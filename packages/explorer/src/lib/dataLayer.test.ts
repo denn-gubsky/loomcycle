@@ -265,4 +265,41 @@ describe("RFC BS connections / history / canvas ops → wire mapping", () => {
       BROWSE,
     );
   });
+
+  it("documentPath pages a recursive document listing until the id turns up", async () => {
+    const s = stubClient();
+    const doc = (full_path: string, document_id: string) => ({
+      name: full_path,
+      kind: "document",
+      full_path,
+      resource_ref: { document_id },
+    });
+    s.path
+      .mockResolvedValueOnce({ path: "/", entries: [doc("/a", "d1")], truncated: true, next_cursor: "c1" })
+      .mockResolvedValueOnce({ path: "/", entries: [doc("/rfcs/cv", "d2")] });
+    const dl = dataLayerFromClient(s.client);
+    await expect(dl.documentPath!("d2", "user", BROWSE)).resolves.toBe("/rfcs/cv");
+    expect(s.path).toHaveBeenNthCalledWith(
+      1,
+      { op: "ls", path: "/", scope: "user", recursive: true, kind_filter: "document", limit: 5000 },
+      BROWSE,
+    );
+    expect(s.path).toHaveBeenNthCalledWith(
+      2,
+      { op: "ls", path: "/", scope: "user", recursive: true, kind_filter: "document", limit: 5000, cursor: "c1" },
+      BROWSE,
+    );
+  });
+
+  it("documentPath is undefined for a document with no dirent, and stops at its page bound", async () => {
+    const s = stubClient();
+    const dl = dataLayerFromClient(s.client);
+    await expect(dl.documentPath!("nope", "user")).resolves.toBeUndefined();
+    expect(s.path).toHaveBeenCalledTimes(1);
+
+    const endless = stubClient();
+    endless.path.mockResolvedValue({ path: "/", entries: [], truncated: true, next_cursor: "more" });
+    await expect(dataLayerFromClient(endless.client).documentPath!("nope", "user")).resolves.toBeUndefined();
+    expect(endless.path).toHaveBeenCalledTimes(4);
+  });
 });

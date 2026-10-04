@@ -68,6 +68,17 @@ export interface ExplorerDataLayer {
   // reports both as plain `directory` entries, so this is the only way to tell
   // them apart. Optional: without it the detail pane omits its "stored" row.
   pathIsStored?(path: string, scope: PathScope, browse?: BrowseScope): Promise<boolean>;
+  // documentPath answers "where is this document in the Path tree" — the reverse
+  // of a dirent, which the runtime has no index for (a dirent names a document;
+  // a document does not know its names). It lets the tree follow a document that
+  // was opened by id, i.e. reached through a reference. undefined = no dirent
+  // found: the document is still readable by id. Optional — without it the tree
+  // only follows documents in directories it has already listed.
+  documentPath?(
+    documentId: string,
+    scope: PathScope,
+    browse?: BrowseScope,
+  ): Promise<string | undefined>;
   pathMkdir(
     path: string,
     scope: PathScope,
@@ -253,6 +264,13 @@ export interface ExplorerDataLayer {
   ): Promise<{ canvas: CanvasDoc; document_id: string }>;
 }
 
+// DOCUMENT_PATH_PAGES bounds the documentPath scan: that many pages of the
+// largest size the runtime serves. Subject-homed facts are document dirents too,
+// so a scope can hold tens of thousands; past the bound the lookup gives up and
+// the document simply opens without a tree position.
+const DOCUMENT_PATH_PAGES = 4;
+const DOCUMENT_PATH_PAGE_LIMIT = 5000;
+
 // dataLayerFromClient maps a @loomcycle/client instance onto the
 // ExplorerDataLayer. Path ops route to client.path (POST /v1/_path); document
 // ops to client.document (POST /v1/_document) — both op-discriminated.
@@ -288,6 +306,32 @@ export function dataLayerFromClient(client: LoomcycleClient, assetFetch?: AssetF
           throw e;
         },
       ),
+    // One recursive listing of document dirents, followed page by page until the
+    // document turns up.
+    documentPath: async (documentId, scope, browse) => {
+      let cursor: string | undefined;
+      for (let page = 0; page < DOCUMENT_PATH_PAGES; page++) {
+        const resp = (await client.path(
+          {
+            op: "ls",
+            path: "/",
+            scope,
+            recursive: true,
+            kind_filter: "document",
+            limit: DOCUMENT_PATH_PAGE_LIMIT,
+            ...(cursor ? { cursor } : {}),
+          },
+          browse,
+        )) as PathLsResult;
+        const hit = (resp.entries ?? []).find(
+          (e) => (e.resource_ref as { document_id?: string } | undefined)?.document_id === documentId,
+        );
+        if (hit) return hit.full_path;
+        cursor = resp.next_cursor || undefined;
+        if (!cursor) return undefined;
+      }
+      return undefined;
+    },
     pathMkdir: (path, scope, browse) =>
       client.path({ op: "mkdir", path, scope }, browse),
     pathMv: (from, to, scope, browse) =>

@@ -14,7 +14,24 @@ import { useEffect, useRef, useState, type ReactNode } from "react";
 // sandbox where Math.random / new Date are disallowed).
 let mermaidSeq = 0;
 
-export default function MermaidDiagram({ code }: { code: string }): ReactNode {
+// flowchartNode finds the flowchart node a click landed in and returns the id it
+// was DECLARED with. Mermaid wraps that id in its own (`flowchart-<id>-<n>`,
+// behind the render id in newer versions), so it is matched from the right. A
+// click outside any node — or a diagram that is not a flowchart — is undefined.
+export function flowchartNode(target: Element | null): string | undefined {
+  const node = target?.closest("g.node");
+  return node ? /flowchart-(.+)-\d+$/.exec(node.id)?.[1] : undefined;
+}
+
+export default function MermaidDiagram({
+  code,
+  onNodeClick,
+}: {
+  code: string;
+  // Called with a flowchart node's declared id when it is clicked. Makes the
+  // nodes read as clickable; omit for a diagram that is only a picture.
+  onNodeClick?: (nodeId: string) => void;
+}): ReactNode {
   const ref = useRef<HTMLDivElement>(null);
   const [state, setState] = useState<{ svg?: string; err?: boolean }>({});
 
@@ -47,7 +64,20 @@ export default function MermaidDiagram({ code }: { code: string }): ReactNode {
     );
   }
   if (state.svg) {
-    return <div ref={ref} className="md-mermaid" dangerouslySetInnerHTML={{ __html: state.svg }} />;
+    return (
+      <div
+        ref={ref}
+        className={onNodeClick ? "md-mermaid md-mermaid-nav" : "md-mermaid"}
+        onClick={
+          onNodeClick &&
+          ((e) => {
+            const id = flowchartNode(e.target as Element);
+            if (id) onNodeClick(id);
+          })
+        }
+        dangerouslySetInnerHTML={{ __html: state.svg }}
+      />
+    );
   }
   return (
     <div ref={ref} className="md-mermaid md-mermaid-loading">

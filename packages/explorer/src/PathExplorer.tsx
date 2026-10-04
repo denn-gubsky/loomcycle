@@ -29,6 +29,16 @@ import {
   useResolvedDataLayer,
   type ExplorerDataSource,
 } from "./components/ExplorerRoot";
+import {
+  amendCurrent,
+  findDocumentPath,
+  followReference,
+  jumpTo,
+  labelOf,
+  type DocLocation,
+  type Trail,
+} from "./lib/docTrail";
+import DocTrail from "./components/DocTrail";
 import Splitter from "./components/Splitter";
 import DocumentViewerBody from "./components/DocumentViewerBody";
 import PathTree, { buildLazyTree, type PathNode } from "./components/PathTree";
@@ -164,10 +174,44 @@ function PathExplorerBody({
     onErrorRef.current = onError;
   }, [onError]);
 
-  const setSelected = useCallback((p: string | undefined) => {
+  // The trail of documents reached by following references (see lib/docTrail).
+  // While it has entries, its LAST one is the document on screen — it may have
+  // no path at all, so the tree selection cannot be what picks the document.
+  const [trail, setTrail] = useState<Trail>([]);
+  // navSeq numbers each navigation, so a path lookup that answers after the
+  // reader has moved on is dropped instead of yanking the selection back.
+  const navSeq = useRef(0);
+  // The last path this component reported, to tell a controlled host's echo of
+  // it from a path the host chose itself.
+  const emittedPath = useRef<string | undefined>(undefined);
+
+  // applySelection moves the tree selection without touching the trail — the
+  // trail's own navigation uses it so the tree follows the opened document.
+  const applySelection = useCallback((p: string | undefined) => {
+    emittedPath.current = p;
     onPathChangeRef.current?.(p);
     setInternalSelected(p); // harmless when controlled; drives display when not
   }, []);
+
+  // setSelected is a FRESH navigation — a tree click, a create/rename/delete, a
+  // scope switch — and starts over: the trail records a chain of followed
+  // references, and picking a document some other way is not a link in it.
+  const setSelected = useCallback(
+    (p: string | undefined) => {
+      navSeq.current++;
+      setTrail((t) => (t.length > 0 ? [] : t));
+      applySelection(p);
+    },
+    [applySelection],
+  );
+
+  // A controlled host that moves `path` on its own (not echoing ours) is a fresh
+  // navigation too.
+  useEffect(() => {
+    if (pathProp === undefined || pathProp === emittedPath.current) return;
+    navSeq.current++;
+    setTrail((t) => (t.length > 0 ? [] : t));
+  }, [pathProp]);
 
   // Memoize browse on its primitives so an inline `browse={{...}}` doesn't churn
   // the fetch effect every render.
@@ -471,6 +515,65 @@ function PathExplorerBody({
 
   const mutable = selected && (selected.kind === "directory" || selected.kind === "document");
 
+  // The document on screen: the trail's last entry while references are being
+  // followed, else the document the tree selection names.
+  const view = useMemo<DocLocation | undefined>(() => {
+    if (trail.length > 0) return trail[trail.length - 1];
+    if (selected?.kind !== "document") return undefined;
+    return {
+      documentId: (selected.resourceRef as { document_id?: string })?.document_id ?? "",
+      path: selected.fullPath,
+      title: selected.name,
+    };
+  }, [trail, selected]);
+
+  // openDocument follows a reference into another document. The tree follows
+  // when that document's path is known: first from the directories already
+  // listed, then by asking the data layer. Until (or unless) a path turns up the
+  // document is open by id, with the tree selection cleared.
+  const openDocument = useCallback(
+    (target: DocLocation, from: DocLocation) => {
+      const seq = ++navSeq.current;
+      const known = findDocumentPath(lazy.getSnapshot(), target.documentId);
+      setTrail(followReference(trail, { ...from, path: view?.path }, { ...target, path: known }));
+      applySelection(known);
+      if (known || !data.documentPath) return;
+      data.documentPath(target.documentId, scope, browse).then(
+        (p) => {
+          if (!p || navSeq.current !== seq) return;
+          setTrail((t) => amendCurrent(t, target.documentId, { path: p }));
+          applySelection(p);
+        },
+        () => {}, // best-effort: the document is already open by id
+      );
+    },
+    [data, lazy, trail, view?.path, scope, browse, applySelection],
+  );
+
+  // jumpToCrumb returns to an earlier document on the trail (Back = the previous
+  // one), restoring the chunk that was selected there.
+  const jumpToCrumb = useCallback(
+    (index: number) => {
+      const next = jumpTo(trail, index);
+      if (next === trail) return;
+      navSeq.current++;
+      setTrail(next);
+      applySelection(next[next.length - 1].path);
+    },
+    [trail, applySelection],
+  );
+
+  const onDocTitle = useCallback(
+    (documentId: string, title: string) => setTrail((t) => amendCurrent(t, documentId, { title })),
+    [],
+  );
+
+  // rename / delete act on the tree's selected entry, so they are offered only
+  // when that entry IS the document on screen (not while its path is unknown, or
+  // its directory is still being listed).
+  const viewIsSelected =
+    !!view?.path && selected?.kind === "document" && selected.fullPath === view.path;
+
   return (
     <>
       <Splitter
@@ -538,63 +641,78 @@ function PathExplorerBody({
           />
         </div>
         <div className="right">
-          {selected ? (
-            selected.kind === "document" ? (
-              <div className="paths-doc">
-                <div className="paths-doc-head">
-                  <code className="paths-doc-path">{selected.fullPath}</code>
-                  <div className="paths-detail-actions">
-                    <button type="button" onClick={renameSelected}>
-                      rename / move
-                    </button>
-                    <button type="button" className="danger" onClick={deleteSelected}>
-                      delete
-                    </button>
-                  </div>
-                </div>
-                <DocumentViewerBody
-                  documentId={
-                    (selected.resourceRef as { document_id?: string })?.document_id ?? ""
-                  }
-                  scope={scope}
-                  titleHint={selected.name}
-                  browse={browse}
-                  principal={principal}
-                  renderAssistant={renderAssistant}
-                />
-              </div>
-            ) : (
-              <div className="paths-detail">
-                <h2>
-                  <span className="paths-detail-kind">{selected.kind}</span>
-                  <code>{selected.fullPath}</code>
-                </h2>
-                <dl className="paths-detail-meta">
-                  <dt>scope</dt>
-                  <dd>{scope}</dd>
-                  {storedLabel && (
-                    <>
-                      <dt>stored</dt>
-                      <dd>{storedLabel}</dd>
-                    </>
-                  )}
-                </dl>
-                {mutable ? (
-                  <div className="paths-detail-actions">
-                    <button type="button" onClick={renameSelected}>
-                      rename / move
-                    </button>
-                    <button type="button" className="danger" onClick={deleteSelected}>
-                      delete
-                    </button>
-                  </div>
+          {view ? (
+            <div className="paths-doc">
+              <DocTrail trail={trail} onJump={jumpToCrumb} />
+              <div className="paths-doc-head">
+                {view.path ? (
+                  <code className="paths-doc-path">{view.path}</code>
                 ) : (
-                  <p className="paths-readonly">
-                    Read-only — {selected.kind} entries are managed by their own tool.
-                  </p>
+                  <span
+                    className="paths-doc-path paths-doc-unfiled"
+                    title="Opened by id — no entry for this document was found in the Path tree"
+                  >
+                    {labelOf(view)} <em>· opened by id, not in the tree</em>
+                  </span>
+                )}
+                {viewIsSelected && (
+                  <div className="paths-detail-actions">
+                    <button type="button" onClick={renameSelected}>
+                      rename / move
+                    </button>
+                    <button type="button" className="danger" onClick={deleteSelected}>
+                      delete
+                    </button>
+                  </div>
                 )}
               </div>
-            )
+              {/* Keyed on the trail depth: every step along the trail changes it,
+                  so the viewer remounts and lands on that step's chunk. A plain
+                  tree selection (depth 0) keeps the viewer mounted, as before. */}
+              <DocumentViewerBody
+                key={trail.length}
+                documentId={view.documentId}
+                scope={scope}
+                titleHint={view.title}
+                browse={browse}
+                principal={principal}
+                renderAssistant={renderAssistant}
+                initialChunkId={view.chunkId}
+                onOpenDocument={openDocument}
+                onTitle={onDocTitle}
+              />
+            </div>
+          ) : selected ? (
+            <div className="paths-detail">
+              <h2>
+                <span className="paths-detail-kind">{selected.kind}</span>
+                <code>{selected.fullPath}</code>
+              </h2>
+              <dl className="paths-detail-meta">
+                <dt>scope</dt>
+                <dd>{scope}</dd>
+                {storedLabel && (
+                  <>
+                    <dt>stored</dt>
+                    <dd>{storedLabel}</dd>
+                  </>
+                )}
+              </dl>
+              {mutable ? (
+                <div className="paths-detail-actions">
+                  <button type="button" onClick={renameSelected}>
+                    rename / move
+                  </button>
+                  <button type="button" className="danger" onClick={deleteSelected}>
+                    delete
+                  </button>
+                </div>
+              ) : (
+                <p className="paths-readonly">
+                  Read-only — {selected.kind} entries are managed by their own tool.
+                </p>
+              )}
+            </div>
           ) : (
             <div className="empty">
               <p>Select a path on the left, or create a folder / document.</p>

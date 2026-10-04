@@ -10,6 +10,7 @@ import type {
 } from "../types";
 import { readImageAsBase64, imageFileFromPaste } from "../lib/imageUpload";
 import { useExplorerData } from "../lib/dataLayer";
+import { landingChunk, type DocLocation } from "../lib/docTrail";
 import {
   docColor,
   effectiveScheme,
@@ -26,6 +27,7 @@ import ColorSchemeEditor from "./ColorSchemeEditor";
 import IdCopy from "./IdCopy";
 import Connections from "./Connections";
 import CrossReferences from "./CrossReferences";
+import DocUnavailable from "./DocUnavailable";
 import HistoryModal from "./HistoryModal";
 import Markdown from "./Markdown";
 import MermaidDiagram from "./Mermaid";
@@ -66,6 +68,18 @@ export interface DocumentViewerBodyProps {
   // when omitted, no assistant affordance is shown and no run-stream machinery
   // is pulled in. The host owns the run: it reads {documentId, scope, subject}.
   renderAssistant?: (ctx: AssistantContext) => ReactNode;
+  // initialChunkId — the chunk to land on instead of the root, for a document
+  // opened AT a chunk (a followed reference, or a return along the trail). It is
+  // read when the document loads; the host remounts the body to land again.
+  initialChunkId?: string;
+  // onOpenDocument — the host's "leave this document" handler. `target` is the
+  // referenced document + chunk; `from` is this document as the reader leaves it
+  // (the selected chunk and the loaded title), which is what a way back needs.
+  // Omitted → cross-document targets are labels only.
+  onOpenDocument?: (target: DocLocation, from: DocLocation) => void;
+  // onTitle reports this document's title once its root chunk has loaded, so a
+  // host that opened it by id can name it.
+  onTitle?: (documentId: string, title: string) => void;
 }
 
 // View mode for the selected-chunk pane (not the whole document).
@@ -78,6 +92,9 @@ export default function DocumentViewerBody({
   browse: browseProp,
   principal,
   renderAssistant,
+  initialChunkId,
+  onOpenDocument,
+  onTitle,
 }: DocumentViewerBodyProps) {
   const data = useExplorerData();
 
@@ -105,6 +122,10 @@ export default function DocumentViewerBody({
   const [confirmDelete, setConfirmDelete] = useState(false); // RFC BP delete confirm
   const [err, setErr] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
+  // Which document the chunk list on hand belongs to, and why a load failed —
+  // together they tell "still loading" from "cannot be read".
+  const [loadedFor, setLoadedFor] = useState<string | undefined>(undefined);
+  const [loadErr, setLoadErr] = useState<string | null>(null);
   const [reload, setReload] = useState(0);
   const [assistantOpen, setAssistantOpen] = useState(false);
   const [meta, setMeta] = useState<DocumentMeta | null>(null);
@@ -112,6 +133,13 @@ export default function DocumentViewerBody({
   const [edges, setEdges] = useState<DocEdge[]>([]);
 
   const refresh = useCallback(() => setReload((n) => n + 1), []);
+
+  // Host callbacks + the landing chunk through refs: none of them should re-run
+  // a fetch effect when a host passes a fresh closure each render.
+  const initialChunkRef = useRef(initialChunkId);
+  initialChunkRef.current = initialChunkId;
+  const onTitleRef = useRef(onTitle);
+  onTitleRef.current = onTitle;
 
   const tree = useMemo(() => buildChunkTree(chunks), [chunks]);
   const rootTitle = useMemo(() => {
@@ -158,20 +186,45 @@ export default function DocumentViewerBody({
     let cancelled = false;
     setLoading(true);
     setErr(null);
+    setLoadErr(null);
     data
       .documentQueryChunks(documentId, scope, browse)
       .then((resp) => {
         if (cancelled) return;
         const rows = resp.chunks ?? [];
         setChunks(rows);
-        setSelectedId((cur) => cur ?? rows.find((c) => !c.parent_id)?.id);
+        setLoadedFor(`${scope}:${documentId}`);
+        setSelectedId((cur) => cur ?? landingChunk(rows, initialChunkRef.current));
       })
-      .catch((e) => !cancelled && setErr(e instanceof Error ? e.message : String(e)))
+      .catch((e) => {
+        if (cancelled) return;
+        // Drop the previous document's chunks: a failed load must not leave them
+        // on screen under the new document's name.
+        setChunks([]);
+        setLoadErr(e instanceof Error ? e.message : String(e));
+      })
       .finally(() => !cancelled && setLoading(false));
     return () => {
       cancelled = true;
     };
   }, [data, documentId, scope, reload, browse]);
+
+  // A document always has a root chunk, so a load that failed — or answered with
+  // no chunks at all — is a document that is not there to read (deleted, another
+  // scope, no access). Said in place rather than left as an empty pane.
+  const unavailable =
+    !loading &&
+    (loadErr !== null || (loadedFor === `${scope}:${documentId}` && chunks.length === 0));
+
+  // Report the title once THIS document's root chunk is on hand (the list still
+  // holds the previous document's rows until the new load lands).
+  const loadedTitle = useMemo(
+    () => chunks.find((c) => !c.parent_id && c.document_id === documentId)?.title,
+    [chunks, documentId],
+  );
+  useEffect(() => {
+    if (loadedTitle) onTitleRef.current?.(documentId, loadedTitle);
+  }, [documentId, loadedTitle]);
 
   // Load the document's color metadata (RFC BN) alongside the chunk list. It
   // drives the chunk-tree tint, the toolbar tint, and seeds the color editor.
@@ -305,6 +358,18 @@ export default function DocumentViewerBody({
   }, [data, mode, selectedId, tree, scope, reload, browse]);
 
   const onSelect = useCallback((n: ChunkNode) => setSelectedId(n.row.id), []);
+
+  // Leaving for another document: hand the host the target and a snapshot of
+  // where the reader is now. The target's title is the CHUNK's — a stand-in until
+  // that document loads and reports its own.
+  const openDocument = useCallback(
+    (targetDocumentId: string, chunkId: string, title?: string) =>
+      onOpenDocument?.(
+        { documentId: targetDocumentId, chunkId, title },
+        { documentId, chunkId: selectedId, title: rootTitle },
+      ),
+    [onOpenDocument, documentId, selectedId, rootTitle],
+  );
 
   // Download the WHOLE document as canonical, round-trippable Markdown (with the
   // metadata comments), independent of the selected-chunk view above.
@@ -601,176 +666,182 @@ export default function DocumentViewerBody({
         </div>
       </div>
       {err && <div className="paths-err">{err}</div>}
-      <div className="doc-split">
-        <div className="doc-chunktree">
-          {loading && chunks.length === 0 ? (
-            <div className="empty">
-              <p>Loading…</p>
-            </div>
-          ) : (
-            <DocumentChunkTree
-              tree={tree}
-              selectedId={selectedId}
-              onSelect={onSelect}
-              colorEnabled={colorEnabled}
-              scheme={meta?.color_scheme}
-              linkedIds={linkedIds}
-            />
-          )}
-        </div>
-        <div className="doc-content">
-          {selectedDetail ? (
-            <>
-              <div className="doc-content-head">
-                <h3>{selectedDetail.title || "(untitled)"}</h3>
-                <div className="doc-content-meta">
-                  {selectedDetail.type && <span className="chunk-badge">{selectedDetail.type}</span>}
-                  {selectedDetail.status && (
-                    <span className="chunk-badge chunk-status">{selectedDetail.status}</span>
-                  )}
-                  <span className="chunk-rev">rev {selectedDetail.revision}</span>
-                  {/* RFC BS — read-only tag chips (editing lives in ChunkEditorModal).
-                      Nested tags (area/sub) are shown verbatim. */}
-                  {selectedDetail.tags?.map((t) => (
-                    <span className="chunk-tag" key={t}>
-                      {t}
-                    </span>
-                  ))}
-                  {/* The selected chunk's id — copyable for external workflows. */}
-                  <IdCopy value={selectedDetail.id} label="chunk" />
-                </div>
-                <div className="doc-content-controls">
-                  {/* The chunk/markdown switch is per-selected-chunk: markdown
-                      assembles this chunk + its sub-chunks (the root → the whole
-                      document). */}
-                  <div className="doc-mode-toggle">
-                    <button
-                      type="button"
-                      className={mode === "chunks" ? "active" : ""}
-                      onClick={() => setMode("chunks")}
-                      title="This chunk's own content"
-                    >
-                      chunk
-                    </button>
-                    <button
-                      type="button"
-                      className={mode === "markdown" ? "active" : ""}
-                      onClick={() => setMode("markdown")}
-                      title={
-                        selectedIsRoot
-                          ? "Whole document as Markdown"
-                          : "This chunk + its sub-chunks as Markdown"
-                      }
-                    >
-                      markdown
-                    </button>
+      {unavailable ? (
+        <DocUnavailable documentId={documentId} scope={scope} detail={loadErr ?? undefined} />
+      ) : (
+        <div className="doc-split">
+          <div className="doc-chunktree">
+            {loading && chunks.length === 0 ? (
+              <div className="empty">
+                <p>Loading…</p>
+              </div>
+            ) : (
+              <DocumentChunkTree
+                tree={tree}
+                selectedId={selectedId}
+                onSelect={onSelect}
+                colorEnabled={colorEnabled}
+                scheme={meta?.color_scheme}
+                linkedIds={linkedIds}
+              />
+            )}
+          </div>
+          <div className="doc-content">
+            {selectedDetail ? (
+              <>
+                <div className="doc-content-head">
+                  <h3>{selectedDetail.title || "(untitled)"}</h3>
+                  <div className="doc-content-meta">
+                    {selectedDetail.type && <span className="chunk-badge">{selectedDetail.type}</span>}
+                    {selectedDetail.status && (
+                      <span className="chunk-badge chunk-status">{selectedDetail.status}</span>
+                    )}
+                    <span className="chunk-rev">rev {selectedDetail.revision}</span>
+                    {/* RFC BS — read-only tag chips (editing lives in ChunkEditorModal).
+                        Nested tags (area/sub) are shown verbatim. */}
+                    {selectedDetail.tags?.map((t) => (
+                      <span className="chunk-tag" key={t}>
+                        {t}
+                      </span>
+                    ))}
+                    {/* The selected chunk's id — copyable for external workflows. */}
+                    <IdCopy value={selectedDetail.id} label="chunk" />
                   </div>
-                  <button type="button" onClick={() => setEditing(selectedDetail)}>
-                    edit
-                  </button>
-                  {/* RFC BS — read-only edit history (revisions + version view + diff). */}
-                  <button
-                    type="button"
-                    onClick={() => setHistoryOpen(true)}
-                    title="View this chunk's edit history + diffs"
-                  >
-                    history
-                  </button>
-                  {/* RFC BP — reorder within the level + delete (not for the root). */}
-                  {!selectedIsRoot && (
-                    <>
+                  <div className="doc-content-controls">
+                    {/* The chunk/markdown switch is per-selected-chunk: markdown
+                        assembles this chunk + its sub-chunks (the root → the whole
+                        document). */}
+                    <div className="doc-mode-toggle">
                       <button
                         type="button"
-                        onClick={() => void reorderSelected("up")}
-                        disabled={!siblingBounds.canUp}
-                        title="Move this chunk up within its level"
+                        className={mode === "chunks" ? "active" : ""}
+                        onClick={() => setMode("chunks")}
+                        title="This chunk's own content"
                       >
-                        ↑
+                        chunk
                       </button>
                       <button
                         type="button"
-                        onClick={() => void reorderSelected("down")}
-                        disabled={!siblingBounds.canDown}
-                        title="Move this chunk down within its level"
+                        className={mode === "markdown" ? "active" : ""}
+                        onClick={() => setMode("markdown")}
+                        title={
+                          selectedIsRoot
+                            ? "Whole document as Markdown"
+                            : "This chunk + its sub-chunks as Markdown"
+                        }
                       >
-                        ↓
+                        markdown
                       </button>
-                    </>
-                  )}
-                  {!selectedIsRoot && (
+                    </div>
+                    <button type="button" onClick={() => setEditing(selectedDetail)}>
+                      edit
+                    </button>
+                    {/* RFC BS — read-only edit history (revisions + version view + diff). */}
                     <button
                       type="button"
-                      className="danger"
-                      onClick={() => setConfirmDelete(true)}
-                      title="Delete this chunk and its sub-chunks"
+                      onClick={() => setHistoryOpen(true)}
+                      title="View this chunk's edit history + diffs"
                     >
-                      delete
+                      history
                     </button>
+                    {/* RFC BP — reorder within the level + delete (not for the root). */}
+                    {!selectedIsRoot && (
+                      <>
+                        <button
+                          type="button"
+                          onClick={() => void reorderSelected("up")}
+                          disabled={!siblingBounds.canUp}
+                          title="Move this chunk up within its level"
+                        >
+                          ↑
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => void reorderSelected("down")}
+                          disabled={!siblingBounds.canDown}
+                          title="Move this chunk down within its level"
+                        >
+                          ↓
+                        </button>
+                      </>
+                    )}
+                    {!selectedIsRoot && (
+                      <button
+                        type="button"
+                        className="danger"
+                        onClick={() => setConfirmDelete(true)}
+                        title="Delete this chunk and its sub-chunks"
+                      >
+                        delete
+                      </button>
+                    )}
+                  </div>
+                </div>
+                <div className="doc-content-body">
+                  {selectedDetail.type === "mermaid" ? (
+                    // RFC BO — a diagram chunk: body IS the Mermaid source.
+                    selectedDetail.body ? (
+                      <>
+                        <MermaidDiagram code={selectedDetail.body} />
+                        {mode === "markdown" && (
+                          <pre className="md-pre doc-mermaid-source">
+                            <code>{selectedDetail.body}</code>
+                          </pre>
+                        )}
+                      </>
+                    ) : (
+                      <p className="doc-empty-body">(empty diagram)</p>
+                    )
+                  ) : selectedDetail.type === "image" || selectedDetail.asset ? (
+                    // RFC BO — an image chunk: bytes come from the auth'd asset GET.
+                    imageErr ? (
+                      <p className="doc-empty-body">Image failed to load: {imageErr}</p>
+                    ) : imageUrl ? (
+                      <figure className="doc-image">
+                        <img src={imageUrl} alt={imageAlt(selectedDetail)} />
+                        {selectedDetail.body && <figcaption>{selectedDetail.body}</figcaption>}
+                      </figure>
+                    ) : (
+                      <p className="doc-empty-body">Loading image…</p>
+                    )
+                  ) : mode === "markdown" ? (
+                    subtreeMd !== null ? (
+                      <Markdown source={subtreeMd} />
+                    ) : (
+                      <p className="doc-empty-body">Assembling Markdown…</p>
+                    )
+                  ) : selectedDetail.body ? (
+                    <Markdown source={selectedDetail.body} />
+                  ) : (
+                    <p className="doc-empty-body">(empty chunk)</p>
                   )}
                 </div>
+                <CrossReferences
+                  edges={edges}
+                  documentId={documentId}
+                  selectedId={selectedId}
+                  onSelectChunk={setSelectedId}
+                  onOpenDocument={onOpenDocument ? openDocument : undefined}
+                />
+                {/* RFC BS — backlinks / related / unlinked mentions for the selected
+                    chunk, lazily fetched when its section is expanded. */}
+                <Connections
+                  documentId={documentId}
+                  selectedId={selectedId}
+                  scope={scope}
+                  browse={browse}
+                  onSelectChunk={setSelectedId}
+                  onOpenDocument={onOpenDocument ? openDocument : undefined}
+                />
+              </>
+            ) : (
+              <div className="empty">
+                <p>Select a chunk on the left.</p>
               </div>
-              <div className="doc-content-body">
-                {selectedDetail.type === "mermaid" ? (
-                  // RFC BO — a diagram chunk: body IS the Mermaid source.
-                  selectedDetail.body ? (
-                    <>
-                      <MermaidDiagram code={selectedDetail.body} />
-                      {mode === "markdown" && (
-                        <pre className="md-pre doc-mermaid-source">
-                          <code>{selectedDetail.body}</code>
-                        </pre>
-                      )}
-                    </>
-                  ) : (
-                    <p className="doc-empty-body">(empty diagram)</p>
-                  )
-                ) : selectedDetail.type === "image" || selectedDetail.asset ? (
-                  // RFC BO — an image chunk: bytes come from the auth'd asset GET.
-                  imageErr ? (
-                    <p className="doc-empty-body">Image failed to load: {imageErr}</p>
-                  ) : imageUrl ? (
-                    <figure className="doc-image">
-                      <img src={imageUrl} alt={imageAlt(selectedDetail)} />
-                      {selectedDetail.body && <figcaption>{selectedDetail.body}</figcaption>}
-                    </figure>
-                  ) : (
-                    <p className="doc-empty-body">Loading image…</p>
-                  )
-                ) : mode === "markdown" ? (
-                  subtreeMd !== null ? (
-                    <Markdown source={subtreeMd} />
-                  ) : (
-                    <p className="doc-empty-body">Assembling Markdown…</p>
-                  )
-                ) : selectedDetail.body ? (
-                  <Markdown source={selectedDetail.body} />
-                ) : (
-                  <p className="doc-empty-body">(empty chunk)</p>
-                )}
-              </div>
-              <CrossReferences
-                edges={edges}
-                documentId={documentId}
-                selectedId={selectedId}
-                onSelectChunk={setSelectedId}
-              />
-              {/* RFC BS — backlinks / related / unlinked mentions for the selected
-                  chunk, lazily fetched when its section is expanded. */}
-              <Connections
-                documentId={documentId}
-                selectedId={selectedId}
-                scope={scope}
-                browse={browse}
-                onSelectChunk={setSelectedId}
-              />
-            </>
-          ) : (
-            <div className="empty">
-              <p>Select a chunk on the left.</p>
-            </div>
-          )}
+            )}
+          </div>
         </div>
-      </div>
+      )}
       {assistantOpen && renderAssistant && (
         <div className="doc-assistant">
           {renderAssistant({
