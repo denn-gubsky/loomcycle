@@ -159,6 +159,8 @@ type Handler struct {
 	SystemPrompt string `json:"system_prompt,omitempty"`
 	// InputTemplate is this node's user prompt. When set it REPLACES the input
 	// threaded from the previous state; when empty the threaded input is used.
+	// A template that names {{thread.output}} gets the threaded input there,
+	// filled after expansion and never expanded itself.
 	// Declared by RFC AP and read for the first time here.
 	InputTemplate string `json:"input_template,omitempty"`
 	TimeoutMS     int    `json:"timeout_ms,omitempty"`

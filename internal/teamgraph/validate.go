@@ -232,6 +232,61 @@ func validateHandler(stateID string, h Handler) error {
 	if h.TimeoutMS < 0 {
 		return fmt.Errorf("team definition: state %q handler timeout_ms must be >= 0", stateID)
 	}
+	return validatePromptSlots(stateID, h)
+}
+
+// The reserved data-slot markers a walk fills AFTER a prompt's placeholders
+// have been expanded, with content it never scans. Declared here, beside the
+// validation that says where each may be written, and used by the walk under
+// these same names so the two cannot disagree about a marker's spelling.
+const (
+	// ThreadedOutputSlot receives what the previous state handed over (the
+	// walk's own input, on the entry state).
+	ThreadedOutputSlot = "{{thread.output}}"
+	// StarterMessageSlot / StarterMessagesSlot receive a Starter's work item
+	// (per=message, per=chunk) or its whole batch (per=once).
+	StarterMessageSlot  = "{{starter.message}}"
+	StarterMessagesSlot = "{{starter.messages}}"
+)
+
+// validatePromptSlots refuses a reserved slot marker written where the walk
+// would not fill it, or must not.
+//
+// The hand-off between states is another agent's OUTPUT — it may carry whatever
+// a tool result or a fetched page put into it. In the user segment that is what
+// it is for. In `system_prompt` it would be untrusted text speaking with the
+// team's voice, so the marker is refused there on every kind.
+//
+// The other refusals are silent-setting guards: a Starter threads nothing to
+// its runs (each gets its work item), and only a Starter has a work item, so
+// the wrong marker in either place would reach the agent as literal braces.
+func validatePromptSlots(stateID string, h Handler) error {
+	if strings.Contains(h.SystemPrompt, ThreadedOutputSlot) {
+		return fmt.Errorf("team definition: state %q `system_prompt` contains %s — the previous state's output is "+
+			"another agent's text and may only go in the user prompt; put it in `input_template`", stateID, ThreadedOutputSlot)
+	}
+	if h.Kind == HandlerStarter {
+		if h.Prompt == nil {
+			return nil
+		}
+		for _, f := range []struct{ name, text string }{{"prompt.system", h.Prompt.System}, {"prompt.input", h.Prompt.Input}} {
+			if strings.Contains(f.text, ThreadedOutputSlot) {
+				return fmt.Errorf("team definition: state %q starter `%s` contains %s — a starter hands each run its "+
+					"work item, not the previous state's output; use %s (%s for per=once)",
+					stateID, f.name, ThreadedOutputSlot, StarterMessageSlot, StarterMessagesSlot)
+			}
+		}
+		return nil
+	}
+	for _, f := range []struct{ name, text string }{{"system_prompt", h.SystemPrompt}, {"input_template", h.InputTemplate}} {
+		for _, marker := range []string{StarterMessageSlot, StarterMessagesSlot} {
+			if strings.Contains(f.text, marker) {
+				return fmt.Errorf("team definition: state %q `%s` contains %s but is kind %q — only a starter has a "+
+					"work item; the previous state's output is %s, in `input_template`",
+					stateID, f.name, marker, h.Kind, ThreadedOutputSlot)
+			}
+		}
+	}
 	return nil
 }
 
