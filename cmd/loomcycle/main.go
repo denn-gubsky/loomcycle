@@ -4249,6 +4249,12 @@ func (r mcpActiveDefReader) ActiveMCPServerDef(ctx context.Context, tenant, name
 	if err != nil {
 		return nil, false
 	}
+	// A retired active version keeps its pointer but is out of the registry,
+	// so the pool dials the next tier for this name. Report it absent so the
+	// enumerator advertises that tier's tools too, not the retired version's.
+	if row.Retired {
+		return nil, false
+	}
 	return row.Definition, true
 }
 
