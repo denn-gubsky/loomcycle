@@ -42,6 +42,7 @@ type Receiver struct {
 	cfg          *config.Config
 	runner       runner.Runner
 	teams        runner.TeamWalkStarter
+	teamHooks    runner.TeamWebhookResolver
 	publisher    channels.SystemPublisher
 	runStateBus  *runstate.Bus
 	envAllowlist map[string]bool
@@ -71,12 +72,14 @@ type Receiver struct {
 // Deps is the constructor input. runStateBus may be nil (disables ?sync);
 // publisher may be nil (channel-delivery webhooks then 503). store may be
 // nil (only yaml-defined webhooks resolve). TeamWalks may be nil
-// (team-delivery webhooks then 503).
+// (team-delivery webhooks then 503). TeamWebhooks may be nil (no route for a
+// team's own webhooks is mounted).
 type Deps struct {
 	Store        lookup.WebhookStore
 	Cfg          *config.Config
 	Runner       runner.Runner
 	TeamWalks    runner.TeamWalkStarter
+	TeamWebhooks runner.TeamWebhookResolver
 	Publisher    channels.SystemPublisher
 	RunStateBus  *runstate.Bus
 	EnvAllowlist map[string]bool
@@ -109,6 +112,7 @@ func New(d Deps) *Receiver {
 		cfg:                  d.Cfg,
 		runner:               d.Runner,
 		teams:                d.TeamWalks,
+		teamHooks:            d.TeamWebhooks,
 		publisher:            d.Publisher,
 		runStateBus:          d.RunStateBus,
 		envAllowlist:         d.EnvAllowlist,
@@ -139,6 +143,12 @@ func (rec *Receiver) Mount(reg Registrar) {
 	// per-tenant webhook. Go's ServeMux distinguishes them by segment count.
 	reg.Handle("POST /v1/_webhooks/{name}", http.HandlerFunc(rec.handle))
 	reg.Handle("POST /v1/_webhooks/{tenant}/{name}", http.HandlerFunc(rec.handle))
+	if rec.teamHooks != nil {
+		// A team's own webhooks, the same two shapes: the shared "" tenant's
+		// teams at the bare route, a tenant's at the prefixed one.
+		reg.Handle("POST /v1/_teams/{team}/webhooks/{name}", http.HandlerFunc(rec.handleTeam))
+		reg.Handle("POST /v1/_teams/{tenant}/{team}/webhooks/{name}", http.HandlerFunc(rec.handleTeam))
+	}
 }
 
 // webhookInert reports whether a resolved def must refuse every delivery. A
