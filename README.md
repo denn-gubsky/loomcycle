@@ -182,7 +182,16 @@ been primitives plus hardening: memory, documents, teams, sandboxing, retention
 and erasure. The agentic-memory subsystem and the document surfaces built on it
 remain the main direction.
 
-The most recent line (v1.103.0) answers an operator message sent to a run
+The most recent line (v1.104.0) lets a team definition carry its own agents,
+skills, channels, schedules and webhooks, and declare variables a start sets,
+so a workflow is handed over as one definition; a team's own webhook answers on
+any instance, with durable dedup. Schedules and inbound webhooks can start a
+team walk directly. An agent inside a run can no longer create an agent with
+more authority than it holds, and retired webhook, skill, memory-backend and
+A2A definitions are no longer served. Memory search can rerank with a decision
+model, and the Web UI sets team variables and shows a team's own definitions.
+
+Before it, v1.103.0 answered an operator message sent to a run
 while it writes its final answer, where it used to be acknowledged and dropped;
 a message sent after the run finished is refused. Team states can put the
 previous state's output inside a template and capture a plain-text answer into
