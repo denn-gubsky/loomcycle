@@ -64,7 +64,7 @@ func memberCtxIn(t *testing.T, callerTenant string, operatorAuthored bool) conte
 // Agent-tool child both start, and returns its prepared run.
 func startSub(t *testing.T, h *reviewHarness, ctx context.Context) *subRunPrep {
 	t.Helper()
-	prep, err := h.srv.prepareSubRunValues(ctx, "writer", "", "go", "", false, func(providers.Event) {}, nil, nil, false, false)
+	prep, err := h.srv.prepareSubRunValues(ctx, "writer", nameFromAgentTool, "", "go", "", false, func(providers.Event) {}, nil, nil, false, false)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -56,6 +56,8 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
+	"fmt"
 
 	"github.com/denn-gubsky/loomcycle/internal/config"
 	"github.com/denn-gubsky/loomcycle/internal/hooks"
@@ -118,6 +120,39 @@ func Agent(ctx context.Context, s AgentStore, cfg *config.Config, tenantID, name
 	return resolveDynamic(ctx, s, "", name)
 }
 
+// AgentChecked is Agent for a caller that must tell "no such agent" from "could
+// not look": it walks the same chain in the same order and returns the same
+// definition, but a store fault on any tier it had to read is returned as an
+// error instead of being read as "not there".
+//
+// Agent folds the two together, which is right for a caller that goes on to
+// say "unknown agent" either way. It is wrong for a caller DECIDING something
+// on absence — that a name is free, that no other agent shares it — where a
+// fault read as absence is a decision made on nothing.
+func AgentChecked(ctx context.Context, s AgentStore, cfg *config.Config, tenantID, name string) (config.AgentDef, bool, error) {
+	if tenantID != "" {
+		def, ok, err := resolveDynamicChecked(ctx, s, tenantID, name)
+		if err != nil || ok {
+			return def, ok, err
+		}
+	}
+	if def, ok := StaticAgent(cfg, name); ok {
+		return def, true, nil
+	}
+	return resolveDynamicChecked(ctx, s, "", name)
+}
+
+// resolveDynamicChecked is resolveDynamic with store faults reported: an
+// error from either tier that is not "no such row" comes back as err, whatever
+// else was found. A row that is absent, retired or unreadable is "not found".
+func resolveDynamicChecked(ctx context.Context, s AgentStore, tenantID, name string) (config.AgentDef, bool, error) {
+	def, ok, fault := resolveDynamicTiers(ctx, s, tenantID, name)
+	if fault != nil {
+		return config.AgentDef{}, false, fmt.Errorf("look up agent %q: %w", name, fault)
+	}
+	return def, ok, nil
+}
+
 // StaticAgent is the static cfg.Agents entry for name, exactly as Agent serves
 // it when no tenant definition shadows it. A resume of a run that started on a
 // static agent reads it here, past any shadow that has appeared since.
@@ -144,26 +179,42 @@ func StaticAgent(cfg *config.Config, name string) (config.AgentDef, bool) {
 // the name for that tenant (or the store is nil). Called once for the
 // tenant pass and once for the shared "" pass by Agent.
 func resolveDynamic(ctx context.Context, s AgentStore, tenantID, name string) (config.AgentDef, bool) {
+	def, ok, _ := resolveDynamicTiers(ctx, s, tenantID, name)
+	return def, ok
+}
+
+// resolveDynamicTiers is the two-tier read behind resolveDynamic. fault is the
+// first store error that was not "no such row"; def and ok are what
+// resolveDynamic returns regardless of it (a fault on the first tier still
+// falls through to the second, as it always has).
+func resolveDynamicTiers(ctx context.Context, s AgentStore, tenantID, name string) (def config.AgentDef, ok bool, fault error) {
 	if s == nil {
-		return config.AgentDef{}, false
+		return config.AgentDef{}, false, nil
 	}
+	var nf *store.ErrNotFound
 	// Tier A — dynamic_agents. Persistence uses config.AgentDef's JSON
 	// tags directly; safe to unmarshal into config.AgentDef.
-	if row, err := s.DynamicAgentGet(ctx, tenantID, name); err == nil {
+	row, err := s.DynamicAgentGet(ctx, tenantID, name)
+	if err == nil {
 		var def config.AgentDef
 		if uerr := json.Unmarshal(row.Definition, &def); uerr == nil {
 			NormalizeAgentDef(&def)
 			def.OwnerTenant = tenantID
 			def.RegisteredSHA256 = registeredDigest(row.Definition)
-			return def, true
+			return def, true, nil
 		}
+	} else if !errors.As(err, &nf) {
+		fault = err
 	}
 	// Tier B — substrate (agent_def_active overlay → agent_defs row).
 	// Persistence uses mergedDef's snake_case JSON tags; must unmarshal
 	// into a json-tagged adapter then convert.
 	activeRow, err := s.AgentDefGetActive(ctx, tenantID, name)
 	if err != nil {
-		return config.AgentDef{}, false
+		if fault == nil && !errors.As(err, &nf) {
+			fault = err
+		}
+		return config.AgentDef{}, false, fault
 	}
 	// A retired def must never be served, even if the active pointer still
 	// references it. The retire-of-active path now clears the pointer, so
@@ -171,14 +222,14 @@ func resolveDynamic(ctx context.Context, s AgentStore, tenantID, name string) (c
 	// run for a retired-but-active name falls through to static/none rather
 	// than silently running a retired definition.
 	if activeRow.Retired {
-		return config.AgentDef{}, false
+		return config.AgentDef{}, false, fault
 	}
-	def, ok := AgentFromDefRow(activeRow)
+	def, ok = AgentFromDefRow(activeRow)
 	if !ok {
-		return config.AgentDef{}, false
+		return config.AgentDef{}, false, fault
 	}
 	def.OwnerTenant = tenantID
-	return def, true
+	return def, true, fault
 }
 
 // registeredDigest identifies one dynamic_agents row's content. It is the

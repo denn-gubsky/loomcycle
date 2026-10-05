@@ -26,6 +26,8 @@ import (
 //     next_edge is unambiguous);
 //   - a terminal state has no outbound transitions;
 //   - every state is reachable from `entry`;
+//   - a local agent's name is one segment, and every "./<name>" a state uses
+//     is declared under local.agents;
 //   - max_iterations ≥ 0 (0 = use the default). Cycle termination is guaranteed
 //     because the per-state cap applies to every state.
 //
@@ -73,6 +75,9 @@ func Validate(d Definition) error {
 		return fmt.Errorf("team definition: entry %q does not resolve to a state", d.Entry)
 	}
 	if err := validateInputSourcePlacement(d); err != nil {
+		return err
+	}
+	if err := validateLocal(d); err != nil {
 		return err
 	}
 

@@ -1438,13 +1438,28 @@ export interface RunSpec {
    *  run that started on the operator's static configuration, which a resume
    *  reads again rather than a same-named agent registered or forked since.
    *  Written by the server only. */
-  agent_version?: { def_id?: string; registered_sha256?: string; static?: boolean };
+  agent_version?: {
+    def_id?: string;
+    registered_sha256?: string;
+    static?: boolean;
+    /** Set when the run's agent is one of a team's OWN agents (declared in
+     *  the team's definition, run as `<team>/<name>`): the team version it
+     *  was read from. */
+    team_def_id?: string;
+  };
   /** On a team walk's own run: the team version it ran, its input and the
    *  arguments it was started with. Written once when the walk starts and
    *  never changed. Absent on any other run, and on a walk recorded before
    *  versions were: read that as "version not recorded", never as the
    *  team's current version. Written by the server only. */
   team?: RunSpecTeam;
+  /** The team this run belongs to: present on every run in a team walk's
+   *  spawn tree (its members, their sub-agents, and theirs) and on a
+   *  continuation of one. Names the team VERSION whose own agents the run
+   *  may start; a resume or continuation reads them from it. Absent outside
+   *  any team, and on the walk's own run (see `team`). Written by the
+   *  server only. */
+  team_scope?: { team: string; def_id: string; def_tenant?: string };
 }
 
 /** What a team walk started with (`RunSpec.team`). */

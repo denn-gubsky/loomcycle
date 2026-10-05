@@ -170,6 +170,9 @@ var agentDefOverridability = map[string]overridability{
 	// And for the operator's static config: that the run started on it, so a
 	// resume reads it again past any shadow.
 	"Static": notOverridable,
+	// And for a team's own agent: the team version it was read from. A run
+	// naming its own would pick the definition it runs.
+	"TeamDefID": notOverridable,
 
 	// --- operator configuration (D6): the declarations themselves are the
 	// operator's; an override selects WITHIN them and may not change them. ---

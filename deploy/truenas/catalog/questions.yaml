@@ -963,6 +963,12 @@ questions:
             schema:
               type: string
               default: ""
+          - variable: LOOMCYCLE_TEAM_DEF_MAX_DEFINITION_BYTES
+            label: LOOMCYCLE_TEAM_DEF_MAX_DEFINITION_BYTES
+            description: '(example: 1048576)'
+            schema:
+              type: string
+              default: ""
           - variable: LOOMCYCLE_SKILL_DEF_MAX_BODY_BYTES
             label: LOOMCYCLE_SKILL_DEF_MAX_BODY_BYTES
             description: '(example: 131072)'

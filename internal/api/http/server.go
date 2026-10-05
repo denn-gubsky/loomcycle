@@ -178,6 +178,10 @@ type Server struct {
 	// held ones now rather than at their next hold heartbeat. Zero value works.
 	reviewMembers walkReviewMembers
 
+	// teamDefs keeps the parsed form of recently used team versions, for
+	// resolving a team's own agents (see teamVersion).
+	teamDefs teamDefCache
+
 	// advisoryLock, when set, gates the team-subscription sweep so exactly one
 	// replica drives a given promoted team at a time. nil = single-process
 	// (or no Postgres): the sweep drives every team itself, which is correct
@@ -658,12 +662,14 @@ func New(cfg *config.Config, pr ProviderResolver, builtinTools []tools.Tool, sem
 			}
 			// RFC N: resolve within the calling run's tenant (carried via
 			// ctx RunIdentity for in-loop callers).
-			def, ok := lookup.Agent(ctx, s.store, s.cfg(), tenantFromCtx(ctx), callingAgent)
+			def, ok := s.lookupAgent(ctx, tenantFromCtx(ctx), callingAgent)
 			if !ok {
 				return 0
 			}
 			return def.MaxConcurrentChildren
 		},
+		// A team's own agent is reported under the name it runs as.
+		ResolveName: s.agentRunName,
 	})
 	// F45: `Context op=tools` introspects the runtime-wide catalog via the
 	// Context tool's Tools field. main.go can only set that to the PRE-server
@@ -1079,8 +1085,12 @@ func (s *Server) SetTeamDefTool(t tools.Tool) {
 		if td.AgentExists == nil {
 			// The same lookup op=run resolves a member through, so verify cannot
 			// call a team runnable that run would refuse.
+			//
+			// Outside any team scope, even when the verify comes from an agent
+			// running inside one: verify is about the definition it was given,
+			// whose own agents it checks against that definition itself.
 			td.AgentExists = func(ctx context.Context, name string) bool {
-				_, ok := s.lookupAgent(ctx, tenantFromCtx(ctx), name)
+				_, ok := s.lookupAgent(store.WithTeamScope(ctx, store.TeamScope{}), tenantFromCtx(ctx), name)
 				return ok
 			}
 		}
@@ -1549,14 +1559,17 @@ func (s *Server) lookupAgent(ctx context.Context, tenantID, name string) (config
 	// run with RunIdentity on ctx (sub-agents, the Context-tool path, boot)
 	// pass tenantFromCtx(ctx) explicitly to preserve today's behavior.
 	// "" = shared/default/legacy tenant.
-	// nil-store guard at the boundary so the lookup package can
-	// type-assert an interface receiver. The lookup package treats
-	// "no store" identically to "store didn't have the name" — both
-	// fall through to (zero, false).
-	if s.store == nil {
-		return lookup.Agent(ctx, nil, s.cfg(), tenantID, name)
-	}
-	return lookup.Agent(ctx, s.store, s.cfg(), tenantID, name)
+	//
+	// A team scope on ctx is honoured (resolveAgentName): inside one, the
+	// name may be one of that team's own agents. A caller acting on a run or
+	// a session from outside it puts that run's recorded scope on ctx first
+	// (runTeamScopeCtx / sessionTeamScopeCtx).
+	//
+	// `name` here is always one a run or session already carries, or one a
+	// caller outside every team supplied — never a state's or the Agent
+	// tool's, which resolve through resolveAgentName with their own source.
+	def, _, err := s.resolveAgentName(ctx, tenantID, name, nameOfRun)
+	return def, err == nil
 }
 
 // resolveAgentDef mirrors resolveAgent but takes a caller-supplied
@@ -2654,6 +2667,11 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 	}
 	var priorMessages []providers.Message
 
+	// A fresh top-level run is outside every team, whatever its caller's ctx
+	// carried: a team's own agents are reachable only from a walk of the team.
+	if !isContinuation {
+		ctx = store.WithTeamScope(ctx, store.TeamScope{})
+	}
 	if isContinuation {
 		if s.store == nil {
 			return runner.ErrSessionRequired
@@ -2674,6 +2692,16 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 		effectiveAgentName = sess.Agent
 		effectiveTenantID = sess.TenantID
 		effectiveUserID = sess.UserID
+		// Continued inside the team it began in, if any — and refused if that
+		// team version has been retired (continuationTeamScopeCtx).
+		scopedCtx, scopeErr := s.continuationTeamScopeCtx(ctx, sess)
+		if errors.Is(scopeErr, errContinuationRefused) {
+			return fmt.Errorf("%w: %s: %v", runner.ErrUnknownAgent, sess.Agent, scopeErr)
+		}
+		if scopeErr != nil {
+			return fmt.Errorf("%w: %v", runner.ErrInternal, scopeErr)
+		}
+		ctx = scopedCtx
 
 		releaseLock, ok := s.sessionLocks.TryLock(in.SessionID)
 		if !ok {
@@ -2879,6 +2907,7 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 		Hooks:             additionsRecord(hooks.Additions{Hooks: in.Hooks, ToolHooks: in.ToolHooks}),
 		Interruption:      in.Interruption,          // the run's own block, so a resume re-narrows from it
 		AgentVersion:      agentVersionOf(agentDef), // the version it resumes on
+		TeamScope:         teamScopeRecordOf(ctx),   // a continued team session's; nil for a fresh run
 	}
 
 	// ---- Session+run creation ----
@@ -5393,6 +5422,22 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 	// RFC N: resolve at the SESSION's authoritative tenant (the same value
 	// RunOnce uses for a continuation), not tenantFromCtx — the ownership
 	// gate above already proved the caller is entitled to this session.
+	//
+	// A session that began inside a team is continued inside it: the request
+	// carries that team scope from here on, so the session's agent — and any
+	// agent this continuation spawns — resolves in the team version the
+	// session started under — unless that version has been retired since, when
+	// it cannot be continued at all. See continuationTeamScopeCtx.
+	scopedCtx, scopeErr := s.continuationTeamScopeCtx(r.Context(), sess)
+	if errors.Is(scopeErr, errContinuationRefused) {
+		http.Error(w, fmt.Sprintf("session cannot be continued: %v", scopeErr), http.StatusBadRequest)
+		return
+	}
+	if scopeErr != nil {
+		http.Error(w, scopeErr.Error(), http.StatusInternalServerError)
+		return
+	}
+	r = r.WithContext(scopedCtx)
 	agentDef, ok := s.lookupAgent(r.Context(), sess.TenantID, sess.Agent)
 	if !ok {
 		http.Error(w, fmt.Sprintf("session refers to unknown agent %q", sess.Agent), http.StatusBadRequest)
@@ -5582,6 +5627,7 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 		Hooks:             additionsRecord(hooks.Additions{Hooks: body.Hooks, ToolHooks: body.ToolHooks}),
 		Interruption:      body.Interruption,        // the run's own block, so a resume re-narrows from it
 		AgentVersion:      agentVersionOf(agentDef), // the version it resumes on
+		TeamScope:         teamScopeRecordOf(r.Context()),
 	}
 
 	// Create a new run inside the existing session. user_id is
@@ -6842,7 +6888,7 @@ func (s *Server) runSubRun(ctx context.Context, name, systemExtra, prompt, defID
 	if hold != nil {
 		observe = hold.observe
 	}
-	prep, err := s.prepareSubRunValues(ctx, name, systemExtra, prompt, defID, false, observe, values, dataSlots, systemAuthored, inputAuthored)
+	prep, err := s.prepareSubRunValues(ctx, name, nameFromAgentTool, systemExtra, prompt, defID, false, observe, values, dataSlots, systemAuthored, inputAuthored)
 	if err != nil {
 		return "", nil, "", err
 	}
@@ -6940,7 +6986,9 @@ func (h *childHold) released(status store.RunStatus) {
 //   - Its terminal status, by the same rule its row is written with, so the
 //     walk can tell a rejected member from a failed one.
 func (s *Server) runTeamMember(ctx context.Context, name string, p teamrun.Prompt, defID string) (teamrun.SpawnResult, error) {
-	prep, err := s.prepareSubRunValues(ctx, name, p.System, p.Input, defID, false, func(providers.Event) {}, p.Values, p.DataSlots, p.SystemAuthored, p.InputAuthored)
+	// `name` is the team definition's own: "./x" for one of the team's agents,
+	// anything else a global agent — never shadowed by a local of that name.
+	prep, err := s.prepareSubRunValues(ctx, name, nameFromDefinition, p.System, p.Input, defID, false, func(providers.Event) {}, p.Values, p.DataSlots, p.SystemAuthored, p.InputAuthored)
 	if err != nil {
 		return teamrun.SpawnResult{}, err
 	}
@@ -7179,19 +7227,36 @@ func composeSubRunSegments(agentSystemPrompt, systemExtra, prompt string) []loop
 // resident child, like a top-level interactive run, must not swap/hold the
 // provider gate across turns) — everything else is identical.
 func (s *Server) prepareSubRun(ctx context.Context, name, systemExtra, prompt, defID string, interactive bool, fwd func(providers.Event)) (*subRunPrep, error) {
-	return s.prepareSubRunValues(ctx, name, systemExtra, prompt, defID, interactive, fwd, nil, nil, false, false)
+	return s.prepareSubRunValues(ctx, name, nameFromAgentTool, systemExtra, prompt, defID, interactive, fwd, nil, nil, false, false)
 }
 
-func (s *Server) prepareSubRunValues(ctx context.Context, name, systemExtra, prompt, defID string, interactive bool, fwd func(providers.Event), values, dataSlots map[string]string, systemAuthored, inputAuthored bool) (*subRunPrep, error) {
+// prepareSubRunValues is prepareSubRun with a team state's prompt values. src
+// is who wrote `name` — a state of a team definition, or a model through the
+// Agent tool — which decides how it may resolve inside a team.
+func (s *Server) prepareSubRunValues(ctx context.Context, name string, src nameSource, systemExtra, prompt, defID string, interactive bool, fwd func(providers.Event), values, dataSlots map[string]string, systemAuthored, inputAuthored bool) (*subRunPrep, error) {
 	// RFC N: a parent in tenant T resolves the sub-agent name within T's
 	// view (parent tenant flows via ctx RunIdentity, inherited by every
 	// sub-agent). Confirms RFC N's open-question on cross-boundary spawn:
 	// the lookup is tenant-scoped, so a parent cannot spawn another
 	// tenant's private agent by name.
+	//
+	// Inside a team the name may be one of the team's OWN agents, and from
+	// here on `name` is the name the child RUNS under ("<team>/<name>" for
+	// one of those, however the caller spelled it): its run row, session,
+	// events and agent-scoped state all key on it.
 	tenant := tenantFromCtx(ctx)
-	def, ok := lookup.Agent(ctx, s.store, s.cfg(), tenant, name)
-	if !ok {
+	def, runName, err := s.resolveAgentName(ctx, tenant, name, src)
+	if errors.Is(err, errAgentNotFound) {
 		return nil, fmt.Errorf("unknown sub-agent %q (not in cfg.Agents, dynamic_agents, or agent_def_active)", name)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("sub-agent %q: %w", name, err)
+	}
+	name = runName
+	// A team's own agent has no versions of its own to pin: it is whatever
+	// the team version this run belongs to says it is.
+	if def.TeamDefID != "" && defID != "" {
+		return nil, fmt.Errorf("Agent tool: def_id does not apply to %q — it is a team's own agent and runs as its team's version defines it", name)
 	}
 
 	// v0.8.5 substrate: when defID is set, overlay the named def's
@@ -7315,6 +7380,10 @@ func (s *Server) prepareSubRunValues(ctx context.Context, name, systemExtra, pro
 		// base the pinned version was laid over — so a resume rebuilds the same
 		// definition; the pin itself is AgentDefID on the row.
 		AgentVersion: agentVersionOf(def),
+		// The team this run belongs to, inherited from the spawning run's ctx
+		// and passed on below (it is not cleared for sub-agents, unlike the
+		// walk and wave stamps): a resume reads the team's own agents from it.
+		TeamScope: teamScopeRecordOf(ctx),
 	}
 
 	// RFC DC P5 / D9: a child inherits the parent's overrides only when it is
@@ -8668,7 +8737,7 @@ func (s *Server) compactRunWithSource(ctx context.Context, runID, source string)
 
 	// Resolve provider/model + summarize (one model call) — same chain resume
 	// uses; no per-run secrets needed (the operator's provider key serves it).
-	agentDef, ok := s.lookupAgent(ctx, run.TenantID, run.Agent)
+	agentDef, ok := s.lookupAgent(runTeamScopeCtx(ctx, run), run.TenantID, run.Agent)
 	if !ok {
 		return connector.CompactResult{}, &compactErr{status: http.StatusConflict, code: "agent_gone", msg: "the run's agent no longer exists"}
 	}
@@ -8895,7 +8964,7 @@ func (s *Server) RecapSession(ctx context.Context, sessionID string) (string, er
 		return "", errors.New("chat has no transcript to recap yet")
 	}
 
-	agentDef, ok := s.lookupAgent(ctx, sess.TenantID, sess.Agent)
+	agentDef, ok := s.lookupAgent(s.sessionTeamScopeCtx(ctx, sessionID), sess.TenantID, sess.Agent)
 	if !ok {
 		return "", errors.New("the chat's agent no longer exists")
 	}

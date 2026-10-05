@@ -79,29 +79,31 @@ func AgentRefs(d Definition) []AgentRef {
 	var out []AgentRef
 	for _, s := range d.States {
 		h := s.Handler
-		if h.Agent != "" {
-			out = append(out, AgentRef{h.Agent, s.ID, "agent"})
-		}
-		for _, a := range h.Agents {
-			if a != "" {
-				out = append(out, AgentRef{a, s.ID, "agents"})
+		visitAgentRefs(&h, func(ref *string, field string) {
+			if *ref != "" {
+				out = append(out, AgentRef{*ref, s.ID, field})
 			}
-		}
-		if h.Consolidator != "" {
-			out = append(out, AgentRef{h.Consolidator, s.ID, "consolidator"})
-		}
-		if h.Fanout != nil {
-			if h.Fanout.Agent != "" {
-				out = append(out, AgentRef{h.Fanout.Agent, s.ID, "fanout.agent"})
-			}
-			for _, a := range h.Fanout.Agents {
-				if a != "" {
-					out = append(out, AgentRef{a, s.ID, "fanout.agents"})
-				}
-			}
-		}
+		})
 	}
 	return out
+}
+
+// visitAgentRefs calls fn with every agent-name field of a handler, in the
+// order AgentRefs reports them. It is the ONE list of agent-bearing fields:
+// AgentRefs reads through it and QualifyLocalRefs rewrites through it, so a
+// field added here is seen by both and one added elsewhere by neither.
+func visitAgentRefs(h *Handler, fn func(ref *string, field string)) {
+	fn(&h.Agent, "agent")
+	for i := range h.Agents {
+		fn(&h.Agents[i], "agents")
+	}
+	fn(&h.Consolidator, "consolidator")
+	if h.Fanout != nil {
+		fn(&h.Fanout.Agent, "fanout.agent")
+		for i := range h.Fanout.Agents {
+			fn(&h.Fanout.Agents[i], "fanout.agents")
+		}
+	}
 }
 
 // GrantList returns the team's own allowlist for one side of a reference. A nil

@@ -216,66 +216,98 @@ func operatorKeyRestrictedFromCtx(ctx context.Context, cfg *config.Config) bool 
 	return tools.AuthorOperatorKeyRestricted(ctx, cfg != nil && cfg.Env.OperatorKeyRestriction)
 }
 
-func (a *AgentDef) execCreate(ctx context.Context, policy tools.AgentDefPolicyValue, in agentDefInput) (tools.Result, error) {
-	if in.Name == "" {
-		return errResult("create: missing required field: name"), nil
+// gateNewDef runs every gate a NEW agent definition passes before it may be
+// stored, and returns the definition as it will be stored (merged, normalized)
+// with its encoding. op prefixes the refusals ("create").
+//
+// It is ONE function because two things author a new agent: AgentDef create,
+// and a team that declares its own agents (TeamDef create/fork, which holds
+// each local agent to exactly this, under the name "<team>/<name>"). A gate
+// written into one caller instead of here is a gate the other does not have,
+// so a new one belongs HERE; TestAgentDefCreate_GatesLiveInGateNewDef fails
+// when execCreate grows a refusal of its own.
+//
+// The gates, in order: the name grammar; the caller's agent_def_scopes
+// (default-deny); no static agent of that name; the overlay's own rules
+// (named-scope patterns, tool_choice, output_format, memory_rerank, one
+// routing mode); hooks; the tools ceiling (the caller's own tools); inline
+// code; the definition size cap.
+//
+// parentDef is the stored definition this one replaces, nil when there is
+// none. It only feeds the hooks gate, which lets a caller inside a run keep
+// the hooks a definition already had but not change them.
+func (a *AgentDef) gateNewDef(ctx context.Context, policy tools.AgentDefPolicyValue, op, name string, overlay, parentDef json.RawMessage) (mergedDef, []byte, error) {
+	if err := agents.ValidateName(name); err != nil {
+		return mergedDef{}, nil, fmt.Errorf("%s: %v", op, err)
 	}
-	if err := agents.ValidateName(in.Name); err != nil {
-		return errResult(fmt.Sprintf("create: %v", err)), nil
-	}
-	if err := a.checkScopeForName(policy, in.Name, ""); err != nil {
-		return errResult(err.Error()), nil
+	if err := a.checkScopeForName(policy, name, ""); err != nil {
+		return mergedDef{}, nil, err
 	}
 	// Static-name-replace refusal — operator-blessed MD is ground truth.
 	// Anyone wanting to evolve a static agent must fork, not create.
-	if _, ok := a.Cfg.Agents[in.Name]; ok {
-		return errResult(fmt.Sprintf("create: name %q matches a static cfg.Agents entry — use `fork` to derive a new version", in.Name)), nil
+	if _, ok := a.Cfg.Agents[name]; ok {
+		return mergedDef{}, nil, fmt.Errorf("%s: name %q matches a static cfg.Agents entry — use `fork` to derive a new version", op, name)
 	}
 
-	def, err := a.buildDefinition(ctx, in.Name, "", in.Overlay)
+	def, err := a.buildDefinition(ctx, name, "", overlay)
 	if err != nil {
-		return errResult(fmt.Sprintf("create: %s", err)), nil
+		return mergedDef{}, nil, fmt.Errorf("%s: %s", op, err)
 	}
-	if err := a.checkHooks(ctx, in.Name, def, nil); err != nil {
-		return errResult(fmt.Sprintf("create: %s", err)), nil
+	if err := a.checkHooks(ctx, name, def, parentDef); err != nil {
+		return mergedDef{}, nil, fmt.Errorf("%s: %s", op, err)
 	}
-	// Tools ceiling on `create`: the caller's own effective
-	// tools is the ceiling for any new agent it mints. Without
-	// this check an agent with narrow tools could call
-	// `create` with overlay.tools = [the entire universe] and
-	// then spawn the resulting agent — a capability-escalation path.
-	// Mirror of the subset check in `fork`.
+	// Tools ceiling: the caller's own effective tools is the ceiling for any
+	// new agent it mints. Without this check an agent with narrow tools could
+	// author one with overlay.tools = [the entire universe] and then spawn the
+	// resulting agent — a capability-escalation path. Mirror of the subset
+	// check in `fork`.
 	//
-	// AgentTools(ctx) returns nil in test contexts; we refuse to
-	// create with a non-empty Tools overlay when the ceiling
-	// is unknown rather than silently allowing widening.
+	// AgentTools(ctx) returns nil in test contexts; we refuse a non-empty
+	// Tools overlay when the ceiling is unknown rather than silently allowing
+	// widening.
 	callerTools := tools.AgentTools(ctx)
 	if len(def.Tools) > 0 {
 		if callerTools == nil {
-			return errResult("create: caller's effective tools not on ctx (runtime misconfiguration); refuse rather than risk silent widening"), nil
+			return mergedDef{}, nil, fmt.Errorf("%s: caller's effective tools not on ctx (runtime misconfiguration); refuse rather than risk silent widening", op)
 		}
 		if err := assertToolsSubset(def.Tools, callerTools); err != nil {
-			return errResult(fmt.Sprintf("create: %s", err)), nil
+			return mergedDef{}, nil, fmt.Errorf("%s: %s", op, err)
 		}
 	}
-	if err := a.validateInlineCode("create", def); err != nil {
-		return errResult(err.Error()), nil
+	if err := a.validateInlineCode(op, def); err != nil {
+		return mergedDef{}, nil, err
 	}
 	def.normalize()
 	defJSON, err := json.Marshal(def)
 	if err != nil {
-		return errResult(fmt.Sprintf("create: marshal: %s", err)), nil
+		return mergedDef{}, nil, fmt.Errorf("%s: marshal: %s", op, err)
 	}
 	if n, err := definitionSizeForCap(def, defJSON); err != nil {
-		return errResult(fmt.Sprintf("create: measure: %s", err)), nil
+		return mergedDef{}, nil, fmt.Errorf("%s: measure: %s", op, err)
 	} else if a.MaxDefinitionBytes > 0 && n > a.MaxDefinitionBytes {
-		return errResult(fmt.Sprintf("create: definition (%d bytes, excluding code_body) exceeds max %d", n, a.MaxDefinitionBytes)), nil
+		return mergedDef{}, nil, fmt.Errorf("%s: definition (%d bytes, excluding code_body) exceeds max %d", op, n, a.MaxDefinitionBytes)
+	}
+	return def, defJSON, nil
+}
+
+func (a *AgentDef) execCreate(ctx context.Context, policy tools.AgentDefPolicyValue, in agentDefInput) (tools.Result, error) {
+	if in.Name == "" {
+		return errResult("create: missing required field: name"), nil
+	}
+	def, defJSON, err := a.gateNewDef(ctx, policy, "create", in.Name, in.Overlay, nil)
+	if err != nil {
+		return errResult(err.Error()), nil
 	}
 	if a.MaxDescriptionBytes > 0 && len(in.Description) > a.MaxDescriptionBytes {
 		return errResult(fmt.Sprintf("create: description (%d bytes) exceeds max %d", len(in.Description), a.MaxDescriptionBytes)), nil
 	}
 
 	ident := tools.RunIdentity(ctx)
+	// Not one of gateNewDef's: a team's own agent passes that under this very
+	// name, and would refuse itself here.
+	if err := TeamLocalAgentCollision(ctx, a.Store, ident.TenantID, in.Name); err != nil {
+		return errResult(fmt.Sprintf("create: %s", err)), nil
+	}
 	// RFC N: the tenant comes from the authoritative run identity in ctx
 	// (the AgentDef tool always runs inside a run whose RunIdentity
 	// carries the principal-derived tenant), never from tool input. ""
@@ -454,6 +486,12 @@ func (a *AgentDef) execFork(ctx context.Context, policy tools.AgentDefPolicyValu
 	if err := a.checkScopeForName(policy, in.Name, parentDefID); err != nil {
 		return errResult(err.Error()), nil
 	}
+	// A fork can be how a name comes to resolve in this tenant: of a retired
+	// lineage whose pointer was cleared, or the first tenant-owned version of
+	// a shared one. Held to what create is.
+	if err := TeamLocalAgentCollision(ctx, a.Store, tenantID, in.Name); err != nil {
+		return errResult(fmt.Sprintf("fork: %s", err)), nil
+	}
 
 	def, err := a.buildDefinition(ctx, in.Name, string(parent.Definition), in.Overlay)
 	if err != nil {
@@ -598,6 +636,13 @@ func (a *AgentDef) execRetire(ctx context.Context, policy tools.AgentDefPolicyVa
 	if err := a.checkScopeForName(policy, row.Name, row.DefID); err != nil {
 		return errResult(err.Error()), nil
 	}
+	// Un-retiring can make the name resolve again, after a team took it for
+	// one of its own agents while it did not.
+	if !*in.Retired {
+		if err := TeamLocalAgentCollision(ctx, a.Store, row.TenantID, row.Name); err != nil {
+			return errResult(fmt.Sprintf("retire: %s", err)), nil
+		}
+	}
 	if err := a.Store.AgentDefSetRetired(ctx, in.DefID, *in.Retired); err != nil {
 		return errResult(fmt.Sprintf("retire: %s", err)), nil
 	}
@@ -626,6 +671,11 @@ func (a *AgentDef) execPromote(ctx context.Context, policy tools.AgentDefPolicyV
 		return errResult(err.Error()), nil
 	}
 	ident := tools.RunIdentity(ctx)
+	// Promoting is what makes a name resolve (a retired lineage's pointer is
+	// cleared), so it is held to what create is.
+	if err := TeamLocalAgentCollision(ctx, a.Store, ident.TenantID, row.Name); err != nil {
+		return errResult(fmt.Sprintf("promote: %s", err)), nil
+	}
 	// RFC N: promote within the agent's own tenant. AgentDefSetActive
 	// refuses when ident.TenantID ≠ row.TenantID, so a caller in tenant T
 	// cannot point at (or clobber) another tenant's active pointer — even
@@ -805,37 +855,49 @@ func (a *AgentDef) buildDefinition(ctx context.Context, name, parentJSON string,
 	}
 
 	if len(overlay) > 0 {
-		lifted, err := hooks.LiftToolEntries(overlay)
+		ov, err := decodeAgentOverlay(overlay)
 		if err != nil {
-			return mergedDef{}, fmt.Errorf("parse overlay: %w", err)
-		}
-		var ov mergedDef
-		if err := json.Unmarshal(lifted, &ov); err != nil {
-			return mergedDef{}, fmt.Errorf("parse overlay: %w", err)
-		}
-		if err := validateOverlayNamedScopes(ov.AgentDefScopes); err != nil {
-			return mergedDef{}, err
-		}
-		// The same rule operator yaml is held to: a def whose tool_choice
-		// could never let a run finish is refused at authoring time.
-		if err := ov.ToolChoice.Validate(); err != nil {
-			return mergedDef{}, err
-		}
-		if err := ov.OutputFormat.Validate(); err != nil {
-			return mergedDef{}, err
-		}
-		if err := ov.MemoryRerank.Validate(); err != nil {
-			return mergedDef{}, err
-		}
-		// Only the overlay is judged: on a fork, applyOverlay lets a pin
-		// replace the parent's tier and a tier replace the parent's pin, so
-		// the one ambiguous request is naming both at once.
-		if err := config.ValidateRoutingMode(ov.Provider, ov.Model, ov.Tier); err != nil {
 			return mergedDef{}, err
 		}
 		base.applyOverlay(ov)
 	}
 	return base, nil
+}
+
+// decodeAgentOverlay reads a create/fork overlay and applies the rules that
+// judge the overlay alone. It is the one decoder of that shape: AgentDef
+// create and fork read through it, and so does a team-local agent's body,
+// both when it is authored and each time it is resolved.
+func decodeAgentOverlay(overlay json.RawMessage) (mergedDef, error) {
+	lifted, err := hooks.LiftToolEntries(overlay)
+	if err != nil {
+		return mergedDef{}, fmt.Errorf("parse overlay: %w", err)
+	}
+	var ov mergedDef
+	if err := json.Unmarshal(lifted, &ov); err != nil {
+		return mergedDef{}, fmt.Errorf("parse overlay: %w", err)
+	}
+	if err := validateOverlayNamedScopes(ov.AgentDefScopes); err != nil {
+		return mergedDef{}, err
+	}
+	// The same rule operator yaml is held to: a def whose tool_choice
+	// could never let a run finish is refused at authoring time.
+	if err := ov.ToolChoice.Validate(); err != nil {
+		return mergedDef{}, err
+	}
+	if err := ov.OutputFormat.Validate(); err != nil {
+		return mergedDef{}, err
+	}
+	if err := ov.MemoryRerank.Validate(); err != nil {
+		return mergedDef{}, err
+	}
+	// Only the overlay is judged: on a fork, applyOverlay lets a pin
+	// replace the parent's tier and a tier replace the parent's pin, so
+	// the one ambiguous request is naming both at once.
+	if err := config.ValidateRoutingMode(ov.Provider, ov.Model, ov.Tier); err != nil {
+		return mergedDef{}, err
+	}
+	return ov, nil
 }
 
 // validateOverlayNamedScopes applies the operator-yaml rule for

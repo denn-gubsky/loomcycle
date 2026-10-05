@@ -211,6 +211,17 @@ type AgentTool struct {
 	PollChild   PollChildRunner
 	CancelChild CancelChildRunner
 	CloseChild  CloseChildRunner
+
+	// ResolveName, when set, turns the name a caller wrote into the name that
+	// agent RUNS under, before anything here uses it. Inside a team walk a
+	// caller may write "./reviewer" — or, where the resolver's rule for bare
+	// names allows it, a bare "reviewer" — for one of the team's own agents,
+	// which runs as "<team>/reviewer"; resolving it once at the
+	// door means the result envelope, the spawn ledger and the hooks all name
+	// the child the way its run row does. An error refuses the call (a
+	// "./name" outside a team, or one the team does not declare). nil = names
+	// are used as written. Wired by the HTTP server.
+	ResolveName func(ctx context.Context, name string) (string, error)
 }
 
 // runChild drives one sub-agent, preferring RunDetailed (surfaces the child
@@ -300,9 +311,9 @@ const agentInputSchema = `{
   "type": "object",
   "properties": {
     "op": {"type": "string", "enum": ["spawn","parallel_spawn","open","send","poll","cancel","close"], "description": "Which operation (default spawn). spawn: run one sub-agent and return its final text. parallel_spawn: run several at once and return a per-child envelope. open: start a RESIDENT sub-agent you steer over several turns (returns child_run_id). send: give a resident child its next instruction. poll: check on a resident child without new input. cancel: stop a resident child's current turn (it stays alive). close: shut a resident child down and free its resources — always close what you open."},
-    "name": {"type": "string", "description": "spawn / open (required): the sub-agent's name, a key in the agents map."},
+    "name": {"type": "string", "description": "spawn / open (required): the sub-agent's name, a key in the agents map. Inside a team's workflow, ./<name> is one of that team's own agents (a bare name also finds it, ahead of a global agent of that name)."},
     "prompt": {"type": "string", "description": "spawn / open / send (required): the instruction the child sees. For spawn and open, the task; for send, the next instruction — the child sees its whole prior conversation. Do not include auth tokens (the child gets its own auth context)."},
-    "def_id": {"type": "string", "description": "spawn / open (optional): pin the child to a specific agent_defs row id (from AgentDef.create or AgentDef.fork). The row's name must match the name field."},
+    "def_id": {"type": "string", "description": "spawn / open (optional): pin the child to a specific agent_defs row id (from AgentDef.create or AgentDef.fork). The row's name must match the name field. Not for a team's own agent, which has no versions of its own."},
     "compaction": {"type": "object", "description": "spawn (optional): override this child's context-compaction settings (it inherits yours by default). Per field: enabled (auto-compact on/off), target_percentage (10-50), keep_last_n, keep_first, autocompact_at_pct (50-95), model.", "properties": {"enabled": {"type": "boolean"}, "target_percentage": {"type": "integer"}, "keep_last_n": {"type": "integer"}, "keep_first": {"type": "boolean"}, "autocompact_at_pct": {"type": "integer"}, "model": {"type": "string"}}},
     "spawns": {
       "type": "array",
@@ -329,6 +340,14 @@ const agentDescription = `Spawn or drive named sub-agents, each with its own too
 	`Stateless ops: 'spawn' (default; one child, return its final text) and 'parallel_spawn' (N children concurrently, JSON envelope with per-child ok/output/error) — best when you describe the whole task up front. ` +
 	`Resident ops (stateful): 'open' starts a persistent sub-agent and returns a child_run_id; 'send' gives it the next instruction and returns that turn's output (optional timeout_ms bounds the wait — a long turn returns state "running" + partial output); 'poll' checks a running child without new input; 'cancel' stops a child's current turn (it stays alive); 'close' shuts it down. Use these when the child must keep state between steps — a warm sandbox container, a REPL, a multi-turn analysis — instead of re-spawning and re-threading state by hand. Close what you open. ` +
 	`See Context.help(topic="fan-out-patterns") for spawn vs parallel_spawn vs Channel.publish, and Context.help(topic="resident-sub-agents") for the open/send/close lifecycle.`
+
+// runName is the name a child the caller wrote as `name` runs under.
+func (a *AgentTool) runName(ctx context.Context, name string) (string, error) {
+	if a.ResolveName == nil {
+		return name, nil
+	}
+	return a.ResolveName(ctx, name)
+}
 
 // Name implements tools.Tool.
 func (a *AgentTool) Name() string { return "Agent" }
@@ -394,6 +413,11 @@ func (a *AgentTool) executeSpawn(ctx context.Context, in agentInput) (tools.Resu
 	if in.Prompt == "" {
 		return errValidation("missing required field: prompt", "Pass `prompt`: the task for the sub-agent."), nil
 	}
+	name, err := a.runName(ctx, in.Name)
+	if err != nil {
+		return errValidation(err.Error(), ""), nil
+	}
+	in.Name = name
 	if AgentDepth(ctx) >= MaxAgentDepth {
 		return errBusiness(fmt.Sprintf(
 			"max sub-agent recursion depth (%d) reached at agent %q; refusing to spawn deeper",
@@ -478,6 +502,10 @@ func (a *AgentTool) executeParallelSpawn(ctx context.Context, in agentInput) (to
 		}
 		if sp.Prompt == "" {
 			return errValidation(fmt.Sprintf("spawns[%d] (%s): missing required field: prompt", i, name), "Give every `spawns` entry a `prompt`."), nil
+		}
+		name, err := a.runName(ctx, name)
+		if err != nil {
+			return errValidation(fmt.Sprintf("spawns[%d]: %s", i, err), ""), nil
 		}
 		in.Spawns[i].Name = name
 	}
@@ -680,6 +708,11 @@ func (a *AgentTool) executeOpen(ctx context.Context, in agentInput) (tools.Resul
 	if in.IdleTTLSeconds < 0 {
 		return errValidation("idle_ttl_seconds must be >= 0 (0 = operator default)", ""), nil
 	}
+	name, err := a.runName(ctx, in.Name)
+	if err != nil {
+		return errValidation(err.Error(), ""), nil
+	}
+	in.Name = name
 	if AgentDepth(ctx) >= MaxAgentDepth {
 		return errBusiness(fmt.Sprintf(
 			"max sub-agent recursion depth (%d) reached at agent %q; refusing to open deeper", MaxAgentDepth, in.Name),

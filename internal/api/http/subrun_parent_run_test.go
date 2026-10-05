@@ -115,7 +115,7 @@ func TestSubAgent_ParallelSpawnChildrenRecordTheParentRunID(t *testing.T) {
 func TestPrepareSubRun_ChildRowRecordsTheParentRunID(t *testing.T) {
 	h := newReviewHarness(t)
 	parent := tools.WithRunID(context.Background(), "r_parent")
-	prep, err := h.srv.prepareSubRunValues(parent, "writer", "", "go", "", false, func(providers.Event) {}, nil, nil, false, false)
+	prep, err := h.srv.prepareSubRunValues(parent, "writer", nameFromAgentTool, "", "go", "", false, func(providers.Event) {}, nil, nil, false, false)
 	if err != nil {
 		t.Fatal(err)
 	}

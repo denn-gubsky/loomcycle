@@ -193,7 +193,7 @@ func (s *Server) handleEffectiveConfig(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "no in-flight run for that run_id", http.StatusNotFound)
 		return
 	}
-	agentDef, found := s.lookupAgent(r.Context(), run.TenantID, run.Agent)
+	agentDef, found := s.lookupAgent(runTeamScopeCtx(r.Context(), run), run.TenantID, run.Agent)
 	if !found {
 		http.Error(w, "the run's agent definition is no longer available", http.StatusNotFound)
 		return

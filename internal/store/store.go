@@ -1082,6 +1082,43 @@ func WalkTaskFromContext(ctx context.Context) (WalkTask, bool) {
 	return w, true
 }
 
+// TeamScope is the team a run belongs to: set by a walk, and inherited by
+// every run in the spawn tree below it — the walk's members, their sub-agents,
+// and theirs, global agents included. Inside it an agent name may resolve to
+// one of the team's OWN agents, which exist nowhere else.
+//
+// DefID names the team VERSION, not just the team: a team's own agents are
+// part of its definition, so a run keeps reading them from the version it
+// started under however the team is forked or promoted since.
+//
+// Unlike WalkTask and WaveTask it is NOT cleared for a member's sub-agents:
+// those say which state started a run, this says whose agents it may name.
+type TeamScope struct {
+	// Tenant is the tenant that owns the team definition ("" = shared), which
+	// differs from the run's own when an admin runs another tenant's team.
+	Tenant string
+	Team   string
+	DefID  string
+}
+
+type teamScopeCtxKey struct{}
+
+// WithTeamScope attaches the team a run belongs to. A zero scope CLEARS it,
+// which is how a run that starts outside every team says so.
+func WithTeamScope(ctx context.Context, sc TeamScope) context.Context {
+	return context.WithValue(ctx, teamScopeCtxKey{}, sc)
+}
+
+// TeamScopeFromContext returns the team scope on ctx. ok=false for a missing
+// or cleared scope.
+func TeamScopeFromContext(ctx context.Context) (TeamScope, bool) {
+	sc, _ := ctx.Value(teamScopeCtxKey{}).(TeamScope)
+	if sc.DefID == "" || sc.Team == "" {
+		return TeamScope{}, false
+	}
+	return sc, true
+}
+
 // IsZero reports whether every field is empty (no meaningful tracking
 // context). Wire entry points normalise a zero struct to nil so
 // back-compat decode paths stay clean.

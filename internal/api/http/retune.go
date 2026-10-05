@@ -246,7 +246,7 @@ func (s *Server) retuneRun(ctx context.Context, run store.Run, in *runOverridesW
 	if in.isZero() {
 		return runConfigRecord{}, nil
 	}
-	agentDef, ok := s.lookupAgent(ctx, run.TenantID, run.Agent)
+	agentDef, ok := s.lookupAgent(runTeamScopeCtx(ctx, run), run.TenantID, run.Agent)
 	if !ok {
 		return runConfigRecord{}, fmt.Errorf("%w: %s", runner.ErrUnknownAgent, run.Agent)
 	}
@@ -419,7 +419,7 @@ func (s *Server) reResolveOnOperatorTurnFn(runID, tenantID, userID, agentName, u
 		if !ok {
 			return nil, "", "", false, nil
 		}
-		agentDef, found := s.lookupAgent(ctx, tenantID, agentName)
+		agentDef, found := s.lookupAgent(cfg.withTeamScope(ctx), tenantID, agentName)
 		if !found {
 			return nil, "", "", false, fmt.Errorf("%w: %s", runner.ErrUnknownAgent, agentName)
 		}

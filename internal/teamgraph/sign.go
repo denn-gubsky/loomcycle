@@ -51,6 +51,12 @@ type teamContent struct {
 	// encoding/json writes a map's keys sorted, so the bytes do not depend on
 	// the order they were authored in.
 	Vars map[string]string `json:"vars,omitempty"`
+	// Local is the team's own agents — content: a changed local agent changes
+	// what the team runs. Last and omitempty, like the three above, so a team
+	// that declares none keeps its recorded hash (Sign passes nil for an empty
+	// block). Each body is already canonical JSON (see Local), so the bytes do
+	// not depend on key order or whitespace inside one.
+	Local *Local `json:"local,omitempty"`
 }
 
 // Sign returns "sha256:" + the lowercase-hex SHA-256 of a TeamDef's canonical
@@ -66,6 +72,7 @@ func Sign(name string, d Definition) string {
 		Channels:      d.Channels,
 		Hooks:         d.Hooks,
 		Vars:          d.Vars,
+		Local:         localContent(d.Local),
 	})
 	if err != nil {
 		buf = []byte("{}")
