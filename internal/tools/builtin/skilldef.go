@@ -207,24 +207,11 @@ func (s *SkillDef) execCreate(ctx context.Context, policy tools.SkillPolicyValue
 	if err != nil {
 		return errResult(fmt.Sprintf("create: %s", err)), nil
 	}
-	if err := s.validateBody(def.Body); err != nil {
-		return errResult(fmt.Sprintf("create: %s", err)), nil
-	}
-	// Tools ceiling on `create`: caller's effective tools.
-	callerTools := tools.AgentTools(ctx)
-	if len(def.Tools) > 0 {
-		if callerTools == nil {
-			return errResult("create: caller's effective tools not on ctx (runtime misconfiguration); refuse rather than risk silent widening"), nil
-		}
-		if err := assertToolsSubset(def.Tools, callerTools); err != nil {
-			return errResult(fmt.Sprintf("create: %s", err)), nil
-		}
-	}
-	defJSON, err := json.Marshal(def)
+	defJSON, err := s.gateNewSkill(ctx, policy, "create", in.Name, def)
 	if err != nil {
-		return errResult(fmt.Sprintf("create: marshal: %s", err)), nil
+		return errResult(err.Error()), nil
 	}
-	if err := s.checkSizeCaps(defJSON, def.Body, in.Description); err != nil {
+	if err := s.checkSizeCaps(defJSON, "", in.Description); err != nil {
 		return errResult(fmt.Sprintf("create: %s", err)), nil
 	}
 
@@ -258,6 +245,51 @@ func (s *SkillDef) execCreate(ctx context.Context, policy tools.SkillPolicyValue
 		}
 	}
 	return okJSON(skillDefRowResponse(created, promote))
+}
+
+// gateNewSkill runs every gate a NEW skill definition passes before it may be
+// stored, and returns its encoding. op prefixes the refusals ("create").
+//
+// It is ONE function because two things author a new skill: SkillDef create,
+// and a team that declares its own skills (TeamDef create/fork, which holds
+// each local skill to exactly this, under the name "<team>/<name>"). A gate
+// written into one caller instead of here is a gate the other does not have.
+//
+// The gates, in order: the name grammar; the caller's `skills:` allowlist;
+// a non-blank body; the tools ceiling (the caller's own tools); the body size
+// cap. create checks the name and the allowlist before this as well, ahead of
+// its static-name refusal, so that refusal never tells a caller without the
+// grant that a static skill of the name exists. That refusal is create's
+// alone: a team's own skill is reached as "./<name>" and shadows no static
+// skill, whatever its full name.
+func (s *SkillDef) gateNewSkill(ctx context.Context, policy tools.SkillPolicyValue, op, name string, def skillDefOverlay) ([]byte, error) {
+	if err := skillmatch.ValidateName(name); err != nil {
+		return nil, fmt.Errorf("%s: %s", op, err)
+	}
+	if err := s.checkScopeForName(policy, name, ""); err != nil {
+		return nil, err
+	}
+	if err := s.validateBody(def.Body); err != nil {
+		return nil, fmt.Errorf("%s: %s", op, err)
+	}
+	// Tools ceiling: the caller's effective tools.
+	callerTools := tools.AgentTools(ctx)
+	if len(def.Tools) > 0 {
+		if callerTools == nil {
+			return nil, fmt.Errorf("%s: caller's effective tools not on ctx (runtime misconfiguration); refuse rather than risk silent widening", op)
+		}
+		if err := assertToolsSubset(def.Tools, callerTools); err != nil {
+			return nil, fmt.Errorf("%s: %s", op, err)
+		}
+	}
+	defJSON, err := json.Marshal(def)
+	if err != nil {
+		return nil, fmt.Errorf("%s: marshal: %s", op, err)
+	}
+	if err := s.checkSizeCaps(defJSON, def.Body, ""); err != nil {
+		return nil, fmt.Errorf("%s: %s", op, err)
+	}
+	return defJSON, nil
 }
 
 // ---- fork ----
