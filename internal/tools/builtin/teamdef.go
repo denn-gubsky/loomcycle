@@ -134,6 +134,11 @@ type TeamDef struct {
 	// local agents is refused, rather than stored unchecked.
 	Agents *AgentDef
 
+	// Skills is the SkillDef tool whose gates a team's own skills pass at
+	// create and fork (see teamdef_local.go). nil = a definition declaring
+	// local skills is refused, rather than stored unchecked.
+	Skills *SkillDef
+
 	// AgentExists, if set, reports whether an agent name resolves, so verify can
 	// report a member retired after the def was written. nil = the agent sweep
 	// is omitted from the report rather than reported as failing.
@@ -241,6 +246,10 @@ const teamDefDescription = `Author, fork, promote, retire, and inspect team work
 	`and run one from a state as ./<name>; any other name in a state is a global agent, even when the team declares one of that name, and a ./<name> the team does not declare is refused. Such an agent ` +
 	`exists only in the team, runs as <team>/<name>, cannot be started outside a walk of the team, and passes every check a new agent does ` +
 	`(your agent-authoring grant, your own tools as its ceiling) at create and at fork; its full name must not be an existing agent's. ` +
+	`The team may declare skills of its own the same way (local: {skills: {name: {body, description, tools}}}); one of the team's own agents ` +
+	`is granted one by listing ./<name> in its skills (only that exact spelling grants it — no pattern does), and loads it with the Skill tool as ./<name>. ` +
+	`Each skill passes the checks a new skill does, as <team>/<name> (your skills allowlist, your own tools as its ceiling), and its tools must be ` +
+	`within the tools of every team agent granted it. ` +
 	`run may also set breakpoints on starter states to step a fan-out wave: the walk pauses ` +
 	`before dispatching (showing each composed prompt) and asks a human to release all, release n, or abort. ` +
 	`run may also set review on starter, agent or parallel states (not a consolidator): ` +
@@ -266,7 +275,7 @@ const teamDefInputSchema = `{
         "transitions":    {"type": "array", "items": {"type": "object"}, "description": "Edges: each is {from, to, on}. Replaces the parent's transitions wholesale."},
         "colors":         {"type": "object", "description": "Presentation-only fills/edge colours. Excluded from the content hash."},
         "hooks":          {"type": "object", "description": "The walk's own hooks: {run_end: [entry, ...]}, fired when the walk ends. A state's handler may also carry hooks / tool_hooks, added to every run it starts."},
-        "local":          {"type": "object", "properties": {"agents": {"type": "object", "additionalProperties": {"type": "object"}, "description": "The team's own agents, at most 64: name (one segment of A-Z a-z 0-9 _ -, at most 64 characters) → the overlay AgentDef create takes (tier or provider/model, system_prompt, tools, ...). A state runs one as \"./<name>\". Each passes the checks a new agent does, as <team>/<name>; a code-js one must carry code_body. A fork that sends agents replaces the whole list; {} declares none."}}, "additionalProperties": false, "description": "What the team declares for itself. Only agents; any other key is refused."},
+        "local":          {"type": "object", "properties": {"agents": {"type": "object", "additionalProperties": {"type": "object"}, "description": "The team's own agents, at most 64: name (one segment of A-Z a-z 0-9 _ -, at most 64 characters) → the overlay AgentDef create takes (tier or provider/model, system_prompt, tools, skills, ...). A state runs one as \"./<name>\". Each passes the checks a new agent does, as <team>/<name>; a code-js one must carry code_body. A fork that sends agents replaces the whole list; {} declares none."}, "skills": {"type": "object", "additionalProperties": {"type": "object", "properties": {"body": {"type": "string"}, "description": {"type": "string"}, "tools": {"type": "array", "items": {"type": "string"}}}, "required": ["body"], "additionalProperties": false}, "description": "The team's own skills, at most 64: name (same grammar as an agent's) → {body, description, tools}, what SkillDef create takes. Only the team's own agents can use one, each granted it by listing \"./<name>\" in its skills; they load it with the Skill tool as \"./<name>\". Each passes the checks a new skill does, as <team>/<name>, and its tools must be within each granted agent's tools. A fork that sends skills replaces the whole list and leaves agents alone; {} declares none."}}, "additionalProperties": false, "description": "What the team declares for itself: agents and skills; any other key is refused."},
         "vars":           {"type": "object", "additionalProperties": {"type": "string"}, "description": "The team's variables: name → default value, read in a state's prompts as ${var.<name>}. Every walk starts with these defaults; run may set a declared one with its own vars. A default is literal text (never expanded; no {{ or }}), at most 4096 bytes, at most 64 variables. A fork that sends vars replaces the whole list; {} declares none."}
       },
       "additionalProperties": true
@@ -446,6 +455,9 @@ func (t *TeamDef) execCreate(ctx context.Context, in teamDefInput) (tools.Result
 	if err := t.preflightChannels(ctx, def); err != nil {
 		return errResult(fmt.Sprintf("create: %s", err)), nil
 	}
+	if err := t.checkLocalSkills(ctx, "create", in.Name, def); err != nil {
+		return errResult(fmt.Sprintf("create: %s", err)), nil
+	}
 	if err := t.checkLocalAgents(ctx, "create", in.Name, def, nil); err != nil {
 		return errResult(fmt.Sprintf("create: %s", err)), nil
 	}
@@ -604,6 +616,9 @@ func (t *TeamDef) execFork(ctx context.Context, in teamDefInput) (tools.Result, 
 	// The parent's own agents, for the one gate that compares against them. A
 	// parent that no longer parses was already refused by buildDefinition.
 	parentDef, _ := teamgraph.Parse(parent.Definition)
+	if err := t.checkLocalSkills(ctx, "fork", in.Name, def); err != nil {
+		return errResult(fmt.Sprintf("fork: %s", err)), nil
+	}
 	if err := t.checkLocalAgents(ctx, "fork", in.Name, def, &parentDef); err != nil {
 		return errResult(fmt.Sprintf("fork: %s", err)), nil
 	}
@@ -1851,11 +1866,11 @@ func walkTerminal(def teamgraph.Definition, task *teamrun.Task) string {
 // ValidateTeamDefBody re-runs, over a stored team def body, the authoring
 // checks on its hooks: it parses as a team definition, and the walk's and each
 // state's hooks are well formed (inline webhooks included), and so is each
-// agent the team declares for itself. A snapshot restore calls it before
-// writing a body. The graph itself is not re-validated — a team dials nothing
-// of its own — and neither are the caller-dependent checks: channel authority,
-// and the gates a local agent passes when it is authored (see
-// ValidateAgentDefBody for why a restore has no authoring caller).
+// agent and skill the team declares for itself. A snapshot restore calls it
+// before writing a body. The graph itself is not re-validated — a team dials
+// nothing of its own — and neither are the caller-dependent checks: channel
+// authority, and the gates a local agent or skill passes when it is authored
+// (see ValidateAgentDefBody for why a restore has no authoring caller).
 func ValidateTeamDefBody(body json.RawMessage) error {
 	def, err := teamgraph.Parse(body)
 	if err != nil {
@@ -1870,6 +1885,17 @@ func ValidateTeamDefBody(body json.RawMessage) error {
 		}
 		if err != nil {
 			return fmt.Errorf("local.agents[%q]: %w", name, err)
+		}
+	}
+	// And its own skills to what a restored skill def is.
+	for _, name := range def.LocalSkillNames() {
+		sk, _ := def.LocalSkill(name)
+		body, err := json.Marshal(localSkillDefinition(sk))
+		if err == nil {
+			err = ValidateSkillDefBody(body)
+		}
+		if err != nil {
+			return fmt.Errorf("local.skills[%q]: %w", name, err)
 		}
 	}
 	return teamgraph.ValidateHooks(def)
