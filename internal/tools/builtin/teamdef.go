@@ -250,6 +250,10 @@ const teamDefDescription = `Author, fork, promote, retire, and inspect team work
 	`is granted one by listing ./<name> in its skills (only that exact spelling grants it — no pattern does), and loads it with the Skill tool as ./<name>. ` +
 	`Each skill passes the checks a new skill does, as <team>/<name> (your skills allowlist, your own tools as its ceiling), and its tools must be ` +
 	`within the tools of every team agent granted it. ` +
+	`It may declare channels of its own too (local: {channels: {name: {scope: tenant|user, default_ttl?, max_messages?, hold?, semantic?, description?}}}) ` +
+	`and name one as ./<name> in a starter's source or sink, a channel state, or an input state's publish. The team publishes to and reads its own ` +
+	`channels without a channels ACL entry; nothing outside the team can reach them, and of the agents inside it only the team's own, each ` +
+	`listing ./<name> in its own channels (publish / subscribe). A tenant-scoped one is shared by every walk of the team in the tenant, a user-scoped one is per user. ` +
 	`run may also set breakpoints on starter states to step a fan-out wave: the walk pauses ` +
 	`before dispatching (showing each composed prompt) and asks a human to release all, release n, or abort. ` +
 	`run may also set review on starter, agent or parallel states (not a consolidator): ` +
@@ -275,7 +279,7 @@ const teamDefInputSchema = `{
         "transitions":    {"type": "array", "items": {"type": "object"}, "description": "Edges: each is {from, to, on}. Replaces the parent's transitions wholesale."},
         "colors":         {"type": "object", "description": "Presentation-only fills/edge colours. Excluded from the content hash."},
         "hooks":          {"type": "object", "description": "The walk's own hooks: {run_end: [entry, ...]}, fired when the walk ends. A state's handler may also carry hooks / tool_hooks, added to every run it starts."},
-        "local":          {"type": "object", "properties": {"agents": {"type": "object", "additionalProperties": {"type": "object"}, "description": "The team's own agents, at most 64: name (one segment of A-Z a-z 0-9 _ -, at most 64 characters) → the overlay AgentDef create takes (tier or provider/model, system_prompt, tools, skills, ...). A state runs one as \"./<name>\". Each passes the checks a new agent does, as <team>/<name>; a code-js one must carry code_body. A fork that sends agents replaces the whole list; {} declares none."}, "skills": {"type": "object", "additionalProperties": {"type": "object", "properties": {"body": {"type": "string"}, "description": {"type": "string"}, "tools": {"type": "array", "items": {"type": "string"}}}, "required": ["body"], "additionalProperties": false}, "description": "The team's own skills, at most 64: name (same grammar as an agent's) → {body, description, tools}, what SkillDef create takes. Only the team's own agents can use one, each granted it by listing \"./<name>\" in its skills; they load it with the Skill tool as \"./<name>\". Each passes the checks a new skill does, as <team>/<name>, and its tools must be within each granted agent's tools. A fork that sends skills replaces the whole list and leaves agents alone; {} declares none."}}, "additionalProperties": false, "description": "What the team declares for itself: agents and skills; any other key is refused."},
+        "local":          {"type": "object", "properties": {"agents": {"type": "object", "additionalProperties": {"type": "object"}, "description": "The team's own agents, at most 64: name (one segment of A-Z a-z 0-9 _ -, at most 64 characters) → the overlay AgentDef create takes (tier or provider/model, system_prompt, tools, skills, ...). A state runs one as \"./<name>\". Each passes the checks a new agent does, as <team>/<name>; a code-js one must carry code_body. A fork that sends agents replaces the whole list; {} declares none."}, "skills": {"type": "object", "additionalProperties": {"type": "object", "properties": {"body": {"type": "string"}, "description": {"type": "string"}, "tools": {"type": "array", "items": {"type": "string"}}}, "required": ["body"], "additionalProperties": false}, "description": "The team's own skills, at most 64: name (same grammar as an agent's) → {body, description, tools}, what SkillDef create takes. Only the team's own agents can use one, each granted it by listing \"./<name>\" in its skills; they load it with the Skill tool as \"./<name>\". Each passes the checks a new skill does, as <team>/<name>, and its tools must be within each granted agent's tools. A fork that sends skills replaces the whole list and leaves agents alone; {} declares none."}, "channels": {"type": "object", "additionalProperties": {"type": "object"}, "description": "The team's own channels, at most 64: name (one segment of A-Z a-z 0-9 _ -, at most 64 characters) → {scope: tenant|user, default_ttl?, max_messages?, hold?, semantic?, description?} (a ChannelDef's fields; no publisher, period or hooks). Named as \"./<name>\" in channel fields and in the team's own agents' channels. A fork that sends channels replaces the whole list; {} declares none."}}, "additionalProperties": false, "description": "What the team declares for itself: agents, skills and channels; any other key is refused."},
         "vars":           {"type": "object", "additionalProperties": {"type": "string"}, "description": "The team's variables: name → default value, read in a state's prompts as ${var.<name>}. Every walk starts with these defaults; run may set a declared one with its own vars. A default is literal text (never expanded; no {{ or }}), at most 4096 bytes, at most 64 variables. A fork that sends vars replaces the whole list; {} declares none."}
       },
       "additionalProperties": true
@@ -446,6 +450,9 @@ func (t *TeamDef) execCreate(ctx context.Context, in teamDefInput) (tools.Result
 	if err := teamgraph.Validate(def); err != nil {
 		return errResult(fmt.Sprintf("create: %s", err)), nil
 	}
+	if err := checkLocalChannels(in.Name, def); err != nil {
+		return errResult(fmt.Sprintf("create: %s", err)), nil
+	}
 	if err := checkTeamChannelAuthority(ctx, def); err != nil {
 		return errResult(fmt.Sprintf("create: %s", err)), nil
 	}
@@ -605,6 +612,9 @@ func (t *TeamDef) execFork(ctx context.Context, in teamDefInput) (tools.Result, 
 		return errResult(fmt.Sprintf("fork: %s", err)), nil
 	}
 	if err := teamgraph.Validate(def); err != nil {
+		return errResult(fmt.Sprintf("fork: %s", err)), nil
+	}
+	if err := checkLocalChannels(in.Name, def); err != nil {
 		return errResult(fmt.Sprintf("fork: %s", err)), nil
 	}
 	if err := checkTeamChannelAuthority(ctx, def); err != nil {
@@ -895,6 +905,18 @@ func (t *TeamDef) sweepReferences(ctx context.Context, def teamgraph.Definition)
 	var issues []map[string]any
 	catalog := t.channelCatalog(ctx)
 	for _, ref := range teamgraph.ChannelRefs(def) {
+		// The team's own channels need neither an ACL entry nor a declaration
+		// outside it: checked against the definition itself below.
+		if name, isLocal := teamgraph.LocalRef(ref.Channel); isLocal {
+			if _, ok := def.LocalChannel(name); !ok {
+				issues = append(issues, map[string]any{
+					"kind": "local_channel_missing", "state": ref.State, "field": ref.Field,
+					"channel": ref.Channel,
+					"detail":  fmt.Sprintf("%q names a channel the team does not declare under local.channels", ref.Channel),
+				})
+			}
+			continue
+		}
 		// The team ACL is def-internal, so this is checkable on every plane and
 		// is the failure that actually strands workflows: a def promoted before
 		// the ACL existed still validates.
@@ -1791,6 +1813,9 @@ func applyTeamOverlay(base *teamgraph.Definition, ov teamgraph.Definition) {
 		if ov.Local.Skills != nil {
 			base.Local.Skills = ov.Local.Skills
 		}
+		if ov.Local.Channels != nil {
+			base.Local.Channels = ov.Local.Channels
+		}
 	}
 }
 
@@ -1896,6 +1921,13 @@ func ValidateTeamDefBody(body json.RawMessage) error {
 		}
 		if err != nil {
 			return fmt.Errorf("local.skills[%q]: %w", name, err)
+		}
+	}
+	// And its own channels to what create accepts: a restored body reaches
+	// the walks and the channel writer through the same decoder.
+	for _, name := range def.LocalChannelNames() {
+		if _, err := decodeLocalChannel(def.Local.Channels[name]); err != nil {
+			return fmt.Errorf("local.channels[%q]: %w", name, err)
 		}
 	}
 	return teamgraph.ValidateHooks(def)

@@ -26,6 +26,7 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/providers"
 	"github.com/denn-gubsky/loomcycle/internal/search"
 	"github.com/denn-gubsky/loomcycle/internal/skillmatch"
+	"github.com/denn-gubsky/loomcycle/internal/store"
 )
 
 // Config is the top-level YAML structure plus env-derived fields.
@@ -7892,6 +7893,11 @@ func validate(c *Config) error {
 	for name, ch := range c.Channels {
 		if name == "" {
 			return fmt.Errorf("channels: empty channel name")
+		}
+		// A team's own channels are stored under this prefix; one declared
+		// here would read and write a team's messages from outside it.
+		if store.IsTeamChannelName(name) {
+			return fmt.Errorf("channels.%s: the %q prefix is reserved for a team's own channels, which a team declares in its definition under local.channels", name, store.TeamChannelPrefix)
 		}
 		if !validChannelScopes[ch.Scope] {
 			return fmt.Errorf("channels.%s: unknown scope %q (want one of: agent, user, global)", name, ch.Scope)

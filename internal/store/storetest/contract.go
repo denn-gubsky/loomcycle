@@ -34,6 +34,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/denn-gubsky/loomcycle/internal/channels"
 	"github.com/denn-gubsky/loomcycle/internal/store"
 )
 
@@ -355,6 +356,9 @@ func Run(t *testing.T, factory Factory) {
 		{"TeamDefActivePointerCarriesItsPromoter", testTeamDefActivePointerCarriesItsPromoter},
 		{"TeamDefRetireReversible", testTeamDefRetireReversible},
 		{"TeamDefDelete", testTeamDefDelete},
+		{"TeamDefDeleteDropsItsOwnChannels", testTeamDefDeleteDropsItsOwnChannels},
+		{"TeamDefDeletePurgesOnlyAnExistingTeamsOwnChannels", testTeamDefDeletePurgesOnlyAnExistingTeamsOwnChannels},
+		{"TeamDefDeletePurgesEveryScopeAndTableItsWritersFill", testTeamDefDeletePurgesEveryScopeAndTableItsWritersFill},
 		{"TeamDefListNamesLiveCount", testTeamDefListNamesLiveCount},
 		{"TeamDefStaticFallback", testTeamDefStaticFallback},
 		// RFC N — team definition plane tenant isolation. Fails on the
@@ -10107,6 +10111,254 @@ func testTeamDefDelete(t *testing.T, s store.Store) {
 	// Re-deleting a now-missing team → (false, nil).
 	if d, err := s.TeamDefDelete(ctx, "", "team-del"); err != nil || d {
 		t.Errorf("re-delete: got (%v,%v), want (false,nil)", d, err)
+	}
+}
+
+// testTeamDefDeleteDropsItsOwnChannels: deleting a team drops the messages and
+// cursors of its own channels (stored under "_team/<team>/") in its tenant,
+// in the same transaction — and nothing else: not another tenant's, not a team
+// whose name extends this one's, not a name a LIKE wildcard would match.
+func testTeamDefDeleteDropsItsOwnChannels(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	if _, err := s.TeamDefCreate(ctx, store.TeamDefRow{DefID: "tdch-1", Name: "team-ch", TenantID: "acme",
+		Definition: json.RawMessage(`{"entry":"a"}`)}); err != nil {
+		t.Fatal(err)
+	}
+	own := store.TeamChannelName("team-ch", "events")
+	type key struct{ tenant, channel string }
+	seed := []key{
+		{"acme", own},
+		{"acme", store.TeamChannelName("team-ch", "verdicts")},
+		{"other", own}, // another tenant's team of the same name
+		{"acme", store.TeamChannelName("team-chx", "events")}, // a name that extends this one
+		{"acme", "xteam/team-ch/events"},                      // "_" as a LIKE wildcard would match it
+		{"acme", "events"},                                    // an ordinary channel
+	}
+	for _, k := range seed {
+		if _, _, err := s.ChannelPublish(ctx, store.ChannelMessage{Channel: k.channel, TenantID: k.tenant,
+			Scope: store.MemoryScopeTenant, Payload: json.RawMessage(`{}`)}, 0); err != nil {
+			t.Fatalf("publish %v: %v", k, err)
+		}
+		msgs, err := s.ChannelPeek(ctx, k.tenant, k.channel, store.MemoryScopeTenant, "", "", 1)
+		if err != nil || len(msgs) != 1 {
+			t.Fatalf("peek %v: %v %v", k, msgs, err)
+		}
+		if err := s.ChannelAck(ctx, k.tenant, k.channel, store.MemoryScopeTenant, "",
+			store.EncodeChannelCursor(msgs[0].VisibleAt, msgs[0].ID)); err != nil {
+			t.Fatalf("ack %v: %v", k, err)
+		}
+	}
+	if deleted, err := s.TeamDefDelete(ctx, "acme", "team-ch"); err != nil || !deleted {
+		t.Fatalf("delete: %v %v", deleted, err)
+	}
+	for i, k := range seed {
+		msgs, err := s.ChannelPeek(ctx, k.tenant, k.channel, store.MemoryScopeTenant, "", "", 10)
+		if err != nil {
+			t.Fatal(err)
+		}
+		cur, err := s.ChannelCommittedCursor(ctx, k.tenant, k.channel, store.MemoryScopeTenant, "")
+		if err != nil {
+			t.Fatal(err)
+		}
+		gone := i < 2
+		if gone && (len(msgs) != 0 || cur != "") {
+			t.Errorf("%v: the team's own channel kept %d message(s), cursor %q", k, len(msgs), cur)
+		}
+		if !gone && (len(msgs) != 1 || cur == "") {
+			t.Errorf("%v: a bystander lost its message or cursor (%d, %q)", k, len(msgs), cur)
+		}
+	}
+}
+
+// testTeamDefDeletePurgesOnlyAnExistingTeamsOwnChannels: the purge runs only
+// when the delete removed the team, and matches exactly that team's channels —
+// "_team/<team>/<one segment>" — never a name that is not a team of the
+// tenant, a team whose name extends it, or a legacy multi-segment team's
+// prefix (which overlaps its first segment's team).
+func testTeamDefDeletePurgesOnlyAnExistingTeamsOwnChannels(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	for i, name := range []string{"a", "a-x", "a/x"} {
+		if _, err := s.TeamDefCreate(ctx, store.TeamDefRow{DefID: fmt.Sprintf("tdpx-%d", i), Name: name, TenantID: "acme",
+			Definition: json.RawMessage(`{"entry":"a"}`)}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	type key struct{ tenant, channel string }
+	seed := []key{
+		{"acme", "_team/a/events"},     // team a's own
+		{"acme", "_team/a-x/events"},   // a team whose name extends "a"
+		{"acme", "_team/a/x/events"},   // under legacy team "a/x"'s prefix
+		{"acme", "_team/ghost/events"}, // no team "ghost" exists
+		{"other", "_team/a/events"},    // tenant other has no team "a"
+	}
+	for _, k := range seed {
+		if _, _, err := s.ChannelPublish(ctx, store.ChannelMessage{Channel: k.channel, TenantID: k.tenant,
+			Scope: store.MemoryScopeTenant, Payload: json.RawMessage(`{}`)}, 0); err != nil {
+			t.Fatalf("publish %v: %v", k, err)
+		}
+		msgs, err := s.ChannelPeek(ctx, k.tenant, k.channel, store.MemoryScopeTenant, "", "", 1)
+		if err != nil || len(msgs) != 1 {
+			t.Fatalf("peek %v: %v %v", k, msgs, err)
+		}
+		if err := s.ChannelAck(ctx, k.tenant, k.channel, store.MemoryScopeTenant, "",
+			store.EncodeChannelCursor(msgs[0].VisibleAt, msgs[0].ID)); err != nil {
+			t.Fatalf("ack %v: %v", k, err)
+		}
+	}
+	kept := func(k key) bool {
+		msgs, err := s.ChannelPeek(ctx, k.tenant, k.channel, store.MemoryScopeTenant, "", "", 10)
+		if err != nil {
+			t.Fatal(err)
+		}
+		cur, err := s.ChannelCommittedCursor(ctx, k.tenant, k.channel, store.MemoryScopeTenant, "")
+		if err != nil {
+			t.Fatal(err)
+		}
+		return len(msgs) == 1 && cur != ""
+	}
+	// Deletes that remove no team purge nothing.
+	for _, d := range []key{{"acme", "ghost"}, {"other", "a"}} {
+		if deleted, err := s.TeamDefDelete(ctx, d.tenant, d.channel); err != nil || deleted {
+			t.Fatalf("delete %v of no team: (%v, %v), want (false, nil)", d, deleted, err)
+		}
+	}
+	for _, k := range seed {
+		if !kept(k) {
+			t.Errorf("deleting no team purged %v", k)
+		}
+	}
+	// A legacy multi-segment team purges nothing, not team a's channels.
+	if deleted, err := s.TeamDefDelete(ctx, "acme", "a/x"); err != nil || !deleted {
+		t.Fatalf("delete legacy a/x: (%v, %v)", deleted, err)
+	}
+	for _, k := range seed {
+		if !kept(k) {
+			t.Errorf("deleting legacy team a/x purged %v", k)
+		}
+	}
+	// Team a's own channel, and nothing else.
+	if deleted, err := s.TeamDefDelete(ctx, "acme", "a"); err != nil || !deleted {
+		t.Fatalf("delete a: (%v, %v)", deleted, err)
+	}
+	for i, k := range seed {
+		if want := i != 0; kept(k) != want {
+			t.Errorf("after deleting team a: %v kept=%v, want %v", k, !want, want)
+		}
+	}
+}
+
+// testTeamDefDeletePurgesEveryScopeAndTableItsWritersFill writes a team's own
+// channels the way the runtime does — through the channel writer, in the
+// team's tenant, under each scope such a channel may have (tenant: scope_id "";
+// user: one per user), with cursors, and with hook progress (no team channel
+// carries hooks today; the table is purged anyway) — then deletes the team and
+// asserts no row of it is left in any table, and that another team's and
+// another tenant's rows are untouched.
+func testTeamDefDeletePurgesEveryScopeAndTableItsWritersFill(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	for _, row := range []store.TeamDefRow{
+		{DefID: "tdw-1", Name: "team-w", TenantID: "acme"},
+		{DefID: "tdw-2", Name: "team-v", TenantID: "acme"},
+		{DefID: "tdw-3", Name: "team-w", TenantID: "other"},
+	} {
+		row.Definition = json.RawMessage(`{"entry":"a"}`)
+		if _, err := s.TeamDefCreate(ctx, row); err != nil {
+			t.Fatal(err)
+		}
+	}
+	gated := func(team string) string { return store.TeamChannelName(team, "gated") }
+	pub := &channels.StorePublisher{Store: s, HooksEnabled: true,
+		Defs: func(_ context.Context, tenant, channel string) (channels.WriteDef, error) {
+			if channel == gated("team-w") || channel == gated("team-v") {
+				return channels.WriteDef{Hooked: true, HookTenant: tenant}, nil
+			}
+			return channels.WriteDef{}, nil
+		}}
+	type key struct {
+		tenant, team, local string
+		scope               store.MemoryScope
+		scopeID             string
+	}
+	var keys []key
+	for _, tt := range []struct{ tenant, team string }{{"acme", "team-w"}, {"acme", "team-v"}, {"other", "team-w"}} {
+		keys = append(keys,
+			key{tt.tenant, tt.team, "events", store.MemoryScopeTenant, ""},
+			key{tt.tenant, tt.team, "verdicts", store.MemoryScopeUser, "alice"},
+			key{tt.tenant, tt.team, "verdicts", store.MemoryScopeUser, "bob"},
+		)
+	}
+	for _, k := range keys {
+		name := store.TeamChannelName(k.team, k.local)
+		if _, err := pub.Write(ctx, channels.WriteRequest{Channel: name, TenantID: k.tenant, Scope: k.scope, ScopeID: k.scopeID,
+			Payload: json.RawMessage(`{}`), PublishedBy: "w"}); err != nil {
+			t.Fatalf("write %v: %v", k, err)
+		}
+		msgs, err := s.ChannelPeek(ctx, k.tenant, name, k.scope, k.scopeID, "", 1)
+		if err != nil || len(msgs) != 1 {
+			t.Fatalf("peek %v: %v %v", k, msgs, err)
+		}
+		if err := s.ChannelAck(ctx, k.tenant, name, k.scope, k.scopeID, store.EncodeChannelCursor(msgs[0].VisibleAt, msgs[0].ID)); err != nil {
+			t.Fatalf("ack %v: %v", k, err)
+		}
+	}
+	for _, team := range []string{"team-w", "team-v"} {
+		if _, err := pub.Write(ctx, channels.WriteRequest{Channel: gated(team), TenantID: "acme", Scope: store.MemoryScopeTenant,
+			Payload: json.RawMessage(`{}`), PublishedBy: "w"}); err != nil {
+			t.Fatalf("write gated: %v", err)
+		}
+	}
+	now := time.Now()
+	if work, err := s.ChannelHookClaim(ctx, "w", now, now.Add(time.Minute), 10); err != nil || len(work) != 2 {
+		t.Fatalf("claim hooked messages: %d %v (want 2, giving each hook progress)", len(work), err)
+	}
+
+	if deleted, err := s.TeamDefDelete(ctx, "acme", "team-w"); err != nil || !deleted {
+		t.Fatalf("delete: %v %v", deleted, err)
+	}
+
+	stats, err := s.ChannelStats(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	left := map[string]int64{}
+	for _, st := range stats {
+		left[st.TenantID+"|"+st.Channel] += st.MessageCount
+	}
+	for k, n := range left {
+		if strings.HasPrefix(k, "acme|"+store.TeamChannelName("team-w", "")) && n > 0 {
+			t.Errorf("%s: %d message(s) left after the team was deleted", k, n)
+		}
+	}
+	for _, k := range keys {
+		cur, err := s.ChannelCommittedCursor(ctx, k.tenant, store.TeamChannelName(k.team, k.local), k.scope, k.scopeID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		deletedTeam := k.tenant == "acme" && k.team == "team-w"
+		if deletedTeam && cur != "" {
+			t.Errorf("%v: cursor left after the team was deleted", k)
+		}
+		if !deletedTeam && cur == "" {
+			t.Errorf("%v: a bystander's cursor was purged", k)
+		}
+	}
+	for _, want := range []string{"acme|" + store.TeamChannelName("team-v", "events"), "acme|" + store.TeamChannelName("team-v", "verdicts"),
+		"acme|" + gated("team-v"), "other|" + store.TeamChannelName("team-w", "events"), "other|" + store.TeamChannelName("team-w", "verdicts")} {
+		if left[want] == 0 {
+			t.Errorf("%s: a bystander's messages were purged", want)
+		}
+	}
+	// Hook progress whose message is gone would be GC's to collect: none may be.
+	if n, err := s.ChannelHookGC(ctx, 100); err != nil || n != 0 {
+		t.Errorf("hook progress left behind by the purge: GC collected %d (%v)", n, err)
+	}
+	// And the bystander's hook progress survived: its message is still claimable
+	// once the lease lapses, which a purged state row would not change — so check
+	// the message itself is still awaiting hooks.
+	for _, st := range stats {
+		if st.TenantID == "acme" && st.Channel == gated("team-v") && st.AwaitingHooks != 1 {
+			t.Errorf("bystander's hooked message: awaiting_hooks = %d, want 1", st.AwaitingHooks)
+		}
 	}
 }
 

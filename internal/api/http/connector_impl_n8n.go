@@ -116,6 +116,11 @@ func (s *Server) ListChannels(ctx context.Context) (connector.ListChannelsRespon
 		if _, declared := s.cfg().Channels[name]; declared || runtimeNames[name] || orphans[name] {
 			continue
 		}
+		// A team's own channel has messages and no declaration by design: it is
+		// the team's, listed by nobody — for every caller, admin included.
+		if store.IsTeamChannelName(name) {
+			continue
+		}
 		if !all && st.TenantID != tenantID {
 			continue
 		}

@@ -1088,7 +1088,7 @@ func TestTeamDefCache_ReparsesOnlyWhenTheBytesDifferAndStaysBounded(t *testing.T
 	if d, _ := c.parsed("tdf_1", v2); len(d.LocalAgentNames()) != 1 || d.LocalAgentNames()[0] != "b" {
 		t.Errorf("a changed body under the same def id returned the stale parse: %v", d.LocalAgentNames())
 	}
-	if _, err := c.parsed("tdf_bad", []byte(`{"local":{"channels":{}}}`)); err == nil {
+	if _, err := c.parsed("tdf_bad", []byte(`{"local":{"schedules":{}}}`)); err == nil {
 		t.Error("an unparseable definition must report its error")
 	}
 	for i := 0; i < maxCachedTeamDefs*2; i++ {

@@ -110,3 +110,32 @@ func validCredentialKey(k string) bool {
 	}
 	return true
 }
+
+// NormalizeChannelFields checks the fields a runtime channel definition is
+// created with that need no caller to judge — scope, semantic, default_ttl and
+// max_messages — and returns scope and semantic with their defaults applied
+// (global, queue). Shared by ChannelDef create and a team's own channels, so
+// the two accept the same definitions; who may create a global channel, and
+// whether hooks resolve, are the caller's checks.
+func NormalizeChannelFields(scope, semantic string, defaultTTL, maxMessages int) (string, string, error) {
+	if scope == "" {
+		scope = "global"
+	}
+	switch scope {
+	case "global", "agent", "user", "tenant":
+	default:
+		return "", "", fmt.Errorf("scope must be one of global|tenant|user|agent, got %q", scope)
+	}
+	if semantic == "" {
+		semantic = "queue"
+	}
+	switch semantic {
+	case "queue", "topic":
+	default:
+		return "", "", fmt.Errorf("semantic must be one of queue|topic, got %q", semantic)
+	}
+	if defaultTTL < 0 || maxMessages < 0 {
+		return "", "", fmt.Errorf("default_ttl and max_messages must be >= 0")
+	}
+	return scope, semantic, nil
+}
