@@ -1,14 +1,32 @@
 #!/bin/bash
 # RFC DR P2 driver — per LoCoMo conversation: A (build), B-off, B-on. See PREREG.md.
 #
-#   OUT=<dir> PG_DSN=<main store DSN> SQLMEM_DSN=<password DSN> bench/docs/memory-rerank/run.sh
+#   OUT=<dir> PG_URL=<postgres://user@host:port, no database> \
+#   SQLMEM_DSN=<password DSN naming database lc_drp2_sqlmem> bench/docs/memory-rerank/run.sh
 #
 # Resumable: a conversation whose B-on report exists is skipped. The server is restarted
 # for each phase with the trace index and the rerank layer that phase needs.
+#
+# Each conversation gets its OWN main and SQL-Memory databases, created empty before its
+# build (amendment 3). The harness's purge removes memory rows but not chat transcripts,
+# so in a shared store the next build consolidated the previous conversation's answer
+# runs as if they were its own chats.
 set -u
 cd "$(dirname "$0")/../../.."
 ROOT=$PWD
-: "${OUT:?OUT required}" "${PG_DSN:?PG_DSN required}" "${SQLMEM_DSN:?SQLMEM_DSN required}"
+: "${OUT:?OUT required}" "${PG_URL:?PG_URL required}" "${SQLMEM_DSN:?SQLMEM_DSN required}"
+SQLMEM_BASE=$SQLMEM_DSN
+# fresh_dbs <conv>: drop and recreate the conversation's two databases, both empty.
+fresh_dbs() {
+  local db=lc_drp2_${1//-/_}
+  dropdb --if-exists "$db" && createdb "$db" && psql -q "$PG_URL/$db" -c "create extension vector" &&
+    dropdb --if-exists "${db/lc_drp2_/lc_drp2_sqlmem_}" && createdb -O drprobe "${db/lc_drp2_/lc_drp2_sqlmem_}"
+}
+use_dbs() { # point PG_DSN and SQLMEM_DSN at the conversation's databases
+  local db=lc_drp2_${1//-/_}
+  PG_DSN="$PG_URL/$db?sslmode=disable"
+  SQLMEM_DSN=${SQLMEM_BASE/\/lc_drp2_sqlmem/\/${db/lc_drp2_/lc_drp2_sqlmem_}}
+}
 # nimble calls so far, from the usage ledger: check 2 needs the count per answer phase.
 nimble_calls() { psql "$PG_DSN" -Atc "select count(*) from token_usage where model = 'nimble'" 2>/dev/null || echo -1; }
 OLLAMA=${OLLAMA:-http://100.112.7.68:11434}
@@ -46,7 +64,9 @@ for f in "$OUT"/data/conv-*.json; do
   c=$(basename "$f" .json)
   [ -f "$OUT/B-on-$c/answer-report.json" ] && { echo "$c: done, skipped"; continue; }
   echo "=== $c $(date +%T)"
+  use_dbs "$c"
   if ! grep -q "consolidated in" "$OUT/A-$c.log" 2>/dev/null; then
+    fresh_dbs "$c" || { echo "$c: could not create its databases"; exit 1; }
     start 1 ""
     harness -data "$f" -ingest-as-chats -scribe locomo/scribe -consolidate-passes 12 \
       -retrieval-dump "$OUT/A-$c.dump.jsonl" -out "$OUT/A-$c" > "$OUT/A-$c.log" 2>&1

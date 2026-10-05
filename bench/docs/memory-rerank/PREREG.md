@@ -119,3 +119,29 @@ Written while conv-26's B-off was running, before any answer report was read.
     conversation. The pair count is reported.
 - **What does not change:** the draw itself. It is deterministic and identical in both
   arms, so nothing is re-run.
+
+## Amendment 3 (2026-10-05) — one database per conversation
+
+Written after the driver was stopped at conv-42, before any H1 analysis was run.
+
+- **The deviation:** the setup says one conversation is resident at a time. It was not.
+  - The harness's purge between conversations removes memory **rows** but not chat
+    **transcripts**.
+  - The answerer's runs are sessions of the same user as the scribe's chats. The next
+    build's consolidation therefore read them as unconsolidated chats.
+  - The store held 150 answerer sessions: conv-26's 74 and conv-30's 76.
+- **The effect:**
+  - conv-30's build read 93 chats for its own 19, and wrote facts from conv-26's
+    answer transcripts into conv-30's store.
+  - conv-41's build read 108 chats for its own 32 (76 of them conv-30's answers),
+    stopped at the 12-pass cap, and failed check 1.
+  - The answer phases themselves are unaffected, since no consolidation runs during
+    them. So B-off's answers never reached B-on's store.
+- **The fix:** `run.sh` creates **empty main and SQL-Memory databases for each
+  conversation** before its build (`lc_drp2_<conv>`, `lc_drp2_sqlmem_<conv>`).
+- **Kept:** conv-26, which was built in an empty database: the fixed protocol's exact
+  condition. Its rerank-off/on answers were seen (31 vs 30 correct of 37). The rule is
+  protocol-based ("built from empty"), so keeping it does not select on outcome.
+- **Re-run from scratch:** conv-30, conv-41 and conv-42 (stopped mid-build), and every
+  later conversation. Their earlier artifacts are not used.
+- **Unchanged:** hypotheses, checks, models, sample.
