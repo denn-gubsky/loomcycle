@@ -41,12 +41,13 @@ const MaxLocalAgents = 64
 // them.
 const MaxLocalSkills = 64
 
-// Local is a definition's `local` block: the team's own agents and skills.
+// Local is a definition's `local` block: the team's own agents, skills and
+// channels (see localchannels.go for channels).
 //
 // It is decoded by hand (UnmarshalJSON) so that a kind this runtime does not
 // know is REFUSED. The rest of a definition tolerates unknown keys, and a
 // typed struct drops them silently — which here would accept a team declaring
-// local channels and then run it without them.
+// local schedules and then run it without them.
 type Local struct {
 	// Agents maps a local name to that agent's body: the overlay AgentDef
 	// create takes. Each body is held in canonical form — keys sorted, no
@@ -59,6 +60,12 @@ type Local struct {
 	// omitempty, so a team declaring none hashes as it did before skills
 	// existed.
 	Skills map[string]LocalSkill `json:"skills,omitempty"`
+	// Channels maps a local name to that channel's definition: the fields a
+	// runtime ChannelDef takes, held canonically like Agents (the type that
+	// defines them lives above this leaf package; every reader decodes a body
+	// strictly, unknown fields refused). Added after Skills with omitempty, so
+	// a team declaring none hashes as it did before channels existed.
+	Channels map[string]json.RawMessage `json:"channels,omitempty"`
 }
 
 // LocalSkill is one skill a team declares for itself: the shape of a SkillDef
@@ -77,8 +84,9 @@ type localError struct{ msg string }
 func (e *localError) Error() string { return e.msg }
 
 // UnmarshalJSON decodes the block, refusing any kind but `agents` and
-// `skills`, an agent body that is not a JSON object, and a skill that is not
-// exactly a skill (an unknown field in one is refused, not dropped).
+// `skills` and `channels`, an agent or channel body that is not a JSON object,
+// and a skill that is not exactly a skill (an unknown field in one is refused,
+// not dropped).
 func (l *Local) UnmarshalJSON(b []byte) error {
 	var kinds map[string]json.RawMessage
 	if err := json.Unmarshal(b, &kinds); err != nil {
@@ -91,8 +99,10 @@ func (l *Local) UnmarshalJSON(b []byte) error {
 	}
 	sort.Strings(names)
 	for _, kind := range names {
-		if kind != "agents" && kind != "skills" {
-			return &localError{fmt.Sprintf("local: unknown kind %q — a team may declare only local \"agents\" and \"skills\"", kind)}
+		switch kind {
+		case "agents", "skills", "channels":
+		default:
+			return &localError{fmt.Sprintf("local: unknown kind %q — a team may declare only local \"agents\", \"skills\" and \"channels\"", kind)}
 		}
 		if bytes.Equal(bytes.TrimSpace(kinds[kind]), []byte("null")) {
 			continue
@@ -105,19 +115,23 @@ func (l *Local) UnmarshalJSON(b []byte) error {
 			out.Skills = skills
 			continue
 		}
+		dst := &out.Agents
+		if kind == "channels" {
+			dst = &out.Channels
+		}
 		var bodies map[string]json.RawMessage
 		if err := json.Unmarshal(kinds[kind], &bodies); err != nil {
-			return &localError{"local.agents: must be an object of name → agent definition"}
+			return &localError{fmt.Sprintf("local.%s: must be an object of name → definition", kind)}
 		}
 		// Non-nil even when empty: a fork that sends `agents: {}` is stating
 		// the whole list, and that list is empty.
-		out.Agents = make(map[string]json.RawMessage, len(bodies))
+		*dst = make(map[string]json.RawMessage, len(bodies))
 		for name, body := range bodies {
 			canon, err := canonicalObject(body)
 			if err != nil {
-				return &localError{fmt.Sprintf("local.agents[%q]: %s", name, err)}
+				return &localError{fmt.Sprintf("local.%s[%q]: %s", kind, name, err)}
 			}
-			out.Agents[name] = canon
+			(*dst)[name] = canon
 		}
 	}
 	*l = out
@@ -157,7 +171,7 @@ func canonicalObject(raw json.RawMessage) (json.RawMessage, error) {
 		return nil, errors.New("is not valid JSON")
 	}
 	if _, ok := v.(map[string]any); !ok {
-		return nil, errors.New("must be an object (the agent's definition)")
+		return nil, errors.New("must be an object (its definition)")
 	}
 	// encoding/json writes a map's keys sorted.
 	out, err := json.Marshal(v)
@@ -247,6 +261,9 @@ func validateLocal(d Definition) error {
 			return fmt.Errorf("team definition: local.skills: %w", err)
 		}
 	}
+	if err := validateLocalChannels(d); err != nil {
+		return err
+	}
 	if err := checkLocalSkillGrants(d); err != nil {
 		return err
 	}
@@ -274,7 +291,7 @@ func CheckLocalRefs(d Definition) error {
 		return fmt.Errorf("team definition: state %q %s: %q names a local agent the team does not declare under local.agents (%s)",
 			ref.State, ref.Field, ref.Agent, declared)
 	}
-	return nil
+	return CheckLocalChannelRefs(d)
 }
 
 // CheckLocalRunNames refuses a definition in which a state names, as a GLOBAL
@@ -371,7 +388,7 @@ func QualifyLocalRefs(d Definition, team string) Definition {
 // localContent is the `local` block as the content hash sees it: nil when the
 // team declares nothing, so `local: {}` and no block at all hash alike.
 func localContent(l *Local) *Local {
-	if l == nil || (len(l.Agents) == 0 && len(l.Skills) == 0) {
+	if l == nil || (len(l.Agents) == 0 && len(l.Skills) == 0 && len(l.Channels) == 0) {
 		return nil
 	}
 	return l
