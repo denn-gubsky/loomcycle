@@ -58,12 +58,14 @@ create and fork agents — but **you still can't escalate**:
   `interruption`, `evaluation_scopes`, `skills` and the `*_def_scopes`
   of an agent you create must be within your own (`Context op=self`
   shows them). A fork may also keep what the version it forks already
-  has. A field you leave unset takes the ordinary default any agent
-  gets (e.g. `memory_scopes` falls back to the caller's own data,
-  `user` plus `tenant` in a tenant). The exception is `skills`: unset
-  means **every** skill, so if your own `skills` list is restricted,
-  give the new agent one within it. A team's own agents may always be granted the team's own
-  channels and skills (`./<name>`).
+  has. An unset `memory_scopes` or `sql_scopes` takes the ordinary
+  memory default (the caller's own data). Any other field you leave
+  unset is judged at its default — `volumes` binds the operator's
+  default volume, `history_scope` the user's chats, interruption
+  `kinds` is `question`, and `skills` means **every** skill — so when
+  you hold less, set it explicitly within what you hold (`["-*"]`
+  denies all of `history_scope`). A team's own agents may always be
+  granted the team's own channels and skills (`./<name>`).
 
 So to give any agent a tool that no existing agent (in your reach)
 already holds, a **human operator** must introduce it. What you *can*

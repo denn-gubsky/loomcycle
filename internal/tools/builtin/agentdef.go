@@ -78,8 +78,9 @@ const agentDefDescription = `Author, fork, promote, retire, and inspect agent de
 	`on forks but never WIDENED — operator-blessed root is the permanent capability ceiling. ` +
 	`Every other grant is held to what you hold yourself: memory_scopes, sql_scopes, history_scope, ` +
 	`core_blocks, volumes, channels, interruption, evaluation_scopes, skills and the *_def_scopes must be within ` +
-	`your own (a fork may also keep what the forked version has). A field left unset takes the ordinary default ` +
-	`any agent gets — except skills, where unset means every skill, so set it when yours is restricted. ` +
+	`your own (a fork may also keep what the forked version has). An unset memory_scopes or sql_scopes takes the ` +
+	`ordinary memory default; any other unset field is judged at its default (the operator's default volume, ` +
+	`the user's history, the question interruption kind, every skill), so set it explicitly when yours is narrower. ` +
 	`Operations: create, fork, get, list, retire, promote.`
 
 const agentDefInputSchema = `{
