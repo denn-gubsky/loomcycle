@@ -19,6 +19,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/denn-gubsky/loomcycle/internal/audit"
@@ -166,6 +167,12 @@ type Server struct {
 	// walkHeartbeatEvery overrides how often a live walk's run is heartbeated;
 	// zero means the loop's own interval. Tests set it.
 	walkHeartbeatEvery time.Duration
+	// walkClock is the time a walk's own schedules run on; nil is the wall
+	// clock. Tests set it.
+	walkClock walkClock
+	// walkTimers counts the team schedules armed on this replica, live, so a
+	// test can tell that a disarm stopped them all.
+	walkTimers atomic.Int64
 
 	// breakpointReg maps a live run_id → the armed breakpoint set of the team
 	// walk running under it, so an operator can arm a Starter state while the
@@ -1069,6 +1076,11 @@ func (s *Server) SetTeamDefTool(t tools.Tool) {
 			// A walk's pause asks a person without a model, so nothing recorded
 			// it: wrapped, its run reads and streams as waiting on the ask.
 			td.AskHuman = s.walkAwareAsk(td.AskHuman)
+		}
+		if td.ArmWalkTriggers == nil {
+			// A team's own schedules tick only while a walk of the team runs:
+			// armed when op=run starts the walk, disarmed when it ends.
+			td.ArmWalkTriggers = s.armWalkTriggers
 		}
 		if td.LiveBreakpoints == nil {
 			// Ad-hoc Run → Debug: the walk reads its arming from a set this
