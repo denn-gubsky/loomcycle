@@ -4199,6 +4199,13 @@ type Env struct {
 	// Env: LOOMCYCLE_AGENT_DEF_MAX_DEFINITION_BYTES.
 	AgentDefMaxDefinitionBytes int
 
+	// TeamDefMaxDefinitionBytes caps a TeamDef create or fork's serialised
+	// definition JSON. Default 1048576 (1 MiB): a team carries its own agents'
+	// definitions, each still held to the AgentDef caps, so the whole is larger
+	// than any one agent. 0 disables.
+	// Env: LOOMCYCLE_TEAM_DEF_MAX_DEFINITION_BYTES.
+	TeamDefMaxDefinitionBytes int
+
 	// AgentDefMaxDescriptionBytes caps the free-text description
 	// field on AgentDef.create / fork (v0.8.5). Default 8192 (8 KB).
 	// 0 disables.
@@ -5467,6 +5474,16 @@ func LoadLayers(layers ...Layer) (*Config, error) {
 				cfg.Env.AgentDefMaxDefinitionBytes = 0
 			} else {
 				cfg.Env.AgentDefMaxDefinitionBytes = n
+			}
+		}
+	}
+	cfg.Env.TeamDefMaxDefinitionBytes = 1048576
+	if v := os.Getenv("LOOMCYCLE_TEAM_DEF_MAX_DEFINITION_BYTES"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			if n <= 0 {
+				cfg.Env.TeamDefMaxDefinitionBytes = 0
+			} else {
+				cfg.Env.TeamDefMaxDefinitionBytes = n
 			}
 		}
 	}

@@ -503,3 +503,19 @@ func TestTeamDefPromote_DoesNotRevealAnAgentTheCallerHasNoGrantOver(t *testing.T
 		t.Errorf("a caller with no grant over sdlc/reviewer learned from the refusal that it exists: %s", res.Text)
 	}
 }
+
+// A team holds several agents, each within one agent's cap, so the team's own
+// cap is the larger one — and is still a cap.
+func TestTeamDefCreate_TeamCapCoversSeveralAgentsEachWithinTheAgentCap(t *testing.T) {
+	tool, ctx := localTeamFixture(t)
+	big := `{"tier":"middle","system_prompt":"` + strings.Repeat("x", 50000) + `"}`
+	overlay := strings.Replace(localTeam(big), `"agents":{`, `"agents":{"second":`+big+`,"third":`+big+`,`, 1)
+	if len(overlay) <= tool.Agents.MaxDefinitionBytes {
+		t.Fatalf("fixture drifted: the team (%d bytes) must exceed one agent's cap (%d)", len(overlay), tool.Agents.MaxDefinitionBytes)
+	}
+	if res := teamOp(t, tool, ctx, "create", "sdlc", overlay); res.IsError {
+		t.Fatalf("three agents of 50 KB each fit a 1 MiB team: %s", res.Text)
+	}
+	tool.MaxDefinitionBytes = 150000
+	wantRefused(t, teamOp(t, tool, ctx, "create", "other", overlay), "a team over its own cap", "exceeds max 150000")
+}

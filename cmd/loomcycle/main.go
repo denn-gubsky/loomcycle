@@ -953,10 +953,11 @@ func main() {
 	// team/orchestrator can author/run teams IN-LOOP (an agent's `tools: [TeamDef]`
 	// only takes effect if the instance is agent-available; being reachable via
 	// the HTTP/MCP def-route alone is not enough). Store is late-bound below;
-	// Spawn + Admit (op=run) are injected by srv.SetTeamDefTool. Byte caps reuse
-	// AgentDef's (the definition is a graph blob, like ScheduleDef/A2A).
+	// Spawn + Admit (op=run) are injected by srv.SetTeamDefTool. The definition
+	// cap is the team's own (it carries its agents' definitions); the
+	// description cap is AgentDef's.
 	teamDefTool := &builtin.TeamDef{
-		MaxDefinitionBytes:  cfg.Env.AgentDefMaxDefinitionBytes,
+		MaxDefinitionBytes:  cfg.Env.TeamDefMaxDefinitionBytes,
 		MaxDescriptionBytes: cfg.Env.AgentDefMaxDescriptionBytes,
 		// A team's own agents pass AgentDef create's gates, on this instance.
 		Agents: agentDefTool,
@@ -1811,8 +1812,8 @@ func main() {
 	// RFC AP Phase 2 — wire the TeamDef substrate tool (team-workflow graphs).
 	// Tenant-confined at the route (ScopeTenant), but the same dedicated-slot
 	// wiring as ScheduleDef; reached via Connector.TeamDef + POST /v1/_teamdef +
-	// the LoomCycle MCP meta-tool `teamdef`. Reuses the AgentDef byte caps (the
-	// definition is a graph blob, like ScheduleDef/A2A — no dedicated env knob).
+	// the LoomCycle MCP meta-tool `teamdef`. Its definition cap is
+	// LOOMCYCLE_TEAM_DEF_MAX_DEFINITION_BYTES.
 	// Same instance that's agent-available in allTools — SetTeamDefTool injects
 	// Spawn + Admit (op=run) into it, and keeps the HTTP /v1/_teamdef + MCP
 	// `teamdef` + Connector surfaces pointing at it.

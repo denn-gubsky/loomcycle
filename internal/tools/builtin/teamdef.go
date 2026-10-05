@@ -50,8 +50,8 @@ type TeamDef struct {
 	// Store is the persistence backend. Required.
 	Store store.Store
 
-	// MaxDefinitionBytes caps the serialised definition JSON
-	// (mirrors AgentDef/ScheduleDef). 0 = no cap.
+	// MaxDefinitionBytes caps the serialised definition JSON, the team's own
+	// agents included (LOOMCYCLE_TEAM_DEF_MAX_DEFINITION_BYTES). 0 = no cap.
 	MaxDefinitionBytes int
 
 	// MaxDescriptionBytes caps the free-text description field. 0 = no cap.
