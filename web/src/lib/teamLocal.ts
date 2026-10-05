@@ -135,3 +135,35 @@ export function writeLocalAgent(definition: unknown, name: string, body: Obj): u
   const local = def.local as Obj;
   return { ...def, local: { ...local, agents: { ...(local.agents as Obj), [name]: body } } };
 }
+
+const nonEmpty = (v: unknown): boolean => isObj(v) && Object.keys(v).length > 0;
+const absent = (v: unknown): boolean => v === undefined || v === null;
+
+/** keepOwnDefinitionRemovals is a team fork's graph with every variable list
+ *  or local kind the operator removed sent as a clear. A fork keeps the
+ *  parent's `vars`, and each parent `local` kind, when the key is absent (or
+ *  null) — a `local` block without a kind, or no `local` at all, leaves that
+ *  kind alone — so deleting the key from the editor would save a version that
+ *  still declares them. Only an empty object declares none, so that is what is
+ *  sent for each section the parent had and the edit dropped. A section the
+ *  edit still carries, even emptied by hand, is sent as written. */
+export function keepOwnDefinitionRemovals(source: unknown, edited: unknown): unknown {
+  if (!isObj(source) || !isObj(edited)) return edited;
+  let out: Obj = edited;
+  if (nonEmpty(source.vars) && absent(edited.vars)) out = { ...out, vars: {} };
+  const had = isObj(source.local) ? source.local : {};
+  const dropped = LOCAL_KINDS.filter((k) => nonEmpty(had[k]));
+  if (dropped.length === 0) return out;
+  const local = edited.local;
+  // A `local` that is neither absent nor an object is the server's to refuse.
+  if (!absent(local) && !isObj(local)) return out;
+  const nextLocal: Obj = isObj(local) ? { ...local } : {};
+  let changed = false;
+  for (const k of dropped) {
+    if (absent(nextLocal[k])) {
+      nextLocal[k] = {};
+      changed = true;
+    }
+  }
+  return changed ? { ...out, local: nextLocal } : out;
+}

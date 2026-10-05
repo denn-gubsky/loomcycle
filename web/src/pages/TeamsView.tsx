@@ -21,6 +21,7 @@ import TeamRunModal from "../components/TeamRunModal";
 import { ownTenantOf, sameTeam, teamReach, teamTenantOf } from "../lib/teamTenant";
 import { WALK, hookTargets, keepWalkHookRemoval, readTeamHooks, writeTeamHooks } from "../lib/teamHooks";
 import TeamOwnDefinitionsPanel from "../components/TeamOwnDefinitionsPanel";
+import { keepOwnDefinitionRemovals } from "../lib/teamLocal";
 
 // TeamsView — the agent-team board.
 //
@@ -115,7 +116,8 @@ export default function TeamsView() {
   // Editor.
   const [editorText, setEditorText] = useState<string>("");
   // The stored definition the editor was loaded from: what a fork's graph is
-  // compared with, so a walk hook the operator removed is sent as a clear.
+  // compared with, so walk hooks, variables or a team's own definitions the
+  // operator removed are sent as clears.
   const [loadedDef, setLoadedDef] = useState<unknown>(undefined);
   const [createName, setCreateName] = useState<string>("");
   const [editorErr, setEditorErr] = useState<string>("");
@@ -281,7 +283,7 @@ export default function TeamsView() {
     if (parsed === undefined) return;
     setSaving(true);
     try {
-      const res = await forkTeam(selected, keepWalkHookRemoval(loadedDef, parsed));
+      const res = await forkTeam(selected, keepOwnDefinitionRemovals(loadedDef, keepWalkHookRemoval(loadedDef, parsed)));
       await fetchTeams();
       await loadDefIntoEditor(res.def_id);
       // The new version is stamped with the caller's tenant (a shared team's

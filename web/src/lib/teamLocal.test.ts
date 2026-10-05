@@ -3,6 +3,7 @@ import {
   agentSummary,
   channelSummary,
   countOwnDefinitions,
+  keepOwnDefinitionRemovals,
   readLocalAgent,
   scheduleSummary,
   skillSummary,
@@ -138,5 +139,50 @@ describe("readLocalAgent / writeLocalAgent", () => {
     expect(writeLocalAgent(def, "ghost", { tier: "top" })).toBe(def);
     expect(writeLocalAgent({ entry: "x" }, "reviewer", {})).toEqual({ entry: "x" });
     expect(readLocalAgent(def, "ghost")).toBeUndefined();
+  });
+});
+
+describe("keepOwnDefinitionRemovals", () => {
+  const { vars: _v, local: _l, ...bare } = def;
+
+  it("sends vars: {} when the edit drops the parent's variables", () => {
+    const { vars: _drop, ...edited } = def;
+    expect((keepOwnDefinitionRemovals(def, edited) as { vars: unknown }).vars).toEqual({});
+    expect((keepOwnDefinitionRemovals(def, { ...edited, vars: null }) as { vars: unknown }).vars).toEqual({});
+  });
+
+  it("sends {} for each local kind the edit drops, keeping the kinds it still has", () => {
+    const { agents: _a, webhooks: _w, ...rest } = def.local;
+    const out = keepOwnDefinitionRemovals(def, { ...def, local: rest }) as typeof def;
+    expect(out.local.agents).toEqual({});
+    expect(out.local.webhooks).toEqual({});
+    expect(out.local.skills).toBe(def.local.skills);
+    expect(out.local.channels).toBe(def.local.channels);
+  });
+
+  it("sends {} for every kind the parent had when the edit drops the whole local block", () => {
+    const out = keepOwnDefinitionRemovals(def, { ...def, local: undefined }) as { local: unknown };
+    expect(out.local).toEqual({ agents: {}, skills: {}, channels: {}, schedules: {}, webhooks: {} });
+    const both = keepOwnDefinitionRemovals(def, bare) as { local: unknown; vars: unknown };
+    expect(both.vars).toEqual({});
+    expect(both.local).toEqual({ agents: {}, skills: {}, channels: {}, schedules: {}, webhooks: {} });
+  });
+
+  it("clears only the kinds the parent declared", () => {
+    const parent = { ...bare, local: { channels: { events: { scope: "tenant" } }, agents: {} } };
+    expect(keepOwnDefinitionRemovals(parent, bare)).toEqual({ ...bare, local: { channels: {} } });
+  });
+
+  it("returns the edit unchanged when it removes nothing or the parent declared nothing", () => {
+    expect(keepOwnDefinitionRemovals(def, def)).toBe(def);
+    expect(keepOwnDefinitionRemovals(bare, bare)).toBe(bare);
+    const emptied = { ...def, vars: {}, local: { ...def.local, agents: {} } };
+    expect(keepOwnDefinitionRemovals(def, emptied)).toBe(emptied);
+    expect(keepOwnDefinitionRemovals(undefined, bare)).toBe(bare);
+  });
+
+  it("leaves a local that is not an object for the server to refuse", () => {
+    const edited = { ...bare, local: "oops" };
+    expect((keepOwnDefinitionRemovals(def, edited) as { local: unknown }).local).toBe("oops");
   });
 });
