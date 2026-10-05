@@ -170,6 +170,11 @@ func ParseLocalCadence(expr string) (cron.Schedule, error) {
 		return nil, fmt.Errorf("schedule: %q fires every %s; a team's own schedule fires at most every %s",
 			expr, every.Delay, MinLocalScheduleInterval)
 	}
+	// A date that does not exist ("0 0 30 2 *") parses, and the parser then
+	// answers "never" — a walk would wait on it for good.
+	if sched.Next(time.Now()).IsZero() {
+		return nil, fmt.Errorf("schedule: %q never fires", expr)
+	}
 	return sched, nil
 }
 

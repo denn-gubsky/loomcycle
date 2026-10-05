@@ -61,6 +61,7 @@ func TestValidate_RefusesALocalScheduleThatCouldNotRun(t *testing.T) {
 		"six fields":          {`{"schedule": "*/5 * * * * *", "channel": "./ticks"}`, "invalid cadence"},
 		"below the minimum":   {`{"schedule": "@every 9s", "channel": "./ticks"}`, "at most every 10s"},
 		"sub-second":          {`{"schedule": "@every 500ms", "channel": "./ticks"}`, "at most every 10s"},
+		"a date that is not":  {`{"schedule": "0 0 30 2 *", "channel": "./ticks"}`, "never fires"},
 		"no channel":          {`{"schedule": "@every 1m"}`, `must name one of the team's own channels`},
 		"a global channel":    {`{"schedule": "@every 1m", "channel": "ticks"}`, `must name one of the team's own channels`},
 		"an undeclared one":   {`{"schedule": "@every 1m", "channel": "./ghost"}`, `"./ghost" names a channel the team does not declare under local.channels (declared: ticks)`},
