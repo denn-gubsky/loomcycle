@@ -174,6 +174,71 @@ Without a Starter you also give up:
 - **the `before_dispatch` breakpoint**, which only a Starter has (a
   `<state>:review` hold works on `agent` and `parallel` states too).
 
+## A team's own agents
+
+A team may carry its agents inside its definition instead of naming agents that
+already exist. Declare them under `local.agents` — name → the same body
+`AgentDef op=create` takes as its `overlay` — and name one from a state as
+`./<name>`:
+
+```json
+{
+  "entry": "review",
+  "local": {
+    "agents": {
+      "reviewer": {
+        "tier": "middle",
+        "tools": ["Read", "Agent"],
+        "system_prompt": "You review diffs."
+      }
+    }
+  },
+  "states": [
+    {"state": "review", "handler": {"kind": "agent", "agent": "./reviewer"}},
+    {"state": "done", "handler": {"kind": "terminal"}}
+  ],
+  "transitions": [{"from": "review", "to": "done", "on": "success"}]
+}
+```
+
+- **It exists only in the team.** It is stored in the team's definition and
+  nowhere else, is versioned and hashed with the team, and appears in no agent
+  list. It runs as `<team>/<name>` (`sdlc/reviewer`): that is the name on its
+  run, in events and results, and the name its agent-scoped memory is kept
+  under.
+- **It is not runnable outside its team.** Starting a run, a schedule, a
+  webhook or an A2A call on `sdlc/reviewer` finds no such agent. The one way
+  back to it after its walk is to continue the session it already ran in, which
+  stays on the team version that session started under.
+- **How a name resolves.** In the definition, `./reviewer` is the team's own
+  agent and a bare `reviewer` is a global agent — a `./x` the team does not
+  declare is refused at create and fork. At run time, for every agent started
+  anywhere below the walk (members, their sub-agents, and theirs — global
+  agents started inside the team included), the Agent tool resolves:
+  - `./reviewer` → the team's own; an error if the team declares none;
+  - `reviewer` → the team's own if it declares one, otherwise the global agent;
+  - `sdlc/reviewer` → the same, by the name it runs under.
+  The Agent tool's `def_id` does not apply to a team's own agent: it has no
+  versions of its own, and a run keeps reading it from the team version it
+  started under, whatever the team is forked or promoted to later.
+- **It passes every check a new agent does**, at create and at fork, under its
+  full name: the author's agent-authoring grant (a grant on `sdlc/**` covers
+  team `sdlc`'s own agents), the author's own tools as the ceiling for its
+  `tools`, the rules on its routing, hooks and code. A fork is checked against
+  whoever forks, for the agents it keeps as well as the ones it sends. A
+  `code-js` agent must carry its source inline as `code_body`.
+- **Its full name must be free.** A team cannot declare `reviewer` while an
+  agent named `sdlc/reviewer` exists, and such an agent cannot be created while
+  the team declares it: the two would share memory. If both come to exist some
+  other way, the team's agent is refused when a walk starts it until one is
+  renamed.
+- **Forking.** A fork that sends `local.agents` replaces the whole list (`{}`
+  declares none); one that does not keeps the parent's.
+- **Limits.** A local name is one segment of `A-Z a-z 0-9 _ -`, at most 64
+  characters, and the team's own name must be one segment too. Only `agents`
+  may be declared under `local`. `verify` lists a declared agent no state runs
+  as an advisory issue.
+
 ## Declaring variables and setting them at start
 
 A team lists its variables, each with a default, in the definition's `vars`.
@@ -352,7 +417,8 @@ by moving `status` from one state to the next per the transitions. (See the
 - **Inspect** a team's shape with `TeamDef op=render_diagram` (a Mermaid
   `stateDiagram-v2` with the colour scheme applied).
 - **Handlers** are ordinary agents; a team just names them per state. Missing a
-  role? Build it with the `agent/assistant` agent first.
+  role? Build it with the `agent/assistant` agent first, or declare it in the
+  team itself (see "A team's own agents").
 - **Hooks.** A state may carry `hooks` / `tool_hooks`, added to every run it
   starts; the TeamDef's own `hooks` take `run_end` for the walk. See
   `help(topic="hooks")`.
