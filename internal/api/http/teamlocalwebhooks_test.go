@@ -106,12 +106,13 @@ func (h *hookHarness) waitArmed(n int) {
 	h.t.Fatalf("%d webhook registration(s) live, want %d", h.srv.teamHooks.count(), n)
 }
 
-// notFound is what the receiver answers for a webhook that does not exist.
+// notFound is what the receiver answers for a WebhookDef that does not exist
+// — the answer a team's webhook that cannot take a delivery must give too.
 func notFound(t *testing.T, mux *http.ServeMux) *httptest.ResponseRecorder {
 	t.Helper()
-	w := deliverToTeam(mux, "/v1/_teams/acme/no-such-team/webhooks/github", `{}`, "", true)
+	w := deliverToTeam(mux, "/v1/_webhooks/acme/no-such-webhook", `{}`, "", true)
 	if w.Code != http.StatusNotFound {
-		t.Fatalf("an unknown team's webhook: %d %s", w.Code, w.Body.String())
+		t.Fatalf("an unknown WebhookDef: %d %s", w.Code, w.Body.String())
 	}
 	return w
 }
