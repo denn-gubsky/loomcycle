@@ -595,6 +595,22 @@ func (s *Store) migrate(ctx context.Context) error {
 			promoter_isolated                INTEGER,
 			PRIMARY KEY(tenant_id, name)
 		)`,
+		// A team's own webhooks, armed by running walks: one lease per
+		// (tenant, team, webhook, walk run), so any replica can accept a
+		// delivery. The primary key serves the receiver's (tenant, team,
+		// name) lookup and a walk's (tenant, team, walk) delete. Instants are
+		// unix nanos. Mirrors postgres migration 0092.
+		`CREATE TABLE IF NOT EXISTS team_webhook_arms (
+			tenant_id   TEXT    NOT NULL DEFAULT '',
+			team        TEXT    NOT NULL,
+			name        TEXT    NOT NULL,
+			walk_run_id TEXT    NOT NULL,
+			def_id      TEXT    NOT NULL,
+			user_id     TEXT    NOT NULL DEFAULT '',
+			armed_at    INTEGER NOT NULL,
+			expires_at  INTEGER NOT NULL,
+			PRIMARY KEY(tenant_id, team, name, walk_run_id)
+		)`,
 		// HookDef substrate — mirror of teamdefs minus the two authority
 		// columns (bootstrapped_from_static, operator_authored) a HookDef
 		// has no use for. A fresh table born tenant-aware, so the
@@ -11010,6 +11026,78 @@ func (s *Store) MetricsSweep(ctx context.Context, cutoff time.Time) (int, error)
 	}
 	n, _ := res.RowsAffected()
 	return int(n), nil
+}
+
+// --- a team's own webhooks, armed by running walks ---
+
+// TeamWebhookArmPut upserts each lease and drops the lapsed ones of each team
+// named; see the store.Store contract.
+func (s *Store) TeamWebhookArmPut(ctx context.Context, rows []store.TeamWebhookArm) error {
+	if len(rows) == 0 {
+		return nil
+	}
+	for _, r := range rows {
+		if r.Team == "" || r.Name == "" || r.WalkRunID == "" || r.DefID == "" || r.ArmedAt.IsZero() || r.ExpiresAt.IsZero() {
+			return fmt.Errorf("team webhook arm: team, name, walk_run_id, def_id, armed_at and expires_at are required")
+		}
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("team webhook arm begin: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	for _, r := range rows {
+		if _, err := tx.ExecContext(ctx,
+			`DELETE FROM team_webhook_arms WHERE tenant_id = ? AND team = ? AND expires_at <= ?`,
+			r.TenantID, r.Team, r.ArmedAt.UnixNano()); err != nil {
+			return fmt.Errorf("team webhook arm sweep: %w", err)
+		}
+		if _, err := tx.ExecContext(ctx,
+			`INSERT INTO team_webhook_arms (tenant_id, team, name, walk_run_id, def_id, user_id, armed_at, expires_at)
+			 VALUES (?,?,?,?,?,?,?,?)
+			 ON CONFLICT(tenant_id, team, name, walk_run_id) DO UPDATE SET
+			   def_id = excluded.def_id, user_id = excluded.user_id,
+			   armed_at = excluded.armed_at, expires_at = excluded.expires_at`,
+			r.TenantID, r.Team, r.Name, r.WalkRunID, r.DefID, r.UserID,
+			r.ArmedAt.UnixNano(), r.ExpiresAt.UnixNano()); err != nil {
+			return fmt.Errorf("team webhook arm: %w", err)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("team webhook arm commit: %w", err)
+	}
+	return nil
+}
+
+// TeamWebhookArmDelete removes one walk's leases for a team.
+func (s *Store) TeamWebhookArmDelete(ctx context.Context, tenantID, team, walkRunID string) error {
+	if _, err := s.db.ExecContext(ctx,
+		`DELETE FROM team_webhook_arms WHERE tenant_id = ? AND team = ? AND walk_run_id = ?`,
+		tenantID, team, walkRunID); err != nil {
+		return fmt.Errorf("team webhook disarm: %w", err)
+	}
+	return nil
+}
+
+// TeamWebhookArmLive returns the earliest-armed live lease for one webhook.
+func (s *Store) TeamWebhookArmLive(ctx context.Context, tenantID, team, name string, now time.Time) (store.TeamWebhookArm, bool, error) {
+	r := store.TeamWebhookArm{TenantID: tenantID, Team: team, Name: name}
+	var armed, expires int64
+	err := s.db.QueryRowContext(ctx,
+		`SELECT a.walk_run_id, a.def_id, a.user_id, a.armed_at, a.expires_at
+		 FROM team_webhook_arms a JOIN runs r ON r.id = a.walk_run_id
+		 WHERE a.tenant_id = ? AND a.team = ? AND a.name = ? AND a.expires_at > ? AND r.status = 'running'
+		 ORDER BY a.armed_at, a.walk_run_id LIMIT 1`,
+		tenantID, team, name, now.UnixNano()).Scan(&r.WalkRunID, &r.DefID, &r.UserID, &armed, &expires)
+	if errors.Is(err, sql.ErrNoRows) {
+		return store.TeamWebhookArm{}, false, nil
+	}
+	if err != nil {
+		return store.TeamWebhookArm{}, false, fmt.Errorf("team webhook lookup: %w", err)
+	}
+	r.ArmedAt = time.Unix(0, armed).UTC()
+	r.ExpiresAt = time.Unix(0, expires).UTC()
+	return r, true, nil
 }
 
 // --- v0.8.15 dynamic_agents (LoomCycle MCP runtime registration) ---

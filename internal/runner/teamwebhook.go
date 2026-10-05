@@ -13,7 +13,8 @@ import (
 // import internal/api/http, which owns the walks that arm those webhooks.
 type TeamWebhookResolver interface {
 	// ResolveTeamWebhook returns team `team`'s own webhook `name` in tenant,
-	// when a walk of that team is running on this instance and armed it.
+	// when a running walk of that team armed it — on this instance or, through
+	// the walk's lease in the store, on another.
 	// false for every other case alike — no such team, no such webhook, no
 	// walk running, a retired version — so that an outside caller cannot
 	// tell them apart.

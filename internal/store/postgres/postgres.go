@@ -3574,6 +3574,77 @@ func (s *Store) MetricsSweep(ctx context.Context, cutoff time.Time) (int, error)
 	return int(tag.RowsAffected()), nil
 }
 
+// --- a team's own webhooks, armed by running walks (migration 0092) ---
+
+// TeamWebhookArmPut upserts each lease and drops the lapsed ones of each team
+// named; see the store.Store contract.
+func (s *Store) TeamWebhookArmPut(ctx context.Context, rows []store.TeamWebhookArm) error {
+	if len(rows) == 0 {
+		return nil
+	}
+	for _, r := range rows {
+		if r.Team == "" || r.Name == "" || r.WalkRunID == "" || r.DefID == "" || r.ArmedAt.IsZero() || r.ExpiresAt.IsZero() {
+			return fmt.Errorf("team webhook arm: team, name, walk_run_id, def_id, armed_at and expires_at are required")
+		}
+	}
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("team webhook arm begin: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	for _, r := range rows {
+		if _, err := tx.Exec(ctx,
+			`DELETE FROM team_webhook_arms WHERE tenant_id = $1 AND team = $2 AND expires_at <= $3`,
+			r.TenantID, r.Team, r.ArmedAt.UTC()); err != nil {
+			return fmt.Errorf("team webhook arm sweep: %w", err)
+		}
+		if _, err := tx.Exec(ctx,
+			`INSERT INTO team_webhook_arms (tenant_id, team, name, walk_run_id, def_id, user_id, armed_at, expires_at)
+			 VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
+			 ON CONFLICT (tenant_id, team, name, walk_run_id) DO UPDATE SET
+			   def_id = EXCLUDED.def_id, user_id = EXCLUDED.user_id,
+			   armed_at = EXCLUDED.armed_at, expires_at = EXCLUDED.expires_at`,
+			r.TenantID, r.Team, r.Name, r.WalkRunID, r.DefID, r.UserID,
+			r.ArmedAt.UTC(), r.ExpiresAt.UTC()); err != nil {
+			return fmt.Errorf("team webhook arm: %w", err)
+		}
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("team webhook arm commit: %w", err)
+	}
+	return nil
+}
+
+// TeamWebhookArmDelete removes one walk's leases for a team.
+func (s *Store) TeamWebhookArmDelete(ctx context.Context, tenantID, team, walkRunID string) error {
+	if _, err := s.pool.Exec(ctx,
+		`DELETE FROM team_webhook_arms WHERE tenant_id = $1 AND team = $2 AND walk_run_id = $3`,
+		tenantID, team, walkRunID); err != nil {
+		return fmt.Errorf("team webhook disarm: %w", err)
+	}
+	return nil
+}
+
+// TeamWebhookArmLive returns the earliest-armed live lease for one webhook.
+func (s *Store) TeamWebhookArmLive(ctx context.Context, tenantID, team, name string, now time.Time) (store.TeamWebhookArm, bool, error) {
+	r := store.TeamWebhookArm{TenantID: tenantID, Team: team, Name: name}
+	err := s.pool.QueryRow(ctx,
+		`SELECT a.walk_run_id, a.def_id, a.user_id, a.armed_at, a.expires_at
+		 FROM team_webhook_arms a JOIN runs r ON r.id = a.walk_run_id
+		 WHERE a.tenant_id = $1 AND a.team = $2 AND a.name = $3 AND a.expires_at > $4 AND r.status = 'running'
+		 ORDER BY a.armed_at, a.walk_run_id LIMIT 1`,
+		tenantID, team, name, now.UTC()).Scan(&r.WalkRunID, &r.DefID, &r.UserID, &r.ArmedAt, &r.ExpiresAt)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return store.TeamWebhookArm{}, false, nil
+	}
+	if err != nil {
+		return store.TeamWebhookArm{}, false, fmt.Errorf("team webhook lookup: %w", err)
+	}
+	r.ArmedAt = r.ArmedAt.UTC()
+	r.ExpiresAt = r.ExpiresAt.UTC()
+	return r, true, nil
+}
+
 // --- v0.8.15 dynamic_agents (LoomCycle MCP runtime registration) ---
 
 func (s *Store) DynamicAgentUpsert(ctx context.Context, a store.DynamicAgent) error {
