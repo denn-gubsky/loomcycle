@@ -401,6 +401,78 @@ starter:
   sends `local.schedules` replaces the whole list. A walk runs them only in the
   team's tenant.
 
+### A team's own webhooks
+
+A team may also take events from outside. A webhook under `local.webhooks`
+is an endpoint that, **while a walk of the team is running**, publishes each
+signed POST into one of the team's own channels — the raw request body, as
+the message — and so wakes whatever in the walk reads that channel:
+
+```json
+{
+  "entry": "wave",
+  "local": {
+    "channels": {"events": {"scope": "tenant", "default_ttl": 3600}},
+    "webhooks": {"github": {
+      "channel": "./events",
+      "auth": {"kind": "hmac", "header": "X-Hub-Signature-256",
+               "signing_secret_env": "LOOMCYCLE_GH_TEAM_SECRET",
+               "delivery_id_header": "X-GitHub-Delivery"},
+      "payload_mapping": {"user_id": "$.sender.login"}}}
+  },
+  "states": [
+    {"state": "wave", "handler": {"kind": "starter",
+      "source": {"channel": "./events", "wait_ms": 600000},
+      "fanout": {"agent": "triager", "per": "message", "max": 1}}},
+    {"state": "done", "handler": {"kind": "terminal"}}
+  ],
+  "transitions": [{"from": "wave", "to": "done", "on": "success"}]
+}
+```
+
+- **Where.** `POST /v1/_teams/{tenant}/{team}/webhooks/{name}` for a team in
+  a tenant, `POST /v1/_teams/{team}/webhooks/{name}` for one in the shared
+  tenant. Served when inbound webhooks are enabled
+  (`LOOMCYCLE_WEBHOOKS_ENABLED=1`); not behind the API bearer — the
+  webhook's own secret authenticates each delivery.
+- **Alive only while a walk runs.** The endpoint opens when a walk of the
+  team starts and closes when it ends, however it ends. With no walk
+  running, an unknown team, an unknown webhook name, or a retired version,
+  the answer is the same `404 {"error":"unknown_webhook"}` an unknown
+  webhook definition gets.
+- **Auth** is exactly a webhook definition's `auth`: `hmac` (the default,
+  with `signing_secret_env`; GitHub `sha256=`, Stripe `t=,v1=` and bare-hex
+  signatures), `bearer` (with `bearer_token_env`, optionally a raw `header`),
+  or `none` only where the operator set
+  `LOOMCYCLE_WEBHOOKS_ALLOW_UNAUTHENTICATED=1`. A secret is an env-var
+  **name**, resolved by the receiver under the same allowlist as a runtime
+  webhook definition's (a `LOOMCYCLE_*` name, or one listed in
+  `LOOMCYCLE_WEBHOOKS_ENV_ALLOWLIST`). The signature is checked before the
+  body is read as JSON; a bad one is `401`, a redelivery an idempotent
+  `200`. A delivery accepted answers `202` with
+  `{"webhook_name", "delivery_id", "channel"}`.
+- **One message per delivery.** However many walks of the team are running,
+  a delivery is published once into the team's channel (a tenant channel is
+  shared by those walks). It is attributed to the user `payload_mapping.user_id`
+  names, else to the user of the walk that started first. Into a `user`
+  channel a delivery is filed under the user it names — such a webhook must
+  map `user_id`, and a delivery naming none is refused with `400`.
+- **Nothing else.** `channel` must be one of the team's own (`./<name>`).
+  No agent, team, delivery mode, `sync_response`, `on_complete`,
+  credentials, `user_tier`, `tenant_id` or rate settings: a delivery only
+  publishes into the team, and what it causes is the walk's to do.
+- **Who may declare one.** A team's own webhook opens an endpoint anyone can
+  POST to, so declaring one takes the authority to create a webhook
+  definition: the operator's API, the MCP server and gRPC grant it; an agent
+  inside a run does not hold it and cannot create or fork a team that has
+  one.
+- **One instance.** The endpoint answers on the instance running the walk;
+  another instance answers `404`. Route a team's webhook to the instance
+  running its walks.
+- **Limits.** At most 16 webhooks, named like a team's agents; the team's
+  own name must be one segment. A fork that sends `local.webhooks` replaces
+  the whole list. A walk opens them only in the team's tenant.
+
 ## Declaring variables and setting them at start
 
 A team lists its variables, each with a default, in the definition's `vars`.

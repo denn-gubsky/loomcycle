@@ -1,6 +1,6 @@
 ---
 name: input-webhooks
-description: Inbound webhooks (WebhookDef) — let external systems (GitHub, Stripe, Linear, n8n) trigger agent runs, wake parked agents, or start team walks via signed HTTP POST. HMAC-over-raw-body auth, JSONPath payload mapping, spawn vs channel vs team delivery, idempotency, rate limiting, per-run credentials, on_complete hooks, triage endpoints.
+description: Inbound webhooks (WebhookDef) — let external systems (GitHub, Stripe, Linear, n8n) trigger agent runs, wake parked agents, or start team walks via signed HTTP POST. HMAC-over-raw-body auth, JSONPath payload mapping, spawn vs channel vs team delivery, a team's own webhooks, idempotency, rate limiting, per-run credentials, on_complete hooks, triage endpoints.
 ---
 
 # Input webhooks (`WebhookDef`)
@@ -217,6 +217,47 @@ read before its signature verifies.
   spawned run). `team` and `vars` are refused on the other deliveries.
 - **A redelivery starts no second walk**: the walk's run carries the
   delivery's keys, as a spawned run does.
+
+## A team's own webhooks
+
+A team definition can declare webhooks of its own under `local.webhooks`
+(see the agent-teams article). They are not webhook definitions: each lives
+in its team, answers only while a walk of the team is running, and always
+publishes the request body into one of the team's own channels.
+
+```
+POST /v1/_teams/{tenant}/{team}/webhooks/{name}     a team in a tenant
+POST /v1/_teams/{team}/webhooks/{name}              a team in the shared tenant
+```
+
+```json
+{"local": {"webhooks": {"github": {
+  "channel": "./events",
+  "auth": {"kind": "hmac", "header": "X-Hub-Signature-256",
+           "signing_secret_env": "LOOMCYCLE_GH_TEAM_SECRET"},
+  "payload_mapping": {"user_id": "$.sender.login"}}}}}
+```
+
+- **Same receiver, same rules.** The `auth` block is a webhook definition's,
+  checked by the same rules; the secret is an env-var name resolved under
+  the same allowlist; a delivery is verified before it is parsed, deduped,
+  rate limited at the default rate (60 a minute, bursts of 10), and answered
+  with the same codes. Dedup and rate are kept per team webhook, apart from
+  any webhook definition of the same name.
+- **Not running is not found.** With no walk of the team running, or no such
+  team, webhook or tenant, or a retired version, the answer is
+  `404 {"error":"unknown_webhook"}` — the same bytes as an unknown webhook
+  definition, before anything is verified.
+- **Takes only** `auth`, `channel` (`./<name>`) and `payload_mapping`
+  (`user_id` only). Everything that would start or shape a run is refused
+  by name.
+- **Authoring** is gated like `WebhookDef` create: only an author who could
+  create a webhook definition may declare one.
+- **Not in triage.** `recent-deliveries` and `/test` address webhook
+  definitions by name and cannot name a team's; its verdicts are on the
+  `webhook.receive` span.
+- **One instance.** It answers on the instance running the walk; other
+  instances answer `404`.
 
 ## The signing secret
 

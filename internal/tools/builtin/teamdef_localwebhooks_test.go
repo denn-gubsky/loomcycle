@@ -206,3 +206,40 @@ func TestTeamDefRun_RefusesATeamWhoseWebhooksCannotRun(t *testing.T) {
 		t.Errorf("lifecycle = %s, want the walk armed and disarmed", got)
 	}
 }
+
+// The model learns a team's own webhooks from the tool's schema: it must parse
+// and describe them under local, and the description must name the route.
+func TestTeamDefInputSchema_DescribesLocalWebhooks(t *testing.T) {
+	var schema struct {
+		Properties struct {
+			Overlay struct {
+				Properties struct {
+					Local struct {
+						Properties map[string]struct {
+							AdditionalProperties struct {
+								Properties map[string]any `json:"properties"`
+								Required   []string       `json:"required"`
+							} `json:"additionalProperties"`
+						} `json:"properties"`
+					} `json:"local"`
+				} `json:"properties"`
+			} `json:"overlay"`
+		} `json:"properties"`
+	}
+	if err := json.Unmarshal((&TeamDef{}).InputSchema(), &schema); err != nil {
+		t.Fatalf("the TeamDef input schema does not parse: %v", err)
+	}
+	hooks, ok := schema.Properties.Overlay.Properties.Local.Properties["webhooks"]
+	if !ok {
+		t.Fatal("local.webhooks is not in the TeamDef input schema")
+	}
+	for _, field := range []string{"auth", "channel", "payload_mapping"} {
+		if _, ok := hooks.AdditionalProperties.Properties[field]; !ok {
+			t.Errorf("local.webhooks does not describe %q", field)
+		}
+	}
+	desc := (&TeamDef{}).Description()
+	if !strings.Contains(desc, "webhooks of its own") || !strings.Contains(desc, "/v1/_teams/<tenant>/<team>/webhooks/<name>") {
+		t.Error("the TeamDef description does not describe a team's own webhooks and their route")
+	}
+}
