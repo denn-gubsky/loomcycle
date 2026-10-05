@@ -204,6 +204,8 @@ func Run(t *testing.T, factory Factory) {
 		{"TeamWebhookArmDeleteRemovesOnlyThatWalksLeases", testTeamWebhookArmDeleteRemovesOnlyThatWalksLeases},
 		{"TeamWebhookArmPutSweepsTheTeamsLapsedLeases", testTeamWebhookArmPutSweepsTheTeamsLapsedLeases},
 		{"TeamWebhookArmPutRefusesAnIncompleteLease", testTeamWebhookArmPutRefusesAnIncompleteLease},
+		{"WebhookDeliveryClaimIsAllOrNoneUntilReleasedOrExpired", testWebhookDeliveryClaimIsAllOrNoneUntilReleasedOrExpired},
+		{"WebhookDeliveryClaimRaceGrantsOne", testWebhookDeliveryClaimRaceGrantsOne},
 		{"MemoryEmbedCascadesOnDelete", testMemoryEmbedCascadesOnDelete},
 		{"MemoryEmbedListMissing", testMemoryEmbedListMissing},
 		{"MemorySearchFilterExcludesPrefix", testMemorySearchFilterExcludesPrefix},

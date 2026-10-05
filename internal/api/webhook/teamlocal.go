@@ -104,9 +104,23 @@ func (rec *Receiver) handleTeam(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 7. Publish once into the team's channel.
-	if err := hook.Publish(ctx, proj.Fields["user_id"], json.RawMessage(body)); err != nil {
+	// 7. Publish once into the team's channel. The replay guard above is this
+	//    replica's; Publish claims the delivery's keys in the store first, so
+	//    one already accepted anywhere — another replica, before a restart —
+	//    publishes nothing.
+	keys := []string{dk.key}
+	if dk.alt != "" {
+		keys = append(keys, dk.alt)
+	}
+	if err := hook.Publish(ctx, proj.Fields["user_id"], keys, json.RawMessage(body)); err != nil {
 		switch {
+		case errors.Is(err, runner.ErrTeamWebhookDuplicate):
+			// The same answer the replay guard gives, and recorded as a
+			// WebhookDef's durable duplicate is.
+			rec.dedup.recordDuplicate(dk)
+			rec.finish(span, "", did, verdictAcceptedReplay, "")
+			rec.logf("team webhook %q: delivery already accepted — idempotent ack", display)
+			writeJSON(w, http.StatusOK, map[string]string{"webhook_name": name, "delivery_id": did, "deduped": "true"})
 		case errors.Is(err, runner.ErrTeamWebhookNeedsUser):
 			rec.finish(span, "", did, "rejected_mapping", "")
 			rec.logf("team webhook %q: %v", display, err)

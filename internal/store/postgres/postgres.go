@@ -3645,6 +3645,51 @@ func (s *Store) TeamWebhookArmLive(ctx context.Context, tenantID, team, name str
 	return r, true, nil
 }
 
+// --- durable webhook delivery dedup ---
+
+// WebhookDeliveryClaim claims every key or none; see the store.Store contract.
+func (s *Store) WebhookDeliveryClaim(ctx context.Context, keys []string, now, expiresAt time.Time) (bool, error) {
+	if len(keys) == 0 {
+		return false, fmt.Errorf("webhook delivery claim: no keys")
+	}
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return false, fmt.Errorf("webhook delivery claim begin: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	if _, err := tx.Exec(ctx, `DELETE FROM webhook_deliveries WHERE expires_at <= $1`, now.UTC()); err != nil {
+		return false, fmt.Errorf("webhook delivery claim sweep: %w", err)
+	}
+	for _, k := range keys {
+		// A racing claim of the same key blocks here on the unique index
+		// until the first commits (then DO NOTHING) or rolls back.
+		tag, err := tx.Exec(ctx,
+			`INSERT INTO webhook_deliveries (delivery_key, expires_at) VALUES ($1, $2) ON CONFLICT (delivery_key) DO NOTHING`,
+			k, expiresAt.UTC())
+		if err != nil {
+			return false, fmt.Errorf("webhook delivery claim: %w", err)
+		}
+		if tag.RowsAffected() == 0 {
+			return false, nil // held: the deferred rollback undoes this claim's other keys
+		}
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return false, fmt.Errorf("webhook delivery claim commit: %w", err)
+	}
+	return true, nil
+}
+
+// WebhookDeliveryRelease drops keys a claim took.
+func (s *Store) WebhookDeliveryRelease(ctx context.Context, keys []string) error {
+	if len(keys) == 0 {
+		return nil
+	}
+	if _, err := s.pool.Exec(ctx, `DELETE FROM webhook_deliveries WHERE delivery_key = ANY($1)`, keys); err != nil {
+		return fmt.Errorf("webhook delivery release: %w", err)
+	}
+	return nil
+}
+
 // --- v0.8.15 dynamic_agents (LoomCycle MCP runtime registration) ---
 
 func (s *Store) DynamicAgentUpsert(ctx context.Context, a store.DynamicAgent) error {

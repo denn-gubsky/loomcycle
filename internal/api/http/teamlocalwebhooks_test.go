@@ -350,7 +350,7 @@ func TestTeamLocalWebhook_NothingPublishesAfterTheDisarm(t *testing.T) {
 		t.Fatal("the armed webhook does not resolve")
 	}
 	disarm()
-	if err := hook.Publish(context.Background(), "", json.RawMessage(`{"late":true}`)); !errors.Is(err, runner.ErrTeamWebhookGone) {
+	if err := hook.Publish(context.Background(), "", []string{"late"}, json.RawMessage(`{"late":true}`)); !errors.Is(err, runner.ErrTeamWebhookGone) {
 		t.Fatalf("a publish after the disarm: %v, want ErrTeamWebhookGone", err)
 	}
 	if got := h.stored("_team/hooked/events", store.MemoryScopeTenant, ""); len(got) != 0 {

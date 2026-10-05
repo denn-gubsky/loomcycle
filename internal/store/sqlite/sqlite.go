@@ -611,6 +611,13 @@ func (s *Store) migrate(ctx context.Context) error {
 			expires_at  INTEGER NOT NULL,
 			PRIMARY KEY(tenant_id, team, name, walk_run_id)
 		)`,
+		// Accepted deliveries of webhooks that start no run, by dedup key,
+		// until expires_at (unix nanos). Mirrors postgres migration 0093.
+		`CREATE TABLE IF NOT EXISTS webhook_deliveries (
+			delivery_key TEXT    PRIMARY KEY,
+			expires_at   INTEGER NOT NULL
+		)`,
+		`CREATE INDEX IF NOT EXISTS webhook_deliveries_by_expires_at ON webhook_deliveries(expires_at)`,
 		// HookDef substrate — mirror of teamdefs minus the two authority
 		// columns (bootstrapped_from_static, operator_authored) a HookDef
 		// has no use for. A fresh table born tenant-aware, so the
@@ -11098,6 +11105,56 @@ func (s *Store) TeamWebhookArmLive(ctx context.Context, tenantID, team, name str
 	r.ArmedAt = time.Unix(0, armed).UTC()
 	r.ExpiresAt = time.Unix(0, expires).UTC()
 	return r, true, nil
+}
+
+// --- durable webhook delivery dedup ---
+
+// WebhookDeliveryClaim claims every key or none; see the store.Store contract.
+func (s *Store) WebhookDeliveryClaim(ctx context.Context, keys []string, now, expiresAt time.Time) (bool, error) {
+	if len(keys) == 0 {
+		return false, fmt.Errorf("webhook delivery claim: no keys")
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return false, fmt.Errorf("webhook delivery claim begin: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	if _, err := tx.ExecContext(ctx, `DELETE FROM webhook_deliveries WHERE expires_at <= ?`, now.UnixNano()); err != nil {
+		return false, fmt.Errorf("webhook delivery claim sweep: %w", err)
+	}
+	for _, k := range keys {
+		res, err := tx.ExecContext(ctx,
+			`INSERT INTO webhook_deliveries (delivery_key, expires_at) VALUES (?, ?) ON CONFLICT(delivery_key) DO NOTHING`,
+			k, expiresAt.UnixNano())
+		if err != nil {
+			return false, fmt.Errorf("webhook delivery claim: %w", err)
+		}
+		if n, err := res.RowsAffected(); err != nil {
+			return false, fmt.Errorf("webhook delivery claim: %w", err)
+		} else if n == 0 {
+			return false, nil // held: the deferred rollback undoes this claim's other keys
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return false, fmt.Errorf("webhook delivery claim commit: %w", err)
+	}
+	return true, nil
+}
+
+// WebhookDeliveryRelease drops keys a claim took.
+func (s *Store) WebhookDeliveryRelease(ctx context.Context, keys []string) error {
+	if len(keys) == 0 {
+		return nil
+	}
+	args := make([]any, len(keys))
+	for i, k := range keys {
+		args[i] = k
+	}
+	if _, err := s.db.ExecContext(ctx,
+		`DELETE FROM webhook_deliveries WHERE delivery_key IN (`+sqlitePlaceholders(len(keys))+`)`, args...); err != nil {
+		return fmt.Errorf("webhook delivery release: %w", err)
+	}
+	return nil
 }
 
 // --- v0.8.15 dynamic_agents (LoomCycle MCP runtime registration) ---

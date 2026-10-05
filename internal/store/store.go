@@ -3281,6 +3281,25 @@ type Store interface {
 	// one has authenticated yet.
 	TeamWebhookArmLive(ctx context.Context, tenantID, team, name string, now time.Time) (TeamWebhookArm, bool, error)
 
+	// ---- Durable webhook delivery dedup ----
+	//
+	// The accepted deliveries of a webhook that starts no run — a team's own
+	// webhook publishes a channel message, so no runs.idempotency_key can
+	// remember it — keyed by the receiver's dedup keys (already scoped to the
+	// webhook), each held until it expires. Shared by every replica and kept
+	// across restarts, so a captured delivery replayed to another replica, or
+	// after a restart, is still a duplicate.
+
+	// WebhookDeliveryClaim records keys as accepted until expiresAt, all or
+	// none: false (nothing written) when any of them is already held past
+	// now. A claim is the insert itself, so of two replicas racing on one
+	// delivery exactly one gets true. Keys held until at or before now are
+	// dropped first.
+	WebhookDeliveryClaim(ctx context.Context, keys []string, now, expiresAt time.Time) (bool, error)
+	// WebhookDeliveryRelease drops keys a claim took for a delivery that was
+	// then not accepted, so the sender's retry is not a duplicate.
+	WebhookDeliveryRelease(ctx context.Context, keys []string) error
+
 	// ---- HookDef substrate ----
 	//
 	// Mirror of TeamDef* with the same invariants: a per-name lock keeps the

@@ -2,6 +2,7 @@ package storetest
 
 import (
 	"context"
+	"sync"
 	"testing"
 	"time"
 
@@ -197,5 +198,79 @@ func testTeamWebhookArmPutRefusesAnIncompleteLease(t *testing.T, s store.Store) 
 	}
 	if w := liveWalk(t, s, "acme", "hooked", "gitlab", armT0); w != "" {
 		t.Errorf("a refused Put wrote its valid lease too")
+	}
+}
+
+func claim(t *testing.T, s store.Store, now time.Time, keys ...string) bool {
+	t.Helper()
+	ok, err := s.WebhookDeliveryClaim(context.Background(), keys, now, now.Add(time.Hour))
+	if err != nil {
+		t.Fatalf("WebhookDeliveryClaim(%v): %v", keys, err)
+	}
+	return ok
+}
+
+// A delivery's keys are claimed all or none: a second claim holding any one of
+// them is refused and writes nothing; a released claim, or one past its
+// expiry, can be claimed again.
+func testWebhookDeliveryClaimIsAllOrNoneUntilReleasedOrExpired(t *testing.T, s store.Store) {
+	if !claim(t, s, armT0, "k1", "k2") {
+		t.Fatal("the first claim was refused")
+	}
+	if claim(t, s, armT0, "k3", "k2") {
+		t.Error("a claim sharing a held key was granted")
+	}
+	if !claim(t, s, armT0, "k3") {
+		t.Error("a refused claim wrote its other key")
+	}
+	if err := s.WebhookDeliveryRelease(context.Background(), []string{"k1", "k2"}); err != nil {
+		t.Fatal(err)
+	}
+	if !claim(t, s, armT0, "k1", "k2") {
+		t.Error("released keys could not be claimed again")
+	}
+	if claim(t, s, armT0.Add(time.Hour-time.Millisecond), "k1") {
+		t.Error("a key was claimed again before its expiry")
+	}
+	if !claim(t, s, armT0.Add(time.Hour), "k1") {
+		t.Error("a key past its expiry could not be claimed again")
+	}
+	if _, err := s.WebhookDeliveryClaim(context.Background(), nil, armT0, armT0.Add(time.Hour)); err == nil {
+		t.Error("a claim of no keys was granted")
+	}
+}
+
+// Of many concurrent claims of one delivery, exactly one is granted.
+func testWebhookDeliveryClaimRaceGrantsOne(t *testing.T, s store.Store) {
+	const racers = 8
+	var wg sync.WaitGroup
+	granted := make(chan bool, racers)
+	errs := make(chan error, racers)
+	for i := 0; i < racers; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			ok, err := s.WebhookDeliveryClaim(context.Background(), []string{"race-key", "race-alt"}, armT0, armT0.Add(time.Hour))
+			if err != nil {
+				errs <- err
+				return
+			}
+			granted <- ok
+		}()
+	}
+	wg.Wait()
+	close(granted)
+	close(errs)
+	for err := range errs {
+		t.Errorf("a racing claim failed: %v", err)
+	}
+	n := 0
+	for ok := range granted {
+		if ok {
+			n++
+		}
+	}
+	if n != 1 {
+		t.Errorf("%d of %d racing claims granted, want exactly 1", n, racers)
 	}
 }

@@ -21,7 +21,8 @@ type fakeTeamHooks struct {
 	hooks     map[string]runner.TeamWebhook
 	published []teamPublish
 	resolved  []string
-	err       error // returned by Publish when set
+	keys      [][]string // the dedup keys of every Publish call
+	err       error      // returned by Publish when set
 }
 
 type teamPublish struct {
@@ -38,9 +39,10 @@ func (f *fakeTeamHooks) ResolveTeamWebhook(_ context.Context, tenant, team, name
 	if !ok {
 		return runner.TeamWebhook{}, false
 	}
-	h.Publish = func(_ context.Context, userID string, body json.RawMessage) error {
+	h.Publish = func(_ context.Context, userID string, keys []string, body json.RawMessage) error {
 		f.mu.Lock()
 		defer f.mu.Unlock()
+		f.keys = append(f.keys, keys)
 		if f.err != nil {
 			return f.err
 		}
@@ -294,5 +296,27 @@ func TestTeamWebhook_NoRouteWithoutAResolver(t *testing.T) {
 	body := []byte(`{}`)
 	if w := post(rec, "/v1/_teams/t/webhooks/github", body, nil); w.Code != http.StatusNotFound || w.Body.String() == "{\"error\":\"unknown_webhook\"}\n" {
 		t.Errorf("a receiver with no team resolver answers the team route: %d %s", w.Code, w.Body.String())
+	}
+}
+
+// A delivery the resolver reports already accepted elsewhere is the replay
+// guard's idempotent ack, and its keys are the delivery's two identities —
+// what its signature covers and the sender's id — so a replay under a new id
+// still collides with them.
+func TestTeamWebhook_ADuplicateFromThePublishIsAnIdempotentAck(t *testing.T) {
+	rec, th, _ := newLocalHookReceiver(t, map[string]runner.TeamWebhook{"acme/triage/github": ghHook()}, nil)
+	th.err = runner.ErrTeamWebhookDuplicate
+	body := []byte(`{"pr": 7}`)
+	w := post(rec, "/v1/_teams/acme/triage/webhooks/github", body, signed(body, "d-1"))
+	if w.Code != http.StatusOK || w.Body.String() != "{\"deduped\":\"true\",\"delivery_id\":\"d-1\",\"webhook_name\":\"github\"}\n" {
+		t.Errorf("a duplicate: %d %s, want the idempotent ack", w.Code, w.Body.String())
+	}
+	key := teamWebhookKey("acme", "triage", "github")
+	want := []string{dedupKey(key, bodyDeliveryID(body)), dedupKey(key, "d-1")}
+	th.mu.Lock()
+	got := th.keys
+	th.mu.Unlock()
+	if len(got) != 1 || len(got[0]) != 2 || got[0][0] != want[0] || got[0][1] != want[1] {
+		t.Errorf("Publish keys = %q, want %q", got, want)
 	}
 }

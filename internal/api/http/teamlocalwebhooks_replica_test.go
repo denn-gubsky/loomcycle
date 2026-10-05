@@ -1,11 +1,18 @@
 package http
 
 import (
+	"bytes"
 	"context"
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"net/http"
+	"net/http/httptest"
+	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -262,10 +269,156 @@ func TestTeamLocalWebhook_ALeasedDeliveryPublishesNothingAfterTheDisarm(t *testi
 		t.Fatal("the leased webhook does not resolve on the other replica")
 	}
 	disarm()
-	if err := hook.Publish(context.Background(), "", json.RawMessage(`{"late":true}`)); !errors.Is(err, runner.ErrTeamWebhookGone) {
+	if err := hook.Publish(context.Background(), "", []string{"late"}, json.RawMessage(`{"late":true}`)); !errors.Is(err, runner.ErrTeamWebhookGone) {
 		t.Fatalf("a publish after the disarm: %v, want ErrTeamWebhookGone", err)
 	}
 	if got := h.stored("_team/hooked/events", store.MemoryScopeTenant, ""); len(got) != 0 {
 		t.Errorf("%d message(s) landed after the disarm", len(got))
+	}
+}
+
+// deliverStripe POSTs body signed in the Stripe envelope at instant ts.
+func deliverStripe(mux *http.ServeMux, body string, ts time.Time) *httptest.ResponseRecorder {
+	t := strconv.FormatInt(ts.Unix(), 10)
+	mac := hmac.New(sha256.New, []byte(hookSecret))
+	mac.Write([]byte(t + "." + body))
+	req := httptest.NewRequest(http.MethodPost, hookPath, bytes.NewReader([]byte(body)))
+	req.Header.Set("X-Hub-Signature-256", "t="+t+", v1="+hex.EncodeToString(mac.Sum(nil)))
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, req)
+	return w
+}
+
+// A delivery accepted on one replica is a duplicate on every other — and on
+// the same one after a restart, with its in-process replay guard empty — and
+// under a new delivery id too, as its signature covers only the body: one
+// message, and an idempotent ack for each replay.
+func TestTeamLocalWebhook_ADeliveryIsAcceptedOnceAcrossReplicasAndRestarts(t *testing.T) {
+	h := newHookHarness(t)
+	raw := hookedTeamJSON("tenant", 30000, "")
+	sc := h.seed("tdf_hooked_1", "hooked", raw)
+	disarm, err := h.srv.armWalkTriggers(schedWalkCtx(sc, h.walkRun("alice"), "alice"), mustTeamDef(t, raw))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer disarm()
+	_, otherMux := h.replica()
+
+	if w := deliverToTeam(h.mux, hookPath, `{"pr":1}`, "d-1", true); w.Code != http.StatusAccepted {
+		t.Fatalf("the first delivery: %d %s", w.Code, w.Body.String())
+	}
+	for what, w := range map[string]*httptest.ResponseRecorder{
+		"replayed to the other replica":         deliverToTeam(otherMux, hookPath, `{"pr":1}`, "d-1", true),
+		"replayed to a restarted receiver":      deliverToTeam(receiverFor(h.srv), hookPath, `{"pr":1}`, "d-1", true),
+		"replayed elsewhere under a new id":     deliverToTeam(otherMux, hookPath, `{"pr":1}`, "d-other", true),
+		"replayed under a new id after restart": deliverToTeam(receiverFor(h.srv), hookPath, `{"pr":1}`, "d-new", true),
+	} {
+		if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), `"deduped":"true"`) {
+			t.Errorf("%s: %d %s, want the idempotent ack", what, w.Code, w.Body.String())
+		}
+	}
+	if got := h.stored("_team/hooked/events", store.MemoryScopeTenant, ""); len(got) != 1 {
+		t.Errorf("%d message(s) for one delivery and its replays, want 1", len(got))
+	}
+}
+
+// The same delivery sent to two replicas at once publishes once.
+func TestTeamLocalWebhook_ConcurrentDuplicatesOnTwoReplicasPublishOnce(t *testing.T) {
+	h := newHookHarness(t)
+	raw := hookedTeamJSON("tenant", 30000, "")
+	sc := h.seed("tdf_hooked_1", "hooked", raw)
+	disarm, err := h.srv.armWalkTriggers(schedWalkCtx(sc, h.walkRun("alice"), "alice"), mustTeamDef(t, raw))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer disarm()
+	_, otherMux := h.replica()
+
+	const racers = 8
+	codes := make(chan int, racers)
+	var wg sync.WaitGroup
+	start := make(chan struct{})
+	for i := 0; i < racers; i++ {
+		mux := h.mux
+		if i%2 == 1 {
+			mux = otherMux
+		}
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			codes <- deliverToTeam(mux, hookPath, `{"pr":1}`, "d-1", true).Code
+		}()
+	}
+	close(start)
+	wg.Wait()
+	close(codes)
+	accepted := 0
+	for c := range codes {
+		switch c {
+		case http.StatusAccepted:
+			accepted++
+		case http.StatusOK:
+		default:
+			t.Errorf("a racing duplicate answered %d", c)
+		}
+	}
+	if accepted != 1 {
+		t.Errorf("%d of %d racing duplicates accepted, want exactly 1", accepted, racers)
+	}
+	if got := h.stored("_team/hooked/events", store.MemoryScopeTenant, ""); len(got) != 1 {
+		t.Errorf("%d message(s), want 1", len(got))
+	}
+}
+
+// A Stripe-style signature outside the replay window is the opaque 401 on
+// both paths — the replica running the walk and one answering from its lease —
+// and a fresh one is accepted on both.
+func TestTeamLocalWebhook_AStaleSignatureIsRefusedOnEveryReplica(t *testing.T) {
+	h := newHookHarness(t)
+	raw := hookedTeamJSON("tenant", 30000, "")
+	sc := h.seed("tdf_hooked_1", "hooked", raw)
+	disarm, err := h.srv.armWalkTriggers(schedWalkCtx(sc, h.walkRun("alice"), "alice"), mustTeamDef(t, raw))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer disarm()
+	_, otherMux := h.replica()
+
+	for what, mux := range map[string]*http.ServeMux{"the walk's replica": h.mux, "another replica": otherMux} {
+		if w := deliverStripe(mux, `{"stale":"`+what+`"}`, time.Now().Add(-10*time.Minute)); w.Code != http.StatusUnauthorized || w.Body.String() != "{\"error\":\"unauthorized\"}\n" {
+			t.Errorf("%s, a signature 10 minutes old: %d %s", what, w.Code, w.Body.String())
+		}
+		if w := deliverStripe(mux, `{"fresh":"`+what+`"}`, time.Now()); w.Code != http.StatusAccepted {
+			t.Errorf("%s, a fresh signature: %d %s", what, w.Code, w.Body.String())
+		}
+	}
+	if got := h.stored("_team/hooked/events", store.MemoryScopeTenant, ""); len(got) != 2 {
+		t.Errorf("%d message(s), want the two fresh deliveries", len(got))
+	}
+}
+
+// A delivery whose publish fails is not remembered as accepted: the sender's
+// retry of it publishes.
+func TestTeamLocalWebhook_AFailedPublishLeavesTheDeliveryRetryable(t *testing.T) {
+	h := newHookHarness(t)
+	raw := hookedTeamJSON("tenant", 30000, "")
+	sc := h.seed("tdf_hooked_1", "hooked", raw)
+	disarm, err := h.srv.armWalkTriggers(schedWalkCtx(sc, h.walkRun("alice"), "alice"), mustTeamDef(t, raw))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer disarm()
+	// A replica whose channel writer is not wired yet: its publish fails.
+	other := New(h.srv.cfg(), &stubResolver{p: h.prov}, nil, concurrency.New(8, 8, 5*time.Second), h.st)
+	otherMux := receiverFor(other)
+	if w := deliverToTeam(otherMux, hookPath, `{"pr":1}`, "d-1", true); w.Code != http.StatusServiceUnavailable {
+		t.Fatalf("a publish that fails: %d %s", w.Code, w.Body.String())
+	}
+	if w := deliverToTeam(h.mux, hookPath, `{"pr":1}`, "d-1", true); w.Code != http.StatusAccepted {
+		t.Errorf("the sender's retry, to another replica: %d %s", w.Code, w.Body.String())
+	}
+	if got := h.stored("_team/hooked/events", store.MemoryScopeTenant, ""); len(got) != 1 {
+		t.Errorf("%d message(s), want the retried delivery once", len(got))
 	}
 }

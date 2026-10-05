@@ -113,8 +113,8 @@ func (s *Server) ResolveTeamWebhook(ctx context.Context, tenant, team, name stri
 		if err != nil || row.Retired {
 			return runner.TeamWebhook{}, false
 		}
-		return teamWebhookOf(a, func(ctx context.Context, userID string, body json.RawMessage) error {
-			return s.publishTeamWebhook(ctx, a, userID, body)
+		return teamWebhookOf(a, func(ctx context.Context, userID string, keys []string, body json.RawMessage) error {
+			return s.publishTeamWebhook(ctx, a, userID, keys, body)
 		}), true
 	}
 	// No walk of the team armed it here; one on another replica may have.
@@ -125,7 +125,7 @@ func (s *Server) ResolveTeamWebhook(ctx context.Context, tenant, team, name stri
 	if a == nil {
 		return runner.TeamWebhook{}, false
 	}
-	return teamWebhookOf(a, func(ctx context.Context, userID string, body json.RawMessage) error {
+	return teamWebhookOf(a, func(ctx context.Context, userID string, keys []string, body json.RawMessage) error {
 		// Read again now, as the walk may have ended while the delivery was
 		// verified: publish as whichever walk holds the webhook at this
 		// moment, or not at all.
@@ -136,13 +136,13 @@ func (s *Server) ResolveTeamWebhook(ctx context.Context, tenant, team, name stri
 		if live == nil {
 			return runner.ErrTeamWebhookGone
 		}
-		return s.publishTeamWebhook(ctx, live, userID, body)
+		return s.publishTeamWebhook(ctx, live, userID, keys, body)
 	}), true
 }
 
 // teamWebhookOf is the receiver's view of webhook a, publishing through
 // publish.
-func teamWebhookOf(a *armedTeamWebhook, publish func(ctx context.Context, userID string, body json.RawMessage) error) runner.TeamWebhook {
+func teamWebhookOf(a *armedTeamWebhook, publish func(ctx context.Context, userID string, keys []string, body json.RawMessage) error) runner.TeamWebhook {
 	var mapping map[string]string
 	if a.hook.UserIDPath != "" {
 		mapping = map[string]string{"user_id": a.hook.UserIDPath}
@@ -183,10 +183,24 @@ func (s *Server) leasedTeamWebhook(ctx context.Context, key teamWebhookKey) (*ar
 	return &armedTeamWebhook{key: key, walkID: lease.WalkRunID, sc: sc, userID: lease.UserID, hook: hook}, nil
 }
 
+// teamWebhookDedupTTL is how long an accepted delivery's keys are held in the
+// store. A replay inside it — to any replica, across a restart — publishes
+// nothing. Longer than the receiver's in-process window (10 minutes) and the
+// Stripe-style signature tolerance it backs; a body-only signature (GitHub's)
+// has no time limit, so a capture replayed after this publishes again, as a
+// WebhookDef's channel delivery does after its in-process window.
+const teamWebhookDedupTTL = 24 * time.Hour
+
 // publishTeamWebhook publishes one verified delivery into the webhook's
 // channel, as walk a: under its team scope, attributed to userID or, when the
 // payload named none and the channel is tenant-scoped, to the walk's user.
-func (s *Server) publishTeamWebhook(ctx context.Context, a *armedTeamWebhook, userID string, body json.RawMessage) error {
+//
+// The delivery's dedup keys are claimed in the store first, by the insert
+// itself, so of two replicas taking one delivery (a replay, or the sender's
+// retry racing its original) exactly one publishes; the other gets
+// ErrTeamWebhookDuplicate. A publish that then fails releases the claim, so
+// the sender's retry is not taken for a duplicate.
+func (s *Server) publishTeamWebhook(ctx context.Context, a *armedTeamWebhook, userID string, keys []string, body json.RawMessage) error {
 	a.mu.RLock()
 	defer a.mu.RUnlock()
 	if a.closed {
@@ -198,8 +212,25 @@ func (s *Server) publishTeamWebhook(ctx context.Context, a *armedTeamWebhook, us
 		}
 		userID = a.userID
 	}
-	_, err := s.publishTeamLocalChannel(ctx, a.sc.Tenant, a.sc, a.hook.Channel, userID, body)
-	return err
+	if s.store != nil && len(keys) > 0 {
+		now := s.clock().Now()
+		claimed, err := s.store.WebhookDeliveryClaim(ctx, keys, now, now.Add(teamWebhookDedupTTL))
+		if err != nil {
+			return err
+		}
+		if !claimed {
+			return runner.ErrTeamWebhookDuplicate
+		}
+	}
+	if _, err := s.publishTeamLocalChannel(ctx, a.sc.Tenant, a.sc, a.hook.Channel, userID, body); err != nil {
+		if s.store != nil && len(keys) > 0 {
+			if rerr := s.store.WebhookDeliveryRelease(context.WithoutCancel(ctx), keys); rerr != nil {
+				log.Printf("team %q: release the dedup keys of a delivery that did not publish: %v", a.sc.Team, rerr)
+			}
+		}
+		return err
+	}
+	return nil
 }
 
 // armTeamWebhooks registers the team's own webhooks for the walk running under

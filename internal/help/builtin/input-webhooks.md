@@ -259,7 +259,9 @@ POST /v1/_teams/{team}/webhooks/{name}              a team in the shared tenant
 - **Any instance.** Every instance sharing the database answers while a walk
   of the team runs on any of them: the walk records the webhooks it opens and
   removes the record when it ends. A crashed instance's record stops counting
-  within about three walk heartbeats.
+  within about three walk heartbeats. Its deliveries are deduplicated across
+  instances and restarts for a day, unlike a `delivery: channel` webhook
+  definition's (per instance, ten minutes — see Limits).
 
 ## The signing secret
 
