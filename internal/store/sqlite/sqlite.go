@@ -11573,16 +11573,17 @@ func (s *Store) InterruptDeleteAllByUser(ctx context.Context, userID, tenantID s
 // interface for why there is no tenants table and why this is admin-only.
 func (s *Store) ListTenants(ctx context.Context) ([]store.TenantSummary, error) {
 	// COUNT(DISTINCT user_id) for the user tally: a tenant's user count is how many
-	// distinct subjects ran there, not how many rows exist.
+	// distinct subjects ran there, not how many rows exist. A run with no tenant
+	// (open mode, the shared tenant) stores NULL, so it is folded into "".
 	const q = `
 		SELECT
-			tenant_id,
+			COALESCE(tenant_id, '') AS tenant,
 			COUNT(DISTINCT CASE WHEN user_id IS NOT NULL AND user_id != '' THEN user_id END) AS user_count,
 			COUNT(CASE WHEN status = 'running' THEN 1 END) AS running_count,
 			COUNT(*) AS total_count,
 			MAX(started_at) AS last_started_at
 		FROM runs
-		GROUP BY tenant_id
+		GROUP BY COALESCE(tenant_id, '')
 		ORDER BY last_started_at DESC
 		LIMIT 500`
 	rows, err := s.db.QueryContext(ctx, q)
