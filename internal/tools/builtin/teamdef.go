@@ -1773,6 +1773,9 @@ func applyTeamOverlay(base *teamgraph.Definition, ov teamgraph.Definition) {
 		if ov.Local.Agents != nil {
 			base.Local.Agents = ov.Local.Agents
 		}
+		if ov.Local.Skills != nil {
+			base.Local.Skills = ov.Local.Skills
+		}
 	}
 }
 

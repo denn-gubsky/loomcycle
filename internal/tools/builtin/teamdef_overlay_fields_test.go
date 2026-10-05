@@ -67,3 +67,39 @@ func TestApplyTeamOverlay_LocalAgentsReplaceWholesalePerKind(t *testing.T) {
 		}
 	}
 }
+
+// Skills are their own kind: sending them replaces the team's skills and
+// leaves its agents alone, and the other way round.
+func TestApplyTeamOverlay_LocalSkillsReplaceIndependentlyOfAgents(t *testing.T) {
+	parse := func(s string) teamgraph.Definition {
+		t.Helper()
+		d, err := teamgraph.Parse([]byte(s))
+		if err != nil {
+			t.Fatalf("parse %s: %v", s, err)
+		}
+		return d
+	}
+	const parent = `{"entry":"s","local":{"agents":{"a":{"tier":"low"}},"skills":{"x":{"body":"X"},"y":{"body":"Y"}}}}`
+	for name, tc := range map[string]struct {
+		overlay              string
+		wantAgents, wantSkls []string
+	}{
+		"no local block keeps both":            {`{"entry":"s2"}`, []string{"a"}, []string{"x", "y"}},
+		"agents only keeps the skills":         {`{"local":{"agents":{"b":{"tier":"low"}}}}`, []string{"b"}, []string{"x", "y"}},
+		"skills only keeps the agents":         {`{"local":{"skills":{"z":{"body":"Z"}}}}`, []string{"a"}, []string{"z"}},
+		"null skills keeps them":               {`{"local":{"skills":null}}`, []string{"a"}, []string{"x", "y"}},
+		"an empty skills object declares none": {`{"local":{"skills":{}}}`, []string{"a"}, nil},
+	} {
+		base := parse(parent)
+		applyTeamOverlay(&base, parse(tc.overlay))
+		same := func(got, want []string) bool {
+			return reflect.DeepEqual(got, want) || (len(got) == 0 && len(want) == 0)
+		}
+		if got := base.LocalAgentNames(); !same(got, tc.wantAgents) {
+			t.Errorf("%s: local agents = %v, want %v", name, got, tc.wantAgents)
+		}
+		if got := base.LocalSkillNames(); !same(got, tc.wantSkls) {
+			t.Errorf("%s: local skills = %v, want %v", name, got, tc.wantSkls)
+		}
+	}
+}
