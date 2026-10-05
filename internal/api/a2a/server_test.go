@@ -119,6 +119,40 @@ func TestNew_MissingCardIsError(t *testing.T) {
 	}
 }
 
+// retiredCardStore serves one shared server card whose active version is
+// retired.
+type retiredCardStore struct{ fakeStore }
+
+func (retiredCardStore) A2AServerCardDefGetActive(ctx context.Context, tenantID, name string) (store.A2AServerCardDefRow, error) {
+	if tenantID == "" && name == "fleet" {
+		return store.A2AServerCardDefRow{DefID: "a2acd_1", Name: name, Retired: true, Definition: json.RawMessage(`{"name":"fleet"}`)}, nil
+	}
+	return fakeStore{}.A2AServerCardDefGetActive(ctx, tenantID, name)
+}
+
+// Retiring the configured card is a runtime action, so it must not fail the
+// next boot: New starts as if the surface were disabled (nil server, nothing
+// mounted), and the card is not served.
+func TestNew_RetiredCardDegradesToDisabled(t *testing.T) {
+	cfg := &config.Config{}
+	cfg.Env.A2AServerEnabled = true
+	cfg.Env.A2AServerCardName = "fleet"
+	srv, err := New(context.Background(), Deps{Cfg: cfg, Store: retiredCardStore{}, Run: noopRunner{}, Conn: noopConnector{}})
+	if err != nil {
+		t.Fatalf("New with a retired card failed boot: %v", err)
+	}
+	if srv != nil {
+		t.Fatal("New with a retired card returned a server; want nil, as when the surface is disabled")
+	}
+	mux := http.NewServeMux()
+	srv.Mount(mux, nil)
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/.well-known/agent-card.json", nil))
+	if rec.Code != http.StatusNotFound {
+		t.Errorf("agent card answered %d, want 404 as when the surface is disabled", rec.Code)
+	}
+}
+
 func fetchCard(t *testing.T, h http.Handler, target, host string) (*httptest.ResponseRecorder, *a2asdk.AgentCard) {
 	t.Helper()
 	req := httptest.NewRequest(http.MethodGet, target, nil)
