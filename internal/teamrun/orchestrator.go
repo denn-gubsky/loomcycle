@@ -85,6 +85,18 @@ func (t *Task) SetVar(name, value string) {
 	t.Vars[name] = value
 }
 
+// SeedVars gives the task each of defaults it does not already carry. A name
+// the task has — supplied when the walk was started, or carried by a task that
+// came from somewhere else — keeps its value, including an empty one: present
+// is the test, not non-empty, so a caller can blank a default.
+func (t *Task) SeedVars(defaults map[string]string) {
+	for name, value := range defaults {
+		if _, has := t.Vars[name]; !has {
+			t.SetVar(name, value)
+		}
+	}
+}
+
 // StepRecord is one executed state, for the caller's trace/audit.
 type StepRecord struct {
 	State   string // the state that ran
@@ -199,6 +211,14 @@ func Walk(ctx context.Context, d teamgraph.Definition, task *Task, r Runner, opt
 	if task.WalkID == "" {
 		task.WalkID = mintWalkID()
 	}
+	// The team's declared defaults, before any state runs. Here rather than at
+	// the caller so every way a walk is started gets them, and only for names
+	// the task does not carry: a walk's variables are not persisted, so a task
+	// arrives with exactly what its start supplied, and a default must not win
+	// over that. A board-bound walk resumed mid-graph is seeded too — what its
+	// earlier `vars` states bound is gone with the walk that bound it, and the
+	// declared default is the value its later states were written against.
+	task.SeedVars(d.Vars)
 	max := teamgraph.EffectiveMaxIterations(d)
 
 	var trace []StepRecord
