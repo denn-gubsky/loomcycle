@@ -219,40 +219,58 @@ type teamDefActiveGetter interface {
 // Only a name of exactly two segments can collide, so every other name costs
 // nothing; a two-segment one costs a single read.
 //
-// Called wherever a global agent name can come to resolve: AgentDef create,
-// fork, promote and un-retire, and register_agent. It reads the ACTIVE team
+// Checked wherever a global agent name can come to resolve: AgentDef create,
+// fork, promote and un-retire call this, register_agent the predicate under
+// it (TeamDeclaresLocalAgent). It reads the ACTIVE team
 // version only, and nothing here can see a static agent added to the
 // operator's config or rows written by a restore, so it is the early, readable
 // refusal and not the guarantee: that is the check made when a team's own
 // agent is resolved for a run, which refuses while both exist.
+//
+// The refusal names what the team declares, so it is for a caller already
+// authorised for the name (AgentDef's paths check agent_def_scopes first). A
+// caller with no per-name grant must not learn a team's declarations from it,
+// so it asks TeamDeclaresLocalAgent and refuses in its own words.
 func TeamLocalAgentCollision(ctx context.Context, st teamDefActiveGetter, tenantID, name string) error {
+	declared, err := TeamDeclaresLocalAgent(ctx, st, tenantID, name)
+	if err != nil {
+		return err
+	}
+	if declared {
+		team, local, _ := strings.Cut(name, "/")
+		return fmt.Errorf("team %q declares its own agent %q, which runs as %q. Another agent of that name would share "+
+			"its agent-scoped memory and channel cursors — choose a different name", team, local, name)
+	}
+	return nil
+}
+
+// TeamDeclaresLocalAgent reports whether name is "<team>/<local>" for an
+// active, non-retired team of the tenant that declares its own agent <local>
+// (see TeamLocalAgentCollision). A store fault is an error, never false: it
+// must not be the way two agents come to share a name.
+func TeamDeclaresLocalAgent(ctx context.Context, st teamDefActiveGetter, tenantID, name string) (bool, error) {
 	team, local, two := strings.Cut(name, "/")
 	if !two || strings.Contains(local, "/") {
-		return nil
+		return false, nil
 	}
 	if st == nil {
-		return fmt.Errorf("could not check team %q for an agent of its own named %q: no store", team, local)
+		return false, fmt.Errorf("could not check team %q for an agent of its own named %q: no store", team, local)
 	}
 	row, err := st.TeamDefGetActive(ctx, tenantID, team)
 	if err != nil {
 		var nf *store.ErrNotFound
 		if errors.As(err, &nf) {
-			return nil
+			return false, nil
 		}
-		// Refused rather than waved through: a store fault must not be the
-		// way two agents come to share a name.
-		return fmt.Errorf("could not check team %q for an agent of its own named %q: %w", team, local, err)
+		return false, fmt.Errorf("could not check team %q for an agent of its own named %q: %w", team, local, err)
 	}
 	if row.Retired {
-		return nil
+		return false, nil
 	}
 	def, err := teamgraph.Parse(row.Definition)
 	if err != nil {
-		return nil // op=run parses first and refuses, so its agents cannot run
+		return false, nil // op=run parses first and refuses, so its agents cannot run
 	}
-	if _, declared := def.LocalAgent(local); declared {
-		return fmt.Errorf("team %q declares its own agent %q, which runs as %q. Another agent of that name would share "+
-			"its agent-scoped memory and channel cursors — choose a different name", team, local, name)
-	}
-	return nil
+	_, declared := def.LocalAgent(local)
+	return declared, nil
 }
