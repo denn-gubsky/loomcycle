@@ -958,6 +958,8 @@ func main() {
 	teamDefTool := &builtin.TeamDef{
 		MaxDefinitionBytes:  cfg.Env.AgentDefMaxDefinitionBytes,
 		MaxDescriptionBytes: cfg.Env.AgentDefMaxDescriptionBytes,
+		// A team's own agents pass AgentDef create's gates, on this instance.
+		Agents: agentDefTool,
 	}
 	allTools = append(allTools, teamDefTool)
 

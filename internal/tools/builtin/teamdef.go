@@ -129,6 +129,11 @@ type TeamDef struct {
 	// tool with no catalog cannot tell "undeclared" from "I have no list".
 	ChannelCatalog func(ctx context.Context) map[string]tools.ChannelDef
 
+	// Agents is the AgentDef tool whose gates a team's own agents pass at
+	// create and fork (see teamdef_local.go). nil = a definition declaring
+	// local agents is refused, rather than stored unchecked.
+	Agents *AgentDef
+
 	// AgentExists, if set, reports whether an agent name resolves, so verify can
 	// report a member retired after the def was written. nil = the agent sweep
 	// is omitted from the report rather than reported as failing.
@@ -436,6 +441,9 @@ func (t *TeamDef) execCreate(ctx context.Context, in teamDefInput) (tools.Result
 	if err := t.preflightChannels(ctx, def); err != nil {
 		return errResult(fmt.Sprintf("create: %s", err)), nil
 	}
+	if err := t.checkLocalAgents(ctx, "create", in.Name, def, nil); err != nil {
+		return errResult(fmt.Sprintf("create: %s", err)), nil
+	}
 	if err := t.checkSizeCaps(defJSON, in.Description); err != nil {
 		return errResult(fmt.Sprintf("create: %s", err)), nil
 	}
@@ -586,6 +594,12 @@ func (t *TeamDef) execFork(ctx context.Context, in teamDefInput) (tools.Result, 
 		return errResult(fmt.Sprintf("fork: %s", err)), nil
 	}
 	if err := t.preflightChannels(ctx, def); err != nil {
+		return errResult(fmt.Sprintf("fork: %s", err)), nil
+	}
+	// The parent's own agents, for the one gate that compares against them. A
+	// parent that no longer parses was already refused by buildDefinition.
+	parentDef, _ := teamgraph.Parse(parent.Definition)
+	if err := t.checkLocalAgents(ctx, "fork", in.Name, def, &parentDef); err != nil {
 		return errResult(fmt.Sprintf("fork: %s", err)), nil
 	}
 	if err := t.checkSizeCaps(defJSON, in.Description); err != nil {
@@ -761,6 +775,9 @@ func (t *TeamDef) execPromote(ctx context.Context, in teamDefInput) (tools.Resul
 	if !defCallerIsAdmin(ctx) && row.TenantID != tools.RunIdentity(ctx).TenantID {
 		return errResult(fmt.Sprintf("promote: def_id %q not found", in.DefID)), nil
 	}
+	if err := t.checkLocalNamesFree(ctx, row); err != nil {
+		return errResult(fmt.Sprintf("promote: %s", err)), nil
+	}
 	ident := tools.RunIdentity(ctx)
 	if err := t.Store.TeamDefSetActive(ctx, ident.TenantID, row.Name, row.DefID, ident.AgentID, t.promoter(ctx)); err != nil {
 		return errResult(fmt.Sprintf("promote: %s", err)), nil
@@ -827,7 +844,16 @@ func (t *TeamDef) execVerify(ctx context.Context, in teamDefInput) (tools.Result
 		// where an absent field would be indistinguishable from a sweep that
 		// did not run. `issues` appears only when there are some, so a healthy
 		// team's response stays the shape callers already parse.
-		out["runnable"] = len(issues) == 0
+		//
+		// An advisory issue is worth reading and stops nothing, so it does not
+		// make the team unrunnable.
+		runnable := true
+		for _, issue := range issues {
+			if advisory, _ := issue["advisory"].(bool); !advisory {
+				runnable = false
+			}
+		}
+		out["runnable"] = runnable
 		if len(issues) > 0 {
 			out["issues"] = issues
 		}
@@ -869,6 +895,9 @@ func (t *TeamDef) sweepReferences(ctx context.Context, def teamgraph.Definition)
 	if t.AgentExists != nil {
 		seen := map[string]bool{}
 		for _, ref := range teamgraph.AgentRefs(def) {
+			if _, isLocal := teamgraph.LocalRef(ref.Agent); isLocal {
+				continue // the team's own: checked against the definition below
+			}
 			if seen[ref.Agent] || t.AgentExists(ctx, ref.Agent) {
 				seen[ref.Agent] = true
 				continue
@@ -880,6 +909,29 @@ func (t *TeamDef) sweepReferences(ctx context.Context, def teamgraph.Definition)
 				"detail": fmt.Sprintf("agent %q does not resolve in this tenant", ref.Agent),
 			})
 		}
+	}
+	// The team's own agents need no store: a reference is checked against the
+	// definition that carries it. create and fork refuse an undeclared one, so
+	// this only finds a body stored some other way.
+	for _, ref := range teamgraph.AgentRefs(def) {
+		name, isLocal := teamgraph.LocalRef(ref.Agent)
+		if !isLocal {
+			continue
+		}
+		if _, ok := def.LocalAgent(name); !ok {
+			issues = append(issues, map[string]any{
+				"kind": "local_agent_missing", "state": ref.State, "field": ref.Field,
+				"agent":  ref.Agent,
+				"detail": fmt.Sprintf("%q names an agent the team does not declare under local.agents", ref.Agent),
+			})
+		}
+	}
+	for _, name := range teamgraph.UnreferencedLocalAgents(def) {
+		issues = append(issues, map[string]any{
+			"kind": "local_agent_unreferenced", "agent": teamgraph.LocalRefPrefix + name, "advisory": true,
+			"detail": fmt.Sprintf("the team declares its own agent %q and no state runs it "+
+				"(an agent of the team may still start it with the Agent tool)", name),
+		})
 	}
 	return issues
 }
@@ -1744,14 +1796,27 @@ func walkTerminal(def teamgraph.Definition, task *teamrun.Task) string {
 
 // ValidateTeamDefBody re-runs, over a stored team def body, the authoring
 // checks on its hooks: it parses as a team definition, and the walk's and each
-// state's hooks are well formed (inline webhooks included). A snapshot restore
-// calls it before writing a body. The graph itself is not re-validated — a
-// team dials nothing of its own — and neither are the caller-dependent channel
-// authority checks.
+// state's hooks are well formed (inline webhooks included), and so is each
+// agent the team declares for itself. A snapshot restore calls it before
+// writing a body. The graph itself is not re-validated — a team dials nothing
+// of its own — and neither are the caller-dependent checks: channel authority,
+// and the gates a local agent passes when it is authored (see
+// ValidateAgentDefBody for why a restore has no authoring caller).
 func ValidateTeamDefBody(body json.RawMessage) error {
 	def, err := teamgraph.Parse(body)
 	if err != nil {
 		return err
+	}
+	// The team's own agents are agent definitions and are held to what a
+	// restored agent def is: it decodes, and its hooks are well formed.
+	for _, name := range def.LocalAgentNames() {
+		agentDef, err := LocalAgentDefinition(def.Local.Agents[name])
+		if err == nil {
+			err = ValidateAgentDefBody(agentDef)
+		}
+		if err != nil {
+			return fmt.Errorf("local.agents[%q]: %w", name, err)
+		}
 	}
 	return teamgraph.ValidateHooks(def)
 }

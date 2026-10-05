@@ -35,6 +35,7 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/snapshot/migrations"
 	"github.com/denn-gubsky/loomcycle/internal/store"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
+	"github.com/denn-gubsky/loomcycle/internal/tools/builtin"
 )
 
 // Compile-time assertion that *Server satisfies connector.Connector.
@@ -545,6 +546,12 @@ func (s *Server) RegisterAgent(ctx context.Context, req connector.RegisterAgentR
 	}
 	if s.store == nil {
 		return connector.AgentDescriptor{}, fmt.Errorf("register_agent requires persistence (no Store configured)")
+	}
+	// A team's own agent runs as "<team>/<name>"; a registered agent of that
+	// name would share its agent-scoped state. AgentDef create refuses the
+	// same.
+	if err := builtin.TeamLocalAgentCollision(ctx, s.store, tenantFromCtx(ctx), req.Name); err != nil {
+		return connector.AgentDescriptor{}, err
 	}
 
 	allowedTools := stripPrivilegedTools(req.Tools, s.cfg().Env.MCPAllowPrivilegedTools)

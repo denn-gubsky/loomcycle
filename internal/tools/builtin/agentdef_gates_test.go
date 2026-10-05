@@ -9,8 +9,10 @@ import (
 
 // execCreateRefusals is how many refusals AgentDef create makes ITSELF, outside
 // gateNewDef: a missing name, gateNewDef's own verdict, the description cap
-// (a property of the row, not of the definition), and the two store writes.
-const execCreateRefusals = 5
+// (a property of the row, not of the definition), the clash with a team's own
+// agent of the same full name (which that agent, passing gateNewDef under
+// this name, must not trip over itself), and the two store writes.
+const execCreateRefusals = 6
 
 // A team's local agents pass gateNewDef and nothing else of AgentDef create.
 // So a gate added to execCreate directly is one a local agent does not pass —

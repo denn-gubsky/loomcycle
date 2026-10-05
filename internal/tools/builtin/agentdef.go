@@ -303,6 +303,11 @@ func (a *AgentDef) execCreate(ctx context.Context, policy tools.AgentDefPolicyVa
 	}
 
 	ident := tools.RunIdentity(ctx)
+	// Not one of gateNewDef's: a team's own agent passes that under this very
+	// name, and would refuse itself here.
+	if err := TeamLocalAgentCollision(ctx, a.Store, ident.TenantID, in.Name); err != nil {
+		return errResult(fmt.Sprintf("create: %s", err)), nil
+	}
 	// RFC N: the tenant comes from the authoritative run identity in ctx
 	// (the AgentDef tool always runs inside a run whose RunIdentity
 	// carries the principal-derived tenant), never from tool input. ""
