@@ -3,6 +3,7 @@ package builtin
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -578,5 +579,86 @@ func TestSkillTool_InvokeBackCompatEmptyAllowlist(t *testing.T) {
 	}
 	if res.Text != "M" {
 		t.Errorf("body = %q, want M", res.Text)
+	}
+}
+
+// Retiring the active version of a SkillDef takes it out of service for the
+// Skill tool: the store keeps the active pointer, so invoke must refuse the
+// row itself and fall through to the static skill of the name, or to "unknown"
+// when there is none; list stops offering it. Un-retiring restores it.
+func TestSkillTool_RetiredActiveSkillDefIsNotServed(t *testing.T) {
+	set := loadSetWithSkills(t, []struct {
+		Name  string
+		Tools []string
+		Body  string
+	}{
+		{Name: "with-static", Body: "STATIC BODY"},
+	})
+	st, err := sqlite.Open(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	ctx := tools.WithRunIdentity(tools.WithAgentTools(context.Background(), []string{"Read"}),
+		tools.RunIdentityValue{AgentID: "a_seed", TenantID: "acme"})
+	ctx = tools.WithSkillPolicy(ctx, tools.SkillPolicyValue{})
+	authoring := &SkillDef{Store: st, Set: set}
+	defIDs := map[string]string{}
+	for _, seed := range []string{
+		`{"op":"fork","name":"with-static","overlay":{"body":"DB BODY"},"promote":true}`,
+		`{"op":"create","name":"db-only","overlay":{"body":"DB ONLY BODY"},"promote":true}`,
+	} {
+		res, _ := authoring.Execute(ctx, json.RawMessage(seed))
+		if res.IsError {
+			t.Fatalf("seed: %s", res.Text)
+		}
+		var row struct {
+			DefID string `json:"def_id"`
+			Name  string `json:"name"`
+		}
+		_ = json.Unmarshal([]byte(res.Text), &row)
+		defIDs[row.Name] = row.DefID
+	}
+	retire := func(retired bool) {
+		t.Helper()
+		for _, id := range defIDs {
+			in := fmt.Sprintf(`{"op":"retire","def_id":%q,"retired":%v}`, id, retired)
+			if res, _ := authoring.Execute(ctx, json.RawMessage(in)); res.IsError {
+				t.Fatalf("retire %s: %s", id, res.Text)
+			}
+		}
+	}
+	tool := &SkillTool{Set: set, Store: st}
+	invoke := func(name string) tools.Result {
+		res, _ := tool.Execute(ctx, json.RawMessage(`{"name":"`+name+`"}`))
+		return res
+	}
+	listed := func() string {
+		res, _ := tool.Execute(ctx, json.RawMessage(`{"op":"list"}`))
+		return strings.Join(listNames(t, res), ",")
+	}
+
+	if res := invoke("with-static"); res.Text != "DB BODY" {
+		t.Fatalf("precondition: with-static = %q, want DB BODY", res.Text)
+	}
+	retire(true)
+	if res := invoke("with-static"); res.IsError || res.Text != "STATIC BODY" {
+		t.Errorf("retired override: with-static = %q (error %v), want the static body", res.Text, res.IsError)
+	}
+	if res := invoke("db-only"); !res.IsError || strings.Contains(res.Text, "DB ONLY BODY") {
+		t.Errorf("retired db-only skill was served: %q", res.Text)
+	}
+	if got := listed(); got != "with-static" {
+		t.Errorf("list with both retired = %q, want only the static skill", got)
+	}
+	retire(false)
+	if res := invoke("with-static"); res.Text != "DB BODY" {
+		t.Errorf("un-retired override: with-static = %q, want DB BODY", res.Text)
+	}
+	if res := invoke("db-only"); res.IsError || res.Text != "DB ONLY BODY" {
+		t.Errorf("un-retired db-only = %q (error %v), want it served", res.Text, res.IsError)
+	}
+	if got := listed(); got != "db-only,with-static" {
+		t.Errorf("list after un-retire = %q, want both", got)
 	}
 }

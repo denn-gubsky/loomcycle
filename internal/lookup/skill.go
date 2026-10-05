@@ -91,13 +91,19 @@ func Skill(ctx context.Context, s SkillStore, set *skills.Set, tenantID, name st
 
 // resolveSubstrateSkill runs the skill_def_active → skill_defs lookup
 // for one tenant pass. Returns (zero, false) when the tenant has no
-// usable active row for the name. Preserves the parse-error +
+// usable active row for the name — none, a retired one, or one that does
+// not parse. Preserves the parse-error +
 // transient-error logging/fallback semantics exactly: a corrupt row or
 // a transient store hiccup logs + returns false so the caller falls
 // through to the next tier (the static bake still runs).
 func resolveSubstrateSkill(ctx context.Context, s SkillStore, tenantID, name string) (SkillResolution, bool) {
 	row, err := s.SkillDefGetActive(ctx, tenantID, name)
 	switch {
+	case err == nil && row.Retired:
+		// Retiring the active version takes the skill out of service. The
+		// store keeps the pointer (SkillDef fork forks from it), so the
+		// refusal lives here: the tier is treated as absent and the name
+		// resolves from the next one, as a retired agent override does.
 	case err == nil:
 		var sd SubstrateSkillDef
 		if uerr := json.Unmarshal(row.Definition, &sd); uerr != nil {

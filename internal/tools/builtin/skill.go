@@ -187,6 +187,9 @@ func (s *SkillTool) execList(ctx context.Context, policy tools.SkillPolicyValue,
 				if r.TenantID != "" && r.TenantID != tid {
 					continue // RFC N: only the caller's tenant + the shared "" base.
 				}
+				if r.ActiveRetired {
+					continue // invoke would not serve it (a static skill of the name is listed above)
+				}
 				if _, ok := catalog[r.Name]; !ok {
 					catalog[r.Name] = ""
 				}
@@ -227,6 +230,12 @@ func (s *SkillTool) resolveSkill(ctx context.Context, name string) (string, []st
 		// RFC N: read the active pointer within the agent's own tenant
 		// (from the authoritative run identity in ctx; "" = shared).
 		row, err := s.Store.SkillDefGetActive(ctx, tools.RunIdentity(ctx).TenantID, name)
+		if err == nil && row.Retired {
+			// A retired active version is out of service. The store keeps the
+			// pointer (SkillDef fork forks from it), so it is refused here and
+			// the name falls through to the static skill, as if never overridden.
+			err = &store.ErrNotFound{Kind: "skill_def_active", ID: name}
+		}
 		if err == nil {
 			var def skillDefOverlay
 			if uerr := json.Unmarshal(row.Definition, &def); uerr != nil {
@@ -267,7 +276,7 @@ func (s *SkillTool) resolveSkill(ctx context.Context, name string) (string, []st
 			tenant := tools.RunIdentity(ctx).TenantID
 			var names []store.SkillDefNameSummary
 			for _, n := range all {
-				if n.TenantID == tenant {
+				if n.TenantID == tenant && !n.ActiveRetired {
 					names = append(names, n)
 				}
 			}
