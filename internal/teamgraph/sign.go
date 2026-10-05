@@ -45,6 +45,12 @@ type teamContent struct {
 	// States). omitempty for the same reason as Channels: a team without them
 	// keeps its recorded hash.
 	Hooks hooks.EventHooks `json:"hooks,omitempty"`
+	// Vars is the team's declared variables and their defaults — content: a
+	// changed default changes what every walk starts with. Last and omitempty,
+	// like the two above, so a team that declares none keeps its recorded hash.
+	// encoding/json writes a map's keys sorted, so the bytes do not depend on
+	// the order they were authored in.
+	Vars map[string]string `json:"vars,omitempty"`
 }
 
 // Sign returns "sha256:" + the lowercase-hex SHA-256 of a TeamDef's canonical
@@ -59,6 +65,7 @@ func Sign(name string, d Definition) string {
 		Transitions:   d.Transitions,
 		Channels:      d.Channels,
 		Hooks:         d.Hooks,
+		Vars:          d.Vars,
 	})
 	if err != nil {
 		buf = []byte("{}")

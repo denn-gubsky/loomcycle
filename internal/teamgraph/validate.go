@@ -50,6 +50,9 @@ func Validate(d Definition) error {
 	if err := validateHooks(d); err != nil {
 		return err
 	}
+	if err := validateVars(d.Vars); err != nil {
+		return err
+	}
 
 	// State ids: unique + non-empty; validate each handler.
 	states := make(map[string]State, len(d.States))
@@ -309,15 +312,26 @@ func validateSet(stateID string, set map[string]string) error {
 		if !varNameRe.MatchString(name) {
 			return fmt.Errorf("team definition: state %q set key %q must match [a-zA-Z0-9_-]{1,64}", stateID, name)
 		}
-		for _, ns := range secretNamespaces {
-			if strings.Contains(set[name], ns) {
-				return fmt.Errorf("team definition: state %q set %q reads the credentials namespace — "+
-					"variables are non-secret by construction; a secret copied into one becomes a plaintext "+
-					"value in every transcript, snapshot and prompt-cache entry downstream", stateID, name)
-			}
+		if readsSecretNamespace(set[name]) {
+			return fmt.Errorf("team definition: state %q set %q reads the credentials namespace — "+
+				"variables are non-secret by construction; a secret copied into one becomes a plaintext "+
+				"value in every transcript, snapshot and prompt-cache entry downstream", stateID, name)
 		}
 	}
 	return nil
+}
+
+// readsSecretNamespace reports whether a variable's value names a secret
+// namespace. One reader for every place a variable is given a value by the
+// author or the caller — a vars state's `set`, a declared default, a value
+// supplied at start — so the three cannot disagree about what a secret is.
+func readsSecretNamespace(value string) bool {
+	for _, ns := range secretNamespaces {
+		if strings.Contains(value, ns) {
+			return true
+		}
+	}
+	return false
 }
 
 func validateCapture(stateID string, capture map[string]string) error {

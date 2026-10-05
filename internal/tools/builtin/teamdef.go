@@ -254,7 +254,8 @@ const teamDefInputSchema = `{
         "states":         {"type": "array", "items": {"type": "object"}, "description": "State nodes: each is {state, handler:{kind, agent|agents, wait?, consolidator?, ...}}. A starter handler instead carries source ({channel} or {kind:\"document\", path, scope?}), fanout ({agent|agents, per: message|chunk|once, max}), prompt, sink and binds. An input state may set publish ({channel}) to publish the walk's input to that channel as a JSON value; a channel state may set payload:\"raw\" to publish its input as a JSON value instead of the {state, output} envelope. Replaces the parent's states wholesale."},
         "transitions":    {"type": "array", "items": {"type": "object"}, "description": "Edges: each is {from, to, on}. Replaces the parent's transitions wholesale."},
         "colors":         {"type": "object", "description": "Presentation-only fills/edge colours. Excluded from the content hash."},
-        "hooks":          {"type": "object", "description": "The walk's own hooks: {run_end: [entry, ...]}, fired when the walk ends. A state's handler may also carry hooks / tool_hooks, added to every run it starts."}
+        "hooks":          {"type": "object", "description": "The walk's own hooks: {run_end: [entry, ...]}, fired when the walk ends. A state's handler may also carry hooks / tool_hooks, added to every run it starts."},
+        "vars":           {"type": "object", "additionalProperties": {"type": "string"}, "description": "The team's variables: name → default value, read in a state's prompts as ${var.<name>}. A default is literal text (never expanded; no {{ or }}), at most 4096 bytes, at most 64 variables. A fork that sends vars replaces the whole list; {} declares none."}
       },
       "additionalProperties": true
     },
@@ -1626,6 +1627,11 @@ func applyTeamOverlay(base *teamgraph.Definition, ov teamgraph.Definition) {
 	}
 	if ov.Hooks != nil {
 		base.Hooks = ov.Hooks
+	}
+	// Wholesale, like every map here: a fork that sends `vars` states the whole
+	// declared list, so `{}` is how one declares none.
+	if ov.Vars != nil {
+		base.Vars = ov.Vars
 	}
 }
 

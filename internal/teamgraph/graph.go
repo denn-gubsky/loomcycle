@@ -107,6 +107,16 @@ type Definition struct {
 	// Hooks are the walk's own: the walk is a run, and ends like one, so its
 	// run_end hooks report how it ended. Content, and hashed.
 	Hooks hooks.EventHooks `json:"hooks,omitempty"`
+
+	// Vars DECLARES the team's variables: name → default value. A walk starts
+	// with these, a caller may supply its own value for a declared name when it
+	// starts one, and a `vars` state, a `capture` or a starter's `binds` may
+	// overwrite either while it runs. Declaring is what lets a start refuse a
+	// name the team never reads instead of carrying it silently.
+	//
+	// A default is a LITERAL: it is never expanded, so a ${…} written in one
+	// reaches a prompt as those characters (see vars.go). Content, and hashed.
+	Vars map[string]string `json:"vars,omitempty"`
 }
 
 // TeamChannels is the workflow's own channel allowlist, same shape as an
