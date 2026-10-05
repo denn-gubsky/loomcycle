@@ -41,18 +41,19 @@ func TestTeamDefCreate_PreflightSkipsOwnChannels(t *testing.T) {
 func TestTeamDefCreate_RefusesBadLocalChannelBody(t *testing.T) {
 	tool, ctx, cleanup := teamDefFixture(t)
 	defer cleanup()
+	const hooked = `{"scope":"user","hooks":{"channel_publish":["gate"]}}`
 	for body, want := range map[string]string{
-		`{"scope":"global"}`:                                    "scope must be tenant",
-		`{"scope":"agent"}`:                                     "scope must be tenant",
-		`{}`:                                                    "scope must be tenant", // the default is global
-		`{"scope":"bogus"}`:                                     "scope must be one of",
-		`{"scope":"user","semantic":"fanout"}`:                  "semantic must be one of",
-		`{"scope":"user","default_ttl":-1}`:                     ">= 0",
-		`{"scope":"user","publisher":"system"}`:                 "operator's config",
-		`{"scope":"user","period":"1m"}`:                        "operator's config",
-		`{"scope":"user","hooks":{"channel_publish":["gate"]}}`: "cannot carry hooks",
-		`{"scope":"user","name":"events"}`:                      "remove `name`",
-		`{"scope":"user","colour":"red"}`:                       "not a channel definition",
+		`{"scope":"global"}`:                    "scope must be tenant",
+		`{"scope":"agent"}`:                     "scope must be tenant",
+		`{}`:                                    "scope must be tenant", // the default is global
+		`{"scope":"bogus"}`:                     "scope must be one of",
+		`{"scope":"user","semantic":"fanout"}`:  "semantic must be one of",
+		`{"scope":"user","default_ttl":-1}`:     ">= 0",
+		`{"scope":"user","publisher":"system"}`: "operator's config",
+		`{"scope":"user","period":"1m"}`:        "operator's config",
+		hooked:                                  "cannot carry hooks",
+		`{"scope":"user","name":"events"}`:      "remove `name`",
+		`{"scope":"user","colour":"red"}`:       "not a channel definition",
 	} {
 		res, _ := tool.Execute(ctx, json.RawMessage(`{"op":"create","name":"triage","overlay":`+localChannelTeam(body)+`}`))
 		wantRefused(t, res, body, `local.channels["events"]`, want)
