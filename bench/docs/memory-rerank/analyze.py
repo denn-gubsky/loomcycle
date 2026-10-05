@@ -72,7 +72,11 @@ def main():
     summary["checks"]["2_nimble_calls_off"] = sum(v for (arm, _), v in nimble.items() if arm == "off" and v is not None)
     summary["checks"]["2_nimble_calls_on"] = sum(v for (arm, _), v in nimble.items() if arm == "on" and v is not None)
     summary["checks"]["2_nimble_calls_on_per_question"] = round(summary["checks"]["2_nimble_calls_on"] / max(1, len(pairs)), 3)
-    summary["checks"]["4_pairs_400"] = len(pairs) == 400
+    # Amendment 2: the sampler draws floor(40 x category share) per conversation, 383 in all.
+    same = all(set(load(os.path.join(O, "B-off-%s" % c, "answer-report.json"))) ==
+               set(load(os.path.join(O, "B-on-%s" % c, "answer-report.json"))) for c in convs if c not in voided)
+    summary["checks"]["4_same_questions_both_arms"] = same
+    summary["checks"]["4_pairs_383_less_voided"] = len(pairs)
     print(json.dumps(summary, indent=2))
     json.dump(summary, open(os.path.join(O, "summary.json"), "w"), indent=2)
 

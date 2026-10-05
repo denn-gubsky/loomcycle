@@ -102,3 +102,20 @@ Written after (b) started and before any (c) pool was fetched. It changes nothin
   6. **Rerank applied:** both arms report `reranked` on ≥ 95% of questions.
   7. **The store is #1571's:** the 20-arm's unreranked recall@5 is within ±0.02 of
      #1571's multi-hop `none`, 0.332.
+
+## Amendment 2 (2026-10-05) — the question count is 383, not 400
+
+Written while conv-26's B-off was running, before any answer report was read.
+
+- **Why:** `-sample-questions 40` gives each category `floor(40 × its share)` of a
+  conversation's questions, so a conversation yields **up to** 40. Replaying the harness's
+  `SampleQueries` over its own `-mode=convert` questions gives:
+  - per conversation: 37, 38, 39, 39, 38, 38, 39, 38, 38, 39;
+  - **383 in all.** The replay matches conv-26's live count of 37.
+- **What changes:**
+  - **H1** is tested over the **383** paired questions, less any conversation voided by
+    check 1.
+  - **Check 4** becomes: both arms graded the **identical question set** in every
+    conversation. The pair count is reported.
+- **What does not change:** the draw itself. It is deterministic and identical in both
+  arms, so nothing is re-run.
