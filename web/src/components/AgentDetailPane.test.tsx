@@ -2,7 +2,7 @@ import { createElement, type ReactElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { MemoryRouter } from "react-router-dom";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import AgentDetailPane, { stopRun } from "./AgentDetailPane";
+import AgentDetailPane, { RunTeamBadge, stopRun } from "./AgentDetailPane";
 import { AgentTabStrip } from "./AgentDetailTabs";
 
 // The web tests render to static markup (no DOM), so effects never run. The
@@ -117,5 +117,27 @@ describe("stopRun", () => {
     const fetchMock = okFetch();
     await expect(stopRun({ agent_id: "team:triage", run_id: "" }, "why")).rejects.toThrow(/no run id/);
     expect(fetchMock).not.toHaveBeenCalled();
+  });
+});
+
+describe("RunTeamBadge", () => {
+  const html = (spec?: Record<string, unknown>) => renderToStaticMarkup(createElement(RunTeamBadge, { run: { spec } }));
+
+  it("names the team of a run of one of its own agents, saying it runs only inside a walk", () => {
+    const out = html({ team_scope: { team: "sdlc", def_id: "tdf_1" }, agent_version: { team_def_id: "tdf_1" } });
+    expect(out).toContain(">team: sdlc</span>");
+    expect(out).toContain("cannot be started on its own");
+  });
+
+  it("names the team of a global agent run inside a walk, without calling it the team's own", () => {
+    const out = html({ team_scope: { team: "sdlc", def_id: "tdf_1" }, agent_version: { def_id: "adf_9" } });
+    expect(out).toContain(">team: sdlc</span>");
+    expect(out).toContain("Runs inside a walk of team sdlc.");
+  });
+
+  it("renders nothing for a run outside any team, a walk's own run included", () => {
+    expect(html(undefined)).toBe("");
+    expect(html({ agent_version: { def_id: "adf_9" } })).toBe("");
+    expect(html({ team: { name: "sdlc", def_id: "tdf_1", version: 1 } })).toBe("");
   });
 });

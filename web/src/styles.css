@@ -4649,6 +4649,17 @@ button.primary:disabled {
 }
 /* RFC BK P3 — resident interactive sub-agent chip. Distinct hue (amber) from the
    interactive (green) chip so a resident child is scannable in the runs tree. */
+.pill-team {
+  font-size: 10px;
+  padding: 1px 6px;
+  border-radius: 10px;
+  text-transform: lowercase;
+  letter-spacing: 0.03em;
+  background: rgba(127, 127, 127, 0.15);
+  color: var(--fg-muted, #888);
+  border: 1px solid var(--fg-muted, #888);
+  justify-self: start;
+}
 .pill-resident {
   font-size: 10px;
   padding: 1px 6px;
