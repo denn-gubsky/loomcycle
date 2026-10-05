@@ -1,0 +1,70 @@
+# RFC DR P2 — layered OVER ingest.yaml, lme_gate_arms.yaml and locomo_rating.yaml
+# (the rating pipeline, whose answerer is locomo/orn-l2k24-sp with recall_attach_traces).
+#
+#   ./bin/loomcycle --config bench/synthesis/ingest.yaml --config bench/synthesis/lme_gate_arms.yaml \
+#                   --config bench/synthesis/locomo_rating.yaml --config bench/docs/memory-rerank/measure.yaml \
+#                   [--config bench/docs/memory-rerank/rerank-on.yaml]
+#
+# FULLY LOCAL (operator decision, 2026-10-05): every model is qwen3.8 on the Spark —
+# extractor, ontologist, memory judges, the answerer and the grading judge. The rating's
+# ornith CUDA-faults beside another workload's gpt-oss on that GPU; qwen3.8 ran thousands
+# of calls beside it this week without one. The rating's cloud judge (deepseek-v4-flash)
+# is gone from DeepSeek's catalog. So these numbers are an A/B, not comparable with the
+# 0.706 rating.
+#
+# Every qwen3.8 agent: effort low (thinking off, as the measured rerank and reader ran)
+# and one shared window, so Ollama never reloads qwen3.8 between agents.
+#
+# The arm under test is the rerank of the answerer's recall: the server's reranker is
+# declared here for BOTH arms, and rerank-on.yaml alone switches the answerer's
+# memory_rerank on — the two arms differ in nothing else.
+memory:
+  reranker:
+    kind: decision
+    provider: ollama-local
+    model: nimble
+    timeout_ms: 120000           # a shared GPU: cover a model reload (RFC DQ P3)
+    sources: [facts, notes]      # RFC DR: rerank the agent's own memory recall
+
+# (No YAML anchor: config layering merges parsed documents, and an anchor does not
+# survive into the merged one.)
+agents:
+  memory/extractor:
+    tier: ""
+    provider: ollama-local
+    model: qwen3.8:latest
+    effort: low
+    max_context_tokens: 32768
+  memory/ontologist:
+    tier: ""
+    provider: ollama-local
+    model: qwen3.8:latest
+    effort: low
+    max_context_tokens: 32768
+  memory/judge:
+    tier: ""
+    provider: ollama-local
+    model: qwen3.8:latest
+    effort: low
+    max_context_tokens: 32768
+  memory/conflict-judge:
+    tier: ""
+    provider: ollama-local
+    model: qwen3.8:latest
+    effort: low
+    max_context_tokens: 32768
+  locomo/answerer:
+    provider: ollama-local
+    model: qwen3.8:latest
+    effort: low
+    max_context_tokens: 32768
+  locomo/orn-l2k24-sp:
+    provider: ollama-local
+    model: qwen3.8:latest
+    effort: low
+    max_context_tokens: 32768
+  locomo/judge:
+    provider: ollama-local
+    model: qwen3.8:latest
+    effort: low
+    max_context_tokens: 32768
