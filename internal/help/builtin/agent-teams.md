@@ -353,6 +353,54 @@ and name one as `./<name>` wherever a channel goes: a starter's `source` and
   `A-Z a-z 0-9 _ -`, at most 64 characters; the team's own name must be one
   segment. A walk uses them only in the team's tenant.
 
+### A team's own schedules
+
+A team may carry a clock too. A schedule under `local.schedules` publishes into
+one of the team's own channels on a cadence, **while a walk of the team is
+running** — it starts with the walk and stops when the walk ends, however it
+ends. Each tick wakes whatever in the walk reads that channel, typically a
+starter:
+
+```json
+{
+  "entry": "wave",
+  "local": {
+    "channels":  {"ticks": {"scope": "tenant", "default_ttl": 3600}},
+    "schedules": {"minute": {"schedule": "@every 1m", "channel": "./ticks"}}
+  },
+  "states": [
+    {"state": "wave", "handler": {"kind": "starter",
+      "source": {"channel": "./ticks", "wait_ms": 90000},
+      "fanout": {"agent": "checker", "per": "message", "max": 1}}},
+    {"state": "done", "handler": {"kind": "terminal"}}
+  ],
+  "transitions": [{"from": "wave", "to": "done", "on": "success"}]
+}
+```
+
+- **Fields.** `schedule` — five-field cron (`*/5 * * * *`) or a descriptor
+  (`@every 1m`, `@hourly`), the grammar a schedule definition takes; a time
+  zone goes in the expression (`CRON_TZ=Europe/Berlin 0 9 * * 1-5`). At most
+  every 10 seconds. `channel` — one of the team's own channels, `./<name>`; a
+  bare name is refused. `payload` (optional) — any JSON value, published as the
+  message on every tick. Without one a tick is
+  `{"schedule_name": "./minute", "fired_at": "...", "delivery": "channel", "payload": null}`.
+- **Nothing else.** No agent, prompt, credentials, `on_complete` or
+  `max_fires`: a schedule of the team only publishes into the team, and what a
+  tick causes is the walk's to do.
+- **Alive only while a walk runs.** A team with no walk running has no
+  schedule ticking; nothing is stored for one. Two walks running at once each
+  tick: into a `tenant` channel both walks' ticks land in the one channel
+  (either walk may read one), into a `user` channel each walk's land under its
+  own user. A walk that starts again starts its schedules afresh.
+- **Paused.** While the runtime is paused no tick is published; the first one
+  due after the resume is, and the ticks skipped are not made up.
+- **Seen as messages.** Each tick is an ordinary message on the team's
+  channel, attributed to the walk's user.
+- **Limits.** At most 16 schedules, named like a team's agents. A fork that
+  sends `local.schedules` replaces the whole list. A walk runs them only in the
+  team's tenant.
+
 ## Declaring variables and setting them at start
 
 A team lists its variables, each with a default, in the definition's `vars`.

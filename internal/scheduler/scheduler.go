@@ -581,12 +581,7 @@ func (s *Scheduler) publishTick(ctx context.Context, scheduleName string, def sc
 	if def.Channel == "" {
 		return fmt.Errorf("delivery=channel missing `channel`")
 	}
-	payload, err := json.Marshal(map[string]any{
-		"schedule_name": scheduleName,
-		"fired_at":      now.UTC().Format(time.RFC3339Nano),
-		"delivery":      "channel",
-		"payload":       def.Metadata,
-	})
+	payload, err := TickPayload(scheduleName, now, def.Metadata)
 	if err != nil {
 		return fmt.Errorf("marshal tick: %w", err)
 	}
@@ -612,6 +607,18 @@ func (s *Scheduler) publishTick(ctx context.Context, scheduleName string, def sc
 	// decides that from the channel's definition, so a cron tick cannot walk
 	// past a breakpoint.
 	return s.writeChannel(ctx, req)
+}
+
+// TickPayload is the message a channel tick publishes: which schedule fired,
+// when, and what its author attached. A team's own schedules publish the same
+// shape, so one reader handles both.
+func TickPayload(scheduleName string, firedAt time.Time, payload any) (json.RawMessage, error) {
+	return json.Marshal(map[string]any{
+		"schedule_name": scheduleName,
+		"fired_at":      firedAt.UTC().Format(time.RFC3339Nano),
+		"delivery":      "channel",
+		"payload":       payload,
+	})
 }
 
 // fireTeamDelivery is the tick that starts a team walk.
