@@ -242,7 +242,7 @@ const teamDefInputSchema = `{
   "type": "object",
   "properties": {
     "op":            {"type": "string", "enum": ["create","fork","get","list","retire","delete","promote","verify","render_diagram","run"], "description": "Operation to perform."},
-    "name":          {"type": "string", "description": "Team name (required for create/fork/list/verify/delete)."},
+    "name":          {"type": "string", "description": "Team name (required for create/fork/list/verify/delete). A new name is one segment of A-Z a-z 0-9 _ -, at most 64 characters: no \"/\", \":\", \".\" or spaces."},
     "def_id":        {"type": "string", "description": "Existing def_id (required for get/retire/promote)."},
     "parent_def_id": {"type": "string", "description": "Fork parent (optional for fork — when absent, forks the active def of the name in your tenant, falling back to the shared \"\" base)."},
     "overlay": {
@@ -401,6 +401,9 @@ func (t *TeamDef) execCreate(ctx context.Context, in teamDefInput) (tools.Result
 	if in.Name == "" {
 		return errResult("create: missing required field: name"), nil
 	}
+	if err := t.checkNewName(ctx, in.Name); err != nil {
+		return errResult(fmt.Sprintf("create: %s", err)), nil
+	}
 	defJSON, err := t.buildDefinition("", in.Overlay)
 	if err != nil {
 		return errResult(fmt.Sprintf("create: %s", err)), nil
@@ -462,11 +465,42 @@ func (t *TeamDef) execCreate(ctx context.Context, in teamDefInput) (tools.Result
 	return okJSON(teamDefRowResponse(created, promote))
 }
 
+// checkNewName holds a name to the team-name grammar unless the caller's tenant
+// already has a version under it. Names were only checked for non-empty before
+// the grammar existed, so a team named outside it must stay writable — a new
+// version under the name it already has — while no new such name is admitted.
+func (t *TeamDef) checkNewName(ctx context.Context, name string) error {
+	nameErr := teamgraph.ValidateName(name)
+	if nameErr == nil {
+		return nil
+	}
+	rows, err := t.Store.TeamDefListByName(ctx, name)
+	if err != nil {
+		return err
+	}
+	// TeamDefListByName returns every tenant's rows. Match the caller's tenant
+	// EXACTLY, admin included: the row is written there, and another tenant's
+	// team of the same name neither makes this one exist nor may be revealed.
+	tenantID := tools.RunIdentity(ctx).TenantID
+	for _, r := range rows {
+		if r.TenantID == tenantID {
+			return nil
+		}
+	}
+	return nameErr
+}
+
 // ---- fork ----
 
 func (t *TeamDef) execFork(ctx context.Context, in teamDefInput) (tools.Result, error) {
 	if in.Name == "" {
 		return errResult("fork: missing required field: name"), nil
+	}
+	// A fork lands under the CALLER's tenant, so forking the shared ("") base —
+	// or, for an admin, another tenant's def — can bring a name into a tenant
+	// that never held it. That is a new name there, held to the same rule.
+	if err := t.checkNewName(ctx, in.Name); err != nil {
+		return errResult(fmt.Sprintf("fork: %s", err)), nil
 	}
 
 	// Resolve the parent from the STORE only (no static bootstrap — there is no

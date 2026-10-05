@@ -299,6 +299,10 @@ by moving `status` from one state to the next per the transitions. (See the
   (`op=create` / `fork` / `promote` / `render_diagram`). The graph is validated
   before any write — a dangling transition, unreachable state, or
   parallel-without-consolidator is refused.
+- **Name** a new team with one segment of `A-Z a-z 0-9 _ -`, at most 64
+  characters (`sdlc`, `pr-review_2`) — no `/`, `:`, `.` or spaces, since the
+  name is part of run labels such as `team:<name>`. A team created earlier
+  under another name keeps working and can still get new versions.
 - **Inspect** a team's shape with `TeamDef op=render_diagram` (a Mermaid
   `stateDiagram-v2` with the colour scheme applied).
 - **Handlers** are ordinary agents; a team just names them per state. Missing a
