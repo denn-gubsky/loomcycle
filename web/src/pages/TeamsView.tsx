@@ -20,6 +20,7 @@ import Splitter from "../components/Splitter";
 import TeamRunModal from "../components/TeamRunModal";
 import { ownTenantOf, sameTeam, teamReach, teamTenantOf } from "../lib/teamTenant";
 import { WALK, hookTargets, keepWalkHookRemoval, readTeamHooks, writeTeamHooks } from "../lib/teamHooks";
+import TeamOwnDefinitionsPanel from "../components/TeamOwnDefinitionsPanel";
 
 // TeamsView — the agent-team board.
 //
@@ -433,6 +434,11 @@ export default function TeamsView() {
       />
 
       <TeamHooksPanel editorText={editorText} setEditorText={setEditorText} disabled={saving || loadingDef} />
+      <TeamOwnDefinitionsPanel
+        editorText={editorText}
+        team={creating ? createName.trim() || "team" : selected}
+        tenant={creating ? ownTenant : selectedTenant}
+      />
 
       {editorErr && (
         <div style={{ color: "var(--error, #e03131)", whiteSpace: "pre-wrap", flex: "0 0 auto", fontSize: "0.85em" }}>
