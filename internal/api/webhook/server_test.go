@@ -505,6 +505,9 @@ type fakeWebhookStore struct {
 	// Lets the URL-tenant route test assert the receiver threaded the
 	// URL-derived tenant into the resolver.
 	askedTenants []string
+
+	// claimed holds the durable delivery keys, as webhook_deliveries does.
+	claimed map[string]time.Time
 }
 
 type memorySetCall struct {
@@ -543,6 +546,34 @@ func (f *fakeWebhookStore) RunByDeliveryKeys(ctx context.Context, keys []string)
 		}
 	}
 	return store.Run{}, false, nil
+}
+
+// WebhookDeliveryClaim models the store contract: all keys or none, a key
+// held past now refuses the claim.
+func (f *fakeWebhookStore) WebhookDeliveryClaim(_ context.Context, keys []string, now, expiresAt time.Time) (bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for _, k := range keys {
+		if exp, ok := f.claimed[k]; ok && exp.After(now) {
+			return false, nil
+		}
+	}
+	if f.claimed == nil {
+		f.claimed = make(map[string]time.Time)
+	}
+	for _, k := range keys {
+		f.claimed[k] = expiresAt
+	}
+	return true, nil
+}
+
+func (f *fakeWebhookStore) WebhookDeliveryRelease(_ context.Context, keys []string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for _, k := range keys {
+		delete(f.claimed, k)
+	}
+	return nil
 }
 
 func (f *fakeWebhookStore) ChannelPublish(_ context.Context, msg store.ChannelMessage, _ int) (string, int, error) {
@@ -778,6 +809,15 @@ func (s *raceStore) RunByDeliveryKeys(_ context.Context, keys []string) (store.R
 		}
 	}
 	return store.Run{}, false, nil
+}
+
+// The race tests deliver by spawn, which claims nothing.
+func (s *raceStore) WebhookDeliveryClaim(_ context.Context, _ []string, _, _ time.Time) (bool, error) {
+	return true, nil
+}
+
+func (s *raceStore) WebhookDeliveryRelease(_ context.Context, _ []string) error {
+	return nil
 }
 
 // ChannelPublish + MemorySet satisfy lookup.WebhookStore (WH-5b). The race

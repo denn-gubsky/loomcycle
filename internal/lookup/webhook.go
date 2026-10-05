@@ -28,6 +28,12 @@ type WebhookStore interface {
 	// is any of keys.
 	RunByDeliveryKeys(ctx context.Context, keys []string) (store.Run, bool, error)
 
+	// WebhookDeliveryClaim + WebhookDeliveryRelease are the receiver's
+	// durable dedup for a channel-delivery webhook, which starts no run for
+	// the two lookups above to find. Signatures match store.Store exactly.
+	WebhookDeliveryClaim(ctx context.Context, keys []string, now, expiresAt time.Time) (bool, error)
+	WebhookDeliveryRelease(ctx context.Context, keys []string) error
+
 	// MemorySet backs the WH-5b on_complete memory.set hook (the receiver
 	// MIRRORS the scheduler's dispatch rather than importing it). Its
 	// signature matches store.Store exactly so store.Store satisfies this

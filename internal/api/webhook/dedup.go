@@ -19,6 +19,13 @@ import (
 // layer absorbs the common case cheaply without a DB round-trip.
 const dedupTTL = 10 * time.Minute
 
+// durableDedupTTL is how long a channel delivery's keys are held in the store
+// (durableDeliveryKeys): a day, the hold a team's own webhook's deliveries get
+// (the server's teamWebhookDedupTTL), far past this replica's dedupTTL and the
+// Stripe-style signature tolerance it backs. A body-only signature has no
+// time limit, so a capture replayed after it publishes again.
+const durableDedupTTL = 24 * time.Hour
+
 // dedupCache is a per-replica replay cache keyed by dedupKey (webhook,
 // delivery_id) with lazy TTL expiry. Entries are evicted on access (a hit
 // past its TTL is treated as a miss and refreshed) plus an optional
