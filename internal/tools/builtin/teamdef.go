@@ -474,6 +474,9 @@ func (t *TeamDef) execCreate(ctx context.Context, in teamDefInput) (tools.Result
 	if err := checkTeamChannelAuthority(ctx, def); err != nil {
 		return errResult(fmt.Sprintf("create: %s", err)), nil
 	}
+	if err := checkLocalWebhooks(ctx, in.Name, def); err != nil {
+		return errResult(fmt.Sprintf("create: %s", err)), nil
+	}
 	// Preflight AFTER the authority check: "you may not grant this" is a
 	// harder refusal than "this will not work", and reporting the softer one
 	// first would send the author to fix a def they are not allowed to write.
@@ -636,6 +639,9 @@ func (t *TeamDef) execFork(ctx context.Context, in teamDefInput) (tools.Result, 
 		return errResult(fmt.Sprintf("fork: %s", err)), nil
 	}
 	if err := checkTeamChannelAuthority(ctx, def); err != nil {
+		return errResult(fmt.Sprintf("fork: %s", err)), nil
+	}
+	if err := checkLocalWebhooks(ctx, in.Name, def); err != nil {
 		return errResult(fmt.Sprintf("fork: %s", err)), nil
 	}
 	if err := t.preflightChannels(ctx, def); err != nil {
@@ -1161,16 +1167,23 @@ func (t *TeamDef) execRun(ctx context.Context, in teamDefInput) (tools.Result, e
 		return errResult(fmt.Sprintf("run: team %q declares agents of its own and belongs to another tenant; "+
 			"a team's own agents run only in the team's tenant — run it as that tenant", row.Name)), nil
 	}
-	// A team's own schedules publish into its own channels, which are its
-	// tenant's, and are started by whatever arms a walk's triggers. Either
-	// missing, the walk would wait on a clock that never ticks.
-	if len(def.LocalScheduleNames()) > 0 {
+	// A team's own schedules and webhooks publish into its own channels, which
+	// are its tenant's, and are started by whatever arms a walk's triggers.
+	// Either missing, the walk would wait on a clock that never ticks or an
+	// endpoint that never answers.
+	for _, kind := range []struct {
+		what  string
+		names []string
+	}{{"schedules", def.LocalScheduleNames()}, {"webhooks", def.LocalWebhookNames()}} {
+		if len(kind.names) == 0 {
+			continue
+		}
 		if t.ArmWalkTriggers == nil {
-			return errResult(fmt.Sprintf("run: team %q declares schedules of its own, and this server cannot run them", row.Name)), nil
+			return errResult(fmt.Sprintf("run: team %q declares %s of its own, and this server cannot run them", row.Name, kind.what)), nil
 		}
 		if row.TenantID != tools.RunIdentity(ctx).TenantID {
-			return errResult(fmt.Sprintf("run: team %q declares schedules of its own and belongs to another tenant; "+
-				"a team's own schedules run only in the team's tenant — run it as that tenant", row.Name)), nil
+			return errResult(fmt.Sprintf("run: team %q declares %s of its own and belongs to another tenant; "+
+				"a team's own %s run only in the team's tenant — run it as that tenant", row.Name, kind.what, kind.what)), nil
 		}
 	}
 
@@ -1865,6 +1878,9 @@ func applyTeamOverlay(base *teamgraph.Definition, ov teamgraph.Definition) {
 		if ov.Local.Schedules != nil {
 			base.Local.Schedules = ov.Local.Schedules
 		}
+		if ov.Local.Webhooks != nil {
+			base.Local.Webhooks = ov.Local.Webhooks
+		}
 	}
 }
 
@@ -1940,12 +1956,12 @@ func walkTerminal(def teamgraph.Definition, task *teamrun.Task) string {
 // ValidateTeamDefBody re-runs, over a stored team def body, the authoring
 // checks on its hooks: it parses as a team definition, and the walk's and each
 // state's hooks are well formed (inline webhooks included), and so is each
-// agent, skill, channel and schedule the team declares for itself. A snapshot
-// restore calls it before writing a body. The graph itself is not re-validated
-// — a team dials nothing of its own — and neither are the caller-dependent
-// checks: channel authority, and the gates a local agent or skill passes when
-// it is authored (see ValidateAgentDefBody for why a restore has no authoring
-// caller).
+// agent, skill, channel, schedule and webhook the team declares for itself. A
+// snapshot restore calls it before writing a body. The graph itself is not
+// re-validated — a team dials nothing of its own — and neither are the
+// caller-dependent checks: channel authority, and the gates a local agent,
+// skill or webhook passes when it is authored (see ValidateAgentDefBody for
+// why a restore has no authoring caller).
 func ValidateTeamDefBody(body json.RawMessage) error {
 	def, err := teamgraph.Parse(body)
 	if err != nil {
@@ -1984,6 +2000,13 @@ func ValidateTeamDefBody(body json.RawMessage) error {
 	// channel the team does not declare, would only be found by a walk.
 	if err := teamgraph.CheckLocalSchedules(def); err != nil {
 		return err
+	}
+	// And its own webhooks, by the rules their authoring is held to — all but
+	// the authoring gate, which needs a caller.
+	for _, name := range def.LocalWebhookNames() {
+		if _, err := LocalWebhookOf(def, name); err != nil {
+			return fmt.Errorf("local.webhooks[%q]: %w", name, err)
+		}
 	}
 	return teamgraph.ValidateHooks(def)
 }
