@@ -1410,6 +1410,12 @@ func main() {
 		log.Printf("reranker: %s/%s (kind %s)", rerankModel.ProviderID(), rerankModel.ModelID(), rerankModel.Kind())
 		inProcBackend.SetRanker(rerankModel)
 		memoryTool.Reranker = rerankModel
+		// Which kinds of memory it may reorder. Validated at config load, so the parse
+		// cannot fail here; unset is nil, which every reader takes as documents only.
+		rerankSources, _ := memory.ParseSources(cfg.Memory.Reranker.Sources)
+		inProcBackend.SetRerankSources(rerankSources)
+		memoryTool.RerankSources = rerankSources
+		log.Printf("reranker: reorders %v", cfg.Memory.Reranker.EffectiveSources())
 	}
 	channelTool.Store = storeIface
 	// Wire the pool-stats accessor when the backend is Postgres so

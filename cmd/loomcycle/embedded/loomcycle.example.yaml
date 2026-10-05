@@ -373,6 +373,10 @@ channels:
 #     timeout_ms: 30000                      # a slower rerank keeps search's own order
 #                                            # (on a GPU shared with other models, cover a reload)
 #     max_concurrent: 2                      # reranks in flight (default 4)
+#     sources: [documents]                   # what it may reorder (the default). Add
+#                                            # facts, notes to rerank agents' `recall`
+#                                            # too: +15pp recall@5 on LoCoMo memory,
+#                                            # at one model call per recall.
 #     # base_url / api_key_env override the provider's, as for the embedder.
 #
 #   # kind: decision asks a decision model (Ollama >= 0.35, /v1/systemone) one

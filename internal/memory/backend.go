@@ -169,6 +169,72 @@ func (q SearchQuery) CanReturnDocuments() bool {
 	return false
 }
 
+// CanReturn reports whether this query can return rows of source s. It mirrors what
+// Filter lets through:
+//   - documents: as CanReturnDocuments;
+//   - facts and notes: any selector that names them, or none at all — unless a key
+//     prefix confines the search to the chunk or the trace namespace;
+//   - traces: only a selector that asks for them, since an unfiltered search
+//     excludes them — and not under a prefix outside their namespace.
+func (q SearchQuery) CanReturn(s Source) bool {
+	switch s {
+	case SourceDocuments:
+		return q.CanReturnDocuments()
+	case SourceTraces:
+		if !q.asks(SourceTraces) {
+			return false
+		}
+		return q.Prefix == "" || strings.HasPrefix(q.Prefix, store.TraceTurnKeyPrefix) ||
+			strings.HasPrefix(store.TraceTurnKeyPrefix, q.Prefix)
+	case SourceFacts, SourceNotes:
+		if q.Prefix != "" && (strings.HasPrefix(q.Prefix, DocumentChunkKeyPrefix) ||
+			strings.HasPrefix(q.Prefix, store.TraceTurnKeyPrefix)) {
+			return false
+		}
+		return len(q.Sources) == 0 || q.asks(s)
+	}
+	return false
+}
+
+func (q SearchQuery) asks(s Source) bool {
+	for _, x := range q.Sources {
+		if x == s {
+			return true
+		}
+	}
+	return false
+}
+
+// RerankAllowed reports whether a rerank limited to sources (the operator's
+// memory.reranker.sources; empty = DefaultRerankSources) may reorder this search: it
+// may when the search can return at least one of them. With the default this is
+// exactly CanReturnDocuments, the rule the rerank shipped with.
+func (q SearchQuery) RerankAllowed(sources []Source) bool {
+	if len(sources) == 0 {
+		sources = DefaultRerankSources
+	}
+	for _, s := range sources {
+		if q.CanReturn(s) {
+			return true
+		}
+	}
+	return false
+}
+
+// DefaultRerankSources is what a rerank may reorder when the operator names nothing:
+// documents, the only kind it was measured on when it shipped.
+var DefaultRerankSources = []Source{SourceDocuments}
+
+// RerankRefusalReason is the reason a search RerankAllowed refuses reports: the
+// original not_a_document_search under the default sources (so every existing
+// deployment reads exactly what it did), source_not_enabled under any other list.
+func RerankRefusalReason(sources []Source) string {
+	if len(sources) == 0 || (len(sources) == 1 && sources[0] == SourceDocuments) {
+		return RerankNotDocumentSearch
+	}
+	return RerankSourceNotEnabled
+}
+
 // Source is one kind of remembered thing a search may return.
 type Source string
 

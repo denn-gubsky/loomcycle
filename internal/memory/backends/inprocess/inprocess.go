@@ -49,6 +49,9 @@ type Backend struct {
 	// reranker serves an agent's opt-in rerank (memory.reranker). nil when the
 	// operator declared none: a requested rerank then reports not_configured.
 	reranker memory.Ranker
+	// rerankSources is the operator's memory.reranker.sources: which kinds of memory
+	// the rerank may reorder. Empty is memory.DefaultRerankSources (documents only).
+	rerankSources []memory.Source
 }
 
 // New builds the in-process backend. Either argument may be nil at the
@@ -71,6 +74,10 @@ func (b *Backend) SetReranker(r memory.RerankModel) { b.reranker = memory.Listwi
 
 // SetRanker wires the operator's reranker as a Ranker, whatever its kind.
 func (b *Backend) SetRanker(r memory.Ranker) { b.reranker = r }
+
+// SetRerankSources sets which kinds of memory the rerank may reorder (the operator's
+// memory.reranker.sources). Unset, or empty, it is documents only.
+func (b *Backend) SetRerankSources(s []memory.Source) { b.rerankSources = s }
 
 // Get delegates to the store.
 func (b *Backend) Get(ctx context.Context, scope store.MemoryScope, scopeID, key string) (store.MemoryEntry, error) {
@@ -239,10 +246,10 @@ func (b *Backend) Search(ctx context.Context, scope store.MemoryScope, scopeID s
 	// A rerank that will run needs the deep pool too: the cheap path fetches
 	// top_k+1 rows, and a rerank shown only those can promote nothing from below
 	// top_k. Only one that WILL run — a requested rerank this server cannot serve,
-	// or one on a search that cannot return documents, is reported and skipped, and
-	// must leave the search exactly as it was (the same pool, the same rank_score
-	// scale).
-	willRerank := q.Rerank.Enabled && b.reranker != nil && q.CanReturnDocuments()
+	// or one on a search that can return none of the kinds of memory the operator lets
+	// it reorder, is reported and skipped, and must leave the search exactly as it was
+	// (the same pool, the same rank_score scale).
+	willRerank := q.Rerank.Enabled && b.reranker != nil && q.RerankAllowed(b.rerankSources)
 	hybrid := b.store.SupportsFullText() || !rank.IsPureSemantic() || dedup.Enabled || willRerank
 
 	var pool []store.MemorySearchEntry

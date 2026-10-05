@@ -360,3 +360,46 @@ func TestInProcessRerank_TheDecisionKindReordersASearch(t *testing.T) {
 		t.Errorf("option A = %q, want the first candidate's index text", seen["A"])
 	}
 }
+
+// TestInProcessRerank_RecallGetsTheDeepPoolUnderMemorySources — with facts and notes
+// in the operator's sources, a recall of the agent's own notes is reranked over the
+// deep pool, so the model's pick from below top_k is returned first; under the
+// default sources the same recall keeps its order with not_a_document_search.
+func TestInProcessRerank_RecallGetsTheDeepPoolUnderMemorySources(t *testing.T) {
+	b, _, _, cleanup := vectorFixture(t)
+	defer cleanup()
+	ctx := context.Background()
+	for i, txt := range []string{"go", "go rust", "go rust python", "go rust python alice", "go rust python alice bob"} {
+		if _, err := b.Set(ctx, store.MemoryScopeUser, "u1", "n"+string(rune('1'+i)), json.RawMessage(`"`+txt+`"`),
+			memory.SetOptions{Embed: true, EmbedText: txt}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	recall := func() memory.RecallResult {
+		res, err := b.Recall(ctx, store.MemoryScopeUser, "u1", memory.RecallQuery{Query: "go", TopK: 2, Rerank: rerankOn})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return res
+	}
+	ids := func(res memory.RecallResult) string {
+		var s []string
+		for _, f := range res.Facts {
+			s = append(s, f.ID)
+		}
+		return strings.Join(s, ",")
+	}
+
+	r := &scriptedReranker{reply: "[5, 4]"}
+	b.SetReranker(r)
+	res := recall()
+	if ids(res) != "n1,n2" || res.Rerank == nil || res.Rerank.Applied || res.Rerank.Reason != memory.RerankNotDocumentSearch || r.calls != 0 {
+		t.Fatalf("default sources: %s %+v after %d calls, want n1,n2 with not_a_document_search and no call", ids(res), res.Rerank, r.calls)
+	}
+
+	b.SetRerankSources([]memory.Source{memory.SourceFacts, memory.SourceNotes})
+	res = recall()
+	if ids(res) != "n5,n4" || res.Rerank == nil || !res.Rerank.Applied || res.Rerank.Candidates != 5 {
+		t.Errorf("memory sources: %s %+v, want n5,n4 promoted from below top_k over 5 candidates", ids(res), res.Rerank)
+	}
+}

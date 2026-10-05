@@ -24,8 +24,8 @@ func (b *Backend) rerankPool(ctx context.Context, tenant string, scope store.Mem
 	if b.reranker == nil {
 		return pool, memory.RerankReport{Reason: memory.RerankNotConfigured}
 	}
-	if !q.CanReturnDocuments() {
-		return pool, memory.RerankReport{Reason: memory.RerankNotDocumentSearch}
+	if !q.RerankAllowed(b.rerankSources) {
+		return pool, memory.RerankReport{Reason: memory.RerankRefusalReason(b.rerankSources)}
 	}
 	n := q.Rerank.EffectiveCandidates()
 	if n > len(pool) {
