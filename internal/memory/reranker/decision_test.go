@@ -14,6 +14,9 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/config"
 	"github.com/denn-gubsky/loomcycle/internal/memory"
 	"github.com/denn-gubsky/loomcycle/internal/providers"
+	// Registered so Build's refusal of a decision block is what fails, not a missing
+	// driver: unguarded, Build would happily build an Ollama chat driver for nimble.
+	_ "github.com/denn-gubsky/loomcycle/internal/providers/ollama"
 )
 
 // fakeSystemOne is an Ollama /v1/systemone double: it records every request and
