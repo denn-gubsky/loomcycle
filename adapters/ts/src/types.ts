@@ -1464,6 +1464,11 @@ export interface RunSpecTeam {
   input_bytes?: number;
   /** Set when `input` was cut. */
   input_truncated?: boolean;
+  /** The variable values the caller supplied at start (`runTeam`'s `vars`),
+   *  with secrets masked like `input`. Only those: a variable left at the
+   *  team's default is not listed, and reads from the definition version
+   *  this record names. Absent when the start supplied none. */
+  vars?: Record<string, string>;
   mode: "sync" | "detach";
   /** The board binding; `resumed_from` names the state a persisted board
    *  resumed the walk from. */
@@ -2580,6 +2585,14 @@ export interface TeamRunTarget {
   defId?: string;
   /** The initial task handed to the entry state's agent. */
   input?: string;
+  /** Values for this walk's variables, name → text, read by the team's
+   *  prompts as `${var.<name>}`. Only a name the team's definition declares in
+   *  its `vars` is accepted — any other is refused before anything runs, with
+   *  the declared names. A value given here replaces the team's default for
+   *  this walk; a `vars` state, a `capture` or a starter's `binds` may still
+   *  overwrite it as the walk runs. Literal text: never expanded, no `{{` or
+   *  `}}`, at most 4096 bytes. */
+  vars?: Record<string, string>;
   /** Bind the walk to a Document chunk task board: each state transition
    *  persists `chunk.status` = the current team state, and every handler run
    *  the walk spawns carries the task key on its `parent_context`. */

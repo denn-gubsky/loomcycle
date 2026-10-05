@@ -146,7 +146,8 @@ type runConfigRecord struct {
 }
 
 // teamWalkRecord is a walk's start, as its run records it. Nothing in it is
-// secret: the input is masked and bounded before it is stored (teamWalkRecordOf).
+// secret: the input and the supplied variable values are masked before they
+// are stored, and the input bounded (teamWalkRecordOf).
 // No copy of the definition body is kept; content_sha256 still identifies it
 // after the row is deleted.
 type teamWalkRecord struct {
@@ -170,6 +171,14 @@ type teamWalkRecord struct {
 	Review         []string       `json:"review,omitempty"`
 	ReviewTTL      int            `json:"review_ttl_seconds,omitempty"`
 	InterruptOnCap bool           `json:"interrupt_on_cap,omitempty"`
+
+	// Vars are the variable values the caller supplied at start, each masked
+	// like the input. Only those: a default is in the definition version this
+	// record names, so a reader tells "given" from "defaulted" by what is
+	// here. Not cut — a start refuses a value over 4096 bytes and a name the
+	// team does not declare, and a team declares at most 64. Absent when the
+	// start supplied none, so such a record is the bytes it always was.
+	Vars map[string]string `json:"vars,omitempty"`
 }
 
 // teamWalkBoard is the walk's board binding at start. Breakpoints and review
@@ -188,7 +197,9 @@ const teamWalkInputCap = 16 << 10
 
 // teamWalkRecordOf records spec, masking its input with r before cutting it,
 // so a secret in a walk's input is not put at rest unmasked on the run row,
-// and a cut never splits the mask.
+// and a cut never splits the mask. The supplied variable values are masked by
+// the same r: a caller can put anything in one, so they are held to what the
+// input is and are never more readable than it.
 func teamWalkRecordOf(r *redact.Redactor, spec builtin.WalkRunSpec) *teamWalkRecord {
 	mode := "sync"
 	if spec.Detach {
@@ -214,6 +225,12 @@ func teamWalkRecordOf(r *redact.Redactor, spec builtin.WalkRunSpec) *teamWalkRec
 		Review:         spec.Review,
 		ReviewTTL:      spec.ReviewTTLSeconds,
 		InterruptOnCap: spec.InterruptOnCap,
+	}
+	if len(spec.Vars) > 0 {
+		rec.Vars = make(map[string]string, len(spec.Vars))
+		for name, value := range spec.Vars {
+			rec.Vars[name] = r.String(value)
+		}
 	}
 	if spec.Board != nil {
 		rec.Board = &teamWalkBoard{Scope: spec.Board.Scope, ChunkID: spec.Board.ChunkID, ResumedFrom: spec.Board.ResumedFrom}

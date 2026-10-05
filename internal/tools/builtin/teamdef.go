@@ -230,7 +230,9 @@ const teamDefDescription = `Author, fork, promote, retire, and inspect team work
 	`never started automatically, and nothing may lead back into it (no transition, no cap reroute): route a retry to ` +
 	`a later state. When the entry (an input state, or that starter) carries a schema, run checks the input against ` +
 	`it before anything runs — its top-level type, its required fields, and each present property's type — and ` +
-	`refuses a bad input naming the field. run may also set breakpoints on starter states to step a fan-out wave: the walk pauses ` +
+	`refuses a bad input naming the field. A definition may declare variables with defaults (vars: name → default text), ` +
+	`read in prompts as ${var.<name>}; run may set a declared one for that walk (vars), and a name the team does not ` +
+	`declare is refused before anything runs. run may also set breakpoints on starter states to step a fan-out wave: the walk pauses ` +
 	`before dispatching (showing each composed prompt) and asks a human to release all, release n, or abort. ` +
 	`run may also set review on starter, agent or parallel states (not a consolidator): ` +
 	`each member run is held when it finishes, for an operator to approve, send back with feedback, or reject; a rejected ` +
@@ -254,7 +256,8 @@ const teamDefInputSchema = `{
         "states":         {"type": "array", "items": {"type": "object"}, "description": "State nodes: each is {state, handler:{kind, agent|agents, wait?, consolidator?, ...}}. A starter handler instead carries source ({channel} or {kind:\"document\", path, scope?}), fanout ({agent|agents, per: message|chunk|once, max}), prompt, sink and binds. An input state may set publish ({channel}) to publish the walk's input to that channel as a JSON value; a channel state may set payload:\"raw\" to publish its input as a JSON value instead of the {state, output} envelope. Replaces the parent's states wholesale."},
         "transitions":    {"type": "array", "items": {"type": "object"}, "description": "Edges: each is {from, to, on}. Replaces the parent's transitions wholesale."},
         "colors":         {"type": "object", "description": "Presentation-only fills/edge colours. Excluded from the content hash."},
-        "hooks":          {"type": "object", "description": "The walk's own hooks: {run_end: [entry, ...]}, fired when the walk ends. A state's handler may also carry hooks / tool_hooks, added to every run it starts."}
+        "hooks":          {"type": "object", "description": "The walk's own hooks: {run_end: [entry, ...]}, fired when the walk ends. A state's handler may also carry hooks / tool_hooks, added to every run it starts."},
+        "vars":           {"type": "object", "additionalProperties": {"type": "string"}, "description": "The team's variables: name → default value, read in a state's prompts as ${var.<name>}. Every walk starts with these defaults; run may set a declared one with its own vars. A default is literal text (never expanded; no {{ or }}), at most 4096 bytes, at most 64 variables. A fork that sends vars replaces the whole list; {} declares none."}
       },
       "additionalProperties": true
     },
@@ -265,6 +268,7 @@ const teamDefInputSchema = `{
     "format":         {"type": "string", "enum": ["mermaid","d2"], "description": "render_diagram output format (default mermaid; d2 is deferred)."},
     "highlight_state": {"type": "string", "description": "render_diagram: optionally mark this state (e.g. a chunk's current state) with a bold outline."},
     "input":          {"type": "string", "description": "run: the initial input handed to the entry state's agent (the task/prompt the team works on)."},
+    "vars":           {"type": "object", "additionalProperties": {"type": "string"}, "description": "run (optional): values for this walk's variables, name → text, read by the team's prompts as ${var.<name>}. Only a name the team's definition declares in its vars is accepted; any other is refused before anything runs, with the declared names. A value given here replaces the team's default for this walk; a vars state, a capture or a starter's binds may still overwrite it as the walk runs. Literal text: never expanded, no {{ or }}, at most 4096 bytes."},
     "board_chunk_id": {"type": "string", "description": "run (optional): bind the walk to a Document chunk task board. Each state transition persists chunk.status = the current team state (durable progress), and a later run RESUMES from the persisted status. Omit for an ephemeral run (default)."},
     "board_scope":    {"type": "string", "enum": ["agent","user"], "description": "run (optional): the Document scope of board_chunk_id (default user)."},
     "interrupt_on_cap": {"type": "boolean", "description": "run (optional): when a state hits its iteration cap, ask a human (Interruption) whether to continue / reroute:<state> / abort instead of returning the iteration_cap outcome. An unanswered/timed-out/declined ask aborts (still terminates). Default false."},
@@ -296,6 +300,9 @@ type WalkRunSpec struct {
 	// it took the active one.
 	ResolvedBy string
 	Input      string
+	// Vars are the variable values the caller supplied at start, and only
+	// those: the team's defaults are in the definition this spec names.
+	Vars map[string]string
 	// Detach is the run's mode: the caller got the run id back at once.
 	Detach bool
 	// Board is the Document-board binding, nil when the walk has none.
@@ -347,6 +354,9 @@ type teamDefInput struct {
 	Review         []string        `json:"review,omitempty"`             // run: starter/agent/parallel states whose member runs are held for a verdict
 	ReviewTTL      int             `json:"review_ttl_seconds,omitempty"` // run: end an unreviewed member hold as rejected after this long
 	Mode           string          `json:"mode,omitempty"`               // run: "" (wait for the walk) | "detach" (return the run id now)
+
+	// Vars — run: values for variables the team declares, name → text.
+	Vars map[string]string `json:"vars,omitempty"`
 }
 
 // Name implements tools.Tool.
@@ -1014,6 +1024,16 @@ func (t *TeamDef) execRun(ctx context.Context, in teamDefInput) (tools.Result, e
 		return errResult(fmt.Sprintf("run: %s", err)), nil
 	}
 
+	// Checked before admission and before the walk's run exists, like the
+	// input below: a name the team does not declare, or a value it could not
+	// have declared, is the caller's to fix and must cost neither a row nor a
+	// model call. Supplied values are untrusted text and take the path every
+	// other variable does from here — the task's map, then prompt assembly.
+	if err := teamgraph.CheckStartVars(def, in.Vars); err != nil {
+		return errValidation(fmt.Sprintf("run: %s", err),
+			"send `vars` naming only variables the team's definition declares in its own `vars`, with literal text values, and run again"), nil
+	}
+
 	// Run admission (op=run bypasses RunOnce): enforce the token budget +
 	// operator-key restriction + agent-depth bound, and walk under the enriched
 	// ctx so every spawned agent inherits them. A refusal (over budget / too
@@ -1078,6 +1098,7 @@ func (t *TeamDef) execRun(ctx context.Context, in teamDefInput) (tools.Result, e
 			DefTenant:        row.TenantID,
 			ResolvedBy:       "name",
 			Input:            in.Input,
+			Vars:             in.Vars,
 			Detach:           detach,
 			Breakpoints:      in.Breakpoints,
 			Review:           in.Review,
@@ -1113,6 +1134,12 @@ func (t *TeamDef) execRun(ctx context.Context, in teamDefInput) (tools.Result, e
 	// parent_context of every agent the walk starts, and the stream filter.
 	if runID != "" {
 		task.WalkID = runID
+	}
+	// What the caller supplied goes on the task first; the walk then fills in
+	// the team's default for every declared name still missing, and anything a
+	// state binds while it runs overwrites both.
+	for name, value := range in.Vars {
+		task.SetVar(name, value)
 	}
 
 	// Assemble walk options. When neither feature is used, opts is empty and Walk
@@ -1626,6 +1653,11 @@ func applyTeamOverlay(base *teamgraph.Definition, ov teamgraph.Definition) {
 	}
 	if ov.Hooks != nil {
 		base.Hooks = ov.Hooks
+	}
+	// Wholesale, like every map here: a fork that sends `vars` states the whole
+	// declared list, so `{}` is how one declares none.
+	if ov.Vars != nil {
+		base.Vars = ov.Vars
 	}
 }
 
