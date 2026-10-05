@@ -174,6 +174,44 @@ Without a Starter you also give up:
 - **the `before_dispatch` breakpoint**, which only a Starter has (a
   `<state>:review` hold works on `agent` and `parallel` states too).
 
+## Declaring variables and setting them at start
+
+A team lists its variables, each with a default, in the definition's `vars`.
+Every walk starts with those defaults, and any state reads one as
+`${var.<name>}` in its `system_prompt` or `input_template`.
+
+```json
+{"entry": "write",
+ "vars": {"tone": "formal", "audience": ""},
+ "states": [
+   {"state": "write", "handler": {"kind": "agent", "agent": "writer",
+     "input_template": "Tone: ${var.tone}. Audience: ${var.audience:-general}.\n\n{{thread.output}}"}},
+   {"state": "done", "handler": {"kind": "terminal"}}],
+ "transitions": [{"from": "write", "to": "done", "on": "success"}]}
+```
+
+`TeamDef op=run` takes its own `vars` to set them for one walk:
+`{"op": "run", "name": "brief", "input": "…", "vars": {"tone": "casual"}}`.
+
+- **Only a declared name is accepted.** A name the team does not list is
+  refused before anything runs, and the refusal lists the declared names. A
+  team with no `vars` accepts none.
+- **Order, lowest first:** the team's default, the value given at start, then
+  whatever a `vars` state, a `capture` or a Starter's `binds` writes while the
+  walk runs.
+- **Values are literal text.** A default or a start value is never expanded:
+  a `${…}` inside one reaches the prompt as those characters. Neither may
+  contain `{{` or `}}` or name a credential, and each is at most 4096 bytes; a
+  team declares at most 64 variables.
+- An empty default declares the variable without a value; it expands to empty,
+  or to the fallback in `${var.audience:-general}`. A start value of `""`
+  blanks a default the same way.
+- Variables are not saved between runs. A walk resumed from a task board
+  starts again with the defaults and whatever that run's `vars` give it.
+- `vars` are part of the definition's content: changing a default makes a new
+  version with a new content hash. A fork that sends `vars` replaces the whole
+  list.
+
 ## Capturing an answer into a variable
 
 `capture` on a state binds variables from what the state produced: variable
