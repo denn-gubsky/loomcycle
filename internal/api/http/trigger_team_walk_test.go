@@ -37,6 +37,7 @@ type triggerWalkHarness struct {
 	t    *testing.T
 	srv  *Server
 	st   store.Store
+	cfg  *config.Config
 	prov *numberedProvider
 }
 
@@ -56,7 +57,7 @@ func newTriggerWalkHarness(t *testing.T) *triggerWalkHarness {
 	srv := New(cfg, &stubResolver{p: prov}, []tools.Tool{}, concurrency.New(4, 4, 100*time.Millisecond), st)
 	srv.SetSteerRegistry(steer.NewRegistry(0))
 	srv.SetTeamDefTool(&builtin.TeamDef{Store: st})
-	return &triggerWalkHarness{t: t, srv: srv, st: st, prov: prov}
+	return &triggerWalkHarness{t: t, srv: srv, st: st, cfg: cfg, prov: prov}
 }
 
 // finished waits for a detached walk's run to end and returns its row.
