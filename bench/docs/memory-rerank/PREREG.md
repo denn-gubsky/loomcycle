@@ -80,3 +80,25 @@ multi-hop questions:
   reaching answers in this pipeline. The setting stays available and is documented with
   both results.
 - **H1 reverses:** investigate before recommending.
+
+## Amendment 1 (2026-10-05) — the (c) harness and its checks
+
+Written after (b) started and before any (c) pool was fetched. It changes nothing in (b).
+
+- **Harness:** `depth.sh` + `depth.py`. A fresh store (its own database) is built as
+  #1571's was: `bench/cmd/locomo -mode=ingest -scope user`, with questions from
+  `-mode=convert`.
+  - Each multi-hop question's pool is `POST /v1/_memory/search` top_k **40**, no rerank.
+  - The 20-arm is the **first 20 of that same pool**. The two arms rerank the same head
+    and differ only by the 20 rows behind it.
+  - Both arms run `bench/cmd/rerankpool` with #1571's `reranker.yaml` (qwen3.8 listwise,
+    16K window).
+- **Order:** (c) runs **after** (b) has finished. Both use qwen3.8 on the Spark, and
+  sharing it would distort (b)'s latency.
+- **S1's interval:** the paired bootstrap is two-sided 95% (10,000 resamples, seed 1)
+  over the per-question difference in recall@5.
+- **Checks (each voids S1):**
+  5. **282 multi-hop questions** are pooled.
+  6. **Rerank applied:** both arms report `reranked` on ≥ 95% of questions.
+  7. **The store is #1571's:** the 20-arm's unreranked recall@5 is within ±0.02 of
+     #1571's multi-hop `none`, 0.332.
