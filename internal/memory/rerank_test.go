@@ -151,3 +151,65 @@ func TestSearchQuery_CanReturnDocumentsHonoursThePrefix(t *testing.T) {
 		}
 	}
 }
+
+// TestSearchQuery_CanReturnMirrorsTheFilter — which kinds of memory a search can
+// return follows what Filter lets through: no selector reaches documents, facts and
+// notes but never traces (they are opt-in); a chunk or trace prefix confines it.
+func TestSearchQuery_CanReturnMirrorsTheFilter(t *testing.T) {
+	for _, c := range []struct {
+		name string
+		q    SearchQuery
+		want map[Source]bool
+	}{
+		{"unfiltered", SearchQuery{}, map[Source]bool{SourceDocuments: true, SourceFacts: true, SourceNotes: true, SourceTraces: false}},
+		{"recall default", SearchQuery{Sources: []Source{SourceFacts, SourceNotes}},
+			map[Source]bool{SourceDocuments: false, SourceFacts: true, SourceNotes: true, SourceTraces: false}},
+		{"notes only", SearchQuery{Sources: []Source{SourceNotes}},
+			map[Source]bool{SourceDocuments: false, SourceFacts: false, SourceNotes: true, SourceTraces: false}},
+		{"traces only", SearchQuery{Sources: []Source{SourceTraces}},
+			map[Source]bool{SourceDocuments: false, SourceFacts: false, SourceNotes: false, SourceTraces: true}},
+		{"chunk prefix", SearchQuery{Prefix: DocumentChunkKeyPrefix},
+			map[Source]bool{SourceDocuments: true, SourceFacts: false, SourceNotes: false, SourceTraces: false}},
+		{"note prefix", SearchQuery{Prefix: "notes/"},
+			map[Source]bool{SourceDocuments: false, SourceFacts: true, SourceNotes: true, SourceTraces: false}},
+		{"traces under another prefix", SearchQuery{Prefix: "notes/", Sources: []Source{SourceTraces}},
+			map[Source]bool{SourceTraces: false}},
+	} {
+		for s, want := range c.want {
+			if got := c.q.CanReturn(s); got != want {
+				t.Errorf("%s: CanReturn(%s) = %v, want %v", c.name, s, got, want)
+			}
+		}
+	}
+}
+
+// TestSearchQuery_RerankAllowedDefaultsToTodaysRule — the default sources are
+// exactly CanReturnDocuments (no existing deployment changes), and a list reranks a
+// search that can return at least one of its sources.
+func TestSearchQuery_RerankAllowedDefaultsToTodaysRule(t *testing.T) {
+	memory := []Source{SourceFacts, SourceNotes}
+	for _, c := range []struct {
+		name         string
+		q            SearchQuery
+		def, withMem bool
+	}{
+		{"unfiltered", SearchQuery{}, true, true},
+		{"recall default", SearchQuery{Sources: []Source{SourceFacts, SourceNotes}}, false, true},
+		{"documents only", SearchQuery{Sources: []Source{SourceDocuments}}, true, false},
+		{"traces only", SearchQuery{Sources: []Source{SourceTraces}}, false, false},
+		{"chunk prefix", SearchQuery{Prefix: DocumentChunkKeyPrefix}, true, false},
+	} {
+		if got := c.q.RerankAllowed(nil); got != c.def || got != c.q.CanReturnDocuments() {
+			t.Errorf("%s: default RerankAllowed = %v, want %v (= CanReturnDocuments)", c.name, got, c.def)
+		}
+		if got := c.q.RerankAllowed(memory); got != c.withMem {
+			t.Errorf("%s: RerankAllowed([facts notes]) = %v, want %v", c.name, got, c.withMem)
+		}
+	}
+	if RerankRefusalReason(nil) != RerankNotDocumentSearch || RerankRefusalReason([]Source{SourceDocuments}) != RerankNotDocumentSearch {
+		t.Error("the default sources must keep the original not_a_document_search reason")
+	}
+	if RerankRefusalReason(memory) != RerankSourceNotEnabled {
+		t.Errorf("a non-default list must report %s", RerankSourceNotEnabled)
+	}
+}

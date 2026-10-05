@@ -109,6 +109,10 @@ const (
 	RerankCallFailed = "call_failed"
 	// RerankUnparseable: the model answered without a usable ranking.
 	RerankUnparseable = "unparseable"
+	// RerankSourceNotEnabled: the search could return none of the kinds of memory the
+	// operator lets the rerank reorder (memory.reranker.sources, when it is not the
+	// default; under the default the reason stays not_a_document_search).
+	RerankSourceNotEnabled = "source_not_enabled"
 	// RerankPromptTooLarge: a decision model refused the candidates as more than its
 	// context holds, even with every candidate cut to a quarter of its characters.
 	RerankPromptTooLarge = "prompt_too_large"

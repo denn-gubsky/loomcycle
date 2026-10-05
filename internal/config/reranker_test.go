@@ -1,6 +1,7 @@
 package config
 
 import (
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -29,7 +30,7 @@ memory:
 		BaseURL: "http://gpu.internal:11434", APIKeyEnv: "MY_RERANK_TOKEN",
 		TimeoutMs: 20000, Effort: "low", ContextTokens: 32768, MaxConcurrent: 2,
 	}
-	if cfg.Memory.Reranker != want {
+	if !reflect.DeepEqual(cfg.Memory.Reranker, want) {
 		t.Errorf("reranker = %+v, want %+v", cfg.Memory.Reranker, want)
 	}
 	if !cfg.Memory.Reranker.Configured() {
@@ -64,6 +65,7 @@ func TestRerankerConfig_RejectsAnIncompleteOrInvalidBlock(t *testing.T) {
 		{"provider: p\n    model: m\n    max_concurrent: -1", "memory.reranker.max_concurrent"},
 		{"provider: p\n    model: m\n    base_url: gpu.internal:11434", "memory.reranker.base_url"},
 		{"provider: p\n    model: m\n    kind: pointwise", "memory.reranker.kind"},
+		{"provider: p\n    model: m\n    sources: [documents, memories]", "memory.reranker.sources"},
 		// A decision call has no reasoning to switch off and no window to request: a
 		// copied listwise block must fail, not look configured while ignored.
 		{"kind: decision\n    provider: p\n    model: m\n    effort: low", "memory.reranker.effort does not apply to kind: decision"},
@@ -105,6 +107,32 @@ memory:
 		}
 		if got := cfg.Memory.Reranker.EffectiveKind(); got != c.want {
 			t.Errorf("%q: kind %q, want %q", c.body, got, c.want)
+		}
+	}
+}
+
+// TestRerankerConfig_SourcesDefaultToDocuments — unset, the rerank reorders documents
+// only (the rule it shipped with); a list loads as written.
+func TestRerankerConfig_SourcesDefaultToDocuments(t *testing.T) {
+	for _, c := range []struct {
+		body string
+		want []string
+	}{
+		{"provider: ollama-local\n    model: m", []string{"documents"}},
+		{"provider: ollama-local\n    model: m\n    sources: [documents, facts, notes]", []string{"documents", "facts", "notes"}},
+		{"provider: ollama-local\n    model: m\n    sources: [traces]", []string{"traces"}},
+	} {
+		cfg, err := Load(writeCfg(t, `
+defaults: { provider: anthropic, model: claude-sonnet-4-6 }
+memory:
+  reranker:
+    `+c.body+`
+`))
+		if err != nil {
+			t.Fatalf("%q: %v", c.body, err)
+		}
+		if got := cfg.Memory.Reranker.EffectiveSources(); !reflect.DeepEqual(got, c.want) {
+			t.Errorf("%q: sources %v, want %v", c.body, got, c.want)
 		}
 	}
 }

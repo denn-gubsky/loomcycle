@@ -99,6 +99,9 @@ type Memory struct {
 	// would otherwise report not_configured on a server that has a reranker. nil
 	// when none is declared — main.go must never store a typed-nil here.
 	Reranker memrank.Ranker
+	// RerankSources is the operator's memory.reranker.sources, carried to every
+	// in-process backend this tool builds with the reranker. nil = documents only.
+	RerankSources []memrank.Source
 
 	// Cfg is the operator config, used to resolve a per-agent
 	// memory_backend NAME to its MemoryBackendDef via lookup.MemoryBackend
@@ -302,6 +305,7 @@ func (m *Memory) newInprocess() *inprocess.Backend {
 	b := inprocess.New(m.Store, m.Embedder)
 	if m.Reranker != nil {
 		b.SetRanker(m.Reranker)
+		b.SetRerankSources(m.RerankSources)
 	}
 	return b
 }

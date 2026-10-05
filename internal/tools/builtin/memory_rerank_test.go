@@ -275,3 +275,61 @@ func TestMemoryRerank_ABackendThatDoesNotRerankSaysSo(t *testing.T) {
 		t.Errorf("reranked %v, reason %v; want false, %q", out["reranked"], out["rerank_reason"], memrank.RerankBackendUnsupported)
 	}
 }
+
+// recallIDs runs a recall and returns its memory ids in order, plus the response.
+func recallIDs(t *testing.T, tool *Memory, ctx context.Context) (string, map[string]any) {
+	t.Helper()
+	res, _ := tool.Execute(ctx, json.RawMessage(`{"op":"recall","scope":"agent","query":"alice go rust","top_k":3}`))
+	if res.IsError {
+		t.Fatalf("recall: %s", res.Text)
+	}
+	var out map[string]any
+	if err := json.Unmarshal([]byte(res.Text), &out); err != nil {
+		t.Fatal(err)
+	}
+	var ids []string
+	for _, f := range out["memories"].([]any) {
+		ids = append(ids, f.(map[string]any)["id"].(string))
+	}
+	return strings.Join(ids, ","), out
+}
+
+// TestMemoryRerank_RecallIsRerankedWhenTheOperatorAddsNotes — memory.reranker.sources
+// naming the agent's own memory reranks its default recall (facts and notes), on
+// the default backend and on a named in-process one alike.
+func TestMemoryRerank_RecallIsRerankedWhenTheOperatorAddsNotes(t *testing.T) {
+	for _, backend := range []string{"", "local"} {
+		rr := &stubRerankModel{reply: "[3, 2, 1]"}
+		tool, ctx, cleanup := rerankMemoryFixture(t, rr, rerankOn(), backend)
+		if backend != "" {
+			tool.Cfg = &config.Config{MemoryBackends: map[string]config.MemoryBackend{backend: {Kind: "inprocess"}}}
+		}
+		tool.RerankSources = []memrank.Source{memrank.SourceFacts, memrank.SourceNotes}
+		order, out := recallIDs(t, tool, ctx)
+		if out["reranked"] != true || order != "r3,r2,r1" || rr.calls != 1 {
+			t.Errorf("backend %q: recall order %s, reranked %v (%v), %d calls; want r3,r2,r1 reranked once",
+				backend, order, out["reranked"], out["rerank_reason"], rr.calls)
+		}
+		cleanup()
+	}
+}
+
+// TestMemoryRerank_ASourceTheOperatorDidNotNameSaysSo — under a non-default list, a
+// search that can return none of its sources keeps its order with
+// source_not_enabled (the default list keeps the original not_a_document_search).
+func TestMemoryRerank_ASourceTheOperatorDidNotNameSaysSo(t *testing.T) {
+	rr := &stubRerankModel{reply: "[1]"}
+	tool, ctx, cleanup := rerankMemoryFixture(t, rr, rerankOn(), "")
+	defer cleanup()
+	tool.RerankSources = []memrank.Source{memrank.SourceFacts, memrank.SourceNotes}
+	res, _ := tool.Execute(ctx, json.RawMessage(`{"op":"search","scope":"agent","query":"alice","sources":["traces"]}`))
+	if res.IsError {
+		t.Fatalf("search: %s", res.Text)
+	}
+	var out map[string]any
+	_ = json.Unmarshal([]byte(res.Text), &out)
+	if out["reranked"] != false || out["rerank_reason"] != memrank.RerankSourceNotEnabled || rr.calls != 0 {
+		t.Errorf("traces search: reranked %v reason %v, %d calls; want source_not_enabled and no call",
+			out["reranked"], out["rerank_reason"], rr.calls)
+	}
+}
