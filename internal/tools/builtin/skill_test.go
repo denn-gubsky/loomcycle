@@ -662,3 +662,115 @@ func TestSkillTool_RetiredActiveSkillDefIsNotServed(t *testing.T) {
 		t.Errorf("list after un-retire = %q, want both", got)
 	}
 }
+
+// list and invoke read the same tiers: the run's own tenant, the shared ""
+// tenant, then the static set. Every name list offers loads, and what it
+// leaves out does not: another tenant's skill, a retired one, and one that
+// was never promoted (no active version).
+func TestSkillTool_EveryListedSkillCanBeInvoked(t *testing.T) {
+	set := loadSetWithSkills(t, []struct {
+		Name  string
+		Tools []string
+		Body  string
+	}{
+		{Name: "static-only", Body: "STATIC ONLY"},
+		{Name: "shared-over-static", Body: "STATIC SHADOWED"},
+	})
+	st, err := sqlite.Open(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	authoring := &SkillDef{Store: st, Set: set}
+	seed := func(tenant, op string) {
+		t.Helper()
+		ctx := tools.WithSkillPolicy(tools.WithAgentTools(context.Background(), []string{"Read"}), tools.SkillPolicyValue{})
+		ctx = tools.WithRunIdentity(ctx, tools.RunIdentityValue{AgentID: "a_seed", TenantID: tenant})
+		res, _ := authoring.Execute(ctx, json.RawMessage(op))
+		if res.IsError {
+			t.Fatalf("seed %q %s: %s", tenant, op, res.Text)
+		}
+		if strings.Contains(op, `"retire-me"`) {
+			var row struct {
+				DefID string `json:"def_id"`
+			}
+			_ = json.Unmarshal([]byte(res.Text), &row)
+			if res, _ := authoring.Execute(ctx, json.RawMessage(`{"op":"retire","def_id":"`+row.DefID+`","retired":true}`)); res.IsError {
+				t.Fatalf("retire: %s", res.Text)
+			}
+		}
+	}
+	seed("", `{"op":"create","name":"shared","overlay":{"body":"SHARED BODY"}}`)
+	seed("", `{"op":"fork","name":"shared-over-static","overlay":{"body":"SHARED OVERRIDE"},"promote":true}`)
+	seed("", `{"op":"create","name":"shared-draft","overlay":{"body":"DRAFT"},"promote":false}`)
+	seed("", `{"op":"create","name":"retire-me","overlay":{"body":"RETIRED"}}`)
+	seed("acme", `{"op":"create","name":"own","overlay":{"body":"OWN BODY"}}`)
+	seed("acme", `{"op":"create","name":"own-draft","overlay":{"body":"DRAFT"},"promote":false}`)
+	seed("globex", `{"op":"create","name":"theirs","overlay":{"body":"THEIRS"}}`)
+
+	ctx := tools.WithRunIdentity(tools.WithAgentTools(context.Background(), []string{"Read"}),
+		tools.RunIdentityValue{AgentID: "a_caller", TenantID: "acme"})
+	tool := &SkillTool{Set: set, Store: st}
+	res, _ := tool.Execute(ctx, json.RawMessage(`{"op":"list"}`))
+	listed := listNames(t, res)
+	if got, want := strings.Join(listed, ","), "own,shared,shared-over-static,static-only"; got != want {
+		t.Errorf("list = %q, want %q", got, want)
+	}
+	for _, name := range listed {
+		if res, _ := tool.Execute(ctx, json.RawMessage(`{"name":"`+name+`"}`)); res.IsError {
+			t.Errorf("listed skill %q does not load: %s", name, res.Text)
+		}
+	}
+	// The shared tier is read, ahead of the static set.
+	if res, _ := tool.Execute(ctx, json.RawMessage(`{"name":"shared-over-static"}`)); res.Text != "SHARED OVERRIDE" {
+		t.Errorf("shared-over-static = %q, want the shared override", res.Text)
+	}
+	for _, name := range []string{"shared-draft", "own-draft", "retire-me", "theirs"} {
+		if res, _ := tool.Execute(ctx, json.RawMessage(`{"name":"`+name+`"}`)); !res.IsError {
+			t.Errorf("unlisted skill %q loads: %q", name, res.Text)
+		}
+	}
+}
+
+// The unknown-skill hint names what this run could load — its own tenant's
+// and the shared skills with an active version — and nothing else.
+func TestSkillTool_UnknownSkillHintNamesOnlyLoadableSkills(t *testing.T) {
+	emptySet, err := skills.LoadSet("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	st, err := sqlite.Open(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	seed := func(tenant, op string) {
+		t.Helper()
+		ctx := tools.WithSkillPolicy(tools.WithAgentTools(context.Background(), []string{"Read"}), tools.SkillPolicyValue{})
+		ctx = tools.WithRunIdentity(ctx, tools.RunIdentityValue{AgentID: "a_seed", TenantID: tenant})
+		if res, _ := (&SkillDef{Store: st, Set: emptySet}).Execute(ctx, json.RawMessage(op)); res.IsError {
+			t.Fatalf("seed %q %s: %s", tenant, op, res.Text)
+		}
+	}
+	seed("", `{"op":"create","name":"shared-skill","overlay":{"body":"b"}}`)
+	seed("", `{"op":"create","name":"shared-draft","overlay":{"body":"b"},"promote":false}`)
+	seed("acme", `{"op":"create","name":"own-skill","overlay":{"body":"b"}}`)
+	seed("globex", `{"op":"create","name":"their-skill","overlay":{"body":"b"}}`)
+
+	ctx := tools.WithRunIdentity(tools.WithAgentTools(context.Background(), []string{"Read"}),
+		tools.RunIdentityValue{AgentID: "a_caller", TenantID: "acme"})
+	res, _ := (&SkillTool{Set: emptySet, Store: st}).Execute(ctx, json.RawMessage(`{"name":"does-not-exist"}`))
+	if !res.IsError {
+		t.Fatalf("expected IsError for unknown skill; got %+v", res)
+	}
+	for _, want := range []string{"own-skill", "shared-skill"} {
+		if !strings.Contains(res.Text, want) {
+			t.Errorf("the hint omits loadable %q: %s", want, res.Text)
+		}
+	}
+	for _, not := range []string{"their-skill", "shared-draft"} {
+		if strings.Contains(res.Text, not) {
+			t.Errorf("the hint names %q, which this run cannot load: %s", not, res.Text)
+		}
+	}
+}

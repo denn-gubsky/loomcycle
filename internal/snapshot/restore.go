@@ -116,6 +116,10 @@ type RestoreOptions struct {
 // an author on this host could not have created; the warnings name each row
 // and the reason.
 //
+// TeamChannelRowsSkipped counts the channel messages and cursors of a team's
+// own channels not written because that team is not defined in their tenant
+// here (team_channels.go); the warnings name each team.
+//
 // VolumeDirsCreated counts the dynamic volume directories this restore
 // created under the host's dynamic root; a restored volume whose directory
 // was already there is in VolumeDefsRestored but not here.
@@ -148,6 +152,7 @@ type RestoreResult struct {
 	ChannelDefsRestored            int      `json:"channel_defs_restored"`
 	ChannelMessagesRestored        int      `json:"channel_messages_restored"`
 	ChannelCursorsRestored         int      `json:"channel_cursors_restored"`
+	TeamChannelRowsSkipped         int      `json:"team_channel_rows_skipped"`
 	WebhookDefsRestored            int      `json:"webhook_defs_restored"`
 	WebhookDefActiveRestored       int      `json:"webhook_def_active_restored"`
 	ScheduleDefsRestored           int      `json:"schedule_defs_restored"`
@@ -214,7 +219,8 @@ func (r RestoreResult) Counts() map[string]int {
 //	(missing-credential scan over the restored triggers and cards)
 //	(sessions synth)  → paused_runs       (FK: session_id → sessions.id)
 //	                  → transcript events (FK: run_id    → runs.id)
-//	channel_defs      → channels.messages, .cursors
+//	channel_defs      → channels.messages, .cursors (a team's own channels'
+//	                   rows only for a team defined here: team_defs are above)
 //	evaluations       (no FKs)
 //	interaction_history (optional)
 //	sqlmem            (document structure; bodies came with memory)
@@ -920,7 +926,11 @@ func Restore(ctx context.Context, s store.Store, raw []byte, opts RestoreOptions
 			result.Warnings = append(result.Warnings,
 				fmt.Sprintf("channels.config: %d declared channels in snapshot; reconcile against operator yaml on the restoring host", len(sec.Config)))
 		}
+		teamChannels := newTeamChannelGate(s)
 		for _, m := range sec.Messages {
+			if !teamChannels.admit(ctx, m.TenantID, m.Channel) {
+				continue
+			}
 			var expires, visible, requested time.Time
 			if m.ExpiresAt != nil {
 				expires = *m.ExpiresAt
@@ -955,6 +965,9 @@ func Restore(ctx context.Context, s store.Store, raw []byte, opts RestoreOptions
 			}
 		}
 		for _, c := range sec.Cursors {
+			if !teamChannels.admit(ctx, c.TenantID, c.Channel) {
+				continue
+			}
 			inserted, err := s.SnapshotRestoreChannelCursor(ctx, store.ChannelCursorEntry{
 				Channel:   c.Channel,
 				TenantID:  c.TenantID,
@@ -971,6 +984,7 @@ func Restore(ctx context.Context, s store.Store, raw []byte, opts RestoreOptions
 				result.ChannelCursorsRestored++
 			}
 		}
+		result.TeamChannelRowsSkipped = teamChannels.report(&result)
 	}
 
 	// webhook_defs, then webhook_def_active: after the agent and channel defs

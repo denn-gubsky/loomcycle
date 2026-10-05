@@ -542,16 +542,20 @@ func (s *Server) RegisterAgent(ctx context.Context, req connector.RegisterAgentR
 		return connector.AgentDescriptor{}, err
 	}
 	if _, collides := s.cfg().Agents[req.Name]; collides {
-		return connector.AgentDescriptor{}, fmt.Errorf("agent %q is statically defined in yaml; cannot register over it", req.Name)
+		return connector.AgentDescriptor{}, errRegisterNameUnavailable(req.Name)
 	}
 	if s.store == nil {
 		return connector.AgentDescriptor{}, fmt.Errorf("register_agent requires persistence (no Store configured)")
 	}
 	// A team's own agent runs as "<team>/<name>"; a registered agent of that
 	// name would share its agent-scoped state. AgentDef create refuses the
-	// same.
-	if err := builtin.TeamLocalAgentCollision(ctx, s.store, tenantFromCtx(ctx), req.Name); err != nil {
+	// same, naming the team's agent; register_agent has no per-name grant, so
+	// its refusal is the one any unavailable name gets and does not tell the
+	// caller what a team declares.
+	if declared, err := builtin.TeamDeclaresLocalAgent(ctx, s.store, tenantFromCtx(ctx), req.Name); err != nil {
 		return connector.AgentDescriptor{}, err
+	} else if declared {
+		return connector.AgentDescriptor{}, errRegisterNameUnavailable(req.Name)
 	}
 
 	allowedTools := stripPrivilegedTools(req.Tools, s.cfg().Env.MCPAllowPrivilegedTools)
@@ -609,6 +613,12 @@ func (s *Server) RegisterAgent(ctx context.Context, req connector.RegisterAgentR
 		desc.ExpiresAt = &expiresAt
 	}
 	return desc, nil
+}
+
+// errRegisterNameUnavailable is register_agent's one refusal for a name it
+// cannot take, whatever holds it, so the refusal never says which.
+func errRegisterNameUnavailable(name string) error {
+	return fmt.Errorf("agent name %q is not available; choose a different name", name)
 }
 
 // UnregisterAgent removes a dynamic agent. Refuses to operate on

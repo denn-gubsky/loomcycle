@@ -107,8 +107,9 @@ type Server struct {
 }
 
 // New builds the A2A server from the active A2AServerCardDef named in
-// config. It returns (nil, nil) when the surface is disabled so callers
-// can unconditionally call New and skip mounting on a nil result.
+// config. It returns (nil, nil) when the surface is disabled, or when its
+// card's active version is retired, so callers can unconditionally call New
+// and skip mounting on a nil result.
 //
 // Resolution happens once at construction: the card's exposed_agents
 // drive the skill→agent resolver baked into the executor, and the card
@@ -126,6 +127,16 @@ func New(ctx context.Context, deps Deps) (*Server, error) {
 	// operator's; per-tenant executors are future work.
 	card, ok := lookup.A2AServerCard(ctx, deps.Store, deps.Cfg, "", cardName)
 	if !ok {
+		// A card whose active version was retired is out of service, not a
+		// misconfiguration: retiring is a runtime action, and failing boot on
+		// it would turn the next restart into an outage. Start as if the
+		// surface were disabled; un-retire and restart to serve it again.
+		if deps.Store != nil {
+			if row, err := deps.Store.A2AServerCardDefGetActive(ctx, "", cardName); err == nil && row.Retired {
+				log.Printf("a2a server: NOT SERVING — server card %q (LOOMCYCLE_A2A_SERVER_CARD) has a retired active version (def %s); the A2A surface is off until it is un-retired and loomcycle restarted", cardName, row.DefID)
+				return nil, nil
+			}
+		}
 		return nil, fmt.Errorf("a2a server: active server card %q not found (yaml a2a_server_cards or A2AServerCardDef substrate)", cardName)
 	}
 

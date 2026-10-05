@@ -55,14 +55,21 @@ func MemoryBackend(ctx context.Context, s MemoryBackendStore, cfg *config.Config
 
 // resolveMemoryBackendSubstrate reads the memory_backend_def_active
 // overlay for one tenant pass. Returns (zero, false) when the store is
-// nil, the name has no active pointer for that tenant, or the row's JSON
-// is malformed.
+// nil, the name has no active pointer for that tenant, the active row is
+// retired, or the row's JSON is malformed.
 func resolveMemoryBackendSubstrate(ctx context.Context, s MemoryBackendStore, cfg *config.Config, tenantID, name string) (config.MemoryBackend, Provenance, bool) {
 	if s == nil {
 		return config.MemoryBackend{}, Provenance{}, false
 	}
 	activeRow, err := s.MemoryBackendDefGetActive(ctx, tenantID, name)
 	if err != nil {
+		return config.MemoryBackend{}, Provenance{}, false
+	}
+	// Retiring the active version takes the backend out of service: the store
+	// keeps the pointer (MemoryBackendDef fork forks from it), so the refusal
+	// lives here. The tier is treated as absent and the name resolves from the
+	// next one, as a retired agent override does.
+	if activeRow.Retired {
 		return config.MemoryBackend{}, Provenance{}, false
 	}
 	var md SubstrateMemoryBackendDef
