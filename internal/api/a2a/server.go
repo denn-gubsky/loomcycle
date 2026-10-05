@@ -126,7 +126,7 @@ func New(ctx context.Context, deps Deps) (*Server, error) {
 	// operator's; per-tenant executors are future work.
 	card, ok := lookup.A2AServerCard(ctx, deps.Store, deps.Cfg, "", cardName)
 	if !ok {
-		return nil, fmt.Errorf("a2a server: active server card %q not found (yaml a2a_server_cards or A2AServerCardDef substrate)", cardName)
+		return nil, fmt.Errorf("a2a server: active server card %q not found (yaml a2a_server_cards or A2AServerCardDef substrate; a retired active version does not count)", cardName)
 	}
 
 	// Skill→agent resolver from exposed_agents. Built once; the map is

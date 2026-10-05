@@ -56,13 +56,20 @@ func A2AServerCard(ctx context.Context, s A2AServerCardStore, cfg *config.Config
 
 // resolveA2AServerCardSubstrate reads the a2a_server_card_def_active overlay
 // for one tenant pass. Returns (zero, false) on nil store, no active pointer
-// for that tenant, or malformed row JSON.
+// for that tenant, a retired active row, or malformed row JSON.
 func resolveA2AServerCardSubstrate(ctx context.Context, s A2AServerCardStore, tenantID, name string) (config.A2AServerCard, bool) {
 	if s == nil {
 		return config.A2AServerCard{}, false
 	}
 	activeRow, err := s.A2AServerCardDefGetActive(ctx, tenantID, name)
 	if err != nil {
+		return config.A2AServerCard{}, false
+	}
+	// Retiring the active version takes the card out of service: the store
+	// keeps the pointer (A2AServerCardDef fork forks from it), so the refusal
+	// lives here. The tier is treated as absent and the name resolves from
+	// the next one, as a retired agent override does.
+	if activeRow.Retired {
 		return config.A2AServerCard{}, false
 	}
 	var sd SubstrateA2AServerCardDef
@@ -105,13 +112,21 @@ func A2AAgent(ctx context.Context, s A2AAgentStore, cfg *config.Config, tenantID
 
 // resolveA2AAgentSubstrate reads the a2a_agent_def_active overlay for one
 // tenant pass. Returns (zero, false) on nil store, no active pointer for
-// that tenant, or malformed row JSON.
+// that tenant, a retired active row, or malformed row JSON.
 func resolveA2AAgentSubstrate(ctx context.Context, s A2AAgentStore, tenantID, name string) (config.A2AAgent, bool) {
 	if s == nil {
 		return config.A2AAgent{}, false
 	}
 	activeRow, err := s.A2AAgentDefGetActive(ctx, tenantID, name)
 	if err != nil {
+		return config.A2AAgent{}, false
+	}
+	// Retiring the active version takes the peer out of service — its tools
+	// re-resolve on every call, so a retired peer is no longer dialed. The
+	// store keeps the pointer (A2AAgentDef fork forks from it), so the
+	// refusal lives here; the tier is treated as absent and the name resolves
+	// from the next one, as a retired agent override does.
+	if activeRow.Retired {
 		return config.A2AAgent{}, false
 	}
 	var ad SubstrateA2AAgentDef
