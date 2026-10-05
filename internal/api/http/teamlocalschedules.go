@@ -21,9 +21,10 @@ import (
 //
 // A team's own schedule (teamgraph.LocalSchedule) is a timer held by a WALK of
 // the team: armed when op=run starts the walk (TeamDef.ArmWalkTriggers →
-// armWalkTriggers), stopped when the walk ends, whichever way it ends. It has
-// no row anywhere — nothing in schedule_defs or schedule_run_state, nothing
-// the scheduler sweeps — so a team with no walk running has no live schedule.
+// armWalkTriggers → armTeamSchedules), stopped when the walk ends, whichever
+// way it ends. It has no row anywhere — nothing in schedule_defs or
+// schedule_run_state, nothing the scheduler sweeps — so a team with no walk
+// running has no live schedule.
 //
 // Each tick is a message published into one of the team's own channels
 // through publishTeamLocalChannel, under the walk's team scope and as the walk
@@ -71,16 +72,35 @@ type tickCounts struct {
 	published, paused, failed atomic.Int64
 }
 
-// armWalkTriggers starts the timers of the team's own schedules for the walk
+// armWalkTriggers arms what wakes the walk running under ctx from inside its
+// team — its own schedules, then its own webhooks — and returns the disarm,
+// which undoes both and returns only once neither can publish again. Wired as
+// TeamDef.ArmWalkTriggers.
+func (s *Server) armWalkTriggers(ctx context.Context, def teamgraph.Definition) (func(), error) {
+	disarmSchedules, err := s.armTeamSchedules(ctx, def)
+	if err != nil {
+		return nil, err
+	}
+	disarmWebhooks, err := s.armTeamWebhooks(ctx, def)
+	if err != nil {
+		disarmSchedules()
+		return nil, err
+	}
+	return func() {
+		disarmWebhooks()
+		disarmSchedules()
+	}, nil
+}
+
+// armTeamSchedules starts the timers of the team's own schedules for the walk
 // running under ctx, and returns the disarm: it stops every one of them and
-// returns only once none can publish again. Wired as TeamDef.ArmWalkTriggers;
-// a team's own webhooks would register on the same lifecycle here.
+// returns only once none can publish again.
 //
 // Every schedule's channel is resolved once, here, in the walk's tenant and
 // for the walk's user: a schedule that could never publish — the walk runs in
 // another tenant than the team, or the channel is user-scoped and the walk has
 // no user — refuses the walk instead of failing on every tick.
-func (s *Server) armWalkTriggers(ctx context.Context, def teamgraph.Definition) (func(), error) {
+func (s *Server) armTeamSchedules(ctx context.Context, def teamgraph.Definition) (func(), error) {
 	names := def.LocalScheduleNames()
 	if len(names) == 0 {
 		return func() {}, nil

@@ -2196,6 +2196,7 @@ func main() {
 			Cfg:                  cfg,
 			Runner:               srv,
 			TeamWalks:            srv,
+			TeamWebhooks:         srv.ReceiveTeamWebhooks(), // a team's own, while a walk of it runs here
 			Publisher:            sysPublisher,
 			RunStateBus:          runStateBus,
 			EnvAllowlist:         webhookAllowlist,
@@ -2208,7 +2209,7 @@ func main() {
 			rec.Mount(reg)
 			rec.MountAdmin(reg, adminAuth)
 		})
-		log.Printf("webhooks: enabled (POST /v1/_webhooks/{name}, env_allowlist=%d names via LOOMCYCLE_SCHEDULER_ENV_ALLOWLIST + LOOMCYCLE_WEBHOOKS_ENV_ALLOWLIST + static-declared secrets; LOOMCYCLE_* verify-secrets auto-allowed; unauthenticated_mode=%t)",
+		log.Printf("webhooks: enabled (POST /v1/_webhooks/{name} + a team's own at POST /v1/_teams/{team}/webhooks/{name}, env_allowlist=%d names via LOOMCYCLE_SCHEDULER_ENV_ALLOWLIST + LOOMCYCLE_WEBHOOKS_ENV_ALLOWLIST + static-declared secrets; LOOMCYCLE_* verify-secrets auto-allowed; unauthenticated_mode=%t)",
 			len(webhookAllowlist), cfg.Env.WebhooksAllowUnauthenticated)
 		// Surface every static webhook that will fail every delivery (inert,
 		// or its secret won't resolve) so the operator sees WHY at boot rather

@@ -173,6 +173,9 @@ type Server struct {
 	// walkTimers counts the team schedules armed on this replica, live, so a
 	// test can tell that a disarm stopped them all.
 	walkTimers atomic.Int64
+	// teamHooks is the set of a team's own webhooks the walks running on
+	// this replica have armed; see teamlocalwebhooks.go.
+	teamHooks teamWebhooks
 
 	// breakpointReg maps a live run_id → the armed breakpoint set of the team
 	// walk running under it, so an operator can arm a Starter state while the
