@@ -740,3 +740,20 @@ func TestResumedRun_WhoseTeamVersionWasDeletedIsFailed(t *testing.T) {
 		t.Errorf("run status %q, error %q; want failed because its team version no longer exists", got.Status, got.ErrorMsg)
 	}
 }
+
+// A provider fallback re-resolves the run's agent BY NAME, on the run's own
+// context. For a team's own agent that only works because the context carries
+// the team scope: with it the name resolves, without it there is no such agent.
+func TestResolveAgent_FallbackReResolveFindsATeamsOwnAgentOnlyInItsScope(t *testing.T) {
+	h := newLocalHarness(t)
+	defID := h.seedTeamVersion("tdf_sdlc_1", "sdlc", teamWith("./solo", map[string]string{"solo": "LOCAL solo"}), true)
+	inTeam := store.WithTeamScope(context.Background(), store.TeamScope{Tenant: "acme", Team: "sdlc", DefID: defID})
+
+	providerID, model, _, err := h.srv.resolveAgent(inTeam, "acme", "alice", "sdlc/solo", "", false, nil)
+	if err != nil || providerID != "stub" || model != "stub-model" {
+		t.Errorf("inside the team: resolveAgent = %q %q %v, want the local agent's stub-model", providerID, model, err)
+	}
+	if _, _, _, err := h.srv.resolveAgent(context.Background(), "acme", "alice", "sdlc/solo", "", false, nil); !errors.Is(err, runner.ErrUnknownAgent) {
+		t.Errorf("outside the team: resolveAgent = %v, want unknown agent", err)
+	}
+}
