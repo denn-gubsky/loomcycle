@@ -39,7 +39,15 @@ import (
 //     have no list", and refusing on the second would break every create on a
 //     plane that simply never wired a catalog.
 func (t *TeamDef) preflightChannels(ctx context.Context, def teamgraph.Definition) error {
-	refs := teamgraph.ChannelRefs(def)
+	// The team's own channels are neither in its ACL nor in the declared set:
+	// the team holds them, and they exist only in the definition, whose
+	// Validate already refused an undeclared one.
+	var refs []teamgraph.ChannelRef
+	for _, ref := range teamgraph.ChannelRefs(def) {
+		if _, isLocal := teamgraph.LocalRef(ref.Channel); !isLocal {
+			refs = append(refs, ref)
+		}
+	}
 	if len(refs) == 0 {
 		return nil
 	}
