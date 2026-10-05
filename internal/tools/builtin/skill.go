@@ -239,7 +239,7 @@ func (s *SkillTool) execList(ctx context.Context, policy tools.SkillPolicyValue,
 				if r.TenantID != "" && r.TenantID != tid {
 					continue // RFC N: only the caller's tenant + the shared "" base.
 				}
-				if r.ActiveRetired {
+				if !skillDefServable(r) {
 					continue // invoke would not serve it (a static skill of the name is listed above)
 				}
 				if _, ok := catalog[r.Name]; !ok {
@@ -285,6 +285,13 @@ func (s *SkillTool) execList(ctx context.Context, policy tools.SkillPolicyValue,
 	return okJSONCount(map[string]any{"skills": out}, len(out))
 }
 
+// skillDefServable reports whether invoke would serve a stored skill name:
+// it has an active version (a version created with promote:false has none)
+// and that version is not retired.
+func skillDefServable(n store.SkillDefNameSummary) bool {
+	return n.ActiveDefID != "" && !n.ActiveRetired
+}
+
 // skillFail boxes a classified failure for resolveSkill's return.
 func skillFail(r tools.Result) *tools.Result { return &r }
 
@@ -296,35 +303,42 @@ func skillFail(r tools.Result) *tools.Result { return &r }
 // exist, no skills configured at all, a broken stored definition, a
 // store error), and only here is the reason known.
 func (s *SkillTool) resolveSkill(ctx context.Context, name string) (string, []string, string, *tools.Result) {
-	// 1. DB-promoted active SkillDef wins when Store is wired.
+	// 1. DB-promoted active SkillDef wins when Store is wired: the run's own
+	// tenant's, then the shared "" one — lookup.Skill's order, and the set
+	// op=list offers. RFC N: the tenant is the authoritative run identity in
+	// ctx; for the "" tenant the two passes are one.
 	if s.Store != nil {
-		// RFC N: read the active pointer within the agent's own tenant
-		// (from the authoritative run identity in ctx; "" = shared).
-		row, err := s.Store.SkillDefGetActive(ctx, tools.RunIdentity(ctx).TenantID, name)
-		if err == nil && row.Retired {
-			// A retired active version is out of service. The store keeps the
-			// pointer (SkillDef fork forks from it), so it is refused here and
-			// the name falls through to the static skill, as if never overridden.
-			err = &store.ErrNotFound{Kind: "skill_def_active", ID: name}
+		tiers := []string{tools.RunIdentity(ctx).TenantID}
+		if tiers[0] != "" {
+			tiers = append(tiers, "")
 		}
-		if err == nil {
-			var def skillDefOverlay
-			if uerr := json.Unmarshal(row.Definition, &def); uerr != nil {
-				return "", nil, "", skillFail(errBusiness(fmt.Sprintf("skill %q: corrupt active def %s: %v", name, row.DefID, uerr),
-					"Ask an operator to repair or re-promote this skill; continue without it."))
+		for _, tier := range tiers {
+			row, err := s.Store.SkillDefGetActive(ctx, tier, name)
+			if err == nil && row.Retired {
+				// A retired active version is out of service. The store keeps the
+				// pointer (SkillDef fork forks from it), so it is refused here and
+				// the name falls through to the next tier, as if never overridden.
+				err = &store.ErrNotFound{Kind: "skill_def_active", ID: name}
 			}
-			if strings.TrimSpace(def.Body) == "" {
-				// Shouldn't happen — SkillDef.create/fork reject empty
-				// bodies — but defend against a hand-mucked DB row
-				// rather than silently emitting an empty tool_result.
-				return "", nil, "", skillFail(errBusiness(fmt.Sprintf("skill %q: active def %s has empty body", name, row.DefID),
-					"Ask an operator to repair or re-promote this skill; continue without it."))
+			if err == nil {
+				var def skillDefOverlay
+				if uerr := json.Unmarshal(row.Definition, &def); uerr != nil {
+					return "", nil, "", skillFail(errBusiness(fmt.Sprintf("skill %q: corrupt active def %s: %v", name, row.DefID, uerr),
+						"Ask an operator to repair or re-promote this skill; continue without it."))
+				}
+				if strings.TrimSpace(def.Body) == "" {
+					// Shouldn't happen — SkillDef.create/fork reject empty
+					// bodies — but defend against a hand-mucked DB row
+					// rather than silently emitting an empty tool_result.
+					return "", nil, "", skillFail(errBusiness(fmt.Sprintf("skill %q: active def %s has empty body", name, row.DefID),
+						"Ask an operator to repair or re-promote this skill; continue without it."))
+				}
+				return def.Body, def.Tools, "skill_def", nil
 			}
-			return def.Body, def.Tools, "skill_def", nil
-		}
-		var nf *store.ErrNotFound
-		if !errors.As(err, &nf) {
-			return "", nil, "", skillFail(errFrom(fmt.Sprintf("skill %q: lookup active def: %v", name, err), err))
+			var nf *store.ErrNotFound
+			if !errors.As(err, &nf) {
+				return "", nil, "", skillFail(errFrom(fmt.Sprintf("skill %q: lookup active def: %v", name, err), err))
+			}
 		}
 		// Fall through to static lookup.
 	}
@@ -340,14 +354,17 @@ func (s *SkillTool) resolveSkill(ctx context.Context, name string) (string, []st
 		// this one) vs neither source configured at all.
 		if s.Store != nil {
 			all, lerr := s.Store.SkillDefListNames(ctx)
-			// Only the names THIS run could load: its own tenant's, which is
-			// the one tenant resolveSkill reads. The listing spans every
-			// tenant, and hinting from all of it disclosed other tenants'
-			// skill names to anyone who asked for one that does not exist.
+			// Only the names THIS run could load: its own tenant's and the
+			// shared ones, the tiers resolveSkill reads. The listing spans
+			// every tenant, and hinting from all of it disclosed other
+			// tenants' skill names to anyone who asked for one that does not
+			// exist.
 			tenant := tools.RunIdentity(ctx).TenantID
 			var names []store.SkillDefNameSummary
+			seen := map[string]bool{}
 			for _, n := range all {
-				if n.TenantID == tenant && !n.ActiveRetired {
+				if (n.TenantID == tenant || n.TenantID == "") && skillDefServable(n) && !seen[n.Name] {
+					seen[n.Name] = true
 					names = append(names, n)
 				}
 			}
