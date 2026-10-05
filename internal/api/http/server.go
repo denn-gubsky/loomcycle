@@ -2405,7 +2405,13 @@ func (s *Server) ChannelWriteDef(ctx context.Context, tenantID, channel string) 
 	if s.store == nil {
 		return channels.WriteDef{}, nil
 	}
-	if team, local, ok := store.SplitTeamChannelName(channel); ok {
+	// The reserved prefix holds only team channels: a name under it that is
+	// not one is refused, not written as an undeclared channel.
+	if store.IsTeamChannelName(channel) {
+		team, local, ok := store.SplitTeamChannelName(channel)
+		if !ok {
+			return channels.WriteDef{}, fmt.Errorf("channel %q is under the reserved %q prefix and names no team's channel", channel, store.TeamChannelPrefix)
+		}
 		return s.teamChannelWriteDef(ctx, tenantID, team, local)
 	}
 	row, err := s.store.ChannelGet(ctx, tenantID, channel)

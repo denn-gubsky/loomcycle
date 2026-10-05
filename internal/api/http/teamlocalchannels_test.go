@@ -92,6 +92,7 @@ type channelHarness struct {
 	srv  *Server
 	st   store.Store
 	prov *chanProvider
+	pub  *channels.StorePublisher
 }
 
 // newChannelHarness serves the global agents given (plus "reviewer"), with the
@@ -124,7 +125,7 @@ func newChannelHarness(t *testing.T, agents map[string]config.AgentDef) *channel
 	srv.SetChannelBus(bus)
 	srv.SetSteerRegistry(steer.NewRegistry(0))
 	srv.SetTeamDefTool(&builtin.TeamDef{Store: st})
-	return &channelHarness{t: t, srv: srv, st: st, prov: prov}
+	return &channelHarness{t: t, srv: srv, st: st, prov: prov, pub: pub}
 }
 
 // seed writes one promoted version of a team in tenant acme.
@@ -281,13 +282,50 @@ func TestTeamWalk_OwnChannelHoldIsHonoured(t *testing.T) {
 	if held != 1 {
 		t.Errorf("held count on _team/held/events = %d, want 1", held)
 	}
-	// With no scope on the writer, the team's active version decides.
-	wd, err := h.srv.ChannelWriteDef(context.Background(), "acme", "_team/held/events")
-	if err != nil || !wd.Hold {
-		t.Errorf("ChannelWriteDef outside a walk = %+v, %v; want the active version's hold", wd, err)
+}
+
+// A write to a team's own channel is decided from the version the writer acts
+// under, and REFUSED — not written as-is, which would deliver what the
+// channel's definition holds — whenever that version cannot say.
+func TestChannelWriter_TeamChannelWriteFailsClosed(t *testing.T) {
+	h := newChannelHarness(t, nil)
+	sc := h.seed("tdf_held_1", "held", intakeTeam(`{"scope":"tenant","hold":true}`))
+	write := func(ctx context.Context, tenant, name string) error {
+		_, err := h.pub.Write(ctx, channels.WriteRequest{
+			Channel: name, TenantID: tenant, Scope: store.MemoryScopeTenant, Payload: json.RawMessage(`{}`),
+		})
+		return err
 	}
-	if wd, err := h.srv.ChannelWriteDef(context.Background(), "other", "_team/held/events"); err != nil || wd.Hold {
-		t.Errorf("another tenant's write is not this team's: %+v, %v", wd, err)
+	in := func(sc store.TeamScope) context.Context { return store.WithTeamScope(context.Background(), sc) }
+	gone := sc
+	gone.DefID = "tdf_deleted"
+	for name, c := range map[string]struct {
+		ctx            context.Context
+		tenant, stored string
+	}{
+		"no team scope (and an active version that holds)": {context.Background(), "acme", "_team/held/events"},
+		"another team's scope":                             {in(store.TeamScope{Tenant: "acme", Team: "other", DefID: sc.DefID}), "acme", "_team/held/events"},
+		"another tenant":                                   {in(sc), "other", "_team/held/events"},
+		"the writer's version is gone":                     {in(gone), "acme", "_team/held/events"},
+		"the version does not declare the channel":         {in(sc), "acme", "_team/held/nosuch"},
+		"a name that is not a team channel's":              {in(sc), "acme", "_team/held"},
+	} {
+		if err := write(c.ctx, c.tenant, c.stored); err == nil {
+			t.Errorf("%s: the write was accepted", name)
+		}
+	}
+	stats, err := h.st.ChannelStats(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, st := range stats {
+		if store.IsTeamChannelName(st.Channel) {
+			t.Errorf("a refused write left %d message(s) on %s (tenant %q)", st.MessageCount+st.Held, st.Channel, st.TenantID)
+		}
+	}
+	// Inside the version that declares it, the write holds.
+	if err := write(in(sc), "acme", "_team/held/events"); err != nil {
+		t.Fatalf("a write from inside the team: %v", err)
 	}
 }
 

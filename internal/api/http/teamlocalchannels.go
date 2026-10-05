@@ -3,7 +3,6 @@ package http
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 
 	"github.com/denn-gubsky/loomcycle/internal/channels"
@@ -22,8 +21,7 @@ import (
 //
 //	a walk's starter, channel state or input publish   the version it walks
 //	a team's own agent, via the Channel tool           the version on its scope
-//	the channel writer, deciding a hold                the writer's scope, else
-//	                                                   the team's active version
+//	the channel writer, deciding a hold                the writer's own scope
 //
 // Its keyspace is the team's tenant: a tenant-scoped one is shared by every
 // walk of the team there (scope_id ""), a user-scoped one is the run's user's.
@@ -89,40 +87,32 @@ func (s *Server) publishTeamLocalChannel(ctx context.Context, tenant string, sc 
 }
 
 // teamChannelWriteDef is ChannelWriteDef for a team's own channel: whether it
-// holds. The version is the writer's own team scope when it is this team's —
-// a walk, or a run inside one — and otherwise the team's active version, the
-// definition of the team as it stands. A channel no version declares (the team
-// is gone, or the version dropped it) is written as-is, as an undeclared
-// channel is; a store fault or an unreadable definition refuses the write.
+// holds, decided from the version the WRITER is acting under — the team scope
+// on its ctx, which must be this team's in this tenant.
+//
+// It FAILS CLOSED. The prefix is reserved, so there is no legitimate write to
+// a "_team/" name that is not a team's own channel, and a lenient answer
+// would publish visible messages into a channel whose definition says hold.
+// A write is refused when ctx carries no scope for this team and tenant (every
+// writer that reaches such a name — a walk, a team's own agent through the
+// Channel tool, publishTeamLocalChannel — carries one; the admin surfaces and
+// the scheduler refuse the name as undeclared before they write), when that
+// version is gone or unreadable, when it does not declare the channel, and on
+// a store fault. The team's ACTIVE version is never consulted: the writer may
+// be acting under another one, whose definition is the one that applies.
 func (s *Server) teamChannelWriteDef(ctx context.Context, tenantID, team, local string) (channels.WriteDef, error) {
-	var def teamgraph.Definition
-	if sc, ok := store.TeamScopeFromContext(ctx); ok && sc.Team == team && sc.Tenant == tenantID {
-		_, d, err := s.teamVersion(ctx, tenantID, sc)
-		var gone *teamVersionGoneError
-		switch {
-		case errors.As(err, &gone):
-			return channels.WriteDef{}, nil
-		case err != nil:
-			return channels.WriteDef{}, err
-		}
-		def = d
-	} else {
-		row, err := s.store.TeamDefGetActive(ctx, tenantID, team)
-		switch {
-		case isNotFound(err):
-			return channels.WriteDef{}, nil
-		case err != nil:
-			return channels.WriteDef{}, err
-		}
-		d, err := s.teamDefs.parsed(row.DefID, row.Definition)
-		if err != nil {
-			return channels.WriteDef{}, fmt.Errorf("team %q: %w", team, err)
-		}
-		def = d
+	name := store.TeamChannelName(team, local)
+	sc, ok := store.TeamScopeFromContext(ctx)
+	if !ok || sc.Team != team || sc.Tenant != tenantID {
+		return channels.WriteDef{}, fmt.Errorf("channel %q is team %q's own, and this write is not made from inside that team in its tenant", store.TeamChannelDisplayName(name), team)
+	}
+	_, def, err := s.teamVersion(ctx, tenantID, sc)
+	if err != nil {
+		return channels.WriteDef{}, err
 	}
 	body, ok := def.LocalChannel(local)
 	if !ok {
-		return channels.WriteDef{}, nil
+		return channels.WriteDef{}, fmt.Errorf("team %q (version %s) declares no channel of its own named %q", team, sc.DefID, local)
 	}
 	cd, err := builtin.LocalChannelDefinition(team, local, body)
 	if err != nil {
