@@ -224,3 +224,39 @@ func TestValidateTeamDefBody_RefusesALocalScheduleThatCouldNotRun(t *testing.T) 
 		}
 	}
 }
+
+// The model learns a team's own schedules from the tool's schema: it must parse
+// and describe them under local.
+func TestTeamDefInputSchema_DescribesLocalSchedules(t *testing.T) {
+	var schema struct {
+		Properties struct {
+			Overlay struct {
+				Properties struct {
+					Local struct {
+						Properties map[string]struct {
+							AdditionalProperties struct {
+								Properties map[string]any `json:"properties"`
+								Required   []string       `json:"required"`
+							} `json:"additionalProperties"`
+						} `json:"properties"`
+					} `json:"local"`
+				} `json:"properties"`
+			} `json:"overlay"`
+		} `json:"properties"`
+	}
+	if err := json.Unmarshal((&TeamDef{}).InputSchema(), &schema); err != nil {
+		t.Fatalf("the TeamDef input schema does not parse: %v", err)
+	}
+	sched, ok := schema.Properties.Overlay.Properties.Local.Properties["schedules"]
+	if !ok {
+		t.Fatal("local.schedules is not in the TeamDef input schema")
+	}
+	for _, field := range []string{"schedule", "channel", "payload"} {
+		if _, ok := sched.AdditionalProperties.Properties[field]; !ok {
+			t.Errorf("local.schedules does not describe %q", field)
+		}
+	}
+	if !strings.Contains((&TeamDef{}).Description(), "schedules of its own") {
+		t.Error("the TeamDef description does not mention a team's own schedules")
+	}
+}
