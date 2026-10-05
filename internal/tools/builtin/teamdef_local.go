@@ -109,6 +109,58 @@ func (t *TeamDef) checkLocalAgents(ctx context.Context, op, team string, def tea
 			return fmt.Errorf("%s: a team's own code-js agent must carry its source inline as code_body — "+
 				"there is no agent_code directory for it", where)
 		}
+		// skill.tools ⊆ agent.tools for every team skill it is granted — the
+		// rule the Skill tool applies when one is loaded, checked here so a
+		// team cannot be stored with a grant that would only ever be refused.
+		// Validate has already refused a grant of an undeclared skill.
+		for _, granted := range teamgraph.LocalSkillGrants(merged.Skills) {
+			sk, ok := def.LocalSkill(granted)
+			if !ok {
+				continue
+			}
+			if widening := skillToolsExceedingAgent(sk.Tools, merged.Tools, merged.Tools); len(widening) > 0 {
+				return fmt.Errorf("%s: its skill %q requires tools %v this agent is not granted — a skill cannot widen its agent's tools",
+					where, teamgraph.LocalRefPrefix+granted, widening)
+			}
+		}
+	}
+	return nil
+}
+
+// localSkillDefinition is a team-local skill in the shape a skill_defs row
+// holds, which every SkillDef check reads.
+func localSkillDefinition(sk teamgraph.LocalSkill) skillDefOverlay {
+	return skillDefOverlay{Body: sk.Body, Description: sk.Description, Tools: sk.Tools}
+}
+
+// checkLocalSkills holds every skill a definition declares to the gates a new
+// skill passes (SkillDef.gateNewSkill), under its full name "<team>/<name>".
+// Called at create AND fork, on the merged definition, for the reason
+// checkLocalAgents gives: a fork is an authoring act by the forker, so the
+// skills it carries over are judged under the forker's authority — its
+// `skills:` allowlist and its own tools — like the ones it adds.
+//
+// There is no name-collision check, unlike for agents: a team's skill keeps
+// no state of its own, and it is reached only as "./<name>" by the team's own
+// agents, so a global skill of the same full name is never ambiguous with it.
+func (t *TeamDef) checkLocalSkills(ctx context.Context, op, team string, def teamgraph.Definition) error {
+	names := def.LocalSkillNames()
+	if len(names) == 0 {
+		return nil
+	}
+	if err := teamgraph.ValidateName(team); err != nil {
+		return fmt.Errorf("local: a team that declares its own skills needs a name of one segment "+
+			"(A-Z a-z 0-9 _ -), because each is named \"<team>/<name>\": %w", err)
+	}
+	if t.Skills == nil {
+		return fmt.Errorf("local: this server cannot check a team's own skills (no skill-definition tool is wired), so a definition declaring them is refused")
+	}
+	policy := tools.SkillPolicy(ctx)
+	for _, name := range names {
+		sk, _ := def.LocalSkill(name)
+		if _, err := t.Skills.gateNewSkill(ctx, policy, op, teamgraph.QualifiedLocalName(team, name), localSkillDefinition(sk)); err != nil {
+			return fmt.Errorf("local.skills[%q]: %w", name, err)
+		}
 	}
 	return nil
 }

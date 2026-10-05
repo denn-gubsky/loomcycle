@@ -119,9 +119,9 @@ type Definition struct {
 	// reaches a prompt as those characters (see vars.go). Content, and hashed.
 	Vars map[string]string `json:"vars,omitempty"`
 
-	// Local is what the team declares for itself — today, its own agents (see
-	// local.go). A local agent lives only here: it is never written to the
-	// agent stores, and resolves only from inside a walk of this team.
+	// Local is what the team declares for itself — its own agents and skills
+	// (see local.go). Each lives only here: it is never written to the agent
+	// or skill stores, and resolves only from inside a walk of this team.
 	// Content, and hashed.
 	Local *Local `json:"local,omitempty"`
 }

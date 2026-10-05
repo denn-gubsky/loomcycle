@@ -16,11 +16,14 @@ agent's `skills:` allowlist admits.
 
 `{skills: [{name, description?}]}`. A skill created at runtime may have no
 description in this list; `invoke` it to read it. An empty list means no skill
-you may load matches.
+you may load matches. A skill your team declares for its own agents is listed
+as `./<name>`, the name `invoke` takes.
 
 ## Errors
 
-None in practice: a pattern that matches nothing returns an empty list.
+None in practice: a pattern that matches nothing returns an empty list. A
+team agent whose team cannot be read gets an error saying so, rather than a
+list missing its team's skills.
 
 ## Examples
 

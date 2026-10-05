@@ -115,3 +115,43 @@ func TestSkill_DefaultTenantPreservesSubstrateFirstOrder(t *testing.T) {
 		t.Errorf("default tenant precedence broke: got body=%q source=%q, want the shared substrate def", got.Body, got.Source)
 	}
 }
+
+// Retiring the active version takes a skill out of service: the store keeps
+// the pointer, so the resolver must refuse the row. The name then resolves
+// from the next tier — the shared override, then the static skill — as if the
+// retired tier had never overridden it, and un-retiring restores it.
+func TestSkill_RetiredActiveVersionFallsThroughToTheNextTier(t *testing.T) {
+	ss := &stubSkillStore{active: map[string]store.SkillDefRow{
+		skillKey("tenant-a", "s"): {DefID: "sd_a", Name: "s", Definition: mustSubstrateSkill(t, "tenant override")},
+		skillKey("", "s"):         {DefID: "sd_shared", Name: "s", Definition: mustSubstrateSkill(t, "shared override")},
+	}}
+	set := staticSetWith(t, "s", "static base")
+	setRetired := func(tenant string, retired bool) {
+		row := ss.active[skillKey(tenant, "s")]
+		row.Retired = retired
+		ss.active[skillKey(tenant, "s")] = row
+	}
+	body := func() string {
+		got, ok := lookup.Skill(context.Background(), ss, set, "tenant-a", "s")
+		if !ok {
+			return "<none>"
+		}
+		return got.Body
+	}
+
+	if got := body(); got != "tenant override" {
+		t.Fatalf("precondition: body = %q, want the tenant override", got)
+	}
+	setRetired("tenant-a", true)
+	if got := body(); got != "shared override" {
+		t.Errorf("tenant override retired: body = %q, want the shared override", got)
+	}
+	setRetired("", true)
+	if got := body(); got != "static base" {
+		t.Errorf("both overrides retired: body = %q, want the static skill", got)
+	}
+	setRetired("tenant-a", false)
+	if got := body(); got != "tenant override" {
+		t.Errorf("tenant override un-retired: body = %q, want it served again", got)
+	}
+}

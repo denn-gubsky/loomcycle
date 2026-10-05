@@ -147,16 +147,50 @@ func (s *Server) resolveAgentName(ctx context.Context, tenantID, name string, sr
 // agents: it runs as "<team>/<name>" and the team version declares <name>.
 // (No global agent can hold that name while it runs; see refuseSharedName.)
 func (s *Server) callerIsTeamLocal(ctx context.Context, tenantID string, sc store.TeamScope) bool {
+	_, ok, err := s.teamLocalCaller(ctx, tenantID, sc)
+	return err == nil && ok
+}
+
+// teamLocalCaller is callerIsTeamLocal with the team version it read, and a
+// failure to read it reported rather than taken for "no": ok says whether the
+// run asking is one of that version's own agents.
+func (s *Server) teamLocalCaller(ctx context.Context, tenantID string, sc store.TeamScope) (teamgraph.Definition, bool, error) {
 	local, ok := strings.CutPrefix(tools.AgentName(ctx), sc.Team+"/")
 	if !ok || teamgraph.ValidateLocalName(local) != nil {
-		return false
+		return teamgraph.Definition{}, false, nil
 	}
 	_, def, err := s.teamVersion(ctx, tenantID, sc)
 	if err != nil {
-		return false
+		return teamgraph.Definition{}, false, err
 	}
 	_, declared := def.LocalAgent(local)
-	return declared
+	return def, declared, nil
+}
+
+// teamSkillsForCaller is the Skill tool's view of a team's own skills: the
+// skills the team version in ctx's scope declares, when the run asking is one
+// of that version's own agents (ok=true). Any other caller — outside every
+// scope, or a global agent running inside one — gets ok=false and so reaches
+// no team skill by any spelling. Which of them the agent may load is its
+// `skills` grant's to say (teamgraph.LocalSkillGranted); this only answers
+// "which team, which version".
+//
+// It reads the version the scope RECORDS, through teamVersion, so a resumed
+// or continued run loads the skill of the version it started under, as it
+// runs that version's agents.
+func (s *Server) teamSkillsForCaller(ctx context.Context) (map[string]teamgraph.LocalSkill, bool, error) {
+	sc, inTeam := store.TeamScopeFromContext(ctx)
+	if !inTeam {
+		return nil, false, nil
+	}
+	def, ok, err := s.teamLocalCaller(ctx, tenantFromCtx(ctx), sc)
+	if err != nil || !ok {
+		return nil, false, err
+	}
+	if def.Local == nil {
+		return nil, true, nil
+	}
+	return def.Local.Skills, true, nil
 }
 
 // refuseSharedName refuses to run a team's own agent while a GLOBAL agent of

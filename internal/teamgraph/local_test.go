@@ -87,7 +87,7 @@ func quote(s string) string { return `"` + s + `"` }
 // know. Under `local` that would accept a kind this runtime cannot honour and
 // run the team without it.
 func TestParse_RefusesUnknownLocalKind(t *testing.T) {
-	for _, kind := range []string{"skills", "channels", "schedules", "webhooks", "agent"} {
+	for _, kind := range []string{"channels", "schedules", "webhooks", "agent", "skill"} {
 		_, err := Parse([]byte(`{"entry":"s","local":{"` + kind + `":{}}}`))
 		if err == nil {
 			t.Errorf("local.%s must be refused, not ignored", kind)

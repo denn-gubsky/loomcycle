@@ -222,8 +222,8 @@ func TestTeamDefFork_KeepsOrReplacesLocalAgents(t *testing.T) {
 
 func TestTeamDefCreate_RefusesUnknownLocalKind(t *testing.T) {
 	tool, ctx := localTeamFixture(t)
-	overlay := strings.Replace(validTeamGraph, `"entry"`, `"local":{"skills":{"s":{}}},"entry"`, 1)
-	wantRefused(t, teamOp(t, tool, ctx, "create", "sdlc", overlay), "local.skills", "skills")
+	overlay := strings.Replace(validTeamGraph, `"entry"`, `"local":{"channels":{"c":{}}},"entry"`, 1)
+	wantRefused(t, teamOp(t, tool, ctx, "create", "sdlc", overlay), "local.channels", "channels")
 }
 
 // A team named before the one-segment rule keeps working, but "<team>/<name>"
@@ -368,7 +368,7 @@ func TestValidateTeamDefBody_ChecksLocalAgentBodies(t *testing.T) {
 		t.Fatalf("a well-formed local agent: %v", err)
 	}
 	for what, body := range map[string]string{
-		"an unknown local kind":       strings.Replace(validTeamGraph, `"entry"`, `"local":{"skills":{}},"entry"`, 1),
+		"an unknown local kind":       strings.Replace(validTeamGraph, `"entry"`, `"local":{"channels":{}},"entry"`, 1),
 		"a pin and a tier at once":    localTeam(`{"tier":"middle","model":"m"}`),
 		"hooks on a tool it lacks":    localTeam(`{"tier":"middle","tools":["Read"],"tool_hooks":{"Bash":{"pre":[{"name":"h","url":"https://example.com"}]}}}`),
 		"a body that is not an agent": localTeam(`{"tools":"Read"}`),

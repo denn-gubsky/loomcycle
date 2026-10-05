@@ -26,8 +26,9 @@ import (
 //     next_edge is unambiguous);
 //   - a terminal state has no outbound transitions;
 //   - every state is reachable from `entry`;
-//   - a local agent's name is one segment, and every "./<name>" a state uses
-//     is declared under local.agents;
+//   - a local agent's or skill's name is one segment, every "./<name>" a state
+//     uses is declared under local.agents, and every "./<name>" a local
+//     agent's skills list grants is declared under local.skills;
 //   - max_iterations ≥ 0 (0 = use the default). Cycle termination is guaranteed
 //     because the per-state cap applies to every state.
 //
