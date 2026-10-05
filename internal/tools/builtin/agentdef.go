@@ -76,6 +76,10 @@ const agentDefDescription = `Author, fork, promote, retire, and inspect agent de
 	`Static <name>.md files remain the operator's immutable ground truth; this tool ` +
 	`produces the DERIVED layer of agent-authored versions. Tools may be NARROWED ` +
 	`on forks but never WIDENED — operator-blessed root is the permanent capability ceiling. ` +
+	`Every other grant is held to what you hold yourself: memory_scopes, sql_scopes, history_scope, ` +
+	`core_blocks, volumes, channels, interruption, evaluation_scopes, skills and the *_def_scopes must be within ` +
+	`your own (a fork may also keep what the forked version has), and a field left unset is judged at its ` +
+	`default — unset skills means every skill. ` +
 	`Operations: create, fork, get, list, retire, promote.`
 
 const agentDefInputSchema = `{

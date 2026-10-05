@@ -53,6 +53,15 @@ create and fork agents — but **you still can't escalate**:
 - `fork` — may only **narrow** an existing agent's tools; the lineage
   root is a permanent ceiling. A fork can never add a tool the root
   lacks.
+- **Every other grant follows the same rule.** `memory_scopes`,
+  `sql_scopes`, `history_scope`, `core_blocks`, `volumes`, `channels`,
+  `interruption`, `evaluation_scopes`, `skills` and the `*_def_scopes`
+  of an agent you create must be within your own (`Context op=self`
+  shows them). A fork may also keep what the version it forks already
+  has. A field you leave unset is judged at its default — unset
+  `skills` means every skill, unset `memory_scopes` can include `tenant` —
+  so set it explicitly to what the new agent needs (`["-*"]` denies all
+  of a scope list).
 
 So to give any agent a tool that no existing agent (in your reach)
 already holds, a **human operator** must introduce it. What you *can*
