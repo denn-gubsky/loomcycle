@@ -127,14 +127,9 @@ func (s *Server) CreateChannel(ctx context.Context, req connector.ChannelCreateR
 		return connector.ChannelDescriptor{}, fmt.Errorf("create channel: name must match [A-Za-z0-9_-]{1,128}")
 	}
 
-	scope := strings.TrimSpace(req.Scope)
-	if scope == "" {
-		scope = "global"
-	}
-	switch scope {
-	case "global", "agent", "user", "tenant":
-	default:
-		return connector.ChannelDescriptor{}, fmt.Errorf("create channel: scope must be one of global|tenant|user|agent, got %q", scope)
+	scope, semantic, err := connector.NormalizeChannelFields(strings.TrimSpace(req.Scope), strings.TrimSpace(req.Semantic), req.DefaultTTL, req.MaxMessages)
+	if err != nil {
+		return connector.ChannelDescriptor{}, fmt.Errorf("create channel: %w", err)
 	}
 	// A global channel is a single cross-tenant keyspace (tenant_id="", see
 	// store.ChannelScopeTenant): its messages are shared across every
@@ -146,19 +141,6 @@ func (s *Server) CreateChannel(ctx context.Context, req connector.ChannelCreateR
 		if p, ok := auth.PrincipalFromContext(ctx); ok && !auth.HasScope(p.Scopes, auth.ScopeAdmin) {
 			return connector.ChannelDescriptor{}, fmt.Errorf("create channel: scope=global requires operator (admin) scope; a tenant operator may create tenant|user|agent channels")
 		}
-	}
-
-	semantic := strings.TrimSpace(req.Semantic)
-	if semantic == "" {
-		semantic = "queue"
-	}
-	switch semantic {
-	case "queue", "topic":
-	default:
-		return connector.ChannelDescriptor{}, fmt.Errorf("create channel: semantic must be one of queue|topic, got %q", semantic)
-	}
-	if req.DefaultTTL < 0 || req.MaxMessages < 0 {
-		return connector.ChannelDescriptor{}, fmt.Errorf("create channel: default_ttl and max_messages must be >= 0")
 	}
 
 	hooksRaw, err := s.checkChannelHooks(ctx, name, req.Publisher, tenantFromCtx(ctx), req.Hooks)
