@@ -1,6 +1,6 @@
 ---
 name: scheduled-runs
-description: Scheduled autonomous agent runs — operator-authored cron schedules + dynamic per-user forks + on_complete delivery hooks. v1.x substrate.
+description: Scheduled autonomous agent runs — operator-authored cron schedules + dynamic per-user forks + on_complete delivery hooks; a tick can instead publish to a channel or start a team walk. v1.x substrate.
 ---
 Loomcycle v1.x introduces a ScheduleDef substrate primitive
 (parallel to AgentDef / SkillDef / MCPServerDef) that lets operators
@@ -73,6 +73,57 @@ standalone entry has an explicit `user_id` and a single `schedule:`.
 
 Mutual exclusion: a template can't fix one cron AND offer per-tier
 defaults. The config validator refuses at boot.
+
+## `delivery: team` — a tick that starts a team walk
+
+A schedule's `delivery` decides what a tick does: `run` (the default)
+invokes `agent`, `channel` publishes a tick to `channel`, and `team`
+starts a walk of a team.
+
+```json
+{"schedule": "0 6 * * 1", "delivery": "team", "team": "weekly-report",
+ "vars": {"repo": "loomcycle", "user": "u-42"}, "input": "optional literal walk input"}
+```
+
+```yaml
+scheduled_runs:
+  weekly-report:
+    delivery: team
+    team: weekly-report
+    vars: { repo: loomcycle, user: u-42 }
+    input: "optional literal walk input"
+    schedule: "0 6 * * 1"
+    enabled: true
+```
+
+Through the tool:
+`{"op": "create", "name": "weekly-report", "overlay": {"schedule": "0 6 * * 1", "delivery": "team", "team": "weekly-report", "vars": {"repo": "loomcycle"}}}`.
+
+- **The tick starts the walk and is done.** It is the same start as
+  `TeamDef op=run mode=detach`: the walk gets its own run and carries on in
+  the background. The schedule's `last_status: completed` means the walk
+  STARTED, and `last_run_id` is the walk's run id — read the walk's outcome
+  there. The fire timeout does not apply to the walk.
+- **`vars`** are name → literal text for variables the team declares, under
+  the rules a value given to `op=run` follows (never expanded; no `{{` or
+  `}}`; at most 4096 bytes). `input` is the walk's input; omit it for none.
+- **The team is looked up when the tick fires**, in the schedule's own
+  tenant (`tenant_id`) and nowhere else. A team may be created after the
+  schedule that names it.
+- **A tick that cannot start a walk starts nothing**: the team is missing or
+  retired, the schedule sets a variable the team does not declare, or the
+  team refuses a value or the input. The reason is logged and recorded as
+  the schedule's `last_error` with `last_status: failed`, the schedule moves
+  on to its next time, and the tick does **not** count toward `max_fires` —
+  a one-shot schedule is still there once the team is fixed.
+- **Refused on a team tick**, when it is written: `agent`, `channel`,
+  `prompt`, `on_complete`, credentials (`required_credentials`,
+  `user_credentials`, `user_credentials_from_env`) and `metadata`. Each
+  configures an agent run, and the walk's members resolve their own; put
+  what should follow the walk in the team's own hooks. `team`, `vars` and
+  `input` are refused on the other deliveries.
+- The walk runs as the schedule's `user_id` in its `tenant_id`, with the
+  access its author had, exactly as the schedule's agent run would.
 
 ## `max_fires` — bounded / one-shot schedules
 
@@ -242,6 +293,9 @@ pass in its user's own tenant, so its hooks fire once per tenant whose
 passes all completed, in that tenant, naming that tenant's run — as one
 schedule per tenant would. See `memory-consolidation`.
 
+A `delivery: team` tick has no `on_complete`: the tick ends when the walk
+starts. See "`delivery: team`" above.
+
 A `delivery: channel` tick starts no run, so it lands in the schedule's
 own tenant. On a `scope: global` channel a schedule with no `tenant_id`
 publishes into the operator layer, which every tenant reads; give the
@@ -268,6 +322,7 @@ range, set up multiple entries.
 
 ## Related topics
 
+- `agent-teams` — team definitions, their variables, and what a walk is.
 - `per-run-credentials` — the per-tool credentials map. The
   scheduler stores credentials in fork rows + passes them through
   RunInput; that topic documents the wire shape + substitution semantics +

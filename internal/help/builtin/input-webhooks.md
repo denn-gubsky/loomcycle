@@ -1,15 +1,16 @@
 ---
 name: input-webhooks
-description: Inbound webhooks (WebhookDef) — let external systems (GitHub, Stripe, Linear, n8n) trigger agent runs or wake parked agents via signed HTTP POST. HMAC-over-raw-body auth, JSONPath payload mapping, spawn vs channel delivery, idempotency, rate limiting, per-run credentials, on_complete hooks, triage endpoints.
+description: Inbound webhooks (WebhookDef) — let external systems (GitHub, Stripe, Linear, n8n) trigger agent runs, wake parked agents, or start team walks via signed HTTP POST. HMAC-over-raw-body auth, JSONPath payload mapping, spawn vs channel vs team delivery, idempotency, rate limiting, per-run credentials, on_complete hooks, triage endpoints.
 ---
 
 # Input webhooks (`WebhookDef`)
 
 An input webhook turns an external HTTP POST into loomcycle work: an
 external system (GitHub, Stripe, Linear, a CI server, n8n cloud) signs and
-POSTs an event, and loomcycle either **spawns an agent run** (`delivery:
-spawn`) or **publishes to a channel** to wake an agent already waiting on a
-callback (`delivery: channel`). `WebhookDef` is the fifth substrate
+POSTs an event, and loomcycle **spawns an agent run** (`delivery:
+spawn`), **publishes to a channel** to wake an agent already waiting on a
+callback (`delivery: channel`), or **starts a team walk** (`delivery: team`).
+`WebhookDef` is the fifth substrate
 primitive, alongside AgentDef / SkillDef / MCPServerDef / ScheduleDef.
 
 ## Why a substrate primitive, not glue code
@@ -163,7 +164,59 @@ A shared front-half runs for every request, then forks on `delivery`:
 7. **Deliver**: spawn → build a RunInput (the mapped `goal` enters as an
    **untrusted-block**, fenced in `<untrusted>` tags — a webhook payload is
    external, attacker-influenceable input) and run it; channel → publish +
-   notify.
+   notify; team → start a detached walk (see "`delivery: team`" below).
+
+## `delivery: team` — a delivery that starts a team walk
+
+```json
+{"delivery": "team", "team": "pr-review",
+ "vars": {"repo": "$.repository.full_name", "pr": "$.pull_request.number"}}
+```
+
+```yaml
+webhooks:
+  github-pr-walk:
+    enabled: true
+    delivery: team
+    team: pr-review
+    vars: { repo: "$.repository.full_name", pr: "$.pull_request.number" }
+    auth: { kind: hmac, header: "X-Hub-Signature-256", signing_secret_env: "LOOMCYCLE_GH_WEBHOOK_SECRET", delivery_id_header: "X-GitHub-Delivery" }
+```
+
+A verified delivery starts a walk of `team`, the same start as
+`TeamDef op=run mode=detach`, and answers `202` with the walk's `run_id`.
+Steps 1–6 above are unchanged and all happen first: nothing in the body is
+read before its signature verifies.
+
+- **`vars`** maps a variable the team declares to a JSONPath into the body,
+  in the `payload_mapping` subset (`$`, `.key`, `[N]`). A number or boolean
+  is passed as its text, an object or array as compact JSON.
+- **A path the body does not have leaves that variable at the team's
+  default.** So does one that resolves to `null` or to an empty string.
+- **A projected value is untrusted text.** It is held to the rules a value
+  given to `op=run` follows: one that contains `{{` or `}}`, names a
+  credential, or is over 4096 bytes refuses the delivery. It is never
+  expanded, and reaches a prompt only where a state reads `${var.<name>}`.
+- **The walk's input is the raw request body**, bounded by
+  `body_size_limit_bytes`.
+- **The team is looked up when a delivery arrives**, in the webhook's own
+  tenant (`tenant_id`) and nowhere else. Nothing in the body can name the
+  team, the tenant, or which variables may be set.
+- **A verified delivery that cannot start a walk answers `400` with
+  `{"error": "invalid_run"}` and no detail**, whatever the cause: the team is
+  missing or retired, `vars` names a variable the team does not declare, a
+  projected value is refused, or the team refuses the body as its input. The
+  cause is in the server log, and the delivery shows as
+  `rejected_team_start` in recent-deliveries. It is not recorded as
+  accepted, so a retry after the fix is processed. A spent token budget
+  answers `429`, a paused or unavailable runtime `503`.
+- **Refused on a team webhook**, when it is written: `agent`, `channel`,
+  `user_tier`, credentials (`user_credentials`, `user_credentials_from_env`),
+  `metadata`, `on_complete`, `sync_response`, and every `payload_mapping`
+  target except `user_id` (which attributes the walk to a user, as it does a
+  spawned run). `team` and `vars` are refused on the other deliveries.
+- **A redelivery starts no second walk**: the walk's run carries the
+  delivery's keys, as a spawned run does.
 
 ## The signing secret
 
@@ -279,14 +332,17 @@ operator's yaml may still name any tenant.
 `202 Accepted` with `{run_id, webhook_name, delivery_id}` (async, the
 default). `?sync=true` (when the Def's `sync_response.enabled`) blocks on the
 run-state bus until the run reaches a terminal state — `200` with the
-status, or `504` on `sync_timeout_ms`. Channel mode returns `202`.
+status, or `504` on `sync_timeout_ms`. Channel mode returns `202`. Team mode
+returns `202` with the walk's `run_id` in the same shape; it has no sync
+mode — follow the walk by that id.
 
 ## Never silently degrade
 
 Every outcome is loud and distinct: `404` unknown/disabled (opaque, no
 enumeration), `401` signature/auth failure (no body detail — no oracle),
-`503 secret_unresolvable`, `400` malformed body/mapping, `429` rate limit,
-`503` runtime unavailable. A rate-limited or rejected delivery does **not**
+`503 secret_unresolvable`, `400` malformed body/mapping, `400 invalid_run`
+for a delivery that names an agent or a team walk that cannot start, `429`
+rate limit, `503` runtime unavailable. A rate-limited or rejected delivery does **not**
 burn its `delivery_id`, so the sender's retry is processed rather than
 dropped as a replay.
 
@@ -484,7 +540,7 @@ header).
 
 - **Single-replica v1.** The Layer-1 dedup cache + rate-limit buckets are
   per-replica; the durable `runs.idempotency_key` (Layer 2) is the
-  cross-replica backstop for spawn mode. Cluster-wide dedup/rate-limit is a
+  cross-replica backstop for spawn and team mode. Cluster-wide dedup/rate-limit is a
   later concern.
 - **Not a DDoS shield.** Signature verification is cheap and the body is
   size-capped, but front-line flood protection belongs at your ingress; the

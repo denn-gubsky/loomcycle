@@ -192,6 +192,10 @@ Every walk starts with those defaults, and any state reads one as
 
 `TeamDef op=run` takes its own `vars` to set them for one walk:
 `{"op": "run", "name": "brief", "input": "…", "vars": {"tone": "casual"}}`.
+A schedule or an inbound webhook with `delivery: team` starts a walk the same
+way and sets them too — literal values on a schedule, values projected from
+the request body on a webhook; see `help(topic="scheduled-runs")` and
+`help(topic="input-webhooks")`.
 
 - **Only a declared name is accepted.** A name the team does not list is
   refused before anything runs, and the refusal lists the declared names. A
