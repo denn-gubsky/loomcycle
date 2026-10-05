@@ -206,6 +206,10 @@ Every walk starts with those defaults, and any state reads one as
 - An empty default declares the variable without a value; it expands to empty,
   or to the fallback in `${var.audience:-general}`. A start value of `""`
   blanks a default the same way.
+- The values given at start are kept on the walk's own run, with secrets
+  masked like its input, and are returned with it (`spec.team.vars`).
+  Defaults are not copied there; they are in the definition version the run
+  names.
 - Variables are not saved between runs. A walk resumed from a task board
   starts again with the defaults and whatever that run's `vars` give it.
 - `vars` are part of the definition's content: changing a default makes a new

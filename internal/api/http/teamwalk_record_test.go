@@ -5,10 +5,12 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"unicode/utf8"
 
+	"github.com/denn-gubsky/loomcycle/internal/auth"
 	"github.com/denn-gubsky/loomcycle/internal/connector"
 	"github.com/denn-gubsky/loomcycle/internal/redact"
 	"github.com/denn-gubsky/loomcycle/internal/store"
@@ -246,6 +248,126 @@ func TestTeamWalkRecordOf_CarriesEveryStartArgument(t *testing.T) {
 		`"review_ttl_seconds":60,"interrupt_on_cap":true}`
 	if string(b) != want {
 		t.Errorf("record = %s\nwant      %s", b, want)
+	}
+}
+
+// varsTeamHTTP is agentOnlyTeam declaring two variables.
+const varsTeamHTTP = `{"entry":"a","vars":{"tone":"formal","lang":"en"},"states":[` +
+	`{"state":"a","handler":{"kind":"agent","agent":"writer","input_template":"${var.tone}/${var.lang}"}},` +
+	`{"state":"done","handler":{"kind":"terminal"}}],` +
+	`"transitions":[{"from":"a","to":"done","on":"success"}]}`
+
+// The values a caller gave at start are on the walk's run, so a viewer can
+// tell what the walk ran with. Only those: a default is in the definition.
+func TestTeamWalkRecord_CarriesTheVarsSuppliedAtStart(t *testing.T) {
+	for _, mode := range []string{"sync", "detach"} {
+		t.Run(mode, func(t *testing.T) {
+			h := newWalkHarness(t)
+			seedTenantTeam(t, h.st, "acme", "tuned", varsTeamHTTP)
+			body := `{"op":"run","name":"tuned","input":"go","vars":{"tone":"casual"}`
+			if mode == "detach" {
+				body += `,"mode":"detach"`
+			}
+			walkID := h.postTeamDef(alicePrincipal, body+`}`)
+			if mode == "detach" {
+				waitRunEnded(t, h.st, walkID)
+			}
+			got := walkSpecTeam(t, h, walkID)
+			if got == nil {
+				t.Fatal("no team record")
+			}
+			if got.Mode != mode {
+				t.Fatalf("mode = %q, want %q", got.Mode, mode)
+			}
+			if len(got.Vars) != 1 || got.Vars["tone"] != "casual" {
+				t.Errorf("spec.team.vars = %v, want exactly {tone: casual} — the supplied value and not the default for lang", got.Vars)
+			}
+			// The connector read is what MCP get_run answers from.
+			crun, err := h.srv.GetRunByRunID(alicePrincipal(context.Background()), walkID)
+			if err != nil || !strings.Contains(string(crun.Spec), `"vars":{"tone":"casual"}`) {
+				t.Errorf("connector GetRunByRunID spec = %s (%v), want the supplied vars", crun.Spec, err)
+			}
+		})
+	}
+}
+
+// A start that supplies no vars stores the record it always did: no key, so
+// rows written before the field existed and rows written after it are alike.
+func TestTeamWalkRecord_AStartWithoutVarsStoresNoVarsKey(t *testing.T) {
+	h := newWalkHarness(t)
+	seedTenantTeam(t, h.st, "acme", "tuned", varsTeamHTTP)
+	for name, body := range map[string]string{
+		"no vars":    `{"op":"run","name":"tuned","input":"go"}`,
+		"empty vars": `{"op":"run","name":"tuned","input":"go","vars":{}}`,
+	} {
+		walk, err := h.st.GetRun(context.Background(), h.postTeamDef(alicePrincipal, body))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(string(walk.RunConfig), `"input":"go"`) {
+			t.Fatalf("%s: stored record %s has no input, so this asserts nothing", name, walk.RunConfig)
+		}
+		if strings.Contains(string(walk.RunConfig), `"vars"`) {
+			t.Errorf("%s: stored record carries a vars key: %s", name, walk.RunConfig)
+		}
+	}
+	// And byte for byte, for a minimal spec, against the record as it was
+	// before the field existed.
+	const before = `{"name":"t","def_id":"tdf_1","version":1,"resolved_by":"name","input":"go","input_bytes":2,"mode":"sync"}`
+	for name, vars := range map[string]map[string]string{"nil": nil, "empty": {}} {
+		b, _ := json.Marshal(teamWalkRecordOf(nil, builtin.WalkRunSpec{
+			Name: "t", DefID: "tdf_1", Version: 1, ResolvedBy: "name", Input: "go", Vars: vars}))
+		if string(b) != before {
+			t.Errorf("%s vars: record = %s\nwant         %s", name, b, before)
+		}
+	}
+}
+
+// A supplied value gets the input's treatment and no more reach than it: it
+// is masked before it is stored, and a viewer the walk's run is hidden from
+// reads neither.
+func TestTeamWalkRecord_SuppliedVarsAreMaskedAndGatedLikeTheInput(t *testing.T) {
+	h := newWalkHarness(t)
+	const secret = "ghs_walkvarsecret_0123456789abcdef"
+	h.srv.redactor = redact.New(map[string]string{"LOOMCYCLE_GITEA_TOKEN": secret}, true)
+	seedTenantTeam(t, h.st, "acme", "tuned", varsTeamHTTP)
+	walkID := h.postTeamDef(alicePrincipal,
+		`{"op":"run","name":"tuned","input":"token is `+secret+`","vars":{"tone":"token is `+secret+`"}}`)
+
+	walk, err := h.st.GetRun(context.Background(), walkID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(walk.RunConfig), secret) {
+		t.Errorf("the stored record carries the secret unmasked: %s", walk.RunConfig)
+	}
+	got := walkSpecTeam(t, h, walkID)
+	if got == nil || !strings.HasPrefix(got.Input, "token is ") || got.Input == "token is " {
+		t.Fatalf("the input reads %+v; without a masked input to compare to this asserts nothing", got)
+	}
+	if got.Vars["tone"] != got.Input {
+		t.Errorf("vars.tone = %q, want it masked exactly as the same text in the input, %q", got.Vars["tone"], got.Input)
+	}
+
+	// Every read of the record, as a viewer who may not see this run.
+	for name, ctx := range map[string]context.Context{
+		"another tenant's operator": principalCtx("other", "op", auth.ScopeTenant),
+		"another user, user scope":  principalCtx("acme", "bob", auth.ScopeUser),
+	} {
+		if code, body := getRun(t, h.srv.Mux(), ctx, walkID); code != http.StatusNotFound || len(body.Spec) != 0 {
+			t.Errorf("%s: GET /v1/runs/{id} = %d spec %s, want 404 and nothing", name, code, body.Spec)
+		}
+		if crun, err := h.srv.GetRunByRunID(ctx, walkID); err == nil {
+			t.Errorf("%s: connector GetRunByRunID returned spec %s, want not found", name, crun.Spec)
+		}
+		// The config route reads the same record behind the steer gate, which
+		// a walk's run is never behind: it answers nobody for one.
+		req := httptest.NewRequest(http.MethodGet, "/v1/runs/"+walkID+"/config", nil).WithContext(ctx)
+		rr := httptest.NewRecorder()
+		h.srv.Mux().ServeHTTP(rr, req)
+		if rr.Code == http.StatusOK || strings.Contains(rr.Body.String(), "tone") {
+			t.Errorf("%s: GET /v1/runs/{id}/config = %d %s, want a refusal with no vars", name, rr.Code, rr.Body)
+		}
 	}
 }
 

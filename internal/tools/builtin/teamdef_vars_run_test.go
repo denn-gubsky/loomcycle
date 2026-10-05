@@ -180,3 +180,42 @@ func TestTeamDefTool_Run_DetachedWalkCarriesSuppliedValuesAndDefaults(t *testing
 		t.Errorf("the detached walk's later prompt was handed %q, want set-by-state/de", got)
 	}
 }
+
+// What opens the walk's run is handed the values the caller supplied — those
+// and not the defaults — in both modes, and nothing when none were supplied.
+func TestTeamDefTool_Run_OpensTheRunWithTheSuppliedVarsOnly(t *testing.T) {
+	for name, tc := range map[string]struct {
+		args string
+		want map[string]string
+	}{
+		"sync":          {`"vars":{"tone":"casual"}`, map[string]string{"tone": "casual"}},
+		"detach":        {`"mode":"detach","vars":{"lang":"de"}`, map[string]string{"lang": "de"}},
+		"none supplied": {`"input":"go"`, nil},
+	} {
+		t.Run(name, func(t *testing.T) {
+			tool, ctx, done := teamDefFixture(t)
+			defer done()
+			tool.Spawn = (&valueRecorder{}).spawn()
+			runs := &walkRunRecorder{}
+			tool.WalkRun = runs.open
+			createTeam(t, tool, ctx, "vars-spec", varsTeam)
+
+			res, _ := tool.Execute(ctx, json.RawMessage(`{"op":"run","name":"vars-spec",`+tc.args+`}`))
+			if res.IsError {
+				t.Fatalf("run: %s", res.Text)
+			}
+			waitFor(t, func() bool { _, f := runs.counts(); return f == 1 })
+			runs.mu.Lock()
+			got := runs.spec.Vars
+			runs.mu.Unlock()
+			if len(got) != len(tc.want) {
+				t.Fatalf("the run was opened with vars %v, want %v", got, tc.want)
+			}
+			for k, v := range tc.want {
+				if got[k] != v {
+					t.Errorf("the run was opened with vars %v, want %v", got, tc.want)
+				}
+			}
+		})
+	}
+}

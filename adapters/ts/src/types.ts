@@ -1464,6 +1464,11 @@ export interface RunSpecTeam {
   input_bytes?: number;
   /** Set when `input` was cut. */
   input_truncated?: boolean;
+  /** The variable values the caller supplied at start (`runTeam`'s `vars`),
+   *  with secrets masked like `input`. Only those: a variable left at the
+   *  team's default is not listed, and reads from the definition version
+   *  this record names. Absent when the start supplied none. */
+  vars?: Record<string, string>;
   mode: "sync" | "detach";
   /** The board binding; `resumed_from` names the state a persisted board
    *  resumed the walk from. */

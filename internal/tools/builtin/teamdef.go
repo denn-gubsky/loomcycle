@@ -300,6 +300,9 @@ type WalkRunSpec struct {
 	// it took the active one.
 	ResolvedBy string
 	Input      string
+	// Vars are the variable values the caller supplied at start, and only
+	// those: the team's defaults are in the definition this spec names.
+	Vars map[string]string
 	// Detach is the run's mode: the caller got the run id back at once.
 	Detach bool
 	// Board is the Document-board binding, nil when the walk has none.
@@ -1095,6 +1098,7 @@ func (t *TeamDef) execRun(ctx context.Context, in teamDefInput) (tools.Result, e
 			DefTenant:        row.TenantID,
 			ResolvedBy:       "name",
 			Input:            in.Input,
+			Vars:             in.Vars,
 			Detach:           detach,
 			Breakpoints:      in.Breakpoints,
 			Review:           in.Review,
