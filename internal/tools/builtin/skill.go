@@ -11,6 +11,7 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/skillmatch"
 	"github.com/denn-gubsky/loomcycle/internal/skills"
 	"github.com/denn-gubsky/loomcycle/internal/store"
+	"github.com/denn-gubsky/loomcycle/internal/teamgraph"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
 	"github.com/denn-gubsky/loomcycle/internal/tools/policy"
 )
@@ -68,13 +69,23 @@ type SkillTool struct {
 	// SkillDef row overrides the on-disk SKILL.md body for the same
 	// name. Nil = pre-v0.8.22 behaviour (Set only).
 	Store store.Store
+
+	// TeamSkills, when set, returns the skills the calling agent's team
+	// declares for itself — ok=true only when the caller is one of that
+	// team's own agents, inside a walk of the team (or a resume or
+	// continuation of one). Such an agent lists and loads a team skill its
+	// `skills` grants by exactly "./<name>" (teamgraph.LocalSkillGranted),
+	// under that same name; no other caller and no other spelling reaches
+	// one. nil = no team skills on this server. Wired by the HTTP server,
+	// which reads the team version the run's scope records.
+	TeamSkills func(ctx context.Context) (skills map[string]teamgraph.LocalSkill, ok bool, err error)
 }
 
 const skillInputSchema = `{
   "type": "object",
   "properties": {
     "op": {"type": "string", "enum": ["invoke", "list"], "description": "invoke (default) loads a skill body by name; list enumerates the skills this agent may use."},
-    "name": {"type": "string", "description": "op=invoke: the skill name to load (supports /-grouped names like doc/redactor)."},
+    "name": {"type": "string", "description": "op=invoke: the skill name to load (supports /-grouped names like doc/redactor). A skill your team declares for its own agents is named ./<name>, as op=list shows it."},
     "pattern": {"type": "string", "description": "op=list: optional /-glob filter (e.g. doc/*, marketing/**)."}
   },
   "additionalProperties": false
@@ -142,6 +153,9 @@ func (s *SkillTool) execInvoke(ctx context.Context, policy tools.SkillPolicyValu
 	if name == "" {
 		return errValidation("missing required field: name", "Pass `name`: a skill from op=list."), nil
 	}
+	if local, ok := teamgraph.LocalRef(name); ok {
+		return s.execInvokeTeamSkill(ctx, policy, name, local)
+	}
 	// RFC BA: the agent's `skills:` allowlist gates WHICH skills it may load.
 	if !skillmatch.Allowed(policy.Patterns, name) {
 		return errPermission(fmt.Sprintf("skill %q is not permitted by this agent's `skills:` allowlist", name),
@@ -164,6 +178,44 @@ func (s *SkillTool) execInvoke(ctx context.Context, policy tools.SkillPolicyValu
 		), "Use another skill, or ask an operator to grant this agent those tools."), nil
 	}
 	return tools.Result{Text: body}, nil
+}
+
+// execInvokeTeamSkill loads a skill the caller's team declares for its own
+// agents, named "./<local>". It is granted only by that exact entry in the
+// agent's `skills` — the allowlist's patterns govern global skills and never
+// reach one — and holds to skill.tools ⊆ agent.tools like any skill.
+func (s *SkillTool) execInvokeTeamSkill(ctx context.Context, policy tools.SkillPolicyValue, name, local string) (tools.Result, error) {
+	if !teamgraph.LocalSkillGranted(policy.Patterns, local) {
+		return errPermission(fmt.Sprintf("skill %q is not granted to this agent: a team's own skill is granted by naming it exactly, as %q, in the skills of one of the team's own agents", name, name),
+			"Use a skill from op=list."), nil
+	}
+	var (
+		skills map[string]teamgraph.LocalSkill
+		inTeam bool
+		err    error
+	)
+	if s.TeamSkills != nil {
+		skills, inTeam, err = s.TeamSkills(ctx)
+	}
+	if err != nil {
+		return errFrom(fmt.Sprintf("skill %q: read the team's skills: %v", name, err), err), nil
+	}
+	if !inTeam {
+		return errNotFound(fmt.Sprintf("skill %q names a team's own skill, which only that team's own agents can load, inside a walk of the team", name),
+			"Use a skill from op=list."), nil
+	}
+	sk, ok := skills[local]
+	if !ok {
+		return errNotFound(fmt.Sprintf("unknown skill %q: this agent's team declares no skill of its own named %q", name, local),
+			"Use a skill name from op=list."), nil
+	}
+	if widening := skillToolsExceedingAgent(sk.Tools, tools.AgentTools(ctx), tools.AgentToolPatterns(ctx)); len(widening) > 0 {
+		return errPermission(fmt.Sprintf(
+			"skill %q (team) requires tools %v not granted by this agent's tools — skills cannot widen the agent's tool set",
+			name, widening,
+		), "Use another skill, or ask an operator to grant this agent those tools."), nil
+	}
+	return tools.Result{Text: sk.Body}, nil
 }
 
 // execList enumerates the skills this agent may use — the assembled catalog
@@ -209,6 +261,25 @@ func (s *SkillTool) execList(ctx context.Context, policy tools.SkillPolicyValue,
 			continue
 		}
 		out = append(out, skillEntry{Name: n, Description: d})
+	}
+	// The team's own skills this agent is granted, under the name invoke
+	// takes: "./<name>". Their grant is the exact entry, never the patterns
+	// above, so they are listed apart from the catalog.
+	if s.TeamSkills != nil {
+		skills, _, err := s.TeamSkills(ctx) // nil unless the caller is a team's own agent
+		if err != nil {
+			return errFrom(fmt.Sprintf("Skill: read the team's skills: %v", err), err), nil
+		}
+		for local, sk := range skills {
+			n := teamgraph.LocalRefPrefix + local
+			if !teamgraph.LocalSkillGranted(policy.Patterns, local) {
+				continue
+			}
+			if pattern != "" && !skillmatch.Allowed([]string{pattern}, n) {
+				continue
+			}
+			out = append(out, skillEntry{Name: n, Description: sk.Description})
+		}
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
 	return okJSONCount(map[string]any{"skills": out}, len(out))

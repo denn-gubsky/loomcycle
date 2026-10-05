@@ -683,6 +683,12 @@ func New(cfg *config.Config, pr ProviderResolver, builtinTools []tools.Tool, sem
 			// RFC DT: `self` reports the run's model speed from this estimate.
 			ct.Throughput = s.throughput
 		}
+		// A team's own agents list and load their team's skills through the
+		// team version their run's scope records — the read their agents
+		// resolve through.
+		if sk, ok := t.(*builtin.SkillTool); ok && sk.TeamSkills == nil {
+			sk.TeamSkills = s.teamSkillsForCaller
+		}
 		// The planes that call the Channel tool with no per-run catalog on the
 		// policy (the MCP `channel` tool) resolve channels through the same
 		// merged set a run's policy is built from, in the caller's tenant.
