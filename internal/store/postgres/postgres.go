@@ -6919,15 +6919,21 @@ func (s *Store) TeamDefDelete(ctx context.Context, tenantID, name string) (bool,
 	if err != nil {
 		return false, fmt.Errorf("teamdef delete rows: %w", err)
 	}
-	// The team's own channels go with it: every message, cursor and hook
-	// progress stored under its reserved prefix in this tenant. A prefix
-	// compare (substr, not LIKE, whose "_" is a wildcard), in the same
-	// transaction, so a team recreated under the name starts empty.
-	prefix := store.TeamChannelName(name, "")
-	for _, table := range []string{"channel_messages", "channel_cursors", "channel_hook_state"} {
-		if _, err := tx.Exec(ctx, `DELETE FROM `+table+` WHERE tenant_id = $1 AND substr(channel, 1, $2) = $3`,
-			tenantID, utf8.RuneCountInString(prefix), prefix); err != nil {
-			return false, fmt.Errorf("teamdef delete own channels (%s): %w", table, err)
+	// The team's own channels go with it — only when this transaction removed
+	// the team, so deleting a name that is not (or no longer) a team of this
+	// tenant destroys nothing. Exactly "_team/<team>/<one segment>": a prefix
+	// compare (substr, not LIKE, whose "_" is a wildcard) plus no further "/",
+	// so no other team's channels can match. A name with a "/" is a team from
+	// before the one-segment rule, which cannot declare channels; its prefix
+	// would overlap the first segment's team, so it purges nothing.
+	if tag.RowsAffected() > 0 && !strings.Contains(name, "/") {
+		prefix := store.TeamChannelName(name, "")
+		plen := utf8.RuneCountInString(prefix)
+		for _, table := range []string{"channel_messages", "channel_cursors", "channel_hook_state"} {
+			if _, err := tx.Exec(ctx, `DELETE FROM `+table+` WHERE tenant_id = $1 AND substr(channel, 1, $2) = $3 AND length(channel) > $2 AND position('/' in substr(channel, $2 + 1)) = 0`,
+				tenantID, plen, prefix); err != nil {
+				return false, fmt.Errorf("teamdef delete own channels (%s): %w", table, err)
+			}
 		}
 	}
 	if err := tx.Commit(ctx); err != nil {
