@@ -2190,6 +2190,7 @@ func main() {
 			Store:                storeIface,
 			Cfg:                  cfg,
 			Runner:               srv,
+			TeamWalks:            srv,
 			Publisher:            sysPublisher,
 			RunStateBus:          runStateBus,
 			EnvAllowlist:         webhookAllowlist,
