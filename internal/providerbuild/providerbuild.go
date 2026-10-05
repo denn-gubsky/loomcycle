@@ -254,9 +254,27 @@ type ServiceEndpoint struct {
 // an account it never touched. With base_url overridden and no api_key_env, the
 // service answers only to ownKeyName, a name no provider uses.
 func ServiceProvider(cfg *config.Config, field string, ep ServiceEndpoint, ownKeyName string) (providers.Provider, string, string, error) {
-	provider, model, err := cfg.ExpandServiceModel(field, ep.Provider, ep.Model)
+	opts, provider, model, driver, err := ServiceDriverOptions(cfg, field, ep, ownKeyName)
 	if err != nil {
 		return nil, "", "", err
+	}
+	p, err := providers.NewDriver(driver, opts)
+	if err != nil {
+		return nil, "", "", fmt.Errorf("%s: provider %q: %w", field, provider, err)
+	}
+	return p, provider, model, nil
+}
+
+// ServiceDriverOptions is ServiceProvider's resolution without the driver: the
+// endpoint, key and key name the block's calls must use, the provider and model it
+// resolved to, and the provider's driver. It is the same resolution, so a service
+// that speaks a protocol of its own to the provider (a decision model's
+// /v1/systemone) cannot resolve its endpoint or key differently from a chat
+// service, and in particular cannot send a tenant's key to an operator endpoint.
+func ServiceDriverOptions(cfg *config.Config, field string, ep ServiceEndpoint, ownKeyName string) (opts providers.DriverOptions, provider, model, driver string, err error) {
+	provider, model, err = cfg.ExpandServiceModel(field, ep.Provider, ep.Model)
+	if err != nil {
+		return opts, "", "", "", err
 	}
 	pc, ok := cfg.Providers[provider]
 	if !ok {
@@ -265,9 +283,9 @@ func ServiceProvider(cfg *config.Config, field string, ep ServiceEndpoint, ownKe
 			known = append(known, k)
 		}
 		sort.Strings(known)
-		return nil, "", "", fmt.Errorf("%s.provider: %q is not declared in providers (declared: %v)", field, provider, known)
+		return opts, "", "", "", fmt.Errorf("%s.provider: %q is not declared in providers (declared: %v)", field, provider, known)
 	}
-	opts := DriverOptions(provider, pc, cfg)
+	opts = DriverOptions(provider, pc, cfg)
 	if ep.BaseURL != "" {
 		opts.BaseURL = ep.BaseURL
 	}
@@ -280,9 +298,5 @@ func ServiceProvider(cfg *config.Config, field string, ep ServiceEndpoint, ownKe
 	} else if ep.BaseURL != "" {
 		opts.KeyEnvName = ownKeyName
 	}
-	p, err := providers.NewDriver(pc.Driver, opts)
-	if err != nil {
-		return nil, "", "", fmt.Errorf("%s: provider %q: %w", field, provider, err)
-	}
-	return p, provider, model, nil
+	return opts, provider, model, pc.Driver, nil
 }

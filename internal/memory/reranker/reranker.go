@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/denn-gubsky/loomcycle/internal/config"
+	"github.com/denn-gubsky/loomcycle/internal/memory"
 	"github.com/denn-gubsky/loomcycle/internal/providerbuild"
 	"github.com/denn-gubsky/loomcycle/internal/providers"
 )
@@ -61,14 +62,48 @@ type Model struct {
 	OnUsage func(ctx context.Context, u *providers.Usage)
 }
 
-// Build constructs the reranker declared in cfg.Memory.Reranker, or returns nil
-// when none is declared. A declared reranker that cannot be built is an error:
-// an operator who configured one expects it to run, and would otherwise learn
-// otherwise only from `reranked: false` on every search.
+// Reranker is a built reranker of either kind: what a search ranks with, plus
+// what logs and the usage ledger need to know about it.
+type Reranker interface {
+	memory.Ranker
+	ProviderID() string
+	ModelID() string
+	Kind() string
+	SetOnUsage(func(ctx context.Context, u *providers.Usage))
+}
+
+// BuildRanker constructs the reranker cfg.Memory.Reranker declares, of its kind,
+// or returns nil (an untyped nil) when none is declared. A declared reranker that
+// cannot be built is an error: an operator who configured one expects it to run,
+// and would otherwise learn otherwise only from `reranked: false` on every search.
+func BuildRanker(cfg *config.Config) (Reranker, error) {
+	rc := cfg.Memory.Reranker
+	if !rc.Configured() {
+		return nil, nil
+	}
+	if rc.EffectiveKind() == config.RerankerKindDecision {
+		d, err := buildDecision(cfg, rc)
+		if err != nil {
+			return nil, err
+		}
+		return d, nil
+	}
+	m, err := Build(cfg)
+	if err != nil {
+		return nil, err
+	}
+	return m, nil
+}
+
+// Build constructs the listwise reranker cfg.Memory.Reranker declares, or nil when
+// none is declared. BuildRanker is the production path, for either kind.
 func Build(cfg *config.Config) (*Model, error) {
 	rc := cfg.Memory.Reranker
 	if !rc.Configured() {
 		return nil, nil
+	}
+	if rc.EffectiveKind() != config.RerankerKindListwise {
+		return nil, fmt.Errorf("memory.reranker: kind %q is not built as a listwise model (use BuildRanker)", rc.Kind)
 	}
 	p, provider, model, err := providerbuild.ServiceProvider(cfg, "memory.reranker", providerbuild.ServiceEndpoint{
 		Provider: rc.Provider, Model: rc.Model, BaseURL: rc.BaseURL, APIKeyEnv: rc.APIKeyEnv,
@@ -107,6 +142,17 @@ func New(p providers.Provider, rc config.RerankerConfig) *Model {
 	m.slots = make(chan struct{}, n)
 	return m
 }
+
+// Rank serves the listwise kind through the measured prompt and reply repair.
+func (m *Model) Rank(ctx context.Context, query string, texts []string, maxChars int) ([]int, memory.RerankReport) {
+	return memory.RerankTexts(ctx, m, query, texts, maxChars)
+}
+
+// Kind is the listwise kind.
+func (m *Model) Kind() string { return config.RerankerKindListwise }
+
+// SetOnUsage records each call's tokens against the run whose context it is.
+func (m *Model) SetOnUsage(f func(ctx context.Context, u *providers.Usage)) { m.OnUsage = f }
 
 // ProviderID and ModelID name what serves the rerank, for logs and reports.
 func (m *Model) ProviderID() string { return m.providerID }

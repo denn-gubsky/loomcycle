@@ -109,6 +109,9 @@ const (
 	RerankCallFailed = "call_failed"
 	// RerankUnparseable: the model answered without a usable ranking.
 	RerankUnparseable = "unparseable"
+	// RerankPromptTooLarge: a decision model refused the candidates as more than its
+	// context holds, even with every candidate cut to a quarter of its characters.
+	RerankPromptTooLarge = "prompt_too_large"
 	// RerankBackendUnsupported: the agent's memory backend does not rerank.
 	RerankBackendUnsupported = "not_supported_by_memory_backend"
 )

@@ -366,12 +366,25 @@ channels:
 #   # the first `candidates` (default 20). No block, no rerank: an agent that
 #   # asks for one gets `reranked: false, rerank_reason: not_configured`.
 #   reranker:
+#     kind: listwise                         # the default; or `decision` (below)
 #     provider: ollama-local                 # a provider declared in providers:
 #     model: qwen3.6:latest                  # or a models: alias (e.g. local-medium)
 #     effort: low                            # thinking off on a hybrid local model
 #     timeout_ms: 30000                      # a slower rerank keeps search's own order
+#                                            # (on a GPU shared with other models, cover a reload)
 #     max_concurrent: 2                      # reranks in flight (default 4)
 #     # base_url / api_key_env override the provider's, as for the embedder.
+#
+#   # kind: decision asks a decision model (Ollama >= 0.35, /v1/systemone) one
+#   # typed choice over the candidates and orders them by its probabilities: no
+#   # reply to parse, about 3x faster than a large listwise model, slightly worse
+#   # at rank 1. Needs an Ollama provider; at most 26 candidates are shown (the
+#   # rest keep their places); effort / context_tokens do not apply.
+#   # reranker:
+#   #   kind: decision
+#   #   provider: ollama-local
+#   #   model: nimble                        # `ollama pull nimble`
+#   #   timeout_ms: 30000
 #
 #   # The model that writes Document "derived search units" — a description,
 #   # claims and questions per chunk — when an operator runs

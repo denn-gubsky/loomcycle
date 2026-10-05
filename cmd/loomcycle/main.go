@@ -1402,15 +1402,14 @@ func main() {
 	// then an agent that enables memory_rerank reports not_configured. A declared
 	// one that cannot be built fails boot, as the embedder does. Only a non-nil
 	// model is handed on: a typed-nil in the interface fields would be called.
-	rerankModel, rrErr := reranker.Build(cfg)
+	rerankModel, rrErr := reranker.BuildRanker(cfg)
 	if rrErr != nil {
 		log.Fatalf("reranker: %v", rrErr)
 	}
 	if rerankModel != nil {
-		log.Printf("reranker: %s/%s", rerankModel.ProviderID(), rerankModel.ModelID())
-		ranker := memory.ListwiseRanker(rerankModel)
-		inProcBackend.SetRanker(ranker)
-		memoryTool.Reranker = ranker
+		log.Printf("reranker: %s/%s (kind %s)", rerankModel.ProviderID(), rerankModel.ModelID(), rerankModel.Kind())
+		inProcBackend.SetRanker(rerankModel)
+		memoryTool.Reranker = rerankModel
 	}
 	channelTool.Store = storeIface
 	// Wire the pool-stats accessor when the backend is Postgres so
@@ -1670,7 +1669,7 @@ func main() {
 	// run's ledger and budget. Set here because srv exists only now; no run can
 	// have started yet.
 	if rerankModel != nil {
-		rerankModel.OnUsage = srv.RecordRunSideCallUsage
+		rerankModel.SetOnUsage(srv.RecordRunSideCallUsage)
 	}
 	// The Document derived-unit writer (memory.unit_generator): a declared one that
 	// cannot be built fails boot, as the embedder and the reranker do.

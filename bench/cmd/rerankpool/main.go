@@ -1,6 +1,7 @@
-// Command rerankpool reranks pre-fetched candidate pools with the SHIPPED listwise
-// rerank: the operator's memory.reranker block, built by reranker.Build, asked through
-// memory.RerankTexts — the measured prompt and the reply repair, unchanged.
+// Command rerankpool reranks pre-fetched candidate pools with the SHIPPED rerank:
+// the operator's memory.reranker block, built by reranker.BuildRanker, of either
+// kind — the listwise one asked through the measured prompt and reply repair, the
+// decision one through /v1/systemone, both unchanged.
 //
 // It exists because the shipped rerank only runs inside a document search, and a
 // benchmark that compares rerankers over the same pools (memory rows, say) needs the
@@ -84,7 +85,7 @@ func run() error {
 	if err != nil {
 		return err
 	}
-	model, err := reranker.Build(cfg)
+	model, err := reranker.BuildRanker(cfg)
 	if err != nil {
 		return err
 	}
@@ -126,7 +127,7 @@ func run() error {
 			continue
 		}
 		t0 := time.Now()
-		order, rep := memory.RerankTexts(context.Background(), model, p.Query, p.Texts, *maxChars)
+		order, rep := model.Rank(context.Background(), p.Query, p.Texts, *maxChars)
 		r := result{QID: p.QID, Reranked: rep.Applied, RerankReason: rep.Reason, MS: time.Since(t0).Milliseconds()}
 		for _, i := range order {
 			r.Order = append(r.Order, p.Keys[i])
