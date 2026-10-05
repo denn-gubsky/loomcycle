@@ -702,6 +702,12 @@ func (t *TeamDef) execRetire(ctx context.Context, in teamDefInput) (tools.Result
 	if !defCallerIsAdmin(ctx) && row.TenantID != tools.RunIdentity(ctx).TenantID {
 		return errResult(fmt.Sprintf("retire: def_id %q not found", in.DefID)), nil
 	}
+	// Un-retiring puts this version's own agents back in play.
+	if !*in.Retired {
+		if err := t.checkLocalNamesFree(ctx, row); err != nil {
+			return errResult(fmt.Sprintf("retire: %s", err)), nil
+		}
+	}
 	if err := t.Store.TeamDefSetRetired(ctx, in.DefID, *in.Retired); err != nil {
 		return errResult(fmt.Sprintf("retire: %s", err)), nil
 	}

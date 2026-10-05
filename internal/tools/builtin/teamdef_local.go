@@ -103,20 +103,35 @@ func (t *TeamDef) checkLocalAgents(ctx context.Context, op, team string, def tea
 	return nil
 }
 
-// checkLocalNamesFree refuses to make a definition ACTIVE while one of its
-// local agents shares its full name with an existing agent. create and fork
-// check this on what they write; promote can make an older version active
-// after such an agent appeared.
+// checkLocalNamesFree refuses to make a version ACTIVE AND LIVE while one of
+// its local agents shares its full name with an existing agent. create and
+// fork check this on what they write; promote and un-retire can bring back an
+// older version after such an agent appeared. (A version that is neither is
+// still runnable by def_id, and a restore writes rows directly: what stops a
+// clash there is the check made each time a local agent is resolved.)
+//
+// A version that declares agents is refused when the check cannot be made,
+// as checkLocalAgents refuses to store one. A name the caller holds no
+// agent-authoring grant over is NOT checked: refusing on it would tell the
+// caller whether an agent of that name exists.
 func (t *TeamDef) checkLocalNamesFree(ctx context.Context, row store.TeamDefRow) error {
-	if t.Agents == nil || t.Agents.Cfg == nil {
-		return nil
-	}
 	def, err := teamgraph.Parse(row.Definition)
 	if err != nil {
-		return nil // it cannot run either
+		return nil // op=run parses first and refuses, so its agents cannot run
 	}
-	for _, name := range def.LocalAgentNames() {
+	names := def.LocalAgentNames()
+	if len(names) == 0 {
+		return nil
+	}
+	if t.Agents == nil || t.Agents.Cfg == nil {
+		return fmt.Errorf("this version declares its own agents, and this server cannot check them (no agent-definition tool is wired)")
+	}
+	policy := tools.AgentDefPolicy(ctx)
+	for _, name := range names {
 		full := teamgraph.QualifiedLocalName(row.Name, name)
+		if t.Agents.checkScopeForName(policy, full, "") != nil {
+			continue
+		}
 		if _, exists := lookup.Agent(ctx, t.Store, t.Agents.Cfg, row.TenantID, full); exists {
 			return fmt.Errorf("this version declares its own agent %q, and an agent named %q exists now. They would share "+
 				"agent-scoped memory and channel cursors — rename or remove one first", name, full)
@@ -137,10 +152,20 @@ type teamDefActiveGetter interface {
 //
 // Only a name of exactly two segments can collide, so every other name costs
 // nothing; a two-segment one costs a single read.
+//
+// Called wherever a global agent name can come to resolve: AgentDef create,
+// fork, promote and un-retire, and register_agent. It reads the ACTIVE team
+// version only, and nothing here can see a static agent added to the
+// operator's config or rows written by a restore, so it is the early, readable
+// refusal and not the guarantee: that is the check made when a team's own
+// agent is resolved for a run, which refuses while both exist.
 func TeamLocalAgentCollision(ctx context.Context, st teamDefActiveGetter, tenantID, name string) error {
 	team, local, two := strings.Cut(name, "/")
-	if !two || strings.Contains(local, "/") || st == nil {
+	if !two || strings.Contains(local, "/") {
 		return nil
+	}
+	if st == nil {
+		return fmt.Errorf("could not check team %q for an agent of its own named %q: no store", team, local)
 	}
 	row, err := st.TeamDefGetActive(ctx, tenantID, team)
 	if err != nil {
@@ -157,7 +182,7 @@ func TeamLocalAgentCollision(ctx context.Context, st teamDefActiveGetter, tenant
 	}
 	def, err := teamgraph.Parse(row.Definition)
 	if err != nil {
-		return nil // a definition that does not parse cannot run its agents
+		return nil // op=run parses first and refuses, so its agents cannot run
 	}
 	if _, declared := def.LocalAgent(local); declared {
 		return fmt.Errorf("team %q declares its own agent %q, which runs as %q. Another agent of that name would share "+

@@ -486,6 +486,12 @@ func (a *AgentDef) execFork(ctx context.Context, policy tools.AgentDefPolicyValu
 	if err := a.checkScopeForName(policy, in.Name, parentDefID); err != nil {
 		return errResult(err.Error()), nil
 	}
+	// A fork can be how a name comes to resolve in this tenant: of a retired
+	// lineage whose pointer was cleared, or the first tenant-owned version of
+	// a shared one. Held to what create is.
+	if err := TeamLocalAgentCollision(ctx, a.Store, tenantID, in.Name); err != nil {
+		return errResult(fmt.Sprintf("fork: %s", err)), nil
+	}
 
 	def, err := a.buildDefinition(ctx, in.Name, string(parent.Definition), in.Overlay)
 	if err != nil {
@@ -630,6 +636,13 @@ func (a *AgentDef) execRetire(ctx context.Context, policy tools.AgentDefPolicyVa
 	if err := a.checkScopeForName(policy, row.Name, row.DefID); err != nil {
 		return errResult(err.Error()), nil
 	}
+	// Un-retiring can make the name resolve again, after a team took it for
+	// one of its own agents while it did not.
+	if !*in.Retired {
+		if err := TeamLocalAgentCollision(ctx, a.Store, row.TenantID, row.Name); err != nil {
+			return errResult(fmt.Sprintf("retire: %s", err)), nil
+		}
+	}
 	if err := a.Store.AgentDefSetRetired(ctx, in.DefID, *in.Retired); err != nil {
 		return errResult(fmt.Sprintf("retire: %s", err)), nil
 	}
@@ -658,6 +671,11 @@ func (a *AgentDef) execPromote(ctx context.Context, policy tools.AgentDefPolicyV
 		return errResult(err.Error()), nil
 	}
 	ident := tools.RunIdentity(ctx)
+	// Promoting is what makes a name resolve (a retired lineage's pointer is
+	// cleared), so it is held to what create is.
+	if err := TeamLocalAgentCollision(ctx, a.Store, ident.TenantID, row.Name); err != nil {
+		return errResult(fmt.Sprintf("promote: %s", err)), nil
+	}
 	// RFC N: promote within the agent's own tenant. AgentDefSetActive
 	// refuses when ident.TenantID ≠ row.TenantID, so a caller in tenant T
 	// cannot point at (or clobber) another tenant's active pointer — even

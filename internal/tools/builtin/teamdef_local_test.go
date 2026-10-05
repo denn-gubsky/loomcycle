@@ -403,3 +403,103 @@ func TestValidateTeamDefBody_NamesTheRefusedLocalAgent(t *testing.T) {
 		t.Fatalf("want a refusal naming the agent and the tool it lacks, got %v", err)
 	}
 }
+
+// ---- every path by which the two names can come to coexist ----
+
+func agentOp(t *testing.T, tool *TeamDef, ctx context.Context, input string) tools.Result {
+	t.Helper()
+	res, err := tool.Agents.Execute(ctx, json.RawMessage(input))
+	if err != nil {
+		t.Fatalf("AgentDef %s: %v", input, err)
+	}
+	return res
+}
+
+// A retired agent does not resolve, so a team may take its name for one of its
+// own. Every way of bringing the agent back must then be refused: un-retire,
+// promote, and a fork that promotes.
+func TestAgentDef_BringingBackANameATeamNowDeclaresIsRefused(t *testing.T) {
+	tool, ctx := localTeamFixture(t)
+	created := decodeResult(t, agentOp(t, tool, ctx, `{"op":"create","name":"sdlc/reviewer","overlay":{"tier":"low"}}`).Text)
+	defID, _ := created["def_id"].(string)
+	if res := agentOp(t, tool, ctx, `{"op":"retire","def_id":"`+defID+`","retired":true}`); res.IsError {
+		t.Fatalf("retire: %s", res.Text)
+	}
+	if res := teamOp(t, tool, ctx, "create", "sdlc", localTeam(`{"tier":"middle"}`)); res.IsError {
+		t.Fatalf("the retired agent no longer holds the name, but the team was refused: %s", res.Text)
+	}
+	for what, input := range map[string]string{
+		"un-retire":         `{"op":"retire","def_id":"` + defID + `","retired":false}`,
+		"promote":           `{"op":"promote","def_id":"` + defID + `"}`,
+		"fork and promote":  `{"op":"fork","name":"sdlc/reviewer","parent_def_id":"` + defID + `","promote":true,"overlay":{"effort":"low"}}`,
+		"fork, not promote": `{"op":"fork","name":"sdlc/reviewer","parent_def_id":"` + defID + `","overlay":{"effort":"low"}}`,
+	} {
+		wantRefused(t, agentOp(t, tool, ctx, input), what, "sdlc", "reviewer", "own agent")
+	}
+	row, err := tool.Store.AgentDefGet(ctx, defID)
+	if err != nil || !row.Retired {
+		t.Errorf("the agent must still be retired (retired=%v, err %v)", row.Retired, err)
+	}
+	if _, err := tool.Store.AgentDefGetActive(ctx, "", "sdlc/reviewer"); err == nil {
+		t.Error("the agent's name resolves again beside the team's own agent")
+	}
+}
+
+// The mirror: a retired team version does not run its agents, so a global
+// agent may take one's name; un-retiring the version must then be refused.
+func TestTeamDefRetire_UnretireRefusedWhileItsLocalAgentsNameIsTaken(t *testing.T) {
+	tool, ctx := localTeamFixture(t)
+	created := decodeResult(t, teamOp(t, tool, ctx, "create", "sdlc", localTeam(`{"tier":"middle"}`)).Text)
+	defID, _ := created["def_id"].(string)
+	retire := func(retired string) tools.Result {
+		res, _ := tool.Execute(ctx, json.RawMessage(`{"op":"retire","def_id":"`+defID+`","retired":`+retired+`}`))
+		return res
+	}
+	if res := retire("true"); res.IsError {
+		t.Fatalf("retire: %s", res.Text)
+	}
+	if res := agentOp(t, tool, ctx, `{"op":"create","name":"sdlc/reviewer","overlay":{"tier":"low"}}`); res.IsError {
+		t.Fatalf("a retired team does not hold the name, but the agent was refused: %s", res.Text)
+	}
+	wantRefused(t, retire("false"), "un-retire of a team whose agent's name is now taken", "sdlc/reviewer")
+	if row, err := tool.Store.TeamDefGet(ctx, defID); err != nil || !row.Retired {
+		t.Errorf("the team version must still be retired (retired=%v, err %v)", row.Retired, err)
+	}
+}
+
+// A version that declares agents is not made active on a server that cannot
+// check them — the same answer create gives.
+func TestTeamDefPromote_RefusedWhenLocalAgentsCannotBeChecked(t *testing.T) {
+	tool, ctx := localTeamFixture(t)
+	created := decodeResult(t, teamOp(t, tool, ctx, "create", "sdlc", localTeam(`{"tier":"middle"}`)).Text)
+	plain := decodeResult(t, teamOp(t, tool, ctx, "create", "plain", validTeamGraph).Text)
+	tool.Agents = nil
+	promote := func(defID any) tools.Result {
+		res, _ := tool.Execute(ctx, json.RawMessage(`{"op":"promote","def_id":"`+defID.(string)+`"}`))
+		return res
+	}
+	wantRefused(t, promote(created["def_id"]), "promote with no way to check the agents", "cannot check")
+	if res := promote(plain["def_id"]); res.IsError {
+		t.Errorf("a team with no agents of its own needs no check: %s", res.Text)
+	}
+}
+
+// A refusal that names a clashing agent tells the caller that agent exists. A
+// caller with no agent-authoring grant over the name is not told: the check is
+// skipped for it, and the clash is caught when the agent would run.
+func TestTeamDefPromote_DoesNotRevealAnAgentTheCallerHasNoGrantOver(t *testing.T) {
+	tool, ctx := localTeamFixture(t)
+	v1 := decodeResult(t, teamOp(t, tool, ctx, "create", "sdlc", localTeam(`{"tier":"middle"}`)).Text)
+	v2 := `{"local":{"agents":{}},"states":[{"state":"review","handler":{"kind":"agent","agent":"static-one"}},{"state":"done","handler":{"kind":"terminal"}}]}`
+	if res, _ := tool.Execute(ctx, json.RawMessage(`{"op":"fork","name":"sdlc","promote":true,"overlay":`+v2+`}`)); res.IsError {
+		t.Fatalf("fork: %s", res.Text)
+	}
+	if res := agentOp(t, tool, ctx, `{"op":"create","name":"sdlc/reviewer","overlay":{"tier":"low"}}`); res.IsError {
+		t.Fatalf("seed the clashing agent: %s", res.Text)
+	}
+	promote := `{"op":"promote","def_id":"` + v1["def_id"].(string) + `"}`
+	ungranted := localAuthorCtx("", nil, []string{"Read"})
+	if res, _ := tool.Execute(ungranted, json.RawMessage(promote)); res.IsError {
+		t.Errorf("a caller with no grant over sdlc/reviewer learned from the refusal that it exists: %s", res.Text)
+	}
+}
