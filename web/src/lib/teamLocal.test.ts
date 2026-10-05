@@ -3,11 +3,13 @@ import {
   agentSummary,
   channelSummary,
   countOwnDefinitions,
+  readLocalAgent,
   scheduleSummary,
   skillSummary,
   teamOwnDefinitions,
   webhookRoute,
   webhookSummary,
+  writeLocalAgent,
 } from "./teamLocal";
 
 // The help article's examples, folded into one definition.
@@ -111,5 +113,30 @@ describe("webhookSummary", () => {
     // summary must not repeat it.
     const s = webhookSummary({ channel: "./e", auth: { kind: "hmac", signing_secret_env: "LOOMCYCLE_S", secret: "s3cr3t-value" } }, route);
     expect(s).not.toContain("s3cr3t-value");
+  });
+});
+
+describe("readLocalAgent / writeLocalAgent", () => {
+  it("replaces one agent's body and leaves the rest of the definition as it was", () => {
+    const next = writeLocalAgent(def, "reviewer", { tier: "top", tools: ["Read"] }) as typeof def;
+    expect(readLocalAgent(next, "reviewer")).toEqual({ tier: "top", tools: ["Read"] });
+    expect(next.local.agents.pinned).toBe(def.local.agents.pinned);
+    expect(next.local.skills).toBe(def.local.skills);
+    expect(next.local.webhooks).toBe(def.local.webhooks);
+    expect(next.vars).toBe(def.vars);
+    expect(next.entry).toBe("wave");
+    // The input is not modified.
+    expect(def.local.agents.reviewer.tier).toBe("middle");
+  });
+
+  it("drops a field the editor cleared rather than keeping the old value", () => {
+    const next = writeLocalAgent(def, "reviewer", { tools: ["Read", "Agent"] });
+    expect(readLocalAgent(next, "reviewer")).toEqual({ tools: ["Read", "Agent"] });
+  });
+
+  it("leaves the definition unchanged for an agent it does not declare", () => {
+    expect(writeLocalAgent(def, "ghost", { tier: "top" })).toBe(def);
+    expect(writeLocalAgent({ entry: "x" }, "reviewer", {})).toEqual({ entry: "x" });
+    expect(readLocalAgent(def, "ghost")).toBeUndefined();
   });
 });

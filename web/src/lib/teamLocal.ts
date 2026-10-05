@@ -116,3 +116,22 @@ export function webhookSummary(body: Obj, route: string): string {
   }
   return `POST ${route} · ${how} → ${str(body.channel) || "(no channel)"}`;
 }
+
+/** readLocalAgent is one of the team's own agents' body (the overlay an agent
+ *  definition takes), or undefined when the definition declares no such agent. */
+export function readLocalAgent(definition: unknown, name: string): Obj | undefined {
+  if (!isObj(definition) || !isObj(definition.local) || !isObj(definition.local.agents)) return undefined;
+  const body = definition.local.agents[name];
+  return isObj(body) ? body : undefined;
+}
+
+/** writeLocalAgent returns the definition with one local agent's body
+ *  replaced, everything else — the other agents, the other local kinds, the
+ *  graph — as it was. The input is not modified. A name the definition does
+ *  not declare leaves it unchanged: this edits agents, it does not add them. */
+export function writeLocalAgent(definition: unknown, name: string, body: Obj): unknown {
+  if (readLocalAgent(definition, name) === undefined) return definition;
+  const def = definition as Obj;
+  const local = def.local as Obj;
+  return { ...def, local: { ...local, agents: { ...(local.agents as Obj), [name]: body } } };
+}

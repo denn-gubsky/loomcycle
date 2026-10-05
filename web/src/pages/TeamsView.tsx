@@ -436,8 +436,10 @@ export default function TeamsView() {
       <TeamHooksPanel editorText={editorText} setEditorText={setEditorText} disabled={saving || loadingDef} />
       <TeamOwnDefinitionsPanel
         editorText={editorText}
+        setEditorText={setEditorText}
         team={creating ? createName.trim() || "team" : selected}
         tenant={creating ? ownTenant : selectedTenant}
+        disabled={saving || loadingDef}
       />
 
       {editorErr && (
