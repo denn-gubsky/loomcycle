@@ -33,6 +33,11 @@ type teamChannelIO struct {
 	srv    *Server
 	acl    *teamgraph.TeamChannels
 	tenant string
+	// def and scope are the walk's own definition and team: what a "./<name>"
+	// channel resolves against (see teamlocalchannels.go). A walk resolves
+	// its own channels from the version it is walking, never from the store.
+	def   teamgraph.Definition
+	scope store.TeamScope
 }
 
 // newTeamChannelIO returns the executor for a walk, or nil when the server has
@@ -41,7 +46,8 @@ func (s *Server) newTeamChannelIO(ctx context.Context, d teamgraph.Definition) *
 	if s.store == nil {
 		return nil
 	}
-	return &teamChannelIO{srv: s, acl: d.Channels, tenant: tenantFromCtx(ctx)}
+	sc, _ := store.TeamScopeFromContext(ctx)
+	return &teamChannelIO{srv: s, acl: d.Channels, tenant: tenantFromCtx(ctx), def: d, scope: sc}
 }
 
 // allowed checks a channel against the TEAM's allowlist, reusing the agent
@@ -91,6 +97,22 @@ func (io *teamChannelIO) resolve(ctx context.Context, channel string) (tools.Cha
 	}
 }
 
+// target is everything an op on `channel` needs: the side's grant checked,
+// and the name its messages are stored under with the definition and keyspace
+// they are read and written in. The team's own channels ("./<name>") need no
+// grant and resolve from the walk's definition; every other one goes through
+// the team ACL and the declared set.
+func (io *teamChannelIO) target(ctx context.Context, side, channel string) (string, tools.ChannelDef, store.MemoryScope, string, error) {
+	if local, isLocal := teamgraph.LocalRef(channel); isLocal {
+		return io.srv.teamLocalChannelTarget(io.def, io.scope, io.tenant, local, tools.RunIdentity(ctx).UserID)
+	}
+	if err := io.allowed(side, channel); err != nil {
+		return "", tools.ChannelDef{}, "", "", err
+	}
+	def, scope, scopeID, err := io.resolve(ctx, channel)
+	return channel, def, scope, scopeID, err
+}
+
 // readPoll is how often Read re-peeks while it waits and the server has no bus
 // to wake it. A publish on this replica wakes the bus at once; the poll covers
 // a server without one.
@@ -106,10 +128,7 @@ const readPoll = 250 * time.Millisecond
 // and a wave that arrived a moment after the read found nothing and failed the
 // walk instead of waiting for it.
 func (io *teamChannelIO) Read(ctx context.Context, channel string, want, batch, waitMS int) ([]teamrun.ChannelMessage, string, error) {
-	if err := io.allowed("subscribe", channel); err != nil {
-		return nil, "", err
-	}
-	_, scope, scopeID, err := io.resolve(ctx, channel)
+	channel, _, scope, scopeID, err := io.target(ctx, "subscribe", channel)
 	if err != nil {
 		return nil, "", err
 	}
@@ -192,10 +211,7 @@ func toTeamMessages(msgs []store.ChannelMessage) ([]teamrun.ChannelMessage, stri
 }
 
 func (io *teamChannelIO) Ack(ctx context.Context, channel, cursor string) error {
-	if err := io.allowed("subscribe", channel); err != nil {
-		return err
-	}
-	_, scope, scopeID, err := io.resolve(ctx, channel)
+	channel, _, scope, scopeID, err := io.target(ctx, "subscribe", channel)
 	if err != nil {
 		return err
 	}
@@ -203,10 +219,7 @@ func (io *teamChannelIO) Ack(ctx context.Context, channel, cursor string) error 
 }
 
 func (io *teamChannelIO) Publish(ctx context.Context, channel string, payload json.RawMessage) error {
-	if err := io.allowed("publish", channel); err != nil {
-		return err
-	}
-	def, scope, scopeID, err := io.resolve(ctx, channel)
+	channel, def, scope, scopeID, err := io.target(ctx, "publish", channel)
 	if err != nil {
 		return err
 	}
@@ -226,10 +239,7 @@ func (io *teamChannelIO) Publish(ctx context.Context, channel string, payload js
 // hook on the sink cannot make it disappear (a drop is delivered as an error
 // result), because the downstream fan-in counts one per run.
 func (io *teamChannelIO) PublishSink(ctx context.Context, channel string, payload json.RawMessage) error {
-	if err := io.allowed("publish", channel); err != nil {
-		return err
-	}
-	def, scope, scopeID, err := io.resolve(ctx, channel)
+	channel, def, scope, scopeID, err := io.target(ctx, "publish", channel)
 	if err != nil {
 		return err
 	}

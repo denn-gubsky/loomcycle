@@ -2405,6 +2405,9 @@ func (s *Server) ChannelWriteDef(ctx context.Context, tenantID, channel string) 
 	if s.store == nil {
 		return channels.WriteDef{}, nil
 	}
+	if team, local, ok := store.SplitTeamChannelName(channel); ok {
+		return s.teamChannelWriteDef(ctx, tenantID, team, local)
+	}
 	row, err := s.store.ChannelGet(ctx, tenantID, channel)
 	switch {
 	case err == nil:
