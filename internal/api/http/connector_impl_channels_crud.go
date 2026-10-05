@@ -123,6 +123,12 @@ func (s *Server) CreateChannel(ctx context.Context, req connector.ChannelCreateR
 	if _, yaml := s.cfg().Channels[name]; yaml {
 		return connector.ChannelDescriptor{}, fmt.Errorf("%w: %q", connector.ErrChannelYamlImmutable, name)
 	}
+	// Stated on its own, not left to the grammar below (which also refuses a
+	// "/"): the reservation is what keeps a team's own channels unreachable
+	// from outside it, and must hold if the grammar is ever widened.
+	if store.IsTeamChannelName(name) {
+		return connector.ChannelDescriptor{}, fmt.Errorf("create channel: the %q prefix is reserved for a team's own channels, which a team declares in its definition under local.channels", store.TeamChannelPrefix)
+	}
 	if !validChannelName(name) {
 		return connector.ChannelDescriptor{}, fmt.Errorf("create channel: name must match [A-Za-z0-9_-]{1,128}")
 	}

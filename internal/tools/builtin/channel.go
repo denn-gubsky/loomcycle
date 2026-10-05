@@ -253,6 +253,12 @@ func (c *Channel) resolveChannel(ctx context.Context, policy tools.ChannelPolicy
 	if name == "" {
 		return tools.ChannelDef{}, "", "", refuseChannel(errValidation, "Pass `channel`: a name from op=list_channels.", "missing required field: channel")
 	}
+	// The spelling a team's own channels are stored under is never an address:
+	// a team's own agent names one as "./<name>", and nobody else can.
+	if store.IsTeamChannelName(name) {
+		return tools.ChannelDef{}, "", "", refuseChannel(errPermission, "A team's own channel is named \"./<name>\", and only that team's own agents may use one.",
+			"Channel tool: channel names under %q are reserved", store.TeamChannelPrefix)
+	}
 	def, ok := policy.Channels[name]
 	if !ok {
 		return tools.ChannelDef{}, "", "", refuseChannel(errNotFound, "Use a channel from op=list_channels.", "Channel tool: channel %q is not declared (neither in operator config nor created at runtime)", name)
