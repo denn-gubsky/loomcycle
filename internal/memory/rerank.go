@@ -38,6 +38,31 @@ type RerankModel interface {
 	Complete(ctx context.Context, prompt string) (string, error)
 }
 
+// Ranker orders a search's candidate texts for a query. It is what a search holds:
+// the listwise kind is a RerankModel asked through RerankTexts (ListwiseRanker),
+// and a kind that does not answer in text implements it directly. The contract is
+// RerankTexts's — it never fails, and every fault returns the identity order with
+// a report saying why.
+type Ranker interface {
+	Rank(ctx context.Context, query string, texts []string, maxChars int) ([]int, RerankReport)
+}
+
+// ListwiseRanker serves m through the measured prompt and reply repair. nil for a
+// nil model, so a caller that has no reranker never holds a Ranker that would call
+// one.
+func ListwiseRanker(m RerankModel) Ranker {
+	if m == nil {
+		return nil
+	}
+	return listwiseRanker{m: m}
+}
+
+type listwiseRanker struct{ m RerankModel }
+
+func (l listwiseRanker) Rank(ctx context.Context, query string, texts []string, maxChars int) ([]int, RerankReport) {
+	return RerankTexts(ctx, l.m, query, texts, maxChars)
+}
+
 // RerankOptions is what an agent's configuration asks of a search. The zero value
 // asks for nothing, so every caller that never mentions a rerank is unchanged.
 //

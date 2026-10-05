@@ -35,7 +35,7 @@ func rerankOn() *config.MemoryRerank {
 func rerankMemoryFixture(t *testing.T, rr memrank.RerankModel, policy *config.MemoryRerank, backend string) (*Memory, context.Context, func()) {
 	t.Helper()
 	tool, _, ctx, cleanup := vectorMemoryFixture(t)
-	tool.Reranker = rr
+	tool.Reranker = memrank.ListwiseRanker(rr)
 	for _, row := range []struct{ key, text string }{
 		{"r1", "alice go rust"},
 		{"r2", "alice go"},

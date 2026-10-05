@@ -260,3 +260,55 @@ func TestInProcessRerank_ThePoolHoldsCandidatesWhateverTopK(t *testing.T) {
 		t.Error("the prompt does not hold exactly 20 candidates")
 	}
 }
+
+// orderRanker is a Ranker that answers with a fixed order and never sees a prompt:
+// the shape of a reranker kind that does not reply in text.
+type orderRanker struct {
+	order    []int
+	report   memory.RerankReport
+	texts    []string
+	maxChars int
+}
+
+func (o *orderRanker) Rank(_ context.Context, _ string, texts []string, maxChars int) ([]int, memory.RerankReport) {
+	o.texts, o.maxChars = texts, maxChars
+	return o.order, o.report
+}
+
+// TestInProcessRerank_AnyRankerOrdersTheSearch — the search holds a Ranker, not a
+// text model: a ranker that answers with an order is applied as the listwise one
+// is, sees each candidate's index text and the agent's character budget, and a
+// report it marks not applied keeps search's own order.
+func TestInProcessRerank_AnyRankerOrdersTheSearch(t *testing.T) {
+	b, cleanup := rerankFixture(t)
+	defer cleanup()
+	r := &orderRanker{order: []int{4, 2, 0, 1, 3}, report: memory.RerankReport{Applied: true, Candidates: 5}}
+	b.SetRanker(r)
+	res := search(t, b, memory.SearchQuery{QueryText: "go", TopK: 5, Rerank: memory.RerankOptions{Enabled: true, MaxChars: 99}})
+	if got := keys(res); got != "c5,c3,c1,c2,c4" {
+		t.Errorf("order = %s, want the ranker's c5,c3,c1,c2,c4", got)
+	}
+	if res.Rerank == nil || !res.Rerank.Applied {
+		t.Errorf("report = %+v, want applied", res.Rerank)
+	}
+	if len(r.texts) != 5 || r.texts[0] != "Guide — Section\ngo" || r.maxChars != 99 {
+		t.Errorf("ranker saw texts %q with max_chars %d, want the five index texts and 99", r.texts, r.maxChars)
+	}
+
+	b.SetRanker(&orderRanker{order: []int{4, 3, 2, 1, 0}, report: memory.RerankReport{Reason: memory.RerankTimeout, Candidates: 5}})
+	res = search(t, b, memory.SearchQuery{QueryText: "go", TopK: 5, Rerank: rerankOn})
+	if got := keys(res); got != "c1,c2,c3,c4,c5" {
+		t.Errorf("order = %s, want search's own c1..c5 when the ranker reports not applied", got)
+	}
+	if res.Rerank == nil || res.Rerank.Applied || res.Rerank.Reason != memory.RerankTimeout {
+		t.Errorf("report = %+v, want not applied with reason timeout", res.Rerank)
+	}
+}
+
+// TestListwiseRanker_NilModelIsNoRanker — a server without a reranker must never
+// hold a Ranker that would call one (a typed-nil would be called, not skipped).
+func TestListwiseRanker_NilModelIsNoRanker(t *testing.T) {
+	if r := memory.ListwiseRanker(nil); r != nil {
+		t.Fatalf("ListwiseRanker(nil) = %#v, want nil", r)
+	}
+}
