@@ -82,6 +82,9 @@ func TestAgentDefTool_ForkDifferentContentDifferentHash(t *testing.T) {
 func TestAgentDefTool_ForkInteractiveConfigMovesHash(t *testing.T) {
 	tool, ctx, cleanup := agentDefFixture(t)
 	defer cleanup()
+	// The forks grant channels and interruptions, which only an operator may
+	// hand out to an agent that does not already hold them.
+	ctx = operatorPlane(ctx)
 
 	base, _ := tool.Execute(ctx, json.RawMessage(`{"op":"fork","name":"researcher","overlay":{"system_prompt":"v1"}}`))
 	if base.IsError {

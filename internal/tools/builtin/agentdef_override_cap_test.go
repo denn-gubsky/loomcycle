@@ -62,6 +62,8 @@ func codeAgentFixture(t *testing.T) (*AgentDef, context.Context, func()) {
 func TestAgentDefTool_ForkOverridesGrantsOnALargeCodeAgent(t *testing.T) {
 	tool, ctx, cleanup := codeAgentFixture(t)
 	defer cleanup()
+	// Granting a scope the agent does not hold is the operator's act.
+	ctx = operatorPlane(ctx)
 
 	res, _ := tool.Execute(ctx, json.RawMessage(
 		`{"op":"fork","name":"memory/consolidator","overlay":{"memory_scopes":["agent","user","tenant"],"sql_scopes":["tenant"]},"description":"grant tenant placement"}`))
