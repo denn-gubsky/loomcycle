@@ -277,13 +277,17 @@ func TestTeamLocalWebhook_ALeasedDeliveryPublishesNothingAfterTheDisarm(t *testi
 	}
 }
 
-// deliverStripe POSTs body signed in the Stripe envelope at instant ts.
-func deliverStripe(mux *http.ServeMux, body string, ts time.Time) *httptest.ResponseRecorder {
+// deliverStripe POSTs body to path, signed in the Stripe envelope at instant
+// ts, with delivery id did when not "".
+func deliverStripe(mux *http.ServeMux, path, body, did string, ts time.Time) *httptest.ResponseRecorder {
 	t := strconv.FormatInt(ts.Unix(), 10)
 	mac := hmac.New(sha256.New, []byte(hookSecret))
 	mac.Write([]byte(t + "." + body))
-	req := httptest.NewRequest(http.MethodPost, hookPath, bytes.NewReader([]byte(body)))
+	req := httptest.NewRequest(http.MethodPost, path, bytes.NewReader([]byte(body)))
 	req.Header.Set("X-Hub-Signature-256", "t="+t+", v1="+hex.EncodeToString(mac.Sum(nil)))
+	if did != "" {
+		req.Header.Set("X-Delivery", did)
+	}
 	w := httptest.NewRecorder()
 	mux.ServeHTTP(w, req)
 	return w
@@ -386,10 +390,10 @@ func TestTeamLocalWebhook_AStaleSignatureIsRefusedOnEveryReplica(t *testing.T) {
 	_, otherMux := h.replica()
 
 	for what, mux := range map[string]*http.ServeMux{"the walk's replica": h.mux, "another replica": otherMux} {
-		if w := deliverStripe(mux, `{"stale":"`+what+`"}`, time.Now().Add(-10*time.Minute)); w.Code != http.StatusUnauthorized || w.Body.String() != "{\"error\":\"unauthorized\"}\n" {
+		if w := deliverStripe(mux, hookPath, `{"stale":"`+what+`"}`, "", time.Now().Add(-10*time.Minute)); w.Code != http.StatusUnauthorized || w.Body.String() != "{\"error\":\"unauthorized\"}\n" {
 			t.Errorf("%s, a signature 10 minutes old: %d %s", what, w.Code, w.Body.String())
 		}
-		if w := deliverStripe(mux, `{"fresh":"`+what+`"}`, time.Now()); w.Code != http.StatusAccepted {
+		if w := deliverStripe(mux, hookPath, `{"fresh":"`+what+`"}`, "", time.Now()); w.Code != http.StatusAccepted {
 			t.Errorf("%s, a fresh signature: %d %s", what, w.Code, w.Body.String())
 		}
 	}
@@ -420,5 +424,99 @@ func TestTeamLocalWebhook_AFailedPublishLeavesTheDeliveryRetryable(t *testing.T)
 	}
 	if got := h.stored("_team/hooked/events", store.MemoryScopeTenant, ""); len(got) != 1 {
 		t.Errorf("%d message(s), want the retried delivery once", len(got))
+	}
+}
+
+// Only a request that is authenticated and would publish holds a delivery's
+// keys: a badly signed one carrying a genuine delivery's id, and a signed one
+// refused for naming no user, leave nothing that drops the genuine delivery.
+func TestTeamLocalWebhook_ARefusedRequestHoldsNoKey(t *testing.T) {
+	h := newHookHarness(t)
+	raw := hookedTeamJSON("user", 30000, `,"payload_mapping":{"user_id":"$.sender.login"}`)
+	sc := h.seed("tdf_hooked_1", "hooked", raw)
+	disarm, err := h.srv.armWalkTriggers(schedWalkCtx(sc, h.walkRun("alice"), "alice"), mustTeamDef(t, raw))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer disarm()
+	_, otherMux := h.replica()
+	req := httptest.NewRequest(http.MethodPost, hookPath, strings.NewReader(`{"sender":{"login":"bob"},"n":"d-1"}`))
+	req.Header.Set("X-Hub-Signature-256", "t="+strconv.FormatInt(time.Now().Unix(), 10)+", v1="+strings.Repeat("0", 64))
+	req.Header.Set("X-Delivery", "d-1")
+	w := httptest.NewRecorder()
+	otherMux.ServeHTTP(w, req)
+	if w.Code != http.StatusUnauthorized {
+		t.Fatalf("badly signed, carrying the genuine id: %d %s", w.Code, w.Body.String())
+	}
+	if w := deliverStripe(otherMux, hookPath, `{"sender":{}}`, "d-2", time.Now()); w.Code != http.StatusBadRequest {
+		t.Fatalf("signed, naming no user: %d %s", w.Code, w.Body.String())
+	}
+	for _, did := range []string{"d-1", "d-2"} {
+		// Two genuine deliveries: distinct bodies, as a signed payload seen
+		// twice is a replay whatever its id.
+		body := `{"sender":{"login":"bob"},"n":"` + did + `"}`
+		if w := deliverStripe(h.mux, hookPath, body, did, time.Now().Add(-time.Second)); w.Code != http.StatusAccepted {
+			t.Errorf("the genuine delivery %s after a refused request with its id: %d %s", did, w.Code, w.Body.String())
+		}
+	}
+	if got := h.stored("_team/hooked/events", store.MemoryScopeUser, "bob"); len(got) != 2 {
+		t.Errorf("%d message(s), want the two genuine deliveries", len(got))
+	}
+}
+
+// A body-only signature never expires, and its sender's id is not signed: a
+// capture replayed once its key has lapsed must not be able to file itself
+// under the id of a delivery not yet sent. The genuine delivery is accepted.
+func TestTeamLocalWebhook_AReplayCannotHoldAnUnsignedDeliveryID(t *testing.T) {
+	h := newHookHarness(t)
+	raw := hookedTeamJSON("tenant", 30000, "")
+	sc := h.seed("tdf_hooked_1", "hooked", raw)
+	clock := newFakeClock()
+	h.srv.walkClock = clock
+	other, _ := h.replica()
+	other.walkClock = clock
+	disarm, err := h.srv.armWalkTriggers(schedWalkCtx(sc, h.walkRun("alice"), "alice"), mustTeamDef(t, raw))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer disarm()
+
+	if w := deliverToTeam(receiverFor(other), hookPath, `{"pr":1}`, "d-1", true); w.Code != http.StatusAccepted {
+		t.Fatalf("the captured delivery, first sent: %d %s", w.Code, w.Body.String())
+	}
+	clock.Advance(25 * time.Hour)
+	// The lease is renewed on this clock too; let it catch up.
+	clock.waitAfters(t, 2)
+	if w := deliverToTeam(receiverFor(other), hookPath, `{"pr":1}`, "d-victim", true); w.Code != http.StatusAccepted {
+		t.Fatalf("the capture, replayed a day later under another id: %d %s", w.Code, w.Body.String())
+	}
+	if w := deliverToTeam(receiverFor(h.srv), hookPath, `{"pr":2}`, "d-victim", true); w.Code != http.StatusAccepted {
+		t.Errorf("the genuine delivery d-victim: %d %s, want it accepted", w.Code, w.Body.String())
+	}
+}
+
+// A delivery's keys are its team webhook's: the same signed body and id sent
+// to two teams' webhooks of one name publishes into each.
+func TestTeamLocalWebhook_KeysAreScopedToTheTeamsWebhook(t *testing.T) {
+	h := newHookHarness(t)
+	raw := hookedTeamJSON("tenant", 30000, "")
+	for _, team := range []string{"hooked", "hooked2"} {
+		sc := h.seed("tdf_"+team+"_1", team, raw)
+		disarm, err := h.srv.armWalkTriggers(schedWalkCtx(sc, h.walkRun("alice"), "alice"), mustTeamDef(t, raw))
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer disarm()
+	}
+	_, otherMux := h.replica()
+	for _, path := range []string{hookPath, "/v1/_teams/acme/hooked2/webhooks/github"} {
+		if w := deliverToTeam(otherMux, path, `{"pr":1}`, "d-1", true); w.Code != http.StatusAccepted {
+			t.Errorf("%s: %d %s", path, w.Code, w.Body.String())
+		}
+	}
+	for _, ch := range []string{"_team/hooked/events", "_team/hooked2/events"} {
+		if got := h.stored(ch, store.MemoryScopeTenant, ""); len(got) != 1 {
+			t.Errorf("%s holds %d message(s), want 1", ch, len(got))
+		}
 	}
 }

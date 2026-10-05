@@ -212,6 +212,16 @@ func (s *Server) publishTeamWebhook(ctx context.Context, a *armedTeamWebhook, us
 		}
 		userID = a.userID
 	}
+	// Everything that can refuse the delivery is checked before its keys are
+	// claimed, so a delivery that is refused holds none of them; what is left
+	// to fail after the claim is the write itself, which releases them.
+	_, def, err := s.teamVersion(ctx, a.sc.Tenant, a.sc)
+	if err != nil {
+		return err
+	}
+	if _, _, _, _, err := s.teamLocalChannelTarget(def, a.sc, a.sc.Tenant, a.hook.Channel, userID); err != nil {
+		return err
+	}
 	if s.store != nil && len(keys) > 0 {
 		now := s.clock().Now()
 		claimed, err := s.store.WebhookDeliveryClaim(ctx, keys, now, now.Add(teamWebhookDedupTTL))
