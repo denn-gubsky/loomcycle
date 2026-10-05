@@ -156,8 +156,10 @@ func (s *Server) withTeamLocalChannels(ctx context.Context, agentDef config.Agen
 	if len(granted) == 0 {
 		return p
 	}
-	tenant := tenantFromCtx(ctx)
-	_, def, err := s.teamVersion(ctx, tenant, sc)
+	// The tenant the Channel tool reads and writes in — the run's — which must
+	// be the team's (teamVersion refuses another): a team's channel rows are
+	// keyed by the team's tenant, which is what deleting the team purges.
+	_, def, err := s.teamVersion(ctx, tools.RunIdentity(ctx).TenantID, sc)
 	if err != nil {
 		log.Printf("team %q (version %s): its own channels are not available to this run: %v", sc.Team, sc.DefID, err)
 		return p

@@ -547,3 +547,41 @@ func TestTeamDef_DeleteDropsItsOwnChannelsAndRetireKeepsThem(t *testing.T) {
 		t.Fatalf("after delete: events=%d verdicts=%d cursor=%q; want nothing left", e, v, cur)
 	}
 }
+
+// The catalog gains a team's channel only for that team's own agent, in the
+// version's scope, running in the team's tenant — the tenant the Channel tool
+// writes in and the one deleting the team purges.
+func TestWithTeamLocalChannels_OnlyTheTeamsOwnAgentInItsTenant(t *testing.T) {
+	h := newChannelHarness(t, nil)
+	sc := h.seed("tdf_triage_1", "triage", starterTeam)
+	grant := tools.ChannelPolicyValue{Publish: []string{"./events"}, Channels: map[string]tools.ChannelDef{}}
+	ctxIn := func(tenant string, sc store.TeamScope) context.Context {
+		// The caller's principal is acme's throughout: what decides is the
+		// tenant the run reads and writes in.
+		ctx := acmeUser("alice")(context.Background())
+		ctx = tools.WithRunIdentity(ctx, tools.RunIdentityValue{TenantID: tenant, UserID: "alice"})
+		return store.WithTeamScope(ctx, sc)
+	}
+	got := h.srv.withTeamLocalChannels(ctxIn("acme", sc), config.AgentDef{TeamDefID: sc.DefID}, grant)
+	if cd, ok := got.Channels["./events"]; !ok || cd.Name != "_team/triage/events" || cd.Scope != "tenant" {
+		t.Fatalf("the team's own agent: catalog = %+v", got.Channels)
+	}
+	if _, ok := got.Channels["./verdicts"]; ok {
+		t.Error("a channel the agent was not granted is listed")
+	}
+	other := sc
+	other.DefID = "tdf_other"
+	for name, c := range map[string]struct {
+		ctx context.Context
+		def config.AgentDef
+	}{
+		"a global agent in the team": {ctxIn("acme", sc), config.AgentDef{}},
+		"another version's agent":    {ctxIn("acme", sc), config.AgentDef{TeamDefID: other.DefID}},
+		"no team scope":              {ctxIn("acme", store.TeamScope{}), config.AgentDef{TeamDefID: sc.DefID}},
+		"a run in another tenant":    {ctxIn("other", sc), config.AgentDef{TeamDefID: sc.DefID}},
+	} {
+		if got := h.srv.withTeamLocalChannels(c.ctx, c.def, grant); len(got.Channels) != 0 {
+			t.Errorf("%s: catalog = %+v, want none of the team's channels", name, got.Channels)
+		}
+	}
+}
