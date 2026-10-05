@@ -34,6 +34,10 @@ Fetch one operation's article, with examples, as `Skill/<op>` — for example
   your tools** — a skill can never give you a tool you do not have. If it asks
   for more, `invoke` refuses it.
 - Names may be grouped with `/`, like `doc/redactor`.
+- If you are one of a team's own agents, your team may have skills of its own
+  for you. They are named `./<name>` — that is how `list` shows them and how
+  you `invoke` them — and only an exact `./<name>` in your `skills:` grants
+  one; no pattern does.
 
 For the full picture — allowlist patterns, grouping, authoring — read
 `{"op":"help","topic":"skills"}`.

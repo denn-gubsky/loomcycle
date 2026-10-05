@@ -53,6 +53,12 @@ and then the `Skill` tool is not added at all.
 `Context op=permissions` shows the effective `skills` allowlist for
 the calling agent, so you can see your own limits.
 
+**A team's own skills** are different. If you are one of a team's own
+agents, your team may declare skills for you, granted by an exact
+`./<name>` entry in your `skills:` — no pattern reaches one. You see
+them in `{"op":"list"}` as `./<name>` and load one with
+`{"name":"./<name>"}`. See `help(topic="agent-teams")`.
+
 ## Grouping with `/`
 
 Skill names may be `/`-grouped — `doc/semantic-chunking`,
@@ -92,6 +98,7 @@ for the create / fork / promote loop.
 
 - `help(topic="skills-evolution")` — author + version skill bodies at
   runtime (the `SkillDef` substrate).
+- `help(topic="agent-teams")` — a team's own agents and skills.
 - `help(topic="scopes")` — agent vs user vs tenant scope.
 - `Context op=permissions` — your effective `skills` allowlist + tools.
 - `Context op=tools` — confirm you actually hold the `Skill` tool.

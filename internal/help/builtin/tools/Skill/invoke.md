@@ -31,6 +31,11 @@ been revised at runtime, you get the active revision.
   the skill needs tools you do not hold, so it cannot be used by you. Use a
   different skill, or hand the task to an agent that holds those tools.
 - `Skill tool: no skills configured ...` — this deployment has no skills.
+- For a `./<name>` (a team's own skill): `skill "./X" is not granted to this
+  agent` — your `skills:` does not name it exactly; `skill "./X" names a team's
+  own skill, which only that team's own agents can load` — you are not one of
+  them, or not inside the team's walk; `this agent's team declares no skill of
+  its own named "X"` — check the name with `list`.
 
 ## Examples
 

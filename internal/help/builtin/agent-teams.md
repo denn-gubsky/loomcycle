@@ -244,9 +244,60 @@ already exist. Declare them under `local.agents` — name → the same body
   its version: a paused member resumes on it.
 - **Limits.** At most 64 agents. A local name is one segment of
   `A-Z a-z 0-9 _ -`, at most 64 characters, and the team's own name must be
-  one segment too. Only `agents` may be declared under `local`. A team's own
-  agents run only in the team's tenant. `verify` lists a declared agent no state runs
-  as an advisory issue.
+  one segment too. Only `agents` and `skills` may be declared under `local`. A
+  team's own agents run only in the team's tenant. `verify` lists a declared
+  agent no state runs as an advisory issue.
+
+### A team's own skills
+
+A team may carry skills the same way. Declare them under `local.skills` —
+name → `{body, description, tools}`, what `SkillDef op=create` takes — and
+grant one to a team agent by listing `./<name>` in that agent's `skills`:
+
+```json
+"local": {
+  "agents": {
+    "reviewer": {
+      "tier": "middle",
+      "tools": ["Read", "Skill"],
+      "skills": ["./house-style"],
+      "system_prompt": "You review diffs against the house style."
+    }
+  },
+  "skills": {
+    "house-style": {
+      "description": "How this team writes code",
+      "body": "Prefer short functions. Name errors for what failed.",
+      "tools": ["Read"]
+    }
+  }
+}
+```
+
+- **Only the team's own agents can use one,** inside a walk of the team (or a
+  resume or continuation of one). They load it with the Skill tool as
+  `./house-style`, and `Skill op=list` shows it under that name. A global
+  agent — inside the walk or not — reaches no team skill by any spelling, and
+  outside a walk nothing does. `sdlc/house-style` is a global skill's name,
+  never the team's.
+- **Only the exact `./<name>` grants it.** The patterns in `skills` (`*`,
+  `doc/*`, none at all) govern global skills and never reach a team's skill,
+  and a pattern written as a grant (`./*`) is refused. A negative entry still
+  denies: `-*` denies a team skill too. A `./x` the team does not declare is
+  refused at create and fork.
+- **It passes every check a new skill does**, at create and at fork, under its
+  full name `<team>/<name>`: the author's `skills` allowlist (`sdlc/*` covers
+  team `sdlc`'s skills), the author's own tools as the ceiling for its `tools`,
+  a non-blank body and the skill body cap. Its `tools` must also be within the
+  `tools` of every team agent granted it — the Skill tool would refuse to load
+  it otherwise, and checks that again when it does.
+- **It is read from the team version a run started under**, like the team's
+  agents: a paused member resumes on that version's skills, not on what a fork
+  has promoted since.
+- **Forking.** A fork that sends `local.skills` replaces the whole list (`{}`
+  declares none) and leaves `local.agents` alone; one that does not keeps the
+  parent's.
+- **Limits.** At most 64 skills, named like a team's agents.
 
 ## Declaring variables and setting them at start
 
