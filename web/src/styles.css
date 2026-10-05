@@ -7451,6 +7451,29 @@ button.doc-ref-target.external {
 .team-walk-result {
   margin-top: 8px;
 }
+.team-walk-vars {
+  margin-top: 8px;
+  font-size: 12px;
+}
+.team-walk-vars dl {
+  margin: 4px 0 0;
+}
+.team-walk-vars dl > div {
+  display: grid;
+  grid-template-columns: minmax(80px, max-content) 1fr;
+  gap: 8px;
+}
+.team-walk-vars dd {
+  margin: 0;
+}
+.team-walk-vars pre {
+  margin: 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-family: var(--mono);
+  max-height: 160px;
+  overflow: auto;
+}
 .team-walk-visit + .team-walk-visit {
   margin-top: 10px;
 }

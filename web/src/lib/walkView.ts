@@ -38,6 +38,20 @@ export function walkTeamOf(walk: Pick<Agent, "agent_id" | "spec">): WalkTeam {
   return { name, defId: def_id, version: typeof version === "number" && version > 0 ? version : undefined };
 }
 
+/** walkVarsOf reads the variable values the walk's start supplied (its spec's
+ *  `team.vars`), sorted by name. Only those: a variable left at its default is
+ *  not recorded there, so an empty list means "every variable at its default",
+ *  not "the team has none". A value that is not text is skipped. */
+export function walkVarsOf(walk: Pick<Agent, "spec">): [string, string][] {
+  const rec = walk.spec?.team;
+  if (!rec || typeof rec !== "object") return [];
+  const vars = (rec as { vars?: unknown }).vars;
+  if (!vars || typeof vars !== "object" || Array.isArray(vars)) return [];
+  return Object.entries(vars as Record<string, unknown>)
+    .filter((e): e is [string, string] => typeof e[1] === "string")
+    .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
+}
+
 /** graphCaption says which definition the walk's graph is drawn from: the
  *  version the walk recorded, or — for a walk that recorded none — whatever
  *  is active now. */
