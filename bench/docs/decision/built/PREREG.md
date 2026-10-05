@@ -60,3 +60,44 @@ Reported, not tested:
   candidate text, truncation, the call) before recommending it.
 - **H2 fails:** the built feature is slower than the probe. Find where the time goes
   before the guide quotes a speed.
+
+## Amendment 1 — 2026-10-05 17:45, after the first run, before any re-run
+
+**The first run is void** by instrument check 2. Its `none` arm scored R@5 **0.7781**
+against phase M's 0.8604, outside the ±0.02 tolerance. What was looked at:
+- the check values;
+- the two arms' R@ figures in `summary.json`;
+- the diagnosis below.
+
+**Diagnosis:**
+
+1. **The code is not the cause.** On the SAME store, the Sept 30 binary (`dd9b58c1`, the
+   decision probe's) and the shipped binary (main after #1619) now return identical
+   rankings for 100 of 100 reference questions. A `git bisect` over the 98 commits
+   between them found every tested commit identical to that reference.
+2. **The drift was transient, in the store's state during the run, not its contents.**
+   The first run's `none` rankings, compared with what the same store returns now:
+   - 5 of 16 sampled questions identical among the first 500 the run searched;
+   - 18 of 21 in the next 500;
+   - 20 of 20 thereafter.
+   The early figure (≈ 0.78) is close to phase M's no-header arm (0.768).
+3. **What it was is not established.** These were ruled out:
+   - the index texts are correct and complete (13,072 chunks embedded, headers present);
+   - embedding is synchronous at write;
+   - there is no approximate vector index (the vector leg is an exact scan);
+   - autovacuum analyzed the table before the run;
+   - the default ranking is pure semantic.
+   The remaining candidate is the query side: the Spark's `bge-m3`, shared with another
+   workload that was swapping models, serving query embeddings that differed during the
+   first part of the run. This cannot be verified after the fact.
+
+**Change.** Both arms are re-run, in full, on the same store, which is now settled.
+Before the re-run starts, a **stability gate** must pass:
+- 50 reference questions are searched (`none`) twice, at least 5 minutes apart;
+- both passes must be identical to each other, and ≥ 95% identical to the `dd9b58c1`
+  reference;
+- if the gate fails, the re-run waits, and the gate is repeated.
+
+The first run's results are kept beside the re-run (`built-run1.jsonl`) but are not
+scored. Nothing else changes: the hypotheses, thresholds and checks stand. Check 2 still
+applies to the re-run.
