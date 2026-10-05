@@ -327,6 +327,23 @@ describe("runTeam debug arguments", () => {
   });
 });
 
+describe("runTeam vars", () => {
+  it("passes vars through, and omits them when unset", async () => {
+    const { client, fetchMock } = makeClient([
+      jsonResponse({ name: "triage", def_id: "team_1", status: "completed", steps: [] }),
+      jsonResponse({ name: "triage", def_id: "team_1", status: "completed", steps: [] }),
+    ]);
+
+    await client.runTeam({ name: "triage", input: "go", vars: { tone: "casual", lang: "" } });
+    const sent = JSON.parse((fetchMock.mock.calls[0]![1] as RequestInit).body as string);
+    expect(sent).toMatchObject({ op: "run", name: "triage", input: "go", vars: { tone: "casual", lang: "" } });
+
+    await client.runTeam({ name: "triage", input: "go" });
+    const bare = JSON.parse((fetchMock.mock.calls[1]![1] as RequestInit).body as string);
+    expect("vars" in bare).toBe(false);
+  });
+});
+
 describe("getRunBreakpoints / setRunBreakpoints", () => {
   it("GETs the armed set for a run", async () => {
     const { client, fetchMock } = makeClient([

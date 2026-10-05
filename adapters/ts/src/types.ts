@@ -2580,6 +2580,14 @@ export interface TeamRunTarget {
   defId?: string;
   /** The initial task handed to the entry state's agent. */
   input?: string;
+  /** Values for this walk's variables, name → text, read by the team's
+   *  prompts as `${var.<name>}`. Only a name the team's definition declares in
+   *  its `vars` is accepted — any other is refused before anything runs, with
+   *  the declared names. A value given here replaces the team's default for
+   *  this walk; a `vars` state, a `capture` or a starter's `binds` may still
+   *  overwrite it as the walk runs. Literal text: never expanded, no `{{` or
+   *  `}}`, at most 4096 bytes. */
+  vars?: Record<string, string>;
   /** Bind the walk to a Document chunk task board: each state transition
    *  persists `chunk.status` = the current team state, and every handler run
    *  the walk spawns carries the task key on its `parent_context`. */

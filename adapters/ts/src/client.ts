@@ -2133,6 +2133,7 @@ export class LoomcycleClient {
     if (target.name !== undefined) body.name = target.name;
     if (target.defId !== undefined) body.def_id = target.defId;
     if (target.input !== undefined) body.input = target.input;
+    if (target.vars !== undefined) body.vars = target.vars;
     if (target.boardChunkId !== undefined) body.board_chunk_id = target.boardChunkId;
     if (target.boardScope !== undefined) body.board_scope = target.boardScope;
     if (target.mode !== undefined) body.mode = target.mode;
