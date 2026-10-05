@@ -1001,6 +1001,13 @@ func TestTeamScope_NamingAnotherTenantsTeamReachesNoneOfItsAgents(t *testing.T) 
 			}
 		}
 	}
+	// A state's name reaches the team's own agent as "./solo" and in no other
+	// spelling — not even the name that agent runs under.
+	for _, name := range []string{"sdlc/solo", "solo"} {
+		if _, _, err := h.srv.resolveAgentName(forged, "acme", name, nameFromDefinition); !errors.Is(err, errAgentNotFound) {
+			t.Errorf("a state naming %q resolved to something (err %v); only \"./solo\" is the team's own", name, err)
+		}
+	}
 	// Same scope, the team's own tenant: resolves.
 	if _, runName, err := h.srv.resolveAgentName(forged, "acme", "./solo", nameFromAgentTool); err != nil || runName != "sdlc/solo" {
 		t.Errorf("an acme run in its own team's scope: %q, %v", runName, err)
@@ -1048,8 +1055,12 @@ func TestTeamWalk_AnotherTenantsTeamWithItsOwnAgentsIsRefusedUpFront(t *testing.
 		_ = json.Unmarshal(rr.Body.Bytes(), &out)
 		return out
 	}
-	if out := asAdmin(withLocals); !strings.Contains(fmtAny(out), "another tenant") || h.prov.sawSystem("LOCAL solo") {
+	if out := asAdmin(withLocals); !strings.Contains(fmtAny(out), "run it as that tenant") || h.prov.sawSystem("LOCAL solo") {
 		t.Errorf("want a refusal naming the tenant boundary and nothing run, got %v", out)
+	}
+	// Up front: no walk run was opened to fail at its first state.
+	if rows, err := h.st.ListActiveRunsByUser(context.Background(), "", "root", ""); err != nil || len(rows) != 0 {
+		t.Errorf("the refused walk left %d run row(s) (err %v)", len(rows), err)
 	}
 	if out := asAdmin(plain); out["status"] != "completed" {
 		t.Errorf("a team with no agents of its own must still run for an admin of another tenant: %v", out)
@@ -1097,6 +1108,12 @@ func TestLogTeamLocalNameClashes_StopsWhenItsContextEnds(t *testing.T) {
 	if err := h.st.DynamicAgentUpsert(context.Background(), store.DynamicAgent{Name: "sdlc/solo", TenantID: "acme", Definition: json.RawMessage(`{}`)}); err != nil {
 		t.Fatal(err)
 	}
+	if n := h.srv.LogTeamLocalNameClashes(context.Background()); n != 1 {
+		t.Fatalf("fixture drifted: the report found %d clashes, want 1", n)
+	}
+	// A store that ignores cancellation, so what stops the report is the
+	// report itself and not a read that happens to fail.
+	h.srv.store = ctxBlindStore{h.st}
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	if n := h.srv.LogTeamLocalNameClashes(ctx); n != 0 {
@@ -1139,4 +1156,23 @@ func TestResumeAndContinuation_OfAGlobalAgentInATeamStayGlobalDespiteALocalOfTha
 	if !h.prov.sawSystem("GLOBAL checker") || h.prov.sawSystem("LOCAL checker") {
 		t.Error("the continued session of the global checker became the team's own checker")
 	}
+}
+
+// ctxBlindStore answers the boot report's reads whether or not ctx has ended.
+type ctxBlindStore struct{ store.Store }
+
+func (b ctxBlindStore) TeamDefListNames(context.Context) ([]store.TeamDefNameSummary, error) {
+	return b.Store.TeamDefListNames(context.Background())
+}
+
+func (b ctxBlindStore) TeamDefGet(_ context.Context, defID string) (store.TeamDefRow, error) {
+	return b.Store.TeamDefGet(context.Background(), defID)
+}
+
+func (b ctxBlindStore) DynamicAgentGet(_ context.Context, tenantID, name string) (store.DynamicAgent, error) {
+	return b.Store.DynamicAgentGet(context.Background(), tenantID, name)
+}
+
+func (b ctxBlindStore) AgentDefGetActive(_ context.Context, tenantID, name string) (store.AgentDefRow, error) {
+	return b.Store.AgentDefGetActive(context.Background(), tenantID, name)
 }
