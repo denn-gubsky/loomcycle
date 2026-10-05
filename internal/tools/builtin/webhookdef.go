@@ -716,43 +716,8 @@ func validateWebhookDef(def mergedWebhookDef) error {
 		return fmt.Errorf("unknown delivery %q (must be one of: spawn, channel, team)", def.Delivery)
 	}
 
-	// auth.kind ∈ {"", "hmac", "bearer"} ("" treated as hmac).
-	switch def.Auth.Kind {
-	case "", "hmac":
-		if def.Auth.SigningSecretEnv == "" {
-			return fmt.Errorf("auth.kind=hmac requires auth.signing_secret_env")
-		}
-		if !envVarNameRe.MatchString(def.Auth.SigningSecretEnv) {
-			return fmt.Errorf("auth.signing_secret_env %q is not a valid env-var name (must match [A-Z][A-Z0-9_]*)", def.Auth.SigningSecretEnv)
-		}
-		// SHA-256 is the only digest the receiver implements (verifyHMAC
-		// hardcodes sha256.New). The Algorithm field is carried through
-		// every Def site, so an unsupported value would be silently dropped
-		// and the sender's valid signatures rejected with an opaque 401 —
-		// the never-silently-degrade contract (RFC H Decision 9) demands a
-		// loud refusal here instead. "" defaults to sha256.
-		if a := strings.ToLower(strings.TrimSpace(def.Auth.Algorithm)); a != "" && a != "sha256" {
-			return fmt.Errorf("auth.algorithm %q unsupported (only sha256 is implemented)", def.Auth.Algorithm)
-		}
-	case "bearer":
-		if def.Auth.BearerTokenEnv == "" {
-			return fmt.Errorf("auth.kind=bearer requires auth.bearer_token_env")
-		}
-		if !envVarNameRe.MatchString(def.Auth.BearerTokenEnv) {
-			return fmt.Errorf("auth.bearer_token_env %q is not a valid env-var name (must match [A-Z][A-Z0-9_]*)", def.Auth.BearerTokenEnv)
-		}
-	case "none":
-		// Trusted-network escape hatch: the receiver performs NO verification.
-		// It is honored only when the operator sets
-		// LOOMCYCLE_WEBHOOKS_ALLOW_UNAUTHENTICATED=1; otherwise every delivery
-		// 503s "unauthenticated_mode_disabled". Forbid declaring a secret that
-		// would never be consumed — silent dead config is worse than a loud
-		// refusal (RFC H Decision 9, never-silently-degrade).
-		if def.Auth.SigningSecretEnv != "" || def.Auth.BearerTokenEnv != "" {
-			return fmt.Errorf("auth.kind=none forbids signing_secret_env / bearer_token_env (no verification is performed)")
-		}
-	default:
-		return fmt.Errorf("unknown auth.kind %q (must be one of: hmac, bearer, none)", def.Auth.Kind)
+	if err := validateWebhookAuth(def.Auth); err != nil {
+		return err
 	}
 
 	// Every value in user_credentials_from_env must be a valid env-var
@@ -784,6 +749,51 @@ func validateWebhookDef(def mergedWebhookDef) error {
 		if def.SyncResponse.TimeoutMs <= 0 || def.SyncResponse.TimeoutMs > 60000 {
 			return fmt.Errorf("sync_response.timeout_ms must be in (0, 60000] when sync_response.enabled")
 		}
+	}
+	return nil
+}
+
+// validateWebhookAuth checks a webhook's auth block: auth.kind ∈ {"", "hmac",
+// "bearer", "none"} ("" treated as hmac), the secret its kind needs named by a
+// well-formed env-var name, and nothing it does not use. A team's own webhooks
+// are checked by it too, so they are held to exactly a WebhookDef's rules.
+func validateWebhookAuth(a mergedWebhookAuth) error {
+	switch a.Kind {
+	case "", "hmac":
+		if a.SigningSecretEnv == "" {
+			return fmt.Errorf("auth.kind=hmac requires auth.signing_secret_env")
+		}
+		if !envVarNameRe.MatchString(a.SigningSecretEnv) {
+			return fmt.Errorf("auth.signing_secret_env %q is not a valid env-var name (must match [A-Z][A-Z0-9_]*)", a.SigningSecretEnv)
+		}
+		// SHA-256 is the only digest the receiver implements (verifyHMAC
+		// hardcodes sha256.New). The Algorithm field is carried through
+		// every Def site, so an unsupported value would be silently dropped
+		// and the sender's valid signatures rejected with an opaque 401 —
+		// the never-silently-degrade contract (RFC H Decision 9) demands a
+		// loud refusal here instead. "" defaults to sha256.
+		if alg := strings.ToLower(strings.TrimSpace(a.Algorithm)); alg != "" && alg != "sha256" {
+			return fmt.Errorf("auth.algorithm %q unsupported (only sha256 is implemented)", a.Algorithm)
+		}
+	case "bearer":
+		if a.BearerTokenEnv == "" {
+			return fmt.Errorf("auth.kind=bearer requires auth.bearer_token_env")
+		}
+		if !envVarNameRe.MatchString(a.BearerTokenEnv) {
+			return fmt.Errorf("auth.bearer_token_env %q is not a valid env-var name (must match [A-Z][A-Z0-9_]*)", a.BearerTokenEnv)
+		}
+	case "none":
+		// Trusted-network escape hatch: the receiver performs NO verification.
+		// It is honored only when the operator sets
+		// LOOMCYCLE_WEBHOOKS_ALLOW_UNAUTHENTICATED=1; otherwise every delivery
+		// 503s "unauthenticated_mode_disabled". Forbid declaring a secret that
+		// would never be consumed — silent dead config is worse than a loud
+		// refusal (RFC H Decision 9, never-silently-degrade).
+		if a.SigningSecretEnv != "" || a.BearerTokenEnv != "" {
+			return fmt.Errorf("auth.kind=none forbids signing_secret_env / bearer_token_env (no verification is performed)")
+		}
+	default:
+		return fmt.Errorf("unknown auth.kind %q (must be one of: hmac, bearer, none)", a.Kind)
 	}
 	return nil
 }
