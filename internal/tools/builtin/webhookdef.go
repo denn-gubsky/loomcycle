@@ -73,7 +73,7 @@ const webhookDefInputSchema = `{
     "parent_def_id": {"type": "string", "description": "Fork parent (optional for fork — when absent, forks the active def of the name, or bootstraps from a yaml template)."},
     "overlay": {
       "type": "object",
-      "description": "Mutable subset of the webhook definition for create/fork. tenant_id (where spawned runs execute) may name only your own tenant unless you are an admin; omit it to use yours. Server-set fields are silently ignored if supplied.",
+      "description": "Mutable subset of the webhook definition for create/fork. delivery is spawn (default — start a run of agent), channel (publish the body to channel) or team (start a detached walk of the team named in team, as TeamDef op=run mode=detach does, with the raw request body as the walk's input). For team, vars maps a variable the team declares to a JSONPath into the body ($, .key and [N] only), e.g. {\"delivery\":\"team\",\"team\":\"pr-review\",\"vars\":{\"repo\":\"$.repository.full_name\",\"pr\":\"$.pull_request.number\"}}; a path the body lacks leaves that variable at the team's default. delivery=team forbids agent, channel, credentials, metadata, on_complete, sync_response and every payload_mapping target except user_id; team and vars are refused on the other deliveries. The team is looked up in the webhook's tenant when a delivery arrives: a missing or retired team, a variable it does not declare, or a projected value it refuses (too long, or containing {{ or }}) starts no walk and answers 400 invalid_run. An accepted delivery answers 202 with the walk's run_id. tenant_id (where spawned runs execute) may name only your own tenant unless you are an admin; omit it to use yours. Server-set fields are silently ignored if supplied.",
       "additionalProperties": true
     },
     "description":   {"type": "string", "description": "Free-text rationale for create/fork."},
@@ -670,6 +670,26 @@ func validateWebhookDef(def mergedWebhookDef) error {
 		if def.Channel != "" {
 			return fmt.Errorf("delivery=spawn forbids channel (set agent, not channel)")
 		}
+		if def.Team != "" || len(def.Vars) > 0 {
+			return fmt.Errorf("delivery=spawn forbids team and vars (set delivery: team to start a team walk)")
+		}
+	case "team":
+		if err := config.CheckWebhookTeamDelivery(def.Team, def.Vars); err != nil {
+			return err
+		}
+		// One list of refused fields for this tool and the yaml load.
+		if field := config.WebhookTeamDeliveryForbids(config.Webhook{
+			Agent:                  def.Agent,
+			Channel:                def.Channel,
+			UserCredentials:        def.UserCredentials,
+			UserCredentialsFromEnv: def.UserCredentialsFromEnv,
+			Metadata:               def.Metadata,
+			OnComplete:             def.OnComplete,
+			SyncResponse:           config.WebhookSyncResponse{Enabled: def.SyncResponse.Enabled},
+			PayloadMapping:         def.PayloadMapping,
+		}); field != "" {
+			return fmt.Errorf("delivery=team forbids %s", field)
+		}
 	case "channel":
 		if def.Channel == "" {
 			return fmt.Errorf("delivery=channel requires channel (non-empty)")
@@ -689,8 +709,11 @@ func validateWebhookDef(def mergedWebhookDef) error {
 				return fmt.Errorf("delivery=channel forbids payload_mapping key %q (RFC H Decision 11: channel mode cannot map user credentials)", k)
 			}
 		}
+		if def.Team != "" || len(def.Vars) > 0 {
+			return fmt.Errorf("delivery=channel forbids team and vars (set delivery: team to start a team walk)")
+		}
 	default:
-		return fmt.Errorf("unknown delivery %q (must be one of: spawn, channel)", def.Delivery)
+		return fmt.Errorf("unknown delivery %q (must be one of: spawn, channel, team)", def.Delivery)
 	}
 
 	// auth.kind ∈ {"", "hmac", "bearer"} ("" treated as hmac).
@@ -824,6 +847,13 @@ type mergedWebhookDef struct {
 	// confinement. Mirrors OperatorKeyRestricted; omitempty keeps pre-P2b bodies
 	// byte-identical. Drift-tested against config.Webhook / SubstrateWebhookDef.
 	Isolated bool `json:"isolated,omitempty"`
+	// Team / Vars are the delivery=team target: the team whose walk a delivery
+	// starts (detached, the raw body as its input), and the walk's variables
+	// as strict-subset JSONPaths into that body. Whether the team exists and
+	// declares these names is checked when a delivery arrives, in the def's
+	// own tenant.
+	Team string            `json:"team,omitempty"`
+	Vars map[string]string `json:"vars,omitempty"`
 	// CaptureDisabled is the marker a snapshot restore writes on a def whose
 	// literal user_credentials values were stripped from the snapshot (they
 	// never travel). Server authority: only restore sets it, and applyOverlay
@@ -941,19 +971,37 @@ func (d *mergedWebhookDef) applyOverlay(ov mergedWebhookDef) {
 	// either — the merged def then carries both and the validator rejects
 	// it loudly, rather than silently dropping one target. Mirrors
 	// A2AAgentDef's both-set reachability posture.
+	//
+	// delivery=team adds a third target (team, with its vars) under the same
+	// rule: an overlay naming exactly one target clears the other two.
 	overlayHasAgent := ov.Agent != ""
 	overlayHasChannel := ov.Channel != ""
+	overlayHasTeam := ov.Team != ""
 	if overlayHasAgent {
 		d.Agent = ov.Agent
-		if !overlayHasChannel {
+		if !overlayHasChannel && !overlayHasTeam {
 			d.Channel = ""
+			d.Team, d.Vars = "", nil
 		}
 	}
 	if overlayHasChannel {
 		d.Channel = ov.Channel
-		if !overlayHasAgent {
+		if !overlayHasAgent && !overlayHasTeam {
 			d.Agent = ""
+			d.Team, d.Vars = "", nil
 		}
+	}
+	if overlayHasTeam {
+		d.Team = ov.Team
+		if !overlayHasAgent && !overlayHasChannel {
+			d.Agent = ""
+			d.Channel = ""
+		}
+	}
+	// Replaced wholesale, like payload_mapping: the variables a delivery
+	// fills are one statement, and a fork that names fewer means fewer.
+	if ov.Vars != nil {
+		d.Vars = ov.Vars
 	}
 	if ov.Auth.Kind != "" {
 		d.Auth.Kind = ov.Auth.Kind
@@ -1039,6 +1087,8 @@ func staticToMergedWebhookDef(w config.Webhook) mergedWebhookDef {
 		// shape reuses ScheduleDef's hook type), so the slice is copied by
 		// reference — no field-by-field projection needed.
 		OnComplete: w.OnComplete,
+		Team:       w.Team,
+		Vars:       w.Vars,
 	}
 	return out
 }

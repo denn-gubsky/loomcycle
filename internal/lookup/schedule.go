@@ -135,6 +135,11 @@ type SubstrateScheduleDef struct {
 	// losslessly. The def body's `enabled: false` is what keeps it from
 	// firing; config.ScheduledRun carries no such field.
 	CaptureDisabled *SubstrateScheduleCaptureDisabled `json:"capture_disabled,omitempty"`
+	// Team / Vars / Input are the delivery=team target: the team whose walk a
+	// tick starts, its variable values (literals) and its input.
+	Team  string            `json:"team,omitempty"`
+	Vars  map[string]string `json:"vars,omitempty"`
+	Input string            `json:"input,omitempty"`
 	// OperatorLayer mirrors mergedScheduleDef's server-stamped authority bit:
 	// the def was written, with no tenant, by a caller holding operator
 	// authority. The scheduler reads it via scheduler.scheduleDef to decide
@@ -190,6 +195,9 @@ func (s SubstrateScheduleDef) ToConfigDef() config.ScheduledRun {
 	out := config.ScheduledRun{
 		Delivery:               s.Delivery,
 		Channel:                s.Channel,
+		Team:                   s.Team,
+		Vars:                   s.Vars,
+		Input:                  s.Input,
 		Agent:                  s.Agent,
 		Schedule:               s.Schedule,
 		UserTierSchedules:      s.UserTierSchedules,

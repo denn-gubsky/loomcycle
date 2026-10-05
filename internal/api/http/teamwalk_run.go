@@ -76,7 +76,7 @@ func (s *Server) openTeamWalkRun(ctx context.Context, spec builtin.WalkRunSpec) 
 	// (admitTeamRun) has already put the caller's, or a subscription's
 	// promoter's, on ident. Without them the walk's own row read as
 	// unrestricted to anything that reads runs by their row.
-	sessionID, runID, err := s.openOrCreateSessionAndRun(ctx, "", agent, ident.TenantID, ident.UserID, store.RunIdentity{
+	identity := store.RunIdentity{
 		AgentID:               agent,
 		ParentRunID:           parentRunID,
 		UserID:                ident.UserID,
@@ -84,8 +84,19 @@ func (s *Server) openTeamWalkRun(ctx context.Context, spec builtin.WalkRunSpec) 
 		OperatorKeyRestricted: ident.OperatorKeyRestricted,
 		Isolated:              ident.Isolated,
 		RunConfig:             runConfigRecord{Team: teamWalkRecordOf(s.redactor, spec)}.marshal(),
-	})
+	}
+	// A walk a webhook delivery started carries that delivery's dedup keys, as
+	// a spawned run does, so a redelivery finds this row instead of starting a
+	// second walk.
+	trigger := triggerWalkStartFrom(ctx)
+	if trigger != nil {
+		identity.IdempotencyKey, identity.DeliveryAltKey = trigger.idempotencyKey, trigger.deliveryAltKey
+	}
+	sessionID, runID, err := s.openOrCreateSessionAndRun(ctx, "", agent, ident.TenantID, ident.UserID, identity)
 	if err != nil {
+		if trigger != nil {
+			trigger.openErr = err
+		}
 		return ctx, "", func(builtin.WalkEnd) {}, err
 	}
 	// A walk is a run, and its transitions reach the run-state stream like
@@ -97,6 +108,11 @@ func (s *Server) openTeamWalkRun(ctx context.Context, spec builtin.WalkRunSpec) 
 	walkCtx := ctx
 	if detach {
 		walkCtx = context.WithoutCancel(ctx)
+	}
+	if trigger != nil {
+		// The keys name THIS row. A walk a member of this one starts is its
+		// own run and must not claim them again.
+		walkCtx = context.WithValue(walkCtx, triggerWalkStartKey{}, (*triggerWalkStart)(nil))
 	}
 	// The walk's own cancel. Every member run spawns under walkCtx, so firing
 	// it stops them too; before this nothing could stop a running walk short

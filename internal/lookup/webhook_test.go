@@ -214,6 +214,8 @@ func TestWebhook_DriftDetection(t *testing.T) {
 		"payload_mapping":           true,
 		"sync_response":             true,
 		"on_complete":               true,
+		"team":                      true, // delivery=team: the team whose walk a delivery starts
+		"vars":                      true, // delivery=team: the walk's variables, as JSONPaths into the body
 		"operator_key_restricted":   true, // RFC AX: captured operator-key restriction (anti-bypass)
 		"isolated":                  true, // RFC BX P2b: captured isolation bit (anti-bypass)
 		"capture_disabled":          true, // server-set by a snapshot restore that stripped literal credentials

@@ -105,6 +105,11 @@ type runInputPreview struct {
 	UserID         string   `json:"user_id"`
 	Goal           string   `json:"goal"`
 	CredentialKeys []string `json:"credential_keys"`
+	// Team and Vars preview a delivery=team webhook: the team a delivery
+	// would start, and the variable values its `vars` paths projected from
+	// the posted body. Absent for the other deliveries.
+	Team string            `json:"team,omitempty"`
+	Vars map[string]string `json:"vars,omitempty"`
 }
 
 // handleTest is the admin dry-run validator. It verifies the signature and
@@ -178,6 +183,34 @@ func (rec *Receiver) handleTest(w http.ResponseWriter, r *http.Request) {
 			WouldAccept:     false,
 			Verdict:         "rejected_mapping",
 			RunInputPreview: runInputPreview{},
+		})
+		return
+	}
+
+	// A team delivery builds a walk, not a RunInput. The same builder the
+	// receiver uses, so a value it would refuse is refused here — but whether
+	// the team exists and declares these variables is known only to a real
+	// start, which a dry-run must not make.
+	if wd.Delivery == "team" {
+		in, terr := buildTeamWalkInput(wd, proj, body)
+		if terr != nil {
+			verdict := "rejected_mapping"
+			if errors.Is(terr, errTeamVarRefused) {
+				verdict = verdictRejectedTeamStart
+			}
+			writeJSON(w, http.StatusOK, testResult{WouldAccept: false, Verdict: verdict, RunInputPreview: runInputPreview{}})
+			return
+		}
+		writeJSON(w, http.StatusOK, testResult{
+			WouldAccept: true,
+			Verdict:     verdictAccepted,
+			RunInputPreview: runInputPreview{
+				UserID:         in.UserID,
+				Goal:           in.Input,
+				CredentialKeys: []string{},
+				Team:           in.Team,
+				Vars:           in.Vars,
+			},
 		})
 		return
 	}

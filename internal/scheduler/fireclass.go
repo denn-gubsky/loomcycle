@@ -30,6 +30,11 @@ const (
 	// later fire, so it does not use up max_fires (F38) — counting it would
 	// retire the schedule and present a misconfig as N normal runs.
 	fireUnknownAgent
+	// fireTeamNotStartable: the same config error for a team tick — the team
+	// is missing or retired, or the schedule sets a variable it does not
+	// declare or a value it refuses. No walk started and none will until the
+	// schedule or the team is changed, so it does not use up max_fires either.
+	fireTeamNotStartable
 	// fireBackpressure: transient load refused admission. Nothing broke.
 	fireBackpressure
 	// fireDeferred: an admission rule refused the run — the scope's hard token
@@ -54,6 +59,8 @@ func classifyFire(err error) fireClass {
 		return fireRan
 	case errors.Is(err, runner.ErrUnknownAgent):
 		return fireUnknownAgent
+	case errors.Is(err, runner.ErrTeamNotStartable):
+		return fireTeamNotStartable
 	case errors.Is(err, runner.ErrBackpressure),
 		errors.Is(err, runner.ErrPerUserQuotaExhausted),
 		errors.Is(err, runner.ErrProviderConcurrencyExhausted):
@@ -85,7 +92,7 @@ func (c fireClass) status() string {
 // countsAsFire reports whether a fire of this class uses up one of the
 // schedule's max_fires.
 func (c fireClass) countsAsFire() bool {
-	return c != fireUnknownAgent && c != firePaused
+	return c != fireUnknownAgent && c != fireTeamNotStartable && c != firePaused
 }
 
 // isOperatorKeyErr reports whether err is the operator-key restriction. It has

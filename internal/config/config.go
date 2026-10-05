@@ -2771,7 +2771,9 @@ type ScheduledRun struct {
 	// Delivery is WHAT a tick does. "" / "run" (the default) invokes the
 	// agent, which is every schedule that existed before this field. "channel"
 	// publishes to Channel and starts NO run — a cadence signal, symmetric
-	// with the `delivery: channel` a Webhook already has.
+	// with the `delivery: channel` a Webhook already has. "team" starts a
+	// detached walk of Team with Vars and Input, and starts no agent run of
+	// its own.
 	//
 	// Why a tick without a run: a workflow driven off a channel needs a clock,
 	// and today reaching a channel on a cron means burning an agent run whose
@@ -2788,6 +2790,20 @@ type ScheduledRun struct {
 	// forbidden otherwise. Resolved at the channel's DECLARED scope, the same
 	// as an on_complete channel.publish hook.
 	Channel string `yaml:"channel"`
+
+	// Team is the team whose walk a delivery=team tick starts. Required
+	// there, forbidden otherwise. Teams are runtime definitions, so whether
+	// it exists is known only when the tick fires — in the schedule's own
+	// tenant (TenantID).
+	Team string `yaml:"team"`
+
+	// Vars are the walk's variable values for delivery=team: name → literal
+	// text, exactly what a caller passes when starting the walk by hand. Only
+	// names the team declares are accepted, which is checked at fire.
+	Vars map[string]string `yaml:"vars"`
+
+	// Input is the optional literal input a delivery=team walk starts with.
+	Input string `yaml:"input"`
 
 	// Agent is the agent name to invoke. Must resolve via lookup.Agent
 	// (static cfg.Agents or substrate). Required for delivery=run.
@@ -2982,9 +2998,9 @@ type A2AExpectedSkill struct {
 
 // Webhook is one entry in the v1.x RFC H `webhooks:` yaml block. It
 // declares an INBOUND HTTP webhook: how an external system reaches
-// loomcycle to trigger an agent run (delivery=spawn) or publish to a
-// channel (delivery=channel), plus the auth, rate limit, payload
-// mapping, and on_complete hooks.
+// loomcycle to trigger an agent run (delivery=spawn), publish to a
+// channel (delivery=channel) or start a team walk (delivery=team), plus
+// the auth, rate limit, payload mapping, and on_complete hooks.
 //
 // Unlike the A2A config structs (yaml-only), Webhook carries BOTH json
 // and yaml tags: the SAME field set backs the tool-layer merged shape
@@ -3063,6 +3079,16 @@ type Webhook struct {
 	PayloadMapping map[string]string   `json:"payload_mapping,omitempty" yaml:"payload_mapping"`
 	SyncResponse   WebhookSyncResponse `json:"sync_response,omitempty" yaml:"sync_response"`
 	OnComplete     []ScheduledRunHook  `json:"on_complete,omitempty" yaml:"on_complete"`
+	// Team is the team whose walk a delivery=team webhook starts, detached,
+	// with the raw request body as its input. Looked up in TenantID only, when
+	// a delivery arrives (teams are runtime definitions).
+	Team string `json:"team,omitempty" yaml:"team"`
+	// Vars fill the walk's variables for delivery=team: name → strict-subset
+	// JSONPath into the delivery's body (the payload_mapping dialect). A path
+	// the body does not have leaves that variable at the team's default. The
+	// projected value is UNTRUSTED text and is checked like any value a caller
+	// supplies at start; one that fails refuses the delivery.
+	Vars map[string]string `json:"vars,omitempty" yaml:"vars"`
 	// OperatorKeyRestricted is the RFC AX negative permission bit. For a DYNAMIC
 	// WebhookDef it is CAPTURED from the authoring principal (server authority);
 	// the receiver copies it into RunInput so the fired run keeps its creator's
@@ -7075,9 +7101,39 @@ func validateScheduleDelivery(name string, sr ScheduledRun) error {
 		if sr.Channel != "" {
 			return fmt.Errorf("scheduled_runs.%s: delivery=run forbids `channel` (set delivery: channel to publish instead of running)", name)
 		}
+		if scheduleHasTeamFields(sr) {
+			return fmt.Errorf("scheduled_runs.%s: delivery=run forbids `team`, `vars` and `input` (set delivery: team to start a team walk instead of running)", name)
+		}
+	case "team":
+		if err := CheckScheduleTeamDelivery(sr.Team, sr.Vars); err != nil {
+			return fmt.Errorf("scheduled_runs.%s: %w", name, err)
+		}
+		// The same refusals a channel tick makes, for the same reason: each
+		// of these configures an agent run, and a team tick starts a walk.
+		if sr.Agent != "" {
+			return fmt.Errorf("scheduled_runs.%s: delivery=team forbids `agent` (the walk runs the team's own members)", name)
+		}
+		if sr.Channel != "" {
+			return fmt.Errorf("scheduled_runs.%s: delivery=team forbids `channel` (set delivery: channel to publish instead)", name)
+		}
+		if len(sr.Prompt) > 0 {
+			return fmt.Errorf("scheduled_runs.%s: delivery=team forbids `prompt` (nothing reads it — the walk starts with `input`, and its prompts read `vars`)", name)
+		}
+		if len(sr.OnComplete) > 0 {
+			return fmt.Errorf("scheduled_runs.%s: delivery=team forbids `on_complete` (the tick ends when the walk STARTS — put what follows the walk in the team's own hooks)", name)
+		}
+		if len(sr.RequiredCredentials) > 0 || len(sr.UserCredentialsFromEnv) > 0 {
+			return fmt.Errorf("scheduled_runs.%s: delivery=team forbids credentials (they are handed to one agent run, and a walk's members resolve their own)", name)
+		}
+		if len(sr.Metadata) > 0 {
+			return fmt.Errorf("scheduled_runs.%s: delivery=team forbids `metadata` (nothing reads it — pass values to the walk in `vars`)", name)
+		}
 	case "channel":
 		if sr.Channel == "" {
 			return fmt.Errorf("scheduled_runs.%s: delivery=channel requires `channel`", name)
+		}
+		if scheduleHasTeamFields(sr) {
+			return fmt.Errorf("scheduled_runs.%s: delivery=channel forbids `team`, `vars` and `input` (set delivery: team to start a team walk instead of publishing)", name)
 		}
 		if sr.Agent != "" {
 			return fmt.Errorf("scheduled_runs.%s: delivery=channel forbids `agent` (a channel tick starts no run)", name)
@@ -7092,9 +7148,15 @@ func validateScheduleDelivery(name string, sr ScheduledRun) error {
 			return fmt.Errorf("scheduled_runs.%s: delivery=channel forbids credentials (they exist to authorize a run, and no run fires)", name)
 		}
 	default:
-		return fmt.Errorf("scheduled_runs.%s: unknown delivery %q (want run or channel)", name, sr.Delivery)
+		return fmt.Errorf("scheduled_runs.%s: unknown delivery %q (want run, channel or team)", name, sr.Delivery)
 	}
 	return nil
+}
+
+// scheduleHasTeamFields reports whether a schedule sets any field only a team
+// delivery reads.
+func scheduleHasTeamFields(sr ScheduledRun) bool {
+	return sr.Team != "" || len(sr.Vars) > 0 || sr.Input != ""
 }
 
 // validateStaticWebhook checks a static `webhooks:` entry's delivery target +
@@ -7113,6 +7175,9 @@ func validateStaticWebhook(name string, w Webhook) error {
 		if w.Channel != "" {
 			return fmt.Errorf("webhooks.%s: delivery=spawn forbids `channel` (set agent, not channel)", name)
 		}
+		if w.Team != "" || len(w.Vars) > 0 {
+			return fmt.Errorf("webhooks.%s: delivery=spawn forbids `team` and `vars` (set delivery: team to start a team walk)", name)
+		}
 	case "channel":
 		if w.Channel == "" {
 			return fmt.Errorf("webhooks.%s: delivery=channel requires `channel`", name)
@@ -7120,8 +7185,18 @@ func validateStaticWebhook(name string, w Webhook) error {
 		if w.Agent != "" {
 			return fmt.Errorf("webhooks.%s: delivery=channel forbids `agent` (set channel, not agent)", name)
 		}
+		if w.Team != "" || len(w.Vars) > 0 {
+			return fmt.Errorf("webhooks.%s: delivery=channel forbids `team` and `vars` (set delivery: team to start a team walk)", name)
+		}
+	case "team":
+		if err := CheckWebhookTeamDelivery(w.Team, w.Vars); err != nil {
+			return fmt.Errorf("webhooks.%s: %w", name, err)
+		}
+		if field := WebhookTeamDeliveryForbids(w); field != "" {
+			return fmt.Errorf("webhooks.%s: delivery=team forbids %s", name, field)
+		}
 	default:
-		return fmt.Errorf("webhooks.%s: unknown delivery %q (want spawn or channel)", name, w.Delivery)
+		return fmt.Errorf("webhooks.%s: unknown delivery %q (want spawn, channel or team)", name, w.Delivery)
 	}
 	switch strings.ToLower(strings.TrimSpace(w.Auth.Kind)) {
 	case "", "hmac", "bearer", "none":
@@ -7129,6 +7204,40 @@ func validateStaticWebhook(name string, w Webhook) error {
 		return fmt.Errorf("webhooks.%s: unknown auth.kind %q (want hmac, bearer, or none)", name, w.Auth.Kind)
 	}
 	return nil
+}
+
+// WebhookTeamDeliveryForbids names the first field a delivery=team webhook
+// sets that configures an agent run, with why — "" when it sets none. Each is
+// REFUSED rather than ignored: a tier that pins nothing or a hook that never
+// fires is a setting the author believes they made. One list for the yaml load
+// and the WebhookDef tool, which both hold this def shape.
+//
+// payload_mapping keeps one target, user_id: it attributes the walk to a user
+// the way it attributes a spawned run. Every other target feeds a run's prompt,
+// credentials or metadata, and the walk has `vars` and the raw body instead.
+func WebhookTeamDeliveryForbids(w Webhook) string {
+	switch {
+	case w.Agent != "":
+		return "`agent` (the walk runs the team's own members)"
+	case w.Channel != "":
+		return "`channel` (set delivery: channel to publish instead)"
+	case w.UserTier != "":
+		return "`user_tier` (it pins one agent run's tier, and a walk's members resolve their own)"
+	case len(w.UserCredentials) > 0 || len(w.UserCredentialsFromEnv) > 0:
+		return "credentials (they are handed to one agent run, and a walk's members resolve their own)"
+	case len(w.Metadata) > 0:
+		return "`metadata` (nothing reads it — pass values to the walk in `vars`)"
+	case len(w.OnComplete) > 0:
+		return "`on_complete` (the delivery ends when the walk STARTS — put what follows the walk in the team's own hooks)"
+	case w.SyncResponse.Enabled:
+		return "`sync_response` (a walk is started detached; the response carries its run id to follow it by)"
+	}
+	for _, target := range sortedVarNames(w.PayloadMapping) {
+		if target != "user_id" {
+			return fmt.Sprintf("payload_mapping target %q (only `user_id` applies to a walk — project body values into the team's variables with `vars`)", target)
+		}
+	}
+	return ""
 }
 
 // validateTierCandidate checks one tier candidate at config-load. A candidate

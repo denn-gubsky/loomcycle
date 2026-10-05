@@ -93,7 +93,7 @@ const scheduleDefInputSchema = `{
     "parent_def_id": {"type": "string", "description": "Fork parent (optional for fork — when absent, forks the active def of the name, or bootstraps from a yaml template)."},
     "overlay": {
       "type": "object",
-      "description": "Mutable subset of ScheduledRun for create/fork (delivery, channel, agent, prompt, schedule/user_tier_schedules, timezone, enabled, catch_up_max, max_fires, user_id, user_tier, user_credentials, user_credentials_from_env, on_complete, metadata, tenant_id). delivery is run (default — invoke the agent) or channel (publish a cadence tick to the named channel and start NO run; forbids agent/prompt/on_complete/credentials, and carries metadata as the message payload). max_fires N>0 auto-retires the def after its Nth fire (1 = one-shot; 0 = unbounded). tenant_id (where fired runs execute) may name only your own tenant unless you are an admin; omit it to use yours. Immutable / server-set fields are silently ignored if supplied.",
+      "description": "Mutable subset of ScheduledRun for create/fork (delivery, channel, team, vars, input, agent, prompt, schedule/user_tier_schedules, timezone, enabled, catch_up_max, max_fires, user_id, user_tier, user_credentials, user_credentials_from_env, on_complete, metadata, tenant_id). delivery is run (default — invoke the agent), channel (publish a cadence tick to the named channel and start NO run; forbids agent/prompt/on_complete/credentials, and carries metadata as the message payload) or team (start a detached walk of the team named in team, as TeamDef op=run mode=detach does: vars is name → literal text for variables the team declares, input is the walk's optional input; forbids agent/channel/prompt/on_complete/credentials/metadata, e.g. {\"schedule\":\"0 6 * * 1\",\"delivery\":\"team\",\"team\":\"weekly-report\",\"vars\":{\"repo\":\"loomcycle\"}}). The team is looked up in the schedule's tenant when the tick fires: a missing or retired team, a variable it does not declare, or a value it refuses starts no walk, is recorded as the schedule's last error, and does not count toward max_fires. team, vars and input are refused on the other deliveries. max_fires N>0 auto-retires the def after its Nth fire (1 = one-shot; 0 = unbounded). tenant_id (where fired runs execute) may name only your own tenant unless you are an admin; omit it to use yours. Immutable / server-set fields are silently ignored if supplied.",
       "additionalProperties": true
     },
     "description":   {"type": "string", "description": "Free-text rationale for create/fork."},
@@ -1086,9 +1086,39 @@ func validateScheduleDef(def mergedScheduleDef) error {
 		if def.Channel != "" {
 			return fmt.Errorf("delivery=run forbids channel (set delivery: channel to publish instead of running)")
 		}
+		if def.hasTeamFields() {
+			return fmt.Errorf("delivery=run forbids team, vars and input (set delivery: team to start a team walk instead of running)")
+		}
+	case "team":
+		if err := config.CheckScheduleTeamDelivery(def.Team, def.Vars); err != nil {
+			return err
+		}
+		// The same refusals a channel tick makes, for the same reason: each
+		// of these configures an agent run, and a team tick starts a walk.
+		if def.Agent != "" {
+			return fmt.Errorf("delivery=team forbids agent (the walk runs the team's own members)")
+		}
+		if def.Channel != "" {
+			return fmt.Errorf("delivery=team forbids channel (set delivery: channel to publish instead)")
+		}
+		if len(def.Prompt) > 0 {
+			return fmt.Errorf("delivery=team forbids prompt (nothing reads it — the walk starts with input, and its prompts read vars)")
+		}
+		if len(def.OnComplete) > 0 {
+			return fmt.Errorf("delivery=team forbids on_complete (the tick ends when the walk STARTS — put what follows the walk in the team's own hooks)")
+		}
+		if len(def.RequiredCredentials) > 0 || len(def.UserCredentials) > 0 || len(def.UserCredentialsFromEnv) > 0 {
+			return fmt.Errorf("delivery=team forbids credentials (they are handed to one agent run, and a walk's members resolve their own)")
+		}
+		if len(def.Metadata) > 0 {
+			return fmt.Errorf("delivery=team forbids metadata (nothing reads it — pass values to the walk in vars)")
+		}
 	case "channel":
 		if def.Channel == "" {
 			return fmt.Errorf("delivery=channel requires channel")
+		}
+		if def.hasTeamFields() {
+			return fmt.Errorf("delivery=channel forbids team, vars and input (set delivery: team to start a team walk instead of publishing)")
 		}
 		if def.Agent != "" {
 			return fmt.Errorf("delivery=channel forbids agent (a channel tick starts no run)")
@@ -1103,7 +1133,7 @@ func validateScheduleDef(def mergedScheduleDef) error {
 			return fmt.Errorf("delivery=channel forbids credentials (they exist to authorize a run, and no run fires)")
 		}
 	default:
-		return fmt.Errorf("unknown delivery %q (want run or channel)", def.Delivery)
+		return fmt.Errorf("unknown delivery %q (want run, channel or team)", def.Delivery)
 	}
 	if def.Schedule != "" && len(def.UserTierSchedules) > 0 {
 		return fmt.Errorf("cannot set both schedule and user_tier_schedules (pick one)")
@@ -1392,6 +1422,13 @@ type mergedScheduleDef struct {
 	// disabled, so no trigger fires without the credentials it was authored
 	// with, and re-enabling never hands a max_fires budget back.
 	CaptureDisabled *mergedScheduleCaptureDisabled `json:"capture_disabled,omitempty"`
+	// Team / Vars / Input are the delivery=team target: the team whose walk a
+	// tick starts (detached), the walk's variable values as LITERALS, and its
+	// optional input. Whether the team exists and declares these names is
+	// checked when the tick fires, in the def's own tenant.
+	Team  string            `json:"team,omitempty"`
+	Vars  map[string]string `json:"vars,omitempty"`
+	Input string            `json:"input,omitempty"`
 	// OperatorLayer records that this version was written with no tenant by a
 	// caller holding operator authority (callerHasOperatorAuthority). A
 	// consolidation fan-out with no tenant sweeps EVERY tenant, running its
@@ -1402,6 +1439,12 @@ type mergedScheduleDef struct {
 	// applyOverlay never copies it, so an overlay can neither set nor clear it.
 	// omitempty keeps every other def body byte-identical.
 	OperatorLayer bool `json:"operator_layer,omitempty"`
+}
+
+// hasTeamFields reports whether the def sets any field only a team delivery
+// reads.
+func (d mergedScheduleDef) hasTeamFields() bool {
+	return d.Team != "" || len(d.Vars) > 0 || d.Input != ""
 }
 
 // mergedScheduleCaptureDisabled lists the credential keys a snapshot stripped
@@ -1509,6 +1552,17 @@ func (d *mergedScheduleDef) applyOverlay(ov mergedScheduleDef) {
 	if ov.Channel != "" {
 		d.Channel = ov.Channel
 	}
+	if ov.Team != "" {
+		d.Team = ov.Team
+	}
+	// Replaced wholesale, not merged key by key: the set of variables a tick
+	// supplies is one statement, and a fork that names fewer means fewer.
+	if ov.Vars != nil {
+		d.Vars = ov.Vars
+	}
+	if ov.Input != "" {
+		d.Input = ov.Input
+	}
 }
 
 func staticToMergedScheduleDef(sr config.ScheduledRun) mergedScheduleDef {
@@ -1516,6 +1570,9 @@ func staticToMergedScheduleDef(sr config.ScheduledRun) mergedScheduleDef {
 	out := mergedScheduleDef{
 		Delivery:               sr.Delivery,
 		Channel:                sr.Channel,
+		Team:                   sr.Team,
+		Vars:                   sr.Vars,
+		Input:                  sr.Input,
 		Agent:                  sr.Agent,
 		Schedule:               sr.Schedule,
 		UserTierSchedules:      sr.UserTierSchedules,

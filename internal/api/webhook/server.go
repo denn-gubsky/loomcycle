@@ -30,8 +30,8 @@ const defaultBodySizeLimitBytes = 1 << 20 // 1 MiB
 // Receiver is the RFC H inbound-webhook HTTP handler. It is the
 // security/trust boundary: it authenticates a raw external POST, guards
 // against replay + overload, projects the payload through the Def's
-// allowlisted mapping, then forks on delivery mode to either spawn an agent
-// run or publish to a channel.
+// allowlisted mapping, then forks on delivery mode to spawn an agent run,
+// publish to a channel, or start a team walk.
 //
 // The receiver does its OWN per-Def authentication (HMAC / bearer); it is
 // therefore mounted WITHOUT the global bearer authMiddleware. Mounting it
@@ -41,6 +41,7 @@ type Receiver struct {
 	store        lookup.WebhookStore
 	cfg          *config.Config
 	runner       runner.Runner
+	teams        runner.TeamWalkStarter
 	publisher    channels.SystemPublisher
 	runStateBus  *runstate.Bus
 	envAllowlist map[string]bool
@@ -69,11 +70,13 @@ type Receiver struct {
 
 // Deps is the constructor input. runStateBus may be nil (disables ?sync);
 // publisher may be nil (channel-delivery webhooks then 503). store may be
-// nil (only yaml-defined webhooks resolve).
+// nil (only yaml-defined webhooks resolve). TeamWalks may be nil
+// (team-delivery webhooks then 503).
 type Deps struct {
 	Store        lookup.WebhookStore
 	Cfg          *config.Config
 	Runner       runner.Runner
+	TeamWalks    runner.TeamWalkStarter
 	Publisher    channels.SystemPublisher
 	RunStateBus  *runstate.Bus
 	EnvAllowlist map[string]bool
@@ -105,6 +108,7 @@ func New(d Deps) *Receiver {
 		store:                d.Store,
 		cfg:                  d.Cfg,
 		runner:               d.Runner,
+		teams:                d.TeamWalks,
 		publisher:            d.Publisher,
 		runStateBus:          d.RunStateBus,
 		envAllowlist:         d.EnvAllowlist,
@@ -284,6 +288,8 @@ func (rec *Receiver) handle(w http.ResponseWriter, r *http.Request) {
 	switch wd.Delivery {
 	case "channel":
 		rec.deliverChannel(ctx, w, span, name, whKey, did, dk, wd, body)
+	case "team":
+		rec.deliverTeam(ctx, w, span, name, whKey, did, dk, wd, proj, body)
 	case "spawn", "":
 		rec.deliverSpawn(ctx, w, span, name, whKey, did, dk, wd, proj, r)
 	default:

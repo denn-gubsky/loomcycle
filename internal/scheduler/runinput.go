@@ -54,6 +54,11 @@ type scheduleDef struct {
 	// says otherwise: a schedule must not fire without the credentials it was
 	// authored with, whichever path wrote the body.
 	CaptureDisabled *scheduleCaptureDisabled `json:"capture_disabled,omitempty"`
+	// Team / Vars / Input are the delivery=team target: the team whose walk a
+	// tick starts, its variable values (literals) and its input.
+	Team  string            `json:"team,omitempty"`
+	Vars  map[string]string `json:"vars,omitempty"`
+	Input string            `json:"input,omitempty"`
 	// OperatorLayer is the server-stamped bit saying the def was written, with
 	// no tenant, by a caller holding operator authority. Only such a def (or a
 	// row bootstrapped from the operator's yaml) may run a consolidation fan-out
@@ -109,6 +114,10 @@ func unmarshalDef(body []byte) (scheduleDef, error) {
 		if def.Channel == "" {
 			return def, fmt.Errorf("schedule definition has delivery=channel but no `channel` field")
 		}
+	case "team":
+		if def.Team == "" {
+			return def, fmt.Errorf("schedule definition has delivery=team but no `team` field")
+		}
 	case "", "run":
 		if def.Agent == "" {
 			return def, fmt.Errorf("schedule definition missing required `agent` field")
@@ -119,9 +128,29 @@ func unmarshalDef(body []byte) (scheduleDef, error) {
 		// direction: with a default-run fallthrough, a delivery this sweeper
 		// does not understand would quietly fire the agent — the loudest
 		// possible action taken because of a value nobody could interpret.
-		return def, fmt.Errorf("schedule definition has unknown delivery %q (want run or channel)", def.Delivery)
+		return def, fmt.Errorf("schedule definition has unknown delivery %q (want run, channel or team)", def.Delivery)
 	}
 	return def, nil
+}
+
+// buildTeamWalkInput is buildRunInput's twin for a team tick: the same
+// identity fields from the same places, for a walk instead of a run.
+//
+// Every one of them comes from the def. TenantID is where the walk executes
+// and the only tenant its team is looked up in; the two bits are the author's
+// captured confinement, the only authority there is with no principal on a
+// tick. The agent-run fields (prompt, credentials, tier, metadata) have no
+// counterpart — a team tick is refused them when it is written.
+func buildTeamWalkInput(def scheduleDef) runner.TeamWalkInput {
+	return runner.TeamWalkInput{
+		Team:                  def.Team,
+		Vars:                  def.Vars,
+		Input:                 def.Input,
+		TenantID:              def.TenantID,
+		UserID:                def.UserID,
+		OperatorKeyRestricted: def.OperatorKeyRestricted,
+		Isolated:              def.Isolated,
+	}
 }
 
 // buildRunInput converts a unmarshaled schedule definition into the

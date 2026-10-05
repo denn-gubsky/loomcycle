@@ -126,6 +126,7 @@ type Scheduler struct {
 	mcp     MCPCaller
 	chScope ChannelScopeResolver
 	chWrite channels.Writer
+	teams   runner.TeamWalkStarter
 	logf    func(format string, args ...any)
 
 	// Consolidation fan-out dependencies (RFC BL P2), both optional and both
@@ -225,6 +226,12 @@ func (s *Scheduler) SetChannelScope(r ChannelScopeResolver) {
 // before Start; with none, a channel write fails.
 func (s *Scheduler) SetChannelWriter(w channels.Writer) {
 	s.chWrite = w
+}
+
+// SetTeamWalkStarter wires what a `delivery: team` tick starts its walk
+// through. Must be called before Start; with none, a team tick fails.
+func (s *Scheduler) SetTeamWalkStarter(w runner.TeamWalkStarter) {
+	s.teams = w
 }
 
 // writeChannel writes one scheduler message through the channel writer.
@@ -425,6 +432,14 @@ func (s *Scheduler) fireOne(ctx context.Context, row store.ScheduleDueRow, now t
 		return
 	}
 
+	// A team tick starts a walk and no agent run of its own. Decided here for
+	// the reason the channel tick is: the fan-out check below reads `metadata`
+	// and the rest reads `agent`, neither of which a team tick has.
+	if def.Delivery == "team" {
+		s.fireTeamDelivery(ctx, row, def, now)
+		return
+	}
+
 	// RFC BL P2: a consolidation schedule dispatches one run per memory TARGET
 	// with new work rather than one blanket run — the pass operates on exactly
 	// one target, so "consolidate everything" is N runs. See consolidator.go;
@@ -597,6 +612,53 @@ func (s *Scheduler) publishTick(ctx context.Context, scheduleName string, def sc
 	// decides that from the channel's definition, so a cron tick cannot walk
 	// past a breakpoint.
 	return s.writeChannel(ctx, req)
+}
+
+// fireTeamDelivery is the tick that starts a team walk.
+//
+// The walk is started DETACHED, exactly as `TeamDef op=run mode=detach` starts
+// one, so the tick is over as soon as the walk exists: "completed" here means
+// the walk STARTED, and last_run_id is the walk's own run — the handle to
+// follow it by. The fire timeout does not bound a walk for the same reason (a
+// walk may wait on a person), and there is no on_complete to dispatch.
+//
+// The walk runs as the DEFINITION says and as nothing else: its execution
+// tenant (after the legacy re-home fireOne already applied), its user, and the
+// restriction bits captured from its author — the fields a run tick puts in
+// RunInput, here in TeamWalkInput. The team is looked up in that tenant only.
+//
+// A team that cannot start — missing, retired, a variable it does not declare,
+// a value it refuses — is a mistake in the definition, not a fire: it is
+// logged, recorded as the schedule's last error, and does not use up
+// max_fires, as an agent that cannot be resolved does not. Every other outcome
+// is classified the way a run's is (classifyFire).
+func (s *Scheduler) fireTeamDelivery(ctx context.Context, row store.ScheduleDueRow, def scheduleDef, now time.Time) {
+	out := fireOutcome{Status: "completed", CountAsFire: true}
+	runID, err := s.startTeamWalk(ctx, def)
+	if err != nil {
+		class := classifyFire(err)
+		out.Status, out.Err, out.CountAsFire = class.status(), err.Error(), class.countsAsFire()
+		switch class {
+		case fireTeamNotStartable:
+			s.logf("scheduler: schedule %q could not start team %q in tenant %q — not counting toward max_fires; fix the schedule or the team: %v",
+				row.Name, def.Team, def.TenantID, err)
+		case firePaused:
+			s.logf("scheduler: schedule %q was refused because the runtime paused after this tick began — not counting toward max_fires", row.Name)
+		default:
+			s.logf("scheduler: schedule %q team delivery to %q failed: %v", row.Name, def.Team, err)
+		}
+	}
+	out.RunID = runID
+	_, done := s.recordFireOutcome(ctx, row, def, now, out)
+	done()
+}
+
+// startTeamWalk asks the wired starter for one detached walk of the def's team.
+func (s *Scheduler) startTeamWalk(ctx context.Context, def scheduleDef) (string, error) {
+	if s.teams == nil {
+		return "", fmt.Errorf("delivery=team: no team walk starter wired")
+	}
+	return s.teams.StartTeamWalk(ctx, buildTeamWalkInput(def))
 }
 
 // fireOutcome is what one fire produced, whatever kind of fire it was. It

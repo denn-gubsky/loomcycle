@@ -2190,6 +2190,7 @@ func main() {
 			Store:                storeIface,
 			Cfg:                  cfg,
 			Runner:               srv,
+			TeamWalks:            srv,
 			Publisher:            sysPublisher,
 			RunStateBus:          runStateBus,
 			EnvAllowlist:         webhookAllowlist,
@@ -3044,6 +3045,9 @@ func main() {
 		// A schedule's channel writes go through the channel writer, which
 		// decides from the channel's definition whether they are held.
 		sched.SetChannelWriter(sysPublisher)
+		// A `delivery: team` tick starts its walk through the server, which
+		// owns the walk — the same instance that runs a tick's agent run.
+		sched.SetTeamWalkStarter(srv)
 		// RFC BL P2 consolidation fan-out: the provider resolver decides
 		// parallel-vs-serial dispatch (a local model runtime is serialized), and
 		// the advisory lock makes exactly one replica per tick enumerate the
