@@ -128,7 +128,9 @@ const channelDescription = `Persistent inter-agent message bus. ` +
 	`A channel the operator declared hold: stores publishes without delivering them; release hands over the oldest count (default 1) ` +
 	`so a workflow wired through that channel can be single-stepped. release needs the PUBLISH allowlist — it completes a publish. ` +
 	`A channel that carries hooks has each publish checked before any reader sees it (publish returns awaiting_hooks): ` +
-	`the operator's hooks may deliver it, rewrite it, or drop it, and delivery order may differ from publish order.`
+	`the operator's hooks may deliver it, rewrite it, or drop it, and delivery order may differ from publish order. ` +
+	`A team's own agent (one declared inside the team) names a channel the team declares for itself as ./<name>, once ./<name> is in its publish / subscribe allowlist; ` +
+	`no other agent can reach such a channel.`
 
 const channelInputSchema = `{
   "type": "object",
