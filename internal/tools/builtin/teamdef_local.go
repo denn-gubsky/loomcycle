@@ -66,6 +66,9 @@ func (t *TeamDef) checkLocalAgents(ctx context.Context, op, team string, def tea
 	if t.Agents == nil || t.Agents.Cfg == nil {
 		return fmt.Errorf("local: this server cannot check a team's own agents (no agent-definition tool is wired), so a definition declaring them is refused")
 	}
+	if err := teamgraph.CheckLocalRunNames(def, team); err != nil {
+		return err
+	}
 	policy := tools.AgentDefPolicy(ctx)
 	tenantID := tools.RunIdentity(ctx).TenantID
 	for _, name := range names {
@@ -79,7 +82,14 @@ func (t *TeamDef) checkLocalAgents(ctx context.Context, op, team string, def tea
 		}
 		// The global chain a run of that name would resolve through: the
 		// tenant's own agents, the operator's static ones, the shared ones.
-		if _, exists := lookup.Agent(ctx, t.Store, t.Agents.Cfg, tenantID, full); exists {
+		//
+		// Read with faults reported: a store that cannot answer has not said
+		// the name is free.
+		_, exists, err := lookup.AgentChecked(ctx, t.Store, t.Agents.Cfg, tenantID, full)
+		if err != nil {
+			return fmt.Errorf("%s: could not check that no agent is named %q: %w", where, full, err)
+		}
+		if exists {
 			return fmt.Errorf("%s: an agent named %q already exists. A team's own agent and another agent of the same "+
 				"full name would share agent-scoped memory and channel cursors — rename one of them", where, full)
 		}
@@ -132,7 +142,11 @@ func (t *TeamDef) checkLocalNamesFree(ctx context.Context, row store.TeamDefRow)
 		if t.Agents.checkScopeForName(policy, full, "") != nil {
 			continue
 		}
-		if _, exists := lookup.Agent(ctx, t.Store, t.Agents.Cfg, row.TenantID, full); exists {
+		_, exists, err := lookup.AgentChecked(ctx, t.Store, t.Agents.Cfg, row.TenantID, full)
+		if err != nil {
+			return fmt.Errorf("could not check that no agent is named %q: %w", full, err)
+		}
+		if exists {
 			return fmt.Errorf("this version declares its own agent %q, and an agent named %q exists now. They would share "+
 				"agent-scoped memory and channel cursors — rename or remove one first", name, full)
 		}

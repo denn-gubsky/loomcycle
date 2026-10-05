@@ -3,6 +3,8 @@ package builtin
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -518,4 +520,92 @@ func TestTeamDefCreate_TeamCapCoversSeveralAgentsEachWithinTheAgentCap(t *testin
 	}
 	tool.MaxDefinitionBytes = 150000
 	wantRefused(t, teamOp(t, tool, ctx, "create", "other", overlay), "a team over its own cap", "exceeds max 150000")
+}
+
+// ---- "is the name free" fails closed ----
+
+// agentFaultStore fails every read of the agent stores.
+type agentFaultStore struct {
+	store.Store
+}
+
+func (agentFaultStore) AgentDefGetActive(context.Context, string, string) (store.AgentDefRow, error) {
+	return store.AgentDefRow{}, errors.New("database unavailable")
+}
+
+func (agentFaultStore) DynamicAgentGet(context.Context, string, string) (store.DynamicAgent, error) {
+	return store.DynamicAgent{}, errors.New("database unavailable")
+}
+
+// A store that cannot answer has not said the name is free. Create, promote
+// and un-retire refuse rather than read the fault as "no such agent".
+func TestTeamDef_NameClashCheckFailsClosedOnAStoreFault(t *testing.T) {
+	tool, ctx := localTeamFixture(t)
+	created := decodeResult(t, teamOp(t, tool, ctx, "create", "sdlc", localTeam(`{"tier":"middle"}`)).Text)
+	defID, _ := created["def_id"].(string)
+	if res, _ := tool.Execute(ctx, json.RawMessage(`{"op":"retire","def_id":"`+defID+`","retired":true}`)); res.IsError {
+		t.Fatalf("retire: %s", res.Text)
+	}
+	tool.Store = agentFaultStore{tool.Store}
+
+	wantRefused(t, teamOp(t, tool, ctx, "create", "other", localTeam(`{"tier":"middle"}`)), "create with the agent stores down", "could not check")
+	for _, op := range []string{`{"op":"promote","def_id":"` + defID + `"}`, `{"op":"retire","def_id":"` + defID + `","retired":false}`} {
+		res, _ := tool.Execute(ctx, json.RawMessage(op))
+		wantRefused(t, res, op, "could not check")
+	}
+	if _, err := tool.Store.TeamDefGetActive(ctx, "", "other"); err == nil {
+		t.Error("a team was stored although its agents' names could not be checked")
+	}
+	if row, _ := tool.Store.TeamDefGet(ctx, defID); !row.Retired {
+		t.Error("a team version was un-retired although its agents' names could not be checked")
+	}
+}
+
+// A state that names "<team>/<name>" bare asks for a GLOBAL agent under the
+// name the team's own agent runs as. Refused, pointing at "./<name>".
+func TestTeamDefCreate_RefusesBareReferenceToALocalAgentsRunName(t *testing.T) {
+	tool, ctx := localTeamFixture(t)
+	overlay := strings.Replace(localTeam(`{"tier":"middle"}`), `"./reviewer"`, `"sdlc/reviewer"`, 1)
+	wantRefused(t, teamOp(t, tool, ctx, "create", "sdlc", overlay), "bare <team>/<name>", `"./reviewer"`, "global agent")
+	// Under another team's name it is just some global agent's name.
+	if res := teamOp(t, tool, ctx, "create", "other", overlay); res.IsError {
+		t.Errorf("for team other, sdlc/reviewer is an ordinary global name: %s", res.Text)
+	}
+}
+
+func TestTeamDefCreate_RefusesMoreLocalAgentsThanTheCap(t *testing.T) {
+	tool, ctx := localTeamFixture(t)
+	var extra strings.Builder
+	for i := 0; i < teamgraph.MaxLocalAgents; i++ {
+		fmt.Fprintf(&extra, `"a%d":{"tier":"low"},`, i)
+	}
+	overlay := strings.Replace(localTeam(`{"tier":"middle"}`), `"agents":{`, `"agents":{`+extra.String(), 1)
+	wantRefused(t, teamOp(t, tool, ctx, "create", "sdlc", overlay), "65 local agents", "maximum 64")
+}
+
+// The clash refusal names a team and one of its agents, so it is made only
+// after the caller's own grant over that agent name: a caller with none gets
+// the grant refusal, and learns nothing about what a team declares.
+func TestAgentDef_TeamClashIsCheckedOnlyAfterTheCallersGrant(t *testing.T) {
+	tool, ctx := localTeamFixture(t)
+	created := decodeResult(t, agentOp(t, tool, ctx, `{"op":"create","name":"sdlc/reviewer","overlay":{"tier":"low"}}`).Text)
+	defID, _ := created["def_id"].(string)
+	if res := agentOp(t, tool, ctx, `{"op":"retire","def_id":"`+defID+`","retired":true}`); res.IsError {
+		t.Fatalf("retire: %s", res.Text)
+	}
+	if res := teamOp(t, tool, ctx, "create", "sdlc", localTeam(`{"tier":"middle"}`)); res.IsError {
+		t.Fatalf("create team: %s", res.Text)
+	}
+	ungranted := localAuthorCtx("", []string{"named:elsewhere/**"}, []string{"Read"})
+	for what, input := range map[string]string{
+		"create":    `{"op":"create","name":"sdlc/reviewer","overlay":{"tier":"low"}}`,
+		"fork":      `{"op":"fork","name":"sdlc/reviewer","parent_def_id":"` + defID + `","overlay":{"effort":"low"}}`,
+		"promote":   `{"op":"promote","def_id":"` + defID + `"}`,
+		"un-retire": `{"op":"retire","def_id":"` + defID + `","retired":false}`,
+	} {
+		res := agentOp(t, tool, ungranted, input)
+		if !res.IsError || !strings.Contains(res.Text, "agent_def_scopes") || strings.Contains(res.Text, "own agent") {
+			t.Errorf("%s by a caller with no grant over the name: %q — want the grant refusal, with nothing about the team", what, res.Text)
+		}
+	}
 }
