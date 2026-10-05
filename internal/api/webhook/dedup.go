@@ -15,8 +15,10 @@ import (
 // "already seen". This is the Layer-1, per-replica replay guard — a
 // best-effort defense against duplicate deliveries and naive replays within
 // a short window. The durable, cross-replica guard is the
-// runs.idempotency_key column landing in WH-5 (Layer 2); this in-memory
-// layer absorbs the common case cheaply without a DB round-trip.
+// runs.idempotency_key column landing in WH-5 (Layer 2) — or, for a delivery
+// that starts no run, the store's held delivery keys (durableDeliveryKeys);
+// this in-memory layer absorbs the common case cheaply without a DB
+// round-trip.
 const dedupTTL = 10 * time.Minute
 
 // durableDedupTTL is how long a channel delivery's keys are held in the store

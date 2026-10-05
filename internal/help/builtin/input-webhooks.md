@@ -155,6 +155,17 @@ A shared front-half runs for every request, then forks on `delivery`:
      original run; a sender that posts the same body as separate deliveries,
      each with its own id and timestamp, gets a run for each.
    - **Bearer** and **`none`** sign nothing and key on the id alone.
+
+   A `delivery: channel` webhook starts no run, so the database holds the
+   delivery's keys instead, for 24 hours: a re-send to any instance, or
+   after a restart, publishes nothing and answers `200 deduped`. Only what
+   the signature covers is held there — for GitHub `sha256=` / bare hex the
+   body alone (a byte-identical body re-sent within the day is not
+   published again; a repeat of just the id is caught by the instance that
+   took it, within ten minutes), for Stripe the id and the signed timestamp
+   plus body, for bearer and `none` their one key. A delivery refused
+   before its publish holds nothing, and one whose channel write fails gives
+   its keys back, so the sender's retry is published.
 5. **Project** the payload via the Def's `payload_mapping` (strict JSONPath
    subset: `$.a.b`, `$.a[0]` — no wildcards/filters/recursion). An absent
    path resolves to empty + a tracing note, never a failure.
@@ -260,8 +271,8 @@ POST /v1/_teams/{team}/webhooks/{name}              a team in the shared tenant
   of the team runs on any of them: the walk records the webhooks it opens and
   removes the record when it ends. A crashed instance's record stops counting
   within about three walk heartbeats. Its deliveries are deduplicated across
-  instances and restarts for a day, unlike a `delivery: channel` webhook
-  definition's (per instance, ten minutes — see Limits).
+  instances and restarts for a day, as a `delivery: channel` webhook
+  definition's are.
 
 ## The signing secret
 
@@ -584,9 +595,10 @@ header).
 ## Caveats
 
 - **Single-replica v1.** The Layer-1 dedup cache + rate-limit buckets are
-  per-replica; the durable `runs.idempotency_key` (Layer 2) is the
-  cross-replica backstop for spawn and team mode. Cluster-wide dedup/rate-limit is a
-  later concern.
+  per-replica; the durable layer is the cross-replica backstop — the run's
+  `runs.idempotency_key` (Layer 2) for spawn and team mode, a day-long hold
+  of the delivery's signed keys for channel mode. Cluster-wide rate limiting
+  is a later concern.
 - **Not a DDoS shield.** Signature verification is cheap and the body is
   size-capped, but front-line flood protection belongs at your ingress; the
   per-Def rate limit caps *accepted* invocations (runtime protection), not
