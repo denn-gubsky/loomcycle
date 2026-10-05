@@ -2093,14 +2093,19 @@ export function createTeam(name: string, overlay: unknown): Promise<CreatedTeam>
   });
 }
 
-// forkTeam saves an edited graph as a NEW version of an existing team (op=fork).
-// With no parent_def_id the server forks the name's active def; the overlay
-// (a full graph) replaces it. Validated server-side (422 with the reason).
+// forkTeam saves an edited graph as a NEW version of an existing team (op=fork)
+// and makes it the ACTIVE version. With no parent_def_id the server forks the
+// name's active def; the overlay (a full graph) replaces it. Validated
+// server-side (422 with the reason).
+//
+// promote is explicit because op=fork does not promote by default: without it
+// a save stored a version that nothing ran — Run, a schedule or a webhook kept
+// starting the old one.
 export function forkTeam(name: string, overlay: unknown): Promise<CreatedTeam> {
   return jsonFetch<CreatedTeam>("/v1/_teamdef", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ op: "fork", name, overlay }),
+    body: JSON.stringify({ op: "fork", name, overlay, promote: true }),
   });
 }
 
