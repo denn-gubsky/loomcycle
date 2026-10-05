@@ -202,6 +202,10 @@ var tableCoverageMap = map[string]tableCoverage{
 		Reason: "restore synthesizes a session per paused run from the run entry"},
 	"snapshots": {Kind: coverOmitted, Backends: onBoth,
 		Reason: "the snapshot store itself"},
+	"team_webhook_arms": {Kind: coverOmitted, Backends: onBoth,
+		Reason: "leases of walks running on the source; a restored instance runs none, and a walk re-arms its own"},
 	"user_quotas": {Kind: coverOmitted, Backends: onPostgres,
 		Reason: "live concurrency slots of the source cluster"},
+	"webhook_deliveries": {Kind: coverOmitted, Backends: onBoth,
+		Reason: "TTL-bound replay guard of the deliveries the source accepted, like the receiver's in-process one"},
 }

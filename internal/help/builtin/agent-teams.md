@@ -466,9 +466,13 @@ the message — and so wakes whatever in the walk reads that channel:
   definition: the operator's API, the MCP server and gRPC grant it; an agent
   inside a run does not hold it and cannot create or fork a team that has
   one.
-- **One instance.** The endpoint answers on the instance running the walk;
-  another instance answers `404`. Route a team's webhook to the instance
-  running its walks.
+- **Any instance.** Instances sharing one database all answer: a walk
+  records each webhook it opens there, renews that record while it runs and
+  removes it when it ends, so a delivery can reach any of them. An instance
+  that stops without ending its walk leaves a record that stops counting
+  within about three walk heartbeats (a minute and a half by default). A
+  delivery accepted by one instance is a duplicate on every other, and after
+  a restart, for a day: a redelivery is the idempotent `200`.
 - **Limits.** At most 16 webhooks, named like a team's agents; the team's
   own name must be one segment. A fork that sends `local.webhooks` replaces
   the whole list. A walk opens them only in the team's tenant.

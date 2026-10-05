@@ -256,8 +256,12 @@ POST /v1/_teams/{team}/webhooks/{name}              a team in the shared tenant
 - **Not in triage.** `recent-deliveries` and `/test` address webhook
   definitions by name and cannot name a team's; its verdicts are on the
   `webhook.receive` span.
-- **One instance.** It answers on the instance running the walk; other
-  instances answer `404`.
+- **Any instance.** Every instance sharing the database answers while a walk
+  of the team runs on any of them: the walk records the webhooks it opens and
+  removes the record when it ends. A crashed instance's record stops counting
+  within about three walk heartbeats. Its deliveries are deduplicated across
+  instances and restarts for a day, unlike a `delivery: channel` webhook
+  definition's (per instance, ten minutes — see Limits).
 
 ## The signing secret
 

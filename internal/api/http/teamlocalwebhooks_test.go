@@ -16,7 +16,6 @@ import (
 	"time"
 
 	"github.com/denn-gubsky/loomcycle/internal/api/webhook"
-	"github.com/denn-gubsky/loomcycle/internal/concurrency"
 	"github.com/denn-gubsky/loomcycle/internal/runner"
 	"github.com/denn-gubsky/loomcycle/internal/store"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
@@ -351,7 +350,7 @@ func TestTeamLocalWebhook_NothingPublishesAfterTheDisarm(t *testing.T) {
 		t.Fatal("the armed webhook does not resolve")
 	}
 	disarm()
-	if err := hook.Publish(context.Background(), "", json.RawMessage(`{"late":true}`)); !errors.Is(err, runner.ErrTeamWebhookGone) {
+	if err := hook.Publish(context.Background(), "", []string{"late"}, json.RawMessage(`{"late":true}`)); !errors.Is(err, runner.ErrTeamWebhookGone) {
 		t.Fatalf("a publish after the disarm: %v, want ErrTeamWebhookGone", err)
 	}
 	if got := h.stored("_team/hooked/events", store.MemoryScopeTenant, ""); len(got) != 0 {
@@ -388,32 +387,5 @@ func TestArmWalkTriggers_RefusesWebhooksItCannotOpen(t *testing.T) {
 	}
 	if n := h.srv.teamHooks.count(); n != 0 {
 		t.Errorf("a refused arm left %d webhook registration(s)", n)
-	}
-}
-
-// A webhook answers only on the replica whose walk armed it. Another replica,
-// sharing the store, answers as for a webhook that does not exist; what the
-// first accepted is a stored message every replica reads.
-func TestTeamLocalWebhook_AnswersOnlyOnTheReplicaRunningTheWalk(t *testing.T) {
-	h := newHookHarness(t)
-	raw := hookedTeamJSON("tenant", 30000, "")
-	sc := h.seed("tdf_hooked_1", "hooked", raw)
-	disarm, err := h.srv.armWalkTriggers(schedWalkCtx(sc, "r_a", "alice"), mustTeamDef(t, raw))
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer disarm()
-
-	other := New(h.srv.cfg(), &stubResolver{p: h.prov}, nil, concurrency.New(8, 8, 5*time.Second), h.st)
-	other.SetSystemPublisher(h.pub)
-	otherMux := receiverFor(other)
-	if w := deliverToTeam(otherMux, hookPath, `{"n":1}`, "d-1", true); !sameResponse(w, notFound(t, otherMux)) {
-		t.Errorf("the replica with no walk of the team: %d %s", w.Code, w.Body.String())
-	}
-	if w := deliverToTeam(h.mux, hookPath, `{"n":1}`, "d-1", true); w.Code != http.StatusAccepted {
-		t.Fatalf("the replica running the walk: %d %s", w.Code, w.Body.String())
-	}
-	if got := h.stored("_team/hooked/events", store.MemoryScopeTenant, ""); len(got) != 1 {
-		t.Errorf("%d message(s), want the one delivery the walk's replica took", len(got))
 	}
 }

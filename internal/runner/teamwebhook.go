@@ -13,7 +13,8 @@ import (
 // import internal/api/http, which owns the walks that arm those webhooks.
 type TeamWebhookResolver interface {
 	// ResolveTeamWebhook returns team `team`'s own webhook `name` in tenant,
-	// when a walk of that team is running on this instance and armed it.
+	// when a running walk of that team armed it — on this instance or, through
+	// the walk's lease in the store, on another.
 	// false for every other case alike — no such team, no such webhook, no
 	// walk running, a retired version — so that an outside caller cannot
 	// tell them apart.
@@ -30,9 +31,12 @@ type TeamWebhook struct {
 	// team writes it ("./events"), for the response.
 	Channel string
 	// Publish publishes a verified body into that channel, once, attributed
-	// to userID (the payload's user_id, "" when it mapped none). Errors a
-	// caller branches on: ErrTeamWebhookNeedsUser, ErrTeamWebhookGone.
-	Publish func(ctx context.Context, userID string, body json.RawMessage) error
+	// to userID (the payload's user_id, "" when it mapped none). keys are the
+	// delivery's dedup keys: Publish claims them durably, for every replica,
+	// before it publishes, and a delivery whose keys are already claimed
+	// publishes nothing. Errors a caller branches on: ErrTeamWebhookNeedsUser,
+	// ErrTeamWebhookGone, ErrTeamWebhookDuplicate.
+	Publish func(ctx context.Context, userID string, keys []string, body json.RawMessage) error
 }
 
 // ErrTeamWebhookNeedsUser — the webhook publishes into a user-scoped channel
@@ -43,3 +47,8 @@ var ErrTeamWebhookNeedsUser = errors.New("team webhook: the delivery names no us
 // ErrTeamWebhookGone — the walk that armed the webhook ended while the
 // delivery was being verified. Wire: the receiver's unknown-webhook 404.
 var ErrTeamWebhookGone = errors.New("team webhook: no walk of the team is running")
+
+// ErrTeamWebhookDuplicate — the delivery was already accepted, on this
+// instance or another: nothing is published. Wire: the receiver's idempotent
+// 200 with deduped=true.
+var ErrTeamWebhookDuplicate = errors.New("team webhook: the delivery was already accepted")

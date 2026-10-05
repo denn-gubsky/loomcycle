@@ -3257,6 +3257,49 @@ type Store interface {
 	// team later created under the name starts with none of them.
 	TeamDefDelete(ctx context.Context, tenantID, name string) (bool, error)
 
+	// ---- A team's own webhooks, armed by running walks ----
+	//
+	// One row per webhook a running walk of a team armed: the durable record
+	// that lets ANY replica accept a delivery, not only the one running the
+	// walk. A row is a lease: the walk renews it while it runs and deletes it
+	// when it ends, and a row whose lease lapsed (a crashed walk's) or whose
+	// walk run is no longer running is treated as absent. Runtime liveness,
+	// not configuration: nothing else reads it and snapshots do not carry it.
+
+	// TeamWebhookArmPut upserts each row on (tenant_id, team, name,
+	// walk_run_id) — arming and renewing are the same write, so a renewal
+	// also restores a row a lapse let go. In the same transaction it drops the
+	// rows of each named team whose lease ended at or before that row's
+	// ArmedAt, so a crashed walk leaves rows behind only until the team is
+	// next armed.
+	TeamWebhookArmPut(ctx context.Context, rows []TeamWebhookArm) error
+	// TeamWebhookArmDelete removes every row one walk armed for a team.
+	TeamWebhookArmDelete(ctx context.Context, tenantID, team, walkRunID string) error
+	// TeamWebhookArmLive returns the earliest-armed row for (tenantID, team,
+	// name) whose lease ends after now and whose walk run is running; false
+	// when there is none. One indexed point lookup: it answers a request no
+	// one has authenticated yet.
+	TeamWebhookArmLive(ctx context.Context, tenantID, team, name string, now time.Time) (TeamWebhookArm, bool, error)
+
+	// ---- Durable webhook delivery dedup ----
+	//
+	// The accepted deliveries of a webhook that starts no run — a team's own
+	// webhook publishes a channel message, so no runs.idempotency_key can
+	// remember it — keyed by the receiver's dedup keys (already scoped to the
+	// webhook), each held until it expires. Shared by every replica and kept
+	// across restarts, so a captured delivery replayed to another replica, or
+	// after a restart, is still a duplicate.
+
+	// WebhookDeliveryClaim records keys as accepted until expiresAt, all or
+	// none: false (nothing written) when any of them is already held past
+	// now. A claim is the insert itself, so of two replicas racing on one
+	// delivery exactly one gets true. Keys held until at or before now are
+	// dropped first.
+	WebhookDeliveryClaim(ctx context.Context, keys []string, now, expiresAt time.Time) (bool, error)
+	// WebhookDeliveryRelease drops keys a claim took for a delivery that was
+	// then not accepted, so the sender's retry is not a duplicate.
+	WebhookDeliveryRelease(ctx context.Context, keys []string) error
+
 	// ---- HookDef substrate ----
 	//
 	// Mirror of TeamDef* with the same invariants: a per-name lock keeps the
@@ -5077,6 +5120,24 @@ type TeamDefRow struct {
 	// authority, not content — which teamgraph.Sign gets for free by hashing
 	// the definition rather than the row.
 	OperatorAuthored bool `json:"operator_authored,omitempty"`
+}
+
+// TeamWebhookArm is one of a team's own webhooks, armed by one running walk
+// of the team (see TeamWebhookArmPut). No secret: the webhook's auth is read
+// from the team version DefID names, never stored here.
+type TeamWebhookArm struct {
+	TenantID  string
+	Team      string
+	Name      string
+	WalkRunID string
+	// DefID is the team version the walk runs, whose definition the
+	// webhook's auth and channel are read from.
+	DefID string
+	// UserID is the walk's user: a delivery to a tenant-scoped channel that
+	// names no user is attributed to it.
+	UserID    string
+	ArmedAt   time.Time
+	ExpiresAt time.Time
 }
 
 // TeamDefNameSummary mirrors SkillDefNameSummary.

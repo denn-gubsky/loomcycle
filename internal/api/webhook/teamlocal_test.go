@@ -21,7 +21,8 @@ type fakeTeamHooks struct {
 	hooks     map[string]runner.TeamWebhook
 	published []teamPublish
 	resolved  []string
-	err       error // returned by Publish when set
+	keys      [][]string // the dedup keys of every Publish call
+	err       error      // returned by Publish when set
 }
 
 type teamPublish struct {
@@ -38,9 +39,10 @@ func (f *fakeTeamHooks) ResolveTeamWebhook(_ context.Context, tenant, team, name
 	if !ok {
 		return runner.TeamWebhook{}, false
 	}
-	h.Publish = func(_ context.Context, userID string, body json.RawMessage) error {
+	h.Publish = func(_ context.Context, userID string, keys []string, body json.RawMessage) error {
 		f.mu.Lock()
 		defer f.mu.Unlock()
+		f.keys = append(f.keys, keys)
 		if f.err != nil {
 			return f.err
 		}
@@ -294,5 +296,62 @@ func TestTeamWebhook_NoRouteWithoutAResolver(t *testing.T) {
 	body := []byte(`{}`)
 	if w := post(rec, "/v1/_teams/t/webhooks/github", body, nil); w.Code != http.StatusNotFound || w.Body.String() == "{\"error\":\"unknown_webhook\"}\n" {
 		t.Errorf("a receiver with no team resolver answers the team route: %d %s", w.Code, w.Body.String())
+	}
+}
+
+// A delivery the resolver reports already accepted elsewhere is the replay
+// guard's idempotent ack.
+func TestTeamWebhook_ADuplicateFromThePublishIsAnIdempotentAck(t *testing.T) {
+	rec, th, _ := newLocalHookReceiver(t, map[string]runner.TeamWebhook{"acme/triage/github": ghHook()}, nil)
+	th.err = runner.ErrTeamWebhookDuplicate
+	body := []byte(`{"pr": 7}`)
+	w := post(rec, "/v1/_teams/acme/triage/webhooks/github", body, signed(body, "d-1"))
+	if w.Code != http.StatusOK || w.Body.String() != "{\"deduped\":\"true\",\"delivery_id\":\"d-1\",\"webhook_name\":\"github\"}\n" {
+		t.Errorf("a duplicate: %d %s, want the idempotent ack", w.Code, w.Body.String())
+	}
+}
+
+// The keys handed to the durable store are ones the signature covers — the
+// sender's id only where the signature expires — scoped to the team webhook.
+func TestTeamWebhook_DurableKeysAreTheSignedIdentities(t *testing.T) {
+	key := teamWebhookKey("acme", "triage", "github")
+	body := []byte(`{"pr": 7}`)
+	hdr := func(sig string) func(string) string {
+		return func(h string) string {
+			switch h {
+			case "X-Hub-Signature-256":
+				return sig
+			case "X-Delivery":
+				return "d-1"
+			}
+			return ""
+		}
+	}
+	auth := ghHook().Auth
+	for what, tc := range map[string]struct {
+		sig  string
+		want []string
+	}{
+		"github sha256=": {githubSig("shhh", body), []string{dedupKey(key, bodyDeliveryID(body))}},
+		"stripe t=,v1=":  {"t=1700000000, v1=00", []string{dedupKey(key, "d-1"), dedupKey(key, signedPayloadID("1700000000", body))}},
+	} {
+		get := hdr(tc.sig)
+		env := signedEnvelope(auth, get)
+		got := durableTeamKeys(newDeliveryKeys(key, deliveryID(auth, body, get), body, env), env)
+		if len(got) != len(tc.want) {
+			t.Errorf("%s: keys %q, want %q", what, got, tc.want)
+			continue
+		}
+		for i := range got {
+			if got[i] != tc.want[i] {
+				t.Errorf("%s: keys %q, want %q", what, got, tc.want)
+			}
+		}
+	}
+	bearer := config.WebhookAuth{Kind: "bearer", BearerTokenEnv: "WH_SECRET", DeliveryIDHeader: "X-Delivery"}
+	get := hdr("")
+	env := signedEnvelope(bearer, get)
+	if got := durableTeamKeys(newDeliveryKeys(key, deliveryID(bearer, body, get), body, env), env); len(got) != 1 || got[0] != dedupKey(key, "d-1") {
+		t.Errorf("bearer: keys %q, want the sender's id alone", got)
 	}
 }

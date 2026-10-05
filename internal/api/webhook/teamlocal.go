@@ -42,6 +42,37 @@ func teamWebhookKey(tenant, team, name string) string {
 	return "team/" + url.QueryEscape(tenant) + "/" + url.QueryEscape(team) + ":" + url.QueryEscape(name)
 }
 
+// durableTeamKeys are the keys of a delivery to a team's own webhook that are
+// held in the store, where every replica reads them for a day.
+//
+// A key held there that the signature does not cover could be POISONED: the
+// sender's delivery-id header is not signed, so whoever replays a captured
+// delivery once it may be accepted again can file it under the id of a
+// delivery not yet sent, and the genuine one is then dropped as a duplicate.
+// So:
+//
+//   - A body-only signature (GitHub `sha256=`, bare hex) never expires: only
+//     the body's key is held. A genuine redelivery repeats the body, so it is
+//     still caught; the sender's id is kept by this replica's own guard only.
+//   - A Stripe-style signature is good for ±signatureTolerance, and its
+//     signed payload's key is held far longer, so a replay inside the window
+//     collides with it and claims nothing (a claim is all or none): the
+//     sender's id is held too, which is what catches its re-signed retries.
+//   - bearer and none sign nothing; the one key is the sender's id or the
+//     body hash, exactly as for a WebhookDef.
+//
+// Every key is a dedupKey of teamWebhookKey(tenant, team, name), so no other
+// team, tenant or WebhookDef shares one.
+func durableTeamKeys(dk deliveryKeys, env envelope) []string {
+	if env.signsBody && env.timestamp == "" {
+		return []string{dk.dup}
+	}
+	if dk.alt == "" {
+		return []string{dk.key}
+	}
+	return []string{dk.key, dk.alt}
+}
+
 // handleTeam receives one delivery to a team's own webhook.
 func (rec *Receiver) handleTeam(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
@@ -80,7 +111,8 @@ func (rec *Receiver) handleTeam(w http.ResponseWriter, r *http.Request) {
 
 	// 4. Replay guard, keyed to this team's webhook.
 	did := deliveryID(hook.Auth, body, r.Header.Get)
-	dk := newDeliveryKeys(whKey, did, body, signedEnvelope(hook.Auth, r.Header.Get))
+	env := signedEnvelope(hook.Auth, r.Header.Get)
+	dk := newDeliveryKeys(whKey, did, body, env)
 	if rec.dedup.seenAny(dk) {
 		rec.finish(span, "", did, verdictAcceptedReplay, "")
 		rec.logf("team webhook %q: replayed delivery (delivery_id seen within TTL) — idempotent ack", display)
@@ -104,9 +136,19 @@ func (rec *Receiver) handleTeam(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 7. Publish once into the team's channel.
-	if err := hook.Publish(ctx, proj.Fields["user_id"], json.RawMessage(body)); err != nil {
+	// 7. Publish once into the team's channel. The replay guard above is this
+	//    replica's; Publish claims the delivery's keys in the store first, so
+	//    one already accepted anywhere — another replica, before a restart —
+	//    publishes nothing.
+	if err := hook.Publish(ctx, proj.Fields["user_id"], durableTeamKeys(dk, env), json.RawMessage(body)); err != nil {
 		switch {
+		case errors.Is(err, runner.ErrTeamWebhookDuplicate):
+			// The same answer the replay guard gives, and recorded as a
+			// WebhookDef's durable duplicate is.
+			rec.dedup.recordDuplicate(dk)
+			rec.finish(span, "", did, verdictAcceptedReplay, "")
+			rec.logf("team webhook %q: delivery already accepted — idempotent ack", display)
+			writeJSON(w, http.StatusOK, map[string]string{"webhook_name": name, "delivery_id": did, "deduped": "true"})
 		case errors.Is(err, runner.ErrTeamWebhookNeedsUser):
 			rec.finish(span, "", did, "rejected_mapping", "")
 			rec.logf("team webhook %q: %v", display, err)

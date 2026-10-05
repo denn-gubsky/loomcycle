@@ -33,12 +33,14 @@ adm() { curl -fsS -H "Authorization: Bearer $TOKEN" -H "Content-Type: applicatio
 fail() { echo "FAIL ✗ — $1"; exit 1; }
 # GitHub-style HMAC-SHA256 over the raw body.
 sign() { printf '%s' "$1" | openssl dgst -sha256 -hmac "$SECRET" -hex | sed 's/^.*= //'; }
+# The inbound route of the def created in [3]: set there from its owning tenant.
+HOOK_URL=""
 # Deliver: $1=body $2=extra curl args... ; prints "HTTP_CODE\nbody"
 deliver() {
   local body="$1"; shift
   curl -s -o "$TEST_DIR/deliver.body" -w "%{http_code}" -X POST \
     -H "Content-Type: application/json" "$@" \
-    --data-binary "$body" "$BASE/v1/_webhooks/gh"
+    --data-binary "$body" "$HOOK_URL"
 }
 
 echo "[1/8] build"
@@ -76,6 +78,13 @@ CREATE=$(adm -X POST "$BASE/v1/_webhookdef" -d '{
 echo "$CREATE" > "$TEST_DIR/create.json"
 echo "$CREATE" | grep -q '"def_id"' || fail "webhookdef create failed: $CREATE"
 adm "$BASE/v1/_webhookdef/names" | grep -q "gh" || fail "webhook name not listed"
+# A def is owned by its author's tenant, and a tenant's webhook answers on
+# /v1/_webhooks/{tenant}/{name}; the bare route is the shared "" tenant's. The
+# legacy LOOMCYCLE_AUTH_TOKEN principal's tenant is "default", so that is where
+# this def lands.
+OWNER=$(echo "$CREATE" | sed -n 's/.*"tenant_id":"\([^"]*\)".*/\1/p')
+if [[ -n "$OWNER" ]]; then HOOK_URL="$BASE/v1/_webhooks/$OWNER/gh"; else HOOK_URL="$BASE/v1/_webhooks/gh"; fi
+echo "  delivering to $HOOK_URL"
 
 echo "[4/8] correctly-signed delivery → 202 + run"
 BODY='{"goal":"do-the-thing"}'

@@ -3574,6 +3574,122 @@ func (s *Store) MetricsSweep(ctx context.Context, cutoff time.Time) (int, error)
 	return int(tag.RowsAffected()), nil
 }
 
+// --- a team's own webhooks, armed by running walks (migration 0092) ---
+
+// TeamWebhookArmPut upserts each lease and drops the lapsed ones of each team
+// named; see the store.Store contract.
+func (s *Store) TeamWebhookArmPut(ctx context.Context, rows []store.TeamWebhookArm) error {
+	if len(rows) == 0 {
+		return nil
+	}
+	for _, r := range rows {
+		if r.Team == "" || r.Name == "" || r.WalkRunID == "" || r.DefID == "" || r.ArmedAt.IsZero() || r.ExpiresAt.IsZero() {
+			return fmt.Errorf("team webhook arm: team, name, walk_run_id, def_id, armed_at and expires_at are required")
+		}
+	}
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("team webhook arm begin: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	for _, r := range rows {
+		if _, err := tx.Exec(ctx,
+			`DELETE FROM team_webhook_arms WHERE tenant_id = $1 AND team = $2 AND expires_at <= $3`,
+			r.TenantID, r.Team, r.ArmedAt.UTC()); err != nil {
+			return fmt.Errorf("team webhook arm sweep: %w", err)
+		}
+		if _, err := tx.Exec(ctx,
+			`INSERT INTO team_webhook_arms (tenant_id, team, name, walk_run_id, def_id, user_id, armed_at, expires_at)
+			 VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
+			 ON CONFLICT (tenant_id, team, name, walk_run_id) DO UPDATE SET
+			   def_id = EXCLUDED.def_id, user_id = EXCLUDED.user_id,
+			   armed_at = EXCLUDED.armed_at, expires_at = EXCLUDED.expires_at`,
+			r.TenantID, r.Team, r.Name, r.WalkRunID, r.DefID, r.UserID,
+			r.ArmedAt.UTC(), r.ExpiresAt.UTC()); err != nil {
+			return fmt.Errorf("team webhook arm: %w", err)
+		}
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("team webhook arm commit: %w", err)
+	}
+	return nil
+}
+
+// TeamWebhookArmDelete removes one walk's leases for a team.
+func (s *Store) TeamWebhookArmDelete(ctx context.Context, tenantID, team, walkRunID string) error {
+	if _, err := s.pool.Exec(ctx,
+		`DELETE FROM team_webhook_arms WHERE tenant_id = $1 AND team = $2 AND walk_run_id = $3`,
+		tenantID, team, walkRunID); err != nil {
+		return fmt.Errorf("team webhook disarm: %w", err)
+	}
+	return nil
+}
+
+// TeamWebhookArmLive returns the earliest-armed live lease for one webhook.
+func (s *Store) TeamWebhookArmLive(ctx context.Context, tenantID, team, name string, now time.Time) (store.TeamWebhookArm, bool, error) {
+	r := store.TeamWebhookArm{TenantID: tenantID, Team: team, Name: name}
+	err := s.pool.QueryRow(ctx,
+		`SELECT a.walk_run_id, a.def_id, a.user_id, a.armed_at, a.expires_at
+		 FROM team_webhook_arms a JOIN runs r ON r.id = a.walk_run_id
+		 WHERE a.tenant_id = $1 AND a.team = $2 AND a.name = $3 AND a.expires_at > $4 AND r.status = 'running'
+		 ORDER BY a.armed_at, a.walk_run_id LIMIT 1`,
+		tenantID, team, name, now.UTC()).Scan(&r.WalkRunID, &r.DefID, &r.UserID, &r.ArmedAt, &r.ExpiresAt)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return store.TeamWebhookArm{}, false, nil
+	}
+	if err != nil {
+		return store.TeamWebhookArm{}, false, fmt.Errorf("team webhook lookup: %w", err)
+	}
+	r.ArmedAt = r.ArmedAt.UTC()
+	r.ExpiresAt = r.ExpiresAt.UTC()
+	return r, true, nil
+}
+
+// --- durable webhook delivery dedup ---
+
+// WebhookDeliveryClaim claims every key or none; see the store.Store contract.
+func (s *Store) WebhookDeliveryClaim(ctx context.Context, keys []string, now, expiresAt time.Time) (bool, error) {
+	if len(keys) == 0 {
+		return false, fmt.Errorf("webhook delivery claim: no keys")
+	}
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return false, fmt.Errorf("webhook delivery claim begin: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	if _, err := tx.Exec(ctx, `DELETE FROM webhook_deliveries WHERE expires_at <= $1`, now.UTC()); err != nil {
+		return false, fmt.Errorf("webhook delivery claim sweep: %w", err)
+	}
+	for _, k := range keys {
+		// A racing claim of the same key blocks here on the unique index
+		// until the first commits (then DO NOTHING) or rolls back.
+		tag, err := tx.Exec(ctx,
+			`INSERT INTO webhook_deliveries (delivery_key, expires_at) VALUES ($1, $2) ON CONFLICT (delivery_key) DO NOTHING`,
+			k, expiresAt.UTC())
+		if err != nil {
+			return false, fmt.Errorf("webhook delivery claim: %w", err)
+		}
+		if tag.RowsAffected() == 0 {
+			return false, nil // held: the deferred rollback undoes this claim's other keys
+		}
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return false, fmt.Errorf("webhook delivery claim commit: %w", err)
+	}
+	return true, nil
+}
+
+// WebhookDeliveryRelease drops keys a claim took.
+func (s *Store) WebhookDeliveryRelease(ctx context.Context, keys []string) error {
+	if len(keys) == 0 {
+		return nil
+	}
+	if _, err := s.pool.Exec(ctx, `DELETE FROM webhook_deliveries WHERE delivery_key = ANY($1)`, keys); err != nil {
+		return fmt.Errorf("webhook delivery release: %w", err)
+	}
+	return nil
+}
+
 // --- v0.8.15 dynamic_agents (LoomCycle MCP runtime registration) ---
 
 func (s *Store) DynamicAgentUpsert(ctx context.Context, a store.DynamicAgent) error {
@@ -9914,15 +10030,17 @@ func (s *Store) InterruptDeleteAllByUser(ctx context.Context, userID, tenantID s
 // interface for why there is no tenants table and why this is admin-only; see the
 // sqlite twin for the COUNT(DISTINCT …) shape.
 func (s *Store) ListTenants(ctx context.Context) ([]store.TenantSummary, error) {
+	// A run with no tenant (open mode, the shared tenant) stores NULL, so it is
+	// folded into "".
 	const q = `
 		SELECT
-			tenant_id,
+			COALESCE(tenant_id, '') AS tenant,
 			COUNT(DISTINCT CASE WHEN user_id IS NOT NULL AND user_id <> '' THEN user_id END) AS user_count,
 			COUNT(CASE WHEN status = 'running' THEN 1 END) AS running_count,
 			COUNT(*) AS total_count,
 			MAX(started_at) AS last_started_at
 		FROM runs
-		GROUP BY tenant_id
+		GROUP BY COALESCE(tenant_id, '')
 		ORDER BY last_started_at DESC NULLS LAST
 		LIMIT 500`
 	rows, err := s.pool.Query(ctx, q)

@@ -167,8 +167,8 @@ type Server struct {
 	// walkHeartbeatEvery overrides how often a live walk's run is heartbeated;
 	// zero means the loop's own interval. Tests set it.
 	walkHeartbeatEvery time.Duration
-	// walkClock is the time a walk's own schedules run on; nil is the wall
-	// clock. Tests set it.
+	// walkClock is the time a walk's own schedules run on, and its own
+	// webhooks' leases; nil is the wall clock. Tests set it.
 	walkClock walkClock
 	// walkTimers counts the team schedules armed on this replica, live, so a
 	// test can tell that a disarm stopped them all.

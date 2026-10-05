@@ -189,6 +189,7 @@ var deliberatelyUnclassified = map[string]string{
 	// receiver, which maps them to 400 and the unknown-webhook 404 itself.
 	"runner.ErrTeamWebhookNeedsUser": "receiver-side only; not reachable from a tool caller",
 	"runner.ErrTeamWebhookGone":      "receiver-side only; not reachable from a tool caller",
+	"runner.ErrTeamWebhookDuplicate": "receiver-side only; not reachable from a tool caller",
 }
 
 // TestCategoryOf_NoUnclassifiedSentinelDrift parses the sentinel declarations
@@ -220,6 +221,7 @@ func TestCategoryOf_NoUnclassifiedSentinelDrift(t *testing.T) {
 			"ErrTeamNotStartable":             runner.ErrTeamNotStartable,
 			"ErrTeamWebhookNeedsUser":         runner.ErrTeamWebhookNeedsUser,
 			"ErrTeamWebhookGone":              runner.ErrTeamWebhookGone,
+			"ErrTeamWebhookDuplicate":         runner.ErrTeamWebhookDuplicate,
 		},
 		"resolve": {
 			"ErrTierUnavailable":       resolve.ErrTierUnavailable,

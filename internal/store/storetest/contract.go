@@ -198,6 +198,14 @@ func Run(t *testing.T, factory Factory) {
 		{"MemoryListBySourceSessions", testMemoryListBySourceSessions},
 		{"InterruptDeleteAllByUser", testInterruptDeleteAllByUser},
 		{"ListTenants", testListTenants},
+		{"TeamWebhookArmLiveIsTheEarliestArmedLease", testTeamWebhookArmLiveIsTheEarliestArmedLease},
+		{"TeamWebhookArmLapsedLeaseIsAbsentUntilRenewed", testTeamWebhookArmLapsedLeaseIsAbsentUntilRenewed},
+		{"TeamWebhookArmLeaseOfAnEndedWalkIsAbsent", testTeamWebhookArmLeaseOfAnEndedWalkIsAbsent},
+		{"TeamWebhookArmDeleteRemovesOnlyThatWalksLeases", testTeamWebhookArmDeleteRemovesOnlyThatWalksLeases},
+		{"TeamWebhookArmPutSweepsTheTeamsLapsedLeases", testTeamWebhookArmPutSweepsTheTeamsLapsedLeases},
+		{"TeamWebhookArmPutRefusesAnIncompleteLease", testTeamWebhookArmPutRefusesAnIncompleteLease},
+		{"WebhookDeliveryClaimIsAllOrNoneUntilReleasedOrExpired", testWebhookDeliveryClaimIsAllOrNoneUntilReleasedOrExpired},
+		{"WebhookDeliveryClaimRaceGrantsOne", testWebhookDeliveryClaimRaceGrantsOne},
 		{"MemoryEmbedCascadesOnDelete", testMemoryEmbedCascadesOnDelete},
 		{"MemoryEmbedListMissing", testMemoryEmbedListMissing},
 		{"MemorySearchFilterExcludesPrefix", testMemorySearchFilterExcludesPrefix},
@@ -14508,6 +14516,10 @@ func testListTenants(t *testing.T, s store.Store) {
 	mk("tn_acme", "u_a")
 	mk("tn_acme", "u_b")
 	mk("tn_globex", "u_c")
+	// The shared tenant's runs (open mode) store no tenant; they are listed
+	// under "" rather than failing the whole list.
+	mk("", "u_d")
+	mk("", "u_e")
 
 	rows, err := s.ListTenants(ctx)
 	if err != nil {
@@ -14529,6 +14541,9 @@ func testListTenants(t *testing.T, s store.Store) {
 	}
 	if g, ok := got["tn_globex"]; !ok || g.UserCount != 1 {
 		t.Errorf("tn_globex = %+v, want 1 user", g)
+	}
+	if shared, ok := got[""]; !ok || shared.UserCount != 2 || shared.TotalCount != 2 {
+		t.Errorf("the shared tenant = %+v (present=%v), want 2 users and 2 runs", shared, ok)
 	}
 	// A tenant with no runs must NOT appear — the enumeration is derived.
 	if _, present := got["tn_never_ran"]; present {
