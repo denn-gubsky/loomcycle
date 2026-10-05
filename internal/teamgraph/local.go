@@ -24,6 +24,12 @@ const LocalRefPrefix = "./"
 // "<team>/<name>", and both halves share the one-segment grammar.
 const MaxLocalNameLen = 64
 
+// MaxLocalAgents bounds how many agents a team may declare for itself — the
+// number MaxVars uses, for the same reason: enough for a real team, small
+// enough that a definition cannot make every name resolved inside its walks
+// pay for a list nobody could read.
+const MaxLocalAgents = 64
+
 // Local is a definition's `local` block. Only agents exist today.
 //
 // It is decoded by hand (UnmarshalJSON) so that a kind this runtime does not
@@ -163,6 +169,9 @@ func ValidateLocalName(name string) error {
 // authoring caller's to judge (it depends on who is writing), not this
 // package's.
 func validateLocal(d Definition) error {
+	if d.Local != nil && len(d.Local.Agents) > MaxLocalAgents {
+		return fmt.Errorf("team definition: local.agents declares %d agents, more than the maximum %d", len(d.Local.Agents), MaxLocalAgents)
+	}
 	for _, name := range d.LocalAgentNames() {
 		if err := ValidateLocalName(name); err != nil {
 			return fmt.Errorf("team definition: local.agents: %w", err)
@@ -193,6 +202,50 @@ func CheckLocalRefs(d Definition) error {
 			ref.State, ref.Field, ref.Agent, declared)
 	}
 	return nil
+}
+
+// CheckLocalRunNames refuses a definition in which a state names, as a GLOBAL
+// agent, the very name one of the team's own agents runs under: with team
+// "sdlc" declaring "reviewer", a state `agent: "sdlc/reviewer"`. A bare
+// reference is never the team's own agent, so that state asks for a global
+// agent which cannot coexist with the local one (the two would share
+// agent-scoped state) — and inside a walk the two could not be told apart by
+// name. The author means "./reviewer", and is told so.
+//
+// It needs the team's name, which Validate does not have; whoever stores or
+// walks a definition calls it.
+func CheckLocalRunNames(d Definition, team string) error {
+	if d.Local == nil || len(d.Local.Agents) == 0 {
+		return nil
+	}
+	for _, ref := range AgentRefs(d) {
+		if _, isLocal := LocalRef(ref.Agent); isLocal {
+			continue
+		}
+		name, qualified := strings.CutPrefix(ref.Agent, team+"/")
+		if !qualified {
+			continue
+		}
+		if _, declared := d.LocalAgent(name); declared {
+			return fmt.Errorf("team definition: state %q %s: %q is the name the team's own agent %q runs under, "+
+				"and a bare name is a global agent — write %q to run the team's own",
+				ref.State, ref.Field, ref.Agent, name, LocalRefPrefix+name)
+		}
+	}
+	return nil
+}
+
+// LocalRunNames maps the name each declared local agent runs under
+// ("<team>/<name>") back to its reference ("./<name>"). A walk runs on the
+// definition QualifyLocalRefs returns, whose members are named by run name;
+// this is how it tells one of the team's own from a global agent again when
+// it starts them — unambiguously, given CheckLocalRunNames.
+func LocalRunNames(d Definition, team string) map[string]string {
+	out := map[string]string{}
+	for _, name := range d.LocalAgentNames() {
+		out[QualifiedLocalName(team, name)] = LocalRefPrefix + name
+	}
+	return out
 }
 
 // UnreferencedLocalAgents returns the declared local agents no state names,

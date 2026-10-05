@@ -2,6 +2,7 @@ package teamgraph
 
 import (
 	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
 )
@@ -204,5 +205,40 @@ func TestResolve_LocalAgentNameChoosesTheFill(t *testing.T) {
 	global := mustParse(t, `{"entry":"s","states":[{"state":"s","handler":{"kind":"agent","agent":"reviewer"}}]}`)
 	if l, g := Resolve(local).Fill["s"], Resolve(global).Fill["s"]; l == "" || l != g {
 		t.Errorf("fill for ./reviewer = %q, for reviewer = %q; want the same keyword colour", l, g)
+	}
+}
+
+func TestValidate_CapsTheNumberOfLocalAgents(t *testing.T) {
+	build := func(n int) Definition {
+		d := mustParse(t, localJSON)
+		for i := 1; i < n; i++ {
+			d.Local.Agents[fmt.Sprintf("a%d", i)] = json.RawMessage(`{"tier":"low"}`)
+		}
+		return d
+	}
+	if err := Validate(build(MaxLocalAgents)); err != nil {
+		t.Fatalf("%d local agents is the limit and must be accepted: %v", MaxLocalAgents, err)
+	}
+	err := Validate(build(MaxLocalAgents + 1))
+	if err == nil || !strings.Contains(err.Error(), "more than the maximum 64") {
+		t.Fatalf("%d local agents must be refused naming the limit, got %v", MaxLocalAgents+1, err)
+	}
+}
+
+func TestCheckLocalRunNames_RefusesBareReferenceToALocalAgentsRunName(t *testing.T) {
+	d := mustParse(t, strings.Replace(localJSON, `"./reviewer"`, `"sdlc/reviewer"`, 1))
+	if err := CheckLocalRunNames(d, "sdlc"); err == nil || !strings.Contains(err.Error(), `"./reviewer"`) {
+		t.Fatalf("want a refusal pointing at \"./reviewer\", got %v", err)
+	}
+	for _, team := range []string{"other", "sdl"} {
+		if err := CheckLocalRunNames(d, team); err != nil {
+			t.Errorf("for team %q the name is an ordinary global one: %v", team, err)
+		}
+	}
+	if err := CheckLocalRunNames(mustParse(t, localJSON), "sdlc"); err != nil {
+		t.Errorf("a \"./reviewer\" reference is the team's own and is fine: %v", err)
+	}
+	if got := LocalRunNames(mustParse(t, localJSON), "sdlc"); len(got) != 1 || got["sdlc/reviewer"] != "./reviewer" {
+		t.Errorf("LocalRunNames = %v", got)
 	}
 }
