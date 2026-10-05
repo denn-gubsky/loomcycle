@@ -3251,7 +3251,10 @@ type Store interface {
 	// active pointer (mirrors DynamicAgentDelete — teams are runtime-only, so an
 	// operator needs to remove a test/obsolete team, not just retire it). RFC N:
 	// scoped to (tenant_id, name) so a principal can't delete another tenant's
-	// same-named team. Returns whether anything was deleted.
+	// same-named team. Returns whether anything was deleted. In the same
+	// transaction it drops the team's own channels' messages, cursors and hook
+	// progress in tenantID (every channel under TeamChannelName(name, "")), so a
+	// team later created under the name starts with none of them.
 	TeamDefDelete(ctx context.Context, tenantID, name string) (bool, error)
 
 	// ---- HookDef substrate ----

@@ -27,6 +27,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
@@ -6917,6 +6918,17 @@ func (s *Store) TeamDefDelete(ctx context.Context, tenantID, name string) (bool,
 	tag, err := tx.Exec(ctx, `DELETE FROM teamdefs WHERE tenant_id = $1 AND name = $2`, tenantID, name)
 	if err != nil {
 		return false, fmt.Errorf("teamdef delete rows: %w", err)
+	}
+	// The team's own channels go with it: every message, cursor and hook
+	// progress stored under its reserved prefix in this tenant. A prefix
+	// compare (substr, not LIKE, whose "_" is a wildcard), in the same
+	// transaction, so a team recreated under the name starts empty.
+	prefix := store.TeamChannelName(name, "")
+	for _, table := range []string{"channel_messages", "channel_cursors", "channel_hook_state"} {
+		if _, err := tx.Exec(ctx, `DELETE FROM `+table+` WHERE tenant_id = $1 AND substr(channel, 1, $2) = $3`,
+			tenantID, utf8.RuneCountInString(prefix), prefix); err != nil {
+			return false, fmt.Errorf("teamdef delete own channels (%s): %w", table, err)
+		}
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return false, fmt.Errorf("teamdef delete: commit: %w", err)

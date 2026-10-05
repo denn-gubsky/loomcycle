@@ -355,6 +355,7 @@ func Run(t *testing.T, factory Factory) {
 		{"TeamDefActivePointerCarriesItsPromoter", testTeamDefActivePointerCarriesItsPromoter},
 		{"TeamDefRetireReversible", testTeamDefRetireReversible},
 		{"TeamDefDelete", testTeamDefDelete},
+		{"TeamDefDeleteDropsItsOwnChannels", testTeamDefDeleteDropsItsOwnChannels},
 		{"TeamDefListNamesLiveCount", testTeamDefListNamesLiveCount},
 		{"TeamDefStaticFallback", testTeamDefStaticFallback},
 		// RFC N — team definition plane tenant isolation. Fails on the
@@ -10107,6 +10108,62 @@ func testTeamDefDelete(t *testing.T, s store.Store) {
 	// Re-deleting a now-missing team → (false, nil).
 	if d, err := s.TeamDefDelete(ctx, "", "team-del"); err != nil || d {
 		t.Errorf("re-delete: got (%v,%v), want (false,nil)", d, err)
+	}
+}
+
+// testTeamDefDeleteDropsItsOwnChannels: deleting a team drops the messages and
+// cursors of its own channels (stored under "_team/<team>/") in its tenant,
+// in the same transaction — and nothing else: not another tenant's, not a team
+// whose name extends this one's, not a name a LIKE wildcard would match.
+func testTeamDefDeleteDropsItsOwnChannels(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	if _, err := s.TeamDefCreate(ctx, store.TeamDefRow{DefID: "tdch-1", Name: "team-ch", TenantID: "acme",
+		Definition: json.RawMessage(`{"entry":"a"}`)}); err != nil {
+		t.Fatal(err)
+	}
+	own := store.TeamChannelName("team-ch", "events")
+	type key struct{ tenant, channel string }
+	seed := []key{
+		{"acme", own},
+		{"acme", store.TeamChannelName("team-ch", "verdicts")},
+		{"other", own}, // another tenant's team of the same name
+		{"acme", store.TeamChannelName("team-chx", "events")}, // a name that extends this one
+		{"acme", "xteam/team-ch/events"},                      // "_" as a LIKE wildcard would match it
+		{"acme", "events"},                                    // an ordinary channel
+	}
+	for _, k := range seed {
+		if _, _, err := s.ChannelPublish(ctx, store.ChannelMessage{Channel: k.channel, TenantID: k.tenant,
+			Scope: store.MemoryScopeTenant, Payload: json.RawMessage(`{}`)}, 0); err != nil {
+			t.Fatalf("publish %v: %v", k, err)
+		}
+		msgs, err := s.ChannelPeek(ctx, k.tenant, k.channel, store.MemoryScopeTenant, "", "", 1)
+		if err != nil || len(msgs) != 1 {
+			t.Fatalf("peek %v: %v %v", k, msgs, err)
+		}
+		if err := s.ChannelAck(ctx, k.tenant, k.channel, store.MemoryScopeTenant, "",
+			store.EncodeChannelCursor(msgs[0].VisibleAt, msgs[0].ID)); err != nil {
+			t.Fatalf("ack %v: %v", k, err)
+		}
+	}
+	if deleted, err := s.TeamDefDelete(ctx, "acme", "team-ch"); err != nil || !deleted {
+		t.Fatalf("delete: %v %v", deleted, err)
+	}
+	for i, k := range seed {
+		msgs, err := s.ChannelPeek(ctx, k.tenant, k.channel, store.MemoryScopeTenant, "", "", 10)
+		if err != nil {
+			t.Fatal(err)
+		}
+		cur, err := s.ChannelCommittedCursor(ctx, k.tenant, k.channel, store.MemoryScopeTenant, "")
+		if err != nil {
+			t.Fatal(err)
+		}
+		gone := i < 2
+		if gone && (len(msgs) != 0 || cur != "") {
+			t.Errorf("%v: the team's own channel kept %d message(s), cursor %q", k, len(msgs), cur)
+		}
+		if !gone && (len(msgs) != 1 || cur == "") {
+			t.Errorf("%v: a bystander lost its message or cursor (%d, %q)", k, len(msgs), cur)
+		}
 	}
 }
 

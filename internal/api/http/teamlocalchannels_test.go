@@ -515,3 +515,35 @@ func TestSweepTeamSubscriptions_IgnoresATeamReadingItsOwnChannel(t *testing.T) {
 		t.Errorf("sweep = %d, %v; want 0, nil", started, err)
 	}
 }
+
+// Retiring a team keeps its channels' messages (a run in flight, or an
+// un-retire, still uses them); deleting it drops them, so a team recreated
+// under the name starts empty.
+func TestTeamDef_DeleteDropsItsOwnChannelsAndRetireKeepsThem(t *testing.T) {
+	h := newChannelHarness(t, nil)
+	sc := h.seed("tdf_triage_1", "triage", starterTeam)
+	if _, err := h.srv.publishTeamLocalChannel(context.Background(), "acme", sc, "events", "alice", json.RawMessage(`{}`)); err != nil {
+		t.Fatal(err)
+	}
+	h.walk(acmeUser("alice"), "triage", "go")
+	if _, err := h.srv.publishTeamLocalChannel(context.Background(), "acme", sc, "events", "alice", json.RawMessage(`{"n":2}`)); err != nil {
+		t.Fatal(err)
+	}
+	count := func() (events, verdicts int, cursor string) {
+		cur, _ := h.st.ChannelCommittedCursor(context.Background(), "acme", "_team/triage/events", store.MemoryScopeTenant, "")
+		return len(h.stored("_team/triage/events", store.MemoryScopeTenant, "")),
+			len(h.stored("_team/triage/verdicts", store.MemoryScopeUser, "alice")), cur
+	}
+	if code, out := h.teamDef(acmeUser("alice"), `{"op":"retire","def_id":"tdf_triage_1","retired":true}`); code != http.StatusOK {
+		t.Fatalf("retire: %d %v", code, out)
+	}
+	if e, v, cur := count(); e != 2 || v != 1 || cur == "" {
+		t.Fatalf("after retire: events=%d verdicts=%d cursor=%q; want everything kept", e, v, cur)
+	}
+	if code, out := h.teamDef(acmeUser("alice"), `{"op":"delete","name":"triage"}`); code != http.StatusOK {
+		t.Fatalf("delete: %d %v", code, out)
+	}
+	if e, v, cur := count(); e != 0 || v != 0 || cur != "" {
+		t.Fatalf("after delete: events=%d verdicts=%d cursor=%q; want nothing left", e, v, cur)
+	}
+}
