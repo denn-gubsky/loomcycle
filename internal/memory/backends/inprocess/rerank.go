@@ -38,7 +38,7 @@ func (b *Backend) rerankPool(ctx context.Context, tenant string, scope store.Mem
 	for i := 0; i < n; i++ {
 		texts[i] = b.candidateText(ctx, tenant, scope, scopeID, pool[i])
 	}
-	order, rep := memory.RerankTexts(ctx, b.reranker, q.QueryText, texts, q.Rerank.EffectiveMaxChars())
+	order, rep := b.reranker.Rank(ctx, q.QueryText, texts, q.Rerank.EffectiveMaxChars())
 	if !rep.Applied {
 		log.Printf("memory.search: rerank kept search order (reason=%s, candidates=%d)", rep.Reason, rep.Candidates)
 		return pool, rep

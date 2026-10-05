@@ -48,7 +48,7 @@ type Backend struct {
 	accessFlusher *memory.AccessFlusher
 	// reranker serves an agent's opt-in rerank (memory.reranker). nil when the
 	// operator declared none: a requested rerank then reports not_configured.
-	reranker memory.RerankModel
+	reranker memory.Ranker
 }
 
 // New builds the in-process backend. Either argument may be nil at the
@@ -64,9 +64,13 @@ func New(s store.Store, e providers.Embedder) *Backend {
 // shared across the tool's default backend.
 func (b *Backend) SetAccessFlusher(f *memory.AccessFlusher) { b.accessFlusher = f }
 
-// SetReranker wires the operator's reranker. Optional; unset, a search whose
-// agent enabled the rerank keeps its own order and says why.
-func (b *Backend) SetReranker(r memory.RerankModel) { b.reranker = r }
+// SetReranker wires a listwise reranker model, asked through the measured prompt.
+// Optional; unset, a search whose agent enabled the rerank keeps its own order and
+// says why.
+func (b *Backend) SetReranker(r memory.RerankModel) { b.reranker = memory.ListwiseRanker(r) }
+
+// SetRanker wires the operator's reranker as a Ranker, whatever its kind.
+func (b *Backend) SetRanker(r memory.Ranker) { b.reranker = r }
 
 // Get delegates to the store.
 func (b *Backend) Get(ctx context.Context, scope store.MemoryScope, scopeID, key string) (store.MemoryEntry, error) {

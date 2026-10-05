@@ -98,7 +98,7 @@ type Memory struct {
 	// the default one: an agent routed through a named in-process memory_backend
 	// would otherwise report not_configured on a server that has a reranker. nil
 	// when none is declared — main.go must never store a typed-nil here.
-	Reranker memrank.RerankModel
+	Reranker memrank.Ranker
 
 	// Cfg is the operator config, used to resolve a per-agent
 	// memory_backend NAME to its MemoryBackendDef via lookup.MemoryBackend
@@ -301,7 +301,7 @@ func (m *Memory) defaultBackend() memrank.Backend {
 func (m *Memory) newInprocess() *inprocess.Backend {
 	b := inprocess.New(m.Store, m.Embedder)
 	if m.Reranker != nil {
-		b.SetReranker(m.Reranker)
+		b.SetRanker(m.Reranker)
 	}
 	return b
 }

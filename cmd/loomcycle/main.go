@@ -1408,8 +1408,9 @@ func main() {
 	}
 	if rerankModel != nil {
 		log.Printf("reranker: %s/%s", rerankModel.ProviderID(), rerankModel.ModelID())
-		inProcBackend.SetReranker(rerankModel)
-		memoryTool.Reranker = rerankModel
+		ranker := memory.ListwiseRanker(rerankModel)
+		inProcBackend.SetRanker(ranker)
+		memoryTool.Reranker = ranker
 	}
 	channelTool.Store = storeIface
 	// Wire the pool-stats accessor when the backend is Postgres so
