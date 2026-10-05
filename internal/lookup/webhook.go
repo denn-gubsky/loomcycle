@@ -91,13 +91,21 @@ func ResolveWebhook(ctx context.Context, s WebhookStore, cfg *config.Config, ten
 
 // resolveWebhookSubstrate reads the webhook_def_active overlay for one
 // tenant pass. Returns (zero, false) on nil store, no active pointer for
-// that tenant, or malformed row JSON.
+// that tenant, a retired active row, or malformed row JSON.
 func resolveWebhookSubstrate(ctx context.Context, s WebhookStore, tenantID, name string) (config.Webhook, bool) {
 	if s == nil {
 		return config.Webhook{}, false
 	}
 	activeRow, err := s.WebhookDefGetActive(ctx, tenantID, name)
 	if err != nil {
+		return config.Webhook{}, false
+	}
+	// Retiring the active version takes the webhook out of service: the store
+	// keeps the pointer (the WebhookDef tool forks from it, and boot must not
+	// re-seed a retired name from the yaml), so the refusal lives here. The
+	// tier is treated as absent, so the name resolves from the next one, as a
+	// retired agent override does.
+	if activeRow.Retired {
 		return config.Webhook{}, false
 	}
 	var wd SubstrateWebhookDef

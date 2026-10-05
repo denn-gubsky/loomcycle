@@ -251,3 +251,65 @@ func TestResolveWebhook_LegacyEmptyBodyTenantRunsInOwningTenant(t *testing.T) {
 		}
 	}
 }
+
+// Retiring the active version takes the webhook out of service: the store
+// keeps the active pointer, so the resolver is what must refuse the row.
+// Un-retiring puts it back.
+func TestResolveWebhook_RetiredActiveVersionDoesNotResolve(t *testing.T) {
+	row := store.WebhookDefRow{Definition: json.RawMessage(`{"enabled":true,"delivery":"spawn","agent":"x"}`)}
+	ss := &tenantWebhookStore{active: map[string]store.WebhookDefRow{"acme/hook": row, "/base": row}}
+	setRetired := func(retired bool) {
+		row.Retired = retired
+		ss.active["acme/hook"], ss.active["/base"] = row, row
+	}
+	resolves := func(tenant, name string) bool {
+		_, _, ok := lookup.ResolveWebhook(context.Background(), ss, &config.Config{}, tenant, name)
+		return ok
+	}
+
+	if !resolves("acme", "hook") || !resolves("", "base") {
+		t.Fatal("precondition: a live active version must resolve")
+	}
+	setRetired(true)
+	if resolves("acme", "hook") {
+		t.Error("tenant webhook whose active version is retired still resolves")
+	}
+	if resolves("", "base") {
+		t.Error("shared webhook whose active version is retired still resolves")
+	}
+	setRetired(false)
+	if !resolves("acme", "hook") || !resolves("", "base") {
+		t.Error("un-retired webhook does not resolve again")
+	}
+}
+
+// A tenant that retires its override is served by the next tier of the same
+// name, exactly as if it had never overridden it (the agent plane's rule).
+func TestResolveWebhook_RetiredTenantOverrideFallsThroughToNextTier(t *testing.T) {
+	def := func(agent string, retired bool) store.WebhookDefRow {
+		return store.WebhookDefRow{Retired: retired, Definition: json.RawMessage(`{"delivery":"spawn","agent":"` + agent + `"}`)}
+	}
+	ss := &tenantWebhookStore{active: map[string]store.WebhookDefRow{
+		"acme/yaml":   def("acme-agent", true),
+		"acme/shared": def("acme-agent", true),
+		"/shared":     def("shared-agent", false),
+	}}
+	cfg := &config.Config{Webhooks: map[string]config.Webhook{"yaml": {Delivery: "spawn", Agent: "yaml-agent"}}}
+
+	for _, tc := range []struct {
+		name, agent string
+		want        lookup.WebhookOwner
+	}{
+		{"yaml", "yaml-agent", lookup.WebhookOwner{Static: true}},
+		{"shared", "shared-agent", lookup.WebhookOwner{}},
+	} {
+		got, owner, ok := lookup.ResolveWebhook(context.Background(), ss, cfg, "acme", tc.name)
+		if !ok || got.Agent != tc.agent {
+			t.Errorf("acme/%s resolved (%q, %v), want agent %q", tc.name, got.Agent, ok, tc.agent)
+			continue
+		}
+		if owner != tc.want {
+			t.Errorf("acme/%s owner = %+v, want %+v", tc.name, owner, tc.want)
+		}
+	}
+}
