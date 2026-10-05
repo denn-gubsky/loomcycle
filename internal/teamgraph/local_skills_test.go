@@ -179,3 +179,13 @@ func TestLocalSkillGranted_OnlyAnExactLocalEntryGrants(t *testing.T) {
 		}
 	}
 }
+
+// A team that declares skills and no agents still declares something: its
+// skills are content, not an empty `local` block.
+func TestSign_TeamDeclaringOnlySkillsHashesThem(t *testing.T) {
+	d := mustParse(t, sdlcJSON)
+	d.Local = &Local{Skills: map[string]LocalSkill{"style": {Body: "b"}}}
+	if got := Sign("sdlc", d); got == recordedNoLocalHash {
+		t.Error("a team declaring only skills hashes as if it declared nothing")
+	}
+}
