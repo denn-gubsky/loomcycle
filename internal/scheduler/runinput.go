@@ -54,6 +54,11 @@ type scheduleDef struct {
 	// says otherwise: a schedule must not fire without the credentials it was
 	// authored with, whichever path wrote the body.
 	CaptureDisabled *scheduleCaptureDisabled `json:"capture_disabled,omitempty"`
+	// Team / Vars / Input are the delivery=team target: the team whose walk a
+	// tick starts, its variable values (literals) and its input.
+	Team  string            `json:"team,omitempty"`
+	Vars  map[string]string `json:"vars,omitempty"`
+	Input string            `json:"input,omitempty"`
 	// OperatorLayer is the server-stamped bit saying the def was written, with
 	// no tenant, by a caller holding operator authority. Only such a def (or a
 	// row bootstrapped from the operator's yaml) may run a consolidation fan-out

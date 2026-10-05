@@ -149,6 +149,10 @@ type SubstrateWebhookDef struct {
 	PayloadMapping         map[string]string         `json:"payload_mapping,omitempty"`
 	SyncResponse           SubstrateWebhookSyncResp  `json:"sync_response,omitempty"`
 	OnComplete             []config.ScheduledRunHook `json:"on_complete,omitempty"`
+	// Team / Vars are the delivery=team target: the team whose walk a delivery
+	// starts, and its variables as JSONPaths into the body.
+	Team string            `json:"team,omitempty"`
+	Vars map[string]string `json:"vars,omitempty"`
 	// OperatorKeyRestricted (RFC AX) mirrors mergedWebhookDef — captured from the
 	// authoring principal, projected onto config.Webhook for the receiver.
 	OperatorKeyRestricted bool `json:"operator_key_restricted,omitempty"`
@@ -223,6 +227,8 @@ func (s SubstrateWebhookDef) ToConfigDef() config.Webhook {
 			TimeoutMs: s.SyncResponse.TimeoutMs,
 		},
 		OnComplete:            s.OnComplete,
+		Team:                  s.Team,
+		Vars:                  s.Vars,
 		OperatorKeyRestricted: s.OperatorKeyRestricted,
 		Isolated:              s.Isolated,
 		CaptureDisabled:       s.CaptureDisabled.toConfig(),

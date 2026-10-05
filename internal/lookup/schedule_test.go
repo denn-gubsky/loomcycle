@@ -220,6 +220,11 @@ func TestSchedule_DriftDetection(t *testing.T) {
 		// NOT on config.ScheduledRun: a yaml entry is the operator's by
 		// construction, and the scheduler reads the bit via scheduler.scheduleDef.
 		"operator_layer": true,
+		// delivery=team: the team whose walk a tick starts, its variable
+		// values and its input.
+		"team":  true,
+		"vars":  true,
+		"input": true,
 	}
 	have := scheduleJsonTagsOf(reflect.TypeOf(lookup.SubstrateScheduleDef{}))
 	for tag := range want {
