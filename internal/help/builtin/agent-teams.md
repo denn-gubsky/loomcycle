@@ -209,12 +209,17 @@ already exist. Declare them under `local.agents` — name → the same body
 - **It is not runnable outside its team.** Starting a run, a schedule, a
   webhook or an A2A call on `sdlc/reviewer` finds no such agent. The one way
   back to it after its walk is to continue the session it already ran in, which
-  stays on the team version that session started under.
-- **How a name resolves.** In the definition, `./reviewer` is the team's own
-  agent and a bare `reviewer` is a global agent — a `./x` the team does not
-  declare is refused at create and fork. At run time, for every agent started
-  anywhere below the walk (members, their sub-agents, and theirs — global
-  agents started inside the team included), the Agent tool resolves:
+  stays on the team version that session started under — and is refused once
+  that version is retired or deleted.
+- **How a name resolves in the definition.** In a state, `./reviewer` is the
+  team's own agent, and any other name is a global agent: a bare `reviewer`
+  runs the global `reviewer` even when the team declares one of its own, so
+  adding an agent to a team never changes what its existing states run. A
+  `./x` the team does not declare is refused at create and fork, and so is a
+  state naming `sdlc/reviewer` in team `sdlc` (write `./reviewer`).
+- **How a name resolves in the Agent tool.** For every agent running anywhere
+  below the walk (members, their sub-agents, and theirs — global agents started
+  inside the team included), a name passed to the Agent tool resolves:
   - `./reviewer` → the team's own; an error if the team declares none;
   - `reviewer` → the team's own if it declares one, otherwise the global agent;
   - `sdlc/reviewer` → the same, by the name it runs under.
@@ -234,9 +239,13 @@ already exist. Declare them under `local.agents` — name → the same body
   renamed.
 - **Forking.** A fork that sends `local.agents` replaces the whole list (`{}`
   declares none); one that does not keeps the parent's.
-- **Limits.** A local name is one segment of `A-Z a-z 0-9 _ -`, at most 64
-  characters, and the team's own name must be one segment too. Only `agents`
-  may be declared under `local`. `verify` lists a declared agent no state runs
+- **Retiring.** Retiring a team version stops new walks of it and new
+  continuations of sessions that ran inside it. A run already in flight keeps
+  its version: a paused member resumes on it.
+- **Limits.** At most 64 agents. A local name is one segment of
+  `A-Z a-z 0-9 _ -`, at most 64 characters, and the team's own name must be
+  one segment too. Only `agents` may be declared under `local`. A team's own
+  agents run only in the team's tenant. `verify` lists a declared agent no state runs
   as an advisory issue.
 
 ## Declaring variables and setting them at start
