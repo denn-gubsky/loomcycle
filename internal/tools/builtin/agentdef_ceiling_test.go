@@ -3,10 +3,12 @@ package builtin
 import (
 	"context"
 	"encoding/json"
+	"strconv"
 	"strings"
 	"testing"
 
 	"github.com/denn-gubsky/loomcycle/internal/config"
+	"github.com/denn-gubsky/loomcycle/internal/skillmatch"
 	"github.com/denn-gubsky/loomcycle/internal/store/sqlite"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
 )
@@ -56,12 +58,15 @@ func ceilingFixture(t *testing.T) (*AgentDef, context.Context) {
 	ctx = tools.WithAgentName(ctx, "sdlc/meta")
 	ctx = tools.WithAgentDefPolicy(ctx, tools.AgentDefPolicyValue{Scopes: []string{"named:sdlc/**"}, SelfName: "sdlc/meta"})
 	ctx = tools.WithAgentTools(ctx, []string{"Read"})
-	// Narrow grants for the scope lists that have an ordinary default, below
-	// that default (user, tenant), so an unset field passing is the default
-	// at work and not the author happening to hold it.
+	// Memory and SQL below their ordinary default (user, tenant), so an unset
+	// one passing is that default at work and not the author holding it. The
+	// author does hold what an unset history_scope and volumes resolve to
+	// ([user], the default volume), so a case leaving those out judges only
+	// the field it is about.
 	ctx = tools.WithMemoryPolicy(ctx, tools.MemoryPolicyValue{AllowedScopes: []string{"agent"}})
 	ctx = tools.WithSqlMemPolicy(ctx, tools.SqlMemPolicyValue{AllowedScopes: []string{"agent"}})
-	ctx = tools.WithHistoryPolicy(ctx, tools.HistoryPolicyValue{Scopes: []string{"self"}})
+	ctx = tools.WithHistoryPolicy(ctx, tools.HistoryPolicyValue{Scopes: []string{"self", "user"}})
+	ctx = tools.WithVolumePolicy(ctx, tools.VolumePolicyValue{Active: true, Bindings: []tools.VolumeBinding{{Name: "default"}}})
 	return tool, ctx
 }
 
@@ -121,10 +126,10 @@ func ceilingCases() []ceilingCase {
 			wider: `{"sql_scopes":["user","tenant"]}`, within: `{"sql_scopes":["user"]}`},
 		{field: "history_scope",
 			policy: func(ctx context.Context) context.Context {
-				return tools.WithHistoryPolicy(ctx, tools.HistoryPolicyValue{Scopes: []string{"self", "user"}})
+				return tools.WithHistoryPolicy(ctx, tools.HistoryPolicyValue{Scopes: []string{"self", "user", "tenant"}})
 			},
 			// The legacy "any" is the cross-tenant "global" it stands for.
-			wider: `{"history_scope":["user","any"]}`, within: `{"history_scope":["user"]}`},
+			wider: `{"history_scope":["tenant","any"]}`, within: `{"history_scope":["tenant"]}`},
 		{field: "channels.publish",
 			policy: func(ctx context.Context) context.Context {
 				return tools.WithChannelPolicy(ctx, tools.ChannelPolicyValue{Publish: []string{"team/*"}})
@@ -252,27 +257,45 @@ func TestAgentDefCreate_WildcardToolsInsideARunIsStillNarrowed(t *testing.T) {
 	}
 }
 
-// A field left unset takes the ordinary default every agent gets — memory,
-// SQL and history scopes, evaluation scopes, the operator's default volume,
-// the question interruption kind — and is not judged, though the author holds
-// less than that default. Unset skills is not a default but "every skill",
-// and is still judged.
-func TestAgentDefCreate_UnsetFieldTakesTheOrdinaryDefault(t *testing.T) {
+// Only the memory facets fall back unjudged when unset: memory_scopes and
+// sql_scopes take the ordinary memory default though the author holds less,
+// and an unset evaluation_scopes is submit_self. Every other unset field is
+// judged at what it resolves to — the operator's default volume (a host
+// directory), the user's chats, the question interruption kind, every skill —
+// and the refusal says how to narrow it.
+func TestAgentDefCreate_UnsetFieldIsJudgedUnlessItIsAMemoryDefault(t *testing.T) {
 	tool, ctx := ceilingFixture(t)
+	// Below every default: memory and SQL [agent] (the fixture), history
+	// [self], bound to the volume "work" only, interruptions of kind approval.
+	ctx = tools.WithHistoryPolicy(ctx, tools.HistoryPolicyValue{Scopes: []string{"self"}})
 	ctx = tools.WithVolumePolicy(ctx, tools.VolumePolicyValue{Active: true, Bindings: []tools.VolumeBinding{{Name: "work"}}})
 	ctx = tools.WithInterruptionPolicy(ctx, tools.InterruptionPolicyValue{Enabled: true, Kinds: []string{"approval"}})
-	if res := agentDefOp(t, tool, ctx, "create", "sdlc/new", `{"interruption":{"enabled":true}}`); res.IsError {
-		t.Fatalf("unset fields with an ordinary default were judged: %s", res.Text)
+	const rest = `"history_scope":["self"],"volumes":["work"]`
+
+	if res := agentDefOp(t, tool, ctx, "create", "sdlc/new", `{`+rest+`}`); res.IsError {
+		t.Fatalf("unset memory_scopes / sql_scopes / evaluation_scopes were judged: %s", res.Text)
 	}
-	if res := agentDefOp(t, tool, ctx, "create", "sdlc/denied", `{"memory_scopes":["-*"],"sql_scopes":["-*"],"history_scope":["-*"]}`); res.IsError {
+	if res := agentDefOp(t, tool, ctx, "create", "sdlc/denied", `{"memory_scopes":["-*"],"sql_scopes":["-*"],"history_scope":["-*"],"volumes":["work"]}`); res.IsError {
 		t.Fatalf("an explicit deny-all must always pass: %s", res.Text)
 	}
-	// Explicit values stay narrow-only.
-	wantRefused(t, agentDefOp(t, tool, ctx, "create", "sdlc/new2", `{"memory_scopes":["user"]}`), "explicit memory_scopes", "memory_scopes:")
-	wantRefused(t, agentDefOp(t, tool, ctx, "create", "sdlc/new2", `{"interruption":{"enabled":true,"kinds":["question"]}}`), "explicit kinds", "interruption.kinds:")
+	wantRefused(t, agentDefOp(t, tool, ctx, "create", "sdlc/x", `{"memory_scopes":["user"],`+rest+`}`), "explicit memory_scopes", "memory_scopes:")
+
+	wantRefused(t, agentDefOp(t, tool, ctx, "create", "sdlc/x", `{"volumes":["work"]}`),
+		"unset history_scope", "history_scope: left unset", `"user"`, "set history_scope explicitly", `["-*"]`)
+	wantRefused(t, agentDefOp(t, tool, ctx, "create", "sdlc/x", `{"history_scope":["self"]}`),
+		"unset volumes", "volumes: left unset", `"default"`, "set volumes explicitly")
+	// The escalation the default would hand out: an author with no volume at
+	// all minting an agent bound to the operator's default host directory.
+	noVolumes := tools.WithVolumePolicy(ctx, tools.VolumePolicyValue{})
+	wantRefused(t, agentDefOp(t, tool, noVolumes, "create", "sdlc/x", `{"history_scope":["self"]}`),
+		"unset volumes, author holds none", "volumes: left unset", `"default"`)
+	wantRefused(t, agentDefOp(t, tool, ctx, "create", "sdlc/x", `{`+rest+`,"interruption":{"enabled":true}}`),
+		"unset interruption kinds", "interruption.kinds: left unset", `"question"`)
+	wantRefused(t, agentDefOp(t, tool, ctx, "create", "sdlc/x", `{`+rest+`,"interruption":{"enabled":true,"kinds":["question"]}}`),
+		"explicit kinds", "interruption.kinds:")
 
 	ctx = tools.WithSkillPolicy(ctx, tools.SkillPolicyValue{Patterns: []string{"doc/*"}})
-	wantRefused(t, agentDefOp(t, tool, ctx, "create", "sdlc/new2", `{}`), "unset skills", "skills: left unset")
+	wantRefused(t, agentDefOp(t, tool, ctx, "create", "sdlc/x", `{`+rest+`}`), "unset skills", "skills: left unset")
 }
 
 // A volume the author holds read-only (a sub-agent of a read-only parent) is
@@ -344,6 +367,14 @@ func TestSkillsWithin_IsNarrowOnly(t *testing.T) {
 		{[]string{"./local"}, []string{"doc/*"}, true},
 		{[]string{"./local"}, []string{"-x"}, true},
 		{[]string{"./local", "other"}, []string{"-x"}, false},
+		// A deny-all author grants nothing, not even the team's own skills.
+		{[]string{"./local"}, []string{"-*"}, false},
+		// A mixed list is judged on its global entries.
+		{[]string{"./local", "*"}, []string{"doc/*"}, false},
+		{[]string{"./local", "*"}, []string{"-x"}, false},
+		// Not one well-formed local name: judged as a pattern.
+		{[]string{"./*"}, []string{"doc/*"}, false},
+		{[]string{"./a/b"}, []string{"doc/*"}, false},
 		{[]string{"anything"}, []string{"-*"}, false},
 	} {
 		if got := skillsWithin(c.child, c.ceiling); got != c.want {
@@ -404,4 +435,56 @@ func TestTeamDefCreate_LocalAgentGrantsOfTheTeamsOwnChannelsAndSkillsAreNotJudge
 	}
 	wantRefused(t, teamOp(t, tool, ctx, "create", "sdlc2", team(`["./events","ops"]`)),
 		"a global channel beside the team's", `local.agents["reviewer"]`, "channels.publish:", `"ops"`)
+}
+
+// Only "./" and one well-formed local name is a team's own resource. Every
+// other "./" spelling is judged like any entry, so none slips past the ceiling
+// as "local" while the channel matcher would read it as a name or pattern.
+func TestIsTeamLocalRef_AcceptsOnlyOneWellFormedName(t *testing.T) {
+	for entry, want := range map[string]bool{
+		"./events": true, " ./a-b_1 ": true,
+		"./": false, "./*": false, "./a/b": false, "./../x": false, "./a.b": false,
+		"./" + strings.Repeat("x", 65): false, "events": false, ".//x": false, "./a/*": false,
+	} {
+		if got := isTeamLocalRef(entry); got != want {
+			t.Errorf("isTeamLocalRef(%q) = %v, want %v", entry, got, want)
+		}
+	}
+}
+
+// An in-run author whose channel ACL is [team/*] cannot pass a malformed "./"
+// entry as one of a team's own channels.
+func TestAgentDefCreate_MalformedLocalChannelRefIsJudged(t *testing.T) {
+	tool, ctx := ceilingFixture(t)
+	ctx = tools.WithChannelPolicy(ctx, tools.ChannelPolicyValue{Publish: []string{"team/*"}})
+	for _, entry := range []string{"./*", "./a/b", "./../x", "./"} {
+		wantRefused(t, agentDefOp(t, tool, ctx, "create", "sdlc/new", `{"channels":{"publish":[`+strconv.Quote(entry)+`]}}`),
+			"publish "+entry, "channels.publish:")
+	}
+}
+
+// A global agent granted only "./x" skills can invoke no global skill, so
+// passing the ceiling on such a list hands out nothing beyond the team.
+func TestAgentDefCreate_OnlyLocalSkillRefsGrantNoGlobalSkill(t *testing.T) {
+	tool, ctx := ceilingFixture(t)
+	ctx = tools.WithSkillPolicy(ctx, tools.SkillPolicyValue{Patterns: []string{"doc/*"}})
+	res := agentDefOp(t, tool, ctx, "create", "sdlc/new", `{"skills":["./x"]}`)
+	if res.IsError {
+		t.Fatalf("create: %s", res.Text)
+	}
+	row, err := tool.Store.AgentDefGetActive(context.Background(), "t1", "sdlc/new")
+	if err != nil {
+		t.Fatalf("read back: %v", err)
+	}
+	var def mergedDef
+	if err := json.Unmarshal(row.Definition, &def); err != nil {
+		t.Fatal(err)
+	}
+	for _, global := range []string{"doc/redactor", "x", "other", "a/b/c"} {
+		if skillmatch.Allowed(def.Skills, global) {
+			t.Errorf("an agent granted %v may invoke the global skill %q", def.Skills, global)
+		}
+	}
+	denyAll := tools.WithSkillPolicy(ctx, tools.SkillPolicyValue{Patterns: []string{"-*"}})
+	wantRefused(t, agentDefOp(t, tool, denyAll, "create", "sdlc/new2", `{"skills":["./x"]}`), "deny-all author", "skills:")
 }
