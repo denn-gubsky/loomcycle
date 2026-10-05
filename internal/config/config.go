@@ -577,10 +577,15 @@ type MemoryConfig struct {
 	UnitGenerator UnitGeneratorConfig `yaml:"unit_generator"`
 }
 
-// RerankerConfig is the memory.reranker block. The rerank is one listwise call:
-// the question plus the first N search candidates, answered with a JSON array of
-// candidate numbers.
+// RerankerConfig is the memory.reranker block. The rerank is one model call over
+// the question and the first N search candidates; Kind says how the model is asked.
 type RerankerConfig struct {
+	// Kind is how the reranker is asked. "listwise" (the default; "" is the same)
+	// asks a chat model for a JSON array of candidate numbers and repairs the reply.
+	// "decision" asks a decision model one typed choice over the candidates (Ollama's
+	// /v1/systemone) and orders them by the probability it returns: there is no
+	// reply to parse, and it measured as good as listwise at a third of the latency.
+	Kind string `yaml:"kind"`
 	// Provider names a provider declared in `providers:` (as for the embedder).
 	Provider string `yaml:"provider"`
 	// Model is the wire model id the provider is asked for.
@@ -614,6 +619,20 @@ type RerankerConfig struct {
 // Configured reports whether a reranker is declared at all. A block naming only
 // a models: alias is declared too — the alias supplies the provider.
 func (r RerankerConfig) Configured() bool { return r.Provider != "" || r.Model != "" }
+
+// The memory.reranker kinds.
+const (
+	RerankerKindListwise = "listwise"
+	RerankerKindDecision = "decision"
+)
+
+// EffectiveKind is Kind with the default applied.
+func (r RerankerConfig) EffectiveKind() string {
+	if r.Kind == "" {
+		return RerankerKindListwise
+	}
+	return r.Kind
+}
 
 // ConsolidationConfig carries the similarity bands the consolidation pass uses
 // to decide whether a candidate fact duplicates an existing memory row. Both
@@ -8070,6 +8089,21 @@ func validate(c *Config) error {
 		}
 		if rr.MaxConcurrent < 0 {
 			return fmt.Errorf("memory.reranker.max_concurrent must be >= 0")
+		}
+		switch rr.EffectiveKind() {
+		case RerankerKindListwise:
+		case RerankerKindDecision:
+			// A decision call has no reasoning to switch off and no context window to
+			// request. A copied listwise block must not look configured while these
+			// are silently ignored.
+			if rr.Effort != "" {
+				return fmt.Errorf("memory.reranker.effort does not apply to kind: decision (remove it)")
+			}
+			if rr.ContextTokens != 0 {
+				return fmt.Errorf("memory.reranker.context_tokens does not apply to kind: decision (remove it)")
+			}
+		default:
+			return fmt.Errorf("memory.reranker.kind: %q is not one of listwise, decision", rr.Kind)
 		}
 		switch rr.Effort {
 		case "", "low", "medium", "high":

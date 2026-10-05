@@ -5,11 +5,15 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 
+	"github.com/denn-gubsky/loomcycle/internal/config"
 	memory "github.com/denn-gubsky/loomcycle/internal/memory"
 	"github.com/denn-gubsky/loomcycle/internal/memory/backends/inprocess"
+	"github.com/denn-gubsky/loomcycle/internal/memory/reranker"
 	"github.com/denn-gubsky/loomcycle/internal/store"
 )
 
@@ -310,5 +314,49 @@ func TestInProcessRerank_AnyRankerOrdersTheSearch(t *testing.T) {
 func TestListwiseRanker_NilModelIsNoRanker(t *testing.T) {
 	if r := memory.ListwiseRanker(nil); r != nil {
 		t.Fatalf("ListwiseRanker(nil) = %#v, want nil", r)
+	}
+}
+
+// TestInProcessRerank_TheDecisionKindReordersASearch — the crossing: a decision
+// reranker built from config (kind: decision on an Ollama provider) reorders a real
+// search by the probabilities its endpoint returns, shown each candidate's index
+// text as an option.
+func TestInProcessRerank_TheDecisionKindReordersASearch(t *testing.T) {
+	var seen map[string]string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			Questions map[string]struct {
+				Criteria map[string]string `json:"criteria"`
+			} `json:"questions"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&req)
+		seen = req.Questions["best"].Criteria
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"answers": map[string]any{"best": map[string]any{"probabilities": map[string]float64{
+				"A": 0.01, "B": 0.02, "C": 0.90, "D": 0.03, "E": 0.04}}},
+			"usage": map[string]int{"input_tokens": 10, "output_tokens": 1},
+		})
+	}))
+	defer srv.Close()
+	rr, err := reranker.BuildRanker(&config.Config{
+		Providers: map[string]config.ProviderConfig{"ollama-local": {Driver: "ollama", BaseURL: srv.URL}},
+		Memory: config.MemoryConfig{Reranker: config.RerankerConfig{
+			Kind: config.RerankerKindDecision, Provider: "ollama-local", Model: "nimble"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, cleanup := rerankFixture(t)
+	defer cleanup()
+	b.SetRanker(rr)
+	res := search(t, b, memory.SearchQuery{QueryText: "go", TopK: 5, Rerank: rerankOn})
+	if got := keys(res); got != "c3,c5,c4,c2,c1" {
+		t.Errorf("order = %s, want c3 (0.90) then c5, c4, c2, c1 by probability", got)
+	}
+	if res.Rerank == nil || !res.Rerank.Applied {
+		t.Errorf("report = %+v, want applied", res.Rerank)
+	}
+	if seen["A"] != "Guide — Section\ngo" {
+		t.Errorf("option A = %q, want the first candidate's index text", seen["A"])
 	}
 }

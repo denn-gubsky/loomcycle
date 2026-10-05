@@ -63,6 +63,11 @@ func TestRerankerConfig_RejectsAnIncompleteOrInvalidBlock(t *testing.T) {
 		{"provider: p\n    model: m\n    effort: max", "memory.reranker.effort"},
 		{"provider: p\n    model: m\n    max_concurrent: -1", "memory.reranker.max_concurrent"},
 		{"provider: p\n    model: m\n    base_url: gpu.internal:11434", "memory.reranker.base_url"},
+		{"provider: p\n    model: m\n    kind: pointwise", "memory.reranker.kind"},
+		// A decision call has no reasoning to switch off and no window to request: a
+		// copied listwise block must fail, not look configured while ignored.
+		{"kind: decision\n    provider: p\n    model: m\n    effort: low", "memory.reranker.effort does not apply to kind: decision"},
+		{"kind: decision\n    provider: p\n    model: m\n    context_tokens: 16384", "memory.reranker.context_tokens does not apply to kind: decision"},
 	} {
 		_, err := Load(writeCfg(t, `
 defaults: { provider: anthropic, model: claude-sonnet-4-6 }
@@ -76,6 +81,30 @@ memory:
 		}
 		if !strings.Contains(err.Error(), c.want) {
 			t.Errorf("%q: error should contain %q, got: %v", c.body, c.want, err)
+		}
+	}
+}
+
+// TestRerankerConfig_KindDefaultsToListwise — an unset kind is the listwise rerank
+// every existing deployment runs; a decision block without the listwise-only
+// fields loads.
+func TestRerankerConfig_KindDefaultsToListwise(t *testing.T) {
+	for _, c := range []struct{ body, want string }{
+		{"provider: ollama-local\n    model: qwen3.6:latest", RerankerKindListwise},
+		{"kind: listwise\n    provider: ollama-local\n    model: qwen3.6:latest", RerankerKindListwise},
+		{"kind: decision\n    provider: ollama-local\n    model: nimble\n    timeout_ms: 30000\n    max_concurrent: 2", RerankerKindDecision},
+	} {
+		cfg, err := Load(writeCfg(t, `
+defaults: { provider: anthropic, model: claude-sonnet-4-6 }
+memory:
+  reranker:
+    `+c.body+`
+`))
+		if err != nil {
+			t.Fatalf("%q: %v", c.body, err)
+		}
+		if got := cfg.Memory.Reranker.EffectiveKind(); got != c.want {
+			t.Errorf("%q: kind %q, want %q", c.body, got, c.want)
 		}
 	}
 }
