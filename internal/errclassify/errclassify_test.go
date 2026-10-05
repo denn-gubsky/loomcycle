@@ -184,6 +184,11 @@ var deliberatelyUnclassified = map[string]string{
 	// and the webhook receiver, which branch on it themselves. A tool caller
 	// starting a walk gets TeamDef op=run's own refusal instead.
 	"runner.ErrTeamNotStartable": "trigger-side only; not reachable from a tool caller",
+
+	// Returned only by a team's own webhook publisher to the webhook
+	// receiver, which maps them to 400 and the unknown-webhook 404 itself.
+	"runner.ErrTeamWebhookNeedsUser": "receiver-side only; not reachable from a tool caller",
+	"runner.ErrTeamWebhookGone":      "receiver-side only; not reachable from a tool caller",
 }
 
 // TestCategoryOf_NoUnclassifiedSentinelDrift parses the sentinel declarations
@@ -213,6 +218,8 @@ func TestCategoryOf_NoUnclassifiedSentinelDrift(t *testing.T) {
 			"ErrRunNotConfigured":             runner.ErrRunNotConfigured,
 			"ErrDraftChanged":                 runner.ErrDraftChanged,
 			"ErrTeamNotStartable":             runner.ErrTeamNotStartable,
+			"ErrTeamWebhookNeedsUser":         runner.ErrTeamWebhookNeedsUser,
+			"ErrTeamWebhookGone":              runner.ErrTeamWebhookGone,
 		},
 		"resolve": {
 			"ErrTierUnavailable":       resolve.ErrTierUnavailable,
