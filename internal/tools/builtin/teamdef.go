@@ -238,7 +238,7 @@ const teamDefDescription = `Author, fork, promote, retire, and inspect team work
 	`refuses a bad input naming the field. A definition may declare variables with defaults (vars: name → default text), ` +
 	`read in prompts as ${var.<name>}; run may set a declared one for that walk (vars), and a name the team does not ` +
 	`declare is refused before anything runs. A definition may also declare agents of its own (local: {agents: {name: <the overlay AgentDef create takes>}}) ` +
-	`and run one from a state as ./<name>; a bare name is a global agent, and a ./<name> the team does not declare is refused. Such an agent ` +
+	`and run one from a state as ./<name>; any other name in a state is a global agent, even when the team declares one of that name, and a ./<name> the team does not declare is refused. Such an agent ` +
 	`exists only in the team, runs as <team>/<name>, cannot be started outside a walk of the team, and passes every check a new agent does ` +
 	`(your agent-authoring grant, your own tools as its ceiling) at create and at fork; its full name must not be an existing agent's. ` +
 	`run may also set breakpoints on starter states to step a fan-out wave: the walk pauses ` +
@@ -266,7 +266,7 @@ const teamDefInputSchema = `{
         "transitions":    {"type": "array", "items": {"type": "object"}, "description": "Edges: each is {from, to, on}. Replaces the parent's transitions wholesale."},
         "colors":         {"type": "object", "description": "Presentation-only fills/edge colours. Excluded from the content hash."},
         "hooks":          {"type": "object", "description": "The walk's own hooks: {run_end: [entry, ...]}, fired when the walk ends. A state's handler may also carry hooks / tool_hooks, added to every run it starts."},
-        "local":          {"type": "object", "properties": {"agents": {"type": "object", "additionalProperties": {"type": "object"}, "description": "The team's own agents: name (one segment of A-Z a-z 0-9 _ -, at most 64 characters) → the overlay AgentDef create takes (tier or provider/model, system_prompt, tools, ...). A state runs one as \"./<name>\". Each passes the checks a new agent does, as <team>/<name>; a code-js one must carry code_body. A fork that sends agents replaces the whole list; {} declares none."}}, "additionalProperties": false, "description": "What the team declares for itself. Only agents; any other key is refused."},
+        "local":          {"type": "object", "properties": {"agents": {"type": "object", "additionalProperties": {"type": "object"}, "description": "The team's own agents, at most 64: name (one segment of A-Z a-z 0-9 _ -, at most 64 characters) → the overlay AgentDef create takes (tier or provider/model, system_prompt, tools, ...). A state runs one as \"./<name>\". Each passes the checks a new agent does, as <team>/<name>; a code-js one must carry code_body. A fork that sends agents replaces the whole list; {} declares none."}}, "additionalProperties": false, "description": "What the team declares for itself. Only agents; any other key is refused."},
         "vars":           {"type": "object", "additionalProperties": {"type": "string"}, "description": "The team's variables: name → default value, read in a state's prompts as ${var.<name>}. Every walk starts with these defaults; run may set a declared one with its own vars. A default is literal text (never expanded; no {{ or }}), at most 4096 bytes, at most 64 variables. A fork that sends vars replaces the whole list; {} declares none."}
       },
       "additionalProperties": true
@@ -1094,6 +1094,18 @@ func (t *TeamDef) execRun(ctx context.Context, in teamDefInput) (tools.Result, e
 	if err := teamgraph.CheckLocalRefs(def); err != nil {
 		return errResult(fmt.Sprintf("run: %s", err)), nil
 	}
+	if err := teamgraph.CheckLocalRunNames(def, row.Name); err != nil {
+		return errResult(fmt.Sprintf("run: %s", err)), nil
+	}
+	// A team's own agents are its tenant's. An admin may run another tenant's
+	// team by def_id, and the walk then runs in the ADMIN's tenant — where
+	// those agents are not resolvable, by design (a run reaches a team's agents
+	// only when the team is its own tenant's). Said here rather than at the
+	// first state that needs one.
+	if len(def.LocalAgentNames()) > 0 && row.TenantID != tools.RunIdentity(ctx).TenantID {
+		return errResult(fmt.Sprintf("run: team %q declares agents of its own and belongs to another tenant; "+
+			"a team's own agents run only in the team's tenant — run it as that tenant", row.Name)), nil
+	}
 
 	// Checked before admission and before the walk's run exists, like the
 	// input below: a name the team does not declare, or a value it could not
@@ -1384,7 +1396,19 @@ func (t *TeamDef) execRun(ctx context.Context, in teamDefInput) (tools.Result, e
 	// asserting its own authority.
 	runnerOpts = append(runnerOpts, teamrun.WithOperatorAuthored(row.OperatorAuthored),
 		teamrun.WithTeamSource(row.Name, row.TenantID))
-	runner := teamrun.NewAgentRunner(t.Spawn, runnerOpts...)
+	// The walk names its members by the name they RUN under, so that is what a
+	// step, an envelope and a sink message carry. Starting one, the name goes
+	// back to what the definition wrote: "./x" for the team's own agent, and
+	// any other name exactly as written — a global agent, which a local agent
+	// of the same bare name must not replace.
+	ownAgents := teamgraph.LocalRunNames(def, row.Name)
+	spawn := func(ctx context.Context, agent string, p teamrun.Prompt, defID string) (teamrun.SpawnResult, error) {
+		if ref, own := ownAgents[agent]; own {
+			agent = ref
+		}
+		return t.Spawn(ctx, agent, p, defID)
+	}
+	runner := teamrun.NewAgentRunner(spawn, runnerOpts...)
 	walk := func() ([]teamrun.StepRecord, error) {
 		defer releaseBreakpoints()
 		// The walk runs on the definition with each "./name" written out as the

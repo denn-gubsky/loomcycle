@@ -911,7 +911,7 @@ func (s *Server) resumedAgentDef(ctx context.Context, run store.Run, ver *agentV
 		if !ok || sc.DefID != ver.TeamDefID || !isMember {
 			return config.AgentDef{}, true, fmt.Errorf("agent %q: the run started on a team's own agent but does not record that team (version %s)", run.Agent, ver.TeamDefID)
 		}
-		d, found, err := s.teamLocalAgent(ctx, sc, local)
+		d, found, err := s.teamLocalAgent(ctx, run.TenantID, sc, local)
 		if err != nil {
 			var gone *teamVersionGoneError
 			return config.AgentDef{}, errors.As(err, &gone), err
@@ -922,7 +922,14 @@ func (s *Server) resumedAgentDef(ctx context.Context, run store.Run, ver *agentV
 		// A global agent that took the name while the run was paused: new
 		// runs of the local one are refused (refuseSharedName); this one has
 		// already run, so it finishes, and says so.
-		if _, _, gerr := s.globalAgent(ctx, run.TenantID, run.Agent); gerr == nil {
+		//
+		// A store fault here is not "no such agent": the run stays paused, to
+		// be tried again, rather than resuming on an answer nobody read.
+		held, herr := s.globalNameHeld(ctx, run.TenantID, run.Agent)
+		if herr != nil {
+			return config.AgentDef{}, false, fmt.Errorf("agent %q: could not check that no other agent holds its name: %w", run.Agent, herr)
+		}
+		if held {
 			log.Printf("resume: run %s is team %q's own agent %q, and a global agent of that name exists now; they share agent-scoped state until one is renamed", run.ID, sc.Team, run.Agent)
 		}
 		def = d

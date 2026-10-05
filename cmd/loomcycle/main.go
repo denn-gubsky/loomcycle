@@ -1818,9 +1818,6 @@ func main() {
 	// Spawn + Admit (op=run) into it, and keeps the HTTP /v1/_teamdef + MCP
 	// `teamdef` + Connector surfaces pointing at it.
 	srv.SetTeamDefTool(teamDefTool)
-	// A static agent added since a team was written can share a name with one
-	// of that team's own agents; say so now rather than at the first walk.
-	srv.LogTeamLocalNameClashes(context.Background())
 	// RFC DK — code-js hook bodies, opt-in. A body's only tool is the same
 	// Interruption instance agents use, run under the hook's own grant.
 	// The HookDef substrate compiles a code-js body when it is saved, with the
@@ -2914,6 +2911,19 @@ func main() {
 	// in-memory substring scan). Backgrounded so a first-boot full embed never
 	// blocks the rest of boot; advisory-gated in a cluster so exactly ONE replica
 	// re-embeds. Non-fatal: on any error help search just degrades.
+	// A static agent added since a team was written can share a name with one
+	// of that team's own agents; say so at boot rather than at the first walk.
+	// Backgrounded and bounded: it reads every active team, and how many there
+	// are — and how many agents each declares — is the tenants' to decide, so
+	// it must not be able to hold up boot.
+	if storeIface != nil {
+		go func() {
+			ctx, cancel := context.WithTimeout(bgCtx, 30*time.Second)
+			defer cancel()
+			srv.LogTeamLocalNameClashes(ctx)
+		}()
+	}
+
 	if storeIface != nil && helpSet != nil {
 		go func() {
 			reconcile := func(ctx context.Context) error {

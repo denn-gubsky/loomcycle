@@ -178,6 +178,10 @@ type Server struct {
 	// held ones now rather than at their next hold heartbeat. Zero value works.
 	reviewMembers walkReviewMembers
 
+	// teamDefs keeps the parsed form of recently used team versions, for
+	// resolving a team's own agents (see teamVersion).
+	teamDefs teamDefCache
+
 	// advisoryLock, when set, gates the team-subscription sweep so exactly one
 	// replica drives a given promoted team at a time. nil = single-process
 	// (or no Postgres): the sweep drives every team itself, which is correct
@@ -1560,7 +1564,11 @@ func (s *Server) lookupAgent(ctx context.Context, tenantID, name string) (config
 	// name may be one of that team's own agents. A caller acting on a run or
 	// a session from outside it puts that run's recorded scope on ctx first
 	// (runTeamScopeCtx / sessionTeamScopeCtx).
-	def, _, err := s.resolveAgentName(ctx, tenantID, name)
+	//
+	// `name` here is always one a run or session already carries, or one a
+	// caller outside every team supplied — never a state's or the Agent
+	// tool's, which resolve through resolveAgentName with their own source.
+	def, _, err := s.resolveAgentName(ctx, tenantID, name, nameOfRun)
 	return def, err == nil
 }
 
@@ -2684,8 +2692,16 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 		effectiveAgentName = sess.Agent
 		effectiveTenantID = sess.TenantID
 		effectiveUserID = sess.UserID
-		// Continued inside the team it began in, if any (sessionTeamScopeCtx).
-		ctx = s.sessionTeamScopeCtx(ctx, in.SessionID)
+		// Continued inside the team it began in, if any — and refused if that
+		// team version has been retired (continuationTeamScopeCtx).
+		scopedCtx, scopeErr := s.continuationTeamScopeCtx(ctx, sess)
+		if errors.Is(scopeErr, errContinuationRefused) {
+			return fmt.Errorf("%w: %s: %v", runner.ErrUnknownAgent, sess.Agent, scopeErr)
+		}
+		if scopeErr != nil {
+			return fmt.Errorf("%w: %v", runner.ErrInternal, scopeErr)
+		}
+		ctx = scopedCtx
 
 		releaseLock, ok := s.sessionLocks.TryLock(in.SessionID)
 		if !ok {
@@ -5410,8 +5426,18 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 	// A session that began inside a team is continued inside it: the request
 	// carries that team scope from here on, so the session's agent — and any
 	// agent this continuation spawns — resolves in the team version the
-	// session started under. See sessionTeamScopeCtx.
-	r = r.WithContext(s.sessionTeamScopeCtx(r.Context(), id))
+	// session started under — unless that version has been retired since, when
+	// it cannot be continued at all. See continuationTeamScopeCtx.
+	scopedCtx, scopeErr := s.continuationTeamScopeCtx(r.Context(), sess)
+	if errors.Is(scopeErr, errContinuationRefused) {
+		http.Error(w, fmt.Sprintf("session cannot be continued: %v", scopeErr), http.StatusBadRequest)
+		return
+	}
+	if scopeErr != nil {
+		http.Error(w, scopeErr.Error(), http.StatusInternalServerError)
+		return
+	}
+	r = r.WithContext(scopedCtx)
 	agentDef, ok := s.lookupAgent(r.Context(), sess.TenantID, sess.Agent)
 	if !ok {
 		http.Error(w, fmt.Sprintf("session refers to unknown agent %q", sess.Agent), http.StatusBadRequest)
@@ -6862,7 +6888,7 @@ func (s *Server) runSubRun(ctx context.Context, name, systemExtra, prompt, defID
 	if hold != nil {
 		observe = hold.observe
 	}
-	prep, err := s.prepareSubRunValues(ctx, name, systemExtra, prompt, defID, false, observe, values, dataSlots, systemAuthored, inputAuthored)
+	prep, err := s.prepareSubRunValues(ctx, name, nameFromAgentTool, systemExtra, prompt, defID, false, observe, values, dataSlots, systemAuthored, inputAuthored)
 	if err != nil {
 		return "", nil, "", err
 	}
@@ -6960,7 +6986,9 @@ func (h *childHold) released(status store.RunStatus) {
 //   - Its terminal status, by the same rule its row is written with, so the
 //     walk can tell a rejected member from a failed one.
 func (s *Server) runTeamMember(ctx context.Context, name string, p teamrun.Prompt, defID string) (teamrun.SpawnResult, error) {
-	prep, err := s.prepareSubRunValues(ctx, name, p.System, p.Input, defID, false, func(providers.Event) {}, p.Values, p.DataSlots, p.SystemAuthored, p.InputAuthored)
+	// `name` is the team definition's own: "./x" for one of the team's agents,
+	// anything else a global agent — never shadowed by a local of that name.
+	prep, err := s.prepareSubRunValues(ctx, name, nameFromDefinition, p.System, p.Input, defID, false, func(providers.Event) {}, p.Values, p.DataSlots, p.SystemAuthored, p.InputAuthored)
 	if err != nil {
 		return teamrun.SpawnResult{}, err
 	}
@@ -7199,10 +7227,13 @@ func composeSubRunSegments(agentSystemPrompt, systemExtra, prompt string) []loop
 // resident child, like a top-level interactive run, must not swap/hold the
 // provider gate across turns) — everything else is identical.
 func (s *Server) prepareSubRun(ctx context.Context, name, systemExtra, prompt, defID string, interactive bool, fwd func(providers.Event)) (*subRunPrep, error) {
-	return s.prepareSubRunValues(ctx, name, systemExtra, prompt, defID, interactive, fwd, nil, nil, false, false)
+	return s.prepareSubRunValues(ctx, name, nameFromAgentTool, systemExtra, prompt, defID, interactive, fwd, nil, nil, false, false)
 }
 
-func (s *Server) prepareSubRunValues(ctx context.Context, name, systemExtra, prompt, defID string, interactive bool, fwd func(providers.Event), values, dataSlots map[string]string, systemAuthored, inputAuthored bool) (*subRunPrep, error) {
+// prepareSubRunValues is prepareSubRun with a team state's prompt values. src
+// is who wrote `name` — a state of a team definition, or a model through the
+// Agent tool — which decides how it may resolve inside a team.
+func (s *Server) prepareSubRunValues(ctx context.Context, name string, src nameSource, systemExtra, prompt, defID string, interactive bool, fwd func(providers.Event), values, dataSlots map[string]string, systemAuthored, inputAuthored bool) (*subRunPrep, error) {
 	// RFC N: a parent in tenant T resolves the sub-agent name within T's
 	// view (parent tenant flows via ctx RunIdentity, inherited by every
 	// sub-agent). Confirms RFC N's open-question on cross-boundary spawn:
@@ -7214,7 +7245,7 @@ func (s *Server) prepareSubRunValues(ctx context.Context, name, systemExtra, pro
 	// one of those, however the caller spelled it): its run row, session,
 	// events and agent-scoped state all key on it.
 	tenant := tenantFromCtx(ctx)
-	def, runName, err := s.resolveAgentName(ctx, tenant, name)
+	def, runName, err := s.resolveAgentName(ctx, tenant, name, src)
 	if errors.Is(err, errAgentNotFound) {
 		return nil, fmt.Errorf("unknown sub-agent %q (not in cfg.Agents, dynamic_agents, or agent_def_active)", name)
 	}

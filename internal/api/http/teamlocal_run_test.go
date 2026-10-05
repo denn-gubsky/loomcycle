@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -13,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/denn-gubsky/loomcycle/internal/auth"
 	"github.com/denn-gubsky/loomcycle/internal/concurrency"
 	"github.com/denn-gubsky/loomcycle/internal/config"
 	"github.com/denn-gubsky/loomcycle/internal/loop"
@@ -166,10 +168,26 @@ func newLocalHarness(t *testing.T) *localHarness {
 	return h
 }
 
-// teamFaultStore is a store whose reads of team versions can be made to fail.
+// teamFaultStore is a store whose reads of team versions, or of the agent
+// stores, can be made to fail.
 type teamFaultStore struct {
 	store.Store
-	faulty atomic.Bool
+	faulty       atomic.Bool
+	agentsFaulty atomic.Bool
+}
+
+func (f *teamFaultStore) AgentDefGetActive(ctx context.Context, tenantID, name string) (store.AgentDefRow, error) {
+	if f.agentsFaulty.Load() {
+		return store.AgentDefRow{}, errors.New("database unavailable")
+	}
+	return f.Store.AgentDefGetActive(ctx, tenantID, name)
+}
+
+func (f *teamFaultStore) DynamicAgentGet(ctx context.Context, tenantID, name string) (store.DynamicAgent, error) {
+	if f.agentsFaulty.Load() {
+		return store.DynamicAgent{}, errors.New("database unavailable")
+	}
+	return f.Store.DynamicAgentGet(ctx, tenantID, name)
 }
 
 func (f *teamFaultStore) TeamDefGet(ctx context.Context, defID string) (store.TeamDefRow, error) {
@@ -755,5 +773,370 @@ func TestResolveAgent_FallbackReResolveFindsATeamsOwnAgentOnlyInItsScope(t *test
 	}
 	if _, _, _, err := h.srv.resolveAgent(context.Background(), "acme", "alice", "sdlc/solo", "", false, nil); !errors.Is(err, runner.ErrUnknownAgent) {
 		t.Errorf("outside the team: resolveAgent = %v, want unknown agent", err)
+	}
+}
+
+// ---- names the DEFINITION writes ----
+
+// In a state, "./reviewer" is the team's own agent and a bare "reviewer" is
+// the global one — also when the team declares a reviewer of its own. A team
+// that gains a local agent must not change which agent its existing states
+// run; shadowing is for names a model writes at run time, not for these.
+func TestTeamWalk_BareNameInAStateIsTheGlobalAgent(t *testing.T) {
+	locals := map[string]string{"reviewer": "LOCAL reviewer", "judge": "LOCAL judge"}
+	for _, tc := range []struct {
+		name       string
+		handler    map[string]any
+		wantRan    []string
+		wantNotRan []string
+		wantRows   []string
+	}{
+		{"agent: bare", map[string]any{"kind": "agent", "agent": "reviewer"},
+			[]string{"GLOBAL reviewer"}, []string{"LOCAL reviewer"}, []string{"reviewer"}},
+		{"agent: ./", map[string]any{"kind": "agent", "agent": "./reviewer"},
+			[]string{"LOCAL reviewer"}, []string{"GLOBAL reviewer"}, []string{"sdlc/reviewer"}},
+		{"consolidator: bare beside a ./ agent", map[string]any{"kind": "agent", "agent": "./judge", "consolidator": "reviewer"},
+			[]string{"LOCAL judge", "GLOBAL reviewer"}, []string{"LOCAL reviewer"}, []string{"sdlc/judge", "reviewer"}},
+		{"parallel: one of each", map[string]any{"kind": "parallel", "agents": []string{"reviewer", "./reviewer"}, "consolidator": "helper"},
+			[]string{"GLOBAL reviewer", "LOCAL reviewer", "GLOBAL helper"}, nil, []string{"reviewer", "sdlc/reviewer", "helper"}},
+		{"starter fan-out: bare", map[string]any{"kind": "starter", "source": map[string]any{"kind": "input"},
+			"fanout": map[string]any{"agent": "reviewer", "per": "once"}},
+			[]string{"GLOBAL reviewer"}, []string{"LOCAL reviewer"}, []string{"reviewer"}},
+		{"starter fan-out: ./", map[string]any{"kind": "starter", "source": map[string]any{"kind": "input"},
+			"fanout": map[string]any{"agents": []string{"./reviewer"}, "per": "once"}},
+			[]string{"LOCAL reviewer"}, []string{"GLOBAL reviewer"}, []string{"sdlc/reviewer"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newLocalHarness(t)
+			def := teamWith("x", locals)
+			var d map[string]any
+			_ = json.Unmarshal([]byte(def), &d)
+			d["states"].([]any)[0].(map[string]any)["handler"] = tc.handler
+			b, _ := json.Marshal(d)
+			h.seedTeamVersion("tdf_sdlc_1", "sdlc", string(b), true)
+
+			h.walk("sdlc")
+
+			for _, want := range tc.wantRan {
+				if !h.prov.sawSystem(want) {
+					t.Errorf("%s did not run", want)
+				}
+			}
+			for _, not := range tc.wantNotRan {
+				if h.prov.sawSystem(not) {
+					t.Errorf("%s ran, though the state does not name it", not)
+				}
+			}
+			runs := h.runsByAgent()
+			for _, row := range tc.wantRows {
+				if _, ok := runs[row]; !ok {
+					t.Errorf("no run row named %q", row)
+				}
+			}
+		})
+	}
+}
+
+// verify answers for the agent a walk will actually run. A state's bare name
+// is the global agent, so a team whose state names a global agent that does
+// not exist is NOT runnable merely because it declares a local of that name.
+func TestTeamVerify_BareStateNameIsCheckedAsTheGlobalAgentAWalkRuns(t *testing.T) {
+	h := newLocalHarness(t)
+	h.seedTeamVersion("tdf_sdlc_1", "sdlc", teamWith("ghost", map[string]string{"ghost": "LOCAL ghost"}), true)
+
+	_, verify := h.teamDef(`{"op":"verify","name":"sdlc"}`)
+	if verify["runnable"] != false || !strings.Contains(fmtAny(verify), "agent_missing") {
+		t.Errorf("verify must report the missing GLOBAL agent \"ghost\": %v", verify)
+	}
+	_, out := h.teamDef(`{"op":"run","name":"sdlc","input":"go"}`)
+	if out["status"] == "completed" || h.prov.sawSystem("LOCAL ghost") {
+		t.Errorf("the walk ran the team's own ghost for a state that names the global one: %v", out)
+	}
+}
+
+// ---- a retired team version ----
+
+func (h *localHarness) retire(defID string) {
+	h.t.Helper()
+	if err := h.st.TeamDefSetRetired(context.Background(), defID, true); err != nil {
+		h.t.Fatal(err)
+	}
+}
+
+// A continuation is a NEW run. Once the team version a session ran inside is
+// retired, the session cannot be continued — for the team's own agent and for
+// a global agent that ran inside the team alike — as a session of a retired
+// agent cannot.
+func TestContinuation_RefusedWhenTheSessionsTeamVersionIsRetired(t *testing.T) {
+	h := newLocalHarness(t)
+	defID := h.seedTeamVersion("tdf_sdlc_1", "sdlc", teamWith("./lead", map[string]string{
+		"lead": "LOCAL lead\nPSPAWN:./helper,scout", "helper": "LOCAL helper", "reviewer": "LOCAL reviewer",
+	}), true)
+	h.walk("sdlc")
+	runs := h.runsByAgent()
+	h.retire(defID)
+	h.prov.forget()
+
+	for _, agent := range []string{"sdlc/lead", "sdlc/helper", "scout"} {
+		sessionID := runs[agent].SessionID
+		err := h.runOnce("", sessionID)
+		if !errors.Is(err, runner.ErrUnknownAgent) || !strings.Contains(err.Error(), "retired") {
+			t.Errorf("continuing %s after its team version was retired = %v, want a refusal saying it is retired", agent, err)
+		}
+		// The HTTP continuation refuses the same way.
+		body := `{"segments":[{"role":"user","content":[{"type":"trusted-text","text":"go"}]}]}`
+		r := httptest.NewRequest(http.MethodPost, "/v1/sessions/"+sessionID+"/messages", strings.NewReader(body))
+		r.SetPathValue("id", sessionID)
+		r = r.WithContext(alicePrincipal(r.Context()))
+		rr := httptest.NewRecorder()
+		h.srv.handleMessages(rr, r)
+		if rr.Code != http.StatusBadRequest || !strings.Contains(rr.Body.String(), "retired") {
+			t.Errorf("POST messages for %s = %d %s, want 400 naming the retirement", agent, rr.Code, rr.Body.String())
+		}
+	}
+	if n := len(h.prov.reqs); n != 0 {
+		t.Errorf("%d model call(s) were made by continuations that should have been refused", n)
+	}
+}
+
+// A run in flight keeps its version: retiring the team does not strand a
+// paused member, which resumes on the retired version and goes on starting
+// that version's agents.
+func TestResumedRun_KeepsARetiredTeamVersion(t *testing.T) {
+	h := newLocalHarness(t)
+	defID := h.seedTeamVersion("tdf_sdlc_1", "sdlc", leadTeam("v1"), true)
+	h.walk("sdlc")
+	lead := h.runsByAgent()["sdlc/lead"]
+	h.retire(defID)
+	h.prov.forget()
+
+	resumeAndFinish(t, h.srv, lead)
+
+	if !h.prov.sawSystem("LOCAL lead v1") || !h.prov.sawSystem("LOCAL helper v1") {
+		t.Error("a paused member must resume on its retired team version and start that version's agents")
+	}
+}
+
+// A store that cannot say whether the session's team is still in service must
+// not let the continuation start on a guess.
+func TestContinuation_RefusedWhenTheTeamVersionCannotBeRead(t *testing.T) {
+	h := newLocalHarness(t)
+	h.seedTeamVersion("tdf_sdlc_1", "sdlc", teamWith("./lead", map[string]string{"lead": "LOCAL lead\nSPAWN:scout"}), true)
+	h.walk("sdlc")
+	scout := h.runsByAgent()["scout"]
+	h.prov.forget()
+	h.st.faulty.Store(true)
+
+	err := h.runOnce("", scout.SessionID)
+	if !errors.Is(err, runner.ErrInternal) {
+		t.Errorf("continuation with the team unreadable = %v, want an internal error", err)
+	}
+	if len(h.prov.reqs) != 0 {
+		t.Error("the continuation ran outside the team it belongs to")
+	}
+}
+
+// ---- the shared-name check fails closed ----
+
+// The check that no global agent holds a local agent's name is the guarantee
+// the authoring checks are not. If the agent stores cannot be read, whether
+// the name is held is unknown — and the agent does not start.
+func TestTeamWalk_DoesNotStartItsOwnAgentWhenTheSharedNameCheckCannotBeMade(t *testing.T) {
+	h := newLocalHarness(t)
+	h.seedTeamVersion("tdf_sdlc_1", "sdlc", teamWith("./solo", map[string]string{"solo": "LOCAL solo"}), true)
+	if err := h.st.DynamicAgentUpsert(context.Background(), store.DynamicAgent{
+		Name: "sdlc/solo", TenantID: "acme", Definition: json.RawMessage(`{"Model":"stub-model","SystemPrompt":"GLOBAL solo"}`),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	h.st.agentsFaulty.Store(true)
+
+	_, out := h.teamDef(`{"op":"run","name":"sdlc","input":"go"}`)
+	if out["status"] == "completed" || !strings.Contains(fmtAny(out), "could not check") {
+		t.Errorf("want the walk to fail because the name check could not be made, got %v", out)
+	}
+	if h.prov.sawSystem("LOCAL solo") {
+		t.Error("the team's own agent started although a global agent holds its name and the check could not be made")
+	}
+}
+
+// On resume the same fault leaves the run paused, to be tried again — it is
+// neither resumed on an unread answer nor failed for a store hiccup.
+func TestResumedRun_StaysPausedWhenTheSharedNameCheckCannotBeMade(t *testing.T) {
+	h := newLocalHarness(t)
+	defID := h.seedTeamVersion("tdf_sdlc_1", "sdlc", teamWith("./solo", map[string]string{"solo": "LOCAL solo"}), true)
+	run := h.pausedLocalRun(defID, "solo")
+	ctx := context.Background()
+	h.st.agentsFaulty.Store(true)
+
+	if n, warnings := h.srv.ResumePausedRuns(ctx); n != 0 || len(warnings) != 1 {
+		t.Fatalf("ResumePausedRuns = %d, %v; want 0 re-dispatched and one warning", n, warnings)
+	}
+	got, err := h.st.GetRun(ctx, run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status != store.RunRunning || got.PauseState != store.PauseStatePaused {
+		t.Errorf("run status %q pause_state %q (%s); want still paused", got.Status, got.PauseState, got.ErrorMsg)
+	}
+	if h.prov.sawSystem("LOCAL solo") {
+		t.Error("the run resumed although the name check could not be made")
+	}
+}
+
+// ---- the team must be the run's own tenant's ----
+
+// A run record is written only by the runtime, but it travels in snapshots. A
+// record that points a run at ANOTHER tenant's team version must not hand it
+// that tenant's agents: the scope's tenant has to be the run's own.
+func TestTeamScope_NamingAnotherTenantsTeamReachesNoneOfItsAgents(t *testing.T) {
+	h := newLocalHarness(t)
+	defID := h.seedTeamVersion("tdf_sdlc_1", "sdlc", teamWith("./solo", map[string]string{"solo": "LOCAL solo"}), true)
+	// The scope tells the truth about the team's tenant (acme); the run is globex's.
+	forged := store.WithTeamScope(context.Background(), store.TeamScope{Tenant: "acme", Team: "sdlc", DefID: defID})
+	for _, src := range []nameSource{nameOfRun, nameFromAgentTool, nameFromDefinition} {
+		for _, name := range []string{"sdlc/solo", "solo", "./solo"} {
+			if _, _, err := h.srv.resolveAgentName(forged, "globex", name, src); err == nil {
+				t.Errorf("a globex run resolved %q (source %d) to acme's team's own agent", name, src)
+			}
+		}
+	}
+	// Same scope, the team's own tenant: resolves.
+	if _, runName, err := h.srv.resolveAgentName(forged, "acme", "./solo", nameFromAgentTool); err != nil || runName != "sdlc/solo" {
+		t.Errorf("an acme run in its own team's scope: %q, %v", runName, err)
+	}
+	// And a paused run so recorded is failed, never resumed.
+	ctx := context.Background()
+	sess, err := h.st.CreateSession(ctx, "globex", "sdlc/solo", "mallory")
+	if err != nil {
+		t.Fatal(err)
+	}
+	rec := runConfigRecord{
+		AgentVersion: &agentVersionRecord{TeamDefID: defID},
+		TeamScope:    &teamScopeRecord{Team: "sdlc", DefID: defID, DefTenant: "acme"},
+	}
+	run, err := h.st.CreateRun(ctx, sess.ID, store.RunIdentity{AgentID: "a_forged", UserID: "mallory", TenantID: "globex", Model: "stub-model", RunConfig: rec.marshal()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	parkForResume(t, h.srv, run.ID)
+	if n, _ := h.srv.ResumePausedRuns(ctx); n != 0 {
+		t.Fatalf("a run pointed at another tenant's team was resumed")
+	}
+	if got, _ := h.st.GetRun(ctx, run.ID); got.Status != store.RunFailed || !strings.Contains(got.ErrorMsg, "another tenant") {
+		t.Errorf("run status %q, error %q; want failed because the team is another tenant's", got.Status, got.ErrorMsg)
+	}
+	if h.prov.sawSystem("LOCAL solo") {
+		t.Error("acme's agent ran in a globex run")
+	}
+}
+
+// An admin may run another tenant's team by def_id; the walk then runs in the
+// admin's tenant, where that team's own agents are not resolvable. Refused
+// before anything starts, saying why — while a team with no agents of its own
+// still runs across tenants as it did.
+func TestTeamWalk_AnotherTenantsTeamWithItsOwnAgentsIsRefusedUpFront(t *testing.T) {
+	h := newLocalHarness(t)
+	withLocals := h.seedTeamVersion("tdf_sdlc_1", "sdlc", teamWith("./solo", map[string]string{"solo": "LOCAL solo"}), true)
+	plain := h.seedTeamVersion("tdf_plain_1", "plain", teamWith("helper", nil), true)
+	asAdmin := func(defID string) map[string]any {
+		r := httptest.NewRequest(http.MethodPost, "/v1/_teamdef", strings.NewReader(`{"op":"run","def_id":"`+defID+`","input":"go"}`))
+		r = r.WithContext(auth.WithPrincipal(r.Context(), auth.Principal{TenantID: "ops", Subject: "root", Scopes: []string{auth.ScopeAdmin}}))
+		rr := httptest.NewRecorder()
+		h.srv.handleSubstrateTeamDef(rr, r)
+		var out map[string]any
+		_ = json.Unmarshal(rr.Body.Bytes(), &out)
+		return out
+	}
+	if out := asAdmin(withLocals); !strings.Contains(fmtAny(out), "another tenant") || h.prov.sawSystem("LOCAL solo") {
+		t.Errorf("want a refusal naming the tenant boundary and nothing run, got %v", out)
+	}
+	if out := asAdmin(plain); out["status"] != "completed" {
+		t.Errorf("a team with no agents of its own must still run for an admin of another tenant: %v", out)
+	}
+}
+
+// ---- the parsed-definition cache ----
+
+func TestTeamDefCache_ReparsesOnlyWhenTheBytesDifferAndStaysBounded(t *testing.T) {
+	var c teamDefCache
+	v1 := []byte(teamWith("./a", map[string]string{"a": "one"}))
+	v2 := []byte(teamWith("./b", map[string]string{"b": "two"}))
+	d, err := c.parsed("tdf_1", v1)
+	if err != nil || len(d.LocalAgentNames()) != 1 || d.LocalAgentNames()[0] != "a" {
+		t.Fatalf("first parse: %v %v", d.LocalAgentNames(), err)
+	}
+	if c.lru.Len() != 1 {
+		t.Fatalf("cache holds %d entries, want 1", c.lru.Len())
+	}
+	entry := c.entries["tdf_1"]
+	if _, _ = c.parsed("tdf_1", v1); c.entries["tdf_1"] != entry {
+		t.Error("the same bytes under the same def id were parsed again")
+	}
+	// A def id written again with a different body must not serve the old parse.
+	if d, _ := c.parsed("tdf_1", v2); len(d.LocalAgentNames()) != 1 || d.LocalAgentNames()[0] != "b" {
+		t.Errorf("a changed body under the same def id returned the stale parse: %v", d.LocalAgentNames())
+	}
+	if _, err := c.parsed("tdf_bad", []byte(`{"local":{"skills":{}}}`)); err == nil {
+		t.Error("an unparseable definition must report its error")
+	}
+	for i := 0; i < maxCachedTeamDefs*2; i++ {
+		if _, err := c.parsed(fmt.Sprintf("tdf_n%d", i), v1); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if c.lru.Len() != maxCachedTeamDefs || len(c.entries) != maxCachedTeamDefs {
+		t.Errorf("cache holds %d/%d entries, want the bound %d", c.lru.Len(), len(c.entries), maxCachedTeamDefs)
+	}
+}
+
+// The boot report stops when its deadline does, however many teams remain.
+func TestLogTeamLocalNameClashes_StopsWhenItsContextEnds(t *testing.T) {
+	h := newLocalHarness(t)
+	h.seedTeamVersion("tdf_sdlc_1", "sdlc", teamWith("./solo", map[string]string{"solo": "LOCAL solo"}), true)
+	if err := h.st.DynamicAgentUpsert(context.Background(), store.DynamicAgent{Name: "sdlc/solo", TenantID: "acme", Definition: json.RawMessage(`{}`)}); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if n := h.srv.LogTeamLocalNameClashes(ctx); n != 0 {
+		t.Errorf("found %d clashes after its context ended, want it to have stopped", n)
+	}
+}
+
+// A run's own agent name is not a name somebody is choosing an agent with. A
+// GLOBAL "reviewer" that ran inside a team which also declares a reviewer is
+// still the global one when its run is resumed or its session continued: only
+// "<team>/<name>" is a team's own agent's name.
+func TestResumeAndContinuation_OfAGlobalAgentInATeamStayGlobalDespiteALocalOfThatName(t *testing.T) {
+	h := newLocalHarness(t)
+	// A registered agent: it records no version, so resume finds it by name.
+	if err := h.st.DynamicAgentUpsert(context.Background(), store.DynamicAgent{
+		Name: "checker", TenantID: "acme", Definition: json.RawMessage(`{"Model":"stub-model","SystemPrompt":"GLOBAL checker"}`),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	h.seedTeamVersion("tdf_sdlc_1", "sdlc", teamWith("checker", map[string]string{"checker": "LOCAL checker"}), true)
+	h.walk("sdlc")
+	run, ok := h.runsByAgent()["checker"]
+	if !ok || !h.prov.sawSystem("GLOBAL checker") {
+		t.Fatalf("fixture drifted: the state's bare name should have run the global checker")
+	}
+	if sc := teamScopeOf(t, run); sc == nil {
+		t.Fatal("fixture drifted: the global member should carry the team scope")
+	}
+
+	h.prov.forget()
+	resumeAndFinish(t, h.srv, run)
+	if !h.prov.sawSystem("GLOBAL checker") || h.prov.sawSystem("LOCAL checker") {
+		t.Error("the resumed run of the global checker became the team's own checker")
+	}
+
+	h.prov.forget()
+	if err := h.runOnce("", run.SessionID); err != nil {
+		t.Fatalf("continue: %v", err)
+	}
+	if !h.prov.sawSystem("GLOBAL checker") || h.prov.sawSystem("LOCAL checker") {
+		t.Error("the continued session of the global checker became the team's own checker")
 	}
 }

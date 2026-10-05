@@ -214,8 +214,9 @@ type AgentTool struct {
 
 	// ResolveName, when set, turns the name a caller wrote into the name that
 	// agent RUNS under, before anything here uses it. Inside a team walk a
-	// caller may write "./reviewer" or a bare "reviewer" for one of the team's
-	// own agents, which runs as "<team>/reviewer"; resolving it once at the
+	// caller may write "./reviewer" — or, where the resolver's rule for bare
+	// names allows it, a bare "reviewer" — for one of the team's own agents,
+	// which runs as "<team>/reviewer"; resolving it once at the
 	// door means the result envelope, the spawn ledger and the hooks all name
 	// the child the way its run row does. An error refuses the call (a
 	// "./name" outside a team, or one the team does not declare). nil = names
