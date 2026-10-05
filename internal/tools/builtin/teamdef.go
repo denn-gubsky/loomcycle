@@ -168,6 +168,20 @@ type TeamDef struct {
 	// are unaddressable — the behaviour before this existed).
 	WalkRun func(ctx context.Context, spec WalkRunSpec) (walkCtx context.Context, runID string, finish func(WalkEnd), err error)
 
+	// ArmWalkTriggers starts what a walk carries that wakes it from inside
+	// the team — today the team's own schedules — on walkCtx, and returns
+	// the disarm. op=run calls it once every refusal is behind it, and calls
+	// the disarm first thing when the walk ends, on every path, before the
+	// walk's run is recorded as over: a team's own trigger is alive only
+	// while a walk of the team is, and nothing it does may land on a walk
+	// already finished. The disarm must not return until every trigger has
+	// stopped.
+	//
+	// An error refuses the walk (a trigger that cannot run would leave the
+	// walk waiting on something that never comes). nil = a team that
+	// declares a trigger of its own is refused: the walk could not be woken.
+	ArmWalkTriggers func(walkCtx context.Context, def teamgraph.Definition) (disarm func(), err error)
+
 	// LiveBreakpoints, if set, opens the MUTABLE armed set for this run's walk,
 	// seeded with the run argument, and returns it plus the release to call when
 	// the walk ends.
@@ -1143,6 +1157,18 @@ func (t *TeamDef) execRun(ctx context.Context, in teamDefInput) (tools.Result, e
 		return errResult(fmt.Sprintf("run: team %q declares agents of its own and belongs to another tenant; "+
 			"a team's own agents run only in the team's tenant — run it as that tenant", row.Name)), nil
 	}
+	// A team's own schedules publish into its own channels, which are its
+	// tenant's, and are started by whatever arms a walk's triggers. Either
+	// missing, the walk would wait on a clock that never ticks.
+	if len(def.LocalScheduleNames()) > 0 {
+		if t.ArmWalkTriggers == nil {
+			return errResult(fmt.Sprintf("run: team %q declares schedules of its own, and this server cannot run them", row.Name)), nil
+		}
+		if row.TenantID != tools.RunIdentity(ctx).TenantID {
+			return errResult(fmt.Sprintf("run: team %q declares schedules of its own and belongs to another tenant; "+
+				"a team's own schedules run only in the team's tenant — run it as that tenant", row.Name)), nil
+		}
+	}
 
 	// Checked before admission and before the walk's run exists, like the
 	// input below: a name the team does not declare, or a value it could not
@@ -1446,6 +1472,22 @@ func (t *TeamDef) execRun(ctx context.Context, in teamDefInput) (tools.Result, e
 		return t.Spawn(ctx, agent, p, defID)
 	}
 	runner := teamrun.NewAgentRunner(spawn, runnerOpts...)
+	// Armed last, once nothing can refuse the walk, and on the walk's own ctx.
+	// The disarm runs first in finishRun, so it covers every way a walk ends —
+	// completed, failed, cancelled — and nothing a trigger does lands after the
+	// walk's run is recorded as over.
+	if t.ArmWalkTriggers != nil {
+		disarm, aerr := t.ArmWalkTriggers(walkCtx, def)
+		if aerr != nil {
+			releaseBreakpoints()
+			return refuse(fmt.Sprintf("run: %s", aerr))
+		}
+		closeRun := finishRun
+		finishRun = func(end WalkEnd) {
+			disarm()
+			closeRun(end)
+		}
+	}
 	walk := func() ([]teamrun.StepRecord, error) {
 		defer releaseBreakpoints()
 		// The walk runs on the definition with each "./name" written out as the
@@ -1894,7 +1936,7 @@ func walkTerminal(def teamgraph.Definition, task *teamrun.Task) string {
 // ValidateTeamDefBody re-runs, over a stored team def body, the authoring
 // checks on its hooks: it parses as a team definition, and the walk's and each
 // state's hooks are well formed (inline webhooks included), and so is each
-// agent and skill the team declares for itself. A snapshot restore calls it
+// agent, skill, channel and schedule the team declares for itself. A snapshot restore calls it
 // before writing a body. The graph itself is not re-validated — a team dials
 // nothing of its own — and neither are the caller-dependent checks: channel
 // authority, and the gates a local agent or skill passes when it is authored
@@ -1932,6 +1974,11 @@ func ValidateTeamDefBody(body json.RawMessage) error {
 		if _, err := decodeLocalChannel(def.Local.Channels[name]); err != nil {
 			return fmt.Errorf("local.channels[%q]: %w", name, err)
 		}
+	}
+	// And its own schedules: a cadence the walk's timer could not parse, or a
+	// channel the team does not declare, would only be found by a walk.
+	if err := teamgraph.CheckLocalSchedules(def); err != nil {
+		return err
 	}
 	return teamgraph.ValidateHooks(def)
 }
