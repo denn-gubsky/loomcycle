@@ -230,8 +230,9 @@ func operatorKeyRestrictedFromCtx(ctx context.Context, cfg *config.Config) bool 
 // The gates, in order: the name grammar; the caller's agent_def_scopes
 // (default-deny); no static agent of that name; the overlay's own rules
 // (named-scope patterns, tool_choice, output_format, memory_rerank, one
-// routing mode); hooks; the tools ceiling (the caller's own tools); inline
-// code; the definition size cap.
+// routing mode); hooks; the tools ceiling (the caller's own tools); the
+// capability ceiling (every other authority field, against the caller's own
+// policies — checkCapabilityCeiling); inline code; the definition size cap.
 //
 // parentDef is the stored definition this one replaces, nil when there is
 // none. It only feeds the hooks gate, which lets a caller inside a run keep
@@ -273,6 +274,12 @@ func (a *AgentDef) gateNewDef(ctx context.Context, policy tools.AgentDefPolicyVa
 		if err := assertToolsSubset(def.Tools, callerTools); err != nil {
 			return mergedDef{}, nil, fmt.Errorf("%s: %s", op, err)
 		}
+	}
+	// The same ceiling for every other capability field, judged against the
+	// caller alone: a new definition has no lineage, and a team's local agent
+	// is authored afresh by whoever writes the team version.
+	if err := a.checkCapabilityCeiling(ctx, name, def, nil); err != nil {
+		return mergedDef{}, nil, fmt.Errorf("%s: %s", op, err)
 	}
 	if err := a.validateInlineCode(op, def); err != nil {
 		return mergedDef{}, nil, err
@@ -506,6 +513,15 @@ func (a *AgentDef) execFork(ctx context.Context, policy tools.AgentDefPolicyValu
 		return errResult(fmt.Sprintf("fork: resolve root: %s", err)), nil
 	}
 	if err := assertToolsSubset(def.Tools, root); err != nil {
+		return errResult(fmt.Sprintf("fork: %s", err)), nil
+	}
+	// The capability fields: within what the forker holds, or what the version
+	// it forks already held — so a fork that only rewrites the prompt keeps the
+	// lineage's grants, and none can add one its author lacks. The parent, not
+	// the lineage root, because the parent is itself operator-authored or
+	// passed this gate, so no version holds more than an operator or one of
+	// its authors did.
+	if err := a.checkCapabilityCeiling(ctx, in.Name, def, decodeBase(parent.Definition)); err != nil {
 		return errResult(fmt.Sprintf("fork: %s", err)), nil
 	}
 	if err := a.validateInlineCode("fork", def); err != nil {

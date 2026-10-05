@@ -71,10 +71,10 @@ func TestAgentDefTool_CreateRefusedOverStaticName(t *testing.T) {
 func TestAgentDefTool_CreateRoundTripsDefScopes(t *testing.T) {
 	tool, ctx, cleanup := agentDefFixture(t)
 	defer cleanup()
+	// Def-authoring grants the fixture does not hold: the operator's to give.
+	ctx = operatorPlane(ctx)
 
-	// No tools in the overlay: the def-scopes round-trip is what F40 is about,
-	// and the narrow-only tools ceiling check requires WithAgentTools on ctx,
-	// which agentDefFixture intentionally does not set (matches TestAgentDefTool_CreateNewName).
+	// No tools in the overlay: the def-scopes round-trip is what F40 is about.
 	res, _ := tool.Execute(ctx, json.RawMessage(`{"op":"create","name":"breeder","overlay":{`+
 		`"system_prompt":"breed agents",`+
 		`"agent_def_scopes":["named:foo"],"schedule_def_scopes":["any"],`+
