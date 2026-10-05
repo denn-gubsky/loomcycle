@@ -1,0 +1,63 @@
+{
+  "n": 2515,
+  "complete": true,
+  "arms": {
+    "none": {
+      "R@1": 0.5276,
+      "R@3": 0.7213,
+      "R@5": 0.7781,
+      "R@10": 0.829
+    },
+    "decision": {
+      "R@1": 0.6998,
+      "R@3": 0.8254,
+      "R@5": 0.8461,
+      "R@10": 0.8561
+    }
+  },
+  "verdicts": {
+    "H1_built_R@5_within_0.03_of_probe": {
+      "R@5": 0.8461,
+      "wilson95": [
+        0.8315,
+        0.8597
+      ],
+      "threshold": 0.9137,
+      "holds": false
+    },
+    "H2_rerank_p50_within_25pct_of_probe": {
+      "p50_rerank_ms": 1526,
+      "threshold_ms": 1830,
+      "holds": true
+    },
+    "S1_decision_over_none_R@5": {
+      "only_decision": 189,
+      "only_none": 18,
+      "p": 3.81451248881712e-37
+    },
+    "S2_decision_over_none_R@1": {
+      "only_decision": 559,
+      "only_none": 126,
+      "p": 6.288488499740054e-66
+    }
+  },
+  "checks": {
+    "1_rerank_applied_rate": 1.0,
+    "1_reasons": {
+      "applied": 2515
+    },
+    "2_none_R@5": 0.7781,
+    "2_none_matches_phase_M_within_0.02": false
+  },
+  "latency": {
+    "none": {
+      "p50_ms": 728,
+      "p95_ms": 1075
+    },
+    "decision": {
+      "p50_ms": 2244,
+      "p95_ms": 2777
+    },
+    "rerank_p95_ms": 1992
+  }
+}
