@@ -1659,6 +1659,18 @@ func applyTeamOverlay(base *teamgraph.Definition, ov teamgraph.Definition) {
 	if ov.Vars != nil {
 		base.Vars = ov.Vars
 	}
+	// Per KIND, wholesale within one: a fork that sends `local.agents` states
+	// the team's whole list of agents (`{}` declares none), and one that sends
+	// a `local` block without that kind leaves the parent's agents alone — so
+	// a kind added later is replaced independently of this one.
+	if ov.Local != nil {
+		if base.Local == nil {
+			base.Local = &teamgraph.Local{}
+		}
+		if ov.Local.Agents != nil {
+			base.Local.Agents = ov.Local.Agents
+		}
+	}
 }
 
 func (t *TeamDef) checkSizeCaps(defJSON []byte, description string) error {

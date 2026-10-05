@@ -12,6 +12,7 @@ package teamgraph
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 
 	"github.com/denn-gubsky/loomcycle/internal/hooks"
@@ -117,6 +118,12 @@ type Definition struct {
 	// A default is a LITERAL: it is never expanded, so a ${…} written in one
 	// reaches a prompt as those characters (see vars.go). Content, and hashed.
 	Vars map[string]string `json:"vars,omitempty"`
+
+	// Local is what the team declares for itself — today, its own agents (see
+	// local.go). A local agent lives only here: it is never written to the
+	// agent stores, and resolves only from inside a walk of this team.
+	// Content, and hashed.
+	Local *Local `json:"local,omitempty"`
 }
 
 // TeamChannels is the workflow's own channel allowlist, same shape as an
@@ -368,10 +375,15 @@ type Colors struct {
 
 // Parse unmarshals a TeamDef definition JSON. It does NOT validate the graph —
 // call Validate for that. Unknown keys are tolerated (forward-compat + operator
-// extension), matching the AgentDef overlay's additionalProperties:true stance.
+// extension), matching the AgentDef overlay's additionalProperties:true stance
+// — except inside `local`, where an unknown kind is refused (see Local).
 func Parse(defJSON []byte) (Definition, error) {
 	var d Definition
 	if err := json.Unmarshal(defJSON, &d); err != nil {
+		var le *localError
+		if errors.As(err, &le) {
+			return Definition{}, fmt.Errorf("team definition: %w", err)
+		}
 		return Definition{}, fmt.Errorf("team definition: invalid JSON: %w", err)
 	}
 	return d, nil

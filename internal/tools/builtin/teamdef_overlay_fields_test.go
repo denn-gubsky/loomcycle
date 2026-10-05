@@ -37,3 +37,33 @@ func TestApplyTeamOverlay_CarriesEveryDefinitionField(t *testing.T) {
 		}
 	}
 }
+
+// `local` merges per kind: sending the agents replaces them all, sending the
+// block without them keeps the parent's, and `{}` declares none.
+func TestApplyTeamOverlay_LocalAgentsReplaceWholesalePerKind(t *testing.T) {
+	parse := func(s string) teamgraph.Definition {
+		t.Helper()
+		d, err := teamgraph.Parse([]byte(s))
+		if err != nil {
+			t.Fatalf("parse %s: %v", s, err)
+		}
+		return d
+	}
+	const parent = `{"entry":"s","local":{"agents":{"a":{"tier":"low"},"b":{"tier":"low"}}}}`
+	for name, tc := range map[string]struct {
+		overlay string
+		want    []string
+	}{
+		"no local block keeps the parent's":    {`{"entry":"s2"}`, []string{"a", "b"}},
+		"a block without agents keeps them":    {`{"local":{}}`, []string{"a", "b"}},
+		"null agents keeps them":               {`{"local":{"agents":null}}`, []string{"a", "b"}},
+		"agents replaces the whole list":       {`{"local":{"agents":{"c":{"tier":"low"}}}}`, []string{"c"}},
+		"an empty agents object declares none": {`{"local":{"agents":{}}}`, nil},
+	} {
+		base := parse(parent)
+		applyTeamOverlay(&base, parse(tc.overlay))
+		if got := base.LocalAgentNames(); !reflect.DeepEqual(append([]string(nil), got...), tc.want) && !(len(got) == 0 && len(tc.want) == 0) {
+			t.Errorf("%s: local agents = %v, want %v", name, got, tc.want)
+		}
+	}
+}
