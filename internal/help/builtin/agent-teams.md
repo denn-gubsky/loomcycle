@@ -244,7 +244,8 @@ already exist. Declare them under `local.agents` — name → the same body
   its version: a paused member resumes on it.
 - **Limits.** At most 64 agents. A local name is one segment of
   `A-Z a-z 0-9 _ -`, at most 64 characters, and the team's own name must be
-  one segment too. Only `agents` and `skills` may be declared under `local`. A
+  one segment too. Under `local` a team may declare `agents`, `skills` (below)
+  and `channels` (next section); any other kind is refused. A
   team's own agents run only in the team's tenant. `verify` lists a declared
   agent no state runs as an advisory issue.
 
@@ -298,6 +299,59 @@ grant one to a team agent by listing `./<name>` in that agent's `skills`:
   declares none) and leaves `local.agents` alone; one that does not keeps the
   parent's.
 - **Limits.** At most 64 skills, named like a team's agents.
+
+## A team's own channels
+
+A team may also carry the channels its walks and agents talk over. Declare
+them under `local.channels` — name → the fields a channel definition takes
+(`scope`, `default_ttl`, `max_messages`, `hold`, `semantic`, `description`) —
+and name one as `./<name>` wherever a channel goes: a starter's `source` and
+`sink`, a `channel` state, an input state's `publish`.
+
+```json
+{
+  "entry": "wave",
+  "local": {
+    "channels": {
+      "events":   {"scope": "tenant", "default_ttl": 86400},
+      "verdicts": {"scope": "user", "max_messages": 500}
+    }
+  },
+  "states": [
+    {"state": "wave", "handler": {"kind": "starter",
+      "source": {"channel": "./events"},
+      "fanout": {"agent": "reviewer", "per": "message", "max": 8},
+      "sink":   {"channel": "./verdicts"}}},
+    {"state": "done", "handler": {"kind": "terminal"}}
+  ],
+  "transitions": [{"from": "wave", "to": "done", "on": "success"}]
+}
+```
+
+- **The team holds both sides.** It publishes to and reads its own channels
+  without a `channels` ACL entry, and its ACL may not name one.
+- **Nothing outside the team reaches them.** No channel list shows them, no
+  agent outside the team can publish or subscribe to them by any name, and the
+  operator's config and channel definitions cannot declare one.
+- **The team's own agents may use them** with the Channel tool, by listing
+  `./<name>` in their own `channels` (`publish` / `subscribe`, as for any
+  channel) and naming the channel `./<name>` when they call it. A global agent
+  running inside the team cannot, whatever its own grants say.
+- **Scope.** `tenant`: one channel shared by every walk of the team in its
+  tenant. `user`: one per user. A walk of two users, or two walks at once,
+  share a tenant-scoped channel as they would any channel.
+- **Not allowed:** `global` or `agent` scope, `publisher` / `period` (cadence
+  channels are the operator's), and `hooks`.
+- **Lifecycle.** Messages outlive a walk, as on any channel. Retiring a version
+  keeps them; deleting the team drops every message and cursor of its channels.
+  A fork that sends `local.channels` replaces the whole list; one that drops a
+  channel leaves its messages (another version may still declare it).
+- **Running on its own.** A promoted team whose entry starter reads one of its
+  own channels is not started by new messages there: nothing outside a walk of
+  the team writes to it. It runs when asked.
+- **Limits.** At most 64 channels, each name one segment of
+  `A-Z a-z 0-9 _ -`, at most 64 characters; the team's own name must be one
+  segment. A walk uses them only in the team's tenant.
 
 ## Declaring variables and setting them at start
 
