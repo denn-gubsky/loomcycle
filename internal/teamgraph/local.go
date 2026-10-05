@@ -22,6 +22,9 @@ import (
 // A local skill is the same for skills: a skill body stored in the team. Only
 // the team's own agents can be granted one, and only by naming it "./<name>"
 // in their `skills` list — no pattern there reaches it.
+//
+// Channels and schedules a team declares for itself are in localchannels.go and
+// localschedules.go.
 
 // LocalRefPrefix marks an agent reference as team-local: "./reviewer".
 const LocalRefPrefix = "./"
@@ -41,13 +44,13 @@ const MaxLocalAgents = 64
 // them.
 const MaxLocalSkills = 64
 
-// Local is a definition's `local` block: the team's own agents, skills and
-// channels (see localchannels.go for channels).
+// Local is a definition's `local` block: the team's own agents, skills,
+// channels and schedules (see localchannels.go and localschedules.go).
 //
 // It is decoded by hand (UnmarshalJSON) so that a kind this runtime does not
 // know is REFUSED. The rest of a definition tolerates unknown keys, and a
 // typed struct drops them silently — which here would accept a team declaring
-// local schedules and then run it without them.
+// a kind of its own and then run it without it.
 type Local struct {
 	// Agents maps a local name to that agent's body: the overlay AgentDef
 	// create takes. Each body is held in canonical form — keys sorted, no
@@ -66,6 +69,11 @@ type Local struct {
 	// strictly, unknown fields refused). Added after Skills with omitempty, so
 	// a team declaring none hashes as it did before channels existed.
 	Channels map[string]json.RawMessage `json:"channels,omitempty"`
+	// Schedules maps a local name to that schedule: a typed struct like
+	// Skills, its payload held canonically. Added after Channels with
+	// omitempty, so a team declaring none hashes as it did before schedules
+	// existed.
+	Schedules map[string]LocalSchedule `json:"schedules,omitempty"`
 }
 
 // LocalSkill is one skill a team declares for itself: the shape of a SkillDef
@@ -83,10 +91,10 @@ type localError struct{ msg string }
 
 func (e *localError) Error() string { return e.msg }
 
-// UnmarshalJSON decodes the block, refusing any kind but `agents` and
-// `skills` and `channels`, an agent or channel body that is not a JSON object,
-// and a skill that is not exactly a skill (an unknown field in one is refused,
-// not dropped).
+// UnmarshalJSON decodes the block, refusing any kind but `agents`, `skills`,
+// `channels` and `schedules`, an agent or channel body that is not a JSON
+// object, and a skill or schedule that is not exactly one (an unknown field in
+// one is refused, not dropped).
 func (l *Local) UnmarshalJSON(b []byte) error {
 	var kinds map[string]json.RawMessage
 	if err := json.Unmarshal(b, &kinds); err != nil {
@@ -100,9 +108,9 @@ func (l *Local) UnmarshalJSON(b []byte) error {
 	sort.Strings(names)
 	for _, kind := range names {
 		switch kind {
-		case "agents", "skills", "channels":
+		case "agents", "skills", "channels", "schedules":
 		default:
-			return &localError{fmt.Sprintf("local: unknown kind %q — a team may declare only local \"agents\", \"skills\" and \"channels\"", kind)}
+			return &localError{fmt.Sprintf("local: unknown kind %q — a team may declare only local \"agents\", \"skills\", \"channels\" and \"schedules\"", kind)}
 		}
 		if bytes.Equal(bytes.TrimSpace(kinds[kind]), []byte("null")) {
 			continue
@@ -113,6 +121,14 @@ func (l *Local) UnmarshalJSON(b []byte) error {
 				return err
 			}
 			out.Skills = skills
+			continue
+		}
+		if kind == "schedules" {
+			schedules, err := decodeLocalSchedules(kinds[kind])
+			if err != nil {
+				return err
+			}
+			out.Schedules = schedules
 			continue
 		}
 		dst := &out.Agents
@@ -264,6 +280,9 @@ func validateLocal(d Definition) error {
 	if err := validateLocalChannels(d); err != nil {
 		return err
 	}
+	if err := validateLocalScheduleNames(d); err != nil {
+		return err
+	}
 	if err := checkLocalSkillGrants(d); err != nil {
 		return err
 	}
@@ -271,10 +290,11 @@ func validateLocal(d Definition) error {
 }
 
 // CheckLocalRefs reports the first "./<name>" reference that names a local
-// agent the definition does not declare. A walk checks it again before it
-// starts: a stored body may predate this rule or have been restored unchecked,
-// and a reference that silently fell through to a global agent of the same
-// full name would run something the author never named.
+// agent or channel the definition does not declare, and the first of its own
+// schedules that could not run (CheckLocalSchedules). A walk checks it again
+// before it starts: a stored body may predate this rule or have been restored
+// unchecked, and a reference that silently fell through to a global agent of
+// the same full name would run something the author never named.
 func CheckLocalRefs(d Definition) error {
 	for _, ref := range AgentRefs(d) {
 		name, isLocal := LocalRef(ref.Agent)
@@ -291,7 +311,10 @@ func CheckLocalRefs(d Definition) error {
 		return fmt.Errorf("team definition: state %q %s: %q names a local agent the team does not declare under local.agents (%s)",
 			ref.State, ref.Field, ref.Agent, declared)
 	}
-	return CheckLocalChannelRefs(d)
+	if err := CheckLocalChannelRefs(d); err != nil {
+		return err
+	}
+	return CheckLocalSchedules(d)
 }
 
 // CheckLocalRunNames refuses a definition in which a state names, as a GLOBAL
@@ -388,7 +411,7 @@ func QualifyLocalRefs(d Definition, team string) Definition {
 // localContent is the `local` block as the content hash sees it: nil when the
 // team declares nothing, so `local: {}` and no block at all hash alike.
 func localContent(l *Local) *Local {
-	if l == nil || (len(l.Agents) == 0 && len(l.Skills) == 0 && len(l.Channels) == 0) {
+	if l == nil || (len(l.Agents) == 0 && len(l.Skills) == 0 && len(l.Channels) == 0 && len(l.Schedules) == 0) {
 		return nil
 	}
 	return l

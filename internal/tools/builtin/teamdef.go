@@ -1816,6 +1816,9 @@ func applyTeamOverlay(base *teamgraph.Definition, ov teamgraph.Definition) {
 		if ov.Local.Channels != nil {
 			base.Local.Channels = ov.Local.Channels
 		}
+		if ov.Local.Schedules != nil {
+			base.Local.Schedules = ov.Local.Schedules
+		}
 	}
 }
 
