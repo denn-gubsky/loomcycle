@@ -1791,6 +1791,25 @@ textarea::placeholder {
 .team-run-required {
   color: var(--failed);
 }
+/* The team's variables, a group of their own under the input form. */
+.team-run-vars {
+  border: 1px solid var(--border, #444);
+  border-radius: 4px;
+  padding: 8px 12px 12px;
+}
+.team-run-vars legend {
+  padding: 0 4px;
+  font-weight: 600;
+}
+.team-run-var-reset {
+  align-self: flex-start;
+  font-size: 11px;
+  padding: 1px 6px;
+}
+.team-run-var-problem {
+  color: var(--failed);
+  font-size: 11px;
+}
 .library-prompt-textarea {
   width: 100%;
   padding: 8px;

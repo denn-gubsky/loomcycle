@@ -1,14 +1,19 @@
 import { describe, expect, it } from "vitest";
 import type { ChunkRow } from "../api";
 import {
+  MAX_VAR_VALUE_BYTES,
   buildInput,
+  buildVars,
   chunkOptions,
   chunkPickerEnabled,
+  declaredVars,
   entryForm,
   entrySchema,
   fieldsFromSchema,
   initialValues,
+  initialVarValues,
   setFieldValue,
+  varValueProblem,
 } from "./teamStart";
 
 // The pcparts-style form from the agent-teams help article: a document picker
@@ -267,5 +272,78 @@ describe("chunkOptions", () => {
   it("terminates on a cycle in parent pointers", () => {
     const cyclic = [row("root", undefined, 0), row("a", "b", 0), row("b", "a", 0)];
     expect(chunkOptions(cyclic)).toEqual([]);
+  });
+});
+
+describe("declaredVars", () => {
+  it("lists the declared variables with their defaults, in definition order", () => {
+    expect(declaredVars({ entry: "x", vars: { tone: "formal", audience: "" } })).toEqual([
+      { name: "tone", defaultValue: "formal" },
+      { name: "audience", defaultValue: "" },
+    ]);
+  });
+
+  it("is empty for a definition without vars, and skips a default that is not text", () => {
+    expect(declaredVars({ entry: "x" })).toEqual([]);
+    expect(declaredVars(null)).toEqual([]);
+    expect(declaredVars({ vars: { n: 3, ok: "y" } })).toEqual([{ name: "ok", defaultValue: "y" }]);
+  });
+});
+
+describe("buildVars", () => {
+  const fields = declaredVars({ vars: { tone: "formal", audience: "", region: "eu" } });
+
+  it("sends nothing when every variable is left at its default", () => {
+    expect(buildVars(fields, initialVarValues(fields))).toEqual({ ok: true, vars: undefined });
+  });
+
+  it("sends only the variables changed from their default", () => {
+    const values = { ...initialVarValues(fields), tone: "casual", audience: "engineers" };
+    expect(buildVars(fields, values)).toEqual({ ok: true, vars: { tone: "casual", audience: "engineers" } });
+  });
+
+  it("sends a default cleared to empty as an empty value, which blanks it", () => {
+    const values = { ...initialVarValues(fields), tone: "" };
+    expect(buildVars(fields, values)).toEqual({ ok: true, vars: { tone: "" } });
+  });
+
+  it("sends nothing for a variable typed back to its default", () => {
+    const values = { ...initialVarValues(fields), region: "eu" };
+    expect(buildVars(fields, values)).toEqual({ ok: true, vars: undefined });
+  });
+
+  it("never sends a name the definition does not declare", () => {
+    const values = { ...initialVarValues(fields), stray: "x" };
+    expect(buildVars(fields, values)).toEqual({ ok: true, vars: undefined });
+  });
+
+  it("refuses a changed value the server would refuse, naming the variable", () => {
+    const values = { ...initialVarValues(fields), tone: "use {{thread.output}}" };
+    expect(buildVars(fields, values)).toEqual({ ok: false, error: "Variable tone: may not contain {{ or }}" });
+  });
+});
+
+describe("varValueProblem", () => {
+  it("accepts a value of exactly the maximum size, counted in bytes", () => {
+    expect(varValueProblem("a".repeat(MAX_VAR_VALUE_BYTES))).toBeUndefined();
+    // Two bytes each in UTF-8: half as many characters reach the limit.
+    expect(varValueProblem("é".repeat(MAX_VAR_VALUE_BYTES / 2))).toBeUndefined();
+  });
+
+  it("refuses a value one byte over the maximum", () => {
+    expect(varValueProblem("a".repeat(MAX_VAR_VALUE_BYTES + 1))).toBe("4097 bytes, more than the maximum 4096");
+    expect(varValueProblem("é".repeat(MAX_VAR_VALUE_BYTES / 2) + "a")).toBe("4097 bytes, more than the maximum 4096");
+  });
+
+  it("refuses either placeholder brace and the credentials namespace", () => {
+    expect(varValueProblem("a }} b")).toBe("may not contain {{ or }}");
+    expect(varValueProblem("{{")).toBe("may not contain {{ or }}");
+    expect(varValueProblem("${run.credentials.gh}")).toBe("may not name the credentials namespace");
+    expect(varValueProblem("${run.user_bearer}")).toBe("may not name the credentials namespace");
+  });
+
+  it("accepts the empty string and a literal ${var} reference", () => {
+    expect(varValueProblem("")).toBeUndefined();
+    expect(varValueProblem("${var.other}")).toBeUndefined();
   });
 });
