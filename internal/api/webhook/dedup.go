@@ -235,3 +235,36 @@ func newDeliveryKeys(whKey, did string, body []byte, env envelope) deliveryKeys 
 	}
 	return deliveryKeys{key: bodyKey, alt: key, dup: bodyKey}
 }
+
+// durableDeliveryKeys are the keys of a delivery that starts no run — to a
+// team's own webhook, or to a channel-delivery WebhookDef — that are held in
+// the store, where every replica reads them for a day. One function for both,
+// so the two cannot come to hold different identities.
+//
+// A key held there that the signature does not cover could be POISONED: the
+// sender's delivery-id header is not signed, so whoever replays a captured
+// delivery once it may be accepted again can file it under the id of a
+// delivery not yet sent, and the genuine one is then dropped as a duplicate.
+// So:
+//
+//   - A body-only signature (GitHub `sha256=`, bare hex) never expires: only
+//     the body's key is held. A genuine redelivery repeats the body, so it is
+//     still caught; the sender's id is kept by this replica's own guard only.
+//   - A Stripe-style signature is good for ±signatureTolerance, and its
+//     signed payload's key is held far longer, so a replay inside the window
+//     collides with it and claims nothing (a claim is all or none): the
+//     sender's id is held too, which is what catches its re-signed retries.
+//   - bearer and none sign nothing; the one key is the sender's id or the
+//     body hash, as a spawned run's is.
+//
+// Every key is a dedupKey of the webhook's own key (webhookKey or
+// teamWebhookKey), so no other webhook, team or tenant shares one.
+func durableDeliveryKeys(dk deliveryKeys, env envelope) []string {
+	if env.signsBody && env.timestamp == "" {
+		return []string{dk.dup}
+	}
+	if dk.alt == "" {
+		return []string{dk.key}
+	}
+	return []string{dk.key, dk.alt}
+}
