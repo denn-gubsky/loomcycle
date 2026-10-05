@@ -15,7 +15,9 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/channels"
 	"github.com/denn-gubsky/loomcycle/internal/concurrency"
 	"github.com/denn-gubsky/loomcycle/internal/config"
+	"github.com/denn-gubsky/loomcycle/internal/loop"
 	"github.com/denn-gubsky/loomcycle/internal/providers"
+	"github.com/denn-gubsky/loomcycle/internal/runner"
 	"github.com/denn-gubsky/loomcycle/internal/steer"
 	"github.com/denn-gubsky/loomcycle/internal/store"
 	storesqlite "github.com/denn-gubsky/loomcycle/internal/store/sqlite"
@@ -340,5 +342,127 @@ func TestTeamLocalChannelTarget_RefusesAnotherTenantsWalk(t *testing.T) {
 	}
 	if _, _, _, _, err := h.srv.teamLocalChannelTarget(def, store.TeamScope{}, "acme", "events", "alice"); err == nil {
 		t.Fatal("no team scope reached a team's own channel")
+	}
+}
+
+func runInputFor(agent string) runner.RunInput {
+	return runner.RunInput{Agent: agent,
+		Segments: []loop.PromptSegment{{Role: "user", Content: []loop.PromptContentBlock{{Type: "trusted-text", Text: "go"}}}}}
+}
+
+var noCallbacks = runner.RunCallbacks{}
+
+// chanAgent is an agent body whose run makes one Channel call with input.
+func chanAgent(label, input string, publish, subscribe []string) map[string]any {
+	return map[string]any{
+		"model": "stub-model", "system_prompt": label + "\nCHAN:" + input, "tools": []string{"Channel"},
+		"channels": map[string]any{"publish": publish, "subscribe": subscribe},
+	}
+}
+
+// oneStateTeam runs `agent` in its one state, declaring channel `events`
+// (tenant) and the given local agents.
+func oneStateTeam(agent string, locals map[string]any) string {
+	def := map[string]any{
+		"entry": "work",
+		"local": map[string]any{"channels": map[string]any{"events": map[string]any{"scope": "tenant"}}},
+		"states": []any{
+			map[string]any{"state": "work", "handler": map[string]any{"kind": "agent", "agent": agent}},
+			map[string]any{"state": "done", "handler": map[string]any{"kind": "terminal"}},
+		},
+		"transitions": []any{map[string]any{"from": "work", "to": "done", "on": "success"}},
+	}
+	if locals != nil {
+		def["local"].(map[string]any)["agents"] = locals
+	}
+	b, _ := json.Marshal(def)
+	return string(b)
+}
+
+const publishEvents = `{"op":"publish","channel":"./events","value":{"from":"pub"}}`
+
+// A team's own agent granted "./events" publishes and reads it through the
+// Channel tool; the message is the team's, stored under its reserved name.
+func TestChannelTool_TeamsOwnAgentUsesTheTeamsChannel(t *testing.T) {
+	h := newChannelHarness(t, nil)
+	h.seed("tdf_pub_1", "pub", oneStateTeam("./writer", map[string]any{
+		"writer": chanAgent("LOCAL writer", publishEvents, []string{"./events"}, nil),
+	}))
+	h.walk(acmeUser("alice"), "pub", "go")
+	if res := h.prov.lastResult(t); res.IsError || !strings.Contains(res.Text, `"channel":"./events"`) {
+		t.Fatalf("the team's own agent's publish = %+v; want success reported under ./events", res)
+	}
+	got := h.stored("_team/pub/events", store.MemoryScopeTenant, "")
+	if len(got) != 1 || !strings.Contains(string(got[0].Payload), "pub") {
+		t.Fatalf("stored under _team/pub/events: %+v", got)
+	}
+
+	// A reader in another version of the same team, granted the subscribe side.
+	h.seed("tdf_pub_2", "pub", oneStateTeam("./reader", map[string]any{
+		"reader": chanAgent("LOCAL reader", `{"op":"subscribe","channel":"./events"}`, nil, []string{"./events"}),
+	}))
+	h.walk(acmeUser("bob"), "pub", "go")
+	if res := h.prov.lastResult(t); res.IsError || !strings.Contains(res.Text, `"from":"pub"`) {
+		t.Fatalf("the reader's subscribe = %+v; want the message the writer published", res)
+	}
+}
+
+// Whatever their own ACL says, no agent but the team's own reaches one of the
+// team's channels, by any spelling — and the team's own reaches it only as
+// "./<name>" with a grant.
+func TestChannelTool_NoOtherAgentReachesATeamsChannel(t *testing.T) {
+	everything := []string{"./events", "_team/*", "_team/locked/events", "locked/events"}
+	globals := map[string]config.AgentDef{}
+	spellings := map[string]string{
+		"dot":      publishEvents,
+		"reserved": `{"op":"publish","channel":"_team/locked/events","value":{}}`,
+		"display":  `{"op":"publish","channel":"locked/events","value":{}}`,
+	}
+	for k, in := range spellings {
+		globals["g-"+k] = config.AgentDef{
+			Model: "stub-model", SystemPrompt: "GLOBAL " + k + "\nCHAN:" + in, Tools: []string{"Channel"},
+			Channels: config.AgentChannelACL{Publish: everything, Subscribe: everything},
+		}
+	}
+	h := newChannelHarness(t, globals)
+
+	for k := range spellings {
+		// A global agent run as a state of the team.
+		team := "locked"
+		h.seed("tdf_"+k, team, oneStateTeam("g-"+k, map[string]any{
+			"own": chanAgent("LOCAL own", spellings[k], everything[:1], nil),
+		}))
+		h.walk(acmeUser("alice"), team, "go")
+		if res := h.prov.lastResult(t); !res.IsError {
+			t.Errorf("%s: a global agent inside the team published: %s", k, res.Text)
+		}
+		// The same agent outside any team.
+		if err := h.srv.RunOnce(acmeUser("alice")(context.Background()), runInputFor("g-"+k), noCallbacks); err != nil {
+			t.Fatalf("%s: run outside a team: %v", k, err)
+		}
+		if res := h.prov.lastResult(t); !res.IsError {
+			t.Errorf("%s: a run outside the team published: %s", k, res.Text)
+		}
+	}
+	// The team's own agent, granted ./events, by the other spellings.
+	for _, k := range []string{"reserved", "display"} {
+		h.seed("tdf_own_"+k, "locked", oneStateTeam("./own", map[string]any{
+			"own": chanAgent("LOCAL own", spellings[k], everything[:1], nil),
+		}))
+		h.walk(acmeUser("alice"), "locked", "go")
+		if res := h.prov.lastResult(t); !res.IsError {
+			t.Errorf("%s: the team's own agent reached its channel by another spelling: %s", k, res.Text)
+		}
+	}
+	// And without a grant.
+	h.seed("tdf_own_nogrant", "locked", oneStateTeam("./own", map[string]any{
+		"own": chanAgent("LOCAL own", publishEvents, nil, []string{"./events"}),
+	}))
+	h.walk(acmeUser("alice"), "locked", "go")
+	if res := h.prov.lastResult(t); !res.IsError {
+		t.Errorf("the team's own agent published without the publish grant: %s", res.Text)
+	}
+	if got := h.stored("_team/locked/events", store.MemoryScopeTenant, ""); len(got) != 0 {
+		t.Fatalf("%d message(s) reached the team's channel", len(got))
 	}
 }

@@ -2352,11 +2352,11 @@ func (s *Server) mergedChannelDefsFor(ctx context.Context, tenantID string, incl
 // channel either way), so the common no-channels run pays nothing.
 func (s *Server) channelPolicyForAgent(ctx context.Context, agentDef config.AgentDef) tools.ChannelPolicyValue {
 	includeRuntime := len(agentDef.Channels.Publish) > 0 || len(agentDef.Channels.Subscribe) > 0
-	return tools.ChannelPolicyValue{
+	return s.withTeamLocalChannels(ctx, agentDef, tools.ChannelPolicyValue{
 		Publish:   agentDef.Channels.Publish,
 		Subscribe: agentDef.Channels.Subscribe,
 		Channels:  s.mergedChannelDefs(ctx, includeRuntime),
-	}
+	})
 }
 
 // ResolveChannelScope returns the DECLARED channel def by name, consulting

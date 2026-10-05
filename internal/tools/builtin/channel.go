@@ -16,6 +16,7 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/channels"
 	"github.com/denn-gubsky/loomcycle/internal/providers"
 	"github.com/denn-gubsky/loomcycle/internal/store"
+	"github.com/denn-gubsky/loomcycle/internal/teamgraph"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
 )
 
@@ -248,7 +249,9 @@ func channelFailure(prefix string, err error) tools.Result {
 // resolveChannel returns the operator-declared channel def + the
 // effective (scope, scope_id) tuple for THIS agent's run. side is
 // "publish" or "subscribe" — used both to check the allowlist and
-// to phrase refusal messages.
+// to phrase refusal messages. The def's Name is the name the channel is
+// stored under — for a team's own channel not the name the caller wrote —
+// and is what every store and bus call uses.
 func (c *Channel) resolveChannel(ctx context.Context, policy tools.ChannelPolicyValue, side, name string) (tools.ChannelDef, store.MemoryScope, string, error) {
 	if name == "" {
 		return tools.ChannelDef{}, "", "", refuseChannel(errValidation, "Pass `channel`: a name from op=list_channels.", "missing required field: channel")
@@ -269,6 +272,17 @@ func (c *Channel) resolveChannel(ctx context.Context, policy tools.ChannelPolicy
 			return tools.ChannelDef{}, "", "", refuseChannel(errPermission, "Ask an operator to grant this agent the channel.", "Channel tool: this agent has no %s allowlist — add `channels.%s: [%s]` to the agent yaml", side, side, name)
 		}
 		return tools.ChannelDef{}, "", "", refuseChannel(errPermission, "Use a channel on the allowlist, or ask an operator to grant this one.", "Channel tool: %s not allowed on channel %q (agent allowlist: %v)", side, name, allowed)
+	}
+
+	// The catalog lists a team's own channel under the "./<name>" its agents
+	// write, and its entry carries the reserved name its messages are stored
+	// under; every op reads and writes def.Name, never the spelling.
+	if _, isLocal := teamgraph.LocalRef(name); isLocal {
+		if !store.IsTeamChannelName(def.Name) {
+			return tools.ChannelDef{}, "", "", refuseChannel(errBusiness, "Use another channel.", "Channel tool: channel %q has no stored name (runtime bug)", name)
+		}
+	} else {
+		def.Name = name
 	}
 
 	// RFC BX P2b: an isolated member (substrate:user) may use only its own
@@ -424,7 +438,8 @@ func parsePublishDeliverAt(deliverAt string, now time.Time) (visibleAt time.Time
 // audit event — the side-effecting half of a publish, shared by publish +
 // broadcast. Returns the per-channel result map (message_id / channel /
 // dropped_oldest, + visible_at when deferred, + held when the channel holds,
-// + awaiting_hooks when its hooks decide).
+// + awaiting_hooks when its hooks decide). channel is the name as the caller
+// wrote it, which the result reports; the write goes to def.Name.
 func (c *Channel) storeAndNotify(ctx context.Context, channel string, def tools.ChannelDef, scope store.MemoryScope, scopeID string, value json.RawMessage, ttl int64, visibleAt time.Time, deferred bool, now time.Time) (map[string]any, error) {
 	// TTL precedence: per-message > channel default > none. TTL counts
 	// from publish time, not deliver_at — a deferred message never
@@ -448,7 +463,7 @@ func (c *Channel) storeAndNotify(ctx context.Context, channel string, def tools.
 	}
 	ident := tools.RunIdentity(ctx)
 	res, err := c.writer(def).Write(ctx, channels.WriteRequest{
-		Channel:     channel,
+		Channel:     def.Name,
 		TenantID:    ident.TenantID, // RFC N: authoritative run tenant
 		Scope:       scope,
 		ScopeID:     scopeID,
@@ -468,7 +483,7 @@ func (c *Channel) storeAndNotify(ctx context.Context, channel string, def tools.
 	tools.EventEmitter(ctx)(providers.Event{
 		Type: providers.EventChannelPublish,
 		Channel: &providers.ChannelEventInfo{
-			Channel:        channel,
+			Channel:        store.TeamChannelDisplayName(def.Name),
 			MessageID:      id,
 			Scope:          string(scope),
 			ScopeID:        scopeID,
@@ -547,14 +562,14 @@ func (c *Channel) execRelease(ctx context.Context, policy tools.ChannelPolicyVal
 	if count > maxReleaseCount {
 		return errValidation(fmt.Sprintf("release: count %d exceeds max %d", count, maxReleaseCount), "Pass a smaller count, and release the rest in further calls."), nil
 	}
-	released, stillHeld, err := c.Store.ChannelRelease(ctx, tools.RunIdentity(ctx).TenantID, in.Channel, scope, scopeID, count)
+	released, stillHeld, err := c.Store.ChannelRelease(ctx, tools.RunIdentity(ctx).TenantID, def.Name, scope, scopeID, count)
 	if err != nil {
 		return errFrom(fmt.Sprintf("release: %s", err), err), nil
 	}
 	// Wake long-poll subscribers exactly as a publish would — from their side
 	// a release IS the publish arriving.
 	if len(released) > 0 && c.Bus != nil {
-		c.Bus.Notify(in.Channel)
+		c.Bus.Notify(def.Name)
 	}
 	if released == nil {
 		released = []string{} // JSON [] not null — a consumer indexes this
@@ -648,7 +663,6 @@ func (c *Channel) execBroadcast(ctx context.Context, policy tools.ChannelPolicyV
 
 func (c *Channel) execSubscribe(ctx context.Context, policy tools.ChannelPolicyValue, in channelInput) (tools.Result, error) {
 	def, scope, scopeID, err := c.resolveChannel(ctx, policy, "subscribe", in.Channel)
-	_ = def
 	if err != nil {
 		return channelFailure("", err), nil
 	}
@@ -666,7 +680,7 @@ func (c *Channel) execSubscribe(ctx context.Context, policy tools.ChannelPolicyV
 	// from_cursor precedence: explicit > committed.
 	from := in.FromCursor
 	if from == "" {
-		committed, err := c.Store.ChannelCommittedCursor(ctx, tenantID, in.Channel, scope, scopeID)
+		committed, err := c.Store.ChannelCommittedCursor(ctx, tenantID, def.Name, scope, scopeID)
 		if err != nil {
 			return errFrom(fmt.Sprintf("subscribe: read committed cursor: %s", err), err), nil
 		}
@@ -674,7 +688,7 @@ func (c *Channel) execSubscribe(ctx context.Context, policy tools.ChannelPolicyV
 	}
 
 	read := func() ([]store.ChannelMessage, string, error) {
-		return c.Store.ChannelSubscribe(ctx, tenantID, in.Channel, scope, scopeID, from, limit)
+		return c.Store.ChannelSubscribe(ctx, tenantID, def.Name, scope, scopeID, from, limit)
 	}
 
 	// Long-poll pattern: when long-poll is enabled, register the
@@ -692,8 +706,8 @@ func (c *Channel) execSubscribe(ctx context.Context, policy tools.ChannelPolicyV
 	longPollEnabled := c.Bus != nil && in.WaitMS > 0 && c.LongPollCapMS > 0
 	var waker chan struct{}
 	if longPollEnabled {
-		waker = c.Bus.Register(in.Channel)
-		defer c.Bus.Unregister(in.Channel, waker)
+		waker = c.Bus.Register(def.Name)
+		defer c.Bus.Unregister(def.Name, waker)
 	}
 
 	msgs, next, err := read()
@@ -710,8 +724,8 @@ func (c *Channel) execSubscribe(ctx context.Context, policy tools.ChannelPolicyV
 			// long-poll budget being clipped — a subscriber that keeps
 			// requesting longer waits re-subscribes every cap interval, burning
 			// the agent's max_iterations.
-			if c.shouldWarnTruncation(in.Channel) {
-				log.Printf("channel %q: subscribe wait_ms=%d truncated to the operator cap %d ms (LOOMCYCLE_CHANNELS_LONGPOLL_CAP_MS) — repeated truncation re-subscribes every cap interval and burns the agent's max_iterations; raise the cap if longer waits are intended", in.Channel, in.WaitMS, c.LongPollCapMS)
+			if c.shouldWarnTruncation(def.Name) {
+				log.Printf("channel %q: subscribe wait_ms=%d truncated to the operator cap %d ms (LOOMCYCLE_CHANNELS_LONGPOLL_CAP_MS) — repeated truncation re-subscribes every cap interval and burns the agent's max_iterations; raise the cap if longer waits are intended", store.TeamChannelDisplayName(def.Name), in.WaitMS, c.LongPollCapMS)
 			}
 			wait = c.LongPollCapMS
 		}
@@ -752,7 +766,7 @@ func (c *Channel) execSubscribe(ctx context.Context, policy tools.ChannelPolicyV
 			if c.PoolStatsFn != nil {
 				diag.poolTotal, diag.poolAcquired, diag.poolIdle = c.PoolStatsFn()
 			}
-			msgs, next, err = readWithRetry(read, in.Channel, diag)
+			msgs, next, err = readWithRetry(read, store.TeamChannelDisplayName(def.Name), diag)
 			if err != nil {
 				return errFrom(fmt.Sprintf("subscribe (after wait): %s", err), err), nil
 			}
@@ -788,7 +802,7 @@ func (c *Channel) execSubscribe(ctx context.Context, policy tools.ChannelPolicyV
 		emit(providers.Event{
 			Type: providers.EventChannelDelivery,
 			Channel: &providers.ChannelEventInfo{
-				Channel:        in.Channel,
+				Channel:        store.TeamChannelDisplayName(def.Name),
 				MessageID:      m.ID,
 				Scope:          string(scope),
 				ScopeID:        scopeID,
@@ -811,7 +825,7 @@ func (c *Channel) execSubscribe(ctx context.Context, policy tools.ChannelPolicyV
 	// explicit `ack` once processing is durable. The two-step
 	// pattern is documented in docs/TOOLS.md.
 	if next != "" {
-		if err := c.Store.ChannelAck(ctx, tenantID, in.Channel, scope, scopeID, next); err != nil {
+		if err := c.Store.ChannelAck(ctx, tenantID, def.Name, scope, scopeID, next); err != nil {
 			// Cursor regression on auto-commit is impossible by
 			// construction (we just read this cursor in the same
 			// txn, so it's always >= the previous committed value).
@@ -823,7 +837,7 @@ func (c *Channel) execSubscribe(ctx context.Context, policy tools.ChannelPolicyV
 			// will re-receive this batch because the committed
 			// cursor didn't advance.
 			if !errors.Is(err, store.ErrChannelCursorRegression) {
-				log.Printf("channel %q: subscribe auto-ack failed (next double-delivery expected): %v", in.Channel, err)
+				log.Printf("channel %q: subscribe auto-ack failed (next double-delivery expected): %v", store.TeamChannelDisplayName(def.Name), err)
 			}
 		}
 	}
@@ -1002,7 +1016,8 @@ func (c *Channel) execAwait(ctx context.Context, policy tools.ChannelPolicyValue
 	// RFC N tenancy is honoured per channel (resolveChannel reads the
 	// run's tenant scope).
 	type chanState struct {
-		name    string
+		name    string // as the caller wrote it: what the result is keyed by
+		key     string // as it is stored
 		scope   store.MemoryScope
 		scopeID string
 		from    string // committed/explicit cursor; NON-advancing
@@ -1016,23 +1031,23 @@ func (c *Channel) execAwait(ctx context.Context, policy tools.ChannelPolicyValue
 			continue
 		}
 		seen[name] = true
-		_, scope, scopeID, err := c.resolveChannel(ctx, policy, "subscribe", name)
+		def, scope, scopeID, err := c.resolveChannel(ctx, policy, "subscribe", name)
 		if err != nil {
 			return channelFailure("", err), nil
 		}
 		from := in.FromCursor
 		if from == "" {
-			committed, err := c.Store.ChannelCommittedCursor(ctx, tenantID, name, scope, scopeID)
+			committed, err := c.Store.ChannelCommittedCursor(ctx, tenantID, def.Name, scope, scopeID)
 			if err != nil {
 				return errFrom(fmt.Sprintf("await: read committed cursor for %q: %s", name, err), err), nil
 			}
 			from = committed
 		}
-		states = append(states, &chanState{name: name, scope: scope, scopeID: scopeID, from: from})
+		states = append(states, &chanState{name: name, key: def.Name, scope: scope, scopeID: scopeID, from: from})
 	}
 
 	readChan := func(st *chanState) error {
-		msgs, next, err := c.Store.ChannelSubscribe(ctx, tenantID, st.name, st.scope, st.scopeID, st.from, limit)
+		msgs, next, err := c.Store.ChannelSubscribe(ctx, tenantID, st.key, st.scope, st.scopeID, st.from, limit)
 		if err != nil {
 			return err
 		}
@@ -1080,12 +1095,12 @@ func (c *Channel) execAwait(ctx context.Context, policy tools.ChannelPolicyValue
 	wakers := make([]chan struct{}, len(states))
 	if longPoll {
 		for i, st := range states {
-			wakers[i] = c.Bus.Register(st.name)
+			wakers[i] = c.Bus.Register(st.key)
 		}
 		defer func() {
 			for i, w := range wakers {
 				if w != nil {
-					c.Bus.Unregister(states[i].name, w)
+					c.Bus.Unregister(states[i].key, w)
 				}
 			}
 		}()
@@ -1134,8 +1149,8 @@ func (c *Channel) execAwait(ctx context.Context, policy tools.ChannelPolicyValue
 			// leaving the loop blocked on a waker that already missed its
 			// signal until the timer expires.
 			st := states[chosen]
-			c.Bus.Unregister(st.name, wakers[chosen])
-			wakers[chosen] = c.Bus.Register(st.name)
+			c.Bus.Unregister(st.key, wakers[chosen])
+			wakers[chosen] = c.Bus.Register(st.key)
 			// Re-read that channel with the same bounded MVCC-visibility retry
 			// subscribe uses (the row committed before Notify, so it IS
 			// visible — the retry covers the rare pgxpool snapshot window).
@@ -1145,8 +1160,8 @@ func (c *Channel) execAwait(ctx context.Context, policy tools.ChannelPolicyValue
 				diag.poolTotal, diag.poolAcquired, diag.poolIdle = c.PoolStatsFn()
 			}
 			msgs, next, err := readWithRetry(func() ([]store.ChannelMessage, string, error) {
-				return c.Store.ChannelSubscribe(ctx, tenantID, st.name, st.scope, st.scopeID, st.from, limit)
-			}, st.name, diag)
+				return c.Store.ChannelSubscribe(ctx, tenantID, st.key, st.scope, st.scopeID, st.from, limit)
+			}, store.TeamChannelDisplayName(st.key), diag)
 			if err != nil {
 				return errFrom(fmt.Sprintf("await: read %q (after wake): %s", st.name, err), err), nil
 			}
@@ -1196,7 +1211,7 @@ func (c *Channel) execAwait(ctx context.Context, policy tools.ChannelPolicyValue
 }
 
 func (c *Channel) execAck(ctx context.Context, policy tools.ChannelPolicyValue, in channelInput) (tools.Result, error) {
-	_, scope, scopeID, err := c.resolveChannel(ctx, policy, "subscribe", in.Channel)
+	def, scope, scopeID, err := c.resolveChannel(ctx, policy, "subscribe", in.Channel)
 	if err != nil {
 		return channelFailure("", err), nil
 	}
@@ -1204,7 +1219,7 @@ func (c *Channel) execAck(ctx context.Context, policy tools.ChannelPolicyValue, 
 		return errValidation("ack: missing required field: cursor", "Pass `cursor`: the next_cursor op=subscribe returned."), nil
 	}
 	tenantID := tools.RunIdentity(ctx).TenantID // RFC N: authoritative run tenant
-	if err := c.Store.ChannelAck(ctx, tenantID, in.Channel, scope, scopeID, in.Cursor); err != nil {
+	if err := c.Store.ChannelAck(ctx, tenantID, def.Name, scope, scopeID, in.Cursor); err != nil {
 		if errors.Is(err, store.ErrChannelCursorRegression) {
 			return errBusiness(fmt.Sprintf("ack: %s", err), "Nothing to do: a later cursor is already acknowledged. Ack the newest next_cursor from op=subscribe."), nil
 		}
@@ -1214,7 +1229,7 @@ func (c *Channel) execAck(ctx context.Context, policy tools.ChannelPolicyValue, 
 }
 
 func (c *Channel) execPeek(ctx context.Context, policy tools.ChannelPolicyValue, in channelInput) (tools.Result, error) {
-	_, scope, scopeID, err := c.resolveChannel(ctx, policy, "subscribe", in.Channel)
+	def, scope, scopeID, err := c.resolveChannel(ctx, policy, "subscribe", in.Channel)
 	if err != nil {
 		return channelFailure("", err), nil
 	}
@@ -1227,7 +1242,7 @@ func (c *Channel) execPeek(ctx context.Context, policy tools.ChannelPolicyValue,
 	}
 	from := in.FromCursor                       // peek defaults to cur_0 (replay) when caller omits.
 	tenantID := tools.RunIdentity(ctx).TenantID // RFC N: authoritative run tenant
-	msgs, err := c.Store.ChannelPeek(ctx, tenantID, in.Channel, scope, scopeID, from, limit)
+	msgs, err := c.Store.ChannelPeek(ctx, tenantID, def.Name, scope, scopeID, from, limit)
 	if err != nil {
 		return errFrom(fmt.Sprintf("peek: %s", err), err), nil
 	}

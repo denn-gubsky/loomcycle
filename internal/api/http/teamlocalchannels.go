@@ -4,8 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
+	"strings"
 
 	"github.com/denn-gubsky/loomcycle/internal/channels"
+	"github.com/denn-gubsky/loomcycle/internal/config"
 	"github.com/denn-gubsky/loomcycle/internal/store"
 	"github.com/denn-gubsky/loomcycle/internal/teamgraph"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
@@ -119,4 +122,62 @@ func (s *Server) teamChannelWriteDef(ctx context.Context, tenantID, team, local 
 		return channels.WriteDef{}, fmt.Errorf("team %q: its channel %q is unreadable: %w", team, local, err)
 	}
 	return channels.WriteDef{Hold: cd.Hold}, nil
+}
+
+// withTeamLocalChannels adds to an agent's channel catalog the team's own
+// channels it is granted, when the agent is one of the team's own: it was
+// resolved from team version V (agentDef.TeamDefID) and runs inside that very
+// version's scope. Each is listed under the "./<name>" the agent's ACL and
+// the model write, and carries the name its messages are stored under.
+//
+// Nothing else is ever given one: a global agent running inside the team has
+// no TeamDefID, and a run outside every team no scope, so for them a
+// "./<name>" is not declared — whatever their own ACL says. Only the granted
+// channels are listed, so the catalog cannot tell an agent which channels
+// the team keeps that it was not given.
+//
+// A team version that cannot be read leaves the catalog as it was: the
+// agent's grants then name channels that are not declared, and every op on
+// one is refused.
+func (s *Server) withTeamLocalChannels(ctx context.Context, agentDef config.AgentDef, p tools.ChannelPolicyValue) tools.ChannelPolicyValue {
+	if agentDef.TeamDefID == "" {
+		return p
+	}
+	sc, ok := store.TeamScopeFromContext(ctx)
+	if !ok || sc.DefID != agentDef.TeamDefID {
+		return p
+	}
+	granted := map[string]bool{}
+	for _, entry := range append(append([]string(nil), p.Publish...), p.Subscribe...) {
+		if name, isLocal := teamgraph.LocalRef(strings.TrimSpace(entry)); isLocal {
+			granted[name] = true
+		}
+	}
+	if len(granted) == 0 {
+		return p
+	}
+	tenant := tenantFromCtx(ctx)
+	_, def, err := s.teamVersion(ctx, tenant, sc)
+	if err != nil {
+		log.Printf("team %q (version %s): its own channels are not available to this run: %v", sc.Team, sc.DefID, err)
+		return p
+	}
+	catalog := make(map[string]tools.ChannelDef, len(p.Channels)+len(granted))
+	for k, v := range p.Channels {
+		catalog[k] = v
+	}
+	for name := range granted {
+		body, declared := def.LocalChannel(name)
+		if !declared {
+			continue
+		}
+		cd, err := builtin.LocalChannelDefinition(sc.Team, name, body)
+		if err != nil {
+			log.Printf("team %q (version %s): its channel %q is unreadable: %v", sc.Team, sc.DefID, name, err)
+			continue
+		}
+		catalog[teamgraph.LocalRefPrefix+name] = cd
+	}
+	p.Channels = catalog
+	return p
 }
