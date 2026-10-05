@@ -120,6 +120,12 @@ func (s *Server) listTeamSubscriptions(ctx context.Context) ([]teamSubscription,
 		if entry.Handler.Source.IsDocument() || entry.Handler.Source.IsInput() {
 			continue
 		}
+		// Nor one that reads a channel of the team's OWN: nothing outside a
+		// walk of the team writes to it, so there is never work to find before
+		// a walk runs — and it runs when asked.
+		if _, isLocal := teamgraph.LocalRef(entry.Handler.Source.Channel); isLocal {
+			continue
+		}
 		out = append(out, teamSubscription{
 			DefID: row.DefID, TenantID: row.TenantID, Name: row.Name,
 			Source:   entry.Handler.Source.Channel,

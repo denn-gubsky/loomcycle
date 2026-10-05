@@ -466,3 +466,52 @@ func TestChannelTool_NoOtherAgentReachesATeamsChannel(t *testing.T) {
 		t.Fatalf("%d message(s) reached the team's channel", len(got))
 	}
 }
+
+// A team's own channels are listed by no channel list — the HTTP, gRPC and MCP
+// lists are all Server.ListChannels — for its tenant or an admin, though their
+// messages sit in the store with no declaration (the orphan pass's case).
+func TestListChannels_HidesATeamsOwnChannels(t *testing.T) {
+	h := newChannelHarness(t, nil)
+	sc := h.seed("tdf_triage_1", "triage", starterTeam)
+	if _, err := h.srv.publishTeamLocalChannel(context.Background(), "acme", sc, "events", "alice", json.RawMessage(`{}`)); err != nil {
+		t.Fatal(err)
+	}
+	h.walk(acmeUser("alice"), "triage", "go") // and its sink has written too
+	admin := auth.WithPrincipal(context.Background(), auth.Principal{Subject: "root", Scopes: []string{auth.ScopeAdmin}})
+	for who, ctx := range map[string]context.Context{"tenant": acmeUser("alice")(context.Background()), "admin": admin} {
+		resp, err := h.srv.ListChannels(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, c := range resp.Channels {
+			if store.IsTeamChannelName(c.Name) || strings.Contains(c.Name, "triage") {
+				t.Errorf("%s: the list shows %q (source %s)", who, c.Name, c.Source)
+			}
+		}
+	}
+	// The messages are there: hiding them is the list's choice, not an empty store.
+	if got := h.stored("_team/triage/verdicts", store.MemoryScopeUser, "alice"); len(got) != 1 {
+		t.Fatalf("fixture: the sink's message is missing (%d)", len(got))
+	}
+}
+
+// A promoted team whose entry starter reads one of its own channels is not
+// armed: nothing outside a walk writes there, so the sweep has nothing to
+// find — and it must pass over the team without an error.
+func TestSweepTeamSubscriptions_IgnoresATeamReadingItsOwnChannel(t *testing.T) {
+	h := newChannelHarness(t, nil)
+	sc := h.seed("tdf_triage_1", "triage", starterTeam)
+	if _, err := h.srv.publishTeamLocalChannel(context.Background(), "acme", sc, "events", "alice", json.RawMessage(`{}`)); err != nil {
+		t.Fatal(err)
+	}
+	subs, err := h.srv.listTeamSubscriptions(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(subs) != 0 {
+		t.Errorf("a team reading its own channel was armed: %+v", subs)
+	}
+	if started, err := h.srv.SweepTeamSubscriptions(context.Background()); err != nil || started != 0 {
+		t.Errorf("sweep = %d, %v; want 0, nil", started, err)
+	}
+}
