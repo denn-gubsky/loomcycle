@@ -51,16 +51,17 @@ type teamContent struct {
 	// encoding/json writes a map's keys sorted, so the bytes do not depend on
 	// the order they were authored in.
 	Vars map[string]string `json:"vars,omitempty"`
-	// Local is the team's own agents, skills, channels and schedules —
-	// content: a changed local agent or skill changes what the team runs, a
-	// changed channel where it reads and writes, a changed schedule when it is
-	// woken. Last and omitempty, like the three above, so a team that declares
-	// none keeps its recorded hash (Sign passes nil for an empty block); within
-	// it, skills, channels and schedules are omitempty too, so a team declaring
-	// only agents keeps the hash it had before any of them existed. Each agent
-	// and channel body is already canonical JSON and a skill or schedule is a
-	// typed struct (see Local), so the bytes do not depend on key order or
-	// whitespace.
+	// Local is the team's own agents, skills, channels, schedules and
+	// webhooks — content: a changed local agent or skill changes what the team
+	// runs, a changed channel where it reads and writes, a changed schedule
+	// when it is woken, a changed webhook who may wake it from outside. Last
+	// and omitempty, like the three above, so a team that declares none keeps
+	// its recorded hash (Sign passes nil for an empty block); within it,
+	// skills, channels, schedules and webhooks are omitempty too, so a team
+	// declaring only agents keeps the hash it had before any of them existed.
+	// Each agent, channel and webhook body is already canonical JSON and a
+	// skill or schedule is a typed struct (see Local), so the bytes do not
+	// depend on key order or whitespace.
 	Local *Local `json:"local,omitempty"`
 }
 

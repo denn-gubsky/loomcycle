@@ -42,6 +42,7 @@ type Receiver struct {
 	cfg          *config.Config
 	runner       runner.Runner
 	teams        runner.TeamWalkStarter
+	teamHooks    runner.TeamWebhookResolver
 	publisher    channels.SystemPublisher
 	runStateBus  *runstate.Bus
 	envAllowlist map[string]bool
@@ -71,12 +72,14 @@ type Receiver struct {
 // Deps is the constructor input. runStateBus may be nil (disables ?sync);
 // publisher may be nil (channel-delivery webhooks then 503). store may be
 // nil (only yaml-defined webhooks resolve). TeamWalks may be nil
-// (team-delivery webhooks then 503).
+// (team-delivery webhooks then 503). TeamWebhooks may be nil (no route for a
+// team's own webhooks is mounted).
 type Deps struct {
 	Store        lookup.WebhookStore
 	Cfg          *config.Config
 	Runner       runner.Runner
 	TeamWalks    runner.TeamWalkStarter
+	TeamWebhooks runner.TeamWebhookResolver
 	Publisher    channels.SystemPublisher
 	RunStateBus  *runstate.Bus
 	EnvAllowlist map[string]bool
@@ -109,6 +112,7 @@ func New(d Deps) *Receiver {
 		cfg:                  d.Cfg,
 		runner:               d.Runner,
 		teams:                d.TeamWalks,
+		teamHooks:            d.TeamWebhooks,
 		publisher:            d.Publisher,
 		runStateBus:          d.RunStateBus,
 		envAllowlist:         d.EnvAllowlist,
@@ -139,6 +143,12 @@ func (rec *Receiver) Mount(reg Registrar) {
 	// per-tenant webhook. Go's ServeMux distinguishes them by segment count.
 	reg.Handle("POST /v1/_webhooks/{name}", http.HandlerFunc(rec.handle))
 	reg.Handle("POST /v1/_webhooks/{tenant}/{name}", http.HandlerFunc(rec.handle))
+	if rec.teamHooks != nil {
+		// A team's own webhooks, the same two shapes: the shared "" tenant's
+		// teams at the bare route, a tenant's at the prefixed one.
+		reg.Handle("POST /v1/_teams/{team}/webhooks/{name}", http.HandlerFunc(rec.handleTeam))
+		reg.Handle("POST /v1/_teams/{tenant}/{team}/webhooks/{name}", http.HandlerFunc(rec.handleTeam))
+	}
 }
 
 // webhookInert reports whether a resolved def must refuse every delivery. A
@@ -198,35 +208,7 @@ func (rec *Receiver) handle(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// 3. AUTHENTICATE (VERIFY BEFORE PARSE — over the raw bytes).
-	//
-	//    auth.kind="none" is the trusted-network escape hatch: skip
-	//    verification entirely, but ONLY when the operator has explicitly
-	//    opted in (LOOMCYCLE_WEBHOOKS_ALLOW_UNAUTHENTICATED=1). Otherwise it
-	//    503s loudly — silently accepting unsigned external POSTs would be a
-	//    footgun, so the default refuses even though the Def asked for no auth.
-	if strings.EqualFold(strings.TrimSpace(wd.Auth.Kind), "none") {
-		if !rec.allowUnauthenticated {
-			rec.finish(span, whKey, "", verdictUnresolved, "")
-			rec.logf("webhook %q: auth.kind=none but LOOMCYCLE_WEBHOOKS_ALLOW_UNAUTHENTICATED is not set — refusing", name)
-			writeError(w, http.StatusServiceUnavailable, "unauthenticated_mode_disabled", "set LOOMCYCLE_WEBHOOKS_ALLOW_UNAUTHENTICATED=1 to enable auth.kind=none")
-			return
-		}
-		rec.logf("webhook %q: accepted UNAUTHENTICATED delivery (auth.kind=none)", name)
-	} else if verr := verifySignature(wd.Auth, body, r.Header.Get, rec.envAllowlist, rec.getenv, rec.now); verr != nil {
-		var ae *authError
-		if errors.As(verr, &ae) && ae.verdict == verdictUnresolved {
-			// Config-side failure (secret not allowlisted / unset). 503 names
-			// the env var (NAME, not value) so the operator can fix it.
-			rec.finish(span, whKey, "", verdictUnresolved, "")
-			rec.logf("webhook %q: secret unresolvable (env=%q)", name, ae.secretEnv)
-			writeSecretUnresolvable(w, ae.secretEnv)
-			return
-		}
-		// Signature mismatch / replay-window / bad header / wrong bearer:
-		// one opaque 401, NO body detail (no timing/oracle leak).
-		rec.finish(span, whKey, "", verdictRejectedSig, "")
-		rec.logf("webhook %q: signature rejected", name)
-		writeError(w, http.StatusUnauthorized, "unauthorized", "")
+	if !rec.authenticate(w, r, span, whKey, name, wd.Auth, body) {
 		return
 	}
 
@@ -297,6 +279,45 @@ func (rec *Receiver) handle(w http.ResponseWriter, r *http.Request) {
 		rec.logf("webhook %q: unknown delivery mode %q", name, wd.Delivery)
 		writeError(w, http.StatusBadRequest, "bad_delivery", "")
 	}
+}
+
+// authenticate verifies a delivery's raw body against auth, before anything
+// parses it, and answers the request itself when it does not pass: false
+// means the response is written. whKey names the per-webhook state the
+// verdict is recorded against ("" records nothing); name is for the log.
+//
+// auth.kind="none" is the trusted-network escape hatch: skip verification
+// entirely, but ONLY when the operator has explicitly opted in
+// (LOOMCYCLE_WEBHOOKS_ALLOW_UNAUTHENTICATED=1). Otherwise it 503s loudly —
+// silently accepting unsigned external POSTs would be a footgun, so the
+// default refuses even though the Def asked for no auth.
+func (rec *Receiver) authenticate(w http.ResponseWriter, r *http.Request, span trace.Span, whKey, name string, a config.WebhookAuth, body []byte) bool {
+	if strings.EqualFold(strings.TrimSpace(a.Kind), "none") {
+		if !rec.allowUnauthenticated {
+			rec.finish(span, whKey, "", verdictUnresolved, "")
+			rec.logf("webhook %q: auth.kind=none but LOOMCYCLE_WEBHOOKS_ALLOW_UNAUTHENTICATED is not set — refusing", name)
+			writeError(w, http.StatusServiceUnavailable, "unauthenticated_mode_disabled", "set LOOMCYCLE_WEBHOOKS_ALLOW_UNAUTHENTICATED=1 to enable auth.kind=none")
+			return false
+		}
+		rec.logf("webhook %q: accepted UNAUTHENTICATED delivery (auth.kind=none)", name)
+	} else if verr := verifySignature(a, body, r.Header.Get, rec.envAllowlist, rec.getenv, rec.now); verr != nil {
+		var ae *authError
+		if errors.As(verr, &ae) && ae.verdict == verdictUnresolved {
+			// Config-side failure (secret not allowlisted / unset). 503 names
+			// the env var (NAME, not value) so the operator can fix it.
+			rec.finish(span, whKey, "", verdictUnresolved, "")
+			rec.logf("webhook %q: secret unresolvable (env=%q)", name, ae.secretEnv)
+			writeSecretUnresolvable(w, ae.secretEnv)
+			return false
+		}
+		// Signature mismatch / replay-window / bad header / wrong bearer:
+		// one opaque 401, NO body detail (no timing/oracle leak).
+		rec.finish(span, whKey, "", verdictRejectedSig, "")
+		rec.logf("webhook %q: signature rejected", name)
+		writeError(w, http.StatusUnauthorized, "unauthorized", "")
+		return false
+	}
+	return true
 }
 
 // deliverChannel publishes the RAW payload to the Def's channel. No

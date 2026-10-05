@@ -272,6 +272,12 @@ const teamDefDescription = `Author, fork, promote, retire, and inspect team work
 	`into one of the team's own channels (channel: ./<name>) on its cadence — five-field cron or a descriptor like @every 1m, at most every 10s — ` +
 	`the payload if set, else a tick naming the schedule and when it fired. They start with each walk and stop when it ends; a team with no walk ` +
 	`running has none ticking, and two walks at once each tick. No agent, prompt, credentials or max_fires: a starter reading the channel is what the tick wakes. ` +
+	`It may declare webhooks of its own (local: {webhooks: {name: {auth, channel, payload_mapping?}}}): while a walk of the team runs, a signed POST to ` +
+	`/v1/_teams/<tenant>/<team>/webhooks/<name> (/v1/_teams/<team>/webhooks/<name> for the shared tenant) publishes its body, once, into one of the team's own ` +
+	`channels (channel: ./<name>). auth is a webhook definition's (hmac with signing_secret_env by default, bearer with bearer_token_env, none only where the ` +
+	`operator allows it; secrets are env-var names). payload_mapping may map only user_id (a JSONPath), the user the message is attributed to, and must for a ` +
+	`user-scoped channel. With no walk running it answers 404 like an unknown webhook. No agent, delivery, credentials, sync_response or on_complete. ` +
+	`Declaring one needs the authority to create a webhook definition, which an agent inside a run does not have. ` +
 	`run may also set breakpoints on starter states to step a fan-out wave: the walk pauses ` +
 	`before dispatching (showing each composed prompt) and asks a human to release all, release n, or abort. ` +
 	`run may also set review on starter, agent or parallel states (not a consolidator): ` +
@@ -297,7 +303,7 @@ const teamDefInputSchema = `{
         "transitions":    {"type": "array", "items": {"type": "object"}, "description": "Edges: each is {from, to, on}. Replaces the parent's transitions wholesale."},
         "colors":         {"type": "object", "description": "Presentation-only fills/edge colours. Excluded from the content hash."},
         "hooks":          {"type": "object", "description": "The walk's own hooks: {run_end: [entry, ...]}, fired when the walk ends. A state's handler may also carry hooks / tool_hooks, added to every run it starts."},
-        "local":          {"type": "object", "properties": {"agents": {"type": "object", "additionalProperties": {"type": "object"}, "description": "The team's own agents, at most 64: name (one segment of A-Z a-z 0-9 _ -, at most 64 characters) → the overlay AgentDef create takes (tier or provider/model, system_prompt, tools, skills, ...). A state runs one as \"./<name>\". Each passes the checks a new agent does, as <team>/<name>; a code-js one must carry code_body. A fork that sends agents replaces the whole list; {} declares none."}, "skills": {"type": "object", "additionalProperties": {"type": "object", "properties": {"body": {"type": "string"}, "description": {"type": "string"}, "tools": {"type": "array", "items": {"type": "string"}}}, "required": ["body"], "additionalProperties": false}, "description": "The team's own skills, at most 64: name (same grammar as an agent's) → {body, description, tools}, what SkillDef create takes. Only the team's own agents can use one, each granted it by listing \"./<name>\" in its skills; they load it with the Skill tool as \"./<name>\". Each passes the checks a new skill does, as <team>/<name>, and its tools must be within each granted agent's tools. A fork that sends skills replaces the whole list and leaves agents alone; {} declares none."}, "channels": {"type": "object", "additionalProperties": {"type": "object"}, "description": "The team's own channels, at most 64: name (one segment of A-Z a-z 0-9 _ -, at most 64 characters) → {scope: tenant|user, default_ttl?, max_messages?, hold?, semantic?, description?} (a ChannelDef's fields; no publisher, period or hooks). Named as \"./<name>\" in channel fields and in the team's own agents' channels. A fork that sends channels replaces the whole list; {} declares none."}, "schedules": {"type": "object", "additionalProperties": {"type": "object", "properties": {"schedule": {"type": "string", "description": "Five-field cron, or a descriptor such as @every 1m or @hourly; at most every 10s. A time zone goes in the expression: CRON_TZ=Europe/Berlin 0 9 * * *."}, "channel": {"type": "string", "description": "One of the team's own channels, as ./<name>."}, "payload": {"description": "Any JSON value, published as the message on every tick (at most 16 KiB). Omitted: a tick {schedule_name, fired_at, delivery, payload: null}."}}, "required": ["schedule", "channel"], "additionalProperties": false}, "description": "The team's own schedules, at most 16: name (same grammar as an agent's) → {schedule, channel, payload?}. Each ticks only while a walk of the team runs — started with the walk, stopped when it ends, skipped while the runtime is paused. No other field is taken (no agent, prompt, credentials, max_fires). A fork that sends schedules replaces the whole list; {} declares none."}}, "additionalProperties": false, "description": "What the team declares for itself: agents, skills, channels and schedules; any other key is refused."},
+        "local":          {"type": "object", "properties": {"agents": {"type": "object", "additionalProperties": {"type": "object"}, "description": "The team's own agents, at most 64: name (one segment of A-Z a-z 0-9 _ -, at most 64 characters) → the overlay AgentDef create takes (tier or provider/model, system_prompt, tools, skills, ...). A state runs one as \"./<name>\". Each passes the checks a new agent does, as <team>/<name>; a code-js one must carry code_body. A fork that sends agents replaces the whole list; {} declares none."}, "skills": {"type": "object", "additionalProperties": {"type": "object", "properties": {"body": {"type": "string"}, "description": {"type": "string"}, "tools": {"type": "array", "items": {"type": "string"}}}, "required": ["body"], "additionalProperties": false}, "description": "The team's own skills, at most 64: name (same grammar as an agent's) → {body, description, tools}, what SkillDef create takes. Only the team's own agents can use one, each granted it by listing \"./<name>\" in its skills; they load it with the Skill tool as \"./<name>\". Each passes the checks a new skill does, as <team>/<name>, and its tools must be within each granted agent's tools. A fork that sends skills replaces the whole list and leaves agents alone; {} declares none."}, "channels": {"type": "object", "additionalProperties": {"type": "object"}, "description": "The team's own channels, at most 64: name (one segment of A-Z a-z 0-9 _ -, at most 64 characters) → {scope: tenant|user, default_ttl?, max_messages?, hold?, semantic?, description?} (a ChannelDef's fields; no publisher, period or hooks). Named as \"./<name>\" in channel fields and in the team's own agents' channels. A fork that sends channels replaces the whole list; {} declares none."}, "schedules": {"type": "object", "additionalProperties": {"type": "object", "properties": {"schedule": {"type": "string", "description": "Five-field cron, or a descriptor such as @every 1m or @hourly; at most every 10s. A time zone goes in the expression: CRON_TZ=Europe/Berlin 0 9 * * *."}, "channel": {"type": "string", "description": "One of the team's own channels, as ./<name>."}, "payload": {"description": "Any JSON value, published as the message on every tick (at most 16 KiB). Omitted: a tick {schedule_name, fired_at, delivery, payload: null}."}}, "required": ["schedule", "channel"], "additionalProperties": false}, "description": "The team's own schedules, at most 16: name (same grammar as an agent's) → {schedule, channel, payload?}. Each ticks only while a walk of the team runs — started with the walk, stopped when it ends, skipped while the runtime is paused. No other field is taken (no agent, prompt, credentials, max_fires). A fork that sends schedules replaces the whole list; {} declares none."}, "webhooks": {"type": "object", "additionalProperties": {"type": "object", "properties": {"auth": {"type": "object", "properties": {"kind": {"type": "string", "enum": ["hmac", "bearer", "none"]}, "signing_secret_env": {"type": "string"}, "bearer_token_env": {"type": "string"}, "header": {"type": "string"}, "algorithm": {"type": "string"}, "delivery_id_header": {"type": "string"}}, "additionalProperties": false, "description": "A webhook definition's auth: hmac (the default) needs signing_secret_env, bearer needs bearer_token_env, none is honoured only where the operator allows unauthenticated webhooks. Secrets are env-var NAMES, resolved under the receiver's allowlist."}, "channel": {"type": "string", "description": "One of the team's own channels, as ./<name>."}, "payload_mapping": {"type": "object", "properties": {"user_id": {"type": "string"}}, "additionalProperties": false, "description": "Only user_id: a JSONPath ($, .key and [N]) to the user the message is attributed to. Required when the channel is user-scoped (the message is filed under that user)."}}, "required": ["auth", "channel"], "additionalProperties": false}, "description": "The team's own webhooks, at most 16: name (same grammar as an agent's) → {auth, channel, payload_mapping?}. Each answers POST /v1/_teams/<tenant>/<team>/webhooks/<name> only while a walk of the team runs, publishing the request body once into the channel; otherwise 404. No other field is taken (no agent, delivery, credentials, sync_response, on_complete, tenant_id). Declaring one needs the authority to create a webhook definition. A fork that sends webhooks replaces the whole list; {} declares none."}}, "additionalProperties": false, "description": "What the team declares for itself: agents, skills, channels, schedules and webhooks; any other key is refused."},
         "vars":           {"type": "object", "additionalProperties": {"type": "string"}, "description": "The team's variables: name → default value, read in a state's prompts as ${var.<name>}. Every walk starts with these defaults; run may set a declared one with its own vars. A default is literal text (never expanded; no {{ or }}), at most 4096 bytes, at most 64 variables. A fork that sends vars replaces the whole list; {} declares none."}
       },
       "additionalProperties": true
@@ -474,6 +480,9 @@ func (t *TeamDef) execCreate(ctx context.Context, in teamDefInput) (tools.Result
 	if err := checkTeamChannelAuthority(ctx, def); err != nil {
 		return errResult(fmt.Sprintf("create: %s", err)), nil
 	}
+	if err := checkLocalWebhooks(ctx, in.Name, def); err != nil {
+		return errResult(fmt.Sprintf("create: %s", err)), nil
+	}
 	// Preflight AFTER the authority check: "you may not grant this" is a
 	// harder refusal than "this will not work", and reporting the softer one
 	// first would send the author to fix a def they are not allowed to write.
@@ -636,6 +645,9 @@ func (t *TeamDef) execFork(ctx context.Context, in teamDefInput) (tools.Result, 
 		return errResult(fmt.Sprintf("fork: %s", err)), nil
 	}
 	if err := checkTeamChannelAuthority(ctx, def); err != nil {
+		return errResult(fmt.Sprintf("fork: %s", err)), nil
+	}
+	if err := checkLocalWebhooks(ctx, in.Name, def); err != nil {
 		return errResult(fmt.Sprintf("fork: %s", err)), nil
 	}
 	if err := t.preflightChannels(ctx, def); err != nil {
@@ -1161,16 +1173,23 @@ func (t *TeamDef) execRun(ctx context.Context, in teamDefInput) (tools.Result, e
 		return errResult(fmt.Sprintf("run: team %q declares agents of its own and belongs to another tenant; "+
 			"a team's own agents run only in the team's tenant — run it as that tenant", row.Name)), nil
 	}
-	// A team's own schedules publish into its own channels, which are its
-	// tenant's, and are started by whatever arms a walk's triggers. Either
-	// missing, the walk would wait on a clock that never ticks.
-	if len(def.LocalScheduleNames()) > 0 {
+	// A team's own schedules and webhooks publish into its own channels, which
+	// are its tenant's, and are started by whatever arms a walk's triggers.
+	// Either missing, the walk would wait on a clock that never ticks or an
+	// endpoint that never answers.
+	for _, kind := range []struct {
+		what  string
+		names []string
+	}{{"schedules", def.LocalScheduleNames()}, {"webhooks", def.LocalWebhookNames()}} {
+		if len(kind.names) == 0 {
+			continue
+		}
 		if t.ArmWalkTriggers == nil {
-			return errResult(fmt.Sprintf("run: team %q declares schedules of its own, and this server cannot run them", row.Name)), nil
+			return errResult(fmt.Sprintf("run: team %q declares %s of its own, and this server cannot run them", row.Name, kind.what)), nil
 		}
 		if row.TenantID != tools.RunIdentity(ctx).TenantID {
-			return errResult(fmt.Sprintf("run: team %q declares schedules of its own and belongs to another tenant; "+
-				"a team's own schedules run only in the team's tenant — run it as that tenant", row.Name)), nil
+			return errResult(fmt.Sprintf("run: team %q declares %s of its own and belongs to another tenant; "+
+				"a team's own %s run only in the team's tenant — run it as that tenant", row.Name, kind.what, kind.what)), nil
 		}
 	}
 
@@ -1865,6 +1884,9 @@ func applyTeamOverlay(base *teamgraph.Definition, ov teamgraph.Definition) {
 		if ov.Local.Schedules != nil {
 			base.Local.Schedules = ov.Local.Schedules
 		}
+		if ov.Local.Webhooks != nil {
+			base.Local.Webhooks = ov.Local.Webhooks
+		}
 	}
 }
 
@@ -1940,12 +1962,12 @@ func walkTerminal(def teamgraph.Definition, task *teamrun.Task) string {
 // ValidateTeamDefBody re-runs, over a stored team def body, the authoring
 // checks on its hooks: it parses as a team definition, and the walk's and each
 // state's hooks are well formed (inline webhooks included), and so is each
-// agent, skill, channel and schedule the team declares for itself. A snapshot
-// restore calls it before writing a body. The graph itself is not re-validated
-// — a team dials nothing of its own — and neither are the caller-dependent
-// checks: channel authority, and the gates a local agent or skill passes when
-// it is authored (see ValidateAgentDefBody for why a restore has no authoring
-// caller).
+// agent, skill, channel, schedule and webhook the team declares for itself. A
+// snapshot restore calls it before writing a body. The graph itself is not
+// re-validated — a team dials nothing of its own — and neither are the
+// caller-dependent checks: channel authority, and the gates a local agent,
+// skill or webhook passes when it is authored (see ValidateAgentDefBody for
+// why a restore has no authoring caller).
 func ValidateTeamDefBody(body json.RawMessage) error {
 	def, err := teamgraph.Parse(body)
 	if err != nil {
@@ -1984,6 +2006,13 @@ func ValidateTeamDefBody(body json.RawMessage) error {
 	// channel the team does not declare, would only be found by a walk.
 	if err := teamgraph.CheckLocalSchedules(def); err != nil {
 		return err
+	}
+	// And its own webhooks, by the rules their authoring is held to — all but
+	// the authoring gate, which needs a caller.
+	for _, name := range def.LocalWebhookNames() {
+		if _, err := LocalWebhookOf(def, name); err != nil {
+			return fmt.Errorf("local.webhooks[%q]: %w", name, err)
+		}
 	}
 	return teamgraph.ValidateHooks(def)
 }
