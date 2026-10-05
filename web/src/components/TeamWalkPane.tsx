@@ -38,6 +38,7 @@ import {
   teamNameOf,
   visitGroups,
   walkTeamOf,
+  walkVarsOf,
   watchWalk,
 } from "../lib/walkView";
 
@@ -298,6 +299,7 @@ function WalkHeader({
   docs: { documentId: string; scope: string }[];
 }) {
   const finalText = walk.result?.final_text;
+  const vars = walkVarsOf(walk);
   return (
     <div className="agent-header">
       <div className="line1">
@@ -330,6 +332,22 @@ function WalkHeader({
         ))}
       </div>
       {walk.error && <div className="agent-err">error: {walk.error}</div>}
+      {vars.length > 0 && (
+        <details className="team-walk-vars">
+          <summary>variables set at start ({vars.length})</summary>
+          <p className="team-walk-muted">The others ran on the team&apos;s defaults.</p>
+          <dl>
+            {vars.map(([name, value]) => (
+              <div key={name}>
+                <dt>
+                  <code>{name}</code>
+                </dt>
+                <dd>{value === "" ? <span className="team-walk-muted">(empty)</span> : <pre>{value}</pre>}</dd>
+              </div>
+            ))}
+          </dl>
+        </details>
+      )}
       {finalText && (
         <details className="team-walk-result" open>
           <summary>result</summary>

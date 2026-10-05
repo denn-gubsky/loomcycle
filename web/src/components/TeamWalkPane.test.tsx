@@ -136,6 +136,20 @@ describe("TeamWalkView", () => {
     expect(html).not.toContain("current definition");
   });
 
+  it("shows the variables the walk was started with, and says the rest kept their defaults", () => {
+    const html = render({
+      walk: walkRun({ spec: { team: { name: "triage", def_id: "tdf_ran", version: 4, vars: { tone: "casual", audience: "" } } } }),
+    });
+    expect(html).toContain("variables set at start (2)");
+    expect(html).toContain("<code>tone</code></dt><dd><pre>casual</pre>");
+    expect(html).toContain("<code>audience</code></dt><dd><span class=\"team-walk-muted\">(empty)</span>");
+    expect(html).toContain("The others ran on the team&#x27;s defaults.");
+  });
+
+  it("shows no variables block for a walk started without any", () => {
+    expect(render({})).not.toContain("variables set at start");
+  });
+
   it("offers continue, release and abort for a pending breakpoint pause", () => {
     const html = render({ interrupts: [pause] });
     expect(html).toContain("Paused before dispatching <code>publish</code>");

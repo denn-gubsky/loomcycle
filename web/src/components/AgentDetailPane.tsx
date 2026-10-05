@@ -17,7 +17,7 @@ import {
 import Breadcrumbs, { type BreadcrumbAncestor } from "./Breadcrumbs";
 import DraftPanel from "./DraftPanel";
 import { settledToolIds } from "../lib/toolSettlement";
-import { isTeamWalkAgentId, parentRunHref, runRowHref, type RunSelection } from "../lib/runLineage";
+import { isTeamWalkAgentId, parentRunHref, runRowHref, runTeamOf, type RunSelection } from "../lib/runLineage";
 import TerminalTranscript from "./TerminalTranscript";
 import ViewToggle, { useViewMode } from "./ViewToggle";
 import {
@@ -229,6 +229,7 @@ function AgentDetailPaneBody({ agentId, runId, ancestors, onSelect }: AgentDetai
                 resident{agent.resident_state ? ` · ${agent.resident_state}` : ""}
               </span>
             )}
+            <RunTeamBadge run={agent} />
             <strong>{agent.agent || "(unknown agent)"}</strong>
             <code className="agent-id">{agent.agent_id}</code>
             {agent.status === "running" && (!isTeamWalkAgentId(agent.agent_id) || agent.run_id) && (
@@ -369,6 +370,26 @@ function AgentDetailPaneBody({ agentId, runId, ancestors, onSelect }: AgentDetai
       {tab === "interrupts" && <InterruptsTab runID={agent?.run_id ?? ""} />}
       {tab === "channels" && <ChannelsTab agentName={agent?.agent ?? ""} />}
     </div>
+  );
+}
+
+// RunTeamBadge marks a run that belongs to a team walk with the team's name,
+// and says when the run's agent is one of the team's own — which exists only
+// in the team's definition and cannot be started outside a walk of it.
+export function RunTeamBadge({ run }: { run: Pick<Agent, "spec"> }) {
+  const t = runTeamOf(run);
+  if (!t) return null;
+  return (
+    <span
+      className="pill-team"
+      title={
+        t.ownAgent
+          ? `One of team ${t.team}'s own agents: declared in the team's definition and run only inside a walk of it — it cannot be started on its own.`
+          : `Runs inside a walk of team ${t.team}.`
+      }
+    >
+      team: {t.team}
+    </span>
   );
 }
 

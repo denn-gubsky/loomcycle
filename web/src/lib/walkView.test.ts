@@ -16,6 +16,7 @@ import {
   rowFromEvent,
   runPaneFor,
   visitGroups,
+  walkVarsOf,
   watchWalk,
   type WalkRunRow,
 } from "./walkView";
@@ -385,5 +386,22 @@ describe("small helpers", () => {
       row({ runId: "c" }),
     ]);
     expect(boardDocuments(v)).toEqual([{ documentId: "doc_1", scope: "tenant" }]);
+  });
+});
+
+describe("walkVarsOf", () => {
+  it("lists the values the start supplied, sorted by name", () => {
+    const spec = { team: { name: "brief", def_id: "tdf_1", version: 2, vars: { tone: "casual", audience: "" } } };
+    expect(walkVarsOf({ spec })).toEqual([
+      ["audience", ""],
+      ["tone", "casual"],
+    ]);
+  });
+
+  it("is empty for a walk started with no vars, an older walk, or any other run", () => {
+    expect(walkVarsOf({ spec: { team: { name: "brief", def_id: "tdf_1", version: 2 } } })).toEqual([]);
+    expect(walkVarsOf({ spec: {} })).toEqual([]);
+    expect(walkVarsOf({})).toEqual([]);
+    expect(walkVarsOf({ spec: { team: { vars: ["x"] } } })).toEqual([]);
   });
 });

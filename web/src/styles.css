@@ -1791,6 +1791,25 @@ textarea::placeholder {
 .team-run-required {
   color: var(--failed);
 }
+/* The team's variables, a group of their own under the input form. */
+.team-run-vars {
+  border: 1px solid var(--border, #444);
+  border-radius: 4px;
+  padding: 8px 12px 12px;
+}
+.team-run-vars legend {
+  padding: 0 4px;
+  font-weight: 600;
+}
+.team-run-var-reset {
+  align-self: flex-start;
+  font-size: 11px;
+  padding: 1px 6px;
+}
+.team-run-var-problem {
+  color: var(--failed);
+  font-size: 11px;
+}
 .library-prompt-textarea {
   width: 100%;
   padding: 8px;
@@ -4630,6 +4649,17 @@ button.primary:disabled {
 }
 /* RFC BK P3 — resident interactive sub-agent chip. Distinct hue (amber) from the
    interactive (green) chip so a resident child is scannable in the runs tree. */
+.pill-team {
+  font-size: 10px;
+  padding: 1px 6px;
+  border-radius: 10px;
+  text-transform: lowercase;
+  letter-spacing: 0.03em;
+  background: rgba(127, 127, 127, 0.15);
+  color: var(--fg-muted, #888);
+  border: 1px solid var(--fg-muted, #888);
+  justify-self: start;
+}
 .pill-resident {
   font-size: 10px;
   padding: 1px 6px;
@@ -7431,6 +7461,29 @@ button.doc-ref-target.external {
 }
 .team-walk-result {
   margin-top: 8px;
+}
+.team-walk-vars {
+  margin-top: 8px;
+  font-size: 12px;
+}
+.team-walk-vars dl {
+  margin: 4px 0 0;
+}
+.team-walk-vars dl > div {
+  display: grid;
+  grid-template-columns: minmax(80px, max-content) 1fr;
+  gap: 8px;
+}
+.team-walk-vars dd {
+  margin: 0;
+}
+.team-walk-vars pre {
+  margin: 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-family: var(--mono);
+  max-height: 160px;
+  overflow: auto;
 }
 .team-walk-visit + .team-walk-visit {
   margin-top: 10px;

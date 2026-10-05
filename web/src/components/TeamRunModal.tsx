@@ -15,19 +15,27 @@ import {
   type FieldValue,
   type FormField,
   type FormValues,
+  type VarField,
+  type VarValues,
   buildInput,
+  buildVars,
   chunkOptions,
   chunkPickerEnabled,
+  declaredVars,
   entryForm,
   initialValues,
+  initialVarValues,
   setFieldValue,
+  varValueProblem,
 } from "../lib/teamStart";
 
 // TeamRunModal starts a walk of a team from its input form. It reads the team's
 // ACTIVE version (what op=run starts — not the editor's unsaved text), renders
 // the entry state's form, and starts the walk detached so the page never waits
 // on it; the walk view then opens on the returned run id. The server checks
-// the input and names a bad field in its refusal, shown next to the form.
+// the input and names a bad field in its refusal, shown next to the form. A
+// team that declares variables also gets one box per variable, starting at its
+// default; only the ones changed are sent (see buildVars).
 
 const msg = (e: unknown) => (e instanceof Error ? e.message : String(e));
 
@@ -37,6 +45,8 @@ export default function TeamRunModal({ team, onClose }: { team: TeamNameSummary;
   const [loadErr, setLoadErr] = useState("");
   const [values, setValues] = useState<FormValues>({});
   const [text, setText] = useState("");
+  const [varFields, setVarFields] = useState<VarField[]>([]);
+  const [varValues, setVarValues] = useState<VarValues>({});
   const [err, setErr] = useState("");
   const [submitting, setSubmitting] = useState(false);
 
@@ -53,6 +63,9 @@ export default function TeamRunModal({ team, onClose }: { team: TeamNameSummary;
         const f = entryForm(def);
         setForm(f);
         if (f.kind === "schema") setValues(initialValues(f.fields));
+        const vf = declaredVars(def);
+        setVarFields(vf);
+        setVarValues(initialVarValues(vf));
       } catch (e) {
         if (!cancelled) setLoadErr(msg(e));
       }
@@ -74,9 +87,14 @@ export default function TeamRunModal({ team, onClose }: { team: TeamNameSummary;
       }
       input = built.input;
     }
+    const vars = buildVars(varFields, varValues);
+    if (!vars.ok) {
+      setErr(vars.error);
+      return;
+    }
     setSubmitting(true);
     try {
-      const res = await runTeam(team.name, input);
+      const res = await runTeam(team.name, input, vars.vars);
       navigate(runRowHref({ runId: res.run_id, agentId: `team:${team.name}` }));
     } catch (e) {
       setErr(msg(e));
@@ -114,6 +132,14 @@ export default function TeamRunModal({ team, onClose }: { team: TeamNameSummary;
             </label>
           </div>
         )}
+        {form && varFields.length > 0 && (
+          <TeamRunVars
+            fields={varFields}
+            values={varValues}
+            disabled={submitting}
+            onChange={(name, v) => setVarValues((cur) => ({ ...cur, [name]: v }))}
+          />
+        )}
 
         {err && <div className="error-banner">{err}</div>}
 
@@ -146,6 +172,54 @@ export function TeamRunFields({ fields, values, disabled, onChange }: TeamRunFie
         <FieldControl key={f.name} field={f} fields={fields} values={values} disabled={disabled} onChange={onChange} />
       ))}
     </div>
+  );
+}
+
+export interface TeamRunVarsProps {
+  fields: VarField[];
+  values: VarValues;
+  disabled: boolean;
+  onChange: (name: string, v: string) => void;
+}
+
+// TeamRunVars renders one box per declared variable. The name is fixed (the
+// server takes only declared ones); the box starts at the default, which the
+// hint repeats so a person who edits it can see — and restore — what it was.
+export function TeamRunVars({ fields, values, disabled, onChange }: TeamRunVarsProps) {
+  return (
+    <fieldset className="library-modal-fields team-run-vars">
+      <legend>Variables</legend>
+      {fields.map((f) => {
+        const v = values[f.name] ?? f.defaultValue;
+        const changed = v !== f.defaultValue;
+        const problem = varValueProblem(v);
+        return (
+          <label key={f.name} className="library-modal-field">
+            <span>
+              <code>{f.name}</code>
+              <span className="library-modal-field-hint">
+                {" "}— default: {f.defaultValue === "" ? "(empty)" : f.defaultValue}
+                {changed && (v === "" ? "; blanked for this walk" : "; changed for this walk")}
+              </span>
+            </span>
+            <textarea
+              rows={2}
+              value={v}
+              onChange={(e) => onChange(f.name, e.target.value)}
+              disabled={disabled}
+              placeholder={f.defaultValue === "" ? "(empty)" : f.defaultValue}
+              spellCheck={false}
+            />
+            {changed && (
+              <button type="button" className="team-run-var-reset" onClick={() => onChange(f.name, f.defaultValue)} disabled={disabled}>
+                use the default
+              </button>
+            )}
+            {problem && <span className="team-run-var-problem">{problem}</span>}
+          </label>
+        );
+      })}
+    </fieldset>
   );
 }
 

@@ -127,3 +127,25 @@ export function breadcrumbAncestors(agents: Agent[], selectedKey: string | undef
   }
   return chain;
 }
+
+// RunTeam is the team a run belongs to, read from its spec: `team_scope` is on
+// every run in a walk's spawn tree (and a continuation of one), and
+// `agent_version.team_def_id` marks a run of one of the team's OWN agents —
+// declared in its definition, run as "<team>/<name>", and not runnable outside
+// a walk of that team.
+export interface RunTeam {
+  team: string;
+  ownAgent: boolean;
+}
+
+/** runTeamOf reads the team a run belongs to, or undefined for a run outside
+ *  any team (a walk's own run included: it carries `team`, not `team_scope`). */
+export function runTeamOf(a: Pick<Agent, "spec">): RunTeam | undefined {
+  const sc = a.spec?.team_scope;
+  if (!sc || typeof sc !== "object") return undefined;
+  const team = (sc as { team?: unknown }).team;
+  if (typeof team !== "string" || team === "") return undefined;
+  const av = a.spec?.agent_version;
+  const tdid = av && typeof av === "object" ? (av as { team_def_id?: unknown }).team_def_id : undefined;
+  return { team, ownAgent: typeof tdid === "string" && tdid !== "" };
+}

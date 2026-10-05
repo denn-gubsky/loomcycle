@@ -211,6 +211,74 @@ export function buildInput(fields: FormField[], values: FormValues): { ok: true;
   return { ok: true, input: JSON.stringify(out) };
 }
 
+// ---- Variables ----
+//
+// A team may declare `vars` (name → default text) and a start may set any of
+// them for one walk. The dialog shows one box per declared variable, holding its
+// default, and sends only the values the person CHANGED: the walk's run records
+// exactly what a start supplied (`spec.team.vars`), so sending the untouched
+// defaults would file them there as if somebody had chosen them — and would pin
+// a default this dialog read over one promoted since. A box cleared to "" is a
+// change from a non-empty default and is sent: "" is a real value, it blanks
+// the default for this walk.
+
+export interface VarField {
+  name: string;
+  defaultValue: string;
+}
+export type VarValues = Record<string, string>;
+
+/** The server's bound on one variable's value, in bytes (UTF-8). */
+export const MAX_VAR_VALUE_BYTES = 4096;
+
+// The ${…} namespaces a variable may never name; the server refuses them for
+// the same reason it refuses {{ }}.
+const SECRET_NAMESPACES = ["${run.credentials.", "${run.user_bearer"];
+
+/** declaredVars lists the variables a stored definition declares, in the order
+ *  the definition lists them. A default that is not text is skipped: the
+ *  server stores only text, so there is nothing to show for one. */
+export function declaredVars(definition: unknown): VarField[] {
+  if (!isObj(definition) || !isObj(definition.vars)) return [];
+  return Object.entries(definition.vars)
+    .filter((e): e is [string, string] => typeof e[1] === "string")
+    .map(([name, defaultValue]) => ({ name, defaultValue }));
+}
+
+/** initialVarValues: every box starts at its default. */
+export function initialVarValues(fields: VarField[]): VarValues {
+  const v: VarValues = {};
+  for (const f of fields) v[f.name] = f.defaultValue;
+  return v;
+}
+
+/** varValueProblem says why the server would refuse a value, or undefined. */
+export function varValueProblem(value: string): string | undefined {
+  const bytes = new TextEncoder().encode(value).length;
+  if (bytes > MAX_VAR_VALUE_BYTES) return `${bytes} bytes, more than the maximum ${MAX_VAR_VALUE_BYTES}`;
+  if (value.includes("{{") || value.includes("}}")) return "may not contain {{ or }}";
+  if (SECRET_NAMESPACES.some((ns) => value.includes(ns))) return "may not name the credentials namespace";
+  return undefined;
+}
+
+/** buildVars returns the `vars` a start sends: the declared variables whose
+ *  value differs from the default, or undefined when none does. A value the
+ *  server would refuse is reported here, naming the variable. */
+export function buildVars(
+  fields: VarField[],
+  values: VarValues,
+): { ok: true; vars?: Record<string, string> } | { ok: false; error: string } {
+  const out: Record<string, string> = {};
+  for (const f of fields) {
+    const v = values[f.name] ?? f.defaultValue;
+    if (v === f.defaultValue) continue;
+    const problem = varValueProblem(v);
+    if (problem) return { ok: false, error: `Variable ${f.name}: ${problem}` };
+    out[f.name] = v;
+  }
+  return { ok: true, vars: Object.keys(out).length > 0 ? out : undefined };
+}
+
 export interface ChunkOption {
   id: string;
   title: string;

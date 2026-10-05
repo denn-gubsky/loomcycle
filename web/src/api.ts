@@ -2141,8 +2141,16 @@ export function deleteTeam(name: string): Promise<{ name: string; deleted: boole
 // server checks `input` against the entry state's input form, then returns the
 // walk's run id at once while the walk continues in the background. A refused
 // input is a 422 whose message (surfaced by substratePost) names the field.
-export function runTeam(name: string, input: string): Promise<{ name: string; def_id: string; run_id: string; status: string }> {
-  return substratePost("/v1/_teamdef", { op: "run", name, input, mode: "detach" });
+// `vars` sets declared variables for this walk; omitted, every one keeps its
+// default.
+export function runTeam(
+  name: string,
+  input: string,
+  vars?: Record<string, string>,
+): Promise<{ name: string; def_id: string; run_id: string; status: string }> {
+  const body: Record<string, unknown> = { op: "run", name, input, mode: "detach" };
+  if (vars) body.vars = vars;
+  return substratePost("/v1/_teamdef", body);
 }
 
 // previewTeamDiagram renders a DRY-RUN diagram from an unsaved graph overlay

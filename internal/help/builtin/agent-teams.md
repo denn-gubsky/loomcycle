@@ -244,9 +244,9 @@ already exist. Declare them under `local.agents` — name → the same body
   its version: a paused member resumes on it.
 - **Limits.** At most 64 agents. A local name is one segment of
   `A-Z a-z 0-9 _ -`, at most 64 characters, and the team's own name must be
-  one segment too. Under `local` a team may declare `agents`, `skills` (below)
-  and `channels` (next section); any other kind is refused. A
-  team's own agents run only in the team's tenant. `verify` lists a declared
+  one segment too. Under `local` a team may declare `agents`, `skills` (below),
+  `channels`, `schedules` and `webhooks` (next section); any other kind is
+  refused. A team's own agents run only in the team's tenant. `verify` lists a declared
   agent no state runs as an advisory issue.
 
 ### A team's own skills
