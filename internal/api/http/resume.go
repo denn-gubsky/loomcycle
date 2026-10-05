@@ -238,6 +238,10 @@ func (s *Server) resumePausedRun(run store.Run) error {
 	// the definition and says so, rather than failing a run that is otherwise
 	// fine: refusing to resume is a heavier answer than resolving normally.
 	runCfg, haveRunCfg := decodeRunConfig(run.RunConfig)
+	// The team the run belongs to, from its own record: its agent — and every
+	// agent it goes on to spawn — resolves in the team VERSION it started
+	// under, whatever the team has been forked or promoted to since.
+	ctx = runCfg.withTeamScope(ctx)
 
 	// The definition the run started on, at its authoritative tenant. One that
 	// no longer exists fails the run so it isn't a permanent "running" zombie;
@@ -870,6 +874,8 @@ func (s *Server) resumePausedRun(run store.Run) error {
 // version may offer wider tools, a different prompt or different policies, and
 // a pause is not a moment at which a run's capabilities may change.
 //
+//   - A team's own agent is read from the team version the run recorded
+//     (its team scope), retired or not; a version deleted since fails the run.
 //   - A recorded version is read by its id, retired or not (the rule a pinned
 //     HookDef follows, see pinnedLookup).
 //   - A record marking the operator's static configuration reads the static
@@ -895,7 +901,32 @@ func (s *Server) resumePausedRun(run store.Run) error {
 // tried again.
 func (s *Server) resumedAgentDef(ctx context.Context, run store.Run, ver *agentVersionRecord) (config.AgentDef, bool, error) {
 	var def config.AgentDef
-	if ver != nil && ver.DefID != "" {
+	if ver != nil && ver.TeamDefID != "" {
+		// A team's own agent: read from the team version the run recorded, and
+		// from nowhere else. Never by name — a global agent may have taken the
+		// same full name since the team was deleted, and it is not the
+		// definition this run started on.
+		sc, ok := store.TeamScopeFromContext(ctx)
+		local, isMember := strings.CutPrefix(run.Agent, sc.Team+"/")
+		if !ok || sc.DefID != ver.TeamDefID || !isMember {
+			return config.AgentDef{}, true, fmt.Errorf("agent %q: the run started on a team's own agent but does not record that team (version %s)", run.Agent, ver.TeamDefID)
+		}
+		d, found, err := s.teamLocalAgent(ctx, sc, local)
+		if err != nil {
+			var gone *teamVersionGoneError
+			return config.AgentDef{}, errors.As(err, &gone), err
+		}
+		if !found {
+			return config.AgentDef{}, true, fmt.Errorf("agent %q: team %q version %s does not declare it", run.Agent, sc.Team, sc.DefID)
+		}
+		// A global agent that took the name while the run was paused: new
+		// runs of the local one are refused (refuseSharedName); this one has
+		// already run, so it finishes, and says so.
+		if _, _, gerr := s.globalAgent(ctx, run.TenantID, run.Agent); gerr == nil {
+			log.Printf("resume: run %s is team %q's own agent %q, and a global agent of that name exists now; they share agent-scoped state until one is renamed", run.ID, sc.Team, run.Agent)
+		}
+		def = d
+	} else if ver != nil && ver.DefID != "" {
 		row, gone, err := s.agentVersionRow(ctx, run, ver.DefID)
 		if err != nil {
 			return config.AgentDef{}, gone, err

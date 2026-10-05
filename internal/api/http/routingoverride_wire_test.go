@@ -240,7 +240,13 @@ func TestResourceOverride_CapLookupPrefersTheRunsOwnCap(t *testing.T) {
 			"max_concurrent_children is recorded and then ignored: the name lookup it falls " +
 			"back to cannot see a per-run value")
 	}
-	if strings.Index(body, "tools.FanoutCap(ctx)") > strings.Index(body, "lookup.Agent(") {
+	// The definition is read through lookupAgent, which honours a team scope:
+	// the calling agent may be one of a team's own.
+	def := strings.Index(body, "s.lookupAgent(")
+	if def < 0 {
+		t.Fatal("CapLookup's definition lookup not found; this guard has stopped guarding")
+	}
+	if strings.Index(body, "tools.FanoutCap(ctx)") > def {
 		t.Error("CapLookup consults the definition BEFORE the run's own cap; the run's value " +
 			"must win, and it can only ever be narrower")
 	}

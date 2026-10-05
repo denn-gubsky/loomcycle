@@ -1818,6 +1818,9 @@ func main() {
 	// Spawn + Admit (op=run) into it, and keeps the HTTP /v1/_teamdef + MCP
 	// `teamdef` + Connector surfaces pointing at it.
 	srv.SetTeamDefTool(teamDefTool)
+	// A static agent added since a team was written can share a name with one
+	// of that team's own agents; say so now rather than at the first walk.
+	srv.LogTeamLocalNameClashes(context.Background())
 	// RFC DK — code-js hook bodies, opt-in. A body's only tool is the same
 	// Interruption instance agents use, run under the hook's own grant.
 	// The HookDef substrate compiles a code-js body when it is saved, with the

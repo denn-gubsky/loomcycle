@@ -143,6 +143,45 @@ type runConfigRecord struct {
 	// Not runs.agent_def_id, for the reason AgentVersion is not: that column
 	// names an AgentDef version, and the Evaluation tool reads it as one.
 	Team *teamWalkRecord `json:"team,omitempty"`
+
+	// TeamScope is the team this run belongs to: set on every run in a walk's
+	// spawn tree — its members, their sub-agents, and theirs — and on a
+	// continuation of one. A resumed or continued run reads the team's own
+	// agents from the version named here, whatever the team is by then.
+	// Absent on a run outside every team, and on the walk's own run, which
+	// names its team in Team and resolves no agent.
+	//
+	// Here rather than in parent_context, which a caller supplies: this names
+	// definitions a run may execute, so only the runtime may write it.
+	TeamScope *teamScopeRecord `json:"team_scope,omitempty"`
+}
+
+// teamScopeRecord is store.TeamScope as a run records it.
+type teamScopeRecord struct {
+	Team      string `json:"team"`
+	DefID     string `json:"def_id"`
+	DefTenant string `json:"def_tenant,omitempty"`
+}
+
+// teamScopeRecordOf records the team scope on ctx; nil outside every team.
+func teamScopeRecordOf(ctx context.Context) *teamScopeRecord {
+	sc, ok := store.TeamScopeFromContext(ctx)
+	if !ok {
+		return nil
+	}
+	return &teamScopeRecord{Team: sc.Team, DefID: sc.DefID, DefTenant: sc.Tenant}
+}
+
+// withTeamScope returns ctx carrying the team scope the run recorded — or
+// carrying NONE when it recorded none, whatever ctx held. A run's scope is its
+// own record's, never the scope of whoever is acting on it.
+func (rc runConfigRecord) withTeamScope(ctx context.Context) context.Context {
+	if rc.TeamScope == nil {
+		return store.WithTeamScope(ctx, store.TeamScope{})
+	}
+	return store.WithTeamScope(ctx, store.TeamScope{
+		Tenant: rc.TeamScope.DefTenant, Team: rc.TeamScope.Team, DefID: rc.TeamScope.DefID,
+	})
 }
 
 // teamWalkRecord is a walk's start, as its run records it. Nothing in it is
@@ -265,15 +304,21 @@ func cutUTF8(s string, n int) string {
 // the same name can shadow later; a resume reads the static definition again.
 // false for every other source, and on a run recorded before it existed, which
 // resumes by name as before.
+//
+// TeamDefID marks a run of a team's OWN agent, with the team version it was
+// read from. A resume reads it from that version and nowhere else — never from
+// a global agent that has the same full name by then. "" for every other
+// source.
 type agentVersionRecord struct {
 	DefID            string `json:"def_id,omitempty"`
 	RegisteredSHA256 string `json:"registered_sha256,omitempty"`
 	Static           bool   `json:"static,omitempty"`
+	TeamDefID        string `json:"team_def_id,omitempty"`
 }
 
 // agentVersionOf records the version def was read from.
 func agentVersionOf(def config.AgentDef) *agentVersionRecord {
-	return &agentVersionRecord{DefID: def.DefID, RegisteredSHA256: def.RegisteredSHA256, Static: def.Static}
+	return &agentVersionRecord{DefID: def.DefID, RegisteredSHA256: def.RegisteredSHA256, Static: def.Static, TeamDefID: def.TeamDefID}
 }
 
 // spawnRecord is a sub-run's inherited ceiling, captured from the parent's
