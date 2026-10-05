@@ -179,6 +179,11 @@ var deliberatelyUnclassified = map[string]string{
 
 	// Transport capability, decided before any tool call is made.
 	"runner.ErrStreamingUnsupported": "transport capability, not a tool outcome",
+
+	// Returned only by the trigger seam (TeamWalkStarter) to the scheduler
+	// and the webhook receiver, which branch on it themselves. A tool caller
+	// starting a walk gets TeamDef op=run's own refusal instead.
+	"runner.ErrTeamNotStartable": "trigger-side only; not reachable from a tool caller",
 }
 
 // TestCategoryOf_NoUnclassifiedSentinelDrift parses the sentinel declarations
@@ -207,6 +212,7 @@ func TestCategoryOf_NoUnclassifiedSentinelDrift(t *testing.T) {
 			"ErrStreamingUnsupported":         runner.ErrStreamingUnsupported,
 			"ErrRunNotConfigured":             runner.ErrRunNotConfigured,
 			"ErrDraftChanged":                 runner.ErrDraftChanged,
+			"ErrTeamNotStartable":             runner.ErrTeamNotStartable,
 		},
 		"resolve": {
 			"ErrTierUnavailable":       resolve.ErrTierUnavailable,
