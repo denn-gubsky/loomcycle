@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/denn-gubsky/loomcycle/internal/store"
 	"github.com/denn-gubsky/loomcycle/internal/store/sqlite"
 	"github.com/denn-gubsky/loomcycle/internal/teamrun"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
@@ -813,5 +814,141 @@ func TestTeamDefTool_Run_BoardChunkIDWithoutBoardWiredErrors(t *testing.T) {
 	res, _ := tool.Execute(ctx, json.RawMessage(`{"op":"run","name":"board-missing","input":"x","board_chunk_id":"c1"}`))
 	if !res.IsError || !strings.Contains(res.Text, "no Document board wired") {
 		t.Fatalf("board_chunk_id without a wired board should error; got %q (isErr=%v)", res.Text, res.IsError)
+	}
+}
+
+// seedLegacyTeam writes a team row straight through the store, the way a team
+// created before the name grammar existed sits in a database: no tool-level
+// name check, promoted to active.
+func seedLegacyTeam(t *testing.T, tool *TeamDef, tenant, name string) string {
+	t.Helper()
+	ctx := context.Background()
+	row, err := tool.Store.TeamDefCreate(ctx, store.TeamDefRow{
+		DefID:      mintTeamDefID(),
+		Name:       name,
+		Definition: json.RawMessage(validTeamGraph),
+		TenantID:   tenant,
+	})
+	if err != nil {
+		t.Fatalf("seed TeamDefCreate %q: %v", name, err)
+	}
+	if err := tool.Store.TeamDefSetActive(ctx, tenant, name, row.DefID, "a_seed", store.TeamDefPromoter{}); err != nil {
+		t.Fatalf("seed TeamDefSetActive %q: %v", name, err)
+	}
+	return row.DefID
+}
+
+func TestTeamDefTool_CreateNewInvalidNameRefusedPersistsNothing(t *testing.T) {
+	tool, ctx, done := teamDefFixture(t)
+	defer done()
+
+	for _, name := range []string{"a/b", "a:b", "a b", "a.b", "..", strings.Repeat("a", 65)} {
+		in, _ := json.Marshal(map[string]any{"op": "create", "name": name, "overlay": json.RawMessage(validTeamGraph)})
+		res, _ := tool.Execute(ctx, in)
+		if !res.IsError {
+			t.Errorf("create %q succeeded, want a name refusal", name)
+			continue
+		}
+		if !strings.Contains(res.Text, "team name") {
+			t.Errorf("create %q refused with %q, want the team-name rule", name, res.Text)
+		}
+		rows, err := tool.Store.TeamDefListByName(ctx, name)
+		if err != nil {
+			t.Fatalf("TeamDefListByName %q: %v", name, err)
+		}
+		if len(rows) != 0 {
+			t.Errorf("create %q persisted %d row(s) despite the refusal", name, len(rows))
+		}
+	}
+}
+
+func TestTeamDefTool_CreateUnderExistingLegacyNameAddsVersion(t *testing.T) {
+	tool, ctx, done := teamDefFixture(t)
+	defer done()
+	seedLegacyTeam(t, tool, "", "legacy/team:1")
+
+	out := createTeam(t, tool, ctx, "legacy/team:1", validTeamGraph)
+	if v, _ := out["version"].(float64); v != 2 {
+		t.Errorf("version = %v, want 2 (a new version under the existing legacy name)", out["version"])
+	}
+}
+
+func TestTeamDefTool_LegacyNameStillReadsRunsAndForks(t *testing.T) {
+	tool, ctx, done := teamDefFixture(t)
+	defer done()
+	tool.Spawn = textSpawn(func(_ context.Context, agent string, _ teamrun.Prompt, _ string) (string, error) {
+		return agent + " ok", nil
+	})
+	const name = "legacy/team:1"
+	defID := seedLegacyTeam(t, tool, "", name)
+
+	for _, in := range []map[string]any{
+		{"op": "get", "def_id": defID},
+		{"op": "list", "name": name},
+		{"op": "verify", "name": name},
+		{"op": "run", "name": name, "input": "seed"},
+		{"op": "fork", "name": name, "overlay": map[string]any{}},
+		{"op": "promote", "def_id": defID},
+		{"op": "retire", "def_id": defID, "retired": true},
+		{"op": "delete", "name": name},
+	} {
+		raw, _ := json.Marshal(in)
+		res, _ := tool.Execute(ctx, raw)
+		if res.IsError {
+			t.Errorf("%s on legacy team %q: %s", in["op"], name, res.Text)
+		}
+	}
+}
+
+// The existence that exempts a name is the CALLER's tenant's. Another tenant's
+// team of the same name must not admit it — in either direction.
+func TestTeamDefTool_CreateInvalidNameHeldOnlyByAnotherTenantRefused(t *testing.T) {
+	tool, _, done := teamDefFixture(t)
+	defer done()
+	seedLegacyTeam(t, tool, "acme", "legacy/team")
+	in := json.RawMessage(`{"op":"create","name":"legacy/team","overlay":` + validTeamGraph + `}`)
+
+	for _, tenant := range []string{"", "globex"} {
+		ctx := tools.WithRunIdentity(context.Background(), tools.RunIdentityValue{AgentID: "a_test", TenantID: tenant})
+		if res, _ := tool.Execute(ctx, in); !res.IsError {
+			t.Errorf("tenant %q created %q, held only by tenant acme; want a name refusal", tenant, "legacy/team")
+		}
+	}
+	own := tools.WithRunIdentity(context.Background(), tools.RunIdentityValue{AgentID: "a_test", TenantID: "acme"})
+	if res, _ := tool.Execute(own, in); res.IsError {
+		t.Errorf("tenant acme could not add a version to its own legacy team: %s", res.Text)
+	}
+}
+
+// Forking the shared base lands a row under the caller's tenant, so it can
+// bring a name into a tenant that never held it.
+func TestTeamDefTool_ForkSharedLegacyNameIntoNewTenantRefused(t *testing.T) {
+	tool, _, done := teamDefFixture(t)
+	defer done()
+	sharedID := seedLegacyTeam(t, tool, "", "legacy/team")
+	seedLegacyTeam(t, tool, "", "sdlc")
+	acme := tools.WithRunIdentity(context.Background(), tools.RunIdentityValue{AgentID: "a_test", TenantID: "acme"})
+
+	for _, in := range []string{
+		`{"op":"fork","name":"legacy/team","overlay":{}}`,
+		`{"op":"fork","name":"legacy/team","parent_def_id":"` + sharedID + `","overlay":{}}`,
+	} {
+		res, _ := tool.Execute(acme, json.RawMessage(in))
+		if !res.IsError || !strings.Contains(res.Text, "team name") {
+			t.Errorf("%s: IsError=%v text=%q, want the team-name refusal", in, res.IsError, res.Text)
+		}
+	}
+	rows, err := tool.Store.TeamDefListByName(acme, "legacy/team")
+	if err != nil {
+		t.Fatalf("TeamDefListByName: %v", err)
+	}
+	for _, r := range rows {
+		if r.TenantID == "acme" {
+			t.Errorf("a refused fork persisted def %s under tenant acme", r.DefID)
+		}
+	}
+	// A shared base with a valid name still forks into a tenant.
+	if res, _ := tool.Execute(acme, json.RawMessage(`{"op":"fork","name":"sdlc","overlay":{}}`)); res.IsError {
+		t.Errorf("fork of the valid shared name sdlc into acme: %s", res.Text)
 	}
 }
