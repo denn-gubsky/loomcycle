@@ -8,6 +8,7 @@ import (
 
 	"github.com/denn-gubsky/loomcycle/internal/lookup"
 	"github.com/denn-gubsky/loomcycle/internal/skillmatch"
+	"github.com/denn-gubsky/loomcycle/internal/teamgraph"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
 )
 
@@ -21,11 +22,19 @@ import (
 // field is therefore held to the same rule as tools: within what the author
 // holds, read from the author's own policies on ctx.
 //
-// Each field is judged at its EFFECTIVE value — what the new agent would hold
-// if it ran from here — so a field left unset is judged at its default. For
-// most fields the default is narrow, but `skills` unset is "every skill", and
-// `memory_scopes` unset includes `tenant` for a tenant run: judging only the
-// declared value would make leaving a field out a way around the ceiling.
+// A field left UNSET is not judged when what it falls back to is the ordinary
+// default every agent gets (memory_scopes, sql_scopes, history_scope,
+// evaluation_scopes, volumes → the operator's `default` volume, interruption
+// kinds → question): the new agent then holds what any agent an operator wrote
+// without that field holds, and an author is not made to spell it out. An
+// explicit value is always judged. `skills` is the exception: unset is not a
+// fallback to a narrow default but the absence of the gate — every skill — so
+// an unset `skills` is judged like an explicit "all".
+//
+// Entries naming a team's own resources ("./<name>" channels and skills) are
+// not judged here: they reach only what the team declares, the author holds
+// those by authoring the team, and teamgraph refuses one the team does not
+// declare. On a global agent such an entry names nothing.
 //
 // Deliberately NOT judged, because they grant no reach over anyone's data:
 // resource budgets (max_iterations, unbounded_iterations,
@@ -98,22 +107,8 @@ func (a *AgentDef) checkCapabilityCeiling(ctx context.Context, name string, def 
 	return nil
 }
 
-// refuseCapability is the refusal for one value outside the ceiling. defaulted
-// says the field was left unset, so the value came from its default — the
-// author has to set the field to narrow it, not remove something it wrote.
-// Only the scope lists that read ["-*"] as "none" (tools.DenyAllScopes) are
-// told about it.
-func refuseCapability(field, value string, effective []string, defaulted bool, held string, ceiling []string) error {
-	if defaulted {
-		none := ""
-		if field == "memory_scopes" || field == "sql_scopes" || field == "history_scope" {
-			none = ` (or ["` + tools.DenyAllScopes + `"] for none)`
-		}
-		return fmt.Errorf("%s: left unset, the new agent would hold the default %s, and %q is not within %s %s %s. "+
-			"A new agent can only be granted authority its author holds: set %s explicitly to what it needs from that list%s, "+
-			"or ask an operator to author this agent",
-			field, listOrNone(effective), value, held, field, listOrNone(ceiling), field, none)
-	}
+// refuseCapability is the refusal for one explicit value outside the ceiling.
+func refuseCapability(field, value string, held string, ceiling []string) error {
 	return fmt.Errorf("%s: %q is not within %s %s %s. A new agent can only be granted authority its author holds: "+
 		"remove it, or ask an operator to author this agent",
 		field, value, held, field, listOrNone(ceiling))
@@ -150,9 +145,9 @@ func scopeUnion(a, b []string) []string {
 
 // subsetCeiling judges a scope list compared entry by entry (memory, SQL,
 // history): every effective entry must be one the ceiling lists.
-func subsetCeiling(field string, effective []string, defaulted bool, held string, ceiling []string) error {
-	if v, bad := firstUncovered(effective, func(c string) bool { return contains(ceiling, c) }); bad {
-		return refuseCapability(field, v, effective, defaulted, held, ceiling)
+func subsetCeiling(field string, declared []string, held string, ceiling []string) error {
+	if v, bad := firstUncovered(declared, func(c string) bool { return contains(ceiling, c) }); bad {
+		return refuseCapability(field, v, held, ceiling)
 	}
 	return nil
 }
@@ -161,18 +156,19 @@ func subsetCeiling(field string, effective []string, defaulted bool, held string
 
 // effectiveVolumes is the volume set an agent binds: its declared names, or
 // the operator's `default` volume when it declares none (volumePolicyForAgent).
-func (a *AgentDef) effectiveVolumes(d mergedDef) (names []string, defaulted bool) {
+func (a *AgentDef) effectiveVolumes(d mergedDef) []string {
 	if len(d.Volumes) > 0 {
-		return d.Volumes, false
+		return d.Volumes
 	}
 	if _, ok := a.Cfg.Volumes["default"]; ok {
-		return []string{"default"}, true
+		return []string{"default"}
 	}
-	return nil, true
+	return nil
 }
 
 func (a *AgentDef) ceilVolumes(ctx context.Context, def mergedDef, base *mergedDef, held string) error {
-	child, defaulted := a.effectiveVolumes(def)
+	// Unset binds the operator's `default` volume, as it does for any agent.
+	child := def.Volumes
 	if len(child) == 0 {
 		return nil
 	}
@@ -187,7 +183,7 @@ func (a *AgentDef) ceilVolumes(ctx context.Context, def mergedDef, base *mergedD
 	}
 	var fromBase []string
 	if base != nil {
-		fromBase, _ = a.effectiveVolumes(*base)
+		fromBase = a.effectiveVolumes(*base)
 		ceiling = scopeUnion(ceiling, fromBase)
 	}
 	for _, v := range child {
@@ -196,7 +192,7 @@ func (a *AgentDef) ceilVolumes(ctx context.Context, def mergedDef, base *mergedD
 		}
 		b, ok := bound[v]
 		if !ok {
-			return refuseCapability("volumes", v, child, defaulted, held, ceiling)
+			return refuseCapability("volumes", v, held, ceiling)
 		}
 		// A binding narrowed to read-only (a sub-agent of a read-only parent)
 		// does not make the volume read-only: a new agent naming it binds the
@@ -225,9 +221,12 @@ func ceilMemory(ctx context.Context, def mergedDef, base *mergedDef, held string
 		includeTurns = includeTurns || base.RecallIncludeTurns
 		attachTraces = attachTraces || base.RecallAttachTraces
 	}
-	eff := tools.EffectiveMemoryScopes(ctx, def.MemoryScopes)
-	if err := subsetCeiling("memory_scopes", eff, len(def.MemoryScopes) == 0, held, ceiling); err != nil {
-		return err
+	// Unset falls back to the ordinary default (EffectiveMemoryScopes), as for
+	// any agent. An explicit deny-all is within every ceiling.
+	if len(def.MemoryScopes) > 0 {
+		if err := subsetCeiling("memory_scopes", tools.EffectiveMemoryScopes(ctx, def.MemoryScopes), held, ceiling); err != nil {
+			return err
+		}
 	}
 	// A core block is read into the prompt at its own scope whatever the
 	// memory_scopes say, so its scope is reach like a memory scope — and the
@@ -267,7 +266,10 @@ func ceilSQL(ctx context.Context, def mergedDef, base *mergedDef, held string) e
 	if base != nil {
 		ceiling = scopeUnion(ceiling, tools.EffectiveSqlScopes(ctx, base.SqlScopes))
 	}
-	return subsetCeiling("sql_scopes", tools.EffectiveSqlScopes(ctx, def.SqlScopes), len(def.SqlScopes) == 0, held, ceiling)
+	if len(def.SqlScopes) == 0 {
+		return nil // the ordinary default, as for any agent
+	}
+	return subsetCeiling("sql_scopes", tools.EffectiveSqlScopes(ctx, def.SqlScopes), held, ceiling)
 }
 
 // historyScopes is a history_scope list as a run resolves it, with the legacy
@@ -291,7 +293,10 @@ func ceilHistory(ctx context.Context, def mergedDef, base *mergedDef, held strin
 	if base != nil {
 		ceiling = scopeUnion(ceiling, historyScopes(ctx, base.HistoryScope))
 	}
-	return subsetCeiling("history_scope", historyScopes(ctx, def.HistoryScope), len(def.HistoryScope) == 0, held, ceiling)
+	if len(def.HistoryScope) == 0 {
+		return nil // the ordinary default, as for any agent
+	}
+	return subsetCeiling("history_scope", historyScopes(ctx, def.HistoryScope), held, ceiling)
 }
 
 // ---- channels ----
@@ -319,8 +324,11 @@ func ceilChannels(ctx context.Context, def mergedDef, base *mergedDef, held stri
 		// either exact or a trailing "/*" prefix, so "team/x/*" passes against
 		// "team/*" (every name it matches, "team/*" matches) and "team/*"
 		// fails against "team/x".
-		if v, bad := firstUncovered(side.child, func(c string) bool { return channelAllowed(c, ceiling) }); bad {
-			return refuseCapability("channels."+side.name, v, side.child, false, held, ceiling)
+		if v, bad := firstUncovered(side.child, func(c string) bool {
+			_, local := teamgraph.LocalRef(strings.TrimSpace(c))
+			return local || channelAllowed(c, ceiling)
+		}); bad {
+			return refuseCapability("channels."+side.name, v, held, ceiling)
 		}
 	}
 	return nil
@@ -353,8 +361,9 @@ func ceilInterruption(ctx context.Context, def mergedDef, base *mergedDef, held 
 		return fmt.Errorf("interruption: this agent may not raise interruptions itself, so it cannot grant that to a new agent. " +
 			"Remove the interruption block, or ask an operator to author this agent")
 	}
-	kinds := interruptionKinds(def.Interruption.Kinds)
-	return subsetCeiling("interruption.kinds", kinds, len(def.Interruption.Kinds) == 0, held, ceiling)
+	// Unset kinds are the ordinary default (question), as for any agent that
+	// enables interruptions; the block itself still needs an enabled author.
+	return subsetCeiling("interruption.kinds", def.Interruption.Kinds, held, ceiling)
 }
 
 // ---- evaluation ----
@@ -367,9 +376,7 @@ func evaluationCovered(c string, ceiling []string) bool {
 }
 
 func ceilEvaluation(ctx context.Context, def mergedDef, base *mergedDef, held string) error {
-	// Unlike the other defaults, evaluation's reaches nothing but the new
-	// agent's own run (submit_self), so leaving the field unset grants no
-	// authority over anything its author could not touch.
+	// Unset is the ordinary default (submit_self), as for any agent.
 	if len(def.EvaluationScopes) == 0 {
 		return nil
 	}
@@ -381,7 +388,7 @@ func ceilEvaluation(ctx context.Context, def mergedDef, base *mergedDef, held st
 	}
 	eff := tools.EffectiveEvaluationScopes(def.EvaluationScopes)
 	if v, bad := firstUncovered(eff, func(c string) bool { return evaluationCovered(c, ceiling) }); bad {
-		return refuseCapability("evaluation_scopes", v, eff, len(def.EvaluationScopes) == 0, held, ceiling)
+		return refuseCapability("evaluation_scopes", v, held, ceiling)
 	}
 	return nil
 }
@@ -444,6 +451,17 @@ func skillsWithin(child, ceiling []string) bool {
 			}
 		}
 	}
+	// A whitelist of only the team's own skills permits no skill outside the
+	// team, whatever the ceiling denies.
+	onlyLocal := len(childPos) > 0
+	for _, p := range childPos {
+		if _, local := teamgraph.LocalRef(p); !local {
+			onlyLocal = false
+		}
+	}
+	if onlyLocal {
+		return true
+	}
 	var ceilPos []string
 	for _, e := range ceiling {
 		neg, pat, ok := skillEntry(e)
@@ -474,7 +492,7 @@ func skillsWithin(child, ceiling []string) bool {
 		// A team's own skill ("./<name>") is judged as a new skill of its own,
 		// under this same allowlist, when the team is authored; it names no
 		// skill outside the team.
-		if strings.HasPrefix(p, "./") {
+		if _, local := teamgraph.LocalRef(p); local {
 			continue
 		}
 		covered := false
@@ -584,7 +602,7 @@ func ceilDefScopes(ctx context.Context, name string, def mergedDef, base *merged
 				defScopeCovered(c, childName, g.baseVal, childName)
 		})
 		if bad {
-			return refuseCapability(g.field, v, g.child, false, held, scopeUnion(g.ceil, g.baseVal))
+			return refuseCapability(g.field, v, held, scopeUnion(g.ceil, g.baseVal))
 		}
 	}
 	return nil

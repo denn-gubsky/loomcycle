@@ -45,6 +45,7 @@ func ceilingFixture(t *testing.T) (*AgentDef, context.Context) {
 			},
 		},
 		Volumes: map[string]config.Volume{
+			"default": {Path: t.TempDir(), Mode: "rw"},
 			"work":    {Path: t.TempDir(), Mode: "rw"},
 			"secrets": {Path: t.TempDir(), Mode: "rw"},
 		},
@@ -55,9 +56,9 @@ func ceilingFixture(t *testing.T) (*AgentDef, context.Context) {
 	ctx = tools.WithAgentName(ctx, "sdlc/meta")
 	ctx = tools.WithAgentDefPolicy(ctx, tools.AgentDefPolicyValue{Scopes: []string{"named:sdlc/**"}, SelfName: "sdlc/meta"})
 	ctx = tools.WithAgentTools(ctx, []string{"Read"})
-	// Explicit narrow grants for the scope lists that would otherwise default
-	// (memory, SQL, history): the author holds only its own agent scope, so a
-	// case that leaves one of them unset judges nothing it did not mean to.
+	// Narrow grants for the scope lists that have an ordinary default, below
+	// that default (user, tenant), so an unset field passing is the default
+	// at work and not the author happening to hold it.
 	ctx = tools.WithMemoryPolicy(ctx, tools.MemoryPolicyValue{AllowedScopes: []string{"agent"}})
 	ctx = tools.WithSqlMemPolicy(ctx, tools.SqlMemPolicyValue{AllowedScopes: []string{"agent"}})
 	ctx = tools.WithHistoryPolicy(ctx, tools.HistoryPolicyValue{Scopes: []string{"self"}})
@@ -72,11 +73,6 @@ func agentDefOp(t *testing.T, tool *AgentDef, ctx context.Context, op, name, ove
 	}
 	return res
 }
-
-// pinned are the scope lists every case sets explicitly so that only the
-// field under test is judged: the fixture's author holds [agent] memory and
-// SQL and [self] history, and the defaults (user, tenant) would be outside it.
-const pinned = `"memory_scopes":["agent"],"sql_scopes":["agent"],"history_scope":["self"]`
 
 // ceilingCase is one capability field: the author policy that holds a narrow
 // grant of it, an overlay granting more, and one granting the same or less.
@@ -183,22 +179,6 @@ func ceilingCases() []ceilingCase {
 	}
 }
 
-// withPinned adds the pinned scope lists to an overlay unless it sets that
-// list itself.
-func withPinned(overlay string) string {
-	var m map[string]json.RawMessage
-	_ = json.Unmarshal([]byte(overlay), &m)
-	var p map[string]json.RawMessage
-	_ = json.Unmarshal([]byte("{"+pinned+"}"), &p)
-	for k, v := range p {
-		if _, ok := m[k]; !ok {
-			m[k] = v
-		}
-	}
-	b, _ := json.Marshal(m)
-	return string(b)
-}
-
 // An agent inside a run is narrowed by its own policies on every capability
 // field: a wider value is refused naming the field, an equal or narrower one
 // is stored. The same overlays pass for an operator on the substrate plane.
@@ -212,8 +192,8 @@ func TestAgentDefCreate_InRunAuthorIsRefusedEveryCapabilityItDoesNotHold(t *test
 			if refusedAs == "" {
 				refusedAs = c.field + ":"
 			}
-			wantRefused(t, agentDefOp(t, tool, ctx, "create", "sdlc/new", withPinned(c.wider)), "wider "+c.field, refusedAs, "ask an operator")
-			if res := agentDefOp(t, tool, ctx, "create", "sdlc/new", withPinned(c.within)); res.IsError {
+			wantRefused(t, agentDefOp(t, tool, ctx, "create", "sdlc/new", c.wider), "wider "+c.field, refusedAs, "ask an operator")
+			if res := agentDefOp(t, tool, ctx, "create", "sdlc/new", c.within); res.IsError {
 				t.Fatalf("within %s: refused: %s", c.field, res.Text)
 			}
 
@@ -236,7 +216,7 @@ func TestAgentDefCreate_MissingAuthorPolicyFailsClosed(t *testing.T) {
 		}
 		t.Run(c.field, func(t *testing.T) {
 			tool, ctx := ceilingFixture(t)
-			wantRefused(t, agentDefOp(t, tool, ctx, "create", "sdlc/new", withPinned(c.within)), "no policy, "+c.field, c.field+":")
+			wantRefused(t, agentDefOp(t, tool, ctx, "create", "sdlc/new", c.within), "no policy, "+c.field, c.field+":")
 		})
 	}
 }
@@ -263,7 +243,7 @@ func TestAgentDefCreate_ReviewerEscalationCaseIsRefused(t *testing.T) {
 func TestAgentDefCreate_WildcardToolsInsideARunIsStillNarrowed(t *testing.T) {
 	tool, ctx := ceilingFixture(t)
 	ctx = tools.WithAgentTools(ctx, []string{"*"})
-	wantRefused(t, agentDefOp(t, tool, ctx, "create", "sdlc/new", withPinned(`{"sql_scopes":["tenant"]}`)), "wildcard in a run", "sql_scopes:")
+	wantRefused(t, agentDefOp(t, tool, ctx, "create", "sdlc/new", `{"sql_scopes":["tenant"]}`), "wildcard in a run", "sql_scopes:")
 
 	off := operatorPlane(context.Background())
 	off = tools.WithAgentDefPolicy(off, tools.AgentDefPolicyValue{Scopes: []string{"named:sdlc/**"}})
@@ -272,16 +252,27 @@ func TestAgentDefCreate_WildcardToolsInsideARunIsStillNarrowed(t *testing.T) {
 	}
 }
 
-// A field left unset is judged at its default: memory_scopes unset gives a
-// tenant run [user tenant], beyond an author holding [agent], and skills unset
-// is every skill.
-func TestAgentDefCreate_UnsetFieldIsJudgedAtItsDefault(t *testing.T) {
+// A field left unset takes the ordinary default every agent gets — memory,
+// SQL and history scopes, evaluation scopes, the operator's default volume,
+// the question interruption kind — and is not judged, though the author holds
+// less than that default. Unset skills is not a default but "every skill",
+// and is still judged.
+func TestAgentDefCreate_UnsetFieldTakesTheOrdinaryDefault(t *testing.T) {
 	tool, ctx := ceilingFixture(t)
-	wantRefused(t, agentDefOp(t, tool, ctx, "create", "sdlc/new", `{"sql_scopes":["agent"],"history_scope":["self"]}`),
-		"memory_scopes unset", "memory_scopes: left unset", `["-*"]`)
-	if res := agentDefOp(t, tool, ctx, "create", "sdlc/new", `{"memory_scopes":["-*"],"sql_scopes":["-*"],"history_scope":["-*"]}`); res.IsError {
+	ctx = tools.WithVolumePolicy(ctx, tools.VolumePolicyValue{Active: true, Bindings: []tools.VolumeBinding{{Name: "work"}}})
+	ctx = tools.WithInterruptionPolicy(ctx, tools.InterruptionPolicyValue{Enabled: true, Kinds: []string{"approval"}})
+	if res := agentDefOp(t, tool, ctx, "create", "sdlc/new", `{"interruption":{"enabled":true}}`); res.IsError {
+		t.Fatalf("unset fields with an ordinary default were judged: %s", res.Text)
+	}
+	if res := agentDefOp(t, tool, ctx, "create", "sdlc/denied", `{"memory_scopes":["-*"],"sql_scopes":["-*"],"history_scope":["-*"]}`); res.IsError {
 		t.Fatalf("an explicit deny-all must always pass: %s", res.Text)
 	}
+	// Explicit values stay narrow-only.
+	wantRefused(t, agentDefOp(t, tool, ctx, "create", "sdlc/new2", `{"memory_scopes":["user"]}`), "explicit memory_scopes", "memory_scopes:")
+	wantRefused(t, agentDefOp(t, tool, ctx, "create", "sdlc/new2", `{"interruption":{"enabled":true,"kinds":["question"]}}`), "explicit kinds", "interruption.kinds:")
+
+	ctx = tools.WithSkillPolicy(ctx, tools.SkillPolicyValue{Patterns: []string{"doc/*"}})
+	wantRefused(t, agentDefOp(t, tool, ctx, "create", "sdlc/new2", `{}`), "unset skills", "skills: left unset")
 }
 
 // A volume the author holds read-only (a sub-agent of a read-only parent) is
@@ -289,7 +280,7 @@ func TestAgentDefCreate_UnsetFieldIsJudgedAtItsDefault(t *testing.T) {
 func TestAgentDefCreate_ReadOnlyHeldVolumeIsNotGrantedReadWrite(t *testing.T) {
 	tool, ctx := ceilingFixture(t)
 	ctx = tools.WithVolumePolicy(ctx, tools.VolumePolicyValue{Active: true, Bindings: []tools.VolumeBinding{{Name: "work", ReadOnly: true}}})
-	wantRefused(t, agentDefOp(t, tool, ctx, "create", "sdlc/new", withPinned(`{"volumes":["work"]}`)), "ro volume", "read-only")
+	wantRefused(t, agentDefOp(t, tool, ctx, "create", "sdlc/new", `{"volumes":["work"]}`), "ro volume", "read-only")
 }
 
 // A fork keeps what the version it forks holds — rewriting only the prompt of
@@ -299,16 +290,15 @@ func TestAgentDefFork_CapabilityCeilingKeepsTheLineageButCannotWiden(t *testing.
 	tool, ctx := ceilingFixture(t)
 	ctx = tools.WithMemoryPolicy(ctx, tools.MemoryPolicyValue{AllowedScopes: []string{"user"}})
 
-	if res := agentDefOp(t, tool, ctx, "fork", "sdlc/wide", withPinned(`{"system_prompt":"rewritten"}`)); res.IsError {
-		// withPinned narrows memory to [agent], which the parent holds.
+	if res := agentDefOp(t, tool, ctx, "fork", "sdlc/wide", `{"system_prompt":"rewritten"}`); res.IsError {
 		t.Fatalf("prompt-only fork refused: %s", res.Text)
 	}
 	if res := agentDefOp(t, tool, ctx, "fork", "sdlc/wide", `{"system_prompt":"keeps all","sql_scopes":["agent"],"history_scope":["self"]}`); res.IsError {
 		t.Fatalf("fork inheriting the parent's memory_scopes, channels and volumes refused: %s", res.Text)
 	}
-	wantRefused(t, agentDefOp(t, tool, ctx, "fork", "sdlc/wide", withPinned(`{"channels":{"publish":["ops","other"]}}`)),
+	wantRefused(t, agentDefOp(t, tool, ctx, "fork", "sdlc/wide", `{"channels":{"publish":["ops","other"]}}`),
 		"fork adding a channel", "channels.publish:", `"other"`, "forked version")
-	wantRefused(t, agentDefOp(t, tool, ctx, "fork", "sdlc/wide", withPinned(`{"volumes":["secrets","work"]}`)),
+	wantRefused(t, agentDefOp(t, tool, ctx, "fork", "sdlc/wide", `{"volumes":["secrets","work"]}`),
 		"fork adding a volume", "volumes:", `"work"`)
 	wantRefused(t, agentDefOp(t, tool, ctx, "fork", "sdlc/wide", `{"sql_scopes":["tenant"],"history_scope":["self"]}`),
 		"fork adding an SQL scope", "sql_scopes:")
@@ -352,6 +342,8 @@ func TestSkillsWithin_IsNarrowOnly(t *testing.T) {
 		{nil, []string{"-x"}, false},
 		{[]string{"doc/*", "-x"}, []string{"-x"}, true},
 		{[]string{"./local"}, []string{"doc/*"}, true},
+		{[]string{"./local"}, []string{"-x"}, true},
+		{[]string{"./local", "other"}, []string{"-x"}, false},
 		{[]string{"anything"}, []string{"-*"}, false},
 	} {
 		if got := skillsWithin(c.child, c.ceiling); got != c.want {
@@ -386,4 +378,30 @@ func TestDefScopeCovered_IsNarrowOnly(t *testing.T) {
 			t.Errorf("defScopeCovered(%q, child %q, %v, self %q) = %v, want %v", c.scope, c.child, c.ceiling, c.self, got, c.want)
 		}
 	}
+}
+
+// A team's own agent may be granted the team's own channels and skills by
+// "./<name>": the author holds those by authoring the team, so they are not
+// judged against its channel ACL or skills allowlist. Its other entries are.
+func TestTeamDefCreate_LocalAgentGrantsOfTheTeamsOwnChannelsAndSkillsAreNotJudged(t *testing.T) {
+	tool, ctx := skillTeamFixture(t)
+	ctx = tools.WithRunID(ctx, "run_author")
+	ctx = tools.WithChannelPolicy(ctx, tools.ChannelPolicyValue{Publish: []string{"team/*"}})
+	// The team's skill is authored as "<team>/style", which this allows; it
+	// does not allow "./style" as a pattern.
+	ctx = tools.WithSkillPolicy(ctx, tools.SkillPolicyValue{Patterns: []string{"sdlc/*", "sdlc2/*"}})
+	team := func(publish string) string {
+		return `{"entry":"review","local":{"channels":{"events":{"scope":"tenant"}},
+		  "agents":{"reviewer":{"tier":"middle","tools":["Read","Skill"],"skills":["./style"],
+		    "channels":{"publish":` + publish + `,"subscribe":["./events"]}}},
+		  "skills":{"style":{"body":"Prefer short functions.","tools":["Read"]}}},
+		  "states":[{"state":"review","handler":{"kind":"agent","agent":"./reviewer"}},
+		            {"state":"done","handler":{"kind":"terminal"}}],
+		  "transitions":[{"from":"review","to":"done","on":"success"}]}`
+	}
+	if res := teamOp(t, tool, ctx, "create", "sdlc", team(`["./events","team/x"]`)); res.IsError {
+		t.Fatalf("grants of the team's own channel and skill were judged: %s", res.Text)
+	}
+	wantRefused(t, teamOp(t, tool, ctx, "create", "sdlc2", team(`["./events","ops"]`)),
+		"a global channel beside the team's", `local.agents["reviewer"]`, "channels.publish:", `"ops"`)
 }
