@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -136,7 +137,7 @@ func (p *whoProvider) sawSystem(first string) bool {
 type localHarness struct {
 	t    *testing.T
 	srv  *Server
-	st   store.Store
+	st   *teamFaultStore
 	prov *whoProvider
 	cfg  *config.Config
 }
@@ -160,9 +161,22 @@ func newLocalHarness(t *testing.T) *localHarness {
 	}
 	t.Cleanup(func() { _ = st.Close() })
 	prov := &whoProvider{}
-	h := &localHarness{t: t, st: st, prov: prov, cfg: cfg}
+	h := &localHarness{t: t, st: &teamFaultStore{Store: st}, prov: prov, cfg: cfg}
 	h.srv = h.newServer()
 	return h
+}
+
+// teamFaultStore is a store whose reads of team versions can be made to fail.
+type teamFaultStore struct {
+	store.Store
+	faulty atomic.Bool
+}
+
+func (f *teamFaultStore) TeamDefGet(ctx context.Context, defID string) (store.TeamDefRow, error) {
+	if f.faulty.Load() {
+		return store.TeamDefRow{}, errors.New("database unavailable")
+	}
+	return f.Store.TeamDefGet(ctx, defID)
 }
 
 // newServer is one instance over the harness's store. A second one is another
@@ -647,5 +661,82 @@ func TestContinuation_OfATeamsOwnAgentStaysInTheTeamVersionItStartedUnder(t *tes
 	}
 	if err := h.runOnce("", lead.SessionID); !errors.Is(err, runner.ErrUnknownAgent) {
 		t.Errorf("continuing after the team was deleted = %v, want unknown agent", err)
+	}
+}
+
+// pausedLocalRun is the row a run of sdlc's own agent `local`, paused on team
+// version defID, leaves: still running, its record naming the team version.
+func (h *localHarness) pausedLocalRun(defID, local string) store.Run {
+	h.t.Helper()
+	ctx := context.Background()
+	agent := "sdlc/" + local
+	sess, err := h.st.CreateSession(ctx, "acme", agent, "alice")
+	if err != nil {
+		h.t.Fatal(err)
+	}
+	rec := runConfigRecord{
+		AgentVersion: &agentVersionRecord{TeamDefID: defID},
+		TeamScope:    &teamScopeRecord{Team: "sdlc", DefID: defID, DefTenant: "acme"},
+	}
+	run, err := h.st.CreateRun(ctx, sess.ID, store.RunIdentity{
+		AgentID: "a_paused_local", UserID: "alice", TenantID: "acme", Model: "stub-model", RunConfig: rec.marshal(),
+	})
+	if err != nil {
+		h.t.Fatal(err)
+	}
+	parkForResume(h.t, h.srv, run.ID)
+	return run
+}
+
+// A store fault reading the team version is not its deletion: the run neither
+// runs nor is failed, and stays paused for the next resume to try again.
+func TestResumedRun_WhoseTeamVersionCannotBeReadStaysPaused(t *testing.T) {
+	h := newLocalHarness(t)
+	defID := h.seedTeamVersion("tdf_sdlc_1", "sdlc", teamWith("./solo", map[string]string{"solo": "LOCAL solo"}), true)
+	run := h.pausedLocalRun(defID, "solo")
+	ctx := context.Background()
+
+	h.st.faulty.Store(true)
+	if n, warnings := h.srv.ResumePausedRuns(ctx); n != 0 || len(warnings) != 1 {
+		t.Fatalf("ResumePausedRuns = %d, %v; want 0 re-dispatched and one warning", n, warnings)
+	}
+	got, err := h.st.GetRun(ctx, run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status != store.RunRunning || got.PauseState != store.PauseStatePaused {
+		t.Fatalf("run status %q pause_state %q (%s); want still paused", got.Status, got.PauseState, got.ErrorMsg)
+	}
+	if h.prov.sawSystem("LOCAL solo") {
+		t.Error("the run ran although its definition could not be read")
+	}
+
+	// The fault clears, and the same run resumes on its team's agent.
+	h.st.faulty.Store(false)
+	resumeOne(t, h.srv)
+	waitFor(t, "the resumed run to finish", func() bool { _, live := h.srv.cancelReg.Get(run.AgentID); return !live })
+	if !h.prov.sawSystem("LOCAL solo") {
+		t.Error("the run did not resume on its team's own agent once the store answered")
+	}
+}
+
+// And a deleted version fails the run, on a row that was really paused.
+func TestResumedRun_WhoseTeamVersionWasDeletedIsFailed(t *testing.T) {
+	h := newLocalHarness(t)
+	defID := h.seedTeamVersion("tdf_sdlc_1", "sdlc", teamWith("./solo", map[string]string{"solo": "LOCAL solo"}), true)
+	run := h.pausedLocalRun(defID, "solo")
+	ctx := context.Background()
+	if _, err := h.st.TeamDefDelete(ctx, "acme", "sdlc"); err != nil {
+		t.Fatal(err)
+	}
+	if n, warnings := h.srv.ResumePausedRuns(ctx); n != 0 || len(warnings) != 1 {
+		t.Fatalf("ResumePausedRuns = %d, %v; want 0 re-dispatched and one warning", n, warnings)
+	}
+	got, err := h.st.GetRun(ctx, run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status != store.RunFailed || !strings.Contains(got.ErrorMsg, "no longer exists") {
+		t.Errorf("run status %q, error %q; want failed because its team version no longer exists", got.Status, got.ErrorMsg)
 	}
 }

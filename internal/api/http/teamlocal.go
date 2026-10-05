@@ -65,14 +65,14 @@ func (s *Server) resolveAgentName(ctx context.Context, tenantID, name string) (c
 	}
 	// Which local name, if any, this spelling could mean. A name with another
 	// prefix cannot be one of this team's agents, so it costs no team read.
-	candidate := local
-	if !dotted {
-		switch rest, qualified := strings.CutPrefix(name, sc.Team+"/"); {
-		case !strings.Contains(name, "/"):
-			candidate = name
-		case qualified:
-			candidate = rest
-		}
+	candidate := ""
+	switch rest, qualified := strings.CutPrefix(name, sc.Team+"/"); {
+	case dotted:
+		candidate = local
+	case !strings.Contains(name, "/"):
+		candidate = name
+	case qualified:
+		candidate = rest
 	}
 	if candidate != "" && teamgraph.ValidateLocalName(candidate) == nil {
 		def, found, err := s.teamLocalAgent(ctx, sc, candidate)
