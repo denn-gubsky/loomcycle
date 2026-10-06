@@ -120,6 +120,7 @@ func (s *Server) handleStreamUserAgents(w http.ResponseWriter, r *http.Request) 
 	ctx, cancel := context.WithTimeout(r.Context(), streamMaxLifetime)
 	defer cancel()
 	stream.startKeepalive(ctx, streamKeepaliveInterval)
+	defer stream.end()
 
 	// stream_open frame: adapters consume this to confirm the
 	// connection is live before any real events flow. Useful for

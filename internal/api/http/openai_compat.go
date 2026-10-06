@@ -309,6 +309,7 @@ func (s *Server) serveOpenAICompatStream(
 	}
 	stream.start()
 	stream.startKeepalive(r.Context(), 15*time.Second)
+	defer stream.end()
 
 	id := newLLMID()
 	created := time.Now().Unix()

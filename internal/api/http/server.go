@@ -4985,9 +4985,10 @@ func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {
 	stream.start()
 	// Keep the underlying TCP/HTTP path warm during long quiet stretches
 	// (parent agent waiting on a fan-out of sub-agents, single sub-agent
-	// mid-WebFetch, etc.). Goroutine exits when r.Context() fires
-	// (handler return / client disconnect). No-op if interval == 0.
+	// mid-WebFetch, etc.). Goroutine exits on client disconnect, or in the
+	// deferred end() before the handler returns. No-op if interval == 0.
 	stream.startKeepalive(r.Context(), s.cfg().Env.SSEKeepaliveInterval)
+	defer stream.end()
 
 	// Announce the (possibly newly-created) session/run IDs so the caller
 	// can address continuation requests at the same session.
@@ -5785,6 +5786,7 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 	stream.start()
 	// See handleRuns for the keepalive rationale.
 	stream.startKeepalive(r.Context(), s.cfg().Env.SSEKeepaliveInterval)
+	defer stream.end()
 	stream.send(providers.Event{Type: "session", Text: id})
 	stream.sendRaw("agent", map[string]any{
 		"agent_id":        agentID,
