@@ -151,6 +151,9 @@ func (m *Model) Rank(ctx context.Context, query string, texts []string, maxChars
 // Kind is the listwise kind.
 func (m *Model) Kind() string { return config.RerankerKindListwise }
 
+// DefaultCandidates is the listwise kind's measured pool.
+func (m *Model) DefaultCandidates() int { return memory.DefaultListwiseRerankCandidates }
+
 // SetOnUsage records each call's tokens against the run whose context it is.
 func (m *Model) SetOnUsage(f func(ctx context.Context, u *providers.Usage)) { m.OnUsage = f }
 

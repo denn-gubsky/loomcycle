@@ -14,6 +14,7 @@ import (
 	memory "github.com/denn-gubsky/loomcycle/internal/memory"
 	"github.com/denn-gubsky/loomcycle/internal/memory/backends/inprocess"
 	"github.com/denn-gubsky/loomcycle/internal/memory/reranker"
+	"github.com/denn-gubsky/loomcycle/internal/providers"
 	"github.com/denn-gubsky/loomcycle/internal/store"
 )
 
@@ -247,21 +248,66 @@ func TestInProcessRerank_ThePoolHoldsCandidatesWhateverTopK(t *testing.T) {
 	b, _, _, cleanup := vectorFixture(t)
 	defer cleanup()
 	ctx := context.Background()
-	for i := 0; i < 30; i++ {
+	for i := 0; i < 50; i++ {
 		key := fmt.Sprintf("doc.chunk:c%02d", i)
 		if _, err := b.Set(ctx, store.MemoryScopeUser, "u1", key, json.RawMessage(`{"body":"go"}`),
 			memory.SetOptions{Embed: true, EmbedText: "Guide — Section\ngo"}); err != nil {
 			t.Fatal(err)
 		}
 	}
+	// The listwise kind's default pool is 40.
 	r := &scriptedReranker{reply: "[20]"}
 	b.SetReranker(r)
 	res := search(t, b, memory.SearchQuery{QueryText: "go", TopK: 2, Rerank: rerankOn})
-	if res.Rerank == nil || res.Rerank.Candidates != 20 {
-		t.Fatalf("the model was shown %+v candidates, want 20 at top_k 2", res.Rerank)
+	if res.Rerank == nil || res.Rerank.Candidates != 40 {
+		t.Fatalf("the listwise model was shown %+v candidates, want 40 at top_k 2", res.Rerank)
 	}
-	if !strings.Contains(r.prompt, "[20] ") || strings.Contains(r.prompt, "[21] ") {
-		t.Error("the prompt does not hold exactly 20 candidates")
+	if !strings.Contains(r.prompt, "[40] ") || strings.Contains(r.prompt, "[41] ") {
+		t.Error("the prompt does not hold exactly 40 candidates")
+	}
+	// A ranker that names no default (the decision kind's shape) is shown 20.
+	o := &orderRanker{report: memory.RerankReport{Reason: memory.RerankTimeout}}
+	b.SetRanker(o)
+	search(t, b, memory.SearchQuery{QueryText: "go", TopK: 2, Rerank: rerankOn})
+	if len(o.texts) != 20 {
+		t.Errorf("a ranker without a default was shown %d candidates, want 20", len(o.texts))
+	}
+}
+
+// replyProvider answers every call with one fixed text: the listwise reranker's
+// model, without a network.
+type replyProvider struct{ text string }
+
+func (replyProvider) ID() string                                   { return "reply" }
+func (replyProvider) Capabilities() providers.Capabilities         { return providers.Capabilities{} }
+func (replyProvider) Probe(context.Context) error                  { return nil }
+func (replyProvider) ListModels(context.Context) ([]string, error) { return nil, nil }
+func (replyProvider) KeyEnvName() string                           { return "" }
+func (p replyProvider) Call(context.Context, providers.Request) (<-chan providers.Event, error) {
+	ch := make(chan providers.Event, 2)
+	ch <- providers.Event{Type: providers.EventText, Text: p.text}
+	ch <- providers.Event{Type: providers.EventDone}
+	close(ch)
+	return ch, nil
+}
+
+// TestInProcessRerank_TheBuiltListwiseRerankerGetsItsDefaultPool — the crossing
+// main.go makes: the listwise reranker the operator's config builds, handed to the
+// backend as a Ranker, is shown its own default of 40 candidates, not 20.
+func TestInProcessRerank_TheBuiltListwiseRerankerGetsItsDefaultPool(t *testing.T) {
+	b, _, _, cleanup := vectorFixture(t)
+	defer cleanup()
+	ctx := context.Background()
+	for i := 0; i < 50; i++ {
+		if _, err := b.Set(ctx, store.MemoryScopeUser, "u1", fmt.Sprintf("doc.chunk:c%02d", i), json.RawMessage(`{"body":"go"}`),
+			memory.SetOptions{Embed: true, EmbedText: "Guide — Section\ngo"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	b.SetRanker(reranker.New(replyProvider{text: "[40, 1]"}, config.RerankerConfig{Provider: "reply", Model: "m"}))
+	res := search(t, b, memory.SearchQuery{QueryText: "go", TopK: 2, Rerank: rerankOn})
+	if res.Rerank == nil || !res.Rerank.Applied || res.Rerank.Candidates != 40 {
+		t.Fatalf("report = %+v, want applied over 40 candidates", res.Rerank)
 	}
 }
 

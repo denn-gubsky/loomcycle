@@ -298,6 +298,31 @@ func TestDecision_ARestrictedRunCannotSpendTheOperatorsKey(t *testing.T) {
 	})
 }
 
+// TestBuildRanker_TheDefaultPoolFollowsTheKind — the crossing from config to the
+// pool a search shows: a listwise block is shown 40 candidates by default and a
+// decision block 20 (it names at most 26 options, so more would only be clamped).
+// An agent's own candidates win over either.
+func TestBuildRanker_TheDefaultPoolFollowsTheKind(t *testing.T) {
+	t.Setenv("OPENAI_API_KEY", "test-operator-key")
+	listwise, err := BuildRanker(openAIConfig(config.RerankerConfig{}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	decision := newDecision(t, "http://ollama.test:11434", config.RerankerConfig{})
+	var o memory.RerankOptions
+	if n := o.EffectiveCandidates(listwise); n != 40 {
+		t.Errorf("listwise default = %d, want 40", n)
+	}
+	if n := o.EffectiveCandidates(decision); n != 20 {
+		t.Errorf("decision default = %d, want 20", n)
+	}
+	o.Candidates = 12
+	if o.EffectiveCandidates(listwise) != 12 || o.EffectiveCandidates(decision) != 12 {
+		t.Errorf("explicit candidates = %d/%d, want 12 for both kinds",
+			o.EffectiveCandidates(listwise), o.EffectiveCandidates(decision))
+	}
+}
+
 // TestBuildRanker_BuildsTheDeclaredKind — the default kind is listwise; decision
 // needs an Ollama provider and calls its endpoint, or the block's own base_url; no
 // block is an untyped nil, so main never holds a Reranker that would be called.

@@ -363,8 +363,9 @@ channels:
 #
 #   # The model that reranks the document searches of agents whose definition
 #   # sets `memory_rerank: {enabled: true}` — one call per search, reordering
-#   # the first `candidates` (default 20). No block, no rerank: an agent that
-#   # asks for one gets `reranked: false, rerank_reason: not_configured`.
+#   # the first `candidates` (default 40 for listwise, 20 for decision). No
+#   # block, no rerank: an agent that asks for one gets `reranked: false,
+#   # rerank_reason: not_configured`.
 #   reranker:
 #     kind: listwise                         # the default; or `decision` (below)
 #     provider: ollama-local                 # a provider declared in providers:

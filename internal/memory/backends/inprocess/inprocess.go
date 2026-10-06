@@ -262,8 +262,8 @@ func (b *Backend) Search(ctx context.Context, scope store.MemoryScope, scopeID s
 		// The rerank shows the model its first `candidates` rows, so the pool must
 		// hold that many whatever top_k is — at top_k 5 the over-fetch alone is 20,
 		// at top_k 2 it would be 8.
-		if willRerank && q.Rerank.EffectiveCandidates() > fetch {
-			fetch = q.Rerank.EffectiveCandidates()
+		if n := q.Rerank.EffectiveCandidates(b.reranker); willRerank && n > fetch {
+			fetch = n
 		}
 		if fetch > 51 {
 			fetch = 51
