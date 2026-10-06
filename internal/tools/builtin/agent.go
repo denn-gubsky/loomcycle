@@ -222,6 +222,12 @@ type AgentTool struct {
 	// 0 = no ceiling. A larger timeout_ms is refused with the ceiling named.
 	MaxChildTimeoutMs int
 
+	// LiveChildren bounds the children each run has alive at once, across
+	// every op (LOOMCYCLE_MAX_LIVE_CHILDREN_PER_RUN). spawn and parallel_spawn
+	// admit theirs here; the server admits resident children at open. nil =
+	// no limit.
+	LiveChildren *tools.LiveChildren
+
 	// ResolveName, when set, turns the name a caller wrote into the name that
 	// agent RUNS under, before anything here uses it. Inside a team walk a
 	// caller may write "./reviewer" — or, where the resolver's rule for bare
@@ -286,6 +292,21 @@ func childTimedOutMessage(name string, timeoutMs int, runID string) string {
 		msg += fmt.Sprintf("; its run %s was cancelled", runID)
 	}
 	return msg
+}
+
+// admitChildren reserves n of the calling run's live children, or says why
+// not: the number alive and the limit, so the caller can wait for some to end.
+func (a *AgentTool) admitChildren(ctx context.Context, n int) ([]func(), tools.Result, bool) {
+	release, err := a.LiveChildren.Admit(tools.RunID(ctx), n)
+	if err != nil {
+		return nil, liveLimitResult(err), false
+	}
+	return release, tools.Result{}, true
+}
+
+// liveLimitResult is the refusal for a spawn past the live-children limit.
+func liveLimitResult(err error) tools.Result {
+	return errBusiness(err.Error(), "Wait for children you started to finish, or close resident children you no longer need, then try again.")
 }
 
 // checkChildTimeout validates a spawn's timeout_ms against the operator
@@ -504,6 +525,11 @@ func (a *AgentTool) executeSpawn(ctx context.Context, in agentInput) (tools.Resu
 			MaxAgentDepth, in.Name,
 		), "Do this work in the current agent instead of spawning another level."), nil
 	}
+	live, refused, ok := a.admitChildren(ctx, 1)
+	if !ok {
+		return refused, nil
+	}
+	defer live[0]()
 	subCtx := IncrementAgentDepth(ctx)
 	// Per-spawn compaction override (the parent steering this child's context
 	// management); runSubAgent blends it on top of inheritance.
@@ -610,6 +636,14 @@ func (a *AgentTool) executeParallelSpawn(ctx context.Context, in agentInput) (to
 			MaxAgentDepth, AgentDepth(ctx),
 		), "Do this work in the current agent instead of spawning another level."), nil
 	}
+	// Every child is admitted up front, queued ones included: the call has
+	// committed to running them all. All or none — a partial batch would hand
+	// back an envelope whose missing rows the caller has to work out, while a
+	// refusal names the number alive so it can resend once some have ended.
+	live, refused, ok := a.admitChildren(ctx, len(in.Spawns))
+	if !ok {
+		return refused, nil
+	}
 	subCtx := IncrementAgentDepth(ctx)
 
 	// Resolve the per-call concurrency cap: per-agent override (if
@@ -654,6 +688,7 @@ func (a *AgentTool) executeParallelSpawn(ctx context.Context, in agentInput) (to
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
+			defer live[i]() // the child is alive until it ends, queued time included
 			// Acquire a slot or bail on ctx cancellation. ctx
 			// cancellation propagates from the parent run, so a
 			// cancelled parent reliably terminates outstanding
@@ -823,6 +858,10 @@ func (a *AgentTool) executeOpen(ctx context.Context, in agentInput) (tools.Resul
 		subCtx = tools.WithCompactionOverride(subCtx, in.Compaction)
 	}
 	childRunID, output, state, err := a.OpenChild(subCtx, in.Name, in.Prompt, in.DefID, in.IdleTTLSeconds, in.TimeoutMs)
+	var lim *tools.LiveChildLimitError
+	if errors.As(err, &lim) {
+		return liveLimitResult(err), nil
+	}
 	if err != nil {
 		return errFrom(err.Error(), err), nil
 	}

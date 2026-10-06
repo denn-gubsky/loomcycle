@@ -214,6 +214,11 @@ type Server struct {
 	// drives Agent op=open/send/close + the idle sweeper + parent-teardown reap.
 	residentReg *residentRegistry
 
+	// liveChildren counts each run's live children across every Agent op
+	// (LOOMCYCLE_MAX_LIVE_CHILDREN_PER_RUN). Shared with the Agent tool, which
+	// admits spawn children; resident children are admitted at open.
+	liveChildren *tools.LiveChildren
+
 	// sessionLocks tracks per-session mutexes used by continuation
 	// requests (handleMessages, or handleRuns with a non-empty
 	// SessionID). A concurrent request to the same session fast-fails
@@ -633,6 +638,7 @@ func New(cfg *config.Config, pr ProviderResolver, builtinTools []tools.Tool, sem
 		s.contextPlugins = cp
 	}
 	s.residentReg = newResidentRegistry() // RFC BK: resident interactive sub-agents
+	s.liveChildren = tools.NewLiveChildren(s.maxLiveChildren)
 	s.tools = append(s.tools, &builtin.AgentTool{
 		// Run drops the run_id (the common sequential/spawn path); RunDetailed
 		// keeps it for the parallel_spawn ledger (RFC X Phase 3). Both drive
@@ -658,6 +664,7 @@ func New(cfg *config.Config, pr ProviderResolver, builtinTools []tools.Tool, sem
 		SpawnLedger: cfg.Env.ResumeFanout, // RFC X Phase 3: record the spawn ledger (default off)
 		// The ceiling on a spawn's timeout_ms (0 = none).
 		MaxChildTimeoutMs: cfg.Env.AgentChildMaxTimeoutMs,
+		LiveChildren:      s.liveChildren,
 		// v0.11.8 — per-agent max_concurrent_children cap for
 		// Agent.parallel_spawn. Walks the same resolver chain as
 		// sub-run dispatch (yaml > dynamic_agents > AgentDef

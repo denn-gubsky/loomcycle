@@ -30,6 +30,9 @@ import (
 // follow-up — on close/idle the container idle-reaps on the sidecar's own TTL.
 
 const (
+	// defaultMaxLiveChildren is LOOMCYCLE_MAX_LIVE_CHILDREN_PER_RUN's default:
+	// one full parallel_spawn (MaxParallelSpawns) fits, a second at once does not.
+	defaultMaxLiveChildren        = 32
 	defaultMaxResidentChildren    = 8
 	defaultResidentChildIdleTTLMs = 30 * 60 * 1000 // 30 min
 	// defaultResidentMaxTurn bounds one turn of a resident child. The idle rule
@@ -298,6 +301,14 @@ func (s *Server) maxResidentChildren() int {
 	return defaultMaxResidentChildren
 }
 
+// maxLiveChildren is the per-run live-children limit (0 = the default).
+func (s *Server) maxLiveChildren() int {
+	if s.cfg() != nil && s.cfg().Env.MaxLiveChildrenPerRun > 0 {
+		return s.cfg().Env.MaxLiveChildrenPerRun
+	}
+	return defaultMaxLiveChildren
+}
+
 // residentMaxTurn is the turn ceiling (LOOMCYCLE_RESIDENT_MAX_TURN_SECONDS;
 // 0 = the default).
 func (s *Server) residentMaxTurn() time.Duration {
@@ -329,7 +340,20 @@ func (s *Server) openResidentChild(ctx context.Context, name, prompt, defID stri
 	if cap := s.maxResidentChildren(); s.residentReg.countByParent(parent.AgentID) >= cap {
 		return "", "", "", fmt.Errorf("resident sub-agent cap reached (%d open for this run); close one before opening another", cap)
 	}
-	prompt, err := s.subagentStart(ctx, name, prompt)
+	// A resident child is one of the run's live children for as long as it
+	// lives: released by its loop goroutine's teardown, or here if it never
+	// starts.
+	live, err := s.liveChildren.Admit(tools.RunID(ctx), 1)
+	if err != nil {
+		return "", "", "", err
+	}
+	started := false
+	defer func() {
+		if !started {
+			live[0]()
+		}
+	}()
+	prompt, err = s.subagentStart(ctx, name, prompt)
 	if err != nil {
 		return "", "", "", err
 	}
@@ -374,6 +398,7 @@ func (s *Server) openResidentChild(ctx context.Context, name, prompt, defID stri
 	turnDone := rc.beginTurn(time.Now())
 	s.residentReg.add(rc)
 
+	started = true
 	go func() {
 		defer func() {
 			if r := recover(); r != nil {
@@ -384,6 +409,7 @@ func (s *Server) openResidentChild(ctx context.Context, name, prompt, defID stri
 			prep.cleanup()
 			prep.Slot.releaseCurrent()
 			s.residentReg.remove(rc)
+			live[0]()
 		}()
 		res, runErr := loop.Run(prep.LoopCtx, prep.Opts)
 		st := "completed"

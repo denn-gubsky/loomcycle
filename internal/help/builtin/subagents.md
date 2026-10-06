@@ -105,6 +105,18 @@ channels to start, then `await`s their result channels). It's the
 symmetric fan-OUT to `await`'s fan-IN; both cap at 32 channels and are
 atomic at the ACL pre-flight (one denied channel refuses the whole op).
 
+## Live-children limit
+
+A run may have at most 32 children alive at once (the operator may change it
+with `LOOMCYCLE_MAX_LIVE_CHILDREN_PER_RUN`), counting every kind: `spawn`
+children, `parallel_spawn` children — including ones still waiting for a slot
+— and open resident children. A spawn that would go past it is refused with
+the number alive and the limit; a `parallel_spawn` is refused whole, before
+any child starts. Wait for children to finish, or close resident children,
+and try again. The limit is per run: your children's own children count
+against them, not you. `max_concurrent_children` is separate — it is how many
+of one `parallel_spawn` call's children run at the same time.
+
 ## Recursion depth cap
 
 Sub-agents can spawn sub-sub-agents, but loomcycle caps recursion

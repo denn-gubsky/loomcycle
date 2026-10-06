@@ -50,6 +50,8 @@ adds `Final state:` and its JSON. A failure names the run in its message
   cancelled` — the child ran out of time. What it did before the bound is in
   its run's transcript; give it more time or a smaller task.
 - `timeout_ms=N is above this runtime's ceiling of M ms` — pass at most M.
+- `this run has N children alive and may have at most M at once ...` — wait
+  for children you started to finish, or close resident ones, then retry.
 
 ## Examples
 

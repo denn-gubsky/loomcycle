@@ -39,6 +39,10 @@ false and its run was cancelled); it is absent otherwise.
 - More than 32 entries is refused; split the batch.
 - `spawns[N].timeout_ms=... is above this runtime's ceiling of M ms` — pass at
   most M.
+- `this run has N children alive and may have at most M at once; starting K
+  more would exceed that` — the whole call is refused before any child
+  starts. Every entry counts, queued ones included. Wait for children to
+  finish, or send fewer entries.
 - A child's own failure is not an error of the call — it is an entry with
   `ok: false`.
 
