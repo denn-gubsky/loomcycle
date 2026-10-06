@@ -82,8 +82,13 @@ import (
 //     turn, not a pending user/tool_result) cannot re-enter the loop directly —
 //     that would send the provider a trailing assistant turn. It is restored to
 //     what it was doing instead: an interactive run waiting for input parks
-//     again, and a run held for review is held again. An idle non-interactive
-//     run that was not held has nobody to wait for and is flagged failed.
+//     again, a run held for review is held again, and a run waiting for its
+//     background children waits for them again. An idle non-interactive run
+//     that was none of these has nobody to wait for and is flagged failed.
+//   - A run's poll-mode background children are rebuilt from its ledger
+//     (resume_background.go); a restored child that is still running is
+//     waited for wherever it runs. A child's timeout_ms is not restored: its
+//     clock lived in the parent that started it.
 //     (Mid-execution runs — the F42 repro — end on a clean tool_result boundary
 //     and resume cleanly.)
 
@@ -389,6 +394,12 @@ func (s *Server) resumePausedRun(run store.Run) error {
 	if stateful {
 		seed = statefulSeedFromEvents(runEvents, nil, run.Interactive)
 	}
+	// The poll-mode children the run started, as its ledger records them. A
+	// stateful run has no background table, so it has none.
+	var pollLedger []*pollChildLedger
+	if !stateful {
+		pollLedger = pollLedgerOf(runEvents)
+	}
 
 	// RFC X Phase 3: detect a parked fan-out PARENT — a parallel_spawn that the
 	// Phase-3 watcher parked mid-wg.Wait, so its transcript ends on a dangling
@@ -446,11 +457,17 @@ func (s *Server) resumePausedRun(run store.Run) error {
 	// hold, interactive or not: it is waiting for a verdict, and a person owes
 	// it one. Refusing it would lose the answer under review.
 	var resumeHeld *loop.HeldReview
+	// A run that ended its turn and was waiting for its background children
+	// when it paused waits for them again: its children were started, nobody
+	// owes it a message, and it wakes when they end, as it would have.
+	resumeChildren := false
 	if !isFanout && idle {
 		held := heldReviewFrom(runEvents)
 		switch {
 		case held != nil && !stateful && s.steerReg != nil:
 			resumeHeld = held
+		case len(pollLedger) > 0 && !run.Interactive && parkedForChildren(runEvents):
+			resumeChildren = true
 		case !run.Interactive || s.steerReg == nil:
 			s.flagRunUnresumable(run, "run was idle awaiting input when paused; re-attach + steer to continue")
 			return fmt.Errorf("not auto-resumable (no pending turn)")
@@ -787,6 +804,11 @@ func (s *Server) resumePausedRun(run store.Run) error {
 		// The RECORD's tool_choice, not resumedToolChoice: the baseline is what
 		// the run holds, so a choice resume dropped as spent is not re-forced.
 		ReReadShapeOnOperatorTurn: s.reReadShapeOnOperatorTurnFn(run.ID, runCfg.ToolChoice, runCfg.OutputFormat),
+
+		// Its background children, rebuilt from its ledger, and its wait for
+		// them when it paused waiting.
+		RestoreBackground:      s.restoreBackgroundFn(run, pollLedger),
+		ResumeAwaitingChildren: resumeChildren,
 	}
 
 	go func() {

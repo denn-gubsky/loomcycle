@@ -170,6 +170,10 @@ type Server struct {
 	// walkHeartbeatEvery overrides how often a live walk's run is heartbeated;
 	// zero means the loop's own interval. Tests set it.
 	walkHeartbeatEvery time.Duration
+	// childRecheckFirst overrides the first wait between reads of a restored
+	// background child's run row (resume_background.go); zero means the
+	// default. Tests set it.
+	childRecheckFirst time.Duration
 	// walkClock is the time a walk's own schedules run on, and its own
 	// webhooks' leases; nil is the wall clock. Tests set it.
 	walkClock walkClock
