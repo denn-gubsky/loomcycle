@@ -108,6 +108,17 @@ func (s *Server) openTeamWalkRun(ctx context.Context, spec builtin.WalkRunSpec) 
 	walkCtx := ctx
 	if detach {
 		walkCtx = context.WithoutCancel(ctx)
+		// A detached walk is its own root, not a child of the agent that
+		// started it. Members register in the cancel registry under the
+		// identity's agent id, and cancelling an agent cascades to every entry
+		// naming it as parent — so with the starter's id here, cancelling the
+		// starter killed the walk's members though the walk's ctx survived it.
+		// Only the agent id changes: the walk keeps the starter's tenant, user,
+		// credentials and confinement bits, and its row still records the
+		// starter's run as its parent. It stops through its own run id.
+		walkIdent := ident
+		walkIdent.AgentID = agent
+		walkCtx = tools.WithRunIdentity(walkCtx, walkIdent)
 	}
 	if trigger != nil {
 		// The keys name THIS row. A walk a member of this one starts is its
