@@ -17,6 +17,11 @@ conversation — so put all it needs in it.
 - `compaction` — override the child's context compaction (it inherits yours):
   `enabled`, `target_percentage` (10–50), `keep_last_n`, `keep_first`,
   `autocompact_at_pct` (50–95), `model`.
+- `timeout_ms` — bound the child's run. When it runs out the child is
+  cancelled (with everything it started) and the call fails naming the
+  timeout. Time the child is held for review does not count. Absent or 0 =
+  wait however long it runs. The operator may set a ceiling; a larger value
+  is refused with the ceiling in the message.
 
 Do not pass `spawns` here; that is `parallel_spawn`.
 
@@ -41,6 +46,10 @@ adds `Final state:` and its JSON. A failure names the run in its message
   why; decide whether to retry with a clearer prompt.
 - `max sub-agent recursion depth (3) reached ...` — you are too deep to
   delegate; do the work yourself.
+- `sub-agent "X" timed out: timeout_ms=N elapsed ...; its run r_... was
+  cancelled` — the child ran out of time. What it did before the bound is in
+  its run's transcript; give it more time or a smaller task.
+- `timeout_ms=N is above this runtime's ceiling of M ms` — pass at most M.
 
 ## Examples
 
@@ -52,6 +61,12 @@ Delegate one task and wait for the answer:
 
 ```json result
 "[sub-agent agent_id=a_9f2c41d07be35a18 run_id=r_2b7e90c41d6f3a58]\n# Jane Doe — Senior Backend Engineer\n..."
+```
+
+Bound a child that might hang to two minutes:
+
+```json
+{"op": "spawn", "name": "researcher", "prompt": "Find the release date of PostgreSQL 18 and cite the announcement.", "timeout_ms": 120000}
 ```
 
 The same, with a child that should compact its context early on a long task:

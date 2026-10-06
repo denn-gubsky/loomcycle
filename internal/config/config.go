@@ -3562,6 +3562,13 @@ type Env struct {
 	// running turn is never idle. 0 = the code default (2h); there is no
 	// unlimited setting. Env: LOOMCYCLE_RESIDENT_MAX_TURN_SECONDS.
 	ResidentMaxTurnSeconds int
+	// AgentChildMaxTimeoutMs is the ceiling on the timeout_ms an agent may give
+	// a child it starts with Agent spawn / parallel_spawn. 0 = no ceiling. It is
+	// a ceiling, not a default: a spawn without timeout_ms still waits for its
+	// child as long as the child runs. A larger timeout_ms is refused, not
+	// clamped — a silently shortened bound would cut off a child the caller
+	// meant to wait for. Env: LOOMCYCLE_AGENT_CHILD_MAX_TIMEOUT_MS.
+	AgentChildMaxTimeoutMs int
 	// BraveAPIKey enables the WebSearch tool. Empty = WebSearch refuses
 	// every call. Lives at https://api.search.brave.com/.
 	BraveAPIKey string
@@ -4665,6 +4672,7 @@ func LoadLayers(layers ...Layer) (*Config, error) {
 		MaxInteractiveChildren:      getenvInt("LOOMCYCLE_MAX_INTERACTIVE_CHILDREN", 0),
 		InteractiveChildIdleTTLMs:   getenvInt("LOOMCYCLE_INTERACTIVE_CHILD_IDLE_TTL_MS", 0),
 		ResidentMaxTurnSeconds:      getenvInt("LOOMCYCLE_RESIDENT_MAX_TURN_SECONDS", 0),
+		AgentChildMaxTimeoutMs:      getenvInt("LOOMCYCLE_AGENT_CHILD_MAX_TIMEOUT_MS", 0),
 		BraveAPIKey:                 os.Getenv("BRAVE_API_KEY"),
 		SerperAPIKey:                os.Getenv("SERPER_API_KEY"),
 		ExaAPIKey:                   os.Getenv("EXA_API_KEY"),

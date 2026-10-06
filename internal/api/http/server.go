@@ -656,6 +656,8 @@ func New(cfg *config.Config, pr ProviderResolver, builtinTools []tools.Tool, sem
 		CancelChild: s.cancelResidentChildTurn,
 		CloseChild:  s.closeResidentChild,
 		SpawnLedger: cfg.Env.ResumeFanout, // RFC X Phase 3: record the spawn ledger (default off)
+		// The ceiling on a spawn's timeout_ms (0 = none).
+		MaxChildTimeoutMs: cfg.Env.AgentChildMaxTimeoutMs,
 		// v0.11.8 — per-agent max_concurrent_children cap for
 		// Agent.parallel_spawn. Walks the same resolver chain as
 		// sub-run dispatch (yaml > dynamic_agents > AgentDef
@@ -6932,6 +6934,9 @@ func (s *Server) runSubRun(ctx context.Context, name, systemExtra, prompt, defID
 		}, prep.Emit)
 		defer dereg()
 		prep.Opts.SteerQueue, prep.Opts.OnSteer = q, onSteer
+		// The spawn's timeout_ms clock stops while the child is held for a
+		// verdict; the Agent tool puts it on ctx (nil when unbounded).
+		prep.Opts.OnReviewHold = teamrun.HoldObserver(ctx)
 	}
 	res, runErr := loop.Run(prep.LoopCtx, prep.Opts)
 	s.finishRunWithCancel(ctx, prep.SteerCtx, prep.RunID, res, runErr, prep.Meta)

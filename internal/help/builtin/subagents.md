@@ -25,6 +25,18 @@ You want the sub-agent's OUTPUT before you continue:
 The sub-agent's own ACL applies — your tool set doesn't transfer.
 Each agent definition is operator-curated and self-describing.
 
+## Bounding a slow child: `timeout_ms`
+
+A sub-agent has no deadline of its own: `spawn` and `parallel_spawn` wait as
+long as it runs. Pass `timeout_ms` to bound it — on `spawn`, or on
+`parallel_spawn` for every entry (an entry's own `timeout_ms` wins). When it
+runs out the child is cancelled, with everything it started; `spawn` fails
+naming the timeout, and a `parallel_spawn` row reports `ok: false`,
+`status: "timeout"` and the child's `run_id`. Time a child is held for review
+does not count, and a `parallel_spawn` child's clock starts when it gets a
+slot. The operator may cap `timeout_ms` (`LOOMCYCLE_AGENT_CHILD_MAX_TIMEOUT_MS`);
+a larger value is refused, naming the cap.
+
 ## `Agent` (in-loop) vs `spawn_run` (MCP surface)
 
 These live at different layers and are easy to confuse:
