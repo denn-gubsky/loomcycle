@@ -145,7 +145,7 @@ const channelInputSchema = `{
     "deliver_at":   {"type": "string", "description": "publish / broadcast (optional): RFC3339 timestamp at which the message becomes deliverable. Absent or in the past = immediate. TTL counts from publish time, NOT deliver_at — size the TTL to cover both the deferral window AND the desired visibility window."},
     "from_cursor":  {"type": "string", "description": "Subscribe/peek only: read starting after this cursor. Absent = subscribe: after the last committed cursor; peek: from the oldest message. \"cur_0\" = replay from oldest."},
     "max_messages": {"type": "integer", "description": "Subscribe/peek only: max messages to return (default 10, cap 100)."},
-    "wait_ms":      {"type": "integer", "description": "Subscribe only: long-poll budget in ms. 0 = return immediately. Capped by operator config."},
+    "wait_ms":      {"type": "integer", "description": "Subscribe / await: how long to wait in ms — subscribe for a message to arrive, await for its condition to hold. 0 = return immediately. Capped by operator config."},
     "cursor":       {"type": "string", "description": "Ack only: the cursor to commit (must be >= currently committed)."},
     "count":        {"type": "integer", "description": "Release only: how many held messages to hand over, oldest first. Default 1."}
   },

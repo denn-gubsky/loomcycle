@@ -112,9 +112,9 @@ const MaxAgentDepth = 3
 // no explicit `max_concurrent_children` yaml override. Four is a
 // pragmatic default for fan-out workflows on a single VM: high
 // enough to amortize the latency of slow-model children (claude-opus
-// at ~10-15s per response) but low enough to avoid blowing past the
-// per-tenant fairness cap (v0.10.1 default = 4) on the global
-// semaphore.
+// at ~10-15s per response) but low enough to keep one call from
+// saturating a provider. Children take no admission slot (the run tree
+// counts as one run), so this cap is the only bound on a call's fan-out.
 //
 // Sequential Agent.spawn calls are unaffected — the cap only applies
 // inside a single parallel_spawn op's `spawns` array. Operators

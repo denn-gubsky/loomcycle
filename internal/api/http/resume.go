@@ -1451,9 +1451,11 @@ func (s *Server) resumedChildThroughStop(ctx context.Context, r builtin.Parallel
 
 // fanoutChildPollInterval / fanoutChildAwaitTimeout bound the reconcile's wait
 // for a re-dispatched child to reach terminal. The timeout is a backstop: a
-// child has its OWN run_timeout + the stale-run sweeper as ultimate ceilings,
-// so this only fires if a child genuinely wedges. Generous so a long-running
-// solver child still resolves to a real result rather than a timeout error.
+// model-driven child has no run timeout of its own (only a code-js child has
+// a run_timeout budget), so this bounds the parent's wait on a child that
+// never finishes; the stale-run sweeper reaps a child whose heartbeat stops.
+// Generous so a long-running solver child still resolves to a real result
+// rather than a timeout error.
 const (
 	fanoutChildPollInterval = 500 * time.Millisecond
 	fanoutChildAwaitTimeout = 30 * time.Minute

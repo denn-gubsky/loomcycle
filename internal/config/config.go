@@ -3921,10 +3921,13 @@ type Env struct {
 	// reproducible runs (Decision 13). Default OFF. Env:
 	// LOOMCYCLE_CODE_AGENTS_DETERMINISTIC=1.
 	CodeAgentsDeterministic bool
-	// CodeAgentsRunTimeout bounds a code-agent's wall-clock as a ctx
-	// deadline (the universal cancel path — Appendix A; Interrupt cannot
-	// break a parked tool call). Default 120s. Env:
-	// LOOMCYCLE_CODE_AGENTS_RUN_TIMEOUT_SECONDS.
+	// CodeAgentsRunTimeout bounds a code-agent's wall-clock. It is NOT a ctx
+	// deadline: the code-js provider gives each replay turn of the JavaScript
+	// the run's remaining budget (measured from the run's start) and
+	// Interrupts the turn when it runs out. A tool call in flight is not cut
+	// short (Interrupt cannot break a parked tool call); the first JavaScript
+	// turn after the budget is spent is interrupted at once. Default 120s.
+	// Env: LOOMCYCLE_CODE_AGENTS_RUN_TIMEOUT_SECONDS.
 	//
 	// This is TOTAL wall-clock from the run's start, and it KEEPS TICKING
 	// while the orchestrator is blocked in Agent.parallel_spawn awaiting its
