@@ -89,8 +89,9 @@ import (
 //     that was none of these has nobody to wait for and is flagged failed.
 //   - A run's poll-mode background children are rebuilt from its ledger
 //     (resume_background.go); a restored child that is still running is
-//     waited for wherever it runs. A child's timeout_ms is not restored: its
-//     clock lived in the parent that started it.
+//     waited for wherever it runs. A child's timeout_ms is re-armed from its
+//     run: the deadline the live clock would have reached (the pause counts,
+//     its review holds do not).
 //     (Mid-execution runs — the F42 repro — end on a clean tool_result boundary
 //     and resume cleanly.)
 

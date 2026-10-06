@@ -6,9 +6,11 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"slices"
 	"strings"
 	"time"
 
+	"github.com/denn-gubsky/loomcycle/internal/awaited"
 	"github.com/denn-gubsky/loomcycle/internal/cancel"
 	"github.com/denn-gubsky/loomcycle/internal/loop"
 	"github.com/denn-gubsky/loomcycle/internal/providers"
@@ -44,6 +46,13 @@ import (
 // (loop.RunOptions.ResumeAwaitingChildren) and wakes once, when the last has
 // ended. Cancelling a restored child cancels its run by id, through the cancel
 // registry, which reaches another replica when the cluster is wired.
+//
+// A restored child's timeout_ms (on its started row) is re-armed from its run:
+// the bound runs from the run's start, the time the run spent held for a
+// verdict (its own transcript says when each hold began and ended) is not
+// counted, and the time the run spent paused IS — the deadline is the instant
+// the live clock would have reached, which a pause does not move. A child past
+// it is cancelled as timed out at once; a held one waits for its hold to end.
 
 // The recheck of a restored child's run row backs off from the first to the
 // second; it is a backstop for an end the run-state bus did not deliver.
@@ -185,6 +194,7 @@ func (s *Server) restoreBackgroundFn(parent store.Run, ledger []*pollChildLedger
 	}
 	return func(ctx context.Context, bg *tools.Background) {
 		var outstanding []tools.ChildSpec
+		bounds := map[string]int{}
 		for _, c := range ledger {
 			spec := specOf(c.started)
 			if c.result != nil {
@@ -195,6 +205,9 @@ func (s *Server) restoreBackgroundFn(parent store.Run, ledger []*pollChildLedger
 			bg.Restore(tools.RestoredChild{ChildSpec: spec, State: tools.ChildRunning, Read: c.read,
 				Cancel: func(cause error) { go s.cancelRestoredChild(spec, cause) }})
 			outstanding = append(outstanding, spec)
+			if c.started.TimeoutMs > 0 && spec.Kind != tools.ChildKindTeam {
+				bounds[spec.RunID] = c.started.TimeoutMs
+			}
 		}
 		if len(outstanding) == 0 {
 			return
@@ -202,17 +215,22 @@ func (s *Server) restoreBackgroundFn(parent store.Run, ledger []*pollChildLedger
 		// They were admitted when they started, and are alive still: the run's
 		// next spawn counts them, whatever the limit is now.
 		releases := s.liveChildren.Hold(parent.ID, len(outstanding))
-		go s.watchRestoredChildren(ctx, bg, parent.UserID, outstanding, releases)
+		go s.watchRestoredChildren(ctx, bg, parent.UserID, outstanding, bounds, releases)
 	}
 }
 
 // watchRestoredChildren files each restored child's end in the table when its
-// run ends. It lives as long as the parent's run, at most: when the run ends,
-// the table cancels what is left, and nothing is waited for any more.
-func (s *Server) watchRestoredChildren(ctx context.Context, bg *tools.Background, userID string, children []tools.ChildSpec, releases []func()) {
+// run ends, or when its re-armed timeout_ms (bounds, by run id) runs out. It
+// lives as long as the parent's run, at most: when the run ends, the table
+// cancels what is left, and nothing is waited for any more.
+func (s *Server) watchRestoredChildren(ctx context.Context, bg *tools.Background, userID string, children []tools.ChildSpec, bounds map[string]int, releases []func()) {
 	pending := make(map[string]int, len(children))
 	for i, c := range children {
 		pending[c.RunID] = i
+	}
+	clocks := make(map[string]*restoredClock, len(bounds))
+	for id, ms := range bounds {
+		clocks[id] = &restoredClock{bound: time.Duration(ms) * time.Millisecond}
 	}
 	defer func() {
 		for _, i := range pending {
@@ -235,11 +253,36 @@ func (s *Server) watchRestoredChildren(ctx context.Context, bg *tools.Background
 		}
 		state, res, ended := s.restoredChildEnd(ctx, children[i], missing)
 		if !ended {
-			return
+			clk := clocks[id]
+			if clk == nil || !s.restoredClockExpired(ctx, id, clk) {
+				return
+			}
+			state, res = s.timeOutRestoredChild(ctx, children[i], bounds[id])
 		}
 		releases[i]()
 		delete(pending, id)
 		bg.Finish(id, state, res)
+	}
+	// The earliest deadline among the pending children whose clock runs.
+	var deadlineC <-chan time.Time
+	deadlineTimer := time.NewTimer(time.Hour)
+	deadlineTimer.Stop()
+	defer deadlineTimer.Stop()
+	armDeadline := func() {
+		deadlineTimer.Stop()
+		deadlineC = nil
+		var next time.Time
+		for id := range pending {
+			if clk := clocks[id]; clk != nil && !clk.start.IsZero() {
+				if at, held := clk.deadline(); !held && (next.IsZero() || at.Before(next)) {
+					next = at
+				}
+			}
+		}
+		if !next.IsZero() {
+			deadlineTimer.Reset(max(time.Until(next), 0))
+			deadlineC = deadlineTimer.C
+		}
 	}
 	wait, most := restoredChildRecheckFirst, restoredChildRecheckMax
 	if s.childRecheckFirst > 0 {
@@ -257,20 +300,105 @@ func (s *Server) watchRestoredChildren(ctx context.Context, bg *tools.Background
 				continue
 			}
 			// A hold or a wait is announced as "running"; only an end is
-			// worth a read.
-			if ev.Status != string(store.RunRunning) {
+			// worth a read — or, for a bounded child, a hold's start or end,
+			// which stops or restarts its clock.
+			if ev.Status != string(store.RunRunning) || clocks[ev.RunID] != nil {
 				check(ev.RunID)
+				armDeadline()
 			}
+		case <-deadlineC:
+			for id := range pending {
+				if clocks[id] != nil {
+					check(id)
+				}
+			}
+			armDeadline()
 		case <-timer.C:
 			for id := range pending {
 				check(id)
 			}
+			armDeadline()
 			timer.Reset(wait)
 			if wait *= 2; wait > most {
 				wait = most
 			}
 		}
 	}
+}
+
+// restoredClock is a restored child's timeout_ms, read off its run: the bound
+// runs from the run's start, plus the time the run spent held for a verdict.
+type restoredClock struct {
+	bound     time.Duration
+	start     time.Time     // the run's start; zero until its row is read
+	seq       int64         // the run's events read so far
+	held      time.Duration // the holds that have ended
+	heldSince time.Time     // the start of the hold still open, or zero
+}
+
+// deadline is when the bound runs out, and whether a hold is open — the clock
+// is stopped then, and the deadline moves on by the hold's length.
+func (c *restoredClock) deadline() (time.Time, bool) {
+	return c.start.Add(c.bound + c.held), !c.heldSince.IsZero()
+}
+
+// observe reads more of the run's events: an awaiting_review opens a hold,
+// whatever leaves it (the verdict's feedback turn, the end) closes it.
+func (c *restoredClock) observe(events []store.Event) {
+	for _, ev := range events {
+		c.seq = max(c.seq, ev.Seq)
+		switch {
+		case ev.Type == string(providers.EventAwaitingReview):
+			if c.heldSince.IsZero() {
+				c.heldSince = ev.Timestamp
+			}
+		case !c.heldSince.IsZero() && slices.Contains(awaited.HoldEndingEvents, ev.Type):
+			c.held += max(ev.Timestamp.Sub(c.heldSince), 0)
+			c.heldSince = time.Time{}
+		}
+	}
+}
+
+// restoredClockEventsPage bounds one read of a bounded child's events.
+const restoredClockEventsPage = 500
+
+// restoredClockExpired brings a bounded child's clock up to date from its run
+// and reports whether its bound has run out. A run it cannot read yet is not
+// timed out: whether it exists at all is restoredChildEnd's to decide.
+func (s *Server) restoredClockExpired(ctx context.Context, runID string, clk *restoredClock) bool {
+	if clk.start.IsZero() {
+		child, err := s.store.GetRun(ctx, runID)
+		if err != nil || child.StartedAt.IsZero() {
+			return false
+		}
+		clk.start = child.StartedAt
+	}
+	for {
+		page, err := s.store.GetRunEventsSince(ctx, runID, clk.seq, restoredClockEventsPage)
+		if err != nil {
+			if ctx.Err() == nil {
+				log.Printf("resume: read background child %s's events: %v", runID, err)
+			}
+			return false
+		}
+		clk.observe(page)
+		if len(page) < restoredClockEventsPage {
+			break
+		}
+	}
+	at, held := clk.deadline()
+	return !held && !time.Now().Before(at)
+}
+
+// timeOutRestoredChild cancels a restored child whose re-armed timeout_ms ran
+// out, as the live clock cancels it, and is the ending the parent is handed:
+// the timeout, after the parent's subagent_stop hooks see it fail, as they do
+// live.
+func (s *Server) timeOutRestoredChild(ctx context.Context, spec tools.ChildSpec, timeoutMs int) (string, tools.ChildResult) {
+	s.cancelRestoredChild(spec, builtin.ChildTimeoutCause(timeoutMs))
+	msg := builtin.ChildTimedOutMessage(spec.Agent, timeoutMs, spec.RunID)
+	_, _ = s.subagentStop(ctx, spec.Agent, spec.RunID, string(store.RunFailed), "", errors.New(msg))
+	return tools.ChildTimeout, tools.ChildResult{Error: msg, Status: "timeout"}
 }
 
 // restoredChildEnd reads a restored child's run row: its ending once the run
