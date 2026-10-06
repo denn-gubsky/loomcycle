@@ -16,9 +16,10 @@ import (
 // handleRunsBatch implements the RFC Y external fan-out: POST /v1/runs:batch
 // spawns every child in `spawns` concurrently and returns the combined
 // index-aligned envelope — once all settle (mode "join"), or once all have
-// started (mode "detach", whose runs go on after the response). Per-child failures are
-// captured in that child's result; the call only 400s on a MALFORMED batch
-// (empty / over-cap / unsupported mode).
+// started (mode "detach", whose runs go on after the response). Per-child
+// failures are captured in that child's result; the call only 400s on a
+// MALFORMED batch (empty / over-cap / unsupported mode / timeout_ms with
+// detach).
 //
 // Authoritative tenant/principal flows from the auth middleware via the request
 // ctx: SpawnRunBatch → SpawnRun → RunOnce re-applies the principal per child
