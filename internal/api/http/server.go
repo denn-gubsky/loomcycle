@@ -7573,6 +7573,7 @@ func (s *Server) prepareSubRunValues(ctx context.Context, name string, src nameS
 							Index:     idx,
 							RunID:     subRunID,
 							Agent:     name,
+							TimeoutMs: tools.SpawnTimeoutMs(ctx),
 						},
 					})
 				}

@@ -288,9 +288,13 @@ func (e childTimeout) reason() string {
 	return fmt.Sprintf("timed out: timeout_ms=%d elapsed (time held for review not counted)", e.ms)
 }
 
-// childTimedOutMessage is what the caller is told about a child its
+// ChildTimeoutCause is the cancel cause of a child whose timeout_ms ran out,
+// for a resumed parent that re-armed the bound on a child it no longer runs.
+func ChildTimeoutCause(timeoutMs int) error { return childTimeout{ms: timeoutMs} }
+
+// ChildTimedOutMessage is what the caller is told about a child its
 // timeout_ms stopped.
-func childTimedOutMessage(name string, timeoutMs int, runID string) string {
+func ChildTimedOutMessage(name string, timeoutMs int, runID string) string {
 	msg := fmt.Sprintf("sub-agent %q timed out: timeout_ms=%d elapsed (time held for review not counted)", name, timeoutMs)
 	if runID != "" {
 		msg += fmt.Sprintf("; its run %s was cancelled", runID)
@@ -588,7 +592,7 @@ func (a *AgentTool) executeSpawn(ctx context.Context, in agentInput) (tools.Resu
 	output, state, runID, timedOut, err := a.runChildBounded(subCtx, in.TimeoutMs, in.Name, in.Prompt, in.DefID)
 	endWait()
 	if timedOut {
-		return errBusiness(childTimedOutMessage(in.Name, in.TimeoutMs, runID),
+		return errBusiness(ChildTimedOutMessage(in.Name, in.TimeoutMs, runID),
 			"Give the child a larger timeout_ms or a smaller task. What it did before the bound is in its run's transcript."), nil
 	}
 	if err != nil {
@@ -788,7 +792,7 @@ func (a *AgentTool) executeParallelSpawn(ctx context.Context, in agentInput) (to
 			// spawn_child_started ledger row with the right index + run_id.
 			childCtx := subCtx
 			if ledger {
-				childCtx = tools.WithSpawnIndex(subCtx, i)
+				childCtx = tools.WithSpawnTimeoutMs(tools.WithSpawnIndex(subCtx, i), sp.TimeoutMs)
 			}
 			// Per-spawn compaction override (the parent steering this child's
 			// context management); runSubAgent blends it on top of inheritance.
@@ -800,7 +804,7 @@ func (a *AgentTool) executeParallelSpawn(ctx context.Context, in agentInput) (to
 			out, childState, childRunID, timedOut, err := a.runChildBounded(childCtx, sp.TimeoutMs, sp.Name, sp.Prompt, sp.DefID)
 			var r ParallelSpawnResult
 			if timedOut {
-				r = ParallelSpawnResult{Index: i, Agent: sp.Name, Ok: false, Error: childTimedOutMessage(sp.Name, sp.TimeoutMs, childRunID), RunID: childRunID, Status: "timeout"}
+				r = ParallelSpawnResult{Index: i, Agent: sp.Name, Ok: false, Error: ChildTimedOutMessage(sp.Name, sp.TimeoutMs, childRunID), RunID: childRunID, Status: "timeout"}
 			} else if err != nil {
 				r = ParallelSpawnResult{Index: i, Agent: sp.Name, Ok: false, Error: err.Error(), RunID: childRunID}
 			} else {

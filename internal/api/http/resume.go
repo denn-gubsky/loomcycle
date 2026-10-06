@@ -6,9 +6,11 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"slices"
 	"strings"
 	"time"
 
+	"github.com/denn-gubsky/loomcycle/internal/awaited"
 	"github.com/denn-gubsky/loomcycle/internal/cancel"
 	"github.com/denn-gubsky/loomcycle/internal/config"
 	"github.com/denn-gubsky/loomcycle/internal/coord"
@@ -1341,9 +1343,10 @@ func (s *Server) reconcileFanoutParent(ctx context.Context, run store.Run, runEv
 
 	// Gather the ledger keyed by child index.
 	type childLedger struct {
-		runID  string
-		agent  string
-		result *providers.SpawnChildEventInfo
+		runID     string
+		agent     string
+		timeoutMs int
+		result    *providers.SpawnChildEventInfo
 	}
 	children := map[int]*childLedger{}
 	get := func(idx int) *childLedger {
@@ -1364,6 +1367,7 @@ func (s *Server) reconcileFanoutParent(ctx context.Context, run store.Run, runEv
 			c := get(pe.SpawnChild.Index)
 			c.runID = pe.SpawnChild.RunID
 			c.agent = pe.SpawnChild.Agent
+			c.timeoutMs = pe.SpawnChild.TimeoutMs
 		case string(providers.EventSpawnChildResult):
 			var pe providers.Event
 			if err := json.Unmarshal(ev.Payload, &pe); err != nil || pe.SpawnChild == nil || pe.SpawnChild.ToolUseID != fanout.toolUseID {
@@ -1418,8 +1422,10 @@ func (s *Server) reconcileFanoutParent(ctx context.Context, run store.Run, runEv
 		case c != nil && c.runID != "":
 			// Still running (parked) at snapshot → re-dispatched independently
 			// by ResumePausedRuns. Await it + read its result, which has not
-			// yet been through the parent's subagent_stop hooks.
-			results[i] = s.resumedChildThroughStop(ctx, s.awaitChildResult(ctx, i, name, c.runID), c.runID)
+			// yet been through the parent's subagent_stop hooks. Its
+			// timeout_ms, which lived only on the parent's lost goroutine, is
+			// re-armed from its run.
+			results[i] = s.resumedChildThroughStop(ctx, s.awaitChildResult(ctx, i, name, c.runID, c.timeoutMs), c.runID)
 		default:
 			results[i] = builtin.ParallelSpawnResult{Index: i, Agent: name, Ok: false,
 				Error: "child was not dispatched before the snapshot; re-issue if its result is required"}
@@ -1500,8 +1506,26 @@ const (
 // an error result. A child whose row was never captured (the narrow race where
 // it completed in the instant before the snapshot, so pause_state never flipped
 // to 'paused') resolves to an error result via awaitChildTerminal's fast-fail.
-func (s *Server) awaitChildResult(ctx context.Context, index int, name, childRunID string) builtin.ParallelSpawnResult {
-	child, err := s.awaitChildTerminal(ctx, childRunID)
+//
+// A child started with timeout_ms > 0 is held to it again: past the bound it
+// is cancelled and answered as timed out, the row the live call would have
+// written.
+func (s *Server) awaitChildResult(ctx context.Context, index int, name, childRunID string, timeoutMs int) builtin.ParallelSpawnResult {
+	var clk *resumedChildClock
+	if timeoutMs > 0 {
+		clk = &resumedChildClock{bound: time.Duration(timeoutMs) * time.Millisecond}
+	}
+	child, err := s.awaitChildTerminal(ctx, childRunID, clk)
+	if errors.Is(err, errResumedChildTimedOut) {
+		if name == "" {
+			name = child.Agent
+		}
+		if child.AgentID != "" && s.cancelReg != nil {
+			s.cancelReg.Cancel(child.AgentID, cancel.ReasonFromCause(builtin.ChildTimeoutCause(timeoutMs)))
+		}
+		return builtin.ParallelSpawnResult{Index: index, Agent: name, Ok: false,
+			Error: builtin.ChildTimedOutMessage(name, timeoutMs, childRunID), RunID: childRunID, Status: "timeout"}
+	}
 	if err != nil {
 		return builtin.ParallelSpawnResult{Index: index, Agent: name, Ok: false,
 			Error: fmt.Sprintf("await child run %s: %v", childRunID, err), RunID: childRunID}
@@ -1526,6 +1550,73 @@ func (s *Server) awaitChildResult(ctx context.Context, index int, name, childRun
 	}
 }
 
+// errResumedChildTimedOut is awaitChildTerminal's answer for a child whose
+// re-armed timeout_ms ran out before it ended.
+var errResumedChildTimedOut = errors.New("the child's timeout_ms ran out")
+
+// resumedChildClock is a re-dispatched child's timeout_ms, re-armed from its
+// run: the bound runs from the run's start, the time the run spent held for a
+// verdict (its own transcript says when each hold began and ended) is not
+// counted, and the time it spent paused IS — the deadline is the instant the
+// live clock would have reached, which a pause does not move.
+type resumedChildClock struct {
+	bound     time.Duration
+	seq       int64         // the run's events read so far
+	held      time.Duration // the holds that have ended
+	heldSince time.Time     // the start of the hold still open, or zero
+}
+
+// resumedChildClockPage bounds one read of a bounded child's events.
+const resumedChildClockPage = 500
+
+// expired brings the clock up to date from the child's events and reports
+// whether its bound has run out: never while a hold is open. A read that
+// fails leaves the clock running on what it has read.
+func (c *resumedChildClock) expired(ctx context.Context, st store.Store, child store.Run, now time.Time) bool {
+	if child.StartedAt.IsZero() {
+		return false
+	}
+	for {
+		page, err := st.GetRunEventsSince(ctx, child.ID, c.seq, resumedChildClockPage)
+		if err != nil {
+			if ctx.Err() == nil {
+				log.Printf("resume: read fan-out child %s's events: %v", child.ID, err)
+			}
+			break
+		}
+		c.observe(page)
+		if len(page) < resumedChildClockPage {
+			break
+		}
+	}
+	at, held := c.deadline(child.StartedAt)
+	return !held && !now.Before(at)
+}
+
+// deadline is when the bound runs out for a run started at start, and
+// whether a hold is open — the clock is stopped then, and the deadline moves
+// on by the hold's length once it ends.
+func (c *resumedChildClock) deadline(start time.Time) (time.Time, bool) {
+	return start.Add(c.bound + c.held), !c.heldSince.IsZero()
+}
+
+// observe reads more of the run's events: an awaiting_review opens a hold,
+// whatever leaves it (the verdict's feedback turn, the end) closes it.
+func (c *resumedChildClock) observe(events []store.Event) {
+	for _, ev := range events {
+		c.seq = max(c.seq, ev.Seq)
+		switch {
+		case ev.Type == string(providers.EventAwaitingReview):
+			if c.heldSince.IsZero() {
+				c.heldSince = ev.Timestamp
+			}
+		case !c.heldSince.IsZero() && slices.Contains(awaited.HoldEndingEvents, ev.Type):
+			c.held += max(ev.Timestamp.Sub(c.heldSince), 0)
+			c.heldSince = time.Time{}
+		}
+	}
+}
+
 // awaitChildTerminal polls a child run row until it reaches a terminal status
 // or a backstop deadline elapses, returning early on:
 //   - a persistent ErrNotFound (the row wasn't captured in the snapshot — the
@@ -1537,7 +1628,9 @@ func (s *Server) awaitChildResult(ctx context.Context, index int, name, childRun
 // 'running') is alive, not wedged: its presence RESETS the deadline so a long
 // second pause doesn't turn a healthy parked child into a spurious timeout
 // error. ctx (the parent's runCtx) cancellation — operator cancel — always wins.
-func (s *Server) awaitChildTerminal(ctx context.Context, childRunID string) (store.Run, error) {
+// clk, when set, is the child's own timeout_ms: past it the child's row is
+// returned with errResumedChildTimedOut.
+func (s *Server) awaitChildTerminal(ctx context.Context, childRunID string, clk *resumedChildClock) (store.Run, error) {
 	tick := time.NewTicker(fanoutChildPollInterval)
 	defer tick.Stop()
 	deadline := time.Now().Add(fanoutChildAwaitTimeout)
@@ -1549,6 +1642,9 @@ func (s *Server) awaitChildTerminal(ctx context.Context, childRunID string) (sto
 			notFoundStreak, errStreak = 0, 0
 			if isTerminalRunStatus(run.Status) {
 				return run, nil
+			}
+			if clk != nil && clk.expired(ctx, s.store, run, time.Now()) {
+				return run, errResumedChildTimedOut
 			}
 			// Re-parked by a concurrent pause → don't penalize parked time.
 			if run.PauseState == store.PauseStatePaused || run.PauseState == store.PauseStatePausing {

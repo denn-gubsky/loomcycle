@@ -1346,6 +1346,24 @@ func SpawnIndex(ctx context.Context) (int, bool) {
 	return v - 1, true
 }
 
+// ctxKeySpawnTimeoutMs carries a parallel_spawn child's timeout_ms beside its
+// index, so the sub-run runner records it on the child's spawn-ledger
+// "started" row: a parent resumed from a snapshot re-arms the bound from it.
+type ctxKeySpawnTimeoutMs struct{}
+
+// WithSpawnTimeoutMs attaches a parallel_spawn child's timeout_ms (0 = none).
+// Set wherever the index is, so a nested fan-out never inherits an
+// ancestor's bound.
+func WithSpawnTimeoutMs(ctx context.Context, ms int) context.Context {
+	return context.WithValue(ctx, ctxKeySpawnTimeoutMs{}, ms)
+}
+
+// SpawnTimeoutMs is the child's parallel_spawn timeout_ms, or 0.
+func SpawnTimeoutMs(ctx context.Context) int {
+	v, _ := ctx.Value(ctxKeySpawnTimeoutMs{}).(int)
+	return v
+}
+
 // PauseGate is the minimal pause-park surface a tool needs (RFC X Phase 3).
 // The Agent tool's parallel_spawn uses it to PARK the fan-out parent run while
 // it's blocked awaiting children (the loop's own top-of-iteration park is

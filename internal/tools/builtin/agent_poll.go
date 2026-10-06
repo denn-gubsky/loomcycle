@@ -230,7 +230,7 @@ func (a *AgentTool) runBackgroundChild(cctx context.Context, bg *tools.Backgroun
 	out, state, _, timedOut, err := a.runChildBounded(childCtx, e.timeoutMs, e.name, e.prompt, e.defID)
 	switch {
 	case timedOut:
-		finish(tools.ChildTimeout, tools.ChildResult{Error: childTimedOutMessage(e.name, e.timeoutMs, runID), Status: "timeout"})
+		finish(tools.ChildTimeout, tools.ChildResult{Error: ChildTimedOutMessage(e.name, e.timeoutMs, runID), Status: "timeout"})
 	case err != nil && bg.Interrupted(runID) != nil:
 		finish(tools.ChildCancelled, tools.ChildResult{Error: err.Error()})
 	case err != nil:
