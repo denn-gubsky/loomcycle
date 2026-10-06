@@ -128,20 +128,21 @@ function run() {
 }
 
 // A resumed run continues its lifetime rather than starting a new one: one
-// that had lived all but half a second of its limit before it paused is
-// stopped about half a second in.
+// that had lived all but 300ms of its limit before it paused is stopped about
+// 300ms in, well before the full limit a fresh lifetime would get.
 func TestCodeJSOrchestrator_ResumeDoesNotResetTheWallLimit(t *testing.T) {
 	ch, ctx := channelFixture(t)
 	js := `
 function run() {
   while (true) { Channel.await({channels: ["inbox"], wait_ms: 30000}); }
 }`
-	carry := providers.RunClockState{Wall: wallLimit - 500*time.Millisecond}
+	const left = 300 * time.Millisecond
+	carry := providers.RunClockState{Wall: wallLimit - left}
 	took, err := runWallLimited(t, ctx, js, func(o *loop.RunOptions) { o.RunClockCarry = carry }, ch)
 	if err == nil || !strings.HasPrefix(err.Error(), "code_agent_wall_limit") {
 		t.Fatalf("want code_agent_wall_limit; got %v", err)
 	}
-	if took > wallLimit-500*time.Millisecond+time.Second {
-		t.Errorf("the resumed run lived %s more; it had %s of its lifetime left", took, 500*time.Millisecond)
+	if took > wallLimit/2+left {
+		t.Errorf("the resumed run lived %s more; it had %s of its lifetime left — the resume reset it", took, left)
 	}
 }
