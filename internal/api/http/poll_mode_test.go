@@ -25,6 +25,11 @@ type familyProvider struct {
 	parent  [][]providers.Event
 	calls   []providers.Request // the parent's
 	release chan struct{}
+	// childUp, when set, is closed at a child's first call, and every parent
+	// call after its first waits for it: the child's run exists before the
+	// parent goes on.
+	childUp   chan struct{}
+	childOnce sync.Once
 }
 
 func (p *familyProvider) ID() string                  { return "stub" }
@@ -39,6 +44,9 @@ func (p *familyProvider) Capabilities() providers.Capabilities {
 func (p *familyProvider) Call(ctx context.Context, req providers.Request) (<-chan providers.Event, error) {
 	var events []providers.Event
 	if len(req.System) > 0 && strings.Contains(req.System[0].Text, "you are a child") {
+		if p.childUp != nil {
+			p.childOnce.Do(func() { close(p.childUp) })
+		}
 		select {
 		case <-p.release:
 		case <-ctx.Done():
@@ -49,6 +57,16 @@ func (p *familyProvider) Call(ctx context.Context, req providers.Request) (<-cha
 			{Type: providers.EventDone, StopReason: "end_turn", Usage: &providers.Usage{InputTokens: 1, OutputTokens: 1}},
 		}
 	} else {
+		p.mu.Lock()
+		waitChild := p.childUp != nil && len(p.calls) > 0
+		p.mu.Unlock()
+		if waitChild {
+			select {
+			case <-p.childUp:
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			}
+		}
 		p.mu.Lock()
 		i := len(p.calls)
 		p.calls = append(p.calls, req)
@@ -196,6 +214,9 @@ func TestPollMode_OnParentEndCancelCompletesAtOnce(t *testing.T) {
 			agentCall("tu_1", `{"op":"spawn","name":"worker","prompt":"one","mode":"poll","on_parent_end":"cancel"}`),
 			answer("not waiting"),
 		},
+		// The parent ends its turn once the child's run exists: a child
+		// cancelled before then has no run row to read back.
+		childUp: make(chan struct{}),
 	}
 	defer close(prov.release)
 	srv, _ := makeServer(t, prov, familyConfig())
