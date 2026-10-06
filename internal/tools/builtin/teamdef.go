@@ -1783,15 +1783,15 @@ func (t *TeamDef) buildDefinition(parentJSON string, overlay json.RawMessage) (j
 			return nil, fmt.Errorf("parse overlay: %w", err)
 		}
 		applyTeamOverlay(&base, ov)
-		// max_iterations' zero value IS a value — "use the default" — so
-		// set-if-non-zero could never put a capped team back on the default:
-		// the editor deletes the key, the fork keeps the parent's cap, and
-		// nothing says so. Presence decides instead: a sent key (0 or null
-		// included) is applied, an absent one keeps the parent's.
+		// max_iterations' zero value IS a value — "use the default" — so the
+		// set-if-non-zero merge above could never put a capped team back on
+		// the default: the editor deletes the key, the fork keeps the
+		// parent's cap, and nothing says so. A SENT 0 or null clears it; an
+		// absent key keeps the parent's.
 		var keys map[string]json.RawMessage
 		if json.Unmarshal(overlay, &keys) == nil {
-			if _, sent := keys["max_iterations"]; sent {
-				base.MaxIterations = ov.MaxIterations
+			if _, sent := keys["max_iterations"]; sent && ov.MaxIterations == 0 {
+				base.MaxIterations = 0
 			}
 		}
 	}
@@ -1849,8 +1849,11 @@ func applyTeamOverlay(base *teamgraph.Definition, ov teamgraph.Definition) {
 	if ov.Entry != "" {
 		base.Entry = ov.Entry
 	}
-	// max_iterations is applied by buildDefinition, which can see whether the
-	// key was sent: its zero value is a value, so ov alone cannot tell.
+	// A sent 0 or null (back to the default) is applied by buildDefinition,
+	// which can see whether the key was sent: ov alone cannot tell it from absent.
+	if ov.MaxIterations != 0 {
+		base.MaxIterations = ov.MaxIterations
+	}
 	if ov.States != nil {
 		base.States = ov.States
 	}
