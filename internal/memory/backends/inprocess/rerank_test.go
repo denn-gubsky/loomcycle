@@ -14,6 +14,7 @@ import (
 	memory "github.com/denn-gubsky/loomcycle/internal/memory"
 	"github.com/denn-gubsky/loomcycle/internal/memory/backends/inprocess"
 	"github.com/denn-gubsky/loomcycle/internal/memory/reranker"
+	"github.com/denn-gubsky/loomcycle/internal/providers"
 	"github.com/denn-gubsky/loomcycle/internal/store"
 )
 
@@ -270,6 +271,43 @@ func TestInProcessRerank_ThePoolHoldsCandidatesWhateverTopK(t *testing.T) {
 	search(t, b, memory.SearchQuery{QueryText: "go", TopK: 2, Rerank: rerankOn})
 	if len(o.texts) != 20 {
 		t.Errorf("a ranker without a default was shown %d candidates, want 20", len(o.texts))
+	}
+}
+
+// replyProvider answers every call with one fixed text: the listwise reranker's
+// model, without a network.
+type replyProvider struct{ text string }
+
+func (replyProvider) ID() string                                   { return "reply" }
+func (replyProvider) Capabilities() providers.Capabilities         { return providers.Capabilities{} }
+func (replyProvider) Probe(context.Context) error                  { return nil }
+func (replyProvider) ListModels(context.Context) ([]string, error) { return nil, nil }
+func (replyProvider) KeyEnvName() string                           { return "" }
+func (p replyProvider) Call(context.Context, providers.Request) (<-chan providers.Event, error) {
+	ch := make(chan providers.Event, 2)
+	ch <- providers.Event{Type: providers.EventText, Text: p.text}
+	ch <- providers.Event{Type: providers.EventDone}
+	close(ch)
+	return ch, nil
+}
+
+// TestInProcessRerank_TheBuiltListwiseRerankerGetsItsDefaultPool — the crossing
+// main.go makes: the listwise reranker the operator's config builds, handed to the
+// backend as a Ranker, is shown its own default of 40 candidates, not 20.
+func TestInProcessRerank_TheBuiltListwiseRerankerGetsItsDefaultPool(t *testing.T) {
+	b, _, _, cleanup := vectorFixture(t)
+	defer cleanup()
+	ctx := context.Background()
+	for i := 0; i < 50; i++ {
+		if _, err := b.Set(ctx, store.MemoryScopeUser, "u1", fmt.Sprintf("doc.chunk:c%02d", i), json.RawMessage(`{"body":"go"}`),
+			memory.SetOptions{Embed: true, EmbedText: "Guide — Section\ngo"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	b.SetRanker(reranker.New(replyProvider{text: "[40, 1]"}, config.RerankerConfig{Provider: "reply", Model: "m"}))
+	res := search(t, b, memory.SearchQuery{QueryText: "go", TopK: 2, Rerank: rerankOn})
+	if res.Rerank == nil || !res.Rerank.Applied || res.Rerank.Candidates != 40 {
+		t.Fatalf("report = %+v, want applied over 40 candidates", res.Rerank)
 	}
 }
 
