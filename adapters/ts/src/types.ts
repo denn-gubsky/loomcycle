@@ -1289,9 +1289,11 @@ export interface ClientOptions {
 export type AgentStatus = "configured" | "running" | "completed" | "failed" | "cancelled" | "rejected";
 
 /** What a running run is blocked on: an open Channel subscribe, an open
- *  Interruption ask, a hold for an operator's review verdict, or an
- *  interactive run parked for the operator's next turn (`input`). */
-export type AwaitedState = "channel" | "interrupted" | "review" | "input";
+ *  Interruption ask, a hold for an operator's review verdict, an
+ *  interactive run parked for the operator's next turn (`input`), or a run
+ *  that ended its turn and waits for its background (poll-mode) children
+ *  to end (`children`). */
+export type AwaitedState = "channel" | "interrupted" | "review" | "input" | "children";
 
 export interface AgentUsage {
   input_tokens?: number;
@@ -1335,8 +1337,9 @@ export interface Agent {
   awaited_state?: AwaitedState;
   /** The channel name (`awaited_state: "channel"`; a fan-in `Channel` await
    *  lists its channels comma-separated, bounded), interruption kind
-   *  (`awaited_state: "interrupted"`) or the agent_stop hook holding a review
-   *  (`awaited_state: "review"`) the run waits on. */
+   *  (`awaited_state: "interrupted"`), the agent_stop hook holding a review
+   *  (`awaited_state: "review"`) or the child run ids, comma-separated and
+   *  bounded (`awaited_state: "children"`) the run waits on. */
   awaited_on?: string;
   /** The replica owning the run's live cancel handle. Absent in a
    *  single-replica deployment. */
@@ -1561,11 +1564,15 @@ export interface CancelAgentResult {
 export interface RunBatchOptions {
   spawns: RunOptions[];
   /** "join" (default) — block until all children settle, returning the
-   *  combined envelope. "detach" (async run handles) is reserved for a future
-   *  release and rejected by the server today. */
-  mode?: "join";
+   *  combined envelope. "detach" — resolve once every child has started:
+   *  each started child reports `status: "running"` with its `run_id`, keeps
+   *  running after the call, and is read with {@link LoomcycleClient.getRun}
+   *  and stopped with {@link LoomcycleClient.cancelAgent}; a child that could
+   *  not start is reported in its slot, as in join. */
+  mode?: "join" | "detach";
   /** Optional join deadline (ms): a child still running when it elapses is
-   *  cancelled and reported with a cancelled status in-envelope. */
+   *  cancelled and reported with a cancelled status in-envelope. Rejected
+   *  (400) with `mode: "detach"`, which does not wait. */
   timeoutMs?: number;
   signal?: AbortSignal;
 }
@@ -3485,7 +3492,8 @@ export interface RunStateEvent {
    *  field, so a client folding the stream holds the run's current wait. */
   awaited_state?: AwaitedState;
   /** The channel (a fan-in `Channel` await: its channels, comma-separated),
-   *  the interruption kind, or the agent_stop hook holding a review. */
+   *  the interruption kind, the agent_stop hook holding a review, or the
+   *  background child run ids (comma-separated) a run waits on. */
   awaited_on?: string;
   /** RFC3339: when a review hold ends as rejected if nobody rules on it.
    *  Absent when the wait has no deadline. */

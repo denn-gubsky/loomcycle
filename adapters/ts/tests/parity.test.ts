@@ -56,6 +56,33 @@ describe("spawnRunBatch", () => {
     expect(body.spawns[1].sampling).toEqual({ temperature: 0.2, top_k: 40 });
   });
 
+  it("sends mode detach and returns the running handles", async () => {
+    const { client, fetchMock } = makeClient([
+      jsonResponse({
+        spawned: 2,
+        results: [
+          { agent_id: "a0", run_id: "r0", session_id: "s0", status: "running" },
+          { agent_id: "", run_id: "", session_id: "", status: "failed", error: "unknown agent" },
+        ],
+      }),
+    ]);
+
+    const res = await client.spawnRunBatch({
+      mode: "detach",
+      spawns: [
+        { agent: "rev", segments: [{ role: "user", content: [{ type: "trusted-text", text: "a" }] }] },
+        { agent: "nope", segments: [{ role: "user", content: [{ type: "trusted-text", text: "b" }] }] },
+      ],
+    });
+
+    const body = JSON.parse(fetchMock.mock.calls[0]![1]!.body as string);
+    expect(body.mode).toBe("detach");
+    expect(body.timeout_ms).toBeUndefined();
+    expect(res.results[0]!.status).toBe("running");
+    expect(res.results[0]!.run_id).toBe("r0");
+    expect(res.results[1]!.status).toBe("failed");
+  });
+
   it("surfaces a server 400 (over-cap) as a thrown error", async () => {
     const { client } = makeClient([
       jsonResponse({ error: "33 spawns exceeds the per-batch cap of 32" }, 400),

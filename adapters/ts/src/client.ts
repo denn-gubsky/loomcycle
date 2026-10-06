@@ -647,11 +647,13 @@ export class LoomcycleClient {
    * N parallel {@link LoomcycleClient.runStreaming} calls.
    *
    * Each spawn is a fresh run (its `sessionId` is ignored). Capped at 32 —
-   * an over-cap batch rejects with InvalidArgumentError. `mode: "detach"`
-   * (async handles) is reserved for a future release and rejected today.
+   * an over-cap batch rejects with InvalidArgumentError.
    *
-   * Blocking: resolves only when the slowest child finishes (or `timeoutMs`
-   * elapses). Mirrors POST /v1/runs:batch.
+   * Blocking by default: resolves only when the slowest child finishes (or
+   * `timeoutMs` elapses). With `mode: "detach"` it resolves once every child
+   * has started — each with `status: "running"` and its `run_id` — and the
+   * runs go on; read one with {@link LoomcycleClient.getRun}. Mirrors
+   * POST /v1/runs:batch.
    */
   async spawnRunBatch(opts: RunBatchOptions): Promise<RunBatchResult> {
     const body: Record<string, unknown> = {
