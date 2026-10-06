@@ -53,7 +53,7 @@ func RunPause(args []string, stdout, stderr io.Writer) int {
 	fs.SetOutput(stderr)
 	target := fs.String("target", defaultBaseURL(), "loomcycle base URL (default: $LOOMCYCLE_BASE_URL or http://127.0.0.1:8787)")
 	token := registerTokenFlag(fs)
-	timeoutMs := fs.Int64("timeout-ms", 0, "per-call wait-for-non-idempotent-tools cap; 0 ⇒ server default")
+	timeoutMs := fs.Int64("timeout-ms", 0, "how long to wait for in-flight runs to park; 0 ⇒ server default")
 	httpTimeout := fs.Duration("http-timeout", 60*time.Second, "client-side HTTP request timeout (must exceed the server's pause timeout so we don't time out before pause finishes)")
 	if err := fs.Parse(args); err != nil {
 		return 2

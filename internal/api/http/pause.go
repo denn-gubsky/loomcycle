@@ -12,7 +12,7 @@ import (
 )
 
 // v0.8.17 Pause/Resume/State admin endpoints (PR 4). The pause Manager
-// (internal/pause) owns the in-memory state + activeTools registry;
+// (internal/pause) owns the in-memory state + in-flight run registry;
 // these handlers are thin wrappers that translate manager errors to
 // HTTP status codes.
 //
@@ -38,7 +38,7 @@ import (
 
 // pauseRequest is the POST /v1/_pause body. Both fields optional.
 type pauseRequest struct {
-	// TimeoutMs caps the wait-for-non-idempotent-tools stage. 0 ⇒ use
+	// TimeoutMs caps the wait for in-flight runs to park. 0 ⇒ use
 	// the manager's default (LOOMCYCLE_PAUSE_TIMEOUT_MS or
 	// pause.DefaultPauseTimeout). Capped at pause.MaxPauseTimeout.
 	TimeoutMs int64 `json:"timeout_ms,omitempty"`

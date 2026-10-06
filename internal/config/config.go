@@ -4011,8 +4011,8 @@ type Env struct {
 	// Env: LOOMCYCLE_CANCEL_ACK_TIMEOUT_MS.
 	CancelAckTimeoutMs int64
 
-	// PauseDefaultTimeoutMs is the wait-for-non-idempotent-tools cap
-	// applied when POST /v1/_pause omits timeout_ms. 0 ⇒ use the
+	// PauseDefaultTimeoutMs is how long a pause waits for in-flight runs
+	// to park, applied when POST /v1/_pause omits timeout_ms. 0 ⇒ use the
 	// internal default (pause.DefaultPauseTimeout = 30s). Capped at
 	// pause.MaxPauseTimeout (5 min) regardless of operator value to
 	// avoid an operator typo (300000 vs 30000) leaving the runtime

@@ -9,12 +9,12 @@
 //
 // Package shape:
 //   - state.go     — RuntimeState enum + transition rules.
-//   - tool_policy.go — static idempotent/non-idempotent categorisation
-//     used by Manager.ToolCtx to decide cancel-immediately
-//     vs wait-with-timeout per pending tool call.
 //   - manager.go   — the Manager type; one per server; exposes Pause/Resume,
-//     PauseCh() for loop.Run to check at iteration boundary,
-//     and ToolCtx for per-tool ctx derivation during pause.
+//     PauseCh() for loop.Run to check at iteration boundary, and the
+//     in-flight run registry the pause barrier waits on.
+//
+// Pause cancels nothing in flight: a run finishes the model call or tool
+// calls it is in and parks at its next iteration boundary.
 package pause
 
 import (
@@ -33,8 +33,8 @@ import (
 //	StatePaused   → StateRunning  (resume — skips through pausing)
 //
 // StatePausing is the in-flight transition where the manager is waiting
-// for in-progress tool calls to finish (idempotent → cancel immediately;
-// non-idempotent → race against timeout). The state DOES NOT block new
+// for in-flight runs to finish their current model or tool calls and park
+// at their next iteration boundary (nothing is cancelled). The state DOES NOT block new
 // /v1/runs at this point; 503 starts at StatePausing already, so new
 // requests are refused the moment pause is declared.
 //
@@ -49,14 +49,15 @@ const (
 	// needed. Both fresh boots and post-resume converge to this state.
 	StateRunning RuntimeState = iota
 	// StatePausing is the operator-issued-pause-in-flight state.
-	// Already-running runs proceed to their iteration boundary (or
-	// hit the per-tool timeout); new /v1/runs requests get 503.
-	// Manager transitions out of this state to StatePaused once every
-	// in-flight run has either committed pause_state='paused' or
-	// been force-cancelled at timeout.
+	// Already-running runs proceed to their iteration boundary; new
+	// /v1/runs requests get 503. Manager transitions out of this state
+	// to StatePaused once every in-flight run has committed
+	// pause_state='paused', or the pause timeout elapsed (a run still
+	// working then parks at its next boundary).
 	StatePausing
 	// StatePaused is the at-rest paused state. No runs are
-	// progressing; all in-flight tool calls finished or timed out.
+	// progressing past a boundary; a run that was still working when the
+	// pause timeout elapsed parks at its next one.
 	// New /v1/runs continue to return 503. Operator calls
 	// POST /v1/runtime/resume to transition back to StateRunning.
 	StatePaused

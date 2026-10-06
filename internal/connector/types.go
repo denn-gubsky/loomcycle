@@ -444,7 +444,7 @@ type AgentDescriptor struct {
 type PauseResult struct {
 	Status              string   `json:"status"`                   // "paused"
 	DurationMS          int64    `json:"duration_ms"`              // time taken to reach paused state
-	ForceCancelledCount int      `json:"force_cancelled_count"`    // non-idempotent tool calls force-cancelled
+	ForceCancelledCount int      `json:"force_cancelled_count"`    // always 0: pause cancels no tool call
 	PausedRunsCount     int      `json:"paused_runs_count"`        // runs marked pause_state='paused' in the store
 	Warnings            []string `json:"warnings,omitempty"`       // non-fatal issues encountered during pause
 	FeatureStatus       string   `json:"feature_status,omitempty"` // empty in v0.8.18+; "preview" historically

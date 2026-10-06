@@ -10,18 +10,14 @@ Operators drive it; agents never call these directly.
 **Pause** declares the runtime is winding down. The in-flight
 state machine transitions `running → pausing → paused`:
 
-- Idempotent tools (Read, WebFetch, WebSearch, Memory.get/list,
-  Channel.peek, AgentDef.get/list, Context.*, Evaluation.get/
-  aggregate) are cancelled IMMEDIATELY — their ctx flips to Done
-  the moment pause is declared. The dispatcher returns IsError=true
-  and the agent loop records `pause_state='paused'` at the next
-  iteration boundary.
-- Non-idempotent tools (Bash, Write, Edit, HTTP-mutate, Memory.set/
-  incr/delete, Channel.publish/subscribe/ack, AgentDef.create/
-  fork/promote/retire, Evaluation.submit) and external (MCP)
-  tools are given a grace window — 30 s by default — to finish
-  cleanly. Any still running at the deadline get force-cancelled
-  and counted in the result.
+- **Nothing in flight is cancelled.** A run checks for a pause at the
+  top of each loop iteration, before its next model call. A model call
+  or tool call already running when pause is declared — any tool,
+  read-only or not, built-in or MCP — runs to completion and its result
+  is recorded; the run then parks at its next iteration boundary and
+  records `pause_state='paused'`. A run never parks between a tool call
+  and its result. `force_cancelled_count` in the result is therefore
+  always `0`.
 - New `/v1/runs` requests (and the gRPC / webhook / A2A run-admission
   paths) return 503 / Unavailable while the runtime is in `pausing` or
   `paused`; the scheduler skips firing. Sub-agents of an already-admitted
@@ -33,6 +29,18 @@ state machine transitions `running → pausing → paused`:
   naming it (it parks on its next boundary regardless). Snapshot only
   captures `pause_state='paused'` runs, so wait for a clean Pause result
   (no "did not reach a boundary" warning) before snapshotting mid-run.
+- **A fan-out parent.** A run blocked in `Agent` `parallel_spawn`
+  cannot reach its own boundary until every child returns, so by
+  default it is the run named in that warning while its children park.
+  With `LOOMCYCLE_RESUME_FANOUT=1` (default off) the parent parks too:
+  `parallel_spawn` records each child on the parent's transcript as it
+  starts and finishes, the parent counts as paused while it waits, and a
+  snapshot taken then can be restored on another instance, where the
+  parent re-collects its children's results — from that record for a
+  child that had finished, by waiting for a resumed child that had not —
+  and continues. Set it on both the capturing and the restoring
+  instance. Off, pause, snapshot and resume behave exactly as without
+  it: don't snapshot mid-fan-out.
 
 **Resume** flips back to `running`. Each previously-paused run's
 state row is updated; the runner goroutine watching the broadcast
