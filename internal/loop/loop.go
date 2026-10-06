@@ -2890,6 +2890,12 @@ func Run(ctx context.Context, opts RunOptions) (RunResult, error) {
 	// loop runs ONE more model call, with tools disabled, so those results are
 	// read and answered instead of thrown away. See closingTurnRequest.
 	closingTurn := false
+	// pendingTokens is what the conversation grew by after the last call was
+	// measured: that call's answer and the tool results appended for the next
+	// one. The auto-compaction gate adds it, so it judges the request about to
+	// be sent — a large tool result used to ride out once before the gate saw
+	// it, which on a small window is the request that overflows.
+	pendingTokens := 0
 outerLoop:
 	for iter := 0; !parkAbandoned && (iter < iterCap || closingTurn); iter++ {
 		// v0.10.0 OTEL: one loomcycle.iteration span per turn. Nested
@@ -2964,6 +2970,7 @@ outerLoop:
 				// the footprint so the auto-compact check + op=self below reflect
 				// the compacted size, not the stale pre-compaction value.
 				lastCtxTokens = estimatePromptTokens(preambleTokens, messages)
+				pendingTokens = 0 // the estimate covers the whole history
 			}
 		}
 
@@ -2975,18 +2982,20 @@ outerLoop:
 		// choosing recap bypasses the compaction auto-trigger. The smaller next
 		// request self-debounces. Applies to ALL runs (interactive + autonomous).
 		selfReq := compactRequested.Swap(false)
+		used := lastCtxTokens + pendingTokens
+		pendingTokens = 0
 		// The gate opens on EITHER threshold. A mode whose primary sits above
 		// the backstop — or whose primary cannot fire at all — must still reach
 		// compaction, or the window fills with nothing consulted.
 		var primaryDue bool
 		if recapMode {
-			primaryDue = shouldAutoRecap(opts.Context, lastCtxTokens, lastWindow, iter, lastCompactIter)
+			primaryDue = shouldAutoRecap(opts.Context, used, lastWindow, iter, lastCompactIter)
 		} else {
-			primaryDue = shouldAutoCompact(opts.Compaction, lastCtxTokens, lastWindow, iter, lastCompactIter)
+			primaryDue = shouldAutoCompact(opts.Compaction, used, lastWindow, iter, lastCompactIter)
 		}
 		backstopDue := iter > lastCompactIter+1 &&
 			backstopAvailable(opts.Compaction) &&
-			aboveBackstop(opts.Compaction, lastCtxTokens, lastWindow)
+			aboveBackstop(opts.Compaction, used, lastWindow)
 		distill := selfReq || primaryDue || backstopDue
 		if distill {
 			trigger := "auto"
@@ -3002,7 +3011,7 @@ outerLoop:
 			iterVerdicts = nil
 			reclaimed := false
 			if recapMode {
-				if newMsgs, did := maybeRecap(iterCtx, opts, messages, lastCtxTokens, lastWindow, distillEmit, trigger); did {
+				if newMsgs, did := maybeRecap(iterCtx, opts, messages, used, lastWindow, distillEmit, trigger); did {
 					messages = newMsgs
 					lastCtxTokens = estimatePromptTokens(preambleTokens, messages)
 					reclaimed = true
@@ -3022,7 +3031,7 @@ outerLoop:
 			// primary, so this is its only invocation there.
 			if !reclaimed && (backstopDue || selfReq || !recapMode) &&
 				backstopAvailable(opts.Compaction) {
-				if newMsgs, did := maybeAutoCompact(iterCtx, opts, messages, lastCtxTokens, lastWindow, distillEmit, trigger); did {
+				if newMsgs, did := maybeAutoCompact(iterCtx, opts, messages, used, lastWindow, distillEmit, trigger); did {
 					messages = newMsgs
 					// Compaction shrank the history; refresh the footprint so
 					// op=self below reflects the compacted size, not the
@@ -3749,6 +3758,9 @@ outerLoop:
 		// fresh one.
 		disarmTurn()
 		iterSpan.End()
+		// The next request carries this turn's answer and its tool results on
+		// top of what the call just measured.
+		pendingTokens = estimateMessageTokens(messages[len(messages)-2:])
 		if grantsClosingTurn(iter, iterCap, unboundedIters) {
 			closingTurn = true
 		}

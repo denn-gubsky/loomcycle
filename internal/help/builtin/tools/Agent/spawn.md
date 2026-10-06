@@ -29,7 +29,10 @@ Do not pass `spawns` here; that is `parallel_spawn`.
 
 The child's final text, as plain text, starting with a line
 `[sub-agent agent_id=a_... run_id=r_...]` — `run_id` is the child's run, for
-anything that needs to refer to it later. A child that keeps structured state
+anything that needs to refer to it later. A reply longer than a quarter of
+your context window is cut to that length and ends with
+`[truncated at N characters; the full answer is in the transcript of run r_...]`
+— the whole answer stays in that run's transcript. A child that keeps structured state
 adds `Final state:` and its JSON. A failure names the run in its message
 (`run=r_...`).
 

@@ -391,6 +391,9 @@ type ParallelSpawnResult struct {
 	// was cancelled). Omitted otherwise. Not `state`, which already carries a
 	// stateful child's structured result.
 	Status string `json:"status,omitempty"`
+	// Truncated is set when Output was cut to the row's share of the parent's
+	// window (capRowOutputs). The full answer stays on the child's run.
+	Truncated bool `json:"truncated,omitempty"`
 }
 
 // agentInputSchema is the JSON Schema the model sees: ONE object, with `op`
@@ -546,6 +549,13 @@ func (a *AgentTool) executeSpawn(ctx context.Context, in agentInput) (tools.Resu
 	}
 	if output == "" && len(state) == 0 {
 		return tools.Result{Text: fmt.Sprintf("(sub-agent %q completed with no final text)", in.Name)}, nil
+	}
+	// One child's answer may take at most a quarter of this run's window, so a
+	// verbose child cannot fill its parent's context in one result.
+	if limit := quarterWindowChars(ctx); limit > 0 {
+		if cut, truncated := cutOnRune(output, limit); truncated {
+			output = cut + fmt.Sprintf("\n\n[truncated at %d characters; the full answer is in the transcript of run %s]", limit, runID)
+		}
 	}
 	// RFC CR D5: a stateful child hands its final Σ up as the structured result,
 	// folded into the tool_result text (tools.Result is text-only) so the parent
@@ -785,6 +795,9 @@ func (a *AgentTool) executeParallelSpawn(ctx context.Context, in agentInput) (to
 	}
 
 	wg.Wait()
+	// After the ledger recorded each full answer: the durable record keeps it,
+	// the parent's context gets the capped envelope.
+	capRowOutputs(results, quarterWindowChars(ctx))
 
 	envelope := struct {
 		Results []ParallelSpawnResult `json:"results"`
@@ -797,6 +810,23 @@ func (a *AgentTool) executeParallelSpawn(ctx context.Context, in agentInput) (to
 		return errFrom(fmt.Sprintf("internal: marshal parallel_spawn envelope: %s", err), err), nil
 	}
 	return tools.Result{Text: string(body)}, nil
+}
+
+// capRowOutputs cuts each row's output to an equal share of quarter — a
+// quarter of the parent's window, in characters — flagging the rows it cut.
+// The rows share it so a wide fan-out cannot take more of the window than a
+// single child may (a quarter; executeSpawn applies the same bound). 0 = no
+// window known, nothing is cut. A cut row's full answer is on its child's run.
+func capRowOutputs(rows []ParallelSpawnResult, quarter int) {
+	if quarter <= 0 || len(rows) == 0 {
+		return
+	}
+	share := quarter / len(rows)
+	for i := range rows {
+		if out, cut := cutOnRune(rows[i].Output, share); cut {
+			rows[i].Output, rows[i].Truncated = out, true
+		}
+	}
 }
 
 // residentChildResult is the JSON envelope the resident-child ops (open/send/

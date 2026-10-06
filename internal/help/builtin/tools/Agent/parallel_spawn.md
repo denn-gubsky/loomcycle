@@ -23,12 +23,15 @@ while it waits for one, and time it is held for review does not count.
 
 ## Returns
 
-`{"results": [{index, agent, ok, output?, error?, state?, run_id?, status?}]}`,
+`{"results": [{index, agent, ok, output?, error?, state?, run_id?, status?, truncated?}]}`,
 in the same order as `spawns`. `output` is the child's final text (as `spawn`
 returns it) when `ok` is true; `error` says why when it is false. `run_id` is
 the child's run, present whenever one was started — failed children included.
 `status` is `"timeout"` on a row whose child its `timeout_ms` stopped (`ok` is
-false and its run was cancelled); it is absent otherwise.
+false and its run was cancelled); it is absent otherwise. The rows share a
+quarter of your context window equally: an `output` longer than its share is
+cut and the row carries `truncated: true` — the child's whole answer stays in
+the transcript of its `run_id`.
 
 ## Errors
 
