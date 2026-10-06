@@ -42,6 +42,12 @@ agents:
   # as well as the lever, and the tidying (dropping two `{{tool:}}` expansions)
   # took accuracy to 0.0567 with 80% abstention.
   locomo/orn-control-sp: &orn_arm
+    # Its runs are runtime bookkeeping, not the conversation under test: an
+    # `internal` agent's sessions are kept out of the consolidation scan and out
+    # of History list/search. Without it, a store built after an answer phase
+    # consolidates the answer runs as chats, and a later answer can read an
+    # earlier one through History.
+    internal: true
     provider: ollama-local
     model: ornith-1.5:35b
     max_tokens: 1200
@@ -98,6 +104,12 @@ agents:
   # and a verifier that starts composing answers has joined that failure rather
   # than checking it.
   locomo/sufficiency:
+    # Its runs are runtime bookkeeping, not the conversation under test: an
+    # `internal` agent's sessions are kept out of the consolidation scan and out
+    # of History list/search. Without it, a store built after an answer phase
+    # consolidates the answer runs as chats, and a later answer can read an
+    # earlier one through History.
+    internal: true
     provider: ollama-local
     model: ornith-1.5:35b
     tools: []
