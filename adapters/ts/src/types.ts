@@ -103,9 +103,12 @@ export type EventType =
   | "channel_delivery"
   | "interruption_pending"
   // Agent fan-out ledger (a parent's parallel_spawn), which is what makes an
-  // in-flight child durable across a pause.
+  // in-flight child durable across a pause. spawn_child_read records that a
+  // run was first handed a poll-mode child's result. Transcript records, never
+  // sent on the live stream.
   | "spawn_child_started"
   | "spawn_child_result"
+  | "spawn_child_read"
   // The prompt a run's first model call received (RFC DI). A transcript
   // record read via getRunPrompt; never sent on the live stream.
   | "prompt_snapshot"
@@ -641,17 +644,34 @@ export interface TurnCancelledInfo {
   since_turn: number;
 }
 
-/** Payload on `spawn_child_started` / `spawn_child_result` — the two-event
- *  ledger a fan-out parent writes so an in-flight child survives a pause. */
+/** Payload on `spawn_child_started` / `spawn_child_result` /
+ *  `spawn_child_read` — the ledger a parent writes so its children survive a
+ *  pause: a fan-out's in-flight children, and its poll-mode children (`mode:
+ *  "poll"`) with how each ended and whether the parent has read it. */
 export interface SpawnChildInfo {
   tool_use_id: string;
   index: number;
   run_id?: string;
   agent?: string;
+  /** "poll" for a poll-mode child; absent for a wait-mode fan-out child. */
+  mode?: string;
+  batch_id?: string;
+  /** "team" for a team walk run in poll mode. */
+  kind?: string;
+  team?: string;
+  def_id?: string;
+  /** The child was started with notify: false / on_parent_end: "cancel". */
+  no_notify?: boolean;
+  cancel_on_parent_end?: boolean;
   ok?: boolean;
   output?: string;
   error?: string;
   state?: Record<string, unknown>;
+  /** A poll-mode child's final state (completed, failed, cancelled, timeout). */
+  ended?: string;
+  status?: string;
+  /** A team walk's whole answer, steps included. */
+  detail?: Record<string, unknown>;
 }
 
 export interface AgentEvent {
@@ -740,7 +760,7 @@ export interface AgentEvent {
   interruption?: InterruptionEventInfo;
   /** Payload on `turn_cancelled`. */
   turn_cancelled?: TurnCancelledInfo;
-  /** Payload on `spawn_child_started` / `spawn_child_result`. */
+  /** Payload on `spawn_child_started` / `spawn_child_result` / `spawn_child_read`. */
   spawn_child?: SpawnChildInfo;
   /** Payload on `prompt_snapshot` (transcript only). */
   prompt_snapshot?: RunPromptSnapshot;
