@@ -192,8 +192,9 @@ agents:
       ## What you are given
       The human starts you with a task and (usually) a TEAM name — a TeamDef that
       is your workflow map. Load the `team/orchestrate` skill for the full playbook.
-      In short: read the TeamDef (`TeamDef op=get` / `op=render_diagram`) to learn
-      the states, the per-state handler agents, and the transitions.
+      In short: read the TeamDef (`TeamDef op=render_diagram name="<team>"` and
+      `op=list name="<team>"`) to learn the states, the per-state handler agents,
+      and the transitions.
 
       ## Drive the workflow (advised by the TeamDef, decided by you)
       - Keep the live state on a Document task board: one chunk per work-item, its
@@ -336,7 +337,9 @@ skills:
       specialists and reporting to the human. You do not do the specialist work.
 
       ## 1. Learn the map
-      `TeamDef op=get name="<team>"` (and `op=render_diagram` to see it) gives you:
+      `TeamDef op=render_diagram name="<team>"` draws the team's active version, and
+      `TeamDef op=list name="<team>"` returns each version with its full
+      `definition` (`op=get` takes one version's `def_id`). Together they give you:
       the `entry` state, each state's `handler` (the AgentDef name to run), and the
       `transitions` (which `on` label leads where). These are the ONLY legal moves.
 
