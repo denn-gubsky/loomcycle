@@ -404,3 +404,33 @@ func TestAgentPoll_AHeldChildReportsHeld(t *testing.T) {
 		t.Errorf("parent stream saw %v, want the hold and its release", seen)
 	}
 }
+
+// A runtime pause ends a poll's wait: the children park at the pause and none
+// of them ends, so a parent held in the wait could not park until the wait's
+// bound ran out — past the pause's own timeout. The poll answers with what is
+// known, so the parent reaches the boundary where it parks.
+func TestAgentPoll_WaitEndsWhenTheRuntimePauses(t *testing.T) {
+	g := newGated("slow")
+	defer g.open("slow")
+	a := pollTool(g)
+	ctx, _ := pollCtx()
+	gate := newFanoutFakeGate()
+	ctx = tools.WithPauseGate(ctx, gate)
+	batch := decodeBatch(t, execJSON(t, a, ctx, `{"op":"parallel_spawn","mode":"poll","spawns":[{"name":"w","prompt":"slow"}]}`))
+	waitUntil(t, func() bool { return g.startedCount() == 1 })
+	answered := make(chan tools.Result, 1)
+	go func() {
+		res, _ := a.Execute(ctx, json.RawMessage(`{"op":"poll","batch_id":"`+batch.BatchID+`","wait":"all","wait_ms":10000}`))
+		answered <- res
+	}()
+	time.Sleep(50 * time.Millisecond)
+	gate.triggerPause()
+	select {
+	case res := <-answered:
+		if p := decodePoll(t, res); p.Pending != 1 || p.Children[0].State != tools.ChildRunning {
+			t.Errorf("poll under a pause = %+v, want the child still running", p)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("the poll kept waiting through a runtime pause — its run cannot park")
+	}
+}

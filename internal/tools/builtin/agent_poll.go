@@ -356,6 +356,12 @@ func (a *AgentTool) awaitChildren(ctx context.Context, bg *tools.Background, vie
 
 // awaitBackground is awaitChildren with the cap given: TeamDef poll waits for
 // its walks the same way.
+//
+// A runtime pause ends the wait as the bound would: the children park at the
+// pause and none of them ends, so a wait for them would hold the caller inside
+// its tool call — where it cannot park — past the pause's timeout. Returning
+// what is known lets the caller reach its next iteration boundary and park
+// there; it can poll again once the runtime resumes.
 func awaitBackground(ctx context.Context, bg *tools.Background, views []tools.ChildView, all bool, waitMs int, bound time.Duration) {
 	var waiting []string
 	for _, v := range views {
@@ -372,7 +378,12 @@ func awaitBackground(ctx context.Context, bg *tools.Background, views []tools.Ch
 	defer providers.BeginWait(ctx)()
 	timer := time.NewTimer(bound)
 	defer timer.Stop()
+	gate := tools.PauseGateFromContext(ctx)
 	for {
+		var paused <-chan struct{} // nil without a gate: never fires
+		if gate != nil {
+			paused = gate.PauseCh() // re-fetched: a resume makes a fresh one
+		}
 		changed := bg.Changed()
 		ended := 0
 		for _, id := range waiting {
@@ -386,6 +397,8 @@ func awaitBackground(ctx context.Context, bg *tools.Background, views []tools.Ch
 		select {
 		case <-changed:
 		case <-timer.C:
+			return
+		case <-paused:
 			return
 		case <-ctx.Done():
 			return
