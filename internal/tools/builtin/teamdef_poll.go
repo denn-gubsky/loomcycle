@@ -6,7 +6,9 @@ import (
 	"log"
 	"strings"
 	"sync"
+	"time"
 
+	runcancel "github.com/denn-gubsky/loomcycle/internal/cancel"
 	"github.com/denn-gubsky/loomcycle/internal/teamrun"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
 )
@@ -171,9 +173,143 @@ func (t *TeamDef) execPoll(ctx context.Context, in teamDefInput) (tools.Result, 
 		row["state"] = v.State
 		rows[i] = row
 	}
+	capWalkRows(rows, quarterWindowChars(ctx))
 	res, err := okJSON(map[string]any{"walks": rows, "pending": pending})
 	if !res.IsError {
 		bg.MarkRead(read)
 	}
 	return res, err
+}
+
+// capWalkRows bounds what one poll's walks put in the caller's context to a
+// quarter of its window, shared equally by the walks that carry text — the
+// bound Agent poll's rows share (capPollRows). A poll answers several walks
+// in one result; a waited-for op=run answers one walk, and is left whole.
+//
+// Only final_output and the steps' outputs are free text of unbounded size;
+// the rest of a row is state ids, agent names, counts and the error. Within a
+// walk the answer comes first: final_output keeps up to the walk's whole
+// share, and the steps' outputs split what is left equally. The trace is the
+// part a caller needs least, and its last output is final_output again. A walk
+// cut anywhere says truncated: true; its whole answer stays on its run
+// (run_id). The table's copy is never cut — a later poll reads it whole under
+// a larger window.
+func capWalkRows(rows []map[string]any, quarter int) {
+	n := 0
+	for _, r := range rows {
+		if walkTextLen(r) > 0 {
+			n++
+		}
+	}
+	if quarter <= 0 || n == 0 {
+		return
+	}
+	share := quarter / n
+	for _, r := range rows {
+		if walkTextLen(r) <= share {
+			continue
+		}
+		left := share
+		if final, ok := r["final_output"].(string); ok {
+			cut, _ := cutOnRune(final, share)
+			r["final_output"] = cut
+			left -= len(cut)
+		}
+		if steps, ok := r["steps"].([]map[string]any); ok {
+			with := 0
+			for _, s := range steps {
+				if out, _ := s["output"].(string); out != "" {
+					with++
+				}
+			}
+			per := 0
+			if with > 0 {
+				per = left / with
+			}
+			// A copy: the row's steps are the table's own.
+			cutSteps := make([]map[string]any, len(steps))
+			for i, s := range steps {
+				c := make(map[string]any, len(s))
+				for k, v := range s {
+					c[k] = v
+				}
+				if out, _ := c["output"].(string); out != "" {
+					c["output"], _ = cutOnRune(out, per)
+				}
+				cutSteps[i] = c
+			}
+			r["steps"] = cutSteps
+		}
+		r["truncated"] = true
+	}
+}
+
+// walkTextLen is the free text a walk's row carries: its final output and its
+// steps' outputs.
+func walkTextLen(r map[string]any) int {
+	final, _ := r["final_output"].(string)
+	n := len(final)
+	steps, _ := r["steps"].([]map[string]any)
+	for _, s := range steps {
+		out, _ := s["output"].(string)
+		n += len(out)
+	}
+	return n
+}
+
+// execCancel ends walks this run started in poll mode, as Agent cancel ends
+// any background child: each walk's ctx is cancelled with the reason
+// "cancelled by its parent", which cancels its members and ends its run
+// cancelled. It then waits, bounded like Agent cancel, for each walk to stop,
+// and answers with how each ended — a walk that finished first is left as it
+// ended. Every id must be a walk of this run, or nothing is cancelled: a
+// sub-agent of this run, another run's walk and a detached walk (never in this
+// run's table) are answered exactly as an id this run never started.
+func (t *TeamDef) execCancel(ctx context.Context, in teamDefInput) (tools.Result, error) {
+	if len(in.RunIDs) == 0 {
+		return errValidation("cancel: missing required field: run_ids",
+			"Pass the run_id each run with mode \"poll\" returned."), nil
+	}
+	bg := tools.BackgroundOf(ctx)
+	views, unknown := []tools.ChildView(nil), in.RunIDs
+	if bg != nil {
+		views, unknown = bg.Select(in.RunIDs, "")
+	}
+	walks := make([]tools.ChildView, 0, len(views))
+	for _, v := range views {
+		if v.Kind == tools.ChildKindTeam {
+			walks = append(walks, v)
+		} else {
+			unknown = append(unknown, v.RunID)
+		}
+	}
+	if len(unknown) > 0 {
+		return errNotFound(fmt.Sprintf("cancel: not a team walk of this run: %s — nothing was cancelled", strings.Join(unknown, ", ")),
+			"Use the run_id a run with mode \"poll\" returned to you."), nil
+	}
+	cause := runcancel.CauseWithReason("cancelled by its parent")
+	var cancelled []tools.ChildView
+	for _, v := range walks {
+		if !v.Ended() {
+			bg.Cancel(v.RunID, cause)
+			cancelled = append(cancelled, v)
+		}
+	}
+	if len(cancelled) > 0 {
+		awaitBackground(ctx, bg, cancelled, true, int(cancelSettle/time.Millisecond), pollWaitCap(t.PollWaitCapMs))
+	}
+	rows := make([]map[string]any, len(walks))
+	for i, v := range walks {
+		now, _ := bg.Lookup(v.RunID)
+		row := map[string]any{
+			"run_id": now.RunID,
+			"name":   strings.TrimPrefix(now.Agent, teamWalkLabel),
+			"state":  now.State,
+		}
+		if now.Ended() && now.Result.Error != "" {
+			row["error"] = now.Result.Error
+		}
+		rows[i] = row
+	}
+	return okJSON(map[string]any{"walks": rows})
 }

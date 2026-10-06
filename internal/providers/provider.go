@@ -1276,6 +1276,12 @@ type SpawnChildEventInfo struct {
 	// wait-mode child. BatchID names its poll-mode parallel_spawn.
 	Mode    string `json:"mode,omitempty"`
 	BatchID string `json:"batch_id,omitempty"`
+	// Kind is "team" for a team walk run in poll mode (Agent is then the label
+	// its walk is filed under, team:<name>; Team and DefID name the version
+	// that runs), and empty for a sub-agent.
+	Kind  string `json:"kind,omitempty"`
+	Team  string `json:"team,omitempty"`
+	DefID string `json:"def_id,omitempty"`
 	// Result fields — set on EventSpawnChildResult only.
 	Ok     bool   `json:"ok,omitempty"`
 	Output string `json:"output,omitempty"`
