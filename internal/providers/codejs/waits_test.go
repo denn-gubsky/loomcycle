@@ -27,6 +27,17 @@ const (
 	childTakes         = 2 * time.Second // longer than the whole budget
 )
 
+// aggregate stands in for the work a real orchestrator does with its
+// children's results once the wait returns. It matters to the fail-before: a
+// replay turn that does no work at all can finish inside the 1 ms an
+// over-budget turn used to be given, and pass without the run clock.
+const aggregate = `
+function aggregate(xs) {
+  var s = 0;
+  for (var i = 0; i < 300000; i++) { s += i % 7; }
+  return xs.join(",");
+}`
+
 // slowChildren is a sub-agent runner whose every child takes childTakes.
 func slowChildren(ctx context.Context, _ string, prompt string, _ string) (string, error) {
 	select {
@@ -71,10 +82,10 @@ func runOrchestrator(t *testing.T, js string, budget time.Duration, ts ...tools.
 }
 
 func TestCodeJSOrchestrator_ParallelSpawnWaitDoesNotSpendBudget(t *testing.T) {
-	js := `
+	js := aggregate + `
 function run() {
   var r = Agent.spawn({op: "parallel_spawn", spawns: [{name: "kid", prompt: "a"}, {name: "kid", prompt: "b"}]});
-  return { final_text: r.results.map(function (x) { return x.output; }).join(",") };
+  return { final_text: aggregate(r.results.map(function (x) { return x.output; })) };
 }`
 	res, err := runOrchestrator(t, js, orchestratorBudget, &builtin.AgentTool{Run: slowChildren})
 	if err != nil {
@@ -86,10 +97,10 @@ function run() {
 }
 
 func TestCodeJSOrchestrator_SpawnWaitDoesNotSpendBudget(t *testing.T) {
-	js := `
+	js := aggregate + `
 function run() {
   var a = Agent.spawn({name: "kid", prompt: "a"});
-  return { final_text: String(a) };
+  return { final_text: aggregate([String(a)]) };
 }`
 	res, err := runOrchestrator(t, js, orchestratorBudget, &builtin.AgentTool{Run: slowChildren})
 	if err != nil {
