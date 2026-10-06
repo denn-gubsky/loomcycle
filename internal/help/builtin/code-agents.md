@@ -219,7 +219,13 @@ tests and snapshot equality.
   non-terminating tool-call loop, not a too-small cap.)
 - **Waiting does not spend the budget.** While `run()` is blocked waiting, the
   run is parked and its budget clock stops. Every wait counts:
-  - `Agent` `spawn` and `parallel_spawn`, while the children run;
+  - `Agent` `spawn` and `parallel_spawn`, while the children run (in
+    `mode: "poll"` the call returns at once and is not a wait);
+  - `Agent` `poll` with `wait: "any"` or `"all"`, while it waits for
+    background children, and `cancel` while it waits for the children it
+    cancelled to stop;
+  - a run that returned while background children it started still run,
+    while it waits for them before completing;
   - resident `open`, `send` and `poll` while they block on the child's turn
     (with or without `timeout_ms`);
   - `TeamDef` `op=run` without `mode: detach`, while the team works;
