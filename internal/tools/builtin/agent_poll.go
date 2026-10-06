@@ -359,12 +359,19 @@ func (a *AgentTool) awaitChildren(ctx context.Context, bg *tools.Background, vie
 // its walks the same way.
 func awaitBackground(ctx context.Context, bg *tools.Background, views []tools.ChildView, all bool, waitMs int, bound time.Duration) {
 	var waiting []string
+	endedAlready := false
 	for _, v := range views {
-		if !v.Resident && !v.Ended() {
+		if v.Resident {
+			continue
+		}
+		if v.Ended() {
+			endedAlready = true
+		} else {
 			waiting = append(waiting, v.RunID)
 		}
 	}
-	if len(waiting) == 0 {
+	// "any" holds already when one of them has ended: the poll answers with it.
+	if len(waiting) == 0 || (!all && endedAlready) {
 		return
 	}
 	if waitMs > 0 && time.Duration(waitMs)*time.Millisecond < bound {
