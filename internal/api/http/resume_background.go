@@ -511,6 +511,10 @@ func (s *Server) restoredAgentEnding(ctx context.Context, child store.Run, spec 
 // walkInterrupted is why a walk still running when its parent paused ended.
 const walkInterrupted = "the walk was interrupted: the run that started it was paused and resumed without it — a team walk runs on the instance that started it and does not survive a restart or move to another one; run it again if you need its answer"
 
+// walkLost is why a walk whose row a restart left running ended, when a resume
+// finds its members paused with no walk behind them.
+const walkLost = "the walk was interrupted: its instance stopped while it ran — a team walk runs on the instance that started it and does not survive a restart or move to another one; run it again if you need its answer"
+
 // endInterruptedWalks closes the run rows of a resumed run's walks that were
 // still running when it paused: their walk went with the instance that ran
 // it, and its row would otherwise read running until the stale sweeper failed

@@ -5,7 +5,9 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
+	"github.com/denn-gubsky/loomcycle/internal/coord"
 	"github.com/denn-gubsky/loomcycle/internal/loop"
 	"github.com/denn-gubsky/loomcycle/internal/store"
 )
@@ -82,7 +84,7 @@ func TestResumePausedRuns_AChildWhoseParentEndsDuringThePassIsCancelled(t *testi
 
 // A detached walk is its own root: its members have the walk as their parent,
 // not the run that started it, and outlive that starter as they did live. A
-// member whose walk's starter has ended still resumes.
+// member whose walk's starter has ended still resumes, its walk live here.
 func TestResumePausedRuns_ADetachedWalksMemberWithAnEndedStarterStillResumes(t *testing.T) {
 	ctx := context.Background()
 	prov := newBGFamily(answer("unused"))
@@ -102,6 +104,8 @@ func TestResumePausedRuns_ADetachedWalksMemberWithAnEndedStarterStillResumes(t *
 		t.Fatal(err)
 	}
 	member := memberRun(t, srv, walk, "a_member", "hold the member")
+	srv.walks.add(walk.ID, wsess.ID, runStateMeta{RunID: walk.ID}, func(error) {})
+	t.Cleanup(func() { srv.walks.remove(walk.ID) })
 
 	if n, warns := srv.ResumePausedRuns(ctx); n != 1 || len(warns) != 0 {
 		t.Fatalf("resumed %d (warnings: %v), want the member", n, warns)
@@ -113,6 +117,99 @@ func TestResumePausedRuns_ADetachedWalksMemberWithAnEndedStarterStillResumes(t *
 	if run, err := srv.store.GetRun(ctx, member.ID); err != nil || run.Status != store.RunRunning {
 		t.Errorf("the member = %+v, %v; want running", run, err)
 	}
+}
+
+// A walk runs no loop and lives only in the process that runs it: a restart on
+// the same database leaves its row running with nothing behind it, whatever
+// mode it ran in. Its paused members are not resumed for a walk that will
+// never read them, and its row is closed as interrupted rather than reading
+// running until the stale sweeper fails it.
+func TestResumePausedRuns_AMemberOfAWalkARestartLeftRunningIsCancelled(t *testing.T) {
+	for _, mode := range []string{"detach", "wait"} {
+		t.Run(mode, func(t *testing.T) {
+			ctx := context.Background()
+			prov := newBGFamily()
+			srv, _ := makeServer(t, prov, bgResumeConfig(""))
+			settle(t, srv, prov)
+			starter := pausedLead(t, srv) // running elsewhere: not paused here
+			walk := walkRow(t, srv, starter, mode)
+			member := memberRun(t, srv, walk, "a_member", "hold the member")
+
+			n, warns := srv.ResumePausedRuns(ctx)
+			if n != 0 || len(warns) != 1 || !strings.Contains(warns[0], "its team walk "+walk.ID+" is not here") {
+				t.Fatalf("resumed %d (warnings: %v), want none and the member refused, its walk gone", n, warns)
+			}
+			gone, err := srv.store.GetRun(ctx, member.ID)
+			if err != nil || gone.Status != store.RunCancelled || gone.PauseState == store.PauseStatePaused {
+				t.Fatalf("the member = %+v, %v; want cancelled and no longer paused", gone, err)
+			}
+			ended, err := srv.store.GetRun(ctx, walk.ID)
+			if err != nil || ended.Status != store.RunFailed || !strings.Contains(ended.ErrorMsg, "the walk was interrupted") || !strings.Contains(ended.ErrorMsg, "run it again") {
+				t.Errorf("the walk's row = %+v, %v; want failed as interrupted", ended, err)
+			}
+		})
+	}
+}
+
+// A walk's members run in the walk's own process, so a member that another
+// live replica holds says its walk is alive there: neither is touched.
+func TestResumePausedRuns_AWalkWhoseMemberIsLiveOnAnotherReplicaIsLeftRunning(t *testing.T) {
+	ctx := context.Background()
+	prov := newBGFamily()
+	srv, _ := makeServer(t, prov, bgResumeConfig(""))
+	settle(t, srv, prov)
+	rs := &replicaColumnStore{Store: srv.store, replica: map[string]string{}} // sqlite keeps no replica column
+	srv.store = rs
+	now := time.Now()
+	srv.SetCoord(nil, &fakeReplicaLister{rows: []coord.Replica{
+		{ID: "rep-a", StartedAt: now, LastHeartbeatAt: now},
+		{ID: "rep-b", StartedAt: now, LastHeartbeatAt: now},
+	}}, "rep-a")
+	starter := pausedLead(t, srv)
+	walk := walkRow(t, srv, starter, "detach")
+	sess, err := srv.store.CreateSession(ctx, "", "worker", "alice")
+	if err != nil {
+		t.Fatal(err)
+	}
+	member, err := srv.store.CreateRun(ctx, sess.ID, store.RunIdentity{
+		AgentID: "a_member", UserID: "alice", Model: "stub-model", ParentRunID: walk.ID, ParentAgentID: walk.AgentID,
+		ReplicaID: "rep-b", ParentContext: &store.ParentContext{WalkID: walk.ID, State: "review", StateVisit: 1},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := rs.SetRunReplica(ctx, member.ID, "rep-b"); err != nil {
+		t.Fatal(err)
+	}
+	markPaused(t, srv, member)
+
+	r := srv.resumePausedRunsReport(ctx)
+	if r.Resumed != 0 || r.AlreadyLive != 1 || len(r.Warnings) != 0 {
+		t.Fatalf("resume = %+v, want the member reported live elsewhere", r)
+	}
+	if got, err := srv.store.GetRun(ctx, walk.ID); err != nil || got.Status != store.RunRunning {
+		t.Errorf("the walk's row = %+v, %v; want still running", got, err)
+	}
+	if got, err := srv.store.GetRun(ctx, member.ID); err != nil || got.Status != store.RunRunning || got.PauseState != store.PauseStatePaused {
+		t.Errorf("the member = %+v, %v; want still paused", got, err)
+	}
+}
+
+// walkRow is a team walk's run row as a walk opens it, in the given mode,
+// started by starter and left running: no walk behind it in this process.
+func walkRow(t *testing.T, srv *Server, starter store.Run, mode string) store.Run {
+	t.Helper()
+	ctx := context.Background()
+	wsess, err := srv.store.CreateSession(ctx, "", "team:rev", "alice")
+	if err != nil {
+		t.Fatal(err)
+	}
+	walk, err := srv.store.CreateRun(ctx, wsess.ID, store.RunIdentity{AgentID: "team:rev", UserID: "alice", ParentRunID: starter.ID,
+		RunConfig: runConfigRecord{Team: &teamWalkRecord{Name: "rev", Mode: mode}}.marshal()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return walk
 }
 
 // memberRun is a paused member run of a walk, as a walk spawns it: the walk is
