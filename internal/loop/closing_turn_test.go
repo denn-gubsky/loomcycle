@@ -6,7 +6,9 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/denn-gubsky/loomcycle/internal/hooks"
 	"github.com/denn-gubsky/loomcycle/internal/providers"
+	"github.com/denn-gubsky/loomcycle/internal/steer"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
 )
 
@@ -166,5 +168,79 @@ func TestGrantsClosingTurn_OnlyTheCappedLastIteration(t *testing.T) {
 		if got := grantsClosingTurn(c.iter, c.cap, c.unbounded); got != c.want {
 			t.Errorf("grantsClosingTurn(%d, %d, %v) = %v, want %v", c.iter, c.cap, c.unbounded, got, c.want)
 		}
+	}
+}
+
+// closingTurnGated is a startReviewRun mutation: a capped fan-out run that
+// gets the closing turn, with the given gates.
+func closingTurnGated(d *hooks.Dispatcher, review bool, steerQueue bool) func(*RunOptions) {
+	return func(o *RunOptions) {
+		tool := &fakeTool{}
+		o.Provider = &fakeProvider{responses: fanOutOnTheLastIteration()}
+		o.Tools, o.Dispatcher = []tools.Tool{tool}, tools.NewDispatcher([]tools.Tool{tool})
+		o.MaxIterations, o.ToolParallelism = 2, 1
+		o.AgentName, o.Hooks, o.Review = "writer", d, review
+		if !steerQueue {
+			o.SteerQueue = nil
+		}
+	}
+}
+
+// The closing turn's answer is a finished answer, so the gates on an answer
+// decide on it, with no iteration left: an agent_stop block fails the run, a
+// hold on a run nothing can deliver a verdict to ends it rejected, and a
+// review holds it — approved, the run ends at its cap on it; sent back, it
+// ends rejected. Before, the closing answer skipped them all and was handed
+// on as a clean result.
+func TestRun_ClosingTurnAnswerGoesThroughTheAnswerGates(t *testing.T) {
+	t.Run("agent_stop block", func(t *testing.T) {
+		h := newScriptedHook(t, `{"decision":"block","reason":"cite a source"}`)
+		r := startReviewRun(t, context.Background(), closingTurnGated(lifecycleHooks(t,
+			&hooks.Hook{Owner: "ops", Name: "check", Phase: hooks.PhaseAgentStop, CallbackURL: h.srv.URL}), false, true))
+		o := r.finish(t)
+		if o.err == nil || o.res.StopReason != StopReasonStopBlocked || !strings.Contains(o.err.Error(), "no iteration left") {
+			t.Fatalf("outcome = %+v, %v", o.res, o.err)
+		}
+		if h.count() != 1 {
+			t.Errorf("the hook was asked %d times, want once", h.count())
+		}
+	})
+	t.Run("hold with no verdict possible", func(t *testing.T) {
+		h := newScriptedHook(t, `{"decision":"hold"}`)
+		r := startReviewRun(t, context.Background(), closingTurnGated(lifecycleHooks(t,
+			&hooks.Hook{Owner: "ops", Name: "hold", Phase: hooks.PhaseAgentStop, CallbackURL: h.srv.URL}), false, false))
+		if o := r.finish(t); o.err != nil || o.res.StopReason != StopReasonRejected {
+			t.Fatalf("outcome = %+v, %v", o.res, o.err)
+		}
+	})
+	for _, tc := range []struct {
+		name, kind, text, want string
+	}{
+		{"review approved", steer.KindApprove, "", "max_iterations"},
+		{"review sent back", steer.KindReject, "redo it", StopReasonRejected},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r := startReviewRun(t, context.Background(), closingTurnGated(nil, true, true))
+			r.waitFor(t, providers.EventAwaitingReview)
+			r.q <- verdict(tc.kind, tc.text) // stamped after the hold began, as a real verdict is
+			o := r.finish(t)
+			if o.err != nil || o.res.StopReason != tc.want || o.res.FinalText != "answer from both results" {
+				t.Fatalf("outcome = %+v, %v; want %q on the closing answer", o.res, o.err, tc.want)
+			}
+		})
+	}
+}
+
+// An interactive run's closing answer ends the run at its cap: it has no
+// iteration left to answer an operator's next message, so it does not park
+// for one.
+func TestRun_ClosingTurnDoesNotParkAnInteractiveRun(t *testing.T) {
+	r := startReviewRun(t, context.Background(), func(o *RunOptions) {
+		closingTurnGated(nil, false, true)(o)
+		o.Interactive = true
+	})
+	o := r.finish(t)
+	if o.err != nil || o.res.StopReason != "max_iterations" || o.res.FinalText != "answer from both results" {
+		t.Fatalf("outcome = %+v, %v", o.res, o.err)
 	}
 }
