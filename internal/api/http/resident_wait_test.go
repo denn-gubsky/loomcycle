@@ -40,3 +40,21 @@ func TestResidentAwaitTurn_ParksTheCallersClockWhileTheChildWorks(t *testing.T) 
 		})
 	}
 }
+
+// A parent whose wait on its child is cancelled closes the wait: one left open
+// would stop its budget for good.
+func TestResidentAwaitTurn_CancelledWaitIsClosed(t *testing.T) {
+	rc := &residentChild{}
+	turnDone := rc.beginTurn(time.Now())
+	clock := providers.NewRunClock(time.Now(), providers.RunClockState{})
+	ctx, cancel := context.WithTimeout(providers.WithRunClock(context.Background(), clock), 100*time.Millisecond)
+	defer cancel()
+	if _, state, _ := rc.awaitTurn(ctx, turnDone, 0, true); state != "interrupted" {
+		t.Fatalf("state = %q, want interrupted", state)
+	}
+	before := clock.State().Waited
+	time.Sleep(50 * time.Millisecond)
+	if after := clock.State().Waited; after != before {
+		t.Fatalf("the wait was left open after awaitTurn returned (%s → %s)", before, after)
+	}
+}

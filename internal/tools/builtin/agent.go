@@ -540,6 +540,7 @@ func (a *AgentTool) executeSpawn(ctx context.Context, in agentInput) (tools.Resu
 		subCtx = tools.WithCompactionOverride(subCtx, in.Compaction)
 	}
 	endWait := providers.BeginWait(ctx) // the caller's run is parked while its child works
+	defer endWait()                     // every exit, a panic included: a wait left open would stop the budget for good
 	output, state, runID, timedOut, err := a.runChildBounded(subCtx, in.TimeoutMs, in.Name, in.Prompt, in.DefID)
 	endWait()
 	if timedOut {
@@ -797,6 +798,7 @@ func (a *AgentTool) executeParallelSpawn(ctx context.Context, in agentInput) (to
 	}
 
 	endWait := providers.BeginWait(ctx) // the caller's run is parked while its children work
+	defer endWait()                     // idempotent; closes the wait on every exit
 	wg.Wait()
 	endWait()
 	// After the ledger recorded each full answer: the durable record keeps it,

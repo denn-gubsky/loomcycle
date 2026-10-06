@@ -398,6 +398,7 @@ func (it *Interruption) execAskViaMCP(ctx context.Context, interruptID, mcpName 
 	// and calling the dispatcher directly was the one path no hook could see.
 	// The consumer's tool holds the call until a person answers: a wait.
 	endWait := providers.BeginWait(ctx)
+	defer endWait() // idempotent; closes the wait on every exit
 	res := tools.ExecuteHooked(callCtx, disp, toolName, args)
 	endWait()
 	if res.IsError {
@@ -646,6 +647,7 @@ func (it *Interruption) blockWithHeartbeat(ctx context.Context, interruptID stri
 	}()
 
 	endWait := providers.BeginWait(ctx) // the caller's run is parked until a person answers
+	defer endWait()                     // idempotent; closes the wait on every exit
 	woke := it.Bus.Wait(ctx, "intr:"+interruptID, waitTimeout)
 	endWait()
 	if woke {

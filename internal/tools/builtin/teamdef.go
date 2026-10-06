@@ -1552,6 +1552,7 @@ func (t *TeamDef) execRun(ctx context.Context, in teamDefInput) (tools.Result, e
 	}
 
 	endWait := providers.BeginWait(ctx) // the caller's run is parked while the team works
+	defer endWait()                     // idempotent; closes the wait on every exit
 	trace, walkErr := walk()
 	endWait()
 

@@ -171,3 +171,86 @@ func TestTeamDefRun_DetachedWalkDoesNotPauseTheCallersClock(t *testing.T) {
 		t.Fatalf("a detached walk's wait paused its caller's clock for %s", got)
 	}
 }
+
+// requireWaitClosed fails if the clock still has a wait open: one left open
+// would stop the run's budget for good.
+func requireWaitClosed(t *testing.T, c *providers.RunClock) {
+	t.Helper()
+	before := c.State().Waited
+	time.Sleep(50 * time.Millisecond)
+	if after := c.State().Waited; after != before {
+		t.Fatalf("a wait was left open after the call returned (waited went %s → %s)", before, after)
+	}
+}
+
+// Every way out of a wait closes it: a cancelled caller, an error, a panic.
+func TestWaitSites_CloseTheirWaitOnEveryExit(t *testing.T) {
+	t.Run("Channel await cancelled", func(t *testing.T) {
+		tool, ctx, cleanup := awaitFixture(t)
+		defer cleanup()
+		waitCtx, clock := withClock(ctx)
+		waitCtx, cancel := context.WithTimeout(waitCtx, 200*time.Millisecond)
+		defer cancel()
+		_, _ = tool.Execute(waitCtx, json.RawMessage(`{"op":"await","channels":["c1"],"wait_ms":5000}`))
+		requireWaitClosed(t, clock)
+	})
+	t.Run("Channel subscribe cancelled", func(t *testing.T) {
+		tool, ctx, cleanup := awaitFixture(t)
+		defer cleanup()
+		waitCtx, clock := withClock(ctx)
+		waitCtx, cancel := context.WithTimeout(waitCtx, 200*time.Millisecond)
+		defer cancel()
+		_, _ = tool.Execute(waitCtx, json.RawMessage(`{"op":"subscribe","channel":"c1","wait_ms":5000}`))
+		requireWaitClosed(t, clock)
+	})
+	t.Run("Interruption ask cancelled", func(t *testing.T) {
+		tool, ctx, _, cleanup := interruptionFixture(t)
+		defer cleanup()
+		waitCtx, clock := withClock(ctx)
+		waitCtx, cancel := context.WithTimeout(waitCtx, 200*time.Millisecond)
+		defer cancel()
+		_, _ = tool.Execute(waitCtx, json.RawMessage(`{"op":"ask","question":"proceed?","timeout_ms":5000}`))
+		requireWaitClosed(t, clock)
+	})
+	t.Run("Agent spawn whose child fails", func(t *testing.T) {
+		ctx, clock := withClock(context.Background())
+		a := &AgentTool{Run: func(context.Context, string, string, string) (string, error) {
+			return "", context.DeadlineExceeded
+		}}
+		_, _ = a.Execute(ctx, json.RawMessage(`{"name":"kid","prompt":"go"}`))
+		requireWaitClosed(t, clock)
+	})
+	t.Run("Agent spawn whose runner panics", func(t *testing.T) {
+		ctx, clock := withClock(context.Background())
+		a := &AgentTool{Run: func(context.Context, string, string, string) (string, error) {
+			panic("runner bug")
+		}}
+		func() {
+			defer func() { _ = recover() }()
+			_, _ = a.Execute(ctx, json.RawMessage(`{"name":"kid","prompt":"go"}`))
+		}()
+		requireWaitClosed(t, clock)
+	})
+	t.Run("Agent parallel_spawn cancelled", func(t *testing.T) {
+		ctx, clock := withClock(context.Background())
+		ctx, cancel := context.WithTimeout(ctx, 200*time.Millisecond)
+		defer cancel()
+		a := &AgentTool{Run: func(c context.Context, _, _, _ string) (string, error) {
+			<-c.Done()
+			return "", c.Err()
+		}}
+		_, _ = a.Execute(ctx, json.RawMessage(`{"op":"parallel_spawn","spawns":[{"name":"kid","prompt":"a"},{"name":"kid","prompt":"b"}]}`))
+		requireWaitClosed(t, clock)
+	})
+	t.Run("TeamDef run whose member fails", func(t *testing.T) {
+		tool, ctx, done := teamDefFixture(t)
+		defer done()
+		tool.Spawn = textSpawn(func(context.Context, string, teamrun.Prompt, string) (string, error) {
+			return "", context.DeadlineExceeded
+		})
+		createTeam(t, tool, ctx, "failing-team", validTeamGraph)
+		waitCtx, clock := withClock(ctx)
+		_, _ = tool.Execute(waitCtx, json.RawMessage(`{"op":"run","name":"failing-team","input":"x"}`))
+		requireWaitClosed(t, clock)
+	})
+}
