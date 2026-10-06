@@ -126,9 +126,9 @@ func TestGrpcPauseRuntime_HappyPath(t *testing.T) {
 		pauseResult: connector.PauseResult{
 			Status:              "paused",
 			DurationMS:          42,
-			ForceCancelledCount: 1,
+			ForceCancelledCount: 0, // always 0: pause cancels no tool call
 			PausedRunsCount:     2,
-			Warnings:            []string{"flaky-tool"},
+			Warnings:            []string{"run r_slow did not park within the timeout"},
 		},
 	}
 	client, cleanup := startTestServerWithConnector(t, mc)

@@ -1335,11 +1335,14 @@ func (x *Compaction) GetModel() string {
 type BatchSpawnRequest struct {
 	state  protoimpl.MessageState `protogen:"open.v1"`
 	Spawns []*RunRequest          `protobuf:"bytes,1,rep,name=spawns,proto3" json:"spawns,omitempty"`
-	// mode is "join" (default): block until all children settle. "detach"
-	// (async run handles) is reserved for a future release and rejected.
+	// mode is "join" (default): block until all children settle. "detach":
+	// return once every child has started (status "running", with its run_id)
+	// or been refused in its slot; the runs continue after the call returns.
+	// Any other value is rejected.
 	Mode string `protobuf:"bytes,2,opt,name=mode,proto3" json:"mode,omitempty"`
 	// timeout_ms optionally caps the join; a child still running when it
 	// elapses is cancelled and reported with a cancelled status in-envelope.
+	// Rejected with mode "detach", which does not wait.
 	TimeoutMs     int64 `protobuf:"varint,3,opt,name=timeout_ms,json=timeoutMs,proto3" json:"timeout_ms,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -1403,7 +1406,7 @@ type SpawnResult struct {
 	AgentId       string                 `protobuf:"bytes,1,opt,name=agent_id,json=agentId,proto3" json:"agent_id,omitempty"`
 	RunId         string                 `protobuf:"bytes,2,opt,name=run_id,json=runId,proto3" json:"run_id,omitempty"`
 	SessionId     string                 `protobuf:"bytes,3,opt,name=session_id,json=sessionId,proto3" json:"session_id,omitempty"`
-	Status        string                 `protobuf:"bytes,4,opt,name=status,proto3" json:"status,omitempty"` // completed | failed | cancelled
+	Status        string                 `protobuf:"bytes,4,opt,name=status,proto3" json:"status,omitempty"` // completed | failed | cancelled; running for a detached batch child
 	StopReason    string                 `protobuf:"bytes,5,opt,name=stop_reason,json=stopReason,proto3" json:"stop_reason,omitempty"`
 	FinalText     string                 `protobuf:"bytes,6,opt,name=final_text,json=finalText,proto3" json:"final_text,omitempty"`
 	Usage         *Usage                 `protobuf:"bytes,7,opt,name=usage,proto3" json:"usage,omitempty"`
@@ -1498,8 +1501,8 @@ func (x *SpawnResult) GetError() string {
 	return ""
 }
 
-// BatchSpawnResult is the combined "join"-mode outcome; results is
-// index-aligned with the request's spawns.
+// BatchSpawnResult is the combined outcome; results is index-aligned with
+// the request's spawns.
 type BatchSpawnResult struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Results       []*SpawnResult         `protobuf:"bytes,1,rep,name=results,proto3" json:"results,omitempty"`
@@ -7256,8 +7259,8 @@ func (x *HealthResponse) GetUptimeSeconds() int64 {
 
 type PauseRuntimeRequest struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
-	// Wait-for-non-idempotent-tools cap, in milliseconds. 0 falls
-	// through to LOOMCYCLE_PAUSE_DEFAULT_TIMEOUT_MS (default 30 s).
+	// How long to wait for in-flight runs to park, in milliseconds. 0
+	// falls through to LOOMCYCLE_PAUSE_DEFAULT_TIMEOUT_MS (default 30 s).
 	// Clamped server-side at pause.MaxPauseTimeout (5 min). int64
 	// for consistency with every other _ms field in this proto
 	// (duration_ms in PauseRuntimeResponse, wait_ms in Retry) —
@@ -7306,12 +7309,13 @@ func (x *PauseRuntimeRequest) GetTimeoutMs() int64 {
 }
 
 type PauseRuntimeResponse struct {
-	state               protoimpl.MessageState `protogen:"open.v1"`
-	Status              string                 `protobuf:"bytes,1,opt,name=status,proto3" json:"status,omitempty"` // "paused"
-	DurationMs          int64                  `protobuf:"varint,2,opt,name=duration_ms,json=durationMs,proto3" json:"duration_ms,omitempty"`
-	ForceCancelledCount int32                  `protobuf:"varint,3,opt,name=force_cancelled_count,json=forceCancelledCount,proto3" json:"force_cancelled_count,omitempty"`
-	PausedRunsCount     int32                  `protobuf:"varint,4,opt,name=paused_runs_count,json=pausedRunsCount,proto3" json:"paused_runs_count,omitempty"`
-	Warnings            []string               `protobuf:"bytes,5,rep,name=warnings,proto3" json:"warnings,omitempty"`
+	state      protoimpl.MessageState `protogen:"open.v1"`
+	Status     string                 `protobuf:"bytes,1,opt,name=status,proto3" json:"status,omitempty"` // "paused"
+	DurationMs int64                  `protobuf:"varint,2,opt,name=duration_ms,json=durationMs,proto3" json:"duration_ms,omitempty"`
+	// Always 0: pause cancels no tool call. Kept for wire compatibility.
+	ForceCancelledCount int32    `protobuf:"varint,3,opt,name=force_cancelled_count,json=forceCancelledCount,proto3" json:"force_cancelled_count,omitempty"`
+	PausedRunsCount     int32    `protobuf:"varint,4,opt,name=paused_runs_count,json=pausedRunsCount,proto3" json:"paused_runs_count,omitempty"`
+	Warnings            []string `protobuf:"bytes,5,rep,name=warnings,proto3" json:"warnings,omitempty"`
 	unknownFields       protoimpl.UnknownFields
 	sizeCache           protoimpl.SizeCache
 }

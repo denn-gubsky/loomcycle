@@ -1063,11 +1063,12 @@ func (s *Server) Continue(req *loomcyclepb.ContinueRequest, stream loomcyclepb.L
 }
 
 // SpawnRunBatch is the RFC Y external fan-out: spawn N fresh runs
-// concurrently (mode "join") and return the combined index-aligned envelope.
-// Dispatches to connector.SpawnRunBatch, which bounds concurrency on the
-// per-user admission gate and captures per-child failures in-envelope. The RPC
-// only errors on a malformed batch (over-cap / unsupported mode). Mirrors
-// POST /v1/runs:batch.
+// concurrently and return the combined index-aligned envelope — once they
+// settle (mode "join") or once they have started (mode "detach"). Dispatches
+// to connector.SpawnRunBatch, which bounds concurrency on the per-user
+// admission gate and captures per-child failures in-envelope. The RPC only
+// errors on a malformed batch (over-cap / unsupported mode / timeout_ms with
+// detach). Mirrors POST /v1/runs:batch.
 func (s *Server) SpawnRunBatch(ctx context.Context, req *loomcyclepb.BatchSpawnRequest) (*loomcyclepb.BatchSpawnResult, error) {
 	if s.connector == nil {
 		return nil, status.Error(codes.Unimplemented, "SpawnRunBatch requires a connector; this Server was constructed without one")
