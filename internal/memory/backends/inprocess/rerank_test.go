@@ -247,21 +247,29 @@ func TestInProcessRerank_ThePoolHoldsCandidatesWhateverTopK(t *testing.T) {
 	b, _, _, cleanup := vectorFixture(t)
 	defer cleanup()
 	ctx := context.Background()
-	for i := 0; i < 30; i++ {
+	for i := 0; i < 50; i++ {
 		key := fmt.Sprintf("doc.chunk:c%02d", i)
 		if _, err := b.Set(ctx, store.MemoryScopeUser, "u1", key, json.RawMessage(`{"body":"go"}`),
 			memory.SetOptions{Embed: true, EmbedText: "Guide — Section\ngo"}); err != nil {
 			t.Fatal(err)
 		}
 	}
+	// The listwise kind's default pool is 40.
 	r := &scriptedReranker{reply: "[20]"}
 	b.SetReranker(r)
 	res := search(t, b, memory.SearchQuery{QueryText: "go", TopK: 2, Rerank: rerankOn})
-	if res.Rerank == nil || res.Rerank.Candidates != 20 {
-		t.Fatalf("the model was shown %+v candidates, want 20 at top_k 2", res.Rerank)
+	if res.Rerank == nil || res.Rerank.Candidates != 40 {
+		t.Fatalf("the listwise model was shown %+v candidates, want 40 at top_k 2", res.Rerank)
 	}
-	if !strings.Contains(r.prompt, "[20] ") || strings.Contains(r.prompt, "[21] ") {
-		t.Error("the prompt does not hold exactly 20 candidates")
+	if !strings.Contains(r.prompt, "[40] ") || strings.Contains(r.prompt, "[41] ") {
+		t.Error("the prompt does not hold exactly 40 candidates")
+	}
+	// A ranker that names no default (the decision kind's shape) is shown 20.
+	o := &orderRanker{report: memory.RerankReport{Reason: memory.RerankTimeout}}
+	b.SetRanker(o)
+	search(t, b, memory.SearchQuery{QueryText: "go", TopK: 2, Rerank: rerankOn})
+	if len(o.texts) != 20 {
+		t.Errorf("a ranker without a default was shown %d candidates, want 20", len(o.texts))
 	}
 }
 

@@ -119,15 +119,30 @@ func TestBuildRerankPrompt_IsTheMeasuredPrompt(t *testing.T) {
 	}
 }
 
+// TestRerankOptions_DefaultsAreTheMeasuredValues — the candidates default is the
+// ranker's: 40 for the listwise kind, 20 for a ranker that names none (the decision
+// kind, or no ranker at all). An agent's own candidates win over either.
 func TestRerankOptions_DefaultsAreTheMeasuredValues(t *testing.T) {
+	listwise := ListwiseRanker(&stubRerankModel{})
 	var o RerankOptions
-	if o.EffectiveCandidates() != 20 || o.EffectiveMaxChars() != 1200 {
-		t.Errorf("defaults = %d/%d, want 20/1200", o.EffectiveCandidates(), o.EffectiveMaxChars())
+	if o.EffectiveCandidates(listwise) != 40 || o.EffectiveMaxChars() != 1200 {
+		t.Errorf("listwise defaults = %d/%d, want 40/1200", o.EffectiveCandidates(listwise), o.EffectiveMaxChars())
+	}
+	if o.EffectiveCandidates(nil) != 20 || o.EffectiveCandidates(fixedRanker{}) != 20 {
+		t.Errorf("a ranker without a default is shown %d/%d, want 20",
+			o.EffectiveCandidates(nil), o.EffectiveCandidates(fixedRanker{}))
 	}
 	o = RerankOptions{Candidates: 30, MaxChars: 800}
-	if o.EffectiveCandidates() != 30 || o.EffectiveMaxChars() != 800 {
-		t.Errorf("explicit = %d/%d", o.EffectiveCandidates(), o.EffectiveMaxChars())
+	if o.EffectiveCandidates(listwise) != 30 || o.EffectiveCandidates(fixedRanker{}) != 30 || o.EffectiveMaxChars() != 800 {
+		t.Errorf("explicit = %d/%d/%d", o.EffectiveCandidates(listwise), o.EffectiveCandidates(fixedRanker{}), o.EffectiveMaxChars())
 	}
+}
+
+// fixedRanker is a Ranker that declares no default pool: the decision kind's shape.
+type fixedRanker struct{}
+
+func (fixedRanker) Rank(_ context.Context, _ string, texts []string, _ int) ([]int, RerankReport) {
+	return nil, RerankReport{}
 }
 
 // TestSearchQuery_CanReturnDocumentsHonoursThePrefix — a prefix outside the chunk

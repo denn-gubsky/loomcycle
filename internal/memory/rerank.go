@@ -27,9 +27,24 @@ import (
 // Rerank defaults — the measured configuration. 20 candidates of 1,200 characters
 // is about 6,000 prompt tokens and five seconds on a local 35B model.
 const (
+	// DefaultRerankCandidates is the pool a ranker is shown when neither the agent
+	// nor the ranker names one. It is the decision kind's: a decision model is
+	// shown at most 26 options, so a deeper default would only be clamped.
 	DefaultRerankCandidates = 20
-	DefaultRerankMaxChars   = 1200
+	// DefaultListwiseRerankCandidates is the listwise kind's default. Shown 40 rows
+	// instead of 20, it lifted LoCoMo multi-hop recall@5 from 0.517 to 0.595 (95%
+	// CI of the gain [+5.5, +10.2]pp; bench/results/docs/2026-10-05-memory-rerank-
+	// answers). It doubles the prompt, to about 12,000 tokens at 1,200 characters,
+	// which the listwise window's 16,384-token default still holds.
+	DefaultListwiseRerankCandidates = 40
+	DefaultRerankMaxChars           = 1200
 )
+
+// CandidateDefaulter is a Ranker that knows how many candidates it was measured
+// with. A Ranker that does not implement it is shown DefaultRerankCandidates.
+type CandidateDefaulter interface {
+	DefaultCandidates() int
+}
 
 // RerankModel is the model a rerank calls: one prompt in, the reply text out.
 // Building the prompt and reading the reply stay here, so every model is asked
@@ -63,6 +78,9 @@ func (l listwiseRanker) Rank(ctx context.Context, query string, texts []string, 
 	return RerankTexts(ctx, l.m, query, texts, maxChars)
 }
 
+// DefaultCandidates is the listwise kind's measured pool.
+func (listwiseRanker) DefaultCandidates() int { return DefaultListwiseRerankCandidates }
+
 // RerankOptions is what an agent's configuration asks of a search. The zero value
 // asks for nothing, so every caller that never mentions a rerank is unchanged.
 //
@@ -71,14 +89,21 @@ func (l listwiseRanker) Rank(ctx context.Context, query string, texts []string, 
 // caller of a tool may switch it on, widen its budget, or switch it off.
 type RerankOptions struct {
 	Enabled    bool
-	Candidates int // 0 = DefaultRerankCandidates
+	Candidates int // 0 = the ranker's default (EffectiveCandidates)
 	MaxChars   int // per-candidate truncation; 0 = DefaultRerankMaxChars
 }
 
-// EffectiveCandidates is how many of the fused pool the model is shown.
-func (o RerankOptions) EffectiveCandidates() int {
+// EffectiveCandidates is how many of the fused pool r is shown: the agent's own
+// candidates when it set them, else r's measured default, else
+// DefaultRerankCandidates.
+func (o RerankOptions) EffectiveCandidates(r Ranker) int {
 	if o.Candidates > 0 {
 		return o.Candidates
+	}
+	if d, ok := r.(CandidateDefaulter); ok {
+		if n := d.DefaultCandidates(); n > 0 {
+			return n
+		}
 	}
 	return DefaultRerankCandidates
 }

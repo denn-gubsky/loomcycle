@@ -16,7 +16,8 @@ type MemoryRerank struct {
 	// Enabled turns the rerank on. A pointer so a fork overlay that only changes
 	// `candidates` keeps its parent's switch.
 	Enabled *bool `json:"enabled,omitempty" yaml:"enabled"`
-	// Candidates is how many of the search pool the model is shown. 0 = 20.
+	// Candidates is how many of the search pool the model is shown. 0 = the
+	// reranker kind's default: 40 for listwise, 20 for decision.
 	Candidates int `json:"candidates,omitempty" yaml:"candidates"`
 	// MaxChars truncates each candidate to this many characters. 0 = 1,200.
 	MaxChars int `json:"max_chars,omitempty" yaml:"max_chars"`

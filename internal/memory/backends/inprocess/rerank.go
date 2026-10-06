@@ -27,7 +27,7 @@ func (b *Backend) rerankPool(ctx context.Context, tenant string, scope store.Mem
 	if !q.RerankAllowed(b.rerankSources) {
 		return pool, memory.RerankReport{Reason: memory.RerankRefusalReason(b.rerankSources)}
 	}
-	n := q.Rerank.EffectiveCandidates()
+	n := q.Rerank.EffectiveCandidates(b.reranker)
 	if n > len(pool) {
 		n = len(pool)
 	}
