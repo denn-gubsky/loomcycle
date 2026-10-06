@@ -53,6 +53,15 @@ func MintChannelMessageID(t time.Time) string {
 	return fmt.Sprintf("msg_%016x%s", uint64(t.UnixNano()), hex.EncodeToString(buf[:]))
 }
 
+// NewRunID mints a run id for RunIdentity.ID: "r_" and 16 random bytes in
+// hex, the shape the postgres store mints (the sqlite store's are shorter;
+// both read any).
+func NewRunID() string {
+	var b [16]byte
+	_, _ = rand.Read(b[:])
+	return "r_" + hex.EncodeToString(b[:])
+}
+
 // ChannelHeldVisibleAt is the reserved `visible_at` instant a message on a
 // HELD channel carries — the storage marker for "stored, but not deliverable
 // until someone releases it".
@@ -853,6 +862,11 @@ func UsageGroupColumns(groupBy []UsageDimension) (dimExprs, groupCols []string) 
 // store them as NULL (or empty string for TEXT columns) so historical
 // rows remain queryable.
 type RunIdentity struct {
+	// ID, when set, is the new run's id, minted by the caller with NewRunID.
+	// A background child is handed to its parent by id before its run starts —
+	// it may wait for a concurrency slot first — so the id has to exist before
+	// the row does. Empty (every other caller) = the store mints one.
+	ID string
 	// AgentID is the caller-supplied tracking handle, or
 	// loomcycle-generated for top-level runs without a caller value
 	// and for sub-agent runs (which always get a fresh ID).

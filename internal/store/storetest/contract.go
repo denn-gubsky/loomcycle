@@ -130,6 +130,7 @@ func Run(t *testing.T, factory Factory) {
 		// before resume re-dispatches it). Plus runs.interactive round-trips.
 		{"SweepStaleRunsSkipsPaused", testSweepStaleRunsSkipsPaused},
 		{"CreateRunInteractiveRoundTrip", testCreateRunInteractiveRoundTrip},
+		{"CreateRunUnderAMintedID", testCreateRunUnderAMintedID},
 		{"CreateRunOperatorKeyRestrictedRoundTrip", testCreateRunOperatorKeyRestrictedRoundTrip},
 		{"CreateRunIsolatedRoundTrip", testCreateRunIsolatedRoundTrip},
 		{"CreateRunConfigRoundTrip", testCreateRunConfigRoundTrip},
@@ -4412,6 +4413,28 @@ func testCreateRunInteractiveRoundTrip(t *testing.T, s store.Store) {
 	got, _ := s.GetRun(ctx, inter.ID)
 	if !got.Interactive {
 		t.Errorf("interactive run Interactive=false on read-back (did not persist)")
+	}
+}
+
+// A run created with a caller-minted id is stored, and read back, under that
+// id; without one the store mints its own.
+func testCreateRunUnderAMintedID(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	sess, _ := s.CreateSession(ctx, "t", "a", "u")
+	id := store.NewRunID()
+	run, err := s.CreateRun(ctx, sess.ID, store.RunIdentity{ID: id, AgentID: "a_minted"})
+	if err != nil {
+		t.Fatalf("CreateRun: %v", err)
+	}
+	if run.ID != id {
+		t.Errorf("CreateRun returned id %q, want the minted %q", run.ID, id)
+	}
+	if got, err := s.GetRun(ctx, id); err != nil || got.AgentID != "a_minted" {
+		t.Errorf("GetRun(%q) = %+v, %v; want the run created under it", id, got, err)
+	}
+	other, err := s.CreateRun(ctx, sess.ID, store.RunIdentity{AgentID: "a_store"})
+	if err != nil || other.ID == "" || other.ID == id {
+		t.Errorf("a run with no minted id got id %q (err %v), want one the store minted", other.ID, err)
 	}
 }
 

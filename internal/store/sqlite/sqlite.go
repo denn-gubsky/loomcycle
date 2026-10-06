@@ -1716,7 +1716,10 @@ func (s *Store) createRun(ctx context.Context, sessionID string, identity store.
 	if _, err := s.GetSession(ctx, sessionID); err != nil {
 		return store.Run{}, err
 	}
-	id := newID("r_")
+	id := identity.ID
+	if id == "" {
+		id = newID("r_")
+	}
 	now := time.Now()
 	pcJSON, pcOK, pcErr := store.EncodeParentContext(identity.ParentContext)
 	if pcErr != nil {
