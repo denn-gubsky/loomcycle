@@ -641,6 +641,14 @@ by moving `status` from one state to the next per the transitions. (See the
   software teams — sets up an ephemeral repo volume and opens a PR. It keeps the
   human in the loop and is steerable mid-run.
 
+A walk started with `mode: "detach"` is its own run, not a child of the agent
+that started it: it carries on after that agent's run ends, and cancelling that
+agent does not stop the walk or the agents it started. It still runs with the
+starter's tenant, user and access, and its run records the starter's run as its
+parent. Stop it by its own `run_id` — `POST /v1/runs/{run_id}/cancel` (gRPC
+`CancelTurn`) — which cancels every agent the walk started. A walk run without
+`mode` belongs to its caller, and cancelling the caller cancels it.
+
 ## Authoring + running
 
 - **Build** a team with the `team/assistant` agent (it assembles a TeamDef from
