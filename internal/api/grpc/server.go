@@ -1703,6 +1703,15 @@ func eventToProto(ev providers.Event) *loomcyclepb.Event {
 			SinceTurn: int32(ev.AwaitingInput.SinceTurn),
 		}
 	}
+	if ev.AwaitingChildren != nil {
+		out.AwaitingChildren = &loomcyclepb.AwaitingChildren{
+			ChildRunIds: ev.AwaitingChildren.ChildRunIDs,
+			SinceTurn:   int32(ev.AwaitingChildren.SinceTurn),
+		}
+	}
+	if ev.ChildrenNote != nil {
+		out.ChildrenNote = &loomcyclepb.ChildrenNote{Text: ev.ChildrenNote.Text}
+	}
 	if ev.UserInput != nil {
 		out.UserInput = &loomcyclepb.UserInput{
 			Text:   ev.UserInput.Text,

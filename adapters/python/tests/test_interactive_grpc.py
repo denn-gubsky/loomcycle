@@ -110,3 +110,32 @@ async def test_stream_run_yields_interactive_events():
     assert events[2].user_input is not None
     assert events[2].user_input.text == "ship it"
     assert events[2].user_input.source == "replay"
+
+
+@pytest.mark.asyncio
+async def test_stream_run_carries_the_children_wait_payloads():
+    # A run that ended its turn with background children outstanding, and the
+    # note that ends that wait: the payloads say which children and what the
+    # note told the run, not only the frame types.
+    client = _make_client()
+    frames = [
+        pb.Event(
+            type="awaiting_children",
+            awaiting_children=pb.AwaitingChildren(child_run_ids=["r_1", "r_2"], since_turn=2),
+        ),
+        pb.Event(type="children_note", children_note=pb.ChildrenNote(text="Background child r_1 finished: completed.")),
+    ]
+
+    def fake_stream(req, metadata=None):
+        return _FakeStream(frames)
+
+    client._stub.StreamRun = fake_stream  # type: ignore[attr-defined]
+
+    events = [ev async for ev in client.stream_run("r_parent")]
+
+    assert [e.type for e in events] == ["awaiting_children", "children_note"]
+    assert events[0].awaiting_children is not None
+    assert events[0].awaiting_children.child_run_ids == ("r_1", "r_2")
+    assert events[0].awaiting_children.since_turn == 2
+    assert events[1].children_note is not None
+    assert events[1].children_note.text == "Background child r_1 finished: completed."

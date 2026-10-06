@@ -1328,6 +1328,16 @@ message Event {
   // for a verdict ("held"), or has ended ("released"). Nil on every other
   // event type.
   SubagentHold subagent_hold = 18;
+
+  // awaiting_children carries the payload on type=awaiting_children frames —
+  // the run ended its turn with background (poll-mode) children outstanding
+  // and waits for them before its next turn. Nil on every other event type.
+  AwaitingChildren awaiting_children = 19;
+
+  // children_note carries the payload on type=children_note frames — the
+  // runtime note that ends that wait, telling the run how its children
+  // ended. Nil on every other event type.
+  ChildrenNote children_note = 20;
 }
 
 // OverrideInfo is the type=override payload (RFC DC). Mirrors
@@ -1348,6 +1358,19 @@ message OverrideInfo {
 // providers.AwaitingInputEventInfo.
 message AwaitingInput {
   int32 since_turn = 1;  // the iteration the run parked after
+}
+
+// AwaitingChildren is the type=awaiting_children payload. Mirrors
+// providers.AwaitingChildrenEventInfo.
+message AwaitingChildren {
+  repeated string child_run_ids = 1;  // the background children waited for
+  int32 since_turn = 2;               // the iteration the run ended its turn at
+}
+
+// ChildrenNote is the type=children_note payload. Mirrors
+// providers.ChildrenNoteEventInfo.
+message ChildrenNote {
+  string text = 1;  // the note, as the model reads it
 }
 
 // AwaitingReview is the type=awaiting_review payload (RFC DJ). Mirrors
@@ -1597,10 +1620,13 @@ message Agent {
   // for operator input).
   bool interactive = 18;
   // awaited_state is what a RUNNING run is currently blocked on: "channel" (an
-  // open Channel subscribe), "interrupted" (an open Interruption ask) or
-  // "review" (held for an operator's verdict). Empty for a run making progress
-  // and for every run that is not running. awaited_on names the channel
-  // (state "channel") or the interruption kind (state "interrupted").
+  // open Channel subscribe), "interrupted" (an open Interruption ask),
+  // "review" (held for an operator's verdict), "input" (an interactive run
+  // parked for the operator's next turn) or "children" (it ended its turn and
+  // waits for its background children). Empty for a run making progress and
+  // for every run that is not running. awaited_on names the channel (state
+  // "channel"), the interruption kind (state "interrupted"), the hook holding
+  // a review, or the child run ids, comma-separated (state "children").
   string awaited_state = 19;
   string awaited_on = 20;
   // replica_id is the replica owning the run's live cancel handle. Empty in a
@@ -2060,13 +2086,13 @@ message RunStateEvent {
   // distinguishable from "present and empty".
   ParentContext parent_context = 10;
   // What a "running" run has started waiting on: "review", "input",
-  // "channel" or "interrupted" — the values Agent.awaited_state reports. A
-  // wait is announced as its own "running" event and its end as another
-  // "running" event with this empty, so a subscriber folding the stream holds
-  // the run's current wait. Empty on every other transition.
+  // "channel", "interrupted" or "children" — the values Agent.awaited_state
+  // reports. A wait is announced as its own "running" event and its end as
+  // another "running" event with this empty, so a subscriber folding the
+  // stream holds the run's current wait. Empty on every other transition.
   string awaited_state = 11;
-  // The channel, the interruption kind, or the agent_stop hook holding a
-  // review.
+  // The channel, the interruption kind, the agent_stop hook holding a
+  // review, or the child run ids (comma-separated) a run waits for.
   string awaited_on = 12;
   // RFC3339 UTC: when a review hold ends as rejected if nobody rules on it.
   // Empty when the wait has no deadline.
