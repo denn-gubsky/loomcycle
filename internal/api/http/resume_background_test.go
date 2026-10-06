@@ -20,17 +20,23 @@ import (
 
 // bgFamily answers the lead from a script and each child by its prompt: a
 // prompt containing "hold" waits until release is closed, any other is
-// answered at once with "result of <prompt>".
+// answered at once with "result of <prompt>". A prompt containing "late"
+// waits for late to be closed (at most 10s) whether or not it is cancelled,
+// and then fails: a child that ends only after the test says so. While late is
+// set, the lead's calls after its first wait for that child to be in its call.
 type bgFamily struct {
-	mu      sync.Mutex
-	script  [][]providers.Event
-	calls   []providers.Request
-	release chan struct{}
-	once    sync.Once
+	mu       sync.Mutex
+	script   [][]providers.Event
+	calls    []providers.Request
+	release  chan struct{}
+	once     sync.Once
+	late     chan struct{}
+	lateUp   chan struct{}
+	lateOnce sync.Once
 }
 
 func newBGFamily(script ...[]providers.Event) *bgFamily {
-	return &bgFamily{script: script, release: make(chan struct{})}
+	return &bgFamily{script: script, release: make(chan struct{}), lateUp: make(chan struct{})}
 }
 
 // unblock lets every held child finish. Idempotent.
@@ -49,6 +55,14 @@ func (p *bgFamily) Call(ctx context.Context, req providers.Request) (<-chan prov
 	var events []providers.Event
 	if len(req.System) > 0 && strings.Contains(req.System[0].Text, "you are a child") {
 		prompt := req.Messages[0].Content[0].Text
+		if strings.Contains(prompt, "late") && p.late != nil {
+			p.lateOnce.Do(func() { close(p.lateUp) })
+			select {
+			case <-p.late:
+			case <-time.After(10 * time.Second):
+			}
+			return nil, fmt.Errorf("late child gave up")
+		}
 		if strings.Contains(prompt, "hold") {
 			select {
 			case <-p.release:
@@ -58,6 +72,16 @@ func (p *bgFamily) Call(ctx context.Context, req providers.Request) (<-chan prov
 		}
 		events = answer("result of " + prompt)
 	} else {
+		p.mu.Lock()
+		waitLate := p.late != nil && len(p.calls) > 0
+		p.mu.Unlock()
+		if waitLate {
+			select {
+			case <-p.lateUp:
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			}
+		}
 		p.mu.Lock()
 		i := len(p.calls)
 		p.calls = append(p.calls, req)

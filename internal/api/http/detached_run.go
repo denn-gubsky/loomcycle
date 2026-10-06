@@ -64,12 +64,13 @@ func (s *Server) startDetachedLoop(d detachedLoop) <-chan struct{} {
 	return done
 }
 
-// forwardWhileAttached wraps a detached run's forward to its caller so that it
-// stops once the caller has gone. detach returns only when no delivery is in
-// flight, so after it returns fwd is never called again — which is what lets a
-// caller return while the run goes on: net/http forbids writing to a
-// ResponseWriter after its handler returns, and a gRPC stream is dead after its
-// handler returns.
+// forwardWhileAttached wraps a run's forward to its caller so that it stops
+// once the caller has gone. detach returns only when no delivery is in flight,
+// so after it returns fwd is never called again — which is what lets a caller
+// return while something still emits through the run: a detached run that goes
+// on, or a background child winding down after its parent's end. net/http
+// forbids writing to a ResponseWriter after its handler returns, and a gRPC
+// stream is dead after its handler returns.
 func forwardWhileAttached(fwd func(providers.Event)) (forward func(providers.Event), detach func()) {
 	var mu sync.Mutex
 	attached := true
