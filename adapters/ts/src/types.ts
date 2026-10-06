@@ -2585,6 +2585,98 @@ export interface TeamVerification {
   current_sha256: string;
   current_def_id: string;
   version: number;
+  /** Whether a walk could run the deployed version: false when it references
+   *  something that does not resolve (see `issues`). Absent when
+   *  `deployed: false`, or when the stored definition does not parse. */
+  runnable?: boolean;
+  /** What the deployed version references but does not contain. Present only
+   *  when there is something to report. */
+  issues?: TeamIssue[];
+}
+
+/** What a {@link TeamIssue} is about. A wire enum that only grows: a kind this
+ *  client does not know is still a `string`, so a new one never breaks a build. */
+export type TeamIssueKind =
+  | "name_invalid"
+  | "parent_not_found"
+  | "overlay_invalid"
+  | "graph_invalid"
+  | "size_cap"
+  | "channel_reserved"
+  | "channel_authority"
+  | "acl_missing"
+  | "channel_undeclared"
+  | "local_channel_invalid"
+  | "local_channel_missing"
+  | "local_agent_invalid"
+  | "local_agent_authority"
+  | "local_agent_collision"
+  | "local_agent_missing"
+  | "local_agent_unreferenced"
+  | "local_skill_invalid"
+  | "local_webhook_authority"
+  | "local_webhook_invalid"
+  | "agent_missing"
+  | "uncheckable"
+  | (string & {});
+
+/** One problem with a team definition, from {@link LoomcycleClient.verifyTeam}.
+ *
+ *  `severity`: `refused` — a create or fork would be refused (its `detail` is
+ *  exactly the refusal); `unrunnable` — it would be stored, but a walk could not
+ *  run it; `advisory` — worth reading, stops nothing. */
+export interface TeamIssue {
+  kind: TeamIssueKind;
+  severity: "refused" | "unrunnable" | "advisory";
+  detail: string;
+  /** JSON path of the value at fault in the definition, e.g.
+   *  `states[2].handler.sink.channel` or `local.agents.reviewer`. Absent when
+   *  the problem is the definition as a whole. */
+  path?: string;
+  /** The state the problem is in, and the handler field within it. */
+  state?: string;
+  field?: string;
+  /** What the problem names. */
+  channel?: string;
+  agent?: string;
+  skill?: string;
+  side?: "publish" | "subscribe";
+  /** Set (true) on an advisory issue — the older spelling of
+   *  `severity: "advisory"`, kept for clients that read it. */
+  advisory?: boolean;
+}
+
+/** An unsaved team for {@link LoomcycleClient.verifyTeam} to check. */
+export interface TeamDraft {
+  /** Exactly what `createTeam` / `forkTeam` would be sent. */
+  overlay: Record<string, unknown>;
+  /** Check it as a create or as a fork. Omitted: as a save would — a fork of
+   *  the active version when the name has one, else a create. */
+  as?: "create" | "fork";
+  /** Check it as a fork of this version. */
+  parentDefId?: string;
+  /** The description the save would carry (its size is checked too). */
+  description?: string;
+}
+
+/** Result of {@link LoomcycleClient.verifyTeam} for a {@link TeamDraft}: every
+ *  problem a create or fork would refuse, plus what would make the stored team
+ *  unrunnable — all at once. Nothing is written. */
+export interface TeamDraftVerification extends TeamVerification {
+  /** No `refused` issue: a create or fork with this overlay would be accepted. */
+  valid: boolean;
+  /** Valid, and no `unrunnable` issue. */
+  runnable: boolean;
+  /** How the draft was checked. */
+  checked_as: "create" | "fork";
+  /** The version the fork would start from (`checked_as: "fork"`). */
+  parent_def_id?: string;
+  /** The hash the save would sign. Absent when the overlay cannot be built.
+   *  `matches` compares it with the deployed version's. */
+  content_sha256?: string;
+  /** Every problem found, refusals first in the order a save checks them;
+   *  empty when there are none. */
+  issues: TeamIssue[];
 }
 
 /** Result of {@link LoomcycleClient.runTeam} (op=run) — the walk trace. `status`
