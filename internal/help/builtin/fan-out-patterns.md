@@ -86,6 +86,11 @@ Four ways to have other agents work for you, by what you need back and when:
 Poll mode is not cheaper than wait mode: the children cost the same. What it
 buys is your own time while they run.
 
+Poll-mode children also survive your run being paused and resumed, on this
+instance or another: your run records what it started, read and was told of,
+and comes back with the same children, results and notes — nothing handed
+over or reported twice. See `help(topic="subagents")`.
+
 **Teams fit here too.** When the work is a whole workflow — a team's walk —
 rather than one agent, `TeamDef op=run` with `mode: "poll"` makes the walk a
 background child of your run, exactly like a poll-mode sub-agent: you are told
