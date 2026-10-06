@@ -50,7 +50,11 @@ func Run(ctx context.Context, opts RunOptions) (RunResult, error) {
 	go enforceWallLimit(ctx, clock, limit, stop)
 
 	res, err := runLoop(ctx, opts)
-	if err != nil && errors.Is(context.Cause(ctx), errWallLimit) {
+	// Reported even when the loop returned no error: the cancel can land while
+	// a tool call is in flight, which then returns cancelled children or an
+	// empty wait as ordinary results, and a quick final turn can finish on them
+	// before it sees the cancel. A run past its limit did not complete its work.
+	if errors.Is(context.Cause(ctx), errWallLimit) {
 		err = fmt.Errorf("%w: run lived past its %s limit on total time, waits included "+
 			"(LOOMCYCLE_CODE_AGENTS_MAX_WALL_SECONDS); what it was waiting on, and its sub-agents, were cancelled", errWallLimit, limit)
 	}
