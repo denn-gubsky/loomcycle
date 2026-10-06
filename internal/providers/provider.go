@@ -1271,6 +1271,11 @@ type SpawnChildEventInfo struct {
 	Index     int    `json:"index"`
 	RunID     string `json:"run_id,omitempty"`
 	Agent     string `json:"agent,omitempty"`
+	// Mode is "poll" for a child started in poll mode — a background child
+	// whose call answered with its handle, not its result — and empty for a
+	// wait-mode child. BatchID names its poll-mode parallel_spawn.
+	Mode    string `json:"mode,omitempty"`
+	BatchID string `json:"batch_id,omitempty"`
 	// Result fields — set on EventSpawnChildResult only.
 	Ok     bool   `json:"ok,omitempty"`
 	Output string `json:"output,omitempty"`

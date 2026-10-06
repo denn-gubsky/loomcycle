@@ -1308,6 +1308,23 @@ func ToolUseID(ctx context.Context) string {
 	return v
 }
 
+// ctxKeyChildRunID carries the run id a poll-mode child was handed out under
+// before its run row existed: the sub-run runner creates the child's run with
+// it. The runner clears it on the child's own ctx, so the child's children
+// never inherit it.
+type ctxKeyChildRunID struct{}
+
+// WithChildRunID attaches the id the next sub-run created from ctx must use.
+func WithChildRunID(ctx context.Context, runID string) context.Context {
+	return context.WithValue(ctx, ctxKeyChildRunID{}, runID)
+}
+
+// ChildRunID is the id set by WithChildRunID, or "".
+func ChildRunID(ctx context.Context) string {
+	v, _ := ctx.Value(ctxKeyChildRunID{}).(string)
+	return v
+}
+
 // ctxKeySpawnIndex carries a child's index within its parent's parallel_spawn
 // (RFC X Phase 3). parallel_spawn stamps it per child so the sub-run runner
 // can emit the child's spawn-ledger "started" event with the right index.
