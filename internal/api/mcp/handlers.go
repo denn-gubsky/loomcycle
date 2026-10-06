@@ -276,7 +276,8 @@ func handleSpawnRun(ctx context.Context, env *handlerEnv, args json.RawMessage) 
 	// over the operator default bounds how long this spawn_run CALL blocks
 	// the MCP transport; on expiry we cancel the run (it honors ctx) and
 	// return a status:"timeout" result rather than hanging. Distinct from
-	// the run's own run_timeout_seconds wall-clock budget. 0 = disabled.
+	// a code-js run's run_timeout_seconds budget (a model-driven run has no
+	// time limit of its own). 0 = disabled.
 	var callerTimeoutMS struct {
 		TimeoutMS int `json:"timeout_ms"`
 	}
@@ -371,8 +372,8 @@ func handleSpawnRuns(ctx context.Context, env *handlerEnv, args json.RawMessage)
 // effectiveSpawnTimeoutMS resolves the spawn_run transport timeout: a
 // caller's per-call timeout_ms narrows the operator default (it may
 // shorten the cap but not extend it). 0 on both → no transport cap (the
-// call blocks until the run finishes on its own run_timeout_seconds
-// budget). This bounds how long the spawn_run CALL blocks the MCP
+// call blocks until the run finishes; only a code-js run has a
+// run_timeout_seconds budget, a model-driven run has none). This bounds how long the spawn_run CALL blocks the MCP
 // transport — it is not the run's wall-clock budget.
 func effectiveSpawnTimeoutMS(operatorMS, callerMS int) int {
 	switch {

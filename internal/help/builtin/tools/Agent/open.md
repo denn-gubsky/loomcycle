@@ -14,15 +14,20 @@ lifecycle: `close` it when you are done.**
 - `name` (required) — a registered agent name.
 - `prompt` (required) — the first instruction.
 - `def_id` — run a specific version of that agent; its name must match `name`.
-- `idle_ttl_seconds` — close the child after this long with no `send`
-  (0 = the operator's default).
+- `idle_ttl_seconds` — close the child after this long unused: no `send`,
+  `poll` or `cancel`, and no turn running (0 = the operator's default).
+- `timeout_ms` — 0 (default) waits until the first turn ends. Above 0, a first
+  turn still going after that long returns `state: "running"` with the output
+  so far and the `child_run_id`; then `poll` to wait for it, or `cancel` to
+  stop it.
 - `compaction` — override the child's context compaction (it inherits yours),
   with the same fields as on `spawn`. Rarely needed.
 
 ## Returns
 
 `{child_run_id, state, output}` — keep `child_run_id` for every later call.
-`state` is normally `awaiting_input` after the first turn.
+`state` is normally `awaiting_input` after the first turn, or `running` when
+`timeout_ms` ran out first.
 
 ## Errors
 
@@ -42,4 +47,15 @@ Open an analyst that keeps a dataset loaded, with a ten-minute idle limit:
 
 ```json result
 {"child_run_id": "r_4e8b1c9a2f7d6035", "state": "awaiting_input", "output": "The file has 12 columns: ..."}
+```
+
+Start a long first task without waiting for it, and collect it later with
+`poll`:
+
+```json
+{"op": "open", "name": "data-analyst", "prompt": "Profile every column of sales_2026.csv.", "timeout_ms": 5000}
+```
+
+```json result
+{"child_run_id": "r_7a1d04c3e9b25f86", "state": "running", "output": "Loading the file..."}
 ```

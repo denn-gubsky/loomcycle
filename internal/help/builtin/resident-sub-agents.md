@@ -13,7 +13,7 @@ Most sub-agent work is one-shot: `Agent {op:"spawn", …}` runs a child to compl
   Agent {op:"open", name:"chat/medium", prompt:"<first instruction>"}
   → {"child_run_id":"run_…", "state":"awaiting_input", "output":"…"}
   ```
-  Capture the `child_run_id` — it's the handle for everything after. The child then **parks**, resident, waiting for your next instruction. Its conversation and anything it holds (open files, a REPL session, accumulated analysis context) stays live.
+  Capture the `child_run_id` — it's the handle for everything after. The child then **parks**, resident, waiting for your next instruction. Its conversation and anything it holds (open files, a REPL session, accumulated analysis context) stays live. By default `open` waits for the first turn to finish; pass **`timeout_ms`** (as on `send`) to get the `child_run_id` back early with `"state":"running"` and the partial output, then `poll` for the rest.
 
 - **`send`** — give the resident child its next instruction and get that turn's output:
   ```
@@ -27,7 +27,7 @@ Most sub-agent work is one-shot: `Agent {op:"spawn", …}` runs a child to compl
   Agent {op:"poll", child_run_id:"run_…", timeout_ms:30000}
   → {"state":"running"|"awaiting_input", "output":"<output so far>"}
   ```
-  `timeout_ms:0` (or omitted) is an instant snapshot; a positive value waits up to that long for the child to park. Use it after a `send` returned `"running"`.
+  `timeout_ms:0` (or omitted) is an instant snapshot; a positive value waits up to that long for the child to park. Use it after an `open` or `send` returned `"running"`.
 
 - **`cancel`** — stop the child's current turn (it stays alive):
   ```
@@ -53,7 +53,11 @@ A long-lived agent — an interactive session, or an orchestrator driving many s
 
 ## Rules & limits
 
-- **You own the lifecycle.** The child stays alive until you `close` it, or it is idle-reaped after a period with no `send` (operator-configured; override per child with `open`'s `idle_ttl_seconds`), or the run that opened it ends.
+- **You own the lifecycle.** The child stays alive until you `close` it, or the run that opened it ends (completed, failed or cancelled), or the runtime reaps it. The runtime reaps a child for one of two reasons:
+  - **idle** — no turn is running and nothing has used it (`open`, `send`, `poll`, `cancel`, or the end of its last turn) for the idle period (operator-configured, 30 minutes by default; override per child with `open`'s `idle_ttl_seconds`). A child running a turn is never idle, so a long turn you sent with `timeout_ms` is safe while you wait on it.
+  - **turn ceiling** — its current turn has been running longer than the operator's ceiling (`LOOMCYCLE_RESIDENT_MAX_TURN_SECONDS`, 2 hours by default). Polling does not extend it: the clock starts when the turn does. It ends a turn that would never finish on its own — `cancel` a turn you no longer need well before that.
+
+  A reaped child's next `poll` or `send` fails with the reason (`idle timeout` or `turn ceiling`); `open` a new one.
 - **Bounded.** A run may hold only so many resident children at once (operator cap); exceeding it fails `open` — close one first.
 - **`state`** tells you where the child is: `awaiting_input` (parked, ready for the next `send`), `completed`/`failed` (the child ended — a further `send` will fail), `closed`.
 - **Longevity caveat:** a resident child is parented to your run — it stays live as long as you do, holds its state in memory between closely-spaced sends, and is reaped if you finish without closing it. Don't rely on it surviving a very long idle pause (e.g. waiting on a human across many minutes).

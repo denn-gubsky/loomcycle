@@ -122,7 +122,7 @@ func toolDescriptors() []loommcp.ToolDescriptor {
 					"allowed_hosts":    {"type": "array", "items": {"type": "string"}, "description": "OMIT for no narrowing (operator's static allowlist applies). Pass empty array [] to DENY ALL outbound HTTP. Pass non-empty array to intersect with operator's list."},
 					"web_search_filter": {"type": "string", "enum": ["drop", "keep"]},
 					"parent_context":   {"type": "object", "description": "v0.12.x opaque caller-tracking lineage carried verbatim, inherited by every sub-agent, and echoed on the per-agent report surfaces so a consumer can attribute a child sub-agent's usage to the user-initiated request.", "properties": {"root_agent_run_id": {"type": "string"}, "function_key": {"type": "string"}, "tier_at_run": {"type": "string"}}},
-					"timeout_ms":       {"type": "integer", "minimum": 1, "description": "Optional transport timeout: max milliseconds this spawn_run call may block before loomcycle cancels the run and returns status:\"timeout\" instead of hanging. Narrows the operator default (LOOMCYCLE_MCP_SPAWN_RUN_TIMEOUT_MS) — it can shorten but not exceed it. Omit to block until the run finishes on its own run_timeout_seconds budget. This is a transport bound, NOT the run's wall-clock budget."},
+					"timeout_ms":       {"type": "integer", "minimum": 1, "description": "Optional transport timeout: max milliseconds this spawn_run call may block before loomcycle cancels the run and returns status:\"timeout\" instead of hanging. Narrows the operator default (LOOMCYCLE_MCP_SPAWN_RUN_TIMEOUT_MS) — it can shorten but not exceed it. Omit to block until the run finishes — a model-driven run has no time limit of its own (only a code-js run has a run_timeout_seconds budget), so omitting it can block indefinitely. This is a transport bound, NOT the run's wall-clock budget."},
 					` + spawnPerRunProps + `
 				},
 				"anyOf": [
@@ -219,7 +219,7 @@ func toolDescriptors() []loommcp.ToolDescriptor {
 					"tools":            {"type": "array", "items": {"type": "string"}},
 					"allowed_hosts":    {"type": "array", "items": {"type": "string"}, "description": "OMIT for no narrowing. Empty array [] denies all outbound HTTP; a non-empty array intersects with the operator's list."},
 					"web_search_filter": {"type": "string", "enum": ["drop", "keep"]},
-					"run_timeout_seconds": {"type": "integer", "minimum": 1, "description": "create: the run's own wall-clock budget once started."},
+					"run_timeout_seconds": {"type": "integer", "minimum": 1, "description": "create: a code-js run's wall-clock budget once started. A model-driven run has no time limit and ignores it."},
 					"patch":            {"type": "object", "description": "update: the fields to replace, in the same names create takes; null removes one."},
 					"user_bearer":      {"type": "string", "description": "start: per-run MCP bearer, as for spawn_run."},
 					"user_credentials": {"type": "object", "additionalProperties": {"type": "string"}, "description": "start: per-tool named credentials, as for spawn_run."},
@@ -505,7 +505,7 @@ func toolDescriptors() []loommcp.ToolDescriptor {
 		// --- Pause/Resume (v0.8.17 primitives, exposed via Connector in v0.8.18) ---
 		{
 			Name:        "pause_runtime",
-			Description: "Quiesce the whole runtime: stop admitting new work and bring in-flight runs to a stop at a safe point. ADMIN ONLY: this is runtime-global with no tenant dimension, so a tenant or user token will not see it. Idempotent tools are cancelled immediately; non-idempotent and external ones get a grace window (default 30s) and are then force-cancelled. While paused, new runs are refused with 503 on every entry surface. Returns {status, duration_ms, force_cancelled_count, paused_runs_count, warnings?}; already pausing or paused is a 409, not a no-op. Use it before a snapshot or a restart, so state is captured at rest. Do NOT use it to stop ONE run \u2014 that is cancel_run; this stops the deployment. It does not lift by itself: the runtime stays paused until resume_runtime.",
+			Description: "Quiesce the whole runtime: stop admitting new work and bring in-flight runs to a stop at a safe point. ADMIN ONLY: this is runtime-global with no tenant dimension, so a tenant or user token will not see it. Nothing in flight is cancelled: each run finishes the model or tool call it is in and parks at its next step; the call waits up to timeout_ms (default 30s) for runs to park and names any that did not (they park at their next step regardless). force_cancelled_count is always 0. While paused, new runs are refused with 503 on every entry surface. Returns {status, duration_ms, force_cancelled_count, paused_runs_count, warnings?}; already pausing or paused is a 409, not a no-op. Use it before a snapshot or a restart, so state is captured at rest. Do NOT use it to stop ONE run \u2014 that is cancel_run; this stops the deployment. It does not lift by itself: the runtime stays paused until resume_runtime.",
 			InputSchema: rawJSON(`{
 				"type": "object",
 				"properties": {"timeout_ms": {"type": "integer", "default": 30000}}

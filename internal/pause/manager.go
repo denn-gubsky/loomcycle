@@ -15,17 +15,17 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/store"
 )
 
-// DefaultPauseTimeout is the wait-for-non-idempotent-tools cap when the
-// operator omits timeout_ms from POST /v1/runtime/pause. 30 s matches
-// the longest reasonable non-idempotent tool call (HTTP POST + MCP
-// chained call) and keeps the operator's pause-then-snapshot cycle
-// completing inside a minute on the worst common case.
+// DefaultPauseTimeout is how long Pause waits for in-flight runs to park
+// when the operator omits timeout_ms from POST /v1/runtime/pause. A run
+// parks at its next iteration boundary, after the model call or tool calls
+// it is in finish; 30 s covers the common case and keeps the operator's
+// pause-then-snapshot cycle completing inside a minute.
 const DefaultPauseTimeout = 30 * time.Second
 
 // MaxPauseTimeout caps what an operator can request. Without an upper
 // bound, an operator typo (300000 vs 30000) leaves the runtime in
 // StatePausing for 5 minutes, during which new runs all see 503. The
-// 5-minute ceiling is generous — most tools complete in under 30 s.
+// 5-minute ceiling is generous — most turns complete in under 30 s.
 const MaxPauseTimeout = 5 * time.Minute
 
 // ErrAlreadyPausing is returned when Pause is called while the manager
@@ -40,10 +40,14 @@ var ErrAlreadyPausing = errors.New("pause: runtime is already pausing or paused"
 var ErrNotPaused = errors.New("pause: runtime is not paused")
 
 // PauseResult is the payload POST /v1/runtime/pause returns. The
-// duration the wind-down took and the count of force-cancelled tool
-// calls are the operator-visible quality signals: a long duration
-// suggests slow tools; a non-zero force-cancelled count suggests
-// timeout was too short (or tools mis-categorised as non-idempotent).
+// duration the wind-down took is the operator-visible quality signal: a
+// long one means runs were inside long model or tool calls; Warnings names
+// any run that did not park in time.
+//
+// ForceCancelledCount is always 0: pause never cancels a tool call — a call
+// in flight runs to completion and its run parks at the next boundary. The
+// field stays because it is on every transport's pause result (HTTP, gRPC,
+// MCP, the TS and Python clients); removing it is a wire change of its own.
 type PauseResult struct {
 	State               string   `json:"state"`
 	DurationMs          int64    `json:"duration_ms"`
@@ -71,13 +75,13 @@ type StateSnapshot struct {
 
 // Manager is the single per-server pause/resume coordinator. Owns the
 // process-local atomic state, the broadcast channel the loop watches
-// at iteration boundaries, and the in-flight-tool tracking used by
-// ToolCtx to apply per-tool cancel timeouts.
+// at iteration boundaries, and the in-flight-run registry the pause
+// barrier waits on.
 //
 // Concurrency: state load + PauseCh read are lock-free (atomic + chan
 // receive). Pause / Resume serialise on `mu` to keep transitions
-// linear. The in-flight tool registry uses a sync.Map so per-tool
-// registration during dispatch doesn't contend with state transitions.
+// linear. The in-flight run registry uses a sync.Map so per-run
+// registration doesn't contend with state transitions.
 type Manager struct {
 	state atomic.Int32
 
@@ -103,7 +107,7 @@ type Manager struct {
 	// waits until every registered run is parked (or the deadline) so
 	// paused_runs_count is meaningful on return. Key: runID; value:
 	// *runEntry. sync.Map so per-run registration doesn't contend with
-	// state transitions (same rationale as activeTools).
+	// state transitions.
 	activeRuns sync.Map
 
 	// store is used to persist runs.pause_state and to list paused
@@ -112,14 +116,8 @@ type Manager struct {
 	// recovery / multi-replica-future path.
 	store store.Store
 
-	// activeTools tracks in-flight tool calls so Pause can iterate
-	// them and apply per-category cancel policy. Key: a per-call
-	// id (UUID-ish); value: *toolEntry.
-	activeTools sync.Map
-
-	// timeout is the configured wait-for-non-idempotent-tools cap.
-	// Per-pause-call value overrides this if the operator supplies
-	// timeout_ms; this is the default used when omitted.
+	// defaultTimeout is how long Pause waits for runs to park when the
+	// operator supplies no timeout_ms.
 	defaultTimeout time.Duration
 
 	// v0.12.3 Phase 4 — cluster-mode wiring. All nil in single-replica
@@ -150,15 +148,6 @@ type Manager struct {
 	stateCacheTTL atomic.Int64
 }
 
-// toolEntry holds the per-tool-call cancellation handle. Manager-
-// owned; created in ToolCtx, removed when the tool's goroutine exits.
-type toolEntry struct {
-	cancel   context.CancelFunc
-	category ToolCategory
-	toolName string
-	id       string
-}
-
 // runEntry tracks one in-flight run for the pause barrier. parked flips
 // true while the run's loop is parked at an iteration boundary.
 type runEntry struct {
@@ -167,8 +156,8 @@ type runEntry struct {
 
 // NewManager constructs a Manager wired to the given store. The
 // initial state is StateRunning; no pause is in flight. timeout is the
-// default wait-for-non-idempotent-tools cap when POST /v1/runtime/pause
-// omits timeout_ms; pass 0 to use DefaultPauseTimeout.
+// default wait for runs to park when POST /v1/runtime/pause omits
+// timeout_ms; pass 0 to use DefaultPauseTimeout.
 func NewManager(s store.Store, timeout time.Duration) *Manager {
 	if timeout <= 0 {
 		timeout = DefaultPauseTimeout
@@ -467,96 +456,19 @@ func (m *Manager) unparkedWarning(whenPhrase string) string {
 		len(ids), whenPhrase, strings.Join(ids, ", "))
 }
 
-// ToolCtx derives a per-tool-call context with the right cancellation
-// policy for the current runtime state. Called from inside the loop's
-// executePendingTools fan-out, ONCE per pending tool, before the
-// tool's Execute() is invoked.
-//
-// When state is StateRunning: returns the parent ctx unchanged + a
-// no-op cleanup; tool execution proceeds normally.
-//
-// When state is StatePausing / StatePaused: the tool's category
-// (CategoryForInput) drives the policy:
-//
-//   - Idempotent: parent ctx is wrapped with WithCancel and the
-//     cancel is invoked IMMEDIATELY. The tool's Execute sees a
-//     cancelled ctx; the dispatcher returns IsError=true; the loop's
-//     iteration boundary records pause_state='paused'.
-//   - Non-idempotent / External: parent ctx is wrapped with
-//     WithTimeout(timeout). Tool completes naturally if it's fast
-//     enough; force-cancel at deadline. Count of force-cancels is
-//     surfaced in PauseResult.
-//
-// Cleanup() must be called when the tool's goroutine exits, whether
-// by completion or by force-cancel. Manager tracks the active entry
-// until Cleanup runs.
-//
-// The toolID parameter is the loop-issued tool_use_id; it's the key
-// in the activeTools registry so Pause can iterate.
-func (m *Manager) ToolCtx(parent context.Context, toolID, toolName string, input json.RawMessage) (ctx context.Context, cleanup func()) {
-	if m == nil {
-		return parent, func() {}
-	}
-	state := m.State()
-	cat := CategoryForInput(toolName, input)
-
-	switch state {
-	case StateRunning:
-		// Track the entry so a pause that arrives mid-flight can
-		// find it. Use WithCancel so a transition from running →
-		// pausing can call cancel for idempotent tools.
-		c, cancel := context.WithCancel(parent)
-		id := toolID
-		if id == "" {
-			id = fmt.Sprintf("tool-%d-%p", time.Now().UnixNano(), &cancel)
-		}
-		entry := &toolEntry{
-			cancel:   cancel,
-			category: cat,
-			toolName: toolName,
-			id:       id,
-		}
-		m.activeTools.Store(id, entry)
-		return c, func() {
-			m.activeTools.Delete(id)
-			cancel()
-		}
-
-	case StatePausing, StatePaused:
-		// Pause is already declared. New tool dispatch within an
-		// already-pausing run is unusual but handle defensively:
-		// idempotent → cancel immediately; non-idempotent → apply
-		// the timeout right away.
-		if cat == CategoryIdempotent {
-			c, cancel := context.WithCancel(parent)
-			cancel() // immediate
-			return c, func() {}
-		}
-		c, cancel := context.WithTimeout(parent, m.defaultTimeout)
-		return c, cancel
-
-	default:
-		return parent, func() {}
-	}
-}
-
 // Pause transitions the manager from StateRunning → StatePausing →
-// StatePaused. Closes the pause broadcast channel (waking the loop's
-// boundary check), iterates in-flight tools applying category policy,
-// then waits for all activeTools entries to drain or for the deadline.
+// StatePaused. Closes the pause broadcast channel (each run's loop sees it
+// at its next iteration boundary and parks there), then waits for every
+// in-flight run to park or for the deadline.
 //
 // Returns ErrAlreadyPausing when the manager is not in StateRunning.
 //
-// timeout (the operator-supplied or DefaultPauseTimeout) bounds two
-// independent wait stages: the per-tool deadline applied via ToolCtx,
-// and the overall stage-2 wait for activeTools to drain. The same
-// number is reused because they're observationally the same
-// constraint: "give tools this long to finish."
-//
-// Force-cancelled count: every non-idempotent / external tool whose
-// goroutine didn't clean up before the deadline is force-cancelled
-// (manager calls its stored cancel func) and counts toward the
-// returned ForceCancelledCount.
+// Nothing in flight is cancelled. A run inside a model call or tool calls
+// finishes them, records their results, and parks at the top of its next
+// iteration — never between a tool_use and its tool_result. timeout (the
+// operator-supplied or DefaultPauseTimeout) bounds only the wait: a run
+// still working at the deadline is named in a warning and parks at its
+// next boundary regardless.
 func (m *Manager) Pause(ctx context.Context, timeout time.Duration) (PauseResult, error) {
 	if m == nil {
 		return PauseResult{}, errors.New("pause: nil Manager")
@@ -609,31 +521,11 @@ func (m *Manager) Pause(ctx context.Context, timeout time.Duration) (PauseResult
 	}
 	m.invalidateStateCache()
 
-	// Apply per-tool cancel policy. Idempotent → cancel immediately;
-	// non-idempotent / external → leave running, deadline applied
-	// implicitly via the goroutine's own ctx (already wrapped by
-	// ToolCtx with WithTimeout). For runs already in flight whose
-	// ToolCtx fired BEFORE pause was declared, we apply category
-	// policy here defensively.
-	var (
-		forceCancelMu   sync.Mutex
-		forceCancel     int
-		idempotentCount int
-	)
-	m.activeTools.Range(func(_, v any) bool {
-		e := v.(*toolEntry)
-		if e.category == CategoryIdempotent {
-			e.cancel()
-			idempotentCount++
-		}
-		return true
-	})
-
-	// Stage 2: wait for activeTools to drain AND for every in-flight run to
-	// reach a pause boundary (PauseGate.Park persisting pause_state='paused'),
-	// or hit the deadline. Waiting for runs to park is what makes
-	// paused_runs_count meaningful on return — a run blocked in a long tool /
-	// provider turn parks at its NEXT boundary, bounded by this deadline.
+	// Wait for every in-flight run to reach a pause boundary (PauseGate.Park
+	// persisting pause_state='paused'), or hit the deadline. Waiting for runs
+	// to park is what makes paused_runs_count meaningful on return — a run
+	// blocked in a long tool / provider turn parks at its NEXT boundary,
+	// bounded by this deadline.
 	deadline := time.NewTimer(timeout)
 	defer deadline.Stop()
 	tick := time.NewTicker(50 * time.Millisecond)
@@ -641,28 +533,19 @@ func (m *Manager) Pause(ctx context.Context, timeout time.Duration) (PauseResult
 
 	var warnings []string
 	for {
-		toolsEmpty := true
-		m.activeTools.Range(func(_, _ any) bool {
-			toolsEmpty = false
-			return false
-		})
-		runsParked, _, _ := m.runsQuiesced()
-		if toolsEmpty && runsParked {
+		if runsParked, _, _ := m.runsQuiesced(); runsParked {
 			break
 		}
 		select {
 		case <-ctx.Done():
-			// Caller cancelled the pause request; mark anything
-			// still in flight as force-cancelled, transition to
-			// StatePaused, return the partial result.
-			m.forceCancelRemaining(&forceCancelMu, &forceCancel)
+			// Caller cancelled the pause request; transition to
+			// StatePaused and return the partial result.
 			if w := m.unparkedWarning("at cancellation"); w != "" {
 				warnings = append(warnings, w)
 			}
-			return m.finalizePause(start, forceCancel, idempotentCount, append(warnings,
+			return m.finalizePause(start, append(warnings,
 				fmt.Sprintf("pause request cancelled by caller: %v", ctx.Err()))), nil
 		case <-deadline.C:
-			m.forceCancelRemaining(&forceCancelMu, &forceCancel)
 			if w := m.unparkedWarning("within the timeout"); w != "" {
 				warnings = append(warnings, w)
 			}
@@ -675,22 +558,7 @@ func (m *Manager) Pause(ctx context.Context, timeout time.Duration) (PauseResult
 		break
 	}
 
-	return m.finalizePause(start, forceCancel, idempotentCount, warnings), nil
-}
-
-// forceCancelRemaining cancels every entry still in activeTools and
-// removes them from the registry. Called from the deadline / caller-
-// cancellation paths in Pause.
-func (m *Manager) forceCancelRemaining(mu *sync.Mutex, counter *int) {
-	m.activeTools.Range(func(k, v any) bool {
-		e := v.(*toolEntry)
-		e.cancel()
-		mu.Lock()
-		*counter++
-		mu.Unlock()
-		m.activeTools.Delete(k)
-		return true
-	})
+	return m.finalizePause(start, warnings), nil
 }
 
 // invalidateStateCache forces the next State() call in cluster mode
@@ -705,7 +573,7 @@ func (m *Manager) invalidateStateCache() {
 // finalizePause transitions to StatePaused, queries the count of
 // runs that committed pause_state='paused' to the DB, and assembles
 // the PauseResult payload.
-func (m *Manager) finalizePause(start time.Time, forceCancel, idempotentCount int, warnings []string) PauseResult {
+func (m *Manager) finalizePause(start time.Time, warnings []string) PauseResult {
 	m.state.Store(int32(StatePaused))
 	m.invalidateStateCache()
 
@@ -730,19 +598,11 @@ func (m *Manager) finalizePause(start time.Time, forceCancel, idempotentCount in
 		cancel()
 	}
 
-	if idempotentCount > 0 {
-		log.Printf("pause: cancelled %d idempotent tools immediately", idempotentCount)
-	}
-	if forceCancel > 0 {
-		log.Printf("pause: force-cancelled %d tools at deadline", forceCancel)
-	}
-
 	return PauseResult{
-		State:               StatePaused.String(),
-		DurationMs:          time.Since(start).Milliseconds(),
-		ForceCancelledCount: forceCancel,
-		PausedRunsCount:     pausedCount,
-		Warnings:            warnings,
+		State:           StatePaused.String(),
+		DurationMs:      time.Since(start).Milliseconds(),
+		PausedRunsCount: pausedCount,
+		Warnings:        warnings,
 	}
 }
 
@@ -804,8 +664,7 @@ func (m *Manager) Resume(ctx context.Context) (ResumeResult, error) {
 	m.invalidateStateCache()
 
 	// v0.12.3 Phase 4: cluster mode — write DB state back to running
-	// and publish on backplane so remote replicas re-allow new runs
-	// + new tool dispatches.
+	// and publish on backplane so remote replicas re-allow new runs.
 	if rss != nil {
 		rctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 		if err := rss.Set(rctx, "running", 0); err != nil {

@@ -1625,6 +1625,35 @@ func ContextUsage(ctx context.Context) ContextUsageValue {
 	return v
 }
 
+// ctxKeyIterationBudget carries how many of its loop iterations a run has used
+// and how many it has, so Context op=self can tell an agent how much room is
+// left before the run ends with max_iterations. Stamped per iteration by the
+// loop, which owns both the counter and the cap.
+type ctxKeyIterationBudget struct{}
+
+// IterationBudgetValue is what op=self reports. Used counts the iteration in
+// progress (the model call that asked); Max is the cap the loop enforces; an
+// Unbounded run (code-js, an interactive run with no explicit max_iterations,
+// unbounded_iterations) has no meaningful remainder — its Max is only a
+// runaway backstop.
+type IterationBudgetValue struct {
+	Used      int
+	Max       int
+	Unbounded bool
+}
+
+// WithIterationBudget attaches the run's iteration budget to ctx.
+func WithIterationBudget(ctx context.Context, used, max int, unbounded bool) context.Context {
+	return context.WithValue(ctx, ctxKeyIterationBudget{}, IterationBudgetValue{Used: used, Max: max, Unbounded: unbounded})
+}
+
+// IterationBudget returns the run's iteration budget, and false outside a loop
+// iteration (nothing stamped it).
+func IterationBudget(ctx context.Context) (IterationBudgetValue, bool) {
+	v, ok := ctx.Value(ctxKeyIterationBudget{}).(IterationBudgetValue)
+	return v, ok
+}
+
 // ctxKeyLastDistill carries the most recent context-distillation DECLINE so
 // Context op=self can report it, mirroring ctxKeyContextUsage above and stamped
 // in the same place so the two can never disagree about the same iteration.

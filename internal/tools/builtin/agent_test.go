@@ -780,7 +780,7 @@ func TestAgentTool_Open_HappyPath(t *testing.T) {
 	var gotTTL int
 	a := &AgentTool{
 		Run: func(context.Context, string, string, string) (string, error) { return "", nil },
-		OpenChild: func(_ context.Context, name, prompt, defID string, ttl int) (string, string, string, error) {
+		OpenChild: func(_ context.Context, name, prompt, defID string, ttl, _ int) (string, string, string, error) {
 			gotName, gotPrompt, gotDef, gotTTL = name, prompt, defID, ttl
 			return "run_child_1", "first turn output", "awaiting_input", nil
 		},
@@ -799,6 +799,31 @@ func TestAgentTool_Open_HappyPath(t *testing.T) {
 	}
 }
 
+// open passes timeout_ms to the runner, so a long first turn can come back
+// "running" with the child_run_id; a negative one is refused before any child
+// starts.
+func TestAgentTool_Open_PassesTimeoutMsAndRefusesNegative(t *testing.T) {
+	var gotTimeout int
+	calls := 0
+	a := &AgentTool{
+		Run: func(context.Context, string, string, string) (string, error) { return "", nil },
+		OpenChild: func(_ context.Context, _, _, _ string, _, timeoutMs int) (string, string, string, error) {
+			calls++
+			gotTimeout = timeoutMs
+			return "run_child_1", "partial", "running", nil
+		},
+	}
+	res, _ := a.Execute(context.Background(), json.RawMessage(`{"op":"open","name":"x","prompt":"y","timeout_ms":250}`))
+	env := parseResident(t, res)
+	if gotTimeout != 250 || env.ChildRunID != "run_child_1" || env.State != "running" || env.Output != "partial" {
+		t.Errorf("timeout=%d envelope=%+v", gotTimeout, env)
+	}
+	res, _ = a.Execute(context.Background(), json.RawMessage(`{"op":"open","name":"x","prompt":"y","timeout_ms":-1}`))
+	if !res.IsError || calls != 1 {
+		t.Errorf("negative timeout_ms: res=%+v calls=%d, want a refusal before any child starts", res, calls)
+	}
+}
+
 func TestAgentTool_Open_NotWired(t *testing.T) {
 	a := &AgentTool{Run: func(context.Context, string, string, string) (string, error) { return "", nil }}
 	res, _ := a.Execute(context.Background(), json.RawMessage(`{"op":"open","name":"x","prompt":"y"}`))
@@ -810,7 +835,7 @@ func TestAgentTool_Open_NotWired(t *testing.T) {
 func TestAgentTool_Open_MissingFields(t *testing.T) {
 	a := &AgentTool{
 		Run: func(context.Context, string, string, string) (string, error) { return "", nil },
-		OpenChild: func(context.Context, string, string, string, int) (string, string, string, error) {
+		OpenChild: func(context.Context, string, string, string, int, int) (string, string, string, error) {
 			return "", "", "", nil
 		},
 	}
@@ -825,7 +850,7 @@ func TestAgentTool_Open_MissingFields(t *testing.T) {
 func TestAgentTool_Open_RejectsChildRunID(t *testing.T) {
 	a := &AgentTool{
 		Run: func(context.Context, string, string, string) (string, error) { return "", nil },
-		OpenChild: func(context.Context, string, string, string, int) (string, string, string, error) {
+		OpenChild: func(context.Context, string, string, string, int, int) (string, string, string, error) {
 			return "", "", "", nil
 		},
 	}
@@ -840,7 +865,7 @@ func TestAgentTool_Open_DepthGuard(t *testing.T) {
 	called := false
 	a := &AgentTool{
 		Run: func(context.Context, string, string, string) (string, error) { return "", nil },
-		OpenChild: func(context.Context, string, string, string, int) (string, string, string, error) {
+		OpenChild: func(context.Context, string, string, string, int, int) (string, string, string, error) {
 			called = true
 			return "", "", "", nil
 		},
@@ -1012,5 +1037,43 @@ func TestAgentTool_Cancel_NotWired(t *testing.T) {
 	res, _ := a.Execute(context.Background(), json.RawMessage(`{"op":"cancel","child_run_id":"r"}`))
 	if !res.IsError || !strings.Contains(res.Text, "not available") {
 		t.Errorf("cancel with nil CancelChild should refuse: %+v", res)
+	}
+}
+
+// Every parallel_spawn row names the child's run — the failed one included,
+// since a failure is exactly when the parent wants to look the run up — and a
+// row with no run (the runner never created one) carries no run_id key.
+func TestAgentTool_ParallelSpawn_EnvelopeRowsCarryTheChildRunID(t *testing.T) {
+	a := &AgentTool{
+		Run: func(context.Context, string, string, string) (string, error) { return "", nil },
+		RunDetailed: func(_ context.Context, name, prompt, _ string) (string, map[string]any, string, error) {
+			switch prompt {
+			case "fail":
+				return "", nil, "r_failed", errors.New("child failed")
+			case "unresolved":
+				return "", nil, "", errors.New("unknown sub-agent")
+			}
+			return "ok", nil, "r_" + name, nil
+		},
+	}
+	res, _ := a.Execute(context.Background(), json.RawMessage(`{"op":"parallel_spawn","spawns":[
+		{"name":"one","prompt":"go"},{"name":"two","prompt":"fail"},{"name":"three","prompt":"unresolved"}]}`))
+	if res.IsError {
+		t.Fatalf("parallel_spawn: %s", res.Text)
+	}
+	var env struct {
+		Results []map[string]any `json:"results"`
+	}
+	if err := json.Unmarshal([]byte(res.Text), &env); err != nil {
+		t.Fatalf("envelope: %v; raw=%s", err, res.Text)
+	}
+	if got := env.Results[0]["run_id"]; got != "r_one" {
+		t.Errorf("ok row run_id = %v, want r_one; raw=%s", got, res.Text)
+	}
+	if got := env.Results[1]["run_id"]; got != "r_failed" {
+		t.Errorf("failed row run_id = %v, want r_failed; raw=%s", got, res.Text)
+	}
+	if _, has := env.Results[2]["run_id"]; has {
+		t.Errorf("a row with no run carries run_id: %s", res.Text)
 	}
 }

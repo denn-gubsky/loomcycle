@@ -19,7 +19,7 @@ You want the sub-agent's OUTPUT before you continue:
 
 ```
 {"name": "cv-adapter", "prompt": "Generate CV for ..."}
-→ "[sub-agent agent_id=a_abc]\n<sub-agent's final output>"
+→ "[sub-agent agent_id=a_abc run_id=r_def]\n<sub-agent's final output>"
 ```
 
 The sub-agent's own ACL applies — your tool set doesn't transfer.
@@ -96,8 +96,10 @@ atomic at the ACL pre-flight (one denied channel refuses the whole op).
 ## Recursion depth cap
 
 Sub-agents can spawn sub-sub-agents, but loomcycle caps recursion
-at depth 3 (top-level run = 0, its children = 1, grandchildren = 2,
-attempting depth 3 refuses). Designed to bound runaway self-spawning
+at depth 3: the top-level run is depth 0, its children depth 1,
+grandchildren depth 2, great-grandchildren depth 3. An agent at depth 3
+cannot spawn — its `Agent` call is refused — so a chain is at most three
+levels below the top-level run. Designed to bound runaway self-spawning
 prompt loops.
 
 ## def_id pinning (v0.8.5 substrate)

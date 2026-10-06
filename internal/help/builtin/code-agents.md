@@ -30,7 +30,7 @@ posture (same as the Bash tool), so you opt in:
 ```
 LOOMCYCLE_CODE_AGENTS_ENABLED=1
 LOOMCYCLE_CODE_AGENTS_ROOT=./agent_code              # default; where index.js lives
-LOOMCYCLE_CODE_AGENTS_RUN_TIMEOUT_SECONDS=120        # wall-clock ctx deadline
+LOOMCYCLE_CODE_AGENTS_RUN_TIMEOUT_SECONDS=120        # whole-run wall-clock budget
 LOOMCYCLE_CODE_AGENTS_DETERMINISTIC=0                # seed Date.now/Math.random
 ```
 
@@ -209,14 +209,19 @@ tests and snapshot equality.
   `MaxIterations` soft-cap (default 16) would be unusable here — it would stop
   `run()` after 16 sequential calls. Code-agents are therefore **exempt** from
   `MaxIterations`; `run()` may make as many sequential tool calls as it needs.
-  The bound is `LOOMCYCLE_CODE_AGENTS_RUN_TIMEOUT_SECONDS`, enforced as a
-  **whole-run** wall-clock deadline (the per-turn budget is the run's remaining
-  time, not a fresh timeout each turn), so the total run cannot exceed it. (A
-  very high hard ceiling on turns remains as a pure runaway backstop; reaching
-  it means a non-terminating tool-call loop, not a too-small cap.)
+  The bound is `LOOMCYCLE_CODE_AGENTS_RUN_TIMEOUT_SECONDS`, a **whole-run**
+  wall-clock budget measured from the run's start. It is enforced by
+  interrupting the JavaScript: each turn of `run()` is interrupted when the
+  budget runs out (the per-turn allowance is the run's remaining time, not a
+  fresh timeout each turn). It is not a deadline on the run's other work — a
+  tool call already in flight when the budget runs out (a sub-agent your code
+  is waiting on) is not cut short; the next JavaScript turn after it is
+  interrupted at once and the run fails. (A very high hard ceiling on turns
+  remains as a pure runaway backstop; reaching it means a non-terminating
+  tool-call loop, not a too-small cap.)
 - **Run timeout bounds total wall time — including the parallel_spawn wait.**
   A CPU-bound JS loop is cut by goja `Interrupt`; a too-slow multi-call run is
-  cut by the same deadline on whatever turn crosses it. Crucially the budget is
+  cut on the first JavaScript turn that runs past the budget. Crucially the budget is
   whole-run wall-clock from start and KEEPS TICKING while the orchestrator is
   blocked in `Agent.parallel_spawn` awaiting children (each child a full LLM run,
   often 60–180s) — so a fan-out orchestrator's budget must envelope the entire

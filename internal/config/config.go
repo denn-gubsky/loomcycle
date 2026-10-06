@@ -3555,6 +3555,13 @@ type Env struct {
 	// interactive sub-agent — reaped after this long with no send. 0 = the code
 	// default (30 min). Per-open overridable via op=open's idle_ttl_seconds.
 	InteractiveChildIdleTTLMs int
+	// ResidentMaxTurnSeconds is the turn ceiling for a resident interactive
+	// sub-agent: a child whose CURRENT turn has run longer than this is reaped,
+	// whatever its parent does (polling it does not extend the ceiling). It
+	// bounds a turn that never ends, which the idle rule cannot see because a
+	// running turn is never idle. 0 = the code default (2h); there is no
+	// unlimited setting. Env: LOOMCYCLE_RESIDENT_MAX_TURN_SECONDS.
+	ResidentMaxTurnSeconds int
 	// BraveAPIKey enables the WebSearch tool. Empty = WebSearch refuses
 	// every call. Lives at https://api.search.brave.com/.
 	BraveAPIKey string
@@ -3914,10 +3921,13 @@ type Env struct {
 	// reproducible runs (Decision 13). Default OFF. Env:
 	// LOOMCYCLE_CODE_AGENTS_DETERMINISTIC=1.
 	CodeAgentsDeterministic bool
-	// CodeAgentsRunTimeout bounds a code-agent's wall-clock as a ctx
-	// deadline (the universal cancel path — Appendix A; Interrupt cannot
-	// break a parked tool call). Default 120s. Env:
-	// LOOMCYCLE_CODE_AGENTS_RUN_TIMEOUT_SECONDS.
+	// CodeAgentsRunTimeout bounds a code-agent's wall-clock. It is NOT a ctx
+	// deadline: the code-js provider gives each replay turn of the JavaScript
+	// the run's remaining budget (measured from the run's start) and
+	// Interrupts the turn when it runs out. A tool call in flight is not cut
+	// short (Interrupt cannot break a parked tool call); the first JavaScript
+	// turn after the budget is spent is interrupted at once. Default 120s.
+	// Env: LOOMCYCLE_CODE_AGENTS_RUN_TIMEOUT_SECONDS.
 	//
 	// This is TOTAL wall-clock from the run's start, and it KEEPS TICKING
 	// while the orchestrator is blocked in Agent.parallel_spawn awaiting its
@@ -4004,8 +4014,8 @@ type Env struct {
 	// Env: LOOMCYCLE_CANCEL_ACK_TIMEOUT_MS.
 	CancelAckTimeoutMs int64
 
-	// PauseDefaultTimeoutMs is the wait-for-non-idempotent-tools cap
-	// applied when POST /v1/_pause omits timeout_ms. 0 ⇒ use the
+	// PauseDefaultTimeoutMs is how long a pause waits for in-flight runs
+	// to park, applied when POST /v1/_pause omits timeout_ms. 0 ⇒ use the
 	// internal default (pause.DefaultPauseTimeout = 30s). Capped at
 	// pause.MaxPauseTimeout (5 min) regardless of operator value to
 	// avoid an operator typo (300000 vs 30000) leaving the runtime
@@ -4654,6 +4664,7 @@ func LoadLayers(layers ...Layer) (*Config, error) {
 		TeamSubscriptions:           os.Getenv("LOOMCYCLE_TEAM_SUBSCRIPTIONS") == "1",
 		MaxInteractiveChildren:      getenvInt("LOOMCYCLE_MAX_INTERACTIVE_CHILDREN", 0),
 		InteractiveChildIdleTTLMs:   getenvInt("LOOMCYCLE_INTERACTIVE_CHILD_IDLE_TTL_MS", 0),
+		ResidentMaxTurnSeconds:      getenvInt("LOOMCYCLE_RESIDENT_MAX_TURN_SECONDS", 0),
 		BraveAPIKey:                 os.Getenv("BRAVE_API_KEY"),
 		SerperAPIKey:                os.Getenv("SERPER_API_KEY"),
 		ExaAPIKey:                   os.Getenv("EXA_API_KEY"),

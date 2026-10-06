@@ -343,6 +343,11 @@ func TestResumePausedRuns_ReconcilesFanoutParent(t *testing.T) {
 	if !strings.Contains(env.Results[0].Output, "done") || !strings.Contains(env.Results[0].Output, "sub-agent agent_id=") {
 		t.Errorf("child output not reconciled from its transcript: %q", env.Results[0].Output)
 	}
+	// The awaited child's row has the live envelope's shape: its run_id, as a
+	// field and in the output header.
+	if env.Results[0].RunID != child.ID || !strings.Contains(env.Results[0].Output, "run_id="+child.ID+"]") {
+		t.Errorf("reconciled row does not name the child run %s: run_id=%q output=%q", child.ID, env.Results[0].RunID, env.Results[0].Output)
+	}
 }
 
 // TestResumePausedRuns_FanoutFlagOff_NotReconciled: with LOOMCYCLE_RESUME_FANOUT

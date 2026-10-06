@@ -74,8 +74,8 @@ type Config struct {
 	// TRANSPORT timeout (RFC P): how long a spawn_run MCP call may block
 	// before loomcycle cancels the run and returns a status:"timeout"
 	// result instead of hanging. A caller's per-call timeout_ms narrows
-	// this. <= 0 → disabled (the call blocks until the run finishes on
-	// its own run_timeout_seconds budget). This is a transport bound,
+	// this. <= 0 → disabled (the call blocks until the run finishes; only
+	// a code-js run has a run_timeout_seconds budget). This is a transport bound,
 	// distinct from the run's wall-clock budget.
 	SpawnRunTimeoutMS int
 }

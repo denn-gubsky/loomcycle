@@ -30,6 +30,14 @@ import (
 // tool with agentInput, and returns the parent's row and its children's.
 func spawnParentChild(t *testing.T, parentAgentID, agentInput string, childTurns int) (store.Run, []store.Run) {
 	t.Helper()
+	parent, children, _ := spawnParentChildStore(t, parentAgentID, agentInput, childTurns)
+	return parent, children
+}
+
+// spawnParentChildStore is spawnParentChild that also returns the store, for a
+// test that reads the parent's transcript.
+func spawnParentChildStore(t *testing.T, parentAgentID, agentInput string, childTurns int) (store.Run, []store.Run, store.Store) {
+	t.Helper()
 	cfg := makeBaseConfig()
 	cfg.Defaults.Provider = "scripted"
 	cfg.Agents = map[string]config.AgentDef{
@@ -84,7 +92,7 @@ func spawnParentChild(t *testing.T, parentAgentID, agentInput string, childTurns
 	if len(children) != childTurns {
 		t.Fatalf("got %d child runs, want %d", len(children), childTurns)
 	}
-	return parent, children
+	return parent, children, st
 }
 
 // A one-shot Agent spawn records the parent's run id; the top-level run

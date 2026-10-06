@@ -32,7 +32,20 @@ import (
 const (
 	defaultMaxResidentChildren    = 8
 	defaultResidentChildIdleTTLMs = 30 * 60 * 1000 // 30 min
-	residentSweepInterval         = 60 * time.Second
+	// defaultResidentMaxTurn bounds one turn of a resident child. The idle rule
+	// cannot see a turn that never ends — a hung tool, a provider call that
+	// never returns, a model looping on tool calls with no iteration cap (a
+	// resident child without max_iterations is unbounded) — and such a child
+	// would hold its goroutine, its sandbox and a resident slot forever. Two
+	// hours is far past any turn a parent should wait on (four idle TTLs), yet
+	// finite. LOOMCYCLE_RESIDENT_MAX_TURN_SECONDS overrides it; there is no
+	// unlimited setting.
+	defaultResidentMaxTurn = 2 * time.Hour
+	// residentTombstoneTTL is how long the reason a child was reaped stays
+	// answerable after its teardown removed it: long enough for a parent busy
+	// elsewhere to poll and learn why, short enough that the map stays small.
+	residentTombstoneTTL  = time.Hour
+	residentSweepInterval = 60 * time.Second
 	// residentCancelReparkTimeout bounds how long op=cancel waits for the child's
 	// loop to re-park after its turn is stopped (RFC BK P2). The re-park is near-
 	// instant once the turn ctx cancels; this is only a backstop.
@@ -49,15 +62,21 @@ type residentChild struct {
 	userID        string
 	cancel        context.CancelCauseFunc // direct fallback if the registry entry is gone
 	idleTTL       time.Duration
+	maxTurn       time.Duration // the turn ceiling: a turn running longer is reaped
 
 	mu         sync.Mutex
 	buf        strings.Builder // assistant text accumulated for the CURRENT turn
 	state      string          // "awaiting_input" | "completed" | "failed"
 	turnDone   chan struct{}   // closed once when the current turn parks or the run ends
 	turnClosed bool
-	running    bool // a turn is in flight (between beginTurn and park/terminal) — RFC BK P2
-	lastUsed   time.Time
-	done       bool // loop goroutine exited
+	running    bool      // a turn is in flight (between beginTurn and park/terminal) — RFC BK P2
+	lastUsed   time.Time // the idle clock: open/send/poll/cancel and a turn's end
+	// turnStarted is the turn-ceiling clock. Only beginTurn moves it: a parent
+	// polling a wedged turn keeps the child from going idle, never from the
+	// ceiling.
+	turnStarted time.Time
+	done        bool   // loop goroutine exited
+	reapReason  string // set by the sweeper before it cancels the child
 }
 
 // beginTurn resets the per-turn buffer + wake channel. Called before open's
@@ -70,6 +89,7 @@ func (rc *residentChild) beginTurn(now time.Time) <-chan struct{} {
 	rc.turnClosed = false
 	rc.running = true
 	rc.lastUsed = now
+	rc.turnStarted = now
 	return rc.turnDone
 }
 
@@ -81,11 +101,17 @@ func (rc *residentChild) appendText(t string) {
 
 // endTurn records the turn's terminal state and wakes the waiter exactly once.
 // Idempotent per turn: the park boundary (fwd) and the loop-exit both call it;
-// whichever comes first wins, the second is a no-op.
+// whichever comes first wins, the second is a no-op. The idle clock restarts
+// when the turn ends, so a parent gets the whole TTL to collect a long turn's
+// result — measured from its start, a turn longer than the TTL would be reaped
+// at the first sweep after it parked.
 func (rc *residentChild) endTurn(state string) {
 	rc.mu.Lock()
 	defer rc.mu.Unlock()
 	rc.state = state
+	if rc.running {
+		rc.lastUsed = time.Now()
+	}
 	rc.running = false
 	if !rc.turnClosed && rc.turnDone != nil {
 		rc.turnClosed = true
@@ -102,11 +128,26 @@ func (rc *residentChild) currentTurnDone() (<-chan struct{}, bool) {
 	return rc.turnDone, rc.running
 }
 
+// touch restarts the idle clock. poll and cancel use it: a parent checking on
+// a child is using it, even though it starts no turn.
+func (rc *residentChild) touch(now time.Time) {
+	rc.mu.Lock()
+	rc.lastUsed = now
+	rc.mu.Unlock()
+}
+
 func (rc *residentChild) markDone(state string) {
 	rc.mu.Lock()
 	rc.done = true
 	rc.mu.Unlock()
 	rc.endTurn(state) // wake a waiter blocked on the final (non-parking) turn
+}
+
+// reaped returns why the sweeper reaped the child, or "" if it did not.
+func (rc *residentChild) reaped() string {
+	rc.mu.Lock()
+	defer rc.mu.Unlock()
+	return rc.reapReason
 }
 
 func (rc *residentChild) readTurn() (string, string) {
@@ -152,10 +193,20 @@ func (rc *residentChild) snapshotInfo() residentInfo {
 type residentRegistry struct {
 	mu sync.Mutex
 	m  map[string]*residentChild
+	// gone keeps why a reaped child went away after its teardown removed it,
+	// so a parent's later poll/send learns the reason instead of a bare
+	// not-found. Pruned by the sweeper after residentTombstoneTTL.
+	gone map[string]residentTombstone
+}
+
+type residentTombstone struct {
+	tenantID string
+	reason   string
+	at       time.Time
 }
 
 func newResidentRegistry() *residentRegistry {
-	return &residentRegistry{m: map[string]*residentChild{}}
+	return &residentRegistry{m: map[string]*residentChild{}, gone: map[string]residentTombstone{}}
 }
 
 func (r *residentRegistry) add(rc *residentChild) {
@@ -171,10 +222,37 @@ func (r *residentRegistry) get(runID string) (*residentChild, bool) {
 	return rc, ok
 }
 
-func (r *residentRegistry) remove(runID string) {
+// remove drops a torn-down child, keeping its reap reason when it was reaped.
+func (r *residentRegistry) remove(rc *residentChild) {
+	reason := rc.reaped()
 	r.mu.Lock()
-	delete(r.m, runID)
+	delete(r.m, rc.runID)
+	if reason != "" {
+		r.gone[rc.runID] = residentTombstone{tenantID: rc.tenantID, reason: reason, at: time.Now()}
+	}
 	r.mu.Unlock()
+}
+
+// goneReason returns why a child that is no longer registered was reaped, for
+// a caller in its tenant; "" when it was not reaped (closed, ended) or the
+// caller is another tenant's.
+func (r *residentRegistry) goneReason(runID, tenantID string) string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if t, ok := r.gone[runID]; ok && t.tenantID == tenantID {
+		return t.reason
+	}
+	return ""
+}
+
+func (r *residentRegistry) pruneGone(now time.Time) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for id, t := range r.gone {
+		if now.Sub(t.at) > residentTombstoneTTL {
+			delete(r.gone, id)
+		}
+	}
 }
 
 func (r *residentRegistry) countByParent(parentAgentID string) int {
@@ -220,6 +298,15 @@ func (s *Server) maxResidentChildren() int {
 	return defaultMaxResidentChildren
 }
 
+// residentMaxTurn is the turn ceiling (LOOMCYCLE_RESIDENT_MAX_TURN_SECONDS;
+// 0 = the default).
+func (s *Server) residentMaxTurn() time.Duration {
+	if s.cfg() != nil && s.cfg().Env.ResidentMaxTurnSeconds > 0 {
+		return time.Duration(s.cfg().Env.ResidentMaxTurnSeconds) * time.Second
+	}
+	return defaultResidentMaxTurn
+}
+
 func (s *Server) residentChildIdleTTL() time.Duration {
 	if s.cfg() != nil && s.cfg().Env.InteractiveChildIdleTTLMs > 0 {
 		return time.Duration(s.cfg().Env.InteractiveChildIdleTTLMs) * time.Millisecond
@@ -229,7 +316,10 @@ func (s *Server) residentChildIdleTTL() time.Duration {
 
 // openResidentChild starts a resident interactive sub-run, runs its first turn,
 // parks it at awaiting_input, and returns (childRunID, firstOutput, state).
-func (s *Server) openResidentChild(ctx context.Context, name, prompt, defID string, idleTTLSeconds int) (string, string, string, error) {
+// timeoutMs bounds the wait for that first turn exactly as it bounds a send's:
+// 0 blocks until the child parks; >0 returns state "running" + the partial
+// output if the turn is still going, and the parent polls to collect it.
+func (s *Server) openResidentChild(ctx context.Context, name, prompt, defID string, idleTTLSeconds, timeoutMs int) (string, string, string, error) {
 	if s.residentReg == nil || s.steerReg == nil {
 		// A resident child parks on its steer queue between turns; without the
 		// steer registry it could not park (nor could send reach it).
@@ -244,7 +334,7 @@ func (s *Server) openResidentChild(ctx context.Context, name, prompt, defID stri
 		return "", "", "", err
 	}
 
-	rc := &residentChild{parentAgentID: parent.AgentID, idleTTL: s.residentChildIdleTTL()}
+	rc := &residentChild{parentAgentID: parent.AgentID, idleTTL: s.residentChildIdleTTL(), maxTurn: s.residentMaxTurn()}
 	if idleTTLSeconds > 0 {
 		rc.idleTTL = time.Duration(idleTTLSeconds) * time.Second
 	}
@@ -293,7 +383,7 @@ func (s *Server) openResidentChild(ctx context.Context, name, prompt, defID stri
 			deregSteer()
 			prep.cleanup()
 			prep.Slot.releaseCurrent()
-			s.residentReg.remove(prep.RunID)
+			s.residentReg.remove(rc)
 		}()
 		res, runErr := loop.Run(prep.LoopCtx, prep.Opts)
 		st := "completed"
@@ -305,9 +395,7 @@ func (s *Server) openResidentChild(ctx context.Context, name, prompt, defID stri
 		rc.markDone(st)
 	}()
 
-	// open always blocks for the FIRST park (no timeout) — by the time it returns
-	// the child is parked and ready for the first send.
-	out, state, aerr := rc.awaitTurn(ctx, turnDone, 0, true)
+	out, state, aerr := rc.awaitTurn(ctx, turnDone, time.Duration(timeoutMs)*time.Millisecond, true)
 	out, aerr = s.residentHandBack(ctx, rc, out, state, aerr)
 	return prep.RunID, out, state, aerr
 }
@@ -318,6 +406,9 @@ func (s *Server) openResidentChild(ctx context.Context, name, prompt, defID stri
 // run on each, with the child's state as the status. A refusal leaves the
 // child open: the parent may send again, or close it.
 func (s *Server) residentHandBack(ctx context.Context, rc *residentChild, out, state string, err error) (string, error) {
+	if reason := rc.reaped(); reason != "" && err == nil {
+		err = fmt.Errorf("resident sub-agent %q was reaped by the runtime (%s); open a new one", rc.runID, reason)
+	}
 	out, herr := s.subagentStop(ctx, rc.agentName, rc.runID, state, out, err)
 	if herr != nil && herr != err {
 		return "", fmt.Errorf("%w (child_run_id %s is still open: send again or close it)", herr, rc.runID)
@@ -331,7 +422,7 @@ func (s *Server) residentHandBack(ctx context.Context, rc *residentChild, out, s
 func (s *Server) sendResidentChild(ctx context.Context, childRunID, prompt string, timeoutMs int) (string, string, error) {
 	rc, ok := s.lookupOwnedResident(ctx, childRunID)
 	if !ok {
-		return "", "", fmt.Errorf("resident sub-agent %q not found (it may have been closed or timed out)", childRunID)
+		return "", "", s.residentNotFound(ctx, childRunID)
 	}
 	// A send while the previous turn is still in flight would interleave two
 	// turns. Refuse — the parent should poll to await it, or cancel to interrupt.
@@ -353,8 +444,9 @@ func (s *Server) sendResidentChild(ctx context.Context, childRunID, prompt strin
 func (s *Server) pollResidentChild(ctx context.Context, childRunID string, timeoutMs int) (string, string, error) {
 	rc, ok := s.lookupOwnedResident(ctx, childRunID)
 	if !ok {
-		return "", "", fmt.Errorf("resident sub-agent %q not found (it may have been closed or timed out)", childRunID)
+		return "", "", s.residentNotFound(ctx, childRunID)
 	}
+	rc.touch(time.Now())
 	td, _ := rc.currentTurnDone()
 	if td == nil {
 		// No turn has ever started (shouldn't happen post-open) — report state.
@@ -375,8 +467,9 @@ func (s *Server) pollResidentChild(ctx context.Context, childRunID string, timeo
 func (s *Server) cancelResidentChildTurn(ctx context.Context, childRunID string) (string, string, error) {
 	rc, ok := s.lookupOwnedResident(ctx, childRunID)
 	if !ok {
-		return "", "", fmt.Errorf("resident sub-agent %q not found (it may have been closed or timed out)", childRunID)
+		return "", "", s.residentNotFound(ctx, childRunID)
 	}
+	rc.touch(time.Now())
 	td, running := rc.currentTurnDone()
 	if !running {
 		out, st := rc.readTurn() // already parked/idle — nothing to cancel
@@ -406,6 +499,17 @@ func (s *Server) closeResidentChild(ctx context.Context, childRunID string) erro
 		rc.cancel(fmt.Errorf("closed by parent"))
 	}
 	return nil
+}
+
+// residentNotFound is the error for a child_run_id with no live child: the
+// reap reason when the sweeper reaped it, else the generic not-found.
+func (s *Server) residentNotFound(ctx context.Context, childRunID string) error {
+	if s.residentReg != nil {
+		if reason := s.residentReg.goneReason(childRunID, tools.RunIdentity(ctx).TenantID); reason != "" {
+			return fmt.Errorf("resident sub-agent %q was reaped by the runtime (%s); open a new one", childRunID, reason)
+		}
+	}
+	return fmt.Errorf("resident sub-agent %q not found (it may have been closed or timed out)", childRunID)
 }
 
 // lookupOwnedResident resolves a child by run_id and enforces tenant ownership
@@ -505,24 +609,44 @@ func (s *Server) RunResidentSweeper(ctx context.Context) {
 	}
 }
 
-// sweepResidentChildren cancels every resident child idle past its TTL (the
-// per-tick body of RunResidentSweeper; separated so tests can drive one sweep
-// without wall-clock waiting).
+// sweepResidentChildren reaps resident children by two rules (the per-tick
+// body of RunResidentSweeper; separated so tests can drive one sweep without
+// wall-clock waiting):
+//
+//   - idle: no turn running, and nothing has used the child (open/send/poll/
+//     cancel, or the end of its last turn) for longer than its idle TTL. A
+//     running turn is never idle — a long turn sent with timeout_ms is
+//     working, and reaping it would discard the result the parent will poll.
+//   - turn ceiling: the current turn has run longer than the ceiling. This is
+//     what bounds a turn that never ends; poll does not move its clock.
+//
+// The reason is logged, carried as the cancel cause into the run's terminal
+// record, and kept on the child so the parent's next call says why.
 func (s *Server) sweepResidentChildren(now time.Time) {
 	if s.residentReg == nil {
 		return
 	}
+	s.residentReg.pruneGone(now)
 	for _, rc := range s.residentReg.snapshot() {
 		rc.mu.Lock()
-		idle := now.Sub(rc.lastUsed) > rc.idleTTL
-		done := rc.done
+		var reason string
+		switch {
+		case rc.done:
+		case rc.running && now.Sub(rc.turnStarted) > rc.maxTurn:
+			reason = fmt.Sprintf("turn ceiling: a turn ran longer than %s", rc.maxTurn)
+		case !rc.running && now.Sub(rc.lastUsed) > rc.idleTTL:
+			reason = fmt.Sprintf("idle timeout: unused for longer than %s", rc.idleTTL)
+		}
+		if reason != "" && rc.reapReason == "" {
+			rc.reapReason = reason
+		}
 		rc.mu.Unlock()
-		if done || !idle {
+		if reason == "" {
 			continue
 		}
-		log.Printf("resident child %s idle-reaped after %s", rc.runID, rc.idleTTL)
-		if _, found := s.cancelReg.Cancel(rc.agentID, "idle timeout (resident sub-agent)"); !found && rc.cancel != nil {
-			rc.cancel(fmt.Errorf("idle timeout"))
+		log.Printf("resident child %s reaped: %s", rc.runID, reason)
+		if _, found := s.cancelReg.Cancel(rc.agentID, reason+" (resident sub-agent)"); !found && rc.cancel != nil {
+			rc.cancel(fmt.Errorf("%s", reason))
 		}
 	}
 }

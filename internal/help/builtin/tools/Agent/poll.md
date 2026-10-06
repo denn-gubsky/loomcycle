@@ -2,8 +2,9 @@
 name: Agent/poll
 description: "Agent op=poll — check a resident sub-agent's state and output so far, without giving it new input."
 ---
-`poll` looks at a resident child without sending anything. Use it after a
-`send` that returned `state: "running"`, to wait for the turn to finish.
+`poll` looks at a resident child without sending anything. Use it after an
+`open` or `send` that returned `state: "running"`, to wait for the turn to
+finish.
 
 ## Arguments
 

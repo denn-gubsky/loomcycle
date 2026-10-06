@@ -54,8 +54,10 @@ type SubAgentRunnerDetailed func(ctx context.Context, name string, prompt string
 // resources it holds (e.g. a warm sandbox container) between sends.
 //
 // idleTTLSeconds overrides the operator-default idle reap window for THIS child
-// (0 = use the default). The parent owns the child's lifecycle.
-type OpenChildRunner func(ctx context.Context, name, prompt, defID string, idleTTLSeconds int) (childRunID, output, state string, err error)
+// (0 = use the default). The parent owns the child's lifecycle. timeoutMs bounds
+// the wait for the first turn as SendChildRunner's does: 0 blocks until the child
+// parks; >0 returns state "running" + the partial output if it is still going.
+type OpenChildRunner func(ctx context.Context, name, prompt, defID string, idleTTLSeconds, timeoutMs int) (childRunID, output, state string, err error)
 
 // SendChildRunner injects the next instruction into a resident child (RFC BK)
 // and waits for that turn's result. timeoutMs bounds the wait: 0 blocks until the
@@ -110,9 +112,9 @@ const MaxAgentDepth = 3
 // no explicit `max_concurrent_children` yaml override. Four is a
 // pragmatic default for fan-out workflows on a single VM: high
 // enough to amortize the latency of slow-model children (claude-opus
-// at ~10-15s per response) but low enough to avoid blowing past the
-// per-tenant fairness cap (v0.10.1 default = 4) on the global
-// semaphore.
+// at ~10-15s per response) but low enough to keep one call from
+// saturating a provider. Children take no admission slot (the run tree
+// counts as one run), so this cap is the only bound on a call's fan-out.
 //
 // Sequential Agent.spawn calls are unaffected — the cap only applies
 // inside a single parallel_spawn op's `spawns` array. Operators
@@ -144,7 +146,7 @@ const MaxParallelSpawns = 32
 //
 // `op:"spawn"` returns the sub-agent's final assistant text as a
 // tool_result. `op:"parallel_spawn"` returns a JSON-encoded
-// `{results:[{agent,ok,output|error},...]}` envelope in input order
+// `{results:[{agent,ok,output|error,run_id},...]}` envelope in input order
 // — sub-agent errors are captured per-child and surfaced inside the
 // envelope, NOT escalated to a parent tool error. The parent's
 // model decides whether to retry, fall back, or give up.
@@ -254,15 +256,15 @@ type agentInput struct {
 	Spawns []parallelSpawnEntry `json:"spawns,omitempty"`
 
 	// Resident-child fields (RFC BK). op="open" reuses Name/Prompt/DefID and
-	// optionally IdleTTLSeconds; op="send" uses ChildRunID + Prompt (+ optional
-	// TimeoutMs); op="poll" uses ChildRunID (+ optional TimeoutMs); op="close"
-	// and op="cancel" use ChildRunID.
+	// optionally IdleTTLSeconds + TimeoutMs; op="send" uses ChildRunID + Prompt
+	// (+ optional TimeoutMs); op="poll" uses ChildRunID (+ optional TimeoutMs);
+	// op="close" and op="cancel" use ChildRunID.
 	ChildRunID     string `json:"child_run_id,omitempty"`
 	IdleTTLSeconds int    `json:"idle_ttl_seconds,omitempty"`
-	// TimeoutMs bounds a send/poll (RFC BK P2). send: 0 = block until the child
-	// parks (P1 behavior); >0 = return {state:"running", partial output} if the
-	// turn is still going after this long. poll: 0 = a non-blocking snapshot; >0 =
-	// wait up to this long for the child to park.
+	// TimeoutMs bounds an open/send/poll (RFC BK P2). open/send: 0 = block until
+	// the child parks (P1 behavior); >0 = return {state:"running", partial
+	// output} if the turn is still going after this long. poll: 0 = a
+	// non-blocking snapshot; >0 = wait up to this long for the child to park.
 	TimeoutMs int `json:"timeout_ms,omitempty"`
 }
 
@@ -290,10 +292,12 @@ type ParallelSpawnResult struct {
 	// parent gets each child's structured result — not just its prose — in the
 	// envelope. Omitted for append/recap children.
 	State map[string]any `json:"state,omitempty"`
-	// RunID is the child's run row id (RFC X Phase 3), captured for the
-	// spawn ledger so a restored fan-out parent can re-find this child.
-	// Internal-only — omitted from the tool_result envelope the model sees.
-	RunID string `json:"-"`
+	// RunID is the child's run row id (RFC X Phase 3): the spawn ledger's key
+	// for re-finding this child after a restore, and the handle the parent's
+	// model needs to address the child's run (History, Evaluation, an
+	// operator). Omitted when no run was created (an early resolution error,
+	// a child never dispatched).
+	RunID string `json:"run_id,omitempty"`
 }
 
 // agentInputSchema is the JSON Schema the model sees: ONE object, with `op`
@@ -330,15 +334,15 @@ const agentInputSchema = `{
         "required": ["name", "prompt"]
       }
     },
-    "idle_ttl_seconds": {"type": "integer", "description": "open (optional): reap the child after this many seconds with no send (0 = operator default). You own the child's lifecycle — close it when done."},
+    "idle_ttl_seconds": {"type": "integer", "description": "open (optional): reap the child after this many seconds unused — no send, poll or cancel, and no turn running (0 = operator default). You own the child's lifecycle — close it when done."},
     "child_run_id": {"type": "string", "description": "send / poll / cancel / close (required): the child_run_id op=open returned."},
-    "timeout_ms": {"type": "integer", "description": "send / poll (optional). send: 0 (default) blocks until the child parks; >0 returns early with state \"running\" and the partial output — then poll to await it or cancel to interrupt. poll: 0 (default) is a non-blocking snapshot; >0 waits up to this long for the child to park."}
+    "timeout_ms": {"type": "integer", "description": "open / send / poll (optional). open and send: 0 (default) blocks until the child finishes its turn and parks; >0 returns early with state \"running\" and the partial output (open still returns the child_run_id) — then poll to await it or cancel to interrupt. poll: 0 (default) is a non-blocking snapshot; >0 waits up to this long for the child to park."}
   }
 }`
 
 const agentDescription = `Spawn or drive named sub-agents, each with its own tool allowlist (your tool set does not transfer). ` +
-	`Stateless ops: 'spawn' (default; one child, return its final text) and 'parallel_spawn' (N children concurrently, JSON envelope with per-child ok/output/error) — best when you describe the whole task up front. ` +
-	`Resident ops (stateful): 'open' starts a persistent sub-agent and returns a child_run_id; 'send' gives it the next instruction and returns that turn's output (optional timeout_ms bounds the wait — a long turn returns state "running" + partial output); 'poll' checks a running child without new input; 'cancel' stops a child's current turn (it stays alive); 'close' shuts it down. Use these when the child must keep state between steps — a warm sandbox container, a REPL, a multi-turn analysis — instead of re-spawning and re-threading state by hand. Close what you open. ` +
+	`Stateless ops: 'spawn' (default; one child, return its final text) and 'parallel_spawn' (N children concurrently, JSON envelope with per-child ok/output/error and the child's run_id) — best when you describe the whole task up front. ` +
+	`Resident ops (stateful): 'open' starts a persistent sub-agent and returns a child_run_id with its first turn's output; 'send' gives it the next instruction and returns that turn's output (on both, optional timeout_ms bounds the wait — a long turn returns state "running" + partial output); 'poll' checks a running child without new input; 'cancel' stops a child's current turn (it stays alive); 'close' shuts it down. Use these when the child must keep state between steps — a warm sandbox container, a REPL, a multi-turn analysis — instead of re-spawning and re-threading state by hand. Close what you open. ` +
 	`See Context.help(topic="fan-out-patterns") for spawn vs parallel_spawn vs Channel.publish, and Context.help(topic="resident-sub-agents") for the open/send/close lifecycle.`
 
 // runName is the name a child the caller wrote as `name` runs under.
@@ -472,8 +476,8 @@ func withSubAgentState(text string, state map[string]any) string {
 //
 // Result text is a deterministic-ordering JSON envelope:
 //
-//	{"results": [{"index":0,"agent":"researcher","ok":true,"output":"..."},
-//	             {"index":1,"agent":"researcher","ok":false,"error":"..."}]}
+//	{"results": [{"index":0,"agent":"researcher","ok":true,"output":"...","run_id":"r_..."},
+//	             {"index":1,"agent":"researcher","ok":false,"error":"...","run_id":"r_..."}]}
 //
 // The envelope is a tool_result Text payload (not IsError) regardless
 // of per-child success — the call as a whole succeeded; the per-child
@@ -708,6 +712,9 @@ func (a *AgentTool) executeOpen(ctx context.Context, in agentInput) (tools.Resul
 	if in.IdleTTLSeconds < 0 {
 		return errValidation("idle_ttl_seconds must be >= 0 (0 = operator default)", ""), nil
 	}
+	if in.TimeoutMs < 0 {
+		return errValidation("timeout_ms must be >= 0 (0 = block until the child parks)", ""), nil
+	}
 	name, err := a.runName(ctx, in.Name)
 	if err != nil {
 		return errValidation(err.Error(), ""), nil
@@ -722,7 +729,7 @@ func (a *AgentTool) executeOpen(ctx context.Context, in agentInput) (tools.Resul
 	if !in.Compaction.IsZero() {
 		subCtx = tools.WithCompactionOverride(subCtx, in.Compaction)
 	}
-	childRunID, output, state, err := a.OpenChild(subCtx, in.Name, in.Prompt, in.DefID, in.IdleTTLSeconds)
+	childRunID, output, state, err := a.OpenChild(subCtx, in.Name, in.Prompt, in.DefID, in.IdleTTLSeconds, in.TimeoutMs)
 	if err != nil {
 		return errFrom(err.Error(), err), nil
 	}

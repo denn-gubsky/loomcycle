@@ -6960,7 +6960,7 @@ func (s *Server) runSubRun(ctx context.Context, name, systemExtra, prompt, defID
 	// the sub" UX. res.State is the sub-agent's final structured Σ (RFC CR
 	// L2 stateful runs; nil otherwise) — the parent receives it as the
 	// structured hand-off instead of re-parsing prose (RFC CR D5).
-	return formatSubAgentOutput(prep.AgentID, res.FinalText), res.State, prep.RunID, nil
+	return formatSubAgentOutput(prep.AgentID, prep.RunID, res.FinalText), res.State, prep.RunID, nil
 }
 
 // childHold reports a child's review hold on its parent's stream: "held" at

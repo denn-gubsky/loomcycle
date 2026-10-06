@@ -59,14 +59,14 @@ Rule of thumb: if each child takes <100ms, sequential `spawn` is faster.
 
 If a child fails, the error is captured in the envelope's `ok:false` row alongside `error: "<text>"`. The parent's model reads the envelope and decides what to do: retry the failed children, fall back, give up gracefully. The parent's run is **never torn down** because a child failed — exactly the same posture as a `spawn` op whose child errored.
 
-If the parent's `ctx` is cancelled mid-call (operator hit cancel, or the run hit its deadline), in-flight children inherit the cancellation; pending children that haven't been admitted to the goroutine pool yet are not started. The envelope still returns, with cancelled-or-not-started children marked `ok:false` + `error: "context canceled"`.
+If the parent is cancelled mid-call (an operator or caller cancelled the run, or its parent was cancelled), in-flight children inherit the cancellation; pending children that haven't been admitted to the goroutine pool yet are not started. The envelope still returns, with cancelled-or-not-started children marked `ok:false` + `error: "context canceled"`.
 
 ## Concurrency cap
 
 The runtime caps the number of children running concurrently per `parallel_spawn` call. Two layers:
 
 1. **Per-agent override** — `max_concurrent_children: N` in the agent's `loomcycle.yaml` (or via AgentDef substrate overlay). When unset, falls back to:
-2. **Runtime default** — 4. This matches v0.10.1's per-tenant fairness default; bigger values fan out faster but also burn down your fairness budget faster.
+2. **Runtime default** — 4. Bigger values fan out faster and spend provider capacity and tokens faster; this cap is the only bound on how many of one call's children run at once.
 
 The cap throttles concurrency, not enrollment: if your `spawns` array has 10 entries and the cap is 4, all 10 are enrolled but only 4 run at a time — slots free up as each completes.
 
@@ -77,7 +77,7 @@ There's also a hard per-call ceiling (`MaxParallelSpawns = 32`) regardless of th
 Every child is a full agent run: its own loop, its own provider calls, its own iterations, its own tool dispatches. Three considerations:
 
 - **API spend scales linearly with `spawns` length.** Parallel doesn't make it cheaper.
-- **Each child counts against the parent's tenant fairness budget** (v0.10.1). If you have a per-tenant cap of 4 and you `parallel_spawn` 4 children, you've used your whole budget for this run; the next sibling at the same tenant will queue.
+- **Children take no admission slot of their own.** A run and every sub-agent under it count as one run against the concurrency and per-user caps, so fanning out never makes a sibling run queue for admission. What children do contend for is provider capacity: a child on a provider whose concurrency the operator caps, and that no ancestor already holds, waits for that provider's slot.
 - **Each child has its own `max_iterations`.** Children with `max_iterations: 64` × 8 spawns is 512 potential provider calls; that's a real cost.
 
 When in doubt: estimate `cost-per-child × N` before fanning out. If you can do the work with N=3 instead of N=10 by giving each child a wider topic, do that.
@@ -93,5 +93,5 @@ When in doubt: estimate `cost-per-child × N` before fanning out. If you can do 
 
 - `Context.help(topic="scopes")` — how `agent` / `user` / `global` scopes shape Memory + Channel cursor namespacing across sub-runs.
 - `Context.help(topic="subagents")` — recursion depth cap, sub-run lifecycle, transcript persistence.
-- `Context.help(topic="fairness")` — v0.10.1 per-tenant cap; how `parallel_spawn` interacts with it.
+- `Context.help(topic="fairness")` — the per-user admission cap, and why sub-agents don't count against it.
 - `Channel.publish` — the alternative to fan-out when you don't need the join-back.

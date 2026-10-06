@@ -315,6 +315,19 @@ func (c *Context) execSelf(ctx context.Context) (tools.Result, error) {
 			out["output_format"] = shape.OutputFormat
 		}
 	}
+	// iterations_*: how many loop iterations (model turns) this run has used,
+	// counting the one that called op=self, and how many are left before it
+	// ends with max_iterations — the budget an agent plans a long task
+	// against. An iteration-unbounded run reports iterations_unbounded and no
+	// remainder: its cap is a runaway backstop, not a plan. Omitted outside a
+	// loop iteration.
+	if ib, ok := tools.IterationBudget(ctx); ok {
+		out["iterations_used"] = ib.Used
+		out["iterations_unbounded"] = ib.Unbounded
+		if !ib.Unbounded {
+			out["iterations_remaining"] = max(ib.Max-ib.Used, 0)
+		}
+	}
 	// max_context_tokens: the CONFIGURED per-agent context-WINDOW cap in effect
 	// (RFC CJ; per-run > per-agent). Reported even before the first turn (unlike
 	// the effective `context.max_tokens` below, which is only known post-turn).
