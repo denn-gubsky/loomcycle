@@ -1605,6 +1605,87 @@ func (t *TeamDef) execRun(ctx context.Context, in teamDefInput) (tools.Result, e
 		return trace, werr
 	}
 
+	// answer is what op=run answers once the walk is over: the trace and the
+	// end state for a walk that completed or stopped at an iteration cap (a
+	// first-class outcome, not a tool fault), or the error that failed it.
+	// Built here so a poll-mode walk is answered exactly as a waited-for one.
+	answer := func(trace []teamrun.StepRecord, walkErr error) (map[string]any, error) {
+		steps := make([]map[string]any, 0, len(trace))
+		for _, s := range trace {
+			steps = append(steps, map[string]any{
+				"state":  s.State,
+				"agent":  s.Agent,
+				"edge":   s.Edge,
+				"next":   s.Next,
+				"output": s.Output,
+			})
+		}
+
+		// annotate adds the opt-in board/interruption fields to a response ONLY when
+		// the relevant feature was used, keeping the default ephemeral response shape
+		// byte-identical for existing callers.
+		annotate := func(m map[string]any) map[string]any {
+			if runID != "" {
+				// Reported on the synchronous path as well: a caller holding a
+				// second connection can still arm this walk while it runs, and the
+				// id is what every run surface keys on afterwards.
+				m["run_id"] = runID
+			}
+			if boardBound {
+				m["board_chunk_id"] = in.BoardChunkID
+				m["board_scope"] = boardScope
+				if resumedFrom != "" {
+					m["resumed_from"] = resumedFrom
+				}
+			}
+			if in.InterruptOnCap {
+				m["interruptions"] = interruptions
+				if lastDecision != "" {
+					m["cap_decision"] = lastDecision
+				}
+			}
+			// Reported when the walk actually paused — not when `breakpoints` was
+			// passed. A walk armed mid-run passed nothing and still paused, and a
+			// walk that was armed but never reached the state paused nothing.
+			if breaks > 0 {
+				m["breakpoints_hit"] = breaks
+				if lastBreak != "" {
+					m["break_decision"] = lastBreak
+				}
+			}
+			return m
+		}
+
+		if walkErr != nil {
+			var capErr *teamrun.ErrIterationCap
+			if errors.As(walkErr, &capErr) {
+				// Cap overflow is a first-class outcome, not a tool fault — report it
+				// with the trace so the caller sees how far the walk got. (When
+				// interrupt_on_cap escalated, this is the human's abort / a failed
+				// escalation; continue/reroute keep the walk going and don't land here.)
+				return annotate(map[string]any{
+					"name":            row.Name,
+					"def_id":          row.DefID,
+					"status":          "iteration_cap",
+					"capped_state":    capErr.State,
+					"max_iterations":  capErr.Max,
+					"iteration_count": capErr.Count,
+					"steps":           steps,
+				}), nil
+			}
+			return nil, walkErr
+		}
+
+		return annotate(map[string]any{
+			"name":         row.Name,
+			"def_id":       row.DefID,
+			"status":       "completed",
+			"final_state":  task.State,
+			"final_output": task.Input, // Walk threads the last handler's output here
+			"steps":        steps,
+		}), nil
+	}
+
 	if detach {
 		// The caller gets its handle NOW and the walk continues behind it. This
 		// is the whole point of the mode: a synchronous op=run tells the caller
@@ -1635,80 +1716,11 @@ func (t *TeamDef) execRun(ctx context.Context, in teamDefInput) (tools.Result, e
 	trace, walkErr := walk()
 	endWait()
 
-	steps := make([]map[string]any, 0, len(trace))
-	for _, s := range trace {
-		steps = append(steps, map[string]any{
-			"state":  s.State,
-			"agent":  s.Agent,
-			"edge":   s.Edge,
-			"next":   s.Next,
-			"output": s.Output,
-		})
+	out, failed := answer(trace, walkErr)
+	if failed != nil {
+		return errResult(fmt.Sprintf("run: %s", failed)), nil
 	}
-
-	// annotate adds the opt-in board/interruption fields to a response ONLY when
-	// the relevant feature was used, keeping the default ephemeral response shape
-	// byte-identical for existing callers.
-	annotate := func(m map[string]any) map[string]any {
-		if runID != "" {
-			// Reported on the synchronous path as well: a caller holding a
-			// second connection can still arm this walk while it runs, and the
-			// id is what every run surface keys on afterwards.
-			m["run_id"] = runID
-		}
-		if boardBound {
-			m["board_chunk_id"] = in.BoardChunkID
-			m["board_scope"] = boardScope
-			if resumedFrom != "" {
-				m["resumed_from"] = resumedFrom
-			}
-		}
-		if in.InterruptOnCap {
-			m["interruptions"] = interruptions
-			if lastDecision != "" {
-				m["cap_decision"] = lastDecision
-			}
-		}
-		// Reported when the walk actually paused — not when `breakpoints` was
-		// passed. A walk armed mid-run passed nothing and still paused, and a
-		// walk that was armed but never reached the state paused nothing.
-		if breaks > 0 {
-			m["breakpoints_hit"] = breaks
-			if lastBreak != "" {
-				m["break_decision"] = lastBreak
-			}
-		}
-		return m
-	}
-
-	if walkErr != nil {
-		var capErr *teamrun.ErrIterationCap
-		if errors.As(walkErr, &capErr) {
-			// Cap overflow is a first-class outcome, not a tool fault — report it
-			// with the trace so the caller sees how far the walk got. (When
-			// interrupt_on_cap escalated, this is the human's abort / a failed
-			// escalation; continue/reroute keep the walk going and don't land here.)
-			return okJSON(annotate(map[string]any{
-				"name":            row.Name,
-				"def_id":          row.DefID,
-				"status":          "iteration_cap",
-				"capped_state":    capErr.State,
-				"max_iterations":  capErr.Max,
-				"iteration_count": capErr.Count,
-				"steps":           steps,
-			}))
-		}
-		return errResult(fmt.Sprintf("run: %s", walkErr)), nil
-	}
-
-	return okJSON(annotate(map[string]any{
-		"name":         row.Name,
-		"def_id":       row.DefID,
-		"status":       "completed",
-		"final_state":  task.State,
-		"final_output": task.Input, // Walk threads the last handler's output here
-		"steps":        steps,
-	}))
+	return okJSON(out)
 }
 
 // parseCapAnswer maps a human's free-text cap answer to a walk decision. Only an
