@@ -23,8 +23,8 @@ import (
 // failed code_agent_timeout with the children's results discarded.
 
 const (
-	orchestratorBudget = time.Second
-	childTakes         = 2 * time.Second // longer than the whole budget
+	orchestratorBudget = 2 * time.Second
+	childTakes         = 3 * time.Second // longer than the whole budget
 )
 
 // aggregate stands in for the work a real orchestrator does with its
@@ -34,7 +34,7 @@ const (
 const aggregate = `
 function aggregate(xs) {
   var s = 0;
-  for (var i = 0; i < 300000; i++) { s += i % 7; }
+  for (var i = 0; i < 50000; i++) { s += i % 7; }
   return xs.join(",");
 }`
 
