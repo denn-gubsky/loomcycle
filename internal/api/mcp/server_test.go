@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -857,6 +858,38 @@ func TestServer_SpawnRuns_DispatchesBatch(t *testing.T) {
 	}
 	if inner.Spawned != 2 || len(inner.Results) != 2 || inner.Results[1].RunID != "r_1" {
 		t.Errorf("inner = %+v, want 2 results with r_1 at index 1", inner)
+	}
+}
+
+// A client that validates arguments against the advertised schema could not
+// send mode "detach" while the enum listed only "join"; and the handler must
+// carry the mode to the connector, which is what starts the runs and returns.
+func TestServer_SpawnRuns_DetachIsAdvertisedAndReachesTheConnector(t *testing.T) {
+	var mode struct {
+		Enum []string `json:"enum"`
+	}
+	if err := json.Unmarshal(topLevelProperties(t, schemaObject(t, toolInputSchema(t, "spawn_runs")))["mode"], &mode); err != nil {
+		t.Fatalf("spawn_runs.mode schema: %v", err)
+	}
+	if !slices.Contains(mode.Enum, "detach") || !slices.Contains(mode.Enum, "join") {
+		t.Errorf("spawn_runs.mode enum = %v, want join and detach", mode.Enum)
+	}
+
+	mc := &mockConnector{batchResult: connector.BatchSpawnResult{
+		Spawned: 1,
+		Results: []connector.SpawnRunResult{{AgentID: "a_0", RunID: "r_0", Status: "running"}},
+	}}
+	srv := New(Config{Connector: mc, Logf: func(string, ...any) {}})
+	in := strings.Join([]string{
+		`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"t","version":"1"}}}`,
+		`{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"spawn_runs","arguments":{"mode":"detach","spawns":[{"agent":"rev"}]}}}`,
+	}, "\n") + "\n"
+	resps, _ := driveServer(t, srv, in)
+	if len(resps) != 2 {
+		t.Fatalf("got %d responses, want 2 (init + spawn_runs)", len(resps))
+	}
+	if stored, _ := mc.batchReq.Load().(connector.BatchSpawnRequest); stored.Mode != "detach" {
+		t.Errorf("connector saw mode %q, want detach", stored.Mode)
 	}
 }
 

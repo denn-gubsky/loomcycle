@@ -133,7 +133,7 @@ func toolDescriptors() []loommcp.ToolDescriptor {
 		},
 		{
 			Name:        "spawn_runs",
-			Description: "Run up to 32 agents CONCURRENTLY in one call and block until all of them settle, returning one index-aligned envelope \u2014 result[i] belongs to spawns[i]. Each child is a FRESH run; there is no session continuation here. Each child spec takes the same per-run overrides spawn_run does \u2014 sampling, compaction, context and the routing/budget knobs \u2014 so one batch can fan the same agent out across different models or budgets. Concurrency is server-side and still bounded by the per-user admission gate. A child that fails is reported in its own slot and never fails the batch, so always read per-child status rather than assuming success. USE THIS for any fan-out: N parallel spawn_run calls serialize over the single MCP connection and will be slower for no benefit. Do NOT use it to continue sessions, and do NOT pass mode 'detach' \u2014 async handles are reserved for a future release and rejected today. Over 32 spawns is refused rather than truncated.",
+			Description: "Run up to 32 agents CONCURRENTLY in one call and, by default, block until all of them settle, returning one index-aligned envelope \u2014 result[i] belongs to spawns[i]. Each child is a FRESH run; there is no session continuation here. Each child spec takes the same per-run overrides spawn_run does \u2014 sampling, compaction, context and the routing/budget knobs \u2014 so one batch can fan the same agent out across different models or budgets. Concurrency is server-side and still bounded by the per-user admission gate. A child that fails is reported in its own slot and never fails the batch, so always read per-child status rather than assuming success. USE THIS for any fan-out: N parallel spawn_run calls serialize over the single MCP connection and will be slower for no benefit. To start the runs and NOT wait for them, pass mode 'detach': the call returns as soon as every child has started, each with status 'running' and its run_id and agent_id, and the runs go on after the call returns \u2014 read each later with get_run by run_id, and stop one with cancel_run. A child that could not start is reported in its own slot either way. Do NOT use it to continue sessions. Over 32 spawns is refused rather than truncated.",
 			InputSchema: rawJSON(`{
 				"type": "object",
 				"required": ["spawns"],
@@ -162,8 +162,8 @@ func toolDescriptors() []loommcp.ToolDescriptor {
 							}
 						}
 					},
-					"mode":       {"type": "string", "enum": ["join"], "description": "Only \"join\" (default) is supported today: block until all children settle. \"detach\" awaits a future async-handle release."},
-					"timeout_ms": {"type": "integer", "minimum": 1, "description": "Optional join deadline: a child still running when it elapses is cancelled and reported with a cancelled status in-envelope."}
+					"mode":       {"type": "string", "enum": ["join", "detach"], "description": "\"join\" (default): block until all children settle and return their results. \"detach\": return each child's run_id once it has started; the runs continue after the call and are read with get_run."},
+					"timeout_ms": {"type": "integer", "minimum": 1, "description": "Optional join deadline: a child still running when it elapses is cancelled and reported with a cancelled status in-envelope. Refused with mode \"detach\", which does not wait."}
 				}
 			}`),
 		},
