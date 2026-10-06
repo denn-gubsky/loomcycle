@@ -133,6 +133,7 @@ func TestPollMode_EarlyEndingParentWaitsForItsChildrenThenCompletes(t *testing.T
 	srv, _ := makeServer(t, prov, familyConfig())
 	ts := httptest.NewServer(srv.Mux())
 	defer ts.Close()
+	defer cancelAllRuns(srv)
 
 	body := make(chan string, 1)
 	go func() {
@@ -266,6 +267,7 @@ func TestPollMode_CancellingAParkedParentCancelsItsChildren(t *testing.T) {
 	srv, _ := makeServer(t, prov, familyConfig())
 	ts := httptest.NewServer(srv.Mux())
 	defer ts.Close()
+	defer cancelAllRuns(srv)
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
@@ -285,7 +287,10 @@ func TestPollMode_CancellingAParkedParentCancelsItsChildren(t *testing.T) {
 				child = e.RunID
 			}
 		}
-		if parentRun != "" {
+		// Both must be seen: the parent can park before its background
+		// child's run has registered, and a loop that stopped at the park
+		// would then report a child that was merely not yet listed.
+		if parentRun != "" && child != "" {
 			if state, _ := awaited.ForRun(context.Background(), srv.store, parentRun); state == awaited.Children {
 				break
 			}
@@ -348,5 +353,16 @@ func TestPollMode_AChildsOwnChildrenGetTheirOwnIDs(t *testing.T) {
 	run, err := srv.store.GetRun(context.Background(), grand)
 	if err != nil || grand == minted || run.ParentRunID != minted {
 		t.Errorf("grandchild %q = %+v, %v; want its own run under %s", grand, run, err, minted)
+	}
+}
+
+// cancelAllRuns cancels every run the server still has in flight. A test that
+// leaves a parent parked for its children — on a failed assertion, say —
+// leaves that parent's POST open, and httptest.Server.Close waits for every
+// open request, so the test would hang until the package timeout instead of
+// failing. Deferred after ts.Close, so it runs first.
+func cancelAllRuns(srv *Server) {
+	for _, e := range srv.cancelReg.ListAll() {
+		srv.cancelReg.Cancel(e.AgentID, "test cleanup")
 	}
 }
