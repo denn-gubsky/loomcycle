@@ -6171,6 +6171,20 @@ func replayTranscript(events []store.Event) []providers.Message {
 			pendingToolResults = nil
 			asstReasoning = ""
 			asstReasoningSignature = ""
+		case string(providers.EventChildrenNote):
+			// The runtime's note about background children reached the model
+			// as a user turn (loop.appendChildrenNote), and this row is the only
+			// record of it. Without it a resumed run lost every note: its
+			// conversation skipped from the answer before a note to the answer
+			// after it, and a run paused between a wake note and its next call
+			// looked idle instead of owing that call.
+			var pe providers.Event
+			if err := json.Unmarshal(ev.Payload, &pe); err != nil || pe.ChildrenNote == nil || pe.ChildrenNote.Text == "" {
+				continue
+			}
+			flushAssistant()
+			flushPendingTools()
+			messages = append(messages, providers.Message{Role: "user", Content: []providers.ContentBlock{{Type: "text", Text: pe.ChildrenNote.Text}}})
 		case string(providers.EventHookDecision):
 			// Two hook decisions put text into the conversation, and each one's
 			// event is the only record of it: an agent_stop block sent the model
