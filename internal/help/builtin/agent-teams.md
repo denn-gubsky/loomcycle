@@ -645,9 +645,12 @@ A walk started with `mode: "detach"` is its own run, not a child of the agent
 that started it: it carries on after that agent's run ends, and cancelling that
 agent does not stop the walk or the agents it started. It still runs with the
 starter's tenant, user and access, and its run records the starter's run as its
-parent. Stop it by its own `run_id` — `POST /v1/runs/{run_id}/cancel` (gRPC
-`CancelTurn`) — which cancels every agent the walk started. A walk run without
-`mode` belongs to its caller, and cancelling the caller cancels it.
+parent. It keeps the starter's ephemeral volumes until it ends, even when the
+starter's top-level run ends first. Stop it by its own `run_id` —
+`POST /v1/runs/{run_id}/cancel` (gRPC `CancelTurn`) — which cancels every agent
+the walk started. A walk run without `mode` belongs to its caller, and
+cancelling the caller cancels it.
+
 ## Running a team in poll mode
 
 `TeamDef op=run` waits for the walk by default: your call returns its whole
