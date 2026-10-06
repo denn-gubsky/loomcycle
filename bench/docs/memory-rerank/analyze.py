@@ -22,7 +22,12 @@ def mcnemar(a, b):
 def load(path):
     rep = json.load(open(path))
     rows = rep.get("results") or rep.get("answers") or []
-    return {r["question"]: r for r in rows}
+    # Keyed by (text, occurrence): a sample can hold two questions with the same text.
+    seen, out = {}, {}
+    for r in rows:
+        seen[r["question"]] = seen.get(r["question"], 0) + 1
+        out[(r["question"], seen[r["question"]])] = r
+    return out
 
 
 def main():
@@ -31,7 +36,7 @@ def main():
     a = ap.parse_args()
     O = a.out
     pairs, voided, nimble = [], [], {}
-    convs = sorted(os.path.basename(d)[len("B-on-"):] for d in glob.glob(os.path.join(O, "B-on-conv-*")))
+    convs = sorted(os.path.basename(d)[len("B-on-"):] for d in glob.glob(os.path.join(O, "B-on-conv-*")) if os.path.isdir(d))
     for c in convs:
         alog = open(os.path.join(O, "A-%s.log" % c)).read() if os.path.exists(os.path.join(O, "A-%s.log" % c)) else ""
         if "consolidated in" not in alog or "work still queued" in alog or "SKIPPED" in alog:
