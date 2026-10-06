@@ -31,6 +31,7 @@ posture (same as the Bash tool), so you opt in:
 LOOMCYCLE_CODE_AGENTS_ENABLED=1
 LOOMCYCLE_CODE_AGENTS_ROOT=./agent_code              # default; where index.js lives
 LOOMCYCLE_CODE_AGENTS_RUN_TIMEOUT_SECONDS=120        # whole-run budget of active time (waits don't count)
+LOOMCYCLE_CODE_AGENTS_MAX_WALL_SECONDS=86400         # lifetime limit, waits included (default 24h)
 LOOMCYCLE_CODE_AGENTS_DETERMINISTIC=0                # seed Date.now/Math.random
 ```
 
@@ -234,7 +235,8 @@ tests and snapshot equality.
   like any other work, so the next turn after it fails if none is left. A
   tool call already in flight when the budget runs out is not cut short.
   `Context` `op=self` reports `run_budget` — `{budget_ms, used_ms, waited_ms,
-  remaining_ms}` — so `run()` can plan what is left. The budget survives a
+  remaining_ms}` plus the wall limit below — so `run()` can plan what is
+  left. The budget survives a
   pause and snapshot: a run resumed elsewhere continues with what it had left,
   not a fresh budget.
 
@@ -245,6 +247,20 @@ tests and snapshot equality.
   besides, no JS source line) — distinct from `code_agent_threw` (a real
   exception) and `code_agent_cancelled` (parent cancel). The heap limit is
   best-effort (goja exposes no hard cap).
+- **A lifetime limit counts the waits.** Because waiting is free against the
+  budget, a run that does little but wait — a loop over `Channel.await`,
+  `Interruption.ask` or tiny spawns — would otherwise live for ever. So a code
+  agent also has a **wall limit**: how long the run may live in all, waits
+  included. It is the operator's `LOOMCYCLE_CODE_AGENTS_MAX_WALL_SECONDS`
+  (default 24 hours; there is no "unlimited", only a large value set on
+  purpose), and nothing an agent or a caller sets reaches it —
+  `run_timeout_seconds` sets the budget, not this. Past it the run is
+  **cancelled**: whatever it is waiting on stops, its sub-agents are cancelled
+  with it, and the run fails `code_agent_wall_limit`. Time the runtime is
+  paused by the operator does not count, and a resumed run continues from the
+  lifetime it had recorded rather than starting a new one. `Context`
+  `op=self` reports both, in `run_budget`: `wall_limit_ms` and
+  `wall_elapsed_ms` beside the budget's figures.
 - **ABI versioning.** The JS-side API is versioned on its own semver
   (currently 1.0.0), separate from loomcycle's release vector. Breaking a
   signature is a major bump with a deprecation window.
