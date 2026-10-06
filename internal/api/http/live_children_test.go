@@ -1,7 +1,6 @@
 package http
 
 import (
-	"context"
 	"encoding/json"
 	"errors"
 	"strings"
@@ -75,7 +74,7 @@ func TestLiveChildren_ResidentCapStillAppliesUnderTheLiveLimit(t *testing.T) {
 	// store is closed and its temp dir removed.
 	defer func() {
 		for _, id := range open {
-			_ = srv.closeResidentChild(context.Background(), id)
+			_ = srv.closeResidentChild(ctx, id)
 		}
 		for _, id := range open {
 			waitResidentGone(t, srv, id)
