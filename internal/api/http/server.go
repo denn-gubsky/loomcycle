@@ -7511,6 +7511,10 @@ func (s *Server) prepareSubRunValues(ctx context.Context, name string, src nameS
 	// Identity is the substrate def_id, falling back to the agent NAME for
 	// static (yaml) agents, which have no def row.
 	def, subRunCfg = s.inheritOverridesForChild(ctx, def, subRunCfg, defID, name)
+	// Only a resident child runs interactive; its resume must know it is one.
+	if subRunCfg.Spawn != nil {
+		subRunCfg.Spawn.Resident = interactive
+	}
 
 	// Sub-run gets its OWN session, under the PARENT's tenant (RFC L). The
 	// session row's tenant_id must match the run's (subIdentity.TenantID below) —

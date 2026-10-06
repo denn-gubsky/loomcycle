@@ -80,6 +80,10 @@ type residentChild struct {
 	turnStarted time.Time
 	done        bool   // loop goroutine exited
 	reapReason  string // set by the sweeper before it cancels the child
+	// startupPark marks a child resumed parked whose loop has not yet parked:
+	// the awaiting_input it announces then is the park it was already in, not
+	// the end of a turn — a send that arrived first must not end on it.
+	startupPark bool
 }
 
 // beginTurn resets the per-turn buffer + wake channel. Called before open's
@@ -120,6 +124,34 @@ func (rc *residentChild) endTurn(state string) {
 		rc.turnClosed = true
 		close(rc.turnDone)
 	}
+}
+
+// observe is the child's capturing emit: it accumulates the child's assistant
+// text for the current turn, and the awaiting_input boundary ends the turn and
+// wakes the waiter.
+func (rc *residentChild) observe(ev providers.Event) {
+	switch ev.Type {
+	case providers.EventText:
+		rc.appendText(ev.Text)
+	case providers.EventAwaitingInput:
+		rc.mu.Lock()
+		startup := rc.startupPark
+		rc.startupPark = false
+		rc.mu.Unlock()
+		if !startup {
+			rc.endTurn("awaiting_input")
+		}
+	}
+}
+
+// parked files a resumed child that was parked between turns when it paused:
+// no turn in flight, waiting for its parent's next send.
+func (rc *residentChild) parked(now time.Time) {
+	rc.mu.Lock()
+	defer rc.mu.Unlock()
+	rc.state = "awaiting_input"
+	rc.lastUsed = now
+	rc.startupPark = true
 }
 
 // currentTurnDone returns the channel the in-flight (or just-ended) turn signals
@@ -419,16 +451,7 @@ func (s *Server) openResidentChild(ctx context.Context, name, prompt, defID stri
 	if idleTTLSeconds > 0 {
 		rc.idleTTL = time.Duration(idleTTLSeconds) * time.Second
 	}
-	// Capturing emit: accumulate the child's assistant text for the current turn;
-	// the awaiting_input boundary ends the turn and wakes the waiter.
-	fwd := func(ev providers.Event) {
-		switch ev.Type {
-		case providers.EventText:
-			rc.appendText(ev.Text)
-		case providers.EventAwaitingInput:
-			rc.endTurn("awaiting_input")
-		}
-	}
+	fwd := rc.observe
 	// The child must SURVIVE this tool call returning → detach its ctx from the
 	// parent request's cancellation (keep values) before prepareSubRun wraps it
 	// in its own cancel scope (fired by close / idle-reap / parent teardown).

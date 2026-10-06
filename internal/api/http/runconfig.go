@@ -381,6 +381,9 @@ type spawnRecord struct {
 	// FanoutCap is the parallel_spawn width the child inherited on ctx; 0 when
 	// its ancestors set none and its definition decides.
 	FanoutCap int `json:"fanout_cap,omitempty"`
+	// Resident marks a resident child (Agent op=open): a resume rebuilds it as
+	// one — parked between its parent's sends, reachable by its run id.
+	Resident bool `json:"resident,omitempty"`
 }
 
 // volumeCeilingRecord mirrors tools.VolumePolicyValue minus each binding's

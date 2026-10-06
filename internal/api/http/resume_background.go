@@ -187,12 +187,18 @@ func walkDetail(d map[string]any) map[string]any {
 }
 
 // restoreBackgroundFn is what refills a resumed run's background table from
-// its ledger, or nil when it started no poll-mode child.
-func (s *Server) restoreBackgroundFn(parent store.Run, ledger []*pollChildLedger) func(context.Context, *tools.Background) {
-	if len(ledger) == 0 {
+// its ledger and its open resident children, or nil when it has neither.
+func (s *Server) restoreBackgroundFn(parent store.Run, ledger []*pollChildLedger, residents []store.Run) func(context.Context, *tools.Background) {
+	if len(ledger) == 0 && len(residents) == 0 {
 		return nil
 	}
 	return func(ctx context.Context, bg *tools.Background) {
+		// Filed as live open does, so a poll or cancel naming one by
+		// child_run_ids knows it is this run's. Its registry entry is its own
+		// resume's (resumePausedRun).
+		for _, r := range residents {
+			bg.AddResident(r.ID, r.Agent)
+		}
 		var outstanding []tools.ChildSpec
 		bounds := map[string]int{}
 		for _, c := range ledger {
@@ -217,6 +223,32 @@ func (s *Server) restoreBackgroundFn(parent store.Run, ledger []*pollChildLedger
 		releases := s.liveChildren.Hold(parent.ID, len(outstanding))
 		go s.watchRestoredChildren(ctx, bg, parent.UserID, outstanding, bounds, releases)
 	}
+}
+
+// residentChildrenOf is a resumed run's resident children that had not ended
+// when it paused: its child runs whose record marks them resident. A failed
+// read is logged and leaves none — the children are still reachable by id
+// through the resident registry; only a poll by child_run_ids would not know
+// them.
+func (s *Server) residentChildrenOf(ctx context.Context, parent store.Run) []store.Run {
+	if s.residentReg == nil || parent.AgentID == "" {
+		return nil
+	}
+	runs, err := s.store.ListRunsByParentAgentID(ctx, parent.AgentID)
+	if err != nil {
+		log.Printf("resume: list run %s's children: %v", parent.ID, err)
+		return nil
+	}
+	var out []store.Run
+	for _, r := range runs {
+		if r.ParentRunID != parent.ID || isTerminalRunStatus(r.Status) {
+			continue
+		}
+		if rec, ok := decodeRunConfig(r.RunConfig); ok && rec.Spawn != nil && rec.Spawn.Resident {
+			out = append(out, r)
+		}
+	}
+	return out
 }
 
 // watchRestoredChildren files each restored child's end in the table when its

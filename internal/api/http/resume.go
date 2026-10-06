@@ -8,6 +8,7 @@ import (
 	"log"
 	"slices"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/denn-gubsky/loomcycle/internal/awaited"
@@ -92,6 +93,12 @@ import (
 //     waited for wherever it runs. A child's timeout_ms is re-armed from its
 //     run: the deadline the live clock would have reached (the pause counts,
 //     its review holds do not).
+//   - A RESIDENT child (Agent op=open) resumes as one — parked between sends,
+//     or finishing its turn — filed in this instance's resident registry, so
+//     its parent, resumed here with it, sends to it, polls and closes it by its
+//     run id. Its idle TTL is the operator's: the one it was opened with is not
+//     recorded. Paused runs resume children first, so a parent's first turn
+//     finds its resident child registered.
 //     (Mid-execution runs — the F42 repro — end on a clean tool_result boundary
 //     and resume cleanly.)
 
@@ -135,7 +142,7 @@ func (s *Server) resumePausedRunsReport(ctx context.Context) resumeReport {
 		r.Warnings = []string{fmt.Sprintf("list paused runs: %v", err)}
 		return r
 	}
-	for _, run := range paused {
+	for _, run := range childrenFirst(paused) {
 		if err := s.resumePausedRun(run); err != nil {
 			if errors.Is(err, errRunAlreadyLive) {
 				r.AlreadyLive++
@@ -150,6 +157,33 @@ func (s *Server) resumePausedRunsReport(ctx context.Context) resumeReport {
 		log.Printf("resume: re-dispatched %d paused run(s); %d already live; %d flagged", r.Resumed, r.AlreadyLive, len(r.Warnings))
 	}
 	return r
+}
+
+// childrenFirst orders paused runs so that a run comes after every paused
+// descendant of it, otherwise keeping their order. A resumed parent may
+// address its resident child by id at its first turn, which finds the child
+// only once the child's own resume has registered it.
+func childrenFirst(runs []store.Run) []store.Run {
+	parentOf := make(map[string]string, len(runs))
+	for _, r := range runs {
+		parentOf[r.ID] = r.ParentRunID
+	}
+	// A run's depth counts its ancestors in the list. Bounded by the list's
+	// length, so a cycle in corrupt rows cannot loop forever.
+	depth := make(map[string]int, len(runs))
+	for _, r := range runs {
+		d := 0
+		for p := r.ParentRunID; d < len(runs); p = parentOf[p] {
+			if _, ok := parentOf[p]; !ok {
+				break
+			}
+			d++
+		}
+		depth[r.ID] = d
+	}
+	out := slices.Clone(runs)
+	slices.SortStableFunc(out, func(a, b store.Run) int { return depth[b.ID] - depth[a.ID] })
+	return out
 }
 
 // pausedRunIsLive reports whether a live loop still owns a paused row, so the
@@ -246,6 +280,11 @@ func (s *Server) resumePausedRun(run store.Run) error {
 	// the definition and says so, rather than failing a run that is otherwise
 	// fine: refusing to resume is a heavier answer than resolving normally.
 	runCfg, haveRunCfg := decodeRunConfig(run.RunConfig)
+	// A resident child (Agent op=open) is rebuilt as one: parked between its
+	// parent's sends — or finishing the turn it was in — and filed in this
+	// instance's resident registry under its run id, so its parent (resumed
+	// here with it) can send, poll and close it as before the pause.
+	resident := runCfg.Spawn != nil && runCfg.Spawn.Resident && s.residentReg != nil && s.steerReg != nil
 	// The team the run belongs to, from its own record: its agent — and every
 	// agent it goes on to spawn — resolves in the team VERSION it started
 	// under, whatever the team has been forked or promoted to since.
@@ -400,8 +439,10 @@ func (s *Server) resumePausedRun(run store.Run) error {
 	// The poll-mode children the run started, as its ledger records them. A
 	// stateful run has no background table, so it has none.
 	var pollLedger []*pollChildLedger
+	var residents []store.Run
 	if !stateful {
 		pollLedger = pollLedgerOf(runEvents)
+		residents = s.residentChildrenOf(ctx, run)
 	}
 
 	// RFC X Phase 3: detect a parked fan-out PARENT — a parallel_spawn that the
@@ -471,6 +512,8 @@ func (s *Server) resumePausedRun(run store.Run) error {
 			resumeHeld = held
 		case len(pollLedger) > 0 && !run.Interactive && parkedForChildren(runEvents):
 			resumeChildren = true
+		case resident:
+			startParked = true // waiting for its parent's next send
 		case !run.Interactive || s.steerReg == nil:
 			s.flagRunUnresumable(run, "run was idle awaiting input when paused; re-attach + steer to continue")
 			return fmt.Errorf("not auto-resumable (no pending turn)")
@@ -610,7 +653,17 @@ func (s *Server) resumePausedRun(run store.Run) error {
 	}
 	// Store-only emit (no live client to forward to) — the resumed turns
 	// append to the same run's transcript so a re-attaching operator tails them.
-	emit := s.makeRecordingEmit(runCtx, run.ID, rid, run.SessionID, meta, func(providers.Event) {})
+	fwd := func(providers.Event) {}
+	var rc *residentChild
+	if resident {
+		rc = &residentChild{runID: run.ID, agentID: run.AgentID, agentName: run.Agent, parentAgentID: run.ParentAgentID,
+			tenantID: run.TenantID, userID: run.UserID, cancel: cancelFn,
+			// The idle TTL its parent opened it with is not recorded; it
+			// comes back with the operator's.
+			idleTTL: s.residentChildIdleTTL(), maxTurn: s.residentMaxTurn()}
+		fwd = rc.observe
+	}
+	emit := s.makeRecordingEmit(runCtx, run.ID, rid, run.SessionID, meta, fwd)
 	// A child the Agent tool started takes a verdict and nothing else, live
 	// (runSubRun registers it VerdictsOnly) and so after a resume: its parent
 	// drives it, and a full entry here handed an operator its steer, retune and
@@ -621,7 +674,7 @@ func (s *Server) resumePausedRun(run store.Run) error {
 	// would refuse its next turn.
 	steerQ, onSteer, closeSteer, deregSteer := s.makeSteerEntry(runCtx, steer.Entry{
 		RunID: run.ID, AgentID: run.AgentID, SessionID: run.SessionID, UserID: run.UserID,
-		VerdictsOnly: takesOnlyVerdicts(run),
+		VerdictsOnly: takesOnlyVerdicts(run) && !resident, // a resident child takes its parent's sends
 	}, emit)
 
 	loopCtx := tools.WithAgentTools(runCtx, toolNames(allowedTools))
@@ -776,8 +829,8 @@ func (s *Server) resumePausedRun(run store.Run) error {
 		CodeBody:            agentDef.Code,
 		RunTimeoutSeconds:   runCfg.RunTimeoutSeconds,
 		RunClockCarry:       runCfg.clockCarry(), // the budget continues where the run paused
-		Interactive:         run.Interactive,
-		InteractiveNow:      s.interactiveNowFn(run.ID, run.Interactive),
+		Interactive:         run.Interactive || resident,
+		InteractiveNow:      s.interactiveNowFn(run.ID, run.Interactive || resident),
 		Review:              reviewArmed,
 		ReviewNow:           s.reviewNowFn(run.ID, reviewArmed),
 		ReviewTTL:           runCfg.reviewTTL(), // the deadline runs from when the hold began, restart or not
@@ -810,8 +863,29 @@ func (s *Server) resumePausedRun(run store.Run) error {
 
 		// Its background children, rebuilt from its ledger, and its wait for
 		// them when it paused waiting.
-		RestoreBackground:      s.restoreBackgroundFn(run, pollLedger),
+		RestoreBackground:      s.restoreBackgroundFn(run, pollLedger, residents),
 		ResumeAwaitingChildren: resumeChildren,
+	}
+	residentDone := func(string) {}
+	if rc != nil {
+		// Its parent's op=cancel stops its current turn, as it did live.
+		runOpts.ArmTurnCancel = s.armTurnCancel(run.ID)
+		if startParked {
+			rc.parked(time.Now())
+		} else {
+			rc.beginTurn(time.Now())
+		}
+		s.residentReg.add(rc)
+		// One of its parent's live children again, until it ends.
+		live := s.liveChildren.Hold(run.ParentRunID, 1)[0]
+		var once sync.Once
+		residentDone = func(state string) {
+			once.Do(func() {
+				rc.markDone(state)
+				s.residentReg.remove(rc)
+				live()
+			})
+		}
 	}
 
 	go func() {
@@ -824,6 +898,7 @@ func (s *Server) resumePausedRun(run store.Run) error {
 				log.Printf("resumed run %s panicked: %v", run.ID, rec)
 				s.finishRunFailedReason(run.ID, fmt.Sprintf("panic: %v", rec), meta)
 			}
+			residentDone("failed") // a no-op once the loop's end has filed it
 			deregSteer()
 			deregGate()
 			s.cancelReg.Deregister(run.AgentID)
@@ -890,6 +965,9 @@ func (s *Server) resumePausedRun(run store.Run) error {
 			emit(runErrorEvent(runErr))
 		}
 		s.finishRunWithCancel(context.WithoutCancel(runCtx), runCtx, run.ID, loopRes, runErr, meta)
+		if runErr == nil {
+			residentDone("completed")
+		}
 	}()
 	return nil
 }
