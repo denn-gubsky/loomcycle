@@ -210,10 +210,12 @@ func TestTeamDefPoll_AgentPollReadsAWalkAndAgentCancelEndsIt(t *testing.T) {
 	}
 }
 
-// A poll-mode walk lives with the calling RUN: when the run ends it is
-// cancelled with the run's cause. A detached walk started from the same run
-// is not: it runs on.
-func TestTeamDefPoll_TheParentRunEndingCancelsThePollWalkButNotADetachedOne(t *testing.T) {
+// A poll-mode walk lives with the calling RUN, not the call: when the run
+// ends it is cancelled with the run's cause. A detached walk's ctx is not the
+// run's, and runs on. (Only the ctx is pinned here: on a server a detached
+// walk's members are also children of the starting agent in the cancel
+// registry, whose cascade reaches them — behaviour poll mode leaves as it is.)
+func TestTeamDefPoll_TheParentRunEndingCancelsThePollWalkNotADetachedCtx(t *testing.T) {
 	tool, base, done := teamDefFixture(t)
 	defer done()
 	createTeam(t, tool, base, "rev", validTeamGraph)
