@@ -228,7 +228,10 @@ tests and snapshot equality.
     while it waits for them before completing;
   - resident `open`, `send` and `poll` while they block on the child's turn
     (with or without `timeout_ms`);
-  - `TeamDef` `op=run` without `mode: detach`, while the team works;
+  - `TeamDef` `op=run` without a `mode`, while the team works (with
+    `mode: "poll"` or `"detach"` the call returns at once and is not a wait),
+    and `TeamDef` `poll` with `wait: "any"` or `"all"`, while it waits for
+    walks;
   - `Channel` `await`, and `subscribe` with `wait_ms`, while they wait for a
     message;
   - `Interruption` `ask`, until a person answers;
