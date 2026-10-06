@@ -232,6 +232,11 @@ func (b *Background) EndTurn(cause error) {
 // one with cause. The run calls it as it ends: a child it no longer waits for
 // would run on with nobody to read it.
 func (b *Background) Close(cause error) {
+	// A run that ended because it was cancelled passes that cancel on, as its
+	// lifetime watch would — Close may run before the watch does.
+	if b.lifetime.Err() != nil {
+		cause = context.Cause(b.lifetime)
+	}
 	b.mu.Lock()
 	b.closed = true
 	var cancel []*bgChild

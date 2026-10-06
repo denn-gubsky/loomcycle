@@ -668,6 +668,20 @@ const (
 	// held again.
 	EventAwaitingReview EventType = "awaiting_review"
 
+	// EventAwaitingChildren is emitted when a run ends its turn while
+	// background children it started (Agent poll mode) are still running.
+	// Instead of completing, the run waits — no model call, no iteration spent
+	// — until every one of them has ended, then takes another turn with an
+	// EventChildrenNote saying how each ended. The AwaitingChildren field names
+	// the children waited for.
+	EventAwaitingChildren EventType = "awaiting_children"
+
+	// EventChildrenNote records the runtime note a run's next model call
+	// carries about its background children: that some ended since its last
+	// call, or — after an awaiting_children wait — how each one ended. The
+	// note reaches the model as a user turn; ChildrenNote carries its text.
+	EventChildrenNote EventType = "children_note"
+
 	// EventSubagentHold is emitted on a PARENT's stream when a sub-agent it
 	// started through the Agent tool is held for review (an agent_stop hook's
 	// hold) — and again, state "released", when that child ends. The child
@@ -906,6 +920,14 @@ type Event struct {
 	// Nil otherwise.
 	AwaitingReview *AwaitingReviewEventInfo `json:"awaiting_review,omitempty"`
 
+	// AwaitingChildren carries the structured payload on
+	// EventAwaitingChildren. Nil otherwise.
+	AwaitingChildren *AwaitingChildrenEventInfo `json:"awaiting_children,omitempty"`
+
+	// ChildrenNote carries the structured payload on EventChildrenNote. Nil
+	// otherwise.
+	ChildrenNote *ChildrenNoteEventInfo `json:"children_note,omitempty"`
+
 	// SubagentHold carries the structured payload on EventSubagentHold. Nil
 	// otherwise.
 	SubagentHold *SubagentHoldEventInfo `json:"subagent_hold,omitempty"`
@@ -1133,6 +1155,21 @@ type AwaitingInputEventInfo struct {
 	// SinceTurn is the iteration index the run parked at. Informational —
 	// lets the UI show "idle after N turns".
 	SinceTurn int `json:"since_turn"`
+}
+
+// AwaitingChildrenEventInfo is the structured payload on
+// EventAwaitingChildren.
+type AwaitingChildrenEventInfo struct {
+	// ChildRunIDs are the background children the run waits for.
+	ChildRunIDs []string `json:"child_run_ids"`
+	// SinceTurn is the iteration index the run ended its turn at.
+	SinceTurn int `json:"since_turn"`
+}
+
+// ChildrenNoteEventInfo is the structured payload on EventChildrenNote.
+type ChildrenNoteEventInfo struct {
+	// Text is the note as the model reads it.
+	Text string `json:"text"`
 }
 
 // AwaitingReviewEventInfo is the structured payload on EventAwaitingReview.
