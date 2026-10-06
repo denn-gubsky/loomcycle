@@ -26,9 +26,13 @@ func TestLiveChildren_ResidentChildrenCountTowardTheRunsLimit(t *testing.T) {
 		}
 		open = append(open, runID)
 	}
+	// Close and wait for teardown, so no child writes after the store closes.
 	defer func() {
 		for _, id := range open {
 			_ = srv.closeResidentChild(ctx, id)
+		}
+		for _, id := range open {
+			waitResidentGone(t, srv, id)
 		}
 	}()
 
@@ -66,9 +70,15 @@ func TestLiveChildren_ResidentCapStillAppliesUnderTheLiveLimit(t *testing.T) {
 	srv := newResidentTestServer(t)
 	ctx := tools.WithRunID(residentParentCtx("parent-agent", ""), "r_parent")
 	var open []string
+	// Close AND wait for each child's teardown: closing only cancels it, and a
+	// child still finishing its run writes to the store after the test's
+	// store is closed and its temp dir removed.
 	defer func() {
 		for _, id := range open {
 			_ = srv.closeResidentChild(context.Background(), id)
+		}
+		for _, id := range open {
+			waitResidentGone(t, srv, id)
 		}
 	}()
 	for i := 0; i < 8; i++ {

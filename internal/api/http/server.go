@@ -665,6 +665,7 @@ func New(cfg *config.Config, pr ProviderResolver, builtinTools []tools.Tool, sem
 		// The ceiling on a spawn's timeout_ms (0 = none).
 		MaxChildTimeoutMs: cfg.Env.AgentChildMaxTimeoutMs,
 		LiveChildren:      s.liveChildren,
+		PollWaitCapMs:     cfg.Env.AgentPollWaitCapMs,
 		// v0.11.8 — per-agent max_concurrent_children cap for
 		// Agent.parallel_spawn. Walks the same resolver chain as
 		// sub-run dispatch (yaml > dynamic_agents > AgentDef
@@ -7468,6 +7469,9 @@ func (s *Server) prepareSubRunValues(ctx context.Context, name string, src nameS
 		// cannot escape by spawning. Persisted so a resumed sub-run keeps it.
 		Isolated:  parentIdentity.Isolated,
 		RunConfig: subRunCfg.marshal(),
+		// A poll-mode child was handed to its parent under this id before
+		// its run existed; "" (every other sub-run) lets the store mint one.
+		ID: tools.ChildRunID(ctx),
 	}
 	// RFC BT P4: a board-bound `TeamDef op=run` puts the task key on ctx; stamp it
 	// onto this handler run's ParentContext so a client folding the run-state
@@ -7555,6 +7559,8 @@ func (s *Server) prepareSubRunValues(ctx context.Context, name string, src nameS
 	// member's own from ctx already; left on its execution ctx, a walk nested
 	// inside the member would hold its runs on the OUTER state's arming.
 	subRunCtx = teamrun.WithReviewTTL(teamrun.WithReviewArming(subRunCtx, nil), nil)
+	// And the id this run was created under: its own children mint theirs.
+	subRunCtx = tools.WithChildRunID(subRunCtx, "")
 	defer func() {
 		if !prepOK {
 			subCancelFn(nil)

@@ -37,6 +37,35 @@ does not count, and a `parallel_spawn` child's clock starts when it gets a
 slot. The operator may cap `timeout_ms` (`LOOMCYCLE_AGENT_CHILD_MAX_TIMEOUT_MS`);
 a larger value is refused, naming the cap.
 
+## Working while children run: `mode: "poll"`
+
+`spawn` and `parallel_spawn` wait for their children by default. With
+`mode: "poll"` they return as soon as the children are admitted — `spawn`
+with `{child_run_id, agent, state}`, `parallel_spawn` with `{batch_id,
+children: [...]}` — and the children run in the background while you keep
+working. The same rules apply as in wait mode (depth, the live-children
+limit, `def_id`, `timeout_ms`); a background child is an ordinary sub-run of
+yours with its own transcript, and it is cancelled if your run is.
+
+- **Reading results.** `poll` with `child_run_ids`, `batch_id`, or neither (every
+  background child you have not read yet). `wait: "any"` or `"all"` blocks
+  for them, bounded by `wait_ms`. A finished child's result is returned every
+  time you ask for it by id.
+- **Being told.** When a background child finishes, your next turn starts with
+  a short note naming it (several share one note). `notify: false` on the
+  spawn turns that off.
+- **Ending your turn with children still running** does not end your run. It
+  waits — costing no iteration — until every one of them has ended or been
+  cancelled, then gives you one more turn, with a note listing how each ended.
+  To finish without waiting, `cancel` them first, or start them with
+  `on_parent_end: "cancel"` so they stop when you end your turn.
+- **Stopping one.** `cancel` with `child_run_ids` ends background children;
+  the rest of a batch keeps running.
+- **The last iteration.** Poll mode is refused on the last iteration your
+  `max_iterations` allows — no turn would be left to collect the children.
+  Children still running when you end that last turn are cancelled, because
+  nothing could read them.
+
 ## `Agent` (in-loop) vs `spawn_run` (MCP surface)
 
 These live at different layers and are easy to confuse:
@@ -162,4 +191,5 @@ inherit from the parent.
 | "Drop this on the queue; analyst will pick it up" | Channel |
 | "Run 5 forks of myself in parallel and aggregate" | Agent (with def_id) |
 | "Notify everyone subscribed to alerts" | Channel (broadcast) |
+| "Start these, keep working, collect them later" | Agent with `mode: "poll"` |
 | "Run this side task in the background" | Channel (async worker) |

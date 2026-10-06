@@ -228,6 +228,10 @@ type AgentTool struct {
 	// no limit.
 	LiveChildren *tools.LiveChildren
 
+	// PollWaitCapMs bounds how long one poll with wait "any" or "all" may
+	// block (LOOMCYCLE_AGENT_POLL_WAIT_CAP_MS). 0 = DefaultPollWaitCapMs.
+	PollWaitCapMs int
+
 	// ResolveName, when set, turns the name a caller wrote into the name that
 	// agent RUNS under, before anything here uses it. Inside a team walk a
 	// caller may write "./reviewer" — or, where the resolver's rule for bare
@@ -353,6 +357,20 @@ type agentInput struct {
 	// output} if the turn is still going after this long. poll: 0 = a
 	// non-blocking snapshot; >0 = wait up to this long for the child to park.
 	TimeoutMs int `json:"timeout_ms,omitempty"`
+
+	// Poll mode (spawn / parallel_spawn): Mode "poll" returns once the
+	// children are admitted and leaves them running in the background.
+	// Notify (default true) and OnParentEnd ("wait" | "cancel") apply to it.
+	Mode        string `json:"mode,omitempty"`
+	Notify      *bool  `json:"notify,omitempty"`
+	OnParentEnd string `json:"on_parent_end,omitempty"`
+	// The generalised poll and cancel: ChildRunIDs names background or
+	// resident children of this run; BatchID one poll-mode parallel_spawn.
+	// Wait ("none" | "any" | "all") and WaitMs bound a poll's wait.
+	ChildRunIDs []string `json:"child_run_ids,omitempty"`
+	BatchID     string   `json:"batch_id,omitempty"`
+	Wait        string   `json:"wait,omitempty"`
+	WaitMs      int      `json:"wait_ms,omitempty"`
 }
 
 // parallelSpawnEntry is one row in a parallel_spawn `spawns` array.
@@ -410,7 +428,14 @@ type ParallelSpawnResult struct {
 const agentInputSchema = `{
   "type": "object",
   "properties": {
-    "op": {"type": "string", "enum": ["spawn","parallel_spawn","open","send","poll","cancel","close"], "description": "Which operation (default spawn). spawn: run one sub-agent and return its final text. parallel_spawn: run several at once and return a per-child envelope. open: start a RESIDENT sub-agent you steer over several turns (returns child_run_id). send: give a resident child its next instruction. poll: check on a resident child without new input. cancel: stop a resident child's current turn (it stays alive). close: shut a resident child down and free its resources — always close what you open."},
+    "op": {"type": "string", "enum": ["spawn","parallel_spawn","open","send","poll","cancel","close"], "description": "Which operation (default spawn). spawn: run one sub-agent and return its final text (or, with mode poll, its child_run_id at once). parallel_spawn: run several at once and return a per-child envelope (or, with mode poll, their child_run_ids at once). open: start a RESIDENT sub-agent you steer over several turns (returns child_run_id). send: give a resident child its next instruction. poll: read your background children's states and results (child_run_ids, batch_id, or none = every child you have not read yet), or check on one resident child (child_run_id). cancel: end background children (child_run_ids), or stop a resident child's current turn (child_run_id; it stays alive). close: shut a resident child down and free its resources — always close what you open."},
+    "mode": {"type": "string", "enum": ["wait","poll"], "description": "spawn / parallel_spawn (optional). wait (default): return when the children finish. poll: return at once with the child_run_id(s); the children run in the background while you keep working, you are told when they finish, and you read their results with op=poll. Your run does not end while one is still running: ending your turn waits for all of them, then you get one more turn."},
+    "notify": {"type": "boolean", "description": "spawn / parallel_spawn with mode poll (optional, default true): add a short note to your next turn when a child finishes. false = no note; you poll."},
+    "on_parent_end": {"type": "string", "enum": ["wait","cancel"], "description": "spawn / parallel_spawn with mode poll (optional). wait (default): ending your turn waits for these children. cancel: they are cancelled when you end your turn."},
+    "child_run_ids": {"type": "array", "items": {"type": "string"}, "description": "poll / cancel: children of this run, by the child_run_id spawn, parallel_spawn or open returned. poll: omit (and omit batch_id) to get every background child whose result you have not read yet."},
+    "batch_id": {"type": "string", "description": "poll: every child of one mode poll parallel_spawn, by the batch_id it returned."},
+    "wait": {"type": "string", "enum": ["none","any","all"], "description": "poll (optional). none (default): answer at once. any: wait until one of the named background children ends. all: wait until all of them have. Bounded by wait_ms."},
+    "wait_ms": {"type": "integer", "description": "poll with wait any or all (optional): the longest to wait, in ms; capped by the runtime (60000 unless the operator set another). Absent = the cap."},
     "name": {"type": "string", "description": "spawn / open (required): the sub-agent's name, a key in the agents map. Inside a team's workflow, ./<name> is one of that team's own agents (a bare name also finds it, ahead of a global agent of that name)."},
     "prompt": {"type": "string", "description": "spawn / open / send (required): the instruction the child sees. For spawn and open, the task; for send, the next instruction — the child sees its whole prior conversation. Do not include auth tokens (the child gets its own auth context)."},
     "def_id": {"type": "string", "description": "spawn / open (optional): pin the child to a specific agent_defs row id (from AgentDef.create or AgentDef.fork). The row's name must match the name field. Not for a team's own agent, which has no versions of its own."},
@@ -432,13 +457,14 @@ const agentInputSchema = `{
       }
     },
     "idle_ttl_seconds": {"type": "integer", "description": "open (optional): reap the child after this many seconds unused — no send, poll or cancel, and no turn running (0 = operator default). You own the child's lifecycle — close it when done."},
-    "child_run_id": {"type": "string", "description": "send / poll / cancel / close (required): the child_run_id op=open returned."},
+    "child_run_id": {"type": "string", "description": "send / close (required), and poll / cancel of one resident child: the child_run_id op=open returned."},
     "timeout_ms": {"type": "integer", "description": "Optional. spawn / parallel_spawn: bound the child's run (for parallel_spawn, the default for every entry without its own); when it runs out the child is cancelled and reported as timed out. 0 (default) waits however long it runs. Time a child is held for review does not count. open and send: 0 (default) blocks until the child finishes its turn and parks; >0 returns early with state \"running\" and the partial output (open still returns the child_run_id) — then poll to await it or cancel to interrupt. poll: 0 (default) is a non-blocking snapshot; >0 waits up to this long for the child to park."}
   }
 }`
 
 const agentDescription = `Spawn or drive named sub-agents, each with its own tool allowlist (your tool set does not transfer). ` +
 	`Stateless ops: 'spawn' (default; one child, return its final text) and 'parallel_spawn' (N children concurrently, JSON envelope with per-child ok/output/error and the child's run_id) — best when you describe the whole task up front. ` +
+	`With mode "poll" both return child_run_ids at once and the children work in the background while you continue; 'poll' reads their results (wait "any"/"all" to block for them) and 'cancel' with child_run_ids ends them. You are told when one finishes, and your run waits for any still running when you end your turn. ` +
 	`Resident ops (stateful): 'open' starts a persistent sub-agent and returns a child_run_id with its first turn's output; 'send' gives it the next instruction and returns that turn's output (on both, optional timeout_ms bounds the wait — a long turn returns state "running" + partial output); 'poll' checks a running child without new input; 'cancel' stops a child's current turn (it stays alive); 'close' shuts it down. Use these when the child must keep state between steps — a warm sandbox container, a REPL, a multi-turn analysis — instead of re-spawning and re-threading state by hand. Close what you open. ` +
 	`See Context.help(topic="fan-out-patterns") for spawn vs parallel_spawn vs Channel.publish, and Context.help(topic="resident-sub-agents") for the open/send/close lifecycle.`
 
@@ -507,6 +533,10 @@ func (a *AgentTool) executeSpawn(ctx context.Context, in agentInput) (tools.Resu
 	if len(in.Spawns) > 0 {
 		return errValidation("op=spawn must not carry a 'spawns' array; use op=parallel_spawn for fan-out", ""), nil
 	}
+	pm, r, ok := pollModeOf(in)
+	if !ok {
+		return r, nil
+	}
 	in.Name = strings.TrimSpace(in.Name)
 	if in.Name == "" {
 		return errValidation("missing required field: name", "Pass `name`: the agent to run."), nil
@@ -528,9 +558,18 @@ func (a *AgentTool) executeSpawn(ctx context.Context, in agentInput) (tools.Resu
 			MaxAgentDepth, in.Name,
 		), "Do this work in the current agent instead of spawning another level."), nil
 	}
+	var bg *tools.Background
+	if pm.poll {
+		if bg, r, ok = backgroundFor(ctx); !ok {
+			return r, nil
+		}
+	}
 	live, refused, ok := a.admitChildren(ctx, 1)
 	if !ok {
 		return refused, nil
+	}
+	if pm.poll {
+		return a.spawnInBackground(ctx, bg, pm, live, []bgEntry{{name: in.Name, prompt: in.Prompt, defID: in.DefID, compaction: in.Compaction, timeoutMs: in.TimeoutMs, index: -1}}, 1, "")
 	}
 	defer live[0]()
 	subCtx := IncrementAgentDepth(ctx)
@@ -608,6 +647,10 @@ func (a *AgentTool) executeParallelSpawn(ctx context.Context, in agentInput) (to
 	if len(in.Spawns) == 0 {
 		return errValidation("op=parallel_spawn requires a non-empty 'spawns' array", "Pass `spawns`: a list of {name, prompt} entries."), nil
 	}
+	pm, r, ok := pollModeOf(in)
+	if !ok {
+		return r, nil
+	}
 	if len(in.Spawns) > MaxParallelSpawns {
 		return errValidation(fmt.Sprintf(
 			"parallel_spawn 'spawns' array has %d entries; the per-call ceiling is %d (split the work across multiple calls if you genuinely need more)",
@@ -649,6 +692,12 @@ func (a *AgentTool) executeParallelSpawn(ctx context.Context, in agentInput) (to
 			MaxAgentDepth, AgentDepth(ctx),
 		), "Do this work in the current agent instead of spawning another level."), nil
 	}
+	var bg *tools.Background
+	if pm.poll {
+		if bg, r, ok = backgroundFor(ctx); !ok {
+			return r, nil
+		}
+	}
 	// Every child is admitted up front, queued ones included: the call has
 	// committed to running them all. All or none — a partial batch would hand
 	// back an envelope whose missing rows the caller has to work out, while a
@@ -676,6 +725,13 @@ func (a *AgentTool) executeParallelSpawn(ctx context.Context, in agentInput) (to
 	}
 	if concurrencyCap > len(in.Spawns) {
 		concurrencyCap = len(in.Spawns)
+	}
+	if pm.poll {
+		entries := make([]bgEntry, len(in.Spawns))
+		for i, sp := range in.Spawns {
+			entries[i] = bgEntry{name: sp.Name, prompt: sp.Prompt, defID: sp.DefID, compaction: sp.Compaction, timeoutMs: sp.TimeoutMs, index: i}
+		}
+		return a.spawnInBackground(ctx, bg, pm, live, entries, concurrencyCap, newBatchID())
 	}
 
 	// RFC X Phase 3 spawn ledger (flag-gated). emit + toolUseID are captured
@@ -901,6 +957,11 @@ func (a *AgentTool) executeOpen(ctx context.Context, in agentInput) (tools.Resul
 	if err != nil {
 		return errFrom(err.Error(), err), nil
 	}
+	// Filed with the run's children, so a poll or cancel naming it by
+	// child_run_ids knows it is this run's.
+	if bg := tools.BackgroundOf(ctx); bg != nil {
+		bg.AddResident(childRunID, in.Name)
+	}
 	return residentResult(childRunID, state, output)
 }
 
@@ -931,6 +992,12 @@ func (a *AgentTool) executeSend(ctx context.Context, in agentInput) (tools.Resul
 // returns its current output-so-far + state. Used to await a child after a send
 // returned state "running" (timeout_ms=0 is a non-blocking snapshot).
 func (a *AgentTool) executePoll(ctx context.Context, in agentInput) (tools.Result, error) {
+	if strings.TrimSpace(in.ChildRunID) == "" {
+		return a.pollChildren(ctx, in)
+	}
+	if len(in.ChildRunIDs) > 0 || in.BatchID != "" || in.Wait != "" || in.WaitMs != 0 {
+		return errValidation("child_run_id polls one resident child; to poll several children use child_run_ids (or batch_id) with wait and wait_ms instead", ""), nil
+	}
 	if a.PollChild == nil {
 		return errBusiness("Agent op=poll (resident sub-agent) is not available on this runtime", "Resident sub-agents are not available here; use op=spawn instead."), nil
 	}
@@ -951,6 +1018,12 @@ func (a *AgentTool) executePoll(ctx context.Context, in agentInput) (tools.Resul
 // executeCancel (RFC BK P2) turn-cancels a resident child's current turn (stops
 // it and re-parks the child — the child stays alive, unlike close).
 func (a *AgentTool) executeCancel(ctx context.Context, in agentInput) (tools.Result, error) {
+	if strings.TrimSpace(in.ChildRunID) == "" && len(in.ChildRunIDs) > 0 {
+		return a.cancelChildren(ctx, in)
+	}
+	if len(in.ChildRunIDs) > 0 {
+		return errValidation("pass child_run_id (one resident child) or child_run_ids, not both", ""), nil
+	}
 	if a.CancelChild == nil {
 		return errBusiness("Agent op=cancel (resident sub-agent) is not available on this runtime", "Resident sub-agents are not available here; use op=spawn instead."), nil
 	}

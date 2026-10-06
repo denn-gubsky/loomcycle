@@ -55,11 +55,36 @@ Rule of thumb: if each child takes <100ms, sequential `spawn` is faster.
 
 ## Join semantics
 
-`parallel_spawn` blocks the parent agent's tool call until **every** child returns — success or error. There's no partial-results streaming, no early-cancel-on-first-error, no "fire and forget."
+`parallel_spawn` blocks the parent agent's tool call until **every** child returns — success or error. There's no partial-results streaming and no early-cancel-on-first-error. (To take results as they come, or to cancel one child, use `mode: "poll"` — see below.)
 
 If a child fails, the error is captured in the envelope's `ok:false` row alongside `error: "<text>"`. The parent's model reads the envelope and decides what to do: retry the failed children, fall back, give up gracefully. The parent's run is **never torn down** because a child failed — exactly the same posture as a `spawn` op whose child errored.
 
 If the parent is cancelled mid-call (an operator or caller cancelled the run, or its parent was cancelled), in-flight children inherit the cancellation; pending children that haven't been admitted to the goroutine pool yet are not started. The envelope still returns, with cancelled-or-not-started children marked `ok:false` + `error: "context canceled"`.
+
+## Wait mode, poll mode, resident children, or channels?
+
+Four ways to have other agents work for you, by what you need back and when:
+
+- **Wait mode** (`spawn` / `parallel_spawn`, the default): you have nothing to
+  do until the children are done. One call, their results in its answer.
+- **Poll mode** (`mode: "poll"`): you have other work to do meanwhile — more
+  tool calls, another batch, reading what the first children found while the
+  rest still run. The call returns child_run_ids at once; `poll` reads results
+  (`wait: "any"` to take them as they come, `"all"` to join), and a note on
+  your next turn says when one finishes. You cannot forget them: ending your
+  turn with children still running makes your run wait for them and gives you
+  another turn. Use `on_parent_end: "cancel"` for speculative children you
+  will not wait for.
+- **Resident children** (`open` / `send`): the child must keep state between
+  steps — a conversation, a warm sandbox, a REPL — and you steer it turn by
+  turn. Not for one-shot tasks; a resident child is a conversation you own and
+  must `close`.
+- **Channels** (`publish` / `await`): the producers are not your children —
+  scheduled runs, webhooks, other agents — or the results do not need to come
+  back to you at all.
+
+Poll mode is not cheaper than wait mode: the children cost the same. What it
+buys is your own time while they run.
 
 ## Concurrency cap
 

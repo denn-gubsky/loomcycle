@@ -370,7 +370,10 @@ func (s *Store) createRun(ctx context.Context, sessionID string, identity store.
 		return store.Run{}, &store.ErrNotFound{Kind: "session", ID: sessionID}
 	}
 
-	id := newID("r_")
+	id := identity.ID
+	if id == "" {
+		id = newID("r_")
+	}
 	now := time.Now().UTC()
 	pcJSON, pcOK, pcErr := store.EncodeParentContext(identity.ParentContext)
 	if pcErr != nil {

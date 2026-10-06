@@ -19,6 +19,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	runcancel "github.com/denn-gubsky/loomcycle/internal/cancel"
 	"github.com/denn-gubsky/loomcycle/internal/config"
 	"github.com/denn-gubsky/loomcycle/internal/contextplugin"
 	"github.com/denn-gubsky/loomcycle/internal/hooks"
@@ -1125,6 +1126,60 @@ func parkForInput(ctx context.Context, q <-chan steer.Message, heartbeat func(),
 			return steer.Message{}, false
 		}
 	}
+}
+
+// parkForChildren holds a run that ended its turn while background children
+// it started are still running, until every one of them has ended — then
+// returns the note that wakes it, naming how each ended. false = the run was
+// cancelled while it waited.
+//
+// It blocks on the table's change channel: no model call is held, no
+// iteration spent, nothing polls. Like the other parks it is a clean boundary,
+// so a runtime pause records the run as paused while it waits, and for a code
+// agent it is a wait — its budget does not run.
+func parkForChildren(ctx context.Context, opts *RunOptions, bg *tools.Background, sinceTurn int, emit func(providers.Event)) (string, bool) {
+	waiting, changed := bg.Outstanding()
+	ids := make([]string, len(waiting))
+	for i, c := range waiting {
+		ids[i] = c.RunID
+	}
+	emit(providers.Event{Type: providers.EventAwaitingChildren,
+		AwaitingChildren: &providers.AwaitingChildrenEventInfo{ChildRunIDs: ids, SinceTurn: sinceTurn}})
+	defer providers.BeginWait(ctx)()
+	pp := newParkPause(opts.PauseGate)
+	defer pp.done()
+	for len(waiting) > 0 {
+		select {
+		case <-changed:
+		case <-pp.declared():
+			pp.onDeclared()
+		case <-pp.lifted():
+			pp.onLifted()
+		case <-ctx.Done():
+			return "", false
+		}
+		waiting, changed = bg.Outstanding()
+	}
+	return bg.WakeNote(ids), true
+}
+
+// appendChildrenNote adds a runtime note about background children as a user
+// turn, and records it.
+func appendChildrenNote(messages []providers.Message, note string, emit func(providers.Event)) []providers.Message {
+	emit(providers.Event{Type: providers.EventChildrenNote, ChildrenNote: &providers.ChildrenNoteEventInfo{Text: note}})
+	return append(messages, providers.Message{
+		Role:    "user",
+		Content: []providers.ContentBlock{{Type: "text", Text: note}},
+	})
+}
+
+// childIDs lists children as "r_1 (agent), r_2 (agent)".
+func childIDs(cs []tools.ChildView) string {
+	parts := make([]string, len(cs))
+	for i, c := range cs {
+		parts[i] = c.RunID + " (" + c.Agent + ")"
+	}
+	return strings.Join(parts, ", ")
 }
 
 // parkForOperatorTurn parks a persistent interactive run at awaiting_input until
@@ -2602,6 +2657,12 @@ func runLoop(ctx context.Context, opts RunOptions) (RunResult, error) {
 	var answerShape atomic.Pointer[tools.AnswerShape]
 	ctx = tools.WithAnswerShape(ctx, &answerShape)
 
+	// Background children (Agent poll mode) are filed in a table the run owns.
+	// A stateful run has none — it has no end of turn to wait at — and
+	// shadows any table inherited from a parent with nil, so its children are
+	// never filed in another run's.
+	ctx = tools.WithBackground(ctx, nil)
+
 	// RFC CR L2: a stateful run is a different loop — it feeds only (P, Σ, O) and
 	// the model emits a patch + action each step. Branch here, after the preamble
 	// P (`system`) and the action-tool catalog are resolved, into the self-
@@ -2637,6 +2698,14 @@ func runLoop(ctx context.Context, opts RunOptions) (RunResult, error) {
 		}
 		return runStateful(ctx, opts, system, messages, toolSpecs, iterCap, emit)
 	}
+	// The children run on after the calls that started them; they end with
+	// the run at the latest, however the run ends. A run waits for them at the
+	// end of its turn (parkForChildren), so this cancels only what a run that
+	// did not wait left behind: a failure, a cancel, the iteration cap.
+	bg := tools.NewBackground(ctx)
+	ctx = tools.WithBackground(ctx, bg)
+	defer bg.Close(runcancel.CauseWithReason("its parent run ended while it was still running"))
+
 	toolChoice := newToolChoicePolicy(opts.ToolChoice)
 	outputFormat := newOutputFormatPolicy(opts.OutputFormat)
 	if err := toolChoice.checkTool(toolSpecs); err != nil {
@@ -2980,6 +3049,12 @@ outerLoop:
 				lastCtxTokens = estimatePromptTokens(preambleTokens, messages)
 				pendingTokens = 0 // the estimate covers the whole history
 			}
+		}
+		// Background children that ended since the last call are named in one
+		// note, here — after the last tool results, never between a tool_use
+		// and its result — the boundary operator messages use.
+		if note := bg.TakeNotes(); note != "" {
+			messages = appendChildrenNote(messages, note, emit)
 		}
 
 		// Auto / self-requested context distillation — also a clean boundary
@@ -3673,6 +3748,8 @@ outerLoop:
 					return RunResult{StopReason: "cancelled", FinalText: finalText, Usage: totalUsage}, err
 				}
 			}
+			// The turn has ended: children started to stop with it do now.
+			bg.EndTurn(runcancel.CauseWithReason("its parent ended its turn (on_parent_end: cancel)"))
 			// Persistent interactive run: park instead of terminating. Wait
 			// for the operator's next instruction (or Cancel). The run holds
 			// its concurrency slot while idle — the documented fairness
@@ -3690,6 +3767,31 @@ outerLoop:
 					break
 				}
 				continue outerLoop
+			}
+			// The run would finish, but background children it started are
+			// still running: it waits for all of them, then takes another turn
+			// with a note on how each ended. With no iteration left for that
+			// turn nothing could read them, so they are cancelled instead —
+			// a parent never ends leaving children behind.
+			if waiting, _ := bg.Outstanding(); len(waiting) > 0 {
+				if iter+1 >= iterCap {
+					bg.Close(runcancel.CauseWithReason("its parent run had no iteration left to read its result"))
+					emit(providers.Event{Type: providers.EventError, Error: "the run ended its last iteration with background children still running; they were cancelled: " + childIDs(waiting)})
+				} else {
+					disarmTurn()
+					note, ok := parkForChildren(ctx, &opts, bg, iter, emit)
+					iterSpan.End()
+					if !ok {
+						turnCancelFn(nil)
+						err := ctx.Err()
+						if err == nil {
+							err = context.Canceled
+						}
+						return RunResult{StopReason: "cancelled", FinalText: finalText, Usage: totalUsage}, err
+					}
+					messages = appendChildrenNote(messages, note, emit)
+					continue outerLoop
+				}
 			}
 			// The run is finishing. A message sent while this answer was being
 			// written was acknowledged, so it is answered — one more turn,

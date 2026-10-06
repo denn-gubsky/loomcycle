@@ -3577,6 +3577,10 @@ type Env struct {
 	// clamped — a silently shortened bound would cut off a child the caller
 	// meant to wait for. Env: LOOMCYCLE_AGENT_CHILD_MAX_TIMEOUT_MS.
 	AgentChildMaxTimeoutMs int
+	// AgentPollWaitCapMs bounds how long one Agent poll with wait "any" or
+	// "all" may block; a larger wait_ms is cut to it. 0 = the tool's default
+	// (60 s). Env: LOOMCYCLE_AGENT_POLL_WAIT_CAP_MS.
+	AgentPollWaitCapMs int
 	// BraveAPIKey enables the WebSearch tool. Empty = WebSearch refuses
 	// every call. Lives at https://api.search.brave.com/.
 	BraveAPIKey string
@@ -4695,6 +4699,7 @@ func LoadLayers(layers ...Layer) (*Config, error) {
 		InteractiveChildIdleTTLMs:   getenvInt("LOOMCYCLE_INTERACTIVE_CHILD_IDLE_TTL_MS", 0),
 		ResidentMaxTurnSeconds:      getenvInt("LOOMCYCLE_RESIDENT_MAX_TURN_SECONDS", 0),
 		AgentChildMaxTimeoutMs:      getenvInt("LOOMCYCLE_AGENT_CHILD_MAX_TIMEOUT_MS", 0),
+		AgentPollWaitCapMs:          getenvInt("LOOMCYCLE_AGENT_POLL_WAIT_CAP_MS", 0),
 		BraveAPIKey:                 os.Getenv("BRAVE_API_KEY"),
 		SerperAPIKey:                os.Getenv("SERPER_API_KEY"),
 		ExaAPIKey:                   os.Getenv("EXA_API_KEY"),

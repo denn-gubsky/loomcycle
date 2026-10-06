@@ -41,6 +41,11 @@ export type EventType =
   // On a parent's stream: a sub-agent it started through the Agent tool is
   // held for a verdict ("held") or has ended ("released").
   | "subagent_hold"
+  // A run ended its turn with background (poll-mode) children still running
+  // and waits for all of them; `children_note` is the runtime note its next
+  // model call carries about children that ended.
+  | "awaiting_children"
+  | "children_note"
   | "steer"
   | "context_compaction"
   // RFC AW per-scope token budgets. `limit` = a server-generated token-budget
@@ -678,6 +683,11 @@ export interface AgentEvent {
    *  rule on it with {@link LoomcycleClient.reviewRun} on `subagent_run_id`)
    *  or has ended (`state` "released", with `status`). */
   subagent_hold?: SubagentHoldInfo;
+  /** Payload on `event: awaiting_children` — the background children the
+   *  run waits for before its next turn. */
+  awaiting_children?: { child_run_ids?: string[]; since_turn?: number };
+  /** Payload on `event: children_note` — the note's text, as the model reads it. */
+  children_note?: { text?: string };
   /** Payload on `event: steer` (RFC AI) — the operator's drained turn. On a
    *  re-attach replay, `source` is `"replay"`. Nil on all other event types. */
   user_input?: { text?: string; source?: string; seen_at?: string };

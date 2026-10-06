@@ -166,6 +166,14 @@ func TestDetectFanoutParent(t *testing.T) {
 	answered := append(append([]store.Event{}, dangling...),
 		mkEvent("tool_result", providers.Event{Type: providers.EventToolResult,
 			ToolUse: &providers.ToolUse{ID: "tu_fan"}, Text: `{"results":[]}`}))
+	// A poll-mode spawn whose call has not been answered yet (a snapshot taken
+	// mid-call) is not a parked fan-out: its children were never awaited.
+	pollMode := []store.Event{
+		mkEvent("tool_call", providers.Event{Type: providers.EventToolCall,
+			ToolUse: &providers.ToolUse{ID: "tu_poll", Name: "Agent", Input: json.RawMessage(`{"op":"parallel_spawn","mode":"poll","spawns":[{"name":"s","prompt":"p"}]}`)}}),
+		mkEvent(string(providers.EventSpawnChildStarted), providers.Event{Type: providers.EventSpawnChildStarted,
+			SpawnChild: &providers.SpawnChildEventInfo{ToolUseID: "tu_poll", Index: 0, RunID: "r0", Agent: "s", Mode: "poll", BatchID: "fan_1"}}),
+	}
 	noLedger := []store.Event{
 		mkEvent("tool_call", providers.Event{Type: providers.EventToolCall,
 			ToolUse: &providers.ToolUse{ID: "tu_read", Name: "Read"}}),
@@ -182,6 +190,7 @@ func TestDetectFanoutParent(t *testing.T) {
 		{"dangling + ledger ⇒ detected", true, dangling, true, "tu_fan"},
 		{"answered tool_use ⇒ not detected", true, answered, false, ""},
 		{"no ledger ⇒ not detected", true, noLedger, false, ""},
+		{"poll-mode ledger ⇒ not detected", true, pollMode, false, ""},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {

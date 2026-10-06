@@ -1,6 +1,6 @@
 ---
 name: Agent/spawn
-description: "Agent op=spawn — run one registered sub-agent on a task and wait for its final answer."
+description: "Agent op=spawn — run one registered sub-agent on a task and wait for its final answer, or start it in the background with mode poll."
 ---
 `spawn` hands one task to one sub-agent and returns its final reply when it
 finishes. It is the default: a call with no `op` is a `spawn`. **The `prompt`
@@ -22,6 +22,16 @@ conversation — so put all it needs in it.
   timeout. Time the child is held for review does not count. Absent or 0 =
   wait however long it runs. The operator may set a ceiling; a larger value
   is refused with the ceiling in the message.
+- `mode` — `wait` (default): the call returns the child's answer. `poll`: the
+  call returns at once and the child works in the background while you go on;
+  read its result later with `poll`. A poll-mode child is still bounded by
+  `timeout_ms`, still counts toward your live children until it ends, and is
+  cancelled if your run is.
+- `notify` — poll mode only. `true` (default): your next turn after the child
+  finishes starts with a short note saying so. `false`: no note; you poll.
+- `on_parent_end` — poll mode only. `wait` (default): if you end your turn
+  while the child still runs, your run waits for it, then gives you one more
+  turn. `cancel`: the child is cancelled when you end your turn.
 
 Do not pass `spawns` here; that is `parallel_spawn`.
 
@@ -35,6 +45,10 @@ your context window is cut to that length and ends with
 — the whole answer stays in that run's transcript. A child that keeps structured state
 adds `Final state:` and its JSON. A failure names the run in its message
 (`run=r_...`).
+
+In poll mode the call returns `{child_run_id, agent, state}` with `state`
+`"running"` — the child's run id, before it has done anything. Its answer
+comes back from `poll`.
 
 ## Errors
 
@@ -55,6 +69,10 @@ adds `Final state:` and its JSON. A failure names the run in its message
 - `timeout_ms=N is above this runtime's ceiling of M ms` — pass at most M.
 - `this run has N children alive and may have at most M at once ...` — wait
   for children you started to finish, or close resident ones, then retry.
+- `mode "poll" is refused on your last iteration ...` — no turn would be left
+  to collect the child; use `mode: "wait"`.
+- `notify and on_parent_end apply to mode "poll" only` — add
+  `"mode": "poll"` or drop them.
 
 ## Examples
 
@@ -72,6 +90,17 @@ Bound a child that might hang to two minutes:
 
 ```json
 {"op": "spawn", "name": "researcher", "prompt": "Find the release date of PostgreSQL 18 and cite the announcement.", "timeout_ms": 120000}
+```
+
+Start a child in the background and keep working; collect it later with
+`poll`:
+
+```json
+{"op": "spawn", "name": "researcher", "prompt": "Find the release date of PostgreSQL 18 and cite the announcement.", "mode": "poll"}
+```
+
+```json result
+{"child_run_id": "r_6a1f0c9e2b7d4835", "agent": "researcher", "state": "running"}
 ```
 
 The same, with a child that should compact its context early on a long task:
