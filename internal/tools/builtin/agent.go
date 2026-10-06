@@ -560,7 +560,7 @@ func (a *AgentTool) executeSpawn(ctx context.Context, in agentInput) (tools.Resu
 	}
 	var bg *tools.Background
 	if pm.poll {
-		if bg, r, ok = backgroundFor(ctx); !ok {
+		if bg, r, ok = backgroundFor(ctx, agentPollNoTable, agentPollLastIteration); !ok {
 			return r, nil
 		}
 	}
@@ -694,7 +694,7 @@ func (a *AgentTool) executeParallelSpawn(ctx context.Context, in agentInput) (to
 	}
 	var bg *tools.Background
 	if pm.poll {
-		if bg, r, ok = backgroundFor(ctx); !ok {
+		if bg, r, ok = backgroundFor(ctx, agentPollNoTable, agentPollLastIteration); !ok {
 			return r, nil
 		}
 	}
