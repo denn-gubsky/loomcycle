@@ -3,13 +3,16 @@ package http
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/denn-gubsky/loomcycle/internal/loop"
 	"github.com/denn-gubsky/loomcycle/internal/providers"
 	"github.com/denn-gubsky/loomcycle/internal/store"
+	"github.com/denn-gubsky/loomcycle/internal/tools"
 )
 
 // A restored child's clock counts its run's time from its start, less every
@@ -147,5 +150,38 @@ func TestResumePausedRuns_ARestoredChildPastItsDeadlineTimesOutAtOnce(t *testing
 	}
 	if poll := lastToolText(prov.leadCalls()[1]); !strings.Contains(poll, `"state":"timeout"`) {
 		t.Errorf("poll = %s, want the child timed out", poll)
+	}
+}
+
+// failingEventsStore reads a bounded child's run as running since a minute ago
+// — past its deadline — and fails every read of its events.
+type failingEventsStore struct {
+	store.Store
+	events atomic.Int64
+}
+
+func (s *failingEventsStore) GetRun(_ context.Context, id string) (store.Run, error) {
+	return store.Run{ID: id, Status: store.RunRunning, StartedAt: time.Now().Add(-time.Minute)}, nil
+}
+
+func (s *failingEventsStore) GetRunEventsSince(context.Context, string, int64, int) ([]store.Event, error) {
+	s.events.Add(1)
+	return nil, errors.New("db down")
+}
+
+// A bounded restored child past its deadline whose events cannot be read is
+// read again after a backoff, not at once and again without end for as long
+// as the store fails.
+func TestWatchRestoredChildren_AnUnreadableChildPastItsDeadlineIsRetriedWithBackoff(t *testing.T) {
+	st := &failingEventsStore{}
+	srv := &Server{store: st, childRecheckFirst: time.Hour}
+	ctx, cancel := context.WithTimeout(context.Background(), 1500*time.Millisecond)
+	defer cancel()
+	srv.watchRestoredChildren(ctx, nil, "alice", []tools.ChildSpec{{RunID: "c1", Agent: "worker", Index: -1}},
+		map[string]int{"c1": 50}, []func(){func() {}})
+	// One read at once, one after the first backoff (a second) — not the tens
+	// of thousands a re-arm at zero makes.
+	if n := st.events.Load(); n < 2 || n > 3 {
+		t.Errorf("the child's events were read %d times in 1.5s, want 2 or 3", n)
 	}
 }
