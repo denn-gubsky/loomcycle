@@ -76,7 +76,7 @@ type interruptCause int32
 const (
 	causeNone    interruptCause = iota
 	causeCancel                 // ctx cancelled (operator/parent)
-	causeTimeout                // whole-run wall-clock budget elapsed
+	causeTimeout                // whole-run budget of active time elapsed
 )
 
 // interruptCause reads the authoritative stop reason set by interruptWatch.

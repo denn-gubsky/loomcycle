@@ -413,6 +413,12 @@ type RunOptions struct {
 	// drivers ignore it.
 	RunTimeoutSeconds int
 
+	// RunClockCarry is the active and waited time a resumed run had used before
+	// it paused, so its budget resumes where it stopped (zero for a fresh run).
+	// Read only when the provider bounds the run by time (see the RunClock
+	// stamped in Run).
+	RunClockCarry providers.RunClockState
+
 	// UserTier is the v0.8.2 user-facing-tier policy name applied
 	// to this run. Informational on the loop side — appears on
 	// store.Run.UserTier + agent-loop log lines so cost/compliance
@@ -2435,11 +2441,21 @@ func Run(ctx context.Context, opts RunOptions) (RunResult, error) {
 	// StartedAt is stamped once per Run() and stays stable across the run's
 	// turns, so code-js's anchored Date.now() is consistent across replays.
 	runIdent := tools.RunIdentity(ctx)
+	startedAt := time.Now()
+	// A provider that bounds the whole run by time spends that budget from a
+	// clock that stops while the run waits (on a sub-agent, a channel, an
+	// answer). Every other run gets none — stamped as nil, so it does not
+	// inherit, and pause, its parent's.
+	var runClock *providers.RunClock
+	if opts.Provider.Capabilities().UnboundedIterations {
+		runClock = providers.NewRunClock(startedAt, opts.RunClockCarry)
+	}
+	ctx = providers.WithRunClock(ctx, runClock)
 	ctx = providers.WithRunMeta(ctx, providers.RunMeta{
 		AgentName:         opts.AgentName,
 		UserID:            runIdent.UserID,
 		RunID:             runIdent.AgentID,
-		StartedAt:         time.Now(),
+		StartedAt:         startedAt,
 		CodeBody:          opts.CodeBody,
 		Metadata:          opts.Metadata,
 		PayloadMetadata:   opts.PayloadMetadata,
