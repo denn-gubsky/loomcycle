@@ -994,6 +994,41 @@ func reasonFromCause(cause error) string {
 	return ""
 }
 
+// grantsClosingTurn reports whether an iteration that just ran tools earns the
+// closing turn: it was the last one the cap allows. Never for an
+// iteration-unbounded run, whose cap is a runaway ceiling, not a budget.
+func grantsClosingTurn(iter, iterCap int, unbounded bool) bool {
+	return iter+1 == iterCap && !unbounded
+}
+
+// closingTurnMessage is what the model is told on its closing turn. Sent with
+// that request only — it is never part of the run's history.
+const closingTurnMessage = "You have used every iteration this run allows, and tools are now disabled. " +
+	"Using the tool results above, give your final answer now."
+
+// closingTurnRequest turns req into the closing turn's call: tools disabled
+// and the model told why. "none" where the target enforces it, keeping the
+// tool list — a provider may refuse a history of tool calls with no tools
+// declared; otherwise the list is withheld, which every provider honours.
+func closingTurnRequest(req *providers.Request, opts RunOptions) {
+	req.ToolChoice = providers.ToolChoice{Mode: providers.ToolChoiceNone}
+	if !providers.EnforcesToolChoice(opts.Provider, opts.Model, opts.Effort, req.ToolChoice) {
+		req.Tools, req.ToolChoice = nil, providers.ToolChoice{}
+	}
+	req.Messages = append(req.Messages[:len(req.Messages):len(req.Messages)], providers.Message{
+		Role: "user", Content: []providers.ContentBlock{{Type: "text", Text: closingTurnMessage}},
+	})
+}
+
+// notRunToolResults answers tool calls the closing turn made anyway.
+func notRunToolResults(pending []providers.ToolUse) []providers.ContentBlock {
+	out := cancelledToolResults(pending)
+	for i := range out {
+		out[i].Text = "not run: the run has no iterations left"
+	}
+	return out
+}
+
 // cancelledToolResults synthesizes an error-shaped tool_result for every pending
 // tool_use a turn-cancelled turn started but never dispatched, so the next model
 // call sees a well-formed assistant(tool_use)/user(tool_result) pairing — a
@@ -2851,8 +2886,12 @@ func Run(ctx context.Context, opts RunOptions) (RunResult, error) {
 	}
 
 	promptSnapshotted := false // RFC DI: the first request is recorded once
+	// closingTurn is set when the last allowed iteration dispatched tools: the
+	// loop runs ONE more model call, with tools disabled, so those results are
+	// read and answered instead of thrown away. See closingTurnRequest.
+	closingTurn := false
 outerLoop:
-	for iter := 0; !parkAbandoned && iter < iterCap; iter++ {
+	for iter := 0; !parkAbandoned && (iter < iterCap || closingTurn); iter++ {
 		// v0.10.0 OTEL: one loomcycle.iteration span per turn. Nested
 		// under the caller-opened loomcycle.run span (api/http opens
 		// the run span at each of the 4 run-creation sites). The
@@ -3086,6 +3125,9 @@ outerLoop:
 			req.PresencePenalty = s.PresencePenalty
 			req.Seed = s.Seed
 			req.Stop = s.Stop
+		}
+		if closingTurn {
+			closingTurnRequest(&req, opts)
 		}
 		if !promptSnapshotted {
 			// RFC DI: what the model was first asked, exactly as sent. Once
@@ -3489,6 +3531,22 @@ outerLoop:
 			continue outerLoop
 		}
 
+		// The closing turn's text is the run's answer, whatever it ended on. It
+		// is not an end of turn — the run stopped at its cap — so it is not
+		// offered to agent_stop hooks, a review or an interactive park, exactly
+		// as a run ending at the cap never was.
+		if closingTurn {
+			if len(pendingTools) > 0 {
+				// A model that called tools anyway (a provider that cannot be
+				// held to "none"): they are never run. Answer them so the
+				// history a continuation replays stays valid.
+				messages = append(messages, providers.Message{Role: "user", Content: notRunToolResults(pendingTools)})
+			}
+			stopReason = "max_iterations"
+			iterSpan.End()
+			break
+		}
+
 		// Terminal: model is done.
 		if iterStop != "tool_use" || len(pendingTools) == 0 {
 			// agent_stop hooks decide first: an automated check that blocks the
@@ -3691,6 +3749,9 @@ outerLoop:
 		// fresh one.
 		disarmTurn()
 		iterSpan.End()
+		if grantsClosingTurn(iter, iterCap, unboundedIters) {
+			closingTurn = true
+		}
 	}
 	// RFC BH: release the last turn's cancel ctx once the loop has exited (break or
 	// MaxIterations exhaustion). The run-exit defer would catch it too, but calling

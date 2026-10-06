@@ -52,7 +52,9 @@ Present when they apply:
   many turns this run has taken (counting the current one) and how many it
   has left before it ends with `max_iterations`. When `iterations_unbounded`
   is `true` there is no turn limit to plan against and `iterations_remaining`
-  is absent.
+  is absent. If your last turn calls tools, you get one more turn to read
+  their results, with tools disabled — answer in it; nothing you call there
+  runs.
 - `context_distill_declined` — `{mode, reason, message?}` when an attempt to
   compact did nothing. **If it is present, calling `compact` again will not
   help**; report the reason instead.

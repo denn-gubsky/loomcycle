@@ -79,6 +79,7 @@ Every child is a full agent run: its own loop, its own provider calls, its own i
 - **API spend scales linearly with `spawns` length.** Parallel doesn't make it cheaper.
 - **Children take no admission slot of their own.** A run and every sub-agent under it count as one run against the concurrency and per-user caps, so fanning out never makes a sibling run queue for admission. What children do contend for is provider capacity: a child on a provider whose concurrency the operator caps, and that no ancestor already holds, waits for that provider's slot.
 - **Each child has its own `max_iterations`.** Children with `max_iterations: 64` × 8 spawns is 512 potential provider calls; that's a real cost.
+- **A fan-out on your last iteration is not wasted.** When the last turn your `max_iterations` allows calls tools, you get one closing turn with their results and tools disabled; its answer is the run's. Plan the fan-out so that one turn can use what comes back.
 
 When in doubt: estimate `cost-per-child × N` before fanning out. If you can do the work with N=3 instead of N=10 by giving each child a wider topic, do that.
 
