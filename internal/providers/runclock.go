@@ -19,6 +19,12 @@ import (
 // counts wall time during which AT LEAST ONE wait is open, so overlapping
 // waits are counted once.
 //
+// Because waits do not count, the budget alone cannot bound a run that does
+// little but wait. The clock therefore also measures the run's WALL time — its
+// whole lifetime, waits included — against which the loop enforces an
+// absolute limit. Only a runtime pause (BeginPause), which the operator
+// declared, is left out of it.
+//
 // The loop creates one per run for a provider that needs it and stamps it on
 // the run's ctx; every other run carries none, and BeginWait is then a no-op.
 // All methods are safe on a nil *RunClock.
@@ -31,15 +37,23 @@ type RunClock struct {
 	open   int           // waits in progress
 	openAt time.Time     // when open last went 0 → 1
 	waited time.Duration // closed wait time since start
-	budget time.Duration // the run's total budget, as its provider resolved it
+
+	paused   int           // runtime pauses in progress (each also a wait)
+	pausedAt time.Time     // when paused last went 0 → 1
+	pausedT  time.Duration // closed pause time since start
+
+	budget    time.Duration // the run's total budget, as its provider resolved it
+	wallLimit time.Duration // the run's lifetime limit, as the loop enforces it
 }
 
 // RunClockState is a run's time so far: Active counts against its budget,
-// Waited does not. It is what a paused run persists so that a resumed run
-// neither loses nor regains the budget it had used.
+// Waited does not, and Wall — its lifetime, waits included, runtime pauses
+// excluded — counts against its wall limit. It is what a paused run persists
+// so that a resumed run neither loses nor regains either.
 type RunClockState struct {
 	Active time.Duration
 	Waited time.Duration
+	Wall   time.Duration
 }
 
 // NewRunClock starts a clock at start, adding prior — the state a resumed run
@@ -74,8 +88,37 @@ func (c *RunClock) BeginWait() (end func()) {
 	}
 }
 
-// State reports the run's active and waited time as of now, including a wait
-// still in progress and whatever was carried over from before a resume.
+// BeginPause marks the start of a runtime pause — the operator stopped the
+// runtime, and the run is parked — and returns the func that ends it. A pause
+// is a wait (it does not spend the budget) and, unlike any other wait, does
+// not count towards the wall limit either. Idempotent like BeginWait's.
+func (c *RunClock) BeginPause() (end func()) {
+	if c == nil {
+		return func() {}
+	}
+	endWait := c.BeginWait()
+	c.mu.Lock()
+	if c.paused == 0 {
+		c.pausedAt = c.now()
+	}
+	c.paused++
+	c.mu.Unlock()
+	var once sync.Once
+	return func() {
+		once.Do(func() {
+			c.mu.Lock()
+			c.paused--
+			if c.paused == 0 {
+				c.pausedT += c.now().Sub(c.pausedAt)
+			}
+			c.mu.Unlock()
+			endWait()
+		})
+	}
+}
+
+// State reports the run's time as of now, including a wait or pause still in
+// progress and whatever was carried over from before a resume.
 func (c *RunClock) State() RunClockState {
 	if c == nil {
 		return RunClockState{}
@@ -87,11 +130,18 @@ func (c *RunClock) State() RunClockState {
 	if c.open > 0 {
 		waited += now.Sub(c.openAt)
 	}
-	active := now.Sub(c.start) - waited
-	if active < 0 {
-		active = 0
+	pausedT := c.pausedT
+	if c.paused > 0 {
+		pausedT += now.Sub(c.pausedAt)
 	}
-	return RunClockState{Active: c.prior.Active + active, Waited: c.prior.Waited + waited}
+	elapsed := now.Sub(c.start)
+	active := max(elapsed-waited, 0)
+	wall := max(elapsed-pausedT, 0)
+	return RunClockState{
+		Active: c.prior.Active + active,
+		Waited: c.prior.Waited + waited,
+		Wall:   c.prior.Wall + wall,
+	}
 }
 
 // SetBudget records the run's total budget. The provider that enforces the
@@ -115,6 +165,27 @@ func (c *RunClock) Budget() time.Duration {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return c.budget
+}
+
+// SetWallLimit records the run's lifetime limit, for anything that reports on
+// the run. The loop sets it when it starts enforcing the limit.
+func (c *RunClock) SetWallLimit(d time.Duration) {
+	if c == nil {
+		return
+	}
+	c.mu.Lock()
+	c.wallLimit = d
+	c.mu.Unlock()
+}
+
+// WallLimit returns what SetWallLimit recorded; 0 when none is enforced.
+func (c *RunClock) WallLimit() time.Duration {
+	if c == nil {
+		return 0
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.wallLimit
 }
 
 type ctxKeyRunClock struct{}
@@ -141,4 +212,9 @@ func RunClockFromContext(ctx context.Context) *RunClock {
 //	endWait()
 func BeginWait(ctx context.Context) (end func()) {
 	return RunClockFromContext(ctx).BeginWait()
+}
+
+// BeginPause is BeginWait for a runtime pause (see RunClock.BeginPause).
+func BeginPause(ctx context.Context) (end func()) {
+	return RunClockFromContext(ctx).BeginPause()
 }

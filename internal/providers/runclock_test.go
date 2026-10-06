@@ -103,3 +103,28 @@ func TestWithRunClock_NilShadowsAnOuterClock(t *testing.T) {
 		t.Fatalf("a sub-run's wait paused its parent's clock (waited %s)", got.Waited)
 	}
 }
+
+// Wall time is the run's lifetime: waits count towards it, a runtime pause
+// does not (it is a wait for the budget, too).
+func TestRunClock_WallCountsWaitsButNotRuntimePauses(t *testing.T) {
+	c, f := newTestClock(RunClockState{Active: time.Second, Waited: 2 * time.Second, Wall: 3 * time.Second})
+	f.advance(time.Second) // busy
+	endWait := c.BeginWait()
+	f.advance(4 * time.Second) // waiting
+	endWait()
+	endPause := c.BeginPause()
+	f.advance(100 * time.Second) // the runtime is paused
+	if got := c.State(); got.Wall != 8*time.Second {
+		t.Fatalf("mid-pause wall = %s, want 8s (3s carried + 1s busy + 4s waiting; the pause excluded)", got.Wall)
+	}
+	endPause()
+	endPause()             // idempotent
+	f.advance(time.Second) // busy
+	got := c.State()
+	if got.Wall != 9*time.Second {
+		t.Errorf("wall = %s, want 9s", got.Wall)
+	}
+	if got.Active != 3*time.Second || got.Waited != 106*time.Second {
+		t.Errorf("active = %s waited = %s, want 3s and 106s (the pause is a wait for the budget)", got.Active, got.Waited)
+	}
+}
