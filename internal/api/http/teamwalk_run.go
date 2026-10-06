@@ -84,6 +84,9 @@ func (s *Server) openTeamWalkRun(ctx context.Context, spec builtin.WalkRunSpec) 
 		OperatorKeyRestricted: ident.OperatorKeyRestricted,
 		Isolated:              ident.Isolated,
 		RunConfig:             runConfigRecord{Team: teamWalkRecordOf(s.redactor, spec)}.marshal(),
+		// A poll-mode walk was handed to its caller under this id before its
+		// run existed; "" (sync and detach) lets the store mint one.
+		ID: spec.RunID,
 	}
 	// A walk a webhook delivery started carries that delivery's dedup keys, as
 	// a spawned run does, so a redelivery finds this row instead of starting a

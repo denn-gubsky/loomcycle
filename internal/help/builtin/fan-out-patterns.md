@@ -86,6 +86,14 @@ Four ways to have other agents work for you, by what you need back and when:
 Poll mode is not cheaper than wait mode: the children cost the same. What it
 buys is your own time while they run.
 
+**Teams fit here too.** When the work is a whole workflow — a team's walk —
+rather than one agent, `TeamDef op=run` with `mode: "poll"` makes the walk a
+background child of your run, exactly like a poll-mode sub-agent: you are told
+when it ends, your run waits for it at the end of your turn, and you read its
+answer with `TeamDef op=poll` (or `Agent op=poll`, which reads every background
+child). Start several walks and sub-agents and collect them in any order. See
+`help(topic="agent-teams")`.
+
 ## Concurrency cap
 
 The runtime caps the number of children running concurrently per `parallel_spawn` call. Two layers:

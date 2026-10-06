@@ -4,7 +4,8 @@ description: "Agent op=poll — read your background children's states and resul
 ---
 `poll` reads your children without starting anything. It has two forms.
 
-**Background children** (started with `mode: "poll"`): name them with
+**Background children** (started with `mode: "poll"` — sub-agents, and team
+walks you ran with `TeamDef op=run` in poll mode): name them with
 `child_run_ids`, or a whole `parallel_spawn` with `batch_id`, or name none to
 get every background child whose result you have not read yet — so a series
 of bare polls hands you each result once. Polling a finished child by id
@@ -18,7 +19,8 @@ current turn, as after an `open` or `send` that returned
 
 - `op` (required) — `poll`.
 - `child_run_ids` — background or resident children of this run, by the id
-  `spawn`, `parallel_spawn` or `open` returned.
+  `spawn`, `parallel_spawn` or `open` returned, or the `run_id` of a team walk
+  you ran in poll mode.
 - `batch_id` — every child of one `parallel_spawn` started with
   `mode: "poll"`. Not with `child_run_ids`.
 - `wait` — `none` (default) answers at once; `any` waits until one of the
@@ -32,13 +34,15 @@ current turn, as after an `open` or `send` that returned
 
 ## Returns
 
-Background form: `{"children": [{child_run_id, agent, index?, state, output?,
-error?, structured?, status?, truncated?}], "pending": N}`. `state` is
+Background form: `{"children": [{child_run_id, agent, kind?, index?, state,
+output?, error?, structured?, status?, truncated?}], "pending": N}`. `state` is
 `queued` (waiting for a slot), `running`, `held` (held for a review verdict),
 `completed`, `failed`, `cancelled` or `timeout`; a resident child is `idle`
 when it is waiting for your next `send`. A finished child carries its
 `output` (or `error`), and `structured` when it keeps structured state;
-`status` is `"timeout"` for one its `timeout_ms` stopped. `pending` counts the
+`status` is `"timeout"` for one its `timeout_ms` stopped. A team walk's row
+has `kind: "team"`, `agent: "team:<name>"`, and its final output as `output`;
+`TeamDef op=poll` reads its whole answer (final state, steps). `pending` counts the
 children in the answer that are still queued, running or held. The rows share
 a quarter of your context window; a cut row carries `truncated: true` and the
 whole answer stays in its run's transcript.

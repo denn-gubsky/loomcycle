@@ -1502,7 +1502,10 @@ export interface RunSpecTeam {
    *  team's default is not listed, and reads from the definition version
    *  this record names. Absent when the start supplied none. */
   vars?: Record<string, string>;
-  mode: "sync" | "detach";
+  /** How the walk was started: waited for (`sync`), handed back at once and
+   *  run outside its caller (`detach`), or run as a background child of the
+   *  agent run that started it (`poll`). */
+  mode: "sync" | "detach" | "poll";
   /** The board binding; `resumed_from` names the state a persisted board
    *  resumed the walk from. */
   board?: { scope: string; chunk_id: string; resumed_from?: string };

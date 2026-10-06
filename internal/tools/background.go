@@ -23,14 +23,19 @@ const (
 	ChildIdle      = "idle"
 )
 
+// ChildKindTeam marks a background child that is a team walk (TeamDef run in
+// poll mode) rather than a sub-agent. The empty kind is a sub-agent.
+const ChildKindTeam = "team"
+
 // errBackgroundClosed refuses a child started after its run stopped taking
 // new ones: the run is ending, and nothing would collect the child.
 var errBackgroundClosed = errors.New("this run is ending and starts no more background children")
 
 // Background is one run's table of background children: the children its
-// Agent spawn and parallel_spawn started in poll mode, which run on after the
-// call that started them returns, and the resident children it opened, kept
-// so that a poll or cancel naming one is recognised as this run's.
+// Agent spawn and parallel_spawn started in poll mode and the team walks its
+// TeamDef run started in poll mode, which run on after the call that started
+// them returns, and the resident children it opened, kept so that a poll or
+// cancel naming one is recognised as this run's.
 //
 // A background child runs on a ctx that keeps the spawning call's values but
 // not its cancellation — the call returns at once — and is cancelled instead
@@ -75,6 +80,8 @@ type ChildSpec struct {
 	// Resident marks a child opened with Agent open: tracked for ownership
 	// only, its state read from the resident registry when asked.
 	Resident bool
+	// Kind is ChildKindTeam for a team walk, "" for a sub-agent.
+	Kind string
 }
 
 // ChildResult is what a background child handed back when it ended.
@@ -85,6 +92,9 @@ type ChildResult struct {
 	// Status is "timeout" for a child its timeout_ms stopped, as on a
 	// parallel_spawn envelope row.
 	Status string
+	// Detail is a team walk's whole answer — the fields a synchronous TeamDef
+	// run returns — kept for TeamDef poll. nil for a sub-agent.
+	Detail map[string]any
 }
 
 // ChildView is a snapshot of one child.
@@ -174,6 +184,24 @@ func (b *Background) SetState(runID, state string) {
 	}
 	c.state = state
 	b.broadcastLocked()
+}
+
+// Withdraw removes a child whose start was refused after Start filed it. The
+// caller never got its id, so nothing may report it: no poll finds it and no
+// note names it.
+func (b *Background) Withdraw(runID string) {
+	b.mu.Lock()
+	c, ok := b.byID[runID]
+	if !ok || c.Resident {
+		b.mu.Unlock()
+		return
+	}
+	delete(b.byID, runID)
+	b.children = slices.DeleteFunc(b.children, func(x *bgChild) bool { return x == c })
+	c.stop()
+	b.broadcastLocked()
+	b.mu.Unlock()
+	c.cancel(nil)
 }
 
 // Finish records a child's end. Only the first call counts.
@@ -353,9 +381,9 @@ func (b *Background) TakeNotes() string {
 		return ""
 	case 1:
 		c := ended[0]
-		return fmt.Sprintf("Background child %s (%s) finished: %s. Use Agent poll to read its result.", c.RunID, c.Agent, c.state)
+		return fmt.Sprintf("Background child %s (%s) finished: %s. %s", c.RunID, c.Agent, c.state, readHint(ended))
 	}
-	return "Background children finished: " + listStates(ended) + ". Use Agent poll to read their results."
+	return "Background children finished: " + listStates(ended) + ". " + readHint(ended)
 }
 
 // WakeNote is the note a run woken from waiting on its children gets: the
@@ -375,7 +403,30 @@ func (b *Background) WakeNote(waitedFor []string) string {
 		}
 	}
 	return "Every background child you were waiting for has ended: " + listStates(ended) +
-		". Use Agent poll to read their results."
+		". " + readHint(ended)
+}
+
+// readHint names the call that reads what the note reports. A team walk is
+// read with TeamDef poll — a run that started one has the TeamDef tool, not
+// necessarily the Agent tool — and a sub-agent with Agent poll.
+func readHint(cs []*bgChild) string {
+	teams := 0
+	for _, c := range cs {
+		if c.Kind == ChildKindTeam {
+			teams++
+		}
+	}
+	switch {
+	case teams == 0 && len(cs) == 1:
+		return "Use Agent poll to read its result."
+	case teams == 0:
+		return "Use Agent poll to read their results."
+	case teams == len(cs) && len(cs) == 1:
+		return "Use TeamDef poll to read its result."
+	case teams == len(cs):
+		return "Use TeamDef poll to read their results."
+	}
+	return "Use Agent poll to read the sub-agents' results and TeamDef poll to read the team walks'."
 }
 
 func listStates(cs []*bgChild) string {

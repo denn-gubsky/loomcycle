@@ -65,6 +65,11 @@ yours with its own transcript, and it is cancelled if your run is.
   `max_iterations` allows — no turn would be left to collect the children.
   Children still running when you end that last turn are cancelled, because
   nothing could read them.
+- **Team walks too.** `TeamDef op=run` with `mode: "poll"` starts a team's
+  walk as one of these background children: the same notes, end-of-turn wait,
+  `on_parent_end` and last-iteration rule. Read it with `TeamDef op=poll`, or
+  with `Agent` `poll` / `cancel` by its run id. See
+  `help(topic="agent-teams")`.
 
 ## `Agent` (in-loop) vs `spawn_run` (MCP surface)
 
