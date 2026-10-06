@@ -181,6 +181,16 @@ describe("keepOwnDefinitionRemovals", () => {
     expect(keepOwnDefinitionRemovals(undefined, bare)).toBe(bare);
   });
 
+  it("sends max_iterations: 0 when the edit drops the parent's cap", () => {
+    const capped = { ...bare, max_iterations: 12 };
+    expect((keepOwnDefinitionRemovals(capped, bare) as { max_iterations: unknown }).max_iterations).toBe(0);
+    expect((keepOwnDefinitionRemovals(capped, { ...bare, max_iterations: null }) as { max_iterations: unknown }).max_iterations).toBe(0);
+    // A cap the edit still sets, and a parent with none, are left as written.
+    const recapped = { ...bare, max_iterations: 3 };
+    expect(keepOwnDefinitionRemovals(capped, recapped)).toBe(recapped);
+    expect(keepOwnDefinitionRemovals(bare, bare)).toBe(bare);
+  });
+
   it("leaves a local that is not an object for the server to refuse", () => {
     const edited = { ...bare, local: "oops" };
     expect((keepOwnDefinitionRemovals(def, edited) as { local: unknown }).local).toBe("oops");
