@@ -648,6 +648,43 @@ starter's tenant, user and access, and its run records the starter's run as its
 parent. Stop it by its own `run_id` — `POST /v1/runs/{run_id}/cancel` (gRPC
 `CancelTurn`) — which cancels every agent the walk started. A walk run without
 `mode` belongs to its caller, and cancelling the caller cancels it.
+## Running a team in poll mode
+
+`TeamDef op=run` waits for the walk by default: your call returns its whole
+answer, and you do nothing else meanwhile. Inside an agent's run,
+`mode: "poll"` returns `{run_id, state: "running"}` at once instead, and the
+walk runs as a **background child of your run**, beside any sub-agents you
+started with `Agent` in poll mode:
+
+- You keep working — other tool calls, another walk, a batch of sub-agents.
+- When the walk ends, a note on your next turn names it
+  (`r_... (team:<name>): completed`). `notify: false` turns the note off.
+- `TeamDef op=poll` reads it: `run_ids` names walks, or omit it to get every
+  walk whose answer you have not read yet; `wait: "any"` / `"all"` blocks
+  (bounded by `wait_ms` and the runtime's cap) until one or all have ended.
+  An ended walk's row carries the fields a waited-for `op=run` returns —
+  `status`, `final_state`, `final_output`, `steps` — plus `state`
+  (`completed`, `failed`, `cancelled`) and `error` when it did not complete.
+  A walk stopped at an iteration cap reads `state: "failed"` with
+  `status: "iteration_cap"` and the trace so far.
+- Your run does not end while the walk runs: ending your turn waits for it,
+  then gives you another turn. `on_parent_end: "cancel"` cancels it when you
+  end your turn instead.
+- It is cancelled when your run ends or is cancelled, counts against your run's
+  limit on live children, and is refused on your last iteration (no turn would
+  be left to read it).
+- With the `Agent` tool as well, `Agent op=poll` reads a walk by its run id
+  (`kind: "team"`, `output` = its final output) and `Agent op=cancel` ends it.
+- A person holding it — a breakpoint pause or `interrupt_on_cap` question it
+  asks, or a member held for `review` — shows the walk as `held` until the
+  hold ends.
+
+Everything else about the run is unchanged: `input`, `vars`, `breakpoints`,
+`review`, `board_chunk_id` and `interrupt_on_cap` work as they do when you wait.
+`mode: "detach"` is different: the walk runs on **outside** your run — it is
+not your child, nothing tells you it ended, and it outlives you. Use it to hand
+a walk to an operator or a debugger; use poll mode to collect the answer
+yourself.
 
 ## Authoring + running
 

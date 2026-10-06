@@ -291,8 +291,11 @@ const teamWalkInputCap = 16 << 10
 // input is and are never more readable than it.
 func teamWalkRecordOf(r *redact.Redactor, spec builtin.WalkRunSpec) *teamWalkRecord {
 	mode := "sync"
-	if spec.Detach {
+	switch {
+	case spec.Detach:
 		mode = "detach"
+	case spec.Poll:
+		mode = "poll"
 	}
 	input := r.String(spec.Input)
 	truncated := false

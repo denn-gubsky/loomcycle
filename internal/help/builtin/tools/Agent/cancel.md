@@ -4,8 +4,9 @@ description: "Agent op=cancel — end background children you started, or stop a
 ---
 `cancel` has two forms.
 
-**Background children** (started with `mode: "poll"`): pass `child_run_ids`.
-Each is cancelled and its run ends `cancelled`; cancelling one child of a
+**Background children** (started with `mode: "poll"`, team walks you ran in
+poll mode included): pass `child_run_ids`. Each is cancelled and its run ends
+`cancelled` — a walk's members with it; cancelling one child of a
 `parallel_spawn` leaves the others running. A child that already finished is
 left as it ended. A resident child named here has its current turn stopped,
 as below.
@@ -19,12 +20,13 @@ running a turn does nothing.
 ## Arguments
 
 - `op` (required) — `cancel`.
-- `child_run_ids` — background or resident children of this run.
+- `child_run_ids` — background or resident children of this run, team walks
+  you ran in poll mode included (by their `run_id`).
 - `child_run_id` — instead: one resident child.
 
 ## Returns
 
-Background form: `{"children": [{child_run_id, agent, index?, state}]}` with
+Background form: `{"children": [{child_run_id, agent, kind?, index?, state}]}` with
 each child's state once the cancel has taken effect — `cancelled`, or how it
 ended if it finished first.
 

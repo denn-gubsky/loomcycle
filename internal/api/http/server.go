@@ -1131,6 +1131,15 @@ func (s *Server) SetTeamDefTool(t tools.Tool) {
 			// tunes both rather than discovering a second one later.
 			td.MaxWave = connector.MaxBatchSpawns
 		}
+		if td.LiveChildren == nil {
+			// A walk run in poll mode is one of its caller's children, counted
+			// against the same per-run limit as the Agent tool's.
+			td.LiveChildren = s.liveChildren
+		}
+		if td.PollWaitCapMs == 0 {
+			// One cap on a poll's wait, whichever tool polls.
+			td.PollWaitCapMs = s.cfg().Env.AgentPollWaitCapMs
+		}
 		if td.WaveContext == nil {
 			td.WaveContext = func(ctx context.Context, walkID, waveID string, index int) context.Context {
 				return store.WithWaveTask(ctx, store.WaveTask{WalkID: walkID, WaveID: waveID, Index: index})

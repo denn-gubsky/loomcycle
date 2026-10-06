@@ -65,19 +65,27 @@ func pollModeOf(in agentInput) (pollMode, tools.Result, bool) {
 }
 
 // backgroundFor is the calling run's background table, or why poll mode is
-// refused: a run with no table (a stateful run), or one on its last
-// iteration, which has no turn left in which to collect a child.
-func backgroundFor(ctx context.Context) (*tools.Background, tools.Result, bool) {
+// refused: a run with no table (a stateful run, or a call from outside any
+// run), or one on its last iteration, which has no turn left in which to
+// collect a child. noTable and lastIteration are the fixes the refusals offer,
+// which name the calling tool's own waiting form.
+func backgroundFor(ctx context.Context, noTable, lastIteration string) (*tools.Background, tools.Result, bool) {
 	bg := tools.BackgroundOf(ctx)
 	if bg == nil {
-		return nil, errBusiness("mode \"poll\" is not available in this run", "Use mode \"wait\" (the default)."), false
+		return nil, errBusiness("mode \"poll\" is not available in this run", noTable), false
 	}
 	if b, ok := tools.IterationBudget(ctx); ok && !b.Unbounded && b.Used >= b.Max {
 		return nil, errBusiness("mode \"poll\" is refused on your last iteration: you would have no turn left to collect the children",
-			"Use mode \"wait\" so the call returns their results, or do the work yourself."), false
+			lastIteration), false
 	}
 	return bg, tools.Result{}, true
 }
+
+// The fixes the Agent tool's poll-mode refusals offer.
+const (
+	agentPollNoTable       = "Use mode \"wait\" (the default)."
+	agentPollLastIteration = "Use mode \"wait\" so the call returns their results, or do the work yourself."
+)
 
 // bgEntry is one child a poll-mode call starts.
 type bgEntry struct {
@@ -230,8 +238,12 @@ func (a *AgentTool) runBackgroundChild(cctx context.Context, bg *tools.Backgroun
 
 // pollRow is one child in a poll or cancel answer.
 type pollRow struct {
-	ChildRunID string         `json:"child_run_id"`
-	Agent      string         `json:"agent,omitempty"`
+	ChildRunID string `json:"child_run_id"`
+	Agent      string `json:"agent,omitempty"`
+	// Kind is "team" for a team walk run in poll mode: Agent is then its run's
+	// label (team:<name>) and Output its final output. TeamDef poll reads the
+	// walk's whole answer.
+	Kind       string         `json:"kind,omitempty"`
 	Index      *int           `json:"index,omitempty"`
 	State      string         `json:"state"`
 	Output     string         `json:"output,omitempty"`
@@ -242,7 +254,7 @@ type pollRow struct {
 }
 
 func rowOf(v tools.ChildView) pollRow {
-	r := pollRow{ChildRunID: v.RunID, Agent: v.Agent, State: v.State}
+	r := pollRow{ChildRunID: v.RunID, Agent: v.Agent, Kind: v.Kind, State: v.State}
 	if v.Index >= 0 {
 		idx := v.Index
 		r.Index = &idx
@@ -257,11 +269,14 @@ func rowOf(v tools.ChildView) pollRow {
 // the same whether they do not exist or belong to another run.
 func unknownChildren(ids []string) tools.Result {
 	return errNotFound(fmt.Sprintf("not a child of this run: %s", strings.Join(ids, ", ")),
-		"Use the child_run_id or batch_id that spawn, parallel_spawn or open returned to you.")
+		"Use the child_run_id or batch_id that spawn, parallel_spawn or open returned to you, or the run_id of a team you ran in poll mode.")
 }
 
-func (a *AgentTool) pollWaitCap() time.Duration {
-	ms := a.PollWaitCapMs
+func (a *AgentTool) pollWaitCap() time.Duration { return pollWaitCap(a.PollWaitCapMs) }
+
+// pollWaitCap is the operator's cap on one poll's wait, in ms (0 = the
+// default).
+func pollWaitCap(ms int) time.Duration {
 	if ms <= 0 {
 		ms = DefaultPollWaitCapMs
 	}
@@ -336,6 +351,12 @@ func (a *AgentTool) pollChildren(ctx context.Context, in agentInput) (tools.Resu
 // views that are still running have ended, the wait bound runs out, or ctx
 // ends. It is a wait: a code agent's budget does not run while it blocks.
 func (a *AgentTool) awaitChildren(ctx context.Context, bg *tools.Background, views []tools.ChildView, all bool, waitMs int) {
+	awaitBackground(ctx, bg, views, all, waitMs, a.pollWaitCap())
+}
+
+// awaitBackground is awaitChildren with the cap given: TeamDef poll waits for
+// its walks the same way.
+func awaitBackground(ctx context.Context, bg *tools.Background, views []tools.ChildView, all bool, waitMs int, bound time.Duration) {
 	var waiting []string
 	for _, v := range views {
 		if !v.Resident && !v.Ended() {
@@ -345,7 +366,6 @@ func (a *AgentTool) awaitChildren(ctx context.Context, bg *tools.Background, vie
 	if len(waiting) == 0 {
 		return
 	}
-	bound := a.pollWaitCap()
 	if waitMs > 0 && time.Duration(waitMs)*time.Millisecond < bound {
 		bound = time.Duration(waitMs) * time.Millisecond
 	}
@@ -465,7 +485,7 @@ func (a *AgentTool) cancelChildren(ctx context.Context, in agentInput) (tools.Re
 			continue
 		}
 		now, _ := bg.Lookup(v.RunID)
-		rows[i] = pollRow{ChildRunID: now.RunID, Agent: now.Agent, State: now.State}
+		rows[i] = pollRow{ChildRunID: now.RunID, Agent: now.Agent, Kind: now.Kind, State: now.State}
 		if now.Index >= 0 {
 			idx := now.Index
 			rows[i].Index = &idx
