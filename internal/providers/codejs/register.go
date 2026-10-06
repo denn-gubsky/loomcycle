@@ -19,7 +19,7 @@ func init() {
 // config-driven construction the resolver uses (the RFC BF replacement for the
 // pre-registry hardcoded codejs.New(codejs.Config{})). code-js has no HTTP shape
 // — its Config comes from the options map (code_root / deterministic /
-// run_timeout_seconds), which cmd/loomcycle's toDriverOptions populates from the
+// run_timeout_seconds / max_wall_seconds), which cmd/loomcycle's toDriverOptions populates from the
 // LOOMCYCLE_CODE_AGENTS_* env (an explicit `providers:` entry overrides that).
 func newFromOptions(o providers.DriverOptions) (providers.Provider, error) {
 	cfg := Config{Logf: o.Logf}
@@ -32,11 +32,14 @@ func newFromOptions(o providers.DriverOptions) (providers.Provider, error) {
 	if secs, ok := providers.IntOption(o.Options, "run_timeout_seconds"); ok {
 		cfg.RunTimeout = time.Duration(secs) * time.Second
 	}
+	if secs, ok := providers.IntOption(o.Options, "max_wall_seconds"); ok {
+		cfg.MaxWall = time.Duration(secs) * time.Second
+	}
 	p := New(cfg)
 	if o.ID != "" {
 		p.id = o.ID
 	}
 	p.capsPatch = o.Capabilities
-	providers.WarnUnknownOptions(o.Logf, "code-js", o.Options, "code_root", "deterministic", "run_timeout_seconds")
+	providers.WarnUnknownOptions(o.Logf, "code-js", o.Options, "code_root", "deterministic", "run_timeout_seconds", "max_wall_seconds")
 	return p, nil
 }

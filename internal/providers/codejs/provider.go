@@ -29,6 +29,14 @@ const syntheticModel = "loomcycle/code-js"
 // (LOOMCYCLE_CODE_AGENTS_RUN_TIMEOUT_SECONDS) sets one.
 const DefaultRunTimeout = 120 * time.Second
 
+// DefaultMaxWall is how long a code-js run may LIVE, waits included, when the
+// operator sets no LOOMCYCLE_CODE_AGENTS_MAX_WALL_SECONDS. The run budget
+// excludes waits, so without this a run that only waits never ends. A day is
+// far past any legitimate orchestration — a fan-out of model-driven children
+// takes minutes to hours — yet still ends a runaway the same day, freeing its
+// goroutine, its admission slot and whatever its children spend.
+const DefaultMaxWall = 24 * time.Hour
+
 // fixedEpochMs / fixedSeed pin the clock + RNG across ALL runs under
 // LOOMCYCLE_CODE_AGENTS_DETERMINISTIC=1 (cross-run reproducibility for
 // testing / snapshot equality). 2023-11-14T22:13:20Z.
@@ -43,6 +51,7 @@ type Config struct {
 	CodeRoot      string // resolved $LOOMCYCLE_CODE_AGENTS_ROOT (default ./agent_code)
 	Deterministic bool   // LOOMCYCLE_CODE_AGENTS_DETERMINISTIC (cross-run reproducibility)
 	RunTimeout    time.Duration
+	MaxWall       time.Duration // a run's lifetime limit, waits included; 0 → DefaultMaxWall
 	Logf          func(format string, args ...any)
 }
 
@@ -56,6 +65,7 @@ type Provider struct {
 	compiler      *compiler
 	deterministic bool
 	runTimeout    time.Duration
+	maxWall       time.Duration
 	logf          func(string, ...any)
 	// id is the provider identity reported by ID(). Defaults to providerID
 	// ("code-js") in New(); the RFC BF driver registry sets it from
@@ -68,10 +78,15 @@ type Provider struct {
 	counter atomic.Uint64 // mints unique tool_use IDs for the transcript
 }
 
-// New builds the provider. RunTimeout falls back to DefaultRunTimeout.
+// New builds the provider. RunTimeout falls back to DefaultRunTimeout and
+// MaxWall to DefaultMaxWall: there is no "unlimited" wall limit, only a large
+// one an operator sets on purpose.
 func New(cfg Config) *Provider {
 	if cfg.RunTimeout <= 0 {
 		cfg.RunTimeout = DefaultRunTimeout
+	}
+	if cfg.MaxWall <= 0 {
+		cfg.MaxWall = DefaultMaxWall
 	}
 	logf := cfg.Logf
 	if logf == nil {
@@ -81,6 +96,7 @@ func New(cfg Config) *Provider {
 		compiler:      newCompiler(cfg.CodeRoot),
 		deterministic: cfg.Deterministic,
 		runTimeout:    cfg.RunTimeout,
+		maxWall:       cfg.MaxWall,
 		logf:          logf,
 		id:            providerID,
 	}
@@ -94,11 +110,13 @@ func (p *Provider) Capabilities() providers.Capabilities {
 	// UnboundedIterations: a code-agent's run() makes an arbitrary number of
 	// SEQUENTIAL tool calls, each a loop turn; the MaxIterations soft-cap is
 	// unusable here. The run is bounded by its run-level budget of active time
-	// (see Call/interruptWatch), not by an iteration count.
+	// (see Call/interruptWatch), not by an iteration count — and, since that
+	// budget excludes waits, by RunWallLimit, which the loop enforces on the
+	// run's whole lifetime.
 	// MetadataViaInput: code-js receives run metadata structurally as
 	// input.metadata / input.payload_metadata (see buildInput), so the
 	// run-build path must not also serialize it into prompt segments.
-	return p.capsPatch.Apply(providers.Capabilities{Streaming: true, UnboundedIterations: true, MetadataViaInput: true})
+	return p.capsPatch.Apply(providers.Capabilities{Streaming: true, UnboundedIterations: true, RunWallLimit: p.maxWall, MetadataViaInput: true})
 }
 
 // Probe always succeeds — code-js is in-process, always reachable.

@@ -102,6 +102,7 @@ func DriverOptions(id string, pc config.ProviderConfig, cfg *config.Config) prov
 		opts["code_root"] = cfg.Env.CodeAgentsRoot
 		opts["deterministic"] = cfg.Env.CodeAgentsDeterministic
 		opts["run_timeout_seconds"] = int(cfg.Env.CodeAgentsRunTimeout / time.Second)
+		opts["max_wall_seconds"] = int(cfg.Env.CodeAgentsMaxWall / time.Second)
 	}
 	// Operator-declared options override the env-derived defaults (e.g. mock-stable's
 	// `stable: true`, or a per-provider num_ctx).

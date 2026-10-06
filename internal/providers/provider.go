@@ -9,6 +9,7 @@ package providers
 import (
 	"context"
 	"encoding/json"
+	"time"
 
 	"github.com/denn-gubsky/loomcycle/internal/errkind"
 )
@@ -175,6 +176,15 @@ type Capabilities struct {
 	// hard ceiling as a pure runaway backstop. False for every LLM driver,
 	// where MaxIterations remains the runaway-tool-use guard.
 	UnboundedIterations bool
+
+	// RunWallLimit is the longest an UnboundedIterations run may LIVE, waits
+	// included (a runtime pause excluded); 0 = none. The budget above counts
+	// only active time, so a run that does little but wait — a loop over
+	// Channel.await, Interruption.ask or tiny spawns — spends almost none of
+	// it; this is what still ends such a run. The loop enforces it by
+	// cancelling the run's ctx, which stops in-flight waits and children too.
+	// Set by the code-js provider from LOOMCYCLE_CODE_AGENTS_MAX_WALL_SECONDS.
+	RunWallLimit time.Duration
 
 	// MetadataViaInput signals that this provider delivers the run's
 	// non-secret metadata to the agent STRUCTURALLY as part of its input
