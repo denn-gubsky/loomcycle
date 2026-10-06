@@ -232,6 +232,20 @@ type RunOptions struct {
 	// verdict then takes it on exactly as it would have before the restart.
 	// Requires SteerQueue. nil for every run that was not held.
 	ResumeHeld *HeldReview
+
+	// RestoreBackground, for a resumed run, refills its background table — the
+	// poll-mode children it started before it paused — before anything else
+	// runs. It is called once, with the run's ctx (which carries the table,
+	// and the run's hooks and identity) and the table. nil for a run that
+	// started none.
+	RestoreBackground func(ctx context.Context, bg *tools.Background)
+	// ResumeAwaitingChildren, for a resumed run that was waiting for its
+	// background children when it paused, waits for them again BEFORE any
+	// model call — its conversation ends on the answer after which it began to
+	// wait, so there is nothing to send — and wakes once, as it would have,
+	// when the last of them has ended. Requires RestoreBackground.
+	ResumeAwaitingChildren bool
+
 	// Resumed marks a run re-entered under its existing run id (a paused run
 	// restored). It has already started, so its agent_start hooks do not run
 	// again. A continuation is a new run, and is not Resumed.
@@ -1143,8 +1157,12 @@ func parkForChildren(ctx context.Context, opts *RunOptions, bg *tools.Background
 	for i, c := range waiting {
 		ids[i] = c.RunID
 	}
-	emit(providers.Event{Type: providers.EventAwaitingChildren,
-		AwaitingChildren: &providers.AwaitingChildrenEventInfo{ChildRunIDs: ids, SinceTurn: sinceTurn}})
+	// A resumed run whose children all ended while it was paused has nothing to
+	// wait for: it is woken at once, and announcing a wait would be untrue.
+	if len(ids) > 0 {
+		emit(providers.Event{Type: providers.EventAwaitingChildren,
+			AwaitingChildren: &providers.AwaitingChildrenEventInfo{ChildRunIDs: ids, SinceTurn: sinceTurn}})
+	}
 	defer providers.BeginWait(ctx)()
 	pp := newParkPause(opts.PauseGate)
 	defer pp.done()
@@ -2706,6 +2724,9 @@ func runLoop(ctx context.Context, opts RunOptions) (RunResult, error) {
 	bg := tools.NewBackground(ctx)
 	bg.RecordTo(emit)
 	ctx = tools.WithBackground(ctx, bg)
+	if opts.RestoreBackground != nil {
+		opts.RestoreBackground(ctx, bg)
+	}
 	defer bg.Close(runcancel.CauseWithReason("its parent run ended while it was still running"))
 
 	toolChoice := newToolChoicePolicy(opts.ToolChoice)
@@ -2962,6 +2983,22 @@ func runLoop(ctx context.Context, opts RunOptions) (RunResult, error) {
 				parkAbandoned = !took
 			}
 		}
+	}
+
+	// A resumed run that was waiting for its background children when it
+	// paused waits for them again here. The wake is the one it would have had:
+	// a note naming how each ended — those that ended while it was paused
+	// included — then its next turn.
+	if opts.ResumeAwaitingChildren && opts.RestoreBackground != nil && !parkAbandoned {
+		note, noted, ok := parkForChildren(ctx, &opts, bg, 0, emit)
+		if !ok {
+			err := ctx.Err()
+			if err == nil {
+				err = context.Canceled
+			}
+			return RunResult{StopReason: "cancelled", FinalText: lastAssistantText(messages), Usage: totalUsage}, err
+		}
+		messages = appendChildrenNote(messages, note, noted, emit)
 	}
 
 	promptSnapshotted := false // RFC DI: the first request is recorded once

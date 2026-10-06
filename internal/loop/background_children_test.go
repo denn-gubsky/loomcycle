@@ -404,3 +404,108 @@ func TestRun_AwaitingChildrenKeepsHeartbeating(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+// A run resumed while it was waiting for its background children waits for
+// them again before any model call — restored children that ended while it
+// was paused do not hold it, one still running does — and wakes ONCE when the
+// last has ended, with a note naming every child it was waiting for. The
+// note's event names them too, so a later resume does not note them again.
+func TestRun_ResumedIntoAwaitingChildrenWakesOnceWhenTheLastEnds(t *testing.T) {
+	prov := &fakeProvider{responses: [][]providers.Event{endTurn("read them")}}
+	sink := &childEvents{}
+	var bg *tools.Background
+	ready := make(chan struct{})
+	done := make(chan error, 1)
+	go func() {
+		_, err := Run(context.Background(), RunOptions{
+			Provider: prov,
+			Model:    "fake-model",
+			PriorMessages: []providers.Message{
+				{Role: "user", Content: []providers.ContentBlock{{Type: "text", Text: "go"}}},
+				{Role: "assistant", Content: []providers.ContentBlock{{Type: "text", Text: "started them"}}},
+			},
+			RestoreBackground: func(_ context.Context, b *tools.Background) {
+				b.Restore(tools.RestoredChild{ChildSpec: tools.ChildSpec{RunID: "r_1", Agent: "worker", Index: -1, Notify: true},
+					State: tools.ChildCompleted, Result: tools.ChildResult{Output: "out-r_1"}})
+				b.Restore(tools.RestoredChild{ChildSpec: tools.ChildSpec{RunID: "r_2", Agent: "worker", Index: -1, Notify: true},
+					State: tools.ChildRunning})
+				bg = b
+				close(ready)
+			},
+			ResumeAwaitingChildren: true,
+			Resumed:                true,
+			OnEvent:                sink.add,
+		})
+		done <- err
+	}()
+	<-ready
+	waitFor(t, func() bool { return len(sink.of(providers.EventAwaitingChildren)) == 1 })
+	if a := sink.of(providers.EventAwaitingChildren)[0].AwaitingChildren; a == nil || strings.Join(a.ChildRunIDs, ",") != "r_2" {
+		t.Fatalf("awaiting_children = %+v, want only the child still running", a)
+	}
+	time.Sleep(50 * time.Millisecond)
+	prov.mu.Lock()
+	calls := len(prov.calls)
+	prov.mu.Unlock()
+	if calls != 0 {
+		t.Fatalf("%d model calls while waiting, want none", calls)
+	}
+	bg.Finish("r_2", tools.ChildCompleted, tools.ChildResult{Output: "out-r_2"})
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("the resumed run did not wake when its last child ended")
+	}
+	wake := "Every background child you were waiting for has ended: r_1 (worker): completed; r_2 (worker): completed. Use Agent poll to read their results."
+	if len(prov.calls) != 1 || lastUserText(prov.calls[0]) != wake {
+		t.Fatalf("calls = %d, last = %q; want one call ending with %q", len(prov.calls), lastUserText(prov.calls[0]), wake)
+	}
+	notes := sink.of(providers.EventChildrenNote)
+	if len(notes) != 1 || strings.Join(notes[0].ChildrenNote.ChildRunIDs, ",") != "r_1,r_2" {
+		t.Errorf("children_note events = %+v, want one naming r_1 and r_2", notes)
+	}
+}
+
+// A run resumed into the wait and cancelled there ends cancelled, without a
+// model call.
+func TestRun_ResumedIntoAwaitingChildrenEndsCancelledWhenCancelled(t *testing.T) {
+	prov := &fakeProvider{}
+	ctx, cancel := context.WithCancel(context.Background())
+	sink := &childEvents{}
+	done := make(chan error, 1)
+	go func() {
+		res, err := Run(ctx, RunOptions{
+			Provider: prov,
+			Model:    "fake-model",
+			PriorMessages: []providers.Message{
+				{Role: "user", Content: []providers.ContentBlock{{Type: "text", Text: "go"}}},
+				{Role: "assistant", Content: []providers.ContentBlock{{Type: "text", Text: "started it"}}},
+			},
+			RestoreBackground: func(_ context.Context, b *tools.Background) {
+				b.Restore(tools.RestoredChild{ChildSpec: tools.ChildSpec{RunID: "r_1", Index: -1}, State: tools.ChildRunning})
+			},
+			ResumeAwaitingChildren: true,
+			OnEvent:                sink.add,
+		})
+		if err == nil && res.StopReason != "cancelled" {
+			err = errors.New("stop reason " + res.StopReason)
+		}
+		done <- err
+	}()
+	waitFor(t, func() bool { return len(sink.of(providers.EventAwaitingChildren)) == 1 })
+	cancel()
+	select {
+	case err := <-done:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("err = %v, want cancelled", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("a cancelled run kept waiting for its children")
+	}
+	if len(prov.calls) != 0 {
+		t.Errorf("%d model calls, want none", len(prov.calls))
+	}
+}
