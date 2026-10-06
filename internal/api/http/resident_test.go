@@ -278,7 +278,7 @@ func TestResidentChild_PollDoesNotExtendTheTurnCeiling(t *testing.T) {
 func TestResidentChild_ParentRunEndClosesItsChildren(t *testing.T) {
 	for _, end := range []string{"completed", "cancelled"} {
 		t.Run(end, func(t *testing.T) {
-			srv, parentAgentID, finish := startParentWithResidentChild(t, end == "cancelled")
+			srv, parentAgentID, release, finish := startParentWithResidentChild(t)
 			var children []residentInfo
 			deadline := time.Now().Add(5 * time.Second)
 			for time.Now().Before(deadline) {
@@ -290,10 +290,14 @@ func TestResidentChild_ParentRunEndClosesItsChildren(t *testing.T) {
 			if len(children) != 1 || children[0].ParentAgentID != parentAgentID {
 				t.Fatalf("the parent's resident child never opened: %+v", children)
 			}
+			// The parent is held in its next model call until here, so the
+			// child is observed before the parent can end.
 			if end == "cancelled" {
 				if _, found := srv.cancelReg.Cancel(parentAgentID, "test cancel"); !found {
 					t.Fatal("the parent run was not cancellable")
 				}
+			} else {
+				close(release)
 			}
 			finish()
 			waitResidentGone(t, srv, children[0].ChildRunID)
@@ -302,9 +306,10 @@ func TestResidentChild_ParentRunEndClosesItsChildren(t *testing.T) {
 }
 
 // startParentWithResidentChild posts a run of "lead" that opens a resident
-// "child" and then either answers (block=false) or blocks in its next model
-// call until cancelled. finish waits for the parent's POST to return.
-func startParentWithResidentChild(t *testing.T, block bool) (*Server, string, func()) {
+// "child" and then holds its next model call until release is closed (it then
+// answers and completes) or the run is cancelled. finish waits for the
+// parent's POST to return.
+func startParentWithResidentChild(t *testing.T) (*Server, string, chan struct{}, func()) {
 	t.Helper()
 	cfg := &config.Config{
 		Defaults: config.Defaults{Provider: "stub", Model: "stub-model"},
@@ -329,8 +334,8 @@ func startParentWithResidentChild(t *testing.T, block bool) (*Server, string, fu
 			},
 			done("child parked"),
 		},
-		blockAfter: block,
-		final:      done("lead done"),
+		release: make(chan struct{}),
+		final:   done("lead done"),
 	}
 	st, err := storesqlite.Open(filepath.Join(t.TempDir(), "parent_end.db"))
 	if err != nil {
@@ -353,7 +358,7 @@ func startParentWithResidentChild(t *testing.T, block bool) (*Server, string, fu
 			resp.Body.Close()
 		}
 	}()
-	return srv, parentAgentID, func() {
+	return srv, parentAgentID, prov.release, func() {
 		select {
 		case <-posted:
 		case <-time.After(10 * time.Second):
@@ -362,13 +367,13 @@ func startParentWithResidentChild(t *testing.T, block bool) (*Server, string, fu
 	}
 }
 
-// parentChildProvider replays scripts in call order; past them it answers
-// final, or — with blockAfter — blocks until the call's ctx is cancelled.
+// parentChildProvider replays scripts in call order; past them it waits for
+// release (then answers final) or the call's ctx to be cancelled.
 type parentChildProvider struct {
-	calls      atomic.Int32
-	scripts    [][]providers.Event
-	blockAfter bool
-	final      []providers.Event
+	calls   atomic.Int32
+	scripts [][]providers.Event
+	release chan struct{}
+	final   []providers.Event
 }
 
 func (p *parentChildProvider) ID() string                    { return "stub" }
@@ -390,8 +395,9 @@ func (p *parentChildProvider) Call(ctx context.Context, _ providers.Request) (<-
 			}
 			return
 		}
-		if p.blockAfter && i == len(p.scripts) {
-			<-ctx.Done()
+		select {
+		case <-p.release:
+		case <-ctx.Done():
 			return
 		}
 		for _, ev := range p.final {
