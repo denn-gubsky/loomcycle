@@ -19,6 +19,7 @@ type idleGate struct {
 	resumeCh chan struct{}
 	paused   atomic.Int32 // PauseIdle records currently held
 	records  atomic.Int32 // PauseIdle calls that recorded
+	clocked  atomic.Int32 // PauseIdle calls whose ctx carried the run's clock
 }
 
 func newIdleGate() *idleGate {
@@ -32,9 +33,12 @@ func (g *idleGate) PauseCh() <-chan struct{} {
 	defer g.mu.Unlock()
 	return g.pauseCh
 }
-func (g *idleGate) PauseIdle() (<-chan struct{}, func(), bool) {
+func (g *idleGate) PauseIdle(ctx context.Context) (<-chan struct{}, func(), bool) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
+	if providers.RunClockFromContext(ctx) != nil {
+		g.clocked.Add(1)
+	}
 	g.paused.Add(1)
 	g.records.Add(1)
 	var once sync.Once

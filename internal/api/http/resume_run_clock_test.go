@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -63,6 +64,33 @@ func (p *clockProvider) calls() ([]providers.RunClockState, []bool) {
 // orchestrator that had used 7s of its budget and waited 30s carries on from
 // there — not from zero, which would hand it a fresh budget on every restore.
 func TestResumedRun_ContinuesItsRunClock(t *testing.T) {
+	assertResumeCarriesRunClock(t, func(gate *pauseGate, ctx context.Context) { _ = gate.Park(ctx) })
+}
+
+// The same for a run the pause found WAITING — on its children, an operator's
+// message, a review verdict — which records itself paused where it waits
+// instead of at an iteration boundary. That is the usual place a pause finds
+// an orchestrator, so its record must carry the clock too.
+func TestResumedRun_ContinuesTheRunClockOfAWaitingRun(t *testing.T) {
+	assertResumeCarriesRunClock(t, parkIdle)
+}
+
+// parkIdle records a waiting run as paused the way the loop's parks do, and
+// holds it until the runtime resumes.
+func parkIdle(gate *pauseGate, ctx context.Context) {
+	resumed, release, ok := gate.PauseIdle(ctx)
+	if !ok {
+		return
+	}
+	<-resumed
+	release()
+}
+
+// assertResumeCarriesRunClock parks a clocked run with park while the runtime
+// is paused, restores it from its row, and asserts the resumed run's clock
+// continues from what it had recorded.
+func assertResumeCarriesRunClock(t *testing.T, park func(gate *pauseGate, ctx context.Context)) {
+	t.Helper()
 	cfg := &config.Config{
 		Defaults: config.Defaults{Provider: "clocked", Model: "stub-model"},
 		Agents: map[string]config.AgentDef{
@@ -111,7 +139,7 @@ func TestResumedRun_ContinuesItsRunClock(t *testing.T) {
 		for mgr.State() == pause.StateRunning {
 			time.Sleep(2 * time.Millisecond)
 		}
-		_ = gate.Park(parkCtx)
+		park(gate, parkCtx)
 	}()
 	if _, err := mgr.Pause(context.Background(), 2*time.Second); err != nil {
 		t.Fatalf("Pause: %v", err)
@@ -192,5 +220,55 @@ func TestPauseGatePark_ParksTheRunClock(t *testing.T) {
 	// not count against its lifetime limit.
 	if cs.Wall > pausedFor/2 {
 		t.Errorf("the run's lifetime grew %s across a %s runtime pause", cs.Wall, pausedFor)
+	}
+}
+
+// A run the pause finds waiting is parked by the operator just as one at an
+// iteration boundary is: the pause does not count against its lifetime, and
+// what it has spent is recorded for a snapshot taken at the barrier.
+func TestPauseGatePauseIdle_ParksTheRunClock(t *testing.T) {
+	st, err := storesqlite.Open(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	mgr := pause.NewManager(st, time.Second)
+	const runID = "r_waiting"
+	mgr.RegisterRun(runID)
+	defer mgr.DeregisterRun(runID)
+	var saved atomic.Int32
+	gate := &pauseGate{mgr: mgr, store: st, runID: runID,
+		saveClock: func(context.Context, string, providers.RunClockState) error { saved.Add(1); return nil }}
+	clock := providers.NewRunClock(time.Now(), providers.RunClockState{})
+	ctx := providers.WithRunClock(context.Background(), clock)
+	// The waiting park's own bracket (parkForChildren is a wait): the budget
+	// stops either way — only the pause also stops the lifetime.
+	defer providers.BeginWait(ctx)()
+	parked := make(chan struct{})
+	go func() {
+		defer close(parked)
+		for mgr.State() == pause.StateRunning {
+			time.Sleep(2 * time.Millisecond)
+		}
+		parkIdle(gate, ctx)
+	}()
+	if _, err := mgr.Pause(context.Background(), 2*time.Second); err != nil {
+		t.Fatalf("Pause: %v", err)
+	}
+	const pausedFor = 400 * time.Millisecond
+	time.Sleep(pausedFor)
+	if _, err := mgr.Resume(context.Background()); err != nil {
+		t.Fatalf("Resume: %v", err)
+	}
+	select {
+	case <-parked:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the waiting run never left its pause record")
+	}
+	if saved.Load() != 1 {
+		t.Errorf("the clock was recorded %d times, want once — a snapshot taken at the barrier would carry no clock", saved.Load())
+	}
+	if cs := clock.State(); cs.Wall > pausedFor/2 {
+		t.Errorf("the waiting run's lifetime grew %s across a %s runtime pause", cs.Wall, pausedFor)
 	}
 }

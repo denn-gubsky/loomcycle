@@ -122,7 +122,14 @@ func (g *pauseGate) recordClock(ctx context.Context) {
 // Same ordering as Park: the store row is durably 'paused' before the barrier
 // is credited, and a failed write earns no credit. The run keeps waiting where
 // it is; release undoes the record when the runtime resumes or the run moves on.
-func (g *pauseGate) PauseIdle() (<-chan struct{}, func(), bool) {
+//
+// The clock is handled as Park handles it: the operator's pause stops the
+// run's lifetime until release, and what the run has spent is recorded before
+// the barrier is credited. A waiting run is exactly what a pause usually finds
+// — an orchestrator waiting on its children has no iteration boundary to park
+// at — so without this its snapshot carried no clock and it resumed on a
+// fresh budget and lifetime.
+func (g *pauseGate) PauseIdle(ctx context.Context) (<-chan struct{}, func(), bool) {
 	if g.mgr == nil {
 		return nil, nil, false
 	}
@@ -130,6 +137,8 @@ func (g *pauseGate) PauseIdle() (<-chan struct{}, func(), bool) {
 	if !shouldPark {
 		return nil, nil, false
 	}
+	endPause := providers.BeginPause(ctx)
+	g.recordClock(ctx)
 	if err := g.setPauseState(context.Background(), store.PauseStatePaused); err != nil {
 		log.Printf("pause: persist paused for waiting run %s failed: %v — no barrier credit", g.runID, err)
 	} else {
@@ -140,6 +149,7 @@ func (g *pauseGate) PauseIdle() (<-chan struct{}, func(), bool) {
 		once.Do(func() {
 			g.mgr.EndPark(g.runID)
 			_ = g.setPauseState(context.Background(), store.PauseStateRunning)
+			endPause()
 		})
 	}, true
 }

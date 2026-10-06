@@ -1146,7 +1146,7 @@ func parkForChildren(ctx context.Context, opts *RunOptions, bg *tools.Background
 	emit(providers.Event{Type: providers.EventAwaitingChildren,
 		AwaitingChildren: &providers.AwaitingChildrenEventInfo{ChildRunIDs: ids, SinceTurn: sinceTurn}})
 	defer providers.BeginWait(ctx)()
-	pp := newParkPause(opts.PauseGate)
+	pp := newParkPause(ctx, opts.PauseGate)
 	defer pp.done()
 	for len(waiting) > 0 {
 		select {
@@ -1193,7 +1193,7 @@ func childIDs(cs []tools.ChildView) string {
 func parkForOperatorTurn(ctx context.Context, opts *RunOptions, messages []providers.Message, sinceTurn, lastCtxTokens, preambleTokens int, emit func(providers.Event)) ([]providers.Message, int, bool) {
 	emit(providers.Event{Type: providers.EventAwaitingInput,
 		AwaitingInput: &providers.AwaitingInputEventInfo{SinceTurn: sinceTurn}})
-	pp := newParkPause(opts.PauseGate)
+	pp := newParkPause(ctx, opts.PauseGate)
 	defer pp.done()
 	for {
 		m, resumed := parkForInput(ctx, opts.SteerQueue, opts.OnHeartbeat, pp)

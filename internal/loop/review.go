@@ -206,7 +206,7 @@ func parkForReview(ctx context.Context, opts *RunOptions, messages []providers.M
 	announce()
 	t := time.NewTicker(parkHeartbeatInterval)
 	defer t.Stop()
-	pp := newParkPause(opts.PauseGate)
+	pp := newParkPause(ctx, opts.PauseGate)
 	defer pp.done()
 	expiredWhilePaused := false
 	// handle acts on one message from the steer queue; the bool reports that
