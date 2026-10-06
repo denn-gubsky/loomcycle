@@ -2,6 +2,11 @@ package cli
 
 import (
 	"bytes"
+	"fmt"
+	"os"
+	"path/filepath"
+	"reflect"
+	"sort"
 	"strings"
 	"testing"
 
@@ -93,6 +98,72 @@ func TestRunTrueNASQuestions_EmitsValidYAML(t *testing.T) {
 	if rc := RunTrueNASQuestions([]string{"x"}, &out, &errb); rc != 2 {
 		t.Errorf("with args rc=%d, want 2", rc)
 	}
+}
+
+// TestTrueNASCatalog_EnvOptionsMatchGenerator: the env_options question checked
+// into the TrueNAS catalog form is exactly what `truenas-questions` emits from
+// the embedded env catalogue. The form is a spliced copy, so without this a knob
+// added to the catalogue never reaches the install wizard until someone
+// remembers to regenerate it.
+func TestTrueNASCatalog_EnvOptionsMatchGenerator(t *testing.T) {
+	raw, err := os.ReadFile(filepath.Join("..", "..", "deploy", "truenas", "catalog", "questions.yaml"))
+	if err != nil {
+		t.Fatalf("read catalog form: %v", err)
+	}
+	var form struct {
+		Questions []map[string]any `yaml:"questions"`
+	}
+	if err := yaml.Unmarshal(raw, &form); err != nil {
+		t.Fatalf("catalog form is not valid YAML: %v", err)
+	}
+	var have map[string]any
+	for _, q := range form.Questions {
+		if q["variable"] == "env_options" {
+			have = q
+		}
+	}
+	if have == nil {
+		t.Fatal("catalog form has no env_options question")
+	}
+
+	var out, errb bytes.Buffer
+	if rc := RunTrueNASQuestions(nil, &out, &errb); rc != 0 {
+		t.Fatalf("rc=%d stderr=%s", rc, errb.String())
+	}
+	var gen []map[string]any
+	if err := yaml.Unmarshal(out.Bytes(), &gen); err != nil || len(gen) != 1 {
+		t.Fatalf("generator output: %v (%d questions)", err, len(gen))
+	}
+	if !reflect.DeepEqual(have, gen[0]) {
+		t.Errorf("deploy/truenas/catalog/questions.yaml env_options is stale: regenerate it with "+
+			"`loomcycle truenas-questions` (only in the form: %v; only in the catalogue: %v)",
+			attrDiff(have, gen[0]), attrDiff(gen[0], have))
+	}
+}
+
+// attrDiff lists the env_options attr names in a that b lacks (a mismatch with
+// none on either side means a help text changed).
+func attrDiff(a, b map[string]any) []string {
+	names := func(q map[string]any) map[string]bool {
+		m := map[string]bool{}
+		schema, _ := q["schema"].(map[string]any)
+		attrs, _ := schema["attrs"].([]any)
+		for _, x := range attrs {
+			if v, ok := x.(map[string]any); ok {
+				m[fmt.Sprint(v["variable"])] = true
+			}
+		}
+		return m
+	}
+	in, other := names(a), names(b)
+	var out []string
+	for n := range in {
+		if !other[n] {
+			out = append(out, n)
+		}
+	}
+	sort.Strings(out)
+	return out
 }
 
 func attrKeys(m map[string]tnVar) []string {
