@@ -468,6 +468,7 @@ func Run(t *testing.T, factory Factory) {
 		{"EphemeralVolumeCreateListDelete", testEphemeralVolumeCreateListDelete},
 		{"EphemeralVolumeSweepCandidatesTerminalOnly", testEphemeralVolumeSweepCandidatesTerminalOnly},
 		{"EphemeralVolumeSweepCandidatesSkipsPaused", testEphemeralVolumeSweepCandidatesSkipsPaused},
+		{"EphemeralVolumeSweepCandidatesWaitForRunsBeneathRoot", testEphemeralVolumeSweepCandidatesWaitForRunsBeneathRoot},
 		{"EphemeralVolumeListByTenantIsolation", testEphemeralVolumeListByTenantIsolation},
 		// RFC L OSS multi-tenant authorization — OperatorTokenDef.
 		{"OperatorTokenDefCreateAndLookup", testOperatorTokenDefCreateAndLookup},
@@ -13717,6 +13718,69 @@ func testEphemeralVolumeSweepCandidatesSkipsPaused(t *testing.T, s store.Store) 
 		if c.RootRunID == run.ID {
 			t.Fatalf("PAUSED run appeared as a sweep candidate — its volumes would be wrongly purged before resume")
 		}
+	}
+}
+
+// testEphemeralVolumeSweepCandidatesWaitForRunsBeneathRoot: a tree whose root
+// has ended is not swept while any run beneath it still runs — a detached team
+// walk keeps its starter's root run id and outlives it, so its members use the
+// tree's volumes after the root ends. The run beneath is reached through every
+// level of parent_run_id (root → child → walk → member), and the tree is swept
+// once nothing beneath it runs. A running run in ANOTHER tree holds nothing.
+func testEphemeralVolumeSweepCandidatesWaitForRunsBeneathRoot(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	sess, _ := s.CreateSession(ctx, "tnt-tree", "a", "u")
+	mk := func(agent, parent string) store.Run {
+		t.Helper()
+		run, err := s.CreateRun(ctx, sess.ID, store.RunIdentity{AgentID: agent, TenantID: "tnt-tree", ParentRunID: parent})
+		if err != nil {
+			t.Fatalf("create run %s: %v", agent, err)
+		}
+		return run
+	}
+	finish := func(run store.Run) {
+		t.Helper()
+		if err := s.FinishRun(ctx, run.ID, store.RunCompleted, "end_turn", store.Usage{}, ""); err != nil {
+			t.Fatalf("finish %s: %v", run.AgentID, err)
+		}
+	}
+	isCandidate := func(root string) bool {
+		t.Helper()
+		cands, err := s.EphemeralVolumeSweepCandidates(ctx)
+		if err != nil {
+			t.Fatalf("sweep candidates: %v", err)
+		}
+		for _, c := range cands {
+			if c.RootRunID == root {
+				return true
+			}
+		}
+		return false
+	}
+
+	root := mk("a_tree_root", "")
+	child := mk("a_tree_child", root.ID)
+	walk := mk("team:tree", child.ID)
+	member := mk("a_tree_member", walk.ID)
+	if _, err := s.EphemeralVolumeCreate(ctx, mkEphemeralVolume(root.ID, "work", "tnt-tree", "/pool/_ephemeral/"+root.ID+"/work", "rw")); err != nil {
+		t.Fatalf("create ephemeral: %v", err)
+	}
+	finish(child)
+	finish(root)
+	// A live run elsewhere: its own tree, nothing to do with root's.
+	other := mk("a_other_root", "")
+	mk("a_other_child", other.ID)
+
+	if isCandidate(root.ID) {
+		t.Fatal("tree swept while a walk and its member beneath its root still run")
+	}
+	finish(member)
+	if isCandidate(root.ID) {
+		t.Fatal("tree swept while the walk beneath its root still runs")
+	}
+	finish(walk)
+	if !isCandidate(root.ID) {
+		t.Error("tree not swept once nothing beneath its root runs")
 	}
 }
 
