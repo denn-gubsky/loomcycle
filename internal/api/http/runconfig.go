@@ -154,6 +154,53 @@ type runConfigRecord struct {
 	// Here rather than in parent_context, which a caller supplies: this names
 	// definitions a run may execute, so only the runtime may write it.
 	TeamScope *teamScopeRecord `json:"team_scope,omitempty"`
+
+	// Clock is how much of its time budget a code-js run had spent, and how
+	// long it had waited, when it last paused — written by the pause gate as
+	// the run parks, so a resume (on this instance or another) continues the
+	// budget where it stopped rather than granting a fresh one. Absent on
+	// every run whose provider keeps no clock, and on one that never paused.
+	Clock *runClockRecord `json:"run_clock,omitempty"`
+}
+
+// runClockRecord is providers.RunClockState as a run records it.
+type runClockRecord struct {
+	ActiveMs int64 `json:"active_ms"`
+	WaitedMs int64 `json:"waited_ms"`
+}
+
+// clockCarry is the clock state a resumed run starts from (zero when none
+// was recorded).
+func (rc runConfigRecord) clockCarry() providers.RunClockState {
+	if rc.Clock == nil {
+		return providers.RunClockState{}
+	}
+	return providers.RunClockState{
+		Active: time.Duration(rc.Clock.ActiveMs) * time.Millisecond,
+		Waited: time.Duration(rc.Clock.WaitedMs) * time.Millisecond,
+	}
+}
+
+// recordRunClock writes a parking run's clock state into its record. A run
+// with no record at all is left without one: a record holding only the clock
+// would read, on resume, as the run's whole configuration and replace the
+// definition fallback such a run resumes from.
+func (s *Server) recordRunClock(ctx context.Context, runID string, st providers.RunClockState) error {
+	run, err := s.store.GetRun(ctx, runID)
+	if err != nil {
+		return err
+	}
+	if len(run.RunConfig) == 0 {
+		return nil
+	}
+	_, err = s.updateRunConfig(ctx, runID, func(rec *runConfigRecord, unreadable bool) error {
+		if unreadable {
+			return errRunConfigUnreadable
+		}
+		rec.Clock = &runClockRecord{ActiveMs: st.Active.Milliseconds(), WaitedMs: st.Waited.Milliseconds()}
+		return nil
+	})
+	return err
 }
 
 // teamScopeRecord is store.TeamScope as a run records it.
