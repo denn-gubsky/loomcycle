@@ -11,6 +11,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/denn-gubsky/loomcycle/internal/providers"
@@ -212,7 +213,23 @@ type TeamDef struct {
 	// Spawn/Admit injection — wired by the server to the Interruption tool. nil (or
 	// a run that omits interrupt_on_cap) = a cap returns the iteration_cap outcome.
 	AskHuman func(ctx context.Context, question string) (answer string, err error)
+
+	// LiveChildren bounds the children each run has alive at once — the
+	// registry the Agent tool admits against. A walk run in poll mode is one
+	// of its caller's children and holds a slot until it ends. nil admits
+	// everything.
+	LiveChildren *tools.LiveChildren
+
+	// PollWaitCapMs bounds how long one poll with wait "any" or "all" may
+	// block — the Agent poll cap (LOOMCYCLE_AGENT_POLL_WAIT_CAP_MS). 0 =
+	// DefaultPollWaitCapMs.
+	PollWaitCapMs int
 }
+
+// teamWalkLabel prefixes the label a walk's run is filed under (team:<name>),
+// which is also how a poll-mode walk is named in its caller's background
+// table and in the notes that report it.
+const teamWalkLabel = "team:"
 
 // teamBoard is the minimal Document-board surface a board-bound op=run needs: read
 // a chunk's status to resume, and set it to persist each transition. An interface
@@ -238,7 +255,11 @@ const teamDefDescription = `Author, fork, promote, retire, and inspect team work
 	`terminal state. run may OPTIONALLY bind to a Document chunk board (board_chunk_id) so progress persists ` +
 	`as chunk.status and resumes across runs, and may escalate an iteration cap to a human (interrupt_on_cap) ` +
 	`instead of aborting. A run is a first-class unit of work: it gets its own run_id (returned either way), so it can be ` +
-	`addressed while it runs — mode=detach returns that id immediately instead of waiting for the walk. create and fork PREFLIGHT a definition's channel references — a channel the team's own ACL ` +
+	`addressed while it runs — mode=detach returns that id immediately instead of waiting for the walk. ` +
+	`mode=poll (inside an agent's run) also returns {run_id, state:"running"} at once, and runs the walk as a background ` +
+	`child of your run: you keep working, are told when it ends, and read its answer — the fields a waited-for run returns — ` +
+	`with poll (run_ids, wait none|any|all, wait_ms). It is cancelled with your run, and your run does not end while it is ` +
+	`still running. create and fork PREFLIGHT a definition's channel references — a channel the team's own ACL ` +
 	`does not grant, or one that is not declared at all, is refused with the exact block to add, rather than ` +
 	`failing later at the state that needed it. verify reports the content hash AND sweeps what the stored ` +
 	`definition references but does not contain (channels deleted, ACL gaps, members retired) as issues[] with ` +
@@ -289,12 +310,12 @@ const teamDefDescription = `Author, fork, promote, retire, and inspect team work
 	`each member run is held when it finishes, for an operator to approve, send back with feedback, or reject; a rejected ` +
 	`starter member reaches the sink as status "rejected", and a rejected agent or parallel member fails like any failed member. retire soft-retires one version; delete ` +
 	`hard-removes a whole team by name (all versions + active pointer), scoped to your tenant. Operations: ` +
-	`create, fork, get, list, retire, delete, promote, verify, render_diagram, run.`
+	`create, fork, get, list, retire, delete, promote, verify, render_diagram, run, poll.`
 
 const teamDefInputSchema = `{
   "type": "object",
   "properties": {
-    "op":            {"type": "string", "enum": ["create","fork","get","list","retire","delete","promote","verify","render_diagram","run"], "description": "Operation to perform."},
+    "op":            {"type": "string", "enum": ["create","fork","get","list","retire","delete","promote","verify","render_diagram","run","poll"], "description": "Operation to perform."},
     "name":          {"type": "string", "description": "Team name (required for create/fork/list/verify/delete). A new name is one segment of A-Z a-z 0-9 _ -, at most 64 characters: no \"/\", \":\", \".\" or spaces."},
     "def_id":        {"type": "string", "description": "Existing def_id (required for get/retire/promote)."},
     "parent_def_id": {"type": "string", "description": "Fork parent (optional for fork — when absent, forks the active def of the name in your tenant, falling back to the shared \"\" base). verify with an overlay takes it too, to check the draft as a fork of that version."},
@@ -325,7 +346,12 @@ const teamDefInputSchema = `{
     "board_chunk_id": {"type": "string", "description": "run (optional): bind the walk to a Document chunk task board. Each state transition persists chunk.status = the current team state (durable progress), and a later run RESUMES from the persisted status. Omit for an ephemeral run (default)."},
     "board_scope":    {"type": "string", "enum": ["agent","user"], "description": "run (optional): the Document scope of board_chunk_id (default user)."},
     "interrupt_on_cap": {"type": "boolean", "description": "run (optional): when a state hits its iteration cap, ask a human (Interruption) whether to continue / reroute:<state> / abort instead of returning the iteration_cap outcome. An unanswered/timed-out/declined ask aborts (still terminates). Default false."},
-    "mode":             {"type": "string", "enum": ["detach"], "description": "run (optional): omit to wait for the walk and get its trace. \"detach\" returns {run_id, status:\"running\"} immediately and the walk continues in the background — use it when you need a handle WHILE the walk runs, to arm a breakpoint, answer a pause, or watch progress. Either way the response carries run_id."},
+    "mode":             {"type": "string", "enum": ["detach","poll"], "description": "run (optional): omit to wait for the walk and get its trace. \"detach\" returns {run_id, status:\"running\"} immediately and the walk continues in the background, outside your run — use it when you need a handle WHILE the walk runs, to arm a breakpoint, answer a pause, or watch progress. \"poll\" (inside an agent's run) returns {run_id, state:\"running\"} immediately and the walk runs as a background child of your run: you keep working, are told when it ends, read it with op=poll, and your run does not end while it is still running; it is cancelled with your run. Either way the response carries run_id."},
+    "notify":           {"type": "boolean", "description": "run with mode poll (optional, default true): add a short note to your next turn when the walk ends. false = no note; you poll."},
+    "on_parent_end":    {"type": "string", "enum": ["wait","cancel"], "description": "run with mode poll (optional). wait (default): ending your turn waits for the walk. cancel: the walk is cancelled when you end your turn."},
+    "run_ids":          {"type": "array", "items": {"type": "string"}, "description": "poll (optional): walks you ran with mode poll, by the run_id each returned. Omit to get every such walk whose answer you have not read yet."},
+    "wait":             {"type": "string", "enum": ["none","any","all"], "description": "poll (optional). none (default): answer at once. any: wait until one of the named walks that is still running ends. all: wait until all of them have. Bounded by wait_ms."},
+    "wait_ms":          {"type": "integer", "description": "poll with wait any or all (optional): the longest to wait, in ms; capped by the runtime (60000 unless the operator set another). Absent = the cap."},
     "breakpoints":      {"type": "array", "items": {"type": "string"}, "description": "run (optional): debug mode. Each entry is a starter state id — \"wave\" (or \"wave:before_dispatch\") pauses the state before it dispatches: the wave is composed and nothing has run. Each pause asks a human (Interruption) to reply 'continue' (release all), 'release:<n>' (release n and pause again), or 'abort'. An unanswered/declined ask aborts. A run-time argument, never part of the definition: debugging a team must not change what the team IS. \"<state>:review\" arms review instead (see review), and may be set here or live."},
     "review":           {"type": "array", "items": {"type": "string"}, "description": "run (optional): starter, agent or parallel state ids whose member runs are held for an operator's verdict when they finish (a consolidator is not: it judges the work, it is not the work). A person approves each one, rejects it with feedback it revises from, or rejects it. A rejected starter member reaches the sink as status \"rejected\" and does not count toward the wave's wait; a rejected agent or parallel member counts as failed. Can also be armed while the walk runs, as the breakpoint \"<state>:review\". A run-time argument, never part of the definition."},
     "review_ttl_seconds": {"type": "integer", "minimum": 0, "description": "run (optional): with review, end a member hold nobody rules on within this many seconds as rejected. Omit for no deadline."}
@@ -358,6 +384,11 @@ type WalkRunSpec struct {
 	Vars map[string]string
 	// Detach is the run's mode: the caller got the run id back at once.
 	Detach bool
+	// Poll is the run's mode when the walk runs as a background child of the
+	// calling run; RunID is then the id the caller was handed before the
+	// walk's run existed, which the run must be created under.
+	Poll  bool
+	RunID string
 	// Board is the Document-board binding, nil when the walk has none.
 	Board            *WalkBoard
 	Breakpoints      []string
@@ -406,8 +437,16 @@ type teamDefInput struct {
 	Breakpoints    []string        `json:"breakpoints,omitempty"`        // run: starter states to pause at (debug mode)
 	Review         []string        `json:"review,omitempty"`             // run: starter/agent/parallel states whose member runs are held for a verdict
 	ReviewTTL      int             `json:"review_ttl_seconds,omitempty"` // run: end an unreviewed member hold as rejected after this long
-	Mode           string          `json:"mode,omitempty"`               // run: "" (wait for the walk) | "detach" (return the run id now)
+	Mode           string          `json:"mode,omitempty"`               // run: "" (wait for the walk) | "detach" (return the run id now) | "poll" (a background child of the calling run)
 	As             string          `json:"as,omitempty"`                 // verify with overlay: check the draft as a "create" or a "fork" ("" = as a save would)
+	Notify         *bool           `json:"notify,omitempty"`             // run, mode poll: note the walk's end (default true)
+	OnParentEnd    string          `json:"on_parent_end,omitempty"`      // run, mode poll: "wait" | "cancel"
+
+	// poll: walks run in poll mode by run id (none = every unread one), and
+	// how long to wait for them.
+	RunIDs []string `json:"run_ids,omitempty"`
+	Wait   string   `json:"wait,omitempty"`
+	WaitMs int      `json:"wait_ms,omitempty"`
 
 	// Vars — run: values for variables the team declares, name → text.
 	Vars map[string]string `json:"vars,omitempty"`
@@ -452,10 +491,12 @@ func (t *TeamDef) Execute(ctx context.Context, raw json.RawMessage) (tools.Resul
 		return t.execRenderDiagram(ctx, in)
 	case "run":
 		return t.execRun(ctx, in)
+	case "poll":
+		return t.execPoll(ctx, in)
 	case "":
 		return errResult("missing required field: op"), nil
 	default:
-		return errResult(fmt.Sprintf("unknown op %q (must be one of: create, fork, get, list, retire, delete, promote, verify, render_diagram, run)", in.Op)), nil
+		return errResult(fmt.Sprintf("unknown op %q (must be one of: create, fork, get, list, retire, delete, promote, verify, render_diagram, run, poll)", in.Op)), nil
 	}
 }
 
@@ -1283,6 +1324,27 @@ func (t *TeamDef) execRun(ctx context.Context, in teamDefInput) (tools.Result, e
 			"send `vars` naming only variables the team's definition declares in its own `vars`, with literal text values, and run again"), nil
 	}
 
+	// mode "poll" makes the walk a background child of the calling run, so it
+	// needs that run's table, and the iteration to collect it in, before
+	// anything is admitted. notify and on_parent_end are poll mode's only.
+	pollArg := ""
+	if in.Mode == "poll" {
+		pollArg = "poll"
+	}
+	pm, r, ok := pollModeOf(agentInput{Mode: pollArg, Notify: in.Notify, OnParentEnd: in.OnParentEnd})
+	if !ok {
+		return r, nil
+	}
+	var bg *tools.Background
+	if pm.poll {
+		if bg, r, ok = backgroundFor(ctx, teamPollNoTable, teamPollLastIteration); !ok {
+			return r, nil
+		}
+		if t.WalkRun == nil {
+			return errResult("run: mode=poll requires run tracking, which is not wired on this server"), nil
+		}
+	}
+
 	// Run admission (op=run bypasses RunOnce): enforce the token budget +
 	// operator-key restriction + agent-depth bound, and walk under the enriched
 	// ctx so every spawned agent inherits them. A refusal (over budget / too
@@ -1301,8 +1363,8 @@ func (t *TeamDef) execRun(ctx context.Context, in teamDefInput) (tools.Result, e
 	walkCtx = store.WithTeamScope(walkCtx, store.TeamScope{Tenant: row.TenantID, Team: row.Name, DefID: row.DefID})
 
 	detach := in.Mode == "detach"
-	if in.Mode != "" && !detach {
-		return errResult(fmt.Sprintf("run: unknown mode %q (only \"detach\")", in.Mode)), nil
+	if in.Mode != "" && !detach && !pm.poll {
+		return errResult(fmt.Sprintf("run: unknown mode %q (expected \"detach\" or \"poll\")", in.Mode)), nil
 	}
 	// Where a board-bound walk resumes is read BEFORE its run exists: the run
 	// records it when the row is created, and a board that cannot be read
@@ -1333,6 +1395,61 @@ func (t *TeamDef) execRun(ctx context.Context, in teamDefInput) (tools.Result, e
 				"send an input that matches the team's input form (the `schema` on its entry state) and run again"), nil
 		}
 	}
+	// A poll-mode walk is a background child of the calling run: admitted
+	// against the run's live children, filed in its table under an id minted
+	// now — the caller is handed it before the walk's run row exists — and run
+	// on the ctx the table hands out: the call's values, cancelled with the
+	// calling RUN (or by its cancel of the walk) rather than with this call,
+	// which returns at once. withdraw undoes this for a walk refused below.
+	pollRunID := ""
+	releaseLive := func() {}
+	withdraw := func() {}
+	if pm.poll {
+		live, lerr := t.LiveChildren.Admit(tools.RunID(ctx), 1)
+		if lerr != nil {
+			return liveLimitResult(lerr), nil
+		}
+		releaseLive = live[0]
+		pollRunID = store.NewRunID()
+		cctx, serr := bg.Start(walkCtx, tools.ChildSpec{
+			RunID: pollRunID, Agent: teamWalkLabel + row.Name, Index: -1, Kind: tools.ChildKindTeam,
+			Notify: pm.notify, CancelOnParentEnd: pm.cancelOnEnd,
+		})
+		if serr != nil {
+			releaseLive()
+			return errBusiness(serr.Error(), ""), nil
+		}
+		bg.SetState(pollRunID, tools.ChildRunning)
+		walkCtx = cctx
+		withdraw = func() {
+			bg.Withdraw(pollRunID)
+			releaseLive()
+		}
+	}
+	// held reports a person holding a poll-mode walk — a breakpoint or cap
+	// question it asked, or a member held for a review verdict — on its row
+	// in the caller's table: "held" while any hold is open, "running" again
+	// once none is.
+	held := func(bool) {}
+	if pm.poll {
+		var mu sync.Mutex
+		open := 0
+		held = func(on bool) {
+			mu.Lock()
+			defer mu.Unlock()
+			if on {
+				open++
+			} else {
+				open--
+			}
+			state := tools.ChildRunning
+			if open > 0 {
+				state = tools.ChildHeld
+			}
+			bg.SetState(pollRunID, state)
+		}
+	}
+
 	// The walk becomes a RUN — after admission, so a refused request never
 	// mints a row. From here on walkCtx carries the run id, which is what makes
 	// the walk addressable: breakpoints, the Interruption ask a pause is
@@ -1354,6 +1471,8 @@ func (t *TeamDef) execRun(ctx context.Context, in teamDefInput) (tools.Result, e
 			Input:            in.Input,
 			Vars:             in.Vars,
 			Detach:           detach,
+			Poll:             pm.poll,
+			RunID:            pollRunID,
 			Breakpoints:      in.Breakpoints,
 			Review:           in.Review,
 			ReviewTTLSeconds: in.ReviewTTL,
@@ -1367,7 +1486,16 @@ func (t *TeamDef) execRun(ctx context.Context, in teamDefInput) (tools.Result, e
 		}
 		walkCtx, runID, finishRun, werr = t.WalkRun(walkCtx, spec)
 		if werr != nil {
+			withdraw()
 			return errResult(fmt.Sprintf("run: %s", werr)), nil
+		}
+		// Fail closed: a poll-mode walk the caller would read under one id
+		// while its run lives under another could be neither polled nor
+		// cancelled through its run.
+		if pm.poll && runID != pollRunID {
+			finishRun(WalkEnd{Err: errors.New("the walk's run was not created under the id it was handed")})
+			withdraw()
+			return errResult("run: internal: the walk's run was not created under the id it was handed"), nil
 		}
 	} else if detach {
 		// Refused, not silently run inline: a caller that asked for a handle
@@ -1425,7 +1553,9 @@ func (t *TeamDef) execRun(ctx context.Context, in teamDefInput) (tools.Result, e
 				"Team %q: state %q hit its iteration cap (%d entries > max %d). "+
 					"Reply `continue` to grant another %d-iteration window, `reroute:<state>` to jump to another state, or `abort` to stop.",
 				row.Name, capErr.State, capErr.Count, capErr.Max, capErr.Max)
+			held(true)
 			answer, aerr := t.AskHuman(c, q)
+			held(false)
 			if aerr != nil {
 				// Interruption unavailable / timed out / cancelled / declined →
 				// abort. Preserves the termination guarantee (a failed escalation
@@ -1473,6 +1603,7 @@ func (t *TeamDef) execRun(ctx context.Context, in teamDefInput) (tools.Result, e
 	// stale sweeper failed it.
 	refuse := func(msg string) (tools.Result, error) {
 		finishRun(WalkEnd{Err: errors.New(msg)})
+		withdraw()
 		return errResult(msg), nil
 	}
 	if len(seed) > 0 {
@@ -1525,7 +1656,9 @@ func (t *TeamDef) execRun(ctx context.Context, in teamDefInput) (tools.Result, e
 		runnerOpts = append(runnerOpts, teamrun.WithBreakpoints(armedSet,
 			func(c context.Context, bp teamrun.Breakpoint) (teamrun.BreakDecision, error) {
 				breaks++
+				held(true)
 				answer, aerr := t.AskHuman(c, formatBreakpoint(row.Name, bp))
+				held(false)
 				if aerr != nil {
 					// Unavailable / timed out / cancelled / declined → abort.
 					// A debugger nobody can answer must not release the wave.
@@ -1572,6 +1705,11 @@ func (t *TeamDef) execRun(ctx context.Context, in teamDefInput) (tools.Result, e
 		if ref, own := ownAgents[agent]; own {
 			agent = ref
 		}
+		if pm.poll {
+			var endHold func()
+			ctx, endHold = memberHolds(ctx, held)
+			defer endHold()
+		}
 		return t.Spawn(ctx, agent, p, defID)
 	}
 	runner := teamrun.NewAgentRunner(spawn, runnerOpts...)
@@ -1591,6 +1729,9 @@ func (t *TeamDef) execRun(ctx context.Context, in teamDefInput) (tools.Result, e
 			closeRun(end)
 		}
 	}
+	// walkCancelled is whether the walk's ctx had been cancelled when it
+	// ended, read before finishRun releases that ctx.
+	walkCancelled := false
 	walk := func() ([]teamrun.StepRecord, error) {
 		defer releaseBreakpoints()
 		// The walk runs on the definition with each "./name" written out as the
@@ -1601,6 +1742,7 @@ func (t *TeamDef) execRun(ctx context.Context, in teamDefInput) (tools.Result, e
 		if werr == nil {
 			end.Terminal = walkTerminal(def, task)
 		}
+		walkCancelled = walkCtx.Err() != nil
 		finishRun(end)
 		return trace, werr
 	}
@@ -1684,6 +1826,25 @@ func (t *TeamDef) execRun(ctx context.Context, in teamDefInput) (tools.Result, e
 			"final_output": task.Input, // Walk threads the last handler's output here
 			"steps":        steps,
 		}), nil
+	}
+
+	if pm.poll {
+		// The caller gets the walk's id NOW and goes on working. The walk is a
+		// child of the caller's run (see above): its end is filed in the run's
+		// table with the answer a waited-for walk returns, and the run is told.
+		// Like a detached walk it no longer holds the caller up, so whatever it
+		// waits on must not pause the caller's clock.
+		walkCtx = providers.WithRunClock(walkCtx, nil)
+		go finishPollWalk(bg, pollRunID, releaseLive, func() walkEnding {
+			trace, werr := walk()
+			return pollWalkResult(answer, trace, werr, walkCancelled, context.Cause(walkCtx))
+		})
+		return okJSON(map[string]any{
+			"name":   row.Name,
+			"def_id": row.DefID,
+			"run_id": runID,
+			"state":  tools.ChildRunning,
+		})
 	}
 
 	if detach {

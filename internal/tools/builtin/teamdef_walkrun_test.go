@@ -40,7 +40,13 @@ func (w *walkRunRecorder) open(ctx context.Context, spec WalkRunSpec) (context.C
 	if detach {
 		ctx = context.WithoutCancel(ctx)
 	}
-	return ctx, "r_walk1", func(end WalkEnd) {
+	// A poll-mode walk's run is created under the id it was handed, as the
+	// server creates it.
+	runID := "r_walk1"
+	if spec.RunID != "" {
+		runID = spec.RunID
+	}
+	return ctx, runID, func(end WalkEnd) {
 		w.mu.Lock()
 		w.finished++
 		w.lastErr = end.Err
