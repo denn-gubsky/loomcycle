@@ -42,6 +42,15 @@ func (s *stubWebhookStore) RunByDeliveryKeys(_ context.Context, _ []string) (sto
 	return store.Run{}, false, nil
 }
 
+// The resolver tests never deliver, so a claim is always granted.
+func (s *stubWebhookStore) WebhookDeliveryClaim(_ context.Context, _ []string, _, _ time.Time) (bool, error) {
+	return true, nil
+}
+
+func (s *stubWebhookStore) WebhookDeliveryRelease(_ context.Context, _ []string) error {
+	return nil
+}
+
 // ChannelPublish + MemorySet satisfy lookup.WebhookStore (WH-5b
 // on_complete hooks). The resolver tests never fire hooks, so no-ops
 // suffice.

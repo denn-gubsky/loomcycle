@@ -3284,11 +3284,12 @@ type Store interface {
 	// ---- Durable webhook delivery dedup ----
 	//
 	// The accepted deliveries of a webhook that starts no run — a team's own
-	// webhook publishes a channel message, so no runs.idempotency_key can
-	// remember it — keyed by the receiver's dedup keys (already scoped to the
-	// webhook), each held until it expires. Shared by every replica and kept
-	// across restarts, so a captured delivery replayed to another replica, or
-	// after a restart, is still a duplicate.
+	// webhook, or a WebhookDef with delivery=channel, publishes a channel
+	// message, so no runs.idempotency_key can remember it — keyed by the
+	// receiver's dedup keys (already scoped to the webhook), each held until
+	// it expires. Shared by every replica and kept across restarts, so a
+	// captured delivery replayed to another replica, or after a restart, is
+	// still a duplicate.
 
 	// WebhookDeliveryClaim records keys as accepted until expiresAt, all or
 	// none: false (nothing written) when any of them is already held past

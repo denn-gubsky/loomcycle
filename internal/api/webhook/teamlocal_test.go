@@ -337,7 +337,7 @@ func TestTeamWebhook_DurableKeysAreTheSignedIdentities(t *testing.T) {
 	} {
 		get := hdr(tc.sig)
 		env := signedEnvelope(auth, get)
-		got := durableTeamKeys(newDeliveryKeys(key, deliveryID(auth, body, get), body, env), env)
+		got := durableDeliveryKeys(newDeliveryKeys(key, deliveryID(auth, body, get), body, env), env)
 		if len(got) != len(tc.want) {
 			t.Errorf("%s: keys %q, want %q", what, got, tc.want)
 			continue
@@ -351,7 +351,7 @@ func TestTeamWebhook_DurableKeysAreTheSignedIdentities(t *testing.T) {
 	bearer := config.WebhookAuth{Kind: "bearer", BearerTokenEnv: "WH_SECRET", DeliveryIDHeader: "X-Delivery"}
 	get := hdr("")
 	env := signedEnvelope(bearer, get)
-	if got := durableTeamKeys(newDeliveryKeys(key, deliveryID(bearer, body, get), body, env), env); len(got) != 1 || got[0] != dedupKey(key, "d-1") {
+	if got := durableDeliveryKeys(newDeliveryKeys(key, deliveryID(bearer, body, get), body, env), env); len(got) != 1 || got[0] != dedupKey(key, "d-1") {
 		t.Errorf("bearer: keys %q, want the sender's id alone", got)
 	}
 }

@@ -226,22 +226,11 @@ func (rec *Receiver) handle(w http.ResponseWriter, r *http.Request) {
 	//    it to the resolved webhook def and is what BOTH dedup layers key on
 	//    — plus what an HMAC signature covers (newDeliveryKeys).
 	did := deliveryID(wd.Auth, body, r.Header.Get)
-	dk := newDeliveryKeys(whKey, did, body, signedEnvelope(wd.Auth, r.Header.Get))
+	env := signedEnvelope(wd.Auth, r.Header.Get)
+	dk := newDeliveryKeys(whKey, did, body, env)
 	if rec.dedup.seenAny(dk) {
-		rec.finish(span, whKey, did, verdictAcceptedReplay, "")
 		rec.logf("webhook %q: replayed delivery (delivery_id seen within TTL) — idempotent ack", name)
-		resp := map[string]string{"webhook_name": name, "delivery_id": did, "deduped": "true"}
-		// Best-effort: surface the original run for the spawn path, which set
-		// idempotency_key = dk.key and delivery_alt_key = dk.alt (RFC H
-		// Decision 10) — or, for a delivery an earlier release accepted, the
-		// bare did. Channel-delivery has no run row, so run_id is simply
-		// omitted.
-		if rec.store != nil {
-			if existing, ok := rec.priorDeliveryRun(ctx, dk, did, wd); ok {
-				resp["run_id"] = existing.ID
-			}
-		}
-		writeJSON(w, http.StatusOK, resp)
+		rec.replayAck(ctx, w, span, name, whKey, did, dk, wd)
 		return
 	}
 
@@ -269,7 +258,7 @@ func (rec *Receiver) handle(w http.ResponseWriter, r *http.Request) {
 	// Accepted at the trust boundary — fork on delivery mode.
 	switch wd.Delivery {
 	case "channel":
-		rec.deliverChannel(ctx, w, span, name, whKey, did, dk, wd, body)
+		rec.deliverChannel(ctx, w, span, name, whKey, did, dk, durableDeliveryKeys(dk, env), wd, body)
 	case "team":
 		rec.deliverTeam(ctx, w, span, name, whKey, did, dk, wd, proj, body)
 	case "spawn", "":
@@ -320,13 +309,58 @@ func (rec *Receiver) authenticate(w http.ResponseWriter, r *http.Request, span t
 	return true
 }
 
+// replayAck answers a delivery already accepted — the idempotent re-send
+// GitHub and Stripe redeliveries expect — whichever guard recognised it.
+func (rec *Receiver) replayAck(ctx context.Context, w http.ResponseWriter, span trace.Span, name, whKey, did string, dk deliveryKeys, wd config.Webhook) {
+	rec.finish(span, whKey, did, verdictAcceptedReplay, "")
+	resp := map[string]string{"webhook_name": name, "delivery_id": did, "deduped": "true"}
+	// Best-effort: surface the original run for the spawn path, which set
+	// idempotency_key = dk.key and delivery_alt_key = dk.alt (RFC H
+	// Decision 10) — or, for a delivery an earlier release accepted, the
+	// bare did. Channel-delivery has no run row, so run_id is simply
+	// omitted.
+	if rec.store != nil {
+		if existing, ok := rec.priorDeliveryRun(ctx, dk, did, wd); ok {
+			resp["run_id"] = existing.ID
+		}
+	}
+	writeJSON(w, http.StatusOK, resp)
+}
+
 // deliverChannel publishes the RAW payload to the Def's channel. No
 // RunInput, no credential resolution — channel delivery is a pure relay.
-func (rec *Receiver) deliverChannel(ctx context.Context, w http.ResponseWriter, span trace.Span, name, whKey, did string, dk deliveryKeys, wd config.Webhook, body []byte) {
+//
+// No run row remembers a channel delivery, so the replay guard in front is
+// this replica's alone. keys (durableDeliveryKeys: only what the signature
+// covers) are claimed in the store just before the publish, so a delivery
+// already accepted on any replica, or before a restart, publishes nothing.
+func (rec *Receiver) deliverChannel(ctx context.Context, w http.ResponseWriter, span trace.Span, name, whKey, did string, dk deliveryKeys, keys []string, wd config.Webhook, body []byte) {
 	if rec.publisher == nil {
 		rec.finish(span, whKey, did, "rejected_no_publisher", "")
 		writeError(w, http.StatusServiceUnavailable, "channel_unavailable", "")
 		return
+	}
+	// Claimed only now, after every check that can refuse the delivery, so a
+	// refused one holds no key; the write below is all that is left to fail,
+	// and it releases them. Of two replicas racing on one delivery the claim
+	// (the insert itself) grants exactly one.
+	claimed := false
+	if rec.store != nil && len(keys) > 0 {
+		now := rec.now()
+		ok, err := rec.store.WebhookDeliveryClaim(ctx, keys, now, now.Add(durableDedupTTL))
+		if err != nil {
+			rec.finish(span, whKey, did, "rejected_publish", "")
+			rec.logf("webhook %q: claim the delivery's dedup keys: %v", name, err)
+			writeError(w, http.StatusServiceUnavailable, "channel_unavailable", "")
+			return
+		}
+		if !ok {
+			rec.dedup.recordDuplicate(dk)
+			rec.logf("webhook %q: delivery already accepted (held in the store) — idempotent ack", name)
+			rec.replayAck(ctx, w, span, name, whKey, did, dk, wd)
+			return
+		}
+		claimed = true
 	}
 	// Publish under the global scope — a webhook is an operator-level
 	// ingress, not bound to a user/agent keyspace. maxMessages/TTL default
@@ -336,6 +370,13 @@ func (rec *Receiver) deliverChannel(ctx context.Context, w http.ResponseWriter, 
 	_, err := rec.publisher.PublishNow(ctx, wd.Channel, wd.TenantID, store.MemoryScopeGlobal, "",
 		json.RawMessage(body), channels.SystemPublisherUserID, 0, 0)
 	if err != nil {
+		if claimed {
+			// Released, so the sender's retry is processed, not acked as a
+			// duplicate of a delivery that never landed.
+			if rerr := rec.store.WebhookDeliveryRelease(context.WithoutCancel(ctx), keys); rerr != nil {
+				rec.logf("webhook %q: release the dedup keys of a delivery that did not publish: %v", name, rerr)
+			}
+		}
 		rec.finish(span, whKey, did, "rejected_publish", "")
 		rec.logf("webhook %q: channel publish failed: %v", name, err)
 		writeError(w, http.StatusServiceUnavailable, "channel_unavailable", "")

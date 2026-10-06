@@ -187,8 +187,9 @@ func (s *Server) leasedTeamWebhook(ctx context.Context, key teamWebhookKey) (*ar
 // store. A replay inside it — to any replica, across a restart — publishes
 // nothing. Longer than the receiver's in-process window (10 minutes) and the
 // Stripe-style signature tolerance it backs; a body-only signature (GitHub's)
-// has no time limit, so a capture replayed after this publishes again, as a
-// WebhookDef's channel delivery does after its in-process window.
+// has no time limit, so a capture replayed after this publishes again. The
+// receiver holds a channel-delivery WebhookDef's keys as long
+// (durableDedupTTL in internal/api/webhook).
 const teamWebhookDedupTTL = 24 * time.Hour
 
 // publishTeamWebhook publishes one verified delivery into the webhook's
