@@ -80,8 +80,9 @@ func TestTeamDefCreate_RefusesLocalChannelsOnALegacyTeamName(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := checkLocalChannels("team/with/slashes", def); err == nil || !strings.Contains(err.Error(), "one segment") {
-		t.Fatalf("want the one-segment refusal, got %v", err)
+	first := firstRefusal(localChannelIssues("team/with/slashes", def))
+	if first == nil || !strings.Contains(first.Detail, "one segment") {
+		t.Fatalf("want the one-segment refusal, got %v", first)
 	}
 }
 
@@ -164,7 +165,7 @@ func TestTeamDefVerify_OwnChannelsNeedNoACLOrDeclaration(t *testing.T) {
 	}
 	def.Local.Channels = nil
 	issues := tool.sweepReferences(t.Context(), def)
-	if len(issues) != 2 || issues[0]["kind"] != "local_channel_missing" {
+	if len(issues) != 2 || issues[0].Kind != teamIssueLocalChannelMissing {
 		t.Errorf("want two local_channel_missing issues, got %v", issues)
 	}
 }
