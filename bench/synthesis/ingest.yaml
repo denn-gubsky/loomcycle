@@ -74,6 +74,12 @@ agents:
       }
 
   locomo/answerer:
+    # Its runs are runtime bookkeeping, not the conversation under test: an
+    # `internal` agent's sessions are kept out of the consolidation scan and out
+    # of History list/search. Without it, a store built after an answer phase
+    # consolidates the answer runs as chats, and a later answer can read an
+    # earlier one through History.
+    internal: true
     provider: deepseek
     model: deepseek-v4-flash
     max_tokens: 1200
@@ -149,6 +155,12 @@ agents:
   # unparsed while abstentions (scored without the judge) come through as wrong,
   # which reads as 0% accuracy on a store that is answering fine.
   locomo/judge:
+    # Its runs are runtime bookkeeping, not the conversation under test: an
+    # `internal` agent's sessions are kept out of the consolidation scan and out
+    # of History list/search. Without it, a store built after an answer phase
+    # consolidates the answer runs as chats, and a later answer can read an
+    # earlier one through History.
+    internal: true
     provider: deepseek
     model: deepseek-v4-flash
     tools: []

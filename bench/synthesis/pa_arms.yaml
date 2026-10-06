@@ -31,6 +31,12 @@ agents:
   # so the control already includes the willingness effect and the other arms
   # cannot bank it a second time.
   locomo/pa-control:
+    # Its runs are runtime bookkeeping, not the conversation under test: an
+    # `internal` agent's sessions are kept out of the consolidation scan and out
+    # of History list/search. Without it, a store built after an answer phase
+    # consolidates the answer runs as chats, and a later answer can read an
+    # earlier one through History.
+    internal: true
     provider: deepseek
     model: deepseek-v4-flash
     max_tokens: 1200
@@ -65,6 +71,12 @@ agents:
   # their turn events. On a queue-ingested store every one of those is null and
   # this arm silently degenerates into the control.
   locomo/pa-window:
+    # Its runs are runtime bookkeeping, not the conversation under test: an
+    # `internal` agent's sessions are kept out of the consolidation scan and out
+    # of History list/search. Without it, a store built after an answer phase
+    # consolidates the answer runs as chats, and a later answer can read an
+    # earlier one through History.
+    internal: true
     provider: deepseek
     model: deepseek-v4-flash
     max_tokens: 1200
@@ -118,6 +130,12 @@ agents:
   #   POST /v1/_memory/backfill_traces?tenant=&user_id=&dry_run=false
   # (needs LOOMCYCLE_MEMORY_TRACE_INDEX=1) and re-check the count BEFORE running.
   locomo/pa-traces:
+    # Its runs are runtime bookkeeping, not the conversation under test: an
+    # `internal` agent's sessions are kept out of the consolidation scan and out
+    # of History list/search. Without it, a store built after an answer phase
+    # consolidates the answer runs as chats, and a later answer can read an
+    # earlier one through History.
+    internal: true
     provider: deepseek
     model: deepseek-v4-flash
     max_tokens: 1200

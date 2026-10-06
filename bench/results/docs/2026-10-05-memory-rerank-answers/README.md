@@ -117,9 +117,22 @@ The pre-registered rule (S1 holds, gain ≥ 3 points) says to raise the default
   - conv-30 onward were re-run from scratch.
   - conv-26 was kept: it was built in an empty database, which is the fixed protocol's
     exact condition.
-- **Open:** the published LoCoMo rating ran all 10 conversations through one store and
-  may carry the same leak. The harness still needs a fix (purge sessions, or keep answer
-  runs out of the consolidation target). Both are follow-ups.
+- **The published LoCoMo rating (0.706) is not affected** (checked 2026-10-06). Its
+  `summary-checkpoints.json` shows all ten builds finishing (21:17 to 05:44) before the
+  first question was answered (06:54), with one scope per conversation.
+- **A caveat on (b), found while fixing the harness:**
+  - **The exposure:** History list/search showed the answerer's own earlier sessions,
+    since they were not `internal`. So a rerank-on answer **could** have found the
+    rerank-off answer to the same question through History. A shortcut like that would
+    pull the two arms together, toward the null.
+  - **Undetermined:** whether any answer did. The reports record no tool calls, and the
+    databases were dropped.
+  - **Weighed against it:** the answerer's prompt points it at `History op=window` (a
+    fact's source turns), not at search. And the two arms did differ: 19 discordant
+    pairs, and about 9% fewer model calls with rerank on.
+- **Fixed for later runs:** every LoCoMo agent but `locomo/scribe` is now `internal`.
+  This closes both the build leak and the History exposure
+  (`TestBenchAgents_OnlyTheScribeIsAConversation`).
 
 ## Files
 
