@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/denn-gubsky/loomcycle/internal/providers"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
 )
 
@@ -357,5 +358,49 @@ func waitUntil(t *testing.T, cond func() bool) {
 		if time.Now().After(deadline) {
 			t.Fatal("condition not reached")
 		}
+	}
+}
+
+// A background child held for a review verdict reports state "held" until it
+// is released, and its hold still reaches the parent's stream.
+func TestAgentPoll_AHeldChildReportsHeld(t *testing.T) {
+	release := make(chan struct{})
+	a := &AgentTool{
+		Run: func(context.Context, string, string, string) (string, error) { return "", nil },
+		RunDetailed: func(ctx context.Context, name, _, _ string) (string, map[string]any, string, error) {
+			id := tools.ChildRunID(ctx)
+			emit := tools.EventEmitter(ctx)
+			emit(providers.Event{Type: providers.EventSubagentHold, SubagentHold: &providers.SubagentHoldEventInfo{Subagent: name, SubagentRunID: id, State: providers.SubagentHoldHeld}})
+			<-release
+			emit(providers.Event{Type: providers.EventSubagentHold, SubagentHold: &providers.SubagentHoldEventInfo{Subagent: name, SubagentRunID: id, State: providers.SubagentHoldReleased}})
+			<-release
+			return "approved", nil, id, nil
+		},
+	}
+	ctx, bg := pollCtx()
+	var mu sync.Mutex
+	var seen []string
+	ctx = tools.WithEventEmitter(ctx, func(ev providers.Event) {
+		if ev.SubagentHold != nil {
+			mu.Lock()
+			seen = append(seen, ev.SubagentHold.State)
+			mu.Unlock()
+		}
+	})
+	res := execJSON(t, a, ctx, `{"op":"spawn","name":"w","prompt":"x","mode":"poll"}`)
+	var one pollStartRow
+	if err := json.Unmarshal([]byte(res.Text), &one); err != nil {
+		t.Fatal(err)
+	}
+	stateOf := func() string { v, _ := bg.Lookup(one.ChildRunID); return v.State }
+	waitUntil(t, func() bool { return stateOf() == tools.ChildHeld })
+	release <- struct{}{}
+	waitUntil(t, func() bool { return stateOf() == tools.ChildRunning })
+	close(release)
+	waitUntil(t, func() bool { return stateOf() == tools.ChildCompleted })
+	mu.Lock()
+	defer mu.Unlock()
+	if strings.Join(seen, ",") != "held,released" {
+		t.Errorf("parent stream saw %v, want the hold and its release", seen)
 	}
 }

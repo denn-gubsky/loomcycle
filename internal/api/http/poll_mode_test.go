@@ -15,6 +15,7 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/config"
 	"github.com/denn-gubsky/loomcycle/internal/providers"
 	"github.com/denn-gubsky/loomcycle/internal/store"
+	"github.com/denn-gubsky/loomcycle/internal/tools"
 )
 
 // familyProvider answers a parent from a script and holds every child until
@@ -286,5 +287,45 @@ func TestPollMode_CancellingAParkedParentCancelsItsChildren(t *testing.T) {
 				t.Fatalf("run %s = %+v, %v; want cancelled", id, run, err)
 			}
 		}
+	}
+}
+
+// A child created under a minted id does not hand that id on: its own
+// children's runs get ids of their own, so a background child can spawn.
+func TestPollMode_AChildsOwnChildrenGetTheirOwnIDs(t *testing.T) {
+	prov := &familyProvider{
+		release: make(chan struct{}),
+		parent: [][]providers.Event{ // the middle agent's script
+			agentCall("tu_1", `{"op":"spawn","name":"worker","prompt":"one"}`),
+			answer("mid done"),
+		},
+	}
+	close(prov.release)
+	cfg := familyConfig()
+	cfg.Agents["mid"] = config.AgentDef{Model: "stub-model", Tools: []string{"Agent"}, SystemPrompt: "you are the mid"}
+	srv, _ := makeServer(t, prov, cfg)
+	ctx, _ := lockedParentCtx(t, srv)
+	minted := store.NewRunID()
+	out, _, runID, err := srv.runAgentToolChild(tools.WithChildRunID(ctx, minted), "mid", "go", "")
+	if err != nil {
+		t.Fatalf("mid failed: %v", err)
+	}
+	if runID != minted || !strings.Contains(out, "mid done") {
+		t.Fatalf("mid ran as %q answering %q, want %q answering mid done", runID, out, minted)
+	}
+	calls := prov.parentCalls()
+	if len(calls) != 2 {
+		t.Fatalf("mid made %d calls", len(calls))
+	}
+	last := calls[1].Messages[len(calls[1].Messages)-1].Content[0]
+	if last.IsError || !strings.Contains(last.Text, "child result") {
+		t.Fatalf("the grandchild's spawn answered %+v, want its result", last)
+	}
+	i := strings.Index(last.Text, "run_id=")
+	grand := strings.Fields(last.Text[i+len("run_id="):])[0]
+	grand = strings.TrimSuffix(grand, "]")
+	run, err := srv.store.GetRun(context.Background(), grand)
+	if err != nil || grand == minted || run.ParentRunID != minted {
+		t.Errorf("grandchild %q = %+v, %v; want its own run under %s", grand, run, err, minted)
 	}
 }

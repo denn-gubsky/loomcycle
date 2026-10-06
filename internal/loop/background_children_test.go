@@ -243,7 +243,10 @@ func TestRun_OnParentEndCancelCompletesAtOnce(t *testing.T) {
 	}}
 	tool := &spawnTool{}
 	sink := &childEvents{}
-	res, err := runWithSpawn(context.Background(), prov, tool, 0, sink)
+	// Bounded: a run that wrongly waited for the child would wait forever.
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	res, err := runWithSpawn(ctx, prov, tool, 0, sink)
 	if err != nil || res.StopReason != "end_turn" {
 		t.Fatalf("run = %+v, %v; want end_turn", res, err)
 	}
@@ -291,7 +294,9 @@ func TestRun_NoIterationLeftCancelsOutstandingChildren(t *testing.T) {
 	}}
 	tool := &spawnTool{}
 	sink := &childEvents{}
-	res, err := runWithSpawn(context.Background(), prov, tool, 2, sink)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second) // a wrong wait would never end
+	defer cancel()
+	res, err := runWithSpawn(ctx, prov, tool, 2, sink)
 	if err != nil || res.FinalText != "out of turns" {
 		t.Fatalf("run = %+v, %v", res, err)
 	}
