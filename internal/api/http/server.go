@@ -164,6 +164,9 @@ type Server struct {
 	// walks under, so POST /v1/runs/{run_id}/cancel can stop it. Zero value
 	// works (test fixtures build a Server without a constructor).
 	walks walkCancels
+	// runTrees defers a run tree's ephemeral purge past its top-level run
+	// while a detached walk started inside it still runs.
+	runTrees runTreeHolds
 	// walkHeartbeatEvery overrides how often a live walk's run is heartbeated;
 	// zero means the loop's own interval. Tests set it.
 	walkHeartbeatEvery time.Duration
@@ -9552,9 +9555,11 @@ func (s *Server) releaseConsolidationLease(runID string) {
 // volumes could exist) or rootRunID is empty.
 //
 // Gated to top-level runs by the caller (meta.IsTopLevel): a sub-agent
-// completing must NOT purge the tree its parent + siblings still use.
+// completing must NOT purge the tree its parent + siblings still use. A
+// detached walk can outlive the top-level run, so while one holds the tree
+// the purge is left to the last walk's end (runTreeHolds).
 func (s *Server) purgeEphemeralVolumesForRun(rootRunID string) {
-	if rootRunID == "" {
+	if rootRunID == "" || s.runTrees.deferPurge(rootRunID) {
 		return
 	}
 	// RFC AA SQL Memory: roll back any explicit transactions this run tree left

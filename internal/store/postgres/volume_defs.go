@@ -242,13 +242,26 @@ func (s *Store) EphemeralVolumeDeleteByRun(ctx context.Context, rootRunID string
 // whose owning run is TERMINAL and NOT paused/pausing. The filter mirrors
 // SweepStaleRuns: a paused run is parked, not crashed — its ephemeral
 // volumes must survive to be reused on resume.
+//
+// Nor is a tree with a run still running beneath its root: a detached team
+// walk keeps its starter's root run id and outlives the root. See the sqlite
+// store for the walk up parent_run_id this mirrors.
 func (s *Store) EphemeralVolumeSweepCandidates(ctx context.Context) ([]store.EphemeralVolumeSweepRow, error) {
+	args := append([]any{string(store.RunRunning)}, store.TerminalRunStatusArgs()...)
 	rows, err := s.pool.Query(ctx,
-		`SELECT DISTINCT e.root_run_id, e.tenant_id
+		`WITH RECURSIVE live(id, parent) AS (
+		     SELECT id, parent_run_id FROM runs
+		      WHERE status = $1 AND parent_run_id IS NOT NULL
+		   UNION
+		     SELECT p.id, p.parent_run_id FROM runs p JOIN live l ON p.id = l.parent
+		      WHERE p.parent_run_id IS NOT NULL
+		 )
+		 SELECT DISTINCT e.root_run_id, e.tenant_id
 		 FROM ephemeral_volume_defs e
 		 JOIN runs r ON r.id = e.root_run_id
-		 WHERE r.status IN (`+pgPlaceholders(1, len(store.TerminalRunStatuses))+`)
-		   AND COALESCE(r.pause_state, 'running') NOT IN ('paused', 'pausing')`, store.TerminalRunStatusArgs()...)
+		 WHERE r.status IN (`+pgPlaceholders(2, len(store.TerminalRunStatuses))+`)
+		   AND COALESCE(r.pause_state, 'running') NOT IN ('paused', 'pausing')
+		   AND NOT EXISTS (SELECT 1 FROM live WHERE live.parent = e.root_run_id)`, args...)
 	if err != nil {
 		return nil, err
 	}

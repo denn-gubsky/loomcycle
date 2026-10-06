@@ -47,7 +47,9 @@ the create fails instead of following it out of the dynamic root.
   (even in one tenant) each get their OWN `work` with no collision. The
   whole spawn tree resolves it (sub-agents inherit it via the narrow-only
   rule); it is **auto-purged when the top-level run completes** (a singleton
-  sweeper backstops crashes). Requires an active run; refused if the name
+  sweeper backstops crashes). A team walk started with `mode: "detach"` uses
+  its starter's ephemeral volumes and keeps them until it ends, even past the
+  top-level run. Requires an active run; refused if the name
   collides with a static volume or already exists in this run. There is no
   `delete`/`purge` for ephemeral volumes — lifetime is the run.
 - **get** `{name}` / **list** — inspect your tenant's dynamic volumes.

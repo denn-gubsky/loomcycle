@@ -123,6 +123,15 @@ func (s *Server) openTeamWalkRun(ctx context.Context, spec builtin.WalkRunSpec) 
 		walkIdent.AgentID = agent
 		walkCtx = tools.WithRunIdentity(walkCtx, walkIdent)
 	}
+	// The root run id is kept too, so the walk's members use the starter
+	// tree's ephemeral volumes — which the tree's top-level run would tear down
+	// when it ends, possibly with this walk still running. The walk holds the
+	// tree until its own run closes.
+	heldRoot := ""
+	if detach && ident.RootRunID != "" {
+		heldRoot = ident.RootRunID
+		s.runTrees.hold(heldRoot)
+	}
 	if trigger != nil {
 		// The keys name THIS row. A walk a member of this one starts is its
 		// own run and must not claim them again.
@@ -184,6 +193,11 @@ func (s *Server) openTeamWalkRun(ctx context.Context, spec builtin.WalkRunSpec) 
 		s.publishRunState(meta, string(status), stopReason, msg)
 		s.observeRunEnd(meta, status, stopReason, msg, end.FinalText)
 		cancelWalk(nil) // release the ctx; a no-op after a cancel
+		// Last: every member has ended by now, so nothing of this walk still
+		// uses the tree it held.
+		if heldRoot != "" && s.runTrees.release(heldRoot) {
+			s.purgeEphemeralVolumesForRun(heldRoot)
+		}
 	}
 	return walkCtx, runID, finish, nil
 }
