@@ -27,7 +27,9 @@ current turn, as after an `open` or `send` that returned
   named background children that is still running ends; `all` waits until all
   of them have. A resident child is reported as it is and never waited for.
 - `wait_ms` — the longest `wait` blocks, in ms. Absent = the runtime's cap
-  (60000 unless the operator set another); a larger value is cut to it.
+  (60000 unless the operator set another); a larger value is cut to it. A
+  runtime pause ends the wait early, with what is known so far: poll again
+  after it.
 - `child_run_id` — instead of the above: one resident child.
 - `timeout_ms` — with `child_run_id` only: 0 (default) returns a snapshot at
   once; above 0 waits up to that long for the child to finish its turn.

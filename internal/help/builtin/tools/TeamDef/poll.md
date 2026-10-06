@@ -13,7 +13,9 @@ each answer once. Polling an ended walk by id returns its answer every time.
 - `wait` — `none` (default) answers at once; `any` waits until one of the
   named walks that is still running ends; `all` waits until all of them have.
 - `wait_ms` — the longest `wait` blocks, in ms. Absent = the runtime's cap
-  (60000 unless the operator set another); a larger value is cut to it.
+  (60000 unless the operator set another); a larger value is cut to it. A
+  runtime pause ends the wait early, with what is known so far: poll again
+  after it.
 
 ## Returns
 
