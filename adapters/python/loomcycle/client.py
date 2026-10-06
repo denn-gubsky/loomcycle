@@ -727,7 +727,16 @@ class LoomcycleClient:
         the runtime stamps the caller's authoritative tenant and opaque-404s
         cross-tenant. ``op="run"`` walks the team's state graph, spawning each
         state's agent under the same admission a run gets. Mirror of
-        :meth:`agent_def`."""
+        :meth:`agent_def`.
+
+        ``op="verify"`` with an ``overlay`` checks an UNSAVED team without
+        writing it: pass ``{"op": "verify", "name": ..., "overlay": <what
+        create/fork would be sent>}`` (optionally ``"as": "create"|"fork"``,
+        ``"parent_def_id"``, ``"description"``). The answer is a report, never
+        a refusal — ``valid`` (a save would be accepted), ``runnable``,
+        ``content_sha256``, ``matches`` and ``issues``: every problem at once,
+        each with a ``severity`` (``refused`` | ``unrunnable`` | ``advisory``)
+        and the JSON ``path`` of the value at fault."""
         return await self._dispatch_substrate("TeamDef", input)
 
     async def path(self, input: Mapping[str, Any]) -> Mapping[str, Any]:
