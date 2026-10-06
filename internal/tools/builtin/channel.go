@@ -733,6 +733,8 @@ func (c *Channel) execSubscribe(ctx context.Context, policy tools.ChannelPolicyV
 		}
 		t := time.NewTimer(time.Duration(wait) * time.Millisecond)
 		defer t.Stop()
+		endWait := providers.BeginWait(ctx) // the long-poll parks the caller's run
+		defer endWait()
 		select {
 		case <-waker:
 			// New publish landed. The publish's Bus.Notify is called
@@ -777,6 +779,7 @@ func (c *Channel) execSubscribe(ctx context.Context, policy tools.ChannelPolicyV
 		case <-ctx.Done():
 			// Cancelled — same as timeout from the wire shape.
 		}
+		endWait()
 	}
 
 	// Emit BEFORE the auto-commit ack. Audit-event ordering
@@ -1122,6 +1125,8 @@ func (c *Channel) execAwait(ctx context.Context, policy tools.ChannelPolicyValue
 	if !satisfied() && longPoll {
 		timer := time.NewTimer(time.Duration(wait) * time.Millisecond)
 		defer timer.Stop()
+		endWait := providers.BeginWait(ctx) // the long-poll parks the caller's run
+		defer endWait()
 	loop:
 		for {
 			// Dynamic-N select over the wakers + timer + ctx. reflect.Select
@@ -1173,6 +1178,7 @@ func (c *Channel) execAwait(ctx context.Context, policy tools.ChannelPolicyValue
 				break loop
 			}
 		}
+		endWait()
 	} else if !satisfied() {
 		// No long-poll budget (Bus nil / wait<=0): the single synchronous
 		// multi-read above is the whole answer; unmet ⇒ timed out.

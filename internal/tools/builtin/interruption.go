@@ -396,7 +396,10 @@ func (it *Interruption) execAskViaMCP(ctx context.Context, interruptID, mcpName 
 
 	// Through the run's hooks: this is a tool call made on the model's behalf,
 	// and calling the dispatcher directly was the one path no hook could see.
+	// The consumer's tool holds the call until a person answers: a wait.
+	endWait := providers.BeginWait(ctx)
 	res := tools.ExecuteHooked(callCtx, disp, toolName, args)
+	endWait()
 	if res.IsError {
 		// Consumer surfaced an error tool result — treat as a
 		// failed delivery, mark cancelled.
@@ -642,7 +645,9 @@ func (it *Interruption) blockWithHeartbeat(ctx context.Context, interruptID stri
 		}
 	}()
 
+	endWait := providers.BeginWait(ctx) // the caller's run is parked until a person answers
 	woke := it.Bus.Wait(ctx, "intr:"+interruptID, waitTimeout)
+	endWait()
 	if woke {
 		return nil
 	}

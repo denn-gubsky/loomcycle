@@ -562,6 +562,8 @@ func (s *Server) lookupOwnedResident(ctx context.Context, childRunID string) (*r
 // state "running". A cancelled caller ctx returns state "interrupted" (the child
 // keeps running — re-addressable by a later send/poll, or reaped on teardown).
 func (rc *residentChild) awaitTurn(ctx context.Context, turnDone <-chan struct{}, timeout time.Duration, blockWhenZero bool) (string, string, error) {
+	// The caller's run is parked while it waits on its child, bounded or not.
+	defer providers.BeginWait(ctx)()
 	if timeout <= 0 {
 		if blockWhenZero {
 			select {
