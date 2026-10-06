@@ -191,3 +191,54 @@ func TestBackground_CloseAfterACancelPassesTheRunsCause(t *testing.T) {
 		t.Errorf("child cause = %v, want the run's cancel", context.Cause(cctx))
 	}
 }
+
+// A team walk is read with TeamDef poll, so a note naming one says so — a run
+// that started a walk need not have the Agent tool. A mixed note names both.
+func TestBackground_NotesNameTheCallThatReadsEachKind(t *testing.T) {
+	b := NewBackground(context.Background())
+	for _, s := range []ChildSpec{
+		{RunID: "r_w", Agent: "team:triage", Index: -1, Notify: true, Kind: ChildKindTeam},
+		{RunID: "r_a", Agent: "writer", Index: -1, Notify: true},
+	} {
+		if _, err := b.Start(context.Background(), s); err != nil {
+			t.Fatal(err)
+		}
+	}
+	b.Finish("r_w", ChildCompleted, ChildResult{Output: "done"})
+	if n := b.TakeNotes(); n != "Background child r_w (team:triage) finished: completed. Use TeamDef poll to read its result." {
+		t.Errorf("one walk: %q", n)
+	}
+	b.Finish("r_a", ChildCompleted, ChildResult{})
+	wake := b.WakeNote([]string{"r_w", "r_a"})
+	if !strings.HasSuffix(wake, "Use Agent poll to read the sub-agents' results and TeamDef poll to read the team walks'.") {
+		t.Errorf("mixed wake note: %q", wake)
+	}
+}
+
+// A child withdrawn after Start — its start was refused, its id never handed
+// out — is not this run's: no poll selects it, no note names it, nothing
+// waits for it, and its ctx is released.
+func TestBackground_AWithdrawnChildIsNeverReported(t *testing.T) {
+	b := NewBackground(context.Background())
+	cctx, err := b.Start(context.Background(), ChildSpec{RunID: "r_1", Agent: "team:x", Index: -1, Notify: true, Kind: ChildKindTeam})
+	if err != nil {
+		t.Fatal(err)
+	}
+	b.Withdraw("r_1")
+	if cctx.Err() == nil {
+		t.Error("a withdrawn child's ctx was not released")
+	}
+	if _, ok := b.Lookup("r_1"); ok {
+		t.Error("a withdrawn child can still be looked up")
+	}
+	if out, unknown := b.Select(nil, ""); len(out) != 0 || len(unknown) != 0 {
+		t.Errorf("a bare select found %v (unknown %v)", out, unknown)
+	}
+	if waiting, _ := b.Outstanding(); len(waiting) != 0 {
+		t.Errorf("a withdrawn child holds the run: %v", waiting)
+	}
+	b.Finish("r_1", ChildCompleted, ChildResult{})
+	if n := b.TakeNotes(); n != "" {
+		t.Errorf("a withdrawn child was noted: %q", n)
+	}
+}
