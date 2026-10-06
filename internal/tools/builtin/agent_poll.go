@@ -140,6 +140,7 @@ func (a *AgentTool) spawnInBackground(ctx context.Context, bg *tools.Background,
 			}
 			emit(providers.Event{Type: providers.EventSpawnChildStarted, SpawnChild: &providers.SpawnChildEventInfo{
 				ToolUseID: toolUseID, Index: idx, RunID: runID, Agent: e.name, Mode: "poll", BatchID: batchID,
+				NoNotify: !pm.notify, CancelOnParentEnd: pm.cancelOnEnd,
 			}})
 		}
 		// A slot taken here, before returning, makes the reported state true:

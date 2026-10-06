@@ -103,21 +103,21 @@ func TestBackground_NotesNameEachEndedChildOnce(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if n := b.TakeNotes(); n != "" {
+	if n, _ := b.TakeNotes(); n != "" {
 		t.Fatalf("note before any child ended: %q", n)
 	}
 	b.Finish("r_1", ChildCompleted, ChildResult{})
-	if n := b.TakeNotes(); n != "Background child r_1 (researcher) finished: completed. Use Agent poll to read its result." {
+	if n, _ := b.TakeNotes(); n != "Background child r_1 (researcher) finished: completed. Use Agent poll to read its result." {
 		t.Errorf("one child: %q", n)
 	}
 	b.Finish("r_2", ChildFailed, ChildResult{})
 	b.Finish("r_3", ChildCompleted, ChildResult{})
 	b.Finish("r_4", ChildCompleted, ChildResult{})
 	b.MarkRead([]string{"r_4"})
-	if n := b.TakeNotes(); n != "Background child r_2 (writer) finished: failed. Use Agent poll to read its result." {
+	if n, _ := b.TakeNotes(); n != "Background child r_2 (writer) finished: failed. Use Agent poll to read its result." {
 		t.Errorf("after notify-off and read children: %q", n)
 	}
-	if n := b.TakeNotes(); n != "" {
+	if n, _ := b.TakeNotes(); n != "" {
 		t.Errorf("a child was noted twice: %q", n)
 	}
 }
@@ -205,11 +205,11 @@ func TestBackground_NotesNameTheCallThatReadsEachKind(t *testing.T) {
 		}
 	}
 	b.Finish("r_w", ChildCompleted, ChildResult{Output: "done"})
-	if n := b.TakeNotes(); n != "Background child r_w (team:triage) finished: completed. Use TeamDef poll to read its result." {
+	if n, _ := b.TakeNotes(); n != "Background child r_w (team:triage) finished: completed. Use TeamDef poll to read its result." {
 		t.Errorf("one walk: %q", n)
 	}
 	b.Finish("r_a", ChildCompleted, ChildResult{})
-	wake := b.WakeNote([]string{"r_w", "r_a"})
+	wake, _ := b.WakeNote([]string{"r_w", "r_a"})
 	if !strings.HasSuffix(wake, "Use Agent poll to read the sub-agents' results and TeamDef poll to read the team walks'.") {
 		t.Errorf("mixed wake note: %q", wake)
 	}
@@ -238,7 +238,7 @@ func TestBackground_AWithdrawnChildIsNeverReported(t *testing.T) {
 		t.Errorf("a withdrawn child holds the run: %v", waiting)
 	}
 	b.Finish("r_1", ChildCompleted, ChildResult{})
-	if n := b.TakeNotes(); n != "" {
+	if n, _ := b.TakeNotes(); n != "" {
 		t.Errorf("a withdrawn child was noted: %q", n)
 	}
 }

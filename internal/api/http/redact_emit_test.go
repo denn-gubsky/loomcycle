@@ -126,7 +126,8 @@ func TestRecordingEmit_SpawnLedgerStoredNotForwarded(t *testing.T) {
 	forwarded := 0
 	emit := srv.makeRecordingEmit(ctx, runID, tools.RunIdentityValue{}, "", runStateMeta{}, func(providers.Event) { forwarded++ })
 
-	for _, typ := range []providers.EventType{providers.EventSpawnChildStarted, providers.EventSpawnChildResult} {
+	ledgerTypes := []providers.EventType{providers.EventSpawnChildStarted, providers.EventSpawnChildResult, providers.EventSpawnChildRead}
+	for _, typ := range ledgerTypes {
 		emit(providers.Event{
 			Type:       typ,
 			SpawnChild: &providers.SpawnChildEventInfo{ToolUseID: "tu_fan", Index: 0, RunID: "r_child", Agent: "solver", Ok: true, Output: "done"},
@@ -139,7 +140,7 @@ func TestRecordingEmit_SpawnLedgerStoredNotForwarded(t *testing.T) {
 	}
 
 	// But DO land in the store (so the resume reconcile can read them back).
-	for _, typ := range []providers.EventType{providers.EventSpawnChildStarted, providers.EventSpawnChildResult} {
+	for _, typ := range ledgerTypes {
 		evs, _, err := st.ListEvents(ctx, store.EventFilter{Type: string(typ)}, 10, 0)
 		if err != nil {
 			t.Fatalf("ListEvents(%s): %v", typ, err)
@@ -154,6 +155,32 @@ func TestRecordingEmit_SpawnLedgerStoredNotForwarded(t *testing.T) {
 		if decoded.SpawnChild == nil || decoded.SpawnChild.ToolUseID != "tu_fan" {
 			t.Errorf("%s persisted without its SpawnChild payload: %+v", typ, decoded.SpawnChild)
 		}
+	}
+}
+
+// A poll-mode child's result row holds the answer its parent is handed — the
+// copy a tool_result row would hold — so a secret in it is masked in the
+// stored row as it is in the tool_result, everywhere it can be: the output,
+// the error, the structured state and a walk's answer. The live table keeps
+// its own copy, so nothing reaches the wire changed.
+func TestRecordingEmit_RedactsSecretInPollChildResult(t *testing.T) {
+	redactor := redact.New(map[string]string{"LOOMCYCLE_GITEA_TOKEN": emitSecret}, true)
+	srv, st, runID, ctx, cleanup := emitFixture(t, redactor)
+	defer cleanup()
+	emit := srv.makeRecordingEmit(ctx, runID, tools.RunIdentityValue{}, "", runStateMeta{}, func(providers.Event) {})
+	sc := &providers.SpawnChildEventInfo{RunID: "r_child", Mode: "poll", Ok: true, Ended: "completed",
+		Output: "out " + emitSecret, Error: "err " + emitSecret,
+		State: map[string]any{"k": emitSecret}, Detail: map[string]any{"final_output": emitSecret}}
+	emit(providers.Event{Type: providers.EventSpawnChildResult, SpawnChild: sc})
+	evs, _, err := st.ListEvents(ctx, store.EventFilter{Type: string(providers.EventSpawnChildResult)}, 10, 0)
+	if err != nil || len(evs) != 1 {
+		t.Fatalf("stored results = %d, %v", len(evs), err)
+	}
+	if strings.Contains(string(evs[0].Payload), emitSecret) {
+		t.Errorf("the stored poll result carries the secret: %s", evs[0].Payload)
+	}
+	if !strings.Contains(sc.Output, emitSecret) {
+		t.Error("masking the stored row changed the caller's copy")
 	}
 }
 

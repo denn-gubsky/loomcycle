@@ -686,8 +686,9 @@ export interface AgentEvent {
   /** Payload on `event: awaiting_children` — the background children the
    *  run waits for before its next turn. */
   awaiting_children?: { child_run_ids?: string[]; since_turn?: number };
-  /** Payload on `event: children_note` — the note's text, as the model reads it. */
-  children_note?: { text?: string };
+  /** Payload on `event: children_note` — the note's text, as the model reads it,
+   * and the background children it reports. */
+  children_note?: { text?: string; child_run_ids?: string[] };
   /** Payload on `event: steer` (RFC AI) — the operator's drained turn. On a
    *  re-attach replay, `source` is `"replay"`. Nil on all other event types. */
   user_input?: { text?: string; source?: string; seen_at?: string };

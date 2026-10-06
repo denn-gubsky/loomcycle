@@ -46,3 +46,22 @@ func TestLiveChildren_UnboundedCasesAdmitEverything(t *testing.T) {
 		}
 	}
 }
+
+// Hold counts children that are alive already whatever the limit, so the
+// run's next spawn sees them; each release frees one slot once.
+func TestLiveChildren_HoldCountsChildrenPastTheLimit(t *testing.T) {
+	l := NewLiveChildren(func() int { return 2 })
+	rel := l.Hold("r", 3)
+	if n := l.Alive("r"); n != 3 {
+		t.Fatalf("alive = %d, want 3", n)
+	}
+	if _, err := l.Admit("r", 1); err == nil {
+		t.Fatal("a spawn past held children was admitted")
+	}
+	rel[0]()
+	rel[0]()
+	rel[1]()
+	if n := l.Alive("r"); n != 1 {
+		t.Errorf("alive after two releases = %d, want 1", n)
+	}
+}

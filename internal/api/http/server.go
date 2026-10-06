@@ -6522,7 +6522,16 @@ func (s *Server) makeRecordingEmit(ctx context.Context, runID string, rid tools.
 			}
 			return
 		}
-		if ev.Type == providers.EventSpawnChildStarted || ev.Type == providers.EventSpawnChildResult {
+		if ev.Type == providers.EventSpawnChildStarted || ev.Type == providers.EventSpawnChildResult || ev.Type == providers.EventSpawnChildRead {
+			// A poll-mode child's result row holds what the parent is handed —
+			// the copy a tool_result row would hold — so it is masked as that
+			// row is. The live table keeps its own copy.
+			if sc := ev.SpawnChild; sc != nil && sc.Mode == "poll" && ev.Type == providers.EventSpawnChildResult && s.redactor.Enabled() {
+				masked := *sc
+				masked.Output, masked.Error = s.redactor.String(sc.Output), s.redactor.String(sc.Error)
+				masked.State, masked.Detail = redactJSONMap(s.redactor, sc.State), redactJSONMap(s.redactor, sc.Detail)
+				ev.SpawnChild = &masked
+			}
 			payload, err := json.Marshal(ev)
 			if err == nil {
 				if err := s.store.AppendEvent(ctx, runID, string(ev.Type), payload); err != nil {

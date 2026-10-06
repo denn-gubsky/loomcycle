@@ -316,7 +316,7 @@ func TestTeamDefPoll_AWalkRefusedAfterFilingIsWithdrawn(t *testing.T) {
 	if n := tool.LiveChildren.Alive("r_parent"); n != 0 {
 		t.Errorf("the refused walk holds %d slots", n)
 	}
-	if n := bg.TakeNotes(); n != "" {
+	if n, _ := bg.TakeNotes(); n != "" {
 		t.Errorf("the refused walk was noted: %q", n)
 	}
 }
