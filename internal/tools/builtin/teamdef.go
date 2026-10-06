@@ -299,7 +299,7 @@ const teamDefInputSchema = `{
       "description": "Team workflow graph. For create/fork, top-level fields are merged per-field over the parent (slices replace wholesale); server-set fields (def_id, version, parent_def_id, created_*) are ignored if supplied. For render_diagram, supplying an overlay renders a DRY-RUN preview of the unsaved graph (syntax-checked, not persisted) instead of resolving a stored def.",
       "properties": {
         "entry":          {"type": "string", "description": "The entry state id."},
-        "max_iterations": {"type": "integer", "description": "Per-state cycle cap (0 = default)."},
+        "max_iterations": {"type": "integer", "description": "Per-state cycle cap (0 = default). On fork, omit it to keep the parent's cap; send 0 to go back to the default."},
         "states":         {"type": "array", "items": {"type": "object"}, "description": "State nodes: each is {state, handler:{kind, agent|agents, wait?, consolidator?, ...}}. An agent name is a global agent, or \"./<name>\" for one the team declares under local.agents. A starter handler instead carries source ({channel} or {kind:\"document\", path, scope?}), fanout ({agent|agents, per: message|chunk|once, max}), prompt, sink and binds. An input state may set publish ({channel}) to publish the walk's input to that channel as a JSON value; a channel state may set payload:\"raw\" to publish its input as a JSON value instead of the {state, output} envelope. Replaces the parent's states wholesale."},
         "transitions":    {"type": "array", "items": {"type": "object"}, "description": "Edges: each is {from, to, on}. Replaces the parent's transitions wholesale."},
         "colors":         {"type": "object", "description": "Presentation-only fills/edge colours. Excluded from the content hash."},
@@ -1783,6 +1783,17 @@ func (t *TeamDef) buildDefinition(parentJSON string, overlay json.RawMessage) (j
 			return nil, fmt.Errorf("parse overlay: %w", err)
 		}
 		applyTeamOverlay(&base, ov)
+		// max_iterations' zero value IS a value — "use the default" — so
+		// set-if-non-zero could never put a capped team back on the default:
+		// the editor deletes the key, the fork keeps the parent's cap, and
+		// nothing says so. Presence decides instead: a sent key (0 or null
+		// included) is applied, an absent one keeps the parent's.
+		var keys map[string]json.RawMessage
+		if json.Unmarshal(overlay, &keys) == nil {
+			if _, sent := keys["max_iterations"]; sent {
+				base.MaxIterations = ov.MaxIterations
+			}
+		}
 	}
 	merged, err := json.Marshal(base)
 	if err != nil {
@@ -1838,9 +1849,8 @@ func applyTeamOverlay(base *teamgraph.Definition, ov teamgraph.Definition) {
 	if ov.Entry != "" {
 		base.Entry = ov.Entry
 	}
-	if ov.MaxIterations != 0 {
-		base.MaxIterations = ov.MaxIterations
-	}
+	// max_iterations is applied by buildDefinition, which can see whether the
+	// key was sent: its zero value is a value, so ov alone cannot tell.
 	if ov.States != nil {
 		base.States = ov.States
 	}
