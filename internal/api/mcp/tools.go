@@ -219,7 +219,7 @@ func toolDescriptors() []loommcp.ToolDescriptor {
 					"tools":            {"type": "array", "items": {"type": "string"}},
 					"allowed_hosts":    {"type": "array", "items": {"type": "string"}, "description": "OMIT for no narrowing. Empty array [] denies all outbound HTTP; a non-empty array intersects with the operator's list."},
 					"web_search_filter": {"type": "string", "enum": ["drop", "keep"]},
-					"run_timeout_seconds": {"type": "integer", "minimum": 1, "description": "create: a code-js run's wall-clock budget once started. A model-driven run has no time limit and ignores it."},
+					"run_timeout_seconds": {"type": "integer", "minimum": 1, "description": "create: a code-js run's time budget once started; time it spends waiting (on sub-agents, channels, answers) does not count. A model-driven run has no time limit and ignores it."},
 					"patch":            {"type": "object", "description": "update: the fields to replace, in the same names create takes; null removes one."},
 					"user_bearer":      {"type": "string", "description": "start: per-run MCP bearer, as for spawn_run."},
 					"user_credentials": {"type": "object", "additionalProperties": {"type": "string"}, "description": "start: per-tool named credentials, as for spawn_run."},

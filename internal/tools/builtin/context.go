@@ -328,6 +328,28 @@ func (c *Context) execSelf(ctx context.Context) (tools.Result, error) {
 			out["iterations_remaining"] = max(ib.Max-ib.Used, 0)
 		}
 	}
+	// run_budget: a run bounded by a time budget (a code-js run) reports it in
+	// milliseconds — the budget, the active time used against it, the time
+	// spent waiting (which never counts) and what is left — so an orchestrator
+	// can plan its remaining work; and beside it the lifetime limit, which
+	// waits DO count against, with the run's lifetime so far. Omitted for every
+	// other run, and before the provider has published the budget.
+	if clk := providers.RunClockFromContext(ctx); clk != nil {
+		if b := clk.Budget(); b > 0 {
+			st := clk.State()
+			rb := map[string]any{
+				"budget_ms":    b.Milliseconds(),
+				"used_ms":      st.Active.Milliseconds(),
+				"waited_ms":    st.Waited.Milliseconds(),
+				"remaining_ms": max(b-st.Active, 0).Milliseconds(),
+			}
+			if wl := clk.WallLimit(); wl > 0 {
+				rb["wall_limit_ms"] = wl.Milliseconds()
+				rb["wall_elapsed_ms"] = st.Wall.Milliseconds()
+			}
+			out["run_budget"] = rb
+		}
+	}
 	// max_context_tokens: the CONFIGURED per-agent context-WINDOW cap in effect
 	// (RFC CJ; per-run > per-agent). Reported even before the first turn (unlike
 	// the effective `context.max_tokens` below, which is only known post-turn).

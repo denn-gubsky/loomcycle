@@ -81,6 +81,8 @@ Every child is a full agent run: its own loop, its own provider calls, its own i
 - **Each child has its own `max_iterations`.** Children with `max_iterations: 64` × 8 spawns is 512 potential provider calls; that's a real cost.
 - **A fan-out on your last iteration is not wasted.** When the last turn your `max_iterations` allows calls tools, you get one closing turn with their results and tools disabled; its answer is the run's. Plan the fan-out so that one turn can use what comes back.
 
+A **code agent** orchestrating a fan-out is parked while its children run: the wait does not spend its run budget (`run_timeout_seconds`), so size that budget for the orchestrator's own work, not for the batch. The operator's lifetime limit on a code agent does count the wait. See `Context.help(topic="code-agents")`.
+
 When in doubt: estimate `cost-per-child × N` before fanning out. If you can do the work with N=3 instead of N=10 by giving each child a wider topic, do that.
 
 ## Common shape mistakes

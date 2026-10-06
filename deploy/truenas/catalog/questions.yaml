@@ -1041,6 +1041,12 @@ questions:
             schema:
               type: string
               default: ""
+          - variable: LOOMCYCLE_CODE_AGENTS_MAX_WALL_SECONDS
+            label: LOOMCYCLE_CODE_AGENTS_MAX_WALL_SECONDS
+            description: '(example: 86400)'
+            schema:
+              type: string
+              default: ""
           - variable: LOOMCYCLE_MOCK_ENABLED
             label: LOOMCYCLE_MOCK_ENABLED
             description: 'Canned responses with tunable latency/error injection — never hits a real API. (example: 1)'

@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/denn-gubsky/loomcycle/internal/providers"
 	"github.com/denn-gubsky/loomcycle/internal/store"
 	"github.com/denn-gubsky/loomcycle/internal/teamgraph"
 	"github.com/denn-gubsky/loomcycle/internal/teamrun"
@@ -1533,6 +1534,10 @@ func (t *TeamDef) execRun(ctx context.Context, in teamDefInput) (tools.Result, e
 		//
 		// walkCtx is already detached from the request by WalkRun, so the walk
 		// survives this handler returning; only cancel stops it.
+		//
+		// A detached walk no longer holds the caller up, so whatever it waits
+		// on must not pause the caller's clock.
+		walkCtx = providers.WithRunClock(walkCtx, nil)
 		go func() {
 			if _, werr := walk(); werr != nil {
 				log.Printf("teamdef: detached walk %q (run %s): %v", row.Name, runID, werr)
@@ -1546,7 +1551,10 @@ func (t *TeamDef) execRun(ctx context.Context, in teamDefInput) (tools.Result, e
 		})
 	}
 
+	endWait := providers.BeginWait(ctx) // the caller's run is parked while the team works
+	defer endWait()                     // idempotent; closes the wait on every exit
 	trace, walkErr := walk()
+	endWait()
 
 	steps := make([]map[string]any, 0, len(trace))
 	for _, s := range trace {

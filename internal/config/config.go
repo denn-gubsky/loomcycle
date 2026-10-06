@@ -3936,24 +3936,37 @@ type Env struct {
 	// reproducible runs (Decision 13). Default OFF. Env:
 	// LOOMCYCLE_CODE_AGENTS_DETERMINISTIC=1.
 	CodeAgentsDeterministic bool
-	// CodeAgentsRunTimeout bounds a code-agent's wall-clock. It is NOT a ctx
-	// deadline: the code-js provider gives each replay turn of the JavaScript
-	// the run's remaining budget (measured from the run's start) and
-	// Interrupts the turn when it runs out. A tool call in flight is not cut
-	// short (Interrupt cannot break a parked tool call); the first JavaScript
-	// turn after the budget is spent is interrupted at once. Default 120s.
-	// Env: LOOMCYCLE_CODE_AGENTS_RUN_TIMEOUT_SECONDS.
+	// CodeAgentsRunTimeout is a code-agent's whole-run budget of ACTIVE time.
+	// It is NOT a ctx deadline: the code-js provider gives each replay turn of
+	// the JavaScript the run's remaining budget and Interrupts the turn when
+	// it runs out; a turn that starts with none left fails at once. A tool
+	// call in flight is not cut short. Default 120s. Env:
+	// LOOMCYCLE_CODE_AGENTS_RUN_TIMEOUT_SECONDS.
 	//
-	// This is TOTAL wall-clock from the run's start, and it KEEPS TICKING
-	// while the orchestrator is blocked in Agent.parallel_spawn awaiting its
-	// children — each child is a full LLM run (often 60–180s), so a fan-out
-	// orchestrator's budget must envelope the whole batch, not one child. The
-	// CPU-oriented 120s default is structurally too low for one: raise it
-	// per-orchestrator-agent via AgentDef.RunTimeoutSeconds (yaml
-	// run_timeout_seconds) or per-call via the /v1/runs run_timeout_seconds
-	// field rather than bumping this global for every code agent. Exceeding
-	// the budget surfaces as code_agent_timeout (not a throw at a JS line).
+	// Time the run spends WAITING does not count: Agent spawn/parallel_spawn
+	// and the resident open/send/poll while they block, a synchronous TeamDef
+	// op=run, Channel await/subscribe long-polls, Interruption ask, and a
+	// runtime pause all stop the run's clock (providers.RunClock). So a
+	// fan-out orchestrator's budget covers its own JavaScript and non-waiting
+	// tool calls, not its children. Raise it per-agent via
+	// AgentDef.RunTimeoutSeconds (yaml run_timeout_seconds) or per-call via the
+	// /v1/runs run_timeout_seconds field. Exceeding the budget surfaces as
+	// code_agent_timeout (not a throw at a JS line). Because waits are free
+	// against it, CodeAgentsMaxWall below is the bound that waits DO count
+	// against.
 	CodeAgentsRunTimeout time.Duration
+	// CodeAgentsMaxWall is how long a code-agent run may LIVE, waits
+	// included — the absolute bound the budget above, which excludes waits,
+	// cannot be: a run that only waits (a loop over Channel await,
+	// Interruption ask or tiny spawns) spends almost none of it. When it is
+	// exceeded the run's ctx is cancelled, so in-flight waits and children
+	// stop too, and the run fails code_agent_wall_limit. Time the runtime is
+	// paused does not count, and a resumed run continues from its recorded
+	// lifetime. Default 24h; there is no "unlimited", only a large value set
+	// on purpose. Operator-only: no per-agent or per-run field reaches it, so
+	// an agent author cannot lift it (run_timeout_seconds sets the budget,
+	// not this). Env: LOOMCYCLE_CODE_AGENTS_MAX_WALL_SECONDS.
+	CodeAgentsMaxWall time.Duration
 	// CodeHooksEnabled lets a hook's body be code-js (RFC DK) instead of a
 	// webhook. Default OFF, separate from CodeAgentsEnabled: a code hook runs
 	// on every matching tool call of every agent in its scope, which is a
@@ -5352,6 +5365,12 @@ func LoadLayers(layers ...Layer) (*Config, error) {
 				d = time.Second
 			}
 			cfg.Env.CodeAgentsRunTimeout = d
+		}
+	}
+	cfg.Env.CodeAgentsMaxWall = 24 * time.Hour
+	if v := os.Getenv("LOOMCYCLE_CODE_AGENTS_MAX_WALL_SECONDS"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			cfg.Env.CodeAgentsMaxWall = time.Duration(n) * time.Second
 		}
 	}
 

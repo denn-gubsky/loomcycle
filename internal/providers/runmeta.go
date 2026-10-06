@@ -54,12 +54,11 @@ type RunMeta struct {
 	Metadata        map[string]any
 	PayloadMetadata map[string]any
 
-	// RunTimeoutSeconds is the effective per-run/per-agent wall-clock budget
-	// override for a code-js run (resolved server-side: per-run wins over
-	// per-agent). 0 ⇒ the code-js provider uses its global default
-	// (LOOMCYCLE_CODE_AGENTS_RUN_TIMEOUT_SECONDS). Lets a fan-out orchestrator
-	// that blocks in Agent.parallel_spawn carry a long envelope without
-	// raising the global for every code agent. LLM drivers ignore it.
+	// RunTimeoutSeconds is the effective per-run/per-agent budget override
+	// for a code-js run (resolved server-side: per-run wins over per-agent).
+	// 0 ⇒ the code-js provider uses its global default
+	// (LOOMCYCLE_CODE_AGENTS_RUN_TIMEOUT_SECONDS). The budget is ACTIVE time:
+	// the run's RunClock stops while it waits. LLM drivers ignore it.
 	RunTimeoutSeconds int
 }
 

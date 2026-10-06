@@ -35,7 +35,7 @@ func runErr(t *testing.T, p *Provider, meta providers.RunMeta) string {
 // wall-clock budget exhaustion is reported as code_agent_timeout (with the
 // budget, no source line), NOT code_agent_threw at whatever line the replay was
 // interrupted. Drives it by stamping StartedAt in the past so the resume turn
-// starts already over budget; the CPU loop is then interrupted by the timer.
+// starts already over budget and fails before the CPU loop runs.
 func TestCodeJS_BudgetTimeout_ClassifiedAsTimeout(t *testing.T) {
 	root := writeAgent(t, "spin", `function run(){ while(true){} }`)
 	p := New(Config{CodeRoot: root, RunTimeout: 5 * time.Second})
@@ -103,5 +103,54 @@ func TestCodeJS_RunTimeoutOverride_ExtendsBudget(t *testing.T) {
 	})
 	if got != "" {
 		t.Fatalf("per-run override should extend the budget so the run completes; got error %q", got)
+	}
+}
+
+// runErrWithClock is runErr with a run clock on ctx, as the loop stamps one.
+func runErrWithClock(t *testing.T, p *Provider, meta providers.RunMeta, clock *providers.RunClock) string {
+	t.Helper()
+	ctx := providers.WithRunClock(providers.WithRunMeta(context.Background(), meta), clock)
+	ch, err := p.Call(ctx, providers.Request{
+		Model:    "code-js",
+		Messages: []providers.Message{{Role: "user", Content: []providers.ContentBlock{{Type: "text", Text: "go"}}}},
+	})
+	if err != nil {
+		t.Fatalf("Call: %v", err)
+	}
+	var errText string
+	for ev := range ch {
+		if ev.Type == providers.EventError {
+			errText = ev.Error
+		}
+	}
+	return errText
+}
+
+// The budget is spent from the run clock's ACTIVE time, not from the wall
+// time since the run started: a run that started long ago but spent that time
+// waiting still has its budget, and one whose active time is used up fails at
+// once — even a turn quick enough to finish before any timer could fire.
+func TestCodeJS_BudgetIsTheRunClocksActiveTime(t *testing.T) {
+	root := writeAgent(t, "quick", `function run(){ return {final_text:"done"}; }`)
+	p := New(Config{CodeRoot: root, RunTimeout: 5 * time.Second})
+	meta := providers.RunMeta{AgentName: "quick", StartedAt: time.Now().Add(-10 * time.Second)}
+
+	// 10s of wall time since the start, all of it waited: nothing spent.
+	waited := providers.NewRunClock(time.Now(), providers.RunClockState{Waited: 10 * time.Second})
+	if got := runErrWithClock(t, p, meta, waited); got != "" {
+		t.Fatalf("a run whose time went to waiting must still have its budget; got %q", got)
+	}
+	if b := waited.Budget(); b != 5*time.Second {
+		t.Errorf("the provider published budget %s on the clock, want 5s", b)
+	}
+
+	// 6s of active time against a 5s budget: over, before the turn runs.
+	spent := providers.NewRunClock(time.Now(), providers.RunClockState{Active: 6 * time.Second, Waited: 3 * time.Second})
+	got := runErrWithClock(t, p, meta, spent)
+	if !strings.HasPrefix(got, "code_agent_timeout:") {
+		t.Fatalf("a run past its active budget must time out; got %q", got)
+	}
+	if !strings.Contains(got, "budget of active time") || !strings.Contains(got, "waited 3s, which did not count") {
+		t.Errorf("the timeout must say only active time counted and how long the run waited; got %q", got)
 	}
 }

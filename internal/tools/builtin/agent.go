@@ -539,7 +539,10 @@ func (a *AgentTool) executeSpawn(ctx context.Context, in agentInput) (tools.Resu
 	if !in.Compaction.IsZero() {
 		subCtx = tools.WithCompactionOverride(subCtx, in.Compaction)
 	}
+	endWait := providers.BeginWait(ctx) // the caller's run is parked while its child works
+	defer endWait()                     // every exit, a panic included: a wait left open would stop the budget for good
 	output, state, runID, timedOut, err := a.runChildBounded(subCtx, in.TimeoutMs, in.Name, in.Prompt, in.DefID)
+	endWait()
 	if timedOut {
 		return errBusiness(childTimedOutMessage(in.Name, in.TimeoutMs, runID),
 			"Give the child a larger timeout_ms or a smaller task. What it did before the bound is in its run's transcript."), nil
@@ -794,7 +797,10 @@ func (a *AgentTool) executeParallelSpawn(ctx context.Context, in agentInput) (to
 		}
 	}
 
+	endWait := providers.BeginWait(ctx) // the caller's run is parked while its children work
+	defer endWait()                     // idempotent; closes the wait on every exit
 	wg.Wait()
+	endWait()
 	// After the ledger recorded each full answer: the durable record keeps it,
 	// the parent's context gets the capped envelope.
 	capRowOutputs(results, quarterWindowChars(ctx))

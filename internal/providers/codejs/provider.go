@@ -23,11 +23,19 @@ const providerID = "code-js"
 // code-agent run (RFC J Decision 9). Token counters are always zero.
 const syntheticModel = "loomcycle/code-js"
 
-// DefaultRunTimeout bounds a single replay turn's wall-clock (a CPU-bound JS
-// loop) via Interrupt, when the operator sets no
-// LOOMCYCLE_CODE_AGENTS_RUN_TIMEOUT_SECONDS. The run's overall deadline is the
-// loop's ctx.
+// DefaultRunTimeout is a code-js run's budget of ACTIVE time (time spent
+// waiting does not count), enforced by interrupting the replay turn that
+// crosses it, when neither the run, its agent nor the operator
+// (LOOMCYCLE_CODE_AGENTS_RUN_TIMEOUT_SECONDS) sets one.
 const DefaultRunTimeout = 120 * time.Second
+
+// DefaultMaxWall is how long a code-js run may LIVE, waits included, when the
+// operator sets no LOOMCYCLE_CODE_AGENTS_MAX_WALL_SECONDS. The run budget
+// excludes waits, so without this a run that only waits never ends. A day is
+// far past any legitimate orchestration — a fan-out of model-driven children
+// takes minutes to hours — yet still ends a runaway the same day, freeing its
+// goroutine, its admission slot and whatever its children spend.
+const DefaultMaxWall = 24 * time.Hour
 
 // fixedEpochMs / fixedSeed pin the clock + RNG across ALL runs under
 // LOOMCYCLE_CODE_AGENTS_DETERMINISTIC=1 (cross-run reproducibility for
@@ -43,6 +51,7 @@ type Config struct {
 	CodeRoot      string // resolved $LOOMCYCLE_CODE_AGENTS_ROOT (default ./agent_code)
 	Deterministic bool   // LOOMCYCLE_CODE_AGENTS_DETERMINISTIC (cross-run reproducibility)
 	RunTimeout    time.Duration
+	MaxWall       time.Duration // a run's lifetime limit, waits included; 0 → DefaultMaxWall
 	Logf          func(format string, args ...any)
 }
 
@@ -56,6 +65,7 @@ type Provider struct {
 	compiler      *compiler
 	deterministic bool
 	runTimeout    time.Duration
+	maxWall       time.Duration
 	logf          func(string, ...any)
 	// id is the provider identity reported by ID(). Defaults to providerID
 	// ("code-js") in New(); the RFC BF driver registry sets it from
@@ -68,10 +78,15 @@ type Provider struct {
 	counter atomic.Uint64 // mints unique tool_use IDs for the transcript
 }
 
-// New builds the provider. RunTimeout falls back to DefaultRunTimeout.
+// New builds the provider. RunTimeout falls back to DefaultRunTimeout and
+// MaxWall to DefaultMaxWall: there is no "unlimited" wall limit, only a large
+// one an operator sets on purpose.
 func New(cfg Config) *Provider {
 	if cfg.RunTimeout <= 0 {
 		cfg.RunTimeout = DefaultRunTimeout
+	}
+	if cfg.MaxWall <= 0 {
+		cfg.MaxWall = DefaultMaxWall
 	}
 	logf := cfg.Logf
 	if logf == nil {
@@ -81,6 +96,7 @@ func New(cfg Config) *Provider {
 		compiler:      newCompiler(cfg.CodeRoot),
 		deterministic: cfg.Deterministic,
 		runTimeout:    cfg.RunTimeout,
+		maxWall:       cfg.MaxWall,
 		logf:          logf,
 		id:            providerID,
 	}
@@ -93,12 +109,14 @@ func (p *Provider) ID() string { return p.id }
 func (p *Provider) Capabilities() providers.Capabilities {
 	// UnboundedIterations: a code-agent's run() makes an arbitrary number of
 	// SEQUENTIAL tool calls, each a loop turn; the MaxIterations soft-cap is
-	// unusable here. The run is bounded by the run-level wall-clock deadline
-	// (see Call/interruptWatch), not by an iteration count.
+	// unusable here. The run is bounded by its run-level budget of active time
+	// (see Call/interruptWatch), not by an iteration count — and, since that
+	// budget excludes waits, by RunWallLimit, which the loop enforces on the
+	// run's whole lifetime.
 	// MetadataViaInput: code-js receives run metadata structurally as
 	// input.metadata / input.payload_metadata (see buildInput), so the
 	// run-build path must not also serialize it into prompt segments.
-	return p.capsPatch.Apply(providers.Capabilities{Streaming: true, UnboundedIterations: true, MetadataViaInput: true})
+	return p.capsPatch.Apply(providers.Capabilities{Streaming: true, UnboundedIterations: true, RunWallLimit: p.maxWall, MetadataViaInput: true})
 }
 
 // Probe always succeeds — code-js is in-process, always reachable.
@@ -153,24 +171,33 @@ func (p *Provider) Call(ctx context.Context, req providers.Request) (<-chan prov
 		return out, nil
 	}
 	seed, anchorMs := p.determinism(meta)
-	// budget bounds THIS turn's wall-clock — but it is the WHOLE RUN's remaining
-	// budget, not a fresh per-turn timeout: derived from the stable run start
-	// (RunMeta.StartedAt) so the sum across all replay turns can never exceed
-	// RunTimeout. This is what lets the loop exempt code-js from the
+	// budget bounds THIS turn — but it is the WHOLE RUN's remaining budget, not
+	// a fresh per-turn timeout, so the sum across all replay turns can never
+	// exceed it. This is what lets the loop exempt code-js from the
 	// MaxIterations cap (Capabilities().UnboundedIterations) and rely on the
-	// timeout as the sole bound. Falls back to a flat per-turn RunTimeout when
-	// StartedAt is unstamped (direct, non-loop callers / tests).
-	// Effective wall-clock budget: a per-run / per-agent run_timeout_seconds
-	// override (resolved server-side, carried on RunMeta) wins over the global
-	// LOOMCYCLE_CODE_AGENTS_RUN_TIMEOUT_SECONDS default — so a fan-out
-	// orchestrator that blocks in Agent.parallel_spawn awaiting LLM children
-	// can have a long envelope without raising the global for every code agent.
+	// budget as the sole bound.
+	//
+	// The budget is ACTIVE time: the run's clock (stamped by the loop) stops
+	// while the run waits — on sub-agents, a team walk, a channel, an answer —
+	// so an orchestrator blocked on its children is parked, not timing out
+	// under them. A busy JavaScript loop or a slow non-waiting tool call still
+	// counts. Without a clock (direct, non-loop callers / tests) the budget runs
+	// from RunMeta.StartedAt, and without that it is a flat per-turn budget.
+	//
+	// A per-run / per-agent run_timeout_seconds override (resolved server-side,
+	// carried on RunMeta) wins over the global
+	// LOOMCYCLE_CODE_AGENTS_RUN_TIMEOUT_SECONDS default.
 	total := p.runTimeout
 	if meta.RunTimeoutSeconds > 0 {
 		total = time.Duration(meta.RunTimeoutSeconds) * time.Second
 	}
+	clock := providers.RunClockFromContext(ctx)
 	budget := total
-	if !meta.StartedAt.IsZero() {
+	switch {
+	case clock != nil:
+		clock.SetBudget(total)
+		budget = total - clock.State().Active
+	case !meta.StartedAt.IsZero():
 		budget = time.Until(meta.StartedAt.Add(total))
 	}
 	// Emit a loomcycle.provider.call span for parity with the real LLM drivers
@@ -184,17 +211,26 @@ func (p *Provider) Call(ctx context.Context, req providers.Request) (<-chan prov
 		Kind:     "synthetic-code",
 		CodeHash: prog.hash,
 	})
-	go p.runTurn(spanCtx, out, span, prog.prog, buildInput(req, meta), extractRecorded(req), toolNames(req), seed, anchorMs, budget, total)
+	go p.runTurn(spanCtx, out, span, prog.prog, buildInput(req, meta), extractRecorded(req), toolNames(req), seed, anchorMs, budget, total, clock)
 	return out, nil
 }
 
 // runTurn executes one replay turn on its own (short-lived) goroutine: build
 // runtime → harden + hook → bind → run() → emit the turn's outcome → close.
 // The goroutine lives only for the JS execution (µs–ms), never across a
-// dispatch gap.
-func (p *Provider) runTurn(ctx context.Context, out chan providers.Event, span trace.Span, prog *goja.Program, input map[string]any, recorded []toolRecord, allowed []string, seed uint32, anchorMs int64, budget, total time.Duration) {
+// dispatch gap. clock is the run's (nil without one), read only to report
+// the time spent waiting when the budget runs out.
+func (p *Provider) runTurn(ctx context.Context, out chan providers.Event, span trace.Span, prog *goja.Program, input map[string]any, recorded []toolRecord, allowed []string, seed uint32, anchorMs int64, budget, total time.Duration, clock *providers.RunClock) {
 	defer close(out)
 	defer span.End()
+
+	// A run already past its budget — a slow tool call, which counts, spent
+	// the rest of it — fails here rather than racing a turn that may finish
+	// before any timer can fire.
+	if budget <= 0 {
+		out <- errorEvent(timeoutMessage(total, clock))
+		return
+	}
 
 	rt := goja.New()
 	rt.SetFieldNameMapper(goja.TagFieldNameMapper("json", true))
@@ -211,7 +247,7 @@ func (p *Provider) runTurn(ctx context.Context, out chan providers.Event, span t
 	go p.interruptWatch(ctx, state, stop, budget)
 
 	if _, err := rt.RunProgram(prog); err != nil {
-		out <- errorEvent(p.classifyRunErr(state, ctx, state.interruptCause(), err, "evaluating index.js", total))
+		out <- errorEvent(p.classifyRunErr(state, ctx, state.interruptCause(), err, "evaluating index.js", total, clock))
 		return
 	}
 	runFn, ok := goja.AssertFunction(rt.Get("run"))
@@ -237,7 +273,7 @@ func (p *Provider) runTurn(ctx context.Context, out chan providers.Event, span t
 			out <- providers.Event{Type: providers.EventDone, StopReason: "tool_use", Usage: zeroUsage()}
 			return
 		}
-		out <- errorEvent(p.classifyRunErr(state, ctx, cause, err, "run", total))
+		out <- errorEvent(p.classifyRunErr(state, ctx, cause, err, "run", total, clock))
 		return
 	}
 
@@ -249,13 +285,14 @@ func (p *Provider) runTurn(ctx context.Context, out chan providers.Event, span t
 
 // classifyRunErr maps a non-frontier run() error to a code-agent error string.
 // cause is interruptWatch's authoritative stop reason (causeNone unless the
-// watcher interrupted the runtime); total is the effective configured
-// wall-clock budget (per-run/per-agent override or the global default),
-// surfaced in the timeout message. Divergence is checked first because it is a
-// determinism bug the operator must fix and is more actionable than "it timed
-// out"; the watcher cause is preferred over ctx.Err() so a budget timeout that
-// coincides with a parent cancel is not misreported as a cancellation.
-func (p *Provider) classifyRunErr(state *replayState, ctx context.Context, cause interruptCause, err error, where string, total time.Duration) string {
+// watcher interrupted the runtime); total is the effective configured budget
+// (per-run/per-agent override or the global default), surfaced in the timeout
+// message with the time the run's clock (nil without one) spent waiting.
+// Divergence is checked first because it is a determinism bug the operator
+// must fix and is more actionable than "it timed out"; the watcher cause is
+// preferred over ctx.Err() so a budget timeout that coincides with a parent
+// cancel is not misreported as a cancellation.
+func (p *Provider) classifyRunErr(state *replayState, ctx context.Context, cause interruptCause, err error, where string, total time.Duration, clock *providers.RunClock) string {
 	switch {
 	case state.diverged != nil:
 		d := state.diverged
@@ -269,28 +306,35 @@ func (p *Provider) classifyRunErr(state *replayState, ctx context.Context, cause
 		}
 		return "code_agent_cancelled: " + msg
 	case cause == causeTimeout:
-		// Whole-run wall-clock budget elapsed (the timer branch of
-		// interruptWatch). This is NOT a throw at `where` — the replay was
-		// merely interrupted there — so attribute no source line. For a
-		// fan-out orchestrator this budget spans the time blocked awaiting
-		// Agent.parallel_spawn children, so the CPU-oriented default is often
-		// too low; raise it per-agent (run_timeout_seconds) or per-run.
-		return fmt.Sprintf("code_agent_timeout: run exceeded its %s wall-clock budget (raise run_timeout_seconds per-agent / per-run, or LOOMCYCLE_CODE_AGENTS_RUN_TIMEOUT_SECONDS globally; the budget includes time blocked in Agent.parallel_spawn awaiting children)", total)
+		// Whole-run budget elapsed (the timer branch of interruptWatch). This
+		// is NOT a throw at `where` — the replay was merely interrupted there —
+		// so attribute no source line.
+		return timeoutMessage(total, clock)
 	default:
 		return fmt.Sprintf("code_agent_threw: %s: %s", where, err)
 	}
 }
 
+// timeoutMessage is the code_agent_timeout error. The budget counts only
+// ACTIVE time; the message says so, and how long the run waited besides, so
+// an operator does not raise the budget to cover waits that never counted.
+func timeoutMessage(total time.Duration, clock *providers.RunClock) string {
+	waited := ""
+	if clock != nil {
+		waited = fmt.Sprintf("; it also waited %s, which did not count", clock.State().Waited.Round(time.Millisecond))
+	}
+	return fmt.Sprintf("code_agent_timeout: run used up its %s budget of active time (time spent waiting on sub-agents, team runs, channels or answers does not count%s; raise run_timeout_seconds per-agent / per-run, or LOOMCYCLE_CODE_AGENTS_RUN_TIMEOUT_SECONDS globally)", total, waited)
+}
+
 // interruptWatch Interrupts the runtime if the turn's ctx is cancelled or the
 // remaining run budget elapses, then exits when the turn finishes (stop
-// closed). budget is the WHOLE RUN's remaining wall-clock (see Call), so the
-// last turn to cross the run deadline is interrupted — the run total can't
-// exceed RunTimeout even with the loop's iteration cap disabled.
+// closed). budget is the WHOLE RUN's remaining active time (see Call), so the
+// last turn to cross it is interrupted — the run's active total can't exceed
+// its budget even with the loop's iteration cap disabled. budget is positive:
+// runTurn fails a turn that starts with none left. No wait happens inside a
+// turn (tool calls are dispatched between turns), so a plain timer over the
+// turn is exact.
 func (p *Provider) interruptWatch(ctx context.Context, state *replayState, stop <-chan struct{}, budget time.Duration) {
-	if budget <= 0 {
-		// Run already over its total budget — interrupt this turn at once.
-		budget = time.Millisecond
-	}
 	timer := time.NewTimer(budget)
 	defer timer.Stop()
 	select {
@@ -301,7 +345,7 @@ func (p *Provider) interruptWatch(ctx context.Context, state *replayState, stop 
 		state.cause.Store(int32(causeCancel))
 		state.rt.Interrupt(ctx.Err())
 	case <-timer.C:
-		// Whole-run wall-clock budget elapsed — record it BEFORE the interrupt
+		// Whole-run budget elapsed — record it BEFORE the interrupt
 		// so classifyRunErr reports code_agent_timeout (not code_agent_threw at
 		// whatever line the replay was interrupted, and not a tool_use if the
 		// run reached a frontier in the same instant).

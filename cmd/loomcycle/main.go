@@ -3628,8 +3628,8 @@ func newProviderResolver(cfg *config.Config) (*providerResolver, error) {
 		log.Printf("mock-stable provider: enabled (failure injection always off; fallback target for [mock, mock-stable] tier policies)")
 	}
 	if _, ok := pr.byID["code-js"]; ok {
-		log.Printf("code-js provider: enabled (root=%q deterministic=%v run_timeout=%s abi=%s)",
-			cfg.Env.CodeAgentsRoot, cfg.Env.CodeAgentsDeterministic, cfg.Env.CodeAgentsRunTimeout, codejs.ABIVersion)
+		log.Printf("code-js provider: enabled (root=%q deterministic=%v run_timeout=%s max_wall=%s abi=%s)",
+			cfg.Env.CodeAgentsRoot, cfg.Env.CodeAgentsDeterministic, cfg.Env.CodeAgentsRunTimeout, cfg.Env.CodeAgentsMaxWall, codejs.ABIVersion)
 	}
 
 	// v0.11.9 — anthropic-oauth-dev stays a residual hardcoded path (main-owned

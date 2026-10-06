@@ -413,6 +413,13 @@ type RunOptions struct {
 	// drivers ignore it.
 	RunTimeoutSeconds int
 
+	// RunClockCarry is the active, waited and wall time a resumed run had used
+	// before it paused, so its budget and its lifetime resume where they
+	// stopped (zero for a fresh run).
+	// Read only when the provider bounds the run by time (see Run in
+	// runclock.go).
+	RunClockCarry providers.RunClockState
+
 	// UserTier is the v0.8.2 user-facing-tier policy name applied
 	// to this run. Informational on the loop side — appears on
 	// store.Run.UserTier + agent-loop log lines so cost/compliance
@@ -2369,7 +2376,8 @@ func maybeRecap(ctx context.Context, opts RunOptions, messages []providers.Messa
 	return out, true
 }
 
-func Run(ctx context.Context, opts RunOptions) (RunResult, error) {
+// runLoop is the loop itself; Run (runclock.go) wraps it with the run's clock.
+func runLoop(ctx context.Context, opts RunOptions) (RunResult, error) {
 	// An interactive run is operator-driven and Cancel-bounded: each operator
 	// turn (and each end_turn park awaiting input) consumes a loop iteration,
 	// so the default 16-iteration runaway guard silently ends a live terminal

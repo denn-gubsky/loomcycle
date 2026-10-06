@@ -1460,6 +1460,14 @@ export interface RunSpec {
    *  any team, and on the walk's own run (see `team`). Written by the
    *  server only. */
   team_scope?: { team: string; def_id: string; def_tenant?: string };
+  /** A code agent's time as of its last pause: the active time it had used
+   *  against `run_timeout_seconds`, the time it had spent waiting (which
+   *  never counts against that budget), and how long it had lived — waits
+   *  included, runtime pauses excluded — against the operator's lifetime
+   *  limit. A resumed run continues from it rather than starting fresh.
+   *  Absent on a run that never paused, and on every run that is not a code
+   *  agent. Written by the server only. */
+  run_clock?: { active_ms: number; waited_ms: number; wall_ms: number };
 }
 
 /** What a team walk started with (`RunSpec.team`). */

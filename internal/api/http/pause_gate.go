@@ -9,6 +9,7 @@ import (
 
 	"github.com/denn-gubsky/loomcycle/internal/loop"
 	"github.com/denn-gubsky/loomcycle/internal/pause"
+	"github.com/denn-gubsky/loomcycle/internal/providers"
 	"github.com/denn-gubsky/loomcycle/internal/runner"
 	"github.com/denn-gubsky/loomcycle/internal/store"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
@@ -24,6 +25,9 @@ type pauseGate struct {
 	mgr   *pause.Manager
 	store store.Store
 	runID string
+	// saveClock persists a parking run's clock state (Server.recordRunClock);
+	// nil skips it.
+	saveClock func(ctx context.Context, runID string, st providers.RunClockState) error
 }
 
 // pauseStatePersistTimeout bounds the store write that records a run's
@@ -60,6 +64,13 @@ func (g *pauseGate) Park(ctx context.Context) error {
 	if !shouldPark {
 		return nil
 	}
+	// Parked by the operator's pause: a run whose budget is active time does
+	// not spend it here, and the time does not count against its lifetime
+	// limit either — the operator stopped the runtime, the run did not linger.
+	// What it has spent is recorded before the barrier is credited, so a
+	// snapshot taken at the barrier carries it to wherever the run resumes.
+	defer providers.BeginPause(ctx)()
+	g.recordClock(ctx)
 	// Persist 'paused' to the store BEFORE marking the run parked in the
 	// barrier: Pause() only treats a run as quiesced once MarkParked fires, so
 	// this ordering guarantees finalizePause / snapshot (which read the store)
@@ -87,6 +98,22 @@ func (g *pauseGate) Park(ctx context.Context) error {
 		return nil
 	case <-ctx.Done():
 		return ctx.Err()
+	}
+}
+
+// recordClock persists the parking run's clock state, when it has a clock,
+// under the same bounded non-cancellable ctx as the pause_state write. A failed
+// write is logged and the run still parks: it then resumes elsewhere on the
+// budget it last recorded, which is the behaviour a run had before any was.
+func (g *pauseGate) recordClock(ctx context.Context) {
+	clock := providers.RunClockFromContext(ctx)
+	if clock == nil || g.saveClock == nil || g.runID == "" {
+		return
+	}
+	wctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), pauseStatePersistTimeout)
+	defer cancel()
+	if err := g.saveClock(wctx, g.runID, clock.State()); err != nil {
+		log.Printf("pause: record the clock of run %s failed: %v — a resume elsewhere starts from its last recorded budget", g.runID, err)
 	}
 }
 
@@ -141,7 +168,7 @@ func (s *Server) newPauseGate(runID string) (tools.PauseGate, func()) {
 		return nil, func() {}
 	}
 	s.pauseMgr.RegisterRun(runID)
-	return &pauseGate{mgr: s.pauseMgr, store: s.store, runID: runID}, func() {
+	return &pauseGate{mgr: s.pauseMgr, store: s.store, runID: runID, saveClock: s.recordRunClock}, func() {
 		s.pauseMgr.DeregisterRun(runID)
 	}
 }
