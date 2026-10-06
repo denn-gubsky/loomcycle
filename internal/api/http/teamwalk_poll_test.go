@@ -184,6 +184,27 @@ func leadWaiting(t *testing.T, srv *Server) (agentID, runID, on string) {
 	return "", "", ""
 }
 
+// waitWalkMembers waits until the walk has at least n member runs (its own
+// run excluded).
+func waitWalkMembers(t *testing.T, st store.Store, walkID string, n int) {
+	t.Helper()
+	for deadline := time.Now().Add(10 * time.Second); ; time.Sleep(10 * time.Millisecond) {
+		runs, _, err := st.ListRunsByWalk(context.Background(), "", walkID, 50, "")
+		members := 0
+		for _, r := range runs {
+			if r.ID != walkID {
+				members++
+			}
+		}
+		if err == nil && members >= n {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("walk %s has %d members, %v; want at least %d", walkID, members, err, n)
+		}
+	}
+}
+
 func waitWalkRunStatus(t *testing.T, st store.Store, id string, want store.RunStatus) store.Run {
 	t.Helper()
 	for deadline := time.Now().Add(10 * time.Second); ; time.Sleep(10 * time.Millisecond) {
@@ -289,6 +310,10 @@ func TestTeamWalkPoll_CancellingTheParentCancelsThePollWalk(t *testing.T) {
 	if polled == "" {
 		t.Fatal("no walk id")
 	}
+	// The walk starts its member on its own goroutine, after the lead already
+	// waits on the walk. Cancelling before the member exists ends a walk with
+	// no member to cancel, which is not the cascade under test.
+	waitWalkMembers(t, st, polled, 1)
 	if _, ok := srv.cancelReg.Cancel(parentAgent, "operator stop"); !ok {
 		t.Fatal("the lead is not cancellable")
 	}
