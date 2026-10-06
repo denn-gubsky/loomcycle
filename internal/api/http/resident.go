@@ -139,6 +139,23 @@ func (rc *residentChild) touch(now time.Time) {
 	rc.mu.Unlock()
 }
 
+// discountPause takes a runtime pause that ran from since to now off the
+// child's idle and turn-ceiling clocks: a clock that started before the pause
+// moves forward by the pause's length, one that moved during it restarts now.
+func (rc *residentChild) discountPause(since, now time.Time) {
+	rc.mu.Lock()
+	defer rc.mu.Unlock()
+	rc.lastUsed = discountPaused(rc.lastUsed, since, now)
+	rc.turnStarted = discountPaused(rc.turnStarted, since, now)
+}
+
+func discountPaused(t, since, now time.Time) time.Time {
+	if t.Before(since) {
+		return t.Add(now.Sub(since))
+	}
+	return now
+}
+
 func (rc *residentChild) markDone(state string) {
 	rc.mu.Lock()
 	rc.done = true
@@ -200,6 +217,9 @@ type residentRegistry struct {
 	// so a parent's later poll/send learns the reason instead of a bare
 	// not-found. Pruned by the sweeper after residentTombstoneTTL.
 	gone map[string]residentTombstone
+	// pausedSince is when the sweeper first saw the runtime paused; zero
+	// while it runs. See sweepResidentChildren.
+	pausedSince time.Time
 }
 
 type residentTombstone struct {
@@ -256,6 +276,26 @@ func (r *residentRegistry) pruneGone(now time.Time) {
 			delete(r.gone, id)
 		}
 	}
+}
+
+// notePause records that the runtime is paused at now, keeping the earliest
+// sighting of the pause.
+func (r *residentRegistry) notePause(now time.Time) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.pausedSince.IsZero() {
+		r.pausedSince = now
+	}
+}
+
+// endPause returns when the pause the sweeper last saw began, and clears it;
+// zero when it saw none.
+func (r *residentRegistry) endPause() time.Time {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	since := r.pausedSince
+	r.pausedSince = time.Time{}
+	return since
 }
 
 func (r *residentRegistry) countByParent(parentAgentID string) int {
@@ -650,11 +690,27 @@ func (s *Server) RunResidentSweeper(ctx context.Context) {
 //
 // The reason is logged, carried as the cancel cause into the run's terminal
 // record, and kept on the child so the parent's next call says why.
+//
+// Neither rule runs while the runtime is paused, and the pause does not count
+// towards either once it lifts: a paused runtime cancels nothing in flight,
+// its parents cannot use their children, and a child reaped in the pause
+// would be missing from the snapshot the pause was taken for. The pause is
+// timed from the first sweep that sees it, so up to one sweep interval of it
+// may still count.
 func (s *Server) sweepResidentChildren(now time.Time) {
 	if s.residentReg == nil {
 		return
 	}
 	s.residentReg.pruneGone(now)
+	if s.runtimePaused() {
+		s.residentReg.notePause(now)
+		return
+	}
+	if since := s.residentReg.endPause(); !since.IsZero() {
+		for _, rc := range s.residentReg.snapshot() {
+			rc.discountPause(since, now)
+		}
+	}
 	for _, rc := range s.residentReg.snapshot() {
 		rc.mu.Lock()
 		var reason string
