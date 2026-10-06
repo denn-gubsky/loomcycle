@@ -689,8 +689,10 @@ started with `Agent` in poll mode:
 - Its whole answer — steps included — is recorded on your run when the walk
   ends, so if your run is paused and resumed, on this instance or another,
   `TeamDef op=poll` still reads it whole. A walk still running when your run
-  is moved to another instance does not move with it: the walk lives on the
-  instance that started it, and reads `failed` once its run is ended there.
+  paused does not come back with it: a walk lives on the instance that
+  started it, and does not survive a restart or move to another instance. It
+  reads `failed`, with an error saying it was interrupted — run it again if
+  you need its answer.
 
 Everything else about the run is unchanged: `input`, `vars`, `breakpoints`,
 `review`, `board_chunk_id` and `interrupt_on_cap` work as they do when you wait.

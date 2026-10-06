@@ -47,6 +47,14 @@ import (
 // ended. Cancelling a restored child cancels its run by id, through the cancel
 // registry, which reaches another replica when the cluster is wired.
 //
+// A team walk does not move. It runs no loop of its own — its members are the
+// runs — and lives in the memory of the instance that started it, so it is
+// never paused, never carried by a snapshot and never resumed. A walk that
+// ended before its parent paused is restored from its result row, its whole
+// answer included. One that had not is gone with its instance: its parent
+// reads it failed with that reason rather than a missing run, and a row it
+// left behind running (a restart on the same database) is closed with it.
+//
 // A restored child's timeout_ms (on its started row) is re-armed from its run:
 // the bound runs from the run's start, the time the run spent held for a
 // verdict (its own transcript says when each hold began and ended) is not
@@ -446,6 +454,10 @@ func (s *Server) restoredChildEnd(ctx context.Context, spec tools.ChildSpec, mis
 			}
 			return "", tools.ChildResult{}, false
 		}
+		// A walk's run never travels with its parent: no read will find it.
+		if spec.Kind == tools.ChildKindTeam {
+			return tools.ChildFailed, tools.ChildResult{Error: "run: " + walkInterrupted}, true
+		}
 		if missing[spec.RunID]++; missing[spec.RunID] < restoredChildNotFoundChecks {
 			return "", tools.ChildResult{}, false
 		}
@@ -524,6 +536,35 @@ func (s *Server) restoredAgentEnding(ctx context.Context, child store.Run, spec 
 		res.Error = err.Error() // a capped child's answer stays beside it
 	}
 	return state, res
+}
+
+// walkInterrupted is why a walk still running when its parent paused ended.
+const walkInterrupted = "the walk was interrupted: the run that started it was paused and resumed without it — a team walk runs on the instance that started it and does not survive a restart or move to another one; run it again if you need its answer"
+
+// endInterruptedWalks closes the run rows of a resumed run's walks that were
+// still running when it paused: their walk went with the instance that ran
+// it, and its row would otherwise read running until the stale sweeper failed
+// it for a missed heartbeat. Closed before the run's own resume returns, so a
+// resume pass sees them ended — and does not leave their paused members
+// running for a walk that will never read them. A walk live on this instance
+// (none, for a run that needed resuming) is left alone.
+func (s *Server) endInterruptedWalks(ctx context.Context, ledger []*pollChildLedger) {
+	for _, c := range ledger {
+		if c.result != nil || c.started.Kind != tools.ChildKindTeam {
+			continue
+		}
+		if _, live := s.walks.get(c.started.RunID); live {
+			continue
+		}
+		walk, err := s.store.GetRun(ctx, c.started.RunID)
+		if err != nil || isTerminalRunStatus(walk.Status) {
+			continue // not here (its parent reads why), or it ended on its own
+		}
+		s.finishRunFailedReason(walk.ID, walkInterrupted, runStateMeta{
+			RunID: walk.ID, AgentID: walk.AgentID, Agent: walk.Agent, UserID: walk.UserID,
+			TenantID: walk.TenantID, ParentRunID: walk.ParentRunID, ParentContext: walk.ParentContext,
+		})
+	}
 }
 
 // restoredWalkEnding is a team walk's ending from its run row. A walk's whole

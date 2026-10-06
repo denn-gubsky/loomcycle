@@ -99,6 +99,10 @@ import (
 //     run id. Its idle TTL is the operator's: the one it was opened with is not
 //     recorded. Paused runs resume children first, so a parent's first turn
 //     finds its resident child registered.
+//   - A TEAM WALK the run started in poll mode does not resume: it runs no
+//     loop and lives on the instance that started it. One that ended before
+//     the pause is read from its parent's ledger; one still running reads
+//     failed as interrupted, and a row it left running is closed so.
 //     (Mid-execution runs — the F42 repro — end on a clean tool_result boundary
 //     and resume cleanly.)
 
@@ -443,6 +447,7 @@ func (s *Server) resumePausedRun(run store.Run) error {
 	if !stateful {
 		pollLedger = pollLedgerOf(runEvents)
 		residents = s.residentChildrenOf(ctx, run)
+		s.endInterruptedWalks(ctx, pollLedger)
 	}
 
 	// RFC X Phase 3: detect a parked fan-out PARENT — a parallel_spawn that the
