@@ -1306,6 +1306,9 @@ func runStateful(ctx context.Context, opts RunOptions, system []providers.Conten
 			actCtx = tools.WithMaxContextTokens(actCtx, opts.MaxContextTokens)
 			actCtx = tools.WithContextUsage(actCtx, lastIn, lastWindow)
 			actCtx = tools.WithEffectiveContextWindow(actCtx, lastWindow)
+			// Run lifted the cap to the hard ceiling exactly when the run is
+			// iteration-unbounded, so the ceiling identifies that case here.
+			actCtx = tools.WithIterationBudget(actCtx, iter+1, maxIter, maxIter >= maxIterationsHardCeiling)
 			blocks := executePendingTools(actCtx, opts.Dispatcher, []providers.ToolUse{tu}, 1, opts.Hooks, hookIdent, emit)
 			// A failure is already the structured error object, isError and all.
 			obs = blocks[0].Text

@@ -1,6 +1,6 @@
 ---
 name: Context/self
-description: "Context op=self — your identity (agent, run, user, tenant), model, the scope values each of your tools grants, volumes, network allowlist and context-window usage."
+description: "Context op=self — your identity (agent, run, user, tenant), model, the scope values each of your tools grants, volumes, network allowlist, context-window usage and turns left."
 ---
 `self` describes you and your run in one call. Call it before choosing a
 `scope` for Memory, Path, Document, History or any other scoped tool: the
@@ -48,6 +48,11 @@ Present when they apply:
   is not checked, so follow the schema exactly and add nothing around it.
 - `context` — `{used_tokens, max_tokens?, used_pct?}` as of your last
   completed turn. Absent before your first turn completes.
+- `iterations_used`, `iterations_remaining`, `iterations_unbounded` — how
+  many turns this run has taken (counting the current one) and how many it
+  has left before it ends with `max_iterations`. When `iterations_unbounded`
+  is `true` there is no turn limit to plan against and `iterations_remaining`
+  is absent.
 - `context_distill_declined` — `{mode, reason, message?}` when an attempt to
   compact did nothing. **If it is present, calling `compact` again will not
   help**; report the reason instead.

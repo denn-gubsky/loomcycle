@@ -2882,7 +2882,8 @@ outerLoop:
 		iterCtx = tools.WithResolvedModel(iterCtx, opts.Model)
 		iterCtx = tools.WithResolvedSampling(iterCtx, opts.Sampling)
 		iterCtx = withIteration(iterCtx, iter)
-		iterCtx = tools.WithMaxContextTokens(iterCtx, opts.MaxContextTokens) // RFC CJ — configured cap for op=self
+		iterCtx = tools.WithIterationBudget(iterCtx, iter+1, iterCap, unboundedIters) // op=self: iterations used / left
+		iterCtx = tools.WithMaxContextTokens(iterCtx, opts.MaxContextTokens)          // RFC CJ — configured cap for op=self
 		// NB: the context-footprint stamp (tools.WithContextUsage) is applied
 		// LOWER — after drainSteer + auto/self compaction — so a same-turn
 		// op=self never reports a stale pre-compaction footprint.
