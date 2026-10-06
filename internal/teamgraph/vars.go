@@ -17,19 +17,19 @@ const (
 
 // validateVars checks a definition's `vars` block: the declared names and
 // their defaults.
-func validateVars(vars map[string]string) error {
+func validateVars(out *issues, vars map[string]string) {
 	if len(vars) > MaxVars {
-		return fmt.Errorf("team definition: vars declares %d variables, more than the maximum %d", len(vars), MaxVars)
+		out.top("vars", "team definition: vars declares %d variables, more than the maximum %d", len(vars), MaxVars)
 	}
 	for _, name := range sortedKeys(vars) {
+		path := PathKey("vars", name)
 		if !varNameRe.MatchString(name) {
-			return fmt.Errorf("team definition: vars key %q must match [a-zA-Z0-9_-]{1,64}", name)
+			out.top(path, "team definition: vars key %q must match [a-zA-Z0-9_-]{1,64}", name)
 		}
 		if err := CheckVarValue(vars[name]); err != nil {
-			return fmt.Errorf("team definition: vars %q: %w", name, err)
+			out.top(path, "team definition: vars %q: %v", name, err)
 		}
 	}
-	return nil
 }
 
 // CheckVarValue is what a variable's value must satisfy when it is WRITTEN

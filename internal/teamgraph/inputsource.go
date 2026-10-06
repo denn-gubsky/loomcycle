@@ -44,28 +44,35 @@ func InputValue(input string) json.RawMessage {
 // and nothing to wait for, and it reads no store at all, so every field that
 // names a store or shapes a read is refused rather than ignored: each would
 // read as configured and do nothing.
-func validateInputSource(stateID string, h Handler) error {
+func validateInputSource(out *issues, at stateAt, h Handler) {
+	stateID := at.id
 	src := h.Source
-	switch {
-	case strings.TrimSpace(src.Channel) != "":
-		return fmt.Errorf("team definition: state %q starter reads the walk's input, so `source.channel` means nothing — remove it", stateID)
-	case src.Path != "" || src.Scope != "" || src.Select != "":
-		return fmt.Errorf("team definition: state %q starter reads the walk's input, which is no document — remove source.path/scope/select", stateID)
-	case src.Wait != "" || src.N != 0 || src.WaitMS != 0:
-		return fmt.Errorf("team definition: state %q starter reads the walk's input, which is there when the walk starts — "+
-			"there is nothing to wait for, so remove source.wait/n/wait_ms", stateID)
-	case src.Batch != 0:
-		return fmt.Errorf("team definition: state %q starter reads the walk's input, which is read whole — remove source.batch "+
-			"(fanout.max bounds the wave)", stateID)
-	case h.Ack != "":
-		return fmt.Errorf("team definition: state %q starter reads the walk's input, which has no cursor to acknowledge — remove `ack`", stateID)
-	case h.Fanout != nil && h.Fanout.Per == FanoutPerChunk:
-		return fmt.Errorf("team definition: state %q starter fanout per=chunk needs a document source (source.kind: document); "+
-			"an input source fans out per=message (one run per item) or per=once", stateID)
-	case len(h.Schema) > 0 && !json.Valid(h.Schema):
-		return fmt.Errorf("team definition: state %q starter `schema` is not valid JSON", stateID)
+	if strings.TrimSpace(src.Channel) != "" {
+		out.in(at, "source.channel", "team definition: state %q starter reads the walk's input, so `source.channel` means nothing — remove it", stateID)
 	}
-	return nil
+	if f := firstOf(fieldIf{"source.path", src.Path != ""}, fieldIf{"source.scope", src.Scope != ""},
+		fieldIf{"source.select", src.Select != ""}); f != "" {
+		out.in(at, f, "team definition: state %q starter reads the walk's input, which is no document — remove source.path/scope/select", stateID)
+	}
+	if f := firstOf(fieldIf{"source.wait", src.Wait != ""}, fieldIf{"source.n", src.N != 0},
+		fieldIf{"source.wait_ms", src.WaitMS != 0}); f != "" {
+		out.in(at, f, "team definition: state %q starter reads the walk's input, which is there when the walk starts — "+
+			"there is nothing to wait for, so remove source.wait/n/wait_ms", stateID)
+	}
+	if src.Batch != 0 {
+		out.in(at, "source.batch", "team definition: state %q starter reads the walk's input, which is read whole — remove source.batch "+
+			"(fanout.max bounds the wave)", stateID)
+	}
+	if h.Ack != "" {
+		out.in(at, "ack", "team definition: state %q starter reads the walk's input, which has no cursor to acknowledge — remove `ack`", stateID)
+	}
+	if h.Fanout != nil && h.Fanout.Per == FanoutPerChunk {
+		out.in(at, "fanout.per", "team definition: state %q starter fanout per=chunk needs a document source (source.kind: document); "+
+			"an input source fans out per=message (one run per item) or per=once", stateID)
+	}
+	if len(h.Schema) > 0 && !json.Valid(h.Schema) {
+		out.in(at, "schema", "team definition: state %q starter `schema` is not valid JSON", stateID)
+	}
 }
 
 // validateInputSourcePlacement refuses an input-sourced Starter anywhere but
@@ -79,19 +86,23 @@ func validateInputSource(stateID string, h Handler) error {
 // success, pushback, conditional — is a Transition, resolved by NextState), so
 // checking each `to` covers them all. A cap reroute names its target at run
 // time and is refused by the walk (IsInputStarter).
-func validateInputSourcePlacement(d Definition) error {
-	for _, s := range d.States {
-		if IsInputStarter(s) && s.ID != d.Entry {
-			return fmt.Errorf("team definition: state %q starter reads the walk's input, so it must be the definition's `entry` (entry is %q)", s.ID, d.Entry)
+//
+// entryOK says the entry resolves. When it does not — empty, or a name no
+// state has — the entry was reported already, and "must be the entry" would
+// only restate that: the fix may well be pointing the entry at this state.
+func validateInputSourcePlacement(out *issues, d Definition, entryOK bool) {
+	for i, s := range d.States {
+		if entryOK && IsInputStarter(s) && s.ID != d.Entry {
+			out.in(stateAt{index: i, id: s.ID}, "source.kind",
+				"team definition: state %q starter reads the walk's input, so it must be the definition's `entry` (entry is %q)", s.ID, d.Entry)
 		}
 	}
 	for i, t := range d.Transitions {
 		if to, ok := StateByID(d, t.To); ok && IsInputStarter(to) {
-			return fmt.Errorf("team definition: transition[%d] from %q on %q leads into state %q, a starter that reads the walk's input — "+
+			out.top(fmt.Sprintf("transitions[%d].to", i), "team definition: transition[%d] from %q on %q leads into state %q, a starter that reads the walk's input — "+
 				"its items are the input the walk was started with, so it cannot be re-entered; route a retry to a later state", i, t.From, t.On, t.To)
 		}
 	}
-	return nil
 }
 
 // IsInputStarter reports whether a state is a Starter whose source is the

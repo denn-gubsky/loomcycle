@@ -1,5 +1,7 @@
 package teamgraph
 
+import "fmt"
+
 // refs.go — what a definition NAMES but does not contain.
 //
 // A team graph is self-contained except for two kinds of reference: the
@@ -35,6 +37,10 @@ type ChannelRef struct {
 	// the graph in general.
 	State string
 	Field string
+	// Path is the full JSON path of the value that names it, e.g.
+	// "states[3].handler.sink.channel" — what an editor maps to a line. Field
+	// stays as it was (it is on the wire); Path is the precise address.
+	Path string
 }
 
 // ChannelRefs returns every channel the definition names, in state order, with
@@ -42,22 +48,23 @@ type ChannelRef struct {
 // another needs BOTH grants, and collapsing them would hide one.
 func ChannelRefs(d Definition) []ChannelRef {
 	var out []ChannelRef
-	for _, s := range d.States {
+	for i, s := range d.States {
 		h := s.Handler
+		base := handlerPath(i)
 		// A document or input source reads no channel, so it needs no
 		// subscribe grant — and naming one here would have the preflight
 		// demand a grant for a channel the definition never reads.
 		if h.Source != nil && !h.Source.IsDocument() && !h.Source.IsInput() && h.Source.Channel != "" {
-			out = append(out, ChannelRef{h.Source.Channel, SideSubscribe, s.ID, "source"})
+			out = append(out, ChannelRef{Channel: h.Source.Channel, Side: SideSubscribe, State: s.ID, Field: "source", Path: base + ".source.channel"})
 		}
 		if h.Sink != nil && h.Sink.Channel != "" {
-			out = append(out, ChannelRef{h.Sink.Channel, SidePublish, s.ID, "sink"})
+			out = append(out, ChannelRef{Channel: h.Sink.Channel, Side: SidePublish, State: s.ID, Field: "sink", Path: base + ".sink.channel"})
 		}
 		if h.Channel != "" {
-			out = append(out, ChannelRef{h.Channel, SidePublish, s.ID, "channel"})
+			out = append(out, ChannelRef{Channel: h.Channel, Side: SidePublish, State: s.ID, Field: "channel", Path: base + ".channel"})
 		}
 		if h.Publish != nil && h.Publish.Channel != "" {
-			out = append(out, ChannelRef{h.Publish.Channel, SidePublish, s.ID, "publish"})
+			out = append(out, ChannelRef{Channel: h.Publish.Channel, Side: SidePublish, State: s.ID, Field: "publish", Path: base + ".publish.channel"})
 		}
 	}
 	return out
@@ -68,6 +75,8 @@ type AgentRef struct {
 	Agent string
 	State string
 	Field string
+	// Path is the full JSON path of the name, e.g. "states[1].handler.agents[2]".
+	Path string
 }
 
 // AgentRefs returns every agent name the definition runs, in state order.
@@ -77,11 +86,12 @@ type AgentRef struct {
 // the reader can act on.
 func AgentRefs(d Definition) []AgentRef {
 	var out []AgentRef
-	for _, s := range d.States {
+	for i, s := range d.States {
 		h := s.Handler
-		visitAgentRefs(&h, func(ref *string, field string) {
+		base := handlerPath(i)
+		visitAgentRefs(&h, func(ref *string, field, rel string) {
 			if *ref != "" {
-				out = append(out, AgentRef{*ref, s.ID, field})
+				out = append(out, AgentRef{Agent: *ref, State: s.ID, Field: field, Path: base + "." + rel})
 			}
 		})
 	}
@@ -89,22 +99,28 @@ func AgentRefs(d Definition) []AgentRef {
 }
 
 // visitAgentRefs calls fn with every agent-name field of a handler, in the
-// order AgentRefs reports them. It is the ONE list of agent-bearing fields:
+// order AgentRefs reports them: field is the coarse name on the wire
+// ("agents"), rel the handler-relative JSON path ("agents[2]"). It is the ONE list of agent-bearing fields:
 // AgentRefs reads through it and QualifyLocalRefs rewrites through it, so a
 // field added here is seen by both and one added elsewhere by neither.
-func visitAgentRefs(h *Handler, fn func(ref *string, field string)) {
-	fn(&h.Agent, "agent")
+func visitAgentRefs(h *Handler, fn func(ref *string, field, rel string)) {
+	fn(&h.Agent, "agent", "agent")
 	for i := range h.Agents {
-		fn(&h.Agents[i], "agents")
+		fn(&h.Agents[i], "agents", fmt.Sprintf("agents[%d]", i))
 	}
-	fn(&h.Consolidator, "consolidator")
+	fn(&h.Consolidator, "consolidator", "consolidator")
 	if h.Fanout != nil {
-		fn(&h.Fanout.Agent, "fanout.agent")
+		fn(&h.Fanout.Agent, "fanout.agent", "fanout.agent")
 		for i := range h.Fanout.Agents {
-			fn(&h.Fanout.Agents[i], "fanout.agents")
+			fn(&h.Fanout.Agents[i], "fanout.agents", fmt.Sprintf("fanout.agents[%d]", i))
 		}
 	}
 }
+
+// statePath / handlerPath are the JSON paths of the i-th state and its
+// handler — the prefix of every path a state-level reference or issue carries.
+func statePath(i int) string   { return fmt.Sprintf("states[%d]", i) }
+func handlerPath(i int) string { return statePath(i) + ".handler" }
 
 // GrantList returns the team's own allowlist for one side of a reference. A nil
 // Channels block yields nothing — which is correct and is the case that bites:

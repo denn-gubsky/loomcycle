@@ -9,10 +9,7 @@ package teamgraph
 // the value itself instead — `publish` on an input state (the walk's input)
 // and `payload: "raw"` on a channel state (whatever reached it).
 
-import (
-	"fmt"
-	"strings"
-)
+import "strings"
 
 // Payload shapes for a channel state.
 const (
@@ -30,23 +27,25 @@ type InputPublish struct {
 
 // validatePublishing checks `publish` and `payload`, each of which belongs to
 // one kind. On any other kind they would read as configured and do nothing.
-func validatePublishing(stateID string, h Handler) error {
+func validatePublishing(out *issues, at stateAt, h Handler) {
+	stateID := at.id
 	if h.Publish != nil {
 		if h.Kind != HandlerInput {
-			return fmt.Errorf("team definition: state %q sets `publish` but is kind %q (input only) — "+
+			out.in(at, "publish", "team definition: state %q sets `publish` but is kind %q (input only) — "+
 				"a channel state publishes to its `channel`", stateID, h.Kind)
-		}
-		if strings.TrimSpace(h.Publish.Channel) == "" {
-			return fmt.Errorf("team definition: state %q input handler `publish` is present but names no channel", stateID)
+		} else if strings.TrimSpace(h.Publish.Channel) == "" {
+			out.in(at, "publish.channel", "team definition: state %q input handler `publish` is present but names no channel", stateID)
 		}
 	}
+	// A payload on the wrong kind is refused for that; whether its value
+	// would be a valid one there is beside the point.
 	if h.Payload != "" && h.Kind != HandlerChannel {
-		return fmt.Errorf("team definition: state %q sets `payload` but is kind %q (channel only)", stateID, h.Kind)
+		out.in(at, "payload", "team definition: state %q sets `payload` but is kind %q (channel only)", stateID, h.Kind)
+		return
 	}
 	switch h.Payload {
 	case "", PayloadEnvelope, PayloadRaw:
 	default:
-		return fmt.Errorf("team definition: state %q channel handler has invalid payload %q (want envelope|raw)", stateID, h.Payload)
+		out.in(at, "payload", "team definition: state %q channel handler has invalid payload %q (want envelope|raw)", stateID, h.Payload)
 	}
-	return nil
 }
