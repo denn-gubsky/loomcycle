@@ -81,11 +81,17 @@ func (rc *residentChild) appendText(t string) {
 
 // endTurn records the turn's terminal state and wakes the waiter exactly once.
 // Idempotent per turn: the park boundary (fwd) and the loop-exit both call it;
-// whichever comes first wins, the second is a no-op.
+// whichever comes first wins, the second is a no-op. The idle clock restarts
+// when the turn ends, so a parent gets the whole TTL to collect a long turn's
+// result — measured from its start, a turn longer than the TTL would be reaped
+// at the first sweep after it parked.
 func (rc *residentChild) endTurn(state string) {
 	rc.mu.Lock()
 	defer rc.mu.Unlock()
 	rc.state = state
+	if rc.running {
+		rc.lastUsed = time.Now()
+	}
 	rc.running = false
 	if !rc.turnClosed && rc.turnDone != nil {
 		rc.turnClosed = true
@@ -100,6 +106,14 @@ func (rc *residentChild) currentTurnDone() (<-chan struct{}, bool) {
 	rc.mu.Lock()
 	defer rc.mu.Unlock()
 	return rc.turnDone, rc.running
+}
+
+// touch restarts the idle clock. poll and cancel use it: a parent checking on
+// a child is using it, even though it starts no turn.
+func (rc *residentChild) touch(now time.Time) {
+	rc.mu.Lock()
+	rc.lastUsed = now
+	rc.mu.Unlock()
 }
 
 func (rc *residentChild) markDone(state string) {
@@ -355,6 +369,7 @@ func (s *Server) pollResidentChild(ctx context.Context, childRunID string, timeo
 	if !ok {
 		return "", "", fmt.Errorf("resident sub-agent %q not found (it may have been closed or timed out)", childRunID)
 	}
+	rc.touch(time.Now())
 	td, _ := rc.currentTurnDone()
 	if td == nil {
 		// No turn has ever started (shouldn't happen post-open) — report state.
@@ -377,6 +392,7 @@ func (s *Server) cancelResidentChildTurn(ctx context.Context, childRunID string)
 	if !ok {
 		return "", "", fmt.Errorf("resident sub-agent %q not found (it may have been closed or timed out)", childRunID)
 	}
+	rc.touch(time.Now())
 	td, running := rc.currentTurnDone()
 	if !running {
 		out, st := rc.readTurn() // already parked/idle — nothing to cancel
@@ -507,14 +523,17 @@ func (s *Server) RunResidentSweeper(ctx context.Context) {
 
 // sweepResidentChildren cancels every resident child idle past its TTL (the
 // per-tick body of RunResidentSweeper; separated so tests can drive one sweep
-// without wall-clock waiting).
+// without wall-clock waiting). A child running a turn is never idle: the
+// clock only counts from the last open/send/poll/cancel or the end of the last
+// turn, whichever is later — a long turn sent with timeout_ms is working, not
+// abandoned, and reaping it would discard the result the parent will poll for.
 func (s *Server) sweepResidentChildren(now time.Time) {
 	if s.residentReg == nil {
 		return
 	}
 	for _, rc := range s.residentReg.snapshot() {
 		rc.mu.Lock()
-		idle := now.Sub(rc.lastUsed) > rc.idleTTL
+		idle := !rc.running && now.Sub(rc.lastUsed) > rc.idleTTL
 		done := rc.done
 		rc.mu.Unlock()
 		if done || !idle {

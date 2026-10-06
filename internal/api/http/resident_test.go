@@ -188,6 +188,111 @@ func TestResidentChild_IdleSweepReaps(t *testing.T) {
 	waitResidentGone(t, srv, runID)
 }
 
+// ageResidentChild moves a child's idle clock back by d, as if nothing had
+// touched it for that long.
+func ageResidentChild(t *testing.T, srv *Server, runID string, d time.Duration) {
+	t.Helper()
+	rc, ok := srv.residentReg.get(runID)
+	if !ok {
+		t.Fatalf("resident child %s not registered", runID)
+	}
+	rc.mu.Lock()
+	rc.lastUsed = rc.lastUsed.Add(-d)
+	rc.mu.Unlock()
+}
+
+// A child whose turn is still running is working, not idle: a sweep far past
+// its TTL leaves it alone, and the parent collects the turn with poll.
+func TestResidentChild_SweepNeverReapsARunningTurn(t *testing.T) {
+	srv, gate := newGatedResidentServer(t)
+	ctx := residentParentCtx("parent-agent", "")
+
+	gate <- struct{}{}
+	runID, _, state, err := srv.openResidentChild(ctx, "child", "start", "", 0)
+	if err != nil || state != "awaiting_input" {
+		t.Fatalf("open: state=%q err=%v", state, err)
+	}
+	defer func() { _ = srv.closeResidentChild(ctx, runID) }()
+
+	if _, state, err = srv.sendResidentChild(ctx, runID, "slow work", 100); err != nil || state != "running" {
+		t.Fatalf("send: state=%q err=%v", state, err)
+	}
+	srv.sweepResidentChildren(time.Now().Add(24 * time.Hour))
+
+	gate <- struct{}{}
+	out, state, err := srv.pollResidentChild(ctx, runID, 5000)
+	if err != nil || state != "awaiting_input" {
+		t.Fatalf("poll after a sweep mid-turn: state=%q out=%q err=%v — the running child was reaped", state, out, err)
+	}
+}
+
+// poll and cancel are uses of a child: each restarts its idle clock, so a
+// parent that only polls does not lose the child to the sweeper.
+func TestResidentChild_PollAndCancelRestartTheIdleClock(t *testing.T) {
+	for _, op := range []string{"poll", "cancel"} {
+		t.Run(op, func(t *testing.T) {
+			srv := newResidentTestServer(t)
+			ctx := residentParentCtx("parent-agent", "")
+			runID, _, _, err := srv.openResidentChild(ctx, "child", "start", "", 0)
+			if err != nil {
+				t.Fatalf("open: %v", err)
+			}
+			defer func() { _ = srv.closeResidentChild(ctx, runID) }()
+
+			ttl := srv.residentChildIdleTTL()
+			ageResidentChild(t, srv, runID, 2*ttl)
+			if op == "poll" {
+				_, _, err = srv.pollResidentChild(ctx, runID, 0)
+			} else {
+				_, _, err = srv.cancelResidentChildTurn(ctx, runID)
+			}
+			if err != nil {
+				t.Fatalf("%s: %v", op, err)
+			}
+			srv.sweepResidentChildren(time.Now())
+
+			out, state, err := srv.sendResidentChild(ctx, runID, "again", 0)
+			if err != nil || state != "awaiting_input" {
+				t.Fatalf("send after %s + sweep: state=%q out=%q err=%v — the child was reaped", op, state, out, err)
+			}
+		})
+	}
+}
+
+// The idle clock restarts when a turn ends: a turn that ran longer than the
+// TTL leaves the parent the whole TTL to collect it, not a reap at the next
+// sweep.
+func TestResidentChild_IdleClockStartsWhenTheTurnEnds(t *testing.T) {
+	srv, gate := newGatedResidentServer(t)
+	ctx := residentParentCtx("parent-agent", "")
+
+	gate <- struct{}{}
+	runID, _, _, err := srv.openResidentChild(ctx, "child", "start", "", 0)
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	defer func() { _ = srv.closeResidentChild(ctx, runID) }()
+
+	if _, state, err := srv.sendResidentChild(ctx, runID, "slow work", 100); err != nil || state != "running" {
+		t.Fatalf("send: state=%q err=%v", state, err)
+	}
+	ageResidentChild(t, srv, runID, 2*srv.residentChildIdleTTL()) // the turn began long ago
+	rc, _ := srv.residentReg.get(runID)
+	td, _ := rc.currentTurnDone()
+	gate <- struct{}{}
+	select {
+	case <-td:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the turn did not end")
+	}
+	srv.sweepResidentChildren(time.Now())
+
+	out, state, err := srv.pollResidentChild(ctx, runID, 0)
+	if err != nil || state != "awaiting_input" {
+		t.Fatalf("poll after the turn ended + sweep: state=%q out=%q err=%v — the child was reaped", state, out, err)
+	}
+}
+
 // gatedProvider emits a line of text, then blocks before end_turn until the test
 // releases its gate (or the turn's ctx is cancelled — RFC BH turn-cancel). Lets
 // a test hold a turn "running" to exercise send timeout_ms / poll / cancel.
