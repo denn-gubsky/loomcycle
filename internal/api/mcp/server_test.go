@@ -557,6 +557,11 @@ func TestBuiltinWrapperSchemas_CoverAllWrappers(t *testing.T) {
 			continue
 		}
 		want, _ := builtin.MCPWrapperInputSchema(name)
+		if name == "teamdef" {
+			// Derived from the builtin's schema minus the poll-mode surface
+			// this transport cannot serve (teamdef_surface.go).
+			want = teamDefMCPSchema()
+		}
 		if !bytes.Equal(schema, want) {
 			t.Errorf("wrapper %q: descriptor schema not sourced from builtin (bare fallback?)", name)
 		}

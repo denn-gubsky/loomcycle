@@ -84,9 +84,7 @@ var handlersByName = map[string]toolHandler{
 	// RFC AP Phase 2 team-workflow substrate. Tenant-confined (the tool stamps
 	// the row's tenant from ctx + opaque-404s cross-tenant reads); mirror of
 	// skilldef.
-	"teamdef": wrapBuiltin("teamdef", func(c connector.Connector, ctx context.Context, in json.RawMessage) (connector.ToolResult, error) {
-		return c.TeamDef(ctx, in)
-	}),
+	"teamdef": handleTeamDef,
 	// Reusable hook definitions. Tenant-confined like agentdef; never an agent
 	// tool, so this meta-tool and the other operator surfaces are the only
 	// writers.
