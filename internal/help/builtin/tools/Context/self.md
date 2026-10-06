@@ -55,11 +55,13 @@ Present when they apply:
   is absent. If your last turn calls tools, you get one more turn to read
   their results, with tools disabled — answer in it; nothing you call there
   runs.
-- `run_budget` — `{budget_ms, used_ms, waited_ms, remaining_ms}` for a code
-  agent, whose run is bounded by a time budget rather than by turns. Only
-  active time counts against it: `waited_ms` — time spent waiting on
-  sub-agents, a team run, a channel or an answer — is reported but never
-  spent.
+- `run_budget` — `{budget_ms, used_ms, waited_ms, remaining_ms,
+  wall_limit_ms, wall_elapsed_ms}` for a code agent, whose run is bounded by
+  a time budget rather than by turns. Only active time counts against the
+  budget: `waited_ms` — time spent waiting on sub-agents, a team run, a
+  channel or an answer — is reported but never spent. Waiting does count
+  against `wall_limit_ms`, how long the run may live in all;
+  `wall_elapsed_ms` is how long it has lived so far.
 - `context_distill_declined` — `{mode, reason, message?}` when an attempt to
   compact did nothing. **If it is present, calling `compact` again will not
   help**; report the reason instead.

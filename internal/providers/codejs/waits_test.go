@@ -179,4 +179,12 @@ function run() {
 	if d := b["budget_ms"] - b["used_ms"] - b["remaining_ms"]; b["used_ms"] >= 1000 || d < 0 || d > 1 {
 		t.Errorf("used_ms = %d remaining_ms = %d: the wait was spent, or the remainder does not add up", b["used_ms"], b["remaining_ms"])
 	}
+	// The lifetime limit, which waits DO count against: the default day, and
+	// a lifetime that includes the spawn.
+	if b["wall_limit_ms"] != codejs.DefaultMaxWall.Milliseconds() {
+		t.Errorf("wall_limit_ms = %d, want the default %d", b["wall_limit_ms"], codejs.DefaultMaxWall.Milliseconds())
+	}
+	if b["wall_elapsed_ms"] < b["waited_ms"] {
+		t.Errorf("wall_elapsed_ms = %d < waited_ms = %d: the run's lifetime left out its wait", b["wall_elapsed_ms"], b["waited_ms"])
+	}
 }
