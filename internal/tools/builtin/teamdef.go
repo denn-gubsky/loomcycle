@@ -259,7 +259,7 @@ const teamDefDescription = `Author, fork, promote, retire, and inspect team work
 	`mode=poll (inside an agent's run) also returns {run_id, state:"running"} at once, and runs the walk as a background ` +
 	`child of your run: you keep working, are told when it ends, and read its answer — the fields a waited-for run returns — ` +
 	`with poll (run_ids, wait none|any|all, wait_ms). It is cancelled with your run, and your run does not end while it is ` +
-	`still running. create and fork PREFLIGHT a definition's channel references — a channel the team's own ACL ` +
+	`still running; cancel (run_ids) ends it sooner. create and fork PREFLIGHT a definition's channel references — a channel the team's own ACL ` +
 	`does not grant, or one that is not declared at all, is refused with the exact block to add, rather than ` +
 	`failing later at the state that needed it. verify reports the content hash AND sweeps what the stored ` +
 	`definition references but does not contain (channels deleted, ACL gaps, members retired) as issues[] with ` +
@@ -310,12 +310,12 @@ const teamDefDescription = `Author, fork, promote, retire, and inspect team work
 	`each member run is held when it finishes, for an operator to approve, send back with feedback, or reject; a rejected ` +
 	`starter member reaches the sink as status "rejected", and a rejected agent or parallel member fails like any failed member. retire soft-retires one version; delete ` +
 	`hard-removes a whole team by name (all versions + active pointer), scoped to your tenant. Operations: ` +
-	`create, fork, get, list, retire, delete, promote, verify, render_diagram, run, poll.`
+	`create, fork, get, list, retire, delete, promote, verify, render_diagram, run, poll, cancel.`
 
 const teamDefInputSchema = `{
   "type": "object",
   "properties": {
-    "op":            {"type": "string", "enum": ["create","fork","get","list","retire","delete","promote","verify","render_diagram","run","poll"], "description": "Operation to perform."},
+    "op":            {"type": "string", "enum": ["create","fork","get","list","retire","delete","promote","verify","render_diagram","run","poll","cancel"], "description": "Operation to perform."},
     "name":          {"type": "string", "description": "Team name (required for create/fork/list/verify/delete). A new name is one segment of A-Z a-z 0-9 _ -, at most 64 characters: no \"/\", \":\", \".\" or spaces."},
     "def_id":        {"type": "string", "description": "Existing def_id (required for get/retire/promote)."},
     "parent_def_id": {"type": "string", "description": "Fork parent (optional for fork — when absent, forks the active def of the name in your tenant, falling back to the shared \"\" base). verify with an overlay takes it too, to check the draft as a fork of that version."},
@@ -349,7 +349,7 @@ const teamDefInputSchema = `{
     "mode":             {"type": "string", "enum": ["detach","poll"], "description": "run (optional): omit to wait for the walk and get its trace. \"detach\" returns {run_id, status:\"running\"} immediately and the walk continues in the background, outside your run — use it when you need a handle WHILE the walk runs, to arm a breakpoint, answer a pause, or watch progress. \"poll\" (inside an agent's run) returns {run_id, state:\"running\"} immediately and the walk runs as a background child of your run: you keep working, are told when it ends, read it with op=poll, and your run does not end while it is still running; it is cancelled with your run. Either way the response carries run_id."},
     "notify":           {"type": "boolean", "description": "run with mode poll (optional, default true): add a short note to your next turn when the walk ends. false = no note; you poll."},
     "on_parent_end":    {"type": "string", "enum": ["wait","cancel"], "description": "run with mode poll (optional). wait (default): ending your turn waits for the walk. cancel: the walk is cancelled when you end your turn."},
-    "run_ids":          {"type": "array", "items": {"type": "string"}, "description": "poll (optional): walks you ran with mode poll, by the run_id each returned. Omit to get every such walk whose answer you have not read yet."},
+    "run_ids":          {"type": "array", "items": {"type": "string"}, "description": "poll (optional): walks you ran with mode poll, by the run_id each returned. Omit to get every such walk whose answer you have not read yet. cancel (required): the walks to end."},
     "wait":             {"type": "string", "enum": ["none","any","all"], "description": "poll (optional). none (default): answer at once. any: wait until one of the named walks that is still running ends. all: wait until all of them have. Bounded by wait_ms."},
     "wait_ms":          {"type": "integer", "description": "poll with wait any or all (optional): the longest to wait, in ms; capped by the runtime (60000 unless the operator set another). Absent = the cap."},
     "breakpoints":      {"type": "array", "items": {"type": "string"}, "description": "run (optional): debug mode. Each entry is a starter state id — \"wave\" (or \"wave:before_dispatch\") pauses the state before it dispatches: the wave is composed and nothing has run. Each pause asks a human (Interruption) to reply 'continue' (release all), 'release:<n>' (release n and pause again), or 'abort'. An unanswered/declined ask aborts. A run-time argument, never part of the definition: debugging a team must not change what the team IS. \"<state>:review\" arms review instead (see review), and may be set here or live."},
@@ -493,10 +493,12 @@ func (t *TeamDef) Execute(ctx context.Context, raw json.RawMessage) (tools.Resul
 		return t.execRun(ctx, in)
 	case "poll":
 		return t.execPoll(ctx, in)
+	case "cancel":
+		return t.execCancel(ctx, in)
 	case "":
 		return errResult("missing required field: op"), nil
 	default:
-		return errResult(fmt.Sprintf("unknown op %q (must be one of: create, fork, get, list, retire, delete, promote, verify, render_diagram, run, poll)", in.Op)), nil
+		return errResult(fmt.Sprintf("unknown op %q (must be one of: create, fork, get, list, retire, delete, promote, verify, render_diagram, run, poll, cancel)", in.Op)), nil
 	}
 }
 

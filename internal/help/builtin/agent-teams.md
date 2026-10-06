@@ -670,6 +670,9 @@ started with `Agent` in poll mode:
 - Your run does not end while the walk runs: ending your turn waits for it,
   then gives you another turn. `on_parent_end: "cancel"` cancels it when you
   end your turn instead.
+- `TeamDef op=cancel` with `run_ids` ends walks sooner: each walk's members
+  are cancelled with it and its run ends `cancelled`; the call waits briefly
+  for each to stop and answers with how each ended.
 - It is cancelled when your run ends or is cancelled, counts against your run's
   limit on live children, and is refused on your last iteration (no turn would
   be left to read it).

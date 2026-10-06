@@ -14,8 +14,9 @@ It has three modes:
 - **Poll** (`mode: "poll"`, inside an agent's run): the call returns
   `{run_id, state: "running"}` at once and the walk runs as a background child
   of your run. You keep working; a note on your next turn says when it ended;
-  read its answer with `poll`. Your run does not end while the walk runs —
-  ending your turn waits for it — and the walk is cancelled if your run is.
+  read its answer with `poll`, or end it early with `cancel`. Your run does
+  not end while the walk runs — ending your turn waits for it — and the walk
+  is cancelled if your run is.
   It counts against your live children, and is refused on your last
   iteration.
 - **Detach** (`mode: "detach"`): the call returns `{run_id, status: "running"}`
