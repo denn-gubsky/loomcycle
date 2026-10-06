@@ -3,6 +3,7 @@ package http
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -186,6 +187,10 @@ func TestResidentChild_IdleSweepReaps(t *testing.T) {
 	// One sweep far in the future → past any idle TTL → the child is reaped.
 	srv.sweepResidentChildren(time.Now().Add(24 * time.Hour))
 	waitResidentGone(t, srv, runID)
+	// The parent's next call says why, not a bare not-found.
+	if _, _, err := srv.sendResidentChild(ctx, runID, "again", 0); err == nil || !strings.Contains(err.Error(), "idle timeout") {
+		t.Errorf("send to an idle-reaped child: %v, want the idle reason", err)
+	}
 }
 
 // ageResidentChild moves a child's idle clock back by d, as if nothing had
@@ -199,6 +204,201 @@ func ageResidentChild(t *testing.T, srv *Server, runID string, d time.Duration) 
 	rc.mu.Lock()
 	rc.lastUsed = rc.lastUsed.Add(-d)
 	rc.mu.Unlock()
+}
+
+// ageResidentTurn moves the start of a child's current turn back by d, as if
+// the turn had been running that long.
+func ageResidentTurn(t *testing.T, srv *Server, runID string, d time.Duration) {
+	t.Helper()
+	rc, ok := srv.residentReg.get(runID)
+	if !ok {
+		t.Fatalf("resident child %s not registered", runID)
+	}
+	rc.mu.Lock()
+	rc.turnStarted = rc.turnStarted.Add(-d)
+	rc.mu.Unlock()
+}
+
+// startRunningTurn opens a gated child and leaves a second turn running.
+func startRunningTurn(t *testing.T, srv *Server, ctx context.Context, gate chan struct{}) string {
+	t.Helper()
+	gate <- struct{}{}
+	runID, _, state, err := srv.openResidentChild(ctx, "child", "start", "", 0)
+	if err != nil || state != "awaiting_input" {
+		t.Fatalf("open: state=%q err=%v", state, err)
+	}
+	t.Cleanup(func() { _ = srv.closeResidentChild(ctx, runID) })
+	if _, state, err = srv.sendResidentChild(ctx, runID, "slow work", 100); err != nil || state != "running" {
+		t.Fatalf("send: state=%q err=%v", state, err)
+	}
+	return runID
+}
+
+// A turn that has run past the ceiling is reaped, whatever the idle clock
+// says, and the parent's calls name the ceiling as the reason — while the
+// teardown is under way and after it.
+func TestResidentChild_SweepReapsATurnPastTheCeiling(t *testing.T) {
+	srv, gate := newGatedResidentServer(t)
+	ctx := residentParentCtx("parent-agent", "")
+	runID := startRunningTurn(t, srv, ctx, gate)
+
+	ageResidentTurn(t, srv, runID, srv.residentMaxTurn()+time.Minute)
+	srv.sweepResidentChildren(time.Now())
+
+	if _, _, err := srv.pollResidentChild(ctx, runID, 5000); err == nil || !strings.Contains(err.Error(), "turn ceiling") {
+		t.Errorf("poll of a child past the turn ceiling: %v, want the ceiling reason", err)
+	}
+	waitResidentGone(t, srv, runID)
+	if _, _, err := srv.pollResidentChild(ctx, runID, 0); err == nil || !strings.Contains(err.Error(), "turn ceiling") {
+		t.Errorf("poll after the teardown: %v, want the ceiling reason", err)
+	}
+	// The reason is not an oracle for another tenant.
+	if _, _, err := srv.pollResidentChild(residentParentCtx("intruder", "other"), runID, 0); err == nil || strings.Contains(err.Error(), "ceiling") {
+		t.Errorf("another tenant's poll: %v, want a bare not-found", err)
+	}
+}
+
+// Polling a running turn keeps the child from going idle, but never from the
+// turn ceiling: the ceiling's clock starts when the turn does.
+func TestResidentChild_PollDoesNotExtendTheTurnCeiling(t *testing.T) {
+	srv, gate := newGatedResidentServer(t)
+	ctx := residentParentCtx("parent-agent", "")
+	runID := startRunningTurn(t, srv, ctx, gate)
+
+	ageResidentTurn(t, srv, runID, srv.residentMaxTurn()+time.Minute)
+	if _, state, err := srv.pollResidentChild(ctx, runID, 0); err != nil || state != "running" {
+		t.Fatalf("poll: state=%q err=%v", state, err)
+	}
+	srv.sweepResidentChildren(time.Now())
+	waitResidentGone(t, srv, runID)
+}
+
+// The run that opened resident children closes them when it ends, completed
+// or cancelled — the backstop the sweeper's rules do not replace.
+func TestResidentChild_ParentRunEndClosesItsChildren(t *testing.T) {
+	for _, end := range []string{"completed", "cancelled"} {
+		t.Run(end, func(t *testing.T) {
+			srv, parentAgentID, finish := startParentWithResidentChild(t, end == "cancelled")
+			var children []residentInfo
+			deadline := time.Now().Add(5 * time.Second)
+			for time.Now().Before(deadline) {
+				if children = srv.residentReg.listInfo(); len(children) == 1 {
+					break
+				}
+				time.Sleep(10 * time.Millisecond)
+			}
+			if len(children) != 1 || children[0].ParentAgentID != parentAgentID {
+				t.Fatalf("the parent's resident child never opened: %+v", children)
+			}
+			if end == "cancelled" {
+				if _, found := srv.cancelReg.Cancel(parentAgentID, "test cancel"); !found {
+					t.Fatal("the parent run was not cancellable")
+				}
+			}
+			finish()
+			waitResidentGone(t, srv, children[0].ChildRunID)
+		})
+	}
+}
+
+// startParentWithResidentChild posts a run of "lead" that opens a resident
+// "child" and then either answers (block=false) or blocks in its next model
+// call until cancelled. finish waits for the parent's POST to return.
+func startParentWithResidentChild(t *testing.T, block bool) (*Server, string, func()) {
+	t.Helper()
+	cfg := &config.Config{
+		Defaults: config.Defaults{Provider: "stub", Model: "stub-model"},
+		Agents: map[string]config.AgentDef{
+			"lead":  {Model: "stub-model", SystemPrompt: "lead", Tools: []string{"Agent"}},
+			"child": {Model: "stub-model", SystemPrompt: "child"},
+		},
+		Concurrency: config.Concurrency{MaxConcurrentRuns: 8, MaxQueueDepth: 8, QueueTimeoutMS: 1000},
+	}
+	cfg.Env.AuthToken = ""
+	done := func(text string) []providers.Event {
+		return []providers.Event{
+			{Type: providers.EventText, Text: text},
+			{Type: providers.EventDone, StopReason: "end_turn", Usage: &providers.Usage{InputTokens: 1, OutputTokens: 1}},
+		}
+	}
+	prov := &parentChildProvider{
+		scripts: [][]providers.Event{
+			{
+				{Type: providers.EventToolCall, ToolUse: &providers.ToolUse{ID: "tu_open", Name: "Agent", Input: json.RawMessage(`{"op":"open","name":"child","prompt":"stay"}`)}},
+				{Type: providers.EventDone, StopReason: "tool_use", Usage: &providers.Usage{InputTokens: 1, OutputTokens: 1}},
+			},
+			done("child parked"),
+		},
+		blockAfter: block,
+		final:      done("lead done"),
+	}
+	st, err := storesqlite.Open(filepath.Join(t.TempDir(), "parent_end.db"))
+	if err != nil {
+		t.Fatalf("sqlite.Open: %v", err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+	srv := New(cfg, &stubResolver{p: prov}, []tools.Tool{}, concurrency.New(8, 8, time.Second), st)
+	srv.SetSteerRegistry(steer.NewRegistry(0))
+	ts := httptest.NewServer(srv.Mux())
+	t.Cleanup(ts.Close)
+
+	const parentAgentID = "a_lead_parent"
+	posted := make(chan struct{})
+	go func() {
+		defer close(posted)
+		resp, err := http.Post(ts.URL+"/v1/runs", "application/json", strings.NewReader(
+			`{"agent":"lead","agent_id":"`+parentAgentID+`","segments":[{"role":"user","content":[{"type":"trusted-text","text":"go"}]}]}`))
+		if err == nil {
+			_, _ = io.Copy(io.Discard, resp.Body)
+			resp.Body.Close()
+		}
+	}()
+	return srv, parentAgentID, func() {
+		select {
+		case <-posted:
+		case <-time.After(10 * time.Second):
+			t.Fatal("the parent run did not end")
+		}
+	}
+}
+
+// parentChildProvider replays scripts in call order; past them it answers
+// final, or — with blockAfter — blocks until the call's ctx is cancelled.
+type parentChildProvider struct {
+	calls      atomic.Int32
+	scripts    [][]providers.Event
+	blockAfter bool
+	final      []providers.Event
+}
+
+func (p *parentChildProvider) ID() string                    { return "stub" }
+func (p *parentChildProvider) Probe(_ context.Context) error { return nil }
+func (p *parentChildProvider) ListModels(_ context.Context) ([]string, error) {
+	return []string{"stub-model"}, nil
+}
+func (p *parentChildProvider) Capabilities() providers.Capabilities {
+	return providers.Capabilities{Streaming: true}
+}
+func (p *parentChildProvider) Call(ctx context.Context, _ providers.Request) (<-chan providers.Event, error) {
+	i := int(p.calls.Add(1)) - 1
+	ch := make(chan providers.Event, 4)
+	go func() {
+		defer close(ch)
+		if i < len(p.scripts) {
+			for _, ev := range p.scripts[i] {
+				ch <- ev
+			}
+			return
+		}
+		if p.blockAfter && i == len(p.scripts) {
+			<-ctx.Done()
+			return
+		}
+		for _, ev := range p.final {
+			ch <- ev
+		}
+	}()
+	return ch, nil
 }
 
 // A child whose turn is still running is working, not idle: a sweep far past
@@ -217,12 +417,27 @@ func TestResidentChild_SweepNeverReapsARunningTurn(t *testing.T) {
 	if _, state, err = srv.sendResidentChild(ctx, runID, "slow work", 100); err != nil || state != "running" {
 		t.Fatalf("send: state=%q err=%v", state, err)
 	}
-	srv.sweepResidentChildren(time.Now().Add(24 * time.Hour))
+	// Long past the idle TTL by the idle clock, well inside the turn ceiling.
+	ageResidentChild(t, srv, runID, 2*srv.residentChildIdleTTL())
+	srv.sweepResidentChildren(time.Now())
 
 	gate <- struct{}{}
-	out, state, err := srv.pollResidentChild(ctx, runID, 5000)
+	if out, state, err := srv.pollResidentChild(ctx, runID, 5000); err != nil || state != "awaiting_input" {
+		t.Fatalf("poll after a sweep mid-turn: state=%q out=%q err=%v", state, out, err)
+	}
+	// A reaped child can still report its interrupted turn as parked; only a
+	// further turn shows it is alive.
+	assertResidentChildAlive(t, srv, ctx, gate, runID)
+}
+
+// assertResidentChildAlive runs one more turn on the child and requires it to
+// park again: a reaped child's loop has exited, so the turn never completes.
+func assertResidentChildAlive(t *testing.T, srv *Server, ctx context.Context, gate chan struct{}, runID string) {
+	t.Helper()
+	gate <- struct{}{}
+	out, state, err := srv.sendResidentChild(ctx, runID, "are you there", 5000)
 	if err != nil || state != "awaiting_input" {
-		t.Fatalf("poll after a sweep mid-turn: state=%q out=%q err=%v — the running child was reaped", state, out, err)
+		t.Fatalf("a further turn: state=%q out=%q err=%v — the child was reaped", state, out, err)
 	}
 }
 
@@ -287,10 +502,7 @@ func TestResidentChild_IdleClockStartsWhenTheTurnEnds(t *testing.T) {
 	}
 	srv.sweepResidentChildren(time.Now())
 
-	out, state, err := srv.pollResidentChild(ctx, runID, 0)
-	if err != nil || state != "awaiting_input" {
-		t.Fatalf("poll after the turn ended + sweep: state=%q out=%q err=%v — the child was reaped", state, out, err)
-	}
+	assertResidentChildAlive(t, srv, ctx, gate, runID)
 }
 
 // gatedProvider emits a line of text, then blocks before end_turn until the test
