@@ -1837,6 +1837,15 @@ func (t *TeamDef) execRun(ctx context.Context, in teamDefInput) (tools.Result, e
 		// Like a detached walk it no longer holds the caller up, so whatever it
 		// waits on must not pause the caller's clock.
 		walkCtx = providers.WithRunClock(walkCtx, nil)
+		// The spawn ledger, as Agent poll mode records a child: on the
+		// caller's transcript, so a later resume can rebuild its handles.
+		// Recorded here, once nothing can withdraw the walk.
+		if toolUseID := tools.ToolUseID(ctx); toolUseID != "" && tools.HasEventEmitter(ctx) {
+			tools.EventEmitter(ctx)(providers.Event{Type: providers.EventSpawnChildStarted, SpawnChild: &providers.SpawnChildEventInfo{
+				ToolUseID: toolUseID, RunID: pollRunID, Agent: teamWalkLabel + row.Name, Mode: "poll",
+				Kind: tools.ChildKindTeam, Team: row.Name, DefID: row.DefID,
+			}})
+		}
 		go finishPollWalk(bg, pollRunID, releaseLive, func() walkEnding {
 			trace, werr := walk()
 			return pollWalkResult(answer, trace, werr, walkCancelled, context.Cause(walkCtx))
