@@ -146,7 +146,7 @@ const MaxParallelSpawns = 32
 //
 // `op:"spawn"` returns the sub-agent's final assistant text as a
 // tool_result. `op:"parallel_spawn"` returns a JSON-encoded
-// `{results:[{agent,ok,output|error},...]}` envelope in input order
+// `{results:[{agent,ok,output|error,run_id},...]}` envelope in input order
 // — sub-agent errors are captured per-child and surfaced inside the
 // envelope, NOT escalated to a parent tool error. The parent's
 // model decides whether to retry, fall back, or give up.
@@ -292,10 +292,12 @@ type ParallelSpawnResult struct {
 	// parent gets each child's structured result — not just its prose — in the
 	// envelope. Omitted for append/recap children.
 	State map[string]any `json:"state,omitempty"`
-	// RunID is the child's run row id (RFC X Phase 3), captured for the
-	// spawn ledger so a restored fan-out parent can re-find this child.
-	// Internal-only — omitted from the tool_result envelope the model sees.
-	RunID string `json:"-"`
+	// RunID is the child's run row id (RFC X Phase 3): the spawn ledger's key
+	// for re-finding this child after a restore, and the handle the parent's
+	// model needs to address the child's run (History, Evaluation, an
+	// operator). Omitted when no run was created (an early resolution error,
+	// a child never dispatched).
+	RunID string `json:"run_id,omitempty"`
 }
 
 // agentInputSchema is the JSON Schema the model sees: ONE object, with `op`
@@ -339,7 +341,7 @@ const agentInputSchema = `{
 }`
 
 const agentDescription = `Spawn or drive named sub-agents, each with its own tool allowlist (your tool set does not transfer). ` +
-	`Stateless ops: 'spawn' (default; one child, return its final text) and 'parallel_spawn' (N children concurrently, JSON envelope with per-child ok/output/error) — best when you describe the whole task up front. ` +
+	`Stateless ops: 'spawn' (default; one child, return its final text) and 'parallel_spawn' (N children concurrently, JSON envelope with per-child ok/output/error and the child's run_id) — best when you describe the whole task up front. ` +
 	`Resident ops (stateful): 'open' starts a persistent sub-agent and returns a child_run_id with its first turn's output; 'send' gives it the next instruction and returns that turn's output (on both, optional timeout_ms bounds the wait — a long turn returns state "running" + partial output); 'poll' checks a running child without new input; 'cancel' stops a child's current turn (it stays alive); 'close' shuts it down. Use these when the child must keep state between steps — a warm sandbox container, a REPL, a multi-turn analysis — instead of re-spawning and re-threading state by hand. Close what you open. ` +
 	`See Context.help(topic="fan-out-patterns") for spawn vs parallel_spawn vs Channel.publish, and Context.help(topic="resident-sub-agents") for the open/send/close lifecycle.`
 
@@ -474,8 +476,8 @@ func withSubAgentState(text string, state map[string]any) string {
 //
 // Result text is a deterministic-ordering JSON envelope:
 //
-//	{"results": [{"index":0,"agent":"researcher","ok":true,"output":"..."},
-//	             {"index":1,"agent":"researcher","ok":false,"error":"..."}]}
+//	{"results": [{"index":0,"agent":"researcher","ok":true,"output":"...","run_id":"r_..."},
+//	             {"index":1,"agent":"researcher","ok":false,"error":"...","run_id":"r_..."}]}
 //
 // The envelope is a tool_result Text payload (not IsError) regardless
 // of per-child success — the call as a whole succeeded; the per-child

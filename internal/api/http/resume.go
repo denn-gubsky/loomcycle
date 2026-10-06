@@ -1389,7 +1389,7 @@ func (s *Server) reconcileFanoutParent(ctx context.Context, run store.Run, runEv
 		switch {
 		case c != nil && c.result != nil:
 			// Completed before the snapshot — durable result in the ledger.
-			results[i] = builtin.ParallelSpawnResult{Index: i, Agent: c.result.Agent, Ok: c.result.Ok, Output: c.result.Output, Error: c.result.Error, State: c.result.State}
+			results[i] = builtin.ParallelSpawnResult{Index: i, Agent: c.result.Agent, Ok: c.result.Ok, Output: c.result.Output, Error: c.result.Error, State: c.result.State, RunID: c.result.RunID}
 		case c != nil && c.runID != "":
 			// Still running (parked) at snapshot → re-dispatched independently
 			// by ResumePausedRuns. Await it + read its result, which has not
@@ -1477,7 +1477,7 @@ func (s *Server) awaitChildResult(ctx context.Context, index int, name, childRun
 	child, err := s.awaitChildTerminal(ctx, childRunID)
 	if err != nil {
 		return builtin.ParallelSpawnResult{Index: index, Agent: name, Ok: false,
-			Error: fmt.Sprintf("await child run %s: %v", childRunID, err)}
+			Error: fmt.Sprintf("await child run %s: %v", childRunID, err), RunID: childRunID}
 	}
 	if name == "" {
 		name = child.Agent
@@ -1489,13 +1489,13 @@ func (s *Server) awaitChildResult(ctx context.Context, index int, name, childRun
 			out = fmt.Sprintf("(sub-agent %q completed with no final text)", name)
 		}
 		return builtin.ParallelSpawnResult{Index: index, Agent: name, Ok: true,
-			Output: formatSubAgentOutput(child.AgentID, out)}
+			Output: formatSubAgentOutput(child.AgentID, childRunID, out), RunID: childRunID}
 	default:
 		msg := child.ErrorMsg
 		if msg == "" {
 			msg = string(child.Status)
 		}
-		return builtin.ParallelSpawnResult{Index: index, Agent: name, Ok: false, Error: msg}
+		return builtin.ParallelSpawnResult{Index: index, Agent: name, Ok: false, Error: msg, RunID: childRunID}
 	}
 }
 
@@ -1550,11 +1550,17 @@ func (s *Server) awaitChildTerminal(ctx context.Context, childRunID string) (sto
 }
 
 // formatSubAgentOutput wraps a sub-agent's final text with the parseable
-// "[sub-agent agent_id=...]" header the parent agent's model reads to attribute
-// child output. Shared by the live collection path (runSubAgent) and the
-// cross-instance reconcile (awaitChildResult) so the wire contract can't drift.
-func formatSubAgentOutput(agentID, finalText string) string {
-	return fmt.Sprintf("[sub-agent agent_id=%s]\n%s", agentID, finalText)
+// "[sub-agent agent_id=... run_id=...]" header the parent agent's model reads
+// to attribute child output — and, from run_id, to address the child's run
+// afterwards. run_id sits inside the same bracket so every reader that strips
+// the header ("[sub-agent" up to the first "]") keeps working. Shared by the
+// live collection path (runSubAgent) and the cross-instance reconcile
+// (awaitChildResult) so the wire contract can't drift.
+func formatSubAgentOutput(agentID, runID, finalText string) string {
+	if runID == "" {
+		return fmt.Sprintf("[sub-agent agent_id=%s]\n%s", agentID, finalText)
+	}
+	return fmt.Sprintf("[sub-agent agent_id=%s run_id=%s]\n%s", agentID, runID, finalText)
 }
 
 // childFinalText reads a completed child's final assistant text from its

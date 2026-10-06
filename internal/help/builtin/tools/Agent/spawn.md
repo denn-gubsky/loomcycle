@@ -23,8 +23,10 @@ Do not pass `spawns` here; that is `parallel_spawn`.
 ## Returns
 
 The child's final text, as plain text, starting with a line
-`[sub-agent agent_id=a_...]`. A child that keeps structured state adds
-`Final state:` and its JSON.
+`[sub-agent agent_id=a_... run_id=r_...]` — `run_id` is the child's run, for
+anything that needs to refer to it later. A child that keeps structured state
+adds `Final state:` and its JSON. A failure names the run in its message
+(`run=r_...`).
 
 ## Errors
 
@@ -49,7 +51,7 @@ Delegate one task and wait for the answer:
 ```
 
 ```json result
-"[sub-agent agent_id=a_9f2c41d07be35a18]\n# Jane Doe — Senior Backend Engineer\n..."
+"[sub-agent agent_id=a_9f2c41d07be35a18 run_id=r_2b7e90c41d6f3a58]\n# Jane Doe — Senior Backend Engineer\n..."
 ```
 
 The same, with a child that should compact its context early on a long task:

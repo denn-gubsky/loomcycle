@@ -19,7 +19,7 @@ You want the sub-agent's OUTPUT before you continue:
 
 ```
 {"name": "cv-adapter", "prompt": "Generate CV for ..."}
-→ "[sub-agent agent_id=a_abc]\n<sub-agent's final output>"
+→ "[sub-agent agent_id=a_abc run_id=r_def]\n<sub-agent's final output>"
 ```
 
 The sub-agent's own ACL applies — your tool set doesn't transfer.

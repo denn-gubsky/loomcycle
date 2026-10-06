@@ -1039,3 +1039,41 @@ func TestAgentTool_Cancel_NotWired(t *testing.T) {
 		t.Errorf("cancel with nil CancelChild should refuse: %+v", res)
 	}
 }
+
+// Every parallel_spawn row names the child's run — the failed one included,
+// since a failure is exactly when the parent wants to look the run up — and a
+// row with no run (the runner never created one) carries no run_id key.
+func TestAgentTool_ParallelSpawn_EnvelopeRowsCarryTheChildRunID(t *testing.T) {
+	a := &AgentTool{
+		Run: func(context.Context, string, string, string) (string, error) { return "", nil },
+		RunDetailed: func(_ context.Context, name, prompt, _ string) (string, map[string]any, string, error) {
+			switch prompt {
+			case "fail":
+				return "", nil, "r_failed", errors.New("child failed")
+			case "unresolved":
+				return "", nil, "", errors.New("unknown sub-agent")
+			}
+			return "ok", nil, "r_" + name, nil
+		},
+	}
+	res, _ := a.Execute(context.Background(), json.RawMessage(`{"op":"parallel_spawn","spawns":[
+		{"name":"one","prompt":"go"},{"name":"two","prompt":"fail"},{"name":"three","prompt":"unresolved"}]}`))
+	if res.IsError {
+		t.Fatalf("parallel_spawn: %s", res.Text)
+	}
+	var env struct {
+		Results []map[string]any `json:"results"`
+	}
+	if err := json.Unmarshal([]byte(res.Text), &env); err != nil {
+		t.Fatalf("envelope: %v; raw=%s", err, res.Text)
+	}
+	if got := env.Results[0]["run_id"]; got != "r_one" {
+		t.Errorf("ok row run_id = %v, want r_one; raw=%s", got, res.Text)
+	}
+	if got := env.Results[1]["run_id"]; got != "r_failed" {
+		t.Errorf("failed row run_id = %v, want r_failed; raw=%s", got, res.Text)
+	}
+	if _, has := env.Results[2]["run_id"]; has {
+		t.Errorf("a row with no run carries run_id: %s", res.Text)
+	}
+}
