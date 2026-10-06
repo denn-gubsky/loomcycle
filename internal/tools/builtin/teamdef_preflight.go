@@ -20,11 +20,12 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/denn-gubsky/loomcycle/internal/store"
 	"github.com/denn-gubsky/loomcycle/internal/teamgraph"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
 )
 
-// preflightChannels refuses a definition whose channel references cannot work.
+// preflightChannelIssues refuses a definition whose channel references cannot work.
 //
 // Two independent checks, because they fail for different reasons and have
 // different fixes:
@@ -38,15 +39,18 @@ import (
 //     A tool that cannot see the declarations cannot tell "undeclared" from "I
 //     have no list", and refusing on the second would break every create on a
 //     plane that simply never wired a catalog.
-func (t *TeamDef) preflightChannels(ctx context.Context, def teamgraph.Definition) error {
+func (t *TeamDef) preflightChannelIssues(ctx context.Context, def teamgraph.Definition) []teamIssue {
 	// The team's own channels are neither in its ACL nor in the declared set:
 	// the team holds them, and they exist only in the definition, whose
-	// Validate already refused an undeclared one.
+	// Validate already refused an undeclared one. A reserved name is refused
+	// as such by localChannelIssues; asking for an ACL line or a declaration
+	// for it too would send the author to fix the wrong thing.
 	var refs []teamgraph.ChannelRef
 	for _, ref := range teamgraph.ChannelRefs(def) {
-		if _, isLocal := teamgraph.LocalRef(ref.Channel); !isLocal {
-			refs = append(refs, ref)
+		if _, isLocal := teamgraph.LocalRef(ref.Channel); isLocal || store.IsTeamChannelName(ref.Channel) {
+			continue
 		}
+		refs = append(refs, ref)
 	}
 	if len(refs) == 0 {
 		return nil
@@ -55,28 +59,37 @@ func (t *TeamDef) preflightChannels(ctx context.Context, def teamgraph.Definitio
 	// The ACL check, against the ONE runtime matcher — never a second copy of
 	// its rules. A preflight that accepted what the runtime refuses would be
 	// worse than none: it would certify a def that cannot run.
+	var issues []teamIssue
 	for _, ref := range refs {
 		if channelAllowed(ref.Channel, def.GrantList(ref.Side)) {
 			continue
 		}
-		return fmt.Errorf("state %q uses channel %q as its %s, but the team's own ACL does not grant %s on it — "+
-			"a Starter resolves its channels under the TEAM's authority, so add it to the definition:\n%s",
-			ref.State, ref.Channel, ref.Field, ref.Side, aclFixFor(def, refs))
+		issues = append(issues, teamIssue{
+			Kind: teamIssueACLMissing, Severity: severityRefused, Path: ref.Path,
+			State: ref.State, Field: ref.Field, Channel: ref.Channel, Side: string(ref.Side),
+			Detail: fmt.Sprintf("state %q uses channel %q as its %s, but the team's own ACL does not grant %s on it — "+
+				"a Starter resolves its channels under the TEAM's authority, so add it to the definition:\n%s",
+				ref.State, ref.Channel, ref.Field, ref.Side, aclFixFor(def, refs)),
+		})
 	}
 
 	catalog := t.channelCatalog(ctx)
 	if catalog == nil {
-		return nil
+		return issues
 	}
 	for _, ref := range refs {
 		if _, ok := catalog[ref.Channel]; !ok {
-			return fmt.Errorf("state %q names channel %q, which is not declared — "+
-				"declare it in the operator config:\n%s\nor at runtime with "+
-				"`ChannelDef op=create name=%s overlay={\"scope\":\"user\"}`",
-				ref.State, ref.Channel, channelYAMLFor(ref.Channel), ref.Channel)
+			issues = append(issues, teamIssue{
+				Kind: teamIssueChannelUndeclared, Severity: severityRefused, Path: ref.Path,
+				State: ref.State, Field: ref.Field, Channel: ref.Channel,
+				Detail: fmt.Sprintf("state %q names channel %q, which is not declared — "+
+					"declare it in the operator config:\n%s\nor at runtime with "+
+					"`ChannelDef op=create name=%s overlay={\"scope\":\"user\"}`",
+					ref.State, ref.Channel, channelYAMLFor(ref.Channel), ref.Channel),
+			})
 		}
 	}
-	return nil
+	return issues
 }
 
 // channelCatalog reads the declared channel set, or nil when none is wired.

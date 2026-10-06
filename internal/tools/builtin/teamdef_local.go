@@ -43,7 +43,7 @@ func LocalAgentDefinition(body json.RawMessage) (json.RawMessage, error) {
 	return json.Marshal(def)
 }
 
-// checkLocalAgents holds every local agent a definition declares to the gates
+// localAgentIssues holds every local agent a definition declares to the gates
 // a new agent passes, and refuses one whose full name is already an agent.
 // Called at create AND fork, on the merged definition: a fork is an authoring
 // act by whoever forks, so the agents it carries over are judged under the
@@ -51,34 +51,45 @@ func LocalAgentDefinition(body json.RawMessage) (json.RawMessage, error) {
 // inherit a ceiling from. parent is the definition being forked (nil at
 // create); it only lets a caller inside a run keep the hooks a local agent
 // already had.
-func (t *TeamDef) checkLocalAgents(ctx context.Context, op, team string, def teamgraph.Definition, parent *teamgraph.Definition) error {
+//
+// Every agent is judged; one that fails a gate is not judged further (the
+// AgentDef gates after a refusal assume it passed), and the next agent is.
+func (t *TeamDef) localAgentIssues(ctx context.Context, op, team string, def teamgraph.Definition, parent *teamgraph.Definition) []teamIssue {
 	names := def.LocalAgentNames()
 	if len(names) == 0 {
 		return nil
 	}
+	var issues []teamIssue
 	// A local agent is named "<team>/<name>", which must split one way. A team
 	// named before the one-segment rule may hold a "/" or ":" and keeps
-	// working as it did, but cannot declare agents of its own.
+	// working as it did, but cannot declare agents of its own. Nothing below
+	// can be judged under a name that does not split.
 	if err := teamgraph.ValidateName(team); err != nil {
-		return fmt.Errorf("local: a team that declares its own agents needs a name of one segment "+
-			"(A-Z a-z 0-9 _ -), because each is named \"<team>/<name>\": %w", err)
+		return append(issues, refused(teamIssueNameInvalid, "local.agents", fmt.Sprintf(
+			"local: a team that declares its own agents needs a name of one segment "+
+				"(A-Z a-z 0-9 _ -), because each is named \"<team>/<name>\": %v", err)))
 	}
 	if t.Agents == nil || t.Agents.Cfg == nil {
-		return fmt.Errorf("local: this server cannot check a team's own agents (no agent-definition tool is wired), so a definition declaring them is refused")
+		return append(issues, refused(teamIssueUncheckable, "local.agents",
+			"local: this server cannot check a team's own agents (no agent-definition tool is wired), so a definition declaring them is refused"))
 	}
-	if err := teamgraph.CheckLocalRunNames(def, team); err != nil {
-		return err
-	}
+	issues = append(issues, graphIssues(teamgraph.CheckLocalRunNamesAll(def, team))...)
 	policy := tools.AgentDefPolicy(ctx)
 	tenantID := tools.RunIdentity(ctx).TenantID
 	for _, name := range names {
 		full := teamgraph.QualifiedLocalName(team, name)
 		where := fmt.Sprintf("local.agents[%q]", name)
+		path := teamgraph.PathKey("local.agents", name)
+		agent := teamgraph.LocalRefPrefix + name
+		refuse := func(kind, subpath, detail string) {
+			issues = append(issues, teamIssue{Kind: kind, Severity: severityRefused, Path: path + subpath, Agent: agent, Detail: detail})
+		}
 		// The scope gate first, although gateNewDef applies it again below: a
 		// caller with no authority over this name must not learn from the
 		// collision check whether an agent of that name exists.
 		if err := t.Agents.checkScopeForName(policy, full, ""); err != nil {
-			return fmt.Errorf("%s: %w", where, err)
+			refuse(teamIssueLocalAgentAuthority, "", fmt.Sprintf("%s: %v", where, err))
+			continue
 		}
 		// The global chain a run of that name would resolve through: the
 		// tenant's own agents, the operator's static ones, the shared ones.
@@ -87,11 +98,13 @@ func (t *TeamDef) checkLocalAgents(ctx context.Context, op, team string, def tea
 		// the name is free.
 		_, exists, err := lookup.AgentChecked(ctx, t.Store, t.Agents.Cfg, tenantID, full)
 		if err != nil {
-			return fmt.Errorf("%s: could not check that no agent is named %q: %w", where, full, err)
+			refuse(teamIssueUncheckable, "", fmt.Sprintf("%s: could not check that no agent is named %q: %v", where, full, err))
+			continue
 		}
 		if exists {
-			return fmt.Errorf("%s: an agent named %q already exists. A team's own agent and another agent of the same "+
-				"full name would share agent-scoped memory and channel cursors — rename one of them", where, full)
+			refuse(teamIssueLocalAgentCollision, "", fmt.Sprintf("%s: an agent named %q already exists. A team's own agent and another agent of the same "+
+				"full name would share agent-scoped memory and channel cursors — rename one of them", where, full))
+			continue
 		}
 		var parentDef json.RawMessage
 		if parent != nil {
@@ -103,11 +116,13 @@ func (t *TeamDef) checkLocalAgents(ctx context.Context, op, team string, def tea
 		}
 		merged, _, err := t.Agents.gateNewDef(ctx, policy, op, full, def.Local.Agents[name], parentDef)
 		if err != nil {
-			return fmt.Errorf("%s: %w", where, err)
+			refuse(teamIssueLocalAgentInvalid, "", fmt.Sprintf("%s: %v", where, err))
+			continue
 		}
 		if merged.Provider == codeJSProvider && merged.Code == "" {
-			return fmt.Errorf("%s: a team's own code-js agent must carry its source inline as code_body — "+
-				"there is no agent_code directory for it", where)
+			refuse(teamIssueLocalAgentInvalid, ".code_body", fmt.Sprintf("%s: a team's own code-js agent must carry its source inline as code_body — "+
+				"there is no agent_code directory for it", where))
+			continue
 		}
 		// skill.tools ⊆ agent.tools for every team skill it is granted — the
 		// rule the Skill tool applies when one is loaded, checked here so a
@@ -119,12 +134,16 @@ func (t *TeamDef) checkLocalAgents(ctx context.Context, op, team string, def tea
 				continue
 			}
 			if widening := skillToolsExceedingAgent(sk.Tools, merged.Tools, merged.Tools); len(widening) > 0 {
-				return fmt.Errorf("%s: its skill %q requires tools %v this agent is not granted — a skill cannot widen its agent's tools",
-					where, teamgraph.LocalRefPrefix+granted, widening)
+				issues = append(issues, teamIssue{
+					Kind: teamIssueLocalAgentInvalid, Severity: severityRefused, Path: path + ".skills",
+					Agent: agent, Skill: teamgraph.LocalRefPrefix + granted,
+					Detail: fmt.Sprintf("%s: its skill %q requires tools %v this agent is not granted — a skill cannot widen its agent's tools",
+						where, teamgraph.LocalRefPrefix+granted, widening),
+				})
 			}
 		}
 	}
-	return nil
+	return issues
 }
 
 // localSkillDefinition is a team-local skill in the shape a skill_defs row
@@ -133,36 +152,43 @@ func localSkillDefinition(sk teamgraph.LocalSkill) skillDefOverlay {
 	return skillDefOverlay{Body: sk.Body, Description: sk.Description, Tools: sk.Tools}
 }
 
-// checkLocalSkills holds every skill a definition declares to the gates a new
+// localSkillIssues holds every skill a definition declares to the gates a new
 // skill passes (SkillDef.gateNewSkill), under its full name "<team>/<name>".
 // Called at create AND fork, on the merged definition, for the reason
-// checkLocalAgents gives: a fork is an authoring act by the forker, so the
+// localAgentIssues gives: a fork is an authoring act by the forker, so the
 // skills it carries over are judged under the forker's authority — its
 // `skills:` allowlist and its own tools — like the ones it adds.
 //
 // There is no name-collision check, unlike for agents: a team's skill keeps
 // no state of its own, and it is reached only as "./<name>" by the team's own
 // agents, so a global skill of the same full name is never ambiguous with it.
-func (t *TeamDef) checkLocalSkills(ctx context.Context, op, team string, def teamgraph.Definition) error {
+func (t *TeamDef) localSkillIssues(ctx context.Context, op, team string, def teamgraph.Definition) []teamIssue {
 	names := def.LocalSkillNames()
 	if len(names) == 0 {
 		return nil
 	}
 	if err := teamgraph.ValidateName(team); err != nil {
-		return fmt.Errorf("local: a team that declares its own skills needs a name of one segment "+
-			"(A-Z a-z 0-9 _ -), because each is named \"<team>/<name>\": %w", err)
+		return []teamIssue{refused(teamIssueNameInvalid, "local.skills", fmt.Sprintf(
+			"local: a team that declares its own skills needs a name of one segment "+
+				"(A-Z a-z 0-9 _ -), because each is named \"<team>/<name>\": %v", err))}
 	}
 	if t.Skills == nil {
-		return fmt.Errorf("local: this server cannot check a team's own skills (no skill-definition tool is wired), so a definition declaring them is refused")
+		return []teamIssue{refused(teamIssueUncheckable, "local.skills",
+			"local: this server cannot check a team's own skills (no skill-definition tool is wired), so a definition declaring them is refused")}
 	}
+	var issues []teamIssue
 	policy := tools.SkillPolicy(ctx)
 	for _, name := range names {
 		sk, _ := def.LocalSkill(name)
 		if _, err := t.Skills.gateNewSkill(ctx, policy, op, teamgraph.QualifiedLocalName(team, name), localSkillDefinition(sk)); err != nil {
-			return fmt.Errorf("local.skills[%q]: %w", name, err)
+			issues = append(issues, teamIssue{
+				Kind: teamIssueLocalSkillInvalid, Severity: severityRefused,
+				Path: teamgraph.PathKey("local.skills", name), Skill: teamgraph.LocalRefPrefix + name,
+				Detail: fmt.Sprintf("local.skills[%q]: %v", name, err),
+			})
 		}
 	}
-	return nil
+	return issues
 }
 
 // checkLocalNamesFree refuses to make a version ACTIVE AND LIVE while one of
@@ -173,7 +199,7 @@ func (t *TeamDef) checkLocalSkills(ctx context.Context, op, team string, def tea
 // clash there is the check made each time a local agent is resolved.)
 //
 // A version that declares agents is refused when the check cannot be made,
-// as checkLocalAgents refuses to store one. A name the caller holds no
+// as localAgentIssues refuses to store one. A name the caller holds no
 // agent-authoring grant over is NOT checked: refusing on it would tell the
 // caller whether an agent of that name exists.
 func (t *TeamDef) checkLocalNamesFree(ctx context.Context, row store.TeamDefRow) error {

@@ -161,6 +161,8 @@ import type {
   TeamRunDetached,
   TeamRunTarget,
   TeamVerification,
+  TeamDraft,
+  TeamDraftVerification,
   TeamVersionList,
   TeamDiagram,
   TeamRunResult,
@@ -2083,18 +2085,37 @@ export class LoomcycleClient {
    *
    *  Never raises for an absent team: a name with no active version answers
    *  `{deployed: false, matches: false}`, which a caller distinguishes from a
-   *  deployed version whose hash differs. */
+   *  deployed version whose hash differs.
+   *
+   *  Given a {@link TeamDraft} instead of a hash, it checks that UNSAVED team
+   *  the way `createTeam` / `forkTeam` would — every check they run, plus
+   *  what would make it unrunnable — and returns all the problems at once,
+   *  each with the JSON path at fault. Nothing is written. */
   async verifyTeam(
     name: string,
     contentSha256: string,
     opts?: { signal?: AbortSignal },
-  ): Promise<TeamVerification> {
-    return postJSON<TeamVerification>(
-      this.ctx,
-      "/v1/_teamdef",
-      { op: "verify", name, content_sha256: contentSha256 },
-      opts,
-    );
+  ): Promise<TeamVerification>;
+  async verifyTeam(
+    name: string,
+    draft: TeamDraft,
+    opts?: { signal?: AbortSignal },
+  ): Promise<TeamDraftVerification>;
+  async verifyTeam(
+    name: string,
+    target: string | TeamDraft,
+    opts?: { signal?: AbortSignal },
+  ): Promise<TeamVerification | TeamDraftVerification> {
+    const body: Record<string, unknown> = { op: "verify", name };
+    if (typeof target === "string") {
+      body.content_sha256 = target;
+    } else {
+      body.overlay = target.overlay;
+      if (target.as) body.as = target.as;
+      if (target.parentDefId) body.parent_def_id = target.parentDefId;
+      if (target.description) body.description = target.description;
+    }
+    return postJSON<TeamVerification | TeamDraftVerification>(this.ctx, "/v1/_teamdef", body, opts);
   }
 
   /** Hard-remove a whole team by name — all versions + the active pointer

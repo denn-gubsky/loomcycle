@@ -179,16 +179,15 @@ func ParseLocalCadence(expr string) (cron.Schedule, error) {
 }
 
 // validateLocalScheduleNames checks the declared schedules' count and names.
-func validateLocalScheduleNames(d Definition) error {
+func validateLocalScheduleNames(out *issues, d Definition) {
 	if d.Local != nil && len(d.Local.Schedules) > MaxLocalSchedules {
-		return fmt.Errorf("team definition: local.schedules declares %d schedules, more than the maximum %d", len(d.Local.Schedules), MaxLocalSchedules)
+		out.top("local.schedules", "team definition: local.schedules declares %d schedules, more than the maximum %d", len(d.Local.Schedules), MaxLocalSchedules)
 	}
 	for _, name := range d.LocalScheduleNames() {
 		if err := validateLocalName("schedule", name); err != nil {
-			return fmt.Errorf("team definition: local.schedules: %w", err)
+			out.top(PathKey("local.schedules", name), "team definition: local.schedules: %v", err)
 		}
 	}
-	return nil
 }
 
 // CheckLocalSchedules reports the first declared schedule that could not run:
@@ -200,28 +199,36 @@ func validateLocalScheduleNames(d Definition) error {
 // The channel must be the team's own: a schedule inside a team reaches what is
 // inside the team and nothing else, so a bare name — a channel the operator or
 // the tenant declared — is refused, not resolved.
-func CheckLocalSchedules(d Definition) error {
+func CheckLocalSchedules(d Definition) error { return first(localScheduleIssues(d)) }
+
+// localScheduleIssues is CheckLocalSchedules collecting every finding. A
+// schedule's cadence, payload and channel are independent, so each is
+// reported; Kind stays "" for its channel, which is not a state's reference.
+func localScheduleIssues(d Definition) []*Issue {
+	var out issues
 	for _, name := range d.LocalScheduleNames() {
 		ls := d.Local.Schedules[name]
 		where := fmt.Sprintf("team definition: local.schedules[%q]", name)
+		base := PathKey("local.schedules", name)
 		if _, err := ParseLocalCadence(ls.Schedule); err != nil {
-			return fmt.Errorf("%s: %w", where, err)
+			out.top(base+".schedule", "%s: %v", where, err)
 		}
 		if len(ls.Payload) > MaxLocalSchedulePayloadBytes {
-			return fmt.Errorf("%s: payload is %d bytes; the limit is %d", where, len(ls.Payload), MaxLocalSchedulePayloadBytes)
+			out.top(base+".payload", "%s: payload is %d bytes; the limit is %d", where, len(ls.Payload), MaxLocalSchedulePayloadBytes)
 		}
 		local, isLocal := LocalRef(ls.Channel)
 		if !isLocal {
-			return fmt.Errorf("%s: channel %q must name one of the team's own channels as \"./<name>\" — "+
+			out.top(base+".channel", "%s: channel %q must name one of the team's own channels as \"./<name>\" — "+
 				"a team's own schedule publishes only into the team", where, ls.Channel)
+			continue
 		}
 		if _, ok := d.LocalChannel(local); !ok {
 			declared := "it declares none"
 			if names := d.LocalChannelNames(); len(names) > 0 {
 				declared = "declared: " + strings.Join(names, ", ")
 			}
-			return fmt.Errorf("%s: channel %q names a channel the team does not declare under local.channels (%s)", where, ls.Channel, declared)
+			out.top(base+".channel", "%s: channel %q names a channel the team does not declare under local.channels (%s)", where, ls.Channel, declared)
 		}
 	}
-	return nil
+	return out
 }

@@ -160,34 +160,38 @@ func LocalWebhookOf(def teamgraph.Definition, name string) (LocalWebhookDefiniti
 	}, nil
 }
 
-// checkLocalWebhooks refuses, at create and fork, a definition declaring a
+// localWebhookIssues refuses, at create and fork, a definition declaring a
 // webhook its author may not open or that could not work. A fork is judged on
 // what it writes: the webhooks it carries over from its parent are judged
 // under the forker's authority like the ones it adds.
-func checkLocalWebhooks(ctx context.Context, team string, def teamgraph.Definition) error {
+func localWebhookIssues(ctx context.Context, team string, def teamgraph.Definition) []teamIssue {
 	names := def.LocalWebhookNames()
 	if len(names) == 0 {
 		return nil
 	}
+	var issues []teamIssue
 	policy := tools.WebhookDefPolicy(ctx)
 	// The WebhookDef tool's own scope check, on the name the webhook is shown
 	// by. It reads only the policy, so a zero tool serves.
 	var webhookDefs WebhookDef
 	for _, name := range names {
 		if err := webhookDefs.checkScopeForName(policy, teamgraph.QualifiedLocalName(team, name)); err != nil {
-			return fmt.Errorf("local.webhooks[%q]: a team's own webhook opens an endpoint anyone can POST to, "+
-				"so declaring one takes the authority to create a webhook definition: %w", name, err)
+			issues = append(issues, refused(teamIssueLocalWebhookAuthority, teamgraph.PathKey("local.webhooks", name),
+				fmt.Sprintf("local.webhooks[%q]: a team's own webhook opens an endpoint anyone can POST to, "+
+					"so declaring one takes the authority to create a webhook definition: %v", name, err)))
 		}
 	}
 	// One segment of the URL the webhook is reached at.
 	if err := teamgraph.ValidateName(team); err != nil {
-		return fmt.Errorf("local: a team that declares its own webhooks needs a name of one segment "+
-			"(A-Z a-z 0-9 _ -), because each is reached under the team's name: %w", err)
+		issues = append(issues, refused(teamIssueNameInvalid, "local.webhooks", fmt.Sprintf(
+			"local: a team that declares its own webhooks needs a name of one segment "+
+				"(A-Z a-z 0-9 _ -), because each is reached under the team's name: %v", err)))
 	}
 	for _, name := range names {
 		if _, err := LocalWebhookOf(def, name); err != nil {
-			return fmt.Errorf("local.webhooks[%q]: %w", name, err)
+			issues = append(issues, refused(teamIssueLocalWebhookInvalid, teamgraph.PathKey("local.webhooks", name),
+				fmt.Sprintf("local.webhooks[%q]: %v", name, err)))
 		}
 	}
-	return nil
+	return issues
 }

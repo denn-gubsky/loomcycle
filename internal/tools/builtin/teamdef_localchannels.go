@@ -75,23 +75,37 @@ func LocalChannelDefinition(team, name string, body json.RawMessage) (tools.Chan
 	return def, nil
 }
 
-// checkLocalChannels refuses, at create and fork, a definition whose own
+// localChannelIssues refuses, at create and fork, a definition whose own
 // channels could not work, and any channel reference that names the reserved
 // prefix directly. Store-free and caller-free: what a local channel may be
 // does not depend on who writes it (a global one, which would, is refused).
-func checkLocalChannels(team string, def teamgraph.Definition) error {
+func localChannelIssues(team string, def teamgraph.Definition) []teamIssue {
+	var issues []teamIssue
 	// The reserved spelling, wherever a definition can name a channel. Checked
 	// for every team: a team with no channels of its own must not reach
 	// another's by writing its stored name.
 	for _, ref := range teamgraph.ChannelRefs(def) {
 		if store.IsTeamChannelName(ref.Channel) {
-			return fmt.Errorf("state %q %s: %q is a reserved name — a team's own channel is named \"./<name>\"", ref.State, ref.Field, ref.Channel)
+			issues = append(issues, teamIssue{
+				Kind: teamIssueChannelReserved, Severity: severityRefused, Path: ref.Path,
+				State: ref.State, Field: ref.Field, Channel: ref.Channel,
+				Detail: fmt.Sprintf("state %q %s: %q is a reserved name — a team's own channel is named \"./<name>\"", ref.State, ref.Field, ref.Channel),
+			})
 		}
 	}
 	if def.Channels != nil {
-		for _, entry := range append(append([]string(nil), def.Channels.Publish...), def.Channels.Subscribe...) {
-			if store.IsTeamChannelName(strings.TrimSpace(entry)) {
-				return fmt.Errorf("channels: %q is a reserved name — a team holds its own channels without an ACL entry", entry)
+		for _, side := range []struct {
+			key  string
+			list []string
+		}{{"publish", def.Channels.Publish}, {"subscribe", def.Channels.Subscribe}} {
+			for i, entry := range side.list {
+				if store.IsTeamChannelName(strings.TrimSpace(entry)) {
+					issues = append(issues, teamIssue{
+						Kind: teamIssueChannelReserved, Severity: severityRefused,
+						Path: fmt.Sprintf("channels.%s[%d]", side.key, i), Channel: entry, Side: side.key,
+						Detail: fmt.Sprintf("channels: %q is a reserved name — a team holds its own channels without an ACL entry", entry),
+					})
+				}
 			}
 		}
 	}
@@ -99,26 +113,29 @@ func checkLocalChannels(team string, def teamgraph.Definition) error {
 	if len(names) > 0 {
 		// Stored as "_team/<team>/<name>", which must split one way.
 		if err := teamgraph.ValidateName(team); err != nil {
-			return fmt.Errorf("local: a team that declares its own channels needs a name of one segment "+
-				"(A-Z a-z 0-9 _ -), because each is stored under the team's name: %w", err)
+			issues = append(issues, refused(teamIssueNameInvalid, "local.channels", fmt.Sprintf(
+				"local: a team that declares its own channels needs a name of one segment "+
+					"(A-Z a-z 0-9 _ -), because each is stored under the team's name: %v", err)))
 		}
 	}
 	for _, name := range names {
 		if _, err := decodeLocalChannel(def.Local.Channels[name]); err != nil {
-			return fmt.Errorf("local.channels[%q]: %w", name, err)
+			issues = append(issues, refused(teamIssueLocalChannelInvalid, teamgraph.PathKey("local.channels", name),
+				fmt.Sprintf("local.channels[%q]: %v", name, err)))
 		}
 	}
-	return checkLocalAgentChannelGrants(def)
+	return append(issues, localAgentChannelGrantIssues(def)...)
 }
 
-// checkLocalAgentChannelGrants refuses a team's own agent whose channel ACL
+// localAgentChannelGrantIssues refuses a team's own agent whose channel ACL
 // names "./x" for a channel the team does not declare, or names the reserved
 // prefix. A local agent is granted one of the team's channels by listing
 // "./<name>" in its own `channels`, side by side as for any channel.
 //
-// A body that does not decode is skipped: checkLocalAgents refuses it with
+// A body that does not decode is skipped: localAgentIssues refuses it with
 // the decoder's own words.
-func checkLocalAgentChannelGrants(def teamgraph.Definition) error {
+func localAgentChannelGrantIssues(def teamgraph.Definition) []teamIssue {
+	var issues []teamIssue
 	for _, agent := range def.LocalAgentNames() {
 		ov, err := decodeAgentOverlay(def.Local.Agents[agent])
 		if err != nil {
@@ -128,20 +145,30 @@ func checkLocalAgentChannelGrants(def teamgraph.Definition) error {
 			key  string
 			list []string
 		}{{"publish", ov.Channels.Publish}, {"subscribe", ov.Channels.Subscribe}} {
-			for _, entry := range side.list {
+			for i, entry := range side.list {
 				entry = strings.TrimSpace(entry)
+				path := fmt.Sprintf("%s.channels.%s[%d]", teamgraph.PathKey("local.agents", agent), side.key, i)
 				if store.IsTeamChannelName(entry) {
-					return fmt.Errorf("local.agents[%q]: channels.%s: %q is a reserved name — name the team's own channel as \"./<name>\"", agent, side.key, entry)
+					issues = append(issues, teamIssue{
+						Kind: teamIssueChannelReserved, Severity: severityRefused, Path: path,
+						Agent: teamgraph.LocalRefPrefix + agent, Channel: entry, Side: side.key,
+						Detail: fmt.Sprintf("local.agents[%q]: channels.%s: %q is a reserved name — name the team's own channel as \"./<name>\"", agent, side.key, entry),
+					})
+					continue
 				}
 				name, isLocal := teamgraph.LocalRef(entry)
 				if !isLocal {
 					continue
 				}
 				if _, ok := def.LocalChannel(name); !ok {
-					return fmt.Errorf("local.agents[%q]: channels.%s: %q names a channel the team does not declare under local.channels", agent, side.key, entry)
+					issues = append(issues, teamIssue{
+						Kind: teamIssueLocalChannelMissing, Severity: severityRefused, Path: path,
+						Agent: teamgraph.LocalRefPrefix + agent, Channel: entry, Side: side.key,
+						Detail: fmt.Sprintf("local.agents[%q]: channels.%s: %q names a channel the team does not declare under local.channels", agent, side.key, entry),
+					})
 				}
 			}
 		}
 	}
-	return nil
+	return issues
 }

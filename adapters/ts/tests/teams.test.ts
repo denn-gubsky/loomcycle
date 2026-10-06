@@ -270,6 +270,44 @@ describe("verifyTeam", () => {
     expect(res.deployed).toBe(false);
     expect(res.matches).toBe(false);
   });
+
+  // A deployed team's sweep is typed: no cast to read runnable or an issue.
+  it("types the deployed version's runnable and issues", async () => {
+    const { client } = makeClient([
+      jsonResponse({
+        name: "triage", matches: true, deployed: true, current_sha256: "sha256:abc",
+        current_def_id: "tdf_2", version: 2, runnable: false,
+        issues: [{
+          kind: "channel_undeclared", severity: "unrunnable", state: "intake", field: "source",
+          channel: "inbox", path: "states[0].handler.source.channel", detail: "channel \"inbox\" is no longer declared",
+        }],
+      }),
+    ]);
+    const res = await client.verifyTeam("triage", "sha256:abc");
+    expect(res.runnable).toBe(false);
+    expect(res.issues?.[0]?.kind).toBe("channel_undeclared");
+    expect(res.issues?.[0]?.path).toBe("states[0].handler.source.channel");
+  });
+
+  // A draft is sent as the overlay a save would send, never with a hash.
+  it("checks a draft: sends the overlay and the draft's options, no hash", async () => {
+    const { client, fetchMock } = makeClient([
+      jsonResponse({
+        name: "triage", matches: false, deployed: true, current_sha256: "sha256:abc",
+        current_def_id: "tdf_2", version: 2, valid: false, runnable: false,
+        checked_as: "fork", parent_def_id: "tdf_2", content_sha256: "sha256:def",
+        issues: [{ kind: "graph_invalid", severity: "refused", path: "entry", detail: "team definition: `entry` is required" }],
+      }),
+    ]);
+    const overlay = { states: [] };
+    const res = await client.verifyTeam("triage", { overlay, as: "fork", parentDefId: "tdf_2", description: "why" });
+    expect(res.valid).toBe(false);
+    expect(res.checked_as).toBe("fork");
+    expect(res.issues[0]?.severity).toBe("refused");
+
+    const body = JSON.parse((fetchMock.mock.calls[0]![1] as RequestInit).body as string);
+    expect(body).toEqual({ op: "verify", name: "triage", overlay, as: "fork", parent_def_id: "tdf_2", description: "why" });
+  });
 });
 
 // ---- the debug surface: a walk is a run, and can be armed while it runs ----

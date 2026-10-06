@@ -269,36 +269,28 @@ func validateLocalName(kind, name string) error {
 // agent's skills list grants is a declared skill. Whether a body is an
 // acceptable agent or skill is the authoring caller's to judge (it depends on
 // who is writing), not this package's.
-func validateLocal(d Definition) error {
+func validateLocal(out *issues, d Definition) {
 	if d.Local != nil && len(d.Local.Agents) > MaxLocalAgents {
-		return fmt.Errorf("team definition: local.agents declares %d agents, more than the maximum %d", len(d.Local.Agents), MaxLocalAgents)
+		out.top("local.agents", "team definition: local.agents declares %d agents, more than the maximum %d", len(d.Local.Agents), MaxLocalAgents)
 	}
 	if d.Local != nil && len(d.Local.Skills) > MaxLocalSkills {
-		return fmt.Errorf("team definition: local.skills declares %d skills, more than the maximum %d", len(d.Local.Skills), MaxLocalSkills)
+		out.top("local.skills", "team definition: local.skills declares %d skills, more than the maximum %d", len(d.Local.Skills), MaxLocalSkills)
 	}
 	for _, name := range d.LocalAgentNames() {
 		if err := ValidateLocalName(name); err != nil {
-			return fmt.Errorf("team definition: local.agents: %w", err)
+			out.top(PathKey("local.agents", name), "team definition: local.agents: %v", err)
 		}
 	}
 	for _, name := range d.LocalSkillNames() {
 		if err := validateLocalName("skill", name); err != nil {
-			return fmt.Errorf("team definition: local.skills: %w", err)
+			out.top(PathKey("local.skills", name), "team definition: local.skills: %v", err)
 		}
 	}
-	if err := validateLocalChannels(d); err != nil {
-		return err
-	}
-	if err := validateLocalScheduleNames(d); err != nil {
-		return err
-	}
-	if err := validateLocalWebhookNames(d); err != nil {
-		return err
-	}
-	if err := checkLocalSkillGrants(d); err != nil {
-		return err
-	}
-	return CheckLocalRefs(d)
+	validateLocalChannels(out, d)
+	validateLocalScheduleNames(out, d)
+	validateLocalWebhookNames(out, d)
+	checkLocalSkillGrants(out, d)
+	*out = append(*out, localRefIssues(d)...)
 }
 
 // CheckLocalRefs reports the first "./<name>" reference that names a local
@@ -308,7 +300,11 @@ func validateLocal(d Definition) error {
 // again before it starts: a stored body may predate this rule or have been
 // restored unchecked, and a reference that silently fell through to a global
 // agent of the same full name would run something the author never named.
-func CheckLocalRefs(d Definition) error {
+func CheckLocalRefs(d Definition) error { return first(localRefIssues(d)) }
+
+// localRefIssues is CheckLocalRefs collecting every finding.
+func localRefIssues(d Definition) []*Issue {
+	var out []*Issue
 	for _, ref := range AgentRefs(d) {
 		name, isLocal := LocalRef(ref.Agent)
 		if !isLocal {
@@ -321,16 +317,13 @@ func CheckLocalRefs(d Definition) error {
 		if names := d.LocalAgentNames(); len(names) > 0 {
 			declared = "declared: " + strings.Join(names, ", ")
 		}
-		return fmt.Errorf("team definition: state %q %s: %q names a local agent the team does not declare under local.agents (%s)",
-			ref.State, ref.Field, ref.Agent, declared)
+		out = append(out, &Issue{Kind: IssueLocalAgentMissing, Path: ref.Path, State: ref.State, Field: handlerRel(ref.Path),
+			Msg: fmt.Sprintf("team definition: state %q %s: %q names a local agent the team does not declare under local.agents (%s)",
+				ref.State, ref.Field, ref.Agent, declared)})
 	}
-	if err := CheckLocalChannelRefs(d); err != nil {
-		return err
-	}
-	if err := CheckLocalSchedules(d); err != nil {
-		return err
-	}
-	return CheckLocalWebhooks(d)
+	out = append(out, localChannelRefIssues(d)...)
+	out = append(out, localScheduleIssues(d)...)
+	return append(out, localWebhookIssues(d)...)
 }
 
 // CheckLocalRunNames refuses a definition in which a state names, as a GLOBAL
@@ -344,9 +337,16 @@ func CheckLocalRefs(d Definition) error {
 // It needs the team's name, which Validate does not have; whoever stores or
 // walks a definition calls it.
 func CheckLocalRunNames(d Definition, team string) error {
+	return first(CheckLocalRunNamesAll(d, team))
+}
+
+// CheckLocalRunNamesAll is CheckLocalRunNames reporting every such state
+// reference, each at its own path.
+func CheckLocalRunNamesAll(d Definition, team string) []*Issue {
 	if d.Local == nil || len(d.Local.Agents) == 0 {
 		return nil
 	}
+	var out []*Issue
 	for _, ref := range AgentRefs(d) {
 		if _, isLocal := LocalRef(ref.Agent); isLocal {
 			continue
@@ -356,12 +356,13 @@ func CheckLocalRunNames(d Definition, team string) error {
 			continue
 		}
 		if _, declared := d.LocalAgent(name); declared {
-			return fmt.Errorf("team definition: state %q %s: %q is the name the team's own agent %q runs under, "+
-				"and a bare name is a global agent — write %q to run the team's own",
-				ref.State, ref.Field, ref.Agent, name, LocalRefPrefix+name)
+			out = append(out, &Issue{Path: ref.Path, State: ref.State, Field: handlerRel(ref.Path),
+				Msg: fmt.Sprintf("team definition: state %q %s: %q is the name the team's own agent %q runs under, "+
+					"and a bare name is a global agent — write %q to run the team's own",
+					ref.State, ref.Field, ref.Agent, name, LocalRefPrefix+name)})
 		}
 	}
-	return nil
+	return out
 }
 
 // LocalRunNames maps the name each declared local agent runs under
@@ -412,7 +413,7 @@ func QualifyLocalRefs(d Definition, team string) Definition {
 			f.Agents = append([]string(nil), f.Agents...)
 			h.Fanout = &f
 		}
-		visitAgentRefs(&h, func(ref *string, _ string) {
+		visitAgentRefs(&h, func(ref *string, _, _ string) {
 			if name, ok := LocalRef(*ref); ok {
 				*ref = QualifiedLocalName(team, name)
 			}
@@ -465,10 +466,26 @@ func (d Definition) LocalSkillNames() []string {
 // author who wants an agent to have a skill of the team's says which one.
 func LocalSkillGrants(skills []string) []string {
 	var out []string
-	for _, entry := range skills {
+	for _, g := range localSkillGrantsAt(skills) {
+		out = append(out, g.name)
+	}
+	return out
+}
+
+// skillGrant is one local grant in a `skills` list and the index of the entry
+// that makes it, for the path a refusal points at.
+type skillGrant struct {
+	name  string
+	index int
+}
+
+// localSkillGrantsAt is LocalSkillGrants keeping each entry's index.
+func localSkillGrantsAt(skills []string) []skillGrant {
+	var out []skillGrant
+	for i, entry := range skills {
 		entry = strings.TrimPrefix(strings.TrimSpace(entry), "+")
 		if name, ok := LocalRef(entry); ok {
-			out = append(out, name)
+			out = append(out, skillGrant{name: name, index: i})
 		}
 	}
 	return out
@@ -500,7 +517,7 @@ func LocalSkillGranted(skills []string, name string) bool {
 // "./<name>", a skill the team does not declare — or writes a pattern there,
 // which grants nothing and would read as if it did. A body whose `skills` is
 // not a list of strings is left to the agent gates, which refuse it.
-func checkLocalSkillGrants(d Definition) error {
+func checkLocalSkillGrants(out *issues, d Definition) {
 	for _, agent := range d.LocalAgentNames() {
 		var body struct {
 			Skills []string `json:"skills"`
@@ -508,13 +525,19 @@ func checkLocalSkillGrants(d Definition) error {
 		if json.Unmarshal(d.Local.Agents[agent], &body) != nil {
 			continue
 		}
-		for _, name := range LocalSkillGrants(body.Skills) {
+		// Each grant fails for one reason: a pattern is not a name, and a
+		// malformed name names nothing that could be declared.
+		for _, g := range localSkillGrantsAt(body.Skills) {
+			path := fmt.Sprintf("%s.skills[%d]", PathKey("local.agents", agent), g.index)
+			name := g.name
 			if strings.ContainsAny(name, "*?") {
-				return fmt.Errorf("team definition: local.agents[%q].skills: %q is a pattern, and a team's own skill is granted only "+
+				out.top(path, "team definition: local.agents[%q].skills: %q is a pattern, and a team's own skill is granted only "+
 					"by its exact name — list each one as \"./<name>\"", agent, LocalRefPrefix+name)
+				continue
 			}
 			if err := validateLocalName("skill", name); err != nil {
-				return fmt.Errorf("team definition: local.agents[%q].skills: %w", agent, err)
+				out.top(path, "team definition: local.agents[%q].skills: %v", agent, err)
+				continue
 			}
 			if _, ok := d.LocalSkill(name); ok {
 				continue
@@ -523,9 +546,8 @@ func checkLocalSkillGrants(d Definition) error {
 			if names := d.LocalSkillNames(); len(names) > 0 {
 				declared = "declared: " + strings.Join(names, ", ")
 			}
-			return fmt.Errorf("team definition: local.agents[%q].skills: %q names a skill the team does not declare under local.skills (%s)",
+			out.top(path, "team definition: local.agents[%q].skills: %q names a skill the team does not declare under local.skills (%s)",
 				agent, LocalRefPrefix+name, declared)
 		}
 	}
-	return nil
 }

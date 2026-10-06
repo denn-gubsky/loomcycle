@@ -81,9 +81,9 @@ func TestChannelRefs_CarriesSideStateAndField(t *testing.T) {
 		{ID: "notify", Handler: Handler{Kind: HandlerChannel, Channel: "out"}},
 	}}
 	want := []ChannelRef{
-		{"in", SideSubscribe, "wave", "source"},
-		{"out", SidePublish, "wave", "sink"},
-		{"out", SidePublish, "notify", "channel"},
+		{Channel: "in", Side: SideSubscribe, State: "wave", Field: "source", Path: "states[0].handler.source.channel"},
+		{Channel: "out", Side: SidePublish, State: "wave", Field: "sink", Path: "states[0].handler.sink.channel"},
+		{Channel: "out", Side: SidePublish, State: "notify", Field: "channel", Path: "states[1].handler.channel"},
 	}
 	got := ChannelRefs(def)
 	if !reflect.DeepEqual(got, want) {
@@ -162,5 +162,29 @@ func TestChannelRefs_SurvivesJSONRoundTrip(t *testing.T) {
 	}
 	if got := len(AgentRefs(def)); got != 1 {
 		t.Errorf("AgentRefs over parsed JSON = %d refs, want 1", got)
+	}
+}
+
+// TestAgentRefs_CarriesFullJSONPath: Field stays the coarse wire name, Path
+// addresses the exact value — the element index included — so an editor can
+// point at the line.
+func TestAgentRefs_CarriesFullJSONPath(t *testing.T) {
+	def := Definition{States: []State{
+		{ID: "one", Handler: Handler{Kind: HandlerAgent, Agent: "a1", Consolidator: "c1"}},
+		{ID: "par", Handler: Handler{Kind: HandlerParallel, Agents: []string{"a2", "", "a3"}}},
+		{ID: "wave", Handler: Handler{Kind: HandlerStarter,
+			Fanout: &StarterFanout{Agent: "a4", Agents: []string{"a5", "a6"}}}},
+	}}
+	want := []AgentRef{
+		{Agent: "a1", State: "one", Field: "agent", Path: "states[0].handler.agent"},
+		{Agent: "c1", State: "one", Field: "consolidator", Path: "states[0].handler.consolidator"},
+		{Agent: "a2", State: "par", Field: "agents", Path: "states[1].handler.agents[0]"},
+		{Agent: "a3", State: "par", Field: "agents", Path: "states[1].handler.agents[2]"},
+		{Agent: "a4", State: "wave", Field: "fanout.agent", Path: "states[2].handler.fanout.agent"},
+		{Agent: "a5", State: "wave", Field: "fanout.agents", Path: "states[2].handler.fanout.agents[0]"},
+		{Agent: "a6", State: "wave", Field: "fanout.agents", Path: "states[2].handler.fanout.agents[1]"},
+	}
+	if got := AgentRefs(def); !reflect.DeepEqual(got, want) {
+		t.Errorf("AgentRefs =\n  %+v\nwant\n  %+v", got, want)
 	}
 }

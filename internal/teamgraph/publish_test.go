@@ -69,7 +69,7 @@ func TestChannelRefs_InputPublishIsAPublishReference(t *testing.T) {
 	if len(refs) != 1 {
 		t.Fatalf("refs = %+v, want one", refs)
 	}
-	if got := refs[0]; got != (ChannelRef{"pcparts-in", SidePublish, "s", "publish"}) {
+	if got := refs[0]; got != (ChannelRef{Channel: "pcparts-in", Side: SidePublish, State: "s", Field: "publish", Path: "states[0].handler.publish.channel"}) {
 		t.Errorf("ref = %+v, want a publish reference from state s, field publish", got)
 	}
 }

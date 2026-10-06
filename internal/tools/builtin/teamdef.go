@@ -242,7 +242,11 @@ const teamDefDescription = `Author, fork, promote, retire, and inspect team work
 	`does not grant, or one that is not declared at all, is refused with the exact block to add, rather than ` +
 	`failing later at the state that needed it. verify reports the content hash AND sweeps what the stored ` +
 	`definition references but does not contain (channels deleted, ACL gaps, members retired) as issues[] with ` +
-	`a runnable flag. A starter state dispatches a wave of agent runs, one per work item, and publishes each result to its sink ` +
+	`a runnable flag. verify with an overlay checks an UNSAVED draft without writing anything: it runs every check ` +
+	`create or fork would, plus that sweep, and returns ALL the problems at once — valid (a save would be accepted), ` +
+	`runnable, content_sha256 and issues[], each with a severity (refused | unrunnable | advisory) and the JSON path of ` +
+	`the value at fault. It checks the draft as the save would (a fork when the name has a version, else a create); ` +
+	`as:"create"|"fork" overrides that. A starter state dispatches a wave of agent runs, one per work item, and publishes each result to its sink ` +
 	`channel. Its source is a channel (source.channel) or a document (source: {kind:"document", path:"/specs/x", ` +
 	`scope:"user"|"tenant"}), whose top-level sections are the items: read once when the wave dispatches, one run per ` +
 	`section with fanout.per:"chunk" (max required; more sections than max fails the walk) or one run holding them all ` +
@@ -293,10 +297,10 @@ const teamDefInputSchema = `{
     "op":            {"type": "string", "enum": ["create","fork","get","list","retire","delete","promote","verify","render_diagram","run"], "description": "Operation to perform."},
     "name":          {"type": "string", "description": "Team name (required for create/fork/list/verify/delete). A new name is one segment of A-Z a-z 0-9 _ -, at most 64 characters: no \"/\", \":\", \".\" or spaces."},
     "def_id":        {"type": "string", "description": "Existing def_id (required for get/retire/promote)."},
-    "parent_def_id": {"type": "string", "description": "Fork parent (optional for fork — when absent, forks the active def of the name in your tenant, falling back to the shared \"\" base)."},
+    "parent_def_id": {"type": "string", "description": "Fork parent (optional for fork — when absent, forks the active def of the name in your tenant, falling back to the shared \"\" base). verify with an overlay takes it too, to check the draft as a fork of that version."},
     "overlay": {
       "type": "object",
-      "description": "Team workflow graph. For create/fork, top-level fields are merged per-field over the parent (slices replace wholesale); server-set fields (def_id, version, parent_def_id, created_*) are ignored if supplied. For render_diagram, supplying an overlay renders a DRY-RUN preview of the unsaved graph (syntax-checked, not persisted) instead of resolving a stored def.",
+      "description": "Team workflow graph. For create/fork, top-level fields are merged per-field over the parent (slices replace wholesale); server-set fields (def_id, version, parent_def_id, created_*) are ignored if supplied. For render_diagram, supplying an overlay renders a DRY-RUN preview of the unsaved graph (syntax-checked, not persisted) instead of resolving a stored def. For verify, supplying an overlay checks the unsaved draft — exactly what create or fork would be sent — without writing it.",
       "properties": {
         "entry":          {"type": "string", "description": "The entry state id."},
         "max_iterations": {"type": "integer", "description": "Per-state cycle cap (0 = default). On fork, omit it to keep the parent's cap; send 0 to go back to the default."},
@@ -312,7 +316,8 @@ const teamDefInputSchema = `{
     "description":    {"type": "string", "description": "Free-text rationale for create/fork."},
     "promote":        {"type": "boolean", "description": "create defaults true, fork defaults false."},
     "retired":        {"type": "boolean", "description": "Required for retire — set true to retire, false to un-retire."},
-    "content_sha256": {"type": "string", "description": "Input for op=verify — the local content hash to compare against the active row. verify also returns runnable + issues[]: what the stored definition references but does not contain (an undeclared channel, a team-ACL gap, a retired member). Optional — verify reports the sweep with or without it."},
+    "content_sha256": {"type": "string", "description": "Input for op=verify — the local content hash to compare against the active row. verify also returns runnable + issues[]: what the stored definition references but does not contain (an undeclared channel, a team-ACL gap, a retired member). Optional — verify reports the sweep with or without it. Not with overlay: a draft's hash is computed."},
+    "as":             {"type": "string", "enum": ["create","fork"], "description": "verify with an overlay (optional): check the draft as a create or as a fork. Omit to check it as a save would: a fork of the active version when the name has one, else a create."},
     "format":         {"type": "string", "enum": ["mermaid","d2"], "description": "render_diagram output format (default mermaid; d2 is deferred)."},
     "highlight_state": {"type": "string", "description": "render_diagram: optionally mark this state (e.g. a chunk's current state) with a bold outline."},
     "input":          {"type": "string", "description": "run: the initial input handed to the entry state's agent (the task/prompt the team works on)."},
@@ -402,6 +407,7 @@ type teamDefInput struct {
 	Review         []string        `json:"review,omitempty"`             // run: starter/agent/parallel states whose member runs are held for a verdict
 	ReviewTTL      int             `json:"review_ttl_seconds,omitempty"` // run: end an unreviewed member hold as rejected after this long
 	Mode           string          `json:"mode,omitempty"`               // run: "" (wait for the walk) | "detach" (return the run id now)
+	As             string          `json:"as,omitempty"`                 // verify with overlay: check the draft as a "create" or a "fork" ("" = as a save would)
 
 	// Vars — run: values for variables the team declares, name → text.
 	Vars map[string]string `json:"vars,omitempty"`
@@ -470,34 +476,11 @@ func (t *TeamDef) execCreate(ctx context.Context, in teamDefInput) (tools.Result
 	if err != nil {
 		return errResult(fmt.Sprintf("create: %s", err)), nil
 	}
-	// Validate the merged graph BEFORE any write — an invalid graph must
-	// never reach storage (a broken team is silent orchestration corruption).
-	if err := teamgraph.Validate(def); err != nil {
-		return errResult(fmt.Sprintf("create: %s", err)), nil
-	}
-	if err := checkLocalChannels(in.Name, def); err != nil {
-		return errResult(fmt.Sprintf("create: %s", err)), nil
-	}
-	if err := checkTeamChannelAuthority(ctx, def); err != nil {
-		return errResult(fmt.Sprintf("create: %s", err)), nil
-	}
-	if err := checkLocalWebhooks(ctx, in.Name, def); err != nil {
-		return errResult(fmt.Sprintf("create: %s", err)), nil
-	}
-	// Preflight AFTER the authority check: "you may not grant this" is a
-	// harder refusal than "this will not work", and reporting the softer one
-	// first would send the author to fix a def they are not allowed to write.
-	if err := t.preflightChannels(ctx, def); err != nil {
-		return errResult(fmt.Sprintf("create: %s", err)), nil
-	}
-	if err := t.checkLocalSkills(ctx, "create", in.Name, def); err != nil {
-		return errResult(fmt.Sprintf("create: %s", err)), nil
-	}
-	if err := t.checkLocalAgents(ctx, "create", in.Name, def, nil); err != nil {
-		return errResult(fmt.Sprintf("create: %s", err)), nil
-	}
-	if err := t.checkSizeCaps(defJSON, in.Description); err != nil {
-		return errResult(fmt.Sprintf("create: %s", err)), nil
+	// Every gate BEFORE any write — an invalid graph must never reach storage
+	// (a broken team is silent orchestration corruption). The same gates
+	// verify runs on a draft; a save refuses with the first.
+	if first := firstRefusal(t.authoringIssues(ctx, "create", in.Name, defJSON, def, nil, in.Description)); first != nil {
+		return errResult("create: " + first.Detail), nil
 	}
 
 	ident := tools.RunIdentity(ctx)
@@ -573,63 +556,13 @@ func (t *TeamDef) execFork(ctx context.Context, in teamDefInput) (tools.Result, 
 		return errResult(fmt.Sprintf("fork: %s", err)), nil
 	}
 
-	// Resolve the parent from the STORE only (no static bootstrap — there is no
-	// cfg.Teams). Three paths, mirroring SkillDef minus the static branch:
-	//   1. parent_def_id supplied → pin
-	//   2. parent_def_id empty + own-tenant active pointer → use it
-	//   3. neither → fall back to the shared ("") active base, else refuse.
-	// RFC N: fork resolves + stamps within the team's own tenant (from the
-	// authoritative run identity, never tool input).
 	ident := tools.RunIdentity(ctx)
 	tenantID := ident.TenantID
-
-	parentDefID := in.ParentDefID
-	var parent store.TeamDefRow
-	if parentDefID != "" {
-		row, err := t.Store.TeamDefGet(ctx, parentDefID)
-		if err != nil {
-			var nf *store.ErrNotFound
-			if errors.As(err, &nf) {
-				return errResult(fmt.Sprintf("fork: parent_def_id %q not found", parentDefID)), nil
-			}
-			return errResult(fmt.Sprintf("fork: %s", err)), nil
-		}
-		// Allow forking the SHARED ("") base or the caller's own tenant (the fork
-		// lands under the caller's tenant); refuse another specific tenant's
-		// private def unless the caller is substrate:admin (crosses tenants, RFC L).
-		if !forkParentVisible(ctx, row.TenantID, tenantID) {
-			return errResult(fmt.Sprintf("fork: parent_def_id %q not found", parentDefID)), nil
-		}
-		if row.Name != in.Name {
-			return errResult(fmt.Sprintf("fork: parent_def_id %q has name %q, refusing to fork under name %q", parentDefID, row.Name, in.Name)), nil
-		}
-		parent = row
-	} else {
-		row, err := t.Store.TeamDefGetActive(ctx, tenantID, in.Name)
-		if err == nil {
-			parent = row
-			parentDefID = row.DefID
-		} else {
-			var nf *store.ErrNotFound
-			if !errors.As(err, &nf) {
-				return errResult(fmt.Sprintf("fork: %s", err)), nil
-			}
-			// No own-tenant active pointer. Fall back to the SHARED ("") base so a
-			// per-tenant principal can fork a name seeded under the legacy "" tenant.
-			// Skip when tenantID is already "" (identical lookup).
-			if tenantID != "" {
-				if shared, serr := t.Store.TeamDefGetActive(ctx, "", in.Name); serr == nil {
-					parent = shared
-					parentDefID = shared.DefID
-				} else if !errors.As(serr, &nf) {
-					return errResult(fmt.Sprintf("fork: %s", serr)), nil
-				}
-			}
-			if parentDefID == "" {
-				return errResult(fmt.Sprintf("fork: no parent — name %q has no DB version to fork (own tenant or shared \"\")", in.Name)), nil
-			}
-		}
+	parent, err := t.resolveForkParent(ctx, in.Name, in.ParentDefID)
+	if err != nil {
+		return errResult(fmt.Sprintf("fork: %s", err)), nil
 	}
+	parentDefID := parent.DefID
 
 	defJSON, err := t.buildDefinition(string(parent.Definition), in.Overlay)
 	if err != nil {
@@ -639,32 +572,11 @@ func (t *TeamDef) execFork(ctx context.Context, in teamDefInput) (tools.Result, 
 	if err != nil {
 		return errResult(fmt.Sprintf("fork: %s", err)), nil
 	}
-	if err := teamgraph.Validate(def); err != nil {
-		return errResult(fmt.Sprintf("fork: %s", err)), nil
-	}
-	if err := checkLocalChannels(in.Name, def); err != nil {
-		return errResult(fmt.Sprintf("fork: %s", err)), nil
-	}
-	if err := checkTeamChannelAuthority(ctx, def); err != nil {
-		return errResult(fmt.Sprintf("fork: %s", err)), nil
-	}
-	if err := checkLocalWebhooks(ctx, in.Name, def); err != nil {
-		return errResult(fmt.Sprintf("fork: %s", err)), nil
-	}
-	if err := t.preflightChannels(ctx, def); err != nil {
-		return errResult(fmt.Sprintf("fork: %s", err)), nil
-	}
 	// The parent's own agents, for the one gate that compares against them. A
 	// parent that no longer parses was already refused by buildDefinition.
 	parentDef, _ := teamgraph.Parse(parent.Definition)
-	if err := t.checkLocalSkills(ctx, "fork", in.Name, def); err != nil {
-		return errResult(fmt.Sprintf("fork: %s", err)), nil
-	}
-	if err := t.checkLocalAgents(ctx, "fork", in.Name, def, &parentDef); err != nil {
-		return errResult(fmt.Sprintf("fork: %s", err)), nil
-	}
-	if err := t.checkSizeCaps(defJSON, in.Description); err != nil {
-		return errResult(fmt.Sprintf("fork: %s", err)), nil
+	if first := firstRefusal(t.authoringIssues(ctx, "fork", in.Name, defJSON, def, &parentDef, in.Description)); first != nil {
+		return errResult("fork: " + first.Detail), nil
 	}
 
 	row := store.TeamDefRow{
@@ -695,6 +607,75 @@ func (t *TeamDef) execFork(ctx context.Context, in teamDefInput) (tools.Result, 
 		}
 	}
 	return okJSON(teamDefRowResponse(created, promote))
+}
+
+// errNoForkParent: the name has no version a fork could start from.
+type errNoForkParent struct{ name string }
+
+func (e *errNoForkParent) Error() string {
+	return fmt.Sprintf("no parent — name %q has no DB version to fork (own tenant or shared \"\")", e.name)
+}
+
+// errForkParent: the pinned parent_def_id cannot be forked under this name —
+// unknown, another tenant's (the same opaque not-found), or another team's.
+type errForkParent struct{ msg string }
+
+func (e *errForkParent) Error() string { return e.msg }
+
+// resolveForkParent finds the version a fork of name starts from — fork's
+// lookup, and verify's when it checks a draft as a fork, so the two cannot
+// resolve different parents. From the STORE only (no static bootstrap — there
+// is no cfg.Teams). Three paths, mirroring SkillDef minus the static branch:
+//  1. parent_def_id supplied → pin
+//  2. parent_def_id empty + own-tenant active pointer → use it
+//  3. neither → fall back to the shared ("") active base, else
+//     *errNoForkParent.
+//
+// RFC N: resolved within the caller's own tenant (from the authoritative run
+// identity, never tool input).
+func (t *TeamDef) resolveForkParent(ctx context.Context, name, parentDefID string) (store.TeamDefRow, error) {
+	tenantID := tools.RunIdentity(ctx).TenantID
+	var nf *store.ErrNotFound
+	if parentDefID != "" {
+		row, err := t.Store.TeamDefGet(ctx, parentDefID)
+		notFound := &errForkParent{fmt.Sprintf("parent_def_id %q not found", parentDefID)}
+		if err != nil {
+			if errors.As(err, &nf) {
+				return store.TeamDefRow{}, notFound
+			}
+			return store.TeamDefRow{}, err
+		}
+		// Allow forking the SHARED ("") base or the caller's own tenant (the fork
+		// lands under the caller's tenant); refuse another specific tenant's
+		// private def unless the caller is substrate:admin (crosses tenants, RFC L).
+		if !forkParentVisible(ctx, row.TenantID, tenantID) {
+			return store.TeamDefRow{}, notFound
+		}
+		if row.Name != name {
+			return store.TeamDefRow{}, &errForkParent{fmt.Sprintf("parent_def_id %q has name %q, refusing to fork under name %q", parentDefID, row.Name, name)}
+		}
+		return row, nil
+	}
+	row, err := t.Store.TeamDefGetActive(ctx, tenantID, name)
+	if err == nil {
+		return row, nil
+	}
+	if !errors.As(err, &nf) {
+		return store.TeamDefRow{}, err
+	}
+	// No own-tenant active pointer. Fall back to the SHARED ("") base so a
+	// per-tenant principal can fork a name seeded under the legacy "" tenant.
+	// Skip when tenantID is already "" (identical lookup).
+	if tenantID != "" {
+		shared, serr := t.Store.TeamDefGetActive(ctx, "", name)
+		if serr == nil {
+			return shared, nil
+		}
+		if !errors.As(serr, &nf) {
+			return store.TeamDefRow{}, serr
+		}
+	}
+	return store.TeamDefRow{}, &errNoForkParent{name: name}
 }
 
 // ---- get / list ----
@@ -868,10 +849,17 @@ func (t *TeamDef) promoter(ctx context.Context) store.TeamDefPromoter {
 
 // execVerify compares a caller-supplied content_sha256 against the active row's
 // (same shape as SkillDef verify): the caller passes name + a locally-computed
-// hash, and the tool reports whether it matches the deployed active def.
+// hash, and the tool reports whether it matches the deployed active def. With
+// an overlay instead, it checks that unsaved draft (verifyDraft).
 func (t *TeamDef) execVerify(ctx context.Context, in teamDefInput) (tools.Result, error) {
 	if in.Name == "" {
 		return errResult("verify: missing required field: name"), nil
+	}
+	if len(in.Overlay) > 0 {
+		return t.verifyDraft(ctx, in)
+	}
+	if in.As != "" || in.ParentDefID != "" || in.Description != "" {
+		return errResult("verify: as, parent_def_id and description describe a draft — they need an overlay"), nil
 	}
 	// RFC N: verify against the team's own tenant active pointer.
 	row, err := t.Store.TeamDefGetActive(ctx, tools.RunIdentity(ctx).TenantID, in.Name)
@@ -914,36 +902,129 @@ func (t *TeamDef) execVerify(ctx context.Context, in teamDefInput) (tools.Result
 		//
 		// An advisory issue is worth reading and stops nothing, so it does not
 		// make the team unrunnable.
-		runnable := true
-		for _, issue := range issues {
-			if advisory, _ := issue["advisory"].(bool); !advisory {
-				runnable = false
-			}
-		}
+		_, runnable := verdict(issues)
 		out["runnable"] = runnable
 		if len(issues) > 0 {
-			out["issues"] = issues
+			out["issues"] = issueMaps(issues)
 		}
 	}
 	return okJSON(out)
 }
 
-// sweepReferences reports what a stored definition names that no longer
-// resolves. Each issue is a map so a canvas can render it and a human can read
-// it, and each carries the state that names the thing — the only part anyone
-// can act on.
-func (t *TeamDef) sweepReferences(ctx context.Context, def teamgraph.Definition) []map[string]any {
-	var issues []map[string]any
+// verifyDraft is verify with an overlay: the pre-save check. It builds the
+// definition a create or fork of name with this overlay would store, runs
+// every gate that save would run plus the reference sweep, and writes nothing.
+//
+// It reports instead of refusing — the op's contract — so a draft that cannot
+// even be built is an answer with one issue, not an error. Each step that
+// cannot run without the one before it stops the report there; every other
+// problem is collected, so an author fixing a hand-written team sees all of
+// them at once.
+//
+// As a create or fork: `as` picks one; unset, whichever a save would do — a
+// fork when there is a version to fork, else a create.
+func (t *TeamDef) verifyDraft(ctx context.Context, in teamDefInput) (tools.Result, error) {
+	if in.ContentSHA256 != "" {
+		return errResult("verify: pass content_sha256 or overlay, not both — with an overlay, verify computes the draft's hash itself"), nil
+	}
+	as := in.As
+	switch as {
+	case "", "create", "fork":
+	default:
+		return errResult(fmt.Sprintf("verify: invalid as %q (want create or fork)", as)), nil
+	}
+	if as == "create" && in.ParentDefID != "" {
+		return errResult("verify: parent_def_id names a fork's parent; it cannot be checked as a create"), nil
+	}
+
+	out := map[string]any{"name": in.Name, "deployed": false, "matches": false,
+		"current_sha256": "", "current_def_id": "", "version": 0}
+	// The deployed version, for `matches`: is this draft what is in force now?
+	active, err := t.Store.TeamDefGetActive(ctx, tools.RunIdentity(ctx).TenantID, in.Name)
+	var nf *store.ErrNotFound
+	switch {
+	case err == nil:
+		out["deployed"], out["current_sha256"], out["current_def_id"], out["version"] = true, active.ContentSHA256, active.DefID, active.Version
+	case !errors.As(err, &nf):
+		return errResult(fmt.Sprintf("verify: %s", err)), nil
+	}
+
+	report := func(issues []teamIssue) (tools.Result, error) {
+		valid, runnable := verdict(issues)
+		out["valid"], out["runnable"], out["issues"] = valid, runnable, issueMaps(issues)
+		return okJSON(out)
+	}
+
+	var issues []teamIssue
+	// The name rule create and fork both apply. A name that fails it is
+	// reported and the rest is still checked under it.
+	if err := t.checkNewName(ctx, in.Name); err != nil {
+		issues = append(issues, refused(teamIssueNameInvalid, "", err.Error()))
+	}
+
+	var parent store.TeamDefRow
+	if as != "create" {
+		p, err := t.resolveForkParent(ctx, in.Name, in.ParentDefID)
+		var none *errNoForkParent
+		var bad *errForkParent
+		switch {
+		case err == nil:
+			parent, as = p, "fork"
+		case errors.As(err, &none) && as == "":
+			as = "create" // nothing to fork: a save of a new name is a create
+		case errors.As(err, &none), errors.As(err, &bad):
+			out["checked_as"] = "fork"
+			return report(append(issues, refused(teamIssueParentNotFound, "parent_def_id", err.Error())))
+		default:
+			return errResult(fmt.Sprintf("verify: %s", err)), nil
+		}
+	}
+	out["checked_as"] = as
+	if as == "fork" {
+		out["parent_def_id"] = parent.DefID
+	}
+
+	defJSON, err := t.buildDefinition(string(parent.Definition), in.Overlay)
+	if err != nil {
+		return report(append(issues, refused(teamIssueOverlayInvalid, "", err.Error())))
+	}
+	def, err := teamgraph.Parse(defJSON)
+	if err != nil {
+		return report(append(issues, refused(teamIssueOverlayInvalid, "", err.Error())))
+	}
+	sha := teamgraph.Sign(in.Name, def)
+	out["content_sha256"] = sha
+	out["matches"] = active.DefID != "" && sha == active.ContentSHA256
+
+	var parentDef *teamgraph.Definition
+	if as == "fork" {
+		pd, _ := teamgraph.Parse(parent.Definition)
+		parentDef = &pd
+	}
+	issues = append(issues, t.authoringIssues(ctx, as, in.Name, defJSON, def, parentDef, in.Description)...)
+	return report(withoutRepeats(issues, t.sweepReferences(ctx, def)))
+}
+
+// sweepReferences reports what a definition names that does not resolve. Each
+// issue carries the state that names the thing and its JSON path — the only
+// part anyone can act on. None of these stops a save: a stored team that
+// references a deleted channel or a retired member is unrunnable, not invalid,
+// except an advisory, which stops nothing.
+func (t *TeamDef) sweepReferences(ctx context.Context, def teamgraph.Definition) []teamIssue {
+	var issues []teamIssue
+	unrunnable := func(i teamIssue) {
+		i.Severity = severityUnrunnable
+		issues = append(issues, i)
+	}
 	catalog := t.channelCatalog(ctx)
 	for _, ref := range teamgraph.ChannelRefs(def) {
 		// The team's own channels need neither an ACL entry nor a declaration
 		// outside it: checked against the definition itself below.
 		if name, isLocal := teamgraph.LocalRef(ref.Channel); isLocal {
 			if _, ok := def.LocalChannel(name); !ok {
-				issues = append(issues, map[string]any{
-					"kind": "local_channel_missing", "state": ref.State, "field": ref.Field,
-					"channel": ref.Channel,
-					"detail":  fmt.Sprintf("%q names a channel the team does not declare under local.channels", ref.Channel),
+				unrunnable(teamIssue{
+					Kind: teamIssueLocalChannelMissing, Path: ref.Path, State: ref.State, Field: ref.Field, Channel: ref.Channel,
+					Detail: fmt.Sprintf("%q names a channel the team does not declare under local.channels", ref.Channel),
 				})
 			}
 			continue
@@ -952,10 +1033,10 @@ func (t *TeamDef) sweepReferences(ctx context.Context, def teamgraph.Definition)
 		// is the failure that actually strands workflows: a def promoted before
 		// the ACL existed still validates.
 		if !channelAllowed(ref.Channel, def.GrantList(ref.Side)) {
-			issues = append(issues, map[string]any{
-				"kind": "acl_missing", "state": ref.State, "field": ref.Field,
-				"channel": ref.Channel, "side": string(ref.Side),
-				"detail": fmt.Sprintf("the team's ACL does not grant %s on %q", ref.Side, ref.Channel),
+			unrunnable(teamIssue{
+				Kind: teamIssueACLMissing, Path: ref.Path, State: ref.State, Field: ref.Field,
+				Channel: ref.Channel, Side: string(ref.Side),
+				Detail: fmt.Sprintf("the team's ACL does not grant %s on %q", ref.Side, ref.Channel),
 			})
 		}
 		// Skipped, not reported as broken, when no catalog is wired — the same
@@ -964,10 +1045,9 @@ func (t *TeamDef) sweepReferences(ctx context.Context, def teamgraph.Definition)
 			continue
 		}
 		if _, ok := catalog[ref.Channel]; !ok {
-			issues = append(issues, map[string]any{
-				"kind": "channel_undeclared", "state": ref.State, "field": ref.Field,
-				"channel": ref.Channel,
-				"detail":  fmt.Sprintf("channel %q is no longer declared", ref.Channel),
+			unrunnable(teamIssue{
+				Kind: teamIssueChannelUndeclared, Path: ref.Path, State: ref.State, Field: ref.Field, Channel: ref.Channel,
+				Detail: fmt.Sprintf("channel %q is no longer declared", ref.Channel),
 			})
 		}
 	}
@@ -982,10 +1062,9 @@ func (t *TeamDef) sweepReferences(ctx context.Context, def teamgraph.Definition)
 				continue
 			}
 			seen[ref.Agent] = true
-			issues = append(issues, map[string]any{
-				"kind": "agent_missing", "state": ref.State, "field": ref.Field,
-				"agent":  ref.Agent,
-				"detail": fmt.Sprintf("agent %q does not resolve in this tenant", ref.Agent),
+			unrunnable(teamIssue{
+				Kind: teamIssueAgentMissing, Path: ref.Path, State: ref.State, Field: ref.Field, Agent: ref.Agent,
+				Detail: fmt.Sprintf("agent %q does not resolve in this tenant", ref.Agent),
 			})
 		}
 	}
@@ -998,17 +1077,17 @@ func (t *TeamDef) sweepReferences(ctx context.Context, def teamgraph.Definition)
 			continue
 		}
 		if _, ok := def.LocalAgent(name); !ok {
-			issues = append(issues, map[string]any{
-				"kind": "local_agent_missing", "state": ref.State, "field": ref.Field,
-				"agent":  ref.Agent,
-				"detail": fmt.Sprintf("%q names an agent the team does not declare under local.agents", ref.Agent),
+			unrunnable(teamIssue{
+				Kind: teamIssueLocalAgentMissing, Path: ref.Path, State: ref.State, Field: ref.Field, Agent: ref.Agent,
+				Detail: fmt.Sprintf("%q names an agent the team does not declare under local.agents", ref.Agent),
 			})
 		}
 	}
 	for _, name := range teamgraph.UnreferencedLocalAgents(def) {
-		issues = append(issues, map[string]any{
-			"kind": "local_agent_unreferenced", "agent": teamgraph.LocalRefPrefix + name, "advisory": true,
-			"detail": fmt.Sprintf("the team declares its own agent %q and no state runs it "+
+		issues = append(issues, teamIssue{
+			Kind: teamIssueLocalAgentUnreferenced, Severity: severityAdvisory,
+			Path: teamgraph.PathKey("local.agents", name), Agent: teamgraph.LocalRefPrefix + name,
+			Detail: fmt.Sprintf("the team declares its own agent %q and no state runs it "+
 				"(an agent of the team may still start it with the Agent tool)", name),
 		})
 	}
@@ -1805,7 +1884,7 @@ func (t *TeamDef) buildDefinition(parentJSON string, overlay json.RawMessage) (j
 // applyTeamOverlay merges ov over base per top-level field. Scalars set-if-set;
 // slices/maps replace wholesale (never element-merged) since the graph is a
 // cohesive unit.
-// checkTeamChannelAuthority enforces trust rule 4 on `Definition.Channels`:
+// teamChannelAuthorityIssues enforces trust rule 4 on `Definition.Channels`:
 // the workflow's ACL may only NARROW what the authoring principal already
 // holds. Inherit, never widen.
 //
@@ -1819,10 +1898,11 @@ func (t *TeamDef) buildDefinition(parentJSON string, overlay json.RawMessage) (j
 // An author with NO channel policy at all can declare no channels — the same
 // default-deny every other channel surface applies, rather than "no policy
 // means no limit".
-func checkTeamChannelAuthority(ctx context.Context, def teamgraph.Definition) error {
+func teamChannelAuthorityIssues(ctx context.Context, def teamgraph.Definition) []teamIssue {
 	if def.Channels == nil {
 		return nil
 	}
+	var issues []teamIssue
 	pol := tools.ChannelPolicy(ctx)
 	for _, side := range []struct {
 		name string
@@ -1835,14 +1915,18 @@ func checkTeamChannelAuthority(ctx context.Context, def teamgraph.Definition) er
 		if all {
 			continue // the plane holds every channel; there is nothing to narrow from
 		}
-		for _, ch := range side.want {
+		for i, ch := range side.want {
 			if !channelAllowed(ch, granted) {
-				return fmt.Errorf("channels.%s: %q is not in the authoring principal's own %s allowlist — "+
-					"a team ACL may only narrow what its author holds, never widen it", side.name, ch, side.name)
+				issues = append(issues, teamIssue{
+					Kind: teamIssueChannelAuthority, Severity: severityRefused,
+					Path: fmt.Sprintf("channels.%s[%d]", side.name, i), Channel: ch, Side: side.name,
+					Detail: fmt.Sprintf("channels.%s: %q is not in the authoring principal's own %s allowlist — "+
+						"a team ACL may only narrow what its author holds, never widen it", side.name, ch, side.name),
+				})
 			}
 		}
 	}
-	return nil
+	return issues
 }
 
 func applyTeamOverlay(base *teamgraph.Definition, ov teamgraph.Definition) {
@@ -1911,14 +1995,17 @@ func applyTeamOverlay(base *teamgraph.Definition, ov teamgraph.Definition) {
 	}
 }
 
-func (t *TeamDef) checkSizeCaps(defJSON []byte, description string) error {
+func (t *TeamDef) sizeCapIssues(defJSON []byte, description string) []teamIssue {
+	var issues []teamIssue
 	if t.MaxDefinitionBytes > 0 && len(defJSON) > t.MaxDefinitionBytes {
-		return fmt.Errorf("definition (%d bytes) exceeds max %d", len(defJSON), t.MaxDefinitionBytes)
+		issues = append(issues, refused(teamIssueSizeCap, "",
+			fmt.Sprintf("definition (%d bytes) exceeds max %d", len(defJSON), t.MaxDefinitionBytes)))
 	}
 	if t.MaxDescriptionBytes > 0 && len(description) > t.MaxDescriptionBytes {
-		return fmt.Errorf("description (%d bytes) exceeds max %d", len(description), t.MaxDescriptionBytes)
+		issues = append(issues, refused(teamIssueSizeCap, "",
+			fmt.Sprintf("description (%d bytes) exceeds max %d", len(description), t.MaxDescriptionBytes)))
 	}
-	return nil
+	return issues
 }
 
 // teamDefRowResponse + Map shape the tool's reply envelope (mirror of
