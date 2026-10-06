@@ -2158,6 +2158,52 @@ export function runTeam(
   return substratePost("/v1/_teamdef", body);
 }
 
+// One problem with an unsaved team, from verifyTeamDraft. `severity`: refused
+// (a save would refuse it; `detail` is its exact text), unrunnable (it would be
+// stored but a walk could not run it), advisory (worth reading, stops nothing).
+// `path` is the JSON path of the value at fault in the definition.
+export interface TeamDraftIssue {
+  kind: string;
+  severity: "refused" | "unrunnable" | "advisory";
+  detail: string;
+  path?: string;
+  state?: string;
+  field?: string;
+  channel?: string;
+  agent?: string;
+  skill?: string;
+  side?: string;
+}
+
+export interface TeamDraftVerification {
+  name: string;
+  valid: boolean;
+  runnable: boolean;
+  checked_as: "create" | "fork";
+  parent_def_id?: string;
+  content_sha256?: string;
+  // matches: a version is deployed and the draft hashes the same.
+  matches: boolean;
+  deployed: boolean;
+  issues: TeamDraftIssue[];
+}
+
+// verifyTeamDraft checks an UNSAVED team the way a create or fork of it would
+// be judged (op=verify + overlay) and writes nothing. It answers with every
+// problem at once rather than refusing, so a draft that cannot be saved is a
+// result, not an error. `as` says which save it stands for.
+export function verifyTeamDraft(
+  name: string,
+  overlay: unknown,
+  as: "create" | "fork",
+): Promise<TeamDraftVerification> {
+  return jsonFetch<TeamDraftVerification>("/v1/_teamdef", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ op: "verify", name, overlay, as }),
+  });
+}
+
 // previewTeamDiagram renders a DRY-RUN diagram from an unsaved graph overlay
 // (op=render_diagram + overlay) — the server syntax-checks + renders without
 // persisting. Backs the editor's "refresh diagram". Throws (422) on an invalid

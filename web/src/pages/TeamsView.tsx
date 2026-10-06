@@ -3,6 +3,7 @@ import { AGENT_HOOK_EVENTS, HookEventsControl, ToolHooksControl } from "@loomcyc
 import "@loomcycle/def-fields/styles.css";
 import {
   TeamDiagram,
+  TeamDraftVerification,
   TeamNameSummary,
   createTeam,
   deleteTeam,
@@ -12,6 +13,7 @@ import {
   listTeams,
   previewTeamDiagram,
   renderTeamDiagram,
+  verifyTeamDraft,
 } from "../api";
 import { usePrincipal } from "../components/Layout";
 import { useTheme } from "../hooks/useTheme";
@@ -19,9 +21,10 @@ import { useMermaidSvg } from "../hooks/useMermaidSvg";
 import Splitter from "../components/Splitter";
 import TeamRunModal from "../components/TeamRunModal";
 import { ownTenantOf, sameTeam, teamReach, teamTenantOf } from "../lib/teamTenant";
-import { WALK, hookTargets, keepWalkHookRemoval, readTeamHooks, writeTeamHooks } from "../lib/teamHooks";
+import { WALK, hookTargets, readTeamHooks, writeTeamHooks } from "../lib/teamHooks";
 import TeamOwnDefinitionsPanel from "../components/TeamOwnDefinitionsPanel";
-import { keepOwnDefinitionRemovals } from "../lib/teamLocal";
+import { TeamCheckPanel } from "../components/TeamCheckPanel";
+import { forkOverlayFor } from "../lib/teamCheck";
 
 // TeamsView — the agent-team board.
 //
@@ -126,6 +129,13 @@ export default function TeamsView() {
   const [deleting, setDeleting] = useState(false);
   // The Run dialog (start a walk from the team's input form).
   const [runOpen, setRunOpen] = useState(false);
+  // Check: what a save of the editor's text would run into, without saving.
+  // Cleared on any edit — a result about other text would mislead.
+  const [checking, setChecking] = useState(false);
+  const [checkResult, setCheckResult] = useState<TeamDraftVerification | null>(null);
+  useEffect(() => {
+    setCheckResult(null);
+  }, [editorText, creating, selected]);
 
   // Diagram.
   const [highlight, setHighlight] = useState<string>("");
@@ -283,7 +293,7 @@ export default function TeamsView() {
     if (parsed === undefined) return;
     setSaving(true);
     try {
-      const res = await forkTeam(selected, keepOwnDefinitionRemovals(loadedDef, keepWalkHookRemoval(loadedDef, parsed)));
+      const res = await forkTeam(selected, forkOverlayFor(loadedDef, parsed));
       await fetchTeams();
       await loadDefIntoEditor(res.def_id);
       // The new version is stamped with the caller's tenant (a shared team's
@@ -295,6 +305,30 @@ export default function TeamsView() {
       setEditorErr(msg(e));
     } finally {
       setSaving(false);
+    }
+  }
+
+  // onCheck asks the server what Save (or Create) would make of the editor's
+  // text: the same overlay, judged by the same checks, nothing written.
+  async function onCheck() {
+    setEditorErr("");
+    const parsed = parseEditor();
+    if (parsed === undefined) return;
+    if (creating && !createName.trim()) {
+      setEditorErr("Name is required.");
+      return;
+    }
+    setChecking(true);
+    try {
+      setCheckResult(
+        creating
+          ? await verifyTeamDraft(createName.trim(), parsed, "create")
+          : await verifyTeamDraft(selected, forkOverlayFor(loadedDef, parsed), "fork"),
+      );
+    } catch (e) {
+      setEditorErr("Check failed: " + msg(e));
+    } finally {
+      setChecking(false);
     }
   }
 
@@ -450,9 +484,22 @@ export default function TeamsView() {
         </div>
       )}
 
+      {checkResult && <TeamCheckPanel result={checkResult} onClose={() => setCheckResult(null)} />}
+
       <div style={{ display: "flex", gap: "0.5rem", flex: "0 0 auto", flexWrap: "wrap" }}>
         <button onClick={onRefresh} disabled={saving || loadingDef} style={{ fontWeight: 600 }}>
           Refresh diagram
+        </button>
+        <button
+          onClick={() => void onCheck()}
+          disabled={saving || loadingDef || checking || (!creating && !reach.save)}
+          title={
+            !creating && !reach.save
+              ? reach.notice
+              : "Run every check a save would, and list every problem — nothing is saved"
+          }
+        >
+          {checking ? "Checking…" : "Check"}
         </button>
         {creating ? (
           <button onClick={() => void onCreate()} disabled={saving} style={{ fontWeight: 600 }}>
