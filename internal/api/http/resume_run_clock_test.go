@@ -103,7 +103,7 @@ func TestResumedRun_ContinuesItsRunClock(t *testing.T) {
 	mgr.RegisterRun(run.ID)
 	defer mgr.DeregisterRun(run.ID)
 	gate := &pauseGate{mgr: mgr, store: st, runID: run.ID, saveClock: srv.recordRunClock}
-	clock := providers.NewRunClock(time.Now().Add(-7*time.Second), providers.RunClockState{Waited: 30 * time.Second})
+	clock := providers.NewRunClock(time.Now().Add(-7*time.Second), providers.RunClockState{Waited: 30 * time.Second, Wall: 40 * time.Second})
 	parkCtx := providers.WithRunClock(context.Background(), clock)
 	parked := make(chan struct{})
 	go func() {
@@ -145,10 +145,16 @@ func TestResumedRun_ContinuesItsRunClock(t *testing.T) {
 	if resumed.Waited < 30*time.Second {
 		t.Errorf("the resumed run's clock reports %s waited, want the 30s it had waited", resumed.Waited)
 	}
+	// Its lifetime continues too — 40s carried plus the 7s it lived — and the
+	// pause it was parked in is not part of it.
+	if resumed.Wall < 47*time.Second || resumed.Wall > 48*time.Second {
+		t.Errorf("the resumed run's lifetime starts at %s, want the 47s it had lived — "+
+			"a resume must not reset the wall limit", resumed.Wall)
+	}
 }
 
 // Parked by a runtime pause is waiting too: a run whose budget is active time
-// does not spend it while the runtime is paused.
+// does not spend it while the runtime is paused, nor its lifetime.
 func TestPauseGatePark_ParksTheRunClock(t *testing.T) {
 	st, err := storesqlite.Open(":memory:")
 	if err != nil {
@@ -178,7 +184,13 @@ func TestPauseGatePark_ParksTheRunClock(t *testing.T) {
 		t.Fatalf("Resume: %v", err)
 	}
 	<-parked
-	if got := clock.State().Waited; got < pausedFor*3/4 {
-		t.Fatalf("the run's clock counted %s of a %s pause as waited — the pause was spent as active time", got, pausedFor)
+	cs := clock.State()
+	if cs.Waited < pausedFor*3/4 {
+		t.Fatalf("the run's clock counted %s of a %s pause as waited — the pause was spent as active time", cs.Waited, pausedFor)
+	}
+	// The operator paused the runtime; the run did not linger. The pause does
+	// not count against its lifetime limit.
+	if cs.Wall > pausedFor/2 {
+		t.Errorf("the run's lifetime grew %s across a %s runtime pause", cs.Wall, pausedFor)
 	}
 }

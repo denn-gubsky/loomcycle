@@ -64,10 +64,12 @@ func (g *pauseGate) Park(ctx context.Context) error {
 	if !shouldPark {
 		return nil
 	}
-	// Parked is waiting: a run whose budget is active time does not spend it
-	// here. What it has spent is recorded before the barrier is credited, so a
+	// Parked by the operator's pause: a run whose budget is active time does
+	// not spend it here, and the time does not count against its lifetime
+	// limit either — the operator stopped the runtime, the run did not linger.
+	// What it has spent is recorded before the barrier is credited, so a
 	// snapshot taken at the barrier carries it to wherever the run resumes.
-	defer providers.BeginWait(ctx)()
+	defer providers.BeginPause(ctx)()
 	g.recordClock(ctx)
 	// Persist 'paused' to the store BEFORE marking the run parked in the
 	// barrier: Pause() only treats a run as quiesced once MarkParked fires, so
