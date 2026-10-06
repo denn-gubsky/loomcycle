@@ -371,6 +371,14 @@ func (s *Server) resumePausedRun(run store.Run) error {
 	// ended cancelled instead, saying why.
 	if reason, orphaned := s.orphanedBy(ctx, run); orphaned {
 		s.cancelOrphanedRun(run, reason)
+		// The walks it started in poll mode went with its instance as they
+		// would have had it resumed, and are closed as its resume closes them.
+		if events, err := s.store.GetTranscript(ctx, run.SessionID); err == nil {
+			own := slices.DeleteFunc(events, func(e store.Event) bool { return e.RunID != run.ID })
+			s.endInterruptedWalks(ctx, pollLedgerOf(own))
+		} else {
+			log.Printf("resume: read orphaned run %s's transcript for its walks: %v", run.ID, err)
+		}
 		return fmt.Errorf("not resumed: %s", reason)
 	}
 

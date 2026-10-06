@@ -2,6 +2,7 @@ package http
 
 import (
 	"context"
+	"encoding/json"
 	"strings"
 	"sync"
 	"testing"
@@ -9,6 +10,7 @@ import (
 
 	"github.com/denn-gubsky/loomcycle/internal/coord"
 	"github.com/denn-gubsky/loomcycle/internal/loop"
+	"github.com/denn-gubsky/loomcycle/internal/providers"
 	"github.com/denn-gubsky/loomcycle/internal/store"
 )
 
@@ -192,6 +194,40 @@ func TestResumePausedRuns_AWalkWhoseMemberIsLiveOnAnotherReplicaIsLeftRunning(t 
 	}
 	if got, err := srv.store.GetRun(ctx, member.ID); err != nil || got.Status != store.RunRunning || got.PauseState != store.PauseStatePaused {
 		t.Errorf("the member = %+v, %v; want still paused", got, err)
+	}
+}
+
+// A run cancelled on resume because its parent ended goes no further, and the
+// walks it started in poll mode go with it: one still running is closed as
+// interrupted, as its own resume would have closed it, not left running for
+// nobody.
+func TestResumePausedRuns_AnOrphanedRunsPollWalkIsClosedAsInterrupted(t *testing.T) {
+	ctx := context.Background()
+	prov := newBGFamily()
+	srv, _ := makeServer(t, prov, bgResumeConfig(""))
+	settle(t, srv, prov)
+	grand := pausedLead(t, srv)
+	if err := srv.store.FinishRun(ctx, grand.ID, store.RunCompleted, "end_turn", store.Usage{}, ""); err != nil {
+		t.Fatal(err)
+	}
+	lead := workerRun(t, srv, grand, "a_mid", "unused", false)
+	walk := walkRow(t, srv, lead, "poll")
+	appendResumeEvent(t, srv, lead.ID, "tool_call", providers.Event{Type: providers.EventToolCall,
+		ToolUse: &providers.ToolUse{ID: "tu_1", Name: "TeamDef", Input: json.RawMessage(`{"op":"run","name":"rev","mode":"poll"}`)}})
+	appendResumeEvent(t, srv, lead.ID, string(providers.EventSpawnChildStarted), providers.Event{Type: providers.EventSpawnChildStarted,
+		SpawnChild: &providers.SpawnChildEventInfo{ToolUseID: "tu_1", RunID: walk.ID, Agent: "team:rev", Mode: "poll", Kind: "team", Team: "rev"}})
+	appendResumeEvent(t, srv, lead.ID, "done", providers.Event{Type: providers.EventDone, StopReason: "tool_use", Usage: &providers.Usage{}})
+	appendResumeEvent(t, srv, lead.ID, "tool_result", providers.Event{Type: providers.EventToolResult,
+		ToolUse: &providers.ToolUse{ID: "tu_1", Name: "TeamDef"}, Text: `{"run_id":"` + walk.ID + `"}`})
+	markPaused(t, srv, lead)
+
+	n, warns := srv.ResumePausedRuns(ctx)
+	if n != 0 || len(warns) != 1 || !strings.Contains(warns[0], "its parent run "+grand.ID+" ended (completed)") {
+		t.Fatalf("resumed %d (warnings: %v), want none and the run refused as orphaned", n, warns)
+	}
+	ended, err := srv.store.GetRun(ctx, walk.ID)
+	if err != nil || ended.Status != store.RunFailed || !strings.Contains(ended.ErrorMsg, "the walk was interrupted") {
+		t.Errorf("the walk's row = %+v, %v; want failed as interrupted", ended, err)
 	}
 }
 
