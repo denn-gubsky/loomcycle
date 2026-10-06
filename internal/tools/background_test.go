@@ -172,3 +172,22 @@ func TestBackground_CloseCancelsOutstandingAndRefusesMore(t *testing.T) {
 		t.Error("a child was started after Close")
 	}
 }
+
+// A run that ended because it was cancelled passes ITS cancel to the children
+// it closes over, even when Close runs before the lifetime watch fires — so a
+// child of a cancelled parent is recorded cancelled for the parent's reason.
+func TestBackground_CloseAfterACancelPassesTheRunsCause(t *testing.T) {
+	run, endRun := context.WithCancelCause(context.Background())
+	b := NewBackground(run)
+	cctx, err := b.Start(context.Background(), ChildSpec{RunID: "r_1", Index: -1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	b.byID["r_1"].stop() // hold the watch off: Close runs first
+	why := errors.New("operator cancelled the parent")
+	endRun(why)
+	b.Close(errors.New("run ended"))
+	if !errors.Is(context.Cause(cctx), why) {
+		t.Errorf("child cause = %v, want the run's cancel", context.Cause(cctx))
+	}
+}
