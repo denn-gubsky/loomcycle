@@ -173,11 +173,88 @@ func (t *TeamDef) execPoll(ctx context.Context, in teamDefInput) (tools.Result, 
 		row["state"] = v.State
 		rows[i] = row
 	}
+	capWalkRows(rows, quarterWindowChars(ctx))
 	res, err := okJSON(map[string]any{"walks": rows, "pending": pending})
 	if !res.IsError {
 		bg.MarkRead(read)
 	}
 	return res, err
+}
+
+// capWalkRows bounds what one poll's walks put in the caller's context to a
+// quarter of its window, shared equally by the walks that carry text — the
+// bound Agent poll's rows share (capPollRows). A poll answers several walks
+// in one result; a waited-for op=run answers one walk, and is left whole.
+//
+// Only final_output and the steps' outputs are free text of unbounded size;
+// the rest of a row is state ids, agent names, counts and the error. Within a
+// walk the answer comes first: final_output keeps up to the walk's whole
+// share, and the steps' outputs split what is left equally. The trace is the
+// part a caller needs least, and its last output is final_output again. A walk
+// cut anywhere says truncated: true; its whole answer stays on its run
+// (run_id). The table's copy is never cut — a later poll reads it whole under
+// a larger window.
+func capWalkRows(rows []map[string]any, quarter int) {
+	n := 0
+	for _, r := range rows {
+		if walkTextLen(r) > 0 {
+			n++
+		}
+	}
+	if quarter <= 0 || n == 0 {
+		return
+	}
+	share := quarter / n
+	for _, r := range rows {
+		if walkTextLen(r) <= share {
+			continue
+		}
+		left := share
+		if final, ok := r["final_output"].(string); ok {
+			cut, _ := cutOnRune(final, share)
+			r["final_output"] = cut
+			left -= len(cut)
+		}
+		if steps, ok := r["steps"].([]map[string]any); ok {
+			with := 0
+			for _, s := range steps {
+				if out, _ := s["output"].(string); out != "" {
+					with++
+				}
+			}
+			per := 0
+			if with > 0 {
+				per = left / with
+			}
+			// A copy: the row's steps are the table's own.
+			cutSteps := make([]map[string]any, len(steps))
+			for i, s := range steps {
+				c := make(map[string]any, len(s))
+				for k, v := range s {
+					c[k] = v
+				}
+				if out, _ := c["output"].(string); out != "" {
+					c["output"], _ = cutOnRune(out, per)
+				}
+				cutSteps[i] = c
+			}
+			r["steps"] = cutSteps
+		}
+		r["truncated"] = true
+	}
+}
+
+// walkTextLen is the free text a walk's row carries: its final output and its
+// steps' outputs.
+func walkTextLen(r map[string]any) int {
+	final, _ := r["final_output"].(string)
+	n := len(final)
+	steps, _ := r["steps"].([]map[string]any)
+	for _, s := range steps {
+		out, _ := s["output"].(string)
+		n += len(out)
+	}
+	return n
 }
 
 // execCancel ends walks this run started in poll mode, as Agent cancel ends

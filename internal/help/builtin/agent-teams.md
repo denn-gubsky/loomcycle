@@ -666,7 +666,9 @@ started with `Agent` in poll mode:
   `status`, `final_state`, `final_output`, `steps` — plus `state`
   (`completed`, `failed`, `cancelled`) and `error` when it did not complete.
   A walk stopped at an iteration cap reads `state: "failed"` with
-  `status: "iteration_cap"` and the trace so far.
+  `status: "iteration_cap"` and the trace so far. The walks in one poll share
+  a quarter of your context window; a walk cut to fit says `truncated: true`
+  (its whole answer stays on its run).
 - Your run does not end while the walk runs: ending your turn waits for it,
   then gives you another turn. `on_parent_end: "cancel"` cancels it when you
   end your turn instead.
