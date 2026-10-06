@@ -1181,7 +1181,7 @@ func TestServer_PauseRuntime_DispatchesToConnector(t *testing.T) {
 		pauseResult: connector.PauseResult{
 			Status:              "paused",
 			DurationMS:          12,
-			ForceCancelledCount: 1,
+			ForceCancelledCount: 0, // always 0: pause cancels no tool call
 			PausedRunsCount:     2,
 		},
 	}

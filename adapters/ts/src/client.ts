@@ -1191,9 +1191,11 @@ export class LoomcycleClient {
 
   // ---- v0.8.17/8.18 Pause / Resume / State ----
 
-  /** Quiesce the runtime. Idempotent tools cancel immediately;
-   *  non-idempotent + external tools get a grace window then
-   *  force-cancel. Raises AlreadyPausingError on 409,
+  /** Quiesce the runtime: new runs are refused and each in-flight run
+   *  parks at its next iteration boundary, after the model or tool call it
+   *  is in finishes — no tool call is cancelled. Waits up to `timeoutMs`
+   *  (default 30 s, max 5 min) for runs to park; any that did not are named
+   *  in `warnings`. Raises AlreadyPausingError on 409,
    *  PauseNotConfiguredError on 503. */
   async pauseRuntime(opts?: {
     timeoutMs?: number;

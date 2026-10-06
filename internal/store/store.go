@@ -476,8 +476,8 @@ type Run struct {
 	// participation in the runtime-wide quiesce protocol. One of
 	// PauseStateRunning (default, never paused or already resumed),
 	// PauseStatePausing (operator issued POST /v1/runtime/pause; the
-	// loop is between tool calls or waiting on a non-idempotent tool's
-	// timeout), or PauseStatePaused (the loop has reached an
+	// loop has not yet reached its next iteration boundary — a model or
+	// tool call it is in is still finishing), or PauseStatePaused (the loop has reached an
 	// iteration boundary and persisted the pause).
 	//
 	// The column default is "running" so existing rows back-fill

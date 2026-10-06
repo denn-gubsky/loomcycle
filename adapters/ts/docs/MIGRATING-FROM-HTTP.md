@@ -203,7 +203,7 @@ await fetch(`${baseUrl}/v1/_pause`, {
 import { AlreadyPausingError, PauseNotConfiguredError } from "@loomcycle/client";
 try {
   const result = await client.pauseRuntime({ timeoutMs: 30_000 });
-  console.log(`paused in ${result.duration_ms}ms, force-cancelled ${result.force_cancelled_count}`);
+  console.log(`paused in ${result.duration_ms}ms, ${result.paused_runs_count} runs parked`);
 } catch (e) {
   if (e instanceof AlreadyPausingError) {
     // idempotent — fine to no-op

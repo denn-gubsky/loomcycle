@@ -393,11 +393,13 @@ class LoomcycleClient:
     # ---- v0.8.18 Pause / Resume / State + Snapshot lifecycle ----
 
     async def pause_runtime(self, *, timeout_ms: int = 0) -> Mapping[str, Any]:
-        """Quiesce the runtime. Idempotent tools cancel immediately;
-        non-idempotent + external tools get a grace window (default
-        30 s; max 5 min) then force-cancel. New /v1/runs return 503
-        while paused. Returns a dict matching ``PauseRuntimeResponse``
-        (status, duration_ms, force_cancelled_count, paused_runs_count,
+        """Quiesce the runtime: new runs are refused and each in-flight
+        run parks at its next iteration boundary, after the model or tool
+        call it is in finishes — no tool call is cancelled. Waits up to
+        ``timeout_ms`` (default 30 s; max 5 min) for runs to park; any that
+        did not are named in ``warnings``. New /v1/runs return 503 while
+        paused. Returns a dict matching ``PauseRuntimeResponse`` (status,
+        duration_ms, force_cancelled_count — always 0 — paused_runs_count,
         warnings).
 
         Raises ``AlreadyPausingError`` (FailedPrecondition) when the

@@ -58,7 +58,7 @@ export default function PauseControls() {
 
   const doPause = async () => {
     if (busy) return;
-    if (!confirm("Pause the runtime? In-flight idempotent tools are cancelled immediately; non-idempotent tools get a 30-second wind-down. New runs return 503 until you resume.")) {
+    if (!confirm("Pause the runtime? Each in-flight run finishes the call it is in and parks at its next step; nothing is cancelled. New runs return 503 until you resume.")) {
       return;
     }
     setBusy(true);
@@ -66,7 +66,7 @@ export default function PauseControls() {
       const res = await pauseRuntime();
       setState({ state: res.state as RuntimeStateResponse["state"], paused_runs_count: res.paused_runs_count });
       setFlash(
-        `paused (${res.duration_ms} ms, ${res.force_cancelled_count} force-cancelled, ${res.paused_runs_count} paused runs)`,
+        `paused (${res.duration_ms} ms, ${res.paused_runs_count} paused runs)`,
       );
       setErr(null);
     } catch (e) {
@@ -107,7 +107,7 @@ export default function PauseControls() {
         </span>
       )}
       {state?.state === "running" && (
-        <button type="button" disabled={busy} onClick={doPause} title="Quiesce the runtime: cancel idempotent tools, drain non-idempotent ones, reject new runs.">
+        <button type="button" disabled={busy} onClick={doPause} title="Quiesce the runtime: park in-flight runs at their next step, reject new runs.">
           {busy ? "pausing…" : "pause"}
         </button>
       )}

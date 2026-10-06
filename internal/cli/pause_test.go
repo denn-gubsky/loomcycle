@@ -35,7 +35,7 @@ func stubServer(t *testing.T, expectMethod, expectPath string, status int, respB
 // {"timeout_ms":N} when --timeout-ms is given.
 func TestRunPause_HappyPath(t *testing.T) {
 	var body []byte
-	srv := stubServer(t, "POST", "/v1/_pause", 200, `{"state":"paused","duration_ms":123,"force_cancelled_count":1,"paused_runs_count":2}`, &body)
+	srv := stubServer(t, "POST", "/v1/_pause", 200, `{"state":"paused","duration_ms":123,"force_cancelled_count":0,"paused_runs_count":2}`, &body)
 	defer srv.Close()
 
 	var stdout, stderr bytes.Buffer

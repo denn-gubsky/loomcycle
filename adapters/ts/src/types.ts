@@ -1926,6 +1926,7 @@ export type RuntimeStateStatus = "running" | "pausing" | "paused";
 export interface PauseResult {
   state: string; // "paused"
   duration_ms: number;
+  /** Always 0: pause cancels no tool call. Kept for wire compatibility. */
   force_cancelled_count: number;
   paused_runs_count: number;
   warnings?: string[];
