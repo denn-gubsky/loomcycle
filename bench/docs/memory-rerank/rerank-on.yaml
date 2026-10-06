@@ -1,0 +1,5 @@
+# RFC DR P2 — the ONE difference between the two arms: the answerer's recall is
+# reranked (by memory.reranker in measure.yaml, which reorders facts and notes).
+agents:
+  locomo/orn-l2k24-sp:
+    memory_rerank: { enabled: true }
