@@ -67,6 +67,7 @@ type bgChild struct {
 	ChildSpec
 	state           string
 	result          ChildResult
+	ctx             context.Context // what Start handed out; nil for a resident
 	cancel          context.CancelCauseFunc
 	stop            func() bool // detaches the lifetime watch
 	cancelRequested bool
@@ -180,7 +181,7 @@ func (b *Background) Start(ctx context.Context, spec ChildSpec) (context.Context
 		cancel(errBackgroundClosed)
 		return nil, errBackgroundClosed
 	}
-	c := &bgChild{ChildSpec: spec, state: ChildQueued, cancel: cancel}
+	c := &bgChild{ChildSpec: spec, state: ChildQueued, ctx: cctx, cancel: cancel}
 	c.stop = context.AfterFunc(b.lifetime, func() { cancel(context.Cause(b.lifetime)) })
 	b.children = append(b.children, c)
 	b.byID[spec.RunID] = c
@@ -305,6 +306,30 @@ func (c *bgChild) resultEventLocked() providers.Event {
 		Ok: c.state == ChildCompleted, Output: c.result.Output, Error: c.result.Error, State: c.result.Structured,
 		Ended: c.state, Status: c.result.Status, Detail: c.result.Detail,
 	}}
+}
+
+// Interrupted is why the child runID's ctx was cancelled, or nil while it
+// runs on. A child of a run whose lifetime has ended reads as cancelled by it,
+// and its ctx is cancelled now with the run's cause: the lifetime reaches a
+// child's ctx through a watch that runs on its own goroutine, while a run's
+// cancel reaches the runs below it — a poll-mode sub-agent's own run, a walk's
+// members — directly, so a child can end on that cancel before its ctx hears
+// of it. A child that ends with an error asks this before it says how it
+// ended, so a parent's cancel is never reported as the child's failure.
+func (b *Background) Interrupted(runID string) error {
+	b.mu.Lock()
+	c, ok := b.byID[runID]
+	b.mu.Unlock()
+	if !ok || c.Resident {
+		return nil
+	}
+	if c.ctx.Err() == nil && b.lifetime.Err() != nil {
+		c.cancel(context.Cause(b.lifetime))
+	}
+	if c.ctx.Err() == nil {
+		return nil
+	}
+	return context.Cause(c.ctx)
 }
 
 // Cancel cancels an outstanding background child with cause. It reports

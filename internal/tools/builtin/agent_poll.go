@@ -225,7 +225,7 @@ func (a *AgentTool) runBackgroundChild(cctx context.Context, bg *tools.Backgroun
 	switch {
 	case timedOut:
 		bg.Finish(runID, tools.ChildTimeout, tools.ChildResult{Error: childTimedOutMessage(e.name, e.timeoutMs, runID), Status: "timeout"})
-	case err != nil && cctx.Err() != nil:
+	case err != nil && bg.Interrupted(runID) != nil:
 		bg.Finish(runID, tools.ChildCancelled, tools.ChildResult{Error: err.Error()})
 	case err != nil:
 		bg.Finish(runID, tools.ChildFailed, tools.ChildResult{Error: err.Error()})
