@@ -4655,7 +4655,8 @@ func (x *AwaitingChildren) GetSinceTurn() int32 {
 // providers.ChildrenNoteEventInfo.
 type ChildrenNote struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
-	Text          string                 `protobuf:"bytes,1,opt,name=text,proto3" json:"text,omitempty"` // the note, as the model reads it
+	Text          string                 `protobuf:"bytes,1,opt,name=text,proto3" json:"text,omitempty"`                                    // the note, as the model reads it
+	ChildRunIds   []string               `protobuf:"bytes,2,rep,name=child_run_ids,json=childRunIds,proto3" json:"child_run_ids,omitempty"` // the background children it reports
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -4695,6 +4696,13 @@ func (x *ChildrenNote) GetText() string {
 		return x.Text
 	}
 	return ""
+}
+
+func (x *ChildrenNote) GetChildRunIds() []string {
+	if x != nil {
+		return x.ChildRunIds
+	}
+	return nil
 }
 
 // AwaitingReview is the type=awaiting_review payload (RFC DJ). Mirrors
@@ -11087,9 +11095,10 @@ const file_loomcycle_proto_rawDesc = "" +
 	"\x10AwaitingChildren\x12\"\n" +
 	"\rchild_run_ids\x18\x01 \x03(\tR\vchildRunIds\x12\x1d\n" +
 	"\n" +
-	"since_turn\x18\x02 \x01(\x05R\tsinceTurn\"\"\n" +
+	"since_turn\x18\x02 \x01(\x05R\tsinceTurn\"F\n" +
 	"\fChildrenNote\x12\x12\n" +
-	"\x04text\x18\x01 \x01(\tR\x04text\"}\n" +
+	"\x04text\x18\x01 \x01(\tR\x04text\x12\"\n" +
+	"\rchild_run_ids\x18\x02 \x03(\tR\vchildRunIds\"}\n" +
 	"\x0eAwaitingReview\x12\x1d\n" +
 	"\n" +
 	"since_turn\x18\x01 \x01(\x05R\tsinceTurn\x12\x14\n" +

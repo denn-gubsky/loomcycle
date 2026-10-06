@@ -1710,7 +1710,10 @@ func eventToProto(ev providers.Event) *loomcyclepb.Event {
 		}
 	}
 	if ev.ChildrenNote != nil {
-		out.ChildrenNote = &loomcyclepb.ChildrenNote{Text: ev.ChildrenNote.Text}
+		out.ChildrenNote = &loomcyclepb.ChildrenNote{
+			Text:        ev.ChildrenNote.Text,
+			ChildRunIds: ev.ChildrenNote.ChildRunIDs,
+		}
 	}
 	if ev.UserInput != nil {
 		out.UserInput = &loomcyclepb.UserInput{

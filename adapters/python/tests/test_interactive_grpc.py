@@ -123,7 +123,10 @@ async def test_stream_run_carries_the_children_wait_payloads():
             type="awaiting_children",
             awaiting_children=pb.AwaitingChildren(child_run_ids=["r_1", "r_2"], since_turn=2),
         ),
-        pb.Event(type="children_note", children_note=pb.ChildrenNote(text="Background child r_1 finished: completed.")),
+        pb.Event(
+            type="children_note",
+            children_note=pb.ChildrenNote(text="Background child r_1 finished: completed.", child_run_ids=["r_1"]),
+        ),
     ]
 
     def fake_stream(req, metadata=None):
@@ -139,3 +142,4 @@ async def test_stream_run_carries_the_children_wait_payloads():
     assert events[0].awaiting_children.since_turn == 2
     assert events[1].children_note is not None
     assert events[1].children_note.text == "Background child r_1 finished: completed."
+    assert events[1].children_note.child_run_ids == ("r_1",)
