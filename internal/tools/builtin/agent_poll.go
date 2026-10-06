@@ -186,10 +186,16 @@ func (a *AgentTool) spawnInBackground(ctx context.Context, bg *tools.Background,
 // or by the parent's cancel.
 func (a *AgentTool) runBackgroundChild(cctx context.Context, bg *tools.Background, sem chan struct{}, hasSlot bool, release func(), runID string, e bgEntry) {
 	defer release() // alive until it ends, queued time included
+	// The child's live-children slot is freed before its end is filed, so a
+	// parent woken by the end finds the slot free. release runs once.
+	finish := func(state string, res tools.ChildResult) {
+		release()
+		bg.Finish(runID, state, res)
+	}
 	defer func() {
 		if r := recover(); r != nil {
 			log.Printf("background child %s panicked: %v", runID, r)
-			bg.Finish(runID, tools.ChildFailed, tools.ChildResult{Error: fmt.Sprintf("sub-agent %q failed: internal error", e.name)})
+			finish(tools.ChildFailed, tools.ChildResult{Error: fmt.Sprintf("sub-agent %q failed: internal error", e.name)})
 		}
 	}()
 	if !hasSlot {
@@ -197,7 +203,7 @@ func (a *AgentTool) runBackgroundChild(cctx context.Context, bg *tools.Backgroun
 		case sem <- struct{}{}:
 			bg.SetState(runID, tools.ChildRunning)
 		case <-cctx.Done():
-			bg.Finish(runID, tools.ChildCancelled, tools.ChildResult{
+			finish(tools.ChildCancelled, tools.ChildResult{
 				Error: fmt.Sprintf("sub-agent %q was cancelled before it started: %v", e.name, context.Cause(cctx))})
 			return
 		}
@@ -224,16 +230,16 @@ func (a *AgentTool) runBackgroundChild(cctx context.Context, bg *tools.Backgroun
 	out, state, _, timedOut, err := a.runChildBounded(childCtx, e.timeoutMs, e.name, e.prompt, e.defID)
 	switch {
 	case timedOut:
-		bg.Finish(runID, tools.ChildTimeout, tools.ChildResult{Error: childTimedOutMessage(e.name, e.timeoutMs, runID), Status: "timeout"})
+		finish(tools.ChildTimeout, tools.ChildResult{Error: childTimedOutMessage(e.name, e.timeoutMs, runID), Status: "timeout"})
 	case err != nil && bg.Interrupted(runID) != nil:
-		bg.Finish(runID, tools.ChildCancelled, tools.ChildResult{Error: err.Error()})
+		finish(tools.ChildCancelled, tools.ChildResult{Error: err.Error()})
 	case err != nil:
-		bg.Finish(runID, tools.ChildFailed, tools.ChildResult{Error: err.Error()})
+		finish(tools.ChildFailed, tools.ChildResult{Error: err.Error()})
 	default:
 		if out == "" && len(state) == 0 {
 			out = fmt.Sprintf("(sub-agent %q completed with no final text)", e.name)
 		}
-		bg.Finish(runID, tools.ChildCompleted, tools.ChildResult{Output: out, Structured: state})
+		finish(tools.ChildCompleted, tools.ChildResult{Output: out, Structured: state})
 	}
 }
 

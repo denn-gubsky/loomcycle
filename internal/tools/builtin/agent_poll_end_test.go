@@ -2,6 +2,7 @@ package builtin
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"testing"
 	"time"
@@ -71,5 +72,54 @@ func TestAgentPoll_AChildEndingOnItsParentsCancelIsFiledCancelled(t *testing.T) 
 	v, _ := bg.Lookup("r_c")
 	if v.State != tools.ChildCancelled {
 		t.Errorf("child = %s (%s), want cancelled", v.State, v.Result.Error)
+	}
+}
+
+// A poll-mode child frees its live-children slot before its end is filed: a
+// parent woken by the end at the limit must find the slot free, not be told
+// it would exceed the limit by the child that just ended.
+func TestAgentPoll_AChildFreesItsSlotBeforeItsEndIsSeen(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		run     func(context.Context, string, string, string) (string, error)
+		hasSlot bool
+		cancel  bool
+	}{
+		{name: "completed", hasSlot: true, run: func(context.Context, string, string, string) (string, error) { return "done", nil }},
+		{name: "failed", hasSlot: true, run: func(context.Context, string, string, string) (string, error) { return "", errors.New("boom") }},
+		{name: "cancelled before it started", cancel: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			bg := tools.NewBackground(context.Background())
+			cctx, err := bg.Start(context.Background(), tools.ChildSpec{RunID: "r_c", Agent: "worker", Index: -1})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if tc.cancel {
+				bg.Cancel("r_c", errors.New("stop"))
+			}
+			sem := make(chan struct{}, 1)
+			// Full either way: a child that holds a slot was handed it, and
+			// one that does not queues, where its cancel ends it.
+			sem <- struct{}{}
+			released, endedAtRelease := 0, false
+			release := func() {
+				if released++; released == 1 {
+					v, _ := bg.Lookup("r_c")
+					endedAtRelease = v.Ended()
+				}
+			}
+			a := &AgentTool{Run: tc.run}
+			a.runBackgroundChild(cctx, bg, sem, tc.hasSlot, release, "r_c", bgEntry{name: "worker", index: -1})
+			if v, _ := bg.Lookup("r_c"); !v.Ended() {
+				t.Fatalf("the child never ended: %s", v.State)
+			}
+			if released == 0 {
+				t.Fatal("the child never freed its slot")
+			}
+			if endedAtRelease {
+				t.Error("the child's end was filed before its slot was freed")
+			}
+		})
 	}
 }
