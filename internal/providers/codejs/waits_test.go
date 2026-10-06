@@ -188,3 +188,43 @@ function run() {
 		t.Errorf("wall_elapsed_ms = %d < waited_ms = %d: the run's lifetime left out its wait", b["wall_elapsed_ms"], b["waited_ms"])
 	}
 }
+
+// Poll mode from a code agent: the spawn returns at once, and a poll that
+// waits for every child is a wait — the orchestrator collects children that
+// take longer than its whole budget.
+func TestCodeJSOrchestrator_PollWaitDoesNotSpendBudget(t *testing.T) {
+	js := aggregate + `
+function run() {
+  var b = Agent.spawn({op: "parallel_spawn", mode: "poll", spawns: [{name: "kid", prompt: "a"}, {name: "kid", prompt: "b"}]});
+  var p = Agent.spawn({op: "poll", batch_id: b.batch_id, wait: "all", wait_ms: 30000});
+  return { final_text: aggregate(p.children.map(function (x) { return x.output; })) };
+}`
+	res, err := runOrchestrator(t, js, orchestratorBudget, &builtin.AgentTool{Run: slowChildren})
+	if err != nil {
+		t.Fatalf("an orchestrator polling %s for its children failed under a %s budget: %v", childTakes, orchestratorBudget, err)
+	}
+	if res.FinalText != "child:a,child:b" {
+		t.Fatalf("final text = %q, want the children's results", res.FinalText)
+	}
+}
+
+// A code agent that returns while its poll-mode children still run waits for
+// them before it completes, and that wait is not spent from its budget either.
+func TestCodeJSOrchestrator_WaitingForChildrenAtTheEndDoesNotSpendBudget(t *testing.T) {
+	js := `
+function run() {
+  var c = Agent.spawn({name: "kid", prompt: "a", mode: "poll"});
+  return { final_text: "started " + c.state };
+}`
+	start := time.Now()
+	res, err := runOrchestrator(t, js, orchestratorBudget, &builtin.AgentTool{Run: slowChildren})
+	if err != nil {
+		t.Fatalf("an orchestrator waiting %s for its children at the end failed under a %s budget: %v", childTakes, orchestratorBudget, err)
+	}
+	if res.FinalText != "started running" {
+		t.Fatalf("final text = %q", res.FinalText)
+	}
+	if took := time.Since(start); took < childTakes {
+		t.Errorf("the run ended after %s, before its child (%s): it did not wait", took, childTakes)
+	}
+}
