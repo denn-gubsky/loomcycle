@@ -484,6 +484,9 @@ func TestTeamLocalWebhook_AReplayCannotHoldAnUnsignedDeliveryID(t *testing.T) {
 	if w := deliverToTeam(receiverFor(other), hookPath, `{"pr":1}`, "d-1", true); w.Code != http.StatusAccepted {
 		t.Fatalf("the captured delivery, first sent: %d %s", w.Code, w.Body.String())
 	}
+	// The renewal loop must be waiting before the jump: Advance fires only the
+	// waits already asked for, and one asked for afterwards is due a day later.
+	clock.waitAfters(t, 1)
 	clock.Advance(25 * time.Hour)
 	// The lease is renewed on this clock too; let it catch up.
 	clock.waitAfters(t, 2)
