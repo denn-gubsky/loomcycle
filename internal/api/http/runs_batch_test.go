@@ -409,6 +409,9 @@ func TestRunsBatch_HTTPEndpointDetach(t *testing.T) {
 // handle to. (A child that has started is not affected — see above.)
 func TestSpawnRunBatch_DetachCallerLeavingBeforeAdmissionStartsNothing(t *testing.T) {
 	s, gate := newGatedBatchServer(t, 1)
+	// A queue wait far longer than the test: had the caller's leaving not
+	// withdrawn the waiter, the call could only end when that wait did.
+	s.sem = concurrency.New(1, 1, time.Minute)
 	first, err := s.SpawnRunBatch(context.Background(), connector.BatchSpawnRequest{
 		Mode:   "detach",
 		Spawns: []connector.SpawnRunRequest{{Agent: "r", Segments: oneUserSeg("holds the only slot")}},
@@ -419,12 +422,28 @@ func TestSpawnRunBatch_DetachCallerLeavingBeforeAdmissionStartsNothing(t *testin
 
 	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
 	defer cancel()
-	res, err := s.SpawnRunBatch(ctx, connector.BatchSpawnRequest{
-		Mode:   "detach",
-		Spawns: []connector.SpawnRunRequest{{Agent: "r", Segments: oneUserSeg("queued")}},
-	})
-	if err != nil {
-		t.Fatalf("SpawnRunBatch(detach): %v", err)
+	type outcome struct {
+		res connector.BatchSpawnResult
+		err error
+	}
+	done := make(chan outcome, 1)
+	go func() {
+		res, err := s.SpawnRunBatch(ctx, connector.BatchSpawnRequest{
+			Mode:   "detach",
+			Spawns: []connector.SpawnRunRequest{{Agent: "r", Segments: oneUserSeg("queued")}},
+		})
+		done <- outcome{res, err}
+	}()
+	var res connector.BatchSpawnResult
+	select {
+	case o := <-done:
+		if o.err != nil {
+			t.Fatalf("SpawnRunBatch(detach): %v", o.err)
+		}
+		res = o.res
+	case <-time.After(10 * time.Second):
+		gate <- struct{}{} // let the held run end so the leaked call can too
+		t.Fatal("the call did not return after its caller left: the queued child was not withdrawn")
 	}
 	if r := res.Results[0]; r.Status != "cancelled" || r.RunID != "" {
 		t.Errorf("queued child = %+v, want cancelled with no run", r)
