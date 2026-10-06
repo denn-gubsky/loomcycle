@@ -1216,7 +1216,9 @@ func detectFanoutParent(enabled bool, runEvents []store.Event) (fanoutParkInfo, 
 			}
 		case string(providers.EventSpawnChildStarted):
 			var pe providers.Event
-			if err := json.Unmarshal(ev.Payload, &pe); err == nil && pe.SpawnChild != nil {
+			// A poll-mode child's call answered with its handle, so its spawn
+			// is no parked fan-out.
+			if err := json.Unmarshal(ev.Payload, &pe); err == nil && pe.SpawnChild != nil && pe.SpawnChild.Mode != "poll" {
 				hasLedger[pe.SpawnChild.ToolUseID] = true
 			}
 		}

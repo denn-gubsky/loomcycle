@@ -31,6 +31,10 @@ const (
 	// Input: an interactive run parked at the end of a turn, waiting for the
 	// operator's next message.
 	Input = "input"
+	// Children: a run that ended its turn while background children it
+	// started were still running, waiting for all of them to end. awaited_on
+	// names them.
+	Children = "children"
 )
 
 // EventReader is the slice of store.Store the derivation reads.
@@ -73,6 +77,7 @@ type interruptionInput struct {
 //	state="channel"     on=<"a, b, c">      — a long-polling Channel.await call
 //	state="interrupted" on=<kind|op>        — an Interruption.ask call
 //	state="input"       on=""               — parked for the operator's turn
+//	state="children"    on=<"r_1, r_2">     — waiting for background children
 //	state=""            on=""               — no wait
 //
 // Whether that wait is still open is ForRun's question: the event that
@@ -80,6 +85,9 @@ type interruptionInput struct {
 func FromEvent(ev store.Event) (state, on string) {
 	if ev.Type == string(providers.EventAwaitingInput) {
 		return Input, ""
+	}
+	if ev.Type == string(providers.EventAwaitingChildren) {
+		return Children, awaitedChildrenOf(ev)
 	}
 	if ev.Type != "tool_call" {
 		return "", ""
@@ -175,10 +183,15 @@ func awaitedChannels(names []string) string {
 // other writers append to a held run without ending it — a retune's override
 // event, a budget limit, a compaction marker — and each of those would make
 // "the latest event is awaiting_review" false for a run that is still held.
+//
+// awaiting_children is a wait of the same kind, ended by the note that wakes
+// the run (children_note) or by its end.
 var HoldEndingEvents = []string{
 	string(providers.EventAwaitingReview), // listed so the query can return it
 	"user_input",
 	string(providers.EventAwaitingInput),
+	string(providers.EventAwaitingChildren),
+	string(providers.EventChildrenNote),
 	string(providers.EventDone),
 }
 
@@ -233,9 +246,25 @@ func ForRun(ctx context.Context, st EventReader, runID string) (state, on string
 		return Review, ""
 	case string(providers.EventAwaitingInput):
 		return Input, ""
+	case string(providers.EventAwaitingChildren):
+		return Children, awaitedChildrenOf(last)
 	}
 	return "", ""
 }
+
+// awaitedChildrenOf is the awaited_on of an awaiting_children event: the
+// children waited for, as an await names its channels.
+func awaitedChildrenOf(ev store.Event) string {
+	var p providers.Event
+	if json.Unmarshal(ev.Payload, &p) != nil || p.AwaitingChildren == nil {
+		return ""
+	}
+	return AwaitedChildren(p.AwaitingChildren.ChildRunIDs)
+}
+
+// AwaitedChildren renders the children a run waits for as awaited_on, bounded
+// like an await's channel list.
+func AwaitedChildren(ids []string) string { return awaitedChannels(ids) }
 
 // eventPageSize bounds one read of openCall's scan.
 const eventPageSize = 256

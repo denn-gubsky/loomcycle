@@ -70,6 +70,13 @@ func TestRecordingEmit_AnnouncesEachWaitOnceAndItsEnd(t *testing.T) {
 		{"interactive_park_ends_on_the_operators_turn",
 			[]providers.Event{text, parked, compacted, steered, text, parked},
 			[]holdSeen{{at: 1, state: awaited.Input}, {at: 3}, {at: 5, state: awaited.Input}}},
+		// A run waiting for its background children names them, and the note
+		// that wakes it ends the wait.
+		{"awaiting_children_names_the_children_and_ends_on_the_wake_note",
+			[]providers.Event{text,
+				{Type: providers.EventAwaitingChildren, AwaitingChildren: &providers.AwaitingChildrenEventInfo{ChildRunIDs: []string{"r_1", "r_2"}}},
+				{Type: providers.EventChildrenNote, ChildrenNote: &providers.ChildrenNoteEventInfo{Text: "ended"}}, text, done},
+			[]holdSeen{{at: 1, state: awaited.Children, on: "r_1, r_2"}, {at: 2}}},
 		{"approved_interactive_review_moves_to_input",
 			[]providers.Event{review, parked},
 			[]holdSeen{{0, awaited.Review, "ops/gate", expires}, {at: 1, state: awaited.Input}}},

@@ -168,9 +168,11 @@ func ev(typ, payload string) store.Event { return store.Event{Type: typ, Payload
 
 // A parked interactive run reads as waiting for input until the operator's turn
 // lands, however many other rows are written while it waits; a review hold
-// names the hook that took it.
+// names the hook that took it; a run waiting for its background children names
+// them until the note that wakes it.
 func TestForRun_ReportsAParkedRunAndTheHookHoldingAReview(t *testing.T) {
 	parked := ev("awaiting_input", `{"type":"awaiting_input","awaiting_input":{"since_turn":1}}`)
+	children := ev("awaiting_children", `{"type":"awaiting_children","awaiting_children":{"child_run_ids":["r_1","r_2"],"since_turn":1}}`)
 	for _, tc := range []struct {
 		name              string
 		events            fakeEvents
@@ -182,6 +184,8 @@ func TestForRun_ReportsAParkedRunAndTheHookHoldingAReview(t *testing.T) {
 		{"review_by_hook", fakeEvents{ev("awaiting_review", `{"type":"awaiting_review","awaiting_review":{"round":1,"held_by":"ops/gate"}}`), ev("limit", `{}`)}, Review, "ops/gate"},
 		{"review_by_arming", fakeEvents{ev("awaiting_review", `{"type":"awaiting_review","awaiting_review":{"round":1}}`)}, Review, ""},
 		{"approved_interactive_parks", fakeEvents{ev("awaiting_review", `{"type":"awaiting_review","awaiting_review":{"round":1}}`), parked}, Input, ""},
+		{"waiting_for_children", fakeEvents{ev("text", `{"type":"text"}`), children, ev("limit", `{}`)}, Children, "r_1, r_2"},
+		{"wake_note_ends_the_wait", fakeEvents{children, ev("children_note", `{"type":"children_note","children_note":{"text":"ended"}}`), ev("text", `{"type":"text"}`)}, "", ""},
 		{"no_events", fakeEvents{}, "", ""},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

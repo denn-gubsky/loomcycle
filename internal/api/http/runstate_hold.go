@@ -69,6 +69,12 @@ func holdAfter(cur runHold, ev providers.Event) runHold {
 		return h
 	case providers.EventAwaitingInput:
 		return runHold{state: awaited.Input}
+	case providers.EventAwaitingChildren:
+		h := runHold{state: awaited.Children}
+		if a := ev.AwaitingChildren; a != nil {
+			h.on = awaited.AwaitedChildren(a.ChildRunIDs)
+		}
+		return h
 	case providers.EventToolCall:
 		if ev.ToolUse != nil {
 			if state, on := awaited.FromToolUse(ev.ToolUse.Name, ev.ToolUse.Input); state != "" {
@@ -87,7 +93,7 @@ func holdAfter(cur runHold, ev providers.Event) runHold {
 				return waitingOn(slices.Delete(slices.Clone(cur.calls), i, i+1))
 			}
 		}
-	case providers.EventSteer, providers.EventText:
+	case providers.EventSteer, providers.EventText, providers.EventChildrenNote:
 		if len(cur.calls) == 0 {
 			return runHold{}
 		}

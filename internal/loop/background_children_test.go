@@ -6,6 +6,7 @@ import (
 	"errors"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -358,6 +359,41 @@ func TestRun_AwaitingChildrenTakesPartInAPause(t *testing.T) {
 	waitCount(t, "paused records", gate.paused.Load, 1)
 	gate.lift()
 	waitCount(t, "paused records", gate.paused.Load, 0)
+	tool.finish("r_1")
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+}
+
+// A run waiting for its children keeps its heartbeat going, so the stale-run
+// sweeper never takes a parked parent for a dead one.
+func TestRun_AwaitingChildrenKeepsHeartbeating(t *testing.T) {
+	orig := parkHeartbeatInterval
+	parkHeartbeatInterval = 10 * time.Millisecond
+	defer func() { parkHeartbeatInterval = orig }()
+	prov := &fakeProvider{responses: [][]providers.Event{
+		toolTurn(spawnCall("s1", `{"ids":["r_1"]}`)),
+		endTurn("started"),
+		endTurn("read"),
+	}}
+	tool := &spawnTool{}
+	sink := &childEvents{}
+	var beats atomic.Int32
+	fr := &fakeTool{}
+	ts := []tools.Tool{tool, fr}
+	done := make(chan error, 1)
+	go func() {
+		_, err := Run(context.Background(), RunOptions{
+			Provider: prov, Model: "fake-model", Tools: ts, Dispatcher: tools.NewDispatcher(ts),
+			OnHeartbeat: func() { beats.Add(1) },
+			Segments:    []PromptSegment{{Role: "user", Content: []PromptContentBlock{{Type: "trusted-text", Text: "go"}}}},
+			OnEvent:     sink.add,
+		})
+		done <- err
+	}()
+	waitFor(t, func() bool { return len(sink.of(providers.EventAwaitingChildren)) == 1 })
+	at := beats.Load()
+	waitFor(t, func() bool { return beats.Load() >= at+3 })
 	tool.finish("r_1")
 	if err := <-done; err != nil {
 		t.Fatal(err)
