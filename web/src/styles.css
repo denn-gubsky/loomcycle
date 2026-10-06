@@ -812,6 +812,18 @@ textarea::placeholder {
   color: #c9a8ff;
   border-color: #46347a;
 }
+/* A run parked for its background (poll-mode) children: waiting on other
+ * runs, like a channel wait, so it shares the orange family; each child id
+ * is a link to its run. */
+.await-chip-children {
+  background: #3a2a14;
+  color: #ffb766;
+  border-color: #5a3a1e;
+  flex-wrap: wrap;
+}
+.await-chip-children a {
+  color: inherit;
+}
 .cancel-btn {
   background: var(--failed);
   color: white;
@@ -4658,6 +4670,19 @@ button.primary:disabled {
   background: rgba(127, 127, 127, 0.15);
   color: var(--fg-muted, #888);
   border: 1px solid var(--fg-muted, #888);
+  justify-self: start;
+}
+/* A run in the tree that ended its turn and waits for its background
+   children. Orange like the channel tint: it waits on other runs. */
+.pill-awaiting-children {
+  font-size: 10px;
+  padding: 1px 6px;
+  border-radius: 10px;
+  text-transform: lowercase;
+  letter-spacing: 0.03em;
+  background: rgba(255, 183, 102, 0.12);
+  color: #b97a30;
+  border: 1px solid #b97a30;
   justify-self: start;
 }
 .pill-resident {

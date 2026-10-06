@@ -17,7 +17,16 @@ import {
 import Breadcrumbs, { type BreadcrumbAncestor } from "./Breadcrumbs";
 import DraftPanel from "./DraftPanel";
 import { settledToolIds } from "../lib/toolSettlement";
-import { isTeamWalkAgentId, parentRunHref, runRowHref, runTeamOf, type RunSelection } from "../lib/runLineage";
+import {
+  awaitedChildrenOf,
+  isTeamWalkAgentId,
+  parentRunHref,
+  runClockOf,
+  runRowHref,
+  runTeamOf,
+  shortDuration,
+  type RunSelection,
+} from "../lib/runLineage";
 import TerminalTranscript from "./TerminalTranscript";
 import ViewToggle, { useViewMode } from "./ViewToggle";
 import {
@@ -302,7 +311,7 @@ function AgentDetailPaneBody({ agentId, runId, ancestors, onSelect }: AgentDetai
           </div>
           {agent.status === "running" && (
             <div className="line-await">
-              <AwaitChip state={awaited} />
+              <ChildrenAwaitOrChip agent={agent} state={awaited} />
             </div>
           )}
           <div className="line2">
@@ -337,6 +346,7 @@ function AgentDetailPaneBody({ agentId, runId, ancestors, onSelect }: AgentDetai
             {agent.completed_at && (
               <span>{durationLabel(agent.started_at, agent.completed_at)}</span>
             )}
+            <RunClockFacts run={agent} />
           </div>
           {agent.error && <div className="agent-err">error: {agent.error}</div>}
           {agent.status === "configured" && (
@@ -460,6 +470,51 @@ function deriveAwaitedState(events: TranscriptEvent[]): AwaitedState {
     return { kind: "running" };
   }
   return { kind: "running" };
+}
+
+// ChildrenAwaitOrChip shows a run parked for its background (poll-mode)
+// children — which the server reports, and the transcript walk below cannot
+// see — naming each child with a link to its run; any other running run gets
+// the transcript-derived chip.
+export function ChildrenAwaitOrChip({ agent, state }: { agent: Pick<Agent, "status" | "awaited_state" | "awaited_on">; state: AwaitedState }) {
+  const w = awaitedChildrenOf(agent);
+  if (!w) return <AwaitChip state={state} />;
+  return (
+    <span className="await-chip await-chip-children" title="Ended its turn; it takes its next turn when every background child it started has ended">
+      waiting for background children:
+      {w.runIds.map((id) => (
+        <Link key={id} to={runRowHref({ runId: id, agentId: "" })}>
+          <code>{id}</code>
+        </Link>
+      ))}
+      {w.more > 0 && <span>+{w.more} more</span>}
+    </span>
+  );
+}
+
+// RunClockFacts shows a code agent's time budget beside the run's other facts:
+// the budget its definition or run set, and — once the run has paused — the
+// active time used against it, the time spent waiting (which never counts)
+// and how long the run had lived, as of that pause.
+export function RunClockFacts({ run }: { run: Pick<Agent, "spec" | "usage"> }) {
+  const c = runClockOf(run);
+  if (!c) return null;
+  const budget = c.budgetSeconds !== undefined ? shortDuration(c.budgetSeconds * 1000) : "operator default";
+  const p = c.atLastPause;
+  return (
+    <span
+      className="run-clock"
+      title="A code agent's run budget counts its own time only; waits for sub-agents, channels and questions never count. Its lifetime, waits included, is bounded by the operator's wall limit."
+    >
+      code budget: {budget}
+      {p && (
+        <>
+          {" "}
+          · at last pause: used {shortDuration(p.activeMs)}, waited {shortDuration(p.waitedMs)}, lived {shortDuration(p.wallMs)}
+        </>
+      )}
+    </span>
+  );
 }
 
 // AwaitChip renders one of three pills next to a running agent's

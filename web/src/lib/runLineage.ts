@@ -149,3 +149,71 @@ export function runTeamOf(a: Pick<Agent, "spec">): RunTeam | undefined {
   const tdid = av && typeof av === "object" ? (av as { team_def_id?: unknown }).team_def_id : undefined;
   return { team, ownAgent: typeof tdid === "string" && tdid !== "" };
 }
+
+// AwaitedChildren is a running run's wait for its background (poll-mode)
+// children: it ended its turn and takes its next one when every child it
+// started has ended. runIds are the children the server names in awaited_on,
+// a bounded list; more counts the ones it left out (", +N more", or an id cut
+// short to fit, which is no use as a link).
+export interface AwaitedChildren {
+  runIds: string[];
+  more: number;
+}
+
+/** awaitedChildrenOf reads a run's wait for its background children, or
+ *  undefined for a run that is not waiting on them. */
+export function awaitedChildrenOf(a: Pick<Agent, "status" | "awaited_state" | "awaited_on">): AwaitedChildren | undefined {
+  if (a.status !== "running" || a.awaited_state !== "children") return undefined;
+  const out: AwaitedChildren = { runIds: [], more: 0 };
+  for (const raw of (a.awaited_on ?? "").split(",")) {
+    const part = raw.trim();
+    if (part === "") continue;
+    const m = /^\+(\d+) more$/.exec(part);
+    if (m) {
+      out.more += Number(m[1]);
+    } else if (part.endsWith("…")) {
+      out.more += 1;
+    } else {
+      out.runIds.push(part);
+    }
+  }
+  return out;
+}
+
+// RunClock is a code agent's time budget as its run read reports it: the
+// budget its definition or run set (absent when the operator's default
+// applies), and — once the run has paused at least once — the active time it
+// had used against that budget, the time it had spent waiting (which never
+// counts against it) and how long it had lived, as of that pause. The live
+// figures are not on the run read: a run reports them to itself through
+// Context op=self.
+export interface RunClock {
+  budgetSeconds?: number;
+  atLastPause?: { activeMs: number; waitedMs: number; wallMs: number };
+}
+
+/** runClockOf reads a code agent's run clock from its spec, or undefined for a
+ *  run that keeps none (every model-driven run). */
+export function runClockOf(a: Pick<Agent, "spec" | "usage">): RunClock | undefined {
+  const spec = a.spec ?? {};
+  const rc = spec.run_clock;
+  const recorded = rc !== null && typeof rc === "object";
+  if (!recorded && a.usage?.provider !== "code-js") return undefined;
+  const out: RunClock = {};
+  const budget = spec.run_timeout_seconds;
+  if (typeof budget === "number" && budget > 0) out.budgetSeconds = budget;
+  if (recorded) {
+    const r = rc as { active_ms?: unknown; waited_ms?: unknown; wall_ms?: unknown };
+    const ms = (v: unknown) => (typeof v === "number" && v >= 0 ? v : 0);
+    out.atLastPause = { activeMs: ms(r.active_ms), waitedMs: ms(r.waited_ms), wallMs: ms(r.wall_ms) };
+  }
+  return out;
+}
+
+/** shortDuration renders a span of milliseconds the way the run header does. */
+export function shortDuration(ms: number): string {
+  if (ms < 1000) return `${Math.round(ms)}ms`;
+  if (ms < 60_000) return `${(ms / 1000).toFixed(1)}s`;
+  if (ms < 3_600_000) return `${Math.floor(ms / 60_000)}m ${Math.round((ms % 60_000) / 1000)}s`;
+  return `${Math.floor(ms / 3_600_000)}h ${Math.round((ms % 3_600_000) / 60_000)}m`;
+}

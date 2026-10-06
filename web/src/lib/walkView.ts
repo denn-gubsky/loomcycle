@@ -81,7 +81,7 @@ export interface WalkRunRow {
   waveId?: string;
   waveIndex?: number;
   /** What a running run is blocked on. */
-  awaited?: "channel" | "interrupted" | "review" | "input";
+  awaited?: "channel" | "interrupted" | "review" | "input" | "children";
   awaitedOn?: string;
   /** When an unruled review hold ends as rejected. Only the stream carries it. */
   holdExpiresAt?: string;
@@ -117,7 +117,7 @@ export function isTerminal(status: string): boolean {
 }
 
 function awaitedOf(s: string | undefined): WalkRunRow["awaited"] {
-  return s === "channel" || s === "interrupted" || s === "review" || s === "input" ? s : undefined;
+  return s === "channel" || s === "interrupted" || s === "review" || s === "input" || s === "children" ? s : undefined;
 }
 
 /** A listing row (listWalkRuns / getRun). Its instant is the latest it knows:

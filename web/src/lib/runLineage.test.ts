@@ -1,6 +1,15 @@
 import { describe, expect, it } from "vitest";
 import type { Agent } from "../api";
-import { breadcrumbAncestors, isTeamWalkAgentId, paneRunId, parentRunHref, runRowHref, selectedRowKey } from "./runLineage";
+import {
+  awaitedChildrenOf,
+  breadcrumbAncestors,
+  isTeamWalkAgentId,
+  paneRunId,
+  parentRunHref,
+  runClockOf,
+  runRowHref,
+  selectedRowKey,
+} from "./runLineage";
 
 const run = (over: Partial<Agent> & Pick<Agent, "agent_id" | "run_id">): Agent => ({
   session_id: "s",
@@ -101,5 +110,35 @@ describe("runRowHref", () => {
   it("links a run by run id and a row with no run id by agent id", () => {
     expect(runRowHref({ runId: "r a", agentId: "team:triage" })).toBe("/agents?run=r%20a");
     expect(runRowHref({ agentId: "team:triage" })).toBe("/agents?agent=team%3Atriage");
+  });
+});
+
+describe("awaitedChildrenOf", () => {
+  const base = { status: "running" as const, awaited_state: "children" as const };
+
+  it("reads the child run ids a parked run waits for", () => {
+    expect(awaitedChildrenOf({ ...base, awaited_on: "r_1, r_2" })).toEqual({ runIds: ["r_1", "r_2"], more: 0 });
+  });
+
+  it("counts the ones a bounded list left out, and an id cut short to fit", () => {
+    expect(awaitedChildrenOf({ ...base, awaited_on: "r_1, +4 more" })).toEqual({ runIds: ["r_1"], more: 4 });
+    expect(awaitedChildrenOf({ ...base, awaited_on: "r_ver…, +2 more" })).toEqual({ runIds: [], more: 3 });
+  });
+
+  it("is undefined for a run waiting on anything else, or not running", () => {
+    expect(awaitedChildrenOf({ status: "running", awaited_state: "channel", awaited_on: "inbox" })).toBeUndefined();
+    expect(awaitedChildrenOf({ ...base, status: "completed", awaited_on: "r_1" })).toBeUndefined();
+  });
+});
+
+describe("runClockOf", () => {
+  it("is undefined for a model-driven run", () => {
+    expect(runClockOf({ usage: { provider: "openai" }, spec: { run_timeout_seconds: 60 } })).toBeUndefined();
+  });
+
+  it("reads a recorded clock even before the run's provider is known", () => {
+    expect(runClockOf({ usage: {}, spec: { run_clock: { active_ms: 1, waited_ms: 2, wall_ms: 3 } } })).toEqual({
+      atLastPause: { activeMs: 1, waitedMs: 2, wallMs: 3 },
+    });
   });
 });
