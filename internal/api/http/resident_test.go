@@ -79,7 +79,7 @@ func TestResidentChild_OpenSendClose(t *testing.T) {
 	srv := newResidentTestServer(t)
 	ctx := residentParentCtx("parent-agent", "")
 
-	runID, out, state, err := srv.openResidentChild(ctx, "child", "start", "", 0)
+	runID, out, state, err := srv.openResidentChild(ctx, "child", "start", "", 0, 0)
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}
@@ -120,13 +120,13 @@ func TestResidentChild_PerRunCapErrors(t *testing.T) {
 	srv.cfg().Env.MaxInteractiveChildren = 1
 	ctx := residentParentCtx("parent-agent", "")
 
-	runID, _, _, err := srv.openResidentChild(ctx, "child", "one", "", 0)
+	runID, _, _, err := srv.openResidentChild(ctx, "child", "one", "", 0, 0)
 	if err != nil {
 		t.Fatalf("first open: %v", err)
 	}
 	defer func() { _ = srv.closeResidentChild(ctx, runID) }()
 
-	_, _, _, err = srv.openResidentChild(ctx, "child", "two", "", 0)
+	_, _, _, err = srv.openResidentChild(ctx, "child", "two", "", 0, 0)
 	if err == nil {
 		t.Fatal("second open should hit the per-run cap")
 	}
@@ -143,7 +143,7 @@ func TestResidentChild_TenantIsolation(t *testing.T) {
 	owner := residentParentCtx("parent-a", "tenant-a")
 	intruder := residentParentCtx("parent-b", "tenant-b")
 
-	runID, _, _, err := srv.openResidentChild(owner, "child", "start", "", 0)
+	runID, _, _, err := srv.openResidentChild(owner, "child", "start", "", 0, 0)
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}
@@ -166,7 +166,7 @@ func TestResidentChild_ParentTeardownReaps(t *testing.T) {
 	srv := newResidentTestServer(t)
 	ctx := residentParentCtx("parent-agent", "")
 
-	runID, _, _, err := srv.openResidentChild(ctx, "child", "start", "", 0)
+	runID, _, _, err := srv.openResidentChild(ctx, "child", "start", "", 0, 0)
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}
@@ -180,7 +180,7 @@ func TestResidentChild_IdleSweepReaps(t *testing.T) {
 	srv := newResidentTestServer(t)
 	ctx := residentParentCtx("parent-agent", "")
 
-	runID, _, _, err := srv.openResidentChild(ctx, "child", "start", "", 0)
+	runID, _, _, err := srv.openResidentChild(ctx, "child", "start", "", 0, 0)
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}
@@ -223,7 +223,7 @@ func ageResidentTurn(t *testing.T, srv *Server, runID string, d time.Duration) {
 func startRunningTurn(t *testing.T, srv *Server, ctx context.Context, gate chan struct{}) string {
 	t.Helper()
 	gate <- struct{}{}
-	runID, _, state, err := srv.openResidentChild(ctx, "child", "start", "", 0)
+	runID, _, state, err := srv.openResidentChild(ctx, "child", "start", "", 0, 0)
 	if err != nil || state != "awaiting_input" {
 		t.Fatalf("open: state=%q err=%v", state, err)
 	}
@@ -408,7 +408,7 @@ func TestResidentChild_SweepNeverReapsARunningTurn(t *testing.T) {
 	ctx := residentParentCtx("parent-agent", "")
 
 	gate <- struct{}{}
-	runID, _, state, err := srv.openResidentChild(ctx, "child", "start", "", 0)
+	runID, _, state, err := srv.openResidentChild(ctx, "child", "start", "", 0, 0)
 	if err != nil || state != "awaiting_input" {
 		t.Fatalf("open: state=%q err=%v", state, err)
 	}
@@ -448,7 +448,7 @@ func TestResidentChild_PollAndCancelRestartTheIdleClock(t *testing.T) {
 		t.Run(op, func(t *testing.T) {
 			srv := newResidentTestServer(t)
 			ctx := residentParentCtx("parent-agent", "")
-			runID, _, _, err := srv.openResidentChild(ctx, "child", "start", "", 0)
+			runID, _, _, err := srv.openResidentChild(ctx, "child", "start", "", 0, 0)
 			if err != nil {
 				t.Fatalf("open: %v", err)
 			}
@@ -482,7 +482,7 @@ func TestResidentChild_IdleClockStartsWhenTheTurnEnds(t *testing.T) {
 	ctx := residentParentCtx("parent-agent", "")
 
 	gate <- struct{}{}
-	runID, _, _, err := srv.openResidentChild(ctx, "child", "start", "", 0)
+	runID, _, _, err := srv.openResidentChild(ctx, "child", "start", "", 0, 0)
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}
@@ -565,7 +565,7 @@ func TestResidentChild_SendTimeoutThenPoll(t *testing.T) {
 	ctx := residentParentCtx("parent-agent", "")
 
 	gate <- struct{}{} // let the open turn complete + park
-	runID, _, state, err := srv.openResidentChild(ctx, "child", "start", "", 0)
+	runID, _, state, err := srv.openResidentChild(ctx, "child", "start", "", 0, 0)
 	if err != nil || state != "awaiting_input" {
 		t.Fatalf("open: state=%q err=%v", state, err)
 	}
@@ -598,6 +598,48 @@ func TestResidentChild_SendTimeoutThenPoll(t *testing.T) {
 	}
 }
 
+// open with timeout_ms returns the child_run_id while a slow first turn is
+// still going, state "running" with the partial output; poll collects the
+// turn and the child is parked and usable.
+func TestResidentChild_OpenTimeoutReturnsRunningThenPollCollects(t *testing.T) {
+	srv, gate := newGatedResidentServer(t)
+	ctx := residentParentCtx("parent-agent", "")
+
+	// open runs on its own goroutine so an open that ignores timeout_ms fails
+	// here in seconds instead of hanging on the gated turn until the suite's
+	// timeout.
+	type opened struct {
+		runID, out, state string
+		err               error
+	}
+	got := make(chan opened, 1)
+	go func() {
+		runID, out, state, err := srv.openResidentChild(ctx, "child", "start", "", 0, 100)
+		got <- opened{runID, out, state, err}
+	}()
+	var o opened
+	select {
+	case o = <-got:
+	case <-time.After(5 * time.Second):
+		gate <- struct{}{} // let the blocked open return so the server can stop
+		t.Fatal("open with timeout_ms blocked on a slow first turn")
+	}
+	runID, out, state, err := o.runID, o.out, o.state, o.err
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	defer func() { _ = srv.closeResidentChild(ctx, runID) }()
+	if runID == "" || state != "running" || !strings.Contains(out, "working") {
+		t.Fatalf("open with timeout_ms on a gated first turn: runID=%q state=%q out=%q", runID, state, out)
+	}
+
+	gate <- struct{}{}
+	if out, state, err = srv.pollResidentChild(ctx, runID, 5000); err != nil || state != "awaiting_input" {
+		t.Fatalf("poll: state=%q out=%q err=%v", state, out, err)
+	}
+	assertResidentChildAlive(t, srv, ctx, gate, runID)
+}
+
 // TestResidentChild_CancelStopsTurn: cancel turn-cancels a running turn and the
 // child re-parks (stays alive).
 func TestResidentChild_CancelStopsTurn(t *testing.T) {
@@ -605,7 +647,7 @@ func TestResidentChild_CancelStopsTurn(t *testing.T) {
 	ctx := residentParentCtx("parent-agent", "")
 
 	gate <- struct{}{} // open turn completes + parks
-	runID, _, state, err := srv.openResidentChild(ctx, "child", "start", "", 0)
+	runID, _, state, err := srv.openResidentChild(ctx, "child", "start", "", 0, 0)
 	if err != nil || state != "awaiting_input" {
 		t.Fatalf("open: state=%q err=%v", state, err)
 	}
@@ -638,7 +680,7 @@ func TestResidentChild_CancelStopsTurn(t *testing.T) {
 func TestResidentP3_ListAndClose(t *testing.T) {
 	srv := newResidentTestServer(t)
 	ctx := residentParentCtx("parent-agent", "")
-	runID, _, _, err := srv.openResidentChild(ctx, "child", "start", "", 0)
+	runID, _, _, err := srv.openResidentChild(ctx, "child", "start", "", 0, 0)
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}
@@ -691,7 +733,7 @@ func TestResidentP3_ListAndClose(t *testing.T) {
 func TestResidentP3_FillResidentState(t *testing.T) {
 	srv := newResidentTestServer(t)
 	ctx := residentParentCtx("parent-agent", "")
-	runID, _, _, err := srv.openResidentChild(ctx, "child", "start", "", 0)
+	runID, _, _, err := srv.openResidentChild(ctx, "child", "start", "", 0, 0)
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}
@@ -712,7 +754,7 @@ func TestResidentP3_FillResidentState(t *testing.T) {
 func TestResidentP3_OperatorTenantGate(t *testing.T) {
 	srv := newResidentTestServer(t)
 	ctx := residentParentCtx("parent-a", "tenant-a")
-	runID, _, _, err := srv.openResidentChild(ctx, "child", "start", "", 0)
+	runID, _, _, err := srv.openResidentChild(ctx, "child", "start", "", 0, 0)
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}
@@ -739,7 +781,7 @@ func TestResidentChild_TheParentsSubagentHooksApply(t *testing.T) {
 
 	deny := newRecordingHook(t, `{"decision":"deny","reason":"no residents"}`)
 	register(t, srv, &hooks.Hook{Owner: "ops", Name: "gate", Phase: hooks.PhaseSubagentStart, Agents: []string{"lead"}, CallbackURL: deny.srv.URL})
-	if _, _, _, err := srv.openResidentChild(ctx, "child", "start", "", 0); err == nil || !strings.Contains(err.Error(), "was not started: no residents") {
+	if _, _, _, err := srv.openResidentChild(ctx, "child", "start", "", 0, 0); err == nil || !strings.Contains(err.Error(), "was not started: no residents") {
 		t.Fatalf("open under a start deny: %v", err)
 	}
 	if n := srv.residentReg.countByParent("parent-agent"); n != 0 {
@@ -757,7 +799,7 @@ func TestResidentChild_TheParentsSubagentHooksApply(t *testing.T) {
 	t.Cleanup(stop.Close)
 	register(t, srv, &hooks.Hook{Owner: "ops", Name: "check", Phase: hooks.PhaseSubagentStop, Agents: []string{"lead"}, CallbackURL: stop.URL})
 
-	runID, out, _, err := srv.openResidentChild(ctx, "child", "start", "", 0)
+	runID, out, _, err := srv.openResidentChild(ctx, "child", "start", "", 0, 0)
 	if err == nil || !strings.Contains(err.Error(), "was refused: not yet") || out != "" {
 		t.Fatalf("open under a stop deny: out %q err %v", out, err)
 	}

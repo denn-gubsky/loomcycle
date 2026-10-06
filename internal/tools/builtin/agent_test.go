@@ -780,7 +780,7 @@ func TestAgentTool_Open_HappyPath(t *testing.T) {
 	var gotTTL int
 	a := &AgentTool{
 		Run: func(context.Context, string, string, string) (string, error) { return "", nil },
-		OpenChild: func(_ context.Context, name, prompt, defID string, ttl int) (string, string, string, error) {
+		OpenChild: func(_ context.Context, name, prompt, defID string, ttl, _ int) (string, string, string, error) {
 			gotName, gotPrompt, gotDef, gotTTL = name, prompt, defID, ttl
 			return "run_child_1", "first turn output", "awaiting_input", nil
 		},
@@ -799,6 +799,31 @@ func TestAgentTool_Open_HappyPath(t *testing.T) {
 	}
 }
 
+// open passes timeout_ms to the runner, so a long first turn can come back
+// "running" with the child_run_id; a negative one is refused before any child
+// starts.
+func TestAgentTool_Open_PassesTimeoutMsAndRefusesNegative(t *testing.T) {
+	var gotTimeout int
+	calls := 0
+	a := &AgentTool{
+		Run: func(context.Context, string, string, string) (string, error) { return "", nil },
+		OpenChild: func(_ context.Context, _, _, _ string, _, timeoutMs int) (string, string, string, error) {
+			calls++
+			gotTimeout = timeoutMs
+			return "run_child_1", "partial", "running", nil
+		},
+	}
+	res, _ := a.Execute(context.Background(), json.RawMessage(`{"op":"open","name":"x","prompt":"y","timeout_ms":250}`))
+	env := parseResident(t, res)
+	if gotTimeout != 250 || env.ChildRunID != "run_child_1" || env.State != "running" || env.Output != "partial" {
+		t.Errorf("timeout=%d envelope=%+v", gotTimeout, env)
+	}
+	res, _ = a.Execute(context.Background(), json.RawMessage(`{"op":"open","name":"x","prompt":"y","timeout_ms":-1}`))
+	if !res.IsError || calls != 1 {
+		t.Errorf("negative timeout_ms: res=%+v calls=%d, want a refusal before any child starts", res, calls)
+	}
+}
+
 func TestAgentTool_Open_NotWired(t *testing.T) {
 	a := &AgentTool{Run: func(context.Context, string, string, string) (string, error) { return "", nil }}
 	res, _ := a.Execute(context.Background(), json.RawMessage(`{"op":"open","name":"x","prompt":"y"}`))
@@ -810,7 +835,7 @@ func TestAgentTool_Open_NotWired(t *testing.T) {
 func TestAgentTool_Open_MissingFields(t *testing.T) {
 	a := &AgentTool{
 		Run: func(context.Context, string, string, string) (string, error) { return "", nil },
-		OpenChild: func(context.Context, string, string, string, int) (string, string, string, error) {
+		OpenChild: func(context.Context, string, string, string, int, int) (string, string, string, error) {
 			return "", "", "", nil
 		},
 	}
@@ -825,7 +850,7 @@ func TestAgentTool_Open_MissingFields(t *testing.T) {
 func TestAgentTool_Open_RejectsChildRunID(t *testing.T) {
 	a := &AgentTool{
 		Run: func(context.Context, string, string, string) (string, error) { return "", nil },
-		OpenChild: func(context.Context, string, string, string, int) (string, string, string, error) {
+		OpenChild: func(context.Context, string, string, string, int, int) (string, string, string, error) {
 			return "", "", "", nil
 		},
 	}
@@ -840,7 +865,7 @@ func TestAgentTool_Open_DepthGuard(t *testing.T) {
 	called := false
 	a := &AgentTool{
 		Run: func(context.Context, string, string, string) (string, error) { return "", nil },
-		OpenChild: func(context.Context, string, string, string, int) (string, string, string, error) {
+		OpenChild: func(context.Context, string, string, string, int, int) (string, string, string, error) {
 			called = true
 			return "", "", "", nil
 		},

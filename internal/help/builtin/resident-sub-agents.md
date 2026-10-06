@@ -13,7 +13,7 @@ Most sub-agent work is one-shot: `Agent {op:"spawn", …}` runs a child to compl
   Agent {op:"open", name:"chat/medium", prompt:"<first instruction>"}
   → {"child_run_id":"run_…", "state":"awaiting_input", "output":"…"}
   ```
-  Capture the `child_run_id` — it's the handle for everything after. The child then **parks**, resident, waiting for your next instruction. Its conversation and anything it holds (open files, a REPL session, accumulated analysis context) stays live.
+  Capture the `child_run_id` — it's the handle for everything after. The child then **parks**, resident, waiting for your next instruction. Its conversation and anything it holds (open files, a REPL session, accumulated analysis context) stays live. By default `open` waits for the first turn to finish; pass **`timeout_ms`** (as on `send`) to get the `child_run_id` back early with `"state":"running"` and the partial output, then `poll` for the rest.
 
 - **`send`** — give the resident child its next instruction and get that turn's output:
   ```
@@ -27,7 +27,7 @@ Most sub-agent work is one-shot: `Agent {op:"spawn", …}` runs a child to compl
   Agent {op:"poll", child_run_id:"run_…", timeout_ms:30000}
   → {"state":"running"|"awaiting_input", "output":"<output so far>"}
   ```
-  `timeout_ms:0` (or omitted) is an instant snapshot; a positive value waits up to that long for the child to park. Use it after a `send` returned `"running"`.
+  `timeout_ms:0` (or omitted) is an instant snapshot; a positive value waits up to that long for the child to park. Use it after an `open` or `send` returned `"running"`.
 
 - **`cancel`** — stop the child's current turn (it stays alive):
   ```

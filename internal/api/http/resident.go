@@ -316,7 +316,10 @@ func (s *Server) residentChildIdleTTL() time.Duration {
 
 // openResidentChild starts a resident interactive sub-run, runs its first turn,
 // parks it at awaiting_input, and returns (childRunID, firstOutput, state).
-func (s *Server) openResidentChild(ctx context.Context, name, prompt, defID string, idleTTLSeconds int) (string, string, string, error) {
+// timeoutMs bounds the wait for that first turn exactly as it bounds a send's:
+// 0 blocks until the child parks; >0 returns state "running" + the partial
+// output if the turn is still going, and the parent polls to collect it.
+func (s *Server) openResidentChild(ctx context.Context, name, prompt, defID string, idleTTLSeconds, timeoutMs int) (string, string, string, error) {
 	if s.residentReg == nil || s.steerReg == nil {
 		// A resident child parks on its steer queue between turns; without the
 		// steer registry it could not park (nor could send reach it).
@@ -392,9 +395,7 @@ func (s *Server) openResidentChild(ctx context.Context, name, prompt, defID stri
 		rc.markDone(st)
 	}()
 
-	// open always blocks for the FIRST park (no timeout) — by the time it returns
-	// the child is parked and ready for the first send.
-	out, state, aerr := rc.awaitTurn(ctx, turnDone, 0, true)
+	out, state, aerr := rc.awaitTurn(ctx, turnDone, time.Duration(timeoutMs)*time.Millisecond, true)
 	out, aerr = s.residentHandBack(ctx, rc, out, state, aerr)
 	return prep.RunID, out, state, aerr
 }
