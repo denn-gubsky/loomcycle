@@ -146,11 +146,16 @@ const absent = (v: unknown): boolean => v === undefined || v === null;
  *  kind alone — so deleting the key from the editor would save a version that
  *  still declares them. Only an empty object declares none, so that is what is
  *  sent for each section the parent had and the edit dropped. A section the
- *  edit still carries, even emptied by hand, is sent as written. */
+ *  edit still carries, even emptied by hand, is sent as written. A dropped
+ *  `max_iterations` is sent as 0, the default, for the same reason. */
 export function keepOwnDefinitionRemovals(source: unknown, edited: unknown): unknown {
   if (!isObj(source) || !isObj(edited)) return edited;
   let out: Obj = edited;
   if (nonEmpty(source.vars) && absent(edited.vars)) out = { ...out, vars: {} };
+  // A fork keeps the parent's cap when the key is absent; 0 is the default.
+  if (typeof source.max_iterations === "number" && source.max_iterations !== 0 && absent(edited.max_iterations)) {
+    out = { ...out, max_iterations: 0 };
+  }
   const had = isObj(source.local) ? source.local : {};
   const dropped = LOCAL_KINDS.filter((k) => nonEmpty(had[k]));
   if (dropped.length === 0) return out;
