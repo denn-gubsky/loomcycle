@@ -251,6 +251,10 @@ type pollRow struct {
 	Structured map[string]any `json:"structured,omitempty"`
 	Status     string         `json:"status,omitempty"`
 	Truncated  bool           `json:"truncated,omitempty"`
+	// StructuredOmitted is set, with StructuredBytes its size as JSON, when
+	// Structured did not fit the row's share and was left out (capPollRows).
+	StructuredOmitted bool `json:"structured_omitted,omitempty"`
+	StructuredBytes   int  `json:"structured_bytes,omitempty"`
 }
 
 func rowOf(v tools.ChildView) pollRow {
@@ -415,12 +419,14 @@ func (a *AgentTool) residentRow(ctx context.Context, v tools.ChildView) pollRow 
 	return r
 }
 
-// capPollRows cuts each row's output to an equal share of quarter — the bound
-// a parallel_spawn envelope's rows share (capRowOutputs).
+// capPollRows cuts each row that carries an answer to an equal share of
+// quarter — the bound a parallel_spawn envelope's rows share, cut the same way
+// (capRowOutputs): the error first, the structured state kept whole or left
+// out, the output last.
 func capPollRows(rows []pollRow, quarter int) {
 	n := 0
 	for _, r := range rows {
-		if r.Output != "" {
+		if r.Output != "" || r.Error != "" || len(r.Structured) > 0 {
 			n++
 		}
 	}
@@ -429,8 +435,19 @@ func capPollRows(rows []pollRow, quarter int) {
 	}
 	share := quarter / n
 	for i := range rows {
-		if out, cut := cutOnRune(rows[i].Output, share); cut {
-			rows[i].Output, rows[i].Truncated = out, true
+		r := &rows[i]
+		left := share
+		if e, cut := cutOnRune(r.Error, left); cut {
+			r.Error, r.Truncated = e, true
+		}
+		left -= len(r.Error)
+		if sz := jsonSize(r.Structured); sz > left {
+			r.Structured, r.StructuredOmitted, r.StructuredBytes, r.Truncated = nil, true, sz, true
+		} else {
+			left -= sz
+		}
+		if out, cut := cutOnRune(r.Output, left); cut {
+			r.Output, r.Truncated = out, true
 		}
 	}
 }

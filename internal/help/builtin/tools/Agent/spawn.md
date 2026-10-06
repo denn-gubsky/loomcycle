@@ -43,7 +43,10 @@ anything that needs to refer to it later. A reply longer than a quarter of
 your context window is cut to that length and ends with
 `[truncated at N characters; the full answer is in the transcript of run r_...]`
 — the whole answer stays in that run's transcript. A child that keeps structured state
-adds `Final state:` and its JSON. A failure names the run in its message
+adds `Final state:` and its JSON. The state counts against the same quarter:
+one that fits is kept whole and the text gets what is left; a larger one is
+left out, with `[final state omitted: N characters, ...; it is in the
+transcript of run r_...]` in its place. A failure names the run in its message
 (`run=r_...`).
 
 In poll mode the call returns `{child_run_id, agent, state}` with `state`

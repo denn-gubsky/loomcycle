@@ -26,8 +26,8 @@ by an iteration cap is `failed` with `status: "iteration_cap"`, `capped_state`
 and the steps so far. `pending` counts the walks still running or held.
 
 The walks in one answer share a quarter of your context window. A walk whose
-text does not fit its share is cut — `final_output` first keeps up to the
-whole share, the `steps` outputs split what is left — and says
+text does not fit its share is cut — `error` first, then `final_output` keeps
+up to what is left of the share, the `steps` outputs split the rest — and says
 `truncated: true`. Its whole answer stays on its run (`run_id`); poll it alone
 to give it the whole quarter.
 
