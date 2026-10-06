@@ -224,6 +224,36 @@ func (m *clockMember) setHeld(held bool) {
 	c.settle()
 }
 
+// Deadline is the held-time clock bounding ONE run outside a walk: a child an
+// agent spawns with timeout_ms. Same rule as a state's: time the run spends
+// held for a verdict is not counted.
+type Deadline struct {
+	c *heldClock
+	m *clockMember
+}
+
+// StartDeadline returns a ctx cancelled with cause once d of unheld time has
+// passed. The run reports its holds through SetHeld; call Finish when it ends.
+//
+// The clock is kept OFF the returned ctx, as spawnMember keeps a state's: a
+// walk the run starts must not count its own members on it.
+func StartDeadline(ctx context.Context, d time.Duration, cause error) (context.Context, *Deadline) {
+	cctx, c := startClock(ctx, d, cause)
+	return context.WithValue(cctx, clockKey{}, (*heldClock)(nil)), &Deadline{c: c, m: c.join()}
+}
+
+// SetHeld records that the run's hold for a verdict began or ended.
+func (d *Deadline) SetHeld(held bool) { d.m.setHeld(held) }
+
+// TimedOut reports whether the bound ran out.
+func (d *Deadline) TimedOut() bool { return d.c.timedOut() }
+
+// Finish stops the clock and releases its ctx.
+func (d *Deadline) Finish() {
+	d.m.leave()
+	d.c.finish()
+}
+
 func (m *clockMember) leave() {
 	c := m.c
 	c.mu.Lock()

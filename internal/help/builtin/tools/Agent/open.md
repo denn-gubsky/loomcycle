@@ -36,6 +36,9 @@ lifecycle: `close` it when you are done.**
   `Context {"op":"agents"}`.
 - `resident sub-agent cap reached ...` — too many open children; `close` one
   first.
+- `this run has N children alive and may have at most M at once ...` — the
+  run's limit on live children of every kind; close a resident child or wait
+  for spawned ones to finish.
 
 ## Examples
 

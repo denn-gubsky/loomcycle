@@ -7,9 +7,12 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+	"time"
 
+	runcancel "github.com/denn-gubsky/loomcycle/internal/cancel"
 	"github.com/denn-gubsky/loomcycle/internal/config"
 	"github.com/denn-gubsky/loomcycle/internal/providers"
+	"github.com/denn-gubsky/loomcycle/internal/teamrun"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
 )
 
@@ -214,6 +217,17 @@ type AgentTool struct {
 	CancelChild CancelChildRunner
 	CloseChild  CloseChildRunner
 
+	// MaxChildTimeoutMs is the operator's ceiling on the timeout_ms a caller
+	// gives a spawn or parallel_spawn child (LOOMCYCLE_AGENT_CHILD_MAX_TIMEOUT_MS).
+	// 0 = no ceiling. A larger timeout_ms is refused with the ceiling named.
+	MaxChildTimeoutMs int
+
+	// LiveChildren bounds the children each run has alive at once, across
+	// every op (LOOMCYCLE_MAX_LIVE_CHILDREN_PER_RUN). spawn and parallel_spawn
+	// admit theirs here; the server admits resident children at open. nil =
+	// no limit.
+	LiveChildren *tools.LiveChildren
+
 	// ResolveName, when set, turns the name a caller wrote into the name that
 	// agent RUNS under, before anything here uses it. Inside a team walk a
 	// caller may write "./reviewer" — or, where the resolver's rule for bare
@@ -235,6 +249,79 @@ func (a *AgentTool) runChild(ctx context.Context, name, prompt, defID string) (o
 	}
 	output, err = a.Run(ctx, name, prompt, defID)
 	return output, nil, "", err
+}
+
+// runChildBounded is runChild under the caller's timeout_ms (0 = unbounded).
+// When the bound runs out the child's ctx is cancelled with a cause the run's
+// terminal write records as cancelled — so its run row ends `cancelled` with
+// the timeout as the reason, and everything it started goes with it. Time the
+// child spends held for a review verdict is not counted (teamrun.Deadline,
+// the rule a team state's timeout_ms uses).
+//
+// The hold observer is ALWAYS set on the child's ctx, nil when unbounded: an
+// observer inherited from an enclosing bound — a parent that is itself a
+// bounded child, or a team member — must never see this child's holds.
+func (a *AgentTool) runChildBounded(ctx context.Context, timeoutMs int, name, prompt, defID string) (output string, state map[string]any, runID string, timedOut bool, err error) {
+	if timeoutMs <= 0 {
+		output, state, runID, err = a.runChild(teamrun.WithHoldObserver(ctx, nil), name, prompt, defID)
+		return output, state, runID, false, err
+	}
+	cctx, dl := teamrun.StartDeadline(ctx, time.Duration(timeoutMs)*time.Millisecond, childTimeout{ms: timeoutMs})
+	defer dl.Finish()
+	output, state, runID, err = a.runChild(teamrun.WithHoldObserver(cctx, dl.SetHeld), name, prompt, defID)
+	// A child that finished as the bound ran out keeps its answer.
+	return output, state, runID, err != nil && dl.TimedOut(), err
+}
+
+// childTimeout is the cancel cause of a child whose timeout_ms ran out. It
+// unwraps to the API-cancel cause so the child's run is recorded cancelled,
+// with this as its reason, rather than failed.
+type childTimeout struct{ ms int }
+
+func (e childTimeout) Error() string { return e.reason() }
+func (e childTimeout) Unwrap() error { return runcancel.CauseWithReason(e.reason()) }
+func (e childTimeout) reason() string {
+	return fmt.Sprintf("timed out: timeout_ms=%d elapsed (time held for review not counted)", e.ms)
+}
+
+// childTimedOutMessage is what the caller is told about a child its
+// timeout_ms stopped.
+func childTimedOutMessage(name string, timeoutMs int, runID string) string {
+	msg := fmt.Sprintf("sub-agent %q timed out: timeout_ms=%d elapsed (time held for review not counted)", name, timeoutMs)
+	if runID != "" {
+		msg += fmt.Sprintf("; its run %s was cancelled", runID)
+	}
+	return msg
+}
+
+// admitChildren reserves n of the calling run's live children, or says why
+// not: the number alive and the limit, so the caller can wait for some to end.
+func (a *AgentTool) admitChildren(ctx context.Context, n int) ([]func(), tools.Result, bool) {
+	release, err := a.LiveChildren.Admit(tools.RunID(ctx), n)
+	if err != nil {
+		return nil, liveLimitResult(err), false
+	}
+	return release, tools.Result{}, true
+}
+
+// liveLimitResult is the refusal for a spawn past the live-children limit.
+func liveLimitResult(err error) tools.Result {
+	return errBusiness(err.Error(), "Wait for children you started to finish, or close resident children you no longer need, then try again.")
+}
+
+// checkChildTimeout validates a spawn's timeout_ms against the operator
+// ceiling. Refused rather than clamped: a bound shortened behind the caller's
+// back would cut off a child it meant to wait for, and the message names the
+// ceiling so the next call can fit it.
+func (a *AgentTool) checkChildTimeout(field string, ms int) (tools.Result, bool) {
+	if ms < 0 {
+		return errValidation(field+" must be >= 0 (0 or absent = wait for the child however long it runs)", ""), false
+	}
+	if a.MaxChildTimeoutMs > 0 && ms > a.MaxChildTimeoutMs {
+		return errValidation(fmt.Sprintf("%s=%d is above this runtime's ceiling of %d ms", field, ms, a.MaxChildTimeoutMs),
+			fmt.Sprintf("Pass a timeout_ms of at most %d.", a.MaxChildTimeoutMs)), false
+	}
+	return tools.Result{}, true
 }
 
 // agentInput is the JSON shape the model sends. The discriminator is
@@ -275,6 +362,8 @@ type parallelSpawnEntry struct {
 	DefID  string `json:"def_id,omitempty"`
 	// Compaction: per-spawn compaction override for THIS child (see agentInput).
 	Compaction *config.Compaction `json:"compaction,omitempty"`
+	// TimeoutMs bounds THIS child; 0 = the call's timeout_ms.
+	TimeoutMs int `json:"timeout_ms,omitempty"`
 }
 
 // ParallelSpawnResult is one entry in the JSON envelope the
@@ -298,6 +387,13 @@ type ParallelSpawnResult struct {
 	// operator). Omitted when no run was created (an early resolution error,
 	// a child never dispatched).
 	RunID string `json:"run_id,omitempty"`
+	// Status is "timeout" for a child its timeout_ms stopped (ok false; its run
+	// was cancelled). Omitted otherwise. Not `state`, which already carries a
+	// stateful child's structured result.
+	Status string `json:"status,omitempty"`
+	// Truncated is set when Output was cut to the row's share of the parent's
+	// window (capRowOutputs). The full answer stays on the child's run.
+	Truncated bool `json:"truncated,omitempty"`
 }
 
 // agentInputSchema is the JSON Schema the model sees: ONE object, with `op`
@@ -329,14 +425,15 @@ const agentInputSchema = `{
           "name":   {"type": "string", "description": "The sub-agent's name, a key in the agents map."},
           "prompt": {"type": "string", "description": "The instruction this child sees."},
           "def_id": {"type": "string", "description": "Optional. Pin this child to a specific agent_defs row id."},
-          "compaction": {"type": "object", "description": "Optional per-child context-compaction override (inherits yours by default). Fields: enabled, target_percentage (10-50), keep_last_n, keep_first, autocompact_at_pct (50-95), model.", "properties": {"enabled": {"type": "boolean"}, "target_percentage": {"type": "integer"}, "keep_last_n": {"type": "integer"}, "keep_first": {"type": "boolean"}, "autocompact_at_pct": {"type": "integer"}, "model": {"type": "string"}}}
+          "compaction": {"type": "object", "description": "Optional per-child context-compaction override (inherits yours by default). Fields: enabled, target_percentage (10-50), keep_last_n, keep_first, autocompact_at_pct (50-95), model.", "properties": {"enabled": {"type": "boolean"}, "target_percentage": {"type": "integer"}, "keep_last_n": {"type": "integer"}, "keep_first": {"type": "boolean"}, "autocompact_at_pct": {"type": "integer"}, "model": {"type": "string"}}},
+          "timeout_ms": {"type": "integer", "description": "Optional. Bound this child's run; when it runs out the child is cancelled and its entry reports status \"timeout\". 0 or absent = the call's timeout_ms."}
         },
         "required": ["name", "prompt"]
       }
     },
     "idle_ttl_seconds": {"type": "integer", "description": "open (optional): reap the child after this many seconds unused — no send, poll or cancel, and no turn running (0 = operator default). You own the child's lifecycle — close it when done."},
     "child_run_id": {"type": "string", "description": "send / poll / cancel / close (required): the child_run_id op=open returned."},
-    "timeout_ms": {"type": "integer", "description": "open / send / poll (optional). open and send: 0 (default) blocks until the child finishes its turn and parks; >0 returns early with state \"running\" and the partial output (open still returns the child_run_id) — then poll to await it or cancel to interrupt. poll: 0 (default) is a non-blocking snapshot; >0 waits up to this long for the child to park."}
+    "timeout_ms": {"type": "integer", "description": "Optional. spawn / parallel_spawn: bound the child's run (for parallel_spawn, the default for every entry without its own); when it runs out the child is cancelled and reported as timed out. 0 (default) waits however long it runs. Time a child is held for review does not count. open and send: 0 (default) blocks until the child finishes its turn and parks; >0 returns early with state \"running\" and the partial output (open still returns the child_run_id) — then poll to await it or cancel to interrupt. poll: 0 (default) is a non-blocking snapshot; >0 waits up to this long for the child to park."}
   }
 }`
 
@@ -417,6 +514,9 @@ func (a *AgentTool) executeSpawn(ctx context.Context, in agentInput) (tools.Resu
 	if in.Prompt == "" {
 		return errValidation("missing required field: prompt", "Pass `prompt`: the task for the sub-agent."), nil
 	}
+	if r, ok := a.checkChildTimeout("timeout_ms", in.TimeoutMs); !ok {
+		return r, nil
+	}
 	name, err := a.runName(ctx, in.Name)
 	if err != nil {
 		return errValidation(err.Error(), ""), nil
@@ -428,18 +528,34 @@ func (a *AgentTool) executeSpawn(ctx context.Context, in agentInput) (tools.Resu
 			MaxAgentDepth, in.Name,
 		), "Do this work in the current agent instead of spawning another level."), nil
 	}
+	live, refused, ok := a.admitChildren(ctx, 1)
+	if !ok {
+		return refused, nil
+	}
+	defer live[0]()
 	subCtx := IncrementAgentDepth(ctx)
 	// Per-spawn compaction override (the parent steering this child's context
 	// management); runSubAgent blends it on top of inheritance.
 	if !in.Compaction.IsZero() {
 		subCtx = tools.WithCompactionOverride(subCtx, in.Compaction)
 	}
-	output, state, _, err := a.runChild(subCtx, in.Name, in.Prompt, in.DefID)
+	output, state, runID, timedOut, err := a.runChildBounded(subCtx, in.TimeoutMs, in.Name, in.Prompt, in.DefID)
+	if timedOut {
+		return errBusiness(childTimedOutMessage(in.Name, in.TimeoutMs, runID),
+			"Give the child a larger timeout_ms or a smaller task. What it did before the bound is in its run's transcript."), nil
+	}
 	if err != nil {
 		return errFrom(err.Error(), err), nil
 	}
 	if output == "" && len(state) == 0 {
 		return tools.Result{Text: fmt.Sprintf("(sub-agent %q completed with no final text)", in.Name)}, nil
+	}
+	// One child's answer may take at most a quarter of this run's window, so a
+	// verbose child cannot fill its parent's context in one result.
+	if limit := quarterWindowChars(ctx); limit > 0 {
+		if cut, truncated := cutOnRune(output, limit); truncated {
+			output = cut + fmt.Sprintf("\n\n[truncated at %d characters; the full answer is in the transcript of run %s]", limit, runID)
+		}
 	}
 	// RFC CR D5: a stateful child hands its final Σ up as the structured result,
 	// folded into the tool_result text (tools.Result is text-only) so the parent
@@ -495,6 +611,9 @@ func (a *AgentTool) executeParallelSpawn(ctx context.Context, in agentInput) (to
 			len(in.Spawns), MaxParallelSpawns,
 		), ""), nil
 	}
+	if r, ok := a.checkChildTimeout("timeout_ms", in.TimeoutMs); !ok {
+		return r, nil
+	}
 	// Per-entry input validation BEFORE we kick anything off — a
 	// malformed entry should fail the whole call up-front, not
 	// arrive as a per-child error inside an otherwise-successful
@@ -506,6 +625,12 @@ func (a *AgentTool) executeParallelSpawn(ctx context.Context, in agentInput) (to
 		}
 		if sp.Prompt == "" {
 			return errValidation(fmt.Sprintf("spawns[%d] (%s): missing required field: prompt", i, name), "Give every `spawns` entry a `prompt`."), nil
+		}
+		if r, ok := a.checkChildTimeout(fmt.Sprintf("spawns[%d].timeout_ms", i), sp.TimeoutMs); !ok {
+			return r, nil
+		}
+		if sp.TimeoutMs == 0 {
+			in.Spawns[i].TimeoutMs = in.TimeoutMs // the call's default
 		}
 		name, err := a.runName(ctx, name)
 		if err != nil {
@@ -520,6 +645,14 @@ func (a *AgentTool) executeParallelSpawn(ctx context.Context, in agentInput) (to
 			"max sub-agent recursion depth (%d) reached; refusing to parallel_spawn at depth %d",
 			MaxAgentDepth, AgentDepth(ctx),
 		), "Do this work in the current agent instead of spawning another level."), nil
+	}
+	// Every child is admitted up front, queued ones included: the call has
+	// committed to running them all. All or none — a partial batch would hand
+	// back an envelope whose missing rows the caller has to work out, while a
+	// refusal names the number alive so it can resend once some have ended.
+	live, refused, ok := a.admitChildren(ctx, len(in.Spawns))
+	if !ok {
+		return refused, nil
 	}
 	subCtx := IncrementAgentDepth(ctx)
 
@@ -565,6 +698,7 @@ func (a *AgentTool) executeParallelSpawn(ctx context.Context, in agentInput) (to
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
+			defer live[i]() // the child is alive until it ends, queued time included
 			// Acquire a slot or bail on ctx cancellation. ctx
 			// cancellation propagates from the parent run, so a
 			// cancelled parent reliably terminates outstanding
@@ -587,9 +721,13 @@ func (a *AgentTool) executeParallelSpawn(ctx context.Context, in agentInput) (to
 			if !sp.Compaction.IsZero() {
 				childCtx = tools.WithCompactionOverride(childCtx, sp.Compaction)
 			}
-			out, childState, childRunID, err := a.runChild(childCtx, sp.Name, sp.Prompt, sp.DefID)
+			// The bound starts here, once the child holds a slot: time queued
+			// behind its siblings is the call's concurrency, not the child's work.
+			out, childState, childRunID, timedOut, err := a.runChildBounded(childCtx, sp.TimeoutMs, sp.Name, sp.Prompt, sp.DefID)
 			var r ParallelSpawnResult
-			if err != nil {
+			if timedOut {
+				r = ParallelSpawnResult{Index: i, Agent: sp.Name, Ok: false, Error: childTimedOutMessage(sp.Name, sp.TimeoutMs, childRunID), RunID: childRunID, Status: "timeout"}
+			} else if err != nil {
 				r = ParallelSpawnResult{Index: i, Agent: sp.Name, Ok: false, Error: err.Error(), RunID: childRunID}
 			} else {
 				if out == "" && len(childState) == 0 {
@@ -657,6 +795,9 @@ func (a *AgentTool) executeParallelSpawn(ctx context.Context, in agentInput) (to
 	}
 
 	wg.Wait()
+	// After the ledger recorded each full answer: the durable record keeps it,
+	// the parent's context gets the capped envelope.
+	capRowOutputs(results, quarterWindowChars(ctx))
 
 	envelope := struct {
 		Results []ParallelSpawnResult `json:"results"`
@@ -669,6 +810,23 @@ func (a *AgentTool) executeParallelSpawn(ctx context.Context, in agentInput) (to
 		return errFrom(fmt.Sprintf("internal: marshal parallel_spawn envelope: %s", err), err), nil
 	}
 	return tools.Result{Text: string(body)}, nil
+}
+
+// capRowOutputs cuts each row's output to an equal share of quarter — a
+// quarter of the parent's window, in characters — flagging the rows it cut.
+// The rows share it so a wide fan-out cannot take more of the window than a
+// single child may (a quarter; executeSpawn applies the same bound). 0 = no
+// window known, nothing is cut. A cut row's full answer is on its child's run.
+func capRowOutputs(rows []ParallelSpawnResult, quarter int) {
+	if quarter <= 0 || len(rows) == 0 {
+		return
+	}
+	share := quarter / len(rows)
+	for i := range rows {
+		if out, cut := cutOnRune(rows[i].Output, share); cut {
+			rows[i].Output, rows[i].Truncated = out, true
+		}
+	}
 }
 
 // residentChildResult is the JSON envelope the resident-child ops (open/send/
@@ -730,6 +888,10 @@ func (a *AgentTool) executeOpen(ctx context.Context, in agentInput) (tools.Resul
 		subCtx = tools.WithCompactionOverride(subCtx, in.Compaction)
 	}
 	childRunID, output, state, err := a.OpenChild(subCtx, in.Name, in.Prompt, in.DefID, in.IdleTTLSeconds, in.TimeoutMs)
+	var lim *tools.LiveChildLimitError
+	if errors.As(err, &lim) {
+		return liveLimitResult(err), nil
+	}
 	if err != nil {
 		return errFrom(err.Error(), err), nil
 	}

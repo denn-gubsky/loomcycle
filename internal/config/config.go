@@ -3551,6 +3551,14 @@ type Env struct {
 	// BK Agent op=open) one run may hold open at once. 0 = the code default (8).
 	// Exceeding it fails op=open (the parent must close one first).
 	MaxInteractiveChildren int
+	// MaxLiveChildrenPerRun caps how many children one run has alive at once,
+	// across every Agent op that starts one — spawn and parallel_spawn
+	// children (a parallel_spawn child queued for a slot counts) and resident
+	// children, which keep their own MaxInteractiveChildren cap as well. A
+	// spawn that would exceed it is refused. 0 = the code default (32). Per
+	// run, not per tree: a child's children count against the child.
+	// Env: LOOMCYCLE_MAX_LIVE_CHILDREN_PER_RUN.
+	MaxLiveChildrenPerRun int
 	// InteractiveChildIdleTTLMs is the default idle-reap window for a resident
 	// interactive sub-agent — reaped after this long with no send. 0 = the code
 	// default (30 min). Per-open overridable via op=open's idle_ttl_seconds.
@@ -3562,6 +3570,13 @@ type Env struct {
 	// running turn is never idle. 0 = the code default (2h); there is no
 	// unlimited setting. Env: LOOMCYCLE_RESIDENT_MAX_TURN_SECONDS.
 	ResidentMaxTurnSeconds int
+	// AgentChildMaxTimeoutMs is the ceiling on the timeout_ms an agent may give
+	// a child it starts with Agent spawn / parallel_spawn. 0 = no ceiling. It is
+	// a ceiling, not a default: a spawn without timeout_ms still waits for its
+	// child as long as the child runs. A larger timeout_ms is refused, not
+	// clamped — a silently shortened bound would cut off a child the caller
+	// meant to wait for. Env: LOOMCYCLE_AGENT_CHILD_MAX_TIMEOUT_MS.
+	AgentChildMaxTimeoutMs int
 	// BraveAPIKey enables the WebSearch tool. Empty = WebSearch refuses
 	// every call. Lives at https://api.search.brave.com/.
 	BraveAPIKey string
@@ -4663,8 +4678,10 @@ func LoadLayers(layers ...Layer) (*Config, error) {
 		ResumeFanout:                os.Getenv("LOOMCYCLE_RESUME_FANOUT") == "1",
 		TeamSubscriptions:           os.Getenv("LOOMCYCLE_TEAM_SUBSCRIPTIONS") == "1",
 		MaxInteractiveChildren:      getenvInt("LOOMCYCLE_MAX_INTERACTIVE_CHILDREN", 0),
+		MaxLiveChildrenPerRun:       getenvInt("LOOMCYCLE_MAX_LIVE_CHILDREN_PER_RUN", 0),
 		InteractiveChildIdleTTLMs:   getenvInt("LOOMCYCLE_INTERACTIVE_CHILD_IDLE_TTL_MS", 0),
 		ResidentMaxTurnSeconds:      getenvInt("LOOMCYCLE_RESIDENT_MAX_TURN_SECONDS", 0),
+		AgentChildMaxTimeoutMs:      getenvInt("LOOMCYCLE_AGENT_CHILD_MAX_TIMEOUT_MS", 0),
 		BraveAPIKey:                 os.Getenv("BRAVE_API_KEY"),
 		SerperAPIKey:                os.Getenv("SERPER_API_KEY"),
 		ExaAPIKey:                   os.Getenv("EXA_API_KEY"),

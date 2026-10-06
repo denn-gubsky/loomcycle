@@ -289,7 +289,11 @@ func TestLoopMaxIterationsTruncatesStopReason(t *testing.T) {
 				{Type: providers.EventDone, StopReason: "tool_use"},
 			}
 		}
-		return out
+		// The closing turn the last tool round earns (tools disabled).
+		return append(out, []providers.Event{
+			{Type: providers.EventText, Text: "closing"},
+			{Type: providers.EventDone, StopReason: "end_turn"},
+		})
 	}
 	res, err := Run(context.Background(), RunOptions{
 		Provider:      &fakeProvider{responses: infiniteToolUse()},

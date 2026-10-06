@@ -58,6 +58,6 @@ A long-lived agent — an interactive session, or an orchestrator driving many s
   - **turn ceiling** — its current turn has been running longer than the operator's ceiling (`LOOMCYCLE_RESIDENT_MAX_TURN_SECONDS`, 2 hours by default). Polling does not extend it: the clock starts when the turn does. It ends a turn that would never finish on its own — `cancel` a turn you no longer need well before that.
 
   A reaped child's next `poll` or `send` fails with the reason (`idle timeout` or `turn ceiling`); `open` a new one.
-- **Bounded.** A run may hold only so many resident children at once (operator cap); exceeding it fails `open` — close one first.
+- **Bounded.** A run may hold only so many resident children at once (operator cap, 8 by default); exceeding it fails `open` — close one first. An open resident child also counts toward the run's limit on live children of every kind (32 by default), so open residents leave less room for `spawn` and `parallel_spawn`.
 - **`state`** tells you where the child is: `awaiting_input` (parked, ready for the next `send`), `completed`/`failed` (the child ended — a further `send` will fail), `closed`.
 - **Longevity caveat:** a resident child is parented to your run — it stays live as long as you do, holds its state in memory between closely-spaced sends, and is reaped if you finish without closing it. Don't rely on it surviving a very long idle pause (e.g. waiting on a human across many minutes).

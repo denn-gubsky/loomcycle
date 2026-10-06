@@ -105,8 +105,9 @@ func TestRun_UnboundedIterations_ExemptFromMaxIterations(t *testing.T) {
 	if res2.StopReason != "max_iterations" {
 		t.Errorf("capped: stop = %q, want max_iterations (cap should still apply to LLM drivers)", res2.StopReason)
 	}
-	if provCapped.calls > cap {
-		t.Errorf("capped: made %d calls, want ≤ %d (cap not enforced)", provCapped.calls, cap)
+	// cap+1: the last tool round earns one closing call with tools disabled.
+	if provCapped.calls > cap+1 {
+		t.Errorf("capped: made %d calls, want ≤ %d (cap not enforced)", provCapped.calls, cap+1)
 	}
 }
 

@@ -23,7 +23,10 @@ original transcript is retained (audit) — only what the model SEES collapses.
    `POST /v1/runs/{run_id}/compact`), at a safe boundary.
 2. **Auto** — when `compaction.enabled` is true and the context footprint
    crosses `autocompact_at_pct`, the loop compacts on its own at the next clean
-   boundary. Works for autonomous runs too; off by default.
+   boundary. Works for autonomous runs too; off by default. The footprint it
+   checks is the request about to be sent, tool results you just received
+   included, so one large result is compacted around before it goes out; the
+   newest results are kept verbatim.
 3. **Self** — YOU can compact your own context: call **`Context op=compact`**.
    It schedules a compaction at your next step (honoring your keep_last_n /
    keep_first / target_percentage). Useful on a long autonomous run before you

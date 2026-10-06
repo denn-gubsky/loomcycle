@@ -25,6 +25,18 @@ You want the sub-agent's OUTPUT before you continue:
 The sub-agent's own ACL applies — your tool set doesn't transfer.
 Each agent definition is operator-curated and self-describing.
 
+## Bounding a slow child: `timeout_ms`
+
+A sub-agent has no deadline of its own: `spawn` and `parallel_spawn` wait as
+long as it runs. Pass `timeout_ms` to bound it — on `spawn`, or on
+`parallel_spawn` for every entry (an entry's own `timeout_ms` wins). When it
+runs out the child is cancelled, with everything it started; `spawn` fails
+naming the timeout, and a `parallel_spawn` row reports `ok: false`,
+`status: "timeout"` and the child's `run_id`. Time a child is held for review
+does not count, and a `parallel_spawn` child's clock starts when it gets a
+slot. The operator may cap `timeout_ms` (`LOOMCYCLE_AGENT_CHILD_MAX_TIMEOUT_MS`);
+a larger value is refused, naming the cap.
+
 ## `Agent` (in-loop) vs `spawn_run` (MCP surface)
 
 These live at different layers and are easy to confuse:
@@ -92,6 +104,18 @@ to N channels in a single call (e.g. an orchestrator pings N worker
 channels to start, then `await`s their result channels). It's the
 symmetric fan-OUT to `await`'s fan-IN; both cap at 32 channels and are
 atomic at the ACL pre-flight (one denied channel refuses the whole op).
+
+## Live-children limit
+
+A run may have at most 32 children alive at once (the operator may change it
+with `LOOMCYCLE_MAX_LIVE_CHILDREN_PER_RUN`), counting every kind: `spawn`
+children, `parallel_spawn` children — including ones still waiting for a slot
+— and open resident children. A spawn that would go past it is refused with
+the number alive and the limit; a `parallel_spawn` is refused whole, before
+any child starts. Wait for children to finish, or close resident children,
+and try again. The limit is per run: your children's own children count
+against them, not you. `max_concurrent_children` is separate — it is how many
+of one `parallel_spawn` call's children run at the same time.
 
 ## Recursion depth cap
 
