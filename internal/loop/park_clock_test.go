@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/denn-gubsky/loomcycle/internal/providers"
+	"github.com/denn-gubsky/loomcycle/internal/steer"
 )
 
 // clockedProvider is reviewProvider for a run bounded by time, as code-js is:
@@ -58,6 +59,53 @@ func TestPark_AWaitingRunHandsThePauseItsClock(t *testing.T) {
 			waitCount(t, "paused records", gate.records.Load, 1)
 			if gate.clocked.Load() != 1 {
 				t.Error("the pause was not handed the waiting run's clock")
+			}
+			cancel()
+			r.finish(t)
+		})
+	}
+}
+
+// A run held for a reviewer, or parked for an operator's next message, is
+// waiting on a person: for a run bounded by active time the hold does not
+// spend its budget, or a slow reviewer would leave it nothing to revise with.
+func TestPark_AHoldForAPersonDoesNotSpendTheBudget(t *testing.T) {
+	for name, tc := range map[string]struct {
+		mutate func(*RunOptions)
+		held   providers.EventType
+		answer string
+	}{
+		"held for review":  {nil, providers.EventAwaitingReview, steer.KindReject},
+		"parked for input": {func(o *RunOptions) { o.Review = false; o.Interactive = true }, providers.EventAwaitingInput, ""},
+	} {
+		t.Run(name, func(t *testing.T) {
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			var prov *clockedProvider
+			r := startReviewRun(t, ctx, func(o *RunOptions) {
+				prov = &clockedProvider{reviewProvider: o.Provider.(*reviewProvider)}
+				o.Provider = prov
+				if tc.mutate != nil {
+					tc.mutate(o)
+				}
+			})
+			r.waitFor(t, tc.held)
+			const heldFor = 300 * time.Millisecond
+			time.Sleep(heldFor)
+			// Sent now: a verdict from before the hold began is stale.
+			r.q <- verdict(tc.answer, "go on")
+			deadline := time.Now().Add(2 * time.Second)
+			for r.prov.calls() < 2 && time.Now().Before(deadline) {
+				time.Sleep(5 * time.Millisecond)
+			}
+			prov.mu.Lock()
+			active := append([]time.Duration(nil), prov.active...)
+			prov.mu.Unlock()
+			if len(active) < 2 {
+				t.Fatalf("the run made %d calls, want its next turn after the answer", len(active))
+			}
+			if active[1] > heldFor/2 {
+				t.Errorf("the next turn starts with %s active after a %s hold — the wait on a person was spent as budget", active[1], heldFor)
 			}
 			cancel()
 			r.finish(t)

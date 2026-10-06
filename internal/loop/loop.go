@@ -1107,7 +1107,11 @@ func HeartbeatInterval() time.Duration { return parkHeartbeatInterval }
 // in effect (pp, owned by the caller so the record survives the caller's
 // re-parks). Returns (msg, true) on input; (zero, false) on cancel or a closed
 // queue.
+//
+// For a code agent the park is a wait: a person's answer does not spend its
+// budget. It still counts against the run's lifetime, like every wait.
 func parkForInput(ctx context.Context, q <-chan steer.Message, heartbeat func(), pp *parkPause) (steer.Message, bool) {
+	defer providers.BeginWait(ctx)()
 	t := time.NewTicker(parkHeartbeatInterval)
 	defer t.Stop()
 	for {
