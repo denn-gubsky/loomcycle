@@ -108,7 +108,7 @@ func TestResumePausedRuns_AWalkReadsItsAnswerOrWhyItWasInterruptedOnAnotherInsta
 	defer openGate()
 	_ = startLead(t, tsA)
 
-	_, leadID, on := leadWaiting(t, srvA)
+	leadAgent, leadID, on := leadWaiting(t, srvA)
 	lead := store.Run{ID: leadID, SessionID: sessionOf(t, srvA, leadID)}
 	var fastWalk, slowWalk string
 	waitFor(t, "the fast walk's end to be recorded on the lead", func() bool {
@@ -138,6 +138,19 @@ func TestResumePausedRuns_AWalkReadsItsAnswerOrWhyItWasInterruptedOnAnotherInsta
 	}
 	waitFor(t, "the lead to be paused on A", func() bool {
 		run, err := srvA.store.GetRun(ctx, leadID)
+		return err == nil && run.PauseState == store.PauseStatePaused
+	})
+	var member string
+	for _, parentAgent := range []string{leadAgent, "team:rev"} {
+		runs, _ := srvA.store.ListRunsByParentAgentID(ctx, parentAgent)
+		for _, r := range runs {
+			if r.ParentRunID == slowWalk {
+				member = r.ID
+			}
+		}
+	}
+	waitFor(t, "the slow walk's member to be paused on A", func() bool {
+		run, err := srvA.store.GetRun(ctx, member)
 		return err == nil && run.PauseState == store.PauseStatePaused
 	})
 	_, raw, err := snapshot.Capture(ctx, srvA.store, snapshot.CaptureOptions{})
@@ -199,6 +212,12 @@ func TestResumePausedRuns_AWalkReadsItsAnswerOrWhyItWasInterruptedOnAnotherInsta
 	if len(polled.Walks) != 2 {
 		t.Errorf("TeamDef poll on B = %s, want both walks", text)
 	}
+	// The slow walk's member travelled (it was paused); its walk did not.
+	// Nothing would read it, so it is not resumed on B.
+	ended, err := srvB.store.GetRun(ctx, member)
+	if err != nil || ended.Status != store.RunCancelled || !strings.Contains(ended.StopReason, "its team walk "+slowWalk+" is not here") {
+		t.Errorf("the slow walk's member on B = %+v, %v; want cancelled, its walk gone", ended, err)
+	}
 }
 
 // On the same database — the instance restarted — a walk still running when
@@ -235,6 +254,7 @@ func TestResumePausedRuns_AWalkLeftRunningByARestartIsClosedAsInterrupted(t *tes
 	if err != nil {
 		t.Fatal(err)
 	}
+	member := memberRun(t, srv, walk, "a_member", "slow member")
 	appendResumeEvent(t, srv, lead.ID, "user_input", []loop.PromptSegment{
 		{Role: "user", Content: []loop.PromptContentBlock{{Type: "trusted-text", Text: "go"}}},
 	})
@@ -247,6 +267,8 @@ func TestResumePausedRuns_AWalkLeftRunningByARestartIsClosedAsInterrupted(t *tes
 		ToolUse: &providers.ToolUse{ID: "tu_1", Name: "TeamDef"}, Text: `{"run_id":"` + walk.ID + `"}`})
 	markPaused(t, srv, lead)
 
+	// The walk is not paused, so the member is not ordered before the lead:
+	// the lead's resume closes the walk first, and the member is not resumed.
 	if n, warns := srv.ResumePausedRuns(ctx); n != 1 {
 		t.Fatalf("resumed %d, want the lead (warnings: %v)", n, warns)
 	}
@@ -257,5 +279,10 @@ func TestResumePausedRuns_AWalkLeftRunningByARestartIsClosedAsInterrupted(t *tes
 	waitWalkRunStatus(t, st, lead.ID, store.RunCompleted)
 	if polled := lastToolText(prov.leadCalls()[1]); !strings.Contains(polled, `"state":"failed"`) || !strings.Contains(polled, "the walk was interrupted") {
 		t.Errorf("TeamDef poll = %s, want the walk failed as interrupted", polled)
+	}
+	// Its member is not left running for a walk that will never read it.
+	gone := waitWalkRunStatus(t, st, member.ID, store.RunCancelled)
+	if !strings.Contains(gone.StopReason, "its parent run "+walk.ID+" ended (failed)") {
+		t.Errorf("the member ended %q, want cancelled naming its walk's end", gone.StopReason)
 	}
 }

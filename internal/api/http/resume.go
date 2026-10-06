@@ -103,6 +103,11 @@ import (
 //     loop and lives on the instance that started it. One that ended before
 //     the pause is read from its parent's ledger; one still running reads
 //     failed as interrupted, and a row it left running is closed so.
+//   - A sub-run whose PARENT has ended (or whose team walk is not here) is not
+//     resumed into a run nobody reads: it ends cancelled, naming the parent's
+//     end. The pass checks again once every run is resumed, for a parent that
+//     ended meanwhile. A detached walk's members are the walk's, not its
+//     starter's, and outlive that starter.
 //     (Mid-execution runs — the F42 repro — end on a clean tool_result boundary
 //     and resume cleanly.)
 
@@ -146,6 +151,7 @@ func (s *Server) resumePausedRunsReport(ctx context.Context) resumeReport {
 		r.Warnings = []string{fmt.Sprintf("list paused runs: %v", err)}
 		return r
 	}
+	var resumedChildren []store.Run
 	for _, run := range childrenFirst(paused) {
 		if err := s.resumePausedRun(run); err != nil {
 			if errors.Is(err, errRunAlreadyLive) {
@@ -156,11 +162,73 @@ func (s *Server) resumePausedRunsReport(ctx context.Context) resumeReport {
 			continue
 		}
 		r.Resumed++
+		if run.ParentRunID != "" {
+			resumedChildren = append(resumedChildren, run)
+		}
+	}
+	// A child is resumed before its parent, and checked against its parent as
+	// it is (resumePausedRun). A parent that ended after that — cancelled
+	// meanwhile, or a walk its own resume found interrupted — would leave the
+	// child running for nobody; it is cancelled now.
+	for _, run := range resumedChildren {
+		if reason, orphaned := s.orphanedBy(ctx, run); orphaned {
+			s.cancelReg.Cancel(run.AgentID, "cancelled on resume: "+reason)
+		}
 	}
 	if r.Resumed > 0 || r.AlreadyLive > 0 || len(r.Warnings) > 0 {
 		log.Printf("resume: re-dispatched %d paused run(s); %d already live; %d flagged", r.Resumed, r.AlreadyLive, len(r.Warnings))
 	}
 	return r
+}
+
+// orphanedBy reports whether a sub-run's parent can no longer read or cancel
+// it, and why: the parent's run has ended — or the parent is the team walk
+// the run is a member of and its run is not here, which for a walk means it
+// is gone (a walk's run never travels in a snapshot). Any other missing parent
+// leaves the run to resume as it always did, as does a store fault.
+//
+// Only the DIRECT parent counts: a detached walk's members have the walk as
+// their parent, not the run that started it, and outlive that starter as
+// they did live. A row that has itself ended is not a run that would go on
+// for nobody, and is left as it is.
+func (s *Server) orphanedBy(ctx context.Context, run store.Run) (string, bool) {
+	if run.ParentRunID == "" || isTerminalRunStatus(run.Status) {
+		return "", false
+	}
+	parent, err := s.store.GetRun(ctx, run.ParentRunID)
+	if err != nil {
+		var nf *store.ErrNotFound
+		if errors.As(err, &nf) {
+			if run.ParentContext != nil && run.ParentContext.WalkID == run.ParentRunID {
+				return fmt.Sprintf("its team walk %s is not here: a walk does not survive a restart or move to another instance", run.ParentRunID), true
+			}
+			return "", false
+		}
+		log.Printf("resume: read run %s's parent %s: %v", run.ID, run.ParentRunID, err)
+		return "", false
+	}
+	if !isTerminalRunStatus(parent.Status) {
+		return "", false
+	}
+	return fmt.Sprintf("its parent run %s ended (%s) before it was resumed", parent.ID, parent.Status), true
+}
+
+// cancelOrphanedRun ends a paused child that is not resumed because its
+// parent is gone: cancelled with the reason, and no longer paused, so a later
+// pass does not find it again.
+func (s *Server) cancelOrphanedRun(run store.Run, reason string) {
+	ctx, stop := context.WithTimeout(context.Background(), 5*time.Second)
+	defer stop()
+	if err := s.store.FinishRun(ctx, run.ID, store.RunCancelled, reason, store.Usage{}, ""); err != nil {
+		log.Printf("resume: cancel orphaned run %s: %v", run.ID, err)
+	}
+	if err := s.store.SetRunPauseState(ctx, run.ID, store.PauseStateRunning); err != nil {
+		log.Printf("resume: clear orphaned run %s's pause: %v", run.ID, err)
+	}
+	s.publishRunState(runStateMeta{
+		RunID: run.ID, AgentID: run.AgentID, Agent: run.Agent, UserID: run.UserID, TenantID: run.TenantID,
+		ParentAgentID: run.ParentAgentID, ParentRunID: run.ParentRunID, ParentContext: run.ParentContext,
+	}, string(store.RunCancelled), reason, "")
 }
 
 // childrenFirst orders paused runs so that a run comes after every paused
@@ -273,6 +341,13 @@ func (s *Server) resumePausedRun(run store.Run) error {
 	}
 	if live {
 		return errRunAlreadyLive
+	}
+	// A child whose parent has ended has nobody to read it or to cancel it:
+	// resumed, it would run on, orphaned, to an end nobody collects. It is
+	// ended cancelled instead, saying why.
+	if reason, orphaned := s.orphanedBy(ctx, run); orphaned {
+		s.cancelOrphanedRun(run, reason)
+		return fmt.Errorf("not resumed: %s", reason)
 	}
 
 	// RFC AX: restore the operator-key restriction from the runs row so a resumed
