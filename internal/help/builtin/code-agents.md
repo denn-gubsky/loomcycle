@@ -30,7 +30,7 @@ posture (same as the Bash tool), so you opt in:
 ```
 LOOMCYCLE_CODE_AGENTS_ENABLED=1
 LOOMCYCLE_CODE_AGENTS_ROOT=./agent_code              # default; where index.js lives
-LOOMCYCLE_CODE_AGENTS_RUN_TIMEOUT_SECONDS=120        # whole-run wall-clock budget
+LOOMCYCLE_CODE_AGENTS_RUN_TIMEOUT_SECONDS=120        # whole-run budget of active time (waits don't count)
 LOOMCYCLE_CODE_AGENTS_DETERMINISTIC=0                # seed Date.now/Math.random
 ```
 
@@ -210,29 +210,41 @@ tests and snapshot equality.
   `run()` after 16 sequential calls. Code-agents are therefore **exempt** from
   `MaxIterations`; `run()` may make as many sequential tool calls as it needs.
   The bound is `LOOMCYCLE_CODE_AGENTS_RUN_TIMEOUT_SECONDS`, a **whole-run**
-  wall-clock budget measured from the run's start. It is enforced by
-  interrupting the JavaScript: each turn of `run()` is interrupted when the
-  budget runs out (the per-turn allowance is the run's remaining time, not a
-  fresh timeout each turn). It is not a deadline on the run's other work — a
-  tool call already in flight when the budget runs out (a sub-agent your code
-  is waiting on) is not cut short; the next JavaScript turn after it is
-  interrupted at once and the run fails. (A very high hard ceiling on turns
-  remains as a pure runaway backstop; reaching it means a non-terminating
-  tool-call loop, not a too-small cap.)
-- **Run timeout bounds total wall time — including the parallel_spawn wait.**
-  A CPU-bound JS loop is cut by goja `Interrupt`; a too-slow multi-call run is
-  cut on the first JavaScript turn that runs past the budget. Crucially the budget is
-  whole-run wall-clock from start and KEEPS TICKING while the orchestrator is
-  blocked in `Agent.parallel_spawn` awaiting children (each child a full LLM run,
-  often 60–180s) — so a fan-out orchestrator's budget must envelope the entire
-  batch, not one child. The global default (`LOOMCYCLE_CODE_AGENTS_RUN_TIMEOUT_
-  SECONDS`, 120s) is CPU-oriented and structurally too low for one; raise it for
-  just the orchestrator via the agent's `run_timeout_seconds` (AgentDef / yaml),
-  or per-call via the `/v1/runs` `run_timeout_seconds` field (precedence:
-  per-run > per-agent > global). Exceeding the budget reports as
-  `code_agent_timeout` (stating the budget, no JS source line) — distinct from
-  `code_agent_threw` (a real exception) and `code_agent_cancelled` (parent
-  cancel). The heap limit is best-effort (goja exposes no hard cap).
+  budget of **active time**. It is enforced by interrupting the JavaScript:
+  each turn of `run()` is interrupted when the budget runs out (the per-turn
+  allowance is the run's remaining budget, not a fresh timeout each turn), and
+  a turn that starts with none left fails at once. (A very high hard ceiling
+  on turns remains as a pure runaway backstop; reaching it means a
+  non-terminating tool-call loop, not a too-small cap.)
+- **Waiting does not spend the budget.** While `run()` is blocked waiting, the
+  run is parked and its budget clock stops. Every wait counts:
+  - `Agent` `spawn` and `parallel_spawn`, while the children run;
+  - resident `open`, `send` and `poll` while they block on the child's turn
+    (with or without `timeout_ms`);
+  - `TeamDef` `op=run` without `mode: detach`, while the team works;
+  - `Channel` `await`, and `subscribe` with `wait_ms`, while they wait for a
+    message;
+  - `Interruption` `ask`, until a person answers;
+  - a runtime pause, for as long as the run is parked by it.
+
+  So a fan-out orchestrator sizes its budget for its OWN work — the JavaScript
+  and the non-waiting tool calls it makes — not for its children. Everything
+  else counts: a busy JavaScript loop is cut by goja `Interrupt`, and a slow
+  tool call that is not a wait (an HTTP fetch, a store read) spends the budget
+  like any other work, so the next turn after it fails if none is left. A
+  tool call already in flight when the budget runs out is not cut short.
+  `Context` `op=self` reports `run_budget` — `{budget_ms, used_ms, waited_ms,
+  remaining_ms}` — so `run()` can plan what is left. The budget survives a
+  pause and snapshot: a run resumed elsewhere continues with what it had left,
+  not a fresh budget.
+
+  Raise the budget for one agent via its `run_timeout_seconds` (AgentDef /
+  yaml), or per-call via the `/v1/runs` `run_timeout_seconds` field
+  (precedence: per-run > per-agent > global). Exceeding it reports as
+  `code_agent_timeout` (stating the budget and how long the run waited
+  besides, no JS source line) — distinct from `code_agent_threw` (a real
+  exception) and `code_agent_cancelled` (parent cancel). The heap limit is
+  best-effort (goja exposes no hard cap).
 - **ABI versioning.** The JS-side API is versioned on its own semver
   (currently 1.0.0), separate from loomcycle's release vector. Breaking a
   signature is a major bump with a deprecation window.
