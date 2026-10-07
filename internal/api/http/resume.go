@@ -667,7 +667,7 @@ func (s *Server) resumePausedRun(run store.Run) error {
 	// on the instance it parked on — so its pause ends here, and a parent's
 	// re-armed timeout_ms leaves the downtime out (runConfigRecord.Pauses).
 	if haveRunCfg && runCfg.pauseOpen() {
-		if err := recordRunPause(ctx, s.store, run.ID, false, time.Now()); err != nil {
+		if err := recordRunPause(ctx, s.store, run.ID, time.Time{}, time.Now()); err != nil {
 			log.Printf("resume: end run %s's pause on its record: %v — a resumed timeout_ms on it counts the downtime", run.ID, err)
 		}
 	}

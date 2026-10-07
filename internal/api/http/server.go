@@ -893,8 +893,16 @@ func (s *Server) SetSkillSet(set *skills.Set) {
 // /v1/_pause, /v1/_resume, /v1/_state endpoints have a backing manager.
 // Nil is the default — endpoints return 503 until this is called.
 // Same wiring shape as SetMetricsSampler.
+//
+// It also has the manager record each pause on every run live when it
+// begins, not only on the runs that park for it (Manager.SetRunPauseRecorder).
 func (s *Server) SetPauseManager(m *pause.Manager) {
 	s.pauseMgr = m
+	if m != nil && s.store != nil {
+		m.SetRunPauseRecorder(func(ctx context.Context, runID string, since, until time.Time) error {
+			return recordRunPause(ctx, s.store, runID, since, until)
+		})
+	}
 }
 
 // replicaLister is the minimum read surface of *coord.ReplicaStore

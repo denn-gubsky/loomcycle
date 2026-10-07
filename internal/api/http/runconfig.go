@@ -163,15 +163,16 @@ type runConfigRecord struct {
 	// keeps no clock, and on one that never paused.
 	Clock *runClockRecord `json:"run_clock,omitempty"`
 
-	// Pauses are the runtime pauses this run was parked for, oldest first.
+	// Pauses are the runtime pauses this run lived through, oldest first.
 	// Each begins when the RUNTIME paused — where a parent's live timeout_ms
 	// on this run stopped, though the run may have parked later, once its
-	// call finished — and ends when the run was released: by the resume, or
-	// by its re-dispatch after a restore or a restart, so the downtime between
-	// is inside the pause. The last has no end while the run is parked. A
-	// parent that re-arms this run's timeout_ms after a resume leaves them out
-	// (resumedChildClock). Written by the pause gate as the run parks and is
-	// released; absent on a run that never parked for a pause.
+	// call finished, or not at all — and ends when the run was released: by
+	// the resume, or by its re-dispatch after a restore or a restart, so the
+	// downtime between is inside the pause. The last has no end while the
+	// pause lasts. A parent that re-arms this run's timeout_ms after a resume
+	// leaves them out (resumedChildClock). Written by the pause manager for
+	// every run live when the runtime pauses, and by the pause gate as the run
+	// parks and is released; absent on a run that never lived through one.
 	Pauses []runPauseRecord `json:"pauses,omitempty"`
 }
 
@@ -187,33 +188,42 @@ func (rc runConfigRecord) pauseOpen() bool {
 	return len(rc.Pauses) > 0 && rc.Pauses[len(rc.Pauses)-1].Until == nil
 }
 
-// errNoPauseOpen is a close that found no open pause to end: nothing to write.
+// errNoPauseOpen is an end that found no open pause to end — none is open, or
+// the open one is another pause: nothing to write.
 var errNoPauseOpen = errors.New("run config: no open pause")
 
-// notePause opens a pause that began at since, or (began false) ends the open
-// one at until. An open pause whose end was never written is replaced by a
-// new one rather than closed: when it really ended is unknown, so it is not
-// counted.
-func (rc *runConfigRecord) notePause(began bool, at time.Time) error {
-	open := rc.pauseOpen()
-	switch {
-	case began && open:
-		rc.Pauses[len(rc.Pauses)-1] = runPauseRecord{Since: at}
-	case began:
-		rc.Pauses = append(rc.Pauses, runPauseRecord{Since: at})
-	case open:
-		rc.Pauses[len(rc.Pauses)-1].Until = &at
-	default:
+// openPause opens a pause that began at since. The same pause opened twice —
+// by the pause manager and by the run's own park — is one entry. An open
+// pause whose end was never written is replaced by a new one rather than
+// closed: when it really ended is unknown, so it is not counted.
+func (rc *runConfigRecord) openPause(since time.Time) {
+	if rc.pauseOpen() {
+		rc.Pauses[len(rc.Pauses)-1] = runPauseRecord{Since: since}
+		return
+	}
+	rc.Pauses = append(rc.Pauses, runPauseRecord{Since: since})
+}
+
+// endPause ends the open pause at until — only the one opened at since, when
+// since is set, so a late end of one pause never ends the next.
+func (rc *runConfigRecord) endPause(since, until time.Time) error {
+	if !rc.pauseOpen() {
 		return errNoPauseOpen
 	}
+	last := &rc.Pauses[len(rc.Pauses)-1]
+	if !since.IsZero() && !last.Since.Equal(since) {
+		return errNoPauseOpen
+	}
+	last.Until = &until
 	return nil
 }
 
-// recordRunPause opens or ends a pause on the run's record (notePause) with
-// the record's compare-and-swap update, so it never overwrites another
-// writer's field. A run with no record is left without one, as
-// recordRunClock leaves it.
-func recordRunPause(ctx context.Context, st store.Store, runID string, began bool, at time.Time) error {
+// recordRunPause opens a pause that began at since on the run's record (until
+// zero), or ends at until the pause opened at since — whichever is open, when
+// since is zero — with the record's compare-and-swap update, so it never
+// overwrites another writer's field. A run with no record is left without
+// one, as recordRunClock leaves it.
+func recordRunPause(ctx context.Context, st store.Store, runID string, since, until time.Time) error {
 	run, err := st.GetRun(ctx, runID)
 	if err != nil {
 		return err
@@ -225,7 +235,11 @@ func recordRunPause(ctx context.Context, st store.Store, runID string, began boo
 		if unreadable {
 			return errRunConfigUnreadable
 		}
-		return rec.notePause(began, at)
+		if !until.IsZero() {
+			return rec.endPause(since, until)
+		}
+		rec.openPause(since)
+		return nil
 	})
 	if errors.Is(err, errNoPauseOpen) {
 		return nil
