@@ -24,6 +24,19 @@ The most common consumer is Claude Code: you can ask Claude to "spawn a `qa-agen
 
 The request body is not compared: the same key with a different prompt still returns the first run, so build the key from what makes the work distinct. A key is refused on a continuation (`session_id`), on a configured run, and when two children of one batch share it. It lives as long as the run's session is retained, and travels with a paused run through a snapshot.
 
+**Bounding a run's lifetime: `max_wall_seconds`.** `spawn_run`, each `spawn_runs` child, each `POST /v1/runs:batch` child, `POST /v1/runs` and the gRPC `Run` and `SpawnRunBatch` requests take an optional `max_wall_seconds` (0 or absent = no bound; at most 30 days). It works for any agent, model-driven or code-js.
+
+- Past the limit the run is cancelled, with everything it started, and ends `cancelled` with `stop_reason: "wall_limit"`.
+- Waits count, including an interactive run's time parked for input. Time the runtime is paused does not.
+- It belongs to the run, not to the call. It is the time bound for a `detach` child, where `timeout_ms` is refused, and it holds after the caller has gone.
+- It survives a restart: the limit is in the run's `spec`, and a resumed run is charged the lifetime it had already used.
+- A sub-agent takes no limit of its own from it; it ends because its parent's cancel reaches it.
+- A run reads its own limit with `Context op=self`: `run_budget.wall_limit_ms` and `wall_elapsed_ms`.
+
+A code-js run's `run_timeout_seconds` is a different bound: active time only, waits excluded. A code-js run that outlives the operator's `LOOMCYCLE_CODE_AGENTS_MAX_WALL_SECONDS` still ends `failed` with `code_agent_wall_limit`; only the per-run `max_wall_seconds` ends a run `cancelled` / `wall_limit`.
+
+A blocking spawn now reports how its run really ended. A run cancelled from outside (`cancel_run`, or its own `max_wall_seconds`) was reported `completed` by `spawn_run` and by a joined batch; it is reported `cancelled`, as its row says.
+
 ## Single-runtime invariant: embedded vs thin-client (`--upstream`)
 
 **Never run two loomcycle runtimes against the same state.** A runtime owns the providers, scheduler, sweepers, and an *in-process event bus* that wakes blocked runs (e.g. an agent parked on `Interruption.ask`). Two runtimes sharing one `./data` each have their own bus, so a signal raised on one — a resolved interruption, a cancel — never reaches a run owned by the other: the state row flips, but the agent never wakes. That two-runtime topology is the root of the cross-process interruption hang and the "wedged session" failures.

@@ -348,6 +348,14 @@ func (c *Context) execSelf(ctx context.Context) (tools.Result, error) {
 				rb["wall_elapsed_ms"] = st.Wall.Milliseconds()
 			}
 			out["run_budget"] = rb
+		} else if wl := clk.WallLimit(); wl > 0 {
+			// A run bounded only by its own lifetime limit (max_wall_seconds
+			// on a model-driven run): no budget to report, but the limit and
+			// how much of it is gone are what the run can plan around.
+			out["run_budget"] = map[string]any{
+				"wall_limit_ms":   wl.Milliseconds(),
+				"wall_elapsed_ms": clk.State().Wall.Milliseconds(),
+			}
 		}
 	}
 	// max_context_tokens: the CONFIGURED per-agent context-WINDOW cap in effect

@@ -256,6 +256,7 @@ function runBody(opts: RunOptions): Record<string, unknown> {
   if (opts.userCredentials !== undefined) body.user_credentials = opts.userCredentials;
   if (opts.parentContext !== undefined) body.parent_context = opts.parentContext;
   if (opts.idempotencyKey !== undefined) body.idempotency_key = opts.idempotencyKey;
+  if (opts.maxWallSeconds !== undefined) body.max_wall_seconds = opts.maxWallSeconds;
   if (opts.metadata !== undefined) body.metadata = opts.metadata;
   if (opts.runTimeoutSeconds !== undefined) body.run_timeout_seconds = opts.runTimeoutSeconds;
   if (opts.reviewTtlSeconds !== undefined) body.review_ttl_seconds = opts.reviewTtlSeconds;

@@ -429,6 +429,20 @@ type RunOptions struct {
 	// drivers ignore it.
 	RunTimeoutSeconds int
 
+	// MaxWallSeconds is the run's own lifetime limit (0 = none): how long it
+	// may live, waits included, runtime pauses not. Any provider. Past it the
+	// loop calls OnWallLimit, which is expected to cancel the run; with no
+	// OnWallLimit the loop cancels the run's ctx itself and the run fails.
+	MaxWallSeconds int
+	// OnWallLimit is called once, from the watcher's goroutine, when
+	// MaxWallSeconds runs out. The server sets it to a cancel through its
+	// registry, which records the reason on the run and reaches what a ctx
+	// cancel does not: resident children and detached walks.
+	OnWallLimit func()
+	// wallCancelGrace overrides how long OnWallLimit is given to end the run
+	// before the loop ends it itself (tests only; 0 = the default).
+	wallCancelGrace time.Duration
+
 	// RunClockCarry is the active, waited and wall time a resumed run had used
 	// before it paused, so its budget and its lifetime resume where they
 	// stopped (zero for a fresh run).

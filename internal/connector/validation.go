@@ -164,3 +164,17 @@ func ValidateIdempotencyKey(k string) (errMsg string, ok bool) {
 	}
 	return "", true
 }
+
+// MaxWallSecondsCeiling bounds max_wall_seconds: 30 days. A larger value is
+// almost certainly a unit mistake, and no run is meant to be held that long by
+// a per-run setting.
+const MaxWallSecondsCeiling = 30 * 24 * 60 * 60
+
+// ValidateMaxWallSeconds checks a caller's max_wall_seconds: 0 (no bound) to
+// MaxWallSecondsCeiling. One validator for every transport.
+func ValidateMaxWallSeconds(n int) (errMsg string, ok bool) {
+	if n < 0 || n > MaxWallSecondsCeiling {
+		return fmt.Sprintf("max_wall_seconds must be between 0 and %d", MaxWallSecondsCeiling), false
+	}
+	return "", true
+}

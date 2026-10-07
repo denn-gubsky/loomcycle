@@ -1002,7 +1002,9 @@ func (s *Server) resumePausedRun(run store.Run) error {
 		AgentName:           run.Agent,
 		CodeBody:            agentDef.Code,
 		RunTimeoutSeconds:   runCfg.RunTimeoutSeconds,
-		RunClockCarry:       runCfg.clockCarry(), // the budget continues where the run paused
+		MaxWallSeconds:      runCfg.MaxWallSeconds,
+		OnWallLimit:         s.wallLimitCancel(run.AgentID),
+		RunClockCarry:       runCfg.clockCarryFrom(run.StartedAt), // the budget continues where the run paused
 		Interactive:         run.Interactive || resident,
 		InteractiveNow:      s.interactiveNowFn(run.ID, run.Interactive || resident),
 		Review:              reviewArmed,

@@ -244,6 +244,12 @@ type RunInput struct {
 	// starts nothing and returns a *DuplicateRunError naming it.
 	ClientIdempotencyKey string
 
+	// MaxWallSeconds is the run's own lifetime limit (0 = none): past it the
+	// run is cancelled with stop reason "wall_limit". Waits count; time the
+	// runtime is paused does not. Any provider, and the one time bound a
+	// detached run can carry.
+	MaxWallSeconds int
+
 	// DeliveryAltKey is an optional second durable dedup key, persisted to
 	// runs.delivery_alt_key with the same duplicate-refusal semantics as
 	// IdempotencyKey. Set by the webhook spawn path when a delivery has two
@@ -280,7 +286,7 @@ type RunInput struct {
 	// run_timeout_seconds, else the global default. The server resolves
 	// per-run > per-agent and passes the winner to loop.RunOptions; only the
 	// code-js provider consumes it (LLM runs are bounded by MaxIterations +
-	// provider HTTP timeouts, not this budget).
+	// provider HTTP timeouts, not this budget; MaxWallSeconds bounds any run).
 	RunTimeoutSeconds int
 
 	// Interactive starts a PERSISTENT run that parks waiting for operator

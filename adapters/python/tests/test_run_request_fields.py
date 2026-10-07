@@ -194,3 +194,17 @@ def test_a_batch_child_carries_its_key_and_its_deduplicated_flag():
     assert req.idempotency_key == "k1"
     assert _spawn_result_to_dict(pb.SpawnResult(run_id="r_1", deduplicated=True))["deduplicated"] is True
     assert _spawn_result_to_dict(pb.SpawnResult(run_id="r_2"))["deduplicated"] is False
+
+
+@pytest.mark.asyncio
+async def test_max_wall_seconds_lands_on_the_run_request():
+    stub = _FakeStub()
+    client = _make_client_with_stub(stub)
+    async for _ in client.run_streaming(agent="judge", segments=[], max_wall_seconds=60):
+        pass
+    assert stub.last_run_req.max_wall_seconds == 60
+
+    from loomcycle.client import _run_request_from_dict
+
+    assert _run_request_from_dict({"agent": "judge", "max_wall_seconds": 90}).max_wall_seconds == 90
+    assert _run_request_from_dict({"agent": "judge"}).max_wall_seconds == 0

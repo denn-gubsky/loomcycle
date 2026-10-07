@@ -7,10 +7,12 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/denn-gubsky/loomcycle/internal/auth"
 	"github.com/denn-gubsky/loomcycle/internal/config"
 	"github.com/denn-gubsky/loomcycle/internal/help"
+	"github.com/denn-gubsky/loomcycle/internal/providers"
 	"github.com/denn-gubsky/loomcycle/internal/store"
 	"github.com/denn-gubsky/loomcycle/internal/store/sqlite"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
@@ -117,6 +119,32 @@ func TestContextTool_SelfReturnsIdentity(t *testing.T) {
 	}
 	if samp["temperature"] != 0.7 {
 		t.Errorf("sampling.temperature = %v, want 0.7", samp["temperature"])
+	}
+}
+
+// A model-driven run bounded by its own max_wall_seconds has no time budget to
+// report, but it can still see the limit and how much of it is gone. A run
+// with neither reports no run_budget.
+func TestContextTool_SelfReportsARunsOwnWallLimit(t *testing.T) {
+	tool, ctx := contextFixture(t)
+	if res, _ := tool.Execute(ctx, json.RawMessage(`{"op":"self"}`)); decodeResult(t, res.Text)["run_budget"] != nil {
+		t.Fatalf("a run with no clock reports a run_budget: %s", res.Text)
+	}
+	clock := providers.NewRunClock(time.Now(), providers.RunClockState{Wall: 20 * time.Second})
+	clock.SetWallLimit(60 * time.Second)
+	res, _ := tool.Execute(providers.WithRunClock(ctx, clock), json.RawMessage(`{"op":"self"}`))
+	if res.IsError {
+		t.Fatalf("self: %s", res.Text)
+	}
+	rb, _ := decodeResult(t, res.Text)["run_budget"].(map[string]any)
+	if rb["wall_limit_ms"] != float64(60000) {
+		t.Errorf("run_budget = %v, want wall_limit_ms 60000", rb)
+	}
+	if elapsed, _ := rb["wall_elapsed_ms"].(float64); elapsed < 20000 || elapsed > 25000 {
+		t.Errorf("wall_elapsed_ms = %v, want about 20000", rb["wall_elapsed_ms"])
+	}
+	if _, has := rb["budget_ms"]; has {
+		t.Errorf("a run with no time budget reports one: %v", rb)
 	}
 }
 
