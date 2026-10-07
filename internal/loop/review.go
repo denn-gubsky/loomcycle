@@ -97,6 +97,11 @@ const StopReasonDeniedByHook = "denied_by_hook"
 // tools/repeat.go). Its own reason so a client can tell it from a crash.
 const StopReasonRepeatedFailedCall = "repeated_failed_call"
 
+// StopReasonMaxIterations is the stop reason of a run that used every
+// iteration it was allowed — its closing turn's answer included — before it
+// finished. The run is recorded completed; a parent is told it was capped.
+const StopReasonMaxIterations = "max_iterations"
+
 // StopReasonStopBlocked is the stop reason of a run whose answer agent_stop
 // hooks blocked more than MaxStopBlocks times in a row.
 const StopReasonStopBlocked = "stop_blocked"

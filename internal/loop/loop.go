@@ -1196,6 +1196,19 @@ func appendChildrenNote(messages []providers.Message, note string, noted []strin
 	})
 }
 
+// cancelUnreadChildren cancels the background children still running when
+// the run has no iteration left in which to read them, and names them in an
+// error event: a parent never ends leaving children behind, nor ends them
+// without saying so.
+func cancelUnreadChildren(bg *tools.Background, emit func(providers.Event)) {
+	waiting, _ := bg.Outstanding()
+	if len(waiting) == 0 {
+		return
+	}
+	bg.Close(runcancel.CauseWithReason("its parent run had no iteration left to read its result"))
+	emit(providers.Event{Type: providers.EventError, Error: "the run ended its last iteration with background children still running; they were cancelled: " + childIDs(waiting)})
+}
+
 // childIDs lists children as "r_1 (agent), r_2 (agent)".
 func childIDs(cs []tools.ChildView) string {
 	parts := make([]string, len(cs))
@@ -3666,17 +3679,21 @@ outerLoop:
 			continue outerLoop
 		}
 
-		// The closing turn's text is the run's answer, whatever it ended on. It
-		// is not an end of turn — the run stopped at its cap — so it is not
-		// offered to agent_stop hooks, a review or an interactive park, exactly
-		// as a run ending at the cap never was.
-		if closingTurn {
-			if len(pendingTools) > 0 {
-				// A model that called tools anyway (a provider that cannot be
-				// held to "none"): they are never run. Answer them so the
-				// history a continuation replays stays valid.
-				messages = append(messages, providers.Message{Role: "user", Content: notRunToolResults(pendingTools)})
-			}
+		// The closing turn's text is the run's answer, whatever it ended on, and
+		// the run stops at its cap. A finished answer goes through the end of a
+		// turn below like any answer on the last iteration — agent_stop hooks
+		// and review decide on it with no iteration left, the children it can
+		// no longer read are cancelled and named — but it is not offered to an
+		// interactive park, and a run that ends on it is recorded as stopped
+		// at its cap.
+		if closingTurn && len(pendingTools) > 0 {
+			// A model that called tools anyway (a provider that cannot be
+			// held to "none"): they are never run. Answer them so the
+			// history a continuation replays stays valid. Its text is what a
+			// run ending at the cap mid-tool-use leaves: no answer to decide on.
+			messages = append(messages, providers.Message{Role: "user", Content: notRunToolResults(pendingTools)})
+			bg.EndTurn(runcancel.CauseWithReason("its parent ended its turn (on_parent_end: cancel)"))
+			cancelUnreadChildren(bg, emit)
 			stopReason = "max_iterations"
 			iterSpan.End()
 			break
@@ -3798,7 +3815,7 @@ outerLoop:
 			// its concurrency slot while idle — the documented fairness
 			// trade-off of an always-on terminal agent (bounded by the
 			// existing per-user / global run caps).
-			if opts.interactiveAtBoundary(ctx) && opts.SteerQueue != nil {
+			if opts.interactiveAtBoundary(ctx) && opts.SteerQueue != nil && !closingTurn {
 				// RFC BH: the turn ended and the run is about to park — no longer
 				// mid-turn, so disarm the turn-cancel token (a cancel while parked
 				// finds nothing armed → the handler 409s it).
@@ -3818,8 +3835,7 @@ outerLoop:
 			// a parent never ends leaving children behind.
 			if waiting, _ := bg.Outstanding(); len(waiting) > 0 {
 				if iter+1 >= iterCap {
-					bg.Close(runcancel.CauseWithReason("its parent run had no iteration left to read its result"))
-					emit(providers.Event{Type: providers.EventError, Error: "the run ended its last iteration with background children still running; they were cancelled: " + childIDs(waiting)})
+					cancelUnreadChildren(bg, emit)
 				} else {
 					disarmTurn()
 					note, noted, ok := parkForChildren(ctx, &opts, bg, iter, emit)
@@ -3851,6 +3867,9 @@ outerLoop:
 					iterSpan.End()
 					continue outerLoop
 				}
+			}
+			if closingTurn {
+				stopReason = "max_iterations"
 			}
 			iterSpan.End()
 			break

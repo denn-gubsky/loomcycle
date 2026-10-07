@@ -312,6 +312,42 @@ func TestRun_NoIterationLeftCancelsOutstandingChildren(t *testing.T) {
 	}
 }
 
+// A run that stops at its cap through the closing turn cancels the children
+// it can no longer read and says so, as a last iteration that ends its turn
+// does — whether the closing turn answers or calls tools anyway.
+func TestRun_ClosingTurnCancelsAndNamesOutstandingChildren(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		closing []providers.Event
+	}{
+		{"answered", endTurn("closing answer")},
+		{"called tools anyway", toolTurn(toolCall("t3"))},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			prov := &fakeProvider{responses: [][]providers.Event{
+				toolTurn(spawnCall("s1", `{"ids":["r_1"]}`)),
+				toolTurn(toolCall("t2")), // the last iteration calls a tool: the closing turn follows
+				tc.closing,
+			}}
+			tool := &spawnTool{}
+			sink := &childEvents{}
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			res, err := runWithSpawn(ctx, prov, tool, 2, sink)
+			if err != nil || res.StopReason != "max_iterations" || len(prov.calls) != 3 {
+				t.Fatalf("run = %+v, %v after %d calls", res, err, len(prov.calls))
+			}
+			if c := tool.childCtx("r_1"); c.Err() == nil || !strings.Contains(context.Cause(c).Error(), "no iteration left") {
+				t.Errorf("child cause = %v, want cancelled for want of an iteration", context.Cause(c))
+			}
+			errs := sink.of(providers.EventError)
+			if len(errs) != 1 || !strings.Contains(errs[0].Error, "r_1 (worker)") {
+				t.Errorf("error events = %+v, want one naming r_1", errs)
+			}
+		})
+	}
+}
+
 // Whatever a run leaves running when it ends is cancelled.
 func TestRun_EndingRunCancelsWhatItLeftRunning(t *testing.T) {
 	prov := &fakeProvider{responses: [][]providers.Event{

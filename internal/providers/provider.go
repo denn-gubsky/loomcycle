@@ -1299,6 +1299,10 @@ type SpawnChildEventInfo struct {
 	// it was started. Absent is the default (notify, wait).
 	NoNotify          bool `json:"no_notify,omitempty"`
 	CancelOnParentEnd bool `json:"cancel_on_parent_end,omitempty"`
+	// TimeoutMs is a sub-agent's timeout_ms, on its started row: a resumed
+	// parent re-arms the bound from its child's run (its start, and the time
+	// it spent held for a verdict), since the live clock was lost.
+	TimeoutMs int `json:"timeout_ms,omitempty"`
 	// Result fields — set on EventSpawnChildResult only.
 	Ok     bool   `json:"ok,omitempty"`
 	Output string `json:"output,omitempty"`

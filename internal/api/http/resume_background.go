@@ -15,6 +15,7 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/runstate"
 	"github.com/denn-gubsky/loomcycle/internal/store"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
+	"github.com/denn-gubsky/loomcycle/internal/tools/builtin"
 )
 
 // A run's background children across a resume.
@@ -317,6 +318,15 @@ func (s *Server) restoredAgentEnding(ctx context.Context, child store.Run, spec 
 	var res tools.ChildResult
 	var runErr error
 	switch {
+	case child.Status == store.RunCompleted && child.StopReason == loop.StopReasonMaxIterations:
+		// Ended at its iteration limit: failed, its last answer kept beside
+		// the error, as a live poll child's is.
+		text := rec.FinalText
+		if text == "" && len(rec.State) == 0 {
+			text = s.childFinalText(ctx, child)
+		}
+		state, res = tools.ChildFailed, tools.ChildResult{Output: formatSubAgentOutput(child.AgentID, child.ID, text), Structured: rec.State, Status: builtin.ChildStatusMaxIterations}
+		runErr = errors.New(builtin.ChildCappedMessage(spec.Agent, 0, child.ID))
 	case child.Status == store.RunCompleted && !loop.EndsRejected(child.StopReason):
 		text := rec.FinalText
 		if text == "" && len(rec.State) == 0 {
@@ -351,7 +361,7 @@ func (s *Server) restoredAgentEnding(ctx context.Context, child store.Run, spec 
 		}
 		res = tools.ChildResult{Error: err.Error()}
 	default:
-		res = tools.ChildResult{Error: err.Error()}
+		res.Error = err.Error() // a capped child's answer stays beside it
 	}
 	return state, res
 }

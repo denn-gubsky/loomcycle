@@ -242,3 +242,32 @@ func TestBackground_AWithdrawnChildIsNeverReported(t *testing.T) {
 		t.Errorf("a withdrawn child was noted: %q", n)
 	}
 }
+
+// A child of a run that has ended reads as interrupted at once, though the
+// run's end has not reached its ctx yet, and its ctx is cancelled with the
+// run's cause: a run's cancel stops the runs below it directly, so a child
+// can end on that cancel before its lifetime watch runs.
+func TestBackground_InterruptedReadsAnEndedRunBeforeItsWatchRuns(t *testing.T) {
+	life := newHeldWatch()
+	b := NewBackground(life)
+	cctx, err := b.Start(context.Background(), ChildSpec{RunID: "r_1", Agent: "a", Index: -1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := b.Interrupted("r_1"); err != nil {
+		t.Fatalf("a child of a live run reads interrupted: %v", err)
+	}
+	life.end()
+	if cctx.Err() != nil {
+		t.Fatal("setup: the run's end reached the child through its watch")
+	}
+	if err := b.Interrupted("r_1"); !errors.Is(err, context.Canceled) {
+		t.Errorf("Interrupted = %v, want the run's cause", err)
+	}
+	if !errors.Is(context.Cause(cctx), context.Canceled) {
+		t.Errorf("child cause = %v, want the run's", context.Cause(cctx))
+	}
+	if err := b.Interrupted("r_unknown"); err != nil {
+		t.Errorf("an unknown child reads interrupted: %v", err)
+	}
+}

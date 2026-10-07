@@ -1743,6 +1743,11 @@ func (t *TeamDef) execRun(ctx context.Context, in teamDefInput) (tools.Result, e
 		end := WalkEnd{FinalText: walkFinalOutput(trace), Err: werr}
 		if werr == nil {
 			end.Terminal = walkTerminal(def, task)
+		} else if pm.poll {
+			// The calling run's cancel stops the walk's members before the
+			// walk's ctx hears of it; this passes it on first, so the walk's
+			// run is recorded cancelled, not failed by its member's cancel.
+			_ = bg.Interrupted(pollRunID)
 		}
 		walkCancelled = walkCtx.Err() != nil
 		finishRun(end)

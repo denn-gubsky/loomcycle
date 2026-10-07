@@ -7014,7 +7014,29 @@ func (s *Server) runSubRun(ctx context.Context, name, systemExtra, prompt, defID
 	// the sub" UX. res.State is the sub-agent's final structured Σ (RFC CR
 	// L2 stateful runs; nil otherwise) — the parent receives it as the
 	// structured hand-off instead of re-parsing prose (RFC CR D5).
-	return formatSubAgentOutput(prep.AgentID, prep.RunID, res.FinalText), res.State, prep.RunID, nil
+	out := formatSubAgentOutput(prep.AgentID, prep.RunID, res.FinalText)
+	if res.StopReason == loop.StopReasonMaxIterations {
+		// Recorded completed — the run ended without a fault — but it did not
+		// get to finish: its parent is told so, with its last answer beside
+		// the error, rather than handed that answer as a result. The output
+		// is returned too, for the parent's subagent_stop hooks to read.
+		return out, res.State, prep.RunID, &builtin.ChildCappedError{
+			Name: name, Limit: iterationLimitOf(prep.Opts), RunID: prep.RunID, Output: out, State: res.State,
+		}
+	}
+	return out, res.State, prep.RunID, nil
+}
+
+// iterationLimitOf is the iteration limit a run's options give it, or 0 for
+// a run with none (unbounded iterations; only a runaway backstop applies).
+func iterationLimitOf(opts loop.RunOptions) int {
+	if opts.UnboundedIterations || (opts.Provider != nil && opts.Provider.Capabilities().UnboundedIterations) {
+		return 0
+	}
+	if opts.MaxIterations == 0 {
+		return loop.DefaultMaxIterations
+	}
+	return opts.MaxIterations
 }
 
 // childHold reports a child's review hold on its parent's stream: "held" at
@@ -7573,6 +7595,7 @@ func (s *Server) prepareSubRunValues(ctx context.Context, name string, src nameS
 							Index:     idx,
 							RunID:     subRunID,
 							Agent:     name,
+							TimeoutMs: tools.SpawnTimeoutMs(ctx),
 						},
 					})
 				}

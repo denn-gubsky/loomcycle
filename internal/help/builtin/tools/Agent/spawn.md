@@ -69,6 +69,11 @@ comes back from `poll`.
 - `sub-agent "X" timed out: timeout_ms=N elapsed ...; its run r_... was
   cancelled` — the child ran out of time. What it did before the bound is in
   its run's transcript; give it more time or a smaller task.
+- `sub-agent "X" stopped at its iteration limit of N before it finished, so
+  its last answer may be incomplete (run r_...). Its last answer: ...` — the
+  child used every iteration its `max_iterations` allows. Its answer follows
+  the message; check whether it is enough before relying on it. If not, split
+  the task into smaller ones, or give it to an agent with a higher limit.
 - `timeout_ms=N is above this runtime's ceiling of M ms` — pass at most M.
 - `this run has N children alive and may have at most M at once ...` — wait
   for children you started to finish, or close resident ones, then retry.

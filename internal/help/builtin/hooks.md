@@ -237,7 +237,9 @@ created; `additional_context` is added to the child's prompt.
 
 **`subagent_stop`** runs in the parent after the child finished, before its
 result reaches the parent. The payload adds `subagent_run_id`, `status`
-(`completed` / `failed`), `final_text` and `error`. `deny` refuses the result:
+(`completed` / `failed`), `final_text` and `error`. A child that stopped at
+its iteration limit is `failed`, with the limit in `error` and its last answer
+in `final_text`. `deny` refuses the result:
 the parent gets the reason as an error and may try again. `additional_context`
 is appended to the result. To send a child back to revise, give the child an
 `agent_stop` hook: it fires on the child's own run (its `parent_run_id` names

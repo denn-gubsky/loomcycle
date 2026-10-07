@@ -37,10 +37,13 @@ in the same order as `spawns`. `output` is the child's final text (as `spawn`
 returns it) when `ok` is true; `error` says why when it is false. `run_id` is
 the child's run, present whenever one was started — failed children included.
 `status` is `"timeout"` on a row whose child its `timeout_ms` stopped (`ok` is
-false and its run was cancelled); it is absent otherwise. The rows share a
-quarter of your context window equally: an `error` or `output` longer than its
-share is cut, and a `state` that does not fit is left out whole, replaced by
-`state_omitted: true` and its size in `state_bytes`. A cut row carries
+false and its run was cancelled), and `"max_iterations"` on a row whose child
+stopped at its iteration limit before it finished: `ok` is false, `error`
+says so, and its last answer is still in `output` — it may be incomplete.
+`status` is absent otherwise. The rows share a quarter of your context window
+equally: an `error` or `output` longer than its share is cut, and a `state`
+that does not fit is left out whole, replaced by `state_omitted: true` and its
+size in `state_bytes`. A cut row carries
 `truncated: true` — the child's whole answer, state included, stays in the
 transcript of its `run_id`.
 
