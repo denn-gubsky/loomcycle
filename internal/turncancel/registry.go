@@ -66,6 +66,8 @@ type Registry struct {
 	causeFor func(reason string) error
 	// cluster is the cross-replica fallback; nil in single-process mode.
 	cluster ClusterCanceller
+	// unarmed stops a run that holds no turn token here; see SetUnarmedStopper.
+	unarmed func(runID, reason string) bool
 }
 
 type entry struct {
@@ -93,6 +95,18 @@ func (r *Registry) SetCauseFor(fn func(reason string) error) {
 func (r *Registry) SetClusterCanceller(c ClusterCanceller) {
 	r.mu.Lock()
 	r.cluster = c
+	r.mu.Unlock()
+}
+
+// SetUnarmedStopper installs what CancelLocal fires for a run id with no
+// armed token: a run live here that has no turns to stop, so a cancel ends it
+// whole. It reports whether it stopped one. The server passes its live team
+// walks. Without it a cancel another replica routed here for such a run found
+// nothing to fire, so the caller waited out its ack timeout and answered "no
+// in-flight run" while the run went on. Called once at server construction.
+func (r *Registry) SetUnarmedStopper(fn func(runID, reason string) bool) {
+	r.mu.Lock()
+	r.unarmed = fn
 	r.mu.Unlock()
 }
 
@@ -143,6 +157,11 @@ func (r *Registry) Cancel(ctx context.Context, runID, reason string) (bool, erro
 // Removing on fire makes a double-cancel idempotent: the second call finds
 // nothing armed and returns false (the handler 409s it), so a cancel that races
 // the turn ending / a repeat click can never double-fire.
+//
+// A run with no armed token goes to the unarmed stopper, if one is installed.
+// Like a token, it is fired without an ownership check: every caller has
+// already checked who is asking, or is the owning-side listener for a cancel
+// the sending replica checked before routing it here.
 func (r *Registry) CancelLocal(runID, reason string) bool {
 	r.mu.Lock()
 	causeFor := r.causeFor
@@ -158,9 +177,10 @@ func (r *Registry) CancelLocal(runID, reason string) bool {
 	if ok {
 		delete(r.armed, runID)
 	}
+	unarmed := r.unarmed
 	r.mu.Unlock()
 	if !ok {
-		return false
+		return unarmed != nil && unarmed(runID, reason)
 	}
 	e.cancel(causeFor(reason))
 	return true

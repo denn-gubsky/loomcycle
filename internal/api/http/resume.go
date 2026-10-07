@@ -200,8 +200,8 @@ func (s *Server) resumePausedRunsReport(ctx context.Context) resumeReport {
 // interrupted. That holds because a walk's members run in the walk's own
 // process: a member that reached this check is held by no live loop here
 // and by no live replica (resumePausedRun asks pausedRunIsLive first, and the
-// pass re-checks only runs it resumed itself), so neither is its walk. A walk
-// row records no replica of its own to ask.
+// pass re-checks only runs it resumed itself), so neither is its walk. The
+// walk row's own replica need not be asked: its members run where it runs.
 func (s *Server) orphanedBy(ctx context.Context, run store.Run) (string, bool) {
 	if run.ParentRunID == "" || isTerminalRunStatus(run.Status) {
 		return "", false

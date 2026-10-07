@@ -215,9 +215,9 @@ func takesOnlyVerdicts(run store.Run) bool {
 // caller's, and a caller's may not hold a colon.
 //
 // takesOnlyVerdicts does not catch a walk started from the substrate plane: it
-// has no parent run. Today such a row also carries no replica id, which the
-// gate above already refuses; this does not lean on that omission, so stamping
-// the owner on those rows later does not open them to a remote retune.
+// has no parent run. Its row carries the replica that runs it, so the gate
+// above does not refuse it; this check does, and so a walk is not open to a
+// remote retune.
 func runsNoLoop(run store.Run) bool {
 	return strings.HasPrefix(run.AgentID, teamWalkAgentPrefix) ||
 		strings.HasPrefix(run.AgentID, channelhooks.HookAgentPrefix)

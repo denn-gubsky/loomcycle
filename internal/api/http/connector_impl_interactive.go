@@ -171,7 +171,8 @@ func (s *Server) CancelTurn(ctx context.Context, runID, reason string) (bool, bo
 	}
 	// The tenant fold alone would let an isolated member stop another user's
 	// turn on another replica; the local path confines it via liveRunOwnershipOK.
-	if run, err := s.tenantStore(ctx).GetRun(ctx, runID); err != nil || !runOwnershipOK(ctx, run) {
+	run, err := s.tenantStore(ctx).GetRun(ctx, runID)
+	if err != nil || !runOwnershipOK(ctx, run) {
 		return false, false, connector.ErrRunNotInFlight
 	}
 	fired, err := s.turnCancelReg.Cancel(ctx, runID, reason)
@@ -183,7 +184,9 @@ func (s *Server) CancelTurn(ctx context.Context, runID, reason string) (bool, bo
 		// or single-process with no coordinator wired. "No in-flight turn."
 		return false, false, connector.ErrRunNotInFlight
 	}
-	return true, true, nil
+	// A team walk its owner stopped has ended, as one stopped here does: it has
+	// no turn to park.
+	return true, !strings.HasPrefix(run.AgentID, teamWalkAgentPrefix), nil
 }
 
 // ResolveInterrupt implements connector.Connector — the transport-agnostic core

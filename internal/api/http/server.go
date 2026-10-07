@@ -622,6 +622,9 @@ func New(cfg *config.Config, pr ProviderResolver, builtinTools []tools.Tool, sem
 	// so the leaf turncancel package stays free of internal/loop; wired at
 	// construction so single-process AND cluster paths both fire the correct cause.
 	s.turnCancelReg.SetCauseFor(loop.TurnCancelCause)
+	// A team walk holds no turn token, so a cancel another replica routes here
+	// for a walk running here reaches it through this.
+	s.turnCancelReg.SetUnarmedStopper(s.stopLocalWalk)
 	// RFC AW: per-scope token-budget tracker. limits.New(nil) is a no-op tracker
 	// (Check always allows, Add no-ops), so a store-less server keeps today's
 	// unlimited behavior. Seeded from the ledger at boot via SeedLimits.
