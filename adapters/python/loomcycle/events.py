@@ -93,9 +93,11 @@ class AwaitingChildren:
 class ChildrenNote:
     """Structured payload on ``children_note`` events — the runtime note that
     ends a run's wait for its background children, as the model reads it.
-    Mirrors ``providers.ChildrenNoteEventInfo``."""
+    ``child_run_ids`` names the children it reports. Mirrors
+    ``providers.ChildrenNoteEventInfo``."""
 
     text: str
+    child_run_ids: tuple = ()  # tuple of str — frozen for the dataclass
 
 
 @dataclass(frozen=True)
@@ -383,7 +385,10 @@ class AgentEvent:
             )
         cn: Optional[ChildrenNote] = None
         if ev.HasField("children_note"):
-            cn = ChildrenNote(text=ev.children_note.text)
+            cn = ChildrenNote(
+                text=ev.children_note.text,
+                child_run_ids=tuple(ev.children_note.child_run_ids),
+            )
         ar: Optional[AwaitingReview] = None
         if ev.HasField("awaiting_review"):
             ar = AwaitingReview(

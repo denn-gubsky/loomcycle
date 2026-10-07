@@ -164,7 +164,7 @@ func TestGrpcStreamRun_StreamsInteractiveEvents(t *testing.T) {
 func TestGrpcStreamRun_CarriesTheChildrenWaitPayloads(t *testing.T) {
 	mc := &interactiveMock{streamEvents: []providers.Event{
 		{Type: providers.EventAwaitingChildren, AwaitingChildren: &providers.AwaitingChildrenEventInfo{ChildRunIDs: []string{"r_1", "r_2"}, SinceTurn: 2}},
-		{Type: providers.EventChildrenNote, ChildrenNote: &providers.ChildrenNoteEventInfo{Text: "Background child r_1 finished: completed."}},
+		{Type: providers.EventChildrenNote, ChildrenNote: &providers.ChildrenNoteEventInfo{Text: "Background child r_1 finished: completed.", ChildRunIDs: []string{"r_1"}}},
 	}}
 	client, cleanup := startTestServerWithConnector(t, mc)
 	defer cleanup()
@@ -191,8 +191,13 @@ func TestGrpcStreamRun_CarriesTheChildrenWaitPayloads(t *testing.T) {
 	if got[0].GetType() != "awaiting_children" || len(ac.GetChildRunIds()) != 2 || ac.GetChildRunIds()[1] != "r_2" || ac.GetSinceTurn() != 2 {
 		t.Errorf("awaiting_children frame wrong: %+v", got[0])
 	}
-	if got[1].GetType() != "children_note" || got[1].GetChildrenNote().GetText() != "Background child r_1 finished: completed." {
+	cn := got[1].GetChildrenNote()
+	if got[1].GetType() != "children_note" || cn.GetText() != "Background child r_1 finished: completed." {
 		t.Errorf("children_note frame wrong: %+v", got[1])
+	}
+	// SSE carries the children a note reports; a gRPC client must see them too.
+	if ids := cn.GetChildRunIds(); len(ids) != 1 || ids[0] != "r_1" {
+		t.Errorf("children_note child_run_ids = %v, want [r_1]", ids)
 	}
 }
 
