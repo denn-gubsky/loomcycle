@@ -273,11 +273,10 @@ type residentRegistry struct {
 }
 
 type residentTombstone struct {
-	tenantID      string
-	userID        string
-	parentAgentID string
-	reason        string
-	at            time.Time
+	tenantID string
+	userID   string
+	reason   string
+	at       time.Time
 }
 
 // residentOwnedBy reports whether caller may address a child opened in this
@@ -318,7 +317,7 @@ func (r *residentRegistry) remove(rc *residentChild) {
 	r.mu.Lock()
 	delete(r.m, rc.runID)
 	if reason != "" {
-		r.gone[rc.runID] = residentTombstone{tenantID: rc.tenantID, userID: rc.userID, parentAgentID: rc.parentAgentID, reason: reason, at: time.Now()}
+		r.gone[rc.runID] = residentTombstone{tenantID: rc.tenantID, userID: rc.userID, reason: reason, at: time.Now()}
 	}
 	r.mu.Unlock()
 }
