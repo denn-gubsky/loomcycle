@@ -261,6 +261,9 @@ func handleSpawnRun(ctx context.Context, env *handlerEnv, args json.RawMessage) 
 	if errMsg, ok := connector.ValidateParentContext(req.ParentContext); !ok {
 		return toolErr("spawn_run: " + errMsg), nil
 	}
+	if errMsg, ok := connector.ValidateIdempotencyKey(req.IdempotencyKey); !ok {
+		return toolErr("spawn_run: " + errMsg), nil
+	}
 	// Drop the runtime-owned fields and normalise an all-empty struct to nil so
 	// the echo surfaces omit it, matching the HTTP handlers (handleRuns /
 	// handleMessages).
@@ -302,6 +305,11 @@ func handleSpawnRun(ctx context.Context, env *handlerEnv, args json.RawMessage) 
 	// timeout result, not a -32603. DeadlineExceeded is specific to our
 	// WithTimeout — a parent-ctx cancel (shutdown / cancel_run) yields
 	// Canceled instead, which falls through to the normal error/result.
+	if effectiveTimeoutMS > 0 && errors.Is(runCtx.Err(), context.DeadlineExceeded) && result.Deduplicated {
+		// The wait on a run this call did not start ran out. That run is not
+		// this call's to cancel: it is reported as it is, still running.
+		return toolResultForRun(result), nil
+	}
 	if effectiveTimeoutMS > 0 && errors.Is(runCtx.Err(), context.DeadlineExceeded) {
 		result.Status = "timeout"
 		if result.Error == "" {
@@ -394,26 +402,28 @@ func effectiveSpawnTimeoutMS(operatorMS, callerMS int) int {
 // code paths.
 func spawnRunStreaming(ctx context.Context, env *handlerEnv, req connector.SpawnRunRequest) (connector.SpawnRunResult, error) {
 	in := runner.RunInput{
-		Agent:            req.Agent,
-		SessionID:        req.SessionID,
-		TenantID:         req.TenantID,
-		Segments:         req.Segments,
-		Tools:            req.Tools,
-		AllowedHosts:     req.AllowedHosts,
-		WebSearchFilter:  req.WebSearchFilter,
-		UserID:           req.UserID,
-		AgentID:          req.AgentID,
-		UserTier:         req.UserTier,
-		UserBearer:       req.UserBearer,
-		UserCredentials:  req.UserCredentials,  // v1.x RFC F per-tool named credentials
-		ParentContext:    req.ParentContext,    // v0.12.x opaque tracking lineage
-		Metadata:         req.Metadata,         // non-secret trusted agent metadata
-		Sampling:         req.Sampling,         // per-run LLM sampling override (was dropped on this streaming path)
-		ToolChoice:       req.ToolChoice,       // per-run tool_choice
-		OutputFormat:     req.OutputFormat,     // per-run answer schema
-		Compaction:       req.Compaction,       // per-run context-compaction override (was dropped on this streaming path)
-		Context:          req.Context,          // per-run layered-context override (RFC CR)
-		MaxContextTokens: req.MaxContextTokens, // RFC CJ per-run context-window override
+		Agent:           req.Agent,
+		SessionID:       req.SessionID,
+		TenantID:        req.TenantID,
+		Segments:        req.Segments,
+		Tools:           req.Tools,
+		AllowedHosts:    req.AllowedHosts,
+		WebSearchFilter: req.WebSearchFilter,
+		UserID:          req.UserID,
+		AgentID:         req.AgentID,
+		UserTier:        req.UserTier,
+		UserBearer:      req.UserBearer,
+		UserCredentials: req.UserCredentials, // v1.x RFC F per-tool named credentials
+		ParentContext:   req.ParentContext,   // v0.12.x opaque tracking lineage
+		// The caller's key, as sent; RunOnce scopes and stores it.
+		ClientIdempotencyKey: req.IdempotencyKey,
+		Metadata:             req.Metadata,         // non-secret trusted agent metadata
+		Sampling:             req.Sampling,         // per-run LLM sampling override (was dropped on this streaming path)
+		ToolChoice:           req.ToolChoice,       // per-run tool_choice
+		OutputFormat:         req.OutputFormat,     // per-run answer schema
+		Compaction:           req.Compaction,       // per-run context-compaction override (was dropped on this streaming path)
+		Context:              req.Context,          // per-run layered-context override (RFC CR)
+		MaxContextTokens:     req.MaxContextTokens, // RFC CJ per-run context-window override
 		// RFC DC P6: the MCP spawn surfaces carry the per-run overrides too, so
 		// an agent spawning a child can choose its model — and is refused by
 		// exactly the same validation an HTTP caller meets.
@@ -481,6 +491,11 @@ func spawnRunStreaming(ctx context.Context, env *handlerEnv, req connector.Spawn
 	}
 
 	runErr := env.runner.RunOnce(ctx, in, cb)
+	if errors.Is(runErr, store.ErrDuplicateIdempotencyKey) {
+		// The key was already held, so nothing started and there is nothing
+		// to stream. The connector joins the run that holds it.
+		return env.connector.SpawnRun(ctx, req)
+	}
 
 	result := connector.SpawnRunResult{
 		AgentID:       regAgentID,

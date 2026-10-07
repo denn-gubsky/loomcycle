@@ -14,6 +14,15 @@ The most common consumer is Claude Code: you can ask Claude to "spawn a `qa-agen
 
 **v0.33.0 added two run-lifecycle meta-tools:** **`spawn_runs`** — RFC Y external fan-out: spawn up to 32 fresh runs concurrently in one call and get back a combined index-aligned envelope (prefer it over firing N `spawn_run` calls, which serialize over the single stdio connection); and **`compact_run`** — compact a parked run's context by `agent_id` (summarize older turns, continue from the summary). `spawn_run`/`spawn_runs` also now accept per-run `sampling` + `compaction` overrides.
 
+**Retrying a start safely: `idempotency_key`.** `spawn_run`, each `spawn_runs` child and each `POST /v1/runs:batch` child take an optional `idempotency_key` (1 to 200 characters of letters, digits and `: . _ -`). A second request with the same key, from the same tenant and user, starts nothing. It is answered with the run the first request started, with `deduplicated: true`:
+
+- In `detach` mode it returns that run's ids and its current status.
+- In `join` mode, and on `spawn_run`, it waits for that run to end and returns its result, read from the run's row. The text is the stored (redacted) answer and `limits` is absent.
+- A timeout on such a call ends the wait only. The run was not started by this call, so it is not cancelled, and it is reported as `running`.
+- A run that is waiting for a person (parked for input, or held for review) is returned at once as `running`.
+
+The request body is not compared: the same key with a different prompt still returns the first run, so build the key from what makes the work distinct. A key is refused on a continuation (`session_id`), on a configured run, and when two children of one batch share it. It lives as long as the run's session is retained.
+
 ## Single-runtime invariant: embedded vs thin-client (`--upstream`)
 
 **Never run two loomcycle runtimes against the same state.** A runtime owns the providers, scheduler, sweepers, and an *in-process event bus* that wakes blocked runs (e.g. an agent parked on `Interruption.ask`). Two runtimes sharing one `./data` each have their own bus, so a signal raised on one — a resolved interruption, a cancel — never reaches a run owned by the other: the state row flips, but the agent never wakes. That two-runtime topology is the root of the cross-process interruption hang and the "wedged session" failures.

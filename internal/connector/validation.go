@@ -139,3 +139,28 @@ func NormalizeChannelFields(scope, semantic string, defaultTTL, maxMessages int)
 	}
 	return scope, semantic, nil
 }
+
+// MaxIdempotencyKeyLen bounds a caller's idempotency_key.
+const MaxIdempotencyKeyLen = 200
+
+// ValidateIdempotencyKey checks a caller-supplied idempotency_key: 1 to 200
+// characters of [A-Za-z0-9:._-]. Empty is valid (no key). One validator for
+// every transport, like ValidateParentContext.
+func ValidateIdempotencyKey(k string) (errMsg string, ok bool) {
+	if k == "" {
+		return "", true
+	}
+	const msg = "idempotency_key must match [A-Za-z0-9:._-]{1,200}"
+	if len(k) > MaxIdempotencyKeyLen {
+		return msg, false
+	}
+	for _, r := range k {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9',
+			r == ':', r == '.', r == '_', r == '-':
+		default:
+			return msg, false
+		}
+	}
+	return "", true
+}

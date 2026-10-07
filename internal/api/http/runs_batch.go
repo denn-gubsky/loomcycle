@@ -3,6 +3,7 @@ package http
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"strings"
 	"sync"
@@ -112,6 +113,10 @@ func (s *Server) spawnDetached(ctx context.Context, req connector.SpawnRunReques
 			case h := <-handle:
 				return h
 			default:
+			}
+			if dup := (*runner.DuplicateRunError)(nil); errors.As(err, &dup) {
+				// The key was already held: this child is that run, as it is now.
+				return s.existingRunResult(ctx, dup, false, req.ParentContext)
 			}
 			res := connector.SpawnRunResult{Status: string(store.RunFailed), ParentContext: req.ParentContext}
 			switch {

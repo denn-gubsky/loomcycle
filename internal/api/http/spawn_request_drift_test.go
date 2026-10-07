@@ -64,6 +64,14 @@ func TestSpawnRequestToRunInput_CarriesEverySpawnField(t *testing.T) {
 
 	notMapped := map[string]string{
 		"Interactive": "a blocking spawn cannot park; the configured-run start sets RunInput.Interactive itself",
+		// RunInput.IdempotencyKey is the STORED key, which only RunOnce may
+		// write: a caller's key reaching it as sent could equal a webhook's or
+		// a schedule's.
+		"IdempotencyKey": "carried as RunInput.ClientIdempotencyKey, checked below",
+	}
+	if in := spawnRequestToRunInput(req); in.ClientIdempotencyKey != req.IdempotencyKey || in.IdempotencyKey != "" {
+		t.Errorf("idempotency_key: ClientIdempotencyKey = %q, IdempotencyKey = %q; want the caller's key in the first and nothing in the second",
+			in.ClientIdempotencyKey, in.IdempotencyKey)
 	}
 	typ := reflect.TypeOf(req)
 	for i := 0; i < typ.NumField(); i++ {

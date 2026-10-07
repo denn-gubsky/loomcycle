@@ -101,6 +101,12 @@ type SpawnRunRequest struct {
 	// surfaces. Not a secret. Nil = no context (back-compat).
 	ParentContext *store.ParentContext `json:"parent_context,omitempty"`
 
+	// IdempotencyKey makes starting this run safe to retry: a second request
+	// with the same key, from the same tenant and user, starts nothing and is
+	// answered with the run the first one started (SpawnRunResult.
+	// Deduplicated). For a fresh run only. See ValidateIdempotencyKey.
+	IdempotencyKey string `json:"idempotency_key,omitempty"`
+
 	// Metadata is the optional NON-SECRET structured metadata passed to the
 	// agent (repo name, review policy, …) — the same trusted channel the HTTP
 	// /v1/runs `metadata` field feeds, so a gRPC / LoomCycle-MCP spawn_run /
@@ -222,6 +228,11 @@ type SpawnRunResult struct {
 	// caller (v0.12.x) so a sub-agent's usage can be attributed to the
 	// root request. Nil when the run carried no context.
 	ParentContext *store.ParentContext `json:"parent_context,omitempty"`
+	// Deduplicated is set when the request's idempotency_key was already
+	// held by a run: the ids, status and result are that run's, and this
+	// request started nothing. The result is read from the run's row, so
+	// FinalText is the stored (redacted) answer and Limits is absent.
+	Deduplicated bool `json:"deduplicated,omitempty"`
 }
 
 // MaxBatchSpawns bounds a single external fan-out call (RFC Y). Matches the
