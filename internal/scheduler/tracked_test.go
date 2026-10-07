@@ -376,3 +376,36 @@ type failingStart struct{ store.Store }
 func (failingStart) ScheduleActiveRunStart(context.Context, store.ScheduleActiveRun) error {
 	return errors.New("store unavailable")
 }
+
+// A consolidation sweep runs off the tick, so the tick returns while it runs;
+// and a slot of the same def that comes due meanwhile starts no second sweep
+// on this replica.
+//
+// Fails-before (the sweep on the tick): the first fire blocks until the
+// sweep's runs end.
+func TestFanout_SweepRunsOffTheTickOnePerDef(t *testing.T) {
+	sched, fr, st, logs := fanoutFixture(t, operatorFanoutDef(nil), nil)
+	seedSettledSession(t, st, "acme", "u1")
+	release := make(chan struct{})
+	fr.onRun = func(runner.RunInput) { <-release }
+	row := dueRow(t, st)
+
+	fired := make(chan struct{})
+	go func() {
+		sched.fireOne(context.Background(), row, time.Now())
+		close(fired)
+	}()
+	select {
+	case <-fired:
+	case <-time.After(5 * time.Second):
+		close(release)
+		t.Fatal("the fire waited for the sweep — a sweep must run off the tick")
+	}
+	sched.fireOne(context.Background(), dueAgain(t, st, row), time.Now())
+	close(release)
+	sched.sweeps.Wait()
+
+	if n := len(fr.Calls()); n != 1 {
+		t.Errorf("sweep runs dispatched = %d, want 1 — the second slot must not start a second sweep; logs:\n%s", n, logs.all())
+	}
+}

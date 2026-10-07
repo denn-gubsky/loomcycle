@@ -154,28 +154,6 @@ func fanoutScope(def scheduleDef) (store.MemoryScope, error) {
 	}
 }
 
-// fireConsolidationFanout is fireOne's per-target twin. It enumerates the
-// targets with new work, dispatches one child run each, and records ONE result
-// for the schedule — so the schedule's next_run_at and fire count behave
-// exactly as they do for a single-run fire. on_complete hooks fire per tenant
-// the runs executed in (see dispatchFanoutHooks).
-//
-// The whole batch shares one sweep budget (cfg.fanoutSweepBudget, a fixed 10
-// minutes), so a consolidation sweep is bounded. It runs off the tick
-// (startConsolidationFanout), so it never delays another schedule. Targets
-// left undispatched when the budget runs out are picked up next sweep — the
-// per-target watermark makes that resumable.
-//
-// That resumability is only fair if the order changes and no one target can
-// spend the whole budget: a cut pass does not advance its watermark, so it is
-// re-selected next tick, and in a fixed order it went first again — one slow
-// tenant early in the alphabet starved every later tenant on every tick. So
-// targets are interleaved across tenants from a start that moves each tick
-// (fairTargetOrder), and each pass gets a slice of the budget (targetBudget).
-//
-// A slice alone looped, though: a pass that needs more than its slice is cut
-// at the same point every tick and never finishes. So a pass the slice cut
-// goes first next tick with the whole remaining budget (notePassBudget).
 // startConsolidationFanout runs the sweep in its own goroutine, so a long
 // sweep never holds up the tick. One sweep per def at a time on this replica:
 // a slot that arrives while the def's previous sweep still runs is skipped,
@@ -200,6 +178,28 @@ func (s *Scheduler) startConsolidationFanout(ctx context.Context, row store.Sche
 	}()
 }
 
+// fireConsolidationFanout is fireOne's per-target twin. It enumerates the
+// targets with new work, dispatches one child run each, and records ONE result
+// for the schedule — so the schedule's next_run_at and fire count behave
+// exactly as they do for a single-run fire. on_complete hooks fire per tenant
+// the runs executed in (see dispatchFanoutHooks).
+//
+// The whole batch shares one sweep budget (cfg.fanoutSweepBudget, a fixed 10
+// minutes), so a consolidation sweep is bounded. It runs off the tick
+// (startConsolidationFanout), so it never delays another schedule. Targets
+// left undispatched when the budget runs out are picked up next sweep — the
+// per-target watermark makes that resumable.
+//
+// That resumability is only fair if the order changes and no one target can
+// spend the whole budget: a cut pass does not advance its watermark, so it is
+// re-selected next tick, and in a fixed order it went first again — one slow
+// tenant early in the alphabet starved every later tenant on every tick. So
+// targets are interleaved across tenants from a start that moves each tick
+// (fairTargetOrder), and each pass gets a slice of the budget (targetBudget).
+//
+// A slice alone looped, though: a pass that needs more than its slice is cut
+// at the same point every tick and never finishes. So a pass the slice cut
+// goes first next tick with the whole remaining budget (notePassBudget).
 func (s *Scheduler) fireConsolidationFanout(ctx context.Context, row store.ScheduleDueRow, def scheduleDef, now time.Time) {
 	scope, err := fanoutScope(def)
 	if err != nil {

@@ -178,10 +178,10 @@ type Scheduler struct {
 	// a single replica (across replicas, the fan-out lock does the same).
 	fanoutRunning sync.Map
 
-	// wg tracks the sweeper goroutine and sweeps the consolidation sweeps;
-	// Stop waits for both (a sweep is bounded by its budget). runs tracks the
-	// goroutines that run and finish scheduled runs. Stop does not wait for
-	// those — a run may last hours — but tests do.
+	// wg tracks the sweeper goroutine and sweeps tracks the consolidation
+	// sweeps; Stop waits for both (a sweep is bounded by its budget). runs tracks
+	// the goroutines that run and finish scheduled runs: Stop does not wait
+	// for those — a run may last hours — but tests do.
 	wg     sync.WaitGroup
 	sweeps sync.WaitGroup
 	runs   sync.WaitGroup
@@ -417,8 +417,8 @@ func (s *Scheduler) fireOne(ctx context.Context, row store.ScheduleDueRow, now t
 	}
 
 	// RFC CY: a channel tick is a fire with no run. Everything below — the
-	// consolidation fan-out, RunInput, the runner, the fire timeout,
-	// on_complete — presumes an agent, so delivery is decided FIRST.
+	// consolidation fan-out, RunInput, the runner, on_complete — presumes an
+	// agent, so delivery is decided FIRST.
 	//
 	// Order matters against the fan-out check in particular: that one keys off
 	// a metadata flag, and on a channel tick `metadata` is opaque payload
