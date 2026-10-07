@@ -1,0 +1,135 @@
+package http
+
+import (
+	"context"
+	"log"
+	"time"
+
+	"github.com/denn-gubsky/loomcycle/internal/store"
+)
+
+// A run's row says "running" for as long as nobody ends it, whether or not a
+// loop is still behind it. After a crash, a replica's death, or a pause that
+// was never resumed, the row outlives the loop: a cancel aimed at it finds no
+// live run on this replica and none to route to, and used to leave the row as
+// it was — to be resumed by a later pass, or to sit running until the stale
+// sweeper failed it. Such a row is finished here instead, as cancelled with
+// the canceller's reason.
+//
+// Finishing a row whose loop is alive would leave that loop running against a
+// run recorded as over, so "nobody holds it" is decided strictly (runUnheld).
+
+// defaultUnheldRunGrace is how long a row must have been quiet — neither
+// started nor heartbeated — before it can be judged unheld. A run's row is
+// written a moment before its loop is registered (a new run), and a resumed
+// run's row is flipped to running and heartbeated a moment before it is; a
+// cancel landing in that moment must not take the row from a loop about to
+// start. It also allows for clock skew against the replica that wrote the row.
+const defaultUnheldRunGrace = 10 * time.Second
+
+func (s *Server) unheldGrace() time.Duration {
+	if s.unheldRunGrace > 0 {
+		return s.unheldRunGrace
+	}
+	return defaultUnheldRunGrace
+}
+
+// runUnheld reports whether a running row has no live loop behind it,
+// anywhere. It is held when:
+//   - this process holds it (pausedRunIsLive: the cancel registry or the pause
+//     manager), or it is a walk in this process's walk table;
+//   - its row names another replica whose heartbeat is fresh — by the
+//     replicas table, never by a missing ack, so a slow owner is not a dead one;
+//   - in a cluster, its row names no replica: there is no record to show its
+//     owner is gone;
+//   - it is a channel hook's run, which a worker holds rather than a loop;
+//   - it was started or heartbeated within the grace.
+//
+// A failed liveness read is an error, and the caller leaves the row alone.
+func (s *Server) runUnheld(ctx context.Context, run store.Run) (bool, error) {
+	if run.Status != store.RunRunning || run.UserID == hookRunUser {
+		return false, nil
+	}
+	if _, live := s.walks.get(run.ID); live {
+		return false, nil
+	}
+	if s.replicaStore != nil && run.ReplicaID == "" {
+		return false, nil
+	}
+	if live, err := s.pausedRunIsLive(ctx, run); live || err != nil {
+		return false, err
+	}
+	quietSince := run.StartedAt
+	if run.LastHeartbeatAt.After(quietSince) {
+		quietSince = run.LastHeartbeatAt
+	}
+	return time.Since(quietSince) >= s.unheldGrace(), nil
+}
+
+// finishUnheldRun ends run as cancelled with reason when no live loop holds
+// it, and with it every descendant in the same state, and reports whether run
+// itself was ended. The caller has already established that its own caller
+// may cancel run: this checks nothing about who asks.
+func (s *Server) finishUnheldRun(ctx context.Context, run store.Run, reason string) bool {
+	if s.store == nil {
+		return false
+	}
+	unheld, err := s.runUnheld(ctx, run)
+	if err != nil {
+		log.Printf("cancel: run %s is left as it is: %v", run.ID, err)
+		return false
+	}
+	if !unheld {
+		return false
+	}
+	if reason == "" {
+		reason = "cancelled by api" // what a live run's cancel records for no reason
+	}
+	s.cancelOrphanedRun(run, reason)
+	s.finishUnheldDescendants(ctx, run, reason, map[string]bool{run.ID: true})
+	return true
+}
+
+// finishUnheldDescendants ends the unheld runs below parent, which has ended.
+// A child a live loop holds is left, and so is everything below it: its loop
+// answers for them. seen bounds the walk on rows whose parent links loop.
+func (s *Server) finishUnheldDescendants(ctx context.Context, parent store.Run, reason string, seen map[string]bool) {
+	if parent.AgentID == "" {
+		return
+	}
+	children, err := s.store.ListRunsByParentAgentID(ctx, parent.AgentID)
+	if err != nil {
+		log.Printf("cancel: list run %s's children: %v", parent.ID, err)
+		return
+	}
+	for _, child := range children {
+		if child.ParentRunID != parent.ID || seen[child.ID] {
+			continue
+		}
+		seen[child.ID] = true
+		ended := isTerminalRunStatus(child.Status)
+		if !ended {
+			unheld, err := s.runUnheld(ctx, child)
+			if err != nil || !unheld {
+				continue
+			}
+			s.cancelOrphanedRun(child, reason)
+		}
+		s.finishUnheldDescendants(ctx, child, reason, seen)
+	}
+}
+
+// cancelRunWherever cancels a run by its row for a caller that has no live
+// handle on it: through the cancel registry, which reaches it here or on its
+// replica, and — when no live loop holds it anywhere — by finishing its row.
+func (s *Server) cancelRunWherever(ctx context.Context, run store.Run, reason string) {
+	if isTerminalRunStatus(run.Status) {
+		return
+	}
+	if run.AgentID != "" && s.cancelReg != nil {
+		if _, found := s.cancelReg.Cancel(run.AgentID, reason); found {
+			return
+		}
+	}
+	s.finishUnheldRun(ctx, run, reason)
+}

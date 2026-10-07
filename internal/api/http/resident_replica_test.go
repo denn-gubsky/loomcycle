@@ -6,12 +6,14 @@ import (
 	"errors"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/denn-gubsky/loomcycle/internal/cancel"
 	"github.com/denn-gubsky/loomcycle/internal/concurrency"
 	"github.com/denn-gubsky/loomcycle/internal/config"
+	"github.com/denn-gubsky/loomcycle/internal/coord"
 	"github.com/denn-gubsky/loomcycle/internal/providers"
 	"github.com/denn-gubsky/loomcycle/internal/steer"
 	"github.com/denn-gubsky/loomcycle/internal/store"
@@ -130,17 +132,105 @@ func (p peerTurnCancel) CancelRemote(_ context.Context, runID, reason string) (b
 	return p.owner.turnCancelReg.CancelLocal(runID, reason), nil
 }
 
-// twoReplicas returns a, which will hold the resident children, and b, which
-// shares a's store and reaches a only through the cluster routes (when routed).
+// clusterStore gives a shared SQLite store the one thing a cluster's store
+// has and it lacks: each run's row names the replica that runs it. SQLite
+// keeps no such column, so the stamp a run is created (or re-stamped) with is
+// kept here and put back on every read of the row.
+type clusterStore struct {
+	store.Store
+	mu      sync.Mutex
+	replica map[string]string
+}
+
+func (c *clusterStore) stamp(run store.Run) store.Run {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	run.ReplicaID = c.replica[run.ID]
+	return run
+}
+
+func (c *clusterStore) CreateRun(ctx context.Context, sessionID string, identity store.RunIdentity) (store.Run, error) {
+	run, err := c.Store.CreateRun(ctx, sessionID, identity)
+	if err != nil {
+		return run, err
+	}
+	c.mu.Lock()
+	c.replica[run.ID] = identity.ReplicaID
+	c.mu.Unlock()
+	return c.stamp(run), nil
+}
+
+func (c *clusterStore) SetRunReplica(_ context.Context, runID, replicaID string) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.replica[runID] = replicaID
+	return nil
+}
+
+func (c *clusterStore) GetRun(ctx context.Context, id string) (store.Run, error) {
+	run, err := c.Store.GetRun(ctx, id)
+	return c.stamp(run), err
+}
+
+func (c *clusterStore) GetRunByAgentID(ctx context.Context, agentID string) (store.Run, error) {
+	run, err := c.Store.GetRunByAgentID(ctx, agentID)
+	return c.stamp(run), err
+}
+
+func (c *clusterStore) ListRunsByParentAgentID(ctx context.Context, parentAgentID string) ([]store.Run, error) {
+	runs, err := c.Store.ListRunsByParentAgentID(ctx, parentAgentID)
+	for i := range runs {
+		runs[i] = c.stamp(runs[i])
+	}
+	return runs, err
+}
+
+// fakeReplicas is the replicas table: which replicas' heartbeats are fresh.
+type fakeReplicas struct {
+	mu    sync.Mutex
+	alive map[string]bool
+	err   error
+	reads int // IsReplicaAlive calls so far
+}
+
+func (f *fakeReplicas) IsReplicaAlive(_ context.Context, replicaID string, _ time.Duration) (bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.reads++
+	return f.alive[replicaID], f.err
+}
+
+func (f *fakeReplicas) readCount() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.reads
+}
+
+func (f *fakeReplicas) ListReplicas(context.Context) ([]coord.Replica, error) { return nil, nil }
+
+func (f *fakeReplicas) set(replicaID string, alive bool) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.alive[replicaID] = alive
+}
+
+// twoReplicas returns a ("replica-a"), which will hold the resident children,
+// and b ("replica-b"), which shares a's store and reaches a only through the
+// cluster routes (when routed). Both read one replicas table, on which both
+// are alive; replicasOf(b) is its handle.
 func twoReplicas(t *testing.T, prov providers.Provider, cfg *config.Config, routed bool) (a, b *Server) {
 	t.Helper()
-	st, err := storesqlite.Open(filepath.Join(t.TempDir(), "cluster.db"))
+	sq, err := storesqlite.Open(filepath.Join(t.TempDir(), "cluster.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = st.Close() })
+	t.Cleanup(func() { _ = sq.Close() })
+	st := &clusterStore{Store: sq, replica: map[string]string{}}
 	a = New(cfg, &stubResolver{p: prov}, []tools.Tool{}, concurrency.New(8, 8, time.Second), st)
 	b = New(cfg, &stubResolver{p: prov}, []tools.Tool{}, concurrency.New(8, 8, time.Second), st)
+	a.replicaID, b.replicaID = "replica-a", "replica-b"
+	replicas := &fakeReplicas{alive: map[string]bool{"replica-a": true, "replica-b": true}}
+	a.replicaStore, b.replicaStore = replicas, replicas
 	a.SetSteerRegistry(steer.NewRegistry(0))
 	b.SetSteerRegistry(steer.NewRegistry(0))
 	if routed {
@@ -219,8 +309,9 @@ func TestResidentElsewhere_APollReadsHowTheChildEnded(t *testing.T) {
 		t.Fatalf("open of a capped child: %v", err)
 	}
 	waitResidentGone(t, a, runID)
-	if _, _, err := b.pollResidentChild(ctx, runID, 0); !errors.As(err, &capped) || capped.Output != "capped last answer" {
-		t.Errorf("poll of the capped child elsewhere: %v, want the capped error with its answer", err)
+	if _, _, err := b.pollResidentChild(ctx, runID, 0); !errors.As(err, &capped) || capped.Output != "capped last answer" ||
+		!strings.Contains(err.Error(), "stopped at its iteration limit of 2") {
+		t.Errorf("poll of the capped child elsewhere: %v, want the capped error naming its limit, with its answer", err)
 	}
 
 	runID, _, _, err = a.openResidentChild(ctx, "whole", "x", "", 0, 0)
@@ -339,5 +430,92 @@ func TestResidentElsewhere_WithoutARouteASendSaysSo(t *testing.T) {
 	}
 	if res.IsError || !strings.Contains(res.Text, `"state":"idle"`) || !strings.Contains(res.Text, `"output":"reply to start"`) {
 		t.Errorf("poll by child_run_ids elsewhere = %q, want it idle with its answer", res.Text)
+	}
+}
+
+func replicasOf(s *Server) *fakeReplicas { return s.replicaStore.(*fakeReplicas) }
+
+// addressedAt reads the time a child's record says it was last addressed
+// from another replica.
+func addressedAt(t *testing.T, st store.Store, runID string) int64 {
+	t.Helper()
+	run, err := st.GetRun(context.Background(), runID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rec, _ := decodeRunConfig(run.RunConfig)
+	if rec.Spawn == nil {
+		t.Fatalf("run %s records no spawn", runID)
+	}
+	return rec.Spawn.AddressedAt
+}
+
+// A child its parent addresses only from another replica is in use: a poll
+// (or a cancel) there leaves a mark on the child's record, and the child's
+// own replica reads it before it reaps the child as idle. Once nothing has
+// addressed it for the idle period, from anywhere, it is reaped as before.
+func TestResidentElsewhere_APollFromAnotherReplicaKeepsTheChildFromIdling(t *testing.T) {
+	a, b := twoReplicas(t, echoProvider{}, echoConfig(), false)
+	ctx := residentParentCtx("parent-agent", "")
+	runID, _, _, err := a.openResidentChild(ctx, "child", "start", "", 0, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ageResidentChild(t, a, runID, time.Hour) // unused on its own replica for an hour
+
+	if _, state, err := b.pollResidentChild(ctx, runID, 0); err != nil || state != "awaiting_input" {
+		t.Fatalf("poll elsewhere = %q %v", state, err)
+	}
+	a.sweepResidentChildren(time.Now())
+	if rc, ok := a.residentReg.get(runID); !ok || rc.ending().reapReason != "" {
+		t.Fatal("a child just polled from another replica was reaped as idle")
+	}
+
+	// Nothing addresses it again: past the idle period (and the allowance for
+	// the mark's age and the replicas' clocks) it is reaped, and says why.
+	a.sweepResidentChildren(time.Now().Add(a.residentChildIdleTTL() + residentAddressedSlack + time.Minute))
+	waitResidentGone(t, a, runID)
+	if _, _, err := a.pollResidentChild(ctx, runID, 0); err == nil || !strings.Contains(err.Error(), "idle timeout") {
+		t.Errorf("poll after the idle reap: %v, want the idle reason", err)
+	}
+}
+
+// The mark is written at most once per residentAddressedEvery for a child,
+// so a parent polling in a loop does not rewrite the record on every poll;
+// a cancel from elsewhere marks it as a poll does.
+func TestResidentElsewhere_TheAddressedMarkIsThrottled(t *testing.T) {
+	a, b := twoReplicas(t, echoProvider{}, echoConfig(), true)
+	ctx := residentParentCtx("parent-agent", "")
+	runID, _, _, err := a.openResidentChild(ctx, "child", "start", "", 0, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	setMark := func(at time.Time) {
+		t.Helper()
+		if _, err := b.updateRunConfig(context.Background(), runID, func(rec *runConfigRecord, _ bool) error {
+			rec.Spawn.AddressedAt = at.Unix()
+			return nil
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if got := addressedAt(t, b.store, runID); got != 0 {
+		t.Fatalf("a child nobody addressed from elsewhere is marked %d", got)
+	}
+	recent := time.Now().Add(-residentAddressedEvery / 2)
+	setMark(recent)
+	if _, _, err := b.pollResidentChild(ctx, runID, 0); err != nil {
+		t.Fatal(err)
+	}
+	if got := addressedAt(t, b.store, runID); got != recent.Unix() {
+		t.Errorf("a poll inside the throttle rewrote the mark (%d, was %d)", got, recent.Unix())
+	}
+	old := time.Now().Add(-2 * residentAddressedEvery)
+	setMark(old)
+	if _, _, err := b.cancelResidentChildTurn(ctx, runID); err != nil {
+		t.Fatal(err)
+	}
+	if got := addressedAt(t, b.store, runID); got <= old.Unix() {
+		t.Errorf("a cancel past the throttle left the mark at %d", got)
 	}
 }

@@ -113,6 +113,13 @@ type runConfigRecord struct {
 	// resumed run fires those and no others (see pinnedHooks).
 	PinnedHooks *pinnedHooks `json:"pinned_hooks,omitempty"`
 
+	// IterationLimit is the iteration limit the run started with (0 = none:
+	// unbounded, or an interactive run with no limit of its own). A reader
+	// holding only the run's row — another replica, a resume — names it when it
+	// tells a parent the run stopped at its limit. Absent on a run recorded
+	// before it existed, which is told without the number.
+	IterationLimit int `json:"iteration_limit,omitempty"`
+
 	// Spawn is what bounded a SUB-run at its spawn beyond its own definition:
 	// the parent's volume confinement and the fan-out width it inherited. A
 	// live child reads both off its parent's context; a resumed child has no
@@ -559,6 +566,13 @@ type spawnRecord struct {
 	// Resident marks a resident child (Agent op=open): a resume rebuilds it as
 	// one — parked between its parent's sends, reachable by its run id.
 	Resident bool `json:"resident,omitempty"`
+	// AddressedAt is when (unix seconds) a resident child was last polled or
+	// cancelled from a replica that does not hold it. Only the child's own
+	// replica sees calls made on it, so this is how the others tell it the
+	// child is in use: its idle reaper reads it before it reaps
+	// (residentAddressedSince). Written at most once per
+	// residentAddressedEvery.
+	AddressedAt int64 `json:"addressed_at,omitempty"`
 }
 
 // volumeCeilingRecord mirrors tools.VolumePolicyValue minus each binding's

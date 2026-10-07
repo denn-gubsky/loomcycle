@@ -1735,9 +1735,9 @@ func (s *Server) awaitChildResult(ctx context.Context, index int, name, childRun
 		if name == "" {
 			name = child.Agent
 		}
-		if child.AgentID != "" && s.cancelReg != nil {
-			s.cancelReg.Cancel(child.AgentID, cancel.ReasonFromCause(builtin.ChildTimeoutCause(timeoutMs)))
-		}
+		// Its row too when no live loop holds it, so the child the parent is
+		// told timed out is not resumed later.
+		s.cancelRunWherever(ctx, child, cancel.ReasonFromCause(builtin.ChildTimeoutCause(timeoutMs)))
 		return builtin.ParallelSpawnResult{Index: index, Agent: name, Ok: false,
 			Error: builtin.ChildTimedOutMessage(name, timeoutMs, childRunID), RunID: childRunID, Status: "timeout"}
 	}
@@ -1755,8 +1755,7 @@ func (s *Server) awaitChildResult(ctx context.Context, index int, name, childRun
 			out = fmt.Sprintf("(sub-agent %q completed with no final text)", name)
 		}
 		if child.StopReason == loop.StopReasonMaxIterations {
-			// Its limit is not on its row; the message goes without it.
-			return builtin.ParallelSpawnResult{Index: index, Agent: name, Ok: false, Error: builtin.ChildCappedMessage(name, 0, childRunID),
+			return builtin.ParallelSpawnResult{Index: index, Agent: name, Ok: false, Error: builtin.ChildCappedMessage(name, recordedIterationLimit(child), childRunID),
 				Output: formatSubAgentOutput(child.AgentID, childRunID, out), RunID: childRunID, Status: builtin.ChildStatusMaxIterations}
 		}
 		return builtin.ParallelSpawnResult{Index: index, Agent: name, Ok: true,

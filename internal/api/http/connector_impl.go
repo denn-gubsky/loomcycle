@@ -347,7 +347,12 @@ func (s *Server) CancelRun(ctx context.Context, agentID, reason string) (connect
 		// Run may already have completed. Check the store to
 		// distinguish "never existed" from "already ended".
 		if s.store != nil {
-			if _, err := s.store.GetRunByAgentID(ctx, agentID); err == nil {
+			if run, err := s.store.GetRunByAgentID(ctx, agentID); err == nil {
+				// Still running on its row with no live loop behind it: the
+				// cancel ends the row.
+				if s.finishUnheldRun(ctx, run, reason) {
+					return connector.CancelRunResult{Cancelled: true}, nil
+				}
 				return connector.CancelRunResult{AlreadyEnded: true}, nil
 			}
 		}

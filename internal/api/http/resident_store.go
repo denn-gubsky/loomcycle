@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"strings"
 	"time"
 
@@ -30,6 +31,22 @@ import (
 // re-reads the store: its replica does not tell this one when a turn ends.
 const residentStorePollInterval = 250 * time.Millisecond
 
+// residentOwnerCheckEvery is how many re-reads pass between checks that a
+// live loop still holds the child (about two seconds): a replica that died
+// will never end the turn being waited for.
+const residentOwnerCheckEvery = 8
+
+// residentAddressedEvery is the least time between two writes of a child's
+// addressed mark (spawnRecord.AddressedAt): a parent polling in a loop marks
+// the child once in a while, not on every poll.
+const residentAddressedEvery = 30 * time.Second
+
+// residentAddressedSlack is how much older than the idle period a child's
+// addressed mark may be and still count as use: the mark lags the last call
+// by up to residentAddressedEvery, and it was stamped by another replica's
+// clock, which is allowed to differ from this one's by the rest.
+const residentAddressedSlack = residentAddressedEvery + 30*time.Second
+
 // residentTextPage bounds one read of a turn's events while its answer is
 // collected.
 const residentTextPage = 500
@@ -48,8 +65,7 @@ func (v storedResident) ended() bool { return store.IsTerminalRunStatus(v.run.St
 
 // ending is an ended child's kept-ending shape, read from its row: how it was
 // ended for it from the reason its run was cancelled with, and an iteration
-// limit from its stop reason. The limit's number is not recorded on the row,
-// so the error names none.
+// limit from its stop reason, with the number its record keeps.
 func (v storedResident) ending() residentTombstone {
 	t := residentTombstone{tenantID: v.run.TenantID, userID: v.run.UserID, agentName: v.run.Agent, state: string(v.run.Status), output: v.output}
 	switch {
@@ -59,7 +75,7 @@ func (v storedResident) ending() residentTombstone {
 			t.closedBy = "cancelled"
 		}
 	case v.run.Status == store.RunCompleted && v.run.StopReason == loop.StopReasonMaxIterations:
-		t.capped = &builtin.ChildCappedError{Name: v.run.Agent, RunID: v.run.ID}
+		t.capped = &builtin.ChildCappedError{Name: v.run.Agent, Limit: recordedIterationLimit(v.run), RunID: v.run.ID}
 	}
 	return t
 }
@@ -150,7 +166,10 @@ func (s *Server) readStoredResident(ctx context.Context, runID string) (storedRe
 // awaitStoredResident reads the child until its turn has ended — it parked
 // after sinceSeq, or its run ended — or the wait is over, as awaitTurn waits
 // on a live child. A turn still running when the wait is over reads as
-// "running" with its answer so far.
+// "running" with its answer so far. A child no live loop holds any more is
+// ended at once and read as that (endIfOwnerGone): checked on the first read
+// and every residentOwnerCheckEvery after, so a wait does not outlast the
+// replica it waits on.
 func (s *Server) awaitStoredResident(ctx context.Context, runID string, sinceSeq int64, timeout time.Duration, blockWhenZero bool) (storedResident, error) {
 	defer providers.BeginWait(ctx)()
 	var deadline <-chan time.Time
@@ -159,8 +178,11 @@ func (s *Server) awaitStoredResident(ctx context.Context, runID string, sinceSeq
 		defer t.Stop()
 		deadline = t.C
 	}
-	for {
+	for i := 0; ; i++ {
 		v, err := s.readStoredResident(ctx, runID)
+		if err == nil && i%residentOwnerCheckEvery == 0 {
+			v, err = s.endIfOwnerGone(ctx, v)
+		}
 		if err != nil {
 			return v, err
 		}
@@ -187,6 +209,56 @@ func (s *Server) awaitStoredResident(ctx context.Context, runID string, sinceSeq
 	}
 }
 
+// noteResidentAddressed marks a child held by another replica as addressed
+// now, unless its record was marked within residentAddressedEvery. A poll or
+// a cancel made here never reaches the child's own replica, whose idle rule
+// would otherwise see a child in use as unused. Best effort: a mark that is
+// not written costs at worst an idle reap the parent is told about.
+func (s *Server) noteResidentAddressed(ctx context.Context, run store.Run) {
+	if store.IsTerminalRunStatus(run.Status) {
+		return
+	}
+	now := time.Now()
+	fresh := func(rec runConfigRecord) bool {
+		return rec.Spawn == nil || now.Sub(time.Unix(rec.Spawn.AddressedAt, 0)) < residentAddressedEvery
+	}
+	if rec, ok := decodeRunConfig(run.RunConfig); !ok || fresh(rec) {
+		return
+	}
+	errNothingToWrite := errors.New("already marked")
+	_, err := s.updateRunConfig(ctx, run.ID, func(rec *runConfigRecord, unreadable bool) error {
+		if unreadable || fresh(*rec) {
+			return errNothingToWrite
+		}
+		rec.Spawn.AddressedAt = now.Unix()
+		return nil
+	})
+	if err != nil && !errors.Is(err, errNothingToWrite) && ctx.Err() == nil {
+		log.Printf("resident child %s: mark it addressed: %v", run.ID, err)
+	}
+}
+
+// residentAddressedSince reports whether a call from another replica
+// addressed the child within its idle period before now, and when. Read by
+// the child's own replica only when it is about to reap the child as idle.
+func (s *Server) residentAddressedSince(runID string, now time.Time, idleTTL time.Duration) (time.Time, bool) {
+	if s.store == nil {
+		return time.Time{}, false
+	}
+	ctx, stop := context.WithTimeout(context.Background(), 5*time.Second)
+	defer stop()
+	run, err := s.store.GetRun(ctx, runID)
+	if err != nil {
+		return time.Time{}, false
+	}
+	rec, ok := decodeRunConfig(run.RunConfig)
+	if !ok || rec.Spawn == nil || rec.Spawn.AddressedAt == 0 {
+		return time.Time{}, false
+	}
+	at := time.Unix(rec.Spawn.AddressedAt, 0)
+	return at, now.Sub(at) <= idleTTL+residentAddressedSlack
+}
+
 // handBackStored hands a child read from the store back through the parent's
 // subagent_stop hooks exactly as a read of it on its own replica would: a
 // turn as a live child's, an ending as its kept ending.
@@ -210,9 +282,11 @@ func (s *Server) pollUnheldResident(ctx context.Context, childRunID string, time
 	if t, ok := s.keptEnding(ctx, childRunID); ok {
 		return s.handBackEnding(ctx, childRunID, t)
 	}
-	if _, ok := s.storedOwnedResident(ctx, childRunID); !ok {
+	run, ok := s.storedOwnedResident(ctx, childRunID)
+	if !ok {
 		return "", "", residentNotFoundErr(childRunID)
 	}
+	s.noteResidentAddressed(ctx, run)
 	v, err := s.awaitStoredResident(ctx, childRunID, 0, time.Duration(timeoutMs)*time.Millisecond, false)
 	if err != nil {
 		return v.output, v.state, err
@@ -232,6 +306,9 @@ func (s *Server) sendUnheldResident(ctx context.Context, childRunID, prompt stri
 	}
 	v, err := s.readStoredResident(ctx, childRunID)
 	if err != nil {
+		return "", "", err
+	}
+	if v, err = s.endIfOwnerGone(ctx, v); err != nil {
 		return "", "", err
 	}
 	if v.ended() {
@@ -263,11 +340,16 @@ func (s *Server) cancelUnheldResident(ctx context.Context, childRunID string) (s
 	if t, ok := s.keptEnding(ctx, childRunID); ok {
 		return s.handBackEnding(ctx, childRunID, t)
 	}
-	if _, ok := s.storedOwnedResident(ctx, childRunID); !ok {
+	run, ok := s.storedOwnedResident(ctx, childRunID)
+	if !ok {
 		return "", "", residentNotFoundErr(childRunID)
 	}
+	s.noteResidentAddressed(ctx, run)
 	v, err := s.readStoredResident(ctx, childRunID)
 	if err != nil {
+		return "", "", err
+	}
+	if v, err = s.endIfOwnerGone(ctx, v); err != nil {
 		return "", "", err
 	}
 	if v.ended() || v.state == "awaiting_input" || s.turnCancelReg == nil {
@@ -286,16 +368,30 @@ func (s *Server) cancelUnheldResident(ctx context.Context, childRunID string) (s
 	return s.handBackStored(ctx, v)
 }
 
+// endIfOwnerGone ends a child no live loop holds anywhere — its replica is
+// gone, or a crash left its row — and returns it as it then reads: nothing
+// would ever take an instruction for it or finish its turn.
+func (s *Server) endIfOwnerGone(ctx context.Context, v storedResident) (storedResident, error) {
+	if v.ended() || !s.finishUnheldRun(ctx, v.run, residentReasonOwnerGone) {
+		return v, nil
+	}
+	return s.readStoredResident(ctx, v.run.ID)
+}
+
 // closeUnheldResident is close for a child this replica does not hold: its
-// run is cancelled through the cancel route by its agent id. One already
-// ended, or unknown to the caller, is closed already.
+// run is cancelled through the cancel route by its agent id, or, when no
+// live loop holds it anywhere, by finishing its row. One already ended, or
+// unknown to the caller, is closed already.
 func (s *Server) closeUnheldResident(ctx context.Context, childRunID string) error {
 	run, ok := s.storedOwnedResident(ctx, childRunID)
 	if !ok || store.IsTerminalRunStatus(run.Status) {
 		return nil
 	}
-	if _, found := s.cancelReg.Cancel(run.AgentID, residentReasonClosedByParent); !found {
-		return residentUnreachableErr(childRunID, "close it")
+	if _, found := s.cancelReg.Cancel(run.AgentID, residentReasonClosedByParent); found {
+		return nil
 	}
-	return nil
+	if s.finishUnheldRun(ctx, run, residentReasonClosedByParent) {
+		return nil
+	}
+	return residentUnreachableErr(childRunID, "close it")
 }

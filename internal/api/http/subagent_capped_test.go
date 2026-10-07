@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/denn-gubsky/loomcycle/internal/config"
+	"github.com/denn-gubsky/loomcycle/internal/loop"
 	"github.com/denn-gubsky/loomcycle/internal/providers"
 	"github.com/denn-gubsky/loomcycle/internal/store"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
@@ -353,5 +354,87 @@ func TestRestoredAgentEnding_ACappedChildIsFailedWithItsAnswer(t *testing.T) {
 	if state != tools.ChildFailed || res.Status != "max_iterations" || !strings.Contains(res.Error, "stopped at its iteration limit") ||
 		!strings.Contains(res.Output, "restored last answer") {
 		t.Errorf("ending = %s %+v, want failed, status max_iterations, its answer kept", state, res)
+	}
+}
+
+// A run records the iteration limit it starts with, so a reader holding only
+// its row can name it: a sub-agent its definition's, a top-level run with
+// none of its own the default, and a resident child with none, none.
+func TestRunConfig_RecordsTheIterationLimitTheRunStartsWith(t *testing.T) {
+	srv := cappedResidentServer(t)
+	ctx, _ := lockedParentCtx(t, srv)
+	agent := agentToolOf(t, srv)
+	limitOf := func(runID string) int {
+		t.Helper()
+		run, err := srv.store.GetRun(context.Background(), runID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return recordedIterationLimit(run)
+	}
+
+	res, err := agent.Execute(ctx, json.RawMessage(`{"op":"spawn","name":"capped","prompt":"x"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := limitOf(runIDAfter(t, res.Text, "(run ")); got != 2 {
+		t.Errorf("a sub-agent with max_iterations 2 recorded limit %d", got)
+	}
+
+	res, err = agent.Execute(ctx, json.RawMessage(`{"op":"open","name":"whole","prompt":"x"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var env residentEnvelope
+	if err := json.Unmarshal([]byte(res.Text), &env); err != nil {
+		t.Fatalf("open = %q: %v", res.Text, err)
+	}
+	if got := limitOf(env.ChildRunID); got != 0 {
+		t.Errorf("a resident child with no max_iterations recorded limit %d, want none", got)
+	}
+	_, _ = agent.Execute(ctx, json.RawMessage(`{"op":"close","child_run_id":"`+env.ChildRunID+`"}`))
+
+	ts := httptest.NewServer(srv.Mux())
+	defer ts.Close()
+	resp, err := http.Post(ts.URL+"/v1/runs", "application/json", strings.NewReader(
+		`{"agent":"whole","agent_id":"a_top_whole","segments":[{"role":"user","content":[{"type":"trusted-text","text":"go"}]}]}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _ = io.Copy(io.Discard, resp.Body)
+	_ = resp.Body.Close()
+	top, err := srv.store.GetRunByAgentID(context.Background(), "a_top_whole")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := recordedIterationLimit(top); got != loop.DefaultMaxIterations {
+		t.Errorf("a top-level run with no max_iterations recorded limit %d, want the default %d", got, loop.DefaultMaxIterations)
+	}
+}
+
+// A capped child read back from a row that records its limit is told with
+// the number, on the fan-out reconcile and on the poll-mode resume alike.
+func TestCappedFromTheRow_NamesTheRecordedLimit(t *testing.T) {
+	srv := cappedServer(t)
+	ctx := context.Background()
+	sess, _ := srv.store.CreateSession(ctx, "", "capped", "alice")
+	child, err := srv.store.CreateRun(ctx, sess.ID, store.RunIdentity{AgentID: "a_capped_limit", UserID: "alice", Model: "stub-model",
+		RunConfig: runConfigRecord{IterationLimit: 7}.marshal()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := srv.store.FinishRun(ctx, child.ID, store.RunCompleted, "max_iterations",
+		store.Usage{Result: json.RawMessage(`{"final_text":"last answer"}`)}, ""); err != nil {
+		t.Fatal(err)
+	}
+	child, err = srv.store.GetRun(ctx, child.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, res := srv.restoredAgentEnding(ctx, child, tools.ChildSpec{RunID: child.ID, Agent: "capped", Index: -1}); !strings.Contains(res.Error, "stopped at its iteration limit of 7") {
+		t.Errorf("poll-mode resume ending = %q, want the limit named", res.Error)
+	}
+	if r := srv.awaitChildResult(ctx, 0, "capped", child.ID, 0); !strings.Contains(r.Error, "stopped at its iteration limit of 7") {
+		t.Errorf("fan-out reconcile row = %q, want the limit named", r.Error)
 	}
 }

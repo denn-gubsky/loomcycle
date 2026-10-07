@@ -61,8 +61,7 @@ Resident form: `{child_run_id, state, output}` — the output so far.
 with its last turn's output, or the iteration-limit error with its last
 answer. Polling works from wherever your call runs — in a runtime with
 several replicas the child may run on another one, and the poll reads it from
-the shared store (an ended child's iteration-limit error may then not name the
-limit's number).
+the shared store.
 
 ## Errors
 
@@ -73,6 +72,9 @@ limit's number).
   `wait` and `wait_ms`.
 - `resident sub-agent "r_..." was closed ...` / `was reaped by the runtime
   (...)` — it was ended for you; `open` a new one.
+- `resident sub-agent "r_..." was ended because the replica running it is
+  gone ...` — the replica it ran on crashed or went away, so nothing is left
+  to run it; a poll waiting on it ends with this at once. `open` a new one.
 - `resident sub-agent "r_..." not found ...` — an id that is not a resident
   sub-agent your run may address.
 
