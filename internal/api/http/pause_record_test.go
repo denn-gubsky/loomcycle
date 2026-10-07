@@ -120,12 +120,14 @@ type pauseAction struct {
 // and a re-armed timeout_ms reads the same deadline, stop and next check from
 // the folded record as from the whole history — over histories where review
 // holds overlap pauses in every way, a pause is opened twice, ended and opened
-// again, or left open by a lost end, and the run started after the first
-// pause began. Each fold sees only the holds that had begun by then.
+// again, or left open by a lost end, a pause's start was stamped by a clock
+// behind the one that ended the pause before it (a run restored on another
+// instance), and the run started after the first pause began. Each fold sees
+// only the holds that had begun by then.
 func TestRunConfigRecord_FoldedPausesKeepTheReArmedClock(t *testing.T) {
 	base := time.Date(2026, 10, 7, 12, 0, 0, 0, time.UTC)
 	ms := func(n int) time.Time { return base.Add(time.Duration(n) * time.Millisecond) }
-	folds := 0
+	folds, straddles := 0, 0
 	for seed := int64(1); seed <= 300; seed++ {
 		r := rand.New(rand.NewSource(seed))
 		start := ms(r.Intn(30))
@@ -134,7 +136,10 @@ func TestRunConfigRecord_FoldedPausesKeepTheReArmedClock(t *testing.T) {
 		for i, n := 0, maxRunPauses+5+r.Intn(3*maxRunPauses); i < n; i++ {
 			now += 1 + r.Intn(40)
 			since := ms(now)
-			actions = append(actions, pauseAction{at: since, since: since})
+			if r.Intn(8) == 0 { // a start stamped by a clock behind the last one's
+				since = ms(now - 1 - r.Intn(80))
+			}
+			actions = append(actions, pauseAction{at: ms(now), since: since})
 			if r.Intn(4) == 0 { // opened again by the run's own park
 				actions = append(actions, pauseAction{at: ms(now + 1), since: since})
 			}
@@ -153,6 +158,9 @@ func TestRunConfigRecord_FoldedPausesKeepTheReArmedClock(t *testing.T) {
 		for h, seq := r.Intn(50), int64(1); h < now; seq += 2 {
 			events = append(events, store.Event{Seq: seq, Type: string(providers.EventAwaitingReview), Timestamp: ms(h)})
 			h += 1 + r.Intn(120)
+			if r.Intn(4) == 0 { // held across many pauses, and across a fold
+				h += r.Intn(1500)
+			}
 			if h < now || r.Intn(2) == 0 {
 				events = append(events, store.Event{Seq: seq + 1, Type: "user_input", Timestamp: ms(h)})
 			}
@@ -160,7 +168,9 @@ func TestRunConfigRecord_FoldedPausesKeepTheReArmedClock(t *testing.T) {
 		}
 		sort.SliceStable(actions, func(i, j int) bool { return actions[i].at.Before(actions[j].at) })
 		heldBy := func(t time.Time) resumedChildClock {
-			var c resumedChildClock
+			// A bound longer than the history, so a stopped clock's next check
+			// is the time it has left, not the recheck floor.
+			c := resumedChildClock{bound: 10 * time.Second}
 			for _, ev := range events {
 				if !ev.Timestamp.After(t) {
 					c.observe([]store.Event{ev})
@@ -185,11 +195,15 @@ func TestRunConfigRecord_FoldedPausesKeepTheReArmedClock(t *testing.T) {
 			want, got := heldBy(a.at), heldBy(a.at)
 			want.readPauses(whole.marshal())
 			got.readPauses(kept.marshal())
+			// A stopped clock's deadline is not read, only its next check.
 			wd, ws := want.deadline(start)
 			gd, gs := got.deadline(start)
-			if !gd.Equal(wd) || gs != ws {
+			if gs != ws || !ws && !gd.Equal(wd) {
 				t.Fatalf("seed %d at %v: folded deadline %v stopped %v, want %v stopped %v (record %s)",
 					seed, a.at.Sub(base), gd.Sub(base), gs, wd.Sub(base), ws, kept.marshal())
+			}
+			if _, open := want.stopped(start); !open.IsZero() && kept.PausesFolded != nil && open.Before(kept.PausesFolded.Until) {
+				straddles++ // a stop still open began inside what was folded
 			}
 			if wn, gn := want.nextCheck(start, a.at), got.nextCheck(start, a.at); !gn.Equal(wn) {
 				t.Fatalf("seed %d at %v: folded next check %v, want %v", seed, a.at.Sub(base), gn.Sub(base), wn.Sub(base))
@@ -199,9 +213,10 @@ func TestRunConfigRecord_FoldedPausesKeepTheReArmedClock(t *testing.T) {
 			folds++
 		}
 	}
-	if folds < 250 {
-		t.Fatalf("only %d of 300 histories folded anything — the property is barely exercised", folds)
+	if folds < 250 || straddles < 50 {
+		t.Fatalf("%d of 300 histories folded anything and %d checks had an open stop straddle a fold — the property is barely exercised", folds, straddles)
 	}
+	t.Logf("%d of 300 histories folded; %d checks had an open stop straddle a fold", folds, straddles)
 }
 
 // The record write folds past the cap: a run paused many times, held for
