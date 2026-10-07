@@ -22,6 +22,7 @@ import (
 	runcancel "github.com/denn-gubsky/loomcycle/internal/cancel"
 	"github.com/denn-gubsky/loomcycle/internal/config"
 	"github.com/denn-gubsky/loomcycle/internal/contextplugin"
+	"github.com/denn-gubsky/loomcycle/internal/fence"
 	"github.com/denn-gubsky/loomcycle/internal/hooks"
 	lcotel "github.com/denn-gubsky/loomcycle/internal/otel"
 	"github.com/denn-gubsky/loomcycle/internal/providers"
@@ -4499,10 +4500,13 @@ func FlattenContent(c PromptContentBlock) providers.ContentBlock {
 //     normalised to "untrusted" so a caller can't open a "system"- or
 //     "trusted"-shaped tag.
 //
-//   - the body is escaped: every `<` becomes `&lt;`. Without this, content
-//     containing `</web_content>` followed by attacker text and a re-opened
-//     `<web_content>` would syntactically close our wrapping and present
-//     the inner text to the model as if it were trusted.
+//   - the body is escaped (fence.EscapeUntrusted): no spelling of `<` is
+//     left in it. Without this, content containing `</web_content>` followed
+//     by attacker text and a re-opened `<web_content>` would syntactically
+//     close our wrapping and present the inner text to the model as if it
+//     were trusted. Entities, look-alike characters and invisible format
+//     characters are covered too: a model reads `&lt;/web_content>` as the
+//     closing tag just as readily.
 func flattenContent(c PromptContentBlock) providers.ContentBlock {
 	switch c.Type {
 	case "untrusted-block":
@@ -4510,7 +4514,7 @@ func flattenContent(c PromptContentBlock) providers.ContentBlock {
 		if kind == "" || !allowedUntrustedKinds[kind] {
 			kind = "untrusted"
 		}
-		safe := strings.ReplaceAll(c.Text, "<", "&lt;")
+		safe := fence.EscapeUntrusted(c.Text)
 		return providers.ContentBlock{
 			Type: "text",
 			Text: fmt.Sprintf("<%s>\n%s\n</%s>", kind, safe, kind),
