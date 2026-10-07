@@ -232,6 +232,14 @@ type AgentTool struct {
 	// block (LOOMCYCLE_AGENT_POLL_WAIT_CAP_MS). 0 = DefaultPollWaitCapMs.
 	PollWaitCapMs int
 
+	// HoldRunTree keeps the run tree rooted at root — its ephemeral volumes
+	// and run-scope SQL database — from being torn down until the returned
+	// release is called. A poll-mode child takes it before it is started and
+	// releases it once its goroutine has returned: its parent's end cancels it
+	// without waiting, and a child still inside a tool call must not find the
+	// tree removed under it. nil = nothing is held. Wired by the HTTP server.
+	HoldRunTree func(root string) (release func())
+
 	// ResolveName, when set, turns the name a caller wrote into the name that
 	// agent RUNS under, before anything here uses it. Inside a team walk a
 	// caller may write "./reviewer" — or, where the resolver's rule for bare

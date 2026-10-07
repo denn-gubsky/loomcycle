@@ -479,6 +479,9 @@ func (s *Server) openResidentChild(ctx context.Context, name, prompt, defID stri
 	s.residentReg.add(rc)
 
 	started = true
+	// The parent's end closes the child but does not wait for it, so the tree
+	// it works in is held until its goroutine has returned.
+	releaseTree := s.holdRunTree(parent.RootRunID)
 	go func() {
 		defer func() {
 			if r := recover(); r != nil {
@@ -490,6 +493,7 @@ func (s *Server) openResidentChild(ctx context.Context, name, prompt, defID stri
 			prep.Slot.releaseCurrent()
 			s.residentReg.remove(rc)
 			live[0]()
+			releaseTree()
 		}()
 		res, runErr := loop.Run(prep.LoopCtx, prep.Opts)
 		st := "completed"

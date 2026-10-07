@@ -673,6 +673,7 @@ func New(cfg *config.Config, pr ProviderResolver, builtinTools []tools.Tool, sem
 		MaxChildTimeoutMs: cfg.Env.AgentChildMaxTimeoutMs,
 		LiveChildren:      s.liveChildren,
 		PollWaitCapMs:     cfg.Env.AgentPollWaitCapMs,
+		HoldRunTree:       s.holdRunTree,
 		// v0.11.8 — per-agent max_concurrent_children cap for
 		// Agent.parallel_spawn. Walks the same resolver chain as
 		// sub-run dispatch (yaml > dynamic_agents > AgentDef
