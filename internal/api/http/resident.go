@@ -2,6 +2,7 @@ package http
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"net/http"
@@ -9,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/denn-gubsky/loomcycle/internal/cancel"
 	"github.com/denn-gubsky/loomcycle/internal/loop"
 	"github.com/denn-gubsky/loomcycle/internal/providers"
 	"github.com/denn-gubsky/loomcycle/internal/steer"
@@ -62,6 +64,41 @@ const (
 	residentCancelReparkTimeout = 15 * time.Second
 )
 
+// The reasons a resident child's run is ended for it. Each is carried as its
+// run's cancel cause and recorded as the run's stop_reason, so how the child
+// ended reads the same from the cause on the replica that ran it and from the
+// row anywhere else (residentEndedFor).
+const (
+	residentReasonSuffix           = " (resident sub-agent)"
+	residentReasonClosedByParent   = "closed by parent" + residentReasonSuffix
+	residentReasonClosedByOperator = "closed by operator" + residentReasonSuffix
+	residentReasonParentEnded      = "parent run ended" + residentReasonSuffix
+	// The sweeper's reasons start with these, then say how long.
+	residentReapIdle    = "idle timeout:"
+	residentReapCeiling = "turn ceiling:"
+)
+
+// residentEndedFor reads how a resident child's run was ended for it from the
+// reason it was cancelled with: reapReason when the sweeper reaped it,
+// closedBy when it was closed or cancelled otherwise. Both are "" for "".
+func residentEndedFor(reason string) (reapReason, closedBy string) {
+	switch reason {
+	case "":
+		return "", ""
+	case residentReasonClosedByParent:
+		return "", "closed by its parent"
+	case residentReasonClosedByOperator:
+		return "", "closed by the operator"
+	case residentReasonParentEnded:
+		return "", "closed when its parent run ended"
+	}
+	if r, ok := strings.CutSuffix(reason, residentReasonSuffix); ok &&
+		(strings.HasPrefix(r, residentReapIdle) || strings.HasPrefix(r, residentReapCeiling)) {
+		return r, ""
+	}
+	return "", "cancelled (" + reason + ")"
+}
+
 // residentChild is a live handle to one resident interactive sub-agent.
 type residentChild struct {
 	runID         string
@@ -87,7 +124,7 @@ type residentChild struct {
 	turnStarted time.Time
 	done        bool   // loop goroutine exited
 	reapReason  string // set by the sweeper before it cancels the child
-	closedBy    string // set by a close before it cancels the child: who closed it
+	closedBy    string // who closed it, read from its run's cancel cause at its end
 	// startupPark marks a child resumed parked whose loop has not yet parked:
 	// the awaiting_input it announces then is the park it was already in, not
 	// the end of a turn — a send that arrived first must not end on it.
@@ -222,13 +259,24 @@ func (rc *residentChild) ending() residentEnding {
 	return residentEnding{reapReason: rc.reapReason, ended: rc.done, capped: rc.capped}
 }
 
-// markClosed records who closed a child still running, before the close
-// cancels it, so its ending says it was closed rather than that it failed.
-func (rc *residentChild) markClosed(by string) {
+// noteCancelled records how the child's run was ended for it, from the cause
+// it was cancelled with — the reason its row's stop_reason also records — so
+// a close that reached it from anywhere, another replica included, reads as
+// one. A run that was not cancelled, or a reap the sweeper already noted, is
+// left as it is.
+func (rc *residentChild) noteCancelled(cause error) {
+	if !errors.Is(cause, cancel.ErrCancelledByAPI) {
+		return
+	}
+	reason := cancel.ReasonFromCause(cause)
+	if reason == "" {
+		reason = "cancelled by api" // what finishRunWithCancel records for it
+	}
+	reap, closed := residentEndedFor(reason)
 	rc.mu.Lock()
 	defer rc.mu.Unlock()
-	if !rc.done && rc.closedBy == "" {
-		rc.closedBy = by
+	if rc.reapReason == "" && rc.closedBy == "" {
+		rc.reapReason, rc.closedBy = reap, closed
 	}
 }
 
@@ -574,6 +622,7 @@ func (s *Server) openResidentChild(ctx context.Context, name, prompt, defID stri
 		if runErr == nil && res.StopReason == loop.StopReasonMaxIterations {
 			capped = &builtin.ChildCappedError{Name: name, Limit: iterationLimitOf(prep.Opts), RunID: prep.RunID}
 		}
+		rc.noteCancelled(context.Cause(prep.SteerCtx))
 		rc.markDone(st, capped)
 	}()
 
@@ -699,9 +748,8 @@ func (s *Server) closeResidentChild(ctx context.Context, childRunID string) erro
 	if !ok {
 		return nil // idempotent: already gone (or not ours → opaque)
 	}
-	rc.markClosed("closed by its parent")
-	if _, found := s.cancelReg.Cancel(rc.agentID, "closed by parent (resident sub-agent)"); !found && rc.cancel != nil {
-		rc.cancel(fmt.Errorf("closed by parent"))
+	if _, found := s.cancelReg.Cancel(rc.agentID, residentReasonClosedByParent); !found && rc.cancel != nil {
+		rc.cancel(cancel.CauseWithReason(residentReasonClosedByParent))
 	}
 	return nil
 }
@@ -846,9 +894,8 @@ func (s *Server) closeResidentChildrenOf(parentAgentID string) {
 		if rc.parentAgentID != parentAgentID {
 			continue
 		}
-		rc.markClosed("closed when its parent run ended")
-		if _, found := s.cancelReg.Cancel(rc.agentID, "parent run ended (resident sub-agent)"); !found && rc.cancel != nil {
-			rc.cancel(fmt.Errorf("parent run ended"))
+		if _, found := s.cancelReg.Cancel(rc.agentID, residentReasonParentEnded); !found && rc.cancel != nil {
+			rc.cancel(cancel.CauseWithReason(residentReasonParentEnded))
 		}
 	}
 }
@@ -912,9 +959,9 @@ func (s *Server) sweepResidentChildren(now time.Time) {
 		switch {
 		case rc.done:
 		case rc.running && now.Sub(rc.turnStarted) > rc.maxTurn:
-			reason = fmt.Sprintf("turn ceiling: a turn ran longer than %s", rc.maxTurn)
+			reason = fmt.Sprintf("%s a turn ran longer than %s", residentReapCeiling, rc.maxTurn)
 		case !rc.running && now.Sub(rc.lastUsed) > rc.idleTTL:
-			reason = fmt.Sprintf("idle timeout: unused for longer than %s", rc.idleTTL)
+			reason = fmt.Sprintf("%s unused for longer than %s", residentReapIdle, rc.idleTTL)
 		}
 		if reason != "" && rc.reapReason == "" {
 			rc.reapReason = reason
@@ -924,8 +971,8 @@ func (s *Server) sweepResidentChildren(now time.Time) {
 			continue
 		}
 		log.Printf("resident child %s reaped: %s", rc.runID, reason)
-		if _, found := s.cancelReg.Cancel(rc.agentID, reason+" (resident sub-agent)"); !found && rc.cancel != nil {
-			rc.cancel(fmt.Errorf("%s", reason))
+		if _, found := s.cancelReg.Cancel(rc.agentID, reason+residentReasonSuffix); !found && rc.cancel != nil {
+			rc.cancel(cancel.CauseWithReason(reason + residentReasonSuffix))
 		}
 	}
 }
@@ -982,9 +1029,8 @@ func (s *Server) handleResidentClose(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "no resident sub-agent for that run_id", http.StatusNotFound)
 		return
 	}
-	rc.markClosed("closed by the operator")
-	if _, found := s.cancelReg.Cancel(rc.agentID, "closed by operator (resident sub-agent)"); !found && rc.cancel != nil {
-		rc.cancel(fmt.Errorf("closed by operator"))
+	if _, found := s.cancelReg.Cancel(rc.agentID, residentReasonClosedByOperator); !found && rc.cancel != nil {
+		rc.cancel(cancel.CauseWithReason(residentReasonClosedByOperator))
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"run_id": runID, "closed": true})
 }
