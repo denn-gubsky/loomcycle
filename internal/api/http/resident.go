@@ -139,6 +139,10 @@ type residentChild struct {
 func (rc *residentChild) beginTurn(now time.Time) <-chan struct{} {
 	rc.mu.Lock()
 	defer rc.mu.Unlock()
+	return rc.beginTurnLocked(now)
+}
+
+func (rc *residentChild) beginTurnLocked(now time.Time) <-chan struct{} {
 	rc.buf.Reset()
 	rc.turnDone = make(chan struct{})
 	rc.turnClosed = false
@@ -179,6 +183,17 @@ func (rc *residentChild) endTurn(state string) {
 // wakes the waiter.
 func (rc *residentChild) observe(ev providers.Event) {
 	switch ev.Type {
+	case providers.EventSteer:
+		// The child took an instruction. A send made here began its turn
+		// before pushing it; one that reached this child's queue from another
+		// replica (routed by the steer coordinator) began none, so its turn
+		// begins now — or its answer would run on from the last turn's, and
+		// the idle rule would see a working child as unused.
+		rc.mu.Lock()
+		if !rc.running {
+			rc.beginTurnLocked(time.Now())
+		}
+		rc.mu.Unlock()
 	case providers.EventText:
 		rc.appendText(ev.Text)
 	case providers.EventAwaitingInput:
