@@ -194,9 +194,17 @@ func (v *VolumeDef) execCreate(ctx context.Context, in volumeDefInput) (tools.Re
 	}
 	// A directory this call made but could not record is one no row names.
 	// Remove only that one, and only while empty: a re-create that reused an
-	// existing directory must leave it (and its content) where it was.
+	// existing directory must leave it (and its content) where it was. And
+	// only while no row names it — an insert can commit before its re-read
+	// fails, and a concurrent create of the same name can record the
+	// directory this call made — looked up on a ctx that a cancel cannot
+	// turn into a false "not found".
 	undo := func() {
-		if created {
+		if !created {
+			return
+		}
+		var nf *store.ErrNotFound
+		if _, err := v.Store.VolumeDefGetByName(context.WithoutCancel(ctx), tenantID, in.Name); errors.As(err, &nf) {
 			dynvol.RemoveEmptyFenced(dynRoot, path)
 		}
 	}

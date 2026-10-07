@@ -542,6 +542,9 @@ func TestVolumeDefTool_CreateEphemeralRefusesPersistentDynamicCollision(t *testi
 type faultyVolumeStore struct {
 	store.Store
 	failGetByName, failEphemeralCreate, failCreate bool
+	// commitThenFail records the row, then reports a fault: an insert that
+	// committed before its re-read failed.
+	commitThenFail bool
 }
 
 var errVolumeStoreFault = errors.New("store fault")
@@ -562,6 +565,12 @@ func (f *faultyVolumeStore) EphemeralVolumeCreate(ctx context.Context, row store
 
 func (f *faultyVolumeStore) VolumeDefCreate(ctx context.Context, row store.VolumeDefRow) (store.VolumeDefRow, error) {
 	if f.failCreate {
+		return store.VolumeDefRow{}, errVolumeStoreFault
+	}
+	if f.commitThenFail {
+		if _, err := f.Store.VolumeDefCreate(ctx, row); err != nil {
+			return store.VolumeDefRow{}, err
+		}
 		return store.VolumeDefRow{}, errVolumeStoreFault
 	}
 	return f.Store.VolumeDefCreate(ctx, row)
@@ -683,6 +692,22 @@ func TestVolumeDefTool_CreatePersistentInsertFaultKeepsAPreexistingDirectory(t *
 	}
 	if info, err := os.Stat(dir); err != nil || !info.IsDir() {
 		t.Errorf("failed insert removed a directory it did not make (err=%v)", err)
+	}
+}
+
+// An insert that committed before it reported a fault left a row naming the
+// directory, so the create keeps it: removing it would leave a row whose
+// directory is gone.
+func TestVolumeDefTool_CreatePersistentFaultAfterCommitKeepsTheDirectory(t *testing.T) {
+	tool, base, root, cleanup := volumeDefFixture(t)
+	defer cleanup()
+	tool.Store = &faultyVolumeStore{Store: tool.Store, commitThenFail: true}
+	ctx, _ := ephemeralCtx(base, "run-1")
+	if _, res := vdExec(t, tool, ctx, `{"op":"create","name":"work"}`); !res.IsError {
+		t.Fatalf("create whose insert reported a fault succeeded: %s", res.Text)
+	}
+	if info, err := os.Stat(filepath.Join(root, "_shared", "work")); err != nil || !info.IsDir() {
+		t.Errorf("removed a directory a committed row names (err=%v)", err)
 	}
 }
 
