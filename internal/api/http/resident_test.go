@@ -160,16 +160,27 @@ func TestResidentChild_TenantIsolation(t *testing.T) {
 	}
 }
 
-// residentCallers are runs in the opener's tenant that did not open its child:
-// another user (plain and isolated) and another run of the same user.
-var residentCallers = []struct {
+// residentPeers are runs in the opener's tenant that did not open its child
+// and may still address it: the tenant's runs collaborate, and an isolated
+// member's run reaches its own user's children.
+var residentPeers = []struct {
 	name string
 	id   tools.RunIdentityValue
 }{
 	{"other user", tools.RunIdentityValue{AgentID: "a_bob_run", UserID: "bob", TenantID: "acme"}},
-	{"other user isolated", tools.RunIdentityValue{AgentID: "a_bob_run", UserID: "bob", TenantID: "acme", Isolated: true}},
 	{"same user, another run", tools.RunIdentityValue{AgentID: "a_alice_other", UserID: "alice", TenantID: "acme"}},
 	{"other user, opener's id", tools.RunIdentityValue{AgentID: "a_alice_lead", UserID: "bob", TenantID: "acme"}},
+	{"same user isolated, another run", tools.RunIdentityValue{AgentID: "a_alice_other", UserID: "alice", TenantID: "acme", Isolated: true}},
+}
+
+// residentStrangers are runs in the opener's tenant that may not address its
+// child: an isolated member's run for another user, whatever its agent id.
+var residentStrangers = []struct {
+	name string
+	id   tools.RunIdentityValue
+}{
+	{"other user isolated", tools.RunIdentityValue{AgentID: "a_bob_run", UserID: "bob", TenantID: "acme", Isolated: true}},
+	{"other user isolated, opener's id", tools.RunIdentityValue{AgentID: "a_alice_lead", UserID: "bob", TenantID: "acme", Isolated: true}},
 }
 
 func residentOwnerCtx() context.Context {
@@ -189,11 +200,11 @@ func residentLastUsed(t *testing.T, srv *Server, runID string) time.Time {
 	return rc.lastUsed
 }
 
-// TestResidentChild_OnlyTheOpeningRunCanAddressIt asserts a run in the same
-// tenant that did not open the child gets the unknown-id answer on send, poll,
-// cancel and close, cannot move its idle clock, and cannot close it — while
-// the opening run still drives it.
-func TestResidentChild_OnlyTheOpeningRunCanAddressIt(t *testing.T) {
+// TestResidentChild_TenantRunsCanAddressIt asserts a run in the opener's
+// tenant that did not open the child — another user's, another run of the
+// same user, or an isolated run of the same user — drives it with send, poll
+// and cancel, and that such a run can close it.
+func TestResidentChild_TenantRunsCanAddressIt(t *testing.T) {
 	srv := newResidentTestServer(t)
 	owner := residentOwnerCtx()
 	runID, _, _, err := srv.openResidentChild(owner, "child", "start", "", 0, 0)
@@ -202,7 +213,42 @@ func TestResidentChild_OnlyTheOpeningRunCanAddressIt(t *testing.T) {
 	}
 	defer func() { _ = srv.closeResidentChild(owner, runID) }()
 
-	for _, c := range residentCallers {
+	for _, c := range residentPeers {
+		t.Run(c.name, func(t *testing.T) {
+			caller := tools.WithRunIdentity(context.Background(), c.id)
+			if out, state, err := srv.sendResidentChild(caller, runID, "again", 0); err != nil || state != "awaiting_input" || !strings.Contains(out, "ok") {
+				t.Fatalf("send: out=%q state=%q err=%v", out, state, err)
+			}
+			if _, state, err := srv.pollResidentChild(caller, runID, 0); err != nil || state != "awaiting_input" {
+				t.Fatalf("poll: state=%q err=%v", state, err)
+			}
+			if _, _, err := srv.cancelResidentChildTurn(caller, runID); err != nil {
+				t.Fatalf("cancel: %v", err)
+			}
+		})
+	}
+
+	peer := tools.WithRunIdentity(context.Background(), residentPeers[0].id)
+	if err := srv.closeResidentChild(peer, runID); err != nil {
+		t.Fatalf("peer close: %v", err)
+	}
+	waitResidentGone(t, srv, runID)
+}
+
+// TestResidentChild_IsolatedOtherUserCannotAddressIt asserts an isolated
+// member's run gets the unknown-id answer on send, poll, cancel and close for
+// another user's child in its tenant, cannot move its idle clock, and cannot
+// close it — while the opening run still drives it.
+func TestResidentChild_IsolatedOtherUserCannotAddressIt(t *testing.T) {
+	srv := newResidentTestServer(t)
+	owner := residentOwnerCtx()
+	runID, _, _, err := srv.openResidentChild(owner, "child", "start", "", 0, 0)
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	defer func() { _ = srv.closeResidentChild(owner, runID) }()
+
+	for _, c := range residentStrangers {
 		t.Run(c.name, func(t *testing.T) {
 			caller := tools.WithRunIdentity(context.Background(), c.id)
 			ageResidentChild(t, srv, runID, time.Minute)
@@ -226,7 +272,7 @@ func TestResidentChild_OnlyTheOpeningRunCanAddressIt(t *testing.T) {
 			// to land before checking the child is still there.
 			time.Sleep(50 * time.Millisecond)
 			if _, ok := srv.residentReg.get(runID); !ok {
-				t.Fatal("another run's close reaped the child")
+				t.Fatal("an isolated run's close reaped another user's child")
 			}
 		})
 	}
@@ -237,18 +283,16 @@ func TestResidentChild_OnlyTheOpeningRunCanAddressIt(t *testing.T) {
 	if out, state, err := srv.sendResidentChild(owner, runID, "again", 0); err != nil || state != "awaiting_input" || !strings.Contains(out, "ok") {
 		t.Fatalf("owner send: out=%q state=%q err=%v", out, state, err)
 	}
-	if _, _, err := srv.cancelResidentChildTurn(owner, runID); err != nil {
-		t.Fatalf("owner cancel: %v", err)
-	}
 	if err := srv.closeResidentChild(owner, runID); err != nil {
 		t.Fatalf("owner close: %v", err)
 	}
 	waitResidentGone(t, srv, runID)
 }
 
-// TestResidentChild_ReapReasonOnlyForTheOpeningRun asserts why a child was
-// reaped is told to the run that opened it and to no other run in its tenant.
-func TestResidentChild_ReapReasonOnlyForTheOpeningRun(t *testing.T) {
+// TestResidentChild_ReapReasonFollowsAddressing asserts why a child was reaped
+// is told to every run that could have addressed it and to no isolated run of
+// another user.
+func TestResidentChild_ReapReasonFollowsAddressing(t *testing.T) {
 	srv := newResidentTestServer(t)
 	owner := residentOwnerCtx()
 	runID, _, _, err := srv.openResidentChild(owner, "child", "start", "", 0, 0)
@@ -258,10 +302,16 @@ func TestResidentChild_ReapReasonOnlyForTheOpeningRun(t *testing.T) {
 	srv.sweepResidentChildren(time.Now().Add(24 * time.Hour))
 	waitResidentGone(t, srv, runID)
 
-	for _, c := range residentCallers {
+	for _, c := range residentStrangers {
 		caller := tools.WithRunIdentity(context.Background(), c.id)
 		if _, _, err := srv.pollResidentChild(caller, runID, 0); err == nil || strings.Contains(err.Error(), "idle timeout") {
 			t.Errorf("%s: poll %v, want a bare not-found", c.name, err)
+		}
+	}
+	for _, c := range residentPeers {
+		caller := tools.WithRunIdentity(context.Background(), c.id)
+		if _, _, err := srv.pollResidentChild(caller, runID, 0); err == nil || !strings.Contains(err.Error(), "idle timeout") {
+			t.Errorf("%s: poll %v, want the idle reason", c.name, err)
 		}
 	}
 	if _, _, err := srv.pollResidentChild(owner, runID, 0); err == nil || !strings.Contains(err.Error(), "idle timeout") {

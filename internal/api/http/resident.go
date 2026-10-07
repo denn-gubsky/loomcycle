@@ -60,7 +60,7 @@ type residentChild struct {
 	runID         string
 	agentID       string // cancel-registry key (close/idle cancel by agent_id)
 	agentName     string // the resident child's agent name (for Web-UI visibility)
-	parentAgentID string // the opener's agent id: teardown backstop + ownership
+	parentAgentID string // the opener's agent id (parent-teardown backstop)
 	tenantID      string // ownership: send/close must come from this tenant
 	userID        string
 	cancel        context.CancelCauseFunc // direct fallback if the registry entry is gone
@@ -230,20 +230,19 @@ type residentTombstone struct {
 	at            time.Time
 }
 
-// residentOwnedBy reports whether caller is the run that opened a child with
-// this tenant, user and parent agent id. Only the opener may address it: run
-// ids are not secrets, and the tenant alone admitted any run in the tenant —
-// an isolated member's included — to read, steer, stop, close or keep alive
-// another user's child. The parent agent id is the opener's key because it is
-// what a resumed parent carries and what a rebuilt child is restored with; an
-// empty one matches nobody. The user check closes the window where another
-// user's run takes the agent id over (agent_id is caller-chosen at run start
-// once the opener no longer holds it).
-func residentOwnedBy(tenantID, userID, parentAgentID string, caller tools.RunIdentityValue) bool {
-	return parentAgentID != "" &&
-		parentAgentID == caller.AgentID &&
-		tenantID == caller.TenantID &&
-		userID == caller.UserID
+// residentOwnedBy reports whether caller may address a child opened in this
+// tenant by this user. It is the run-content rule (auth.OwnedRowVisible) read
+// off the caller's run identity: any run in the tenant may — the tenant's
+// runs collaborate, as they do on run cancel, compact and retune — except an
+// isolated member's run, which may address only its own user's children. A
+// run always sits in one tenant, so OwnedRowVisible's admin/legacy
+// cross-tenant pass has no counterpart here. The opener's agent id is
+// deliberately not part of the rule.
+func residentOwnedBy(tenantID, userID string, caller tools.RunIdentityValue) bool {
+	if tenantID != caller.TenantID {
+		return false
+	}
+	return !caller.Isolated || userID == caller.UserID
 }
 
 func newResidentRegistry() *residentRegistry {
@@ -275,12 +274,12 @@ func (r *residentRegistry) remove(rc *residentChild) {
 }
 
 // goneReason returns why a child that is no longer registered was reaped, for
-// the run that opened it; "" when it was not reaped (closed, ended) or the
-// caller is any other run.
+// a caller that could have addressed it (residentOwnedBy); "" when it was not
+// reaped (closed, ended) or the caller could not.
 func (r *residentRegistry) goneReason(runID string, caller tools.RunIdentityValue) string {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if t, ok := r.gone[runID]; ok && residentOwnedBy(t.tenantID, t.userID, t.parentAgentID, caller) {
+	if t, ok := r.gone[runID]; ok && residentOwnedBy(t.tenantID, t.userID, caller) {
 		return t.reason
 	}
 	return ""
@@ -596,9 +595,9 @@ func (s *Server) residentNotFound(ctx context.Context, childRunID string) error 
 	return fmt.Errorf("resident sub-agent %q not found (it may have been closed or timed out)", childRunID)
 }
 
-// lookupOwnedResident resolves a child by run_id for the run that opened it
-// (residentOwnedBy). Any other caller — another tenant, another user, or
-// another run of the same user — gets the same not-found as an unknown id.
+// lookupOwnedResident resolves a child by run_id for a caller residentOwnedBy
+// admits. Any other caller — another tenant, or an isolated member's run for
+// another user's child — gets the same not-found as an unknown id.
 func (s *Server) lookupOwnedResident(ctx context.Context, childRunID string) (*residentChild, bool) {
 	if s.residentReg == nil {
 		return nil, false
@@ -607,7 +606,7 @@ func (s *Server) lookupOwnedResident(ctx context.Context, childRunID string) (*r
 	if !ok {
 		return nil, false
 	}
-	if !residentOwnedBy(rc.tenantID, rc.userID, rc.parentAgentID, tools.RunIdentity(ctx)) {
+	if !residentOwnedBy(rc.tenantID, rc.userID, tools.RunIdentity(ctx)) {
 		return nil, false
 	}
 	return rc, true
