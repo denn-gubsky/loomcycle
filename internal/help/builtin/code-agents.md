@@ -235,6 +235,8 @@ tests and snapshot equality.
   - `Channel` `await`, and `subscribe` with `wait_ms`, while they wait for a
     message;
   - `Interruption` `ask`, until a person answers;
+  - a run held for a review verdict, or parked for an operator's next
+    message;
   - a runtime pause, for as long as the run is parked by it.
 
   So a fan-out orchestrator sizes its budget for its OWN work — the JavaScript

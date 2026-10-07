@@ -105,7 +105,7 @@ const statefulOperatorPrefix = "operator: "
 func parkForStatefulTurn(ctx context.Context, opts *RunOptions, sinceTurn int, emit func(providers.Event)) (string, bool) {
 	emit(providers.Event{Type: providers.EventAwaitingInput,
 		AwaitingInput: &providers.AwaitingInputEventInfo{SinceTurn: sinceTurn}})
-	pp := newParkPause(opts.PauseGate)
+	pp := newParkPause(ctx, opts.PauseGate)
 	defer pp.done()
 	for {
 		m, resumed := parkForInput(ctx, opts.SteerQueue, opts.OnHeartbeat, pp)

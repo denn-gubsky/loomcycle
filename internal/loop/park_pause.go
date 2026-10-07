@@ -1,5 +1,7 @@
 package loop
 
+import "context"
+
 // IdlePauser is implemented by a PauseGate that can record a WAITING run as
 // paused without moving it.
 //
@@ -15,23 +17,27 @@ type IdlePauser interface {
 	// each resume, so it is re-fetched after every cycle.
 	PauseCh() <-chan struct{}
 	// PauseIdle records the run as paused and credits it to the pause
-	// barrier. resumed is closed when the runtime resumes; release undoes the
-	// record, and is safe to call more than once. ok=false means the pause was
-	// already lifted and nothing was recorded.
-	PauseIdle() (resumed <-chan struct{}, release func(), ok bool)
+	// barrier. ctx is the waiting run's: it carries the run's clock, which is
+	// recorded and stopped exactly as a park at the iteration boundary does,
+	// so the pause neither counts against the run's lifetime nor is lost by a
+	// snapshot taken while it waits. resumed is closed when the runtime
+	// resumes; release undoes the record, and is safe to call more than once.
+	// ok=false means the pause was already lifted and nothing was recorded.
+	PauseIdle(ctx context.Context) (resumed <-chan struct{}, release func(), ok bool)
 }
 
 // parkPause tracks one park's part in a runtime pause. The zero value (no
 // IdlePauser) never fires: every channel it returns is nil.
 type parkPause struct {
+	ctx      context.Context // the waiting run's, handed to PauseIdle
 	p        IdlePauser
 	pauseCh  <-chan struct{}
 	resumeCh <-chan struct{}
 	release  func()
 }
 
-func newParkPause(g PauseGate) *parkPause {
-	pp := &parkPause{}
+func newParkPause(ctx context.Context, g PauseGate) *parkPause {
+	pp := &parkPause{ctx: ctx}
 	if ip, ok := g.(IdlePauser); ok {
 		pp.p = ip
 		pp.pauseCh = ip.PauseCh()
@@ -50,7 +56,7 @@ func (pp *parkPause) lifted() <-chan struct{} { return pp.resumeCh }
 
 // onDeclared records the waiting run as paused.
 func (pp *parkPause) onDeclared() {
-	resumed, release, ok := pp.p.PauseIdle()
+	resumed, release, ok := pp.p.PauseIdle(pp.ctx)
 	if !ok {
 		// Lost a race with a resume: nothing recorded, wait for the next pause.
 		pp.pauseCh = pp.p.PauseCh()

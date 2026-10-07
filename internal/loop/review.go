@@ -189,6 +189,10 @@ func parkForReview(ctx context.Context, opts *RunOptions, messages []providers.M
 		opts.OnReviewHold(true)
 		defer opts.OnReviewHold(false)
 	}
+	// For a code agent the hold is a wait: a reviewer's verdict does not spend
+	// its budget, or a slow review would leave it none to revise with. It
+	// still counts against the run's lifetime, like every wait.
+	defer providers.BeginWait(ctx)()
 	heldAt := acceptFrom
 	var deadline <-chan time.Time
 	expiresAt := ""
@@ -206,7 +210,7 @@ func parkForReview(ctx context.Context, opts *RunOptions, messages []providers.M
 	announce()
 	t := time.NewTicker(parkHeartbeatInterval)
 	defer t.Stop()
-	pp := newParkPause(opts.PauseGate)
+	pp := newParkPause(ctx, opts.PauseGate)
 	defer pp.done()
 	expiredWhilePaused := false
 	// handle acts on one message from the steer queue; the bool reports that

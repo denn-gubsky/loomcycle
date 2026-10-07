@@ -16,8 +16,10 @@ state machine transitions `running → pausing → paused`:
   read-only or not, built-in or MCP — runs to completion and its result
   is recorded; the run then parks at its next iteration boundary and
   records `pause_state='paused'`. A run never parks between a tool call
-  and its result. `force_cancelled_count` in the result is therefore
-  always `0`.
+  and its result. An `Agent` or `TeamDef` `poll` waiting on children
+  ends its wait at the pause and answers with what it knows, so its run
+  can park. A resident sub-agent's idle and turn timers stop for the
+  pause. `force_cancelled_count` in the result is therefore always `0`.
 - New `/v1/runs` requests (and the gRPC / webhook / A2A run-admission
   paths) return 503 / Unavailable while the runtime is in `pausing` or
   `paused`; the scheduler skips firing. Sub-agents of an already-admitted

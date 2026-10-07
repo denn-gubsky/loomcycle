@@ -1121,7 +1121,11 @@ func HeartbeatInterval() time.Duration { return parkHeartbeatInterval }
 // in effect (pp, owned by the caller so the record survives the caller's
 // re-parks). Returns (msg, true) on input; (zero, false) on cancel or a closed
 // queue.
+//
+// For a code agent the park is a wait: a person's answer does not spend its
+// budget. It still counts against the run's lifetime, like every wait.
 func parkForInput(ctx context.Context, q <-chan steer.Message, heartbeat func(), pp *parkPause) (steer.Message, bool) {
+	defer providers.BeginWait(ctx)()
 	t := time.NewTicker(parkHeartbeatInterval)
 	defer t.Stop()
 	for {
@@ -1164,7 +1168,7 @@ func parkForChildren(ctx context.Context, opts *RunOptions, bg *tools.Background
 			AwaitingChildren: &providers.AwaitingChildrenEventInfo{ChildRunIDs: ids, SinceTurn: sinceTurn}})
 	}
 	defer providers.BeginWait(ctx)()
-	pp := newParkPause(opts.PauseGate)
+	pp := newParkPause(ctx, opts.PauseGate)
 	defer pp.done()
 	for len(waiting) > 0 {
 		select {
@@ -1212,7 +1216,7 @@ func childIDs(cs []tools.ChildView) string {
 func parkForOperatorTurn(ctx context.Context, opts *RunOptions, messages []providers.Message, sinceTurn, lastCtxTokens, preambleTokens int, emit func(providers.Event)) ([]providers.Message, int, bool) {
 	emit(providers.Event{Type: providers.EventAwaitingInput,
 		AwaitingInput: &providers.AwaitingInputEventInfo{SinceTurn: sinceTurn}})
-	pp := newParkPause(opts.PauseGate)
+	pp := newParkPause(ctx, opts.PauseGate)
 	defer pp.done()
 	for {
 		m, resumed := parkForInput(ctx, opts.SteerQueue, opts.OnHeartbeat, pp)
