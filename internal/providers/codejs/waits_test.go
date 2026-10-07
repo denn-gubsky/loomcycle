@@ -228,3 +228,28 @@ function run() {
 		t.Errorf("the run ended after %s, before its child (%s): it did not wait", took, childTakes)
 	}
 }
+
+// A program hands its child text as data through the same call: the `untrusted`
+// field reaches the Agent tool as written, an array or a single string.
+func TestCodeJSOrchestrator_SpawnPassesUntrustedToTheAgentTool(t *testing.T) {
+	js := `
+function run() {
+  var a = Agent.spawn({name: "kid", prompt: "judge", untrusted: [{text: "a transcript", kind: "user_input"}]});
+  var b = Agent.spawn({name: "kid", prompt: "judge", untrusted: "a page"});
+  return { final_text: String(a) + "|" + String(b) };
+}`
+	seen := func(ctx context.Context, _, _, _ string) (string, error) {
+		var parts []string
+		for _, u := range tools.SpawnUntrusted(ctx) {
+			parts = append(parts, u.Kind+":"+u.Text)
+		}
+		return strings.Join(parts, ","), nil
+	}
+	res, err := runOrchestrator(t, js, orchestratorBudget, &builtin.AgentTool{Run: seen})
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if want := "user_input:a transcript|:a page"; res.FinalText != want {
+		t.Fatalf("the children saw %q, want %q", res.FinalText, want)
+	}
+}
