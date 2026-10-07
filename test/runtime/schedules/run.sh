@@ -79,6 +79,13 @@ FIRE_STATUS=$(sqlite3 "$DB" "SELECT last_status FROM schedule_run_state WHERE de
 [[ "$FIRE_STATUS" = "completed" ]] || fail "fired run status=$FIRE_STATUS, want completed"
 RUN_OK=$(sqlite3 "$DB" "SELECT count(*) FROM runs WHERE status='completed';")
 [[ "$RUN_OK" -ge 1 ]] || fail "no completed run row after fire"
+# The run-state view the Web UI polls: the fire counted, the claim recorded,
+# and nothing left running (active_runs is a list, empty — never absent).
+adm "$BASE/v1/_schedules/$DEF_ID/state" > "$TEST_DIR/state.json"
+grep -q '"active_runs":\[\]' "$TEST_DIR/state.json" || fail "state has no empty active_runs: $(cat "$TEST_DIR/state.json")"
+grep -q '"fire_count":1' "$TEST_DIR/state.json" || fail "state fire_count != 1: $(cat "$TEST_DIR/state.json")"
+grep -q '"slot_at":' "$TEST_DIR/state.json" || fail "state has no slot_at: $(cat "$TEST_DIR/state.json")"
+if grep -q '"catch_up_until":' "$TEST_DIR/state.json"; then fail "state reports a catch-up backlog: $(cat "$TEST_DIR/state.json")"; fi
 
 echo "[6/6] retire → no further fires"
 BEFORE=$(sqlite3 "$DB" "SELECT last_run_id FROM schedule_run_state WHERE def_id='$DEF_ID';")

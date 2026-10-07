@@ -1809,10 +1809,33 @@ export interface ScheduleStateView {
   def_id: string;
   last_run_at?: string;
   last_run_id?: string;
+  // completed | failed | cancelled | rejected | running (a run is in
+  // flight) | skipped_overlap (a slot found one still going) | skipped*
   last_status?: string;
   last_error?: string;
   next_run_at: string;
   paused_until?: string;
+  fire_count?: number;
+  // The last slot claim: which slot, which replica, when.
+  slot_at?: string;
+  claimed_by?: string;
+  claimed_at?: string;
+  finished_at?: string;
+  // Present while a catch_up_max backlog drains: its newest slot.
+  catch_up_until?: string;
+  // Slots the last outage dropped (older than catch_up_max).
+  missed_slots?: number;
+  // Every run the schedule started and has not finished.
+  active_runs?: ScheduleActiveRun[];
+}
+
+export interface ScheduleActiveRun {
+  def_id: string;
+  run_id: string;
+  slot_at: string;
+  catch_up?: boolean;
+  started_at: string;
+  claimed_by?: string;
 }
 
 export function getScheduleState(defID: string): Promise<ScheduleStateView> {
