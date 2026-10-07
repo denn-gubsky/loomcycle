@@ -8,6 +8,140 @@ Each entry is the release's tag annotation, so the tag and this file cannot disa
 
 For the **public roadmap**, see [`docs/PLAN.md`](docs/PLAN.md).
 
+## What's in v1.105.0
+
+*An agent can now start sub-agents and team walks in **poll mode**: the call returns at once, the children run in the background, the parent keeps working, is told when they finish and collects their results with `poll`; they survive a pause, a restart and a move to another instance. A child can be bounded with `timeout_ms`, and a child that stops at its iteration limit now reaches its caller as an error with its last answer kept. Scheduled runs are no longer capped at 10 minutes, every replica can run the scheduler, and a schedule says what an overlapping slot does and how many missed slots it makes up. Also: a team can be checked before it is saved, a cancel ends a run whose replica is gone, a parent can hand a sub-agent untrusted text, and the memory rerank can reorder recall.*
+
+A minor release: #1629 to #1683 (every number in that range).
+- #1635 to #1639, #1642, #1646, #1648 to #1650 and #1657 are poll mode, bounded sub-agents and the code-js run clock;
+- #1651 to #1656, #1658 to #1663, #1665, #1666, #1669 to #1672, #1674 to #1676, #1679, #1681 and #1683 are the review of that line: capped children, pauses, resume, resident children and cancels;
+- #1664, #1667, #1668, #1673, #1677 and #1678 are the scheduler;
+- #1640, #1641, #1643 to #1645 and #1647 are teams; #1680 and #1682 are untrusted text;
+- #1630 and #1633 are the memory rerank; #1631 is webhook dedup; #1629, #1632 and #1634 are benchmarks.
+
+### Sub-agents in poll mode (#1638, #1642, #1646, #1650, #1657)
+
+`Agent op=spawn` and `parallel_spawn` take `mode: "poll"`. The call returns as soon as the children are admitted: `spawn` answers `{child_run_id, agent, state: "running"}` and `parallel_spawn` answers `{batch_id, children: [{index, agent, child_run_id, state}]}`, where a child still waiting for a slot is `queued`. Validation, depth, admission and authority are the same as for a waited-for spawn, which is unchanged.
+
+- **Notes.** When a child finishes, the parent's next turn carries a note naming it and the call that reads it (`notify`, default true; several endings share one note; a child already read is not noted).
+- **`Agent op=poll`.** `child_run_ids`, a `batch_id`, or neither (every background child not yet read; each result is handed over once). `wait` is `none`, `any` or `all` with `wait_ms`, cut to `LOOMCYCLE_AGENT_POLL_WAIT_CAP_MS`. The answer is `{children: [{child_run_id, agent, state, output?, error?, structured?, status?, truncated?}], pending}`. A poll by id can be repeated. A child held for review reads `held`.
+- **`Agent op=cancel`** with `child_run_ids` ends background children (one of a batch leaves the rest running), waits up to 15 s and reports each final state.
+- **A parent does not end over its children.** `on_parent_end` is `wait` (default) or `cancel`. With `wait`, a parent that ends its turn while children are queued, running or held parks: it emits `awaiting_children`, makes no model call, spends no iteration, and wakes once, when every child has ended, with a note listing each final state. Run reads and the run-state stream show `awaited_state: "children"` with the child ids in `awaited_on`. Cancelling a parked parent cancels its children. With `cancel`, the children are cancelled when the parent ends its turn.
+- **Refusals.** An id this run did not start gets `not a child of this run`, whether it is unknown or another run's. Poll mode is refused on a run's last iteration and in a stateful run. Children still running when a parent ends its last iteration are cancelled, and an error event names them.
+- **Team walks (#1642, #1646).** `TeamDef op=run` takes `mode: "poll"` and returns `{name, def_id, run_id, state: "running"}`. The walk is a background child of the calling run: it holds one live-children slot, takes `notify` and `on_parent_end`, and is cancelled when the parent run ends. `TeamDef op=poll` (`run_ids`, `wait`, `wait_ms`) returns the answer a waited-for run returns, and `TeamDef op=cancel` (`run_ids` required) cancels poll-mode walks and their members. Agent `poll` and `cancel` also accept a walk's run id (the row has `kind: "team"`). Synchronous and `mode: "detach"` runs are unchanged.
+- **External batches can detach (#1650).** `POST /v1/runs:batch`, MCP `spawn_runs` and gRPC `SpawnRunBatch` accept `mode: "detach"`, which they used to refuse. The call returns once every child has started (`status: "running"` with `run_id`, `agent_id` and `session_id`) or been refused in its slot. The runs go on under the caller's identity, hold their admission slots until they end, and are read with `GET /v1/runs/{run_id}` and stopped by agent id. A caller that leaves while a child still waits for admission withdraws that child.
+- **Transports and Web UI (#1650, #1657).** The gRPC `Event` gains `awaiting_children` and `children_note` (with the child run ids), and Python exposes both. The Web UI shows a "waiting for N children" pill on a parked parent and names each child in the run detail, and shows a code agent's budget.
+
+### Bounding sub-agents (#1635, #1636, #1654, #1655, #1663)
+
+- **`timeout_ms` on `spawn` and `parallel_spawn` (#1636),** per entry on `parallel_spawn` with the call's value as the default. When it runs out the child and everything below it are cancelled; `spawn` returns an error naming the timeout and the child's run, and a `parallel_spawn` row reads `ok: false`, `status: "timeout"`. Time the child is held for review is not counted, and neither is time the runtime is paused (#1666). `LOOMCYCLE_AGENT_CHILD_MAX_TIMEOUT_MS` is an operator ceiling; a larger value is refused, not clamped.
+- **A closing turn (#1636).** When the last turn `max_iterations` allows calls tools, the tools run and the model is called once more with their results and tools disabled, so the results are no longer thrown away. Its text is the run's answer and `stop_reason` stays `max_iterations`. The answer goes through `agent_stop` hooks and review like any other (#1655). Iteration-unbounded and stateful runs get no closing turn.
+- **A child that stops at its iteration limit is an error to its caller (#1655, #1663).** The child's own run is unchanged (`completed`, stop reason `max_iterations`). Its caller is told it did not finish, with the answer kept: `spawn` returns an error result, `sub-agent "X" stopped at its iteration limit of N before it finished, so its last answer may be incomplete (run r_…). Its last answer:` followed by the answer; a `parallel_spawn` row reads `ok: false`, `status: "max_iterations"`, the answer in `output`; a `poll` row reads `state: "failed"` with the same `status`. The same holds for a resident child's turn, and for a team walk's member: an `agent` or `consolidator` state fails the walk, a `parallel` state or Starter wave reports the member `ok: false` and does not count it toward `wait`, and a Starter's sink message is `status: "error"` with the answer kept. `subagent_stop` hooks see `status: failed`. A top-level run (`POST /v1/runs`, MCP `spawn_run`) is not affected.
+- **A live-children limit (#1636).** `LOOMCYCLE_MAX_LIVE_CHILDREN_PER_RUN` (default 32) caps the children one run has alive at once: spawned, queued, background and resident children, and poll-mode walks. A `parallel_spawn` past it is refused whole, before any child starts. The limit is per run, not per tree.
+- **Results fit the parent's window (#1636, #1654).** A `spawn` answer is cut to a quarter of the parent's window with a note naming the child's run; `parallel_spawn` and `poll` rows share that quarter and say `truncated: true`. A row's error is cut first; a child's final state is kept whole or left out (`state_omitted` / `structured_omitted` with its size), never cut. Auto-compaction now counts a turn's tool results before they are sent.
+- **Also (#1635).** `parallel_spawn` rows and the spawn result header carry the child's `run_id`. `Context op=self` reports `iterations_used`, `iterations_remaining` and `iterations_unbounded`. `Agent op=open` takes `timeout_ms` with `send`'s meaning: past it, `open` returns `state: "running"` with the partial output and the parent collects the rest with `poll`. A resident child running a turn is no longer reaped as idle; a turn longer than `LOOMCYCLE_RESIDENT_MAX_TURN_SECONDS` is, and the parent's next call is told why.
+
+### code-js: waiting does not spend the run budget (#1637, #1653, #1660)
+
+A code agent's budget (`run_timeout_seconds` / `LOOMCYCLE_CODE_AGENTS_RUN_TIMEOUT_SECONDS`) is now spent only by active time. Time blocked in an Agent call, a synchronous team run, a Channel `subscribe` or `await`, an `Interruption ask`, a review hold or a runtime pause does not count. `LOOMCYCLE_CODE_AGENTS_MAX_WALL_SECONDS` (default 86400; operator-only, no unlimited setting) bounds the run's lifetime, waits included and runtime pauses excluded; a run that reaches it fails with `code_agent_wall_limit`. A pause and a snapshot keep the clock, so a resume does not reset either limit. `Context op=self` reports `run_budget`. Model-driven agents are unchanged.
+
+### Pause, restart and other instances (#1649, #1653, #1658, #1661, #1665, #1666, #1672)
+
+- **Background children are durable (#1649, #1658).** A parent resumed after a snapshot restore or at boot gets its poll-mode children back from its transcript: results already read stay read, a child still running is read from its run wherever it runs, and a parent that was parked for its children parks again and wakes when the last one ends. Notes replay. A resident child is rebuilt with its parent. A child's `timeout_ms` is armed again from where it stood.
+- **Team walks do not move (#1658, #1665).** A walk lives on the instance that started it. A walk still running when its instance stopped is ended `failed` with that reason, and its paused members are cancelled instead of resumed. A paused sub-run whose direct parent has ended is ended `cancelled` instead of resumed.
+- **A runtime pause does not count against `timeout_ms` (#1666, #1672).** Every `timeout_ms` clock (an Agent child, a team state, a Starter run) stops from the moment the runtime is paused until it resumes, live and when re-armed after a restart or restore. Each run records the pauses it lived through as `spec.pauses` (`[{since, until?}]`) on `GET /v1/runs/{id}`; past 16 entries the oldest are folded into `spec.pauses_folded`.
+- **Waiting runs respect a pause (#1653).** A poll with `wait` returns when the runtime pauses, so its parent can park and a snapshot carries it. Resident children are not reaped while the runtime is paused.
+- **Cleanup waits for the tree (#1661).** A run tree's ephemeral volumes and run-scope SQL database are purged only after its background children, resident children and poll-mode walks have ended.
+
+### Resident sub-agents (#1651, #1656, #1671, #1676, #1679)
+
+- **Who may address one (#1651, #1656).** `Agent op=send`, `poll`, `cancel` and `close` by `child_run_id` reach a resident child from any run in its tenant; an isolated run (a `substrate:user` principal's) reaches only its own user's children. Any other caller gets the same not-found as an unknown id.
+- **An ended child's last answer stays readable (#1671).** After a resident child's run ends (at its iteration limit, on a failure, or closed), `poll` and `cancel` still hand back its ending and last answer, and `send` says the child has ended. A closed child says who closed it.
+- **From any replica (#1676, #1679).** A resident child held by another replica is read from the store and reached through the existing steer and cancel routes, where it used to answer "not found" (and `close` answered success while the child kept running). A poll from another replica counts as use, so the child is not reaped as idle. A wait on a child whose replica has died ends with that reason.
+
+### Cancelling runs nothing holds (#1675, #1679, #1681, #1683)
+
+A run's row reads `running` until something ends it. After a crash, a dead replica or a pause never resumed, a cancel found nothing to stop and left the row.
+
+- **A cancel now ends such a row (#1679):** `cancelled`, with the caller's reason as its stop reason, its pause cleared, its state published, and the unheld runs below it ended with it, including a team walk's members (#1683). This applies to the run-id cancel, the agent cancel on HTTP, gRPC and MCP, a resident `close`, a parent's `timeout_ms` on a paused child, and a schedule's `replace`. A row is left alone when a loop in this process holds it, when its replica is recorded alive or its liveness cannot be read, or when it started or heartbeated in the last 10 s.
+- **In a cluster (#1681).** A cancel for a run whose owner is recorded dead ends it the same way and answers `reason: "owner_dead_cancelled"` with the agents it cascaded to. It used to mark the run `failed` / `owner_replica_dead` and answer `owner_dead_marked_failed`.
+- **`run_end` hooks fire (#1683)** for a run ended this way and for one the resume pass cancels as orphaned, from the hooks the run pinned at start.
+- **A team walk can be cancelled from another replica (#1675).** A run-id cancel of a walk routed to the replica running it used to do nothing and answer 404 after the ack timeout.
+- **The recorded iteration limit (#1679).** A run's `spec.iteration_limit` records its limit at start (0 when unbounded).
+
+### Scheduled runs (#1664, #1667, #1668, #1673, #1677, #1678)
+
+- **Every replica can run the scheduler (#1664).** Each slot is claimed once in the database before it fires, so a slot fires once however many replicas tick. Before, every replica with the scheduler enabled fired every slot.
+- **A scheduled run outlives its tick (#1667).** The tick only starts the run; the run is no longer cut at 10 minutes, and a long run no longer delays other schedules. Each started run is tracked and finished once, by the replica that ran it or by any replica if that one died, so `on_complete` hooks fire exactly once. `last_status` reads `running` while a run is in flight; a team schedule records how its walk ended, not `completed` when it starts; a run whose loop fails is recorded `failed` and fires no hooks (it used to be recorded `completed`). A one-shot schedule is retired when its run finishes.
+- **`concurrency_policy` (#1668, #1678)** says what a slot does when the schedule's previous run is still going, for agent and team schedules: `forbid` (default) starts nothing and records `last_status: skipped_overlap`, which does not count toward `max_fires`; `allow` starts another run; `replace` cancels the running one (it ends `cancelled`, with no hooks) and starts its own, on any replica. `replace` never starts over a run it could not stop. The field is refused on `delivery: channel`.
+- **`catch_up_max` (#1673)** was stored but never read. `0` (default) collapses the slots missed in an outage into one fire and records the number dropped as `missed_slots`. `N` (at most 1000) runs the newest N in slot order; each catch-up agent run carries metadata `slot_at` and `catch_up: true`. Under `forbid` or `replace` the backlog runs one at a time; under `allow` up to N run at once. A gap of more than 100,000 slots collapses into one fire. A disabled schedule, a `channel` tick and a consolidation sweep never catch up.
+- **What a schedule is doing (#1677).** `GET /v1/_schedules/{def_id}/state` and `ScheduleDef op=get` (`run_state`) add `active_runs`, `fire_count`, the last claim, `finished_at`, `catch_up_until` and `missed_slots`. The Web UI Schedules page shows them with a "Running now" list, sets both fields on create and fork, and has status chips for `running`, `skipped_overlap` and `cancelled`.
+
+### Teams (#1640, #1641, #1643 to #1647)
+
+- **Check a team before saving it (#1641, #1644, #1645).** `TeamDef op=verify` with an `overlay` builds what a save would store, runs every create or fork gate and returns every problem at once, writing nothing. Each issue has a `severity` (`refused`, `unrunnable` or `advisory`) and the JSON `path` of the value at fault; the answer says `valid` and `runnable`. It checks a fork when the name has an active version, otherwise a create (`as` overrides, `parent_def_id` pins the parent). The Web UI Teams editor has a Check button that sends exactly what Save would.
+- **A detached walk outlives its starter (#1643, #1647).** A walk an agent started with `mode: "detach"` was cancelled with that agent, and the starter tree's ephemeral volumes and run-scope SQL database were purged under it. The walk now runs until it ends or its run id is cancelled, and that state is kept until the last detached walk on the tree ends.
+- **Fork (#1640).** A fork that sends `max_iterations: 0` or `null` clears the parent's cap; an absent key keeps it.
+- **Strict arguments in a run (#1646).** A `TeamDef` call made inside an agent's run with an argument its op does not take is refused; it used to be dropped silently.
+
+### Untrusted text (#1680, #1682)
+
+- **A parent can hand a sub-agent untrusted text (#1682).** `spawn`, each `parallel_spawn` entry and `open` take `untrusted: [{text, kind?}]`. Each entry is fenced in the child's first user turn, after the prompt, so the child reads it as data; before, a parent could pass only `prompt`, which the child reads as instruction. The text is not template-expanded, and a child's own spawns never receive it. `kind` is one of `untrusted`, `user_input`, `web_content`, `tool_output`, `search_result`, `uploaded_cv`, `qa_question`. At most 64 entries and 1 MiB per child. `send` refuses the field.
+- **An untrusted block cannot close its own fence (#1680).** The body was escaped by replacing `<` only, so `&lt;/untrusted>`, a fullwidth `＜`, a zero-width character inside the tag or an escape such as `\x3c` still read to a model as the closing tag. Invisible characters are now dropped and every spelling of `<` becomes `‹`.
+
+### Memory and webhooks (#1630, #1631, #1633)
+
+- **The rerank can reorder memory recall (#1630).** `memory.reranker.sources` (operator-wide; `documents`, `facts`, `notes`, `traces`) lists what the rerank may reorder for `search` and `recall`. Unset means `[documents]`, as before. On LoCoMo memory, reranking recall lifted recall@5 from 0.588 to 0.74.
+- **The listwise rerank's default pool is 40 candidates (#1633),** up from 20; the decision reranker stays at 20, and an agent that sets `candidates` is unchanged.
+- **Channel webhooks are deduplicated across replicas and restarts (#1631).** A `delivery: channel` WebhookDef was deduplicated only by a per-process 10-minute cache. Accepted deliveries' keys are now claimed in the database before the publish and held for 24 hours, as for a team's own webhooks; a duplicate answers `200` with `deduped`.
+
+### Other fixes
+
+- **`Interruption ask` (#1674).** An answer, decline or cancel that landed between the ask's creation and the start of its wait was missed, and the ask slept until its poll backstop noticed, 15 s by default.
+- **SSE (#1652).** A stream's keepalive could write after its handler had returned, into a response already handed back to the server. Every stream now ends its keepalive before the handler returns.
+- **Volumes (#1659).** A `VolumeDef op=create` that fails or is cancelled no longer leaves a directory with no row.
+- **MCP `teamdef` (#1654).** The tool no longer offers `poll`, `cancel` or `mode: "poll"`, which need a calling run and always failed over MCP; `mode: "detach"` is the route there.
+- **Pause (#1635, #1650).** The unused per-tool pause policy is removed and the docs say what a pause has always done: a call in flight runs to completion and the run parks at its next iteration boundary.
+- **Tests, docs and benchmarks.** #1639, #1648, #1662 and #1670 are test fixes; #1669 updates the architecture guide; #1629, #1632 and #1634 are benchmark runs with no runtime change.
+
+### Upgrade notes
+
+- **Migrations:** 0094 to 0097 on Postgres, with the same changes on sqlite, applied at boot. 0094 and 0096 add columns to `schedule_run_state`, 0095 adds the `schedule_active_runs` table, and 0097 adds a partial index on `runs(parent_run_id)`. The index is built in the migration's transaction, not concurrently, so on a large `runs` table the first boot holds writes to it while the index builds.
+- **Proto:** additive. `Event` gains `awaiting_children` (19) and `children_note` (20).
+- **New environment variables:**
+
+  | Variable | Default | Meaning |
+  |---|---|---|
+  | `LOOMCYCLE_MAX_LIVE_CHILDREN_PER_RUN` | 32 | Children one run may have alive at once. 0 or unset means the default. |
+  | `LOOMCYCLE_AGENT_CHILD_MAX_TIMEOUT_MS` | 0 (no ceiling) | Largest `timeout_ms` an agent may give a child. A larger value is refused. Never a default. |
+  | `LOOMCYCLE_AGENT_POLL_WAIT_CAP_MS` | 60000 | Longest one Agent or TeamDef `poll` with `wait` blocks. A larger `wait_ms` is cut to it. |
+  | `LOOMCYCLE_RESIDENT_MAX_TURN_SECONDS` | 7200 | Longest turn of a resident child before it is reaped. No unlimited setting. |
+  | `LOOMCYCLE_CODE_AGENTS_MAX_WALL_SECONDS` | 86400 | Lifetime of a code-js run, waits included, runtime pauses excluded. No unlimited setting. |
+- **Removed:** `LOOMCYCLE_SCHEDULER_FIRE_TIMEOUT_SECONDS` is no longer read. A scheduled run has no wall clock; it is bounded like any other run (iteration limit, token budgets, cancel). The consolidation sweep keeps a fixed 10-minute budget per sweep, so raising the variable to give slow local-model passes more time no longer works.
+- **Capped children are errors:** a sub-agent, resident turn or team-walk member that stops at its iteration limit used to reach its caller as a success. It is now an error result (`ok: false` / `state: "failed"`, `status: "max_iterations"`) with the answer kept beside it, and a walk whose `agent` or `consolidator` member is capped fails. Raise the child's `max_iterations`, or read `output` from the failed row. The child's own run row still reads `completed` / `max_iterations`.
+- **Closing turn:** a run whose last allowed iteration calls tools makes one more, billed model call. A consumer that treated a `max_iterations` run as having no answer now sees one.
+- **Fan-out width:** a run is refused past 32 live children by default, with the number alive and the limit named. Raise `LOOMCYCLE_MAX_LIVE_CHILDREN_PER_RUN` if a workload relies on more.
+- **Child answers are cut** to a quarter of the parent's window (shared across the rows of one `parallel_spawn` or `poll`), and a final state that does not fit is left out with `state_omitted` / `structured_omitted`. The whole answer stays on the child's run.
+- **Spawn header:** a spawn result's header is now `[sub-agent agent_id=a_… run_id=r_…]`. A reader that expects exactly `[sub-agent agent_id=…]` must accept the extra field.
+- **`timeout_ms`:** time the runtime is paused no longer counts against it, on any `timeout_ms` clock.
+- **code-js:** a run that only waits is now stopped by the 24-hour wall limit (`code_agent_wall_limit`), not its budget, and one that waited on children or channels has more working time than before. Only the operator variable moves the wall limit.
+- **Pause:** `force_cancelled_count` stays on every transport and is always 0, as it always was in production.
+- **Resident children:** an isolated run can no longer address another user's resident child by id. `close` of a child that no process holds now ends its row; where its replica is alive but does not answer, `close` returns an error where it used to return success.
+- **Cancels:** a cancel aimed at a run whose loop is gone now ends the row `cancelled`, where it answered "no in-flight run" or "already ended" and left it. In a cluster, the agent cancel's `reason` for a dead owner is `owner_dead_cancelled` (was `owner_dead_marked_failed`), and the run ends `cancelled` with the caller's reason (was `failed` / `owner_replica_dead`), with its unheld descendants. `owner_replica_unreachable` is unchanged. `run_end` hooks now fire for these runs.
+- **Scheduler:**
+  - The scheduler may be enabled on every replica; a deployment that enabled it on one replica to avoid double fires no longer needs to.
+  - `concurrency_policy` defaults to `forbid`. Agent schedules already skipped an overlap; a team schedule used to start a walk over a running one and no longer does. Set `allow` to keep that.
+  - `catch_up_max` defaults to 0, which is the previous behaviour (one fire after an outage). A schedule that already stored a non-zero value now runs that many missed slots.
+  - `last_status` can be `running`, `skipped_overlap` and `cancelled`, and a failed run reads `failed` where it read `completed`. `on_complete` hooks no longer fire for a failed run. A team schedule's `completed` now means the walk finished.
+- **Team walks:** a walk does not survive its instance; one left `running` by a restart is ended `failed` when its starter or members are next resumed. An agent-started detached walk no longer stops when its starter is cancelled (stop it by its run id), and its members' `parent_agent_id` is `team:<name>`.
+- **TeamDef:** inside a run, an argument the op does not take is refused. A fork that sends `max_iterations: 0` clears the cap; omit the key to keep it. Over MCP, `teamdef` refuses `poll`, `cancel` and `mode: "poll"`.
+- **Batches:** `mode: "detach"` is accepted on `POST /v1/runs:batch`, `spawn_runs` and `SpawnRunBatch`. `timeout_ms` with `detach` is refused (HTTP 400, gRPC `InvalidArgument`).
+- **Untrusted blocks:** untrusted text shows `‹` where it showed `&lt;` (`a < b` reads `a ‹ b`). A session that holds an untrusted block misses the provider's prompt cache once after the upgrade. The code-js ABI is 1.1.0 for the new `untrusted` argument.
+- **Channel webhooks:** a redelivery of an accepted `delivery: channel` delivery answers `200` deduped on every instance and after a restart, for 24 hours. With a body-only signature the key is the body, so an identical body re-sent within a day is not published again.
+- **Memory rerank:** with the listwise rerank enabled and no `candidates` set, the rerank prompt now holds 40 candidates. `rerank_reason` can be `source_not_enabled` once `memory.reranker.sources` is set; an unknown source fails config load.
+- **Run reads:** `spec` gains the optional fields `pauses`, `pauses_folded`, `iteration_limit`, `run_clock`, `spawn.resident` and `spawn.addressed_at`, and `awaited_state` can be `children`.
+- **Adapters:** `@loomcycle/client` 1.105.0 adds the `awaiting_children`, `children_note` and `spawn_child_read` event types with their payloads, `"children"` on `AwaitedState`, `mode: "join" | "detach"` on `RunBatchOptions`, `"poll"` on `RunSpecTeam.mode`, the `RunSpec` fields above, the `verifyTeam(name, draft)` overload and the `TeamIssue`, `TeamIssueKind`, `TeamDraft` and `TeamDraftVerification` types. The Python package 1.105.0 adds `AgentEvent.awaiting_children` and `.children_note` (`AwaitingChildren`, `ChildrenNote`) and regenerated stubs.
+
 ## What's in v1.104.0
 
 *A team definition can now carry its own agents, skills, channels, schedules and webhooks, and declare variables that a start sets, so a workflow is handed over as one definition. Schedules and inbound webhooks can start a team walk directly. An agent inside a run can no longer create an agent with more authority than it holds, and retired webhook, skill, memory-backend and A2A definitions are no longer served. Also: an opt-in memory reranker that asks a decision model, Web UI support for team variables and a team's own definitions, and Save new version in the Web UI now puts the saved version in force.*

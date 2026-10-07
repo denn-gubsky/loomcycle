@@ -182,7 +182,18 @@ been primitives plus hardening: memory, documents, teams, sandboxing, retention
 and erasure. The agentic-memory subsystem and the document surfaces built on it
 remain the main direction.
 
-The most recent line (v1.104.0) lets a team definition carry its own agents,
+The most recent line (v1.105.0) lets an agent start sub-agents and team walks
+in poll mode: the call returns at once, the parent keeps working, is told when
+they finish and collects their results, and they survive a pause, a restart and
+a move to another instance. A child can be bounded with `timeout_ms`, and one
+that stops at its iteration limit reaches its caller as an error with its last
+answer kept. Scheduled runs are no longer capped at 10 minutes, every replica
+can run the scheduler, and a schedule sets what an overlapping slot does and
+how many missed slots it makes up. A team can be checked before it is saved, a
+cancel ends a run whose replica is gone, and a parent can hand a sub-agent
+untrusted text as data.
+
+Before it, v1.104.0 let a team definition carry its own agents,
 skills, channels, schedules and webhooks, and declare variables a start sets,
 so a workflow is handed over as one definition; a team's own webhook answers on
 any instance, with durable dedup. Schedules and inbound webhooks can start a
