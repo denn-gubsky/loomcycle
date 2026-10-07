@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { scheduleDefFork } from "../api";
+import ScheduleRunPolicyFields, { applyRunPolicy } from "./ScheduleRunPolicyFields";
 
 interface Props {
   templateName: string;
@@ -21,6 +22,8 @@ export default function ScheduleForkForm({ templateName, onClose, onForked }: Pr
   const [userTier, setUserTier] = useState("");
   const [cronOverride, setCronOverride] = useState("");
   const [maxFires, setMaxFires] = useState("");
+  const [policy, setPolicy] = useState("");
+  const [catchUpMax, setCatchUpMax] = useState("");
   const [credentialsJSON, setCredentialsJSON] = useState('{"":""}');
   const [err, setErr] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -62,6 +65,12 @@ export default function ScheduleForkForm({ templateName, onClose, onForked }: Pr
         return;
       }
       overlay.max_fires = n;
+    }
+    const policyErr = applyRunPolicy(overlay, policy, catchUpMax);
+    if (policyErr) {
+      setErr(policyErr);
+      setBusy(false);
+      return;
     }
     if (Object.keys(credentials).length > 0) overlay.user_credentials = credentials;
 
@@ -122,6 +131,13 @@ export default function ScheduleForkForm({ templateName, onClose, onForked }: Pr
               placeholder="blank = inherit template; 0 = unbounded; N = retire after N fires"
             />
           </label>
+          <ScheduleRunPolicyFields
+            policy={policy}
+            onPolicy={setPolicy}
+            catchUpMax={catchUpMax}
+            onCatchUpMax={setCatchUpMax}
+            inherit
+          />
           <label className="modal-field">
             <span>user_credentials (JSON)</span>
             <textarea

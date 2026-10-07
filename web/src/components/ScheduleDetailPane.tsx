@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import { Link } from "react-router-dom";
 import {
   getScheduleState,
   schedulePause,
@@ -210,6 +211,16 @@ export default function ScheduleDetailPane({ entry, onMutated, onForkTemplate }:
             value={Number(def.max_fires) === 0 ? "unbounded" : String(def.max_fires)}
           />
         )}
+        {def?.delivery !== "channel" && (
+          <DefField
+            label="concurrency_policy"
+            value={(def?.concurrency_policy as string) || "forbid"}
+          />
+        )}
+        <DefField
+          label="catch_up_max"
+          value={Number(def?.catch_up_max ?? 0) === 0 ? "0 (collapse)" : String(def?.catch_up_max)}
+        />
         {state?.next_run_at && (
           <DefField label="next_run_at" value={state.next_run_at} />
         )}
@@ -225,8 +236,46 @@ export default function ScheduleDetailPane({ entry, onMutated, onForkTemplate }:
         {state?.last_error && (
           <DefField label="last_error" value={<code>{state.last_error}</code>} />
         )}
+        {state?.fire_count != null && (
+          <DefField label="fire_count" value={String(state.fire_count)} />
+        )}
+        {state?.slot_at && (
+          <DefField
+            label="last claim"
+            value={`slot ${state.slot_at}${state.claimed_by ? ` by ${state.claimed_by}` : ""}`}
+          />
+        )}
+        {state?.catch_up_until && (
+          <DefField label="catching up until" value={state.catch_up_until} />
+        )}
+        {state?.missed_slots ? (
+          <DefField
+            label="missed_slots"
+            value={`${state.missed_slots} dropped by the last outage`}
+          />
+        ) : null}
         {isPaused && <div className="schedule-detail-paused">⏸ paused</div>}
       </section>
+
+      {/* What the schedule is running now. A run outlives the tick that
+          started it, so a long job shows here until it ends. */}
+      {state?.active_runs && state.active_runs.length > 0 && (
+        <section className="schedule-detail-block">
+          <h4>Running now</h4>
+          <ul className="schedule-lineage">
+            {state.active_runs.map((r) => (
+              <li key={r.run_id} className="schedule-lineage-row">
+                <Link to={`/agents?run=${encodeURIComponent(r.run_id)}`}>
+                  <code className="schedule-lineage-defid">{r.run_id}</code>
+                </Link>
+                <span>slot {r.slot_at}</span>
+                {r.catch_up && <span className="schedule-lineage-tag">catch-up</span>}
+                {r.claimed_by && <span className="schedule-lineage-tag">{r.claimed_by}</span>}
+              </li>
+            ))}
+          </ul>
+        </section>
+      )}
 
       {/* Action buttons — only when there's a substrate def_id to target. */}
       {entry.active_def_id && (
@@ -234,7 +283,7 @@ export default function ScheduleDetailPane({ entry, onMutated, onForkTemplate }:
           <button
             onClick={handleRunNow}
             disabled={busy}
-            title="Sets next_run_at to the past so the sweeper fires this def on its next tick. Caveat: if a run is already in progress, the in-flight fire's post-completion next_run_at advance overwrites this admin intent. At most one extra fire is guaranteed."
+            title="Sets next_run_at to the past so the sweeper fires this def on its next tick; the regular cadence carries on after it. While a run is still going, concurrency_policy decides: forbid skips it, allow starts another, replace cancels the running one."
           >
             Run now
           </button>

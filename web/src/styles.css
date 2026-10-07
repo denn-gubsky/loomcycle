@@ -4130,9 +4130,15 @@ button.primary:disabled {
   color: #e6b8b8;
 }
 
-.status-skipped, .status-skipped_disabled, .status-decode_def {
+.status-skipped, .status-skipped_disabled, .status-decode_def,
+.status-skipped_overlap, .status-cancelled, .status-rejected {
   background: #4a4a4a;
   color: #c8c8c8;
+}
+
+.status-running {
+  background: #2d425a;
+  color: #b8d0e6;
 }
 
 /* Fork form modal — extends the existing .modal-overlay/.modal. */
