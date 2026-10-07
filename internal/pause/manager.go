@@ -785,10 +785,11 @@ func (m *Manager) Resume(ctx context.Context) (ResumeResult, error) {
 	m.mu.Unlock()
 	rss := m.rss.Load()
 	m.invalidateStateCache()
-	// End the pause opened on every run live at the pause before answering:
-	// an entry left open reads as a pause still going, which never lets a
-	// re-armed timeout_ms run out.
-	<-recordRunPauses(rec, ids, since, until)
+	// End the pause opened on every run live at the pause, alongside the
+	// cluster writes, and before answering: an entry left open reads as a
+	// pause still going, which never lets a re-armed timeout_ms run out.
+	ended := recordRunPauses(rec, ids, since, until)
+	defer func() { <-ended }()
 
 	// v0.12.3 Phase 4: cluster mode — write DB state back to running
 	// and publish on backplane so remote replicas re-allow new runs.
