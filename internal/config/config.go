@@ -4429,12 +4429,6 @@ type Env struct {
 	// LOOMCYCLE_SCHEDULER_TICK_SECONDS.
 	SchedulerTickSeconds int
 
-	// SchedulerFireTimeoutSeconds is the per-fire run timeout cap.
-	// Default 600 (10 minutes). The runner's ctx-cancellation
-	// cascades into provider + tool calls so timeout cleanly
-	// aborts. Env: LOOMCYCLE_SCHEDULER_FIRE_TIMEOUT_SECONDS.
-	SchedulerFireTimeoutSeconds int
-
 	// MaxConsolidationTargets bounds how many memory-consolidation targets ONE
 	// fan-out tick dispatches (RFC BL P2). 0 → the scheduler default (32). The
 	// per-target watermark makes the fan-out resumable, so the cap defers work to
@@ -5420,12 +5414,6 @@ func LoadLayers(layers ...Layer) (*Config, error) {
 	if v := os.Getenv("LOOMCYCLE_TEAM_SUBSCRIPTIONS_TICK_SECONDS"); v != "" {
 		if n, err := strconv.Atoi(v); err == nil && n > 0 {
 			cfg.Env.TeamSubscriptionsTickSeconds = n
-		}
-	}
-	cfg.Env.SchedulerFireTimeoutSeconds = 600
-	if v := os.Getenv("LOOMCYCLE_SCHEDULER_FIRE_TIMEOUT_SECONDS"); v != "" {
-		if n, err := strconv.Atoi(v); err == nil && n > 0 {
-			cfg.Env.SchedulerFireTimeoutSeconds = n
 		}
 	}
 	// RFC BL P2 consolidation fan-out caps. Left at 0 the scheduler applies its

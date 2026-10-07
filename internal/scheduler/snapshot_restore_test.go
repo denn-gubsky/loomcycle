@@ -75,7 +75,7 @@ func TestScheduler_RestoredScheduleFiresOnItsCarriedCountAndStopsAtMaxFires(t *t
 	snapshotInto(t, src, dst)
 
 	fr := &fakeRunner{}
-	sched := New(Config{TickInterval: 10 * time.Millisecond, FireTimeout: 5 * time.Second}, dst, fr, nil, &fakeMCP{}, t.Logf)
+	sched := New(Config{TickInterval: 10 * time.Millisecond}, dst, fr, nil, &fakeMCP{}, t.Logf)
 
 	sched.tick(ctx)
 	if got := len(fr.Calls()); got != 1 {
@@ -115,7 +115,7 @@ func TestScheduler_RestoredCredentialStrippedScheduleAdvancesWithoutFiring(t *te
 	}
 
 	fr := &fakeRunner{}
-	sched := New(Config{TickInterval: 10 * time.Millisecond, FireTimeout: 5 * time.Second}, dst, fr, nil, &fakeMCP{}, t.Logf)
+	sched := New(Config{TickInterval: 10 * time.Millisecond}, dst, fr, nil, &fakeMCP{}, t.Logf)
 	sched.tick(ctx)
 	if got := len(fr.Calls()); got != 0 {
 		t.Fatalf("a schedule restored without its credentials fired %d times", got)

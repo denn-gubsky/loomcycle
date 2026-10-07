@@ -88,7 +88,7 @@ func scheduleState(t *testing.T, sched *Scheduler, defID string) store.ScheduleR
 // Fails-before: zzz is never dispatched; aaa holds the whole budget.
 func TestFanout_SlowEarlyTenantDoesNotStarveLaterTenants(t *testing.T) {
 	sched, fr, st, logs := fanoutFixture(t, operatorFanoutDef(nil), func(c *Config) {
-		c.FireTimeout = 600 * time.Millisecond
+		c.fanoutSweepBudget = 600 * time.Millisecond
 	})
 	// No provider resolver: serial, as the code-js consolidator is.
 	sched.runner = hangingRunner{fakeRunner: fr, hang: func(in runner.RunInput) bool { return in.TenantID == "aaa" }}
@@ -127,7 +127,7 @@ func TestFanout_QueueOnlyTargetsAreNotStarvedByTheCap(t *testing.T) {
 	// The fake runner never advances a watermark, so every target keeps its work
 	// on every tick — the sustained-load case.
 	for tick := 0; tick < 3; tick++ {
-		sched.fireOne(context.Background(), dueAgain(t, st, row), time.Now())
+		fireOneWait(sched, context.Background(), dueAgain(t, st, row), time.Now())
 	}
 
 	for _, d := range dispatched(fr) {
@@ -154,7 +154,7 @@ func TestFanout_StartTenantRotatesAcrossTicks(t *testing.T) {
 	var firsts []string
 	for tick := 0; tick < 4; tick++ {
 		before := len(fr.Calls())
-		sched.fireOne(context.Background(), dueAgain(t, st, row), time.Now())
+		fireOneWait(sched, context.Background(), dueAgain(t, st, row), time.Now())
 		calls := callsSince(fr, before)
 		if len(calls) != 3 {
 			t.Fatalf("tick %d dispatched %v, want all three tenants; logs:\n%s", tick, calls, logs.all())

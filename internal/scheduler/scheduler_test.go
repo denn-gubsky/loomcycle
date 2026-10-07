@@ -33,11 +33,19 @@ type fakeRunner struct {
 	// resultFor, when set, gives each call its own run id and error — for
 	// fan-out tests that tell one child's run from another's.
 	resultFor func(in runner.RunInput) (runID string, err error)
+	// registerOnError registers the run even when RunOnce returns an error.
+	// The real runner returns its setup refusals BEFORE registering, so by
+	// default an error here means the run never started.
+	registerOnError bool
+	// afterRegistered, when set, runs after OnRegistered — a run that is
+	// admitted and then takes its time.
+	afterRegistered func(in runner.RunInput)
 }
 
 func (f *fakeRunner) RunOnce(_ context.Context, in runner.RunInput, cb runner.RunCallbacks) error {
 	f.mu.Lock()
 	f.calls = append(f.calls, in)
+	n := len(f.calls)
 	f.mu.Unlock()
 	if f.onRun != nil {
 		f.onRun(in)
@@ -45,12 +53,20 @@ func (f *fakeRunner) RunOnce(_ context.Context, in runner.RunInput, cb runner.Ru
 	if f.onCallbacks != nil {
 		f.onCallbacks(in, cb)
 	}
+	// Each run its own id, as the runs table would give it; the first keeps
+	// the name tests have always read back.
 	runID, runErr := "r_test", f.runErr
+	if n > 1 {
+		runID = fmt.Sprintf("r_test-%d", n)
+	}
 	if f.resultFor != nil {
 		runID, runErr = f.resultFor(in)
 	}
-	if cb.OnRegistered != nil {
+	if cb.OnRegistered != nil && (runErr == nil || f.registerOnError) {
 		cb.OnRegistered("a_test", runID, "", "")
+		if f.afterRegistered != nil {
+			f.afterRegistered(in)
+		}
 	}
 	return runErr
 }
@@ -124,18 +140,30 @@ func schedulerFixture(t *testing.T, def scheduleDef, nextRunAt time.Time) (*Sche
 
 	fr := &fakeRunner{}
 	fm := &fakeMCP{}
-	cfg := Config{TickInterval: 10 * time.Millisecond, FireTimeout: 5 * time.Second}
+	cfg := Config{TickInterval: 10 * time.Millisecond}
 	sched := New(cfg, st, fr, nil, fm, t.Logf)
 	// The channel writer main.go wires, with no channel held.
 	sched.SetChannelWriter(&channels.StorePublisher{Store: st})
 	return sched, fr, fm, defID, st
 }
 
-// fireT triggers one sweeper tick synchronously. Faster + more
-// deterministic than starting the goroutine.
+// fireOneWait fires one row and waits for what it started — a consolidation
+// sweep, or a run — to be finished.
+func fireOneWait(s *Scheduler, ctx context.Context, row store.ScheduleDueRow, now time.Time) {
+	s.fireOne(ctx, row, now)
+	s.sweeps.Wait()
+	s.runs.Wait()
+}
+
+// fireT triggers one sweeper tick synchronously — faster + more
+// deterministic than starting the goroutine — and waits for the runs it
+// started to be finished, so a test reads the outcome the way it would once
+// a real run ended.
 func fireT(t *testing.T, s *Scheduler) {
 	t.Helper()
 	s.tick(context.Background())
+	s.sweeps.Wait()
+	s.runs.Wait()
 }
 
 func TestScheduler_DueScheduleFires(t *testing.T) {

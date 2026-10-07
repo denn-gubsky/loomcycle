@@ -166,6 +166,11 @@ var (
 	// LockKeyMemorySweeper's: sharing a key makes each subsystem's tick starve
 	// the other's (see LockKeyDeadLinkGC).
 	LockKeyMemoryPendingSweeper int64
+	// LockKeyScheduleReconcile gates the scheduler's reconcile sweep (RFC DZ),
+	// which finishes scheduled runs whose replica died before finishing them.
+	// It saves the other replicas the query; correctness does not rest on it,
+	// because a run's schedule_active_runs row is deleted once whoever tries.
+	LockKeyScheduleReconcile int64
 )
 
 // TeamSubscriptionLockKey derives a team's subscription-sweep key from its
@@ -226,6 +231,7 @@ func init() {
 	LockKeyHelpIndexReconcile = fnvKey("help_index_reconcile")
 	LockKeyDeadLinkGC = fnvKey("deadlink_gc")
 	LockKeyMemoryPendingSweeper = fnvKey("memory_pending_sweeper")
+	LockKeyScheduleReconcile = fnvKey("schedule_reconcile")
 }
 
 // fnvKey hashes a sweeper-name string to a stable int64 lock key.

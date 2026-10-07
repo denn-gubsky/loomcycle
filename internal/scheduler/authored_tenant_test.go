@@ -47,7 +47,7 @@ func TestScheduler_NonAdminAuthoredScheduleFiresInTheAuthorsTenant(t *testing.T)
 	exec(acme, `{"op":"fork","name":"shared","overlay":{"user_id":"alice"}}`)
 
 	fr := &fakeRunner{}
-	sched := New(Config{TickInterval: 10 * time.Millisecond, FireTimeout: 5 * time.Second}, st, fr, nil, &fakeMCP{}, t.Logf)
+	sched := New(Config{TickInterval: 10 * time.Millisecond}, st, fr, nil, &fakeMCP{}, t.Logf)
 	names, err := st.ScheduleDefListNames(context.Background())
 	if err != nil {
 		t.Fatalf("list names: %v", err)

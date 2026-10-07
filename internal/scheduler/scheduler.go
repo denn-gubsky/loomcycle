@@ -22,11 +22,6 @@ type Config struct {
 	// schedule punctuality. Most operators leave it at the default.
 	TickInterval time.Duration
 
-	// FireTimeout is the per-fire cap on the agent run. 0 → default
-	// 10m. Reaching the cap cancels the run via ctx and records
-	// last_status=failed last_error="run timeout".
-	FireTimeout time.Duration
-
 	// EnvAllowlist is the set of env var names a schedule can read
 	// via user_credentials_from_env. The empty allowlist (default)
 	// disables env-credential resolution entirely — a safe-by-default
@@ -34,13 +29,12 @@ type Config struct {
 	EnvAllowlist map[string]bool
 
 	// MaxConcurrentFires bounds the number of schedules a single tick
-	// fires in parallel. 0 → default runtime.NumCPU()*4. Each fire is
-	// a goroutine that calls runner.RunOnce synchronously; the tick
-	// itself waits for the whole batch to drain before returning so
-	// the "one tick at a time" invariant holds. Larger values trade
-	// memory + concurrency-store pressure for tighter cascading at
-	// burst-fire moments (e.g. cron crossings where 100s of forks
-	// become due in the same second).
+	// fires in parallel. 0 → default runtime.NumCPU()*4. A fire waits only
+	// for its run to be admitted (the run itself carries on after the tick),
+	// and the tick waits for its batch of fires. Larger values trade memory
+	// + concurrency-store pressure for tighter cascading at burst-fire
+	// moments (e.g. cron crossings where 100s of forks become due in the
+	// same second).
 	MaxConcurrentFires int
 
 	// MaxConsolidationTargets bounds how many memory-consolidation targets ONE
@@ -88,15 +82,26 @@ type Config struct {
 	// ReplicaID names this replica on the slots it claims
 	// (schedule_run_state.claimed_by). "" outside cluster mode.
 	ReplicaID string
+
+	// fanoutSweepBudget is the time one consolidation fan-out sweep divides
+	// among its memory targets (see targetBudget). Not operator-tunable and
+	// not a cap on any scheduled run: the fan-out is a bounded maintenance
+	// sweep and needs SOME budget to share fairly. 0 → defaultFanoutSweepBudget.
+	// Tests shorten it.
+	fanoutSweepBudget time.Duration
 }
+
+// defaultFanoutSweepBudget is a consolidation fan-out sweep's whole budget —
+// the value the scheduler's old per-fire cap gave it.
+const defaultFanoutSweepBudget = 10 * time.Minute
 
 // defaults applies the documented defaults to a zero-value Config.
 func (c Config) defaults() Config {
 	if c.TickInterval == 0 {
 		c.TickInterval = 30 * time.Second
 	}
-	if c.FireTimeout == 0 {
-		c.FireTimeout = 10 * time.Minute
+	if c.fanoutSweepBudget == 0 {
+		c.fanoutSweepBudget = defaultFanoutSweepBudget
 	}
 	if c.MaxConcurrentFires == 0 {
 		c.MaxConcurrentFires = runtime.NumCPU() * 4
@@ -162,7 +167,24 @@ type Scheduler struct {
 	fanoutEscalatedMu sync.Mutex
 	fanoutEscalated   map[string]map[consolidationTarget]bool
 
+	// reconcileLock gates the reconcile sweep to one replica per tick (nil =
+	// single replica, unguarded). See SetReconcileCoordination.
+	reconcileLock    AdvisoryLocker
+	reconcileLockKey int64
+
+	// fanoutRunning holds the consolidation fan-out defs whose sweep is
+	// running on this replica. A sweep runs off the tick, so without it a
+	// slot arriving mid-sweep would start a second sweep of the same def on
+	// a single replica (across replicas, the fan-out lock does the same).
+	fanoutRunning sync.Map
+
+	// wg tracks the sweeper goroutine and sweeps the consolidation sweeps;
+	// Stop waits for both (a sweep is bounded by its budget). runs tracks the
+	// goroutines that run and finish scheduled runs. Stop does not wait for
+	// those — a run may last hours — but tests do.
 	wg     sync.WaitGroup
+	sweeps sync.WaitGroup
+	runs   sync.WaitGroup
 	stopCh chan struct{}
 	once   sync.Once
 }
@@ -257,6 +279,7 @@ func (s *Scheduler) Start(ctx context.Context) {
 func (s *Scheduler) Stop() {
 	s.once.Do(func() { close(s.stopCh) })
 	s.wg.Wait()
+	s.sweeps.Wait()
 }
 
 // run is the sweeper main loop. Single goroutine — no concurrency
@@ -266,7 +289,7 @@ func (s *Scheduler) run(ctx context.Context) {
 	ticker := time.NewTicker(s.cfg.TickInterval)
 	defer ticker.Stop()
 
-	s.logf("scheduler: started (tick=%s, fire_timeout=%s)", s.cfg.TickInterval, s.cfg.FireTimeout)
+	s.logf("scheduler: started (tick=%s)", s.cfg.TickInterval)
 	defer s.logf("scheduler: stopped")
 
 	for {
@@ -285,18 +308,20 @@ func (s *Scheduler) run(ctx context.Context) {
 // reports runtime != StateRunning (matches the v0.8.17 pause/resume
 // composition rule from RFC E).
 //
-// Due rows fire in parallel up to cfg.MaxConcurrentFires goroutines.
-// Each fire first claims its slot (claimSlot), so a row listed by two
-// ticks — or by two replicas — fires once. The tick still waits for its
-// batch to drain. The bounded semaphore keeps memory + per-user-fairness
-// pressure predictable when 100s of forks become due in one cron
-// crossing.
+// Each tick first finishes tracked runs that ended without being finished
+// (reconcile). Due rows then fire in parallel up to cfg.MaxConcurrentFires
+// goroutines. Each fire first claims its slot (claimSlot), so a row listed
+// by two ticks — or by two replicas — fires once. A fire returns once its
+// run is admitted, so the batch drains in milliseconds however long the runs
+// last. The bounded semaphore keeps memory + per-user-fairness pressure
+// predictable when 100s of forks become due in one cron crossing.
 func (s *Scheduler) tick(ctx context.Context) {
 	if s.pause != nil && s.pause.State() != pause.StateRunning {
 		// Paused / pausing — the runtime is quiesced for snapshot.
 		// Skip without advancing next_run_at; next tick re-checks.
 		return
 	}
+	s.reconcile(ctx)
 	now := time.Now()
 	due, err := s.store.ScheduleRunStateListDue(ctx, now)
 	if err != nil {
@@ -342,11 +367,11 @@ func (s *Scheduler) tick(ctx context.Context) {
 	wg.Wait()
 }
 
-// fireOne handles one due schedule end-to-end: unmarshal the def, claim
-// its slot (which advances next_run_at), build RunInput, call
-// runner.RunOnce, record the result, dispatch on_complete hooks. Errors
-// are logged but never bubble out — one failed schedule shouldn't block
-// the rest of the tick.
+// fireOne handles one due schedule: unmarshal the def, claim its slot
+// (which advances next_run_at), and start what the def delivers. A run is
+// started and tracked; it is finished — outcome recorded, on_complete
+// dispatched — when it ends (see tracked.go). Errors are logged but never
+// bubble out — one failed schedule shouldn't block the rest of the tick.
 func (s *Scheduler) fireOne(ctx context.Context, row store.ScheduleDueRow, now time.Time) {
 	def, err := unmarshalDef(row.Definition)
 	if err != nil {
@@ -385,6 +410,11 @@ func (s *Scheduler) fireOne(ctx context.Context, row store.ScheduleDueRow, now t
 		s.recordSkip(ctx, row.DefID, "skipped_disabled", now)
 		return
 	}
+	if s.spentWhileRunning(ctx, row, def) {
+		// max_fires is used up by runs that have not finished; the def is
+		// retired when one does.
+		return
+	}
 
 	// RFC CY: a channel tick is a fire with no run. Everything below — the
 	// consolidation fan-out, RunInput, the runner, the fire timeout,
@@ -412,7 +442,7 @@ func (s *Scheduler) fireOne(ctx context.Context, row store.ScheduleDueRow, now t
 	// one target, so "consolidate everything" is N runs. See consolidator.go;
 	// it does its own result bookkeeping.
 	if isConsolidationFanout(def) {
-		s.fireConsolidationFanout(ctx, row, def, now)
+		s.startConsolidationFanout(ctx, row, def, now)
 		return
 	}
 
@@ -421,77 +451,7 @@ func (s *Scheduler) fireOne(ctx context.Context, row store.ScheduleDueRow, now t
 	// refused by the runs table before its loop starts, whatever went wrong
 	// with the claim. It also names the slot a run was fired for.
 	in.IdempotencyKey = slotRunKey(row.DefID, row.NextRunAt)
-
-	// Cap the per-fire run time. The runner's ctx-cancellation cascades
-	// down to provider calls + tool calls so timeout cleanly aborts.
-	fireCtx, cancel := context.WithTimeout(ctx, s.cfg.FireTimeout)
-	defer cancel()
-
-	var registeredAgentID, registeredRunID string
-	cb := runner.RunCallbacks{
-		OnRegistered: func(agentID, runID, _, _ string) {
-			registeredAgentID = agentID
-			registeredRunID = runID
-		},
-	}
-	runErr := s.runner.RunOnce(fireCtx, in, cb)
-	if errors.Is(runErr, store.ErrDuplicateIdempotencyKey) {
-		// This slot already has its run. Whoever started it records it.
-		s.logf("scheduler: schedule %q slot %s already has a run — not firing it twice", row.Name, row.NextRunAt.UTC().Format(time.RFC3339Nano))
-		return
-	}
-	status := "completed"
-	errStr := ""
-	// F36: every real fire counts toward max_fires (a wedged/always-failing
-	// schedule still retires). The exceptions — an agent that cannot be
-	// resolved (F38) and a paused runtime — never started a run; see
-	// classifyFire, which the fan-out shares.
-	countAsFire := true
-	if runErr != nil {
-		class := classifyFire(runErr)
-		status = class.status()
-		errStr = runErr.Error()
-		countAsFire = class.countsAsFire()
-		switch class {
-		case fireUnknownAgent:
-			s.logf("scheduler: schedule %q could not resolve agent %q in tenant %q — not counting toward max_fires; check the agent exists in this tenant (F38)",
-				row.Name, def.Agent, def.TenantID)
-		case firePaused:
-			s.logf("scheduler: schedule %q was refused because the runtime paused after this tick began — not counting toward max_fires", row.Name)
-		}
-		if errors.Is(runErr, context.DeadlineExceeded) {
-			// Disambiguate fireCtx (per-fire timeout) from parent ctx
-			// (scheduler shutting down). Both surface as
-			// context.DeadlineExceeded via errors.Is. Checking
-			// fireCtx.Err() lets us emit a more accurate status.
-			if fireCtx.Err() != nil && ctx.Err() == nil {
-				status = "failed"
-				errStr = "fire timeout exceeded"
-			} else {
-				// Parent ctx deadline (or both — treat as shutdown).
-				status = "failed"
-				errStr = "scheduler context deadline exceeded"
-			}
-		}
-	}
-
-	recordCtx, done := s.recordFireOutcome(ctx, row, def, now, fireOutcome{
-		RunID:       registeredRunID,
-		Status:      status,
-		Err:         errStr,
-		CountAsFire: countAsFire,
-	})
-	defer done()
-
-	// Dispatch hooks only on success — RFC E says on_complete fires on
-	// "successful runs." Failed/skipped runs don't notify. Use recordCtx (the
-	// survival ctx) not the parent: a run that completes just as shutdown
-	// begins still recorded its result above, so its on_complete hooks
-	// (channel publish / memory set / mcp.call) must fire too rather than be
-	// dropped on a cancelled parent ctx.
-	if status == "completed" {
-		s.dispatchHooks(recordCtx, row.Name, def, registeredRunID, registeredAgentID)
-	}
+	s.fireRun(ctx, row, def, in, now)
 }
 
 // rehomeToOwningTenant returns def executing in its row's owning tenant when the
@@ -600,10 +560,11 @@ func TickPayload(scheduleName string, firedAt time.Time, payload any) (json.RawM
 // fireTeamDelivery is the tick that starts a team walk.
 //
 // The walk is started DETACHED, exactly as `TeamDef op=run mode=detach` starts
-// one, so the tick is over as soon as the walk exists: "completed" here means
-// the walk STARTED, and last_run_id is the walk's own run — the handle to
-// follow it by. The fire timeout does not bound a walk for the same reason (a
-// walk may wait on a person), and there is no on_complete to dispatch.
+// one, so the tick is over as soon as the walk exists. The walk's run is
+// tracked like any scheduled run: the schedule reads "running" with the walk's
+// run as last_run_id, and records how the walk ended when it ends (the
+// reconciler finishes it — nothing on this replica waits for a walk). There
+// is no on_complete to dispatch: a team schedule refuses one.
 //
 // The walk runs as the DEFINITION says and as nothing else: its execution
 // tenant (after the legacy re-home fireOne already applied), its user, and the
@@ -617,7 +578,15 @@ func TickPayload(scheduleName string, firedAt time.Time, payload any) (json.RawM
 // is classified the way a run's is (classifyFire).
 func (s *Scheduler) fireTeamDelivery(ctx context.Context, row store.ScheduleDueRow, def scheduleDef, now time.Time) {
 	out := fireOutcome{Status: "completed", CountAsFire: true}
-	runID, err := s.startTeamWalk(ctx, def)
+	runID, err := s.startTeamWalk(ctx, def, slotRunKey(row.DefID, row.NextRunAt))
+	if errors.Is(err, store.ErrDuplicateIdempotencyKey) {
+		// This slot already has its walk. Whoever started it records it.
+		s.logf("scheduler: schedule %q slot %s already has a walk — not starting it twice", row.Name, row.NextRunAt.UTC().Format(time.RFC3339Nano))
+		return
+	}
+	if err == nil && s.trackRun(ctx, row, runID, now) {
+		return
+	}
 	if err != nil {
 		class := classifyFire(err)
 		out.Status, out.Err, out.CountAsFire = class.status(), err.Error(), class.countsAsFire()
@@ -636,12 +605,15 @@ func (s *Scheduler) fireTeamDelivery(ctx context.Context, row store.ScheduleDueR
 	done()
 }
 
-// startTeamWalk asks the wired starter for one detached walk of the def's team.
-func (s *Scheduler) startTeamWalk(ctx context.Context, def scheduleDef) (string, error) {
+// startTeamWalk asks the wired starter for one detached walk of the def's
+// team, under the slot's key: a second walk for the same slot is refused.
+func (s *Scheduler) startTeamWalk(ctx context.Context, def scheduleDef, slotKey string) (string, error) {
 	if s.teams == nil {
 		return "", fmt.Errorf("delivery=team: no team walk starter wired")
 	}
-	return s.teams.StartTeamWalk(ctx, buildTeamWalkInput(def))
+	in := buildTeamWalkInput(def)
+	in.IdempotencyKey = slotKey
+	return s.teams.StartTeamWalk(ctx, in)
 }
 
 // fireOutcome is what one fire produced, whatever kind of fire it was. It
@@ -736,23 +708,10 @@ func (s *Scheduler) recordFireOutcome(ctx context.Context, row store.ScheduleDue
 		s.logf("scheduler: record result for %q: %v", row.Name, err)
 	}
 
-	// RFC S / F36: auto-retire after the Nth fire. Re-read the just-
-	// incremented fire_count (cheap, and only when a cap is set) and retire
-	// the def once it reaches max_fires. Retired defs are skipped by the
-	// due-query JOIN, so this is the last fire. Uses recordCtx so it still
+	// RFC S / F36: auto-retire after the Nth fire. Uses recordCtx so it still
 	// runs mid-shutdown. Multi-replica: each slot is claimed by one replica
 	// and fire_count += 1 is atomic, so the cap is exact.
-	if def.MaxFires > 0 {
-		if st, gerr := s.store.ScheduleRunStateGet(recordCtx, row.DefID); gerr != nil {
-			s.logf("scheduler: max_fires read state for %q: %v", row.Name, gerr)
-		} else if st.FireCount >= def.MaxFires {
-			if rerr := s.store.ScheduleDefSetRetired(recordCtx, row.DefID, true); rerr != nil {
-				s.logf("scheduler: max_fires retire %q (def %s) after %d fires: %v", row.Name, row.DefID, st.FireCount, rerr)
-			} else {
-				s.logf("scheduler: %q reached max_fires=%d — retired def %s", row.Name, def.MaxFires, row.DefID)
-			}
-		}
-	}
+	s.retireIfSpent(recordCtx, row.DefID, row.Name, def)
 	return recordCtx, done
 }
 

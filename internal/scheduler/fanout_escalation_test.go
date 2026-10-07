@@ -102,7 +102,7 @@ func TestFanout_PassCutByItsShareCompletesOnItsNextTurn(t *testing.T) {
 		slow = 1700 * time.Millisecond
 	)
 	sched, fr, st, logs := fanoutFixture(t, operatorFanoutDef(nil), func(c *Config) {
-		c.FireTimeout = fire
+		c.fanoutSweepBudget = fire
 	})
 	// No provider resolver: serial, as the code-js consolidator is.
 	tr := &timedRunner{fakeRunner: fr, take: func(in runner.RunInput) (time.Duration, bool) {
@@ -117,7 +117,7 @@ func TestFanout_PassCutByItsShareCompletesOnItsNextTurn(t *testing.T) {
 	row := dueRow(t, st)
 
 	// Tick one: aaa first (rotation 0), cut by its slice; zzz still runs.
-	sched.fireOne(context.Background(), dueAgain(t, st, row), time.Now())
+	fireOneWait(sched, context.Background(), dueAgain(t, st, row), time.Now())
 	if n := tr.completions("aaa/slow"); n != 0 {
 		t.Fatalf("aaa completed on its first slice-budgeted turn — the fixture must make the pass longer than the slice to test anything; logs:\n%s", logs.all())
 	}
@@ -131,7 +131,7 @@ func TestFanout_PassCutByItsShareCompletesOnItsNextTurn(t *testing.T) {
 	// Tick two: the rotation would start with zzz; the escalated aaa goes first
 	// and gets the whole budget.
 	before := len(fr.Calls())
-	sched.fireOne(context.Background(), dueAgain(t, st, row), time.Now())
+	fireOneWait(sched, context.Background(), dueAgain(t, st, row), time.Now())
 	if calls := callsSince(fr, before); len(calls) == 0 || calls[0] != "aaa/slow" {
 		t.Errorf("tick two dispatched %v, want the cut target aaa/slow first, ahead of the rotation; logs:\n%s", calls, logs.all())
 	}
@@ -158,7 +158,7 @@ func TestFanout_WedgedEscalatedPassDropsBackAndDoesNotStarveOthers(t *testing.T)
 	sched, fr, st, logs := fanoutFixture(t, operatorFanoutDef(nil), func(c *Config) {
 		// A 600ms slice: wide enough that target enumeration, which spends the
 		// batch's budget too, can never make the batch the earlier deadline.
-		c.FireTimeout = 1200 * time.Millisecond
+		c.fanoutSweepBudget = 1200 * time.Millisecond
 	})
 	tr := &timedRunner{fakeRunner: fr, take: func(in runner.RunInput) (time.Duration, bool) {
 		return 0, in.TenantID == "aaa"
@@ -170,7 +170,7 @@ func TestFanout_WedgedEscalatedPassDropsBackAndDoesNotStarveOthers(t *testing.T)
 
 	tick := func() []string {
 		before := len(fr.Calls())
-		sched.fireOne(context.Background(), dueAgain(t, st, row), time.Now())
+		fireOneWait(sched, context.Background(), dueAgain(t, st, row), time.Now())
 		return callsSince(fr, before)
 	}
 
@@ -209,7 +209,7 @@ func TestFanout_WedgedEscalatedPassDropsBackAndDoesNotStarveOthers(t *testing.T)
 // does and the batch's deadline is the one that cuts it.
 func TestFanout_PassThatCameLastInASpentBudgetIsNotEscalated(t *testing.T) {
 	sched, fr, st, logs := fanoutFixture(t, operatorFanoutDef(nil), func(c *Config) {
-		c.FireTimeout = 1800 * time.Millisecond // three targets: a slice of 600ms
+		c.fanoutSweepBudget = 1800 * time.Millisecond // three targets: a slice of 600ms
 	})
 	sched.runner = &timedRunner{fakeRunner: fr, take: func(runner.RunInput) (time.Duration, bool) { return 0, true }}
 	for _, tenant := range []string{"aaa", "bbb", "ccc"} {
@@ -217,7 +217,7 @@ func TestFanout_PassThatCameLastInASpentBudgetIsNotEscalated(t *testing.T) {
 	}
 	row := dueRow(t, st)
 
-	sched.fireOne(context.Background(), dueAgain(t, st, row), time.Now())
+	fireOneWait(sched, context.Background(), dueAgain(t, st, row), time.Now())
 
 	if got := strings.Join(dispatched(fr), ","); got != "aaa/u,bbb/u,ccc/u" {
 		t.Fatalf("dispatched %s, want all three in tenant order; logs:\n%s", got, logs.all())
