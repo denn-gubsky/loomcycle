@@ -2981,6 +2981,7 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 		Interruption:      in.Interruption,          // the run's own block, so a resume re-narrows from it
 		AgentVersion:      agentVersionOf(agentDef), // the version it resumes on
 		TeamScope:         teamScopeRecordOf(ctx),   // a continued team session's; nil for a fresh run
+		IterationLimit:    s.startIterationLimit(agentDef, provider, in.Interactive),
 	}
 
 	// ---- Session+run creation ----
@@ -4878,6 +4879,7 @@ func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {
 		Hooks:             additionsRecord(hooks.Additions{Hooks: req.Hooks, ToolHooks: req.ToolHooks}),
 		Interruption:      req.Interruption,         // the run's own block, so a resume re-narrows from it
 		AgentVersion:      agentVersionOf(agentDef), // the version it resumes on
+		IterationLimit:    s.startIterationLimit(agentDef, provider, req.Interactive),
 	}
 
 	// Persistence: resolve or create a session, create a run, route every
@@ -5709,6 +5711,7 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 		Interruption:      body.Interruption,        // the run's own block, so a resume re-narrows from it
 		AgentVersion:      agentVersionOf(agentDef), // the version it resumes on
 		TeamScope:         teamScopeRecordOf(r.Context()),
+		IterationLimit:    s.startIterationLimit(agentDef, provider, body.Interactive),
 	}
 
 	// Create a new run inside the existing session. user_id is
@@ -7058,18 +7061,39 @@ func (s *Server) runSubRun(ctx context.Context, name, systemExtra, prompt, defID
 // iterationLimitOf is the iteration limit a run's options give it, or 0 for
 // a run with none (unbounded iterations; only a runaway backstop applies).
 func iterationLimitOf(opts loop.RunOptions) int {
-	if opts.UnboundedIterations || (opts.Provider != nil && opts.Provider.Capabilities().UnboundedIterations) {
+	return iterationLimit(opts.MaxIterations,
+		opts.UnboundedIterations || (opts.Provider != nil && opts.Provider.Capabilities().UnboundedIterations),
+		opts.Interactive && opts.SteerQueue != nil)
+}
+
+// iterationLimit is the limit a run with this max_iterations has: none (0)
+// when it is unbounded, or when it is an interactive run that parks for input
+// and has no explicit limit — the loop lifts the default for it (a resident
+// child) — and the default when a one-shot run names none.
+func iterationLimit(maxIterations int, unbounded, parksForInput bool) int {
+	switch {
+	case unbounded, maxIterations == 0 && parksForInput:
 		return 0
-	}
-	// An interactive run with no explicit limit is unbounded too (a resident
-	// child): the loop lifts the default for it.
-	if opts.MaxIterations == 0 && opts.Interactive && opts.SteerQueue != nil {
-		return 0
-	}
-	if opts.MaxIterations == 0 {
+	case maxIterations == 0:
 		return loop.DefaultMaxIterations
 	}
-	return opts.MaxIterations
+	return maxIterations
+}
+
+// startIterationLimit is the limit a run of def starts with, for its record
+// (runConfigRecord.IterationLimit): what iterationLimitOf reads off the
+// options the same definition, provider and mode build.
+func (s *Server) startIterationLimit(def config.AgentDef, provider providers.Provider, interactive bool) int {
+	return iterationLimit(def.MaxIterations,
+		def.UnboundedIterations || (provider != nil && provider.Capabilities().UnboundedIterations),
+		interactive && s.steerReg != nil)
+}
+
+// recordedIterationLimit is the limit a run's row records, or 0 when it
+// records none.
+func recordedIterationLimit(run store.Run) int {
+	rec, _ := decodeRunConfig(run.RunConfig)
+	return rec.IterationLimit
 }
 
 // childHold reports a child's review hold on its parent's stream: "held" at
@@ -7542,6 +7566,8 @@ func (s *Server) prepareSubRunValues(ctx context.Context, name string, src nameS
 	// Identity is the substrate def_id, falling back to the agent NAME for
 	// static (yaml) agents, which have no def row.
 	def, subRunCfg = s.inheritOverridesForChild(ctx, def, subRunCfg, defID, name)
+	// Read off the definition as the parent's overrides left it.
+	subRunCfg.IterationLimit = s.startIterationLimit(def, provider, interactive)
 	// Only a resident child runs interactive; its resume must know it is one.
 	if subRunCfg.Spawn != nil {
 		subRunCfg.Spawn.Resident = interactive

@@ -219,8 +219,9 @@ func TestResidentElsewhere_APollReadsHowTheChildEnded(t *testing.T) {
 		t.Fatalf("open of a capped child: %v", err)
 	}
 	waitResidentGone(t, a, runID)
-	if _, _, err := b.pollResidentChild(ctx, runID, 0); !errors.As(err, &capped) || capped.Output != "capped last answer" {
-		t.Errorf("poll of the capped child elsewhere: %v, want the capped error with its answer", err)
+	if _, _, err := b.pollResidentChild(ctx, runID, 0); !errors.As(err, &capped) || capped.Output != "capped last answer" ||
+		!strings.Contains(err.Error(), "stopped at its iteration limit of 2") {
+		t.Errorf("poll of the capped child elsewhere: %v, want the capped error naming its limit, with its answer", err)
 	}
 
 	runID, _, _, err = a.openResidentChild(ctx, "whole", "x", "", 0, 0)

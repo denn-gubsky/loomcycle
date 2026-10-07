@@ -1468,6 +1468,11 @@ export interface RunSpec {
     /** A resident child (Agent op=open), which a resume rebuilds as one. */
     resident?: boolean;
   };
+  /** The iteration limit the run started with. Absent for a run with none
+   *  (unbounded, or an interactive run with no `max_iterations` of its own)
+   *  and for a run recorded before the field existed. Written by the server
+   *  only. */
+  iteration_limit?: number;
   /** The agent version the run started on, which a resumed run continues on:
    *  the AgentDef version its agent name resolved to (`def_id` absent for an
    *  agent with no versions — the operator's yaml or a registered agent). For

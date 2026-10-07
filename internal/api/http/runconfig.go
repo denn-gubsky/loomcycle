@@ -113,6 +113,13 @@ type runConfigRecord struct {
 	// resumed run fires those and no others (see pinnedHooks).
 	PinnedHooks *pinnedHooks `json:"pinned_hooks,omitempty"`
 
+	// IterationLimit is the iteration limit the run started with (0 = none:
+	// unbounded, or an interactive run with no limit of its own). A reader
+	// holding only the run's row — another replica, a resume — names it when it
+	// tells a parent the run stopped at its limit. Absent on a run recorded
+	// before it existed, which is told without the number.
+	IterationLimit int `json:"iteration_limit,omitempty"`
+
 	// Spawn is what bounded a SUB-run at its spawn beyond its own definition:
 	// the parent's volume confinement and the fan-out width it inherited. A
 	// live child reads both off its parent's context; a resumed child has no

@@ -48,8 +48,7 @@ func (v storedResident) ended() bool { return store.IsTerminalRunStatus(v.run.St
 
 // ending is an ended child's kept-ending shape, read from its row: how it was
 // ended for it from the reason its run was cancelled with, and an iteration
-// limit from its stop reason. The limit's number is not recorded on the row,
-// so the error names none.
+// limit from its stop reason, with the number its record keeps.
 func (v storedResident) ending() residentTombstone {
 	t := residentTombstone{tenantID: v.run.TenantID, userID: v.run.UserID, agentName: v.run.Agent, state: string(v.run.Status), output: v.output}
 	switch {
@@ -59,7 +58,7 @@ func (v storedResident) ending() residentTombstone {
 			t.closedBy = "cancelled"
 		}
 	case v.run.Status == store.RunCompleted && v.run.StopReason == loop.StopReasonMaxIterations:
-		t.capped = &builtin.ChildCappedError{Name: v.run.Agent, RunID: v.run.ID}
+		t.capped = &builtin.ChildCappedError{Name: v.run.Agent, Limit: recordedIterationLimit(v.run), RunID: v.run.ID}
 	}
 	return t
 }

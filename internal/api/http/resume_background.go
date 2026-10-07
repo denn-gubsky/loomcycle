@@ -507,7 +507,7 @@ func (s *Server) restoredAgentEnding(ctx context.Context, child store.Run, spec 
 			text = s.childFinalText(ctx, child)
 		}
 		state, res = tools.ChildFailed, tools.ChildResult{Output: formatSubAgentOutput(child.AgentID, child.ID, text), Structured: rec.State, Status: builtin.ChildStatusMaxIterations}
-		runErr = errors.New(builtin.ChildCappedMessage(spec.Agent, 0, child.ID))
+		runErr = errors.New(builtin.ChildCappedMessage(spec.Agent, recordedIterationLimit(child), child.ID))
 	case child.Status == store.RunCompleted && !loop.EndsRejected(child.StopReason):
 		text := rec.FinalText
 		if text == "" && len(rec.State) == 0 {
