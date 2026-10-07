@@ -7,10 +7,12 @@ import (
 	"testing"
 
 	"github.com/denn-gubsky/loomcycle/internal/config"
+	"github.com/denn-gubsky/loomcycle/internal/hooks"
 	"github.com/denn-gubsky/loomcycle/internal/loop"
 	"github.com/denn-gubsky/loomcycle/internal/providers"
 	"github.com/denn-gubsky/loomcycle/internal/steer"
 	"github.com/denn-gubsky/loomcycle/internal/store"
+	"github.com/denn-gubsky/loomcycle/internal/tools"
 )
 
 // A resident child whose turn ended because it stopped at its iteration
@@ -179,5 +181,41 @@ func TestIterationLimitOf_AnInteractiveRunWithNoLimitHasNone(t *testing.T) {
 		if got := iterationLimitOf(tc.opts); got != tc.want {
 			t.Errorf("%s: limit = %d, want %d", tc.name, got, tc.want)
 		}
+	}
+}
+
+// A subagent_stop refusal names what the parent can still do with the child:
+// one that is still open may be sent to again or closed; one whose run has
+// ended — here at its iteration limit, refused at its open and again when a
+// later poll reads its ending — can only be replaced.
+func TestResidentHandBack_AHookRefusalSaysWhetherTheChildIsStillOpen(t *testing.T) {
+	srv := cappedResidentServer(t)
+	ctx := tools.WithAgentName(residentParentCtx("parent-agent", ""), "lead")
+	deny := newRecordingHook(t, `{"decision":"deny","reason":"not good enough"}`)
+	register(t, srv, &hooks.Hook{Owner: "ops", Name: "check", Phase: hooks.PhaseSubagentStop, Agents: []string{"lead"}, CallbackURL: deny.srv.URL})
+
+	runID, _, _, err := srv.openResidentChild(ctx, "whole", "x", "", 0, 0)
+	if err == nil || !strings.Contains(err.Error(), "was refused: not good enough") ||
+		!strings.Contains(err.Error(), "is still open: send again or close it") {
+		t.Errorf("refused turn of an open child: %v, want it still open", err)
+	}
+	_ = srv.closeResidentChild(ctx, runID)
+
+	runID, _, _, err = srv.openResidentChild(ctx, "capped", "x", "", 0, 0)
+	if err == nil || !strings.Contains(err.Error(), "was refused: not good enough") {
+		t.Fatalf("refused last turn of a capped child: %v, want the refusal", err)
+	}
+	for _, wrong := range []string{"is still open", "send again"} {
+		if strings.Contains(err.Error(), wrong) {
+			t.Errorf("refused last turn of a capped child: %v, says %q", err, wrong)
+		}
+	}
+	if !strings.Contains(err.Error(), "has ended") {
+		t.Errorf("refused last turn of a capped child: %v, want it to say the child has ended", err)
+	}
+	waitResidentGone(t, srv, runID)
+	if _, _, err := srv.pollResidentChild(ctx, runID, 0); err == nil || !strings.Contains(err.Error(), "was refused") ||
+		strings.Contains(err.Error(), "is still open") || !strings.Contains(err.Error(), "has ended") {
+		t.Errorf("poll of the ended child under the refusal: %v, want it refused and ended", err)
 	}
 }

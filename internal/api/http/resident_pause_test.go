@@ -25,8 +25,8 @@ func TestResidentChild_ARuntimePauseIsNotIdleTime(t *testing.T) {
 	alive := func(when string) {
 		t.Helper()
 		rc, ok := srv.residentReg.get(runID)
-		if !ok || rc.reaped() != "" {
-			t.Fatalf("the resident child was reaped %s (%v)", when, rc.reaped())
+		if !ok || rc.ending().reapReason != "" {
+			t.Fatalf("the resident child was reaped %s (%v)", when, rc.ending().reapReason)
 		}
 	}
 

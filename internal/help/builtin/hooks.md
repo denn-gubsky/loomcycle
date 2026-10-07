@@ -249,8 +249,11 @@ A resident child (`op=open`) hands its parent an output at every turn, not
 once at the end, so `subagent_stop` runs on each: on what `open`, `send`,
 `poll` and `cancel` return, with the child's state (`awaiting_input`,
 `running`, …) as `status`; a turn that stopped the child at its iteration
-limit is `failed`, with the limit in `error`. A refused output leaves the
-child open; the parent may send again, or close it.
+limit is `failed`, with the limit in `error`. A refused output of a child
+that is still open leaves it open; the parent may send again, or close it. A
+refused output of a child whose run has ended — at its iteration limit, or
+on a failure — was its last answer, and the refusal says the child has ended:
+the parent opens a new one to go on.
 
 **`pre_compact`** runs before a compaction summarizes the conversation.
 `trigger` says what asked (`manual`, `auto`, `self`); `context_tokens` and

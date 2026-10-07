@@ -83,7 +83,10 @@ func (s *Server) openTeamWalkRun(ctx context.Context, spec builtin.WalkRunSpec) 
 		TenantID:              ident.TenantID,
 		OperatorKeyRestricted: ident.OperatorKeyRestricted,
 		Isolated:              ident.Isolated,
-		RunConfig:             runConfigRecord{Team: teamWalkRecordOf(s.redactor, spec)}.marshal(),
+		// The replica running the walk, as every run row names its own: a
+		// cluster finds a run's owner by it.
+		ReplicaID: s.replicaID,
+		RunConfig: runConfigRecord{Team: teamWalkRecordOf(s.redactor, spec)}.marshal(),
 		// A poll-mode walk was handed to its caller under this id before its
 		// run existed; "" (sync and detach) lets the store mint one.
 		ID: spec.RunID,

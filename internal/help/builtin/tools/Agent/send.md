@@ -23,8 +23,12 @@ finished and the child is ready for the next `send`.
 ## Errors
 
 - `missing required field: child_run_id (the id op=open returned)` / `prompt`.
-- `resident sub-agent "r_..." not found ...` — it was closed or timed out;
-  `open` a new one.
+- `resident sub-agent "r_..." has ended ...` — its run is over and it takes
+  no more sends; `poll` it to read its last answer, then `open` a new one.
+- `resident sub-agent "r_..." was closed ...` / `was reaped by the runtime
+  (...)` — it was ended for you; `open` a new one.
+- `resident sub-agent "r_..." not found ...` — an id you never opened, or a
+  child that ended more than an hour ago.
 - `resident sub-agent "r_..." is still running its previous turn ...` — `poll`
   it to wait, or `cancel` the turn, before you `send` again.
 - `sub-agent "X" stopped at its iteration limit of N before it finished, so
