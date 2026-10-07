@@ -173,7 +173,38 @@ type runConfigRecord struct {
 	// leaves them out (resumedChildClock). Written by the pause manager for
 	// every run live when the runtime pauses, and by the pause gate as the run
 	// parks and is released; absent on a run that never lived through one.
+	// Past maxRunPauses the oldest are folded into PausesFolded.
 	Pauses []runPauseRecord `json:"pauses,omitempty"`
+
+	// PausesFolded is what the clock was stopped for before its Until, for
+	// the pauses folded out of Pauses (foldPauses). Absent until the run has
+	// lived through more than maxRunPauses pauses.
+	PausesFolded *runPauseFold `json:"pauses_folded,omitempty"`
+}
+
+// maxRunPauses bounds Pauses. A run gets one entry per runtime pause it lives
+// through, and the record is decoded on every read of a re-armed timeout_ms
+// (each poll of a bounded child), so the list must not grow with the run's
+// age. 16 lets a run live through a pause a day for two weeks before anything
+// is folded; folding is exact but reads the run's transcript, so past the cap
+// it folds down to half, paying that read once in nine pauses rather than on
+// each one.
+const maxRunPauses = 16
+
+// runPauseFold is the pauses folded out of a run's record: the time before
+// Until that the run's timeout_ms was stopped, StoppedNs — its pauses and its
+// review holds merged, an overlap counted once, nothing before its start.
+//
+// The holds are in it, and not only the folded pauses, because a hold and a
+// pause often overlap (a run held for review when the runtime pauses), and
+// the clock counts that stretch once. A pause folded to a bare duration could
+// not say how much of it a hold also covered, so the clock would count it
+// twice or not at all; the stopped time up to Until can be. A re-armed clock
+// counts StoppedNs for everything before Until, and its holds and the pauses
+// still listed only from Until on.
+type runPauseFold struct {
+	Until     time.Time `json:"until"`
+	StoppedNs int64     `json:"stopped_ns"`
 }
 
 // runPauseRecord is one runtime pause a run was parked for: Until is nil while
@@ -218,11 +249,60 @@ func (rc *runConfigRecord) endPause(since, until time.Time) error {
 	return nil
 }
 
+// foldPauses keeps Pauses to maxRunPauses: past it, all but the newest half
+// are folded into PausesFolded, which then holds the time the clock was
+// stopped up to the last folded pause's end. held is the run's review holds
+// as its transcript reads now, and start its start, both as a re-armed clock
+// reads them; a hold still open counts as going on, which it does past every
+// folded pause. Only closed pauses are folded — an open one is always the
+// last.
+func (rc *runConfigRecord) foldPauses(start time.Time, held resumedChildClock) {
+	if len(rc.Pauses) <= maxRunPauses {
+		return
+	}
+	n := len(rc.Pauses) - maxRunPauses/2
+	var until time.Time
+	for i, p := range rc.Pauses[:n] {
+		if p.Until == nil {
+			n = i
+			break
+		}
+		until = maxTime(until, *p.Until)
+	}
+	if n == 0 {
+		return
+	}
+	from := start
+	prev := runPauseFold{}
+	if rc.PausesFolded != nil {
+		prev = *rc.PausesFolded
+		from = maxTime(from, prev.Until)
+	}
+	// Every pause, the ones staying listed too: one of them may have begun
+	// before until, and that part is folded with the rest.
+	held.pauses = rc.Pauses
+	stopped, _ := mergedStops(held.spans(), from, until)
+	rc.PausesFolded = &runPauseFold{Until: maxTime(from, until), StoppedNs: prev.StoppedNs + int64(stopped)}
+	rc.Pauses = slices.Clone(rc.Pauses[n:])
+}
+
+// maxTime is the later of a and b.
+func maxTime(a, b time.Time) time.Time {
+	if b.After(a) {
+		return b
+	}
+	return a
+}
+
 // recordRunPause opens a pause that began at since on the run's record (until
 // zero), or ends at until the pause opened at since — whichever is open, when
 // since is zero — with the record's compare-and-swap update, so it never
 // overwrites another writer's field. A run with no record is left without
 // one, as recordRunClock leaves it.
+//
+// An open that takes the list past maxRunPauses folds the oldest (foldPauses),
+// which needs the run's holds: they are read first, once. If they cannot be
+// read the list is left one longer and folded at the next pause.
 func recordRunPause(ctx context.Context, st store.Store, runID string, since, until time.Time) error {
 	run, err := st.GetRun(ctx, runID)
 	if err != nil {
@@ -230,6 +310,15 @@ func recordRunPause(ctx context.Context, st store.Store, runID string, since, un
 	}
 	if len(run.RunConfig) == 0 {
 		return nil
+	}
+	var held resumedChildClock
+	foldable := false
+	if rec, ok := decodeRunConfig(run.RunConfig); ok && until.IsZero() && len(rec.Pauses) >= maxRunPauses {
+		if err := held.readEvents(ctx, st, runID); err != nil {
+			log.Printf("pause: read run %s's holds to fold its pauses: %v — folded at its next pause", runID, err)
+		} else {
+			foldable = true
+		}
 	}
 	_, err = updateRunConfigIn(ctx, st, runID, func(rec *runConfigRecord, unreadable bool) error {
 		if unreadable {
@@ -239,6 +328,9 @@ func recordRunPause(ctx context.Context, st store.Store, runID string, since, un
 			return rec.endPause(since, until)
 		}
 		rec.openPause(since)
+		if foldable {
+			rec.foldPauses(run.StartedAt, held)
+		}
 		return nil
 	})
 	if errors.Is(err, errNoPauseOpen) {

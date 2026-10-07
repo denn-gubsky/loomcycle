@@ -1786,6 +1786,7 @@ type resumedChildClock struct {
 	holds     []stopSpan       // the holds that have ended
 	heldSince time.Time        // the start of the hold still open, or zero
 	pauses    []runPauseRecord // the run's pauses, as its record last read
+	folded    *runPauseFold    // the pauses folded out of them, likewise
 }
 
 // stopSpan is a stretch the clock was stopped; to is zero while it lasts.
@@ -1806,21 +1807,26 @@ func (c *resumedChildClock) expired(ctx context.Context, st store.Store, child s
 		return false
 	}
 	c.readPauses(child.RunConfig)
-	for {
-		page, err := st.GetRunEventsSince(ctx, child.ID, c.seq, resumedChildClockPage)
-		if err != nil {
-			if ctx.Err() == nil {
-				log.Printf("resume: read fan-out child %s's events: %v", child.ID, err)
-			}
-			break
-		}
-		c.observe(page)
-		if len(page) < resumedChildClockPage {
-			break
-		}
+	if err := c.readEvents(ctx, st, child.ID); err != nil && ctx.Err() == nil {
+		log.Printf("resume: read fan-out child %s's events: %v", child.ID, err)
 	}
 	at, stopped := c.deadline(child.StartedAt)
 	return !stopped && !now.Before(at)
+}
+
+// readEvents reads the run's events the clock has not read yet. On a failed
+// read the clock keeps what it read before it.
+func (c *resumedChildClock) readEvents(ctx context.Context, st store.Store, runID string) error {
+	for {
+		page, err := st.GetRunEventsSince(ctx, runID, c.seq, resumedChildClockPage)
+		if err != nil {
+			return err
+		}
+		c.observe(page)
+		if len(page) < resumedChildClockPage {
+			return nil
+		}
+	}
 }
 
 // readPauses takes the run's pauses from its record as it reads now. A run
@@ -1830,7 +1836,7 @@ func (c *resumedChildClock) readPauses(raw json.RawMessage) {
 		return
 	}
 	if rec, ok := decodeRunConfig(raw); ok {
-		c.pauses = rec.Pauses
+		c.pauses, c.folded = rec.Pauses, rec.PausesFolded
 	}
 }
 
@@ -1858,8 +1864,20 @@ func (c *resumedChildClock) nextCheck(start, now time.Time) time.Time {
 
 // stopped merges the holds and the pauses — none counted before start, an
 // overlap counted once — into the time they stopped the clock that has
-// ended, and when the stop still open began (zero when none is).
+// ended, and when the stop still open began (zero when none is). What was
+// folded out of the record's pauses is counted as folded, and nothing else
+// before the fold's end.
 func (c *resumedChildClock) stopped(start time.Time) (ended time.Duration, openSince time.Time) {
+	if c.folded == nil {
+		return mergedStops(c.spans(), start, time.Time{})
+	}
+	ended, openSince = mergedStops(c.spans(), maxTime(start, c.folded.Until), time.Time{})
+	return ended + time.Duration(c.folded.StoppedNs), openSince
+}
+
+// spans is every stretch the clock was stopped for that it knows of: its
+// holds, the one still open, and its pauses.
+func (c *resumedChildClock) spans() []stopSpan {
 	spans := append([]stopSpan(nil), c.holds...)
 	if !c.heldSince.IsZero() {
 		spans = append(spans, stopSpan{from: c.heldSince})
@@ -1871,9 +1889,19 @@ func (c *resumedChildClock) stopped(start time.Time) (ended time.Duration, openS
 		}
 		spans = append(spans, sp)
 	}
+	return spans
+}
+
+// mergedStops merges spans within [from, to) — to zero for no end, and an
+// open span ending at to when there is one — an overlap counted once, into
+// the time they cover that has ended and when the stretch still open began.
+func mergedStops(spans []stopSpan, from, to time.Time) (ended time.Duration, openSince time.Time) {
 	for i := range spans {
-		if spans[i].from.Before(start) {
-			spans[i].from = start
+		if spans[i].from.Before(from) {
+			spans[i].from = from
+		}
+		if !to.IsZero() && (spans[i].to.IsZero() || spans[i].to.After(to)) {
+			spans[i].to = to
 		}
 	}
 	slices.SortFunc(spans, func(a, b stopSpan) int { return a.from.Compare(b.from) })
@@ -1881,7 +1909,7 @@ func (c *resumedChildClock) stopped(start time.Time) (ended time.Duration, openS
 	for i := range spans {
 		sp := spans[i]
 		if !sp.to.IsZero() && !sp.to.After(sp.from) {
-			continue // ended before the run started, or empty
+			continue // outside [from, to), or empty
 		}
 		if cur != nil && (cur.to.IsZero() || !sp.from.After(cur.to)) {
 			if !cur.to.IsZero() && (sp.to.IsZero() || sp.to.After(cur.to)) {
