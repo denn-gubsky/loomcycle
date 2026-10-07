@@ -12,7 +12,9 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/loop"
 	"github.com/denn-gubsky/loomcycle/internal/providers"
 	"github.com/denn-gubsky/loomcycle/internal/steer"
+	"github.com/denn-gubsky/loomcycle/internal/store"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
+	"github.com/denn-gubsky/loomcycle/internal/tools/builtin"
 )
 
 // --- RFC BK: resident (interactive) sub-agents ---
@@ -84,6 +86,9 @@ type residentChild struct {
 	// the awaiting_input it announces then is the park it was already in, not
 	// the end of a turn — a send that arrived first must not end on it.
 	startupPark bool
+	// capped is set when the child's run ended at its iteration limit: its
+	// last turn is handed back as that error, not as a completed turn.
+	capped *builtin.ChildCappedError
 }
 
 // beginTurn resets the per-turn buffer + wake channel. Called before open's
@@ -188,11 +193,24 @@ func discountPaused(t, since, now time.Time) time.Time {
 	return now
 }
 
-func (rc *residentChild) markDone(state string) {
+func (rc *residentChild) markDone(state string, capped *builtin.ChildCappedError) {
 	rc.mu.Lock()
 	rc.done = true
+	rc.capped = capped
 	rc.mu.Unlock()
 	rc.endTurn(state) // wake a waiter blocked on the final (non-parking) turn
+}
+
+// cappedEnd returns the error a turn that ended in state hands back when the
+// child's run ended at its iteration limit, or nil.
+func (rc *residentChild) cappedEnd(state string) *builtin.ChildCappedError {
+	rc.mu.Lock()
+	defer rc.mu.Unlock()
+	if state != "completed" || rc.capped == nil {
+		return nil
+	}
+	c := *rc.capped
+	return &c
 }
 
 // reaped returns why the sweeper reaped the child, or "" if it did not.
@@ -486,7 +504,7 @@ func (s *Server) openResidentChild(ctx context.Context, name, prompt, defID stri
 		defer func() {
 			if r := recover(); r != nil {
 				log.Printf("resident child %s panicked: %v", prep.RunID, r)
-				rc.markDone("failed")
+				rc.markDone("failed", nil)
 			}
 			deregSteer()
 			prep.cleanup()
@@ -502,7 +520,13 @@ func (s *Server) openResidentChild(ctx context.Context, name, prompt, defID stri
 			prep.Emit(runErrorEvent(runErr))
 		}
 		s.finishRunWithCancel(context.WithoutCancel(prep.SteerCtx), prep.SteerCtx, prep.RunID, res, runErr, prep.Meta)
-		rc.markDone(st)
+		// Recorded completed, but the child did not get to finish its turn:
+		// its parent is told so, as a spawned child's parent is.
+		var capped *builtin.ChildCappedError
+		if runErr == nil && res.StopReason == loop.StopReasonMaxIterations {
+			capped = &builtin.ChildCappedError{Name: name, Limit: iterationLimitOf(prep.Opts), RunID: prep.RunID}
+		}
+		rc.markDone(st, capped)
 	}()
 
 	out, state, aerr := rc.awaitTurn(ctx, turnDone, time.Duration(timeoutMs)*time.Millisecond, true)
@@ -515,11 +539,20 @@ func (s *Server) openResidentChild(ctx context.Context, name, prompt, defID stri
 // child hands back an output at every turn, not once at the end, so the hooks
 // run on each, with the child's state as the status. A refusal leaves the
 // child open: the parent may send again, or close it.
+//
+// A turn that ended because the child stopped at its iteration limit is
+// handed back as a builtin.ChildCappedError carrying the turn's output, with
+// status failed for the hooks.
 func (s *Server) residentHandBack(ctx context.Context, rc *residentChild, out, state string, err error) (string, error) {
 	if reason := rc.reaped(); reason != "" && err == nil {
 		err = fmt.Errorf("resident sub-agent %q was reaped by the runtime (%s); open a new one", rc.runID, reason)
 	}
-	out, herr := s.subagentStop(ctx, rc.agentName, rc.runID, state, out, err)
+	status := state
+	if capped := rc.cappedEnd(state); capped != nil && err == nil {
+		capped.Output = out
+		err, status = capped, string(store.RunFailed)
+	}
+	out, herr := s.subagentStop(ctx, rc.agentName, rc.runID, status, out, err)
 	if herr != nil && herr != err {
 		return "", fmt.Errorf("%w (child_run_id %s is still open: send again or close it)", herr, rc.runID)
 	}

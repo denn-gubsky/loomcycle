@@ -27,6 +27,9 @@ type residentFamily struct {
 	script []func(providers.Request) []providers.Event
 	calls  []providers.Request
 	gate   chan struct{}
+	// capOn, when set, makes a child told it call a tool on every turn after
+	// it, until its iteration limit ends it (its closing turn answers).
+	capOn string
 }
 
 func (p *residentFamily) ID() string                  { return "stub" }
@@ -50,6 +53,9 @@ func (p *residentFamily) Call(ctx context.Context, req providers.Request) (<-cha
 			}
 		}
 		events = answer("reply to " + last)
+		if p.capOn != "" && !closingTurnAsked(req) && requestMentions(req, p.capOn) {
+			events = toolCallEv("tu_more", "Nope", `{}`)
+		}
 	} else {
 		p.mu.Lock()
 		i := len(p.calls)
@@ -66,6 +72,18 @@ func (p *residentFamily) Call(ctx context.Context, req providers.Request) (<-cha
 	}
 	close(ch)
 	return ch, nil
+}
+
+// requestMentions reports whether any text block of req contains want.
+func requestMentions(req providers.Request, want string) bool {
+	for _, m := range req.Messages {
+		for _, b := range m.Content {
+			if strings.Contains(b.Text, want) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func (p *residentFamily) leadCalls() []providers.Request {
@@ -284,5 +302,112 @@ func TestResumePausedRuns_ResumesAChildBeforeItsParent(t *testing.T) {
 	defer flips.mu.Unlock()
 	if len(flips.ids) != 2 || flips.ids[0] != child.ID || flips.ids[1] != lead.ID {
 		t.Errorf("resumed in the order %v, want the child %s then the lead %s", flips.ids, child.ID, lead.ID)
+	}
+}
+
+// A resident child resumed on another instance that then stops at its
+// iteration limit hands its parent that turn as an error naming the limit,
+// with the turn's answer after it — as a child that never paused does. Before,
+// the resumed child's end was filed as a completed turn.
+func TestResumePausedRuns_AResumedResidentChildCappedAtItsLimitIsAnError(t *testing.T) {
+	ctx := context.Background()
+	cfgA := bgResumeConfig("")
+	worker := cfgA.Agents["worker"]
+	worker.MaxIterations = 3
+	cfgA.Agents["worker"] = worker
+	provA := &residentFamily{gate: make(chan struct{}), script: []func(providers.Request) []providers.Event{
+		func(providers.Request) []providers.Event {
+			return agentCall("tu_1", `{"op":"open","name":"worker","prompt":"first"}`)
+		},
+	}}
+	srvA, _ := makeServer(t, provA, cfgA)
+	srvA.SetSteerRegistry(steer.NewRegistry(0))
+	srvA.SetPauseManager(pause.NewManager(srvA.store, 5*time.Second))
+	tsA := httptest.NewServer(srvA.Mux())
+	defer tsA.Close()
+	defer func() {
+		cancelAllRuns(srvA)
+		for deadline := time.Now().Add(10 * time.Second); srvA.cancelReg.Count() > 0 && time.Now().Before(deadline); {
+			time.Sleep(10 * time.Millisecond)
+		}
+	}()
+	var gateOnce sync.Once
+	openGate := func() { gateOnce.Do(func() { close(provA.gate) }) }
+	defer openGate()
+	_ = postLead(t, tsA)
+
+	var childID string
+	waitFor(t, "the resident child to be opened on A", func() bool {
+		for _, info := range srvA.residentReg.listInfo() {
+			childID = info.ChildRunID
+		}
+		return childID != ""
+	})
+	child, err := srvA.store.GetRun(ctx, childID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	leadID := child.ParentRunID
+
+	paused := make(chan error, 1)
+	go func() {
+		_, err := srvA.pauseMgr.Pause(ctx, 5*time.Second)
+		paused <- err
+	}()
+	waitFor(t, "the pause to be declared on A", func() bool { return srvA.pauseMgr.State() != pause.StateRunning })
+	openGate()
+	if err := <-paused; err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range []string{leadID, childID} {
+		waitFor(t, "run "+id+" to be paused on A", func() bool {
+			run, err := srvA.store.GetRun(ctx, id)
+			return err == nil && run.PauseState == store.PauseStatePaused
+		})
+	}
+	_, raw, err := snapshot.Capture(ctx, srvA.store, snapshot.CaptureOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	provB := &residentFamily{capOn: "second", script: []func(providers.Request) []providers.Event{
+		func(providers.Request) []providers.Event {
+			return agentCall("tu_2", `{"op":"send","child_run_id":"`+childID+`","prompt":"second"}`)
+		},
+		func(providers.Request) []providers.Event { return answer("done") },
+	}}
+	cfgB := bgResumeConfig("")
+	cfgB.Agents["worker"] = worker
+	srvB, _ := makeServer(t, provB, cfgB)
+	srvB.SetSteerRegistry(steer.NewRegistry(0))
+	t.Cleanup(func() {
+		cancelAllRuns(srvB)
+		for deadline := time.Now().Add(10 * time.Second); srvB.cancelReg.Count() > 0 && time.Now().Before(deadline); {
+			time.Sleep(10 * time.Millisecond)
+		}
+	})
+	reqBody, _ := json.Marshal(map[string]any{"json": json.RawMessage(raw)})
+	req := httptest.NewRequest("POST", "/v1/_snapshots/inline/restore", bytes.NewReader(reqBody))
+	req.SetPathValue("id", "inline")
+	rec := httptest.NewRecorder()
+	srvB.handleRestoreSnapshot(rec, req)
+	var restored snapshotRestoreResponse
+	_ = json.Unmarshal(rec.Body.Bytes(), &restored)
+	if rec.Code != http.StatusOK || restored.PausedRunsResumed != 2 {
+		t.Fatalf("restore on B: status %d, resumed %d, want the lead and its resident child: %s", rec.Code, restored.PausedRunsResumed, rec.Body.String())
+	}
+
+	waitWalkRunStatus(t, srvB.store, leadID, store.RunCompleted)
+	calls := provB.leadCalls()
+	if len(calls) != 2 {
+		t.Fatalf("the lead made %d calls on B, want 2", len(calls))
+	}
+	sent := lastToolText(calls[1])
+	if !strings.Contains(sent, "stopped at its iteration limit") || !strings.Contains(sent, "Its last answer") || !strings.Contains(sent, "reply to") {
+		t.Errorf("send on B = %s, want the capped error with the turn's answer", sent)
+	}
+	ended := waitWalkRunStatus(t, srvB.store, childID, store.RunCompleted)
+	if ended.StopReason != loop.StopReasonMaxIterations {
+		t.Errorf("the child ended with stop reason %q, want %q", ended.StopReason, loop.StopReasonMaxIterations)
 	}
 }

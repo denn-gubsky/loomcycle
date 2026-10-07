@@ -39,6 +39,11 @@ lifecycle: `close` it when you are done.**
 - `this run has N children alive and may have at most M at once ...` — the
   run's limit on live children of every kind; close a resident child or wait
   for spawned ones to finish.
+- `sub-agent "X" stopped at its iteration limit of N before it finished, so
+  its last answer may be incomplete (run r_...). Its last answer: ...` — the
+  turn used the last iterations its agent's `max_iterations` allows, and the
+  child has ended with it. Its answer follows the message; check it before
+  relying on it. To go on, `open` a new one.
 
 ## Examples
 

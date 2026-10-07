@@ -127,12 +127,24 @@ type SpawnResult struct {
 	// to tell the three apart. Empty when the implementor has no run behind the
 	// call.
 	Status string
+	// Capped is set for a member that stopped at its own iteration limit (its
+	// agent's max_iterations) before it finished. Its run is recorded
+	// completed, but the SpawnFunc also returns an error saying so, and the
+	// walk counts it as it counts a failed member. Output, FinalText and
+	// Structured keep its last answer, for the entries that carry a failed
+	// member's answer: a parallel results row and a Starter's sink message.
+	Capped bool
 }
 
 // MemberRejected is the SpawnResult.Status of a member a reviewer turned down.
 // It is the run's own status value (store.RunRejected) — teamrun does not
 // import the store — and a test in the server pins the two equal.
 const MemberRejected = "rejected"
+
+// MemberMaxIterations is the results-row status of a Capped member: its run's
+// stop reason. It is the member agent's own limit, not a state's
+// max_iterations, which ends the whole walk at an iteration cap.
+const MemberMaxIterations = "max_iterations"
 
 // spawnWork spawns a member whose output the walk goes on to use — every
 // state but the Starter, which tells a rejected member apart itself. A
@@ -730,6 +742,12 @@ func (r *agentRunner) runParallel(ctx context.Context, st teamgraph.State, input
 			sp, spawnErr := r.spawnWork(r.withMemberReview(runCtx, st), name, prompt)
 			if spawnErr != nil {
 				results[i] = agentResult{Index: i, Agent: name, RunID: sp.RunID, Ok: false, Error: spawnErr.Error()}
+				if sp.Capped {
+					// Not a success, but its answer is kept for the
+					// consolidator to judge, as an Agent parallel_spawn row
+					// keeps a capped child's.
+					results[i].Status, results[i].Output = MemberMaxIterations, sp.Output
+				}
 				return
 			}
 			results[i] = agentResult{Index: i, Agent: name, RunID: sp.RunID, Ok: true, Output: sp.Output}
@@ -871,9 +889,10 @@ type agentResult struct {
 	Error  string `json:"error,omitempty"`
 	// Status is set only for a member a reviewer REJECTED ("rejected"): not ok,
 	// but not a failure either — the run did its work and a person turned the
-	// answer down — and for a Starter run that outlived timeout_ms ("timeout").
-	// Absent otherwise, so an envelope with neither is byte-identical to before
-	// either existed.
+	// answer down — for a Starter run that outlived timeout_ms ("timeout"), and
+	// for a member that stopped at its iteration limit ("max_iterations"): not
+	// ok, its last answer kept in Output. Absent otherwise, so an envelope with
+	// none of them is byte-identical to before they existed.
 	Status string `json:"status,omitempty"`
 	// answer and structured are the member's bare final text and its
 	// structured result, for the sink message only. Unexported so the

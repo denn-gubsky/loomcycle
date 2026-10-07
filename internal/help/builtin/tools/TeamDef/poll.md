@@ -25,7 +25,9 @@ for review), `completed`, `failed` or `cancelled`. An ended walk's row also
 carries what a waited-for `run` answers — `def_id`, `status`, `final_state`,
 `final_output`, `steps` — and `error` when it did not complete. A walk stopped
 by an iteration cap is `failed` with `status: "iteration_cap"`, `capped_state`
-and the steps so far. `pending` counts the walks still running or held.
+and the steps so far. A walk whose member stopped at its own iteration limit
+is `failed` too, with no `status`: `error` names the member and its limit.
+`pending` counts the walks still running or held.
 
 The walks in one answer share a quarter of your context window. A walk whose
 text does not fit its share is cut — `error` first, then `final_output` keeps

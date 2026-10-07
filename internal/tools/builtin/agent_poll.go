@@ -457,7 +457,12 @@ func (a *AgentTool) residentRow(ctx context.Context, v tools.ChildView) pollRow 
 		return r
 	}
 	out, state, err := a.PollChild(ctx, v.RunID, 0)
+	var capped *ChildCappedError
 	switch {
+	case errors.As(err, &capped):
+		// Its run ended at its iteration limit: failed, its answer kept, as a
+		// spawned child's row reads.
+		r.State, r.Error, r.Status, r.Output = tools.ChildFailed, capped.Error(), ChildStatusMaxIterations, capped.Output
 	case err != nil:
 		// Closed or reaped: its run was ended for it.
 		r.State, r.Error = tools.ChildCancelled, err.Error()
@@ -529,7 +534,10 @@ func (a *AgentTool) cancelChildren(ctx context.Context, in agentInput) (tools.Re
 				continue
 			}
 			out, state, err := a.CancelChild(ctx, v.RunID)
+			var capped *ChildCappedError
 			switch {
+			case errors.As(err, &capped):
+				rows[i].State, rows[i].Error, rows[i].Status, rows[i].Output = tools.ChildFailed, capped.Error(), ChildStatusMaxIterations, capped.Output
 			case err != nil:
 				rows[i].State, rows[i].Error = tools.ChildCancelled, err.Error()
 			case state == "awaiting_input":
