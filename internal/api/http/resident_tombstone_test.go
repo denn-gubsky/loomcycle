@@ -197,3 +197,41 @@ func TestResidentTombstone_EndingsAreBoundedInCountAndTime(t *testing.T) {
 		t.Errorf("kept %d endings past their TTL, want none", n)
 	}
 }
+
+// A close that reaches the child's run through the cancel registry alone — as
+// one sent from another replica does — still leaves the ending "closed by its
+// parent", read from the reason the run was cancelled with.
+func TestResidentTombstone_ACloseThroughTheCancelRegistrySaysItWasClosed(t *testing.T) {
+	srv := newResidentTestServer(t)
+	ctx := residentParentCtx("parent-agent", "")
+	runID, _, _, err := srv.openResidentChild(ctx, "child", "start", "", 0, 0)
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	rc, _ := srv.residentReg.get(runID)
+	if _, found := srv.cancelReg.Cancel(rc.agentID, "closed by parent (resident sub-agent)"); !found {
+		t.Fatal("the child is not in the cancel registry")
+	}
+	waitResidentGone(t, srv, runID)
+	if _, _, err := srv.pollResidentChild(ctx, runID, 0); err == nil || !strings.Contains(err.Error(), "was closed by its parent") {
+		t.Errorf("poll after a registry close: %v, want it closed by its parent", err)
+	}
+}
+
+// Every reason the runtime ends a resident child's run with reads back as the
+// ending it names; any other cancel reads as a cancel with its reason.
+func TestResidentEndedFor_ReadsEveryReasonTheRuntimeCancelsWith(t *testing.T) {
+	for _, tc := range []struct{ reason, reap, closed string }{
+		{"", "", ""},
+		{residentReasonClosedByParent, "", "closed by its parent"},
+		{residentReasonClosedByOperator, "", "closed by the operator"},
+		{residentReasonParentEnded, "", "closed when its parent run ended"},
+		{residentReapIdle + " unused for longer than 30m0s" + residentReasonSuffix, residentReapIdle + " unused for longer than 30m0s", ""},
+		{residentReapCeiling + " a turn ran longer than 2h0m0s" + residentReasonSuffix, residentReapCeiling + " a turn ran longer than 2h0m0s", ""},
+		{"cancelled by api", "", "cancelled (cancelled by api)"},
+	} {
+		if reap, closed := residentEndedFor(tc.reason); reap != tc.reap || closed != tc.closed {
+			t.Errorf("residentEndedFor(%q) = (%q, %q), want (%q, %q)", tc.reason, reap, closed, tc.reap, tc.closed)
+		}
+	}
+}

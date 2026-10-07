@@ -1002,6 +1002,7 @@ func (s *Server) resumePausedRun(run store.Run) error {
 		var once sync.Once
 		residentDone = func(state string, capped *builtin.ChildCappedError) {
 			once.Do(func() {
+				rc.noteCancelled(context.Cause(runCtx))
 				rc.markDone(state, capped)
 				s.residentReg.remove(rc)
 				live()
