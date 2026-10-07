@@ -43,9 +43,10 @@ func (s *Scheduler) SetRunCanceller(c RunCanceller) {
 //     a fire, so it does not count toward max_fires.
 //   - allow: always starts. Each run is tracked and finished on its own.
 //   - replace: cancels the schedule's running runs, then starts. A cancelled
-//     run is finished as cancelled, with no hooks. If one cannot be stopped
-//     (a walk on another replica, an unreachable owner), the slot is skipped
-//     as forbid would: replace never starts a run over one it did not stop.
+//     run is finished as cancelled, with no hooks. A run or a walk is stopped
+//     on whichever replica runs it; if one cannot be stopped (its replica is
+//     unreachable, a store fault), the slot is skipped as forbid would:
+//     replace never starts a run over one it did not stop.
 //
 // Whether anything is running is read from schedule_active_runs, which every
 // replica shares, so the policy holds across replicas.
@@ -87,7 +88,7 @@ func (s *Scheduler) replaceActive(ctx context.Context, row store.ScheduleDueRow,
 			return false
 		}
 		if !stopped {
-			s.logf("scheduler: schedule %q: replace: run %s could not be stopped from this replica", row.Name, a.RunID)
+			s.logf("scheduler: schedule %q: replace: run %s could not be stopped (its replica did not answer)", row.Name, a.RunID)
 			return false
 		}
 	}

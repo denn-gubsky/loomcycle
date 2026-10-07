@@ -176,7 +176,7 @@ There is no split-brain scenario: Postgres is the single source of truth. If the
 9. **The scheduler may run on every replica.** With `LOOMCYCLE_SCHEDULER_ENABLED=1` on several replicas, each lists the same due schedules, and each slot is fired by the one replica that claims it (a compare-and-set on `next_run_at`). The run also carries the claim's idempotency key, so a slot never produces two runs. `schedule_run_state.claimed_by` records which replica took the last slot.
    - **Finishing:** a scheduled run is finished — outcome recorded, `on_complete` dispatched once — by the replica that ran it. If that replica dies, any replica's reconcile sweep finishes it once the stale-run sweeper has failed the run, or once it completed (one replica per tick under an advisory lock).
    - **Across replicas:** `concurrency_policy` and `catch_up_max` read what is running from the shared `schedule_active_runs` table, so they hold cluster-wide.
-   - **Sharp edge:** `concurrency_policy: replace` stops an agent run on whichever replica runs it, but a **team walk only on the replica it runs on**. When the running walk is elsewhere, the slot is skipped as `forbid` would skip it; nothing starts over a walk it could not stop.
+   - **`replace` across replicas:** `concurrency_policy: replace` stops the running run or team walk on whichever replica runs it — the cancel is routed to the owner. If the owner cannot be reached within the cancel ack timeout, the slot is skipped as `forbid` would skip it; nothing starts over a run it could not stop.
 
 ## Roadmap (post-v1.0)
 
