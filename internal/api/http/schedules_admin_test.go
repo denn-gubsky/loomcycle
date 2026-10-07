@@ -1,6 +1,7 @@
 package http
 
 import (
+	"context"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -349,5 +350,51 @@ func TestScheduleAdmin_AllEndpointsRequireBearer(t *testing.T) {
 				t.Errorf("unauthenticated %s %s should 401; got %d", c.method, c.path, resp.StatusCode)
 			}
 		})
+	}
+}
+
+// The state view carries what the schedule is running now, its last claim and
+// the catch-up backlog. active_runs is always a list (empty, never absent),
+// and an unset instant is absent rather than year 1 — a reader takes
+// catch_up_until's presence to mean a backlog drains.
+func TestScheduleState_CarriesActiveRunsAndTheBacklog(t *testing.T) {
+	ts, st, defID := schedulesAdminFixture(t)
+	ctx := context.Background()
+
+	raw := func() map[string]any {
+		t.Helper()
+		resp := authGET(t, ts, "/v1/_schedules/"+defID+"/state")
+		defer resp.Body.Close()
+		var m map[string]any
+		if err := json.NewDecoder(resp.Body).Decode(&m); err != nil {
+			t.Fatalf("decode: %v", err)
+		}
+		return m
+	}
+	m := raw()
+	if runs, ok := m["active_runs"].([]any); !ok || len(runs) != 0 {
+		t.Errorf("active_runs = %v, want an empty list", m["active_runs"])
+	}
+	for _, k := range []string{"catch_up_until", "slot_at", "claimed_at", "finished_at"} {
+		if _, present := m[k]; present {
+			t.Errorf("%s present before anything set it: %v", k, m[k])
+		}
+	}
+
+	slot := time.Now().Add(-time.Hour).UTC().Truncate(time.Second)
+	if err := st.ScheduleActiveRunStart(ctx, store.ScheduleActiveRun{DefID: defID, RunID: "r_live", SlotAt: slot, CatchUp: true, StartedAt: time.Now()}); err != nil {
+		t.Fatal(err)
+	}
+	m = raw()
+	runs, _ := m["active_runs"].([]any)
+	if len(runs) != 1 {
+		t.Fatalf("active_runs = %v, want the running run", m["active_runs"])
+	}
+	run, _ := runs[0].(map[string]any)
+	if run["run_id"] != "r_live" || run["catch_up"] != true {
+		t.Errorf("active run = %v, want r_live marked catch-up", run)
+	}
+	if m["last_status"] != "running" || m["fire_count"] != float64(1) {
+		t.Errorf("last_status=%v fire_count=%v, want running 1", m["last_status"], m["fire_count"])
 	}
 }

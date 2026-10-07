@@ -75,6 +75,9 @@ const scheduleDefDescription = `Author, fork, retire, and inspect schedule defin
 	`Static scheduled_runs.<name>: yaml entries remain the operator's immutable ground truth; this tool ` +
 	`produces the DERIVED layer of orchestrator-authored per-user forks. ` +
 	`Operations: create, fork, get, list, retire, add_hook, remove_hook. ` +
+	`get also returns run_state: next_run_at, how the last run went (last_status — running while one is in flight, ` +
+	`skipped_overlap when a slot found one still going), active_runs (every run it started and has not finished, with ` +
+	`its slot and whether it is a catch-up run) and missed_slots (how many slots the last outage dropped). ` +
 	`The definition's tenant_id is the tenant its fired runs execute in: it defaults to your own tenant, ` +
 	`and only an admin may set it to another tenant (a fork or hook edit that would keep another tenant's is refused too). ` +
 	`A definition carrying capture_disabled was restored from a snapshot without its literal user_credentials: ` +
@@ -554,7 +557,53 @@ func (s *ScheduleDef) execGet(ctx context.Context, policy tools.ScheduleDefPolic
 	if err := s.checkScopeForName(policy, row.Name); err != nil {
 		return errResult(err.Error()), nil
 	}
-	return okJSON(scheduleRowResponse(row, false))
+	out := scheduleRowResponse(row, false)
+	if rs := s.runStateResponse(ctx, row.DefID); rs != nil {
+		out["run_state"] = rs
+	}
+	return okJSON(out)
+}
+
+// runStateResponse is a def's run-time state for `get`: when it fires next,
+// how its last run went, what it is running now (active_runs) and what an
+// outage dropped (missed_slots). Nil when the def has no state row (never
+// promoted). Telemetry only — no credential lives in either table.
+func (s *ScheduleDef) runStateResponse(ctx context.Context, defID string) map[string]any {
+	st, err := s.Store.ScheduleRunStateGet(ctx, defID)
+	if err != nil {
+		return nil
+	}
+	out := map[string]any{
+		"next_run_at":  st.NextRunAt.UTC(),
+		"fire_count":   st.FireCount,
+		"missed_slots": st.MissedSlots,
+	}
+	// An unset instant or string is left out rather than sent as year 1 or
+	// "": a reader takes catch_up_until's presence to mean a backlog drains.
+	for k, t := range map[string]time.Time{
+		"last_run_at": st.LastRunAt, "paused_until": st.PausedUntil, "slot_at": st.SlotAt,
+		"claimed_at": st.ClaimedAt, "finished_at": st.FinishedAt, "catch_up_until": st.CatchUpUntil,
+	} {
+		if !t.IsZero() {
+			out[k] = t.UTC()
+		}
+	}
+	for k, v := range map[string]string{
+		"last_run_id": st.LastRunID, "last_status": st.LastStatus, "last_error": st.LastError, "claimed_by": st.ClaimedBy,
+	} {
+		if v != "" {
+			out[k] = v
+		}
+	}
+	active, err := s.Store.ScheduleActiveRunsList(ctx, defID)
+	if err != nil {
+		active = nil
+	}
+	if active == nil {
+		active = []store.ScheduleActiveRun{}
+	}
+	out["active_runs"] = active
+	return out
 }
 
 func (s *ScheduleDef) execList(ctx context.Context, policy tools.ScheduleDefPolicyValue, in scheduleDefInput) (tools.Result, error) {

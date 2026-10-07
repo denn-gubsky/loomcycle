@@ -106,3 +106,36 @@ func TestScheduleDefTool_ConcurrencyPolicy(t *testing.T) {
 		})
 	}
 }
+
+// get carries the def's run-time state: when it fires next, what it is
+// running now (active_runs — a list, empty when nothing runs) and what an
+// outage dropped. Unset instants are left out, not sent as year 1.
+func TestScheduleDefTool_GetCarriesRunState(t *testing.T) {
+	tool, ctx, cleanup := scheduleDefFixture(t)
+	defer cleanup()
+	res, _ := tool.Execute(ctx, json.RawMessage(
+		`{"op":"create","name":"nightly","overlay":{"agent":"job-search-batch","schedule":"0 3 * * *"}}`))
+	if res.IsError {
+		t.Fatalf("create: %s", res.Text)
+	}
+	defID, _ := decodeResult(t, res.Text)["def_id"].(string)
+	res, _ = tool.Execute(ctx, json.RawMessage(`{"op":"get","def_id":"`+defID+`"}`))
+	if res.IsError {
+		t.Fatalf("get: %s", res.Text)
+	}
+	rs, ok := decodeResult(t, res.Text)["run_state"].(map[string]any)
+	if !ok {
+		t.Fatalf("get carries no run_state: %s", res.Text)
+	}
+	if rs["next_run_at"] == nil {
+		t.Errorf("run_state has no next_run_at: %v", rs)
+	}
+	if runs, ok := rs["active_runs"].([]any); !ok || len(runs) != 0 {
+		t.Errorf("active_runs = %v, want an empty list", rs["active_runs"])
+	}
+	for _, k := range []string{"catch_up_until", "last_run_at", "slot_at"} {
+		if _, present := rs[k]; present {
+			t.Errorf("%s present before anything set it: %v", k, rs[k])
+		}
+	}
+}

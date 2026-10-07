@@ -149,6 +149,31 @@ type ScheduleStateView struct {
 	LastError   string    `json:"last_error,omitempty"`
 	NextRunAt   time.Time `json:"next_run_at"`
 	PausedUntil time.Time `json:"paused_until,omitempty"`
+
+	// RFC DZ: the slot claims, and what the schedule is running. FireCount
+	// counts toward max_fires. SlotAt/ClaimedBy/ClaimedAt are the last
+	// claim; FinishedAt when its last tracked run was finished. CatchUpUntil
+	// is set while a catch_up_max backlog drains; MissedSlots is what the
+	// last outage dropped. ActiveRuns is every started, unfinished run —
+	// empty, never absent.
+	// The instants are pointers so an unset one is absent rather than
+	// year 1: a UI reads catch_up_until's presence as "a backlog drains".
+	FireCount    int                       `json:"fire_count"`
+	SlotAt       *time.Time                `json:"slot_at,omitempty"`
+	ClaimedBy    string                    `json:"claimed_by,omitempty"`
+	ClaimedAt    *time.Time                `json:"claimed_at,omitempty"`
+	FinishedAt   *time.Time                `json:"finished_at,omitempty"`
+	CatchUpUntil *time.Time                `json:"catch_up_until,omitempty"`
+	MissedSlots  int                       `json:"missed_slots,omitempty"`
+	ActiveRuns   []store.ScheduleActiveRun `json:"active_runs"`
+}
+
+// optTime is t, or nil for the zero time.
+func optTime(t time.Time) *time.Time {
+	if t.IsZero() {
+		return nil
+	}
+	return &t
 }
 
 // handleGetScheduleState serves GET /v1/_schedules/{def_id}/state.
@@ -176,14 +201,30 @@ func (s *Server) handleGetScheduleState(w http.ResponseWriter, r *http.Request) 
 		writeJSONError(w, http.StatusInternalServerError, "store_error", err.Error())
 		return
 	}
+	active, err := s.store.ScheduleActiveRunsList(r.Context(), defID)
+	if err != nil {
+		writeJSONError(w, http.StatusInternalServerError, "store_error", err.Error())
+		return
+	}
+	if active == nil {
+		active = []store.ScheduleActiveRun{}
+	}
 	writeJSONOK(w, ScheduleStateView{
-		DefID:       row.DefID,
-		LastRunAt:   row.LastRunAt,
-		LastRunID:   row.LastRunID,
-		LastStatus:  row.LastStatus,
-		LastError:   row.LastError,
-		NextRunAt:   row.NextRunAt,
-		PausedUntil: row.PausedUntil,
+		DefID:        row.DefID,
+		LastRunAt:    row.LastRunAt,
+		LastRunID:    row.LastRunID,
+		LastStatus:   row.LastStatus,
+		LastError:    row.LastError,
+		NextRunAt:    row.NextRunAt,
+		PausedUntil:  row.PausedUntil,
+		FireCount:    row.FireCount,
+		SlotAt:       optTime(row.SlotAt),
+		ClaimedBy:    row.ClaimedBy,
+		ClaimedAt:    optTime(row.ClaimedAt),
+		FinishedAt:   optTime(row.FinishedAt),
+		CatchUpUntil: optTime(row.CatchUpUntil),
+		MissedSlots:  row.MissedSlots,
+		ActiveRuns:   active,
 	})
 }
 
