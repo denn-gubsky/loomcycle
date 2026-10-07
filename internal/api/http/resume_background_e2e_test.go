@@ -126,6 +126,9 @@ func (p *crossFamily) Call(ctx context.Context, req providers.Request) (<-chan p
 		case prompt != "slow":
 			events = answer("result of " + prompt)
 		case len(req.Messages) == 1:
+			p.mu.Lock()
+			p.slowCalls++
+			p.mu.Unlock()
 			select {
 			case <-p.gate:
 			case <-ctx.Done():
@@ -153,6 +156,14 @@ func (p *crossFamily) Call(ctx context.Context, req providers.Request) (<-chan p
 	}
 	close(ch)
 	return ch, nil
+}
+
+// slowInFlight reports whether the slow child's first call has reached the
+// gate.
+func (p *crossFamily) slowInFlight() bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.slowCalls > 0
 }
 
 func (p *crossFamily) leadCalls() []providers.Request {
@@ -210,6 +221,10 @@ func TestResumePausedRuns_AParentPausedOnOneInstanceWakesOnAnother(t *testing.T)
 		t.Fatalf("the lead on A read %q before it waited, want the fast child", fastID)
 	}
 
+	// The pause must find the slow child inside its first call, so it parks at
+	// the boundary after it. Paused before that call, it would resume on B
+	// still owing its first call, which waits on a gate B does not have.
+	waitFor(t, "the slow child's first call on A", provA.slowInFlight)
 	paused := make(chan error, 1)
 	go func() {
 		_, err := srvA.pauseMgr.Pause(ctx, 5*time.Second)
