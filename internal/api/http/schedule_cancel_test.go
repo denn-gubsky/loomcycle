@@ -5,6 +5,7 @@ import (
 	"sync/atomic"
 	"testing"
 
+	"github.com/denn-gubsky/loomcycle/internal/cancel"
 	"github.com/denn-gubsky/loomcycle/internal/store"
 )
 
@@ -12,7 +13,7 @@ import (
 // schedule's running run through. It reaches an agent run through the cancel
 // registry and a walk through its own cancel, reports a run that already
 // ended as stopped, and reports a walk it cannot reach as NOT stopped — so the
-// scheduler never starts a walk over one still running elsewhere.
+// scheduler never starts a walk over one it did not stop.
 func TestCancelScheduledRun(t *testing.T) {
 	s, st := tokenAuthServer(t, "")
 	ctx := context.Background()
@@ -37,7 +38,7 @@ func TestCancelScheduledRun(t *testing.T) {
 		}
 	})
 
-	t.Run("a walk running on another replica is not stopped", func(t *testing.T) {
+	t.Run("a walk not live here, with no route to its replica, is not stopped", func(t *testing.T) {
 		runID := seedRunInTenant(t, st, "acme", "alice", teamWalkAgentPrefix+"elsewhere")
 		stopped, err := s.CancelScheduledRun(ctx, runID, "replaced by the next slot")
 		if err != nil || stopped {
@@ -55,6 +56,49 @@ func TestCancelScheduledRun(t *testing.T) {
 		}
 		if stopped, err := s.CancelScheduledRun(ctx, "r_gone", "x"); err != nil || !stopped {
 			t.Errorf("a run that is gone: stopped=%v err=%v, want true", stopped, err)
+		}
+	})
+}
+
+// A replace slot claimed on one replica stops a team walk running on ANOTHER:
+// the cancel is routed to the walk's replica, whose walk table holds its
+// cancel. The walk ends with the slot's reason.
+//
+// Fails-before: a walk not live on the calling replica was reported "not
+// stopped" without trying, so replace skipped the slot as forbid would.
+func TestCancelScheduledRun_StopsAWalkOnAnotherReplica(t *testing.T) {
+	walkOn := func(t *testing.T, routed bool) (b *Server, runID string, cause func() error) {
+		t.Helper()
+		a, b := twoReplicas(t, hangingProvider{}, makeBaseConfig(), routed)
+		runID = seedRunInTenant(t, a.store, "acme", "alice", teamWalkAgentPrefix+"weekly")
+		var got atomic.Value
+		a.walks.add(runID, "", runStateMeta{RunID: runID}, func(err error) { got.Store(err) })
+		t.Cleanup(func() { a.walks.remove(runID) })
+		return b, runID, func() error {
+			err, _ := got.Load().(error)
+			return err
+		}
+	}
+
+	t.Run("routed to the walk's replica", func(t *testing.T) {
+		b, runID, cause := walkOn(t, true)
+		stopped, err := b.CancelScheduledRun(context.Background(), runID, "replaced by the next slot")
+		if err != nil || !stopped {
+			t.Fatalf("stopped=%v err=%v, want the walk stopped through its replica", stopped, err)
+		}
+		if got := cause(); got == nil || cancel.ReasonFromCause(got) != "replaced by the next slot" {
+			t.Errorf("the walk's cancel cause = %v, want the slot's reason", got)
+		}
+	})
+
+	t.Run("no route: not stopped, and not cancelled", func(t *testing.T) {
+		b, runID, cause := walkOn(t, false)
+		stopped, err := b.CancelScheduledRun(context.Background(), runID, "replaced by the next slot")
+		if err != nil || stopped {
+			t.Errorf("stopped=%v err=%v, want false", stopped, err)
+		}
+		if got := cause(); got != nil {
+			t.Errorf("the walk was cancelled with no route to it: %v", got)
 		}
 	})
 }

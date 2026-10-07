@@ -202,9 +202,9 @@ scheduled_runs:
 
 - It holds across replicas: whether a run is still going is read from the
   store every replica shares.
-- `replace` never starts a run over one it could not stop. A team walk can
-  only be cancelled on the replica it runs on, so when the running walk is
-  elsewhere the slot is skipped as `forbid` would.
+- `replace` stops the running run or walk on whichever replica runs it. It
+  never starts a run over one it could not stop: if the replica running it
+  cannot be reached, the slot is skipped as `forbid` would.
 - Refused on `delivery: channel`, which starts nothing that could overlap. A
   consolidation sweep always runs one at a time per schedule.
 

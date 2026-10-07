@@ -21,10 +21,13 @@ import (
 // firing — the def's own authority, the same authority that started the run.
 // It is not reachable from any wire surface.
 //
-// An agent run stops on whichever replica runs it: the cancel registry falls
-// back to the cluster canceller, which routes by the run's replica. A team walk
-// stops only on the replica it runs on (its cancel is held in s.walks), so a
-// walk running elsewhere reports false.
+// Either kind stops on whichever replica runs it. An agent run goes through
+// the cancel registry, which falls back to the cluster canceller. A team walk
+// has no entry there — its cancel is held in its replica's walk table — so a
+// walk running elsewhere goes through the turn-cancel registry, which routes a
+// run-id cancel to the owning replica, where the unarmed stopper ends the walk
+// (SetUnarmedStopper). In single-process mode nothing routes, and a walk that
+// is not live here reports false.
 func (s *Server) CancelScheduledRun(ctx context.Context, runID, reason string) (bool, error) {
 	if e, ok := s.walks.get(runID); ok {
 		e.cancel(cancel.CauseWithReason(strings.TrimSpace(reason)))
@@ -45,16 +48,22 @@ func (s *Server) CancelScheduledRun(ctx context.Context, runID, reason string) (
 	if store.IsTerminalRunStatus(run.Status) {
 		return true, nil
 	}
+	var routeErr error
 	if strings.HasPrefix(run.AgentID, teamWalkAgentPrefix) {
-		// A live walk on another replica: nothing here can stop it.
-		return false, nil
-	}
-	if res, ok := s.cancelReg.Cancel(run.AgentID, reason); ok && res.Cancelled {
+		// A live walk on another replica: route the cancel to its owner.
+		if s.turnCancelReg != nil {
+			fired, err := s.turnCancelReg.Cancel(ctx, runID, strings.TrimSpace(reason))
+			if fired {
+				return true, nil
+			}
+			routeErr = err
+		}
+	} else if res, ok := s.cancelReg.Cancel(run.AgentID, reason); ok && res.Cancelled {
 		return true, nil
 	}
 	// Not cancelled: it may have ended meanwhile, which is as good.
 	if again, err := s.store.GetRun(ctx, runID); err == nil && store.IsTerminalRunStatus(again.Status) {
 		return true, nil
 	}
-	return false, nil
+	return false, routeErr
 }
