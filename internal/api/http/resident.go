@@ -208,17 +208,18 @@ func (rc *residentChild) markDone(state string, capped *builtin.ChildCappedError
 }
 
 // residentEnding is how a resident child stands at a hand-back: why the
-// sweeper reaped it ("" if it did not), and the iteration-limit error its
-// run ended with (nil unless it did).
+// sweeper reaped it ("" if it did not), whether its run has ended, and the
+// iteration-limit error it ended with (nil unless it did).
 type residentEnding struct {
 	reapReason string
+	ended      bool
 	capped     *builtin.ChildCappedError
 }
 
 func (rc *residentChild) ending() residentEnding {
 	rc.mu.Lock()
 	defer rc.mu.Unlock()
-	return residentEnding{reapReason: rc.reapReason, capped: rc.capped}
+	return residentEnding{reapReason: rc.reapReason, ended: rc.done, capped: rc.capped}
 }
 
 // markClosed records who closed a child still running, before the close
@@ -584,8 +585,10 @@ func (s *Server) openResidentChild(ctx context.Context, name, prompt, defID stri
 // residentHandBack passes what a resident child hands its parent through the
 // parent's subagent_stop hooks, as a one-shot child's result is. A resident
 // child hands back an output at every turn, not once at the end, so the hooks
-// run on each, with the child's state as the status. A refusal leaves the
-// child open: the parent may send again, or close it.
+// run on each, with the child's state as the status. A refusal of an open
+// child's turn leaves it open: the parent may send again, or close it. A
+// refusal of the last answer of a child whose run has ended says so instead
+// — there is nothing left to send to.
 //
 // A turn that ended because the child stopped at its iteration limit is
 // handed back as a builtin.ChildCappedError carrying the turn's output, with
@@ -603,6 +606,9 @@ func (s *Server) residentHandBack(ctx context.Context, runID, agentName string, 
 	}
 	out, herr := s.subagentStop(ctx, agentName, runID, status, out, err)
 	if herr != nil && herr != err {
+		if e.ended {
+			return "", fmt.Errorf("%w (child_run_id %s has ended and this was its last answer: open a new one to go on)", herr, runID)
+		}
 		return "", fmt.Errorf("%w (child_run_id %s is still open: send again or close it)", herr, runID)
 	}
 	return out, herr
@@ -736,7 +742,7 @@ func (s *Server) readEndedResident(ctx context.Context, childRunID string) (stri
 	if err != nil {
 		return "", "", err
 	}
-	out, err := s.residentHandBack(ctx, childRunID, t.agentName, residentEnding{capped: t.capped}, t.output, t.state, nil)
+	out, err := s.residentHandBack(ctx, childRunID, t.agentName, residentEnding{ended: true, capped: t.capped}, t.output, t.state, nil)
 	return out, t.state, err
 }
 
