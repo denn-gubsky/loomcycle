@@ -185,6 +185,14 @@ func (c *clusterStore) ListRunsByParentAgentID(ctx context.Context, parentAgentI
 	return runs, err
 }
 
+func (c *clusterStore) ListRunsByParentRunID(ctx context.Context, parentRunID string) ([]store.Run, error) {
+	runs, err := c.Store.ListRunsByParentRunID(ctx, parentRunID)
+	for i := range runs {
+		runs[i] = c.stamp(runs[i])
+	}
+	return runs, err
+}
+
 // fakeReplicas is the replicas table: which replicas' heartbeats are fresh.
 type fakeReplicas struct {
 	mu    sync.Mutex

@@ -107,16 +107,16 @@ func (s *Server) FinishRunOwnerGone(ctx context.Context, run store.Run, reason s
 // answers for them. seen bounds the walk on rows whose parent links loop;
 // ended collects the agent ids of the runs ended.
 func (s *Server) finishUnheldDescendants(ctx context.Context, parent store.Run, reason string, seen map[string]bool, ended *[]string) {
-	if parent.AgentID == "" {
-		return
-	}
-	children, err := s.store.ListRunsByParentAgentID(ctx, parent.AgentID)
+	// By the parent's run id, not its agent id: a team walk's members name the
+	// agent that started the walk as their parent agent, and only the walk's
+	// run id as their parent.
+	children, err := s.store.ListRunsByParentRunID(ctx, parent.ID)
 	if err != nil {
 		log.Printf("cancel: list run %s's children: %v", parent.ID, err)
 		return
 	}
 	for _, child := range children {
-		if child.ParentRunID != parent.ID || seen[child.ID] {
+		if seen[child.ID] {
 			continue
 		}
 		seen[child.ID] = true
