@@ -3,6 +3,7 @@ package http
 import (
 	"context"
 	"encoding/json"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -38,7 +39,15 @@ func TestScheduler_ReplaceCancelsTheRunningRunThroughTheServer(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	sched := scheduler.New(scheduler.Config{TickInterval: 20 * time.Millisecond}, st, srv, nil, nil, t.Logf)
+	// The replacing run outlives the test body: it is cancelled in cleanup,
+	// and the goroutine finishing it may log after the test returns.
+	var over atomic.Bool
+	logf := func(format string, args ...any) {
+		if !over.Load() {
+			t.Logf(format, args...)
+		}
+	}
+	sched := scheduler.New(scheduler.Config{TickInterval: 20 * time.Millisecond}, st, srv, nil, nil, logf)
 	sched.SetRunCanceller(srv)
 	sched.Start(ctx)
 	t.Cleanup(sched.Stop)
@@ -59,7 +68,15 @@ func TestScheduler_ReplaceCancelsTheRunningRunThroughTheServer(t *testing.T) {
 		return len(rows) == 1 && rows[0].RunID != first
 	})
 	second := active()[0].RunID
-	t.Cleanup(func() { _, _ = srv.CancelScheduledRun(ctx, second, "test over") })
+	t.Cleanup(func() {
+		_, _ = srv.CancelScheduledRun(ctx, second, "test over")
+		// Let it end before the store closes under it.
+		waitFor(t, "the replacing run to end", func() bool {
+			got, err := st.GetRun(ctx, second)
+			return err == nil && store.IsTerminalRunStatus(got.Status)
+		})
+		over.Store(true)
+	})
 
 	var run store.Run
 	waitFor(t, "the replaced run to end", func() bool {
