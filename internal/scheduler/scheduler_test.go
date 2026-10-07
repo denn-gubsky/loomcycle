@@ -693,19 +693,16 @@ func TestScheduler_PanicInFireOneIsRecovered(t *testing.T) {
 	}
 }
 
-// TestScheduler_InFlightSuppressesDoubleFire regresses the x30000
+// TestScheduler_SlotClaimSuppressesDoubleFire regresses the x30000
 // compound-test ceiling: when a fire takes longer than the tick
-// interval, the previous fire's RecordResult hasn't yet advanced
-// next_run_at, so the same row appears in the NEXT tick's due list
-// and fires AGAIN. Before the in-flight tracker fix, this produced
-// 2× MCP call counts at compound test scale=30000.
+// interval, the same row must not fire again from the next tick.
+// At compound scale=30000 that once produced 2× MCP call counts.
 //
 // Test shape: one schedule due in the past + a fake runner that
-// blocks for 300ms + back-to-back tick() calls 50ms apart. Without
-// the in-flight tracker, every tick during the in-flight window
-// re-fires the same schedule. With the tracker, only the FIRST
-// tick fires; subsequent ticks see the def in s.inFlight and skip.
-func TestScheduler_InFlightSuppressesDoubleFire(t *testing.T) {
+// blocks for 300ms + back-to-back tick() calls 50ms apart. The first
+// fire claims its slot, which moves next_run_at on before the run, so
+// the later ticks either do not list the row or lose the claim.
+func TestScheduler_SlotClaimSuppressesDoubleFire(t *testing.T) {
 	enabled := true
 	def := scheduleDef{Agent: "researcher", Schedule: "0 * * * *", Enabled: &enabled}
 
@@ -737,9 +734,8 @@ func TestScheduler_InFlightSuppressesDoubleFire(t *testing.T) {
 
 	// First tick fires the schedule asynchronously (via the goroutine
 	// pool). The fire takes 300ms; meanwhile we issue more ticks at
-	// 50ms intervals. WITHOUT the in-flight tracker, each of these
-	// ticks would re-fire the same schedule (the listDue query still
-	// returns it because next_run_at hasn't advanced yet).
+	// 50ms intervals. Were next_run_at still in the past during the
+	// run, each of these ticks would re-fire the same schedule.
 	go sched.tick(ctx)
 	for i := 0; i < 4; i++ {
 		time.Sleep(50 * time.Millisecond)
@@ -749,7 +745,7 @@ func TestScheduler_InFlightSuppressesDoubleFire(t *testing.T) {
 	time.Sleep(perFireDelay + 100*time.Millisecond)
 
 	if got := calls.Load(); got != 1 {
-		t.Errorf("calls = %d, want 1 (in-flight tracker should have suppressed re-fires while the first fire was running)", got)
+		t.Errorf("calls = %d, want 1 (the slot claim should have suppressed re-fires while the first fire was running)", got)
 	}
 }
 
@@ -765,12 +761,12 @@ func (s recordResultErrStore) ScheduleRunStateRecordResult(context.Context, stor
 	return s.err
 }
 
-// TestScheduler_AdvanceOnly_LogsDroppedResultWriteError pins exp7 I3: when the
-// result-write fails, next_run_at can't advance and the def re-presents every
-// tick (a re-fire loop). The scheduler previously swallowed the error (`_ =`),
-// hiding the cause. Now it logs. FAIL-BEFORE: with the dropped `_ =` the
-// captured log is empty and this test fails.
-func TestScheduler_AdvanceOnly_LogsDroppedResultWriteError(t *testing.T) {
+// TestScheduler_RecordSkip_LogsDroppedResultWriteError pins exp7 I3: a failed
+// result-write leaves last_status stale with nothing to say why. The scheduler
+// previously swallowed the error (`_ =`), hiding the cause. Now it logs.
+// FAIL-BEFORE: with the dropped `_ =` the captured log is empty and this test
+// fails.
+func TestScheduler_RecordSkip_LogsDroppedResultWriteError(t *testing.T) {
 	real, err := sqlite.Open(":memory:")
 	if err != nil {
 		t.Fatalf("sqlite.Open: %v", err)
@@ -789,15 +785,14 @@ func TestScheduler_AdvanceOnly_LogsDroppedResultWriteError(t *testing.T) {
 	st := recordResultErrStore{Store: real, err: errors.New("boom-write-failed")}
 	sched := New(Config{TickInterval: time.Hour}, st, &fakeRunner{}, nil, nil, logf)
 
-	// Empty Schedule → computeNext errors → 1h-park fallback, then the
-	// record-result write fails and must be logged (not swallowed).
-	sched.advanceOnly(context.Background(), "sd-x", scheduleDef{}, "skipped", time.Now())
+	// The record-result write fails and must be logged (not swallowed).
+	sched.recordSkip(context.Background(), "sd-x", "skipped", time.Now())
 
 	mu.Lock()
 	out := logged.String()
 	mu.Unlock()
 	if !strings.Contains(out, "record-result failed") || !strings.Contains(out, "boom-write-failed") {
-		t.Errorf("advanceOnly did not log the dropped result-write error; captured log:\n%s", out)
+		t.Errorf("recordSkip did not log the dropped result-write error; captured log:\n%s", out)
 	}
 }
 

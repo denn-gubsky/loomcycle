@@ -49,6 +49,18 @@ func dueRow(t *testing.T, st store.Store) store.ScheduleDueRow {
 	return due[0]
 }
 
+// dueAgain makes row's schedule due now and returns it as the lister sees it.
+// A fire claims its slot, which moves next_run_at on, so a test that fires the
+// same schedule tick after tick needs a fresh slot each time — as the operator's
+// run-now does.
+func dueAgain(t *testing.T, st store.Store, row store.ScheduleDueRow) store.ScheduleDueRow {
+	t.Helper()
+	if err := st.ScheduleRunStateSeed(context.Background(), row.DefID, time.Now().Add(-time.Second)); err != nil {
+		t.Fatalf("ScheduleRunStateSeed: %v", err)
+	}
+	return dueRow(t, st)
+}
+
 // callsSince returns the "tenant/user" of every dispatch after the first n.
 func callsSince(fr *fakeRunner, n int) []string {
 	return dispatched(fr)[n:]
@@ -115,7 +127,7 @@ func TestFanout_QueueOnlyTargetsAreNotStarvedByTheCap(t *testing.T) {
 	// The fake runner never advances a watermark, so every target keeps its work
 	// on every tick — the sustained-load case.
 	for tick := 0; tick < 3; tick++ {
-		sched.fireOne(context.Background(), row, time.Now())
+		sched.fireOne(context.Background(), dueAgain(t, st, row), time.Now())
 	}
 
 	for _, d := range dispatched(fr) {
@@ -142,7 +154,7 @@ func TestFanout_StartTenantRotatesAcrossTicks(t *testing.T) {
 	var firsts []string
 	for tick := 0; tick < 4; tick++ {
 		before := len(fr.Calls())
-		sched.fireOne(context.Background(), row, time.Now())
+		sched.fireOne(context.Background(), dueAgain(t, st, row), time.Now())
 		calls := callsSince(fr, before)
 		if len(calls) != 3 {
 			t.Fatalf("tick %d dispatched %v, want all three tenants; logs:\n%s", tick, calls, logs.all())

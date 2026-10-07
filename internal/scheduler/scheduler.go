@@ -84,6 +84,10 @@ type Config struct {
 	// same reason as InternalAgents: no config dependency here. The value is an
 	// env var, which a config reload does not change.
 	OperatorKeyRestriction bool
+
+	// ReplicaID names this replica on the slots it claims
+	// (schedule_run_state.claimed_by). "" outside cluster mode.
+	ReplicaID string
 }
 
 // defaults applies the documented defaults to a zero-value Config.
@@ -113,8 +117,9 @@ func (c Config) consolidationConcurrency() (n int, explicit bool) {
 }
 
 // Scheduler is the sweeper runtime. One instance per loomcycle
-// process; in cluster mode (v0.12+) each replica runs its own
-// Scheduler and per-def advisory locks coordinate which fires.
+// process; in cluster mode each replica may run its own. Every replica
+// lists the same due rows, and the slot claim (ScheduleRunStateClaim, a
+// compare-and-set on next_run_at) decides which one fires each slot.
 //
 // Construction is via New + Start. Stop the goroutine via
 // (*Scheduler).Stop or by cancelling the ctx passed to Start.
@@ -160,30 +165,6 @@ type Scheduler struct {
 	wg     sync.WaitGroup
 	stopCh chan struct{}
 	once   sync.Once
-
-	// inFlight tracks def_ids whose fire goroutine is currently
-	// running (between slot-acquire and RecordResult). Used to
-	// suppress double-fire when a fire takes longer than the tick
-	// interval and the next tick still sees the same row as due
-	// (because RecordResult hasn't advanced next_run_at yet).
-	//
-	// Surfaced by the compound test at scale=30000 where every
-	// schedule fired twice — every fire's RecordResult write was
-	// slower than the 100ms tick under heavy concurrent load, so
-	// each row stayed "due" for the next tick. The in-memory
-	// tracker is single-replica-only; cluster-mode advisory locks
-	// (v0.12+) would cover the cross-replica case symmetrically.
-	//
-	// Entry lifecycle:
-	//   tick():
-	//     LoadOrStore(def_id, _) before slot-acquire — skip if loaded
-	//   fire goroutine (deferred):
-	//     Delete(def_id) after fireOne returns or panics
-	//
-	// A goroutine that hangs leaks the entry until the fireCtx
-	// timeout cancels the RunOnce call (default 10m), which is the
-	// existing budget. No separate TTL needed.
-	inFlight sync.Map
 }
 
 // DeclaredChannel is what the scheduler needs to know about a channel it is
@@ -305,13 +286,11 @@ func (s *Scheduler) run(ctx context.Context) {
 // composition rule from RFC E).
 //
 // Due rows fire in parallel up to cfg.MaxConcurrentFires goroutines.
-// The tick waits for the whole batch to drain before returning so
-// the "next tick won't start until this one finishes" invariant
-// holds — important because each fire's RecordResult advances
-// next_run_at; without the wait, the next tick could re-fire a row
-// whose status update is still in flight. The bounded semaphore
-// keeps memory + per-user-fairness pressure predictable when 100s
-// of forks become due in one cron crossing.
+// Each fire first claims its slot (claimSlot), so a row listed by two
+// ticks — or by two replicas — fires once. The tick still waits for its
+// batch to drain. The bounded semaphore keeps memory + per-user-fairness
+// pressure predictable when 100s of forks become due in one cron
+// crossing.
 func (s *Scheduler) tick(ctx context.Context) {
 	if s.pause != nil && s.pause.State() != pause.StateRunning {
 		// Paused / pausing — the runtime is quiesced for snapshot.
@@ -335,25 +314,12 @@ func (s *Scheduler) tick(ctx context.Context) {
 	sem := make(chan struct{}, s.cfg.MaxConcurrentFires)
 	var wg sync.WaitGroup
 	for _, row := range due {
-		// In-flight suppression: skip rows whose fire goroutine from
-		// a previous tick is still running (RecordResult hasn't yet
-		// advanced next_run_at, so the row would otherwise re-fire).
-		// LoadOrStore is atomic so the racy "check then store" hole
-		// is closed. See the inFlight field's commentary for the
-		// lifecycle + why it solves the x30000 over-fire finding.
-		if _, alreadyFiring := s.inFlight.LoadOrStore(row.DefID, time.Now()); alreadyFiring {
-			continue
-		}
 		// Slot-acquire is ctx-aware so cancellation during a slow
 		// tick doesn't block waiting for slots indefinitely.
 		select {
 		case <-ctx.Done():
-			// We reserved the inFlight slot above but won't fire;
-			// release it so the next tick can pick up this def
-			// freely.
-			s.inFlight.Delete(row.DefID)
-			// Skip remaining rows; in-flight fires continue (their
-			// own fireCtx still has a timeout). Wait below drains.
+			// Skip remaining rows; their slots stay unclaimed, so the
+			// next tick (or another replica) takes them. Wait below drains.
 			wg.Wait()
 			return
 		case sem <- struct{}{}:
@@ -362,30 +328,12 @@ func (s *Scheduler) tick(ctx context.Context) {
 		go func(row store.ScheduleDueRow) {
 			defer wg.Done()
 			defer func() { <-sem }()
-			// Always release the in-flight reservation, even on
-			// panic. defer order is LIFO so this runs AFTER the
-			// recover() below; that ordering means a panicking fire
-			// still clears its in-flight slot before the next tick.
-			defer s.inFlight.Delete(row.DefID)
-			// Recover panics so one bad fire doesn't bring down
-			// the sweeper goroutine. Log + advance with a parked
-			// next_run_at so the def doesn't re-present every tick.
+			// Recover panics so one bad fire doesn't bring down the
+			// sweeper goroutine.
 			defer func() {
 				if r := recover(); r != nil {
 					s.logf("scheduler: PANIC in fireOne(def_id=%s): %v", row.DefID, r)
-					// Best-effort park — re-use the same 1h fallback
-					// the cron-resolve failure path uses.
-					if rerr := s.store.ScheduleRunStateRecordResult(context.Background(), store.ScheduleRunResult{
-						DefID:      row.DefID,
-						LastStatus: "failed",
-						LastError:  "panic in fireOne",
-						LastRunAt:  time.Now(),
-						NextRunAt:  time.Now().Add(1 * time.Hour),
-					}); rerr != nil {
-						// exp7 I3: if the park write also fails the def re-fires
-						// next tick — log so the panic→re-fire chain isn't silent.
-						s.logf("scheduler: def %q panic-park record-result failed: %v", row.DefID, rerr)
-					}
+					s.parkAfterPanic(row)
 				}
 			}()
 			s.fireOne(ctx, row, now)
@@ -394,15 +342,19 @@ func (s *Scheduler) tick(ctx context.Context) {
 	wg.Wait()
 }
 
-// fireOne handles one due schedule end-to-end: unmarshal the def,
-// build RunInput, call runner.RunOnce, record result, advance
-// next_run_at, dispatch on_complete hooks. Errors are logged but
-// never bubble out — one failed schedule shouldn't block the rest
-// of the tick.
+// fireOne handles one due schedule end-to-end: unmarshal the def, claim
+// its slot (which advances next_run_at), build RunInput, call
+// runner.RunOnce, record the result, dispatch on_complete hooks. Errors
+// are logged but never bubble out — one failed schedule shouldn't block
+// the rest of the tick.
 func (s *Scheduler) fireOne(ctx context.Context, row store.ScheduleDueRow, now time.Time) {
 	def, err := unmarshalDef(row.Definition)
 	if err != nil {
-		s.recordFireFailure(ctx, row.DefID, "", "decode_def", err, now)
+		// No cron to compute the next slot from: park this one an hour out
+		// so it does not re-present every tick.
+		if s.claimSlot(ctx, row, now.Add(time.Hour), now) {
+			s.recordFireFailure(ctx, row.DefID, "", "decode_def", err, now)
+		}
 		return
 	}
 	if rehomed, ok := rehomeToOwningTenant(row, def); ok {
@@ -410,12 +362,27 @@ func (s *Scheduler) fireOne(ctx context.Context, row store.ScheduleDueRow, now t
 			row.Name, row.DefID, row.OwnerTenantID, row.OwnerTenantID)
 		def = rehomed
 	}
+
+	// Claim the slot BEFORE firing. Taking it advances next_run_at, so the
+	// row is no longer due however long the fire runs, and another tick or
+	// replica that listed it too loses the claim and fires nothing.
+	next, nextErr := s.computeNext(def, now)
+	if nextErr != nil {
+		// Without a valid next_run_at, the sweeper would re-fire this
+		// def every tick. Park it 1 hour in the future so the operator
+		// gets a breathing window to fix the def before re-firing.
+		s.logf("scheduler: schedule %q cron-resolve failed: %v — parking 1h", row.Name, nextErr)
+		next = now.Add(1 * time.Hour)
+	}
+	if !s.claimSlot(ctx, row, next, now) {
+		return
+	}
+
 	if (def.Enabled != nil && !*def.Enabled) || def.CaptureDisabled != nil {
-		// Skip-but-advance: the operator disabled this schedule via the
-		// substrate (or the yaml template set enabled:false). Bump
-		// next_run_at to keep listDue's bounded set from re-presenting
-		// this row every tick.
-		s.advanceOnly(ctx, row.DefID, def, "skipped_disabled", now)
+		// Skip: the operator disabled this schedule via the substrate (or
+		// the yaml template set enabled:false). The claim already moved
+		// next_run_at on, so the row stops re-presenting every tick.
+		s.recordSkip(ctx, row.DefID, "skipped_disabled", now)
 		return
 	}
 
@@ -450,6 +417,10 @@ func (s *Scheduler) fireOne(ctx context.Context, row store.ScheduleDueRow, now t
 	}
 
 	in := buildRunInput(def, s.cfg.EnvAllowlist, s.logf)
+	// The slot's own key on the run: a second run for the same slot is
+	// refused by the runs table before its loop starts, whatever went wrong
+	// with the claim. It also names the slot a run was fired for.
+	in.IdempotencyKey = slotRunKey(row.DefID, row.NextRunAt)
 
 	// Cap the per-fire run time. The runner's ctx-cancellation cascades
 	// down to provider calls + tool calls so timeout cleanly aborts.
@@ -464,6 +435,11 @@ func (s *Scheduler) fireOne(ctx context.Context, row store.ScheduleDueRow, now t
 		},
 	}
 	runErr := s.runner.RunOnce(fireCtx, in, cb)
+	if errors.Is(runErr, store.ErrDuplicateIdempotencyKey) {
+		// This slot already has its run. Whoever started it records it.
+		s.logf("scheduler: schedule %q slot %s already has a run — not firing it twice", row.Name, row.NextRunAt.UTC().Format(time.RFC3339Nano))
+		return
+	}
 	status := "completed"
 	errStr := ""
 	// F36: every real fire counts toward max_fires (a wedged/always-failing
@@ -679,24 +655,64 @@ type fireOutcome struct {
 	CountAsFire bool
 }
 
-// recordFireOutcome advances next_run_at, records the result, and applies the
-// max_fires lifetime cap.
+// claimSlot takes the row's slot: it moves next_run_at from the value the
+// tick listed to next, if no one has moved it since. false means another
+// tick or replica took the slot (or the store could not answer), and the
+// caller must not fire. Every fire claims before it does anything, which is
+// what makes a slot fire once across replicas and keeps a fire that outlasts
+// its cadence from leaving its row due.
+func (s *Scheduler) claimSlot(ctx context.Context, row store.ScheduleDueRow, next, now time.Time) bool {
+	won, err := s.store.ScheduleRunStateClaim(ctx, store.ScheduleSlotClaim{
+		DefID:     row.DefID,
+		Slot:      row.NextRunAt,
+		NextRunAt: next,
+		ClaimedBy: s.cfg.ReplicaID,
+		ClaimedAt: now,
+	})
+	if err != nil {
+		// Not claimed is the safe reading: the slot stays due and is retried.
+		s.logf("scheduler: schedule %q claim slot: %v", row.Name, err)
+		return false
+	}
+	return won
+}
+
+// parkAfterPanic is the recovery for a fire that panicked. If the panic came
+// before the claim, the row is still due and would panic again every tick, so
+// its slot is claimed with next_run_at an hour out — the same park a cron
+// that cannot be resolved gets. If the fire had already claimed, the claim
+// here loses (next_run_at has moved) and only the failure is recorded.
+func (s *Scheduler) parkAfterPanic(row store.ScheduleDueRow) {
+	ctx := context.Background()
+	now := time.Now()
+	s.claimSlot(ctx, row, now.Add(time.Hour), now)
+	if err := s.store.ScheduleRunStateRecordResult(ctx, store.ScheduleRunResult{
+		DefID:      row.DefID,
+		LastStatus: "failed",
+		LastError:  "panic in fireOne",
+		LastRunAt:  now,
+	}); err != nil {
+		// exp7 I3: a dropped write is otherwise silent.
+		s.logf("scheduler: def %q panic record-result failed: %v", row.DefID, err)
+	}
+}
+
+// slotRunKey is the idempotency key of the run fired for one slot of one
+// schedule. The runs table holds a key once, so a second run for the same
+// slot is refused before it starts.
+func slotRunKey(defID string, slot time.Time) string {
+	return fmt.Sprintf("sched:%s:%d", defID, slot.UnixMicro())
+}
+
+// recordFireOutcome records the result and applies the max_fires lifetime
+// cap. next_run_at is not touched: the claim moved it before the fire.
 //
 // Returns the ctx it used plus a cleanup func. The ctx is a SURVIVAL ctx when
 // the parent is already cancelled (mid-shutdown): without it the store write
-// fails silently, next_run_at stays in the past, and the schedule re-fires
-// immediately on the next startup. Callers with follow-on work — on_complete
-// hooks — dispatch on the same ctx for the same reason, and must call the
-// cleanup func when they are done with it.
+// fails silently and the outcome is lost. Callers with follow-on work —
+// on_complete hooks — dispatch on the same ctx for the same reason, and must
+// call the cleanup func when they are done with it.
 func (s *Scheduler) recordFireOutcome(ctx context.Context, row store.ScheduleDueRow, def scheduleDef, now time.Time, out fireOutcome) (context.Context, func()) {
-	next, nextErr := s.computeNext(def, now)
-	if nextErr != nil {
-		// Without a valid next_run_at, the sweeper would re-fire this
-		// def every tick. Park it 1 hour in the future so the operator
-		// gets a breathing window to fix the def before re-firing.
-		s.logf("scheduler: schedule %q cron-resolve failed: %v — parking 1h", row.Name, nextErr)
-		next = now.Add(1 * time.Hour)
-	}
 	recordCtx := ctx
 	done := func() {}
 	if ctx.Err() != nil {
@@ -711,10 +727,9 @@ func (s *Scheduler) recordFireOutcome(ctx context.Context, row store.ScheduleDue
 		LastStatus: out.Status,
 		LastError:  out.Err,
 		LastRunAt:  now,
-		NextRunAt:  next,
 		// RFC S / F36: this IS a fire (any status counts toward the cap, so
-		// a wedged/always-failing schedule still retires). The disabled-skip
-		// advance (advanceOnly) leaves this false; F38 leaves it false for an
+		// a wedged/always-failing schedule still retires). The disabled skip
+		// (recordSkip) leaves this false; F38 leaves it false for an
 		// unresolved-agent config error.
 		CountAsFire: out.CountAsFire,
 	}); err != nil {
@@ -725,9 +740,8 @@ func (s *Scheduler) recordFireOutcome(ctx context.Context, row store.ScheduleDue
 	// incremented fire_count (cheap, and only when a cap is set) and retire
 	// the def once it reaches max_fires. Retired defs are skipped by the
 	// due-query JOIN, so this is the last fire. Uses recordCtx so it still
-	// runs mid-shutdown. Multi-replica: fire_count += 1 is atomic, so the
-	// cap is exact single-replica and at most over-fired by the racing
-	// replica count — acceptable for a lifetime bound.
+	// runs mid-shutdown. Multi-replica: each slot is claimed by one replica
+	// and fire_count += 1 is atomic, so the cap is exact.
 	if def.MaxFires > 0 {
 		if st, gerr := s.store.ScheduleRunStateGet(recordCtx, row.DefID); gerr != nil {
 			s.logf("scheduler: max_fires read state for %q: %v", row.Name, gerr)
@@ -742,40 +756,32 @@ func (s *Scheduler) recordFireOutcome(ctx context.Context, row store.ScheduleDue
 	return recordCtx, done
 }
 
-// advanceOnly is the disabled-schedule path: bump next_run_at without
-// recording a run.
-func (s *Scheduler) advanceOnly(ctx context.Context, defID string, def scheduleDef, reason string, now time.Time) {
-	next, err := s.computeNext(def, now)
-	if err != nil {
-		next = now.Add(1 * time.Hour)
-	}
-	// exp7 I3: a dropped result-write leaves next_run_at unadvanced, so the
-	// def re-presents on every subsequent tick (a re-fire loop). A genuinely
-	// dead store can't advance state at all — logging is the most this path
-	// can do, but it makes the re-fire cause visible instead of silent.
+// recordSkip records a claimed slot that started nothing (a disabled
+// schedule). It is not a fire, so it does not count toward max_fires.
+func (s *Scheduler) recordSkip(ctx context.Context, defID, reason string, now time.Time) {
+	// exp7 I3: a dropped result-write is otherwise silent. The claim already
+	// moved next_run_at, so it cannot cause a re-fire loop, but the operator
+	// should still see why last_status is stale.
 	if err := s.store.ScheduleRunStateRecordResult(ctx, store.ScheduleRunResult{
 		DefID:      defID,
 		LastStatus: reason,
 		LastRunAt:  now,
-		NextRunAt:  next,
 	}); err != nil {
-		s.logf("scheduler: def %q advance-only (%s) record-result failed: %v", defID, reason, err)
+		s.logf("scheduler: def %q skip (%s) record-result failed: %v", defID, reason, err)
 	}
 }
 
 // recordFireFailure records an outcome when we never reached the
-// runner (decode failure, etc.). Same advance-by-1h fallback if
-// the def's cron can't be resolved.
+// runner (decode failure, etc.). The caller has claimed the slot.
 func (s *Scheduler) recordFireFailure(ctx context.Context, defID, runID, status string, err error, now time.Time) {
 	s.logf("scheduler: def %q fire-failed (%s): %v", defID, status, err)
-	// exp7 I3: surface a dropped result-write — see advanceOnly above.
+	// exp7 I3: surface a dropped result-write — see recordSkip above.
 	if rerr := s.store.ScheduleRunStateRecordResult(ctx, store.ScheduleRunResult{
 		DefID:      defID,
 		LastRunID:  runID,
 		LastStatus: status,
 		LastError:  err.Error(),
 		LastRunAt:  now,
-		NextRunAt:  now.Add(1 * time.Hour),
 	}); rerr != nil {
 		s.logf("scheduler: def %q record fire-failure result failed: %v", defID, rerr)
 	}

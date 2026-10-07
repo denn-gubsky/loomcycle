@@ -44,7 +44,7 @@ func plantFired(t *testing.T, st store.Store, defID, name string, body map[strin
 	}
 	for i := 0; i < fires; i++ {
 		if err := st.ScheduleRunStateRecordResult(ctx, store.ScheduleRunResult{
-			DefID: defID, LastStatus: "completed", LastRunAt: time.Now(), NextRunAt: due, CountAsFire: true,
+			DefID: defID, LastStatus: "completed", LastRunAt: time.Now(), CountAsFire: true,
 		}); err != nil {
 			t.Fatal(err)
 		}

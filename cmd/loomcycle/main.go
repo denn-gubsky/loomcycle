@@ -3020,6 +3020,9 @@ func main() {
 			// operator-layer sweep's runs in other tenants may not spend the
 			// operator's provider key.
 			OperatorKeyRestriction: cfg.Env.OperatorKeyRestriction,
+			// Names this replica on the slots it claims. Every replica may run
+			// the scheduler: the slot claim fires each slot once.
+			ReplicaID: cfg.Env.ReplicaID,
 		}
 		// Materialize static yaml `scheduled_runs:` into the substrate so
 		// they fire autonomously — symmetric with dynamically-created

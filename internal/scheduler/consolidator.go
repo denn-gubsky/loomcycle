@@ -224,12 +224,13 @@ func (s *Scheduler) fireConsolidationFanout(ctx context.Context, row store.Sched
 		}
 		if lockErr != nil {
 			s.logf("scheduler: consolidation fan-out %q advisory lock infra error: %v — skipping this tick", row.Name, lockErr)
-			s.advanceOnly(ctx, row.DefID, def, "skipped", now)
+			s.recordSkip(ctx, row.DefID, "skipped", now)
 			return
 		}
-		// Another replica owns this tick. Skip-but-advance so the row does not
-		// re-present every tick on this replica.
-		s.advanceOnly(ctx, row.DefID, def, "skipped", now)
+		// Another replica holds the fan-out lock. The slot claim normally
+		// rules that out (one replica takes each slot), but a fan-out from an
+		// earlier slot can still be running there.
+		s.recordSkip(ctx, row.DefID, "skipped", now)
 		return
 	}
 	dispatch(batchCtx)
@@ -293,7 +294,7 @@ func (s *Scheduler) dispatchConsolidationTargets(ctx context.Context, row store.
 	if len(targets) == 0 {
 		// Skip-but-advance: an idle deployment must cost nothing. No run, no
 		// fire counted, no hooks.
-		s.advanceOnly(ctx, row.DefID, def, "skipped_no_targets", now)
+		s.recordSkip(ctx, row.DefID, "skipped_no_targets", now)
 		return
 	}
 
@@ -1476,19 +1477,15 @@ func (before passObservation) diff(after passObservation, provider, model string
 	return out
 }
 
-// recordFanoutResult writes the schedule's outcome + next_run_at, mirroring
-// fireOne's bookkeeping (including the survival ctx for a mid-shutdown write
-// and the max_fires retirement check).
+// recordFanoutResult writes the schedule's outcome, mirroring fireOne's
+// bookkeeping (including the survival ctx for a mid-shutdown write and the
+// max_fires retirement check). next_run_at is not touched: fireOne claimed
+// the slot, which moved it, before the fan-out began.
 //
 // countAsFire comes from the caller's outcome classification rather than being
 // hardcoded true: an all-targets-unresolved tick must not consume the max_fires
 // budget (F38).
 func (s *Scheduler) recordFanoutResult(ctx context.Context, row store.ScheduleDueRow, def scheduleDef, now time.Time, status, errStr, runID string, countAsFire bool) {
-	next, nextErr := s.computeNext(def, now)
-	if nextErr != nil {
-		s.logf("scheduler: schedule %q cron-resolve failed: %v — parking 1h", row.Name, nextErr)
-		next = now.Add(1 * time.Hour)
-	}
 	recordCtx := ctx
 	if ctx.Err() != nil {
 		var cancel context.CancelFunc
@@ -1501,7 +1498,6 @@ func (s *Scheduler) recordFanoutResult(ctx context.Context, row store.ScheduleDu
 		LastStatus:  status,
 		LastError:   errStr,
 		LastRunAt:   now,
-		NextRunAt:   next,
 		CountAsFire: countAsFire,
 	}); err != nil {
 		s.logf("scheduler: record fan-out result for %q: %v", row.Name, err)
