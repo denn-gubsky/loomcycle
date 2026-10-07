@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 
@@ -52,6 +51,24 @@ func interruptionFixture(t *testing.T) (*Interruption, context.Context, string, 
 	return tool, ctx, run.ID, func() { _ = s.Close() }
 }
 
+// waitPending waits for the run to have a pending interrupt — the ask that
+// creates it runs on another goroutine — and returns the pending rows.
+func waitPending(t *testing.T, tool *Interruption, ctx context.Context) []store.InterruptRow {
+	t.Helper()
+	for deadline := time.Now().Add(5 * time.Second); ; time.Sleep(5 * time.Millisecond) {
+		pending, err := tool.Store.InterruptListByRun(ctx, tools.RunID(ctx), store.InterruptStatusPending)
+		if err != nil {
+			t.Fatalf("List: %v", err)
+		}
+		if len(pending) > 0 {
+			return pending
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the ask never created its pending interrupt")
+		}
+	}
+}
+
 func TestInterruption_DefaultDeny(t *testing.T) {
 	tool, ctx, _, cleanup := interruptionFixture(t)
 	defer cleanup()
@@ -89,15 +106,9 @@ func TestInterruption_AskBlockUntilResolve(t *testing.T) {
 		resCh <- res
 	}()
 
-	// Wait briefly so the create + bus.Wait runs.
-	time.Sleep(50 * time.Millisecond)
-
 	// Find the pending row + resolve it (simulating the HTTP
 	// resolve handler doing the work).
-	pending, err := tool.Store.InterruptListByRun(ctx, tools.RunID(ctx), store.InterruptStatusPending)
-	if err != nil {
-		t.Fatalf("List: %v", err)
-	}
+	pending := waitPending(t, tool, ctx)
 	if len(pending) != 1 {
 		t.Fatalf("expected 1 pending interrupt, got %d", len(pending))
 	}
@@ -151,12 +162,7 @@ func TestInterruption_DeclineReturnsNonErrorResult(t *testing.T) {
 		resCh <- res
 	}()
 
-	time.Sleep(50 * time.Millisecond)
-
-	pending, err := tool.Store.InterruptListByRun(ctx, tools.RunID(ctx), store.InterruptStatusPending)
-	if err != nil {
-		t.Fatalf("List: %v", err)
-	}
+	pending := waitPending(t, tool, ctx)
 	if len(pending) != 1 {
 		t.Fatalf("expected 1 pending interrupt, got %d", len(pending))
 	}
@@ -219,13 +225,7 @@ func TestInterruption_AskWakesOnCrossRuntimeResolve(t *testing.T) {
 		resCh <- res
 	}()
 
-	// Let the create + bus.Wait register.
-	time.Sleep(50 * time.Millisecond)
-
-	pending, err := tool.Store.InterruptListByRun(ctx, tools.RunID(ctx), store.InterruptStatusPending)
-	if err != nil {
-		t.Fatalf("List: %v", err)
-	}
+	pending := waitPending(t, tool, ctx)
 	if len(pending) != 1 {
 		t.Fatalf("expected 1 pending interrupt, got %d", len(pending))
 	}
@@ -340,7 +340,7 @@ func TestInterruption_AskCtxCancelMidBlock(t *testing.T) {
 		res, _ := tool.Execute(ctx, json.RawMessage(`{"op":"ask","question":"Hi?","timeout_ms":5000}`))
 		resCh <- res
 	}()
-	time.Sleep(30 * time.Millisecond)
+	waitPending(t, tool, ctx)
 	cancel()
 
 	select {
@@ -388,9 +388,7 @@ func TestInterruption_Cancel(t *testing.T) {
 		res, _ := tool.Execute(ctx, json.RawMessage(`{"op":"ask","question":"Hi?","timeout_ms":5000}`))
 		resCh <- res
 	}()
-	time.Sleep(30 * time.Millisecond)
-
-	pending, _ := tool.Store.InterruptListByRun(ctx, tools.RunID(ctx), store.InterruptStatusPending)
+	pending := waitPending(t, tool, ctx)
 	if len(pending) != 1 {
 		t.Fatalf("expected 1 pending, got %d", len(pending))
 	}
@@ -438,9 +436,7 @@ func TestInterruption_OptionsRejectInvalidAnswerAtResolveLayer(t *testing.T) {
 		}`))
 		resCh <- res
 	}()
-	time.Sleep(50 * time.Millisecond)
-
-	pending, _ := tool.Store.InterruptListByRun(ctx, tools.RunID(ctx), store.InterruptStatusPending)
+	pending := waitPending(t, tool, ctx)
 	if len(pending) != 1 {
 		t.Fatalf("expected 1 pending, got %d", len(pending))
 	}
@@ -469,7 +465,7 @@ func TestInterruption_MaxPendingEnforced(t *testing.T) {
 		r, _ := tool.Execute(ctx, json.RawMessage(`{"op":"ask","question":"first","timeout_ms":2000}`))
 		resCh <- r
 	}()
-	time.Sleep(50 * time.Millisecond)
+	waitPending(t, tool, ctx)
 
 	// Second ask — should refuse with max_pending error.
 	r2, err := tool.Execute(ctx, json.RawMessage(`{"op":"ask","question":"second","timeout_ms":2000}`))
@@ -495,18 +491,16 @@ func TestInterruption_EmitsPendingSSEEvent(t *testing.T) {
 	tool, ctx, _, cleanup := interruptionFixture(t)
 	defer cleanup()
 
-	// The emitter fires from the goroutine that calls tool.Execute below;
-	// the assertion loop runs from the test goroutine. Both touch the
-	// `events` slice, so guard it with a mutex — without this, -race
-	// flags the unsynchronised slice access (CI run 25993107457).
-	var (
-		eventsMu sync.Mutex
-		events   []providers.Event
-	)
+	// The emitter fires on the goroutine that calls tool.Execute below, so the
+	// event is handed over on a channel and waited for, bounded.
+	pendingEv := make(chan providers.Event, 1)
 	ctx = tools.WithEventEmitter(ctx, func(e providers.Event) {
-		eventsMu.Lock()
-		events = append(events, e)
-		eventsMu.Unlock()
+		if e.Type == providers.EventInterruptionPending {
+			select {
+			case pendingEv <- e:
+			default:
+			}
+		}
 	})
 
 	resCh := make(chan tools.Result, 1)
@@ -514,29 +508,19 @@ func TestInterruption_EmitsPendingSSEEvent(t *testing.T) {
 		r, _ := tool.Execute(ctx, json.RawMessage(`{"op":"ask","question":"Hi?","timeout_ms":2000}`))
 		resCh <- r
 	}()
-	time.Sleep(50 * time.Millisecond)
 
-	// Snapshot under the lock so the iteration below operates on a
-	// stable slice header that won't race with further emitter writes.
-	eventsMu.Lock()
-	snapshot := append([]providers.Event(nil), events...)
-	eventsMu.Unlock()
-
-	// At least one EventInterruptionPending must have fired.
-	found := false
-	for _, e := range snapshot {
-		if e.Type == providers.EventInterruptionPending && e.Interruption != nil {
-			found = true
-			if e.Interruption.Question != "Hi?" {
-				t.Errorf("event Question=%q, want Hi?", e.Interruption.Question)
-			}
-			if e.Interruption.Kind != store.InterruptKindQuestion {
-				t.Errorf("event Kind=%q, want question", e.Interruption.Kind)
-			}
-			break
+	select {
+	case e := <-pendingEv:
+		if e.Interruption == nil {
+			t.Fatal("EventInterruptionPending carries no interruption")
 		}
-	}
-	if !found {
+		if e.Interruption.Question != "Hi?" {
+			t.Errorf("event Question=%q, want Hi?", e.Interruption.Question)
+		}
+		if e.Interruption.Kind != store.InterruptKindQuestion {
+			t.Errorf("event Kind=%q, want question", e.Interruption.Kind)
+		}
+	case <-time.After(5 * time.Second):
 		t.Error("EventInterruptionPending not emitted")
 	}
 	// Cleanup.
