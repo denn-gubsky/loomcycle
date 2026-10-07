@@ -401,7 +401,7 @@ func (r *agentRunner) dispatchOne(ctx context.Context, st teamgraph.State, env E
 	var timeout *TimeoutError
 	if ms := st.Handler.TimeoutMS; ms > 0 {
 		timeout = &TimeoutError{State: st.ID, TimeoutMS: ms, Agent: agent}
-		mctx, clk = startClock(mctx, time.Duration(ms)*time.Millisecond, timeout)
+		mctx, clk = startClock(mctx, time.Duration(ms)*time.Millisecond, timeout, r.pause)
 		defer clk.finish()
 	}
 	sp, err := r.spawnMember(mctx, agent, prompt, "")

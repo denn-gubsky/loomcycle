@@ -235,3 +235,47 @@ func TestManager_ResumeFlipsPausedRunsToRunning(t *testing.T) {
 		}
 	}
 }
+
+// PauseWatch reports the pause from the moment it is declared, and each
+// channel it hands out closes at the next change — the pause, then the resume.
+func TestManager_PauseWatchSignalsThePauseAndTheResume(t *testing.T) {
+	m, _, cleanup := newTestManager(t)
+	defer cleanup()
+	closed := func(ch <-chan struct{}) bool {
+		select {
+		case <-ch:
+			return true
+		default:
+			return false
+		}
+	}
+
+	paused, changed := m.PauseWatch()
+	if paused || closed(changed) {
+		t.Fatalf("running: paused=%v changed closed=%v, want neither", paused, closed(changed))
+	}
+	if _, err := m.Pause(context.Background(), 10*time.Millisecond); err != nil {
+		t.Fatalf("Pause: %v", err)
+	}
+	if !closed(changed) {
+		t.Fatal("the running watch was not woken by the pause")
+	}
+	paused, changed = m.PauseWatch()
+	if !paused || closed(changed) {
+		t.Fatalf("paused: paused=%v changed closed=%v, want paused and an open channel", paused, closed(changed))
+	}
+	if _, err := m.Resume(context.Background()); err != nil {
+		t.Fatalf("Resume: %v", err)
+	}
+	if !closed(changed) {
+		t.Fatal("the paused watch was not woken by the resume")
+	}
+	if paused, _ = m.PauseWatch(); paused {
+		t.Error("still paused after the resume")
+	}
+
+	var nilM *Manager
+	if paused, changed := nilM.PauseWatch(); paused || changed != nil {
+		t.Errorf("nil Manager.PauseWatch() = %v, %v; want never paused, never changing", paused, changed)
+	}
+}

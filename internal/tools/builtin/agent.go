@@ -222,6 +222,11 @@ type AgentTool struct {
 	// 0 = no ceiling. A larger timeout_ms is refused with the ceiling named.
 	MaxChildTimeoutMs int
 
+	// PauseSignal is the runtime's pause state: a child's timeout_ms does not
+	// run while the runtime is paused. nil = only review holds stop it. Set by
+	// the HTTP server.
+	PauseSignal teamrun.PauseSignal
+
 	// LiveChildren bounds the children each run has alive at once, across
 	// every op (LOOMCYCLE_MAX_LIVE_CHILDREN_PER_RUN). spawn and parallel_spawn
 	// admit theirs here; the server admits resident children at open. nil =
@@ -267,8 +272,9 @@ func (a *AgentTool) runChild(ctx context.Context, name, prompt, defID string) (o
 // When the bound runs out the child's ctx is cancelled with a cause the run's
 // terminal write records as cancelled — so its run row ends `cancelled` with
 // the timeout as the reason, and everything it started goes with it. Time the
-// child spends held for a review verdict is not counted (teamrun.Deadline,
-// the rule a team state's timeout_ms uses).
+// child spends held for a review verdict is not counted, nor is time the
+// runtime is paused (teamrun.Deadline, the rule a team state's timeout_ms
+// uses).
 //
 // The hold observer is ALWAYS set on the child's ctx, nil when unbounded: an
 // observer inherited from an enclosing bound — a parent that is itself a
@@ -278,7 +284,7 @@ func (a *AgentTool) runChildBounded(ctx context.Context, timeoutMs int, name, pr
 		output, state, runID, err = a.runChild(teamrun.WithHoldObserver(ctx, nil), name, prompt, defID)
 		return output, state, runID, false, err
 	}
-	cctx, dl := teamrun.StartDeadline(ctx, time.Duration(timeoutMs)*time.Millisecond, childTimeout{ms: timeoutMs})
+	cctx, dl := teamrun.StartDeadline(ctx, time.Duration(timeoutMs)*time.Millisecond, childTimeout{ms: timeoutMs}, a.PauseSignal)
 	defer dl.Finish()
 	output, state, runID, err = a.runChild(teamrun.WithHoldObserver(cctx, dl.SetHeld), name, prompt, defID)
 	// A child that finished as the bound ran out keeps its answer — one that

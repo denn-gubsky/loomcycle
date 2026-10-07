@@ -183,6 +183,14 @@ func (s *Server) newPauseGate(runID string) (tools.PauseGate, func()) {
 	}
 }
 
+// PauseWatch is the runtime's pause state for a timeout_ms clock
+// (teamrun.PauseSignal). It reads the manager at each call, so the Agent and
+// TeamDef tools can hold the server before SetPauseManager runs; with no
+// manager the runtime is never paused.
+func (s *Server) PauseWatch() (bool, <-chan struct{}) {
+	return s.pauseMgr.PauseWatch()
+}
+
 // runtimePaused reports whether new runs should be rejected (a pause is in
 // flight). The admission gate (RFC X / F41) — the help doc already promises
 // "new /v1/runs return 503 while pausing/paused".

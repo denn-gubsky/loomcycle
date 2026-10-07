@@ -281,7 +281,7 @@ func TestStarterTimeout_HeldRunIsNotTimedOutWhileHeld(t *testing.T) {
 // working keeps it going.
 func TestHeldClock_StopsOnlyWhileEveryLiveRunIsHeld(t *testing.T) {
 	cause := errors.New("out of time")
-	ctx, clk := startClock(context.Background(), 80*time.Millisecond, cause)
+	ctx, clk := startClock(context.Background(), 80*time.Millisecond, cause, nil)
 	defer clk.finish()
 	a, b := clk.join(), clk.join()
 	a.setHeld(true) // b still working: the clock runs
@@ -296,7 +296,7 @@ func TestHeldClock_StopsOnlyWhileEveryLiveRunIsHeld(t *testing.T) {
 	a.leave()
 	b.leave()
 
-	ctx2, clk2 := startClock(context.Background(), 80*time.Millisecond, cause)
+	ctx2, clk2 := startClock(context.Background(), 80*time.Millisecond, cause, nil)
 	defer clk2.finish()
 	c, d := clk2.join(), clk2.join()
 	c.setHeld(true)
@@ -317,5 +317,113 @@ func TestHeldClock_StopsOnlyWhileEveryLiveRunIsHeld(t *testing.T) {
 	case <-ctx2.Done():
 	case <-time.After(time.Second):
 		t.Fatal("the clock did not resume when the hold ended")
+	}
+}
+
+// fakePause is a runtime pause a test drives: set flips it and wakes every
+// clock watching it.
+type fakePause struct {
+	mu      sync.Mutex
+	paused  bool
+	changed chan struct{}
+}
+
+func newFakePause(paused bool) *fakePause {
+	return &fakePause{paused: paused, changed: make(chan struct{})}
+}
+
+func (f *fakePause) PauseWatch() (bool, <-chan struct{}) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.paused, f.changed
+}
+
+func (f *fakePause) set(paused bool) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.paused = paused
+	close(f.changed)
+	f.changed = make(chan struct{})
+}
+
+// A runtime pause stops the clock whatever its runs are doing — none is held
+// here — and the time left when it began still applies once it ends.
+func TestHeldClock_StopsWhileTheRuntimeIsPaused(t *testing.T) {
+	cause := errors.New("out of time")
+	sig := newFakePause(false)
+	ctx, clk := startClock(context.Background(), 150*time.Millisecond, cause, sig)
+	defer clk.finish()
+	m := clk.join() // working, not held
+	defer m.leave()
+	time.Sleep(50 * time.Millisecond)
+	sig.set(true)
+	select {
+	case <-ctx.Done():
+		t.Fatal("the clock ran out while the runtime was paused")
+	case <-time.After(400 * time.Millisecond): // well past the bound
+	}
+	resumed := time.Now()
+	sig.set(false)
+	select {
+	case <-ctx.Done():
+	case <-time.After(2 * time.Second):
+		t.Fatal("the clock did not run again once the runtime resumed")
+	}
+	// About 100ms were left when the pause began.
+	if left := time.Since(resumed); left < 60*time.Millisecond || left > time.Second {
+		t.Errorf("the clock ran out %v after the resume, want about the 100ms it had left", left)
+	}
+	if !errors.Is(context.Cause(ctx), cause) || !clk.timedOut() {
+		t.Errorf("cause = %v, want the clock's", context.Cause(ctx))
+	}
+}
+
+// A clock started while the runtime is already paused — a sub-agent started
+// during the pause's wind-down — does not run until the runtime resumes.
+func TestHeldClock_StartedDuringAPauseWaitsForTheResume(t *testing.T) {
+	sig := newFakePause(true)
+	ctx, d := StartDeadline(context.Background(), 50*time.Millisecond, errors.New("out of time"), sig)
+	defer d.Finish()
+	select {
+	case <-ctx.Done():
+		t.Fatal("the bound ran while the runtime was paused")
+	case <-time.After(250 * time.Millisecond):
+	}
+	sig.set(false)
+	select {
+	case <-ctx.Done():
+	case <-time.After(2 * time.Second):
+		t.Fatal("the bound never ran after the resume")
+	}
+	if !d.TimedOut() {
+		t.Error("the deadline does not report it timed out")
+	}
+}
+
+// A walk's state clock is given the runner's pause signal.
+func TestHandlerTimeout_PausedTimeIsNotCounted(t *testing.T) {
+	d := mustParse(t, strings.Replace(timedAgentJSON, `"timeout_ms":50`, `"timeout_ms":150`, 1))
+	sig := newFakePause(false)
+	spawn := func(ctx context.Context, agent string, _ Prompt, _ string) (SpawnResult, error) {
+		if agent != "slow" {
+			return SpawnResult{Output: "ok"}, nil
+		}
+		sig.set(true)
+		select {
+		case <-ctx.Done():
+			t.Error("cancelled while the runtime was paused")
+		case <-time.After(400 * time.Millisecond): // well past timeout_ms
+		}
+		sig.set(false)
+		return blockUntilCancelled(ctx) // then runs out what is left
+	}
+	start := time.Now()
+	_, err := Walk(context.Background(), d, &Task{}, NewAgentRunner(spawn, WithPauseSignal(sig)))
+	var te *TimeoutError
+	if !errors.As(err, &te) {
+		t.Fatalf("walk error = %v, want the timeout once the runtime resumed", err)
+	}
+	if e := time.Since(start); e > 2*time.Second {
+		t.Errorf("took %v: the budget left after the pause was not enforced", e)
 	}
 }

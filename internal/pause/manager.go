@@ -334,6 +334,24 @@ func (m *Manager) PauseCh() <-chan struct{} {
 	return m.pauseCh
 }
 
+// PauseWatch reports whether the runtime is paused — pausing or paused, from
+// the moment the operator pauses it — and returns a channel closed at its next
+// change: the pause signal while running, the resume signal while paused. A
+// timeout_ms clock stops on it (teamrun.PauseSignal). Reads the in-process
+// state, which a cluster pause reaches through the backplane. A nil manager is
+// never paused and never changes.
+func (m *Manager) PauseWatch() (paused bool, changed <-chan struct{}) {
+	if m == nil {
+		return false, nil
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if loadState(&m.state) == StateRunning {
+		return false, m.pauseCh
+	}
+	return true, m.resumeCh
+}
+
 // RegisterRun adds a run to the in-flight registry so Pause()'s barrier knows
 // to wait for it to reach an iteration boundary. Called by the run's PauseGate
 // (via the server) at loop entry. Idempotent. No-op on a nil manager.

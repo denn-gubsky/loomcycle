@@ -111,6 +111,10 @@ type TeamDef struct {
 	// authority can author. 0 disables the check.
 	MaxWave int
 
+	// PauseSignal is the runtime's pause state: a state's timeout_ms does not
+	// run while the runtime is paused. nil = only review holds stop it.
+	PauseSignal teamrun.PauseSignal
+
 	// Board, if set, lets an op=run OPTIONALLY bind to a Document task board: when
 	// the caller passes board_chunk_id, the walk persists its position onto that
 	// chunk's status (chunk.status = the current team state) on every transition
@@ -1690,6 +1694,9 @@ func (t *TeamDef) execRun(ctx context.Context, in teamDefInput) (tools.Result, e
 	}
 	if t.MaxWave > 0 {
 		runnerOpts = append(runnerOpts, teamrun.WithMaxWave(t.MaxWave))
+	}
+	if t.PauseSignal != nil {
+		runnerOpts = append(runnerOpts, teamrun.WithPauseSignal(t.PauseSignal))
 	}
 	// From the DEF ROW, not from ctx and not from the definition body. The row
 	// is where the runtime recorded who wrote this team; the body is the thing
