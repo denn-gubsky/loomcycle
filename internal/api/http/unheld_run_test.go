@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/denn-gubsky/loomcycle/internal/cancel"
 	"github.com/denn-gubsky/loomcycle/internal/connector"
 	"github.com/denn-gubsky/loomcycle/internal/providers"
 	"github.com/denn-gubsky/loomcycle/internal/store"
@@ -179,6 +180,42 @@ func TestUnheldRun_ACancelledPausedChildIsNotResumedLater(t *testing.T) {
 	srv.cancelRunWherever(ctx, other, "timed out")
 	if got := runNow(t, srv.store, other.ID); got.Status != store.RunCancelled || got.StopReason != "timed out" {
 		t.Errorf("a child cancelled by its row = %s %q, want cancelled with the reason", got.Status, got.StopReason)
+	}
+}
+
+// A team walk's members name the walk as their parent run but the agent that
+// started the walk as their parent agent. Ending a walk nothing holds ends
+// its members with it, and what is below them; a member a live loop holds is
+// left to that loop, and so is what is below it.
+func TestUnheldRun_AWalksMembersEndWithIt(t *testing.T) {
+	srv := newResidentTestServer(t)
+	srv.unheldRunGrace = time.Nanosecond
+	ctx := context.Background()
+	starter := leftRun(t, srv.store, store.RunIdentity{AgentID: "a_starter"})
+	walk := leftRun(t, srv.store, store.RunIdentity{AgentID: "team:rev", ParentRunID: starter.ID})
+	member := leftRun(t, srv.store, store.RunIdentity{AgentID: "a_member", ParentAgentID: starter.AgentID, ParentRunID: walk.ID})
+	below := leftRun(t, srv.store, store.RunIdentity{AgentID: "a_below_member", ParentAgentID: member.AgentID, ParentRunID: member.ID})
+	held := leftRun(t, srv.store, store.RunIdentity{AgentID: "a_held_member", ParentAgentID: starter.AgentID, ParentRunID: walk.ID})
+	belowHeld := leftRun(t, srv.store, store.RunIdentity{AgentID: "a_below_held", ParentAgentID: held.AgentID, ParentRunID: held.ID})
+	// The starter's own child, which is not the walk's.
+	sibling := leftRun(t, srv.store, store.RunIdentity{AgentID: "a_starters_child", ParentAgentID: starter.AgentID, ParentRunID: starter.ID})
+	if err := srv.cancelReg.Register(cancel.Entry{AgentID: held.AgentID, RunID: held.ID, SessionID: held.SessionID, StartedAt: time.Now()}, func(error) {}); err != nil {
+		t.Fatal(err)
+	}
+	defer srv.cancelReg.Deregister(held.AgentID)
+
+	if !srv.finishUnheldRun(ctx, runNow(t, srv.store, walk.ID), "walk stopped") {
+		t.Fatal("a walk nothing holds was not finished")
+	}
+	for _, r := range []store.Run{walk, member, below} {
+		if got := runNow(t, srv.store, r.ID); got.Status != store.RunCancelled || got.StopReason != "walk stopped" {
+			t.Errorf("%s = %s %q, want cancelled with the walk", r.AgentID, got.Status, got.StopReason)
+		}
+	}
+	for _, r := range []store.Run{held, belowHeld, sibling, starter} {
+		if got := runNow(t, srv.store, r.ID); got.Status != store.RunRunning {
+			t.Errorf("%s = %s, want it left running", r.AgentID, got.Status)
+		}
 	}
 }
 

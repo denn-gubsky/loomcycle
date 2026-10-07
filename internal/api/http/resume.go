@@ -238,22 +238,75 @@ func (s *Server) orphanedBy(ctx context.Context, run store.Run) (string, bool) {
 	return fmt.Sprintf("its parent run %s ended (%s) before it was resumed", parent.ID, parent.Status), true
 }
 
-// cancelOrphanedRun ends a paused child that is not resumed because its
-// parent is gone: cancelled with the reason, and no longer paused, so a later
-// pass does not find it again.
+// cancelOrphanedRun ends a run row that has no loop behind it — a paused
+// child not resumed because its parent is gone, or a row a cancel found
+// nothing holding: cancelled with the reason, and no longer paused, so a
+// later pass does not find it again.
+//
+// No loop will report this run's end, so its run_end hooks are fired here,
+// once: by the caller that moved the row out of running, and by no other. The
+// store ends only a running row but does not say whether a call was the one
+// that did, so one canceller in this process ends a row at a time and reads
+// it first; one that finds it already ended reports nothing.
 func (s *Server) cancelOrphanedRun(run store.Run, reason string) {
 	ctx, stop := context.WithTimeout(context.Background(), 5*time.Second)
 	defer stop()
+	if _, taken := s.orphanEnds.LoadOrStore(run.ID, struct{}{}); taken {
+		return // another canceller here is ending this row, with its reason
+	}
+	defer s.orphanEnds.Delete(run.ID)
+	now, err := s.store.GetRun(ctx, run.ID)
+	ended := err == nil && now.Status == store.RunRunning
 	if err := s.store.FinishRun(ctx, run.ID, store.RunCancelled, reason, store.Usage{}, ""); err != nil {
 		log.Printf("resume: cancel orphaned run %s: %v", run.ID, err)
+		ended = false
 	}
 	if err := s.store.SetRunPauseState(ctx, run.ID, store.PauseStateRunning); err != nil {
 		log.Printf("resume: clear orphaned run %s's pause: %v", run.ID, err)
 	}
-	s.publishRunState(runStateMeta{
+	meta := runStateMeta{
 		RunID: run.ID, AgentID: run.AgentID, Agent: run.Agent, UserID: run.UserID, TenantID: run.TenantID,
 		ParentAgentID: run.ParentAgentID, ParentRunID: run.ParentRunID, ParentContext: run.ParentContext,
-	}, string(store.RunCancelled), reason, "")
+	}
+	s.publishRunState(meta, string(store.RunCancelled), reason, "")
+	if ended {
+		s.loadUnloopedRunHooks(run)
+		s.observeRunEnd(meta, store.RunCancelled, reason, "", "")
+	}
+}
+
+// loadUnloopedRunHooks resolves the hooks a run started with, from its
+// record, for a run_end fired with no loop behind the run: a run's hooks are
+// kept in memory only while its loop runs, and without them its end would be
+// reported to nobody. They resolve as a resume resolves them — the versions
+// the run pinned, under the same tenant rules — and observeRunEnd forgets them
+// again.
+//
+// A run that pinned nothing (it carried no hooks, or predates the pins) fires
+// none, rather than whatever its definitions say today. One whose definition
+// or pinned hooks are gone fires none either, and says so.
+func (s *Server) loadUnloopedRunHooks(run store.Run) {
+	if s.hookDispatcher == nil || s.runHookSet(run.ID) != nil {
+		return
+	}
+	rec, ok := decodeRunConfig(run.RunConfig)
+	if !ok || rec.PinnedHooks == nil {
+		return
+	}
+	ctx := rec.withTeamScope(context.Background())
+	ctx = tools.WithRunIdentity(ctx, tools.RunIdentityValue{UserID: run.UserID, AgentID: run.AgentID, TenantID: run.TenantID})
+	def, _, err := s.resumedAgentDef(ctx, run, rec.AgentVersion)
+	if err != nil {
+		log.Printf("hooks: run %s ended with no loop; its run_end hooks are not fired: %v", run.ID, err)
+		return
+	}
+	if added := rec.additions(); !added.Empty() {
+		ctx = hooks.WithAdditions(ctx, added)
+	}
+	s.withResumedRunHooks(ctx, run, def, rec.PinnedHooks)
+	if err := s.runHookSet(run.ID).Err(); err != nil {
+		log.Printf("hooks: run %s ended with no loop; its run_end hooks are not fired: %v", run.ID, err)
+	}
 }
 
 // childrenFirst orders paused runs so that a run comes after every paused

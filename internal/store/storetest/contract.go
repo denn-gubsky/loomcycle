@@ -121,6 +121,7 @@ func Run(t *testing.T, factory Factory) {
 		{"UserCRUD", testUserCRUD},
 		{"UserTenantIsolation", testUserTenantIsolation},
 		{"ListRunsByParentAgentID", testListRunsByParentAgentID},
+		{"ListRunsByParentRunID", testListRunsByParentRunID},
 		{"UpdateHeartbeat", testUpdateHeartbeat},
 		{"FinishRunCancelledTerminal", testFinishRunCancelledTerminal},
 		{"TranscriptOrderedAcrossRuns", testTranscriptOrderedAcrossRuns},
@@ -4180,6 +4181,41 @@ func testListRunsByParentAgentID(t *testing.T, s store.Store) {
 	ids := map[string]bool{got[0].ID: true, got[1].ID: true}
 	if !ids[c1.ID] || !ids[c2.ID] {
 		t.Errorf("expected children %s and %s, got %+v", c1.ID, c2.ID, got)
+	}
+}
+
+// A run's children are listed by its run id whatever agent id they name as
+// parent: a team walk's member names the walk's starter there, and is still
+// the walk's child. Direct children only, oldest first; "" lists nothing.
+func testListRunsByParentRunID(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	sess, _ := s.CreateSession(ctx, "t", "a", "u")
+
+	walk, err := s.CreateRun(ctx, sess.ID, store.RunIdentity{AgentID: "team:rev", UserID: "u"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	m1, _ := s.CreateRun(ctx, sess.ID, store.RunIdentity{AgentID: "a_m1", ParentAgentID: "a_starter", ParentRunID: walk.ID, UserID: "u", TenantID: "t"})
+	time.Sleep(2 * time.Millisecond) // started_at orders the list
+	m2, _ := s.CreateRun(ctx, sess.ID, store.RunIdentity{AgentID: "a_m2", ParentAgentID: "team:rev", ParentRunID: walk.ID, UserID: "u", TenantID: "t"})
+	_, _ = s.CreateRun(ctx, sess.ID, store.RunIdentity{AgentID: "a_below", ParentAgentID: "a_m1", ParentRunID: m1.ID, UserID: "u"})
+	_, _ = s.CreateRun(ctx, sess.ID, store.RunIdentity{AgentID: "a_sibling", ParentAgentID: "a_starter", UserID: "u"})
+
+	got, err := s.ListRunsByParentRunID(ctx, walk.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 2 || got[0].ID != m1.ID || got[1].ID != m2.ID {
+		t.Fatalf("children of %s = %+v, want [%s %s]: its direct children only, oldest first", walk.ID, got, m1.ID, m2.ID)
+	}
+	if got[0].ParentRunID != walk.ID || got[0].ParentAgentID != "a_starter" || got[0].AgentID != "a_m1" || got[0].TenantID != "t" {
+		t.Errorf("child row = %+v, want its lineage and identity as written", got[0])
+	}
+	if none, err := s.ListRunsByParentRunID(ctx, ""); err != nil || len(none) != 0 {
+		t.Errorf(`children of "" = %+v, %v; want none (not every top-level run)`, none, err)
+	}
+	if none, err := s.ListRunsByParentRunID(ctx, "r_no_such_run"); err != nil || len(none) != 0 {
+		t.Errorf("children of an unknown run = %+v, %v; want none", none, err)
 	}
 }
 

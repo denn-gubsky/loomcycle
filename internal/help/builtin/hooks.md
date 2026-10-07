@@ -267,8 +267,12 @@ reason `denied_by_hook`.
 (`completed` / `failed` / `cancelled` / `rejected`), `stop_reason`, `error` and
 `final_text`, after the run's row is final. They run off the run's path, so
 they never delay it, bounded at 30 s; their answer is ignored and a failure is
-only logged. A run whose process died (marked failed by the stale-run sweep)
-never reaches run_end.
+only logged. A run left without a process (after a crash, or a pause never
+resumed) that is then ended by a cancel, or by a resume pass that will not
+resume it, also reports its end: `cancelled`, with the reason and no
+`final_text`, to the hooks it started with. One the stale-run sweep marks
+failed never reaches run_end, and neither does a team walk ended that way for
+the TeamDef's own hooks.
 
 A code hook returns the same shapes (`ev.event` is the phase name), and can
 ask before deciding — an automated reviewer for the clear cases, a person for
