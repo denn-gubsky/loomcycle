@@ -56,8 +56,8 @@ import (
 // A restored child's timeout_ms (on its started row) is re-armed from its run:
 // the bound runs from the run's start, and neither the time the run spent held
 // for a verdict nor the time it spent parked for a runtime pause is counted —
-// its own transcript says when each hold and each pause began and ended, the
-// downtime before a restored run's re-dispatch inside its pause. The deadline
+// its transcript says when each hold began and ended, its record when each
+// pause did, the downtime before a restored run's re-dispatch inside its pause. The deadline
 // is the instant the live clock would have reached. A child past it is
 // cancelled as timed out at once; a held or paused one waits for its hold or
 // pause to end, and nothing is cut while the runtime is paused.
@@ -388,40 +388,45 @@ func (s *Server) watchRestoredChildren(ctx context.Context, bg *tools.Background
 type restoredClock struct {
 	resumedChildClock
 	start time.Time // the run's start; zero until its row is read
-	// retryAt is when a clock whose events could not be read is read again,
-	// after retryWait, which backs off like the recheck of a run row.
+	// retryAt is when a clock whose row or events could not be read is read
+	// again, after retryWait, which backs off like the recheck of a run row.
 	retryAt   time.Time
 	retryWait time.Duration
 }
 
+// backOff puts off the clock's next read after a failed one.
+func (clk *restoredClock) backOff() {
+	if clk.retryWait = max(2*clk.retryWait, restoredChildRecheckFirst); clk.retryWait > restoredChildRecheckMax {
+		clk.retryWait = restoredChildRecheckMax
+	}
+	clk.retryAt = time.Now().Add(clk.retryWait)
+}
+
 // restoredClockExpired brings a bounded child's clock up to date from its run
-// and reports whether its bound has run out. A run it cannot read yet is not
-// timed out: whether it exists at all is restoredChildEnd's to decide. Nor is
-// any while the runtime is paused.
+// — its row, whose record holds its pauses, and its events, which hold its
+// holds — and reports whether its bound has run out. A run it cannot read yet
+// is not timed out: whether it exists at all is restoredChildEnd's to decide.
+// Nor is any while the runtime is paused.
 func (s *Server) restoredClockExpired(ctx context.Context, runID string, clk *restoredClock) bool {
-	if s.runtimePaused() {
+	if s.runtimePaused() || time.Now().Before(clk.retryAt) {
 		return false
 	}
-	if clk.start.IsZero() {
-		child, err := s.store.GetRun(ctx, runID)
-		if err != nil || child.StartedAt.IsZero() {
-			return false
+	child, err := s.store.GetRun(ctx, runID)
+	if err != nil || child.StartedAt.IsZero() {
+		if !clk.start.IsZero() {
+			clk.backOff() // a deadline already past would be read again at once
 		}
-		clk.start = child.StartedAt
-	}
-	if time.Now().Before(clk.retryAt) {
 		return false
 	}
+	clk.start = child.StartedAt
+	clk.readPauses(child.RunConfig)
 	for {
 		page, err := s.store.GetRunEventsSince(ctx, runID, clk.seq, resumedChildClockPage)
 		if err != nil {
 			if ctx.Err() == nil {
 				log.Printf("resume: read background child %s's events: %v", runID, err)
 			}
-			if clk.retryWait = max(2*clk.retryWait, restoredChildRecheckFirst); clk.retryWait > restoredChildRecheckMax {
-				clk.retryWait = restoredChildRecheckMax
-			}
-			clk.retryAt = time.Now().Add(clk.retryWait)
+			clk.backOff()
 			return false
 		}
 		clk.observe(page)

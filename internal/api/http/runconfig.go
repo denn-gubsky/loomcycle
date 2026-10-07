@@ -162,6 +162,75 @@ type runConfigRecord struct {
 	// rather than granting fresh ones. Absent on every run whose provider
 	// keeps no clock, and on one that never paused.
 	Clock *runClockRecord `json:"run_clock,omitempty"`
+
+	// Pauses are the runtime pauses this run was parked for, oldest first.
+	// Each begins when the RUNTIME paused — where a parent's live timeout_ms
+	// on this run stopped, though the run may have parked later, once its
+	// call finished — and ends when the run was released: by the resume, or
+	// by its re-dispatch after a restore or a restart, so the downtime between
+	// is inside the pause. The last has no end while the run is parked. A
+	// parent that re-arms this run's timeout_ms after a resume leaves them out
+	// (resumedChildClock). Written by the pause gate as the run parks and is
+	// released; absent on a run that never parked for a pause.
+	Pauses []runPauseRecord `json:"pauses,omitempty"`
+}
+
+// runPauseRecord is one runtime pause a run was parked for: Until is nil while
+// it is still open.
+type runPauseRecord struct {
+	Since time.Time  `json:"since"`
+	Until *time.Time `json:"until,omitempty"`
+}
+
+// pauseOpen reports whether the run's last recorded pause has not ended.
+func (rc runConfigRecord) pauseOpen() bool {
+	return len(rc.Pauses) > 0 && rc.Pauses[len(rc.Pauses)-1].Until == nil
+}
+
+// errNoPauseOpen is a close that found no open pause to end: nothing to write.
+var errNoPauseOpen = errors.New("run config: no open pause")
+
+// notePause opens a pause that began at since, or (began false) ends the open
+// one at until. An open pause whose end was never written is replaced by a
+// new one rather than closed: when it really ended is unknown, so it is not
+// counted.
+func (rc *runConfigRecord) notePause(began bool, at time.Time) error {
+	open := rc.pauseOpen()
+	switch {
+	case began && open:
+		rc.Pauses[len(rc.Pauses)-1] = runPauseRecord{Since: at}
+	case began:
+		rc.Pauses = append(rc.Pauses, runPauseRecord{Since: at})
+	case open:
+		rc.Pauses[len(rc.Pauses)-1].Until = &at
+	default:
+		return errNoPauseOpen
+	}
+	return nil
+}
+
+// recordRunPause opens or ends a pause on the run's record (notePause) with
+// the record's compare-and-swap update, so it never overwrites another
+// writer's field. A run with no record is left without one, as
+// recordRunClock leaves it.
+func recordRunPause(ctx context.Context, st store.Store, runID string, began bool, at time.Time) error {
+	run, err := st.GetRun(ctx, runID)
+	if err != nil {
+		return err
+	}
+	if len(run.RunConfig) == 0 {
+		return nil
+	}
+	_, err = updateRunConfigIn(ctx, st, runID, func(rec *runConfigRecord, unreadable bool) error {
+		if unreadable {
+			return errRunConfigUnreadable
+		}
+		return rec.notePause(began, at)
+	})
+	if errors.Is(err, errNoPauseOpen) {
+		return nil
+	}
+	return err
 }
 
 // runClockRecord is providers.RunClockState as a run records it.
@@ -534,8 +603,14 @@ var errRunConfigUnreadable = errors.New("run config: stored record does not deco
 // more than once. unreadable is a stored record that does not decode; change
 // decides whether to overwrite it, and any error it returns aborts the write.
 func (s *Server) updateRunConfig(ctx context.Context, runID string, change func(rec *runConfigRecord, unreadable bool) error) (runConfigRecord, error) {
+	return updateRunConfigIn(ctx, s.store, runID, change)
+}
+
+// updateRunConfigIn is updateRunConfig on st, for a writer that holds the
+// store but not the server (the pause gate).
+func updateRunConfigIn(ctx context.Context, st store.Store, runID string, change func(rec *runConfigRecord, unreadable bool) error) (runConfigRecord, error) {
 	for attempt := 0; attempt < runConfigWriteAttempts; attempt++ {
-		run, err := s.store.GetRun(ctx, runID)
+		run, err := st.GetRun(ctx, runID)
 		if err != nil {
 			return runConfigRecord{}, err
 		}
@@ -543,7 +618,7 @@ func (s *Server) updateRunConfig(ctx context.Context, runID string, change func(
 		if err := change(&rec, !ok && len(run.RunConfig) > 0); err != nil {
 			return runConfigRecord{}, err
 		}
-		written, err := s.store.SetRunConfigCAS(ctx, runID, run.RunConfig, rec.marshal())
+		written, err := st.SetRunConfigCAS(ctx, runID, run.RunConfig, rec.marshal())
 		if err != nil {
 			return runConfigRecord{}, err
 		}

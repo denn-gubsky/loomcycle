@@ -73,10 +73,19 @@ func childResultRow(t *testing.T, srv *Server, lead store.Run, child string) (pr
 
 // parkFor parks run for a runtime pause on another instance's manager, which
 // is paused, through the real pause gate — so the run records its pause as a
-// live one does. leave ends the park as that instance going away would; the
-// gate is released by mgr's resume otherwise.
+// live one does. Cleanup ends the park as that instance going away would; the
+// gate is released by mgr's resume otherwise. The run is given the empty
+// configuration record every run the server starts has, which a run made
+// straight in the store lacks.
 func parkFor(t *testing.T, srv *Server, mgr *pause.Manager, run store.Run) {
 	t.Helper()
+	if cur, err := srv.store.GetRun(context.Background(), run.ID); err != nil {
+		t.Fatal(err)
+	} else if len(cur.RunConfig) == 0 {
+		if ok, err := srv.store.SetRunConfigCAS(context.Background(), run.ID, nil, json.RawMessage(`{}`)); err != nil || !ok {
+			t.Fatalf("give run %s a record: %v (written %v)", run.ID, err, ok)
+		}
+	}
 	gone, leave := context.WithCancel(context.Background())
 	parked := make(chan struct{})
 	go func() {

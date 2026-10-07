@@ -1506,6 +1506,13 @@ export interface RunSpec {
    *  Absent on a run that never paused, and on every run that is not a code
    *  agent. Written by the server only. */
   run_clock?: { active_ms: number; waited_ms: number; wall_ms: number };
+  /** The runtime pauses this run was parked for, oldest first: when each
+   *  began (when the runtime paused) and, once it ended, when — the resume,
+   *  or the run's re-dispatch after a restore or a restart. The last has no
+   *  `until` while the run is parked. A parent re-arming this run's
+   *  `timeout_ms` after a resume leaves them out. Absent on a run that never
+   *  parked for a pause. Written by the server only. */
+  pauses?: { since: string; until?: string }[];
 }
 
 /** What a team walk started with (`RunSpec.team`). */

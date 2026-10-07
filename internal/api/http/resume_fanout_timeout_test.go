@@ -3,6 +3,7 @@ package http
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -248,49 +249,55 @@ func TestResumedChildClock_HeldTimeIsNotCounted(t *testing.T) {
 	}
 }
 
-// A recorded pause stops the re-armed clock from when the RUNTIME paused —
-// the record's since, not the park — and a hold and a pause that overlap are
-// left out once. A pause whose end was never recorded ends at the run's next
-// working row.
+// pausesRecord is a run's configuration record holding pauses: each pair is
+// a pause's start and end in seconds after base, an end below 0 still open.
+func pausesRecord(base time.Time, spans ...[2]int) json.RawMessage {
+	var rec runConfigRecord
+	for _, sp := range spans {
+		p := runPauseRecord{Since: base.Add(time.Duration(sp[0]) * time.Second)}
+		if sp[1] >= 0 {
+			until := base.Add(time.Duration(sp[1]) * time.Second)
+			p.Until = &until
+		}
+		rec.Pauses = append(rec.Pauses, p)
+	}
+	return rec.marshal()
+}
+
+// The re-armed clock leaves out the pauses the child's record holds, from when
+// the runtime paused to when the child was released; a hold and a pause that
+// overlap are left out once, and nothing before the run's start counts.
 func TestResumedChildClock_PausedTimeIsNotCounted(t *testing.T) {
 	start := time.Date(2026, 10, 7, 12, 0, 0, 0, time.UTC)
 	at := func(sec int) time.Time { return start.Add(time.Duration(sec) * time.Second) }
-	began := func(seq int64, parked, since int) store.Event {
-		b, _ := json.Marshal(pauseBeganRecord{Since: at(since)})
-		return store.Event{Seq: seq, Type: eventPauseBegan, Timestamp: at(parked), Payload: b}
-	}
 	c := &resumedChildClock{bound: 10 * time.Second}
-	c.observe([]store.Event{
-		{Seq: 1, Type: "user_input", Timestamp: at(0)},
-		began(2, 3, 2), // the runtime paused at 2; the run parked at 3
-	})
+	c.readPauses(pausesRecord(start, [2]int{2, -1}))
 	if _, stopped := c.deadline(start); !stopped {
 		t.Fatal("an open pause does not stop the clock")
 	}
-	c.observe([]store.Event{{Seq: 3, Type: eventPauseEnded, Timestamp: at(7)}})
+	c.readPauses(pausesRecord(start, [2]int{2, 7}))
 	if d, stopped := c.deadline(start); stopped || !d.Equal(at(15)) {
 		t.Fatalf("deadline after a pause from 2 to 7 = %v stopped=%v, want start+15s", d, stopped)
 	}
-	// A hold, then a pause that began before the hold ended: one stretch.
+	// A hold from 8 to 10 and a pause from 9 to 12: one stretch of 4s.
 	c.observe([]store.Event{
-		{Seq: 4, Type: string(providers.EventAwaitingReview), Timestamp: at(8)},
-		{Seq: 5, Type: "user_input", Timestamp: at(10)},
-		began(6, 11, 9), // the runtime paused at 9, while the run was held
-		{Seq: 7, Type: eventPauseEnded, Timestamp: at(12)},
+		{Seq: 1, Type: string(providers.EventAwaitingReview), Timestamp: at(8)},
+		{Seq: 2, Type: "user_input", Timestamp: at(10)},
 	})
+	c.readPauses(pausesRecord(start, [2]int{2, 7}, [2]int{9, 12}))
 	if d, stopped := c.deadline(start); stopped || !d.Equal(at(19)) {
 		t.Fatalf("deadline after an overlapping hold and pause (8 to 12) = %v stopped=%v, want start+19s", d, stopped)
 	}
-	// A pause whose end did not land ends when the run works again.
-	c.observe([]store.Event{began(8, 14, 14), {Seq: 9, Type: "text", Timestamp: at(16)}})
-	if d, stopped := c.deadline(start); stopped || !d.Equal(at(21)) {
-		t.Errorf("deadline after a pause ended by the run's text = %v stopped=%v, want start+21s", d, stopped)
-	}
-	// A run started during the pause's wind-down: not stopped before its first row.
+	// A run started during a pause's wind-down: nothing before its start counts.
 	late := &resumedChildClock{bound: 10 * time.Second}
-	late.observe([]store.Event{{Seq: 1, Type: "user_input", Timestamp: at(5)}, began(2, 6, 1), {Seq: 3, Type: eventPauseEnded, Timestamp: at(8)}})
+	late.readPauses(pausesRecord(start, [2]int{1, 8}))
 	if d, _ := late.deadline(at(5)); !d.Equal(at(18)) {
 		t.Errorf("deadline of a run started at 5 in a pause from 1 to 8 = %v, want start+13s", d)
+	}
+	// A run without a readable record keeps what it read.
+	c.readPauses(nil)
+	if d, _ := c.deadline(start); !d.Equal(at(19)) {
+		t.Errorf("an empty read dropped the pauses: deadline %v", d)
 	}
 }
 
@@ -299,18 +306,76 @@ func TestResumedChildClock_PausedTimeIsNotCounted(t *testing.T) {
 func TestResumedChildClock_StoppedClockIsReadBeforeItCouldRunOut(t *testing.T) {
 	start := time.Date(2026, 10, 7, 12, 0, 0, 0, time.UTC)
 	at := func(sec int) time.Time { return start.Add(time.Duration(sec) * time.Second) }
-	b, _ := json.Marshal(pauseBeganRecord{Since: at(4)})
 	c := &resumedChildClock{bound: 10 * time.Second}
 	if got := c.nextCheck(start, at(1)); !got.Equal(at(10)) {
 		t.Fatalf("running clock's next check = %v, want its deadline", got)
 	}
-	c.observe([]store.Event{{Seq: 1, Type: "user_input", Timestamp: at(0)}, {Seq: 2, Type: eventPauseBegan, Timestamp: at(4), Payload: b}})
+	c.readPauses(pausesRecord(start, [2]int{4, -1}))
 	if got := c.nextCheck(start, at(20)); !got.Equal(at(26)) {
 		t.Errorf("paused clock's next check at 20 = %v, want 20 + the 6s it had left", got)
 	}
 	spent := &resumedChildClock{bound: time.Second}
-	spent.observe([]store.Event{{Seq: 1, Type: "user_input", Timestamp: at(0)}, {Seq: 2, Type: eventPauseBegan, Timestamp: at(4), Payload: b}})
+	spent.readPauses(pausesRecord(start, [2]int{4, -1}))
 	if got := spent.nextCheck(start, at(20)); got.Sub(at(20)) < stoppedClockRecheckMin {
 		t.Errorf("a clock stopped past its bound is read again at %v, want at least %v later", got, stoppedClockRecheckMin)
+	}
+}
+
+// A run's pauses on its record: a pause opens at the runtime's pause, ends at
+// the release, a second end is no write, and a pause left open by a lost end
+// is replaced by the next one rather than counted to it.
+func TestRunConfigRecord_NotePauseOpensAndEndsPauses(t *testing.T) {
+	base := time.Date(2026, 10, 7, 12, 0, 0, 0, time.UTC)
+	var rec runConfigRecord
+	if err := rec.notePause(true, base); err != nil || !rec.pauseOpen() {
+		t.Fatalf("open: err %v, open %v", err, rec.pauseOpen())
+	}
+	if err := rec.notePause(false, base.Add(time.Minute)); err != nil || rec.pauseOpen() {
+		t.Fatalf("end: err %v, open %v", err, rec.pauseOpen())
+	}
+	if err := rec.notePause(false, base.Add(2*time.Minute)); !errors.Is(err, errNoPauseOpen) {
+		t.Errorf("a second end = %v, want errNoPauseOpen", err)
+	}
+	_ = rec.notePause(true, base.Add(3*time.Minute))
+	_ = rec.notePause(true, base.Add(5*time.Minute)) // the end of the first was lost
+	if len(rec.Pauses) != 2 || !rec.Pauses[1].Since.Equal(base.Add(5*time.Minute)) || rec.Pauses[1].Until != nil {
+		t.Errorf("pauses = %+v, want the closed one and one open from +5m", rec.Pauses)
+	}
+}
+
+// The pause gate's record write keeps every other field of the record: it
+// edits the stored record, it does not rebuild it.
+func TestRecordRunPause_KeepsTheRestOfTheRecord(t *testing.T) {
+	srv, _ := makeServer(t, &scriptedProvider{}, makeBaseConfig())
+	ctx := context.Background()
+	sess, _ := srv.store.CreateSession(ctx, "", "solver", "alice")
+	temp := 0.3
+	rec := runConfigRecord{Sampling: &config.Sampling{Temperature: &temp}, Clock: &runClockRecord{ActiveMs: 5}}
+	run, err := srv.store.CreateRun(ctx, sess.ID, store.RunIdentity{AgentID: "a_rec", UserID: "alice", RunConfig: rec.marshal()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	since := time.Now().Add(-time.Second).UTC().Truncate(time.Millisecond)
+	if err := recordRunPause(ctx, srv.store, run.ID, true, since); err != nil {
+		t.Fatal(err)
+	}
+	if err := recordRunPause(ctx, srv.store, run.ID, false, since.Add(time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	got, _ := srv.store.GetRun(ctx, run.ID)
+	out, ok := decodeRunConfig(got.RunConfig)
+	if !ok || out.Sampling == nil || out.Sampling.Temperature == nil || *out.Sampling.Temperature != 0.3 || out.Clock == nil || out.Clock.ActiveMs != 5 {
+		t.Fatalf("record after the pause = %s, want its sampling and clock kept", got.RunConfig)
+	}
+	if len(out.Pauses) != 1 || !out.Pauses[0].Since.Equal(since) || out.Pauses[0].Until == nil {
+		t.Errorf("pauses = %+v, want one from %v, ended", out.Pauses, since)
+	}
+	// A run with no record is left without one.
+	bare, _ := srv.store.CreateRun(ctx, sess.ID, store.RunIdentity{AgentID: "a_bare", UserID: "alice"})
+	if err := recordRunPause(ctx, srv.store, bare.ID, true, since); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := srv.store.GetRun(ctx, bare.ID); len(got.RunConfig) != 0 {
+		t.Errorf("a run with no record was given one: %s", got.RunConfig)
 	}
 }
