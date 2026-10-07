@@ -145,8 +145,15 @@ func TestScheduler_ReplaceCancelsTheRunningRunThenStarts(t *testing.T) {
 	if n := hookCount(t, st); n != 1 {
 		t.Errorf("hooks = %d, want 1 — only the run that completed", n)
 	}
-	if got := runState(t, st, defID); got.LastStatus != "completed" || got.LastRunID != ids[1] {
-		t.Errorf("status=%q run=%q, want completed by the replacing run %s", got.LastStatus, got.LastRunID, ids[1])
+	// Each run's own outcome. (The schedule's last_status describes whichever
+	// finished last, and here both are released at once.)
+	for i, want := range []store.RunStatus{store.RunCancelled, store.RunCompleted} {
+		if run, err := st.GetRun(context.Background(), ids[i]); err != nil || run.Status != want {
+			t.Errorf("run %d = %s (err %v), want %s", i, run.Status, err, want)
+		}
+	}
+	if active, _ := st.ScheduleActiveRunsList(context.Background(), defID); len(active) != 0 {
+		t.Errorf("active runs after both ended = %+v, want none", active)
 	}
 }
 
