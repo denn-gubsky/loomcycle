@@ -1,9 +1,12 @@
 package dynvol
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 )
 
@@ -172,15 +175,90 @@ func TestProvision_RefusesASymlinkBelowTheRoot(t *testing.T) {
 
 func TestProvisionEphemeral_DerivesUnderTheRunDir(t *testing.T) {
 	root := resolvedTempDir(t)
-	path, err := ProvisionEphemeral(root, "run-1", "scratch")
+	path, _, err := ProvisionEphemeral(root, "run-1", "scratch")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if want := filepath.Join(EphemeralRunDir(root, "run-1"), "scratch"); path != want {
 		t.Errorf("path = %q, want %q", path, want)
 	}
-	if _, err := ProvisionEphemeral(root, "run-1", "../x"); err == nil {
+	if _, _, err := ProvisionEphemeral(root, "run-1", "../x"); err == nil {
 		t.Error("ProvisionEphemeral accepted a traversal name")
+	}
+}
+
+// undo removes what its own call created — the leaf and a run dir it made —
+// and nothing another call made: a run dir that already held a volume stays,
+// and a re-provision of an existing leaf does not remove that leaf.
+func TestProvisionEphemeral_UndoRemovesOnlyWhatThisCallCreated(t *testing.T) {
+	root := resolvedTempDir(t)
+	runDir := EphemeralRunDir(root, "run-1")
+
+	path, undo, err := ProvisionEphemeral(root, "run-1", "first")
+	if err != nil {
+		t.Fatal(err)
+	}
+	undo()
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Errorf("undo left the leaf it created (err=%v)", err)
+	}
+	if _, err := os.Stat(runDir); !os.IsNotExist(err) {
+		t.Errorf("undo left the run dir it created (err=%v)", err)
+	}
+
+	kept, _, err := ProvisionEphemeral(root, "run-1", "kept")
+	if err != nil {
+		t.Fatal(err)
+	}
+	other, undoOther, err := ProvisionEphemeral(root, "run-1", "other")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, undoAgain, err := ProvisionEphemeral(root, "run-1", "kept")
+	if err != nil {
+		t.Fatal(err)
+	}
+	undoOther()
+	undoAgain()
+	if _, err := os.Stat(other); !os.IsNotExist(err) {
+		t.Errorf("undo left the leaf it created (err=%v)", err)
+	}
+	if info, err := os.Stat(kept); err != nil || !info.IsDir() {
+		t.Errorf("undo removed a leaf an earlier call created (err=%v)", err)
+	}
+}
+
+// Of concurrent provisions of one leaf exactly one reports it created it, so
+// exactly one undo may remove it.
+func TestProvision_ConcurrentCallsReportCreatedOnce(t *testing.T) {
+	root := resolvedTempDir(t)
+	const callers = 16
+	for i := 0; i < 50; i++ {
+		name := fmt.Sprintf("v%d", i)
+		var (
+			wg      sync.WaitGroup
+			start   = make(chan struct{})
+			created atomic.Int32
+		)
+		for j := 0; j < callers; j++ {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				<-start
+				_, c, err := Provision(root, "acme", name)
+				if err != nil {
+					t.Errorf("Provision(%s): %v", name, err)
+				}
+				if c {
+					created.Add(1)
+				}
+			}()
+		}
+		close(start)
+		wg.Wait()
+		if n := created.Load(); n != 1 {
+			t.Fatalf("%s: %d concurrent calls reported created, want 1", name, n)
+		}
 	}
 }
 
@@ -215,7 +293,7 @@ func TestProvision_ASymlinkedRootProvisionsUnderIt(t *testing.T) {
 	if _, again, err := Provision(link, "acme", "data"); err != nil || again {
 		t.Errorf("re-provision created=%v err=%v, want false/nil", again, err)
 	}
-	if _, err := ProvisionEphemeral(link, "run-1", "scratch"); err != nil {
+	if _, _, err := ProvisionEphemeral(link, "run-1", "scratch"); err != nil {
 		t.Errorf("ProvisionEphemeral under a symlinked root: %v", err)
 	}
 }

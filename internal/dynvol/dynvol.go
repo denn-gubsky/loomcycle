@@ -220,15 +220,49 @@ func Provision(dynRoot, tenantID, name string) (path string, created bool, err e
 
 // ProvisionEphemeral derives a run-scoped ephemeral volume's path, fences it
 // inside the dynamic root and creates the directory, as Provision does.
-func ProvisionEphemeral(dynRoot, rootRunID, name string) (string, error) {
+//
+// undo removes the directories THIS call created (the leaf, then the per-run
+// dir), for a caller whose row insert failed: ephemeral directories are swept
+// by their rows, so one left without a row is never removed. It removes only
+// what this call created and only while empty (os.Remove, not RemoveAll), so
+// it can never take a concurrent create's directory or any content.
+func ProvisionEphemeral(dynRoot, rootRunID, name string) (path string, undo func(), err error) {
 	if err := ValidName(name); err != nil {
-		return "", err
+		return "", nil, err
 	}
-	path := DerivedEphemeralPath(dynRoot, rootRunID, name)
-	if _, err := mkdirFenced(dynRoot, path); err != nil {
-		return "", err
+	runDir := EphemeralRunDir(dynRoot, rootRunID)
+	runDirCreated, err := mkdirFenced(dynRoot, runDir)
+	if err != nil {
+		return "", nil, err
 	}
-	return path, nil
+	path = DerivedEphemeralPath(dynRoot, rootRunID, name)
+	leafCreated, err := mkdirFenced(dynRoot, path)
+	if err != nil {
+		if runDirCreated {
+			RemoveEmptyFenced(dynRoot, runDir)
+		}
+		return "", nil, err
+	}
+	return path, func() {
+		if leafCreated {
+			RemoveEmptyFenced(dynRoot, path)
+		}
+		if runDirCreated {
+			RemoveEmptyFenced(dynRoot, runDir)
+		}
+	}, nil
+}
+
+// RemoveEmptyFenced removes path if it is an empty directory strictly inside
+// the dynamic root. It is the undo for a create whose row insert failed, so a
+// caller passes only a directory its own Provision call created. Best-effort:
+// a failure (already gone, not empty) leaves the directory in place.
+func RemoveEmptyFenced(dynRoot, path string) {
+	rootResolved, rel, err := locateBelowRoot(dynRoot, path)
+	if err != nil {
+		return
+	}
+	_ = os.Remove(filepath.Join(rootResolved, rel))
 }
 
 // mkdirFenced is the one provisioning write: even though path is
@@ -256,10 +290,20 @@ func mkdirFenced(dynRoot, path string) (created bool, err error) {
 		return false, fmt.Errorf("refusing to provision outside the dynamic root: %s", err)
 	}
 	onDisk := filepath.Join(rootResolved, rel)
-	if _, statErr := os.Lstat(onDisk); os.IsNotExist(statErr) {
-		created = true
+	if err := os.MkdirAll(filepath.Dir(onDisk), 0o700); err != nil {
+		return false, fmt.Errorf("mkdir %q: %s", onDisk, err)
 	}
-	if err := os.MkdirAll(onDisk, 0o700); err != nil {
+	// The leaf is made with Mkdir, not MkdirAll, so created is decided by the
+	// filesystem: of two concurrent creates only one sees created=true, and
+	// an undo (ProvisionEphemeral) never removes the other's directory.
+	switch err := os.Mkdir(onDisk, 0o700); {
+	case err == nil:
+		created = true
+	case os.IsExist(err):
+		if info, serr := os.Lstat(onDisk); serr != nil || !info.IsDir() {
+			return false, fmt.Errorf("mkdir %q: %s", onDisk, err)
+		}
+	default:
 		return false, fmt.Errorf("mkdir %q: %s", onDisk, err)
 	}
 	if resolved, err := filepath.EvalSymlinks(onDisk); err != nil || resolved != onDisk {
