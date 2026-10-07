@@ -9156,7 +9156,7 @@ func (s *Store) ScheduleRunStateSeed(ctx context.Context, defID string, nextRunA
 
 // scheduleRunStateColumns is every schedule_run_state column, in the order
 // scanScheduleRunState reads them.
-const scheduleRunStateColumns = `def_id, last_run_at, last_run_id, last_status, last_error, next_run_at, paused_until, fire_count, slot_at, claimed_by, claimed_at, finished_at`
+const scheduleRunStateColumns = `def_id, last_run_at, last_run_id, last_status, last_error, next_run_at, paused_until, fire_count, slot_at, claimed_by, claimed_at, finished_at, catch_up_until, missed_slots`
 
 // scanScheduleRunState reads one row selected as scheduleRunStateColumns.
 func scanScheduleRunState(scan func(dest ...any) error) (store.ScheduleRunStateRow, error) {
@@ -9164,10 +9164,11 @@ func scanScheduleRunState(scan func(dest ...any) error) (store.ScheduleRunStateR
 		out                                  store.ScheduleRunStateRow
 		lastRunAt, pausedUntil               *time.Time
 		slotAt, claimedAt, finishedAt        *time.Time
+		catchUpUntil                         *time.Time
 		lastRunID, lastStatus, lastError, by *string
 	)
 	if err := scan(&out.DefID, &lastRunAt, &lastRunID, &lastStatus, &lastError, &out.NextRunAt, &pausedUntil, &out.FireCount,
-		&slotAt, &by, &claimedAt, &finishedAt); err != nil {
+		&slotAt, &by, &claimedAt, &finishedAt, &catchUpUntil, &out.MissedSlots); err != nil {
 		return store.ScheduleRunStateRow{}, err
 	}
 	deref := func(t *time.Time) time.Time {
@@ -9191,6 +9192,7 @@ func scanScheduleRunState(scan func(dest ...any) error) (store.ScheduleRunStateR
 	out.ClaimedBy = str(by)
 	out.ClaimedAt = deref(claimedAt)
 	out.FinishedAt = deref(finishedAt)
+	out.CatchUpUntil = deref(catchUpUntil)
 	return out, nil
 }
 
@@ -9207,10 +9209,13 @@ func (s *Store) ScheduleRunStateGet(ctx context.Context, defID string) (store.Sc
 func (s *Store) ScheduleRunStateClaim(ctx context.Context, in store.ScheduleSlotClaim) (bool, error) {
 	tag, err := s.pool.Exec(ctx,
 		`UPDATE schedule_run_state SET
-			next_run_at = $1, slot_at = $2, claimed_by = $3, claimed_at = $4
+			next_run_at = $1, slot_at = $2, claimed_by = $3, claimed_at = $4,
+			catch_up_until = $6,
+			missed_slots = CASE WHEN $7 > 0 THEN $7 ELSE missed_slots END
 		 WHERE def_id = $5 AND next_run_at = $2
 		   AND (paused_until IS NULL OR paused_until <= $4)`,
 		in.NextRunAt, in.Slot, nullIfEmpty(in.ClaimedBy), in.ClaimedAt, in.DefID,
+		nullTime(in.CatchUpUntil), in.MissedSlots,
 	)
 	if err != nil {
 		return false, fmt.Errorf("schedule_run_state claim: %w", err)
@@ -9221,7 +9226,7 @@ func (s *Store) ScheduleRunStateClaim(ctx context.Context, in store.ScheduleSlot
 func (s *Store) ScheduleRunStateListDue(ctx context.Context, now time.Time) ([]store.ScheduleDueRow, error) {
 	rows, err := s.pool.Query(ctx,
 		`SELECT srs.def_id, sd.name, sd.definition::text, srs.next_run_at,
-		        sd.tenant_id, sd.bootstrapped_from_static
+		        sd.tenant_id, sd.bootstrapped_from_static, srs.catch_up_until
 		 FROM schedule_run_state srs
 		 JOIN schedule_def_active sda ON sda.def_id = srs.def_id
 		 JOIN schedule_defs sd ON sd.def_id = srs.def_id
@@ -9238,13 +9243,17 @@ func (s *Store) ScheduleRunStateListDue(ctx context.Context, now time.Time) ([]s
 	var out []store.ScheduleDueRow
 	for rows.Next() {
 		var (
-			r          store.ScheduleDueRow
-			definition string
+			r            store.ScheduleDueRow
+			definition   string
+			catchUpUntil *time.Time
 		)
-		if err := rows.Scan(&r.DefID, &r.Name, &definition, &r.NextRunAt, &r.OwnerTenantID, &r.BootstrappedFromStatic); err != nil {
+		if err := rows.Scan(&r.DefID, &r.Name, &definition, &r.NextRunAt, &r.OwnerTenantID, &r.BootstrappedFromStatic, &catchUpUntil); err != nil {
 			return nil, err
 		}
 		r.Definition = json.RawMessage(definition)
+		if catchUpUntil != nil {
+			r.CatchUpUntil = *catchUpUntil
+		}
 		out = append(out, r)
 	}
 	return out, rows.Err()
@@ -9614,11 +9623,12 @@ func (s *Store) SnapshotRestoreScheduleRunState(ctx context.Context, r store.Sch
 	}
 	tag, err := s.pool.Exec(ctx,
 		`INSERT INTO schedule_run_state(`+scheduleRunStateColumns+`)
-		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
 		 ON CONFLICT (def_id) DO NOTHING`,
 		r.DefID, ts(r.LastRunAt), nullIfEmpty(r.LastRunID), nullIfEmpty(r.LastStatus), nullIfEmpty(r.LastError),
 		r.NextRunAt, ts(r.PausedUntil), r.FireCount,
 		ts(r.SlotAt), nullIfEmpty(r.ClaimedBy), ts(r.ClaimedAt), ts(r.FinishedAt),
+		ts(r.CatchUpUntil), r.MissedSlots,
 	)
 	if err != nil {
 		return false, fmt.Errorf("snapshot restore schedule_run_state: %w", err)
@@ -10248,4 +10258,12 @@ func pgPlaceholders(start, n int) string {
 		parts[k] = "$" + strconv.Itoa(start+k)
 	}
 	return strings.Join(parts, ", ")
+}
+
+// nullTime is t, or NULL for the zero time.
+func nullTime(t time.Time) any {
+	if t.IsZero() {
+		return nil
+	}
+	return t
 }

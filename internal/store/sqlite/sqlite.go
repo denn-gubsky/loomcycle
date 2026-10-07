@@ -739,7 +739,9 @@ func (s *Store) migrate(ctx context.Context) error {
 			slot_at         INTEGER,
 			claimed_by      TEXT,
 			claimed_at      INTEGER,
-			finished_at     INTEGER
+			finished_at     INTEGER,
+			catch_up_until  INTEGER,
+			missed_slots    INTEGER NOT NULL DEFAULT 0
 		)`,
 		`CREATE INDEX IF NOT EXISTS schedule_run_state_due ON schedule_run_state(next_run_at)`,
 		// RFC DZ: one row per started, unfinished scheduled run. Whoever deletes
@@ -1279,6 +1281,8 @@ func (s *Store) migrate(ctx context.Context) error {
 		`ALTER TABLE schedule_run_state ADD COLUMN claimed_by TEXT`,
 		`ALTER TABLE schedule_run_state ADD COLUMN claimed_at INTEGER`,
 		`ALTER TABLE schedule_run_state ADD COLUMN finished_at INTEGER`,
+		`ALTER TABLE schedule_run_state ADD COLUMN catch_up_until INTEGER`,
+		`ALTER TABLE schedule_run_state ADD COLUMN missed_slots INTEGER NOT NULL DEFAULT 0`,
 		// F42 / RFC X Phase 2: persist whether a run is an interactive
 		// (persistent, parks-at-end_turn) session so a snapshotted+restored
 		// paused run can be re-dispatched with the correct park-vs-complete
@@ -10223,7 +10227,7 @@ func (s *Store) ScheduleRunStateSeed(ctx context.Context, defID string, nextRunA
 
 // scheduleRunStateColumns is every schedule_run_state column, in the order
 // scanScheduleRunState reads them.
-const scheduleRunStateColumns = `def_id, last_run_at, last_run_id, last_status, last_error, next_run_at, paused_until, fire_count, slot_at, claimed_by, claimed_at, finished_at`
+const scheduleRunStateColumns = `def_id, last_run_at, last_run_id, last_status, last_error, next_run_at, paused_until, fire_count, slot_at, claimed_by, claimed_at, finished_at, catch_up_until, missed_slots`
 
 // scanScheduleRunState reads one row selected as scheduleRunStateColumns.
 func scanScheduleRunState(scan func(dest ...any) error) (store.ScheduleRunStateRow, error) {
@@ -10232,12 +10236,13 @@ func scanScheduleRunState(scan func(dest ...any) error) (store.ScheduleRunStateR
 		lastRunAt, pausedUntil sql.NullInt64
 		slotAt, claimedAt      sql.NullInt64
 		finishedAt             sql.NullInt64
+		catchUpUntil           sql.NullInt64
 		lastRunID, lastStatus  sql.NullString
 		lastError, claimedBy   sql.NullString
 		nextRunAt              int64
 	)
 	if err := scan(&out.DefID, &lastRunAt, &lastRunID, &lastStatus, &lastError, &nextRunAt, &pausedUntil, &out.FireCount,
-		&slotAt, &claimedBy, &claimedAt, &finishedAt); err != nil {
+		&slotAt, &claimedBy, &claimedAt, &finishedAt, &catchUpUntil, &out.MissedSlots); err != nil {
 		return store.ScheduleRunStateRow{}, err
 	}
 	nsTime := func(v sql.NullInt64) time.Time {
@@ -10256,6 +10261,7 @@ func scanScheduleRunState(scan func(dest ...any) error) (store.ScheduleRunStateR
 	out.ClaimedBy = claimedBy.String
 	out.ClaimedAt = nsTime(claimedAt)
 	out.FinishedAt = nsTime(finishedAt)
+	out.CatchUpUntil = nsTime(catchUpUntil)
 	return out, nil
 }
 
@@ -10272,10 +10278,13 @@ func (s *Store) ScheduleRunStateGet(ctx context.Context, defID string) (store.Sc
 func (s *Store) ScheduleRunStateClaim(ctx context.Context, in store.ScheduleSlotClaim) (bool, error) {
 	res, err := s.db.ExecContext(ctx,
 		`UPDATE schedule_run_state SET
-			next_run_at = ?, slot_at = ?, claimed_by = ?, claimed_at = ?
+			next_run_at = ?, slot_at = ?, claimed_by = ?, claimed_at = ?,
+			catch_up_until = ?,
+			missed_slots = CASE WHEN ? > 0 THEN ? ELSE missed_slots END
 		 WHERE def_id = ? AND next_run_at = ?
 		   AND (paused_until IS NULL OR paused_until <= ?)`,
 		in.NextRunAt.UnixNano(), in.Slot.UnixNano(), nilIfEmpty(in.ClaimedBy), in.ClaimedAt.UnixNano(),
+		nsOrNil(in.CatchUpUntil), in.MissedSlots, in.MissedSlots,
 		in.DefID, in.Slot.UnixNano(), in.ClaimedAt.UnixNano(),
 	)
 	if err != nil {
@@ -10293,7 +10302,7 @@ func (s *Store) ScheduleRunStateListDue(ctx context.Context, now time.Time) ([]s
 	// The paused_until filter drops paused-until-future rows.
 	rows, err := s.db.QueryContext(ctx,
 		`SELECT srs.def_id, sd.name, sd.definition, srs.next_run_at,
-		        sd.tenant_id, sd.bootstrapped_from_static
+		        sd.tenant_id, sd.bootstrapped_from_static, srs.catch_up_until
 		 FROM schedule_run_state srs
 		 JOIN schedule_def_active sda ON sda.def_id = srs.def_id
 		 JOIN schedule_defs sd ON sd.def_id = srs.def_id
@@ -10314,9 +10323,13 @@ func (s *Store) ScheduleRunStateListDue(ctx context.Context, now time.Time) ([]s
 			definition   string
 			nextRunAt    int64
 			bootstrapped int
+			catchUpUntil sql.NullInt64
 		)
-		if err := rows.Scan(&r.DefID, &r.Name, &definition, &nextRunAt, &r.OwnerTenantID, &bootstrapped); err != nil {
+		if err := rows.Scan(&r.DefID, &r.Name, &definition, &nextRunAt, &r.OwnerTenantID, &bootstrapped, &catchUpUntil); err != nil {
 			return nil, err
+		}
+		if catchUpUntil.Valid {
+			r.CatchUpUntil = time.Unix(0, catchUpUntil.Int64)
 		}
 		r.Definition = json.RawMessage(definition)
 		r.NextRunAt = time.Unix(0, nextRunAt)
@@ -10694,11 +10707,12 @@ func (s *Store) SnapshotRestoreScheduleRunState(ctx context.Context, r store.Sch
 	}
 	res, err := s.db.ExecContext(ctx,
 		`INSERT INTO schedule_run_state(`+scheduleRunStateColumns+`)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		 ON CONFLICT(def_id) DO NOTHING`,
 		r.DefID, ns(r.LastRunAt), nilIfEmpty(r.LastRunID), nilIfEmpty(r.LastStatus), nilIfEmpty(r.LastError),
 		r.NextRunAt.UnixNano(), ns(r.PausedUntil), r.FireCount,
 		ns(r.SlotAt), nilIfEmpty(r.ClaimedBy), ns(r.ClaimedAt), ns(r.FinishedAt),
+		ns(r.CatchUpUntil), r.MissedSlots,
 	)
 	if err != nil {
 		return false, fmt.Errorf("snapshot restore schedule_run_state: %w", err)
@@ -11964,4 +11978,12 @@ func (s *Store) ListTenants(ctx context.Context) ([]store.TenantSummary, error) 
 // sqlitePlaceholders is "?, ?, …" for n arguments.
 func sqlitePlaceholders(n int) string {
 	return strings.TrimSuffix(strings.Repeat("?, ", n), ", ")
+}
+
+// nsOrNil is t in unix nanoseconds, or NULL for the zero time.
+func nsOrNil(t time.Time) any {
+	if t.IsZero() {
+		return nil
+	}
+	return t.UnixNano()
 }

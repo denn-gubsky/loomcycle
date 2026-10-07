@@ -5822,6 +5822,13 @@ type ScheduleRunStateRow struct {
 	// FinishedAt is when the last tracked run was finished
 	// (ScheduleActiveRunFinish). Zero before the first.
 	FinishedAt time.Time `json:"finished_at,omitempty"`
+	// CatchUpUntil is the newest slot of the backlog being drained
+	// (catch_up_max): a claimed slot at or before it is a catch-up slot.
+	// Zero = no backlog.
+	CatchUpUntil time.Time `json:"catch_up_until,omitempty"`
+	// MissedSlots is how many slots the most recent claim that dropped any
+	// dropped — the part of an outage that did not run.
+	MissedSlots int `json:"missed_slots,omitempty"`
 }
 
 // ScheduleActiveRun is one run a schedule started and has not finished: a
@@ -5871,6 +5878,12 @@ type ScheduleSlotClaim struct {
 	NextRunAt time.Time
 	ClaimedBy string
 	ClaimedAt time.Time
+	// CatchUpUntil is written as given: the newest slot of the backlog this
+	// claim drains, or zero (NULL) when the claimed slot is a live one.
+	CatchUpUntil time.Time
+	// MissedSlots, when > 0, records how many slots this claim dropped. 0
+	// leaves the recorded count alone.
+	MissedSlots int
 }
 
 // ScheduleDueRow is the JOIN result returned by ScheduleRunStateListDue.
@@ -5892,6 +5905,9 @@ type ScheduleDueRow struct {
 	// BootstrappedFromStatic is schedule_defs.bootstrapped_from_static: the row
 	// was materialised from the operator's yaml, so its body is the operator's.
 	BootstrappedFromStatic bool `json:"bootstrapped_from_static,omitempty"`
+	// CatchUpUntil is schedule_run_state.catch_up_until: the newest slot of a
+	// backlog being drained. Zero = none.
+	CatchUpUntil time.Time `json:"catch_up_until,omitempty"`
 }
 
 // ScheduleRunResult is the input to ScheduleRunStateRecordResult.
