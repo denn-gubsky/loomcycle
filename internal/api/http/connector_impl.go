@@ -205,6 +205,10 @@ func (s *Server) runBlocking(ctx context.Context, in runner.RunInput, parentCont
 // path — no manual tenant threading. Per-child failures are captured in that
 // child's SpawnRunResult; the batch itself errors only on a malformed request
 // (over-cap / unsupported mode).
+//
+// Mode "detach" returns once every child has started or been refused, with
+// each started child's handle (status "running"); the runs go on after the
+// call returns (spawnDetached).
 func (s *Server) SpawnRunBatch(ctx context.Context, req connector.BatchSpawnRequest) (connector.BatchSpawnResult, error) {
 	n := len(req.Spawns)
 	if n == 0 {
@@ -246,11 +250,19 @@ func (s *Server) SpawnRunBatch(ctx context.Context, req connector.BatchSpawnRequ
 	if mode == "" {
 		mode = "join"
 	}
-	if mode != "join" {
-		// "detach" (return async run handles to poll/stream) requires RFC P's
-		// bounded/async spawn; reject explicitly until it ships rather than
-		// silently degrading to a blocking join.
-		return connector.BatchSpawnResult{}, fmt.Errorf("spawn_runs: mode %q not supported (only %q; %q awaits RFC P async run handles)", mode, "join", "detach")
+	switch mode {
+	case "join":
+	case "detach":
+		// timeout_ms bounds how long the CALL waits for its children. A
+		// detached batch does not wait, so there is nothing for it to bound,
+		// and reading it as a per-run deadline instead would invent a timeout
+		// model-driven runs do not have anywhere else. Refused rather than
+		// ignored, so a caller relying on it learns it has no effect.
+		if req.TimeoutMS > 0 {
+			return connector.BatchSpawnResult{}, fmt.Errorf("spawn_runs: timeout_ms cannot be combined with mode %q: a detached run outlives the call, so there is no join to bound; stop a run with cancel_run", "detach")
+		}
+	default:
+		return connector.BatchSpawnResult{}, fmt.Errorf("spawn_runs: mode %q not supported (want %q or %q)", mode, "join", "detach")
 	}
 
 	// Optional batch-level join deadline. A child still running when it fires
@@ -276,6 +288,10 @@ func (s *Server) SpawnRunBatch(ctx context.Context, req connector.BatchSpawnRequ
 			// attribution); preserve it verbatim — the caller groups a batch by
 			// setting a shared root_agent_run_id across its spawns.
 			spawn.SessionID = ""
+			if mode == "detach" {
+				results[i] = s.spawnDetached(ctx, spawn)
+				return
+			}
 			res, err := s.SpawnRun(ctx, spawn)
 			if err != nil {
 				// SpawnRun captures run failures in-result and returns a nil

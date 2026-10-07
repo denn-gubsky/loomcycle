@@ -2,7 +2,7 @@ import { createElement, type ReactElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { MemoryRouter } from "react-router-dom";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import AgentDetailPane, { RunTeamBadge, stopRun } from "./AgentDetailPane";
+import AgentDetailPane, { ChildrenAwaitOrChip, RunClockFacts, RunTeamBadge, stopRun } from "./AgentDetailPane";
 import { AgentTabStrip } from "./AgentDetailTabs";
 
 // The web tests render to static markup (no DOM), so effects never run. The
@@ -139,5 +139,55 @@ describe("RunTeamBadge", () => {
     expect(html(undefined)).toBe("");
     expect(html({ agent_version: { def_id: "adf_9" } })).toBe("");
     expect(html({ team: { name: "sdlc", def_id: "tdf_1", version: 1 } })).toBe("");
+  });
+});
+
+describe("ChildrenAwaitOrChip", () => {
+  const html = (agent: Parameters<typeof ChildrenAwaitOrChip>[0]["agent"]) =>
+    renderToStaticMarkup(
+      createElement(MemoryRouter, null, createElement(ChildrenAwaitOrChip, { agent, state: { kind: "running" } })),
+    );
+
+  it("names each background child a parked run waits for, linking to its run", () => {
+    const out = html({ status: "running", awaited_state: "children", awaited_on: "r_c1, r_c2" });
+    expect(out).toContain("waiting for background children");
+    expect(out).toContain('href="/agents?run=r_c1"');
+    expect(out).toContain('href="/agents?run=r_c2"');
+    expect(out).not.toContain("more");
+  });
+
+  it("says how many more the server left out of a bounded list", () => {
+    const out = html({ status: "running", awaited_state: "children", awaited_on: "r_c1, +3 more" });
+    expect(out).toContain('href="/agents?run=r_c1"');
+    expect(out).toContain("+3 more");
+  });
+
+  it("shows the transcript-derived chip for any other running run", () => {
+    const out = html({ status: "running", awaited_state: "input" });
+    expect(out).toContain("await-chip-running");
+    expect(out).not.toContain("background children");
+  });
+});
+
+describe("RunClockFacts", () => {
+  const html = (run: Parameters<typeof RunClockFacts>[0]["run"]) => renderToStaticMarkup(createElement(RunClockFacts, { run }));
+
+  it("shows a code agent's budget and its clock at its last pause", () => {
+    const out = html({
+      usage: { provider: "code-js" },
+      spec: { run_timeout_seconds: 300, run_clock: { active_ms: 12_500, waited_ms: 95_000, wall_ms: 107_500 } },
+    });
+    expect(out).toContain("code budget: 5m 0s");
+    expect(out).toContain("used 12.5s, waited 1m 35s, lived 1m 48s");
+  });
+
+  it("says the operator default applies when the run set no budget, and shows no clock before a pause", () => {
+    const out = html({ usage: { provider: "code-js" }, spec: {} });
+    expect(out).toContain("code budget: operator default");
+    expect(out).not.toContain("at last pause");
+  });
+
+  it("shows nothing for a model-driven run", () => {
+    expect(html({ usage: { provider: "anthropic" }, spec: { run_timeout_seconds: 300 } })).toBe("");
   });
 });

@@ -78,6 +78,31 @@ async def test_spawn_run_batch_builds_children_and_decodes_envelope():
 
 
 @pytest.mark.asyncio
+async def test_spawn_run_batch_detach_sends_the_mode_and_decodes_running_handles():
+    client = _make_client()
+    resp = pb.BatchSpawnResult(
+        spawned=2,
+        results=[
+            pb.SpawnResult(agent_id="a1", run_id="r1", session_id="s1", status="running"),
+            pb.SpawnResult(status="failed", error="unknown agent"),
+        ],
+    )
+    fake, captured = _async_returning(resp)
+    client._stub.SpawnRunBatch = fake  # type: ignore[attr-defined]
+
+    out = await client.spawn_run_batch(
+        [{"agent": "reviewer", "segments": []}, {"agent": "nope", "segments": []}],
+        mode="detach",
+    )
+    req = captured["req"]
+    assert req.mode == "detach"
+    assert req.timeout_ms == 0
+    assert out["results"][0]["status"] == "running"
+    assert out["results"][0]["run_id"] == "r1"
+    assert out["results"][1]["status"] == "failed"
+
+
+@pytest.mark.asyncio
 async def test_compact_run_decodes_result():
     client = _make_client()
     resp = pb.CompactRunResult(

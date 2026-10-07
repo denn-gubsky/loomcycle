@@ -199,7 +199,7 @@ type SpawnRunResult struct {
 	AgentID    string           `json:"agent_id"`
 	RunID      string           `json:"run_id"`
 	SessionID  string           `json:"session_id"`
-	Status     string           `json:"status"` // "completed" | "failed" | "cancelled"
+	Status     string           `json:"status"` // "completed" | "failed" | "cancelled"; "running" for a detached batch child
 	StopReason string           `json:"stop_reason,omitempty"`
 	FinalText  string           `json:"final_text,omitempty"`
 	Usage      *providers.Usage `json:"usage,omitempty"`
@@ -241,21 +241,25 @@ type BatchSpawnRequest struct {
 	Spawns []SpawnRunRequest `json:"spawns"`
 
 	// Mode is "join" (default): block until every child settles, then return
-	// the combined envelope. "detach" (return async run handles to poll/stream)
-	// is reserved for RFC P and rejected until that ships.
+	// the combined envelope. "detach": return as soon as every child has
+	// started (status "running", with its run_id/agent_id/session_id) or been
+	// refused (in its slot, as join reports a failure); the started runs go on
+	// after the call returns and are read by run id (GET /v1/runs/{run_id},
+	// get_run, GetRun) and stopped by cancel. Any other value is refused.
 	Mode string `json:"mode,omitempty"`
 
 	// TimeoutMS optionally caps the join. A child still running when the
 	// deadline passes is cancelled and reported with a cancelled status
 	// in-envelope. 0 = no batch-level deadline (a child's own timeout, if any,
-	// still applies).
+	// still applies). Refused with mode "detach", which has no join to bound.
 	TimeoutMS int `json:"timeout_ms,omitempty"`
 }
 
-// BatchSpawnResult is the combined outcome of a "join"-mode SpawnRunBatch.
-// Results is index-aligned with the request's Spawns (a per-child error lives
-// in that child's SpawnRunResult.Error/Status). Spawned is the number of
-// children dispatched (== len(Results) on the join path).
+// BatchSpawnResult is the combined outcome of a SpawnRunBatch. Results is
+// index-aligned with the request's Spawns (a per-child error lives in that
+// child's SpawnRunResult.Error/Status). Spawned is the number of children
+// dispatched (== len(Results)). In mode "detach" a started child's Status is
+// "running": the state when the call returned, not a final one.
 type BatchSpawnResult struct {
 	Results []SpawnRunResult `json:"results"`
 	Spawned int              `json:"spawned"`

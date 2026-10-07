@@ -158,6 +158,44 @@ func TestGrpcStreamRun_StreamsInteractiveEvents(t *testing.T) {
 	}
 }
 
+// A run waiting for its background children, and the note that ends the wait,
+// reach a gRPC stream with their payloads: without them a gRPC consumer saw
+// the frame types but not which children, nor what the note said.
+func TestGrpcStreamRun_CarriesTheChildrenWaitPayloads(t *testing.T) {
+	mc := &interactiveMock{streamEvents: []providers.Event{
+		{Type: providers.EventAwaitingChildren, AwaitingChildren: &providers.AwaitingChildrenEventInfo{ChildRunIDs: []string{"r_1", "r_2"}, SinceTurn: 2}},
+		{Type: providers.EventChildrenNote, ChildrenNote: &providers.ChildrenNoteEventInfo{Text: "Background child r_1 finished: completed."}},
+	}}
+	client, cleanup := startTestServerWithConnector(t, mc)
+	defer cleanup()
+
+	stream, err := client.StreamRun(context.Background(), &loomcyclepb.StreamRunRequest{RunId: "r_parent"})
+	if err != nil {
+		t.Fatalf("StreamRun: %v", err)
+	}
+	var got []*loomcyclepb.Event
+	for {
+		ev, err := stream.Recv()
+		if errors.Is(err, io.EOF) {
+			break
+		}
+		if err != nil {
+			t.Fatalf("Recv: %v", err)
+		}
+		got = append(got, ev)
+	}
+	if len(got) != 2 {
+		t.Fatalf("got %d events, want 2: %+v", len(got), got)
+	}
+	ac := got[0].GetAwaitingChildren()
+	if got[0].GetType() != "awaiting_children" || len(ac.GetChildRunIds()) != 2 || ac.GetChildRunIds()[1] != "r_2" || ac.GetSinceTurn() != 2 {
+		t.Errorf("awaiting_children frame wrong: %+v", got[0])
+	}
+	if got[1].GetType() != "children_note" || got[1].GetChildrenNote().GetText() != "Background child r_1 finished: completed." {
+		t.Errorf("children_note frame wrong: %+v", got[1])
+	}
+}
+
 // The gap a consumer reported: RunInputRequest carried run_id/text/source only,
 // so a gRPC or Python caller could not retune a run at all — and RunInput
 // requires text, so even once the fields existed a retune could only ride a

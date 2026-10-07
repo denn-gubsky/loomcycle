@@ -401,11 +401,11 @@ class LoomcycleServicer:
 
     def SpawnRunBatch(self, request, context):
         """SpawnRunBatch spawns N fresh runs concurrently in one call (RFC Y
-        external fan-out, mode "join"), bounded by the per-user admission
-        gate, returning a combined index-aligned envelope once all settle. A
-        per-child failure is captured in that child's result and never fails
-        the batch. mode "detach" (async run handles) is reserved for a future
-        release and rejected today.
+        external fan-out), bounded by the per-user admission gate, returning a
+        combined index-aligned envelope once all settle (mode "join") or once
+        all have started (mode "detach": each started child reports status
+        "running" and runs on after the call; read it with GetRun). A per-child
+        failure is captured in that child's result and never fails the batch.
 
         Mirrors POST /v1/runs:batch + the spawn_runs MCP tool.
         """
@@ -738,10 +738,12 @@ class LoomcycleServicer:
         ErrSnapshotVersionTooNew  → FailedPrecondition (422-equivalent)
         ErrSnapshotVersionUnknown → FailedPrecondition (422-equivalent)
 
-        PauseRuntime quiesces the runtime. Idempotent tools cancel
-        immediately; non-idempotent + external tools get a grace window
-        (default 30 s; max 5 min) then force-cancel. Returns 409-equivalent
-        when the runtime is already pausing or paused.
+        PauseRuntime quiesces the runtime: new runs are refused and each
+        in-flight run parks at its next iteration boundary, after the model
+        or tool calls it is in finish. No tool call is cancelled. The call
+        waits up to timeout_ms (default 30 s; max 5 min) for runs to park and
+        names any that did not in warnings. Returns 409-equivalent when the
+        runtime is already pausing or paused.
 
         Mirrors POST /v1/_pause.
         """

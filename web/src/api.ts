@@ -223,10 +223,12 @@ export interface Agent {
   // `awaited_state` is "channel" (open Channel.subscribe, or a long-polling
   // Channel.await — `awaited_on` then lists its channels comma-separated),
   // "interrupted" (open Interruption.ask), "review" (held for an
-  // operator's verdict) or "input" (an interactive run parked for the
-  // operator's next turn), and `awaited_on` carries the channel name,
-  // interruption kind or the agent_stop hook holding a review.
-  awaited_state?: "channel" | "interrupted" | "review" | "input" | "";
+  // operator's verdict), "input" (an interactive run parked for the
+  // operator's next turn) or "children" (it ended its turn and waits for its
+  // background children), and `awaited_on` carries the channel name,
+  // interruption kind, the agent_stop hook holding a review or the child run
+  // ids (", "-separated, bounded with ", +N more").
+  awaited_state?: "channel" | "interrupted" | "review" | "input" | "children" | "";
   awaited_on?: string;
   // draft is a CONFIGURED run's request as it will start, in the server's
   // snake_case wire keys — what updateConfiguredRun edits. Present only while
@@ -884,7 +886,7 @@ export interface RunStateEvent {
   error?: string;
   ts: string; // RFC3339
   parent_context?: RunParentContext;
-  awaited_state?: "channel" | "interrupted" | "review" | "input" | "";
+  awaited_state?: "channel" | "interrupted" | "review" | "input" | "children" | "";
   awaited_on?: string;
   // When an unruled review hold ends as rejected. Only the stream carries it.
   hold_expires_at?: string;

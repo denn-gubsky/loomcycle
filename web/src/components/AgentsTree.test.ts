@@ -156,3 +156,43 @@ describe("AgentsTree row state", () => {
     expect(collectAncestorIds(twoWalks(), "r_cn")).toEqual(["r_new"]);
   });
 });
+
+describe("AgentsTree background children", () => {
+  // A poll-mode child is an ordinary sub-run carrying its parent's run id, so
+  // it hangs under the parent like any child; the parent, parked until they
+  // end, says how many it waits for.
+  it("hangs background children under their parent and marks the parent waiting for them", () => {
+    const tree = buildTree([
+      run({
+        agent_id: "a_lead", run_id: "r_lead", status: "running",
+        awaited_state: "children", awaited_on: "r_c1, r_c2",
+      }),
+      run({ agent_id: "a_w", run_id: "r_c1", status: "running", parent_agent_id: "a_lead", parent_run_id: "r_lead" }),
+      run({ agent_id: "a_w", run_id: "r_c2", status: "completed", parent_agent_id: "a_lead", parent_run_id: "r_lead" }),
+    ]);
+    expect(shape(tree)).toEqual([
+      { run: "r_lead", children: [{ run: "r_c1", children: [] }, { run: "r_c2", children: [] }] },
+    ]);
+    const html = renderToStaticMarkup(createElement(AgentsTreeNode, nodeProps(tree[0])));
+    expect(html).toContain('class="pill-awaiting-children"');
+    expect(html).toContain("waiting for 2 children");
+    // Only the parent waits: its children's rows carry no such mark.
+    expect(html.match(/pill-awaiting-children/g)).toHaveLength(1);
+  });
+
+  it("counts the children the server left out of a bounded list", () => {
+    const html = renderToStaticMarkup(createElement(AgentsTreeNode, nodeProps({
+      agent: run({ agent_id: "a", run_id: "r", status: "running", awaited_state: "children", awaited_on: "r_1, r_2, +5 more" }),
+      children: [],
+    })));
+    expect(html).toContain("waiting for 7 children");
+  });
+
+  it("marks nothing on a run that has ended, whatever it last waited on", () => {
+    const html = renderToStaticMarkup(createElement(AgentsTreeNode, nodeProps({
+      agent: run({ agent_id: "a", run_id: "r", status: "completed", awaited_state: "children", awaited_on: "r_1" }),
+      children: [],
+    })));
+    expect(html).not.toContain("pill-awaiting-children");
+  });
+});

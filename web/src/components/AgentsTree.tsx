@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import type { Agent } from "../api";
-import { rowKey, runRowHref, selectionOf, type RunSelection } from "../lib/runLineage";
+import { awaitedChildrenOf, rowKey, runRowHref, selectionOf, type RunSelection } from "../lib/runLineage";
 
 // AgentsTree renders the parent → children agent hierarchy as a
 // nested <ul>. A caret button on each row toggles whether the
@@ -173,6 +173,7 @@ export function AgentsTreeNode({ node, depth, expandedMap, setExpanded, selected
   // Default-expanded: only an explicit `false` collapses.
   const expanded = expandedMap.get(key) !== false;
   const isSelected = selectedId === key;
+  const waitingOn = awaitedChildrenOf(a);
   return (
     <li className={`node depth-${depth} status-${a.status} ${awaitClass(a.awaited_state, a.status)} ${isSelected ? "selected" : ""}`}>
       <div className="row">
@@ -201,6 +202,14 @@ export function AgentsTreeNode({ node, depth, expandedMap, setExpanded, selected
           {a.resident && (
             <span className="pill-resident" title="Resident sub-agent — a persistent interactive child driven via Agent open/send/close">
               resident{a.resident_state ? ` · ${a.resident_state}` : ""}
+            </span>
+          )}
+          {waitingOn && (
+            <span
+              className="pill-awaiting-children"
+              title="Ended its turn and waits for its background children; it takes its next turn when every one has ended"
+            >
+              waiting for {childCount(waitingOn)}
             </span>
           )}
         </span>
@@ -249,6 +258,12 @@ export function AgentsTreeNode({ node, depth, expandedMap, setExpanded, selected
       )}
     </li>
   );
+}
+
+// childCount says how many background children a row waits for.
+export function childCount(w: { runIds: string[]; more: number }): string {
+  const n = w.runIds.length + w.more;
+  return n === 1 ? "1 child" : `${n} children`;
 }
 
 // awaitClass maps a row to one of three tint classes. Only the

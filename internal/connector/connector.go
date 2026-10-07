@@ -59,10 +59,11 @@ type Connector interface {
 
 	// SpawnRunBatch is the RFC Y external fan-out: one call spawns N fresh
 	// child runs server-side concurrent (bounded by the same per-user
-	// admission gate as SpawnRun), joins them, and returns the combined
-	// index-aligned envelope. A per-child failure is captured in that child's
-	// result and never fails the batch. Mirrors POST /v1/runs:batch and the
-	// in-loop Agent op=parallel_spawn.
+	// admission gate as SpawnRun), joins them — or, with mode "detach",
+	// returns once they have started — and returns the combined index-aligned
+	// envelope. A per-child failure is captured in that child's result and
+	// never fails the batch. Mirrors POST /v1/runs:batch and the in-loop Agent
+	// op=parallel_spawn.
 	SpawnRunBatch(ctx context.Context, req BatchSpawnRequest) (BatchSpawnResult, error)
 
 	// CancelRun mirrors POST /v1/agents/{agent_id}/cancel. Cascades

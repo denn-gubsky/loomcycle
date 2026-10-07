@@ -47,18 +47,18 @@ async def test_pause_runtime_round_trips_fields():
     fake, _captured = _async_returning(pb.PauseRuntimeResponse(
         status="paused",
         duration_ms=42,
-        force_cancelled_count=1,
+        force_cancelled_count=0,  # always 0: pause cancels no tool call
         paused_runs_count=2,
-        warnings=["flaky"],
+        warnings=["run r_slow did not park within the timeout"],
     ))
     client._stub.PauseRuntime = fake  # type: ignore[attr-defined]
 
     result = await client.pause_runtime(timeout_ms=5000)
     assert result["status"] == "paused"
     assert result["duration_ms"] == 42
-    assert result["force_cancelled_count"] == 1
+    assert result["force_cancelled_count"] == 0
     assert result["paused_runs_count"] == 2
-    assert result["warnings"] == ["flaky"]
+    assert result["warnings"] == ["run r_slow did not park within the timeout"]
     assert _captured["req"].timeout_ms == 5000
 
 

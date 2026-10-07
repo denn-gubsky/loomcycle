@@ -210,8 +210,9 @@ func TestSpawnRunBatch_MalformedIsInvalidArgument(t *testing.T) {
 	defer cleanup()
 
 	_, err := client.SpawnRunBatch(context.Background(), &loomcyclepb.BatchSpawnRequest{
-		Spawns: []*loomcyclepb.RunRequest{{Agent: "x"}},
-		Mode:   "detach",
+		Spawns:    []*loomcyclepb.RunRequest{{Agent: "x"}},
+		Mode:      "detach",
+		TimeoutMs: 500,
 	})
 	if status.Code(err) != codes.InvalidArgument {
 		t.Errorf("code = %s, want InvalidArgument", status.Code(err))
@@ -220,7 +221,41 @@ func TestSpawnRunBatch_MalformedIsInvalidArgument(t *testing.T) {
 
 type errOverCap struct{}
 
-func (errOverCap) Error() string { return "spawn_runs: mode \"detach\" not supported" }
+func (errOverCap) Error() string {
+	return "spawn_runs: timeout_ms cannot be combined with mode \"detach\""
+}
+
+// A detached batch reaches the connector as one, and its started children come
+// back with status running and the run id a caller reads them by with GetRun.
+func TestSpawnRunBatch_DetachDispatchesAndMapsRunningHandles(t *testing.T) {
+	mc := &parityMock{batchResult: connector.BatchSpawnResult{
+		Spawned: 2,
+		Results: []connector.SpawnRunResult{
+			{AgentID: "a0", RunID: "r0", SessionID: "s0", Status: "running"},
+			{Status: "failed", Error: "unknown agent"},
+		},
+	}}
+	client, cleanup := startTestServerWithConnector(t, mc)
+	defer cleanup()
+
+	resp, err := client.SpawnRunBatch(context.Background(), &loomcyclepb.BatchSpawnRequest{
+		Mode:   "detach",
+		Spawns: []*loomcyclepb.RunRequest{{Agent: "rev"}, {Agent: "nope"}},
+	})
+	if err != nil {
+		t.Fatalf("SpawnRunBatch(detach): %v", err)
+	}
+	if mc.lastBatch.Mode != "detach" {
+		t.Errorf("connector saw mode %q, want detach", mc.lastBatch.Mode)
+	}
+	r := resp.GetResults()
+	if len(r) != 2 || r[0].GetStatus() != "running" || r[0].GetRunId() != "r0" || r[0].GetSessionId() != "s0" {
+		t.Errorf("results = %+v, want a running handle at index 0", r)
+	}
+	if len(r) == 2 && (r[1].GetStatus() != "failed" || r[1].GetError() == "") {
+		t.Errorf("results[1] = %+v, want the refusal in its slot", r[1])
+	}
+}
 
 func TestCompactRun_DispatchesAndMaps(t *testing.T) {
 	mc := &parityMock{compactResult: connector.CompactResult{

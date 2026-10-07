@@ -589,7 +589,7 @@ describe("pauseRuntime / resumeRuntime / getRuntimeState", () => {
       jsonResponse({
         state: "paused",
         duration_ms: 42,
-        force_cancelled_count: 1,
+        force_cancelled_count: 0, // always 0: pause cancels no tool call
         paused_runs_count: 2,
       }),
     ]);

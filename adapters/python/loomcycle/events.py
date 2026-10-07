@@ -78,6 +78,27 @@ class AwaitingInput:
 
 
 @dataclass(frozen=True)
+class AwaitingChildren:
+    """Structured payload on ``awaiting_children`` events — the run ended its
+    turn with background (poll-mode) children outstanding and waits for them
+    before its next turn. ``child_run_ids`` names them; ``since_turn`` is the
+    iteration it ended its turn at. Mirrors
+    ``providers.AwaitingChildrenEventInfo``."""
+
+    child_run_ids: tuple  # tuple of str — frozen for the dataclass
+    since_turn: int
+
+
+@dataclass(frozen=True)
+class ChildrenNote:
+    """Structured payload on ``children_note`` events — the runtime note that
+    ends a run's wait for its background children, as the model reads it.
+    Mirrors ``providers.ChildrenNoteEventInfo``."""
+
+    text: str
+
+
+@dataclass(frozen=True)
 class AwaitingReview:
     """Structured payload on ``awaiting_review`` events (RFC DJ) — a run armed
     for review finished its answer and is held for an operator's verdict
@@ -298,6 +319,8 @@ class AgentEvent:
     retry: Optional[Retry] = None
     host_widening: Optional[HostWidening] = None
     awaiting_input: Optional[AwaitingInput] = None
+    awaiting_children: Optional[AwaitingChildren] = None
+    children_note: Optional[ChildrenNote] = None
     awaiting_review: Optional[AwaitingReview] = None
     subagent_hold: Optional[SubagentHold] = None
     hook_decision: Optional[HookDecision] = None
@@ -352,6 +375,15 @@ class AgentEvent:
         ai: Optional[AwaitingInput] = None
         if ev.HasField("awaiting_input"):
             ai = AwaitingInput(since_turn=ev.awaiting_input.since_turn)
+        ac: Optional[AwaitingChildren] = None
+        if ev.HasField("awaiting_children"):
+            ac = AwaitingChildren(
+                child_run_ids=tuple(ev.awaiting_children.child_run_ids),
+                since_turn=ev.awaiting_children.since_turn,
+            )
+        cn: Optional[ChildrenNote] = None
+        if ev.HasField("children_note"):
+            cn = ChildrenNote(text=ev.children_note.text)
         ar: Optional[AwaitingReview] = None
         if ev.HasField("awaiting_review"):
             ar = AwaitingReview(
@@ -432,6 +464,8 @@ class AgentEvent:
             retry=r,
             host_widening=hw,
             awaiting_input=ai,
+            awaiting_children=ac,
+            children_note=cn,
             awaiting_review=ar,
             subagent_hold=sh,
             hook_decision=hd,

@@ -93,6 +93,9 @@ func TestAgentReads_ReportWhatARunningRunIsBlockedOn(t *testing.T) {
 		{"input", "awaiting_input",
 			`{"type":"awaiting_input","awaiting_input":{"since_turn":1}}`,
 			"input", ""},
+		{"children", "awaiting_children",
+			`{"type":"awaiting_children","awaiting_children":{"child_run_ids":["r_1","r_2"],"since_turn":2}}`,
+			"children", "r_1, r_2"},
 		{"progressing", "text", `{"type":"text","text":"working"}`, "", ""},
 	}
 	for _, tc := range cases {

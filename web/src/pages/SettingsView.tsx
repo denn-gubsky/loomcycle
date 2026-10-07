@@ -1188,14 +1188,14 @@ function RuntimeSection() {
 
   const doPause = async () => {
     if (busy) return;
-    if (!confirm("Pause the runtime? In-flight idempotent tools are cancelled immediately; non-idempotent tools get a 30-second wind-down. New runs return 503 until you resume.")) {
+    if (!confirm("Pause the runtime? Each in-flight run finishes the call it is in and parks at its next step; nothing is cancelled. New runs return 503 until you resume.")) {
       return;
     }
     setBusy(true);
     try {
       const r = await pauseRuntime();
       setState({ state: r.state as RuntimeStateResponse["state"], paused_runs_count: r.paused_runs_count });
-      setFlash(`paused (${r.duration_ms} ms, ${r.force_cancelled_count} force-cancelled, ${r.paused_runs_count} paused runs)`);
+      setFlash(`paused (${r.duration_ms} ms, ${r.paused_runs_count} paused runs)`);
       setErr(null);
     } catch (e) {
       setErr(e instanceof Error ? e.message : String(e));

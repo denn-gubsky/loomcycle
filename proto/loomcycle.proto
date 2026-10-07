@@ -44,11 +44,11 @@ service Loomcycle {
   rpc Continue(ContinueRequest) returns (stream Event);
 
   // SpawnRunBatch spawns N fresh runs concurrently in one call (RFC Y
-  // external fan-out, mode "join"), bounded by the per-user admission
-  // gate, returning a combined index-aligned envelope once all settle. A
-  // per-child failure is captured in that child's result and never fails
-  // the batch. mode "detach" (async run handles) is reserved for a future
-  // release and rejected today.
+  // external fan-out), bounded by the per-user admission gate, returning a
+  // combined index-aligned envelope once all settle (mode "join") or once
+  // all have started (mode "detach": each started child reports status
+  // "running" and runs on after the call; read it with GetRun). A per-child
+  // failure is captured in that child's result and never fails the batch.
   //
   // Mirrors POST /v1/runs:batch + the spawn_runs MCP tool.
   rpc SpawnRunBatch(BatchSpawnRequest) returns (BatchSpawnResult);
@@ -264,10 +264,12 @@ service Loomcycle {
   //   ErrSnapshotVersionTooNew  → FailedPrecondition (422-equivalent)
   //   ErrSnapshotVersionUnknown → FailedPrecondition (422-equivalent)
 
-  // PauseRuntime quiesces the runtime. Idempotent tools cancel
-  // immediately; non-idempotent + external tools get a grace window
-  // (default 30 s; max 5 min) then force-cancel. Returns 409-equivalent
-  // when the runtime is already pausing or paused.
+  // PauseRuntime quiesces the runtime: new runs are refused and each
+  // in-flight run parks at its next iteration boundary, after the model
+  // or tool calls it is in finish. No tool call is cancelled. The call
+  // waits up to timeout_ms (default 30 s; max 5 min) for runs to park and
+  // names any that did not in warnings. Returns 409-equivalent when the
+  // runtime is already pausing or paused.
   //
   // Mirrors POST /v1/_pause.
   rpc PauseRuntime(PauseRuntimeRequest) returns (PauseRuntimeResponse);
@@ -862,11 +864,14 @@ message Compaction {
 // fresh runs). Capped at 32; the server rejects an over-cap batch.
 message BatchSpawnRequest {
   repeated RunRequest spawns = 1;
-  // mode is "join" (default): block until all children settle. "detach"
-  // (async run handles) is reserved for a future release and rejected.
+  // mode is "join" (default): block until all children settle. "detach":
+  // return once every child has started (status "running", with its run_id)
+  // or been refused in its slot; the runs continue after the call returns.
+  // Any other value is rejected.
   string mode = 2;
   // timeout_ms optionally caps the join; a child still running when it
   // elapses is cancelled and reported with a cancelled status in-envelope.
+  // Rejected with mode "detach", which does not wait.
   int64 timeout_ms = 3;
 }
 
@@ -876,15 +881,15 @@ message SpawnResult {
   string agent_id = 1;
   string run_id = 2;
   string session_id = 3;
-  string status = 4;  // completed | failed | cancelled
+  string status = 4;  // completed | failed | cancelled; running for a detached batch child
   string stop_reason = 5;
   string final_text = 6;
   Usage usage = 7;
   string error = 8;
 }
 
-// BatchSpawnResult is the combined "join"-mode outcome; results is
-// index-aligned with the request's spawns.
+// BatchSpawnResult is the combined outcome; results is index-aligned with
+// the request's spawns.
 message BatchSpawnResult {
   repeated SpawnResult results = 1;
   int32 spawned = 2;
@@ -1323,6 +1328,16 @@ message Event {
   // for a verdict ("held"), or has ended ("released"). Nil on every other
   // event type.
   SubagentHold subagent_hold = 18;
+
+  // awaiting_children carries the payload on type=awaiting_children frames —
+  // the run ended its turn with background (poll-mode) children outstanding
+  // and waits for them before its next turn. Nil on every other event type.
+  AwaitingChildren awaiting_children = 19;
+
+  // children_note carries the payload on type=children_note frames — the
+  // runtime note that ends that wait, telling the run how its children
+  // ended. Nil on every other event type.
+  ChildrenNote children_note = 20;
 }
 
 // OverrideInfo is the type=override payload (RFC DC). Mirrors
@@ -1343,6 +1358,19 @@ message OverrideInfo {
 // providers.AwaitingInputEventInfo.
 message AwaitingInput {
   int32 since_turn = 1;  // the iteration the run parked after
+}
+
+// AwaitingChildren is the type=awaiting_children payload. Mirrors
+// providers.AwaitingChildrenEventInfo.
+message AwaitingChildren {
+  repeated string child_run_ids = 1;  // the background children waited for
+  int32 since_turn = 2;               // the iteration the run ended its turn at
+}
+
+// ChildrenNote is the type=children_note payload. Mirrors
+// providers.ChildrenNoteEventInfo.
+message ChildrenNote {
+  string text = 1;  // the note, as the model reads it
 }
 
 // AwaitingReview is the type=awaiting_review payload (RFC DJ). Mirrors
@@ -1592,10 +1620,13 @@ message Agent {
   // for operator input).
   bool interactive = 18;
   // awaited_state is what a RUNNING run is currently blocked on: "channel" (an
-  // open Channel subscribe), "interrupted" (an open Interruption ask) or
-  // "review" (held for an operator's verdict). Empty for a run making progress
-  // and for every run that is not running. awaited_on names the channel
-  // (state "channel") or the interruption kind (state "interrupted").
+  // open Channel subscribe), "interrupted" (an open Interruption ask),
+  // "review" (held for an operator's verdict), "input" (an interactive run
+  // parked for the operator's next turn) or "children" (it ended its turn and
+  // waits for its background children). Empty for a run making progress and
+  // for every run that is not running. awaited_on names the channel (state
+  // "channel"), the interruption kind (state "interrupted"), the hook holding
+  // a review, or the child run ids, comma-separated (state "children").
   string awaited_state = 19;
   string awaited_on = 20;
   // replica_id is the replica owning the run's live cancel handle. Empty in a
@@ -1779,8 +1810,8 @@ message HealthResponse {
 // ========================
 
 message PauseRuntimeRequest {
-  // Wait-for-non-idempotent-tools cap, in milliseconds. 0 falls
-  // through to LOOMCYCLE_PAUSE_DEFAULT_TIMEOUT_MS (default 30 s).
+  // How long to wait for in-flight runs to park, in milliseconds. 0
+  // falls through to LOOMCYCLE_PAUSE_DEFAULT_TIMEOUT_MS (default 30 s).
   // Clamped server-side at pause.MaxPauseTimeout (5 min). int64
   // for consistency with every other _ms field in this proto
   // (duration_ms in PauseRuntimeResponse, wait_ms in Retry) —
@@ -1792,6 +1823,7 @@ message PauseRuntimeRequest {
 message PauseRuntimeResponse {
   string status = 1;              // "paused"
   int64 duration_ms = 2;
+  // Always 0: pause cancels no tool call. Kept for wire compatibility.
   int32 force_cancelled_count = 3;
   int32 paused_runs_count = 4;
   repeated string warnings = 5;
@@ -2054,13 +2086,13 @@ message RunStateEvent {
   // distinguishable from "present and empty".
   ParentContext parent_context = 10;
   // What a "running" run has started waiting on: "review", "input",
-  // "channel" or "interrupted" — the values Agent.awaited_state reports. A
-  // wait is announced as its own "running" event and its end as another
-  // "running" event with this empty, so a subscriber folding the stream holds
-  // the run's current wait. Empty on every other transition.
+  // "channel", "interrupted" or "children" — the values Agent.awaited_state
+  // reports. A wait is announced as its own "running" event and its end as
+  // another "running" event with this empty, so a subscriber folding the
+  // stream holds the run's current wait. Empty on every other transition.
   string awaited_state = 11;
-  // The channel, the interruption kind, or the agent_stop hook holding a
-  // review.
+  // The channel, the interruption kind, the agent_stop hook holding a
+  // review, or the child run ids (comma-separated) a run waits for.
   string awaited_on = 12;
   // RFC3339 UTC: when a review hold ends as rejected if nobody rules on it.
   // Empty when the wait has no deadline.

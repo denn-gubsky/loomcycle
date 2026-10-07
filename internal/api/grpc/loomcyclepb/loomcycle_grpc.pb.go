@@ -123,11 +123,11 @@ type LoomcycleClient interface {
 	// Mirrors POST /v1/sessions/{id}/messages.
 	Continue(ctx context.Context, in *ContinueRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[Event], error)
 	// SpawnRunBatch spawns N fresh runs concurrently in one call (RFC Y
-	// external fan-out, mode "join"), bounded by the per-user admission
-	// gate, returning a combined index-aligned envelope once all settle. A
-	// per-child failure is captured in that child's result and never fails
-	// the batch. mode "detach" (async run handles) is reserved for a future
-	// release and rejected today.
+	// external fan-out), bounded by the per-user admission gate, returning a
+	// combined index-aligned envelope once all settle (mode "join") or once
+	// all have started (mode "detach": each started child reports status
+	// "running" and runs on after the call; read it with GetRun). A per-child
+	// failure is captured in that child's result and never fails the batch.
 	//
 	// Mirrors POST /v1/runs:batch + the spawn_runs MCP tool.
 	SpawnRunBatch(ctx context.Context, in *BatchSpawnRequest, opts ...grpc.CallOption) (*BatchSpawnResult, error)
@@ -307,10 +307,12 @@ type LoomcycleClient interface {
 	// authenticates before dispatch — so a caller gets `authenticated` or `admin`
 	// from its own scopes. `view` in the payload names which.
 	Config(ctx context.Context, in *ConfigRequest, opts ...grpc.CallOption) (*ConfigResponse, error)
-	// PauseRuntime quiesces the runtime. Idempotent tools cancel
-	// immediately; non-idempotent + external tools get a grace window
-	// (default 30 s; max 5 min) then force-cancel. Returns 409-equivalent
-	// when the runtime is already pausing or paused.
+	// PauseRuntime quiesces the runtime: new runs are refused and each
+	// in-flight run parks at its next iteration boundary, after the model
+	// or tool calls it is in finish. No tool call is cancelled. The call
+	// waits up to timeout_ms (default 30 s; max 5 min) for runs to park and
+	// names any that did not in warnings. Returns 409-equivalent when the
+	// runtime is already pausing or paused.
 	//
 	// Mirrors POST /v1/_pause.
 	PauseRuntime(ctx context.Context, in *PauseRuntimeRequest, opts ...grpc.CallOption) (*PauseRuntimeResponse, error)
@@ -1255,11 +1257,11 @@ type LoomcycleServer interface {
 	// Mirrors POST /v1/sessions/{id}/messages.
 	Continue(*ContinueRequest, grpc.ServerStreamingServer[Event]) error
 	// SpawnRunBatch spawns N fresh runs concurrently in one call (RFC Y
-	// external fan-out, mode "join"), bounded by the per-user admission
-	// gate, returning a combined index-aligned envelope once all settle. A
-	// per-child failure is captured in that child's result and never fails
-	// the batch. mode "detach" (async run handles) is reserved for a future
-	// release and rejected today.
+	// external fan-out), bounded by the per-user admission gate, returning a
+	// combined index-aligned envelope once all settle (mode "join") or once
+	// all have started (mode "detach": each started child reports status
+	// "running" and runs on after the call; read it with GetRun). A per-child
+	// failure is captured in that child's result and never fails the batch.
 	//
 	// Mirrors POST /v1/runs:batch + the spawn_runs MCP tool.
 	SpawnRunBatch(context.Context, *BatchSpawnRequest) (*BatchSpawnResult, error)
@@ -1439,10 +1441,12 @@ type LoomcycleServer interface {
 	// authenticates before dispatch — so a caller gets `authenticated` or `admin`
 	// from its own scopes. `view` in the payload names which.
 	Config(context.Context, *ConfigRequest) (*ConfigResponse, error)
-	// PauseRuntime quiesces the runtime. Idempotent tools cancel
-	// immediately; non-idempotent + external tools get a grace window
-	// (default 30 s; max 5 min) then force-cancel. Returns 409-equivalent
-	// when the runtime is already pausing or paused.
+	// PauseRuntime quiesces the runtime: new runs are refused and each
+	// in-flight run parks at its next iteration boundary, after the model
+	// or tool calls it is in finish. No tool call is cancelled. The call
+	// waits up to timeout_ms (default 30 s; max 5 min) for runs to park and
+	// names any that did not in warnings. Returns 409-equivalent when the
+	// runtime is already pausing or paused.
 	//
 	// Mirrors POST /v1/_pause.
 	PauseRuntime(context.Context, *PauseRuntimeRequest) (*PauseRuntimeResponse, error)

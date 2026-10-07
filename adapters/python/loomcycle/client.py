@@ -393,11 +393,13 @@ class LoomcycleClient:
     # ---- v0.8.18 Pause / Resume / State + Snapshot lifecycle ----
 
     async def pause_runtime(self, *, timeout_ms: int = 0) -> Mapping[str, Any]:
-        """Quiesce the runtime. Idempotent tools cancel immediately;
-        non-idempotent + external tools get a grace window (default
-        30 s; max 5 min) then force-cancel. New /v1/runs return 503
-        while paused. Returns a dict matching ``PauseRuntimeResponse``
-        (status, duration_ms, force_cancelled_count, paused_runs_count,
+        """Quiesce the runtime: new runs are refused and each in-flight
+        run parks at its next iteration boundary, after the model or tool
+        call it is in finishes — no tool call is cancelled. Waits up to
+        ``timeout_ms`` (default 30 s; max 5 min) for runs to park; any that
+        did not are named in ``warnings``. New /v1/runs return 503 while
+        paused. Returns a dict matching ``PauseRuntimeResponse`` (status,
+        duration_ms, force_cancelled_count — always 0 — paused_runs_count,
         warnings).
 
         Raises ``AlreadyPausingError`` (FailedPrecondition) when the
@@ -879,6 +881,11 @@ class LoomcycleClient:
         ``compaction``, …). ``mode="join"`` (default) blocks until every
         child settles; ``timeout_ms`` optionally caps the join (a child
         still running is cancelled + reported in-envelope).
+        ``mode="detach"`` returns once every child has started: each
+        started child reports ``status`` ``"running"`` with its ``run_id``
+        and keeps running after the call (read it with :meth:`get_run`); a
+        child that could not start is reported in its slot. ``timeout_ms``
+        is refused with ``"detach"``, which does not wait.
 
         Returns ``{"spawned": int, "results": [<spawn result>, …]}``
         index-aligned with ``spawns``; a per-child failure rides in that
