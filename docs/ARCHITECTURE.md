@@ -304,9 +304,11 @@ The Agent tool calls into the HTTP server's `runSubAgent` (registered automatica
 - Records `parent_agent_id` on its run row, so the cancel registry can cascade.
 - Runs the same loop, returns the child's final assistant text as the parent's tool_result.
 
-Recursion is depth-capped at 16 by default (`MaxAgentDepth` on the `AgentTool`). Sub-failures are surfaced as `IsError: true` tool_results — the parent sees them, can retry / fall back / give up; loomcycle does NOT tear down the parent on a child error.
+Recursion is depth-capped at 16 by default (`MaxAgentDepth` on the `AgentTool`). Sub-failures are surfaced as `IsError: true` tool_results — the parent sees them, can retry / fall back / give up; loomcycle does NOT tear down the parent on a child error. A child that stopped at its own iteration limit is one of those errors: its run is recorded `completed` / `max_iterations`, but the parent gets an error naming the limit with the child's last answer after it.
 
-References: `internal/tools/builtin/agent.go` (the tool), `internal/api/http/server.go runSubAgent` (the runner), `internal/tools/tool.go` (`HostPolicy` / `RunIdentity` ctx helpers).
+`spawn` and `parallel_spawn` block by default. With `mode: "poll"` the children run in the background while the parent keeps working: `op=poll` reads them, `op=cancel` stops one, a completion note reaches the parent's next model call, and a parent that ends its turn with children outstanding parks until every one has ended (`LOOMCYCLE_MAX_LIVE_CHILDREN_PER_RUN` bounds how many are alive at once). A per-child `timeout_ms` bounds a child's run; time held for review and time the runtime was paused do not count. The ledger rows `spawn_child_started` / `spawn_child_result` / `spawn_child_read` on the parent's transcript let a resumed parent rebuild its children.
+
+References: `internal/tools/builtin/agent.go` (the tool), `internal/tools/builtin/agent_poll.go` (poll mode), `internal/tools/background.go` (the background-children table), `internal/api/http/server.go runSubAgent` (the runner), `internal/tools/tool.go` (`HostPolicy` / `RunIdentity` ctx helpers).
 
 ## Skills (on-demand, RFC BA)
 
