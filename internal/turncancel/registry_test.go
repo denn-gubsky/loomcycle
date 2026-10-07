@@ -258,3 +258,38 @@ func TestRegistry_CancelPropagatesClusterError(t *testing.T) {
 		t.Fatalf("err = %v, want %v", err, boom)
 	}
 }
+
+// A run with no armed token goes to the unarmed stopper, which decides the
+// answer; an armed token is fired as before and never reaches the stopper.
+// Cancel consults the stopper before the cluster, so a run stopped here is not
+// routed elsewhere.
+func TestRegistry_CancelLocalHandsAnUnarmedRunToTheStopper(t *testing.T) {
+	r := newReg()
+	stopped := map[string]string{}
+	r.SetUnarmedStopper(func(runID, reason string) bool {
+		if runID != "walk-1" {
+			return false
+		}
+		stopped[runID] = reason
+		return true
+	})
+	_, cancel := context.WithCancelCause(context.Background())
+	defer cancel(nil)
+	r.Arm("run-1", cancel)
+
+	if !r.CancelLocal("run-1", "x") || len(stopped) != 0 {
+		t.Errorf("an armed run reached the stopper (%v)", stopped)
+	}
+	if !r.CancelLocal("walk-1", "stop it") || stopped["walk-1"] != "stop it" {
+		t.Errorf("an unarmed run the stopper holds was not stopped with the reason (%v)", stopped)
+	}
+	if r.CancelLocal("ghost", "x") {
+		t.Error("a run neither armed nor held by the stopper reported cancelled")
+	}
+
+	fc := &fakeCluster{found: true}
+	r.SetClusterCanceller(fc)
+	if fired, err := r.Cancel(context.Background(), "walk-1", "again"); !fired || err != nil || fc.calls != 0 {
+		t.Errorf("Cancel = (%v, %v) with %d cluster call(s), want a local stop and none", fired, err, fc.calls)
+	}
+}
