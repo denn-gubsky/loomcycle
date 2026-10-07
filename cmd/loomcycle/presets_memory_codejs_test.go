@@ -756,7 +756,12 @@ func runConsolidatorBody(t *testing.T, f *fakeToolset, agent config.AgentDef) lo
 // from outside and then looks at what it kept.
 func execConsolidator(ctx context.Context, codeRoot string, f *fakeToolset, agent config.AgentDef) (loop.RunResult, error) {
 	set := []tools.Tool{&fakeMemory{f: f}, &fakeHistory{f: f}, &fakeAgent{f: f}, &fakeContext{f: f}, &fakeDocument{f: f}}
-	prov := codejs.New(codejs.Config{CodeRoot: codeRoot, RunTimeout: 30 * time.Second})
+	// The shipped default budget, not a tighter one: no scenario here is about
+	// the budget, and every second of a pass counts against it because the fake
+	// tools never wait. The heaviest pass replays 29 tool calls in about 0.7s,
+	// but about 12s under -race, and a race run beside other packages starved
+	// it past a 30s budget (code_agent_timeout, "waited 0s").
+	prov := codejs.New(codejs.Config{CodeRoot: codeRoot, RunTimeout: codejs.DefaultRunTimeout})
 
 	return loop.Run(ctx, loop.RunOptions{
 		Provider:   prov,
