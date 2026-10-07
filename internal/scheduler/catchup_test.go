@@ -112,11 +112,16 @@ func TestCatchUp_ForbidDrainsTheKeptSlotsOneAtATime(t *testing.T) {
 		t.Fatalf("the waiting slot moved: next=%v status=%q, want still %v and not skipped", got.NextRunAt, got.LastStatus, slots[8])
 	}
 	release()
+	sched.tick(ctx) // the second kept slot starts
+	// The last kept slot is now the only one still due, and the second run
+	// is still going. It must still be a catch-up slot, so it waits for —
+	// rather than is skipped by — forbid.
 	sched.tick(ctx)
+	if got := runState(t, st, defID); !got.NextRunAt.Equal(slots[9]) || got.LastStatus == "skipped_overlap" {
+		t.Fatalf("the last kept slot: next=%v status=%q, want it waiting at %v, not skipped", got.NextRunAt, got.LastStatus, slots[9])
+	}
 	release()
-	// The last kept slot is the only one still due now; it must still be a
-	// catch-up slot, so it waits for — rather than is skipped by — forbid.
-	sched.tick(ctx)
+	sched.tick(ctx) // the last kept slot starts
 	release()
 	sched.tick(ctx) // nothing left due
 
@@ -190,4 +195,28 @@ func TestCatchUp_AllowStartsKeptSlotsAtOnceUnderTheLimit(t *testing.T) {
 	sr.gate <- struct{}{}
 	sr.gate <- struct{}{}
 	sched.runs.Wait()
+}
+
+// A gap longer than the scan bound cannot stall a claim — every overdue
+// schedule is scanned, and a tick fires many at once. It collapses into one
+// live fire whatever catch_up_max says (the newest slots past the bound are
+// unknowable without the scan), and the cadence resumes from now.
+func TestCatchUp_AGapPastTheScanBoundCollapsesAndResumesTheCadence(t *testing.T) {
+	sched := New(Config{}, nil, nil, nil, nil, nil)
+	def := scheduleDef{Schedule: "* * * * *", CatchUpMax: 5}
+	now := time.Now()
+	start := time.Now()
+	plan, err := sched.planSlot(def, store.ScheduleDueRow{NextRunAt: now.Add(-3 * 365 * 24 * time.Hour).Truncate(time.Minute)}, now, 5)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if took := time.Since(start); took > 2*time.Second {
+		t.Errorf("planning took %v", took)
+	}
+	if plan.dropped != maxSlotScan || plan.catchUp() {
+		t.Errorf("dropped=%d catchUp=%v, want one live fire with %d counted as dropped", plan.dropped, plan.catchUp(), maxSlotScan)
+	}
+	if !plan.next.After(now) {
+		t.Errorf("next = %v, want the cadence resumed after now", plan.next)
+	}
 }

@@ -28,10 +28,15 @@ import (
 // maxCatchUpCeiling bounds catch_up_max at write time.
 const maxCatchUpCeiling = 1000
 
-// maxSlotScan bounds how many slots one claim counts. An every-minute cron
-// over a 30-day outage is 43,200; past the bound the count stops and the
-// claim moves on from now, so a years-long gap cannot stall a tick.
-const maxSlotScan = 1_000_000
+// maxSlotScan bounds how many slots one claim counts, and so the CPU an
+// overdue schedule can cost a tick: every overdue schedule is scanned, at
+// any catch_up_max, and a tick fires many at once. An every-minute cron over
+// a 30-day outage is 43,200 slots; the bound is about 70 days of those, or 11
+// years of hourly ones. A longer gap collapses into one fire whatever
+// catch_up_max says: a cron cannot be walked backwards from now, so the
+// newest slots past the bound are unknowable without the scan the bound
+// exists to avoid.
+const maxSlotScan = 100_000
 
 // slotPlan is what one claim takes and where it leaves next_run_at.
 type slotPlan struct {
@@ -80,11 +85,13 @@ func (s *Scheduler) planSlot(def scheduleDef, row store.ScheduleDueRow, now time
 		total++
 		t = sched.Next(t.In(loc))
 	}
-	future := t
-	if !future.After(now) {
-		// The scan stopped at its bound: resume the cadence from now.
-		future = sched.Next(now.In(loc))
+	if !t.After(now) {
+		// The scan stopped at its bound: collapse the gap into one live fire
+		// (for the listed slot, which identifies it) and resume the cadence
+		// from now. dropped is a lower bound.
+		return slotPlan{slot: row.NextRunAt, next: sched.Next(now.In(loc)), dropped: total}, nil
 	}
+	future := t
 	if total == 0 {
 		// Not due after all (a clock step between listing and now).
 		return slotPlan{slot: row.NextRunAt, next: future}, nil
