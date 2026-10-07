@@ -46,12 +46,17 @@ func teamTick(maxFires int) scheduleDef {
 }
 
 // A team tick starts one walk — carrying the def's team, literal vars, input
-// and identity — and no agent run. From the schedule's side it is a fire like
-// any other: it records the walk's run id, advances, and counts.
+// and identity, and its slot's key — and no agent run. From the schedule's
+// side it is a fire like any other: it advances and counts, and the schedule
+// reads running with the walk's run until the walk is finished.
 func TestScheduler_TeamDeliveryStartsAWalkWithTheDefsVarsAndIdentity(t *testing.T) {
 	sched, fr, _, defID, st := schedulerFixture(t, teamTick(0), time.Now().Add(-1*time.Minute))
 	teams := &fakeTeams{}
 	sched.SetTeamWalkStarter(teams)
+	listed, err := st.ScheduleRunStateGet(context.Background(), defID)
+	if err != nil {
+		t.Fatalf("state: %v", err)
+	}
 
 	fireT(t, sched)
 
@@ -70,15 +75,18 @@ func TestScheduler_TeamDeliveryStartsAWalkWithTheDefsVarsAndIdentity(t *testing.
 		t.Errorf("walk identity = tenant %q user %q restricted=%v isolated=%v, want the def's own",
 			got.TenantID, got.UserID, got.OperatorKeyRestricted, got.Isolated)
 	}
-	if got.IdempotencyKey != "" || got.DeliveryAltKey != "" {
-		t.Errorf("a tick carries delivery keys %q / %q; it has no delivery to dedup", got.IdempotencyKey, got.DeliveryAltKey)
+	if want := slotRunKey(defID, listed.NextRunAt); got.IdempotencyKey != want || got.DeliveryAltKey != "" {
+		t.Errorf("a tick carries keys %q / %q, want its slot's key %q and no alternate", got.IdempotencyKey, got.DeliveryAltKey, want)
 	}
 	state, err := st.ScheduleRunStateGet(context.Background(), defID)
 	if err != nil {
 		t.Fatalf("state: %v", err)
 	}
-	if state.LastStatus != "completed" || state.LastRunID != "r_walk" || state.FireCount != 1 {
-		t.Errorf("state = status %q run %q fire_count %d, want completed / r_walk / 1", state.LastStatus, state.LastRunID, state.FireCount)
+	if state.LastStatus != "running" || state.LastRunID != "r_walk" || state.FireCount != 1 {
+		t.Errorf("state = status %q run %q fire_count %d, want running / r_walk / 1", state.LastStatus, state.LastRunID, state.FireCount)
+	}
+	if active, _ := st.ScheduleActiveRunsList(context.Background(), defID); len(active) != 1 || active[0].RunID != "r_walk" {
+		t.Errorf("active runs = %+v, want the walk's run tracked", active)
 	}
 	if state.NextRunAt.Before(time.Now()) {
 		t.Errorf("next_run_at = %v, expected the future", state.NextRunAt)

@@ -154,16 +154,41 @@ func fanoutScope(def scheduleDef) (store.MemoryScope, error) {
 	}
 }
 
+// startConsolidationFanout runs the sweep in its own goroutine, so a long
+// sweep never holds up the tick. One sweep per def at a time on this replica:
+// a slot that arrives while the def's previous sweep still runs is skipped,
+// as a sweep running on another replica (the fan-out lock) is.
+func (s *Scheduler) startConsolidationFanout(ctx context.Context, row store.ScheduleDueRow, def scheduleDef, now time.Time) {
+	if _, running := s.fanoutRunning.LoadOrStore(row.DefID, struct{}{}); running {
+		s.logf("scheduler: consolidation fan-out %q: its previous sweep is still running — skipping this slot", row.Name)
+		s.recordSkip(ctx, row.DefID, "skipped", now)
+		return
+	}
+	s.sweeps.Add(1)
+	go func() {
+		defer s.sweeps.Done()
+		defer s.fanoutRunning.Delete(row.DefID)
+		defer func() {
+			if r := recover(); r != nil {
+				s.logf("scheduler: PANIC in consolidation fan-out (def_id=%s): %v", row.DefID, r)
+				s.recordFireFailure(context.WithoutCancel(ctx), row.DefID, "", "failed", fmt.Errorf("panic in consolidation fan-out"), now)
+			}
+		}()
+		s.fireConsolidationFanout(ctx, row, def, now)
+	}()
+}
+
 // fireConsolidationFanout is fireOne's per-target twin. It enumerates the
 // targets with new work, dispatches one child run each, and records ONE result
 // for the schedule — so the schedule's next_run_at and fire count behave
 // exactly as they do for a single-run fire. on_complete hooks fire per tenant
 // the runs executed in (see dispatchFanoutHooks).
 //
-// The whole batch shares fireOne's per-fire budget (cfg.FireTimeout), so a
-// consolidation schedule never consumes more wall-clock than any other fire and
-// can never wedge the tick. Targets left undispatched when the budget runs out
-// are picked up next tick — the per-target watermark makes that resumable.
+// The whole batch shares one sweep budget (cfg.fanoutSweepBudget, a fixed 10
+// minutes), so a consolidation sweep is bounded. It runs off the tick
+// (startConsolidationFanout), so it never delays another schedule. Targets
+// left undispatched when the budget runs out are picked up next sweep — the
+// per-target watermark makes that resumable.
 //
 // That resumability is only fair if the order changes and no one target can
 // spend the whole budget: a cut pass does not advance its watermark, so it is
@@ -196,9 +221,9 @@ func (s *Scheduler) fireConsolidationFanout(ctx context.Context, row store.Sched
 	s.logf("scheduler: schedule %q (def %s) carries the consolidation fan-out marker — dispatching up to %d run(s) per tick %s, each under a discovered user's identity; retire the def if you did not author this",
 		row.Name, row.DefID, s.cfg.MaxConsolidationTargets, reach)
 
-	// The cause is how a pass tells "the fire budget ran out" from "my own
+	// The cause is how a pass tells "the sweep budget ran out" from "my own
 	// slice of it ran out" (see notePassBudget).
-	batchCtx, cancel := context.WithTimeoutCause(ctx, s.cfg.FireTimeout, errBatchBudgetCut)
+	batchCtx, cancel := context.WithTimeoutCause(ctx, s.cfg.fanoutSweepBudget, errBatchBudgetCut)
 	defer cancel()
 
 	// Cluster singleton: without this every replica would dispatch a full
@@ -325,7 +350,7 @@ func (s *Scheduler) dispatchConsolidationTargets(ctx context.Context, row store.
 	} else if reason != "" {
 		s.logf("scheduler: consolidation fan-out %q running up to %d-wide over %d target(s): %s", row.Name, concurrency, len(targets), reason)
 	}
-	perTarget := targetBudget(s.cfg.FireTimeout, len(targets))
+	perTarget := targetBudget(s.cfg.fanoutSweepBudget, len(targets))
 
 	var (
 		mu        sync.Mutex
@@ -422,7 +447,7 @@ func (s *Scheduler) dispatchConsolidationTargets(ctx context.Context, row store.
 
 	if skipped > 0 {
 		s.logf("scheduler: consolidation fan-out %q ran out of its %s budget — %d target(s) not dispatched this tick",
-			row.Name, s.cfg.FireTimeout, skipped)
+			row.Name, s.cfg.fanoutSweepBudget, skipped)
 	}
 	if stoppedPaused > 0 {
 		s.logf("scheduler: consolidation fan-out %q stopped: the runtime paused mid-sweep — %d target(s) not dispatched this tick, and this tick does not count toward max_fires",
@@ -817,7 +842,7 @@ func (s *Scheduler) nextFanoutRotation(defID string) int {
 }
 
 // fanoutBudgetSlices is the most ways a fan-out fire's budget is split. Each
-// pass may spend at most FireTimeout / min(targets, fanoutBudgetSlices) — the
+// pass may spend at most the sweep budget / min(targets, fanoutBudgetSlices) — the
 // whole budget for one target, half for two, a quarter from four up.
 //
 // Why a fixed fraction and not an even share per target: a consolidation pass
@@ -923,7 +948,7 @@ func (s *Scheduler) notePassBudget(row store.ScheduleDueRow, target consolidatio
 	case !wasEscalated && errors.Is(cause, errPassBudgetCut):
 		if s.setEscalated(row.DefID, target, true) {
 			s.logf("scheduler: consolidation fan-out %q target (tenant=%q user=%q): pass cut by its %s share of the %s fire budget before it finished — it goes first next tick with the whole remaining budget",
-				row.Name, target.TenantID, target.UserID, slice, s.cfg.FireTimeout)
+				row.Name, target.TenantID, target.UserID, slice, s.cfg.fanoutSweepBudget)
 		}
 	case wasEscalated && runErr == nil && cause == nil:
 		if s.setEscalated(row.DefID, target, false) {
@@ -932,8 +957,8 @@ func (s *Scheduler) notePassBudget(row store.ScheduleDueRow, target consolidatio
 		}
 	case wasEscalated && errors.Is(cause, errBatchBudgetCut):
 		if s.setEscalated(row.DefID, target, false) {
-			s.logf("scheduler: consolidation fan-out %q target (tenant=%q user=%q): pass did not finish even with the whole %s fire budget — dropping it back to normal budgeting so it cannot hold every tick; raise LOOMCYCLE_SCHEDULER_FIRE_TIMEOUT_SECONDS if its passes need longer",
-				row.Name, target.TenantID, target.UserID, s.cfg.FireTimeout)
+			s.logf("scheduler: consolidation fan-out %q target (tenant=%q user=%q): pass did not finish even with the whole %s sweep budget — dropping it back to normal budgeting so it cannot hold every sweep",
+				row.Name, target.TenantID, target.UserID, s.cfg.fanoutSweepBudget)
 		}
 	}
 }

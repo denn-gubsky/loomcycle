@@ -87,15 +87,17 @@ func TestScheduleDef_ADueTeamScheduleStartsADetachedWalkInItsTenantWithItsVars(t
 
 	h.sweep()
 
+	// The schedule reads running while the walk runs, then records how the
+	// walk ended once the sweeper's reconcile finds its run finished.
 	var state store.ScheduleRunStateRow
-	waitFor(t, "the schedule to record its fire", func() bool {
+	waitFor(t, "the schedule to record how its walk ended", func() bool {
 		got, err := h.st.ScheduleRunStateGet(context.Background(), defID)
 		state = got
-		return err == nil && got.LastStatus != ""
+		return err == nil && got.LastStatus != "" && got.LastStatus != "running"
 	})
-	if state.LastStatus != "completed" || state.LastRunID == "" || state.FireCount != 1 {
-		t.Fatalf("state = status %q run %q fire_count %d (%s), want completed with the walk's run id and one fire",
-			state.LastStatus, state.LastRunID, state.FireCount, state.LastError)
+	if state.LastStatus != "completed" || state.LastRunID == "" || state.FireCount != 1 || state.FinishedAt.IsZero() {
+		t.Fatalf("state = status %q run %q fire_count %d finished_at %v (%s), want completed with the walk's run id, one fire and a finish time",
+			state.LastStatus, state.LastRunID, state.FireCount, state.FinishedAt, state.LastError)
 	}
 	run := h.finished(state.LastRunID)
 	if run.Status != store.RunCompleted || run.Agent != "team:weekly-report" {

@@ -4429,12 +4429,6 @@ type Env struct {
 	// LOOMCYCLE_SCHEDULER_TICK_SECONDS.
 	SchedulerTickSeconds int
 
-	// SchedulerFireTimeoutSeconds is the per-fire run timeout cap.
-	// Default 600 (10 minutes). The runner's ctx-cancellation
-	// cascades into provider + tool calls so timeout cleanly
-	// aborts. Env: LOOMCYCLE_SCHEDULER_FIRE_TIMEOUT_SECONDS.
-	SchedulerFireTimeoutSeconds int
-
 	// MaxConsolidationTargets bounds how many memory-consolidation targets ONE
 	// fan-out tick dispatches (RFC BL P2). 0 → the scheduler default (32). The
 	// per-target watermark makes the fan-out resumable, so the cap defers work to
@@ -5420,12 +5414,6 @@ func LoadLayers(layers ...Layer) (*Config, error) {
 	if v := os.Getenv("LOOMCYCLE_TEAM_SUBSCRIPTIONS_TICK_SECONDS"); v != "" {
 		if n, err := strconv.Atoi(v); err == nil && n > 0 {
 			cfg.Env.TeamSubscriptionsTickSeconds = n
-		}
-	}
-	cfg.Env.SchedulerFireTimeoutSeconds = 600
-	if v := os.Getenv("LOOMCYCLE_SCHEDULER_FIRE_TIMEOUT_SECONDS"); v != "" {
-		if n, err := strconv.Atoi(v); err == nil && n > 0 {
-			cfg.Env.SchedulerFireTimeoutSeconds = n
 		}
 	}
 	// RFC BL P2 consolidation fan-out caps. Left at 0 the scheduler applies its
@@ -7240,7 +7228,7 @@ func validateScheduleDelivery(name string, sr ScheduledRun) error {
 			return fmt.Errorf("scheduled_runs.%s: delivery=team forbids `prompt` (nothing reads it — the walk starts with `input`, and its prompts read `vars`)", name)
 		}
 		if len(sr.OnComplete) > 0 {
-			return fmt.Errorf("scheduled_runs.%s: delivery=team forbids `on_complete` (the tick ends when the walk STARTS — put what follows the walk in the team's own hooks)", name)
+			return fmt.Errorf("scheduled_runs.%s: delivery=team forbids `on_complete` (a team schedule dispatches no hooks — put what follows the walk in the team's own hooks)", name)
 		}
 		if len(sr.RequiredCredentials) > 0 || len(sr.UserCredentialsFromEnv) > 0 {
 			return fmt.Errorf("scheduled_runs.%s: delivery=team forbids credentials (they are handed to one agent run, and a walk's members resolve their own)", name)

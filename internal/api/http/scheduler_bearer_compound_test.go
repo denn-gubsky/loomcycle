@@ -243,7 +243,6 @@ func TestSchedulerBearerCompound(t *testing.T) {
 	// cap so all due rows in each phase enter the queue rapidly.
 	sched := scheduler.New(scheduler.Config{
 		TickInterval:       100 * time.Millisecond,
-		FireTimeout:        2 * time.Minute,
 		MaxConcurrentFires: 64,
 	}, st, srv, pauseMgr, nil, t.Logf)
 

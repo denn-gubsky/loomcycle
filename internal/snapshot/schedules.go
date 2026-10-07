@@ -72,6 +72,20 @@ func captureSchedules(ctx context.Context, s store.Store, defs *ScheduleDefsSect
 	for _, st := range states {
 		stateByDef[st.DefID] = st
 	}
+	actives, err := s.SnapshotReadScheduleActiveRuns(ctx)
+	if err != nil {
+		return fmt.Errorf("snapshot schedule_active_runs: %w", err)
+	}
+	activeByDef := make(map[string][]ScheduleActiveRunEntry)
+	for _, a := range actives {
+		activeByDef[a.DefID] = append(activeByDef[a.DefID], ScheduleActiveRunEntry{
+			RunID:     a.RunID,
+			SlotAt:    a.SlotAt.UTC(),
+			CatchUp:   a.CatchUp,
+			StartedAt: a.StartedAt.UTC(),
+			ClaimedBy: a.ClaimedBy,
+		})
+	}
 	defs.Entries = make([]ScheduleDefEntry, 0, len(rows))
 	for _, r := range rows {
 		body, stripped, err := stripTriggerCredentials(r.Definition)
@@ -97,6 +111,7 @@ func captureSchedules(ctx context.Context, s store.Store, defs *ScheduleDefsSect
 		if st, ok := stateByDef[r.DefID]; ok {
 			entry.RunState = runStateEntry(st)
 		}
+		entry.ActiveRuns = activeByDef[r.DefID]
 		defs.Entries = append(defs.Entries, entry)
 	}
 
@@ -341,6 +356,20 @@ func restoreScheduleDefs(ctx context.Context, s store.Store, sec *ScheduleDefsSe
 					"%s: restored DISABLED because its literal user_credentials were not carried (keys: %s); "+
 						"re-enable it with a ScheduleDef fork that supplies every one of them and enabled: true — the fork keeps the fire count",
 					where, strings.Join(e.StrippedCredentials, ", ")))
+			}
+		}
+		// Its unfinished runs, so the target finishes them when they end.
+		// Insert-or-ignore: a live row on the run stands.
+		for _, a := range e.ActiveRuns {
+			if _, err := s.SnapshotRestoreScheduleActiveRun(ctx, store.ScheduleActiveRun{
+				DefID:     e.DefID,
+				RunID:     a.RunID,
+				SlotAt:    a.SlotAt,
+				CatchUp:   a.CatchUp,
+				StartedAt: a.StartedAt,
+				ClaimedBy: a.ClaimedBy,
+			}); err != nil {
+				result.Warnings = append(result.Warnings, fmt.Sprintf("%s active run %s: %v", where, a.RunID, err))
 			}
 		}
 		if e.RunState == nil {

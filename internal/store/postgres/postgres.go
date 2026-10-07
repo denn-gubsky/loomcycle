@@ -9156,18 +9156,18 @@ func (s *Store) ScheduleRunStateSeed(ctx context.Context, defID string, nextRunA
 
 // scheduleRunStateColumns is every schedule_run_state column, in the order
 // scanScheduleRunState reads them.
-const scheduleRunStateColumns = `def_id, last_run_at, last_run_id, last_status, last_error, next_run_at, paused_until, fire_count, slot_at, claimed_by, claimed_at`
+const scheduleRunStateColumns = `def_id, last_run_at, last_run_id, last_status, last_error, next_run_at, paused_until, fire_count, slot_at, claimed_by, claimed_at, finished_at`
 
 // scanScheduleRunState reads one row selected as scheduleRunStateColumns.
 func scanScheduleRunState(scan func(dest ...any) error) (store.ScheduleRunStateRow, error) {
 	var (
 		out                                  store.ScheduleRunStateRow
 		lastRunAt, pausedUntil               *time.Time
-		slotAt, claimedAt                    *time.Time
+		slotAt, claimedAt, finishedAt        *time.Time
 		lastRunID, lastStatus, lastError, by *string
 	)
 	if err := scan(&out.DefID, &lastRunAt, &lastRunID, &lastStatus, &lastError, &out.NextRunAt, &pausedUntil, &out.FireCount,
-		&slotAt, &by, &claimedAt); err != nil {
+		&slotAt, &by, &claimedAt, &finishedAt); err != nil {
 		return store.ScheduleRunStateRow{}, err
 	}
 	deref := func(t *time.Time) time.Time {
@@ -9190,6 +9190,7 @@ func scanScheduleRunState(scan func(dest ...any) error) (store.ScheduleRunStateR
 	out.SlotAt = deref(slotAt)
 	out.ClaimedBy = str(by)
 	out.ClaimedAt = deref(claimedAt)
+	out.FinishedAt = deref(finishedAt)
 	return out, nil
 }
 
@@ -9274,6 +9275,142 @@ func (s *Store) ScheduleRunStateRecordResult(ctx context.Context, in store.Sched
 		return &store.ErrNotFound{Kind: "schedule_run_state", ID: in.DefID}
 	}
 	return nil
+}
+
+func (s *Store) ScheduleActiveRunStart(ctx context.Context, in store.ScheduleActiveRun) error {
+	if in.DefID == "" || in.RunID == "" {
+		return fmt.Errorf("schedule active run start: def_id and run_id required")
+	}
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("schedule active run start: begin: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	if _, err := tx.Exec(ctx,
+		`INSERT INTO schedule_active_runs (run_id, def_id, slot_at, catch_up, started_at, claimed_by)
+		 VALUES ($1, $2, $3, $4, $5, $6)`,
+		in.RunID, in.DefID, in.SlotAt, in.CatchUp, in.StartedAt, nullIfEmpty(in.ClaimedBy),
+	); err != nil {
+		return fmt.Errorf("schedule active run start: insert: %w", err)
+	}
+	tag, err := tx.Exec(ctx,
+		`UPDATE schedule_run_state SET
+			last_status = 'running', last_run_id = $1, last_run_at = $2, last_error = NULL,
+			fire_count = fire_count + 1
+		 WHERE def_id = $3`,
+		in.RunID, in.StartedAt, in.DefID,
+	)
+	if err != nil {
+		return fmt.Errorf("schedule active run start: state: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return &store.ErrNotFound{Kind: "schedule_run_state", ID: in.DefID}
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("schedule active run start: commit: %w", err)
+	}
+	return nil
+}
+
+func (s *Store) ScheduleActiveRunFinish(ctx context.Context, in store.ScheduleRunFinish) (bool, error) {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return false, fmt.Errorf("schedule active run finish: begin: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	tag, err := tx.Exec(ctx, `DELETE FROM schedule_active_runs WHERE run_id = $1`, in.RunID)
+	if err != nil {
+		return false, fmt.Errorf("schedule active run finish: delete: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		// Someone else finished it.
+		return false, nil
+	}
+	// The def's state row may be gone (the def was deleted while its run
+	// ran); the run is still finished.
+	if _, err := tx.Exec(ctx,
+		`UPDATE schedule_run_state SET
+			last_status = $1, last_error = $2, last_run_id = $3, finished_at = $4
+		 WHERE def_id = $5`,
+		in.Status, nullIfEmpty(in.Error), in.RunID, in.FinishedAt, in.DefID,
+	); err != nil {
+		return false, fmt.Errorf("schedule active run finish: state: %w", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return false, fmt.Errorf("schedule active run finish: commit: %w", err)
+	}
+	return true, nil
+}
+
+// scheduleActiveRunColumns is every schedule_active_runs column, in the order
+// scanScheduleActiveRun reads them.
+const scheduleActiveRunColumns = `a.def_id, a.run_id, a.slot_at, a.catch_up, a.started_at, a.claimed_by`
+
+func scanScheduleActiveRun(scan func(dest ...any) error, extra ...any) (store.ScheduleActiveRun, error) {
+	var (
+		out store.ScheduleActiveRun
+		by  *string
+	)
+	dest := append([]any{&out.DefID, &out.RunID, &out.SlotAt, &out.CatchUp, &out.StartedAt, &by}, extra...)
+	if err := scan(dest...); err != nil {
+		return store.ScheduleActiveRun{}, err
+	}
+	if by != nil {
+		out.ClaimedBy = *by
+	}
+	return out, nil
+}
+
+func (s *Store) ScheduleActiveRunsList(ctx context.Context, defID string) ([]store.ScheduleActiveRun, error) {
+	rows, err := s.pool.Query(ctx,
+		`SELECT `+scheduleActiveRunColumns+` FROM schedule_active_runs a
+		 WHERE a.def_id = $1 ORDER BY a.started_at ASC, a.run_id ASC`, defID)
+	if err != nil {
+		return nil, fmt.Errorf("schedule active runs list: %w", err)
+	}
+	defer rows.Close()
+	var out []store.ScheduleActiveRun
+	for rows.Next() {
+		r, err := scanScheduleActiveRun(rows.Scan)
+		if err != nil {
+			return nil, fmt.Errorf("scan schedule_active_runs: %w", err)
+		}
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
+func (s *Store) ScheduleActiveRunsListEnded(ctx context.Context, limit int) ([]store.ScheduleActiveRunEnded, error) {
+	if limit <= 0 {
+		limit = 100
+	}
+	n := len(store.TerminalRunStatuses)
+	args := append(store.TerminalRunStatusArgs(), limit)
+	rows, err := s.pool.Query(ctx,
+		`SELECT `+scheduleActiveRunColumns+`, r.id IS NOT NULL, COALESCE(r.status, ''), COALESCE(r.error, ''), COALESCE(r.agent_id, '')
+		 FROM schedule_active_runs a LEFT JOIN runs r ON r.id = a.run_id
+		 WHERE r.id IS NULL OR r.status IN (`+pgPlaceholders(1, n)+`)
+		 ORDER BY a.started_at ASC, a.run_id ASC
+		 LIMIT $`+strconv.Itoa(n+1), args...)
+	if err != nil {
+		return nil, fmt.Errorf("schedule active runs list ended: %w", err)
+	}
+	defer rows.Close()
+	var out []store.ScheduleActiveRunEnded
+	for rows.Next() {
+		var (
+			e      store.ScheduleActiveRunEnded
+			status string
+		)
+		r, err := scanScheduleActiveRun(rows.Scan, &e.RunFound, &status, &e.RunError, &e.AgentID)
+		if err != nil {
+			return nil, fmt.Errorf("scan schedule_active_runs ended: %w", err)
+		}
+		e.ScheduleActiveRun = r
+		e.RunStatus = store.RunStatus(status)
+		out = append(out, e)
+	}
+	return out, rows.Err()
 }
 
 func (s *Store) ScheduleRunStatePause(ctx context.Context, defID string, until time.Time) error {
@@ -9423,6 +9560,43 @@ func (s *Store) SnapshotRestoreScheduleDefActive(ctx context.Context, e store.Sc
 	return tag.RowsAffected() > 0, nil
 }
 
+// SnapshotReadScheduleActiveRuns returns every tracked scheduled run.
+func (s *Store) SnapshotReadScheduleActiveRuns(ctx context.Context) ([]store.ScheduleActiveRun, error) {
+	rows, err := s.pool.Query(ctx,
+		`SELECT `+scheduleActiveRunColumns+` FROM schedule_active_runs a ORDER BY a.def_id ASC, a.started_at ASC, a.run_id ASC`)
+	if err != nil {
+		return nil, fmt.Errorf("snapshot read schedule_active_runs: %w", err)
+	}
+	defer rows.Close()
+	var out []store.ScheduleActiveRun
+	for rows.Next() {
+		r, err := scanScheduleActiveRun(rows.Scan)
+		if err != nil {
+			return nil, fmt.Errorf("scan schedule_active_runs: %w", err)
+		}
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
+// SnapshotRestoreScheduleActiveRun inserts one tracked run; a live row on
+// run_id stands.
+func (s *Store) SnapshotRestoreScheduleActiveRun(ctx context.Context, r store.ScheduleActiveRun) (bool, error) {
+	if r.DefID == "" || r.RunID == "" {
+		return false, fmt.Errorf("snapshot restore schedule_active_runs: def_id and run_id required")
+	}
+	tag, err := s.pool.Exec(ctx,
+		`INSERT INTO schedule_active_runs (run_id, def_id, slot_at, catch_up, started_at, claimed_by)
+		 VALUES ($1, $2, $3, $4, $5, $6)
+		 ON CONFLICT (run_id) DO NOTHING`,
+		r.RunID, r.DefID, r.SlotAt, r.CatchUp, r.StartedAt, nullIfEmpty(r.ClaimedBy),
+	)
+	if err != nil {
+		return false, fmt.Errorf("snapshot restore schedule_active_runs: %w", err)
+	}
+	return tag.RowsAffected() > 0, nil
+}
+
 // SnapshotRestoreScheduleRunState inserts one run-state row, every column; a
 // live row on def_id stands.
 func (s *Store) SnapshotRestoreScheduleRunState(ctx context.Context, r store.ScheduleRunStateRow) (bool, error) {
@@ -9440,11 +9614,11 @@ func (s *Store) SnapshotRestoreScheduleRunState(ctx context.Context, r store.Sch
 	}
 	tag, err := s.pool.Exec(ctx,
 		`INSERT INTO schedule_run_state(`+scheduleRunStateColumns+`)
-		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
 		 ON CONFLICT (def_id) DO NOTHING`,
 		r.DefID, ts(r.LastRunAt), nullIfEmpty(r.LastRunID), nullIfEmpty(r.LastStatus), nullIfEmpty(r.LastError),
 		r.NextRunAt, ts(r.PausedUntil), r.FireCount,
-		ts(r.SlotAt), nullIfEmpty(r.ClaimedBy), ts(r.ClaimedAt),
+		ts(r.SlotAt), nullIfEmpty(r.ClaimedBy), ts(r.ClaimedAt), ts(r.FinishedAt),
 	)
 	if err != nil {
 		return false, fmt.Errorf("snapshot restore schedule_run_state: %w", err)

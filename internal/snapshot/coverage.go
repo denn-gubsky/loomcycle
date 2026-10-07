@@ -128,6 +128,8 @@ var tableCoverageMap = map[string]tableCoverage{
 	// A restored schedule's run state rides inside its def's entry, so a fire
 	// count never travels without its def. The scheduler re-queries the store
 	// every tick; it caches nothing a restore must refresh.
+	"schedule_active_runs": {Kind: coverSection, Section: "schedule_defs", Secrets: "none", Backends: onBoth,
+		Reason: "travels as the active_runs of its def's entry; the reconciler reads it from the store each tick"},
 	"schedule_def_active": {Kind: coverSection, Section: "schedule_def_active", Secrets: "none", Backends: onBoth},
 	"schedule_defs": {Kind: coverSection, Section: "schedule_defs", Backends: onBoth,
 		Secrets: "stripped: literal user_credentials values (keys kept as stripped_credentials; the def travels with enabled:false)"},

@@ -67,6 +67,7 @@ func TestScheduler_OnCompleteHookUsesSurvivalCtx(t *testing.T) {
 		t.Fatalf("run state: %v", err)
 	}
 	sched.fireOne(ctx, store.ScheduleDueRow{DefID: defID, Name: "sched-test", Definition: defJSON, NextRunAt: state.NextRunAt}, time.Now())
+	sched.runs.Wait()
 
 	if got := peekScopeCount(t, st, "ctx-survival", store.MemoryScopeGlobal, ""); got != 1 {
 		t.Errorf("on_complete publish landed %d messages, want 1 (hook must use the survival ctx)", got)

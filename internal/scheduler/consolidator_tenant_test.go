@@ -319,7 +319,7 @@ func fanoutFixtureRow(t *testing.T, def scheduleDef, owner string, bootstrapped 
 		t.Fatalf("seed state: %v", err)
 	}
 	fr := &fakeRunner{}
-	sched := New(Config{TickInterval: 10 * time.Millisecond, FireTimeout: 5 * time.Second}, st, fr, nil, &fakeMCP{}, t.Logf)
+	sched := New(Config{TickInterval: 10 * time.Millisecond}, st, fr, nil, &fakeMCP{}, t.Logf)
 	sched.SetChannelWriter(&channels.StorePublisher{Store: st})
 	sched.SetProviderResolver(stubProviderResolver{provider: "anthropic"})
 	return sched, fr, st

@@ -205,8 +205,10 @@ var pinnedEntryKeys = map[string][]string{
 	// credential value, nor one that re-projects the body through a struct.
 	"ScheduleDefEntry": {"def_id", "tenant_id", "name", "version", "parent_def_id", "definition", "description",
 		"created_at", "created_by_agent_id", "created_by_run_id", "retired", "bootstrapped_from_static",
-		"stripped_credentials", "run_state"},
-	"ScheduleRunStateEntry":  {"next_run_at", "last_run_at", "last_run_id", "last_status", "last_error", "paused_until", "fire_count"},
+		"stripped_credentials", "run_state", "active_runs"},
+	"ScheduleRunStateEntry": {"next_run_at", "last_run_at", "last_run_id", "last_status", "last_error", "paused_until", "fire_count"},
+	// A run id, its slot and start instants, and a replica name — no secret.
+	"ScheduleActiveRunEntry": {"run_id", "slot_at", "catch_up", "started_at", "claimed_by"},
 	"ScheduleDefActiveEntry": {"name", "tenant_id", "def_id", "promoted_at", "promoted_by_agent_id"},
 
 	"MemoryEntry": {"tenant_id", "scope", "scope_id", "key", "value", "expires_at", "created_at", "updated_at",

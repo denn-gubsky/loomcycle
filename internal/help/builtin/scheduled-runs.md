@@ -99,11 +99,12 @@ scheduled_runs:
 Through the tool:
 `{"op": "create", "name": "weekly-report", "overlay": {"schedule": "0 6 * * 1", "delivery": "team", "team": "weekly-report", "vars": {"repo": "loomcycle"}}}`.
 
-- **The tick starts the walk and is done.** It is the same start as
-  `TeamDef op=run mode=detach`: the walk gets its own run and carries on in
-  the background. The schedule's `last_status: completed` means the walk
-  STARTED, and `last_run_id` is the walk's run id — read the walk's outcome
-  there. The fire timeout does not apply to the walk.
+- **The tick starts the walk, and the schedule follows it to its end.** It
+  is the same start as `TeamDef op=run mode=detach`: the walk gets its own
+  run and carries on in the background. While it runs the schedule reads
+  `last_status: running` with `last_run_id` the walk's run id; when it ends,
+  the schedule records how (`completed`, `failed`, `cancelled`). No time
+  limit applies to the walk.
 - **`vars`** are name → literal text for variables the team declares, under
   the rules a value given to `op=run` follows (never expanded; no `{{` or
   `}}`; at most 4096 bytes). `input` is the walk's input; omit it for none.
@@ -144,6 +145,10 @@ scheduled_runs:
 - `0` (default) = fire indefinitely until retired — unchanged behavior.
 - `1` = one-shot (pair with a near-future cron for "run once soon").
 - `N > 1` = a finite run of N fires.
+
+A run counts when it starts, and the def is retired when that run
+finishes — not while it is still running; a slot that comes due while the
+last run is still going starts nothing.
 
 Fires of **any** status count (completed / failed / backpressure-skipped)
 so a wedged schedule still retires; catch-up fires after a pause count
@@ -293,8 +298,8 @@ pass in its user's own tenant, so its hooks fire once per tenant whose
 passes all completed, in that tenant, naming that tenant's run — as one
 schedule per tenant would. See `memory-consolidation`.
 
-A `delivery: team` tick has no `on_complete`: the tick ends when the walk
-starts. See "`delivery: team`" above.
+A `delivery: team` tick has no `on_complete`: put what follows the walk in
+the team's own hooks. See "`delivery: team`" above.
 
 A `delivery: channel` tick starts no run, so it lands in the schedule's
 own tenant. On a `scope: global` channel a schedule with no `tenant_id`

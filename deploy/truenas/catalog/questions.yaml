@@ -753,12 +753,6 @@ questions:
             schema:
               type: string
               default: ""
-          - variable: LOOMCYCLE_SCHEDULER_FIRE_TIMEOUT_SECONDS
-            label: LOOMCYCLE_SCHEDULER_FIRE_TIMEOUT_SECONDS
-            description: '(example: 300)'
-            schema:
-              type: string
-              default: ""
           - variable: LOOMCYCLE_A2A_ENABLED
             label: LOOMCYCLE_A2A_ENABLED
             description: 'Inbound A2A server + outbound client. Off by default. The signing key is a SECRET → .env.local (LOOMCYCLE_A2A_SIGNING_KEY). (example: 1)'

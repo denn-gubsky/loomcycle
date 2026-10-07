@@ -3005,7 +3005,6 @@ func main() {
 		envAllowlist := cfg.SchedulerCredentialEnvAllowlist()
 		schedCfg := scheduler.Config{
 			TickInterval: time.Duration(cfg.Env.SchedulerTickSeconds) * time.Second,
-			FireTimeout:  time.Duration(cfg.Env.SchedulerFireTimeoutSeconds) * time.Second,
 			EnvAllowlist: envAllowlist,
 			// RFC BL P2 consolidation fan-out caps. Zero here means "use the
 			// scheduler's documented defaults" (Config.defaults()), so an operator
@@ -3086,11 +3085,14 @@ func main() {
 		sched.SetProviderResolver(srv)
 		if advisoryLock != nil {
 			sched.SetFanoutCoordination(advisoryLock, coord.MemoryConsolidatorLockKey)
+			// RFC DZ: one replica per tick finishes the scheduled runs whose
+			// replica died. Only saves work — a run is finished once whoever
+			// tries — so single-replica leaves it unguarded.
+			sched.SetReconcileCoordination(advisoryLock, coord.LockKeyScheduleReconcile)
 		}
 		sched.Start(bgCtx)
-		log.Printf("scheduler: enabled (tick=%ds, fire_timeout=%ds, env_allowlist=%d names)",
-			cfg.Env.SchedulerTickSeconds, cfg.Env.SchedulerFireTimeoutSeconds,
-			len(cfg.Env.SchedulerEnvAllowlist))
+		log.Printf("scheduler: enabled (tick=%ds, env_allowlist=%d names)",
+			cfg.Env.SchedulerTickSeconds, len(cfg.Env.SchedulerEnvAllowlist))
 	} else if cfg.Env.SchedulerEnabled {
 		log.Printf("scheduler: disabled (no Store backend or no HTTP server)")
 	} else {
