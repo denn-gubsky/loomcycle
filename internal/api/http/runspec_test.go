@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"reflect"
 	"regexp"
 	"strings"
 	"testing"
@@ -123,6 +124,42 @@ func TestRunSpec_TSMirrorDeclaresEveryRecordField(t *testing.T) {
 	for _, f := range goFields {
 		if !declared[f] {
 			t.Errorf("runConfigRecord persists %q but TS RunSpec does not declare it", f)
+		}
+	}
+}
+
+// RunSpec.spawn is the nested spawnRecord, which the top-level guard above
+// does not look inside: every json key of the record must be declared there.
+func TestRunSpec_TSMirrorDeclaresEverySpawnRecordField(t *testing.T) {
+	var goFields []string
+	st := reflect.TypeOf(spawnRecord{})
+	for i := range st.NumField() {
+		if name, _, _ := strings.Cut(st.Field(i).Tag.Get("json"), ","); name != "" && name != "-" {
+			goFields = append(goFields, name)
+		}
+	}
+	if len(goFields) < 3 {
+		t.Fatalf("only %d json fields read off spawnRecord — this guard is reading nothing", len(goFields))
+	}
+	tsSrc, err := os.ReadFile("../../../adapters/ts/src/types.ts")
+	if err != nil {
+		t.Skipf("TS adapter not present: %v", err)
+	}
+	tm := regexp.MustCompile(`(?s)export interface RunSpec \{(.*?)\n\}`).FindSubmatch(tsSrc)
+	if tm == nil {
+		t.Fatal("could not find RunSpec in types.ts")
+	}
+	sm := regexp.MustCompile(`(?s)\n  spawn\?: \{(.*?)\n  \};`).FindSubmatch(tm[1])
+	if sm == nil {
+		t.Fatal("could not find RunSpec.spawn in types.ts")
+	}
+	declared := map[string]bool{}
+	for _, f := range regexp.MustCompile(`(?m)^    ([a-z0-9_]+)\??:`).FindAllSubmatch(sm[1], -1) {
+		declared[string(f[1])] = true
+	}
+	for _, f := range goFields {
+		if !declared[f] {
+			t.Errorf("spawnRecord persists %q but TS RunSpec.spawn does not declare it", f)
 		}
 	}
 }

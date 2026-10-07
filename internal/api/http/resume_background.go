@@ -312,7 +312,14 @@ func (s *Server) watchRestoredChildren(ctx context.Context, bg *tools.Background
 		var next time.Time
 		for id := range pending {
 			if clk := clocks[id]; clk != nil && !clk.start.IsZero() {
-				if at, held := clk.deadline(clk.start); !held && (next.IsZero() || at.Before(next)) {
+				at, held := clk.deadline(clk.start)
+				// A clock whose last read failed is not read again before its
+				// retry: at a deadline already past, that would be at once,
+				// and again, for as long as the store fails.
+				if clk.retryAt.After(at) {
+					at = clk.retryAt
+				}
+				if !held && (next.IsZero() || at.Before(next)) {
 					next = at
 				}
 			}
@@ -370,6 +377,10 @@ func (s *Server) watchRestoredChildren(ctx context.Context, bg *tools.Background
 type restoredClock struct {
 	resumedChildClock
 	start time.Time // the run's start; zero until its row is read
+	// retryAt is when a clock whose events could not be read is read again,
+	// after retryWait, which backs off like the recheck of a run row.
+	retryAt   time.Time
+	retryWait time.Duration
 }
 
 // restoredClockExpired brings a bounded child's clock up to date from its run
@@ -383,12 +394,19 @@ func (s *Server) restoredClockExpired(ctx context.Context, runID string, clk *re
 		}
 		clk.start = child.StartedAt
 	}
+	if time.Now().Before(clk.retryAt) {
+		return false
+	}
 	for {
 		page, err := s.store.GetRunEventsSince(ctx, runID, clk.seq, resumedChildClockPage)
 		if err != nil {
 			if ctx.Err() == nil {
 				log.Printf("resume: read background child %s's events: %v", runID, err)
 			}
+			if clk.retryWait = max(2*clk.retryWait, restoredChildRecheckFirst); clk.retryWait > restoredChildRecheckMax {
+				clk.retryWait = restoredChildRecheckMax
+			}
+			clk.retryAt = time.Now().Add(clk.retryWait)
 			return false
 		}
 		clk.observe(page)
@@ -396,6 +414,7 @@ func (s *Server) restoredClockExpired(ctx context.Context, runID string, clk *re
 			break
 		}
 	}
+	clk.retryAt, clk.retryWait = time.Time{}, 0
 	at, held := clk.deadline(clk.start)
 	return !held && !time.Now().Before(at)
 }
@@ -510,6 +529,10 @@ func (s *Server) restoredAgentEnding(ctx context.Context, child store.Run, spec 
 
 // walkInterrupted is why a walk still running when its parent paused ended.
 const walkInterrupted = "the walk was interrupted: the run that started it was paused and resumed without it — a team walk runs on the instance that started it and does not survive a restart or move to another one; run it again if you need its answer"
+
+// walkLost is why a walk whose row a restart left running ended, when a resume
+// finds its members paused with no walk behind them.
+const walkLost = "the walk was interrupted: its instance stopped while it ran — a team walk runs on the instance that started it and does not survive a restart or move to another one; run it again if you need its answer"
 
 // endInterruptedWalks closes the run rows of a resumed run's walks that were
 // still running when it paused: their walk went with the instance that ran

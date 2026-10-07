@@ -107,7 +107,8 @@ import (
 //     resumed into a run nobody reads: it ends cancelled, naming the parent's
 //     end. The pass checks again once every run is resumed, for a parent that
 //     ended meanwhile. A detached walk's members are the walk's, not its
-//     starter's, and outlive that starter.
+//     starter's, and outlive that starter. A walk of any mode whose row a
+//     restart left running is not here: its row is closed as interrupted.
 //     (Mid-execution runs — the F42 repro — end on a clean tool_result boundary
 //     and resume cleanly.)
 
@@ -191,16 +192,32 @@ func (s *Server) resumePausedRunsReport(ctx context.Context) resumeReport {
 // their parent, not the run that started it, and outlive that starter as
 // they did live. A row that has itself ended is not a run that would go on
 // for nobody, and is left as it is.
+//
+// A walk whose row is still running but that is not live in this process is
+// gone too — a restart on the same database leaves its row running, with no
+// walk behind it, whatever mode it ran in — and its row is closed as
+// interrupted. That holds because a walk's members run in the walk's own
+// process: a member that reached this check is held by no live loop here
+// and by no live replica (resumePausedRun asks pausedRunIsLive first, and the
+// pass re-checks only runs it resumed itself), so neither is its walk. A walk
+// row records no replica of its own to ask.
 func (s *Server) orphanedBy(ctx context.Context, run store.Run) (string, bool) {
 	if run.ParentRunID == "" || isTerminalRunStatus(run.Status) {
 		return "", false
 	}
+	isWalkMember := run.ParentContext != nil && run.ParentContext.WalkID == run.ParentRunID
+	if isWalkMember {
+		if _, live := s.walks.get(run.ParentRunID); live {
+			return "", false
+		}
+	}
+	walkGone := fmt.Sprintf("its team walk %s is not here: a walk does not survive a restart or move to another instance", run.ParentRunID)
 	parent, err := s.store.GetRun(ctx, run.ParentRunID)
 	if err != nil {
 		var nf *store.ErrNotFound
 		if errors.As(err, &nf) {
-			if run.ParentContext != nil && run.ParentContext.WalkID == run.ParentRunID {
-				return fmt.Sprintf("its team walk %s is not here: a walk does not survive a restart or move to another instance", run.ParentRunID), true
+			if isWalkMember {
+				return walkGone, true
 			}
 			return "", false
 		}
@@ -208,7 +225,14 @@ func (s *Server) orphanedBy(ctx context.Context, run store.Run) (string, bool) {
 		return "", false
 	}
 	if !isTerminalRunStatus(parent.Status) {
-		return "", false
+		if !isWalkMember {
+			return "", false
+		}
+		s.finishRunFailedReason(parent.ID, walkLost, runStateMeta{
+			RunID: parent.ID, AgentID: parent.AgentID, Agent: parent.Agent, UserID: parent.UserID,
+			TenantID: parent.TenantID, ParentRunID: parent.ParentRunID, ParentContext: parent.ParentContext,
+		})
+		return walkGone, true
 	}
 	return fmt.Sprintf("its parent run %s ended (%s) before it was resumed", parent.ID, parent.Status), true
 }
@@ -347,6 +371,14 @@ func (s *Server) resumePausedRun(run store.Run) error {
 	// ended cancelled instead, saying why.
 	if reason, orphaned := s.orphanedBy(ctx, run); orphaned {
 		s.cancelOrphanedRun(run, reason)
+		// The walks it started in poll mode went with its instance as they
+		// would have had it resumed, and are closed as its resume closes them.
+		if events, err := s.store.GetTranscript(ctx, run.SessionID); err == nil {
+			own := slices.DeleteFunc(events, func(e store.Event) bool { return e.RunID != run.ID })
+			s.endInterruptedWalks(ctx, pollLedgerOf(own))
+		} else {
+			log.Printf("resume: read orphaned run %s's transcript for its walks: %v", run.ID, err)
+		}
 		return fmt.Errorf("not resumed: %s", reason)
 	}
 

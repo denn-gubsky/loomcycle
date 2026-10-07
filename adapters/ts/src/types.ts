@@ -663,6 +663,8 @@ export interface SpawnChildInfo {
   /** The child was started with notify: false / on_parent_end: "cancel". */
   no_notify?: boolean;
   cancel_on_parent_end?: boolean;
+  /** A poll-mode sub-agent's per-child timeout_ms, on its started row. */
+  timeout_ms?: number;
   ok?: boolean;
   output?: string;
   error?: string;
@@ -1463,6 +1465,8 @@ export interface RunSpec {
       bindings?: Array<{ name: string; read_only: boolean; default?: boolean }>;
     };
     fanout_cap?: number;
+    /** A resident child (Agent op=open), which a resume rebuilds as one. */
+    resident?: boolean;
   };
   /** The agent version the run started on, which a resumed run continues on:
    *  the AgentDef version its agent name resolved to (`def_id` absent for an
