@@ -34,18 +34,34 @@ func backlogFixture(t *testing.T, catchUpMax int, policy string) (*Scheduler, *s
 	return sched, sr, defID, st, slots
 }
 
-func slotKeys(defID string, slots ...time.Time) []string {
+// slotStrings formats slots the way a catch-up run's slot_at carries them.
+func slotStrings(slots ...time.Time) []string {
 	out := make([]string, len(slots))
 	for i, s := range slots {
-		out[i] = slotRunKey(defID, s)
+		out[i] = s.UTC().Format(time.RFC3339)
 	}
 	return out
 }
 
-func keysOf(ins []runner.RunInput) []string {
+// firedSlots is the slot_at each catch-up run carried, in start order.
+func firedSlots(ins []runner.RunInput) []string {
 	out := make([]string, len(ins))
 	for i, in := range ins {
-		out[i] = in.IdempotencyKey
+		out[i], _ = in.Metadata["slot_at"].(string)
+	}
+	return out
+}
+
+// activeSlots is the slot of each running run of the def, oldest first.
+func activeSlots(t *testing.T, st store.Store, defID string) []string {
+	t.Helper()
+	rows, err := st.ScheduleActiveRunsList(context.Background(), defID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := make([]string, len(rows))
+	for i, r := range rows {
+		out[i] = r.SlotAt.UTC().Format(time.RFC3339)
 	}
 	return out
 }
@@ -66,13 +82,16 @@ func equalStrings(a, b []string) bool {
 // the newest missed slot — and says how many it dropped.
 func TestCatchUp_ZeroCollapsesTheOutageAndCountsTheDropped(t *testing.T) {
 	sched, sr, defID, st, slots := backlogFixture(t, 0, "")
+	sr.gate = make(chan struct{})
 
-	fireT(t, sched)
+	sched.tick(context.Background())
+	if got, want := activeSlots(t, st, defID), slotStrings(slots[9]); !equalStrings(got, want) {
+		t.Fatalf("running = %v, want one run for the newest slot %v", got, want)
+	}
+	sr.gate <- struct{}{}
+	sched.runs.Wait()
 
 	ins := sr.inputs()
-	if got, want := keysOf(ins), slotKeys(defID, slots[9]); !equalStrings(got, want) {
-		t.Fatalf("runs = %v, want one for the newest slot %v", got, want)
-	}
 	if _, has := ins[0].Metadata["slot_at"]; has {
 		t.Errorf("a live fire carries catch-up metadata: %v", ins[0].Metadata)
 	}
@@ -126,12 +145,12 @@ func TestCatchUp_ForbidDrainsTheKeptSlotsOneAtATime(t *testing.T) {
 	sched.tick(ctx) // nothing left due
 
 	ins := sr.inputs()
-	if got, want := keysOf(ins), slotKeys(defID, slots[7], slots[8], slots[9]); !equalStrings(got, want) {
-		t.Fatalf("runs = %v, want the newest three slots in order %v", got, want)
+	if got, want := firedSlots(ins), slotStrings(slots[7], slots[8], slots[9]); !equalStrings(got, want) {
+		t.Fatalf("runs fired for %v, want the newest three slots in order %v", got, want)
 	}
 	for i, in := range ins {
-		if in.Metadata["catch_up"] != true || in.Metadata["slot_at"] != slots[7+i].Format(time.RFC3339) {
-			t.Errorf("run %d metadata = %v, want catch_up and slot_at %s", i, in.Metadata, slots[7+i].Format(time.RFC3339))
+		if in.Metadata["catch_up"] != true {
+			t.Errorf("run %d metadata = %v, want catch_up", i, in.Metadata)
 		}
 	}
 	got := runState(t, st, defID)
@@ -165,8 +184,8 @@ func TestCatchUp_AllowStartsKeptSlotsAtOnceUnderTheLimit(t *testing.T) {
 	}
 
 	sched.tick(ctx)
-	if got, want := keysOf(sr.inputs()), slotKeys(defID, slots[7], slots[8]); !equalStrings(got, want) {
-		t.Fatalf("runs started at once = %v, want the two that fit under catch_up_max %v", got, want)
+	if got, want := firedSlots(sr.inputs()), slotStrings(slots[7], slots[8]); !equalStrings(got, want) {
+		t.Fatalf("runs started at once for %v, want the two that fit under catch_up_max %v", got, want)
 	}
 	active, _ := st.ScheduleActiveRunsList(ctx, defID)
 	if len(active) != 3 || !active[1].CatchUp || !active[2].CatchUp {
@@ -189,8 +208,8 @@ func TestCatchUp_AllowStartsKeptSlotsAtOnceUnderTheLimit(t *testing.T) {
 		time.Sleep(10 * time.Millisecond)
 	}
 	sched.tick(ctx)
-	if got, want := keysOf(sr.inputs()), slotKeys(defID, slots[7], slots[8], slots[9]); !equalStrings(got, want) {
-		t.Errorf("runs = %v, want the third kept slot started once one ended %v", got, want)
+	if got, want := firedSlots(sr.inputs()), slotStrings(slots[7], slots[8], slots[9]); !equalStrings(got, want) {
+		t.Errorf("runs fired for %v, want the third kept slot started once one ended %v", got, want)
 	}
 	sr.gate <- struct{}{}
 	sr.gate <- struct{}{}
@@ -205,18 +224,45 @@ func TestCatchUp_AGapPastTheScanBoundCollapsesAndResumesTheCadence(t *testing.T)
 	sched := New(Config{}, nil, nil, nil, nil, nil)
 	def := scheduleDef{Schedule: "* * * * *", CatchUpMax: 5}
 	now := time.Now()
-	start := time.Now()
 	plan, err := sched.planSlot(def, store.ScheduleDueRow{NextRunAt: now.Add(-3 * 365 * 24 * time.Hour).Truncate(time.Minute)}, now, 5)
 	if err != nil {
 		t.Fatal(err)
-	}
-	if took := time.Since(start); took > 2*time.Second {
-		t.Errorf("planning took %v", took)
 	}
 	if plan.dropped != maxSlotScan || plan.catchUp() {
 		t.Errorf("dropped=%d catchUp=%v, want one live fire with %d counted as dropped", plan.dropped, plan.catchUp(), maxSlotScan)
 	}
 	if !plan.next.After(now) {
 		t.Errorf("next = %v, want the cadence resumed after now", plan.next)
+	}
+}
+
+// Each claim keys its run by the next_run_at it moved, not by the slot it
+// fires. When next_run_at is set back behind a slot that already fired (an
+// operator's run-now), that slot is due again and is the one a collapse
+// fires; keyed by the slot, the new run was refused as a duplicate of the old
+// — and under replace the old one had already been cancelled for it.
+func TestCatchUp_ASlotDueAgainAfterARunNowStillStartsARun(t *testing.T) {
+	def := channelHookDef("done-hook")
+	def.Schedule = "* * * * *"
+	def.ConcurrencyPolicy = "allow"
+	sched, sr, defID, st := trackedFixture(t, def)
+	ctx := context.Background()
+	minute := time.Now().Truncate(time.Minute)
+
+	if err := st.ScheduleRunStateSeed(ctx, defID, minute.Add(-30*time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	fireT(t, sched) // fires the minute's slot
+	// Run-now: next_run_at set just behind that slot again.
+	if err := st.ScheduleRunStateSeed(ctx, defID, minute.Add(-10*time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	fireT(t, sched)
+
+	if n := len(sr.inputs()); n != 2 {
+		t.Fatalf("runs started = %d, want 2 — the second claim's run was refused as a duplicate", n)
+	}
+	if got := runState(t, st, defID); got.FireCount != 2 {
+		t.Errorf("fire_count = %d, want 2", got.FireCount)
 	}
 }

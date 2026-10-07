@@ -441,10 +441,15 @@ func (s *Scheduler) fireSlot(ctx context.Context, row store.ScheduleDueRow, def 
 		s.logf("scheduler: schedule %q: %d missed slot(s) dropped (catch_up_max %d) — firing slot %s",
 			row.Name, plan.dropped, keep, plan.slot.UTC().Format(time.RFC3339))
 	}
-	// From here on the row names the slot being fired, and the backlog it
-	// belongs to: its run's key, its tracked row and its catch-up flag all
-	// read them.
+	// The run's key is the CLAIM's: the next_run_at this claim moved, which no
+	// other claim can take. Not the fired slot — a collapse fires the newest
+	// due slot, and when next_run_at was set back behind a slot that already
+	// fired (an operator's run-now), that slot is due again; keyed by it, the
+	// new run would be refused as a duplicate of the old.
 	listed := row
+	key := slotRunKey(row.DefID, listed.NextRunAt)
+	// From here on the row names the slot being fired, and the backlog it
+	// belongs to: its tracked row and its catch-up flag read them.
 	row.NextRunAt = plan.slot
 	row.CatchUpUntil = plan.catchUpUntil
 
@@ -486,7 +491,7 @@ func (s *Scheduler) fireSlot(ctx context.Context, row store.ScheduleDueRow, def 
 	// the reason the channel tick is: the fan-out check below reads `metadata`
 	// and the rest reads `agent`, neither of which a team tick has.
 	if def.Delivery == "team" {
-		s.fireTeamDelivery(ctx, row, def, now)
+		s.fireTeamDelivery(ctx, row, def, key, now)
 		return s.nextInBacklog(listed, plan, def, now)
 	}
 
@@ -500,10 +505,9 @@ func (s *Scheduler) fireSlot(ctx context.Context, row store.ScheduleDueRow, def 
 	}
 
 	in := buildRunInput(def, s.cfg.EnvAllowlist, s.logf)
-	// The slot's own key on the run: a second run for the same slot is
-	// refused by the runs table before its loop starts, whatever went wrong
-	// with the claim. It also names the slot a run was fired for.
-	in.IdempotencyKey = slotRunKey(row.DefID, row.NextRunAt)
+	// The claim's key on the run: a second run for the same claim is refused
+	// by the runs table before its loop starts, whatever went wrong with it.
+	in.IdempotencyKey = key
 	if plan.catchUp() {
 		in.Metadata = catchUpMetadata(in.Metadata, plan.slot)
 	}
@@ -647,9 +651,9 @@ func TickPayload(scheduleName string, firedAt time.Time, payload any) (json.RawM
 // logged, recorded as the schedule's last error, and does not use up
 // max_fires, as an agent that cannot be resolved does not. Every other outcome
 // is classified the way a run's is (classifyFire).
-func (s *Scheduler) fireTeamDelivery(ctx context.Context, row store.ScheduleDueRow, def scheduleDef, now time.Time) {
+func (s *Scheduler) fireTeamDelivery(ctx context.Context, row store.ScheduleDueRow, def scheduleDef, key string, now time.Time) {
 	out := fireOutcome{Status: "completed", CountAsFire: true}
-	runID, err := s.startTeamWalk(ctx, def, slotRunKey(row.DefID, row.NextRunAt))
+	runID, err := s.startTeamWalk(ctx, def, key)
 	if errors.Is(err, store.ErrDuplicateIdempotencyKey) {
 		// This slot already has its walk. Whoever started it records it.
 		s.logf("scheduler: schedule %q slot %s already has a walk — not starting it twice", row.Name, row.NextRunAt.UTC().Format(time.RFC3339Nano))
@@ -742,9 +746,9 @@ func (s *Scheduler) parkAfterPanic(row store.ScheduleDueRow) {
 	}
 }
 
-// slotRunKey is the idempotency key of the run fired for one slot of one
-// schedule. The runs table holds a key once, so a second run for the same
-// slot is refused before it starts.
+// slotRunKey is the idempotency key of the run one claim fires: the schedule
+// and the next_run_at the claim moved. The runs table holds a key once, so a
+// second run for the same claim is refused before it starts.
 func slotRunKey(defID string, slot time.Time) string {
 	return fmt.Sprintf("sched:%s:%d", defID, slot.UnixMicro())
 }
