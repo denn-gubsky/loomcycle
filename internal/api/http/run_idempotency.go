@@ -60,6 +60,15 @@ func (s *Server) runHoldingClientKey(ctx context.Context, storedKey, tenant, use
 		if run.TenantID != tenant || run.UserID != user {
 			return nil, fmt.Errorf("%w: idempotency_key is not available", runner.ErrInvalidArgument)
 		}
+		// What follows hands the caller this run's ids, its answer or its
+		// whole stream, so it passes the gate every other read of a run's
+		// content passes (GET /v1/runs/{id}/stream, get_run). The identity
+		// match above already implies it for a key this code wrote; the gate
+		// is applied anyway, so this read can never be the one path that
+		// answers a principal the others would refuse.
+		if !runOwnershipOK(ctx, run) {
+			return nil, fmt.Errorf("%w: idempotency_key is not available", runner.ErrInvalidArgument)
+		}
 		return &runner.DuplicateRunError{RunID: run.ID, AgentID: run.AgentID, SessionID: run.SessionID}, nil
 	}
 	return nil, nil

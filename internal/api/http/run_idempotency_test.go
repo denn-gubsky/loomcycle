@@ -2,14 +2,17 @@ package http
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/denn-gubsky/loomcycle/internal/auth"
 	"github.com/denn-gubsky/loomcycle/internal/awaited"
 	"github.com/denn-gubsky/loomcycle/internal/connector"
+	"github.com/denn-gubsky/loomcycle/internal/runner"
 	"github.com/denn-gubsky/loomcycle/internal/steer"
 	"github.com/denn-gubsky/loomcycle/internal/store"
 )
@@ -312,6 +315,31 @@ func TestIdempotencyKey_ARequestRefusedByTheIndexIsAnsweredWithTheWinner(t *test
 	// This path does reach CreateSession before the index refuses the run.
 	if n := sessionCount(t, s.store) - sessions; n > 1 {
 		t.Errorf("the refused request left %d sessions behind, want at most its own one", n)
+	}
+	gate <- struct{}{}
+	waitRunStatus(t, s.store, first.RunID, store.RunCompleted)
+}
+
+// The run a key resolves to is handed to the caller, so the lookup applies the
+// same ownership gate as every other read of a run's content. An isolated
+// member is refused another user's run even when the identity it was looked
+// up under matches the row.
+func TestIdempotencyKey_TheLookupAppliesTheRunOwnershipGate(t *testing.T) {
+	s, gate := newGatedBatchServer(t, 4)
+	ctx := context.Background()
+	first := batchOne(t, s, ctx, "detach", 0, keyed("k", "u1"))
+	key := clientRunKey("", "u1", "k")
+
+	if dup, err := s.runHoldingClientKey(ctx, key, "", "u1", false); err != nil || dup == nil || dup.RunID != first.RunID {
+		t.Fatalf("the owner's lookup = %+v, %v; want run %s", dup, err, first.RunID)
+	}
+	stranger := auth.WithPrincipal(ctx, auth.Principal{TenantID: "", Subject: "u2", Scopes: []string{auth.ScopeUser}})
+	dup, err := s.runHoldingClientKey(stranger, key, "", "u1", false)
+	if dup != nil || err == nil || !errors.Is(err, runner.ErrInvalidArgument) {
+		t.Errorf("an isolated member's lookup of another user's run = %+v, %v; want a refusal", dup, err)
+	}
+	if err != nil && strings.Contains(err.Error(), first.RunID) {
+		t.Errorf("the refusal names the run: %v", err)
 	}
 	gate <- struct{}{}
 	waitRunStatus(t, s.store, first.RunID, store.RunCompleted)
