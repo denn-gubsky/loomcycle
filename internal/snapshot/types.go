@@ -532,6 +532,9 @@ type ScheduleRunStateEntry struct {
 	LastError   string     `json:"last_error,omitempty"`
 	PausedUntil *time.Time `json:"paused_until,omitempty"`
 	FireCount   int        `json:"fire_count"`
+	// CatchUpUntil marks a catch-up backlog being drained (RFC DZ), so its
+	// last slot is still a catch-up slot on the target.
+	CatchUpUntil *time.Time `json:"catch_up_until,omitempty"`
 }
 
 // ScheduleDefActiveSection mirrors the other active-pointer sections.

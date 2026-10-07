@@ -150,6 +150,10 @@ func runStateEntry(st store.ScheduleRunStateRow) *ScheduleRunStateEntry {
 		t := st.PausedUntil.UTC()
 		out.PausedUntil = &t
 	}
+	if !st.CatchUpUntil.IsZero() {
+		t := st.CatchUpUntil.UTC()
+		out.CatchUpUntil = &t
+	}
 	return out
 }
 
@@ -390,6 +394,9 @@ func restoreScheduleDefs(ctx context.Context, s store.Store, sec *ScheduleDefsSe
 		}
 		if e.RunState.PausedUntil != nil {
 			st.PausedUntil = *e.RunState.PausedUntil
+		}
+		if e.RunState.CatchUpUntil != nil {
+			st.CatchUpUntil = *e.RunState.CatchUpUntil
 		}
 		stInserted, err := s.SnapshotRestoreScheduleRunState(ctx, st)
 		if err != nil {

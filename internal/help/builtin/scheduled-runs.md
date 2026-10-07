@@ -151,7 +151,7 @@ finishes — not while it is still running; a slot that comes due while the
 last run is still going starts nothing.
 
 Fires of **any** status count (completed / failed / backpressure-skipped)
-so a wedged schedule still retires; catch-up fires after a pause count
+so a wedged schedule still retires; catch-up fires after an outage count
 too — it's a hard lifetime cap regardless of cadence. The disabled-skip
 advance (`enabled: false`) does NOT count, so toggling a schedule off and
 on preserves its remaining budget. Retirement flips the def's `retired`
@@ -186,6 +186,31 @@ scheduled_runs:
   elsewhere the slot is skipped as `forbid` would.
 - Refused on `delivery: channel`, which starts nothing that could overlap. A
   consolidation sweep always runs one at a time per schedule.
+
+## `catch_up_max` — slots missed during an outage
+
+When the scheduler finds a schedule overdue by more than one slot (the
+runtime was down or paused, the schedule was paused, or a run outlived
+several slots), `catch_up_max` decides what happens to the missed slots:
+
+- `0` (default): they collapse into **one** fire, for the newest missed
+  slot. The schedule's `missed_slots` records how many were dropped.
+- `N` (at most 1000): the **newest N** run, oldest first; older ones are
+  dropped and counted in `missed_slots`. Each catch-up run carries its slot
+  in its metadata (`slot_at`, plus `catch_up: true`), so it can tell "the
+  06:00 run, executed at 09:12" from a live one.
+
+How the kept slots run follows `concurrency_policy`:
+
+| Policy | Catch-up slots |
+|---|---|
+| `forbid`, `replace` | One at a time: each waits for the run before it to finish. They are never skipped, and never cancel each other. |
+| `allow` | Start at once while fewer than `catch_up_max` of the schedule's runs are going; the rest wait for one to end. |
+
+A disabled schedule, a `delivery: channel` tick and a consolidation sweep
+never catch up — an outage is always one fire for them. A gap longer than
+100,000 slots (about 70 days of an every-minute cron) also collapses into
+one fire.
 
 ## `tenant_id` — which tenant the fired run executes as
 

@@ -19,6 +19,9 @@ type storeRunner struct {
 	st store.Store
 	// hold, when set, keeps every registered run going until it is closed.
 	hold chan struct{}
+	// gate, when set, keeps each registered run going until it takes one
+	// token from it — so a test ends runs one at a time.
+	gate chan struct{}
 	// status and errMsg are how each run ends (default completed).
 	status store.RunStatus
 	errMsg string
@@ -29,6 +32,7 @@ type storeRunner struct {
 	mu     sync.Mutex
 	runIDs []string
 	ctxs   []context.Context
+	ins    []runner.RunInput
 }
 
 func (r *storeRunner) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunCallbacks) error {
@@ -43,10 +47,14 @@ func (r *storeRunner) RunOnce(ctx context.Context, in runner.RunInput, cb runner
 	r.mu.Lock()
 	r.runIDs = append(r.runIDs, run.ID)
 	r.ctxs = append(r.ctxs, ctx)
+	r.ins = append(r.ins, in)
 	r.mu.Unlock()
 	cb.OnRegistered("a-"+in.Agent, run.ID, sess.ID, "")
 	if r.hold != nil {
 		<-r.hold
+	}
+	if r.gate != nil {
+		<-r.gate
 	}
 	if r.leave {
 		return nil
@@ -56,6 +64,12 @@ func (r *storeRunner) RunOnce(ctx context.Context, in runner.RunInput, cb runner
 		status = store.RunCompleted
 	}
 	return r.st.FinishRun(context.WithoutCancel(ctx), run.ID, status, "end_turn", store.Usage{}, r.errMsg)
+}
+
+func (r *storeRunner) inputs() []runner.RunInput {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return append([]runner.RunInput(nil), r.ins...)
 }
 
 func (r *storeRunner) started() ([]string, []context.Context) {

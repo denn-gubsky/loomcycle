@@ -483,6 +483,7 @@ func Run(t *testing.T, factory Factory) {
 		{"ScheduleRunStateRecordResult", testScheduleRunStateRecordResult},
 		{"ScheduleRunStateClaimTakesASlotOnce", testScheduleRunStateClaimTakesASlotOnce},
 		{"ScheduleActiveRunFinishesOnce", testScheduleActiveRunFinishesOnce},
+		{"ScheduleRunStateClaimCarriesTheBacklog", testScheduleRunStateClaimCarriesTheBacklog},
 		{"ScheduleActiveRunsListEndedFindsOnlyEndedRuns", testScheduleActiveRunsListEndedFindsOnlyEndedRuns},
 		{"ScheduleRunStatePauseResume", testScheduleRunStatePauseResume},
 		{"EvaluationSubmitAndAggregate", testEvaluationSubmitAndAggregate},
@@ -12217,6 +12218,51 @@ func testScheduleActiveRunsListEndedFindsOnlyEndedRuns(t *testing.T, s store.Sto
 	}
 	if one, _ := s.ScheduleActiveRunsListEnded(ctx, 1); len(one) != 1 {
 		t.Errorf("limit 1 returned %d rows", len(one))
+	}
+}
+
+// A catch-up claim records the backlog it drains (catch_up_until), which the
+// due list hands back so the next claim knows its slot is still catch-up; a
+// live claim clears it. missed_slots keeps the last non-zero count.
+func testScheduleRunStateClaimCarriesTheBacklog(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	defID := scheduleRuntimeFixture(t, s, "rt-backlog")
+	base := time.Now().Add(-3 * time.Hour).Truncate(time.Microsecond)
+	if err := s.ScheduleRunStateSeed(ctx, defID, base); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	listed, _ := s.ScheduleRunStateGet(ctx, defID)
+	until := base.Add(2 * time.Hour)
+	if won, err := s.ScheduleRunStateClaim(ctx, store.ScheduleSlotClaim{
+		DefID: defID, Slot: listed.NextRunAt, NextRunAt: base.Add(time.Hour), ClaimedAt: time.Now(),
+		CatchUpUntil: until, MissedSlots: 7,
+	}); err != nil || !won {
+		t.Fatalf("catch-up claim: won=%v err=%v", won, err)
+	}
+	due, err := s.ScheduleRunStateListDue(ctx, time.Now())
+	if err != nil {
+		t.Fatalf("list due: %v", err)
+	}
+	var row *store.ScheduleDueRow
+	for i := range due {
+		if due[i].DefID == defID {
+			row = &due[i]
+		}
+	}
+	if row == nil || !row.CatchUpUntil.Equal(until) {
+		t.Fatalf("due row = %+v, want catch_up_until %v", row, until)
+	}
+	if st, _ := s.ScheduleRunStateGet(ctx, defID); st.MissedSlots != 7 || !st.CatchUpUntil.Equal(until) {
+		t.Errorf("state missed=%d until=%v, want 7 %v", st.MissedSlots, st.CatchUpUntil, until)
+	}
+	// A live claim clears the backlog and keeps the recorded count.
+	if won, err := s.ScheduleRunStateClaim(ctx, store.ScheduleSlotClaim{
+		DefID: defID, Slot: row.NextRunAt, NextRunAt: time.Now().Add(time.Hour).Truncate(time.Microsecond), ClaimedAt: time.Now(),
+	}); err != nil || !won {
+		t.Fatalf("live claim: won=%v err=%v", won, err)
+	}
+	if st, _ := s.ScheduleRunStateGet(ctx, defID); st.MissedSlots != 7 || !st.CatchUpUntil.IsZero() {
+		t.Errorf("after a live claim: missed=%d until=%v, want 7 and none", st.MissedSlots, st.CatchUpUntil)
 	}
 }
 
