@@ -8,6 +8,7 @@ import (
 	"log"
 	"slices"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/denn-gubsky/loomcycle/internal/awaited"
@@ -89,8 +90,24 @@ import (
 //     that was none of these has nobody to wait for and is flagged failed.
 //   - A run's poll-mode background children are rebuilt from its ledger
 //     (resume_background.go); a restored child that is still running is
-//     waited for wherever it runs. A child's timeout_ms is not restored: its
-//     clock lived in the parent that started it.
+//     waited for wherever it runs. A child's timeout_ms is re-armed from its
+//     run: the deadline the live clock would have reached (the pause counts,
+//     its review holds do not).
+//   - A RESIDENT child (Agent op=open) resumes as one — parked between sends,
+//     or finishing its turn — filed in this instance's resident registry, so
+//     its parent, resumed here with it, sends to it, polls and closes it by its
+//     run id. Its idle TTL is the operator's: the one it was opened with is not
+//     recorded. Paused runs resume children first, so a parent's first turn
+//     finds its resident child registered.
+//   - A TEAM WALK the run started in poll mode does not resume: it runs no
+//     loop and lives on the instance that started it. One that ended before
+//     the pause is read from its parent's ledger; one still running reads
+//     failed as interrupted, and a row it left running is closed so.
+//   - A sub-run whose PARENT has ended (or whose team walk is not here) is not
+//     resumed into a run nobody reads: it ends cancelled, naming the parent's
+//     end. The pass checks again once every run is resumed, for a parent that
+//     ended meanwhile. A detached walk's members are the walk's, not its
+//     starter's, and outlive that starter.
 //     (Mid-execution runs — the F42 repro — end on a clean tool_result boundary
 //     and resume cleanly.)
 
@@ -134,7 +151,8 @@ func (s *Server) resumePausedRunsReport(ctx context.Context) resumeReport {
 		r.Warnings = []string{fmt.Sprintf("list paused runs: %v", err)}
 		return r
 	}
-	for _, run := range paused {
+	var resumedChildren []store.Run
+	for _, run := range childrenFirst(paused) {
 		if err := s.resumePausedRun(run); err != nil {
 			if errors.Is(err, errRunAlreadyLive) {
 				r.AlreadyLive++
@@ -144,11 +162,100 @@ func (s *Server) resumePausedRunsReport(ctx context.Context) resumeReport {
 			continue
 		}
 		r.Resumed++
+		if run.ParentRunID != "" {
+			resumedChildren = append(resumedChildren, run)
+		}
+	}
+	// A child is resumed before its parent, and checked against its parent as
+	// it is (resumePausedRun). A parent that ended after that — cancelled
+	// meanwhile, or a walk its own resume found interrupted — would leave the
+	// child running for nobody; it is cancelled now.
+	for _, run := range resumedChildren {
+		if reason, orphaned := s.orphanedBy(ctx, run); orphaned {
+			s.cancelReg.Cancel(run.AgentID, "cancelled on resume: "+reason)
+		}
 	}
 	if r.Resumed > 0 || r.AlreadyLive > 0 || len(r.Warnings) > 0 {
 		log.Printf("resume: re-dispatched %d paused run(s); %d already live; %d flagged", r.Resumed, r.AlreadyLive, len(r.Warnings))
 	}
 	return r
+}
+
+// orphanedBy reports whether a sub-run's parent can no longer read or cancel
+// it, and why: the parent's run has ended — or the parent is the team walk
+// the run is a member of and its run is not here, which for a walk means it
+// is gone (a walk's run never travels in a snapshot). Any other missing parent
+// leaves the run to resume as it always did, as does a store fault.
+//
+// Only the DIRECT parent counts: a detached walk's members have the walk as
+// their parent, not the run that started it, and outlive that starter as
+// they did live. A row that has itself ended is not a run that would go on
+// for nobody, and is left as it is.
+func (s *Server) orphanedBy(ctx context.Context, run store.Run) (string, bool) {
+	if run.ParentRunID == "" || isTerminalRunStatus(run.Status) {
+		return "", false
+	}
+	parent, err := s.store.GetRun(ctx, run.ParentRunID)
+	if err != nil {
+		var nf *store.ErrNotFound
+		if errors.As(err, &nf) {
+			if run.ParentContext != nil && run.ParentContext.WalkID == run.ParentRunID {
+				return fmt.Sprintf("its team walk %s is not here: a walk does not survive a restart or move to another instance", run.ParentRunID), true
+			}
+			return "", false
+		}
+		log.Printf("resume: read run %s's parent %s: %v", run.ID, run.ParentRunID, err)
+		return "", false
+	}
+	if !isTerminalRunStatus(parent.Status) {
+		return "", false
+	}
+	return fmt.Sprintf("its parent run %s ended (%s) before it was resumed", parent.ID, parent.Status), true
+}
+
+// cancelOrphanedRun ends a paused child that is not resumed because its
+// parent is gone: cancelled with the reason, and no longer paused, so a later
+// pass does not find it again.
+func (s *Server) cancelOrphanedRun(run store.Run, reason string) {
+	ctx, stop := context.WithTimeout(context.Background(), 5*time.Second)
+	defer stop()
+	if err := s.store.FinishRun(ctx, run.ID, store.RunCancelled, reason, store.Usage{}, ""); err != nil {
+		log.Printf("resume: cancel orphaned run %s: %v", run.ID, err)
+	}
+	if err := s.store.SetRunPauseState(ctx, run.ID, store.PauseStateRunning); err != nil {
+		log.Printf("resume: clear orphaned run %s's pause: %v", run.ID, err)
+	}
+	s.publishRunState(runStateMeta{
+		RunID: run.ID, AgentID: run.AgentID, Agent: run.Agent, UserID: run.UserID, TenantID: run.TenantID,
+		ParentAgentID: run.ParentAgentID, ParentRunID: run.ParentRunID, ParentContext: run.ParentContext,
+	}, string(store.RunCancelled), reason, "")
+}
+
+// childrenFirst orders paused runs so that a run comes after every paused
+// descendant of it, otherwise keeping their order. A resumed parent may
+// address its resident child by id at its first turn, which finds the child
+// only once the child's own resume has registered it.
+func childrenFirst(runs []store.Run) []store.Run {
+	parentOf := make(map[string]string, len(runs))
+	for _, r := range runs {
+		parentOf[r.ID] = r.ParentRunID
+	}
+	// A run's depth counts its ancestors in the list. Bounded by the list's
+	// length, so a cycle in corrupt rows cannot loop forever.
+	depth := make(map[string]int, len(runs))
+	for _, r := range runs {
+		d := 0
+		for p := r.ParentRunID; d < len(runs); p = parentOf[p] {
+			if _, ok := parentOf[p]; !ok {
+				break
+			}
+			d++
+		}
+		depth[r.ID] = d
+	}
+	out := slices.Clone(runs)
+	slices.SortStableFunc(out, func(a, b store.Run) int { return depth[b.ID] - depth[a.ID] })
+	return out
 }
 
 // pausedRunIsLive reports whether a live loop still owns a paused row, so the
@@ -235,6 +342,13 @@ func (s *Server) resumePausedRun(run store.Run) error {
 	if live {
 		return errRunAlreadyLive
 	}
+	// A child whose parent has ended has nobody to read it or to cancel it:
+	// resumed, it would run on, orphaned, to an end nobody collects. It is
+	// ended cancelled instead, saying why.
+	if reason, orphaned := s.orphanedBy(ctx, run); orphaned {
+		s.cancelOrphanedRun(run, reason)
+		return fmt.Errorf("not resumed: %s", reason)
+	}
 
 	// RFC AX: restore the operator-key restriction from the runs row so a resumed
 	// run's credential-aware routing matches the original admission.
@@ -245,6 +359,11 @@ func (s *Server) resumePausedRun(run store.Run) error {
 	// the definition and says so, rather than failing a run that is otherwise
 	// fine: refusing to resume is a heavier answer than resolving normally.
 	runCfg, haveRunCfg := decodeRunConfig(run.RunConfig)
+	// A resident child (Agent op=open) is rebuilt as one: parked between its
+	// parent's sends — or finishing the turn it was in — and filed in this
+	// instance's resident registry under its run id, so its parent (resumed
+	// here with it) can send, poll and close it as before the pause.
+	resident := runCfg.Spawn != nil && runCfg.Spawn.Resident && s.residentReg != nil && s.steerReg != nil
 	// The team the run belongs to, from its own record: its agent — and every
 	// agent it goes on to spawn — resolves in the team VERSION it started
 	// under, whatever the team has been forked or promoted to since.
@@ -399,8 +518,11 @@ func (s *Server) resumePausedRun(run store.Run) error {
 	// The poll-mode children the run started, as its ledger records them. A
 	// stateful run has no background table, so it has none.
 	var pollLedger []*pollChildLedger
+	var residents []store.Run
 	if !stateful {
 		pollLedger = pollLedgerOf(runEvents)
+		residents = s.residentChildrenOf(ctx, run)
+		s.endInterruptedWalks(ctx, pollLedger)
 	}
 
 	// RFC X Phase 3: detect a parked fan-out PARENT — a parallel_spawn that the
@@ -470,6 +592,8 @@ func (s *Server) resumePausedRun(run store.Run) error {
 			resumeHeld = held
 		case len(pollLedger) > 0 && !run.Interactive && parkedForChildren(runEvents):
 			resumeChildren = true
+		case resident:
+			startParked = true // waiting for its parent's next send
 		case !run.Interactive || s.steerReg == nil:
 			s.flagRunUnresumable(run, "run was idle awaiting input when paused; re-attach + steer to continue")
 			return fmt.Errorf("not auto-resumable (no pending turn)")
@@ -609,7 +733,17 @@ func (s *Server) resumePausedRun(run store.Run) error {
 	}
 	// Store-only emit (no live client to forward to) — the resumed turns
 	// append to the same run's transcript so a re-attaching operator tails them.
-	emit := s.makeRecordingEmit(runCtx, run.ID, rid, run.SessionID, meta, func(providers.Event) {})
+	fwd := func(providers.Event) {}
+	var rc *residentChild
+	if resident {
+		rc = &residentChild{runID: run.ID, agentID: run.AgentID, agentName: run.Agent, parentAgentID: run.ParentAgentID,
+			tenantID: run.TenantID, userID: run.UserID, cancel: cancelFn,
+			// The idle TTL its parent opened it with is not recorded; it
+			// comes back with the operator's.
+			idleTTL: s.residentChildIdleTTL(), maxTurn: s.residentMaxTurn()}
+		fwd = rc.observe
+	}
+	emit := s.makeRecordingEmit(runCtx, run.ID, rid, run.SessionID, meta, fwd)
 	// A child the Agent tool started takes a verdict and nothing else, live
 	// (runSubRun registers it VerdictsOnly) and so after a resume: its parent
 	// drives it, and a full entry here handed an operator its steer, retune and
@@ -620,7 +754,7 @@ func (s *Server) resumePausedRun(run store.Run) error {
 	// would refuse its next turn.
 	steerQ, onSteer, closeSteer, deregSteer := s.makeSteerEntry(runCtx, steer.Entry{
 		RunID: run.ID, AgentID: run.AgentID, SessionID: run.SessionID, UserID: run.UserID,
-		VerdictsOnly: takesOnlyVerdicts(run),
+		VerdictsOnly: takesOnlyVerdicts(run) && !resident, // a resident child takes its parent's sends
 	}, emit)
 
 	loopCtx := tools.WithAgentTools(runCtx, toolNames(allowedTools))
@@ -775,8 +909,8 @@ func (s *Server) resumePausedRun(run store.Run) error {
 		CodeBody:            agentDef.Code,
 		RunTimeoutSeconds:   runCfg.RunTimeoutSeconds,
 		RunClockCarry:       runCfg.clockCarry(), // the budget continues where the run paused
-		Interactive:         run.Interactive,
-		InteractiveNow:      s.interactiveNowFn(run.ID, run.Interactive),
+		Interactive:         run.Interactive || resident,
+		InteractiveNow:      s.interactiveNowFn(run.ID, run.Interactive || resident),
 		Review:              reviewArmed,
 		ReviewNow:           s.reviewNowFn(run.ID, reviewArmed),
 		ReviewTTL:           runCfg.reviewTTL(), // the deadline runs from when the hold began, restart or not
@@ -809,8 +943,29 @@ func (s *Server) resumePausedRun(run store.Run) error {
 
 		// Its background children, rebuilt from its ledger, and its wait for
 		// them when it paused waiting.
-		RestoreBackground:      s.restoreBackgroundFn(run, pollLedger),
+		RestoreBackground:      s.restoreBackgroundFn(run, pollLedger, residents),
 		ResumeAwaitingChildren: resumeChildren,
+	}
+	residentDone := func(string) {}
+	if rc != nil {
+		// Its parent's op=cancel stops its current turn, as it did live.
+		runOpts.ArmTurnCancel = s.armTurnCancel(run.ID)
+		if startParked {
+			rc.parked(time.Now())
+		} else {
+			rc.beginTurn(time.Now())
+		}
+		s.residentReg.add(rc)
+		// One of its parent's live children again, until it ends.
+		live := s.liveChildren.Hold(run.ParentRunID, 1)[0]
+		var once sync.Once
+		residentDone = func(state string) {
+			once.Do(func() {
+				rc.markDone(state)
+				s.residentReg.remove(rc)
+				live()
+			})
+		}
 	}
 
 	go func() {
@@ -823,6 +978,7 @@ func (s *Server) resumePausedRun(run store.Run) error {
 				log.Printf("resumed run %s panicked: %v", run.ID, rec)
 				s.finishRunFailedReason(run.ID, fmt.Sprintf("panic: %v", rec), meta)
 			}
+			residentDone("failed") // a no-op once the loop's end has filed it
 			deregSteer()
 			deregGate()
 			s.cancelReg.Deregister(run.AgentID)
@@ -889,6 +1045,9 @@ func (s *Server) resumePausedRun(run store.Run) error {
 			emit(runErrorEvent(runErr))
 		}
 		s.finishRunWithCancel(context.WithoutCancel(runCtx), runCtx, run.ID, loopRes, runErr, meta)
+		if runErr == nil {
+			residentDone("completed")
+		}
 	}()
 	return nil
 }

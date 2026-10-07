@@ -464,3 +464,30 @@ func TestAgentPoll_WaitEndsWhenTheRuntimePauses(t *testing.T) {
 		t.Fatal("the poll kept waiting through a runtime pause — its run cannot park")
 	}
 }
+
+// A bounded poll-mode child's started row records its timeout_ms, which a
+// resumed parent re-arms the bound from; an unbounded child's records none.
+func TestAgentPoll_StartedRowRecordsTheChildsTimeout(t *testing.T) {
+	g := newGated("bounded", "free")
+	a := pollTool(g)
+	ctx, _ := pollCtx()
+	var mu sync.Mutex
+	rows := map[string]int{}
+	ctx = tools.WithToolUseID(ctx, "tu_1")
+	ctx = tools.WithEventEmitter(ctx, func(ev providers.Event) {
+		if ev.Type == providers.EventSpawnChildStarted && ev.SpawnChild != nil {
+			mu.Lock()
+			rows[ev.SpawnChild.RunID] = ev.SpawnChild.TimeoutMs
+			mu.Unlock()
+		}
+	})
+	res := decodeBatch(t, execJSON(t, a, ctx, `{"op":"parallel_spawn","mode":"poll","spawns":[{"name":"w","prompt":"bounded","timeout_ms":60000},{"name":"w","prompt":"free"}]}`))
+	mu.Lock()
+	bounded, free := rows[res.Children[0].ChildRunID], rows[res.Children[1].ChildRunID]
+	mu.Unlock()
+	if bounded != 60000 || free != 0 {
+		t.Errorf("started rows record timeout_ms %d and %d, want 60000 and none", bounded, free)
+	}
+	g.open("bounded")
+	g.open("free")
+}

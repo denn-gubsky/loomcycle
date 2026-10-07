@@ -3124,12 +3124,13 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 			cb.OnEvent(ev)
 		}
 	}
-	// A detached run stops forwarding once its caller has gone (callerGone),
-	// and keeps recording: a later reader re-attaches from the store.
-	callerGone := func() {}
-	if detached {
-		fwd, callerGone = forwardWhileAttached(fwd)
-	}
+	// Forwarding to the caller stops once it has gone (callerGone), and
+	// recording goes on: a detached run's later reader re-attaches from the
+	// store. Every run's caller goes when RunOnce returns, and a background
+	// child winding down after its parent's end still emits through this emit
+	// — into a transport whose handler may have returned.
+	fwd, callerGone := forwardWhileAttached(fwd)
+	defer callerGone()
 	emit := s.makeRecordingEmit(runParent, runID, rid, sessionID, meta, fwd)
 	// RFC AW: emit any soft budget crossings the admission check found, so the
 	// warning lands at run start in the transcript/stream (dedup'd once-per-run
@@ -5023,6 +5024,12 @@ func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {
 	if detached {
 		streamFwd = func(providers.Event) {}
 	}
+	// Even a run that ends with this handler is not the last to use its emit:
+	// a background child winding down after its parent's end (a hook decision
+	// on its result, a hold released) still emits through it. Forwarding stops
+	// before the handler returns; recording goes on.
+	streamFwd, streamGone := forwardWhileAttached(streamFwd)
+	defer streamGone()
 	// Stash the run's identity so the Agent built-in tool's SubAgentRunner can
 	// inherit user_id and set parent_agent_id on any sub-runs it spawns.
 	// Hoisted above the recording emit so usage is attributed under the run's
@@ -5817,7 +5824,11 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 	}
 	// Persist under runCtx so a detached continuation's events survive the
 	// client leaving (runCtx tracks the request otherwise).
-	emit := s.makeRecordingEmit(runCtx, run.ID, rid, id, meta, stream.send)
+	// Forwarding stops before the handler returns (see handleRuns): a
+	// background child may still emit through this run's emit after it ends.
+	streamFwd, streamGone := forwardWhileAttached(stream.send)
+	defer streamGone()
+	emit := s.makeRecordingEmit(runCtx, run.ID, rid, id, meta, streamFwd)
 	// RFC AW: emit any soft budget crossings found at admission so the warning
 	// lands at run start (dedup'd once-per-run by makeRecordingEmit).
 	for _, info := range limitDec.Soft {
@@ -7500,6 +7511,10 @@ func (s *Server) prepareSubRunValues(ctx context.Context, name string, src nameS
 	// Identity is the substrate def_id, falling back to the agent NAME for
 	// static (yaml) agents, which have no def row.
 	def, subRunCfg = s.inheritOverridesForChild(ctx, def, subRunCfg, defID, name)
+	// Only a resident child runs interactive; its resume must know it is one.
+	if subRunCfg.Spawn != nil {
+		subRunCfg.Spawn.Resident = interactive
+	}
 
 	// Sub-run gets its OWN session, under the PARENT's tenant (RFC L). The
 	// session row's tenant_id must match the run's (subIdentity.TenantID below) —
