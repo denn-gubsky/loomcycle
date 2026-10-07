@@ -72,3 +72,37 @@ func TestScheduleDefTool_ChannelDeliveryRefusesRunShapedFields(t *testing.T) {
 		})
 	}
 }
+
+// The substrate takes concurrency_policy on a run schedule, carries it through
+// a fork's overlay, and refuses what the yaml validator refuses.
+func TestScheduleDefTool_ConcurrencyPolicy(t *testing.T) {
+	tool, ctx, cleanup := scheduleDefFixture(t)
+	defer cleanup()
+	res, _ := tool.Execute(ctx, json.RawMessage(
+		`{"op":"create","name":"nightly","overlay":{"agent":"job-search-batch","schedule":"0 3 * * *","concurrency_policy":"allow"}}`))
+	if res.IsError {
+		t.Fatalf("create: %s", res.Text)
+	}
+	res, _ = tool.Execute(ctx, json.RawMessage(`{"op":"fork","name":"nightly","overlay":{"schedule":"0 4 * * *"}}`))
+	if res.IsError {
+		t.Fatalf("fork: %s", res.Text)
+	}
+	defID, _ := decodeResult(t, res.Text)["def_id"].(string)
+	res, _ = tool.Execute(ctx, json.RawMessage(`{"op":"get","def_id":"`+defID+`"}`))
+	def, _ := decodeResult(t, res.Text)["definition"].(map[string]any)
+	if def["concurrency_policy"] != "allow" {
+		t.Errorf("a fork that did not name the policy lost it: %v", def)
+	}
+
+	for name, c := range map[string]struct{ overlay, want string }{
+		"unknown":           {`{"agent":"job-search-batch","schedule":"0 3 * * *","concurrency_policy":"queue"}`, "unknown concurrency_policy"},
+		"on a channel tick": {`{"delivery":"channel","channel":"c","schedule":"0 3 * * *","concurrency_policy":"replace"}`, "forbids concurrency_policy"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			res, _ := tool.Execute(ctx, json.RawMessage(`{"op":"create","name":"bad","overlay":`+c.overlay+`}`))
+			if !res.IsError || !strings.Contains(res.Text, c.want) {
+				t.Errorf("create = %q (error %v), want a refusal mentioning %q", res.Text, res.IsError, c.want)
+			}
+		})
+	}
+}

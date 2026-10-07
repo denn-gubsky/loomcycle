@@ -110,6 +110,8 @@ type SubstrateScheduleDef struct {
 	// mergedScheduleDef.MaxFires so the def round-trips through the lookup.
 	MaxFires int    `json:"max_fires,omitempty"`
 	UserID   string `json:"user_id,omitempty"`
+	// ConcurrencyPolicy mirrors mergedScheduleDef.ConcurrencyPolicy (RFC DZ).
+	ConcurrencyPolicy string `json:"concurrency_policy,omitempty"`
 	// UserTier is the fork-time tier pick — see the matching field
 	// commentary on builtin.mergedScheduleDef. Required for sweeper-
 	// side cron resolution on templates with user_tier_schedules.
@@ -206,6 +208,7 @@ func (s SubstrateScheduleDef) ToConfigDef() config.ScheduledRun {
 		Enabled:                enabled,
 		CatchUpMax:             s.CatchUpMax,
 		MaxFires:               s.MaxFires,
+		ConcurrencyPolicy:      s.ConcurrencyPolicy,
 		UserID:                 s.UserID,
 		UserCredentialsFromEnv: s.UserCredentialsFromEnv,
 		Metadata:               s.Metadata,

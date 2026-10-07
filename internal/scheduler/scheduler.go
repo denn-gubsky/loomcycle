@@ -167,6 +167,10 @@ type Scheduler struct {
 	fanoutEscalatedMu sync.Mutex
 	fanoutEscalated   map[string]map[consolidationTarget]bool
 
+	// canceller stops a running run for a concurrency_policy: replace slot
+	// (nil = replace skips as forbid does). See SetRunCanceller.
+	canceller RunCanceller
+
 	// reconcileLock gates the reconcile sweep to one replica per tick (nil =
 	// single replica, unguarded). See SetReconcileCoordination.
 	reconcileLock    AdvisoryLocker
@@ -413,6 +417,13 @@ func (s *Scheduler) fireOne(ctx context.Context, row store.ScheduleDueRow, now t
 	if s.spentWhileRunning(ctx, row, def) {
 		// max_fires is used up by runs that have not finished; the def is
 		// retired when one does.
+		return
+	}
+	// A slot that would start a run or a walk while the schedule's previous
+	// one is still going does what concurrency_policy says. A channel tick
+	// starts nothing to overlap, and a consolidation sweep keeps to one per
+	// def on its own (startConsolidationFanout).
+	if def.Delivery != "channel" && !isConsolidationFanout(def) && !s.admitOverlap(ctx, row, def, now) {
 		return
 	}
 

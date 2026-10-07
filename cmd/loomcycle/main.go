@@ -3075,6 +3075,9 @@ func main() {
 		// A `delivery: team` tick starts its walk through the server, which
 		// owns the walk — the same instance that runs a tick's agent run.
 		sched.SetTeamWalkStarter(srv)
+		// RFC DZ: a concurrency_policy: replace slot cancels the schedule's
+		// running run through the server, on whichever replica runs it.
+		sched.SetRunCanceller(srv)
 		// RFC BL P2 consolidation fan-out: the provider resolver decides
 		// parallel-vs-serial dispatch (a local model runtime is serialized), and
 		// the advisory lock makes exactly one replica per tick enumerate the

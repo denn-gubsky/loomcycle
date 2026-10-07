@@ -2908,6 +2908,13 @@ type ScheduledRun struct {
 	// too — it's a hard lifetime cap regardless of cadence.
 	MaxFires int `yaml:"max_fires"`
 
+	// ConcurrencyPolicy is what a slot does when the schedule's previous run
+	// (or walk) is still going (RFC DZ): forbid (default — skip the slot,
+	// recorded as skipped_overlap, not counted toward max_fires), allow
+	// (start another), or replace (cancel the running one, then start).
+	// Refused on delivery: channel, which starts nothing.
+	ConcurrencyPolicy string `yaml:"concurrency_policy"`
+
 	// UserID is the run's identity anchor for STANDALONE entries.
 	// Empty = TEMPLATE entry (orchestrators fork with their per-user
 	// identity supplied via the ScheduleDef tool overlay).
@@ -8066,6 +8073,9 @@ func validate(c *Config) error {
 		}
 		if sr.CatchUpMax < 0 {
 			return fmt.Errorf("scheduled_runs.%s: catch_up_max must be >= 0", name)
+		}
+		if err := CheckScheduleConcurrencyPolicy(sr.ConcurrencyPolicy, sr.Delivery); err != nil {
+			return fmt.Errorf("scheduled_runs.%s: %w", name, err)
 		}
 		// Validate on_complete kinds.
 		for i, hook := range sr.OnComplete {
