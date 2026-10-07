@@ -91,8 +91,9 @@ yours with its own transcript, and it is cancelled if your run is.
   goes on waiting and is woken once, when the last has ended. A child still
   running elsewhere is read from its run when it ends. A child's `timeout_ms`
   carries over: it still runs out when it would have — neither time the
-  child spent held for review nor the pauses it was parked for count, the
-  downtime before a restored child runs again included — and a child already
+  child spent held for review nor time the runtime was paused counts,
+  whether or not the child parked for the pause, the downtime before a
+  restored child runs again included — and a child already
   past it when your run comes back reads `timeout` at once. A child
   that had not started when your run paused, or whose run
   did not come along with yours, reads `failed` — start it again if you need
