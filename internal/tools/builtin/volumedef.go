@@ -188,13 +188,22 @@ func (v *VolumeDef) execCreate(ctx context.Context, in volumeDefInput) (tools.Re
 	tenantID := tools.RunIdentity(ctx).TenantID
 	// Derive + fence + MkdirAll through the one provisioning helper snapshot
 	// restore also uses, so a restored volume lands exactly where this would.
-	path, _, err := dynvol.Provision(dynRoot, tenantID, in.Name)
+	path, created, err := dynvol.Provision(dynRoot, tenantID, in.Name)
 	if err != nil {
 		return errResult(fmt.Sprintf("create: %s", err)), nil
+	}
+	// A directory this call made but could not record is one no row names.
+	// Remove only that one, and only while empty: a re-create that reused an
+	// existing directory must leave it (and its content) where it was.
+	undo := func() {
+		if created {
+			dynvol.RemoveEmptyFenced(dynRoot, path)
+		}
 	}
 
 	body, err := json.Marshal(dynvol.Body{Path: path, Mode: mode})
 	if err != nil {
+		undo()
 		return errResult(fmt.Sprintf("create: marshal: %s", err)), nil
 	}
 	row, err := v.Store.VolumeDefCreate(ctx, store.VolumeDefRow{
@@ -203,6 +212,7 @@ func (v *VolumeDef) execCreate(ctx context.Context, in volumeDefInput) (tools.Re
 		Definition: body,
 	})
 	if err != nil {
+		undo()
 		return errResult(fmt.Sprintf("create: %s", err)), nil
 	}
 	resp := volumeDefRowResponse(row, mode)

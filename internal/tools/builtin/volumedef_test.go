@@ -541,7 +541,7 @@ func TestVolumeDefTool_CreateEphemeralRefusesPersistentDynamicCollision(t *testi
 // standing in for a store fault on a live ctx.
 type faultyVolumeStore struct {
 	store.Store
-	failGetByName, failEphemeralCreate bool
+	failGetByName, failEphemeralCreate, failCreate bool
 }
 
 var errVolumeStoreFault = errors.New("store fault")
@@ -558,6 +558,13 @@ func (f *faultyVolumeStore) EphemeralVolumeCreate(ctx context.Context, row store
 		return store.EphemeralVolumeDefRow{}, errVolumeStoreFault
 	}
 	return f.Store.EphemeralVolumeCreate(ctx, row)
+}
+
+func (f *faultyVolumeStore) VolumeDefCreate(ctx context.Context, row store.VolumeDefRow) (store.VolumeDefRow, error) {
+	if f.failCreate {
+		return store.VolumeDefRow{}, errVolumeStoreFault
+	}
+	return f.Store.VolumeDefCreate(ctx, row)
 }
 
 // A cancelled run (a background child cancelled as its root ends) can still
@@ -642,6 +649,40 @@ func TestVolumeDefTool_CreateEphemeralInsertFaultRemovesItsDirectory(t *testing.
 	}
 	if info, err := os.Stat(filepath.Join(runDir, "kept")); err != nil || !info.IsDir() {
 		t.Errorf("failed insert removed another volume's directory (err=%v)", err)
+	}
+}
+
+// A persistent row insert that fails on a live ctx removes the directory this
+// create made, so no directory is left that no row names.
+func TestVolumeDefTool_CreatePersistentInsertFaultRemovesItsDirectory(t *testing.T) {
+	tool, base, root, cleanup := volumeDefFixture(t)
+	defer cleanup()
+	tool.Store = &faultyVolumeStore{Store: tool.Store, failCreate: true}
+	ctx, _ := ephemeralCtx(base, "run-1")
+	if _, res := vdExec(t, tool, ctx, `{"op":"create","name":"work"}`); !res.IsError || !strings.Contains(res.Text, errVolumeStoreFault.Error()) {
+		t.Fatalf("create with a failing insert must refuse with the fault; got %s", res.Text)
+	}
+	if _, err := os.Stat(filepath.Join(root, "_shared", "work")); !os.IsNotExist(err) {
+		t.Errorf("failed insert left the directory it made (err=%v)", err)
+	}
+}
+
+// A create that reused a directory already on disk did not make it, so a
+// failed insert leaves it — even an empty one, which os.Remove would take.
+func TestVolumeDefTool_CreatePersistentInsertFaultKeepsAPreexistingDirectory(t *testing.T) {
+	tool, base, root, cleanup := volumeDefFixture(t)
+	defer cleanup()
+	tool.Store = &faultyVolumeStore{Store: tool.Store, failCreate: true}
+	dir := filepath.Join(root, "_shared", "work")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	ctx, _ := ephemeralCtx(base, "run-1")
+	if _, res := vdExec(t, tool, ctx, `{"op":"create","name":"work"}`); !res.IsError {
+		t.Fatalf("create with a failing insert succeeded: %s", res.Text)
+	}
+	if info, err := os.Stat(dir); err != nil || !info.IsDir() {
+		t.Errorf("failed insert removed a directory it did not make (err=%v)", err)
 	}
 }
 

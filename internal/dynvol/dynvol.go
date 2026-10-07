@@ -239,24 +239,25 @@ func ProvisionEphemeral(dynRoot, rootRunID, name string) (path string, undo func
 	leafCreated, err := mkdirFenced(dynRoot, path)
 	if err != nil {
 		if runDirCreated {
-			removeEmptyFenced(dynRoot, runDir)
+			RemoveEmptyFenced(dynRoot, runDir)
 		}
 		return "", nil, err
 	}
 	return path, func() {
 		if leafCreated {
-			removeEmptyFenced(dynRoot, path)
+			RemoveEmptyFenced(dynRoot, path)
 		}
 		if runDirCreated {
-			removeEmptyFenced(dynRoot, runDir)
+			RemoveEmptyFenced(dynRoot, runDir)
 		}
 	}, nil
 }
 
-// removeEmptyFenced removes path if it is an empty directory strictly inside
-// the dynamic root. Best-effort: a failure (already gone, not empty) leaves
-// the directory for the run-completion purge.
-func removeEmptyFenced(dynRoot, path string) {
+// RemoveEmptyFenced removes path if it is an empty directory strictly inside
+// the dynamic root. It is the undo for a create whose row insert failed, so a
+// caller passes only a directory its own Provision call created. Best-effort:
+// a failure (already gone, not empty) leaves the directory in place.
+func RemoveEmptyFenced(dynRoot, path string) {
 	rootResolved, rel, err := locateBelowRoot(dynRoot, path)
 	if err != nil {
 		return
