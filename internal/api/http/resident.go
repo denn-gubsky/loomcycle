@@ -60,7 +60,7 @@ type residentChild struct {
 	runID         string
 	agentID       string // cancel-registry key (close/idle cancel by agent_id)
 	agentName     string // the resident child's agent name (for Web-UI visibility)
-	parentAgentID string // the opener's agent id (parent-teardown backstop)
+	parentAgentID string // the opener's agent id: teardown backstop + ownership
 	tenantID      string // ownership: send/close must come from this tenant
 	userID        string
 	cancel        context.CancelCauseFunc // direct fallback if the registry entry is gone
@@ -203,9 +203,27 @@ type residentRegistry struct {
 }
 
 type residentTombstone struct {
-	tenantID string
-	reason   string
-	at       time.Time
+	tenantID      string
+	userID        string
+	parentAgentID string
+	reason        string
+	at            time.Time
+}
+
+// residentOwnedBy reports whether caller is the run that opened a child with
+// this tenant, user and parent agent id. Only the opener may address it: run
+// ids are not secrets, and the tenant alone admitted any run in the tenant —
+// an isolated member's included — to read, steer, stop, close or keep alive
+// another user's child. The parent agent id is the opener's key because it is
+// what a resumed parent carries and what a rebuilt child is restored with; an
+// empty one matches nobody. The user check closes the window where another
+// user's run takes the agent id over (agent_id is caller-chosen at run start
+// once the opener no longer holds it).
+func residentOwnedBy(tenantID, userID, parentAgentID string, caller tools.RunIdentityValue) bool {
+	return parentAgentID != "" &&
+		parentAgentID == caller.AgentID &&
+		tenantID == caller.TenantID &&
+		userID == caller.UserID
 }
 
 func newResidentRegistry() *residentRegistry {
@@ -231,18 +249,18 @@ func (r *residentRegistry) remove(rc *residentChild) {
 	r.mu.Lock()
 	delete(r.m, rc.runID)
 	if reason != "" {
-		r.gone[rc.runID] = residentTombstone{tenantID: rc.tenantID, reason: reason, at: time.Now()}
+		r.gone[rc.runID] = residentTombstone{tenantID: rc.tenantID, userID: rc.userID, parentAgentID: rc.parentAgentID, reason: reason, at: time.Now()}
 	}
 	r.mu.Unlock()
 }
 
 // goneReason returns why a child that is no longer registered was reaped, for
-// a caller in its tenant; "" when it was not reaped (closed, ended) or the
-// caller is another tenant's.
-func (r *residentRegistry) goneReason(runID, tenantID string) string {
+// the run that opened it; "" when it was not reaped (closed, ended) or the
+// caller is any other run.
+func (r *residentRegistry) goneReason(runID string, caller tools.RunIdentityValue) string {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if t, ok := r.gone[runID]; ok && t.tenantID == tenantID {
+	if t, ok := r.gone[runID]; ok && residentOwnedBy(t.tenantID, t.userID, t.parentAgentID, caller) {
 		return t.reason
 	}
 	return ""
@@ -531,15 +549,16 @@ func (s *Server) closeResidentChild(ctx context.Context, childRunID string) erro
 // reap reason when the sweeper reaped it, else the generic not-found.
 func (s *Server) residentNotFound(ctx context.Context, childRunID string) error {
 	if s.residentReg != nil {
-		if reason := s.residentReg.goneReason(childRunID, tools.RunIdentity(ctx).TenantID); reason != "" {
+		if reason := s.residentReg.goneReason(childRunID, tools.RunIdentity(ctx)); reason != "" {
 			return fmt.Errorf("resident sub-agent %q was reaped by the runtime (%s); open a new one", childRunID, reason)
 		}
 	}
 	return fmt.Errorf("resident sub-agent %q not found (it may have been closed or timed out)", childRunID)
 }
 
-// lookupOwnedResident resolves a child by run_id and enforces tenant ownership
-// (a cross-tenant caller gets a not-found, never another tenant's child).
+// lookupOwnedResident resolves a child by run_id for the run that opened it
+// (residentOwnedBy). Any other caller — another tenant, another user, or
+// another run of the same user — gets the same not-found as an unknown id.
 func (s *Server) lookupOwnedResident(ctx context.Context, childRunID string) (*residentChild, bool) {
 	if s.residentReg == nil {
 		return nil, false
@@ -548,7 +567,7 @@ func (s *Server) lookupOwnedResident(ctx context.Context, childRunID string) (*r
 	if !ok {
 		return nil, false
 	}
-	if rc.tenantID != tools.RunIdentity(ctx).TenantID {
+	if !residentOwnedBy(rc.tenantID, rc.userID, rc.parentAgentID, tools.RunIdentity(ctx)) {
 		return nil, false
 	}
 	return rc, true
