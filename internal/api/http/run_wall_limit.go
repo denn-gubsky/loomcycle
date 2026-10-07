@@ -10,6 +10,12 @@ const WallLimitReason = "wall_limit"
 // the run ends cancelled with stop_reason "wall_limit" instead of failed; and
 // its cascade reaches what a ctx cancel does not — resident children and
 // detached walks, which run on contexts of their own.
-func (s *Server) wallLimitCancel(agentID string) func() {
-	return func() { s.cancelReg.Cancel(agentID, WallLimitReason) }
+//
+// It cancels THIS run and no other. The registry is keyed by agent id, which a
+// later run can hold — a continuation, or a caller reusing the id — so a
+// cancel by agent id, landing as this run ends, could end that one instead.
+// And it stays on this replica: the watcher lives in the process that runs
+// the run, so there is nothing to route.
+func (s *Server) wallLimitCancel(agentID, runID string) func() {
+	return func() { s.cancelReg.CancelLocalRun(agentID, runID, WallLimitReason) }
 }

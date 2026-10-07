@@ -198,13 +198,34 @@ func (r *Registry) Get(agentID string) (Entry, bool) {
 // "not on this replica" and silently skips — the owning replica's
 // subscriber will handle it.
 func (r *Registry) CancelLocal(agentID, reason string) (CancelResult, bool) {
+	return r.cancelLocal(agentID, "", reason)
+}
+
+// CancelLocalRun is CancelLocal for ONE run: it cancels the entry under
+// agentID only if that entry is run runID, and reports a miss otherwise.
+//
+// An agent id outlives a run — a continuation, or a caller that names its own,
+// registers the next run under the same id. Something that decides to cancel
+// "this run" some time after it started (a run's own lifetime limit) must not
+// reach whichever run holds the id by then. The check and the removal happen
+// under one lock, so no other run can take the id between them.
+func (r *Registry) CancelLocalRun(agentID, runID, reason string) (CancelResult, bool) {
+	if runID == "" {
+		return CancelResult{}, false
+	}
+	return r.cancelLocal(agentID, runID, reason)
+}
+
+// cancelLocal cancels the local entry under agentID and its descendants.
+// onlyRunID, when set, limits it to an entry for that run.
+func (r *Registry) cancelLocal(agentID, onlyRunID, reason string) (CancelResult, bool) {
 	cause := ErrCancelledByAPI
 	if reason != "" {
 		cause = &cancelWithReason{reason: reason}
 	}
 	r.mu.Lock()
 	root, ok := r.entries[agentID]
-	if !ok {
+	if !ok || (onlyRunID != "" && root.RunID != onlyRunID) {
 		r.mu.Unlock()
 		return CancelResult{}, false
 	}

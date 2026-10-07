@@ -3358,7 +3358,7 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 		PayloadMetadata:     in.PayloadMetadata,
 		RunTimeoutSeconds:   runCfg.RunTimeoutSeconds,
 		MaxWallSeconds:      runCfg.MaxWallSeconds,
-		OnWallLimit:         s.wallLimitCancel(agentID),
+		OnWallLimit:         s.wallLimitCancel(agentID, runID),
 		Interactive:         in.Interactive,
 		InteractiveNow:      s.interactiveNowFn(runID, in.Interactive),
 		ArmTurnCancel:       s.armTurnCancelIf(in.Interactive, runID), // an interactive run's turn can be stopped; it parks
@@ -5297,7 +5297,7 @@ func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {
 		Metadata:            req.Metadata,  // direct /v1/runs caller is first-party → trusted; no payload_metadata
 		RunTimeoutSeconds:   runCfg.RunTimeoutSeconds,
 		MaxWallSeconds:      runCfg.MaxWallSeconds,
-		OnWallLimit:         s.wallLimitCancel(agentID),
+		OnWallLimit:         s.wallLimitCancel(agentID, runID),
 		Interactive:         req.Interactive,
 		InteractiveNow:      s.interactiveNowFn(runID, req.Interactive),
 		Review:              req.Review,

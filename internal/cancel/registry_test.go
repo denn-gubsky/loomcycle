@@ -340,3 +340,42 @@ func TestRegistry_ListAll_Empty(t *testing.T) {
 		t.Errorf("fresh registry returned %d entries, want 0", len(got))
 	}
 }
+
+// An agent id outlives a run. A cancel aimed at one run must not end the run
+// that holds the id later, and must still take that run's children with it
+// when it does land.
+func TestRegistry_CancelLocalRunCancelsOnlyTheRunItNames(t *testing.T) {
+	r := NewRegistry()
+	var cancelled []string
+	reg := func(agentID, runID, parent string) {
+		t.Helper()
+		_, cancelFn := context.WithCancelCause(context.Background())
+		if err := r.Register(Entry{AgentID: agentID, RunID: runID, ParentAgentID: parent}, func(cause error) {
+			cancelled = append(cancelled, agentID)
+			cancelFn(cause)
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	reg("a_reused", "r_second", "") // the id's CURRENT run
+	reg("a_child", "r_child", "a_reused")
+
+	// The first run's limit fires late: its id is now another run's.
+	if res, ok := r.CancelLocalRun("a_reused", "r_first", "wall_limit"); ok || res.Cancelled || len(cancelled) != 0 {
+		t.Fatalf("a cancel for run r_first ended %v (ok=%v): the id's current run is r_second", cancelled, ok)
+	}
+	if _, ok := r.CancelLocalRun("a_reused", "", "wall_limit"); ok || len(cancelled) != 0 {
+		t.Fatalf("a cancel naming no run ended %v", cancelled)
+	}
+	if r.Count() != 2 {
+		t.Fatalf("%d entries left, want both still registered", r.Count())
+	}
+
+	res, ok := r.CancelLocalRun("a_reused", "r_second", "wall_limit")
+	if !ok || !res.Cancelled || res.Reason != "wall_limit" {
+		t.Fatalf("cancel of the run it names = %+v, %v", res, ok)
+	}
+	if len(cancelled) != 2 || len(res.Cascaded) != 1 || res.Cascaded[0] != "a_child" {
+		t.Errorf("cancelled %v, cascaded %v; want the run and its child", cancelled, res.Cascaded)
+	}
+}
