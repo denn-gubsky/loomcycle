@@ -7,6 +7,6 @@
 -- the last claim took, which replica took it, and when. All nullable: a row
 -- never claimed has none.
 
-ALTER TABLE schedule_run_state ADD COLUMN slot_at    TIMESTAMPTZ;
-ALTER TABLE schedule_run_state ADD COLUMN claimed_by TEXT;
-ALTER TABLE schedule_run_state ADD COLUMN claimed_at TIMESTAMPTZ;
+ALTER TABLE schedule_run_state ADD COLUMN IF NOT EXISTS slot_at    TIMESTAMPTZ;
+ALTER TABLE schedule_run_state ADD COLUMN IF NOT EXISTS claimed_by TEXT;
+ALTER TABLE schedule_run_state ADD COLUMN IF NOT EXISTS claimed_at TIMESTAMPTZ;
