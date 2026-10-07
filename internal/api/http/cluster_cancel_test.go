@@ -137,3 +137,34 @@ func TestClusterCancel_TheRuntimesOwnCancelsEndARunOnADeadReplica(t *testing.T) 
 		t.Errorf("paused child = %s pause %q (%q), want cancelled and no longer paused", got.Status, got.PauseState, got.StopReason)
 	}
 }
+
+// A schedule's replace stops the run before it: an agent run through the
+// cancel coordinator, a team walk through the turn-cancel route. Either, on
+// a replica recorded dead, is ended as cancelled and the slot freed; on a
+// live replica that does not answer it is left, and the slot is not.
+func TestClusterCancel_AScheduleReplaceEndsARunOnADeadReplica(t *testing.T) {
+	_, b := twoReplicas(t, echoProvider{}, echoConfig(), false)
+	b.unheldRunGrace = time.Nanosecond
+	withCancelCoordinator(t, b)
+	ctx := context.Background()
+	agentRun := leftRun(t, b.store, store.RunIdentity{AgentID: "a_scheduled", ReplicaID: "replica-a"})
+	walk := leftRun(t, b.store, store.RunIdentity{AgentID: teamWalkAgentPrefix + "nightly", ReplicaID: "replica-a"})
+
+	for _, r := range []store.Run{agentRun, walk} {
+		if stopped, _ := b.CancelScheduledRun(ctx, r.ID, "replaced"); stopped {
+			t.Errorf("replace of %s on a live, silent replica reported it stopped", r.AgentID)
+		}
+		if got := runNow(t, b.store, r.ID); got.Status != store.RunRunning {
+			t.Fatalf("%s on a live replica was finished %s", r.AgentID, got.Status)
+		}
+	}
+	replicasOf(b).set("replica-a", false)
+	for _, r := range []store.Run{agentRun, walk} {
+		if stopped, err := b.CancelScheduledRun(ctx, r.ID, "replaced"); err != nil || !stopped {
+			t.Errorf("replace of %s on a dead replica = %v %v, want stopped", r.AgentID, stopped, err)
+		}
+		if got := runNow(t, b.store, r.ID); got.Status != store.RunCancelled || got.StopReason != "replaced" {
+			t.Errorf("%s = %s %q, want cancelled with the replace's reason", r.AgentID, got.Status, got.StopReason)
+		}
+	}
+}

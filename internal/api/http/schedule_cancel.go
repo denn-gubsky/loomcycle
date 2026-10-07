@@ -27,7 +27,11 @@ import (
 // walk running elsewhere goes through the turn-cancel registry, which routes a
 // run-id cancel to the owning replica, where the unarmed stopper ends the walk
 // (SetUnarmedStopper). In single-process mode nothing routes, and a walk that
-// is not live here reports false.
+// is live on no replica this one can reach reports false.
+//
+// A run no live loop holds anywhere — its replica is recorded dead, or a
+// crash left its row — has nothing to stop: its row is finished as cancelled
+// (finishUnheldRun), and the slot is free.
 func (s *Server) CancelScheduledRun(ctx context.Context, runID, reason string) (bool, error) {
 	if e, ok := s.walks.get(runID); ok {
 		e.cancel(cancel.CauseWithReason(strings.TrimSpace(reason)))
@@ -59,6 +63,9 @@ func (s *Server) CancelScheduledRun(ctx context.Context, runID, reason string) (
 			routeErr = err
 		}
 	} else if res, ok := s.cancelReg.Cancel(run.AgentID, reason); ok && res.Cancelled {
+		return true, nil
+	}
+	if s.finishUnheldRun(ctx, run, strings.TrimSpace(reason)) {
 		return true, nil
 	}
 	// Not cancelled: it may have ended meanwhile, which is as good.
