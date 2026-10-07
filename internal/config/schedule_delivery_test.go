@@ -126,3 +126,43 @@ func TestScheduleDelivery_UnknownDeliveryIsRefused(t *testing.T) {
 		t.Fatalf("err = %v, want an unknown-delivery refusal", err)
 	}
 }
+
+// concurrency_policy loads on a run or team schedule, is refused when unknown,
+// and is refused on a channel tick, which starts nothing that could overlap.
+func TestScheduleDelivery_ConcurrencyPolicy(t *testing.T) {
+	cfg, err := loadScheduleYAML(t, `
+  nightly:
+    agent: worker
+    schedule: "0 3 * * *"
+    concurrency_policy: replace
+    enabled: true
+`)
+	if err != nil {
+		t.Fatalf("Load failed: %v", err)
+	}
+	if got := cfg.ScheduledRuns["nightly"].ConcurrencyPolicy; got != "replace" {
+		t.Errorf("concurrency_policy = %q, want replace", got)
+	}
+	for name, tc := range map[string]struct{ yaml, want string }{
+		"unknown": {`
+  nightly:
+    agent: worker
+    schedule: "0 3 * * *"
+    concurrency_policy: queue
+`, "unknown concurrency_policy"},
+		"on a channel tick": {`
+  tick:
+    delivery: channel
+    channel: wave-in
+    schedule: "0 3 * * *"
+    concurrency_policy: allow
+`, "delivery=channel forbids concurrency_policy"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			_, err := loadScheduleYAML(t, tc.yaml)
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Errorf("Load error = %v, want it to mention %q", err, tc.want)
+			}
+		})
+	}
+}

@@ -197,6 +197,7 @@ func TestSchedule_DriftDetection(t *testing.T) {
 		"timezone":                  true,
 		"enabled":                   true,
 		"catch_up_max":              true,
+		"concurrency_policy":        true,
 		"max_fires":                 true, // RFC S / F36 lifetime fire-count cap
 		"user_id":                   true,
 		"user_tier":                 true,

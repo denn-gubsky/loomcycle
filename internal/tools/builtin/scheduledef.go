@@ -93,7 +93,7 @@ const scheduleDefInputSchema = `{
     "parent_def_id": {"type": "string", "description": "Fork parent (optional for fork — when absent, forks the active def of the name, or bootstraps from a yaml template)."},
     "overlay": {
       "type": "object",
-      "description": "Mutable subset of ScheduledRun for create/fork (delivery, channel, team, vars, input, agent, prompt, schedule/user_tier_schedules, timezone, enabled, catch_up_max, max_fires, user_id, user_tier, user_credentials, user_credentials_from_env, on_complete, metadata, tenant_id). delivery is run (default — invoke the agent), channel (publish a cadence tick to the named channel and start NO run; forbids agent/prompt/on_complete/credentials, and carries metadata as the message payload) or team (start a detached walk of the team named in team, as TeamDef op=run mode=detach does: vars is name → literal text for variables the team declares, input is the walk's optional input; forbids agent/channel/prompt/on_complete/credentials/metadata, e.g. {\"schedule\":\"0 6 * * 1\",\"delivery\":\"team\",\"team\":\"weekly-report\",\"vars\":{\"repo\":\"loomcycle\"}}). The team is looked up in the schedule's tenant when the tick fires: a missing or retired team, a variable it does not declare, or a value it refuses starts no walk, is recorded as the schedule's last error, and does not count toward max_fires. team, vars and input are refused on the other deliveries. max_fires N>0 auto-retires the def after its Nth fire (1 = one-shot; 0 = unbounded). tenant_id (where fired runs execute) may name only your own tenant unless you are an admin; omit it to use yours. Immutable / server-set fields are silently ignored if supplied.",
+      "description": "Mutable subset of ScheduledRun for create/fork (delivery, channel, team, vars, input, agent, prompt, schedule/user_tier_schedules, timezone, enabled, catch_up_max, max_fires, concurrency_policy, user_id, user_tier, user_credentials, user_credentials_from_env, on_complete, metadata, tenant_id). delivery is run (default — invoke the agent), channel (publish a cadence tick to the named channel and start NO run; forbids agent/prompt/on_complete/credentials, and carries metadata as the message payload) or team (start a detached walk of the team named in team, as TeamDef op=run mode=detach does: vars is name → literal text for variables the team declares, input is the walk's optional input; forbids agent/channel/prompt/on_complete/credentials/metadata, e.g. {\"schedule\":\"0 6 * * 1\",\"delivery\":\"team\",\"team\":\"weekly-report\",\"vars\":{\"repo\":\"loomcycle\"}}). The team is looked up in the schedule's tenant when the tick fires: a missing or retired team, a variable it does not declare, or a value it refuses starts no walk, is recorded as the schedule's last error, and does not count toward max_fires. team, vars and input are refused on the other deliveries. max_fires N>0 auto-retires the def after its Nth fire (1 = one-shot; 0 = unbounded). concurrency_policy is what a slot does while the schedule's previous run or walk is still going: forbid (default — skip the slot, recorded as skipped_overlap and not counted toward max_fires), allow (start another alongside it) or replace (cancel the running one, then start); refused on delivery channel. tenant_id (where fired runs execute) may name only your own tenant unless you are an admin; omit it to use yours. Immutable / server-set fields are silently ignored if supplied.",
       "additionalProperties": true
     },
     "description":   {"type": "string", "description": "Free-text rationale for create/fork."},
@@ -1151,6 +1151,9 @@ func validateScheduleDef(def mergedScheduleDef) error {
 	if def.CatchUpMax < 0 {
 		return fmt.Errorf("catch_up_max must be >= 0")
 	}
+	if err := config.CheckScheduleConcurrencyPolicy(def.ConcurrencyPolicy, def.Delivery); err != nil {
+		return err
+	}
 	for i, h := range def.OnComplete {
 		switch h.Kind {
 		case "channel.publish":
@@ -1381,6 +1384,9 @@ type mergedScheduleDef struct {
 	// no such distinction.
 	MaxFires *int   `json:"max_fires,omitempty"`
 	UserID   string `json:"user_id,omitempty"`
+	// ConcurrencyPolicy is forbid | allow | replace; "" = forbid (RFC DZ).
+	// omitempty keeps every def written before it byte-identical.
+	ConcurrencyPolicy string `json:"concurrency_policy,omitempty"`
 	// UserTier is the fork-time tier pick for templates with
 	// user_tier_schedules. The scheduler's ResolveCron uses it to
 	// select which cron expression to fire from the per-tier map.
@@ -1505,6 +1511,9 @@ func (d *mergedScheduleDef) applyOverlay(ov mergedScheduleDef) {
 	if ov.CatchUpMax != 0 {
 		d.CatchUpMax = ov.CatchUpMax
 	}
+	if ov.ConcurrencyPolicy != "" {
+		d.ConcurrencyPolicy = ov.ConcurrencyPolicy
+	}
 	if ov.MaxFires != nil {
 		// Non-nil (incl. an explicit 0) overrides; nil = overlay omitted
 		// the field → inherit the parent's cap. This is what lets a fork
@@ -1580,6 +1589,7 @@ func staticToMergedScheduleDef(sr config.ScheduledRun) mergedScheduleDef {
 		Timezone:               sr.Timezone,
 		Enabled:                &enabled,
 		CatchUpMax:             sr.CatchUpMax,
+		ConcurrencyPolicy:      sr.ConcurrencyPolicy,
 		UserID:                 sr.UserID,
 		UserCredentialsFromEnv: sr.UserCredentialsFromEnv,
 		Metadata:               sr.Metadata,

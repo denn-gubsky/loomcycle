@@ -76,3 +76,27 @@ func sortedVarNames(vars map[string]string) []string {
 	sort.Strings(names)
 	return names
 }
+
+// Schedule concurrency policies (RFC DZ). "" means ScheduleConcurrencyForbid.
+const (
+	ScheduleConcurrencyForbid  = "forbid"
+	ScheduleConcurrencyAllow   = "allow"
+	ScheduleConcurrencyReplace = "replace"
+)
+
+// CheckScheduleConcurrencyPolicy validates a schedule's concurrency_policy
+// against its delivery. A channel tick starts nothing that could overlap, so
+// the field is refused there rather than ignored: a setting the author
+// believes they made must do something. Shared by the yaml validator and the
+// ScheduleDef tool, as CheckScheduleTeamDelivery is.
+func CheckScheduleConcurrencyPolicy(policy, delivery string) error {
+	switch policy {
+	case "", ScheduleConcurrencyForbid, ScheduleConcurrencyAllow, ScheduleConcurrencyReplace:
+	default:
+		return fmt.Errorf("unknown concurrency_policy %q (want forbid, allow or replace)", policy)
+	}
+	if policy != "" && delivery == "channel" {
+		return fmt.Errorf("delivery=channel forbids concurrency_policy (a channel tick starts no run that could overlap)")
+	}
+	return nil
+}

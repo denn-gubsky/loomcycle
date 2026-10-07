@@ -159,6 +159,34 @@ flag (lineage stays visible in `/ui/schedules`); the run-state row's
 `fire_count` is the counter. Set it on a substrate fork via the overlay:
 `{op:"fork", name:"…", overlay:{max_fires:3}}`.
 
+## `concurrency_policy` — when the previous run is still going
+
+A scheduled run has no time limit, so a long job on a short cron can still be
+running when its next time comes. `concurrency_policy` says what that slot
+does, for agent (`run`) and `team` schedules alike:
+
+| Value | What the slot does |
+|---|---|
+| `forbid` (default) | Starts nothing. The schedule records `last_status: skipped_overlap`; the skip does not count toward `max_fires`. |
+| `allow` | Starts another run alongside it. Each run records its own outcome and fires its own `on_complete`. |
+| `replace` | Cancels the running run (it ends `cancelled`, reason `replaced by the next slot`, with no hooks), then starts. |
+
+```yaml
+scheduled_runs:
+  hourly-digest:
+    agent: digester
+    schedule: "0 * * * *"
+    concurrency_policy: replace   # a stale digest is worth less than a fresh one
+```
+
+- It holds across replicas: whether a run is still going is read from the
+  store every replica shares.
+- `replace` never starts a run over one it could not stop. A team walk can
+  only be cancelled on the replica it runs on, so when the running walk is
+  elsewhere the slot is skipped as `forbid` would.
+- Refused on `delivery: channel`, which starts nothing that could overlap. A
+  consolidation sweep always runs one at a time per schedule.
+
 ## `tenant_id` — which tenant the fired run executes as
 
 Set `tenant_id:` on a schedule to make its spawned run execute as that
