@@ -153,7 +153,13 @@ func (a *AgentTool) spawnInBackground(ctx context.Context, bg *tools.Background,
 			bg.SetState(runID, state)
 		default:
 		}
-		go a.runBackgroundChild(cctx, bg, sem, state == tools.ChildRunning, live[i], runID, e)
+		// Held from here, while the calling run is alive, until the child's
+		// goroutine has returned — its own run's end included.
+		releaseTree := a.holdRunTree(ctx)
+		go func() {
+			defer releaseTree()
+			a.runBackgroundChild(cctx, bg, sem, state == tools.ChildRunning, live[i], runID, e)
+		}()
 		row := pollStartRow{Agent: e.name, ChildRunID: runID, State: state}
 		if e.index >= 0 {
 			idx := e.index
@@ -180,6 +186,17 @@ func (a *AgentTool) spawnInBackground(ctx context.Context, bg *tools.Background,
 		return errFrom(fmt.Sprintf("internal: marshal poll-mode answer: %s", err), err), nil
 	}
 	return tools.Result{Text: string(body)}, nil
+}
+
+// holdRunTree holds the calling run's tree for a child that outlives the call,
+// and returns the release. A no-op when nothing is wired or the run has no
+// tree.
+func (a *AgentTool) holdRunTree(ctx context.Context) func() {
+	root := tools.RunIdentity(ctx).RootRunID
+	if a.HoldRunTree == nil || root == "" {
+		return func() {}
+	}
+	return a.HoldRunTree(root)
 }
 
 // runBackgroundChild runs one background child to its end and files the

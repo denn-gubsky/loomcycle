@@ -3,21 +3,25 @@ package http
 import "sync"
 
 // runTreeHolds keeps a run tree's ephemeral state — its ephemeral volumes and
-// run-scope SQL database — alive past its top-level run while a detached team
-// walk started inside the tree still runs.
+// run-scope SQL database — alive past its top-level run while a run started
+// inside the tree still runs.
 //
 // The tree's state is torn down when its top-level run ends, which was safe
-// while every run in a tree ended before its root. A detached walk does not: it
-// keeps the starter's root run id, so its members read and write the starter
-// tree's volumes, and it outlives the run that started it. Torn down at the
-// root's end, the walk's files vanished under it mid-run.
+// while every run in a tree ended before its root. Several do not. A detached
+// walk keeps the starter's root run id, so its members read and write the
+// starter tree's volumes, and it outlives the run that started it. A background
+// child — a poll-mode spawn or walk, a resident child, a resumed sub-run — is
+// cancelled when its parent ends but not waited for, and a cancelled run stops
+// only at its next await: one still inside a tool call wrote to, or provisioned,
+// a volume the root's end had already removed.
 //
-// A detached walk holds its tree from the moment its run opens until its run
-// closes. The root's end with a hold outstanding records the purge as owed; the
-// last hold released pays it. In-process only, and that is enough here: the
-// walk is opened by a tool call inside the tree, so it runs on the replica the
-// tree runs on. A walk that dies with its process holds nothing in the next
-// one — the ephemeral sweeper covers that, by not purging a tree while any run
+// Each of them holds its tree from before it can outlive its starter until its
+// goroutine has returned. The root's end with a hold outstanding records the
+// purge as owed; the last hold released pays it. There is no timeout: a slow
+// unwind is waited for, never cut short. In-process only, and that is enough
+// here: each is started by a run inside the tree, so it runs on the replica the
+// tree runs on. One that dies with its process holds nothing in the next one —
+// the ephemeral sweeper covers that, by not purging a tree while any run
 // beneath its root is still running (EphemeralVolumeSweepCandidates).
 //
 // Zero value works (test fixtures build a Server without a constructor).
@@ -68,4 +72,23 @@ func (h *runTreeHolds) deferPurge(root string) bool {
 	}
 	h.owed[root] = true
 	return true
+}
+
+// holdRunTree takes one hold on the tree rooted at root and returns its
+// release, which purges the tree when it is the last hold and the top-level run
+// has already ended. The release may be called more than once; only the first
+// counts. An empty root holds nothing.
+func (s *Server) holdRunTree(root string) (release func()) {
+	if root == "" {
+		return func() {}
+	}
+	s.runTrees.hold(root)
+	var once sync.Once
+	return func() {
+		once.Do(func() {
+			if s.runTrees.release(root) {
+				s.purgeEphemeralVolumesForRun(root)
+			}
+		})
+	}
 }

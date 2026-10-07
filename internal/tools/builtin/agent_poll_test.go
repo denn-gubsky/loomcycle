@@ -491,3 +491,58 @@ func TestAgentPoll_StartedRowRecordsTheChildsTimeout(t *testing.T) {
 	g.open("bounded")
 	g.open("free")
 }
+
+// Each poll-mode child holds its run's tree from before the call returns until
+// its end is filed, so the tree outlives a child its parent's end cancelled
+// but did not wait for. A wait-mode spawn holds nothing: the call itself waits.
+func TestAgentPoll_EachChildHoldsItsRunTreeUntilItHasEnded(t *testing.T) {
+	g := newGated("x", "y", "z")
+	a := pollTool(g)
+	ctx, bg := pollCtx()
+	ctx = tools.WithRunIdentity(ctx, tools.RunIdentityValue{RootRunID: "r_root"})
+	var mu sync.Mutex
+	held := map[string]int{}
+	var releasedAfterEnds []int // ended children seen at each release
+	a.HoldRunTree = func(root string) func() {
+		mu.Lock()
+		held[root]++
+		mu.Unlock()
+		return func() {
+			views, _ := bg.Select(nil, "")
+			ended := 0
+			for _, v := range views {
+				if v.Ended() {
+					ended++
+				}
+			}
+			mu.Lock()
+			held[root]--
+			releasedAfterEnds = append(releasedAfterEnds, ended)
+			mu.Unlock()
+		}
+	}
+	heldOn := func(root string) int {
+		mu.Lock()
+		defer mu.Unlock()
+		return held[root]
+	}
+
+	g.open("z")
+	execJSON(t, a, ctx, `{"op":"spawn","name":"w","prompt":"z"}`)
+	if n := heldOn("r_root"); n != 0 {
+		t.Fatalf("a wait-mode spawn left %d holds", n)
+	}
+	execJSON(t, a, ctx, `{"op":"parallel_spawn","mode":"poll","spawns":[{"name":"w","prompt":"x"},{"name":"w","prompt":"y"}]}`)
+	if n := heldOn("r_root"); n != 2 {
+		t.Fatalf("holds after the call returned = %d, want one per child", n)
+	}
+	bg.Close(errors.New("parent ended")) // cancels both, waits for neither
+	waitUntil(t, func() bool { return heldOn("r_root") == 0 })
+	mu.Lock()
+	defer mu.Unlock()
+	for i, ended := range releasedAfterEnds {
+		if ended < i+1 {
+			t.Errorf("release %d came with %d children ended, want its own end filed first", i+1, ended)
+		}
+	}
+}

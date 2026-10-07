@@ -126,9 +126,10 @@ func (s *Server) openTeamWalkRun(ctx context.Context, spec builtin.WalkRunSpec) 
 	// The root run id is kept too, so the walk's members use the starter
 	// tree's ephemeral volumes — which the tree's top-level run would tear down
 	// when it ends, possibly with this walk still running. The walk holds the
-	// tree until its own run closes.
+	// tree until its own run closes. So does a poll-mode walk: its starter's
+	// end cancels it without waiting for its members to unwind.
 	heldRoot := ""
-	if detach && ident.RootRunID != "" {
+	if (detach || spec.Poll) && ident.RootRunID != "" {
 		heldRoot = ident.RootRunID
 		s.runTrees.hold(heldRoot)
 	}

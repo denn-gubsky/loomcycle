@@ -968,6 +968,13 @@ func (s *Server) resumePausedRun(run store.Run) error {
 		}
 	}
 
+	// A resumed sub-run runs detached from its parent, whose cancel reaches it
+	// through the registry and is not waited for: it holds its tree until its
+	// goroutine has returned, so the root's end leaves the purge to it.
+	releaseTree := func() {}
+	if !meta.IsTopLevel {
+		releaseTree = s.holdRunTree(rootRunID)
+	}
 	go func() {
 		// Panic-safe teardown: a panic must not crash the process (no
 		// recoveryMiddleware wraps this detached goroutine) nor leak the run in
@@ -984,6 +991,7 @@ func (s *Server) resumePausedRun(run store.Run) error {
 			s.cancelReg.Deregister(run.AgentID)
 			runSpan.End()
 			cancelFn(nil)
+			releaseTree()
 		}()
 		// RFC X Phase 3: reconcile a parked fan-out parent BEFORE acquiring a run
 		// slot. The reconcile awaits this parent's children (which acquire their
