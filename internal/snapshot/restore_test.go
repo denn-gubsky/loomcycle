@@ -1903,7 +1903,7 @@ func TestCapture_CarriesNoPerRunSecret(t *testing.T) {
 		"started_at": true, "model": true, "pause_state": true, "tenant_id": true, "interactive": true,
 		"operator_key_restricted": true, "isolated": true, "parent_run_id": true,
 		"parent_context": true, "run_config": true, "transcript_events": true,
-		"transcript_error": true,
+		"transcript_error": true, "idempotency_key": true, "delivery_alt_key": true,
 	}
 	for k := range entries[0] {
 		if !allowed[k] {
@@ -1912,4 +1912,81 @@ func TestCapture_CarriesNoPerRunSecret(t *testing.T) {
 				"question this test exists to force.", k)
 		}
 	}
+}
+
+// A paused run's dedup keys cross the snapshot boundary, so a request retried
+// against the instance the run was restored on finds the run instead of
+// starting the work again. And when the target already has a run holding the
+// key, the paused run still comes back — without the key, with a warning.
+func TestRoundTrip_PreservesARunsDedupKeys(t *testing.T) {
+	src, srcClose := newTestStore(t)
+	defer srcClose()
+	ctx := context.Background()
+
+	sess, _ := src.CreateSession(ctx, "t", "qa", "user1")
+	run, err := src.CreateRun(ctx, sess.ID, store.RunIdentity{
+		AgentID: "a_keyed", UserID: "user1", TenantID: "t",
+		IdempotencyKey: "run:t:user1:score-c1", DeliveryAltKey: "webhook:t:hook:alt-1",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := src.SetRunPauseState(ctx, run.ID, store.PauseStatePaused); err != nil {
+		t.Fatal(err)
+	}
+	_, raw, err := Capture(ctx, src, CaptureOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{`"idempotency_key":"run:t:user1:score-c1"`, `"delivery_alt_key":"webhook:t:hook:alt-1"`} {
+		if !strings.Contains(string(raw), want) {
+			t.Fatalf("the captured envelope lacks %s", want)
+		}
+	}
+
+	t.Run("an empty target", func(t *testing.T) {
+		dst, dstClose := newTestStore(t)
+		defer dstClose()
+		if _, err := Restore(ctx, dst, raw, RestoreOptions{}); err != nil {
+			t.Fatalf("Restore: %v", err)
+		}
+		got, found, err := dst.RunByIdempotencyKey(ctx, "run:t:user1:score-c1")
+		if err != nil || !found || got.ID != run.ID {
+			t.Fatalf("the restored run does not hold its key: %q, %v, %v", got.ID, found, err)
+		}
+		if got.DeliveryAltKey != "webhook:t:hook:alt-1" {
+			t.Errorf("restored delivery_alt_key = %q", got.DeliveryAltKey)
+		}
+	})
+
+	t.Run("a target where another run holds the key", func(t *testing.T) {
+		dst, dstClose := newTestStore(t)
+		defer dstClose()
+		other, _ := dst.CreateSession(ctx, "t", "qa", "user1")
+		holder, err := dst.CreateRun(ctx, other.ID, store.RunIdentity{AgentID: "a_holder", UserID: "user1", TenantID: "t", IdempotencyKey: "run:t:user1:score-c1"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		res, err := Restore(ctx, dst, raw, RestoreOptions{})
+		if err != nil {
+			t.Fatalf("Restore: %v", err)
+		}
+		got, err := dst.GetRun(ctx, run.ID)
+		if err != nil {
+			t.Fatalf("the paused run was not restored: %v", err)
+		}
+		if got.IdempotencyKey != "" || got.DeliveryAltKey != "" {
+			t.Errorf("the restored run kept keys %q / %q that another run holds", got.IdempotencyKey, got.DeliveryAltKey)
+		}
+		if still, found, _ := dst.RunByIdempotencyKey(ctx, "run:t:user1:score-c1"); !found || still.ID != holder.ID {
+			t.Errorf("the key moved off its holder: %q, %v", still.ID, found)
+		}
+		warned := false
+		for _, w := range res.Warnings {
+			warned = warned || (strings.Contains(w, run.ID) && strings.Contains(w, "dedup key"))
+		}
+		if !warned {
+			t.Errorf("no warning names the run restored without its key: %v", res.Warnings)
+		}
+	})
 }

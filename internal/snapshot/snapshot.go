@@ -770,6 +770,11 @@ func capturePausedRuns(ctx context.Context, s store.Store, out *PausedRunsSectio
 			ParentContext: r.ParentContext.Clone(), // v0.12.x: survive pause→snapshot→restore
 			RunConfig:     r.RunConfig,             // resume on the run's own settings, not the def's current ones
 
+			// The dedup keys go with the run, so a retry after the restore
+			// still finds it.
+			IdempotencyKey: r.IdempotencyKey,
+			DeliveryAltKey: r.DeliveryAltKey,
+
 			// Resume reads the confinement bits from the restored row.
 			OperatorKeyRestricted: r.OperatorKeyRestricted,
 			Isolated:              r.Isolated,

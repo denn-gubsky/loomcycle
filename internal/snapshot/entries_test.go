@@ -241,8 +241,8 @@ var pinnedEntryKeys = map[string][]string{
 
 	"PausedRunEntry": {"run_id", "agent_id", "parent_agent_id", "user_id", "user_tier", "agent", "agent_def_id",
 		"session_id", "started_at", "model", "pause_state", "tenant_id", "parent_run_id", "interactive",
-		"operator_key_restricted", "isolated", "parent_context", "run_config", "transcript_events",
-		"transcript_error"},
+		"operator_key_restricted", "isolated", "parent_context", "run_config", "idempotency_key",
+		"delivery_alt_key", "transcript_events", "transcript_error"},
 	"TranscriptEvent": {"seq", "ts_ns", "type", "payload"},
 	"store.ParentContext": {"root_agent_run_id", "function_key", "tier_at_run", "board_scope", "board_chunk_id",
 		"board_document_id", "walk_id", "wave_id", "wave_index", "state", "state_visit"},

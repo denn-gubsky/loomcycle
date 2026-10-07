@@ -2987,8 +2987,9 @@ func (s *Store) SnapshotRestoreRun(ctx context.Context, r store.Run) (bool, erro
 			input_tokens, output_tokens, cache_creation_tokens, cache_read_tokens,
 			model, provider, error,
 			agent_id, parent_agent_id, parent_run_id, user_id, last_heartbeat_at,
-			user_tier, agent_def_id, pause_state, parent_context, interactive, operator_key_restricted, isolated, run_config, walk_id, tenant_id
-		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26::jsonb, $27, $28)
+			user_tier, agent_def_id, pause_state, parent_context, interactive, operator_key_restricted, isolated, run_config, walk_id, tenant_id,
+			idempotency_key, delivery_alt_key
+		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26::jsonb, $27, $28, $29, $30)
 		 ON CONFLICT (id) DO NOTHING`,
 		r.ID, r.SessionID, status, startedAt, completedAt, nullIfEmpty(r.StopReason),
 		r.InputTokens, r.OutputTokens, r.CacheCreationTokens, r.CacheReadTokens,
@@ -2997,7 +2998,7 @@ func (s *Store) SnapshotRestoreRun(ctx context.Context, r store.Run) (bool, erro
 		nullIfEmpty(r.UserID), lastHbAt,
 		nullIfEmpty(r.UserTier), nullIfEmpty(r.AgentDefID), pauseState, pcVal, r.Interactive, r.OperatorKeyRestricted, r.Isolated,
 		nullableJSONArg(r.RunConfig), nullIfEmpty(store.RunWalkID(r.ParentContext)),
-		nullIfEmpty(r.TenantID),
+		nullIfEmpty(r.TenantID), nullIfEmpty(r.IdempotencyKey), nullIfEmpty(r.DeliveryAltKey),
 	)
 	if err != nil {
 		return false, fmt.Errorf("snapshot restore run: %w", err)

@@ -156,6 +156,7 @@ func Run(t *testing.T, factory Factory) {
 		{"ListPausedRunsOrderedByStartedAtAsc", testListPausedRunsOrderedByStartedAtAsc},
 		{"SnapshotRestoreRunKeepsItsTenant", testSnapshotRestoreRunKeepsItsTenant},
 		{"SnapshotRestoreRunKeepsItsParentRun", testSnapshotRestoreRunKeepsItsParentRun},
+		{"SnapshotRestoreRunKeepsItsDedupKeys", testSnapshotRestoreRunKeepsItsDedupKeys},
 		{"SnapshotRestoreRunEventsSortAfterTheTargetsHistory", testSnapshotRestoreRunEventsSortAfterTheTargetsHistory},
 		{"SnapshotRestoreRunEventsWritesARunsTranscriptOnce", testSnapshotRestoreRunEventsWritesARunsTranscriptOnce},
 		{"SnapshotRestoreRunEventsKeepTheSequenceAheadOfThem", testSnapshotRestoreRunEventsKeepTheSequenceAheadOfThem},
@@ -4966,6 +4967,43 @@ func testSnapshotRestoreRunKeepsItsParentRun(t *testing.T, s store.Store) {
 	}
 	if got.ParentRunID != "r_absent_parent" {
 		t.Errorf("restored run's parent run = %q, want r_absent_parent", got.ParentRunID)
+	}
+}
+
+// A restored run still holds its dedup keys: a lookup by either finds it, and
+// a new run cannot take them. Without the keys a retry after a restore
+// started the same work a second time.
+func testSnapshotRestoreRunKeepsItsDedupKeys(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	sess := store.Session{ID: "sess_restored_keyed", Agent: "a", UserID: "alice"}
+	if ok, err := s.SnapshotRestoreSession(ctx, sess); err != nil || !ok {
+		t.Fatalf("SnapshotRestoreSession = %v, %v", ok, err)
+	}
+	restored := store.Run{
+		ID: "r_restored_keyed", SessionID: sess.ID, UserID: "alice", AgentID: "a_restored_keyed",
+		Status: store.RunRunning, PauseState: store.PauseStatePaused,
+		IdempotencyKey: "run::alice:restored-key", DeliveryAltKey: "webhook:t:h:restored-alt",
+	}
+	if ok, err := s.SnapshotRestoreRun(ctx, restored); err != nil || !ok {
+		t.Fatalf("SnapshotRestoreRun = %v, %v", ok, err)
+	}
+	for _, key := range []string{restored.IdempotencyKey, restored.DeliveryAltKey} {
+		got, found, err := s.RunByDeliveryKeys(ctx, []string{key})
+		if err != nil || !found || got.ID != restored.ID {
+			t.Errorf("RunByDeliveryKeys(%q) = %q, %v, %v; want the restored run", key, got.ID, found, err)
+		}
+	}
+	if _, err := s.CreateRun(ctx, sess.ID, store.RunIdentity{AgentID: "a_retry", UserID: "alice", IdempotencyKey: restored.IdempotencyKey}); !errors.Is(err, store.ErrDuplicateIdempotencyKey) {
+		t.Errorf("a new run took the restored run's key: err = %v, want ErrDuplicateIdempotencyKey", err)
+	}
+	// A run with no keys restores with none, as before.
+	bare := store.Run{ID: "r_restored_bare", SessionID: sess.ID, UserID: "alice", AgentID: "a_restored_bare",
+		Status: store.RunRunning, PauseState: store.PauseStatePaused}
+	if ok, err := s.SnapshotRestoreRun(ctx, bare); err != nil || !ok {
+		t.Fatalf("SnapshotRestoreRun(bare) = %v, %v", ok, err)
+	}
+	if got, err := s.GetRun(ctx, bare.ID); err != nil || got.IdempotencyKey != "" || got.DeliveryAltKey != "" {
+		t.Errorf("a keyless run restored with keys %q / %q (err %v)", got.IdempotencyKey, got.DeliveryAltKey, err)
 	}
 }
 

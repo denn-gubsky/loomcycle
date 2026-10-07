@@ -683,6 +683,13 @@ message RunRequest {
   // {name, url, fail_mode, timeout_ms, headers}. Added only — nothing here
   // removes a hook the agent carries. Mirrors POST /v1/runs `hooks` + `tool_hooks`.
   bytes hooks_json = 37;
+  // Makes starting this run safe to retry: [A-Za-z0-9:._-]{1,200}. A second
+  // request with the same key, from the same tenant and user, starts nothing.
+  // On Run the stream then carries the existing run: its `agent` frame says
+  // "deduplicated": true and its events follow from the start. In a batch the
+  // child's SpawnResult names the existing run, deduplicated. A fresh run
+  // only. Mirrors POST /v1/runs `idempotency_key`.
+  string idempotency_key = 38;
 }
 
 message ContinueRequest {
@@ -886,6 +893,9 @@ message SpawnResult {
   string final_text = 6;
   Usage usage = 7;
   string error = 8;
+  // Set when the child's idempotency_key was already held by a run: the ids,
+  // status and result are that run's, and this request started nothing.
+  bool deduplicated = 9;
 }
 
 // BatchSpawnResult is the combined outcome; results is index-aligned with

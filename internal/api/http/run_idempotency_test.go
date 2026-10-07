@@ -272,15 +272,18 @@ func TestIdempotencyKey_AJoinDoesNotWaitOnARunHeldForReview(t *testing.T) {
 	}
 }
 
-// missFirstLookup hides the key from the first lookup, which is what a
-// request sees when another with the same key creates its run a moment later.
-type missFirstLookup struct {
+// missLookup hides the key from one lookup, which is what a request sees when
+// another with the same key creates its run a moment later. It is installed
+// before any run starts — a server's store is read by its running runs — and
+// the test picks which lookup misses.
+type missLookup struct {
 	store.Store
+	miss    int32 // the lookup, counted from 1, that finds nothing
 	lookups atomic.Int32
 }
 
-func (m *missFirstLookup) RunByIdempotencyKey(ctx context.Context, key string) (store.Run, bool, error) {
-	if m.lookups.Add(1) == 1 {
+func (m *missLookup) RunByIdempotencyKey(ctx context.Context, key string) (store.Run, bool, error) {
+	if m.lookups.Add(1) == m.miss {
 		return store.Run{}, false, nil
 	}
 	return m.Store.RunByIdempotencyKey(ctx, key)
@@ -291,15 +294,17 @@ func (m *missFirstLookup) RunByIdempotencyKey(ctx context.Context, key string) (
 // with the first instead of failing.
 func TestIdempotencyKey_ARequestRefusedByTheIndexIsAnsweredWithTheWinner(t *testing.T) {
 	s, gate := newGatedBatchServer(t, 4)
+	// Lookup 1 is the first request's own; lookup 2, the second request's, is
+	// the one that misses.
+	blind := &missLookup{Store: s.store, miss: 2}
+	s.store = blind
 	ctx := context.Background()
 	first := batchOne(t, s, ctx, "detach", 0, keyed("k", "u1"))
 	sessions := sessionCount(t, s.store)
 
-	blind := &missFirstLookup{Store: s.store}
-	s.store = blind
 	second := batchOne(t, s, ctx, "detach", 0, keyed("k", "u1"))
-	if blind.lookups.Load() < 2 {
-		t.Fatalf("the request made %d lookup(s); the index refusal was not reached", blind.lookups.Load())
+	if blind.lookups.Load() < 3 {
+		t.Fatalf("the requests made %d lookup(s); the index refusal was not reached", blind.lookups.Load())
 	}
 	if !second.Deduplicated || second.RunID != first.RunID {
 		t.Fatalf("second call = %+v, want the first run %s, deduplicated", second, first.RunID)

@@ -175,9 +175,16 @@ type RunRequest struct {
 	// where an entry is a HookDef name ("gate", "gate@3") or an inline webhook
 	// {name, url, fail_mode, timeout_ms, headers}. Added only — nothing here
 	// removes a hook the agent carries. Mirrors POST /v1/runs `hooks` + `tool_hooks`.
-	HooksJson     []byte `protobuf:"bytes,37,opt,name=hooks_json,json=hooksJson,proto3" json:"hooks_json,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	HooksJson []byte `protobuf:"bytes,37,opt,name=hooks_json,json=hooksJson,proto3" json:"hooks_json,omitempty"`
+	// Makes starting this run safe to retry: [A-Za-z0-9:._-]{1,200}. A second
+	// request with the same key, from the same tenant and user, starts nothing.
+	// On Run the stream then carries the existing run: its `agent` frame says
+	// "deduplicated": true and its events follow from the start. In a batch the
+	// child's SpawnResult names the existing run, deduplicated. A fresh run
+	// only. Mirrors POST /v1/runs `idempotency_key`.
+	IdempotencyKey string `protobuf:"bytes,38,opt,name=idempotency_key,json=idempotencyKey,proto3" json:"idempotency_key,omitempty"`
+	unknownFields  protoimpl.UnknownFields
+	sizeCache      protoimpl.SizeCache
 }
 
 func (x *RunRequest) Reset() {
@@ -467,6 +474,13 @@ func (x *RunRequest) GetHooksJson() []byte {
 		return x.HooksJson
 	}
 	return nil
+}
+
+func (x *RunRequest) GetIdempotencyKey() string {
+	if x != nil {
+		return x.IdempotencyKey
+	}
+	return ""
 }
 
 type ContinueRequest struct {
@@ -1402,15 +1416,18 @@ func (x *BatchSpawnRequest) GetTimeoutMs() int64 {
 // SpawnResult mirrors connector.SpawnRunResult — one child's outcome. A
 // per-child failure is reported here (status + error), never as an RPC error.
 type SpawnResult struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	AgentId       string                 `protobuf:"bytes,1,opt,name=agent_id,json=agentId,proto3" json:"agent_id,omitempty"`
-	RunId         string                 `protobuf:"bytes,2,opt,name=run_id,json=runId,proto3" json:"run_id,omitempty"`
-	SessionId     string                 `protobuf:"bytes,3,opt,name=session_id,json=sessionId,proto3" json:"session_id,omitempty"`
-	Status        string                 `protobuf:"bytes,4,opt,name=status,proto3" json:"status,omitempty"` // completed | failed | cancelled; running for a detached batch child
-	StopReason    string                 `protobuf:"bytes,5,opt,name=stop_reason,json=stopReason,proto3" json:"stop_reason,omitempty"`
-	FinalText     string                 `protobuf:"bytes,6,opt,name=final_text,json=finalText,proto3" json:"final_text,omitempty"`
-	Usage         *Usage                 `protobuf:"bytes,7,opt,name=usage,proto3" json:"usage,omitempty"`
-	Error         string                 `protobuf:"bytes,8,opt,name=error,proto3" json:"error,omitempty"`
+	state      protoimpl.MessageState `protogen:"open.v1"`
+	AgentId    string                 `protobuf:"bytes,1,opt,name=agent_id,json=agentId,proto3" json:"agent_id,omitempty"`
+	RunId      string                 `protobuf:"bytes,2,opt,name=run_id,json=runId,proto3" json:"run_id,omitempty"`
+	SessionId  string                 `protobuf:"bytes,3,opt,name=session_id,json=sessionId,proto3" json:"session_id,omitempty"`
+	Status     string                 `protobuf:"bytes,4,opt,name=status,proto3" json:"status,omitempty"` // completed | failed | cancelled; running for a detached batch child
+	StopReason string                 `protobuf:"bytes,5,opt,name=stop_reason,json=stopReason,proto3" json:"stop_reason,omitempty"`
+	FinalText  string                 `protobuf:"bytes,6,opt,name=final_text,json=finalText,proto3" json:"final_text,omitempty"`
+	Usage      *Usage                 `protobuf:"bytes,7,opt,name=usage,proto3" json:"usage,omitempty"`
+	Error      string                 `protobuf:"bytes,8,opt,name=error,proto3" json:"error,omitempty"`
+	// Set when the child's idempotency_key was already held by a run: the ids,
+	// status and result are that run's, and this request started nothing.
+	Deduplicated  bool `protobuf:"varint,9,opt,name=deduplicated,proto3" json:"deduplicated,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1499,6 +1516,13 @@ func (x *SpawnResult) GetError() string {
 		return x.Error
 	}
 	return ""
+}
+
+func (x *SpawnResult) GetDeduplicated() bool {
+	if x != nil {
+		return x.Deduplicated
+	}
+	return false
 }
 
 // BatchSpawnResult is the combined outcome; results is index-aligned with
@@ -10622,7 +10646,7 @@ var File_loomcycle_proto protoreflect.FileDescriptor
 
 const file_loomcycle_proto_rawDesc = "" +
 	"\n" +
-	"\x0floomcycle.proto\x12\floomcycle.v1\x1a\x1fgoogle/protobuf/timestamp.proto\"\x94\x0e\n" +
+	"\x0floomcycle.proto\x12\floomcycle.v1\x1a\x1fgoogle/protobuf/timestamp.proto\"\xbd\x0e\n" +
 	"\n" +
 	"RunRequest\x12\x14\n" +
 	"\x05agent\x18\x01 \x01(\tR\x05agent\x12\x1d\n" +
@@ -10669,7 +10693,8 @@ const file_loomcycle_proto_rawDesc = "" +
 	"\x06review\x18# \x01(\bR\x06review\x12,\n" +
 	"\x12review_ttl_seconds\x18$ \x01(\x05R\x10reviewTtlSeconds\x12\x1d\n" +
 	"\n" +
-	"hooks_json\x18% \x01(\fR\thooksJson\x1aB\n" +
+	"hooks_json\x18% \x01(\fR\thooksJson\x12'\n" +
+	"\x0fidempotency_key\x18& \x01(\tR\x0eidempotencyKey\x1aB\n" +
 	"\x14UserCredentialsEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
 	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01B\x17\n" +
@@ -10803,7 +10828,7 @@ const file_loomcycle_proto_rawDesc = "" +
 	"\x06spawns\x18\x01 \x03(\v2\x18.loomcycle.v1.RunRequestR\x06spawns\x12\x12\n" +
 	"\x04mode\x18\x02 \x01(\tR\x04mode\x12\x1d\n" +
 	"\n" +
-	"timeout_ms\x18\x03 \x01(\x03R\ttimeoutMs\"\xf7\x01\n" +
+	"timeout_ms\x18\x03 \x01(\x03R\ttimeoutMs\"\x9b\x02\n" +
 	"\vSpawnResult\x12\x19\n" +
 	"\bagent_id\x18\x01 \x01(\tR\aagentId\x12\x15\n" +
 	"\x06run_id\x18\x02 \x01(\tR\x05runId\x12\x1d\n" +
@@ -10815,7 +10840,8 @@ const file_loomcycle_proto_rawDesc = "" +
 	"\n" +
 	"final_text\x18\x06 \x01(\tR\tfinalText\x12)\n" +
 	"\x05usage\x18\a \x01(\v2\x13.loomcycle.v1.UsageR\x05usage\x12\x14\n" +
-	"\x05error\x18\b \x01(\tR\x05error\"a\n" +
+	"\x05error\x18\b \x01(\tR\x05error\x12\"\n" +
+	"\fdeduplicated\x18\t \x01(\bR\fdeduplicated\"a\n" +
 	"\x10BatchSpawnResult\x123\n" +
 	"\aresults\x18\x01 \x03(\v2\x19.loomcycle.v1.SpawnResultR\aresults\x12\x18\n" +
 	"\aspawned\x18\x02 \x01(\x05R\aspawned\"\x17\n" +

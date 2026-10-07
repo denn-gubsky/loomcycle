@@ -121,3 +121,76 @@ async def test_continue_session_threads_tier_bearer():
     # so a future "let's just mirror RunRequest" PR doesn't
     # accidentally widen the surface.
     assert not hasattr(req, "tenant_id") or pb.ContinueRequest.DESCRIPTOR.fields_by_name.get("tenant_id") is None
+
+
+class _FramesStream:
+    """Yields fixed proto frames."""
+
+    def __init__(self, frames) -> None:
+        self._frames = list(frames)
+
+    def __aiter__(self) -> "_FramesStream":
+        return self
+
+    async def __anext__(self):
+        if not self._frames:
+            raise StopAsyncIteration
+        return self._frames.pop(0)
+
+
+@pytest.mark.asyncio
+async def test_run_streaming_sends_idempotency_key_and_reports_a_deduplicated_run():
+    """The key lands on RunRequest, and the agent frame's deduplicated flag
+    reaches the RunHandle: the stream is an existing run's, not a new one."""
+
+    class _Stub(_FakeStub):
+        def Run(self, req, metadata=None):
+            self.last_run_req = req
+            return _FramesStream([
+                pb.Event(type="session", text="s_1"),
+                pb.Event(
+                    type="agent",
+                    text="a_1",
+                    error='{"agent_id":"a_1","run_id":"r_1","session_id":"s_1","deduplicated":true}',
+                ),
+            ])
+
+    stub = _Stub()
+    client = _make_client_with_stub(stub)
+    handles = []
+    async for _ in client.run_streaming(
+        agent="judge", segments=[], idempotency_key="ccq-score:c1:abc", on_handle=handles.append
+    ):
+        pass
+    assert stub.last_run_req.idempotency_key == "ccq-score:c1:abc"
+    assert len(handles) == 1
+    assert handles[0].run_id == "r_1"
+    assert handles[0].deduplicated is True
+
+
+@pytest.mark.asyncio
+async def test_a_fresh_run_is_not_reported_deduplicated():
+    class _Stub(_FakeStub):
+        def Run(self, req, metadata=None):
+            self.last_run_req = req
+            return _FramesStream([
+                pb.Event(type="session", text="s_1"),
+                pb.Event(type="agent", text="a_1", error='{"agent_id":"a_1","run_id":"r_1","session_id":"s_1"}'),
+            ])
+
+    stub = _Stub()
+    client = _make_client_with_stub(stub)
+    handles = []
+    async for _ in client.run_streaming(agent="judge", segments=[], on_handle=handles.append):
+        pass
+    assert stub.last_run_req.idempotency_key == ""
+    assert handles[0].deduplicated is False
+
+
+def test_a_batch_child_carries_its_key_and_its_deduplicated_flag():
+    from loomcycle.client import _run_request_from_dict, _spawn_result_to_dict
+
+    req = _run_request_from_dict({"agent": "judge", "idempotency_key": "k1"})
+    assert req.idempotency_key == "k1"
+    assert _spawn_result_to_dict(pb.SpawnResult(run_id="r_1", deduplicated=True))["deduplicated"] is True
+    assert _spawn_result_to_dict(pb.SpawnResult(run_id="r_2"))["deduplicated"] is False

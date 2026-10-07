@@ -738,6 +738,9 @@ export interface AgentEvent {
   run_id?: string;
   session_id?: string;
   parent_agent_id?: string | null;
+  /** On the `agent` frame: the request's `idempotencyKey` was already held by
+   *  a run, and this stream is that existing run's. */
+  deduplicated?: boolean;
   // v0.12.x — opaque caller-tracking lineage on the `event: agent` frame
   // (and inherited by sub-agents). Present only when the run carried it.
   parent_context?: ParentContext;
@@ -956,6 +959,15 @@ export interface RunOptions extends RunOverrideOptions {
    *  user-initiated request that spawned the whole tree. Not a secret.
    *  Omitted = no tracking context. */
   parentContext?: ParentContext;
+  /** Makes starting this run safe to retry: 1 to 200 characters of
+   *  `[A-Za-z0-9:._-]`. A second request with the same key, from the same
+   *  tenant and user, starts nothing. `runStreaming` then yields the existing
+   *  run's stream — its `agent` frame carries `deduplicated: true` and its
+   *  events follow from the first — and a `spawnRunBatch` child reports the
+   *  existing run with `deduplicated: true`. The request body is not
+   *  compared, so build the key from what makes the work distinct. A fresh
+   *  run only: refused with `sessionId`. */
+  idempotencyKey?: string;
   /** Optional NON-SECRET structured metadata passed to the agent (repo
    *  name, review policy, preferred skills, …) — symmetric with the
    *  WebHook/Schedule trigger paths. As a first-party (bearer-authed)
@@ -1636,6 +1648,9 @@ export interface SpawnRunResult {
   final_text?: string;
   usage?: AgentUsage;
   error?: string;
+  /** The child's `idempotencyKey` was already held by a run: the ids, status
+   *  and result are that run's, and this request started nothing. */
+  deduplicated?: boolean;
 }
 
 /** Result of {@link LoomcycleClient.spawnRunBatch} — `results` is index-aligned

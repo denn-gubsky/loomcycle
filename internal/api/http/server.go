@@ -4399,6 +4399,13 @@ type runRequest struct {
 	// absent. Not a secret (safe to persist/log/emit). Omitted = no
 	// tracking context (back-compat).
 	ParentContext *store.ParentContext `json:"parent_context,omitempty"`
+	// IdempotencyKey makes starting this run safe to retry
+	// ([A-Za-z0-9:._-]{1,200}). A second request with the same key, from the
+	// same tenant and user, starts nothing: the response is the existing
+	// run's stream, its `agent` frame marked "deduplicated": true. A fresh
+	// run that starts at once only — not with session_id, not with
+	// start:false.
+	IdempotencyKey string `json:"idempotency_key,omitempty"`
 	// Metadata is the optional NON-SECRET structured blob passed to the
 	// agent (repo name, review policy, preferred skills, …) — symmetric with
 	// the WebHook/Schedule trigger paths. A first-party /v1/runs caller is
@@ -4727,6 +4734,30 @@ func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {
 	}
 	// RFC DI D5: start:false stops here — validated, not admitted. Which
 	// provider serves it, and every slot and budget check, is decided at start.
+	// A caller's idempotency_key is resolved here, as RunOnce resolves it:
+	// once the identity it is scoped to is authoritative, and before
+	// admission, so a retry takes no slot and creates no session.
+	storedKey := ""
+	if req.IdempotencyKey != "" {
+		if msg, ok := connector.ValidateIdempotencyKey(req.IdempotencyKey); !ok {
+			http.Error(w, msg, http.StatusBadRequest)
+			return
+		}
+		if req.SessionID != "" || (req.Start != nil && !*req.Start) || s.store == nil {
+			http.Error(w, "idempotency_key applies to a fresh run that starts at once, on a runtime with a store", http.StatusBadRequest)
+			return
+		}
+		storedKey = clientRunKey(req.TenantID, req.UserID, req.IdempotencyKey)
+		dup, err := s.runHoldingClientKey(r.Context(), storedKey, req.TenantID, req.UserID, false)
+		if err != nil {
+			writeRunKeyError(w, err)
+			return
+		}
+		if dup != nil {
+			s.serveExistingRun(w, r, dup)
+			return
+		}
+	}
 	if req.Start != nil && !*req.Start {
 		s.createConfiguredRun(w, r, req)
 		return
@@ -4920,8 +4951,23 @@ func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {
 	// emitted event through the store before forwarding to SSE. With
 	// s.store == nil the recording becomes a no-op so v0.2 callers see no
 	// behaviour change.
-	identity := store.RunIdentity{AgentID: agentID, UserID: req.UserID, TenantID: req.TenantID, UserTier: req.UserTier, Model: model, ReplicaID: s.replicaID, ParentContext: req.ParentContext, Interactive: req.Interactive, OperatorKeyRestricted: operatorKeyRestricted, Isolated: isolated, RunConfig: runCfg.marshal()}
+	identity := store.RunIdentity{AgentID: agentID, UserID: req.UserID, TenantID: req.TenantID, UserTier: req.UserTier, Model: model, ReplicaID: s.replicaID, ParentContext: req.ParentContext, IdempotencyKey: storedKey, Interactive: req.Interactive, OperatorKeyRestricted: operatorKeyRestricted, Isolated: isolated, RunConfig: runCfg.marshal()}
 	sessionID, runID, sessErr := s.openOrCreateSessionAndRun(r.Context(), req.SessionID, req.Agent, req.TenantID, req.UserID, identity)
+	if storedKey != "" && errors.Is(sessErr, store.ErrDuplicateIdempotencyKey) {
+		// Lost the race to another request with the same key, between the
+		// lookup above and CreateRun: answer with the winner's stream. This
+		// request's admission slots stay held until that stream ends — the
+		// handler's defers release them — which is the price of the rare case.
+		dup, err := s.runHoldingClientKey(r.Context(), storedKey, req.TenantID, req.UserID, true)
+		if err != nil {
+			writeRunKeyError(w, err)
+			return
+		}
+		if dup != nil {
+			s.serveExistingRun(w, r, dup)
+			return
+		}
+	}
 	if sessErr != nil {
 		var nf *store.ErrNotFound
 		if errors.As(sessErr, &nf) {

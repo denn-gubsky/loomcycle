@@ -3,12 +3,15 @@ package http
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"net/http"
 	"net/url"
 	"time"
 
 	"github.com/denn-gubsky/loomcycle/internal/awaited"
 	"github.com/denn-gubsky/loomcycle/internal/connector"
+	"github.com/denn-gubsky/loomcycle/internal/providers"
 	"github.com/denn-gubsky/loomcycle/internal/runner"
 	"github.com/denn-gubsky/loomcycle/internal/store"
 )
@@ -109,4 +112,41 @@ func (s *Server) existingRunResult(ctx context.Context, dup *runner.DuplicateRun
 		case <-time.After(existingRunPollInterval):
 		}
 	}
+}
+
+// writeRunKeyError answers a failed idempotency_key lookup on POST /v1/runs.
+func writeRunKeyError(w http.ResponseWriter, err error) {
+	code := http.StatusInternalServerError
+	if errors.Is(err, runner.ErrInvalidArgument) {
+		code = http.StatusBadRequest
+	}
+	http.Error(w, err.Error(), code)
+}
+
+// serveExistingRun answers a POST /v1/runs whose idempotency_key a run already
+// held: nothing was started, and the response is that run's stream. It opens
+// as a fresh run's does — the `session` frame, then the `agent` frame, here
+// marked deduplicated — and carries the run's events from its first, ending
+// when the run does. The client leaving ends the response and nothing else:
+// this request did not start the run.
+func (s *Server) serveExistingRun(w http.ResponseWriter, r *http.Request, dup *runner.DuplicateRunError) {
+	stream, ok := newSSE(w)
+	if !ok {
+		http.Error(w, "server does not support streaming on this transport", http.StatusInternalServerError)
+		return
+	}
+	stream.start()
+	stream.startKeepalive(r.Context(), s.cfg().Env.SSEKeepaliveInterval)
+	defer stream.end()
+	stream.send(providers.Event{Type: "session", Text: dup.SessionID})
+	stream.sendRaw("agent", map[string]any{
+		"agent_id":     dup.AgentID,
+		"run_id":       dup.RunID,
+		"session_id":   dup.SessionID,
+		"deduplicated": true,
+	})
+	_ = s.streamRunEvents(r.Context(), dup.RunID, 0, func(pe providers.Event) error {
+		stream.send(pe)
+		return nil
+	})
 }
