@@ -133,6 +133,11 @@ func (s *Server) createConfiguredRunCore(ctx context.Context, req runDraft) (con
 	if req.SessionID != "" {
 		return connector.ConfiguredRun{}, draftRefusal(http.StatusBadRequest, "invalid_draft", "a configured run starts in its own session; session_id is not accepted")
 	}
+	if req.IdempotencyKey != "" {
+		// A draft is made once and addressed by its run id; a key guards the
+		// act of starting a fresh run, which a draft's start is not.
+		return connector.ConfiguredRun{}, draftRefusal(http.StatusBadRequest, "invalid_draft", "idempotency_key is not accepted on a configured run; it applies to a run that starts at once")
+	}
 	if req.UserBearer != "" || len(req.UserCredentials) > 0 {
 		return connector.ConfiguredRun{}, draftRefusal(http.StatusBadRequest, "invalid_draft", "a configured run never stores secrets; supply user_bearer / user_credentials when starting it")
 	}

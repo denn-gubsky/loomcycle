@@ -2744,6 +2744,24 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 	if !isContinuation && !startingDraft {
 		effectiveTenantID, effectiveUserID = s.applyPrincipal(ctx, in.TenantID, in.UserID)
 	}
+	// A caller's idempotency_key is resolved HERE: after the identity it is
+	// scoped to is known, and before admission, so a retry takes no slot,
+	// spends no budget check and creates no session.
+	if in.ClientIdempotencyKey != "" {
+		if msg, ok := connector.ValidateIdempotencyKey(in.ClientIdempotencyKey); !ok {
+			return fmt.Errorf("%w: %s", runner.ErrInvalidArgument, msg)
+		}
+		if isContinuation || startingDraft || in.IdempotencyKey != "" || s.store == nil {
+			return fmt.Errorf("%w: idempotency_key applies to a fresh run on a runtime with a store", runner.ErrInvalidArgument)
+		}
+		in.IdempotencyKey = clientRunKey(effectiveTenantID, effectiveUserID, in.ClientIdempotencyKey)
+		if dup, err := s.runHoldingClientKey(ctx, in.IdempotencyKey, effectiveTenantID, effectiveUserID, false); err != nil || dup != nil {
+			if err != nil {
+				return err
+			}
+			return dup
+		}
+	}
 	var priorMessages []providers.Message
 
 	// A fresh top-level run is outside every team, whatever its caller's ctx
@@ -3027,6 +3045,16 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 		// orphan session with no run — acceptable: it carries no events
 		// and is never returned to a caller.)
 		if errors.Is(sessErr, store.ErrDuplicateIdempotencyKey) {
+			if in.ClientIdempotencyKey != "" {
+				// Lost the race to another request with the same key, between
+				// the lookup above and CreateRun: answer with the winner.
+				if dup, err := s.runHoldingClientKey(ctx, in.IdempotencyKey, effectiveTenantID, effectiveUserID, true); err != nil || dup != nil {
+					if err != nil {
+						return err
+					}
+					return dup
+				}
+			}
 			return sessErr
 		}
 		return fmt.Errorf("%w: %v", runner.ErrInternal, sessErr)

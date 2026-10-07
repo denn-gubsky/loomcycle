@@ -50,26 +50,28 @@ var _ connector.Connector = (*Server)(nil)
 // is a spawn request), so the two cannot carry different fields.
 func spawnRequestToRunInput(req connector.SpawnRunRequest) runner.RunInput {
 	return runner.RunInput{
-		Agent:            req.Agent,
-		SessionID:        req.SessionID,
-		TenantID:         req.TenantID,
-		Segments:         req.Segments,
-		Tools:            req.Tools,
-		AllowedHosts:     req.AllowedHosts,
-		WebSearchFilter:  req.WebSearchFilter,
-		UserID:           req.UserID,
-		AgentID:          req.AgentID,
-		UserTier:         req.UserTier,
-		UserBearer:       req.UserBearer,
-		UserCredentials:  req.UserCredentials,  // v1.x RFC F: per-tool named credentials
-		ParentContext:    req.ParentContext,    // v0.12.x: opaque tracking lineage
-		Metadata:         req.Metadata,         // non-secret trusted agent metadata
-		Sampling:         req.Sampling,         // per-run LLM sampling override
-		ToolChoice:       req.ToolChoice,       // per-run tool_choice (RFC DI)
-		OutputFormat:     req.OutputFormat,     // per-run answer schema (RFC DI)
-		Compaction:       req.Compaction,       // per-run context-compaction override
-		Context:          req.Context,          // per-run layered-context override (RFC CR)
-		MaxContextTokens: req.MaxContextTokens, // RFC CJ per-run context-window override
+		Agent:           req.Agent,
+		SessionID:       req.SessionID,
+		TenantID:        req.TenantID,
+		Segments:        req.Segments,
+		Tools:           req.Tools,
+		AllowedHosts:    req.AllowedHosts,
+		WebSearchFilter: req.WebSearchFilter,
+		UserID:          req.UserID,
+		AgentID:         req.AgentID,
+		UserTier:        req.UserTier,
+		UserBearer:      req.UserBearer,
+		UserCredentials: req.UserCredentials, // v1.x RFC F: per-tool named credentials
+		ParentContext:   req.ParentContext,   // v0.12.x: opaque tracking lineage
+		// The caller's key, as sent; RunOnce scopes and stores it.
+		ClientIdempotencyKey: req.IdempotencyKey,
+		Metadata:             req.Metadata,         // non-secret trusted agent metadata
+		Sampling:             req.Sampling,         // per-run LLM sampling override
+		ToolChoice:           req.ToolChoice,       // per-run tool_choice (RFC DI)
+		OutputFormat:         req.OutputFormat,     // per-run answer schema (RFC DI)
+		Compaction:           req.Compaction,       // per-run context-compaction override
+		Context:              req.Context,          // per-run layered-context override (RFC CR)
+		MaxContextTokens:     req.MaxContextTokens, // RFC CJ per-run context-window override
 		// RFC DC P6: the spawn surfaces reach the SAME validation the HTTP
 		// endpoint uses, because they hand RunOnce the same RunInput.
 		Model:                 req.Model,
@@ -155,6 +157,10 @@ func (s *Server) runBlocking(ctx context.Context, in runner.RunInput, parentCont
 	}
 
 	runErr := s.RunOnce(ctx, in, cb)
+	if dup := (*runner.DuplicateRunError)(nil); errors.As(runErr, &dup) {
+		// The key was already held: nothing started. Join the run that holds it.
+		return s.existingRunResult(ctx, dup, true, parentContext), nil
+	}
 
 	result := connector.SpawnRunResult{
 		AgentID:       regAgentID,
@@ -243,6 +249,18 @@ func (s *Server) SpawnRunBatch(ctx context.Context, req connector.BatchSpawnRequ
 		// green envelope — a different answer on runs:batch and gRPC than on MCP.
 		if msg, ok := connector.ValidateParentContext(req.Spawns[i].ParentContext); !ok {
 			return connector.BatchSpawnResult{}, fmt.Errorf("spawn_runs: spawns[%d]: %s", i, msg)
+		}
+		// A key is one run. Two children sharing one would race for it, and
+		// which of them ran would be chance — almost certainly a mistake in
+		// how the caller built its keys.
+		key := req.Spawns[i].IdempotencyKey
+		if msg, ok := connector.ValidateIdempotencyKey(key); !ok {
+			return connector.BatchSpawnResult{}, fmt.Errorf("spawn_runs: spawns[%d]: %s", i, msg)
+		}
+		for j := 0; key != "" && j < i; j++ {
+			if req.Spawns[j].IdempotencyKey == key {
+				return connector.BatchSpawnResult{}, fmt.Errorf("spawn_runs: spawns[%d] and spawns[%d] carry the same idempotency_key", j, i)
+			}
 		}
 	}
 

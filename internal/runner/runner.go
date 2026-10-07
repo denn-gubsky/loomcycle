@@ -237,6 +237,13 @@ type RunInput struct {
 	// agent loop, so the run never double-executes.
 	IdempotencyKey string
 
+	// ClientIdempotencyKey is the CALLER's idempotency_key, as sent. RunOnce
+	// scopes it to the run's tenant and user and stores that in
+	// IdempotencyKey, so a caller's key can never equal a webhook's or a
+	// schedule's. A fresh run only. When a run already holds the key, RunOnce
+	// starts nothing and returns a *DuplicateRunError naming it.
+	ClientIdempotencyKey string
+
 	// DeliveryAltKey is an optional second durable dedup key, persisted to
 	// runs.delivery_alt_key with the same duplicate-refusal semantics as
 	// IdempotencyKey. Set by the webhook spawn path when a delivery has two
@@ -421,4 +428,19 @@ type RunInput struct {
 type RunCallbacks struct {
 	OnRegistered func(agentID, runID, sessionID, parentAgentID string)
 	OnEvent      func(providers.Event)
+}
+
+// DuplicateRunError is what RunOnce returns when RunInput.ClientIdempotencyKey
+// is already held by a run: nothing was started, and the fields name the run
+// that holds the key. errors.Is(err, store.ErrDuplicateIdempotencyKey) holds.
+type DuplicateRunError struct {
+	RunID, AgentID, SessionID string
+}
+
+func (e *DuplicateRunError) Error() string {
+	return "idempotency_key is already held by run " + e.RunID
+}
+
+func (e *DuplicateRunError) Is(target error) bool {
+	return target == store.ErrDuplicateIdempotencyKey
 }
