@@ -37,6 +37,13 @@ does not count, and a `parallel_spawn` child's clock starts when it gets a
 slot. The operator may cap `timeout_ms` (`LOOMCYCLE_AGENT_CHILD_MAX_TIMEOUT_MS`);
 a larger value is refused, naming the cap.
 
+A child that uses every iteration its `max_iterations` allows before it
+finishes is reported as not finished: `spawn` fails, saying it stopped at its
+iteration limit, with its last answer after the message; a `parallel_spawn`
+row is `ok: false` and a `poll` row `state: "failed"`, both with
+`status: "max_iterations"` and that answer still in `output`. The answer may be
+incomplete — check it before relying on it.
+
 ## Working while children run: `mode: "poll"`
 
 `spawn` and `parallel_spawn` wait for their children by default. With

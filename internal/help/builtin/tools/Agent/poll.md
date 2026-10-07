@@ -43,7 +43,10 @@ structured_bytes?}], "pending": N}`. `state` is
 `completed`, `failed`, `cancelled` or `timeout`; a resident child is `idle`
 when it is waiting for your next `send`. A finished child carries its
 `output` (or `error`), and `structured` when it keeps structured state;
-`status` is `"timeout"` for one its `timeout_ms` stopped. A team walk's row
+`status` is `"timeout"` for one its `timeout_ms` stopped, and
+`"max_iterations"` for one that stopped at its iteration limit before it
+finished — its `state` is `failed`, `error` says so, and its last answer,
+which may be incomplete, is still in `output`. A team walk's row
 has `kind: "team"`, `agent: "team:<name>"`, and its final output as `output`;
 `TeamDef op=poll` reads its whole answer (final state, steps). `pending` counts the
 children in the answer that are still queued, running or held. The rows share
