@@ -190,12 +190,20 @@ type fakeReplicas struct {
 	mu    sync.Mutex
 	alive map[string]bool
 	err   error
+	reads int // IsReplicaAlive calls so far
 }
 
 func (f *fakeReplicas) IsReplicaAlive(_ context.Context, replicaID string, _ time.Duration) (bool, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	f.reads++
 	return f.alive[replicaID], f.err
+}
+
+func (f *fakeReplicas) readCount() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.reads
 }
 
 func (f *fakeReplicas) ListReplicas(context.Context) ([]coord.Replica, error) { return nil, nil }

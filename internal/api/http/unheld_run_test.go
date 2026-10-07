@@ -249,3 +249,47 @@ func TestUnheldRun_ARunHeldHereIsNeverFinishedByItsRow(t *testing.T) {
 	_ = srv.closeResidentChild(ctx, runID)
 	waitResidentGone(t, srv, runID)
 }
+
+// A wait on a resident child held by another replica ends when that replica
+// is recorded gone, with the child ended and told as such — it does not sit
+// until the caller's own bound, or the stale-run sweeper, ends it.
+func TestResidentElsewhere_AWaitEndsWhenTheChildsReplicaIsGone(t *testing.T) {
+	_, b := twoReplicas(t, echoProvider{}, echoConfig(), false)
+	b.unheldRunGrace = time.Nanosecond
+	ctx := residentParentCtx("parent-agent", "")
+	child := leftResident(t, b.store, "a_left_running", "replica-a")
+	// A turn its replica was running when it died: an instruction taken, no park.
+	if err := b.store.AppendEvent(context.Background(), child.ID, "user_input", []byte(`[]`)); err != nil {
+		t.Fatal(err)
+	}
+	if _, state, err := b.pollResidentChild(ctx, child.ID, 0); err != nil || state != "running" {
+		t.Fatalf("poll while its replica is alive = %q %v, want running", state, err)
+	}
+
+	type polled struct {
+		state string
+		err   error
+	}
+	done := make(chan polled, 1)
+	start := time.Now()
+	before := replicasOf(b).readCount()
+	go func() {
+		_, state, err := b.pollResidentChild(ctx, child.ID, 30_000)
+		done <- polled{state, err}
+	}()
+	// The replica dies once the wait has seen it alive, so it is the wait's
+	// later re-check that must notice.
+	waitFor(t, "the wait to check the child's replica", func() bool { return replicasOf(b).readCount() > before })
+	replicasOf(b).set("replica-a", false)
+	select {
+	case p := <-done:
+		if p.err == nil || !strings.Contains(p.err.Error(), "the replica running it is gone") {
+			t.Errorf("the wait ended %q %v after %s, want the child ended as gone", p.state, p.err, time.Since(start))
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("the wait went on though the child's replica is gone")
+	}
+	if got := runNow(t, b.store, child.ID); got.Status != store.RunCancelled || got.StopReason != residentReasonOwnerGone {
+		t.Errorf("row = %s %q, want cancelled as its replica gone", got.Status, got.StopReason)
+	}
+}

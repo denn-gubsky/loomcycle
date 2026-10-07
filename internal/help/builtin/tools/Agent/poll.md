@@ -72,6 +72,9 @@ the shared store.
   `wait` and `wait_ms`.
 - `resident sub-agent "r_..." was closed ...` / `was reaped by the runtime
   (...)` — it was ended for you; `open` a new one.
+- `resident sub-agent "r_..." was ended because the replica running it is
+  gone ...` — the replica it ran on crashed or went away, so nothing is left
+  to run it; a poll waiting on it ends with this at once. `open` a new one.
 - `resident sub-agent "r_..." not found ...` — an id that is not a resident
   sub-agent your run may address.
 

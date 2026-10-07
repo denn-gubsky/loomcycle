@@ -30,6 +30,11 @@ import (
 // re-reads the store: its replica does not tell this one when a turn ends.
 const residentStorePollInterval = 250 * time.Millisecond
 
+// residentOwnerCheckEvery is how many re-reads pass between checks that a
+// live loop still holds the child (about two seconds): a replica that died
+// will never end the turn being waited for.
+const residentOwnerCheckEvery = 8
+
 // residentTextPage bounds one read of a turn's events while its answer is
 // collected.
 const residentTextPage = 500
@@ -149,7 +154,10 @@ func (s *Server) readStoredResident(ctx context.Context, runID string) (storedRe
 // awaitStoredResident reads the child until its turn has ended — it parked
 // after sinceSeq, or its run ended — or the wait is over, as awaitTurn waits
 // on a live child. A turn still running when the wait is over reads as
-// "running" with its answer so far.
+// "running" with its answer so far. A child no live loop holds any more is
+// ended at once and read as that (endIfOwnerGone): checked on the first read
+// and every residentOwnerCheckEvery after, so a wait does not outlast the
+// replica it waits on.
 func (s *Server) awaitStoredResident(ctx context.Context, runID string, sinceSeq int64, timeout time.Duration, blockWhenZero bool) (storedResident, error) {
 	defer providers.BeginWait(ctx)()
 	var deadline <-chan time.Time
@@ -158,8 +166,11 @@ func (s *Server) awaitStoredResident(ctx context.Context, runID string, sinceSeq
 		defer t.Stop()
 		deadline = t.C
 	}
-	for {
+	for i := 0; ; i++ {
 		v, err := s.readStoredResident(ctx, runID)
+		if err == nil && i%residentOwnerCheckEvery == 0 {
+			v, err = s.endIfOwnerGone(ctx, v)
+		}
 		if err != nil {
 			return v, err
 		}
