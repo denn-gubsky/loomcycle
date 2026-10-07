@@ -735,7 +735,10 @@ func (s *Store) migrate(ctx context.Context) error {
 			last_error      TEXT,
 			next_run_at     INTEGER NOT NULL,
 			paused_until    INTEGER,
-			fire_count      INTEGER NOT NULL DEFAULT 0
+			fire_count      INTEGER NOT NULL DEFAULT 0,
+			slot_at         INTEGER,
+			claimed_by      TEXT,
+			claimed_at      INTEGER
 		)`,
 		`CREATE INDEX IF NOT EXISTS schedule_run_state_due ON schedule_run_state(next_run_at)`,
 		// v1.x RFC G A2A substrate — two content-addressed Defs mirroring
@@ -1257,6 +1260,11 @@ func (s *Store) migrate(ctx context.Context) error {
 		// RFC S / F36: lifetime fire-count for max_fires self-retirement.
 		// Idempotent ALTER for existing DBs; fresh DBs get it in CREATE TABLE.
 		`ALTER TABLE schedule_run_state ADD COLUMN fire_count INTEGER NOT NULL DEFAULT 0`,
+		// RFC DZ: the slot each claim takes, and who took it. Idempotent ALTERs
+		// for existing DBs; fresh DBs get them in CREATE TABLE.
+		`ALTER TABLE schedule_run_state ADD COLUMN slot_at INTEGER`,
+		`ALTER TABLE schedule_run_state ADD COLUMN claimed_by TEXT`,
+		`ALTER TABLE schedule_run_state ADD COLUMN claimed_at INTEGER`,
 		// F42 / RFC X Phase 2: persist whether a run is an interactive
 		// (persistent, parks-at-end_turn) session so a snapshotted+restored
 		// paused run can be re-dispatched with the correct park-vs-complete
@@ -10199,39 +10207,66 @@ func (s *Store) ScheduleRunStateSeed(ctx context.Context, defID string, nextRunA
 	return err
 }
 
-func (s *Store) ScheduleRunStateGet(ctx context.Context, defID string) (store.ScheduleRunStateRow, error) {
+// scheduleRunStateColumns is every schedule_run_state column, in the order
+// scanScheduleRunState reads them.
+const scheduleRunStateColumns = `def_id, last_run_at, last_run_id, last_status, last_error, next_run_at, paused_until, fire_count, slot_at, claimed_by, claimed_at`
+
+// scanScheduleRunState reads one row selected as scheduleRunStateColumns.
+func scanScheduleRunState(scan func(dest ...any) error) (store.ScheduleRunStateRow, error) {
 	var (
-		out         store.ScheduleRunStateRow
-		lastRunAt   sql.NullInt64
-		lastRunID   sql.NullString
-		lastStatus  sql.NullString
-		lastError   sql.NullString
-		nextRunAt   int64
-		pausedUntil sql.NullInt64
-		fireCount   int
+		out                    store.ScheduleRunStateRow
+		lastRunAt, pausedUntil sql.NullInt64
+		slotAt, claimedAt      sql.NullInt64
+		lastRunID, lastStatus  sql.NullString
+		lastError, claimedBy   sql.NullString
+		nextRunAt              int64
 	)
-	err := s.db.QueryRowContext(ctx,
-		`SELECT def_id, last_run_at, last_run_id, last_status, last_error, next_run_at, paused_until, fire_count
-		 FROM schedule_run_state WHERE def_id = ?`, defID,
-	).Scan(&out.DefID, &lastRunAt, &lastRunID, &lastStatus, &lastError, &nextRunAt, &pausedUntil, &fireCount)
-	if err == sql.ErrNoRows {
-		return store.ScheduleRunStateRow{}, &store.ErrNotFound{Kind: "schedule_run_state", ID: defID}
-	}
-	if err != nil {
+	if err := scan(&out.DefID, &lastRunAt, &lastRunID, &lastStatus, &lastError, &nextRunAt, &pausedUntil, &out.FireCount,
+		&slotAt, &claimedBy, &claimedAt); err != nil {
 		return store.ScheduleRunStateRow{}, err
 	}
-	if lastRunAt.Valid {
-		out.LastRunAt = time.Unix(0, lastRunAt.Int64)
+	nsTime := func(v sql.NullInt64) time.Time {
+		if !v.Valid {
+			return time.Time{}
+		}
+		return time.Unix(0, v.Int64)
 	}
+	out.LastRunAt = nsTime(lastRunAt)
 	out.LastRunID = lastRunID.String
 	out.LastStatus = lastStatus.String
 	out.LastError = lastError.String
 	out.NextRunAt = time.Unix(0, nextRunAt)
-	if pausedUntil.Valid {
-		out.PausedUntil = time.Unix(0, pausedUntil.Int64)
-	}
-	out.FireCount = fireCount
+	out.PausedUntil = nsTime(pausedUntil)
+	out.SlotAt = nsTime(slotAt)
+	out.ClaimedBy = claimedBy.String
+	out.ClaimedAt = nsTime(claimedAt)
 	return out, nil
+}
+
+func (s *Store) ScheduleRunStateGet(ctx context.Context, defID string) (store.ScheduleRunStateRow, error) {
+	out, err := scanScheduleRunState(s.db.QueryRowContext(ctx,
+		`SELECT `+scheduleRunStateColumns+` FROM schedule_run_state WHERE def_id = ?`, defID,
+	).Scan)
+	if err == sql.ErrNoRows {
+		return store.ScheduleRunStateRow{}, &store.ErrNotFound{Kind: "schedule_run_state", ID: defID}
+	}
+	return out, err
+}
+
+func (s *Store) ScheduleRunStateClaim(ctx context.Context, in store.ScheduleSlotClaim) (bool, error) {
+	res, err := s.db.ExecContext(ctx,
+		`UPDATE schedule_run_state SET
+			next_run_at = ?, slot_at = ?, claimed_by = ?, claimed_at = ?
+		 WHERE def_id = ? AND next_run_at = ?
+		   AND (paused_until IS NULL OR paused_until <= ?)`,
+		in.NextRunAt.UnixNano(), in.Slot.UnixNano(), nilIfEmpty(in.ClaimedBy), in.ClaimedAt.UnixNano(),
+		in.DefID, in.Slot.UnixNano(), in.ClaimedAt.UnixNano(),
+	)
+	if err != nil {
+		return false, err
+	}
+	n, err := res.RowsAffected()
+	return n == 1, err
 }
 
 func (s *Store) ScheduleRunStateListDue(ctx context.Context, now time.Time) ([]store.ScheduleDueRow, error) {
@@ -10288,11 +10323,10 @@ func (s *Store) ScheduleRunStateRecordResult(ctx context.Context, in store.Sched
 			last_run_id = ?,
 			last_status = ?,
 			last_error = ?,
-			next_run_at = ?,
 			fire_count = fire_count + ?
 		 WHERE def_id = ?`,
 		in.LastRunAt.UnixNano(), in.LastRunID, in.LastStatus, in.LastError,
-		in.NextRunAt.UnixNano(), fireInc, in.DefID,
+		fireInc, in.DefID,
 	)
 	if err != nil {
 		return err
@@ -10382,36 +10416,16 @@ func (s *Store) SnapshotReadScheduleDefActive(ctx context.Context) ([]store.Sche
 // SnapshotReadScheduleRunState returns every run-state row.
 func (s *Store) SnapshotReadScheduleRunState(ctx context.Context) ([]store.ScheduleRunStateRow, error) {
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT def_id, last_run_at, last_run_id, last_status, last_error, next_run_at, paused_until, fire_count
-		 FROM schedule_run_state
-		 ORDER BY def_id ASC`)
+		`SELECT `+scheduleRunStateColumns+` FROM schedule_run_state ORDER BY def_id ASC`)
 	if err != nil {
 		return nil, fmt.Errorf("snapshot read schedule_run_state: %w", err)
 	}
 	defer rows.Close()
 	var out []store.ScheduleRunStateRow
 	for rows.Next() {
-		var (
-			r           store.ScheduleRunStateRow
-			lastRunAt   sql.NullInt64
-			lastRunID   sql.NullString
-			lastStatus  sql.NullString
-			lastError   sql.NullString
-			nextRunAt   int64
-			pausedUntil sql.NullInt64
-		)
-		if err := rows.Scan(&r.DefID, &lastRunAt, &lastRunID, &lastStatus, &lastError, &nextRunAt, &pausedUntil, &r.FireCount); err != nil {
+		r, err := scanScheduleRunState(rows.Scan)
+		if err != nil {
 			return nil, fmt.Errorf("scan schedule_run_state: %w", err)
-		}
-		if lastRunAt.Valid {
-			r.LastRunAt = time.Unix(0, lastRunAt.Int64)
-		}
-		r.LastRunID = lastRunID.String
-		r.LastStatus = lastStatus.String
-		r.LastError = lastError.String
-		r.NextRunAt = time.Unix(0, nextRunAt)
-		if pausedUntil.Valid {
-			r.PausedUntil = time.Unix(0, pausedUntil.Int64)
 		}
 		out = append(out, r)
 	}
@@ -10481,19 +10495,19 @@ func (s *Store) SnapshotRestoreScheduleRunState(ctx context.Context, r store.Sch
 	if r.FireCount < 0 {
 		return false, fmt.Errorf("snapshot restore schedule_run_state: negative fire_count %d", r.FireCount)
 	}
-	var lastRunAt, pausedUntil any
-	if !r.LastRunAt.IsZero() {
-		lastRunAt = r.LastRunAt.UnixNano()
-	}
-	if !r.PausedUntil.IsZero() {
-		pausedUntil = r.PausedUntil.UnixNano()
+	ns := func(t time.Time) any {
+		if t.IsZero() {
+			return nil
+		}
+		return t.UnixNano()
 	}
 	res, err := s.db.ExecContext(ctx,
-		`INSERT INTO schedule_run_state(def_id, last_run_at, last_run_id, last_status, last_error, next_run_at, paused_until, fire_count)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+		`INSERT INTO schedule_run_state(`+scheduleRunStateColumns+`)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		 ON CONFLICT(def_id) DO NOTHING`,
-		r.DefID, lastRunAt, nilIfEmpty(r.LastRunID), nilIfEmpty(r.LastStatus), nilIfEmpty(r.LastError),
-		r.NextRunAt.UnixNano(), pausedUntil, r.FireCount,
+		r.DefID, ns(r.LastRunAt), nilIfEmpty(r.LastRunID), nilIfEmpty(r.LastStatus), nilIfEmpty(r.LastError),
+		r.NextRunAt.UnixNano(), ns(r.PausedUntil), r.FireCount,
+		ns(r.SlotAt), nilIfEmpty(r.ClaimedBy), ns(r.ClaimedAt),
 	)
 	if err != nil {
 		return false, fmt.Errorf("snapshot restore schedule_run_state: %w", err)

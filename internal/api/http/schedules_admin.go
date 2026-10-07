@@ -200,20 +200,12 @@ func marshalStaticScheduledRun(sr config.ScheduledRun) json.RawMessage {
 }
 
 // handleScheduleRunNow serves POST /v1/_schedules/{def_id}/run-now.
-// Forces an immediate fire by setting next_run_at to time.Now() — the
-// sweeper picks it up on the next tick. The schedule's regular
-// next_run_at advance happens after the run completes (per the
-// scheduler's normal fire path), so a forced run doesn't skip the
-// schedule's cadence going forward.
-//
-// Race caveat: if a run for this def_id is already in progress when
-// run-now is invoked, the in-flight fire's post-completion
-// ScheduleRunStateRecordResult will overwrite next_run_at with the
-// next scheduled time — silently discarding the operator's intent.
-// The endpoint returns 200 in that case (the upsert itself succeeds),
-// but the schedule fires at most once extra. Fixing this fully needs
-// a separate force-fire flag column or a per-def mutex; v1 accepts
-// the race as low-impact for the admin use case.
+// Forces an immediate fire by setting next_run_at just into the past —
+// the sweeper picks it up on the next tick. The fire claims that slot,
+// which moves next_run_at on to the schedule's next regular time, so a
+// forced run doesn't skip the schedule's cadence going forward. A run
+// already in progress does not undo it: recording an outcome never
+// touches next_run_at.
 func (s *Server) handleScheduleRunNow(w http.ResponseWriter, r *http.Request) {
 	defID := r.PathValue("def_id")
 	if defID == "" {

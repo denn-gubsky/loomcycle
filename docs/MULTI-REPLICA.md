@@ -173,6 +173,8 @@ There is no split-brain scenario: Postgres is the single source of truth. If the
 
 8. **Hook registrations are cluster-wide but require Postgres.** Single-replica deployments keep the v0.11.x in-process hook registry (no DB, no backplane traffic).
 
+9. **The scheduler may run on every replica.** With `LOOMCYCLE_SCHEDULER_ENABLED=1` on several replicas, each lists the same due schedules, and each slot is fired by the one replica that claims it (a compare-and-set on `next_run_at`). The run also carries the slot's idempotency key, so a slot never produces two runs. `schedule_run_state.claimed_by` records which replica took the last slot.
+
 ## Roadmap (post-v1.0)
 
 - **Redis backplane.** When LISTEN/NOTIFY throughput becomes the bottleneck. v1.1+.

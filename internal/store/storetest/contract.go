@@ -481,6 +481,7 @@ func Run(t *testing.T, factory Factory) {
 		{"ScheduleRunStateListDueRespectsRetiredAndPaused", testScheduleRunStateListDueRespectsRetiredAndPaused},
 		{"ScheduleRunStateListDueCarriesOwnerAndProvenance", testScheduleRunStateListDueCarriesOwnerAndProvenance},
 		{"ScheduleRunStateRecordResult", testScheduleRunStateRecordResult},
+		{"ScheduleRunStateClaimTakesASlotOnce", testScheduleRunStateClaimTakesASlotOnce},
 		{"ScheduleRunStatePauseResume", testScheduleRunStatePauseResume},
 		{"EvaluationSubmitAndAggregate", testEvaluationSubmitAndAggregate},
 		{"EvaluationAggregateWithLineage", testEvaluationAggregateWithLineage},
@@ -11997,13 +11998,11 @@ func testScheduleRunStateRecordResult(t *testing.T, s store.Store) {
 		t.Fatalf("seed: %v", err)
 	}
 
-	next := start.Add(24 * time.Hour)
 	if err := s.ScheduleRunStateRecordResult(ctx, store.ScheduleRunResult{
 		DefID:      defID,
 		LastRunID:  "r_abc",
 		LastStatus: "completed",
 		LastRunAt:  start,
-		NextRunAt:  next,
 	}); err != nil {
 		t.Fatalf("record result: %v", err)
 	}
@@ -12011,8 +12010,11 @@ func testScheduleRunStateRecordResult(t *testing.T, s store.Store) {
 	if got.LastRunID != "r_abc" || got.LastStatus != "completed" {
 		t.Errorf("got %+v", got)
 	}
-	if !got.NextRunAt.Equal(next) {
-		t.Errorf("next_run_at not advanced: %v, want %v", got.NextRunAt, next)
+	// RFC DZ: recording an outcome never moves next_run_at — the claim did,
+	// before the fire. A late result must not rewind a slot another replica
+	// has since claimed.
+	if !got.NextRunAt.Equal(start) {
+		t.Errorf("next_run_at moved by a result write: %v, want %v", got.NextRunAt, start)
 	}
 	if !got.LastRunAt.Equal(start) {
 		t.Errorf("last_run_at = %v, want %v", got.LastRunAt, start)
@@ -12029,7 +12031,6 @@ func testScheduleRunStateRecordResult(t *testing.T, s store.Store) {
 			LastRunID:   "r_fire",
 			LastStatus:  "completed",
 			LastRunAt:   start,
-			NextRunAt:   next,
 			CountAsFire: true,
 		}); err != nil {
 			t.Fatalf("record fire %d: %v", want, err)
@@ -12044,11 +12045,58 @@ func testScheduleRunStateRecordResult(t *testing.T, s store.Store) {
 	err := s.ScheduleRunStateRecordResult(ctx, store.ScheduleRunResult{
 		DefID:     "unknown",
 		LastRunID: "r_nope",
-		NextRunAt: next,
 	})
 	var nf *store.ErrNotFound
 	if !errors.As(err, &nf) {
 		t.Errorf("record result on unknown def_id should return ErrNotFound; got %v", err)
+	}
+}
+
+// RFC DZ: a slot is taken once. The claim moves next_run_at from the slot the
+// caller listed to the next one, only if it is still that slot — so of two
+// replicas that listed the same due row, exactly one fires it.
+func testScheduleRunStateClaimTakesASlotOnce(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	defID := scheduleRuntimeFixture(t, s, "rt-claim")
+	slot := time.Now().Add(-time.Minute).Truncate(time.Microsecond)
+	if err := s.ScheduleRunStateSeed(ctx, defID, slot); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	// Read the slot back as a lister would: the claim compares against the
+	// stored value, so it must survive the store's own precision.
+	listed, err := s.ScheduleRunStateGet(ctx, defID)
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	next := slot.Add(time.Hour)
+	at := time.Now().Truncate(time.Microsecond)
+	claim := store.ScheduleSlotClaim{DefID: defID, Slot: listed.NextRunAt, NextRunAt: next, ClaimedBy: "replica-a", ClaimedAt: at}
+	won, err := s.ScheduleRunStateClaim(ctx, claim)
+	if err != nil || !won {
+		t.Fatalf("first claim: won=%v err=%v, want true", won, err)
+	}
+	claim.ClaimedBy = "replica-b"
+	if won, err := s.ScheduleRunStateClaim(ctx, claim); err != nil || won {
+		t.Fatalf("second claim of the same slot: won=%v err=%v, want false", won, err)
+	}
+	got, _ := s.ScheduleRunStateGet(ctx, defID)
+	if !got.NextRunAt.Equal(next) || !got.SlotAt.Equal(listed.NextRunAt) || got.ClaimedBy != "replica-a" || !got.ClaimedAt.Equal(at) {
+		t.Errorf("after claim: next=%v slot=%v by=%q at=%v; want %v %v replica-a %v",
+			got.NextRunAt, got.SlotAt, got.ClaimedBy, got.ClaimedAt, next, listed.NextRunAt, at)
+	}
+
+	// A paused schedule's slot is not taken, even when it matches.
+	if err := s.ScheduleRunStatePause(ctx, defID, time.Now().Add(time.Hour)); err != nil {
+		t.Fatalf("pause: %v", err)
+	}
+	paused := store.ScheduleSlotClaim{DefID: defID, Slot: next, NextRunAt: next.Add(time.Hour), ClaimedAt: time.Now()}
+	if won, err := s.ScheduleRunStateClaim(ctx, paused); err != nil || won {
+		t.Errorf("claim of a paused schedule: won=%v err=%v, want false", won, err)
+	}
+
+	// An unknown def is simply not taken.
+	if won, err := s.ScheduleRunStateClaim(ctx, store.ScheduleSlotClaim{DefID: "unknown", Slot: slot, NextRunAt: next, ClaimedAt: at}); err != nil || won {
+		t.Errorf("claim of an unknown def: won=%v err=%v, want false", won, err)
 	}
 }
 

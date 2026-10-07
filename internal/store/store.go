@@ -3550,9 +3550,21 @@ type Store interface {
 	// snapshot of "what should fire now." Empty slice = nothing due.
 	ScheduleRunStateListDue(ctx context.Context, now time.Time) ([]ScheduleDueRow, error)
 
+	// ScheduleRunStateClaim takes one due slot: it moves next_run_at from
+	// in.Slot (the value the caller listed) to in.NextRunAt, and records the
+	// slot and who took it — only if next_run_at is still in.Slot and the
+	// schedule is not paused at in.ClaimedAt. It reports whether this caller
+	// took the slot. false with a nil error means someone else did (another
+	// replica, or an earlier tick), and the caller must not fire.
+	//
+	// It is the sweeper's only write to next_run_at, which is what makes a
+	// slot fire once however many replicas list it.
+	ScheduleRunStateClaim(ctx context.Context, in ScheduleSlotClaim) (bool, error)
+
 	// ScheduleRunStateRecordResult writes the outcome of a single
-	// firing: last_run_id, last_status, last_error, last_run_at=now,
-	// next_run_at advanced to the supplied value. Atomic.
+	// firing: last_run_id, last_status, last_error, last_run_at, and
+	// fire_count += 1 when CountAsFire. It never moves next_run_at — the
+	// claim already did, before the fire. Atomic.
 	ScheduleRunStateRecordResult(ctx context.Context, in ScheduleRunResult) error
 
 	// ---- v1.x RFC G A2A substrate (server + client sides) ----
@@ -5768,6 +5780,23 @@ type ScheduleRunStateRow struct {
 	// (every real fire; NOT the disabled-skip advance). The scheduler
 	// reads it after a fire to enforce ScheduledRun.MaxFires.
 	FireCount int `json:"fire_count,omitempty"`
+	// SlotAt is the slot the last claim took (the next_run_at it moved
+	// from), ClaimedBy the replica that took it ("" outside cluster mode)
+	// and ClaimedAt when. Zero before the first claim.
+	SlotAt    time.Time `json:"slot_at,omitempty"`
+	ClaimedBy string    `json:"claimed_by,omitempty"`
+	ClaimedAt time.Time `json:"claimed_at,omitempty"`
+}
+
+// ScheduleSlotClaim is the input to ScheduleRunStateClaim.
+type ScheduleSlotClaim struct {
+	DefID string
+	// Slot is the next_run_at the caller listed — the slot it wants.
+	Slot time.Time
+	// NextRunAt is where next_run_at moves once the slot is taken.
+	NextRunAt time.Time
+	ClaimedBy string
+	ClaimedAt time.Time
 }
 
 // ScheduleDueRow is the JOIN result returned by ScheduleRunStateListDue.
@@ -5800,7 +5829,6 @@ type ScheduleRunResult struct {
 	LastStatus string // "completed" | "failed" | "cancelled" | "skipped"
 	LastError  string
 	LastRunAt  time.Time
-	NextRunAt  time.Time
 	// CountAsFire increments fire_count by one when true (RFC S / F36).
 	// The scheduler sets it on every real fire (any status); the
 	// disabled-skip advance (advanceOnly) leaves it false so a disabled

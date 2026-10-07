@@ -9154,41 +9154,67 @@ func (s *Store) ScheduleRunStateSeed(ctx context.Context, defID string, nextRunA
 	return nil
 }
 
-func (s *Store) ScheduleRunStateGet(ctx context.Context, defID string) (store.ScheduleRunStateRow, error) {
+// scheduleRunStateColumns is every schedule_run_state column, in the order
+// scanScheduleRunState reads them.
+const scheduleRunStateColumns = `def_id, last_run_at, last_run_id, last_status, last_error, next_run_at, paused_until, fire_count, slot_at, claimed_by, claimed_at`
+
+// scanScheduleRunState reads one row selected as scheduleRunStateColumns.
+func scanScheduleRunState(scan func(dest ...any) error) (store.ScheduleRunStateRow, error) {
 	var (
-		out         store.ScheduleRunStateRow
-		lastRunAt   *time.Time
-		lastRunID   *string
-		lastStatus  *string
-		lastError   *string
-		pausedUntil *time.Time
+		out                                  store.ScheduleRunStateRow
+		lastRunAt, pausedUntil               *time.Time
+		slotAt, claimedAt                    *time.Time
+		lastRunID, lastStatus, lastError, by *string
 	)
-	err := s.pool.QueryRow(ctx,
-		`SELECT def_id, last_run_at, last_run_id, last_status, last_error, next_run_at, paused_until, fire_count
-		 FROM schedule_run_state WHERE def_id = $1`, defID,
-	).Scan(&out.DefID, &lastRunAt, &lastRunID, &lastStatus, &lastError, &out.NextRunAt, &pausedUntil, &out.FireCount)
+	if err := scan(&out.DefID, &lastRunAt, &lastRunID, &lastStatus, &lastError, &out.NextRunAt, &pausedUntil, &out.FireCount,
+		&slotAt, &by, &claimedAt); err != nil {
+		return store.ScheduleRunStateRow{}, err
+	}
+	deref := func(t *time.Time) time.Time {
+		if t == nil {
+			return time.Time{}
+		}
+		return *t
+	}
+	str := func(s *string) string {
+		if s == nil {
+			return ""
+		}
+		return *s
+	}
+	out.LastRunAt = deref(lastRunAt)
+	out.LastRunID = str(lastRunID)
+	out.LastStatus = str(lastStatus)
+	out.LastError = str(lastError)
+	out.PausedUntil = deref(pausedUntil)
+	out.SlotAt = deref(slotAt)
+	out.ClaimedBy = str(by)
+	out.ClaimedAt = deref(claimedAt)
+	return out, nil
+}
+
+func (s *Store) ScheduleRunStateGet(ctx context.Context, defID string) (store.ScheduleRunStateRow, error) {
+	out, err := scanScheduleRunState(s.pool.QueryRow(ctx,
+		`SELECT `+scheduleRunStateColumns+` FROM schedule_run_state WHERE def_id = $1`, defID,
+	).Scan)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return store.ScheduleRunStateRow{}, &store.ErrNotFound{Kind: "schedule_run_state", ID: defID}
 	}
+	return out, err
+}
+
+func (s *Store) ScheduleRunStateClaim(ctx context.Context, in store.ScheduleSlotClaim) (bool, error) {
+	tag, err := s.pool.Exec(ctx,
+		`UPDATE schedule_run_state SET
+			next_run_at = $1, slot_at = $2, claimed_by = $3, claimed_at = $4
+		 WHERE def_id = $5 AND next_run_at = $2
+		   AND (paused_until IS NULL OR paused_until <= $4)`,
+		in.NextRunAt, in.Slot, nullIfEmpty(in.ClaimedBy), in.ClaimedAt, in.DefID,
+	)
 	if err != nil {
-		return store.ScheduleRunStateRow{}, err
+		return false, fmt.Errorf("schedule_run_state claim: %w", err)
 	}
-	if lastRunAt != nil {
-		out.LastRunAt = *lastRunAt
-	}
-	if lastRunID != nil {
-		out.LastRunID = *lastRunID
-	}
-	if lastStatus != nil {
-		out.LastStatus = *lastStatus
-	}
-	if lastError != nil {
-		out.LastError = *lastError
-	}
-	if pausedUntil != nil {
-		out.PausedUntil = *pausedUntil
-	}
-	return out, nil
+	return tag.RowsAffected() == 1, nil
 }
 
 func (s *Store) ScheduleRunStateListDue(ctx context.Context, now time.Time) ([]store.ScheduleDueRow, error) {
@@ -9236,11 +9262,10 @@ func (s *Store) ScheduleRunStateRecordResult(ctx context.Context, in store.Sched
 			last_run_id = $2,
 			last_status = $3,
 			last_error = $4,
-			next_run_at = $5,
-			fire_count = fire_count + $6
-		 WHERE def_id = $7`,
+			fire_count = fire_count + $5
+		 WHERE def_id = $6`,
 		in.LastRunAt, in.LastRunID, in.LastStatus, in.LastError,
-		in.NextRunAt, fireInc, in.DefID,
+		fireInc, in.DefID,
 	)
 	if err != nil {
 		return fmt.Errorf("schedule_run_state record result: %w", err)
@@ -9331,40 +9356,16 @@ func (s *Store) SnapshotReadScheduleDefActive(ctx context.Context) ([]store.Sche
 // SnapshotReadScheduleRunState returns every run-state row.
 func (s *Store) SnapshotReadScheduleRunState(ctx context.Context) ([]store.ScheduleRunStateRow, error) {
 	rows, err := s.pool.Query(ctx,
-		`SELECT def_id, last_run_at, last_run_id, last_status, last_error, next_run_at, paused_until, fire_count
-		 FROM schedule_run_state
-		 ORDER BY def_id ASC`)
+		`SELECT `+scheduleRunStateColumns+` FROM schedule_run_state ORDER BY def_id ASC`)
 	if err != nil {
 		return nil, fmt.Errorf("snapshot read schedule_run_state: %w", err)
 	}
 	defer rows.Close()
 	var out []store.ScheduleRunStateRow
 	for rows.Next() {
-		var (
-			r           store.ScheduleRunStateRow
-			lastRunAt   *time.Time
-			lastRunID   *string
-			lastStatus  *string
-			lastError   *string
-			pausedUntil *time.Time
-		)
-		if err := rows.Scan(&r.DefID, &lastRunAt, &lastRunID, &lastStatus, &lastError, &r.NextRunAt, &pausedUntil, &r.FireCount); err != nil {
+		r, err := scanScheduleRunState(rows.Scan)
+		if err != nil {
 			return nil, fmt.Errorf("scan schedule_run_state: %w", err)
-		}
-		if lastRunAt != nil {
-			r.LastRunAt = *lastRunAt
-		}
-		if lastRunID != nil {
-			r.LastRunID = *lastRunID
-		}
-		if lastStatus != nil {
-			r.LastStatus = *lastStatus
-		}
-		if lastError != nil {
-			r.LastError = *lastError
-		}
-		if pausedUntil != nil {
-			r.PausedUntil = *pausedUntil
 		}
 		out = append(out, r)
 	}
@@ -9431,19 +9432,19 @@ func (s *Store) SnapshotRestoreScheduleRunState(ctx context.Context, r store.Sch
 	if r.FireCount < 0 {
 		return false, fmt.Errorf("snapshot restore schedule_run_state: negative fire_count %d", r.FireCount)
 	}
-	var lastRunAt, pausedUntil any
-	if !r.LastRunAt.IsZero() {
-		lastRunAt = r.LastRunAt
-	}
-	if !r.PausedUntil.IsZero() {
-		pausedUntil = r.PausedUntil
+	ts := func(t time.Time) any {
+		if t.IsZero() {
+			return nil
+		}
+		return t
 	}
 	tag, err := s.pool.Exec(ctx,
-		`INSERT INTO schedule_run_state(def_id, last_run_at, last_run_id, last_status, last_error, next_run_at, paused_until, fire_count)
-		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+		`INSERT INTO schedule_run_state(`+scheduleRunStateColumns+`)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
 		 ON CONFLICT (def_id) DO NOTHING`,
-		r.DefID, lastRunAt, nullIfEmpty(r.LastRunID), nullIfEmpty(r.LastStatus), nullIfEmpty(r.LastError),
-		r.NextRunAt, pausedUntil, r.FireCount,
+		r.DefID, ts(r.LastRunAt), nullIfEmpty(r.LastRunID), nullIfEmpty(r.LastStatus), nullIfEmpty(r.LastError),
+		r.NextRunAt, ts(r.PausedUntil), r.FireCount,
+		ts(r.SlotAt), nullIfEmpty(r.ClaimedBy), ts(r.ClaimedAt),
 	)
 	if err != nil {
 		return false, fmt.Errorf("snapshot restore schedule_run_state: %w", err)

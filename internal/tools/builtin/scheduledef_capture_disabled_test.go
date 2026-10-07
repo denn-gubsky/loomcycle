@@ -182,7 +182,7 @@ func TestScheduleDefTool_OrdinaryForkStartsAtZero(t *testing.T) {
 	parentID, _ := decodeResult(t, res.Text)["def_id"].(string)
 	for i := 0; i < 3; i++ {
 		if err := tool.Store.ScheduleRunStateRecordResult(context.Background(), store.ScheduleRunResult{
-			DefID: parentID, LastStatus: "completed", LastRunAt: time.Now(), NextRunAt: time.Now().Add(time.Hour), CountAsFire: true,
+			DefID: parentID, LastStatus: "completed", LastRunAt: time.Now(), CountAsFire: true,
 		}); err != nil {
 			t.Fatal(err)
 		}
@@ -232,7 +232,7 @@ func TestScheduleDefTool_SnapshotRestoredDefReEnabledByForkKeepsCount(t *testing
 	}
 	for i := 0; i < 3; i++ {
 		if err := src.ScheduleRunStateRecordResult(bg, store.ScheduleRunResult{
-			DefID: "sd_src", LastStatus: "completed", LastRunAt: time.Now(), NextRunAt: time.Now().Add(time.Hour), CountAsFire: true,
+			DefID: "sd_src", LastStatus: "completed", LastRunAt: time.Now(), CountAsFire: true,
 		}); err != nil {
 			t.Fatal(err)
 		}

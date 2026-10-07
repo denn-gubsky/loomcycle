@@ -577,7 +577,7 @@ References: `internal/tools/tool.go` (`RunIdentityValue.UserCredentials`, `WithR
 
 ## Scheduled runs — ScheduleDef (v0.12.7, RFC E)
 
-Operators declare run templates under the yaml `scheduled_runs:` map (`config.ScheduledRun`); an entry is either standalone (`schedule:` cron) or a per-user-tier template (`user_tier_schedules:`) that dynamic per-user forks specialise. The `internal/scheduler` package runs a sweeper goroutine (one per process; in cluster mode each replica runs its own, gated by a Postgres advisory lock so a row fires once cluster-wide). Each `tick` lists due rows and fires them **in parallel** up to `MaxConcurrentFires` (default `NumCPU()*4`), skipping entirely while the pause `Manager` is non-running.
+Operators declare run templates under the yaml `scheduled_runs:` map (`config.ScheduledRun`); an entry is either standalone (`schedule:` cron) or a per-user-tier template (`user_tier_schedules:`) that dynamic per-user forks specialise. The `internal/scheduler` package runs a sweeper goroutine (one per process; in cluster mode every replica may run its own). Each `tick` lists due rows and fires them **in parallel** up to `MaxConcurrentFires` (default `NumCPU()*4`), skipping entirely while the pause `Manager` is non-running. A fire first **claims its slot** (`ScheduleRunStateClaim`, RFC DZ): a compare-and-set that moves `next_run_at` from the slot the tick listed to the next one, only if no one has moved it since. That makes a slot fire once cluster-wide, and a fire that outlasts its cadence no longer leaves its row due. The slot's run also carries the idempotency key `sched:<def_id>:<slot>`, so even a second start for the same slot is refused by the runs table before it runs. The claim is the sweeper's only write to `next_run_at`; recording an outcome never moves it.
 
 The `ScheduleDef` built-in (`internal/tools/builtin/scheduledef.go`) is a 7-op tool — the five core ops `create` / `fork` / `get` / `list` / `retire` plus `add_hook` / `remove_hook` (each hook edit persists a new lineage version). Static yaml entries remain immutable ground truth; the tool authors *new* names only.
 
@@ -587,7 +587,7 @@ A fired schedule's `on_complete` hooks deliver results through one of three kind
 
 Both scheduler writes to a channel — the tick and the `on_complete` hook — resolve the channel's **declaration** through an injected `ChannelScopeResolver` and honour all of it: the declared scope (F37/RFC T), `default_ttl`, `max_messages`, and `hold:`. That matters most at cron cadence, where a write that ignored retention would accumulate half a million rows a year on a channel whose operator did set limits, and where a write that ignored a hold would walk a workflow straight past its breakpoint.
 
-References: `internal/scheduler/scheduler.go` (sweeper, `tick`, `fireOne`, `fireChannelDelivery`, `recordFireOutcome`), `internal/scheduler/dispatch.go` (`on_complete` kinds, `resolvePublishTarget`), `internal/tools/builtin/scheduledef.go`, `internal/config/config.go` (`ScheduledRun`).
+References: `internal/scheduler/scheduler.go` (sweeper, `tick`, `fireOne`, `claimSlot`, `fireChannelDelivery`, `recordFireOutcome`), `internal/scheduler/dispatch.go` (`on_complete` kinds, `resolvePublishTarget`), `internal/tools/builtin/scheduledef.go`, `internal/config/config.go` (`ScheduledRun`).
 
 ## Multi-replica HA (v0.12.0→v0.12.6)
 

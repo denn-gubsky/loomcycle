@@ -62,7 +62,12 @@ func TestScheduler_NonAdminAuthoredScheduleFiresInTheAuthorsTenant(t *testing.T)
 			t.Fatalf("get %s: %v", n.ActiveDefID, err)
 		}
 		before := len(fr.Calls())
-		sched.fireOne(context.Background(), store.ScheduleDueRow{DefID: row.DefID, Name: row.Name, Definition: row.Definition}, time.Now())
+		// The slot the lister would hand over: a fire claims it before running.
+		state, err := st.ScheduleRunStateGet(context.Background(), row.DefID)
+		if err != nil {
+			t.Fatalf("run state %s: %v", row.DefID, err)
+		}
+		sched.fireOne(context.Background(), store.ScheduleDueRow{DefID: row.DefID, Name: row.Name, Definition: row.Definition, NextRunAt: state.NextRunAt}, time.Now())
 		calls := fr.Calls()
 		if len(calls) != before+1 {
 			t.Fatalf("schedule %q did not fire a run", n.Name)

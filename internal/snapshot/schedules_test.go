@@ -51,7 +51,7 @@ func plantSchedules(t *testing.T, s store.Store, defs ...plantedSchedule) {
 		for i := 0; i < d.fires; i++ {
 			if err := s.ScheduleRunStateRecordResult(ctx, store.ScheduleRunResult{
 				DefID: row.DefID, LastRunID: "run_" + row.DefID, LastStatus: "completed", LastError: "",
-				LastRunAt: row.CreatedAt.Add(time.Duration(i+1) * time.Minute), NextRunAt: d.next, CountAsFire: true,
+				LastRunAt: row.CreatedAt.Add(time.Duration(i+1) * time.Minute), CountAsFire: true,
 			}); err != nil {
 				t.Fatalf("record %s: %v", row.DefID, err)
 			}
@@ -209,7 +209,7 @@ func TestScheduleDefs_ReRestoreWritesNothingAndKeepsTheCount(t *testing.T) {
 	mustRestore(t, dst, raw, RestoreOptions{})
 	// The target fires once more after the restore.
 	if err := dst.ScheduleRunStateRecordResult(context.Background(), store.ScheduleRunResult{
-		DefID: "sd_1", LastStatus: "completed", LastRunAt: b, NextRunAt: b.Add(time.Hour), CountAsFire: true,
+		DefID: "sd_1", LastStatus: "completed", LastRunAt: b, CountAsFire: true,
 	}); err != nil {
 		t.Fatal(err)
 	}
