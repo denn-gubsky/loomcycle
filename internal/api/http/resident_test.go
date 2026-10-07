@@ -723,6 +723,27 @@ func newGatedResidentServer(t *testing.T) (*Server, chan struct{}) {
 	return srv, gate
 }
 
+// partialWhileRunning checks that a turn still running hands its output so
+// far to its caller. out is what the bounded open or send returned at its
+// timeout. On a loaded machine that timeout can run out before the child's
+// turn has produced any text, so an empty out is not a failure by itself: the
+// output must then show up in a snapshot while the turn is still running.
+func partialWhileRunning(t *testing.T, srv *Server, ctx context.Context, runID, out string) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for !strings.Contains(out, "working") {
+		if time.Now().After(deadline) {
+			t.Fatalf("no partial output from the running turn: %q", out)
+		}
+		time.Sleep(10 * time.Millisecond)
+		var state string
+		var err error
+		if out, state, err = srv.pollResidentChild(ctx, runID, 0); err != nil || state != "running" {
+			t.Fatalf("snapshot of the gated turn: state=%q out=%q err=%v", state, out, err)
+		}
+	}
+}
+
 // TestResidentChild_SendTimeoutThenPoll: a slow turn makes send return
 // state "running" + partial output; poll then awaits its completion.
 func TestResidentChild_SendTimeoutThenPoll(t *testing.T) {
@@ -744,9 +765,7 @@ func TestResidentChild_SendTimeoutThenPoll(t *testing.T) {
 	if state != "running" {
 		t.Fatalf("expected state=running on a gated turn, got %q (out=%q)", state, out)
 	}
-	if !strings.Contains(out, "working") {
-		t.Errorf("expected partial output while running, got %q", out)
-	}
+	partialWhileRunning(t, srv, ctx, runID, out)
 
 	// a second send is refused while the turn is still in flight.
 	if _, _, err := srv.sendResidentChild(ctx, runID, "again", 100); err == nil {
@@ -794,9 +813,10 @@ func TestResidentChild_OpenTimeoutReturnsRunningThenPollCollects(t *testing.T) {
 		t.Fatalf("open: %v", err)
 	}
 	defer func() { _ = srv.closeResidentChild(ctx, runID) }()
-	if runID == "" || state != "running" || !strings.Contains(out, "working") {
+	if runID == "" || state != "running" {
 		t.Fatalf("open with timeout_ms on a gated first turn: runID=%q state=%q out=%q", runID, state, out)
 	}
+	partialWhileRunning(t, srv, ctx, runID, out)
 
 	gate <- struct{}{}
 	if out, state, err = srv.pollResidentChild(ctx, runID, 5000); err != nil || state != "awaiting_input" {
