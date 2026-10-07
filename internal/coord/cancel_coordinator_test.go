@@ -13,13 +13,7 @@ import (
 // stubCancelRunStore implements cancelRunStore for tests without
 // standing up a Postgres fixture.
 type stubCancelRunStore struct {
-	runs       map[string]store.Run // keyed by agent_id
-	finishErr  error
-	finishCall struct {
-		runID  string
-		status store.RunStatus
-		reason string
-	}
+	runs map[string]store.Run // keyed by agent_id
 }
 
 func (s *stubCancelRunStore) GetRunByAgentID(_ context.Context, agentID string) (store.Run, error) {
@@ -28,25 +22,6 @@ func (s *stubCancelRunStore) GetRunByAgentID(_ context.Context, agentID string) 
 		return store.Run{}, &store.ErrNotFound{Kind: "run", ID: agentID}
 	}
 	return r, nil
-}
-
-func (s *stubCancelRunStore) FinishRun(_ context.Context, runID string, status store.RunStatus, stopReason string, _ store.Usage, _ string) error {
-	s.finishCall.runID = runID
-	s.finishCall.status = status
-	s.finishCall.reason = stopReason
-	if s.finishErr != nil {
-		return s.finishErr
-	}
-	// Update the in-memory row so the timeout-recheck path can see
-	// a terminal status if the test set finish before timeout.
-	for agentID, r := range s.runs {
-		if r.ID == runID {
-			r.Status = status
-			s.runs[agentID] = r
-			break
-		}
-	}
-	return nil
 }
 
 func TestCancelCoordinator_LocalFallback_NoClusterCanceller(t *testing.T) {
@@ -131,11 +106,12 @@ func TestCancelCoordinator_AlreadyTerminal_ReturnsIdempotent(t *testing.T) {
 	}
 }
 
-// TestCancelCoordinator_DeadOwner_MarksRunFailed verifies the
-// short-circuit: when the owning replica's heartbeat is stale, the
-// coordinator marks the run failed in the DB and returns success
-// without broadcasting.
-func TestCancelCoordinator_DeadOwner_MarksRunFailed(t *testing.T) {
+// TestCancelCoordinator_DeadOwner_HandsTheRunToTheFinisher verifies the
+// short-circuit against the real replicas table: when the owning replica's
+// heartbeat is stale, the coordinator hands the run to the owner-gone
+// finisher with the caller's reason and answers cancelled, without
+// broadcasting and without writing to the run itself.
+func TestCancelCoordinator_DeadOwner_HandsTheRunToTheFinisher(t *testing.T) {
 	dsn := pgDSNFromEnv(t)
 	pool := freshUserQuotasPool(t, dsn)
 	bp, _ := NewPostgresBackplane(PostgresBackplaneConfig{
@@ -166,6 +142,11 @@ func TestCancelCoordinator_DeadOwner_MarksRunFailed(t *testing.T) {
 		ReplicaStore: rs,
 		AckTimeout:   500 * time.Millisecond,
 	})
+	var gotRun, gotReason string
+	cc.SetOwnerGoneFinisher(func(_ context.Context, run store.Run, reason string) (bool, []string) {
+		gotRun, gotReason = run.ID, reason
+		return true, nil
+	})
 	res, ok, err := cc.CancelRemote(context.Background(), "a_dead", "user-stop")
 	if err != nil {
 		t.Fatalf("err: %v", err)
@@ -173,11 +154,11 @@ func TestCancelCoordinator_DeadOwner_MarksRunFailed(t *testing.T) {
 	if !ok || !res.Cancelled {
 		t.Errorf("dead-owner: got ok=%v Cancelled=%v, want ok=true Cancelled=true", ok, res.Cancelled)
 	}
-	if res.Reason != "owner_dead_marked_failed" {
-		t.Errorf("Reason = %q, want owner_dead_marked_failed", res.Reason)
+	if res.Reason != ReasonOwnerDeadCancelled {
+		t.Errorf("Reason = %q, want %q", res.Reason, ReasonOwnerDeadCancelled)
 	}
-	if stub.finishCall.runID != "r2" || stub.finishCall.status != store.RunFailed {
-		t.Errorf("FinishRun call = %+v, want runID=r2 status=failed", stub.finishCall)
+	if gotRun != "r2" || gotReason != "user-stop" {
+		t.Errorf("finisher got run %q reason %q, want r2 with the caller's reason", gotRun, gotReason)
 	}
 }
 
