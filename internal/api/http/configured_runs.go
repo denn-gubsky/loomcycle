@@ -513,6 +513,11 @@ func (s *Server) handleStartConfiguredRun(w http.ResponseWriter, r *http.Request
 	// The stream opens only once the run is registered, so every refusal that
 	// happens before it is still an ordinary HTTP status.
 	var stream *sse
+	defer func() {
+		if stream != nil {
+			stream.end()
+		}
+	}()
 	cb := runner.RunCallbacks{
 		OnRegistered: func(agentID, runID, sessionID, _ string) {
 			st, ok := newSSE(w)

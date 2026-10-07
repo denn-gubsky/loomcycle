@@ -20,10 +20,23 @@ import (
 // goroutine and the optional keepalive goroutine (started by startKeepalive)
 // don't interleave bytes on the wire. net/http does NOT serialise concurrent
 // writes from multiple goroutines on a response writer — that's our job.
+//
+// Lifetime: the handler that streams defers end(). net/http cancels the
+// request ctx only AFTER ServeHTTP returns and then flushes the response's
+// buffered writer back to a pool shared with other connections, so a write
+// that arrives once the handler is gone can race that teardown or land in
+// another connection's response. end() runs before the return and makes
+// every later write a no-op.
 type sse struct {
 	w       http.ResponseWriter
 	flusher http.Flusher
 	mu      sync.Mutex
+	// ended is set by end(); every write after it is dropped. Guarded by mu.
+	ended bool
+	// Set once startKeepalive has started its goroutine (guarded by mu):
+	// end() closes keepaliveStop and waits for keepaliveDone.
+	keepaliveStop chan struct{}
+	keepaliveDone chan struct{}
 }
 
 // newSSE returns an sse and a boolean indicating whether the writer supports
@@ -41,6 +54,9 @@ func newSSE(w http.ResponseWriter) (*sse, bool) {
 func (s *sse) start() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.ended {
+		return
+	}
 	s.w.Header().Set("Content-Type", "text/event-stream")
 	s.w.Header().Set("Cache-Control", "no-cache")
 	s.w.Header().Set("Connection", "keep-alive")
@@ -65,12 +81,18 @@ func (s *sse) send(ev providers.Event) {
 		}
 		s.mu.Lock()
 		defer s.mu.Unlock()
+		if s.ended {
+			return
+		}
 		fmt.Fprintf(s.w, "event: error\ndata: %s\n\n", fallback)
 		s.flushLocked()
 		return
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.ended {
+		return
+	}
 	fmt.Fprintf(s.w, "event: %s\ndata: %s\n\n", ev.Type, payload)
 	s.flushLocked()
 }
@@ -93,6 +115,9 @@ func (s *sse) sendRaw(eventName string, data any) {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.ended {
+		return
+	}
 	fmt.Fprintf(s.w, "event: %s\ndata: %s\n\n", eventName, payload)
 	s.flushLocked()
 }
@@ -109,6 +134,9 @@ func (s *sse) sendOpenAIData(data any) {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.ended {
+		return
+	}
 	fmt.Fprintf(s.w, "data: %s\n\n", payload)
 	s.flushLocked()
 }
@@ -118,6 +146,9 @@ func (s *sse) sendOpenAIData(data any) {
 func (s *sse) sendOpenAIDone() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.ended {
+		return
+	}
 	fmt.Fprint(s.w, "data: [DONE]\n\n")
 	s.flushLocked()
 }
@@ -139,24 +170,56 @@ func (s *sse) sendOpenAIDone() {
 //
 // Safe to call once per stream after start(). No-op when the writer
 // doesn't support streaming (newSSE returned ok=false). The goroutine
-// holds no references that could outlive the request — when ctx
-// cancels (handler return, client disconnect), it exits next tick.
+// stops on ctx (client disconnect) or on end(), which also waits for it
+// to exit: the request ctx alone is cancelled only after the handler has
+// returned, too late to keep a tick off a finished response.
 func (s *sse) startKeepalive(ctx context.Context, interval time.Duration) {
 	if s.flusher == nil || interval <= 0 {
 		return
 	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.ended || s.keepaliveStop != nil {
+		return
+	}
+	stop, done := make(chan struct{}), make(chan struct{})
+	s.keepaliveStop, s.keepaliveDone = stop, done
 	go func() {
+		defer close(done)
 		t := time.NewTicker(interval)
 		defer t.Stop()
 		for {
 			select {
 			case <-ctx.Done():
 				return
+			case <-stop:
+				return
 			case <-t.C:
 				s.writeKeepalive()
 			}
 		}
 	}()
+}
+
+// end closes the stream for writing: it drops every later write and stops
+// the keepalive goroutine, waiting for it to exit. Taking mu also waits out
+// a write already in flight, so once end returns nothing in this package
+// touches the ResponseWriter again. Handlers defer it right after starting
+// the stream. Idempotent.
+func (s *sse) end() {
+	s.mu.Lock()
+	already := s.ended
+	s.ended = true
+	stop, done := s.keepaliveStop, s.keepaliveDone
+	s.mu.Unlock()
+	if stop == nil {
+		return
+	}
+	if !already {
+		close(stop)
+	}
+	// Outside mu: the goroutine may be waiting on it to find the stream ended.
+	<-done
 }
 
 // writeKeepalive emits one comment-only SSE frame. Errors are
@@ -166,6 +229,9 @@ func (s *sse) startKeepalive(ctx context.Context, interval time.Duration) {
 func (s *sse) writeKeepalive() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.ended {
+		return
+	}
 	if _, err := io.WriteString(s.w, ": keepalive\n\n"); err != nil {
 		return
 	}

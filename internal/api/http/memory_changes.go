@@ -135,6 +135,7 @@ func (s *Server) streamMemoryChanges(w http.ResponseWriter, r *http.Request, doc
 	})
 
 	stream.startKeepalive(r.Context(), s.cfg().Env.SSEKeepaliveInterval)
+	defer stream.end()
 
 	ticker := time.NewTicker(memoryChangesPollInterval)
 	defer ticker.Stop()

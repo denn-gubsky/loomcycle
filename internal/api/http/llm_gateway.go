@@ -236,6 +236,7 @@ func (s *Server) serveLLMChatStream(
 	}
 	stream.start()
 	stream.startKeepalive(r.Context(), 15*time.Second)
+	defer stream.end()
 	stream.sendRaw("provider_chosen", llmStreamProviderChosen{
 		Provider:  providerID,
 		Model:     modelID,
