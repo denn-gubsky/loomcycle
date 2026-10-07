@@ -1503,6 +1503,34 @@ func CompactionOverride(ctx context.Context) *config.Compaction {
 	return c
 }
 
+// UntrustedInput is one piece of text a parent hands its child as DATA: the
+// Agent tool's `untrusted` field on a spawn. It reaches the child's first user
+// turn as an untrusted-block, after the prompt, and never as instructions.
+type UntrustedInput struct {
+	Text string `json:"text"`
+	// Kind labels the block's tag; one the runtime does not know becomes
+	// "untrusted" where the block is rendered.
+	Kind string `json:"kind,omitempty"`
+}
+
+type ctxKeySpawnUntrusted struct{}
+
+// WithSpawnUntrusted carries a spawn's untrusted inputs from the Agent tool to
+// the sub-run that takes them. It ALWAYS sets the value, an empty one too:
+// the sub-run's ctx is the root of everything its child does, so a setter that
+// did nothing for "no inputs" would leave an outer spawn's text in place for a
+// grandchild to receive. The sub-run clears it for the same reason.
+func WithSpawnUntrusted(ctx context.Context, in []UntrustedInput) context.Context {
+	return context.WithValue(ctx, ctxKeySpawnUntrusted{}, in)
+}
+
+// SpawnUntrusted returns the untrusted inputs of the spawn this ctx belongs
+// to, or nil.
+func SpawnUntrusted(ctx context.Context) []UntrustedInput {
+	in, _ := ctx.Value(ctxKeySpawnUntrusted{}).([]UntrustedInput)
+	return in
+}
+
 // ctxKeyResolvedProvider / ctxKeyResolvedModel carry the run's
 // CURRENTLY-RESOLVED provider id and model name so the Context tool's
 // op=self can report them to the agent. The model never supplies these

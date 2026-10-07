@@ -7395,6 +7395,22 @@ func composeSubRunSegments(agentSystemPrompt, systemExtra, prompt string) []loop
 	})
 }
 
+// withUntrustedBlocks appends a spawn's untrusted inputs to the sub-run's user
+// segment as untrusted-block content, in order, after the prompt. The loop
+// fences each one (loop.FlattenContent) on the first call and again on every
+// replay, because the segments are what the run's first user_input event
+// stores.
+func withUntrustedBlocks(segs []loop.PromptSegment, in []tools.UntrustedInput) []loop.PromptSegment {
+	if len(in) == 0 || len(segs) == 0 {
+		return segs
+	}
+	user := &segs[len(segs)-1] // composeSubRunSegments ends with the user segment
+	for _, u := range in {
+		user.Content = append(user.Content, loop.PromptContentBlock{Type: "untrusted-block", Kind: u.Kind, Text: u.Text})
+	}
+	return segs
+}
+
 // prepareSubRun does all sub-run setup shared by the synchronous spawn path and
 // the resident interactive path. fwd is the recording emit's forward sink (the
 // sync path passes a no-op; the interactive path passes a turn-capturer).
@@ -7700,6 +7716,9 @@ func (s *Server) prepareSubRunValues(ctx context.Context, name string, src nameS
 	subRunCtx = teamrun.WithReviewTTL(teamrun.WithReviewArming(subRunCtx, nil), nil)
 	// And the id this run was created under: its own children mint theirs.
 	subRunCtx = tools.WithChildRunID(subRunCtx, "")
+	// A spawn's untrusted inputs are this run's alone: without the clear, a
+	// child this run spawns with none of its own would be handed them again.
+	subRunCtx = tools.WithSpawnUntrusted(subRunCtx, nil)
 	defer func() {
 		if !prepOK {
 			subCancelFn(nil)
@@ -7797,7 +7816,10 @@ func (s *Server) prepareSubRunValues(ctx context.Context, name string, src nameS
 	systemExtra, prompt = s.composeCallerText(ctx, memInject{
 		Tenant: parentIdentity.TenantID, UserID: parentIdentity.UserID, AgentName: name,
 	}, values, dataSlots, systemExtra, prompt, systemAuthored, inputAuthored)
-	segs := composeSubRunSegments(def.SystemPrompt, systemExtra, prompt)
+	// The spawn's untrusted inputs join the segments HERE, after the caller's
+	// text is composed: they are data, so no placeholder in them is expanded,
+	// and they sit after the prompt and whatever a start hook added to it.
+	segs := withUntrustedBlocks(composeSubRunSegments(def.SystemPrompt, systemExtra, prompt), tools.SpawnUntrusted(ctx))
 
 	// Inherit the parent's caller-authoritative host policy. Without
 	// this, sub-agents fall back to the operator's static

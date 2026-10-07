@@ -88,7 +88,7 @@ tool, built-in or MCP, is callable. A tool you didn't allow is not a
 |---|---|---|
 | `Memory.<op>(obj)` | Memory | multi-op meta-tool; `<op>` is any Memory op (get/set/delete/list/incr/search/merge/append_dedupe/bounded_list/add/recall); obj is the input minus `op` |
 | `Channel.<op>(obj)` | Channel | multi-op meta-tool; `<op>` is any Channel op (publish/subscribe/ack/peek/list_channels); subscribe is a non-blocking peek |
-| `Agent.spawn(obj)` | Agent | spawn an LLM (or code) sub-agent; returns its final text **behind an attribution header** — see Return types |
+| `Agent.spawn(obj)` | Agent | spawn an LLM (or code) sub-agent; returns its final text **behind an attribution header** — see Return types. Text the child must treat as data goes in `untrusted`, not in `prompt` |
 | `WebFetch(obj)` / `Read(obj)` / `HTTP(obj)` / `WebSearch(obj)` / … | the built-in of that name | every other allowed **built-in**, flat by canonical name |
 | `mcp__<server>__<tool>(obj)` | that MCP tool | every allowed MCP tool, flat by name |
 
@@ -273,5 +273,5 @@ tests and snapshot equality.
   `op=self` reports both, in `run_budget`: `wall_limit_ms` and
   `wall_elapsed_ms` beside the budget's figures.
 - **ABI versioning.** The JS-side API is versioned on its own semver
-  (currently 1.0.0), separate from loomcycle's release vector. Breaking a
+  (currently 1.1.0), separate from loomcycle's release vector. Breaking a
   signature is a major bump with a deprecation window.

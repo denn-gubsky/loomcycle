@@ -13,6 +13,9 @@ lifecycle: `close` it when you are done.**
 - `op` (required) — `open`.
 - `name` (required) — a registered agent name.
 - `prompt` (required) — the first instruction.
+- `untrusted` — text the child gets as data, not as instructions, fenced
+  after the first instruction; the same field as on `spawn`. Only `open`
+  takes it: `send` refuses it.
 - `def_id` — run a specific version of that agent; its name must match `name`.
 - `idle_ttl_seconds` — close the child after this long unused: no `send`,
   `poll` or `cancel`, and no turn running (0 = the operator's default).

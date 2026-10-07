@@ -92,6 +92,7 @@ const (
 type bgEntry struct {
 	name, prompt, defID string
 	compaction          *config.Compaction
+	untrusted           untrustedInputs
 	timeoutMs           int
 	index               int // -1 for a spawn
 }
@@ -228,7 +229,7 @@ func (a *AgentTool) runBackgroundChild(cctx context.Context, bg *tools.Backgroun
 	}
 	defer func() { <-sem }()
 
-	childCtx := tools.WithChildRunID(cctx, runID)
+	childCtx := tools.WithSpawnUntrusted(tools.WithChildRunID(cctx, runID), e.untrusted)
 	if !e.compaction.IsZero() {
 		childCtx = tools.WithCompactionOverride(childCtx, e.compaction)
 	}
