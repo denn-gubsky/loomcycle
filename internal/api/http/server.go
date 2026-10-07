@@ -307,6 +307,9 @@ type Server struct {
 	// runHookSets keeps each live run's resolved Set by run id, for the hooks
 	// fired outside the loop (manual compaction, run_end).
 	runHookSets sync.Map
+	// orphanEnds holds the id of each run cancelOrphanedRun is ending, so two
+	// cancellers of one row do not both report its end.
+	orphanEnds sync.Map
 	// codeHooks runs code-js hook bodies; nil unless code hooks are enabled,
 	// in which case registering one is refused.
 	codeHooks hooks.CodeRunner
