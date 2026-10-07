@@ -159,6 +159,27 @@ flag (lineage stays visible in `/ui/schedules`); the run-state row's
 `fire_count` is the counter. Set it on a substrate fork via the overlay:
 `{op:"fork", name:"…", overlay:{max_fires:3}}`.
 
+## What a schedule is doing now
+
+A scheduled run has no time limit and outlives the tick that started it: the
+schedule records it as `last_status: running` while it runs, and how it
+ended (`completed`, `failed`, `cancelled`) once it does. `on_complete` fires
+once, when it completes. If the replica running it dies, another replica
+finishes it.
+
+`ScheduleDef op=get` returns the definition plus `run_state`:
+
+| Field | Meaning |
+|---|---|
+| `next_run_at` | When the next slot comes due. |
+| `last_status` / `last_run_id` / `last_error` | The last run, or `skipped_overlap` / `skipped_disabled` for a slot that started nothing. |
+| `active_runs` | Every run it started and has not finished: `run_id`, `slot_at`, `catch_up`. Empty when nothing runs. |
+| `fire_count` | Fires so far (counts toward `max_fires`). |
+| `missed_slots` | Slots the last outage dropped. |
+| `catch_up_until` | Present while a `catch_up_max` backlog drains. |
+
+The Web UI's Schedules page shows the same, with links to the running runs.
+
 ## `concurrency_policy` — when the previous run is still going
 
 A scheduled run has no time limit, so a long job on a short cron can still be
