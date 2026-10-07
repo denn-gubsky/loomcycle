@@ -349,7 +349,7 @@ questions:
       attrs:
           - variable: OLLAMA_BASE_URL
             label: OLLAMA_BASE_URL
-            description: '`ollama` provider       = hosted ollama.com, Bearer auth via OLLAMA_API_KEY. `ollama-local` provider = local-network Ollama, no auth, default http://localhost:11434. Driven by OLLAMA_BASE_URL. Existing deploys with OLLAMA_BASE_URL=http://localhost:11434 keep working unchanged — they now feed `ollama-local`. To opt out of the local registration entirely, set OLLAMA_BASE_URL=disabled. (example: h…'
+            description: '`ollama` provider       = hosted ollama.com, Bearer auth via OLLAMA_API_KEY. `ollama-local` provider = local-network Ollama, no auth, default http://localhost:11434. Driven by OLLAMA_BASE_URL. YAML alternative (RFC CK): these ollama-local knobs — base_url, num_ctx, num_gpu, and the timeouts below — can instead live in the `local` preset (or your loomcycle.yaml) as `providers.ollama-local.{bas…'
             schema:
               type: string
               default: ""
@@ -377,6 +377,12 @@ questions:
             schema:
               type: string
               default: ""
+          - variable: LOOMCYCLE_PUBLIC_URL
+            label: LOOMCYCLE_PUBLIC_URL
+            description: 'The externally-reachable base URL for THIS instance (e.g. behind a tunnel/ proxy). Advertised to agents via `Context op=self` (server.url) so an agent — especially one over the MCP transport — can identify the server it''s talking to. Optional; unset → self reports only the bind address. (example: https://loomcycle.example.com)'
+            schema:
+              type: string
+              default: ""
           - variable: LOOMCYCLE_HTTP_HOST_ALLOWLIST
             label: LOOMCYCLE_HTTP_HOST_ALLOWLIST
             description: HTTP + WebFetch tools — comma-separated suffix-match host allowlist. Entry "example.com" matches "example.com" and "api.example.com" but not "evilexample.com". Private IPs (RFC1918, loopback, link-local incl. 169.254.169.254, CGNAT 100.64.0.0/10 and other non-public ranges) are HARD-blocked at connect regardless of allowlist. Loopback aliases on the list (localhost, 127.0.0.1, ::1, *.localhost)…
@@ -385,7 +391,7 @@ questions:
               default: ""
           - variable: LOOMCYCLE_HTTP_PRIVATE_HOST_ALLOWLIST
             label: LOOMCYCLE_HTTP_PRIVATE_HOST_ALLOWLIST
-            description: 'Private-host exception. Hosts here may resolve to private IPs at dial time — used to permit agent callbacks to a localhost-bound application API. Suffix-matched the same way as the main allowlist. Each entry must ALSO be on LOOMCYCLE_HTTP_HOST_ALLOWLIST (or be carried per-call when LOOMCYCLE_HTTP_CALLER_AUTHORITATIVE=1) to be reachable; this var only lifts the IP-private rejection. (example: lo…'
+            description: Private-host exception. Hosts here may resolve to private IPs at dial time — used to permit agent callbacks to a localhost-bound application API. Suffix-matched the same way as the main allowlist. Each entry must ALSO be on LOOMCYCLE_HTTP_HOST_ALLOWLIST (or be carried per-call when LOOMCYCLE_HTTP_CALLER_AUTHORITATIVE=1) to be reachable; this var only lifts the IP-private rejection. It is also t…
             schema:
               type: string
               default: ""
@@ -416,6 +422,12 @@ questions:
           - variable: LOOMCYCLE_BASHBOX_FALLBACK_ALLOWED_ENV
             label: LOOMCYCLE_BASHBOX_FALLBACK_ALLOWED_ENV
             description: 'Env vars injected ONLY into fallback (host) commands — never the sandbox (PATH always passes). Reference NAMES here; the secret VALUES live in .env.local. Comma-separated. (example: GH_TOKEN,HOME,SSH_AUTH_SOCK)'
+            schema:
+              type: string
+              default: ""
+          - variable: LOOMCYCLE_BASHBOX_FALLBACK_ALLOWED_CREDS
+            label: LOOMCYCLE_BASHBOX_FALLBACK_ALLOWED_CREDS
+            description: 'PER-TENANT credentials (RFC AR CredentialDef names) injected into fallback commands — resolved for each run''s own (tenant, user, agent) identity, so a tenant''s own GITHUB_TOKEN reaches git/gh instead of one shared host token. A resolved cred overrides a same-named ALLOWED_ENV var. Requires LOOMCYCLE_SECRET_KEY (the credential KEK). Comma-separated. (example: GITHUB_TOKEN)'
             schema:
               type: string
               default: ""
@@ -581,13 +593,13 @@ questions:
               default: ""
           - variable: LOOMCYCLE_OLLAMA_LOCAL_HEADER_TIMEOUT_MS
             label: LOOMCYCLE_OLLAMA_LOCAL_HEADER_TIMEOUT_MS
-            description: 'The `ollama-local` provider is the exception: local generation is slow on first-token (cold model load from disk + prompt eval over a large num_ctx can take minutes on a consumer GPU/CPU), so it uses its OWN, more generous default pair — 300 s / 300 s — instead of the cloud-shaped 60/90 above. These override only ollama-local; hosted ollama.com and every other cloud provider keep the global P…'
+            description: 'The `ollama-local` provider is the exception: local generation is slow on first-token (cold model load from disk + prompt eval over a large num_ctx can take minutes on a consumer GPU/CPU), so it uses its OWN, more generous default pair — 600 s / 600 s — instead of the cloud-shaped 60/90 above. These override only ollama-local; hosted ollama.com and every other cloud provider keep the global P…'
             schema:
               type: string
               default: ""
           - variable: LOOMCYCLE_OLLAMA_LOCAL_IDLE_TIMEOUT_MS
             label: LOOMCYCLE_OLLAMA_LOCAL_IDLE_TIMEOUT_MS
-            description: '(example: 300000)'
+            description: '(example: 600000)'
             schema:
               type: string
               default: ""
@@ -945,6 +957,18 @@ questions:
             schema:
               type: string
               default: ""
+          - variable: LOOMCYCLE_MCP_UPSTREAM_HEADER_TIMEOUT_MS
+            label: LOOMCYCLE_MCP_UPSTREAM_HEADER_TIMEOUT_MS
+            description: 'Thin-client (`loomcycle mcp --upstream`) connection self-recovery. Defaults heal an idle-dropped connection + a server restart transparently; tune only for a slow-to-restart upstream or a flaky link. (example: 60000)'
+            schema:
+              type: string
+              default: ""
+          - variable: LOOMCYCLE_MCP_UPSTREAM_RECONNECT_ATTEMPTS
+            label: LOOMCYCLE_MCP_UPSTREAM_RECONNECT_ATTEMPTS
+            description: '(example: 5)'
+            schema:
+              type: string
+              default: ""
           - variable: LOOMCYCLE_AGENT_DEF_MAX_DEFINITION_BYTES
             label: LOOMCYCLE_AGENT_DEF_MAX_DEFINITION_BYTES
             description: '(example: 131072)'
@@ -1017,6 +1041,42 @@ questions:
             schema:
               type: string
               default: ""
+          - variable: LOOMCYCLE_MAX_LIVE_CHILDREN_PER_RUN
+            label: LOOMCYCLE_MAX_LIVE_CHILDREN_PER_RUN
+            description: 'Children one run has alive at once, across every Agent op that starts one; a spawn past it is refused. Per run, not per tree: a child''s children count against the child. Default 32. (example: 32)'
+            schema:
+              type: string
+              default: ""
+          - variable: LOOMCYCLE_MAX_INTERACTIVE_CHILDREN
+            label: LOOMCYCLE_MAX_INTERACTIVE_CHILDREN
+            description: 'Resident (op=open) children one run holds open at once; op=open past it is refused until one is closed. Default 8. (example: 8)'
+            schema:
+              type: string
+              default: ""
+          - variable: LOOMCYCLE_INTERACTIVE_CHILD_IDLE_TTL_MS
+            label: LOOMCYCLE_INTERACTIVE_CHILD_IDLE_TTL_MS
+            description: 'Reap a resident child after this long with no send. Default 30 min. (example: 1800000)'
+            schema:
+              type: string
+              default: ""
+          - variable: LOOMCYCLE_RESIDENT_MAX_TURN_SECONDS
+            label: LOOMCYCLE_RESIDENT_MAX_TURN_SECONDS
+            description: 'Reap a resident child whose current turn has run longer than this, however its parent polls it. Default 2h; there is no unlimited setting. (example: 7200)'
+            schema:
+              type: string
+              default: ""
+          - variable: LOOMCYCLE_AGENT_CHILD_MAX_TIMEOUT_MS
+            label: LOOMCYCLE_AGENT_CHILD_MAX_TIMEOUT_MS
+            description: 'Ceiling on the timeout_ms an agent may give a spawned child; a larger value is refused, not clamped. 0 = no ceiling (the default). (example: 0)'
+            schema:
+              type: string
+              default: ""
+          - variable: LOOMCYCLE_AGENT_POLL_WAIT_CAP_MS
+            label: LOOMCYCLE_AGENT_POLL_WAIT_CAP_MS
+            description: 'Longest one Agent poll with wait any/all may block; a larger wait_ms is cut to it. Default 60 s. (example: 60000)'
+            schema:
+              type: string
+              default: ""
           - variable: LOOMCYCLE_CODE_AGENTS_ENABLED
             label: LOOMCYCLE_CODE_AGENTS_ENABLED
             description: 'A goja-backed provider for stateless replay agents (load tests, deterministic pipelines). Off by default. (example: 1)'
@@ -1044,6 +1104,36 @@ questions:
           - variable: LOOMCYCLE_CODE_AGENTS_MAX_WALL_SECONDS
             label: LOOMCYCLE_CODE_AGENTS_MAX_WALL_SECONDS
             description: '(example: 86400)'
+            schema:
+              type: string
+              default: ""
+          - variable: LOOMCYCLE_CODE_HOOKS_ENABLED
+            label: LOOMCYCLE_CODE_HOOKS_ENABLED
+            description: 'A hook''s body may be JavaScript (a code hook) instead of a webhook. Separate from the code-agent gate: a code hook runs on every matching tool call. (example: 1)'
+            schema:
+              type: string
+              default: ""
+          - variable: LOOMCYCLE_CHANNEL_HOOKS
+            label: LOOMCYCLE_CHANNEL_HOOKS
+            description: 'Decide each message published to a channel that carries `hooks:` before any reader sees it. Off by default; off, a publish to such a channel is refused. (example: 1)'
+            schema:
+              type: string
+              default: ""
+          - variable: LOOMCYCLE_CHANNEL_HOOKS_CONCURRENCY
+            label: LOOMCYCLE_CHANNEL_HOOKS_CONCURRENCY
+            description: '(example: 16)'
+            schema:
+              type: string
+              default: ""
+          - variable: LOOMCYCLE_CHANNEL_HOOKS_PER_CHANNEL
+            label: LOOMCYCLE_CHANNEL_HOOKS_PER_CHANNEL
+            description: '(example: 4)'
+            schema:
+              type: string
+              default: ""
+          - variable: LOOMCYCLE_CHANNEL_HOOKS_MAX_WAIT
+            label: LOOMCYCLE_CHANNEL_HOOKS_MAX_WAIT
+            description: '(example: 15m)'
             schema:
               type: string
               default: ""

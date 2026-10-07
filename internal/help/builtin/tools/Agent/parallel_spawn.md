@@ -32,15 +32,17 @@ while it waits for one, and time it is held for review does not count.
 
 ## Returns
 
-`{"results": [{index, agent, ok, output?, error?, state?, run_id?, status?, truncated?}]}`,
+`{"results": [{index, agent, ok, output?, error?, state?, run_id?, status?, truncated?, state_omitted?, state_bytes?}]}`,
 in the same order as `spawns`. `output` is the child's final text (as `spawn`
 returns it) when `ok` is true; `error` says why when it is false. `run_id` is
 the child's run, present whenever one was started — failed children included.
 `status` is `"timeout"` on a row whose child its `timeout_ms` stopped (`ok` is
 false and its run was cancelled); it is absent otherwise. The rows share a
-quarter of your context window equally: an `output` longer than its share is
-cut and the row carries `truncated: true` — the child's whole answer stays in
-the transcript of its `run_id`.
+quarter of your context window equally: an `error` or `output` longer than its
+share is cut, and a `state` that does not fit is left out whole, replaced by
+`state_omitted: true` and its size in `state_bytes`. A cut row carries
+`truncated: true` — the child's whole answer, state included, stays in the
+transcript of its `run_id`.
 
 In poll mode the call returns `{"batch_id": "fan_...", "children": [{index,
 agent, child_run_id, state}]}` at once. `state` is `"running"`, or `"queued"`

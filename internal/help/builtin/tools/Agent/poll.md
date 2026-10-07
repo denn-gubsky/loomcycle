@@ -37,7 +37,8 @@ current turn, as after an `open` or `send` that returned
 ## Returns
 
 Background form: `{"children": [{child_run_id, agent, kind?, index?, state,
-output?, error?, structured?, status?, truncated?}], "pending": N}`. `state` is
+output?, error?, structured?, status?, truncated?, structured_omitted?,
+structured_bytes?}], "pending": N}`. `state` is
 `queued` (waiting for a slot), `running`, `held` (held for a review verdict),
 `completed`, `failed`, `cancelled` or `timeout`; a resident child is `idle`
 when it is waiting for your next `send`. A finished child carries its
@@ -46,8 +47,10 @@ when it is waiting for your next `send`. A finished child carries its
 has `kind: "team"`, `agent: "team:<name>"`, and its final output as `output`;
 `TeamDef op=poll` reads its whole answer (final state, steps). `pending` counts the
 children in the answer that are still queued, running or held. The rows share
-a quarter of your context window; a cut row carries `truncated: true` and the
-whole answer stays in its run's transcript.
+a quarter of your context window: an `error` or `output` is cut to its share,
+and a `structured` state that does not fit is left out whole, replaced by
+`structured_omitted: true` and its size in `structured_bytes`. A cut row
+carries `truncated: true` and the whole answer stays in its run's transcript.
 
 Resident form: `{child_run_id, state, output}` — the output so far.
 `awaiting_input` means the turn is done and the child is ready for the next

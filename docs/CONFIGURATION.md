@@ -1238,6 +1238,17 @@ cp .env.insecure.example  .env.insecure   # then adjust paths/flags
 - **Definition plane — store the reference, resolve at use-time.** A substrate def persists the `${ENV_NAME}` reference, never the expanded value. Webhook defs store `signing_secret_env` / `bearer_token_env` (env-var *names*), and a dynamic MCP server's `url` / `headers` keep their `${LOOMCYCLE_*}` placeholders in `mcp_server_defs.content` — the secret is resolved only when the pool dials the server (mirroring how a yaml `mcp_servers.*` entry is expanded at config load). `content_sha256` is computed over the reference, so it stays stable when the token rotates. Only an admin (or the open-mode / stdio operator) may store a `${NAME}` in a dynamic MCP server def: a `substrate:tenant` author or an agent uses `${run.credentials.<name>}` or `$cred:<name>`, and a stored version holding a `${NAME}` that an admin did not save (an *unattributed* one: written before this rule, restored from an older snapshot, or hand-edited) is listed in a boot `WARNING` and warned once per version when dialed. It still dials for now; `LOOMCYCLE_MCP_REFUSE_UNATTRIBUTED_ENV=1` refuses it now, and the next release refuses it by default.
 - **Transcript plane — redact before persisting (`LOOMCYCLE_REDACT_SECRETS`, default ON).** Tool I/O (tool_call inputs + tool_result outputs) is scanned for secret-shaped substrings and masked before it reaches the events store (and thus snapshots + the `/v1/_events` audit API): the exact values of secret-named env vars (`*_KEY` / `*_TOKEN` / `*_SECRET` / `*_AUTH` / `*_PASSWORD` / `*_CREDENTIAL`) become `[redacted:NAME]`, plus conservative heuristics for `Authorization:` headers, `sk-`/`AKIA`/`xox`/`ghp_` keys, and `*_API_KEY=` assignments. The live SSE stream is **not** redacted (the caller already holds the secret). Set `LOOMCYCLE_REDACT_SECRETS=0` to disable. This is defense-in-depth — agents should still pass secrets out-of-band (env / stdin / credential helper), never inline on a cmdline.
 
+**Sub-agent limits.** Bounds on the children an agent starts with the `Agent` tool. Each is per run, not per tree (a child's own children count against the child); unset or `0` means the default.
+
+| Env var | Default | Bounds |
+|---|---|---|
+| `LOOMCYCLE_MAX_LIVE_CHILDREN_PER_RUN` | 32 | Children one run has alive at once, across every `Agent` op that starts one; a spawn past it is refused. |
+| `LOOMCYCLE_MAX_INTERACTIVE_CHILDREN` | 8 | Resident (`op=open`) children one run holds open; `op=open` past it is refused. |
+| `LOOMCYCLE_INTERACTIVE_CHILD_IDLE_TTL_MS` | 1800000 (30 min) | Idle time (no send) after which a resident child is reaped. |
+| `LOOMCYCLE_RESIDENT_MAX_TURN_SECONDS` | 7200 (2 h) | A resident child whose current turn runs longer is reaped. No unlimited setting. |
+| `LOOMCYCLE_AGENT_CHILD_MAX_TIMEOUT_MS` | 0 (no ceiling) | Ceiling on a spawn's `timeout_ms`; a larger value is refused, not clamped. |
+| `LOOMCYCLE_AGENT_POLL_WAIT_CAP_MS` | 60000 (60 s) | Longest one `Agent` poll with `wait` `any`/`all` blocks; a larger `wait_ms` is cut to it. |
+
 ---
 
 ## 9d. Filesystem Volumes — per-agent ro/rw scopes (RFC AH)

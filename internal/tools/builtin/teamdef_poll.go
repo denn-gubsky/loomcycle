@@ -186,10 +186,11 @@ func (t *TeamDef) execPoll(ctx context.Context, in teamDefInput) (tools.Result, 
 // bound Agent poll's rows share (capPollRows). A poll answers several walks
 // in one result; a waited-for op=run answers one walk, and is left whole.
 //
-// Only final_output and the steps' outputs are free text of unbounded size;
-// the rest of a row is state ids, agent names, counts and the error. Within a
-// walk the answer comes first: final_output keeps up to the walk's whole
-// share, and the steps' outputs split what is left equally. The trace is the
+// Only the error, final_output and the steps' outputs are free text of
+// unbounded size; the rest of a row is state ids, agent names and counts.
+// Within a walk the error comes first, then the answer: final_output keeps up
+// to what the error left of the walk's share, and the steps' outputs split
+// what is left equally. The trace is the
 // part a caller needs least, and its last output is final_output again. A walk
 // cut anywhere says truncated: true; its whole answer stays on its run
 // (run_id). The table's copy is never cut — a later poll reads it whole under
@@ -210,8 +211,13 @@ func capWalkRows(rows []map[string]any, quarter int) {
 			continue
 		}
 		left := share
+		if e, ok := r["error"].(string); ok {
+			cut, _ := cutOnRune(e, left)
+			r["error"] = cut
+			left -= len(cut)
+		}
 		if final, ok := r["final_output"].(string); ok {
-			cut, _ := cutOnRune(final, share)
+			cut, _ := cutOnRune(final, left)
 			r["final_output"] = cut
 			left -= len(cut)
 		}
@@ -244,11 +250,12 @@ func capWalkRows(rows []map[string]any, quarter int) {
 	}
 }
 
-// walkTextLen is the free text a walk's row carries: its final output and its
-// steps' outputs.
+// walkTextLen is the free text a walk's row carries: its error, its final
+// output and its steps' outputs.
 func walkTextLen(r map[string]any) int {
+	e, _ := r["error"].(string)
 	final, _ := r["final_output"].(string)
-	n := len(final)
+	n := len(e) + len(final)
 	steps, _ := r["steps"].([]map[string]any)
 	for _, s := range steps {
 		out, _ := s["output"].(string)
