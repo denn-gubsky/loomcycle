@@ -204,7 +204,9 @@ scheduled_runs:
   store every replica shares.
 - `replace` stops the running run or walk on whichever replica runs it. It
   never starts a run over one it could not stop: if the replica running it
-  cannot be reached, the slot is skipped as `forbid` would.
+  cannot be reached, the slot is skipped as `forbid` would. A run whose replica
+  is gone (it crashed, or was shut down without the run) has nothing left to
+  stop: it is recorded `cancelled` with the same reason, and the slot starts.
 - Refused on `delivery: channel`, which starts nothing that could overlap. A
   consolidation sweep always runs one at a time per schedule.
 

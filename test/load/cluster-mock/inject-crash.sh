@@ -83,11 +83,11 @@ log "killed" "$CONTAINER"
 
 # ─── Polling loop: snapshot distribution every 5 s up to WAIT_TOTAL_S ─
 #
-# Three distinct stop_reasons can mark a victim's running row terminal:
+# Two distinct stop_reasons can mark a victim's running row failed:
 #   replica_died        ← coord/replicas_sweeper.go (the explicit reaper)
 #   heartbeat_timeout   ← internal/heartbeat/sweeper.go (per-run sweeper)
-#   owner_replica_dead  ← coord/cancel_coordinator.go (cancel arrives for
-#                         a run whose owner replica is dead)
+# (A cancel arriving for a run whose owner replica is dead ends it as
+# cancelled with the cancel's own reason; this harness sends none.)
 # We track each separately and report which path actually cleared the
 # victim's in-flight runs.
 REAP_OBSERVED=0
@@ -104,7 +104,7 @@ while [ $(( SECONDS - KILL_AT )) -lt "$WAIT_TOTAL_S" ]; do
             REAPED=$(psql "$PG_DSN" -tAc "
                 SELECT count(*) FROM runs
                 WHERE replica_id='$VICTIM' AND status='failed'
-                  AND stop_reason IN ('replica_died','heartbeat_timeout','owner_replica_dead')" 2>/dev/null || echo 0)
+                  AND stop_reason IN ('replica_died','heartbeat_timeout')" 2>/dev/null || echo 0)
             if [ "$REAPED" -gt 0 ]; then
                 REAP_AT_S=$elapsed
                 REAP_OBSERVED=$REAPED
@@ -169,7 +169,7 @@ POST_STUCK=$(psql "$PG_DSN" -tAc \
 POST_REAPED=$(psql "$PG_DSN" -tAc \
     "SELECT count(*) FROM runs
      WHERE replica_id='$VICTIM' AND status='failed'
-       AND stop_reason IN ('replica_died','heartbeat_timeout','owner_replica_dead')" 2>/dev/null || echo 0)
+       AND stop_reason IN ('replica_died','heartbeat_timeout')" 2>/dev/null || echo 0)
 POST_QUOTA=$(psql "$PG_DSN" -tAc \
     "SELECT COALESCE(sum(active_count),0) FROM user_quotas WHERE active_count > 0" 2>/dev/null || echo "?")
 TOP_REASON=$(psql "$PG_DSN" -tAc "

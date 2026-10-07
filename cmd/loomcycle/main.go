@@ -2359,6 +2359,9 @@ func main() {
 		if err != nil {
 			log.Fatalf("coord: cancel coordinator init: %v", err)
 		}
+		// A cancel for a run whose replica is recorded dead ends the run the
+		// way the server ends any run no live loop holds.
+		cancelCoord.SetOwnerGoneFinisher(srv.FinishRunOwnerGone)
 		srv.CancelRegistry().SetClusterCanceller(cancelCoord)
 		go cancelCoord.RunCancelSubscriber(bgCtx, srv.CancelRegistry())
 		go cancelCoord.RunAckSubscriber(bgCtx)

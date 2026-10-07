@@ -71,29 +71,42 @@ func (s *Server) runUnheld(ctx context.Context, run store.Run) (bool, error) {
 // itself was ended. The caller has already established that its own caller
 // may cancel run: this checks nothing about who asks.
 func (s *Server) finishUnheldRun(ctx context.Context, run store.Run, reason string) bool {
+	finished, _ := s.FinishRunOwnerGone(ctx, run, reason)
+	return finished
+}
+
+// FinishRunOwnerGone is finishUnheldRun that also returns the agent ids of
+// the descendants it ended. It is the finisher the cluster cancel coordinator
+// calls for a run whose owning replica is recorded dead
+// (coord.OwnerGoneFinisher; main.go wires it), so that a cancel routed
+// through the cluster ends such a run exactly as one that never left this
+// replica does.
+func (s *Server) FinishRunOwnerGone(ctx context.Context, run store.Run, reason string) (bool, []string) {
 	if s.store == nil {
-		return false
+		return false, nil
 	}
 	unheld, err := s.runUnheld(ctx, run)
 	if err != nil {
 		log.Printf("cancel: run %s is left as it is: %v", run.ID, err)
-		return false
+		return false, nil
 	}
 	if !unheld {
-		return false
+		return false, nil
 	}
 	if reason == "" {
 		reason = "cancelled by api" // what a live run's cancel records for no reason
 	}
 	s.cancelOrphanedRun(run, reason)
-	s.finishUnheldDescendants(ctx, run, reason, map[string]bool{run.ID: true})
-	return true
+	var cascaded []string
+	s.finishUnheldDescendants(ctx, run, reason, map[string]bool{run.ID: true}, &cascaded)
+	return true, cascaded
 }
 
 // finishUnheldDescendants ends the unheld runs below parent, which has ended.
 // A child a live loop holds is left, and so is everything below it: its loop
-// answers for them. seen bounds the walk on rows whose parent links loop.
-func (s *Server) finishUnheldDescendants(ctx context.Context, parent store.Run, reason string, seen map[string]bool) {
+// answers for them. seen bounds the walk on rows whose parent links loop;
+// ended collects the agent ids of the runs ended.
+func (s *Server) finishUnheldDescendants(ctx context.Context, parent store.Run, reason string, seen map[string]bool, ended *[]string) {
 	if parent.AgentID == "" {
 		return
 	}
@@ -107,15 +120,15 @@ func (s *Server) finishUnheldDescendants(ctx context.Context, parent store.Run, 
 			continue
 		}
 		seen[child.ID] = true
-		ended := isTerminalRunStatus(child.Status)
-		if !ended {
+		if !isTerminalRunStatus(child.Status) {
 			unheld, err := s.runUnheld(ctx, child)
 			if err != nil || !unheld {
 				continue
 			}
 			s.cancelOrphanedRun(child, reason)
+			*ended = append(*ended, child.AgentID)
 		}
-		s.finishUnheldDescendants(ctx, child, reason, seen)
+		s.finishUnheldDescendants(ctx, child, reason, seen, ended)
 	}
 }
 
@@ -127,6 +140,8 @@ func (s *Server) cancelRunWherever(ctx context.Context, run store.Run, reason st
 		return
 	}
 	if run.AgentID != "" && s.cancelReg != nil {
+		// Found and not cancelled is an owner that did not answer, or a run
+		// that ended meanwhile: either way the registry has spoken for it.
 		if _, found := s.cancelReg.Cancel(run.AgentID, reason); found {
 			return
 		}

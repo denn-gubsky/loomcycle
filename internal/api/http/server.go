@@ -8397,9 +8397,10 @@ func (s *Server) handleCancelAgent(w http.ResponseWriter, r *http.Request) {
 	if ok {
 		// v0.12.2: Cancel may now return ok=true with res.Cancelled=false
 		// when the cluster canceller found the run but couldn't cancel
-		// it (owner_replica_unreachable, owner_dead_marked_failed,
-		// already-terminal). Surface res.Cancelled directly instead of
-		// hardcoding true.
+		// it (owner_replica_unreachable, already-terminal). A run whose
+		// owner is recorded dead comes back cancelled, ended by
+		// FinishRunOwnerGone (reason owner_dead_cancelled). Surface
+		// res.Cancelled directly instead of hardcoding true.
 		writeJSON(w, http.StatusOK, cancelResponse{
 			Cancelled: res.Cancelled,
 			AgentID:   agentID,

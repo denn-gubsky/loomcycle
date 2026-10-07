@@ -117,7 +117,7 @@ If a replica crashes (process kill, host outage), the survivors auto-recover:
 - Within 90 seconds the replicas TTL sweeper marks the dead replica's `replicas` row stale.
 - All runs owned by the dead replica are marked `status=failed` with `error="owner replica died"`.
 - Per-user quota slots leaked by the dead replica are decremented (`GREATEST(0, …)` clamps prevent underflow).
-- Cancel requests for the dead replica's runs auto-return `cancelled:true, reason:"owner_dead_marked_failed"`.
+- A cancel request for one of the dead replica's runs ends that run itself, without waiting for the sweeper: the run is recorded `status=cancelled` with the cancel's own reason as its stop reason, the runs below it that nothing holds are cancelled with it, and the response is `cancelled:true, reason:"owner_dead_cancelled"` (`cascaded` lists the runs ended with it). Earlier releases marked the run `failed` with stop reason `owner_replica_dead` and the response said `reason:"owner_dead_marked_failed"`; neither value is produced any more. A replica that is alive but does not answer is never treated as dead — see `owner_replica_unreachable` below.
 
 You do NOT need to manually clean up the DB. Just restart the replica when ready.
 

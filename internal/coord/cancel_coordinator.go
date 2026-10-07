@@ -21,9 +21,12 @@ import (
 //
 //  1. Queries the runs table for the agent's owning replica_id.
 //  2. Checks owner liveness via replicas.IsReplicaAlive — if dead,
-//     marks the run failed in the DB and returns success without
-//     a broadcast (Phase 5's TTL sweeper will close this loop, but
-//     this short-circuit saves the 5s ack wait).
+//     nobody is left to take a broadcast: the run is handed to the
+//     owner-gone finisher the server installs (SetOwnerGoneFinisher),
+//     which ends its row as cancelled with the caller's reason — the
+//     one way any cancel ends a run no live loop holds — and the
+//     answer is ReasonOwnerDeadCancelled. This coordinator writes
+//     nothing to the run itself.
 //  3. Publishes a `loomcycle.cancel` event on the backplane carrying
 //     {agent_id, reason, from_replica}.
 //  4. Waits on a per-call ack channel keyed by agent_id for up to
@@ -40,10 +43,13 @@ type CancelCoordinator struct {
 	bp         Backplane
 	replicaID  string
 	store      cancelRunStore
-	replicas   *ReplicaStore
+	replicas   ReplicaLiveness
 	ackTimeout time.Duration
 
 	mu sync.Mutex
+	// finishOwnerGone ends a run whose owner is recorded dead; nil until the
+	// server installs it (SetOwnerGoneFinisher).
+	finishOwnerGone OwnerGoneFinisher
 	// ackSubs is the in-flight waiter registry, fanning out one ack
 	// to every concurrent CancelRemote caller for the same agent_id.
 	// Slice (not single chan) closes the v0.12.2 review-1 finding #2:
@@ -57,10 +63,12 @@ type CancelCoordinator struct {
 
 // CancelCoordinatorConfig is the constructor input.
 type CancelCoordinatorConfig struct {
-	Backplane    Backplane
-	ReplicaID    string
-	Store        cancelRunStore
-	ReplicaStore *ReplicaStore
+	Backplane Backplane
+	ReplicaID string
+	Store     cancelRunStore
+	// ReplicaStore answers whether a run's owning replica is alive, from
+	// the replicas table (*ReplicaStore in production).
+	ReplicaStore ReplicaLiveness
 	// AckTimeout caps how long CancelRemote waits for the owning
 	// replica's ack publish. Default 5s if zero.
 	AckTimeout time.Duration
@@ -72,14 +80,41 @@ type CancelCoordinatorConfig struct {
 // store.Store interface.
 type cancelRunStore interface {
 	GetRunByAgentID(ctx context.Context, agentID string) (store.Run, error)
-	FinishRun(ctx context.Context, runID string, status store.RunStatus, stopReason string, usage store.Usage, errMsg string) error
 }
+
+// OwnerGoneFinisher ends a run whose owning replica is recorded dead: as
+// cancelled with reason, and with it the runs below it nothing holds either.
+// It reports whether it ended the run, and the agent ids of those it ended
+// with it. It decides for itself whether the run is really unheld, and may
+// decline — the run is then left exactly as it was.
+type OwnerGoneFinisher func(ctx context.Context, run store.Run, reason string) (finished bool, cascaded []string)
+
+// SetOwnerGoneFinisher installs the finisher. Until it is set, a cancel for a
+// run on a dead replica is answered as a miss, and the caller falls back to
+// what it does for a run no registry knows.
+func (c *CancelCoordinator) SetOwnerGoneFinisher(f OwnerGoneFinisher) {
+	c.mu.Lock()
+	c.finishOwnerGone = f
+	c.mu.Unlock()
+}
+
+// The CancelResult.Reason values a cancel that could not reach a live owner
+// answers with. They are on the wire (the agent-cancel response's `reason`).
+const (
+	// ReasonOwnerDeadCancelled: the owning replica is recorded dead, and the
+	// run was ended as cancelled. It replaces "owner_dead_marked_failed",
+	// which is no longer sent: the run used to be marked failed instead.
+	ReasonOwnerDeadCancelled = "owner_dead_cancelled"
+	// ReasonOwnerUnreachable: the owner did not answer, and the run was left
+	// as it is — a silent owner is not a dead one.
+	ReasonOwnerUnreachable = "owner_replica_unreachable"
+)
 
 // StaleReplicaThreshold is the dead-owner cutoff. 3× the 30s
 // heartbeat interval = 90s. A replica whose last_heartbeat_at is
-// older than this is presumed dead and CancelRemote marks the run
-// failed without a broadcast. Exported so the paused-run resume judges
-// "owned by a live replica" by the same cutoff.
+// older than this is presumed dead and CancelRemote hands the run to the
+// owner-gone finisher without a broadcast. Exported so the paused-run
+// resume judges "owned by a live replica" by the same cutoff.
 const StaleReplicaThreshold = 90 * time.Second
 
 const (
@@ -158,21 +193,29 @@ func (c *CancelCoordinator) CancelRemote(ctx context.Context, agentID, reason st
 		return cancel.CancelResult{}, false, nil
 	}
 
-	// Check owner liveness before broadcasting. A dead owner triggers
-	// the "mark failed in DB + return success" short-circuit.
+	// Check owner liveness before broadcasting. A dead owner has nobody to
+	// broadcast to: the run is ended through the finisher instead.
 	alive, err := c.replicas.IsReplicaAlive(ctx, run.ReplicaID, StaleReplicaThreshold)
 	if err != nil {
 		// Liveness probe failure: log and continue with broadcast. A
 		// real cancel may still succeed if the replica responds.
 		log.Printf("coord: IsReplicaAlive probe for %s failed: %v (proceeding with broadcast)", run.ReplicaID, err)
 	} else if !alive {
-		// Owner is gone. Mark the run failed and return success. No result
-		// (RFC DI): the answer was in the dead replica's memory, and this
-		// replica has only the row.
-		if ferr := c.store.FinishRun(ctx, run.ID, store.RunFailed, "owner_replica_dead", store.Usage{}, "owner replica heartbeat stale; marked failed by cancel handler"); ferr != nil {
-			log.Printf("coord: mark run %s failed after dead-owner detection: %v", run.ID, ferr)
+		// Owner is gone. The run is ended the one way a run no live loop
+		// holds is ended — cancelled, with this cancel's reason, and what is
+		// below it too — by the finisher, which applies its own, stricter
+		// test that nothing holds the run. No result: the answer was in the
+		// dead replica's memory.
+		c.mu.Lock()
+		finish := c.finishOwnerGone
+		c.mu.Unlock()
+		if finish == nil {
+			return cancel.CancelResult{}, false, nil
 		}
-		return cancel.CancelResult{Cancelled: true, Reason: "owner_dead_marked_failed"}, true, nil
+		if finished, cascaded := finish(ctx, run, reason); finished {
+			return cancel.CancelResult{Cancelled: true, Reason: ReasonOwnerDeadCancelled, Cascaded: cascaded}, true, nil
+		}
+		return cancel.CancelResult{Cancelled: false, Reason: ReasonOwnerUnreachable}, true, nil
 	}
 
 	// Live owner: broadcast + wait for ack.
@@ -232,7 +275,7 @@ func (c *CancelCoordinator) CancelRemote(ctx context.Context, agentID, reason st
 		if run2, err := c.store.GetRunByAgentID(recheckCtx, agentID); err == nil && run2.Status != "" && run2.Status != store.RunRunning {
 			return cancel.CancelResult{Cancelled: false, Reason: string(run2.Status)}, true, nil
 		}
-		return cancel.CancelResult{Cancelled: false, Reason: "owner_replica_unreachable"}, true, nil
+		return cancel.CancelResult{Cancelled: false, Reason: ReasonOwnerUnreachable}, true, nil
 	}
 }
 

@@ -387,10 +387,16 @@ func (s *Server) closeUnheldResident(ctx context.Context, childRunID string) err
 	if !ok || store.IsTerminalRunStatus(run.Status) {
 		return nil
 	}
-	if _, found := s.cancelReg.Cancel(run.AgentID, residentReasonClosedByParent); found {
+	res, found := s.cancelReg.Cancel(run.AgentID, residentReasonClosedByParent)
+	if found && res.Cancelled {
 		return nil
 	}
-	if s.finishUnheldRun(ctx, run, residentReasonClosedByParent) {
+	if !found && s.finishUnheldRun(ctx, run, residentReasonClosedByParent) {
+		return nil
+	}
+	// Found but not cancelled: its replica did not answer, or its run ended
+	// meanwhile. Only the second is a child that is closed.
+	if now, err := s.store.GetRun(ctx, childRunID); err == nil && store.IsTerminalRunStatus(now.Status) {
 		return nil
 	}
 	return residentUnreachableErr(childRunID, "close it")
