@@ -262,6 +262,49 @@ func TestResumePausedRuns_CancellingTheParentCancelsAResumedChild(t *testing.T) 
 	}
 }
 
+// A resumed run joins the cancel registry before its goroutine is started, and
+// the pass resumes descendants before their ancestors. So when the pass
+// returns every run it resumed is registered, and the root's cancel the
+// instant after reaches the whole tree — none of the descendants' goroutines
+// need to have run yet. Were a run to register from inside its goroutine, a
+// descendant could join after the cascade passed and run on under a cancelled
+// tree.
+func TestResumePausedRuns_ARootCancelledAsThePassReturnsCancelsEveryResumedDescendant(t *testing.T) {
+	prov := &blockingProvider{started: make(chan struct{}, 1)}
+	srv, _ := makeServer(t, prov, resumeTreeConfig("stub", "", ""))
+	root := createTreeRun(t, srv, store.RunIdentity{AgentID: "a_root"})
+	child := createTreeRun(t, srv, store.RunIdentity{AgentID: "a_child", ParentAgentID: "a_root", ParentRunID: root.ID})
+	grand := createTreeRun(t, srv, store.RunIdentity{AgentID: "a_grand", ParentAgentID: "a_child", ParentRunID: child.ID})
+	for _, r := range []store.Run{root, child, grand} {
+		pauseMidTurn(t, srv, r)
+	}
+	t.Cleanup(func() { cancelAllRuns(srv) })
+
+	if n, warnings := srv.ResumePausedRuns(context.Background()); n != 3 {
+		t.Fatalf("ResumePausedRuns re-dispatched %d, want 3 (warnings: %v)", n, warnings)
+	}
+	for _, id := range []string{"a_root", "a_child", "a_grand"} {
+		if _, ok := srv.cancelReg.Get(id); !ok {
+			t.Errorf("%s was not in the cancel registry when the pass returned", id)
+		}
+	}
+	res, ok := srv.cancelReg.Cancel("a_root", "operator stop")
+	if !ok {
+		t.Fatal("the resumed root was not registered")
+	}
+	if len(res.Cascaded) != 2 {
+		t.Errorf("the root's cancel cascaded to %v, want both resumed descendants", res.Cascaded)
+	}
+
+	for _, r := range []store.Run{root, child, grand} {
+		if got := waitRunStatus(t, srv.store, r.ID, store.RunCancelled); got.StopReason != "operator stop" {
+			t.Errorf("run %s stop reason = %q, want the root's cancel reason", r.AgentID, got.StopReason)
+		}
+	}
+	// The descendants hold the tree until their goroutines return.
+	waitFor(t, "the resumed descendants' goroutines to return", func() bool { return treeHolds(srv, root.ID) == 0 })
+}
+
 // The walk to the root, including every way it can fail to find one.
 func TestResumedRootRunID_WalksToTheTopOrFallsBackToTheRunItself(t *testing.T) {
 	rows := map[string]store.Run{
