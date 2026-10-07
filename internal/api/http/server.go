@@ -7045,6 +7045,11 @@ func iterationLimitOf(opts loop.RunOptions) int {
 	if opts.UnboundedIterations || (opts.Provider != nil && opts.Provider.Capabilities().UnboundedIterations) {
 		return 0
 	}
+	// An interactive run with no explicit limit is unbounded too (a resident
+	// child): the loop lifts the default for it.
+	if opts.MaxIterations == 0 && opts.Interactive && opts.SteerQueue != nil {
+		return 0
+	}
 	if opts.MaxIterations == 0 {
 		return loop.DefaultMaxIterations
 	}
