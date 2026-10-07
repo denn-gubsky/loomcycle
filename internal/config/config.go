@@ -2896,9 +2896,12 @@ type ScheduledRun struct {
 	// for staged rollouts + emergency disable.
 	Enabled bool `yaml:"enabled"`
 
-	// CatchUpMax bounds retroactive runs after a pause/outage. 0
-	// (default) = no catch-up (sweeper runs at most ONCE on resume);
-	// N > 0 = up to N retroactive fires. Per RFC E sharp edge.
+	// CatchUpMax is how many missed slots a schedule runs after an outage,
+	// a pause, or a run that outlived several slots (RFC DZ). 0 (default):
+	// the missed slots collapse into one fire, the rest counted as dropped.
+	// N: the newest N run in slot order, each knowing its slot (slot_at);
+	// under concurrency_policy allow up to N of them at once. At most
+	// MaxScheduleCatchUp.
 	CatchUpMax int `yaml:"catch_up_max"`
 
 	// MaxFires bounds the schedule's LIFETIME fire count (RFC S / F36).
@@ -8071,8 +8074,8 @@ func validate(c *Config) error {
 				return fmt.Errorf("scheduled_runs.%s: user_tier_schedules.%s: invalid cron expression %q: %w", name, tier, cronExpr, err)
 			}
 		}
-		if sr.CatchUpMax < 0 {
-			return fmt.Errorf("scheduled_runs.%s: catch_up_max must be >= 0", name)
+		if sr.CatchUpMax < 0 || sr.CatchUpMax > MaxScheduleCatchUp {
+			return fmt.Errorf("scheduled_runs.%s: catch_up_max must be between 0 and %d", name, MaxScheduleCatchUp)
 		}
 		if err := CheckScheduleConcurrencyPolicy(sr.ConcurrencyPolicy, sr.Delivery); err != nil {
 			return fmt.Errorf("scheduled_runs.%s: %w", name, err)

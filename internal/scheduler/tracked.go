@@ -137,6 +137,7 @@ func (s *Scheduler) trackRun(ctx context.Context, row store.ScheduleDueRow, runI
 		DefID:     row.DefID,
 		RunID:     runID,
 		SlotAt:    row.NextRunAt,
+		CatchUp:   !row.CatchUpUntil.IsZero(),
 		StartedAt: now,
 		ClaimedBy: s.cfg.ReplicaID,
 	}); err != nil {

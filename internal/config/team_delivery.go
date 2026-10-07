@@ -77,6 +77,9 @@ func sortedVarNames(vars map[string]string) []string {
 	return names
 }
 
+// MaxScheduleCatchUp is the most a schedule's catch_up_max may be (RFC DZ).
+const MaxScheduleCatchUp = 1000
+
 // Schedule concurrency policies (RFC DZ). "" means ScheduleConcurrencyForbid.
 const (
 	ScheduleConcurrencyForbid  = "forbid"

@@ -381,7 +381,7 @@ func (s *Scheduler) fireOne(ctx context.Context, row store.ScheduleDueRow, now t
 	if err != nil {
 		// No cron to compute the next slot from: park this one an hour out
 		// so it does not re-present every tick.
-		if s.claimSlot(ctx, row, now.Add(time.Hour), now) {
+		if s.claimSlot(ctx, row, slotPlan{slot: row.NextRunAt, next: now.Add(time.Hour)}, now) {
 			s.recordFireFailure(ctx, row.DefID, "", "decode_def", err, now)
 		}
 		return
@@ -391,40 +391,82 @@ func (s *Scheduler) fireOne(ctx context.Context, row store.ScheduleDueRow, now t
 			row.Name, row.DefID, row.OwnerTenantID, row.OwnerTenantID)
 		def = rehomed
 	}
+	// One slot per call, except while an `allow` schedule drains a backlog:
+	// its kept slots start at once, up to catch_up_max running. Every other
+	// policy runs a backlog one slot at a time, and the next one waits for
+	// the next tick.
+	for i := 0; i <= maxCatchUpCeiling; i++ {
+		next, more := s.fireSlot(ctx, row, def, now)
+		if !more {
+			return
+		}
+		row = next
+	}
+}
+
+// fireSlot claims and fires one slot of row. more=true hands back the row as
+// the next due slot of an `allow` backlog, which the caller fires at once.
+func (s *Scheduler) fireSlot(ctx context.Context, row store.ScheduleDueRow, def scheduleDef, now time.Time) (store.ScheduleDueRow, bool) {
+	disabled := (def.Enabled != nil && !*def.Enabled) || def.CaptureDisabled != nil
+	keep := def.CatchUpMax
+	if disabled || def.Delivery == "channel" || isConsolidationFanout(def) {
+		// A disabled schedule catches nothing up. A channel tick and a
+		// consolidation sweep collapse an outage into one fire: a sweep
+		// resumes from its own watermarks, and missed ticks carry nothing a
+		// later one does not.
+		keep = 0
+	}
+	plan, err := s.planSlot(def, row, now, keep)
+	if err != nil {
+		// Without a valid next_run_at, the sweeper would re-fire this
+		// def every tick. Park it 1 hour in the future so the operator
+		// gets a breathing window to fix the def before re-firing.
+		s.logf("scheduler: schedule %q cron-resolve failed: %v — parking 1h", row.Name, err)
+		plan = slotPlan{slot: row.NextRunAt, next: now.Add(time.Hour)}
+	}
+	// A catch-up slot that has to wait for the schedule's running runs is
+	// not claimed: next_run_at stays where it is and the slot is tried again
+	// next tick (see catchUpMustWait).
+	if plan.catchUp() && s.catchUpMustWait(ctx, row, def) {
+		return row, false
+	}
 
 	// Claim the slot BEFORE firing. Taking it advances next_run_at, so the
 	// row is no longer due however long the fire runs, and another tick or
 	// replica that listed it too loses the claim and fires nothing.
-	next, nextErr := s.computeNext(def, now)
-	if nextErr != nil {
-		// Without a valid next_run_at, the sweeper would re-fire this
-		// def every tick. Park it 1 hour in the future so the operator
-		// gets a breathing window to fix the def before re-firing.
-		s.logf("scheduler: schedule %q cron-resolve failed: %v — parking 1h", row.Name, nextErr)
-		next = now.Add(1 * time.Hour)
+	if !s.claimSlot(ctx, row, plan, now) {
+		return row, false
 	}
-	if !s.claimSlot(ctx, row, next, now) {
-		return
+	if plan.dropped > 0 {
+		s.logf("scheduler: schedule %q: %d missed slot(s) dropped (catch_up_max %d) — firing slot %s",
+			row.Name, plan.dropped, keep, plan.slot.UTC().Format(time.RFC3339))
 	}
+	// From here on the row names the slot being fired, and the backlog it
+	// belongs to: its run's key, its tracked row and its catch-up flag all
+	// read them.
+	listed := row
+	row.NextRunAt = plan.slot
+	row.CatchUpUntil = plan.catchUpUntil
 
-	if (def.Enabled != nil && !*def.Enabled) || def.CaptureDisabled != nil {
+	if disabled {
 		// Skip: the operator disabled this schedule via the substrate (or
 		// the yaml template set enabled:false). The claim already moved
 		// next_run_at on, so the row stops re-presenting every tick.
 		s.recordSkip(ctx, row.DefID, "skipped_disabled", now)
-		return
+		return row, false
 	}
 	if s.spentWhileRunning(ctx, row, def) {
 		// max_fires is used up by runs that have not finished; the def is
 		// retired when one does.
-		return
+		return row, false
 	}
-	// A slot that would start a run or a walk while the schedule's previous
-	// one is still going does what concurrency_policy says. A channel tick
-	// starts nothing to overlap, and a consolidation sweep keeps to one per
-	// def on its own (startConsolidationFanout).
-	if def.Delivery != "channel" && !isConsolidationFanout(def) && !s.admitOverlap(ctx, row, def, now) {
-		return
+	// A live slot that would start a run or a walk while the schedule's
+	// previous one is still going does what concurrency_policy says (a
+	// catch-up slot has already been through catchUpMustWait). A channel
+	// tick starts nothing to overlap, and a consolidation sweep keeps to one
+	// per def on its own (startConsolidationFanout).
+	if !plan.catchUp() && def.Delivery != "channel" && !isConsolidationFanout(def) && !s.admitOverlap(ctx, row, def, now) {
+		return row, false
 	}
 
 	// RFC CY: a channel tick is a fire with no run. Everything below — the
@@ -437,7 +479,7 @@ func (s *Scheduler) fireOne(ctx context.Context, row store.ScheduleDueRow, now t
 	// sentence true.
 	if def.Delivery == "channel" {
 		s.fireChannelDelivery(ctx, row, def, now)
-		return
+		return row, false
 	}
 
 	// A team tick starts a walk and no agent run of its own. Decided here for
@@ -445,7 +487,7 @@ func (s *Scheduler) fireOne(ctx context.Context, row store.ScheduleDueRow, now t
 	// and the rest reads `agent`, neither of which a team tick has.
 	if def.Delivery == "team" {
 		s.fireTeamDelivery(ctx, row, def, now)
-		return
+		return s.nextInBacklog(listed, plan, def, now)
 	}
 
 	// RFC BL P2: a consolidation schedule dispatches one run per memory TARGET
@@ -454,7 +496,7 @@ func (s *Scheduler) fireOne(ctx context.Context, row store.ScheduleDueRow, now t
 	// it does its own result bookkeeping.
 	if isConsolidationFanout(def) {
 		s.startConsolidationFanout(ctx, row, def, now)
-		return
+		return row, false
 	}
 
 	in := buildRunInput(def, s.cfg.EnvAllowlist, s.logf)
@@ -462,7 +504,25 @@ func (s *Scheduler) fireOne(ctx context.Context, row store.ScheduleDueRow, now t
 	// refused by the runs table before its loop starts, whatever went wrong
 	// with the claim. It also names the slot a run was fired for.
 	in.IdempotencyKey = slotRunKey(row.DefID, row.NextRunAt)
+	if plan.catchUp() {
+		in.Metadata = catchUpMetadata(in.Metadata, plan.slot)
+	}
 	s.fireRun(ctx, row, def, in, now)
+	return s.nextInBacklog(listed, plan, def, now)
+}
+
+// nextInBacklog is the row of the backlog's next kept slot, when the def is
+// `allow` and that slot is already due — so the caller starts it at once
+// rather than a tick later. Its claim compares against plan.next, which this
+// claim just wrote.
+func (s *Scheduler) nextInBacklog(listed store.ScheduleDueRow, plan slotPlan, def scheduleDef, now time.Time) (store.ScheduleDueRow, bool) {
+	if !plan.catchUp() || def.ConcurrencyPolicy != policyAllow || plan.next.After(now) {
+		return listed, false
+	}
+	next := listed
+	next.NextRunAt = plan.next
+	next.CatchUpUntil = plan.catchUpUntil
+	return next, true
 }
 
 // rehomeToOwningTenant returns def executing in its row's owning tenant when the
@@ -644,13 +704,15 @@ type fireOutcome struct {
 // caller must not fire. Every fire claims before it does anything, which is
 // what makes a slot fire once across replicas and keeps a fire that outlasts
 // its cadence from leaving its row due.
-func (s *Scheduler) claimSlot(ctx context.Context, row store.ScheduleDueRow, next, now time.Time) bool {
+func (s *Scheduler) claimSlot(ctx context.Context, row store.ScheduleDueRow, plan slotPlan, now time.Time) bool {
 	won, err := s.store.ScheduleRunStateClaim(ctx, store.ScheduleSlotClaim{
-		DefID:     row.DefID,
-		Slot:      row.NextRunAt,
-		NextRunAt: next,
-		ClaimedBy: s.cfg.ReplicaID,
-		ClaimedAt: now,
+		DefID:        row.DefID,
+		Slot:         row.NextRunAt,
+		NextRunAt:    plan.next,
+		ClaimedBy:    s.cfg.ReplicaID,
+		ClaimedAt:    now,
+		CatchUpUntil: plan.catchUpUntil,
+		MissedSlots:  plan.dropped,
 	})
 	if err != nil {
 		// Not claimed is the safe reading: the slot stays due and is retried.
@@ -668,7 +730,7 @@ func (s *Scheduler) claimSlot(ctx context.Context, row store.ScheduleDueRow, nex
 func (s *Scheduler) parkAfterPanic(row store.ScheduleDueRow) {
 	ctx := context.Background()
 	now := time.Now()
-	s.claimSlot(ctx, row, now.Add(time.Hour), now)
+	s.claimSlot(ctx, row, slotPlan{slot: row.NextRunAt, next: now.Add(time.Hour)}, now)
 	if err := s.store.ScheduleRunStateRecordResult(ctx, store.ScheduleRunResult{
 		DefID:      row.DefID,
 		LastStatus: "failed",
@@ -755,14 +817,4 @@ func (s *Scheduler) recordFireFailure(ctx context.Context, defID, runID, status 
 	}); rerr != nil {
 		s.logf("scheduler: def %q record fire-failure result failed: %v", defID, rerr)
 	}
-}
-
-// computeNext picks the cron from the def and returns the next-fire time
-// strictly after `now`.
-func (s *Scheduler) computeNext(def scheduleDef, now time.Time) (time.Time, error) {
-	expr, err := ResolveCron(def.Schedule, def.UserTierSchedules, def.UserTier)
-	if err != nil {
-		return time.Time{}, err
-	}
-	return NextFireAfter(expr, def.Timezone, now)
 }
