@@ -3,6 +3,7 @@ package builtin
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"os"
@@ -167,6 +168,14 @@ func (v *VolumeDef) execCreate(ctx context.Context, in volumeDefInput) (tools.Re
 	if _, ok := v.Cfg.Volumes[in.Name]; ok {
 		return errResult(fmt.Sprintf("create: name %q matches a static volumes: entry — yaml is ground truth; use a different name", in.Name)), nil
 	}
+	// A cancelled run can still dispatch a tool (a background child cancelled
+	// as its root ends). Both paths below make the directory BEFORE the
+	// ctx-bound row insert, which would then fail and leave a directory no row
+	// names; for an ephemeral volume that lands after the root's purge, where
+	// nothing sweeps it. Refuse before any filesystem side effect.
+	if err := ctx.Err(); err != nil {
+		return errResult(fmt.Sprintf("create: run is ending: %s", err)), nil
+	}
 
 	if in.Ephemeral {
 		return v.execCreateEphemeral(ctx, in, mode)
@@ -259,15 +268,15 @@ func (v *VolumeDef) execCreateEphemeral(ctx context.Context, in volumeDefInput, 
 	// ephemeral FIRST, so an ephemeral volume shadowing a durable same-named one
 	// would silently route the agent's writes into the run-scoped tree — which
 	// is purged at run completion (silent data loss). Names must be unambiguous.
-	// (A store fault here is non-fatal: skip the check and let create proceed —
-	// the persistent volume would be equally unresolvable under the same fault.)
+	// Only not-found clears the check: any other fault (a cancelled ctx among
+	// them) is not evidence there is no collision, so it refuses.
 	tenantID := tools.RunIdentity(ctx).TenantID
-	if _, err := v.Store.VolumeDefGetByName(ctx, tenantID, in.Name); err == nil {
-		return errResult(fmt.Sprintf("create: %q collides with an existing dynamic volume — ephemeral names must be unique", in.Name)), nil
+	if res, refused := v.refuseEphemeralCollision(ctx, tenantID, in.Name, "an existing"); refused {
+		return res, nil
 	}
 	if tenantID != "" {
-		if _, err := v.Store.VolumeDefGetByName(ctx, "", in.Name); err == nil {
-			return errResult(fmt.Sprintf("create: %q collides with a shared dynamic volume — ephemeral names must be unique", in.Name)), nil
+		if res, refused := v.refuseEphemeralCollision(ctx, "", in.Name, "a shared"); refused {
+			return res, nil
 		}
 	}
 
@@ -276,13 +285,14 @@ func (v *VolumeDef) execCreateEphemeral(ctx context.Context, in volumeDefInput, 
 		return errResult(fmt.Sprintf("create: %s", err)), nil
 	}
 	// Same fenced provisioning as the persistent path.
-	path, err := dynvol.ProvisionEphemeral(dynRoot, rootRunID, in.Name)
+	path, undo, err := dynvol.ProvisionEphemeral(dynRoot, rootRunID, in.Name)
 	if err != nil {
 		return errResult(fmt.Sprintf("create: %s", err)), nil
 	}
 
 	body, err := json.Marshal(dynvol.Body{Path: path, Mode: mode})
 	if err != nil {
+		undo()
 		return errResult(fmt.Sprintf("create: marshal: %s", err)), nil
 	}
 	row, err := v.Store.EphemeralVolumeCreate(ctx, store.EphemeralVolumeDefRow{
@@ -292,6 +302,9 @@ func (v *VolumeDef) execCreateEphemeral(ctx context.Context, in volumeDefInput, 
 		Definition: body,
 	})
 	if err != nil {
+		// The sweeper finds ephemeral directories by their rows, so one this
+		// call made but could not record would never be removed.
+		undo()
 		return errResult(fmt.Sprintf("create: %s", err)), nil
 	}
 	// Register in the run-scoped set ONLY after the row + dir are in place, so
@@ -306,6 +319,22 @@ func (v *VolumeDef) execCreateEphemeral(ctx context.Context, in volumeDefInput, 
 		"created_at": row.CreatedAt.UTC().Format("2006-01-02T15:04:05.000000000Z"),
 	}
 	return okJSON(resp)
+}
+
+// refuseEphemeralCollision reports whether an ephemeral create of name must be
+// refused because of a persistent dynamic volume in tenantID: it exists, or
+// the lookup failed for any reason other than not-found. which names the
+// tenant in the message ("an existing" / "a shared").
+func (v *VolumeDef) refuseEphemeralCollision(ctx context.Context, tenantID, name, which string) (tools.Result, bool) {
+	_, err := v.Store.VolumeDefGetByName(ctx, tenantID, name)
+	if err == nil {
+		return errResult(fmt.Sprintf("create: %q collides with %s dynamic volume — ephemeral names must be unique", name, which)), true
+	}
+	var nf *store.ErrNotFound
+	if errors.As(err, &nf) {
+		return tools.Result{}, false
+	}
+	return errResult(fmt.Sprintf("create: checking %q against dynamic volumes: %s", name, err)), true
 }
 
 // ---- get / list ----

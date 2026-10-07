@@ -3,6 +3,7 @@ package builtin
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -533,6 +534,114 @@ func TestVolumeDefTool_CreateEphemeralRefusesPersistentDynamicCollision(t *testi
 	// An ephemeral volume of the same name must be refused (would shadow it).
 	if _, res := vdExec(t, tool, ctx, `{"op":"create","name":"durable","ephemeral":true}`); !res.IsError || !strings.Contains(res.Text, "collides") {
 		t.Errorf("ephemeral name colliding with a persistent dynamic volume must refuse; got %s", res.Text)
+	}
+}
+
+// faultyVolumeStore fails the named volume calls with a non-not-found error,
+// standing in for a store fault on a live ctx.
+type faultyVolumeStore struct {
+	store.Store
+	failGetByName, failEphemeralCreate bool
+}
+
+var errVolumeStoreFault = errors.New("store fault")
+
+func (f *faultyVolumeStore) VolumeDefGetByName(ctx context.Context, tenantID, name string) (store.VolumeDefRow, error) {
+	if f.failGetByName {
+		return store.VolumeDefRow{}, errVolumeStoreFault
+	}
+	return f.Store.VolumeDefGetByName(ctx, tenantID, name)
+}
+
+func (f *faultyVolumeStore) EphemeralVolumeCreate(ctx context.Context, row store.EphemeralVolumeDefRow) (store.EphemeralVolumeDefRow, error) {
+	if f.failEphemeralCreate {
+		return store.EphemeralVolumeDefRow{}, errVolumeStoreFault
+	}
+	return f.Store.EphemeralVolumeCreate(ctx, row)
+}
+
+// A cancelled run (a background child cancelled as its root ends) can still
+// dispatch a create. It must refuse before making a directory: the row insert
+// would fail on the ctx, and an ephemeral directory with no row — possibly
+// re-made after the root's purge — is never swept.
+func TestVolumeDefTool_CreateOnCancelledCtxMakesNoDirectory(t *testing.T) {
+	for _, tc := range []struct {
+		name, body, dir string
+	}{
+		{"ephemeral", `{"op":"create","name":"work","ephemeral":true}`, filepath.Join("_ephemeral", "run-1")},
+		{"persistent", `{"op":"create","name":"work"}`, filepath.Join("_shared", "work")},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			tool, base, root, cleanup := volumeDefFixture(t)
+			defer cleanup()
+			ctx, set := ephemeralCtx(base, "run-1")
+			ctx, cancel := context.WithCancel(ctx)
+			cancel()
+			if _, res := vdExec(t, tool, ctx, tc.body); !res.IsError {
+				t.Fatalf("create on a cancelled ctx succeeded: %s", res.Text)
+			}
+			if _, err := os.Stat(filepath.Join(root, tc.dir)); !os.IsNotExist(err) {
+				t.Errorf("create on a cancelled ctx left %s on disk (err=%v)", tc.dir, err)
+			}
+			if set.Has("work") {
+				t.Error("create on a cancelled ctx registered the volume")
+			}
+		})
+	}
+}
+
+// A collision lookup that fails for any reason but not-found is no evidence
+// there is no collision: the create refuses, and makes no directory.
+func TestVolumeDefTool_CreateEphemeralRefusesOnCollisionLookupFault(t *testing.T) {
+	tool, base, root, cleanup := volumeDefFixture(t)
+	defer cleanup()
+	tool.Store = &faultyVolumeStore{Store: tool.Store, failGetByName: true}
+	ctx, set := ephemeralCtx(base, "run-1")
+	if _, res := vdExec(t, tool, ctx, `{"op":"create","name":"work","ephemeral":true}`); !res.IsError || !strings.Contains(res.Text, errVolumeStoreFault.Error()) {
+		t.Fatalf("create with a failing collision lookup must refuse with the fault; got %s", res.Text)
+	}
+	if _, err := os.Stat(filepath.Join(root, "_ephemeral")); !os.IsNotExist(err) {
+		t.Errorf("refused create left an _ephemeral directory (err=%v)", err)
+	}
+	if set.Has("work") {
+		t.Error("refused create registered the volume")
+	}
+}
+
+// A row insert that fails after the directory was made removes what this
+// create made — and only that: another volume of the same run keeps its
+// directory and the run dir that holds it.
+func TestVolumeDefTool_CreateEphemeralInsertFaultRemovesItsDirectory(t *testing.T) {
+	tool, base, root, cleanup := volumeDefFixture(t)
+	defer cleanup()
+	faulty := &faultyVolumeStore{Store: tool.Store, failEphemeralCreate: true}
+	tool.Store = faulty
+	runDir := filepath.Join(root, "_ephemeral", "run-1")
+
+	ctx, set := ephemeralCtx(base, "run-1")
+	if _, res := vdExec(t, tool, ctx, `{"op":"create","name":"work","ephemeral":true}`); !res.IsError {
+		t.Fatalf("create with a failing insert succeeded: %s", res.Text)
+	}
+	if _, err := os.Stat(runDir); !os.IsNotExist(err) {
+		t.Errorf("failed insert left the run dir it made (err=%v)", err)
+	}
+	if set.Has("work") {
+		t.Error("failed insert registered the volume")
+	}
+
+	faulty.failEphemeralCreate = false
+	if _, res := vdExec(t, tool, ctx, `{"op":"create","name":"kept","ephemeral":true}`); res.IsError {
+		t.Fatalf("create kept: %s", res.Text)
+	}
+	faulty.failEphemeralCreate = true
+	if _, res := vdExec(t, tool, ctx, `{"op":"create","name":"work","ephemeral":true}`); !res.IsError {
+		t.Fatalf("create with a failing insert succeeded: %s", res.Text)
+	}
+	if _, err := os.Stat(filepath.Join(runDir, "work")); !os.IsNotExist(err) {
+		t.Errorf("failed insert left the leaf it made (err=%v)", err)
+	}
+	if info, err := os.Stat(filepath.Join(runDir, "kept")); err != nil || !info.IsDir() {
+		t.Errorf("failed insert removed another volume's directory (err=%v)", err)
 	}
 }
 
