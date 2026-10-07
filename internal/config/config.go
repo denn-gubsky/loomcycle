@@ -3881,7 +3881,7 @@ type Env struct {
 	ReplicasSweepInterval time.Duration
 	// ReplicasStaleAfter is the cutoff for marking a replica's heartbeat
 	// stale and reaping its in-flight runs (status='failed',
-	// stop_reason='owner_replica_dead') + reclaiming its quota.
+	// stop_reason='replica_died') + reclaiming its quota.
 	// Default 90s — should be > the replica heartbeat interval (30s) by
 	// enough margin to absorb a missed beat. Crash-recovery load tests
 	// drive it down to ~15s so the reap fires in-window.

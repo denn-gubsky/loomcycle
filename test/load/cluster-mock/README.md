@@ -23,7 +23,7 @@ piece of cross-replica coordination through real traffic:
 | `runs.replica_id` | Ownership stamping at create; needed for cancel routing + crash reap |
 | `loomcycle.channel` LISTEN/NOTIFY | Editor on replica B subscribes to a channel the researcher published on replica A → fan-out must traverse the backplane |
 | `cancel_coordinator` + `loomcycle.cancel`/`.ack` | Cancel posted to replica B for a run owned by replica A → broadcast + ack round-trip |
-| `replicas` table + dead-replica reaper | A killed replica's in-flight runs marked `failed`/`owner_replica_dead`; quotas reclaimed |
+| `replicas` table + dead-replica reaper | A killed replica's in-flight runs marked `failed`/`replica_died`; quotas reclaimed |
 | `process_samples.replica_id` (Phase 1 of this branch) | Per-replica CPU/RSS series in the shared table — see `feat(metrics): tag process_samples with replica_id` |
 | pgxpool budget split | Per-replica pool sized from N so `N × pool ≤ max_connections` — surfaces the central-Postgres connection budget as a real constraint |
 
@@ -129,7 +129,7 @@ output is written to `cluster-analysis.txt`; the rollups it computes:
 | `runs GROUP BY replica_id, status` | LB round-robin + ownership stamping work; load splits cleanly |
 | `process_samples GROUP BY replica_id` | The Phase-1 `replica_id` column populates per replica → per-replica CPU/RSS/goroutines attributable |
 | Cross-replica circuit count | Circuits whose 3 agents span ≥2 replicas → editor/evaluator subscribe traversed `loomcycle.channel` NOTIFY |
-| `stop_reason IN ('owner_replica_dead','heartbeat_stale')` | Dead-replica reaper fired (crash scenario) |
+| `stop_reason IN ('replica_died','heartbeat_timeout')` | Dead-replica reaper or per-run heartbeat sweeper fired (crash scenario) |
 | `count(*) WHERE status='running'` | Zombie-run guard: should be 0 after every test |
 | `sum(user_quotas.active_count)` | Quota-leak guard: should be 0 after a clean drain |
 
