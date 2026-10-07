@@ -17,7 +17,7 @@ import (
 func TestRestoredClock_DeadlineIsStartPlusBoundPlusEndedHolds(t *testing.T) {
 	t0 := time.Date(2026, 10, 6, 12, 0, 0, 0, time.UTC)
 	at := func(s int) time.Time { return t0.Add(time.Duration(s) * time.Second) }
-	clk := &restoredClock{bound: 10 * time.Second, start: t0}
+	clk := &restoredClock{resumedChildClock: resumedChildClock{bound: 10 * time.Second}, start: t0}
 	clk.observe([]store.Event{
 		{Seq: 1, Type: "user_input", Timestamp: at(0)},
 		{Seq: 2, Type: string(providers.EventAwaitingReview), Timestamp: at(2)},
@@ -25,11 +25,11 @@ func TestRestoredClock_DeadlineIsStartPlusBoundPlusEndedHolds(t *testing.T) {
 		{Seq: 4, Type: "user_input", Timestamp: at(5)},
 		{Seq: 5, Type: string(providers.EventAwaitingReview), Timestamp: at(7)},
 	})
-	if deadline, held := clk.deadline(); !held || !deadline.Equal(at(13)) {
+	if deadline, held := clk.deadline(clk.start); !held || !deadline.Equal(at(13)) {
 		t.Fatalf("deadline = %v held %v; want %v, held (the second hold is open)", deadline, held, at(13))
 	}
 	clk.observe([]store.Event{{Seq: 6, Type: "done", Timestamp: at(8)}})
-	if deadline, held := clk.deadline(); held || !deadline.Equal(at(14)) || clk.seq != 6 {
+	if deadline, held := clk.deadline(clk.start); held || !deadline.Equal(at(14)) || clk.seq != 6 {
 		t.Fatalf("deadline = %v held %v seq %d; want %v, not held, seq 6", deadline, held, clk.seq, at(14))
 	}
 }

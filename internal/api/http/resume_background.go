@@ -6,11 +6,9 @@ import (
 	"errors"
 	"fmt"
 	"log"
-	"slices"
 	"strings"
 	"time"
 
-	"github.com/denn-gubsky/loomcycle/internal/awaited"
 	"github.com/denn-gubsky/loomcycle/internal/cancel"
 	"github.com/denn-gubsky/loomcycle/internal/loop"
 	"github.com/denn-gubsky/loomcycle/internal/providers"
@@ -270,7 +268,7 @@ func (s *Server) watchRestoredChildren(ctx context.Context, bg *tools.Background
 	}
 	clocks := make(map[string]*restoredClock, len(bounds))
 	for id, ms := range bounds {
-		clocks[id] = &restoredClock{bound: time.Duration(ms) * time.Millisecond}
+		clocks[id] = &restoredClock{resumedChildClock: resumedChildClock{bound: time.Duration(ms) * time.Millisecond}}
 	}
 	defer func() {
 		for _, i := range pending {
@@ -314,7 +312,7 @@ func (s *Server) watchRestoredChildren(ctx context.Context, bg *tools.Background
 		var next time.Time
 		for id := range pending {
 			if clk := clocks[id]; clk != nil && !clk.start.IsZero() {
-				if at, held := clk.deadline(); !held && (next.IsZero() || at.Before(next)) {
+				if at, held := clk.deadline(clk.start); !held && (next.IsZero() || at.Before(next)) {
 					next = at
 				}
 			}
@@ -366,41 +364,13 @@ func (s *Server) watchRestoredChildren(ctx context.Context, bg *tools.Background
 	}
 }
 
-// restoredClock is a restored child's timeout_ms, read off its run: the bound
-// runs from the run's start, plus the time the run spent held for a verdict.
+// restoredClock is a restored child's timeout_ms, read off its run: the
+// fan-out child's clock (the bound from the run's start, plus the time it spent
+// held for a verdict), with the start read lazily, once its row is there.
 type restoredClock struct {
-	bound     time.Duration
-	start     time.Time     // the run's start; zero until its row is read
-	seq       int64         // the run's events read so far
-	held      time.Duration // the holds that have ended
-	heldSince time.Time     // the start of the hold still open, or zero
+	resumedChildClock
+	start time.Time // the run's start; zero until its row is read
 }
-
-// deadline is when the bound runs out, and whether a hold is open — the clock
-// is stopped then, and the deadline moves on by the hold's length.
-func (c *restoredClock) deadline() (time.Time, bool) {
-	return c.start.Add(c.bound + c.held), !c.heldSince.IsZero()
-}
-
-// observe reads more of the run's events: an awaiting_review opens a hold,
-// whatever leaves it (the verdict's feedback turn, the end) closes it.
-func (c *restoredClock) observe(events []store.Event) {
-	for _, ev := range events {
-		c.seq = max(c.seq, ev.Seq)
-		switch {
-		case ev.Type == string(providers.EventAwaitingReview):
-			if c.heldSince.IsZero() {
-				c.heldSince = ev.Timestamp
-			}
-		case !c.heldSince.IsZero() && slices.Contains(awaited.HoldEndingEvents, ev.Type):
-			c.held += max(ev.Timestamp.Sub(c.heldSince), 0)
-			c.heldSince = time.Time{}
-		}
-	}
-}
-
-// restoredClockEventsPage bounds one read of a bounded child's events.
-const restoredClockEventsPage = 500
 
 // restoredClockExpired brings a bounded child's clock up to date from its run
 // and reports whether its bound has run out. A run it cannot read yet is not
@@ -414,7 +384,7 @@ func (s *Server) restoredClockExpired(ctx context.Context, runID string, clk *re
 		clk.start = child.StartedAt
 	}
 	for {
-		page, err := s.store.GetRunEventsSince(ctx, runID, clk.seq, restoredClockEventsPage)
+		page, err := s.store.GetRunEventsSince(ctx, runID, clk.seq, resumedChildClockPage)
 		if err != nil {
 			if ctx.Err() == nil {
 				log.Printf("resume: read background child %s's events: %v", runID, err)
@@ -422,11 +392,11 @@ func (s *Server) restoredClockExpired(ctx context.Context, runID string, clk *re
 			return false
 		}
 		clk.observe(page)
-		if len(page) < restoredClockEventsPage {
+		if len(page) < resumedChildClockPage {
 			break
 		}
 	}
-	at, held := clk.deadline()
+	at, held := clk.deadline(clk.start)
 	return !held && !time.Now().Before(at)
 }
 
