@@ -27,6 +27,11 @@ finished and the child is ready for the next `send`.
   `open` a new one.
 - `resident sub-agent "r_..." is still running its previous turn ...` — `poll`
   it to wait, or `cancel` the turn, before you `send` again.
+- `sub-agent "X" stopped at its iteration limit of N before it finished, so
+  its last answer may be incomplete (run r_...). Its last answer: ...` — the
+  turn used the last iterations its agent's `max_iterations` allows, and the
+  child has ended with it. Its answer follows the message; check it before
+  relying on it. To go on, `open` a new one.
 
 ## Examples
 

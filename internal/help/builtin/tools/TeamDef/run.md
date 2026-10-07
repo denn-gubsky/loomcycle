@@ -72,6 +72,12 @@ Detach mode: `{name, def_id, run_id, status: "running"}`.
 - `notify and on_parent_end apply to mode "poll" only` — add
   `"mode": "poll"` or drop them.
 - `run: ...` — the walk failed; the message says at which state and why.
+- `run: ... sub-agent "X" stopped at its iteration limit of N before it
+  finished ...` — a member used every iteration its agent's `max_iterations`
+  allows. That counts as a failed member, so the state failed; the member's
+  last answer is in its run's transcript. Give the state a smaller task, or
+  the agent a higher limit. (A state's own cap answers `iteration_cap`
+  instead.)
 
 ## Examples
 
