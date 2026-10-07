@@ -321,25 +321,35 @@ func TestResumedChildClock_StoppedClockIsReadBeforeItCouldRunOut(t *testing.T) {
 	}
 }
 
-// A run's pauses on its record: a pause opens at the runtime's pause, ends at
-// the release, a second end is no write, and a pause left open by a lost end
-// is replaced by the next one rather than counted to it.
-func TestRunConfigRecord_NotePauseOpensAndEndsPauses(t *testing.T) {
+// A run's pauses on its record: a pause opens at the runtime's pause, opening
+// it again (the manager and the run's own park) is one entry, it ends at the
+// release, a second end is no write, an end for another pause leaves the open
+// one alone, and a pause left open by a lost end is replaced by the next one
+// rather than counted to it.
+func TestRunConfigRecord_PausesOpenAndEndOnce(t *testing.T) {
 	base := time.Date(2026, 10, 7, 12, 0, 0, 0, time.UTC)
 	var rec runConfigRecord
-	if err := rec.notePause(true, base); err != nil || !rec.pauseOpen() {
-		t.Fatalf("open: err %v, open %v", err, rec.pauseOpen())
+	rec.openPause(base)
+	rec.openPause(base)
+	if len(rec.Pauses) != 1 || !rec.pauseOpen() {
+		t.Fatalf("opened twice: pauses %+v, want one open", rec.Pauses)
 	}
-	if err := rec.notePause(false, base.Add(time.Minute)); err != nil || rec.pauseOpen() {
+	if err := rec.endPause(base, base.Add(time.Minute)); err != nil || rec.pauseOpen() {
 		t.Fatalf("end: err %v, open %v", err, rec.pauseOpen())
 	}
-	if err := rec.notePause(false, base.Add(2*time.Minute)); !errors.Is(err, errNoPauseOpen) {
+	if err := rec.endPause(base, base.Add(2*time.Minute)); !errors.Is(err, errNoPauseOpen) {
 		t.Errorf("a second end = %v, want errNoPauseOpen", err)
 	}
-	_ = rec.notePause(true, base.Add(3*time.Minute))
-	_ = rec.notePause(true, base.Add(5*time.Minute)) // the end of the first was lost
+	rec.openPause(base.Add(3 * time.Minute))
+	if err := rec.endPause(base, base.Add(4*time.Minute)); !errors.Is(err, errNoPauseOpen) || !rec.pauseOpen() {
+		t.Errorf("a late end of the first pause = %v, open %v: want the second left open", err, rec.pauseOpen())
+	}
+	rec.openPause(base.Add(5 * time.Minute)) // the end of the second was lost
 	if len(rec.Pauses) != 2 || !rec.Pauses[1].Since.Equal(base.Add(5*time.Minute)) || rec.Pauses[1].Until != nil {
 		t.Errorf("pauses = %+v, want the closed one and one open from +5m", rec.Pauses)
+	}
+	if err := rec.endPause(time.Time{}, base.Add(6*time.Minute)); err != nil || rec.pauseOpen() {
+		t.Errorf("an end naming no pause = %v, open %v: want the open one ended", err, rec.pauseOpen())
 	}
 }
 
@@ -356,10 +366,10 @@ func TestRecordRunPause_KeepsTheRestOfTheRecord(t *testing.T) {
 		t.Fatal(err)
 	}
 	since := time.Now().Add(-time.Second).UTC().Truncate(time.Millisecond)
-	if err := recordRunPause(ctx, srv.store, run.ID, true, since); err != nil {
+	if err := recordRunPause(ctx, srv.store, run.ID, since, time.Time{}); err != nil {
 		t.Fatal(err)
 	}
-	if err := recordRunPause(ctx, srv.store, run.ID, false, since.Add(time.Second)); err != nil {
+	if err := recordRunPause(ctx, srv.store, run.ID, since, since.Add(time.Second)); err != nil {
 		t.Fatal(err)
 	}
 	got, _ := srv.store.GetRun(ctx, run.ID)
@@ -372,7 +382,7 @@ func TestRecordRunPause_KeepsTheRestOfTheRecord(t *testing.T) {
 	}
 	// A run with no record is left without one.
 	bare, _ := srv.store.CreateRun(ctx, sess.ID, store.RunIdentity{AgentID: "a_bare", UserID: "alice"})
-	if err := recordRunPause(ctx, srv.store, bare.ID, true, since); err != nil {
+	if err := recordRunPause(ctx, srv.store, bare.ID, since, time.Time{}); err != nil {
 		t.Fatal(err)
 	}
 	if got, _ := srv.store.GetRun(ctx, bare.ID); len(got.RunConfig) != 0 {

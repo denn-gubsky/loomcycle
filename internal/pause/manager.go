@@ -99,6 +99,13 @@ type Manager struct {
 	// applied here); zero while running. Guarded by mu.
 	pausedAt time.Time
 
+	// recorder writes the pause onto each run live here when it begins and
+	// ends (SetRunPauseRecorder); nil records nothing. recorded are the runs
+	// it was opened on for the current pause, ended at the resume. Both
+	// guarded by mu.
+	recorder RunPauseRecorder
+	recorded []string
+
 	// resumeCh is closed on Resume to WAKE runs parked at an iteration
 	// boundary (the loop's PauseGate.Park selects on it). A fresh one is
 	// allocated each Resume so the next pause cycle has a clean signal.
@@ -151,6 +158,17 @@ type Manager struct {
 	// SetRuntimeStateStore. atomic.Int64 (nanos) for race-free read.
 	stateCacheTTL atomic.Int64
 }
+
+// RunPauseRecorder writes a runtime pause onto one run's own record: until
+// zero opens a pause that began at since; otherwise it ends, at until, the
+// pause opened at since. The run's record is where a parent re-arming the
+// run's timeout_ms after a restart or a restore reads its pauses from.
+type RunPauseRecorder func(ctx context.Context, runID string, since, until time.Time) error
+
+// runPauseRecordTimeout bounds one run's pause-record write, as the pause
+// gate bounds its own store writes, so a wedged store cannot hold a pause or a
+// resume forever.
+const runPauseRecordTimeout = 5 * time.Second
 
 // runEntry tracks one in-flight run for the pause barrier. parked flips
 // true while the run's loop is parked at an iteration boundary.
@@ -290,12 +308,18 @@ func (m *Manager) applyRemotePause() {
 	m.state.Store(int32(StatePaused))
 	m.pausedAt = time.Now()
 	close(m.pauseCh)
+	since, rec := m.pausedAt, m.recorder
+	m.recorded = m.liveRunIDs()
+	ids := m.recorded
 	m.mu.Unlock()
 
 	m.stateCacheMu.Lock()
 	m.stateCacheAt = time.Time{}
 	m.stateCacheMu.Unlock()
 	log.Printf("pause: cluster pause signal received — local state → paused")
+	// Waited for here: the resume arrives on this same goroutine, so the
+	// pauses it ends are all open by then.
+	<-recordRunPauses(rec, ids, since, time.Time{})
 }
 
 // applyRemoteResume mirrors applyRemotePause for the resume direction.
@@ -310,13 +334,15 @@ func (m *Manager) applyRemoteResume() {
 	close(m.resumeCh)
 	m.resumeCh = make(chan struct{})
 	m.state.Store(int32(StateRunning))
-	m.pausedAt = time.Time{}
+	since, until, rec, ids := m.pausedAt, time.Now(), m.recorder, m.recorded
+	m.pausedAt, m.recorded = time.Time{}, nil
 	m.mu.Unlock()
 
 	m.stateCacheMu.Lock()
 	m.stateCacheAt = time.Time{}
 	m.stateCacheMu.Unlock()
 	log.Printf("pause: cluster resume signal received — local state → running")
+	<-recordRunPauses(rec, ids, since, until)
 }
 
 // PauseCh returns the channel the loop's iteration-boundary check
@@ -369,6 +395,55 @@ func (m *Manager) PausedSince() time.Time {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	return m.pausedAt
+}
+
+// SetRunPauseRecorder installs what records a pause on every run live here.
+//
+// A run parking for a pause records it itself (its pause gate), but a run
+// that is inside a tool or a model call for the whole pause never parks, so
+// it recorded nothing — and a parent that re-armed its timeout_ms after a
+// restart or a restore counted that pause against it, though the live clock
+// had stopped for it. The manager knows every run live when the pause begins
+// (the barrier's registry), so it opens the pause on each of them and ends it
+// at the resume. The pause gate's own writes name the same pause, so the two
+// land as one entry whichever comes first.
+func (m *Manager) SetRunPauseRecorder(r RunPauseRecorder) {
+	m.mu.Lock()
+	m.recorder = r
+	m.mu.Unlock()
+}
+
+// liveRunIDs lists the runs registered with the barrier.
+func (m *Manager) liveRunIDs() []string {
+	var ids []string
+	m.activeRuns.Range(func(k, _ any) bool {
+		ids = append(ids, k.(string))
+		return true
+	})
+	return ids
+}
+
+// recordRunPauses opens (until zero) or ends the pause that began at since on
+// each run, in the background; the returned channel closes once every write
+// is done. A failed write is logged: a parent re-arming that run's timeout_ms
+// then counts the pause, as it did before any pause was recorded here.
+func recordRunPauses(rec RunPauseRecorder, ids []string, since, until time.Time) <-chan struct{} {
+	done := make(chan struct{})
+	if rec == nil || len(ids) == 0 {
+		close(done)
+		return done
+	}
+	go func() {
+		defer close(done)
+		for _, id := range ids {
+			ctx, cancel := context.WithTimeout(context.Background(), runPauseRecordTimeout)
+			if err := rec(ctx, id, since, until); err != nil {
+				log.Printf("pause: record the pause on run %s failed: %v — a resumed timeout_ms on it counts this pause", id, err)
+			}
+			cancel()
+		}
+	}()
+	return done
 }
 
 // RegisterRun adds a run to the in-flight registry so Pause()'s barrier knows
@@ -535,6 +610,13 @@ func (m *Manager) Pause(ctx context.Context, timeout time.Duration) (PauseResult
 	// PauseCh() callers observe a consistent (state, channel) pair.
 	close(m.pauseCh)
 	bp := m.bp
+	// Every run live now has its pause opened on its record, whether or not
+	// it reaches a boundary to park at. Written alongside the barrier wait and
+	// finished before the pause is final, so a snapshot taken once Pause
+	// returns carries the entries, and a resume (only possible once the pause
+	// is final) cannot end a pause before it was opened.
+	m.recorded = m.liveRunIDs()
+	recorded := recordRunPauses(m.recorder, m.recorded, start, time.Time{})
 	m.mu.Unlock()
 	rss := m.rss.Load()
 
@@ -581,7 +663,7 @@ func (m *Manager) Pause(ctx context.Context, timeout time.Duration) (PauseResult
 			if w := m.unparkedWarning("at cancellation"); w != "" {
 				warnings = append(warnings, w)
 			}
-			return m.finalizePause(start, append(warnings,
+			return m.finalizePause(start, recorded, append(warnings,
 				fmt.Sprintf("pause request cancelled by caller: %v", ctx.Err()))), nil
 		case <-deadline.C:
 			if w := m.unparkedWarning("within the timeout"); w != "" {
@@ -596,7 +678,7 @@ func (m *Manager) Pause(ctx context.Context, timeout time.Duration) (PauseResult
 		break
 	}
 
-	return m.finalizePause(start, warnings), nil
+	return m.finalizePause(start, recorded, warnings), nil
 }
 
 // invalidateStateCache forces the next State() call in cluster mode
@@ -608,10 +690,11 @@ func (m *Manager) invalidateStateCache() {
 	m.stateCacheMu.Unlock()
 }
 
-// finalizePause transitions to StatePaused, queries the count of
-// runs that committed pause_state='paused' to the DB, and assembles
-// the PauseResult payload.
-func (m *Manager) finalizePause(start time.Time, warnings []string) PauseResult {
+// finalizePause waits for the live runs' pause records, transitions to
+// StatePaused, queries the count of runs that committed pause_state='paused'
+// to the DB, and assembles the PauseResult payload.
+func (m *Manager) finalizePause(start time.Time, recorded <-chan struct{}, warnings []string) PauseResult {
+	<-recorded
 	m.state.Store(int32(StatePaused))
 	m.invalidateStateCache()
 
@@ -696,11 +779,17 @@ func (m *Manager) Resume(ctx context.Context) (ResumeResult, error) {
 	close(m.resumeCh)
 	m.resumeCh = make(chan struct{})
 	m.state.Store(int32(StateRunning))
-	m.pausedAt = time.Time{}
+	since, until, rec, ids := m.pausedAt, time.Now(), m.recorder, m.recorded
+	m.pausedAt, m.recorded = time.Time{}, nil
 	bp := m.bp
 	m.mu.Unlock()
 	rss := m.rss.Load()
 	m.invalidateStateCache()
+	// End the pause opened on every run live at the pause, alongside the
+	// cluster writes, and before answering: an entry left open reads as a
+	// pause still going, which never lets a re-armed timeout_ms run out.
+	ended := recordRunPauses(rec, ids, since, until)
+	defer func() { <-ended }()
 
 	// v0.12.3 Phase 4: cluster mode — write DB state back to running
 	// and publish on backplane so remote replicas re-allow new runs.

@@ -3,6 +3,8 @@ package pause
 import (
 	"context"
 	"errors"
+	"slices"
+	"sort"
 	"sync"
 	"testing"
 	"time"
@@ -309,5 +311,79 @@ func TestManager_PausedSinceIsWhenThePauseBegan(t *testing.T) {
 	m.applyRemoteResume()
 	if !m.PausedSince().IsZero() {
 		t.Error("the cluster pause's start outlived its resume")
+	}
+}
+
+// pauseWrites records a RunPauseRecorder's calls.
+type pauseWrites struct {
+	mu     sync.Mutex
+	writes []string // "open <run> <since>" or "end <run> <since>"
+	ends   map[string]time.Time
+}
+
+func (w *pauseWrites) record(_ context.Context, runID string, since, until time.Time) error {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if until.IsZero() {
+		w.writes = append(w.writes, "open "+runID+" "+since.Format(time.RFC3339Nano))
+		return nil
+	}
+	w.writes = append(w.writes, "end "+runID+" "+since.Format(time.RFC3339Nano))
+	if w.ends == nil {
+		w.ends = map[string]time.Time{}
+	}
+	w.ends[runID] = until
+	return nil
+}
+
+func (w *pauseWrites) take() []string {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	out := w.writes
+	w.writes = nil
+	sort.Strings(out)
+	return out
+}
+
+// Every run live when the runtime pauses has the pause recorded — not only
+// the runs that park for it: one inside a tool call for the whole pause never
+// parks. Each is opened before Pause returns, so a snapshot taken then carries
+// it, and ended, as the same pause, before Resume returns. A cluster pause
+// applied here records it the same way.
+func TestManager_APauseIsRecordedOnEveryLiveRun(t *testing.T) {
+	m, _, cleanup := newTestManager(t)
+	defer cleanup()
+	w := &pauseWrites{}
+	m.SetRunPauseRecorder(w.record)
+	m.RegisterRun("r_busy")
+	m.RegisterRun("r_other")
+
+	if _, err := m.Pause(context.Background(), 10*time.Millisecond); err != nil {
+		t.Fatalf("Pause: %v", err)
+	}
+	since := m.PausedSince().Format(time.RFC3339Nano)
+	if got, want := w.take(), []string{"open r_busy " + since, "open r_other " + since}; !slices.Equal(got, want) {
+		t.Fatalf("writes once Pause returned = %v, want %v", got, want)
+	}
+	before := time.Now()
+	if _, err := m.Resume(context.Background()); err != nil {
+		t.Fatalf("Resume: %v", err)
+	}
+	if got, want := w.take(), []string{"end r_busy " + since, "end r_other " + since}; !slices.Equal(got, want) {
+		t.Fatalf("writes once Resume returned = %v, want %v", got, want)
+	}
+	if end := w.ends["r_busy"]; end.Before(before) || end.After(time.Now()) {
+		t.Errorf("the pause ended at %v, want at the resume", end)
+	}
+
+	m.DeregisterRun("r_other")
+	m.applyRemotePause()
+	since = m.PausedSince().Format(time.RFC3339Nano)
+	if got, want := w.take(), []string{"open r_busy " + since}; !slices.Equal(got, want) {
+		t.Fatalf("writes once a cluster pause was applied = %v, want %v", got, want)
+	}
+	m.applyRemoteResume()
+	if got, want := w.take(), []string{"end r_busy " + since}; !slices.Equal(got, want) {
+		t.Fatalf("writes once a cluster resume was applied = %v, want %v", got, want)
 	}
 }
