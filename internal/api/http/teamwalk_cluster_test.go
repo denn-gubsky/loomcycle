@@ -14,6 +14,7 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/steer"
 	"github.com/denn-gubsky/loomcycle/internal/store"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
+	"github.com/denn-gubsky/loomcycle/internal/tools/builtin"
 )
 
 // memBackplane is an in-process cluster backplane: Publish fans a copy to
@@ -219,21 +220,30 @@ func TestTeamWalkCluster_ACancelFromAnotherReplicaStopsTheWalkAndItsMember(t *te
 // What another replica answers about a walk is what its owner answers: a
 // stranger's cancel is the same opaque 404 there, and it reaches nothing — the
 // walk is later stopped with its owner's reason, not the stranger's; a steer is
-// refused the same way on both, since a walk takes no operator turns.
+// refused the same way on both, since a walk takes no operator turns. Steered
+// both as a walk an agent started and as one started from the substrate plane,
+// which has no parent run.
 func TestTeamWalkCluster_AnotherReplicaAnswersAsTheOwnerDoes(t *testing.T) {
 	c := newWalkCluster(t)
 	walkID, _ := c.runWalkOnA(t)
+	_, rootWalkID, finishRoot, err := c.a.openTeamWalkRun(substrateAdminCtx(tenantOperatorCtx("acme")), builtin.WalkRunSpec{Name: "solo", Detach: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer finishRoot(builtin.WalkEnd{})
 
 	for _, srv := range []*Server{c.a, c.b} {
 		if rec := call(srv, "globex", "/v1/runs/"+walkID+"/cancel", `{"reason":"stranger"}`); rec.Code != 404 {
 			t.Errorf("stranger cancel on %s: status %d, want 404: %s", srv.replicaID, rec.Code, rec.Body)
 		}
-		start := time.Now()
-		if rec := call(srv, "acme", "/v1/runs/"+walkID+"/input", `{"text":"focus"}`); rec.Code != 404 {
-			t.Errorf("steer on %s: status %d, want 404: %s", srv.replicaID, rec.Code, rec.Body)
-		}
-		if d := time.Since(start); d >= c.ackTimeout {
-			t.Errorf("steer on %s took %v, the whole ack timeout", srv.replicaID, d)
+		for _, id := range []string{walkID, rootWalkID} {
+			start := time.Now()
+			if rec := call(srv, "acme", "/v1/runs/"+id+"/input", `{"text":"focus"}`); rec.Code != 404 {
+				t.Errorf("steer of %s on %s: status %d, want 404: %s", id, srv.replicaID, rec.Code, rec.Body)
+			}
+			if d := time.Since(start); d >= c.ackTimeout {
+				t.Errorf("steer of %s on %s took %v, the whole ack timeout", id, srv.replicaID, d)
+			}
 		}
 	}
 	if rec := call(c.a, "acme", "/v1/runs/"+walkID+"/cancel", `{"reason":"owner stop"}`); rec.Code != 200 {
