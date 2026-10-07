@@ -239,10 +239,9 @@ func (s *Server) heartbeatWalk(ctx context.Context, runID string) (stop func()) 
 	return func() { once.Do(func() { close(done) }) }
 }
 
-// walkCancels is the live-walk cancel table. In-process only: a walk on
-// another replica is not reachable here, and the cancel route answers that as
-// "no in-flight run" rather than pretending it stopped something — the same
-// single-replica limit the breakpoint set has.
+// walkCancels is the live-walk cancel table. In-process only: a run-id cancel
+// for a walk on another replica is routed to that replica, whose turn-cancel
+// registry reaches its own table (stopLocalWalk).
 type walkCancels struct {
 	mu sync.Mutex
 	m  map[string]walkCancel
@@ -295,4 +294,18 @@ func (s *Server) cancelTeamWalk(ctx context.Context, runID, reason string) (stop
 	}
 	e.cancel(cancel.CauseWithReason(strings.TrimSpace(reason)))
 	return true, true, nil
+}
+
+// stopLocalWalk stops a walk live on this replica, with no ownership check:
+// it is reached through the turn-cancel registry by a cancel another replica
+// routed here, and that replica checked the caller against the walk's row
+// before routing it (CancelTurn), as it does for any run. A walk ends rather
+// than parks, so the caller's answer comes from that row too.
+func (s *Server) stopLocalWalk(runID, reason string) bool {
+	e, ok := s.walks.get(runID)
+	if !ok {
+		return false
+	}
+	e.cancel(cancel.CauseWithReason(strings.TrimSpace(reason)))
+	return true
 }
