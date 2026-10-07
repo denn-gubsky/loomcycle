@@ -29,6 +29,15 @@ import (
 // while EVERY run in flight is held: a run still working keeps it going, and
 // if that run spends the budget the whole handler ends, held siblings with it
 // — the state as a whole ran out of working time.
+//
+// Nor is time the RUNTIME is paused: every clock stops from the moment the
+// operator pauses the runtime until it resumes, whatever its runs are doing
+// meanwhile — parked at a boundary, finishing a model or tool call, or blocked
+// on work of their own that the pause parked. A pause stops the whole runtime,
+// so the rule is the runtime's state rather than each run's: a run still
+// finishing its call when the pause began is not raced by it either. The
+// clock learns of the pause from a PauseSignal (WithPauseSignal, and the
+// signal StartDeadline takes); with none, only holds stop it.
 
 // TimeoutError is why a state (or one Starter run) was stopped by timeout_ms.
 type TimeoutError struct {
@@ -40,10 +49,10 @@ type TimeoutError struct {
 
 func (e *TimeoutError) Error() string {
 	if e.Agent != "" {
-		return fmt.Sprintf("agent %q in state %q timed out: timeout_ms=%d elapsed (time held for review not counted)",
+		return fmt.Sprintf("agent %q in state %q timed out: timeout_ms=%d elapsed (time held for review or paused not counted)",
 			e.Agent, e.State, e.TimeoutMS)
 	}
-	return fmt.Sprintf("state %q timed out: timeout_ms=%d elapsed (time held for review not counted)",
+	return fmt.Sprintf("state %q timed out: timeout_ms=%d elapsed (time held for review or paused not counted)",
 		e.State, e.TimeoutMS)
 }
 
@@ -59,6 +68,13 @@ func boundsWholeHandler(h teamgraph.Handler) bool {
 		return true
 	}
 	return false
+}
+
+// PauseSignal is the runtime's pause state, as a clock reads it.
+type PauseSignal interface {
+	// PauseWatch reports whether the runtime is paused (or pausing) and returns
+	// a channel closed at its next change. A nil channel never changes.
+	PauseWatch() (paused bool, changed <-chan struct{})
 }
 
 type holdObserverKey struct{}
@@ -97,8 +113,9 @@ func (r *agentRunner) spawnMember(ctx context.Context, agent string, p Prompt, d
 	return r.spawn(WithHoldObserver(ctx, m.setHeld), agent, p, defID)
 }
 
-// heldClock is a deadline that does not run while every run it bounds is held.
-// Its ctx is cancelled, with the clock's cause, when the budget is spent.
+// heldClock is a deadline that does not run while every run it bounds is held,
+// nor while the runtime is paused. Its ctx is cancelled, with the clock's
+// cause, when the budget is spent.
 type heldClock struct {
 	mu        sync.Mutex
 	remaining time.Duration
@@ -107,21 +124,53 @@ type heldClock struct {
 	gen       int         // invalidates a timer that fired as it was stopped
 	live      int         // runs in flight
 	held      int         // of those, held for a verdict
+	paused    bool        // the runtime is paused
 	expired   bool
 	finished  bool
+	done      chan struct{} // closed by finish; ends the pause watch
 	cause     error
 	cancel    context.CancelCauseFunc
 }
 
-// startClock returns a ctx cancelled with cause once d of unheld time passes.
-// Call finish when the bounded work is over.
-func startClock(ctx context.Context, d time.Duration, cause error) (context.Context, *heldClock) {
+// startClock returns a ctx cancelled with cause once d of unheld, unpaused
+// time passes. sig may be nil: then only holds stop it. Call finish when the
+// bounded work is over.
+func startClock(ctx context.Context, d time.Duration, cause error, sig PauseSignal) (context.Context, *heldClock) {
 	cctx, cancel := context.WithCancelCause(ctx)
-	c := &heldClock{remaining: d, cause: cause, cancel: cancel}
+	c := &heldClock{remaining: d, cause: cause, cancel: cancel, done: make(chan struct{})}
+	var changed <-chan struct{}
 	c.mu.Lock()
-	c.run()
+	if sig != nil {
+		// Read before the clock first runs: a run started while the runtime
+		// is pausing (its sub-agents are not refused) starts stopped.
+		c.paused, changed = sig.PauseWatch()
+	}
+	if !c.paused {
+		c.run()
+	}
 	c.mu.Unlock()
+	if sig != nil {
+		go c.watchPause(sig, changed)
+	}
 	return context.WithValue(cctx, clockKey{}, c), c
+}
+
+// watchPause stops and restarts the clock as the runtime pauses and resumes,
+// until the clock is finished.
+func (c *heldClock) watchPause(sig PauseSignal, changed <-chan struct{}) {
+	for {
+		select {
+		case <-changed:
+		case <-c.done:
+			return
+		}
+		paused, next := sig.PauseWatch()
+		c.mu.Lock()
+		c.paused = paused
+		c.settle()
+		c.mu.Unlock()
+		changed = next
+	}
 }
 
 // run starts the timer on what is left. Caller holds mu.
@@ -157,17 +206,17 @@ func (c *heldClock) fire(gen int) {
 	c.cancel(c.cause)
 }
 
-// settle stops or restarts the clock for the current live/held counts.
-// Caller holds mu.
+// settle stops or restarts the clock for the runtime's pause and the current
+// live/held counts. Caller holds mu.
 func (c *heldClock) settle() {
 	if c.expired || c.finished {
 		return
 	}
-	allHeld := c.live > 0 && c.held == c.live
+	stopped := c.paused || (c.live > 0 && c.held == c.live)
 	switch {
-	case allHeld && c.timer != nil:
+	case stopped && c.timer != nil:
 		c.stop()
-	case !allHeld && c.timer == nil:
+	case !stopped && c.timer == nil:
 		c.run()
 	}
 }
@@ -182,6 +231,9 @@ func (c *heldClock) timedOut() bool {
 // finish ends the clock and releases its ctx.
 func (c *heldClock) finish() {
 	c.mu.Lock()
+	if !c.finished {
+		close(c.done)
+	}
 	c.finished = true
 	if c.timer != nil {
 		c.timer.Stop()
@@ -226,19 +278,20 @@ func (m *clockMember) setHeld(held bool) {
 
 // Deadline is the held-time clock bounding ONE run outside a walk: a child an
 // agent spawns with timeout_ms. Same rule as a state's: time the run spends
-// held for a verdict is not counted.
+// held for a verdict, and time the runtime is paused, is not counted.
 type Deadline struct {
 	c *heldClock
 	m *clockMember
 }
 
-// StartDeadline returns a ctx cancelled with cause once d of unheld time has
-// passed. The run reports its holds through SetHeld; call Finish when it ends.
+// StartDeadline returns a ctx cancelled with cause once d of unheld, unpaused
+// time has passed; sig (nil = none) says when the runtime is paused. The run
+// reports its holds through SetHeld; call Finish when it ends.
 //
 // The clock is kept OFF the returned ctx, as spawnMember keeps a state's: a
 // walk the run starts must not count its own members on it.
-func StartDeadline(ctx context.Context, d time.Duration, cause error) (context.Context, *Deadline) {
-	cctx, c := startClock(ctx, d, cause)
+func StartDeadline(ctx context.Context, d time.Duration, cause error, sig PauseSignal) (context.Context, *Deadline) {
+	cctx, c := startClock(ctx, d, cause, sig)
 	return context.WithValue(cctx, clockKey{}, (*heldClock)(nil)), &Deadline{c: c, m: c.join()}
 }
 

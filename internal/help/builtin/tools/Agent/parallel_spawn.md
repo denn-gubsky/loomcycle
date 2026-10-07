@@ -28,7 +28,8 @@ only the ones that failed.
 
 The children run concurrently — by default at most 4 at a time; the rest wait
 for a free slot. A child's `timeout_ms` starts when it gets its slot, not
-while it waits for one, and time it is held for review does not count.
+while it waits for one, and neither time it is held for review nor time the
+runtime is paused counts.
 
 ## Returns
 
@@ -116,5 +117,5 @@ Give every child five minutes, and one slow child ten:
 ```json result
 {"results": [
   {"index": 0, "agent": "researcher", "ok": true, "output": "[sub-agent agent_id=a_... run_id=r_...]\n...", "run_id": "r_0c5e9a7f13b2d846"},
-  {"index": 1, "agent": "researcher", "ok": false, "error": "sub-agent \"researcher\" timed out: timeout_ms=600000 elapsed (time held for review not counted); its run r_93d1f0b6a2e4c758 was cancelled", "run_id": "r_93d1f0b6a2e4c758", "status": "timeout"}]}
+  {"index": 1, "agent": "researcher", "ok": false, "error": "sub-agent \"researcher\" timed out: timeout_ms=600000 elapsed (time held for review or paused not counted); its run r_93d1f0b6a2e4c758 was cancelled", "run_id": "r_93d1f0b6a2e4c758", "status": "timeout"}]}
 ```

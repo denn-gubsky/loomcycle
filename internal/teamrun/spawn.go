@@ -299,6 +299,9 @@ type agentRunner struct {
 	// the source's live one when it carries a deadline (ReviewDeadlineSource),
 	// else the one the walk started with.
 	reviewTTL func() time.Duration
+	// pause says when the runtime is paused, so a state's timeout_ms stops
+	// for it (see timeout.go). nil = only holds stop the clock.
+	pause PauseSignal
 }
 
 // RunnerOption configures the production runner. Options rather than more
@@ -377,6 +380,12 @@ func WithMemberReview(src BreakpointSource, ttl time.Duration) RunnerOption {
 	}
 }
 
+// WithPauseSignal wires the runtime's pause state into every timeout_ms clock
+// the walk starts.
+func WithPauseSignal(sig PauseSignal) RunnerOption {
+	return func(r *agentRunner) { r.pause = sig }
+}
+
 // WithRunnerLogf wires the non-fatal log sink.
 func WithRunnerLogf(f func(format string, args ...any)) RunnerOption {
 	return func(r *agentRunner) { r.logf = f }
@@ -390,7 +399,7 @@ func (r *agentRunner) RunHandler(ctx context.Context, st teamgraph.State, task *
 	// clock's ctx is the one every run below is started from, so its expiry
 	// cancels them through the path a walk abort already takes.
 	timeout := &TimeoutError{State: st.ID, TimeoutMS: st.Handler.TimeoutMS}
-	cctx, clk := startClock(ctx, time.Duration(st.Handler.TimeoutMS)*time.Millisecond, timeout)
+	cctx, clk := startClock(ctx, time.Duration(st.Handler.TimeoutMS)*time.Millisecond, timeout, r.pause)
 	defer clk.finish()
 	oc, err := r.runHandler(cctx, st, task)
 	if err != nil && clk.timedOut() && ctx.Err() == nil {

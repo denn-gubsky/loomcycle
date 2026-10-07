@@ -95,6 +95,10 @@ type Manager struct {
 	// allocated so the next pause has a clean signal.
 	pauseCh chan struct{}
 
+	// pausedAt is when the current pause began (Pause, or a cluster pause
+	// applied here); zero while running. Guarded by mu.
+	pausedAt time.Time
+
 	// resumeCh is closed on Resume to WAKE runs parked at an iteration
 	// boundary (the loop's PauseGate.Park selects on it). A fresh one is
 	// allocated each Resume so the next pause cycle has a clean signal.
@@ -284,6 +288,7 @@ func (m *Manager) applyRemotePause() {
 		return
 	}
 	m.state.Store(int32(StatePaused))
+	m.pausedAt = time.Now()
 	close(m.pauseCh)
 	m.mu.Unlock()
 
@@ -305,6 +310,7 @@ func (m *Manager) applyRemoteResume() {
 	close(m.resumeCh)
 	m.resumeCh = make(chan struct{})
 	m.state.Store(int32(StateRunning))
+	m.pausedAt = time.Time{}
 	m.mu.Unlock()
 
 	m.stateCacheMu.Lock()
@@ -332,6 +338,37 @@ func (m *Manager) PauseCh() <-chan struct{} {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	return m.pauseCh
+}
+
+// PauseWatch reports whether the runtime is paused — pausing or paused, from
+// the moment the operator pauses it — and returns a channel closed at its next
+// change: the pause signal while running, the resume signal while paused. A
+// timeout_ms clock stops on it (teamrun.PauseSignal). Reads the in-process
+// state, which a cluster pause reaches through the backplane. A nil manager is
+// never paused and never changes.
+func (m *Manager) PauseWatch() (paused bool, changed <-chan struct{}) {
+	if m == nil {
+		return false, nil
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if loadState(&m.state) == StateRunning {
+		return false, m.pauseCh
+	}
+	return true, m.resumeCh
+}
+
+// PausedSince is when the current pause began — the operator's pause, before
+// any run parked for it — or zero while the runtime runs. A run parking for
+// the pause records it, so a timeout_ms re-armed after a restore leaves out
+// what the live clock left out. A nil manager is never paused.
+func (m *Manager) PausedSince() time.Time {
+	if m == nil {
+		return time.Time{}
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.pausedAt
 }
 
 // RegisterRun adds a run to the in-flight registry so Pause()'s barrier knows
@@ -493,6 +530,7 @@ func (m *Manager) Pause(ctx context.Context, timeout time.Duration) (PauseResult
 		return PauseResult{State: state.String()}, ErrAlreadyPausing
 	}
 	m.state.Store(int32(StatePausing))
+	m.pausedAt = start
 	// Close the broadcast channel under the lock so concurrent
 	// PauseCh() callers observe a consistent (state, channel) pair.
 	close(m.pauseCh)
@@ -658,6 +696,7 @@ func (m *Manager) Resume(ctx context.Context) (ResumeResult, error) {
 	close(m.resumeCh)
 	m.resumeCh = make(chan struct{})
 	m.state.Store(int32(StateRunning))
+	m.pausedAt = time.Time{}
 	bp := m.bp
 	m.mu.Unlock()
 	rss := m.rss.Load()

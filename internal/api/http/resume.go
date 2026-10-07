@@ -91,8 +91,9 @@ import (
 //   - A run's poll-mode background children are rebuilt from its ledger
 //     (resume_background.go); a restored child that is still running is
 //     waited for wherever it runs. A child's timeout_ms is re-armed from its
-//     run: the deadline the live clock would have reached (the pause counts,
-//     its review holds do not).
+//     run: the deadline the live clock would have reached (neither its
+//     review holds nor the pauses it parked for count, the downtime before
+//     its re-dispatch included).
 //   - A RESIDENT child (Agent op=open) resumes as one — parked between sends,
 //     or finishing its turn — filed in this instance's resident registry, so
 //     its parent, resumed here with it, sends to it, polls and closes it by its
@@ -661,6 +662,14 @@ func (s *Server) resumePausedRun(run store.Run) error {
 	// Pause accounts for it and it's no longer "paused" data on disk.
 	if err := s.store.SetRunPauseState(ctx, run.ID, store.PauseStateRunning); err != nil {
 		return fmt.Errorf("set pause_state=running: %w", err)
+	}
+	// The run was paused until now — through the restart, or from the snapshot
+	// on the instance it parked on — so its pause ends here, and a parent's
+	// re-armed timeout_ms leaves the downtime out (runConfigRecord.Pauses).
+	if haveRunCfg && runCfg.pauseOpen() {
+		if err := recordRunPause(ctx, s.store, run.ID, false, time.Now()); err != nil {
+			log.Printf("resume: end run %s's pause on its record: %v — a resumed timeout_ms on it counts the downtime", run.ID, err)
+		}
 	}
 	// Stamp a fresh heartbeat NOW. The restored row carries an old started_at
 	// and a NULL last_heartbeat_at; the stale-run sweeper's
@@ -1765,27 +1774,38 @@ func (s *Server) awaitChildResult(ctx context.Context, index int, name, childRun
 var errResumedChildTimedOut = errors.New("the child's timeout_ms ran out")
 
 // resumedChildClock is a re-dispatched child's timeout_ms, re-armed from its
-// run: the bound runs from the run's start, the time the run spent held for a
-// verdict (its own transcript says when each hold began and ended) is not
-// counted, and the time it spent paused IS — the deadline is the instant the
-// live clock would have reached, which a pause does not move.
+// run: the bound runs from the run's start, and neither the time the run
+// spent held for a verdict nor the time it spent paused is counted. Its
+// transcript says when each hold began and ended; its record says when each
+// pause did (runConfigRecord.Pauses). A hold and a pause that overlap are
+// left out once. The deadline is the instant the live clock would have
+// reached.
 type resumedChildClock struct {
 	bound     time.Duration
-	seq       int64         // the run's events read so far
-	held      time.Duration // the holds that have ended
-	heldSince time.Time     // the start of the hold still open, or zero
+	seq       int64            // the run's events read so far
+	holds     []stopSpan       // the holds that have ended
+	heldSince time.Time        // the start of the hold still open, or zero
+	pauses    []runPauseRecord // the run's pauses, as its record last read
 }
+
+// stopSpan is a stretch the clock was stopped; to is zero while it lasts.
+type stopSpan struct{ from, to time.Time }
 
 // resumedChildClockPage bounds one read of a bounded child's events.
 const resumedChildClockPage = 500
 
-// expired brings the clock up to date from the child's events and reports
-// whether its bound has run out: never while a hold is open. A read that
-// fails leaves the clock running on what it has read.
+// stoppedClockRecheckMin is the least a stopped clock waits before it is
+// read again (nextCheck).
+const stoppedClockRecheckMin = time.Second
+
+// expired brings the clock up to date from the child's row and events and
+// reports whether its bound has run out: never while a hold or a pause is
+// open. A read that fails leaves the clock running on what it has read.
 func (c *resumedChildClock) expired(ctx context.Context, st store.Store, child store.Run, now time.Time) bool {
 	if child.StartedAt.IsZero() {
 		return false
 	}
+	c.readPauses(child.RunConfig)
 	for {
 		page, err := st.GetRunEventsSince(ctx, child.ID, c.seq, resumedChildClockPage)
 		if err != nil {
@@ -1799,15 +1819,88 @@ func (c *resumedChildClock) expired(ctx context.Context, st store.Store, child s
 			break
 		}
 	}
-	at, held := c.deadline(child.StartedAt)
-	return !held && !now.Before(at)
+	at, stopped := c.deadline(child.StartedAt)
+	return !stopped && !now.Before(at)
+}
+
+// readPauses takes the run's pauses from its record as it reads now. A run
+// without a readable record has none recorded.
+func (c *resumedChildClock) readPauses(raw json.RawMessage) {
+	if len(raw) == 0 {
+		return
+	}
+	if rec, ok := decodeRunConfig(raw); ok {
+		c.pauses = rec.Pauses
+	}
 }
 
 // deadline is when the bound runs out for a run started at start, and
-// whether a hold is open — the clock is stopped then, and the deadline moves
-// on by the hold's length once it ends.
+// whether a hold or a pause is open — the clock is stopped then, and the
+// deadline moves on by the stop's length once it ends.
 func (c *resumedChildClock) deadline(start time.Time) (time.Time, bool) {
-	return start.Add(c.bound + c.held), !c.heldSince.IsZero()
+	stopped, openSince := c.stopped(start)
+	return start.Add(c.bound + stopped), !openSince.IsZero()
+}
+
+// nextCheck is when the clock should next be read: its deadline while it
+// runs. While it is stopped, the earliest instant it could run out if the
+// stop ended now — the time it had left when the stop began, from now — so
+// the end of a pause, which nothing announces, is still read before the
+// deadline it moves to.
+func (c *resumedChildClock) nextCheck(start, now time.Time) time.Time {
+	stopped, openSince := c.stopped(start)
+	at := start.Add(c.bound + stopped)
+	if openSince.IsZero() {
+		return at
+	}
+	return now.Add(max(at.Sub(openSince), stoppedClockRecheckMin))
+}
+
+// stopped merges the holds and the pauses — none counted before start, an
+// overlap counted once — into the time they stopped the clock that has
+// ended, and when the stop still open began (zero when none is).
+func (c *resumedChildClock) stopped(start time.Time) (ended time.Duration, openSince time.Time) {
+	spans := append([]stopSpan(nil), c.holds...)
+	if !c.heldSince.IsZero() {
+		spans = append(spans, stopSpan{from: c.heldSince})
+	}
+	for _, p := range c.pauses {
+		sp := stopSpan{from: p.Since}
+		if p.Until != nil {
+			sp.to = *p.Until
+		}
+		spans = append(spans, sp)
+	}
+	for i := range spans {
+		if spans[i].from.Before(start) {
+			spans[i].from = start
+		}
+	}
+	slices.SortFunc(spans, func(a, b stopSpan) int { return a.from.Compare(b.from) })
+	var cur *stopSpan
+	for i := range spans {
+		sp := spans[i]
+		if !sp.to.IsZero() && !sp.to.After(sp.from) {
+			continue // ended before the run started, or empty
+		}
+		if cur != nil && (cur.to.IsZero() || !sp.from.After(cur.to)) {
+			if !cur.to.IsZero() && (sp.to.IsZero() || sp.to.After(cur.to)) {
+				cur.to = sp.to // overlaps: extends the stretch
+			}
+			continue
+		}
+		if cur != nil {
+			ended += cur.to.Sub(cur.from)
+		}
+		cur = &sp
+	}
+	if cur != nil {
+		if cur.to.IsZero() {
+			return ended, cur.from
+		}
+		ended += cur.to.Sub(cur.from)
+	}
+	return ended, time.Time{}
 }
 
 // observe reads more of the run's events: an awaiting_review opens a hold,
@@ -1821,7 +1914,7 @@ func (c *resumedChildClock) observe(events []store.Event) {
 				c.heldSince = ev.Timestamp
 			}
 		case !c.heldSince.IsZero() && slices.Contains(awaited.HoldEndingEvents, ev.Type):
-			c.held += max(ev.Timestamp.Sub(c.heldSince), 0)
+			c.holds = append(c.holds, stopSpan{from: c.heldSince, to: ev.Timestamp})
 			c.heldSince = time.Time{}
 		}
 	}
@@ -1853,7 +1946,9 @@ func (s *Server) awaitChildTerminal(ctx context.Context, childRunID string, clk 
 			if isTerminalRunStatus(run.Status) {
 				return run, nil
 			}
-			if clk != nil && clk.expired(ctx, s.store, run, time.Now()) {
+			// Nothing is cut while the runtime is paused: a child that
+			// recorded no pause is counted, but only once it runs again.
+			if clk != nil && !s.runtimePaused() && clk.expired(ctx, s.store, run, time.Now()) {
 				return run, errResumedChildTimedOut
 			}
 			// Re-parked by a concurrent pause → don't penalize parked time.

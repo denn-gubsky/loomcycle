@@ -71,6 +71,7 @@ func (g *pauseGate) Park(ctx context.Context) error {
 	// snapshot taken at the barrier carries it to wherever the run resumes.
 	defer providers.BeginPause(ctx)()
 	g.recordClock(ctx)
+	g.recordPause(ctx, true)
 	// Persist 'paused' to the store BEFORE marking the run parked in the
 	// barrier: Pause() only treats a run as quiesced once MarkParked fires, so
 	// this ordering guarantees finalizePause / snapshot (which read the store)
@@ -89,6 +90,7 @@ func (g *pauseGate) Park(ctx context.Context) error {
 	}
 	defer func() {
 		g.mgr.EndPark(g.runID)
+		g.recordPause(ctx, false)
 		// Resume() also bulk-flips paused→running (covers restored/orphaned
 		// runs with no live loop); this per-run flip is idempotent with it.
 		_ = g.setPauseState(context.Background(), store.PauseStateRunning)
@@ -139,6 +141,7 @@ func (g *pauseGate) PauseIdle(ctx context.Context) (<-chan struct{}, func(), boo
 	}
 	endPause := providers.BeginPause(ctx)
 	g.recordClock(ctx)
+	g.recordPause(ctx, true)
 	if err := g.setPauseState(context.Background(), store.PauseStatePaused); err != nil {
 		log.Printf("pause: persist paused for waiting run %s failed: %v — no barrier credit", g.runID, err)
 	} else {
@@ -148,10 +151,32 @@ func (g *pauseGate) PauseIdle(ctx context.Context) (<-chan struct{}, func(), boo
 	return resume, func() {
 		once.Do(func() {
 			g.mgr.EndPark(g.runID)
+			g.recordPause(ctx, false)
 			_ = g.setPauseState(context.Background(), store.PauseStateRunning)
 			endPause()
 		})
 	}, true
+}
+
+// recordPause opens a pause on the run's record as it parks — from when the
+// runtime paused, the manager's PausedSince, before the barrier is credited so
+// a snapshot carries it — or ends it as the run is released (began false).
+// Under the same bounded, non-cancellable ctx as the pause_state write. A
+// failed write is logged and the run parks or goes on regardless: a parent
+// that re-arms its timeout_ms after a resume then counts that pause.
+func (g *pauseGate) recordPause(ctx context.Context, began bool) {
+	if g.store == nil || g.runID == "" {
+		return
+	}
+	at := time.Now()
+	if since := g.mgr.PausedSince(); began && !since.IsZero() {
+		at = since
+	}
+	wctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), pauseStatePersistTimeout)
+	defer cancel()
+	if err := recordRunPause(wctx, g.store, g.runID, began, at); err != nil {
+		log.Printf("pause: record the pause of run %s failed: %v — a resumed timeout_ms on it counts this pause", g.runID, err)
+	}
 }
 
 // setPauseState writes runs.pause_state under a bounded, non-cancellable ctx so
@@ -181,6 +206,14 @@ func (s *Server) newPauseGate(runID string) (tools.PauseGate, func()) {
 	return &pauseGate{mgr: s.pauseMgr, store: s.store, runID: runID, saveClock: s.recordRunClock}, func() {
 		s.pauseMgr.DeregisterRun(runID)
 	}
+}
+
+// PauseWatch is the runtime's pause state for a timeout_ms clock
+// (teamrun.PauseSignal). It reads the manager at each call, so the Agent and
+// TeamDef tools can hold the server before SetPauseManager runs; with no
+// manager the runtime is never paused.
+func (s *Server) PauseWatch() (bool, <-chan struct{}) {
+	return s.pauseMgr.PauseWatch()
 }
 
 // runtimePaused reports whether new runs should be rejected (a pause is in

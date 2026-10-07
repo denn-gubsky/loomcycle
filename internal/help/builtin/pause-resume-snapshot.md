@@ -19,7 +19,10 @@ state machine transitions `running → pausing → paused`:
   and its result. An `Agent` or `TeamDef` `poll` waiting on children
   ends its wait at the pause and answers with what it knows, so its run
   can park. A resident sub-agent's idle and turn timers stop for the
-  pause. `force_cancelled_count` in the result is therefore always `0`.
+  pause, and so does every `timeout_ms` bounding a sub-agent or a team
+  state: from the pause to the resume, whatever the run is doing, and
+  across a restart or a restore on another instance. `force_cancelled_count`
+  in the result is therefore always `0`.
 - New `/v1/runs` requests (and the gRPC / webhook / A2A run-admission
   paths) return 503 / Unavailable while the runtime is in `pausing` or
   `paused`; the scheduler skips firing. Sub-agents of an already-admitted

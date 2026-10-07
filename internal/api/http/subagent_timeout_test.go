@@ -10,6 +10,7 @@ import (
 
 	"github.com/denn-gubsky/loomcycle/internal/config"
 	"github.com/denn-gubsky/loomcycle/internal/hooks"
+	"github.com/denn-gubsky/loomcycle/internal/pause"
 	"github.com/denn-gubsky/loomcycle/internal/providers"
 	"github.com/denn-gubsky/loomcycle/internal/store"
 	"github.com/denn-gubsky/loomcycle/internal/teamrun"
@@ -121,5 +122,60 @@ func TestSubAgentTimeout_AHeldChildReportsItsHoldToTheBound(t *testing.T) {
 	defer mu.Unlock()
 	if len(holds) != 2 || !holds[0] || holds[1] {
 		t.Errorf("hold reports = %v, want [true false]", holds)
+	}
+}
+
+// A runtime pause does not spend a child's timeout_ms. The child here is in
+// its model call when the operator pauses — it never parks — and the runtime
+// stays paused for twice its bound: it is not timed out meanwhile, and once
+// the runtime resumes it runs out only the time it had left.
+func TestSubAgentTimeout_APausedRuntimeDoesNotSpendTheChildsBound(t *testing.T) {
+	const bound = 800 * time.Millisecond
+	cfg := makeBaseConfig()
+	cfg.Agents = map[string]config.AgentDef{"child": {Model: "stub-model", SystemPrompt: "child"}}
+	srv, _ := makeServer(t, hangingProvider{}, cfg)
+	mgr := pause.NewManager(srv.store, time.Second)
+	srv.SetPauseManager(mgr)
+	defer cancelAllRuns(srv)
+	ctx, _ := lockedParentCtx(t, srv)
+
+	type outcome struct {
+		text    string
+		isError bool
+		err     error
+		at      time.Time
+	}
+	done := make(chan outcome, 1)
+	start := time.Now()
+	go func() {
+		res, err := agentToolOf(t, srv).Execute(ctx, json.RawMessage(`{"op":"spawn","name":"child","prompt":"x","timeout_ms":800}`))
+		done <- outcome{text: res.Text, isError: res.IsError, err: err, at: time.Now()}
+	}()
+	time.Sleep(200 * time.Millisecond)
+	if _, err := mgr.Pause(context.Background(), 20*time.Millisecond); err != nil {
+		t.Fatalf("pause: %v", err)
+	}
+	paused := time.Now()
+	select {
+	case o := <-done:
+		t.Fatalf("the spawn returned %v after it started, into the pause: %s", o.at.Sub(start), o.text)
+	case <-time.After(2 * bound):
+	}
+	resumed := time.Now()
+	if _, err := mgr.Resume(context.Background()); err != nil {
+		t.Fatalf("resume: %v", err)
+	}
+	var o outcome
+	select {
+	case o = <-done:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the child was never timed out after the resume")
+	}
+	if o.err != nil || !o.isError || !strings.Contains(o.text, "timed out: timeout_ms=800") {
+		t.Fatalf("spawn = %q (error %v), want the child timed out", o.text, o.err)
+	}
+	left := bound - paused.Sub(start)
+	if got := o.at.Sub(resumed); got < left-150*time.Millisecond || got > left+time.Second {
+		t.Errorf("the child timed out %v after the resume, want about the %v it had left", got, left)
 	}
 }

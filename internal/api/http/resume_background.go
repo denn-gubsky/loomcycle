@@ -54,11 +54,13 @@ import (
 // left behind running (a restart on the same database) is closed with it.
 //
 // A restored child's timeout_ms (on its started row) is re-armed from its run:
-// the bound runs from the run's start, the time the run spent held for a
-// verdict (its own transcript says when each hold began and ended) is not
-// counted, and the time the run spent paused IS — the deadline is the instant
-// the live clock would have reached, which a pause does not move. A child past
-// it is cancelled as timed out at once; a held one waits for its hold to end.
+// the bound runs from the run's start, and neither the time the run spent held
+// for a verdict nor the time it spent parked for a runtime pause is counted —
+// its transcript says when each hold began and ended, its record when each
+// pause did, the downtime before a restored run's re-dispatch inside its pause. The deadline
+// is the instant the live clock would have reached. A child past it is
+// cancelled as timed out at once; a held or paused one waits for its hold or
+// pause to end, and nothing is cut while the runtime is paused.
 
 // The recheck of a restored child's run row backs off from the first to the
 // second; it is a backstop for an end the run-state bus did not deliver.
@@ -301,7 +303,9 @@ func (s *Server) watchRestoredChildren(ctx context.Context, bg *tools.Background
 		delete(pending, id)
 		bg.Finish(id, state, res)
 	}
-	// The earliest deadline among the pending children whose clock runs.
+	// The earliest instant a pending child's clock must be read: its
+	// deadline, or for a stopped clock the earliest it could run out
+	// (nextCheck) — a pause's end is announced by nothing.
 	var deadlineC <-chan time.Time
 	deadlineTimer := time.NewTimer(time.Hour)
 	deadlineTimer.Stop()
@@ -310,22 +314,28 @@ func (s *Server) watchRestoredChildren(ctx context.Context, bg *tools.Background
 		deadlineTimer.Stop()
 		deadlineC = nil
 		var next time.Time
+		now := time.Now()
 		for id := range pending {
 			if clk := clocks[id]; clk != nil && !clk.start.IsZero() {
-				at, held := clk.deadline(clk.start)
+				at := clk.nextCheck(clk.start, now)
 				// A clock whose last read failed is not read again before its
 				// retry: at a deadline already past, that would be at once,
 				// and again, for as long as the store fails.
 				if clk.retryAt.After(at) {
 					at = clk.retryAt
 				}
-				if !held && (next.IsZero() || at.Before(next)) {
+				if next.IsZero() || at.Before(next) {
 					next = at
 				}
 			}
 		}
 		if !next.IsZero() {
-			deadlineTimer.Reset(max(time.Until(next), 0))
+			wait := next.Sub(now)
+			if s.runtimePaused() {
+				// Nothing is cut during a pause; read again once it may be over.
+				wait = max(wait, stoppedClockRecheckMin)
+			}
+			deadlineTimer.Reset(max(wait, 0))
 			deadlineC = deadlineTimer.C
 		}
 	}
@@ -373,40 +383,50 @@ func (s *Server) watchRestoredChildren(ctx context.Context, bg *tools.Background
 
 // restoredClock is a restored child's timeout_ms, read off its run: the
 // fan-out child's clock (the bound from the run's start, plus the time it spent
-// held for a verdict), with the start read lazily, once its row is there.
+// held for a verdict or paused), with the start read lazily, once its row is
+// there.
 type restoredClock struct {
 	resumedChildClock
 	start time.Time // the run's start; zero until its row is read
-	// retryAt is when a clock whose events could not be read is read again,
-	// after retryWait, which backs off like the recheck of a run row.
+	// retryAt is when a clock whose row or events could not be read is read
+	// again, after retryWait, which backs off like the recheck of a run row.
 	retryAt   time.Time
 	retryWait time.Duration
 }
 
-// restoredClockExpired brings a bounded child's clock up to date from its run
-// and reports whether its bound has run out. A run it cannot read yet is not
-// timed out: whether it exists at all is restoredChildEnd's to decide.
-func (s *Server) restoredClockExpired(ctx context.Context, runID string, clk *restoredClock) bool {
-	if clk.start.IsZero() {
-		child, err := s.store.GetRun(ctx, runID)
-		if err != nil || child.StartedAt.IsZero() {
-			return false
-		}
-		clk.start = child.StartedAt
+// backOff puts off the clock's next read after a failed one.
+func (clk *restoredClock) backOff() {
+	if clk.retryWait = max(2*clk.retryWait, restoredChildRecheckFirst); clk.retryWait > restoredChildRecheckMax {
+		clk.retryWait = restoredChildRecheckMax
 	}
-	if time.Now().Before(clk.retryAt) {
+	clk.retryAt = time.Now().Add(clk.retryWait)
+}
+
+// restoredClockExpired brings a bounded child's clock up to date from its run
+// — its row, whose record holds its pauses, and its events, which hold its
+// holds — and reports whether its bound has run out. A run it cannot read yet
+// is not timed out: whether it exists at all is restoredChildEnd's to decide.
+// Nor is any while the runtime is paused.
+func (s *Server) restoredClockExpired(ctx context.Context, runID string, clk *restoredClock) bool {
+	if s.runtimePaused() || time.Now().Before(clk.retryAt) {
 		return false
 	}
+	child, err := s.store.GetRun(ctx, runID)
+	if err != nil || child.StartedAt.IsZero() {
+		if !clk.start.IsZero() {
+			clk.backOff() // a deadline already past would be read again at once
+		}
+		return false
+	}
+	clk.start = child.StartedAt
+	clk.readPauses(child.RunConfig)
 	for {
 		page, err := s.store.GetRunEventsSince(ctx, runID, clk.seq, resumedChildClockPage)
 		if err != nil {
 			if ctx.Err() == nil {
 				log.Printf("resume: read background child %s's events: %v", runID, err)
 			}
-			if clk.retryWait = max(2*clk.retryWait, restoredChildRecheckFirst); clk.retryWait > restoredChildRecheckMax {
-				clk.retryWait = restoredChildRecheckMax
-			}
-			clk.retryAt = time.Now().Add(clk.retryWait)
+			clk.backOff()
 			return false
 		}
 		clk.observe(page)
@@ -415,8 +435,8 @@ func (s *Server) restoredClockExpired(ctx context.Context, runID string, clk *re
 		}
 	}
 	clk.retryAt, clk.retryWait = time.Time{}, 0
-	at, held := clk.deadline(clk.start)
-	return !held && !time.Now().Before(at)
+	at, stopped := clk.deadline(clk.start)
+	return !stopped && !time.Now().Before(at)
 }
 
 // timeOutRestoredChild cancels a restored child whose re-armed timeout_ms ran

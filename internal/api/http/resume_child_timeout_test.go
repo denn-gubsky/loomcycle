@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/denn-gubsky/loomcycle/internal/loop"
+	"github.com/denn-gubsky/loomcycle/internal/pause"
 	"github.com/denn-gubsky/loomcycle/internal/providers"
 	"github.com/denn-gubsky/loomcycle/internal/store"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
@@ -70,13 +71,49 @@ func childResultRow(t *testing.T, srv *Server, lead store.Run, child string) (pr
 	return providers.SpawnChildEventInfo{}, time.Time{}, false
 }
 
+// parkFor parks run for a runtime pause on another instance's manager, which
+// is paused, through the real pause gate — so the run records its pause as a
+// live one does. Cleanup ends the park as that instance going away would; the
+// gate is released by mgr's resume otherwise. The run is given the empty
+// configuration record every run the server starts has, which a run made
+// straight in the store lacks.
+func parkFor(t *testing.T, srv *Server, mgr *pause.Manager, run store.Run) {
+	t.Helper()
+	if cur, err := srv.store.GetRun(context.Background(), run.ID); err != nil {
+		t.Fatal(err)
+	} else if len(cur.RunConfig) == 0 {
+		if ok, err := srv.store.SetRunConfigCAS(context.Background(), run.ID, nil, json.RawMessage(`{}`)); err != nil || !ok {
+			t.Fatalf("give run %s a record: %v (written %v)", run.ID, err, ok)
+		}
+	}
+	gone, leave := context.WithCancel(context.Background())
+	parked := make(chan struct{})
+	go func() {
+		defer close(parked)
+		_ = (&pauseGate{mgr: mgr, store: srv.store, runID: run.ID}).Park(gone)
+	}()
+	t.Cleanup(func() {
+		leave()
+		select {
+		case <-parked:
+		case <-time.After(10 * time.Second):
+			t.Error("the parked gate never returned")
+		}
+	})
+	waitFor(t, "run "+run.ID+" to park", func() bool {
+		r, err := srv.store.GetRun(context.Background(), run.ID)
+		return err == nil && r.PauseState == store.PauseStatePaused
+	})
+}
+
 // A bounded poll-mode child of a paused parent times out at the deadline its
 // live clock would have reached — its run's start plus timeout_ms plus the
-// time it spent held for review — not timeout_ms after the parent comes back,
-// and not never. The pause counts: it does not move the deadline. Its run is
-// cancelled as timed out, wherever it runs, and the parent wakes to it.
-func TestResumePausedRuns_ARestoredChildTimesOutAtItsOriginalDeadline(t *testing.T) {
-	const bound, hold, downtime = 2000 * time.Millisecond, 400 * time.Millisecond, 1400 * time.Millisecond
+// time it spent held for review plus the time it spent parked for a runtime
+// pause on the instance it runs on — not timeout_ms after the parent comes
+// back, not while it is parked, and not never. Its run is cancelled as timed
+// out, wherever it runs, and the parent wakes to it.
+func TestResumePausedRuns_ARestoredChildLeavesOutItsHoldAndItsPause(t *testing.T) {
+	const bound, hold, downtime = 1200 * time.Millisecond, 400 * time.Millisecond, 800 * time.Millisecond
 	ctx := context.Background()
 	prov := newBGFamily(answer("done"))
 	srv, _ := makeServer(t, prov, bgResumeConfig(""))
@@ -99,26 +136,92 @@ func TestResumePausedRuns_ARestoredChildTimesOutAtItsOriginalDeadline(t *testing
 	if err != nil {
 		t.Fatal(err)
 	}
+	// The parent's own downtime counts: the child went on running elsewhere.
 	time.Sleep(time.Until(started.StartedAt.Add(downtime)))
-
 	if n, warns := srv.ResumePausedRuns(ctx); n != 1 {
 		t.Fatalf("resumed %d, want the lead (warnings: %v)", n, warns)
 	}
+
+	// Then the instance the child runs on pauses, past the deadline the hold
+	// alone would have moved it to.
+	elsewhere := pause.NewManager(srv.store, time.Second)
+	pausedAt := time.Now()
+	if _, err := elsewhere.Pause(ctx, 10*time.Millisecond); err != nil {
+		t.Fatal(err)
+	}
+	parkFor(t, srv, elsewhere, child)
+	time.Sleep(time.Until(started.StartedAt.Add(bound + hold + 300*time.Millisecond)))
+	if row, _, ok := childResultRow(t, srv, lead, child.ID); ok {
+		t.Fatalf("the child was ended %+v while it was parked for the pause", row)
+	}
+	resumedAt := time.Now()
+	if _, err := elsewhere.Resume(ctx); err != nil {
+		t.Fatal(err)
+	}
+
 	waitWalkRunStatus(t, srv.store, lead.ID, store.RunCompleted)
 	row, at, ok := childResultRow(t, srv, lead, child.ID)
-	if !ok || row.Ended != "timeout" || row.Status != "timeout" || !strings.Contains(row.Error, "timed out: timeout_ms=2000") {
+	if !ok || row.Ended != "timeout" || row.Status != "timeout" || !strings.Contains(row.Error, "timed out: timeout_ms=1200") {
 		t.Fatalf("the child's recorded ending = %+v (found %v), want a timeout", row, ok)
 	}
-	// The live clock would have run out at start + bound + hold.
-	want := started.StartedAt.Add(bound + hold)
-	if early, late := at.Sub(want), at.Sub(want.Add(500*time.Millisecond)); early < -100*time.Millisecond || late > 0 {
-		t.Errorf("the child timed out %v after its run started, want about %v (bound + its review hold)", at.Sub(started.StartedAt), bound+hold)
+	// The live clock would have run out at start + bound + hold + the pause.
+	want := started.StartedAt.Add(bound + hold + resumedAt.Sub(pausedAt))
+	if early, late := at.Sub(want), at.Sub(want.Add(700*time.Millisecond)); early < -150*time.Millisecond || late > 0 {
+		t.Errorf("the child timed out %v after its run started, want about %v (bound + its review hold + its pause)",
+			at.Sub(started.StartedAt), want.Sub(started.StartedAt))
 	}
-	if reason, ok := cluster.reason("a_remote"); !ok || !strings.Contains(reason, "timed out: timeout_ms=2000") {
+	if reason, ok := cluster.reason("a_remote"); !ok || !strings.Contains(reason, "timed out: timeout_ms=1200") {
 		t.Errorf("the child's run was cancelled with %q (sent %v), want the timeout", reason, ok)
 	}
 	if calls := prov.leadCalls(); len(calls) != 1 || !strings.Contains(lastText(calls[0]), child.ID+" (worker): timeout") {
 		t.Errorf("the lead was woken by %d calls, want one naming the timeout", len(calls))
+	}
+}
+
+// A bounded child restored with its paused parent — snapshot and restore, or
+// a restart — does not count the time it was paused: from when the runtime
+// paused on the instance it parked on, through the downtime, to its
+// re-dispatch here. The bound from its start passed in the downtime; it is
+// still given the time it had left when the runtime paused.
+func TestResumePausedRuns_ARestoredChildDoesNotCountTheDowntimeItWasPausedFor(t *testing.T) {
+	const bound = 800 * time.Millisecond
+	ctx := context.Background()
+	prov := newBGFamily(answer("done"))
+	srv, _ := makeServer(t, prov, bgResumeConfig(""))
+	settle(t, srv, prov)
+	lead := pausedLead(t, srv)
+	child := workerRun(t, srv, lead, "a_child", "hold", false)
+	boundedInPoll(t, srv, lead, child.ID, int(bound/time.Millisecond))
+	waitedFor(t, srv, lead, child.ID)
+	markPaused(t, srv, lead)
+	started, err := srv.store.GetRun(ctx, child.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// The instance both ran on pauses, the child parks for it, and the
+	// instance is gone before it resumes.
+	before := pause.NewManager(srv.store, time.Second)
+	pausedAt := time.Now()
+	if _, err := before.Pause(ctx, 10*time.Millisecond); err != nil {
+		t.Fatal(err)
+	}
+	parkFor(t, srv, before, child)
+	time.Sleep(time.Until(started.StartedAt.Add(bound + 400*time.Millisecond)))
+
+	redispatched := time.Now()
+	if n, warns := srv.ResumePausedRuns(ctx); n != 2 {
+		t.Fatalf("resumed %d, want the child and the lead (warnings: %v)", n, warns)
+	}
+	waitWalkRunStatus(t, srv.store, lead.ID, store.RunCompleted)
+	row, at, ok := childResultRow(t, srv, lead, child.ID)
+	if !ok || row.Ended != "timeout" || !strings.Contains(row.Error, "timed out: timeout_ms=800") {
+		t.Fatalf("the child's recorded ending = %+v (found %v), want a timeout", row, ok)
+	}
+	want := started.StartedAt.Add(bound + redispatched.Sub(pausedAt))
+	if early, late := at.Sub(want), at.Sub(want.Add(time.Second)); early < -150*time.Millisecond || late > 0 {
+		t.Errorf("the child timed out %v after it was re-dispatched, want about %v (what it had left when the runtime paused)",
+			at.Sub(redispatched), want.Sub(redispatched))
 	}
 }
 

@@ -698,6 +698,8 @@ func New(cfg *config.Config, pr ProviderResolver, builtinTools []tools.Tool, sem
 		},
 		// A team's own agent is reported under the name it runs as.
 		ResolveName: s.agentRunName,
+		// A child's timeout_ms stops while the runtime is paused.
+		PauseSignal: s,
 	})
 	// F45: `Context op=tools` introspects the runtime-wide catalog via the
 	// Context tool's Tools field. main.go can only set that to the PRE-server
@@ -1067,6 +1069,9 @@ func (s *Server) SetTeamDefTool(t tools.Tool) {
 		}
 		if td.Admit == nil {
 			td.Admit = s.admitTeamRun
+		}
+		if td.PauseSignal == nil {
+			td.PauseSignal = s // a state's timeout_ms stops while the runtime is paused
 		}
 		if td.OperatorKeyGate == nil {
 			td.OperatorKeyGate = func() bool { return s.cfg().Env.OperatorKeyRestriction }
