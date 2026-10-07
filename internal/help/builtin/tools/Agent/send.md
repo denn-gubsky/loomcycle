@@ -27,8 +27,11 @@ finished and the child is ready for the next `send`.
   no more sends; `poll` it to read its last answer, then `open` a new one.
 - `resident sub-agent "r_..." was closed ...` / `was reaped by the runtime
   (...)` — it was ended for you; `open` a new one.
-- `resident sub-agent "r_..." not found ...` — an id you never opened, or a
-  child that ended more than an hour ago.
+- `resident sub-agent "r_..." not found ...` — an id that is not a resident
+  sub-agent your run may address.
+- `resident sub-agent "r_..." is not held by this replica, and there is no
+  route to the one running it ...` — the child runs on another replica this
+  runtime cannot reach; `poll` still reads it.
 - `resident sub-agent "r_..." is still running its previous turn ...` — `poll`
   it to wait, or `cancel` the turn, before you `send` again.
 - `sub-agent "X" stopped at its iteration limit of N before it finished, so

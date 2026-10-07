@@ -57,9 +57,12 @@ carries `truncated: true` and the whole answer stays in its run's transcript.
 
 Resident form: `{child_run_id, state, output}` — the output so far.
 `awaiting_input` means the turn is done and the child is ready for the next
-`send`. A child whose run has ended still answers for up to an hour afterwards:
-`completed` or `failed` with its last turn's output, or the iteration-limit
-error with its last answer.
+`send`. A child whose run has ended still answers: `completed` or `failed`
+with its last turn's output, or the iteration-limit error with its last
+answer. Polling works from wherever your call runs — in a runtime with
+several replicas the child may run on another one, and the poll reads it from
+the shared store (an ended child's iteration-limit error may then not name the
+limit's number).
 
 ## Errors
 
@@ -70,8 +73,8 @@ error with its last answer.
   `wait` and `wait_ms`.
 - `resident sub-agent "r_..." was closed ...` / `was reaped by the runtime
   (...)` — it was ended for you; `open` a new one.
-- `resident sub-agent "r_..." not found ...` — an id you never opened, or a
-  child that ended more than an hour ago.
+- `resident sub-agent "r_..." not found ...` — an id that is not a resident
+  sub-agent your run may address.
 
 ## Examples
 

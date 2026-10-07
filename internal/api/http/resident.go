@@ -73,6 +73,8 @@ const (
 	residentReasonClosedByParent   = "closed by parent" + residentReasonSuffix
 	residentReasonClosedByOperator = "closed by operator" + residentReasonSuffix
 	residentReasonParentEnded      = "parent run ended" + residentReasonSuffix
+	// A turn cancel stops the current turn only; the child lives on.
+	residentReasonTurnCancelledByParent = "cancelled by parent" + residentReasonSuffix
 	// The sweeper's reasons start with these, then say how long.
 	residentReapIdle    = "idle timeout:"
 	residentReapCeiling = "turn ceiling:"
@@ -657,7 +659,7 @@ func (s *Server) openResidentChild(ctx context.Context, name, prompt, defID stri
 // A turn that ended because the child stopped at its iteration limit is
 // handed back as a builtin.ChildCappedError carrying the turn's output, with
 // status failed for the hooks. A child whose run has ended and left the
-// registry hands back its kept ending the same way (readEndedResident).
+// registry hands back its kept ending the same way (handBackEnding).
 func (s *Server) residentHandBack(ctx context.Context, runID, agentName string, e residentEnding, out, state string, err error) (string, error) {
 	if e.reapReason != "" && err == nil {
 		err = residentReapedErr(runID, e.reapReason)
@@ -684,7 +686,7 @@ func (s *Server) residentHandBack(ctx context.Context, runID, agentName string, 
 func (s *Server) sendResidentChild(ctx context.Context, childRunID, prompt string, timeoutMs int) (string, string, error) {
 	rc, ok := s.lookupOwnedResident(ctx, childRunID)
 	if !ok {
-		return "", "", s.sendToEndedResident(ctx, childRunID)
+		return s.sendUnheldResident(ctx, childRunID, prompt, timeoutMs)
 	}
 	// Its run has ended but its teardown has not yet removed it: nothing
 	// would take the instruction.
@@ -694,7 +696,7 @@ func (s *Server) sendResidentChild(ctx context.Context, childRunID, prompt strin
 	// A send while the previous turn is still in flight would interleave two
 	// turns. Refuse — the parent should poll to await it, or cancel to interrupt.
 	if _, running := rc.currentTurnDone(); running {
-		return "", "", fmt.Errorf("resident sub-agent %q is still running its previous turn; poll to await it or cancel to interrupt", childRunID)
+		return "", "", residentStillRunningErr(childRunID)
 	}
 	turnDone := rc.beginTurn(time.Now())
 	if _, err := s.steerReg.Push(ctx, childRunID, steer.Message{Text: prompt, Source: "agent", EnqueuedAt: time.Now()}); err != nil {
@@ -711,7 +713,7 @@ func (s *Server) sendResidentChild(ctx context.Context, childRunID, prompt strin
 func (s *Server) pollResidentChild(ctx context.Context, childRunID string, timeoutMs int) (string, string, error) {
 	rc, ok := s.lookupOwnedResident(ctx, childRunID)
 	if !ok {
-		return s.readEndedResident(ctx, childRunID)
+		return s.pollUnheldResident(ctx, childRunID, timeoutMs)
 	}
 	rc.touch(time.Now())
 	td, _ := rc.currentTurnDone()
@@ -734,8 +736,7 @@ func (s *Server) pollResidentChild(ctx context.Context, childRunID string, timeo
 func (s *Server) cancelResidentChildTurn(ctx context.Context, childRunID string) (string, string, error) {
 	rc, ok := s.lookupOwnedResident(ctx, childRunID)
 	if !ok {
-		// Its run has ended: there is no turn to stop, only its ending to read.
-		return s.readEndedResident(ctx, childRunID)
+		return s.cancelUnheldResident(ctx, childRunID)
 	}
 	rc.touch(time.Now())
 	td, running := rc.currentTurnDone()
@@ -744,7 +745,7 @@ func (s *Server) cancelResidentChildTurn(ctx context.Context, childRunID string)
 		out, err := s.residentHandBack(ctx, rc.runID, rc.agentName, rc.ending(), out, st, nil)
 		return out, st, err
 	}
-	if s.turnCancelReg == nil || !s.turnCancelReg.CancelLocal(childRunID, "cancelled by parent (resident sub-agent)") {
+	if s.turnCancelReg == nil || !s.turnCancelReg.CancelLocal(childRunID, residentReasonTurnCancelledByParent) {
 		// Not armed / token vanished (the turn just ended) — treat as parked.
 		out, st := rc.readTurn()
 		out, err := s.residentHandBack(ctx, rc.runID, rc.agentName, rc.ending(), out, st, nil)
@@ -761,7 +762,10 @@ func (s *Server) cancelResidentChildTurn(ctx context.Context, childRunID string)
 func (s *Server) closeResidentChild(ctx context.Context, childRunID string) error {
 	rc, ok := s.lookupOwnedResident(ctx, childRunID)
 	if !ok {
-		return nil // idempotent: already gone (or not ours → opaque)
+		if _, ended := s.keptEnding(ctx, childRunID); ended {
+			return nil // idempotent: already gone
+		}
+		return s.closeUnheldResident(ctx, childRunID)
 	}
 	if _, found := s.cancelReg.Cancel(rc.agentID, residentReasonClosedByParent); !found && rc.cancel != nil {
 		rc.cancel(cancel.CauseWithReason(residentReasonClosedByParent))
@@ -769,20 +773,21 @@ func (s *Server) closeResidentChild(ctx context.Context, childRunID string) erro
 	return nil
 }
 
-// endedResident returns the kept ending of a child_run_id with no live child.
-// The error is nil only for a run that ended on its own, whose last turn can
-// still be read: a reaped or closed child answers with why, an id with no
-// ending kept (or that the caller could not address) with not-found.
-func (s *Server) endedResident(ctx context.Context, childRunID string) (residentTombstone, error) {
-	var t residentTombstone
-	ok := false
-	if s.residentReg != nil {
-		t, ok = s.residentReg.ended(childRunID, tools.RunIdentity(ctx))
+// keptEnding is the ending this replica kept for a child that is no longer
+// registered, for a caller that could have addressed it alive.
+func (s *Server) keptEnding(ctx context.Context, childRunID string) (residentTombstone, bool) {
+	if s.residentReg == nil {
+		return residentTombstone{}, false
 	}
-	if !ok {
-		return t, fmt.Errorf("resident sub-agent %q not found (it may have been closed or timed out)", childRunID)
-	}
-	return t, t.endedForItErr(childRunID)
+	return s.residentReg.ended(childRunID, tools.RunIdentity(ctx))
+}
+
+func residentNotFoundErr(childRunID string) error {
+	return fmt.Errorf("resident sub-agent %q not found (it may have been closed or timed out)", childRunID)
+}
+
+func residentStillRunningErr(childRunID string) error {
+	return fmt.Errorf("resident sub-agent %q is still running its previous turn; poll to await it or cancel to interrupt", childRunID)
 }
 
 // endedForItErr is why a reaped or closed child's run was ended for it; nil
@@ -797,25 +802,16 @@ func (t residentTombstone) endedForItErr(childRunID string) error {
 	return nil
 }
 
-// readEndedResident answers poll (and cancel) for a child whose run has ended
-// and left the registry: its last turn handed back as a poll of it read it
-// once the run ended, the iteration-limit error included.
-func (s *Server) readEndedResident(ctx context.Context, childRunID string) (string, string, error) {
-	t, err := s.endedResident(ctx, childRunID)
-	if err != nil {
+// handBackEnding answers poll (and cancel) for a child whose run has ended:
+// a reaped or closed child with why, one that ended on its own with its last
+// turn handed back as a poll of it read it once the run ended, the
+// iteration-limit error included.
+func (s *Server) handBackEnding(ctx context.Context, childRunID string, t residentTombstone) (string, string, error) {
+	if err := t.endedForItErr(childRunID); err != nil {
 		return "", "", err
 	}
 	out, err := s.residentHandBack(ctx, childRunID, t.agentName, residentEnding{ended: true, capped: t.capped}, t.output, t.state, nil)
 	return out, t.state, err
-}
-
-// sendToEndedResident is send's answer for a child_run_id with no live child.
-func (s *Server) sendToEndedResident(ctx context.Context, childRunID string) error {
-	t, err := s.endedResident(ctx, childRunID)
-	if err != nil {
-		return err
-	}
-	return residentEndedSendErr(childRunID, t)
 }
 
 // residentEndedSendErr tells a send that the child's run has ended.
