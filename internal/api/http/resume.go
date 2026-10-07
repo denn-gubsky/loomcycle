@@ -1418,7 +1418,7 @@ func (s *Server) reconcileFanoutParent(ctx context.Context, run store.Run, runEv
 		switch {
 		case c != nil && c.result != nil:
 			// Completed before the snapshot — durable result in the ledger.
-			results[i] = builtin.ParallelSpawnResult{Index: i, Agent: c.result.Agent, Ok: c.result.Ok, Output: c.result.Output, Error: c.result.Error, State: c.result.State, RunID: c.result.RunID}
+			results[i] = builtin.ParallelSpawnResult{Index: i, Agent: c.result.Agent, Ok: c.result.Ok, Output: c.result.Output, Error: c.result.Error, State: c.result.State, RunID: c.result.RunID, Status: c.result.Status}
 		case c != nil && c.runID != "":
 			// Still running (parked) at snapshot → re-dispatched independently
 			// by ResumePausedRuns. Await it + read its result, which has not
@@ -1538,6 +1538,11 @@ func (s *Server) awaitChildResult(ctx context.Context, index int, name, childRun
 		out := s.childFinalText(ctx, child)
 		if out == "" {
 			out = fmt.Sprintf("(sub-agent %q completed with no final text)", name)
+		}
+		if child.StopReason == loop.StopReasonMaxIterations {
+			// Its limit is not on its row; the message goes without it.
+			return builtin.ParallelSpawnResult{Index: index, Agent: name, Ok: false, Error: builtin.ChildCappedMessage(name, 0, childRunID),
+				Output: formatSubAgentOutput(child.AgentID, childRunID, out), RunID: childRunID, Status: builtin.ChildStatusMaxIterations}
 		}
 		return builtin.ParallelSpawnResult{Index: index, Agent: name, Ok: true,
 			Output: formatSubAgentOutput(child.AgentID, childRunID, out), RunID: childRunID}

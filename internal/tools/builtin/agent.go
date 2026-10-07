@@ -273,8 +273,10 @@ func (a *AgentTool) runChildBounded(ctx context.Context, timeoutMs int, name, pr
 	cctx, dl := teamrun.StartDeadline(ctx, time.Duration(timeoutMs)*time.Millisecond, childTimeout{ms: timeoutMs})
 	defer dl.Finish()
 	output, state, runID, err = a.runChild(teamrun.WithHoldObserver(cctx, dl.SetHeld), name, prompt, defID)
-	// A child that finished as the bound ran out keeps its answer.
-	return output, state, runID, err != nil && dl.TimedOut(), err
+	// A child that finished as the bound ran out keeps its answer — one that
+	// stopped at its iteration limit too: it ended, it was not cut.
+	var capped *ChildCappedError
+	return output, state, runID, err != nil && dl.TimedOut() && !errors.As(err, &capped), err
 }
 
 // childTimeout is the cancel cause of a child whose timeout_ms ran out. It
@@ -298,6 +300,39 @@ func ChildTimedOutMessage(name string, timeoutMs int, runID string) string {
 	msg := fmt.Sprintf("sub-agent %q timed out: timeout_ms=%d elapsed (time held for review not counted)", name, timeoutMs)
 	if runID != "" {
 		msg += fmt.Sprintf("; its run %s was cancelled", runID)
+	}
+	return msg
+}
+
+// ChildStatusMaxIterations is the status of a child that stopped at its
+// iteration limit — its run's stop reason — on a parallel_spawn row and a
+// poll row.
+const ChildStatusMaxIterations = "max_iterations"
+
+// ChildCappedError is a child run that stopped at its iteration limit. Its
+// run is recorded completed, but it did not get to finish, so its parent gets
+// an error and its last answer beside it (Output, under the sub-agent header,
+// and State), never the answer as a result.
+type ChildCappedError struct {
+	Name   string
+	Limit  int // the child's iteration limit; 0 when not known
+	RunID  string
+	Output string
+	State  map[string]any
+}
+
+func (e *ChildCappedError) Error() string { return ChildCappedMessage(e.Name, e.Limit, e.RunID) }
+
+// ChildCappedMessage is what the caller is told about a child that stopped at
+// its iteration limit.
+func ChildCappedMessage(name string, limit int, runID string) string {
+	msg := fmt.Sprintf("sub-agent %q stopped at its iteration limit", name)
+	if limit > 0 {
+		msg += fmt.Sprintf(" of %d", limit)
+	}
+	msg += " before it finished, so its last answer may be incomplete"
+	if runID != "" {
+		msg += fmt.Sprintf(" (run %s)", runID)
 	}
 	return msg
 }
@@ -595,10 +630,16 @@ func (a *AgentTool) executeSpawn(ctx context.Context, in agentInput) (tools.Resu
 		return errBusiness(ChildTimedOutMessage(in.Name, in.TimeoutMs, runID),
 			"Give the child a larger timeout_ms or a smaller task. What it did before the bound is in its run's transcript."), nil
 	}
+	// A child that stopped at its iteration limit is an error, with its last
+	// answer after the message, under the same bound as a result.
+	var capped *ChildCappedError
+	if errors.As(err, &capped) {
+		output, state, err = capped.Output, capped.State, nil
+	}
 	if err != nil {
 		return errFrom(err.Error(), err), nil
 	}
-	if output == "" && len(state) == 0 {
+	if output == "" && len(state) == 0 && capped == nil {
 		return tools.Result{Text: fmt.Sprintf("(sub-agent %q completed with no final text)", in.Name)}, nil
 	}
 	// One child's answer may take at most a quarter of this run's window, so a
@@ -621,6 +662,10 @@ func (a *AgentTool) executeSpawn(ctx context.Context, in agentInput) (tools.Resu
 	// RFC CR D5: a stateful child hands its final Σ up as the structured result,
 	// folded into the tool_result text (tools.Result is text-only) so the parent
 	// gets the compact structured state, not just prose.
+	if capped != nil {
+		return errBusiness(capped.Error()+". Its last answer:\n\n"+withSubAgentState(output, state)+omitted,
+			"Use its answer if it is enough; otherwise split the task into smaller ones, or give it to an agent with a higher iteration limit."), nil
+	}
 	return tools.Result{Text: withSubAgentState(output, state) + omitted}, nil
 }
 
@@ -805,6 +850,8 @@ func (a *AgentTool) executeParallelSpawn(ctx context.Context, in agentInput) (to
 			var r ParallelSpawnResult
 			if timedOut {
 				r = ParallelSpawnResult{Index: i, Agent: sp.Name, Ok: false, Error: ChildTimedOutMessage(sp.Name, sp.TimeoutMs, childRunID), RunID: childRunID, Status: "timeout"}
+			} else if capped := (*ChildCappedError)(nil); errors.As(err, &capped) {
+				r = ParallelSpawnResult{Index: i, Agent: sp.Name, Ok: false, Error: capped.Error(), Output: capped.Output, State: capped.State, RunID: childRunID, Status: ChildStatusMaxIterations}
 			} else if err != nil {
 				r = ParallelSpawnResult{Index: i, Agent: sp.Name, Ok: false, Error: err.Error(), RunID: childRunID}
 			} else {
@@ -829,6 +876,7 @@ func (a *AgentTool) executeParallelSpawn(ctx context.Context, in agentInput) (to
 						Output:    r.Output,
 						Error:     r.Error,
 						State:     r.State, // RFC CR D5: keep the child's Σ durable across a snapshot
+						Status:    r.Status,
 					},
 				})
 			}

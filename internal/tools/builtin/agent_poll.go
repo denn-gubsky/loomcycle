@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"strings"
@@ -228,9 +229,14 @@ func (a *AgentTool) runBackgroundChild(cctx context.Context, bg *tools.Backgroun
 		parentEmit(ev)
 	})
 	out, state, _, timedOut, err := a.runChildBounded(childCtx, e.timeoutMs, e.name, e.prompt, e.defID)
+	var capped *ChildCappedError
 	switch {
 	case timedOut:
 		finish(tools.ChildTimeout, tools.ChildResult{Error: ChildTimedOutMessage(e.name, e.timeoutMs, runID), Status: "timeout"})
+	case errors.As(err, &capped):
+		// It ended on its own, at its iteration limit: failed, with its last
+		// answer kept beside the error.
+		finish(tools.ChildFailed, tools.ChildResult{Error: capped.Error(), Output: capped.Output, Structured: capped.State, Status: ChildStatusMaxIterations})
 	case err != nil && bg.Interrupted(runID) != nil:
 		finish(tools.ChildCancelled, tools.ChildResult{Error: err.Error()})
 	case err != nil:
