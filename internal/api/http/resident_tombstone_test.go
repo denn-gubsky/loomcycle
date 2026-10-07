@@ -226,6 +226,7 @@ func TestResidentEndedFor_ReadsEveryReasonTheRuntimeCancelsWith(t *testing.T) {
 		{residentReasonClosedByParent, "", "closed by its parent"},
 		{residentReasonClosedByOperator, "", "closed by the operator"},
 		{residentReasonParentEnded, "", "closed when its parent run ended"},
+		{residentReasonOwnerGone, "", "ended because the replica running it is gone"},
 		{residentReapIdle + " unused for longer than 30m0s" + residentReasonSuffix, residentReapIdle + " unused for longer than 30m0s", ""},
 		{residentReapCeiling + " a turn ran longer than 2h0m0s" + residentReasonSuffix, residentReapCeiling + " a turn ran longer than 2h0m0s", ""},
 		{"cancelled by api", "", "cancelled (cancelled by api)"},

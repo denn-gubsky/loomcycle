@@ -605,10 +605,12 @@ func restoredWalkEnding(child store.Run, spec tools.ChildSpec) (string, tools.Ch
 }
 
 // cancelRestoredChild cancels a restored child's run by id, wherever it runs:
-// a walk through this replica's walk table (a walk is not reachable on
-// another replica), a sub-agent through the cancel registry, which hands a
-// run it does not hold to the cluster. A child whose run has ended is left
-// alone.
+// a walk through this replica's walk table, a sub-agent through the cancel
+// registry, which hands a run it does not hold to the cluster. A child no
+// live loop holds anywhere — paused and never resumed, or left by a replica
+// that is gone — has its row finished as cancelled, so no later resume pass
+// starts a child its parent already gave up on. A child whose run has ended
+// is left alone.
 func (s *Server) cancelRestoredChild(spec tools.ChildSpec, cause error) {
 	ctx, stop := context.WithTimeout(context.Background(), restoredChildCancelTimeout)
 	defer stop()
@@ -619,6 +621,12 @@ func (s *Server) cancelRestoredChild(spec tools.ChildSpec, cause error) {
 	if spec.Kind == tools.ChildKindTeam {
 		if w, ok := s.walks.get(spec.RunID); ok {
 			w.cancel(cancel.CauseWithReason(reason))
+			return
+		}
+		if s.store != nil {
+			if walk, err := s.store.GetRun(ctx, spec.RunID); err == nil {
+				s.finishUnheldRun(ctx, walk, reason)
+			}
 		}
 		return
 	}
@@ -626,10 +634,10 @@ func (s *Server) cancelRestoredChild(spec tools.ChildSpec, cause error) {
 		return
 	}
 	child, err := s.store.GetRun(ctx, spec.RunID)
-	if err != nil || isTerminalRunStatus(child.Status) || child.AgentID == "" {
+	if err != nil || child.AgentID == "" {
 		return
 	}
-	s.cancelReg.Cancel(child.AgentID, reason)
+	s.cancelRunWherever(ctx, child, reason)
 }
 
 func firstNonEmpty(vs ...string) string {

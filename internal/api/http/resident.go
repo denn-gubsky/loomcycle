@@ -73,6 +73,9 @@ const (
 	residentReasonClosedByParent   = "closed by parent" + residentReasonSuffix
 	residentReasonClosedByOperator = "closed by operator" + residentReasonSuffix
 	residentReasonParentEnded      = "parent run ended" + residentReasonSuffix
+	// No live loop held the child when it was addressed: the replica that ran
+	// it is gone, or a crash left its row.
+	residentReasonOwnerGone = "the replica running it is gone" + residentReasonSuffix
 	// A turn cancel stops the current turn only; the child lives on.
 	residentReasonTurnCancelledByParent = "cancelled by parent" + residentReasonSuffix
 	// The sweeper's reasons start with these, then say how long.
@@ -93,6 +96,8 @@ func residentEndedFor(reason string) (reapReason, closedBy string) {
 		return "", "closed by the operator"
 	case residentReasonParentEnded:
 		return "", "closed when its parent run ended"
+	case residentReasonOwnerGone:
+		return "", "ended because the replica running it is gone"
 	}
 	if r, ok := strings.CutSuffix(reason, residentReasonSuffix); ok &&
 		(strings.HasPrefix(r, residentReapIdle) || strings.HasPrefix(r, residentReapCeiling)) {

@@ -233,6 +233,9 @@ func (s *Server) sendUnheldResident(ctx context.Context, childRunID, prompt stri
 	if err != nil {
 		return "", "", err
 	}
+	if v, err = s.endIfOwnerGone(ctx, v); err != nil {
+		return "", "", err
+	}
 	if v.ended() {
 		return "", "", residentEndedSendErr(childRunID, v.ending())
 	}
@@ -269,6 +272,9 @@ func (s *Server) cancelUnheldResident(ctx context.Context, childRunID string) (s
 	if err != nil {
 		return "", "", err
 	}
+	if v, err = s.endIfOwnerGone(ctx, v); err != nil {
+		return "", "", err
+	}
 	if v.ended() || v.state == "awaiting_input" || s.turnCancelReg == nil {
 		return s.handBackStored(ctx, v)
 	}
@@ -285,16 +291,30 @@ func (s *Server) cancelUnheldResident(ctx context.Context, childRunID string) (s
 	return s.handBackStored(ctx, v)
 }
 
+// endIfOwnerGone ends a child no live loop holds anywhere — its replica is
+// gone, or a crash left its row — and returns it as it then reads: nothing
+// would ever take an instruction for it or finish its turn.
+func (s *Server) endIfOwnerGone(ctx context.Context, v storedResident) (storedResident, error) {
+	if v.ended() || !s.finishUnheldRun(ctx, v.run, residentReasonOwnerGone) {
+		return v, nil
+	}
+	return s.readStoredResident(ctx, v.run.ID)
+}
+
 // closeUnheldResident is close for a child this replica does not hold: its
-// run is cancelled through the cancel route by its agent id. One already
-// ended, or unknown to the caller, is closed already.
+// run is cancelled through the cancel route by its agent id, or, when no
+// live loop holds it anywhere, by finishing its row. One already ended, or
+// unknown to the caller, is closed already.
 func (s *Server) closeUnheldResident(ctx context.Context, childRunID string) error {
 	run, ok := s.storedOwnedResident(ctx, childRunID)
 	if !ok || store.IsTerminalRunStatus(run.Status) {
 		return nil
 	}
-	if _, found := s.cancelReg.Cancel(run.AgentID, residentReasonClosedByParent); !found {
-		return residentUnreachableErr(childRunID, "close it")
+	if _, found := s.cancelReg.Cancel(run.AgentID, residentReasonClosedByParent); found {
+		return nil
 	}
-	return nil
+	if s.finishUnheldRun(ctx, run, residentReasonClosedByParent) {
+		return nil
+	}
+	return residentUnreachableErr(childRunID, "close it")
 }

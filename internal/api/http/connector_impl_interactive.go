@@ -180,8 +180,14 @@ func (s *Server) CancelTurn(ctx context.Context, runID, reason string) (bool, bo
 		return false, false, err
 	}
 	if !fired {
-		// Not armed on any reachable replica (parked / just ended / owner gone),
-		// or single-process with no coordinator wired. "No in-flight turn."
+		// A run no live loop holds anywhere (its replica is gone, or it was
+		// left by a crash) has no turn to stop and nobody to end it: its row
+		// is finished as cancelled.
+		if s.finishUnheldRun(ctx, run, reason) {
+			return true, false, nil
+		}
+		// Not armed on any reachable replica (parked / just ended), or
+		// single-process with no coordinator wired. "No in-flight turn."
 		return false, false, connector.ErrRunNotInFlight
 	}
 	// A team walk its owner stopped has ended, as one stopped here does: it has

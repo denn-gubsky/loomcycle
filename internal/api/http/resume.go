@@ -1735,9 +1735,9 @@ func (s *Server) awaitChildResult(ctx context.Context, index int, name, childRun
 		if name == "" {
 			name = child.Agent
 		}
-		if child.AgentID != "" && s.cancelReg != nil {
-			s.cancelReg.Cancel(child.AgentID, cancel.ReasonFromCause(builtin.ChildTimeoutCause(timeoutMs)))
-		}
+		// Its row too when no live loop holds it, so the child the parent is
+		// told timed out is not resumed later.
+		s.cancelRunWherever(ctx, child, cancel.ReasonFromCause(builtin.ChildTimeoutCause(timeoutMs)))
 		return builtin.ParallelSpawnResult{Index: index, Agent: name, Ok: false,
 			Error: builtin.ChildTimedOutMessage(name, timeoutMs, childRunID), RunID: childRunID, Status: "timeout"}
 	}

@@ -170,6 +170,9 @@ type Server struct {
 	// walkHeartbeatEvery overrides how often a live walk's run is heartbeated;
 	// zero means the loop's own interval. Tests set it.
 	walkHeartbeatEvery time.Duration
+	// unheldRunGrace overrides defaultUnheldRunGrace; 0 = the default. Tests
+	// shorten it.
+	unheldRunGrace time.Duration
 	// childRecheckFirst overrides the first wait between reads of a restored
 	// background child's run row (resume_background.go); zero means the
 	// default. Tests set it.
@@ -8423,6 +8426,12 @@ func (s *Server) handleCancelAgent(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	// Still running on its row with no live loop behind it (left by a crash,
+	// or by a replica that is gone): this cancel ends the row.
+	if s.finishUnheldRun(r.Context(), run, body.Reason) {
+		writeJSON(w, http.StatusOK, cancelResponse{Cancelled: true, AgentID: agentID, Reason: body.Reason})
 		return
 	}
 	// Idempotent: surface the existing terminal status. cancelled=false

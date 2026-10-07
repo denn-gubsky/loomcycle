@@ -6,12 +6,14 @@ import (
 	"errors"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/denn-gubsky/loomcycle/internal/cancel"
 	"github.com/denn-gubsky/loomcycle/internal/concurrency"
 	"github.com/denn-gubsky/loomcycle/internal/config"
+	"github.com/denn-gubsky/loomcycle/internal/coord"
 	"github.com/denn-gubsky/loomcycle/internal/providers"
 	"github.com/denn-gubsky/loomcycle/internal/steer"
 	"github.com/denn-gubsky/loomcycle/internal/store"
@@ -130,17 +132,97 @@ func (p peerTurnCancel) CancelRemote(_ context.Context, runID, reason string) (b
 	return p.owner.turnCancelReg.CancelLocal(runID, reason), nil
 }
 
-// twoReplicas returns a, which will hold the resident children, and b, which
-// shares a's store and reaches a only through the cluster routes (when routed).
+// clusterStore gives a shared SQLite store the one thing a cluster's store
+// has and it lacks: each run's row names the replica that runs it. SQLite
+// keeps no such column, so the stamp a run is created (or re-stamped) with is
+// kept here and put back on every read of the row.
+type clusterStore struct {
+	store.Store
+	mu      sync.Mutex
+	replica map[string]string
+}
+
+func (c *clusterStore) stamp(run store.Run) store.Run {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	run.ReplicaID = c.replica[run.ID]
+	return run
+}
+
+func (c *clusterStore) CreateRun(ctx context.Context, sessionID string, identity store.RunIdentity) (store.Run, error) {
+	run, err := c.Store.CreateRun(ctx, sessionID, identity)
+	if err != nil {
+		return run, err
+	}
+	c.mu.Lock()
+	c.replica[run.ID] = identity.ReplicaID
+	c.mu.Unlock()
+	return c.stamp(run), nil
+}
+
+func (c *clusterStore) SetRunReplica(_ context.Context, runID, replicaID string) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.replica[runID] = replicaID
+	return nil
+}
+
+func (c *clusterStore) GetRun(ctx context.Context, id string) (store.Run, error) {
+	run, err := c.Store.GetRun(ctx, id)
+	return c.stamp(run), err
+}
+
+func (c *clusterStore) GetRunByAgentID(ctx context.Context, agentID string) (store.Run, error) {
+	run, err := c.Store.GetRunByAgentID(ctx, agentID)
+	return c.stamp(run), err
+}
+
+func (c *clusterStore) ListRunsByParentAgentID(ctx context.Context, parentAgentID string) ([]store.Run, error) {
+	runs, err := c.Store.ListRunsByParentAgentID(ctx, parentAgentID)
+	for i := range runs {
+		runs[i] = c.stamp(runs[i])
+	}
+	return runs, err
+}
+
+// fakeReplicas is the replicas table: which replicas' heartbeats are fresh.
+type fakeReplicas struct {
+	mu    sync.Mutex
+	alive map[string]bool
+	err   error
+}
+
+func (f *fakeReplicas) IsReplicaAlive(_ context.Context, replicaID string, _ time.Duration) (bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.alive[replicaID], f.err
+}
+
+func (f *fakeReplicas) ListReplicas(context.Context) ([]coord.Replica, error) { return nil, nil }
+
+func (f *fakeReplicas) set(replicaID string, alive bool) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.alive[replicaID] = alive
+}
+
+// twoReplicas returns a ("replica-a"), which will hold the resident children,
+// and b ("replica-b"), which shares a's store and reaches a only through the
+// cluster routes (when routed). Both read one replicas table, on which both
+// are alive; replicasOf(b) is its handle.
 func twoReplicas(t *testing.T, prov providers.Provider, cfg *config.Config, routed bool) (a, b *Server) {
 	t.Helper()
-	st, err := storesqlite.Open(filepath.Join(t.TempDir(), "cluster.db"))
+	sq, err := storesqlite.Open(filepath.Join(t.TempDir(), "cluster.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = st.Close() })
+	t.Cleanup(func() { _ = sq.Close() })
+	st := &clusterStore{Store: sq, replica: map[string]string{}}
 	a = New(cfg, &stubResolver{p: prov}, []tools.Tool{}, concurrency.New(8, 8, time.Second), st)
 	b = New(cfg, &stubResolver{p: prov}, []tools.Tool{}, concurrency.New(8, 8, time.Second), st)
+	a.replicaID, b.replicaID = "replica-a", "replica-b"
+	replicas := &fakeReplicas{alive: map[string]bool{"replica-a": true, "replica-b": true}}
+	a.replicaStore, b.replicaStore = replicas, replicas
 	a.SetSteerRegistry(steer.NewRegistry(0))
 	b.SetSteerRegistry(steer.NewRegistry(0))
 	if routed {
@@ -342,3 +424,5 @@ func TestResidentElsewhere_WithoutARouteASendSaysSo(t *testing.T) {
 		t.Errorf("poll by child_run_ids elsewhere = %q, want it idle with its answer", res.Text)
 	}
 }
+
+func replicasOf(s *Server) *fakeReplicas { return s.replicaStore.(*fakeReplicas) }
