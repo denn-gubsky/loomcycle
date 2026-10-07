@@ -506,6 +506,20 @@ type ScheduleDefEntry struct {
 	StrippedCredentials []string `json:"stripped_credentials,omitempty"`
 	// RunState is absent for a def that never had one (never promoted).
 	RunState *ScheduleRunStateEntry `json:"run_state,omitempty"`
+	// ActiveRuns are the def's started, unfinished runs (RFC DZ). A run that
+	// was running when the snapshot was taken travels as a paused run; its
+	// row here lets the target's reconciler finish it — record its outcome,
+	// dispatch its hooks — when the relaunched run ends.
+	ActiveRuns []ScheduleActiveRunEntry `json:"active_runs,omitempty"`
+}
+
+// ScheduleActiveRunEntry mirrors a schedule_active_runs row.
+type ScheduleActiveRunEntry struct {
+	RunID     string    `json:"run_id"`
+	SlotAt    time.Time `json:"slot_at"`
+	CatchUp   bool      `json:"catch_up,omitempty"`
+	StartedAt time.Time `json:"started_at"`
+	ClaimedBy string    `json:"claimed_by,omitempty"`
 }
 
 // ScheduleRunStateEntry mirrors a schedule_run_state row. FireCount is always

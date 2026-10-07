@@ -493,3 +493,48 @@ func TestScheduleDefs_WithoutSectionRestoresAsBefore(t *testing.T) {
 		t.Errorf("an old-format restore wrote schedule defs %+v", defs)
 	}
 }
+
+// A schedule's unfinished runs travel with its def, so the target's reconciler
+// finishes them — records the outcome, dispatches the hooks — when the
+// relaunched runs end. A live row on the target stands.
+func TestScheduleDefs_ActiveRunsTravelWithTheirDef(t *testing.T) {
+	src, srcClose := newTestStore(t)
+	defer srcClose()
+	dst, dstClose := newTestStore(t)
+	defer dstClose()
+	ctx := context.Background()
+	b := schedBase()
+	plantSchedules(t, src, plantedSchedule{
+		row:  store.ScheduleDefRow{DefID: "sd_long", TenantID: "acme", Name: "nightly", Version: 1, CreatedAt: b},
+		body: map[string]any{"agent": "a", "schedule": "0 2 * * *", "tenant_id": "acme"}, active: true, next: b.Add(time.Hour),
+	})
+	want := []store.ScheduleActiveRun{
+		{DefID: "sd_long", RunID: "run_1", SlotAt: b, StartedAt: b.Add(time.Second), ClaimedBy: "replica-a"},
+		{DefID: "sd_long", RunID: "run_2", SlotAt: b.Add(time.Minute), CatchUp: true, StartedAt: b.Add(2 * time.Second)},
+	}
+	for _, a := range want {
+		if err := src.ScheduleActiveRunStart(ctx, a); err != nil {
+			t.Fatalf("plant active run: %v", err)
+		}
+	}
+
+	mustRestore(t, dst, mustCapture(t, src), RestoreOptions{})
+	got, err := dst.ScheduleActiveRunsList(ctx, "sd_long")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != len(want) {
+		t.Fatalf("restored active runs = %+v, want %+v", got, want)
+	}
+	for i := range want {
+		g, w := got[i], want[i]
+		if g.RunID != w.RunID || !g.SlotAt.Equal(w.SlotAt) || g.CatchUp != w.CatchUp || !g.StartedAt.Equal(w.StartedAt) || g.ClaimedBy != w.ClaimedBy {
+			t.Errorf("active run %d = %+v, want %+v", i, g, w)
+		}
+	}
+	// Re-restoring writes nothing new.
+	mustRestore(t, dst, mustCapture(t, src), RestoreOptions{})
+	if again, _ := dst.ScheduleActiveRunsList(ctx, "sd_long"); len(again) != len(want) {
+		t.Errorf("after a second restore: %d active runs, want %d", len(again), len(want))
+	}
+}
