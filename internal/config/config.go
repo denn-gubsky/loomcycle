@@ -7228,7 +7228,7 @@ func validateScheduleDelivery(name string, sr ScheduledRun) error {
 			return fmt.Errorf("scheduled_runs.%s: delivery=team forbids `prompt` (nothing reads it — the walk starts with `input`, and its prompts read `vars`)", name)
 		}
 		if len(sr.OnComplete) > 0 {
-			return fmt.Errorf("scheduled_runs.%s: delivery=team forbids `on_complete` (the tick ends when the walk STARTS — put what follows the walk in the team's own hooks)", name)
+			return fmt.Errorf("scheduled_runs.%s: delivery=team forbids `on_complete` (a team schedule dispatches no hooks — put what follows the walk in the team's own hooks)", name)
 		}
 		if len(sr.RequiredCredentials) > 0 || len(sr.UserCredentialsFromEnv) > 0 {
 			return fmt.Errorf("scheduled_runs.%s: delivery=team forbids credentials (they are handed to one agent run, and a walk's members resolve their own)", name)

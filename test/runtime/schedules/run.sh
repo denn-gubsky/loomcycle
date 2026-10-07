@@ -67,8 +67,9 @@ echo "$NAMES" | grep -q "ticker" || fail "schedule name not listed: $NAMES"
 echo "[5/6] await a cron fire (<= ~75s)"
 FIRED=0
 for i in $(seq 1 75); do
-  # schedule_run_state records last_run_id once the sweeper fires the def
-  LRID=$(sqlite3 "$DB" "SELECT last_run_id FROM schedule_run_state WHERE def_id='$DEF_ID' AND last_run_id IS NOT NULL AND last_run_id != '';" 2>/dev/null || true)
+  # schedule_run_state records last_run_id once the sweeper starts the run
+  # (last_status running), and how it ended once the run is finished.
+  LRID=$(sqlite3 "$DB" "SELECT last_run_id FROM schedule_run_state WHERE def_id='$DEF_ID' AND last_run_id IS NOT NULL AND last_run_id != '' AND last_status != 'running';" 2>/dev/null || true)
   if [[ -n "$LRID" ]]; then FIRED=1; echo "  fired: last_run_id=$LRID after ~${i}s"; break; fi
   sleep 1
 done

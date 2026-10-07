@@ -1105,7 +1105,7 @@ func validateScheduleDef(def mergedScheduleDef) error {
 			return fmt.Errorf("delivery=team forbids prompt (nothing reads it — the walk starts with input, and its prompts read vars)")
 		}
 		if len(def.OnComplete) > 0 {
-			return fmt.Errorf("delivery=team forbids on_complete (the tick ends when the walk STARTS — put what follows the walk in the team's own hooks)")
+			return fmt.Errorf("delivery=team forbids on_complete (a team schedule dispatches no hooks — put what follows the walk in the team's own hooks)")
 		}
 		if len(def.RequiredCredentials) > 0 || len(def.UserCredentials) > 0 || len(def.UserCredentialsFromEnv) > 0 {
 			return fmt.Errorf("delivery=team forbids credentials (they are handed to one agent run, and a walk's members resolve their own)")
