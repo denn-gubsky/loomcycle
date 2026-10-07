@@ -482,6 +482,8 @@ func Run(t *testing.T, factory Factory) {
 		{"ScheduleRunStateListDueCarriesOwnerAndProvenance", testScheduleRunStateListDueCarriesOwnerAndProvenance},
 		{"ScheduleRunStateRecordResult", testScheduleRunStateRecordResult},
 		{"ScheduleRunStateClaimTakesASlotOnce", testScheduleRunStateClaimTakesASlotOnce},
+		{"ScheduleActiveRunFinishesOnce", testScheduleActiveRunFinishesOnce},
+		{"ScheduleActiveRunsListEndedFindsOnlyEndedRuns", testScheduleActiveRunsListEndedFindsOnlyEndedRuns},
 		{"ScheduleRunStatePauseResume", testScheduleRunStatePauseResume},
 		{"EvaluationSubmitAndAggregate", testEvaluationSubmitAndAggregate},
 		{"EvaluationAggregateWithLineage", testEvaluationAggregateWithLineage},
@@ -12097,6 +12099,124 @@ func testScheduleRunStateClaimTakesASlotOnce(t *testing.T, s store.Store) {
 	// An unknown def is simply not taken.
 	if won, err := s.ScheduleRunStateClaim(ctx, store.ScheduleSlotClaim{DefID: "unknown", Slot: slot, NextRunAt: next, ClaimedAt: at}); err != nil || won {
 		t.Errorf("claim of an unknown def: won=%v err=%v, want false", won, err)
+	}
+}
+
+// A started run is tracked and counted as a fire; finishing it records the
+// outcome once — the second finisher (the reconciler racing the replica that
+// ran it) gets false and must not dispatch hooks.
+func testScheduleActiveRunFinishesOnce(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	defID := scheduleRuntimeFixture(t, s, "rt-active")
+	if err := s.ScheduleRunStateSeed(ctx, defID, time.Now().Add(time.Hour)); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	slot := time.Now().Add(-time.Minute).Truncate(time.Microsecond)
+	started := time.Now().Truncate(time.Microsecond)
+	for i, runID := range []string{"run-a", "run-b"} {
+		if err := s.ScheduleActiveRunStart(ctx, store.ScheduleActiveRun{
+			DefID: defID, RunID: runID, SlotAt: slot.Add(time.Duration(i) * time.Second),
+			CatchUp: i == 1, StartedAt: started.Add(time.Duration(i) * time.Second), ClaimedBy: "replica-a",
+		}); err != nil {
+			t.Fatalf("start %s: %v", runID, err)
+		}
+	}
+	st, _ := s.ScheduleRunStateGet(ctx, defID)
+	if st.LastStatus != "running" || st.LastRunID != "run-b" || st.FireCount != 2 {
+		t.Errorf("after two starts: status=%q run=%q fire_count=%d, want running run-b 2", st.LastStatus, st.LastRunID, st.FireCount)
+	}
+	active, err := s.ScheduleActiveRunsList(ctx, defID)
+	if err != nil || len(active) != 2 {
+		t.Fatalf("active = %v err=%v, want 2 rows", active, err)
+	}
+	if a := active[0]; a.RunID != "run-a" || !a.SlotAt.Equal(slot) || a.CatchUp || a.ClaimedBy != "replica-a" || !a.StartedAt.Equal(started) {
+		t.Errorf("first active row = %+v", a)
+	}
+	if !active[1].CatchUp {
+		t.Errorf("second active row lost catch_up")
+	}
+	// A second start of the same run is refused: one row per run.
+	if err := s.ScheduleActiveRunStart(ctx, store.ScheduleActiveRun{DefID: defID, RunID: "run-a", SlotAt: slot, StartedAt: started}); err == nil {
+		t.Errorf("a second start of run-a was accepted")
+	}
+
+	finished := time.Now().Truncate(time.Microsecond)
+	fin := store.ScheduleRunFinish{DefID: defID, RunID: "run-a", Status: "failed", Error: "boom", FinishedAt: finished}
+	if won, err := s.ScheduleActiveRunFinish(ctx, fin); err != nil || !won {
+		t.Fatalf("first finish: won=%v err=%v, want true", won, err)
+	}
+	if won, err := s.ScheduleActiveRunFinish(ctx, fin); err != nil || won {
+		t.Fatalf("second finish of the same run: won=%v err=%v, want false", won, err)
+	}
+	st, _ = s.ScheduleRunStateGet(ctx, defID)
+	if st.LastStatus != "failed" || st.LastError != "boom" || st.LastRunID != "run-a" || !st.FinishedAt.Equal(finished) || st.FireCount != 2 {
+		t.Errorf("after finish: status=%q err=%q run=%q finished=%v fire_count=%d", st.LastStatus, st.LastError, st.LastRunID, st.FinishedAt, st.FireCount)
+	}
+	if active, _ := s.ScheduleActiveRunsList(ctx, defID); len(active) != 1 || active[0].RunID != "run-b" {
+		t.Errorf("active after finishing run-a = %+v, want only run-b", active)
+	}
+	// A run whose def's state is gone still finishes.
+	if won, err := s.ScheduleActiveRunFinish(ctx, store.ScheduleRunFinish{DefID: "gone", RunID: "run-b", Status: "completed", FinishedAt: finished}); err != nil || !won {
+		t.Errorf("finish under a wrong def: won=%v err=%v, want true (the row is keyed by run)", won, err)
+	}
+
+	// Snapshot round trip.
+	if ok, err := s.SnapshotRestoreScheduleActiveRun(ctx, store.ScheduleActiveRun{DefID: defID, RunID: "run-c", SlotAt: slot, StartedAt: started}); err != nil || !ok {
+		t.Fatalf("restore: ok=%v err=%v", ok, err)
+	}
+	if ok, err := s.SnapshotRestoreScheduleActiveRun(ctx, store.ScheduleActiveRun{DefID: defID, RunID: "run-c", SlotAt: slot, StartedAt: started}); err != nil || ok {
+		t.Errorf("restore over a live row: ok=%v err=%v, want false", ok, err)
+	}
+	all, err := s.SnapshotReadScheduleActiveRuns(ctx)
+	if err != nil || len(all) != 1 || all[0].RunID != "run-c" {
+		t.Errorf("snapshot read = %+v err=%v, want only run-c", all, err)
+	}
+}
+
+// The reconciler's list holds a tracked run once its run is terminal or gone,
+// never while it is still running.
+func testScheduleActiveRunsListEndedFindsOnlyEndedRuns(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	defID := scheduleRuntimeFixture(t, s, "rt-ended")
+	if err := s.ScheduleRunStateSeed(ctx, defID, time.Now().Add(time.Hour)); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	sess, err := s.CreateSession(ctx, "", "default", "")
+	if err != nil {
+		t.Fatalf("session: %v", err)
+	}
+	running, err := s.CreateRun(ctx, sess.ID, store.RunIdentity{AgentID: "a-running"})
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	done, err := s.CreateRun(ctx, sess.ID, store.RunIdentity{AgentID: "a-done"})
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if err := s.FinishRun(ctx, done.ID, store.RunFailed, "error", store.Usage{}, "heartbeat_timeout"); err != nil {
+		t.Fatalf("finish run: %v", err)
+	}
+	now := time.Now().Truncate(time.Microsecond)
+	for i, runID := range []string{running.ID, done.ID, "run-purged"} {
+		if err := s.ScheduleActiveRunStart(ctx, store.ScheduleActiveRun{DefID: defID, RunID: runID, SlotAt: now, StartedAt: now.Add(time.Duration(i) * time.Second)}); err != nil {
+			t.Fatalf("start %s: %v", runID, err)
+		}
+	}
+	ended, err := s.ScheduleActiveRunsListEnded(ctx, 10)
+	if err != nil {
+		t.Fatalf("list ended: %v", err)
+	}
+	if len(ended) != 2 {
+		t.Fatalf("ended = %+v, want the failed run and the purged one", ended)
+	}
+	if e := ended[0]; e.RunID != done.ID || !e.RunFound || e.RunStatus != store.RunFailed || e.RunError != "heartbeat_timeout" || e.AgentID != "a-done" {
+		t.Errorf("ended[0] = %+v, want the failed run with its error and agent", e)
+	}
+	if e := ended[1]; e.RunID != "run-purged" || e.RunFound {
+		t.Errorf("ended[1] = %+v, want the purged run, not found", e)
+	}
+	if one, _ := s.ScheduleActiveRunsListEnded(ctx, 1); len(one) != 1 {
+		t.Errorf("limit 1 returned %d rows", len(one))
 	}
 }
 

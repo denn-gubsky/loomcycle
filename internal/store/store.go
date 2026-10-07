@@ -2161,6 +2161,8 @@ type Store interface {
 	// SnapshotReadScheduleRunState returns every schedule_run_state row,
 	// ordered by def_id.
 	SnapshotReadScheduleRunState(ctx context.Context) ([]ScheduleRunStateRow, error)
+	// SnapshotReadScheduleActiveRuns returns every schedule_active_runs row.
+	SnapshotReadScheduleActiveRuns(ctx context.Context) ([]ScheduleActiveRun, error)
 
 	// SnapshotReadWebhookDefs / SnapshotReadA2AAgentDefs /
 	// SnapshotReadA2AServerCardDefs return every row of the def table, every
@@ -2332,6 +2334,9 @@ type Store interface {
 	// ScheduleRunStateSeed must not be used for this: its conflict branch
 	// resets next_run_at and its insert zeroes fire_count.
 	SnapshotRestoreScheduleRunState(ctx context.Context, r ScheduleRunStateRow) (bool, error)
+	// SnapshotRestoreScheduleActiveRun inserts one schedule_active_runs row; a
+	// live row on run_id stands. Reports whether it inserted.
+	SnapshotRestoreScheduleActiveRun(ctx context.Context, r ScheduleActiveRun) (bool, error)
 
 	// SnapshotRestoreWebhookDef / SnapshotRestoreA2AAgentDef /
 	// SnapshotRestoreA2AServerCardDef insert one def row keeping every
@@ -3566,6 +3571,34 @@ type Store interface {
 	// fire_count += 1 when CountAsFire. It never moves next_run_at — the
 	// claim already did, before the fire. Atomic.
 	ScheduleRunStateRecordResult(ctx context.Context, in ScheduleRunResult) error
+
+	// ScheduleActiveRunStart records that a claimed slot started a run: it
+	// inserts the run's schedule_active_runs row and, in the same
+	// transaction, sets the schedule's last_status to "running" with
+	// last_run_id / last_run_at, clears last_error, and adds one to
+	// fire_count (a started run is a fire). The caller records it before the
+	// run's loop starts, so a replica that dies from then on leaves a row the
+	// reconciler finishes.
+	ScheduleActiveRunStart(ctx context.Context, in ScheduleActiveRun) error
+
+	// ScheduleActiveRunFinish finishes one tracked run: it deletes the run's
+	// schedule_active_runs row and, only if that delete removed it, writes
+	// the outcome to the schedule's state (last_status, last_error,
+	// last_run_id, finished_at) in the same transaction. It reports whether
+	// THIS caller removed the row. Only that caller may dispatch the run's
+	// on_complete hooks and retire a max_fires schedule, which is what makes
+	// both happen exactly once when the replica that ran the run and the
+	// reconciler race.
+	ScheduleActiveRunFinish(ctx context.Context, in ScheduleRunFinish) (bool, error)
+
+	// ScheduleActiveRunsList returns the tracked runs of one schedule def,
+	// oldest first. Empty = nothing running.
+	ScheduleActiveRunsList(ctx context.Context, defID string) ([]ScheduleActiveRun, error)
+
+	// ScheduleActiveRunsListEnded returns up to limit tracked runs that are no
+	// longer running — their run row is terminal, or gone — oldest first,
+	// with the run's final status. The reconciler finishes them.
+	ScheduleActiveRunsListEnded(ctx context.Context, limit int) ([]ScheduleActiveRunEnded, error)
 
 	// ---- v1.x RFC G A2A substrate (server + client sides) ----
 	//
@@ -5786,6 +5819,47 @@ type ScheduleRunStateRow struct {
 	SlotAt    time.Time `json:"slot_at,omitempty"`
 	ClaimedBy string    `json:"claimed_by,omitempty"`
 	ClaimedAt time.Time `json:"claimed_at,omitempty"`
+	// FinishedAt is when the last tracked run was finished
+	// (ScheduleActiveRunFinish). Zero before the first.
+	FinishedAt time.Time `json:"finished_at,omitempty"`
+}
+
+// ScheduleActiveRun is one run a schedule started and has not finished: a
+// schedule_active_runs row. A schedule can have several (catch-up, or
+// overlapping slots), each finished on its own.
+type ScheduleActiveRun struct {
+	DefID string `json:"def_id"`
+	RunID string `json:"run_id"`
+	// SlotAt is the slot the run was fired for.
+	SlotAt time.Time `json:"slot_at"`
+	// CatchUp marks a run fired for a missed slot rather than a live one.
+	CatchUp   bool      `json:"catch_up,omitempty"`
+	StartedAt time.Time `json:"started_at"`
+	// ClaimedBy is the replica that claimed the slot ("" outside cluster
+	// mode).
+	ClaimedBy string `json:"claimed_by,omitempty"`
+}
+
+// ScheduleActiveRunEnded is a tracked run whose run is over, as the
+// reconciler finds it.
+type ScheduleActiveRunEnded struct {
+	ScheduleActiveRun
+	// RunFound is false when the run row is gone (purged, or never restored);
+	// RunStatus and RunError are then empty.
+	RunFound  bool
+	RunStatus RunStatus
+	RunError  string
+	// AgentID is the run's agent id, for the on_complete hooks.
+	AgentID string
+}
+
+// ScheduleRunFinish is the input to ScheduleActiveRunFinish.
+type ScheduleRunFinish struct {
+	DefID      string
+	RunID      string
+	Status     string
+	Error      string
+	FinishedAt time.Time
 }
 
 // ScheduleSlotClaim is the input to ScheduleRunStateClaim.
