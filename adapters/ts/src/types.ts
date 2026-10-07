@@ -1467,6 +1467,10 @@ export interface RunSpec {
     fanout_cap?: number;
     /** A resident child (Agent op=open), which a resume rebuilds as one. */
     resident?: boolean;
+    /** Unix seconds a resident child was last polled or cancelled from a
+     *  replica that does not hold it; its own replica reads it before it
+     *  reaps the child as idle. */
+    addressed_at?: number;
   };
   /** The iteration limit the run started with. Absent for a run with none
    *  (unbounded, or an interactive run with no `max_iterations` of its own)

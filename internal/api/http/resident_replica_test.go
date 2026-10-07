@@ -434,3 +434,88 @@ func TestResidentElsewhere_WithoutARouteASendSaysSo(t *testing.T) {
 }
 
 func replicasOf(s *Server) *fakeReplicas { return s.replicaStore.(*fakeReplicas) }
+
+// addressedAt reads the time a child's record says it was last addressed
+// from another replica.
+func addressedAt(t *testing.T, st store.Store, runID string) int64 {
+	t.Helper()
+	run, err := st.GetRun(context.Background(), runID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rec, _ := decodeRunConfig(run.RunConfig)
+	if rec.Spawn == nil {
+		t.Fatalf("run %s records no spawn", runID)
+	}
+	return rec.Spawn.AddressedAt
+}
+
+// A child its parent addresses only from another replica is in use: a poll
+// (or a cancel) there leaves a mark on the child's record, and the child's
+// own replica reads it before it reaps the child as idle. Once nothing has
+// addressed it for the idle period, from anywhere, it is reaped as before.
+func TestResidentElsewhere_APollFromAnotherReplicaKeepsTheChildFromIdling(t *testing.T) {
+	a, b := twoReplicas(t, echoProvider{}, echoConfig(), false)
+	ctx := residentParentCtx("parent-agent", "")
+	runID, _, _, err := a.openResidentChild(ctx, "child", "start", "", 0, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ageResidentChild(t, a, runID, time.Hour) // unused on its own replica for an hour
+
+	if _, state, err := b.pollResidentChild(ctx, runID, 0); err != nil || state != "awaiting_input" {
+		t.Fatalf("poll elsewhere = %q %v", state, err)
+	}
+	a.sweepResidentChildren(time.Now())
+	if rc, ok := a.residentReg.get(runID); !ok || rc.ending().reapReason != "" {
+		t.Fatal("a child just polled from another replica was reaped as idle")
+	}
+
+	// Nothing addresses it again: past the idle period (and the allowance for
+	// the mark's age and the replicas' clocks) it is reaped, and says why.
+	a.sweepResidentChildren(time.Now().Add(a.residentChildIdleTTL() + residentAddressedSlack + time.Minute))
+	waitResidentGone(t, a, runID)
+	if _, _, err := a.pollResidentChild(ctx, runID, 0); err == nil || !strings.Contains(err.Error(), "idle timeout") {
+		t.Errorf("poll after the idle reap: %v, want the idle reason", err)
+	}
+}
+
+// The mark is written at most once per residentAddressedEvery for a child,
+// so a parent polling in a loop does not rewrite the record on every poll;
+// a cancel from elsewhere marks it as a poll does.
+func TestResidentElsewhere_TheAddressedMarkIsThrottled(t *testing.T) {
+	a, b := twoReplicas(t, echoProvider{}, echoConfig(), true)
+	ctx := residentParentCtx("parent-agent", "")
+	runID, _, _, err := a.openResidentChild(ctx, "child", "start", "", 0, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	setMark := func(at time.Time) {
+		t.Helper()
+		if _, err := b.updateRunConfig(context.Background(), runID, func(rec *runConfigRecord, _ bool) error {
+			rec.Spawn.AddressedAt = at.Unix()
+			return nil
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if got := addressedAt(t, b.store, runID); got != 0 {
+		t.Fatalf("a child nobody addressed from elsewhere is marked %d", got)
+	}
+	recent := time.Now().Add(-residentAddressedEvery / 2)
+	setMark(recent)
+	if _, _, err := b.pollResidentChild(ctx, runID, 0); err != nil {
+		t.Fatal(err)
+	}
+	if got := addressedAt(t, b.store, runID); got != recent.Unix() {
+		t.Errorf("a poll inside the throttle rewrote the mark (%d, was %d)", got, recent.Unix())
+	}
+	old := time.Now().Add(-2 * residentAddressedEvery)
+	setMark(old)
+	if _, _, err := b.cancelResidentChildTurn(ctx, runID); err != nil {
+		t.Fatal(err)
+	}
+	if got := addressedAt(t, b.store, runID); got <= old.Unix() {
+		t.Errorf("a cancel past the throttle left the mark at %d", got)
+	}
+}

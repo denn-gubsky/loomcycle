@@ -566,6 +566,13 @@ type spawnRecord struct {
 	// Resident marks a resident child (Agent op=open): a resume rebuilds it as
 	// one — parked between its parent's sends, reachable by its run id.
 	Resident bool `json:"resident,omitempty"`
+	// AddressedAt is when (unix seconds) a resident child was last polled or
+	// cancelled from a replica that does not hold it. Only the child's own
+	// replica sees calls made on it, so this is how the others tell it the
+	// child is in use: its idle reaper reads it before it reaps
+	// (residentAddressedSince). Written at most once per
+	// residentAddressedEvery.
+	AddressedAt int64 `json:"addressed_at,omitempty"`
 }
 
 // volumeCeilingRecord mirrors tools.VolumePolicyValue minus each binding's

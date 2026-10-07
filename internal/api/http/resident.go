@@ -129,9 +129,12 @@ type residentChild struct {
 	// polling a wedged turn keeps the child from going idle, never from the
 	// ceiling.
 	turnStarted time.Time
-	done        bool   // loop goroutine exited
-	reapReason  string // set by the sweeper before it cancels the child
-	closedBy    string // who closed it, read from its run's cancel cause at its end
+	// addressedElsewhere is the latest addressed mark read from the child's
+	// record: when a replica that does not hold it last polled or cancelled it.
+	addressedElsewhere time.Time
+	done               bool   // loop goroutine exited
+	reapReason         string // set by the sweeper before it cancels the child
+	closedBy           string // who closed it, read from its run's cancel cause at its end
 	// startupPark marks a child resumed parked whose loop has not yet parked:
 	// the awaiting_input it announces then is the park it was already in, not
 	// the end of a turn — a send that arrived first must not end on it.
@@ -239,6 +242,31 @@ func (rc *residentChild) touch(now time.Time) {
 	rc.mu.Lock()
 	rc.lastUsed = now
 	rc.mu.Unlock()
+}
+
+// idleAt reports whether the idle rule would reap the child at now, going by
+// what this replica saw of it.
+func (rc *residentChild) idleAt(now time.Time) bool {
+	rc.mu.Lock()
+	defer rc.mu.Unlock()
+	return !rc.done && !rc.running && now.Sub(rc.lastUsed) > rc.idleTTL
+}
+
+// usedAt records that another replica addressed the child at at, by that
+// replica's clock.
+func (rc *residentChild) usedAt(at time.Time) {
+	rc.mu.Lock()
+	defer rc.mu.Unlock()
+	if at.After(rc.addressedElsewhere) {
+		rc.addressedElsewhere = at
+	}
+}
+
+// usedElsewhere reports whether another replica addressed the child within
+// its idle period before now (residentAddressedSlack allowed). Held under
+// rc.mu.
+func (rc *residentChild) usedElsewhere(now time.Time) bool {
+	return !rc.addressedElsewhere.IsZero() && now.Sub(rc.addressedElsewhere) <= rc.idleTTL+residentAddressedSlack
 }
 
 // discountPause takes a runtime pause that ran from since to now off the
@@ -970,13 +998,21 @@ func (s *Server) sweepResidentChildren(now time.Time) {
 		}
 	}
 	for _, rc := range s.residentReg.snapshot() {
+		// A child about to be reaped as idle may be in use from another
+		// replica, whose calls leave a mark on its record instead of reaching
+		// it here. One row read, only for a child that would otherwise go.
+		if rc.idleAt(now) {
+			if at, used := s.residentAddressedSince(rc.runID, now, rc.idleTTL); used {
+				rc.usedAt(at)
+			}
+		}
 		rc.mu.Lock()
 		var reason string
 		switch {
 		case rc.done:
 		case rc.running && now.Sub(rc.turnStarted) > rc.maxTurn:
 			reason = fmt.Sprintf("%s a turn ran longer than %s", residentReapCeiling, rc.maxTurn)
-		case !rc.running && now.Sub(rc.lastUsed) > rc.idleTTL:
+		case !rc.running && now.Sub(rc.lastUsed) > rc.idleTTL && !rc.usedElsewhere(now):
 			reason = fmt.Sprintf("%s unused for longer than %s", residentReapIdle, rc.idleTTL)
 		}
 		if reason != "" && rc.reapReason == "" {

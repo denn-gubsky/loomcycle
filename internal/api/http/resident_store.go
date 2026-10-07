@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"strings"
 	"time"
 
@@ -34,6 +35,17 @@ const residentStorePollInterval = 250 * time.Millisecond
 // live loop still holds the child (about two seconds): a replica that died
 // will never end the turn being waited for.
 const residentOwnerCheckEvery = 8
+
+// residentAddressedEvery is the least time between two writes of a child's
+// addressed mark (spawnRecord.AddressedAt): a parent polling in a loop marks
+// the child once in a while, not on every poll.
+const residentAddressedEvery = 30 * time.Second
+
+// residentAddressedSlack is how much older than the idle period a child's
+// addressed mark may be and still count as use: the mark lags the last call
+// by up to residentAddressedEvery, and it was stamped by another replica's
+// clock, which is allowed to differ from this one's by the rest.
+const residentAddressedSlack = residentAddressedEvery + 30*time.Second
 
 // residentTextPage bounds one read of a turn's events while its answer is
 // collected.
@@ -197,6 +209,56 @@ func (s *Server) awaitStoredResident(ctx context.Context, runID string, sinceSeq
 	}
 }
 
+// noteResidentAddressed marks a child held by another replica as addressed
+// now, unless its record was marked within residentAddressedEvery. A poll or
+// a cancel made here never reaches the child's own replica, whose idle rule
+// would otherwise see a child in use as unused. Best effort: a mark that is
+// not written costs at worst an idle reap the parent is told about.
+func (s *Server) noteResidentAddressed(ctx context.Context, run store.Run) {
+	if store.IsTerminalRunStatus(run.Status) {
+		return
+	}
+	now := time.Now()
+	fresh := func(rec runConfigRecord) bool {
+		return rec.Spawn == nil || now.Sub(time.Unix(rec.Spawn.AddressedAt, 0)) < residentAddressedEvery
+	}
+	if rec, ok := decodeRunConfig(run.RunConfig); !ok || fresh(rec) {
+		return
+	}
+	errNothingToWrite := errors.New("already marked")
+	_, err := s.updateRunConfig(ctx, run.ID, func(rec *runConfigRecord, unreadable bool) error {
+		if unreadable || fresh(*rec) {
+			return errNothingToWrite
+		}
+		rec.Spawn.AddressedAt = now.Unix()
+		return nil
+	})
+	if err != nil && !errors.Is(err, errNothingToWrite) && ctx.Err() == nil {
+		log.Printf("resident child %s: mark it addressed: %v", run.ID, err)
+	}
+}
+
+// residentAddressedSince reports whether a call from another replica
+// addressed the child within its idle period before now, and when. Read by
+// the child's own replica only when it is about to reap the child as idle.
+func (s *Server) residentAddressedSince(runID string, now time.Time, idleTTL time.Duration) (time.Time, bool) {
+	if s.store == nil {
+		return time.Time{}, false
+	}
+	ctx, stop := context.WithTimeout(context.Background(), 5*time.Second)
+	defer stop()
+	run, err := s.store.GetRun(ctx, runID)
+	if err != nil {
+		return time.Time{}, false
+	}
+	rec, ok := decodeRunConfig(run.RunConfig)
+	if !ok || rec.Spawn == nil || rec.Spawn.AddressedAt == 0 {
+		return time.Time{}, false
+	}
+	at := time.Unix(rec.Spawn.AddressedAt, 0)
+	return at, now.Sub(at) <= idleTTL+residentAddressedSlack
+}
+
 // handBackStored hands a child read from the store back through the parent's
 // subagent_stop hooks exactly as a read of it on its own replica would: a
 // turn as a live child's, an ending as its kept ending.
@@ -220,9 +282,11 @@ func (s *Server) pollUnheldResident(ctx context.Context, childRunID string, time
 	if t, ok := s.keptEnding(ctx, childRunID); ok {
 		return s.handBackEnding(ctx, childRunID, t)
 	}
-	if _, ok := s.storedOwnedResident(ctx, childRunID); !ok {
+	run, ok := s.storedOwnedResident(ctx, childRunID)
+	if !ok {
 		return "", "", residentNotFoundErr(childRunID)
 	}
+	s.noteResidentAddressed(ctx, run)
 	v, err := s.awaitStoredResident(ctx, childRunID, 0, time.Duration(timeoutMs)*time.Millisecond, false)
 	if err != nil {
 		return v.output, v.state, err
@@ -276,9 +340,11 @@ func (s *Server) cancelUnheldResident(ctx context.Context, childRunID string) (s
 	if t, ok := s.keptEnding(ctx, childRunID); ok {
 		return s.handBackEnding(ctx, childRunID, t)
 	}
-	if _, ok := s.storedOwnedResident(ctx, childRunID); !ok {
+	run, ok := s.storedOwnedResident(ctx, childRunID)
+	if !ok {
 		return "", "", residentNotFoundErr(childRunID)
 	}
+	s.noteResidentAddressed(ctx, run)
 	v, err := s.readStoredResident(ctx, childRunID)
 	if err != nil {
 		return "", "", err
