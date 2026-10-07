@@ -987,7 +987,7 @@ func (s *Server) resumePausedRun(run store.Run) error {
 		RestoreBackground:      s.restoreBackgroundFn(run, pollLedger, residents),
 		ResumeAwaitingChildren: resumeChildren,
 	}
-	residentDone := func(string) {}
+	residentDone := func(string, *builtin.ChildCappedError) {}
 	if rc != nil {
 		// Its parent's op=cancel stops its current turn, as it did live.
 		runOpts.ArmTurnCancel = s.armTurnCancel(run.ID)
@@ -1000,9 +1000,9 @@ func (s *Server) resumePausedRun(run store.Run) error {
 		// One of its parent's live children again, until it ends.
 		live := s.liveChildren.Hold(run.ParentRunID, 1)[0]
 		var once sync.Once
-		residentDone = func(state string) {
+		residentDone = func(state string, capped *builtin.ChildCappedError) {
 			once.Do(func() {
-				rc.markDone(state)
+				rc.markDone(state, capped)
 				s.residentReg.remove(rc)
 				live()
 			})
@@ -1026,7 +1026,7 @@ func (s *Server) resumePausedRun(run store.Run) error {
 				log.Printf("resumed run %s panicked: %v", run.ID, rec)
 				s.finishRunFailedReason(run.ID, fmt.Sprintf("panic: %v", rec), meta)
 			}
-			residentDone("failed") // a no-op once the loop's end has filed it
+			residentDone("failed", nil) // a no-op once the loop's end has filed it
 			deregSteer()
 			deregGate()
 			s.cancelReg.Deregister(run.AgentID)
@@ -1095,7 +1095,13 @@ func (s *Server) resumePausedRun(run store.Run) error {
 		}
 		s.finishRunWithCancel(context.WithoutCancel(runCtx), runCtx, run.ID, loopRes, runErr, meta)
 		if runErr == nil {
-			residentDone("completed")
+			// A resident child that ended at its iteration limit hands its
+			// last turn back as that error, as it does when it never paused.
+			var capped *builtin.ChildCappedError
+			if loopRes.StopReason == loop.StopReasonMaxIterations {
+				capped = &builtin.ChildCappedError{Name: run.Agent, Limit: iterationLimitOf(runOpts), RunID: run.ID}
+			}
+			residentDone("completed", capped)
 		}
 	}()
 	return nil

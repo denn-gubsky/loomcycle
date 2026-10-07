@@ -33,8 +33,17 @@ research, …).
   - Time a run spends held for a review verdict does not count. A starter run's
     clock stops while it is held; a handler-wide clock stops while every run in
     flight is held.
-  - Time the runtime is paused does not count either: every clock stops from
-    the operator's pause to the resume, whatever its runs are doing.
+- **A member that stops at its iteration limit** — it used every iteration its
+  agent's `max_iterations` allows before it finished — is a failed member,
+  though its own run is recorded completed. On an `agent` or `consolidator`
+  state the walk fails with
+  `sub-agent "<agent>" stopped at its iteration limit of <N> before it finished ...`.
+  In a `parallel` state or a starter's wave it does not count toward `wait`;
+  its entry in the `{"results": […]}` envelope is `ok: false` with that
+  `error`, `status: "max_iterations"`, and its last answer, which may be
+  incomplete, still in `output`. This is the agent's own limit, not the
+  state's: a state entered more often than its cap ends the walk with
+  `status: "iteration_cap"`.
 - **A state's prompts.** On `agent`, `parallel` and `consolidator` states,
   `system_prompt` adds this state's role to the agent's own system prompt and
   `input_template` is the user prompt. With no `input_template` the agent
@@ -118,7 +127,10 @@ structured, error}`, with absent fields left out:
 - a `status: "error"` or `"timeout"` message has `error` and no `output`; a
   `"rejected"` one has `error` and keeps the answer that was turned down (or
   never ruled on in time) in `output`, and in `structured` when it parsed,
-  just as an `ok` one carries them.
+  just as an `ok` one carries them;
+- a run that stopped at its iteration limit is `status: "error"`, with
+  `error` naming the limit, and keeps its last answer in `output` (and
+  `structured`) the same way: it may be incomplete.
 
 So a second Starter reading the sink binds the answer directly:
 `binds: {answer: "$.output", verdict: "$.structured.verdict"}`. The Starter's

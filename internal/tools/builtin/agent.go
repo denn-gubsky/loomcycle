@@ -1010,6 +1010,17 @@ type residentChildResult struct {
 	Output     string `json:"output"`
 }
 
+// residentCappedResult is what a resident op returns when the child's turn
+// ended because it stopped at its iteration limit: an error, as spawn's is,
+// with the turn's answer after the message. The child has ended with it.
+func residentCappedResult(c *ChildCappedError) tools.Result {
+	msg := c.Error() + "."
+	if c.Output != "" {
+		msg = c.Error() + ". Its last answer:\n\n" + c.Output
+	}
+	return errBusiness(msg, "The child has ended and takes no more sends. Use its answer if it is enough; otherwise open a new one with a smaller step, or use an agent with a higher iteration limit.")
+}
+
 // residentResult marshals the resident-child envelope.
 func residentResult(childRunID, state, output string) (tools.Result, error) {
 	body, err := json.Marshal(residentChildResult{ChildRunID: childRunID, State: state, Output: output})
@@ -1063,6 +1074,10 @@ func (a *AgentTool) executeOpen(ctx context.Context, in agentInput) (tools.Resul
 	if errors.As(err, &lim) {
 		return liveLimitResult(err), nil
 	}
+	var capped *ChildCappedError
+	if errors.As(err, &capped) {
+		return residentCappedResult(capped), nil
+	}
 	if err != nil {
 		return errFrom(err.Error(), err), nil
 	}
@@ -1091,6 +1106,9 @@ func (a *AgentTool) executeSend(ctx context.Context, in agentInput) (tools.Resul
 		return errValidation("timeout_ms must be >= 0 (0 = block until the child parks)", ""), nil
 	}
 	output, state, err := a.SendChild(ctx, in.ChildRunID, in.Prompt, in.TimeoutMs)
+	if capped := (*ChildCappedError)(nil); errors.As(err, &capped) {
+		return residentCappedResult(capped), nil
+	}
 	if err != nil {
 		return errFrom(err.Error(), err), nil
 	}
@@ -1118,6 +1136,9 @@ func (a *AgentTool) executePoll(ctx context.Context, in agentInput) (tools.Resul
 		return errValidation("timeout_ms must be >= 0 (0 = non-blocking snapshot)", ""), nil
 	}
 	output, state, err := a.PollChild(ctx, in.ChildRunID, in.TimeoutMs)
+	if capped := (*ChildCappedError)(nil); errors.As(err, &capped) {
+		return residentCappedResult(capped), nil
+	}
 	if err != nil {
 		return errFrom(err.Error(), err), nil
 	}
@@ -1141,6 +1162,9 @@ func (a *AgentTool) executeCancel(ctx context.Context, in agentInput) (tools.Res
 		return errValidation("missing required field: child_run_id", "Pass `child_run_id`: the id op=open returned."), nil
 	}
 	output, state, err := a.CancelChild(ctx, in.ChildRunID)
+	if capped := (*ChildCappedError)(nil); errors.As(err, &capped) {
+		return residentCappedResult(capped), nil
+	}
 	if err != nil {
 		return errFrom(err.Error(), err), nil
 	}

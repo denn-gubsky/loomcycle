@@ -7050,6 +7050,11 @@ func iterationLimitOf(opts loop.RunOptions) int {
 	if opts.UnboundedIterations || (opts.Provider != nil && opts.Provider.Capabilities().UnboundedIterations) {
 		return 0
 	}
+	// An interactive run with no explicit limit is unbounded too (a resident
+	// child): the loop lifts the default for it.
+	if opts.MaxIterations == 0 && opts.Interactive && opts.SteerQueue != nil {
+		return 0
+	}
 	if opts.MaxIterations == 0 {
 		return loop.DefaultMaxIterations
 	}
@@ -7108,6 +7113,8 @@ func (h *childHold) released(status store.RunStatus) {
 //     the members that have not finished yet.
 //   - Its terminal status, by the same rule its row is written with, so the
 //     walk can tell a rejected member from a failed one.
+//   - A member that stopped at its iteration limit is an error to the walk,
+//     with its answer kept (SpawnResult.Capped); its row stays completed.
 func (s *Server) runTeamMember(ctx context.Context, name string, p teamrun.Prompt, defID string) (teamrun.SpawnResult, error) {
 	// `name` is the team definition's own: "./x" for one of the team's agents,
 	// anything else a global agent — never shadowed by a local of that name.
@@ -7147,6 +7154,13 @@ func (s *Server) runTeamMember(ctx context.Context, name string, p teamrun.Promp
 	// the walk's own result.
 	out.Output = res.FinalText
 	out.FinalText, out.Structured = res.FinalText, res.Structured
+	if res.StopReason == loop.StopReasonMaxIterations {
+		// Recorded completed, but it did not get to finish: the walk counts it
+		// as it counts a failed member, with an error naming the limit, and
+		// keeps its answer where an entry carries one.
+		out.Capped = true
+		return out, &builtin.ChildCappedError{Name: name, Limit: iterationLimitOf(prep.Opts), RunID: prep.RunID}
+	}
 	return out, nil
 }
 

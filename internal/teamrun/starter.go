@@ -408,6 +408,14 @@ func (r *agentRunner) dispatchOne(ctx context.Context, st teamgraph.State, env E
 	res.RunID = sp.RunID
 	if err != nil {
 		res.Error = err.Error()
+		if sp.Capped {
+			// It ended, at its iteration limit — it was not cut, even if the
+			// clock ran out as it did. Not a success; its sink message is an
+			// error that still carries its last answer.
+			res.Status, res.Output = MemberMaxIterations, sp.Output
+			res.answer, res.structured = sp.FinalText, sp.Structured
+			return res
+		}
 		if clk != nil && clk.timedOut() && ctx.Err() == nil {
 			// Not a failure of the agent's: it ran out of the time the
 			// definition gave it. The sink says which.
@@ -446,6 +454,11 @@ func (r *agentRunner) publishSink(ctx context.Context, st teamgraph.State, waveI
 		// rejected. Kept bare, with its structured form, as a success's is, so
 		// the same binds read it.
 		msg.Status, msg.Error = SinkRejected, res.Error
+	case res.Status == MemberMaxIterations:
+		// A failure, as an error says, but with its last answer kept bare
+		// beside it, as a rejected answer is: it may be enough, and only the
+		// downstream can judge that.
+		msg.Status, msg.Error = SinkError, res.Error
 	case !res.Ok:
 		msg.Status, msg.Output, msg.Error = SinkError, "", res.Error
 	}

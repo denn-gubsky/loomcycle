@@ -44,7 +44,9 @@ finishes is reported as not finished: `spawn` fails, saying it stopped at its
 iteration limit, with its last answer after the message; a `parallel_spawn`
 row is `ok: false` and a `poll` row `state: "failed"`, both with
 `status: "max_iterations"` and that answer still in `output`. The answer may be
-incomplete — check it before relying on it.
+incomplete — check it before relying on it. A resident child (`open`) whose
+turn runs it out of iterations is reported the same way, and a team walk
+counts such a member as failed.
 
 ## Working while children run: `mode: "poll"`
 
