@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -17,6 +18,8 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/snapshot"
 	"github.com/denn-gubsky/loomcycle/internal/steer"
 	"github.com/denn-gubsky/loomcycle/internal/store"
+	"github.com/denn-gubsky/loomcycle/internal/tools"
+	"github.com/denn-gubsky/loomcycle/internal/tools/builtin"
 )
 
 // residentFamily answers the lead from a script of functions and a child by
@@ -409,5 +412,14 @@ func TestResumePausedRuns_AResumedResidentChildCappedAtItsLimitIsAnError(t *test
 	ended := waitWalkRunStatus(t, srvB.store, childID, store.RunCompleted)
 	if ended.StopReason != loop.StopReasonMaxIterations {
 		t.Errorf("the child ended with stop reason %q, want %q", ended.StopReason, loop.StopReasonMaxIterations)
+	}
+
+	// Once the resumed child has left B's registry, a poll still reads that
+	// ending, as it does for a child that never paused.
+	waitResidentGone(t, srvB, childID)
+	caller := tools.WithRunIdentity(ctx, tools.RunIdentityValue{TenantID: child.TenantID, UserID: child.UserID})
+	var capped *builtin.ChildCappedError
+	if _, _, err := srvB.pollResidentChild(caller, childID, 0); !errors.As(err, &capped) || !strings.Contains(capped.Output, "reply to") {
+		t.Errorf("poll after the resumed child ended: %v, want the capped error with its answer", err)
 	}
 }

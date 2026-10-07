@@ -39,7 +39,9 @@ stopped.
   cancelled.
 - `missing required field: child_run_id` — pass `child_run_ids` or
   `child_run_id`.
-- `resident sub-agent "r_..." not found ...` — it was already closed.
+- `resident sub-agent "r_..." was closed ...` / `was reaped by the runtime
+  (...)` — it was already ended; there is no turn to stop. A resident child
+  whose run ended on its own answers as `poll` does, with how it ended.
 
 ## Examples
 
