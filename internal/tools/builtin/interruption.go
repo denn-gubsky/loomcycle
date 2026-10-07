@@ -268,6 +268,15 @@ func (it *Interruption) execAsk(ctx context.Context, policy tools.InterruptionPo
 		// the policy / loop wiring. Empty is fine — listing queries
 		// gracefully fall back without it.
 	}
+	// The waker is registered before the row exists. An answer can land the
+	// moment the row is created, and its Notify reaches only a waker already
+	// registered: one registered later missed it, and the ask sat until the
+	// resolve-poll backstop noticed the answer.
+	var waker chan struct{}
+	if _, viaMCP := mcpServerFromBackend(it.Backend); !viaMCP {
+		waker = it.Bus.Register("intr:" + id)
+		defer it.Bus.Unregister("intr:"+id, waker)
+	}
 	if _, err := it.Store.InterruptCreate(ctx, row); err != nil {
 		return errResult(fmt.Sprintf("ask: storage error: %s", err)), nil
 	}
@@ -326,7 +335,7 @@ func (it *Interruption) execAsk(ctx context.Context, policy tools.InterruptionPo
 
 	// Block on the bus. Heartbeat ticker fires in a sibling goroutine
 	// so the run stays alive across long waits.
-	if err := it.blockWithHeartbeat(ctx, id, timeout); err != nil {
+	if err := it.blockWithHeartbeat(ctx, id, waker, timeout); err != nil {
 		// ctx-cancelled OR timeout fired AFTER bus.Wait returned but
 		// before we could read the row. Recover the terminal status
 		// from storage; "still pending" → finalise it ourselves and
@@ -573,11 +582,14 @@ const defaultResolvePollInterval = 15 * time.Second
 // callback every HeartbeatInterval so the sweeper doesn't mark the
 // run as dead.
 //
+// waker is the bus waker for the interrupt, registered by the caller
+// before it created the row (see execAsk).
+//
 // On clean resolve, returns nil. On timeout fired BY bus.Wait
 // itself, returns a sentinel error indicating timeout; on ctx
 // cancel, returns ctx.Err(). The caller distinguishes via errors.Is
 // and calls InterruptFinish accordingly.
-func (it *Interruption) blockWithHeartbeat(ctx context.Context, interruptID string, timeout time.Duration) error {
+func (it *Interruption) blockWithHeartbeat(ctx context.Context, interruptID string, waker <-chan struct{}, timeout time.Duration) error {
 	// bus.Wait with timeout=0 returns immediately (the bus contract).
 	// For "no operator timeout" we pass a very large duration so the
 	// timeout branch never fires; ctx is still respected.
@@ -648,7 +660,15 @@ func (it *Interruption) blockWithHeartbeat(ctx context.Context, interruptID stri
 
 	endWait := providers.BeginWait(ctx) // the caller's run is parked until a person answers
 	defer endWait()                     // idempotent; closes the wait on every exit
-	woke := it.Bus.Wait(ctx, "intr:"+interruptID, waitTimeout)
+	timer := time.NewTimer(waitTimeout)
+	defer timer.Stop()
+	woke := false
+	select {
+	case <-waker:
+		woke = true
+	case <-timer.C:
+	case <-ctx.Done():
+	}
 	endWait()
 	if woke {
 		return nil

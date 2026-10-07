@@ -254,6 +254,55 @@ func TestInterruption_AskWakesOnCrossRuntimeResolve(t *testing.T) {
 	}
 }
 
+// answerOnCreateStore answers every interrupt the moment its row is created,
+// before the ask that created it has returned from the store.
+type answerOnCreateStore struct {
+	store.Store
+	bus *channels.Bus
+}
+
+func (s answerOnCreateStore) InterruptCreate(ctx context.Context, row store.InterruptRow) (string, error) {
+	id, err := s.Store.InterruptCreate(ctx, row)
+	if err != nil {
+		return id, err
+	}
+	if err := s.Store.InterruptResolve(ctx, row.InterruptID, "Yes", store.InterruptResolvedByWebUI, nil); err != nil {
+		return id, err
+	}
+	s.bus.Notify("intr:" + row.InterruptID)
+	return id, nil
+}
+
+// An answer that lands as soon as the row exists — before the ask starts
+// waiting — wakes the ask at once. The resolve-poll backstop is pushed out of
+// reach, so only the answer's own Notify can wake it.
+func TestInterruption_AskWakesOnAnAnswerThatBeatItsWait(t *testing.T) {
+	tool, ctx, _, cleanup := interruptionFixture(t)
+	defer cleanup()
+	tool.Store = answerOnCreateStore{Store: tool.Store, bus: tool.Bus}
+	tool.ResolvePollInterval = time.Hour
+
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	resCh := make(chan tools.Result, 1)
+	go func() {
+		res, _ := tool.Execute(ctx, json.RawMessage(`{"op":"ask","question":"Proceed?","timeout_ms":60000}`))
+		resCh <- res
+	}()
+
+	select {
+	case res := <-resCh:
+		var out map[string]any
+		if err := json.Unmarshal([]byte(res.Text), &out); err != nil || res.IsError || out["answer"] != "Yes" {
+			t.Fatalf("ask answered %+v, want the answer Yes", res)
+		}
+	case <-time.After(5 * time.Second):
+		cancel()
+		<-resCh
+		t.Fatal("the ask missed an answer that landed before it started waiting")
+	}
+}
+
 func TestInterruption_AskTimeout(t *testing.T) {
 	tool, ctx, _, cleanup := interruptionFixture(t)
 	defer cleanup()
