@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -30,6 +31,9 @@ type residentFamily struct {
 	script []func(providers.Request) []providers.Event
 	calls  []providers.Request
 	gate   chan struct{}
+	// atGate counts the children that reached the gate: a child there is
+	// inside its first model call, past the pause check its turn starts with.
+	atGate atomic.Int32
 	// capOn, when set, makes a child told it call a tool on every turn after
 	// it, until its iteration limit ends it (its closing turn answers).
 	capOn string
@@ -49,6 +53,7 @@ func (p *residentFamily) Call(ctx context.Context, req providers.Request) (<-cha
 	if len(req.System) > 0 && strings.Contains(req.System[0].Text, "you are a child") {
 		last := lastText(req)
 		if last == "first" && p.gate != nil {
+			p.atGate.Add(1)
 			select {
 			case <-p.gate:
 			case <-ctx.Done():
@@ -138,6 +143,10 @@ func TestResumePausedRuns_AResidentChildIsReachableByItsParentAfterTheResume(t *
 	}
 	leadID = child.ParentRunID
 
+	// Declared any earlier, the pause can find the child before its first
+	// call: it then parks at that boundary with its turn not started, and the
+	// lead, still inside its open, never reaches a boundary of its own.
+	waitFor(t, "the child to be inside its first model call", func() bool { return provA.atGate.Load() > 0 })
 	paused := make(chan error, 1)
 	go func() {
 		_, err := srvA.pauseMgr.Pause(ctx, 5*time.Second)
@@ -352,6 +361,10 @@ func TestResumePausedRuns_AResumedResidentChildCappedAtItsLimitIsAnError(t *test
 	}
 	leadID := child.ParentRunID
 
+	// Declared any earlier, the pause can find the child before its first
+	// call: it then parks at that boundary with its turn not started, and the
+	// lead, still inside its open, never reaches a boundary of its own.
+	waitFor(t, "the child to be inside its first model call", func() bool { return provA.atGate.Load() > 0 })
 	paused := make(chan error, 1)
 	go func() {
 		_, err := srvA.pauseMgr.Pause(ctx, 5*time.Second)

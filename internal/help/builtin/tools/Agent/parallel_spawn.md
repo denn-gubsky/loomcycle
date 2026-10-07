@@ -11,7 +11,8 @@ only the ones that failed.
 
 - `op` (required) — `parallel_spawn`.
 - `spawns` (required) — 1 to 32 entries, each `{name, prompt, def_id?,
-  compaction?, timeout_ms?}` with the same meaning as on `spawn`. Do not also
+  compaction?, timeout_ms?, untrusted?}` with the same meaning as on `spawn`.
+  An entry's `untrusted` text goes to that child only. Do not also
   pass a top-level `name`, `prompt` or `def_id`.
 - `timeout_ms` — the bound for every entry that has no `timeout_ms` of its
   own. A child that runs out is cancelled and reported in its row; the others

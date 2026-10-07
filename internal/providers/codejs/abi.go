@@ -38,6 +38,8 @@ package codejs
 // / Agent.* / mcp__*__* signatures, error shapes, returned types) — versioned
 // SEPARATELY from loomcycle's release vector (RFC J Decision 14) so the
 // implementation can evolve without binding to release cadence. Breaking a
-// signature → major bump + deprecation window; additive methods → minor bump.
-// Advertised on Provider.Info() and the code-agents-abi help topic.
-const ABIVersion = "1.0.0"
+// signature → major bump + deprecation window; an additive method or argument
+// → minor bump. Logged at startup and stated in the code-agents help topic.
+//
+//	1.1.0  Agent.spawn takes `untrusted`.
+const ABIVersion = "1.1.0"
