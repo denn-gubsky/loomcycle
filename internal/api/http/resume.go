@@ -91,8 +91,9 @@ import (
 //   - A run's poll-mode background children are rebuilt from its ledger
 //     (resume_background.go); a restored child that is still running is
 //     waited for wherever it runs. A child's timeout_ms is re-armed from its
-//     run: the deadline the live clock would have reached (the pause counts,
-//     its review holds do not).
+//     run: the deadline the live clock would have reached (neither its
+//     review holds nor the pauses it parked for count, the downtime before
+//     its re-dispatch included).
 //   - A RESIDENT child (Agent op=open) resumes as one — parked between sends,
 //     or finishing its turn — filed in this instance's resident registry, so
 //     its parent, resumed here with it, sends to it, polls and closes it by its
@@ -661,6 +662,12 @@ func (s *Server) resumePausedRun(run store.Run) error {
 	// Pause accounts for it and it's no longer "paused" data on disk.
 	if err := s.store.SetRunPauseState(ctx, run.ID, store.PauseStateRunning); err != nil {
 		return fmt.Errorf("set pause_state=running: %w", err)
+	}
+	// The run was paused until now — through the restart, or from the snapshot
+	// on the instance it parked on — so its pause ends here, and a parent's
+	// re-armed timeout_ms leaves the downtime out (pause_record.go).
+	if pauseOpen(runEvents) {
+		appendPauseRecord(ctx, s.store, run.ID, eventPauseEnded, struct{}{})
 	}
 	// Stamp a fresh heartbeat NOW. The restored row carries an old started_at
 	// and a NULL last_heartbeat_at; the stale-run sweeper's
@@ -1759,23 +1766,31 @@ func (s *Server) awaitChildResult(ctx context.Context, index int, name, childRun
 var errResumedChildTimedOut = errors.New("the child's timeout_ms ran out")
 
 // resumedChildClock is a re-dispatched child's timeout_ms, re-armed from its
-// run: the bound runs from the run's start, the time the run spent held for a
-// verdict (its own transcript says when each hold began and ended) is not
-// counted, and the time it spent paused IS — the deadline is the instant the
-// live clock would have reached, which a pause does not move.
+// run: the bound runs from the run's start, and neither the time the run
+// spent held for a verdict nor the time it spent paused is counted — its own
+// transcript says when each hold and each pause began and ended
+// (pause_record.go). A hold and a pause that overlap are left out once. The
+// deadline is the instant the live clock would have reached.
 type resumedChildClock struct {
-	bound     time.Duration
-	seq       int64         // the run's events read so far
-	held      time.Duration // the holds that have ended
-	heldSince time.Time     // the start of the hold still open, or zero
+	bound        time.Duration
+	seq          int64         // the run's events read so far
+	stopped      time.Duration // the holds and pauses that have ended
+	stoppedSince time.Time     // the start of the hold or pause still open, or zero
+	held, paused bool          // a hold / a pause is open
+	first        time.Time     // the run's first event: it was not paused before it
+	lastEnd      time.Time     // when the last stop ended: the clock ran since
 }
 
 // resumedChildClockPage bounds one read of a bounded child's events.
 const resumedChildClockPage = 500
 
+// stoppedClockRecheckMin is the least a stopped clock waits before it is
+// read again (nextCheck).
+const stoppedClockRecheckMin = time.Second
+
 // expired brings the clock up to date from the child's events and reports
-// whether its bound has run out: never while a hold is open. A read that
-// fails leaves the clock running on what it has read.
+// whether its bound has run out: never while a hold or a pause is open. A
+// read that fails leaves the clock running on what it has read.
 func (c *resumedChildClock) expired(ctx context.Context, st store.Store, child store.Run, now time.Time) bool {
 	if child.StartedAt.IsZero() {
 		return false
@@ -1793,32 +1808,82 @@ func (c *resumedChildClock) expired(ctx context.Context, st store.Store, child s
 			break
 		}
 	}
-	at, held := c.deadline(child.StartedAt)
-	return !held && !now.Before(at)
+	at, stopped := c.deadline(child.StartedAt)
+	return !stopped && !now.Before(at)
 }
 
 // deadline is when the bound runs out for a run started at start, and
-// whether a hold is open — the clock is stopped then, and the deadline moves
-// on by the hold's length once it ends.
+// whether a hold or a pause is open — the clock is stopped then, and the
+// deadline moves on by the stop's length once it ends.
 func (c *resumedChildClock) deadline(start time.Time) (time.Time, bool) {
-	return start.Add(c.bound + c.held), !c.heldSince.IsZero()
+	return start.Add(c.bound + c.stopped), !c.stoppedSince.IsZero()
+}
+
+// nextCheck is when the clock should next be read: its deadline while it
+// runs. While it is stopped, the earliest instant it could run out if the
+// stop ended now — the time it had left when the stop began, from now — so
+// the end of a pause, which nothing announces, is still read before the
+// deadline it moves to.
+func (c *resumedChildClock) nextCheck(start, now time.Time) time.Time {
+	at, stopped := c.deadline(start)
+	if !stopped {
+		return at
+	}
+	return now.Add(max(at.Sub(c.stoppedSince), stoppedClockRecheckMin))
 }
 
 // observe reads more of the run's events: an awaiting_review opens a hold,
-// whatever leaves it (the verdict's feedback turn, the end) closes it.
+// whatever leaves it (the verdict's feedback turn, the end) closes it; a
+// pause_began opens a pause from when the runtime paused, pause_ended closes
+// it.
 func (c *resumedChildClock) observe(events []store.Event) {
 	for _, ev := range events {
 		c.seq = max(c.seq, ev.Seq)
-		switch {
-		case ev.Type == string(providers.EventAwaitingReview):
-			if c.heldSince.IsZero() {
-				c.heldSince = ev.Timestamp
+		if c.first.IsZero() {
+			c.first = ev.Timestamp
+		}
+		wasStopped, from := c.held || c.paused, ev.Timestamp
+		switch ev.Type {
+		case string(providers.EventAwaitingReview):
+			c.held = true
+		case eventPauseBegan:
+			c.paused, from = true, c.pauseStart(ev)
+		case eventPauseEnded:
+			c.paused = false
+		default:
+			if c.held && slices.Contains(awaited.HoldEndingEvents, ev.Type) {
+				c.held = false
 			}
-		case !c.heldSince.IsZero() && slices.Contains(awaited.HoldEndingEvents, ev.Type):
-			c.held += max(ev.Timestamp.Sub(c.heldSince), 0)
-			c.heldSince = time.Time{}
+			if c.paused && slices.Contains(pauseEndingEvents, ev.Type) {
+				c.paused = false
+			}
+		}
+		switch stopped := c.held || c.paused; {
+		case stopped && !wasStopped:
+			c.stoppedSince = from
+		case !stopped && wasStopped:
+			c.stopped += max(ev.Timestamp.Sub(c.stoppedSince), 0)
+			c.stoppedSince, c.lastEnd = time.Time{}, ev.Timestamp
 		}
 	}
+}
+
+// pauseStart is when a recorded pause stopped the clock: when the runtime
+// paused, as the record says — no later than the run parked, and no earlier
+// than the run's first event or the end of the stop before it, while the
+// clock was running.
+func (c *resumedChildClock) pauseStart(ev store.Event) time.Time {
+	at := ev.Timestamp
+	var rec pauseBeganRecord
+	if json.Unmarshal(ev.Payload, &rec) == nil && !rec.Since.IsZero() && rec.Since.Before(at) {
+		at = rec.Since
+	}
+	for _, floor := range []time.Time{c.first, c.lastEnd} {
+		if at.Before(floor) {
+			at = floor
+		}
+	}
+	return at
 }
 
 // awaitChildTerminal polls a child run row until it reaches a terminal status
@@ -1847,7 +1912,9 @@ func (s *Server) awaitChildTerminal(ctx context.Context, childRunID string, clk 
 			if isTerminalRunStatus(run.Status) {
 				return run, nil
 			}
-			if clk != nil && clk.expired(ctx, s.store, run, time.Now()) {
+			// Nothing is cut while the runtime is paused: a child that
+			// recorded no pause is counted, but only once it runs again.
+			if clk != nil && !s.runtimePaused() && clk.expired(ctx, s.store, run, time.Now()) {
 				return run, errResumedChildTimedOut
 			}
 			// Re-parked by a concurrent pause → don't penalize parked time.

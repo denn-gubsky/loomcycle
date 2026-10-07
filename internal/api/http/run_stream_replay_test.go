@@ -73,4 +73,10 @@ func TestRunEventToFrame_KeepsStoreOnlyRecordsOffTheStream(t *testing.T) {
 	if _, ok := runEventToFrame(store.Event{Type: string(providers.EventPromptSnapshot), Payload: payload}); ok {
 		t.Error("a prompt_snapshot row became a stream frame")
 	}
+	// A run's pause rows are written straight to the store, never emitted.
+	for _, typ := range []string{"pause_began", "pause_ended"} {
+		if _, ok := runEventToFrame(store.Event{Type: typ, Payload: json.RawMessage(`{"since":"2026-10-07T12:00:00Z"}`)}); ok {
+			t.Errorf("a %s row became a stream frame", typ)
+		}
+	}
 }

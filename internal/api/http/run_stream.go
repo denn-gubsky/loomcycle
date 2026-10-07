@@ -35,7 +35,7 @@ const runStreamPollInterval = 250 * time.Millisecond
 //     against its optimistic echo (web/src/hooks/useRunStream.ts).
 func runEventToFrame(ev store.Event) (providers.Event, bool) {
 	switch ev.Type {
-	case "system_prompt", string(providers.EventPromptSnapshot):
+	case "system_prompt", string(providers.EventPromptSnapshot), eventPauseBegan, eventPauseEnded:
 		// Store-only records: the live emitter persists them and never
 		// forwards them, so a replay must not either.
 		return providers.Event{}, false

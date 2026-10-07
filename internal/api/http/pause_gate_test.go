@@ -21,12 +21,17 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/tools"
 )
 
-// failSetPauseStore fails every SetRunPauseState write (simulating a store
-// outage during pause). Embeds store.Store so it satisfies the interface; only
-// SetRunPauseState is exercised by the gate, so the nil embed is never reached.
+// failSetPauseStore fails every SetRunPauseState write and every pause record
+// (simulating a store outage during pause). Embeds store.Store so it satisfies
+// the interface; only those two writes are exercised by the gate, so the nil
+// embed is never reached.
 type failSetPauseStore struct{ store.Store }
 
 func (failSetPauseStore) SetRunPauseState(context.Context, string, string) error {
+	return errors.New("store down")
+}
+
+func (failSetPauseStore) AppendEvent(context.Context, string, string, []byte) error {
 	return errors.New("store down")
 }
 

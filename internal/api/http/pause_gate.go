@@ -71,6 +71,7 @@ func (g *pauseGate) Park(ctx context.Context) error {
 	// snapshot taken at the barrier carries it to wherever the run resumes.
 	defer providers.BeginPause(ctx)()
 	g.recordClock(ctx)
+	g.recordPause(ctx)
 	// Persist 'paused' to the store BEFORE marking the run parked in the
 	// barrier: Pause() only treats a run as quiesced once MarkParked fires, so
 	// this ordering guarantees finalizePause / snapshot (which read the store)
@@ -89,6 +90,7 @@ func (g *pauseGate) Park(ctx context.Context) error {
 	}
 	defer func() {
 		g.mgr.EndPark(g.runID)
+		appendPauseRecord(ctx, g.store, g.runID, eventPauseEnded, struct{}{})
 		// Resume() also bulk-flips paused→running (covers restored/orphaned
 		// runs with no live loop); this per-run flip is idempotent with it.
 		_ = g.setPauseState(context.Background(), store.PauseStateRunning)
@@ -139,6 +141,7 @@ func (g *pauseGate) PauseIdle(ctx context.Context) (<-chan struct{}, func(), boo
 	}
 	endPause := providers.BeginPause(ctx)
 	g.recordClock(ctx)
+	g.recordPause(ctx)
 	if err := g.setPauseState(context.Background(), store.PauseStatePaused); err != nil {
 		log.Printf("pause: persist paused for waiting run %s failed: %v — no barrier credit", g.runID, err)
 	} else {
@@ -148,10 +151,22 @@ func (g *pauseGate) PauseIdle(ctx context.Context) (<-chan struct{}, func(), boo
 	return resume, func() {
 		once.Do(func() {
 			g.mgr.EndPark(g.runID)
+			appendPauseRecord(ctx, g.store, g.runID, eventPauseEnded, struct{}{})
 			_ = g.setPauseState(context.Background(), store.PauseStateRunning)
 			endPause()
 		})
 	}, true
+}
+
+// recordPause records on the run's transcript that it parked for the pause
+// that began at the manager's PausedSince (pause_record.go), before the
+// barrier is credited.
+func (g *pauseGate) recordPause(ctx context.Context) {
+	since := g.mgr.PausedSince()
+	if since.IsZero() {
+		since = time.Now()
+	}
+	appendPauseRecord(ctx, g.store, g.runID, eventPauseBegan, pauseBeganRecord{Since: since})
 }
 
 // setPauseState writes runs.pause_state under a bounded, non-cancellable ctx so

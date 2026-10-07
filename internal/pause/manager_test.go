@@ -279,3 +279,35 @@ func TestManager_PauseWatchSignalsThePauseAndTheResume(t *testing.T) {
 		t.Errorf("nil Manager.PauseWatch() = %v, %v; want never paused, never changing", paused, changed)
 	}
 }
+
+// PausedSince is when the operator paused — before the barrier wait — and is
+// cleared by the resume.
+func TestManager_PausedSinceIsWhenThePauseBegan(t *testing.T) {
+	m, _, cleanup := newTestManager(t)
+	defer cleanup()
+	if !m.PausedSince().IsZero() {
+		t.Fatal("a running manager reports a pause start")
+	}
+	before := time.Now()
+	if _, err := m.Pause(context.Background(), 10*time.Millisecond); err != nil {
+		t.Fatalf("Pause: %v", err)
+	}
+	after := time.Now()
+	if since := m.PausedSince(); since.Before(before) || since.After(after) {
+		t.Errorf("PausedSince = %v, want within the Pause call [%v, %v]", since, before, after)
+	}
+	if _, err := m.Resume(context.Background()); err != nil {
+		t.Fatalf("Resume: %v", err)
+	}
+	if !m.PausedSince().IsZero() {
+		t.Error("the pause start outlived the resume")
+	}
+	m.applyRemotePause()
+	if m.PausedSince().IsZero() {
+		t.Error("a cluster pause applied here records no start")
+	}
+	m.applyRemoteResume()
+	if !m.PausedSince().IsZero() {
+		t.Error("the cluster pause's start outlived its resume")
+	}
+}
