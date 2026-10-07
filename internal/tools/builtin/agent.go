@@ -301,7 +301,7 @@ type childTimeout struct{ ms int }
 func (e childTimeout) Error() string { return e.reason() }
 func (e childTimeout) Unwrap() error { return runcancel.CauseWithReason(e.reason()) }
 func (e childTimeout) reason() string {
-	return fmt.Sprintf("timed out: timeout_ms=%d elapsed (time held for review not counted)", e.ms)
+	return fmt.Sprintf("timed out: timeout_ms=%d elapsed (time held for review or paused not counted)", e.ms)
 }
 
 // ChildTimeoutCause is the cancel cause of a child whose timeout_ms ran out,
@@ -311,7 +311,7 @@ func ChildTimeoutCause(timeoutMs int) error { return childTimeout{ms: timeoutMs}
 // ChildTimedOutMessage is what the caller is told about a child its
 // timeout_ms stopped.
 func ChildTimedOutMessage(name string, timeoutMs int, runID string) string {
-	msg := fmt.Sprintf("sub-agent %q timed out: timeout_ms=%d elapsed (time held for review not counted)", name, timeoutMs)
+	msg := fmt.Sprintf("sub-agent %q timed out: timeout_ms=%d elapsed (time held for review or paused not counted)", name, timeoutMs)
 	if runID != "" {
 		msg += fmt.Sprintf("; its run %s was cancelled", runID)
 	}
@@ -516,7 +516,7 @@ const agentInputSchema = `{
     },
     "idle_ttl_seconds": {"type": "integer", "description": "open (optional): reap the child after this many seconds unused — no send, poll or cancel, and no turn running (0 = operator default). You own the child's lifecycle — close it when done."},
     "child_run_id": {"type": "string", "description": "send / close (required), and poll / cancel of one resident child: the child_run_id op=open returned."},
-    "timeout_ms": {"type": "integer", "description": "Optional. spawn / parallel_spawn: bound the child's run (for parallel_spawn, the default for every entry without its own); when it runs out the child is cancelled and reported as timed out. 0 (default) waits however long it runs. Time a child is held for review does not count. open and send: 0 (default) blocks until the child finishes its turn and parks; >0 returns early with state \"running\" and the partial output (open still returns the child_run_id) — then poll to await it or cancel to interrupt. poll: 0 (default) is a non-blocking snapshot; >0 waits up to this long for the child to park."}
+    "timeout_ms": {"type": "integer", "description": "Optional. spawn / parallel_spawn: bound the child's run (for parallel_spawn, the default for every entry without its own); when it runs out the child is cancelled and reported as timed out. 0 (default) waits however long it runs. Time a child is held for review, or the runtime is paused, does not count. open and send: 0 (default) blocks until the child finishes its turn and parks; >0 returns early with state \"running\" and the partial output (open still returns the child_run_id) — then poll to await it or cancel to interrupt. poll: 0 (default) is a non-blocking snapshot; >0 waits up to this long for the child to park."}
   }
 }`
 

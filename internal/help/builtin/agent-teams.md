@@ -33,6 +33,8 @@ research, …).
   - Time a run spends held for a review verdict does not count. A starter run's
     clock stops while it is held; a handler-wide clock stops while every run in
     flight is held.
+  - Time the runtime is paused does not count either: every clock stops from
+    the operator's pause to the resume, whatever its runs are doing.
 - **A state's prompts.** On `agent`, `parallel` and `consolidator` states,
   `system_prompt` adds this state's role to the agent's own system prompt and
   `input_template` is the user prompt. With no `input_template` the agent

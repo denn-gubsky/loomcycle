@@ -19,7 +19,8 @@ conversation — so put all it needs in it.
   `autocompact_at_pct` (50–95), `model`.
 - `timeout_ms` — bound the child's run. When it runs out the child is
   cancelled (with everything it started) and the call fails naming the
-  timeout. Time the child is held for review does not count. Absent or 0 =
+  timeout. Time the child is held for review, or the runtime is paused,
+  does not count. Absent or 0 =
   wait however long it runs. The operator may set a ceiling; a larger value
   is refused with the ceiling in the message.
 - `mode` — `wait` (default): the call returns the child's answer. `poll`: the

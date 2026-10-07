@@ -33,9 +33,11 @@ long as it runs. Pass `timeout_ms` to bound it — on `spawn`, or on
 runs out the child is cancelled, with everything it started; `spawn` fails
 naming the timeout, and a `parallel_spawn` row reports `ok: false`,
 `status: "timeout"` and the child's `run_id`. Time a child is held for review
-does not count, and a `parallel_spawn` child's clock starts when it gets a
-slot. The operator may cap `timeout_ms` (`LOOMCYCLE_AGENT_CHILD_MAX_TIMEOUT_MS`);
-a larger value is refused, naming the cap.
+does not count, nor does time the runtime is paused — from the operator's
+pause to the resume, whatever the child is doing meanwhile — and a
+`parallel_spawn` child's clock starts when it gets a slot. The operator may
+cap `timeout_ms` (`LOOMCYCLE_AGENT_CHILD_MAX_TIMEOUT_MS`); a larger value is
+refused, naming the cap.
 
 A child that uses every iteration its `max_iterations` allows before it
 finishes is reported as not finished: `spawn` fails, saying it stopped at its
@@ -86,9 +88,10 @@ yours with its own transcript, and it is cancelled if your run is.
   told of is not reported again, and a run that was waiting for its children
   goes on waiting and is woken once, when the last has ended. A child still
   running elsewhere is read from its run when it ends. A child's `timeout_ms`
-  carries over: it still runs out when it would have — the time the pause
-  lasted counts, time the child spent held for review does not — and a child
-  already past it when your run comes back reads `timeout` at once. A child
+  carries over: it still runs out when it would have — neither time the
+  child spent held for review nor the pauses it was parked for count, the
+  downtime before a restored child runs again included — and a child already
+  past it when your run comes back reads `timeout` at once. A child
   that had not started when your run paused, or whose run
   did not come along with yours, reads `failed` — start it again if you need
   it.

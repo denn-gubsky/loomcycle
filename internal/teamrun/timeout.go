@@ -49,10 +49,10 @@ type TimeoutError struct {
 
 func (e *TimeoutError) Error() string {
 	if e.Agent != "" {
-		return fmt.Sprintf("agent %q in state %q timed out: timeout_ms=%d elapsed (time held for review not counted)",
+		return fmt.Sprintf("agent %q in state %q timed out: timeout_ms=%d elapsed (time held for review or paused not counted)",
 			e.Agent, e.State, e.TimeoutMS)
 	}
-	return fmt.Sprintf("state %q timed out: timeout_ms=%d elapsed (time held for review not counted)",
+	return fmt.Sprintf("state %q timed out: timeout_ms=%d elapsed (time held for review or paused not counted)",
 		e.State, e.TimeoutMS)
 }
 
