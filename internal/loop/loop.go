@@ -4249,7 +4249,13 @@ func executePendingTools(
 				}}
 				return
 			}
-			r := dispatchOneTool(ctx, dispatcher, tu, hookDispatcher, hookIdent, emit)
+			// The call is work for a run on a time budget: a wait beside it
+			// must not stop the clock while it runs. Its own waits, made under
+			// callCtx, do. After the slot, so queueing for one is not work.
+			callCtx, endWork := providers.BeginWork(ctx)
+			defer endWork() // idempotent; also on a panic
+			r := dispatchOneTool(callCtx, dispatcher, tu, hookDispatcher, hookIdent, emit)
+			endWork()
 			resCh <- result{idx: i, tu: tu, res: r}
 		}(i, tu)
 	}

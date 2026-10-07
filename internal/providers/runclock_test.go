@@ -128,3 +128,146 @@ func TestRunClock_WallCountsWaitsButNotRuntimePauses(t *testing.T) {
 		t.Errorf("active = %s waited = %s, want 3s and 106s (the pause is a wait for the budget)", got.Active, got.Waited)
 	}
 }
+
+// A wait beside a call that is working does not stop the clock: the working
+// call is charged for as long as it runs, and only the stretch where the wait
+// is the sole thing in flight counts as waited.
+func TestRunClock_WaitBesideAWorkingCallChargesTheWork(t *testing.T) {
+	c, f := newTestClock(RunClockState{})
+	ctx := WithRunClock(context.Background(), c)
+	waitCtx, endWaiter := BeginWork(ctx) // e.g. a channel await
+	_, endWorker := BeginWork(ctx)       // e.g. a Bash command, beside it
+	endWait := BeginWait(waitCtx)
+	f.advance(300 * time.Millisecond) // both in flight
+	endWorker()
+	f.advance(200 * time.Millisecond) // only the wait left
+	endWait()
+	endWaiter()
+	if got := c.State(); got.Active != 300*time.Millisecond || got.Waited != 200*time.Millisecond {
+		t.Fatalf("state = %+v, want active 300ms (the working call) waited 200ms", got)
+	}
+}
+
+// Calls that are all waiting stop the clock, and overlapping waits count once.
+func TestRunClock_ConcurrentWaitingCallsCountOnce(t *testing.T) {
+	c, f := newTestClock(RunClockState{})
+	ctx := WithRunClock(context.Background(), c)
+	aCtx, endA := BeginWork(ctx)
+	bCtx, endB := BeginWork(ctx)
+	endWaitA := BeginWait(aCtx)
+	endWaitB := BeginWait(bCtx)
+	f.advance(300 * time.Millisecond)
+	endWaitA()
+	endA()
+	f.advance(100 * time.Millisecond) // B still waiting
+	endWaitB()
+	endB()
+	if got := c.State(); got.Active != 0 || got.Waited != 400*time.Millisecond {
+		t.Fatalf("state = %+v, want active 0 waited 400ms", got)
+	}
+}
+
+func TestRunClock_ASingleWaitingCallChargesNothing(t *testing.T) {
+	c, f := newTestClock(RunClockState{})
+	callCtx, endCall := BeginWork(WithRunClock(context.Background(), c))
+	endWait := BeginWait(callCtx)
+	f.advance(300 * time.Millisecond)
+	endWait()
+	endCall()
+	if got := c.State(); got.Active != 0 || got.Waited != 300*time.Millisecond {
+		t.Fatalf("state = %+v, want active 0 waited 300ms", got)
+	}
+}
+
+// A call that waits for part of its run is charged for the rest, even with
+// another call waiting the whole time beside it.
+func TestRunClock_ACallIsChargedOnlyForItsNonWaitPart(t *testing.T) {
+	c, f := newTestClock(RunClockState{})
+	ctx := WithRunClock(context.Background(), c)
+	otherCtx, endOther := BeginWork(ctx)
+	endOtherWait := BeginWait(otherCtx) // waits throughout
+	callCtx, endCall := BeginWork(ctx)
+	f.advance(200 * time.Millisecond) // the call works
+	endWait := BeginWait(callCtx)
+	f.advance(300 * time.Millisecond) // the call waits
+	endWait()
+	f.advance(100 * time.Millisecond) // the call works again
+	endCall()
+	endOtherWait()
+	endOther()
+	if got := c.State(); got.Active != 300*time.Millisecond || got.Waited != 300*time.Millisecond {
+		t.Fatalf("state = %+v, want active 300ms (200+100 of work) waited 300ms", got)
+	}
+}
+
+// A wait inside a wait of the same call (a team walk asking a question)
+// suspends the call's work once and hands it back once.
+func TestRunClock_NestedWaitsInOneCallSuspendItsWorkOnce(t *testing.T) {
+	c, f := newTestClock(RunClockState{})
+	callCtx, endCall := BeginWork(WithRunClock(context.Background(), c))
+	endOuter := BeginWait(callCtx)
+	endInner := BeginWait(callCtx)
+	f.advance(time.Second)
+	endInner()
+	f.advance(time.Second) // still inside the outer wait
+	endOuter()
+	f.advance(time.Second) // working
+	endCall()
+	if got := c.State(); got.Active != time.Second || got.Waited != 2*time.Second {
+		t.Fatalf("state = %+v, want active 1s waited 2s", got)
+	}
+	endWait := c.BeginWait() // the call's work is gone: a later wait stops the clock
+	f.advance(time.Second)
+	endWait()
+	if got := c.State(); got.Waited != 3*time.Second {
+		t.Fatalf("waited = %s after the call ended, want 3s — its work outlived it", got.Waited)
+	}
+}
+
+// A wait left open past its call's end (in a goroutine that outlived it) must
+// not hand the call's work back when it closes.
+func TestRunClock_AWaitOutlivingItsCallLeavesNoWork(t *testing.T) {
+	c, f := newTestClock(RunClockState{})
+	callCtx, endCall := BeginWork(WithRunClock(context.Background(), c))
+	endWait := BeginWait(callCtx)
+	endCall()
+	f.advance(time.Second)
+	endWait()
+	endWait2 := c.BeginWait()
+	f.advance(time.Second)
+	endWait2()
+	if got := c.State(); got.Active != 0 || got.Waited != 2*time.Second {
+		t.Fatalf("state = %+v, want active 0 waited 2s — the ended call still counted as work", got)
+	}
+}
+
+// A sub-run's ctx descends from its parent's tool call. A wait on the sub-run's
+// own clock is a plain wait there, and must not suspend the parent call's work.
+func TestBeginWait_AnotherRunsCallIsNotSuspended(t *testing.T) {
+	parent, f := newTestClock(RunClockState{})
+	ctx := WithRunClock(context.Background(), parent)
+	callCtx, endCall := BeginWork(ctx)
+	child := NewRunClock(f.t, RunClockState{})
+	child.now = f.now
+	endChildWait := BeginWait(WithRunClock(callCtx, child))
+	endParentWait := BeginWait(ctx) // another wait of the parent, beside the call
+	f.advance(time.Second)
+	endParentWait()
+	endChildWait()
+	endCall()
+	if got := parent.State(); got.Active != time.Second || got.Waited != 0 {
+		t.Fatalf("parent state = %+v, want active 1s — the child's wait suspended the parent's call", got)
+	}
+	if got := child.State(); got.Active != 0 || got.Waited != time.Second {
+		t.Fatalf("child state = %+v, want waited 1s — the parent's call mark leaked into the child's clock", got)
+	}
+}
+
+func TestBeginWork_NoClockIsANoOp(t *testing.T) {
+	ctx := context.Background()
+	got, end := BeginWork(ctx)
+	end()
+	if got != ctx {
+		t.Fatal("BeginWork without a clock must return ctx unchanged")
+	}
+}

@@ -16,8 +16,17 @@ import (
 // A wait site brackets ONLY its blocking part with BeginWait(ctx) — never the
 // validation or admission before it. Waits may overlap (a team walk asking a
 // question inside its own wait, two tool calls blocking at once): the clock
-// counts wall time during which AT LEAST ONE wait is open, so overlapping
-// waits are counted once.
+// counts wall time during which AT LEAST ONE wait is open (and nothing works
+// beside it, below), so overlapping waits are counted once.
+//
+// A wait only stops the clock while nothing else of the run is working. The
+// loop runs a turn's tool calls side by side and marks each one as work
+// (BeginWork); a call's own wait suspends that call's work for as long as it
+// blocks. So time is waited only while at least one wait is open AND no call
+// is working outside a wait: a wait beside a working call (a channel await
+// next to a Bash command) does not let the working call run free. The model's
+// turn is not marked: it never overlaps a tool call, and with no wait open its
+// time is active anyway.
 //
 // Because waits do not count, the budget alone cannot bound a run that does
 // little but wait. The clock therefore also measures the run's WALL time — its
@@ -35,8 +44,9 @@ type RunClock struct {
 	start  time.Time
 	prior  RunClockState // carried over from before a resume
 	open   int           // waits in progress
-	openAt time.Time     // when open last went 0 → 1
-	waited time.Duration // closed wait time since start
+	work   int           // tool calls working outside a wait
+	mark   time.Time     // when open or work last changed
+	waited time.Duration // waited time since start, up to mark
 
 	paused   int           // runtime pauses in progress (each also a wait)
 	pausedAt time.Time     // when paused last went 0 → 1
@@ -62,27 +72,88 @@ func NewRunClock(start time.Time, prior RunClockState) *RunClock {
 	return &RunClock{now: time.Now, start: start, prior: prior}
 }
 
+// waiting reports whether the run is waiting right now: a wait is open and no
+// call is working outside one. Called with mu held.
+func (c *RunClock) waiting() bool { return c.open > 0 && c.work == 0 }
+
+// settle closes the span since mark, as waited time if the run was waiting
+// through it, before open or work changes. Called with mu held.
+func (c *RunClock) settle() {
+	now := c.now()
+	if c.waiting() {
+		c.waited += now.Sub(c.mark)
+	}
+	c.mark = now
+}
+
 // BeginWait marks the start of a wait and returns the func that ends it. The
 // end func is idempotent, so `defer end()` beside an early explicit end() is
-// safe.
+// safe. A wait made inside a call marked by BeginWork goes through the
+// package-level BeginWait(ctx), which also suspends that call's work.
 func (c *RunClock) BeginWait() (end func()) {
+	return c.beginWait(nil)
+}
+
+// beginWait opens a wait on behalf of w's call (nil: of no call). The call's
+// work is suspended while at least one of its waits is open.
+func (c *RunClock) beginWait(w *workMark) (end func()) {
 	if c == nil {
 		return func() {}
 	}
 	c.mu.Lock()
-	if c.open == 0 {
-		c.openAt = c.now()
-	}
+	c.settle()
 	c.open++
+	if w != nil {
+		if w.waits == 0 && !w.ended {
+			c.work--
+		}
+		w.waits++
+	}
 	c.mu.Unlock()
 	var once sync.Once
 	return func() {
 		once.Do(func() {
 			c.mu.Lock()
+			c.settle()
 			c.open--
-			if c.open == 0 {
-				c.waited += c.now().Sub(c.openAt)
+			if w != nil {
+				w.waits--
+				if w.waits == 0 && !w.ended {
+					c.work++
+				}
 			}
+			c.mu.Unlock()
+		})
+	}
+}
+
+// workMark is one call marked by BeginWork. Its fields are guarded by the
+// clock's mu.
+type workMark struct {
+	c     *RunClock
+	waits int  // the call's own waits in progress; its work is suspended while > 0
+	ended bool // the call returned
+}
+
+// beginWork marks the start of a call's work and returns its mark and the func
+// that ends it (idempotent).
+func (c *RunClock) beginWork() (*workMark, func()) {
+	w := &workMark{c: c}
+	c.mu.Lock()
+	c.settle()
+	c.work++
+	c.mu.Unlock()
+	var once sync.Once
+	return w, func() {
+		once.Do(func() {
+			c.mu.Lock()
+			c.settle()
+			if w.waits == 0 {
+				c.work--
+			}
+			// A wait the call left open (in a goroutine that outlived it) no
+			// longer hands work back when it ends.
+			w.ended = true
 			c.mu.Unlock()
 		})
 	}
@@ -127,8 +198,8 @@ func (c *RunClock) State() RunClockState {
 	defer c.mu.Unlock()
 	now := c.now()
 	waited := c.waited
-	if c.open > 0 {
-		waited += now.Sub(c.openAt)
+	if c.waiting() {
+		waited += now.Sub(c.mark)
 	}
 	pausedT := c.pausedT
 	if c.paused > 0 {
@@ -190,6 +261,8 @@ func (c *RunClock) WallLimit() time.Duration {
 
 type ctxKeyRunClock struct{}
 
+type ctxKeyWorkMark struct{}
+
 // WithRunClock returns ctx carrying c. A nil c is stamped too, deliberately: a
 // sub-run's ctx descends from its parent's, and a run without a clock of its
 // own must not spend — or pause — its parent's.
@@ -210,8 +283,34 @@ func RunClockFromContext(ctx context.Context) *RunClock {
 //	endWait := providers.BeginWait(ctx)
 //	wg.Wait()
 //	endWait()
+//
+// When ctx is a tool call's (BeginWork), the call is taken to be blocked on
+// this wait, so its work is suspended until the wait ends. A wait whose ctx has
+// lost the call's mark is still a wait, but the call keeps counting as work:
+// the run is charged, never let off.
 func BeginWait(ctx context.Context) (end func()) {
-	return RunClockFromContext(ctx).BeginWait()
+	c := RunClockFromContext(ctx)
+	w, _ := ctx.Value(ctxKeyWorkMark{}).(*workMark)
+	if w == nil || w.c != c {
+		// No call, or a call of another run (a sub-run's ctx descends from
+		// its parent's tool call).
+		w = nil
+	}
+	return c.beginWait(w)
+}
+
+// BeginWork marks one tool call of the run that ctx belongs to as working, and
+// returns the ctx to run the call under and the func that ends it (idempotent)
+// — ctx itself and a no-op when the run has no clock. While the call works, the
+// run's other waits do not stop its clock; a wait the call itself makes, under
+// the returned ctx, does (see BeginWait).
+func BeginWork(ctx context.Context) (context.Context, func()) {
+	c := RunClockFromContext(ctx)
+	if c == nil {
+		return ctx, func() {}
+	}
+	w, end := c.beginWork()
+	return context.WithValue(ctx, ctxKeyWorkMark{}, w), end
 }
 
 // BeginPause is BeginWait for a runtime pause (see RunClock.BeginPause).
