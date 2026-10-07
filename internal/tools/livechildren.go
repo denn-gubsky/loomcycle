@@ -66,6 +66,28 @@ func (l *LiveChildren) Admit(runID string, n int) ([]func(), error) {
 	return releases, nil
 }
 
+// Hold counts n children of runID that are alive already — a resumed run's
+// children, admitted when they started — whatever the limit: they cannot be
+// refused, only counted, so that the run's next spawn sees them. It returns n
+// release funcs, as Admit does.
+func (l *LiveChildren) Hold(runID string, n int) []func() {
+	releases := make([]func(), n)
+	if l == nil || runID == "" || n <= 0 {
+		for i := range releases {
+			releases[i] = func() {}
+		}
+		return releases
+	}
+	l.mu.Lock()
+	l.alive[runID] += n
+	l.mu.Unlock()
+	for i := range releases {
+		var once sync.Once
+		releases[i] = func() { once.Do(func() { l.release(runID) }) }
+	}
+	return releases
+}
+
 func (l *LiveChildren) release(runID string) {
 	l.mu.Lock()
 	defer l.mu.Unlock()

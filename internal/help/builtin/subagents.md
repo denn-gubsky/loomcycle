@@ -70,6 +70,19 @@ yours with its own transcript, and it is cancelled if your run is.
   `on_parent_end` and last-iteration rule. Read it with `TeamDef op=poll`, or
   with `Agent` `poll` / `cancel` by its run id. See
   `help(topic="agent-teams")`.
+- **What survives a restart.** Background children are ordinary runs, and
+  your run records each one it starts, how each ended, which results you have
+  read and which endings you were told of. If your run is paused and resumed —
+  on the same instance, after a restart, or restored from a snapshot on
+  another one — `poll` and `cancel` still know your children, a result you
+  already read is not handed over by a bare `poll` again, an ending you were
+  told of is not reported again, and a run that was waiting for its children
+  goes on waiting and is woken once, when the last has ended. A child still
+  running elsewhere is read from its run when it ends. A child's `timeout_ms`
+  does not carry over a resume: its clock was kept by your run before it
+  paused. A child that had not started when your run paused, or whose run
+  did not come along with yours, reads `failed` — start it again if you need
+  it.
 
 ## `Agent` (in-loop) vs `spawn_run` (MCP surface)
 

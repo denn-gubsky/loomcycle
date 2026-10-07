@@ -170,6 +170,10 @@ type Server struct {
 	// walkHeartbeatEvery overrides how often a live walk's run is heartbeated;
 	// zero means the loop's own interval. Tests set it.
 	walkHeartbeatEvery time.Duration
+	// childRecheckFirst overrides the first wait between reads of a restored
+	// background child's run row (resume_background.go); zero means the
+	// default. Tests set it.
+	childRecheckFirst time.Duration
 	// walkClock is the time a walk's own schedules run on, and its own
 	// webhooks' leases; nil is the wall clock. Tests set it.
 	walkClock walkClock
@@ -6171,6 +6175,20 @@ func replayTranscript(events []store.Event) []providers.Message {
 			pendingToolResults = nil
 			asstReasoning = ""
 			asstReasoningSignature = ""
+		case string(providers.EventChildrenNote):
+			// The runtime's note about background children reached the model
+			// as a user turn (loop.appendChildrenNote), and this row is the only
+			// record of it. Without it a resumed run lost every note: its
+			// conversation skipped from the answer before a note to the answer
+			// after it, and a run paused between a wake note and its next call
+			// looked idle instead of owing that call.
+			var pe providers.Event
+			if err := json.Unmarshal(ev.Payload, &pe); err != nil || pe.ChildrenNote == nil || pe.ChildrenNote.Text == "" {
+				continue
+			}
+			flushAssistant()
+			flushPendingTools()
+			messages = append(messages, providers.Message{Role: "user", Content: []providers.ContentBlock{{Type: "text", Text: pe.ChildrenNote.Text}}})
 		case string(providers.EventHookDecision):
 			// Two hook decisions put text into the conversation, and each one's
 			// event is the only record of it: an agent_stop block sent the model
@@ -6522,7 +6540,16 @@ func (s *Server) makeRecordingEmit(ctx context.Context, runID string, rid tools.
 			}
 			return
 		}
-		if ev.Type == providers.EventSpawnChildStarted || ev.Type == providers.EventSpawnChildResult {
+		if ev.Type == providers.EventSpawnChildStarted || ev.Type == providers.EventSpawnChildResult || ev.Type == providers.EventSpawnChildRead {
+			// A poll-mode child's result row holds what the parent is handed —
+			// the copy a tool_result row would hold — so it is masked as that
+			// row is. The live table keeps its own copy.
+			if sc := ev.SpawnChild; sc != nil && sc.Mode == "poll" && ev.Type == providers.EventSpawnChildResult && s.redactor.Enabled() {
+				masked := *sc
+				masked.Output, masked.Error = s.redactor.String(sc.Output), s.redactor.String(sc.Error)
+				masked.State, masked.Detail = redactJSONMap(s.redactor, sc.State), redactJSONMap(s.redactor, sc.Detail)
+				ev.SpawnChild = &masked
+			}
 			payload, err := json.Marshal(ev)
 			if err == nil {
 				if err := s.store.AppendEvent(ctx, runID, string(ev.Type), payload); err != nil {

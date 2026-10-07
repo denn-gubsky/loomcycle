@@ -154,6 +154,28 @@ func mkEvent(typ string, payload any) store.Event {
 	return store.Event{Type: typ, Payload: b}
 }
 
+// A note about background children reached the model as a user turn, after
+// the tool results it followed, so a resumed run's replayed conversation has
+// it there too — and ends on it when the run paused between the note and the
+// call that answers it, which is a turn the run still owes.
+func TestReplayTranscript_ChildrenNoteIsAUserTurn(t *testing.T) {
+	events := []store.Event{
+		mkEvent("text", providers.Event{Type: providers.EventText, Text: "started them"}),
+		mkEvent("done", providers.Event{Type: providers.EventDone, StopReason: "end_turn"}),
+		mkEvent(string(providers.EventAwaitingChildren), providers.Event{Type: providers.EventAwaitingChildren,
+			AwaitingChildren: &providers.AwaitingChildrenEventInfo{ChildRunIDs: []string{"r_1"}}}),
+		mkEvent(string(providers.EventChildrenNote), providers.Event{Type: providers.EventChildrenNote,
+			ChildrenNote: &providers.ChildrenNoteEventInfo{Text: "Every background child you were waiting for has ended", ChildRunIDs: []string{"r_1"}}}),
+	}
+	msgs := replayTranscript(events)
+	if len(msgs) != 2 || msgs[1].Role != "user" || msgs[1].Content[0].Text != "Every background child you were waiting for has ended" {
+		t.Fatalf("replayed = %+v, want the answer then the note as a user turn", msgs)
+	}
+	if !endsWithPendingTurn(msgs) {
+		t.Error("a run paused after its wake note does not owe the next call")
+	}
+}
+
 // TestDetectFanoutParent covers the detection predicate: flag-gated, and keyed
 // on "a tool_use with a spawn_child_started ledger AND no tool_result".
 func TestDetectFanoutParent(t *testing.T) {

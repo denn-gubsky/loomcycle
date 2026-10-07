@@ -246,6 +246,36 @@ func TestAgentPoll_WaitAnyUnreadOnceAndIdempotentByID(t *testing.T) {
 	g.open("slow")
 }
 
+// wait "any" returns at once when one of the children it names has already
+// ended unread: its condition holds. It used to count only the children still
+// running when the poll began, and so blocked for the next one to end — up to
+// wait_ms — with a result already in hand.
+func TestAgentPoll_WaitAnyReturnsAtOnceWhenOneHasAlreadyEnded(t *testing.T) {
+	g := newGated("fast", "slow")
+	a := pollTool(g)
+	ctx, bg := pollCtx()
+	batch := decodeBatch(t, execJSON(t, a, ctx, `{"op":"parallel_spawn","mode":"poll","spawns":[{"name":"w","prompt":"fast"},{"name":"w","prompt":"slow"}]}`))
+	defer g.open("slow")
+	g.open("fast")
+	fast := batch.Children[0].ChildRunID
+	for deadline := time.Now().Add(5 * time.Second); ; time.Sleep(5 * time.Millisecond) {
+		if v, _ := bg.Lookup(fast); v.Ended() {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the fast child never ended")
+		}
+	}
+	start := time.Now()
+	p := decodePoll(t, execJSON(t, a, ctx, `{"op":"poll","wait":"any","wait_ms":5000}`))
+	if took := time.Since(start); took > 2*time.Second {
+		t.Fatalf("wait any took %s with a child already ended", took)
+	}
+	if p.Pending != 1 || p.Children[0].State != tools.ChildCompleted {
+		t.Errorf("wait any = %+v, want the ended child's result and one pending", p)
+	}
+}
+
 // Cancelling one child of a batch ends it cancelled and leaves its siblings
 // running.
 func TestAgentPoll_CancelOneChildOfABatchLeavesTheRest(t *testing.T) {

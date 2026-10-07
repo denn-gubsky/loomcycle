@@ -1844,6 +1844,7 @@ func (t *TeamDef) execRun(ctx context.Context, in teamDefInput) (tools.Result, e
 			tools.EventEmitter(ctx)(providers.Event{Type: providers.EventSpawnChildStarted, SpawnChild: &providers.SpawnChildEventInfo{
 				ToolUseID: toolUseID, RunID: pollRunID, Agent: teamWalkLabel + row.Name, Mode: "poll",
 				Kind: tools.ChildKindTeam, Team: row.Name, DefID: row.DefID,
+				NoNotify: !pm.notify, CancelOnParentEnd: pm.cancelOnEnd,
 			}})
 		}
 		go finishPollWalk(bg, pollRunID, releaseLive, func() walkEnding {

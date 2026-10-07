@@ -703,6 +703,15 @@ const (
 	EventSpawnChildStarted EventType = "spawn_child_started"
 	EventSpawnChildResult  EventType = "spawn_child_result"
 
+	// EventSpawnChildRead records that a run was handed the result of a
+	// background child it started in poll mode (SpawnChild.RunID names it). The
+	// started and result rows say what the child was and how it ended; this one
+	// is what keeps a resumed run from being handed the same result again. Like
+	// the rest of the ledger it is stored, never forwarded, and never replayed.
+	// Poll-mode rows (Mode "poll") are recorded whether or not
+	// LOOMCYCLE_RESUME_FANOUT is on.
+	EventSpawnChildRead EventType = "spawn_child_read"
+
 	// EventPromptSnapshot records the prompt a run's FIRST model call received
 	// (RFC DI): the system blocks and the run's input, as the loop assembled
 	// them — after skills, memory injection, {{...}} expansion, metadata and any
@@ -1170,6 +1179,9 @@ type AwaitingChildrenEventInfo struct {
 type ChildrenNoteEventInfo struct {
 	// Text is the note as the model reads it.
 	Text string `json:"text"`
+	// ChildRunIDs are the children the note reports, so a resumed run does not
+	// report them again.
+	ChildRunIDs []string `json:"child_run_ids,omitempty"`
 }
 
 // AwaitingReviewEventInfo is the structured payload on EventAwaitingReview.
@@ -1282,6 +1294,11 @@ type SpawnChildEventInfo struct {
 	Kind  string `json:"kind,omitempty"`
 	Team  string `json:"team,omitempty"`
 	DefID string `json:"def_id,omitempty"`
+	// NoNotify and CancelOnParentEnd are a poll-mode child's notify: false and
+	// on_parent_end: cancel, on its started row, so a resumed run treats it as
+	// it was started. Absent is the default (notify, wait).
+	NoNotify          bool `json:"no_notify,omitempty"`
+	CancelOnParentEnd bool `json:"cancel_on_parent_end,omitempty"`
 	// Result fields — set on EventSpawnChildResult only.
 	Ok     bool   `json:"ok,omitempty"`
 	Output string `json:"output,omitempty"`
@@ -1293,6 +1310,14 @@ type SpawnChildEventInfo struct {
 	// re-scanned from the transcript — a residual gap in the experimental
 	// resume-fanout path).
 	State map[string]any `json:"state,omitempty"`
+	// A poll-mode child's result row (Mode "poll") also carries how it ended —
+	// Ended is its final state (completed, failed, cancelled, timeout), Status
+	// its "timeout" status — and for a team walk Detail, the walk's whole
+	// answer, which its run row does not hold. The row is the answer its parent
+	// was or would be handed, after the parent's subagent_stop hooks.
+	Ended  string         `json:"ended,omitempty"`
+	Status string         `json:"status,omitempty"`
+	Detail map[string]any `json:"detail,omitempty"`
 }
 
 // ContextCompactionEventInfo is the structured payload on EventContextCompaction

@@ -7,6 +7,8 @@ import (
 	"slices"
 	"strings"
 	"sync"
+
+	"github.com/denn-gubsky/loomcycle/internal/providers"
 )
 
 // The states a background child reports. Queued, running and held are
@@ -44,8 +46,15 @@ var errBackgroundClosed = errors.New("this run is ending and starts no more back
 //
 // The loop makes one per run and carries it on the run's ctx (WithBackground).
 // It is safe for concurrent use: children end on their own goroutines.
+//
+// What a resumed run needs to rebuild the table is recorded on the run's
+// transcript (RecordTo): each child's started row is written by whatever
+// starts it, and the table writes its end (the result the parent is or would
+// be handed) and the parent's first read of it. A resumed run restores its
+// children from those rows (Restore).
 type Background struct {
 	lifetime context.Context
+	record   func(providers.Event) // nil: nothing is recorded
 
 	mu       sync.Mutex
 	children []*bgChild // in the order they were started
@@ -137,6 +146,24 @@ func BackgroundOf(ctx context.Context) *Background {
 	return b
 }
 
+// RecordTo records each child's end and the parent's first read of its result
+// on the run's transcript, through emit. Call it before the first child starts.
+func (b *Background) RecordTo(emit func(providers.Event)) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.record = emit
+}
+
+// recorderLocked is what records, or nil. A table that is closed records
+// nothing more: its run is ending, and a row written after the run's own end
+// would trail its transcript for nobody to read. Callers hold mu.
+func (b *Background) recorderLocked() func(providers.Event) {
+	if b.closed {
+		return nil
+	}
+	return b.record
+}
+
 // broadcastLocked wakes everything watching the table. Callers hold mu.
 func (b *Background) broadcastLocked() {
 	close(b.changed)
@@ -173,6 +200,49 @@ func (b *Background) AddResident(runID, agent string) {
 	b.byID[runID] = c
 }
 
+// RestoredChild is a background child a resumed run rebuilds from its
+// transcript: how it was started, how it ended if it has, and whether the run
+// had already been handed its result or told of its end.
+type RestoredChild struct {
+	ChildSpec
+	// State is the child's final state when it has ended, or the outstanding
+	// state it is filed under (ChildRunning) when it has not. An outstanding
+	// child is ended later by Finish, by whatever learns of its end.
+	State       string
+	Result      ChildResult
+	Read, Noted bool
+	// Cancel cancels the child's run wherever it runs. It is called as a
+	// started child's ctx would be cancelled — by a cancel naming it, the
+	// parent's turn end, the table's Close or the run's lifetime ending — and
+	// never once the child has ended.
+	Cancel func(cause error)
+}
+
+// Restore files a rebuilt child. A run id already in the table is left as it
+// is.
+func (b *Background) Restore(r RestoredChild) {
+	cancel := func(cause error) {
+		// nil is how Finish and Withdraw free a started child's ctx; for a
+		// restored child there is no ctx to free, and its run has ended.
+		if cause != nil && r.Cancel != nil {
+			r.Cancel(cause)
+		}
+	}
+	c := &bgChild{ChildSpec: r.ChildSpec, state: r.State, result: r.Result, read: r.Read, noted: r.Noted,
+		cancel: cancel, stop: func() bool { return false }}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if _, ok := b.byID[r.RunID]; ok {
+		return
+	}
+	if !childEnded(c.state) {
+		c.stop = context.AfterFunc(b.lifetime, func() { cancel(context.Cause(b.lifetime)) })
+	}
+	b.children = append(b.children, c)
+	b.byID[r.RunID] = c
+	b.broadcastLocked()
+}
+
 // SetState moves an outstanding child between queued, running and held. A
 // child that has ended keeps its final state.
 func (b *Background) SetState(runID, state string) {
@@ -204,18 +274,37 @@ func (b *Background) Withdraw(runID string) {
 	c.cancel(nil)
 }
 
-// Finish records a child's end. Only the first call counts.
+// Finish records a child's end. Only the first call counts. The end is
+// recorded before anything watching the table is woken, so a parent that
+// reads the result never finds it read before it was ended.
 func (b *Background) Finish(runID, state string, res ChildResult) {
 	b.mu.Lock()
-	defer b.mu.Unlock()
 	c, ok := b.byID[runID]
 	if !ok || c.Resident || childEnded(c.state) {
+		b.mu.Unlock()
 		return
 	}
 	c.state, c.result = state, res
 	c.stop()
+	record, ev := b.recorderLocked(), c.resultEventLocked()
+	b.mu.Unlock()
 	c.cancel(nil) // frees the ctx; the child's run has ended
+	if record != nil {
+		record(ev)
+	}
+	b.mu.Lock()
 	b.broadcastLocked()
+	b.mu.Unlock()
+}
+
+// resultEventLocked is the transcript row of an ended child: what it handed
+// back, as a resumed run restores it.
+func (c *bgChild) resultEventLocked() providers.Event {
+	return providers.Event{Type: providers.EventSpawnChildResult, SpawnChild: &providers.SpawnChildEventInfo{
+		RunID: c.RunID, Agent: c.Agent, Mode: "poll", Kind: c.Kind, BatchID: c.BatchID,
+		Ok: c.state == ChildCompleted, Output: c.result.Output, Error: c.result.Error, State: c.result.Structured,
+		Ended: c.state, Status: c.result.Status, Detail: c.result.Detail,
+	}}
 }
 
 // Cancel cancels an outstanding background child with cause. It reports
@@ -353,20 +442,34 @@ func (b *Background) Select(ids []string, batchID string) (out []ChildView, unkn
 }
 
 // MarkRead records that the parent has been handed these children's results.
+// The first read of each is recorded: a resumed run does not hand it over
+// again.
 func (b *Background) MarkRead(ids []string) {
 	b.mu.Lock()
-	defer b.mu.Unlock()
+	var first []providers.Event
 	for _, id := range ids {
 		if c, ok := b.byID[id]; ok && childEnded(c.state) {
+			if !c.read && !c.Resident {
+				first = append(first, providers.Event{Type: providers.EventSpawnChildRead, SpawnChild: &providers.SpawnChildEventInfo{
+					RunID: c.RunID, Agent: c.Agent, Mode: "poll", Kind: c.Kind,
+				}})
+			}
 			c.read = true
+		}
+	}
+	record := b.recorderLocked()
+	b.mu.Unlock()
+	if record != nil {
+		for _, ev := range first {
+			record(ev)
 		}
 	}
 }
 
 // TakeNotes is the note for the children that ended since the last one —
-// those started with Notify whose result the parent has not read — or "".
-// Each child is noted once.
-func (b *Background) TakeNotes() string {
+// those started with Notify whose result the parent has not read — or "",
+// and the children it names. Each child is noted once.
+func (b *Background) TakeNotes() (string, []string) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	var ended []*bgChild
@@ -378,18 +481,18 @@ func (b *Background) TakeNotes() string {
 	}
 	switch len(ended) {
 	case 0:
-		return ""
+		return "", nil
 	case 1:
 		c := ended[0]
-		return fmt.Sprintf("Background child %s (%s) finished: %s. %s", c.RunID, c.Agent, c.state, readHint(ended))
+		return fmt.Sprintf("Background child %s (%s) finished: %s. %s", c.RunID, c.Agent, c.state, readHint(ended)), runIDs(ended)
 	}
-	return "Background children finished: " + listStates(ended) + ". " + readHint(ended)
+	return "Background children finished: " + listStates(ended) + ". " + readHint(ended), runIDs(ended)
 }
 
 // WakeNote is the note a run woken from waiting on its children gets: the
 // final state of each child it waited for, and of any other child that ended
-// unread and was not yet noted.
-func (b *Background) WakeNote(waitedFor []string) string {
+// unread and was not yet noted — and the children it names.
+func (b *Background) WakeNote(waitedFor []string) (string, []string) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	var ended []*bgChild
@@ -403,7 +506,15 @@ func (b *Background) WakeNote(waitedFor []string) string {
 		}
 	}
 	return "Every background child you were waiting for has ended: " + listStates(ended) +
-		". " + readHint(ended)
+		". " + readHint(ended), runIDs(ended)
+}
+
+func runIDs(cs []*bgChild) []string {
+	ids := make([]string, len(cs))
+	for i, c := range cs {
+		ids[i] = c.RunID
+	}
+	return ids
 }
 
 // readHint names the call that reads what the note reports. A team walk is
