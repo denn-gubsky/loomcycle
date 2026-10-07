@@ -508,6 +508,13 @@ func TestScheduleDefs_ActiveRunsTravelWithTheirDef(t *testing.T) {
 		row:  store.ScheduleDefRow{DefID: "sd_long", TenantID: "acme", Name: "nightly", Version: 1, CreatedAt: b},
 		body: map[string]any{"agent": "a", "schedule": "0 2 * * *", "tenant_id": "acme"}, active: true, next: b.Add(time.Hour),
 	})
+	// Mid-backlog: the marker travels too.
+	until := b.Add(3 * time.Hour)
+	if won, err := src.ScheduleRunStateClaim(ctx, store.ScheduleSlotClaim{
+		DefID: "sd_long", Slot: b.Add(time.Hour), NextRunAt: b.Add(2 * time.Hour), ClaimedAt: b, CatchUpUntil: until,
+	}); err != nil || !won {
+		t.Fatalf("plant backlog claim: won=%v err=%v", won, err)
+	}
 	want := []store.ScheduleActiveRun{
 		{DefID: "sd_long", RunID: "run_1", SlotAt: b, StartedAt: b.Add(time.Second), ClaimedBy: "replica-a"},
 		{DefID: "sd_long", RunID: "run_2", SlotAt: b.Add(time.Minute), CatchUp: true, StartedAt: b.Add(2 * time.Second)},
@@ -531,6 +538,9 @@ func TestScheduleDefs_ActiveRunsTravelWithTheirDef(t *testing.T) {
 		if g.RunID != w.RunID || !g.SlotAt.Equal(w.SlotAt) || g.CatchUp != w.CatchUp || !g.StartedAt.Equal(w.StartedAt) || g.ClaimedBy != w.ClaimedBy {
 			t.Errorf("active run %d = %+v, want %+v", i, g, w)
 		}
+	}
+	if st := runState(t, dst, "sd_long"); !st.CatchUpUntil.Equal(until) {
+		t.Errorf("restored catch_up_until = %v, want %v", st.CatchUpUntil, until)
 	}
 	// Re-restoring writes nothing new.
 	mustRestore(t, dst, mustCapture(t, src), RestoreOptions{})
