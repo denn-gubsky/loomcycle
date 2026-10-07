@@ -2032,6 +2032,33 @@ func (s *Store) ListRunsByParentAgentID(ctx context.Context, parentAgentID strin
 	return scanRunRows(rows)
 }
 
+// ListRunsByParentRunID returns the runs whose parent_run_id matches: a
+// run's direct children, including a team walk's members, which name the
+// walk as their parent run but its starter as their parent agent.
+func (s *Store) ListRunsByParentRunID(ctx context.Context, parentRunID string) ([]store.Run, error) {
+	if parentRunID == "" {
+		return nil, nil
+	}
+	rows, err := s.pool.Query(ctx,
+		`SELECT r.id, r.session_id, r.status, r.started_at, r.completed_at, r.stop_reason,
+		        r.input_tokens, r.output_tokens, r.cache_creation_tokens, r.cache_read_tokens,
+		        r.model, r.provider, r.error,
+		        r.agent_id, r.parent_agent_id, r.parent_run_id, r.user_id, r.last_heartbeat_at, r.user_tier,
+		        r.agent_def_id, r.pause_state, r.replica_id, r.parent_context, r.idempotency_key, r.delivery_alt_key, r.tenant_id, r.interactive, r.operator_key_restricted, r.isolated,
+		        r.cost, r.cost_currency, r.credential_source, r.credential_scope_id,
+		        r.run_config::text, r.result::text,
+		        s.agent
+		 FROM runs r LEFT JOIN sessions s ON r.session_id = s.id
+		 WHERE r.parent_run_id = $1
+		 ORDER BY r.started_at ASC`, parentRunID,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("list runs by parent run: %w", err)
+	}
+	defer rows.Close()
+	return scanRunRows(rows)
+}
+
 // UpdateHeartbeat advances last_heartbeat_at on a running run. The
 // status='running' guard prevents a late heartbeat from un-finalising a
 // terminal run (which would corrupt the sweeper's stale-row detection).

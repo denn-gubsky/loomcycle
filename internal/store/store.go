@@ -1926,6 +1926,14 @@ type Store interface {
 	// matches the given value. Drives cascade-cancel discovery.
 	ListRunsByParentAgentID(ctx context.Context, parentAgentID string) ([]Run, error)
 
+	// ListRunsByParentRunID returns the runs whose parent_run_id is
+	// parentRunID — a run's direct children, whoever's agent id they were
+	// registered under. A team walk's members name the walk as their parent
+	// run but the agent that started the walk as their parent agent, so
+	// only this finds them from the walk. Ordered by started_at; "" lists
+	// nothing.
+	ListRunsByParentRunID(ctx context.Context, parentRunID string) ([]Run, error)
+
 	// ListUsers returns the distinct user_ids that have runs in the
 	// store, with summary stats per user (run counts by status, last
 	// activity). Drives the v0.7.3 Web UI's user picker so operators

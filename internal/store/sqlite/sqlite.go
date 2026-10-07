@@ -1442,6 +1442,9 @@ func (s *Store) migrate(ctx context.Context) error {
 		// the vast majority of historical rows have no agent_id.
 		`CREATE INDEX IF NOT EXISTS runs_by_agent_id        ON runs(agent_id)        WHERE agent_id IS NOT NULL`,
 		`CREATE INDEX IF NOT EXISTS runs_by_parent_agent_id ON runs(parent_agent_id) WHERE parent_agent_id IS NOT NULL`,
+		// A run's children by its run id: the cascade that ends the runs below
+		// one no loop holds, which a team walk's members are only found by.
+		`CREATE INDEX IF NOT EXISTS runs_by_parent_run_id   ON runs(parent_run_id)   WHERE parent_run_id IS NOT NULL`,
 		`CREATE INDEX IF NOT EXISTS runs_by_user_active     ON runs(user_id, status) WHERE user_id IS NOT NULL`,
 		// RFC L / Web-UI multi-tenant authz — tenant-scoped workspace lists.
 		`CREATE INDEX IF NOT EXISTS runs_by_tenant_active   ON runs(tenant_id, status) WHERE tenant_id IS NOT NULL`,
@@ -3438,6 +3441,32 @@ func (s *Store) ListRunsByParentAgentID(ctx context.Context, parentAgentID strin
 	rows, err := s.db.QueryContext(ctx,
 		`SELECT `+runColumns+` FROM `+runFromTable+` WHERE r.parent_agent_id = ? ORDER BY r.started_at ASC`,
 		parentAgentID,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []store.Run
+	for rows.Next() {
+		r, err := scanRun(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
+// ListRunsByParentRunID returns the runs whose parent_run_id matches: a
+// run's direct children, including a team walk's members, which name the
+// walk as their parent run but its starter as their parent agent.
+func (s *Store) ListRunsByParentRunID(ctx context.Context, parentRunID string) ([]store.Run, error) {
+	if parentRunID == "" {
+		return nil, nil
+	}
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT `+runColumns+` FROM `+runFromTable+` WHERE r.parent_run_id = ? ORDER BY r.started_at ASC`,
+		parentRunID,
 	)
 	if err != nil {
 		return nil, err
