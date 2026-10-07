@@ -3,12 +3,15 @@ package http
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"net/http"
 	"net/url"
 	"time"
 
 	"github.com/denn-gubsky/loomcycle/internal/awaited"
 	"github.com/denn-gubsky/loomcycle/internal/connector"
+	"github.com/denn-gubsky/loomcycle/internal/providers"
 	"github.com/denn-gubsky/loomcycle/internal/runner"
 	"github.com/denn-gubsky/loomcycle/internal/store"
 )
@@ -55,6 +58,15 @@ func (s *Server) runHoldingClientKey(ctx context.Context, storedKey, tenant, use
 		// differ for a key this code wrote. It guards the one row that could
 		// share the spelling: a delivery id an earlier release stored bare.
 		if run.TenantID != tenant || run.UserID != user {
+			return nil, fmt.Errorf("%w: idempotency_key is not available", runner.ErrInvalidArgument)
+		}
+		// What follows hands the caller this run's ids, its answer or its
+		// whole stream, so it passes the gate every other read of a run's
+		// content passes (GET /v1/runs/{id}/stream, get_run). The identity
+		// match above already implies it for a key this code wrote; the gate
+		// is applied anyway, so this read can never be the one path that
+		// answers a principal the others would refuse.
+		if !runOwnershipOK(ctx, run) {
 			return nil, fmt.Errorf("%w: idempotency_key is not available", runner.ErrInvalidArgument)
 		}
 		return &runner.DuplicateRunError{RunID: run.ID, AgentID: run.AgentID, SessionID: run.SessionID}, nil
@@ -109,4 +121,41 @@ func (s *Server) existingRunResult(ctx context.Context, dup *runner.DuplicateRun
 		case <-time.After(existingRunPollInterval):
 		}
 	}
+}
+
+// writeRunKeyError answers a failed idempotency_key lookup on POST /v1/runs.
+func writeRunKeyError(w http.ResponseWriter, err error) {
+	code := http.StatusInternalServerError
+	if errors.Is(err, runner.ErrInvalidArgument) {
+		code = http.StatusBadRequest
+	}
+	http.Error(w, err.Error(), code)
+}
+
+// serveExistingRun answers a POST /v1/runs whose idempotency_key a run already
+// held: nothing was started, and the response is that run's stream. It opens
+// as a fresh run's does — the `session` frame, then the `agent` frame, here
+// marked deduplicated — and carries the run's events from its first, ending
+// when the run does. The client leaving ends the response and nothing else:
+// this request did not start the run.
+func (s *Server) serveExistingRun(w http.ResponseWriter, r *http.Request, dup *runner.DuplicateRunError) {
+	stream, ok := newSSE(w)
+	if !ok {
+		http.Error(w, "server does not support streaming on this transport", http.StatusInternalServerError)
+		return
+	}
+	stream.start()
+	stream.startKeepalive(r.Context(), s.cfg().Env.SSEKeepaliveInterval)
+	defer stream.end()
+	stream.send(providers.Event{Type: "session", Text: dup.SessionID})
+	stream.sendRaw("agent", map[string]any{
+		"agent_id":     dup.AgentID,
+		"run_id":       dup.RunID,
+		"session_id":   dup.SessionID,
+		"deduplicated": true,
+	})
+	_ = s.streamRunEvents(r.Context(), dup.RunID, 0, func(pe providers.Event) error {
+		stream.send(pe)
+		return nil
+	})
 }

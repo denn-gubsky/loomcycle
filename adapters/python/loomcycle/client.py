@@ -82,6 +82,9 @@ class RunHandle:
     run_id: str
     session_id: str
     parent_agent_id: str = ""
+    #: True when the request's idempotency_key was already held by a run:
+    #: nothing was started, and the stream is that existing run's.
+    deduplicated: bool = False
 
 
 class LoomcycleClient:
@@ -1641,6 +1644,7 @@ class LoomcycleClient:
         metadata: Optional[Mapping[str, Any]] = None,
         context: Optional[Mapping[str, Any]] = None,
         parent_context: Optional[Mapping[str, str]] = None,
+        idempotency_key: str = "",
         user_credentials: Optional[Mapping[str, str]] = None,
         sampling: Optional[Mapping[str, Any]] = None,
         tool_choice: Optional[Mapping[str, Any]] = None,
@@ -1727,6 +1731,7 @@ class LoomcycleClient:
             metadata=metadata,
             context=context,
             parent_context=parent_context,
+            idempotency_key=idempotency_key,
             user_credentials=user_credentials,
             sampling=sampling,
             tool_choice=tool_choice,
@@ -1970,10 +1975,12 @@ class LoomcycleClient:
                     registration_seen = 2
                     parent_agent_id = raw.stop_reason
                     run_id = ""
+                    deduplicated = False
                     try:
                         env = json.loads(raw.error or "{}")
                         run_id = str(env.get("run_id", ""))
-                    except (ValueError, TypeError):
+                        deduplicated = env.get("deduplicated") is True
+                    except (ValueError, TypeError, AttributeError):
                         # Server changed the envelope shape — leave
                         # run_id empty rather than crashing the stream.
                         pass
@@ -1982,6 +1989,7 @@ class LoomcycleClient:
                         run_id=run_id,
                         session_id=session_id,  # type: ignore[has-type]
                         parent_agent_id=parent_agent_id,
+                        deduplicated=deduplicated,
                     )
                     if on_handle is not None:
                         try:
@@ -2234,6 +2242,7 @@ def _build_run_request(
     metadata: Optional[Mapping[str, Any]] = None,
     context: Optional[Mapping[str, Any]] = None,
     parent_context: Optional[Mapping[str, str]] = None,
+    idempotency_key: str = "",
     user_credentials: Optional[Mapping[str, str]] = None,
     sampling: Optional[Mapping[str, Any]] = None,
     tool_choice: Optional[Mapping[str, Any]] = None,
@@ -2299,6 +2308,7 @@ def _build_run_request(
         review=review,
         review_ttl_seconds=review_ttl_seconds,
         hooks_json=_hooks_json(hooks, tool_hooks),
+        idempotency_key=idempotency_key,
         # Canonical JSON bytes: the value is map[string]any by definition, so
         # there is no typed message to map it onto.
         metadata=json.dumps(metadata).encode() if metadata is not None else b"",
@@ -2345,6 +2355,7 @@ def _run_request_from_dict(spawn: Mapping[str, Any]) -> "pb.RunRequest":
         agent=spawn.get("agent", ""),
         segments=spawn.get("segments", ()),
         session_id=spawn.get("session_id", ""),
+        idempotency_key=spawn.get("idempotency_key", ""),
         tools=spawn.get("tools"),
         allowed_hosts=spawn.get("allowed_hosts"),
         web_search_filter=spawn.get("web_search_filter", ""),
@@ -2414,6 +2425,9 @@ def _spawn_result_to_dict(r: "pb.SpawnResult") -> Mapping[str, Any]:
         "final_text": r.final_text,
         "usage": _usage_to_dict(r.usage) if r.HasField("usage") else None,
         "error": r.error,
+        # True when the child's idempotency_key was already held: the ids,
+        # status and result are that existing run's.
+        "deduplicated": r.deduplicated,
     }
 
 

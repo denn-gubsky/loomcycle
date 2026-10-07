@@ -980,6 +980,7 @@ func (s *Server) Run(req *loomcyclepb.RunRequest, stream loomcyclepb.Loomcycle_R
 		ParentContext:    parentContextFromProto(req.GetParentContext()),
 		Interruption:     interruptionFromProto(req.GetInterruption()),
 		MaxContextTokens: int(req.GetMaxContextTokens()), // RFC CJ per-run context-window override
+		IdempotencyKey:   req.GetIdempotencyKey(),
 		// RFC DC per-run overrides. One helper for all three call sites, so a
 		// typed gRPC caller and an HTTP one get the same answer from the same
 		// validation — and so adding a field means editing one place.
@@ -1210,6 +1211,7 @@ func spawnRequestFromProto(req *loomcyclepb.RunRequest) connector.SpawnRunReques
 		OutputFormat:     outputFormatFromProto(req.GetOutputFormat()),
 		Compaction:       compactionFromProto(req.GetCompaction()),
 		MaxContextTokens: int(req.GetMaxContextTokens()), // RFC CJ per-run context-window override
+		IdempotencyKey:   req.GetIdempotencyKey(),
 		// The same four Run maps: a configured run or a batch child built from
 		// this request must not silently lose them
 		// (TestSpawnRequestFromProto_MapsEveryFieldRunMaps guards the set).
@@ -1256,6 +1258,8 @@ func spawnResultToProto(r connector.SpawnRunResult) *loomcyclepb.SpawnResult {
 		FinalText:  r.FinalText,
 		Usage:      usageToProto(r.Usage),
 		Error:      r.Error,
+
+		Deduplicated: r.Deduplicated,
 	}
 }
 
@@ -1336,7 +1340,7 @@ func (s *Server) driveStream(ctx context.Context, stream runStreamSink, in runne
 			// `error` for run_id+session_id (using `error` as a
 			// generic string carrier; sub-optimal but avoids a
 			// proto change in PR 2).
-			payload := agentFrameJSON(agentID, runID, sessionID, parentAgentID)
+			payload := agentFrameJSON(agentID, runID, sessionID, parentAgentID, false)
 			// Capture the send error so the OnEvent guard fires
 			// if the agent frame fails — otherwise the loop would
 			// run for one full iteration emitting into a broken
@@ -1361,12 +1365,49 @@ func (s *Server) driveStream(ctx context.Context, stream runStreamSink, in runne
 	}
 
 	runErr := s.runner.RunOnce(ctx, in, cb)
+	if dup := (*runner.DuplicateRunError)(nil); errors.As(runErr, &dup) {
+		return s.streamExistingRun(ctx, stream, dup)
+	}
 	if sendErr != nil {
 		// Stream broke mid-run — the runner kept going (correct, for
 		// transcript persistence), but we surface to the client.
 		return status.Errorf(codes.Canceled, "stream send failed: %v", sendErr)
 	}
 	return mapRunnerErr(runErr)
+}
+
+// streamExistingRun answers a Run whose idempotency_key a run already held:
+// nothing was started, and the stream carries that run instead. It opens with
+// the same `session` and `agent` frames a fresh run does — the agent frame
+// marked deduplicated — and then the run's events from its first, ending when
+// the run does. The client leaving ends the stream and nothing else: this
+// request did not start the run.
+func (s *Server) streamExistingRun(ctx context.Context, stream runStreamSink, dup *runner.DuplicateRunError) error {
+	if s.connector == nil {
+		return status.Error(codes.Unavailable, "connector not wired")
+	}
+	if err := stream.Send(&loomcyclepb.Event{Type: "session", Text: dup.SessionID}); err != nil {
+		return status.Errorf(codes.Canceled, "stream send failed: %v", err)
+	}
+	if err := stream.Send(&loomcyclepb.Event{
+		Type:  "agent",
+		Text:  dup.AgentID,
+		Error: agentFrameJSON(dup.AgentID, dup.RunID, dup.SessionID, "", true),
+	}); err != nil {
+		return status.Errorf(codes.Canceled, "stream send failed: %v", err)
+	}
+	err := s.connector.StreamRunEvents(ctx, dup.RunID, 0, func(ev providers.Event) error {
+		return stream.Send(eventToProto(ev))
+	})
+	switch {
+	case errors.Is(err, connector.ErrRunNotInFlight):
+		return status.Error(codes.NotFound, err.Error())
+	case errors.Is(err, connector.ErrSteeringUnavailable):
+		return status.Error(codes.Unavailable, err.Error())
+	case err != nil:
+		return status.Errorf(codes.Canceled, "stream send failed: %v", err)
+	}
+	return nil
 }
 
 // runInputProtoArgs gathers the proto fields runInputFromProto reads.
@@ -1399,6 +1440,7 @@ type runInputProtoArgs struct {
 	Context          *config.Context              // per-run layered-context / retention override
 	ParentContext    *store.ParentContext         // opaque caller-tracking lineage
 	MaxContextTokens int                          // RFC CJ per-run context-window override (0 = inherit agent def)
+	IdempotencyKey   string                       // the caller's key, as sent (Run only)
 
 	// RFC DC per-run overrides. Routing selects within what the definition
 	// declares; the budget knobs are raisable except MaxConcurrentChildren,
@@ -1458,6 +1500,8 @@ func runInputFromProto(a runInputProtoArgs) runner.RunInput {
 		ParentContext:         a.ParentContext,
 		Interruption:          a.Interruption,
 		MaxContextTokens:      a.MaxContextTokens, // RFC CJ per-run context-window override
+		// As sent; RunOnce scopes and stores it.
+		ClientIdempotencyKey: a.IdempotencyKey,
 	}
 	if a.AllowedHosts != nil {
 		// Proto3 message-type field present → caller did supply a
@@ -1740,13 +1784,16 @@ func eventToProto(ev providers.Event) *loomcyclepb.Event {
 // allocation cost is negligible and the previous hand-rolled
 // concat was a fragile micro-optimisation: a future caller passing
 // an ID with `"` or `\` would have produced malformed JSON.
-func agentFrameJSON(agentID, runID, sessionID, parentAgentID string) string {
+func agentFrameJSON(agentID, runID, sessionID, parentAgentID string, deduplicated bool) string {
 	b, err := json.Marshal(struct {
 		AgentID       string `json:"agent_id"`
 		RunID         string `json:"run_id"`
 		SessionID     string `json:"session_id"`
 		ParentAgentID string `json:"parent_agent_id"`
-	}{agentID, runID, sessionID, parentAgentID})
+		// Deduplicated: the request's idempotency_key was already held, and
+		// this stream is that existing run's.
+		Deduplicated bool `json:"deduplicated,omitempty"`
+	}{agentID, runID, sessionID, parentAgentID, deduplicated})
 	if err != nil {
 		// json.Marshal on a struct of strings cannot fail in
 		// practice — there's no UnmarshalJSON on string and no

@@ -1135,6 +1135,24 @@ func Restore(ctx context.Context, s store.Store, raw []byte, opts RestoreOptions
 				// Resume reads the confinement bits from this row.
 				OperatorKeyRestricted: e.OperatorKeyRestricted,
 				Isolated:              e.Isolated,
+
+				IdempotencyKey: e.IdempotencyKey,
+				DeliveryAltKey: e.DeliveryAltKey,
+			}
+			// The keys are unique across the target. If another run here
+			// already holds one — the same request was retried on this
+			// instance before the restore — the run still comes back, without
+			// its keys: losing the run would be worse than losing its claim.
+			if keys := nonEmpty(e.IdempotencyKey, e.DeliveryAltKey); len(keys) > 0 {
+				held, found, err := s.RunByDeliveryKeys(ctx, keys)
+				switch {
+				case err != nil:
+					result.Warnings = append(result.Warnings, fmt.Sprintf("paused_run %s: check its dedup keys: %v — restored without them", e.RunID, err))
+					runRow.IdempotencyKey, runRow.DeliveryAltKey = "", ""
+				case found && held.ID != e.RunID:
+					result.Warnings = append(result.Warnings, fmt.Sprintf("paused_run %s: run %s on this target already holds its dedup key — restored without it", e.RunID, held.ID))
+					runRow.IdempotencyKey, runRow.DeliveryAltKey = "", ""
+				}
 			}
 			runInserted, err := s.SnapshotRestoreRun(ctx, runRow)
 			if err != nil {
@@ -1311,4 +1329,15 @@ func decodeWithMigration(section string, raw json.RawMessage, dst any) error {
 		return fmt.Errorf("snapshot section %s: decode migrated bytes: %w", section, err)
 	}
 	return nil
+}
+
+// nonEmpty returns the non-empty strings of vals.
+func nonEmpty(vals ...string) []string {
+	out := make([]string, 0, len(vals))
+	for _, v := range vals {
+		if v != "" {
+			out = append(out, v)
+		}
+	}
+	return out
 }

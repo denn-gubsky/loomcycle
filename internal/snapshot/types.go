@@ -1033,7 +1033,15 @@ type PausedRunEntry struct {
 	// definition resolves to now. Opaque here: the snapshot package does
 	// not decode it, exactly as it does not decode a transcript payload.
 	// Omitted for runs started before this field existed.
-	RunConfig        json.RawMessage   `json:"run_config,omitempty"`
+	RunConfig json.RawMessage `json:"run_config,omitempty"`
+	// IdempotencyKey and DeliveryAltKey are the run's durable dedup keys: what
+	// stops a retried request, a redelivered webhook or a re-fired schedule
+	// slot from starting the same work twice. Left out, a run restored on
+	// another instance held no key, so the retry that followed started a
+	// second run beside it. Omitted for runs with no key and absent from
+	// older snapshots.
+	IdempotencyKey   string            `json:"idempotency_key,omitempty"`
+	DeliveryAltKey   string            `json:"delivery_alt_key,omitempty"`
 	TranscriptEvents []TranscriptEvent `json:"transcript_events"`
 	// TranscriptError records a per-run transcript-read failure. Set
 	// when GetTranscript returned an error during capture; the entry

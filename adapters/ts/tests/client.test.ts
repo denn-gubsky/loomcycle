@@ -223,6 +223,33 @@ describe("runStreaming", () => {
     });
   });
 
+  it("forwards idempotency_key and surfaces deduplicated on the agent frame", async () => {
+    const { client, fetchMock } = makeClient([
+      sseResponse([
+        'event: agent\ndata: {"agent_id":"a_1","run_id":"r_1","session_id":"s_1","deduplicated":true}\n\n',
+        'event: done\ndata: {"type":"done"}\n\n',
+      ]),
+      sseResponse(['event: done\ndata: {"type":"done"}\n\n']),
+    ]);
+    const events = [];
+    for await (const ev of client.runStreaming({
+      agent: "judge",
+      segments: [],
+      idempotencyKey: "ccq-score:c1:abc",
+    })) {
+      events.push(ev);
+    }
+    const body = JSON.parse(fetchMock.mock.calls[0]![1]!.body as string);
+    expect(body.idempotency_key).toBe("ccq-score:c1:abc");
+    const agent = events.find((e) => e.type === "agent");
+    expect(agent?.run_id).toBe("r_1");
+    expect(agent?.deduplicated).toBe(true);
+
+    for await (const _ of client.runStreaming({ agent: "judge", segments: [] })) {}
+    const without = JSON.parse(fetchMock.mock.calls[1]![1]!.body as string);
+    expect("idempotency_key" in without).toBe(false);
+  });
+
   it("omits parent_context when undefined (back-compat)", async () => {
     const { client, fetchMock } = makeClient([
       sseResponse(['event: done\ndata: {"type":"done"}\n\n']),
