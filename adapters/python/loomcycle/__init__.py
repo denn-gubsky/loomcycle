@@ -141,4 +141,4 @@ __all__ = [
     "SubstrateToolRefusedError",
 ]
 
-__version__ = "1.105.0"
+__version__ = "1.106.0"
