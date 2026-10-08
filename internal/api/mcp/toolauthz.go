@@ -2,8 +2,10 @@ package mcp
 
 import (
 	"context"
+	"encoding/json"
 
 	"github.com/denn-gubsky/loomcycle/internal/auth"
+	"github.com/denn-gubsky/loomcycle/internal/tools/builtin"
 )
 
 // mcpErrForbidden is the JSON-RPC error code returned when a principal calls a
@@ -224,4 +226,21 @@ func scopeNeededFor(ctx context.Context, toolName string) string {
 		}
 	}
 	return auth.ScopeAdmin
+}
+
+// toolOpMissingScope reports the scope the principal on ctx lacks for the
+// OPERATION a call asks of a tool that passed principalMayCallTool, and that
+// operation; scope is "" when the call may proceed.
+//
+// toolRequiredScope gates a whole tool, which fits the run and channel tools:
+// every operation of each needs the same scope. teamdef does not fit: most of
+// its ops author definitions, which a member may do whatever its token holds,
+// so the tool has no entry there and stays listed — but op=run starts a walk
+// that spawns runs and spends tokens. Without this a token granted only
+// runs:read, refused spawn_run, could start a team's agents through teamdef.
+func toolOpMissingScope(ctx context.Context, toolName string, args json.RawMessage) (op, scope string) {
+	if toolName != "teamdef" {
+		return "", ""
+	}
+	return builtin.TeamDefMissingScope(ctx, args)
 }
