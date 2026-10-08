@@ -23,6 +23,114 @@ func layersFor(t *testing.T, names ...string) []config.Layer {
 	return layers
 }
 
+// bootStackFor is layersFor under the built-in providers layer — the stack main()
+// assembles for LOOMCYCLE_PRESETS=<names> (kept in lockstep with assembleConfigLayers).
+func bootStackFor(t *testing.T, names ...string) []config.Layer {
+	t.Helper()
+	return append([]config.Layer{{Name: "providers.default", Data: embedded.DefaultProviders()}}, layersFor(t, names...)...)
+}
+
+// TestEmbedded_NoUnitDropsABuiltInProvider: selecting a preset or a bundle never
+// takes a built-in provider away. The `local` preset did: its `providers:` key
+// had only comments under it, which is a null, and the null replaced the whole
+// built-in map — LOOMCYCLE_PRESETS=base,local booted with no provider at all,
+// ollama-local included.
+func TestEmbedded_NoUnitDropsABuiltInProvider(t *testing.T) {
+	t.Setenv("LOOMCYCLE_SKILLS_ROOT", "")
+	builtIn := loadDefaultProvidersOnly(t).Providers
+	if len(builtIn) < 5 {
+		t.Fatalf("built-in providers = %d; the layer this test compares against is not the shipped one", len(builtIn))
+	}
+	stacks := [][]string{{"base", "local"}, {"local"}, {"base", "local", "chat"}}
+	for _, u := range embedded.Units() {
+		if u.Name != "base" {
+			stacks = append(stacks, []string{"base", u.Name})
+		}
+	}
+	for _, names := range stacks {
+		t.Run(strings.Join(names, ","), func(t *testing.T) {
+			cfg, err := config.LoadLayers(bootStackFor(t, names...)...)
+			if err != nil {
+				t.Fatalf("LoadLayers: %v", err)
+			}
+			for id, want := range builtIn {
+				got, ok := cfg.Providers[id]
+				if !ok {
+					t.Errorf("built-in provider %q is gone from the merged config (providers: %d)", id, len(cfg.Providers))
+					continue
+				}
+				if got.Driver != want.Driver {
+					t.Errorf("provider %q driver = %q, want the built-in %q", id, got.Driver, want.Driver)
+				}
+			}
+			for _, w := range cfg.Warnings {
+				if strings.Contains(w, "config layer override: providers ") {
+					t.Errorf("a unit replaced the providers map wholesale: %s", w)
+				}
+			}
+		})
+	}
+}
+
+// localPresetProvidersExample returns the commented-out `providers:` example the
+// local preset tells an operator to copy into their own config, uncommented.
+func localPresetProvidersExample(t *testing.T) []byte {
+	t.Helper()
+	data, err := embedded.Show("local")
+	if err != nil {
+		t.Fatalf("Show(local): %v", err)
+	}
+	var out []string
+	in := false
+	for _, line := range strings.Split(string(data), "\n") {
+		if line == "# providers:" {
+			in = true
+		}
+		if !in {
+			continue
+		}
+		if !strings.HasPrefix(line, "#") {
+			if strings.TrimSpace(line) == "" {
+				continue
+			}
+			break // the first live YAML line ends the example
+		}
+		out = append(out, strings.TrimPrefix(strings.TrimPrefix(line, "#"), " "))
+	}
+	if len(out) < 5 {
+		t.Fatalf("no commented `# providers:` example found in the local preset (%d lines)", len(out))
+	}
+	return []byte(strings.Join(out, "\n") + "\n")
+}
+
+// TestEmbedded_LocalPresetProvidersExampleLoads: the provider example the local
+// preset prints is one an operator can paste as written. It loads on top of
+// base,local, and — because each entry names its driver — also with the built-in
+// providers switched off, where an entry carrying only a base_url is refused
+// ("driver is required").
+func TestEmbedded_LocalPresetProvidersExampleLoads(t *testing.T) {
+	example := config.Layer{Name: "operator", Data: localPresetProvidersExample(t)}
+	for name, base := range map[string][]config.Layer{
+		"with the built-in providers":    bootStackFor(t, "base", "local"),
+		"without the built-in providers": layersFor(t, "base", "local"),
+	} {
+		t.Run(name, func(t *testing.T) {
+			cfg, err := config.LoadLayers(append(base, example)...)
+			if err != nil {
+				t.Fatalf("the preset's own example must load: %v", err)
+			}
+			for id, driver := range map[string]string{"ollama-local": "ollama", "vllm-local": "vllm", "llamacpp-local": "llamacpp"} {
+				if got := cfg.Providers[id].Driver; got != driver {
+					t.Errorf("providers.%s.driver = %q, want %q", id, got, driver)
+				}
+			}
+			if got := cfg.Providers["ollama-local"].BaseURL; got == "" {
+				t.Errorf("the example's ollama-local base_url did not reach the merged config")
+			}
+		})
+	}
+}
+
 // TestEmbedded_DocumentAgentResolvesWithInlineSkills is the RFC AQ §7 Phase-1
 // headline, updated for RFC BA on-demand skills: selecting `base,document-agent`
 // registers doc/manager AND carries its four inline skills in cfg.Skills (the

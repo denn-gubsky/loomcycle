@@ -54,6 +54,53 @@ func TestUnits_ParseAsYAML(t *testing.T) {
 	}
 }
 
+// TestUnits_NoKeyIsLeftWithoutAValue: no embedded layer carries a key with
+// nothing under it. A key whose children are all commented out is a YAML null,
+// and a null in a later layer REPLACES the mapping an earlier layer built there
+// (the layering rule: anything that is not mapping-onto-mapping replaces). The
+// `local` preset shipped `providers:` over a block of commented examples and so
+// wiped every built-in provider for anyone who selected it.
+func TestUnits_NoKeyIsLeftWithoutAValue(t *testing.T) {
+	layers := map[string][]byte{"providers.default": DefaultProviders()}
+	for _, u := range Units() {
+		layers[u.Name] = u.Data
+	}
+	if len(layers) < 5 {
+		t.Fatalf("only %d embedded layers found; this test would assert nothing", len(layers))
+	}
+	for name, data := range layers {
+		var doc yaml.Node
+		if err := yaml.Unmarshal(data, &doc); err != nil {
+			t.Errorf("%s: %v", name, err)
+			continue
+		}
+		for _, path := range nullKeys(&doc, "") {
+			t.Errorf("%s: key %q has no value (are its children all commented out?) — comment the key out too, or it replaces what an earlier layer set there", name, path)
+		}
+	}
+}
+
+// nullKeys returns the dotted path of every mapping key in n whose value is null.
+func nullKeys(n *yaml.Node, prefix string) []string {
+	var out []string
+	switch n.Kind {
+	case yaml.DocumentNode, yaml.SequenceNode:
+		for _, c := range n.Content {
+			out = append(out, nullKeys(c, prefix)...)
+		}
+	case yaml.MappingNode:
+		for i := 0; i+1 < len(n.Content); i += 2 {
+			path := strings.TrimPrefix(prefix+"."+n.Content[i].Value, ".")
+			if v := n.Content[i+1]; v.Kind == yaml.ScalarNode && v.Tag == "!!null" {
+				out = append(out, path)
+			} else {
+				out = append(out, nullKeys(v, path)...)
+			}
+		}
+	}
+	return out
+}
+
 // TestBundle_AgentTeamsHasOrchestrator guards the RFC BD additions: the
 // agent-teams bundle must ship the team/orchestrator agent with
 // unbounded_iterations (so a long-lived team lead isn't cut off mid-workflow —
