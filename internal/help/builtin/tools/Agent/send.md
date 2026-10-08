@@ -22,6 +22,8 @@ finished and the child is ready for the next `send`.
 
 ## Errors
 
+- `result "object" is not available for a resident child` — `open` and
+  `send` already answer with an object.
 - `missing required field: child_run_id (the id op=open returned)` / `prompt`.
 - `op=send does not take untrusted` — a later turn carries only `prompt`.
   Pass the text when you `open` the child, or `spawn` a child for it.

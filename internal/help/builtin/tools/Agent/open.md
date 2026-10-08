@@ -34,6 +34,8 @@ lifecycle: `close` it when you are done.**
 
 ## Errors
 
+- `result "object" is not available for a resident child` — `open` and
+  `send` already answer with an object.
 - `missing required field: name` / `prompt`.
 - `unknown sub-agent "X" ...` — not a registered name; check
   `Context {"op":"agents"}`.

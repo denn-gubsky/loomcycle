@@ -398,6 +398,10 @@ type agentInput struct {
 	// Untrusted is text the child gets as data, fenced, after the prompt
 	// (spawn / open). See untrustedInputs.
 	Untrusted untrustedInputs `json:"untrusted,omitempty"`
+	// Result is how the child's outcome comes back: "text" (the default) or
+	// "object" (see spawnObject). On parallel_spawn it is the default for
+	// every entry that names none.
+	Result string `json:"result,omitempty"`
 
 	// Parallel-spawn fields (op="parallel_spawn").
 	Spawns []parallelSpawnEntry `json:"spawns,omitempty"`
@@ -440,6 +444,8 @@ type parallelSpawnEntry struct {
 	TimeoutMs int `json:"timeout_ms,omitempty"`
 	// Untrusted: text THIS child gets as data (see agentInput).
 	Untrusted untrustedInputs `json:"untrusted,omitempty"`
+	// Result: how THIS child's outcome comes back; "" = the call's `result`.
+	Result string `json:"result,omitempty"`
 }
 
 // MaxSpawnUntrustedBytes bounds the untrusted text one child may be handed,
@@ -501,6 +507,14 @@ func (u *untrustedInputs) UnmarshalJSON(b []byte) error {
 	return nil
 }
 
+// A poll-mode spawn answers before its child has done anything, and what a
+// later poll returns is a row of its own shape, so there is no result for
+// `result: "object"` to shape.
+const (
+	resultObjectWithPoll     = `result "object" is not available with mode "poll"`
+	resultObjectWithPollHint = `Use mode "wait" to get the object, or keep mode "poll" and read the child with op=poll.`
+)
+
 // checkUntrusted refuses untrusted inputs past MaxSpawnUntrustedBytes or
 // MaxSpawnUntrustedEntries. field names the argument in the refusal.
 func checkUntrusted(field string, u untrustedInputs) (tools.Result, bool) {
@@ -530,6 +544,10 @@ type ParallelSpawnResult struct {
 	Ok     bool   `json:"ok"`
 	Output string `json:"output,omitempty"`
 	Error  string `json:"error,omitempty"`
+	// Result is the child's outcome as an object, for an entry that asked for
+	// `result: "object"`. It then stands in for Output and State, which are
+	// left out; the row's other fields are as for any child.
+	Result *spawnObject `json:"result,omitempty"`
 	// State is a stateful child's final structured Σ (RFC CR D5), so a fan-out
 	// parent gets each child's structured result — not just its prose — in the
 	// envelope. Omitted for append/recap children.
@@ -581,6 +599,7 @@ const agentInputSchema = `{
     "def_id": {"type": "string", "description": "spawn / open (optional): pin the child to a specific agent_defs row id (from AgentDef.create or AgentDef.fork). The row's name must match the name field. Not for a team's own agent, which has no versions of its own."},
     "compaction": {"type": "object", "description": "spawn (optional): override this child's context-compaction settings (it inherits yours by default). Per field: enabled (auto-compact on/off), target_percentage (10-50), keep_last_n, keep_first, autocompact_at_pct (50-95), model.", "properties": {"enabled": {"type": "boolean"}, "target_percentage": {"type": "integer"}, "keep_last_n": {"type": "integer"}, "keep_first": {"type": "boolean"}, "autocompact_at_pct": {"type": "integer"}, "model": {"type": "string"}}},
     "untrusted": {"type": "array", "description": "spawn / open (optional): array of {text, kind}: text the child gets as DATA, not as instructions — a fetched page, a user's message, another agent's output. Each entry is placed after the prompt inside <kind>…</kind> tags it cannot close. Put what you want done in prompt and what it should be done to here. kind is one of untrusted (default), user_input, web_content, tool_output, search_result, uploaded_cv, qa_question; any other becomes untrusted. At most 64 entries and 1 MiB of text per child.", "items": {"type": "object", "properties": {"text": {"type": "string"}, "kind": {"type": "string"}}, "required": ["text"]}},
+    "result": {"type": "string", "enum": ["text","object"], "description": "spawn (optional): how the child's outcome comes back. text (default): its final answer as text behind a [sub-agent …] line, for you to read. object: a JSON object {agent_id, run_id, status, stop_reason, final_text, structured, state, usage, error} for a program to read — the answer with no header line, the run's token usage and model, and a failed, cancelled or timed-out child reported in status and error instead of failing the call. Not with mode poll. On parallel_spawn it is the default for every entry."},
     "spawns": {
       "type": "array",
       "minItems": 1,
@@ -593,7 +612,8 @@ const agentInputSchema = `{
           "def_id": {"type": "string", "description": "Optional. Pin this child to a specific agent_defs row id."},
           "compaction": {"type": "object", "description": "Optional per-child context-compaction override (inherits yours by default). Fields: enabled, target_percentage (10-50), keep_last_n, keep_first, autocompact_at_pct (50-95), model.", "properties": {"enabled": {"type": "boolean"}, "target_percentage": {"type": "integer"}, "keep_last_n": {"type": "integer"}, "keep_first": {"type": "boolean"}, "autocompact_at_pct": {"type": "integer"}, "model": {"type": "string"}}},
           "timeout_ms": {"type": "integer", "description": "Optional. Bound this child's run; when it runs out the child is cancelled and its entry reports status \"timeout\". 0 or absent = the call's timeout_ms."},
-          "untrusted": {"type": "array", "description": "Optional. Text this child gets as data, not as instructions, fenced after its prompt: an array of {text, kind}. At most 64 entries and 1 MiB per child.", "items": {"type": "object", "properties": {"text": {"type": "string"}, "kind": {"type": "string"}}, "required": ["text"]}}
+          "untrusted": {"type": "array", "description": "Optional. Text this child gets as data, not as instructions, fenced after its prompt: an array of {text, kind}. At most 64 entries and 1 MiB per child.", "items": {"type": "object", "properties": {"text": {"type": "string"}, "kind": {"type": "string"}}, "required": ["text"]}},
+          "result": {"type": "string", "enum": ["text","object"], "description": "Optional. How this child's outcome comes back: text (default) puts its answer in output; object puts a JSON object {agent_id, run_id, status, stop_reason, final_text, structured, state, usage, error} in result instead. Absent = the call's result."}
         },
         "required": ["name", "prompt"]
       }
@@ -692,6 +712,12 @@ func (a *AgentTool) executeSpawn(ctx context.Context, in agentInput) (tools.Resu
 	if r, ok := checkUntrusted("untrusted", in.Untrusted); !ok {
 		return r, nil
 	}
+	if r, ok := checkResultMode("result", in.Result); !ok {
+		return r, nil
+	}
+	if in.Result == resultObject && pm.poll {
+		return errValidation(resultObjectWithPoll, resultObjectWithPollHint), nil
+	}
 	name, err := a.runName(ctx, in.Name)
 	if err != nil {
 		return errValidation(err.Error(), ""), nil
@@ -723,10 +749,24 @@ func (a *AgentTool) executeSpawn(ctx context.Context, in agentInput) (tools.Resu
 	if !in.Compaction.IsZero() {
 		subCtx = tools.WithCompactionOverride(subCtx, in.Compaction)
 	}
+	// Where the child's run reports its outcome, when the caller wants the
+	// object. Always set, nil included (tools.WithChildOutcome).
+	var outcome *tools.ChildOutcome
+	if in.Result == resultObject {
+		outcome = &tools.ChildOutcome{}
+	}
+	subCtx = tools.WithChildOutcome(subCtx, outcome)
 	endWait := providers.BeginWait(ctx) // the caller's run is parked while its child works
 	defer endWait()                     // every exit, a panic included: a wait left open would stop the budget for good
 	output, state, runID, timedOut, err := a.runChildBounded(subCtx, in.TimeoutMs, in.Name, in.Prompt, in.DefID)
 	endWait()
+	// A child that ran is described, not raised, whatever its end. One that
+	// never started has no run to describe and falls through to the errors
+	// below.
+	if obj, ran := newSpawnObject(outcome, in.Name, in.TimeoutMs, output, timedOut, err); ran {
+		obj.capTo(quarterWindowChars(ctx))
+		return obj.result(), nil
+	}
 	if timedOut {
 		return errBusiness(ChildTimedOutMessage(in.Name, in.TimeoutMs, runID),
 			"Give the child a larger timeout_ms or a smaller task. What it did before the bound is in its run's transcript."), nil
@@ -843,6 +883,15 @@ func (a *AgentTool) executeParallelSpawn(ctx context.Context, in agentInput) (to
 		if r, ok := checkUntrusted(fmt.Sprintf("spawns[%d].untrusted", i), sp.Untrusted); !ok {
 			return r, nil
 		}
+		if r, ok := checkResultMode(fmt.Sprintf("spawns[%d].result", i), sp.Result); !ok {
+			return r, nil
+		}
+		if sp.Result == "" {
+			in.Spawns[i].Result = in.Result // the call's default
+		}
+		if in.Spawns[i].Result == resultObject && pm.poll {
+			return errValidation(resultObjectWithPoll, resultObjectWithPollHint), nil
+		}
 		if sp.TimeoutMs == 0 {
 			in.Spawns[i].TimeoutMs = in.TimeoutMs // the call's default
 		}
@@ -918,6 +967,7 @@ func (a *AgentTool) executeParallelSpawn(ctx context.Context, in agentInput) (to
 	}
 
 	results := make([]ParallelSpawnResult, len(in.Spawns))
+	objects := make([]*spawnObject, len(in.Spawns)) // per entry that asked for `result: "object"`
 	sem := make(chan struct{}, concurrencyCap)
 	var wg sync.WaitGroup
 	for i, sp := range in.Spawns {
@@ -950,8 +1000,16 @@ func (a *AgentTool) executeParallelSpawn(ctx context.Context, in agentInput) (to
 			}
 			// The bound starts here, once the child holds a slot: time queued
 			// behind its siblings is the call's concurrency, not the child's work.
+			var outcome *tools.ChildOutcome
+			if sp.Result == resultObject {
+				outcome = &tools.ChildOutcome{}
+			}
+			childCtx = tools.WithChildOutcome(childCtx, outcome)
 			out, childState, childRunID, timedOut, err := a.runChildBounded(childCtx, sp.TimeoutMs, sp.Name, sp.Prompt, sp.DefID)
 			var r ParallelSpawnResult
+			if obj, ran := newSpawnObject(outcome, sp.Name, sp.TimeoutMs, out, timedOut, err); ran {
+				objects[i] = &obj
+			}
 			if timedOut {
 				r = ParallelSpawnResult{Index: i, Agent: sp.Name, Ok: false, Error: ChildTimedOutMessage(sp.Name, sp.TimeoutMs, childRunID), RunID: childRunID, Status: "timeout"}
 			} else if capped := (*ChildCappedError)(nil); errors.As(err, &capped) {
@@ -1028,9 +1086,24 @@ func (a *AgentTool) executeParallelSpawn(ctx context.Context, in agentInput) (to
 	defer endWait()                     // idempotent; closes the wait on every exit
 	wg.Wait()
 	endWait()
+	// A row whose entry asked for the object carries it in place of its text
+	// and state. The ledger above recorded the row in its text form, which is
+	// what a resumed parent is handed for a child that ended before the
+	// snapshot.
+	quarter := quarterWindowChars(ctx)
+	for i, obj := range objects {
+		if obj == nil {
+			continue
+		}
+		if quarter > 0 {
+			obj.capTo(quarter / len(results))
+		}
+		r := &results[i]
+		r.Result, r.Output, r.State = obj, "", nil
+	}
 	// After the ledger recorded each full answer: the durable record keeps it,
 	// the parent's context gets the capped envelope.
-	capRowOutputs(results, quarterWindowChars(ctx))
+	capRowOutputs(results, quarter)
 
 	envelope := struct {
 		Results []ParallelSpawnResult `json:"results"`
@@ -1142,6 +1215,9 @@ func (a *AgentTool) executeOpen(ctx context.Context, in agentInput) (tools.Resul
 	if in.IdleTTLSeconds < 0 {
 		return errValidation("idle_ttl_seconds must be >= 0 (0 = operator default)", ""), nil
 	}
+	if in.Result == resultObject {
+		return errValidation(`result "object" is not available for a resident child`, "op=open and op=send already answer with an object: {child_run_id, state, output}."), nil
+	}
 	if r, ok := checkUntrusted("untrusted", in.Untrusted); !ok {
 		return r, nil
 	}
@@ -1194,6 +1270,9 @@ func (a *AgentTool) executeSend(ctx context.Context, in agentInput) (tools.Resul
 	}
 	if in.Prompt == "" {
 		return errValidation("missing required field: prompt", "Pass `prompt`: the next instruction for the child."), nil
+	}
+	if in.Result == resultObject {
+		return errValidation(`result "object" is not available for a resident child`, "op=open and op=send already answer with an object: {child_run_id, state, output}."), nil
 	}
 	if len(in.Untrusted) > 0 {
 		// Not dropped in silence: the caller would believe the child read it.
