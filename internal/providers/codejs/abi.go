@@ -42,4 +42,5 @@ package codejs
 // → minor bump. Logged at startup and stated in the code-agents help topic.
 //
 //	1.1.0  Agent.spawn takes `untrusted`.
-const ABIVersion = "1.1.0"
+//	1.2.0  Agent.spawn takes `result: "object"` and then returns an object.
+const ABIVersion = "1.2.0"

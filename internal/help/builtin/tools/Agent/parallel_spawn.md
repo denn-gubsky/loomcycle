@@ -11,9 +11,11 @@ only the ones that failed.
 
 - `op` (required) — `parallel_spawn`.
 - `spawns` (required) — 1 to 32 entries, each `{name, prompt, def_id?,
-  compaction?, timeout_ms?, untrusted?}` with the same meaning as on `spawn`.
+  compaction?, timeout_ms?, untrusted?, result?}` with the same meaning as on `spawn`.
   An entry's `untrusted` text goes to that child only. Do not also
   pass a top-level `name`, `prompt` or `def_id`.
+- `result` — the default for every entry that names none: `text` (default) or
+  `object`. Not with `mode: "poll"`.
 - `timeout_ms` — the bound for every entry that has no `timeout_ms` of its
   own. A child that runs out is cancelled and reported in its row; the others
   keep running. Absent or 0 = no bound.
@@ -34,8 +36,12 @@ runtime is paused counts.
 
 ## Returns
 
-`{"results": [{index, agent, ok, output?, error?, state?, run_id?, status?, truncated?, state_omitted?, state_bytes?}]}`,
-in the same order as `spawns`. `output` is the child's final text (as `spawn`
+`{"results": [{index, agent, ok, output?, result?, error?, state?, run_id?, status?, truncated?, state_omitted?, state_bytes?}]}`,
+in the same order as `spawns`. A row whose entry asked for `result: "object"`
+carries that object in `result` (the one `spawn` returns) in place of
+`output` and `state`; its `ok`, `error`, `run_id` and `status` are as for any
+row. After a restore from a snapshot, a child that had already finished is
+reported in the text form, with `output`, whatever its entry asked for. `output` is the child's final text (as `spawn`
 returns it) when `ok` is true; `error` says why when it is false. `run_id` is
 the child's run, present whenever one was started — failed children included.
 `status` is `"timeout"` on a row whose child its `timeout_ms` stopped (`ok` is

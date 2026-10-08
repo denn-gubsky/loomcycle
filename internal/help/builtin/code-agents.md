@@ -88,7 +88,7 @@ tool, built-in or MCP, is callable. A tool you didn't allow is not a
 |---|---|---|
 | `Memory.<op>(obj)` | Memory | multi-op meta-tool; `<op>` is any Memory op (get/set/delete/list/incr/search/merge/append_dedupe/bounded_list/add/recall); obj is the input minus `op` |
 | `Channel.<op>(obj)` | Channel | multi-op meta-tool; `<op>` is any Channel op (publish/subscribe/ack/peek/list_channels); subscribe is a non-blocking peek |
-| `Agent.spawn(obj)` | Agent | spawn an LLM (or code) sub-agent; returns its final text **behind an attribution header** — see Return types. Text the child must treat as data goes in `untrusted`, not in `prompt` |
+| `Agent.spawn(obj)` | Agent | spawn an LLM (or code) sub-agent; returns its final text **behind an attribution header**, or, with `result: "object"`, an object with its status, answer and token usage — see Return types. Text the child must treat as data goes in `untrusted`, not in `prompt` |
 | `WebFetch(obj)` / `Read(obj)` / `HTTP(obj)` / `WebSearch(obj)` / … | the built-in of that name | every other allowed **built-in**, flat by canonical name |
 | `mcp__<server>__<tool>(obj)` | that MCP tool | every allowed MCP tool, flat by name |
 
@@ -111,23 +111,36 @@ values** — their results are structured JSON, so `Memory.get(...).value` and
 `JSON.parse(WebFetch(...))` yourself if it's a JSON API. A result that is not
 valid JSON falls back to the raw string rather than throwing.
 
-> **`Agent.spawn` is the exception, and it will catch you.** Its result is
+> **`Agent.spawn`: ask for the object.** By default its result is text,
 > wrapped as `[sub-agent agent_id=…]\n<the child's final text>` so a parent
-> *model* can attribute the answer — which means it is **never valid JSON**,
-> so it always arrives as a **string**, even when the child replied with a
-> perfect JSON document. `JSON.parse` on it throws on character 0. If you
-> spawn a child to produce structured output, strip the header first:
+> *model* can attribute the answer. That is **never valid JSON**, so it always
+> arrives as a **string**, and `JSON.parse` on it throws on character 0.
+>
+> A program wants `result: "object"` instead:
 >
 > ```js
-> var reply = String(Agent.spawn({ name: "…", prompt: "…" }))
->   .replace(/^\s*\[sub-agent[^\]\n]*\]\s*/, "");
-> var data = JSON.parse(reply);   // now it parses
+> var r = Agent.spawn({ name: "…", prompt: "…", result: "object" });
+> // r.status       "completed" | "failed" | "cancelled" | "rejected" | "timeout" | "max_iterations"
+> // r.final_text   the child's answer, no header line
+> // r.structured   the answer parsed against the child's output_format, when it has one
+> // r.usage        { input_tokens, output_tokens, cache_creation_input_tokens,
+> //                  cache_read_input_tokens, model, provider }
+> // r.agent_id, r.run_id, r.stop_reason, r.error, r.state
 > ```
 >
-> Expect to strip code fences and to tolerate prose either side of the payload
-> too: a small model does not reliably emit a bare document however plainly it
-> is asked to. And validate what you get — a child's reply is model output, so
-> treat an unreadable one as a handled outcome, never as an assertion failure.
+> A child that ran never throws in this mode: a failed, cancelled, timed-out
+> or capped child comes back with its `status` and an `error`, and its
+> `usage` — check `r.status` before you use `r.final_text`. Only a child that
+> never started (an unknown agent, a refused spawn) throws. In a
+> `parallel_spawn`, an entry with `result: "object"` carries the object in its
+> row's `result` in place of `output`; put `result` on the call to make it the
+> default for every entry. Not available with `mode: "poll"`.
+>
+> `r.final_text` is still model output. When the child has no
+> `output_format`, expect to strip code fences and to tolerate prose either
+> side of a JSON payload: a small model does not reliably emit a bare
+> document however plainly it is asked to. Treat an unreadable reply as a
+> handled outcome, never as an assertion failure.
 (Return type follows the tool, never the content — so the same code works
 whether a fetched page is JSON or HTML.)
 
@@ -273,5 +286,5 @@ tests and snapshot equality.
   `op=self` reports both, in `run_budget`: `wall_limit_ms` and
   `wall_elapsed_ms` beside the budget's figures.
 - **ABI versioning.** The JS-side API is versioned on its own semver
-  (currently 1.1.0), separate from loomcycle's release vector. Breaking a
+  (currently 1.2.0), separate from loomcycle's release vector. Breaking a
   signature is a major bump with a deprecation window.

@@ -7122,6 +7122,17 @@ func (s *Server) runSubRun(ctx context.Context, name, systemExtra, prompt, defID
 	if hold != nil {
 		hold.released(terminalStatusOf(prep.SteerCtx, res, runErr))
 	}
+	// A spawn that asked for its child's outcome gets it here, whatever the
+	// end: everything in it is in hand now and gone once this returns.
+	if sink := tools.ChildOutcomeSink(ctx); sink != nil {
+		*sink = tools.ChildOutcome{
+			AgentID: prep.AgentID, RunID: prep.RunID, SessionID: prep.SessionID,
+			Status:     string(terminalStatusOf(prep.SteerCtx, res, runErr)),
+			StopReason: res.StopReason,
+			FinalText:  res.FinalText, Structured: res.Structured, State: res.State,
+			Usage: res.Usage,
+		}
+	}
 	if runErr != nil {
 		// Wrap with session/run IDs so a developer reading parent logs
 		// can locate the sub's transcript directly. The parent agent's
@@ -7815,6 +7826,9 @@ func (s *Server) prepareSubRunValues(ctx context.Context, name string, src nameS
 	// A spawn's untrusted inputs are this run's alone: without the clear, a
 	// child this run spawns with none of its own would be handed them again.
 	subRunCtx = tools.WithSpawnUntrusted(subRunCtx, nil)
+	// Likewise where this run reports its outcome (a spawn with result
+	// "object"): a run it spawns must not write over it.
+	subRunCtx = tools.WithChildOutcome(subRunCtx, nil)
 	defer func() {
 		if !prepOK {
 			subCancelFn(nil)

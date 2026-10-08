@@ -1513,6 +1513,41 @@ type UntrustedInput struct {
 	Kind string `json:"kind,omitempty"`
 }
 
+// ChildOutcome is what a sub-run reports about how it ended, beyond the text
+// and state its runner returns: who it was, how it stopped, what it used. The
+// Agent tool asks for it (a spawn with result "object") by placing a pointer
+// on the child's ctx; the sub-run fills it in once the run is over. RunID is
+// empty when no run was created.
+type ChildOutcome struct {
+	AgentID, RunID, SessionID string
+	// Status is the run's terminal status (completed, failed, cancelled,
+	// rejected) and StopReason why its loop stopped.
+	Status, StopReason string
+	// FinalText is the child's answer as it wrote it, with no attribution line.
+	FinalText string
+	// Structured is the answer parsed against the child's output_format, when
+	// it has one; State a stateful child's final state.
+	Structured, State map[string]any
+	Usage             providers.Usage
+}
+
+type ctxKeyChildOutcome struct{}
+
+// WithChildOutcome places where the next sub-run on this ctx reports its
+// outcome. Like WithSpawnUntrusted it ALWAYS sets the value, nil included, and
+// the sub-run clears it on its own ctx: left in place, a grandchild would
+// write its outcome over its parent's.
+func WithChildOutcome(ctx context.Context, out *ChildOutcome) context.Context {
+	return context.WithValue(ctx, ctxKeyChildOutcome{}, out)
+}
+
+// ChildOutcomeSink returns where this ctx's sub-run reports its outcome, or
+// nil when nobody asked.
+func ChildOutcomeSink(ctx context.Context) *ChildOutcome {
+	out, _ := ctx.Value(ctxKeyChildOutcome{}).(*ChildOutcome)
+	return out
+}
+
 type ctxKeySpawnUntrusted struct{}
 
 // WithSpawnUntrusted carries a spawn's untrusted inputs from the Agent tool to

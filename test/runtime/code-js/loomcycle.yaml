@@ -2,7 +2,8 @@
 # (RFC J). The code-js provider is SYNTHETIC: it runs operator JavaScript via
 # goja with no LLM, so this suite is deterministic by construction and needs
 # no provider key. The mock provider is declared only so boot succeeds with a
-# valid default provider; the code-js agent below never calls it.
+# valid default provider, and to serve the one model-driven agent, echo, that
+# spawnflow spawns; kvflow never calls it.
 provider_priority: [mock]
 tiers:
   middle:
@@ -18,3 +19,19 @@ agents:
     description: "Deterministic Memory round-trip via code-js (set/incr/get/list)."
     memory_scopes: [user, agent]
     tools: [Memory]
+
+  # spawnflow spawns echo twice — once asking for the object result, once
+  # plain — and reports what it got. The object is the regression: a code-js
+  # parent reading its child's status, answer and token usage in one value.
+  spawnflow:
+    provider: code-js
+    description: "Reads a sub-agent's outcome as an object (result: object)."
+    tools: [Agent]
+
+  # echo is the child: a model-driven agent on the mock provider, so its run
+  # reports real usage figures with no provider key.
+  echo:
+    tier: middle
+    description: "A mock model-driven child for spawnflow."
+    system_prompt: "Answer briefly."
+    tools: []

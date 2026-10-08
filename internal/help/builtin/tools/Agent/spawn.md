@@ -23,6 +23,9 @@ conversation — so put all it needs in it.
   not expanded. At most 64 entries and 1 MiB of text per child.
 - `def_id` — run a specific version of that agent (from `AgentDef`). The
   version's name must match `name`.
+- `result` — how the child's outcome comes back. `text` (default): its final
+  answer as text, for you to read. `object`: a JSON object, for a program —
+  see Returns. Not with `mode: "poll"`.
 - `compaction` — override the child's context compaction (it inherits yours):
   `enabled`, `target_percentage` (10–50), `keep_last_n`, `keep_first`,
   `autocompact_at_pct` (50–95), `model`.
@@ -59,6 +62,27 @@ left out, with `[final state omitted: N characters, ...; it is in the
 transcript of run r_...]` in its place. A failure names the run in its message
 (`run=r_...`).
 
+With `result: "object"` the call returns
+`{agent_id, run_id, status, stop_reason?, final_text?, structured?, state?, usage, error?, truncated?, structured_omitted?, state_omitted?}`:
+
+- `final_text` is the answer with no `[sub-agent …]` line.
+- `structured` is the answer parsed against the child's `output_format`, when
+  it has one; `state` is a stateful child's final state.
+- `usage` is what the child's run used: `input_tokens`, `output_tokens`,
+  `cache_creation_input_tokens`, `cache_read_input_tokens`, `model`,
+  `provider`.
+- `status` is `completed`, `failed`, `cancelled` or `rejected`; `timeout` when
+  the child's `timeout_ms` stopped it; `max_iterations` when it stopped at its
+  iteration limit (its last answer is in `final_text` and may be incomplete).
+- **A child that ran does not fail the call in this mode.** Anything but
+  `completed` comes with `error` saying why and without an answer to use, so
+  check `status` first. A child that never started — an unknown agent, a
+  refused spawn — is still an error.
+- The object takes at most a quarter of your context window, like a text
+  result: `final_text` is cut, a `structured` or `state` too large to keep is
+  left out whole, and `truncated` (with `structured_omitted` /
+  `state_omitted`) says so. The full answer stays on the child's run.
+
 In poll mode the call returns `{child_run_id, agent, state}` with `state`
 `"running"` — the child's run id, before it has done anything. Its answer
 comes back from `poll`.
@@ -66,6 +90,9 @@ comes back from `poll`.
 ## Errors
 
 - `missing required field: name` / `prompt` — add it.
+- `result: unknown value "X" ...` — use `text` or `object`.
+- `result "object" is not available with mode "poll"` — a poll-mode call
+  answers before the child has run; read it with `poll`.
 - `untrusted: N bytes of text is over the limit of 1048576` — pass less, or
   split the work across several children.
 - `unknown sub-agent "X" ...` — no agent is registered under that name for
