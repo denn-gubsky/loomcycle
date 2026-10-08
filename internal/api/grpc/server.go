@@ -981,6 +981,7 @@ func (s *Server) Run(req *loomcyclepb.RunRequest, stream loomcyclepb.Loomcycle_R
 		Interruption:     interruptionFromProto(req.GetInterruption()),
 		MaxContextTokens: int(req.GetMaxContextTokens()), // RFC CJ per-run context-window override
 		IdempotencyKey:   req.GetIdempotencyKey(),
+		MaxWallSeconds:   int(req.GetMaxWallSeconds()),
 		// RFC DC per-run overrides. One helper for all three call sites, so a
 		// typed gRPC caller and an HTTP one get the same answer from the same
 		// validation — and so adding a field means editing one place.
@@ -1212,6 +1213,7 @@ func spawnRequestFromProto(req *loomcyclepb.RunRequest) connector.SpawnRunReques
 		Compaction:       compactionFromProto(req.GetCompaction()),
 		MaxContextTokens: int(req.GetMaxContextTokens()), // RFC CJ per-run context-window override
 		IdempotencyKey:   req.GetIdempotencyKey(),
+		MaxWallSeconds:   int(req.GetMaxWallSeconds()),
 		// The same four Run maps: a configured run or a batch child built from
 		// this request must not silently lose them
 		// (TestSpawnRequestFromProto_MapsEveryFieldRunMaps guards the set).
@@ -1441,6 +1443,7 @@ type runInputProtoArgs struct {
 	ParentContext    *store.ParentContext         // opaque caller-tracking lineage
 	MaxContextTokens int                          // RFC CJ per-run context-window override (0 = inherit agent def)
 	IdempotencyKey   string                       // the caller's key, as sent (Run only)
+	MaxWallSeconds   int                          // the run's own lifetime limit (Run only)
 
 	// RFC DC per-run overrides. Routing selects within what the definition
 	// declares; the budget knobs are raisable except MaxConcurrentChildren,
@@ -1502,6 +1505,7 @@ func runInputFromProto(a runInputProtoArgs) runner.RunInput {
 		MaxContextTokens:      a.MaxContextTokens, // RFC CJ per-run context-window override
 		// As sent; RunOnce scopes and stores it.
 		ClientIdempotencyKey: a.IdempotencyKey,
+		MaxWallSeconds:       a.MaxWallSeconds,
 	}
 	if a.AllowedHosts != nil {
 		// Proto3 message-type field present → caller did supply a

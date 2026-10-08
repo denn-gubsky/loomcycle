@@ -183,6 +183,13 @@ type RunRequest struct {
 	// child's SpawnResult names the existing run, deduplicated. A fresh run
 	// only. Mirrors POST /v1/runs `idempotency_key`.
 	IdempotencyKey string `protobuf:"bytes,38,opt,name=idempotency_key,json=idempotencyKey,proto3" json:"idempotency_key,omitempty"`
+	// How long the run may LIVE, in seconds (0 = no bound; at most 30 days).
+	// Past it the run is cancelled, with what it started, and ends cancelled
+	// with stop_reason "wall_limit". Waits count; time the runtime is paused
+	// does not. It belongs to the run, not to the call, so it is the time bound
+	// a detached batch child takes, where timeout_ms is refused. Mirrors
+	// POST /v1/runs `max_wall_seconds`.
+	MaxWallSeconds int32 `protobuf:"varint,39,opt,name=max_wall_seconds,json=maxWallSeconds,proto3" json:"max_wall_seconds,omitempty"`
 	unknownFields  protoimpl.UnknownFields
 	sizeCache      protoimpl.SizeCache
 }
@@ -481,6 +488,13 @@ func (x *RunRequest) GetIdempotencyKey() string {
 		return x.IdempotencyKey
 	}
 	return ""
+}
+
+func (x *RunRequest) GetMaxWallSeconds() int32 {
+	if x != nil {
+		return x.MaxWallSeconds
+	}
+	return 0
 }
 
 type ContinueRequest struct {
@@ -10646,7 +10660,7 @@ var File_loomcycle_proto protoreflect.FileDescriptor
 
 const file_loomcycle_proto_rawDesc = "" +
 	"\n" +
-	"\x0floomcycle.proto\x12\floomcycle.v1\x1a\x1fgoogle/protobuf/timestamp.proto\"\xbd\x0e\n" +
+	"\x0floomcycle.proto\x12\floomcycle.v1\x1a\x1fgoogle/protobuf/timestamp.proto\"\xe7\x0e\n" +
 	"\n" +
 	"RunRequest\x12\x14\n" +
 	"\x05agent\x18\x01 \x01(\tR\x05agent\x12\x1d\n" +
@@ -10694,7 +10708,8 @@ const file_loomcycle_proto_rawDesc = "" +
 	"\x12review_ttl_seconds\x18$ \x01(\x05R\x10reviewTtlSeconds\x12\x1d\n" +
 	"\n" +
 	"hooks_json\x18% \x01(\fR\thooksJson\x12'\n" +
-	"\x0fidempotency_key\x18& \x01(\tR\x0eidempotencyKey\x1aB\n" +
+	"\x0fidempotency_key\x18& \x01(\tR\x0eidempotencyKey\x12(\n" +
+	"\x10max_wall_seconds\x18' \x01(\x05R\x0emaxWallSeconds\x1aB\n" +
 	"\x14UserCredentialsEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
 	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01B\x17\n" +

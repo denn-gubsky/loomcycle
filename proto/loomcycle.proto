@@ -690,6 +690,13 @@ message RunRequest {
   // child's SpawnResult names the existing run, deduplicated. A fresh run
   // only. Mirrors POST /v1/runs `idempotency_key`.
   string idempotency_key = 38;
+  // How long the run may LIVE, in seconds (0 = no bound; at most 30 days).
+  // Past it the run is cancelled, with what it started, and ends cancelled
+  // with stop_reason "wall_limit". Waits count; time the runtime is paused
+  // does not. It belongs to the run, not to the call, so it is the time bound
+  // a detached batch child takes, where timeout_ms is refused. Mirrors
+  // POST /v1/runs `max_wall_seconds`.
+  int32 max_wall_seconds = 39;
 }
 
 message ContinueRequest {

@@ -107,6 +107,13 @@ type SpawnRunRequest struct {
 	// Deduplicated). For a fresh run only. See ValidateIdempotencyKey.
 	IdempotencyKey string `json:"idempotency_key,omitempty"`
 
+	// MaxWallSeconds bounds how long this run may LIVE, in seconds (0 = no
+	// bound). Past it the run is cancelled, with what it started, and ends
+	// with stop_reason "wall_limit". Waits count; time the runtime is paused
+	// does not. It belongs to the run, not to the call, so it is the bound a
+	// detached run takes where timeout_ms is refused.
+	MaxWallSeconds int `json:"max_wall_seconds,omitempty"`
+
 	// Metadata is the optional NON-SECRET structured metadata passed to the
 	// agent (repo name, review policy, …) — the same trusted channel the HTTP
 	// /v1/runs `metadata` field feeds, so a gRPC / LoomCycle-MCP spawn_run /

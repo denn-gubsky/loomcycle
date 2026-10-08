@@ -968,6 +968,13 @@ export interface RunOptions extends RunOverrideOptions {
    *  compared, so build the key from what makes the work distinct. A fresh
    *  run only: refused with `sessionId`. */
   idempotencyKey?: string;
+  /** Bound how long the run may LIVE, in seconds (omitted or 0 = no bound; at
+   *  most 30 days). Past it the run is cancelled, with what it started, and
+   *  ends `cancelled` with `stop_reason: "wall_limit"`. Waits count; time the
+   *  runtime is paused does not. It belongs to the run, not to the call, so it
+   *  is the time bound for a `mode: "detach"` batch child, where `timeoutMs`
+   *  is refused. Any agent, model-driven or code-js. */
+  maxWallSeconds?: number;
   /** Optional NON-SECRET structured metadata passed to the agent (repo
    *  name, review policy, preferred skills, …) — symmetric with the
    *  WebHook/Schedule trigger paths. As a first-party (bearer-authed)
@@ -1437,6 +1444,10 @@ export interface RunSpec {
   context?: Record<string, unknown>;
   max_context_tokens?: number;
   run_timeout_seconds?: number;
+  /** The run's own lifetime limit, in seconds, when it was started with
+   *  `maxWallSeconds`: past it the run ends `cancelled` with
+   *  `stop_reason: "wall_limit"`. Absent when the run has no such limit. */
+  max_wall_seconds?: number;
   review_ttl_seconds?: number;
   /** Which model serves the run: model / provider / tier / effort. */
   routing?: Record<string, unknown>;

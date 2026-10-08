@@ -2696,6 +2696,9 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 	if err := in.OutputFormat.Validate(); err != nil {
 		return fmt.Errorf("%w: %v", runner.ErrInvalidArgument, err)
 	}
+	if msg, ok := connector.ValidateMaxWallSeconds(in.MaxWallSeconds); !ok {
+		return fmt.Errorf("%w: %s", runner.ErrInvalidArgument, msg)
+	}
 	startingDraft := in.ConfiguredRunID != ""
 	if startingDraft && s.store == nil {
 		return runner.ErrSessionRequired
@@ -2995,6 +2998,7 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 		Context:           config.MergeContext(agentDef.Context, in.Context),          // per-run wins per field
 		MaxContextTokens:  config.MergeMaxContextTokens(agentDef.MaxContextTokens, in.MaxContextTokens),
 		RunTimeoutSeconds: pickRunTimeout(in.RunTimeoutSeconds, agentDef.RunTimeoutSeconds),
+		MaxWallSeconds:    in.MaxWallSeconds,
 		Routing:           persistedRouting(runRouting),
 		Resources:         persistedResources(runResources),
 		Tuning:            persistedTuning(runTuning),
@@ -3353,6 +3357,8 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 		Metadata:            in.Metadata,
 		PayloadMetadata:     in.PayloadMetadata,
 		RunTimeoutSeconds:   runCfg.RunTimeoutSeconds,
+		MaxWallSeconds:      runCfg.MaxWallSeconds,
+		OnWallLimit:         s.wallLimitCancel(agentID, runID),
 		Interactive:         in.Interactive,
 		InteractiveNow:      s.interactiveNowFn(runID, in.Interactive),
 		ArmTurnCancel:       s.armTurnCancelIf(in.Interactive, runID), // an interactive run's turn can be stopped; it parks
@@ -4406,6 +4412,12 @@ type runRequest struct {
 	// run that starts at once only — not with session_id, not with
 	// start:false.
 	IdempotencyKey string `json:"idempotency_key,omitempty"`
+	// MaxWallSeconds bounds how long the run may LIVE, in seconds (0 = no
+	// bound; at most 30 days). Past it the run is cancelled, with what it
+	// started, and ends cancelled with stop_reason "wall_limit". Waits count,
+	// an interactive run's time parked for input included; time the runtime
+	// is paused does not. For any agent, model-driven or code-js.
+	MaxWallSeconds int `json:"max_wall_seconds,omitempty"`
 	// Metadata is the optional NON-SECRET structured blob passed to the
 	// agent (repo name, review policy, preferred skills, …) — symmetric with
 	// the WebHook/Schedule trigger paths. A first-party /v1/runs caller is
@@ -4639,6 +4651,10 @@ func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {
 	// clear 400 here beats a confusing provider-side error downstream.
 	if len(req.Segments) == 0 {
 		http.Error(w, `no input: provide "segments" (or a top-level "prompt" string)`, http.StatusBadRequest)
+		return
+	}
+	if msg, ok := connector.ValidateMaxWallSeconds(req.MaxWallSeconds); !ok {
+		http.Error(w, msg, http.StatusBadRequest)
 		return
 	}
 
@@ -4935,6 +4951,7 @@ func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {
 		Context:           config.MergeContext(agentDef.Context, req.Context),          // per-run wins per field
 		MaxContextTokens:  config.MergeMaxContextTokens(agentDef.MaxContextTokens, req.MaxContextTokens),
 		RunTimeoutSeconds: pickRunTimeout(req.RunTimeoutSeconds, agentDef.RunTimeoutSeconds),
+		MaxWallSeconds:    req.MaxWallSeconds,
 		Routing:           persistedRouting(runRouting),
 		Resources:         persistedResources(runResources),
 		Tuning:            persistedTuning(runTuning),
@@ -5279,6 +5296,8 @@ func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {
 		CodeBody:            agentDef.Code, // inline code-js body (RFC J); "" → FS fallback
 		Metadata:            req.Metadata,  // direct /v1/runs caller is first-party → trusted; no payload_metadata
 		RunTimeoutSeconds:   runCfg.RunTimeoutSeconds,
+		MaxWallSeconds:      runCfg.MaxWallSeconds,
+		OnWallLimit:         s.wallLimitCancel(agentID, runID),
 		Interactive:         req.Interactive,
 		InteractiveNow:      s.interactiveNowFn(runID, req.Interactive),
 		Review:              req.Review,

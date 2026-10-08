@@ -65,6 +65,7 @@ func spawnRequestToRunInput(req connector.SpawnRunRequest) runner.RunInput {
 		ParentContext:   req.ParentContext,   // v0.12.x: opaque tracking lineage
 		// The caller's key, as sent; RunOnce scopes and stores it.
 		ClientIdempotencyKey: req.IdempotencyKey,
+		MaxWallSeconds:       req.MaxWallSeconds,
 		Metadata:             req.Metadata,         // non-secret trusted agent metadata
 		Sampling:             req.Sampling,         // per-run LLM sampling override
 		ToolChoice:           req.ToolChoice,       // per-run tool_choice (RFC DI)
@@ -197,6 +198,23 @@ func (s *Server) runBlocking(ctx context.Context, in runner.RunInput, parentCont
 		result.Status = string(store.RunFailed)
 		result.Error = lastErrorMsg
 	}
+	// The run's row has the last word on how it ended. The status above is
+	// worked out from what this call saw — a Go error, the events — and a run
+	// ended from outside leaves neither: cancelled by cancel_run or by its
+	// own max_wall_seconds, RunOnce returns nil and no event says so, which
+	// read here as "completed". The row was written by the same code that
+	// ended the run, before RunOnce returned.
+	if regRunID != "" && s.store != nil {
+		if run, err := s.store.GetRun(context.WithoutCancel(ctx), regRunID); err == nil && store.IsTerminalRunStatus(run.Status) && string(run.Status) != result.Status {
+			result.Status = string(run.Status)
+			if run.StopReason != "" {
+				result.StopReason = run.StopReason
+			}
+			if result.Error == "" {
+				result.Error = run.ErrorMsg
+			}
+		}
+	}
 	return result, nil
 }
 
@@ -253,6 +271,9 @@ func (s *Server) SpawnRunBatch(ctx context.Context, req connector.BatchSpawnRequ
 		// A key is one run. Two children sharing one would race for it, and
 		// which of them ran would be chance — almost certainly a mistake in
 		// how the caller built its keys.
+		if msg, ok := connector.ValidateMaxWallSeconds(req.Spawns[i].MaxWallSeconds); !ok {
+			return connector.BatchSpawnResult{}, fmt.Errorf("spawn_runs: spawns[%d]: %s", i, msg)
+		}
 		key := req.Spawns[i].IdempotencyKey
 		if msg, ok := connector.ValidateIdempotencyKey(key); !ok {
 			return connector.BatchSpawnResult{}, fmt.Errorf("spawn_runs: spawns[%d]: %s", i, msg)
@@ -277,7 +298,7 @@ func (s *Server) SpawnRunBatch(ctx context.Context, req connector.BatchSpawnRequ
 		// model-driven runs do not have anywhere else. Refused rather than
 		// ignored, so a caller relying on it learns it has no effect.
 		if req.TimeoutMS > 0 {
-			return connector.BatchSpawnResult{}, fmt.Errorf("spawn_runs: timeout_ms cannot be combined with mode %q: a detached run outlives the call, so there is no join to bound; stop a run with cancel_run", "detach")
+			return connector.BatchSpawnResult{}, fmt.Errorf("spawn_runs: timeout_ms cannot be combined with mode %q: a detached run outlives the call, so there is no join to bound; bound the run itself with max_wall_seconds on each spawn, or stop it with cancel_run", "detach")
 		}
 	default:
 		return connector.BatchSpawnResult{}, fmt.Errorf("spawn_runs: mode %q not supported (want %q or %q)", mode, "join", "detach")

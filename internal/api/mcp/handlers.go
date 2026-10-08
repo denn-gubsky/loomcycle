@@ -417,6 +417,7 @@ func spawnRunStreaming(ctx context.Context, env *handlerEnv, req connector.Spawn
 		ParentContext:   req.ParentContext,   // v0.12.x opaque tracking lineage
 		// The caller's key, as sent; RunOnce scopes and stores it.
 		ClientIdempotencyKey: req.IdempotencyKey,
+		MaxWallSeconds:       req.MaxWallSeconds,
 		Metadata:             req.Metadata,         // non-secret trusted agent metadata
 		Sampling:             req.Sampling,         // per-run LLM sampling override (was dropped on this streaming path)
 		ToolChoice:           req.ToolChoice,       // per-run tool_choice
@@ -524,6 +525,22 @@ func spawnRunStreaming(ctx context.Context, env *handlerEnv, req connector.Spawn
 		// leave every RunEventsEnabled session unclassified.
 		if info, ok := errclassify.CategoryOf(runErr); ok {
 			result.ErrorInfo = &info
+		}
+	}
+	// The run's own record has the last word on how it ended, as on the
+	// connector's blocking path: a run ended from outside — cancel_run, or
+	// its max_wall_seconds — returns no error and emits no event saying so,
+	// and would be reported here as completed.
+	if regAgentID != "" && env.connector != nil {
+		if run, err := env.connector.GetRun(context.WithoutCancel(ctx), regAgentID); err == nil &&
+			run.RunID == regRunID && store.IsTerminalRunStatus(store.RunStatus(run.Status)) && run.Status != result.Status {
+			result.Status = run.Status
+			if run.StopReason != "" {
+				result.StopReason = run.StopReason
+			}
+			if result.Error == "" {
+				result.Error = run.Error
+			}
 		}
 	}
 	return result, nil

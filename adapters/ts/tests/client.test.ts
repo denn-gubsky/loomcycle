@@ -250,6 +250,17 @@ describe("runStreaming", () => {
     expect("idempotency_key" in without).toBe(false);
   });
 
+  it("forwards max_wall_seconds when set and omits it otherwise", async () => {
+    const { client, fetchMock } = makeClient([
+      sseResponse(['event: done\ndata: {"type":"done"}\n\n']),
+      sseResponse(['event: done\ndata: {"type":"done"}\n\n']),
+    ]);
+    for await (const _ of client.runStreaming({ agent: "judge", segments: [], maxWallSeconds: 60 })) {}
+    expect(JSON.parse(fetchMock.mock.calls[0]![1]!.body as string).max_wall_seconds).toBe(60);
+    for await (const _ of client.runStreaming({ agent: "judge", segments: [] })) {}
+    expect("max_wall_seconds" in JSON.parse(fetchMock.mock.calls[1]![1]!.body as string)).toBe(false);
+  });
+
   it("omits parent_context when undefined (back-compat)", async () => {
     const { client, fetchMock } = makeClient([
       sseResponse(['event: done\ndata: {"type":"done"}\n\n']),

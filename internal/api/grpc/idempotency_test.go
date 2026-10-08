@@ -129,3 +129,21 @@ func TestSpawnRunBatch_CarriesTheKeyAndTheDeduplicatedFlag(t *testing.T) {
 		t.Error("a fresh child is reported deduplicated")
 	}
 }
+
+// max_wall_seconds reaches the runner from Run and a batch child alike.
+func TestRun_MaxWallSecondsReachesTheRunner(t *testing.T) {
+	fr := &fakeRunner{registered: registrationFrame{AgentID: "a", RunID: "r", SessionID: "s"}}
+	client, cleanup := startTestServerWithRunner(t, fr)
+	defer cleanup()
+	stream, err := client.Run(context.Background(), &loomcyclepb.RunRequest{Agent: "default", MaxWallSeconds: 60})
+	if err != nil {
+		t.Fatal(err)
+	}
+	drain(t, stream)
+	if fr.lastInput.MaxWallSeconds != 60 {
+		t.Errorf("Run: RunInput.MaxWallSeconds = %d, want 60", fr.lastInput.MaxWallSeconds)
+	}
+	if r := spawnRequestFromProto(&loomcyclepb.RunRequest{MaxWallSeconds: 90}); r.MaxWallSeconds != 90 {
+		t.Errorf("spawnRequestFromProto: MaxWallSeconds = %d, want 90", r.MaxWallSeconds)
+	}
+}

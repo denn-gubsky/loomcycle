@@ -40,6 +40,9 @@ type runConfigRecord struct {
 	Context           *config.Context      `json:"context,omitempty"`
 	MaxContextTokens  int                  `json:"max_context_tokens,omitempty"`
 	RunTimeoutSeconds int                  `json:"run_timeout_seconds,omitempty"`
+	// MaxWallSeconds is the run's own lifetime limit (0 = none). Kept here so
+	// a resumed run is still bound by it, and so the run's spec shows it.
+	MaxWallSeconds int `json:"max_wall_seconds,omitempty"`
 
 	// Routing is the run's own answer to which model serves it (RFC DC P1).
 	// It lives here rather than beside it on the run row for the same reason
@@ -364,6 +367,21 @@ func (rc runConfigRecord) clockCarry() providers.RunClockState {
 		Waited: time.Duration(rc.Clock.WaitedMs) * time.Millisecond,
 		Wall:   time.Duration(rc.Clock.WallMs) * time.Millisecond,
 	}
+}
+
+// clockCarryFrom is clockCarry for a resume. A run with a lifetime limit of
+// its own that recorded no clock — it did not park before the restart that
+// ended its process — is charged the whole time since it started. That counts
+// any runtime pause in between against it, which errs toward ending the run:
+// the alternative, a fresh clock, would give every restart a full new limit.
+func (rc runConfigRecord) clockCarryFrom(startedAt time.Time) providers.RunClockState {
+	carry := rc.clockCarry()
+	if rc.Clock == nil && rc.MaxWallSeconds > 0 && !startedAt.IsZero() {
+		if lived := time.Since(startedAt); lived > 0 {
+			carry.Wall = lived
+		}
+	}
+	return carry
 }
 
 // recordRunClock writes a parking run's clock state into its record. A run
