@@ -456,8 +456,8 @@ func TestServer_ToolsList_ReturnsFullCatalogue(t *testing.T) {
 	if err := json.Unmarshal(resps[0].Result, &result); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
-	if len(result.Tools) != 53 {
-		t.Errorf("got %d tools, want 53 (register_hook, list_hooks and delete_hook removed; +hookdef, +review_run, +configured_run on top of retune_run and the directory/erasure/history/teamdef/credentialdef/path/document/volumedef/documentsourcedef list)", len(result.Tools))
+	if len(result.Tools) != 54 {
+		t.Errorf("got %d tools, want 54 (register_hook, list_hooks and delete_hook removed; +hookdef, +review_run, +configured_run, +decision on top of retune_run and the directory/erasure/history/teamdef/credentialdef/path/document/volumedef/documentsourcedef list)", len(result.Tools))
 	}
 	names := map[string]bool{}
 	for _, td := range result.Tools {
@@ -583,6 +583,13 @@ func TestBuiltinWrapperSchemas_CoverAllWrappers(t *testing.T) {
 		}
 		if err := json.Unmarshal(schema, &parsed); err != nil {
 			t.Errorf("wrapper %q schema is not valid JSON: %v", name, err)
+			continue
+		}
+		if name == "decision" {
+			// One operation, so no op to discover: the questions are the call.
+			if len(parsed.Properties.Op.Enum) != 0 || !bytes.Contains(schema, []byte(`"questions"`)) {
+				t.Errorf("wrapper %q: want a schema with questions and no op", name)
+			}
 			continue
 		}
 		if len(parsed.Properties.Op.Enum) == 0 {

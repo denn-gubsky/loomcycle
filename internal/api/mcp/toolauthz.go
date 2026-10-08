@@ -90,6 +90,11 @@ var tenantConfinableTools = map[string]bool{
 	// a tenant session to its own tenant; the cross-tenant `global` scope is
 	// refused by the admin-gated history policy (grantOperatorPolicies).
 	"history": true,
+	// decision: it holds no tenant's data (it reads only the state passed in the
+	// call), and the connector resolves the provider key and the bill for the
+	// caller's own principal. It spends tokens, so it additionally needs the
+	// scope that creates a run (toolRequiredScope).
+	"decision": true,
 
 	// Per-run / per-user — tenant inherited; the underlying tool applies its
 	// own own-subject / cross-tenant-404 gate.
@@ -143,6 +148,16 @@ var userSelfServiceTools = map[string]bool{
 	"credentialdef": true, // RFC CN — a user's own scope=user credential store.
 }
 
+// toolRequiredScope is a scope a principal must hold to list + call a tool, ON
+// TOP of its class's allowlist above. The allowlists say which tools a class of
+// principal can be confined on; they do not look at what the token was granted,
+// so a non-isolated token holding only runs:read passes them. A tool whose call
+// spends money must not be reachable on a read-only token.
+var toolRequiredScope = map[string]string{
+	// The scope POST /v1/_decide and the Decide RPC require.
+	"decision": auth.ScopeRunsCreate,
+}
+
 // principalMayCallTool reports whether the principal on ctx may list/invoke
 // toolName over the /v1/_mcp transport (RFC AG §3.3):
 //
@@ -154,6 +169,8 @@ var userSelfServiceTools = map[string]bool{
 //   - Non-admin, non-isolated (substrate:tenant / RFC CB member) principal: the
 //     tenant-confinable allowlist; everything else — including an unclassified new
 //     tool — is admin-only (deny-by-default).
+//   - Any non-admin principal additionally needs a tool's toolRequiredScope,
+//     when it has one.
 func principalMayCallTool(ctx context.Context, toolName string) bool {
 	p, ok := auth.PrincipalFromContext(ctx)
 	if !ok {
@@ -162,8 +179,23 @@ func principalMayCallTool(ctx context.Context, toolName string) bool {
 	if auth.HasScope(p.Scopes, auth.ScopeAdmin) {
 		return true
 	}
+	if required, gated := toolRequiredScope[toolName]; gated && !auth.HasScope(p.Scopes, required) {
+		return false
+	}
 	if auth.IsIsolated(p, ok) {
 		return userSelfServiceTools[toolName]
 	}
 	return tenantConfinableTools[toolName]
+}
+
+// scopeNeededFor names the scope a refused principal lacks for toolName, for
+// the refusal's text: the tool's own required scope when that is what failed,
+// else substrate:admin (the tool is outside the principal's allowlist).
+func scopeNeededFor(ctx context.Context, toolName string) string {
+	if required, gated := toolRequiredScope[toolName]; gated {
+		if p, ok := auth.PrincipalFromContext(ctx); ok && !auth.HasScope(p.Scopes, required) {
+			return required
+		}
+	}
+	return auth.ScopeAdmin
 }
