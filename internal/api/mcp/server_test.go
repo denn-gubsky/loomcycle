@@ -683,7 +683,7 @@ func TestServer_SpawnRun_AppliesPrincipalOverWireIdentity(t *testing.T) {
 	mc := &mockConnector{spawnResult: connector.SpawnRunResult{Status: "completed"}}
 	srv := New(Config{Connector: mc, Logf: func(string, ...any) {}})
 	ctx := auth.WithPrincipal(context.Background(),
-		auth.Principal{TenantID: "acme", Subject: "alice"}) // real (non-legacy) principal
+		auth.Principal{TenantID: "acme", Subject: "alice", Scopes: []string{auth.ScopeRunsCreate}}) // real (non-legacy) principal
 	in := `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"spawn_run","arguments":{"agent":"qa","segments":[{"role":"user","content":[{"type":"trusted-text","text":"hi"}]}],"tenant_id":"evil","user_id":"mallory"}}}` + "\n"
 	driveServerCtx(t, srv, ctx, in)
 	stored, _ := mc.spawnReq.Load().(connector.SpawnRunRequest)
@@ -729,7 +729,7 @@ func TestServer_SpawnRun_ContinuationSkipsOverride(t *testing.T) {
 	mc := &mockConnector{spawnResult: connector.SpawnRunResult{Status: "completed"}}
 	srv := New(Config{Connector: mc, Logf: func(string, ...any) {}})
 	ctx := auth.WithPrincipal(context.Background(),
-		auth.Principal{TenantID: "acme", Subject: "alice"})
+		auth.Principal{TenantID: "acme", Subject: "alice", Scopes: []string{auth.ScopeRunsCreate}})
 	in := `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"spawn_run","arguments":{"session_id":"s_prior","segments":[{"role":"user","content":[{"type":"trusted-text","text":"hi"}]}],"tenant_id":"wire-t"}}}` + "\n"
 	driveServerCtx(t, srv, ctx, in)
 	stored, _ := mc.spawnReq.Load().(connector.SpawnRunRequest)
@@ -745,7 +745,7 @@ func TestServer_SpawnRuns_AppliesPrincipalToEachChild(t *testing.T) {
 	mc := &mockConnector{batchResult: connector.BatchSpawnResult{}}
 	srv := New(Config{Connector: mc, Logf: func(string, ...any) {}})
 	ctx := auth.WithPrincipal(context.Background(),
-		auth.Principal{TenantID: "acme", Subject: "alice"})
+		auth.Principal{TenantID: "acme", Subject: "alice", Scopes: []string{auth.ScopeRunsCreate}})
 	in := `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"spawn_runs","arguments":{"spawns":[{"agent":"a","segments":[{"role":"user","content":[{"type":"trusted-text","text":"hi"}]}],"tenant_id":"evil"},{"agent":"b","segments":[{"role":"user","content":[{"type":"trusted-text","text":"hi"}]}],"tenant_id":"evil2","user_id":"mallory"}]}}}` + "\n"
 	driveServerCtx(t, srv, ctx, in)
 	stored, _ := mc.batchReq.Load().(connector.BatchSpawnRequest)
@@ -1723,3 +1723,49 @@ func (m *mockConnector) ConfiguredRunInput(context.Context, string, connector.Ru
 	return runner.RunInput{}, nil
 }
 func (m *mockConnector) DeleteConfiguredRun(context.Context, string) error { return nil }
+
+// TestServer_AReadOnlyMemberCannotStartARun drives the real list and call
+// paths: a member token granted only runs:read is not offered spawn_run, and a
+// call to it anyway is refused naming the scope it lacks, before the connector
+// is reached.
+func TestServer_AReadOnlyMemberCannotStartARun(t *testing.T) {
+	conn := &mockConnector{}
+	srv := New(Config{Connector: conn, Logf: func(string, ...any) {}})
+	ctx := auth.WithPrincipal(context.Background(),
+		auth.Principal{TenantID: "acme", Subject: "bob", Scopes: []string{auth.ScopeRunsRead}})
+
+	resps, _ := driveServerCtx(t, srv, ctx, `{"jsonrpc":"2.0","id":1,"method":"tools/list"}`+"\n")
+	if len(resps) != 1 {
+		t.Fatalf("got %d responses, want 1", len(resps))
+	}
+	var list loommcp.ToolsListResult
+	if err := json.Unmarshal(resps[0].Result, &list); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	names := map[string]bool{}
+	for _, td := range list.Tools {
+		names[td.Name] = true
+	}
+	for _, hidden := range []string{"spawn_run", "spawn_runs", "cancel_run", "publish_channel"} {
+		if names[hidden] {
+			t.Errorf("%q must not be offered to a runs:read member", hidden)
+		}
+	}
+	for _, shown := range []string{"get_run", "list_runs", "document"} {
+		if !names[shown] {
+			t.Errorf("%q must stay offered to a runs:read member", shown)
+		}
+	}
+
+	in := `{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"spawn_run","arguments":{"agent":"a","prompt":"go"}}}` + "\n"
+	resps, _ = driveServerCtx(t, srv, ctx, in)
+	if len(resps) != 1 {
+		t.Fatalf("got %d responses, want 1", len(resps))
+	}
+	if resps[0].Error == nil || resps[0].Error.Code != mcpErrForbidden {
+		t.Fatalf("spawn_run on a runs:read member = %+v / %s, want mcpErrForbidden", resps[0].Error, resps[0].Result)
+	}
+	if !strings.Contains(resps[0].Error.Message, auth.ScopeRunsCreate) {
+		t.Errorf("refusal %q must name the scope the token lacks", resps[0].Error.Message)
+	}
+}

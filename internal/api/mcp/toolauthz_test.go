@@ -98,3 +98,89 @@ func TestPrincipalMayCallTool_DenyByDefault(t *testing.T) {
 		t.Errorf("an unclassified tool must default to admin-only for a tenant principal (deny-by-default)")
 	}
 }
+
+// member is a non-isolated token without substrate:tenant: the kind of
+// principal the /v1/_mcp route admits on its member path whatever it was
+// granted, so the per-tool gate is the only thing holding it to its scopes.
+func member(scopes ...string) context.Context {
+	return auth.WithPrincipal(context.Background(),
+		auth.Principal{TenantID: "acme", Subject: "bob", Scopes: scopes})
+}
+
+// TestPrincipalMayCallTool_AMemberNeedsTheToolsOwnScope: a token is held to
+// what it was granted. A read-only member cannot start, steer or cancel a run
+// over MCP, as it cannot over HTTP or gRPC.
+func TestPrincipalMayCallTool_AMemberNeedsTheToolsOwnScope(t *testing.T) {
+	runWrites := []string{"spawn_run", "spawn_runs", "cancel_run", "compact_run", "retune_run", "review_run", "configured_run", "interruption_resolve"}
+	runReads := []string{"get_run", "list_runs", "stream_user_run_states"}
+	chanWrites := []string{"publish_channel", "ack_channel"}
+	chanReads := []string{"subscribe_channel", "peek_channel"}
+
+	for _, c := range []struct {
+		name    string
+		scopes  []string
+		allowed [][]string
+		refused [][]string
+	}{
+		{"runs:read only", []string{auth.ScopeRunsRead}, [][]string{runReads}, [][]string{runWrites, chanWrites, chanReads}},
+		{"runs:create only", []string{auth.ScopeRunsCreate}, [][]string{runWrites}, [][]string{runReads, chanWrites, chanReads}},
+		{"channel:read only", []string{auth.ScopeChannelRead}, [][]string{chanReads}, [][]string{runWrites, runReads, chanWrites}},
+		{"channel:publish only", []string{auth.ScopeChannelPublish}, [][]string{chanWrites}, [][]string{runWrites, runReads, chanReads}},
+		{"no scope at all", nil, nil, [][]string{runWrites, runReads, chanWrites, chanReads}},
+		{"substrate:tenant", []string{auth.ScopeTenant}, [][]string{runWrites, runReads, chanWrites, chanReads}, nil},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			ctx := member(c.scopes...)
+			for _, group := range c.allowed {
+				for _, tool := range group {
+					if !principalMayCallTool(ctx, tool) {
+						t.Errorf("%q must be allowed", tool)
+					}
+				}
+			}
+			for _, group := range c.refused {
+				for _, tool := range group {
+					if principalMayCallTool(ctx, tool) {
+						t.Errorf("%q must be refused", tool)
+					}
+				}
+			}
+			// A tool with no scope of its own stays governed by the allowlist.
+			if !principalMayCallTool(ctx, "document") {
+				t.Errorf("a member must keep the data tools, whatever its scopes")
+			}
+		})
+	}
+}
+
+// TestPrincipalMayCallTool_AnIsolatedUserIsNotWidened: an isolated user's
+// scope implies runs:create and runs:read, and must still reach nothing but
+// its self-service tool. The scope check narrows; it never admits.
+func TestPrincipalMayCallTool_AnIsolatedUserIsNotWidened(t *testing.T) {
+	ctx := member(auth.ScopeUser)
+	for tool := range toolRequiredScope {
+		if principalMayCallTool(ctx, tool) {
+			t.Errorf("an isolated user must not reach %q", tool)
+		}
+	}
+	if !principalMayCallTool(ctx, "credentialdef") {
+		t.Errorf("an isolated user must keep credentialdef")
+	}
+}
+
+// TestToolRequiredScope_NamesRealTenantTools: an entry for a tool that is not
+// dispatched, or that a member could not reach anyway, guards nothing and
+// hides that a rename left the real tool ungated.
+func TestToolRequiredScope_NamesRealTenantTools(t *testing.T) {
+	for tool, scope := range toolRequiredScope {
+		if _, ok := handlersByName[tool]; !ok {
+			t.Errorf("toolRequiredScope has %q, which is not a dispatchable tool", tool)
+		}
+		if !tenantConfinableTools[tool] {
+			t.Errorf("toolRequiredScope has %q, which is admin-only and needs no scope of its own", tool)
+		}
+		if !auth.ValidScope(scope) {
+			t.Errorf("toolRequiredScope[%q] = %q, which is not a scope", tool, scope)
+		}
+	}
+}

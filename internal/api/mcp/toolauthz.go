@@ -150,11 +150,37 @@ var userSelfServiceTools = map[string]bool{
 
 // toolRequiredScope is a scope a principal must hold to list + call a tool, ON
 // TOP of its class's allowlist above. The allowlists say which tools a class of
-// principal can be confined on; they do not look at what the token was granted,
-// so a non-isolated token holding only runs:read passes them. A tool whose call
-// spends money must not be reachable on a read-only token.
+// principal can be confined on; they do not look at what the token was granted.
+// A non-isolated member token reaches /v1/_mcp whatever its scopes are (the
+// route's member path), so without this a token minted with only runs:read
+// could start, steer and cancel runs here, or spend tokens on a decision, while
+// POST /v1/runs and the Run RPC refuse it.
+//
+// Each entry is the scope the tool's gRPC twin needs (grpcConsumerScopes), which
+// mirrors the HTTP route's. A tool with no entry is governed by its allowlist
+// alone: the def-authoring and data tools, whose HTTP routes a member also
+// reaches on the member path.
 var toolRequiredScope = map[string]string{
-	// The scope POST /v1/_decide and the Decide RPC require.
+	// Starting a run, and every write on a run's state.
+	"spawn_run":            auth.ScopeRunsCreate,
+	"spawn_runs":           auth.ScopeRunsCreate,
+	"cancel_run":           auth.ScopeRunsCreate,
+	"compact_run":          auth.ScopeRunsCreate,
+	"retune_run":           auth.ScopeRunsCreate,
+	"review_run":           auth.ScopeRunsCreate,
+	"configured_run":       auth.ScopeRunsCreate,
+	"interruption_resolve": auth.ScopeRunsCreate,
+	// Reading runs.
+	"get_run":                auth.ScopeRunsRead,
+	"list_runs":              auth.ScopeRunsRead,
+	"stream_user_run_states": auth.ScopeRunsRead,
+	// The per-user channel surface.
+	"publish_channel":   auth.ScopeChannelPublish,
+	"ack_channel":       auth.ScopeChannelPublish,
+	"subscribe_channel": auth.ScopeChannelRead,
+	"peek_channel":      auth.ScopeChannelRead,
+	// Asking a decision model outside a run spends tokens: the scope
+	// POST /v1/_decide and the Decide RPC require.
 	"decision": auth.ScopeRunsCreate,
 }
 
