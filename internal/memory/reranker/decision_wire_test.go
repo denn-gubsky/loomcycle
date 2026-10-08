@@ -5,7 +5,9 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/denn-gubsky/loomcycle/internal/config"
 )
@@ -55,5 +57,67 @@ func TestDecision_TheRequestIsByteForByteTheMeasuredOne(t *testing.T) {
 	}
 	if contentType != "application/json" {
 		t.Errorf("Content-Type = %q, want application/json", contentType)
+	}
+}
+
+// TestDecision_AnAliasReachesTheProviderAsItsModel — `memory.reranker.model`
+// naming a models: alias asks the provider for the model the alias names. The
+// alias name itself is not a model the provider serves.
+func TestDecision_AnAliasReachesTheProviderAsItsModel(t *testing.T) {
+	f := &fakeSystemOne{replies: []func(http.ResponseWriter, systemOneRequest){
+		probabilities(map[string]float64{"A": 0.1, "B": 0.9}),
+	}}
+	srv := httptest.NewServer(f.handler(t))
+	defer srv.Close()
+	cfg := decisionConfig(srv.URL, config.RerankerConfig{Model: "decide"})
+	cfg.Memory.Reranker.Provider = ""
+	cfg.Models = map[string]config.ModelRef{"decide": {Provider: "ollama-local", Model: "nimble", Kind: config.ModelKindDecision}}
+	r, err := BuildRanker(cfg)
+	if err != nil {
+		t.Fatalf("BuildRanker: %v", err)
+	}
+	if _, rep := r.Rank(context.Background(), "q", fiveTexts[:2], 0); !rep.Applied {
+		t.Fatalf("report = %+v, want applied", rep)
+	}
+	if got := f.reqs[0].Model; got != "nimble" || r.ModelID() != "nimble" || r.ProviderID() != "ollama-local" {
+		t.Errorf("asked for %q as %s/%s, want nimble on ollama-local", got, r.ProviderID(), r.ModelID())
+	}
+}
+
+// TestDecision_BoundsReranksInFlight — memory.reranker.max_concurrent still
+// bounds the decision kind's calls now that the driver holds the bound.
+func TestDecision_BoundsReranksInFlight(t *testing.T) {
+	var mu sync.Mutex
+	inFlight, peak := 0, 0
+	held := func(w http.ResponseWriter, r systemOneRequest) {
+		mu.Lock()
+		inFlight++
+		if inFlight > peak {
+			peak = inFlight
+		}
+		mu.Unlock()
+		time.Sleep(30 * time.Millisecond)
+		mu.Lock()
+		inFlight--
+		mu.Unlock()
+		probabilities(map[string]float64{"A": 0.1, "B": 0.9})(w, r)
+	}
+	f := &fakeSystemOne{replies: []func(http.ResponseWriter, systemOneRequest){held}}
+	srv := httptest.NewServer(f.handler(t))
+	defer srv.Close()
+	d := newDecision(t, srv.URL, config.RerankerConfig{MaxConcurrent: 1})
+	var wg sync.WaitGroup
+	for i := 0; i < 4; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if _, rep := d.Rank(context.Background(), "q", fiveTexts, 0); !rep.Applied {
+				t.Errorf("report = %+v, want applied", rep)
+			}
+		}()
+	}
+	wg.Wait()
+	if f.calls() != 4 || peak != 1 {
+		t.Errorf("%d calls, %d at once; want 4 calls, one at a time", f.calls(), peak)
 	}
 }
