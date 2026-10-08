@@ -1033,7 +1033,7 @@ func (t *TeamDef) verifyDraft(ctx context.Context, in teamDefInput) (tools.Resul
 
 	defJSON, err := t.buildDefinition(string(parent.Definition), in.Overlay)
 	if err != nil {
-		return report(append(issues, refused(teamIssueOverlayInvalid, "", err.Error())))
+		return report(append(issues, overlayIssues(err)...))
 	}
 	def, err := teamgraph.Parse(defJSON)
 	if err != nil {
@@ -2057,6 +2057,17 @@ func (t *TeamDef) buildDefinition(parentJSON string, overlay json.RawMessage) (j
 		ov, err := teamgraph.Parse(overlay)
 		if err != nil {
 			return nil, fmt.Errorf("parse overlay: %w", err)
+		}
+		// The overlay decoded, but the decoder reads keys more loosely than
+		// the text says: it ignores their case, lets a repeated key replace
+		// the one before it, and drops a key no field takes. What is stored
+		// below is what was DECODED, so any of those would save a team that
+		// is not the one its author wrote — and reviewed. Refused here, the
+		// one place every create, fork and verify builds from an overlay; a
+		// stored definition is never judged, since the encoder below writes
+		// none of them.
+		if keyIssues := teamgraph.KeyIssues(overlay, &ov, localBodyKeys); len(keyIssues) > 0 {
+			return nil, &overlayKeysError{issues: keyIssues}
 		}
 		applyTeamOverlay(&base, ov)
 		// max_iterations' zero value IS a value — "use the default" — so the

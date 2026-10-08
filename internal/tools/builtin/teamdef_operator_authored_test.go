@@ -3,6 +3,7 @@ package builtin
 import (
 	"context"
 	"encoding/json"
+	"strings"
 	"testing"
 
 	"github.com/denn-gubsky/loomcycle/internal/teamrun"
@@ -40,23 +41,35 @@ func TestTeamDef_OperatorAuthoredRoundTrips(t *testing.T) {
 
 // TestTeamDef_AuthorshipCannotBeClaimedByTheBody: the flag gates what a team's
 // own node prompts may do, so a team that could assert it would be asserting
-// its own authority. Neither the definition nor a plausible author id moves it.
+// its own authority. A definition that tries is refused — the key is not one a
+// definition has — and a plausible author id does not move the flag either.
 func TestTeamDef_AuthorshipCannotBeClaimedByTheBody(t *testing.T) {
 	tool, base, done := teamDefFixture(t)
 	defer done()
-	// An agent naming itself something operator-shaped, whose definition also
-	// tries to declare the flag.
+	// An agent naming itself something operator-shaped.
 	ctx := asAgent(base, "operator")
-
-	res, _ := tool.Execute(ctx, json.RawMessage(`{"op":"create","name":"claimer","overlay":{
-		"entry": "review",
-		"operator_authored": true,
+	graph := func(extra string) string {
+		return `{"op":"create","name":"claimer","overlay":{
+		"entry": "review",` + extra + `
 		"states": [
 			{"state": "review", "handler": {"kind": "agent", "agent": "reviewer"}},
 			{"state": "done", "handler": {"kind": "terminal"}}
 		],
 		"transitions": [{"from": "review", "to": "done", "on": "success"}]
-	}}`))
+	}}`
+	}
+
+	// Declaring the flag in the body: refused, and nothing is stored.
+	res, _ := tool.Execute(ctx, json.RawMessage(graph(`"operator_authored": true,`)))
+	if !res.IsError || !strings.Contains(res.Text, `unknown key "operator_authored"`) {
+		t.Fatalf("a definition declaring operator_authored = %q (error %v), want it refused as an unknown key", res.Text, res.IsError)
+	}
+	if rows, err := tool.Store.TeamDefListByName(ctx, "claimer"); err != nil || len(rows) != 0 {
+		t.Fatalf("the refused definition was stored: %d rows, err %v", len(rows), err)
+	}
+
+	// Without it, the operator-shaped agent id still does not earn the flag.
+	res, _ = tool.Execute(ctx, json.RawMessage(graph("")))
 	if res.IsError {
 		t.Fatalf("create: %s", res.Text)
 	}
@@ -67,7 +80,7 @@ func TestTeamDef_AuthorshipCannotBeClaimedByTheBody(t *testing.T) {
 		t.Fatalf("read back: %v", err)
 	}
 	if row.OperatorAuthored {
-		t.Error("a team claimed operator authorship in its own body and the runtime believed it")
+		t.Error("an agent with an operator-shaped id authored a team and the runtime marked it operator-authored")
 	}
 }
 

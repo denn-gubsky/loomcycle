@@ -29,6 +29,10 @@ The stored version, as `create` returns it, with `parent_def_id` set.
 - `fork: parent_def_id "..." not found` / `... has name "...", refusing to
   fork under name "..."` — pin a version of this team.
 - `fork: ...` — the merged graph was refused; the message says why.
+- `fork: <object>: unknown key "X"` / `key "X" is read as "x" only by ignoring
+  its case` / `key "x" is written twice` — the overlay's keys are read exactly
+  as written, as on `create`. Only the overlay is judged: the version being
+  forked is taken as stored.
 
 ## Examples
 

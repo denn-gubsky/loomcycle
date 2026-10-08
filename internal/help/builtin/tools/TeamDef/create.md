@@ -16,8 +16,12 @@ For the graph's shape (states, handlers, transitions, `local`, `vars`) read
 - `name` (required) — the new team's name: one segment of `A-Z a-z 0-9 _ -`,
   at most 64 characters.
 - `overlay` (required) — the graph: `entry`, `states`, `transitions`, and
-  optionally `max_iterations`, `colors`, `hooks`, `local`, `vars`.
-- `description` — why this version exists.
+  optionally `max_iterations`, `colors`, `layout`, `channels`, `hooks`,
+  `local`, `vars`.
+  Keys are read exactly as written, at every depth: a key the definition
+  does not have, a key in another case (`"Hooks"` for `hooks`) and a key
+  written twice in one object are each refused, with the key's path.
+- `description` — why this version exists. Beside `overlay`, not inside it.
 - `promote` — `false` stores the version without making it active (default
   `true`).
 
@@ -32,6 +36,11 @@ promoted}`.
 - `create: missing required field: name`.
 - `create: ...` — the graph or the name was refused; the message names the
   problem and where it is.
+- `create: <object>: unknown key "X"` / `key "X" is read as "x" only by
+  ignoring its case` / `key "x" is written twice` / `keys "x" and "X" are both
+  read as "x"` — the overlay would be read differently from its text. Write
+  each key once, spelt as the definition spells it. `verify` with the same
+  overlay lists every such key with its path.
 
 ## Examples
 

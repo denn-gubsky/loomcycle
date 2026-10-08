@@ -47,13 +47,13 @@ func TestTeamDefCreate_LocalWebhookTakesTheAuthorityToCreateAWebhookDef(t *testi
 	if res := teamOp(t, tool, operator, "create", "hooked", hookedTeam); res.IsError {
 		t.Fatalf("an operator may declare a team's own webhook: %s", res.Text)
 	}
-	wantRefused(t, teamOp(t, tool, inRun, "fork", "hooked", `{"description":"only a prompt"}`), "an in-run fork carrying the webhook",
+	wantRefused(t, teamOp(t, tool, inRun, "fork", "hooked", `{"colors":null}`), "an in-run fork carrying the webhook",
 		`local.webhooks["github"]`, "authority to create a webhook definition")
 	narrow := tools.WithWebhookDefPolicy(inRun, tools.WebhookDefPolicyValue{Scopes: []string{"named:other"}})
-	wantRefused(t, teamOp(t, tool, narrow, "fork", "hooked", `{"description":"x"}`), "a scope naming another webhook",
+	wantRefused(t, teamOp(t, tool, narrow, "fork", "hooked", `{"colors":null}`), "a scope naming another webhook",
 		"hooked/github")
 	if res := teamOp(t, tool, tools.WithWebhookDefPolicy(inRun, tools.WebhookDefPolicyValue{Scopes: []string{"named:hooked/github"}}),
-		"fork", "hooked", `{"description":"x"}`); res.IsError {
+		"fork", "hooked", `{"colors":null}`); res.IsError {
 		t.Fatalf("a scope naming the webhook as <team>/<name> covers it: %s", res.Text)
 	}
 	// Dropping the webhooks needs no such authority.
@@ -141,7 +141,7 @@ func TestTeamDefFork_ReplacesOnlyTheLocalWebhooks(t *testing.T) {
 		}
 		return out.Definition.Local.Webhooks
 	}
-	res := teamOp(t, tool, ctx, "fork", "hooked", `{"description":"same hooks"}`)
+	res := teamOp(t, tool, ctx, "fork", "hooked", `{"colors":null}`)
 	if res.IsError {
 		t.Fatalf("fork: %s", res.Text)
 	}
