@@ -1291,3 +1291,18 @@ New `interrupts` table (migration 0011). Columns: `interrupt_id`, `run_id`, `kin
 - `internal/tools/builtin/interruption.go` — tool implementation (Bus.Wait blocking + heartbeat ticker + ACL gate)
 - `internal/api/http/server.go::handleResolveInterrupt` — resolve endpoint
 - `internal/api/mcp/handlers.go::handleInterruptionResolve` — 21st MCP meta-tool
+
+## The `Decision` tool — typed questions for a decision model
+
+`Decision` asks a decision model typed questions about a JSON `state` and returns each answer with probabilities instead of text. It suits routing, gating, ranking and grading text the agent already has. It does not reason, look things up or write.
+
+- **Grant:** list `Decision` in the agent's `tools:`. It needs a top-level `decision:` block; without one the tool is not offered, and `loomcycle validate` warns for each agent that lists it.
+- **Input:** `{model?, state, questions}`. Each question is `{type, instructions, criteria?}` with `type` one of `choice`, `noul` (yes or no) or `score`.
+- **Output:** `{model, provider, served_model, answers, usage}`. Each answer is the model's own, unchanged.
+- **Limits:** 1 to 64 questions per call, 2 to 26 options. The request is never shortened for you.
+- **Probabilities are not calibrated.** Compare options within one answer.
+- **Cost:** the call's tokens are charged to the run.
+- **Per-agent narrowing:** an agent's own `decision: {default, models}` block can narrow which models it may ask.
+- Agents read the format and worked examples through `Context op=help topic=Decision`.
+
+The full guide, including the HTTP, gRPC and MCP surfaces, the error codes and billing, is [`docs/DECISION-MODELS.md`](DECISION-MODELS.md).
