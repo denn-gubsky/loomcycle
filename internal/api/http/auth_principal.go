@@ -837,6 +837,13 @@ func requiredScopeFor(method, path string) string {
 	// RFC BV memory re-gate above; closes the RFC AS channels carve-out.)
 	case strings.HasPrefix(path, "/v1/_channels"):
 		return auth.ScopeTenant
+	// A decision asked outside a run, and the list of models it may name. The
+	// scope that creates a run: a decision is what a caller would otherwise
+	// start a run to get, and it spends the same budget. Listed here because
+	// the /v1/_* catch-all below would pin both to ScopeAdmin, and a tenant
+	// token would be refused before the handler ran.
+	case path == "/v1/_decide" || path == "/v1/_decide/models":
+		return auth.ScopeRunsCreate
 	// Everything else under /v1/_* is OPERATOR-admin: token minting
 	// (_operatortokendef), runtime admin (pause/resume/state/snapshots/metrics),
 	// resolver, cross-tenant user focus.

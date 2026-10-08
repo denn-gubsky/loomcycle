@@ -66,6 +66,8 @@ const (
 	Loomcycle_ListWalkRuns_FullMethodName        = "/loomcycle.v1.Loomcycle/ListWalkRuns"
 	Loomcycle_UsageReport_FullMethodName         = "/loomcycle.v1.Loomcycle/UsageReport"
 	Loomcycle_TokenLimit_FullMethodName          = "/loomcycle.v1.Loomcycle/TokenLimit"
+	Loomcycle_Decide_FullMethodName              = "/loomcycle.v1.Loomcycle/Decide"
+	Loomcycle_ListDecisionModels_FullMethodName  = "/loomcycle.v1.Loomcycle/ListDecisionModels"
 	Loomcycle_Health_FullMethodName              = "/loomcycle.v1.Loomcycle/Health"
 	Loomcycle_Config_FullMethodName              = "/loomcycle.v1.Loomcycle/Config"
 	Loomcycle_PauseRuntime_FullMethodName        = "/loomcycle.v1.Loomcycle/PauseRuntime"
@@ -292,6 +294,33 @@ type LoomcycleClient interface {
 	//
 	// Mirrors GET/PUT/DELETE /v1/_limits.
 	TokenLimit(ctx context.Context, in *TokenLimitRequest, opts ...grpc.CallOption) (*TokenLimitResponse, error)
+	// Decide asks a decision model typed questions (choice / noul / score)
+	// about a piece of state and returns each answer as the model gave it. It
+	// is a judgement with probabilities, not generated text, and it needs no
+	// run: the call is made for the calling principal.
+	//
+	// The caller needs the scope that creates a run. Its tokens are charged to
+	// the caller's own tenant and subject and count against their token
+	// budgets; a caller at a hard budget gets RESOURCE_EXHAUSTED before any
+	// model is asked. A caller that may not spend the operator's provider key
+	// is served on its own stored key for the provider, or refused
+	// PERMISSION_DENIED.
+	//
+	// Failures carry google.rpc.ErrorInfo whose reason is the decision code:
+	// INVALID_ARGUMENT (invalid_input, bad_question, bad_options,
+	// too_many_questions, model_not_allowed, prompt_too_large),
+	// FAILED_PRECONDITION (decision_not_configured, model_not_found: the
+	// deployment cannot answer until an operator changes it), DEADLINE_EXCEEDED
+	// (timeout), UNAVAILABLE (call_failed).
+	//
+	// Mirrors POST /v1/_decide.
+	Decide(ctx context.Context, in *DecideRequest, opts ...grpc.CallOption) (*DecideResponse, error)
+	// ListDecisionModels lists the decision models a Decide call may name and
+	// the default. Same scope as Decide. FAILED_PRECONDITION
+	// (decision_not_configured) on a deployment that declares none.
+	//
+	// Mirrors GET /v1/_decide/models.
+	ListDecisionModels(ctx context.Context, in *ListDecisionModelsRequest, opts ...grpc.CallOption) (*ListDecisionModelsResponse, error)
 	// Health is the liveness probe. Returns build identifier + uptime.
 	//
 	// Mirrors GET /healthz (which is unauthenticated on the HTTP side;
@@ -845,6 +874,26 @@ func (c *loomcycleClient) TokenLimit(ctx context.Context, in *TokenLimitRequest,
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(TokenLimitResponse)
 	err := c.cc.Invoke(ctx, Loomcycle_TokenLimit_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *loomcycleClient) Decide(ctx context.Context, in *DecideRequest, opts ...grpc.CallOption) (*DecideResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(DecideResponse)
+	err := c.cc.Invoke(ctx, Loomcycle_Decide_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *loomcycleClient) ListDecisionModels(ctx context.Context, in *ListDecisionModelsRequest, opts ...grpc.CallOption) (*ListDecisionModelsResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ListDecisionModelsResponse)
+	err := c.cc.Invoke(ctx, Loomcycle_ListDecisionModels_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -1426,6 +1475,33 @@ type LoomcycleServer interface {
 	//
 	// Mirrors GET/PUT/DELETE /v1/_limits.
 	TokenLimit(context.Context, *TokenLimitRequest) (*TokenLimitResponse, error)
+	// Decide asks a decision model typed questions (choice / noul / score)
+	// about a piece of state and returns each answer as the model gave it. It
+	// is a judgement with probabilities, not generated text, and it needs no
+	// run: the call is made for the calling principal.
+	//
+	// The caller needs the scope that creates a run. Its tokens are charged to
+	// the caller's own tenant and subject and count against their token
+	// budgets; a caller at a hard budget gets RESOURCE_EXHAUSTED before any
+	// model is asked. A caller that may not spend the operator's provider key
+	// is served on its own stored key for the provider, or refused
+	// PERMISSION_DENIED.
+	//
+	// Failures carry google.rpc.ErrorInfo whose reason is the decision code:
+	// INVALID_ARGUMENT (invalid_input, bad_question, bad_options,
+	// too_many_questions, model_not_allowed, prompt_too_large),
+	// FAILED_PRECONDITION (decision_not_configured, model_not_found: the
+	// deployment cannot answer until an operator changes it), DEADLINE_EXCEEDED
+	// (timeout), UNAVAILABLE (call_failed).
+	//
+	// Mirrors POST /v1/_decide.
+	Decide(context.Context, *DecideRequest) (*DecideResponse, error)
+	// ListDecisionModels lists the decision models a Decide call may name and
+	// the default. Same scope as Decide. FAILED_PRECONDITION
+	// (decision_not_configured) on a deployment that declares none.
+	//
+	// Mirrors GET /v1/_decide/models.
+	ListDecisionModels(context.Context, *ListDecisionModelsRequest) (*ListDecisionModelsResponse, error)
 	// Health is the liveness probe. Returns build identifier + uptime.
 	//
 	// Mirrors GET /healthz (which is unauthenticated on the HTTP side;
@@ -1752,6 +1828,12 @@ func (UnimplementedLoomcycleServer) UsageReport(context.Context, *UsageReportReq
 }
 func (UnimplementedLoomcycleServer) TokenLimit(context.Context, *TokenLimitRequest) (*TokenLimitResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method TokenLimit not implemented")
+}
+func (UnimplementedLoomcycleServer) Decide(context.Context, *DecideRequest) (*DecideResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method Decide not implemented")
+}
+func (UnimplementedLoomcycleServer) ListDecisionModels(context.Context, *ListDecisionModelsRequest) (*ListDecisionModelsResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method ListDecisionModels not implemented")
 }
 func (UnimplementedLoomcycleServer) Health(context.Context, *HealthRequest) (*HealthResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method Health not implemented")
@@ -2360,6 +2442,42 @@ func _Loomcycle_TokenLimit_Handler(srv interface{}, ctx context.Context, dec fun
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
 		return srv.(LoomcycleServer).TokenLimit(ctx, req.(*TokenLimitRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _Loomcycle_Decide_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(DecideRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(LoomcycleServer).Decide(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: Loomcycle_Decide_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(LoomcycleServer).Decide(ctx, req.(*DecideRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _Loomcycle_ListDecisionModels_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ListDecisionModelsRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(LoomcycleServer).ListDecisionModels(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: Loomcycle_ListDecisionModels_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(LoomcycleServer).ListDecisionModels(ctx, req.(*ListDecisionModelsRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
@@ -3143,6 +3261,14 @@ var Loomcycle_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "TokenLimit",
 			Handler:    _Loomcycle_TokenLimit_Handler,
+		},
+		{
+			MethodName: "Decide",
+			Handler:    _Loomcycle_Decide_Handler,
+		},
+		{
+			MethodName: "ListDecisionModels",
+			Handler:    _Loomcycle_ListDecisionModels_Handler,
 		},
 		{
 			MethodName: "Health",

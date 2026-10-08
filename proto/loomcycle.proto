@@ -234,6 +234,35 @@ service Loomcycle {
   // Mirrors GET/PUT/DELETE /v1/_limits.
   rpc TokenLimit(TokenLimitRequest) returns (TokenLimitResponse);
 
+  // Decide asks a decision model typed questions (choice / noul / score)
+  // about a piece of state and returns each answer as the model gave it. It
+  // is a judgement with probabilities, not generated text, and it needs no
+  // run: the call is made for the calling principal.
+  //
+  // The caller needs the scope that creates a run. Its tokens are charged to
+  // the caller's own tenant and subject and count against their token
+  // budgets; a caller at a hard budget gets RESOURCE_EXHAUSTED before any
+  // model is asked. A caller that may not spend the operator's provider key
+  // is served on its own stored key for the provider, or refused
+  // PERMISSION_DENIED.
+  //
+  // Failures carry google.rpc.ErrorInfo whose reason is the decision code:
+  // INVALID_ARGUMENT (invalid_input, bad_question, bad_options,
+  // too_many_questions, model_not_allowed, prompt_too_large),
+  // FAILED_PRECONDITION (decision_not_configured, model_not_found: the
+  // deployment cannot answer until an operator changes it), DEADLINE_EXCEEDED
+  // (timeout), UNAVAILABLE (call_failed).
+  //
+  // Mirrors POST /v1/_decide.
+  rpc Decide(DecideRequest) returns (DecideResponse);
+
+  // ListDecisionModels lists the decision models a Decide call may name and
+  // the default. Same scope as Decide. FAILED_PRECONDITION
+  // (decision_not_configured) on a deployment that declares none.
+  //
+  // Mirrors GET /v1/_decide/models.
+  rpc ListDecisionModels(ListDecisionModelsRequest) returns (ListDecisionModelsResponse);
+
   // Health is the liveness probe. Returns build identifier + uptime.
   //
   // Mirrors GET /healthz (which is unauthenticated on the HTTP side;
@@ -2288,4 +2317,79 @@ message BroadcastChannelsResponse {
   int32 published = 1;
   int32 failed = 2;
   repeated BroadcastChannelEntry results = 3;
+}
+
+// ========================
+// Decision models
+// ========================
+
+// DecideRequest is one call: every question is answered about the same state.
+//
+// The free-form parts (state, each question's criteria) are JSON carried as
+// UTF-8 bytes, like SubstrateRequest.input_json, so they reach the model
+// exactly as sent.
+message DecideRequest {
+  // model names which decision model answers. Empty = the default.
+  string model = 1;
+  // state_json is what the questions are about: a JSON object.
+  bytes state_json = 2;
+  // questions are 1 to 64 questions keyed by names the caller chooses; each
+  // answer comes back under its question's name.
+  map<string, DecisionQuestion> questions = 3;
+}
+
+message DecisionQuestion {
+  // type is "choice", "noul" or "score".
+  string type = 1;
+  // instructions is the question itself, in plain words.
+  string instructions = 2;
+  // criteria_json is the type's criteria as JSON: choice (required), an
+  // object mapping each option to a description or null; noul (optional), an
+  // object describing "true" and/or "false"; score (required), an array of
+  // level descriptions, lowest first. Empty = none.
+  bytes criteria_json = 3;
+}
+
+message DecideResponse {
+  // model is the name that answered, as the deployment lists it (the
+  // default's name when the request named none).
+  string model = 1;
+  string provider = 2;
+  // served_model is what the provider says answered.
+  string served_model = 3;
+  // answers holds one answer per question, under the question's name: the
+  // model's own JSON, byte for byte. Bytes rather than a Struct so a number
+  // stays the number the model wrote (an integer 0 does not become 0.0) and a
+  // field a later model adds arrives without a schema change.
+  map<string, bytes> answers = 4;
+  DecisionUsage usage = 5;
+}
+
+message DecisionUsage {
+  int64 input_tokens = 1;
+  int64 output_tokens = 2;
+}
+
+message ListDecisionModelsRequest {}
+
+message ListDecisionModelsResponse {
+  // default_model is the name used when a Decide call names no model.
+  string default_model = 1;
+  repeated DecisionModel models = 2;
+}
+
+message DecisionModel {
+  // name is what Decide is called with.
+  string name = 1;
+  string provider = 2;
+  // model is the model the provider serves under that name.
+  string model = 3;
+  DecisionLimits limits = 4;
+}
+
+message DecisionLimits {
+  int32 max_questions = 1;
+  // min_options and max_options bound a choice's options and a score's levels.
+  int32 min_options = 2;
+  int32 max_options = 3;
 }

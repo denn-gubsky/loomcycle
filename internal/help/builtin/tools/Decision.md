@@ -62,7 +62,10 @@ No other argument is accepted, and there is no `op`.
   - `confidence` — how concentrated the probabilities are: near 1 when one
     option holds almost all the weight, near 0 when they are spread evenly.
 - `usage` — `input_tokens` and `output_tokens` of this call. They are charged
-  to your run.
+  to your run. Called from outside a run (the `decision` tool of an MCP
+  client, or the API), they are charged to you, the caller, and count against
+  your token budget: at a hard budget the call is refused before the model is
+  asked.
 
 ## Reading the numbers
 
@@ -108,7 +111,7 @@ to do.
 | `model_not_found` | The provider does not serve that model. | Use another listed name; the same call will fail again. |
 | `timeout` | The model did not answer in time. | Send the same call again; if it repeats, make it smaller. |
 | `call_failed` | The call did not complete. | Try once more, then continue without the decision and say so. |
-| `operator_key_restricted` | This run may not use the operator's provider key and has none of its own. | Do not retry. Decide another way and report it. |
+| `operator_key_restricted` | The caller (this run, or you outside one) may not use the operator's provider key and has none of its own. | Do not retry. Decide another way and report it. |
 | `decision_not_configured` | This deployment has no decision models. | Do not retry. Decide another way. |
 
 ## Examples

@@ -1,6 +1,11 @@
 package connector
 
-import "errors"
+import (
+	"errors"
+
+	"github.com/denn-gubsky/loomcycle/internal/providers"
+	"github.com/denn-gubsky/loomcycle/internal/runner"
+)
 
 // Typed errors returned by the Connector's Pause/Snapshot methods.
 // Wire transports translate these into protocol-specific error codes:
@@ -233,3 +238,17 @@ func (e *codedError) Unwrap() error { return e.sentinel }
 func WithMessage(sentinel error, msg string) error {
 	return &codedError{sentinel: sentinel, msg: msg}
 }
+
+// TokenLimitError is a call refused before it was made because its caller is
+// at or over a hard token budget. It is runner.ErrTokenLimitExceeded, the
+// refusal run admission gives, carrying the tripped scope so a transport can
+// render the same body (HTTP 429 with used/limit; gRPC ResourceExhausted).
+type TokenLimitError struct {
+	Info providers.LimitInfo
+}
+
+func (e *TokenLimitError) Error() string {
+	return runner.ErrTokenLimitExceeded.Error() + ": " + e.Info.Message
+}
+
+func (e *TokenLimitError) Unwrap() error { return runner.ErrTokenLimitExceeded }

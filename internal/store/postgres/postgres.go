@@ -676,6 +676,12 @@ func (s *Store) TokenUsageForRun(ctx context.Context, runID string) ([]store.Tok
 // among the priced rows (or ” when none priced ⇒ unpriced run). This makes
 // runs.cost == Σ(ledger) by construction (see the interface doc).
 func (s *Store) RunCostSummary(ctx context.Context, runID string) (float64, string, bool, error) {
+	// An empty id names no run. Rows with an empty run_id are calls made
+	// outside any run; summing them here would hand their cost to whichever
+	// caller passed an id it never had.
+	if runID == "" {
+		return 0, "", false, nil
+	}
 	var cost float64
 	var currency string
 	var priced int64

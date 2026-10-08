@@ -171,6 +171,13 @@ var handlersByName = map[string]toolHandler{
 	"history": wrapBuiltin("history", func(c connector.Connector, ctx context.Context, in json.RawMessage) (connector.ToolResult, error) {
 		return c.History(ctx, in)
 	}),
+	// The Decision tool, asked with no run behind it. The connector's Decision
+	// is the one run-less path: it takes the caller from the principal on ctx
+	// (not from the identity mcpPrincipalCtx stamps), and from it decides whose
+	// provider key may be spent, checks the budget and charges the tokens.
+	"decision": wrapBuiltin("decision", func(c connector.Connector, ctx context.Context, in json.RawMessage) (connector.ToolResult, error) {
+		return c.Decision(ctx, in)
+	}),
 
 	// Pause/Resume (v0.8.17 primitives; exposed via Connector in v0.8.18)
 	"pause_runtime":     handlePauseRuntime,

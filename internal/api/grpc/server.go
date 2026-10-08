@@ -766,6 +766,11 @@ var grpcConsumerScopes = map[string]string{
 	"StartConfiguredRun":  auth.ScopeRunsCreate,
 	"DeleteConfiguredRun": auth.ScopeRunsCreate,
 	"ReplaySession":       auth.ScopeRunsCreate,
+	// A decision asked outside a run, and the models it may name: the scope that
+	// creates a run, which is what a caller would otherwise start to get one
+	// (mirrors POST /v1/_decide and GET /v1/_decide/models).
+	"Decide":              auth.ScopeRunsCreate,
+	"ListDecisionModels":  auth.ScopeRunsCreate,
 	"CancelAgent":         auth.ScopeRunsCreate,
 	"GetTranscript":       auth.ScopeRunsRead,
 	"GetAgent":            auth.ScopeRunsRead,
