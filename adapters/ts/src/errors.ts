@@ -21,12 +21,22 @@
 export class LoomcycleError extends Error {
   readonly status?: number;
   readonly bodyText?: string;
+  /** The machine-readable `code` of a JSON error body (`model_not_allowed`,
+   *  `token_limit_exceeded`, `per_user_quota_exhausted`, …), on whichever
+   *  class the status maps to. Undefined when the body is not JSON or carries
+   *  no string `code`. Read from the whole body, so it survives where
+   *  `bodyText` is cut at 1 KiB. Branch on this, not on the message. */
+  readonly code?: string;
 
-  constructor(message: string, opts?: { status?: number; bodyText?: string }) {
+  constructor(
+    message: string,
+    opts?: { status?: number; bodyText?: string; code?: string },
+  ) {
     super(message);
     this.name = "LoomcycleError";
     this.status = opts?.status;
     this.bodyText = opts?.bodyText;
+    this.code = opts?.code;
   }
 }
 
@@ -36,42 +46,42 @@ export class LoomcycleError extends Error {
  *  (agent / session / snapshot / generic 404 like a missing memory
  *  row or interrupt). */
 export class NotFoundError extends LoomcycleError {
-  constructor(message: string, opts?: { status?: number; bodyText?: string }) {
+  constructor(message: string, opts?: { status?: number; bodyText?: string; code?: string }) {
     super(message, opts);
     this.name = "NotFoundError";
   }
 }
 
 export class AgentNotFoundError extends NotFoundError {
-  constructor(message: string, opts?: { status?: number; bodyText?: string }) {
+  constructor(message: string, opts?: { status?: number; bodyText?: string; code?: string }) {
     super(message, opts);
     this.name = "AgentNotFoundError";
   }
 }
 
 export class SessionNotFoundError extends NotFoundError {
-  constructor(message: string, opts?: { status?: number; bodyText?: string }) {
+  constructor(message: string, opts?: { status?: number; bodyText?: string; code?: string }) {
     super(message, opts);
     this.name = "SessionNotFoundError";
   }
 }
 
 export class SessionBusyError extends LoomcycleError {
-  constructor(message: string, opts?: { status?: number; bodyText?: string }) {
+  constructor(message: string, opts?: { status?: number; bodyText?: string; code?: string }) {
     super(message, opts);
     this.name = "SessionBusyError";
   }
 }
 
 export class AgentIDInUseError extends LoomcycleError {
-  constructor(message: string, opts?: { status?: number; bodyText?: string }) {
+  constructor(message: string, opts?: { status?: number; bodyText?: string; code?: string }) {
     super(message, opts);
     this.name = "AgentIDInUseError";
   }
 }
 
 export class BackpressureError extends LoomcycleError {
-  constructor(message: string, opts?: { status?: number; bodyText?: string }) {
+  constructor(message: string, opts?: { status?: number; bodyText?: string; code?: string }) {
     super(message, opts);
     this.name = "BackpressureError";
   }
@@ -124,6 +134,7 @@ export class PerUserQuotaExhaustedError extends LoomcycleError {
     opts?: {
       status?: number;
       bodyText?: string;
+      code?: string;
       userId?: string;
       cap?: number;
       retryAfterMs?: number;
@@ -138,21 +149,21 @@ export class PerUserQuotaExhaustedError extends LoomcycleError {
 }
 
 export class AuthError extends LoomcycleError {
-  constructor(message: string, opts?: { status?: number; bodyText?: string }) {
+  constructor(message: string, opts?: { status?: number; bodyText?: string; code?: string }) {
     super(message, opts);
     this.name = "AuthError";
   }
 }
 
 export class UnavailableError extends LoomcycleError {
-  constructor(message: string, opts?: { status?: number; bodyText?: string }) {
+  constructor(message: string, opts?: { status?: number; bodyText?: string; code?: string }) {
     super(message, opts);
     this.name = "UnavailableError";
   }
 }
 
 export class InvalidArgumentError extends LoomcycleError {
-  constructor(message: string, opts?: { status?: number; bodyText?: string }) {
+  constructor(message: string, opts?: { status?: number; bodyText?: string; code?: string }) {
     super(message, opts);
     this.name = "InvalidArgumentError";
   }
@@ -164,42 +175,42 @@ export class InvalidArgumentError extends LoomcycleError {
  *  catches UnavailableError keeps working when this more-specific
  *  variant fires. */
 export class PauseNotConfiguredError extends UnavailableError {
-  constructor(message: string, opts?: { status?: number; bodyText?: string }) {
+  constructor(message: string, opts?: { status?: number; bodyText?: string; code?: string }) {
     super(message, opts);
     this.name = "PauseNotConfiguredError";
   }
 }
 
 export class AlreadyPausingError extends LoomcycleError {
-  constructor(message: string, opts?: { status?: number; bodyText?: string }) {
+  constructor(message: string, opts?: { status?: number; bodyText?: string; code?: string }) {
     super(message, opts);
     this.name = "AlreadyPausingError";
   }
 }
 
 export class NotPausedError extends LoomcycleError {
-  constructor(message: string, opts?: { status?: number; bodyText?: string }) {
+  constructor(message: string, opts?: { status?: number; bodyText?: string; code?: string }) {
     super(message, opts);
     this.name = "NotPausedError";
   }
 }
 
 export class SnapshotNotFoundError extends NotFoundError {
-  constructor(message: string, opts?: { status?: number; bodyText?: string }) {
+  constructor(message: string, opts?: { status?: number; bodyText?: string; code?: string }) {
     super(message, opts);
     this.name = "SnapshotNotFoundError";
   }
 }
 
 export class SnapshotTooLargeError extends LoomcycleError {
-  constructor(message: string, opts?: { status?: number; bodyText?: string }) {
+  constructor(message: string, opts?: { status?: number; bodyText?: string; code?: string }) {
     super(message, opts);
     this.name = "SnapshotTooLargeError";
   }
 }
 
 export class SnapshotVersionError extends LoomcycleError {
-  constructor(message: string, opts?: { status?: number; bodyText?: string }) {
+  constructor(message: string, opts?: { status?: number; bodyText?: string; code?: string }) {
     super(message, opts);
     this.name = "SnapshotVersionError";
   }
@@ -217,7 +228,7 @@ export class SnapshotVersionError extends LoomcycleError {
  *  re-fetch and retry from the new committed position" from other
  *  409 conditions. */
 export class ChannelCursorRegressionError extends LoomcycleError {
-  constructor(message: string, opts?: { status?: number; bodyText?: string }) {
+  constructor(message: string, opts?: { status?: number; bodyText?: string; code?: string }) {
     super(message, opts);
     this.name = "ChannelCursorRegressionError";
   }
@@ -238,7 +249,7 @@ export class SubstrateToolRefusedError extends LoomcycleError {
   readonly tool: string;
   constructor(
     message: string,
-    opts?: { status?: number; bodyText?: string; tool?: string },
+    opts?: { status?: number; bodyText?: string; code?: string; tool?: string },
   ) {
     super(message, opts);
     this.name = "SubstrateToolRefusedError";

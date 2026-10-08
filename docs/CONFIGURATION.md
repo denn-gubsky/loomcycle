@@ -1691,6 +1691,48 @@ base. `document-agent` needs SQL Memory (`LOOMCYCLE_SQLMEM_ENABLED=1`) + a
 
 ---
 
+## 9g. Model kinds and the `decision:` block
+
+**Model kinds.** A `models:` alias can declare what the model is for:
+
+```yaml
+models:
+  local-medium:    { provider: ollama-local, model: qwen3.8 }                 # kind: chat (the default)
+  local-embedding: { provider: ollama-local, model: bge-m3, kind: embedder }
+  decide:          { provider: ollama-local, model: nimble, kind: decision }
+```
+
+| where an alias is used | kind it must have |
+|---|---|
+| an agent's `model:`, a tier candidate, the listwise memory reranker, the unit generator | `chat` |
+| the `decision:` block, a memory reranker with `kind: decision` | `decision` |
+| `memory.embedder.model` | `embedder` |
+
+- A tagged alias in the wrong place **fails config load**; the error names the alias, its kind and the place.
+- An **untagged** alias used as a decision model or an embedder still loads, with a warning at boot and in `loomcycle validate` naming the alias and the tag to add. A later release will make this a failure, so tag them now.
+- An untagged alias used as a chat model says nothing. A plain model name (not an alias) is never checked.
+- `GET /v1/_models` reports a tagged alias's kind. The kind is never a routing input.
+
+**The `decision:` block** lists the decision models a deployment may ask:
+
+```yaml
+decision:
+  default: decide                 # required when the block is set
+  models: [decide, decide-deep]   # optional; omitted = every alias tagged kind: decision, plus the default
+  provider: ollama-local          # only for plain model names in the list
+  timeout_ms: 30000               # default 30000
+  max_concurrent: 4               # default 4, per provider
+```
+
+- Config load fails on: a `model_pattern` alias, an undeclared provider, a provider with no decision support (only Ollama has it today), a plain model name with no `decision.provider`, an alias tagged another kind, or an unknown key in the block.
+- With `models` omitted, every alias tagged `kind: decision` must be buildable, or load fails.
+- No block means the capability is off. Changing the block needs a restart.
+- An agent narrows its own list with `agents.<name>.decision: {default, models}`; it can only narrow.
+
+See [`docs/DECISION-MODELS.md`](DECISION-MODELS.md) for the request and answer formats, the four surfaces and billing.
+
+---
+
 ## 10. Cross-references
 
 - [`loomcycle.example.yaml`](../loomcycle.example.yaml) — the repo-root reference yaml. All six user_tiers wired, inline comments on every section. Copy-paste and edit.
@@ -1700,6 +1742,7 @@ base. `document-agent` needs SQL Memory (`LOOMCYCLE_SQLMEM_ENABLED=1`) + a
 - [`docs/MCP_INTEGRATION.md`](MCP_INTEGRATION.md) — MCP server configuration (deliberately out of scope for this doc).
 - [`docs/ARCHITECTURE.md`](ARCHITECTURE.md) — broader runtime context, provider driver table, probe semantics.
 - [`docs/TOOLS.md`](TOOLS.md) — tool policy and built-in tool reference (the `tools` / `tools` axis).
+- [`docs/DECISION-MODELS.md`](DECISION-MODELS.md) — decision models: the `kind` tag, the `decision:` block, the request and answer formats.
 - [`docs/POSTGRES.md`](POSTGRES.md) — storage backend configuration.
 - [`docs/PLAN.md`](PLAN.md) — historical design rationale, including the v0.8.2 `user_tiers` RFC and the precedence design decisions.
 - [`examples/observability/`](../examples/observability/) — three drop-in observability profiles (Grafana+Tempo self-hosted / Honeycomb / Datadog) for sending loomcycle's OTEL traces + Prometheus metrics to your existing stack. Five-minute quickstart per profile.

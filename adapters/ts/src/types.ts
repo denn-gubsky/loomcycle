@@ -4486,3 +4486,135 @@ export interface CredentialListResponse {
   scope: string;
   credentials: CredentialMeta[];
 }
+
+// ─── Decision models ─────────────────────────────────────────────────────────
+
+/** A `choice` question: pick one of the options. Each key of `criteria` is an
+ *  option and its value describes it, or is `null` when the key explains
+ *  itself. The key is what comes back as the answer. */
+export interface DecisionChoiceQuestion {
+  type: "choice";
+  /** The question itself, in plain words. */
+  instructions: string;
+  criteria: Record<string, string | null>;
+}
+
+/** A `noul` question: yes or no. `criteria` is optional: describe `true`
+ *  and/or `false` when the plain question is not enough. */
+export interface DecisionNoulQuestion {
+  type: "noul";
+  instructions: string;
+  criteria?: { true?: string; false?: string };
+}
+
+/** A `score` question: a position on a scale. `criteria` is the level
+ *  descriptions, LOWEST FIRST. */
+export interface DecisionScoreQuestion {
+  type: "score";
+  instructions: string;
+  criteria: string[];
+}
+
+export type DecisionQuestion =
+  | DecisionChoiceQuestion
+  | DecisionNoulQuestion
+  | DecisionScoreQuestion;
+
+/** Body of {@link LoomcycleClient.decide}: every question is answered about the
+ *  same `state`. */
+export interface DecideRequest {
+  /** Which decision model answers: a name from
+   *  {@link LoomcycleClient.listDecisionModels}. Omit for the default. */
+  model?: string;
+  /** What the questions are about. Any JSON object; the model reads only this,
+   *  and it is never shortened for you (an over-long request is refused with
+   *  code `prompt_too_large`). */
+  state: Record<string, unknown>;
+  /** The questions, keyed by names you choose; each answer comes back under its
+   *  question's name. */
+  questions: Record<string, DecisionQuestion>;
+}
+
+/** The answer to a `choice` question. */
+export interface DecisionChoiceAnswer {
+  type: "choice";
+  /** The option picked: one of the question's `criteria` keys. */
+  choice: string;
+  /** One probability per option, summing to 1. */
+  probabilities: Record<string, number>;
+  /** How concentrated the probabilities are: near 1 when one option holds
+   *  almost all the weight, near 0 when they are spread evenly. */
+  confidence: number;
+  /** The answer is the model's own, passed through unchanged; a later model may
+   *  add fields. */
+  [extra: string]: unknown;
+}
+
+/** The answer to a `noul` question. */
+export interface DecisionNoulAnswer {
+  type: "noul";
+  /** The probability that the answer is YES, from 0 to 1. `0` is a definite
+   *  no, not a missing answer: test it with `=== undefined`, never truthiness. */
+  noul: number;
+  [extra: string]: unknown;
+}
+
+/** The answer to a `score` question. */
+export interface DecisionScoreAnswer {
+  type: "score";
+  /** The expected position on the scale, counted from 0 (`1.7` is between
+   *  level 1 and level 2). */
+  score: number;
+  /** Position → the description you gave that level. */
+  legend: Record<string, string>;
+  /** One probability per position. */
+  probabilities: Record<string, number>;
+  confidence: number;
+  [extra: string]: unknown;
+}
+
+/** One answer, discriminated on `type` (the type of the question it answers). */
+export type DecisionAnswer =
+  | DecisionChoiceAnswer
+  | DecisionNoulAnswer
+  | DecisionScoreAnswer;
+
+/** Result of {@link LoomcycleClient.decide}. The probabilities are a judgement,
+ *  not a measurement: compare options within one answer, and do not treat a
+ *  fixed threshold as a guarantee. */
+export interface DecideResponse {
+  /** The name that answered, as the deployment lists it (the default's name
+   *  when the request named none). */
+  model: string;
+  provider: string;
+  /** What the provider says answered. */
+  served_model: string;
+  /** One answer per question, under the question's name. */
+  answers: Record<string, DecisionAnswer>;
+  /** Tokens of this call, charged to the caller and counted against its token
+   *  budget. */
+  usage: { input_tokens: number; output_tokens: number };
+}
+
+/** One decision model a {@link LoomcycleClient.decide} call may name. */
+export interface DecisionModel {
+  /** What `DecideRequest.model` is set to. */
+  name: string;
+  provider: string;
+  /** The model the provider serves under that name. */
+  model: string;
+  limits: {
+    max_questions: number;
+    /** `min_options` and `max_options` bound a choice's options and a score's
+     *  levels. */
+    min_options: number;
+    max_options: number;
+  };
+}
+
+/** Result of {@link LoomcycleClient.listDecisionModels}. */
+export interface DecisionModelsResponse {
+  /** The name used when a call names no model. */
+  default: string;
+  models: DecisionModel[];
+}

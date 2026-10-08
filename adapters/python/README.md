@@ -122,6 +122,8 @@ All methods are coroutine methods on `LoomcycleClient`.
 | `spawn_run_batch(spawns, mode="join", timeout_ms=0)` | `dict` | v0.8.0 — spawn up to 32 runs concurrently (RFC Y); index-aligned `{spawned, results}`, per-child failures in-envelope. |
 | `compact_run(run_id, reason="")` | `dict` | v0.8.0 — summarize a parked run's context. `{run_id, compacted, before_tokens, after_tokens, applied}`. |
 | `resolve_probe()` | `dict` | v0.8.0 — resolver provider/model availability matrix. |
+| `decide(state, questions, model="")` | `dict` | Ask a decision model typed questions (`choice` / `noul` / `score`) about `state`. `{model, provider, served_model, answers, usage}`; each answer is a dict under its question's name. See [Decision models](#decision-models). |
+| `list_decision_models()` | `dict` | The decision models a `decide` call may name, and the default: `{"default": str, "models": [{name, provider, model, limits}]}`. |
 | `agent_def(input)` / `skill_def(input)` | `dict` | Substrate AgentDef / SkillDef tool; op-discriminated body. |
 | `mcp_server_def` / `schedule_def` / `a2a_server_card_def` / `a2a_agent_def` / `webhook_def` / `memory_backend_def` / `operator_token_def` `(input)` | `dict` | v0.8.0 — the rest of the substrate-def family; same shape + `SubstrateToolRefusedError` contract. |
 | `volume_def(input)` | `dict` | v0.9.0 — RFC AH dynamic filesystem-volume substrate; op-discriminated (create / get / list / delete / purge), tenant-confined, same `SubstrateToolRefusedError` contract. |
@@ -138,6 +140,84 @@ All methods are coroutine methods on `LoomcycleClient`.
 `run_streaming` / `continue_session` / each `spawn_run_batch` child also accept
 per-run `sampling` and `compaction` dict overrides (v0.8.0); an explicit
 `temperature: 0.0` is preserved as deterministic.
+
+## Decision models
+
+A **decision model** answers typed questions about a piece of text and returns
+each answer with its probabilities. It does not write: it reads the `state` you
+give it and answers a choice, a yes/no or a score, so there is no reply to parse
+and a call costs a few output tokens. Use it to route, gate, rank or grade text
+you already have. No run is involved; the tokens are charged to the caller and
+count against its token budget.
+
+```python
+out = await client.decide(
+    {"ticket": "My invoice for March was charged twice and I want my money back."},
+    {
+        "route": {
+            "type": "choice",
+            "instructions": "Which team should handle this ticket?",
+            "criteria": {"billing": "invoices, refunds, charges", "support": "bugs, outages", "sales": None},
+        },
+        "urgent": {"type": "noul", "instructions": "Does this ticket need a reply within the hour?"},
+        "detail": {
+            "type": "score",
+            "instructions": "How complete is the problem report?",
+            "criteria": ["no detail", "some detail", "everything needed"],
+        },
+    },
+)
+out["answers"]["route"]   # {"type": "choice", "choice": "billing", "probabilities": {...}, "confidence": 0.91}
+out["answers"]["urgent"]  # {"type": "noul", "noul": 0.316}
+out["answers"]["detail"]  # {"type": "score", "score": 1.87, "legend": {...}, "probabilities": {...}, "confidence": 0.68}
+out["usage"]              # {"input_tokens": 1059, "output_tokens": 4}
+```
+
+`state` and each question's `criteria` are plain dicts and lists, and each
+answer comes back as a dict: the JSON the wire carries is encoded and decoded
+for you.
+
+| `type` | `criteria` | Answer |
+|---|---|---|
+| `choice` | required — a dict: each key is an option, its value describes it (`None` when the key explains itself) | `{type, choice, probabilities, confidence}` |
+| `noul` | optional — a dict describing `"true"` and/or `"false"` | `{type, noul}` — the probability of YES, 0 to 1 |
+| `score` | required — a list of level descriptions, **lowest first** | `{type, score, legend, probabilities, confidence}` — `score` is the expected position, counted from 0 |
+
+- **`noul: 0` is an answer** (a definite no), not a missing one — test it with
+  `"noul" in answer`, never truthiness.
+- **The probabilities are not calibrated.** Compare options within one answer;
+  do not treat a fixed threshold as a guarantee.
+- **An answer is the model's own JSON**, decoded and otherwise untouched, so a
+  number is the number the model wrote and a field a later model adds is there
+  to read.
+- Leave `model` out for the deployment's default; name one only from
+  `list_decision_models()`.
+
+A refusal raises with the decision's code on `e.reason`:
+
+| `e.reason` | gRPC code → exception | What to do |
+|---|---|---|
+| `invalid_input` / `bad_question` / `bad_options` / `too_many_questions` | `INVALID_ARGUMENT` → `InvalidArgumentError` | Fix the request; the message names the fault. |
+| `model_not_allowed` | `INVALID_ARGUMENT` → `InvalidArgumentError` | Leave `model` out, or use a name from `list_decision_models()`. |
+| `prompt_too_large` | `INVALID_ARGUMENT` → `InvalidArgumentError` | The request does not fit the model's context and is never shortened for you: shorten `state` or ask fewer questions. |
+| `operator_key_restricted` | `PERMISSION_DENIED` → `LoomcycleError` | The caller may not use the operator's provider key and has none of its own. Do not retry. |
+| `token_limit_exceeded` | `RESOURCE_EXHAUSTED` → `BackpressureError` | The caller is at a hard token budget. Retrying does not help until it is raised or the month rolls over. |
+| `model_not_found` | `FAILED_PRECONDITION` → `LoomcycleError` | The provider does not serve that model; the same call fails again. |
+| `decision_not_configured` | `FAILED_PRECONDITION` → `LoomcycleError` | This deployment declares no decision models. Do not retry. |
+| `timeout` | `DEADLINE_EXCEEDED` → `LoomcycleError` | Send the same call again; if it repeats, make it smaller. |
+| `call_failed` | `UNAVAILABLE` → `UnavailableError` | Try once more. |
+
+```python
+from loomcycle import LoomcycleError
+
+try:
+    out = await client.decide(state, questions)
+except LoomcycleError as e:
+    if e.reason == "prompt_too_large":
+        ...  # shorten state and retry
+    else:
+        raise
+```
 
 ## Errors
 
@@ -163,7 +243,14 @@ Every method translates gRPC error codes to typed Python exceptions:
 | `INVALID_ARGUMENT` / `INTERNAL` / other | `LoomcycleError` |
 
 All exceptions inherit from `LoomcycleError` and preserve the
-original `grpc.StatusCode` on `.code` for log correlation:
+original `grpc.StatusCode` on `.code` for log correlation.
+
+One gRPC code covers several conditions (`RESOURCE_EXHAUSTED` is a full queue,
+a per-user quota or a token budget), so when the server says which one it is,
+that name is on `.reason` — `token_limit_exceeded`, `backpressure`,
+`model_not_allowed`, … — the same string the HTTP surface puts in an error
+body's `code`. Branch on `.reason` rather than on the message. It is `None`
+when the server attached none.
 
 ```python
 from loomcycle import BackpressureError

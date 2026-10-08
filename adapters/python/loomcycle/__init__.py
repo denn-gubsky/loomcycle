@@ -37,6 +37,8 @@ The client surface mirrors the gRPC service in proto/loomcycle.proto:
                                  (walk_id= narrows to one team walk)
     get_transcript(...)       — read the persisted event log for a session
     resolve_probe()           — resolver provider/model availability matrix
+    decide(...)               — ask a decision model typed questions
+    list_decision_models()    — the decision models decide() may name
     health()                  — liveness probe
 
 As of v1.1.1 the client covers all 42 gRPC RPCs: the substrate-def family

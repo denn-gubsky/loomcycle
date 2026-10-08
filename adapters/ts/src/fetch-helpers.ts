@@ -247,6 +247,9 @@ export async function deleteJSON<T>(
  *   500-599 (other) → LoomcycleError (base)
  *   default     → LoomcycleError (base)
  *
+ * Whatever class the status maps to, a JSON body's string `code` is on the
+ * error as `code` (see bodyCode).
+ *
  * Priority within a status group is most-specific-first; an unknown
  * 409 falls through to base LoomcycleError so callers see a
  * meaningful message + status. For 404, the catch-all is NotFoundError
@@ -271,7 +274,7 @@ export async function raiseFromResponse(resp: Response): Promise<never> {
   // ("401 Unauthorized" not "401 " with a trailing space).
   const statusPhrase = resp.statusText || stockStatusPhrase(status);
   const msg = bodyText.trim() ? bodyText.slice(0, 1024) : `${status} ${statusPhrase}`;
-  const opts = { status, bodyText: bodyText.slice(0, 1024) };
+  const opts = { status, bodyText: bodyText.slice(0, 1024), code: bodyCode(bodyText) };
 
   switch (status) {
     case 400:
@@ -314,7 +317,7 @@ export async function raiseFromResponse(resp: Response): Promise<never> {
         if (parsed.code === "tool_refused") {
           throw new SubstrateToolRefusedError(
             parsed.error ?? msg,
-            { status, bodyText, tool: parsed.tool },
+            { status, bodyText, code: parsed.code, tool: parsed.tool },
           );
         }
       } catch (e) {
@@ -345,6 +348,7 @@ export async function raiseFromResponse(resp: Response): Promise<never> {
           throw new PerUserQuotaExhaustedError(parsed.error ?? msg, {
             status,
             bodyText,
+            code: parsed.code,
             userId: parsed.user_id,
             cap: parsed.cap,
             retryAfterMs: Number.isFinite(retryAfterMs) ? retryAfterMs : undefined,
@@ -363,6 +367,23 @@ export async function raiseFromResponse(resp: Response): Promise<never> {
     default:
       throw new LoomcycleError(msg, opts);
   }
+}
+
+/** bodyCode returns the string `code` of a JSON error body, or undefined when
+ *  the body is not a JSON object or has none. Statuses are shared between
+ *  unrelated conditions (a 400 is any bad request; a 429 is backpressure, a
+ *  user quota or a token budget), and the code is what tells them apart. */
+function bodyCode(bodyText: string): string | undefined {
+  try {
+    const parsed: unknown = JSON.parse(bodyText);
+    if (parsed !== null && typeof parsed === "object") {
+      const code = (parsed as { code?: unknown }).code;
+      if (typeof code === "string" && code !== "") return code;
+    }
+  } catch {
+    // not JSON: a plain-text error body has no code
+  }
+  return undefined;
 }
 
 /** stockStatusPhrase returns a stock reason phrase for the common

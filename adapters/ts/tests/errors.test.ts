@@ -219,3 +219,43 @@ describe("raiseFromResponse — status + body-text → typed error", () => {
     expect((caught as Error).message).toMatch(/401/);
   });
 });
+
+describe("raiseFromResponse — a JSON body's code", () => {
+  it("is on the error, whichever class the status maps to", async () => {
+    const cases: Array<[number, string]> = [
+      [400, "model_not_allowed"],
+      [403, "operator_key_restricted"],
+      [413, "prompt_too_large"],
+      [422, "tool_refused"],
+      [429, "token_limit_exceeded"],
+      [429, "per_user_quota_exhausted"],
+      [502, "call_failed"],
+      [503, "decision_not_configured"],
+      [504, "timeout"],
+    ];
+    for (const [status, code] of cases) {
+      const e = (await expectErrorFor(
+        status,
+        JSON.stringify({ code, error: "refused" }),
+      )) as LoomcycleError;
+      expect(e).toBeInstanceOf(LoomcycleError);
+      expect(e.status).toBe(status);
+      expect(e.code).toBe(code);
+    }
+  });
+
+  it("survives a body longer than the 1 KiB bodyText cut", async () => {
+    const body = JSON.stringify({ error: "x".repeat(5000), code: "prompt_too_large" });
+    const e = (await expectErrorFor(413, body)) as LoomcycleError;
+    expect(e.bodyText?.length).toBe(1024);
+    expect(e.code).toBe("prompt_too_large");
+  });
+
+  it("is undefined for a plain-text body, a JSON non-object, or a non-string code", async () => {
+    for (const body of ["bad timeout", '"model_not_allowed"', "null", '{"code":7}', '{"error":"x"}']) {
+      const e = (await expectErrorFor(400, body)) as LoomcycleError;
+      expect(e).toBeInstanceOf(InvalidArgumentError);
+      expect(e.code).toBeUndefined();
+    }
+  });
+});
