@@ -1057,9 +1057,10 @@ export class LoomcycleClient {
    *  / `too_many_questions` / `model_not_allowed`, 403
    *  `operator_key_restricted`, 413 `prompt_too_large`, 429
    *  `token_limit_exceeded`, 502 `model_not_found` / `call_failed`, 503
-   *  `decision_not_configured`, 504 `timeout`. Branch on the code: the error
-   *  class follows the status alone, and a status is shared with unrelated
-   *  conditions. */
+   *  `decision_not_configured`, 504 `timeout`. Branch on the code: apart from
+   *  `PromptTooLargeError` (413) and `TokenLimitExceededError` (429), the
+   *  error class follows the status alone, and a status is shared with
+   *  unrelated conditions. */
   async decide(
     req: DecideRequest,
     opts?: { signal?: AbortSignal },

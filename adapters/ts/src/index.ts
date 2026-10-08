@@ -115,7 +115,9 @@
  *     AuthError, UnavailableError, InvalidArgumentError,
  *     PauseNotConfiguredError (subclass of UnavailableError),
  *     AlreadyPausingError, NotPausedError, SnapshotNotFoundError,
- *     SnapshotTooLargeError, SnapshotVersionError,
+ *     SnapshotTooLargeError, RequestTooLargeError + PromptTooLargeError
+ *     (both subclasses of SnapshotTooLargeError), TokenLimitExceededError
+ *     (subclass of BackpressureError), SnapshotVersionError,
  *     SubstrateToolRefusedError (v0.8.22)
  *
  * Transport: HTTP+SSE. Auth: Bearer token via the Authorization
@@ -437,11 +439,14 @@ export {
   NotPausedError,
   PauseNotConfiguredError,
   PerUserQuotaExhaustedError,
+  PromptTooLargeError,
+  RequestTooLargeError,
   SessionBusyError,
   SessionNotFoundError,
   SnapshotNotFoundError,
   SnapshotTooLargeError,
   SnapshotVersionError,
   SubstrateToolRefusedError,
+  TokenLimitExceededError,
   UnavailableError,
 } from "./errors.js";

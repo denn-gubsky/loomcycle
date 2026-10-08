@@ -392,7 +392,7 @@ try {
 }
 ```
 
-Branch on `e.code`, not on the class: the class follows the HTTP status alone, so a `prompt_too_large` arrives as the 413 class `SnapshotTooLargeError` and a `token_limit_exceeded` as the 429 class `BackpressureError`.
+Two of these have a class of their own: a `prompt_too_large` throws `PromptTooLargeError` and a `token_limit_exceeded` throws `TokenLimitExceededError` (with the budget on `e.scope` / `e.used` / `e.limit`). For the rest, branch on `e.code`, not on the class: the class follows the HTTP status alone.
 
 ### Channels + run-state stream (v0.9.x n8n Phase 0)
 
@@ -545,12 +545,41 @@ When the error body is JSON with a string `code` (`token_limit_exceeded`, `per_u
 | 409 + "session" | `SessionBusyError` |
 | 409 + "agent_id" | `AgentIDInUseError` |
 | 409 (other) | `LoomcycleError` (base) |
-| 413 | `SnapshotTooLargeError` |
+| 413 + code `snapshot_too_large` | `SnapshotTooLargeError` ⎫ |
+| 413 + code `prompt_too_large` | `PromptTooLargeError` ⎬ all are `instanceof SnapshotTooLargeError` (back-compat) |
+| 413 (other) | `RequestTooLargeError` ⎭ |
 | 422 | `SnapshotVersionError` |
-| 429 | `BackpressureError` |
+| 429 + code `per_user_quota_exhausted` | `PerUserQuotaExhaustedError` |
+| 429 + code `token_limit_exceeded` | `TokenLimitExceededError` (subclass of `BackpressureError` — back-compat) |
+| 429 (other) | `BackpressureError` |
 | 503 + "pause manager not configured" | `PauseNotConfiguredError` (subclass of `UnavailableError` — back-compat) |
 | 503 (other) | `UnavailableError` |
 | 500 / other | `LoomcycleError` (base) |
+
+**429: a token budget is not backpressure.** A plain `BackpressureError` is transient: the server is busy, back off and retry. `TokenLimitExceededError` is not: the caller is at a hard token budget (run creation and `decide()` both refuse with it), and the same call is refused until the budget is raised or the calendar month rolls over. It extends `BackpressureError` only so that an existing `instanceof BackpressureError` keeps catching it, so test for it first. The client never retries on its own; this matters to your retry loop.
+
+```ts
+import { BackpressureError, TokenLimitExceededError } from "@loomcycle/client";
+
+try {
+  for await (const ev of client.runStreaming({ /* ... */ })) {}
+} catch (e) {
+  if (e instanceof TokenLimitExceededError) {
+    // Not retryable now. e.scope is "operator" | "tenant" | "user"; e.scopeId is
+    // the tenant or user (null for the operator-wide budget); e.used and e.limit
+    // are tokens; e.window is "month". Each is null if the server did not send it.
+    console.error(`token budget reached for ${e.scope}: ${e.used}/${e.limit} this ${e.window}`);
+  } else if (e instanceof BackpressureError) {
+    // Transient: back off and retry.
+  } else {
+    throw e;
+  }
+}
+```
+
+**413: three classes, one legacy base.** Every 413 used to throw `SnapshotTooLargeError`, whatever was too large. A 413 is now named for its cause: `PromptTooLargeError` for a `decide()` request that does not fit the model's context (shorten `state` or ask fewer questions), `RequestTooLargeError` for any other non-snapshot 413 (a request body over the server's limit, a memory value or quota, a channel payload — `e.code` says which), and `SnapshotTooLargeError` itself for a snapshot over its cap. `PromptTooLargeError` extends `RequestTooLargeError`, which extends `SnapshotTooLargeError`, so an existing `instanceof SnapshotTooLargeError` still matches every 413; that relation is for compatibility and says nothing about snapshots. To single out a snapshot that is too large, test `e.code === "snapshot_too_large"`.
+
+`e.name` (and the `meta_reason` of a `stream_close` frame) is the most specific class name, so it reads `TokenLimitExceededError`, `PromptTooLargeError` or `RequestTooLargeError` where it used to read `BackpressureError` or `SnapshotTooLargeError`. Match with `instanceof` or `e.code`, not on the name.
 
 Priority within `404`: most-specific keyword wins (`snapshot` → `session` → `hook` → `agent` → base). The dispatch is keyword-matched on the response body lowercase; a hook with id `hook_agent_scan` still routes to `HookNotFoundError`, not `AgentNotFoundError`.
 
