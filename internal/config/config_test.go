@@ -458,6 +458,27 @@ agents:
 	}
 }
 
+// The message lists what the loader accepts, from the set it checks against. It
+// read "agent, user" after `tenant` became valid, so an operator who mistyped
+// one scope was told a list that left out a scope they could have used.
+func TestMemoryScopesError_ListsEveryAcceptedScope(t *testing.T) {
+	_, err := loadYAMLString(t, `
+defaults: { provider: anthropic, model: claude-sonnet-4-6 }
+agents:
+  bad:
+    model: claude-sonnet-4-6
+    memory_scopes: [session]
+`)
+	if err == nil {
+		t.Fatal("expected error for unknown memory scope")
+	}
+	for scope := range validMemoryScopes {
+		if !strings.Contains(err.Error(), scope) {
+			t.Errorf("error does not list accepted scope %q: %v", scope, err)
+		}
+	}
+}
+
 // TestMemoryScopesTenantAccepted: `tenant` is a granted, shared-write scope as of
 // RFC BL P4b. The grant IS the gate, so an operator must be able to declare it.
 func TestMemoryScopesTenantAccepted(t *testing.T) {

@@ -1142,8 +1142,9 @@ type UserTier struct {
 	// semantic for free tiers, where cascading would defeat the
 	// budget guarantee.
 	//
-	// Defaults to true on the "default" tier so back-compat clients
-	// keep the v0.7.x rate-limit retry behaviour they had.
+	// There is no default: an omitted key is false, on the "default" tier
+	// too. A config with no user_tiers block has no mid-run fallback at all
+	// (fallbackForRun finds no overlay to read the flag from).
 	FallbackOnError bool `yaml:"fallback_on_error"`
 
 	// MaxFallbackAttempts caps cumulative provider switches per run.
@@ -6808,9 +6809,15 @@ func looksLikeAnOverrideOnly(a AgentDef) bool {
 
 // sqlScopeNames renders validSqlScopes for an error message. Derived from the
 // set rather than restated, so the message cannot fall behind the enum.
-func sqlScopeNames() string {
-	names := make([]string, 0, len(validSqlScopes))
-	for k := range validSqlScopes {
+func sqlScopeNames() string { return scopeNames(validSqlScopes) }
+
+// memoryScopeNames renders validMemoryScopes for an error message, for the
+// same reason: the message read "agent, user" long after `tenant` was added.
+func memoryScopeNames() string { return scopeNames(validMemoryScopes) }
+
+func scopeNames(set map[string]bool) string {
+	names := make([]string, 0, len(set))
+	for k := range set {
 		names = append(names, k)
 	}
 	sort.Strings(names)
@@ -7853,14 +7860,13 @@ func validate(c *Config) error {
 				}
 			}
 		}
-		// Memory tool: validate memory_scopes are known scope strings.
-		// Empty memory_scopes is not an ERROR (it just means no Memory
-		// access), but if the agent ALSO lists Memory in tools the
-		// tool default-denies every call — a silent-ish footgun surfaced as a
-		// boot warning below (F21). Non-empty must be a subset of {agent, user}.
+		// Memory tool: validate memory_scopes are known scope strings. An
+		// unset list is not an error: it resolves at policy time to the
+		// caller's own data (tools.EffectiveMemoryScopes). Non-empty must be a
+		// subset of validMemoryScopes; the message is generated from that set.
 		for i, sc := range agent.MemoryScopes {
 			if !validMemoryScopes[sc] {
-				return fmt.Errorf("agent %q: memory_scopes[%d]: unknown scope %q (want one of: agent, user)", name, i, sc)
+				return fmt.Errorf("agent %q: memory_scopes[%d]: unknown scope %q (want one of: %s)", name, i, sc, memoryScopeNames())
 			}
 		}
 		// RFC BL P1: validate core_blocks. Each block backs a Memory key
