@@ -255,8 +255,9 @@ func TestTeamRun_AnAgentInsideARunIsNotHeldToItsStartersScopes(t *testing.T) {
 	e := newEnv(t, false)
 	e.prov.leadScript = [][]providers.Event{
 		callsTeamDef("tu_1", `{"op":"run","name":"solo","mode":"poll"}`),
-		says("started"),
-		callsTeamDef("tu_2", `{"op":"poll"}`),
+		// A waiting poll, straight after: ending the turn in between would race
+		// the walk's own end for whether the lead is woken to poll at all.
+		callsTeamDef("tu_2", `{"op":"poll","wait":"all","wait_ms":20000}`),
 		says("all done"),
 	}
 	bob := e.mint("bob", auth.ScopeRunsCreate) // no runs:read
