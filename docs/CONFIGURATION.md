@@ -60,13 +60,13 @@ The resolver walks **top-down** through this table on every request. The first a
 
 ## 2. Resolution precedence — decision tree
 
-The resolver lives in `internal/resolve/matrix.go:281` (`Resolve(req AgentRequest) (Decision, error)`). The precedence is:
+The resolver is `Resolve` in `internal/resolve/matrix.go` (`Resolve(req AgentRequest) (Decision, error)`). The precedence is:
 
 ```
 Given:  AgentRequest{ Name, Tier, PinProvider, PinModel, Providers, Models, UserTier }
 
    1. PinProvider AND PinModel both set?
-      → resolvePin()       (matrix.go:293)
+      → resolvePin()
         - Looks up the matrix to confirm (provider, model) is reachable.
         - Returns Decision{provider, model} or ErrPinUnavailable.
 
@@ -76,24 +76,26 @@ Given:  AgentRequest{ Name, Tier, PinProvider, PinModel, Providers, Models, User
    3. Tier required from here on. If Tier == "":
       → ErrInvalidArgument
 
-   4. Build the candidate list:
+   4. Build the candidate list (candidatesFor):
       a. agent.Models[tier] set?  use it. (per-agent override; full replacement)
       b. user_tier.Tiers[tier] set?  use it. (overlay)
       c. library tiers[tier] set?  use it.
       d. otherwise →                ErrTierUnavailable
 
-   5. Build the provider walk order:
+   5. Build the provider walk order (priorityFor):
       a. agent.Providers AND user_tier.ProviderPriority both set?
-         → intersection in agent-order (matrix.go:440)
+         → intersection in agent-order
          → empty intersection → ErrTierAgentNotAvailable  (policy refusal)
       b. only agent.Providers set?               → agent.Providers
       c. only user_tier.ProviderPriority set?    → user_tier order
       d. neither set?                            → library provider_priority
 
-   6. Walk the candidate list, skipping any pair whose:
+   6. Walk the provider order; for each provider, take its candidates in
+      list order, skipping any pair whose:
       - provider is excluded (no API key) OR
       - provider is unreachable (probe failed) OR
-      - model is stalled (recent driver error)
+      - model is stalled (recent driver error) OR
+      - model is rate-limited (until the limit window passes) OR
       - model is not listed by the provider's /v1/models (or equivalent)
 
    7. First survivor →  Decision{provider, model, effort, ...}
@@ -105,23 +107,24 @@ Two error classes worth remembering, because they have different operator semant
 | Error | When | Caller should |
 |---|---|---|
 | `ErrTierUnavailable` | Matrix-side problem — every candidate stalled / unreachable | Retry with backoff; surface as 503 |
-| `ErrTierAgentNotAvailable` | **Policy-side** — agent's `providers:` and user_tier's `provider_priority` have no overlap | NOT retry — return 403/"upgrade your plan"; the user genuinely doesn't have access |
+| `ErrTierAgentNotAvailable` | **Policy-side** — agent's `providers:` and user_tier's `provider_priority` have no overlap, or none of the tier's candidates names a provider the user_tier grants | NOT retry — return 403/"upgrade your plan"; the user genuinely doesn't have access |
 
 This distinction matters because a transient outage and "your plan doesn't allow this agent" are operationally different. Loomcycle separates them at the resolver layer so the app server can map them to different HTTP responses.
 
 ### Mutual exclusion at config-load
 
-`internal/config/config.go:1985` enforces **pin XOR tier** at config-load time:
+`ValidateRoutingMode` in `internal/config/config.go` enforces **pin XOR tier**. Config-load calls it for every agent:
 
 ```go
-hasPin := agent.Provider != "" || agent.Model != ""
-hasTier := agent.Tier != ""
-if hasPin && hasTier {
-    return fmt.Errorf("agent %q: cannot set both explicit provider/model pin and tier (pick one)", name)
+func ValidateRoutingMode(provider, model, tier string) error {
+	if (provider != "" || model != "") && tier != "" {
+		return errors.New("cannot set both explicit provider/model pin and tier (pick one)")
+	}
+	return nil
 }
 ```
 
-If you set both `tier: middle` AND `model: claude-sonnet-4-6` in an agent's frontmatter, loomcycle refuses to start. Pick one path.
+If you set both `tier: middle` AND `model: claude-sonnet-4-6` in an agent's frontmatter, loomcycle refuses to start (`agent "<name>": cannot set both explicit provider/model pin and tier (pick one)`). Pick one path.
 
 ---
 
@@ -1125,7 +1128,7 @@ curl -N -H "Authorization: Bearer $LOOMCYCLE_AUTH_TOKEN" \
 
 The first `event: started` (or `event: resolved`) frame carries `provider=...` and `model=...`. Confirms your config picked what you expected.
 
-After v0.8.16 (PR #116), the model is also persisted at run start, so `GET /v1/users/{id}/agents` shows it during the run, not just at completion.
+The model is also persisted at run start, so `GET /v1/users/{user_id}/agents` shows it during the run, not just at completion.
 
 ### `GET /v1/config`
 
@@ -1773,7 +1776,7 @@ See [`docs/DECISION-MODELS.md`](DECISION-MODELS.md) for the request and answer f
 
 ## 11. Code path index
 
-Single jump-list of the source locations cited above. The symbol name is the stable handle: grep for it. The line numbers were checked against v1.107.0 and move with every commit, so treat them as a starting point.
+Single jump-list of the resolver, config-merge and frontmatter code that sections 2, 7 and 8 cite by symbol. The symbol name is the stable handle: grep for it. The line numbers were checked against v1.107.0 and move with every commit, so treat them as a starting point.
 
 | What | Symbol | Where (line at v1.107.0) |
 |---|---|---|
