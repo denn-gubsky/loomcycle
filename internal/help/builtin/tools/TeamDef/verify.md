@@ -32,6 +32,13 @@ issues?}`. The draft form adds `valid` (a save would be accepted),
 always `issues` — each `{kind, severity, detail, path?, state?, field?}` with
 `severity` `refused`, `unrunnable` or `advisory`.
 
+A key of the overlay that would not be read as written — one the definition
+does not have, one in another case, one written twice — is an
+`overlay_invalid` issue, `refused`, with `path` at the key itself
+(`states[0].handler.Agent`, `extras`). Every such key is listed, so an editor
+can mark each line; while there is one, the checks of the merged definition
+are not run.
+
 ## Errors
 
 - `verify: as, parent_def_id and description describe a draft — they need an

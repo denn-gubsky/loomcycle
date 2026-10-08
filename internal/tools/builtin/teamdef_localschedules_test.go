@@ -193,7 +193,7 @@ func TestTeamDefFork_ReplacesOnlyTheLocalSchedules(t *testing.T) {
 		}
 		return out.Definition.Local.Schedules
 	}
-	res := teamOp(t, tool, ctx, "fork", "clocked", `{"description":"same clock"}`)
+	res := teamOp(t, tool, ctx, "fork", "clocked", `{"colors":null}`)
 	if res.IsError {
 		t.Fatalf("fork: %s", res.Text)
 	}
