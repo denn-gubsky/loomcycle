@@ -612,3 +612,53 @@ func TestOffRunDecision_GRPCRefusesJSONThatIsNot(t *testing.T) {
 		t.Errorf("the decision model was called %d times", n)
 	}
 }
+
+// TestOffRunDecision_EveryUsageReaderCountsTheCall — the ledger's other
+// readers, each asked about the caller of one run-less decision through its
+// own surface: the gRPC usage report, the per-subject view, and the erasure
+// report's count of the subject's ledger rows. (The report's SQL, the rollup,
+// the budget seed and the timing seed are held to a row with no run on both
+// store tiers by the store contract's UsageRowsWithNoRun.)
+func TestOffRunDecision_EveryUsageReaderCountsTheCall(t *testing.T) {
+	e := newEnv(t, envOptions{priced: true})
+	if o := e.decideHTTP(e.member("alice"), oneQuestion); !o.ok {
+		t.Fatalf("outcome = %+v", o)
+	}
+	ops := e.mint("acme", "ops", auth.ScopeTenant)
+
+	rep, err := e.grpc.UsageReport(e.grpcCtx(ops), &loomcyclepb.UsageReportRequest{GroupBy: []string{"tenant", "user", "model"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rows := rep.GetRows(); len(rows) != 1 || rows[0].GetTenantId() != "acme" || rows[0].GetUserId() != "alice" ||
+		rows[0].GetModel() != "nimble" || rows[0].GetInputTokens() != 1116 || rows[0].GetOutputTokens() != 4 || rows[0].GetCallCount() != 1 {
+		t.Errorf("the gRPC usage report = %v, want alice's one call", rows)
+	}
+
+	resp, raw := e.do(http.MethodGet, "/v1/_users/alice", ops, "", nil)
+	var ins struct {
+		Usage struct {
+			Calls int64   `json:"calls"`
+			Cost  float64 `json:"cost"`
+		} `json:"usage"`
+	}
+	if err := json.Unmarshal(raw, &ins); err != nil || resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET /v1/_users/alice = %d %s", resp.StatusCode, raw)
+	}
+	if ins.Usage.Calls != 1 || ins.Usage.Cost <= 0 {
+		t.Errorf("the subject view counts %d calls at cost %v, want the 1 priced call", ins.Usage.Calls, ins.Usage.Cost)
+	}
+
+	resp, raw = e.do(http.MethodGet, "/v1/_erasure?subject=alice", ops, "", nil)
+	var erasure struct {
+		Tier2 struct {
+			Counts map[string]int64 `json:"counts"`
+		} `json:"tier2_uncovered"`
+	}
+	if err := json.Unmarshal(raw, &erasure); err != nil || resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET /v1/_erasure = %d %s", resp.StatusCode, raw)
+	}
+	if n := erasure.Tier2.Counts["usage_ledger_calls"]; n != 1 {
+		t.Errorf("the erasure report counts %d ledger calls for alice, want 1", n)
+	}
+}
