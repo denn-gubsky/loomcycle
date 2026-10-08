@@ -261,9 +261,14 @@ func (e *env) mint(tenant, subject string, scopes ...string) string {
 // storeTenantKey stores tenant's own key for the decision provider.
 func (e *env) storeTenantKey(tenant, value string) {
 	e.t.Helper()
-	if _, err := e.creds.PutInline(context.Background(),
-		credential.Identity{TenantID: tenant, Scope: "tenant", Name: keyName}, value, nil); err != nil {
-		e.t.Fatalf("store the tenant's key: %v", err)
+	e.storeKey(credential.Identity{TenantID: tenant, Scope: "tenant", Name: keyName}, value)
+}
+
+// storeKey stores a key for the decision provider under any scope.
+func (e *env) storeKey(id credential.Identity, value string) {
+	e.t.Helper()
+	if _, err := e.creds.PutInline(context.Background(), id, value, nil); err != nil {
+		e.t.Fatalf("store a key: %v", err)
 	}
 }
 

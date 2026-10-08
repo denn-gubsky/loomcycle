@@ -91,7 +91,6 @@ func (s *Server) Decision(ctx context.Context, input json.RawMessage) (connector
 		Isolated:              auth.IsIsolated(p, authed),
 	})
 	ctx = tools.WithAgentName(ctx, "")
-	ctx = tools.WithDecisionPolicy(ctx, nil) // no agent, so no agent's narrowing
 	ctx = providers.WithCredentialResolver(ctx, s.credResolver)
 	ctx = providers.WithOperatorKeyAllowed(ctx, !restricted)
 	ctx = tools.WithMeteredOffRunCall(ctx, tools.MeteredOffRunCallValue{TenantID: tenant, UserID: user})

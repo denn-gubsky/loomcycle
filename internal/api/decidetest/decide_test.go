@@ -13,6 +13,7 @@ import (
 
 	"github.com/denn-gubsky/loomcycle/internal/api/grpc/loomcyclepb"
 	"github.com/denn-gubsky/loomcycle/internal/auth"
+	"github.com/denn-gubsky/loomcycle/internal/credential"
 	"github.com/denn-gubsky/loomcycle/internal/limits"
 )
 
@@ -98,6 +99,36 @@ func TestOffRunDecision_AnotherTenantsKeyIsNotBorrowed(t *testing.T) {
 			got := s.decide(e, e.member("alice"), oneQuestion)
 			if got.ok || got.code != "operator_key_restricted" || e.model.calls() != 0 {
 				t.Errorf("outcome = %+v after %d model calls, want the key refusal and none", got, e.model.calls())
+			}
+		})
+	}
+}
+
+// TestOffRunDecision_ATransportsSyntheticAgentHoldsNoKey — a call outside a
+// run belongs to no agent. The MCP dispatch stamps a synthetic agent name on
+// its context, and a key stored for an agent of that name must not be found on
+// one surface and missed on the others: the caller's own keys are its user's
+// and its tenant's.
+func TestOffRunDecision_ATransportsSyntheticAgentHoldsNoKey(t *testing.T) {
+	for _, s := range surfaces {
+		t.Run(s.name, func(t *testing.T) {
+			e := newEnv(t, envOptions{gate: true})
+			for _, agent := range []string{"mcp-operator", "http-admin", "grpc-admin"} {
+				e.storeKey(credential.Identity{TenantID: "acme", Scope: "agent", ScopeID: agent, Name: keyName}, tenantKey)
+			}
+			bearer := e.member("alice")
+			got := s.decide(e, bearer, oneQuestion)
+			if got.ok || got.code != "operator_key_restricted" || e.model.calls() != 0 {
+				t.Errorf("outcome = %+v after %d model calls, want the key refusal and none", got, e.model.calls())
+			}
+			// The caller's own user-scoped key is one it does hold.
+			e.storeKey(credential.Identity{TenantID: "acme", Scope: "user", ScopeID: "alice", Name: keyName}, tenantKey)
+			got = s.decide(e, bearer, oneQuestion)
+			if !got.ok || e.model.paidWith(t) != tenantKey {
+				t.Errorf("with the user's own key stored: %+v, want an answer on that key", got)
+			}
+			if rows := e.offRunRows(); len(rows) != 1 || rows[0].CredentialSource != "user" {
+				t.Errorf("rows = %+v, want one row paid by the user", rows)
 			}
 		})
 	}
