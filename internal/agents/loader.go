@@ -113,6 +113,7 @@ type Agent struct {
 	RecallAttachTraces    bool
 	MemoryRerank          *MemoryRerank // opt-in listwise search rerank; nil = off
 	MemoryUnits           *bool         // false = ignore derived search units; nil = use them
+	Decision              *Decision     // narrows the operator's decision models; nil = all of them
 	MemoryIndexMaxBytes   int
 	MemoryRoots           string
 	// Channels is the v0.8.4 Channel-tool ACL. Empty Publish /
@@ -188,6 +189,13 @@ type MemoryRerank struct {
 	Enabled    *bool `json:"enabled,omitempty"    yaml:"enabled"`
 	Candidates int   `json:"candidates,omitempty" yaml:"candidates"`
 	MaxChars   int   `json:"max_chars,omitempty"  yaml:"max_chars"`
+}
+
+// Decision mirrors config.AgentDecision locally (the agents package stays
+// config-free). json: tags are LOAD-BEARING for content_sha256.
+type Decision struct {
+	Default string   `json:"default,omitempty" yaml:"default"`
+	Models  []string `json:"models,omitempty"  yaml:"models"`
 }
 
 // OutputFormat mirrors config.OutputFormat locally (the agents package stays
@@ -400,6 +408,7 @@ type frontmatter struct {
 	RecallAttachTraces    bool                       `yaml:"recall_attach_traces"`     // question-anchored turns
 	MemoryRerank          *MemoryRerank              `yaml:"memory_rerank"`            // opt-in search rerank
 	MemoryUnits           *bool                      `yaml:"memory_units"`             // derived search units
+	Decision              *Decision                  `yaml:"decision"`                 // narrows the decision models
 	MemoryIndexMaxBytes   int                        `yaml:"memory_index_max_bytes"`   // RFC BL P1
 	MemoryRoots           string                     `yaml:"memory_roots"`             // RFC BL P1
 	Channels              AgentChannelACL            `yaml:"channels"`
@@ -482,6 +491,7 @@ func parseAgent(raw []byte) (*Agent, error) {
 	a.RecallAttachTraces = fm.RecallAttachTraces
 	a.MemoryRerank = fm.MemoryRerank
 	a.MemoryUnits = fm.MemoryUnits
+	a.Decision = fm.Decision
 	a.MemoryIndexMaxBytes = fm.MemoryIndexMaxBytes
 	a.MemoryRoots = fm.MemoryRoots
 	a.Channels = fm.Channels

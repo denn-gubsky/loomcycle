@@ -3246,6 +3246,7 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 		Rerank:             agentDef.MemoryRerank,
 		Units:              agentDef.MemoryUnits,
 	})
+	loopCtx = tools.WithDecisionPolicy(loopCtx, agentDef.Decision)
 	// RFC BL P1: the run's resolved core blocks — read by the Memory tool to
 	// enforce read_only/limit_bytes, and inherited by an inherit_core_blocks
 	// sub-agent off this ctx key.
@@ -5224,6 +5225,7 @@ func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {
 		Rerank:             agentDef.MemoryRerank,
 		Units:              agentDef.MemoryUnits,
 	})
+	loopCtx = tools.WithDecisionPolicy(loopCtx, agentDef.Decision)
 	// RFC BL P1: run's resolved core blocks (Memory-tool enforcement + inherit).
 	loopCtx = tools.WithCoreBlocksPolicy(loopCtx, tools.CoreBlocksPolicyValue{Blocks: coreBlocks})
 	// RFC AA: the agent's SQL Memory ACL. Empty sql_scopes → default-deny.
@@ -6001,6 +6003,7 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 		Rerank:             agentDef.MemoryRerank,
 		Units:              agentDef.MemoryUnits,
 	})
+	loopCtx = tools.WithDecisionPolicy(loopCtx, agentDef.Decision)
 	// RFC BL P1: run's resolved core blocks (Memory-tool enforcement + inherit).
 	loopCtx = tools.WithCoreBlocksPolicy(loopCtx, tools.CoreBlocksPolicyValue{Blocks: coreBlocks})
 	// RFC AA: the agent's SQL Memory ACL. Empty sql_scopes → default-deny.
@@ -8037,6 +8040,7 @@ func (s *Server) prepareSubRunValues(ctx context.Context, name string, src nameS
 		Rerank:             def.MemoryRerank,
 		Units:              def.MemoryUnits,
 	})
+	subCtx = tools.WithDecisionPolicy(subCtx, def.Decision)
 	// RFC BL P1: the sub-agent's effective core blocks (its own + any inherited
 	// user/tenant blocks). Replaces the parent's policy on subCtx so the Memory
 	// tool enforces THIS agent's blocks and a grandchild inherits from here.

@@ -32,6 +32,7 @@ func TestLoadSet_BundledOnly(t *testing.T) {
 		"compaction",
 		"content-signatures",
 		"credentials",
+		"Decision", // tool article, tools/Decision.md
 		"Document", // tool article, tools/Document.md
 		"dynamic-mcp",
 		"experimentation",

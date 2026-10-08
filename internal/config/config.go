@@ -1603,6 +1603,12 @@ type AgentDef struct {
 	// document search returns. Operator-set only, like memory_rerank.
 	MemoryUnits *bool `yaml:"memory_units,omitempty"`
 
+	// Decision narrows which of the operator's decision models this agent's
+	// Decision calls may name, and sets its default (see AgentDecision). nil =
+	// the operator's list and default. Content-identifying: it decides which
+	// model answers the agent's calls.
+	Decision *AgentDecision `yaml:"decision,omitempty"`
+
 	// Hooks are the agent's own hooks: the run events (agent_start, agent_stop,
 	// …) and tool events that apply to every tool. Each entry is a HookDef name
 	// ("gate", or "gate@3" pinned) or an inline webhook {name, url, fail_mode,
@@ -7805,6 +7811,9 @@ func validate(c *Config) error {
 		if err := agent.MemoryRerank.Validate(); err != nil {
 			return fmt.Errorf("agent %q: %w", name, err)
 		}
+		if err := c.CheckAgentDecision(agent.Decision); err != nil {
+			return fmt.Errorf("agent %q: %w", name, err)
+		}
 		if err := agent.ToolChoice.Validate(); err != nil {
 			return fmt.Errorf("agent %q: %w", name, err)
 		}
@@ -7956,6 +7965,13 @@ func validate(c *Config) error {
 		// logged once at boot, never fatal — an operator may legitimately list a
 		// tool they haven't gated yet.
 		c.Warnings = append(c.Warnings, agentGateWarnings(name, agent)...)
+		if !c.Decision.Configured() {
+			for _, tool := range agent.Tools {
+				if tool == "Decision" {
+					c.Warnings = append(c.Warnings, fmt.Sprintf("agent %q: tools includes Decision but no decision: block is declared, so the tool is not offered to the agent; declare decision: (default, and optionally models), or drop the tool", name))
+				}
+			}
+		}
 		c.Warnings = append(c.Warnings, sqlMemConfigWarnings(name, agent, c.Storage.SqlMemEnabled)...)
 		// Context/compaction settings that cannot take effect for this agent's
 		// mode. The failure they catch is the one this advisory channel exists

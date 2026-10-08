@@ -594,3 +594,40 @@ func TestSign_KnownVectorWithModels(t *testing.T) {
 		t.Errorf("canonical encoding drift on Models: got %s, want %s — update only with intent (bump every existing row + re-backfill); see TierCandidate's json: tag for context", got, want)
 	}
 }
+
+// TestSign_Decision_IsContentIdentifyingAndAbsentIsStable — an agent's
+// `decision` block decides which model answers its Decision calls, so two
+// agents differing only there hash differently; an agent that never mentions
+// it, or carries an empty block, hashes as it did before the block existed
+// (TestSign_KnownVector pins that encoding), and so does the same agent
+// declared in frontmatter and in an overlay.
+func TestSign_Decision_IsContentIdentifyingAndAbsentIsStable(t *testing.T) {
+	base := AgentContent{Name: "router", SystemPrompt: "route"}
+	empty := base
+	empty.Decision = &Decision{}
+	if Sign(empty) != Sign(base) {
+		t.Errorf("an empty decision block changed the hash: %s vs %s", Sign(empty), Sign(base))
+	}
+	narrowed := base
+	narrowed.Decision = &Decision{Default: "decide", Models: []string{"decide", "deep"}}
+	if Sign(narrowed) == Sign(base) {
+		t.Error("decision is not content-identifying: setting it did not change the hash")
+	}
+	other := base
+	other.Decision = &Decision{Default: "deep", Models: []string{"decide", "deep"}}
+	if Sign(other) == Sign(narrowed) {
+		t.Error("two different decision blocks hash the same")
+	}
+
+	fromYAML := FromYAMLAgent(&Agent{Name: "router", SystemPrompt: "route",
+		Decision: &Decision{Default: "decide", Models: []string{"decide", "deep"}}})
+	fromOverlay, err := FromOverlay([]byte(`{"system_prompt":"route","decision":{"default":"decide","models":["decide","deep"]}}`))
+	if err != nil {
+		t.Fatalf("FromOverlay: %v", err)
+	}
+	fromOverlay.Name = "router" // the name is the row's, not the overlay's
+	if Sign(fromYAML) != Sign(narrowed) || Sign(fromOverlay) != Sign(narrowed) {
+		t.Errorf("the same block hashes differently by route: yaml %s, overlay %s, direct %s",
+			Sign(fromYAML), Sign(fromOverlay), Sign(narrowed))
+	}
+}

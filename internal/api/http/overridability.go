@@ -132,6 +132,11 @@ var agentDefOverridability = map[string]overridability{
 	// same reason as the rerank: it decides what every search of the agent returns.
 	"MemoryUnits": notOverridable,
 
+	// Which decision models the agent's Decision calls may reach, and its default.
+	// The call itself names a model, within this list; widening the list is the
+	// agent author's decision, not a run's.
+	"Decision": notOverridable,
+
 	// --- authoring authority: what the agent may CREATE. Already excluded
 	// from content_sha256 as "authority, not content". ---
 	"AgentDefScopes":         notOverridable,

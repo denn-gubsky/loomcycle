@@ -291,6 +291,8 @@ type SubstrateAgentDef struct {
 	MemoryRerank *config.MemoryRerank `json:"memory_rerank,omitempty"`
 	// MemoryUnits mirrors config.AgentDef.MemoryUnits. Kept in sync with builtin.mergedDef.
 	MemoryUnits *bool `json:"memory_units,omitempty"`
+	// Decision mirrors config.AgentDef.Decision. Kept in sync with builtin.mergedDef.
+	Decision *config.AgentDecision `json:"decision,omitempty"`
 	// ToolChoice (RFC DI): mirrors config.ToolChoice / mergedDef.
 	ToolChoice *config.ToolChoice `json:"tool_choice,omitempty"`
 	// OutputFormat (RFC DI): mirrors config.OutputFormat / mergedDef.
@@ -452,6 +454,7 @@ func SubstrateAgentDefFromConfig(def config.AgentDef) SubstrateAgentDef {
 		RecallAttachTraces:     def.RecallAttachTraces,
 		MemoryRerank:           config.MergeMemoryRerank(nil, def.MemoryRerank),
 		MemoryUnits:            copyBoolPtr(def.MemoryUnits),
+		Decision:               def.Decision.Clone(),
 		MemoryIndexMaxBytes:    def.MemoryIndexMaxBytes,
 		MemoryRoots:            def.MemoryRoots,
 		RetryAttempts:          def.RetryAttempts,
@@ -514,6 +517,7 @@ func (s SubstrateAgentDef) ToConfigDef() config.AgentDef {
 		RecallAttachTraces:    s.RecallAttachTraces,
 		MemoryRerank:          config.MergeMemoryRerank(nil, s.MemoryRerank),
 		MemoryUnits:           copyBoolPtr(s.MemoryUnits),
+		Decision:              s.Decision.Clone(),
 		MemoryIndexMaxBytes:   s.MemoryIndexMaxBytes,
 		MemoryRoots:           s.MemoryRoots,
 		RetryAttempts:         s.RetryAttempts,

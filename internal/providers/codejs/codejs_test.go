@@ -296,6 +296,40 @@ func TestCodeJS_BuiltinTool_FlatCallable(t *testing.T) {
 	}
 }
 
+// A granted code agent calls the Decision tool the way its help article says:
+// a flat callable taking the arguments object as written (no op, the nested
+// state and criteria whole), whose result is the tool's JSON as a string.
+func TestCodeJS_DecisionTool_IsAFlatCallableReturningItsJSON(t *testing.T) {
+	root := writeAgent(t, "router", `function run(){
+		var out = JSON.parse(Decision({
+			state: { ticket: "charged twice", tags: ["billing", { tier: "gold" }] },
+			questions: { urgent: { type: "noul", instructions: "Reply within the hour?" },
+			             route: { type: "choice", instructions: "Which team?", criteria: { billing: "refunds", sales: null } } }
+		}));
+		return { final_text: out.answers.route.choice + ":" + (out.answers.urgent.noul > 0.5 ? "now" : "later") };
+	}`)
+	p := newTestProvider(root)
+	var got map[string]json.RawMessage
+	res := drive(t, context.Background(), p, "router", "go", []providers.ToolSpec{{Name: "Decision"}},
+		func(name string, input json.RawMessage) (string, bool) {
+			if name != "Decision" {
+				t.Errorf("dispatched tool name = %q, want Decision", name)
+			}
+			_ = json.Unmarshal(input, &got)
+			return `{"model":"decide","answers":{"route":{"type":"choice","choice":"billing"},"urgent":{"type":"noul","noul":0.3}}}`, false
+		})
+	if res.errText != "" {
+		t.Fatalf("run errored: %s", res.errText)
+	}
+	if _, hasOp := got["op"]; hasOp || len(got) != 2 ||
+		!strings.Contains(string(got["state"]), `"tier":"gold"`) || !strings.Contains(string(got["questions"]), `"sales":null`) {
+		t.Errorf("the tool received %v, want exactly state and questions as written", got)
+	}
+	if res.finalText != "billing:later" {
+		t.Errorf("final text = %q, want the answers read back as billing:later", res.finalText)
+	}
+}
+
 // Default-deny: a tool absent from tools (req.Tools) gets NO binding,
 // so referencing it is a ReferenceError — not a permission error.
 func TestCodeJS_Tools_DisallowedIsReferenceError(t *testing.T) {

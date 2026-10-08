@@ -48,7 +48,8 @@ import (
 // quotas, interruption.max_pending — bounded by the token budgets and the
 // runtime's own ceilings), routing and tuning (provider, model, tier, effort,
 // sampling, providers, models, search_providers, memory_backend, memory_rerank,
-// memory_units, compaction, context), prompt shape (system_prompt,
+// memory_units, decision — which can only narrow the operator's own list —
+// compaction, context), prompt shape (system_prompt,
 // inject_tool_guide, memory_protocol, memory_roots), and `internal`, which
 // nothing reads off a runtime-authored definition (Config.InternalAgentNames
 // is static-only). Hooks have their own gate (checkHooks); code_body runs only

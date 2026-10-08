@@ -427,6 +427,17 @@ channels:
 #   provider: ollama-local         # only for entries that are plain model names
 #   timeout_ms: 30000              # one call, including its wait for a slot (default)
 #   max_concurrent: 4              # calls in flight per provider (default)
+#
+# An agent asks them through the `Decision` tool: list it in the agent's
+# `tools:`. With no decision: block the tool is not offered to any agent (load
+# warns about each agent that lists it). An agent may NARROW the list for its
+# own calls; it cannot name a model the block above does not allow:
+# agents:
+#   router:
+#     tools: [Decision]
+#     decision:
+#       default: decide            # answers a call naming no model
+#       models: [decide]           # the only models this agent's calls may name
 
 # ─── v0.10.0 OpenTelemetry distributed traces ───────────────────────
 # Off by default — when LOOMCYCLE_OTEL_EXPORTER_OTLP_ENDPOINT is unset,
