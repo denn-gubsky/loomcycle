@@ -5,65 +5,79 @@
 # so it composes onto `base` without restating the matrix. Two intended uses:
 #   LOOMCYCLE_PRESETS=base,local   → local on top of base's full matrix, so cloud
 #                                    providers remain as fallback (recommended).
-#   LOOMCYCLE_PRESETS=local        → pure local: local providers only, no cloud.
+#   LOOMCYCLE_PRESETS=local        → local-only ROUTING: provider_priority and the
+#                                    tiers name ollama-local alone. The built-in
+#                                    cloud providers stay declared, but no tier
+#                                    reaches them; only an agent that pins one does.
 #
-# CONFIG HOME (RFC CK). Local-provider settings live HERE, in YAML, rather than
-# in environment variables. Precedence, highest first:
+# CONFIG HOME (RFC CK). Local-provider settings live in YAML rather than in
+# environment variables. Precedence, highest first:
 #   loomcycle.yaml  >  this preset  >  the LOOMCYCLE_OLLAMA_* env vars (legacy).
-# So a value set here overrides the matching env var, and your own loomcycle.yaml
-# overrides this preset. Ollama's endpoint still defaults to the OLLAMA_BASE_URL
-# env (http://localhost:11434) unless you set base_url below. NO secrets here.
+# So your own loomcycle.yaml overrides this preset, and a value set in YAML
+# overrides the matching env var. Ollama's endpoint defaults to the
+# OLLAMA_BASE_URL env (http://localhost:11434). NO secrets here.
 
-providers:
-  # ollama-local is already declared (keyless) in the embedded default providers,
-  # driven by OLLAMA_BASE_URL / LOOMCYCLE_OLLAMA_LOCAL_NUM_CTX / _NUM_GPU /
-  # _*_TIMEOUT_MS. To move that off env and into YAML, uncomment and edit — these
-  # OVERRIDE the env vars (and loomcycle.yaml overrides these in turn):
-  #
-  # base_url here moves CHAT AND THE MEMORY EMBEDDER together: memory.embedder
-  # resolves its endpoint through this same entry, so a new Ollama host is one
-  # edit. Restate it under memory.embedder.base_url only to send embeddings
-  # somewhere else on purpose.
-  #
-  # ollama-local:
-  #   base_url: http://truenas.local:11434   # else OLLAMA_BASE_URL (default localhost)
-  #   options:
-  #     num_ctx: 32768            # else LOOMCYCLE_OLLAMA_LOCAL_NUM_CTX (unset → Ollama's 4096 floor)
-  #     num_gpu: 999              # force full GPU offload; else LOOMCYCLE_OLLAMA_LOCAL_NUM_GPU
-  #     header_timeout_ms: 600000 # first-token budget for a cold model load
-  #     idle_timeout_ms: 600000
-
-  # vLLM — an OpenAI-compatible local server (default :8000). Keyless by default;
-  # for a secured endpoint (--api-key) set api_key_env to the env-var NAME holding
-  # the key (e.g. VLLM_API_KEY). Uncomment to enable, then wire a model + tier below.
-  # vllm-local:
-  #   driver: vllm
-  #   base_url: http://localhost:8000/v1
-  #   options:
-  #     header_timeout_ms: 600000   # cold model load can be slow to first token
-  #     idle_timeout_ms: 600000
-  #   capabilities:
-  #     # vLLM fixes the context window at launch (--max-model-len); advertise it
-  #     # so compaction + the context gauge + Context op=self are accurate. Set
-  #     # this to YOUR served model's window.
-  #     max_context_tokens: 32768
-
-  # llama.cpp (llama-server) — an OpenAI-compatible local server (default :8080).
-  # llamacpp-local:
-  #   driver: llamacpp
-  #   base_url: http://localhost:8080/v1
-  #   options:
-  #     header_timeout_ms: 600000
-  #     idle_timeout_ms: 600000
-  #   capabilities:
-  #     # llama-server fixes the window at launch (-c / --ctx-size).
-  #     max_context_tokens: 32768
+# PROVIDERS. This preset declares none of its own: ollama-local is already
+# declared (keyless) in the built-in providers, driven by OLLAMA_BASE_URL /
+# LOOMCYCLE_OLLAMA_LOCAL_NUM_CTX / _NUM_GPU / _*_TIMEOUT_MS. The blocks below are
+# examples to COPY INTO YOUR OWN loomcycle.yaml (a preset is embedded in the
+# binary and cannot be edited in place) — the `providers:` line included. They
+# override the env vars, and merge over the built-in entry field by field.
+#
+# The whole block is commented out ON PURPOSE, key and all. A bare `providers:`
+# with nothing under it is not "no change": it is an empty value, and it REPLACES
+# every provider an earlier layer declared — the built-in ones included.
+#
+# base_url here moves CHAT AND THE MEMORY EMBEDDER together: memory.embedder
+# resolves its endpoint through this same entry, so a new Ollama host is one
+# edit. Restate it under memory.embedder.base_url only to send embeddings
+# somewhere else on purpose.
+#
+# providers:
+#   ollama-local:
+#     driver: ollama              # restated so the entry is complete on its own
+#                                 # (required under LOOMCYCLE_NO_DEFAULT_PROVIDERS=1)
+#     base_url: http://truenas.local:11434   # else OLLAMA_BASE_URL (default localhost)
+#     options:
+#       num_ctx: 32768            # else LOOMCYCLE_OLLAMA_LOCAL_NUM_CTX (unset → Ollama's 4096 floor)
+#       num_gpu: 999              # force full GPU offload; else LOOMCYCLE_OLLAMA_LOCAL_NUM_GPU
+#       header_timeout_ms: 600000 # first-token budget for a cold model load
+#       idle_timeout_ms: 600000
+#
+#   # vLLM — an OpenAI-compatible local server (default :8000). Keyless by default;
+#   # for a secured endpoint (--api-key) set api_key_env to the env-var NAME holding
+#   # the key (e.g. VLLM_API_KEY). Then wire a model + tier (examples below).
+#   vllm-local:
+#     driver: vllm
+#     base_url: http://localhost:8000/v1
+#     options:
+#       header_timeout_ms: 600000   # cold model load can be slow to first token
+#       idle_timeout_ms: 600000
+#     capabilities:
+#       # vLLM fixes the context window at launch (--max-model-len); advertise it
+#       # so compaction + the context gauge + Context op=self are accurate. Set
+#       # this to YOUR served model's window.
+#       max_context_tokens: 32768
+#
+#   # llama.cpp (llama-server) — an OpenAI-compatible local server (default :8080).
+#   llamacpp-local:
+#     driver: llamacpp
+#     base_url: http://localhost:8080/v1
+#     options:
+#       header_timeout_ms: 600000
+#       idle_timeout_ms: 600000
+#     capabilities:
+#       # llama-server fixes the window at launch (-c / --ctx-size).
+#       max_context_tokens: 32768
 
 models:
   local-fast:  { provider: ollama-local, model: gpt-oss* }        # quick / low-context
   local-chat:  { provider: ollama-local, model: qwen3.6*   }      # general reasoning
   local-coder: { provider: ollama-local, model_pattern: "qwen3.8*" } # coding / review
-  # vLLM / llama.cpp model examples — uncomment the provider above, then set the
+  # A small local decision model (answers a typed question fast; not a chat
+  # model). Naming it here asks nothing of it — see DECISION MODEL below.
+  local-decide: { provider: ollama-local, model: nimble, kind: decision }
+  # vLLM / llama.cpp model examples — declare the provider (above), then set the
   # served model id (as vLLM/llama-server reports it on GET /v1/models):
   # vllm-chat:     { provider: vllm-local,     model: Qwen/Qwen3-8B }
   # llamacpp-chat: { provider: llamacpp-local, model: qwen3-8b }
@@ -77,3 +91,14 @@ tiers:
   low:    !prepend [local-fast]
   middle: !prepend [local-chat]
   high:   !prepend [local-coder]
+
+# DECISION MODEL. The `local-decide` alias above only NAMES a model: nothing asks it
+# until a `decision:` block is declared, and this preset declares none. A block
+# that cannot be built stops the server at boot — which it would here whenever
+# ollama-local is not declared (LOOMCYCLE_NO_DEFAULT_PROVIDERS=1) or your own
+# config points `local-decide` at a provider that serves no decision models. To turn
+# it on, COPY the two lines below into your own loomcycle.yaml. Your Ollama must
+# serve the model: one that is not pulled fails the call, not the boot.
+#
+# decision:
+#   default: local-decide

@@ -6,6 +6,7 @@ import (
 
 	"github.com/denn-gubsky/loomcycle/cmd/loomcycle/embedded"
 	"github.com/denn-gubsky/loomcycle/internal/config"
+	"github.com/denn-gubsky/loomcycle/internal/decision/decisionbuild"
 )
 
 // layersFor resolves embedded unit names to config layers, the same mapping
@@ -21,6 +22,201 @@ func layersFor(t *testing.T, names ...string) []config.Layer {
 		layers[i] = config.Layer{Name: u.Name, Data: u.Data}
 	}
 	return layers
+}
+
+// bootStackFor is layersFor under the built-in providers layer — the stack main()
+// assembles for LOOMCYCLE_PRESETS=<names> (kept in lockstep with assembleConfigLayers).
+func bootStackFor(t *testing.T, names ...string) []config.Layer {
+	t.Helper()
+	return append([]config.Layer{{Name: "providers.default", Data: embedded.DefaultProviders()}}, layersFor(t, names...)...)
+}
+
+// TestEmbedded_NoUnitDropsABuiltInProvider: selecting a preset or a bundle never
+// takes a built-in provider away. The `local` preset did: its `providers:` key
+// had only comments under it, which is a null, and the null replaced the whole
+// built-in map — LOOMCYCLE_PRESETS=base,local booted with no provider at all,
+// ollama-local included.
+func TestEmbedded_NoUnitDropsABuiltInProvider(t *testing.T) {
+	t.Setenv("LOOMCYCLE_SKILLS_ROOT", "")
+	builtIn := loadDefaultProvidersOnly(t).Providers
+	if len(builtIn) < 5 {
+		t.Fatalf("built-in providers = %d; the layer this test compares against is not the shipped one", len(builtIn))
+	}
+	stacks := [][]string{{"base", "local"}, {"local"}, {"base", "local", "chat"}}
+	for _, u := range embedded.Units() {
+		if u.Name != "base" {
+			stacks = append(stacks, []string{"base", u.Name})
+		}
+	}
+	for _, names := range stacks {
+		t.Run(strings.Join(names, ","), func(t *testing.T) {
+			cfg, err := config.LoadLayers(bootStackFor(t, names...)...)
+			if err != nil {
+				t.Fatalf("LoadLayers: %v", err)
+			}
+			for id, want := range builtIn {
+				got, ok := cfg.Providers[id]
+				if !ok {
+					t.Errorf("built-in provider %q is gone from the merged config (providers: %d)", id, len(cfg.Providers))
+					continue
+				}
+				if got.Driver != want.Driver {
+					t.Errorf("provider %q driver = %q, want the built-in %q", id, got.Driver, want.Driver)
+				}
+			}
+			for _, w := range cfg.Warnings {
+				if strings.Contains(w, "config layer override: providers ") {
+					t.Errorf("a unit replaced the providers map wholesale: %s", w)
+				}
+			}
+		})
+	}
+}
+
+// localPresetExample returns the commented-out block starting at the `# <key>:`
+// line of the local preset — an example it tells an operator to copy into their
+// own config — uncommented.
+func localPresetExample(t *testing.T, key string) []byte {
+	t.Helper()
+	data, err := embedded.Show("local")
+	if err != nil {
+		t.Fatalf("Show(local): %v", err)
+	}
+	var out []string
+	in := false
+	for _, line := range strings.Split(string(data), "\n") {
+		if line == "# "+key+":" {
+			in = true
+		}
+		if !in {
+			continue
+		}
+		if !strings.HasPrefix(line, "#") {
+			if strings.TrimSpace(line) == "" {
+				continue
+			}
+			break // the first live YAML line ends the example
+		}
+		out = append(out, strings.TrimPrefix(strings.TrimPrefix(line, "#"), " "))
+	}
+	if len(out) < 2 {
+		t.Fatalf("no commented `# %s:` example found in the local preset (%d lines)", key, len(out))
+	}
+	return []byte(strings.Join(out, "\n") + "\n")
+}
+
+// TestEmbedded_LocalPresetProvidersExampleLoads: the provider example the local
+// preset prints is one an operator can paste as written. It loads on top of
+// base,local, and — because each entry names its driver — also with the built-in
+// providers switched off, where an entry carrying only a base_url is refused
+// ("driver is required").
+func TestEmbedded_LocalPresetProvidersExampleLoads(t *testing.T) {
+	example := config.Layer{Name: "operator", Data: localPresetExample(t, "providers")}
+	for name, base := range map[string][]config.Layer{
+		"with the built-in providers":    bootStackFor(t, "base", "local"),
+		"without the built-in providers": layersFor(t, "base", "local"),
+	} {
+		t.Run(name, func(t *testing.T) {
+			cfg, err := config.LoadLayers(append(base, example)...)
+			if err != nil {
+				t.Fatalf("the preset's own example must load: %v", err)
+			}
+			for id, driver := range map[string]string{"ollama-local": "ollama", "vllm-local": "vllm", "llamacpp-local": "llamacpp"} {
+				if got := cfg.Providers[id].Driver; got != driver {
+					t.Errorf("providers.%s.driver = %q, want %q", id, got, driver)
+				}
+			}
+			if got := cfg.Providers["ollama-local"].BaseURL; got == "" {
+				t.Errorf("the example's ollama-local base_url did not reach the merged config")
+			}
+		})
+	}
+}
+
+// TestEmbedded_LocalNamesADecisionModelAndAsksNothingOfIt: the local preset
+// ships the `local-decide` alias and NO decision block. The alias costs nothing; a
+// block is checked at load and refuses to boot when it cannot be built, so
+// shipping one would stop the server for an operator who runs local without
+// ollama-local declared, or who already points a `local-decide` alias of their own at
+// a provider that serves no decision models. Both of those load here.
+func TestEmbedded_LocalNamesADecisionModelAndAsksNothingOfIt(t *testing.T) {
+	t.Setenv("LOOMCYCLE_SKILLS_ROOT", "")
+	vllmOnly := config.Layer{Name: "operator", Data: []byte(`
+providers:
+  vllm-local: { driver: vllm, base_url: "http://127.0.0.1:9/v1" }
+models:
+  vllm-chat: { provider: vllm-local, model: served-model }
+`)}
+	ownDecide := config.Layer{Name: "operator", Data: []byte(`
+models:
+  local-decide: { provider: openai, model: gpt-5.4-mini }
+`)}
+	for name, layers := range map[string][]config.Layer{
+		"base,local":                                   bootStackFor(t, "base", "local"),
+		"local":                                        bootStackFor(t, "local"),
+		"base,local,chat":                              bootStackFor(t, "base", "local", "chat"),
+		"base,local + another local provider":          append(bootStackFor(t, "base", "local"), vllmOnly),
+		"base,local, no built-in providers":            layersFor(t, "base", "local"),
+		"base,local, only another local provider":      append(layersFor(t, "base", "local"), vllmOnly),
+		"base,local + the operator's own local-decide": append(bootStackFor(t, "base", "local"), ownDecide),
+		"base,local, own local-decide, no built-in":    append(layersFor(t, "base", "local"), ownDecide),
+		"base,local, every other unit stacked on it":   bootStackFor(t, allUnitsBaseLocalFirst()...),
+	} {
+		t.Run(name, func(t *testing.T) {
+			cfg, err := config.LoadLayers(layers...)
+			if err != nil {
+				t.Fatalf("selecting the local preset must not stop this config loading: %v", err)
+			}
+			if cfg.Decision.Configured() {
+				t.Errorf("the local preset declared a decision block (%+v); it may only name the alias", cfg.Decision)
+			}
+			if _, ok := cfg.Models["local-decide"]; !ok {
+				t.Errorf("models.local-decide is missing")
+			}
+		})
+	}
+
+	cfg, err := config.LoadLayers(bootStackFor(t, "base", "local")...)
+	if err != nil {
+		t.Fatalf("LoadLayers(base, local): %v", err)
+	}
+	if got := cfg.Models["local-decide"]; got.Provider != "ollama-local" || got.Model != "nimble" || got.Kind != config.ModelKindDecision {
+		t.Errorf("models.local-decide = %+v, want ollama-local / nimble / kind decision", got)
+	}
+}
+
+// allUnitsBaseLocalFirst is every embedded unit, base and local leading.
+func allUnitsBaseLocalFirst() []string {
+	names := []string{"base", "local"}
+	for _, u := range embedded.Units() {
+		if u.Name != "base" && u.Name != "local" {
+			names = append(names, u.Name)
+		}
+	}
+	return names
+}
+
+// TestEmbedded_LocalPresetDecisionExampleTurnsItOn: the two lines the local
+// preset tells an operator to copy do what it says — pasted over base,local they
+// load, and the decision model they name is the preset's alias on ollama-local.
+func TestEmbedded_LocalPresetDecisionExampleTurnsItOn(t *testing.T) {
+	example := config.Layer{Name: "operator", Data: localPresetExample(t, "decision")}
+	cfg, err := config.LoadLayers(append(bootStackFor(t, "base", "local"), example)...)
+	if err != nil {
+		t.Fatalf("the preset's own decision example must load: %v", err)
+	}
+	entries := cfg.DecisionEntries()
+	if cfg.Decision.Default != "local-decide" || len(entries) != 1 || entries[0].Name != "local-decide" {
+		t.Fatalf("decision = %+v entries %+v, want default local-decide and that one entry", cfg.Decision, entries)
+	}
+	svc, err := decisionbuild.Build(cfg)
+	if err != nil || svc == nil {
+		t.Fatalf("decisionbuild.Build = %v, %v; the example must build a service", svc, err)
+	}
+	models := svc.Models()
+	if len(models) != 1 || models[0].Provider != "ollama-local" || models[0].Model != "nimble" {
+		t.Errorf("decision models = %+v, want local-decide = ollama-local/nimble", models)
+	}
 }
 
 // TestEmbedded_DocumentAgentResolvesWithInlineSkills is the RFC AQ §7 Phase-1
