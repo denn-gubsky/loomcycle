@@ -841,6 +841,24 @@ func (s *Server) History(ctx context.Context, input json.RawMessage) (connector.
 	return s.dispatchBuiltin(ctx, "History", input)
 }
 
+// Decision dispatches to the Decision tool: what the MCP `decision` meta-tool
+// calls. The tool is registered only when the operator declared decision
+// models, so its absence is answered here as the tool's own refusal rather
+// than as "not registered": a caller told the tool does not exist cannot tell
+// a deployment without decision models from a broken one.
+func (s *Server) Decision(ctx context.Context, input json.RawMessage) (connector.ToolResult, error) {
+	for _, t := range s.tools {
+		if t.Name() == "Decision" {
+			return s.dispatchBuiltin(ctx, "Decision", input)
+		}
+	}
+	res, err := s.execBuiltin(ctx, &builtin.Decision{}, input)
+	if err != nil {
+		return connector.ToolResult{}, err
+	}
+	return connector.ToolResult{Text: res.Text, IsError: res.IsError, ErrorInfo: res.Error}, nil
+}
+
 // MCPServerDef dispatches to the v0.9.x dynamic MCP-server-registration
 // substrate tool. The tool is NOT in the per-agent dispatcher (operator-
 // admin-only) — dispatchBuiltinDirect looks it up via the dedicated

@@ -171,6 +171,12 @@ var handlersByName = map[string]toolHandler{
 	"history": wrapBuiltin("history", func(c connector.Connector, ctx context.Context, in json.RawMessage) (connector.ToolResult, error) {
 		return c.History(ctx, in)
 	}),
+	// The Decision tool: typed questions to one of the operator's decision
+	// models. It runs under the caller's own principal (mcpPrincipalCtx), so the
+	// provider key it may spend and the tenant it is asked for are the caller's.
+	"decision": wrapBuiltin("decision", func(c connector.Connector, ctx context.Context, in json.RawMessage) (connector.ToolResult, error) {
+		return c.Decision(ctx, in)
+	}),
 
 	// Pause/Resume (v0.8.17 primitives; exposed via Connector in v0.8.18)
 	"pause_runtime":     handlePauseRuntime,

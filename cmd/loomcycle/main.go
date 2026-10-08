@@ -1663,6 +1663,23 @@ func main() {
 		}
 	}
 
+	// The decision models (the decision: block): a declared block that cannot be
+	// built fails boot, as the reranker does. The Decision tool is registered
+	// only when there is a block: an agent that lists it on a deployment without
+	// one is not offered a tool whose every call would fail (config load says so
+	// in a warning). Built before the server so the tool is in its catalogue.
+	decisionService, dsErr := decisionbuild.Build(cfg)
+	if dsErr != nil {
+		log.Fatalf("decision: %v", dsErr)
+	}
+	if decisionService != nil {
+		for _, m := range decisionService.Models() {
+			log.Printf("decision: %s = %s/%s", m.Name, m.Provider, m.Model)
+		}
+		log.Printf("decision: default %s", decisionService.Default())
+		allTools = append(allTools, &builtin.Decision{Service: decisionService})
+	}
+
 	// The Context tool's catalog (used by `Context op=tools`) is wired inside
 	// lchttp.New — it must include the Agent tool that New appends to the
 	// server's tool set, which isn't in allTools here (F45). New re-points any
@@ -1690,19 +1707,9 @@ func main() {
 		unitGenerator.ObserveCall = srv.ObserveCallTiming
 		srv.SetUnitGenerator(unitGenerator)
 	}
-	// The decision models (the decision: block): a declared block that cannot be
-	// built fails boot, as the reranker does. A decision is asked on a run's
-	// behalf, so its tokens go to that run's ledger and budget. Built and booked
-	// here; nothing asks it yet.
-	decisionService, dsErr := decisionbuild.Build(cfg)
-	if dsErr != nil {
-		log.Fatalf("decision: %v", dsErr)
-	}
+	// A decision is asked on a run's behalf, so its tokens go to that run's
+	// ledger and budget. Set here because srv exists only now.
 	if decisionService != nil {
-		for _, m := range decisionService.Models() {
-			log.Printf("decision: %s = %s/%s", m.Name, m.Provider, m.Model)
-		}
-		log.Printf("decision: default %s", decisionService.Default())
 		decisionService.SetOnUsage(srv.RecordRunSideCallUsage)
 	}
 	// RFC AR: stamp the credential resolver onto each run so a tenant/user's own

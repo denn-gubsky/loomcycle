@@ -254,6 +254,14 @@ type Connector interface {
 	// through this single Connector method.
 	History(ctx context.Context, input json.RawMessage) (ToolResult, error)
 
+	// Decision — ask one of the operator's decision models typed questions
+	// (choice / noul / score) about a piece of state. One operation, no op
+	// field. The models are the operator's decision: block; key resolution and
+	// tenancy are the caller's, from the ctx the transport stamped. Reachable
+	// via the LoomCycle MCP meta-tool `decision`; an agent reaches the same
+	// tool in-loop as `Decision`.
+	Decision(ctx context.Context, input json.RawMessage) (ToolResult, error)
+
 	// MCPServerDef — v0.9.x dynamic MCP server registration substrate.
 	// Op-discriminated (create / fork / get / list / promote / retire
 	// / rediscover / verify). Operator-admin-only: NOT auto-attached
