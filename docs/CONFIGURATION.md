@@ -838,7 +838,7 @@ Agent files live under `LOOMCYCLE_AGENTS_ROOT` (set in the env file). Each `<nam
 
 ### Frontmatter fields
 
-Parsed at `internal/agents/loader.go:381` (the `frontmatter` struct):
+Parsed into the `frontmatter` struct by `parseAgent` in `internal/agents/loader.go`:
 
 | Field | Type | Purpose | Notes |
 |---|---|---|---|
@@ -846,7 +846,7 @@ Parsed at `internal/agents/loader.go:381` (the `frontmatter` struct):
 | `description` | string | Human summary | Surfaces in operator tooling; not sent to the LLM as part of the prompt. |
 | **Model resolution** | | | |
 | `provider` | string | Explicit provider pin | XOR with `tier:`. With `model:` forms the pin path. |
-| `model` | string | Model alias OR full model ID | Aliases expand via `models:` map at `config.go:1370`. |
+| `model` | string | Model alias OR full model ID | Aliases expand via the `models:` map (`ExpandModelAlias` in `internal/config/config.go`). |
 | `tier` | string | `low` / `middle` / `high` | XOR with `provider`/`model`. Triggers tier-driven resolution. |
 | `providers` | `[]string` | Per-agent provider priority | Full replacement of library `provider_priority` for this agent. |
 | `models` | `map[tier][]TierCandidate` | Per-agent tier candidate lists | Full replacement of library `tiers[]` for this agent. |
@@ -895,7 +895,6 @@ tools: []
 ---
 name: qa-agent
 description: Q&A answer generator for job applications.
-tools: mcp__jobs__getAgentContext
 tier: middle
 tools:
   - mcp__jobs__getAgentContext
@@ -904,7 +903,7 @@ tools:
 ---
 ```
 
-Note: `tools:` (the Claude-Code form) is present so the same file works in Claude Code, but `tools:` (the loomcycle form) takes precedence and is the authoritative list at runtime.
+Note: write `tools:` once. A comma-string (`tools: Read, Grep`, the Claude Code shape) and a YAML list are read the same way, so one key serves both consumers. A file that carries the key twice does not load: the frontmatter parse fails with `mapping key "tools" already defined`.
 
 **Alias pin with skills** — privacy-sensitive agent locked to sonnet:
 
@@ -912,7 +911,6 @@ Note: `tools:` (the Claude-Code form) is present so the same file works in Claud
 ---
 name: cv-rewriter
 description: Rewrites CV or Cover Letter text...
-tools: mcp__jobs__getAgentContext
 tools:
   - mcp__jobs__getAgentContext
   - Read
@@ -950,7 +948,6 @@ Inline skills join the on-demand catalog alongside `LOOMCYCLE_SKILLS_ROOT` (inli
 ---
 name: company-researcher
 description: Researches ONE company for a job application...
-tools: WebSearch, WebFetch, mcp__brave-search__brave_web_search
 tier: middle
 tools:
   - WebSearch
@@ -967,9 +964,10 @@ The same `.md` file works in both Claude Code and loomcycle. **Claude-Code-honou
 
 ### Operator-yaml `agents:` overlay
 
-The operator yaml's `agents:` map can override any frontmatter field at the deployment level. Useful when you want different model resolution per deployment without forking the .md files. Merge logic at `internal/config/config.go:1531`:
+The operator yaml's `agents:` map can override any frontmatter field at the deployment level. Useful when you want different model resolution per deployment without forking the .md files. Merge logic is `mergeAgentDef` in `internal/config/config.go` (called from `discoverAgents`):
 
 - Scalar fields (string, int): YAML non-zero value wins
+- Boolean fields: YAML `true` switches the field on; YAML `false` is the zero value, so an overlay cannot switch off what the .md enabled
 - Slice/map fields: YAML `nil` keeps the discovered value; YAML non-nil (even `[]`) is an explicit override
 - `system_prompt` and `system_prompt_file` are mutually exclusive — setting one in YAML clears the other from the merged struct
 
@@ -980,13 +978,11 @@ Example overlay:
 agents:
   cv-rewriter:
     # Override the agent's pin for THIS deployment only.
-    # Removes the model: sonnet from the merged config and uses tier instead.
-    tier: high
-    model: ""
-    provider: ""
+    # The .md says `model: sonnet`; this deployment runs it on another alias.
+    model: opus
 ```
 
-(Setting `model: ""` is the explicit "clear" — without it, the discovered `sonnet` would stay.)
+An overlay replaces a value; it cannot clear one. `model: ""` is the zero value, so it reads as "not set" and the discovered `sonnet` stays. That is why a `.md` that pins `model:` cannot be moved onto a tier from yaml: adding `tier: high` leaves both the pin and the tier on the merged definition, and config-load fails with `cannot set both explicit provider/model pin and tier (pick one)`. Change the routing mode in the `.md` itself.
 
 ### System-prompt placeholders
 
@@ -1042,17 +1038,17 @@ Single reference table:
 
 | Conflict | Winner | Where enforced |
 |---|---|---|
-| `tier:` AND (`provider:` / `model:`) both set | **Config-load fails** | `config.go:1985` |
-| `tools:` AND the old `allowed_tools:` both set | `tools:` is read; `allowed_tools:` is an unknown key and is ignored, with or without `tools:` | `loader.go:508` |
-| Body AND `system_prompt_file:` both set | Setting either via YAML overlay clears the other | `config.go:1564` |
-| Agent `providers:` AND user_tier `provider_priority` both set | **Intersection** (agent-order); empty → `ErrTierAgentNotAvailable` | `matrix.go:440` |
-| Agent `models[tier]:` set | Replaces library `tiers[tier]` AND user_tier `tiers[tier]` for this agent | `matrix.go` candidate-list build |
-| user_tier `tiers[tier]:` set (no agent override) | Replaces library `tiers[tier]` | resolver candidate-list build |
-| Discovered .md field AND operator-yaml `agents:` overlay both set | YAML non-zero wins; nil slice keeps .md value | `config.go:1531` |
-| `model: sonnet` (alias) AND `models:` map has `sonnet` | Alias expands to `{provider, model}` from the map | `config.go:1370` |
-| `model: claude-sonnet-4-6` (literal, no alias) | Used as-is as the model ID | same path |
-| Probe says provider unreachable | Resolver skips all that provider's candidates | `matrix.go` per-candidate check |
-| Provider has no API key set | Marked excluded, treated like unreachable | startup probe |
+| `tier:` AND (`provider:` / `model:`) both set | **Config-load fails** (an AgentDef create / fork is refused the same way) | `ValidateRoutingMode` in `internal/config/config.go` |
+| `tools:` AND the old `allowed_tools:` both set | `tools:` is read; `allowed_tools:` is an unknown key and is ignored, with or without `tools:` | the `frontmatter` struct in `internal/agents/loader.go` (it has no such field) |
+| Body AND `system_prompt_file:` both set | **Config-load fails** when one definition ends up with both. A YAML overlay that sets either one clears the other first, so an overlay never trips this | `resolveSystemPromptFiles` (the refusal) and `mergeAgentDef` (the clear) in `internal/config/config.go` |
+| Agent `providers:` AND user_tier `provider_priority` both set | **Intersection** (agent-order); empty → `ErrTierAgentNotAvailable` | `priorityFor` in `internal/resolve/matrix.go` (`Resolve` returns the error) |
+| Agent `models[tier]:` set | Replaces library `tiers[tier]` AND user_tier `tiers[tier]` for this agent | `candidatesFor` in `internal/resolve/matrix.go` |
+| user_tier `tiers[tier]:` set (no agent override) | Replaces library `tiers[tier]` | `candidatesFor` in `internal/resolve/matrix.go` |
+| Discovered .md field AND operator-yaml `agents:` overlay both set | YAML non-zero wins; nil slice keeps .md value | `mergeAgentDef` in `internal/config/config.go` |
+| `model: sonnet` (alias) AND `models:` map has `sonnet` | Alias expands to `{provider, model}` from the map | `ExpandModelAlias` in `internal/config/config.go` |
+| `model: claude-sonnet-4-6` (literal, no alias) | Used as-is as the model ID | `ExpandModelAlias` in `internal/config/config.go` (a non-alias passes through) |
+| Probe says provider unreachable | Resolver skips all that provider's candidates | `isAvailableLocked` in `internal/resolve/matrix.go` |
+| Provider has no API key set | Marked excluded, treated like unreachable | `runResolveProbeOnce` in `cmd/loomcycle/main.go` calls `SetExcluded` in `internal/resolve/matrix.go` |
 
 ---
 
@@ -1777,19 +1773,26 @@ See [`docs/DECISION-MODELS.md`](DECISION-MODELS.md) for the request and answer f
 
 ## 11. Code path index
 
-Single jump-list of every file:line cited above. As of v0.8.16:
+Single jump-list of the source locations cited above. The symbol name is the stable handle: grep for it. The line numbers were checked against v1.107.0 and move with every commit, so treat them as a starting point.
 
-| What | Where |
-|---|---|
-| Operator yaml `Config` struct + top-level keys | `internal/config/config.go:22` |
-| `ModelRef` (alias map value type) | `internal/config/config.go:154` |
-| `UserTier` overlay struct | `internal/config/config.go:177` |
-| Alias expansion (`ResolveAgentDefModel`) | `internal/config/config.go:1366–1390` |
-| Agent .md / yaml merge logic | `internal/config/config.go:1531–1612` |
-| `system_prompt` / `system_prompt_file` mutual-exclusion clear | `internal/config/config.go:1564` |
-| Pin XOR Tier validation | `internal/config/config.go:1985` |
-| Frontmatter struct (every accepted field) | `internal/agents/loader.go:381` |
-| `tools` comma-string / list coercion | `internal/agents/loader.go:508` |
-| Resolver entry — `Resolve(req)` | `internal/resolve/matrix.go:281` |
-| `priorityFor` intersection logic | `internal/resolve/matrix.go:440` |
-| `resolvePin` (pin path) | `internal/resolve/matrix.go:293` |
+| What | Symbol | Where (line at v1.107.0) |
+|---|---|---|
+| Operator yaml top-level keys | `Config` struct | `internal/config/config.go:34` |
+| Alias map value type | `ModelRef` struct | `internal/config/config.go:837` |
+| User-tier overlay | `UserTier` struct | `internal/config/config.go:1120` |
+| Alias expansion | `ExpandModelAlias` | `internal/config/config.go:5948` |
+| Pin-path model resolution (calls the alias expansion) | `ResolveAgentDefModel` | `internal/config/config.go:5985` |
+| Agent .md discovery + yaml overlay | `discoverAgents` | `internal/config/config.go:6283` |
+| Agent .md / yaml merge logic, including the `system_prompt` / `system_prompt_file` clear | `mergeAgentDef` | `internal/config/config.go:6398` |
+| `system_prompt` / `system_prompt_file` mutual-exclusion refusal | `resolveSystemPromptFiles` | `internal/config/config.go:6600` |
+| Pin XOR Tier validation | `ValidateRoutingMode` | `internal/config/config.go:6932` |
+| Frontmatter struct (every accepted field) | `frontmatter` struct | `internal/agents/loader.go:381` |
+| Frontmatter parse | `parseAgent` | `internal/agents/loader.go:433` |
+| `tools` comma-string / list coercion | `coerceToolsField` | `internal/agents/loader.go:523` |
+| Resolver entry | `Resolve` | `internal/resolve/matrix.go:383` |
+| Pin path | `resolvePin` | `internal/resolve/matrix.go:534` |
+| Tier candidate-list precedence | `candidatesFor` | `internal/resolve/matrix.go:624` |
+| Provider-priority intersection | `priorityFor` | `internal/resolve/matrix.go:653` |
+| Per-candidate availability check | `isAvailableLocked` | `internal/resolve/matrix.go:710` |
+| Excluded-provider marker | `SetExcluded` | `internal/resolve/matrix.go:921` |
+| Provider probe sweep (marks keyless providers excluded) | `runResolveProbeOnce` | `cmd/loomcycle/main.go:3981` |
