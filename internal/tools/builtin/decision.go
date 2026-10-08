@@ -174,31 +174,33 @@ func (d *Decision) allowedModels(ctx context.Context, asked string) (name string
 
 func (d *Decision) Execute(ctx context.Context, raw json.RawMessage) (tools.Result, error) {
 	if d.Service == nil {
-		return decisionFailure(&decision.Error{Code: decisionNotConfigured,
+		return decisionFailure(ctx, &decision.Error{Code: decisionNotConfigured,
 			Message: "this deployment declares no decision models"}, nil), nil
 	}
 	// Fail closed on a call with neither a run nor the server's run-less
 	// preparation (see the type's comment): refused here, before a key is
 	// resolved, whatever surface dispatched it.
 	if _, metered := tools.MeteredOffRunCall(ctx); !metered && tools.RunID(ctx) == "" {
-		return decisionFailure(&decision.Error{Code: decisionNoRun,
+		return decisionFailure(ctx, &decision.Error{Code: decisionNoRun,
 			Message: "a decision model is asked from inside a run, or through the decision API"}, nil), nil
 	}
 	in, state, err := parseDecisionInput(raw)
 	if err != nil {
-		return decisionFailure(err, nil), nil
+		return decisionFailure(ctx, err, nil), nil
 	}
 	name, allowed, ok := d.allowedModels(ctx, in.Model)
 	if !ok {
-		msg := fmt.Sprintf("model %q is not one this agent may ask", in.Model)
+		// Worded for either caller: an agent in a run, or a caller with no run
+		// and no agent (the HTTP, gRPC and MCP surfaces).
+		msg := fmt.Sprintf("model %q is not one of the decision models you may ask", in.Model)
 		if in.Model == "" {
-			msg = "none of this agent's decision models is offered by this deployment"
+			msg = "none of the decision models you may ask is offered by this deployment"
 		}
-		return decisionFailure(&decision.Error{Code: decision.CodeModelNotAllowed, Message: msg}, allowed), nil
+		return decisionFailure(ctx, &decision.Error{Code: decision.CodeModelNotAllowed, Message: msg}, allowed), nil
 	}
 	resp, err := d.Service.Decide(ctx, name, state, in.Questions)
 	if err != nil {
-		return decisionFailure(err, allowed), nil
+		return decisionFailure(ctx, err, allowed), nil
 	}
 	out := decisionOutput{
 		Model: name, Provider: resp.Provider, ServedModel: resp.Model,
@@ -213,13 +215,13 @@ func (d *Decision) Execute(ctx context.Context, raw json.RawMessage) (tools.Resu
 		// A driver that kept no raw bytes: the typed fields are all there is.
 		b, merr := json.Marshal(a)
 		if merr != nil {
-			return decisionFailure(&decision.Error{Code: decision.CodeCallFailed, Question: q, Message: "the answer is not readable"}, allowed), nil
+			return decisionFailure(ctx, &decision.Error{Code: decision.CodeCallFailed, Question: q, Message: "the answer is not readable"}, allowed), nil
 		}
 		out.Answers[q] = b
 	}
 	body, err := json.Marshal(out)
 	if err != nil {
-		return decisionFailure(&decision.Error{Code: decision.CodeCallFailed, Message: "the answers are not readable"}, allowed), nil
+		return decisionFailure(ctx, &decision.Error{Code: decision.CodeCallFailed, Message: "the answers are not readable"}, allowed), nil
 	}
 	return tools.Result{Text: string(body)}, nil
 }
@@ -229,10 +231,14 @@ func (d *Decision) Execute(ctx context.Context, raw json.RawMessage) (tools.Resu
 // is the list of names the caller may use, for the faults a different model
 // could fix.
 //
+// The texts reach two kinds of caller: an agent inside a run, and a caller with
+// no run and no agent (the server's run-less path). Each is worded to be true
+// for both, or picked by which one ctx says this is.
+//
 // Only the fault's own message reaches the text, never the cause it wraps: a
 // transport error names the operator's host, which is for the log, not for the
 // model or a tenant reading the transcript.
-func decisionFailure(err error, allowed []string) tools.Result {
+func decisionFailure(ctx context.Context, err error, allowed []string) tools.Result {
 	var e *decision.Error
 	if !errors.As(err, &e) {
 		log.Printf("Decision: %v", err)
@@ -250,7 +256,10 @@ func decisionFailure(err error, allowed []string) tools.Result {
 		return errBusiness(text(e.Code, what),
 			"No call to this tool can succeed here. Decide another way, or ask an operator to declare decision models.")
 	case decisionNoRun:
-		return errBusiness(text(e.Code, what), "Start a run of an agent that holds the Decision tool.")
+		// The caller here is neither of the two that are served, so the hint
+		// names both ways in.
+		return errBusiness(text(e.Code, what),
+			"Ask from a run of an agent that holds the Decision tool, or through the decision API: POST /v1/_decide, the gRPC Decide RPC or the MCP `decision` tool.")
 	case decisionInvalidInput:
 		return errValidation(text(e.Code, what),
 			"Pass `state` (a JSON object holding what the questions are about) and `questions` (an object of named questions).")
@@ -296,7 +305,12 @@ func decisionFailure(err error, allowed []string) tools.Result {
 	}
 	// call_failed, and any code a driver adds later.
 	if errors.Is(err, providers.ErrOperatorKeyForbidden) {
-		res := errPermission(text(decisionKeyRestricted, "this run may not use the operator's provider key, and has none of its own for this provider"), "")
+		// Who is barred differs: a run, or with no run the caller itself.
+		who := "this run may not use the operator's provider key, and has none of its own for this provider"
+		if _, offRun := tools.MeteredOffRunCall(ctx); offRun {
+			who = "you may not use the operator's provider key, and have none of your own for this provider"
+		}
+		res := errPermission(text(decisionKeyRestricted, who), "")
 		if info, ok := errclassify.CategoryOf(providers.ErrOperatorKeyForbidden); ok {
 			res.Error = &info // the wording every surface gives this refusal
 		}
