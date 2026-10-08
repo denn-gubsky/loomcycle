@@ -95,6 +95,9 @@ func TestTeamChannelTools_AreOfferedLikeTheTeamTool(t *testing.T) {
 		if got, want := principalMayCallTool(as(auth.ScopeTenant), tool), principalMayCallTool(as(auth.ScopeTenant), "teamdef"); got != want || !got {
 			t.Errorf("%s: offered to a tenant operator = %v, teamdef = %v", tool, got, want)
 		}
+		if !principalMayCallTool(as(auth.ScopeChannelRead), tool) || principalMayCallTool(as(auth.ScopeRunsRead), tool) {
+			t.Errorf("%s: a member must hold the channel read scope, and no other will do", tool)
+		}
 		if principalMayCallTool(as(auth.ScopeUser), tool) {
 			t.Errorf("%s: offered to an isolated user", tool)
 		}

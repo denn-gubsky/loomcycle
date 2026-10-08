@@ -264,3 +264,36 @@ func TestTeamChannels_RoutesAreGatedLikeTheTeam(t *testing.T) {
 		}
 	}
 }
+
+// A member's token reaches the team's routes whatever it was granted, and is
+// held here to the scope a channel read needs: one granted only runs:read
+// must not read a team's messages through the team when the channel routes
+// refuse it.
+func TestTeamChannels_AMemberNeedsTheChannelReadScope(t *testing.T) {
+	h := newChannelHarness(t, nil)
+	h.seed("tdf_intake_1", "intake", intakeTeam(`{"scope":"tenant"}`))
+	h.walk(acmeUser("alice"), "intake", "note")
+	memberWith := func(scopes ...string) func(context.Context) context.Context {
+		return func(ctx context.Context) context.Context {
+			return auth.WithPrincipal(ctx, auth.Principal{TenantID: "acme", Subject: "bob", Scopes: scopes})
+		}
+	}
+	for _, path := range []string{"/v1/_teamdef/intake/channels", "/v1/_teamdef/intake/channels/events/peek"} {
+		for name, scopes := range map[string][]string{
+			"runs:read only":       {auth.ScopeRunsRead},
+			"channel:publish only": {auth.ScopeChannelPublish},
+			"no scope at all":      nil,
+		} {
+			if code, out := h.get(memberWith(scopes...), path); code != http.StatusForbidden || out["code"] != "insufficient_scope" {
+				t.Errorf("%s with %s: HTTP %d %v, want 403 insufficient_scope", path, name, code, out)
+			}
+		}
+		if code, out := h.get(memberWith(auth.ScopeChannelRead), path); code != http.StatusOK {
+			t.Errorf("%s with channel:read: HTTP %d %v, want 200", path, code, out)
+		}
+		// No principal is no authentication configured: the operator.
+		if code, out := h.get(func(ctx context.Context) context.Context { return ctx }, path+"?tenant=acme"); code != http.StatusOK {
+			t.Errorf("%s with no authentication configured: HTTP %d %v, want 200", path, code, out)
+		}
+	}
+}

@@ -253,8 +253,30 @@ func writeTeamChannelError(w http.ResponseWriter, err error) {
 	}
 }
 
+// teamChannelScopeOK refuses a caller whose token lacks the channel scope the
+// operation needs, and reports whether the request may go on.
+//
+// The routes are gated like the team, which a member's token reaches whatever
+// it was granted. What they do is a channel read or a channel write, and the
+// channel surface asks channels:read / channels:publish for those: without
+// this a token granted only runs:read would read a team's messages here while
+// the channel routes refuse it. A tenant operator's scope implies both; no
+// principal (no authentication configured) is the operator.
+func teamChannelScopeOK(w http.ResponseWriter, r *http.Request, need string) bool {
+	p, ok := auth.PrincipalFromContext(r.Context())
+	if !ok || auth.HasScope(p.Scopes, need) {
+		return true
+	}
+	w.Header().Set("WWW-Authenticate", `Bearer scope="`+need+`"`)
+	writeJSONError(w, http.StatusForbidden, "insufficient_scope", "insufficient scope: a team's own channels require "+need)
+	return false
+}
+
 // handleTeamChannels serves GET /v1/_teamdef/{team}/channels.
 func (s *Server) handleTeamChannels(w http.ResponseWriter, r *http.Request) {
+	if !teamChannelScopeOK(w, r, auth.ScopeChannelRead) {
+		return
+	}
 	out, err := s.ListTeamChannels(r.Context(), connector.TeamChannelsRequest{
 		Team: r.PathValue("team"), Tenant: r.URL.Query().Get("tenant"),
 	})
@@ -269,6 +291,9 @@ func (s *Server) handleTeamChannels(w http.ResponseWriter, r *http.Request) {
 // handleTeamChannelPeek serves GET /v1/_teamdef/{team}/channels/{name}/peek.
 // Query: max_messages, from_cursor, user_id (a user-scoped channel), tenant.
 func (s *Server) handleTeamChannelPeek(w http.ResponseWriter, r *http.Request) {
+	if !teamChannelScopeOK(w, r, auth.ScopeChannelRead) {
+		return
+	}
 	q := r.URL.Query()
 	limit := 0
 	if v := q.Get("max_messages"); v != "" {

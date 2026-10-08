@@ -186,6 +186,11 @@ var toolRequiredScope = map[string]string{
 	"ack_channel":       auth.ScopeChannelPublish,
 	"subscribe_channel": auth.ScopeChannelRead,
 	"peek_channel":      auth.ScopeChannelRead,
+	// A team's own channels are channels: reading one is a channel read. The
+	// HTTP routes ask the same of a member; the RPCs ask substrate:tenant,
+	// which implies it.
+	"list_team_channels": auth.ScopeChannelRead,
+	"peek_team_channel":  auth.ScopeChannelRead,
 	// Asking a decision model outside a run spends tokens: the scope
 	// POST /v1/_decide and the Decide RPC require.
 	"decision": auth.ScopeRunsCreate,

@@ -42,6 +42,7 @@ A blocking spawn now reports how its run really ended. A run cancelled from outs
 - `list_team_channels {team}` returns each channel's definition, which version declares it (`declared_in`: `active`, `inactive` or `retired`) and its counts: `message_count`, `held_count`, `awaiting_hooks_count`.
 - `peek_team_channel {team, name}` returns its messages and advances no cursor, so the team still reads every one. Held messages are counted by the list, not shown by the peek.
 - The team is resolved in the caller's tenant. An unknown team, or one in another tenant, is not found.
+- A member's token needs `channel:read` for both, as `peek_channel` does; a tenant operator's token implies it. The HTTP routes ask the same.
 - A user-scoped channel is read at the caller's own user. `user_id` reads another user's only for a caller who may read any user's channel. The list's counts for such a channel are summed over every user.
 - A channel only a retired version declares is still listed and readable: its messages belong to the team, not to a version.
 - Read-only. There is no publish, ack or purge for a team's own channel from outside the team.
