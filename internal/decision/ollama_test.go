@@ -209,6 +209,12 @@ func TestOllama_RefusalsMapToTheirCodes(t *testing.T) {
 			Error{Code: CodeBadQuestion, Question: "tokens"}},
 		{"model not found", 404, `{"error":"model \"nope-xyz\" not found, try pulling it first"}`,
 			Error{Code: CodeModelNotFound}},
+		// Seen on Ollama 0.40.0: a cap on the request's bytes, checked before the
+		// model's token limit. It is an oversized input too, but it is not mapped to
+		// prompt_too_large yet: the memory reranker retries shorter on that code, and
+		// it never retried on this refusal. Pinned as it stands so the gap is visible.
+		{"request over 64 KiB", 413, `{"error":"text and schema must not exceed 64 KiB"}`,
+			Error{Code: CodeCallFailed}},
 		{"no such endpoint", 404, `404 page not found`, Error{Code: CodeCallFailed}},
 		{"another 400", 400, `{"error":"something else"}`, Error{Code: CodeCallFailed}},
 		{"server error", 500, `boom`, Error{Code: CodeCallFailed}},
