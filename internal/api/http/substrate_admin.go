@@ -64,8 +64,27 @@ func (s *Server) handleSubstrateSkillDef(w http.ResponseWriter, r *http.Request)
 // (the caller's own stream saw nothing), and its members read and wrote
 // http-admin's user-scope memory and documents and spent its budget. The def
 // ops key on tenant + the synthetic agent id, which this ctx leaves unchanged.
+//
+// The route admits a tenant member whatever scopes its token holds, because
+// authoring a team is a member's to do. Starting, reading and stopping a walk
+// are run operations, so those ops additionally need the scope the run routes
+// need — or a token granted only runs:read could start a team's agents here
+// while POST /v1/runs refuses it. Judged on the request's principal, before
+// the tool: nothing is admitted and no run row is opened on a refusal.
 func (s *Server) handleSubstrateTeamDef(w http.ResponseWriter, r *http.Request) {
-	s.dispatchSubstrateCtx(w, r, "TeamDef", s.TeamDef, substrateAdminUserCtx)
+	guard := func(ctx context.Context, body []byte) ([]byte, *guardError) {
+		op, need := builtin.TeamDefMissingScope(ctx, body)
+		if need == "" {
+			return body, nil
+		}
+		return nil, &guardError{
+			status: http.StatusForbidden,
+			code:   "insufficient_scope",
+			msg:    "insufficient scope: TeamDef op=" + op + " requires " + need,
+			scope:  need,
+		}
+	}
+	s.dispatchSubstrateCtxGuarded(w, r, "TeamDef", s.TeamDef, substrateAdminUserCtx, guard)
 }
 
 // handleSubstrateHookDef serves POST /v1/_hookdef — reusable hook definitions.
@@ -238,6 +257,9 @@ type guardError struct {
 	status int
 	code   string
 	msg    string
+	// scope, when set, is the scope the caller lacks: it goes out in
+	// WWW-Authenticate, as the route gate's own refusal does.
+	scope string
 }
 
 // constrainToUserScope enforces the RFC CN isolated-user rule on a CredentialDef
@@ -314,6 +336,9 @@ func (s *Server) dispatchSubstrateCtxGuarded(
 	if guard != nil {
 		newBody, gerr := guard(ctx, body)
 		if gerr != nil {
+			if gerr.scope != "" {
+				w.Header().Set("WWW-Authenticate", `Bearer scope="`+gerr.scope+`"`)
+			}
 			writeJSONError(w, gerr.status, gerr.code, gerr.msg)
 			return
 		}

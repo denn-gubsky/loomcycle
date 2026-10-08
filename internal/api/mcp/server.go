@@ -434,6 +434,10 @@ func (s *Server) handleToolsCall(ctx context.Context, stdout io.Writer, req loom
 		s.writeError(stdout, req.ID, mcpErrForbidden, params.Name+": forbidden — requires "+scopeNeededFor(ctx, params.Name))
 		return
 	}
+	if op, need := toolOpMissingScope(ctx, params.Name, params.Arguments); need != "" {
+		s.writeError(stdout, req.ID, mcpErrForbidden, params.Name+": forbidden — op="+op+" requires "+need)
+		return
+	}
 
 	res, err := handler(ctx, &handlerEnv{
 		connector:         s.cfg.Connector,
