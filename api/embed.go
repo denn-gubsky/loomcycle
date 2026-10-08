@@ -10,7 +10,7 @@ package api
 import _ "embed"
 
 // OpenAPISpecYAML is the raw OpenAPI 3.1 document for the loomcycle data API
-// (memory + document/path). Served verbatim at /v1/openapi.yaml; rendered to
+// (memory + document/path + decision models). Served verbatim at /v1/openapi.yaml; rendered to
 // JSON at /v1/openapi.json.
 //
 //go:embed openapi.yaml
