@@ -1635,6 +1635,70 @@ class LoomcycleClient:
             "messages": [_channel_message_to_dict(m) for m in resp.messages],
         }
 
+    async def list_team_channels(self, team: str, *, tenant: str = "") -> Mapping[str, Any]:
+        """List the channels a team declares for itself, with each one's
+        definition and traffic counts.
+
+        A team's own channel is written and read only from inside the team,
+        so ``list_channels`` never shows it; this is how the person who runs
+        the team sees it. Returns ``{team, channels: [{name, scope, semantic,
+        hold, default_ttl, max_messages, declared_in, def_id, version,
+        message_count, held_count, awaiting_hooks_count, oldest_visible_at,
+        newest_visible_at}]}``. ``declared_in`` is ``active``, ``inactive``
+        or ``retired``. Counts for a user-scoped channel are summed over
+        every user. An unknown team, or one in another tenant, raises
+        NotFound. ``tenant`` is only for a caller who sees every tenant.
+        """
+        req = pb.ListTeamChannelsRequest(team=team, tenant=tenant)
+        try:
+            resp = await self._stub.ListTeamChannels(req, metadata=self._auth_metadata())
+        except grpc.aio.AioRpcError as e:
+            _raise_from_grpc(e)
+        return {
+            "team": resp.team,
+            "channels": [_team_channel_to_dict(c) for c in resp.channels],
+        }
+
+    async def peek_team_channel(
+        self,
+        team: str,
+        name: str,
+        *,
+        user_id: str = "",
+        from_cursor: str = "",
+        max_messages: int = 0,
+        tenant: str = "",
+    ) -> Mapping[str, Any]:
+        """Read messages on one of a team's own channels without advancing
+        any cursor. ``name`` is the channel's name inside the team
+        (``journal`` for ``./journal``).
+
+        Returns ``{team, name, scope, declared_in, messages: [...]}``. Nothing
+        is consumed. Held messages are not listed; ``list_team_channels``
+        counts them. A user-scoped channel is read at the caller's own user
+        unless ``user_id`` names another and the caller may read any user's
+        channel. A name the team does not declare raises NotFound.
+        """
+        req = pb.PeekTeamChannelRequest(
+            team=team,
+            name=name,
+            tenant=tenant,
+            user_id=user_id,
+            from_cursor=from_cursor,
+            max_messages=max_messages,
+        )
+        try:
+            resp = await self._stub.PeekTeamChannel(req, metadata=self._auth_metadata())
+        except grpc.aio.AioRpcError as e:
+            _raise_from_grpc(e)
+        return {
+            "team": resp.team,
+            "name": resp.name,
+            "scope": resp.scope,
+            "declared_in": resp.declared_in,
+            "messages": [_channel_message_to_dict(m) for m in resp.messages],
+        }
+
     async def ack_channel(
         self,
         channel: str,
@@ -2547,6 +2611,26 @@ def _spawn_result_to_dict(r: "pb.SpawnResult") -> Mapping[str, Any]:
         # True when the child's idempotency_key was already held: the ids,
         # status and result are that existing run's.
         "deduplicated": r.deduplicated,
+    }
+
+
+def _team_channel_to_dict(c: "pb.TeamChannelDescriptor") -> Mapping[str, Any]:
+    """Convert proto TeamChannelDescriptor → public dict."""
+    return {
+        "name": c.name,
+        "scope": c.scope,
+        "semantic": c.semantic,
+        "hold": c.hold,
+        "default_ttl": c.default_ttl,
+        "max_messages": c.max_messages,
+        "declared_in": c.declared_in,
+        "def_id": c.def_id,
+        "version": c.version,
+        "message_count": c.message_count,
+        "held_count": c.held_count,
+        "awaiting_hooks_count": c.awaiting_hooks_count,
+        "oldest_visible_at": c.oldest_visible_at,
+        "newest_visible_at": c.newest_visible_at,
     }
 
 

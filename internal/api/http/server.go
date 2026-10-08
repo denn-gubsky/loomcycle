@@ -3843,6 +3843,10 @@ func (s *Server) Mux() http.Handler {
 	mux.Handle("GET /v1/_agentdef/names", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleListAgentDefNames))))
 	mux.Handle("GET /v1/_skilldef/names", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleListSkillDefNames))))
 	mux.Handle("GET /v1/_teamdef/names", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleListTeamDefNames))))
+	// A team's own channels, for the person who runs the team: its channels
+	// with their counts, and a peek that moves no cursor. Read-only.
+	mux.Handle("GET /v1/_teamdef/{team}/channels", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleTeamChannels))))
+	mux.Handle("GET /v1/_teamdef/{team}/channels/{name}/peek", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleTeamChannelPeek))))
 	mux.Handle("GET /v1/_hookdef/names", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleListHookDefNames))))
 	mux.Handle("GET /v1/_mcpserverdef/names", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleListMCPServerDefNames))))
 	mux.Handle("GET /v1/_scheduledef/names", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleListScheduleDefNames))))

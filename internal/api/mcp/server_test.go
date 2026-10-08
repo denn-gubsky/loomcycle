@@ -332,6 +332,12 @@ func (m *mockConnector) PublishChannel(context.Context, connector.ChannelPublish
 func (m *mockConnector) SubscribeChannel(context.Context, connector.ChannelSubscribeRequest) (connector.ChannelSubscribeResult, error) {
 	return connector.ChannelSubscribeResult{}, nil
 }
+func (m *mockConnector) ListTeamChannels(context.Context, connector.TeamChannelsRequest) (connector.TeamChannelsResponse, error) {
+	return connector.TeamChannelsResponse{}, nil
+}
+func (m *mockConnector) PeekTeamChannel(context.Context, connector.TeamChannelPeekRequest) (connector.TeamChannelPeekResult, error) {
+	return connector.TeamChannelPeekResult{}, nil
+}
 func (m *mockConnector) PeekChannel(context.Context, connector.ChannelPeekRequest) (connector.ChannelPeekResult, error) {
 	return connector.ChannelPeekResult{}, nil
 }
@@ -456,8 +462,8 @@ func TestServer_ToolsList_ReturnsFullCatalogue(t *testing.T) {
 	if err := json.Unmarshal(resps[0].Result, &result); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
-	if len(result.Tools) != 54 {
-		t.Errorf("got %d tools, want 54 (register_hook, list_hooks and delete_hook removed; +hookdef, +review_run, +configured_run, +decision on top of retune_run and the directory/erasure/history/teamdef/credentialdef/path/document/volumedef/documentsourcedef list)", len(result.Tools))
+	if len(result.Tools) != 56 {
+		t.Errorf("got %d tools, want 56 (+list_team_channels, +peek_team_channel; register_hook, list_hooks and delete_hook removed; +hookdef, +review_run, +configured_run, +decision on top of retune_run and the directory/erasure/history/teamdef/credentialdef/path/document/volumedef/documentsourcedef list)", len(result.Tools))
 	}
 	names := map[string]bool{}
 	for _, td := range result.Tools {
@@ -465,6 +471,11 @@ func TestServer_ToolsList_ReturnsFullCatalogue(t *testing.T) {
 	}
 	if !names["credentialdef"] {
 		t.Error("catalogue missing the credentialdef meta-tool")
+	}
+	for _, want := range []string{"list_team_channels", "peek_team_channel"} {
+		if !names[want] {
+			t.Errorf("catalogue missing %s", want)
+		}
 	}
 	// Spot-check across categories — through the v1.x additions.
 	for _, want := range []string{"spawn_run", "spawn_runs", "compact_run", "configured_run", "review_run", "register_agent", "memory", "agentdef", "skilldef", "teamdef", "hookdef", "mcpserverdef", "scheduledef", "a2aservercarddef", "a2aagentdef", "webhookdef", "memorybackenddef", "operatortokendef", "volumedef", "path", "document", "history", "pause_runtime", "create_snapshot", "get_snapshot", "resolve_probe", "interruption_resolve", "list_channels", "stream_user_run_states", "publish_channel", "subscribe_channel", "peek_channel", "ack_channel"} {

@@ -475,3 +475,82 @@ describe("getRunBreakpoints / setRunBreakpoints", () => {
     });
   });
 });
+
+describe("listTeamChannels", () => {
+  it("GETs the team's channels and returns their definitions and counts", async () => {
+    const { client, fetchMock } = makeClient([
+      jsonResponse({
+        team: "triage",
+        channels: [
+          {
+            name: "journal",
+            scope: "user",
+            hold: true,
+            declared_in: "active",
+            def_id: "tdf_1",
+            version: 3,
+            message_count: 4,
+            held_count: 2,
+          },
+        ],
+      }),
+    ]);
+
+    const res = await client.listTeamChannels("triage");
+    expect(res.team).toBe("triage");
+    expect(res.channels[0]!.name).toBe("journal");
+    expect(res.channels[0]!.declared_in).toBe("active");
+    expect(res.channels[0]!.held_count).toBe(2);
+
+    const call = fetchMock.mock.calls[0]!;
+    expect(call[0]).toBe("http://test-loomcycle:8787/v1/_teamdef/triage/channels");
+    expect((call[1] as RequestInit).method).toBe("GET");
+  });
+
+  it("names the tenant only when asked to", async () => {
+    const { client, fetchMock } = makeClient([jsonResponse({ team: "triage", channels: [] })]);
+    const res = await client.listTeamChannels("triage", { tenant: "acme" });
+    expect(res.channels).toEqual([]);
+    expect(fetchMock.mock.calls[0]![0]).toBe(
+      "http://test-loomcycle:8787/v1/_teamdef/triage/channels?tenant=acme",
+    );
+  });
+});
+
+describe("peekTeamChannel", () => {
+  it("GETs the peek by team and local name, with its query options", async () => {
+    const { client, fetchMock } = makeClient([
+      jsonResponse({
+        team: "triage",
+        name: "journal",
+        scope: "user",
+        declared_in: "active",
+        messages: [{ id: "m1", value: { note: "hi" }, published_at: "2026-10-08T00:00:00Z" }],
+      }),
+    ]);
+
+    const res = await client.peekTeamChannel("triage", "journal", {
+      userId: "alice",
+      fromCursor: "cur_2",
+      maxMessages: 5,
+    });
+    expect(res.messages[0]!.value).toEqual({ note: "hi" });
+    expect(res.declared_in).toBe("active");
+
+    const call = fetchMock.mock.calls[0]!;
+    expect(call[0]).toBe(
+      "http://test-loomcycle:8787/v1/_teamdef/triage/channels/journal/peek?user_id=alice&from_cursor=cur_2&max_messages=5",
+    );
+    expect((call[1] as RequestInit).method).toBe("GET");
+  });
+
+  it("sends no query when no option is set, and escapes both names", async () => {
+    const { client, fetchMock } = makeClient([
+      jsonResponse({ team: "a b", name: "x/y", scope: "tenant", declared_in: "retired", messages: [] }),
+    ]);
+    await client.peekTeamChannel("a b", "x/y");
+    expect(fetchMock.mock.calls[0]![0]).toBe(
+      "http://test-loomcycle:8787/v1/_teamdef/a%20b/channels/x%2Fy/peek",
+    );
+  });
+});

@@ -1068,6 +1068,17 @@ func memberReadable(path string) bool {
 	return false
 }
 
+// isTeamChannelsPath reports whether path is one of the team-channel routes:
+// /v1/_teamdef/{team}/channels, or anything under it.
+func isTeamChannelsPath(path string) bool {
+	rest, ok := strings.CutPrefix(path, "/v1/_teamdef/")
+	if !ok {
+		return false
+	}
+	_, after, ok := strings.Cut(rest, "/")
+	return ok && (after == "channels" || strings.HasPrefix(after, "channels/"))
+}
+
 func isTenantConfinedDefPath(path string) bool {
 	// RFC BO — the image-asset serving GET lives UNDER /v1/_document with a
 	// variable {chunk_id} suffix, so it needs a prefix match (the family list
@@ -1080,6 +1091,13 @@ func isTenantConfinedDefPath(path string) bool {
 	// family list below is exact-match. Same ScopeTenant posture as /v1/_document
 	// (and it is carved out of member access — see memberCarveOut).
 	if strings.HasPrefix(path, "/v1/_document/changes") {
+		return true
+	}
+	// A team's own channels are read under the team, with a variable
+	// {team} (and {name}) segment, so they need a prefix match too. Same
+	// ScopeTenant posture as /v1/_teamdef: the handlers confine a caller to
+	// teams its own tenant holds and answer another tenant's with not-found.
+	if isTeamChannelsPath(path) {
 		return true
 	}
 	for _, fam := range []string{

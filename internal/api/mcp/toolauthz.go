@@ -68,19 +68,24 @@ var tenantConfinableTools = map[string]bool{
 
 	// Def authoring — each stamps the row's tenant from ctx and opaque-404s
 	// cross-tenant reads.
-	"agentdef":          true,
-	"skilldef":          true,
-	"teamdef":           true, // RFC AP — tenant-confined team-workflow substrate
-	"hookdef":           true, // tenant-confined reusable hook definitions
-	"mcpserverdef":      true,
-	"scheduledef":       true,
-	"a2aservercarddef":  true,
-	"a2aagentdef":       true,
-	"webhookdef":        true,
-	"memorybackenddef":  true,
-	"documentsourcedef": true, // RFC CE — tenant-confined remote-document-source substrate
-	"volumedef":         true,
-	"credentialdef":     true, // RFC AR — tenant/user-confined secure credential store
+	"agentdef": true,
+	"skilldef": true,
+	"teamdef":  true, // RFC AP — tenant-confined team-workflow substrate
+	// A team's own channels, read by team and local name. The connector
+	// confines the caller to teams its tenant holds (another tenant's is not
+	// found) and to its own user's keyspace of a user-scoped channel.
+	"list_team_channels": true,
+	"peek_team_channel":  true,
+	"hookdef":            true, // tenant-confined reusable hook definitions
+	"mcpserverdef":       true,
+	"scheduledef":        true,
+	"a2aservercarddef":   true,
+	"a2aagentdef":        true,
+	"webhookdef":         true,
+	"memorybackenddef":   true,
+	"documentsourcedef":  true, // RFC CE — tenant-confined remote-document-source substrate
+	"volumedef":          true,
+	"credentialdef":      true, // RFC AR — tenant/user-confined secure credential store
 
 	// Per-(scope, scope_id, tenant) data tools.
 	"memory":     true,
@@ -181,6 +186,11 @@ var toolRequiredScope = map[string]string{
 	"ack_channel":       auth.ScopeChannelPublish,
 	"subscribe_channel": auth.ScopeChannelRead,
 	"peek_channel":      auth.ScopeChannelRead,
+	// A team's own channels are channels: reading one is a channel read. The
+	// HTTP routes ask the same of a member; the RPCs ask substrate:tenant,
+	// which implies it.
+	"list_team_channels": auth.ScopeChannelRead,
+	"peek_team_channel":  auth.ScopeChannelRead,
 	// Asking a decision model outside a run spends tokens: the scope
 	// POST /v1/_decide and the Decide RPC require.
 	"decision": auth.ScopeRunsCreate,

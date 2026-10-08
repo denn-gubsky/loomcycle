@@ -547,6 +547,16 @@ service Loomcycle {
   rpc PeekChannel(PeekChannelRequest) returns (PeekChannelResponse);
   rpc AckChannel(AckChannelRequest) returns (AckChannelResponse);
 
+  // A team's OWN channels, for the person who runs the team (mirror
+  // GET /v1/_teamdef/{team}/channels and .../channels/{name}/peek). Such a
+  // channel is written and read only from inside its team, so ListChannels
+  // never lists it and PeekChannel refuses it; these address it by team and
+  // by the name the team gave it. Read-only: the peek advances no cursor.
+  // An unknown team, or one in another tenant, is NOT_FOUND, as is a name
+  // the team does not declare.
+  rpc ListTeamChannels(ListTeamChannelsRequest) returns (ListTeamChannelsResponse);
+  rpc PeekTeamChannel(PeekTeamChannelRequest) returns (PeekTeamChannelResponse);
+
   // RFC S client twins (mirror POST /v1/_channels/_await and
   // /v1/_channels/_broadcast). AwaitChannels fans IN across a set of
   // channels (any/all/at_least N, or a timeout — a timeout is
@@ -2251,6 +2261,58 @@ message PeekChannelRequest {
 message PeekChannelResponse {
   string channel = 1;
   repeated ChannelMessage messages = 2;
+}
+
+message ListTeamChannelsRequest {
+  string team = 1;
+  // Only for a caller who sees every tenant: the tenant that holds the team.
+  string tenant = 2;
+}
+
+// TeamChannelDescriptor is one of a team's own channels: its definition, the
+// version that declares it, and how much is on it.
+message TeamChannelDescriptor {
+  string name = 1;
+  string scope = 2;      // tenant | user
+  string semantic = 3;
+  bool hold = 4;
+  int32 default_ttl = 5;
+  int32 max_messages = 6;
+  // Which of the team's versions the definition was read from:
+  // active | inactive | retired. def_id and version name it exactly.
+  string declared_in = 7;
+  string def_id = 8;
+  int32 version = 9;
+  // Counts in the team's tenant. For a user-scoped channel they are summed
+  // over every user.
+  int64 message_count = 10;
+  int64 held_count = 11;
+  int64 awaiting_hooks_count = 12;
+  string oldest_visible_at = 13;  // RFC3339Nano; empty when nothing is deliverable
+  string newest_visible_at = 14;
+}
+
+message ListTeamChannelsResponse {
+  string team = 1;
+  repeated TeamChannelDescriptor channels = 2;
+}
+
+message PeekTeamChannelRequest {
+  string team = 1;
+  string name = 2;     // the channel's name inside the team, without "./"
+  string tenant = 3;
+  // For a user-scoped channel: whose messages to read. Empty = the caller's.
+  string user_id = 4;
+  string from_cursor = 5;
+  int32 max_messages = 6;
+}
+
+message PeekTeamChannelResponse {
+  string team = 1;
+  string name = 2;
+  string scope = 3;
+  string declared_in = 4;
+  repeated ChannelMessage messages = 5;
 }
 
 message AckChannelRequest {

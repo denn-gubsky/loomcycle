@@ -90,6 +90,23 @@ var (
 	// `channels:` block. Transports map to NotFound / HTTP 404.
 	ErrChannelNotDeclared = errors.New("connector: channel not declared in operator yaml")
 
+	// ErrTeamNotFound is returned by the team-channel methods when the
+	// caller's tenant holds no team of that name. A team in another tenant
+	// reads the same: its existence is not the caller's to learn. Transports
+	// map to NotFound / HTTP 404.
+	ErrTeamNotFound = errors.New("connector: no such team")
+
+	// ErrTeamChannelNotDeclared is returned when the team exists and no
+	// stored version of it declares a channel of that name. It is also what
+	// a caller gets for another user's keyspace of a user-scoped channel it
+	// may not read. Transports map to NotFound / HTTP 404.
+	ErrTeamChannelNotDeclared = errors.New("connector: the team declares no such channel")
+
+	// ErrTeamChannelUserRequired is returned for a user-scoped channel of a
+	// team when the request names no user and the caller is not one.
+	// Transports map to InvalidArgument / HTTP 400.
+	ErrTeamChannelUserRequired = errors.New("connector: a user-scoped channel needs a user_id")
+
 	// ErrChannelScopeInvalid is returned when the scope field on a
 	// Channel CRUD request is not one of "global" / "user". Transports
 	// map to InvalidArgument / HTTP 400.
@@ -252,3 +269,15 @@ func (e *TokenLimitError) Error() string {
 }
 
 func (e *TokenLimitError) Unwrap() error { return runner.ErrTokenLimitExceeded }
+
+// TeamChannelError is a team-channel refusal with words of its own: Error is
+// the message a caller reads, and errors.Is finds the kind
+// (ErrTeamChannelNotDeclared, ErrTeamChannelUserRequired) a transport maps.
+// The kinds' own texts are for a refusal that has nothing more to say.
+type TeamChannelError struct {
+	Kind error
+	Msg  string
+}
+
+func (e *TeamChannelError) Error() string { return e.Msg }
+func (e *TeamChannelError) Unwrap() error { return e.Kind }

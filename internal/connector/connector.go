@@ -585,6 +585,22 @@ type Connector interface {
 	PeekChannel(ctx context.Context, req ChannelPeekRequest) (ChannelPeekResult, error)
 	AckChannel(ctx context.Context, req ChannelAckRequest) (ChannelAckResult, error)
 
+	// ListTeamChannels / PeekTeamChannel read a team's OWN channels, which
+	// the methods above refuse: such a channel is stored under a reserved
+	// name nothing outside the team may address. These address it by team
+	// and by the name the team gave it, for the person who runs the team:
+	// the list carries each channel's definition and counts, the peek its
+	// messages, without advancing any cursor. Neither writes.
+	//
+	// The caller's tenant must hold the team. A user-scoped channel is read
+	// at the caller's own user unless the request names another and the
+	// caller may read any user's channel.
+	//
+	// Typed errors: ErrTeamNotFound (NotFound), ErrTeamChannelNotDeclared
+	// (NotFound), ErrTeamChannelUserRequired (InvalidArgument).
+	ListTeamChannels(ctx context.Context, req TeamChannelsRequest) (TeamChannelsResponse, error)
+	PeekTeamChannel(ctx context.Context, req TeamChannelPeekRequest) (TeamChannelPeekResult, error)
+
 	// AwaitChannels / BroadcastChannels (RFC S client twins) are the
 	// fan-in / fan-out counterparts of the in-band Channel.await /
 	// Channel.broadcast ops, exposed to wire callers so an external

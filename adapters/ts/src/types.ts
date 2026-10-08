@@ -3350,6 +3350,77 @@ export interface ChannelPeekResult {
   messages: ChannelMessageItem[];
 }
 
+/** Where one of a team's own channels is declared, among the team's stored
+ *  versions: by the active one, by a stored version that is neither active
+ *  nor retired, or only by a retired one. */
+export type TeamChannelDeclaredIn = "active" | "inactive" | "retired";
+
+/** One of a team's own channels, as {@link LoomcycleClient.listTeamChannels}
+ *  returns it: its definition, the version that declares it, and how much is
+ *  on it. */
+export interface TeamChannelDescriptor {
+  /** The name the team gave the channel (`journal` for `./journal`). */
+  name: string;
+  scope: "tenant" | "user";
+  semantic?: string;
+  /** Publishes are stored and not delivered until released. */
+  hold?: boolean;
+  default_ttl?: number;
+  max_messages?: number;
+  /** Which version the definition above was read from. A channel's messages
+   *  belong to the team, not to a version, so a channel only a retired
+   *  version declares is still listed. */
+  declared_in: TeamChannelDeclaredIn;
+  def_id: string;
+  version: number;
+  /** Counts in the team's tenant. For a user-scoped channel they are summed
+   *  over every user: there is no per-user figure. */
+  message_count: number;
+  /** Held for a release; included in `message_count`. */
+  held_count?: number;
+  awaiting_hooks_count?: number;
+  /** RFC3339Nano; absent when nothing is deliverable. */
+  oldest_visible_at?: string;
+  newest_visible_at?: string;
+}
+
+/** Response shape for {@link LoomcycleClient.listTeamChannels}. `channels` is
+ *  empty, never absent, for a team that declares none. */
+export interface TeamChannelsResult {
+  team: string;
+  channels: TeamChannelDescriptor[];
+}
+
+/** Options for {@link LoomcycleClient.listTeamChannels}. */
+export interface ListTeamChannelsOptions {
+  /** Only for a caller who sees every tenant: the tenant that holds the team. */
+  tenant?: string;
+  signal?: AbortSignal;
+}
+
+/** Options for {@link LoomcycleClient.peekTeamChannel}. */
+export interface PeekTeamChannelOptions {
+  /** For a user-scoped channel: whose messages to read. Default: the
+   *  caller's own. Another user's is read only by a caller who may read any
+   *  user's channel; for anyone else the channel is not found. */
+  userId?: string;
+  fromCursor?: string;
+  /** Default 10, at most 100. */
+  maxMessages?: number;
+  tenant?: string;
+  signal?: AbortSignal;
+}
+
+/** Response shape for {@link LoomcycleClient.peekTeamChannel}. Like
+ *  {@link ChannelPeekResult} it carries no cursor: a peek never advances one. */
+export interface TeamChannelPeekResult {
+  team: string;
+  name: string;
+  scope: "tenant" | "user";
+  declared_in: TeamChannelDeclaredIn;
+  messages: ChannelMessageItem[];
+}
+
 /** Options for {@link LoomcycleClient.ackChannel}. */
 export interface AckChannelOptions {
   scope: ChannelScope;

@@ -684,6 +684,34 @@ func toolDescriptors() []loommcp.ToolDescriptor {
 			}`),
 		},
 		{
+			Name:        "list_team_channels",
+			Description: "List the channels a TEAM declares for itself, with each one's definition and traffic counts. Takes `team` (the team's name). Returns {team, channels:[{name, scope, semantic, hold, default_ttl, max_messages, declared_in, def_id, version, message_count, held_count, awaiting_hooks_count, oldest_visible_at, newest_visible_at}]}. A team's own channels are written and read only from inside the team, so list_channels never shows them and peek_channel refuses them; this is how the person who runs the team sees them. `declared_in` says which version the definition was read from: active, inactive (a stored version that is not the active one) or retired. Counts are the channel's in the team's tenant; for a user-scoped channel they are summed over every user. An unknown team, or one in another tenant, is not found. Read-only. USE THIS to see whether a team's channel holds anything before debugging a walk that waits on it. Do NOT use it for an operator-declared channel: that is list_channels.",
+			InputSchema: rawJSON(`{
+				"type": "object",
+				"required": ["team"],
+				"properties": {
+					"team":   {"type": "string", "description": "The team's name."},
+					"tenant": {"type": "string", "description": "Only for a caller who sees every tenant: the tenant that holds the team. Anyone else reads their own tenant's team and omits it."}
+				}
+			}`),
+		},
+		{
+			Name:        "peek_team_channel",
+			Description: "Read messages on one of a TEAM's own channels WITHOUT advancing any cursor. Takes `team` and `name` (the channel's name inside the team, without the leading ./). Returns {team, name, scope, declared_in, messages:[{id, value, published_at}]}. Nothing is consumed: the team still reads every message, and the same ones come back on the next call. Held messages are not listed; list_team_channels counts them. A user-scoped channel is read at your own user; `user_id` reads another user's and is honoured only for a caller who may read any user's channel. A name the team does not declare answers that the team declares no such channel. USE THIS to check what a state, a schedule or a webhook wrote into a team's channel. Do NOT pass the stored name or ./name to peek_channel: it refuses both. There is no ack, publish or purge for a team's own channel from outside the team.",
+			InputSchema: rawJSON(`{
+				"type": "object",
+				"required": ["team", "name"],
+				"properties": {
+					"team":         {"type": "string", "description": "The team's name."},
+					"name":         {"type": "string", "description": "The channel's name inside the team, e.g. journal for ./journal."},
+					"user_id":      {"type": "string", "description": "For a user-scoped channel: whose messages to read. Default: your own."},
+					"from_cursor":  {"type": "string"},
+					"max_messages": {"type": "integer", "minimum": 1, "maximum": 100, "default": 10},
+					"tenant":       {"type": "string", "description": "Only for a caller who sees every tenant: the tenant that holds the team."}
+				}
+			}`),
+		},
+		{
 			Name:        "ack_channel",
 			Description: "Commit the cursor for a (channel, scope, scope_id) tuple \u2014 the second half of at-least-once processing. Takes `channel`, `scope`, `scope_id` (REQUIRED when scope='user') and the `cursor` you are acknowledging. Returns {ok: true}. Cursors move FORWARD only: an older cursor is refused with channel_cursor_regression rather than silently rewinding, so a late ack cannot replay messages someone else has moved past. USE THIS after peek_channel, once the work is durable. Do NOT use it after subscribe_channel \u2014 that already committed. There is no un-ack: to re-process a message, republish it.",
 			InputSchema: rawJSON(`{

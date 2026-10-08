@@ -1039,3 +1039,81 @@ type DecisionModelList struct {
 	Default string               `json:"default"`
 	Models  []decision.ModelInfo `json:"models"`
 }
+
+// --- A team's own channels, for the person who runs the team ---
+//
+// A team's own channel is stored under a reserved name nothing outside the
+// team may address, so the channel operations above refuse it. These address
+// it the only way an outside caller may: by team and by the name the team
+// gave it. They read; nothing here publishes, acks or purges.
+
+// Where a team's own channel is declared, among the team's stored versions.
+const (
+	TeamChannelDeclaredActive   = "active"   // by the version a run by name starts
+	TeamChannelDeclaredInactive = "inactive" // by a stored version that is not active and not retired
+	TeamChannelDeclaredRetired  = "retired"  // only by a retired version
+)
+
+// TeamChannelsRequest is the input to Connector.ListTeamChannels.
+type TeamChannelsRequest struct {
+	Team string `json:"team"`
+	// Tenant names the tenant that holds the team, for a caller who sees
+	// every tenant. Anyone else reads their own tenant's team and may leave
+	// it empty; naming another tenant finds nothing.
+	Tenant string `json:"tenant,omitempty"`
+}
+
+// TeamChannelDescriptor is one of a team's own channels: its definition, the
+// version that declares it, and how much is on it.
+type TeamChannelDescriptor struct {
+	Name        string `json:"name"`
+	Scope       string `json:"scope"`
+	Semantic    string `json:"semantic,omitempty"`
+	Hold        bool   `json:"hold,omitempty"`
+	DefaultTTL  int    `json:"default_ttl,omitempty"`
+	MaxMessages int    `json:"max_messages,omitempty"`
+	// DeclaredIn says which of the team's versions the definition above was
+	// read from (TeamChannelDeclared*), DefID and Version which one exactly.
+	// A channel's messages belong to the team, not to a version, so a channel
+	// only a retired version declares is still listed.
+	DeclaredIn string `json:"declared_in"`
+	DefID      string `json:"def_id"`
+	Version    int    `json:"version"`
+	// The counts are the channel's in the team's tenant. For a user-scoped
+	// channel they are summed over every user: there is no per-user figure.
+	MessageCount       int64  `json:"message_count"`
+	HeldCount          int64  `json:"held_count,omitempty"`
+	AwaitingHooksCount int64  `json:"awaiting_hooks_count,omitempty"`
+	OldestVisibleAt    string `json:"oldest_visible_at,omitempty"` // RFC3339; empty when nothing is deliverable
+	NewestVisibleAt    string `json:"newest_visible_at,omitempty"`
+}
+
+// TeamChannelsResponse is the result of Connector.ListTeamChannels. Channels
+// is never nil: a team that declares none has an empty list.
+type TeamChannelsResponse struct {
+	Team     string                  `json:"team"`
+	Channels []TeamChannelDescriptor `json:"channels"`
+}
+
+// TeamChannelPeekRequest is the input to Connector.PeekTeamChannel.
+type TeamChannelPeekRequest struct {
+	Team   string `json:"team"`
+	Name   string `json:"name"` // the name the team gave the channel, without "./"
+	Tenant string `json:"tenant,omitempty"`
+	// UserID names whose messages to read on a user-scoped channel. Empty =
+	// the caller's own. Another user's is read only by a caller who may read
+	// any user's channel; for anyone else the channel is not found.
+	UserID      string `json:"user_id,omitempty"`
+	FromCursor  string `json:"from_cursor,omitempty"`
+	MaxMessages int    `json:"max_messages,omitempty"`
+}
+
+// TeamChannelPeekResult is the result of Connector.PeekTeamChannel. Like
+// ChannelPeekResult it carries no cursor: a peek never advances one.
+type TeamChannelPeekResult struct {
+	Team       string           `json:"team"`
+	Name       string           `json:"name"`
+	Scope      string           `json:"scope"`
+	DeclaredIn string           `json:"declared_in"`
+	Messages   []ChannelMessage `json:"messages"`
+}

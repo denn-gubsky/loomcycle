@@ -344,9 +344,17 @@ and name one as `./<name>` wherever a channel goes: a starter's `source` and
 
 - **The team holds both sides.** It publishes to and reads its own channels
   without a `channels` ACL entry, and its ACL may not name one.
-- **Nothing outside the team reaches them.** No channel list shows them, no
+- **Nothing outside the team writes to them.** No channel list shows them, no
   agent outside the team can publish or subscribe to them by any name, and the
   operator's config and channel definitions cannot declare one.
+- **The person who runs the team can read them**, by team and by the name the
+  team gave the channel, never by `./<name>`: the team's channels with their
+  definitions and message counts, and a peek of one channel's messages that
+  moves no cursor, so the team still reads every message. Over HTTP these are
+  `GET /v1/_teamdef/{team}/channels` and
+  `GET /v1/_teamdef/{team}/channels/{name}/peek`; an MCP client has
+  `list_team_channels` and `peek_team_channel`. They are not ops of this tool
+  and an agent inside a run does not have them.
 - **The team's own agents may use them** with the Channel tool, by listing
   `./<name>` in their own `channels` (`publish` / `subscribe`, as for any
   channel) and naming the channel `./<name>` when they call it. A global agent

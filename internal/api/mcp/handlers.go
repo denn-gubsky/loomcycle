@@ -210,7 +210,10 @@ var handlersByName = map[string]toolHandler{
 	"publish_channel":   handlePublishChannel,
 	"subscribe_channel": handleSubscribeChannel,
 	"peek_channel":      handlePeekChannel,
-	"ack_channel":       handleAckChannel,
+	// A team's own channels, for the person who runs the team.
+	"list_team_channels": handleListTeamChannels,
+	"peek_team_channel":  handlePeekTeamChannel,
+	"ack_channel":        handleAckChannel,
 }
 
 func toolHandlerByName(name string) (toolHandler, bool) {
@@ -1230,6 +1233,40 @@ func handlePeekChannel(ctx context.Context, env *handlerEnv, args json.RawMessag
 	res, err := env.connector.PeekChannel(ctx, req)
 	if err != nil {
 		return toolErrFrom("peek_channel", err), nil
+	}
+	return toolResultJSON(res), nil
+}
+
+// handleListTeamChannels lists a team's own channels with their definitions
+// and counts. The connector resolves the team in the caller's tenant.
+func handleListTeamChannels(ctx context.Context, env *handlerEnv, args json.RawMessage) (*loommcp.CallToolResult, error) {
+	if env.connector == nil {
+		return nil, fmt.Errorf("list_team_channels: no connector wired")
+	}
+	var req connector.TeamChannelsRequest
+	if err := json.Unmarshal(args, &req); err != nil {
+		return toolErr("invalid list_team_channels arguments: " + err.Error()), nil
+	}
+	res, err := env.connector.ListTeamChannels(ctx, req)
+	if err != nil {
+		return toolErrFrom("list_team_channels", err), nil
+	}
+	return toolResultJSON(res), nil
+}
+
+// handlePeekTeamChannel reads one of a team's own channels without advancing
+// any cursor.
+func handlePeekTeamChannel(ctx context.Context, env *handlerEnv, args json.RawMessage) (*loommcp.CallToolResult, error) {
+	if env.connector == nil {
+		return nil, fmt.Errorf("peek_team_channel: no connector wired")
+	}
+	var req connector.TeamChannelPeekRequest
+	if err := json.Unmarshal(args, &req); err != nil {
+		return toolErr("invalid peek_team_channel arguments: " + err.Error()), nil
+	}
+	res, err := env.connector.PeekTeamChannel(ctx, req)
+	if err != nil {
+		return toolErrFrom("peek_team_channel", err), nil
 	}
 	return toolResultJSON(res), nil
 }
