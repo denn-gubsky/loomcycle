@@ -247,6 +247,10 @@ type Config struct {
 	// embedder_not_configured. K/V Memory is unaffected.
 	Memory MemoryConfig `yaml:"memory"`
 
+	// Decision lists the decision models this deployment may ask (see
+	// DecisionConfig). Unset, there are none.
+	Decision DecisionConfig `yaml:"decision"`
+
 	// Pricing is the operator-owned per-(provider, model) price table used to
 	// compute run + per-call cost (RFC AV). Non-secret; empty ⇒ costs are left
 	// unpriced (token counts still recorded). A provider-reported cost, when a
@@ -8285,6 +8289,9 @@ func validate(c *Config) error {
 		}
 	}
 	if err := c.Memory.UnitGenerator.validate(c); err != nil {
+		return err
+	}
+	if err := c.Decision.validate(c); err != nil {
 		return err
 	}
 	// Consolidation similarity bands. Validated on the EFFECTIVE values so

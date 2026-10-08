@@ -47,6 +47,7 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/config"
 	"github.com/denn-gubsky/loomcycle/internal/coord"
 	"github.com/denn-gubsky/loomcycle/internal/credential"
+	"github.com/denn-gubsky/loomcycle/internal/decision/decisionbuild"
 	"github.com/denn-gubsky/loomcycle/internal/heartbeat"
 	"github.com/denn-gubsky/loomcycle/internal/help"
 	"github.com/denn-gubsky/loomcycle/internal/hooks/codehook"
@@ -1688,6 +1689,21 @@ func main() {
 		// RFC DT: its calls are the throughput samples of its model (not billed).
 		unitGenerator.ObserveCall = srv.ObserveCallTiming
 		srv.SetUnitGenerator(unitGenerator)
+	}
+	// The decision models (the decision: block): a declared block that cannot be
+	// built fails boot, as the reranker does. A decision is asked on a run's
+	// behalf, so its tokens go to that run's ledger and budget. Built and booked
+	// here; nothing asks it yet.
+	decisionService, dsErr := decisionbuild.Build(cfg)
+	if dsErr != nil {
+		log.Fatalf("decision: %v", dsErr)
+	}
+	if decisionService != nil {
+		for _, m := range decisionService.Models() {
+			log.Printf("decision: %s = %s/%s", m.Name, m.Provider, m.Model)
+		}
+		log.Printf("decision: default %s", decisionService.Default())
+		decisionService.SetOnUsage(srv.RecordRunSideCallUsage)
 	}
 	// RFC AR: stamp the credential resolver onto each run so a tenant/user's own
 	// provider key (ANTHROPIC_API_KEY, BRAVE_API_KEY, …) overrides the host key.
