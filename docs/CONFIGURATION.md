@@ -251,7 +251,17 @@ defaults:
 
 ### Cascade behaviour
 
-A `tier: low` agent runs against `deepseek-flash` first. If DeepSeek returns 429 or 5xx — and `fallback_on_error` is true (default) — the resolver re-picks from the same candidate list, this time selecting the next provider (`gemini`). This continues until a candidate succeeds or the cascade is exhausted (`ErrTierUnavailable`).
+A `tier: low` agent resolves to `deepseek-flash` first. What happens when DeepSeek then returns a retryable error (429, 5xx, a network timeout, a stream-idle deadline) depends on `fallback_on_error`, which is a `user_tiers` setting (§5) and is **off unless you set it**. The yaml above has no `user_tiers:` block, so as written there is no mid-run fallback: the error surfaces to the caller. The candidate order still matters when a run starts — a provider the availability probe has marked unreachable, or one with no API key, is skipped and the run begins on the next candidate.
+
+To get the mid-run cascade, add an overlay that turns it on:
+
+```yaml
+user_tiers:
+  default:
+    fallback_on_error: true
+```
+
+With that set, the resolver marks the failed `(provider, model)` pair stalled and re-picks from the same candidate list, this time selecting the next provider (`gemini`). This continues until a candidate succeeds, the candidates run out, or the run has switched providers `max_fallback_attempts` times (default 3); the run then fails with the original provider error.
 
 ### Agent .md: per-agent `providers:` override
 
@@ -320,8 +330,7 @@ models:
 # v0.8.2+: per-user-class policy overlays.
 user_tiers:
   default:
-    # Inherits library priority + tiers. Used when a caller omits
-    # user_tier or passes an unrecognized name.
+    # Inherits library tiers. Used when a caller omits user_tier.
     provider_priority: [anthropic]
     fallback_on_error: true
 
@@ -375,17 +384,17 @@ Loomcycle looks up `user_tiers.free` in the operator yaml, applies the overlay, 
 
 ### Required: the `default` user_tier
 
-If you set `user_tiers:` at all, you must include a `default:` entry. It's the fallback when:
-- The caller omits `user_tier` from the run request (e.g., legacy callers)
-- The caller passes an unrecognized name (`"premium"` when you only defined `"high"`)
+If you set `user_tiers:` at all, you must include a `default:` entry — config-load fails without it. It's the overlay used when the caller omits `user_tier` from the run request (e.g., legacy callers).
 
-Without it, the resolver has nothing to walk for unknown user_tiers, and runs error out.
+An unrecognized name (`"premium"` when you only defined `"high"`) does **not** fall back to `default`: `POST /v1/runs` refuses it with `400 unknown user_tier "premium"`.
 
 ### `fallback_on_error`
 
-Per overlay. When `true` (default), a retryable provider error triggers fallback to the next candidate. When `false`, the error surfaces directly to the caller.
+Per overlay. When `true`, a retryable provider error (429, 5xx, a network timeout, a stream-idle deadline) triggers fallback to the next candidate. When `false`, the error surfaces directly to the caller.
 
-Set to `false` on the free tier if you want a strict no-cascade behaviour (the operator doesn't want a free-tier user accidentally falling into a more expensive provider during an outage). Set to `true` everywhere else for resilience.
+**The default is `false`.** The loader applies no default, on `default` or on any other overlay, so an overlay that omits the key has no mid-run fallback — and neither does a config with no `user_tiers:` block at all (the §3 and §4 examples as written). Write `fallback_on_error: true` on every overlay that should cascade.
+
+Leave it off on the free tier if you want a strict no-cascade behaviour (the operator doesn't want a free-tier user accidentally falling into a more expensive provider during an outage). Set to `true` everywhere else for resilience.
 
 ### Why this pattern
 
@@ -829,7 +838,7 @@ Agent files live under `LOOMCYCLE_AGENTS_ROOT` (set in the env file). Each `<nam
 
 ### Frontmatter fields
 
-Parsed at `internal/agents/loader.go:199` (the `frontmatter` struct):
+Parsed at `internal/agents/loader.go:381` (the `frontmatter` struct):
 
 | Field | Type | Purpose | Notes |
 |---|---|---|---|
@@ -841,25 +850,31 @@ Parsed at `internal/agents/loader.go:199` (the `frontmatter` struct):
 | `tier` | string | `low` / `middle` / `high` | XOR with `provider`/`model`. Triggers tier-driven resolution. |
 | `providers` | `[]string` | Per-agent provider priority | Full replacement of library `provider_priority` for this agent. |
 | `models` | `map[tier][]TierCandidate` | Per-agent tier candidate lists | Full replacement of library `tiers[]` for this agent. |
-| `effort` | string | `low` / `medium` / `high` | Reasoning-effort hint. Anthropic + OpenAI honour it; Ollama ignores. |
+| `effort` | string | `low` / `medium` / `high` | Reasoning-effort hint; each driver maps it to its provider's thinking control. On Ollama `medium` / `high` send `think: true` and `low` sends `think: false`, so the model must be thinking-capable. |
 | `max_tokens` | int | Per-iteration assistant output cap | 0 = provider default. |
 | `max_context_tokens` | int | Per-agent context WINDOW | RFC CJ. 0 = unset. Local (Ollama) → `options.num_ctx`, winning over the env/provider window. Cloud → caps the effective window (a compaction budget clamped to the model max — can only lower). Distinct from `max_tokens` (output). Content-identifying. |
-| `sampling` | object | LLM sampling params | `temperature` / `top_p` / `top_k` / `frequency_penalty` / `presence_penalty` / `seed` / `stop`. Each driver applies what its provider supports, drops the rest. `temperature: 0.0` is deterministic (≠ unset). Overridable per-run on `/v1/runs` (`sampling`), merged per field (per-run wins). See `Context op=help topic=sampling`. Anthropic drops temperature/top_p when `effort` engages thinking. |
 | **Tool fields** | | | |
-| `tools` | `[]string` | Tool allowlist (loomcycle form) | Empty list = zero tools. Always wins over `tools:`. |
-| `tools` | string OR `[]string` | Claude-Code-compatible form | Comma-string or list. Tolerated for Claude-Code compatibility; `tools` takes precedence when both are set. |
+| `tools` | string OR `[]string` | Tool allowlist | A comma-string (the Claude Code shape) or a YAML list. Absent or empty = zero tools. This is the only key read: the older `allowed_tools:` spelling is not recognised and is silently ignored, so a file that still uses it loads with no tools. |
 | `skills` | `[]string` | Skill access allowlist (RFC BA) | Pattern allowlist governing which skills the agent may list / use / author (on-demand via the `Skill` tool — NOT bundled into the prompt). Entries are `/`-globs with an optional `+`/`-` sign: `doc/*` allow, `-doc/secret` deny, `-*` deny all. Empty/absent = allow all. The `Skill` tool is auto-added unless `skills: [-*]`. |
 | **System prompt** | | | |
 | (body) | string | Inline system prompt | Everything after the closing `---` line. |
 | `system_prompt_file` | string | External prompt path | Mutually exclusive with body. Useful for sharing prompts across agents. |
 | **Capability fields** | | | |
-| `memory_scopes` | `[]string` | Memory tool scope gate | `agent` / `user`. Empty = default-deny (no Memory tool access). |
+| `memory_scopes` | `[]string` | Memory tool scope gate | `agent` / `user` / `tenant`. Unset = the caller's own data: `user`, plus `tenant` when the run belongs to a tenant and is not isolated. A declared list is used as written, never widened. See "Unset scope gates" below. |
 | `memory_quota_bytes` | int | Per-agent memory byte cap | 0 = global default. |
 | `channels` | object | Channel tool ACL | `{publish: [...], subscribe: [...]}`. |
 | `agent_def_scopes` | `[]string` | AgentDef tool scope | `self` / `descendants` / `named:<name>` / `any`. Empty = default-deny. |
-| `evaluation_scopes` | `[]string` | Evaluation tool scope | `submit_self` / `submit_siblings` / etc. Empty = default-deny. |
-| `volumes` | `[]string` | Filesystem-volume binding | Names of top-level `volumes:` entries the agent's file/exec tools may use. Empty = implicitly bound to `[default]`. Confines the agent to exactly the named volumes (does NOT also grant `default`). See §9d. |
+| `evaluation_scopes` | `[]string` | Evaluation tool scope | `submit_self` / `submit_siblings` / `submit_descendants` / `submit_any` / `read_any`. Unset = `[submit_self]`: the agent may evaluate its own run and nothing else. See "Unset scope gates" below. |
 | `volume_def_scopes` | `[]string` | VolumeDef tool scope | `any` / `named:<volume>`. Empty = default-deny. Gates create/delete/purge of dynamic volumes; get/list are tenant-scoped reads. See §9d.1. |
+
+**Unset scope gates.** `memory_scopes` and `evaluation_scopes` used to deny everything when empty. They now resolve, at run time, to what the caller already owns: `memory_scopes` to `user` (plus `tenant` for a non-isolated tenant member) and `evaluation_scopes` to `[submit_self]`. Two yaml-only gates follow the same rule: unset `sql_scopes` resolves to `[user]` and unset `history_scope` to `[user]`. The three `user` defaults need a `user_id` on the run; a run without one gets nothing. `agent_def_scopes` and `volume_def_scopes` are unchanged: empty still denies.
+
+To grant none, set the gate to `["-*"]` in a definition overlay (AgentDef create / fork). The config loader does not accept that value: in a `.md` file or the operator yaml it fails config-load as an unknown scope. For a static agent, leave the tool itself (`Memory`, `Evaluation`, `History`) out of `tools:`.
+
+**Not frontmatter keys.** The loader reads only the fields of the `frontmatter` struct and silently ignores any other key. `sampling`, `compaction`, `context`, `tool_choice`, `output_format`, `volumes`, `sql_scopes` and `history_scope` are not in that struct, so in a `.md` file they do nothing. Set them on the agent's entry in the operator yaml `agents:` map (below) or in a definition overlay.
+
+- `sampling` — `temperature` / `top_p` / `top_k` / `frequency_penalty` / `presence_penalty` / `seed` / `stop`. Each driver applies what its provider supports, drops the rest. `temperature: 0.0` is deterministic (≠ unset). Overridable per-run on `/v1/runs` (`sampling`), merged per field (per-run wins). See `Context op=help topic=sampling`. Anthropic drops temperature/top_p when `effort` engages thinking.
+- `volumes` — names of top-level `volumes:` entries the agent's file/exec tools may use. Empty = implicitly bound to `[default]`. Confines the agent to exactly the named volumes (does NOT also grant `default`). See §9d.
 
 ### Worked examples (real agents from jobs-search-agent)
 
@@ -948,7 +963,7 @@ Mix of built-in tools (WebSearch, WebFetch) and an MCP tool. Tier-driven resolut
 
 ### Claude-Code compatibility
 
-The same `.md` file works in both Claude Code and loomcycle. **Claude-Code-honoured fields**: `name`, `description`, `tools` (comma-string), `model`. **Loomcycle extensions**: `tier`, `models`, `providers`, `effort`, `max_tokens`, `max_context_tokens`, `sampling`, `skills`, `tools` (list form), `system_prompt_file`, `memory_scopes`, `memory_quota_bytes`, `channels`, `agent_def_scopes`, `evaluation_scopes`. Claude Code ignores unknown keys; loomcycle treats the format as a superset. Keep your agents portable by including both `tools:` (Claude Code shape) and `tools:` (loomcycle shape) when you want the same file used in both.
+The same `.md` file works in both Claude Code and loomcycle. **Claude-Code-honoured fields**: `name`, `description`, `tools`, `model`. **Loomcycle extensions**: `tier`, `models`, `providers`, `effort`, `max_tokens`, `max_context_tokens`, `skills`, `system_prompt_file`, `memory_scopes`, `memory_quota_bytes`, `channels`, `agent_def_scopes`, `evaluation_scopes`. Claude Code ignores unknown keys; loomcycle treats the format as a superset. One `tools:` key serves both: write it as a comma-string (the Claude Code shape) or as a YAML list, and loomcycle reads either. The older `allowed_tools:` key is no longer read — rename it to `tools:`.
 
 ### Operator-yaml `agents:` overlay
 
@@ -1028,7 +1043,7 @@ Single reference table:
 | Conflict | Winner | Where enforced |
 |---|---|---|
 | `tier:` AND (`provider:` / `model:`) both set | **Config-load fails** | `config.go:1985` |
-| `tools:` AND `tools:` both set | `tools:` wins | `loader.go:295` |
+| `tools:` AND the old `allowed_tools:` both set | `tools:` is read; `allowed_tools:` is an unknown key and is ignored, with or without `tools:` | `loader.go:508` |
 | Body AND `system_prompt_file:` both set | Setting either via YAML overlay clears the other | `config.go:1564` |
 | Agent `providers:` AND user_tier `provider_priority` both set | **Intersection** (agent-order); empty → `ErrTierAgentNotAvailable` | `matrix.go:440` |
 | Agent `models[tier]:` set | Replaces library `tiers[tier]` AND user_tier `tiers[tier]` for this agent | `matrix.go` candidate-list build |
@@ -1049,11 +1064,14 @@ Loomcycle validates the yaml at startup. Common errors:
 
 | Error message | What's wrong |
 |---|---|
-| `agent X: cannot set both explicit provider/model pin and tier (pick one)` | `tier:` AND `provider:`/`model:` both present on the same agent |
-| `agent X: no model, no tier, and no defaults.model` | Agent has neither and operator has no `defaults.model` fallback |
-| `user_tiers: missing "default" entry` | You set `user_tiers:` but didn't include `default:` |
-| `unknown provider: X` | Provider in `provider_priority` or a candidate doesn't match a registered driver |
-| `model alias cycle: X → Y → X` | `models:` map has a cycle |
+| `agent "X": cannot set both explicit provider/model pin and tier (pick one)` | `tier:` AND `provider:`/`model:` both present on the same agent |
+| `agent "X": no model, no tier, and no defaults.model` | Agent has neither and operator has no `defaults.model` fallback. An agent that declares only capability grants gets a longer form of this message, pointing at a bundle missing from `LOOMCYCLE_PRESETS` / `LOOMCYCLE_CONFIG_DIR`. |
+| `user_tiers: a "default" entry is required when the user_tiers block is populated (…)` | You set `user_tiers:` but didn't include `default:` |
+| `provider_priority[N]: unknown provider "X" (known: […])` | A `provider_priority` entry doesn't match a registered provider. Per overlay: `user_tiers.<name>.provider_priority[N]: unknown provider "X"`; per agent: `agent "X": providers[N]: unknown provider "X"`. |
+| `tiers.<tier>[N]: unknown provider "X"` | A tier candidate names an unregistered provider. Per overlay the path is `user_tiers.<name>.tiers.<tier>[N]`; per agent, `agent "X": models.<tier>[N]`. |
+| `models.<alias>: unknown provider "X"` | A `models:` alias names an unregistered provider |
+
+Every message is prefixed `config: `. There is no alias-cycle error: an alias expands once, to the literal `model` it names, so aliases cannot chain.
 
 ### At runtime — inspect the resolver matrix
 
@@ -1145,7 +1163,7 @@ By default every authenticated caller presents the single shared `LOOMCYCLE_AUTH
 
 ```sh
 # Mint a per-developer token (shown once). Needs an existing admin bearer.
-loomcycle operator-token create --tenant acme --subject alice \
+loomcycle operator-token create --name alice --tenant acme --subject alice \
   --scopes runs:create,runs:read
 loomcycle operator-token rotate --name alice   # zero-downtime roll (grace window)
 loomcycle operator-token retire --name alice   # immediate revoke
@@ -1154,8 +1172,10 @@ loomcycle operator-token retire --name alice   # immediate revoke
 Migrate the existing shared secret in place — it keeps working as an admin token after the legacy fallback disables:
 
 ```sh
-loomcycle operator-token create --tenant default --subject ops --copy-from-env
+loomcycle operator-token create --name ops --tenant default --subject ops --copy-from-env
 ```
+
+`create` requires `--name` and `--tenant`. It also requires `--scopes`, except with `--copy-from-env`: binding the existing shared secret already says the token is admin. A `create` with no scope list is refused rather than minting an admin token.
 
 Config knobs (full reference: `loomcycle context help operator-tokens` or the `Context.help operator-tokens` tool topic):
 
@@ -1768,8 +1788,8 @@ Single jump-list of every file:line cited above. As of v0.8.16:
 | Agent .md / yaml merge logic | `internal/config/config.go:1531–1612` |
 | `system_prompt` / `system_prompt_file` mutual-exclusion clear | `internal/config/config.go:1564` |
 | Pin XOR Tier validation | `internal/config/config.go:1985` |
-| Frontmatter struct (every accepted field) | `internal/agents/loader.go:199` |
-| `tools` vs `tools` precedence | `internal/agents/loader.go:295` |
+| Frontmatter struct (every accepted field) | `internal/agents/loader.go:381` |
+| `tools` comma-string / list coercion | `internal/agents/loader.go:508` |
 | Resolver entry — `Resolve(req)` | `internal/resolve/matrix.go:281` |
 | `priorityFor` intersection logic | `internal/resolve/matrix.go:440` |
 | `resolvePin` (pin path) | `internal/resolve/matrix.go:293` |

@@ -4,7 +4,7 @@
 
 ## TL;DR
 
-Set `LOOMCYCLE_REPLICA_ID` on each replica (a UUID or short label like `replica-a`), point them all at the same Postgres, and put them behind any HTTP load balancer (no sticky routing needed). Cancel, pause/resume, per-user fairness, run status, hooks, session locks — all work cluster-wide automatically.
+Set `LOOMCYCLE_REPLICA_ID` on each replica (a UUID or short label like `replica-a`), point them all at the same Postgres, and put them behind any HTTP load balancer (no sticky routing needed). Cancel, pause/resume, per-user fairness, run status, steering, session locks — all work cluster-wide automatically.
 
 ```yaml
 storage:
@@ -41,7 +41,7 @@ LB: round-robin or least-connections, any HTTP load balancer. **No sticky sessio
 | **Dead-replica reaping** | `coord.ReplicasSweeper` every 60s, 90s stale threshold | **v0.12.4** |
 | **Singleton sweepers** | `pg_try_advisory_lock` wrapping heartbeat/memory/channels/interrupts/metrics/dynamic_agents | **v0.12.4** |
 | **Session-continuation lock** | `pg_try_advisory_lock(hash(session_id))` on a pinned conn | **v0.12.5** |
-| **Tool-use hooks** | `hooks` table + `loomcycle.hook` LISTEN/NOTIFY cache invalidation | **v0.12.5** |
+| **Cross-replica steering + turn cancel** | `loomcycle.steer` / `loomcycle.turncancel` LISTEN/NOTIFY, routed to the replica that owns the run; same ack timeout as cancel | **v0.26.1**; every steering surface since **v1.100.0** |
 
 ## What stays per-replica
 
@@ -50,14 +50,14 @@ By design, these are not cluster-wide:
 - **MCP stdio child processes.** Each replica spawns its own stdio MCP children (resource scaling, not correctness).
 - **Anthropic OAuth-dev tokens** (`~/.config/loomcycle/anthropic-oauth.json`). Development path only; production uses API keys.
 - **Snapshot `--file` restoration.** The snapshot file lives on one replica's disk. The inline `raw_json` body path is cluster-safe.
-- **Global concurrency cap.** `LOOMCYCLE_MAX_CONCURRENT_RUNS=10` on a 2-replica deployment means 20 actual concurrent runs. Per-user fairness IS cluster-wide; global cap is per-replica.
+- **Global concurrency cap.** `concurrency.max_concurrent_runs: 10` in `loomcycle.yaml` (default 8; there is no env var for it) on a 2-replica deployment means 20 actual concurrent runs. Per-user fairness IS cluster-wide; global cap is per-replica.
 - **`/v1/_concurrency/stats` `active`+`queued` counts.** These reflect the replica that handled the request. `per_user` reads the cluster-wide DB counter.
 
 ## Deployment checklist
 
 ### Required
 
-- [ ] Postgres 12+ shared across all replicas. SQLite refuses to start when `LOOMCYCLE_REPLICA_ID` is set.
+- [ ] Postgres 14+ shared across all replicas. SQLite refuses to start when `LOOMCYCLE_REPLICA_ID` is set.
 - [ ] All replicas have the **same** `LOOMCYCLE_AUTH_TOKEN`, **same** `loomcycle.yaml`, **same** binary version.
 - [ ] Each replica has a **unique** `LOOMCYCLE_REPLICA_ID`. UUID4 or `^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$`.
 - [ ] Postgres pool sized to `MaxConcurrentRuns + headroom` per replica. Session-locked continuations pin one connection per active session.
@@ -65,7 +65,7 @@ By design, these are not cluster-wide:
 
 ### Recommended
 
-- [ ] `LOOMCYCLE_HEARTBEAT_SWEEPER_ENABLED=1` (default) — without it the replicas TTL sweeper still works but stale runs from crashed replicas live longer.
+- [ ] Leave `LOOMCYCLE_HEARTBEAT_SWEEPER` on (the default; `0` disables it) — without it the replicas TTL sweeper still works but stale runs from crashed replicas live longer.
 - [ ] OTEL exporter wired (`LOOMCYCLE_OTEL_EXPORTER_OTLP_ENDPOINT`) so the cross-replica trace tree is visible.
 - [ ] `LOOMCYCLE_METRICS_ENABLED=1` for `/v1/_metrics/*` observability.
 
@@ -101,7 +101,7 @@ curl -X POST -H "Authorization: Bearer $TOKEN" https://lb.example.com/v1/_pause
 # 2. Wait for in-flight tools to drain (pause endpoint returns when done).
 
 # 3. Snapshot (optional but recommended for major version bumps).
-curl -X POST -H "Authorization: Bearer $TOKEN" https://lb.example.com/v1/_snapshot \
+curl -X POST -H "Authorization: Bearer $TOKEN" https://lb.example.com/v1/_snapshots \
     -d '{"label":"pre-upgrade-v1.0.1"}'
 
 # 4. Upgrade replicas one at a time. The remaining replicas continue serving the paused state via /healthz.
@@ -123,7 +123,7 @@ You do NOT need to manually clean up the DB. Just restart the replica when ready
 
 ### Adding a third (or Nth) replica
 
-Identical to bootstrapping replica B: pick a unique `LOOMCYCLE_REPLICA_ID`, start the binary. It joins the cluster within one heartbeat interval (30s) and is immediately reachable for cancel/pause/SSE/hooks.
+Identical to bootstrapping replica B: pick a unique `LOOMCYCLE_REPLICA_ID`, start the binary. It joins the cluster within one heartbeat interval (30s) and is immediately reachable for cancel/pause/steering/SSE.
 
 ### Reducing to single-replica
 
@@ -141,7 +141,7 @@ There is no data migration step — the existing Postgres schema is compatible w
 
 ### Postgres LISTEN/NOTIFY load
 
-Every replica holds 4–5 long-lived LISTEN connections (one per backplane topic). Postgres handles this easily; typical clusters use < 10K LISTEN/NOTIFY messages per second. If the cluster exceeds this scale, the `coord.Backplane` interface allows a Redis pub/sub implementation to slot in (post-v1.0).
+Every replica holds one long-lived LISTEN connection per backplane topic — about ten today (cancel, steering and turn cancel with their acks, pause, run-state, channel, token invalidation) — each a dedicated connection outside the pool. Postgres handles this easily; typical clusters use < 10K LISTEN/NOTIFY messages per second. If the cluster exceeds this scale, the `coord.Backplane` interface allows a Redis pub/sub implementation to slot in (post-v1.0).
 
 ### Connection pool sizing
 
@@ -165,13 +165,13 @@ There is no split-brain scenario: Postgres is the single source of truth. If the
 
 4. **Snapshot `--file` restoration is replica-local.** If you `loomcycle snapshot restore --file /path/to/snapshot.json` against a load-balanced endpoint, the request may land on a replica that doesn't have the file. Use the inline `raw_json` body for cluster-safe restore, or run the CLI against a specific replica's host.
 
-5. **Global concurrency cap is per-replica.** `LOOMCYCLE_MAX_CONCURRENT_RUNS=10` × 2 replicas = 20 cluster-wide. Per-user fairness IS cluster-wide.
+5. **Global concurrency cap is per-replica.** `concurrency.max_concurrent_runs: 10` × 2 replicas = 20 cluster-wide. Per-user fairness IS cluster-wide.
 
 6. **Cancel ack timeout is 5 seconds.** A cancel request that doesn't get an ack within 5s returns `{cancelled: false, reason: "owner_replica_unreachable"}` and suggests checking `_health`. Tunable via `LOOMCYCLE_CANCEL_ACK_TIMEOUT_MS`.
 
 7. **Pause cache TTL is 1 second.** Worst case 1s lag between a pause request and a remote replica refusing new runs. Tunable via `LOOMCYCLE_PAUSE_CACHE_TTL_MS`.
 
-8. **Hook registrations are cluster-wide but require Postgres.** Single-replica deployments keep the v0.11.x in-process hook registry (no DB, no backplane traffic).
+8. **Steering routes to the replica that owns the run.** `POST /v1/runs/{id}/input`, retune and the run-config reads can land on any replica; one that does not own the run forwards the call to the owner over the backplane and waits for its ack, with the same timeout as cancel. If the owner does not answer in time, the message is reported as not delivered and can be sent again. (The cluster-wide hook registry that used to be listed here was removed in v1.97.0; a run fires the hooks on its agent definition, on whichever replica runs it.)
 
 9. **The scheduler may run on every replica.** With `LOOMCYCLE_SCHEDULER_ENABLED=1` on several replicas, each lists the same due schedules, and each slot is fired by the one replica that claims it (a compare-and-set on `next_run_at`). The run also carries the claim's idempotency key, so a slot never produces two runs. `schedule_run_state.claimed_by` records which replica took the last slot.
    - **Finishing:** a scheduled run is finished — outcome recorded, `on_complete` dispatched once — by the replica that ran it. If that replica dies, any replica's reconcile sweep finishes it once the stale-run sweeper has failed the run, or once it completed (one replica per tick under an advisory lock).

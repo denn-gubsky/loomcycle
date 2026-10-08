@@ -42,9 +42,10 @@ There is no `body`: a new root body is always empty. Write text with
 
 ## Returns
 
-`{document_id, root_chunk_id, title, path}`. If the name could not be stored
-the document still exists and you get `path_warning` instead of `path`; fix
-it with `set_path`.
+`{document_id, root_chunk_id, title, path}`. A malformed `path` fails the
+call and nothing is created. If a well-formed name could not be stored (a
+storage fault), the document still exists and you get `path_warning` instead
+of `path`; fix it with `set_path`.
 
 ## Errors
 
