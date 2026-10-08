@@ -143,6 +143,39 @@ var userSelfServiceTools = map[string]bool{
 	"credentialdef": true, // RFC CN — a user's own scope=user credential store.
 }
 
+// toolRequiredScope is a scope a principal must hold to list + call a tool, ON
+// TOP of its class's allowlist above. The allowlists say which tools a class of
+// principal can be confined on; they do not look at what the token was granted.
+// A non-isolated member token reaches /v1/_mcp whatever its scopes are (the
+// route's member path), so without this a token minted with only runs:read
+// could start, steer and cancel runs here while POST /v1/runs and the Run RPC
+// refuse it.
+//
+// Each entry is the scope the tool's gRPC twin needs (grpcConsumerScopes), which
+// mirrors the HTTP route's. A tool with no entry is governed by its allowlist
+// alone: the def-authoring and data tools, whose HTTP routes a member also
+// reaches on the member path.
+var toolRequiredScope = map[string]string{
+	// Starting a run, and every write on a run's state.
+	"spawn_run":            auth.ScopeRunsCreate,
+	"spawn_runs":           auth.ScopeRunsCreate,
+	"cancel_run":           auth.ScopeRunsCreate,
+	"compact_run":          auth.ScopeRunsCreate,
+	"retune_run":           auth.ScopeRunsCreate,
+	"review_run":           auth.ScopeRunsCreate,
+	"configured_run":       auth.ScopeRunsCreate,
+	"interruption_resolve": auth.ScopeRunsCreate,
+	// Reading runs.
+	"get_run":                auth.ScopeRunsRead,
+	"list_runs":              auth.ScopeRunsRead,
+	"stream_user_run_states": auth.ScopeRunsRead,
+	// The per-user channel surface.
+	"publish_channel":   auth.ScopeChannelPublish,
+	"ack_channel":       auth.ScopeChannelPublish,
+	"subscribe_channel": auth.ScopeChannelRead,
+	"peek_channel":      auth.ScopeChannelRead,
+}
+
 // principalMayCallTool reports whether the principal on ctx may list/invoke
 // toolName over the /v1/_mcp transport (RFC AG §3.3):
 //
@@ -154,6 +187,8 @@ var userSelfServiceTools = map[string]bool{
 //   - Non-admin, non-isolated (substrate:tenant / RFC CB member) principal: the
 //     tenant-confinable allowlist; everything else — including an unclassified new
 //     tool — is admin-only (deny-by-default).
+//   - Any non-admin principal additionally needs a tool's toolRequiredScope,
+//     when it has one.
 func principalMayCallTool(ctx context.Context, toolName string) bool {
 	p, ok := auth.PrincipalFromContext(ctx)
 	if !ok {
@@ -162,8 +197,23 @@ func principalMayCallTool(ctx context.Context, toolName string) bool {
 	if auth.HasScope(p.Scopes, auth.ScopeAdmin) {
 		return true
 	}
+	if required, gated := toolRequiredScope[toolName]; gated && !auth.HasScope(p.Scopes, required) {
+		return false
+	}
 	if auth.IsIsolated(p, ok) {
 		return userSelfServiceTools[toolName]
 	}
 	return tenantConfinableTools[toolName]
+}
+
+// scopeNeededFor names the scope a refused principal lacks for toolName, for
+// the refusal's text: the tool's own required scope when that is what failed,
+// else substrate:admin (the tool is outside the principal's allowlist).
+func scopeNeededFor(ctx context.Context, toolName string) string {
+	if required, gated := toolRequiredScope[toolName]; gated {
+		if p, ok := auth.PrincipalFromContext(ctx); ok && !auth.HasScope(p.Scopes, required) {
+			return required
+		}
+	}
+	return auth.ScopeAdmin
 }

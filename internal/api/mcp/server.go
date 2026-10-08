@@ -431,7 +431,7 @@ func (s *Server) handleToolsCall(ctx context.Context, stdout io.Writer, req loom
 	// gate, not the hide, is the enforcement boundary. No principal (stdio) or
 	// an admin principal passes through unchanged.
 	if !principalMayCallTool(ctx, params.Name) {
-		s.writeError(stdout, req.ID, mcpErrForbidden, params.Name+": forbidden — requires substrate:admin")
+		s.writeError(stdout, req.ID, mcpErrForbidden, params.Name+": forbidden — requires "+scopeNeededFor(ctx, params.Name))
 		return
 	}
 
