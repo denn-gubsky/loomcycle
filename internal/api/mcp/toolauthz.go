@@ -90,6 +90,11 @@ var tenantConfinableTools = map[string]bool{
 	// a tenant session to its own tenant; the cross-tenant `global` scope is
 	// refused by the admin-gated history policy (grantOperatorPolicies).
 	"history": true,
+	// decision: it holds no tenant's data (it reads only the state passed in the
+	// call), and the connector resolves the provider key and the bill for the
+	// caller's own principal. It spends tokens, so it additionally needs the
+	// scope that creates a run (toolRequiredScope).
+	"decision": true,
 
 	// Per-run / per-user — tenant inherited; the underlying tool applies its
 	// own own-subject / cross-tenant-404 gate.
@@ -148,8 +153,8 @@ var userSelfServiceTools = map[string]bool{
 // principal can be confined on; they do not look at what the token was granted.
 // A non-isolated member token reaches /v1/_mcp whatever its scopes are (the
 // route's member path), so without this a token minted with only runs:read
-// could start, steer and cancel runs here while POST /v1/runs and the Run RPC
-// refuse it.
+// could start, steer and cancel runs here, or spend tokens on a decision, while
+// POST /v1/runs and the Run RPC refuse it.
 //
 // Each entry is the scope the tool's gRPC twin needs (grpcConsumerScopes), which
 // mirrors the HTTP route's. A tool with no entry is governed by its allowlist
@@ -174,6 +179,9 @@ var toolRequiredScope = map[string]string{
 	"ack_channel":       auth.ScopeChannelPublish,
 	"subscribe_channel": auth.ScopeChannelRead,
 	"peek_channel":      auth.ScopeChannelRead,
+	// Asking a decision model outside a run spends tokens: the scope
+	// POST /v1/_decide and the Decide RPC require.
+	"decision": auth.ScopeRunsCreate,
 }
 
 // principalMayCallTool reports whether the principal on ctx may list/invoke

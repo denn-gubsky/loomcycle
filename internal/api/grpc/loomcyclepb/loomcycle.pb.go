@@ -10656,6 +10656,496 @@ func (x *BroadcastChannelsResponse) GetResults() []*BroadcastChannelEntry {
 	return nil
 }
 
+// DecideRequest is one call: every question is answered about the same state.
+//
+// The free-form parts (state, each question's criteria) are JSON carried as
+// UTF-8 bytes, like SubstrateRequest.input_json, so they reach the model
+// exactly as sent.
+type DecideRequest struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// model names which decision model answers. Empty = the default.
+	Model string `protobuf:"bytes,1,opt,name=model,proto3" json:"model,omitempty"`
+	// state_json is what the questions are about: a JSON object.
+	StateJson []byte `protobuf:"bytes,2,opt,name=state_json,json=stateJson,proto3" json:"state_json,omitempty"`
+	// questions are 1 to 64 questions keyed by names the caller chooses; each
+	// answer comes back under its question's name.
+	Questions     map[string]*DecisionQuestion `protobuf:"bytes,3,rep,name=questions,proto3" json:"questions,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *DecideRequest) Reset() {
+	*x = DecideRequest{}
+	mi := &file_loomcycle_proto_msgTypes[136]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *DecideRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*DecideRequest) ProtoMessage() {}
+
+func (x *DecideRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_loomcycle_proto_msgTypes[136]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use DecideRequest.ProtoReflect.Descriptor instead.
+func (*DecideRequest) Descriptor() ([]byte, []int) {
+	return file_loomcycle_proto_rawDescGZIP(), []int{136}
+}
+
+func (x *DecideRequest) GetModel() string {
+	if x != nil {
+		return x.Model
+	}
+	return ""
+}
+
+func (x *DecideRequest) GetStateJson() []byte {
+	if x != nil {
+		return x.StateJson
+	}
+	return nil
+}
+
+func (x *DecideRequest) GetQuestions() map[string]*DecisionQuestion {
+	if x != nil {
+		return x.Questions
+	}
+	return nil
+}
+
+type DecisionQuestion struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// type is "choice", "noul" or "score".
+	Type string `protobuf:"bytes,1,opt,name=type,proto3" json:"type,omitempty"`
+	// instructions is the question itself, in plain words.
+	Instructions string `protobuf:"bytes,2,opt,name=instructions,proto3" json:"instructions,omitempty"`
+	// criteria_json is the type's criteria as JSON: choice (required), an
+	// object mapping each option to a description or null; noul (optional), an
+	// object describing "true" and/or "false"; score (required), an array of
+	// level descriptions, lowest first. Empty = none.
+	CriteriaJson  []byte `protobuf:"bytes,3,opt,name=criteria_json,json=criteriaJson,proto3" json:"criteria_json,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *DecisionQuestion) Reset() {
+	*x = DecisionQuestion{}
+	mi := &file_loomcycle_proto_msgTypes[137]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *DecisionQuestion) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*DecisionQuestion) ProtoMessage() {}
+
+func (x *DecisionQuestion) ProtoReflect() protoreflect.Message {
+	mi := &file_loomcycle_proto_msgTypes[137]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use DecisionQuestion.ProtoReflect.Descriptor instead.
+func (*DecisionQuestion) Descriptor() ([]byte, []int) {
+	return file_loomcycle_proto_rawDescGZIP(), []int{137}
+}
+
+func (x *DecisionQuestion) GetType() string {
+	if x != nil {
+		return x.Type
+	}
+	return ""
+}
+
+func (x *DecisionQuestion) GetInstructions() string {
+	if x != nil {
+		return x.Instructions
+	}
+	return ""
+}
+
+func (x *DecisionQuestion) GetCriteriaJson() []byte {
+	if x != nil {
+		return x.CriteriaJson
+	}
+	return nil
+}
+
+type DecideResponse struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// model is the name that answered, as the deployment lists it (the
+	// default's name when the request named none).
+	Model    string `protobuf:"bytes,1,opt,name=model,proto3" json:"model,omitempty"`
+	Provider string `protobuf:"bytes,2,opt,name=provider,proto3" json:"provider,omitempty"`
+	// served_model is what the provider says answered.
+	ServedModel string `protobuf:"bytes,3,opt,name=served_model,json=servedModel,proto3" json:"served_model,omitempty"`
+	// answers holds one answer per question, under the question's name: the
+	// model's own JSON, byte for byte. Bytes rather than a Struct so a number
+	// stays the number the model wrote (an integer 0 does not become 0.0) and a
+	// field a later model adds arrives without a schema change.
+	Answers       map[string][]byte `protobuf:"bytes,4,rep,name=answers,proto3" json:"answers,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
+	Usage         *DecisionUsage    `protobuf:"bytes,5,opt,name=usage,proto3" json:"usage,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *DecideResponse) Reset() {
+	*x = DecideResponse{}
+	mi := &file_loomcycle_proto_msgTypes[138]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *DecideResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*DecideResponse) ProtoMessage() {}
+
+func (x *DecideResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_loomcycle_proto_msgTypes[138]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use DecideResponse.ProtoReflect.Descriptor instead.
+func (*DecideResponse) Descriptor() ([]byte, []int) {
+	return file_loomcycle_proto_rawDescGZIP(), []int{138}
+}
+
+func (x *DecideResponse) GetModel() string {
+	if x != nil {
+		return x.Model
+	}
+	return ""
+}
+
+func (x *DecideResponse) GetProvider() string {
+	if x != nil {
+		return x.Provider
+	}
+	return ""
+}
+
+func (x *DecideResponse) GetServedModel() string {
+	if x != nil {
+		return x.ServedModel
+	}
+	return ""
+}
+
+func (x *DecideResponse) GetAnswers() map[string][]byte {
+	if x != nil {
+		return x.Answers
+	}
+	return nil
+}
+
+func (x *DecideResponse) GetUsage() *DecisionUsage {
+	if x != nil {
+		return x.Usage
+	}
+	return nil
+}
+
+type DecisionUsage struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	InputTokens   int64                  `protobuf:"varint,1,opt,name=input_tokens,json=inputTokens,proto3" json:"input_tokens,omitempty"`
+	OutputTokens  int64                  `protobuf:"varint,2,opt,name=output_tokens,json=outputTokens,proto3" json:"output_tokens,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *DecisionUsage) Reset() {
+	*x = DecisionUsage{}
+	mi := &file_loomcycle_proto_msgTypes[139]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *DecisionUsage) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*DecisionUsage) ProtoMessage() {}
+
+func (x *DecisionUsage) ProtoReflect() protoreflect.Message {
+	mi := &file_loomcycle_proto_msgTypes[139]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use DecisionUsage.ProtoReflect.Descriptor instead.
+func (*DecisionUsage) Descriptor() ([]byte, []int) {
+	return file_loomcycle_proto_rawDescGZIP(), []int{139}
+}
+
+func (x *DecisionUsage) GetInputTokens() int64 {
+	if x != nil {
+		return x.InputTokens
+	}
+	return 0
+}
+
+func (x *DecisionUsage) GetOutputTokens() int64 {
+	if x != nil {
+		return x.OutputTokens
+	}
+	return 0
+}
+
+type ListDecisionModelsRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ListDecisionModelsRequest) Reset() {
+	*x = ListDecisionModelsRequest{}
+	mi := &file_loomcycle_proto_msgTypes[140]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ListDecisionModelsRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ListDecisionModelsRequest) ProtoMessage() {}
+
+func (x *ListDecisionModelsRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_loomcycle_proto_msgTypes[140]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ListDecisionModelsRequest.ProtoReflect.Descriptor instead.
+func (*ListDecisionModelsRequest) Descriptor() ([]byte, []int) {
+	return file_loomcycle_proto_rawDescGZIP(), []int{140}
+}
+
+type ListDecisionModelsResponse struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// default_model is the name used when a Decide call names no model.
+	DefaultModel  string           `protobuf:"bytes,1,opt,name=default_model,json=defaultModel,proto3" json:"default_model,omitempty"`
+	Models        []*DecisionModel `protobuf:"bytes,2,rep,name=models,proto3" json:"models,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ListDecisionModelsResponse) Reset() {
+	*x = ListDecisionModelsResponse{}
+	mi := &file_loomcycle_proto_msgTypes[141]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ListDecisionModelsResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ListDecisionModelsResponse) ProtoMessage() {}
+
+func (x *ListDecisionModelsResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_loomcycle_proto_msgTypes[141]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ListDecisionModelsResponse.ProtoReflect.Descriptor instead.
+func (*ListDecisionModelsResponse) Descriptor() ([]byte, []int) {
+	return file_loomcycle_proto_rawDescGZIP(), []int{141}
+}
+
+func (x *ListDecisionModelsResponse) GetDefaultModel() string {
+	if x != nil {
+		return x.DefaultModel
+	}
+	return ""
+}
+
+func (x *ListDecisionModelsResponse) GetModels() []*DecisionModel {
+	if x != nil {
+		return x.Models
+	}
+	return nil
+}
+
+type DecisionModel struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// name is what Decide is called with.
+	Name     string `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
+	Provider string `protobuf:"bytes,2,opt,name=provider,proto3" json:"provider,omitempty"`
+	// model is the model the provider serves under that name.
+	Model         string          `protobuf:"bytes,3,opt,name=model,proto3" json:"model,omitempty"`
+	Limits        *DecisionLimits `protobuf:"bytes,4,opt,name=limits,proto3" json:"limits,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *DecisionModel) Reset() {
+	*x = DecisionModel{}
+	mi := &file_loomcycle_proto_msgTypes[142]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *DecisionModel) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*DecisionModel) ProtoMessage() {}
+
+func (x *DecisionModel) ProtoReflect() protoreflect.Message {
+	mi := &file_loomcycle_proto_msgTypes[142]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use DecisionModel.ProtoReflect.Descriptor instead.
+func (*DecisionModel) Descriptor() ([]byte, []int) {
+	return file_loomcycle_proto_rawDescGZIP(), []int{142}
+}
+
+func (x *DecisionModel) GetName() string {
+	if x != nil {
+		return x.Name
+	}
+	return ""
+}
+
+func (x *DecisionModel) GetProvider() string {
+	if x != nil {
+		return x.Provider
+	}
+	return ""
+}
+
+func (x *DecisionModel) GetModel() string {
+	if x != nil {
+		return x.Model
+	}
+	return ""
+}
+
+func (x *DecisionModel) GetLimits() *DecisionLimits {
+	if x != nil {
+		return x.Limits
+	}
+	return nil
+}
+
+type DecisionLimits struct {
+	state        protoimpl.MessageState `protogen:"open.v1"`
+	MaxQuestions int32                  `protobuf:"varint,1,opt,name=max_questions,json=maxQuestions,proto3" json:"max_questions,omitempty"`
+	// min_options and max_options bound a choice's options and a score's levels.
+	MinOptions    int32 `protobuf:"varint,2,opt,name=min_options,json=minOptions,proto3" json:"min_options,omitempty"`
+	MaxOptions    int32 `protobuf:"varint,3,opt,name=max_options,json=maxOptions,proto3" json:"max_options,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *DecisionLimits) Reset() {
+	*x = DecisionLimits{}
+	mi := &file_loomcycle_proto_msgTypes[143]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *DecisionLimits) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*DecisionLimits) ProtoMessage() {}
+
+func (x *DecisionLimits) ProtoReflect() protoreflect.Message {
+	mi := &file_loomcycle_proto_msgTypes[143]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use DecisionLimits.ProtoReflect.Descriptor instead.
+func (*DecisionLimits) Descriptor() ([]byte, []int) {
+	return file_loomcycle_proto_rawDescGZIP(), []int{143}
+}
+
+func (x *DecisionLimits) GetMaxQuestions() int32 {
+	if x != nil {
+		return x.MaxQuestions
+	}
+	return 0
+}
+
+func (x *DecisionLimits) GetMinOptions() int32 {
+	if x != nil {
+		return x.MinOptions
+	}
+	return 0
+}
+
+func (x *DecisionLimits) GetMaxOptions() int32 {
+	if x != nil {
+		return x.MaxOptions
+	}
+	return 0
+}
+
 var File_loomcycle_proto protoreflect.FileDescriptor
 
 const file_loomcycle_proto_rawDesc = "" +
@@ -11652,7 +12142,46 @@ const file_loomcycle_proto_rawDesc = "" +
 	"\x19BroadcastChannelsResponse\x12\x1c\n" +
 	"\tpublished\x18\x01 \x01(\x05R\tpublished\x12\x16\n" +
 	"\x06failed\x18\x02 \x01(\x05R\x06failed\x12=\n" +
-	"\aresults\x18\x03 \x03(\v2#.loomcycle.v1.BroadcastChannelEntryR\aresults2\x9c+\n" +
+	"\aresults\x18\x03 \x03(\v2#.loomcycle.v1.BroadcastChannelEntryR\aresults\"\xec\x01\n" +
+	"\rDecideRequest\x12\x14\n" +
+	"\x05model\x18\x01 \x01(\tR\x05model\x12\x1d\n" +
+	"\n" +
+	"state_json\x18\x02 \x01(\fR\tstateJson\x12H\n" +
+	"\tquestions\x18\x03 \x03(\v2*.loomcycle.v1.DecideRequest.QuestionsEntryR\tquestions\x1a\\\n" +
+	"\x0eQuestionsEntry\x12\x10\n" +
+	"\x03key\x18\x01 \x01(\tR\x03key\x124\n" +
+	"\x05value\x18\x02 \x01(\v2\x1e.loomcycle.v1.DecisionQuestionR\x05value:\x028\x01\"o\n" +
+	"\x10DecisionQuestion\x12\x12\n" +
+	"\x04type\x18\x01 \x01(\tR\x04type\x12\"\n" +
+	"\finstructions\x18\x02 \x01(\tR\finstructions\x12#\n" +
+	"\rcriteria_json\x18\x03 \x01(\fR\fcriteriaJson\"\x99\x02\n" +
+	"\x0eDecideResponse\x12\x14\n" +
+	"\x05model\x18\x01 \x01(\tR\x05model\x12\x1a\n" +
+	"\bprovider\x18\x02 \x01(\tR\bprovider\x12!\n" +
+	"\fserved_model\x18\x03 \x01(\tR\vservedModel\x12C\n" +
+	"\aanswers\x18\x04 \x03(\v2).loomcycle.v1.DecideResponse.AnswersEntryR\aanswers\x121\n" +
+	"\x05usage\x18\x05 \x01(\v2\x1b.loomcycle.v1.DecisionUsageR\x05usage\x1a:\n" +
+	"\fAnswersEntry\x12\x10\n" +
+	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
+	"\x05value\x18\x02 \x01(\fR\x05value:\x028\x01\"W\n" +
+	"\rDecisionUsage\x12!\n" +
+	"\finput_tokens\x18\x01 \x01(\x03R\vinputTokens\x12#\n" +
+	"\routput_tokens\x18\x02 \x01(\x03R\foutputTokens\"\x1b\n" +
+	"\x19ListDecisionModelsRequest\"v\n" +
+	"\x1aListDecisionModelsResponse\x12#\n" +
+	"\rdefault_model\x18\x01 \x01(\tR\fdefaultModel\x123\n" +
+	"\x06models\x18\x02 \x03(\v2\x1b.loomcycle.v1.DecisionModelR\x06models\"\x8b\x01\n" +
+	"\rDecisionModel\x12\x12\n" +
+	"\x04name\x18\x01 \x01(\tR\x04name\x12\x1a\n" +
+	"\bprovider\x18\x02 \x01(\tR\bprovider\x12\x14\n" +
+	"\x05model\x18\x03 \x01(\tR\x05model\x124\n" +
+	"\x06limits\x18\x04 \x01(\v2\x1c.loomcycle.v1.DecisionLimitsR\x06limits\"w\n" +
+	"\x0eDecisionLimits\x12#\n" +
+	"\rmax_questions\x18\x01 \x01(\x05R\fmaxQuestions\x12\x1f\n" +
+	"\vmin_options\x18\x02 \x01(\x05R\n" +
+	"minOptions\x12\x1f\n" +
+	"\vmax_options\x18\x03 \x01(\x05R\n" +
+	"maxOptions2\xca,\n" +
 	"\tLoomcycle\x126\n" +
 	"\x03Run\x12\x18.loomcycle.v1.RunRequest\x1a\x13.loomcycle.v1.Event0\x01\x12@\n" +
 	"\bContinue\x12\x1d.loomcycle.v1.ContinueRequest\x1a\x13.loomcycle.v1.Event0\x01\x12P\n" +
@@ -11685,6 +12214,8 @@ const file_loomcycle_proto_rawDesc = "" +
 	"\vUsageReport\x12 .loomcycle.v1.UsageReportRequest\x1a!.loomcycle.v1.UsageReportResponse\x12O\n" +
 	"\n" +
 	"TokenLimit\x12\x1f.loomcycle.v1.TokenLimitRequest\x1a .loomcycle.v1.TokenLimitResponse\x12C\n" +
+	"\x06Decide\x12\x1b.loomcycle.v1.DecideRequest\x1a\x1c.loomcycle.v1.DecideResponse\x12g\n" +
+	"\x12ListDecisionModels\x12'.loomcycle.v1.ListDecisionModelsRequest\x1a(.loomcycle.v1.ListDecisionModelsResponse\x12C\n" +
 	"\x06Health\x12\x1b.loomcycle.v1.HealthRequest\x1a\x1c.loomcycle.v1.HealthResponse\x12C\n" +
 	"\x06Config\x12\x1b.loomcycle.v1.ConfigRequest\x1a\x1c.loomcycle.v1.ConfigResponse\x12U\n" +
 	"\fPauseRuntime\x12!.loomcycle.v1.PauseRuntimeRequest\x1a\".loomcycle.v1.PauseRuntimeResponse\x12X\n" +
@@ -11738,7 +12269,7 @@ func file_loomcycle_proto_rawDescGZIP() []byte {
 	return file_loomcycle_proto_rawDescData
 }
 
-var file_loomcycle_proto_msgTypes = make([]protoimpl.MessageInfo, 147)
+var file_loomcycle_proto_msgTypes = make([]protoimpl.MessageInfo, 157)
 var file_loomcycle_proto_goTypes = []any{
 	(*RunRequest)(nil),                   // 0: loomcycle.v1.RunRequest
 	(*ContinueRequest)(nil),              // 1: loomcycle.v1.ContinueRequest
@@ -11876,23 +12407,33 @@ var file_loomcycle_proto_goTypes = []any{
 	(*BroadcastChannelsRequest)(nil),     // 133: loomcycle.v1.BroadcastChannelsRequest
 	(*BroadcastChannelEntry)(nil),        // 134: loomcycle.v1.BroadcastChannelEntry
 	(*BroadcastChannelsResponse)(nil),    // 135: loomcycle.v1.BroadcastChannelsResponse
-	nil,                                  // 136: loomcycle.v1.RunRequest.UserCredentialsEntry
-	nil,                                  // 137: loomcycle.v1.ContinueRequest.UserCredentialsEntry
-	nil,                                  // 138: loomcycle.v1.DirectoryInspectResponse.MemoryEntry
-	nil,                                  // 139: loomcycle.v1.ErasureTier.CountsEntry
-	nil,                                  // 140: loomcycle.v1.ErasureExecuteResponse.DeletedEntry
-	nil,                                  // 141: loomcycle.v1.ErasureExecuteResponse.RetainedEntry
-	nil,                                  // 142: loomcycle.v1.StartConfiguredRunRequest.UserCredentialsEntry
-	nil,                                  // 143: loomcycle.v1.ResolverMatrixResponse.ProvidersEntry
-	nil,                                  // 144: loomcycle.v1.ResolverProviderAvailability.ModelsEntry
-	nil,                                  // 145: loomcycle.v1.RestoreSnapshotResponse.RestoredEntry
-	nil,                                  // 146: loomcycle.v1.AwaitChannelsResponse.ResultsEntry
-	(*timestamppb.Timestamp)(nil),        // 147: google.protobuf.Timestamp
+	(*DecideRequest)(nil),                // 136: loomcycle.v1.DecideRequest
+	(*DecisionQuestion)(nil),             // 137: loomcycle.v1.DecisionQuestion
+	(*DecideResponse)(nil),               // 138: loomcycle.v1.DecideResponse
+	(*DecisionUsage)(nil),                // 139: loomcycle.v1.DecisionUsage
+	(*ListDecisionModelsRequest)(nil),    // 140: loomcycle.v1.ListDecisionModelsRequest
+	(*ListDecisionModelsResponse)(nil),   // 141: loomcycle.v1.ListDecisionModelsResponse
+	(*DecisionModel)(nil),                // 142: loomcycle.v1.DecisionModel
+	(*DecisionLimits)(nil),               // 143: loomcycle.v1.DecisionLimits
+	nil,                                  // 144: loomcycle.v1.RunRequest.UserCredentialsEntry
+	nil,                                  // 145: loomcycle.v1.ContinueRequest.UserCredentialsEntry
+	nil,                                  // 146: loomcycle.v1.DirectoryInspectResponse.MemoryEntry
+	nil,                                  // 147: loomcycle.v1.ErasureTier.CountsEntry
+	nil,                                  // 148: loomcycle.v1.ErasureExecuteResponse.DeletedEntry
+	nil,                                  // 149: loomcycle.v1.ErasureExecuteResponse.RetainedEntry
+	nil,                                  // 150: loomcycle.v1.StartConfiguredRunRequest.UserCredentialsEntry
+	nil,                                  // 151: loomcycle.v1.ResolverMatrixResponse.ProvidersEntry
+	nil,                                  // 152: loomcycle.v1.ResolverProviderAvailability.ModelsEntry
+	nil,                                  // 153: loomcycle.v1.RestoreSnapshotResponse.RestoredEntry
+	nil,                                  // 154: loomcycle.v1.AwaitChannelsResponse.ResultsEntry
+	nil,                                  // 155: loomcycle.v1.DecideRequest.QuestionsEntry
+	nil,                                  // 156: loomcycle.v1.DecideResponse.AnswersEntry
+	(*timestamppb.Timestamp)(nil),        // 157: google.protobuf.Timestamp
 }
 var file_loomcycle_proto_depIdxs = []int32{
 	48,  // 0: loomcycle.v1.RunRequest.segments:type_name -> loomcycle.v1.PromptSegment
 	47,  // 1: loomcycle.v1.RunRequest.allowed_hosts:type_name -> loomcycle.v1.HostAllowlist
-	136, // 2: loomcycle.v1.RunRequest.user_credentials:type_name -> loomcycle.v1.RunRequest.UserCredentialsEntry
+	144, // 2: loomcycle.v1.RunRequest.user_credentials:type_name -> loomcycle.v1.RunRequest.UserCredentialsEntry
 	4,   // 3: loomcycle.v1.RunRequest.sampling:type_name -> loomcycle.v1.Sampling
 	7,   // 4: loomcycle.v1.RunRequest.compaction:type_name -> loomcycle.v1.Compaction
 	3,   // 5: loomcycle.v1.RunRequest.interruption:type_name -> loomcycle.v1.Interruption
@@ -11902,7 +12443,7 @@ var file_loomcycle_proto_depIdxs = []int32{
 	6,   // 9: loomcycle.v1.RunRequest.output_format:type_name -> loomcycle.v1.OutputFormat
 	48,  // 10: loomcycle.v1.ContinueRequest.segments:type_name -> loomcycle.v1.PromptSegment
 	47,  // 11: loomcycle.v1.ContinueRequest.allowed_hosts:type_name -> loomcycle.v1.HostAllowlist
-	137, // 12: loomcycle.v1.ContinueRequest.user_credentials:type_name -> loomcycle.v1.ContinueRequest.UserCredentialsEntry
+	145, // 12: loomcycle.v1.ContinueRequest.user_credentials:type_name -> loomcycle.v1.ContinueRequest.UserCredentialsEntry
 	4,   // 13: loomcycle.v1.ContinueRequest.sampling:type_name -> loomcycle.v1.Sampling
 	7,   // 14: loomcycle.v1.ContinueRequest.compaction:type_name -> loomcycle.v1.Compaction
 	3,   // 15: loomcycle.v1.ContinueRequest.interruption:type_name -> loomcycle.v1.Interruption
@@ -11915,18 +12456,18 @@ var file_loomcycle_proto_depIdxs = []int32{
 	9,   // 22: loomcycle.v1.BatchSpawnResult.results:type_name -> loomcycle.v1.SpawnResult
 	12,  // 23: loomcycle.v1.DirectoryUsersResponse.users:type_name -> loomcycle.v1.DirectoryUser
 	12,  // 24: loomcycle.v1.DirectoryInspectResponse.activity:type_name -> loomcycle.v1.DirectoryUser
-	138, // 25: loomcycle.v1.DirectoryInspectResponse.memory:type_name -> loomcycle.v1.DirectoryInspectResponse.MemoryEntry
+	146, // 25: loomcycle.v1.DirectoryInspectResponse.memory:type_name -> loomcycle.v1.DirectoryInspectResponse.MemoryEntry
 	15,  // 26: loomcycle.v1.DirectoryInspectResponse.budget:type_name -> loomcycle.v1.DirectoryBudget
 	16,  // 27: loomcycle.v1.DirectoryInspectResponse.usage:type_name -> loomcycle.v1.DirectoryUsage
 	19,  // 28: loomcycle.v1.DirectoryTenantsResponse.tenants:type_name -> loomcycle.v1.DirectoryTenant
-	139, // 29: loomcycle.v1.ErasureTier.counts:type_name -> loomcycle.v1.ErasureTier.CountsEntry
+	147, // 29: loomcycle.v1.ErasureTier.counts:type_name -> loomcycle.v1.ErasureTier.CountsEntry
 	22,  // 30: loomcycle.v1.ErasureReportResponse.tier1_covered:type_name -> loomcycle.v1.ErasureTier
 	22,  // 31: loomcycle.v1.ErasureReportResponse.tier2_uncovered:type_name -> loomcycle.v1.ErasureTier
 	23,  // 32: loomcycle.v1.ErasureReportResponse.tier3_residue:type_name -> loomcycle.v1.ErasureResidue
-	140, // 33: loomcycle.v1.ErasureExecuteResponse.deleted:type_name -> loomcycle.v1.ErasureExecuteResponse.DeletedEntry
-	141, // 34: loomcycle.v1.ErasureExecuteResponse.retained:type_name -> loomcycle.v1.ErasureExecuteResponse.RetainedEntry
+	148, // 33: loomcycle.v1.ErasureExecuteResponse.deleted:type_name -> loomcycle.v1.ErasureExecuteResponse.DeletedEntry
+	149, // 34: loomcycle.v1.ErasureExecuteResponse.retained:type_name -> loomcycle.v1.ErasureExecuteResponse.RetainedEntry
 	23,  // 35: loomcycle.v1.ErasureExecuteResponse.residue:type_name -> loomcycle.v1.ErasureResidue
-	142, // 36: loomcycle.v1.StartConfiguredRunRequest.user_credentials:type_name -> loomcycle.v1.StartConfiguredRunRequest.UserCredentialsEntry
+	150, // 36: loomcycle.v1.StartConfiguredRunRequest.user_credentials:type_name -> loomcycle.v1.StartConfiguredRunRequest.UserCredentialsEntry
 	3,   // 37: loomcycle.v1.RunInputRequest.interruption:type_name -> loomcycle.v1.Interruption
 	5,   // 38: loomcycle.v1.RunInputRequest.tool_choice:type_name -> loomcycle.v1.ToolChoice
 	6,   // 39: loomcycle.v1.RunInputRequest.output_format:type_name -> loomcycle.v1.OutputFormat
@@ -11952,175 +12493,185 @@ var file_loomcycle_proto_depIdxs = []int32{
 	66,  // 59: loomcycle.v1.ErrorInfo.call_format:type_name -> loomcycle.v1.CallFormat
 	67,  // 60: loomcycle.v1.CallFormat.reference:type_name -> loomcycle.v1.CallRef
 	70,  // 61: loomcycle.v1.Transcript.events:type_name -> loomcycle.v1.TranscriptEvent
-	147, // 62: loomcycle.v1.TranscriptEvent.ts:type_name -> google.protobuf.Timestamp
-	147, // 63: loomcycle.v1.Agent.started_at:type_name -> google.protobuf.Timestamp
-	147, // 64: loomcycle.v1.Agent.completed_at:type_name -> google.protobuf.Timestamp
+	157, // 62: loomcycle.v1.TranscriptEvent.ts:type_name -> google.protobuf.Timestamp
+	157, // 63: loomcycle.v1.Agent.started_at:type_name -> google.protobuf.Timestamp
+	157, // 64: loomcycle.v1.Agent.completed_at:type_name -> google.protobuf.Timestamp
 	74,  // 65: loomcycle.v1.Agent.usage:type_name -> loomcycle.v1.AgentUsage
-	147, // 66: loomcycle.v1.Agent.last_heartbeat_at:type_name -> google.protobuf.Timestamp
+	157, // 66: loomcycle.v1.Agent.last_heartbeat_at:type_name -> google.protobuf.Timestamp
 	120, // 67: loomcycle.v1.Agent.parent_context:type_name -> loomcycle.v1.ParentContext
 	73,  // 68: loomcycle.v1.ListUserAgentsResponse.agents:type_name -> loomcycle.v1.Agent
 	73,  // 69: loomcycle.v1.ListWalkRunsResponse.agents:type_name -> loomcycle.v1.Agent
 	82,  // 70: loomcycle.v1.UsageReportResponse.rows:type_name -> loomcycle.v1.UsageAggregate
 	85,  // 71: loomcycle.v1.TokenLimitResponse.limits:type_name -> loomcycle.v1.TokenLimitEntry
-	147, // 72: loomcycle.v1.RuntimeStateResponse.paused_at:type_name -> google.protobuf.Timestamp
-	147, // 73: loomcycle.v1.ResolverMatrixResponse.generated_at:type_name -> google.protobuf.Timestamp
-	143, // 74: loomcycle.v1.ResolverMatrixResponse.providers:type_name -> loomcycle.v1.ResolverMatrixResponse.ProvidersEntry
-	144, // 75: loomcycle.v1.ResolverProviderAvailability.models:type_name -> loomcycle.v1.ResolverProviderAvailability.ModelsEntry
-	147, // 76: loomcycle.v1.ResolverProviderAvailability.last_check:type_name -> google.protobuf.Timestamp
-	147, // 77: loomcycle.v1.CreateSnapshotRequest.since_ts:type_name -> google.protobuf.Timestamp
-	147, // 78: loomcycle.v1.SnapshotDescriptor.created_at:type_name -> google.protobuf.Timestamp
-	147, // 79: loomcycle.v1.SnapshotDescriptor.since_ts:type_name -> google.protobuf.Timestamp
+	157, // 72: loomcycle.v1.RuntimeStateResponse.paused_at:type_name -> google.protobuf.Timestamp
+	157, // 73: loomcycle.v1.ResolverMatrixResponse.generated_at:type_name -> google.protobuf.Timestamp
+	151, // 74: loomcycle.v1.ResolverMatrixResponse.providers:type_name -> loomcycle.v1.ResolverMatrixResponse.ProvidersEntry
+	152, // 75: loomcycle.v1.ResolverProviderAvailability.models:type_name -> loomcycle.v1.ResolverProviderAvailability.ModelsEntry
+	157, // 76: loomcycle.v1.ResolverProviderAvailability.last_check:type_name -> google.protobuf.Timestamp
+	157, // 77: loomcycle.v1.CreateSnapshotRequest.since_ts:type_name -> google.protobuf.Timestamp
+	157, // 78: loomcycle.v1.SnapshotDescriptor.created_at:type_name -> google.protobuf.Timestamp
+	157, // 79: loomcycle.v1.SnapshotDescriptor.since_ts:type_name -> google.protobuf.Timestamp
 	102, // 80: loomcycle.v1.ListSnapshotsResponse.snapshots:type_name -> loomcycle.v1.SnapshotDescriptor
-	147, // 81: loomcycle.v1.SnapshotEnvelope.created_at:type_name -> google.protobuf.Timestamp
-	145, // 82: loomcycle.v1.RestoreSnapshotResponse.restored:type_name -> loomcycle.v1.RestoreSnapshotResponse.RestoredEntry
+	157, // 81: loomcycle.v1.SnapshotEnvelope.created_at:type_name -> google.protobuf.Timestamp
+	153, // 82: loomcycle.v1.RestoreSnapshotResponse.restored:type_name -> loomcycle.v1.RestoreSnapshotResponse.RestoredEntry
 	65,  // 83: loomcycle.v1.SubstrateResponse.error_info:type_name -> loomcycle.v1.ErrorInfo
 	117, // 84: loomcycle.v1.ListChannelsResponse.channels:type_name -> loomcycle.v1.ChannelDescriptor
 	120, // 85: loomcycle.v1.RunStateEvent.parent_context:type_name -> loomcycle.v1.ParentContext
 	125, // 86: loomcycle.v1.SubscribeChannelResponse.messages:type_name -> loomcycle.v1.ChannelMessage
 	125, // 87: loomcycle.v1.PeekChannelResponse.messages:type_name -> loomcycle.v1.ChannelMessage
 	125, // 88: loomcycle.v1.AwaitChannelEntry.messages:type_name -> loomcycle.v1.ChannelMessage
-	146, // 89: loomcycle.v1.AwaitChannelsResponse.results:type_name -> loomcycle.v1.AwaitChannelsResponse.ResultsEntry
+	154, // 89: loomcycle.v1.AwaitChannelsResponse.results:type_name -> loomcycle.v1.AwaitChannelsResponse.ResultsEntry
 	134, // 90: loomcycle.v1.BroadcastChannelsResponse.results:type_name -> loomcycle.v1.BroadcastChannelEntry
-	99,  // 91: loomcycle.v1.ResolverMatrixResponse.ProvidersEntry.value:type_name -> loomcycle.v1.ResolverProviderAvailability
-	100, // 92: loomcycle.v1.ResolverProviderAvailability.ModelsEntry.value:type_name -> loomcycle.v1.ResolverModelStatus
-	131, // 93: loomcycle.v1.AwaitChannelsResponse.ResultsEntry.value:type_name -> loomcycle.v1.AwaitChannelEntry
-	0,   // 94: loomcycle.v1.Loomcycle.Run:input_type -> loomcycle.v1.RunRequest
-	1,   // 95: loomcycle.v1.Loomcycle.Continue:input_type -> loomcycle.v1.ContinueRequest
-	8,   // 96: loomcycle.v1.Loomcycle.SpawnRunBatch:input_type -> loomcycle.v1.BatchSpawnRequest
-	27,  // 97: loomcycle.v1.Loomcycle.CompactRun:input_type -> loomcycle.v1.CompactRunRequest
-	0,   // 98: loomcycle.v1.Loomcycle.CreateConfiguredRun:input_type -> loomcycle.v1.RunRequest
-	30,  // 99: loomcycle.v1.Loomcycle.UpdateConfiguredRun:input_type -> loomcycle.v1.UpdateConfiguredRunRequest
-	31,  // 100: loomcycle.v1.Loomcycle.StartConfiguredRun:input_type -> loomcycle.v1.StartConfiguredRunRequest
-	32,  // 101: loomcycle.v1.Loomcycle.DeleteConfiguredRun:input_type -> loomcycle.v1.DeleteConfiguredRunRequest
-	11,  // 102: loomcycle.v1.Loomcycle.DirectoryUsers:input_type -> loomcycle.v1.DirectoryUsersRequest
-	14,  // 103: loomcycle.v1.Loomcycle.DirectoryInspect:input_type -> loomcycle.v1.DirectoryInspectRequest
-	18,  // 104: loomcycle.v1.Loomcycle.DirectoryTenants:input_type -> loomcycle.v1.DirectoryTenantsRequest
-	21,  // 105: loomcycle.v1.Loomcycle.ErasureReport:input_type -> loomcycle.v1.ErasureReportRequest
-	25,  // 106: loomcycle.v1.Loomcycle.ErasureExecute:input_type -> loomcycle.v1.ErasureExecuteRequest
-	34,  // 107: loomcycle.v1.Loomcycle.ReplaySession:input_type -> loomcycle.v1.ReplaySessionRequest
-	36,  // 108: loomcycle.v1.Loomcycle.RunInput:input_type -> loomcycle.v1.RunInputRequest
-	37,  // 109: loomcycle.v1.Loomcycle.RetuneRun:input_type -> loomcycle.v1.RetuneRunRequest
-	40,  // 110: loomcycle.v1.Loomcycle.CancelTurn:input_type -> loomcycle.v1.CancelTurnRequest
-	42,  // 111: loomcycle.v1.Loomcycle.ReviewRun:input_type -> loomcycle.v1.ReviewRunRequest
-	44,  // 112: loomcycle.v1.Loomcycle.ResolveInterrupt:input_type -> loomcycle.v1.ResolveInterruptRequest
-	46,  // 113: loomcycle.v1.Loomcycle.StreamRun:input_type -> loomcycle.v1.StreamRunRequest
-	68,  // 114: loomcycle.v1.Loomcycle.GetTranscript:input_type -> loomcycle.v1.GetTranscriptRequest
-	71,  // 115: loomcycle.v1.Loomcycle.GetAgent:input_type -> loomcycle.v1.GetAgentRequest
-	72,  // 116: loomcycle.v1.Loomcycle.GetRun:input_type -> loomcycle.v1.GetRunRequest
-	75,  // 117: loomcycle.v1.Loomcycle.CancelAgent:input_type -> loomcycle.v1.CancelAgentRequest
-	77,  // 118: loomcycle.v1.Loomcycle.ListUserAgents:input_type -> loomcycle.v1.ListUserAgentsRequest
-	79,  // 119: loomcycle.v1.Loomcycle.ListWalkRuns:input_type -> loomcycle.v1.ListWalkRunsRequest
-	81,  // 120: loomcycle.v1.Loomcycle.UsageReport:input_type -> loomcycle.v1.UsageReportRequest
-	84,  // 121: loomcycle.v1.Loomcycle.TokenLimit:input_type -> loomcycle.v1.TokenLimitRequest
-	89,  // 122: loomcycle.v1.Loomcycle.Health:input_type -> loomcycle.v1.HealthRequest
-	87,  // 123: loomcycle.v1.Loomcycle.Config:input_type -> loomcycle.v1.ConfigRequest
-	91,  // 124: loomcycle.v1.Loomcycle.PauseRuntime:input_type -> loomcycle.v1.PauseRuntimeRequest
-	93,  // 125: loomcycle.v1.Loomcycle.ResumeRuntime:input_type -> loomcycle.v1.ResumeRuntimeRequest
-	95,  // 126: loomcycle.v1.Loomcycle.GetRuntimeState:input_type -> loomcycle.v1.GetRuntimeStateRequest
-	97,  // 127: loomcycle.v1.Loomcycle.ResolveProbe:input_type -> loomcycle.v1.ResolveProbeRequest
-	101, // 128: loomcycle.v1.Loomcycle.CreateSnapshot:input_type -> loomcycle.v1.CreateSnapshotRequest
-	103, // 129: loomcycle.v1.Loomcycle.ListSnapshots:input_type -> loomcycle.v1.ListSnapshotsRequest
-	105, // 130: loomcycle.v1.Loomcycle.GetSnapshot:input_type -> loomcycle.v1.GetSnapshotRequest
-	107, // 131: loomcycle.v1.Loomcycle.ExportSnapshot:input_type -> loomcycle.v1.ExportSnapshotRequest
-	109, // 132: loomcycle.v1.Loomcycle.RestoreSnapshot:input_type -> loomcycle.v1.RestoreSnapshotRequest
-	111, // 133: loomcycle.v1.Loomcycle.DeleteSnapshot:input_type -> loomcycle.v1.DeleteSnapshotRequest
-	113, // 134: loomcycle.v1.Loomcycle.AgentDef:input_type -> loomcycle.v1.SubstrateRequest
-	113, // 135: loomcycle.v1.Loomcycle.SkillDef:input_type -> loomcycle.v1.SubstrateRequest
-	113, // 136: loomcycle.v1.Loomcycle.MCPServerDef:input_type -> loomcycle.v1.SubstrateRequest
-	113, // 137: loomcycle.v1.Loomcycle.ScheduleDef:input_type -> loomcycle.v1.SubstrateRequest
-	113, // 138: loomcycle.v1.Loomcycle.A2AServerCardDef:input_type -> loomcycle.v1.SubstrateRequest
-	113, // 139: loomcycle.v1.Loomcycle.A2AAgentDef:input_type -> loomcycle.v1.SubstrateRequest
-	113, // 140: loomcycle.v1.Loomcycle.WebhookDef:input_type -> loomcycle.v1.SubstrateRequest
-	113, // 141: loomcycle.v1.Loomcycle.MemoryBackendDef:input_type -> loomcycle.v1.SubstrateRequest
-	113, // 142: loomcycle.v1.Loomcycle.DocumentSourceDef:input_type -> loomcycle.v1.SubstrateRequest
-	113, // 143: loomcycle.v1.Loomcycle.OperatorTokenDef:input_type -> loomcycle.v1.SubstrateRequest
-	113, // 144: loomcycle.v1.Loomcycle.VolumeDef:input_type -> loomcycle.v1.SubstrateRequest
-	113, // 145: loomcycle.v1.Loomcycle.TeamDef:input_type -> loomcycle.v1.SubstrateRequest
-	113, // 146: loomcycle.v1.Loomcycle.HookDef:input_type -> loomcycle.v1.SubstrateRequest
-	113, // 147: loomcycle.v1.Loomcycle.Path:input_type -> loomcycle.v1.SubstrateRequest
-	113, // 148: loomcycle.v1.Loomcycle.Document:input_type -> loomcycle.v1.SubstrateRequest
-	113, // 149: loomcycle.v1.Loomcycle.CredentialDef:input_type -> loomcycle.v1.SubstrateRequest
-	113, // 150: loomcycle.v1.Loomcycle.History:input_type -> loomcycle.v1.SubstrateRequest
-	113, // 151: loomcycle.v1.Loomcycle.Memory:input_type -> loomcycle.v1.SubstrateRequest
-	115, // 152: loomcycle.v1.Loomcycle.ListChannels:input_type -> loomcycle.v1.ListChannelsRequest
-	118, // 153: loomcycle.v1.Loomcycle.StreamUserRunStates:input_type -> loomcycle.v1.StreamUserRunStatesRequest
-	121, // 154: loomcycle.v1.Loomcycle.PublishChannel:input_type -> loomcycle.v1.PublishChannelRequest
-	123, // 155: loomcycle.v1.Loomcycle.SubscribeChannel:input_type -> loomcycle.v1.SubscribeChannelRequest
-	126, // 156: loomcycle.v1.Loomcycle.PeekChannel:input_type -> loomcycle.v1.PeekChannelRequest
-	128, // 157: loomcycle.v1.Loomcycle.AckChannel:input_type -> loomcycle.v1.AckChannelRequest
-	130, // 158: loomcycle.v1.Loomcycle.AwaitChannels:input_type -> loomcycle.v1.AwaitChannelsRequest
-	133, // 159: loomcycle.v1.Loomcycle.BroadcastChannels:input_type -> loomcycle.v1.BroadcastChannelsRequest
-	50,  // 160: loomcycle.v1.Loomcycle.Run:output_type -> loomcycle.v1.Event
-	50,  // 161: loomcycle.v1.Loomcycle.Continue:output_type -> loomcycle.v1.Event
-	10,  // 162: loomcycle.v1.Loomcycle.SpawnRunBatch:output_type -> loomcycle.v1.BatchSpawnResult
-	28,  // 163: loomcycle.v1.Loomcycle.CompactRun:output_type -> loomcycle.v1.CompactRunResult
-	29,  // 164: loomcycle.v1.Loomcycle.CreateConfiguredRun:output_type -> loomcycle.v1.ConfiguredRun
-	29,  // 165: loomcycle.v1.Loomcycle.UpdateConfiguredRun:output_type -> loomcycle.v1.ConfiguredRun
-	50,  // 166: loomcycle.v1.Loomcycle.StartConfiguredRun:output_type -> loomcycle.v1.Event
-	33,  // 167: loomcycle.v1.Loomcycle.DeleteConfiguredRun:output_type -> loomcycle.v1.DeleteConfiguredRunResponse
-	13,  // 168: loomcycle.v1.Loomcycle.DirectoryUsers:output_type -> loomcycle.v1.DirectoryUsersResponse
-	17,  // 169: loomcycle.v1.Loomcycle.DirectoryInspect:output_type -> loomcycle.v1.DirectoryInspectResponse
-	20,  // 170: loomcycle.v1.Loomcycle.DirectoryTenants:output_type -> loomcycle.v1.DirectoryTenantsResponse
-	24,  // 171: loomcycle.v1.Loomcycle.ErasureReport:output_type -> loomcycle.v1.ErasureReportResponse
-	26,  // 172: loomcycle.v1.Loomcycle.ErasureExecute:output_type -> loomcycle.v1.ErasureExecuteResponse
-	35,  // 173: loomcycle.v1.Loomcycle.ReplaySession:output_type -> loomcycle.v1.ReplaySessionResult
-	39,  // 174: loomcycle.v1.Loomcycle.RunInput:output_type -> loomcycle.v1.RunInputResponse
-	38,  // 175: loomcycle.v1.Loomcycle.RetuneRun:output_type -> loomcycle.v1.RetuneRunResponse
-	41,  // 176: loomcycle.v1.Loomcycle.CancelTurn:output_type -> loomcycle.v1.CancelTurnResponse
-	43,  // 177: loomcycle.v1.Loomcycle.ReviewRun:output_type -> loomcycle.v1.ReviewRunResponse
-	45,  // 178: loomcycle.v1.Loomcycle.ResolveInterrupt:output_type -> loomcycle.v1.ResolveInterruptResponse
-	50,  // 179: loomcycle.v1.Loomcycle.StreamRun:output_type -> loomcycle.v1.Event
-	69,  // 180: loomcycle.v1.Loomcycle.GetTranscript:output_type -> loomcycle.v1.Transcript
-	73,  // 181: loomcycle.v1.Loomcycle.GetAgent:output_type -> loomcycle.v1.Agent
-	73,  // 182: loomcycle.v1.Loomcycle.GetRun:output_type -> loomcycle.v1.Agent
-	76,  // 183: loomcycle.v1.Loomcycle.CancelAgent:output_type -> loomcycle.v1.CancelAgentResponse
-	78,  // 184: loomcycle.v1.Loomcycle.ListUserAgents:output_type -> loomcycle.v1.ListUserAgentsResponse
-	80,  // 185: loomcycle.v1.Loomcycle.ListWalkRuns:output_type -> loomcycle.v1.ListWalkRunsResponse
-	83,  // 186: loomcycle.v1.Loomcycle.UsageReport:output_type -> loomcycle.v1.UsageReportResponse
-	86,  // 187: loomcycle.v1.Loomcycle.TokenLimit:output_type -> loomcycle.v1.TokenLimitResponse
-	90,  // 188: loomcycle.v1.Loomcycle.Health:output_type -> loomcycle.v1.HealthResponse
-	88,  // 189: loomcycle.v1.Loomcycle.Config:output_type -> loomcycle.v1.ConfigResponse
-	92,  // 190: loomcycle.v1.Loomcycle.PauseRuntime:output_type -> loomcycle.v1.PauseRuntimeResponse
-	94,  // 191: loomcycle.v1.Loomcycle.ResumeRuntime:output_type -> loomcycle.v1.ResumeRuntimeResponse
-	96,  // 192: loomcycle.v1.Loomcycle.GetRuntimeState:output_type -> loomcycle.v1.RuntimeStateResponse
-	98,  // 193: loomcycle.v1.Loomcycle.ResolveProbe:output_type -> loomcycle.v1.ResolverMatrixResponse
-	102, // 194: loomcycle.v1.Loomcycle.CreateSnapshot:output_type -> loomcycle.v1.SnapshotDescriptor
-	104, // 195: loomcycle.v1.Loomcycle.ListSnapshots:output_type -> loomcycle.v1.ListSnapshotsResponse
-	106, // 196: loomcycle.v1.Loomcycle.GetSnapshot:output_type -> loomcycle.v1.SnapshotEnvelope
-	108, // 197: loomcycle.v1.Loomcycle.ExportSnapshot:output_type -> loomcycle.v1.ExportSnapshotResponse
-	110, // 198: loomcycle.v1.Loomcycle.RestoreSnapshot:output_type -> loomcycle.v1.RestoreSnapshotResponse
-	112, // 199: loomcycle.v1.Loomcycle.DeleteSnapshot:output_type -> loomcycle.v1.DeleteSnapshotResponse
-	114, // 200: loomcycle.v1.Loomcycle.AgentDef:output_type -> loomcycle.v1.SubstrateResponse
-	114, // 201: loomcycle.v1.Loomcycle.SkillDef:output_type -> loomcycle.v1.SubstrateResponse
-	114, // 202: loomcycle.v1.Loomcycle.MCPServerDef:output_type -> loomcycle.v1.SubstrateResponse
-	114, // 203: loomcycle.v1.Loomcycle.ScheduleDef:output_type -> loomcycle.v1.SubstrateResponse
-	114, // 204: loomcycle.v1.Loomcycle.A2AServerCardDef:output_type -> loomcycle.v1.SubstrateResponse
-	114, // 205: loomcycle.v1.Loomcycle.A2AAgentDef:output_type -> loomcycle.v1.SubstrateResponse
-	114, // 206: loomcycle.v1.Loomcycle.WebhookDef:output_type -> loomcycle.v1.SubstrateResponse
-	114, // 207: loomcycle.v1.Loomcycle.MemoryBackendDef:output_type -> loomcycle.v1.SubstrateResponse
-	114, // 208: loomcycle.v1.Loomcycle.DocumentSourceDef:output_type -> loomcycle.v1.SubstrateResponse
-	114, // 209: loomcycle.v1.Loomcycle.OperatorTokenDef:output_type -> loomcycle.v1.SubstrateResponse
-	114, // 210: loomcycle.v1.Loomcycle.VolumeDef:output_type -> loomcycle.v1.SubstrateResponse
-	114, // 211: loomcycle.v1.Loomcycle.TeamDef:output_type -> loomcycle.v1.SubstrateResponse
-	114, // 212: loomcycle.v1.Loomcycle.HookDef:output_type -> loomcycle.v1.SubstrateResponse
-	114, // 213: loomcycle.v1.Loomcycle.Path:output_type -> loomcycle.v1.SubstrateResponse
-	114, // 214: loomcycle.v1.Loomcycle.Document:output_type -> loomcycle.v1.SubstrateResponse
-	114, // 215: loomcycle.v1.Loomcycle.CredentialDef:output_type -> loomcycle.v1.SubstrateResponse
-	114, // 216: loomcycle.v1.Loomcycle.History:output_type -> loomcycle.v1.SubstrateResponse
-	114, // 217: loomcycle.v1.Loomcycle.Memory:output_type -> loomcycle.v1.SubstrateResponse
-	116, // 218: loomcycle.v1.Loomcycle.ListChannels:output_type -> loomcycle.v1.ListChannelsResponse
-	119, // 219: loomcycle.v1.Loomcycle.StreamUserRunStates:output_type -> loomcycle.v1.RunStateEvent
-	122, // 220: loomcycle.v1.Loomcycle.PublishChannel:output_type -> loomcycle.v1.PublishChannelResponse
-	124, // 221: loomcycle.v1.Loomcycle.SubscribeChannel:output_type -> loomcycle.v1.SubscribeChannelResponse
-	127, // 222: loomcycle.v1.Loomcycle.PeekChannel:output_type -> loomcycle.v1.PeekChannelResponse
-	129, // 223: loomcycle.v1.Loomcycle.AckChannel:output_type -> loomcycle.v1.AckChannelResponse
-	132, // 224: loomcycle.v1.Loomcycle.AwaitChannels:output_type -> loomcycle.v1.AwaitChannelsResponse
-	135, // 225: loomcycle.v1.Loomcycle.BroadcastChannels:output_type -> loomcycle.v1.BroadcastChannelsResponse
-	160, // [160:226] is the sub-list for method output_type
-	94,  // [94:160] is the sub-list for method input_type
-	94,  // [94:94] is the sub-list for extension type_name
-	94,  // [94:94] is the sub-list for extension extendee
-	0,   // [0:94] is the sub-list for field type_name
+	155, // 91: loomcycle.v1.DecideRequest.questions:type_name -> loomcycle.v1.DecideRequest.QuestionsEntry
+	156, // 92: loomcycle.v1.DecideResponse.answers:type_name -> loomcycle.v1.DecideResponse.AnswersEntry
+	139, // 93: loomcycle.v1.DecideResponse.usage:type_name -> loomcycle.v1.DecisionUsage
+	142, // 94: loomcycle.v1.ListDecisionModelsResponse.models:type_name -> loomcycle.v1.DecisionModel
+	143, // 95: loomcycle.v1.DecisionModel.limits:type_name -> loomcycle.v1.DecisionLimits
+	99,  // 96: loomcycle.v1.ResolverMatrixResponse.ProvidersEntry.value:type_name -> loomcycle.v1.ResolverProviderAvailability
+	100, // 97: loomcycle.v1.ResolverProviderAvailability.ModelsEntry.value:type_name -> loomcycle.v1.ResolverModelStatus
+	131, // 98: loomcycle.v1.AwaitChannelsResponse.ResultsEntry.value:type_name -> loomcycle.v1.AwaitChannelEntry
+	137, // 99: loomcycle.v1.DecideRequest.QuestionsEntry.value:type_name -> loomcycle.v1.DecisionQuestion
+	0,   // 100: loomcycle.v1.Loomcycle.Run:input_type -> loomcycle.v1.RunRequest
+	1,   // 101: loomcycle.v1.Loomcycle.Continue:input_type -> loomcycle.v1.ContinueRequest
+	8,   // 102: loomcycle.v1.Loomcycle.SpawnRunBatch:input_type -> loomcycle.v1.BatchSpawnRequest
+	27,  // 103: loomcycle.v1.Loomcycle.CompactRun:input_type -> loomcycle.v1.CompactRunRequest
+	0,   // 104: loomcycle.v1.Loomcycle.CreateConfiguredRun:input_type -> loomcycle.v1.RunRequest
+	30,  // 105: loomcycle.v1.Loomcycle.UpdateConfiguredRun:input_type -> loomcycle.v1.UpdateConfiguredRunRequest
+	31,  // 106: loomcycle.v1.Loomcycle.StartConfiguredRun:input_type -> loomcycle.v1.StartConfiguredRunRequest
+	32,  // 107: loomcycle.v1.Loomcycle.DeleteConfiguredRun:input_type -> loomcycle.v1.DeleteConfiguredRunRequest
+	11,  // 108: loomcycle.v1.Loomcycle.DirectoryUsers:input_type -> loomcycle.v1.DirectoryUsersRequest
+	14,  // 109: loomcycle.v1.Loomcycle.DirectoryInspect:input_type -> loomcycle.v1.DirectoryInspectRequest
+	18,  // 110: loomcycle.v1.Loomcycle.DirectoryTenants:input_type -> loomcycle.v1.DirectoryTenantsRequest
+	21,  // 111: loomcycle.v1.Loomcycle.ErasureReport:input_type -> loomcycle.v1.ErasureReportRequest
+	25,  // 112: loomcycle.v1.Loomcycle.ErasureExecute:input_type -> loomcycle.v1.ErasureExecuteRequest
+	34,  // 113: loomcycle.v1.Loomcycle.ReplaySession:input_type -> loomcycle.v1.ReplaySessionRequest
+	36,  // 114: loomcycle.v1.Loomcycle.RunInput:input_type -> loomcycle.v1.RunInputRequest
+	37,  // 115: loomcycle.v1.Loomcycle.RetuneRun:input_type -> loomcycle.v1.RetuneRunRequest
+	40,  // 116: loomcycle.v1.Loomcycle.CancelTurn:input_type -> loomcycle.v1.CancelTurnRequest
+	42,  // 117: loomcycle.v1.Loomcycle.ReviewRun:input_type -> loomcycle.v1.ReviewRunRequest
+	44,  // 118: loomcycle.v1.Loomcycle.ResolveInterrupt:input_type -> loomcycle.v1.ResolveInterruptRequest
+	46,  // 119: loomcycle.v1.Loomcycle.StreamRun:input_type -> loomcycle.v1.StreamRunRequest
+	68,  // 120: loomcycle.v1.Loomcycle.GetTranscript:input_type -> loomcycle.v1.GetTranscriptRequest
+	71,  // 121: loomcycle.v1.Loomcycle.GetAgent:input_type -> loomcycle.v1.GetAgentRequest
+	72,  // 122: loomcycle.v1.Loomcycle.GetRun:input_type -> loomcycle.v1.GetRunRequest
+	75,  // 123: loomcycle.v1.Loomcycle.CancelAgent:input_type -> loomcycle.v1.CancelAgentRequest
+	77,  // 124: loomcycle.v1.Loomcycle.ListUserAgents:input_type -> loomcycle.v1.ListUserAgentsRequest
+	79,  // 125: loomcycle.v1.Loomcycle.ListWalkRuns:input_type -> loomcycle.v1.ListWalkRunsRequest
+	81,  // 126: loomcycle.v1.Loomcycle.UsageReport:input_type -> loomcycle.v1.UsageReportRequest
+	84,  // 127: loomcycle.v1.Loomcycle.TokenLimit:input_type -> loomcycle.v1.TokenLimitRequest
+	136, // 128: loomcycle.v1.Loomcycle.Decide:input_type -> loomcycle.v1.DecideRequest
+	140, // 129: loomcycle.v1.Loomcycle.ListDecisionModels:input_type -> loomcycle.v1.ListDecisionModelsRequest
+	89,  // 130: loomcycle.v1.Loomcycle.Health:input_type -> loomcycle.v1.HealthRequest
+	87,  // 131: loomcycle.v1.Loomcycle.Config:input_type -> loomcycle.v1.ConfigRequest
+	91,  // 132: loomcycle.v1.Loomcycle.PauseRuntime:input_type -> loomcycle.v1.PauseRuntimeRequest
+	93,  // 133: loomcycle.v1.Loomcycle.ResumeRuntime:input_type -> loomcycle.v1.ResumeRuntimeRequest
+	95,  // 134: loomcycle.v1.Loomcycle.GetRuntimeState:input_type -> loomcycle.v1.GetRuntimeStateRequest
+	97,  // 135: loomcycle.v1.Loomcycle.ResolveProbe:input_type -> loomcycle.v1.ResolveProbeRequest
+	101, // 136: loomcycle.v1.Loomcycle.CreateSnapshot:input_type -> loomcycle.v1.CreateSnapshotRequest
+	103, // 137: loomcycle.v1.Loomcycle.ListSnapshots:input_type -> loomcycle.v1.ListSnapshotsRequest
+	105, // 138: loomcycle.v1.Loomcycle.GetSnapshot:input_type -> loomcycle.v1.GetSnapshotRequest
+	107, // 139: loomcycle.v1.Loomcycle.ExportSnapshot:input_type -> loomcycle.v1.ExportSnapshotRequest
+	109, // 140: loomcycle.v1.Loomcycle.RestoreSnapshot:input_type -> loomcycle.v1.RestoreSnapshotRequest
+	111, // 141: loomcycle.v1.Loomcycle.DeleteSnapshot:input_type -> loomcycle.v1.DeleteSnapshotRequest
+	113, // 142: loomcycle.v1.Loomcycle.AgentDef:input_type -> loomcycle.v1.SubstrateRequest
+	113, // 143: loomcycle.v1.Loomcycle.SkillDef:input_type -> loomcycle.v1.SubstrateRequest
+	113, // 144: loomcycle.v1.Loomcycle.MCPServerDef:input_type -> loomcycle.v1.SubstrateRequest
+	113, // 145: loomcycle.v1.Loomcycle.ScheduleDef:input_type -> loomcycle.v1.SubstrateRequest
+	113, // 146: loomcycle.v1.Loomcycle.A2AServerCardDef:input_type -> loomcycle.v1.SubstrateRequest
+	113, // 147: loomcycle.v1.Loomcycle.A2AAgentDef:input_type -> loomcycle.v1.SubstrateRequest
+	113, // 148: loomcycle.v1.Loomcycle.WebhookDef:input_type -> loomcycle.v1.SubstrateRequest
+	113, // 149: loomcycle.v1.Loomcycle.MemoryBackendDef:input_type -> loomcycle.v1.SubstrateRequest
+	113, // 150: loomcycle.v1.Loomcycle.DocumentSourceDef:input_type -> loomcycle.v1.SubstrateRequest
+	113, // 151: loomcycle.v1.Loomcycle.OperatorTokenDef:input_type -> loomcycle.v1.SubstrateRequest
+	113, // 152: loomcycle.v1.Loomcycle.VolumeDef:input_type -> loomcycle.v1.SubstrateRequest
+	113, // 153: loomcycle.v1.Loomcycle.TeamDef:input_type -> loomcycle.v1.SubstrateRequest
+	113, // 154: loomcycle.v1.Loomcycle.HookDef:input_type -> loomcycle.v1.SubstrateRequest
+	113, // 155: loomcycle.v1.Loomcycle.Path:input_type -> loomcycle.v1.SubstrateRequest
+	113, // 156: loomcycle.v1.Loomcycle.Document:input_type -> loomcycle.v1.SubstrateRequest
+	113, // 157: loomcycle.v1.Loomcycle.CredentialDef:input_type -> loomcycle.v1.SubstrateRequest
+	113, // 158: loomcycle.v1.Loomcycle.History:input_type -> loomcycle.v1.SubstrateRequest
+	113, // 159: loomcycle.v1.Loomcycle.Memory:input_type -> loomcycle.v1.SubstrateRequest
+	115, // 160: loomcycle.v1.Loomcycle.ListChannels:input_type -> loomcycle.v1.ListChannelsRequest
+	118, // 161: loomcycle.v1.Loomcycle.StreamUserRunStates:input_type -> loomcycle.v1.StreamUserRunStatesRequest
+	121, // 162: loomcycle.v1.Loomcycle.PublishChannel:input_type -> loomcycle.v1.PublishChannelRequest
+	123, // 163: loomcycle.v1.Loomcycle.SubscribeChannel:input_type -> loomcycle.v1.SubscribeChannelRequest
+	126, // 164: loomcycle.v1.Loomcycle.PeekChannel:input_type -> loomcycle.v1.PeekChannelRequest
+	128, // 165: loomcycle.v1.Loomcycle.AckChannel:input_type -> loomcycle.v1.AckChannelRequest
+	130, // 166: loomcycle.v1.Loomcycle.AwaitChannels:input_type -> loomcycle.v1.AwaitChannelsRequest
+	133, // 167: loomcycle.v1.Loomcycle.BroadcastChannels:input_type -> loomcycle.v1.BroadcastChannelsRequest
+	50,  // 168: loomcycle.v1.Loomcycle.Run:output_type -> loomcycle.v1.Event
+	50,  // 169: loomcycle.v1.Loomcycle.Continue:output_type -> loomcycle.v1.Event
+	10,  // 170: loomcycle.v1.Loomcycle.SpawnRunBatch:output_type -> loomcycle.v1.BatchSpawnResult
+	28,  // 171: loomcycle.v1.Loomcycle.CompactRun:output_type -> loomcycle.v1.CompactRunResult
+	29,  // 172: loomcycle.v1.Loomcycle.CreateConfiguredRun:output_type -> loomcycle.v1.ConfiguredRun
+	29,  // 173: loomcycle.v1.Loomcycle.UpdateConfiguredRun:output_type -> loomcycle.v1.ConfiguredRun
+	50,  // 174: loomcycle.v1.Loomcycle.StartConfiguredRun:output_type -> loomcycle.v1.Event
+	33,  // 175: loomcycle.v1.Loomcycle.DeleteConfiguredRun:output_type -> loomcycle.v1.DeleteConfiguredRunResponse
+	13,  // 176: loomcycle.v1.Loomcycle.DirectoryUsers:output_type -> loomcycle.v1.DirectoryUsersResponse
+	17,  // 177: loomcycle.v1.Loomcycle.DirectoryInspect:output_type -> loomcycle.v1.DirectoryInspectResponse
+	20,  // 178: loomcycle.v1.Loomcycle.DirectoryTenants:output_type -> loomcycle.v1.DirectoryTenantsResponse
+	24,  // 179: loomcycle.v1.Loomcycle.ErasureReport:output_type -> loomcycle.v1.ErasureReportResponse
+	26,  // 180: loomcycle.v1.Loomcycle.ErasureExecute:output_type -> loomcycle.v1.ErasureExecuteResponse
+	35,  // 181: loomcycle.v1.Loomcycle.ReplaySession:output_type -> loomcycle.v1.ReplaySessionResult
+	39,  // 182: loomcycle.v1.Loomcycle.RunInput:output_type -> loomcycle.v1.RunInputResponse
+	38,  // 183: loomcycle.v1.Loomcycle.RetuneRun:output_type -> loomcycle.v1.RetuneRunResponse
+	41,  // 184: loomcycle.v1.Loomcycle.CancelTurn:output_type -> loomcycle.v1.CancelTurnResponse
+	43,  // 185: loomcycle.v1.Loomcycle.ReviewRun:output_type -> loomcycle.v1.ReviewRunResponse
+	45,  // 186: loomcycle.v1.Loomcycle.ResolveInterrupt:output_type -> loomcycle.v1.ResolveInterruptResponse
+	50,  // 187: loomcycle.v1.Loomcycle.StreamRun:output_type -> loomcycle.v1.Event
+	69,  // 188: loomcycle.v1.Loomcycle.GetTranscript:output_type -> loomcycle.v1.Transcript
+	73,  // 189: loomcycle.v1.Loomcycle.GetAgent:output_type -> loomcycle.v1.Agent
+	73,  // 190: loomcycle.v1.Loomcycle.GetRun:output_type -> loomcycle.v1.Agent
+	76,  // 191: loomcycle.v1.Loomcycle.CancelAgent:output_type -> loomcycle.v1.CancelAgentResponse
+	78,  // 192: loomcycle.v1.Loomcycle.ListUserAgents:output_type -> loomcycle.v1.ListUserAgentsResponse
+	80,  // 193: loomcycle.v1.Loomcycle.ListWalkRuns:output_type -> loomcycle.v1.ListWalkRunsResponse
+	83,  // 194: loomcycle.v1.Loomcycle.UsageReport:output_type -> loomcycle.v1.UsageReportResponse
+	86,  // 195: loomcycle.v1.Loomcycle.TokenLimit:output_type -> loomcycle.v1.TokenLimitResponse
+	138, // 196: loomcycle.v1.Loomcycle.Decide:output_type -> loomcycle.v1.DecideResponse
+	141, // 197: loomcycle.v1.Loomcycle.ListDecisionModels:output_type -> loomcycle.v1.ListDecisionModelsResponse
+	90,  // 198: loomcycle.v1.Loomcycle.Health:output_type -> loomcycle.v1.HealthResponse
+	88,  // 199: loomcycle.v1.Loomcycle.Config:output_type -> loomcycle.v1.ConfigResponse
+	92,  // 200: loomcycle.v1.Loomcycle.PauseRuntime:output_type -> loomcycle.v1.PauseRuntimeResponse
+	94,  // 201: loomcycle.v1.Loomcycle.ResumeRuntime:output_type -> loomcycle.v1.ResumeRuntimeResponse
+	96,  // 202: loomcycle.v1.Loomcycle.GetRuntimeState:output_type -> loomcycle.v1.RuntimeStateResponse
+	98,  // 203: loomcycle.v1.Loomcycle.ResolveProbe:output_type -> loomcycle.v1.ResolverMatrixResponse
+	102, // 204: loomcycle.v1.Loomcycle.CreateSnapshot:output_type -> loomcycle.v1.SnapshotDescriptor
+	104, // 205: loomcycle.v1.Loomcycle.ListSnapshots:output_type -> loomcycle.v1.ListSnapshotsResponse
+	106, // 206: loomcycle.v1.Loomcycle.GetSnapshot:output_type -> loomcycle.v1.SnapshotEnvelope
+	108, // 207: loomcycle.v1.Loomcycle.ExportSnapshot:output_type -> loomcycle.v1.ExportSnapshotResponse
+	110, // 208: loomcycle.v1.Loomcycle.RestoreSnapshot:output_type -> loomcycle.v1.RestoreSnapshotResponse
+	112, // 209: loomcycle.v1.Loomcycle.DeleteSnapshot:output_type -> loomcycle.v1.DeleteSnapshotResponse
+	114, // 210: loomcycle.v1.Loomcycle.AgentDef:output_type -> loomcycle.v1.SubstrateResponse
+	114, // 211: loomcycle.v1.Loomcycle.SkillDef:output_type -> loomcycle.v1.SubstrateResponse
+	114, // 212: loomcycle.v1.Loomcycle.MCPServerDef:output_type -> loomcycle.v1.SubstrateResponse
+	114, // 213: loomcycle.v1.Loomcycle.ScheduleDef:output_type -> loomcycle.v1.SubstrateResponse
+	114, // 214: loomcycle.v1.Loomcycle.A2AServerCardDef:output_type -> loomcycle.v1.SubstrateResponse
+	114, // 215: loomcycle.v1.Loomcycle.A2AAgentDef:output_type -> loomcycle.v1.SubstrateResponse
+	114, // 216: loomcycle.v1.Loomcycle.WebhookDef:output_type -> loomcycle.v1.SubstrateResponse
+	114, // 217: loomcycle.v1.Loomcycle.MemoryBackendDef:output_type -> loomcycle.v1.SubstrateResponse
+	114, // 218: loomcycle.v1.Loomcycle.DocumentSourceDef:output_type -> loomcycle.v1.SubstrateResponse
+	114, // 219: loomcycle.v1.Loomcycle.OperatorTokenDef:output_type -> loomcycle.v1.SubstrateResponse
+	114, // 220: loomcycle.v1.Loomcycle.VolumeDef:output_type -> loomcycle.v1.SubstrateResponse
+	114, // 221: loomcycle.v1.Loomcycle.TeamDef:output_type -> loomcycle.v1.SubstrateResponse
+	114, // 222: loomcycle.v1.Loomcycle.HookDef:output_type -> loomcycle.v1.SubstrateResponse
+	114, // 223: loomcycle.v1.Loomcycle.Path:output_type -> loomcycle.v1.SubstrateResponse
+	114, // 224: loomcycle.v1.Loomcycle.Document:output_type -> loomcycle.v1.SubstrateResponse
+	114, // 225: loomcycle.v1.Loomcycle.CredentialDef:output_type -> loomcycle.v1.SubstrateResponse
+	114, // 226: loomcycle.v1.Loomcycle.History:output_type -> loomcycle.v1.SubstrateResponse
+	114, // 227: loomcycle.v1.Loomcycle.Memory:output_type -> loomcycle.v1.SubstrateResponse
+	116, // 228: loomcycle.v1.Loomcycle.ListChannels:output_type -> loomcycle.v1.ListChannelsResponse
+	119, // 229: loomcycle.v1.Loomcycle.StreamUserRunStates:output_type -> loomcycle.v1.RunStateEvent
+	122, // 230: loomcycle.v1.Loomcycle.PublishChannel:output_type -> loomcycle.v1.PublishChannelResponse
+	124, // 231: loomcycle.v1.Loomcycle.SubscribeChannel:output_type -> loomcycle.v1.SubscribeChannelResponse
+	127, // 232: loomcycle.v1.Loomcycle.PeekChannel:output_type -> loomcycle.v1.PeekChannelResponse
+	129, // 233: loomcycle.v1.Loomcycle.AckChannel:output_type -> loomcycle.v1.AckChannelResponse
+	132, // 234: loomcycle.v1.Loomcycle.AwaitChannels:output_type -> loomcycle.v1.AwaitChannelsResponse
+	135, // 235: loomcycle.v1.Loomcycle.BroadcastChannels:output_type -> loomcycle.v1.BroadcastChannelsResponse
+	168, // [168:236] is the sub-list for method output_type
+	100, // [100:168] is the sub-list for method input_type
+	100, // [100:100] is the sub-list for extension type_name
+	100, // [100:100] is the sub-list for extension extendee
+	0,   // [0:100] is the sub-list for field type_name
 }
 
 func init() { file_loomcycle_proto_init() }
@@ -12147,7 +12698,7 @@ func file_loomcycle_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_loomcycle_proto_rawDesc), len(file_loomcycle_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   147,
+			NumMessages:   157,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

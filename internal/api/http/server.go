@@ -3885,6 +3885,9 @@ func (s *Server) Mux() http.Handler {
 	// POST is the JSON-RPC frame transport; DELETE terminates a
 	// session by Mcp-Session-Id. Returns 503 when no HTTP MCP
 	// handler is wired (operator didn't construct one in main.go).
+	// A decision model asked with no run behind it, and the models it may name.
+	mux.Handle("POST /v1/_decide", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleDecide))))
+	mux.Handle("GET /v1/_decide/models", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleDecideModels))))
 	mux.Handle("POST /v1/_mcp", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleMCPHTTP))))
 	mux.Handle("DELETE /v1/_mcp", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleMCPHTTP))))
 	// v0.8.0 Memory admin — read-only browsing of stored Memory rows.

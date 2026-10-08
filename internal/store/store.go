@@ -678,6 +678,9 @@ type Usage struct {
 // no secrets — token counts, provider/model, the owning credential scope id
 // (already non-secret, like user_id), and the computed/provider-reported cost.
 type TokenUsageRow struct {
+	// RunID, SessionID, AgentID and ParentRunID are all empty for a call made
+	// outside any run (a decision asked over the API): the row is charged to
+	// TenantID and UserID alone. Every reader must handle that row.
 	RunID       string
 	SessionID   string
 	TenantID    string
@@ -1601,7 +1604,9 @@ type Store interface {
 	RecordCallUsage(ctx context.Context, row TokenUsageRow) error
 
 	// TokenUsageForRun returns all per-call usage rows for a run, oldest first.
-	// Used by the rollup invariant test + (later) the archiver.
+	// Used by the rollup invariant test + (later) the archiver. An empty runID
+	// returns the rows that name no run: model calls made outside one (a
+	// decision asked over the API), charged to a tenant and user directly.
 	TokenUsageForRun(ctx context.Context, runID string) ([]TokenUsageRow, error)
 
 	// RecentCallTimings returns the latest TIMED per-call rows (duration_ms set)
@@ -1618,7 +1623,9 @@ type Store interface {
 	// a mid-run fallback (where pricing the final model × cumulative tokens differs
 	// from summing each call at its own model). An unpriced run (no priced rows) yields
 	// currency="" so the caller stores a NULL cost, preserving the NULL-vs-zero
-	// distinction (a genuine zero — mock/code-js — carries a currency).
+	// distinction (a genuine zero — mock/code-js — carries a currency). An empty
+	// runID names no run and sums nothing: it must not collect the calls made
+	// outside any run, which share the empty run_id.
 	RunCostSummary(ctx context.Context, runID string) (cost float64, currency string, priced bool, err error)
 
 	// UsageReport aggregates the token_usage ledger for a report (RFC AV Phase 2):

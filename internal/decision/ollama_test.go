@@ -402,32 +402,50 @@ func TestOllama_ARestrictedRunCannotSpendTheOperatorsKey(t *testing.T) {
 	})
 }
 
-// TestOllama_TimesOut — a call that outlives the timeout, and one that spends it
-// waiting for a slot, are both a timeout and both context.DeadlineExceeded.
+// TestOllama_TimesOut — a call that outlives the driver's timeout, and one whose
+// time runs out while it waits for a slot, are both a timeout and both
+// context.DeadlineExceeded; the one that never got a slot never calls.
+//
+// The waiting call gets its deadline from its caller, shorter than the driver's
+// timeout. Two calls on the driver's timeout alone cannot show this: the first
+// frees the slot when its own time is up, which is always before the second's,
+// so the second gets the slot with whatever it has left and calls.
 func TestOllama_TimesOut(t *testing.T) {
 	release := make(chan struct{})
 	s, url := serve(t, func(w http.ResponseWriter) { <-release })
 	// Registered after serve's own cleanup, so it runs first: the server's Close
 	// waits for the handler this releases.
 	t.Cleanup(func() { close(release) })
-	d := newDriver(t, Options{BaseURL: url, Timeout: 80 * time.Millisecond, MaxConcurrent: 1})
+	d := newDriver(t, Options{BaseURL: url, Timeout: 400 * time.Millisecond, MaxConcurrent: 1})
 	req := Request{Model: "nimble", Questions: questionsOf(1)}
-	errs := make(chan error, 2)
-	for i := 0; i < 2; i++ {
-		go func() {
-			_, err := d.Decide(context.Background(), req)
-			errs <- err
-		}()
-	}
-	for i := 0; i < 2; i++ {
-		err := <-errs
-		if CodeOf(err) != CodeTimeout || !errors.Is(err, context.DeadlineExceeded) {
-			t.Errorf("err = %v, want a timeout wrapping context.DeadlineExceeded", err)
+
+	holder := make(chan error, 1)
+	go func() {
+		_, err := d.Decide(context.Background(), req)
+		holder <- err
+	}()
+	// The holder has the only slot once the endpoint has its call.
+	deadline := time.Now().Add(5 * time.Second)
+	for s.calls() == 0 {
+		if time.Now().After(deadline) {
+			t.Fatal("the first call never reached the endpoint")
 		}
+		time.Sleep(time.Millisecond)
 	}
-	// One held the only slot for its whole timeout, so the other never called.
+
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+	_, err := d.Decide(ctx, req)
+	if CodeOf(err) != CodeTimeout || !errors.Is(err, context.DeadlineExceeded) {
+		t.Errorf("the waiting call: err = %v, want a timeout wrapping context.DeadlineExceeded", err)
+	}
+	// Counted while the holder still has the slot: its own time is not up yet.
 	if n := s.calls(); n != 1 {
-		t.Errorf("the endpoint saw %d calls, want 1: the second waited for the slot and timed out", n)
+		t.Errorf("the endpoint saw %d calls, want 1: the second ran out of time waiting for the slot", n)
+	}
+
+	if err := <-holder; CodeOf(err) != CodeTimeout || !errors.Is(err, context.DeadlineExceeded) {
+		t.Errorf("the holding call: err = %v, want a timeout wrapping context.DeadlineExceeded", err)
 	}
 }
 

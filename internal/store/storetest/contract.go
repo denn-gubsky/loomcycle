@@ -35,6 +35,7 @@ import (
 	"time"
 
 	"github.com/denn-gubsky/loomcycle/internal/channels"
+	"github.com/denn-gubsky/loomcycle/internal/limits"
 	"github.com/denn-gubsky/loomcycle/internal/store"
 )
 
@@ -536,6 +537,7 @@ func Run(t *testing.T, factory Factory) {
 		{"UsageReportPerCurrency", testUsageReportPerCurrency},
 		{"UsageRollupAndPrune", testUsageRollupAndPrune},
 		{"UsageReportArchiveWindowBoundary", testUsageReportArchiveWindowBoundary},
+		{"UsageRowsWithNoRun", testUsageRowsWithNoRun},
 		// RFC AW — per-scope token budgets: upsert / get-all / delete round-trip
 		// incl. nullable tiers.
 		{"TokenLimits", testTokenLimits},
@@ -1266,6 +1268,186 @@ func testUsageRollupAndPrune(t *testing.T, s store.Store) {
 	if len(rep2) != 1 || rep2[0].InputTokens != 350 {
 		t.Errorf("report after idempotent re-run = %+v, want unchanged 350", rep2)
 	}
+}
+
+// testUsageRowsWithNoRun holds every reader of the usage ledger to a row that
+// names no run: a model call made outside one (a decision asked over the API),
+// charged to a tenant and user with an empty run, session and agent. Each
+// reader must count such a row exactly once under its tenant and user, never
+// attach it to a run, and treat it like any other row when rolling up, pruning
+// and seeding a budget.
+func testUsageRowsWithNoRun(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	sess, err := s.CreateSession(ctx, "acme", "router", "alice")
+	if err != nil {
+		t.Fatal(err)
+	}
+	run, err := s.CreateRun(ctx, sess.ID, store.RunIdentity{AgentID: "a_norun", UserID: "alice", TenantID: "acme"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC().Truncate(time.Millisecond)
+	old := now.Add(-10 * 24 * time.Hour)
+	rows := []store.TokenUsageRow{
+		// A decision asked outside a run by acme/alice, priced and timed.
+		{TenantID: "acme", UserID: "alice", Provider: "ollama", Model: "nimble", CredentialSource: "operator",
+			InputTokens: 1116, OutputTokens: 4, Cost: 0.25, CostCurrency: "USD", TS: now, DurationMs: 900},
+		// The same, by a caller with no user (no authentication), on a tenant's own key, unpriced.
+		{TenantID: "acme", Provider: "ollama", Model: "nimble", CredentialSource: "tenant", InputTokens: 10, OutputTokens: 1, TS: now},
+		// Another tenant's.
+		{TenantID: "globex", UserID: "bob", Provider: "ollama", Model: "nimble", CredentialSource: "operator", InputTokens: 7, TS: now},
+		// An old one, for the rollup.
+		{TenantID: "acme", UserID: "alice", Provider: "ollama", Model: "nimble", CredentialSource: "operator",
+			InputTokens: 50, Cost: 0.5, CostCurrency: "USD", TS: old},
+		// A call inside a run, by the same user.
+		{RunID: run.ID, SessionID: sess.ID, TenantID: "acme", UserID: "alice", AgentID: "a_norun", Provider: "anthropic", Model: "m",
+			CredentialSource: "operator", InputTokens: 100, Cost: 1, CostCurrency: "USD", TS: now},
+	}
+	for _, r := range rows {
+		if err := s.RecordCallUsage(ctx, r); err != nil {
+			t.Fatalf("RecordCallUsage(%+v): %v", r, err)
+		}
+	}
+
+	// The run's own rows: only the call made inside it.
+	inRun, err := s.TokenUsageForRun(ctx, run.ID)
+	if err != nil || len(inRun) != 1 || inRun[0].InputTokens != 100 {
+		t.Errorf("the run's rows = %+v, %v; want only its own call", inRun, err)
+	}
+	// The rows with no run read back with every id empty.
+	noRun, err := s.TokenUsageForRun(ctx, "")
+	if err != nil || len(noRun) != 4 {
+		t.Fatalf("rows with no run = %d, %v; want 4: %+v", len(noRun), err, noRun)
+	}
+	var noUser int
+	for _, r := range noRun {
+		if r.RunID != "" || r.SessionID != "" || r.AgentID != "" || r.ParentRunID != "" {
+			t.Errorf("a row with no run reads back naming one: %+v", r)
+		}
+		if r.UserID == "" {
+			noUser++
+		}
+	}
+	if noUser != 1 {
+		t.Errorf("%d rows read back with no user, want the 1 written without one", noUser)
+	}
+
+	// A run's cost is its own calls'. An empty id names no run, so it must not
+	// sum every call made outside one.
+	if cost, cur, priced, err := s.RunCostSummary(ctx, run.ID); err != nil || cost != 1 || cur != "USD" || !priced {
+		t.Errorf("the run's cost = (%v, %q, %v), %v; want (1, USD, true)", cost, cur, priced, err)
+	}
+	if cost, cur, priced, err := s.RunCostSummary(ctx, ""); err != nil || cost != 0 || cur != "" || priced {
+		t.Errorf("the cost of no run = (%v, %q, %v), %v; want (0, \"\", false)", cost, cur, priced, err)
+	}
+
+	// The report, by every dimension: each row counted once under its own
+	// tenant and user.
+	type key struct{ tenant, user, provider, model, source string }
+	report := func(q store.UsageQuery) map[key]store.UsageAggregate {
+		t.Helper()
+		aggs, err := s.UsageReport(ctx, q)
+		if err != nil {
+			t.Fatalf("UsageReport(%+v): %v", q, err)
+		}
+		out := map[key]store.UsageAggregate{}
+		for _, a := range aggs {
+			k := key{a.TenantID, a.UserID, a.Provider, a.Model, a.CredentialSource}
+			prev := out[k] // a group is split per currency; fold it back
+			a.InputTokens += prev.InputTokens
+			a.CallCount += prev.CallCount
+			a.UnpricedCalls += prev.UnpricedCalls
+			a.Cost += prev.Cost
+			out[k] = a
+		}
+		return out
+	}
+	checkReport := func(when string) {
+		t.Helper()
+		byTenant := report(store.UsageQuery{GroupBy: []store.UsageDimension{store.UsageByTenant}})
+		if a := byTenant[key{tenant: "acme"}]; a.InputTokens != 1116+10+50+100 || a.CallCount != 4 {
+			t.Errorf("%s: acme = %d input tokens over %d calls, want 1276 over 4", when, a.InputTokens, a.CallCount)
+		}
+		if a := byTenant[key{tenant: "globex"}]; a.InputTokens != 7 || a.CallCount != 1 {
+			t.Errorf("%s: globex = %d input tokens over %d calls, want 7 over 1", when, a.InputTokens, a.CallCount)
+		}
+		byUser := report(store.UsageQuery{TenantID: "acme", GroupBy: []store.UsageDimension{store.UsageByUser}})
+		if a := byUser[key{user: "alice"}]; a.InputTokens != 1116+50+100 || a.CallCount != 3 {
+			t.Errorf("%s: acme/alice = %d input tokens over %d calls, want 1266 over 3", when, a.InputTokens, a.CallCount)
+		}
+		if a := byUser[key{}]; a.InputTokens != 10 || a.CallCount != 1 || a.UnpricedCalls != 1 {
+			t.Errorf("%s: acme with no user = %+v, want the one unpriced 10-token call", when, a)
+		}
+		if len(byUser) != 2 {
+			t.Errorf("%s: acme's report by user has %d groups, want 2 (another tenant's rows leaked in?): %+v", when, len(byUser), byUser)
+		}
+		all := report(store.UsageQuery{GroupBy: []store.UsageDimension{
+			store.UsageByTenant, store.UsageByUser, store.UsageByProvider, store.UsageByModel, store.UsageBySource}})
+		if a := all[key{"acme", "alice", "ollama", "nimble", "operator"}]; a.InputTokens != 1116+50 || a.CallCount != 2 || a.Cost != 0.75 {
+			t.Errorf("%s: acme/alice/ollama/nimble/operator = %d tokens, %d calls, cost %v; want 1166, 2, 0.75", when, a.InputTokens, a.CallCount, a.Cost)
+		}
+		if a := all[key{"acme", "", "ollama", "nimble", "tenant"}]; a.InputTokens != 10 || a.CallCount != 1 {
+			t.Errorf("%s: the tenant-paid call = %+v, want 10 tokens over 1 call", when, a)
+		}
+		bySource := report(store.UsageQuery{GroupBy: []store.UsageDimension{store.UsageBySource}})
+		if a := bySource[key{source: "tenant"}]; a.InputTokens != 10 {
+			t.Errorf("%s: tenant-paid input tokens = %d, want 10", when, a.InputTokens)
+		}
+		if a := bySource[key{source: "operator"}]; a.InputTokens != 1116+7+50+100 {
+			t.Errorf("%s: operator-paid input tokens = %d, want 1273", when, a.InputTokens)
+		}
+	}
+	checkReport("before the rollup")
+
+	// What seeds a budget counter at boot, and what a snapshot carries as
+	// month-to-date: the same totals per (tenant, user).
+	mtd, err := limits.MonthToDate(ctx, s, old.Add(-24*time.Hour))
+	if err != nil {
+		t.Fatalf("MonthToDate: %v", err)
+	}
+	for k, want := range map[limits.UsageKey]int64{
+		{TenantID: "acme", UserID: "alice"}: 1116 + 4 + 50 + 100,
+		{TenantID: "acme"}:                  11,
+		{TenantID: "globex", UserID: "bob"}: 7,
+	} {
+		if mtd[k] != want {
+			t.Errorf("month-to-date for %+v = %d, want %d", k, mtd[k], want)
+		}
+	}
+
+	// The boot seed of the throughput estimate reads timed rows whatever run
+	// they name.
+	timed, err := s.RecentCallTimings(ctx, now.Add(-time.Minute), 10)
+	if err != nil {
+		t.Fatalf("RecentCallTimings: %v", err)
+	}
+	var seen bool
+	for _, r := range timed {
+		if r.RunID == "" && r.Provider == "ollama" && r.Model == "nimble" && r.DurationMs == 900 && r.InputTokens == 1116 {
+			seen = true
+		}
+	}
+	if !seen {
+		t.Errorf("the timed call with no run is missing from the recent timings: %+v", timed)
+	}
+
+	// The rollup folds the old row into the archive and prunes it; the report
+	// still counts it, once.
+	pruned, err := s.RollupAndPruneUsage(ctx, now.Add(-5*24*time.Hour))
+	if err != nil || pruned != 1 {
+		t.Fatalf("RollupAndPruneUsage = %d, %v; want the 1 old row", pruned, err)
+	}
+	if left, _ := s.TokenUsageForRun(ctx, ""); len(left) != 3 {
+		t.Errorf("rows with no run after the prune = %d, want 3", len(left))
+	}
+	checkReport("after the rollup")
+
+	// Deleting the run's session takes no ledger row with it, and certainly not
+	// the rows that name no session.
+	if err := s.DeleteSessionCascade(ctx, sess.ID); err != nil {
+		t.Fatalf("DeleteSessionCascade: %v", err)
+	}
+	checkReport("after the session is deleted")
 }
 
 // testUsageReportArchiveWindowBoundary is the fix-3 regression: an intra-day

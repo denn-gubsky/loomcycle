@@ -254,6 +254,21 @@ type Connector interface {
 	// through this single Connector method.
 	History(ctx context.Context, input json.RawMessage) (ToolResult, error)
 
+	// Decision — ask one of the operator's decision models typed questions
+	// (choice / noul / score) about a piece of state, from OUTSIDE a run. One
+	// operation, no op field; input and output are the in-run `Decision`
+	// tool's. It is the one path for a decision with no run behind it: the
+	// caller is the principal on ctx, which decides whether the operator's
+	// provider key may be spent, whose budget is checked before the call and
+	// who the tokens are charged to after it. A caller at a hard budget gets a
+	// *TokenLimitError and no call. Reachable via POST /v1/_decide, the gRPC
+	// Decide RPC and the LoomCycle MCP meta-tool `decision`.
+	Decision(ctx context.Context, input json.RawMessage) (ToolResult, error)
+
+	// DecisionModels lists the decision models and the default. ok is false on
+	// a deployment that declares none.
+	DecisionModels(ctx context.Context) (list DecisionModelList, ok bool)
+
 	// MCPServerDef — v0.9.x dynamic MCP server registration substrate.
 	// Op-discriminated (create / fork / get / list / promote / retire
 	// / rediscover / verify). Operator-admin-only: NOT auto-attached

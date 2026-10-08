@@ -29,12 +29,13 @@ import (
 // tool. A tool built with no Service still answers (decision_not_configured)
 // rather than panicking.
 //
-// ⚠️ It is reachable ONLY from inside a run. A run's context carries what a
-// call must be held to: whether the run may spend the operator's provider key
-// (a fail-open bit that only a run-start site stamps) and the run its tokens
-// are charged to. A surface that dispatched this tool without a run would hand
-// a restricted tenant the operator's key and bill nobody, so none exists until
-// one derives that bit from the caller's principal and meters the call.
+// ⚠️ A call needs a run, or a context the server prepared for a call without
+// one. A run's context carries what a call must be held to: whether it may
+// spend the operator's provider key (a fail-open bit that only a run-start
+// site stamps) and the run its tokens are charged to. The server's run-less
+// path (tools.WithMeteredOffRunCall) stamps the same bit from the caller's
+// principal and names who is charged instead. Any other dispatch would hand a
+// restricted tenant the operator's key and bill nobody, so it is refused.
 type Decision struct {
 	// Service is the operator's decision models. Its usage callback books each
 	// call's tokens against the run on the call's context.
@@ -49,8 +50,9 @@ const (
 	// decisionInvalidInput: the arguments are not the documented shape at all
 	// (not JSON, or no state object), as distinct from one bad question.
 	decisionInvalidInput = "invalid_input"
-	// decisionNoRun: the call's context carries no run. A model inside a run
-	// never sees it; it is what a surface that dispatched the tool directly gets.
+	// decisionNoRun: the call's context carries no run and was not prepared by
+	// the server's run-less path. A model inside a run never sees it; it is what
+	// a surface that dispatched the tool directly gets.
 	decisionNoRun = "no_run"
 	// decisionKeyRestricted: the run may not spend the operator's provider key
 	// and has none of its own. The same code the HTTP surface uses for the same
@@ -58,6 +60,30 @@ const (
 	// can fix it.
 	decisionKeyRestricted = "operator_key_restricted"
 )
+
+// The tool's own codes, for a transport that maps a failed result onto its
+// status. The driver's are decision.Code*.
+const (
+	DecisionCodeNotConfigured = decisionNotConfigured
+	DecisionCodeInvalidInput  = decisionInvalidInput
+	DecisionCodeNoRun         = decisionNoRun
+	DecisionCodeKeyRestricted = decisionKeyRestricted
+)
+
+// DecisionFailureCode is the code a failed Decision result's text starts with
+// ("Decision: <code>: …"), or "" when the text is not the tool's own: a refusal
+// the dispatcher made before the tool ran (an unknown argument).
+func DecisionFailureCode(text string) string {
+	rest, ok := strings.CutPrefix(text, "Decision: ")
+	if !ok {
+		return ""
+	}
+	code, _, ok := strings.Cut(rest, ": ")
+	if !ok {
+		return ""
+	}
+	return code
+}
 
 func (d *Decision) Name() string { return "Decision" }
 
@@ -151,11 +177,12 @@ func (d *Decision) Execute(ctx context.Context, raw json.RawMessage) (tools.Resu
 		return decisionFailure(&decision.Error{Code: decisionNotConfigured,
 			Message: "this deployment declares no decision models"}, nil), nil
 	}
-	// Fail closed on a call with no run (see the type's comment): refused here,
-	// before a key is resolved, whatever surface dispatched it.
-	if tools.RunID(ctx) == "" {
+	// Fail closed on a call with neither a run nor the server's run-less
+	// preparation (see the type's comment): refused here, before a key is
+	// resolved, whatever surface dispatched it.
+	if _, metered := tools.MeteredOffRunCall(ctx); !metered && tools.RunID(ctx) == "" {
 		return decisionFailure(&decision.Error{Code: decisionNoRun,
-			Message: "a decision model is asked only from inside a run"}, nil), nil
+			Message: "a decision model is asked from inside a run, or through the decision API"}, nil), nil
 	}
 	in, state, err := parseDecisionInput(raw)
 	if err != nil {
