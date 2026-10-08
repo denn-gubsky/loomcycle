@@ -36,6 +36,7 @@ from typing import (
 
 import grpc
 import grpc.aio
+from google.protobuf import any_pb2
 
 from ._generated import loomcycle_pb2 as pb
 from ._generated import loomcycle_pb2_grpc as pb_grpc
@@ -368,6 +369,109 @@ class LoomcycleClient:
             )
         except grpc.aio.AioRpcError as e:
             _raise_from_grpc(e)
+
+    # ---- Decision models (Decide / ListDecisionModels RPCs) ----
+
+    async def decide(
+        self,
+        state: Mapping[str, Any],
+        questions: Mapping[str, Mapping[str, Any]],
+        *,
+        model: str = "",
+    ) -> Mapping[str, Any]:
+        """Ask a decision model typed questions about ``state`` and get each
+        answer with its probabilities. A decision model does not write: there is
+        no reply to parse and the call costs a few output tokens. No run is
+        involved; the tokens are charged to the caller and count against its
+        token budget.
+
+        ``state`` is any JSON-serializable dict: what the questions are about.
+        ``questions`` maps names you choose to
+        ``{"type", "instructions", "criteria"}``; each answer comes back under
+        its question's name. ``criteria`` depends on ``type``:
+
+        * ``"choice"`` (required) — a dict: each key is an option, its value
+          describes it, or is ``None`` when the key explains itself.
+        * ``"noul"`` (optional) — a dict describing ``"true"`` and/or
+          ``"false"``. Leave ``criteria`` out when the question is enough.
+        * ``"score"`` (required) — a list of level descriptions, lowest first.
+
+        ``model`` names which decision model answers (see
+        :meth:`list_decision_models`); empty asks the default.
+
+        Returns ``{"model", "provider", "served_model", "answers", "usage"}``.
+        Each answer is the model's own, decoded to a dict and otherwise
+        untouched: a choice is ``{type, choice, probabilities, confidence}``, a
+        noul ``{type, noul}`` (the probability of yes — ``0`` is a definite no,
+        not a missing answer), a score ``{type, score, legend, probabilities,
+        confidence}``. ``usage`` is ``{input_tokens, output_tokens}``.
+
+        A refusal raises with the decision's code on ``.reason``:
+        ``invalid_input`` / ``bad_question`` / ``bad_options`` /
+        ``too_many_questions`` / ``model_not_allowed`` / ``prompt_too_large``
+        (:class:`InvalidArgumentError`), ``operator_key_restricted``,
+        ``token_limit_exceeded`` (:class:`BackpressureError`),
+        ``model_not_found`` / ``decision_not_configured``, ``timeout``,
+        ``call_failed`` (:class:`UnavailableError`). A ``state`` or ``criteria``
+        that is not JSON-serializable raises :class:`InvalidArgumentError`
+        before any call."""
+        req = pb.DecideRequest(model=model, state_json=_decision_json("state", state))
+        for name, q in questions.items():
+            entry = req.questions[name]
+            entry.type = q.get("type", "")
+            entry.instructions = q.get("instructions", "")
+            # No criteria is sent as none: an encoded `null` would be a
+            # criteria of the wrong shape.
+            if q.get("criteria") is not None:
+                entry.criteria_json = _decision_json(
+                    "question %r: criteria" % name, q["criteria"]
+                )
+        try:
+            resp = await self._stub.Decide(req, metadata=self._auth_metadata())
+        except grpc.aio.AioRpcError as e:
+            _raise_from_grpc(e)
+        return {
+            "model": resp.model,
+            "provider": resp.provider,
+            "served_model": resp.served_model,
+            # json.loads keeps each number as the model wrote it: an integer 0
+            # stays the int 0.
+            "answers": {name: json.loads(raw) for name, raw in resp.answers.items()},
+            "usage": {
+                "input_tokens": resp.usage.input_tokens,
+                "output_tokens": resp.usage.output_tokens,
+            },
+        }
+
+    async def list_decision_models(self) -> Mapping[str, Any]:
+        """The decision models a :meth:`decide` call may name, and the default.
+        Returns ``{"default": str, "models": [{"name", "provider", "model",
+        "limits": {"max_questions", "min_options", "max_options"}}, ...]}``;
+        ``min_options`` / ``max_options`` bound a choice's options and a
+        score's levels. Raises with ``.reason == "decision_not_configured"``
+        on a deployment that declares none."""
+        try:
+            resp = await self._stub.ListDecisionModels(
+                pb.ListDecisionModelsRequest(), metadata=self._auth_metadata()
+            )
+        except grpc.aio.AioRpcError as e:
+            _raise_from_grpc(e)
+        return {
+            "default": resp.default_model,
+            "models": [
+                {
+                    "name": m.name,
+                    "provider": m.provider,
+                    "model": m.model,
+                    "limits": {
+                        "max_questions": m.limits.max_questions,
+                        "min_options": m.limits.min_options,
+                        "max_options": m.limits.max_options,
+                    },
+                }
+                for m in resp.models
+            ],
+        }
 
     async def get_transcript(self, session_id: str) -> Sequence[Mapping[str, Any]]:
         """Read the full event log for a session. Each entry is a
@@ -2044,6 +2148,16 @@ def _segments_to_proto(segments: Iterable[PromptSegment]) -> List[pb.PromptSegme
     return out
 
 
+def _decision_json(what: str, value: Any) -> bytes:
+    """Encode one free-form part of a Decide request as the JSON bytes the wire
+    carries. allow_nan=False because NaN and Infinity are not JSON: the server
+    would refuse the bytes, less clearly."""
+    try:
+        return json.dumps(value, allow_nan=False).encode("utf-8")
+    except (TypeError, ValueError) as e:
+        raise InvalidArgumentError("decide: %s is not JSON-serializable: %s" % (what, e)) from e
+
+
 def _token_limit_entry(e: "pb.TokenLimitEntry") -> Mapping[str, Any]:
     """Convert a proto TokenLimitEntry → public dict (RFC AW). soft_limit /
     hard_limit are ``None`` when that tier is unset (no ceiling on the axis) so
@@ -2566,6 +2680,96 @@ def _ts_to_iso(ts) -> str:
 
 
 def _raise_from_grpc(err: grpc.aio.AioRpcError) -> "None":
+    """Translate a gRPC error into one of our typed exceptions, with the
+    server's reason for it on ``.reason`` (see ``_error_reason``). Always
+    raises."""
+    try:
+        _raise_typed_from_grpc(err)
+    except LoomcycleError as e:
+        e.reason = _error_reason(err)
+        raise
+
+
+_STATUS_DETAILS_KEY = "grpc-status-details-bin"
+_ERROR_INFO_TYPE_URL = "type.googleapis.com/google.rpc.ErrorInfo"
+
+
+def _error_reason(err: Any) -> Optional[str]:
+    """The ``reason`` of the ``google.rpc.ErrorInfo`` a failed call carries in
+    its status details, or ``None`` when it carries none.
+
+    The details ride the ``grpc-status-details-bin`` trailer as a serialized
+    ``google.rpc.Status``. Its two messages are read off the wire here because
+    their generated classes ship in ``googleapis-common-protos``, which this
+    package does not depend on, and three fields do not justify adding it:
+
+        Status    { repeated google.protobuf.Any details = 3; }
+        ErrorInfo { string reason = 1; }
+
+    A trailer that does not parse yields ``None``: decorating an error must
+    never replace it with a different one.
+    """
+    trailers = getattr(err, "trailing_metadata", None)
+    if trailers is None:
+        return None
+    try:
+        for key, value in trailers() or ():
+            if key != _STATUS_DETAILS_KEY or not isinstance(value, bytes):
+                continue
+            for number, detail in _length_delimited_fields(value):
+                if number != 3:
+                    continue
+                packed = any_pb2.Any.FromString(detail)
+                if packed.type_url != _ERROR_INFO_TYPE_URL:
+                    continue
+                for field, raw in _length_delimited_fields(packed.value):
+                    if field == 1 and raw:
+                        return raw.decode("utf-8")
+    except Exception:  # noqa: BLE001 - see the docstring: never mask the error
+        return None
+    return None
+
+
+def _length_delimited_fields(buf: bytes) -> Iterable[Tuple[int, bytes]]:
+    """Yield ``(field_number, payload)`` for each length-delimited field of a
+    serialized protobuf message, skipping the other wire types. Raises
+    ``ValueError`` on a truncated or malformed message."""
+
+    def varint(pos: int) -> Tuple[int, int]:
+        value = shift = 0
+        while True:
+            if pos >= len(buf) or shift > 63:
+                raise ValueError("malformed varint")
+            byte = buf[pos]
+            pos += 1
+            value |= (byte & 0x7F) << shift
+            if not byte & 0x80:
+                return value, pos
+            shift += 7
+
+    pos = 0
+    while pos < len(buf):
+        tag, pos = varint(pos)
+        number, wire_type = tag >> 3, tag & 0x7
+        if wire_type == 0:  # varint
+            _, pos = varint(pos)
+        elif wire_type == 1:  # 64-bit
+            pos += 8
+        elif wire_type == 5:  # 32-bit
+            pos += 4
+        elif wire_type == 2:  # length-delimited
+            size, pos = varint(pos)
+            if pos + size > len(buf):
+                raise ValueError("truncated field")
+            yield number, buf[pos : pos + size]
+            pos += size
+        else:
+            raise ValueError("unsupported wire type %d" % wire_type)
+    if pos != len(buf):
+        raise ValueError("truncated message")
+
+
+def _raise_typed_from_grpc(err: grpc.aio.AioRpcError) -> "None":
     """Translate a gRPC error into one of our typed exceptions.
     Mirrors the inverse of internal/api/grpc/server.go's
     ``mapRunnerErr`` plus the direct ``codes.NotFound`` emissions

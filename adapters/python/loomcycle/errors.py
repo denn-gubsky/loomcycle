@@ -16,6 +16,8 @@ internal/api/grpc/server.go's ``mapRunnerErr``:
 
 The ``code`` and ``message`` attributes preserve the gRPC payload
 for log correlation when the typed class doesn't carry enough.
+The ``reason`` attribute names the condition when the server said which
+one it is (see ``LoomcycleError``).
 """
 
 from __future__ import annotations
@@ -31,6 +33,13 @@ class LoomcycleError(Exception):
         # ``code`` is a ``grpc.StatusCode`` when this came from the
         # gRPC layer; ``None`` for client-side validation errors.
         self.code = code
+        # ``reason`` is the server's machine-readable name for the condition
+        # (``token_limit_exceeded``, ``model_not_allowed``, …): the reason of
+        # the ``google.rpc.ErrorInfo`` in the status details, and the same
+        # string the HTTP surface puts in an error body's ``code``. One gRPC
+        # code covers several conditions, so branch on this, not on the
+        # message. ``None`` when the server attached none.
+        self.reason: Optional[str] = None
 
 
 class AgentNotFoundError(LoomcycleError):
