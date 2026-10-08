@@ -247,6 +247,10 @@ type Config struct {
 	// embedder_not_configured. K/V Memory is unaffected.
 	Memory MemoryConfig `yaml:"memory"`
 
+	// Decision lists the decision models this deployment may ask (see
+	// DecisionConfig). Unset, there are none.
+	Decision DecisionConfig `yaml:"decision"`
+
 	// Pricing is the operator-owned per-(provider, model) price table used to
 	// compute run + per-call cost (RFC AV). Non-secret; empty ⇒ costs are left
 	// unpriced (token counts still recorded). A provider-reported cost, when a
@@ -838,6 +842,61 @@ type ModelRef struct {
 	// provider's listed catalog; the resolver picks the newest match (RFC BG).
 	// Mutually exclusive with Model and requires an explicit Provider.
 	ModelPattern string `yaml:"model_pattern"`
+
+	// Kind says what the model is FOR: "chat" (the default; "" is the same),
+	// "decision" or "embedder". The three are served by different endpoints, so
+	// an alias used where another kind is needed fails at the first call with
+	// whatever the provider says about it; tagged, it fails config load naming
+	// the alias and the place. It is a check on where the alias may be written,
+	// never a routing input.
+	Kind string `yaml:"kind"`
+}
+
+// The kinds a models: alias may declare.
+const (
+	ModelKindChat     = "chat"
+	ModelKindDecision = "decision"
+	ModelKindEmbedder = "embedder"
+)
+
+// CheckModelKind refuses a models: alias TAGGED with a kind other than the one
+// the place it is written in needs. A model that is not an alias is a literal
+// name and is never checked, and neither is an untagged alias: aliases written
+// before the tag existed must keep loading (see untaggedAliasAdvice).
+func (c *Config) CheckModelKind(model, want string) error {
+	return checkModelKind(c.Models, model, want)
+}
+
+func checkModelKind(models map[string]ModelRef, model, want string) error {
+	ref, ok := models[model]
+	if !ok || ref.Kind == "" || ref.Kind == want {
+		return nil
+	}
+	return fmt.Errorf("models.%s is kind: %s, and a model of kind: %s is needed here", model, ref.Kind, want)
+}
+
+// untaggedAliasAdvice is the advisory for an untagged alias written where a
+// decision or embedder model is needed: it loads, because it always did, but
+// nothing stops the same alias being named as an agent's model. "" when model
+// is a literal, is tagged, or the place takes a chat model (the normal case).
+func (c *Config) untaggedAliasAdvice(place, model, want string) string {
+	ref, ok := c.Models[model]
+	if !ok || ref.Kind != "" || want == ModelKindChat {
+		return ""
+	}
+	return fmt.Sprintf("%s uses models.%s, which declares no kind: add `kind: %s` to models.%s so it cannot be used as a chat model by mistake", place, model, want, model)
+}
+
+// requireModelKind is both halves for one place a service block names a model:
+// the refusal, and the advisory appended to Warnings.
+func (c *Config) requireModelKind(place, model, want string) error {
+	if err := c.CheckModelKind(model, want); err != nil {
+		return fmt.Errorf("%s: %w", place, err)
+	}
+	if w := c.untaggedAliasAdvice(place, model, want); w != "" {
+		c.Warnings = append(c.Warnings, w)
+	}
+	return nil
 }
 
 // TierCandidate is one entry in a tier's ordered candidate list.
@@ -5931,6 +5990,11 @@ func (c *Config) ResolveAgentDefModel(agent string, def AgentDef) (provider stri
 		return provider, agent, "", nil
 	}
 
+	// A def authored at run time is not seen by config load, so the kind of the
+	// alias it pins is checked here, where every pin resolves.
+	if err := c.CheckModelKind(model, ModelKindChat); err != nil {
+		return "", "", "", fmt.Errorf("agent %q: model: %w", agent, err)
+	}
 	// If model is an alias in models:, expand it (may surface a pattern).
 	provider, model, pattern = ExpandModelAlias(c.Models, provider, model)
 	if provider == "" {
@@ -7365,6 +7429,9 @@ func WebhookTeamDeliveryForbids(w Webhook) string {
 // must be a known ID and the model non-empty. Without the alias carve-out an
 // all-aliases tier list fails load with `unknown provider ""`.
 func validateTierCandidate(cand TierCandidate, models map[string]ModelRef, known map[string]bool) error {
+	if err := checkModelKind(models, cand.Model, ModelKindChat); err != nil {
+		return err
+	}
 	if cand.Provider == "" {
 		if _, ok := models[cand.Model]; !ok {
 			return fmt.Errorf("empty provider and %q is not a model alias (define it under models: or set an explicit provider)", cand.Model)
@@ -7521,6 +7588,11 @@ func validate(c *Config) error {
 		}
 		if ref.Provider != "" && !known[ref.Provider] {
 			return fmt.Errorf("models.%s: unknown provider %q", name, ref.Provider)
+		}
+		switch ref.Kind {
+		case "", ModelKindChat, ModelKindDecision, ModelKindEmbedder:
+		default:
+			return fmt.Errorf("models.%s: kind %q is not one of chat, decision, embedder", name, ref.Kind)
 		}
 	}
 	// Library-level tier definitions.
@@ -7702,6 +7774,9 @@ func validate(c *Config) error {
 		hasTier := agent.Tier != ""
 		if err := ValidateRoutingMode(agent.Provider, agent.Model, agent.Tier); err != nil {
 			return fmt.Errorf("agent %q: %w", name, err)
+		}
+		if err := c.CheckModelKind(agent.Model, ModelKindChat); err != nil {
+			return fmt.Errorf("agent %q: model: %w", name, err)
 		}
 		if !hasPin && !hasTier {
 			// Back-compat path: agents without either fall back
@@ -8107,6 +8182,9 @@ func validate(c *Config) error {
 	if c.Memory.Embedder.Provider != "" || c.Memory.Embedder.Model != "" ||
 		c.Memory.Embedder.BaseURL != "" || c.Memory.Embedder.APIKeyEnv != "" ||
 		c.Memory.Embedder.Dimensions != 0 {
+		if err := c.requireModelKind("memory.embedder.model", c.Memory.Embedder.Model, ModelKindEmbedder); err != nil {
+			return err
+		}
 		provider, model, err := c.ExpandServiceModel("memory.embedder", c.Memory.Embedder.Provider, c.Memory.Embedder.Model)
 		if err != nil {
 			return err
@@ -8147,6 +8225,15 @@ func validate(c *Config) error {
 	// decided when it is built, against the fully-layered providers map, and a
 	// provider that does not exist fails boot there.
 	if rr := c.Memory.Reranker; rr.isSet() {
+		// The kind of model follows the kind of rerank; an unknown rerank kind is
+		// refused below, under its own name.
+		wantKind := ModelKindChat
+		if rr.EffectiveKind() == RerankerKindDecision {
+			wantKind = ModelKindDecision
+		}
+		if err := c.requireModelKind("memory.reranker.model", rr.Model, wantKind); err != nil {
+			return err
+		}
 		provider, model, err := c.ExpandServiceModel("memory.reranker", rr.Provider, rr.Model)
 		if err != nil {
 			return err
@@ -8202,6 +8289,9 @@ func validate(c *Config) error {
 		}
 	}
 	if err := c.Memory.UnitGenerator.validate(c); err != nil {
+		return err
+	}
+	if err := c.Decision.validate(c); err != nil {
 		return err
 	}
 	// Consolidation similarity bands. Validated on the EFFECTIVE values so

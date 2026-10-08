@@ -1,26 +1,25 @@
 package reranker
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
-	"net/http"
 	"sort"
 	"strings"
 	"time"
 
 	"github.com/denn-gubsky/loomcycle/internal/config"
+	"github.com/denn-gubsky/loomcycle/internal/decision"
 	"github.com/denn-gubsky/loomcycle/internal/memory"
 	"github.com/denn-gubsky/loomcycle/internal/providerbuild"
 	"github.com/denn-gubsky/loomcycle/internal/providers"
 )
 
 // The decision kind (memory.reranker.kind: decision): one typed choice over the
-// candidates, asked of a decision model at Ollama's /v1/systemone, and the
-// candidates ordered by the probability it returns for each.
+// candidates, asked of a decision model through the shared decision driver
+// (internal/decision), and the candidates ordered by the probability it returns
+// for each.
 //
 // WHY NOT THE LISTWISE PROMPT: a decision model returns no text. The answer is a
 // probability per named option, so the order is the answer: nothing to repair,
@@ -36,30 +35,31 @@ const (
 	decisionMaxOptions = 26
 	// decisionInstruction is the question the probe measured, verbatim.
 	decisionInstruction = "Which passage best answers the question?"
-	decisionPath        = "/v1/systemone"
-	letters             = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+	// decisionQuestion is the name the one question is asked, and answered, under.
+	decisionQuestion = "best"
+	letters          = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
 )
 
 // Decision is one configured decision-kind reranker. Safe for concurrent use:
 // every field is set at boot and only read afterwards.
 type Decision struct {
-	baseURL    string
+	// driver makes the call: the endpoint, the key rule, the timeout and the
+	// bound on calls in flight are its own.
+	driver     decision.Driver
 	model      string
 	providerID string
-	// apiKey is the operator's key for the endpoint ("" for a keyless local host);
-	// keyEnvName is the credential name a tenant's own key would be stored under.
-	// Resolved per call through providers.ResolveKeyOrOperator, as a driver does.
-	apiKey     string
+	// baseURL and keyEnvName are what the block resolved to: the endpoint called,
+	// and the credential name a tenant's own key would be stored under. The driver
+	// holds its own copies; these are kept so the resolution can be read back.
+	baseURL    string
 	keyEnvName string
-	timeout    time.Duration
-	slots      chan struct{}
-	client     *http.Client
 	onUsage    func(ctx context.Context, u *providers.Usage)
 }
 
 // buildDecision builds the decision reranker rc declares. The endpoint and key
 // resolve exactly as a listwise reranker's (providerbuild.ServiceDriverOptions);
-// the provider must be an Ollama one, since /v1/systemone is Ollama's.
+// the provider must be an Ollama one: the option letters, the 26-option clamp
+// and the shrink-and-retry below were measured against Ollama's decision models.
 func buildDecision(cfg *config.Config, rc config.RerankerConfig) (*Decision, error) {
 	opts, provider, model, driver, err := providerbuild.ServiceDriverOptions(cfg, "memory.reranker", providerbuild.ServiceEndpoint{
 		Provider: rc.Provider, Model: rc.Model, BaseURL: rc.BaseURL, APIKeyEnv: rc.APIKeyEnv,
@@ -73,21 +73,27 @@ func buildDecision(cfg *config.Config, rc config.RerankerConfig) (*Decision, err
 	if strings.TrimSpace(opts.BaseURL) == "" {
 		return nil, fmt.Errorf("memory.reranker: provider %q has no base URL", provider)
 	}
-	d := &Decision{
-		baseURL: strings.TrimRight(opts.BaseURL, "/"), model: model, providerID: provider,
-		apiKey: opts.APIKey, keyEnvName: opts.KeyEnvName,
-		timeout: time.Duration(rc.TimeoutMs) * time.Millisecond,
-		client:  &http.Client{},
-	}
-	if d.timeout <= 0 {
-		d.timeout = defaultTimeout
+	timeout := time.Duration(rc.TimeoutMs) * time.Millisecond
+	if timeout <= 0 {
+		timeout = defaultTimeout
 	}
 	n := rc.MaxConcurrent
 	if n <= 0 {
 		n = defaultMaxConcurrent
 	}
-	d.slots = make(chan struct{}, n)
-	return d, nil
+	baseURL := strings.TrimRight(opts.BaseURL, "/")
+	drv, err := decision.New(driver, decision.Options{
+		ProviderID: provider, BaseURL: baseURL,
+		APIKey: opts.APIKey, KeyEnvName: opts.KeyEnvName,
+		Timeout: timeout, MaxConcurrent: n,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("memory.reranker: %w", err)
+	}
+	return &Decision{
+		driver: drv, model: model, providerID: provider,
+		baseURL: baseURL, keyEnvName: opts.KeyEnvName,
+	}, nil
 }
 
 func (d *Decision) ProviderID() string { return d.providerID }
@@ -96,9 +102,6 @@ func (d *Decision) Kind() string       { return config.RerankerKindDecision }
 
 // SetOnUsage records each call's tokens against the run whose context it is.
 func (d *Decision) SetOnUsage(f func(ctx context.Context, u *providers.Usage)) { d.onUsage = f }
-
-// errTooLarge is the model refusing a prompt as more than its context holds.
-var errTooLarge = errors.New("the candidates do not fit the decision model's context")
 
 // Rank orders texts for query. It never fails: every fault keeps the identity
 // order, the search's own, and says why.
@@ -122,18 +125,19 @@ func (d *Decision) Rank(ctx context.Context, query string, texts []string, maxCh
 	}
 	// A prompt the model refuses as too large is retried with every candidate cut
 	// to half, then a quarter, of its characters: nimble never truncates input, so
-	// the alternative to a smaller prompt is no rerank at all.
+	// the alternative to a smaller prompt is no rerank at all. The shortening is
+	// this caller's choice; the driver itself refuses rather than trims.
 	var probs map[string]float64
 	var err error
 	for _, chars := range []int{maxChars, maxChars / 2, maxChars / 4} {
 		probs, err = d.choose(ctx, query, texts[:shown], chars)
-		if !errors.Is(err, errTooLarge) {
+		if decision.CodeOf(err) != decision.CodePromptTooLarge {
 			break
 		}
 	}
 	if err != nil {
 		switch {
-		case errors.Is(err, errTooLarge):
+		case decision.CodeOf(err) == decision.CodePromptTooLarge:
 			return identity, memory.RerankReport{Reason: memory.RerankPromptTooLarge, Candidates: shown}
 		case errors.Is(err, context.DeadlineExceeded):
 			return identity, memory.RerankReport{Reason: memory.RerankTimeout, Candidates: shown}
@@ -153,102 +157,34 @@ func (d *Decision) Rank(ctx context.Context, query string, texts []string, maxCh
 	return append(ranked, identity[shown:]...), memory.RerankReport{Applied: true, Candidates: shown}
 }
 
-type systemOneRequest struct {
-	Model     string                       `json:"model"`
-	State     map[string]string            `json:"state"`
-	Questions map[string]systemOneQuestion `json:"questions"`
-}
-
-type systemOneQuestion struct {
-	Type         string            `json:"type"`
-	Instructions string            `json:"instructions"`
-	Criteria     map[string]string `json:"criteria"`
-}
-
-type systemOneResponse struct {
-	Answers map[string]struct {
-		Probabilities map[string]float64 `json:"probabilities"`
-	} `json:"answers"`
-	Usage struct {
-		InputTokens  int `json:"input_tokens"`
-		OutputTokens int `json:"output_tokens"`
-	} `json:"usage"`
-}
-
 // choose asks one choice over texts, each cut to chars runes, and returns the
 // probability per option letter.
 func (d *Decision) choose(ctx context.Context, query string, texts []string, chars int) (map[string]float64, error) {
-	callCtx, cancel := context.WithTimeout(ctx, d.timeout)
-	defer cancel()
-	select {
-	case d.slots <- struct{}{}:
-		defer func() { <-d.slots }()
-	case <-callCtx.Done():
-		return nil, deadlineAware(callCtx, callCtx.Err())
-	}
-	// The same key rule as the Ollama driver: a keyless endpoint has no operator key
-	// to protect and is never restricted; otherwise a tenant's own stored key wins,
-	// and a run barred from the operator's key gets no call at all.
-	key, source, scopeID := d.apiKey, "operator", ""
-	if d.keyEnvName != "" {
-		var err error
-		if key, source, scopeID, err = providers.ResolveKeyOrOperator(ctx, d.keyEnvName, d.apiKey); err != nil {
-			return nil, err
-		}
-	}
-	criteria := make(map[string]string, len(texts))
+	options := make(map[string]string, len(texts))
 	for i, t := range texts {
-		criteria[string(letters[i])] = truncateRunes(t, chars)
+		options[string(letters[i])] = truncateRunes(t, chars)
 	}
-	body, err := json.Marshal(systemOneRequest{
+	criteria, err := json.Marshal(options)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := d.driver.Decide(ctx, decision.Request{
 		Model: d.model,
-		State: map[string]string{"question": query},
-		Questions: map[string]systemOneQuestion{"best": {
-			Type: "choice", Instructions: decisionInstruction, Criteria: criteria,
+		State: map[string]any{"question": query},
+		Questions: map[string]decision.Question{decisionQuestion: {
+			Type: decision.TypeChoice, Instructions: decisionInstruction, Criteria: criteria,
 		}},
 	})
 	if err != nil {
 		return nil, err
 	}
-	req, err := http.NewRequestWithContext(callCtx, http.MethodPost, d.baseURL+decisionPath, bytes.NewReader(body))
-	if err != nil {
-		return nil, err
+	if d.onUsage != nil && (resp.Usage.InputTokens > 0 || resp.Usage.OutputTokens > 0) {
+		u := resp.Usage
+		d.onUsage(ctx, &u)
 	}
-	req.Header.Set("Content-Type", "application/json")
-	if key != "" {
-		req.Header.Set("Authorization", "Bearer "+key)
-	}
-	resp, err := d.client.Do(req)
-	if err != nil {
-		return nil, deadlineAware(callCtx, err)
-	}
-	defer resp.Body.Close()
-	raw, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
-	if err != nil {
-		return nil, deadlineAware(callCtx, err)
-	}
-	if resp.StatusCode == http.StatusBadRequest && strings.Contains(string(raw), "tokens") {
-		// Ollama's refusal of an over-long prompt: "prompt 0 has 10474 tokens;
-		// expected 1–8194 (input is never truncated)".
-		return nil, errTooLarge
-	}
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("%s: HTTP %d", decisionPath, resp.StatusCode)
-	}
-	var out systemOneResponse
-	if err := json.Unmarshal(raw, &out); err != nil {
-		return nil, fmt.Errorf("%s: %w", decisionPath, err)
-	}
-	if d.onUsage != nil && (out.Usage.InputTokens > 0 || out.Usage.OutputTokens > 0) {
-		d.onUsage(ctx, &providers.Usage{
-			InputTokens: out.Usage.InputTokens, OutputTokens: out.Usage.OutputTokens,
-			Model: d.model, Provider: d.providerID,
-			CredentialSource: source, CredentialScopeID: scopeID,
-		})
-	}
-	best, ok := out.Answers["best"]
+	best, ok := resp.Answers[decisionQuestion]
 	if !ok || len(best.Probabilities) == 0 {
-		return nil, fmt.Errorf("%s: the reply carries no probabilities", decisionPath)
+		return nil, errors.New("the decision reply carries no probabilities")
 	}
 	return best.Probabilities, nil
 }

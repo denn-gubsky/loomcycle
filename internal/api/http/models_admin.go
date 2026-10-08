@@ -19,6 +19,10 @@ type modelAliasesResponse struct {
 type modelAliasWire struct {
 	Provider string `json:"provider"`
 	Model    string `json:"model"`
+	// Kind is what the alias is tagged for (chat, decision or embedder), so a
+	// picker can offer only the aliases that fit. Omitted for an untagged alias,
+	// which is a chat model.
+	Kind string `json:"kind,omitempty"`
 }
 
 // handleListModels returns the configured model aliases (cfg.Models). Non-secret
@@ -30,7 +34,7 @@ type modelAliasWire struct {
 func (s *Server) handleListModels(w http.ResponseWriter, _ *http.Request) {
 	resp := modelAliasesResponse{Aliases: make(map[string]modelAliasWire, len(s.cfg().Models))}
 	for name, ref := range s.cfg().Models {
-		resp.Aliases[name] = modelAliasWire{Provider: ref.Provider, Model: ref.Model}
+		resp.Aliases[name] = modelAliasWire{Provider: ref.Provider, Model: ref.Model, Kind: ref.Kind}
 	}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)

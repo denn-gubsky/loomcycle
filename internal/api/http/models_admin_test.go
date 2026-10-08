@@ -49,3 +49,37 @@ func TestListModels_ReturnsConfiguredAliases(t *testing.T) {
 		t.Errorf("deepseek-pro = %+v, want deepseek/deepseek-v4-pro", dp)
 	}
 }
+
+// TestListModels_ReportsAnAliasKind: a tagged alias carries its kind, so a model
+// picker can leave a decision or embedder alias out of a chat agent's choices;
+// an untagged alias (a chat model) omits the field, as it did before the tag.
+func TestListModels_ReportsAnAliasKind(t *testing.T) {
+	cfg := &config.Config{
+		Models: map[string]config.ModelRef{
+			"local-medium": {Provider: "ollama-local", Model: "qwen3.6:latest"},
+			"decide":       {Provider: "ollama-local", Model: "nimble", Kind: config.ModelKindDecision},
+		},
+		Concurrency: config.Concurrency{MaxConcurrentRuns: 1, MaxQueueDepth: 1, QueueTimeoutMS: 100},
+	}
+	srv := New(cfg, &stubResolver{}, nil, concurrency.New(1, 1, time.Second), nil)
+	ts := httptest.NewServer(srv.Mux())
+	defer ts.Close()
+
+	resp, err := http.Get(ts.URL + "/v1/_models")
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	defer resp.Body.Close()
+	var got struct {
+		Aliases map[string]map[string]any `json:"aliases"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&got); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if k := got.Aliases["decide"]["kind"]; k != "decision" {
+		t.Errorf("decide kind = %v, want decision", k)
+	}
+	if k, present := got.Aliases["local-medium"]["kind"]; present {
+		t.Errorf("local-medium carries kind %v; an untagged alias must omit it", k)
+	}
+}

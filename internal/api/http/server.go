@@ -1673,6 +1673,16 @@ func (s *Server) resolveAgentDef(ctx context.Context, def config.AgentDef, tenan
 			return "", "", "", fmt.Errorf("%w: agent %q uses tier %q but resolver is not configured",
 				runner.ErrInvalidArgument, agentName, def.Tier)
 		}
+		// A def authored at run time is not seen by config load, so its own tier
+		// candidates are checked here: an alias tagged as a decision or embedder
+		// model would otherwise be sent to a chat endpoint.
+		for tier, cands := range def.Models {
+			for i, cand := range cands {
+				if kerr := s.cfg().CheckModelKind(cand.Model, config.ModelKindChat); kerr != nil {
+					return "", "", "", fmt.Errorf("%w: agent %q: models.%s[%d]: %v", runner.ErrInvalidArgument, agentName, tier, i, kerr)
+				}
+			}
+		}
 		req := resolve.AgentRequest{
 			Name:      agentName,
 			Tier:      def.Tier,

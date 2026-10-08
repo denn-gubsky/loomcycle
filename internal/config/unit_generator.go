@@ -114,6 +114,9 @@ func (g UnitGeneratorConfig) validate(c *Config) error {
 	if !g.Configured() {
 		return fmt.Errorf("memory.unit_generator: model is required when the block is set")
 	}
+	if err := c.CheckModelKind(g.Model, ModelKindChat); err != nil {
+		return fmt.Errorf("memory.unit_generator.model: %w", err)
+	}
 	provider, model, err := c.ExpandServiceModel("memory.unit_generator", g.Provider, g.Model)
 	if err != nil {
 		return err

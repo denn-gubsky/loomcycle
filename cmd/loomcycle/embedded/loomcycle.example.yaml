@@ -47,6 +47,14 @@ models:
   local-small:  { provider: ollama-local, model: gpt-oss* }        # low tier
   local-medium: { provider: ollama-local, model: qwen3.6* }      # middle tier
   local-coder:  { provider: ollama-local, model: qwen3.8* } # high tier (coding)
+  # An alias may say what KIND of model it names: `chat` (the default when
+  # omitted), `decision` or `embedder`. The three are served by different
+  # endpoints, so a tagged alias written where another kind is needed fails
+  # config load, naming the alias and the place. An untagged alias used for
+  # memory.embedder, a decision reranker or the decision: block still loads,
+  # with an advisory naming the tag to add.
+  # local-embedding: { provider: ollama-local, model: bge-m3:latest, kind: embedder }
+  # decide:          { provider: ollama-local, model: nimble, kind: decision }
 
 # ─── Tier-based model resolution (v0.7+, opt-in) ──────────────────────
 # Agents can declare `tier: low | middle | high` instead of pinning a
@@ -404,6 +412,21 @@ channels:
 #     subtrees:
 #       - { path: /docs/policies }           # all three kinds
 #       - { path: /docs/faq, kinds: [questions] }
+
+# ─── Decision models ──────────────────────────────────────────────────
+# A decision model answers typed questions about a piece of state (a choice
+# among options, a yes/no, a score on a described scale) with probabilities
+# instead of text. This block lists the ones this deployment may ask; a
+# caller picks among them by the name written here and cannot reach a model
+# outside the list. No block, no decision models. Needs a provider whose
+# driver serves them (today: Ollama >= 0.35, `ollama pull nimble`).
+# decision:
+#   default: decide                # required; asked when a caller names no model
+#   models: [decide, decide-deep]  # optional; omitted = every alias tagged
+#                                  # `kind: decision` (the default is always allowed)
+#   provider: ollama-local         # only for entries that are plain model names
+#   timeout_ms: 30000              # one call, including its wait for a slot (default)
+#   max_concurrent: 4              # calls in flight per provider (default)
 
 # ─── v0.10.0 OpenTelemetry distributed traces ───────────────────────
 # Off by default — when LOOMCYCLE_OTEL_EXPORTER_OTLP_ENDPOINT is unset,
