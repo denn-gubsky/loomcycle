@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/denn-gubsky/loomcycle/internal/providers"
@@ -19,12 +20,16 @@ type outcomeRunner struct {
 	state        map[string]any
 	err          error
 	noRun        bool // the child never started: no run, nothing reported
-	sawSink      []bool
+
+	mu      sync.Mutex // a fan-out runs its children at once
+	sawSink []bool
 }
 
 func (r *outcomeRunner) run(ctx context.Context, name, _, _ string) (string, map[string]any, string, error) {
 	sink := tools.ChildOutcomeSink(ctx)
+	r.mu.Lock()
 	r.sawSink = append(r.sawSink, sink != nil)
+	r.mu.Unlock()
 	if r.noRun {
 		return "", nil, "", r.err
 	}
