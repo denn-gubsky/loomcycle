@@ -164,7 +164,7 @@ func TestDecisionHelp_EveryExampleIsWhatTheToolTakesAndReturns(t *testing.T) {
 		// Through a dispatcher that serves the article, so the argument check a
 		// run applies (no undeclared argument) is applied to the example too.
 		disp := tools.NewDispatcher([]tools.Tool{&Decision{Service: svc}, &Context{Help: bundledHelp(t)}})
-		res, err := disp.Call(context.Background(), "Decision", json.RawMessage(ex.request))
+		res, err := disp.Call(inRun(), "Decision", json.RawMessage(ex.request))
 		if err != nil || res.IsError {
 			t.Errorf("line %d: the tool refuses this example: %v %s", ex.line, err, res.Text)
 			continue
@@ -300,6 +300,8 @@ func TestDecisionHelp_IsServedByTheHelpOp(t *testing.T) {
 		decision.CodeTooManyQuestions, decision.CodeBadOptions, decision.CodeBadQuestion, decision.CodePromptTooLarge,
 		decision.CodeModelNotFound, decision.CodeModelNotAllowed, decision.CodeTimeout, decision.CodeCallFailed,
 		decisionNotConfigured, decisionInvalidInput, decisionKeyRestricted,
+		// decisionNoRun is left out on purpose: a model reading the article is
+		// inside a run and cannot get it.
 	} {
 		if !strings.Contains(topic.Content, "| `"+code+"` |") {
 			t.Errorf("the article's error table has no row for %s", code)

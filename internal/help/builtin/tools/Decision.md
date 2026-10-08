@@ -94,8 +94,8 @@ the list you may use.
 
 ## Errors
 
-A failed call's text starts `Decision: <code>: `, and the code tells you what to
-do.
+A failed call's `error` starts `Decision: <code>: `, and the code tells you what
+to do.
 
 | Code | What happened | What to do |
 |---|---|---|

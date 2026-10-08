@@ -107,6 +107,10 @@ func decide(t *testing.T, tool *Decision, ctx context.Context, input string) too
 	return res
 }
 
+// inRun is the context of a call made from inside a run: the tool answers no
+// other.
+func inRun() context.Context { return tools.WithRunID(context.Background(), "run-1") }
+
 const oneNoul = `"state":{"x":1},"questions":{"q":{"type":"noul","instructions":"Is it?"}}`
 
 // TestDecision_ReturnsEveryAnswerFieldUnchanged — the tool's result carries
@@ -124,7 +128,7 @@ func TestDecision_ReturnsEveryAnswerFieldUnchanged(t *testing.T) {
 	d.answers = `{"route":` + answers["route"] + `,"urgent":` + answers["urgent"] + `,"detail":` + answers["detail"] + `}`
 	tool := decisionTool(t, d)
 
-	res := decide(t, tool, context.Background(), `{
+	res := decide(t, tool, inRun(), `{
 		"state": {"ticket": "My invoice for March was charged twice.", "tags": ["billing", {"tier": "gold"}]},
 		"questions": {
 			"route":  {"type": "choice", "instructions": "Which team?", "criteria": {"billing": "invoices, refunds", "support": "bugs, outages", "sales": null}},
@@ -179,7 +183,7 @@ func TestDecision_ReturnsEveryAnswerFieldUnchanged(t *testing.T) {
 func TestDecision_PicksTheModel(t *testing.T) {
 	d := newDecisionDouble(t)
 	tool := decisionTool(t, d)
-	narrowed := tools.WithDecisionPolicy(context.Background(), &config.AgentDecision{Default: "lit", Models: []string{"deep", "lit"}})
+	narrowed := tools.WithDecisionPolicy(inRun(), &config.AgentDecision{Default: "lit", Models: []string{"deep", "lit"}})
 
 	for _, c := range []struct {
 		name      string
@@ -188,8 +192,8 @@ func TestDecision_PicksTheModel(t *testing.T) {
 		wantAsked string // the model the provider is asked for
 		wantName  string // "model" in the result
 	}{
-		{"none named: the operator's default", context.Background(), "", "nimble", "decide"},
-		{"a listed name", context.Background(), "deep", "clef", "deep"},
+		{"none named: the operator's default", inRun(), "", "nimble", "decide"},
+		{"a listed name", inRun(), "deep", "clef", "deep"},
 		{"narrowed, none named: the agent's default", narrowed, "", "nimble-lit", "lit"},
 		{"narrowed, a name inside the agent's list", narrowed, "deep", "clef", "deep"},
 	} {
@@ -212,7 +216,7 @@ func TestDecision_PicksTheModel(t *testing.T) {
 	}{
 		// "nimble" is the model's own name: a caller reaches a model only by the
 		// name the operator listed it under.
-		{"outside the operator's list", context.Background(), "nimble", "decide, deep, lit"},
+		{"outside the operator's list", inRun(), "nimble", "decide, deep, lit"},
 		{"in the operator's list, outside the agent's", narrowed, "decide", "deep, lit"},
 	} {
 		res := decide(t, tool, c.ctx, `{"model":"`+c.model+`",`+oneNoul+`}`)
@@ -275,7 +279,7 @@ func TestDecision_EachFaultIsAClassifiedErrorSayingWhatToDo(t *testing.T) {
 		t.Run(c.name, func(t *testing.T) {
 			d := newDecisionDouble(t)
 			d.reply = c.reply
-			res := decide(t, decisionTool(t, d), context.Background(), c.input)
+			res := decide(t, decisionTool(t, d), inRun(), c.input)
 			if !res.IsError || !strings.HasPrefix(res.Text, "Decision: "+c.code+": ") {
 				t.Fatalf("result = %q, want a failure coded %s", res.Text, c.code)
 			}
@@ -293,7 +297,7 @@ func TestDecision_EachFaultIsAClassifiedErrorSayingWhatToDo(t *testing.T) {
 	t.Run("the prompt's size is reported", func(t *testing.T) {
 		d := newDecisionDouble(t)
 		d.reply = refuse(400, "prompt 0 has 12144 tokens; expected 1–8194 (input is never truncated)")
-		res := decide(t, decisionTool(t, d), context.Background(), `{`+oneNoul+`}`)
+		res := decide(t, decisionTool(t, d), inRun(), `{`+oneNoul+`}`)
 		if !strings.Contains(res.Text, "12144 tokens") || !strings.Contains(res.Text, "at most 8194") {
 			t.Errorf("result = %q, want the request's size and the model's limit", res.Text)
 		}
@@ -304,7 +308,7 @@ func TestDecision_EachFaultIsAClassifiedErrorSayingWhatToDo(t *testing.T) {
 		defer close(release)
 		d.reply = func(http.ResponseWriter, string) { <-release }
 		tool := decisionTool(t, d, func(o *decision.Options) { o.Timeout = 50 * time.Millisecond })
-		res := decide(t, tool, context.Background(), `{`+oneNoul+`}`)
+		res := decide(t, tool, inRun(), `{`+oneNoul+`}`)
 		if !strings.HasPrefix(res.Text, "Decision: timeout: ") || res.Error == nil ||
 			res.Error.Category != tools.CategoryTransient || !res.Error.Retryable {
 			t.Errorf("result = %q %+v, want a retryable timeout", res.Text, res.Error)
@@ -313,7 +317,7 @@ func TestDecision_EachFaultIsAClassifiedErrorSayingWhatToDo(t *testing.T) {
 	t.Run("an unreachable provider does not name its host", func(t *testing.T) {
 		d := newDecisionDouble(t)
 		tool := decisionTool(t, d, func(o *decision.Options) { o.BaseURL = "http://127.0.0.1:1" })
-		res := decide(t, tool, context.Background(), `{`+oneNoul+`}`)
+		res := decide(t, tool, inRun(), `{`+oneNoul+`}`)
 		if !strings.HasPrefix(res.Text, "Decision: call_failed: ") || strings.Contains(res.Text, "127.0.0.1") {
 			t.Errorf("result = %q, want call_failed without the endpoint's address", res.Text)
 		}
@@ -321,7 +325,7 @@ func TestDecision_EachFaultIsAClassifiedErrorSayingWhatToDo(t *testing.T) {
 	t.Run("a run barred from the operator's key", func(t *testing.T) {
 		d := newDecisionDouble(t)
 		tool := decisionTool(t, d, func(o *decision.Options) { o.APIKey, o.KeyEnvName = "test-operator-key", "OLLAMA_API_KEY" })
-		res := decide(t, tool, providers.WithOperatorKeyAllowed(context.Background(), false), `{`+oneNoul+`}`)
+		res := decide(t, tool, providers.WithOperatorKeyAllowed(inRun(), false), `{`+oneNoul+`}`)
 		if !strings.HasPrefix(res.Text, "Decision: operator_key_restricted: ") || res.Error == nil ||
 			res.Error.Category != tools.CategoryPermission || res.Error.Retryable ||
 			!strings.Contains(res.Error.Description, "supply the tenant's own provider credential") {
@@ -332,12 +336,33 @@ func TestDecision_EachFaultIsAClassifiedErrorSayingWhatToDo(t *testing.T) {
 		}
 	})
 	t.Run("no decision models", func(t *testing.T) {
-		res := decide(t, &Decision{}, context.Background(), `{`+oneNoul+`}`)
+		res := decide(t, &Decision{}, inRun(), `{`+oneNoul+`}`)
 		if !strings.HasPrefix(res.Text, "Decision: decision_not_configured: ") || res.Error == nil ||
 			res.Error.Category != tools.CategoryBusiness || res.Error.Retryable {
 			t.Errorf("result = %q %+v, want a business refusal coded decision_not_configured", res.Text, res.Error)
 		}
 	})
+}
+
+// TestDecision_ACallWithNoRunIsRefused — a run's context is what holds a call
+// to the caller's key rule and charges its tokens. A call dispatched with no
+// run on its context would be held to neither (the key rule is fail-open when
+// nothing stamped it), so the tool refuses it before a key is resolved: a
+// restricted caller on such a path gets no call, like any other.
+func TestDecision_ACallWithNoRunIsRefused(t *testing.T) {
+	d := newDecisionDouble(t)
+	tool := decisionTool(t, d, func(o *decision.Options) { o.APIKey, o.KeyEnvName = "test-operator-key", "OLLAMA_API_KEY" })
+	res := decide(t, tool, context.Background(), `{`+oneNoul+`}`)
+	if !res.IsError || !strings.HasPrefix(res.Text, "Decision: no_run: ") ||
+		res.Error == nil || res.Error.Category != tools.CategoryBusiness || res.Error.Retryable {
+		t.Errorf("result = %q %+v, want a refusal coded no_run", res.Text, res.Error)
+	}
+	if d.calls() != 0 {
+		t.Errorf("a call with no run reached the provider %d times", d.calls())
+	}
+	if res := decide(t, tool, inRun(), `{`+oneNoul+`}`); res.IsError || d.calls() != 1 {
+		t.Errorf("the same call inside a run: %q after %d calls, want an answer", res.Text, d.calls())
+	}
 }
 
 // TestDecision_ModelVisibleTextNamesNoDesignDocument — the description and the

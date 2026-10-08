@@ -26,8 +26,15 @@ import (
 // It is registered only when the operator declared a decision: block, so an
 // agent that lists it on a deployment without one is simply not offered it —
 // a tool whose every call would fail is worse in a model's tool list than no
-// tool. Service nil is still answered (decision_not_configured), because the
-// MCP surface reaches the tool by name whatever is registered.
+// tool. A tool built with no Service still answers (decision_not_configured)
+// rather than panicking.
+//
+// ⚠️ It is reachable ONLY from inside a run. A run's context carries what a
+// call must be held to: whether the run may spend the operator's provider key
+// (a fail-open bit that only a run-start site stamps) and the run its tokens
+// are charged to. A surface that dispatched this tool without a run would hand
+// a restricted tenant the operator's key and bill nobody, so none exists until
+// one derives that bit from the caller's principal and meters the call.
 type Decision struct {
 	// Service is the operator's decision models. Its usage callback books each
 	// call's tokens against the run on the call's context.
@@ -42,6 +49,9 @@ const (
 	// decisionInvalidInput: the arguments are not the documented shape at all
 	// (not JSON, or no state object), as distinct from one bad question.
 	decisionInvalidInput = "invalid_input"
+	// decisionNoRun: the call's context carries no run. A model inside a run
+	// never sees it; it is what a surface that dispatched the tool directly gets.
+	decisionNoRun = "no_run"
 	// decisionKeyRestricted: the run may not spend the operator's provider key
 	// and has none of its own. The same code the HTTP surface uses for the same
 	// refusal, and kept apart from call_failed because nothing about the call
@@ -64,8 +74,6 @@ func (d *Decision) Description() string {
 		"Formats and worked examples: Context op=help topic=Decision."
 }
 
-// decisionInputSchema is a package const so the LoomCycle MCP server sources
-// the `decision` tool's advertised inputSchema from it (MCPWrapperInputSchema).
 const decisionInputSchema = `{
 	"type": "object",
 	"properties": {
@@ -143,6 +151,12 @@ func (d *Decision) Execute(ctx context.Context, raw json.RawMessage) (tools.Resu
 		return decisionFailure(&decision.Error{Code: decisionNotConfigured,
 			Message: "this deployment declares no decision models"}, nil), nil
 	}
+	// Fail closed on a call with no run (see the type's comment): refused here,
+	// before a key is resolved, whatever surface dispatched it.
+	if tools.RunID(ctx) == "" {
+		return decisionFailure(&decision.Error{Code: decisionNoRun,
+			Message: "a decision model is asked only from inside a run"}, nil), nil
+	}
 	in, state, err := parseDecisionInput(raw)
 	if err != nil {
 		return decisionFailure(err, nil), nil
@@ -208,6 +222,8 @@ func decisionFailure(err error, allowed []string) tools.Result {
 	case decisionNotConfigured:
 		return errBusiness(text(e.Code, what),
 			"No call to this tool can succeed here. Decide another way, or ask an operator to declare decision models.")
+	case decisionNoRun:
+		return errBusiness(text(e.Code, what), "Start a run of an agent that holds the Decision tool.")
 	case decisionInvalidInput:
 		return errValidation(text(e.Code, what),
 			"Pass `state` (a JSON object holding what the questions are about) and `questions` (an object of named questions).")
