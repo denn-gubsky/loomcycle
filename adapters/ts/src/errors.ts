@@ -80,10 +80,71 @@ export class AgentIDInUseError extends LoomcycleError {
   }
 }
 
+/** Every HTTP 429 that is not a per-user quota. A plain BackpressureError is
+ *  the transient case (the server is busy; back off and retry). It has one
+ *  subclass that is NOT transient, TokenLimitExceededError — check for that
+ *  first when deciding whether to retry. */
 export class BackpressureError extends LoomcycleError {
   constructor(message: string, opts?: { status?: number; bodyText?: string; code?: string }) {
     super(message, opts);
     this.name = "BackpressureError";
+  }
+}
+
+/**
+ * TokenLimitExceededError signals that the caller is at a hard token budget:
+ * HTTP 429 with body code `token_limit_exceeded`, from run creation and from
+ * `decide()`.
+ *
+ * Do not retry it the way you retry backpressure. The budget is a calendar
+ * month's tokens for an operator, tenant or user; the same call is refused
+ * until an operator raises the budget or the window rolls over.
+ *
+ * It extends BackpressureError only so that code written before this class
+ * existed, which caught this refusal with `instanceof BackpressureError`,
+ * keeps catching it. Test for this class BEFORE BackpressureError:
+ *
+ *   if (e instanceof TokenLimitExceededError) {
+ *     // not retryable now: report e.scope / e.used / e.limit
+ *   } else if (e instanceof BackpressureError) {
+ *     // transient: back off and retry
+ *   }
+ *
+ * The fields come from the response body and are null when the server did
+ * not send them.
+ */
+export class TokenLimitExceededError extends BackpressureError {
+  /** Whose budget was hit: "operator", "tenant" or "user". */
+  readonly scope: string | null;
+  /** The id of that scope: the tenant id or the user subject. Null for the
+   *  operator-wide budget, and where the server withholds it. */
+  readonly scopeId: string | null;
+  /** Tokens the scope has used in the current window. */
+  readonly used: number | null;
+  /** The hard ceiling that was reached, in tokens. */
+  readonly limit: number | null;
+  /** The budget window, e.g. "month" (a calendar month, UTC). */
+  readonly window: string | null;
+  constructor(
+    message: string,
+    opts?: {
+      status?: number;
+      bodyText?: string;
+      code?: string;
+      scope?: string;
+      scopeId?: string;
+      used?: number;
+      limit?: number;
+      window?: string;
+    },
+  ) {
+    super(message, opts);
+    this.name = "TokenLimitExceededError";
+    this.scope = opts?.scope ?? null;
+    this.scopeId = opts?.scopeId ?? null;
+    this.used = opts?.used ?? null;
+    this.limit = opts?.limit ?? null;
+    this.window = opts?.window ?? null;
   }
 }
 
@@ -202,10 +263,44 @@ export class SnapshotNotFoundError extends NotFoundError {
   }
 }
 
+/** A snapshot envelope over the size cap (HTTP 413, body code
+ *  `snapshot_too_large`).
+ *
+ *  For compatibility it is ALSO the base class of every other 413: until
+ *  RequestTooLargeError and PromptTooLargeError existed, the client raised
+ *  this class for any 413, so `instanceof SnapshotTooLargeError` is true for
+ *  all of them and stays true. To single out a snapshot that is too large,
+ *  test `e.code === "snapshot_too_large"`. */
 export class SnapshotTooLargeError extends LoomcycleError {
   constructor(message: string, opts?: { status?: number; bodyText?: string; code?: string }) {
     super(message, opts);
     this.name = "SnapshotTooLargeError";
+  }
+}
+
+/** An HTTP 413 that is not about a snapshot: a request body over the server's
+ *  size limit (`request_too_large`, or a plain-text 413 with no code), a
+ *  memory value or quota (`memory_value_too_large`, `memory_quota_exceeded`),
+ *  a channel payload (`payload_too_large`). `e.code` says which.
+ *
+ *  It extends SnapshotTooLargeError only because that is the class these
+ *  responses were raised as before this one existed; the relation keeps an
+ *  existing `instanceof SnapshotTooLargeError` matching and says nothing about
+ *  snapshots. */
+export class RequestTooLargeError extends SnapshotTooLargeError {
+  constructor(message: string, opts?: { status?: number; bodyText?: string; code?: string }) {
+    super(message, opts);
+    this.name = "RequestTooLargeError";
+  }
+}
+
+/** A `decide()` request that does not fit the decision model's context (HTTP
+ *  413, body code `prompt_too_large`). The server never shortens it for you:
+ *  shorten `state` or ask fewer questions, then send it again. */
+export class PromptTooLargeError extends RequestTooLargeError {
+  constructor(message: string, opts?: { status?: number; bodyText?: string; code?: string }) {
+    super(message, opts);
+    this.name = "PromptTooLargeError";
   }
 }
 

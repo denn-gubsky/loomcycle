@@ -23,12 +23,15 @@ import {
   NotPausedError,
   PauseNotConfiguredError,
   PerUserQuotaExhaustedError,
+  PromptTooLargeError,
+  RequestTooLargeError,
   SessionBusyError,
   SessionNotFoundError,
   SnapshotNotFoundError,
   SnapshotTooLargeError,
   SnapshotVersionError,
   SubstrateToolRefusedError,
+  TokenLimitExceededError,
   UnavailableError,
 } from "./errors.js";
 
@@ -238,9 +241,14 @@ export async function deleteJSON<T>(
  *   409 + "session"                            → SessionBusyError
  *   409 + "agent_id"                           → AgentIDInUseError
  *   409 + (other)                              → LoomcycleError (base)
- *   413         → SnapshotTooLargeError
+ *   413 + code "snapshot_too_large" → SnapshotTooLargeError ──┐ all are
+ *   413 + code "prompt_too_large"   → PromptTooLargeError     │ instanceof
+ *   413 (other)                     → RequestTooLargeError ───┘ SnapshotTooLargeError
  *   422         → SnapshotVersionError (snapshot-version-too-new/unknown)
- *   429         → BackpressureError
+ *   429 + code "per_user_quota_exhausted" → PerUserQuotaExhaustedError
+ *   429 + code "token_limit_exceeded"     → TokenLimitExceededError
+ *                                           (subclass of BackpressureError)
+ *   429 (other)                           → BackpressureError
  *   503 + "pause manager not configured" → PauseNotConfiguredError
  *                                          (subclass of UnavailableError)
  *   503 + (other)                        → UnavailableError
@@ -306,7 +314,12 @@ export async function raiseFromResponse(resp: Response): Promise<never> {
       if (bodyLower.includes("agent_id")) throw new AgentIDInUseError(msg, opts);
       throw new LoomcycleError(msg, opts);
     case 413:
-      throw new SnapshotTooLargeError(msg, opts);
+      // Every 413 used to be a SnapshotTooLargeError, so the two classes
+      // below extend it: an existing `instanceof SnapshotTooLargeError`
+      // still matches all three.
+      if (opts.code === "snapshot_too_large") throw new SnapshotTooLargeError(msg, opts);
+      if (opts.code === "prompt_too_large") throw new PromptTooLargeError(msg, opts);
+      throw new RequestTooLargeError(msg, opts);
     case 422: {
       // 422 is shared between snapshot version errors (existing)
       // and v0.8.22 substrate tool refusals. Discriminate by body:
@@ -328,6 +341,20 @@ export async function raiseFromResponse(resp: Response): Promise<never> {
       throw new SnapshotVersionError(msg, opts);
     }
     case 429: {
+      // A hard token budget is not transient the way backpressure is, so
+      // it gets its own class (a BackpressureError subclass, for callers
+      // that already catch that).
+      if (opts.code === "token_limit_exceeded") {
+        const body = bodyObject(bodyText) ?? {};
+        throw new TokenLimitExceededError(msg, {
+          ...opts,
+          scope: stringField(body.scope),
+          scopeId: stringField(body.scope_id),
+          used: numberField(body.used),
+          limit: numberField(body.limit),
+          window: stringField(body.window),
+        });
+      }
       // v0.10.1: distinguish per-user quota exhaustion from
       // operator-wide backpressure. The shapes share the 429 status
       // but the JSON body's `code` field discriminates. Consumers
@@ -374,16 +401,32 @@ export async function raiseFromResponse(resp: Response): Promise<never> {
  *  unrelated conditions (a 400 is any bad request; a 429 is backpressure, a
  *  user quota or a token budget), and the code is what tells them apart. */
 function bodyCode(bodyText: string): string | undefined {
+  return stringField(bodyObject(bodyText)?.code);
+}
+
+/** bodyObject returns a JSON error body as an object, or undefined when the
+ *  body is not JSON or is a JSON array or scalar. */
+function bodyObject(bodyText: string): Record<string, unknown> | undefined {
   try {
     const parsed: unknown = JSON.parse(bodyText);
-    if (parsed !== null && typeof parsed === "object") {
-      const code = (parsed as { code?: unknown }).code;
-      if (typeof code === "string" && code !== "") return code;
+    if (parsed !== null && typeof parsed === "object" && !Array.isArray(parsed)) {
+      return parsed as Record<string, unknown>;
     }
   } catch {
-    // not JSON: a plain-text error body has no code
+    // not JSON: a plain-text error body has no fields
   }
   return undefined;
+}
+
+/** stringField / numberField read one body field, dropping a value of the
+ *  wrong type: an error's typed fields must not carry whatever a proxy or an
+ *  older server put under that name. An empty string counts as absent. */
+function stringField(v: unknown): string | undefined {
+  return typeof v === "string" && v !== "" ? v : undefined;
+}
+
+function numberField(v: unknown): number | undefined {
+  return typeof v === "number" && Number.isFinite(v) ? v : undefined;
 }
 
 /** stockStatusPhrase returns a stock reason phrase for the common

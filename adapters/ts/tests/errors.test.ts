@@ -27,6 +27,15 @@ import {
   UnavailableError,
 } from "../src/errors.js";
 import { raiseFromResponse } from "../src/fetch-helpers.js";
+import { jsonResponse, makeClient } from "./helpers.js";
+// Through the package index on purpose: a class that is thrown but not
+// exported cannot be named in a consumer's `instanceof`, and only an import
+// from here fails when the export is dropped.
+import {
+  PromptTooLargeError,
+  RequestTooLargeError,
+  TokenLimitExceededError,
+} from "../src/index.js";
 
 async function expectErrorFor(status: number, body: string) {
   const resp = new Response(body, { status });
@@ -259,3 +268,183 @@ describe("raiseFromResponse — a JSON body's code", () => {
     }
   });
 });
+
+// The body the server writes for a hard token budget, at run creation and at
+// POST /v1/_decide (internal/api/http writeTokenLimitError).
+const tokenLimitBody = JSON.stringify({
+  code: "token_limit_exceeded",
+  error: "tenant acme is at its monthly token limit",
+  scope: "tenant",
+  scope_id: "acme",
+  used: 1_000_250,
+  limit: 1_000_000,
+  window: "month",
+  message: "tenant acme is at its monthly token limit",
+});
+
+describe("raiseFromResponse — a 429 token budget is not plain backpressure", () => {
+  it("429 + code:token_limit_exceeded → TokenLimitExceededError carrying the budget", async () => {
+    const e = await expectErrorFor(429, tokenLimitBody);
+    expect(e).toBeInstanceOf(TokenLimitExceededError);
+    const err = e as TokenLimitExceededError;
+    expect(err.name).toBe("TokenLimitExceededError");
+    expect(err.status).toBe(429);
+    expect(err.code).toBe("token_limit_exceeded");
+    expect(err.scope).toBe("tenant");
+    expect(err.scopeId).toBe("acme");
+    expect(err.used).toBe(1_000_250);
+    expect(err.limit).toBe(1_000_000);
+    expect(err.window).toBe("month");
+    expect(err.message).toContain("monthly token limit");
+  });
+
+  it("a token budget refusal is still caught by instanceof BackpressureError", async () => {
+    // Callers written before the class existed catch it this way.
+    const e = await expectErrorFor(429, tokenLimitBody);
+    expect(e).toBeInstanceOf(BackpressureError);
+    expect(e).toBeInstanceOf(LoomcycleError);
+    expect(e).not.toBeInstanceOf(PerUserQuotaExhaustedError);
+  });
+
+  it("a token budget refusal without the budget fields has them null", async () => {
+    // The operator-wide budget has an empty scope_id, and one server path
+    // sends only {code, error}.
+    const operator = (await expectErrorFor(
+      429,
+      JSON.stringify({ code: "token_limit_exceeded", error: "x", scope: "operator", scope_id: "", used: 5, limit: 5, window: "month" }),
+    )) as TokenLimitExceededError;
+    expect(operator.scope).toBe("operator");
+    expect(operator.scopeId).toBeNull();
+
+    const bare = (await expectErrorFor(
+      429,
+      JSON.stringify({ code: "token_limit_exceeded", error: "x" }),
+    )) as TokenLimitExceededError;
+    expect(bare).toBeInstanceOf(TokenLimitExceededError);
+    expect([bare.scope, bare.scopeId, bare.used, bare.limit, bare.window]).toEqual([
+      null, null, null, null, null,
+    ]);
+  });
+
+  it("a budget field of the wrong type is dropped, not passed through", async () => {
+    const e = (await expectErrorFor(
+      429,
+      JSON.stringify({ code: "token_limit_exceeded", scope: 7, used: "many", limit: null, window: ["month"] }),
+    )) as TokenLimitExceededError;
+    expect([e.scope, e.used, e.limit, e.window]).toEqual([null, null, null, null]);
+  });
+
+  it("429 without that code stays a plain BackpressureError", async () => {
+    for (const body of ["queue full", JSON.stringify({ code: "backpressure", error: "queue full" })]) {
+      const e = await expectErrorFor(429, body);
+      expect(e).toBeInstanceOf(BackpressureError);
+      expect(e).not.toBeInstanceOf(TokenLimitExceededError);
+      expect((e as Error).name).toBe("BackpressureError");
+    }
+  });
+
+  it("429 + code:per_user_quota_exhausted is unchanged", async () => {
+    const e = await expectErrorFor(
+      429,
+      JSON.stringify({ code: "per_user_quota_exhausted", user_id: "u", cap: 2 }),
+    );
+    expect(e).toBeInstanceOf(PerUserQuotaExhaustedError);
+    expect(e).not.toBeInstanceOf(BackpressureError);
+  });
+
+  it("the budget fields are typed", () => {
+    // Checked by `npm run typecheck:tests`; vitest strips types.
+    const e = new TokenLimitExceededError("x");
+    const scope: Exact<typeof e.scope, string | null> = true;
+    const scopeId: Exact<typeof e.scopeId, string | null> = true;
+    const used: Exact<typeof e.used, number | null> = true;
+    const limit: Exact<typeof e.limit, number | null> = true;
+    const window: Exact<typeof e.window, string | null> = true;
+    const base: BackpressureError = e;
+    const tooLarge: SnapshotTooLargeError = new PromptTooLargeError("x");
+    const request: RequestTooLargeError = new PromptTooLargeError("x");
+    expect([scope, scopeId, used, limit, window]).toEqual([true, true, true, true, true]);
+    expect([base, tooLarge, request]).toHaveLength(3);
+  });
+});
+
+describe("raiseFromResponse — a 413 is named for what was too large", () => {
+  it("413 + code:prompt_too_large → PromptTooLargeError", async () => {
+    const e = await expectErrorFor(
+      413,
+      JSON.stringify({ code: "prompt_too_large", error: "Decision: prompt_too_large: 9000 tokens exceed 8192" }),
+    );
+    expect(e).toBeInstanceOf(PromptTooLargeError);
+    expect((e as PromptTooLargeError).name).toBe("PromptTooLargeError");
+    expect((e as PromptTooLargeError).code).toBe("prompt_too_large");
+    expect((e as PromptTooLargeError).status).toBe(413);
+  });
+
+  it("413 + code:snapshot_too_large (the snapshot endpoint's body) → SnapshotTooLargeError itself", async () => {
+    const e = await expectErrorFor(
+      413,
+      JSON.stringify({ code: "snapshot_too_large", error: "snapshot is 9 bytes, max 8" }),
+    );
+    expect(e).toBeInstanceOf(SnapshotTooLargeError);
+    expect((e as Error).name).toBe("SnapshotTooLargeError");
+    expect(e).not.toBeInstanceOf(RequestTooLargeError);
+    expect(e).not.toBeInstanceOf(PromptTooLargeError);
+  });
+
+  it("any other 413 → RequestTooLargeError, not the prompt class", async () => {
+    const bodies = [
+      JSON.stringify({ code: "request_too_large", error: "body over 1 MiB" }),
+      JSON.stringify({ code: "memory_quota_exceeded", error: "too big" }),
+      "request body exceeds the 16777216-byte limit",
+      "",
+    ];
+    for (const body of bodies) {
+      const e = await expectErrorFor(413, body);
+      expect(e).toBeInstanceOf(RequestTooLargeError);
+      expect((e as Error).name).toBe("RequestTooLargeError");
+      expect(e).not.toBeInstanceOf(PromptTooLargeError);
+    }
+  });
+
+  it("every 413 is still caught by instanceof SnapshotTooLargeError", async () => {
+    // The client raised that class for any 413 before the others existed.
+    const bodies = [
+      JSON.stringify({ code: "prompt_too_large", error: "x" }),
+      JSON.stringify({ code: "request_too_large", error: "x" }),
+      JSON.stringify({ code: "snapshot_too_large", error: "x" }),
+      "snapshot exceeds size cap",
+    ];
+    for (const body of bodies) {
+      expect(await expectErrorFor(413, body)).toBeInstanceOf(SnapshotTooLargeError);
+    }
+  });
+});
+
+describe("the refusal classes reach a caller of the client", () => {
+  it("run creation at a hard token budget throws TokenLimitExceededError", async () => {
+    const { client } = makeClient([jsonResponse(JSON.parse(tokenLimitBody), 429)]);
+    let caught: unknown;
+    try {
+      for await (const _ of client.runStreaming({ agent: "x", segments: [] })) {}
+    } catch (e) {
+      caught = e;
+    }
+    expect(caught).toBeInstanceOf(TokenLimitExceededError);
+    expect((caught as TokenLimitExceededError).limit).toBe(1_000_000);
+  });
+
+  it("decide() over the model's context throws PromptTooLargeError", async () => {
+    const { client } = makeClient([
+      jsonResponse({ code: "prompt_too_large", error: "Decision: prompt_too_large: too long" }, 413),
+    ]);
+    const err = await client
+      .decide({ state: {}, questions: { q: { type: "noul", instructions: "q" } } })
+      .then(() => undefined, (e: unknown) => e);
+    expect(err).toBeInstanceOf(PromptTooLargeError);
+  });
+});
+
+/** True only when A and B are the same type, so a field widened to `unknown`
+ *  or narrowed away from `null` fails the tests' typecheck. */
+type Exact<A, B> =
+  (<T>() => T extends A ? 1 : 2) extends (<T>() => T extends B ? 1 : 2) ? true : false;
