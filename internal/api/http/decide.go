@@ -137,8 +137,12 @@ func decideFailureStatus(res connector.ToolResult) (status int, code string) {
 	case decision.CodeCallFailed, decision.CodeModelNotFound:
 		return http.StatusBadGateway, code
 	}
+	// No code, or one a later driver added: go by what kind of failure it is.
 	if res.ErrorInfo != nil && res.ErrorInfo.Category == tools.CategoryValidation {
-		return http.StatusBadRequest, builtin.DecisionCodeInvalidInput
+		if code == "" {
+			code = builtin.DecisionCodeInvalidInput
+		}
+		return http.StatusBadRequest, code
 	}
 	if code == "" {
 		code = decision.CodeCallFailed

@@ -11,6 +11,7 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/auth"
 	"github.com/denn-gubsky/loomcycle/internal/concurrency"
 	"github.com/denn-gubsky/loomcycle/internal/config"
+	"github.com/denn-gubsky/loomcycle/internal/connector"
 	"github.com/denn-gubsky/loomcycle/internal/providers"
 	storesqlite "github.com/denn-gubsky/loomcycle/internal/store/sqlite"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
@@ -89,5 +90,33 @@ func TestRecordRunSideCallUsage_BillsARunlessCallOnlyWhenAdmitted(t *testing.T) 
 	}
 	if used := srv.limits.UsedFor("user", "acme", "alice"); used != 1120 {
 		t.Errorf("the budget counter = %d, want 1120", used)
+	}
+}
+
+// TestDecideFailureStatus_ARefusalThatIsNotTheToolsOwn — a failed result whose
+// text carries no decision code was refused before the tool ran (the
+// dispatcher turning away an unknown argument). When it is classified as the
+// caller's input it is a 400 invalid_input, never a 502 that reads as the
+// provider's fault; with nothing to go on it is a failed call.
+func TestDecideFailureStatus_ARefusalThatIsNotTheToolsOwn(t *testing.T) {
+	for _, c := range []struct {
+		name   string
+		res    connector.ToolResult
+		status int
+		code   string
+	}{
+		{"an unknown argument", connector.ToolResult{IsError: true, Text: `unknown field "op"`,
+			ErrorInfo: &tools.ErrorInfo{Category: tools.CategoryValidation}}, 400, "invalid_input"},
+		{"unclassified", connector.ToolResult{IsError: true, Text: "something else"}, 502, "call_failed"},
+		{"a code this table does not know", connector.ToolResult{IsError: true, Text: "Decision: brand_new: x",
+			ErrorInfo: &tools.ErrorInfo{Category: tools.CategoryTransient, Retryable: true}}, 502, "brand_new"},
+		{"a new code for the caller's own mistake", connector.ToolResult{IsError: true, Text: "Decision: brand_new: x",
+			ErrorInfo: &tools.ErrorInfo{Category: tools.CategoryValidation}}, 400, "brand_new"},
+		{"no_run, which this path never produces", connector.ToolResult{IsError: true, Text: "Decision: no_run: x",
+			ErrorInfo: &tools.ErrorInfo{Category: tools.CategoryBusiness}}, 502, "no_run"},
+	} {
+		if status, code := decideFailureStatus(c.res); status != c.status || code != c.code {
+			t.Errorf("%s: (%d, %q), want (%d, %q)", c.name, status, code, c.status, c.code)
+		}
 	}
 }

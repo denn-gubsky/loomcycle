@@ -695,3 +695,31 @@ func TestOffRunDecision_EveryUsageReaderCountsTheCall(t *testing.T) {
 		t.Errorf("the erasure report counts %d ledger calls for alice, want 1", n)
 	}
 }
+
+// TestOffRunDecision_AnHTTPFailureCarriesItsStructure — the HTTP error body is
+// {code, error} plus what the failure is: its category, whether sending it
+// again can help, and the next step, under the keys MCP's structured content
+// uses.
+func TestOffRunDecision_AnHTTPFailureCarriesItsStructure(t *testing.T) {
+	e := newEnv(t, envOptions{})
+	resp, raw := e.do(http.MethodPost, "/v1/_decide", e.member("alice"),
+		`{"model":"gpt","state":{},"questions":{"q":{"type":"noul","instructions":"x"}}}`, nil)
+	var body struct {
+		Code        string `json:"code"`
+		Error       string `json:"error"`
+		Category    string `json:"errorCategory"`
+		Retryable   *bool  `json:"isRetryable"`
+		Description string `json:"description"`
+	}
+	if err := json.Unmarshal(raw, &body); err != nil || resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("status %d body %s", resp.StatusCode, raw)
+	}
+	if body.Code != "model_not_allowed" || !strings.HasPrefix(body.Error, "Decision: model_not_allowed: ") ||
+		body.Category != "validation" || body.Retryable == nil || *body.Retryable ||
+		!strings.Contains(body.Description, "decide, deep") {
+		t.Errorf("body = %s, want the code, the tool's text, a validation failure that is not retryable, and the names to use", raw)
+	}
+	if ct := resp.Header.Get("Content-Type"); ct != "application/json" {
+		t.Errorf("Content-Type = %q", ct)
+	}
+}

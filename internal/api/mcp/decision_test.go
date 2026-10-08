@@ -90,6 +90,15 @@ func TestDecisionMCP_NeedsTheScopeThatCreatesARun(t *testing.T) {
 			if resps[0].Error == nil || resps[0].Error.Code != mcpErrForbidden || cc.calls != 0 {
 				t.Errorf("a refused call: error %+v after %d connector calls, want forbidden and none", resps[0].Error, cc.calls)
 			}
+			// A token that is only missing the run-creation scope is told so,
+			// not sent to ask for admin.
+			wantScope := auth.ScopeRunsCreate
+			if auth.IsIsolated(auth.Principal{Scopes: c.scopes}, true) {
+				wantScope = auth.ScopeAdmin // it holds runs:create; the tool is outside its session
+			}
+			if resps[0].Error != nil && !strings.HasSuffix(resps[0].Error.Message, "requires "+wantScope) {
+				t.Errorf("the refusal says %q, want it to name %s", resps[0].Error.Message, wantScope)
+			}
 		})
 	}
 }

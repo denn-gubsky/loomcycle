@@ -139,8 +139,12 @@ func decideFailureCode(res connector.ToolResult) (codes.Code, string) {
 	case decision.CodeCallFailed:
 		return codes.Unavailable, reason
 	}
+	// No code, or one a later driver added: go by what kind of failure it is.
 	if res.ErrorInfo != nil && res.ErrorInfo.Category == tools.CategoryValidation {
-		return codes.InvalidArgument, builtin.DecisionCodeInvalidInput
+		if reason == "" {
+			reason = builtin.DecisionCodeInvalidInput
+		}
+		return codes.InvalidArgument, reason
 	}
 	if reason == "" {
 		reason = decision.CodeCallFailed
