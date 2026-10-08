@@ -340,24 +340,7 @@ func (s *Server) dispatchSubstrateCtxGuarded(
 			"error": result.Text,
 			"tool":  toolName,
 		}
-		// The failure's structure, under the same keys MCP puts in
-		// structuredContent, so every surface says one thing about it. Each
-		// key only when there is something true to say.
-		if info := result.ErrorInfo; info != nil {
-			if info.Category != "" {
-				env["errorCategory"] = string(info.Category)
-				env["isRetryable"] = info.Retryable
-				if d := info.RetryAfter; info.Retryable && d != nil && *d > 0 {
-					env["retryAfterSeconds"] = int((*d + time.Second - 1) / time.Second)
-				}
-			}
-			if info.Description != "" && info.Description != result.Text {
-				env["description"] = info.Description
-			}
-			if info.CallFormat != nil {
-				env["correctCallFormat"] = info.CallFormat
-			}
-		}
+		addErrorInfo(env, result.Text, result.ErrorInfo)
 		_ = json.NewEncoder(w).Encode(env)
 		return
 	}
@@ -368,6 +351,28 @@ func (s *Server) dispatchSubstrateCtxGuarded(
 	// from a create/fork, or the error envelope from a refused
 	// scope check). Pass through verbatim.
 	_, _ = w.Write([]byte(result.Text))
+}
+
+// addErrorInfo adds a failed tool result's structure to an error body, under
+// the same keys MCP puts in structuredContent, so every surface says one thing
+// about it. Each key only when there is something true to say.
+func addErrorInfo(env map[string]any, text string, info *tools.ErrorInfo) {
+	if info == nil {
+		return
+	}
+	if info.Category != "" {
+		env["errorCategory"] = string(info.Category)
+		env["isRetryable"] = info.Retryable
+		if d := info.RetryAfter; info.Retryable && d != nil && *d > 0 {
+			env["retryAfterSeconds"] = int((*d + time.Second - 1) / time.Second)
+		}
+	}
+	if info.Description != "" && info.Description != text {
+		env["description"] = info.Description
+	}
+	if info.CallFormat != nil {
+		env["correctCallFormat"] = info.CallFormat
+	}
 }
 
 // substrateAdminCtx stamps the operator-trust ctx for HTTP

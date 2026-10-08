@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/denn-gubsky/loomcycle/internal/config"
+	"github.com/denn-gubsky/loomcycle/internal/decision"
 	"github.com/denn-gubsky/loomcycle/internal/hooks"
 	"github.com/denn-gubsky/loomcycle/internal/loop"
 	"github.com/denn-gubsky/loomcycle/internal/providers"
@@ -1028,4 +1029,13 @@ type ConfiguredRun struct {
 type RunSecrets struct {
 	UserBearer      string            `json:"user_bearer,omitempty"`
 	UserCredentials map[string]string `json:"user_credentials,omitempty"`
+}
+
+// DecisionModelList is the decision models a caller may ask: the operator's
+// names, what each resolves to, and its limits. Nothing here is secret: no
+// endpoint and no key name.
+type DecisionModelList struct {
+	// Default is the name used when a call names no model.
+	Default string               `json:"default"`
+	Models  []decision.ModelInfo `json:"models"`
 }
