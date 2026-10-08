@@ -8,6 +8,88 @@ Each entry is the release's tag annotation, so the tag and this file cannot disa
 
 For the **public roadmap**, see [`docs/PLAN.md`](docs/PLAN.md).
 
+## What's in v1.106.0
+
+*A caller can now make starting a run safe to retry with an **`idempotency_key`**: a second request with the same key starts nothing and is answered with the first run. Any run can be given a lifetime limit of its own with **`max_wall_seconds`**, a detached run included, and ends `cancelled` with stop reason `wall_limit` when it runs out. A program that spawns a sub-agent can ask for the child's outcome as an **object** — status, answer and token usage — instead of text behind a header line. A blocking spawn now reports a run cancelled from outside as cancelled, where it said completed.*
+
+A minor release: #1685 to #1689.
+- #1686 and #1687 are the idempotency key;
+- #1688 is the lifetime limit;
+- #1689 is the object result;
+- #1685 is a test fix.
+
+Together with the untrusted-text changes in v1.105.0 (#1680, #1682), this is the set a code-js orchestrator that dispatches one run per unit of work asked for.
+
+### Retrying a start safely: `idempotency_key` (#1686, #1687)
+
+A caller that retried after a lost response — a timeout, a restart between the call and its answer — used to start a second run for the same work. Every surface that starts a fresh run now takes `idempotency_key` (1 to 200 characters of `[A-Za-z0-9:._-]`): `POST /v1/runs`, `POST /v1/runs:batch`, MCP `spawn_run` and `spawn_runs`, gRPC `Run` and `SpawnRunBatch`.
+
+A second request with the same key, from the same tenant and user, starts nothing. It is answered with the run the first request started, marked `deduplicated`.
+
+- **Detached batch child:** the existing run's ids and its current status.
+- **Joined batch child and `spawn_run`:** the call waits for the existing run and returns its result, read from the run's row. The text is the stored (redacted) answer and `limits` is absent.
+- **`POST /v1/runs` and gRPC `Run`:** the response is the existing run's stream: the `session` and `agent` frames a fresh run sends, the `agent` frame carrying `"deduplicated": true`, then the run's events from its first, ending when the run does. Closing the stream does not stop the run.
+- **A caller joined to a run it did not start never cancels it.** Its timeout ends its own wait, and the run is reported as `running`. The MCP transport timeout follows the same rule.
+- **A run waiting for a person** — parked for input, or held for review — is returned at once as `running`.
+- **No slot, no session.** The key is looked up before admission. Two first requests at the same moment still make one run: the unique index refuses the second, which is answered with the first.
+- **Scope.** The key is stored as `run:<tenant>:<user>:<key>`, so a caller's key cannot equal a webhook's or a schedule's, and one user of a tenant is never answered with another user's run. The lookup also applies the ownership check every other read of a run's content applies.
+- **Refused:** a key on a continuation (`session_id`), on a configured run (`start: false`), and on two children of one batch.
+- **Not compared:** the request body. The same key with a different prompt returns the first run, so build the key from what makes the work distinct.
+- **Lifetime.** A key lives as long as its run's session is retained.
+- **Snapshots.** A paused run's `idempotency_key` and `delivery_alt_key` are now captured and restored. Before, a run restored on another instance held no key, so the retry, redelivered webhook or re-fired schedule slot that followed started the work again. When the target already has a run holding the key, the paused run is restored without it and the restore warns.
+
+### A lifetime limit that belongs to the run: `max_wall_seconds` (#1688)
+
+A model-driven run had no time bound of its own, only its iteration limit and token budgets, and a detached batch child could not be given one: `timeout_ms` bounds a call, and a detached run has none. `max_wall_seconds` is accepted wherever `idempotency_key` is, for any agent, model-driven or code-js. 0 or absent means no bound; the ceiling is 30 days.
+
+- **End state.** Past the limit the run is cancelled, with everything it started, and ends `cancelled` with `stop_reason` `wall_limit`.
+- **What counts.** Waits count, an interactive run's time parked for input included. Time the runtime is paused does not.
+- **Restarts.** The limit is part of the run's `spec`. A resumed run is charged the lifetime it had used; one resumed with no recorded clock is charged its whole age since it started.
+- **Only this run.** The limit cancels the run it belongs to, not whichever run holds its agent id later, and never a run on another replica.
+- **Backstop.** If the run is still going five seconds after its limit, the loop cancels it directly and it ends `failed`.
+- **Children** take no limit of their own from it; they end because their parent's cancel reaches them.
+- **Reading it.** `Context op=self` reports `run_budget.wall_limit_ms` and `wall_elapsed_ms`.
+- **Detach.** A detached batch still refuses `timeout_ms`; the refusal names `max_wall_seconds`.
+
+A code-js run's `run_timeout_seconds` is a different bound (active time only, waits excluded), and a code-js run that outlives `LOOMCYCLE_CODE_AGENTS_MAX_WALL_SECONDS` still ends `failed` with `code_agent_wall_limit`. Not on the agent definition, a continuation, or a schedule or webhook definition.
+
+### A blocking spawn reports how its run ended (#1688)
+
+`spawn_run` and a joined batch child worked a run's status out from what the call saw: an error, or the run's events. A run ended from outside — by `cancel_run`, or by its own limit — leaves neither, and was reported `completed`. The result now takes the run's recorded end: `status`, `stop_reason` and `error` are the row's.
+
+### The child's outcome as an object: `result: "object"` (#1689)
+
+`Agent op=spawn` returns the child's answer as text behind a `[sub-agent agent_id=… run_id=…]` line, so a parent model can attribute it. A parent program had to strip that line to parse the answer and look the child's run up afterwards to learn what it used. With `result: "object"`, on `spawn` and on each `parallel_spawn` entry (or on the call, as the entries' default), the result is
+
+`{agent_id, run_id, status, stop_reason?, final_text?, structured?, state?, usage, error?, truncated?, structured_omitted?, state_omitted?}`
+
+as JSON, which a code-js program receives parsed.
+
+- **`final_text`** is the answer with no header line. `structured` is the answer parsed against the child's `output_format`; `state` is a stateful child's final state.
+- **`usage`** is `input_tokens`, `output_tokens`, `cache_creation_input_tokens`, `cache_read_input_tokens`, `model` and `provider`. Which key paid and what it cost are not in it.
+- **A child that ran does not fail the call.** `status` is `completed`, `failed`, `cancelled`, `rejected`, `timeout` or `max_iterations`; anything but `completed` comes with `error` and its `usage`. A child that never started is still an error.
+- **Hooks.** What a `subagent_stop` hook adds to an accepted answer is kept; a child whose answer a hook refused reports `rejected` and no answer.
+- **Size.** The object takes at most a quarter of the parent's window, like a text result.
+- **Fan-out.** A row whose entry asked for the object carries it in `result`, in place of `output` and `state`.
+- **Refused** with `mode: "poll"`, and on `open` and `send`.
+
+Without `result` the text result is byte-identical. The code-js ABI is 1.2.0.
+
+### Other fixes
+
+- **Tests (#1685, #1687).** A resident-child test waits for a running turn's partial output instead of assuming it, and the idempotency test that hides one lookup no longer swaps the server's store under a live run.
+
+### Upgrade notes
+
+- **Migrations:** none.
+- **Proto:** additive. `RunRequest` gains `idempotency_key` (38) and `max_wall_seconds` (39); `SpawnResult` gains `deduplicated` (9).
+- **New environment variables:** none.
+- **Blocking spawns:** a caller of `spawn_run` or a joined `spawn_runs` / `POST /v1/runs:batch` that treated every `completed` result as a finished answer now sees `cancelled` for a run that was cancelled while it waited. The partial text is still in `final_text`.
+- **Snapshots:** the paused-run entry gains `idempotency_key` and `delivery_alt_key`. An older snapshot restores as before, with no keys. Restoring a newer snapshot onto a store where another run already holds a key adds a warning and restores the run without it.
+- **`Context op=self`:** a model-driven run started with `max_wall_seconds` now reports a `run_budget` object, with `wall_limit_ms` and `wall_elapsed_ms` only. A reader that assumed `run_budget` always carries `budget_ms` must check for it.
+- **Adapters:** TS and Python are 1.106.0. TS gains `RunOptions.idempotencyKey` and `maxWallSeconds`, `deduplicated` on the `agent` frame and on `SpawnRunResult`, and `RunSpec.max_wall_seconds`. Python gains `idempotency_key` and `max_wall_seconds` on `run_streaming` and on a batch child, `RunHandle.deduplicated`, and `deduplicated` on a batch result.
+- **Not built:** a default `max_wall_seconds` on the agent definition; an idempotency key on a continuation; the object result for a fan-out child that had already finished when its parent was restored from a snapshot (it comes back as text); `untrusted` on `Agent op=send`.
+
 ## What's in v1.105.0
 
 *An agent can now start sub-agents and team walks in **poll mode**: the call returns at once, the children run in the background, the parent keeps working, is told when they finish and collects their results with `poll`; they survive a pause, a restart and a move to another instance. A child can be bounded with `timeout_ms`, and a child that stops at its iteration limit now reaches its caller as an error with its last answer kept. Scheduled runs are no longer capped at 10 minutes, every replica can run the scheduler, and a schedule says what an overlapping slot does and how many missed slots it makes up. Also: a team can be checked before it is saved, a cancel ends a run whose replica is gone, a parent can hand a sub-agent untrusted text, and the memory rerank can reorder recall.*

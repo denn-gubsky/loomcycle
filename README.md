@@ -182,7 +182,15 @@ been primitives plus hardening: memory, documents, teams, sandboxing, retention
 and erasure. The agentic-memory subsystem and the document surfaces built on it
 remain the main direction.
 
-The most recent line (v1.105.0) lets an agent start sub-agents and team walks
+The most recent line (v1.106.0) makes starting a run safe to retry: a request
+with an `idempotency_key` that a run already holds starts nothing and is
+answered with that run. Any run can carry a lifetime limit of its own,
+`max_wall_seconds`, a detached run included, and ends `cancelled` with stop
+reason `wall_limit` when it runs out. A program that spawns a sub-agent can ask
+for the child's outcome as an object, with its status, answer and token usage,
+and a blocking spawn reports a run cancelled from outside as cancelled.
+
+Before it, v1.105.0 let an agent start sub-agents and team walks
 in poll mode: the call returns at once, the parent keeps working, is told when
 they finish and collects their results, and they survive a pause, a restart and
 a move to another instance. A child can be bounded with `timeout_ms`, and one
