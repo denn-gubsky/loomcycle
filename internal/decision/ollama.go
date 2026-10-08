@@ -199,6 +199,12 @@ func ollamaRefusal(status int, raw []byte) error {
 		msg = strings.Replace(msg, m[0], "", 1)
 	}
 	switch {
+	case status == http.StatusRequestEntityTooLarge:
+		// A cap on the request's bytes ("text and schema must not exceed 64 KiB"),
+		// checked before the model's token limit. The caller's remedy is the same
+		// as for a prompt over the context, so it is the same code; the reply gives
+		// no token counts.
+		e.Code = CodePromptTooLarge
 	case status == http.StatusBadRequest && strings.Contains(msg, "tokens"):
 		e.Code = CodePromptTooLarge
 		if m := ollamaTooLarge.FindStringSubmatch(msg); m != nil {
