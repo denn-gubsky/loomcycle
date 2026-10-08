@@ -6,8 +6,23 @@
 
 import { describe, it, expect } from "vitest";
 import { makeClient, jsonResponse } from "./helpers.js";
-import { LoomcycleError } from "../src/errors.js";
-import type { DecideRequest, DecisionAnswer } from "../src/types.js";
+// Through the package index, as a consumer imports them: a type left out of
+// the index fails this file's typecheck.
+import { LoomcycleError } from "../src/index.js";
+import type {
+  DecideRequest,
+  DecideResponse,
+  DecisionAnswer,
+  DecisionChoiceAnswer,
+  DecisionChoiceQuestion,
+  DecisionModel,
+  DecisionModelsResponse,
+  DecisionNoulAnswer,
+  DecisionNoulQuestion,
+  DecisionQuestion,
+  DecisionScoreAnswer,
+  DecisionScoreQuestion,
+} from "../src/index.js";
 
 const state = {
   ticket: "My invoice for March was charged twice and I want my money back.",
@@ -32,7 +47,22 @@ const request: DecideRequest = {
   },
 };
 
+// One value of each exported question and answer type.
+const choiceQ: DecisionChoiceQuestion = { type: "choice", instructions: "q", criteria: { a: null, b: "b" } };
+const noulQ: DecisionNoulQuestion = { type: "noul", instructions: "q" };
+const scoreQ: DecisionScoreQuestion = { type: "score", instructions: "q", criteria: ["low", "high"] };
+const everyQuestion: DecisionQuestion[] = [choiceQ, noulQ, scoreQ];
+const choiceA: DecisionChoiceAnswer = { type: "choice", choice: "a", probabilities: { a: 1, b: 0 }, confidence: 1 };
+const noulA: DecisionNoulAnswer = { type: "noul", noul: 0 };
+const scoreA: DecisionScoreAnswer = { type: "score", score: 0, legend: { "0": "low" }, probabilities: { "0": 1 }, confidence: 1 };
+const everyAnswer: DecisionAnswer[] = [choiceA, noulA, scoreA];
+
 describe("decide", () => {
+  it("exports a question and an answer type per question type", () => {
+    expect(everyQuestion.map((q) => q.type)).toEqual(["choice", "noul", "score"]);
+    expect(everyAnswer.map((a) => a.type)).toEqual(["choice", "noul", "score"]);
+  });
+
   it("POSTs /v1/_decide with state + questions, and no model unless one is named", async () => {
     const { client, fetchMock } = makeClient([
       jsonResponse({ model: "decide", provider: "p", served_model: "m", answers: {}, usage: { input_tokens: 0, output_tokens: 0 } }),
@@ -93,7 +123,7 @@ describe("decide", () => {
       }),
     ]);
 
-    const res = await client.decide(request);
+    const res: DecideResponse = await client.decide(request);
     expect(res.model).toBe("decide");
     expect(res.provider).toBe("ollama-local");
     expect(res.served_model).toBe("nimble");
@@ -210,7 +240,9 @@ describe("listDecisionModels", () => {
       }),
     ]);
 
-    const res = await client.listDecisionModels();
+    const res: DecisionModelsResponse = await client.listDecisionModels();
+    const first: DecisionModel = res.models[0]!;
+    expect(first.provider).toBe("ollama-local");
     expect(res.default).toBe("decide");
     expect(res.models.map((m) => m.name)).toEqual(["decide", "decide-deep"]);
     expect(res.models[1]!.model).toBe("nimble-xl");
