@@ -815,7 +815,7 @@ tiers:
 - **Keyless** endpoints omit `api_key_env` — declaring the provider *is* the opt-in.
 - Operator entries **deep-merge over** the built-ins, so you can also override a built-in (re-point `ollama-local`'s `base_url`, add a `max_concurrent`) without restating it. `LOOMCYCLE_NO_DEFAULT_PROVIDERS=1` drops the built-ins and declares only your own.
 - **Per-provider stream timeouts in YAML** — `options: { header_timeout_ms: 600000, idle_timeout_ms: 600000 }` on any `providers:` entry tunes that provider's first-token and idle windows (a slow local backend's cold model load can exceed the global 60s/90s default). This is the YAML home for what were the `LOOMCYCLE_OLLAMA_LOCAL_*_TIMEOUT_MS` env knobs; a YAML value wins over the env.
-- **Advertise a local model's window.** vLLM (`--max-model-len`) and llama.cpp (`-c`) fix the context window at server launch — there is no per-request `num_ctx` for them. Set `capabilities: { max_context_tokens: <window> }` on the provider entry so loomcycle's compaction budget, the context gauge, and `Context op=self` match the served window (otherwise it advertises the openai default and can over-claim → truncation). The **`local` preset** (`LOOMCYCLE_PRESETS=base,local`) ships ready-to-uncomment `vllm-local` / `llamacpp-local` templates carrying exactly these settings — `loomcycle presets show local`.
+- **Advertise a local model's window.** vLLM (`--max-model-len`) and llama.cpp (`-c`) fix the context window at server launch — there is no per-request `num_ctx` for them. Set `capabilities: { max_context_tokens: <window> }` on the provider entry so loomcycle's compaction budget, the context gauge, and `Context op=self` match the served window (otherwise it advertises the openai default and can over-claim → truncation). The **`local` preset** (`LOOMCYCLE_PRESETS=base,local`) ships `vllm-local` / `llamacpp-local` templates carrying exactly these settings, commented out, to copy into your own config (`providers:` line included) — `loomcycle presets show local`.
 
 **Per-provider concurrency (`max_concurrent`)** caps in-flight runs to one provider; the rest queue inside loomcycle (then `429 provider_concurrency_exhausted`). Its point is a **local model on one GPU**: `ollama-local: { driver: ollama, max_concurrent: 2 }` runs a stable batch to completion without VRAM context-swapping, draining a fan-out in pairs. The gate is taken **before** the global concurrency slot so a saturated local cap never starves cloud runs — leave cloud providers uncapped.
 
@@ -1454,6 +1454,12 @@ error** (recommended for production — an accidental clobber of `provider_prior
 or a host allowlist can't slip through silently). Adding a new key or re-setting a
 key to the *same* value is not a conflict.
 
+**An empty key replaces.** A key with nothing under it — typically a section whose
+entries are all commented out — is a YAML null, not "no change", and by the rule
+above it **replaces** what an earlier layer set there: a bare `providers:` in any
+layer drops every built-in provider (it shows as `config layer override: providers`).
+Comment the key out along with its entries.
+
 **Notes.** Each file keeps its own `${ENV}` expansion (a later layer can't inject
 into an earlier layer's text). The merged whole runs the **same `validate()`** as a
 single file — layering only *assembles* a config, it can't produce one a single
@@ -1727,6 +1733,7 @@ decision:
 - Config load fails on: a `model_pattern` alias, an undeclared provider, a provider with no decision support (only Ollama has it today), a plain model name with no `decision.provider`, an alias tagged another kind, or an unknown key in the block.
 - With `models` omitted, every alias tagged `kind: decision` must be buildable, or load fails.
 - No block means the capability is off. Changing the block needs a restart.
+- The embedded `local` preset (§9f) ships the `decide` alias above and no block: add `decision: { default: decide }` to your own config to turn it on.
 - An agent narrows its own list with `agents.<name>.decision: {default, models}`; it can only narrow.
 
 See [`docs/DECISION-MODELS.md`](DECISION-MODELS.md) for the request and answer formats, the four surfaces and billing.
