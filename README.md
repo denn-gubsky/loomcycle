@@ -182,7 +182,17 @@ been primitives plus hardening: memory, documents, teams, sandboxing, retention
 and erasure. The agentic-memory subsystem and the document surfaces built on it
 remain the main direction.
 
-The most recent line (v1.106.0) makes starting a run safe to retry: a request
+The most recent line (v1.107.0) adds decision models as a general capability:
+an agent, a code body or an outside caller asks typed questions (pick one
+option, yes or no, a position on a scale) and gets each answer with
+probabilities instead of text. It is the `Decision` tool inside a run,
+`POST /v1/_decide`, the gRPC `Decide` RPC and the MCP `decision` tool, with
+`decide()` in both clients; calls made outside a run are metered to the caller.
+A `models:` alias can say what kind of model it is (`kind: chat | decision |
+embedder`), and an MCP session is now held to the scopes its token was granted.
+See [`docs/DECISION-MODELS.md`](docs/DECISION-MODELS.md).
+
+Before it, v1.106.0 made starting a run safe to retry: a request
 with an `idempotency_key` that a run already holds starts nothing and is
 answered with that run. Any run can carry a lifetime limit of its own,
 `max_wall_seconds`, a detached run included, and ends `cancelled` with stop
@@ -190,7 +200,7 @@ reason `wall_limit` when it runs out. A program that spawns a sub-agent can ask
 for the child's outcome as an object, with its status, answer and token usage,
 and a blocking spawn reports a run cancelled from outside as cancelled.
 
-Before it, v1.105.0 let an agent start sub-agents and team walks
+Earlier, v1.105.0 let an agent start sub-agents and team walks
 in poll mode: the call returns at once, the parent keeps working, is told when
 they finish and collects their results, and they survive a pause, a restart and
 a move to another instance. A child can be bounded with `timeout_ms`, and one
