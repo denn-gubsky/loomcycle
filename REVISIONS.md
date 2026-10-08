@@ -12,13 +12,14 @@ For the **public roadmap**, see [`docs/PLAN.md`](docs/PLAN.md).
 
 *An agent, a code body or an outside caller can now ask a **decision model** typed questions — pick one option, yes or no, a position on a scale — and get each answer with probabilities instead of text. It is the **`Decision`** tool inside a run, **`POST /v1/_decide`**, the gRPC **`Decide`** RPC and the MCP **`decision`** tool, with `decide()` in the TypeScript and Python clients. A `models:` alias can now say what kind of model it is (**`kind: chat | decision | embedder`**), so a model cannot be wired where it cannot serve. An MCP session is now held to the scopes its token was granted.*
 
-A minor release: #1691 to #1697.
-- #1691, #1692, #1694 and #1697 are decision models;
-- #1695 is the MCP scope fix;
+A minor release: #1691 to #1703.
+- #1691, #1692, #1694 and #1697 are decision models; #1699, #1700 and #1702 complete them (client error classes, refusal wording, the OpenAPI contract);
+- #1695 and #1703 hold a member token to its scopes, over MCP and for team runs;
+- #1701 fixes the `local` preset;
 - #1693 is the team-definition key fix;
 - #1696 is a test fix.
 
-### Decision models (#1691, #1692, #1694, #1697)
+### Decision models (#1691, #1692, #1694, #1697, #1699, #1700, #1702)
 
 A decision model reads a piece of state and answers typed questions about it. It writes no text, so there is no reply to parse: the answer cannot be malformed and cannot name an option that was not offered. A call is a few hundred input tokens and a handful of output tokens. Until now loomcycle used one in a single place, the memory reranker. Guide: [`docs/DECISION-MODELS.md`](docs/DECISION-MODELS.md).
 
@@ -52,8 +53,13 @@ decision:
 - **MCP:** the `decision` tool.
 - **Clients:** `decide()` / `listDecisionModels()` in `@loomcycle/client`, `decide()` / `list_decision_models()` in the Python client.
 - The three run-less surfaces need the `runs:create` scope.
+- **OpenAPI:** both HTTP routes are in the published contract (`/v1/openapi.yaml`, `/v1/docs`), which now covers memory, documents and decision models. Drift tests tie it to the tool's input and the handler's error codes.
 
 **Errors** carry a code a caller can branch on: `invalid_input`, `bad_question`, `bad_options`, `too_many_questions`, `model_not_allowed`, `prompt_too_large`, `model_not_found`, `operator_key_restricted`, `token_limit_exceeded`, `decision_not_configured`, `timeout`, `call_failed`. The TypeScript client exposes it as `e.code` and the Python client as `e.reason`, on every endpoint, not only this one.
+
+- A refusal is worded for its caller: one asked outside a run no longer speaks of "this agent" or "this run".
+- **TypeScript error classes.** A 429 `token_limit_exceeded` now throws `TokenLimitExceededError`, with the budget on `e.scope`, `e.scopeId`, `e.used`, `e.limit` and `e.window`. It is not transient, unlike a plain `BackpressureError`, which it extends so that existing `instanceof BackpressureError` checks still match: test for it first. A 413 `prompt_too_large` throws `PromptTooLargeError`, and any other non-snapshot 413 throws `RequestTooLargeError`; both are still `instanceof SnapshotTooLargeError`.
+- ⚠️ `e.name`, and the `meta_reason` of the client's `stream_close` frame, now read the more specific class name for these responses. Match with `instanceof` or `e.code`, not on the name.
 
 **Who pays.**
 
@@ -71,7 +77,7 @@ A `models:` alias can declare `kind: chat` (the default), `kind: decision` or `k
 - An untagged alias used as a chat model says nothing.
 - `GET /v1/_models` reports a tagged alias's kind. The kind is never a routing input.
 
-### An MCP session is held to its token's scopes (#1695)
+### A member token is held to its scopes: MCP sessions and team runs (#1695, #1703)
 
 `POST /v1/_mcp` admits any non-isolated member token, and the per-tool gate did not look at the token's scopes. A token granted only `runs:read` could start, steer and cancel runs over MCP, and a token with no channel scope could publish and read channels; the same token was refused over HTTP and gRPC.
 
@@ -86,6 +92,22 @@ Each run and channel tool now needs the scope its gRPC twin needs:
 
 - ⚠️ A member token that was starting runs over MCP without `runs:create` is now refused. The refusal names the scope it lacks.
 - Stdio, admin, legacy and `substrate:tenant` sessions are unchanged.
+
+**Team runs (#1703).** The same kind of token could start a team run through the `teamdef` definition tool, over `POST /v1/_teamdef` and the MCP `teamdef` tool: a member is admitted to both for authoring, and `op=run` rode in on that. gRPC was not affected.
+
+- On those two surfaces `run` and `cancel` now need `runs:create`, and `poll` needs `runs:read`. The refusal is a 403 naming the scope (MCP: a forbidden error), before any walk is admitted.
+- ⚠️ A member token without `runs:create` that was starting team runs this way is now refused. Tokens minted with the default member grants carry both run scopes and are unaffected.
+- Authoring operations, an agent using the tool inside a run, and admin, legacy, `substrate:tenant` and open-mode callers are unchanged.
+
+### The `local` preset no longer wipes the built-in providers (#1701)
+
+The embedded `local` preset carried a `providers:` key with only comments under it. That is an empty value, and a later config layer's empty value replaces what an earlier layer set: `LOOMCYCLE_PRESETS=base,local` booted with no providers at all, `ollama-local` included, and `local` alone failed to boot under `LOOMCYCLE_CONFIG_STRICT=1`.
+
+- The key is now commented out with its examples, and the `ollama-local` example names its driver, so copying it into your own config loads.
+- ⚠️ **`base,local` gets the nine built-in providers back.** A cloud provider whose key is in the environment becomes enabled again, and `base`'s tiers list cloud candidates behind the local ones, so such a deployment can fall back to a cloud provider and be billed by it. This is what the preset's header always described ("cloud providers remain as fallback").
+- `local` alone routes to `ollama-local` only; the built-in cloud providers are declared again, and only an agent that pins one reaches them.
+- The preset now ships a `local-decide` alias (`ollama-local` / `nimble`, `kind: decision`) and a commented `decision:` block. Add `decision: { default: local-decide }` to your own config to turn decision models on.
+- The merge rule is unchanged: an empty key in any layer still replaces. The Configuration guide now says so (§9e).
 
 ### A team definition's keys are read exactly as written (#1693)
 
@@ -102,8 +124,9 @@ A team definition was decoded leniently: a key matched a field with its case ign
 - **No schema migration.**
 - **Additive on the wire:** two HTTP routes, two RPCs, one MCP tool, one builtin tool, `kind` on `/v1/_models`, `decision` on the AgentDef overlay.
 - **Config:** tag embedder and decision aliases with their `kind` to clear the new warning.
-- **MCP:** check that member tokens used over MCP carry the scopes for the tools they call.
-- **Clients:** `@loomcycle/client` 1.107.0 and the Python client 1.107.0 add the decision methods and the error code field.
+- **Member tokens:** check that tokens used over MCP, or to start team runs through `teamdef`, carry the scopes for what they call.
+- **`local` preset:** a deployment on `base,local` with cloud keys in its environment regains cloud fallback. Unset the keys, or set `LOOMCYCLE_NO_DEFAULT_PROVIDERS=1` and declare only the providers you want, to stay local-only.
+- **Clients:** `@loomcycle/client` 1.107.0 and the Python client 1.107.0 add the decision methods and the error code field; the TypeScript client adds `TokenLimitExceededError`, `PromptTooLargeError` and `RequestTooLargeError`.
 
 ## What's in v1.106.0
 
