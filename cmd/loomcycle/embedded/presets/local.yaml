@@ -74,6 +74,9 @@ models:
   local-fast:  { provider: ollama-local, model: gpt-oss* }        # quick / low-context
   local-chat:  { provider: ollama-local, model: qwen3.6*   }      # general reasoning
   local-coder: { provider: ollama-local, model_pattern: "qwen3.8*" } # coding / review
+  # A small local decision model (answers a typed question fast; not a chat
+  # model). Naming it here asks nothing of it — see DECISION MODEL below.
+  decide:      { provider: ollama-local, model: nimble, kind: decision }
   # vLLM / llama.cpp model examples — declare the provider (above), then set the
   # served model id (as vLLM/llama-server reports it on GET /v1/models):
   # vllm-chat:     { provider: vllm-local,     model: Qwen/Qwen3-8B }
@@ -88,3 +91,14 @@ tiers:
   low:    !prepend [local-fast]
   middle: !prepend [local-chat]
   high:   !prepend [local-coder]
+
+# DECISION MODEL. The `decide` alias above only NAMES a model: nothing asks it
+# until a `decision:` block is declared, and this preset declares none. A block
+# that cannot be built stops the server at boot — which it would here whenever
+# ollama-local is not declared (LOOMCYCLE_NO_DEFAULT_PROVIDERS=1) or your own
+# config points `decide` at a provider that serves no decision models. To turn
+# it on, COPY the two lines below into your own loomcycle.yaml. Your Ollama must
+# serve the model: one that is not pulled fails the call, not the boot.
+#
+# decision:
+#   default: decide
