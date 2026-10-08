@@ -134,10 +134,10 @@ func TestEmbedded_LocalPresetProvidersExampleLoads(t *testing.T) {
 }
 
 // TestEmbedded_LocalNamesADecisionModelAndAsksNothingOfIt: the local preset
-// ships the `decide` alias and NO decision block. The alias costs nothing; a
+// ships the `local-decide` alias and NO decision block. The alias costs nothing; a
 // block is checked at load and refuses to boot when it cannot be built, so
 // shipping one would stop the server for an operator who runs local without
-// ollama-local declared, or who already points a `decide` alias of their own at
+// ollama-local declared, or who already points a `local-decide` alias of their own at
 // a provider that serves no decision models. Both of those load here.
 func TestEmbedded_LocalNamesADecisionModelAndAsksNothingOfIt(t *testing.T) {
 	t.Setenv("LOOMCYCLE_SKILLS_ROOT", "")
@@ -149,18 +149,18 @@ models:
 `)}
 	ownDecide := config.Layer{Name: "operator", Data: []byte(`
 models:
-  decide: { provider: openai, model: gpt-5.4-mini }
+  local-decide: { provider: openai, model: gpt-5.4-mini }
 `)}
 	for name, layers := range map[string][]config.Layer{
-		"base,local":                                 bootStackFor(t, "base", "local"),
-		"local":                                      bootStackFor(t, "local"),
-		"base,local,chat":                            bootStackFor(t, "base", "local", "chat"),
-		"base,local + another local provider":        append(bootStackFor(t, "base", "local"), vllmOnly),
-		"base,local, no built-in providers":          layersFor(t, "base", "local"),
-		"base,local, only another local provider":    append(layersFor(t, "base", "local"), vllmOnly),
-		"base,local + the operator's own decide":     append(bootStackFor(t, "base", "local"), ownDecide),
-		"base,local, own decide, no built-in":        append(layersFor(t, "base", "local"), ownDecide),
-		"base,local, every other unit stacked on it": bootStackFor(t, allUnitsBaseLocalFirst()...),
+		"base,local":                                   bootStackFor(t, "base", "local"),
+		"local":                                        bootStackFor(t, "local"),
+		"base,local,chat":                              bootStackFor(t, "base", "local", "chat"),
+		"base,local + another local provider":          append(bootStackFor(t, "base", "local"), vllmOnly),
+		"base,local, no built-in providers":            layersFor(t, "base", "local"),
+		"base,local, only another local provider":      append(layersFor(t, "base", "local"), vllmOnly),
+		"base,local + the operator's own local-decide": append(bootStackFor(t, "base", "local"), ownDecide),
+		"base,local, own local-decide, no built-in":    append(layersFor(t, "base", "local"), ownDecide),
+		"base,local, every other unit stacked on it":   bootStackFor(t, allUnitsBaseLocalFirst()...),
 	} {
 		t.Run(name, func(t *testing.T) {
 			cfg, err := config.LoadLayers(layers...)
@@ -170,8 +170,8 @@ models:
 			if cfg.Decision.Configured() {
 				t.Errorf("the local preset declared a decision block (%+v); it may only name the alias", cfg.Decision)
 			}
-			if _, ok := cfg.Models["decide"]; !ok {
-				t.Errorf("models.decide is missing")
+			if _, ok := cfg.Models["local-decide"]; !ok {
+				t.Errorf("models.local-decide is missing")
 			}
 		})
 	}
@@ -180,8 +180,8 @@ models:
 	if err != nil {
 		t.Fatalf("LoadLayers(base, local): %v", err)
 	}
-	if got := cfg.Models["decide"]; got.Provider != "ollama-local" || got.Model != "nimble" || got.Kind != config.ModelKindDecision {
-		t.Errorf("models.decide = %+v, want ollama-local / nimble / kind decision", got)
+	if got := cfg.Models["local-decide"]; got.Provider != "ollama-local" || got.Model != "nimble" || got.Kind != config.ModelKindDecision {
+		t.Errorf("models.local-decide = %+v, want ollama-local / nimble / kind decision", got)
 	}
 }
 
@@ -206,8 +206,8 @@ func TestEmbedded_LocalPresetDecisionExampleTurnsItOn(t *testing.T) {
 		t.Fatalf("the preset's own decision example must load: %v", err)
 	}
 	entries := cfg.DecisionEntries()
-	if cfg.Decision.Default != "decide" || len(entries) != 1 || entries[0].Name != "decide" {
-		t.Fatalf("decision = %+v entries %+v, want default decide and that one entry", cfg.Decision, entries)
+	if cfg.Decision.Default != "local-decide" || len(entries) != 1 || entries[0].Name != "local-decide" {
+		t.Fatalf("decision = %+v entries %+v, want default local-decide and that one entry", cfg.Decision, entries)
 	}
 	svc, err := decisionbuild.Build(cfg)
 	if err != nil || svc == nil {
@@ -215,7 +215,7 @@ func TestEmbedded_LocalPresetDecisionExampleTurnsItOn(t *testing.T) {
 	}
 	models := svc.Models()
 	if len(models) != 1 || models[0].Provider != "ollama-local" || models[0].Model != "nimble" {
-		t.Errorf("decision models = %+v, want decide = ollama-local/nimble", models)
+		t.Errorf("decision models = %+v, want local-decide = ollama-local/nimble", models)
 	}
 }
 

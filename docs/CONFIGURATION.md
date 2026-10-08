@@ -1733,7 +1733,7 @@ decision:
 - Config load fails on: a `model_pattern` alias, an undeclared provider, a provider with no decision support (only Ollama has it today), a plain model name with no `decision.provider`, an alias tagged another kind, or an unknown key in the block.
 - With `models` omitted, every alias tagged `kind: decision` must be buildable, or load fails.
 - No block means the capability is off. Changing the block needs a restart.
-- The embedded `local` preset (§9f) ships the `decide` alias above and no block: add `decision: { default: decide }` to your own config to turn it on.
+- The embedded `local` preset (§9f) ships a `local-decide` alias (`ollama-local` / `nimble`) and no block: add `decision: { default: local-decide }` to your own config to turn it on.
 - An agent narrows its own list with `agents.<name>.decision: {default, models}`; it can only narrow.
 
 See [`docs/DECISION-MODELS.md`](DECISION-MODELS.md) for the request and answer formats, the four surfaces and billing.
