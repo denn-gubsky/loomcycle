@@ -155,6 +155,14 @@ memory:
 	if got := kindWarnings(cfg); len(got) != 0 {
 		t.Errorf("warnings = %q, want none", got)
 	}
+	// The listwise reranker is the one service block that takes a chat model.
+	cfg, err = Load(writeCfg(t, kindCfg("memory:\n  reranker: { model: plain }\n")))
+	if err != nil {
+		t.Fatalf("Load (listwise reranker): %v", err)
+	}
+	if got := kindWarnings(cfg); len(got) != 0 {
+		t.Errorf("listwise reranker on an untagged alias: warnings = %q, want none", got)
+	}
 }
 
 // TestResolveAgentDefModel_RefusesANonChatAlias — a def authored at run time is
