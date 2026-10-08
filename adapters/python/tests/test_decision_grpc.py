@@ -378,8 +378,18 @@ async def test_list_decision_models_unconfigured_carries_its_reason():
     assert ei.value.code == grpc.StatusCode.FAILED_PRECONDITION
 
 
-def test_reason_is_read_past_other_details():
-    err = _rpc_error(grpc.StatusCode.RESOURCE_EXHAUSTED, "backpressure", _DETAILS["backpressure"])
+def test_reason_is_found_among_other_details_in_either_order():
+    served = _DETAILS["backpressure"]
+    err = _rpc_error(grpc.StatusCode.RESOURCE_EXHAUSTED, "backpressure", served)
+    assert _error_reason(err) == "backpressure"
+
+    # The same two details the server wrote, RetryInfo first: the order of a
+    # repeated field is the server's to choose.
+    retry_info = served[-100:]
+    assert bytes.fromhex(retry_info).endswith(b"google.rpc.RetryInfo\x12\x04\x0a\x02\x08\x05")
+    head, error_info = served[:32], served[32:-100]
+    assert bytes.fromhex(head).endswith(b"backpressure")
+    err = _rpc_error(grpc.StatusCode.RESOURCE_EXHAUSTED, "backpressure", head + retry_info + error_info)
     assert _error_reason(err) == "backpressure"
 
 
