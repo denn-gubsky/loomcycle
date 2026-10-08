@@ -409,6 +409,19 @@ export type {
   CredentialScope,
   CredentialMeta,
   CredentialListResponse,
+  // Decision models
+  DecideRequest,
+  DecideResponse,
+  DecisionQuestion,
+  DecisionChoiceQuestion,
+  DecisionNoulQuestion,
+  DecisionScoreQuestion,
+  DecisionAnswer,
+  DecisionChoiceAnswer,
+  DecisionNoulAnswer,
+  DecisionScoreAnswer,
+  DecisionModel,
+  DecisionModelsResponse,
 } from "./types.js";
 
 export {

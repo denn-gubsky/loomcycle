@@ -45,6 +45,9 @@ import {
 import type {
   CredentialListResponse,
   CredentialMeta,
+  DecideRequest,
+  DecideResponse,
+  DecisionModelsResponse,
   CredentialScope,
   DirectoryInspection,
   DirectoryTenant,
@@ -1041,6 +1044,41 @@ export class LoomcycleClient {
     if (opts?.scopeId) params.set("scope_id", opts.scopeId);
     if (opts?.tenant) params.set("tenant", opts.tenant);
     return deleteRequest(this.ctx, `/v1/_limits?${params.toString()}`, opts);
+  }
+
+  /** Ask a decision model typed questions (`choice` / `noul` / `score`) about
+   *  `state` and get each answer with its probabilities. A decision model does
+   *  not write: there is no reply to parse and the call costs a few output
+   *  tokens. No run is involved; the tokens are charged to the caller and count
+   *  against its token budget. Mirrors `POST /v1/_decide`.
+   *
+   *  A refusal throws with the decision's own code on `e.code` and the HTTP
+   *  status on `e.status`: 400 `invalid_input` / `bad_question` / `bad_options`
+   *  / `too_many_questions` / `model_not_allowed`, 403
+   *  `operator_key_restricted`, 413 `prompt_too_large`, 429
+   *  `token_limit_exceeded`, 502 `model_not_found` / `call_failed`, 503
+   *  `decision_not_configured`, 504 `timeout`. Branch on the code: the error
+   *  class follows the status alone, and a status is shared with unrelated
+   *  conditions. */
+  async decide(
+    req: DecideRequest,
+    opts?: { signal?: AbortSignal },
+  ): Promise<DecideResponse> {
+    const body: Record<string, unknown> = {
+      state: req.state,
+      questions: req.questions,
+    };
+    if (req.model !== undefined) body.model = req.model;
+    return postJSON<DecideResponse>(this.ctx, "/v1/_decide", body, opts);
+  }
+
+  /** The decision models a {@link decide} call may name, with each one's
+   *  limits, and the default. Throws with `code: "decision_not_configured"`
+   *  (503) on a deployment that declares none. Mirrors `GET /v1/_decide/models`. */
+  async listDecisionModels(opts?: {
+    signal?: AbortSignal;
+  }): Promise<DecisionModelsResponse> {
+    return jsonFetch<DecisionModelsResponse>(this.ctx, "/v1/_decide/models", opts);
   }
 
   /** Read the full event log for a session. Each entry has seq,

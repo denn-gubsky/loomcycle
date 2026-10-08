@@ -323,6 +323,77 @@ const { entries } = await client.listVolumes();
 
 Refusals throw `SubstrateToolRefusedError` (collision with a static volume name, no `dynamic_root` configured, cross-tenant); transport failures throw the usual typed errors.
 
+### Decision models
+
+Ask a **decision model** typed questions about a piece of text and get each answer with its probabilities. A decision model does not write: it reads the `state` you give it and answers a choice, a yes/no or a score, so there is no reply to parse and a call costs a few output tokens. Use it to route, gate, rank or grade text you already have. No run is involved; the tokens are charged to the caller and count against its token budget.
+
+| Method | Returns | Notes |
+|---|---|---|
+| `decide(req: DecideRequest)` | `Promise<DecideResponse>` | `{model?, state, questions}` → `{model, provider, served_model, answers, usage}`. Mirrors `POST /v1/_decide`. |
+| `listDecisionModels()` | `Promise<DecisionModelsResponse>` | The models a call may name, each with its limits, and the default. Mirrors `GET /v1/_decide/models`. |
+
+`questions` is keyed by names you choose, and each answer comes back under its question's name. `criteria` is typed per question type:
+
+| `type` | `criteria` | Answer |
+|---|---|---|
+| `choice` | required — `Record<string, string \| null>`: each key is an option, its value describes it (`null` when the key explains itself) | `{type, choice, probabilities, confidence}` |
+| `noul` | optional — `{true?: string; false?: string}` | `{type, noul}` — the probability of YES, 0 to 1 |
+| `score` | required — `string[]`, level descriptions **lowest first** | `{type, score, legend, probabilities, confidence}` — `score` is the expected position, counted from 0 |
+
+```ts
+const res = await client.decide({
+  state: { ticket: "My invoice for March was charged twice and I want my money back." },
+  questions: {
+    route: {
+      type: "choice",
+      instructions: "Which team should handle this ticket?",
+      criteria: { billing: "invoices, refunds, charges", support: "bugs, outages", sales: null },
+    },
+    urgent: { type: "noul", instructions: "Does this ticket need a reply within the hour?" },
+    detail: {
+      type: "score",
+      instructions: "How complete is the problem report?",
+      criteria: ["no detail", "some detail", "everything needed"],
+    },
+  },
+});
+
+const route = res.answers.route;
+if (route?.type === "choice") console.log(route.choice, route.probabilities);
+const urgent = res.answers.urgent;
+if (urgent?.type === "noul" && urgent.noul > 0.5) escalate();
+```
+
+- **`noul: 0` is an answer** (a definite no), not a missing one — never test it for truthiness.
+- **The probabilities are not calibrated.** Compare options within one answer; do not treat a fixed threshold as a guarantee.
+- **An answer is the model's own JSON, passed through unchanged.** The answer types name the documented fields and stay open to others, so a field a later model adds is readable without an adapter release.
+- Omit `model` for the deployment's default; name one only from `listDecisionModels()`.
+
+A refusal throws with the decision's own code on `e.code` (see [Errors](#errors)):
+
+| Status | `e.code` | What to do |
+|---|---|---|
+| 400 | `invalid_input` / `bad_question` / `bad_options` / `too_many_questions` | Fix the request; the message names the fault. |
+| 400 | `model_not_allowed` | Omit `model`, or use a name from `listDecisionModels()`. |
+| 403 | `operator_key_restricted` | The caller may not use the operator's provider key and has none of its own. Do not retry. |
+| 413 | `prompt_too_large` | The request does not fit the model's context and is never shortened for you: shorten `state` or ask fewer questions. |
+| 429 | `token_limit_exceeded` | The caller is at a hard token budget. Retrying does not help until the budget is raised or the month rolls over. |
+| 502 | `model_not_found` / `call_failed` | The provider does not serve that model (the same call fails again) / the call did not complete (try once more). |
+| 503 | `decision_not_configured` | This deployment declares no decision models. Do not retry. |
+| 504 | `timeout` | Send the same call again; if it repeats, make it smaller. |
+
+```ts
+try {
+  await client.decide(req);
+} catch (e) {
+  if (e instanceof LoomcycleError && e.code === "prompt_too_large") {
+    // shorten state and retry
+  } else throw e;
+}
+```
+
+Branch on `e.code`, not on the class: the class follows the HTTP status alone, so a `prompt_too_large` arrives as the 413 class `SnapshotTooLargeError` and a `token_limit_exceeded` as the 429 class `BackpressureError`.
+
 ### Channels + run-state stream (v0.9.x n8n Phase 0)
 
 Two substrate-side surfaces added in the n8n integration's Phase 0 wire-API work. Useful for any orchestrator (not just n8n) that needs to see channel state or subscribe to run-state transitions.
@@ -457,6 +528,8 @@ These events are part of the persisted transcript (not the live `runStreaming` e
 ## Errors
 
 Non-2xx responses throw typed subclasses of `LoomcycleError`. The original HTTP status is on `e.status`; the truncated response body is on `e.bodyText` (≤1 KiB).
+
+When the error body is JSON with a string `code` (`token_limit_exceeded`, `per_user_quota_exhausted`, `model_not_allowed`, …), that code is on `e.code`, whichever class the status maps to. A status is shared between unrelated conditions — a 429 is backpressure, a per-user quota or a token budget — so branch on `e.code` when you need to tell them apart. It is `undefined` for a plain-text body.
 
 | HTTP status / body | Exception class |
 |---|---|
