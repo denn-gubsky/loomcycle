@@ -2,10 +2,13 @@ package http
 
 import (
 	"context"
+	"errors"
+	"strings"
 	"testing"
 
 	"github.com/denn-gubsky/loomcycle/internal/config"
 	"github.com/denn-gubsky/loomcycle/internal/resolve"
+	"github.com/denn-gubsky/loomcycle/internal/runner"
 )
 
 // TestConvertConfigCandidates_ExpandsAlias locks the resolver-boundary
@@ -67,5 +70,29 @@ func TestResolveAgentDef_TierCandidateAliasExpands(t *testing.T) {
 	}
 	if prov != "ollama-local" || model != "gemma4:max" {
 		t.Fatalf("resolved (%q, %q), want (ollama-local, gemma4:max)", prov, model)
+	}
+}
+
+// TestResolveAgentDef_RefusesANonChatAliasAsATierCandidate — a def authored at
+// run time carries its own tier candidates past config load, so an alias tagged
+// as a decision model is refused at admission rather than sent to a chat
+// endpoint. The untagged twin still resolves.
+func TestResolveAgentDef_RefusesANonChatAliasAsATierCandidate(t *testing.T) {
+	r := resolve.NewResolver([]string{"ollama-local"}, nil)
+	r.SetReachable("ollama-local", true, []string{"nimble"}, "")
+	s := minimalServerWithResolver(t, r)
+	s.cfg().Models = map[string]config.ModelRef{
+		"decide": {Provider: "ollama-local", Model: "nimble", Kind: config.ModelKindDecision},
+		"plain":  {Provider: "ollama-local", Model: "nimble"},
+	}
+	def := func(alias string) config.AgentDef {
+		return config.AgentDef{Tier: "low", Models: map[string][]config.TierCandidate{"low": {{Model: alias}}}}
+	}
+	_, _, _, err := s.resolveAgentDef(context.Background(), def("decide"), "", "", "router", "", false)
+	if !errors.Is(err, runner.ErrInvalidArgument) || !strings.Contains(err.Error(), "models.decide is kind: decision") {
+		t.Errorf("err = %v, want an invalid-argument refusal naming models.decide and its kind", err)
+	}
+	if _, model, _, err := s.resolveAgentDef(context.Background(), def("plain"), "", "", "router", "", false); err != nil || model != "nimble" {
+		t.Errorf("untagged alias resolved to %q, %v; want nimble", model, err)
 	}
 }

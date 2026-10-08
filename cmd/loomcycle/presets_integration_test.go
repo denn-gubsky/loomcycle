@@ -124,6 +124,33 @@ func TestEmbedded_DefaultStackValidates(t *testing.T) {
 	}
 }
 
+// TestEmbedded_NoShippedAliasIsUsedUntagged — every embedded preset and bundle,
+// stacked, loads without the "declares no kind" advisory: an alias this
+// repository ships for an embedder or a decision model carries its kind, so an
+// operator's boot log names only aliases of their own.
+func TestEmbedded_NoShippedAliasIsUsedUntagged(t *testing.T) {
+	t.Setenv("LOOMCYCLE_SKILLS_ROOT", "")
+	// base first: it is the layer every other unit is written to sit on.
+	names := []string{"base"}
+	for _, u := range embedded.Units() {
+		if u.Name != "base" {
+			names = append(names, u.Name)
+		}
+	}
+	if len(names) < 5 {
+		t.Fatalf("embedded units = %v; the stack this test loads is not the shipped one", names)
+	}
+	cfg, err := config.LoadLayers(layersFor(t, names...)...)
+	if err != nil {
+		t.Fatalf("the full embedded stack must load: %v", err)
+	}
+	for _, w := range cfg.Warnings {
+		if strings.Contains(w, "declares no kind") {
+			t.Errorf("a shipped alias is used untagged: %s", w)
+		}
+	}
+}
+
 // TestEmbedded_SandboxBundleValidates: the opt-in sandbox bundle loads + validates
 // on top of base. Post-refactor it carries NO agent (the LLM dev/sandbox was retired
 // for the deterministic code-js dev/exec, shipped in the dev-exec bundle) — it ships
