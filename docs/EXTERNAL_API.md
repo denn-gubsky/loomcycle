@@ -6,8 +6,8 @@
 # loomcycle data API — external HTTP access
 
 loomcycle publishes a machine-readable **OpenAPI 3.1** contract for its memory
-and document/path storage, so any application or language can generate a client
-instead of hand-rolling requests. This guide is the entry point; the contract
+and document/path storage and its decision-model routes, so any application or
+language can generate a client instead of hand-rolling requests. This guide is the entry point; the contract
 itself is authoritative.
 
 ## Where the contract lives
@@ -61,6 +61,13 @@ generated client covers the whole surface below.
   behave (they forward the body to the tool verbatim).
 - **Assets:** `GET /v1/_document/asset/{chunk_id}` returns a chunk's binary
   image.
+- **Decision models:** `POST /v1/_decide` asks a decision model typed questions
+  about state you supply, and `GET /v1/_decide/models` lists the models a call
+  may name with their limits. Both need the `runs:create` scope, not
+  `substrate:tenant`. See [DECISION-MODELS.md](DECISION-MODELS.md).
+
+The contract does not describe the rest of the HTTP API (runs, usage, limits,
+definitions).
 
 ## Notes for consumers
 
@@ -70,8 +77,9 @@ generated client covers the whole surface below.
 - `/v1/_memory/search` and the document/path endpoints require SQL Memory /
   vector support for some ops; unsupported requests return a `503` or a `400`
   with a diagnostic `code`.
-- The spec is kept honest by a drift test that fails if a `Document` / `Path`
-  tool op is added or removed without updating the contract.
+- The spec is kept honest by drift tests that fail if a `Document` / `Path`
+  tool op is added or removed without updating the contract, or if the
+  decision request or a decision failure code changes without it.
 
 ## Change feed — react to changes instead of polling
 

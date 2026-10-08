@@ -2,14 +2,20 @@ package http
 
 import (
 	"encoding/json"
+	"go/ast"
+	"go/parser"
+	"go/token"
 	"net/http"
 	"net/http/httptest"
+	"sort"
+	"strconv"
 	"strings"
 	"testing"
 
 	"gopkg.in/yaml.v3"
 
 	loomapi "github.com/denn-gubsky/loomcycle/api"
+	"github.com/denn-gubsky/loomcycle/internal/connector"
 	"github.com/denn-gubsky/loomcycle/internal/tools/builtin"
 )
 
@@ -201,5 +207,232 @@ func assertSameOpSet(t *testing.T, name string, tool, spec []string) {
 		if !toolSet[s] {
 			t.Errorf("%s op %q is in the OpenAPI spec but NOT in the tool — stale entry in api/openapi.yaml", name, s)
 		}
+	}
+}
+
+// TestOpenAPISpec_DecisionRequestMatchesTool guards drift between the
+// POST /v1/_decide request in the spec and the Decision tool's own input
+// schema, which is what the route forwards the body to: the top-level fields
+// and which are required, each question's fields, and the question types. The
+// spec models a question as one schema per type (the shape of criteria differs
+// by type), so every variant must carry the tool's fields and together they
+// must name exactly the tool's types.
+func TestOpenAPISpec_DecisionRequestMatchesTool(t *testing.T) {
+	var tool struct {
+		Properties map[string]json.RawMessage `json:"properties"`
+		Required   []string                   `json:"required"`
+	}
+	if err := json.Unmarshal((&builtin.Decision{}).InputSchema(), &tool); err != nil {
+		t.Fatalf("parse the Decision tool's InputSchema: %v", err)
+	}
+	var questions struct {
+		AdditionalProperties struct {
+			Properties map[string]struct {
+				Enum []string `json:"enum"`
+			} `json:"properties"`
+			Required []string `json:"required"`
+		} `json:"additionalProperties"`
+	}
+	if err := json.Unmarshal(tool.Properties["questions"], &questions); err != nil {
+		t.Fatalf("parse the tool's questions schema: %v", err)
+	}
+	toolQuestion := questions.AdditionalProperties
+	toolTypes := toolQuestion.Properties["type"].Enum
+	if len(tool.Properties) == 0 || len(toolQuestion.Properties) == 0 || len(toolTypes) == 0 {
+		t.Fatalf("the tool's InputSchema no longer has the shape this test reads: %s", (&builtin.Decision{}).InputSchema())
+	}
+
+	schemas := specSchemas(t)
+	req := schemas["DecisionRequest"]
+	assertSameSet(t, "DecisionRequest properties", specKeys(tool.Properties), specKeys(specMap(req["properties"])))
+	assertSameSet(t, "DecisionRequest required", tool.Required, specStrings(req["required"]))
+
+	var specTypes []string
+	for _, ref := range specSlice(schemas["DecisionQuestion"]["oneOf"]) {
+		name := strings.TrimPrefix(specString(specMap(ref)["$ref"]), "#/components/schemas/")
+		variant := schemas[name]
+		if variant == nil {
+			t.Fatalf("DecisionQuestion.oneOf names %q, which is not a schema", name)
+		}
+		props := specMap(variant["properties"])
+		assertSameSet(t, name+" properties", specKeys(toolQuestion.Properties), specKeys(props))
+		for _, field := range toolQuestion.Required {
+			if !containsStr(specStrings(variant["required"]), field) {
+				t.Errorf("%s does not require %q, which the tool requires of every question", name, field)
+			}
+		}
+		specTypes = append(specTypes, specStrings(specMap(props["type"])["enum"])...)
+	}
+	assertSameSet(t, "question types (DecisionQuestion variants)", toolTypes, specTypes)
+	assertSameSet(t, "answer types (DecisionAnswer.type)", toolTypes,
+		specStrings(specMap(specMap(schemas["DecisionAnswer"]["properties"])["type"])["enum"]))
+}
+
+// TestOpenAPISpec_DecisionFailureCodesSitUnderTheirStatus guards drift between
+// the handler's status mapping and the spec: every failure code a decision
+// call can carry must have an example, under the status decideFailureStatus
+// gives that code. The codes are read from the source that declares them, so a
+// new one fails here until the contract documents it.
+func TestOpenAPISpec_DecisionFailureCodesSitUnderTheirStatus(t *testing.T) {
+	codes := append(
+		stringConsts(t, "../../decision/errors.go", "Code"),
+		stringConsts(t, "../../tools/builtin/decision.go", "DecisionCode")...)
+	// A floor on what was read, so a rename of the constants cannot leave this
+	// test checking nothing.
+	if len(codes) < 10 {
+		t.Fatalf("read only %d decision failure codes from the source (%v); the constants moved", len(codes), codes)
+	}
+
+	var doc map[string]any
+	if err := yaml.Unmarshal(loomapi.OpenAPISpecYAML, &doc); err != nil {
+		t.Fatalf("parse spec: %v", err)
+	}
+	responses := specMap(specMap(specMap(specMap(doc["paths"])["/v1/_decide"])["post"])["responses"])
+	if len(responses) == 0 {
+		t.Fatal("the spec has no POST /v1/_decide responses")
+	}
+	for _, code := range codes {
+		// The handler prepares every call it dispatches (who is charged), so the
+		// tool's refusal of an unprepared one never reaches an HTTP caller.
+		if code == builtin.DecisionCodeNoRun {
+			continue
+		}
+		status, got := decideFailureStatus(connector.ToolResult{IsError: true, Text: "Decision: " + code + ": x"})
+		if got != code {
+			t.Errorf("decideFailureStatus rewrote code %q to %q", code, got)
+			continue
+		}
+		examples := specMap(specMap(specMap(specMap(responses[strconv.Itoa(status)])["content"])["application/json"])["examples"])
+		found := false
+		for _, ex := range examples {
+			if specString(specMap(specMap(ex)["value"])["code"]) == code {
+				found = true
+			}
+		}
+		if !found {
+			t.Errorf("decision failure code %q maps to HTTP %d, but POST /v1/_decide has no %d example with that code in api/openapi.yaml", code, status, status)
+		}
+	}
+}
+
+// TestOpenAPIHandlers_ServedJSONCarriesTheDecisionRoutes fetches the JSON the
+// docs console and client generators read and checks the decision routes
+// survive the YAML-to-JSON rendering: both operations, and the noul criteria
+// keys "true" and "false", which YAML reads as booleans unless quoted and
+// which would then not render as JSON object keys at all.
+func TestOpenAPIHandlers_ServedJSONCarriesTheDecisionRoutes(t *testing.T) {
+	var s Server
+	rec := httptest.NewRecorder()
+	s.handleOpenAPIJSON(rec, httptest.NewRequest(http.MethodGet, "/v1/openapi.json", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200: %s", rec.Code, rec.Body.String())
+	}
+	var doc map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &doc); err != nil {
+		t.Fatalf("served JSON does not parse: %v", err)
+	}
+	paths := specMap(doc["paths"])
+	for path, method := range map[string]string{"/v1/_decide": "post", "/v1/_decide/models": "get"} {
+		if specMap(specMap(paths[path])[method])["operationId"] == nil {
+			t.Errorf("served JSON has no %s %s operation", method, path)
+		}
+	}
+	schemas := specMap(specMap(doc["components"])["schemas"])
+	noul := specMap(specMap(specMap(specMap(schemas["DecisionNoulQuestion"])["properties"])["criteria"])["properties"])
+	if noul["true"] == nil || noul["false"] == nil || len(noul) != 2 {
+		t.Errorf("served JSON's noul criteria properties = %v, want exactly \"true\" and \"false\"", specKeys(noul))
+	}
+}
+
+// stringConsts returns the values of the string constants in a Go source file
+// whose names start with prefix. A constant declared as another constant of
+// the same file (an exported alias of an unexported code) resolves to that
+// one's value.
+func stringConsts(t *testing.T, path, prefix string) []string {
+	t.Helper()
+	file, err := parser.ParseFile(token.NewFileSet(), path, nil, 0)
+	if err != nil {
+		t.Fatalf("parse %s: %v", path, err)
+	}
+	values := map[string]ast.Expr{}
+	var names []string
+	for _, decl := range file.Decls {
+		gen, ok := decl.(*ast.GenDecl)
+		if !ok || gen.Tok != token.CONST {
+			continue
+		}
+		for _, spec := range gen.Specs {
+			vs := spec.(*ast.ValueSpec)
+			for i, name := range vs.Names {
+				if i >= len(vs.Values) {
+					continue
+				}
+				values[name.Name] = vs.Values[i]
+				if strings.HasPrefix(name.Name, prefix) {
+					names = append(names, name.Name)
+				}
+			}
+		}
+	}
+	var out []string
+	for _, name := range names {
+		expr := values[name]
+		if ident, ok := expr.(*ast.Ident); ok {
+			expr = values[ident.Name]
+		}
+		lit, ok := expr.(*ast.BasicLit)
+		if !ok || lit.Kind != token.STRING {
+			t.Fatalf("%s: constant %s is not a string literal or an alias of one", path, name)
+		}
+		v, err := strconv.Unquote(lit.Value)
+		if err != nil {
+			t.Fatalf("%s: constant %s: %v", path, name, err)
+		}
+		out = append(out, v)
+	}
+	return out
+}
+
+// specSchemas returns components.schemas from the embedded spec.
+func specSchemas(t *testing.T) map[string]map[string]any {
+	t.Helper()
+	var doc map[string]any
+	if err := yaml.Unmarshal(loomapi.OpenAPISpecYAML, &doc); err != nil {
+		t.Fatalf("parse spec: %v", err)
+	}
+	out := map[string]map[string]any{}
+	for name, sch := range specMap(specMap(doc["components"])["schemas"]) {
+		out[name] = specMap(sch)
+	}
+	return out
+}
+
+func specMap(v any) map[string]any { m, _ := v.(map[string]any); return m }
+func specSlice(v any) []any        { s, _ := v.([]any); return s }
+func specString(v any) string      { s, _ := v.(string); return s }
+
+func specStrings(v any) []string {
+	var out []string
+	for _, e := range specSlice(v) {
+		out = append(out, specString(e))
+	}
+	return out
+}
+
+func specKeys[V any](m map[string]V) []string {
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	return out
+}
+
+// assertSameSet fails when the tool and the spec do not name the same things.
+func assertSameSet(t *testing.T, what string, tool, spec []string) {
+	t.Helper()
+	sort.Strings(tool)
+	sort.Strings(spec)
+	if len(tool) == 0 || strings.Join(tool, ",") != strings.Join(spec, ",") {
+		t.Errorf("%s: the tool has %v, api/openapi.yaml has %v", what, tool, spec)
 	}
 }

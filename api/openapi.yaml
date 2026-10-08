@@ -1,13 +1,15 @@
 openapi: 3.1.0
 info:
-  title: loomcycle data API (memory + documents)
+  title: loomcycle data API (memory, documents, decision models)
   version: "1.0.0"
   description: |
     The external HTTP data API for loomcycle's **memory** and **document/path**
-    storage. Every route here already existed — this contract publishes them so
-    any language can generate a client (e.g. `openapi-generator`) instead of
-    hand-rolling requests, and so a peer instance or a second application can
-    consume the store directly.
+    storage, plus the **decision-model** routes (typed questions about state the
+    caller supplies). Every route here already existed — this contract publishes
+    them so any language can generate a client (e.g. `openapi-generator`) instead
+    of hand-rolling requests, and so a peer instance or a second application can
+    consume the store directly. It is not the whole HTTP API: the run, usage,
+    limit and definition routes are not described here.
 
     **Auth.** All data routes require a bearer token minted by an
     `OperatorTokenDef`, carrying an authoritative `(tenant, subject, scopes)`.
@@ -17,6 +19,9 @@ info:
     refused. The tenant is always derived server-side from the token, NEVER from
     the request; the `?scope_id=` / `?tenant=` query params only re-focus a
     browse WITHIN the caller's authorized tenant (admin may cross tenants).
+    The decision routes require the `runs:create` scope instead: a decision is
+    what a caller would otherwise start a run to get, and it spends the same
+    token budget.
 
     The spec document itself (`/v1/openapi.yaml`, `/v1/openapi.json`) and the
     docs console (`/v1/docs`) are served unauthenticated — the contract is
@@ -31,6 +36,8 @@ tags:
     description: Key/value + vector memory (scopes agent/user/tenant).
   - name: documents
     description: Chunked-graph documents and the Path VFS (op-dispatch).
+  - name: decision
+    description: Decision models — typed questions about supplied state, answered with probabilities.
 paths:
   /v1/_memory/scopes:
     get:
@@ -346,12 +353,292 @@ paths:
           description: Missing, wrong-scope, or non-image chunk (opaque — no cross-scope probing).
         "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { $ref: "#/components/responses/Forbidden" }
+  /v1/_decide:
+    post:
+      tags: [decision]
+      summary: Ask a decision model typed questions about a piece of state.
+      description: |
+        Asks one of the operator's decision models every question in the body
+        about the same `state`, outside any run. The body is the `Decision`
+        tool's input and a 200 is the tool's output: each answer is returned
+        exactly as the model gave it.
+
+        **The probabilities are not calibrated.** Compare options within one
+        answer; do not treat a fixed threshold as a guarantee without measuring
+        it on your own data.
+
+        **The request is never shortened.** State, instructions and criteria
+        must fit the model's context together; a request that does not fit is
+        refused with `prompt_too_large` (413), not trimmed.
+
+        The call is charged to the caller's own tenant and subject and counts
+        against their token budgets; a caller at a hard budget is refused (429)
+        before the model is asked. Requires the `runs:create` scope.
+      operationId: decide
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/DecisionRequest" }
+            examples:
+              ticket:
+                summary: One choice, one noul and one score about a support ticket.
+                value:
+                  model: decide
+                  state:
+                    ticket: My invoice for March was charged twice and I want my money back.
+                    customer_tier: gold
+                  questions:
+                    route:
+                      type: choice
+                      instructions: Which team should handle this ticket?
+                      criteria:
+                        billing: invoices, refunds, charges
+                        support: bugs, outages, login problems
+                        sales: upgrades, quotes
+                    urgent:
+                      type: noul
+                      instructions: Does this ticket need a reply within the hour?
+                    detail:
+                      type: score
+                      instructions: How complete is the problem report?
+                      criteria: [no detail, some detail, everything needed]
+      responses:
+        "200":
+          description: The model's answers, one per question, under the question's name.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/DecisionResponse" }
+              examples:
+                ticket:
+                  summary: The answers to the request example.
+                  value:
+                    model: decide
+                    provider: ollama-local
+                    served_model: nimble
+                    answers:
+                      detail:
+                        type: score
+                        score: 1.874
+                        legend: { "0": no detail, "1": some detail, "2": everything needed }
+                        probabilities: { "0": 0.039, "1": 0.048, "2": 0.913 }
+                        confidence: 0.677
+                      route:
+                        type: choice
+                        choice: billing
+                        probabilities: { billing: 0.983, support: 0.007, sales: 0.011 }
+                        confidence: 0.911
+                      urgent:
+                        type: noul
+                        noul: 0.316
+                    usage: { input_tokens: 1059, output_tokens: 4 }
+        "400":
+          description: |
+            The request is not a call the model can be asked. `bad_request`: an
+            empty or unreadable body. `invalid_input`: not JSON, or no `state`
+            object. `bad_question`: an unknown type, missing instructions, no
+            questions, or criteria of the wrong shape for the type.
+            `bad_options`: too few or too many options or levels.
+            `too_many_questions`: more questions than one call takes.
+            `model_not_allowed`: the model named is not on the allowed list.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/DecisionError" }
+              examples:
+                bad_request:
+                  value: { code: bad_request, error: "empty body: expected {state, questions}" }
+                invalid_input:
+                  value:
+                    code: invalid_input
+                    error: "Decision: invalid_input: state is required and must be a JSON object"
+                    errorCategory: validation
+                    isRetryable: false
+                    description: Pass `state` (a JSON object holding what the questions are about) and `questions` (an object of named questions).
+                bad_question:
+                  value:
+                    code: bad_question
+                    error: "Decision: bad_question: question \"q\": type \"essay\" is not one of choice, noul, score"
+                    errorCategory: validation
+                    isRetryable: false
+                    description: "Each question needs a type (choice, noul or score), instructions, and criteria in that type's shape: choice, an object mapping each option to a description or null; noul, nothing or an object describing \"true\" and \"false\"; score, an array of level descriptions, lowest first."
+                bad_options:
+                  value:
+                    code: bad_options
+                    error: "Decision: bad_options: question \"q\": 1 options; a choice takes 2 to 26"
+                    errorCategory: validation
+                    isRetryable: false
+                    description: "A choice takes 2 to 26 options and a score 2 to 26 levels: add or remove some, or split the question in two."
+                too_many_questions:
+                  value:
+                    code: too_many_questions
+                    error: "Decision: too_many_questions: 65 questions; one call takes at most 64"
+                    errorCategory: validation
+                    isRetryable: false
+                    description: "One call takes at most 64 questions: split them across several calls."
+                model_not_allowed:
+                  value:
+                    code: model_not_allowed
+                    error: "Decision: model_not_allowed: model \"gpt\" is not one this agent may ask"
+                    errorCategory: validation
+                    isRetryable: false
+                    description: "Omit `model` to use the default, or name one of: decide, deep."
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403":
+          description: |
+            `operator_key_restricted` (JSON body): the caller may not use the
+            operator's provider key and has none of its own for this provider.
+            A token without the `runs:create` scope is also refused with 403,
+            with the plain-text body `insufficient scope`.
+          content:
+            text/plain:
+              schema: { type: string }
+              examples:
+                insufficient_scope:
+                  value: insufficient scope
+            application/json:
+              schema: { $ref: "#/components/schemas/DecisionError" }
+              examples:
+                operator_key_restricted:
+                  value:
+                    code: operator_key_restricted
+                    error: "Decision: operator_key_restricted: this run may not use the operator's provider key, and has none of its own for this provider"
+                    errorCategory: permission
+                    isRetryable: false
+                    description: This principal may not use the operator's provider API keys. Retrying will not help — supply the tenant's own provider credential, or ask an operator for the scope that permits it.
+        "413":
+          description: |
+            `request_too_large`: the body exceeds the server's request cap and
+            was refused before it was read. `prompt_too_large`: the state and
+            questions do not fit the model's context; nothing is shortened.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/DecisionError" }
+              examples:
+                request_too_large:
+                  value: { code: request_too_large, error: request body exceeds the 512-byte limit }
+                prompt_too_large:
+                  value:
+                    code: prompt_too_large
+                    error: "Decision: prompt_too_large: the request is 12144 tokens and this model reads at most 8194"
+                    errorCategory: business
+                    isRetryable: false
+                    description: Nothing is shortened for you. Shorten the state or the criteria, or ask fewer questions per call, and send it again.
+        "429":
+          description: |
+            `token_limit_exceeded`: the caller is at a hard token budget. The
+            model was not asked. The body names the budget that tripped.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/TokenLimitError" }
+              examples:
+                token_limit_exceeded:
+                  value:
+                    code: token_limit_exceeded
+                    error: "user alice hard token budget reached: 1120 of 1000 tokens this month"
+                    message: "user alice hard token budget reached: 1120 of 1000 tokens this month"
+                    scope: user
+                    scope_id: alice
+                    used: 1120
+                    limit: 1000
+                    window: month
+        "500":
+          description: "`internal`: the server could not dispatch the call. `error` is the fault's own text."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "502":
+          description: |
+            The call reached no answer. `model_not_found`: the provider does not
+            serve the model the alias names, so the same call fails again.
+            `call_failed`: the call did not complete (the transport, the key, an
+            unreadable reply); it may be sent once more.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/DecisionError" }
+              examples:
+                model_not_found:
+                  value:
+                    code: model_not_found
+                    error: "Decision: model_not_found: /v1/systemone: HTTP 404: model \"nimble\" not found"
+                    errorCategory: business
+                    isRetryable: false
+                    description: "The provider does not serve this model, so the same call will fail again. Name another of: decide, deep."
+                call_failed:
+                  value:
+                    code: call_failed
+                    error: "Decision: call_failed: the call to the decision model failed: /v1/systemone: HTTP 500: boom"
+                    errorCategory: transient
+                    isRetryable: true
+                    description: Send the same call once more. If it fails again, continue without the decision and say that it was unavailable.
+        "503":
+          description: "`decision_not_configured`: this deployment declares no decision models."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/DecisionError" }
+              examples:
+                decision_not_configured:
+                  value:
+                    code: decision_not_configured
+                    error: "Decision: decision_not_configured: this deployment declares no decision models"
+                    errorCategory: business
+                    isRetryable: false
+                    description: No call to this tool can succeed here. Decide another way, or ask an operator to declare decision models.
+        "504":
+          description: "`timeout`: the model, or the wait for a free slot, did not answer in time."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/DecisionError" }
+              examples:
+                timeout:
+                  value:
+                    code: timeout
+                    error: "Decision: timeout: the decision model did not answer in time"
+                    errorCategory: transient
+                    isRetryable: true
+                    description: Send the same call again. If it times out again, ask fewer questions or shorten the state.
+  /v1/_decide/models:
+    get:
+      tags: [decision]
+      summary: List the decision models a call may name, the default, and each model's limits.
+      description: |
+        Nothing here is secret: no endpoint and no key name. Requires the
+        `runs:create` scope.
+      operationId: listDecisionModels
+      responses:
+        "200":
+          description: The default model's name and the models a call may name.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/DecisionModelList" }
+              examples:
+                models:
+                  value:
+                    default: decide
+                    models:
+                      - name: decide
+                        provider: ollama-local
+                        model: nimble
+                        limits: { max_questions: 64, min_options: 2, max_options: 26 }
+                      - name: decide-deep
+                        provider: ollama-local
+                        model: clef
+                        limits: { max_questions: 64, min_options: 2, max_options: 26 }
+        "503":
+          description: "`decision_not_configured`: this deployment declares no decision models."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+              examples:
+                decision_not_configured:
+                  value: { code: decision_not_configured, error: this deployment declares no decision models }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
 components:
   securitySchemes:
     bearerAuth:
       type: http
       scheme: bearer
-      description: An OperatorTokenDef-minted bearer (substrate:tenant, or a non-isolated member token).
+      description: An OperatorTokenDef-minted bearer (substrate:tenant, or a non-isolated member token; runs:create for the decision routes).
   parameters:
     Scope:
       name: scope
@@ -616,3 +903,171 @@ components:
         recursive: { type: boolean }
         kind_filter: { type: string, description: "ls: document/volume_mount/memory_entry/directory." }
         resource_too: { type: boolean }
+    # DecisionRequest mirrors the Decision tool's InputSchema(); its top-level
+    # properties, the question properties and the question types are
+    # drift-tested against the live tool schema, and every failure code against
+    # the status the handler maps it to (internal/api/http/openapi_test.go).
+    DecisionRequest:
+      type: object
+      required: [state, questions]
+      properties:
+        model:
+          type: string
+          description: Which decision model answers. Omit it for the default. A name outside the allowed list is refused (`model_not_allowed`); `GET /v1/_decide/models` lists the names.
+        state:
+          type: object
+          additionalProperties: true
+          description: What the questions are about — any JSON object (strings, numbers, nested objects, arrays). The model reads all of it and nothing else. It is never shortened.
+        questions:
+          type: object
+          description: 1 to 64 questions, keyed by names the caller chooses; each answer comes back under its question's name. The limit is the model's own (see `limits.max_questions` on `GET /v1/_decide/models`).
+          minProperties: 1
+          maxProperties: 64
+          additionalProperties: { $ref: "#/components/schemas/DecisionQuestion" }
+    DecisionQuestion:
+      description: One typed question. The shape of `criteria` depends on `type`.
+      oneOf:
+        - $ref: "#/components/schemas/DecisionChoiceQuestion"
+        - $ref: "#/components/schemas/DecisionNoulQuestion"
+        - $ref: "#/components/schemas/DecisionScoreQuestion"
+      discriminator:
+        propertyName: type
+        mapping:
+          choice: "#/components/schemas/DecisionChoiceQuestion"
+          noul: "#/components/schemas/DecisionNoulQuestion"
+          score: "#/components/schemas/DecisionScoreQuestion"
+    DecisionChoiceQuestion:
+      type: object
+      description: Pick one of the options described.
+      required: [type, instructions, criteria]
+      properties:
+        type: { type: string, enum: [choice] }
+        instructions: { type: string, description: "The question itself, in plain words." }
+        criteria:
+          type: object
+          description: Maps each option to a description, or to null when the option explains itself. 2 to 26 options; the option names come back as the answer.
+          minProperties: 2
+          maxProperties: 26
+          additionalProperties: { type: [string, "null"] }
+    DecisionNoulQuestion:
+      type: object
+      description: Yes or no, answered as the probability of yes.
+      required: [type, instructions]
+      properties:
+        type: { type: string, enum: [noul] }
+        instructions: { type: string, description: "The question itself, in plain words." }
+        criteria:
+          type: [object, "null"]
+          description: Optional (omit it, or pass null). Describes what "true" and/or "false" mean; no other key is accepted.
+          additionalProperties: false
+          properties:
+            "true": { type: string }
+            "false": { type: string }
+    DecisionScoreQuestion:
+      type: object
+      description: A position on a scale whose levels are described.
+      required: [type, instructions, criteria]
+      properties:
+        type: { type: string, enum: [score] }
+        instructions: { type: string, description: "The question itself, in plain words." }
+        criteria:
+          type: array
+          description: The level descriptions, lowest first. 2 to 26 levels.
+          minItems: 2
+          maxItems: 26
+          items: { type: string }
+    DecisionResponse:
+      type: object
+      required: [model, provider, served_model, answers, usage]
+      properties:
+        model: { type: string, description: "The name asked, as the operator listed it (the default's name when the call named none)." }
+        provider: { type: string, description: "The provider the call was made to." }
+        served_model: { type: string, description: "The model the provider says answered." }
+        answers:
+          type: object
+          description: One answer per question, under the question's name.
+          additionalProperties: { $ref: "#/components/schemas/DecisionAnswer" }
+        usage:
+          type: object
+          required: [input_tokens, output_tokens]
+          properties:
+            input_tokens: { type: integer }
+            output_tokens: { type: integer }
+    DecisionAnswer:
+      type: object
+      description: |
+        One question's answer, exactly as the model gave it: nothing is renamed
+        or dropped, so a field a later model version adds arrives too. Which of
+        the fields below are present depends on `type`. The probabilities are
+        NOT calibrated — compare options within one answer.
+      additionalProperties: true
+      required: [type]
+      properties:
+        type: { type: string, enum: [choice, noul, score] }
+        choice: { type: string, description: "choice: the option picked." }
+        noul: { type: number, description: "noul: the probability that the answer is yes, 0 to 1. 0 is a definite no, not a missing answer." }
+        score: { type: number, description: "score: the expected position on the scale, counted from 0." }
+        legend:
+          type: object
+          description: "score: position to level description."
+          additionalProperties: { type: string }
+        probabilities:
+          type: object
+          description: "choice: a probability per option. score: a probability per position. Not calibrated."
+          additionalProperties: { type: number }
+        confidence: { type: number, description: "choice and score: how concentrated the probabilities appear to be (inferred from captured answers, not documented by the model's vendor)." }
+    DecisionError:
+      description: |
+        A failed decision call: the `Error` envelope plus what kind of failure
+        it is. `error` is the tool's own text ("Decision: <code>: ..."). The
+        fields beyond `code` and `error` are present only when there is
+        something to say; a refusal made before the tool ran (`bad_request`,
+        `request_too_large`) carries the envelope alone.
+      allOf:
+        - $ref: "#/components/schemas/Error"
+        - type: object
+          properties:
+            errorCategory: { type: string, enum: [transient, validation, business, permission] }
+            isRetryable: { type: boolean, description: "Whether sending the same call again can succeed." }
+            retryAfterSeconds: { type: integer, description: "A backoff hint, only on a retryable failure that has one." }
+            description: { type: string, description: "The next step for the caller." }
+            correctCallFormat:
+              type: object
+              additionalProperties: true
+              description: The correct shape of the call, when the shape may be the cause.
+    TokenLimitError:
+      description: The refusal run admission gives a caller at a hard token budget.
+      type: object
+      required: [code, error, scope, scope_id, used, limit, window, message]
+      properties:
+        code: { type: string, enum: [token_limit_exceeded] }
+        error: { type: string }
+        message: { type: string, description: "The same text as `error`." }
+        scope: { type: string, enum: [operator, tenant, user], description: "Which budget tripped." }
+        scope_id: { type: string, description: "The tenant id (scope=tenant), the user subject (scope=user), or empty for the operator budget." }
+        used: { type: integer, description: "The scope's month-to-date token total." }
+        limit: { type: integer, description: "The hard ceiling that was reached." }
+        window: { type: string, description: "The budget window; `month` is the calendar month, UTC." }
+    DecisionModelList:
+      type: object
+      required: [default, models]
+      properties:
+        default: { type: string, description: "The name used when a call names no model." }
+        models:
+          type: array
+          items: { $ref: "#/components/schemas/DecisionModelInfo" }
+    DecisionModelInfo:
+      type: object
+      required: [name, provider, model, limits]
+      properties:
+        name: { type: string, description: "The name a call passes as `model`." }
+        provider: { type: string }
+        model: { type: string, description: "The model the provider serves under that name." }
+        limits:
+          type: object
+          description: The bounds one request to this model must respect. How much state fits is not among them; an over-long request is refused with `prompt_too_large`.
+          required: [max_questions, min_options, max_options]
+          properties:
+            max_questions: { type: integer }
+            min_options: { type: integer, description: "Fewest options of a choice / levels of a score." }
+            max_options: { type: integer, description: "Most options of a choice / levels of a score." }
