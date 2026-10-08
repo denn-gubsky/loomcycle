@@ -5,7 +5,7 @@ import (
 	"sort"
 )
 
-// mcpWrapperSchemas maps each builtin tool the MCP server wraps 1:1 — by the
+// mcpWrapperSchemas maps each op-dispatched builtin tool — by the
 // lowercase name under which the LoomCycle MCP server exposes it as a
 // meta-tool — to that tool's canonical input schema const.
 //
@@ -43,7 +43,6 @@ var mcpWrapperSchemas = map[string]string{
 	"path":              pathInputSchema,
 	"document":          documentInputSchema,
 	"history":           historyInputSchema,
-	"decision":          decisionInputSchema,
 }
 
 // MCPWrapperInputSchema returns the canonical input schema for the

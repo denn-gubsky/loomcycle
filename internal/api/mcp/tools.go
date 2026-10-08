@@ -485,11 +485,6 @@ func toolDescriptors() []loommcp.ToolDescriptor {
 			InputSchema: builtinSchema("document"),
 		},
 		{
-			Name:        "decision",
-			Description: decisionDescription(),
-			InputSchema: builtinSchema("decision"),
-		},
-		{
 			Name:        "history",
 			Description: "Browse, search and annotate past CHATS \u2014 a chat being one conversation session, with its own transcript and token/cost/run totals. Ops: list, get, search, rename, annotate, pin, archive, recap, resume, related, window. `search` matches the chat's TITLE by default, which is usually auto-generated \u2014 pass match:\"content\" to search what was actually SAID in your own turns instead, which is what you want when you remember the conversation but not what it was called. Owner scope is self, user, tenant or global (global is admin only), resolved server-side from your identity, so a cross-scope read folds to an opaque not-found rather than a refusal that confirms the row exists. Use it to find what was discussed before, across sessions. Do NOT use it to fetch what a RUN did \u2014 a chat groups runs; list_runs and get_run are the run-level view. Do NOT use it as a memory store: renaming, pinning and annotating are metadata about a conversation, not durable facts \u2014 those belong in memory.",
 			InputSchema: builtinSchema("history"),
@@ -714,16 +709,6 @@ func MetaToolCount() int { return len(toolDescriptors()) }
 // tool's real validation. Falls back to a bare object if the wrapper has
 // no registered schema — a programmer error caught by
 // TestBuiltinWrapperSchemas_CoverAllWrappers.
-// decisionDescription is the `decision` tool's description: the Decision
-// builtin's own, so the two cannot drift, with the help pointer rewritten for
-// this transport (the help is served by the `context` tool here) and the
-// neighbour an MCP client would otherwise reach for.
-func decisionDescription() string {
-	desc := (&builtin.Decision{}).Description()
-	desc = strings.Replace(desc, "Context op=help topic=Decision", "call the `context` tool with {\"op\": \"help\", \"topic\": \"Decision\"}", 1)
-	return desc + " Do NOT use spawn_run for a judgement this tool can make: a run costs a model's whole reply, this costs a few tokens. The models are the ones this deployment's operator listed; a deployment that lists none answers every call with decision_not_configured."
-}
-
 func builtinSchema(name string) json.RawMessage {
 	if s, ok := builtin.MCPWrapperInputSchema(name); ok {
 		return s

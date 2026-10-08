@@ -90,12 +90,6 @@ var tenantConfinableTools = map[string]bool{
 	// a tenant session to its own tenant; the cross-tenant `global` scope is
 	// refused by the admin-gated history policy (grantOperatorPolicies).
 	"history": true,
-	// decision: the same reach as starting a run, which is what a decision
-	// otherwise costs a caller. It holds no tenant's data: it reads only the
-	// state passed in the call, and the provider key is resolved for the
-	// caller's own principal, so a tenant barred from the operator's key is
-	// refused here as it is on a run.
-	"decision": true,
 
 	// Per-run / per-user — tenant inherited; the underlying tool applies its
 	// own own-subject / cross-tenant-404 gate.

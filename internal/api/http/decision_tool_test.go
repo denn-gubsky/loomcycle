@@ -18,6 +18,7 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/concurrency"
 	"github.com/denn-gubsky/loomcycle/internal/config"
 	"github.com/denn-gubsky/loomcycle/internal/decision"
+	"github.com/denn-gubsky/loomcycle/internal/loop"
 	"github.com/denn-gubsky/loomcycle/internal/providers"
 	"github.com/denn-gubsky/loomcycle/internal/store"
 	storesqlite "github.com/denn-gubsky/loomcycle/internal/store/sqlite"
@@ -165,17 +166,25 @@ func newDecisionRunEnv(t *testing.T, configured bool, agents map[string]config.A
 // result's text, in order.
 func (e *decisionRunEnv) run(agent string) (runID string, results []string) {
 	e.t.Helper()
+	return e.runAs(nil, agent)
+}
+
+// runAs is run with the request made by principal p (nil = open mode), through
+// the same handler POST /v1/runs reaches, so the run's context is stamped as a
+// real run's is.
+func (e *decisionRunEnv) runAs(p *auth.Principal, agent string) (runID string, results []string) {
+	e.t.Helper()
 	body := fmt.Sprintf(`{"agent":%q,"user_id":"u1","segments":[{"role":"user","content":[{"type":"trusted-text","text":"go"}]}]}`, agent)
-	resp, err := http.Post(e.ts.URL+"/v1/runs", "application/json", strings.NewReader(body))
-	if err != nil {
-		e.t.Fatalf("post run: %v", err)
+	req := httptest.NewRequest(http.MethodPost, "/v1/runs", strings.NewReader(body))
+	if p != nil {
+		req = req.WithContext(auth.WithPrincipal(req.Context(), *p))
 	}
-	defer resp.Body.Close()
-	if resp.StatusCode != 200 {
-		raw, _ := io.ReadAll(resp.Body)
-		e.t.Fatalf("run status = %d: %s", resp.StatusCode, raw)
+	rr := httptest.NewRecorder()
+	e.srv.handleRuns(rr, req)
+	if rr.Code != 200 {
+		e.t.Fatalf("run status = %d: %s", rr.Code, rr.Body.String())
 	}
-	sc := bufio.NewScanner(resp.Body)
+	sc := bufio.NewScanner(rr.Body)
 	sc.Buffer(make([]byte, 0, 1<<20), 1<<24)
 	for sc.Scan() {
 		line, ok := strings.CutPrefix(sc.Text(), "data: ")
@@ -190,7 +199,7 @@ func (e *decisionRunEnv) run(agent string) (runID string, results []string) {
 		if json.Unmarshal([]byte(line), &ev) != nil {
 			continue
 		}
-		if ev.RunID != "" {
+		if ev.RunID != "" && runID == "" {
 			runID = ev.RunID
 		}
 		if ev.Type == "tool_result" {
@@ -295,73 +304,178 @@ func TestDecisionTool_OfferedOnlyWhenGrantedAndConfigured(t *testing.T) {
 	})
 }
 
-// TestDecisionTool_ARunBarredFromTheOperatorsKeyGetsNoCall — a run that may not
-// spend the operator's provider key is refused before any call is made, with
-// its own code, so the model can tell it from a call that failed.
-func TestDecisionTool_ARunBarredFromTheOperatorsKeyGetsNoCall(t *testing.T) {
-	e := newDecisionRunEnv(t, true, map[string]config.AgentDef{
-		"router": {Model: "stub-model", Tools: []string{"Decision"}, SystemPrompt: "route"},
-	}, nil)
-	tool := e.srv.tools[0]
-	for _, tl := range e.srv.tools {
-		if tl.Name() == "Decision" {
-			tool = tl
+// keyRefused reports whether a tool result is the Decision tool's operator-key
+// refusal: its own code, not a failed call.
+func keyRefused(result string) bool {
+	// A classified failure reaches the model as an envelope around the text.
+	var env struct {
+		IsError  bool   `json:"isError"`
+		Error    string `json:"error"`
+		Category string `json:"errorCategory"`
+		Retry    bool   `json:"isRetryable"`
+	}
+	if json.Unmarshal([]byte(result), &env) != nil {
+		return false
+	}
+	return env.IsError && env.Category == "permission" && !env.Retry &&
+		strings.HasPrefix(env.Error, "Decision: operator_key_restricted: ")
+}
+
+// decisionProviderRows are a run's usage rows for the decision provider.
+func (e *decisionRunEnv) decisionProviderRows(runID string) []store.TokenUsageRow {
+	e.t.Helper()
+	rows, err := e.store.TokenUsageForRun(context.Background(), runID)
+	if err != nil {
+		e.t.Fatal(err)
+	}
+	var out []store.TokenUsageRow
+	for _, r := range rows {
+		if r.Provider == "ollama" {
+			out = append(out, r)
 		}
 	}
-	ctx := tools.WithRunID(context.Background(), "run-restricted")
-	ctx = tools.WithRunIdentity(ctx, tools.RunIdentityValue{TenantID: "t1", UserID: "u1"})
-	ctx = providers.WithOperatorKeyAllowed(ctx, false)
-	res, err := e.srv.execBuiltin(ctx, tool, json.RawMessage(decisionCall))
-	if err != nil {
-		t.Fatal(err)
+	return out
+}
+
+// TestDecisionTool_ARestrictedRunGetsNoCall — a run started by a principal that
+// may not spend the operator's provider key is refused by the Decision tool
+// before any call is made, with a code of its own, and is charged nothing. The
+// restriction is the one a real run start stamps from the principal and the
+// deployment's gate, not a context built by the test: the tool has no key rule
+// of its own, so this is the crossing from run start to the decision driver.
+// The same run by a principal holding the scope, and by the restricted one with
+// the gate off, is answered.
+func TestDecisionTool_ARestrictedRunGetsNoCall(t *testing.T) {
+	agents := map[string]config.AgentDef{
+		"router": {Model: "stub-model", Tools: []string{"Decision"}, SystemPrompt: "route"},
 	}
-	if !res.IsError || !strings.HasPrefix(res.Text, "Decision: operator_key_restricted: ") ||
-		res.Error == nil || res.Error.Category != tools.CategoryPermission || res.Error.Retryable {
-		t.Errorf("result = %q %+v, want a non-retryable permission refusal coded operator_key_restricted", res.Text, res.Error)
+	script := [][]providers.Event{toolCall("tu_1", "Decision", decisionCall)}
+	restricted := restrictedPrincipal()
+	scoped := auth.Principal{TenantID: "acme", Subject: "alice", Scopes: []string{auth.ScopeRunsCreate, auth.ScopeProvidersOperatorKey}}
+
+	t.Run("restricted", func(t *testing.T) {
+		e := newDecisionRunEnv(t, true, agents, script)
+		e.srv.cfg().Env.OperatorKeyRestriction = true
+		runID, results := e.runAs(&restricted, "router")
+		if len(results) != 1 || !keyRefused(results[0]) {
+			t.Errorf("tool results = %q, want the operator-key refusal", results)
+		}
+		if e.endpoint.count() != 0 {
+			t.Errorf("a restricted run reached the decision model %d times", e.endpoint.count())
+		}
+		if rows := e.decisionProviderRows(runID); len(rows) != 0 {
+			t.Errorf("a refused call was charged: %+v", rows)
+		}
+	})
+	t.Run("holding the scope", func(t *testing.T) {
+		e := newDecisionRunEnv(t, true, agents, script)
+		e.srv.cfg().Env.OperatorKeyRestriction = true
+		_, results := e.runAs(&scoped, "router")
+		if len(results) != 1 || !strings.Contains(results[0], `"answers"`) || e.endpoint.count() != 1 {
+			t.Errorf("tool results = %q after %d model calls, want an answer and one call", results, e.endpoint.count())
+		}
+	})
+	t.Run("gate off", func(t *testing.T) {
+		e := newDecisionRunEnv(t, true, agents, script)
+		_, results := e.runAs(&restricted, "router")
+		if len(results) != 1 || !strings.Contains(results[0], `"answers"`) || e.endpoint.count() != 1 {
+			t.Errorf("tool results = %q after %d model calls, want an answer and one call", results, e.endpoint.count())
+		}
+	})
+}
+
+// TestDecisionTool_ASubAgentOfARestrictedRunGetsNoCall — the restriction
+// follows the run tree: a child spawned by a restricted run is refused too.
+func TestDecisionTool_ASubAgentOfARestrictedRunGetsNoCall(t *testing.T) {
+	e := newDecisionRunEnv(t, true, map[string]config.AgentDef{
+		"parent": {Model: "stub-model", Tools: []string{"Agent"}, SystemPrompt: "delegate"},
+		"child":  {Model: "stub-model", Tools: []string{"Decision"}, SystemPrompt: "judge"},
+	}, [][]providers.Event{
+		toolCall("tu_p1", "Agent", `{"name":"child","prompt":"judge this"}`),
+		toolCall("tu_c1", "Decision", decisionCall),  // the child's call
+		finalText("the decision tool said: refused"), // the child's answer
+	})
+	e.srv.cfg().Env.OperatorKeyRestriction = true
+	restricted := restrictedPrincipal()
+	runID, _ := e.runAs(&restricted, "parent")
+
+	children, err := e.store.ListRunsByParentRunID(context.Background(), runID)
+	if err != nil || len(children) != 1 {
+		t.Fatalf("children = %+v, %v; want the one sub-agent run", children, err)
+	}
+	if got := e.toolResults(children[0].ID); len(got) != 1 || !keyRefused(got[0]) {
+		t.Errorf("the child's tool results = %q, want the operator-key refusal", got)
 	}
 	if e.endpoint.count() != 0 {
-		t.Errorf("a restricted run reached the decision model %d times", e.endpoint.count())
-	}
-	rows, _ := e.store.TokenUsageForRun(context.Background(), "run-restricted")
-	if len(rows) != 0 {
-		t.Errorf("a refused call was charged: %+v", rows)
-	}
-	// The same call, allowed the key, answers: the refusal is the bit's doing.
-	ok, _ := e.srv.execBuiltin(providers.WithOperatorKeyAllowed(ctx, true), tool, json.RawMessage(decisionCall))
-	if ok.IsError || e.endpoint.count() != 1 {
-		t.Errorf("an unrestricted call: %q after %d model calls, want an answer and one call", ok.Text, e.endpoint.count())
+		t.Errorf("a restricted run's child reached the decision model %d times", e.endpoint.count())
 	}
 }
 
-// TestDecisionConnector_WithNoDecisionModelsSaysSo — the MCP `decision` tool
-// reaches Server.Decision whatever is registered; on a server with no decision
-// models the caller gets the tool's own classified refusal, not a transport
-// error saying the tool does not exist.
-func TestDecisionConnector_WithNoDecisionModelsSaysSo(t *testing.T) {
-	e := newDecisionRunEnv(t, false, map[string]config.AgentDef{}, nil)
-	res, err := e.srv.Decision(context.Background(), json.RawMessage(decisionCall))
+// TestDecisionTool_AResumedRestrictedRunGetsNoCall — a paused run resumed with
+// no principal anywhere (the boot sweep) is held to the restriction recorded on
+// its row. The gate is OFF, so the row is the only source: a resume that
+// dropped it would answer.
+func TestDecisionTool_AResumedRestrictedRunGetsNoCall(t *testing.T) {
+	for _, c := range []struct {
+		name       string
+		restricted bool
+	}{{"restricted row", true}, {"unrestricted row", false}} {
+		t.Run(c.name, func(t *testing.T) {
+			e := newDecisionRunEnv(t, true, map[string]config.AgentDef{
+				"router": {Provider: "scripted", Model: "stub-model", Tools: []string{"Decision"}, SystemPrompt: "route"},
+			}, [][]providers.Event{toolCall("tu_1", "Decision", decisionCall)})
+			ctx := context.Background()
+			sess, err := e.store.CreateSession(ctx, "", "router", "alice")
+			if err != nil {
+				t.Fatal(err)
+			}
+			run, err := e.store.CreateRun(ctx, sess.ID, store.RunIdentity{
+				AgentID: "a_paused", UserID: "alice", Model: "stub-model", OperatorKeyRestricted: c.restricted})
+			if err != nil {
+				t.Fatal(err)
+			}
+			appendResumeEvent(t, e.srv, run.ID, "user_input", []loop.PromptSegment{
+				{Role: "user", Content: []loop.PromptContentBlock{{Type: "trusted-text", Text: "route it"}}},
+			})
+			if err := e.store.SetRunPauseState(ctx, run.ID, store.PauseStatePaused); err != nil {
+				t.Fatal(err)
+			}
+			if n, warnings := e.srv.ResumePausedRuns(ctx); n != 1 {
+				t.Fatalf("re-dispatched %d, want 1 (warnings: %v)", n, warnings)
+			}
+			waitRunEndedWithin(t, e.store, run.ID, 5*time.Second)
+
+			results := e.toolResults(run.ID)
+			if len(results) != 1 {
+				t.Fatalf("tool results = %q, want the Decision call's", results)
+			}
+			if c.restricted && (!keyRefused(results[0]) || e.endpoint.count() != 0) {
+				t.Errorf("result %q after %d model calls, want the operator-key refusal and no call", results[0], e.endpoint.count())
+			}
+			if !c.restricted && (!strings.Contains(results[0], `"answers"`) || e.endpoint.count() != 1) {
+				t.Errorf("result %q after %d model calls, want an answer and one call", results[0], e.endpoint.count())
+			}
+		})
+	}
+}
+
+// toolResults reads a run's tool results from its stored transcript, in order.
+func (e *decisionRunEnv) toolResults(runID string) []string {
+	e.t.Helper()
+	events, err := e.store.GetRunEventsSince(context.Background(), runID, 0, 1000)
 	if err != nil {
-		t.Fatalf("Decision: %v, want a tool result", err)
+		e.t.Fatal(err)
 	}
-	if !res.IsError || !strings.HasPrefix(res.Text, "Decision: decision_not_configured: ") ||
-		res.ErrorInfo == nil || res.ErrorInfo.Category != tools.CategoryBusiness {
-		t.Errorf("result = %q %+v, want a business refusal coded decision_not_configured", res.Text, res.ErrorInfo)
+	var out []string
+	for _, ev := range events {
+		if ev.Type != "tool_result" {
+			continue
+		}
+		var p struct {
+			Text string `json:"text"`
+		}
+		_ = json.Unmarshal(ev.Payload, &p)
+		out = append(out, p.Text)
 	}
-}
-
-// TestDecisionConnector_RunsUnderTheCallersPrincipal — a call with no run on its
-// context (the MCP path) answers, and the key rule still applies to the
-// principal the transport stamped: barred from the operator's key, it gets no
-// call.
-func TestDecisionConnector_RunsUnderTheCallersPrincipal(t *testing.T) {
-	e := newDecisionRunEnv(t, true, map[string]config.AgentDef{}, nil)
-	ctx := auth.WithPrincipal(context.Background(), auth.Principal{TenantID: "acme", Subject: "alice", Scopes: []string{"substrate:tenant"}})
-	res, err := e.srv.Decision(ctx, json.RawMessage(decisionCall))
-	if err != nil || res.IsError || !strings.Contains(res.Text, `"model":"decide"`) || e.endpoint.count() != 1 {
-		t.Fatalf("Decision = %q, %v after %d model calls; want an answer from decide", res.Text, err, e.endpoint.count())
-	}
-	res, err = e.srv.Decision(providers.WithOperatorKeyAllowed(ctx, false), json.RawMessage(decisionCall))
-	if err != nil || !strings.HasPrefix(res.Text, "Decision: operator_key_restricted: ") || e.endpoint.count() != 1 {
-		t.Errorf("restricted = %q, %v after %d model calls; want the key refusal and no second call", res.Text, err, e.endpoint.count())
-	}
+	return out
 }
