@@ -8,6 +8,103 @@ Each entry is the release's tag annotation, so the tag and this file cannot disa
 
 For the **public roadmap**, see [`docs/PLAN.md`](docs/PLAN.md).
 
+## What's in v1.107.0
+
+*An agent, a code body or an outside caller can now ask a **decision model** typed questions — pick one option, yes or no, a position on a scale — and get each answer with probabilities instead of text. It is the **`Decision`** tool inside a run, **`POST /v1/_decide`**, the gRPC **`Decide`** RPC and the MCP **`decision`** tool, with `decide()` in the TypeScript and Python clients. A `models:` alias can now say what kind of model it is (**`kind: chat | decision | embedder`**), so a model cannot be wired where it cannot serve. An MCP session is now held to the scopes its token was granted.*
+
+A minor release: #1691 to #1697.
+- #1691, #1692, #1694 and #1697 are decision models;
+- #1695 is the MCP scope fix;
+- #1693 is the team-definition key fix;
+- #1696 is a test fix.
+
+### Decision models (#1691, #1692, #1694, #1697)
+
+A decision model reads a piece of state and answers typed questions about it. It writes no text, so there is no reply to parse: the answer cannot be malformed and cannot name an option that was not offered. A call is a few hundred input tokens and a handful of output tokens. Until now loomcycle used one in a single place, the memory reranker. Guide: [`docs/DECISION-MODELS.md`](docs/DECISION-MODELS.md).
+
+**Setting it up.** Decision models are declared like any other model and listed in a new `decision:` block:
+
+```yaml
+models:
+  decide: { provider: ollama-local, model: nimble, kind: decision }
+decision:
+  default: decide
+```
+
+- Only Ollama serves decision models today (0.35 or later: `nimble`, `clef`, `clef-flash`, `tev1`). The driver sits behind an interface another provider can implement.
+- `decision.models` is optional; omitted, every alias tagged `kind: decision` is allowed. `timeout_ms` defaults to 30000 and `max_concurrent` to 4, per provider.
+- No `decision:` block means the capability is off and nothing changes. Changing the block needs a restart.
+
+**The request and the answer** are the same JSON on every surface: `{model?, state, questions}` in, `{model, provider, served_model, answers, usage}` out.
+
+- `choice` takes an object of option → description (or `null`), 2 to 26 options, and returns the option picked with a probability per option.
+- `noul` is yes or no, and returns the probability of yes. `0` is an answer.
+- `score` takes an array of level descriptions, lowest first, and returns the expected position with a probability per level.
+- 1 to 64 questions per call. The request must fit the model's context and is **never shortened for you**.
+- Each answer is returned exactly as the model gave it.
+- **The probabilities are not calibrated.** Compare options within one answer; measure before gating on a threshold.
+
+**The surfaces.**
+
+- **In a run:** the `Decision` tool, granted by listing it in an agent's `tools:`. An agent's own `decision: {default, models}` block can narrow which models it may ask; it can only narrow, and it survives create, fork and reload. `Context op=help topic=Decision` gives the format with a worked request and answer for each question type.
+- **HTTP:** `POST /v1/_decide`, and `GET /v1/_decide/models` for the allowed models and their limits.
+- **gRPC:** `Decide` and `ListDecisionModels`. State, criteria and answers travel as JSON bytes, so numbers arrive unchanged.
+- **MCP:** the `decision` tool.
+- **Clients:** `decide()` / `listDecisionModels()` in `@loomcycle/client`, `decide()` / `list_decision_models()` in the Python client.
+- The three run-less surfaces need the `runs:create` scope.
+
+**Errors** carry a code a caller can branch on: `invalid_input`, `bad_question`, `bad_options`, `too_many_questions`, `model_not_allowed`, `prompt_too_large`, `model_not_found`, `operator_key_restricted`, `token_limit_exceeded`, `decision_not_configured`, `timeout`, `call_failed`. The TypeScript client exposes it as `e.code` and the Python client as `e.reason`, on every endpoint, not only this one.
+
+**Who pays.**
+
+- Inside a run, the call's input and output tokens are charged to the run and count against its budgets.
+- Outside a run, the call is charged to the caller's own tenant and subject, on a usage row with no run. It counts against the operator, tenant and user budgets and shows in `GET /v1/_usage`.
+- A caller at a hard budget is refused before the model is asked.
+- With `LOOMCYCLE_OPERATOR_KEY_RESTRICTION` on, a caller without `providers:operator-key` is served only on its own stored key for the provider.
+
+### What kind of model an alias names: `kind` (#1691)
+
+A `models:` alias can declare `kind: chat` (the default), `kind: decision` or `kind: embedder`.
+
+- A tagged alias written where another kind is needed **fails config load**. The error names the alias, its kind and the place. Before, the failure surfaced as a provider error on the first call.
+- ⚠️ An **untagged** alias used as an embedder, in a decision reranker or in the `decision:` block still loads, with a warning at boot and in `loomcycle validate`. A later release will make this a failure: add `kind: embedder` or `kind: decision` now.
+- An untagged alias used as a chat model says nothing.
+- `GET /v1/_models` reports a tagged alias's kind. The kind is never a routing input.
+
+### An MCP session is held to its token's scopes (#1695)
+
+`POST /v1/_mcp` admits any non-isolated member token, and the per-tool gate did not look at the token's scopes. A token granted only `runs:read` could start, steer and cancel runs over MCP, and a token with no channel scope could publish and read channels; the same token was refused over HTTP and gRPC.
+
+Each run and channel tool now needs the scope its gRPC twin needs:
+
+| Tools | Scope |
+|---|---|
+| `spawn_run`, `spawn_runs`, `cancel_run`, `compact_run`, `retune_run`, `review_run`, `configured_run`, `interruption_resolve`, `decision` | `runs:create` |
+| `get_run`, `list_runs`, `stream_user_run_states` | `runs:read` |
+| `publish_channel`, `ack_channel` | `channel:publish` |
+| `subscribe_channel`, `peek_channel` | `channel:read` |
+
+- ⚠️ A member token that was starting runs over MCP without `runs:create` is now refused. The refusal names the scope it lacks.
+- Stdio, admin, legacy and `substrate:tenant` sessions are unchanged.
+
+### A team definition's keys are read exactly as written (#1693)
+
+A team definition was decoded leniently: a key matched a field with its case ignored, the last of two keys for one field won, and a key no field takes was dropped. A team could be saved that was not the one that was read. A create or fork is now refused when the overlay has a repeated key, a key that names a field only when its case is ignored, two spellings of one field, or a key no field takes; `verify` lists each one with its path.
+
+### Smaller changes
+
+- The decision reranker now retries with shorter candidates when Ollama refuses a request over its 64 KiB cap; before, it kept the search's own order (#1691).
+- The per-run cost summary, asked for an empty run id, no longer sums every run-less usage row (#1694).
+- A flaky driver test is fixed (#1696).
+
+### Upgrade notes
+
+- **No schema migration.**
+- **Additive on the wire:** two HTTP routes, two RPCs, one MCP tool, one builtin tool, `kind` on `/v1/_models`, `decision` on the AgentDef overlay.
+- **Config:** tag embedder and decision aliases with their `kind` to clear the new warning.
+- **MCP:** check that member tokens used over MCP carry the scopes for the tools they call.
+- **Clients:** `@loomcycle/client` 1.107.0 and the Python client 1.107.0 add the decision methods and the error code field.
+
 ## What's in v1.106.0
 
 *A caller can now make starting a run safe to retry with an **`idempotency_key`**: a second request with the same key starts nothing and is answered with the first run. Any run can be given a lifetime limit of its own with **`max_wall_seconds`**, a detached run included, and ends `cancelled` with stop reason `wall_limit` when it runs out. A program that spawns a sub-agent can ask for the child's outcome as an **object** — status, answer and token usage — instead of text behind a header line. A blocking spawn now reports a run cancelled from outside as cancelled, where it said completed.*
