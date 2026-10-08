@@ -723,3 +723,38 @@ func TestOffRunDecision_AnHTTPFailureCarriesItsStructure(t *testing.T) {
 		t.Errorf("Content-Type = %q", ct)
 	}
 }
+
+// TestOffRunDecision_ARefusalDoesNotSpeakOfAnAgentOrARun — a call made outside
+// a run has no agent and no run, and the tool's refusals were first written
+// for a caller that has both. Whatever a surface hands back for a refused call
+// (the text and the advice beside it) must not tell this caller about either.
+func TestOffRunDecision_ARefusalDoesNotSpeakOfAnAgentOrARun(t *testing.T) {
+	cases := []struct {
+		name string
+		opts envOptions
+		call string
+		code string
+		says string
+	}{
+		{"a model outside the list", envOptions{}, `{"model":"gpt","state":{},"questions":{"q":{"type":"noul","instructions":"x"}}}`,
+			"model_not_allowed", "is not one of the decision models you may ask"},
+		{"barred from the operator's key", envOptions{gate: true}, oneQuestion,
+			"operator_key_restricted", "you may not use the operator's provider key, and have none of your own for this provider"},
+	}
+	for _, c := range cases {
+		for _, s := range surfaces {
+			t.Run(c.name+"/"+s.name, func(t *testing.T) {
+				e := newEnv(t, c.opts)
+				got := s.decide(e, e.member("alice"), c.call)
+				if got.ok || got.code != c.code || !strings.Contains(got.raw, c.says) {
+					t.Fatalf("outcome = %+v, want %s saying %q", got, c.code, c.says)
+				}
+				for _, wrong := range []string{"agent", "this run"} {
+					if strings.Contains(strings.ToLower(got.raw), wrong) {
+						t.Errorf("the refusal speaks of %q to a caller that has none: %s", wrong, got.raw)
+					}
+				}
+			})
+		}
+	}
+}
