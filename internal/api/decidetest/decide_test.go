@@ -635,8 +635,10 @@ func TestOffRunDecision_GRPCRefusesJSONThatIsNot(t *testing.T) {
 		"criteria": {StateJson: []byte(`{}`), Questions: map[string]*loomcyclepb.DecisionQuestion{
 			"q": {Type: "choice", Instructions: "x", CriteriaJson: []byte(`{"a":`)}}},
 	} {
-		if _, err := e.grpc.Decide(ctx, req); status.Code(err) != codes.InvalidArgument {
-			t.Errorf("invalid %s JSON: %v, want InvalidArgument", name, err)
+		// The message names the field at fault, not the encoder that tripped on it.
+		if _, err := e.grpc.Decide(ctx, req); status.Code(err) != codes.InvalidArgument ||
+			!strings.Contains(status.Convert(err).Message(), name+"_json is not valid JSON") {
+			t.Errorf("invalid %s JSON: %v, want InvalidArgument naming %s_json", name, err, name)
 		}
 	}
 	if n := e.model.calls(); n != 0 {
