@@ -30,6 +30,8 @@ var classifiedToolFiles = []string{
 	"memory.go", "memory_placement.go", "memory_recall_traces.go", "memory_recall_turns.go", "memory_rerank.go", "memory_source_span.go",
 	// History
 	"history.go", "history_content_search.go", "history_page.go", "history_window.go",
+	// Decision
+	"decision.go",
 	// Path, Channel, Context, Agent, Skill
 	"pathtool.go", "channel.go", "context.go", "context_capabilities.go", "context_guide.go", "agent.go", "skill.go",
 }

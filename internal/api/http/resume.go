@@ -874,6 +874,7 @@ func (s *Server) resumePausedRun(run store.Run) error {
 		Rerank:             agentDef.MemoryRerank,
 		Units:              agentDef.MemoryUnits,
 	})
+	loopCtx = tools.WithDecisionPolicy(loopCtx, agentDef.Decision)
 	// RFC BL P1: re-stamp the run's core blocks (Memory-tool enforcement +
 	// sub-agent inherit) — lost across pause/snapshot/resume otherwise.
 	loopCtx = tools.WithCoreBlocksPolicy(loopCtx, tools.CoreBlocksPolicyValue{Blocks: coreBlocks})

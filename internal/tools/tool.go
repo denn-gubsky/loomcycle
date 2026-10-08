@@ -889,6 +889,24 @@ func MemoryPolicy(ctx context.Context) MemoryPolicyValue {
 	return v
 }
 
+type ctxKeyDecisionPolicy struct{}
+
+// WithDecisionPolicy attaches the agent's `decision` block: the narrowing of
+// the operator's decision models the Decision tool applies to this run's
+// calls. It is set for EVERY run, nil included: a sub-agent's context derives
+// from its parent's, so a child that set nothing would otherwise run under the
+// parent's narrowing rather than its own definition's.
+func WithDecisionPolicy(ctx context.Context, d *config.AgentDecision) context.Context {
+	return context.WithValue(ctx, ctxKeyDecisionPolicy{}, d)
+}
+
+// DecisionPolicy returns the agent's decision narrowing, or nil for none: an
+// agent that declares no block, and a call made outside a run.
+func DecisionPolicy(ctx context.Context) *config.AgentDecision {
+	d, _ := ctx.Value(ctxKeyDecisionPolicy{}).(*config.AgentDecision)
+	return d
+}
+
 // ctxKeySqlMemPolicy is the context key for the per-agent RFC AA SQL Memory
 // policy (allowed scopes + per-scope byte-quota override). Set by the HTTP
 // server from the agent's yaml `sql_scopes` / `sql_quota_bytes`; read by the
