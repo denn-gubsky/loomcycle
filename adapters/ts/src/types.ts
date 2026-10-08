@@ -3860,6 +3860,17 @@ export interface MemoryRerank {
   max_chars?: number;
 }
 
+/** An agent's narrowing of the server's decision models (`decision`). It can
+ *  only narrow: every name must be one the server's `decision:` block lists. A
+ *  fork overlay that sets it replaces the parent's block whole. */
+export interface AgentDecision {
+  /** The model that answers a Decision call naming none. One of `models` when
+   *  `models` is set. */
+  default?: string;
+  /** The models a Decision call may name. Empty = every model the server lists. */
+  models?: string[];
+}
+
 export interface AgentDefOverlay {
   provider?: string;
   model?: string;
@@ -3914,6 +3925,9 @@ export interface AgentDefOverlay {
    *  reports `reranked` (and `rerank_reason` when false); a failed or unavailable
    *  rerank keeps the search's own order. */
   memory_rerank?: MemoryRerank;
+  /** Which of the server's decision models this agent's `Decision` tool may ask,
+   *  and its default. Unset: all of them, and the server's default. */
+  decision?: AgentDecision;
   /** `false` makes this agent's searches ignore Document derived search units — the
    *  short descriptions, claims and questions an operator may generate for a
    *  document so a question can match them. Unset uses them wherever they exist

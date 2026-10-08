@@ -234,8 +234,8 @@ func operatorKeyRestrictedFromCtx(ctx context.Context, cfg *config.Config) bool 
 //
 // The gates, in order: the name grammar; the caller's agent_def_scopes
 // (default-deny); no static agent of that name; the overlay's own rules
-// (named-scope patterns, tool_choice, output_format, memory_rerank, one
-// routing mode); hooks; the tools ceiling (the caller's own tools); the
+// (named-scope patterns, tool_choice, output_format, memory_rerank, decision,
+// one routing mode); hooks; the tools ceiling (the caller's own tools); the
 // capability ceiling (every other authority field, against the caller's own
 // policies — checkCapabilityCeiling); inline code; the definition size cap.
 //
@@ -880,6 +880,13 @@ func (a *AgentDef) buildDefinition(ctx context.Context, name, parentJSON string,
 		if err != nil {
 			return mergedDef{}, err
 		}
+		// Judged here, not in decodeAgentOverlay, because it needs the operator's
+		// list. Only what this overlay sets is judged: a parent's block naming a
+		// model the operator has since dropped must not block an unrelated fork
+		// (the tool drops such a name at call time).
+		if err := a.Cfg.CheckAgentDecision(ov.Decision); err != nil {
+			return mergedDef{}, err
+		}
 		base.applyOverlay(ov)
 	}
 	return base, nil
@@ -910,6 +917,9 @@ func decodeAgentOverlay(overlay json.RawMessage) (mergedDef, error) {
 		return mergedDef{}, err
 	}
 	if err := ov.MemoryRerank.Validate(); err != nil {
+		return mergedDef{}, err
+	}
+	if err := ov.Decision.Validate(); err != nil {
 		return mergedDef{}, err
 	}
 	// Only the overlay is judged: on a fork, applyOverlay lets a pin
@@ -1109,6 +1119,11 @@ type mergedDef struct {
 	// MemoryUnits: false ignores Document derived search units. An overlay that sets
 	// it wins; one that omits it keeps the parent's. Content-identifying.
 	MemoryUnits *bool `json:"memory_units,omitempty"`
+	// Decision narrows the operator's decision models for this agent. An overlay
+	// that sets it REPLACES it whole (its default must be one of its models, so a
+	// per-field merge could pair one layer's default with another's list).
+	// Content-identifying (hashed). Kept in sync with lookup.SubstrateAgentDef.
+	Decision *config.AgentDecision `json:"decision,omitempty"`
 	// ToolChoice (RFC DI): whether and which tool the model must call.
 	// Content-identifying; an overlay REPLACES it whole (its fields constrain
 	// each other, so a per-field merge could mix two layers' intent).
@@ -1389,6 +1404,9 @@ func (d *mergedDef) applyOverlay(ov mergedDef) {
 		v := *ov.MemoryUnits
 		d.MemoryUnits = &v
 	}
+	if !ov.Decision.IsZero() {
+		d.Decision = ov.Decision.Clone()
+	}
 	if ov.RecallIncludeTurns {
 		d.RecallIncludeTurns = true
 	}
@@ -1570,6 +1588,7 @@ func staticToMergedDef(s config.AgentDef) mergedDef {
 		RecallAttachTraces:    s.RecallAttachTraces,
 		MemoryRerank:          config.MergeMemoryRerank(nil, s.MemoryRerank),
 		MemoryUnits:           boolPtrCopy(s.MemoryUnits),
+		Decision:              s.Decision.Clone(),
 		MemoryIndexMaxBytes:   s.MemoryIndexMaxBytes,
 		MemoryRoots:           s.MemoryRoots,
 		RetryAttempts:         s.RetryAttempts,
@@ -1728,6 +1747,10 @@ func signFromMergedDef(name string, def mergedDef) string {
 	// MemoryRerank is content-identifying: it changes what every search returns.
 	if mr := def.MemoryRerank; !mr.IsZero() {
 		c.MemoryRerank = &agents.MemoryRerank{Enabled: mr.Enabled, Candidates: mr.Candidates, MaxChars: mr.MaxChars}
+	}
+	// Decision is content-identifying: it decides which model answers.
+	if dc := def.Decision; !dc.IsZero() {
+		c.Decision = &agents.Decision{Default: dc.Default, Models: dc.Models}
 	}
 	// ToolChoice is content-identifying, same as Sampling.
 	if tc := def.ToolChoice; !tc.IsZero() {

@@ -125,9 +125,13 @@ type AgentContent struct {
 	// (or adds/removes a block) mints a distinct content_sha256. omitempty +
 	// normalize-collapse keep pre-feature rows byte-identical. Tag "core_blocks"
 	// sorts between compaction and description.
-	CoreBlocks  []CoreBlock `json:"core_blocks,omitempty"`
-	Description string      `json:"description,omitempty"`
-	Effort      string      `json:"effort,omitempty"`
+	CoreBlocks []CoreBlock `json:"core_blocks,omitempty"`
+	// Decision (decision, between core_blocks and description) is
+	// content-identifying: it decides which model answers the agent's Decision
+	// calls, so two agents differing only there are not the same agent.
+	Decision    *Decision `json:"decision,omitempty"`
+	Description string    `json:"description,omitempty"`
+	Effort      string    `json:"effort,omitempty"`
 	// EvaluationScopes / Interruption are the remaining interactive/
 	// multi-agent ACL fields (F14). evaluation_scopes is a slice (nil →
 	// omitted); interruption is a pointer for the same empty-struct reason
@@ -364,6 +368,10 @@ func normalize(c *AgentContent) {
 		c.Sampling.Seed == nil && len(c.Sampling.Stop) == 0 {
 		c.Sampling = nil
 	}
+	// An empty decision block narrows nothing, so it hashes as absent.
+	if c.Decision != nil && c.Decision.Default == "" && len(c.Decision.Models) == 0 {
+		c.Decision = nil
+	}
 	// An empty memory_rerank block asks for nothing, so it hashes as absent.
 	if c.MemoryRerank != nil && c.MemoryRerank.Enabled == nil && c.MemoryRerank.Candidates == 0 && c.MemoryRerank.MaxChars == 0 {
 		c.MemoryRerank = nil
@@ -460,6 +468,7 @@ func FromYAMLAgent(a *Agent) AgentContent {
 		RecallAttachTraces:    a.RecallAttachTraces,
 		MemoryRerank:          a.MemoryRerank,
 		MemoryUnits:           a.MemoryUnits,
+		Decision:              a.Decision,
 		MemoryIndexMaxBytes:   a.MemoryIndexMaxBytes,
 		MemoryRoots:           a.MemoryRoots,
 	}
