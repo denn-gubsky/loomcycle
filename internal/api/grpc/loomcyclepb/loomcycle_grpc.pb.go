@@ -106,6 +106,7 @@ const (
 	Loomcycle_AckChannel_FullMethodName          = "/loomcycle.v1.Loomcycle/AckChannel"
 	Loomcycle_ListTeamChannels_FullMethodName    = "/loomcycle.v1.Loomcycle/ListTeamChannels"
 	Loomcycle_PeekTeamChannel_FullMethodName     = "/loomcycle.v1.Loomcycle/PeekTeamChannel"
+	Loomcycle_ReleaseTeamChannel_FullMethodName  = "/loomcycle.v1.Loomcycle/ReleaseTeamChannel"
 	Loomcycle_AwaitChannels_FullMethodName       = "/loomcycle.v1.Loomcycle/AwaitChannels"
 	Loomcycle_BroadcastChannels_FullMethodName   = "/loomcycle.v1.Loomcycle/BroadcastChannels"
 )
@@ -557,6 +558,12 @@ type LoomcycleClient interface {
 	// the team does not declare.
 	ListTeamChannels(ctx context.Context, in *ListTeamChannelsRequest, opts ...grpc.CallOption) (*ListTeamChannelsResponse, error)
 	PeekTeamChannel(ctx context.Context, in *PeekTeamChannelRequest, opts ...grpc.CallOption) (*PeekTeamChannelResponse, error)
+	// The operator's half of a hold on a team's own channel (mirror
+	// POST /v1/_teamdef/{team}/channels/{name}/release): delivers the oldest
+	// held messages to the team's readers. It delivers only what the team
+	// itself wrote; nothing here publishes. A count out of range is
+	// INVALID_ARGUMENT.
+	ReleaseTeamChannel(ctx context.Context, in *ReleaseTeamChannelRequest, opts ...grpc.CallOption) (*ReleaseTeamChannelResponse, error)
 	// RFC S client twins (mirror POST /v1/_channels/_await and
 	// /v1/_channels/_broadcast). AwaitChannels fans IN across a set of
 	// channels (any/all/at_least N, or a timeout — a timeout is
@@ -1300,6 +1307,16 @@ func (c *loomcycleClient) PeekTeamChannel(ctx context.Context, in *PeekTeamChann
 	return out, nil
 }
 
+func (c *loomcycleClient) ReleaseTeamChannel(ctx context.Context, in *ReleaseTeamChannelRequest, opts ...grpc.CallOption) (*ReleaseTeamChannelResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ReleaseTeamChannelResponse)
+	err := c.cc.Invoke(ctx, Loomcycle_ReleaseTeamChannel_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (c *loomcycleClient) AwaitChannels(ctx context.Context, in *AwaitChannelsRequest, opts ...grpc.CallOption) (*AwaitChannelsResponse, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(AwaitChannelsResponse)
@@ -1767,6 +1784,12 @@ type LoomcycleServer interface {
 	// the team does not declare.
 	ListTeamChannels(context.Context, *ListTeamChannelsRequest) (*ListTeamChannelsResponse, error)
 	PeekTeamChannel(context.Context, *PeekTeamChannelRequest) (*PeekTeamChannelResponse, error)
+	// The operator's half of a hold on a team's own channel (mirror
+	// POST /v1/_teamdef/{team}/channels/{name}/release): delivers the oldest
+	// held messages to the team's readers. It delivers only what the team
+	// itself wrote; nothing here publishes. A count out of range is
+	// INVALID_ARGUMENT.
+	ReleaseTeamChannel(context.Context, *ReleaseTeamChannelRequest) (*ReleaseTeamChannelResponse, error)
 	// RFC S client twins (mirror POST /v1/_channels/_await and
 	// /v1/_channels/_broadcast). AwaitChannels fans IN across a set of
 	// channels (any/all/at_least N, or a timeout — a timeout is
@@ -1988,6 +2011,9 @@ func (UnimplementedLoomcycleServer) ListTeamChannels(context.Context, *ListTeamC
 }
 func (UnimplementedLoomcycleServer) PeekTeamChannel(context.Context, *PeekTeamChannelRequest) (*PeekTeamChannelResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method PeekTeamChannel not implemented")
+}
+func (UnimplementedLoomcycleServer) ReleaseTeamChannel(context.Context, *ReleaseTeamChannelRequest) (*ReleaseTeamChannelResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method ReleaseTeamChannel not implemented")
 }
 func (UnimplementedLoomcycleServer) AwaitChannels(context.Context, *AwaitChannelsRequest) (*AwaitChannelsResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method AwaitChannels not implemented")
@@ -3205,6 +3231,24 @@ func _Loomcycle_PeekTeamChannel_Handler(srv interface{}, ctx context.Context, de
 	return interceptor(ctx, in, info, handler)
 }
 
+func _Loomcycle_ReleaseTeamChannel_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ReleaseTeamChannelRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(LoomcycleServer).ReleaseTeamChannel(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: Loomcycle_ReleaseTeamChannel_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(LoomcycleServer).ReleaseTeamChannel(ctx, req.(*ReleaseTeamChannelRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 func _Loomcycle_AwaitChannels_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(AwaitChannelsRequest)
 	if err := dec(in); err != nil {
@@ -3499,6 +3543,10 @@ var Loomcycle_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "PeekTeamChannel",
 			Handler:    _Loomcycle_PeekTeamChannel_Handler,
+		},
+		{
+			MethodName: "ReleaseTeamChannel",
+			Handler:    _Loomcycle_ReleaseTeamChannel_Handler,
 		},
 		{
 			MethodName: "AwaitChannels",

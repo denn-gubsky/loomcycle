@@ -1117,3 +1117,26 @@ type TeamChannelPeekResult struct {
 	DeclaredIn string           `json:"declared_in"`
 	Messages   []ChannelMessage `json:"messages"`
 }
+
+// TeamChannelReleaseRequest is the input to Connector.ReleaseTeamChannel: the
+// operator's half of a hold on a team's own channel.
+type TeamChannelReleaseRequest struct {
+	Team   string `json:"team"`
+	Name   string `json:"name"`
+	Tenant string `json:"tenant,omitempty"`
+	// UserID names whose held messages to release on a user-scoped channel,
+	// as TeamChannelPeekRequest.UserID names whose to read.
+	UserID string `json:"user_id,omitempty"`
+	// Count is how many held messages to hand over, oldest first. 0 = 1.
+	Count int `json:"count,omitempty"`
+}
+
+// TeamChannelReleaseResult reports what a release handed over and what is
+// left. Released is [] (never null), like ChannelReleaseResult.Released.
+type TeamChannelReleaseResult struct {
+	Team          string   `json:"team"`
+	Name          string   `json:"name"`
+	Released      []string `json:"released"`
+	ReleasedCount int      `json:"released_count"`
+	StillHeld     int      `json:"still_held"`
+}

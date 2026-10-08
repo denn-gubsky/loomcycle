@@ -10,13 +10,19 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/connector"
 )
 
-// teamChannelConnector answers the two team-channel reads and records what it
-// was asked.
+// teamChannelConnector answers the team-channel calls and records what it was
+// asked.
 type teamChannelConnector struct {
 	mockConnector
-	listReq connector.TeamChannelsRequest
-	peekReq connector.TeamChannelPeekRequest
-	err     error
+	listReq    connector.TeamChannelsRequest
+	peekReq    connector.TeamChannelPeekRequest
+	releaseReq connector.TeamChannelReleaseRequest
+	err        error
+}
+
+func (c *teamChannelConnector) ReleaseTeamChannel(_ context.Context, r connector.TeamChannelReleaseRequest) (connector.TeamChannelReleaseResult, error) {
+	c.releaseReq = r
+	return connector.TeamChannelReleaseResult{Team: r.Team, Name: r.Name, Released: []string{"m1", "m2"}, ReleasedCount: 2, StillHeld: 4}, c.err
 }
 
 func (c *teamChannelConnector) ListTeamChannels(_ context.Context, r connector.TeamChannelsRequest) (connector.TeamChannelsResponse, error) {
@@ -62,6 +68,20 @@ func TestTeamChannelTools_CarryTheRequestAndTheAnswer(t *testing.T) {
 	if !strings.Contains(res.Content[0].Text, `"note":"hi"`) {
 		t.Errorf("peek result %s lacks the message", res.Content[0].Text)
 	}
+
+	res, err = handleReleaseTeamChannel(context.Background(), env,
+		json.RawMessage(`{"team":"triage","name":"journal","user_id":"alice","count":2}`))
+	if err != nil || res.IsError {
+		t.Fatalf("release_team_channel: %v %+v", err, res)
+	}
+	if got, want := c.releaseReq, (connector.TeamChannelReleaseRequest{Team: "triage", Name: "journal", UserID: "alice", Count: 2}); got != want {
+		t.Errorf("the connector was asked %+v, want %+v", got, want)
+	}
+	for _, want := range []string{`"released":["m1","m2"]`, `"released_count":2`, `"still_held":4`} {
+		if !strings.Contains(res.Content[0].Text, want) {
+			t.Errorf("release result %s lacks %s", res.Content[0].Text, want)
+		}
+	}
 }
 
 // A refusal reaches the caller as a tool error that says which of the two
@@ -75,9 +95,11 @@ func TestTeamChannelTools_ARefusalIsAToolError(t *testing.T) {
 		{connector.ErrTeamChannelNotDeclared, "declares no such channel"},
 	} {
 		env := &handlerEnv{connector: &teamChannelConnector{err: tc.err}, session: NewSession()}
-		res, err := handlePeekTeamChannel(context.Background(), env, json.RawMessage(`{"team":"t","name":"n"}`))
-		if err != nil || !res.IsError || !strings.Contains(res.Content[0].Text, tc.want) {
-			t.Errorf("%v → err=%v result=%+v, want a tool error containing %q", tc.err, err, res, tc.want)
+		for name, call := range map[string]toolHandler{"peek": handlePeekTeamChannel, "release": handleReleaseTeamChannel} {
+			res, err := call(context.Background(), env, json.RawMessage(`{"team":"t","name":"n"}`))
+			if err != nil || !res.IsError || !strings.Contains(res.Content[0].Text, tc.want) {
+				t.Errorf("%s: %v → err=%v result=%+v, want a tool error containing %q", name, tc.err, err, res, tc.want)
+			}
 		}
 	}
 }
@@ -88,15 +110,20 @@ func TestTeamChannelTools_AreOfferedLikeTheTeamTool(t *testing.T) {
 	as := func(scopes ...string) context.Context {
 		return auth.WithPrincipal(context.Background(), auth.Principal{TenantID: "acme", Subject: "alice", Scopes: scopes})
 	}
-	for _, tool := range []string{"list_team_channels", "peek_team_channel"} {
+	for tool, need := range map[string]string{
+		"list_team_channels":   auth.ScopeChannelRead,
+		"peek_team_channel":    auth.ScopeChannelRead,
+		"release_team_channel": auth.ScopeChannelPublish,
+	} {
 		if !principalMayCallTool(context.Background(), tool) || !principalMayCallTool(as(auth.ScopeAdmin), tool) {
 			t.Errorf("%s: withheld from an operator", tool)
 		}
 		if got, want := principalMayCallTool(as(auth.ScopeTenant), tool), principalMayCallTool(as(auth.ScopeTenant), "teamdef"); got != want || !got {
 			t.Errorf("%s: offered to a tenant operator = %v, teamdef = %v", tool, got, want)
 		}
-		if !principalMayCallTool(as(auth.ScopeChannelRead), tool) || principalMayCallTool(as(auth.ScopeRunsRead), tool) {
-			t.Errorf("%s: a member must hold the channel read scope, and no other will do", tool)
+		other := map[string]string{auth.ScopeChannelRead: auth.ScopeChannelPublish, auth.ScopeChannelPublish: auth.ScopeChannelRead}[need]
+		if !principalMayCallTool(as(need), tool) || principalMayCallTool(as(auth.ScopeRunsRead), tool) || principalMayCallTool(as(other), tool) {
+			t.Errorf("%s: a member must hold %s, and no other scope will do", tool, need)
 		}
 		if principalMayCallTool(as(auth.ScopeUser), tool) {
 			t.Errorf("%s: offered to an isolated user", tool)

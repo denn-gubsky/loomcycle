@@ -601,6 +601,21 @@ type Connector interface {
 	ListTeamChannels(ctx context.Context, req TeamChannelsRequest) (TeamChannelsResponse, error)
 	PeekTeamChannel(ctx context.Context, req TeamChannelPeekRequest) (TeamChannelPeekResult, error)
 
+	// ReleaseTeamChannel hands the oldest held messages on one of a team's
+	// own channels to the team's readers: the operator's half of a hold
+	// there, addressed like the two reads above and bound by the same tenant
+	// and user rules. It is the only thing an outside caller may change
+	// about a team's channel, and it adds nothing to it: every message it
+	// delivers is one the team itself wrote and its own definition held.
+	//
+	// Not gated on the channel still declaring hold, as ReleaseChannel is
+	// not: a channel switched back to delivering can still have messages held
+	// from before.
+	//
+	// Typed errors: those of the reads, and ErrTeamChannelBadCount
+	// (InvalidArgument).
+	ReleaseTeamChannel(ctx context.Context, req TeamChannelReleaseRequest) (TeamChannelReleaseResult, error)
+
 	// AwaitChannels / BroadcastChannels (RFC S client twins) are the
 	// fan-in / fan-out counterparts of the in-band Channel.await /
 	// Channel.broadcast ops, exposed to wire callers so an external

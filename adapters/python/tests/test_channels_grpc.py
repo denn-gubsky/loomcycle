@@ -437,3 +437,23 @@ async def test_peek_team_channel_addresses_by_team_and_local_name():
     assert out["team"] == "triage" and out["name"] == "journal"
     assert out["scope"] == "user" and out["declared_in"] == "active"
     assert len(out["messages"]) == 1 and out["messages"][0]["id"] == "m1"
+
+
+@pytest.mark.asyncio
+async def test_release_team_channel_sends_the_address_and_decodes_the_result():
+    client = _make_client()
+    resp = pb.ReleaseTeamChannelResponse(
+        team="triage", name="inbox", released=["m1", "m2"], released_count=2, still_held=3
+    )
+    fake, captured = _async_returning(resp)
+    client._stub.ReleaseTeamChannel = fake  # type: ignore[attr-defined]
+    out = await client.release_team_channel("triage", "inbox", count=2, user_id="alice", tenant="acme")
+    req = captured["req"]
+    assert (req.team, req.name, req.count, req.user_id, req.tenant) == ("triage", "inbox", 2, "alice", "acme")
+    assert out == {
+        "team": "triage",
+        "name": "inbox",
+        "released": ["m1", "m2"],
+        "released_count": 2,
+        "still_held": 3,
+    }

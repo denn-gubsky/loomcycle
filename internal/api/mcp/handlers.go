@@ -211,9 +211,10 @@ var handlersByName = map[string]toolHandler{
 	"subscribe_channel": handleSubscribeChannel,
 	"peek_channel":      handlePeekChannel,
 	// A team's own channels, for the person who runs the team.
-	"list_team_channels": handleListTeamChannels,
-	"peek_team_channel":  handlePeekTeamChannel,
-	"ack_channel":        handleAckChannel,
+	"list_team_channels":   handleListTeamChannels,
+	"peek_team_channel":    handlePeekTeamChannel,
+	"release_team_channel": handleReleaseTeamChannel,
+	"ack_channel":          handleAckChannel,
 }
 
 func toolHandlerByName(name string) (toolHandler, bool) {
@@ -1267,6 +1268,23 @@ func handlePeekTeamChannel(ctx context.Context, env *handlerEnv, args json.RawMe
 	res, err := env.connector.PeekTeamChannel(ctx, req)
 	if err != nil {
 		return toolErrFrom("peek_team_channel", err), nil
+	}
+	return toolResultJSON(res), nil
+}
+
+// handleReleaseTeamChannel delivers held messages on one of a team's own
+// channels to the team's readers.
+func handleReleaseTeamChannel(ctx context.Context, env *handlerEnv, args json.RawMessage) (*loommcp.CallToolResult, error) {
+	if env.connector == nil {
+		return nil, fmt.Errorf("release_team_channel: no connector wired")
+	}
+	var req connector.TeamChannelReleaseRequest
+	if err := json.Unmarshal(args, &req); err != nil {
+		return toolErr("invalid release_team_channel arguments: " + err.Error()), nil
+	}
+	res, err := env.connector.ReleaseTeamChannel(ctx, req)
+	if err != nil {
+		return toolErrFrom("release_team_channel", err), nil
 	}
 	return toolResultJSON(res), nil
 }

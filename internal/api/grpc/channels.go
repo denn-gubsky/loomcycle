@@ -30,7 +30,7 @@ func channelErrCode(err error) error {
 		return status.Error(codes.NotFound, err.Error())
 	case errors.Is(err, connector.ErrTeamNotFound), errors.Is(err, connector.ErrTeamChannelNotDeclared):
 		return status.Error(codes.NotFound, err.Error())
-	case errors.Is(err, connector.ErrTeamChannelUserRequired):
+	case errors.Is(err, connector.ErrTeamChannelUserRequired), errors.Is(err, connector.ErrTeamChannelBadCount):
 		return status.Error(codes.InvalidArgument, err.Error())
 	case errors.Is(err, connector.ErrChannelScopeInvalid):
 		return status.Error(codes.InvalidArgument, err.Error())
@@ -195,6 +195,23 @@ func (s *Server) PeekTeamChannel(ctx context.Context, req *loomcyclepb.PeekTeamC
 		out.Messages = append(out.Messages, &loomcyclepb.ChannelMessage{Id: m.ID, Value: m.Value, PublishedAt: m.PublishedAt})
 	}
 	return out, nil
+}
+
+// ReleaseTeamChannel — mirrors POST /v1/_teamdef/{team}/channels/{name}/release.
+func (s *Server) ReleaseTeamChannel(ctx context.Context, req *loomcyclepb.ReleaseTeamChannelRequest) (*loomcyclepb.ReleaseTeamChannelResponse, error) {
+	if s.connector == nil {
+		return nil, status.Error(codes.Unavailable, "connector not wired")
+	}
+	resp, err := s.connector.ReleaseTeamChannel(ctx, connector.TeamChannelReleaseRequest{
+		Team: req.GetTeam(), Name: req.GetName(), Tenant: req.GetTenant(), UserID: req.GetUserId(), Count: int(req.GetCount()),
+	})
+	if err != nil {
+		return nil, channelErrCode(err)
+	}
+	return &loomcyclepb.ReleaseTeamChannelResponse{
+		Team: resp.Team, Name: resp.Name, Released: resp.Released,
+		ReleasedCount: int32(resp.ReleasedCount), StillHeld: int32(resp.StillHeld),
+	}, nil
 }
 
 // AckChannel — mirrors POST /v1/_channels/{name}/ack.

@@ -3847,6 +3847,8 @@ func (s *Server) Mux() http.Handler {
 	// with their counts, and a peek that moves no cursor. Read-only.
 	mux.Handle("GET /v1/_teamdef/{team}/channels", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleTeamChannels))))
 	mux.Handle("GET /v1/_teamdef/{team}/channels/{name}/peek", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleTeamChannelPeek))))
+	// The operator's half of a hold on a team's own channel.
+	mux.Handle("POST /v1/_teamdef/{team}/channels/{name}/release", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleTeamChannelRelease))))
 	mux.Handle("GET /v1/_hookdef/names", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleListHookDefNames))))
 	mux.Handle("GET /v1/_mcpserverdef/names", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleListMCPServerDefNames))))
 	mux.Handle("GET /v1/_scheduledef/names", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleListScheduleDefNames))))

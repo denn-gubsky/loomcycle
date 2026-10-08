@@ -8,8 +8,10 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/denn-gubsky/loomcycle/internal/auth"
+	"github.com/denn-gubsky/loomcycle/internal/channels"
 	"github.com/denn-gubsky/loomcycle/internal/connector"
 	"github.com/denn-gubsky/loomcycle/internal/store"
 )
@@ -295,5 +297,203 @@ func TestTeamChannels_AMemberNeedsTheChannelReadScope(t *testing.T) {
 		if code, out := h.get(func(ctx context.Context) context.Context { return ctx }, path+"?tenant=acme"); code != http.StatusOK {
 			t.Errorf("%s with no authentication configured: HTTP %d %v, want 200", path, code, out)
 		}
+	}
+}
+
+// release calls POST /v1/_teamdef/{team}/channels/{name}/release as `as`.
+func (h *channelHarness) release(as func(context.Context) context.Context, team, name, body string) (int, map[string]any) {
+	h.t.Helper()
+	r := httptest.NewRequest(http.MethodPost, "/v1/_teamdef/"+team+"/channels/"+name+"/release", strings.NewReader(body))
+	r = r.WithContext(as(r.Context()))
+	r.SetPathValue("team", team)
+	r.SetPathValue("name", name)
+	rr := httptest.NewRecorder()
+	h.srv.handleTeamChannelRelease(rr, r)
+	var out map[string]any
+	_ = json.Unmarshal(rr.Body.Bytes(), &out)
+	if out == nil {
+		out = map[string]any{"raw": rr.Body.String()}
+	}
+	return rr.Code, out
+}
+
+// The other half of a hold: what a team wrote to its own held channel stays
+// held until its operator releases it, one message at a time, oldest first.
+// Without this a team whose only writers are its states, a schedule or a
+// webhook held everything it wrote for good.
+func TestTeamChannels_AnOperatorReleasesWhatATeamHeld(t *testing.T) {
+	h := newChannelHarness(t, nil)
+	h.seed("tdf_held_1", "held", intakeTeam(`{"scope":"tenant","hold":true}`))
+	for _, note := range []string{"first", "second", "third"} {
+		h.walk(acmeUser("alice"), "held", note)
+	}
+	if got := h.stored("_team/held/events", store.MemoryScopeTenant, ""); len(got) != 0 {
+		t.Fatalf("held messages were delivered before any release: %+v", got)
+	}
+
+	// An empty body releases one: the oldest.
+	code, out := h.release(acmeUser("alice"), "held", "events", "")
+	if ids, _ := out["released"].([]any); code != http.StatusOK || len(ids) != 1 || out["released_count"] != float64(1) || out["still_held"] != float64(2) {
+		t.Fatalf("release one: HTTP %d %v, want one released and two still held", code, out)
+	}
+	if out["team"] != "held" || out["name"] != "events" {
+		t.Errorf("release answer = %v, want it to name the team and the local name", out)
+	}
+	_, peek := h.get(acmeUser("alice"), "/v1/_teamdef/held/channels/events/peek")
+	msgs, _ := peek["messages"].([]any)
+	if raw, _ := json.Marshal(msgs); len(msgs) != 1 || !strings.Contains(string(raw), "first") {
+		t.Errorf("after one release the channel delivers %s, want the first message only", raw)
+	}
+	_, list := h.get(acmeUser("alice"), "/v1/_teamdef/held/channels")
+	if ch := channelNamed(t, list, "events"); ch["held_count"] != float64(2) || ch["message_count"] != float64(3) {
+		t.Errorf("counts after one release = %v, want 2 held of 3", ch)
+	}
+
+	// A count releases that many; asking for more than is held releases the rest.
+	code, out = h.release(acmeUser("alice"), "held", "events", `{"count":5}`)
+	if code != http.StatusOK || out["released_count"] != float64(2) || out["still_held"] != float64(0) {
+		t.Fatalf("release the rest: HTTP %d %v", code, out)
+	}
+	if got := h.stored("_team/held/events", store.MemoryScopeTenant, ""); len(got) != 3 {
+		t.Errorf("%d message(s) delivered, want all three", len(got))
+	}
+
+	// With nothing held, a release is a no-op that says so; `released` is a list.
+	code, out = h.release(acmeUser("alice"), "held", "events", "")
+	if ids, isList := out["released"].([]any); code != http.StatusOK || !isList || len(ids) != 0 || out["released_count"] != float64(0) {
+		t.Errorf("release with nothing held: HTTP %d %v, want an empty list and zero", code, out)
+	}
+}
+
+// A release is bound by the same tenant and user rules as the reads, and by
+// the cap every release has. A refused one delivers nothing.
+func TestTeamChannels_AReleaseIsConfinedLikeTheReads(t *testing.T) {
+	h := newChannelHarness(t, nil)
+	h.seed("tdf_held_1", "held", intakeTeam(`{"scope":"user","hold":true}`))
+	h.walk(acmeUser("alice"), "held", "alice's note")
+
+	for name, tc := range map[string]struct {
+		as       func(context.Context) context.Context
+		team     string
+		channel  string
+		body     string
+		code     int
+		wantCode string
+	}{
+		"another tenant":                    {otherTenant, "held", "events", "", 404, "team_not_found"},
+		"a team that does not exist":        {acmeUser("alice"), "nosuch", "events", "", 404, "team_not_found"},
+		"a channel the team does not have":  {acmeUser("alice"), "held", "nosuch", "", 404, "team_channel_not_declared"},
+		"another user's keyspace":           {acmeUser("bob"), "held", "events", `{"user_id":"alice"}`, 404, "team_channel_not_declared"},
+		"a negative count":                  {acmeUser("alice"), "held", "events", `{"count":-1}`, 400, "invalid_request"},
+		"a count over the cap":              {acmeUser("alice"), "held", "events", `{"count":1001}`, 400, "invalid_request"},
+		"a key the body does not have":      {acmeUser("alice"), "held", "events", `{"cnt":2}`, 400, "invalid_body"},
+		"a body that is not JSON":           {acmeUser("alice"), "held", "events", `{`, 400, "invalid_body"},
+		"the stored name as the local name": {acmeUser("alice"), "held", "_team/held/events", "", 404, "team_channel_not_declared"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			code, out := h.release(tc.as, tc.team, tc.channel, tc.body)
+			if code != tc.code || out["code"] != tc.wantCode {
+				t.Errorf("HTTP %d %v, want %d %s", code, out, tc.code, tc.wantCode)
+			}
+		})
+	}
+	if got := h.stored("_team/held/events", store.MemoryScopeUser, "alice"); len(got) != 0 {
+		t.Fatalf("a refused release delivered %d message(s)", len(got))
+	}
+
+	// Bob's own keyspace has nothing held: his release is a no-op, and
+	// alice's message stays held.
+	code, out := h.release(acmeUser("bob"), "held", "events", "")
+	if code != http.StatusOK || out["released_count"] != float64(0) {
+		t.Errorf("bob releasing his own keyspace: HTTP %d %v", code, out)
+	}
+	// Alice releases her own; an admin could have named her.
+	code, out = h.release(acmeUser("alice"), "held", "events", "")
+	if code != http.StatusOK || out["released_count"] != float64(1) {
+		t.Errorf("alice releasing her own: HTTP %d %v", code, out)
+	}
+	if got := h.stored("_team/held/events", store.MemoryScopeUser, "alice"); len(got) != 1 {
+		t.Errorf("alice's message was not delivered: %d", len(got))
+	}
+}
+
+// Releasing does not depend on the channel still declaring hold: a team whose
+// active version no longer holds can still have messages held from before,
+// and refusing would strand them.
+func TestTeamChannels_AReleaseWorksAfterTheTeamStoppedHolding(t *testing.T) {
+	h := newChannelHarness(t, nil)
+	sc := h.seed("tdf_v1", "relaxed", intakeTeam(`{"scope":"tenant","hold":true}`))
+	h.walk(acmeUser("alice"), "relaxed", "held under v1")
+	ctx := context.Background()
+	row, err := h.st.TeamDefCreate(ctx, store.TeamDefRow{DefID: "tdf_v2", Name: "relaxed", Version: 2, TenantID: "acme", ParentDefID: sc.DefID,
+		Definition: json.RawMessage(intakeTeam(`{"scope":"tenant"}`))})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := h.st.TeamDefSetActive(ctx, "acme", "relaxed", row.DefID, "a_test", store.TeamDefPromoter{}); err != nil {
+		t.Fatal(err)
+	}
+	_, list := h.get(acmeUser("alice"), "/v1/_teamdef/relaxed/channels")
+	if ch := channelNamed(t, list, "events"); ch["hold"] == true || ch["held_count"] != float64(1) {
+		t.Fatalf("events = %v, want the active definition (no hold) with one message still held", ch)
+	}
+	code, out := h.release(acmeUser("alice"), "relaxed", "events", "")
+	if code != http.StatusOK || out["released_count"] != float64(1) || out["still_held"] != float64(0) {
+		t.Errorf("release: HTTP %d %v, want the old held message delivered", code, out)
+	}
+}
+
+func TestTeamChannels_TheReleaseRouteIsGatedLikeTheTeam(t *testing.T) {
+	if got := requiredScopeFor(http.MethodPost, "/v1/_teamdef/intake/channels/events/release"); got != auth.ScopeTenant {
+		t.Errorf("requiredScopeFor(POST …/release) = %q, want %q", got, auth.ScopeTenant)
+	}
+}
+
+// A reader blocked on the channel is woken by a release, as by a publish:
+// without the wake it would sit out its whole wait beside a delivered message.
+func TestTeamChannels_AReleaseWakesAWaitingReader(t *testing.T) {
+	h := newChannelHarness(t, nil)
+	h.seed("tdf_held_1", "held", intakeTeam(`{"scope":"tenant","hold":true}`))
+	h.walk(acmeUser("alice"), "held", "note")
+	bus := channels.NewBus()
+	h.srv.SetChannelBus(bus)
+	waker := bus.Register("_team/held/events")
+	defer bus.Unregister("_team/held/events", waker)
+
+	if code, out := h.release(acmeUser("alice"), "held", "events", ""); code != http.StatusOK || out["released_count"] != float64(1) {
+		t.Fatalf("release: HTTP %d %v", code, out)
+	}
+	select {
+	case <-waker:
+	case <-time.After(2 * time.Second):
+		t.Fatal("the release delivered a message and woke no reader")
+	}
+}
+
+// Releasing is a channel write: a member needs the scope a publish needs, and
+// the read scope does not stand in for it. A refused release delivers nothing.
+func TestTeamChannels_AMemberNeedsTheChannelPublishScopeToRelease(t *testing.T) {
+	h := newChannelHarness(t, nil)
+	h.seed("tdf_held_1", "held", intakeTeam(`{"scope":"tenant","hold":true}`))
+	h.walk(acmeUser("alice"), "held", "note")
+	memberWith := func(scopes ...string) func(context.Context) context.Context {
+		return func(ctx context.Context) context.Context {
+			return auth.WithPrincipal(ctx, auth.Principal{TenantID: "acme", Subject: "bob", Scopes: scopes})
+		}
+	}
+	for name, scopes := range map[string][]string{
+		"channel:read only": {auth.ScopeChannelRead},
+		"runs:create only":  {auth.ScopeRunsCreate},
+		"no scope at all":   nil,
+	} {
+		if code, out := h.release(memberWith(scopes...), "held", "events", ""); code != http.StatusForbidden || out["code"] != "insufficient_scope" {
+			t.Errorf("%s: HTTP %d %v, want 403 insufficient_scope", name, code, out)
+		}
+	}
+	if got := h.stored("_team/held/events", store.MemoryScopeTenant, ""); len(got) != 0 {
+		t.Fatalf("a refused release delivered %d message(s)", len(got))
+	}
+	if code, out := h.release(memberWith(auth.ScopeChannelPublish), "held", "events", ""); code != http.StatusOK || out["released_count"] != float64(1) {
+		t.Errorf("channel:publish: HTTP %d %v, want the message released", code, out)
 	}
 }

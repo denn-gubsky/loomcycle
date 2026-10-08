@@ -712,6 +712,21 @@ func toolDescriptors() []loommcp.ToolDescriptor {
 			}`),
 		},
 		{
+			Name:        "release_team_channel",
+			Description: "Deliver HELD messages on one of a TEAM's own channels to the team's readers. Takes `team` and `name` (the channel's name inside the team, without the leading ./), and optionally `count` (how many, oldest first; default 1, at most 1000). Returns {team, name, released:[message ids], released_count, still_held}. A channel a team declares with hold: true stores every publish and delivers none until released; this is the operator's side of that breakpoint, so a team whose own states, schedule or webhook write to a held channel can be stepped one message at a time. It delivers only what the team itself wrote: there is no publish, ack or purge for a team's own channel from outside the team. Releasing when nothing is held is not an error and reports zero. A user-scoped channel is released at your own user; `user_id` names another's and is honoured only for a caller who may act on any user's channel. USE list_team_channels first to see held_count. Do NOT use it on an operator-declared channel: that is the channel's own release.",
+			InputSchema: rawJSON(`{
+				"type": "object",
+				"required": ["team", "name"],
+				"properties": {
+					"team":    {"type": "string", "description": "The team's name."},
+					"name":    {"type": "string", "description": "The channel's name inside the team, e.g. inbox for ./inbox."},
+					"count":   {"type": "integer", "minimum": 1, "maximum": 1000, "default": 1, "description": "How many held messages to deliver, oldest first."},
+					"user_id": {"type": "string", "description": "For a user-scoped channel: whose held messages to deliver. Default: your own."},
+					"tenant":  {"type": "string", "description": "Only for a caller who sees every tenant: the tenant that holds the team."}
+				}
+			}`),
+		},
+		{
 			Name:        "ack_channel",
 			Description: "Commit the cursor for a (channel, scope, scope_id) tuple \u2014 the second half of at-least-once processing. Takes `channel`, `scope`, `scope_id` (REQUIRED when scope='user') and the `cursor` you are acknowledging. Returns {ok: true}. Cursors move FORWARD only: an older cursor is refused with channel_cursor_regression rather than silently rewinding, so a late ack cannot replay messages someone else has moved past. USE THIS after peek_channel, once the work is durable. Do NOT use it after subscribe_channel \u2014 that already committed. There is no un-ack: to re-process a message, republish it.",
 			InputSchema: rawJSON(`{

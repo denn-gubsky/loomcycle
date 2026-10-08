@@ -76,16 +76,19 @@ var tenantConfinableTools = map[string]bool{
 	// found) and to its own user's keyspace of a user-scoped channel.
 	"list_team_channels": true,
 	"peek_team_channel":  true,
-	"hookdef":            true, // tenant-confined reusable hook definitions
-	"mcpserverdef":       true,
-	"scheduledef":        true,
-	"a2aservercarddef":   true,
-	"a2aagentdef":        true,
-	"webhookdef":         true,
-	"memorybackenddef":   true,
-	"documentsourcedef":  true, // RFC CE — tenant-confined remote-document-source substrate
-	"volumedef":          true,
-	"credentialdef":      true, // RFC AR — tenant/user-confined secure credential store
+	// The operator's half of a hold on a team's own channel: delivers what
+	// the team wrote and its definition held. Same confinement as the reads.
+	"release_team_channel": true,
+	"hookdef":              true, // tenant-confined reusable hook definitions
+	"mcpserverdef":         true,
+	"scheduledef":          true,
+	"a2aservercarddef":     true,
+	"a2aagentdef":          true,
+	"webhookdef":           true,
+	"memorybackenddef":     true,
+	"documentsourcedef":    true, // RFC CE — tenant-confined remote-document-source substrate
+	"volumedef":            true,
+	"credentialdef":        true, // RFC AR — tenant/user-confined secure credential store
 
 	// Per-(scope, scope_id, tenant) data tools.
 	"memory":     true,
@@ -186,11 +189,12 @@ var toolRequiredScope = map[string]string{
 	"ack_channel":       auth.ScopeChannelPublish,
 	"subscribe_channel": auth.ScopeChannelRead,
 	"peek_channel":      auth.ScopeChannelRead,
-	// A team's own channels are channels: reading one is a channel read. The
-	// HTTP routes ask the same of a member; the RPCs ask substrate:tenant,
-	// which implies it.
-	"list_team_channels": auth.ScopeChannelRead,
-	"peek_team_channel":  auth.ScopeChannelRead,
+	// A team's own channels are channels: reading one is a channel read, and
+	// releasing what one holds is a channel write. The HTTP routes ask the
+	// same of a member; the RPCs ask substrate:tenant, which implies both.
+	"list_team_channels":   auth.ScopeChannelRead,
+	"peek_team_channel":    auth.ScopeChannelRead,
+	"release_team_channel": auth.ScopeChannelPublish,
 	// Asking a decision model outside a run spends tokens: the scope
 	// POST /v1/_decide and the Decide RPC require.
 	"decision": auth.ScopeRunsCreate,

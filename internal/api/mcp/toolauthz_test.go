@@ -113,7 +113,7 @@ func member(scopes ...string) context.Context {
 func TestPrincipalMayCallTool_AMemberNeedsTheToolsOwnScope(t *testing.T) {
 	runWrites := []string{"spawn_run", "spawn_runs", "cancel_run", "compact_run", "retune_run", "review_run", "configured_run", "interruption_resolve"}
 	runReads := []string{"get_run", "list_runs", "stream_user_run_states"}
-	chanWrites := []string{"publish_channel", "ack_channel"}
+	chanWrites := []string{"publish_channel", "ack_channel", "release_team_channel"}
 	chanReads := []string{"subscribe_channel", "peek_channel", "list_team_channels", "peek_team_channel"}
 
 	for _, c := range []struct {

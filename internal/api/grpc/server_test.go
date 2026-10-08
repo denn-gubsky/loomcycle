@@ -974,6 +974,9 @@ func (m *mockConnector) SubscribeChannel(context.Context, connector.ChannelSubsc
 func (m *mockConnector) ListTeamChannels(context.Context, connector.TeamChannelsRequest) (connector.TeamChannelsResponse, error) {
 	return connector.TeamChannelsResponse{}, nil
 }
+func (m *mockConnector) ReleaseTeamChannel(context.Context, connector.TeamChannelReleaseRequest) (connector.TeamChannelReleaseResult, error) {
+	return connector.TeamChannelReleaseResult{}, nil
+}
 func (m *mockConnector) PeekTeamChannel(context.Context, connector.TeamChannelPeekRequest) (connector.TeamChannelPeekResult, error) {
 	return connector.TeamChannelPeekResult{}, nil
 }

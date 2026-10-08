@@ -315,6 +315,8 @@ export type {
   ChannelPeekResult,
   ListTeamChannelsOptions,
   PeekTeamChannelOptions,
+  ReleaseTeamChannelOptions,
+  TeamChannelReleaseResult,
   TeamChannelDeclaredIn,
   TeamChannelDescriptor,
   TeamChannelPeekResult,
