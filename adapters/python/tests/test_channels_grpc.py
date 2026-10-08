@@ -356,3 +356,84 @@ async def test_stream_user_run_states_names_a_sub_runs_parent_run():
 
     assert got[0]["parent_run_id"] == "r_parent"
     assert got[1]["parent_run_id"] == ""
+
+
+@pytest.mark.asyncio
+async def test_list_team_channels_sends_the_team_and_decodes_every_field():
+    client = _make_client()
+    resp = pb.ListTeamChannelsResponse(
+        team="triage",
+        channels=[
+            pb.TeamChannelDescriptor(
+                name="journal",
+                scope="user",
+                semantic="queue",
+                hold=True,
+                default_ttl=60,
+                max_messages=50,
+                declared_in="retired",
+                def_id="tdf_1",
+                version=3,
+                message_count=4,
+                held_count=2,
+                awaiting_hooks_count=1,
+                oldest_visible_at="2026-10-08T00:00:00Z",
+                newest_visible_at="2026-10-08T01:00:00Z",
+            )
+        ],
+    )
+    fake, captured = _async_returning(resp)
+    client._stub.ListTeamChannels = fake  # type: ignore[attr-defined]
+    out = await client.list_team_channels("triage", tenant="acme")
+    assert captured["req"].team == "triage"
+    assert captured["req"].tenant == "acme"
+    assert out == {
+        "team": "triage",
+        "channels": [
+            {
+                "name": "journal",
+                "scope": "user",
+                "semantic": "queue",
+                "hold": True,
+                "default_ttl": 60,
+                "max_messages": 50,
+                "declared_in": "retired",
+                "def_id": "tdf_1",
+                "version": 3,
+                "message_count": 4,
+                "held_count": 2,
+                "awaiting_hooks_count": 1,
+                "oldest_visible_at": "2026-10-08T00:00:00Z",
+                "newest_visible_at": "2026-10-08T01:00:00Z",
+            }
+        ],
+    }
+
+
+@pytest.mark.asyncio
+async def test_peek_team_channel_addresses_by_team_and_local_name():
+    client = _make_client()
+    resp = pb.PeekTeamChannelResponse(
+        team="triage",
+        name="journal",
+        scope="user",
+        declared_in="active",
+        messages=[pb.ChannelMessage(id="m1", value=b'{"note":"hi"}', published_at="2026-10-08T00:00:00Z")],
+    )
+    fake, captured = _async_returning(resp)
+    client._stub.PeekTeamChannel = fake  # type: ignore[attr-defined]
+    out = await client.peek_team_channel(
+        "triage", "journal", user_id="alice", from_cursor="cur_2", max_messages=5, tenant="acme"
+    )
+    req = captured["req"]
+    assert (req.team, req.name, req.user_id, req.from_cursor, req.max_messages, req.tenant) == (
+        "triage",
+        "journal",
+        "alice",
+        "cur_2",
+        5,
+        "acme",
+    )
+    assert out["team"] == "triage" and out["name"] == "journal"
+    assert out["scope"] == "user" and out["declared_in"] == "active"
+    assert len(out["messages"]) == 1 and out["messages"][0]["id"] == "m1"

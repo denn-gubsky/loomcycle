@@ -233,6 +233,12 @@ func (m *httpMockConnector) PublishChannel(context.Context, connector.ChannelPub
 func (m *httpMockConnector) SubscribeChannel(context.Context, connector.ChannelSubscribeRequest) (connector.ChannelSubscribeResult, error) {
 	return connector.ChannelSubscribeResult{}, errors.New("not implemented")
 }
+func (m *httpMockConnector) ListTeamChannels(context.Context, connector.TeamChannelsRequest) (connector.TeamChannelsResponse, error) {
+	return connector.TeamChannelsResponse{}, nil
+}
+func (m *httpMockConnector) PeekTeamChannel(context.Context, connector.TeamChannelPeekRequest) (connector.TeamChannelPeekResult, error) {
+	return connector.TeamChannelPeekResult{}, nil
+}
 func (m *httpMockConnector) PeekChannel(context.Context, connector.ChannelPeekRequest) (connector.ChannelPeekResult, error) {
 	return connector.ChannelPeekResult{}, errors.New("not implemented")
 }

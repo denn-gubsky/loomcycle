@@ -28,6 +28,10 @@ func channelErrCode(err error) error {
 	switch {
 	case errors.Is(err, connector.ErrChannelNotDeclared):
 		return status.Error(codes.NotFound, err.Error())
+	case errors.Is(err, connector.ErrTeamNotFound), errors.Is(err, connector.ErrTeamChannelNotDeclared):
+		return status.Error(codes.NotFound, err.Error())
+	case errors.Is(err, connector.ErrTeamChannelUserRequired):
+		return status.Error(codes.InvalidArgument, err.Error())
 	case errors.Is(err, connector.ErrChannelScopeInvalid):
 		return status.Error(codes.InvalidArgument, err.Error())
 	case errors.Is(err, connector.ErrChannelCursorRegression):
@@ -139,6 +143,56 @@ func (s *Server) PeekChannel(ctx context.Context, req *loomcyclepb.PeekChannelRe
 			Value:       m.Value,
 			PublishedAt: m.PublishedAt,
 		})
+	}
+	return out, nil
+}
+
+// ListTeamChannels — mirrors GET /v1/_teamdef/{team}/channels. The connector
+// resolves the team in the caller's tenant and confines the read to it.
+func (s *Server) ListTeamChannels(ctx context.Context, req *loomcyclepb.ListTeamChannelsRequest) (*loomcyclepb.ListTeamChannelsResponse, error) {
+	if s.connector == nil {
+		return nil, status.Error(codes.Unavailable, "connector not wired")
+	}
+	resp, err := s.connector.ListTeamChannels(ctx, connector.TeamChannelsRequest{Team: req.GetTeam(), Tenant: req.GetTenant()})
+	if err != nil {
+		return nil, channelErrCode(err)
+	}
+	out := &loomcyclepb.ListTeamChannelsResponse{
+		Team:     resp.Team,
+		Channels: make([]*loomcyclepb.TeamChannelDescriptor, 0, len(resp.Channels)),
+	}
+	for _, c := range resp.Channels {
+		out.Channels = append(out.Channels, &loomcyclepb.TeamChannelDescriptor{
+			Name: c.Name, Scope: c.Scope, Semantic: c.Semantic, Hold: c.Hold,
+			DefaultTtl: int32(c.DefaultTTL), MaxMessages: int32(c.MaxMessages),
+			DeclaredIn: c.DeclaredIn, DefId: c.DefID, Version: int32(c.Version),
+			MessageCount: c.MessageCount, HeldCount: c.HeldCount, AwaitingHooksCount: c.AwaitingHooksCount,
+			OldestVisibleAt: c.OldestVisibleAt, NewestVisibleAt: c.NewestVisibleAt,
+		})
+	}
+	return out, nil
+}
+
+// PeekTeamChannel — mirrors GET /v1/_teamdef/{team}/channels/{name}/peek.
+// Non-destructive. Which user's keyspace of a user-scoped channel a caller
+// may read is the connector's decision, as on every transport.
+func (s *Server) PeekTeamChannel(ctx context.Context, req *loomcyclepb.PeekTeamChannelRequest) (*loomcyclepb.PeekTeamChannelResponse, error) {
+	if s.connector == nil {
+		return nil, status.Error(codes.Unavailable, "connector not wired")
+	}
+	resp, err := s.connector.PeekTeamChannel(ctx, connector.TeamChannelPeekRequest{
+		Team: req.GetTeam(), Name: req.GetName(), Tenant: req.GetTenant(), UserID: req.GetUserId(),
+		FromCursor: req.GetFromCursor(), MaxMessages: int(req.GetMaxMessages()),
+	})
+	if err != nil {
+		return nil, channelErrCode(err)
+	}
+	out := &loomcyclepb.PeekTeamChannelResponse{
+		Team: resp.Team, Name: resp.Name, Scope: resp.Scope, DeclaredIn: resp.DeclaredIn,
+		Messages: make([]*loomcyclepb.ChannelMessage, 0, len(resp.Messages)),
+	}
+	for _, m := range resp.Messages {
+		out.Messages = append(out.Messages, &loomcyclepb.ChannelMessage{Id: m.ID, Value: m.Value, PublishedAt: m.PublishedAt})
 	}
 	return out, nil
 }

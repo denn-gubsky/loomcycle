@@ -68,19 +68,24 @@ var tenantConfinableTools = map[string]bool{
 
 	// Def authoring — each stamps the row's tenant from ctx and opaque-404s
 	// cross-tenant reads.
-	"agentdef":          true,
-	"skilldef":          true,
-	"teamdef":           true, // RFC AP — tenant-confined team-workflow substrate
-	"hookdef":           true, // tenant-confined reusable hook definitions
-	"mcpserverdef":      true,
-	"scheduledef":       true,
-	"a2aservercarddef":  true,
-	"a2aagentdef":       true,
-	"webhookdef":        true,
-	"memorybackenddef":  true,
-	"documentsourcedef": true, // RFC CE — tenant-confined remote-document-source substrate
-	"volumedef":         true,
-	"credentialdef":     true, // RFC AR — tenant/user-confined secure credential store
+	"agentdef": true,
+	"skilldef": true,
+	"teamdef":  true, // RFC AP — tenant-confined team-workflow substrate
+	// A team's own channels, read by team and local name. The connector
+	// confines the caller to teams its tenant holds (another tenant's is not
+	// found) and to its own user's keyspace of a user-scoped channel.
+	"list_team_channels": true,
+	"peek_team_channel":  true,
+	"hookdef":            true, // tenant-confined reusable hook definitions
+	"mcpserverdef":       true,
+	"scheduledef":        true,
+	"a2aservercarddef":   true,
+	"a2aagentdef":        true,
+	"webhookdef":         true,
+	"memorybackenddef":   true,
+	"documentsourcedef":  true, // RFC CE — tenant-confined remote-document-source substrate
+	"volumedef":          true,
+	"credentialdef":      true, // RFC AR — tenant/user-confined secure credential store
 
 	// Per-(scope, scope_id, tenant) data tools.
 	"memory":     true,

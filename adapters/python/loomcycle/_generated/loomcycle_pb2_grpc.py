@@ -368,6 +368,16 @@ class LoomcycleStub:
                 request_serializer=loomcycle__pb2.AckChannelRequest.SerializeToString,
                 response_deserializer=loomcycle__pb2.AckChannelResponse.FromString,
                 _registered_method=True)
+        self.ListTeamChannels = channel.unary_unary(
+                '/loomcycle.v1.Loomcycle/ListTeamChannels',
+                request_serializer=loomcycle__pb2.ListTeamChannelsRequest.SerializeToString,
+                response_deserializer=loomcycle__pb2.ListTeamChannelsResponse.FromString,
+                _registered_method=True)
+        self.PeekTeamChannel = channel.unary_unary(
+                '/loomcycle.v1.Loomcycle/PeekTeamChannel',
+                request_serializer=loomcycle__pb2.PeekTeamChannelRequest.SerializeToString,
+                response_deserializer=loomcycle__pb2.PeekTeamChannelResponse.FromString,
+                _registered_method=True)
         self.AwaitChannels = channel.unary_unary(
                 '/loomcycle.v1.Loomcycle/AwaitChannels',
                 request_serializer=loomcycle__pb2.AwaitChannelsRequest.SerializeToString,
@@ -1177,6 +1187,25 @@ class LoomcycleServicer:
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
 
+    def ListTeamChannels(self, request, context):
+        """A team's OWN channels, for the person who runs the team (mirror
+        GET /v1/_teamdef/{team}/channels and .../channels/{name}/peek). Such a
+        channel is written and read only from inside its team, so ListChannels
+        never lists it and PeekChannel refuses it; these address it by team and
+        by the name the team gave it. Read-only: the peek advances no cursor.
+        An unknown team, or one in another tenant, is NOT_FOUND, as is a name
+        the team does not declare.
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def PeekTeamChannel(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
     def AwaitChannels(self, request, context):
         """RFC S client twins (mirror POST /v1/_channels/_await and
         /v1/_channels/_broadcast). AwaitChannels fans IN across a set of
@@ -1527,6 +1556,16 @@ def add_LoomcycleServicer_to_server(servicer, server):
                     servicer.AckChannel,
                     request_deserializer=loomcycle__pb2.AckChannelRequest.FromString,
                     response_serializer=loomcycle__pb2.AckChannelResponse.SerializeToString,
+            ),
+            'ListTeamChannels': grpc.unary_unary_rpc_method_handler(
+                    servicer.ListTeamChannels,
+                    request_deserializer=loomcycle__pb2.ListTeamChannelsRequest.FromString,
+                    response_serializer=loomcycle__pb2.ListTeamChannelsResponse.SerializeToString,
+            ),
+            'PeekTeamChannel': grpc.unary_unary_rpc_method_handler(
+                    servicer.PeekTeamChannel,
+                    request_deserializer=loomcycle__pb2.PeekTeamChannelRequest.FromString,
+                    response_serializer=loomcycle__pb2.PeekTeamChannelResponse.SerializeToString,
             ),
             'AwaitChannels': grpc.unary_unary_rpc_method_handler(
                     servicer.AwaitChannels,
@@ -3325,6 +3364,60 @@ class Loomcycle:
             '/loomcycle.v1.Loomcycle/AckChannel',
             loomcycle__pb2.AckChannelRequest.SerializeToString,
             loomcycle__pb2.AckChannelResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def ListTeamChannels(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/loomcycle.v1.Loomcycle/ListTeamChannels',
+            loomcycle__pb2.ListTeamChannelsRequest.SerializeToString,
+            loomcycle__pb2.ListTeamChannelsResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def PeekTeamChannel(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/loomcycle.v1.Loomcycle/PeekTeamChannel',
+            loomcycle__pb2.PeekTeamChannelRequest.SerializeToString,
+            loomcycle__pb2.PeekTeamChannelResponse.FromString,
             options,
             channel_credentials,
             insecure,

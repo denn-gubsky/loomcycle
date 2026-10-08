@@ -85,6 +85,10 @@ import type {
   ChannelBroadcastResult,
   ChannelDescriptor,
   ChannelPeekResult,
+  ListTeamChannelsOptions,
+  PeekTeamChannelOptions,
+  TeamChannelPeekResult,
+  TeamChannelsResult,
   ChannelPublishResult,
   ChannelPurgeResult,
   ChannelReleaseResult,
@@ -2761,6 +2765,48 @@ export class LoomcycleClient {
     if (opts.maxMessages) params.push(`max_messages=${opts.maxMessages}`);
     if (params.length > 0) path += `?${params.join("&")}`;
     return jsonFetch<ChannelPeekResult>(this.ctx, path, { signal: opts.signal });
+  }
+
+  /** List the channels a team declares for itself, with each one's
+   *  definition and traffic counts (GET /v1/_teamdef/{team}/channels).
+   *
+   *  A team's own channel is written and read only from inside the team, so
+   *  {@link LoomcycleClient.listChannels} never shows it. This is how the
+   *  person who runs the team sees it. The team is resolved in the caller's
+   *  tenant: an unknown team, or one in another tenant, raises a
+   *  {@link NotFoundError} (code `team_not_found`). Read-only. */
+  async listTeamChannels(
+    team: string,
+    opts: ListTeamChannelsOptions = {},
+  ): Promise<TeamChannelsResult> {
+    let path = `/v1/_teamdef/${encodeURIComponent(team)}/channels`;
+    if (opts.tenant) path += `?tenant=${encodeURIComponent(opts.tenant)}`;
+    return jsonFetch<TeamChannelsResult>(this.ctx, path, { signal: opts.signal });
+  }
+
+  /** Read messages on one of a team's own channels without advancing any
+   *  cursor (GET /v1/_teamdef/{team}/channels/{name}/peek). `name` is the
+   *  channel's name inside the team (`journal` for `./journal`).
+   *
+   *  Nothing is consumed: the team still reads every message, and the same
+   *  ones come back on the next call. Held messages are not listed;
+   *  {@link LoomcycleClient.listTeamChannels} counts them. A name the team
+   *  does not declare raises a {@link NotFoundError} (code
+   *  `team_channel_not_declared`). {@link LoomcycleClient.peekChannel} keeps
+   *  refusing both the stored name and `./name`. */
+  async peekTeamChannel(
+    team: string,
+    name: string,
+    opts: PeekTeamChannelOptions = {},
+  ): Promise<TeamChannelPeekResult> {
+    let path = `/v1/_teamdef/${encodeURIComponent(team)}/channels/${encodeURIComponent(name)}/peek`;
+    const params: string[] = [];
+    if (opts.userId) params.push(`user_id=${encodeURIComponent(opts.userId)}`);
+    if (opts.fromCursor) params.push(`from_cursor=${encodeURIComponent(opts.fromCursor)}`);
+    if (opts.maxMessages) params.push(`max_messages=${opts.maxMessages}`);
+    if (opts.tenant) params.push(`tenant=${encodeURIComponent(opts.tenant)}`);
+    if (params.length > 0) path += `?${params.join("&")}`;
+    return jsonFetch<TeamChannelPeekResult>(this.ctx, path, { signal: opts.signal });
   }
 
   /** Advance the committed cursor for a (channel, scope, scope_id)

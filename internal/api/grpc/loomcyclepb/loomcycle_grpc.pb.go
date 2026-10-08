@@ -104,6 +104,8 @@ const (
 	Loomcycle_SubscribeChannel_FullMethodName    = "/loomcycle.v1.Loomcycle/SubscribeChannel"
 	Loomcycle_PeekChannel_FullMethodName         = "/loomcycle.v1.Loomcycle/PeekChannel"
 	Loomcycle_AckChannel_FullMethodName          = "/loomcycle.v1.Loomcycle/AckChannel"
+	Loomcycle_ListTeamChannels_FullMethodName    = "/loomcycle.v1.Loomcycle/ListTeamChannels"
+	Loomcycle_PeekTeamChannel_FullMethodName     = "/loomcycle.v1.Loomcycle/PeekTeamChannel"
 	Loomcycle_AwaitChannels_FullMethodName       = "/loomcycle.v1.Loomcycle/AwaitChannels"
 	Loomcycle_BroadcastChannels_FullMethodName   = "/loomcycle.v1.Loomcycle/BroadcastChannels"
 )
@@ -546,6 +548,15 @@ type LoomcycleClient interface {
 	SubscribeChannel(ctx context.Context, in *SubscribeChannelRequest, opts ...grpc.CallOption) (*SubscribeChannelResponse, error)
 	PeekChannel(ctx context.Context, in *PeekChannelRequest, opts ...grpc.CallOption) (*PeekChannelResponse, error)
 	AckChannel(ctx context.Context, in *AckChannelRequest, opts ...grpc.CallOption) (*AckChannelResponse, error)
+	// A team's OWN channels, for the person who runs the team (mirror
+	// GET /v1/_teamdef/{team}/channels and .../channels/{name}/peek). Such a
+	// channel is written and read only from inside its team, so ListChannels
+	// never lists it and PeekChannel refuses it; these address it by team and
+	// by the name the team gave it. Read-only: the peek advances no cursor.
+	// An unknown team, or one in another tenant, is NOT_FOUND, as is a name
+	// the team does not declare.
+	ListTeamChannels(ctx context.Context, in *ListTeamChannelsRequest, opts ...grpc.CallOption) (*ListTeamChannelsResponse, error)
+	PeekTeamChannel(ctx context.Context, in *PeekTeamChannelRequest, opts ...grpc.CallOption) (*PeekTeamChannelResponse, error)
 	// RFC S client twins (mirror POST /v1/_channels/_await and
 	// /v1/_channels/_broadcast). AwaitChannels fans IN across a set of
 	// channels (any/all/at_least N, or a timeout — a timeout is
@@ -1269,6 +1280,26 @@ func (c *loomcycleClient) AckChannel(ctx context.Context, in *AckChannelRequest,
 	return out, nil
 }
 
+func (c *loomcycleClient) ListTeamChannels(ctx context.Context, in *ListTeamChannelsRequest, opts ...grpc.CallOption) (*ListTeamChannelsResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ListTeamChannelsResponse)
+	err := c.cc.Invoke(ctx, Loomcycle_ListTeamChannels_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *loomcycleClient) PeekTeamChannel(ctx context.Context, in *PeekTeamChannelRequest, opts ...grpc.CallOption) (*PeekTeamChannelResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(PeekTeamChannelResponse)
+	err := c.cc.Invoke(ctx, Loomcycle_PeekTeamChannel_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (c *loomcycleClient) AwaitChannels(ctx context.Context, in *AwaitChannelsRequest, opts ...grpc.CallOption) (*AwaitChannelsResponse, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(AwaitChannelsResponse)
@@ -1727,6 +1758,15 @@ type LoomcycleServer interface {
 	SubscribeChannel(context.Context, *SubscribeChannelRequest) (*SubscribeChannelResponse, error)
 	PeekChannel(context.Context, *PeekChannelRequest) (*PeekChannelResponse, error)
 	AckChannel(context.Context, *AckChannelRequest) (*AckChannelResponse, error)
+	// A team's OWN channels, for the person who runs the team (mirror
+	// GET /v1/_teamdef/{team}/channels and .../channels/{name}/peek). Such a
+	// channel is written and read only from inside its team, so ListChannels
+	// never lists it and PeekChannel refuses it; these address it by team and
+	// by the name the team gave it. Read-only: the peek advances no cursor.
+	// An unknown team, or one in another tenant, is NOT_FOUND, as is a name
+	// the team does not declare.
+	ListTeamChannels(context.Context, *ListTeamChannelsRequest) (*ListTeamChannelsResponse, error)
+	PeekTeamChannel(context.Context, *PeekTeamChannelRequest) (*PeekTeamChannelResponse, error)
 	// RFC S client twins (mirror POST /v1/_channels/_await and
 	// /v1/_channels/_broadcast). AwaitChannels fans IN across a set of
 	// channels (any/all/at_least N, or a timeout — a timeout is
@@ -1942,6 +1982,12 @@ func (UnimplementedLoomcycleServer) PeekChannel(context.Context, *PeekChannelReq
 }
 func (UnimplementedLoomcycleServer) AckChannel(context.Context, *AckChannelRequest) (*AckChannelResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method AckChannel not implemented")
+}
+func (UnimplementedLoomcycleServer) ListTeamChannels(context.Context, *ListTeamChannelsRequest) (*ListTeamChannelsResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method ListTeamChannels not implemented")
+}
+func (UnimplementedLoomcycleServer) PeekTeamChannel(context.Context, *PeekTeamChannelRequest) (*PeekTeamChannelResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method PeekTeamChannel not implemented")
 }
 func (UnimplementedLoomcycleServer) AwaitChannels(context.Context, *AwaitChannelsRequest) (*AwaitChannelsResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method AwaitChannels not implemented")
@@ -3123,6 +3169,42 @@ func _Loomcycle_AckChannel_Handler(srv interface{}, ctx context.Context, dec fun
 	return interceptor(ctx, in, info, handler)
 }
 
+func _Loomcycle_ListTeamChannels_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ListTeamChannelsRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(LoomcycleServer).ListTeamChannels(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: Loomcycle_ListTeamChannels_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(LoomcycleServer).ListTeamChannels(ctx, req.(*ListTeamChannelsRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _Loomcycle_PeekTeamChannel_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(PeekTeamChannelRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(LoomcycleServer).PeekTeamChannel(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: Loomcycle_PeekTeamChannel_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(LoomcycleServer).PeekTeamChannel(ctx, req.(*PeekTeamChannelRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 func _Loomcycle_AwaitChannels_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(AwaitChannelsRequest)
 	if err := dec(in); err != nil {
@@ -3409,6 +3491,14 @@ var Loomcycle_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "AckChannel",
 			Handler:    _Loomcycle_AckChannel_Handler,
+		},
+		{
+			MethodName: "ListTeamChannels",
+			Handler:    _Loomcycle_ListTeamChannels_Handler,
+		},
+		{
+			MethodName: "PeekTeamChannel",
+			Handler:    _Loomcycle_PeekTeamChannel_Handler,
 		},
 		{
 			MethodName: "AwaitChannels",
