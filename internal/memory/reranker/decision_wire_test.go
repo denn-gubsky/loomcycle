@@ -10,6 +10,24 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/config"
 )
 
+// The wire shape of the one request a decision rerank sends, as the endpoint
+// double in decision_test.go decodes it. The reranker no longer builds the
+// request itself (the shared decision driver does), so these describe what must
+// arrive, not what any production type holds.
+const decisionPath = "/v1/systemone"
+
+type systemOneRequest struct {
+	Model     string                       `json:"model"`
+	State     map[string]string            `json:"state"`
+	Questions map[string]systemOneQuestion `json:"questions"`
+}
+
+type systemOneQuestion struct {
+	Type         string            `json:"type"`
+	Instructions string            `json:"instructions"`
+	Criteria     map[string]string `json:"criteria"`
+}
+
 // TestDecision_TheRequestIsByteForByteTheMeasuredOne — the rerank's numbers were
 // measured against one exact request. This is that request, to the byte, so a
 // change to how it is built (the shared decision driver builds it now) cannot
