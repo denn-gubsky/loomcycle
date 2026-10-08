@@ -82,7 +82,7 @@ func threeQuestions() map[string]Question {
 	return map[string]Question{
 		"route": {Type: TypeChoice, Instructions: "Which team owns this?",
 			Criteria: json.RawMessage(`{"billing":"invoices and refunds","support":null,"sales":"new business"}`)},
-		"urgent":  {Type: TypeNoul, Instructions: "Is this urgent?"},
+		"urgent": {Type: TypeNoul, Instructions: "Is this urgent?"},
 		"quality": {Type: TypeScore, Instructions: "How reproducible is the report?",
 			Criteria: json.RawMessage(`["no detail","partial detail","fully reproducible"]`)},
 	}
