@@ -37,17 +37,18 @@ A code-js run's `run_timeout_seconds` is a different bound: active time only, wa
 
 A blocking spawn now reports how its run really ended. A run cancelled from outside (`cancel_run`, or its own `max_wall_seconds`) was reported `completed` by `spawn_run` and by a joined batch; it is reported `cancelled`, as its row says.
 
-**Reading a team's own channels: `list_team_channels`, `peek_team_channel`.** A channel a team declares under `local.channels` is written and read only from inside the team: `list_channels` never shows it, and `peek_channel` refuses it by its stored name and by `./name`. These two tools are how the person who runs the team sees it.
+**A team's own channels: `list_team_channels`, `peek_team_channel`, `release_team_channel`.** A channel a team declares under `local.channels` is written and read only from inside the team: `list_channels` never shows it, and `peek_channel` refuses it by its stored name and by `./name`. These tools are how the person who runs the team sees it, and how they let a held message through.
 
 - `list_team_channels {team}` returns each channel's definition, which version declares it (`declared_in`: `active`, `inactive` or `retired`) and its counts: `message_count`, `held_count`, `awaiting_hooks_count`.
 - `peek_team_channel {team, name}` returns its messages and advances no cursor, so the team still reads every one. Held messages are counted by the list, not shown by the peek.
 - The team is resolved in the caller's tenant. An unknown team, or one in another tenant, is not found.
-- A member's token needs `channel:read` for both, as `peek_channel` does; a tenant operator's token implies it. The HTTP routes ask the same.
+- A member's token needs `channel:read` for the list and the peek, as `peek_channel` does, and `channel:publish` for a release; a tenant operator's token implies both. The HTTP routes ask the same.
 - A user-scoped channel is read at the caller's own user. `user_id` reads another user's only for a caller who may read any user's channel. The list's counts for such a channel are summed over every user.
 - A channel only a retired version declares is still listed and readable: its messages belong to the team, not to a version.
-- Read-only. There is no publish, ack or purge for a team's own channel from outside the team.
+- `release_team_channel {team, name, count?}` delivers the oldest held messages on a channel that holds (`count` defaults to 1, at most 1000) and answers `released` (message ids), `released_count` and `still_held`. With nothing held it releases nothing and says so. `user_id` works as for the peek. It works whether or not the active version still declares `hold`, so a message held under an earlier version is never stranded.
+- There is no publish, ack or purge for a team's own channel from outside the team.
 
-The same two reads are `GET /v1/_teamdef/{team}/channels` and `GET /v1/_teamdef/{team}/channels/{name}/peek` over HTTP, `ListTeamChannels` / `PeekTeamChannel` over gRPC, `listTeamChannels` / `peekTeamChannel` in the TS client and `list_team_channels` / `peek_team_channel` in the Python client.
+The same three are `GET /v1/_teamdef/{team}/channels`, `GET /v1/_teamdef/{team}/channels/{name}/peek` and `POST /v1/_teamdef/{team}/channels/{name}/release` over HTTP, `ListTeamChannels` / `PeekTeamChannel` / `ReleaseTeamChannel` over gRPC, `listTeamChannels` / `peekTeamChannel` / `releaseTeamChannel` in the TS client and `list_team_channels` / `peek_team_channel` / `release_team_channel` in the Python client.
 
 ## Single-runtime invariant: embedded vs thin-client (`--upstream`)
 

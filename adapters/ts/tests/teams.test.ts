@@ -554,3 +554,33 @@ describe("peekTeamChannel", () => {
     );
   });
 });
+
+describe("releaseTeamChannel", () => {
+  it("POSTs the release by team and local name with its count", async () => {
+    const { client, fetchMock } = makeClient([
+      jsonResponse({ team: "triage", name: "inbox", released: ["m1", "m2"], released_count: 2, still_held: 3 }),
+    ]);
+
+    const res = await client.releaseTeamChannel("triage", "inbox", { count: 2, userId: "alice" });
+    expect(res.released).toEqual(["m1", "m2"]);
+    expect(res.still_held).toBe(3);
+
+    const call = fetchMock.mock.calls[0]!;
+    expect(call[0]).toBe("http://test-loomcycle:8787/v1/_teamdef/triage/channels/inbox/release");
+    expect((call[1] as RequestInit).method).toBe("POST");
+    expect(JSON.parse((call[1] as RequestInit).body as string)).toEqual({ count: 2, user_id: "alice" });
+  });
+
+  it("sends an empty body to release one, and names the tenant only when asked", async () => {
+    const { client, fetchMock } = makeClient([
+      jsonResponse({ team: "triage", name: "inbox", released: [], released_count: 0, still_held: 0 }),
+    ]);
+    const res = await client.releaseTeamChannel("triage", "inbox", { tenant: "acme" });
+    expect(res.released).toEqual([]);
+    const call = fetchMock.mock.calls[0]!;
+    expect(call[0]).toBe(
+      "http://test-loomcycle:8787/v1/_teamdef/triage/channels/inbox/release?tenant=acme",
+    );
+    expect(JSON.parse((call[1] as RequestInit).body as string)).toEqual({});
+  });
+});

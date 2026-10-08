@@ -335,6 +335,9 @@ func (m *mockConnector) SubscribeChannel(context.Context, connector.ChannelSubsc
 func (m *mockConnector) ListTeamChannels(context.Context, connector.TeamChannelsRequest) (connector.TeamChannelsResponse, error) {
 	return connector.TeamChannelsResponse{}, nil
 }
+func (m *mockConnector) ReleaseTeamChannel(context.Context, connector.TeamChannelReleaseRequest) (connector.TeamChannelReleaseResult, error) {
+	return connector.TeamChannelReleaseResult{}, nil
+}
 func (m *mockConnector) PeekTeamChannel(context.Context, connector.TeamChannelPeekRequest) (connector.TeamChannelPeekResult, error) {
 	return connector.TeamChannelPeekResult{}, nil
 }
@@ -462,8 +465,8 @@ func TestServer_ToolsList_ReturnsFullCatalogue(t *testing.T) {
 	if err := json.Unmarshal(resps[0].Result, &result); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
-	if len(result.Tools) != 56 {
-		t.Errorf("got %d tools, want 56 (+list_team_channels, +peek_team_channel; register_hook, list_hooks and delete_hook removed; +hookdef, +review_run, +configured_run, +decision on top of retune_run and the directory/erasure/history/teamdef/credentialdef/path/document/volumedef/documentsourcedef list)", len(result.Tools))
+	if len(result.Tools) != 57 {
+		t.Errorf("got %d tools, want 57 (+list_team_channels, +peek_team_channel, +release_team_channel; register_hook, list_hooks and delete_hook removed; +hookdef, +review_run, +configured_run, +decision on top of retune_run and the directory/erasure/history/teamdef/credentialdef/path/document/volumedef/documentsourcedef list)", len(result.Tools))
 	}
 	names := map[string]bool{}
 	for _, td := range result.Tools {
@@ -472,7 +475,7 @@ func TestServer_ToolsList_ReturnsFullCatalogue(t *testing.T) {
 	if !names["credentialdef"] {
 		t.Error("catalogue missing the credentialdef meta-tool")
 	}
-	for _, want := range []string{"list_team_channels", "peek_team_channel"} {
+	for _, want := range []string{"list_team_channels", "peek_team_channel", "release_team_channel"} {
 		if !names[want] {
 			t.Errorf("catalogue missing %s", want)
 		}

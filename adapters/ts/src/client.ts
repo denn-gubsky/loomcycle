@@ -87,7 +87,9 @@ import type {
   ChannelPeekResult,
   ListTeamChannelsOptions,
   PeekTeamChannelOptions,
+  ReleaseTeamChannelOptions,
   TeamChannelPeekResult,
+  TeamChannelReleaseResult,
   TeamChannelsResult,
   ChannelPublishResult,
   ChannelPurgeResult,
@@ -2807,6 +2809,28 @@ export class LoomcycleClient {
     if (opts.tenant) params.push(`tenant=${encodeURIComponent(opts.tenant)}`);
     if (params.length > 0) path += `?${params.join("&")}`;
     return jsonFetch<TeamChannelPeekResult>(this.ctx, path, { signal: opts.signal });
+  }
+
+  /** Deliver held messages on one of a team's own channels to the team's
+   *  readers (POST /v1/_teamdef/{team}/channels/{name}/release).
+   *
+   *  A channel a team declares with `hold: true` stores every publish and
+   *  delivers none until released. This is the operator's side of that
+   *  breakpoint: it steps a team whose own states, schedule or webhook write
+   *  to a held channel. It delivers only what the team itself wrote; there is
+   *  no publish, ack or purge for a team's own channel from outside the team.
+   *  Releasing when nothing is held resolves with `released_count: 0`. */
+  async releaseTeamChannel(
+    team: string,
+    name: string,
+    opts: ReleaseTeamChannelOptions = {},
+  ): Promise<TeamChannelReleaseResult> {
+    let path = `/v1/_teamdef/${encodeURIComponent(team)}/channels/${encodeURIComponent(name)}/release`;
+    if (opts.tenant) path += `?tenant=${encodeURIComponent(opts.tenant)}`;
+    const body: Record<string, unknown> = {};
+    if (opts.count !== undefined) body.count = opts.count;
+    if (opts.userId !== undefined) body.user_id = opts.userId;
+    return postJSON<TeamChannelReleaseResult>(this.ctx, path, body, { signal: opts.signal });
   }
 
   /** Advance the committed cursor for a (channel, scope, scope_id)

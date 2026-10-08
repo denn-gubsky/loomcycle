@@ -556,6 +556,12 @@ service Loomcycle {
   // the team does not declare.
   rpc ListTeamChannels(ListTeamChannelsRequest) returns (ListTeamChannelsResponse);
   rpc PeekTeamChannel(PeekTeamChannelRequest) returns (PeekTeamChannelResponse);
+  // The operator's half of a hold on a team's own channel (mirror
+  // POST /v1/_teamdef/{team}/channels/{name}/release): delivers the oldest
+  // held messages to the team's readers. It delivers only what the team
+  // itself wrote; nothing here publishes. A count out of range is
+  // INVALID_ARGUMENT.
+  rpc ReleaseTeamChannel(ReleaseTeamChannelRequest) returns (ReleaseTeamChannelResponse);
 
   // RFC S client twins (mirror POST /v1/_channels/_await and
   // /v1/_channels/_broadcast). AwaitChannels fans IN across a set of
@@ -2313,6 +2319,25 @@ message PeekTeamChannelResponse {
   string scope = 3;
   string declared_in = 4;
   repeated ChannelMessage messages = 5;
+}
+
+message ReleaseTeamChannelRequest {
+  string team = 1;
+  string name = 2;     // the channel's name inside the team, without "./"
+  string tenant = 3;
+  // For a user-scoped channel: whose held messages to deliver. Empty = the
+  // caller's.
+  string user_id = 4;
+  // How many held messages to deliver, oldest first. 0 = 1; at most 1000.
+  int32 count = 5;
+}
+
+message ReleaseTeamChannelResponse {
+  string team = 1;
+  string name = 2;
+  repeated string released = 3;  // the ids of the messages delivered
+  int32 released_count = 4;
+  int32 still_held = 5;
 }
 
 message AckChannelRequest {

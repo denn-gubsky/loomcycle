@@ -378,6 +378,11 @@ class LoomcycleStub:
                 request_serializer=loomcycle__pb2.PeekTeamChannelRequest.SerializeToString,
                 response_deserializer=loomcycle__pb2.PeekTeamChannelResponse.FromString,
                 _registered_method=True)
+        self.ReleaseTeamChannel = channel.unary_unary(
+                '/loomcycle.v1.Loomcycle/ReleaseTeamChannel',
+                request_serializer=loomcycle__pb2.ReleaseTeamChannelRequest.SerializeToString,
+                response_deserializer=loomcycle__pb2.ReleaseTeamChannelResponse.FromString,
+                _registered_method=True)
         self.AwaitChannels = channel.unary_unary(
                 '/loomcycle.v1.Loomcycle/AwaitChannels',
                 request_serializer=loomcycle__pb2.AwaitChannelsRequest.SerializeToString,
@@ -1206,6 +1211,17 @@ class LoomcycleServicer:
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
 
+    def ReleaseTeamChannel(self, request, context):
+        """The operator's half of a hold on a team's own channel (mirror
+        POST /v1/_teamdef/{team}/channels/{name}/release): delivers the oldest
+        held messages to the team's readers. It delivers only what the team
+        itself wrote; nothing here publishes. A count out of range is
+        INVALID_ARGUMENT.
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
     def AwaitChannels(self, request, context):
         """RFC S client twins (mirror POST /v1/_channels/_await and
         /v1/_channels/_broadcast). AwaitChannels fans IN across a set of
@@ -1566,6 +1582,11 @@ def add_LoomcycleServicer_to_server(servicer, server):
                     servicer.PeekTeamChannel,
                     request_deserializer=loomcycle__pb2.PeekTeamChannelRequest.FromString,
                     response_serializer=loomcycle__pb2.PeekTeamChannelResponse.SerializeToString,
+            ),
+            'ReleaseTeamChannel': grpc.unary_unary_rpc_method_handler(
+                    servicer.ReleaseTeamChannel,
+                    request_deserializer=loomcycle__pb2.ReleaseTeamChannelRequest.FromString,
+                    response_serializer=loomcycle__pb2.ReleaseTeamChannelResponse.SerializeToString,
             ),
             'AwaitChannels': grpc.unary_unary_rpc_method_handler(
                     servicer.AwaitChannels,
@@ -3418,6 +3439,33 @@ class Loomcycle:
             '/loomcycle.v1.Loomcycle/PeekTeamChannel',
             loomcycle__pb2.PeekTeamChannelRequest.SerializeToString,
             loomcycle__pb2.PeekTeamChannelResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def ReleaseTeamChannel(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/loomcycle.v1.Loomcycle/ReleaseTeamChannel',
+            loomcycle__pb2.ReleaseTeamChannelRequest.SerializeToString,
+            loomcycle__pb2.ReleaseTeamChannelResponse.FromString,
             options,
             channel_credentials,
             insecure,

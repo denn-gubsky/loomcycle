@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"sort"
 	"strconv"
@@ -28,8 +29,10 @@ import (
 // the stored name: a channel is addressed by its team and its local name, and
 // the team by the caller's tenant.
 //
-// They read. Nothing here publishes, acks or purges, and a peek moves no
-// cursor, so nothing here can take a message from the team.
+// They read, and they release: a held message on a team's own channel is
+// delivered to the team's readers. Nothing here publishes, acks or purges,
+// and a peek moves no cursor, so nothing here can add a message to the team
+// or take one from it.
 
 // teamChannelDecl is one of a team's own channels as its declaring version
 // defines it.
@@ -193,25 +196,35 @@ func teamChannelKeyspace(ctx context.Context, d teamChannelDecl, userID string) 
 	return store.MemoryScopeUser, userID, nil
 }
 
-// PeekTeamChannel implements connector.Connector.
-func (s *Server) PeekTeamChannel(ctx context.Context, req connector.TeamChannelPeekRequest) (connector.TeamChannelPeekResult, error) {
-	tenant, decls, err := s.teamOwnChannels(ctx, req.Team, req.Tenant)
+// teamChannelTarget resolves one of a team's own channels for a caller: the
+// team's tenant, the channel's declaration, and the keyspace the caller reads
+// or releases. A name the team does not declare and a keyspace the caller may
+// not touch are refused in the same words, so the two cannot be told apart.
+func (s *Server) teamChannelTarget(ctx context.Context, team, namedTenant, name, userID string) (string, teamChannelDecl, store.MemoryScope, string, error) {
+	tenant, decls, err := s.teamOwnChannels(ctx, team, namedTenant)
 	if err != nil {
-		return connector.TeamChannelPeekResult{}, err
+		return "", teamChannelDecl{}, "", "", err
 	}
-	// One refusal for a name the team does not declare and for a keyspace the
-	// caller may not read, so the two cannot be told apart.
 	notDeclared := &connector.TeamChannelError{Kind: connector.ErrTeamChannelNotDeclared,
-		Msg: fmt.Sprintf("team %q declares no channel of its own named %q", req.Team, req.Name)}
-	d, ok := decls[req.Name]
+		Msg: fmt.Sprintf("team %q declares no channel of its own named %q", team, name)}
+	d, ok := decls[name]
 	if !ok {
-		return connector.TeamChannelPeekResult{}, notDeclared
+		return "", teamChannelDecl{}, "", "", notDeclared
 	}
-	scope, scopeID, err := teamChannelKeyspace(ctx, d, req.UserID)
+	scope, scopeID, err := teamChannelKeyspace(ctx, d, userID)
 	if err != nil {
 		if errors.Is(err, connector.ErrTeamChannelNotDeclared) {
-			return connector.TeamChannelPeekResult{}, notDeclared
+			return "", teamChannelDecl{}, "", "", notDeclared
 		}
+		return "", teamChannelDecl{}, "", "", err
+	}
+	return tenant, d, scope, scopeID, nil
+}
+
+// PeekTeamChannel implements connector.Connector.
+func (s *Server) PeekTeamChannel(ctx context.Context, req connector.TeamChannelPeekRequest) (connector.TeamChannelPeekResult, error) {
+	tenant, d, scope, scopeID, err := s.teamChannelTarget(ctx, req.Team, req.Tenant, req.Name, req.UserID)
+	if err != nil {
 		return connector.TeamChannelPeekResult{}, err
 	}
 	limit := req.MaxMessages
@@ -237,7 +250,37 @@ func (s *Server) PeekTeamChannel(ctx context.Context, req connector.TeamChannelP
 	return out, nil
 }
 
-// writeTeamChannelError answers a failed team-channel read. Both not-founds
+// ReleaseTeamChannel implements connector.Connector: the operator's half of a
+// hold on a team's own channel. It delivers held messages exactly as the
+// channel tool's release does for a team's own agent, and wakes the readers
+// waiting on the channel; what was a publish the definition deferred becomes
+// one that arrived.
+func (s *Server) ReleaseTeamChannel(ctx context.Context, req connector.TeamChannelReleaseRequest) (connector.TeamChannelReleaseResult, error) {
+	if req.Count < 0 || req.Count > maxChannelReleaseCount {
+		return connector.TeamChannelReleaseResult{}, &connector.TeamChannelError{Kind: connector.ErrTeamChannelBadCount,
+			Msg: fmt.Sprintf("release: count must be between 0 and %d (0 means 1), got %d", maxChannelReleaseCount, req.Count)}
+	}
+	tenant, d, scope, scopeID, err := s.teamChannelTarget(ctx, req.Team, req.Tenant, req.Name, req.UserID)
+	if err != nil {
+		return connector.TeamChannelReleaseResult{}, err
+	}
+	// A count of 0 is the store's "one".
+	released, stillHeld, err := s.store.ChannelRelease(ctx, tenant, d.def.Name, scope, scopeID, req.Count)
+	if err != nil {
+		return connector.TeamChannelReleaseResult{}, fmt.Errorf("release: %w", err)
+	}
+	if released == nil {
+		released = []string{}
+	}
+	if len(released) > 0 && s.channelBus != nil {
+		s.channelBus.Notify(d.def.Name)
+	}
+	return connector.TeamChannelReleaseResult{
+		Team: req.Team, Name: d.local, Released: released, ReleasedCount: len(released), StillHeld: stillHeld,
+	}, nil
+}
+
+// writeTeamChannelError answers a failed team-channel read or release. Both not-founds
 // are 404s with their own code, so a client can tell "no such team" from "the
 // team has no such channel" without parsing the text.
 func writeTeamChannelError(w http.ResponseWriter, err error) {
@@ -248,6 +291,8 @@ func writeTeamChannelError(w http.ResponseWriter, err error) {
 		writeJSONError(w, http.StatusNotFound, "team_channel_not_declared", err.Error())
 	case errors.Is(err, connector.ErrTeamChannelUserRequired):
 		writeJSONError(w, http.StatusBadRequest, "user_id_required", err.Error())
+	case errors.Is(err, connector.ErrTeamChannelBadCount):
+		writeJSONError(w, http.StatusBadRequest, "invalid_request", err.Error())
 	default:
 		writeJSONError(w, http.StatusInternalServerError, "team_channel_op_failed", err.Error())
 	}
@@ -259,8 +304,8 @@ func writeTeamChannelError(w http.ResponseWriter, err error) {
 // The routes are gated like the team, which a member's token reaches whatever
 // it was granted. What they do is a channel read or a channel write, and the
 // channel surface asks channels:read / channels:publish for those: without
-// this a token granted only runs:read would read a team's messages here while
-// the channel routes refuse it. A tenant operator's scope implies both; no
+// this a token granted only runs:read would read a team's messages here, or
+// release what it holds, while the channel routes refuse it. A tenant operator's scope implies both; no
 // principal (no authentication configured) is the operator.
 func teamChannelScopeOK(w http.ResponseWriter, r *http.Request, need string) bool {
 	p, ok := auth.PrincipalFromContext(r.Context())
@@ -307,6 +352,36 @@ func (s *Server) handleTeamChannelPeek(w http.ResponseWriter, r *http.Request) {
 	out, err := s.PeekTeamChannel(r.Context(), connector.TeamChannelPeekRequest{
 		Team: r.PathValue("team"), Name: r.PathValue("name"), Tenant: q.Get("tenant"),
 		UserID: q.Get("user_id"), FromCursor: q.Get("from_cursor"), MaxMessages: limit,
+	})
+	if err != nil {
+		writeTeamChannelError(w, err)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(out)
+}
+
+// handleTeamChannelRelease serves POST /v1/_teamdef/{team}/channels/{name}/release.
+// Body (optional): {count, user_id}; an empty body releases one.
+func (s *Server) handleTeamChannelRelease(w http.ResponseWriter, r *http.Request) {
+	if !teamChannelScopeOK(w, r, auth.ScopeChannelPublish) {
+		return
+	}
+	var body struct {
+		Count  int    `json:"count"`
+		UserID string `json:"user_id"`
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
+	// A misspelt `count` must not quietly release one message instead of N.
+	dec := json.NewDecoder(r.Body)
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&body); err != nil && !errors.Is(err, io.EOF) {
+		writeJSONError(w, http.StatusBadRequest, "invalid_body", "invalid request body: "+err.Error())
+		return
+	}
+	out, err := s.ReleaseTeamChannel(r.Context(), connector.TeamChannelReleaseRequest{
+		Team: r.PathValue("team"), Name: r.PathValue("name"), Tenant: r.URL.Query().Get("tenant"),
+		UserID: body.UserID, Count: body.Count,
 	})
 	if err != nil {
 		writeTeamChannelError(w, err)

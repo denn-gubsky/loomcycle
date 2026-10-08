@@ -1699,6 +1699,40 @@ class LoomcycleClient:
             "messages": [_channel_message_to_dict(m) for m in resp.messages],
         }
 
+    async def release_team_channel(
+        self,
+        team: str,
+        name: str,
+        *,
+        count: int = 0,
+        user_id: str = "",
+        tenant: str = "",
+    ) -> Mapping[str, Any]:
+        """Deliver held messages on one of a team's own channels to the
+        team's readers: the operator's side of ``hold: true`` there.
+
+        ``count`` is how many, oldest first (0 = 1, at most 1000). Returns
+        ``{team, name, released: [message ids], released_count, still_held}``.
+        It delivers only what the team itself wrote. Releasing when nothing
+        is held returns ``released_count`` 0. A user-scoped channel is
+        released at the caller's own user unless ``user_id`` names another
+        and the caller may act on any user's channel.
+        """
+        req = pb.ReleaseTeamChannelRequest(
+            team=team, name=name, tenant=tenant, user_id=user_id, count=count
+        )
+        try:
+            resp = await self._stub.ReleaseTeamChannel(req, metadata=self._auth_metadata())
+        except grpc.aio.AioRpcError as e:
+            _raise_from_grpc(e)
+        return {
+            "team": resp.team,
+            "name": resp.name,
+            "released": list(resp.released),
+            "released_count": resp.released_count,
+            "still_held": resp.still_held,
+        }
+
     async def ack_channel(
         self,
         channel: str,

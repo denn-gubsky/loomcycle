@@ -107,6 +107,11 @@ var (
 	// Transports map to InvalidArgument / HTTP 400.
 	ErrTeamChannelUserRequired = errors.New("connector: a user-scoped channel needs a user_id")
 
+	// ErrTeamChannelBadCount is returned by ReleaseTeamChannel for a count
+	// below zero or over the release cap. Transports map to InvalidArgument
+	// / HTTP 400.
+	ErrTeamChannelBadCount = errors.New("connector: release count out of range")
+
 	// ErrChannelScopeInvalid is returned when the scope field on a
 	// Channel CRUD request is not one of "global" / "user". Transports
 	// map to InvalidArgument / HTTP 400.

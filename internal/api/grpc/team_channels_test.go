@@ -15,9 +15,15 @@ import (
 
 type teamChannelMock struct {
 	mockConnector
-	listReq connector.TeamChannelsRequest
-	peekReq connector.TeamChannelPeekRequest
-	err     error
+	listReq    connector.TeamChannelsRequest
+	peekReq    connector.TeamChannelPeekRequest
+	releaseReq connector.TeamChannelReleaseRequest
+	err        error
+}
+
+func (m *teamChannelMock) ReleaseTeamChannel(_ context.Context, r connector.TeamChannelReleaseRequest) (connector.TeamChannelReleaseResult, error) {
+	m.releaseReq = r
+	return connector.TeamChannelReleaseResult{Team: r.Team, Name: r.Name, Released: []string{"m1", "m2"}, ReleasedCount: 2, StillHeld: 4}, m.err
 }
 
 func (m *teamChannelMock) ListTeamChannels(_ context.Context, r connector.TeamChannelsRequest) (connector.TeamChannelsResponse, error) {
@@ -73,6 +79,19 @@ func TestTeamChannelRPCs_CarryEveryField(t *testing.T) {
 		len(peek.GetMessages()) != 1 || peek.GetMessages()[0].GetId() != "m1" || string(peek.GetMessages()[0].GetValue()) != `{"note":"hi"}` {
 		t.Errorf("peek = %v", peek)
 	}
+
+	rel, err := client.ReleaseTeamChannel(ctx, &loomcyclepb.ReleaseTeamChannelRequest{
+		Team: "triage", Name: "journal", Tenant: "acme", UserId: "alice", Count: 2})
+	if err != nil {
+		t.Fatalf("ReleaseTeamChannel: %v", err)
+	}
+	if want := (connector.TeamChannelReleaseRequest{Team: "triage", Name: "journal", Tenant: "acme", UserID: "alice", Count: 2}); mc.releaseReq != want {
+		t.Errorf("the connector was asked %+v, want %+v", mc.releaseReq, want)
+	}
+	if rel.GetTeam() != "triage" || rel.GetName() != "journal" || len(rel.GetReleased()) != 2 || rel.GetReleased()[1] != "m2" ||
+		rel.GetReleasedCount() != 2 || rel.GetStillHeld() != 4 {
+		t.Errorf("release = %v", rel)
+	}
 }
 
 func TestTeamChannelRPCs_MapRefusalsToStatusCodes(t *testing.T) {
@@ -83,12 +102,16 @@ func TestTeamChannelRPCs_MapRefusalsToStatusCodes(t *testing.T) {
 		{connector.ErrTeamNotFound, codes.NotFound},
 		{connector.ErrTeamChannelNotDeclared, codes.NotFound},
 		{connector.ErrTeamChannelUserRequired, codes.InvalidArgument},
+		{connector.ErrTeamChannelBadCount, codes.InvalidArgument},
 	} {
 		client, cleanup := startTestServerWithConnector(t, &teamChannelMock{err: tc.err})
 		if _, err := client.PeekTeamChannel(context.Background(), &loomcyclepb.PeekTeamChannelRequest{Team: "t", Name: "n"}); status.Code(err) != tc.want {
 			t.Errorf("%v → %s, want %s", tc.err, status.Code(err), tc.want)
 		}
-		if _, err := client.ListTeamChannels(context.Background(), &loomcyclepb.ListTeamChannelsRequest{Team: "t"}); tc.err != connector.ErrTeamChannelUserRequired && status.Code(err) != tc.want {
+		if _, err := client.ReleaseTeamChannel(context.Background(), &loomcyclepb.ReleaseTeamChannelRequest{Team: "t", Name: "n"}); status.Code(err) != tc.want {
+			t.Errorf("release: %v → %s, want %s", tc.err, status.Code(err), tc.want)
+		}
+		if _, err := client.ListTeamChannels(context.Background(), &loomcyclepb.ListTeamChannelsRequest{Team: "t"}); status.Code(err) != tc.want {
 			t.Errorf("list: %v → %s, want %s", tc.err, status.Code(err), tc.want)
 		}
 		cleanup()
@@ -97,7 +120,7 @@ func TestTeamChannelRPCs_MapRefusalsToStatusCodes(t *testing.T) {
 
 // Gated like the team's own RPC, not left to the admin-only default.
 func TestTeamChannelRPCs_AreGatedLikeTeamDef(t *testing.T) {
-	for _, m := range []string{"ListTeamChannels", "PeekTeamChannel"} {
+	for _, m := range []string{"ListTeamChannels", "PeekTeamChannel", "ReleaseTeamChannel"} {
 		if got, ok := grpcConsumerScopes[m]; !ok || got != auth.ScopeTenant || got != grpcConsumerScopes["TeamDef"] {
 			t.Errorf("%s scope = %q (mapped %v), want TeamDef's %q", m, got, ok, grpcConsumerScopes["TeamDef"])
 		}

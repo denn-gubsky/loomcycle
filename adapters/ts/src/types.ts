@@ -3421,6 +3421,28 @@ export interface TeamChannelPeekResult {
   messages: ChannelMessageItem[];
 }
 
+/** Options for {@link LoomcycleClient.releaseTeamChannel}. */
+export interface ReleaseTeamChannelOptions {
+  /** How many held messages to deliver, oldest first. Default 1, at most 1000. */
+  count?: number;
+  /** For a user-scoped channel: whose held messages to deliver. Default: the
+   *  caller's own. */
+  userId?: string;
+  tenant?: string;
+  signal?: AbortSignal;
+}
+
+/** Result of {@link LoomcycleClient.releaseTeamChannel}. `released` is the
+ *  ids of the messages delivered and is empty, never absent, when nothing
+ *  was held. */
+export interface TeamChannelReleaseResult {
+  team: string;
+  name: string;
+  released: string[];
+  released_count: number;
+  still_held: number;
+}
+
 /** Options for {@link LoomcycleClient.ackChannel}. */
 export interface AckChannelOptions {
   scope: ChannelScope;

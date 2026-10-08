@@ -355,6 +355,15 @@ and name one as `./<name>` wherever a channel goes: a starter's `source` and
   `GET /v1/_teamdef/{team}/channels/{name}/peek`; an MCP client has
   `list_team_channels` and `peek_team_channel`. They are not ops of this tool
   and an agent inside a run does not have them.
+- **The person who runs the team can release what a channel holds.** On a
+  channel with `hold: true` a message waits until someone releases it. The
+  list above counts what is waiting (`held_count`); the peek does not show it.
+  `POST /v1/_teamdef/{team}/channels/{name}/release` with `{"count": N}`
+  (default 1, oldest first), or `release_team_channel` from an MCP client,
+  delivers them to the team's readers and answers how many are still held. A
+  team's own agent that may publish to the channel can release with the
+  Channel tool's `release` op; a state, a schedule or a webhook cannot, so a
+  team with no such agent depends on this.
 - **The team's own agents may use them** with the Channel tool, by listing
   `./<name>` in their own `channels` (`publish` / `subscribe`, as for any
   channel) and naming the channel `./<name>` when they call it. A global agent
