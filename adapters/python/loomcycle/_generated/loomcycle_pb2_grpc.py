@@ -178,6 +178,16 @@ class LoomcycleStub:
                 request_serializer=loomcycle__pb2.TokenLimitRequest.SerializeToString,
                 response_deserializer=loomcycle__pb2.TokenLimitResponse.FromString,
                 _registered_method=True)
+        self.Decide = channel.unary_unary(
+                '/loomcycle.v1.Loomcycle/Decide',
+                request_serializer=loomcycle__pb2.DecideRequest.SerializeToString,
+                response_deserializer=loomcycle__pb2.DecideResponse.FromString,
+                _registered_method=True)
+        self.ListDecisionModels = channel.unary_unary(
+                '/loomcycle.v1.Loomcycle/ListDecisionModels',
+                request_serializer=loomcycle__pb2.ListDecisionModelsRequest.SerializeToString,
+                response_deserializer=loomcycle__pb2.ListDecisionModelsResponse.FromString,
+                _registered_method=True)
         self.Health = channel.unary_unary(
                 '/loomcycle.v1.Loomcycle/Health',
                 request_serializer=loomcycle__pb2.HealthRequest.SerializeToString,
@@ -694,6 +704,43 @@ class LoomcycleServicer:
         admin-only.
 
         Mirrors GET/PUT/DELETE /v1/_limits.
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def Decide(self, request, context):
+        """Decide asks a decision model typed questions (choice / noul / score)
+        about a piece of state and returns each answer as the model gave it. It
+        is a judgement with probabilities, not generated text, and it needs no
+        run: the call is made for the calling principal.
+
+        The caller needs the scope that creates a run. Its tokens are charged to
+        the caller's own tenant and subject and count against their token
+        budgets; a caller at a hard budget gets RESOURCE_EXHAUSTED before any
+        model is asked. A caller that may not spend the operator's provider key
+        is served on its own stored key for the provider, or refused
+        PERMISSION_DENIED.
+
+        Failures carry google.rpc.ErrorInfo whose reason is the decision code:
+        INVALID_ARGUMENT (invalid_input, bad_question, bad_options,
+        too_many_questions, model_not_allowed, prompt_too_large),
+        FAILED_PRECONDITION (decision_not_configured, model_not_found: the
+        deployment cannot answer until an operator changes it), DEADLINE_EXCEEDED
+        (timeout), UNAVAILABLE (call_failed).
+
+        Mirrors POST /v1/_decide.
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def ListDecisionModels(self, request, context):
+        """ListDecisionModels lists the decision models a Decide call may name and
+        the default. Same scope as Decide. FAILED_PRECONDITION
+        (decision_not_configured) on a deployment that declares none.
+
+        Mirrors GET /v1/_decide/models.
         """
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
         context.set_details('Method not implemented!')
@@ -1290,6 +1337,16 @@ def add_LoomcycleServicer_to_server(servicer, server):
                     servicer.TokenLimit,
                     request_deserializer=loomcycle__pb2.TokenLimitRequest.FromString,
                     response_serializer=loomcycle__pb2.TokenLimitResponse.SerializeToString,
+            ),
+            'Decide': grpc.unary_unary_rpc_method_handler(
+                    servicer.Decide,
+                    request_deserializer=loomcycle__pb2.DecideRequest.FromString,
+                    response_serializer=loomcycle__pb2.DecideResponse.SerializeToString,
+            ),
+            'ListDecisionModels': grpc.unary_unary_rpc_method_handler(
+                    servicer.ListDecisionModels,
+                    request_deserializer=loomcycle__pb2.ListDecisionModelsRequest.FromString,
+                    response_serializer=loomcycle__pb2.ListDecisionModelsResponse.SerializeToString,
             ),
             'Health': grpc.unary_unary_rpc_method_handler(
                     servicer.Health,
@@ -2242,6 +2299,60 @@ class Loomcycle:
             '/loomcycle.v1.Loomcycle/TokenLimit',
             loomcycle__pb2.TokenLimitRequest.SerializeToString,
             loomcycle__pb2.TokenLimitResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def Decide(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/loomcycle.v1.Loomcycle/Decide',
+            loomcycle__pb2.DecideRequest.SerializeToString,
+            loomcycle__pb2.DecideResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def ListDecisionModels(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/loomcycle.v1.Loomcycle/ListDecisionModels',
+            loomcycle__pb2.ListDecisionModelsRequest.SerializeToString,
+            loomcycle__pb2.ListDecisionModelsResponse.FromString,
             options,
             channel_credentials,
             insecure,
