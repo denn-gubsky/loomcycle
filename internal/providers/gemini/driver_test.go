@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -208,9 +209,73 @@ func TestRequestShape(t *testing.T) {
 	if w.GenerationConfig.ThinkingConfig == nil {
 		t.Fatal("thinkingConfig missing for effort=high")
 	}
-	if w.GenerationConfig.ThinkingConfig.ThinkingBudget != 7168 {
-		t.Errorf("thinkingBudget = %d, want 7168 (clamped from 8192 against maxTokens=8192)",
-			w.GenerationConfig.ThinkingConfig.ThinkingBudget)
+	if got := w.GenerationConfig.ThinkingConfig.ThinkingBudget; got == nil || *got != 7168 {
+		t.Errorf("thinkingBudget = %v, want 7168 (clamped from 8192 against maxTokens=8192)", got)
+	}
+}
+
+// A zero thinking budget is refused by part of the Gemini 3 line with a bare
+// 400 "Request contains an invalid argument" (measured: gemini-3.5-flash-lite
+// refuses it, gemini-3.8-flash accepts it). An `effort: low` agent sends one,
+// and so does any effort whose max_tokens leaves no room for a budget, so a
+// fallback onto flash-lite failed the run it was meant to rescue. On Gemini 3
+// the driver sends thinkingLevel "low" in its place, and never both fields.
+func TestThinkingConfig_Gemini3SendsALevelInPlaceOfAZeroBudget(t *testing.T) {
+	cases := []struct {
+		name       string
+		model      string
+		effort     string
+		maxTokens  int
+		wantLevel  string
+		wantBudget int // -1 = the field must be absent
+	}{
+		{"3.x flash-lite, effort low", "gemini-3.5-flash-lite", "low", 0, "low", -1},
+		{"3.x flash, effort low", "gemini-3.8-flash", "low", 0, "low", -1},
+		{"3.x, medium clamped to zero by a small max_tokens", "gemini-3.5-flash-lite", "medium", 256, "low", -1},
+		{"3.x, high clamped to zero by a small max_tokens", "gemini-3.1-pro-preview", "high", 256, "low", -1},
+		{"3.x, medium keeps its budget", "gemini-3.5-flash-lite", "medium", 0, "", 2048},
+		{"3.x, high keeps its budget", "gemini-3.8-flash", "high", 0, "", 8192},
+		{"2.5 still turns thinking off with a zero budget", "gemini-2.5-flash", "low", 0, "", 0},
+		{"model name case does not matter", "Gemini-3.5-Flash-Lite", "low", 0, "low", -1},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			body, err := buildRequestBody(providers.Request{
+				Model:     tc.model,
+				Effort:    tc.effort,
+				MaxTokens: tc.maxTokens,
+				Messages: []providers.Message{{Role: "user",
+					Content: []providers.ContentBlock{{Type: "text", Text: "hi"}}}},
+			})
+			if err != nil {
+				t.Fatalf("buildRequestBody: %v", err)
+			}
+			var w struct {
+				GenerationConfig struct {
+					ThinkingConfig map[string]json.RawMessage `json:"thinkingConfig"`
+				} `json:"generationConfig"`
+			}
+			if err := json.Unmarshal(body, &w); err != nil {
+				t.Fatalf("unmarshal: %v", err)
+			}
+			tcfg := w.GenerationConfig.ThinkingConfig
+			level, hasLevel := tcfg["thinkingLevel"]
+			budget, hasBudget := tcfg["thinkingBudget"]
+			if tc.wantLevel != "" {
+				if !hasLevel || string(level) != `"`+tc.wantLevel+`"` {
+					t.Errorf("thinkingLevel = %s, want %q; body: %s", level, tc.wantLevel, body)
+				}
+			} else if hasLevel {
+				t.Errorf("thinkingLevel = %s, want it absent; body: %s", level, body)
+			}
+			if tc.wantBudget < 0 {
+				if hasBudget {
+					t.Errorf("thinkingBudget = %s sent beside a level — the API refuses both; body: %s", budget, body)
+				}
+			} else if !hasBudget || string(budget) != strconv.Itoa(tc.wantBudget) {
+				t.Errorf("thinkingBudget = %s, want %d; body: %s", budget, tc.wantBudget, body)
+			}
+		})
 	}
 }
 
