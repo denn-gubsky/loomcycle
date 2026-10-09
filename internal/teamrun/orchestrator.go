@@ -43,6 +43,15 @@ type Runner interface {
 type Outcome struct {
 	Output string
 	Edge   string
+	// Fallback is the edge to take when the definition has no transition for
+	// Edge. A decision state sets it to success: an answer with no edge of its
+	// own takes the state's "everything else" edge. Empty means a missing
+	// transition for Edge fails the walk, as it always has.
+	Fallback string
+	// Answer is what a decision state's model answered, as JSON. It is kept
+	// apart from Output, which stays what the state hands on: a decision
+	// routes work, it does not replace it.
+	Answer string
 }
 
 // Task is the mutable walk position for one unit of work (a Document chunk, or an
@@ -105,6 +114,7 @@ type StepRecord struct {
 	Edge    string // the transition label taken
 	Next    string // the destination state
 	Output  string // the handler's output
+	Answer  string // a decision state's answer, as JSON; "" for every other kind
 }
 
 // ErrIterationCap is returned when a state is entered more than the definition's
@@ -283,6 +293,11 @@ func Walk(ctx context.Context, d teamgraph.Definition, task *Task, r Runner, opt
 			edge = teamgraph.OnSuccess
 		}
 		next, ok := teamgraph.NextState(d, st.ID, edge)
+		if !ok && out.Fallback != "" {
+			if next, ok = teamgraph.NextState(d, st.ID, out.Fallback); ok {
+				edge = out.Fallback
+			}
+		}
 		if !ok {
 			return trace, fmt.Errorf("teamrun: state %q handler selected edge %q with no matching transition", st.ID, edge)
 		}
@@ -294,6 +309,7 @@ func Walk(ctx context.Context, d teamgraph.Definition, task *Task, r Runner, opt
 			Edge:    edge,
 			Next:    next,
 			Output:  out.Output,
+			Answer:  out.Answer,
 		})
 		task.Input = out.Output
 		task.State = next

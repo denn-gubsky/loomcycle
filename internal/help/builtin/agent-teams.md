@@ -18,7 +18,9 @@ research, …).
   - `consolidator` — a standalone judging step;
   - `terminal` — an end state (no agent, no outgoing edges);
   - `starter` — dispatches a wave of runs from a channel or a document (see
-    Starters below).
+    Starters below);
+  - `decision` — asks a decision model and takes the transition its answer
+    selects; no agent runs (see Asking a decision model below).
 - **`timeout_ms`** on a handler bounds how long its runs may take (`0` or
   unset = no limit):
   - on `agent`, `parallel` and `consolidator` it bounds ONE execution of the
@@ -63,7 +65,8 @@ research, …).
   (404) — it is never acknowledged and then dropped.
 - **Transitions** are the edges between states, gated by an `on` label:
   `success` (advance), `pushback:<reason>` (loop back for rework), or
-  `conditional:<expr>`. A state's outbound labels are unique, and every cycle is
+  `conditional:<expr>`. A consolidator picks its edge by signalling the label; a
+  `decision` state takes `conditional:<answer>`. A state's outbound labels are unique, and every cycle is
   bounded by a per-state `max_iterations` cap so a workflow always terminates.
 
 ## Starters — a wave of runs from a channel or a document
@@ -576,6 +579,69 @@ envelope (`$.results[0].output`); on an `input` state, the walk's input.
 
 A captured value containing `{{` or `}}` is dropped where it is used, so an
 answer cannot write a placeholder into a later prompt.
+
+## Asking a decision model
+
+A `decision` state asks a decision model typed questions and gets answers with
+probabilities, not text. It makes one call and starts no agent run. Use it to
+route work or to bind a judgement to a variable; use an agent state when the
+step needs reasoning, lookup or written output.
+
+```json
+{"state": "triage", "handler": {
+  "kind": "decision",
+  "about": {"ticket": "{{thread.output}}", "customer_tier": "${var.tier}"},
+  "questions": {
+    "route":  {"type": "choice", "instructions": "Which team should handle this ticket?",
+               "criteria": {"billing": "invoices, refunds", "support": "bugs, outages", "sales": "upgrades"}},
+    "urgent": {"type": "noul", "instructions": "Does this ticket need a reply within the hour?"}
+  },
+  "route": "route",
+  "capture": {"team": "$.answers.route.choice", "urgent": "$.answers.urgent.noul"}
+}}
+```
+
+with transitions `conditional:billing`, `conditional:support` and
+`conditional:sales` leaving `triage`.
+
+- **`about`** is the JSON object the questions are about. Its string values, at
+  any depth, take `${var.<name>}`, `${now.*}`, `${team.*}` and
+  `{{thread.output}}` (what the previous state handed over). Numbers and keys
+  pass as written. No other `{{…}}` placeholder is allowed there.
+- **`questions`** are the questions the `Decision` tool takes: `choice` (pick
+  one of the options in `criteria`), `noul` (yes or no, as the probability of
+  yes) and `score` (a position on the levels in `criteria`, lowest first).
+- **`model`** names one of the operator's decision models; omit it for the
+  default.
+- **`route`** names the question that picks the transition.
+  - A `choice` takes `conditional:<option>`.
+  - A `noul` takes `conditional:true` when the probability of yes is at or
+    above `threshold` (default 0.5), else `conditional:false`.
+  - A `score` cannot be routed on: capture it.
+  - Without `route` the state advances on `success`.
+- **Every routed answer needs a transition.** Each option of the routed choice
+  (or both `true` and `false`) needs its own, unless the state has a `success`
+  transition, which takes any answer without one. A team with a routed answer
+  that has nowhere to go is refused at create and fork, naming the option. So
+  is a `conditional:` transition for an answer the question cannot give.
+- **`capture`** reads the answer: `$.answers.<question>.choice`, `.noul`,
+  `.score`, `.confidence`, `.probabilities.<option>`.
+- **The next state receives what this state was handed**, not the answer. The
+  answer reaches later states through the variables it bound, and the walk's
+  step carries it as `answer`, beside `output`.
+- **There is no confidence gate.** The probabilities are not calibrated. To act
+  on one, capture it and route on it in a later state.
+- **A failed call fails the walk** at this state, with the model's code:
+  `state "triage" handler: decision: timeout: …`. `timeout_ms` bounds the call.
+- **The call is charged to the walk's own run.**
+- **No hooks, prompts or agents** on this state.
+- **Who may write one.** To give a team a decision state you must hold the
+  `Decision` tool, and may name only a model your own `decision` block allows.
+
+`verify` reports a decision state this deployment cannot run, without refusing
+the team: `decision_unconfigured` (no decision models here),
+`decision_model_unknown` (`model` is not one the operator offers) and
+`decision_limits` (more questions or options than that model takes).
 
 ## Publishing to a channel
 

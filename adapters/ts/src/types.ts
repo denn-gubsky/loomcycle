@@ -2701,6 +2701,10 @@ export type TeamIssueKind =
   | "local_webhook_authority"
   | "local_webhook_invalid"
   | "agent_missing"
+  | "decision_authority"
+  | "decision_unconfigured"
+  | "decision_model_unknown"
+  | "decision_limits"
   | "uncheckable"
   | (string & {});
 
@@ -2763,6 +2767,80 @@ export interface TeamDraftVerification extends TeamVerification {
   issues: TeamIssue[];
 }
 
+/** One question of a `decision` state: the shape {@link DecisionQuestion}
+ *  has on a decision call. */
+export interface TeamDecisionQuestion {
+  type: "choice" | "noul" | "score";
+  /** The question itself, in plain words. */
+  instructions: string;
+  /** `choice` (required): each option mapped to a description, or to `null`
+   *  when the option explains itself; the option names are the answers a state
+   *  routes on. `noul` (optional): descriptions of `"true"` and/or `"false"`.
+   *  `score` (required): level descriptions, lowest first. */
+  criteria?: Record<string, string | null> | string[];
+}
+
+/** The handler of a team state of kind `decision`: one call to a decision
+ *  model, with no agent run. It binds what was answered through `capture`
+ *  and, when it names a `route`, takes the transition that answer selects.
+ *
+ *  A save refuses a routed answer with nowhere to go: every option of a routed
+ *  `choice` needs a `conditional:<option>` transition, and a routed `noul`
+ *  both `conditional:true` and `conditional:false`, unless the state has a
+ *  `success` transition, which takes any answer without its own. */
+export interface TeamDecisionHandler {
+  kind: "decision";
+  /** One of the operator's decision models; omitted means the default. A
+   *  model this deployment does not offer is stored and reported by
+   *  `verifyTeam` as `decision_model_unknown`. */
+  model?: string;
+  /** The JSON object the questions are about. Its string values, at any
+   *  depth, are expanded when the state runs: `${var.<name>}`, `${now.*}`,
+   *  `${team.*}`, and `{{thread.output}}` for what the previous state handed
+   *  over. No other `{{…}}` placeholder is allowed. */
+  about: Record<string, unknown>;
+  questions: Record<string, TeamDecisionQuestion>;
+  /** The question whose answer picks the transition: a `choice` or a `noul`.
+   *  Omitted: the state advances on `success`. */
+  route?: string;
+  /** For a routed `noul`: the probability of yes at or above which the answer
+   *  is `true`. Default 0.5; above 0 and below 1. */
+  threshold?: number;
+  /** Variable name → JSONPath into the answer, e.g. `$.answers.route.choice`,
+   *  `$.answers.urgent.noul`, `$.answers.route.probabilities.billing`. */
+  capture?: Record<string, string>;
+  /** Bounds the call. 0 or omitted: the model's own timeout. */
+  timeout_ms?: number;
+}
+
+/** What a `decision` state's model answered: the object a decision call
+ *  returns. On a walk's step as `answer`. */
+export interface TeamDecisionAnswer {
+  /** The model asked, by the operator's name for it. */
+  model: string;
+  provider: string;
+  served_model: string;
+  /** One entry per question, under the question's name. */
+  answers: Record<string, Record<string, unknown>>;
+  usage: { input_tokens: number; output_tokens: number };
+}
+
+/** One executed state of a team walk, in {@link TeamRunResult.steps}. */
+export interface TeamRunStep {
+  state: string;
+  /** The state's agent, for an `agent` or `consolidator` state; else "". */
+  agent: string;
+  /** The transition label taken, and the state it led to. */
+  edge: string;
+  next: string;
+  /** What the state handed to the next one. A `decision`, `vars` or `channel`
+   *  state hands on what it was handed. */
+  output: string;
+  /** A `decision` state's answer. Absent on every other kind. */
+  answer?: TeamDecisionAnswer;
+  [extra: string]: unknown;
+}
+
 /** Result of {@link LoomcycleClient.runTeam} (op=run) — the walk trace. `status`
  *  is `"completed"` (a terminal state was reached) or `"iteration_cap"` (a
  *  state's cycle cap tripped; `capped_state` + `iteration_count` describe it).
@@ -2784,7 +2862,7 @@ export interface TeamRunResult {
   capped_state?: string;
   max_iterations?: number;
   iteration_count?: number;
-  steps: Array<Record<string, unknown>>;
+  steps: TeamRunStep[];
   [extra: string]: unknown;
 }
 

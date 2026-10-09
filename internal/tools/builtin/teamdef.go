@@ -145,6 +145,12 @@ type TeamDef struct {
 	// local skills is refused, rather than stored unchecked.
 	Skills *SkillDef
 
+	// Decision is the Decision tool a walk's `decision` states call through,
+	// and whose models verify checks them against. nil, or one with no
+	// Service, = the deployment declares no decision models: such a state is
+	// reported unrunnable and fails when a walk reaches it.
+	Decision *Decision
+
 	// AgentExists, if set, reports whether an agent name resolves, so verify can
 	// report a member retired after the def was written. nil = the agent sweep
 	// is omitted from the report rather than reported as failing.
@@ -286,7 +292,16 @@ const teamDefDescription = `Author, fork, promote, retire, and inspect team work
 	`it before anything runs — its top-level type, its required fields, and each present property's type — and ` +
 	`refuses a bad input naming the field. A definition may declare variables with defaults (vars: name → default text), ` +
 	`read in prompts as ${var.<name>}; run may set a declared one for that walk (vars), and a name the team does not ` +
-	`declare is refused before anything runs. A definition may also declare agents of its own (local: {agents: {name: <the overlay AgentDef create takes>}}) ` +
+	`declare is refused before anything runs. A decision state (kind:"decision") asks a decision model and runs no agent: ` +
+	`about is the JSON object asked about (its string values take ${var.<name>} and {{thread.output}}), questions are named ` +
+	`typed questions as the Decision tool takes them (choice | noul | score), and model picks one of the operator's (omit ` +
+	`for the default). route names the question that picks the transition: a choice takes conditional:<option>, a noul ` +
+	`conditional:true or conditional:false (threshold, default 0.5); with no route the state advances on success. Every ` +
+	`routed answer needs its own transition unless the state has a success transition, which takes the rest; a missing one ` +
+	`is refused at create and fork. capture reads the answer ($.answers.<question>.choice, .noul, .score, .confidence), the ` +
+	`next state receives what this state was handed, and the walk's step carries the answer as answer. A model or a ` +
+	`deployment that cannot answer it is reported by verify as unrunnable, not refused. ` +
+	`A definition may also declare agents of its own (local: {agents: {name: <the overlay AgentDef create takes>}}) ` +
 	`and run one from a state as ./<name>; any other name in a state is a global agent, even when the team declares one of that name, and a ./<name> the team does not declare is refused. Such an agent ` +
 	`exists only in the team, runs as <team>/<name>, cannot be started outside a walk of the team, and passes every check a new agent does ` +
 	`(your agent-authoring grant, your own tools as its ceiling) at create and at fork; its full name must not be an existing agent's. ` +
@@ -1130,6 +1145,7 @@ func (t *TeamDef) sweepReferences(ctx context.Context, def teamgraph.Definition)
 			})
 		}
 	}
+	issues = append(issues, t.decisionIssues(def)...)
 	for _, name := range teamgraph.UnreferencedLocalAgents(def) {
 		issues = append(issues, teamIssue{
 			Kind: teamIssueLocalAgentUnreferenced, Severity: severityAdvisory,
@@ -1703,7 +1719,7 @@ func (t *TeamDef) execRun(ctx context.Context, in teamDefInput) (tools.Result, e
 	// the flag gates, so a team that could assert its own authorship would be
 	// asserting its own authority.
 	runnerOpts = append(runnerOpts, teamrun.WithOperatorAuthored(row.OperatorAuthored),
-		teamrun.WithTeamSource(row.Name, row.TenantID))
+		teamrun.WithTeamSource(row.Name, row.TenantID), teamrun.WithDecider(t.decider()))
 	// The walk names its members by the name they RUN under, so that is what a
 	// step, an envelope and a sink message carry. Starting one, the name goes
 	// back to what the definition wrote: "./x" for the team's own agent, and
@@ -1768,13 +1784,19 @@ func (t *TeamDef) execRun(ctx context.Context, in teamDefInput) (tools.Result, e
 	answer := func(trace []teamrun.StepRecord, walkErr error) (map[string]any, error) {
 		steps := make([]map[string]any, 0, len(trace))
 		for _, s := range trace {
-			steps = append(steps, map[string]any{
+			step := map[string]any{
 				"state":  s.State,
 				"agent":  s.Agent,
 				"edge":   s.Edge,
 				"next":   s.Next,
 				"output": s.Output,
-			})
+			}
+			// A decision state's answer, as the object the model gave: beside
+			// `output`, which stays what the state handed on.
+			if s.Answer != "" {
+				step["answer"] = json.RawMessage(s.Answer)
+			}
+			steps = append(steps, step)
 		}
 
 		// annotate adds the opt-in board/interruption fields to a response ONLY when

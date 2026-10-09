@@ -1677,7 +1677,10 @@ func main() {
 			log.Printf("decision: %s = %s/%s", m.Name, m.Provider, m.Model)
 		}
 		log.Printf("decision: default %s", decisionService.Default())
-		allTools = append(allTools, &builtin.Decision{Service: decisionService})
+		decisionTool := &builtin.Decision{Service: decisionService}
+		allTools = append(allTools, decisionTool)
+		// A team's decision states ask through the same tool.
+		teamDefTool.Decision = decisionTool
 	}
 
 	// The Context tool's catalog (used by `Context op=tools`) is wired inside

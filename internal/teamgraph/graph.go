@@ -15,6 +15,7 @@ import (
 	"errors"
 	"fmt"
 
+	"github.com/denn-gubsky/loomcycle/internal/decisionq"
 	"github.com/denn-gubsky/loomcycle/internal/hooks"
 )
 
@@ -38,6 +39,7 @@ const (
 	HandlerInput        = "input"        // the start form: a typed schema the client renders
 	HandlerStarter      = "starter"      // reads ONE channel and dispatches a wave of agent runs
 	HandlerChannel      = "channel"      // publishes to a channel; it does NOT read one
+	HandlerDecision     = "decision"     // asks a decision model; routes on an answer, runs no agent
 )
 
 // Transition kinds — the `on` label prefix. success is bare; pushback and
@@ -141,7 +143,7 @@ type State struct {
 
 // Handler is the "who acts" for a state.
 type Handler struct {
-	Kind string `json:"kind"` // agent | parallel | consolidator | terminal | vars | input
+	Kind string `json:"kind"` // agent | parallel | consolidator | terminal | vars | input | starter | channel | decision
 
 	// Hooks / ToolHooks are added to every run this state starts — its agent,
 	// each parallel member and the consolidator, each Starter wave member — on
@@ -258,6 +260,27 @@ type Handler struct {
 	// Payload — kind=channel ONLY: "envelope" (the default when empty) or
 	// "raw". See publish.go.
 	Payload string `json:"payload,omitempty"`
+
+	// The fields below are kind=decision ONLY (see decision.go). Each is
+	// omitempty, so a definition without a decision state hashes as before.
+
+	// Model is one of the operator's decision models; empty means the default.
+	Model string `json:"model,omitempty"`
+	// About is the JSON object the questions are about, sent as the call's
+	// state. Its string values are expanded when the state runs. Named `about`
+	// and not `state` because a state is written {"state": "<id>", "handler":
+	// {…}}, and the same key one level down would mean something else.
+	About json.RawMessage `json:"about,omitempty"`
+	// Questions are the call's questions, in the shape the Decision tool takes.
+	Questions map[string]decisionq.Question `json:"questions,omitempty"`
+	// Route names the question whose answer picks the transition: a choice
+	// takes conditional:<option>, a yes/no conditional:true or
+	// conditional:false. Empty means the state advances on success.
+	Route string `json:"route,omitempty"`
+	// Threshold is the probability of yes at or above which a routed yes/no
+	// answer is `true`. Nil means DefaultThreshold. A pointer so that a
+	// written 0 is refused instead of read as "not set".
+	Threshold *float64 `json:"threshold,omitempty"`
 }
 
 // StarterSource is what a Starter reads: a channel (the default), reusing
