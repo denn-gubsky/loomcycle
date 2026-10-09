@@ -20,6 +20,9 @@
 # is bound to must not change with what is being deployed. Install it again when
 # it changes.
 set -eu
+# The backups are database dumps and the logs carry deploy output: both stay
+# readable by the deploy account only.
+umask 077
 
 base="${LOOMCYCLE_CLOUD_DEPLOY_HOME:-$HOME/work/loomcycle-cloud-deploy}"
 stack="${LOOMCYCLE_CLOUD_STACK:-$HOME/work/loomcycle-cloud}"
@@ -45,6 +48,7 @@ fi
 is_version() { expr "$1" : '[0-9][0-9]*\.[0-9][0-9]*\.[0-9][0-9]*$' >/dev/null; }
 
 mkdir -p "$base/logs" "$base/backups"
+chmod 700 "$base/logs" "$base/backups"
 exec 9>"$base/deploy.lock"
 flock -w 1800 9
 
