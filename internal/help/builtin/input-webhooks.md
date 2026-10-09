@@ -367,14 +367,19 @@ boundary). Omit it (`""`) for a shared/default run with no tenant scoping.
 ```
 
 **Security — the tenant comes from the static def ONLY, never the payload.**
-Unlike `user_id` / `user_tier` (which an operator MAY project from the signed
-body via `payload_mapping`, accepting that they are only as trustworthy as
-the per-def signing secret), there is deliberately **no** `payload_mapping`
+Unlike `user_id` (which an operator MAY project from the signed body via
+`payload_mapping`, accepting that it is only as trustworthy as the per-def
+signing secret), there is deliberately **no** `payload_mapping`
 or `run_metadata.*` path for the tenant. The inbound body is attacker-
 influenceable; letting it select the tenant would let a sender steer the run
 into another tenant's agents/skills/memory. `tenant_id` is def-content
 (operator-authored), flows to `RunInput.TenantID`, and cannot be overridden
 from the wire.
+
+`user_tier` is pinned the same way: it comes from the def's `user_tier`,
+and a `payload_mapping` entry that targets it is ignored (config load warns
+about it). A sender must not be able to pick the plan its run is billed and
+routed under.
 
 **Through the WebhookDef tool, `tenant_id` may name only your own tenant
 unless you are an admin.** Omitted, it defaults to your tenant. A non-admin

@@ -2,17 +2,21 @@
 
 This page covers the **other direction** of loomcycle's MCP integration: exposing loomcycle itself as a stdio MCP server that **Claude Code, Claude Desktop, and other MCP orchestrators consume**.
 
-> **Why this, not the alternative.** You could write your own orchestration: spin up loomcycle as an HTTP server, write client code that polls `/v1/runs`, manage tokens, parse SSE streams. The MCP server path is one command and a five-line config — every MCP client (Claude Code, Claude Desktop, the model layer of any orchestrator that speaks MCP) discovers loomcycle's 43 meta-tools automatically. The HTTP path stays available for everything else, but for "I want Claude Code to drive a multi-agent loomcycle backend", MCP is the shorter route.
+> **Why this, not the alternative.** You could write your own orchestration: spin up loomcycle as an HTTP server, write client code that polls `/v1/runs`, manage tokens, parse SSE streams. The MCP server path is one command and a five-line config — every MCP client (Claude Code, Claude Desktop, the model layer of any orchestrator that speaks MCP) discovers loomcycle's meta-tools automatically. The HTTP path stays available for everything else, but for "I want Claude Code to drive a multi-agent loomcycle backend", MCP is the shorter route.
 
 The consumer side (loomcycle's agents calling external MCP servers like `mcp__jobs__getAgentContext`) is documented in [`MCP_INTEGRATION.md`](MCP_INTEGRATION.md). This document is purely about the inverse: loomcycle's own `loomcycle mcp` subcommand.
 
 ## What you get
 
-When you register loomcycle as your MCP server, your MCP client gains **43 meta-tools** for driving loomcycle from inside a chat — spawn runs, manage agents, read/write memory, publish/subscribe to channels, register agent definitions, etc. The full surface is enumerated in the diagram at [`docs/assets/architecture-connector.png`](assets/architecture-connector.png).
+When you register loomcycle as your MCP server, your MCP client gains loomcycle's **meta-tools** for driving it from inside a chat — spawn runs, manage agents, read/write memory, publish/subscribe to channels, register agent definitions, etc. The list your client shows (`tools/list`, or `/mcp` in Claude Code) is the authoritative catalogue: 54 tools at v1.107.0 for an operator, fewer for a token that may not call them all (see *What a token may call* below). The diagram at [`docs/assets/architecture-connector.png`](assets/architecture-connector.png) shows how they dispatch through the Connector.
 
 The most common consumer is Claude Code: you can ask Claude to "spawn a `qa-agent` against this PR and stream the result" and Claude will use loomcycle's `spawn_run` meta-tool transparently.
 
 **v0.33.0 added two run-lifecycle meta-tools:** **`spawn_runs`** — RFC Y external fan-out: spawn up to 32 fresh runs concurrently in one call and get back a combined index-aligned envelope (prefer it over firing N `spawn_run` calls, which serialize over the single stdio connection); and **`compact_run`** — compact a parked run's context by `agent_id` (summarize older turns, continue from the summary). `spawn_run`/`spawn_runs` also now accept per-run `sampling` + `compaction` overrides.
+
+**Added since:** `configured_run` (create a run without starting it, edit it, then start or discard it), `retune_run` (change a running agent's settings without sending it a turn), `review_run` (rule on an answer held for review), `decision` (ask a decision model outside a run), `teamdef` and `hookdef` (author teams and reusable hooks), `credentialdef`, `volumedef` and `documentsourcedef` (stored secrets, filesystem volumes, peer document sources), `path`, `document` and `history` (named paths, chunked documents, past chats), and `directory` and `erasure` (who is in the tenant and what is held for them; report or erase one subject). `register_hook`, `list_hooks` and `delete_hook` were removed in v1.97.0: a run fires the hooks on its agent definition, and reusable ones are authored with `hookdef`.
+
+### Retrying and bounding a run
 
 **Retrying a start safely: `idempotency_key`.** `spawn_run`, each `spawn_runs` child, each `POST /v1/runs:batch` child, `POST /v1/runs` and the gRPC `Run` and `SpawnRunBatch` requests take an optional `idempotency_key` (1 to 200 characters of letters, digits and `: . _ -`). A second request with the same key, from the same tenant and user, starts nothing. It is answered with the run the first request started, with `deduplicated: true`:
 
@@ -83,10 +87,38 @@ Tunable via env (sensible defaults; unset = default):
 The embedded `loomcycle mcp` (stdio) is process-local operator-trust — whoever launched it has full authority, no bearer involved. The thin client is different: it speaks to a running HTTP runtime over `/v1/_mcp`, which is bearer-authed.
 
 - **The bearer is `LOOMCYCLE_MCP_UPSTREAM_TOKEN`** (falls back to `LOOMCYCLE_AUTH_TOKEN`). The proxy forwards it verbatim on every upstream request, so the session authenticates as **that token's principal** — its `(tenant, subject, scopes)` resolved from the token, never the wire.
-- **A `substrate:tenant` bearer works (RFC AG).** The `/v1/_mcp` route gate is `substrate:tenant`: a tenant token may open a session, and everything it does is confined to its own tenant — its `agentdef`/`skilldef`/… authoring stamps its tenant, its `memory`/`path`/`document`/`channel` data is keyed under its `(tenant, user)`, its hooks fire only on its own runs. User-scoped tools (`document`/`memory`/`path`) key on the bearer's `subject`, so an MCP thin client and the Web UI that authenticate as the *same* principal see the *same* data.
+- **A `substrate:tenant` bearer works (RFC AG).** The `/v1/_mcp` route gate is `substrate:tenant`: a tenant token may open a session, and everything it does is confined to its own tenant — its `agentdef`/`skilldef`/… authoring stamps its tenant, its `memory`/`path`/`document`/`channel` data is keyed under its `(tenant, user)`. User-scoped tools (`document`/`memory`/`path`) key on the bearer's `subject`, so an MCP thin client and the Web UI that authenticate as the *same* principal see the *same* data.
 - **Admin-only meta-tools are withheld from a non-admin session.** Token minting (`operatortokendef`), runtime admin (`pause_runtime`/snapshots/…), and cross-scope `list_channels` are runtime-global with no tenant dimension — a `substrate:tenant` session never *sees* them in `tools/list` and is refused (`-32001`) on `tools/call`. A `substrate:admin` bearer sees + may call the full set.
+- **Narrower tokens open a session too, and see less.** A tenant member's token reaches `/v1/_mcp` whatever scopes it holds, and an isolated `substrate:user` token is admitted to manage its own credentials. Each tool is then gated on the token's scopes — see *What a token may call* below.
 
 So you can hand a downstream tenant a narrow `substrate:tenant` token and let it drive its own confined MCP session — no admin token required, no cross-tenant reach.
+
+### What a token may call
+
+Since v1.107.0 an MCP session is held to its token's scopes the same way the HTTP API and gRPC are. Which tools a session lists and may call depends on the token:
+
+| Token | Tools |
+|---|---|
+| No bearer (embedded stdio, or a runtime with no authentication configured) | All of them. |
+| `substrate:admin`, including the legacy `LOOMCYCLE_AUTH_TOKEN` | All of them. |
+| `substrate:tenant` | The tenant-confinable tools: everything except token minting, runtime pause/resume/state, `resolve_probe`, the snapshot tools and `list_channels`. It satisfies all four scopes in the next table. |
+| A member token (no `substrate:admin` or `substrate:tenant`, and not isolated) | The tenant-confinable tools, minus those whose scope in the next table it does not hold. |
+| An isolated `substrate:user` token | `credentialdef` only, for its own user-scope credentials. |
+
+These tools need a scope of their own:
+
+| Tool | Scope |
+|---|---|
+| `spawn_run`, `spawn_runs`, `cancel_run`, `compact_run`, `retune_run`, `review_run`, `configured_run`, `interruption_resolve` | `runs:create` |
+| `get_run`, `list_runs`, `stream_user_run_states` | `runs:read` |
+| `publish_channel`, `ack_channel` | `channel:publish` |
+| `subscribe_channel`, `peek_channel` | `channel:read` |
+| `decision` | `runs:create` (it spends tokens) |
+| `teamdef` | per operation: `run` and `cancel` need `runs:create`, `poll` needs `runs:read`; the other operations need none |
+
+The remaining tenant-confinable tools have no scope of their own: the definition tools, `register_agent` / `unregister_agent` / `list_agents`, `memory`, `channel`, `path`, `document`, `history`, `evaluation`, `context`, `directory` and `erasure`.
+
+A tool the token may not call is left out of `tools/list`, and a call to it is refused with `-32001`, naming the scope it needs. `teamdef` stays listed for a member; an operation it may not run is refused the same way, naming the operation and the scope. So a tool that is "missing" from a session is usually a scope, not a broken runtime. A token minted with `runs:create` alone can start a run and cannot read it back; mint `runs:create` and `runs:read` together for day-to-day use.
 
 ## Quickest path — `loomcycle mcp install`
 
@@ -278,7 +310,7 @@ providers:
 |---|---|
 | `claude mcp list` shows loomcycle as red / not connected | spawn failed — try running the command from your terminal manually; check stderr for missing env vars or config-file path issues |
 | Tools listed but every call returns "no provider configured" | API key env vars not reaching the MCP server process; use Docker `-e` or populate the client's `env` block |
-| `mcp__loomcycle__spawn_run` not in tool list | server registered under a different name (`--server-name`); MCP tool names are namespaced by server name |
+| `mcp__loomcycle__spawn_run` not in tool list | server registered under a different name (`--server-name`); MCP tool names are namespaced by server name. A tool provided through the Claude Code plugin is named `mcp__plugin_loomcycle_loomcycle__spawn_run`. If only some tools are missing, the token may not call them — see *What a token may call* |
 | Hangs on first call after a fresh install | loomcycle is downloading provider catalog data on first run; subsequent calls warm |
 | Claude Desktop config validates but the server never shows up | restart Claude Desktop fully (not just close the window — Quit from the menu bar) |
 
@@ -286,4 +318,4 @@ providers:
 
 - [`MCP_INTEGRATION.md`](MCP_INTEGRATION.md) — consumer side: loomcycle's agents calling external MCP servers
 - [`ARCHITECTURE.md`](ARCHITECTURE.md) — request flow, where the MCP server fits in the binary
-- [`assets/architecture-connector.png`](assets/architecture-connector.png) — the 36-method Connector interface and how MCP/gRPC/CLI consumers dispatch through it
+- [`assets/architecture-connector.png`](assets/architecture-connector.png) — the Connector interface and how MCP/gRPC/CLI consumers dispatch through it

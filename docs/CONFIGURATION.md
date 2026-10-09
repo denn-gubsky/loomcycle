@@ -60,13 +60,13 @@ The resolver walks **top-down** through this table on every request. The first a
 
 ## 2. Resolution precedence — decision tree
 
-The resolver lives in `internal/resolve/matrix.go:281` (`Resolve(req AgentRequest) (Decision, error)`). The precedence is:
+The resolver is `Resolve` in `internal/resolve/matrix.go` (`Resolve(req AgentRequest) (Decision, error)`). The precedence is:
 
 ```
 Given:  AgentRequest{ Name, Tier, PinProvider, PinModel, Providers, Models, UserTier }
 
    1. PinProvider AND PinModel both set?
-      → resolvePin()       (matrix.go:293)
+      → resolvePin()
         - Looks up the matrix to confirm (provider, model) is reachable.
         - Returns Decision{provider, model} or ErrPinUnavailable.
 
@@ -76,24 +76,26 @@ Given:  AgentRequest{ Name, Tier, PinProvider, PinModel, Providers, Models, User
    3. Tier required from here on. If Tier == "":
       → ErrInvalidArgument
 
-   4. Build the candidate list:
+   4. Build the candidate list (candidatesFor):
       a. agent.Models[tier] set?  use it. (per-agent override; full replacement)
       b. user_tier.Tiers[tier] set?  use it. (overlay)
       c. library tiers[tier] set?  use it.
       d. otherwise →                ErrTierUnavailable
 
-   5. Build the provider walk order:
+   5. Build the provider walk order (priorityFor):
       a. agent.Providers AND user_tier.ProviderPriority both set?
-         → intersection in agent-order (matrix.go:440)
+         → intersection in agent-order
          → empty intersection → ErrTierAgentNotAvailable  (policy refusal)
       b. only agent.Providers set?               → agent.Providers
       c. only user_tier.ProviderPriority set?    → user_tier order
       d. neither set?                            → library provider_priority
 
-   6. Walk the candidate list, skipping any pair whose:
+   6. Walk the provider order; for each provider, take its candidates in
+      list order, skipping any pair whose:
       - provider is excluded (no API key) OR
       - provider is unreachable (probe failed) OR
-      - model is stalled (recent driver error)
+      - model is stalled (recent driver error) OR
+      - model is rate-limited (until the limit window passes) OR
       - model is not listed by the provider's /v1/models (or equivalent)
 
    7. First survivor →  Decision{provider, model, effort, ...}
@@ -105,23 +107,24 @@ Two error classes worth remembering, because they have different operator semant
 | Error | When | Caller should |
 |---|---|---|
 | `ErrTierUnavailable` | Matrix-side problem — every candidate stalled / unreachable | Retry with backoff; surface as 503 |
-| `ErrTierAgentNotAvailable` | **Policy-side** — agent's `providers:` and user_tier's `provider_priority` have no overlap | NOT retry — return 403/"upgrade your plan"; the user genuinely doesn't have access |
+| `ErrTierAgentNotAvailable` | **Policy-side** — agent's `providers:` and user_tier's `provider_priority` have no overlap, or none of the tier's candidates names a provider the user_tier grants | NOT retry — return 403/"upgrade your plan"; the user genuinely doesn't have access |
 
 This distinction matters because a transient outage and "your plan doesn't allow this agent" are operationally different. Loomcycle separates them at the resolver layer so the app server can map them to different HTTP responses.
 
 ### Mutual exclusion at config-load
 
-`internal/config/config.go:1985` enforces **pin XOR tier** at config-load time:
+`ValidateRoutingMode` in `internal/config/config.go` enforces **pin XOR tier**. Config-load calls it for every agent:
 
 ```go
-hasPin := agent.Provider != "" || agent.Model != ""
-hasTier := agent.Tier != ""
-if hasPin && hasTier {
-    return fmt.Errorf("agent %q: cannot set both explicit provider/model pin and tier (pick one)", name)
+func ValidateRoutingMode(provider, model, tier string) error {
+	if (provider != "" || model != "") && tier != "" {
+		return errors.New("cannot set both explicit provider/model pin and tier (pick one)")
+	}
+	return nil
 }
 ```
 
-If you set both `tier: middle` AND `model: claude-sonnet-4-6` in an agent's frontmatter, loomcycle refuses to start. Pick one path.
+If you set both `tier: middle` AND `model: claude-sonnet-4-6` in an agent's frontmatter, loomcycle refuses to start (`agent "<name>": cannot set both explicit provider/model pin and tier (pick one)`). Pick one path.
 
 ---
 
@@ -251,7 +254,17 @@ defaults:
 
 ### Cascade behaviour
 
-A `tier: low` agent runs against `deepseek-flash` first. If DeepSeek returns 429 or 5xx — and `fallback_on_error` is true (default) — the resolver re-picks from the same candidate list, this time selecting the next provider (`gemini`). This continues until a candidate succeeds or the cascade is exhausted (`ErrTierUnavailable`).
+A `tier: low` agent resolves to `deepseek-flash` first. What happens when DeepSeek then returns a retryable error (429, 5xx, a network timeout, a stream-idle deadline) depends on `fallback_on_error`, which is a `user_tiers` setting (§5) and is **off unless you set it**. The yaml above has no `user_tiers:` block, so as written there is no mid-run fallback: the error surfaces to the caller. The candidate order still matters when a run starts — a provider the availability probe has marked unreachable, or one with no API key, is skipped and the run begins on the next candidate.
+
+To get the mid-run cascade, add an overlay that turns it on:
+
+```yaml
+user_tiers:
+  default:
+    fallback_on_error: true
+```
+
+With that set, the resolver marks the failed `(provider, model)` pair stalled and re-picks from the same candidate list, this time selecting the next provider (`gemini`). This continues until a candidate succeeds, the candidates run out, or the run has switched providers `max_fallback_attempts` times (default 3); the run then fails with the original provider error.
 
 ### Agent .md: per-agent `providers:` override
 
@@ -320,8 +333,7 @@ models:
 # v0.8.2+: per-user-class policy overlays.
 user_tiers:
   default:
-    # Inherits library priority + tiers. Used when a caller omits
-    # user_tier or passes an unrecognized name.
+    # Inherits library tiers. Used when a caller omits user_tier.
     provider_priority: [anthropic]
     fallback_on_error: true
 
@@ -375,17 +387,17 @@ Loomcycle looks up `user_tiers.free` in the operator yaml, applies the overlay, 
 
 ### Required: the `default` user_tier
 
-If you set `user_tiers:` at all, you must include a `default:` entry. It's the fallback when:
-- The caller omits `user_tier` from the run request (e.g., legacy callers)
-- The caller passes an unrecognized name (`"premium"` when you only defined `"high"`)
+If you set `user_tiers:` at all, you must include a `default:` entry — config-load fails without it. It's the overlay used when the caller omits `user_tier` from the run request (e.g., legacy callers).
 
-Without it, the resolver has nothing to walk for unknown user_tiers, and runs error out.
+An unrecognized name (`"premium"` when you only defined `"high"`) does **not** fall back to `default`: `POST /v1/runs` refuses it with `400 unknown user_tier "premium"`.
 
 ### `fallback_on_error`
 
-Per overlay. When `true` (default), a retryable provider error triggers fallback to the next candidate. When `false`, the error surfaces directly to the caller.
+Per overlay. When `true`, a retryable provider error (429, 5xx, a network timeout, a stream-idle deadline) triggers fallback to the next candidate. When `false`, the error surfaces directly to the caller.
 
-Set to `false` on the free tier if you want a strict no-cascade behaviour (the operator doesn't want a free-tier user accidentally falling into a more expensive provider during an outage). Set to `true` everywhere else for resilience.
+**The default is `false`.** The loader applies no default, on `default` or on any other overlay, so an overlay that omits the key has no mid-run fallback — and neither does a config with no `user_tiers:` block at all (the §3 and §4 examples as written). Write `fallback_on_error: true` on every overlay that should cascade.
+
+Leave it off on the free tier if you want a strict no-cascade behaviour (the operator doesn't want a free-tier user accidentally falling into a more expensive provider during an outage). Set to `true` everywhere else for resilience.
 
 ### Why this pattern
 
@@ -829,7 +841,7 @@ Agent files live under `LOOMCYCLE_AGENTS_ROOT` (set in the env file). Each `<nam
 
 ### Frontmatter fields
 
-Parsed at `internal/agents/loader.go:199` (the `frontmatter` struct):
+Parsed into the `frontmatter` struct by `parseAgent` in `internal/agents/loader.go`:
 
 | Field | Type | Purpose | Notes |
 |---|---|---|---|
@@ -837,29 +849,35 @@ Parsed at `internal/agents/loader.go:199` (the `frontmatter` struct):
 | `description` | string | Human summary | Surfaces in operator tooling; not sent to the LLM as part of the prompt. |
 | **Model resolution** | | | |
 | `provider` | string | Explicit provider pin | XOR with `tier:`. With `model:` forms the pin path. |
-| `model` | string | Model alias OR full model ID | Aliases expand via `models:` map at `config.go:1370`. |
+| `model` | string | Model alias OR full model ID | Aliases expand via the `models:` map (`ExpandModelAlias` in `internal/config/config.go`). |
 | `tier` | string | `low` / `middle` / `high` | XOR with `provider`/`model`. Triggers tier-driven resolution. |
 | `providers` | `[]string` | Per-agent provider priority | Full replacement of library `provider_priority` for this agent. |
 | `models` | `map[tier][]TierCandidate` | Per-agent tier candidate lists | Full replacement of library `tiers[]` for this agent. |
-| `effort` | string | `low` / `medium` / `high` | Reasoning-effort hint. Anthropic + OpenAI honour it; Ollama ignores. |
+| `effort` | string | `low` / `medium` / `high` | Reasoning-effort hint; each driver maps it to its provider's thinking control. On Ollama `medium` / `high` send `think: true` and `low` sends `think: false`, so the model must be thinking-capable. |
 | `max_tokens` | int | Per-iteration assistant output cap | 0 = provider default. |
 | `max_context_tokens` | int | Per-agent context WINDOW | RFC CJ. 0 = unset. Local (Ollama) → `options.num_ctx`, winning over the env/provider window. Cloud → caps the effective window (a compaction budget clamped to the model max — can only lower). Distinct from `max_tokens` (output). Content-identifying. |
-| `sampling` | object | LLM sampling params | `temperature` / `top_p` / `top_k` / `frequency_penalty` / `presence_penalty` / `seed` / `stop`. Each driver applies what its provider supports, drops the rest. `temperature: 0.0` is deterministic (≠ unset). Overridable per-run on `/v1/runs` (`sampling`), merged per field (per-run wins). See `Context op=help topic=sampling`. Anthropic drops temperature/top_p when `effort` engages thinking. |
 | **Tool fields** | | | |
-| `tools` | `[]string` | Tool allowlist (loomcycle form) | Empty list = zero tools. Always wins over `tools:`. |
-| `tools` | string OR `[]string` | Claude-Code-compatible form | Comma-string or list. Tolerated for Claude-Code compatibility; `tools` takes precedence when both are set. |
+| `tools` | string OR `[]string` | Tool allowlist | A comma-string (the Claude Code shape) or a YAML list. Absent or empty = zero tools. This is the only key read: the older `allowed_tools:` spelling is not recognised and is silently ignored, so a file that still uses it loads with no tools. |
 | `skills` | `[]string` | Skill access allowlist (RFC BA) | Pattern allowlist governing which skills the agent may list / use / author (on-demand via the `Skill` tool — NOT bundled into the prompt). Entries are `/`-globs with an optional `+`/`-` sign: `doc/*` allow, `-doc/secret` deny, `-*` deny all. Empty/absent = allow all. The `Skill` tool is auto-added unless `skills: [-*]`. |
 | **System prompt** | | | |
 | (body) | string | Inline system prompt | Everything after the closing `---` line. |
 | `system_prompt_file` | string | External prompt path | Mutually exclusive with body. Useful for sharing prompts across agents. |
 | **Capability fields** | | | |
-| `memory_scopes` | `[]string` | Memory tool scope gate | `agent` / `user`. Empty = default-deny (no Memory tool access). |
+| `memory_scopes` | `[]string` | Memory tool scope gate | `agent` / `user` / `tenant`. Unset = the caller's own data: `user`, plus `tenant` when the run belongs to a tenant and is not isolated. A declared list is used as written, never widened. See "Unset scope gates" below. |
 | `memory_quota_bytes` | int | Per-agent memory byte cap | 0 = global default. |
 | `channels` | object | Channel tool ACL | `{publish: [...], subscribe: [...]}`. |
 | `agent_def_scopes` | `[]string` | AgentDef tool scope | `self` / `descendants` / `named:<name>` / `any`. Empty = default-deny. |
-| `evaluation_scopes` | `[]string` | Evaluation tool scope | `submit_self` / `submit_siblings` / etc. Empty = default-deny. |
-| `volumes` | `[]string` | Filesystem-volume binding | Names of top-level `volumes:` entries the agent's file/exec tools may use. Empty = implicitly bound to `[default]`. Confines the agent to exactly the named volumes (does NOT also grant `default`). See §9d. |
+| `evaluation_scopes` | `[]string` | Evaluation tool scope | `submit_self` / `submit_siblings` / `submit_descendants` / `submit_any` / `read_any`. Unset = `[submit_self]`: the agent may evaluate its own run and nothing else. See "Unset scope gates" below. |
 | `volume_def_scopes` | `[]string` | VolumeDef tool scope | `any` / `named:<volume>`. Empty = default-deny. Gates create/delete/purge of dynamic volumes; get/list are tenant-scoped reads. See §9d.1. |
+
+**Unset scope gates.** `memory_scopes` and `evaluation_scopes` used to deny everything when empty. They now resolve, at run time, to what the caller already owns: `memory_scopes` to `user` (plus `tenant` for a non-isolated tenant member) and `evaluation_scopes` to `[submit_self]`. Two yaml-only gates follow the same rule: unset `sql_scopes` resolves to `[user]` and unset `history_scope` to `[user]`. The three `user` defaults need a `user_id` on the run; a run without one gets nothing. `agent_def_scopes` and `volume_def_scopes` are unchanged: empty still denies.
+
+To grant none, set the gate to `["-*"]` in a definition overlay (AgentDef create / fork). The config loader does not accept that value: in a `.md` file or the operator yaml it fails config-load as an unknown scope. For a static agent, leave the tool itself (`Memory`, `Evaluation`, `History`) out of `tools:`.
+
+**Not frontmatter keys.** The loader reads only the fields of the `frontmatter` struct and silently ignores any other key. `sampling`, `compaction`, `context`, `tool_choice`, `output_format`, `volumes`, `sql_scopes` and `history_scope` are not in that struct, so in a `.md` file they do nothing. Set them on the agent's entry in the operator yaml `agents:` map (below) or in a definition overlay.
+
+- `sampling` — `temperature` / `top_p` / `top_k` / `frequency_penalty` / `presence_penalty` / `seed` / `stop`. Each driver applies what its provider supports, drops the rest. `temperature: 0.0` is deterministic (≠ unset). Overridable per-run on `/v1/runs` (`sampling`), merged per field (per-run wins). See `Context op=help topic=sampling`. Anthropic drops temperature/top_p when `effort` engages thinking.
+- `volumes` — names of top-level `volumes:` entries the agent's file/exec tools may use. Empty = implicitly bound to `[default]`. Confines the agent to exactly the named volumes (does NOT also grant `default`). See §9d.
 
 ### Worked examples (real agents from jobs-search-agent)
 
@@ -880,7 +898,6 @@ tools: []
 ---
 name: qa-agent
 description: Q&A answer generator for job applications.
-tools: mcp__jobs__getAgentContext
 tier: middle
 tools:
   - mcp__jobs__getAgentContext
@@ -889,7 +906,7 @@ tools:
 ---
 ```
 
-Note: `tools:` (the Claude-Code form) is present so the same file works in Claude Code, but `tools:` (the loomcycle form) takes precedence and is the authoritative list at runtime.
+Note: write `tools:` once. A comma-string (`tools: Read, Grep`, the Claude Code shape) and a YAML list are read the same way, so one key serves both consumers. A file that carries the key twice does not load: the frontmatter parse fails with `mapping key "tools" already defined`.
 
 **Alias pin with skills** — privacy-sensitive agent locked to sonnet:
 
@@ -897,7 +914,6 @@ Note: `tools:` (the Claude-Code form) is present so the same file works in Claud
 ---
 name: cv-rewriter
 description: Rewrites CV or Cover Letter text...
-tools: mcp__jobs__getAgentContext
 tools:
   - mcp__jobs__getAgentContext
   - Read
@@ -935,7 +951,6 @@ Inline skills join the on-demand catalog alongside `LOOMCYCLE_SKILLS_ROOT` (inli
 ---
 name: company-researcher
 description: Researches ONE company for a job application...
-tools: WebSearch, WebFetch, mcp__brave-search__brave_web_search
 tier: middle
 tools:
   - WebSearch
@@ -948,13 +963,14 @@ Mix of built-in tools (WebSearch, WebFetch) and an MCP tool. Tier-driven resolut
 
 ### Claude-Code compatibility
 
-The same `.md` file works in both Claude Code and loomcycle. **Claude-Code-honoured fields**: `name`, `description`, `tools` (comma-string), `model`. **Loomcycle extensions**: `tier`, `models`, `providers`, `effort`, `max_tokens`, `max_context_tokens`, `sampling`, `skills`, `tools` (list form), `system_prompt_file`, `memory_scopes`, `memory_quota_bytes`, `channels`, `agent_def_scopes`, `evaluation_scopes`. Claude Code ignores unknown keys; loomcycle treats the format as a superset. Keep your agents portable by including both `tools:` (Claude Code shape) and `tools:` (loomcycle shape) when you want the same file used in both.
+The same `.md` file works in both Claude Code and loomcycle. **Claude-Code-honoured fields**: `name`, `description`, `tools`, `model`. **Loomcycle extensions**: `tier`, `models`, `providers`, `effort`, `max_tokens`, `max_context_tokens`, `skills`, `system_prompt_file`, `memory_scopes`, `memory_quota_bytes`, `channels`, `agent_def_scopes`, `evaluation_scopes`. Claude Code ignores unknown keys; loomcycle treats the format as a superset. One `tools:` key serves both: write it as a comma-string (the Claude Code shape) or as a YAML list, and loomcycle reads either. The older `allowed_tools:` key is no longer read — rename it to `tools:`.
 
 ### Operator-yaml `agents:` overlay
 
-The operator yaml's `agents:` map can override any frontmatter field at the deployment level. Useful when you want different model resolution per deployment without forking the .md files. Merge logic at `internal/config/config.go:1531`:
+The operator yaml's `agents:` map can override any frontmatter field at the deployment level. Useful when you want different model resolution per deployment without forking the .md files. Merge logic is `mergeAgentDef` in `internal/config/config.go` (called from `discoverAgents`):
 
 - Scalar fields (string, int): YAML non-zero value wins
+- Boolean fields: YAML `true` switches the field on; YAML `false` is the zero value, so an overlay cannot switch off what the .md enabled
 - Slice/map fields: YAML `nil` keeps the discovered value; YAML non-nil (even `[]`) is an explicit override
 - `system_prompt` and `system_prompt_file` are mutually exclusive — setting one in YAML clears the other from the merged struct
 
@@ -965,13 +981,11 @@ Example overlay:
 agents:
   cv-rewriter:
     # Override the agent's pin for THIS deployment only.
-    # Removes the model: sonnet from the merged config and uses tier instead.
-    tier: high
-    model: ""
-    provider: ""
+    # The .md says `model: sonnet`; this deployment runs it on another alias.
+    model: opus
 ```
 
-(Setting `model: ""` is the explicit "clear" — without it, the discovered `sonnet` would stay.)
+An overlay replaces a value; it cannot clear one. `model: ""` is the zero value, so it reads as "not set" and the discovered `sonnet` stays. That is why a `.md` that pins `model:` cannot be moved onto a tier from yaml: adding `tier: high` leaves both the pin and the tier on the merged definition, and config-load fails with `cannot set both explicit provider/model pin and tier (pick one)`. Change the routing mode in the `.md` itself.
 
 ### System-prompt placeholders
 
@@ -1027,17 +1041,17 @@ Single reference table:
 
 | Conflict | Winner | Where enforced |
 |---|---|---|
-| `tier:` AND (`provider:` / `model:`) both set | **Config-load fails** | `config.go:1985` |
-| `tools:` AND `tools:` both set | `tools:` wins | `loader.go:295` |
-| Body AND `system_prompt_file:` both set | Setting either via YAML overlay clears the other | `config.go:1564` |
-| Agent `providers:` AND user_tier `provider_priority` both set | **Intersection** (agent-order); empty → `ErrTierAgentNotAvailable` | `matrix.go:440` |
-| Agent `models[tier]:` set | Replaces library `tiers[tier]` AND user_tier `tiers[tier]` for this agent | `matrix.go` candidate-list build |
-| user_tier `tiers[tier]:` set (no agent override) | Replaces library `tiers[tier]` | resolver candidate-list build |
-| Discovered .md field AND operator-yaml `agents:` overlay both set | YAML non-zero wins; nil slice keeps .md value | `config.go:1531` |
-| `model: sonnet` (alias) AND `models:` map has `sonnet` | Alias expands to `{provider, model}` from the map | `config.go:1370` |
-| `model: claude-sonnet-4-6` (literal, no alias) | Used as-is as the model ID | same path |
-| Probe says provider unreachable | Resolver skips all that provider's candidates | `matrix.go` per-candidate check |
-| Provider has no API key set | Marked excluded, treated like unreachable | startup probe |
+| `tier:` AND (`provider:` / `model:`) both set | **Config-load fails** (an AgentDef create / fork is refused the same way) | `ValidateRoutingMode` in `internal/config/config.go` |
+| `tools:` AND the old `allowed_tools:` both set | `tools:` is read; `allowed_tools:` is an unknown key and is ignored, with or without `tools:` | the `frontmatter` struct in `internal/agents/loader.go` (it has no such field) |
+| Body AND `system_prompt_file:` both set | **Config-load fails** when one definition ends up with both. A YAML overlay that sets either one clears the other first, so an overlay never trips this | `resolveSystemPromptFiles` (the refusal) and `mergeAgentDef` (the clear) in `internal/config/config.go` |
+| Agent `providers:` AND user_tier `provider_priority` both set | **Intersection** (agent-order); empty → `ErrTierAgentNotAvailable` | `priorityFor` in `internal/resolve/matrix.go` (`Resolve` returns the error) |
+| Agent `models[tier]:` set | Replaces library `tiers[tier]` AND user_tier `tiers[tier]` for this agent | `candidatesFor` in `internal/resolve/matrix.go` |
+| user_tier `tiers[tier]:` set (no agent override) | Replaces library `tiers[tier]` | `candidatesFor` in `internal/resolve/matrix.go` |
+| Discovered .md field AND operator-yaml `agents:` overlay both set | YAML non-zero wins; nil slice keeps .md value | `mergeAgentDef` in `internal/config/config.go` |
+| `model: sonnet` (alias) AND `models:` map has `sonnet` | Alias expands to `{provider, model}` from the map | `ExpandModelAlias` in `internal/config/config.go` |
+| `model: claude-sonnet-4-6` (literal, no alias) | Used as-is as the model ID | `ExpandModelAlias` in `internal/config/config.go` (a non-alias passes through) |
+| Probe says provider unreachable | Resolver skips all that provider's candidates | `isAvailableLocked` in `internal/resolve/matrix.go` |
+| Provider has no API key set | Marked excluded, treated like unreachable | `runResolveProbeOnce` in `cmd/loomcycle/main.go` calls `SetExcluded` in `internal/resolve/matrix.go` |
 
 ---
 
@@ -1049,11 +1063,14 @@ Loomcycle validates the yaml at startup. Common errors:
 
 | Error message | What's wrong |
 |---|---|
-| `agent X: cannot set both explicit provider/model pin and tier (pick one)` | `tier:` AND `provider:`/`model:` both present on the same agent |
-| `agent X: no model, no tier, and no defaults.model` | Agent has neither and operator has no `defaults.model` fallback |
-| `user_tiers: missing "default" entry` | You set `user_tiers:` but didn't include `default:` |
-| `unknown provider: X` | Provider in `provider_priority` or a candidate doesn't match a registered driver |
-| `model alias cycle: X → Y → X` | `models:` map has a cycle |
+| `agent "X": cannot set both explicit provider/model pin and tier (pick one)` | `tier:` AND `provider:`/`model:` both present on the same agent |
+| `agent "X": no model, no tier, and no defaults.model` | Agent has neither and operator has no `defaults.model` fallback. An agent that declares only capability grants gets a longer form of this message, pointing at a bundle missing from `LOOMCYCLE_PRESETS` / `LOOMCYCLE_CONFIG_DIR`. |
+| `user_tiers: a "default" entry is required when the user_tiers block is populated (…)` | You set `user_tiers:` but didn't include `default:` |
+| `provider_priority[N]: unknown provider "X" (known: […])` | A `provider_priority` entry doesn't match a registered provider. Per overlay: `user_tiers.<name>.provider_priority[N]: unknown provider "X"`; per agent: `agent "X": providers[N]: unknown provider "X"`. |
+| `tiers.<tier>[N]: unknown provider "X"` | A tier candidate names an unregistered provider. Per overlay the path is `user_tiers.<name>.tiers.<tier>[N]`; per agent, `agent "X": models.<tier>[N]`. |
+| `models.<alias>: unknown provider "X"` | A `models:` alias names an unregistered provider |
+
+Every message is prefixed `config: `. There is no alias-cycle error: an alias expands once, to the literal `model` it names, so aliases cannot chain.
 
 ### At runtime — inspect the resolver matrix
 
@@ -1111,7 +1128,7 @@ curl -N -H "Authorization: Bearer $LOOMCYCLE_AUTH_TOKEN" \
 
 The first `event: started` (or `event: resolved`) frame carries `provider=...` and `model=...`. Confirms your config picked what you expected.
 
-After v0.8.16 (PR #116), the model is also persisted at run start, so `GET /v1/users/{id}/agents` shows it during the run, not just at completion.
+The model is also persisted at run start, so `GET /v1/users/{user_id}/agents` shows it during the run, not just at completion.
 
 ### `GET /v1/config`
 
@@ -1145,7 +1162,7 @@ By default every authenticated caller presents the single shared `LOOMCYCLE_AUTH
 
 ```sh
 # Mint a per-developer token (shown once). Needs an existing admin bearer.
-loomcycle operator-token create --tenant acme --subject alice \
+loomcycle operator-token create --name alice --tenant acme --subject alice \
   --scopes runs:create,runs:read
 loomcycle operator-token rotate --name alice   # zero-downtime roll (grace window)
 loomcycle operator-token retire --name alice   # immediate revoke
@@ -1154,8 +1171,10 @@ loomcycle operator-token retire --name alice   # immediate revoke
 Migrate the existing shared secret in place — it keeps working as an admin token after the legacy fallback disables:
 
 ```sh
-loomcycle operator-token create --tenant default --subject ops --copy-from-env
+loomcycle operator-token create --name ops --tenant default --subject ops --copy-from-env
 ```
+
+`create` requires `--name` and `--tenant`. It also requires `--scopes`, except with `--copy-from-env`: binding the existing shared secret already says the token is admin. A `create` with no scope list is refused rather than minting an admin token.
 
 Config knobs (full reference: `loomcycle context help operator-tokens` or the `Context.help operator-tokens` tool topic):
 
@@ -1757,19 +1776,26 @@ See [`docs/DECISION-MODELS.md`](DECISION-MODELS.md) for the request and answer f
 
 ## 11. Code path index
 
-Single jump-list of every file:line cited above. As of v0.8.16:
+Single jump-list of the resolver, config-merge and frontmatter code that sections 2, 7 and 8 cite by symbol. The symbol name is the stable handle: grep for it. The line numbers were checked against v1.107.0 and move with every commit, so treat them as a starting point.
 
-| What | Where |
-|---|---|
-| Operator yaml `Config` struct + top-level keys | `internal/config/config.go:22` |
-| `ModelRef` (alias map value type) | `internal/config/config.go:154` |
-| `UserTier` overlay struct | `internal/config/config.go:177` |
-| Alias expansion (`ResolveAgentDefModel`) | `internal/config/config.go:1366–1390` |
-| Agent .md / yaml merge logic | `internal/config/config.go:1531–1612` |
-| `system_prompt` / `system_prompt_file` mutual-exclusion clear | `internal/config/config.go:1564` |
-| Pin XOR Tier validation | `internal/config/config.go:1985` |
-| Frontmatter struct (every accepted field) | `internal/agents/loader.go:199` |
-| `tools` vs `tools` precedence | `internal/agents/loader.go:295` |
-| Resolver entry — `Resolve(req)` | `internal/resolve/matrix.go:281` |
-| `priorityFor` intersection logic | `internal/resolve/matrix.go:440` |
-| `resolvePin` (pin path) | `internal/resolve/matrix.go:293` |
+| What | Symbol | Where (line at v1.107.0) |
+|---|---|---|
+| Operator yaml top-level keys | `Config` struct | `internal/config/config.go:34` |
+| Alias map value type | `ModelRef` struct | `internal/config/config.go:837` |
+| User-tier overlay | `UserTier` struct | `internal/config/config.go:1120` |
+| Alias expansion | `ExpandModelAlias` | `internal/config/config.go:5948` |
+| Pin-path model resolution (calls the alias expansion) | `ResolveAgentDefModel` | `internal/config/config.go:5985` |
+| Agent .md discovery + yaml overlay | `discoverAgents` | `internal/config/config.go:6283` |
+| Agent .md / yaml merge logic, including the `system_prompt` / `system_prompt_file` clear | `mergeAgentDef` | `internal/config/config.go:6398` |
+| `system_prompt` / `system_prompt_file` mutual-exclusion refusal | `resolveSystemPromptFiles` | `internal/config/config.go:6600` |
+| Pin XOR Tier validation | `ValidateRoutingMode` | `internal/config/config.go:6932` |
+| Frontmatter struct (every accepted field) | `frontmatter` struct | `internal/agents/loader.go:381` |
+| Frontmatter parse | `parseAgent` | `internal/agents/loader.go:433` |
+| `tools` comma-string / list coercion | `coerceToolsField` | `internal/agents/loader.go:523` |
+| Resolver entry | `Resolve` | `internal/resolve/matrix.go:383` |
+| Pin path | `resolvePin` | `internal/resolve/matrix.go:534` |
+| Tier candidate-list precedence | `candidatesFor` | `internal/resolve/matrix.go:624` |
+| Provider-priority intersection | `priorityFor` | `internal/resolve/matrix.go:653` |
+| Per-candidate availability check | `isAvailableLocked` | `internal/resolve/matrix.go:710` |
+| Excluded-provider marker | `SetExcluded` | `internal/resolve/matrix.go:921` |
+| Provider probe sweep (marks keyless providers excluded) | `runResolveProbeOnce` | `cmd/loomcycle/main.go:3981` |

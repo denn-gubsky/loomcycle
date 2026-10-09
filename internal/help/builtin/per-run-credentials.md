@@ -112,16 +112,25 @@ Same shape as the v0.8.14 `${run.user_bearer}` syntax:
 
 | Expression | Behaviour |
 |---|---|
-| `${run.credentials.jobs}` | Strict — empty/absent → header dropped |
+| `${run.credentials.jobs}` | Strict — empty/absent → the call is refused |
 | `${run.credentials.jobs:-FB}` | POSIX-style fallback to `FB` |
 
-Bare expressions (no fallback) where the credential is missing
-cause the entire header to be dropped from the outbound request.
-A WARN log entry is emitted naming the missing key + the
-`agent_id` so operators can triage. The upstream MCP server then
-returns its own auth error (typically 401), which the loop
-surfaces as a typed tool error — more debuggable than a
-substrate-side dispatch failure.
+A bare expression (no fallback) whose credential is missing **refuses the
+tool call**: the request is never sent. Sending it without the header would
+be worse — a peer that authenticates answers 401, which an agent reads as
+something a retry might fix, and a peer that does not authenticate serves
+the call as anonymous. The refusal is classified `business` and not
+retryable: no rewording of the call can supply a credential, only the
+caller starting the run with it can. A log entry names the header, the
+missing key and the `agent_id` so operators can triage.
+
+The fallback form is the deliberate opt-out: `${run.credentials.jobs:-}`
+is the operator saying that proceeding without the value is intended, and
+it never refuses.
+
+Outside a run there is nothing to refuse: on a request made with no run
+(the tool-discovery handshake, say) a header whose credential is missing
+is dropped and the request goes without it.
 
 ## Back-compat with v0.8.14 `user_bearer`
 
@@ -164,8 +173,8 @@ Credentials are NEVER persisted to:
 - Snapshots (`pause-resume-snapshot` v0.8.17 format) — the
   credential map lives only in the runtime ctx + the outgoing
   request payloads
-- Process logs — the WARN log on missing-credential emits ONLY the
-  key name + `agent_id`, never values
+- Process logs — the log line on a missing credential carries ONLY the
+  header, the key name and the `agent_id`, never values
 
 The credential map lives in memory for the lifetime of the run's
 ctx; cleared on run completion. The outgoing MCP request payloads
