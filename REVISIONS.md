@@ -8,6 +8,68 @@ Each entry is the release's tag annotation, so the tag and this file cannot disa
 
 For the **public roadmap**, see [`docs/PLAN.md`](docs/PLAN.md).
 
+## What's in v1.108.1
+
+*Three provider fixes. A run on a DeepSeek thinking model failed on its first call after a context compaction that happened in the middle of a turn; it now continues. An agent with `effort: low`, or with no effort set, got a 400 from two Gemini 3 models; it now runs. A `model_pattern` alias could resolve to a suffixed variant of a model instead of the model itself.*
+
+A patch on the v1.108 line: #1711 to #1715.
+- #1713 and #1715 are the compaction fix;
+- #1712 is the Gemini fix;
+- #1714 is the pattern alias fix;
+- #1711 updates the `cloud-deployment/` example.
+
+### A compaction in the middle of a turn no longer ends the history on the runtime's own turn (#1713, #1715)
+
+A run on `deepseek-v4-pro` failed on its first call after an automatic compaction:
+
+```
+openai 400: The `reasoning_content` in the thinking mode must be passed back to the API.
+```
+
+A compaction replaces the history with the summary, an assistant turn acknowledging it, and the most recent turns kept as they were. The kept part starts at a user turn. A run that is one long turn of tool calls has no such turn after its task, so nothing was kept and the history ended on the acknowledgement. The next request asked the model to continue an assistant turn that no model had written.
+
+- **A compacted history now ends the way the history it replaces ended.** If that one ended on a user turn, with tool results waiting for the next call, and the replacement ends on an assistant turn, a user turn is added: "Continue the task from where the summary above leaves off."
+- It applies to compaction and to recap, in the running loop and when a resumed run rebuilds its history from the transcript.
+- A parked run's compaction is unchanged. Its history ended on the answer, and the operator's next message is the user turn.
+- The run keeps its model and its effort. #1713 first moved a compacted run to the provider's non-thinking model; #1715 replaces that, and it never shipped in a release.
+
+Measured against the DeepSeek API on `deepseek-v4-pro`: an assistant turn without reasoning is accepted anywhere inside the history, including one that calls tools. The request is refused only when it ends on that turn and carries tools. With the added user turn it is accepted.
+
+### Gemini 3: a thinking level in place of a zero budget (#1712)
+
+A run on `gemini-3.5-flash-lite` failed with a 400 "Request contains an invalid argument", often after a fallback from a local model. The driver sent `thinkingBudget: 0` for `effort: low` and for any effort whose `max_tokens` left no room for a budget. The Gemini 3 models cannot turn thinking off, and they disagree about that value:
+
+| Model | `thinkingBudget: 0` | `thinkingLevel: low` |
+|---|---|---|
+| `gemini-3.5-flash-lite` | 400 | accepted |
+| `gemini-3.8-flash` | accepted | accepted |
+| `gemini-3.1-pro-preview` | 400 | accepted |
+| `gemini-2.5-flash` | accepted | 400 |
+
+- On a `gemini-3*` model a zero budget is now sent as `thinkingLevel: "low"`, the one value every model of the line accepts.
+- A budget above zero is sent as before, and the 2.5 line still gets `thinkingBudget: 0`.
+- The two fields are never sent together.
+
+**Behaviour change:** `effort: low` on a Gemini 3 model now means the lowest thinking level, not thinking off. `gemini-3.8-flash` accepted the zero budget before and now gets the level too.
+
+### A pattern alias prefers a model over its own variant (#1714)
+
+A `models:` alias with `model_pattern` resolves to the newest model the provider lists that matches. When two matches had the same version, the longer id won. `gemini-*-pro*` resolved to `gemini-3.1-pro-preview-customtools` instead of `gemini-3.1-pro-preview`.
+
+- When one id is the other plus a suffix and the versions are equal, the shorter id wins.
+- Ids that are not related that way keep the old order (`qwen3.8:latest` over `qwen3.8:27b`).
+- A newer variant still wins over an older base model.
+
+### The cloud deployment example moves to 1.108.0 (#1711)
+
+`cloud-deployment/` now pulls `loomcycle-browser:1.108.0` for the runtime and for the migration step, so the local `loomcycle.Dockerfile` is gone. Its config carries the current models and tiers, model kinds, the `decision:` and `memory:` blocks, and interruption, concurrency and cache settings. The four memory agents are pinned to `ollama-local`, so consolidation does not send transcripts to a cloud provider. `INSTALL.md` has an upgrade section.
+
+### Upgrading
+
+- No migration and no config change.
+- A patch tag builds only `loomcycle-browser` for linux/amd64. The other images, the binaries and the Homebrew formula stay at v1.108.0.
+- The clients are 1.108.1 with no API change.
+
 ## What's in v1.108.0
 
 *The person who runs a team can now see and release what the team wrote to **its own channels**. A channel a team declares for itself was readable only by the team's agents; every channel call refused it. Three calls addressed by team and the channel's local name now cover it — **list** (with counts), **peek** and **release** — on HTTP, gRPC, MCP and both clients. Several guides and help articles that disagreed with the code are corrected.*

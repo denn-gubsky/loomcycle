@@ -182,7 +182,14 @@ been primitives plus hardening: memory, documents, teams, sandboxing, retention
 and erasure. The agentic-memory subsystem and the document surfaces built on it
 remain the main direction.
 
-The most recent line (v1.108.0) lets the person who runs a team see and release
+The most recent line (v1.108.1) is a patch with three provider fixes. A run on
+a DeepSeek thinking model no longer fails on its first call after a context
+compaction that happened in the middle of a turn. An agent with `effort: low`
+or no effort set no longer gets a 400 from `gemini-3.5-flash-lite` or
+`gemini-3.1-pro-preview`. A `model_pattern` alias that matches a model and a
+suffixed variant of the same version now resolves to the base model.
+
+Before it, v1.108.0 let the person who runs a team see and release
 what the team wrote to its own channels. A channel a team declares for itself
 was readable only by the team's agents; three calls addressed by team and the
 channel's local name now list those channels with their counts, peek at one
@@ -190,7 +197,7 @@ without consuming anything, and release what a held channel is holding. They
 are on HTTP, gRPC and MCP and in both clients. Several guides that disagreed
 with the code are corrected.
 
-Before it, v1.107.0 added decision models as a general capability:
+Earlier, v1.107.0 added decision models as a general capability:
 an agent, a code body or an outside caller asks typed questions (pick one
 option, yes or no, a position on a scale) and gets each answer with
 probabilities instead of text. It is the `Decision` tool inside a run,
