@@ -331,10 +331,46 @@ type wireGenConfig struct {
 }
 
 type wireThinkingConfig struct {
-	// ThinkingBudget caps tokens spent on internal reasoning. -1 =
-	// dynamic (model decides). 0 disables thinking on supported
-	// models. Positive values are explicit token budgets.
-	ThinkingBudget int `json:"thinkingBudget"`
+	// ThinkingBudget caps tokens spent on internal reasoning. 0 disables
+	// thinking on the models that allow it (the 2.5 line). Positive values
+	// are explicit token budgets. A pointer so the field is left off the
+	// wire when ThinkingLevel is sent: the API refuses a request carrying
+	// both.
+	ThinkingBudget *int `json:"thinkingBudget,omitempty"`
+	// ThinkingLevel is the Gemini 3 control. Sent only in place of a zero
+	// budget, which that line refuses (see geminiThinkingConfig).
+	ThinkingLevel string `json:"thinkingLevel,omitempty"`
+}
+
+// geminiThinkingConfig builds the thinkingConfig for an effort hint, or nil
+// for none.
+//
+// A zero budget means "do not think". The 2.5 line honours it. The Gemini 3
+// line cannot turn thinking off, and its models do not agree on what to do
+// with the request: gemini-3.8-flash accepts thinkingBudget 0, while
+// gemini-3.5-flash-lite answers 400 "Request contains an invalid argument"
+// with nothing naming the field. That is what an `effort: low` agent sent, and
+// so did any agent whose max_tokens left no room for a budget — so a fallback
+// from a local model onto flash-lite failed the run instead of rescuing it.
+//
+// On Gemini 3 the zero budget is therefore sent as thinkingLevel "low": the
+// lowest level every model of the line accepts ("minimal" is refused by
+// gemini-3.8-flash and the Pro models). Positive budgets are unchanged; both
+// 3.x models above accept them.
+func geminiThinkingConfig(model, effort string, maxTokens int) *wireThinkingConfig {
+	budget := geminiEffortBudget(effort, maxTokens)
+	if budget < 0 {
+		return nil
+	}
+	if budget == 0 && isGemini3(model) {
+		return &wireThinkingConfig{ThinkingLevel: "low"}
+	}
+	return &wireThinkingConfig{ThinkingBudget: &budget}
+}
+
+// isGemini3 reports whether model belongs to the Gemini 3 line.
+func isGemini3(model string) bool {
+	return strings.HasPrefix(strings.ToLower(model), "gemini-3")
 }
 
 // buildRequestBody marshals a providers.Request into Gemini's wire
@@ -400,9 +436,7 @@ func buildRequestBody(req providers.Request) ([]byte, error) {
 			Seed:            req.Seed,
 			StopSequences:   req.Stop,
 		}
-		if budget := geminiEffortBudget(req.Effort, req.MaxTokens); budget >= 0 {
-			gc.ThinkingConfig = &wireThinkingConfig{ThinkingBudget: budget}
-		}
+		gc.ThinkingConfig = geminiThinkingConfig(req.Model, req.Effort, req.MaxTokens)
 		if req.OutputFormat != nil {
 			gc.ResponseMimeType = "application/json"
 			gc.ResponseJSONSchema = req.OutputFormat.Schema
@@ -988,5 +1022,5 @@ func (d *Driver) EnforcesStructuredOutput(model string, hasTools bool) bool {
 	if !d.Capabilities().SupportsStructuredOutput {
 		return false
 	}
-	return !hasTools || strings.HasPrefix(strings.ToLower(model), "gemini-3")
+	return !hasTools || isGemini3(model)
 }
