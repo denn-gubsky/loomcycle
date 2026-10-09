@@ -275,7 +275,7 @@ func TestOpenAPISpec_DecisionRequestMatchesTool(t *testing.T) {
 // new one fails here until the contract documents it.
 func TestOpenAPISpec_DecisionFailureCodesSitUnderTheirStatus(t *testing.T) {
 	codes := append(
-		stringConsts(t, "../../decision/errors.go", "Code"),
+		stringConsts(t, "../../decisionq/decisionq.go", "Code"),
 		stringConsts(t, "../../tools/builtin/decision.go", "DecisionCode")...)
 	// A floor on what was read, so a rename of the constants cannot leave this
 	// test checking nothing.
