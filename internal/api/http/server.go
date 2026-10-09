@@ -6287,7 +6287,9 @@ func replayTranscript(events []store.Event) []providers.Message {
 						}
 					}
 				}
-				messages = loop.CompactionMessages(pinned, cc.Summary, tail)
+				// EndOnUserTurn reads the history being replaced, as the live
+				// loop did, so the rebuild ends on the same turn.
+				messages = loop.EndOnUserTurn(loop.CompactionMessages(pinned, cc.Summary, tail), messages)
 			}
 			asstText.Reset()
 			asstTools = nil
@@ -6322,7 +6324,7 @@ func replayTranscript(events []store.Event) []providers.Message {
 						}
 					}
 				}
-				messages = loop.RecapMessages(pinned, cr.Recap, tail)
+				messages = loop.EndOnUserTurn(loop.RecapMessages(pinned, cr.Recap, tail), messages)
 			}
 			asstText.Reset()
 			asstTools = nil
