@@ -46,20 +46,24 @@ See [Explicit transactions](#explicit-transactions) below.
 SQL is exposed as ops on the existing `Memory` tool rather than as a dedicated
 `Sql` tool — a deliberate choice (RFC AA Phase 3f). The one real argument for a
 separate tool is gating granularity, and **`sql_scopes` already provides it**:
-SQL is off unless the agent declares `sql_scopes` (below), so `Memory` in
-`tools` grants the key/value + memory-layer ops *without* SQL — the
+the agent's `sql_scopes` (below) decides what SQL it may run, and `[-*]` grants
+none, so `Memory` in
+`tools` can grant the key/value + memory-layer ops *without* SQL — the
 separation a distinct tool would give, without a second wire surface duplicating
 the scope-resolution, audit, and ACL machinery. SQL also shares the Memory
-primitive's scope model (`agent`/`user`/`run`, tenant-keyed), so it belongs with
+primitive's scope model (`agent`/`user`/`run`/`tenant`, tenant-keyed), so it belongs with
 it conceptually. If real consumer feedback shows the combined tool schema hurts
 discoverability, a thin `Sql` alias can be added later — it is not built
 speculatively now.
 
 ## Capability gate — default-deny `sql_scopes`
 
-SQL Memory is **off** unless the operator enables the subsystem *and* the agent
-declares which scopes it may touch (the RFC W capability-gate pattern — having
-`Memory` in `tools` is **not** sufficient):
+SQL Memory is **off** unless the operator enables the subsystem; with it on, the
+agent's `sql_scopes` decides which scopes it may touch (the RFC W
+capability-gate pattern). Since v1.83 an agent that holds `Memory` and declares
+no `sql_scopes` resolves to `[user]` — the caller's own database, and only when
+the run carries a user id — where it used to have every SQL op refused. Set the
+list explicitly to widen or narrow, or `[-*]` to grant none:
 
 ```yaml
 # loomcycle.yaml
@@ -69,7 +73,7 @@ storage:
 agents:
   research-bot:
     tools: [Memory, Read, Grep]
-    sql_scopes: [agent, run]      # closed enum {agent,user,run,tenant}; empty => every SQL op refuses
+    sql_scopes: [agent, run]      # closed enum {agent,user,run,tenant}; unset => [user]; [-*] => every SQL op refuses
     sql_quota_bytes: 52428800     # optional per-agent override of the global quota
 ```
 
