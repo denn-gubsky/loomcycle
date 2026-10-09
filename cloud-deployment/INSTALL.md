@@ -271,7 +271,8 @@ the order; the notes after it are what changed underneath you.
    - remove `LOOMCYCLE_OLLAMA_LOCAL_NUM_CTX` and `LOOMCYCLE_OLLAMA_LOCAL_NUM_GPU`
      (the YAML sets them now, and the YAML wins);
    - remove `LOOMCYCLE_SCHEDULER_FIRE_TIMEOUT_SECONDS` if present (no longer read);
-   - set `SANDBOX_IMAGE` to the `1.108.0` tag.
+   - set `SANDBOX_IMAGE` to the `1.108.0` tag (the compose file sets the value the
+     sidecar uses; this line only keeps the env file in step).
    In `.env.secure`, add `GEMINI_API_KEY` if you want the Gemini candidates, and
    `OLLAMA_API_KEY` for the hosted-Ollama alias. A provider with no key is skipped.
    If `pgdata` is still mounted at `/var/lib/postgresql/data`, leave your working
@@ -323,17 +324,107 @@ What changed, for this stack:
 
 ## Routine upgrades
 
-Bump the image tags in `docker-compose.yaml`, then `make pull && make up`. If the
-new version bumped the schema, `loomcycle-migrate` re-runs automatically on the
-next `up`.
+The image versions and the loomboard ref are variables in `docker-compose.yaml`:
 
-- A **minor** release (`x.y.0`): bump all four tags together — the two
-  `loomcycle-browser` tags, `loomcycle-builder-docker`, and `SANDBOX_IMAGE`.
-- A **patch** release (`x.y.1`): bump only the two `loomcycle-browser` tags. The
-  sidecar and the session image are published on minor releases only.
+| Variable | Sets | Default in the compose file |
+|---|---|---|
+| `LOOMCYCLE_VERSION` | the two `loomcycle-browser` tags (runtime and migration) | the release this directory was written for |
+| `LOOMCYCLE_SIDECAR_VERSION` | `loomcycle-builder-docker` and the sandbox session image | the last minor release |
+| `LOOMBOARD_REF` | the loomboard release tag the hosted board is built from | `v0.3.1` |
+
+Put them in a `versions.env` file next to the compose file; the Makefile passes it
+when it exists. Then `make pull && make up`. If the new version bumped the schema,
+`loomcycle-migrate` re-runs automatically on the next `up`.
+
+- A **minor** release (`x.y.0`): move `LOOMCYCLE_VERSION` and
+  `LOOMCYCLE_SIDECAR_VERSION` together.
+- A **patch** release (`x.y.1`): move only `LOOMCYCLE_VERSION`. The sidecar and the
+  session image are published on minor releases only.
 
 Read the release's notes in `REVISIONS.md` first; a jump across several minors
 needs the steps in the section above.
+
+## Automatic deploys
+
+`deploy/loomcycle-cloud-deploy` deploys one release and checks the result. A
+scheduled CI job calls it over SSH with a key that can do nothing else.
+
+```
+GitHub: tag vX.Y.Z --> images published
+                              ^
+Gitea runner, every 10 min:   | reads the newest release tags (public, no token)
+   ssh deploy-key@host "deploy loomcycle X.Y.Z" / "deploy loomboard vX.Y.Z"
+                              |
+host: loomcycle-cloud-deploy --+--> backup, pull, up, check /healthz
+```
+
+Why a poll from Gitea: the host is reachable from the Gitea runner and not from
+GitHub's runners, and a poll needs no credential on GitHub.
+
+**What the key can do.** Its `authorized_keys` entry forces the script, and the
+script treats what the caller sends as a request:
+
+- the only requests are `deploy loomcycle <X.Y.Z>`, `deploy loomboard <vX.Y.Z>` and
+  `status`;
+- the tag must exist in the project's GitHub repository;
+- it must not be older than what is deployed;
+- for loomcycle, the `loomcycle-browser` image of that version must be published;
+  until it is, the script answers "not published yet" and the next run tries again.
+
+So the key deploys a published release and nothing else. The deploy account can run
+Docker, which is root on the host: whoever can push a release tag to either
+repository decides what runs here.
+
+**What a loomcycle deploy does:**
+
+1. dumps both databases and copies the compose file, the config and `versions.env`
+   to `~/work/loomcycle-cloud-deploy/backups/` (the last 10 are kept);
+2. copies this directory and `cloud-web/` from the release over the stack's files,
+   when the release carries this script. `.env.insecure`, `.env.secure`,
+   `versions.env`, the data directories and files the repository does not hold are
+   left alone. **`config/loomcycle.yaml` and `docker-compose.yaml` on the host are
+   overwritten**, so change them in the repository, not on the host;
+3. writes the new versions, pulls, and runs `up -d --build` (the migration runs
+   first, as on any `up`);
+4. waits up to three minutes for `/healthz` to report the new version. If it does
+   not, the compose file, the config and the versions are put back and the stack is
+   started again, and the job fails. **The databases are not restored
+   automatically**: a migration that already ran stays applied, and the dumps from
+   step 1 are there for a manual restore.
+
+A loomboard deploy rebuilds the `loomboard` image from the tag and restarts that one
+service, and puts the previous tag back if the new one does not answer.
+
+**Setup, once:**
+
+1. On the host, install the script and create `versions.env` with what is running:
+   ```bash
+   mkdir -p ~/work/loomcycle-cloud-deploy/bin
+   install -m 755 deploy/loomcycle-cloud-deploy ~/work/loomcycle-cloud-deploy/bin/
+   printf 'LOOMCYCLE_VERSION=1.108.1\nLOOMCYCLE_SIDECAR_VERSION=1.108.0\nLOOMBOARD_REF=v0.3.1\n' > versions.env
+   ~/work/loomcycle-cloud-deploy/bin/loomcycle-cloud-deploy status
+   ```
+2. A key pair for CI (`ssh-keygen -t ed25519 -N "" -f ~/work/loomcycle-cloud-deploy/ci_deploy`).
+   Its public half goes into `~/.ssh/authorized_keys` as one line:
+   ```
+   command="/home/<user>/work/loomcycle-cloud-deploy/bin/loomcycle-cloud-deploy",restrict ssh-ed25519 AAAA... gitea-loomcycle-cloud-deploy
+   ```
+3. On the Gitea server, a repository holding `deploy/gitea-deploy.yml` as
+   `.gitea/workflows/deploy.yml`, with Actions enabled. In its Settings → Actions:
+   - secret **`DEPLOY_SSH_KEY`**: the private key (then delete it from the host);
+   - variables **`DEPLOY_HOST`** (an address the runner reaches), **`DEPLOY_USER`**
+     and **`DEPLOY_KNOWN_HOSTS`** (`ssh-keyscan -t ed25519 <host>`, after checking
+     the fingerprint against the host's own key).
+4. Run the workflow once by hand. With nothing new it reports "already deployed"
+   twice.
+
+Without the secret and `DEPLOY_HOST` the job reports "not configured" and passes.
+When the script changes, install it again (step 1): the host's copy is not updated
+by a deploy.
+
+By hand on the host, the same requests work as arguments:
+`loomcycle-cloud-deploy deploy loomcycle 1.109.0`. Logs are in
+`~/work/loomcycle-cloud-deploy/logs/`.
 
 ---
 

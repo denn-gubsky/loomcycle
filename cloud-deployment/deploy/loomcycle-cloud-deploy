@@ -1,0 +1,196 @@
+#!/bin/sh
+# Deploys a loomcycle or loomboard RELEASE to this stack. It is the forced command
+# of the CI deploy key (INSTALL.md, "Automatic deploys"): installed once on the
+# host and named in authorized_keys as
+#   command="/home/<user>/work/loomcycle-cloud-deploy/bin/loomcycle-cloud-deploy",restrict ssh-ed25519 AAAA... gitea-loomcycle-cloud-deploy
+#
+# The caller sends one of
+#   deploy loomcycle <X.Y.Z>
+#   deploy loomboard <vX.Y.Z>
+#   status
+# and nothing else is accepted. What the caller names is only a REQUEST:
+#   - the version must be a plain release number;
+#   - the tag must exist in the project's public repository;
+#   - it must not be older than what is deployed (no downgrade);
+#   - for loomcycle, its image must already be published.
+# So the key can deploy a published release and nothing more: not a branch, not
+# an unreleased commit, not a command. One deploy at a time.
+#
+# This file is COPIED to the host, not run from a checkout: the entry point a key
+# is bound to must not change with what is being deployed. Install it again when
+# it changes.
+set -eu
+# The backups are database dumps and the logs carry deploy output: both stay
+# readable by the deploy account only.
+umask 077
+
+base="${LOOMCYCLE_CLOUD_DEPLOY_HOME:-$HOME/work/loomcycle-cloud-deploy}"
+stack="${LOOMCYCLE_CLOUD_STACK:-$HOME/work/loomcycle-cloud}"
+lc_repo="https://github.com/denn-gubsky/loomcycle.git"
+lb_repo="https://github.com/denn-gubsky/loomboard.git"
+hub="denngubsky"
+keep_backups=10
+
+usage="expected 'deploy loomcycle <X.Y.Z>', 'deploy loomboard <vX.Y.Z>' or 'status'"
+refuse() { echo "refused: $*" >&2; exit 1; }
+
+# Under the forced command sshd runs this file with no arguments and puts what the
+# caller sent in SSH_ORIGINAL_COMMAND. A session that sends nothing therefore has
+# no request and is refused below. Run by hand on the host, the arguments are the
+# request.
+if [ -n "${SSH_ORIGINAL_COMMAND:-}" ]; then
+  set -f  # the words are split, never expanded as file patterns
+  # shellcheck disable=SC2086
+  set -- $SSH_ORIGINAL_COMMAND
+  set +f
+fi
+
+is_version() { expr "$1" : '[0-9][0-9]*\.[0-9][0-9]*\.[0-9][0-9]*$' >/dev/null; }
+
+mkdir -p "$base/logs" "$base/backups"
+chmod 700 "$base/logs" "$base/backups"
+exec 9>"$base/deploy.lock"
+flock -w 1800 9
+
+cd "$stack"
+versions="$stack/versions.env"
+[ -f "$versions" ] || refuse "$versions is missing; create it first (INSTALL.md)"
+current() { sed -n "s/^$1=//p" "$versions" | head -1; }
+compose() {
+  docker compose --env-file .env.insecure --env-file .env.secure --env-file versions.env "$@"
+}
+# newer A B: A is a strictly later version than B.
+newer() { [ "$1" != "$2" ] && [ "$(printf '%s\n%s\n' "$1" "$2" | sort -V | tail -1)" = "$1" ]; }
+published() { docker manifest inspect "$1" >/dev/null 2>&1; }
+write_versions() { # runtime sidecar loomboard
+  cp "$versions" "$versions.prev"
+  printf 'LOOMCYCLE_VERSION=%s\nLOOMCYCLE_SIDECAR_VERSION=%s\nLOOMBOARD_REF=%s\n' "$1" "$2" "$3" > "$versions.new"
+  mv "$versions.new" "$versions"
+}
+health() { compose exec -T tailscale wget -qO- http://127.0.0.1:8787/healthz 2>/dev/null || true; }
+
+# The two deploys below run as the condition of an `if`, where `set -e` does not
+# apply. Every step that must stop the deploy says so with `|| return 1`.
+
+deploy_loomcycle() { # have want sidecar
+  echo "==> loomcycle $1 -> $2 (sidecar $3)"
+  bk="$base/backups/$(date +%Y%m%d-%H%M%S)-pre-$2"
+  mkdir -p "$bk" || return 1
+  compose exec -T postgres pg_dump -U loomcycle -Fc loomcycle > "$bk/loomcycle.dump" || return 1
+  compose exec -T postgres pg_dump -U loomcycle -Fc loomcycle_sqlmem > "$bk/loomcycle_sqlmem.dump" || return 1
+  cp docker-compose.yaml versions.env "$bk/" || return 1
+  cp -r config "$bk/config" || return 1
+
+  # The deployment's own files come from the release, when the release carries
+  # this automation. The host keeps its env files, its data and anything the
+  # repository does not hold.
+  src="$base/repo"
+  [ -d "$src/.git" ] || git init --quiet "$src" || return 1
+  git -C "$src" fetch --quiet --depth 1 "$lc_repo" "refs/tags/v$2" || return 1
+  git -C "$src" checkout --quiet --force --detach FETCH_HEAD || return 1
+  if [ -f "$src/cloud-deployment/deploy/loomcycle-cloud-deploy" ]; then
+    rsync -a --exclude .env.insecure --exclude .env.secure --exclude 'versions.env*' \
+      "$src/cloud-deployment/" "$stack/" || return 1
+    rsync -a "$src/cloud-web/" "$stack/web/" || return 1
+    echo "synced the deployment files from v$2"
+  else
+    echo "v$2 predates the deploy automation: deployment files left as they are"
+  fi
+
+  write_versions "$2" "$3" "$(current LOOMBOARD_REF)" || return 1
+  ok=0
+  if compose config -q && compose pull --quiet loomcycle loomcycle-migrate builder-sidecar \
+     && docker pull --quiet "$hub/loomcycle-sandbox-session:$3" >/dev/null \
+     && compose up -d --build; then
+    i=0
+    while [ $i -lt 45 ]; do
+      case "$(health)" in *"\"version\":\"$2\""*) ok=1; break;; esac
+      i=$((i + 1)); sleep 4
+    done
+  fi
+  if [ "$ok" -ne 1 ]; then
+    echo "FAILED: the runtime did not report $2; restoring $1"
+    cp "$bk/docker-compose.yaml" docker-compose.yaml
+    cp "$bk/versions.env" versions.env
+    rm -rf config && cp -r "$bk/config" config
+    compose up -d
+    echo "restored the compose file, the config and the versions of $1."
+    echo "The databases were NOT restored; the dumps taken before the deploy are in $bk"
+    return 1
+  fi
+  ls -1d "$base"/backups/*/ 2>/dev/null | sort | head -n -"$keep_backups" | xargs -r rm -rf
+  compose ps --format '{{.Name}} {{.Image}} {{.Status}}'
+  echo "==> deployed loomcycle $2"
+}
+
+deploy_loomboard() { # have want
+  echo "==> loomboard $1 -> $2"
+  write_versions "$(current LOOMCYCLE_VERSION)" "$(current LOOMCYCLE_SIDECAR_VERSION)" "$2" || return 1
+  ok=0
+  if compose build loomboard && compose up -d loomboard; then
+    i=0
+    while [ $i -lt 15 ]; do
+      if compose exec -T loomboard wget -qO- http://127.0.0.1:8080/ >/dev/null 2>&1; then ok=1; break; fi
+      i=$((i + 1)); sleep 2
+    done
+  fi
+  if [ "$ok" -ne 1 ]; then
+    echo "FAILED: loomboard $2 did not build or does not answer; restoring $1"
+    cp "$versions.prev" "$versions"
+    compose up -d --build loomboard
+    return 1
+  fi
+  echo "==> deployed loomboard $2"
+}
+
+# Runs one deploy with its output kept in a log, shows the log, and exits with
+# the deploy's own status.
+run_logged() { # log-name command...
+  log="$base/logs/deploy-$(date +%Y%m%d-%H%M%S)-$1.log"; shift
+  if "$@" > "$log" 2>&1; then cat "$log"; else cat "$log"; exit 1; fi
+}
+
+case "${1:-}" in
+status)
+  [ $# -eq 1 ] || refuse "$usage"
+  cat "$versions"
+  echo "healthz: $(health)"
+  exit 0;;
+deploy) ;;
+*) refuse "$usage";;
+esac
+[ $# -eq 3 ] || refuse "$usage"
+what="$2"; want="$3"
+
+case "$what" in
+loomcycle)
+  is_version "$want" || refuse "$usage"
+  have="$(current LOOMCYCLE_VERSION)"
+  if [ "$want" = "$have" ]; then echo "loomcycle $have is already deployed"; exit 0; fi
+  newer "$want" "$have" || refuse "loomcycle $want is older than the deployed $have"
+  git ls-remote --exit-code --tags "$lc_repo" "refs/tags/v$want" >/dev/null 2>&1 \
+    || refuse "loomcycle has no release tag v$want"
+  if ! published "$hub/loomcycle-browser:$want"; then
+    echo "skipped: $hub/loomcycle-browser:$want is not published yet"
+    exit 0
+  fi
+  # A patch release publishes only the runtime image. The sidecar and the session
+  # image move when both exist at this version, and stay where they are otherwise.
+  sidecar="$(current LOOMCYCLE_SIDECAR_VERSION)"
+  if published "$hub/loomcycle-builder-docker:$want" && published "$hub/loomcycle-sandbox-session:$want"; then
+    sidecar="$want"
+  fi
+  run_logged loomcycle deploy_loomcycle "$have" "$want" "$sidecar"
+  ;;
+loomboard)
+  case "$want" in v*) ;; *) refuse "$usage";; esac
+  is_version "${want#v}" || refuse "$usage"
+  have="$(current LOOMBOARD_REF)"
+  if [ "$want" = "$have" ]; then echo "loomboard $have is already deployed"; exit 0; fi
+  newer "${want#v}" "${have#v}" || refuse "loomboard $want is older than the deployed $have"
+  git ls-remote --exit-code --tags "$lb_repo" "refs/tags/$want" >/dev/null 2>&1 \
+    || refuse "loomboard has no release tag $want"
+  run_logged loomboard deploy_loomboard "$have" "$want"
+  ;;
+*) refuse "$usage";;
+esac

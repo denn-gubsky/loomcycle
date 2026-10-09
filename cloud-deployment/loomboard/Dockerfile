@@ -8,8 +8,8 @@
 #
 # The serving stage reuses the node:22 build image so hosting needs NO extra
 # registry pull (Docker Hub anonymous pulls rate-limit this host; caddy:2-alpine
-# 429'd). Bump LOOMBOARD_REF to a tag / `main` once the connect-handoff PR merges.
-ARG LOOMBOARD_REF=feature-connect-handoff
+# 429'd). LOOMBOARD_REF is a loomboard release tag; docker-compose.yaml passes it.
+ARG LOOMBOARD_REF=v0.3.1
 ARG CONNECT_ORIGINS=https://loomcycle.cloud
 
 FROM node:22 AS build
