@@ -119,9 +119,20 @@ agents:
     tools: !append [Decision]
     decision: { default: decide, models: [decide] }
 
+  # The memory agents read tenants' chat transcripts. They run from a schedule,
+  # under the `default` user tier, whose cascade would otherwise carry a
+  # transcript to DeepSeek, Gemini, OpenAI or Anthropic whenever the local model
+  # is busy or failing, whatever the tenant's own tier allows. Pinning their
+  # provider list keeps that text on the local Ollama. If it is down they fail,
+  # and the queue waits for the next run.
+  memory/extractor:      { providers: [ollama-local] }
+  memory/judge:          { providers: [ollama-local] }
+  memory/conflict-judge: { providers: [ollama-local] }
+  memory/ontologist:     { providers: [ollama-local] }
+
 # Without this the memory bundle's consolidator stays off, and what agents add
 # to memory is queued and never becomes durable. Runs hourly (the bundle's
-# schedule), on the middle tier.
+# schedule). Its model calls are the memory agents above: local only.
 scheduled_runs:
   memory-consolidation:
     enabled: true
