@@ -8,6 +8,59 @@ Each entry is the release's tag annotation, so the tag and this file cannot disa
 
 For the **public roadmap**, see [`docs/PLAN.md`](docs/PLAN.md).
 
+## What's in v1.108.0
+
+*The person who runs a team can now see and release what the team wrote to **its own channels**. A channel a team declares for itself was readable only by the team's agents; every channel call refused it. Three calls addressed by team and the channel's local name now cover it — **list** (with counts), **peek** and **release** — on HTTP, gRPC, MCP and both clients. Several guides and help articles that disagreed with the code are corrected.*
+
+A minor release: #1705 to #1709.
+- #1705 and #1706 are the operator's view of a team's own channels;
+- #1708 fixes a config error message;
+- #1707 and #1709 are documentation.
+
+### A team's own channels, seen from outside the team (#1705, #1706)
+
+A team can declare channels of its own under `local.channels`. They are stored under a name nothing may address, so `list_channels` never showed them and every peek refused them as not declared. An operator could not see what a team had written, how much was waiting or what was held. A channel declared with `hold: true` was worse: only an agent of the team with a publish grant could release it, so a team whose writers are its states, a schedule or a webhook held everything it wrote for good.
+
+Three calls now address such a channel by **the team and the name the team gave it**:
+
+| | List | Peek | Release |
+|---|---|---|---|
+| HTTP | `GET /v1/_teamdef/{team}/channels` | `GET /v1/_teamdef/{team}/channels/{name}/peek` | `POST /v1/_teamdef/{team}/channels/{name}/release` |
+| MCP | `list_team_channels` | `peek_team_channel` | `release_team_channel` |
+| gRPC | `ListTeamChannels` | `PeekTeamChannel` | `ReleaseTeamChannel` |
+| TypeScript | `listTeamChannels()` | `peekTeamChannel()` | `releaseTeamChannel()` |
+| Python | `list_team_channels()` | `peek_team_channel()` | `release_team_channel()` |
+
+- **List** returns each channel's settings, which version of the team declares it (`declared_in`: `active`, `inactive` or `retired`, with `def_id` and `version`) and its counts: `message_count`, `held_count`, `awaiting_hooks_count`, and the oldest and newest visible message times. A channel only a retired version declares is still listed and readable.
+- **Peek** returns messages and consumes nothing, so the team still reads every one. `from_cursor` and `max_messages` work as on the existing channel peek. Held messages are counted by the list, not shown.
+- **Release** delivers the oldest held messages and answers `released` (message ids), `released_count` and `still_held`. `count` defaults to 1 and is capped at 1000. With nothing held it releases nothing and says so. It works whether or not the active version still declares `hold`, and it wakes readers waiting on the channel. The HTTP body refuses unknown keys.
+- **Tenant and user.** The team is resolved in the caller's tenant; another tenant's team is the same `team_not_found` as one that does not exist. A user-scoped channel is read and released in the caller's own keyspace. `user_id` names another user for an admin; anyone else gets the same `team_channel_not_declared` as for a channel the team does not have. The list's counts for a user-scoped channel are summed over the tenant's users.
+- **Scopes.** A `substrate:tenant` token may make all three calls. A member token also needs `channel:read` to list or peek and `channel:publish` to release, on HTTP and MCP, as the existing channel calls ask.
+- The stored name stays unaddressable everywhere. There is no publish, ack or purge of a team's own channel from outside the team.
+
+### Smaller changes
+
+- The config-load error for an unknown `memory_scopes` value now lists `tenant` with `agent` and `user` (#1708).
+- The MCP `path` tool's description said `mkdir` is a no-op; it creates an empty directory (#1707).
+
+### Documentation (#1707, #1709)
+
+The guides were checked against the source and against the document store they are exported from.
+
+- `docs/CONFIGURATION.md`: `fallback_on_error` has no default; an unknown `user_tier` is refused with 400; unset scope grants resolve to the caller's own data; the config-load error table carries the real messages.
+- `docs/MCP_SERVER.md`: which token may call which tool, and the tools added since v0.33.0.
+- `docs/MULTI-REPLICA.md`: the variables and routes it names now exist.
+- `docs/CLAUDE-CODE.md`: the plugin is a thin client.
+- `docs/DOCUMENTS.md` gains "Search: indexing, re-indexing and reranking".
+- `docs/SQL_MEMORY.md`, `docs/MEMORY-BACKENDS.md`, `docs/ARCHITECTURE.md`, `docs/MCP_INTEGRATION.md`, `docs/POSTGRES.md`, `docs/PLAN.md` and three help articles are corrected.
+- `.env.insecure.example` drops three variables no code reads.
+
+### Upgrade notes
+
+- **No schema migration.**
+- **Additive on the wire:** three HTTP routes, three RPCs, three MCP tools. Nothing existing changes.
+- **Clients:** `@loomcycle/client` 1.108.0 and the Python client 1.108.0 add the three team-channel methods.
+
 ## What's in v1.107.0
 
 *An agent, a code body or an outside caller can now ask a **decision model** typed questions — pick one option, yes or no, a position on a scale — and get each answer with probabilities instead of text. It is the **`Decision`** tool inside a run, **`POST /v1/_decide`**, the gRPC **`Decide`** RPC and the MCP **`decision`** tool, with `decide()` in the TypeScript and Python clients. A `models:` alias can now say what kind of model it is (**`kind: chat | decision | embedder`**), so a model cannot be wired where it cannot serve. An MCP session is now held to the scopes its token was granted.*
