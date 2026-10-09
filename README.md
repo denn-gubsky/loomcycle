@@ -182,7 +182,15 @@ been primitives plus hardening: memory, documents, teams, sandboxing, retention
 and erasure. The agentic-memory subsystem and the document surfaces built on it
 remain the main direction.
 
-The most recent line (v1.107.0) adds decision models as a general capability:
+The most recent line (v1.108.0) lets the person who runs a team see and release
+what the team wrote to its own channels. A channel a team declares for itself
+was readable only by the team's agents; three calls addressed by team and the
+channel's local name now list those channels with their counts, peek at one
+without consuming anything, and release what a held channel is holding. They
+are on HTTP, gRPC and MCP and in both clients. Several guides that disagreed
+with the code are corrected.
+
+Before it, v1.107.0 added decision models as a general capability:
 an agent, a code body or an outside caller asks typed questions (pick one
 option, yes or no, a position on a scale) and gets each answer with
 probabilities instead of text. It is the `Decision` tool inside a run,
@@ -192,7 +200,7 @@ A `models:` alias can say what kind of model it is (`kind: chat | decision |
 embedder`), and an MCP session is now held to the scopes its token was granted.
 See [`docs/DECISION-MODELS.md`](docs/DECISION-MODELS.md).
 
-Before it, v1.106.0 made starting a run safe to retry: a request
+Earlier, v1.106.0 made starting a run safe to retry: a request
 with an `idempotency_key` that a run already holds starts nothing and is
 answered with that run. Any run can carry a lifetime limit of its own,
 `max_wall_seconds`, a detached run included, and ends `cancelled` with stop
