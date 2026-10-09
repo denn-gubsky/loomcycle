@@ -46,6 +46,11 @@ It has three modes:
 - `review`, `review_ttl_seconds` — states whose member runs are held for a
   person's verdict when they finish, and the deadline on each hold.
 
+- `idempotency_key` — makes the start safe to retry: 1 to 200 characters of
+  `A-Z a-z 0-9 : . _ -`. A second run with the same key, from the same tenant
+  and user, starts nothing and is answered with the walk the key holds. Not
+  with `board_chunk_id` or `mode: "poll"`.
+
 ## Returns
 
 Wait mode: `{name, def_id, run_id, status: "completed", final_state,
@@ -59,9 +64,17 @@ or cap question, or a member held for review — shows it as `held`.
 
 Detach mode: `{name, def_id, run_id, status: "running"}`.
 
+A key a walk already holds: `{name, def_id, run_id, status, deduplicated:
+true}` for that walk, at once and in either mode, with `final_state` and
+`final_output` once it has ended. No `steps`.
+
 ## Errors
 
 - `run: team not found` — no active version of that name in your tenant.
+- `run: idempotency_key must match [A-Za-z0-9:._-]{1,200}` — send a key in
+  that form, or leave it out.
+- `run: idempotency_key does not apply to ...` — a board-bound walk and a
+  poll-mode walk take no key.
 - `run: unknown mode ...` — `mode` is `poll` or `detach`, or omitted.
 - `mode "poll" is not available in this run` — poll mode needs an agent's run
   to be a child of; from outside one, wait or detach.

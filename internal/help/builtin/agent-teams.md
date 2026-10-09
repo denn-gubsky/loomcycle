@@ -731,6 +731,14 @@ by moving `status` from one state to the next per the transitions. (See the
   per-state `max_iterations` cap. The walk is a run: its result holds
   `final_text` (the last state's output) and `terminal`, the end state the walk
   reached — absent when it failed or was cancelled.
+  **Retrying a start.** `run` takes `idempotency_key` (1 to 200 characters of
+  `A-Z a-z 0-9 : . _ -`). A second `run` with the same key, from the same
+  tenant and user, starts nothing: it is answered with the walk the key holds,
+  marked `deduplicated: true`, with its `run_id` and `status`, and its
+  `final_state` and `final_output` once it has ended. Use it when a start's
+  answer may be lost (a detached walk's `run_id` is in that answer and nowhere
+  else). A retry is answered at once, never waits for the walk, and carries no
+  `steps`. Not with `board_chunk_id` or `mode: "poll"`.
 - **The `team/orchestrator` agent** — an LLM **team lead** and the human's
   contact point. Run it interactively: it reads the TeamDef as its map, drives
   the Document board (moving `status`, spawning each state's handler), decides

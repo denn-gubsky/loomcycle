@@ -2862,7 +2862,12 @@ export interface TeamRunResult {
   capped_state?: string;
   max_iterations?: number;
   iteration_count?: number;
+  /** The per-state trace. Absent when `deduplicated` is set. */
   steps: TeamRunStep[];
+  /** Set (true) when the request's `idempotencyKey` was already held: nothing
+   *  was started, and this is the walk that holds it, as it is now — `status`
+   *  may be "running", and there are no `steps`. */
+  deduplicated?: boolean;
   [extra: string]: unknown;
 }
 
@@ -2915,6 +2920,21 @@ export interface TeamRunTarget {
    *  seconds as rejected. Omit for no deadline. Changeable while the walk
    *  runs — see {@link LoomcycleClient.setRunBreakpoints}. */
   reviewTtlSeconds?: number;
+  /** Makes starting this walk safe to retry: 1 to 200 characters of
+   *  `[A-Za-z0-9:._-]`. A second `runTeam` with the same key, from the same
+   *  tenant and user, starts nothing and is answered with the walk the key
+   *  already holds, marked `deduplicated: true`.
+   *
+   *  Use one key per press of Start and send it again on a retry of that
+   *  press: a start whose answer was lost then returns the walk it started,
+   *  not a second one. The rest of the request is not compared.
+   *
+   *  The answer to a retry is the walk's `run_id` and `status`, plus
+   *  `final_state` and `final_output` once it has ended. It is returned at
+   *  once in every mode (a retry does not wait for a walk still running), and
+   *  it has no `steps`: read the walk's member runs for those. Refused with
+   *  `boardChunkId`, which already resumes a stored position. */
+  idempotencyKey?: string;
 }
 
 /** What {@link LoomcycleClient.runTeam} returns for `mode: "detach"` — the
@@ -2929,8 +2949,12 @@ export interface TeamRunDetached {
   def_id: string;
   /** Address every other run surface with this. */
   run_id: string;
-  /** Always "running" — the walk has been started, not awaited. */
+  /** "running" for a walk this call started. For a retry answered from an
+   *  `idempotencyKey`, the walk's status now, which may be an ended one. */
   status: string;
+  /** Set (true) when the request's `idempotencyKey` was already held: nothing
+   *  was started, and this is the walk that holds it. */
+  deduplicated?: boolean;
   [extra: string]: unknown;
 }
 
