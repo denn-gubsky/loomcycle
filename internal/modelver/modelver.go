@@ -21,6 +21,8 @@
 // snapshot of its generation → bareIsNewer=true).
 package modelver
 
+import "strings"
+
 // vector tokenizes a model id into its ordered numeric components. An
 // Ollama-style ":tag" suffix ("qwen3.6:latest") is stripped first; then every
 // maximal run of ASCII digits becomes one int and all non-digit separators
@@ -126,8 +128,16 @@ func Compare(a, b string, bareIsNewer bool) int {
 //     (RFC BG "narrow the glob or pin").
 //
 // A single id — even a digit-less one — is always returned (a unique glob match
-// needs no ranking). Ties among version-comparable ids (identical vectors) break
-// by lexical order (greatest wins) for deterministic selection.
+// needs no ranking).
+//
+// Ties among version-comparable ids (identical vectors) are two models of the
+// same version, which the numbers cannot order:
+//   - when one id is the other plus a suffix, the SHORTER one wins: it is the
+//     model, and the longer one a variant of it. "gemini-*-pro*" matches both
+//     gemini-3.1-pro-preview and gemini-3.1-pro-preview-customtools, and
+//     lexical order alone picked the variant.
+//   - otherwise lexical order decides (greatest wins), so the choice is
+//     deterministic: qwen3.8:latest over qwen3.8:27b.
 func Newest(ids []string, bareIsNewer bool) (string, bool) {
 	switch len(ids) {
 	case 0:
@@ -137,7 +147,7 @@ func Newest(ids []string, bareIsNewer bool) (string, bool) {
 	}
 	best := ids[0]
 	for _, id := range ids[1:] {
-		if c := Compare(id, best, bareIsNewer); c > 0 || (c == 0 && id > best) {
+		if c := Compare(id, best, bareIsNewer); c > 0 || (c == 0 && winsTie(id, best)) {
 			best = id
 		}
 	}
@@ -148,4 +158,18 @@ func Newest(ids []string, bareIsNewer bool) (string, bool) {
 		return "", false
 	}
 	return best, true
+}
+
+// winsTie reports whether id beats best when both have the same version
+// vector: a base id beats its own suffixed variant, else the lexically greater
+// id wins.
+func winsTie(id, best string) bool {
+	switch {
+	case strings.HasPrefix(best, id):
+		return true // id is the base of best
+	case strings.HasPrefix(id, best):
+		return false // id is a variant of best
+	default:
+		return id > best
+	}
 }
