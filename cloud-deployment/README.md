@@ -27,10 +27,10 @@ compose network `loomnet`:
 | Service | Image | Role |
 |---|---|---|
 | `postgres` | `pgvector/pgvector:pg18` | Main store (`loomcycle`) + SQL-Memory aux (`loomcycle_sqlmem`). |
-| `loomcycle-migrate` | `denngubsky/loomcycle:1.38.0` | One-shot `migrate up` on the main db, then exits. |
+| `loomcycle-migrate` | `denngubsky/loomcycle-browser:1.108.0` | One-shot `migrate up` on the main db, then exits. Same image and tag as the runtime. |
 | `tailscale` | `tailscale/tailscale` | Kernel-mode egress to the tailnet; **owns the netns loomcycle shares**. |
-| `builder-sidecar` | `denngubsky/loomcycle-builder-docker:1.25.2` | Sandboxed code exec (`mcp__sandbox__*`) via the host Docker socket. |
-| `loomcycle` | `denngubsky/loomcycle:1.38.0` | The runtime. `network_mode: service:tailscale`. |
+| `builder-sidecar` | `denngubsky/loomcycle-builder-docker:1.108.0` | Sandboxed code exec (`mcp__sandbox__*`) via the host Docker socket. |
+| `loomcycle` | `denngubsky/loomcycle-browser:1.108.0` | The runtime, with the PinchTab MCP client binary. `network_mode: service:tailscale`. |
 | `searxng` | `searxng/searxng` | Keyless search backend (wired via `config/loomcycle.yaml`). |
 | `landing` | Node (`./landing`, built) | Serves `cloud-web/`, proxies the public reads `/healthz` + `/v1/config` (inner links), and mints `substrate:tenant` tokens behind Cloudflare Access. |
 | `cloudflared` | `cloudflare/cloudflared` | Outbound tunnel; routes managed in the Cloudflare dashboard (token method). |
@@ -91,7 +91,9 @@ Two env files on the host:
 The `Makefile` passes **both** to `docker compose --env-file` so `${VAR}`
 interpolation resolves. **Secrets are scoped**: `loomcycle`/`migrate` get only
 their own secrets via explicit `${VAR}`; each sidecar reads just its one secret.
-SearXNG is wired in `config/loomcycle.yaml` (not env).
+SearXNG is wired in `config/loomcycle.yaml` (not env), and so are the model
+aliases, tiers, the memory embedder and reranker, and the decision models. That
+file is kept in step with the TrueNAS deployment, which shares the Ollama host.
 
 ## Security posture (read before exposing publicly)
 
@@ -115,8 +117,9 @@ SearXNG is wired in `config/loomcycle.yaml` (not env).
 # on cloud-home.local, from the deploy directory (e.g. /home/denn/work/loomcycle-cloud)
 cp .env.insecure.example .env.insecure     # edit: OLLAMA_BASE_URL, CF_ACCESS_*, …
 # create .env.secure from the template in INSTALL.md, then:  chmod 600 .env.secure
-mkdir -p data work pgdata ts-state web retention-exports
+mkdir -p data work pgdata ts-state web retention-exports pinchtab-data
 sudo chown -R 65532:65532 data work retention-exports
+sudo chown -R 1000:1000 pinchtab-data    # the pinchtab container runs as uid 1000
 cp -r /path/to/loomcycle/cloud-web/* web/  # the landing static files
 make up && make ps
 ```
