@@ -7,10 +7,10 @@ RFC I MR-4 adds a **pluggable backend** seam so the same `Memory` tool can
 route somewhere else, per agent, without any agent prompt change.
 
 This page covers the backend model and the `MemoryBackendDef` schema.
-**One backend kind ships today — `inprocess`.** The seam is what stays
-documented: it is the extension point an external backend would land on,
-and it is what makes the routing, the substrate, and the per-agent
-`memory_backend:` field meaningful.
+**Two backend kinds ship today — `inprocess` (the default) and `remote`, a
+peer loomcycle instance.** The seam is what stays documented: it is the
+extension point any further backend would land on, and it is what makes the
+routing, the substrate, and the per-agent `memory_backend:` field meaningful.
 
 ## Why pluggable backends (and why not a memory subsystem)
 
@@ -440,6 +440,8 @@ broken ad-hoc harness before anyone read the actual request. A run whose canary
 trips has no interpretable numbers, so it publishes none, and
 `--update-baseline` refuses to record them.
 
+**Scope.** The abilities scored are the ones the extractor owns. Multi-session synthesis — combining facts across chats — is retrieval's job and the consolidator's merge step, not a single-transcript component's, so it is deliberately absent rather than measured against the wrong thing.
+
 ## Observability
 
 Each `memory.search` emits an OTEL span, `loomcycle.memory.search`, whose
@@ -484,10 +486,14 @@ span.
 
 ## When to use which
 
-**in-process** — the default, and currently the only kind. Lowest latency,
+**in-process** — the default. Lowest latency,
 no external dependency, full per-scope isolation, native to the
 single-binary deployment, and (since the memory layer landed natively) it
 serves `add` / `recall` as well as the six key/value ops.
+
+**remote** — when memory should be shared or centralized across loomcycle
+instances. The six key/value ops proxy to the peer, which embeds server-side;
+see `kind: remote` above.
 
 Naming a backend explicitly via `memory_backend:` is still worth doing when
 you want the routing to be *declared* rather than implicit — the name resolves

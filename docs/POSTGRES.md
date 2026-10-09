@@ -80,6 +80,12 @@ changes outside the migration set. To recover, install pgvector and then
 either restore from a dump into a database migrated in the right order, or
 apply the `0062` DDL by hand (see the migration file for the exact statements).
 
+> Before v1.33.0 this state did not degrade — it was **fatal**. `Open()` closed
+> the pool and refused to start, advising the operator to "re-run
+> `loomcycle migrate up`", which by the above can never re-apply `0017`. So on
+> an already-migrated database, `CREATE EXTENSION vector` was an outage trigger.
+> If you are on an earlier build, upgrade before installing the extension.
+
 ## Schema migrations
 
 Migrations are embedded in the binary via `golang-migrate/migrate v4`. Two policies:

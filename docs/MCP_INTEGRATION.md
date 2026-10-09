@@ -102,9 +102,9 @@ Content-Type: application/json
 }
 ```
 
-The `user_bearer` field is **optional**. Validation lives in `validUserBearer()` at `internal/api/http/server.go:2838` — accepted format is `[A-Za-z0-9._\-+/=]{16,512}`, which covers JWT base64url alphabets and most opaque token schemes. Empty is allowed for back-compat (callers with static-bearer-only configs need no change).
+The `user_bearer` field is **optional**. Validation lives in `validUserBearer()` in `internal/api/http/server.go` — accepted format is `[A-Za-z0-9._\-+/=]{16,512}`, which covers JWT base64url alphabets and most opaque token schemes. Empty is allowed for back-compat (callers with static-bearer-only configs need no change).
 
-The wire field is defined on `runRequest` at `internal/api/http/server.go:1233`. A parallel field exists on `messagesRequest` for `/v1/messages/{session_id}` continuations at `:1589` — same shape, same validation.
+The wire field is defined on `runRequest` in `internal/api/http/server.go`. A parallel field exists on `messagesRequest` for `/v1/messages/{session_id}` continuations in the same file — same shape, same validation.
 
 The `LOOMCYCLE_AUTH_TOKEN` header is loomcycle's own auth (operator-managed). It's **independent** of `user_bearer`: the operator token authorizes the app server to talk to loomcycle; the `user_bearer` is what loomcycle forwards to YOUR MCP server. Two different trust boundaries.
 
@@ -113,23 +113,25 @@ The `LOOMCYCLE_AUTH_TOKEN` header is loomcycle's own auth (operator-managed). It
 At run start, the HTTP handler builds a `tools.RunIdentityValue` and stitches it into the loop's ctx:
 
 ```go
-loopCtx = tools.WithRunIdentity(loopCtx, tools.RunIdentityValue{
+rid := tools.RunIdentityValue{
     UserID:     effectiveUserID,
     AgentID:    agentID,
     UserTier:   in.UserTier,
     UserBearer: in.UserBearer,      // v0.8.x: per-run MCP bearer
-})
+    // … tenant, session, credentials and the other identity fields
+}
+loopCtx = tools.WithRunIdentity(loopCtx, rid)
 ```
 
-— `internal/api/http/server.go:810`
+— `(*Server).RunOnce` in `internal/api/http/server.go` (abridged)
 
-The `RunIdentityValue` struct lives at `internal/tools/tool.go:163` and carries five fields: `UserID`, `AgentID`, `UserTier`, `AgentDefID`, `UserBearer`. The getter is `tools.RunIdentity(ctx) → RunIdentityValue` at `:203`. Any tool downstream — including the MCP HTTP client — can recover these by calling `tools.RunIdentity(ctx)`.
+The `RunIdentityValue` struct lives in `internal/tools/tool.go` and carries the run's identity fields, among them `UserID`, `AgentID`, `UserTier`, `AgentDefID` and `UserBearer`. The getter is `tools.RunIdentity(ctx) → RunIdentityValue` in the same file. Any tool downstream — including the MCP HTTP client — can recover these by calling `tools.RunIdentity(ctx)`.
 
-The setter fires from **four places** (mirroring the four CreateRun sites in `server.go`): `handleRuns`, `handleMessages` continuation, `RunOnce` (the agent-runner entry), and `runSubAgent` (the Agent-tool spawn path). All four read `UserBearer` from the request body and attach it identically.
+A run's bearer is attached at **four places** in `server.go`: `handleRuns`, `handleMessages` continuation, `RunOnce` (the agent-runner entry), and `prepareSubRunValues` (the sub-run path, which the Agent tool reaches through `runSubRun`). The first three read `UserBearer` from the request; the sub-run path copies it from the parent's identity. A run resumed after a pause or a snapshot restore is re-stamped **without** a bearer, because per-run secrets are never persisted.
 
 ### 2.3 Agent loop runs
 
-The agent loop iterates `model → tool_use → tool_result → model` against the LLM provider. When the LLM emits an `EventToolCall` with `tu.Name = "mcp__jobs__getAgentContext"`, the loop dispatches it through the tool dispatcher (`internal/loop/loop.go` around `:830`). The dispatcher looks the name up in its registry, finds the MCP tool wrapper, and calls its `Execute(ctx, input) → tools.Result`.
+The agent loop iterates `model → tool_use → tool_result → model` against the LLM provider. When the LLM emits an `EventToolCall` with `tu.Name = "mcp__jobs__getAgentContext"`, the loop dispatches it through the tool dispatcher (`executePendingTools` in `internal/loop/loop.go`). The dispatcher looks the name up in its registry, finds the MCP tool wrapper, and calls its `Execute(ctx, input) → tools.Result`.
 
 Critically, the same `ctx` that the loop received from the HTTP handler (with `RunIdentityValue` attached) flows straight into the tool. No re-wrapping, no copying. The MCP client below recovers `UserBearer` from this ctx at request-build time.
 
@@ -152,24 +154,29 @@ Authorization: Bearer <substituted-from-${run.user_bearer}>
 }
 ```
 
-The `Accept` header lists **both** JSON and SSE — strict servers (e.g., the official `@modelcontextprotocol/sdk`'s `WebStandardStreamableHTTPServerTransport`) return HTTP 406 otherwise. This was a v0.4.x hardening point. Loomcycle parses whichever the server replies with (`internal/tools/mcp/http/client.go:140`, `extractSSEData` at `:263`).
+The `Accept` header lists **both** JSON and SSE — strict servers (e.g., the official `@modelcontextprotocol/sdk`'s `WebStandardStreamableHTTPServerTransport`) return HTTP 406 otherwise. This was a v0.4.x hardening point. Loomcycle parses whichever the server replies with (`(*Client).Call` and `extractSSEData` in `internal/tools/mcp/http/client.go`).
 
-The per-request header construction is at `client.go:204–244`. The substitution loop:
+The per-request header construction is in `(*Client).do` in `client.go`. The substitution loop:
 
 ```go
 runIdent := tools.RunIdentity(ctx)
+refuseUnresolved := tools.HasRunIdentity(ctx)
 for k, v := range c.headers {
     subV, drop := substituteRunVars(v, runIdent.UserBearer)
     if drop {
-        log.Printf("mcp http: ${run.user_bearer} unresolved for header %q on %q (agent_id=%s, bearer=%s); dropping header",
-            k, c.url, runIdent.AgentID, tokenPrefix(runIdent.UserBearer))
+        log.Printf("mcp http: ${run.user_bearer} unresolved for header %q on %q (agent_id=%s, bearer=%s); %s",
+            k, c.url, runIdent.AgentID, tokenPrefix(runIdent.UserBearer), unresolvedAction(refuseUnresolved))
+        if refuseUnresolved {
+            return nil, fmt.Errorf("header %q needs ${run.user_bearer}, which this run does not carry: %w", k, tools.ErrRunCredentialUnavailable)
+        }
         continue
     }
+    // … ${run.credentials.<name>}, $cred:<name> and run-id substitution
     req.Header.Set(k, subV)
 }
 ```
 
-— `client.go:227–237`
+— `(*Client).do` in `client.go` (abridged)
 
 Three properties to notice:
 
@@ -183,11 +190,11 @@ Three properties to notice:
 
    **Only when a run made the call.** The same code path serves loomcycle's boot-time enumeration handshake, which has no run on its context — there, "this run does not carry the credential" describes nothing, so the header is dropped and a WARN is logged exactly as before. Otherwise every static server using a per-run credential would fail to enumerate at startup, before any run exists. The operator log distinguishes the two (`refusing the call` vs `dropping header (no run on this request)`).
 
-3. **The log line uses `tokenPrefix()`** (`internal/tools/mcp/http/substitute.go:61`) — only the first 4 chars + ellipsis. **Full tokens are never logged**, even on the WARN path. This is the only place a bearer touches logs.
+3. **The log line uses `tokenPrefix()`** (in `internal/tools/mcp/http/substitute.go`) — only the first 4 chars + ellipsis. **Full tokens are never logged**, even on the WARN path. This is the only place a bearer touches logs.
 
 ### 2.5 MCP server responds
 
-Your MCP server processes the call and replies. Two valid shapes (`client.go:99–162`):
+Your MCP server processes the call and replies. Two valid shapes (both parsed in `(*Client).Call` in `client.go`):
 
 **JSON-RPC** (200/202 with `Content-Type: application/json`):
 
@@ -208,25 +215,25 @@ data: {"jsonrpc":"2.0","id":"...","result":{"content":[{"type":"text","text":"..
 
 Loomcycle's `extractSSEData()` peels off the `data:` prefix and parses the embedded JSON. Servers that conform to the Streamable HTTP spec pick per-request based on response shape; loomcycle handles either. The bare JSON shape is fine for short responses; SSE is useful when the server wants to stream progress events back (loomcycle currently only consumes the final `result` frame, but the transport is open for future streaming).
 
-**Session id**: the server may include `Mcp-Session-Id: <id>` in the initial `initialize` response. Loomcycle captures it (`client.go:107`) and echoes it on every subsequent request. If the server returns **404** mid-session (`client.go:118`), loomcycle marks the client dead (`c.dead=true`) and the pool evicts it; the next call to the same server triggers a fresh handshake.
+**Session id**: the server may include `Mcp-Session-Id: <id>` in the initial `initialize` response. Loomcycle captures it (in `(*Client).Call`) and echoes it on every subsequent request. If the server returns **404** mid-session (same function), loomcycle marks the client dead (`c.dead`) and the pool evicts it; the next call to the same server triggers a fresh handshake.
 
 ### 2.6 Loop folds result back into the conversation
 
-The MCP tool wrapper returns `tools.Result{Text, IsError}` to the dispatcher. The loop's `executePendingTools` collects all in-flight tool results, emits an `EventToolResult` event for each (`internal/loop/loop.go:844`), and assembles them into `tool_result` content blocks for the next provider call:
+The MCP tool wrapper returns `tools.Result{Text, IsError}` to the dispatcher. The loop's `executePendingTools` collects all in-flight tool results, emits an `EventToolResult` event for each (in `internal/loop/loop.go`), and assembles them into `tool_result` content blocks for the next provider call:
 
 ```go
 results[r.idx] = providers.ContentBlock{
     Type:      "tool_result",
     ToolUseID: r.tu.ID,
     ToolName:  r.tu.Name,
-    Text:      r.res.Text,
+    Text:      text,           // renderToolResultText(r.res)
     IsError:   r.res.IsError,
 }
 ```
 
-— `loop.go:856`
+— `executePendingTools` in `loop.go`
 
-The next turn's request to the LLM includes these blocks, and the model produces its next assistant turn. The event also persists to the `events` table for transcript replay and the Web UI's run-detail view. Nothing strips or rewrites the result text on the way in — the MCP server's response body is what the model sees.
+The next turn's request to the LLM includes these blocks, and the model produces its next assistant turn. The event also persists to the `events` table for transcript replay and the Web UI's run-detail view. A successful result's text is passed through unchanged — the MCP server's response body is what the model sees. An error result is rendered by `renderToolResultText` as a structured error carrying its category and retry guidance.
 
 ---
 
@@ -249,7 +256,7 @@ Both work in any header value, anywhere in operator yaml:
 | `${run.user_bearer}` | **Call refused.** Nothing is sent. Logged at WARN with a 4-char token prefix; the model sees a `business` / not-retryable tool error naming what is missing. |
 | `${run.user_bearer:-FALLBACK}` | Replaces with the literal text `FALLBACK`. Useful for static-token fallback during rollout. |
 
-Both forms work inline anywhere in a header value, not just as the whole value. So `"Authorization: Bearer ${run.user_bearer}"` and `"X-Custom-Header: prefix-${run.user_bearer}-suffix"` both work. The matcher is the regex at `internal/tools/mcp/http/substitute.go:19`:
+Both forms work inline anywhere in a header value, not just as the whole value. So `"Authorization: Bearer ${run.user_bearer}"` and `"X-Custom-Header: prefix-${run.user_bearer}-suffix"` both work. The matcher is the regex `runBearerRe` in `internal/tools/mcp/http/substitute.go`:
 
 ```go
 var runBearerRe = regexp.MustCompile(`\$\{run\.user_bearer(?::-(.*?))?\}`)
@@ -315,19 +322,21 @@ To break this property a developer would have to either:
 
 ### Sub-agent inheritance
 
-When an agent calls the `Agent` built-in to spawn a sub-agent, the parent's `RunIdentityValue` is propagated **verbatim** to the child:
+When an agent calls the `Agent` built-in to spawn a sub-agent, the child's `RunIdentityValue` is built from the parent's, and the bearer is carried over **unchanged**:
 
 ```go
-subCtx = tools.WithRunIdentity(subCtx, tools.RunIdentityValue{
+subRID := tools.RunIdentityValue{
     UserID:     parentIdentity.UserID,
     AgentID:    subAgentID,                    // fresh child ID
     UserTier:   parentIdentity.UserTier,       // same end-user tier
     AgentDefID: defID,                         // pinned by parent
     UserBearer: parentIdentity.UserBearer,     // same end-user bearer
-})
+    // … tenant, credentials and the other inherited fields
+}
+subCtx = tools.WithRunIdentity(subCtx, subRID)
 ```
 
-— `internal/api/http/server.go:2324–2330`
+— `(*Server).prepareSubRunValues` in `internal/api/http/server.go` (abridged)
 
 The sub-agent acts on behalf of the same end-user. When the sub-agent's loop calls an MCP tool, the substitution in `Client.do` reads its ctx and gets the parent's bearer — automatically, no re-wiring. Sub-agent trees of arbitrary depth all share the originating user's bearer.
 
@@ -450,7 +459,7 @@ mcp_servers:
     tools: [patchApplication, getAgentContext]
 ```
 
-Restart loomcycle. At startup, loomcycle's pool (`internal/tools/mcp/pool.go:46`) connects, runs `initialize` + `tools/list`, applies `tools` if set, and registers each tool as `mcp__myapi__<toolName>`. The `mcp__server__tool` naming is at `pool.go:293`; `sanitiseServerName` (`:343`) handles edge cases like spaces in server names.
+Restart loomcycle. At startup, loomcycle's pool (`(*Pool).Get` in `internal/tools/mcp/pool.go`) connects, runs `initialize` + `tools/list`, applies `tools` if set, and registers each tool as `mcp__myapi__<toolName>`. The `mcp__server__tool` naming is `(*mcpTool).Name` in `pool.go`; `sanitiseServerName` (same file) handles edge cases like spaces in server names.
 
 ### Step 5: Allow the tools per agent
 
@@ -485,8 +494,8 @@ POST /v1/runs
 | Symptom | Cause | What to do |
 |---|---|---|
 | Model sees tool error "authentication failed" or HTTP 401 | bearer is stale/invalid | refresh on the caller side; pass a fresh `user_bearer` |
-| Loomcycle log: `mcp http: ${run.user_bearer} unresolved for header...` | caller forgot to pass `user_bearer` and you used the strict form | either pass the bearer or switch yaml to the `:-FALLBACK` form |
-| MCP server tool not in registry at boot | server unreachable at startup; loomcycle logged "skipped" | first agent call that needs the tool triggers lazy retry (`internal/tools/mcp/lazy.go:60–182`) — peer restarts no longer require a loomcycle restart (v0.8.1+) |
+| Loomcycle log: `mcp http: ${run.user_bearer} unresolved for header...` | the header uses the strict form and no bearer was available. A line ending `refusing the call` is a run that carried no `user_bearer`: nothing was sent, and the model saw a `business` / not-retryable tool error. A line ending `dropping header (no run on this request)` is the boot-time enumeration handshake, which has no run and sends its request without that header | for a refused call, either pass the bearer or switch yaml to the `:-FALLBACK` form; the dropped-header line is expected at boot for a server whose headers use a per-run credential |
+| MCP server tool not in registry at boot | server unreachable at startup; loomcycle logged "skipped" | first agent call that needs the tool triggers lazy retry (`(*LazyResolver).Resolve` in `internal/tools/mcp/lazy.go`) — peer restarts no longer require a loomcycle restart (v0.8.1+) |
 | All MCP calls error mid-session with 404 | server invalidated the session; loomcycle marks the client dead | next call triggers a fresh handshake automatically — no action needed |
 | Operator yaml `tools` filter excludes a tool | name mismatch | tool names are case-sensitive; check the server's `tools/list` output |
 
@@ -553,27 +562,27 @@ The MCP layer is essentially invisible: the same bearer that authorizes the user
 
 ## 8. Code path index
 
-Single jump-list of every file:line cited above, for readers who want to trace any claim back to source. As of v0.8.16 (post-PR-#116):
+Single jump-list of the code behind the claims above, for readers who want to trace any claim back to source. Each entry names a symbol and its file, with no line number, because line numbers drift: search the file for the symbol.
 
 | What | Where |
 |---|---|
-| `runRequest.UserBearer` field | `internal/api/http/server.go:1233` |
-| `messagesRequest.UserBearer` field | `internal/api/http/server.go:1589` |
-| `validUserBearer()` validator | `internal/api/http/server.go:2838` |
-| `WithRunIdentity` call at `handleRuns` | `internal/api/http/server.go:1506` |
-| `WithRunIdentity` call at `RunOnce` | `internal/api/http/server.go:810` |
-| `WithRunIdentity` call at `handleMessages` | `internal/api/http/server.go:1803` |
-| `WithRunIdentity` call at `runSubAgent` | `internal/api/http/server.go:2324` |
-| `tools.RunIdentityValue` struct definition | `internal/tools/tool.go:163` |
-| `tools.WithRunIdentity` setter | `internal/tools/tool.go:195` |
-| `tools.RunIdentity` getter | `internal/tools/tool.go:203` |
-| MCP HTTP `Client.do()` substitution loop | `internal/tools/mcp/http/client.go:204–244` |
-| `substituteRunVars()` engine | `internal/tools/mcp/http/substitute.go:39` |
-| Substitution regex (`${run.user_bearer}` + fallback form) | `internal/tools/mcp/http/substitute.go:19` |
-| `tokenPrefix()` log redactor | `internal/tools/mcp/http/substitute.go:61` |
-| MCP tool naming (`mcp__server__tool`) | `internal/tools/mcp/pool.go:293` |
-| `sanitiseServerName()` | `internal/tools/mcp/pool.go:343` |
-| Pool startup + handshake | `internal/tools/mcp/pool.go:46–158` |
-| Lazy retry resolver (cold-server recovery) | `internal/tools/mcp/lazy.go:60–182` |
-| Tool result event emit | `internal/loop/loop.go:844` |
-| Tool result content-block assembly | `internal/loop/loop.go:856` |
+| `runRequest.UserBearer` field | `runRequest` in `internal/api/http/server.go` |
+| `messagesRequest.UserBearer` field | `messagesRequest` in `internal/api/http/server.go` |
+| `validUserBearer()` validator | `validUserBearer` in `internal/api/http/server.go` |
+| `WithRunIdentity` call at `handleRuns` | `(*Server).handleRuns` in `internal/api/http/server.go` |
+| `WithRunIdentity` call at `RunOnce` | `(*Server).RunOnce` in `internal/api/http/server.go` |
+| `WithRunIdentity` call at `handleMessages` | `(*Server).handleMessages` in `internal/api/http/server.go` |
+| `WithRunIdentity` call for a sub-agent | `(*Server).prepareSubRunValues` in `internal/api/http/server.go` (the call moved out of `runSubAgent`) |
+| `tools.RunIdentityValue` struct definition | `RunIdentityValue` in `internal/tools/tool.go` |
+| `tools.WithRunIdentity` setter | `WithRunIdentity` in `internal/tools/tool.go` |
+| `tools.RunIdentity` getter | `RunIdentity` in `internal/tools/tool.go` |
+| MCP HTTP `Client.do()` substitution loop | `(*Client).do` in `internal/tools/mcp/http/client.go` |
+| `substituteRunVars()` engine | `substituteRunVars` in `internal/tools/mcp/http/substitute.go` |
+| Substitution regex (`${run.user_bearer}` + fallback form) | `runBearerRe` in `internal/tools/mcp/http/substitute.go` |
+| `tokenPrefix()` log redactor | `tokenPrefix` in `internal/tools/mcp/http/substitute.go` |
+| MCP tool naming (`mcp__server__tool`) | `(*mcpTool).Name` in `internal/tools/mcp/pool.go` |
+| `sanitiseServerName()` | `sanitiseServerName` in `internal/tools/mcp/pool.go` |
+| Pool startup + handshake | `(*Pool).Get`, `(*Pool).initEntry` and `(*Pool).GetWithRetry` in `internal/tools/mcp/pool.go` |
+| Lazy retry resolver (cold-server recovery) | `(*LazyResolver).Resolve` in `internal/tools/mcp/lazy.go` |
+| Tool result event emit | `executePendingTools` in `internal/loop/loop.go` |
+| Tool result content-block assembly | `executePendingTools` in `internal/loop/loop.go` |
