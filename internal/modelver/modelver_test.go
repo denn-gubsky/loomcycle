@@ -150,3 +150,32 @@ func TestNewest_Mixed(t *testing.T) {
 		})
 	}
 }
+
+// Two ids with the same version are a model and a variant of it. Lexical order
+// alone picked the variant: "gemini-*-pro*" resolved to
+// gemini-3.1-pro-preview-customtools on a live catalog, and a `gpt-*` glob
+// would land on gpt-5.4-mini. The base id wins; unrelated ids keep the lexical
+// tie-break.
+func TestNewest_BaseModelBeatsItsOwnVariantOnAVersionTie(t *testing.T) {
+	cases := []struct {
+		name string
+		ids  []string
+		want string
+	}{
+		{"gemini pro and its customtools variant",
+			[]string{"gemini-2.5-pro", "gemini-3.1-pro-preview-customtools", "gemini-3.1-pro-preview", "gemini-3-pro-preview"},
+			"gemini-3.1-pro-preview"},
+		{"the same, variant listed last",
+			[]string{"gemini-3.1-pro-preview", "gemini-3.1-pro-preview-customtools"},
+			"gemini-3.1-pro-preview"},
+		{"a flagship and its mini", []string{"gpt-5.4-mini", "gpt-5.4", "gpt-5.3"}, "gpt-5.4"},
+		{"a newer variant still beats an older base", []string{"gpt-5.4", "gpt-5.5-mini"}, "gpt-5.5-mini"},
+		{"unrelated tags keep the lexical tie-break", []string{"qwen3.8:27b", "qwen3.8:latest"}, "qwen3.8:latest"},
+	}
+	for _, tc := range cases {
+		got, ok := Newest(tc.ids, false)
+		if !ok || got != tc.want {
+			t.Errorf("%s: Newest(%v) = %q, %v; want %q", tc.name, tc.ids, got, ok, tc.want)
+		}
+	}
+}
