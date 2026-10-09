@@ -182,14 +182,22 @@ been primitives plus hardening: memory, documents, teams, sandboxing, retention
 and erasure. The agentic-memory subsystem and the document surfaces built on it
 remain the main direction.
 
-The most recent line (v1.108.1) is a patch with three provider fixes. A run on
+The most recent line (v1.109.0) lets a team graph ask a decision model directly.
+A state of kind `decision` asks typed questions, takes the transition the
+answer selects and binds the answers to team variables, with no agent run; a
+team that could never route on one of the answers is refused when it is saved.
+Starting a team walk is also safe to retry: an `idempotency_key` on a team run
+returns the walk already started. See
+[`docs/DECISION-MODELS.md`](docs/DECISION-MODELS.md).
+
+Before it, v1.108.1 was a patch with three provider fixes. A run on
 a DeepSeek thinking model no longer fails on its first call after a context
 compaction that happened in the middle of a turn. An agent with `effort: low`
 or no effort set no longer gets a 400 from `gemini-3.5-flash-lite` or
 `gemini-3.1-pro-preview`. A `model_pattern` alias that matches a model and a
 suffixed variant of the same version now resolves to the base model.
 
-Before it, v1.108.0 let the person who runs a team see and release
+Earlier, v1.108.0 let the person who runs a team see and release
 what the team wrote to its own channels. A channel a team declares for itself
 was readable only by the team's agents; three calls addressed by team and the
 channel's local name now list those channels with their counts, peek at one

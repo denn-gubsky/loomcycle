@@ -8,6 +8,88 @@ Each entry is the release's tag annotation, so the tag and this file cannot disa
 
 For the **public roadmap**, see [`docs/PLAN.md`](docs/PLAN.md).
 
+## What's in v1.109.0
+
+*A team graph can now **ask a decision model directly**: a state of kind `decision` asks typed questions, takes the transition the answer selects and binds the answers to team variables, with no agent run. A team that could never route on one of the answers is refused when it is saved. And **starting a team walk is safe to retry**: `idempotency_key` on a team run returns the walk already started.*
+
+A minor release: #1717 and #1718.
+- #1717 is the `decision` state;
+- #1718 is the idempotency key on a team run.
+
+### A `decision` state in a team graph (#1717)
+
+To route on a decision model, a team had to run an agent whose only job was to call the `Decision` tool and print a signal. That gave back the cost and latency a decision model exists to avoid, and hid the questions in a prompt or a code body where neither a reader nor `verify` could see them.
+
+A state of kind `decision` makes one call to a decision model and starts no agent run:
+
+```json
+{"state": "triage", "handler": {
+  "kind": "decision",
+  "about": {"ticket": "{{thread.output}}", "customer_tier": "${var.tier}"},
+  "questions": {
+    "route":  {"type": "choice", "instructions": "Which team should handle this ticket?",
+               "criteria": {"billing": "invoices, refunds", "support": "bugs, outages", "sales": "upgrades"}},
+    "urgent": {"type": "noul", "instructions": "Does this ticket need a reply within the hour?"}
+  },
+  "route": "route",
+  "capture": {"team": "$.answers.route.choice", "urgent": "$.answers.urgent.noul"}
+}}
+```
+
+- **`about`** is the JSON object the questions are about. Its string values, at any depth, take `${var.<name>}`, `${now.*}`, `${team.*}` and `{{thread.output}}` (what the previous state handed over). No other `{{…}}` placeholder is allowed there.
+- **`questions`** are the `Decision` tool's (`choice`, `noul`, `score`), checked by the same validator. **`model`** names one of the operator's decision models; omitted means the default.
+- **`route`** names the question that picks the transition. A `choice` takes `conditional:<option>`. A `noul` takes `conditional:true` when the probability of yes is at or above `threshold` (default 0.5), else `conditional:false`. A `score` cannot route. Without `route` the state advances on `success`.
+- **`success` is the "everything else" edge:** a routed answer with no transition of its own takes it.
+- **`capture`** reads the answer: `$.answers.<question>.choice`, `.noul`, `.score`, `.confidence`, `.probabilities.<option>`.
+- **The next state receives what the decision state was handed**, not the answer. The answer reaches later states through the variables it bound.
+- **A walk's step gains `answer`**, the model's answer as an object. `output` stays what the state handed on, as on every other kind.
+- **There is no confidence gate.** The probabilities are not calibrated. A team that wants one captures `confidence` and routes on it in a later state.
+- **A failed call fails the walk** at the state, with the model's code: `state "triage" handler: decision: timeout: …`. `timeout_ms` bounds the call.
+- **The call is charged to the walk's own run** and counts against its token budgets, as a `Decision` call inside a run does.
+
+**Refused when the team is saved,** each with the JSON path of the value at fault:
+
+- a routed answer with nowhere to go: every option of a routed `choice` needs a `conditional:<option>` transition, and a routed `noul` both `conditional:true` and `conditional:false`, unless the state has a `success` transition. The refusal names the option.
+- a `conditional:` transition for an answer the question cannot give, any `conditional:` transition from a state with no `route`, and a `pushback:` transition from a decision state;
+- a question that is not in the `Decision` tool's shape, with the tool's own code (`bad_question`, `bad_options`);
+- an agent, a prompt or hooks on the state, and the decision fields on a state of another kind.
+
+**Reported by `verify` and not refused,** so a team written on one deployment can be stored on another:
+
+| Issue kind | Meaning |
+|---|---|
+| `decision_unconfigured` | this deployment declares no decision models |
+| `decision_model_unknown` | `model` is not one the operator offers |
+| `decision_limits` | more questions or options than that model takes |
+
+**Who may write one.** A decision state reaches a model with no agent in between. An agent that authors a team must hold the `Decision` tool to give it a decision state, and may name only a model its own `decision` block allows; otherwise the save is refused as `decision_authority`. An operator is not narrowed. A state asks from the operator's list whoever starts the walk, as a team's member agents run under their own definitions.
+
+`@loomcycle/client` gains `TeamDecisionHandler`, `TeamDecisionQuestion`, `TeamDecisionAnswer` and `TeamRunStep`, which is now the element type of `TeamRunResult.steps`. The team diagram notes which question a decision state routes on. See [`docs/DECISION-MODELS.md`](docs/DECISION-MODELS.md).
+
+Not in this release: the answer while the walk is still running. A walk reports nothing per step until it ends, so a client sees a decision's answer on the finished walk's step.
+
+### Starting a team walk is safe to retry (#1718)
+
+A detached team walk answers `{run_id, status}` and runs on. If that answer was lost, the caller could not tell "never started" from "started", and starting again ran the whole team twice. A single run has had `idempotency_key` for this since v1.106.0; a team walk had none.
+
+`TeamDef op=run` now takes `idempotency_key`, with a run's grammar (1 to 200 characters of `[A-Za-z0-9:._-]`) and a run's owner (the caller's tenant and user):
+
+- **A second start with the key starts nothing.** It is answered with the walk that holds it: `name`, `def_id`, `run_id`, `status` and `deduplicated: true`, plus `final_state` and `final_output` once the walk has ended.
+- **The key is resolved before the team is read,** before admission and before any row exists. A retry costs nothing and is answered even if the team has since been retired or re-promoted.
+- **Two starts racing on one key** start one walk; the other is answered with it.
+- **A retry never waits.** A walk still running is answered at once as `running`, whether or not the retry asked to wait.
+- **A deduplicated answer has no `steps`.** The trace is built by the request that walks and is not stored; read the walk's member runs.
+- **A walk's key is held apart from a run's.** The same key may name an agent run and a team walk.
+- **Refused** with `board_chunk_id` (a board-bound walk resumes its stored position, so repeating it is already safe) and with `mode: "poll"`.
+
+It is a field of the `teamdef` tool, so HTTP, gRPC and MCP carry it. `@loomcycle/client` has `idempotencyKey` on `TeamRunTarget` and `deduplicated` on both results. The Python adapter passes the tool's input through, so `idempotency_key` works there unchanged.
+
+### Upgrade notes
+
+- **Nothing to migrate.** There is no schema change, and a definition without a decision state hashes as it did.
+- **`@loomcycle/client` 1.109.0:** `TeamRunResult.steps` is typed `TeamRunStep[]` where it was `Array<Record<string, unknown>>`. `TeamRunStep` keeps an index signature, so code reading other keys still compiles.
+- **Internal:** the decision question types and their validator moved to `internal/decisionq`; `internal/decision` keeps every name as an alias.
+
 ## What's in v1.108.1
 
 *Three provider fixes. A run on a DeepSeek thinking model failed on its first call after a context compaction that happened in the middle of a turn; it now continues. An agent with `effort: low`, or with no effort set, got a 400 from two Gemini 3 models; it now runs. A `model_pattern` alias could resolve to a suffixed variant of a model instead of the model itself.*
