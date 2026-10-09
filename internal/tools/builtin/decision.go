@@ -42,7 +42,7 @@ type Decision struct {
 	Service *decision.Service
 }
 
-// The codes this tool adds to the driver's (internal/decision/errors.go). Every
+// The codes this tool adds to the driver's (internal/decisionq). Every
 // failure's text starts "Decision: <code>: ", so a caller that parses results
 // (a code agent) can branch on the code without reading the sentence.
 const (

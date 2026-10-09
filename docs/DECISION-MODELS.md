@@ -152,6 +152,37 @@ agents:
 - Agents can read the full format with worked examples through `Context op=help topic=Decision`.
 - A decision call is not held back by a runtime pause.
 
+## In a team: the `decision` state
+
+A team graph can ask a decision model directly, with no agent in between. A state of kind `decision` makes one call, binds what was answered to team variables, and takes the transition one answer selects.
+
+```json
+{"state": "triage", "handler": {
+  "kind": "decision",
+  "model": "decide",
+  "about": {"ticket": "{{thread.output}}", "customer_tier": "${var.tier}"},
+  "questions": {
+    "route":  {"type": "choice", "instructions": "Which team should handle this ticket?",
+               "criteria": {"billing": "invoices, refunds", "support": "bugs, outages", "sales": "upgrades"}},
+    "urgent": {"type": "noul", "instructions": "Does this ticket need a reply within the hour?"}
+  },
+  "route": "route",
+  "capture": {"team": "$.answers.route.choice", "urgent": "$.answers.urgent.noul"}
+}}
+```
+
+- **`about`** is the request's `state`: the object the questions are about. Its string values take `${var.<name>}`, `${now.*}`, `${team.*}` and `{{thread.output}}`, the previous state's output. No other `{{…}}` placeholder is allowed in it.
+- **`questions`** and **`model`** are the request's, unchanged.
+- **`route`** names the question that picks the transition. A `choice` takes `conditional:<option>`; a `noul` takes `conditional:true` at or above `threshold` (default 0.5), else `conditional:false`; a `score` cannot route. Without `route` the state advances on `success`.
+- **Every routed answer needs a transition**, or the state needs a `success` transition to take the rest. A team with a routed answer that has nowhere to go is refused when it is saved.
+- **`capture`** binds variables from the answer: `$.answers.<question>.choice`, `.noul`, `.score`, `.confidence`, `.probabilities.<option>`.
+- **The next state receives what the decision state was handed**, not the answer. The walk's step carries the answer as `answer`.
+- **No confidence gate.** The probabilities are not calibrated (see "What it is measured to do"), so the state has none. Capture `confidence` and route on it in a later state if you want one.
+- **A failed call fails the walk** at that state with the code from "Limits and errors".
+- **The call is charged to the walk's own run.**
+- **Who may write one.** An agent that authors a team must hold the `Decision` tool to give it a decision state, and may name only a model its own `decision` block allows. An operator is not narrowed.
+- **`verify`** reports, without refusing the team: `decision_unconfigured` (no decision models on this deployment), `decision_model_unknown` (`model` is not one the operator offers) and `decision_limits` (more questions or options than that model takes).
+
 ## Who pays
 
 - **Inside a run:** the call's input and output tokens are charged to the run, and count against its token budgets.

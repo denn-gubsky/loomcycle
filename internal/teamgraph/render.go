@@ -63,6 +63,21 @@ func RenderMermaid(name string, d Definition, highlightState string) string {
 		}
 	}
 
+	// Decision-handler notes: which question picks the edge.
+	for _, s := range d.States {
+		h := s.Handler
+		if h.Kind != HandlerDecision {
+			continue
+		}
+		fmt.Fprintf(&b, "  note right of %s\n", mmSanitize(s.ID))
+		if h.Route != "" {
+			fmt.Fprintf(&b, "    decision: routes on %s\n", mmSanitize(h.Route))
+		} else {
+			b.WriteString("    decision\n")
+		}
+		b.WriteString("  end note\n")
+	}
+
 	// classDefs — one per distinct fill (first-appearance order) + the highlight
 	// variant of the highlighted state's fill.
 	writeClassDefs(&b, d, sc, highlightState)

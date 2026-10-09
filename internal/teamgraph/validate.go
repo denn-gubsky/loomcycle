@@ -135,6 +135,8 @@ func validateAll(out *issues, d Definition) {
 		}
 	}
 
+	validateDecisionEdges(out, d, states)
+
 	// Reachability: BFS from entry; every state must be reachable. Only from
 	// an entry that resolves — from none, every state would read unreachable.
 	if entryOK {
@@ -178,7 +180,7 @@ func validateAll(out *issues, d Definition) {
 func knownKind(k string) bool {
 	switch k {
 	case HandlerAgent, HandlerParallel, HandlerConsolidator, HandlerTerminal,
-		HandlerVars, HandlerInput, HandlerStarter, HandlerChannel:
+		HandlerVars, HandlerInput, HandlerStarter, HandlerChannel, HandlerDecision:
 		return true
 	}
 	return false
@@ -251,6 +253,8 @@ func validateHandler(out *issues, at stateAt, h Handler) {
 		if h.Source != nil {
 			out.in(at, "source", "team definition: state %q channel handler must not set `source` — reading a channel is a `starter`, not a `channel`", stateID)
 		}
+	case HandlerDecision:
+		validateDecision(out, at, h)
 	case HandlerTerminal:
 		if setsAgents {
 			out.in(at, agentFieldSet(h), "team definition: state %q terminal handler must not set agent/agents/consolidator", stateID)
@@ -261,7 +265,7 @@ func validateHandler(out *issues, at stateAt, h Handler) {
 		out.in(at, "kind", "team definition: state %q handler is missing a `kind`", stateID)
 		return
 	default:
-		out.in(at, "kind", "team definition: state %q has unknown handler kind %q (want agent|parallel|consolidator|terminal|vars|input|starter|channel)", stateID, h.Kind)
+		out.in(at, "kind", "team definition: state %q has unknown handler kind %q (want agent|parallel|consolidator|terminal|vars|input|starter|channel|decision)", stateID, h.Kind)
 		return
 	}
 	// The Starter's own fields belong to the Starter. Left on another kind they
@@ -297,6 +301,9 @@ func validateHandler(out *issues, at stateAt, h Handler) {
 	if h.Kind != HandlerInput && len(h.Schema) > 0 && !h.Source.IsInput() {
 		out.in(at, "schema", "team definition: state %q sets `schema` but is kind %q "+
 			"(an input state, or a starter whose source is the walk's input)", stateID, h.Kind)
+	}
+	if f := decisionFieldSet(h); f != "" && h.Kind != HandlerDecision {
+		out.in(at, f, "team definition: state %q sets `%s` but is kind %q (decision only)", stateID, f, h.Kind)
 	}
 	validatePublishing(out, at, h)
 	captureIssues(out, at, "capture", h.Capture)

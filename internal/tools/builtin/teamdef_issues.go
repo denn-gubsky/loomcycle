@@ -50,6 +50,15 @@ const (
 	teamIssueLocalWebhookInvalid    = "local_webhook_invalid"
 	// Members that resolve elsewhere.
 	teamIssueAgentMissing = "agent_missing"
+	// A decision state this deployment cannot run (see teamdef_decision.go):
+	// no decision models at all, a model the operator does not list, or more
+	// questions or options than the named model takes.
+	// A decision state its author may not write: an agent that does not hold
+	// the Decision tool, or a model its own narrowing excludes.
+	teamIssueDecisionAuthority    = "decision_authority"
+	teamIssueDecisionUnconfigured = "decision_unconfigured"
+	teamIssueDecisionModelUnknown = "decision_model_unknown"
+	teamIssueDecisionLimits       = "decision_limits"
 	// The server cannot make a check a save needs (a store fault, or no tool
 	// wired to judge a kind of local body). A save refuses rather than store
 	// what it could not check.
@@ -161,6 +170,7 @@ func (t *TeamDef) authoringIssues(ctx context.Context, op, team string, defJSON 
 	issues = append(issues, graphIssues(teamgraph.ValidateAll(def))...)
 	issues = append(issues, localChannelIssues(team, def)...)
 	issues = append(issues, teamChannelAuthorityIssues(ctx, def)...)
+	issues = append(issues, t.decisionAuthorityIssues(ctx, def)...)
 	issues = append(issues, localWebhookIssues(ctx, team, def)...)
 	issues = append(issues, t.preflightChannelIssues(ctx, def)...)
 	issues = append(issues, t.localSkillIssues(ctx, op, team, def)...)

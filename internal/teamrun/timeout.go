@@ -57,14 +57,14 @@ func (e *TimeoutError) Error() string {
 }
 
 // boundsWholeHandler reports whether timeout_ms bounds the handler as one
-// unit. A Starter bounds each run instead; the kinds that start no runs have
-// nothing to bound.
+// unit. A Starter bounds each run instead; of the kinds that start no runs
+// only a decision has something to bound, its one call to the model.
 func boundsWholeHandler(h teamgraph.Handler) bool {
 	if h.TimeoutMS <= 0 {
 		return false
 	}
 	switch h.Kind {
-	case teamgraph.HandlerAgent, teamgraph.HandlerParallel, teamgraph.HandlerConsolidator:
+	case teamgraph.HandlerAgent, teamgraph.HandlerParallel, teamgraph.HandlerConsolidator, teamgraph.HandlerDecision:
 		return true
 	}
 	return false

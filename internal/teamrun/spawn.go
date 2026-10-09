@@ -302,6 +302,9 @@ type agentRunner struct {
 	// pause says when the runtime is paused, so a state's timeout_ms stops
 	// for it (see timeout.go). nil = only holds stop the clock.
 	pause PauseSignal
+	// decide asks a decision model for a decision state. nil means such a
+	// state cannot run, refused at the state.
+	decide DecideFunc
 }
 
 // RunnerOption configures the production runner. Options rather than more
@@ -462,6 +465,9 @@ func (r *agentRunner) runHandler(ctx context.Context, st teamgraph.State, task *
 			return Outcome{}, fmt.Errorf("state %q publish %q: %w", st.ID, st.Handler.Channel, err)
 		}
 		return Outcome{Output: input}, nil
+
+	case teamgraph.HandlerDecision:
+		return r.runDecision(ctx, st, task, env)
 
 	case teamgraph.HandlerInput:
 		// The start form. Its schema is a contract for the CLIENT (and for a
