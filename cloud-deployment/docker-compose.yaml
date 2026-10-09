@@ -67,7 +67,7 @@ services:
   loomcycle-migrate:
     # Same image and tag as the runtime below, so one bump moves both and a patch
     # release's migrations are applied (a patch tag publishes only this image).
-    image: denngubsky/loomcycle-browser:1.108.0
+    image: denngubsky/loomcycle-browser:${LOOMCYCLE_VERSION:-1.108.1}
     command: ["migrate", "up"]
     restart: "no"
     user: "65532:65532"
@@ -117,12 +117,12 @@ services:
   # patch, keep the sidecar and the session image on the minor's x.y.0. Never
   # hand-push a single-arch build over a tag (a linux/amd64 host then can't pull it).
   builder-sidecar:
-    image: denngubsky/loomcycle-builder-docker:1.108.0
+    image: denngubsky/loomcycle-builder-docker:${LOOMCYCLE_SIDECAR_VERSION:-1.108.0}
     restart: unless-stopped
     networks: [loomnet]
     environment:
       SANDBOX_PODMAN_BIN: docker         # launch sessions as host-Docker siblings
-      SANDBOX_IMAGE: denngubsky/loomcycle-sandbox-session:1.108.0   # pinned with the sidecar, not :latest
+      SANDBOX_IMAGE: denngubsky/loomcycle-sandbox-session:${LOOMCYCLE_SIDECAR_VERSION:-1.108.0}   # pinned with the sidecar, not :latest
       SANDBOX_WORKSPACE_ROOT: /mnt/work  # per-session /work is tmpfs by default;
                                          # durable named workspaces need the same
                                          # HOST path here — see INSTALL.md.
@@ -149,7 +149,7 @@ services:
     # (0.15.0, matching the pinchtab sidecar below), so the runtime can spawn
     # `pinchtab … mcp` (stdio) against it. Published on every release tag, patch
     # tags included.
-    image: denngubsky/loomcycle-browser:1.108.0
+    image: denngubsky/loomcycle-browser:${LOOMCYCLE_VERSION:-1.108.1}
     restart: unless-stopped
     user: "65532:65532"
     network_mode: "service:tailscale"   # → reachable at http://tailscale:8787
@@ -283,7 +283,7 @@ services:
     build:
       context: ./loomboard
       args:
-        LOOMBOARD_REF: feature-connect-handoff
+        LOOMBOARD_REF: ${LOOMBOARD_REF:-v0.3.1}   # a loomboard release tag
         CONNECT_ORIGINS: https://loomcycle.cloud
     restart: unless-stopped
     networks: [loomnet]

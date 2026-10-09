@@ -1,6 +1,9 @@
 # Wrapper so you never have to remember the two --env-file flags (compose needs
 # both files for `${VAR}` interpolation). Run from the deployment directory.
-ENVFILES := --env-file .env.insecure --env-file .env.secure
+# versions.env is optional: it holds the image versions and the loomboard ref when
+# the deploy script manages them (deploy/loomcycle-cloud-deploy). Without it the
+# defaults in docker-compose.yaml apply.
+ENVFILES := --env-file .env.insecure --env-file .env.secure $(if $(wildcard versions.env),--env-file versions.env)
 COMPOSE  := docker compose $(ENVFILES)
 
 .PHONY: up down restart logs ps pull config migrate psql

@@ -1,0 +1,60 @@
+# Deploys new loomcycle and loomboard RELEASES to the cloud stack. It lives in a
+# small repository on the Gitea server as .gitea/workflows/deploy.yml: the stack's
+# host is reachable from the Gitea runner and not from GitHub, where both projects
+# are developed and released. See cloud-deployment/INSTALL.md, "Automatic deploys".
+#
+# Every run asks GitHub for each project's newest release tag and hands it to the
+# host. The host decides: it deploys a release that is newer than what it runs and
+# already published, and answers "already deployed" otherwise. So a run that finds
+# nothing new costs a few seconds and changes nothing.
+name: deploy
+
+on:
+  schedule:
+    - cron: "*/10 * * * *"
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    concurrency:
+      group: deploy
+      cancel-in-progress: false
+    steps:
+      - name: Deploy the newest releases
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_HOST: ${{ vars.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ vars.DEPLOY_USER }}
+          DEPLOY_KNOWN_HOSTS: ${{ vars.DEPLOY_KNOWN_HOSTS }}
+        run: |
+          if [ -z "$DEPLOY_SSH_KEY" ] || [ -z "$DEPLOY_HOST" ]; then echo "deploy is not configured: skipped"; exit 0; fi
+          if [ -z "$DEPLOY_KNOWN_HOSTS" ]; then echo "DEPLOY_KNOWN_HOSTS is not set: refusing an unverified host"; exit 1; fi
+          command -v ssh >/dev/null || { apt-get update -qq && apt-get install -y -qq openssh-client >/dev/null; }
+
+          # The newest tag of the form vX.Y.Z. Other tags (python-v*, explorer-v*,
+          # pre-releases) are not releases of the runtime or the board.
+          newest() {
+            git ls-remote --tags --refs "$1" 'v*' | sed 's#.*refs/tags/##' \
+              | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -1
+          }
+          lc="$(newest https://github.com/denn-gubsky/loomcycle.git)"
+          lb="$(newest https://github.com/denn-gubsky/loomboard.git)"
+          [ -n "$lc" ] && [ -n "$lb" ] || { echo "could not read the release tags from GitHub"; exit 1; }
+          echo "newest releases: loomcycle $lc, loomboard $lb"
+
+          umask 077
+          d="$(mktemp -d)"
+          trap 'rm -rf "$d"' EXIT
+          printf '%s\n' "$DEPLOY_SSH_KEY" > "$d/key"
+          printf '%s\n' "$DEPLOY_KNOWN_HOSTS" > "$d/known_hosts"
+          remote() {
+            ssh -i "$d/key" -o IdentitiesOnly=yes -o UserKnownHostsFile="$d/known_hosts" \
+                -o StrictHostKeyChecking=yes -o ConnectTimeout=20 -o ServerAliveInterval=30 \
+                "${DEPLOY_USER:-deploy}@$DEPLOY_HOST" "$1"
+          }
+          # Both are attempted, so a failed loomcycle deploy does not hold back the board.
+          rc=0
+          remote "deploy loomcycle ${lc#v}" || rc=1
+          remote "deploy loomboard $lb" || rc=1
+          exit $rc
