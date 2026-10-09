@@ -137,6 +137,27 @@ scheduled_runs:
   memory-consolidation:
     enabled: true
 
+# ─── Human-in-the-loop ────────────────────────────────────────────────
+interruption:
+  backend: webui                  # webui | mcp_server:<name> | cli
+  default_timeout_ms: 3600000     # 1h when an ask passes no timeout
+  max_timeout_ms: 86400000        # 24h ceiling
+  max_pending_per_run: 10
+  heartbeat_interval_ms: 30000
+
+# ─── Runtime ──────────────────────────────────────────────────────────
+concurrency:
+  max_concurrent_runs: 8
+  max_queue_depth: 16
+  queue_timeout_ms: 30000
+
+cache:
+  response_kv:
+    backend: memory
+    ttl: 5m
+  native:
+    enabled: true                 # honour Anthropic cache_control hints
+
 # ─── Web search ───────────────────────────────────────────────────────
 # SearXNG is wired here, NOT via env — there is no LOOMCYCLE_SEARCH_* var. The
 # base_url is the in-compose service name. `brave` is an optional paid fallback
