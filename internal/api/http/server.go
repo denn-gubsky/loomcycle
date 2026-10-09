@@ -1087,6 +1087,9 @@ func (s *Server) SetTeamDefTool(t tools.Tool) {
 		if td.Admit == nil {
 			td.Admit = s.admitTeamRun
 		}
+		if td.ExistingWalk == nil {
+			td.ExistingWalk = s.existingTeamWalk
+		}
 		if td.PauseSignal == nil {
 			td.PauseSignal = s // a state's timeout_ms stops while the runtime is paused
 		}

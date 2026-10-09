@@ -135,6 +135,18 @@ describe("runTeam", () => {
     expect("def_id" in body).toBe(false);
   });
 
+  it("sends idempotencyKey as idempotency_key and passes deduplicated through", async () => {
+    const { client, fetchMock } = makeClient([
+      jsonResponse({ name: "triage", def_id: "team_1", run_id: "r_1", status: "running", deduplicated: true }),
+    ]);
+    const res = await client.runTeam({ name: "triage", mode: "detach", idempotencyKey: "press-1" });
+    expect(res.run_id).toBe("r_1");
+    expect(res.deduplicated).toBe(true);
+    const body = JSON.parse((fetchMock.mock.calls[0]![1] as RequestInit).body as string);
+    expect(body.idempotency_key).toBe("press-1");
+    expect("idempotencyKey" in body).toBe(false);
+  });
+
   it("targets a specific version by def_id", async () => {
     const { client, fetchMock } = makeClient([
       jsonResponse({ name: "triage", def_id: "team_9", status: "completed", steps: [] }),

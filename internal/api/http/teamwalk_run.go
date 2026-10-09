@@ -2,9 +2,11 @@ package http
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
+	"net/url"
 	"strings"
 	"sync"
 	"time"
@@ -98,7 +100,20 @@ func (s *Server) openTeamWalkRun(ctx context.Context, spec builtin.WalkRunSpec) 
 	if trigger != nil {
 		identity.IdempotencyKey, identity.DeliveryAltKey = trigger.idempotencyKey, trigger.deliveryAltKey
 	}
+	// A caller's own key, for a start it made itself. A delivery's walk keeps
+	// the delivery's keys: op=run refuses a caller's key nowhere a trigger
+	// starts a walk, since a trigger sends none.
+	clientKey := spec.IdempotencyKey != "" && trigger == nil
+	if clientKey {
+		identity.IdempotencyKey = clientWalkKey(ident.TenantID, ident.UserID, spec.IdempotencyKey)
+	}
 	sessionID, runID, err := s.openOrCreateSessionAndRun(ctx, "", agent, ident.TenantID, ident.UserID, identity)
+	if clientKey && errors.Is(err, store.ErrDuplicateIdempotencyKey) {
+		// Another start with this key created its run first. (CreateSession
+		// ran before the refused CreateRun and leaves a session with no run,
+		// as a run's lost race does: it holds nothing and is never returned.)
+		return ctx, "", func(builtin.WalkEnd) {}, builtin.ErrWalkKeyHeld
+	}
 	if err != nil {
 		if trigger != nil {
 			trigger.openErr = err
@@ -308,4 +323,51 @@ func (s *Server) stopLocalWalk(runID, reason string) bool {
 	}
 	e.cancel(cancel.CauseWithReason(strings.TrimSpace(reason)))
 	return true
+}
+
+// clientWalkKey is what a caller's idempotency_key on a team walk is stored as
+// in runs.idempotency_key. Like clientRunKey it carries the tenant and user it
+// belongs to, so two callers using one key hold different rows. It has its own
+// prefix: a key a caller used for an agent run and uses again for a team walk
+// names two different things, and a walk's start must never be answered with
+// an agent run.
+func clientWalkKey(tenant, user, key string) string {
+	return "teamrun:" + url.QueryEscape(tenant) + ":" + url.QueryEscape(user) + ":" + key
+}
+
+// existingTeamWalk returns the walk that holds the caller's idempotency_key,
+// or nil. Wired into the TeamDef tool by SetTeamDefTool.
+//
+// What it returns hands the caller that walk's id and answer, so the row
+// passes the gate every other read of a run's content passes.
+func (s *Server) existingTeamWalk(ctx context.Context, key string, lostRace bool) (*builtin.ExistingWalk, error) {
+	if s.store == nil {
+		return nil, errors.New("idempotency_key requires a store")
+	}
+	ident := tools.RunIdentity(ctx)
+	stored := clientWalkKey(ident.TenantID, ident.UserID, key)
+	dup, err := s.runHoldingClientKey(ctx, stored, ident.TenantID, ident.UserID, lostRace)
+	if err != nil || dup == nil {
+		return nil, err
+	}
+	run, err := s.store.GetRun(context.WithoutCancel(ctx), dup.RunID)
+	if err != nil {
+		return nil, fmt.Errorf("the walk holding this idempotency_key could not be read: %w", err)
+	}
+	w := &builtin.ExistingWalk{
+		RunID:  run.ID,
+		Name:   strings.TrimPrefix(run.AgentID, teamWalkAgentPrefix),
+		Status: string(run.Status),
+	}
+	if rec, ok := decodeRunConfig(run.RunConfig); ok && rec.Team != nil {
+		w.Name, w.DefID = rec.Team.Name, rec.Team.DefID
+	}
+	if store.IsTerminalRunStatus(run.Status) {
+		w.Ended, w.StopReason, w.Error = true, run.StopReason, run.ErrorMsg
+		var rec runResultRecord
+		if len(run.Result) > 0 && json.Unmarshal(run.Result, &rec) == nil {
+			w.FinalText, w.Terminal = rec.FinalText, rec.Terminal
+		}
+	}
+	return w, nil
 }

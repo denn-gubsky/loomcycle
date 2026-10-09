@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/denn-gubsky/loomcycle/internal/connector"
 	"log"
 	"sort"
 	"strconv"
@@ -179,6 +180,14 @@ type TeamDef struct {
 	// already has a run id; a direct API call gets none, and its breakpoints
 	// are unaddressable — the behaviour before this existed).
 	WalkRun func(ctx context.Context, spec WalkRunSpec) (walkCtx context.Context, runID string, finish func(WalkEnd), err error)
+
+	// ExistingWalk, if set, returns the walk that holds a caller's
+	// idempotency_key for the caller on ctx, or nil when none does. lostRace
+	// is set when WalkRun has just been refused because the key is held: the
+	// holder's row may not be readable yet, so the lookup waits briefly.
+	// nil = an idempotency_key on op=run is refused: a key that is accepted
+	// and not held would let a retry start a second walk.
+	ExistingWalk func(ctx context.Context, key string, lostRace bool) (*ExistingWalk, error)
 
 	// ArmWalkTriggers starts what a walk carries that wakes it from inside
 	// the team — today the team's own schedules — on walkCtx, and returns
@@ -364,6 +373,7 @@ const teamDefInputSchema = `{
     "vars":           {"type": "object", "additionalProperties": {"type": "string"}, "description": "run (optional): values for this walk's variables, name → text, read by the team's prompts as ${var.<name>}. Only a name the team's definition declares in its vars is accepted; any other is refused before anything runs, with the declared names. A value given here replaces the team's default for this walk; a vars state, a capture or a starter's binds may still overwrite it as the walk runs. Literal text: never expanded, no {{ or }}, at most 4096 bytes."},
     "board_chunk_id": {"type": "string", "description": "run (optional): bind the walk to a Document chunk task board. Each state transition persists chunk.status = the current team state (durable progress), and a later run RESUMES from the persisted status. Omit for an ephemeral run (default)."},
     "board_scope":    {"type": "string", "enum": ["agent","user"], "description": "run (optional): the Document scope of board_chunk_id (default user)."},
+    "idempotency_key": {"type": "string", "description": "run (optional): makes starting this walk safe to retry. 1 to 200 characters of [A-Za-z0-9:._-]. A second run with the same key, from the same tenant and user, starts nothing and answers with the walk the key already holds, marked deduplicated: true — its run_id and status, and its final_state and final_output once it has ended. A retry of a walk still running is answered at once in every mode; it does not wait for the walk. The answer has no steps: read the walk's member runs for those. The rest of the request is not compared. Not with board_chunk_id (a board-bound walk resumes its stored position) or mode poll."},
     "interrupt_on_cap": {"type": "boolean", "description": "run (optional): when a state hits its iteration cap, ask a human (Interruption) whether to continue / reroute:<state> / abort instead of returning the iteration_cap outcome. An unanswered/timed-out/declined ask aborts (still terminates). Default false."},
     "mode":             {"type": "string", "enum": ["detach","poll"], "description": "run (optional): omit to wait for the walk and get its trace. \"detach\" returns {run_id, status:\"running\"} immediately and the walk continues in the background, outside your run — use it when you need a handle WHILE the walk runs, to arm a breakpoint, answer a pause, or watch progress. \"poll\" (inside an agent's run) returns {run_id, state:\"running\"} immediately and the walk runs as a background child of your run: you keep working, are told when it ends, read it with op=poll, and your run does not end while it is still running; it is cancelled with your run. Either way the response carries run_id."},
     "notify":           {"type": "boolean", "description": "run with mode poll (optional, default true): add a short note to your next turn when the walk ends. false = no note; you poll."},
@@ -414,6 +424,10 @@ type WalkRunSpec struct {
 	Review           []string
 	ReviewTTLSeconds int
 	InterruptOnCap   bool
+	// IdempotencyKey is the caller's idempotency_key, as sent; "" for none.
+	// WalkRun stores it on the walk's run so a second start with it finds
+	// this walk, and returns ErrWalkKeyHeld when another start already has.
+	IdempotencyKey string
 }
 
 // WalkEnd is how one op=run walk ended, as its run records it.
@@ -428,6 +442,26 @@ type WalkEnd struct {
 	// one.
 	Err error
 }
+
+// ExistingWalk is the walk a caller's idempotency_key already holds, read
+// from its run: what op=run answers a second start with instead of walking.
+type ExistingWalk struct {
+	RunID string
+	// Name and DefID are the team and the version that walk runs.
+	Name, DefID string
+	// Status is the run's: running, completed, failed, cancelled, …
+	Status string
+	// Ended reports a walk that is over; the fields below are set only then.
+	Ended      bool
+	FinalText  string
+	Terminal   string
+	StopReason string
+	Error      string
+}
+
+// ErrWalkKeyHeld is what WalkRun returns when the walk's idempotency_key was
+// taken by another start between op=run's lookup and the run's creation.
+var ErrWalkKeyHeld = errors.New("idempotency_key is already held by a walk")
 
 // WalkBoard is a walk's board binding as it started. ResumedFrom is the state
 // the board's persisted status resumed it from; "" when it started at entry.
@@ -446,20 +480,23 @@ type teamDefInput struct {
 	Description    string          `json:"description,omitempty"`
 	Promote        *bool           `json:"promote,omitempty"`
 	Retired        *bool           `json:"retired,omitempty"`
-	ContentSHA256  string          `json:"content_sha256,omitempty"`     // input for op: verify
-	Format         string          `json:"format,omitempty"`             // render_diagram: mermaid (default) | d2
-	HighlightState string          `json:"highlight_state,omitempty"`    // render_diagram: mark a state
-	Input          string          `json:"input,omitempty"`              // run: initial input to the entry state
-	BoardChunkID   string          `json:"board_chunk_id,omitempty"`     // run: bind the walk to a Document chunk board
-	BoardScope     string          `json:"board_scope,omitempty"`        // run: board_chunk_id's Document scope (agent|user, default user)
-	InterruptOnCap bool            `json:"interrupt_on_cap,omitempty"`   // run: escalate an iteration cap to a human instead of aborting
-	Breakpoints    []string        `json:"breakpoints,omitempty"`        // run: starter states to pause at (debug mode)
-	Review         []string        `json:"review,omitempty"`             // run: starter/agent/parallel states whose member runs are held for a verdict
-	ReviewTTL      int             `json:"review_ttl_seconds,omitempty"` // run: end an unreviewed member hold as rejected after this long
-	Mode           string          `json:"mode,omitempty"`               // run: "" (wait for the walk) | "detach" (return the run id now) | "poll" (a background child of the calling run)
-	As             string          `json:"as,omitempty"`                 // verify with overlay: check the draft as a "create" or a "fork" ("" = as a save would)
-	Notify         *bool           `json:"notify,omitempty"`             // run, mode poll: note the walk's end (default true)
-	OnParentEnd    string          `json:"on_parent_end,omitempty"`      // run, mode poll: "wait" | "cancel"
+	ContentSHA256  string          `json:"content_sha256,omitempty"`   // input for op: verify
+	Format         string          `json:"format,omitempty"`           // render_diagram: mermaid (default) | d2
+	HighlightState string          `json:"highlight_state,omitempty"`  // render_diagram: mark a state
+	Input          string          `json:"input,omitempty"`            // run: initial input to the entry state
+	BoardChunkID   string          `json:"board_chunk_id,omitempty"`   // run: bind the walk to a Document chunk board
+	BoardScope     string          `json:"board_scope,omitempty"`      // run: board_chunk_id's Document scope (agent|user, default user)
+	InterruptOnCap bool            `json:"interrupt_on_cap,omitempty"` // run: escalate an iteration cap to a human instead of aborting
+	// run: makes the start safe to retry — a second start with the same key,
+	// by the same tenant and user, starts nothing and answers with this walk.
+	IdempotencyKey string   `json:"idempotency_key,omitempty"`
+	Breakpoints    []string `json:"breakpoints,omitempty"`        // run: starter states to pause at (debug mode)
+	Review         []string `json:"review,omitempty"`             // run: starter/agent/parallel states whose member runs are held for a verdict
+	ReviewTTL      int      `json:"review_ttl_seconds,omitempty"` // run: end an unreviewed member hold as rejected after this long
+	Mode           string   `json:"mode,omitempty"`               // run: "" (wait for the walk) | "detach" (return the run id now) | "poll" (a background child of the calling run)
+	As             string   `json:"as,omitempty"`                 // verify with overlay: check the draft as a "create" or a "fork" ("" = as a save would)
+	Notify         *bool    `json:"notify,omitempty"`             // run, mode poll: note the walk's end (default true)
+	OnParentEnd    string   `json:"on_parent_end,omitempty"`      // run, mode poll: "wait" | "cancel"
 
 	// poll: walks run in poll mode by run id (none = every unread one), and
 	// how long to wait for them.
@@ -1257,6 +1294,19 @@ func (t *TeamDef) execRun(ctx context.Context, in teamDefInput) (tools.Result, e
 		return errResult("run: this TeamDef tool is not configured for execution (no runner wired)"), nil
 	}
 
+	// A caller's idempotency_key is resolved first: before the team is read,
+	// before admission and before any row exists, so a retry costs nothing and
+	// is answered with the walk it started even if the team has since been
+	// retired or re-promoted.
+	if in.IdempotencyKey != "" {
+		if dup, refusal := t.walkHoldingKey(ctx, in, false); refusal != nil || dup != nil {
+			if refusal != nil {
+				return *refusal, nil
+			}
+			return okJSON(dup)
+		}
+	}
+
 	// Board binding is opt-in; if requested it MUST be wired (a SQL-Memory-backed
 	// Document tool), else fail loud rather than silently dropping durability.
 	boardBound := in.BoardChunkID != ""
@@ -1499,6 +1549,7 @@ func (t *TeamDef) execRun(ctx context.Context, in teamDefInput) (tools.Result, e
 			Review:           in.Review,
 			ReviewTTLSeconds: in.ReviewTTL,
 			InterruptOnCap:   in.InterruptOnCap,
+			IdempotencyKey:   in.IdempotencyKey,
 		}
 		if in.DefID != "" {
 			spec.ResolvedBy = "def_id"
@@ -1507,6 +1558,19 @@ func (t *TeamDef) execRun(ctx context.Context, in teamDefInput) (tools.Result, e
 			spec.Board = &WalkBoard{Scope: boardScope, ChunkID: in.BoardChunkID, ResumedFrom: resumedFrom}
 		}
 		walkCtx, runID, finishRun, werr = t.WalkRun(walkCtx, spec)
+		if errors.Is(werr, ErrWalkKeyHeld) {
+			// Another start with the same key won, between the lookup above
+			// and this run's creation: answer with its walk.
+			withdraw()
+			dup, refusal := t.walkHoldingKey(ctx, in, true)
+			switch {
+			case refusal != nil:
+				return *refusal, nil
+			case dup != nil:
+				return okJSON(dup)
+			}
+			return errResult("run: idempotency_key is held by a walk that could not be read; send the request again"), nil
+		}
 		if werr != nil {
 			withdraw()
 			return errResult(fmt.Sprintf("run: %s", werr)), nil
@@ -1928,6 +1992,58 @@ func (t *TeamDef) execRun(ctx context.Context, in teamDefInput) (tools.Result, e
 		return errResult(fmt.Sprintf("run: %s", failed)), nil
 	}
 	return okJSON(out)
+}
+
+// walkHoldingKey resolves op=run's idempotency_key: a refusal for a key that
+// cannot be used, the answer for a key a walk already holds, or neither when
+// the key is free and the walk should start.
+//
+// The answer is what a detached start returns — name, def_id, run_id, status —
+// marked deduplicated, with the end state and the final output once the walk
+// is over. It carries no steps: the trace is built by the request that walks
+// and is not stored on the run.
+func (t *TeamDef) walkHoldingKey(ctx context.Context, in teamDefInput, lostRace bool) (map[string]any, *tools.Result) {
+	refuse := func(r tools.Result) (map[string]any, *tools.Result) { return nil, &r }
+	if msg, ok := connector.ValidateIdempotencyKey(in.IdempotencyKey); !ok {
+		return refuse(errValidation("run: "+msg, "send a key of 1 to 200 characters of A-Z a-z 0-9 : . _ -, or leave it out"))
+	}
+	switch {
+	case in.BoardChunkID != "":
+		return refuse(errResult("run: idempotency_key does not apply to a board-bound walk: board_chunk_id resumes the " +
+			"position stored on the board, so starting it again is already safe"))
+	case in.Mode == "poll":
+		return refuse(errResult("run: idempotency_key does not apply to mode poll: a poll-mode walk is a child of your run, " +
+			"read through its table, and a walk another call started is not in it"))
+	case t.WalkRun == nil || t.ExistingWalk == nil:
+		return refuse(errResult("run: idempotency_key requires run tracking, which is not wired on this server"))
+	}
+	w, err := t.ExistingWalk(ctx, in.IdempotencyKey, lostRace)
+	if err != nil {
+		return refuse(errResult(fmt.Sprintf("run: %s", err)))
+	}
+	if w == nil {
+		return nil, nil
+	}
+	out := map[string]any{
+		"name":         w.Name,
+		"def_id":       w.DefID,
+		"run_id":       w.RunID,
+		"status":       w.Status,
+		"deduplicated": true,
+	}
+	if w.Ended {
+		if w.Terminal != "" {
+			out["final_state"] = w.Terminal
+		}
+		out["final_output"] = w.FinalText
+		if w.StopReason != "" {
+			out["stop_reason"] = w.StopReason
+		}
+		if w.Error != "" {
+			out["error"] = w.Error
+		}
+	}
+	return out, nil
 }
 
 // parseCapAnswer maps a human's free-text cap answer to a walk decision. Only an

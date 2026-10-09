@@ -28,6 +28,14 @@ The most common consumer is Claude Code: you can ask Claude to "spawn a `qa-agen
 
 The request body is not compared: the same key with a different prompt still returns the first run, so build the key from what makes the work distinct. A key is refused on a continuation (`session_id`), on a configured run, and when two children of one batch share it. It lives as long as the run's session is retained, and travels with a paused run through a snapshot.
 
+**A team walk takes the key too.** `teamdef` `op=run` takes `idempotency_key` with the same grammar and the same owner (tenant and user). A second start with the key starts nothing and is answered with the walk that holds it, with `deduplicated: true`: its `run_id` and `status`, and its `final_state` and `final_output` once it has ended. Three things differ from a run:
+
+- A retry never waits. A walk still running is returned at once as `running`, whether or not the start asked to wait.
+- The answer has no `steps`. The trace is built by the request that walks and is not stored; read the walk's member runs (`list_runs` with `walk_id`).
+- A run's key and a walk's key are held apart, so one key may name a run and a walk.
+
+It is refused with `board_chunk_id` (a board-bound walk resumes its stored position, so starting it again is already safe).
+
 **Bounding a run's lifetime: `max_wall_seconds`.** `spawn_run`, each `spawn_runs` child, each `POST /v1/runs:batch` child, `POST /v1/runs` and the gRPC `Run` and `SpawnRunBatch` requests take an optional `max_wall_seconds` (0 or absent = no bound; at most 30 days). It works for any agent, model-driven or code-js.
 
 - Past the limit the run is cancelled, with everything it started, and ends `cancelled` with `stop_reason: "wall_limit"`.
