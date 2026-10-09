@@ -61,6 +61,49 @@ func TestReplayTranscript_ContextCompactionResets(t *testing.T) {
 	}
 }
 
+// A compaction applied in the middle of a turn that kept no tail ends, in the
+// live loop, on a user turn asking the model to continue (loop.EndOnUserTurn);
+// without it the history ends on the runtime's own acknowledgement and the next
+// call is refused. A resumed run rebuilds its history from the marker, so the
+// rebuild must end the same way: the turn that followed the compaction would
+// otherwise replay as a second assistant message in a row.
+func TestReplayTranscript_MidTurnCompactionEndsOnAUserTurn(t *testing.T) {
+	events := []store.Event{
+		mkEvent("user_input", []loop.PromptSegment{
+			{Role: "user", Content: []loop.PromptContentBlock{{Type: "trusted-text", Text: "the task"}}},
+		}),
+		mkEvent("tool_call", providers.Event{Type: providers.EventToolCall,
+			ToolUse: &providers.ToolUse{ID: "tu_1", Name: "Noop", Input: json.RawMessage(`{}`)}}),
+		mkEvent("done", providers.Event{Type: providers.EventDone, StopReason: "tool_use", Usage: &providers.Usage{}}),
+		mkEvent("tool_result", providers.Event{Type: providers.EventToolResult,
+			ToolUse: &providers.ToolUse{ID: "tu_1", Name: "Noop"}, Text: "result"}),
+		mkEvent(string(providers.EventContextCompaction), providers.Event{
+			Type:              providers.EventContextCompaction,
+			ContextCompaction: &providers.ContextCompactionEventInfo{Summary: "THE-SUMMARY", KeepFirst: true},
+		}),
+		mkEvent("text", providers.Event{Type: providers.EventText, Text: "answer after the compaction"}),
+		mkEvent("done", providers.Event{Type: providers.EventDone, StopReason: "end_turn"}),
+	}
+	msgs := replayTranscript(events)
+	var roles []string
+	for _, m := range msgs {
+		roles = append(roles, m.Role)
+	}
+	want := []string{"user", "assistant", "user", "assistant"}
+	if strings.Join(roles, ",") != strings.Join(want, ",") {
+		t.Fatalf("roles = %v, want %v (summary, acknowledgement, continue, answer): %+v", roles, want, msgs)
+	}
+	if !strings.Contains(firstText(msgs[0]), "THE-SUMMARY") || !strings.Contains(firstText(msgs[0]), "the task") {
+		t.Errorf("msg[0] should pin the task and carry the summary: %q", firstText(msgs[0]))
+	}
+	if !strings.Contains(firstText(msgs[2]), "Continue") {
+		t.Errorf("msg[2] = %q, want the continue instruction", firstText(msgs[2]))
+	}
+	if firstText(msgs[3]) != "answer after the compaction" {
+		t.Errorf("msg[3] = %q, want the answer that followed the compaction", firstText(msgs[3]))
+	}
+}
+
 // TestReplayTranscript_KeepNAndKeepFirst: a marker with KeepN>0 + KeepFirst
 // rebuilds [pinned task + summary, ack, last-N verbatim] — identical to what the
 // live loop produced — and drops the summarized middle.

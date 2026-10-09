@@ -1391,59 +1391,41 @@ func CompactionMessages(pinnedTask, summary string, keptTail []providers.Message
 }
 
 // compactionAckText is the assistant turn CompactionMessages writes after the
-// summary, and recapNotePrefix opens the one RecapMessages writes. No model
-// produced either: hasSyntheticAssistantTurn recognises them by this text.
+// summary, recapNotePrefix opens the one RecapMessages writes, and
+// compactionContinueText is the user turn EndOnUserTurn appends when either
+// would otherwise end the history.
 const (
-	compactionAckText = "Understood — I'll continue from the summary above."
-	recapNotePrefix   = "[Progress recap — what I have done and concluded so far; established context for everything before the recent steps below:]"
+	compactionAckText      = "Understood — I'll continue from the summary above."
+	recapNotePrefix        = "[Progress recap — what I have done and concluded so far; established context for everything before the recent steps below:]"
+	compactionContinueText = "Continue the task from where the summary above leaves off."
 )
 
-// hasSyntheticAssistantTurn reports whether the history holds an assistant turn
-// the runtime wrote itself: a compaction's acknowledgement or a recap note.
-// Such a turn carries no reasoning, because no model call produced it.
-func hasSyntheticAssistantTurn(messages []providers.Message) bool {
-	for i := range messages {
-		m := &messages[i]
-		if m.Role != "assistant" || m.Reasoning != "" || len(m.Content) != 1 || m.Content[0].Type != "text" {
-			continue
-		}
-		if t := m.Content[0].Text; t == compactionAckText || strings.HasPrefix(t, recapNotePrefix) {
-			return true
-		}
-	}
-	return false
-}
-
-// downgradeForSyntheticHistory moves a run off a thinking model that would
-// refuse its history, and reports the model and effort to use.
+// EndOnUserTurn makes a compacted history end the way the history it replaces
+// ended: on a user turn, when a model call is about to follow.
 //
-// A DeepSeek thinking model answers 400 "reasoning_content in the thinking mode
-// must be passed back" when an assistant turn in the history has none. A
-// compaction puts exactly such a turn there (its acknowledgement), and so does
-// a recap. The turn cannot be given reasoning — none was ever produced — so the
-// run continues on the provider's non-thinking sibling, as it does after a
-// cross-provider fallback (tryProviderFallback). The effort hint goes too:
-// on DeepSeek it turns thinking back on whatever the model's name.
+// A compaction or recap in the middle of a turn runs after the tool results
+// were appended and before the next call, so the history ends on a user turn.
+// When the whole span after the task is summarised (a long single turn has no
+// fresh user turn to cut at, so nothing is kept), the replacement is the
+// summary and the acknowledgement alone and ends on an ASSISTANT turn. The next
+// request then asks the model to continue its own message: DeepSeek's thinking
+// models answer 400 "reasoning_content in the thinking mode must be passed
+// back" (the acknowledgement was never produced by a model and has none), and
+// other providers treat a trailing assistant turn as a prefill.
 //
-// It looks only for the runtime's own turns, not for any reasoning-less one: a
-// thinking model may answer without a trace, and the provider accepts its own
-// turn back. It is asked before every call, so it also covers a continuation
-// or a resume that replays a compacted history; once downgraded, the sibling
-// has no sibling and the check is a no-op.
-func downgradeForSyntheticHistory(provider providers.Provider, model, effort string, messages []providers.Message, emit func(providers.Event)) (string, string) {
-	dg, ok := provider.(providers.ThinkingDowngrader)
-	if !ok {
-		return model, effort
+// It appends a short user turn in that case and only that case. A compaction
+// of a PARKED run replaces a history that ended on the assistant's answer; its
+// replacement may end on the acknowledgement, because the operator's next
+// message is the user turn. before is the history being replaced.
+func EndOnUserTurn(compacted, before []providers.Message) []providers.Message {
+	if len(before) == 0 || len(compacted) == 0 {
+		return compacted
 	}
-	sibling, downgraded := dg.NonThinkingSibling(model)
-	if !downgraded || !hasSyntheticAssistantTurn(messages) {
-		return model, effort
+	if before[len(before)-1].Role != "user" || compacted[len(compacted)-1].Role != "assistant" {
+		return compacted
 	}
-	emit(providers.Event{
-		Type: providers.EventModelDowngraded,
-		Text: fmt.Sprintf("downgraded %s to non-thinking %s on %s (dropped the effort hint): the compacted history carries an assistant turn without reasoning_content, which the thinking model would reject", model, sibling, provider.ID()),
-	})
-	return sibling, ""
+	return append(compacted, providers.Message{Role: "user",
+		Content: []providers.ContentBlock{{Type: "text", Text: compactionContinueText}}})
 }
 
 // isFreshUserTurn reports whether m is a user message that STARTS a turn (a real
@@ -1858,7 +1840,7 @@ func applyCompactSummary(messages []providers.Message, summary string, keepN int
 	if keepFirst && len(messages) > 0 {
 		pinned = messageText(messages[0])
 	}
-	out := CompactionMessages(pinned, summary, tail)
+	out := EndOnUserTurn(CompactionMessages(pinned, summary, tail), messages)
 	if emit != nil {
 		emit(providers.Event{Type: providers.EventContextCompaction,
 			ContextCompaction: &providers.ContextCompactionEventInfo{
@@ -2252,7 +2234,7 @@ func maybeAutoCompact(ctx context.Context, opts RunOptions, messages []providers
 	if firstIdx > 0 {
 		pinned = messageText(messages[0])
 	}
-	out := CompactionMessages(pinned, strings.TrimSpace(summary), messages[cut:])
+	out := EndOnUserTurn(CompactionMessages(pinned, strings.TrimSpace(summary), messages[cut:]), messages)
 	after := estimateMessageTokens(out)
 	// Refuse a distillation that is not smaller — see the twin in maybeRecap.
 	// Placed BEFORE the bank and the harvest below, which is why those two need
@@ -2500,7 +2482,7 @@ func maybeRecap(ctx context.Context, opts RunOptions, messages []providers.Messa
 	if firstIdx > 0 {
 		pinned = messageText(messages[0])
 	}
-	out := RecapMessages(pinned, newRecap, messages[cut:])
+	out := EndOnUserTurn(RecapMessages(pinned, newRecap, messages[cut:]), messages)
 	after := estimateMessageTokens(out)
 	// Refuse a distillation that is not smaller. On the observed session a
 	// manual compaction went 14230 -> 14334 and was applied anyway: both
@@ -3303,11 +3285,6 @@ outerLoop:
 		if opts.ArmTurnCancel != nil {
 			disarmTurn = opts.ArmTurnCancel(turnCancelFn)
 		}
-
-		// A compacted history holds a turn no model produced, which a thinking
-		// model that wants its reasoning back refuses. Checked per call, before
-		// anything below reads the model.
-		opts.Model, opts.Effort = downgradeForSyntheticHistory(opts.Provider, opts.Model, opts.Effort, messages, emit)
 
 		// A retune adopted at the last operator turn replaced the source a policy
 		// was built from; rebuild it so this call, not a later one, carries it.
