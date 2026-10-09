@@ -1,6 +1,132 @@
 # loomcycle config overlay (mounted at /config = LOOMCYCLE_CONFIG_DIR).
-# Deep-merged OVER the embedded presets (RFC AN layering: presets → CONFIG_DIR).
+# Deep-merged OVER the embedded presets (LOOMCYCLE_PRESETS → CONFIG_DIR). Every
+# *.yaml in this directory is loaded, in name order: keep backups elsewhere.
+# Secrets live in .env.secure, never here. Checked against v1.108.0.
 #
+# Models, providers and tiers are kept in step with the TrueNAS deployment: both
+# use the same Ollama host, so the same aliases and the same context size avoid
+# reloading a model every time the other deployment calls it.
+
+# ─── Providers ────────────────────────────────────────────────────────
+providers:
+  ollama-local:               # base_url from OLLAMA_BASE_URL (.env.insecure)
+    options:
+      num_ctx: 32768            # unset → Ollama's 4096 floor. Set HERE, not in env:
+      num_gpu: 999              # these options win over LOOMCYCLE_OLLAMA_LOCAL_NUM_*
+      header_timeout_ms: 600000 # first-token budget for a cold model load
+      idle_timeout_ms: 600000
+    max_concurrent: 4
+
+# ─── Models: name each model once, reference it by alias everywhere ───
+# kind: chat (default) | decision | embedder. A tagged alias used in the
+# wrong place fails config load.
+models:
+  # Anthropic (ANTHROPIC_API_KEY)
+  haiku:  { provider: anthropic, model: claude-haiku-5-5 }
+  sonnet: { provider: anthropic, model: claude-sonnet-5-5 }
+  opus:   { provider: anthropic, model: claude-opus-5-5 }
+  # OpenAI (OPENAI_API_KEY)
+  gpt-mini: { provider: openai, model: gpt-5.4-mini }
+  gpt:      { provider: openai, model: gpt-5.4 }
+  gpt-max:  { provider: openai, model: gpt-5.5 }
+  # DeepSeek (DEEPSEEK_API_KEY)
+  deepseek-flash: { provider: deepseek, model: deepseek-flash }
+  deepseek-pro:   { provider: deepseek, model: deepseek-v4-pro }
+  # Gemini (GEMINI_API_KEY) — patterns resolve to the newest listed match
+  gemini-lite:  { provider: gemini, model_pattern: "gemini-*-flash-lite" }
+  gemini-flash: { provider: gemini, model_pattern: "gemini-*-flash" }
+  gemini-pro:   { provider: gemini, model_pattern: "gemini-*-pro*" }
+  # Hosted Ollama cloud (OLLAMA_API_KEY)
+  cloud-kimi: { provider: ollama, model: kimi-k3 }
+  # Local Ollama over the tailnet (no key)
+  local-small:  { provider: ollama-local, model: gpt-oss:latest }
+  local-medium: { provider: ollama-local, model: qwen3.6:latest }
+  local-high:   { provider: ollama-local, model: ornith-1.5:35b }
+  local-dense:  { provider: ollama-local, model: qwen3.8:latest }
+  local-embedding: { provider: ollama-local, model: bge-m3:latest, kind: embedder }
+  decide:      { provider: ollama-local, model: nimble, kind: decision }
+  decide-deep: { provider: ollama-local, model: clef,   kind: decision }
+
+timeout_scaling:
+  models:
+    local-dense: { max_multiplier: 24 }   # measured as up to 24x, not clipped at the global 8x
+
+# ─── Routing ──────────────────────────────────────────────────────────
+provider_priority: [ollama-local, deepseek, gemini, openai, anthropic, ollama]
+
+tiers:
+  low:    [local-small,  deepseek-flash, gemini-lite,  haiku,  gpt-mini]
+  middle: [local-medium, deepseek-flash, gemini-flash, sonnet, gpt]
+  high:   [local-high,   deepseek-pro,   gemini-pro,   opus]
+
+# A run's `user_tier` picks one of these; `default` is required. An unknown
+# user_tier is refused. fallback_on_error has no default: omitted = false.
+user_tiers:
+  default:
+    provider_priority: [ollama-local, deepseek, gemini, openai, anthropic, ollama]
+    fallback_on_error: true
+    max_fallback_attempts: 3
+  free:                       # local only; an outage surfaces to the client
+    provider_priority: [ollama-local]
+    tiers:
+      low:    [local-small]
+      middle: [local-medium]
+      high:   [local-high]
+    fallback_on_error: false
+  low:
+    provider_priority: [ollama-local, deepseek, gemini, anthropic, openai]
+    fallback_on_error: true
+    max_fallback_attempts: 3
+  medium:
+    provider_priority: [deepseek, gemini, anthropic, openai]
+    fallback_on_error: true
+    max_fallback_attempts: 3
+  high:                       # best model or an error; no silent downgrade
+    provider_priority: [deepseek, anthropic]
+    fallback_on_error: false
+
+# ─── Memory ───────────────────────────────────────────────────────────
+memory:
+  embedder:
+    model: local-embedding    # the alias supplies the provider
+  consolidation:
+    merge_threshold: 0.83
+    related_threshold: 0.62
+    detect_conflicts: false
+  reranker:
+    kind: decision
+    model: decide
+    timeout_ms: 120000        # covers the decision model reloading after a chat model evicts it
+    max_concurrent: 2
+
+# ─── Decision models (a change here needs a restart) ──────────────────
+decision:
+  default: decide
+  models: [decide, decide-deep]   # listed explicitly so no other tagged alias joins
+  timeout_ms: 120000
+  max_concurrent: 2
+
+# ─── Agents: overrides of bundled agents only ─────────────────────────
+agents:
+  doc/manager:
+    memory_rerank: { enabled: true }
+  chat/medium:
+    memory_rerank: { enabled: true }
+    tools: !append [Decision]     # adds to the bundle's list
+    decision: { default: decide, models: [decide] }
+  chat/local:
+    memory_rerank: { enabled: true }
+    tools: !append [Decision]
+    decision: { default: decide, models: [decide] }
+
+# Without this the memory bundle's consolidator stays off, and what agents add
+# to memory is queued and never becomes durable. Runs hourly (the bundle's
+# schedule), on the middle tier.
+scheduled_runs:
+  memory-consolidation:
+    enabled: true
+
+# ─── Web search ───────────────────────────────────────────────────────
 # SearXNG is wired here, NOT via env — there is no LOOMCYCLE_SEARCH_* var. The
 # base_url is the in-compose service name. `brave` is an optional paid fallback
 # (inert unless BRAVE_API_KEY is set); drop it from search_priority to disable.
@@ -11,13 +137,12 @@ search_providers:
 
 search_priority: [searxng, brave]
 
-# ── Headless browser (PinchTab) for the dev/exec agent (cloud deployment only) ────
-# PinchTab's MCP is stdio-only, so loomcycle spawns the pinchtab client (in the
-# loomcycle-browser image) as a stdio MCP bridge to the `pinchtab` server sidecar.
-# The child inherits PINCHTAB_TOKEN from loomcycle's env, so no ${...} interpolation
-# is needed here. The dev/exec agent (dev-exec bundle) already grants mcp__browser__*
-# in its tool ceiling and drives it via the envelope's optional `browser` steps, so
-# this overlay only needs to DECLARE the server — no agent override.
+# ─── Headless browser (PinchTab) for the dev/exec agent ───────────────
+# PinchTab's MCP is stdio-only, so loomcycle spawns the pinchtab client (shipped in
+# the loomcycle-browser image) as a stdio MCP bridge to the `pinchtab` sidecar. The
+# child inherits PINCHTAB_TOKEN from loomcycle's env, so no ${...} interpolation is
+# needed here. The dev/exec agent already grants mcp__browser__* in its tool
+# ceiling, so this overlay only DECLARES the server.
 mcp_servers:
   browser:
     transport: stdio

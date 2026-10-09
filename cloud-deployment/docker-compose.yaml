@@ -51,7 +51,9 @@ services:
       POSTGRES_DB: loomcycle
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
     volumes:
-      - ./pgdata:/var/lib/postgresql/data
+      # pg18 keeps its data under a version subdirectory and REFUSES a mount at
+      # /var/lib/postgresql/data, so mount the parent.
+      - ./pgdata:/var/lib/postgresql
       # Runs ONCE on first init: creates loomcycle_sqlmem + the sqlmem pgvector schema.
       - ./postgres/initdb.d:/docker-entrypoint-initdb.d:ro
     healthcheck:
@@ -63,7 +65,9 @@ services:
 
   # ── One-shot schema migration for the MAIN db (SQL Memory self-provisions at runtime) ──
   loomcycle-migrate:
-    image: denngubsky/loomcycle:1.43.0
+    # Same image and tag as the runtime below, so one bump moves both and a patch
+    # release's migrations are applied (a patch tag publishes only this image).
+    image: denngubsky/loomcycle-browser:1.108.0
     command: ["migrate", "up"]
     restart: "no"
     user: "65532:65532"
@@ -109,16 +113,16 @@ services:
   # ── Code-execution sandbox sidecar (host-Docker-socket model) ──
   # The sidecar is a SEPARATE image from the runtime, lockstep-versioned with it and
   # published MULTI-ARCH (amd64+arm64) by the `publish-sandbox-images` workflow on each
-  # release tag. Session exposure (SANDBOX_EXPOSE_NETWORK, below) needs the seam that
-  # shipped in 1.43.0 — keep this pin in step with the runtime tag, and never hand-push
-  # a single-arch build over the tag (a linux/amd64 host then can't pull it).
+  # MINOR release tag. A PATCH tag (x.y.1) publishes only loomcycle-browser: for a
+  # patch, keep the sidecar and the session image on the minor's x.y.0. Never
+  # hand-push a single-arch build over a tag (a linux/amd64 host then can't pull it).
   builder-sidecar:
-    image: denngubsky/loomcycle-builder-docker:1.43.0
+    image: denngubsky/loomcycle-builder-docker:1.108.0
     restart: unless-stopped
     networks: [loomnet]
     environment:
       SANDBOX_PODMAN_BIN: docker         # launch sessions as host-Docker siblings
-      SANDBOX_IMAGE: denngubsky/loomcycle-sandbox-session:latest
+      SANDBOX_IMAGE: denngubsky/loomcycle-sandbox-session:1.108.0   # pinned with the sidecar, not :latest
       SANDBOX_WORKSPACE_ROOT: /mnt/work  # per-session /work is tmpfs by default;
                                          # durable named workspaces need the same
                                          # HOST path here — see INSTALL.md.
@@ -141,16 +145,11 @@ services:
 
   # ── The loomcycle runtime — shares the tailscale netns (no own DNS name / ports) ──
   loomcycle:
-    # Derived image = official loomcycle + the PinchTab MCP client binary, so the
-    # runtime can spawn `pinchtab … mcp` (stdio) against the pinchtab sidecar. See
-    # loomcycle.Dockerfile. (loomcycle-migrate keeps the plain image — it needs no
-    # browser.)
-    build:
-      context: .
-      dockerfile: loomcycle.Dockerfile
-      args:
-        LOOMCYCLE_TAG: "1.43.0"
-        PINCHTAB_TAG: "0.15.0"
+    # loomcycle-browser = the distroless runtime + the PinchTab MCP client binary
+    # (0.15.0, matching the pinchtab sidecar below), so the runtime can spawn
+    # `pinchtab … mcp` (stdio) against it. Published on every release tag, patch
+    # tags included.
+    image: denngubsky/loomcycle-browser:1.108.0
     restart: unless-stopped
     user: "65532:65532"
     network_mode: "service:tailscale"   # → reachable at http://tailscale:8787
@@ -171,6 +170,7 @@ services:
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
       GEMINI_API_KEY: ${GEMINI_API_KEY:-}
       DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:-}
+      OLLAMA_API_KEY: ${OLLAMA_API_KEY:-}        # hosted Ollama cloud (the cloud-kimi alias)
       BRAVE_API_KEY: ${BRAVE_API_KEY:-}
       # Auth for the pinchtab MCP stdio bridge → the pinchtab sidecar. The stdio
       # child inherits loomcycle's env, so no config interpolation is needed.

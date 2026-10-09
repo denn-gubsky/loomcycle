@@ -54,7 +54,8 @@ Then, on the host, create the runtime sub-directories + set ownership (`-t` give
 ```bash
 ssh -t "$HOST" "cd '$DEPLOY' && \
   mkdir -p data config work pgdata ts-state searxng web retention-exports pinchtab-data && \
-  sudo chown -R 65532:65532 data work retention-exports"
+  sudo chown -R 65532:65532 data work retention-exports && \
+  sudo chown -R 1000:1000 pinchtab-data"
 ```
 
 `config/loomcycle.yaml` (SearXNG wiring), `searxng/settings.yml`, the `landing/`
@@ -138,7 +139,8 @@ Edit **`.env.insecure`** (non-secret):
 - `OLLAMA_BASE_URL` → the Ollama tailnet **IP** (Phase 3).
 - `CF_ACCESS_TEAM_DOMAIN` + `CF_ACCESS_AUD` → from the Access app (Phase 4).
 - `LOOMCYCLE_PUBLIC_URL=https://app.loomcycle.cloud` + `LANDING_ORIGIN=https://loomcycle.cloud`.
-- Adjust presets / retention / GPU knobs to taste.
+- Adjust presets / retention to taste. The Ollama context size and GPU offload
+  are in `config/loomcycle.yaml`, not here.
 
 Create **`.env.secure`** (there is no committed template — repo policy forbids a
 `.env.secure*` file in git). Fill every `REPLACE_ME`, then `chmod 600 .env.secure`:
@@ -164,6 +166,7 @@ ANTHROPIC_API_KEY=
 OPENAI_API_KEY=
 GEMINI_API_KEY=
 DEEPSEEK_API_KEY=
+OLLAMA_API_KEY=                              # optional: hosted Ollama cloud (the cloud-kimi alias)
 BRAVE_API_KEY=                               # optional paid search fallback
 ```
 
@@ -174,10 +177,9 @@ Notes:
 - The DSN host is **`postgres`** (the compose service) — don't change it.
 - **Headless browser (dev/exec):** the `pinchtab` sidecar gives the deterministic
   `dev/exec` agent `mcp__browser__*` tools (driven via the envelope's optional
-  `browser` steps). PinchTab's MCP is stdio-only, so loomcycle uses a derived image
-  (`loomcycle.Dockerfile`) that bakes in the pinchtab MCP client — `make up`
-  therefore BUILDS the loomcycle image (first run is slower; needs Docker Hub
-  access). The sidecar is internal-only (no published port), and PinchTab keeps
+  `browser` steps). PinchTab's MCP is stdio-only, so the runtime uses the published
+  `denngubsky/loomcycle-browser` image, which carries the pinchtab MCP client
+  binary. Nothing is built locally for the runtime any more. The sidecar is internal-only (no published port), and PinchTab keeps
   browsing **local-only** until you widen its domain allowlist (IDPI) — to test
   external sites or your own deployment, follow the pinchtab security guide.
 - **Serve-and-test (browse a server the session runs):** the compose ships a
@@ -185,7 +187,7 @@ Notes:
   `SANDBOX_EXPOSE_NETWORK=loom-dev` on the builder-sidecar. A `dev/exec` envelope
   with `expose:<alias>` then attaches its session there, reachable from the browser
   at `http://<alias>:<port>`. This needs the **runtime AND sidecar at ≥ 1.43.0** (the
-  expose seam) — the images pin to `1.43.0` above; the sidecar is a separate,
+  expose seam) — the images pin to `1.108.0`; the sidecar is a separate,
   multi-arch image (`docker pull` a `linux/amd64` tag on TrueNAS, not a hand-built
   single-arch one). Add each alias to PinchTab's IDPI allowlist first
   (`pinchtab config set security.allowedDomains "127.0.0.1,localhost,::1,<alias>"`,
@@ -240,11 +242,98 @@ make ps          # all services `running`/`healthy`; loomcycle-migrate `exited (
 
 ---
 
-## Upgrade
+## Upgrading an existing deployment to 1.108.0
 
-Bump the image tags in `docker-compose.yaml` (keep `loomcycle` + `loomcycle-migrate`
-in lockstep), then `make pull && make up`. If the new version bumped the schema,
-`loomcycle-migrate` re-runs automatically on the next `up`.
+The steps below take a stack on an older release to 1.108.0. The numbered list is
+the order; the notes after it are what changed underneath you.
+
+1. **Back up.** Dump both databases and keep the old files:
+   ```bash
+   docker compose exec postgres pg_dump -U loomcycle loomcycle        > loomcycle.sql
+   docker compose exec postgres pg_dump -U loomcycle loomcycle_sqlmem > loomcycle_sqlmem.sql
+   cp docker-compose.yaml docker-compose.yaml.bak && cp -r config config.bak
+   ```
+   Move `config.bak` OUT of the deploy directory's `config/` tree: every `*.yaml`
+   under `/config` is loaded.
+2. **Check the Ollama host** before anything else. It must run Ollama **0.35 or
+   later** (decision models) and have pulled every model `config/loomcycle.yaml`
+   names:
+   ```bash
+   docker compose exec tailscale wget -qO- http://100.x.x.x:11434/api/version
+   docker compose exec tailscale wget -qO- http://100.x.x.x:11434/api/tags
+   ```
+   Needed: `nimble`, `clef`, `bge-m3`, and the chat models behind `local-small`,
+   `local-medium`, `local-high` and `local-dense`. A model that is not listed is
+   skipped as a tier candidate without an error, and the run goes to a paid provider.
+3. **Sync the files** from the repo: `docker-compose.yaml` and
+   `config/loomcycle.yaml`. Keep your own `OLLAMA_BASE_URL`, hostnames and Access
+   settings. In `.env.insecure`:
+   - remove `LOOMCYCLE_OLLAMA_LOCAL_NUM_CTX` and `LOOMCYCLE_OLLAMA_LOCAL_NUM_GPU`
+     (the YAML sets them now, and the YAML wins);
+   - remove `LOOMCYCLE_SCHEDULER_FIRE_TIMEOUT_SECONDS` if present (no longer read);
+   - set `SANDBOX_IMAGE` to the `1.108.0` tag.
+   In `.env.secure`, add `GEMINI_API_KEY` if you want the Gemini candidates, and
+   `OLLAMA_API_KEY` for the hosted-Ollama alias. A provider with no key is skipped.
+   If `pgdata` is still mounted at `/var/lib/postgresql/data`, leave your working
+   mount as it is; the compose file now mounts the parent, which is what pg18 needs
+   on a fresh install.
+4. **Pull, then migrate with the runtime stopped.** The migrations up to 0097
+   include an index on `runs` that is built inside its transaction and holds writes
+   to that table while it runs.
+   ```bash
+   make pull
+   docker compose --env-file .env.insecure --env-file .env.secure stop loomcycle
+   make migrate            # exits 0
+   make up
+   ```
+   The runtime image is pulled now, not built: `loomcycle.Dockerfile` is gone.
+5. **Verify.** `curl -s https://app.loomcycle.cloud/healthz` reports `1.108.0`.
+   In the runtime log, the resolve probe lists the Ollama models, and there is no
+   `kind` warning. Settings → Routing shows which Gemini model each pattern alias
+   resolved to. `GET /v1/_decide/models` lists `decide` and `decide-deep`.
+6. **Backfill embeddings** if this deployment had no embedder before. Rows written
+   earlier have no vector and are not found by semantic search until
+   `POST /v1/_memory/reembed?tenant=<id>` has run for each tenant (admin bearer; it
+   refuses an admin call that names no tenant).
+
+What changed, for this stack:
+
+- **Models and tiers come from `config/loomcycle.yaml`**, the same set the TrueNAS
+  deployment uses. Before, this stack ran on the presets' defaults.
+- **Memory is switched on end to end**: an embedder (`bge-m3`), a decision-model
+  reranker (`nimble`), and the hourly `memory-consolidation` schedule. Until now
+  what agents added to memory was queued and never consolidated.
+- **Decision models** are available (`decide`, `decide-deep`), and the two chat
+  agents hold the `Decision` tool.
+- **The hook registry is gone.** Migration 0083 drops the `hooks` table and
+  `/v1/hooks` no longer exists. Anything that registered a hook at startup must
+  attach it to the agent definition instead.
+- **Tokens are held to their scopes over MCP.** The landing mints
+  `substrate:tenant,runs:create`, which covers everything in a tenant. A token you
+  minted by hand with `runs:create` alone can no longer read runs.
+- **Minting needs an explicit scope list**; an omitted one is refused.
+- **Unset scope grants no longer deny.** An agent holding `Memory` with no
+  `memory_scopes` reaches the calling user's data (and the tenant's, for a
+  non-isolated member). The `chat/*` agents write the tenant's shared memory.
+- **The tailnet range counts as private** for `WebFetch` / `HTTP`. An agent that
+  must fetch from a tailnet host needs `LOOMCYCLE_HTTP_PRIVATE_HOST_ALLOWLIST`.
+  The Ollama provider and SearXNG are not affected.
+
+---
+
+## Routine upgrades
+
+Bump the image tags in `docker-compose.yaml`, then `make pull && make up`. If the
+new version bumped the schema, `loomcycle-migrate` re-runs automatically on the
+next `up`.
+
+- A **minor** release (`x.y.0`): bump all four tags together — the two
+  `loomcycle-browser` tags, `loomcycle-builder-docker`, and `SANDBOX_IMAGE`.
+- A **patch** release (`x.y.1`): bump only the two `loomcycle-browser` tags. The
+  sidecar and the session image are published on minor releases only.
+
+Read the release's notes in `REVISIONS.md` first; a jump across several minors
+needs the steps in the section above.
 
 ---
 
