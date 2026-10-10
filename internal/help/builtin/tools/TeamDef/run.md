@@ -22,6 +22,9 @@ It has three modes:
 - **Detach** (`mode: "detach"`): the call returns `{run_id, status: "running"}`
   at once and the walk runs on outside your run — not your child, never
   reported to you, not cancelled with you. For handing a walk to an operator.
+  It returns no steps: read the walk's member runs for what each state did,
+  and the walk's own run for what each `decision` state answered (its
+  `team_decision` events).
 
 ## Arguments
 
