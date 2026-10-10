@@ -397,6 +397,7 @@ export type {
   CallFormat,
   CallRef,
   HookDecisionInfo,
+  TeamDecisionInfo,
   EffectiveConfigResponse,
   EffectiveConfigSource,
   EffectiveValue,

@@ -189,6 +189,13 @@ type TeamDef struct {
 	// and not held would let a retry start a second walk.
 	ExistingWalk func(ctx context.Context, key string, lostRace bool) (*ExistingWalk, error)
 
+	// RecordDecision, if set, puts one visit to a decision state on the record
+	// of the walk's own run (walkRunID, the id WalkRun returned). A decision
+	// state starts no member run and a detached walk returns no steps, so this
+	// is the only place a caller holding the walk's run id finds the answer.
+	// nil = nothing is recorded; a waited-for walk still returns it on its step.
+	RecordDecision func(ctx context.Context, walkRunID string, d teamrun.DecisionVisit)
+
 	// ArmWalkTriggers starts what a walk carries that wakes it from inside
 	// the team — today the team's own schedules — on walkCtx, and returns
 	// the disarm. op=run calls it once every refusal is behind it, and calls
@@ -1627,6 +1634,13 @@ func (t *TeamDef) execRun(ctx context.Context, in teamDefInput) (tools.Result, e
 				return fmt.Errorf("board: %w", serr)
 			}
 			return nil
+		}))
+	}
+
+	if runID != "" && t.WalkRun != nil && t.RecordDecision != nil {
+		walkRunID := runID
+		opts = append(opts, teamrun.OnDecision(func(c context.Context, d teamrun.DecisionVisit) {
+			t.RecordDecision(c, walkRunID, d)
 		}))
 	}
 

@@ -10,6 +10,7 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/awaited"
 	"github.com/denn-gubsky/loomcycle/internal/providers"
 	"github.com/denn-gubsky/loomcycle/internal/store"
+	"github.com/denn-gubsky/loomcycle/internal/teamrun"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
 )
 
@@ -88,4 +89,24 @@ func (s *Server) recordWalkEvent(ctx context.Context, runID string, ev providers
 	if err := s.store.AppendEvent(ctx, runID, string(ev.Type), payload); err != nil {
 		log.Printf("teamdef: record %s on walk run %s: %v", ev.Type, runID, err)
 	}
+}
+
+// recordWalkDecision puts one visit to a decision state on the walk's
+// transcript. Wired into the TeamDef tool by SetTeamDefTool.
+//
+// It is the walk's record of that state: a decision starts no member run, and
+// a walk started detached returns no steps, so a caller holding only the
+// walk's run id reads the answer here, from the run's event stream while the
+// walk runs and from the same stream or the transcript once it has ended.
+//
+// Written on a ctx that survives the walk's cancel, like a pause's end: the
+// decision was made, and a cancel landing just after it must not lose it.
+// Masked like every persisted event.
+func (s *Server) recordWalkDecision(ctx context.Context, walkRunID string, d teamrun.DecisionVisit) {
+	if s.store == nil || walkRunID == "" {
+		return
+	}
+	s.recordWalkEvent(context.WithoutCancel(ctx), walkRunID, providers.Event{Type: providers.EventTeamDecision,
+		TeamDecision: &providers.TeamDecisionInfo{State: d.State, Visit: d.Visit, Edge: d.Edge, Next: d.Next,
+			Answer: s.redactor.Bytes(json.RawMessage(d.Answer))}})
 }

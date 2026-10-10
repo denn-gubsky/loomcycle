@@ -172,6 +172,25 @@ type walkConfig struct {
 	// the walk (abort / continue / reroute). A returned error aborts the walk
 	// with that error. nil = a cap returns *ErrIterationCap as before.
 	onCap func(ctx context.Context, cap *ErrIterationCap) (CapDecision, error)
+	// onDecision fires after each visit to a decision state, once the
+	// transition out of it is known.
+	onDecision func(ctx context.Context, d DecisionVisit)
+}
+
+// DecisionVisit is one visit of a walk to a decision state.
+type DecisionVisit struct {
+	State  string // the decision state
+	Visit  int    // the walk's ordinal of state visits (Task.StateVisit)
+	Edge   string // the transition taken
+	Next   string // where it leads
+	Answer string // what the model answered, as JSON
+}
+
+// OnDecision registers an observer of the walk's decision states: the seam a
+// caller uses to put each answer on the walk's record as it is made. It cannot
+// fail the walk; a decision whose record could not be written was still made.
+func OnDecision(f func(ctx context.Context, d DecisionVisit)) Option {
+	return func(c *walkConfig) { c.onDecision = f }
 }
 
 // OnEnterState registers a hook fired as the walk enters each state (terminal
@@ -302,6 +321,9 @@ func Walk(ctx context.Context, d teamgraph.Definition, task *Task, r Runner, opt
 			return trace, fmt.Errorf("teamrun: state %q handler selected edge %q with no matching transition", st.ID, edge)
 		}
 
+		if cfg.onDecision != nil && st.Handler.Kind == teamgraph.HandlerDecision {
+			cfg.onDecision(ctx, DecisionVisit{State: st.ID, Visit: task.StateVisit, Edge: edge, Next: next, Answer: out.Answer})
+		}
 		trace = append(trace, StepRecord{
 			State:   st.ID,
 			Handler: st.Handler.Kind,

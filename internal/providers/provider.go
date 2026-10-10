@@ -857,6 +857,15 @@ const (
 	// Server-persisted + forwarded via makeRecordingEmit, and auto-replayed on
 	// re-attach (runEventToFrame's default round-trips it).
 	EventTurnCancelled EventType = "turn_cancelled"
+
+	// EventTeamDecision records one visit of a team walk to a `decision`
+	// state: the state, which visit it was, the transition taken and what the
+	// model answered. Written to the walk's own run, which is the only place
+	// it can be: a decision state starts no member run, so nothing else on the
+	// walk's record speaks for it, and a walk started detached returns no
+	// steps. A reader gets it from that run's event stream while the walk runs
+	// and from the same stream, or the transcript, after it has ended.
+	EventTeamDecision EventType = "team_decision"
 )
 
 // Event is one streamed datum from a provider call (or, after the loop layer
@@ -940,6 +949,10 @@ type Event struct {
 	// SubagentHold carries the structured payload on EventSubagentHold. Nil
 	// otherwise.
 	SubagentHold *SubagentHoldEventInfo `json:"subagent_hold,omitempty"`
+
+	// TeamDecision carries the structured payload on EventTeamDecision. Nil
+	// otherwise.
+	TeamDecision *TeamDecisionInfo `json:"team_decision,omitempty"`
 
 	// TurnCancelled carries the structured payload on EventTurnCancelled (an
 	// operator turn-cancel, RFC BH). Nil on all other event types.
@@ -1471,6 +1484,27 @@ type OverrideInfo struct {
 // month" without a follow-up fetch. No secrets: Scope/ScopeID are a
 // tenant/subject id (already non-secret, like user_id) and the counts are
 // integers. Wire-stable; field names are part of the RFC AW contract.
+
+// TeamDecisionInfo is the payload on EventTeamDecision.
+type TeamDecisionInfo struct {
+	// State is the decision state's id in the team's graph.
+	State string `json:"state"`
+	// Visit is the walk's ordinal of state visits at this one (1 for the
+	// walk's first state, never reused), the number a member run carries as
+	// its state_visit. So two passes through one state in a loop are two
+	// events with different visits, and a decision sorts among the walk's
+	// member runs by it.
+	Visit int `json:"visit"`
+	// Edge is the transition the walk took out of the state: the answer's own
+	// (`conditional:<option>`, `conditional:true|false`), or `success` when
+	// the answer had no transition of its own or the state routes on nothing.
+	Edge string `json:"edge"`
+	// Next is the state that transition leads to.
+	Next string `json:"next"`
+	// Answer is what the model answered, the object a walk's step carries as
+	// `answer`: model, provider, served_model, answers, usage.
+	Answer json.RawMessage `json:"answer"`
+}
 
 // HookDecisionInfo is the payload on EventHookDecision.
 type HookDecisionInfo struct {
