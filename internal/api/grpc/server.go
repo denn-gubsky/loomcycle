@@ -1767,6 +1767,11 @@ func eventToProto(ev providers.Event) *loomcyclepb.Event {
 			SinceTurn:   int32(ev.AwaitingChildren.SinceTurn),
 		}
 	}
+	if td := ev.TeamDecision; td != nil {
+		out.TeamDecision = &loomcyclepb.TeamDecision{
+			State: td.State, Visit: int32(td.Visit), Edge: td.Edge, Next: td.Next, Answer: td.Answer,
+		}
+	}
 	if ev.ChildrenNote != nil {
 		out.ChildrenNote = &loomcyclepb.ChildrenNote{
 			Text:        ev.ChildrenNote.Text,

@@ -65,6 +65,9 @@ const triageAnswers = `{"route":{"type":"choice","choice":"billing","probabiliti
 type deskProvider struct {
 	mu      sync.Mutex
 	prompts []string
+	// gate, when set, holds every call until it is closed: a desk that has
+	// been reached and has not answered yet.
+	gate chan struct{}
 }
 
 func (p *deskProvider) ID() string                  { return "stub" }
@@ -75,7 +78,7 @@ func (p *deskProvider) ListModels(context.Context) ([]string, error) {
 func (p *deskProvider) Capabilities() providers.Capabilities {
 	return providers.Capabilities{Streaming: true}
 }
-func (p *deskProvider) Call(_ context.Context, req providers.Request) (<-chan providers.Event, error) {
+func (p *deskProvider) Call(ctx context.Context, req providers.Request) (<-chan providers.Event, error) {
 	var asked []string
 	for _, m := range req.Messages {
 		for _, b := range m.Content {
@@ -84,7 +87,15 @@ func (p *deskProvider) Call(_ context.Context, req providers.Request) (<-chan pr
 	}
 	p.mu.Lock()
 	p.prompts = append(p.prompts, strings.Join(asked, "\n"))
+	gate := p.gate
 	p.mu.Unlock()
+	if gate != nil {
+		select {
+		case <-gate:
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+	}
 	events := says("handled")
 	ch := make(chan providers.Event, len(events))
 	for _, ev := range events {

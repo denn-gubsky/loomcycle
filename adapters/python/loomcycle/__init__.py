@@ -78,6 +78,7 @@ from .events import (
     AwaitingReview,
     SubagentHold,
     HookDecision,
+    TeamDecision,
     UserInput,
     LimitInfo,
     ErrorInfo,
@@ -118,6 +119,7 @@ __all__ = [
     "AwaitingReview",
     "SubagentHold",
     "HookDecision",
+    "TeamDecision",
     "UserInput",
     "LimitInfo",
     "ErrorInfo",
@@ -143,4 +145,4 @@ __all__ = [
     "SubstrateToolRefusedError",
 ]
 
-__version__ = "1.109.0"
+__version__ = "1.110.0"

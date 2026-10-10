@@ -1118,6 +1118,9 @@ func (s *Server) SetTeamDefTool(t tools.Tool) {
 			// armed breakpoint aborted the walk instead of pausing it.
 			td.WalkRun = s.openTeamWalkRun
 		}
+		if td.RecordDecision == nil {
+			td.RecordDecision = s.recordWalkDecision
+		}
 		if td.AskHuman != nil {
 			// A walk's pause asks a person without a model, so nothing recorded
 			// it: wrapped, its run reads and streams as waiting on the ask.

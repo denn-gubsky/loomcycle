@@ -1400,6 +1400,11 @@ message Event {
   // runtime note that ends that wait, telling the run how its children
   // ended. Nil on every other event type.
   ChildrenNote children_note = 20;
+
+  // team_decision carries the payload on type=team_decision frames — one
+  // visit of a team walk to a decision state, on the walk's own run. Nil on
+  // every other event type.
+  TeamDecision team_decision = 21;
 }
 
 // OverrideInfo is the type=override payload (RFC DC). Mirrors
@@ -1434,6 +1439,16 @@ message AwaitingChildren {
 message ChildrenNote {
   string text = 1;                    // the note, as the model reads it
   repeated string child_run_ids = 2;  // the background children it reports
+}
+
+// TeamDecision is the type=team_decision payload. Mirrors
+// providers.TeamDecisionInfo.
+message TeamDecision {
+  string state = 1;  // the decision state's id
+  int32 visit = 2;   // the walk's ordinal of state visits; a member run's state_visit
+  string edge = 3;   // the transition taken
+  string next = 4;   // the state it leads to
+  bytes answer = 5;  // the model's answer, a JSON object: model, provider, served_model, answers, usage
 }
 
 // AwaitingReview is the type=awaiting_review payload (RFC DJ). Mirrors
