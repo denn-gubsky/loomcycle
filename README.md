@@ -182,15 +182,22 @@ been primitives plus hardening: memory, documents, teams, sandboxing, retention
 and erasure. The agentic-memory subsystem and the document surfaces built on it
 remain the main direction.
 
-The most recent line (v1.109.0) lets a team graph ask a decision model directly.
+The most recent line (v1.110.0) puts a team decision's answer on the walk's own
+run. A walk started detached returns no steps, and a `decision` state starts no
+member run, so a client holding only the walk's run id could not read what a
+decision answered. Each decision is now one `team_decision` event on that run:
+the state, the transition taken and the model's answer, read from the run's
+event stream while the walk runs and after it has ended. See
+[`docs/DECISION-MODELS.md`](docs/DECISION-MODELS.md).
+
+Before it, v1.109.0 let a team graph ask a decision model directly.
 A state of kind `decision` asks typed questions, takes the transition the
 answer selects and binds the answers to team variables, with no agent run; a
 team that could never route on one of the answers is refused when it is saved.
 Starting a team walk is also safe to retry: an `idempotency_key` on a team run
-returns the walk already started. See
-[`docs/DECISION-MODELS.md`](docs/DECISION-MODELS.md).
+returns the walk already started.
 
-Before it, v1.108.1 was a patch with three provider fixes. A run on
+Earlier, v1.108.1 was a patch with three provider fixes. A run on
 a DeepSeek thinking model no longer fails on its first call after a context
 compaction that happened in the middle of a turn. An agent with `effort: low`
 or no effort set no longer gets a 400 from `gemini-3.5-flash-lite` or

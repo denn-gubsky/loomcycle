@@ -8,6 +8,69 @@ Each entry is the release's tag annotation, so the tag and this file cannot disa
 
 For the **public roadmap**, see [`docs/PLAN.md`](docs/PLAN.md).
 
+## What's in v1.110.0
+
+*A team's `decision` state now leaves **its answer on the walk's own run**. A walk started detached returns no steps, and a decision state starts no member run, so a client holding only the walk's run id could not read what a decision answered. Each decision is now one `team_decision` event on that run, read while the walk runs and after it has ended.*
+
+A minor release: #1720 and #1721.
+- #1721 is the decision record;
+- #1720 deploys releases to the cloud stack from CI, and changes nothing in the runtime.
+
+### A decision's answer is on the walk's run (#1721)
+
+v1.109.0 put a decision's answer on the walk's step, and a step exists only in the response of a walk the caller waited for. A walk started with `mode: "detach"` answers `{run_id, status}`, and its run kept its final text and the end state it reached. A client that detaches, as a canvas does so that it can abort, watch and answer pauses, could only infer which way a decision went from the state that ran next. It could not show the option's probabilities, the answers to the unrouted questions, or which model answered.
+
+Each visit of a walk to a `decision` state now appends one event to the walk's own run:
+
+```json
+{"type": "team_decision", "team_decision": {
+  "state": "triage",
+  "visit": 2,
+  "edge": "conditional:billing",
+  "next": "billing-desk",
+  "answer": {"model": "decide",
+             "answers": {"route": {"type": "choice", "choice": "billing", "probabilities": {"billing": 0.91, "support": 0.06, "sales": 0.03}, "confidence": 0.85},
+                         "urgent": {"type": "noul", "noul": 0.4}},
+             "usage": {"input_tokens": 1116, "output_tokens": 4}}
+}}
+```
+
+- **`visit`** is the walk's count of state visits: 1 for the walk's first state, never reused. It is the number a member run carries as `parent_context.state_visit`, so a decision sorts among the walk's member runs, and a loop through one decision state gives one event per pass.
+- **`edge`** is the transition the walk took: the answer's own `conditional:…`, or `success` when the answer had no transition of its own or the state has no `route`.
+- **`next`** is the state that transition leads to.
+- **`answer`** is the object a waited-for walk's step carries as `answer`.
+
+**Where it is read.** The event is a row of the walk run's transcript, so the reads every run has return it:
+
+- `GET /v1/runs/{run_id}/stream` on the walk's run (`streamRunByID` in `@loomcycle/client`, `StreamRun` over gRPC). While the walk runs, the decision arrives as it is made. Opened after the walk has ended, the stream replays the run's events, the decision among them, and closes.
+- `GET /v1/sessions/{session_id}/transcript` for the walk run's session.
+
+**Every walk records it,** however it was started: waited for, `detach` or `poll`.
+
+**What is not recorded.**
+
+- A decision whose call failed. The walk's run ends `failed` with the state and the model's code in its error, as before.
+- The event is not on the user run-state stream. That stream carries a run's state changes, and a decision changes none.
+- No MCP tool reads a run's events, for any run, so a client that has only MCP cannot read a decision.
+
+`@loomcycle/client` 1.110.0 has `"team_decision"` in `EventType` and `TeamDecisionInfo` as `AgentEvent.team_decision`. The Python adapter has `TeamDecision` as `AgentEvent.team_decision`; its `answer` is the JSON as bytes. The gRPC `Event` gains `team_decision` (field 21). The Web UI's run transcript shows a decision as one line, with the answer when expanded. See [`docs/DECISION-MODELS.md`](docs/DECISION-MODELS.md).
+
+### Releases deploy to the cloud stack from CI (#1720)
+
+`cloud-deployment/` is the compose stack behind the hosted instance. It was upgraded by hand and had fallen 52 minor releases behind.
+
+- The compose file takes the runtime version, the sidecar version and the loomboard ref from a `versions.env` file on the host, so a deploy changes three values and never edits the file.
+- A deploy script on the host deploys one release: it checks that the tag exists, is published and is not older than what runs, dumps the databases, pulls, restarts and waits for `/healthz` to report the new version. If it does not, the previous files are put back.
+- A workflow polls for the newest loomcycle and loomboard release tags every ten minutes and hands them to the script.
+
+Nothing in the binary, the images or the adapters changes with it. See [`cloud-deployment/INSTALL.md`](cloud-deployment/INSTALL.md).
+
+### Upgrade notes
+
+- **Nothing to migrate.** There is no schema change. The event is a new row type in the existing events table.
+- **A client that switches on every event type** meets a new one, `team_decision`, on a team walk's run only. No agent run emits it.
+- **gRPC:** `Event.team_decision` is a new optional message; a client built against the older proto ignores it.
+
 ## What's in v1.109.0
 
 *A team graph can now **ask a decision model directly**: a state of kind `decision` asks typed questions, takes the transition the answer selects and binds the answers to team variables, with no agent run. A team that could never route on one of the answers is refused when it is saved. And **starting a team walk is safe to retry**: `idempotency_key` on a team run returns the walk already started.*
