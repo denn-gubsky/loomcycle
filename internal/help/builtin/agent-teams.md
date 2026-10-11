@@ -629,6 +629,14 @@ with transitions `conditional:billing`, `conditional:support` and
 - **The next state receives what this state was handed**, not the answer. The
   answer reaches later states through the variables it bound, and the walk's
   step carries it as `answer`, beside `output`.
+- **Each visit is on the walk's own run** as a `team_decision` event:
+  `{state, visit, edge, next, answer}`. A walk started with `mode: "detach"`
+  returns no steps, and this state starts no member run, so the walk's run is
+  where a caller holding only its `run_id` reads the answer: from the run's
+  event stream (`GET /v1/runs/{run_id}/stream`) while the walk runs, and from
+  the same stream or the transcript after it has ended. `visit` is the walk's
+  count of state visits, the number a member run carries as `state_visit`, so
+  two passes through one state are two events.
 - **There is no confidence gate.** The probabilities are not calibrated. To act
   on one, capture it and route on it in a later state.
 - **A failed call fails the walk** at this state, with the model's code:

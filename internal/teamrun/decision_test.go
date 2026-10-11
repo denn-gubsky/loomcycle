@@ -242,3 +242,67 @@ func TestWalk_AMissingEdgeStillFailsWithoutAFallback(t *testing.T) {
 		t.Errorf("err = %v, want the missing transition reported", err)
 	}
 }
+
+// Each visit to a decision state is reported once, after the transition out
+// of it is known: with the edge the walk took (the answer's own, or success
+// when the answer has none) and the walk's ordinal for that visit, so two
+// passes through one state are two reports that differ.
+func TestWalk_ReportsEachDecisionVisitWithTheEdgeTaken(t *testing.T) {
+	support := strings.Replace(triageAnswer, `"choice":"billing"`, `"choice":"support"`, 1)
+	// intake → triage; an answer with no edge of its own goes round through
+	// retry, and billing ends the walk.
+	d := teamgraph.Definition{
+		Entry: "intake",
+		States: []teamgraph.State{
+			{ID: "intake", Handler: teamgraph.Handler{Kind: teamgraph.HandlerVars, Set: map[string]string{"seen": "intake"}}},
+			triageState(),
+			{ID: "retry", Handler: teamgraph.Handler{Kind: teamgraph.HandlerVars, Set: map[string]string{"seen": "retry"}}},
+			{ID: "billing-desk", Handler: teamgraph.Handler{Kind: teamgraph.HandlerTerminal}},
+		},
+		Transitions: []teamgraph.Transition{
+			{From: "intake", To: "triage", On: "success"},
+			{From: "triage", To: "billing-desk", On: "conditional:billing"},
+			{From: "triage", To: "retry", On: "success"},
+			{From: "retry", To: "triage", On: "success"},
+		},
+	}
+	if err := teamgraph.Validate(d); err != nil {
+		t.Fatalf("the test's team is not valid: %v", err)
+	}
+	answers := []string{support, triageAnswer}
+	a := &asked{}
+	r := decisionRunner(t, a)
+	r.decide = func(context.Context, string, map[string]any, map[string]decisionq.Question) (string, error) {
+		a.calls++
+		return answers[a.calls-1], nil
+	}
+	var got []DecisionVisit
+	task := &Task{Input: "the ticket"}
+	if _, err := Walk(context.Background(), d, task, r, OnDecision(func(_ context.Context, v DecisionVisit) { got = append(got, v) })); err != nil {
+		t.Fatalf("Walk: %v", err)
+	}
+	want := []DecisionVisit{
+		{State: "triage", Visit: 2, Edge: "success", Next: "retry", Answer: support},
+		{State: "triage", Visit: 4, Edge: "conditional:billing", Next: "billing-desk", Answer: triageAnswer},
+	}
+	if len(got) != len(want) {
+		t.Fatalf("the walk reported %d decisions, want %d: %+v", len(got), len(want), got)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("decision %d = %+v, want %+v", i, got[i], want[i])
+		}
+	}
+}
+
+// A decision whose call failed made no decision: nothing is reported.
+func TestWalk_AFailedDecisionReportsNothing(t *testing.T) {
+	reported := 0
+	r := decisionRunner(t, &asked{err: &DecisionError{Code: "timeout", Message: "no reply"}})
+	if _, err := Walk(context.Background(), decisionTeam(), &Task{}, r, OnDecision(func(context.Context, DecisionVisit) { reported++ })); err == nil {
+		t.Fatal("the walk did not fail")
+	}
+	if reported != 0 {
+		t.Errorf("a failed decision was reported %d times", reported)
+	}
+}

@@ -101,6 +101,23 @@ class ChildrenNote:
 
 
 @dataclass(frozen=True)
+class TeamDecision:
+    """Structured payload on ``team_decision`` events: one visit of a team
+    walk to a decision state, recorded on the walk's own run. ``visit`` is the
+    walk's ordinal of state visits (the number a member run carries as its
+    state_visit), ``edge`` the transition taken and ``next`` the state it
+    leads to. ``answer`` is the model's answer as JSON bytes: an object with
+    ``model``, ``provider``, ``served_model``, ``answers`` and ``usage``.
+    Mirrors ``providers.TeamDecisionInfo``."""
+
+    state: str
+    visit: int
+    edge: str
+    next: str
+    answer: bytes = b""
+
+
+@dataclass(frozen=True)
 class AwaitingReview:
     """Structured payload on ``awaiting_review`` events (RFC DJ) — a run armed
     for review finished its answer and is held for an operator's verdict
@@ -326,6 +343,7 @@ class AgentEvent:
     awaiting_review: Optional[AwaitingReview] = None
     subagent_hold: Optional[SubagentHold] = None
     hook_decision: Optional[HookDecision] = None
+    team_decision: Optional[TeamDecision] = None
     user_input: Optional[UserInput] = None
     limit: Optional[LimitInfo] = None
     capability_inert: Optional[CapabilityInertInfo] = None
@@ -388,6 +406,16 @@ class AgentEvent:
             cn = ChildrenNote(
                 text=ev.children_note.text,
                 child_run_ids=tuple(ev.children_note.child_run_ids),
+            )
+        td: Optional[TeamDecision] = None
+        if ev.HasField("team_decision"):
+            d = ev.team_decision
+            td = TeamDecision(
+                state=d.state,
+                visit=d.visit,
+                edge=d.edge,
+                next=d.next,
+                answer=d.answer,
             )
         ar: Optional[AwaitingReview] = None
         if ev.HasField("awaiting_review"):
@@ -474,6 +502,7 @@ class AgentEvent:
             awaiting_review=ar,
             subagent_hold=sh,
             hook_decision=hd,
+            team_decision=td,
             user_input=ui,
             limit=li,
             capability_inert=ci,

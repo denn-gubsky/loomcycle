@@ -55,3 +55,21 @@ def test_every_hook_decision_field_is_decoded():
     assert got is not None
     for name, want in values.items():
         assert getattr(got, name, None) == want, f"HookDecision.{name} is not decoded"
+
+
+def test_every_team_decision_field_is_decoded():
+    # Derived from the descriptor, like the hook decision's: a field added to
+    # TeamDecision must come through to the dataclass.
+    values = {}
+    for f in pb.TeamDecision.DESCRIPTOR.fields:
+        if f.type == f.TYPE_BYTES:
+            values[f.name] = f.name.encode()
+        elif f.type == f.TYPE_STRING:
+            values[f.name] = f.name
+        else:
+            values[f.name] = 7
+    got = AgentEvent._from_proto(pb.Event(type="team_decision", team_decision=pb.TeamDecision(**values))).team_decision
+    assert got is not None
+    for name, want in values.items():
+        assert getattr(got, name, None) == want, f"TeamDecision.{name} is not decoded"
+    assert AgentEvent._from_proto(pb.Event(type="text", text="x")).team_decision is None

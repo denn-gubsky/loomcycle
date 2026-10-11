@@ -369,6 +369,9 @@ export interface EventPayload {
   // "hook_decision" sidecar — what one hook did to a call, to the run, or to a
   // channel message.
   hook_decision?: HookDecisionEventInfo;
+  // "team_decision" sidecar — on a team walk's own run, one visit to a
+  // decision state: the transition taken and the model's answer.
+  team_decision?: { state: string; visit: number; edge: string; next: string; answer: unknown };
 }
 
 // HookDecisionEventInfo mirrors providers.HookDecisionInfo. A hook that passed

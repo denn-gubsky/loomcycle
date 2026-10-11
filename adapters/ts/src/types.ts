@@ -87,6 +87,9 @@ export type EventType =
   // content and not echoed into the next request — the full trace rides
   // `done`.
   | "thinking"
+  // On a team walk's own run: one visit to a `decision` state, with the
+  // transition taken and the model's answer (`AgentEvent.team_decision`).
+  | "team_decision"
   // RFC BH: the operator stopped THIS turn (the run itself continues, and an
   // interactive run parks).
   | "turn_cancelled"
@@ -440,6 +443,29 @@ export interface ErrorInfo {
   correct_call_format?: CallFormat;
 }
 
+/** One visit of a team walk to a `decision` state (the `team_decision`
+ *  payload), recorded on the walk's own run. A decision state starts no
+ *  member run, and a walk started with `mode: "detach"` returns no steps, so
+ *  this is where a client holding the walk's `run_id` finds the answer. */
+export interface TeamDecisionInfo {
+  /** The decision state's id. */
+  state: string;
+  /** The walk's ordinal of state visits at this one: 1 for the walk's first
+   *  state, never reused, and the number a member run of the walk carries as
+   *  `parent_context.state_visit`. Two passes through one state are two
+   *  events with different visits. */
+  visit: number;
+  /** The transition the walk took out of the state: `conditional:<option>`,
+   *  `conditional:true` / `conditional:false`, or `success` when the answer
+   *  had no transition of its own or the state routes on nothing. */
+  edge: string;
+  /** The state that transition leads to. */
+  next: string;
+  /** What the model answered: the object a waited-for walk's step carries as
+   *  `answer`. */
+  answer: TeamDecisionAnswer;
+}
+
 /** What one hook did to one call, or to the run (the `hook_decision`
  *  payload). */
 export interface HookDecisionInfo {
@@ -721,6 +747,11 @@ export interface AgentEvent {
   capability_inert?: CapabilityInertInfo;
   /** Payload on `event: hook_decision`. */
   hook_decision?: HookDecisionInfo;
+  /** Payload on `event: team_decision`: one visit of a team walk to a
+   *  decision state. Read it from the WALK's run, with
+   *  {@link LoomcycleClient.streamRunByID}: while the walk runs, and after
+   *  it has ended. */
+  team_decision?: TeamDecisionInfo;
   /** Set on `event: override` frames — what the operator changed, and from
    *  what to what. */
   override?: OverrideInfo;

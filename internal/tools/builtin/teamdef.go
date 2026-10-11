@@ -189,6 +189,13 @@ type TeamDef struct {
 	// and not held would let a retry start a second walk.
 	ExistingWalk func(ctx context.Context, key string, lostRace bool) (*ExistingWalk, error)
 
+	// RecordDecision, if set, puts one visit to a decision state on the record
+	// of the walk's own run (walkRunID, the id WalkRun returned). A decision
+	// state starts no member run and a detached walk returns no steps, so this
+	// is the only place a caller holding the walk's run id finds the answer.
+	// nil = nothing is recorded; a waited-for walk still returns it on its step.
+	RecordDecision func(ctx context.Context, walkRunID string, d teamrun.DecisionVisit)
+
 	// ArmWalkTriggers starts what a walk carries that wakes it from inside
 	// the team — today the team's own schedules — on walkCtx, and returns
 	// the disarm. op=run calls it once every refusal is behind it, and calls
@@ -308,7 +315,9 @@ const teamDefDescription = `Author, fork, promote, retire, and inspect team work
 	`conditional:true or conditional:false (threshold, default 0.5); with no route the state advances on success. Every ` +
 	`routed answer needs its own transition unless the state has a success transition, which takes the rest; a missing one ` +
 	`is refused at create and fork. capture reads the answer ($.answers.<question>.choice, .noul, .score, .confidence), the ` +
-	`next state receives what this state was handed, and the walk's step carries the answer as answer. A model or a ` +
+	`next state receives what this state was handed, and the walk's step carries the answer as answer; each visit ` +
+	`is also recorded on the walk's own run as a team_decision event {state, visit, edge, next, answer}, read from that ` +
+	`run's event stream during the walk and after it, which is where a detached walk's answer is found. A model or a ` +
 	`deployment that cannot answer it is reported by verify as unrunnable, not refused. ` +
 	`A definition may also declare agents of its own (local: {agents: {name: <the overlay AgentDef create takes>}}) ` +
 	`and run one from a state as ./<name>; any other name in a state is a global agent, even when the team declares one of that name, and a ./<name> the team does not declare is refused. Such an agent ` +
@@ -1627,6 +1636,13 @@ func (t *TeamDef) execRun(ctx context.Context, in teamDefInput) (tools.Result, e
 				return fmt.Errorf("board: %w", serr)
 			}
 			return nil
+		}))
+	}
+
+	if runID != "" && t.WalkRun != nil && t.RecordDecision != nil {
+		walkRunID := runID
+		opts = append(opts, teamrun.OnDecision(func(c context.Context, d teamrun.DecisionVisit) {
+			t.RecordDecision(c, walkRunID, d)
 		}))
 	}
 

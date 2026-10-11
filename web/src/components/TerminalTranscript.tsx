@@ -287,6 +287,18 @@ export function formatLine(row: TranscriptEvent): FormattedLine {
       if (!hd) return { key, ts, kind, cls: "tl-other", payload: oneLine(JSON.stringify(ev)) };
       return { key, ts, kind, ...hookDecisionLine(hd), collapsible: true };
     }
+    case "team_decision": {
+      // On a team walk's own run: which way a decision state sent the walk.
+      // The model's whole answer (probabilities, the unrouted answers) is the
+      // expanded view.
+      const td = ev.team_decision;
+      if (!td) return { key, ts, kind, cls: "tl-other", payload: oneLine(JSON.stringify(ev)) };
+      return {
+        key, ts, kind, cls: "tl-tool", collapsible: true,
+        payload: `◆ ${td.state} decided ${td.edge} → ${td.next}`,
+        full: JSON.stringify(td.answer, null, 2),
+      };
+    }
     case "started":
       return { key, ts, kind, cls: "tl-meta", payload: "" };
     case "session":

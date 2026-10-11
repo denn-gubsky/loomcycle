@@ -64,3 +64,21 @@ describe("hook_decision rows", () => {
     expect(open.cls).toBe("tl-tool");
   });
 });
+
+describe("team_decision rows", () => {
+  it("says which way the decision sent the walk, with the answer when expanded", () => {
+    const l = formatLine({
+      seq: 3, run_id: "walk-1", ts_ns: 0, type: "team_decision",
+      event: {
+        type: "team_decision",
+        team_decision: {
+          state: "triage", visit: 2, edge: "conditional:billing", next: "billing-desk",
+          answer: { model: "decide", answers: { route: { type: "choice", choice: "billing" } } },
+        },
+      },
+    });
+    expect(l.payload).toBe("◆ triage decided conditional:billing → billing-desk");
+    expect(l.collapsible).toBe(true);
+    expect(l.full).toContain('"choice": "billing"');
+  });
+});
