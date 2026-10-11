@@ -182,15 +182,24 @@ been primitives plus hardening: memory, documents, teams, sandboxing, retention
 and erasure. The agentic-memory subsystem and the document surfaces built on it
 remain the main direction.
 
-The most recent line (v1.110.0) puts a team decision's answer on the walk's own
+The most recent line (v1.111.0) makes the runs a team walk's member starts part
+of the walk. A sub-agent, at any depth, carries its member's walk, state and
+visit, so it is in the walk's listing and on the walk's stream; it is told from
+a member by its parent run. Before, a member reported as waiting on its
+children named runs that a client following the walk could not see. Any run
+can also be asked for its children now: a paged listing by parent run, and the
+same filter on the run-state stream, on every transport. See
+"Watching a team walk live" in [`docs/CONFIGURATION.md`](docs/CONFIGURATION.md).
+
+Before it, v1.110.0 put a team decision's answer on the walk's own
 run. A walk started detached returns no steps, and a `decision` state starts no
 member run, so a client holding only the walk's run id could not read what a
-decision answered. Each decision is now one `team_decision` event on that run:
+decision answered. Each decision is one `team_decision` event on that run:
 the state, the transition taken and the model's answer, read from the run's
 event stream while the walk runs and after it has ended. See
 [`docs/DECISION-MODELS.md`](docs/DECISION-MODELS.md).
 
-Before it, v1.109.0 let a team graph ask a decision model directly.
+Earlier, v1.109.0 let a team graph ask a decision model directly.
 A state of kind `decision` asks typed questions, takes the transition the
 answer selects and binds the answers to team variables, with no agent run; a
 team that could never route on one of the answers is refused when it is saved.
