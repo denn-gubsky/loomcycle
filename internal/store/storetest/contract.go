@@ -106,6 +106,8 @@ func Run(t *testing.T, factory Factory) {
 		{"ListRunsByWalkTenantFilter", testListRunsByWalkTenantFilter},
 		{"ListRunsByWalkEveryWriterStampsTheColumn", testListRunsByWalkEveryWriterStampsTheColumn},
 		{"ListRunsByWalkRefusesForeignCursor", testListRunsByWalkRefusesForeignCursor},
+		{"ListChildRunsPagesEveryChildOnceInOrder", testListChildRunsPagesEveryChildOnceInOrder},
+		{"ListChildRunsTenantFilterAndCursor", testListChildRunsTenantFilterAndCursor},
 		{"ListSessions", testListSessions},
 		{"ListSessionsTagEscaping", testListSessionsTagEscaping},
 		{"ListSessionsTenantIsolation", testListSessionsTenantIsolation},

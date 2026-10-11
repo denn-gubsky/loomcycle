@@ -1991,6 +1991,14 @@ type Store interface {
 	// nothing.
 	ListRunsByParentRunID(ctx context.Context, parentRunID string) ([]Run, error)
 
+	// ListChildRuns is ListRunsByParentRunID one page at a time, for a caller
+	// outside the runtime: a run's direct children (runs.parent_run_id ==
+	// parentRunID, never the run itself), every status, ordered by started_at
+	// then id, at most limit per page (<= 0 → 100, capped at 1000). cursor
+	// and nextCursor are ListRunsByWalk's. tenantID scopes the result to one
+	// tenant; "" returns all tenants. The caller authorizes the parent run.
+	ListChildRuns(ctx context.Context, tenantID, parentRunID string, limit int, cursor string) (runs []Run, nextCursor string, err error)
+
 	// ListUsers returns the distinct user_ids that have runs in the
 	// store, with summary stats per user (run counts by status, last
 	// activity). Drives the v0.7.3 Web UI's user picker so operators
