@@ -217,6 +217,14 @@ service Loomcycle {
   // Mirrors GET /v1/runs?walk_id=.
   rpc ListWalkRuns(ListWalkRunsRequest) returns (ListWalkRunsResponse);
 
+  // ListChildRuns lists one run's direct children — the runs whose
+  // parent_run_id is that run — of every status, oldest first, a page at a
+  // time. Not the run itself, and not its grandchildren. A parent the caller
+  // cannot read is the NotFound an unknown run gets.
+  //
+  // Mirrors GET /v1/runs?parent_run_id=.
+  rpc ListChildRuns(ListChildRunsRequest) returns (ListChildRunsResponse);
+
   // UsageReport aggregates the token-usage + cost ledger (RFC AV): summed
   // tokens + cost grouped by the requested dimensions over an optional tenant +
   // time window. Tenant-scoped like the HTTP twin (a substrate:tenant caller is
@@ -1774,6 +1782,21 @@ message ListWalkRunsResponse {
   string next_cursor = 2;
 }
 
+// ListChildRunsRequest names a run by its run id. limit 0 = 100, at most 1000;
+// cursor is "" for the first page, else the previous page's next_cursor.
+message ListChildRunsRequest {
+  string parent_run_id = 1;
+  int32 limit = 2;
+  string cursor = 3;
+}
+
+// ListChildRunsResponse is one page, ordered by (started_at, run_id).
+// next_cursor is "" on the last page.
+message ListChildRunsResponse {
+  repeated Agent agents = 1;
+  string next_cursor = 2;
+}
+
 // UsageReportRequest mirrors GET /v1/_usage query params. group_by is a subset
 // of {tenant,user,provider,model,source}; an unknown dimension is rejected. from
 // / to are RFC3339 (empty = unbounded). tenant is an admin-only focus (ignored
@@ -2145,6 +2168,10 @@ message StreamUserRunStatesRequest {
   // Server-side: it reduces what crosses the wire, not merely what the caller
   // keeps.
   string walk_id = 4;
+  // Optional filter — only ONE run's direct children: events whose
+  // parent_run_id is this run id. The run's own transitions are not in it.
+  // With walk_id, an event must pass both. Server-side, like walk_id.
+  string parent_run_id = 5;
 }
 
 // RunStateEvent mirrors the SSE wire shape from the HTTP transport.

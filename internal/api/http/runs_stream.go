@@ -68,6 +68,10 @@ func parseStreamFilter(userID string, q map[string][]string) connector.StreamUse
 	if vals := q["walk_id"]; len(vals) > 0 {
 		out.WalkID = strings.TrimSpace(vals[0])
 	}
+	// `?parent_run_id=<run_id>` — watch one run's direct children live.
+	if vals := q["parent_run_id"]; len(vals) > 0 {
+		out.ParentRunID = strings.TrimSpace(vals[0])
+	}
 	return out
 }
 
@@ -134,8 +138,9 @@ func (s *Server) handleStreamUserAgents(w http.ResponseWriter, r *http.Request) 
 		// mistyped param would otherwise look like a workflow that simply
 		// produced no events, which is the same thing a working filter looks
 		// like right up until it isn't.
-		"filter_walk_id":     req.WalkID,
-		"keepalive_interval": int(streamKeepaliveInterval.Seconds()),
+		"filter_walk_id":       req.WalkID,
+		"filter_parent_run_id": req.ParentRunID,
+		"keepalive_interval":   int(streamKeepaliveInterval.Seconds()),
 	})
 
 	visit := func(evt connector.RunStateEvent) error {

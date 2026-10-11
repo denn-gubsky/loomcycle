@@ -1596,6 +1596,32 @@ walk reached — absent when it failed or was cancelled — so a team with two e
 (say `published` and `abandoned`) tells you which one it took. Member rows leave
 `result` out, like every listing.
 
+#### One run's children
+
+Any run, in a walk or not, can be asked for the runs it started itself:
+
+```sh
+curl "…/v1/runs?parent_run_id=r_0d07…&limit=100"
+# → {"agents":[{"run_id":"r_2452…","parent_run_id":"r_0d07…",…}, …], "next_cursor":""}
+
+curl -N "…/v1/users/{user_id}/agents/stream?parent_run_id=r_0d07…"
+```
+
+The listing returns the run's direct children, the runs whose `parent_run_id`
+is that run, of every status, oldest first, paged like the walk listing. The
+run itself is not in it, and neither are its grandchildren: ask again with a
+child's id for those. You may list a run's children if you may read the run;
+otherwise it is the 404 an unknown run gets. Pass `walk_id` or `parent_run_id`,
+not both. It is `list_runs` with `parent_run_id` over MCP, the `ListChildRuns`
+RPC over gRPC, `listChildRuns` in the TypeScript client and `list_child_runs`
+in Python.
+
+The stream filter is the same rule, live: only events whose `parent_run_id` is
+that run. The `stream_open` event echoes it as `filter_parent_run_id`. It is on
+`stream_user_run_states` over MCP and gRPC (`parent_run_id`), `parentRunId` in
+the TypeScript client and `parent_run_id` in Python. With `walk_id` as well, an
+event must pass both.
+
 Every run a walk state starts — an agent and its consolidator, each parallel
 member, a standalone consolidator, a starter's wave — carries `walk_id` plus
 `state` (the state id it ran in) and `state_visit` on its `parent_context`.

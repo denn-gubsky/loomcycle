@@ -84,7 +84,9 @@ func (s *Server) StreamUserRunStates(req *loomcyclepb.StreamUserRunStatesRequest
 		// each event's parent_context.walk_id, exactly as the HTTP handler's
 		// ?walk_id= does — the two transports must not disagree about what a
 		// walk filter means.
-		WalkID:       req.GetWalkId(),
+		WalkID: req.GetWalkId(),
+		// One run's direct children, by each event's parent_run_id.
+		ParentRunID:  req.GetParentRunId(),
 		TenantID:     tenantID,
 		TenantScoped: !allTenants,
 	}

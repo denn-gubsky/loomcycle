@@ -521,6 +521,32 @@ describe("getAgent / cancelAgent / listUserAgents", () => {
     expect(fetchMock.mock.calls[0]![1]!.method).toBe("GET");
   });
 
+  it("listChildRuns GETs /v1/runs with parent_run_id, limit and cursor and returns the page", async () => {
+    const { NotFoundError } = await import("../src/errors.js");
+    const { client, fetchMock } = makeClient([
+      jsonResponse({
+        agents: [
+          { agent_id: "helper", run_id: "r_child", parent_run_id: "r_parent", session_id: "s2", agent: "helper", status: "completed", started_at: "2026-10-11T00:00:01Z" },
+        ],
+        next_cursor: "run_0000000000000001_r_child",
+      }),
+      jsonResponse({ agents: [], next_cursor: "" }),
+      errorResponse(404, "no run found for parent_run_id r_missing"),
+    ]);
+
+    const page = await client.listChildRuns("r_parent", { limit: 1, cursor: "run_0000000000000000_r_a" });
+    expect(page.agents.map((a) => [a.run_id, a.parent_run_id, a.status])).toEqual([["r_child", "r_parent", "completed"]]);
+    expect(page.next_cursor).toBe("run_0000000000000001_r_child");
+    expect(fetchMock.mock.calls[0]![0]).toBe(
+      "http://test-loomcycle:8787/v1/runs?parent_run_id=r_parent&limit=1&cursor=run_0000000000000000_r_a",
+    );
+    expect(fetchMock.mock.calls[0]![1]!.method).toBe("GET");
+
+    expect(await client.listChildRuns("r_parent")).toEqual({ agents: [], next_cursor: "" });
+    expect(fetchMock.mock.calls[1]![0]).toBe("http://test-loomcycle:8787/v1/runs?parent_run_id=r_parent");
+    await expect(client.listChildRuns("r_missing")).rejects.toBeInstanceOf(NotFoundError);
+  });
+
   it("listWalkRuns sends only walk_id by default and throws NotFoundError on 404", async () => {
     const { NotFoundError } = await import("../src/errors.js");
     const { client, fetchMock } = makeClient([
@@ -1114,6 +1140,20 @@ describe("v0.9.x n8n RFC Phase 0 — listChannels + streamUserRunStates", () => 
     expect(url).toContain("walk_id=run_walk_123");
     // Not smuggled under some other spelling the server does not read.
     expect(url).not.toContain("walkId=");
+  });
+
+  it("streamUserRunStates sends parentRunId as the server's ?parent_run_id= param", async () => {
+    const { client, fetchMock } = makeClient([sseResponse([]), sseResponse([])]);
+    for await (const _ of client.streamUserRunStates("user-a", { parentRunId: "r_parent_1" })) {
+      // drain
+    }
+    const url = fetchMock.mock.calls[0]![0] as string;
+    expect(url).toContain("parent_run_id=r_parent_1");
+    expect(url).not.toContain("parentRunId=");
+    for await (const _ of client.streamUserRunStates("user-a")) {
+      // drain
+    }
+    expect(fetchMock.mock.calls[1]![0] as string).not.toContain("parent_run_id");
   });
 
   it("streamUserRunStates omits walk_id when no walk is named", async () => {

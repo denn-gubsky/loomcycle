@@ -78,3 +78,27 @@ async def test_list_walk_runs_unknown_walk_raises_not_found():
 
     with pytest.raises(AgentNotFoundError):
         await client.list_walk_runs("r_missing")
+
+
+@pytest.mark.asyncio
+async def test_list_child_runs_sends_the_page_arguments_and_decodes_the_page():
+    client = _make_client()
+    captured: dict = {}
+
+    async def fake(req, metadata=None):
+        captured["req"] = req
+        return pb.ListChildRunsResponse(
+            agents=[pb.Agent(agent_id="helper", run_id="r_child", parent_run_id="r_parent", status="completed")],
+            next_cursor="run_0000000000000001_r_child",
+        )
+
+    client._stub.ListChildRuns = fake  # type: ignore[attr-defined]
+
+    page = await client.list_child_runs("r_parent", limit=1, cursor="run_0000000000000000_r_a")
+    req = captured["req"]
+    assert (req.parent_run_id, req.limit, req.cursor) == ("r_parent", 1, "run_0000000000000000_r_a")
+    assert [(a["run_id"], a["status"]) for a in page["agents"]] == [("r_child", "completed")]
+    assert page["next_cursor"] == "run_0000000000000001_r_child"
+
+    await client.list_child_runs("r_parent")
+    assert (captured["req"].limit, captured["req"].cursor) == (0, "")

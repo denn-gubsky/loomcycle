@@ -219,6 +219,25 @@ async def test_stream_user_run_states_forwards_the_walk_filter():
 
 
 @pytest.mark.asyncio
+async def test_stream_user_run_states_forwards_the_parent_run_filter():
+    """An unforwarded parent_run_id streams every run, which looks like a busy
+    parent. So assert on what was SENT."""
+    client = _make_client()
+    captured: dict = {}
+
+    def fake(req, metadata=None):
+        captured["req"] = req
+        return _ItemStream([])
+
+    client._stub.StreamUserRunStates = fake  # type: ignore[attr-defined]
+
+    async for _ in client.stream_user_run_states("u1", parent_run_id="r_parent_1"):
+        pass
+
+    assert captured["req"].parent_run_id == "r_parent_1"
+
+
+@pytest.mark.asyncio
 async def test_stream_user_run_states_surfaces_the_wave_correlation():
     """walk_id says a run is INSIDE a walk; wave_id and wave_index say where.
 

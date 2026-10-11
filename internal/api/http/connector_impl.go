@@ -542,6 +542,27 @@ func (s *Server) ListWalkRuns(ctx context.Context, walkID string, limit int, cur
 	return connector.WalkRuns{Runs: out, NextCursor: next}, nil
 }
 
+// ListChildRuns is the connector side of GET /v1/runs?parent_run_id=, through
+// the same childRuns gate. Running rows carry their awaited state, as on HTTP.
+func (s *Server) ListChildRuns(ctx context.Context, parentRunID string, limit int, cursor string) (connector.WalkRuns, error) {
+	if s.store == nil {
+		return connector.WalkRuns{}, fmt.Errorf("list_runs requires persistence (no Store configured)")
+	}
+	runs, next, err := s.childRuns(ctx, parentRunID, limit, cursor)
+	if err != nil {
+		return connector.WalkRuns{}, err
+	}
+	out := make([]connector.Run, 0, len(runs))
+	for _, r := range runs {
+		c := storeRunToConnector(r)
+		if r.Status == store.RunRunning {
+			c.AwaitedState, c.AwaitedOn = awaited.ForRun(ctx, s.store, r.ID)
+		}
+		out = append(out, c)
+	}
+	return connector.WalkRuns{Runs: out, NextCursor: next}, nil
+}
+
 func storeRunToConnector(r store.Run) connector.Run {
 	usage := &providers.Usage{
 		InputTokens:         r.InputTokens,

@@ -3820,6 +3820,10 @@ export interface RunStateStreamOpen {
    *  are a stream that stays quiet. Comparing this to what you sent tells the
    *  two apart before you wait on an empty stream. Empty when unfiltered. */
   filter_walk_id?: string;
+  /** The parent-run filter the server applied, echoed back like
+   *  `filter_walk_id`. Empty when unfiltered, absent on a server that
+   *  predates the filter (which then streams every run). */
+  filter_parent_run_id?: string;
   keepalive_interval: number;
 }
 
@@ -3858,6 +3862,13 @@ export interface StreamUserRunStatesOptions {
    *  callback sees. The server echoes it back on the open frame as
    *  {@link RunStateStreamOpen.filter_walk_id}. */
   walkId?: string;
+  /** SERVER-side filter: only one run's direct children, the events whose
+   *  `parent_run_id` is this run id. The run's own transitions are not in
+   *  it, nor its grandchildren's. It is the live twin of
+   *  {@link LoomcycleClient.listChildRuns}. With `walkId`, an event must pass
+   *  both. Echoed on the open frame as
+   *  {@link RunStateStreamOpen.filter_parent_run_id}. */
+  parentRunId?: string;
   /** v0.9.x — client-side filter on the run's parent_agent_id.
    *  Useful for "show me only the sub-runs spawned by agent X."
    *  The filter is applied AFTER the SSE frame is parsed, so this
