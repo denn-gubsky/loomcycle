@@ -8,6 +8,49 @@ Each entry is the release's tag annotation, so the tag and this file cannot disa
 
 For the **public roadmap**, see [`docs/PLAN.md`](docs/PLAN.md).
 
+## What's in v1.111.0
+
+*The runs a team walk's member starts are now **part of the walk**. A sub-agent, at any depth, carries its member's walk, state and visit, so it is in the walk's listing and on the walk's stream. Before, a member reported as waiting on its children named runs that a client following the walk could not see.*
+
+A minor release: #1723 and #1724.
+- #1723 puts the walk on a member's sub-agents;
+- #1724 is `@loomcycle/def-fields` 0.4.0, published by its own tag, and changes nothing in the runtime.
+
+### A member's sub-agents carry the walk (#1723)
+
+A run a walk's member started with the `Agent` tool, waited for or with `mode: "poll"`, named the member as its parent run and carried nothing of the walk. So it was in neither `GET /v1/runs?walk_id=` nor the walk-filtered run-state stream. The only way to find it was the user's own run listing, which returns at most 100 runs and only running ones unless asked.
+
+A run started under a member, at any depth, now carries the member's `walk_id`, `state` and `state_visit` on its `parent_context`:
+
+- **It is in the walk's listing and on its stream,** running and ended, with the state it belongs to.
+- **It is not a member.** Tell the two apart by `parent_run_id`: a member's is the walk's run id, a sub-agent's is the run that started it.
+- **The wave and board fields stay the member's alone.** A wave's width is still the runs its Starter dispatched, and a board card is still pinned to the direct handler.
+- **A walk a member starts** carries the outer walk's fields on its own run. The runs it starts carry its own `walk_id`.
+
+**What changes for a client.** `GET /v1/runs?walk_id=`, the `ListWalkRuns` RPC, `list_runs` with `walk_id` and the walk-filtered stream return more rows for a walk whose members spawn sub-agents. A client that treated every row other than the walk's own as a member should check `parent_run_id`.
+
+**What does not change.** A member's sub-agent still takes only a review verdict, not a retune or a steer, as every sub-agent does. The rule that decides it now asks whether the walk is the run's parent, where it asked whether the run carried a walk at all.
+
+The Web UI's walk view lists a sub-agent under its member, indented, and a visit's count reads "N runs, M sub-agents".
+
+`@loomcycle/client` 1.111.0: `listUserAgents` accepts `status: "all"` in its type. The server always took it.
+
+See "Watching a team walk live" in [`docs/CONFIGURATION.md`](docs/CONFIGURATION.md).
+
+### `@loomcycle/def-fields` 0.4.0 (#1724)
+
+The agent registry has had a "Decision models" field (`decision {default, models}`) since v1.107.0, and it had not been published: npm's latest was 0.3.0. A host that renders an agent's form from the published registry had no field for the block.
+
+0.4.0 is that field and nothing else. It is published by the `def-fields-v0.4.0` tag, apart from this release.
+
+`@loomcycle/library` depends on `@loomcycle/def-fields` at `^0.3.0`, which does not take 0.4.0. It is not re-released here.
+
+### Upgrade notes
+
+- **Nothing to migrate.** There is no schema change. The walk's listing reads a column that the new rows fill as every member's row does.
+- **Runs already stored are not rewritten.** A sub-agent that ran before the upgrade stays out of its walk's listing.
+- **A client of the walk listing or the walk-filtered stream** will see sub-agents. Use `parent_run_id` to separate them from members.
+
 ## What's in v1.110.0
 
 *A team's `decision` state now leaves **its answer on the walk's own run**. A walk started detached returns no steps, and a decision state starts no member run, so a client holding only the walk's run id could not read what a decision answered. Each decision is now one `team_decision` event on that run, read while the walk runs and after it has ended.*
