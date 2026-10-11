@@ -1558,7 +1558,8 @@ curl -XPOST …/v1/_teamdef -d '{"op":"run","name":"triage","mode":"detach"}'
 curl -N "…/v1/users/{user_id}/agents/stream?walk_id=r_4325…"
 ```
 
-The filtered stream carries the walk's own run as well as its members: it is
+The filtered stream carries the walk's own run, its members and the runs its
+members start. The walk's run is
 `running` when the walk starts and ends `completed`, `failed` or `cancelled`.
 While the walk is paused at a breakpoint — or on an iteration cap it escalated
 to a person — its run is `running` with `awaited_state: "interrupted"`
@@ -1580,7 +1581,8 @@ curl "…/v1/runs?walk_id=r_4325…&limit=100"
 curl "…/v1/runs?walk_id=r_4325…&limit=100&cursor=run_…"   # the next page
 ```
 
-It returns the walk's own run and every member, oldest first, in pages of up to
+It returns the walk's own run, every member, and every run a member started
+(its sub-agents, at any depth), oldest first, in pages of up to
 1000 (default 100); `next_cursor` is empty on the last page. Unlike the user
 listing (`/v1/users/{user_id}/agents`, 100 rows) it is not capped, and it needs
 no client-side filtering. You may list a walk if you may read the walk's own run
@@ -1601,8 +1603,17 @@ member, a standalone consolidator, a starter's wave — carries `walk_id` plus
 one visit share it, and a revisit of the same state — a pushback loop, or a
 `continue` on an iteration cap — gets a new one. A starter's wave members also
 carry `wave_id` and `wave_index`, so a client can group a fan-out by wave and
-order it by position. A member's own sub-agents carry none of these, and the
-walk's own run is the one whose `run_id` equals the `walk_id`.
+order it by position. The walk's own run is the one whose `run_id` equals the
+`walk_id`.
+
+A run a member starts with the `Agent` tool, and any run that one starts, is
+not a member and still belongs to the walk. It carries the member's `walk_id`,
+`state` and `state_visit`, so it is in the walk's listing and on its stream.
+Tell the two apart by `parent_run_id`: a member's is the walk's `run_id`, a
+sub-agent's is the run that started it. The wave fields and the board fields
+stay the member's alone, so a wave's width is the runs its starter dispatched.
+A walk a member starts is such a run too: its own run carries the outer walk's
+fields, and the runs it starts carry its own `walk_id`.
 
 ### Armed subscriptions — a promoted team that runs itself
 

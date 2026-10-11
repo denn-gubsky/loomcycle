@@ -65,7 +65,10 @@ func heldKindFixture(t *testing.T, kind heldResumeKind) (*Server, *httptest.Serv
 		ident.ParentRunID, ident.ParentAgentID = parent.ID, parent.AgentID
 	}
 	if kind == heldWalkMember {
-		ident.ParentContext = &store.ParentContext{WalkID: "w1", State: "draft", StateVisit: 1}
+		// A member's parent run is its walk, and the walk is live here: a
+		// member whose walk is gone is not resumed at all.
+		ident.ParentContext = &store.ParentContext{WalkID: ident.ParentRunID, State: "draft", StateVisit: 1}
+		srv.walks.add(ident.ParentRunID, "", runStateMeta{RunID: ident.ParentRunID}, func(error) {})
 	}
 	sess, err := st.CreateSession(ctx, "", "writer", "alice")
 	if err != nil {

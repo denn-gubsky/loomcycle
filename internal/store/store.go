@@ -1207,6 +1207,56 @@ func (p *ParentContext) Clone() *ParentContext {
 	return &cp
 }
 
+// WalkLineage is the walk state a run descends from, carried on that run's own
+// execution ctx to the runs it starts. It is what makes a member's sub-agents,
+// at any depth, part of the walk's listing and stream.
+//
+// It is kept apart from WalkTask on purpose. WalkTask says "the run created
+// here IS this state's member" and is set by the walk for one spawn; a run
+// carrying the walk fields with a parent that is not the walk is a descendant.
+// Only the walk, the state and the visit travel: a wave is the runs a Starter
+// dispatched and a board card is pinned to the direct handler, so neither is
+// inherited.
+type walkLineageCtxKey struct{}
+
+// WithWalkLineage sets the walk state the runs started under ctx descend
+// from. A zero task CLEARS it.
+func WithWalkLineage(ctx context.Context, w WalkTask) context.Context {
+	return context.WithValue(ctx, walkLineageCtxKey{}, w)
+}
+
+// WalkLineageFromContext returns the walk state runs started under ctx
+// descend from. ok=false when there is none.
+func WalkLineageFromContext(ctx context.Context) (WalkTask, bool) {
+	w, _ := ctx.Value(walkLineageCtxKey{}).(WalkTask)
+	if w.WalkID == "" {
+		return WalkTask{}, false
+	}
+	return w, true
+}
+
+// StampWalkLineage puts the walk state on ctx onto a run's parent context:
+// the run is a descendant of that state's member. nil-safe on pc; it returns
+// pc unchanged when ctx carries none.
+func StampWalkLineage(ctx context.Context, pc *ParentContext) *ParentContext {
+	ln, ok := WalkLineageFromContext(ctx)
+	if !ok {
+		return pc
+	}
+	if pc == nil {
+		pc = &ParentContext{}
+	}
+	pc.WalkID, pc.State, pc.StateVisit = ln.WalkID, ln.State, ln.Visit
+	return pc
+}
+
+// IsWalkMember reports whether the run was started by a walk's own state: it
+// carries the walk, and the walk's run is its parent. A run that carries the
+// walk under any other parent is a member's sub-agent.
+func (r Run) IsWalkMember() bool {
+	return r.ParentContext != nil && r.ParentContext.WalkID != "" && r.ParentContext.WalkID == r.ParentRunID
+}
+
 // BoardTask identifies the workflow-board task (a Document chunk) a board-bound
 // `TeamDef op=run` is driving. It rides the walk context so each handler spawn
 // stamps it onto the child run's ParentContext (see the sub-agent spawn path).

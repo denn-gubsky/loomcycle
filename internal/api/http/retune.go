@@ -205,7 +205,7 @@ func (s *Server) remoteRunForSteer(ctx context.Context, runID string) (store.Run
 // agree. A walk's or hook's run has no entry at all and is refused apart from
 // this, by runsNoLoop.
 func takesOnlyVerdicts(run store.Run) bool {
-	return run.ParentRunID != "" && (run.ParentContext == nil || run.ParentContext.WalkID == "")
+	return run.ParentRunID != "" && !run.IsWalkMember()
 }
 
 // runsNoLoop reports a run that is a record, not an agent loop: a team walk's

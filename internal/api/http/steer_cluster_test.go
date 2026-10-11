@@ -177,7 +177,13 @@ func TestSteer_ARemoteAgentToolChildTakesOnlyAVerdict(t *testing.T) {
 		t.Errorf("verdict on another replica's held child: status %d, want 200: %s", rec.Code, rec.Body.String())
 	}
 
-	member := clusterSubRun(t, srv, parent, "r2", &store.ParentContext{WalkID: "w1", State: "a", StateVisit: 1})
+	// A member's parent run is its walk; a run that carries the walk under any
+	// other parent is a member's sub-agent, and takes only a verdict too.
+	member := clusterSubRun(t, srv, parent, "r2", &store.ParentContext{WalkID: parent, State: "a", StateVisit: 1})
+	descendant := clusterSubRun(t, srv, member, "r2", &store.ParentContext{WalkID: parent, State: "a", StateVisit: 1})
+	if rec := doJSON(t, srv, "POST", "/v1/runs/"+descendant+"/retune", `{"max_tokens":512}`); rec.Code != 404 {
+		t.Errorf("retune of a member's sub-agent on another replica: status %d, want 404: %s", rec.Code, rec.Body.String())
+	}
 	for _, id := range []string{member, parent} {
 		if rec := doJSON(t, srv, "POST", "/v1/runs/"+id+"/retune", `{"max_tokens":512}`); rec.Code != 200 {
 			t.Errorf("retune of %s on another replica: status %d, want 200: %s", id, rec.Code, rec.Body.String())

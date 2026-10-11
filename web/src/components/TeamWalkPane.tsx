@@ -415,12 +415,14 @@ function VisitTimeline({
             <div className="team-walk-visit-head">
               <span className="team-walk-visit-n">#{g.visit || "?"}</span> <code>{g.state || "(no state)"}</code>{" "}
               <span className="team-walk-muted">
-                {g.members.length} run{g.members.length === 1 ? "" : "s"}
+                {g.memberCount} run{g.memberCount === 1 ? "" : "s"}
+                {g.members.length > g.memberCount &&
+                  `, ${g.members.length - g.memberCount} sub-agent${g.members.length - g.memberCount === 1 ? "" : "s"}`}
               </span>
             </div>
             <ul className="team-walk-members">
               {g.members.map((m) => (
-                <MemberRow key={m.runId} m={m} live={live} now={now} onReview={onReview} />
+                <MemberRow key={m.runId} m={m} depth={g.depth.get(m.runId) ?? 0} live={live} now={now} onReview={onReview} />
               ))}
             </ul>
           </div>
@@ -432,11 +434,14 @@ function VisitTimeline({
 
 function MemberRow({
   m,
+  depth,
   live,
   now,
   onReview,
 }: {
   m: WalkRunRow;
+  /** 0 for a member; how deep under its member a sub-agent is. */
+  depth: number;
   live: boolean;
   now: number;
   onReview: WalkActions["review"];
@@ -446,8 +451,9 @@ function MemberRow({
   const ended = m.completedAt ?? (isTerminal(m.status) ? m.ts : undefined);
   const dur = durationLabel(m.startedAt, ended ?? (live ? now : undefined));
   return (
-    <li className="team-walk-member">
+    <li className="team-walk-member" style={depth > 0 ? { marginLeft: `${depth * 1.5}rem` } : undefined}>
       <div className="team-walk-member-line">
+        {depth > 0 && <span className="team-walk-muted">sub-agent</span>}
         {m.waveId && <span className="team-walk-muted">[{m.waveIndex ?? 0}]</span>}
         <span className={`pill ${m.status}`}>{m.status}</span>
         <Link to={runRowHref({ runId: m.runId, agentId: m.agentId })}>

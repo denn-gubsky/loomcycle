@@ -1250,7 +1250,14 @@ export interface ParentContext {
    *  agent within the walk rather than merely inside it — a fan-out of N
    *  agents shares one `wave_id` and differs only by `wave_index`.
    *
-   *  Absent on any run no team walk spawned. */
+   *  A run a member starts (a sub-agent, at any depth) carries the member's
+   *  `walk_id`, `state` and `state_visit` too, so it is in
+   *  {@link LoomcycleClient.listWalkRuns} and on the walk-filtered stream.
+   *  It is told from a member by `parent_run_id`: a member's is the walk's
+   *  run id, a sub-agent's is the run that started it. The wave fields stay
+   *  the member's alone.
+   *
+   *  Absent on any run outside a team walk. */
   walk_id?: string;
   wave_id?: string;
   /** Position within the wave, 0-based. Sent even when 0 (unlike the string
@@ -1259,7 +1266,8 @@ export interface ParentContext {
   wave_index?: number;
   /** Which state of the walk ran this run — set on EVERY run a team walk
    *  spawns (agent, parallel, consolidator and starter members alike), where
-   *  the wave fields are a starter's alone. */
+   *  the wave fields are a starter's alone. A member's sub-agent carries the
+   *  member's. */
   state?: string;
   /** The walk's own ordinal of state visits (1, 2, …): the runs of one visit
    *  share it, and a revisit of the same state gets a new one. Absent outside

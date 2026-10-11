@@ -918,7 +918,8 @@ export class LoomcycleClient {
     return { cancelledCount: resp.cancelled_count };
   }
 
-  /** List a user's recent agent runs, optionally filtered by status.
+  /** List a user's recent agent runs, optionally filtered by status. With no
+   *  `status` only running runs are returned; `"all"` returns every status.
    *
    *  v0.9.x — `parentAgentId` narrows the result CLIENT-SIDE to runs
    *  whose `parent_agent_id` matches. The server still returns the
@@ -928,7 +929,7 @@ export class LoomcycleClient {
   async listUserAgents(
     userId: string,
     opts?: {
-      status?: AgentStatus;
+      status?: AgentStatus | "all";
       parentAgentId?: string;
       /** Super-admin tenant-focus (?tenant=, RFC L v0.17.0). Ignored
        *  server-side for a tenant principal — its own tenant is forced. */
