@@ -50,8 +50,13 @@ func (p *delegatingProvider) Call(_ context.Context, req providers.Request) (<-c
 	}
 	ch := make(chan providers.Event, 2)
 	if delegates && !answered {
+		input := `{"name":"` + to + `","prompt":"help"}`
+		if to == "POLL" {
+			// Two background children the run does not wait on in the call.
+			input = `{"op":"parallel_spawn","mode":"poll","spawns":[{"name":"helper","prompt":"a"},{"name":"helper","prompt":"b"}]}`
+		}
 		ch <- providers.Event{Type: providers.EventToolCall, ToolUse: &providers.ToolUse{
-			ID: "tu_delegate", Name: "Agent", Input: json.RawMessage(`{"name":"` + to + `","prompt":"help"}`),
+			ID: "tu_delegate", Name: "Agent", Input: json.RawMessage(input),
 		}}
 		ch <- providers.Event{Type: providers.EventDone, StopReason: "tool_use", Usage: &providers.Usage{InputTokens: 1, OutputTokens: 1}}
 	} else {
@@ -76,6 +81,8 @@ func newStampHarness(t *testing.T) *walkHarness {
 			// chain → relay → helper: a member with a sub-agent that has one.
 			"chain": {Model: "stub-model", SystemPrompt: "DELEGATE:relay", Tools: []string{"Agent"}},
 			"relay": {Model: "stub-model", SystemPrompt: "DELEGATE:helper", Tools: []string{"Agent"}},
+			// poller starts two helpers in the background (mode poll).
+			"poller": {Model: "stub-model", SystemPrompt: "DELEGATE:POLL", Tools: []string{"Agent"}},
 		},
 		Channels: map[string]config.Channel{
 			"in":  {Scope: "tenant", Semantic: "queue", MaxMessages: 100},
@@ -389,6 +396,45 @@ func TestTakesOnlyVerdicts_ASubAgentCarryingTheWalkIsStillASubAgent(t *testing.T
 	} {
 		if got := takesOnlyVerdicts(tc.run); got != tc.want {
 			t.Errorf("%s: takesOnlyVerdicts = %v, want %v", name, got, tc.want)
+		}
+	}
+}
+
+// pollTeam is one agent state whose member starts two background children.
+const pollTeam = `{"entry":"lead","states":[` +
+	`{"state":"lead","handler":{"kind":"agent","agent":"poller"}},` +
+	`{"state":"done","handler":{"kind":"terminal"}}],` +
+	`"transitions":[{"from":"lead","to":"done","on":"success"}]}`
+
+// TestTeamDefRun_BackgroundChildrenAreInTheWalksListing: a member that starts
+// two children with mode poll, and is then reported as waiting on its
+// children, has both in the walk's listing with its state.
+func TestTeamDefRun_BackgroundChildrenAreInTheWalksListing(t *testing.T) {
+	h := newStampHarness(t)
+	seedTenantTeam(t, h.st, "acme", "poll", pollTeam)
+	walkID := h.postTeamDef(alicePrincipal, `{"op":"run","name":"poll","input":"go"}`)
+
+	listed, err := h.srv.ListWalkRuns(alicePrincipal(context.Background()), walkID, 100, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var member connector.Run
+	var children []connector.Run
+	for _, r := range listed.Runs {
+		switch r.Agent {
+		case "poller":
+			member = r
+		case "helper":
+			children = append(children, r)
+		}
+	}
+	if len(listed.Runs) != 4 || member.RunID == "" || len(children) != 2 {
+		t.Fatalf("the walk's listing has %d runs, want the walk, the member and its two children: %+v", len(listed.Runs), listed.Runs)
+	}
+	for _, c := range children {
+		pc := c.ParentContext
+		if c.ParentRunID != member.RunID || pc == nil || pc.WalkID != walkID || pc.State != "lead" || pc.StateVisit != 1 {
+			t.Errorf("child %s: parent %q, context %+v; want the member as parent and the walk, state lead, visit 1", c.RunID, c.ParentRunID, pc)
 		}
 	}
 }
