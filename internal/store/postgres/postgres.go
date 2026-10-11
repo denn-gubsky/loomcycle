@@ -2011,6 +2011,63 @@ func (s *Store) ListRunsByWalk(ctx context.Context, tenantID, walkID string, lim
 	return out, next, nil
 }
 
+// ListChildRuns returns a run's direct children in (started_at, id) order, one
+// keyset page at a time. See store.Store.
+func (s *Store) ListChildRuns(ctx context.Context, tenantID, parentRunID string, limit int, cursor string) ([]store.Run, string, error) {
+	if parentRunID == "" {
+		return nil, "", nil
+	}
+	if limit <= 0 {
+		limit = 100
+	}
+	if limit > 1000 {
+		limit = 1000
+	}
+	where := `r.parent_run_id = $1`
+	args := []any{parentRunID}
+	if tenantID != "" {
+		args = append(args, tenantID)
+		where += fmt.Sprintf(` AND r.tenant_id = $%d`, len(args))
+	}
+	if cursor != "" {
+		after, afterID, err := store.DecodeRunCursor(cursor)
+		if err != nil {
+			return nil, "", err
+		}
+		args = append(args, after, afterID)
+		where += fmt.Sprintf(` AND (r.started_at, r.id) > ($%d, $%d)`, len(args)-1, len(args))
+	}
+	// One extra row says whether another page follows.
+	args = append(args, limit+1)
+	rows, err := s.pool.Query(ctx,
+		`SELECT r.id, r.session_id, r.status, r.started_at, r.completed_at, r.stop_reason,
+		        r.input_tokens, r.output_tokens, r.cache_creation_tokens, r.cache_read_tokens,
+		        r.model, r.provider, r.error,
+		        r.agent_id, r.parent_agent_id, r.parent_run_id, r.user_id, r.last_heartbeat_at, r.user_tier,
+		        r.agent_def_id, r.pause_state, r.replica_id, r.parent_context, r.idempotency_key, r.delivery_alt_key, r.tenant_id, r.interactive, r.operator_key_restricted, r.isolated,
+		        r.cost, r.cost_currency, r.credential_source, r.credential_scope_id,
+		        r.run_config::text, r.result::text,
+		        s.agent
+		 FROM runs r LEFT JOIN sessions s ON r.session_id = s.id
+		 WHERE `+where+`
+		 ORDER BY r.started_at ASC, r.id ASC LIMIT $`+fmt.Sprint(len(args)), args...)
+	if err != nil {
+		return nil, "", fmt.Errorf("list child runs: %w", err)
+	}
+	defer rows.Close()
+	out, err := scanRunRows(rows)
+	if err != nil {
+		return nil, "", fmt.Errorf("list child runs: %w", err)
+	}
+	next := ""
+	if len(out) > limit {
+		out = out[:limit]
+		last := out[len(out)-1]
+		next = store.EncodeRunCursor(last.StartedAt, last.ID)
+	}
+	return out, next, nil
+}
+
 // ListRunsByParentAgentID returns the direct children of the given
 // parent. Recursion to grandchildren is the caller's responsibility —
 // keeping the SQL flat keeps the indexes simple.

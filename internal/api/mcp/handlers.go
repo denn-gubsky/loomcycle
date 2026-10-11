@@ -633,29 +633,45 @@ func handleCompactRun(ctx context.Context, env *handlerEnv, args json.RawMessage
 	return toolResultJSON(res), nil
 }
 
-// handleListRuns lists either one user's runs or one team walk's — exactly one
-// of user_id / walk_id. The walk listing pages with a cursor; the user listing
-// has none, and a walk has no status filter, so an argument that belongs to the
-// other form is refused rather than silently ignored.
+// handleListRuns lists one user's runs, one team walk's, or one run's direct
+// children — exactly one of user_id / walk_id / parent_run_id. The walk and
+// parent listings page with a cursor and take no status filter; the user
+// listing has no cursor. An argument that belongs to another form is refused
+// rather than silently ignored.
 func handleListRuns(ctx context.Context, env *handlerEnv, args json.RawMessage) (*loommcp.CallToolResult, error) {
 	var p struct {
 		connector.ListRunsFilter
-		WalkID string `json:"walk_id"`
-		Cursor string `json:"cursor"`
+		WalkID      string `json:"walk_id"`
+		ParentRunID string `json:"parent_run_id"`
+		Cursor      string `json:"cursor"`
 	}
 	if err := json.Unmarshal(args, &p); err != nil {
 		return toolErr("invalid list_runs arguments: " + err.Error()), nil
 	}
-	if (p.UserID == "") == (p.WalkID == "") {
-		return toolErrValidation("list_runs: pass exactly one of user_id or walk_id",
-			"Send user_id to list one user's runs, or walk_id (a team walk's run_id) to list that walk's runs — not both, not neither."), nil
+	given := 0
+	for _, v := range []string{p.UserID, p.WalkID, p.ParentRunID} {
+		if v != "" {
+			given++
+		}
 	}
-	if p.WalkID != "" {
+	if given != 1 {
+		return toolErrValidation("list_runs: pass exactly one of user_id, walk_id or parent_run_id",
+			"Send user_id to list one user's runs, walk_id (a team walk's run_id) to list that walk's runs, or parent_run_id to list one run's direct children — one of them, not several, not none."), nil
+	}
+	if p.WalkID != "" || p.ParentRunID != "" {
 		if p.Status != "" {
 			return toolErrValidation("list_runs: status filters a user_id listing only",
-				"Drop status: a walk_id listing returns every run of the walk; read each row's status."), nil
+				"Drop status: a walk_id or parent_run_id listing returns runs of every status; read each row's status."), nil
 		}
-		res, err := env.connector.ListWalkRuns(ctx, p.WalkID, p.Limit, p.Cursor)
+		var (
+			res connector.WalkRuns
+			err error
+		)
+		if p.WalkID != "" {
+			res, err = env.connector.ListWalkRuns(ctx, p.WalkID, p.Limit, p.Cursor)
+		} else {
+			res, err = env.connector.ListChildRuns(ctx, p.ParentRunID, p.Limit, p.Cursor)
+		}
 		if errors.Is(err, store.ErrInvalidRunCursor) {
 			return toolErrValidation("list_runs: "+err.Error(),
 				"Pass the next_cursor from the previous page unchanged, or omit cursor to start from the first page."), nil
@@ -666,7 +682,7 @@ func handleListRuns(ctx context.Context, env *handlerEnv, args json.RawMessage) 
 		return toolResultJSON(res), nil
 	}
 	if p.Cursor != "" {
-		return toolErrValidation("list_runs: cursor pages a walk_id listing only",
+		return toolErrValidation("list_runs: cursor pages a walk_id or parent_run_id listing only",
 			"Drop cursor: a user_id listing is one bounded list, newest first."), nil
 	}
 	res, err := env.connector.ListRuns(ctx, p.ListRunsFilter)
@@ -1094,12 +1110,14 @@ func handleListChannels(ctx context.Context, env *handlerEnv, _ json.RawMessage)
 // extra fields that bound the blocking-aggregate code path (the
 // streaming code path uses ctx done instead).
 type streamUserRunStatesArgs struct {
-	UserID    string   `json:"user_id"`
-	Statuses  []string `json:"statuses,omitempty"`
-	Agent     string   `json:"agent,omitempty"`
-	WalkID    string   `json:"walk_id,omitempty"`
-	MaxEvents int      `json:"max_events,omitempty"`
-	TimeoutMS int      `json:"timeout_ms,omitempty"`
+	UserID   string   `json:"user_id"`
+	Statuses []string `json:"statuses,omitempty"`
+	Agent    string   `json:"agent,omitempty"`
+	WalkID   string   `json:"walk_id,omitempty"`
+	// ParentRunID: only this run's direct children.
+	ParentRunID string `json:"parent_run_id,omitempty"`
+	MaxEvents   int    `json:"max_events,omitempty"`
+	TimeoutMS   int    `json:"timeout_ms,omitempty"`
 }
 
 // handleStreamUserRunStates has two code paths analogous to spawn_run:
@@ -1142,6 +1160,8 @@ func handleStreamUserRunStates(ctx context.Context, env *handlerEnv, args json.R
 		Statuses: a.Statuses,
 		Agent:    a.Agent,
 		WalkID:   a.WalkID,
+		// One run's direct children; with walk_id an event must pass both.
+		ParentRunID: a.ParentRunID,
 	}
 	if ok && !p.Legacy && !auth.HasScope(p.Scopes, auth.ScopeAdmin) {
 		req.TenantID, req.TenantScoped = p.TenantID, true

@@ -197,6 +197,11 @@ func (s *Server) StreamUserRunStates(ctx context.Context, req connector.StreamUs
 			if !walkIDMatches(req.WalkID, evt.RunID, evt.ParentContext) {
 				continue
 			}
+			// One run's direct children. A top-level run has no parent run
+			// and never matches a non-empty filter.
+			if req.ParentRunID != "" && evt.ParentRunID != req.ParentRunID {
+				continue
+			}
 			if len(statusSet) > 0 && !statusSet[evt.Status] {
 				continue
 			}

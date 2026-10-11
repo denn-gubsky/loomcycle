@@ -971,6 +971,25 @@ export class LoomcycleClient {
     return { agents: resp.agents ?? [], next_cursor: resp.next_cursor ?? "" };
   }
 
+  /** One page of a run's direct children — the runs it started itself, for
+   *  example through the Agent tool — of every status, oldest first. Not the
+   *  run itself, and not its grandchildren: call it again on a child for
+   *  those. Rows are {@link LoomcycleClient.listWalkRuns}' rows, and none
+   *  carries a `result`. Pass the page's `next_cursor` back as `cursor` for
+   *  the next one; it is "" on the last. `limit` defaults to 100, at most
+   *  1000. Mirrors `GET /v1/runs?parent_run_id=`. Raises NotFoundError for an
+   *  unknown run, or one the caller may not see. */
+  async listChildRuns(
+    parentRunId: string,
+    opts?: { limit?: number; cursor?: string; signal?: AbortSignal },
+  ): Promise<WalkRunsPage> {
+    const params = new URLSearchParams({ parent_run_id: parentRunId });
+    if (opts?.limit !== undefined) params.set("limit", String(opts.limit));
+    if (opts?.cursor) params.set("cursor", opts.cursor);
+    const resp = await jsonFetch<WalkRunsPage>(this.ctx, `/v1/runs?${params.toString()}`, opts);
+    return { agents: resp.agents ?? [], next_cursor: resp.next_cursor ?? "" };
+  }
+
   /** Aggregated token-usage + cost report (RFC AV). Group by any of
    *  tenant/user/provider/model/source over an optional time window; group by
    *  `source` for the operator-vs-tenant split. Tenant-scoped server-side: a
@@ -3094,6 +3113,9 @@ export class LoomcycleClient {
     }
     if (opts?.walkId) {
       params.set("walk_id", opts.walkId);
+    }
+    if (opts?.parentRunId) {
+      params.set("parent_run_id", opts.parentRunId);
     }
     const qs = params.toString();
     const path =

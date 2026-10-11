@@ -64,6 +64,7 @@ const (
 	Loomcycle_CancelAgent_FullMethodName         = "/loomcycle.v1.Loomcycle/CancelAgent"
 	Loomcycle_ListUserAgents_FullMethodName      = "/loomcycle.v1.Loomcycle/ListUserAgents"
 	Loomcycle_ListWalkRuns_FullMethodName        = "/loomcycle.v1.Loomcycle/ListWalkRuns"
+	Loomcycle_ListChildRuns_FullMethodName       = "/loomcycle.v1.Loomcycle/ListChildRuns"
 	Loomcycle_UsageReport_FullMethodName         = "/loomcycle.v1.Loomcycle/UsageReport"
 	Loomcycle_TokenLimit_FullMethodName          = "/loomcycle.v1.Loomcycle/TokenLimit"
 	Loomcycle_Decide_FullMethodName              = "/loomcycle.v1.Loomcycle/Decide"
@@ -282,6 +283,13 @@ type LoomcycleClient interface {
 	//
 	// Mirrors GET /v1/runs?walk_id=.
 	ListWalkRuns(ctx context.Context, in *ListWalkRunsRequest, opts ...grpc.CallOption) (*ListWalkRunsResponse, error)
+	// ListChildRuns lists one run's direct children — the runs whose
+	// parent_run_id is that run — of every status, oldest first, a page at a
+	// time. Not the run itself, and not its grandchildren. A parent the caller
+	// cannot read is the NotFound an unknown run gets.
+	//
+	// Mirrors GET /v1/runs?parent_run_id=.
+	ListChildRuns(ctx context.Context, in *ListChildRunsRequest, opts ...grpc.CallOption) (*ListChildRunsResponse, error)
 	// UsageReport aggregates the token-usage + cost ledger (RFC AV): summed
 	// tokens + cost grouped by the requested dimensions over an optional tenant +
 	// time window. Tenant-scoped like the HTTP twin (a substrate:tenant caller is
@@ -872,6 +880,16 @@ func (c *loomcycleClient) ListWalkRuns(ctx context.Context, in *ListWalkRunsRequ
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(ListWalkRunsResponse)
 	err := c.cc.Invoke(ctx, Loomcycle_ListWalkRuns_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *loomcycleClient) ListChildRuns(ctx context.Context, in *ListChildRunsRequest, opts ...grpc.CallOption) (*ListChildRunsResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ListChildRunsResponse)
+	err := c.cc.Invoke(ctx, Loomcycle_ListChildRuns_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -1508,6 +1526,13 @@ type LoomcycleServer interface {
 	//
 	// Mirrors GET /v1/runs?walk_id=.
 	ListWalkRuns(context.Context, *ListWalkRunsRequest) (*ListWalkRunsResponse, error)
+	// ListChildRuns lists one run's direct children — the runs whose
+	// parent_run_id is that run — of every status, oldest first, a page at a
+	// time. Not the run itself, and not its grandchildren. A parent the caller
+	// cannot read is the NotFound an unknown run gets.
+	//
+	// Mirrors GET /v1/runs?parent_run_id=.
+	ListChildRuns(context.Context, *ListChildRunsRequest) (*ListChildRunsResponse, error)
 	// UsageReport aggregates the token-usage + cost ledger (RFC AV): summed
 	// tokens + cost grouped by the requested dimensions over an optional tenant +
 	// time window. Tenant-scoped like the HTTP twin (a substrate:tenant caller is
@@ -1885,6 +1910,9 @@ func (UnimplementedLoomcycleServer) ListUserAgents(context.Context, *ListUserAge
 }
 func (UnimplementedLoomcycleServer) ListWalkRuns(context.Context, *ListWalkRunsRequest) (*ListWalkRunsResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method ListWalkRuns not implemented")
+}
+func (UnimplementedLoomcycleServer) ListChildRuns(context.Context, *ListChildRunsRequest) (*ListChildRunsResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method ListChildRuns not implemented")
 }
 func (UnimplementedLoomcycleServer) UsageReport(context.Context, *UsageReportRequest) (*UsageReportResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method UsageReport not implemented")
@@ -2478,6 +2506,24 @@ func _Loomcycle_ListWalkRuns_Handler(srv interface{}, ctx context.Context, dec f
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
 		return srv.(LoomcycleServer).ListWalkRuns(ctx, req.(*ListWalkRunsRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _Loomcycle_ListChildRuns_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ListChildRunsRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(LoomcycleServer).ListChildRuns(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: Loomcycle_ListChildRuns_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(LoomcycleServer).ListChildRuns(ctx, req.(*ListChildRunsRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
@@ -3379,6 +3425,10 @@ var Loomcycle_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "ListWalkRuns",
 			Handler:    _Loomcycle_ListWalkRuns_Handler,
+		},
+		{
+			MethodName: "ListChildRuns",
+			Handler:    _Loomcycle_ListChildRuns_Handler,
 		},
 		{
 			MethodName: "UsageReport",

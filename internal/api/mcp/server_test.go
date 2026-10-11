@@ -153,6 +153,13 @@ func (m *mockConnector) ListWalkRuns(_ context.Context, walkID string, limit int
 	m.listWalkArgs.Store(listWalkCall{walkID, limit, cursor})
 	return m.listWalkResult, m.listWalkErr
 }
+
+// ListChildRuns records its call where ListWalkRuns does, under a marker, so
+// a test can tell which listing the handler chose.
+func (m *mockConnector) ListChildRuns(_ context.Context, parentRunID string, limit int, cursor string) (connector.WalkRuns, error) {
+	m.listWalkArgs.Store(listWalkCall{"parent:" + parentRunID, limit, cursor})
+	return m.listWalkResult, m.listWalkErr
+}
 func (m *mockConnector) RegisterAgent(_ context.Context, _ connector.RegisterAgentRequest) (connector.AgentDescriptor, error) {
 	m.regCalls.Add(1)
 	return m.regResult, nil

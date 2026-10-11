@@ -266,6 +266,34 @@ class LoomcycleClient:
             "next_cursor": resp.next_cursor,
         }
 
+    async def list_child_runs(
+        self,
+        parent_run_id: str,
+        limit: int | None = None,
+        cursor: str | None = None,
+    ) -> Mapping[str, Any]:
+        """One page of a run's direct children — the runs it started itself,
+        for example through the Agent tool — of every status, oldest first.
+        Not the run itself, and not its grandchildren. Returns
+        ``{"agents": [...], "next_cursor": str}``; each agent is
+        ``get_agent``'s dict. Pass ``next_cursor`` back as ``cursor`` for the
+        next page; it is ``""`` on the last. ``limit`` defaults to 100, at
+        most 1000. A run the caller may not see raises
+        ``AgentNotFoundError``, as an unknown one does."""
+        try:
+            resp = await self._stub.ListChildRuns(
+                pb.ListChildRunsRequest(
+                    parent_run_id=parent_run_id, limit=limit or 0, cursor=cursor or ""
+                ),
+                metadata=self._auth_metadata(),
+            )
+        except grpc.aio.AioRpcError as e:
+            _raise_from_grpc(e)
+        return {
+            "agents": [_agent_to_dict(a) for a in resp.agents],
+            "next_cursor": resp.next_cursor,
+        }
+
     async def usage_report(
         self,
         *,
@@ -2086,6 +2114,7 @@ class LoomcycleClient:
         statuses: Optional[Sequence[str]] = None,
         agent: str = "",
         walk_id: str = "",
+        parent_run_id: str = "",
     ) -> AsyncIterator[Mapping[str, Any]]:
         """Stream run-state transitions for a user's runs (mirror of the
         gRPC ``StreamUserRunStates`` / HTTP
@@ -2110,6 +2139,11 @@ class LoomcycleClient:
                 # within it — index 0 is a real first position.
                 place(evt["agent"], evt["status"], pc and pc["wave_id"])
 
+        ``parent_run_id`` narrows it, server-side, to ONE run's direct
+        children: the events whose ``parent_run_id`` is that run id. The
+        run's own transitions are not in it. With ``walk_id``, an event must
+        pass both.
+
         Sync-returning — consume with ``async for`` (see
         :meth:`run_streaming`)."""
         req = pb.StreamUserRunStatesRequest(
@@ -2117,6 +2151,7 @@ class LoomcycleClient:
             statuses=list(statuses or ()),
             agent=agent,
             walk_id=walk_id,
+            parent_run_id=parent_run_id,
         )
         return self._drive_run_state_stream(
             self._stub.StreamUserRunStates(req, metadata=self._auth_metadata())

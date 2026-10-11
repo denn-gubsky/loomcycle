@@ -3435,6 +3435,62 @@ func (s *Store) ListRunsByWalk(ctx context.Context, tenantID, walkID string, lim
 	return out, next, nil
 }
 
+// ListChildRuns returns a run's direct children in (started_at, id) order, one
+// keyset page at a time. See store.Store.
+func (s *Store) ListChildRuns(ctx context.Context, tenantID, parentRunID string, limit int, cursor string) ([]store.Run, string, error) {
+	if parentRunID == "" {
+		return nil, "", nil
+	}
+	if limit <= 0 {
+		limit = 100
+	}
+	if limit > 1000 {
+		limit = 1000
+	}
+	where := `r.parent_run_id = ?`
+	args := []any{parentRunID}
+	if tenantID != "" {
+		where += ` AND r.tenant_id = ?`
+		args = append(args, tenantID)
+	}
+	if cursor != "" {
+		after, afterID, err := store.DecodeRunCursor(cursor)
+		if err != nil {
+			return nil, "", err
+		}
+		where += ` AND (r.started_at, r.id) > (?, ?)`
+		args = append(args, after.UnixNano(), afterID)
+	}
+	// One extra row says whether another page follows.
+	args = append(args, limit+1)
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT `+runColumns+` FROM `+runFromTable+` WHERE `+where+` ORDER BY r.started_at ASC, r.id ASC LIMIT ?`,
+		args...,
+	)
+	if err != nil {
+		return nil, "", fmt.Errorf("list child runs: %w", err)
+	}
+	defer rows.Close()
+	var out []store.Run
+	for rows.Next() {
+		r, err := scanRun(rows)
+		if err != nil {
+			return nil, "", err
+		}
+		out = append(out, r)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, "", err
+	}
+	next := ""
+	if len(out) > limit {
+		out = out[:limit]
+		last := out[len(out)-1]
+		next = store.EncodeRunCursor(last.StartedAt, last.ID)
+	}
+	return out, next, nil
+}
+
 // ListRunsByParentAgentID returns the runs whose parent_agent_id
 // matches. Drives cascade-cancel discovery (every direct child of a
 // parent agent_id). Recursion (grandchildren) is the caller's job —

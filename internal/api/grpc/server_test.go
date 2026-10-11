@@ -793,6 +793,9 @@ func (m *mockConnector) GetRunByRunID(context.Context, string) (connector.Run, e
 func (m *mockConnector) ListWalkRuns(context.Context, string, int, string) (connector.WalkRuns, error) {
 	return connector.WalkRuns{}, nil
 }
+func (m *mockConnector) ListChildRuns(context.Context, string, int, string) (connector.WalkRuns, error) {
+	return connector.WalkRuns{}, nil
+}
 func (m *mockConnector) CompactRun(context.Context, string) (connector.CompactResult, error) {
 	return connector.CompactResult{}, nil
 }

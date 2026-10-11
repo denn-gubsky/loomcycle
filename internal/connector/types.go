@@ -401,8 +401,8 @@ type ListRunsFilter struct {
 	Limit  int    `json:"limit,omitempty"` // 0 = adapter default
 }
 
-// WalkRuns is one page of a team walk's runs (ListWalkRuns). NextCursor is ""
-// on the last page.
+// WalkRuns is one page of a team walk's runs (ListWalkRuns), or of one run's
+// children (ListChildRuns). NextCursor is "" on the last page.
 type WalkRuns struct {
 	Runs       []Run  `json:"runs"`
 	NextCursor string `json:"next_cursor"`
@@ -914,6 +914,11 @@ type StreamUserRunStatesRequest struct {
 	// second identifier, and no mapping to look up. This is what makes a live
 	// canvas view of a running workflow a filter rather than a feature.
 	WalkID string `json:"walk_id,omitempty"`
+	// ParentRunID narrows the stream to ONE run's direct children, matched
+	// against each event's parent_run_id. The run's own transitions are not
+	// in it, nor its grandchildren's: it is the live twin of the listing by
+	// parent run. With WalkID, an event must pass both.
+	ParentRunID string `json:"parent_run_id,omitempty"`
 	// TenantID + TenantScoped enforce RFC L/N tenant isolation on the stream.
 	// When TenantScoped is true, only events whose run TenantID == TenantID are
 	// yielded (a tenant principal must not see another tenant's run

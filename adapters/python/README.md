@@ -105,6 +105,7 @@ All methods are coroutine methods on `LoomcycleClient`.
 | `cancel_agent(agent_id, reason="")` | `int` | Returns count of agents cancelled (cascades to children). |
 | `list_user_agents(user_id, status="")` | `list[dict]` | Filters: `running`, `completed`, `failed`, `cancelled`. |
 | `list_walk_runs(walk_id, limit=None, cursor=None)` | `dict` | One page of a team walk's runs — its own run and every member, oldest first: `{"agents": [...], "next_cursor": str}`. Pass `next_cursor` back as `cursor`; `""` on the last page. `limit` defaults to 100, at most 1000. |
+| `list_child_runs(parent_run_id, limit=None, cursor=None)` | `dict` | One page of a run's direct children (the runs it started itself), of every status, oldest first, paged like `list_walk_runs`. Not the run itself, and not its grandchildren. |
 | `get_transcript(session_id)` | `list[dict]` | Persisted event log; `payload` is raw JSON bytes. |
 | `health()` | `dict` | Liveness + build info. Unauthenticated. |
 | `get_config()` | `dict` | v1.38.0 — instance configuration: build identity, the feature matrix, and the live provider/model/search cascade with `active`/`selected`. `view` names the disclosure level (`authenticated` or `admin`; the HTTP surface's narrower `public` level does not exist over gRPC, which authenticates before dispatch). |
@@ -135,7 +136,7 @@ All methods are coroutine methods on `LoomcycleClient`.
 | `ack_channel(channel, cursor, ...)` | `bool` | v0.8.0 — commit a channel cursor. |
 | `await_channels(channels, mode="any", n=0, ...)` | `dict` | v0.8.0 — fan-in across channels (any / all / at_least). |
 | `broadcast_channels(channels, payload, ...)` | `dict` | v0.8.0 — fan-out one payload to N channels. |
-| `stream_user_run_states(user_id, statuses=None, agent="", walk_id="")` | `AsyncIterator[dict]` | v0.8.0 — stream a user's run-state transitions. `walk_id` (1.78.0) narrows it server-side to the runs one team walk spawned; each event carries `parent_context` (`None` outside a walk) with `walk_id` / `state` / `state_visit` (every member) and `wave_id` / `wave_index` (a starter's wave). |
+| `stream_user_run_states(user_id, statuses=None, agent="", walk_id="", parent_run_id="")` | `AsyncIterator[dict]` | v0.8.0 — stream a user's run-state transitions. `walk_id` (1.78.0) narrows it server-side to the runs one team walk spawned; each event carries `parent_context` (`None` outside a walk) with `walk_id` / `state` / `state_visit` (every member) and `wave_id` / `wave_index` (a starter's wave). |
 
 `run_streaming` / `continue_session` / each `spawn_run_batch` child also accept
 per-run `sampling` and `compaction` dict overrides (v0.8.0); an explicit

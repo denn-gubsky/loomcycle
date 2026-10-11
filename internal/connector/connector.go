@@ -159,6 +159,12 @@ type Connector interface {
 	// /v1/runs?walk_id=. cursor is "" or a previous page's NextCursor. A walk
 	// the caller cannot read is the same not-found an unknown one is.
 	ListWalkRuns(ctx context.Context, walkID string, limit int, cursor string) (WalkRuns, error)
+	// ListChildRuns lists one run's direct children, of every status, oldest
+	// first, a page at a time: the connector side of GET
+	// /v1/runs?parent_run_id=. Not the run itself and not its grandchildren.
+	// cursor is "" or a previous page's NextCursor. A parent the caller cannot
+	// read is *store.ErrNotFound, as an unknown one is.
+	ListChildRuns(ctx context.Context, parentRunID string, limit int, cursor string) (WalkRuns, error)
 
 	// --- Agent management ---
 
