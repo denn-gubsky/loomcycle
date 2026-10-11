@@ -186,7 +186,9 @@ The most recent line (v1.111.0) makes the runs a team walk's member starts part
 of the walk. A sub-agent, at any depth, carries its member's walk, state and
 visit, so it is in the walk's listing and on the walk's stream; it is told from
 a member by its parent run. Before, a member reported as waiting on its
-children named runs that a client following the walk could not see. See
+children named runs that a client following the walk could not see. Any run
+can also be asked for its children now: a paged listing by parent run, and the
+same filter on the run-state stream, on every transport. See
 "Watching a team walk live" in [`docs/CONFIGURATION.md`](docs/CONFIGURATION.md).
 
 Before it, v1.110.0 put a team decision's answer on the walk's own

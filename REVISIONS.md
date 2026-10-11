@@ -10,10 +10,11 @@ For the **public roadmap**, see [`docs/PLAN.md`](docs/PLAN.md).
 
 ## What's in v1.111.0
 
-*The runs a team walk's member starts are now **part of the walk**. A sub-agent, at any depth, carries its member's walk, state and visit, so it is in the walk's listing and on the walk's stream. Before, a member reported as waiting on its children named runs that a client following the walk could not see.*
+*The runs a team walk's member starts are now **part of the walk**. A sub-agent, at any depth, carries its member's walk, state and visit, so it is in the walk's listing and on the walk's stream. Before, a member reported as waiting on its children named runs that a client following the walk could not see. And **any run can be asked for its children**: a listing by parent run, and the same filter on the run-state stream.*
 
-A minor release: #1723 and #1724.
+A minor release: #1723, #1725 and #1724.
 - #1723 puts the walk on a member's sub-agents;
+- #1725 lists a run's children and filters the run-state stream by parent run;
 - #1724 is `@loomcycle/def-fields` 0.4.0, published by its own tag, and changes nothing in the runtime.
 
 ### A member's sub-agents carry the walk (#1723)
@@ -37,6 +38,32 @@ The Web UI's walk view lists a sub-agent under its member, indented, and a visit
 
 See "Watching a team walk live" in [`docs/CONFIGURATION.md`](docs/CONFIGURATION.md).
 
+### A run's children: a listing and a stream filter (#1725)
+
+The runs an agent spawned could be found only in its user's listing (`GET /v1/users/{user_id}/agents`), filtered by parent run on the client. #1723 covers runs inside a walk; this covers any run.
+
+```sh
+curl "…/v1/runs?parent_run_id=r_0d07…&limit=100"
+# → {"agents":[{"run_id":"r_2452…","parent_run_id":"r_0d07…",…}, …], "next_cursor":""}
+
+curl -N "…/v1/users/{user_id}/agents/stream?parent_run_id=r_0d07…"
+```
+
+- **The listing** returns the run's direct children, the runs whose `parent_run_id` is that run, of every status, oldest first. It pages like the walk listing: `limit` up to 1000 (default 100) and `next_cursor`, empty on the last page.
+- **Direct children only.** The run itself is not in it, and neither are its grandchildren; ask again with a child's id for those.
+- **Who may list.** Whoever may read the run. Otherwise it is the 404 `unknown_parent_run_id` an unknown run gets, and each child is held to the same rule.
+- **`walk_id` or `parent_run_id`, not both** on the listing: both is 400 `one_filter_only`. Neither is still 400 `walk_id_required`.
+- **The stream filter** passes only events whose `parent_run_id` is that run. The `stream_open` event echoes it as `filter_parent_run_id`. With `walk_id` as well, an event must pass both.
+
+| Transport | Listing | Stream filter |
+|---|---|---|
+| gRPC | `ListChildRuns` RPC (`runs:read`) | `StreamUserRunStatesRequest.parent_run_id` |
+| MCP | `list_runs` with `parent_run_id` | `stream_user_run_states` with `parent_run_id` |
+| TypeScript | `listChildRuns(parentRunId, { limit, cursor })` | `parentRunId` option |
+| Python | `list_child_runs(parent_run_id, limit, cursor)` | `parent_run_id=` |
+
+No schema change: it reads through an index the store already had. See "One run's children" in [`docs/CONFIGURATION.md`](docs/CONFIGURATION.md).
+
 ### `@loomcycle/def-fields` 0.4.0 (#1724)
 
 The agent registry has had a "Decision models" field (`decision {default, models}`) since v1.107.0, and it had not been published: npm's latest was 0.3.0. A host that renders an agent's form from the published registry had no field for the block.
@@ -50,6 +77,8 @@ The agent registry has had a "Decision models" field (`decision {default, models
 - **Nothing to migrate.** There is no schema change. The walk's listing reads a column that the new rows fill as every member's row does.
 - **Runs already stored are not rewritten.** A sub-agent that ran before the upgrade stays out of its walk's listing.
 - **A client of the walk listing or the walk-filtered stream** will see sub-agents. Use `parent_run_id` to separate them from members.
+- **MCP `list_runs`:** the refusal for a wrong combination of arguments now reads "exactly one of user_id, walk_id or parent_run_id".
+- **gRPC:** `ListChildRuns` is a new RPC, and `StreamUserRunStatesRequest.parent_run_id` a new optional field. A server older than this release ignores the field and streams every run; a client can tell from the missing `filter_parent_run_id` on the HTTP open frame.
 
 ## What's in v1.110.0
 
