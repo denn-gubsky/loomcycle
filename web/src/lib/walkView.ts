@@ -74,7 +74,11 @@ export interface WalkRunRow {
   status: string;
   /** RFC3339 instant of this row's state; the newer row wins. */
   ts: string;
-  /** Members only: the state that started this run, and which visit of it. */
+  /** The run that started this one. A member's is the walk's run; a
+   *  sub-agent's is the member (or sub-agent) that spawned it. */
+  parentRunId?: string;
+  /** The state that started this run, and which visit of it. A member's
+   *  sub-agent carries its member's. */
   state?: string;
   stateVisit?: number;
   /** Starter members only. */
@@ -130,6 +134,7 @@ export function rowFromAgent(a: Agent): WalkRunRow {
     agent: a.agent,
     status: a.status,
     ts: a.completed_at ?? a.last_heartbeat_at ?? a.started_at,
+    parentRunId: a.parent_run_id || undefined,
     state: pc?.state || undefined,
     stateVisit: pc?.state_visit,
     waveId: pc?.wave_id || undefined,
@@ -156,6 +161,7 @@ export function rowFromEvent(e: RunStateEvent): WalkRunRow {
     agent: e.agent,
     status: e.status,
     ts: e.ts,
+    parentRunId: e.parent_run_id || undefined,
     state: pc?.state || undefined,
     stateVisit: pc?.state_visit,
     waveId: pc?.wave_id || undefined,
@@ -230,6 +236,7 @@ export function foldWalk(view: WalkView, rows: readonly WalkRunRow[]): WalkView 
 function carryOver(next: WalkRunRow, prev: WalkRunRow): WalkRunRow {
   return {
     ...next,
+    parentRunId: next.parentRunId ?? prev.parentRunId,
     state: next.state ?? prev.state,
     stateVisit: next.stateVisit ?? prev.stateVisit,
     waveId: next.waveId ?? prev.waveId,
@@ -246,12 +253,25 @@ function carryOver(next: WalkRunRow, prev: WalkRunRow): WalkRunRow {
   };
 }
 
-/** One visit of one state: the members that visit started, in wave order. */
+/** One visit of one state: the members that visit started, in wave order,
+ *  each followed by the runs under it. */
 export interface VisitGroup {
   key: string;
   visit: number;
   state: string;
   members: WalkRunRow[];
+  /** How many of `members` the walk's state started itself. The rest are
+   *  sub-agents. */
+  memberCount: number;
+  /** runId → how deep under its member a sub-agent is (1 = the member's own). */
+  depth: ReadonlyMap<string, number>;
+}
+
+/** True when the walk's own state started this run. A run that carries the
+ *  walk under any other parent is a member's sub-agent. A row with no parent
+ *  recorded (a frame from an older server) is taken as a member. */
+export function isMember(r: WalkRunRow, walkRunId: string): boolean {
+  return !r.parentRunId || r.parentRunId === walkRunId;
 }
 
 /** Members grouped by state visit, then state, each group in wave order.
@@ -265,20 +285,47 @@ export function visitGroups(view: WalkView): VisitGroup[] {
     const key = `${visit}\u0000${state}`;
     let g = byKey.get(key);
     if (!g) {
-      g = { key, visit, state, members: [] };
+      g = { key, visit, state, members: [], memberCount: 0, depth: new Map() };
       byKey.set(key, g);
     }
     g.members.push(r);
   }
   const groups = [...byKey.values()];
   groups.sort((a, b) => a.visit - b.visit || (a.state < b.state ? -1 : a.state > b.state ? 1 : 0));
+  const order = (a: WalkRunRow, b: WalkRunRow) =>
+    (a.waveIndex ?? 0) - (b.waveIndex ?? 0) ||
+    cmp(a.startedAt ?? a.ts, b.startedAt ?? b.ts) ||
+    cmp(a.runId, b.runId);
   for (const g of groups) {
-    g.members.sort(
-      (a, b) =>
-        (a.waveIndex ?? 0) - (b.waveIndex ?? 0) ||
-        cmp(a.startedAt ?? a.ts, b.startedAt ?? b.ts) ||
-        cmp(a.runId, b.runId),
-    );
+    // Members in wave order, each followed by the runs under it, depth first.
+    // A sub-agent whose parent is not in the group (its page not folded yet)
+    // is listed after them, so no run is dropped.
+    const children = new Map<string, WalkRunRow[]>();
+    const tops: WalkRunRow[] = [];
+    const inGroup = new Set(g.members.map((m) => m.runId));
+    for (const m of g.members) {
+      if (isMember(m, view.walkRunId) || !inGroup.has(m.parentRunId!)) {
+        tops.push(m);
+      } else {
+        const list = children.get(m.parentRunId!) ?? [];
+        list.push(m);
+        children.set(m.parentRunId!, list);
+      }
+    }
+    const depth = new Map<string, number>();
+    const out: WalkRunRow[] = [];
+    const place = (r: WalkRunRow, d: number) => {
+      if (depth.has(r.runId)) return;
+      depth.set(r.runId, d);
+      out.push(r);
+      for (const c of (children.get(r.runId) ?? []).sort(order)) place(c, d + 1);
+    };
+    const memberFirst = (a: WalkRunRow, b: WalkRunRow) =>
+      Number(isMember(b, view.walkRunId)) - Number(isMember(a, view.walkRunId)) || order(a, b);
+    for (const t of tops.sort(memberFirst)) place(t, isMember(t, view.walkRunId) ? 0 : 1);
+    g.members = out;
+    g.depth = depth;
+    g.memberCount = out.filter((m) => isMember(m, view.walkRunId)).length;
   }
   return groups;
 }

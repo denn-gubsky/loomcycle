@@ -176,6 +176,29 @@ describe("visitGroups", () => {
     expect(g[0].members.map((m) => m.runId)).toEqual(["b1", "b2"]);
   });
 
+  it("lists a member's sub-agents under it, at their depth, and counts members apart", () => {
+    const v = foldWalk(emptyWalk(WALK), [
+      row({ runId: "leaf", parentRunId: "kid", state: "lead", stateVisit: 1, startedAt: "2026-10-01T10:00:03Z" }),
+      row({ runId: "m2", parentRunId: WALK, state: "lead", stateVisit: 1, waveId: "w", waveIndex: 1 }),
+      row({ runId: "kid", parentRunId: "m1", state: "lead", stateVisit: 1, startedAt: "2026-10-01T10:00:02Z" }),
+      row({ runId: "m1", parentRunId: WALK, state: "lead", stateVisit: 1, waveId: "w", waveIndex: 0 }),
+      // Its parent is not in the listing yet: kept, after the members.
+      row({ runId: "stray", parentRunId: "unseen", state: "lead", stateVisit: 1 }),
+    ]);
+    const [g] = visitGroups(v);
+    expect(g.members.map((m) => m.runId)).toEqual(["m1", "kid", "leaf", "m2", "stray"]);
+    expect(g.memberCount).toBe(2);
+    expect(g.members.map((m) => g.depth.get(m.runId))).toEqual([0, 1, 2, 0, 1]);
+  });
+
+  it("reads the parent run from a listing row and from a stream frame", () => {
+    expect(rowFromAgent(agent({ run_id: "k", parent_run_id: "m1" })).parentRunId).toBe("m1");
+    expect(
+      rowFromEvent({ run_id: "k", agent_id: "a", agent: "w", user_id: "u", status: "running", ts: "t", parent_run_id: "m1" })
+        .parentRunId,
+    ).toBe("m1");
+  });
+
   it("keeps a member with no recorded visit, ahead of the counted ones", () => {
     const g = visitGroups(foldWalk(emptyWalk(WALK), [row({ runId: "x", state: "s", stateVisit: 1 }), row({ runId: "y" })]));
     expect(g.map((x) => x.visit)).toEqual([0, 1]);

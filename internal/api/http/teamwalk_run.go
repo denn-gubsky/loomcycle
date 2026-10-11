@@ -92,6 +92,10 @@ func (s *Server) openTeamWalkRun(ctx context.Context, spec builtin.WalkRunSpec) 
 		// A poll-mode walk was handed to its caller under this id before its
 		// run existed; "" (sync and detach) lets the store mint one.
 		ID: spec.RunID,
+		// A walk a member of another walk started is that member's descendant,
+		// like any run the member starts, so the outer walk's listing and
+		// stream show it. Its own members carry this walk, not the outer one.
+		ParentContext: store.StampWalkLineage(ctx, nil),
 	}
 	// A walk a webhook delivery started carries that delivery's dedup keys, as
 	// a spawned run does, so a redelivery finds this row instead of starting a
@@ -123,10 +127,13 @@ func (s *Server) openTeamWalkRun(ctx context.Context, spec builtin.WalkRunSpec) 
 	// A walk is a run, and its transitions reach the run-state stream like
 	// one's: without these a stream watching the walk saw its members come and
 	// go and never the walk itself.
-	meta := runStateMeta{RunID: runID, AgentID: agent, Agent: agent, UserID: ident.UserID, TenantID: ident.TenantID, ParentRunID: parentRunID}
+	meta := runStateMeta{RunID: runID, AgentID: agent, Agent: agent, UserID: ident.UserID, TenantID: ident.TenantID, ParentRunID: parentRunID,
+		ParentContext: identity.ParentContext}
 	s.publishRunState(meta, "running", "", "")
 
-	walkCtx := ctx
+	// The outer walk stops here: every run this walk starts is its own
+	// member and carries this walk.
+	walkCtx := store.WithWalkLineage(ctx, store.WalkTask{})
 	if detach {
 		walkCtx = context.WithoutCancel(ctx)
 		// A detached walk is its own root, not a child of the agent that

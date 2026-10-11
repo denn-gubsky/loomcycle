@@ -7780,6 +7780,12 @@ func (s *Server) prepareSubRunValues(ctx context.Context, name string, src nameS
 	// visit, so a walk-filtered stream shows a walk with no starter too. The
 	// wave stamp below then adds a Starter member's wave fields on top; both
 	// carry the same walk id. Cleared from subRunCtx below like the rest.
+	//
+	// A run a member starts, at any depth, is not a member and still belongs
+	// to the walk: it carries the walk, the state and the visit of the member
+	// it descends from, and its parent run says it is not one. Without them it
+	// was in neither the walk's listing nor its stream, so a member waiting on
+	// its children named runs nothing could follow.
 	if wk, ok := store.WalkTaskFromContext(ctx); ok {
 		if subIdentity.ParentContext == nil {
 			subIdentity.ParentContext = &store.ParentContext{}
@@ -7787,6 +7793,8 @@ func (s *Server) prepareSubRunValues(ctx context.Context, name string, src nameS
 		subIdentity.ParentContext.WalkID = wk.WalkID
 		subIdentity.ParentContext.State = wk.State
 		subIdentity.ParentContext.StateVisit = wk.Visit
+	} else {
+		subIdentity.ParentContext = store.StampWalkLineage(ctx, subIdentity.ParentContext)
 	}
 	// RFC CY L4: a Starter puts its wave on ctx per spawned run; stamp it the
 	// same way, so a wave's runs can be recovered by a join instead of being
@@ -7847,6 +7855,14 @@ func (s *Server) prepareSubRunValues(ctx context.Context, name string, src nameS
 	// And the walk state: a member's own sub-agents are not the walk's members,
 	// and a walk nested inside a member stamps its own.
 	subRunCtx = store.WithWalkTask(subRunCtx, store.WalkTask{})
+	// What this run's own spawns inherit instead: the walk state this run
+	// carries, as a member or as a member's descendant. Set from the stamped
+	// row, so a run with none clears it.
+	var lineage store.WalkTask
+	if pc := subIdentity.ParentContext; pc != nil {
+		lineage = store.WalkTask{WalkID: pc.WalkID, State: pc.State, Visit: pc.StateVisit}
+	}
+	subRunCtx = store.WithWalkLineage(subRunCtx, lineage)
 	// And the walk's review arming and deadline. runTeamMember has read this
 	// member's own from ctx already; left on its execution ctx, a walk nested
 	// inside the member would hold its runs on the OUTER state's arming.

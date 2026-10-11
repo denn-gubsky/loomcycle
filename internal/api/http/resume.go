@@ -206,7 +206,7 @@ func (s *Server) orphanedBy(ctx context.Context, run store.Run) (string, bool) {
 	if run.ParentRunID == "" || isTerminalRunStatus(run.Status) {
 		return "", false
 	}
-	isWalkMember := run.ParentContext != nil && run.ParentContext.WalkID == run.ParentRunID
+	isWalkMember := run.IsWalkMember()
 	if isWalkMember {
 		if _, live := s.walks.get(run.ParentRunID); live {
 			return "", false
