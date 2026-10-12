@@ -58,7 +58,7 @@ func TestTokenCache_BoundedBySize(t *testing.T) {
 	now := time.Unix(1000, 0)
 	c.now = func() time.Time { return now }
 	for i := 0; i < 1000; i++ {
-		c.put(fmt.Sprintf("h%d", i), auth.Principal{}, false) // distinct negative entries
+		c.put(fmt.Sprintf("h%d", i), auth.Principal{}, false, time.Time{}) // distinct negative entries
 	}
 	if len(c.m) > c.maxSize {
 		t.Fatalf("cache grew to %d entries, want <= %d (negative-spray DoS bound)", len(c.m), c.maxSize)
@@ -70,7 +70,7 @@ func TestTokenCache_HitMissExpiryFlush(t *testing.T) {
 	c := newTokenCache(30 * time.Second)
 	c.now = func() time.Time { return now }
 
-	c.put("h1", auth.Principal{Subject: "alice"}, true)
+	c.put("h1", auth.Principal{Subject: "alice"}, true, time.Time{})
 	if p, found, ok := c.get("h1"); !ok || !found || p.Subject != "alice" {
 		t.Fatalf("hit expected: ok=%v found=%v p=%+v", ok, found, p)
 	}
@@ -84,7 +84,7 @@ func TestTokenCache_HitMissExpiryFlush(t *testing.T) {
 	}
 	// Re-put then flush.
 	now = time.Unix(2000, 0)
-	c.put("h2", auth.Principal{}, false) // negative entry
+	c.put("h2", auth.Principal{}, false, time.Time{}) // negative entry
 	if _, found, ok := c.get("h2"); !ok || found {
 		t.Errorf("negative entry should be a hit with found=false (ok=%v found=%v)", ok, found)
 	}
@@ -96,13 +96,13 @@ func TestTokenCache_HitMissExpiryFlush(t *testing.T) {
 
 func TestTokenCache_DisabledTTLZero(t *testing.T) {
 	var c *tokenCache // nil receiver — disabled
-	c.put("h", auth.Principal{Subject: "x"}, true)
+	c.put("h", auth.Principal{Subject: "x"}, true, time.Time{})
 	if _, _, ok := c.get("h"); ok {
 		t.Error("nil cache must always miss")
 	}
 	c.flush() // must not panic
 	c2 := newTokenCache(0)
-	c2.put("h", auth.Principal{Subject: "x"}, true)
+	c2.put("h", auth.Principal{Subject: "x"}, true, time.Time{})
 	if _, _, ok := c2.get("h"); ok {
 		t.Error("ttl<=0 cache must always miss")
 	}
@@ -133,5 +133,23 @@ func TestResolvePrincipal_CacheServesAndInvalidates(t *testing.T) {
 	s.invalidateTokenCache(context.Background())
 	if _, ok := s.resolvePrincipal(context.Background(), "lct_x"); ok {
 		t.Error("after invalidation, the retired token must no longer resolve")
+	}
+}
+
+// A token whose life ends while its entry is still cached must stop being
+// answered from the cache at that instant, not at the end of the entry's TTL.
+func TestTokenCache_HitStopsAtTheTokensOwnEnd(t *testing.T) {
+	now := time.Unix(1000, 0)
+	c := newTokenCache(30 * time.Second)
+	c.now = func() time.Time { return now }
+
+	c.put("h", auth.Principal{Subject: "alice"}, true, now.Add(10*time.Second))
+	now = now.Add(9 * time.Second)
+	if _, found, ok := c.get("h"); !ok || !found {
+		t.Fatalf("one second before the token ends: ok=%v found=%v, want a hit", ok, found)
+	}
+	now = now.Add(time.Second)
+	if _, _, ok := c.get("h"); ok {
+		t.Error("at the instant the token ends the entry still answered; the cache's own TTL had 20s left")
 	}
 }

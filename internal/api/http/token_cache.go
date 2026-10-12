@@ -28,6 +28,12 @@ type tokenCacheEntry struct {
 	principal auth.Principal
 	found     bool
 	expiresAt time.Time
+	// validUntil is when the TOKEN stops authenticating (its expiry, or the
+	// end of its rotation grace); zero = no such instant. It is checked on
+	// every hit: without it a token whose life ended while its entry was
+	// cached would keep authenticating for up to one TTL, and nothing flushes
+	// the cache when a clock passes an instant.
+	validUntil time.Time
 }
 
 // tokenCacheMaxEntries bounds the map. resolvePrincipal caches a negative for
@@ -61,7 +67,13 @@ func (c *tokenCache) get(hash string) (auth.Principal, bool /*found*/, bool /*ok
 	c.mu.RLock()
 	e, ok := c.m[hash]
 	c.mu.RUnlock()
-	if !ok || c.now().After(e.expiresAt) {
+	now := c.now()
+	if !ok || now.After(e.expiresAt) {
+		return auth.Principal{}, false, false
+	}
+	if e.found && !e.validUntil.IsZero() && !now.Before(e.validUntil) {
+		// The token's life ended inside the entry's. Answered as a miss so the
+		// direct lookup decides (and caches the refusal).
 		return auth.Principal{}, false, false
 	}
 	return e.principal, e.found, true
@@ -71,7 +83,7 @@ func (c *tokenCache) get(hash string) (auth.Principal, bool /*found*/, bool /*ok
 // maxSize: at the cap it first evicts expired entries, then — if still full —
 // skips caching this entry (the next request does a direct lookup). This caps
 // the negative-cache memory an invalid-bearer spray can consume.
-func (c *tokenCache) put(hash string, p auth.Principal, found bool) {
+func (c *tokenCache) put(hash string, p auth.Principal, found bool, validUntil time.Time) {
 	if c == nil || c.ttl <= 0 {
 		return
 	}
@@ -88,7 +100,7 @@ func (c *tokenCache) put(hash string, p auth.Principal, found bool) {
 			return // still full of live entries — skip caching, stay bounded
 		}
 	}
-	c.m[hash] = tokenCacheEntry{principal: p, found: found, expiresAt: c.now().Add(c.ttl)}
+	c.m[hash] = tokenCacheEntry{principal: p, found: found, expiresAt: c.now().Add(c.ttl), validUntil: validUntil}
 }
 
 // flush drops all entries. Called on a local token mutation and on

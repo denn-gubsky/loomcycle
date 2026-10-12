@@ -88,6 +88,7 @@ const operatorTokenDefInputSchema = `{
     "tenant_id":  {"type": "string", "description": "Authoritative tenant (required for create)."},
     "subject":    {"type": "string", "description": "Authoritative subject (optional for create; defaults to tok-<name>)."},
     "scopes":     {"type": "array", "items": {"type": "string"}, "description": "Allowed scopes from the closed catalog. REQUIRED on create (except with import_token) — an omitted list is refused rather than defaulting to [substrate:admin], because that made a mistyped key mint a full-power token. Note the asymmetry: the request field is scopes, the response echoes it as allowed_scopes."},
+    "ttl_seconds": {"type": "integer", "description": "Lifetime in seconds (create). The token stops authenticating when it runs out, and a later rotate does not extend it. Omit for a token that never expires. Refused for a token holding substrate:admin."},
     "grace_seconds": {"type": "integer", "description": "Rotation grace window override (rotate)."},
     "import_token": {"type": "string", "description": "Migration only (create): bind an existing secret (the legacy LOOMCYCLE_AUTH_TOKEN) instead of minting. Hashed, never echoed."}
   },
@@ -101,6 +102,7 @@ type operatorTokenDefInput struct {
 	TenantID     string   `json:"tenant_id,omitempty"`
 	Subject      string   `json:"subject,omitempty"`
 	Scopes       []string `json:"scopes,omitempty"`
+	TTLSeconds   *int64   `json:"ttl_seconds,omitempty"`
 	GraceSeconds *int     `json:"grace_seconds,omitempty"`
 	// ImportToken (Decision 10 migration) binds an existing secret —
 	// the legacy LOOMCYCLE_AUTH_TOKEN via `--copy-from-env` — instead of
@@ -246,6 +248,25 @@ func (s *OperatorTokenDef) execCreate(ctx context.Context, in operatorTokenDefIn
 		return errResult(fmt.Sprintf("create: unknown scope(s) %v — not in the closed catalog", bad)), nil
 	}
 
+	var expiresAt time.Time
+	if in.TTLSeconds != nil {
+		if imported {
+			return errResult("create: ttl_seconds cannot be combined with import_token"), nil
+		}
+		// An admin token that expires is a lockout waiting for a date: once
+		// one exists the legacy LOOMCYCLE_AUTH_TOKEN login is off, and when
+		// the last one runs out nothing can mint its replacement.
+		if auth.HasScope(scopes, auth.ScopeAdmin) {
+			return errResult("create: ttl_seconds is not allowed on a token holding " + auth.ScopeAdmin +
+				" — an expiring admin token can lock the deployment out"), nil
+		}
+		const maxTTLSeconds = int64(100 * 365 * 24 * 3600)
+		if *in.TTLSeconds <= 0 || *in.TTLSeconds > maxTTLSeconds {
+			return errResult(fmt.Sprintf("create: ttl_seconds must be between 1 and %d", maxTTLSeconds)), nil
+		}
+		expiresAt = time.Now().Add(time.Duration(*in.TTLSeconds) * time.Second).UTC()
+	}
+
 	// A name has at most one current (non-retired) token; force `rotate`
 	// for an existing live name so a create can't silently shadow it.
 	if _, err := s.Store.OperatorTokenDefGetCurrentByName(ctx, in.Name); err == nil {
@@ -288,6 +309,7 @@ func (s *OperatorTokenDef) execCreate(ctx context.Context, in operatorTokenDefIn
 		TokenHash:        auth.HashToken(s.Pepper, hashInput),
 		AllowedScopes:    scopes,
 		CreatedByAgentID: ident.AgentID,
+		ExpiresAt:        expiresAt,
 	}
 	created, err := s.Store.OperatorTokenDefCreate(ctx, row)
 	if err != nil {
@@ -383,6 +405,11 @@ func (s *OperatorTokenDef) execRotate(ctx context.Context, in operatorTokenDefIn
 	if err != nil {
 		return errResult(err.Error()), nil
 	}
+	// The replacement inherits the lifetime, so rotating a token that has run
+	// out would mint one that is dead on arrival.
+	if !prior.ExpiresAt.IsZero() && !time.Now().Before(prior.ExpiresAt) {
+		return errResult(fmt.Sprintf("rotate: token %q has expired — create a new one", prior.DefID)), nil
+	}
 	plaintext, suffix, mErr := auth.MintToken()
 	if mErr != nil {
 		return errResult(fmt.Sprintf("rotate: %s", mErr)), nil
@@ -397,6 +424,9 @@ func (s *OperatorTokenDef) execRotate(ctx context.Context, in operatorTokenDefIn
 		AllowedScopes:    prior.AllowedScopes,
 		CreatedByAgentID: ident.AgentID,
 		RotatedFrom:      prior.DefID,
+		// Copied, never recomputed: a rotation replaces the secret, it does
+		// not grant the token more time.
+		ExpiresAt: prior.ExpiresAt,
 	}
 	created, err := s.Store.OperatorTokenDefCreate(ctx, row)
 	if err != nil {
@@ -547,6 +577,10 @@ func operatorTokenRowResponse(row store.OperatorTokenDefRow) map[string]any {
 	}
 	if !row.RetiredAt.IsZero() {
 		m["retired_at"] = row.RetiredAt.UTC().Format(time.RFC3339Nano)
+	}
+	if !row.ExpiresAt.IsZero() {
+		m["expires_at"] = row.ExpiresAt.UTC().Format(time.RFC3339Nano)
+		m["expired"] = !time.Now().Before(row.ExpiresAt)
 	}
 	return m
 }

@@ -5,7 +5,9 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/denn-gubsky/loomcycle/internal/auth"
 	"github.com/denn-gubsky/loomcycle/internal/store"
@@ -23,9 +25,11 @@ func seedUser(t *testing.T, st store.Store, tenant, subject, accessMode, status 
 }
 
 // Mint derives scopes from the target user's access_mode and FORCES the row's
-// tenant to the principal's — a body/query "tenant" or "scopes" never reaches
-// the stored row. The minted token also resolves back to exactly the derived
-// principal (proves the pepper matches the auth hot path).
+// tenant to the principal's — a query "tenant" never reaches the stored row,
+// and a body naming a tenant or scopes is refused outright (see
+// TestHandleMintUserToken_UnknownBodyFieldRefused). The minted token also
+// resolves back to exactly the derived principal (proves the pepper matches
+// the auth hot path).
 //
 // SECURITY ASSERTION (fail-before target): the persisted row is under the
 // principal tenant "acme", NEVER the "?tenant=evil" the request carries.
@@ -37,9 +41,8 @@ func TestHandleMintUserToken_TenantForcedAndScopesDerived(t *testing.T) {
 	// An ISOLATED member — the grant must be exactly [substrate:user].
 	seedUser(t, st, "acme", "alice", "isolated", "active")
 
-	// A bogus tenant + admin scopes in the body AND a ?tenant=evil query, all of
-	// which the handler must ignore.
-	body := `{"tenant":"evil","scopes":["substrate:admin"]}`
+	// A ?tenant=evil query, which the handler must ignore.
+	body := ""
 	rec := httptest.NewRecorder()
 	s.handleMintUserToken(rec, bodyReq("POST", "/v1/_users/alice/tokens?tenant=evil", body, acme, "subject", "alice"))
 	if rec.Code != http.StatusCreated {
@@ -360,5 +363,252 @@ func TestDeleteUser_RetiresDelegatedTokens(t *testing.T) {
 	// The token rows persist (retired) even though the identity row is gone.
 	if n := activeAliceTokens(t, st); n != 0 {
 		t.Errorf("active tokens after delete = %d, want 0 (delete must retire delegated tokens)", n)
+	}
+}
+
+// mintFor mints a token for subject with the given body and returns the
+// decoded response, failing the test on a non-201.
+func mintFor(t *testing.T, s *Server, p auth.Principal, subject, body string) mintUserTokenResponse {
+	t.Helper()
+	rec := httptest.NewRecorder()
+	s.handleMintUserToken(rec, bodyReq("POST", "/v1/_users/"+subject+"/tokens", body, p, "subject", subject))
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("mint %s %s: status %d: %s", subject, body, rec.Code, rec.Body.String())
+	}
+	var resp mintUserTokenResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	return resp
+}
+
+// A body that names a tenant or scopes used to be ignored. It is now refused,
+// and nothing is written: a mint that silently dropped a key would hand back a
+// token that is not what the caller described.
+func TestHandleMintUserToken_UnknownBodyFieldRefused(t *testing.T) {
+	s, st := tokenAuthServer(t, "legacy")
+	acme := auth.Principal{TenantID: "acme", Subject: "ops", Scopes: []string{auth.ScopeTenant}}
+	seedUser(t, st, "acme", "alice", "isolated", "active")
+
+	for _, body := range []string{
+		`{"tenant":"evil","scopes":["substrate:admin"]}`,
+		`{"ttl":60}`,
+	} {
+		rec := httptest.NewRecorder()
+		s.handleMintUserToken(rec, bodyReq("POST", "/v1/_users/alice/tokens", body, acme, "subject", "alice"))
+		if rec.Code != http.StatusBadRequest {
+			t.Errorf("body %s: status %d, want 400: %s", body, rec.Code, rec.Body.String())
+		}
+	}
+	for _, tenant := range []string{"acme", "evil"} {
+		rows, err := st.OperatorTokenDefListBySubject(context.Background(), tenant, "alice")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(rows) != 0 {
+			t.Errorf("%s/alice has %d token row(s) after refused mints, want 0", tenant, len(rows))
+		}
+	}
+}
+
+// ttl_seconds gives the token a fixed end, reported on the mint and in the
+// listing. A mint without it has none, as before.
+func TestHandleMintUserToken_TTLSetsExpiry(t *testing.T) {
+	s, st := tokenAuthServer(t, "legacy")
+	acme := auth.Principal{TenantID: "acme", Subject: "ops", Scopes: []string{auth.ScopeTenant}}
+	seedUser(t, st, "acme", "alice", "isolated", "active")
+
+	before := time.Now()
+	resp := mintFor(t, s, acme, "alice", `{"ttl_seconds":3600,"name":"laptop-1"}`)
+	if resp.ExpiresAt == nil {
+		t.Fatal("mint with ttl_seconds returned no expires_at")
+	}
+	if d := resp.ExpiresAt.Sub(before); d < 3599*time.Second || d > 3601*time.Second {
+		t.Errorf("expires_at is %s after the mint, want one hour", d)
+	}
+	if resp.Name != "laptop-1" {
+		t.Errorf("name = %q, want the one asked for", resp.Name)
+	}
+	plain := mintFor(t, s, acme, "alice", "")
+	if plain.ExpiresAt != nil {
+		t.Errorf("a mint with no body got expires_at %v, want none", plain.ExpiresAt)
+	}
+
+	rec := httptest.NewRecorder()
+	s.handleListUserTokens(rec, bodyReq("GET", "/v1/_users/alice/tokens", "", acme, "subject", "alice"))
+	var list listUserTokensResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &list); err != nil {
+		t.Fatal(err)
+	}
+	byID := map[string]userTokenMeta{}
+	for _, m := range list.Tokens {
+		byID[m.DefID] = m
+	}
+	if m := byID[resp.DefID]; m.ExpiresAt == nil || !m.Active {
+		t.Errorf("listing of the expiring token = %+v, want expires_at set and active", m)
+	}
+	if m := byID[plain.DefID]; m.ExpiresAt != nil {
+		t.Errorf("listing of the plain token carries expires_at %v", m.ExpiresAt)
+	}
+}
+
+// Bad lifetimes and names are refused before anything is minted.
+func TestHandleMintUserToken_RefusesBadTTLNameAndMaxActive(t *testing.T) {
+	s, st := tokenAuthServer(t, "legacy")
+	acme := auth.Principal{TenantID: "acme", Subject: "ops", Scopes: []string{auth.ScopeTenant}}
+	seedUser(t, st, "acme", "alice", "isolated", "active")
+	for _, body := range []string{
+		`{"ttl_seconds":0}`, `{"ttl_seconds":-5}`, `{"ttl_seconds":99999999999999}`,
+		`{"name":"has space"}`, `{"max_active":0}`,
+	} {
+		rec := httptest.NewRecorder()
+		s.handleMintUserToken(rec, bodyReq("POST", "/v1/_users/alice/tokens", body, acme, "subject", "alice"))
+		if rec.Code != http.StatusBadRequest {
+			t.Errorf("body %s: status %d, want 400: %s", body, rec.Code, rec.Body.String())
+		}
+	}
+	rows, _ := st.OperatorTokenDefListBySubject(context.Background(), "acme", "alice")
+	if len(rows) != 0 {
+		t.Errorf("%d token row(s) written by refused mints", len(rows))
+	}
+}
+
+// With an operator maximum set, a longer lifetime is refused, and a mint that
+// asks for none gets the maximum: leaving the field out must not be the way
+// around the cap.
+func TestHandleMintUserToken_MaxTTLCapsAndFillsIn(t *testing.T) {
+	s, st := tokenAuthServer(t, "legacy")
+	s.SetUserTokenMaxTTL(time.Hour)
+	acme := auth.Principal{TenantID: "acme", Subject: "ops", Scopes: []string{auth.ScopeTenant}}
+	seedUser(t, st, "acme", "alice", "isolated", "active")
+
+	rec := httptest.NewRecorder()
+	s.handleMintUserToken(rec, bodyReq("POST", "/v1/_users/alice/tokens", `{"ttl_seconds":3601}`, acme, "subject", "alice"))
+	if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "3600") {
+		t.Errorf("ttl over the maximum: status %d, want 400 naming the maximum: %s", rec.Code, rec.Body.String())
+	}
+
+	before := time.Now()
+	for _, body := range []string{"", `{}`, `{"name":"x"}`} {
+		resp := mintFor(t, s, acme, "alice", body)
+		if resp.ExpiresAt == nil {
+			t.Errorf("body %q under a maximum: no expires_at, so the token never expires", body)
+			continue
+		}
+		if d := resp.ExpiresAt.Sub(before); d < 3599*time.Second || d > 3602*time.Second {
+			t.Errorf("body %q: expires %s after the mint, want the one-hour maximum", body, d)
+		}
+	}
+	if resp := mintFor(t, s, acme, "alice", `{"ttl_seconds":60}`); resp.ExpiresAt == nil || resp.ExpiresAt.Sub(before) > 2*time.Minute {
+		t.Errorf("a shorter lifetime under the maximum was not honoured: %v", resp.ExpiresAt)
+	}
+}
+
+// max_active keeps the newest N of the user's tokens alive and retires the
+// rest at once. Another user's tokens, and a privileged token that shares the
+// subject, are not touched.
+func TestHandleMintUserToken_MaxActiveRetiresTheOldest(t *testing.T) {
+	s, st := tokenAuthServer(t, "legacy")
+	ctx := context.Background()
+	acme := auth.Principal{TenantID: "acme", Subject: "ops", Scopes: []string{auth.ScopeTenant}}
+	seedUser(t, st, "acme", "alice", "isolated", "active")
+	seedUser(t, st, "acme", "bob", "isolated", "active")
+
+	bob := mintFor(t, s, acme, "bob", "")
+	// A tenant-operator token that happens to name alice as its subject.
+	if _, err := st.OperatorTokenDefCreate(ctx, store.OperatorTokenDefRow{
+		DefID: "def_priv", Name: "priv", TenantID: "acme", Subject: "alice",
+		TokenHash: "h-priv", AllowedScopes: []string{auth.ScopeTenant},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	var minted []mintUserTokenResponse
+	for i := 0; i < 3; i++ {
+		minted = append(minted, mintFor(t, s, acme, "alice", ""))
+		time.Sleep(2 * time.Millisecond) // distinct created_at
+	}
+	last := mintFor(t, s, acme, "alice", `{"max_active":2}`)
+	if len(last.Retired) != 2 {
+		t.Fatalf("retired = %v, want the two oldest", last.Retired)
+	}
+	wantRetired := map[string]bool{minted[0].DefID: true, minted[1].DefID: true}
+	for _, id := range last.Retired {
+		if !wantRetired[id] {
+			t.Errorf("retired %s, which is not one of the two oldest", id)
+		}
+	}
+	for i, m := range append(minted, last) {
+		_, ok := s.resolvePrincipal(ctx, m.Token)
+		if want := i >= 2; ok != want {
+			t.Errorf("token %d authenticates = %v, want %v", i, ok, want)
+		}
+	}
+	if _, ok := s.resolvePrincipal(ctx, bob.Token); !ok {
+		t.Error("another user's token was retired")
+	}
+	if row, err := st.OperatorTokenDefGet(ctx, "def_priv"); err != nil || !row.RetiredAt.IsZero() {
+		t.Errorf("the privileged token sharing the subject was retired (err=%v retired_at=%v)", err, row.RetiredAt)
+	}
+}
+
+// An expired token is refused, and refused exactly as an unknown one is.
+func TestResolvePrincipal_ExpiredTokenRefused(t *testing.T) {
+	s, st := tokenAuthServer(t, "")
+	ctx := context.Background()
+	mk := func(id, plaintext string, expires time.Time) {
+		if _, err := st.OperatorTokenDefCreate(ctx, store.OperatorTokenDefRow{
+			DefID: id, Name: id, TenantID: "acme", Subject: "alice",
+			TokenHash:     auth.HashToken(testTokenPepper, plaintext),
+			AllowedScopes: []string{auth.ScopeUser}, ExpiresAt: expires,
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	mk("def_live", "tok-live", time.Now().Add(time.Hour))
+	mk("def_dead", "tok-dead", time.Now().Add(-time.Second))
+	if _, ok := s.resolvePrincipal(ctx, "tok-live"); !ok {
+		t.Error("a token inside its lifetime was refused")
+	}
+	if _, ok := s.resolvePrincipal(ctx, "tok-dead"); ok {
+		t.Error("an expired token authenticated")
+	}
+}
+
+// The case the cache makes hard: a token that expires while its resolution is
+// cached. With a 30s cache it must still stop at its own end.
+func TestResolvePrincipal_ExpiryHoldsThroughAWarmCache(t *testing.T) {
+	s, st := tokenAuthServer(t, "")
+	s.EnableTokenCache(30 * time.Second)
+	ctx := context.Background()
+	if _, err := st.OperatorTokenDefCreate(ctx, store.OperatorTokenDefRow{
+		DefID: "def_short", Name: "short", TenantID: "acme", Subject: "alice",
+		TokenHash:     auth.HashToken(testTokenPepper, "tok-short"),
+		AllowedScopes: []string{auth.ScopeUser}, ExpiresAt: time.Now().Add(300 * time.Millisecond),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := s.resolvePrincipal(ctx, "tok-short"); !ok {
+		t.Fatal("the token was refused before its end")
+	}
+	time.Sleep(400 * time.Millisecond)
+	if _, ok := s.resolvePrincipal(ctx, "tok-short"); ok {
+		t.Error("the token authenticated after its end: the cached resolution outlived it")
+	}
+}
+
+// The same hole existed for a rotated-out token: nothing flushes the cache
+// when a grace window ends, so it kept authenticating for up to one cache TTL.
+func TestResolvePrincipal_RotationGraceEndsThroughAWarmCache(t *testing.T) {
+	s, st := tokenAuthServer(t, "")
+	s.EnableTokenCache(30 * time.Second)
+	ctx := context.Background()
+	seedToken(t, st, "tok-grace", "acme", "alice", []string{auth.ScopeUser}, time.Now().Add(300*time.Millisecond))
+	if _, ok := s.resolvePrincipal(ctx, "tok-grace"); !ok {
+		t.Fatal("the token was refused inside its grace window")
+	}
+	time.Sleep(400 * time.Millisecond)
+	if _, ok := s.resolvePrincipal(ctx, "tok-grace"); ok {
+		t.Error("the token authenticated after its grace window ended")
 	}
 }

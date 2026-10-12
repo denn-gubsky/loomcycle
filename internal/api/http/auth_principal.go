@@ -219,14 +219,14 @@ func (s *Server) resolvePrincipal(ctx context.Context, bearer string) (auth.Prin
 	if p, found, ok := s.tokenCache.get(hash); ok {
 		return p, found
 	}
-	p, found, cacheable := s.resolvePrincipalUncached(ctx, bearer, hash)
+	p, found, cacheable, validUntil := s.resolvePrincipalUncached(ctx, bearer, hash)
 	// Only memoise DEFINITIVE outcomes (token hit, legacy fallback, genuine
 	// not-found/expired). A transient store OUTAGE resolves to (_, false) but
 	// is NOT cacheable: caching it would lock a VALID token out for the whole
 	// TTL after the DB recovered — a blip amplified into a ≤30s sticky
 	// lockout. On an outage we fail closed for THIS request only and re-probe.
 	if cacheable {
-		s.tokenCache.put(hash, p, found)
+		s.tokenCache.put(hash, p, found, validUntil)
 	}
 	return p, found
 }
@@ -241,20 +241,30 @@ func (s *Server) resolvePrincipal(ctx context.Context, bearer string) (auth.Prin
 // The third return is `cacheable`: true for a DEFINITIVE outcome (hit, legacy,
 // genuine not-found/expired) that resolvePrincipal may memoise; FALSE for a
 // transient store outage so a blip is not cached into a sticky lockout.
-func (s *Server) resolvePrincipalUncached(ctx context.Context, bearer, hash string) (auth.Principal, bool, bool) {
+//
+// The fourth is when a minted token stops authenticating (zero = never, and
+// for every other kind of principal), so the cache can stop answering for it
+// at that instant rather than at the end of its own TTL.
+func (s *Server) resolvePrincipalUncached(ctx context.Context, bearer, hash string) (auth.Principal, bool, bool, time.Time) {
+	var never time.Time
 	if s.store != nil {
 		row, err := s.store.OperatorTokenDefGetByTokenHash(ctx, hash)
 		if err == nil {
-			// Valid iff never retired, or still inside the grace window.
-			if row.RetiredAt.IsZero() || time.Now().Before(row.RetiredAt) {
+			// Valid iff not retired (or still inside the grace window) and
+			// not past its fixed lifetime. Both refusals look the same.
+			if row.ValidAt(time.Now()) {
+				validUntil := never
+				if !row.RetiredAt.IsZero() || !row.ExpiresAt.IsZero() {
+					validUntil = row.ValidUntil()
+				}
 				return auth.Principal{
 					TenantID:   row.TenantID,
 					Subject:    row.Subject,
 					Scopes:     row.AllowedScopes,
 					TokenDefID: row.DefID,
-				}, true, true
+				}, true, true, validUntil
 			}
-			return auth.Principal{}, false, true // expired → opaque 401, cacheable
+			return auth.Principal{}, false, true, never // expired → opaque 401, cacheable
 		}
 		// Not found (ErrNotFound) → fall through to legacy. Any OTHER
 		// store error is a genuine outage: fail closed AND not cacheable (we
@@ -263,7 +273,7 @@ func (s *Server) resolvePrincipalUncached(ctx context.Context, bearer, hash stri
 			if s.authVerbose() {
 				log.Printf("auth: token-substrate lookup error (failing closed): %v", err)
 			}
-			return auth.Principal{}, false, false
+			return auth.Principal{}, false, false, never
 		}
 	}
 	// Config-declared principals (RFC AO) — static service identities from the
@@ -271,21 +281,21 @@ func (s *Server) resolvePrincipalUncached(ctx context.Context, bearer, hash stri
 	// substrate (a minted def wins a value clash) and BEFORE the legacy
 	// fallback. A definitive, cacheable outcome.
 	if p, ok := auth.MatchDeclared(bearer, s.cfg().ResolvedPrincipals); ok {
-		return p, true, true
+		return p, true, true, never
 	}
 	// Legacy shared-secret fallback.
 	if s.cfg().Env.AuthToken != "" && auth.CompareBearer(bearer, s.cfg().Env.AuthToken) {
 		if s.legacyFallbackDisabled(ctx) {
-			return auth.Principal{}, false, true
+			return auth.Principal{}, false, true, never
 		}
 		return auth.Principal{
 			TenantID: "default",
 			Subject:  "default",
 			Scopes:   []string{auth.ScopeAdmin},
 			Legacy:   true,
-		}, true, true
+		}, true, true, never
 	}
-	return auth.Principal{}, false, true // genuine unknown → cacheable negative
+	return auth.Principal{}, false, true, never // genuine unknown → cacheable negative
 }
 
 // legacyFallbackDisabled reports whether the LOOMCYCLE_AUTH_TOKEN path is
