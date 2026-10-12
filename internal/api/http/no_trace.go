@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"regexp"
 	"sync"
+	"time"
 
 	"github.com/denn-gubsky/loomcycle/internal/errclassify"
 	"github.com/denn-gubsky/loomcycle/internal/providers"
@@ -107,8 +108,26 @@ func (t *traceFilterStore) CapturesChanges() bool {
 	return ok && c.CapturesChanges()
 }
 
+// noTraceRunConfig is the configuration record of a no-trace run: its mode.
+// The settings a run records are there to resume it, and a no-trace run is
+// never resumed; some of them (a hook's literal header, a walk's input) are
+// content.
+var noTraceRunConfig = json.RawMessage(`{"retention":"none"}`)
+
+// SetRunConfigCAS keeps a no-trace run's record at its mode, whatever a
+// writer meant to add.
+func (t *traceFilterStore) SetRunConfigCAS(ctx context.Context, runID string, prev, next json.RawMessage) (bool, error) {
+	if t.modes.noTrace(ctx, t.Store, runID) {
+		next = noTraceRunConfig
+	}
+	return t.Store.SetRunConfigCAS(ctx, runID, prev, next)
+}
+
 // CreateRun records the new run's mode, so its first event needs no lookup.
 func (t *traceFilterStore) CreateRun(ctx context.Context, sessionID string, identity store.RunIdentity) (store.Run, error) {
+	if identity.Retention == store.RetentionNone {
+		identity.RunConfig = noTraceRunConfig
+	}
 	run, err := t.Store.CreateRun(ctx, sessionID, identity)
 	if err == nil {
 		t.modes.note(run.ID, identity.Retention == store.RetentionNone)
@@ -383,4 +402,15 @@ func writeNoTraceRefusal(w http.ResponseWriter, err error) {
 func (s *Server) runIsNoTrace(ctx context.Context, runID string) bool {
 	f, ok := s.store.(*traceFilterStore)
 	return ok && runID != "" && f.modes.noTrace(ctx, f.Store, runID)
+}
+
+// FailLostNoTraceRuns fails the no-trace runs a restart lost and releases
+// their idempotency keys (store.FailLostNoTraceRuns). bootedAt is when this
+// process started: a run begun since then is its own and alive. Called once,
+// at boot, before anything can resume or retry.
+func (s *Server) FailLostNoTraceRuns(ctx context.Context, bootedAt time.Time) (int, error) {
+	if s.store == nil {
+		return 0, nil
+	}
+	return s.store.FailLostNoTraceRuns(ctx, s.replicaID, bootedAt)
 }

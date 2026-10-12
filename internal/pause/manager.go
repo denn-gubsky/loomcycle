@@ -49,10 +49,15 @@ var ErrNotPaused = errors.New("pause: runtime is not paused")
 // field stays because it is on every transport's pause result (HTTP, gRPC,
 // MCP, the TS and Python clients); removing it is a wire change of its own.
 type PauseResult struct {
-	State               string   `json:"state"`
-	DurationMs          int64    `json:"duration_ms"`
-	ForceCancelledCount int      `json:"force_cancelled_count"`
-	PausedRunsCount     int      `json:"paused_runs_count"`
+	State               string `json:"state"`
+	DurationMs          int64  `json:"duration_ms"`
+	ForceCancelledCount int    `json:"force_cancelled_count"`
+	PausedRunsCount     int    `json:"paused_runs_count"`
+	// UnpausableRunsCount is the runs on this replica that a pause does not
+	// park: no-trace runs, which have nothing stored to resume from. They
+	// keep running through the pause, a snapshot leaves them out, and if the
+	// process stops they are lost. Absent when there are none.
+	UnpausableRunsCount int      `json:"unpausable_runs_count,omitempty"`
 	Warnings            []string `json:"warnings,omitempty"`
 }
 
@@ -120,6 +125,10 @@ type Manager struct {
 	// *runEntry. sync.Map so per-run registration doesn't contend with
 	// state transitions.
 	activeRuns sync.Map
+
+	// unpausable is the runs that take no part in a pause (RegisterUnpausable).
+	// Not in activeRuns, so the barrier never waits for them.
+	unpausable sync.Map
 
 	// store is used to persist runs.pause_state and to list paused
 	// runs on resume. Manager treats the store as the source of
@@ -456,6 +465,33 @@ func (m *Manager) RegisterRun(runID string) {
 	m.activeRuns.LoadOrStore(runID, &runEntry{})
 }
 
+// RegisterUnpausable records a run that a pause does not park. It is counted
+// in the pause report and otherwise left alone.
+func (m *Manager) RegisterUnpausable(runID string) {
+	if m == nil || runID == "" {
+		return
+	}
+	m.unpausable.Store(runID, struct{}{})
+}
+
+// DeregisterUnpausable removes a run recorded by RegisterUnpausable.
+func (m *Manager) DeregisterUnpausable(runID string) {
+	if m == nil || runID == "" {
+		return
+	}
+	m.unpausable.Delete(runID)
+}
+
+// UnpausableRuns is how many unpausable runs are in flight on this replica.
+func (m *Manager) UnpausableRuns() int {
+	if m == nil {
+		return 0
+	}
+	n := 0
+	m.unpausable.Range(func(_, _ any) bool { n++; return true })
+	return n
+}
+
 // DeregisterRun removes a run from the registry (loop exit — completed,
 // failed, or cancelled). A deregistered run no longer holds back the barrier.
 func (m *Manager) DeregisterRun(runID string) {
@@ -723,7 +759,10 @@ func (m *Manager) finalizePause(start time.Time, recorded <-chan struct{}, warni
 		State:           StatePaused.String(),
 		DurationMs:      time.Since(start).Milliseconds(),
 		PausedRunsCount: pausedCount,
-		Warnings:        warnings,
+		// Counted at the end: one that finished while the others parked is
+		// no longer something a snapshot would miss.
+		UnpausableRunsCount: m.UnpausableRuns(),
+		Warnings:            warnings,
 	}
 }
 

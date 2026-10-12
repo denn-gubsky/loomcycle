@@ -33,6 +33,10 @@ import (
 // internal/store, so the store cannot name these types — and deliberately does
 // not interpret the record. It stores bytes.
 type runConfigRecord struct {
+	// Retention is all a no-trace run's record holds (see noTraceRunConfig):
+	// such a run is never resumed, so nothing else has a reader.
+	Retention string `json:"retention,omitempty"`
+
 	Sampling          *config.Sampling     `json:"sampling,omitempty"`
 	ToolChoice        *config.ToolChoice   `json:"tool_choice,omitempty"`   // RFC DI
 	OutputFormat      *config.OutputFormat `json:"output_format,omitempty"` // RFC DI

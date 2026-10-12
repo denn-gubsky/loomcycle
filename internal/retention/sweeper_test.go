@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -1247,5 +1248,49 @@ func TestRetentionSweep_PerTenantFanout(t *testing.T) {
 	// The live agent's memory is intact.
 	if n := memKeyCountTenant(t, st, "A", "alive"); n != 1 {
 		t.Errorf("live agent memory = %d, want 1 (must not be reclaimed)", n)
+	}
+}
+
+// A no-trace chat is deleted at its age like any other and never exported:
+// "not retained" means no copy is made of it, markers included.
+func TestSweeper_ANoTraceChatIsDeletedAndNeverExported(t *testing.T) {
+	ctx := context.Background()
+	st, err := sqlite.Open(filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatalf("open sqlite: %v", err)
+	}
+	defer func() { _ = st.Close() }()
+
+	dir := t.TempDir()
+	normalID := seedCompletedChatSession(t, st, "exp-plain")
+	sess, err := st.CreateSession(ctx, "t", "default", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	run, err := st.CreateRun(ctx, sess.ID, store.RunIdentity{AgentID: "exp-quiet", Retention: store.RetentionNone})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := st.FinishRun(ctx, run.ID, store.RunCompleted, "end_turn", store.Usage{}, ""); err != nil {
+		t.Fatal(err)
+	}
+
+	sw := New(st, Config{ChatsMode: "export+prune", ExportDir: dir, Logger: quietLogger, Now: futureHour})
+	res, err := sw.sweepOnce(ctx)
+	if err != nil {
+		t.Fatalf("sweepOnce: %v", err)
+	}
+	if res.Chats != 2 {
+		t.Errorf("res.Chats = %d, want 2: both chats are past their age", res.Chats)
+	}
+	if m, _ := filepath.Glob(filepath.Join(dir, "chats", "*", normalID+".json")); len(m) != 1 {
+		t.Errorf("ordinary chat bundle = %v, want one", m)
+	}
+	if m, _ := filepath.Glob(filepath.Join(dir, "chats", "*", sess.ID+".json")); len(m) != 0 {
+		t.Errorf("a no-trace chat was exported to %v", m)
+	}
+	var nf *store.ErrNotFound
+	if _, err := st.GetSession(ctx, sess.ID); !errors.As(err, &nf) {
+		t.Errorf("the no-trace chat was not deleted: err = %v", err)
 	}
 }

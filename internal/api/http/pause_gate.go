@@ -211,9 +211,22 @@ func (g *pauseGate) setPauseState(parent context.Context, state string) error {
 // (PauseRequested + Park, used by the loop) and tools.PauseGate (adds PauseCh,
 // used by the parallel_spawn park watcher); returning the wider tools.PauseGate
 // lets callers both set runOpts.PauseGate and stash it via tools.WithPauseGate.
-func (s *Server) newPauseGate(runID string) (tools.PauseGate, func()) {
+//
+// noTrace is the run's own mode, from whoever is starting it: it is not looked
+// up here. A lookup that failed would have to guess, and both guesses are
+// wrong — an ordinary run left unparked is missing from the snapshot the
+// pause was for, and a no-trace run parked is captured with nothing to
+// resume from.
+func (s *Server) newPauseGate(runID string, noTrace bool) (tools.PauseGate, func()) {
 	if s.pauseMgr == nil || s.store == nil || runID == "" {
 		return nil, func() {}
+	}
+	// A no-trace run is not parked: a parked run is one a snapshot captures
+	// and a resume rebuilds from its transcript, and it has none. It runs on
+	// through a pause and is reported as unpausable.
+	if noTrace {
+		s.pauseMgr.RegisterUnpausable(runID)
+		return nil, func() { s.pauseMgr.DeregisterUnpausable(runID) }
 	}
 	s.pauseMgr.RegisterRun(runID)
 	return &pauseGate{mgr: s.pauseMgr, store: s.store, runID: runID, saveClock: s.recordRunClock}, func() {

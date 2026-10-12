@@ -13,12 +13,20 @@ import (
 	"regexp"
 	"strings"
 	"testing"
+	"time"
+
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
+	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 
 	"github.com/denn-gubsky/loomcycle/internal/config"
 	"github.com/denn-gubsky/loomcycle/internal/connector"
+	"github.com/denn-gubsky/loomcycle/internal/hooks"
 	"github.com/denn-gubsky/loomcycle/internal/loop"
+	"github.com/denn-gubsky/loomcycle/internal/pause"
 	"github.com/denn-gubsky/loomcycle/internal/providers"
 	"github.com/denn-gubsky/loomcycle/internal/runner"
+	"github.com/denn-gubsky/loomcycle/internal/runstate"
+	"github.com/denn-gubsky/loomcycle/internal/steer"
 	"github.com/denn-gubsky/loomcycle/internal/store"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
 )
@@ -442,5 +450,246 @@ func TestNoTraceFilter_NothingInThisPackageWritesAroundIt(t *testing.T) {
 			}
 			t.Errorf("%s:%d reaches a store around the no-trace filter: %s", name, i+1, strings.TrimSpace(line))
 		}
+	}
+}
+
+// While a no-trace run is in flight: it cannot be sent a message or retuned
+// (both are stored and relayed), and a pause does not park it — it is
+// reported as unpausable and keeps running.
+func TestNoTrace_ARunInFlightIsUnpausableAndTakesNoMessages(t *testing.T) {
+	prov := &canaryHangProvider{started: make(chan struct{})}
+	srv, _ := makeServer(t, prov, noTraceConfig())
+	srv.noTraceAgents = map[string]bool{"parent": true}
+	srv.SetSteerRegistry(steer.NewRegistry(8))
+	mgr := pause.NewManager(srv.store, 2*time.Second)
+	srv.SetPauseManager(mgr)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() {
+		done <- srv.RunOnce(ctx, runner.RunInput{Agent: "parent", AgentID: "a_parent", UserID: "alice", Segments: canarySegments()}, runner.RunCallbacks{})
+	}()
+	select {
+	case <-prov.started:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the model call never started")
+	}
+	run := runOfAgent(t, srv, "a_parent")
+	// Its row holds its mode and none of its settings.
+	if string(run.RunConfig) != `{"retention":"none"}` {
+		t.Errorf("run_config = %s, want only the mode", run.RunConfig)
+	}
+
+	if _, err := srv.SteerRun(context.Background(), run.ID, "a message "+canary, "api"); !errors.Is(err, runner.ErrRetentionUnsupported) {
+		t.Errorf("a message to a no-trace run: err = %v, want ErrRetentionUnsupported", err)
+	}
+	if _, err := srv.retuneRun(context.Background(), run, &runOverridesWire{Model: "stub-model"}); !errors.Is(err, runner.ErrRetentionUnsupported) {
+		t.Errorf("a retune of a no-trace run: err = %v, want ErrRetentionUnsupported", err)
+	}
+
+	// A pause returns without waiting for it, and says it left one running.
+	start := time.Now()
+	res, err := mgr.Pause(context.Background(), 2*time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.UnpausableRunsCount != 1 || res.PausedRunsCount != 0 {
+		t.Errorf("pause report: unpausable=%d paused=%d, want 1 and 0", res.UnpausableRunsCount, res.PausedRunsCount)
+	}
+	if d := time.Since(start); d > time.Second {
+		t.Errorf("the pause waited %v for a run it does not park", d)
+	}
+	if got, _ := srv.store.GetRun(context.Background(), run.ID); got.Status != store.RunRunning || got.PauseState == store.PauseStatePaused {
+		t.Errorf("the run under a pause: status=%q pause_state=%q, want it still running", got.Status, got.PauseState)
+	}
+
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the run did not end after its cancel")
+	}
+	waitRunsTerminal(t, srv)
+	if n := mgr.UnpausableRuns(); n != 0 {
+		t.Errorf("unpausable runs after it ended = %d, want 0", n)
+	}
+}
+
+// The run-state bus fans a run's end out to every replica and every stream
+// watching its tenant. A no-trace run's text does not ride it.
+func TestNoTrace_TheRunStateBusCarriesNoText(t *testing.T) {
+	srv, _ := makeServer(t, completingProvider(), noTraceConfig())
+	f := srv.store.(*traceFilterStore)
+	sess, _ := f.Store.CreateSession(context.Background(), "", "parent", "alice")
+	quiet, err := srv.store.CreateRun(context.Background(), sess.ID, store.RunIdentity{AgentID: "a_bus", Retention: store.RetentionNone})
+	if err != nil {
+		t.Fatal(err)
+	}
+	plainSess, _ := f.Store.CreateSession(context.Background(), "", "parent", "alice")
+	plain, err := srv.store.CreateRun(context.Background(), plainSess.ID, store.RunIdentity{AgentID: "a_bus_plain"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	bus := runstate.NewBus()
+	srv.SetRunStateBus(bus)
+	sub := bus.Subscribe("")
+	defer sub.Close()
+
+	srv.publishRunState(runStateMeta{RunID: quiet.ID}, "failed", "the operator said "+canary, "boom "+canary)
+	srv.publishRunState(runStateMeta{RunID: plain.ID}, "failed", "max_iterations", "an ordinary error")
+	for _, want := range []struct{ id, stop, errText string }{
+		{quiet.ID, "other", "error class: unclassified"},
+		{plain.ID, "max_iterations", "an ordinary error"},
+	} {
+		select {
+		case ev := <-sub.C:
+			if ev.RunID != want.id || ev.StopReason != want.stop || ev.Error != want.errText {
+				t.Errorf("bus event = run %s stop %q error %q, want run %s stop %q error %q", ev.RunID, ev.StopReason, ev.Error, want.id, want.stop, want.errText)
+			}
+		case <-time.After(2 * time.Second):
+			t.Fatal("no bus event")
+		}
+	}
+}
+
+// Context distillation can bank the turns it drops, for a later pass to read.
+// A banked span is the conversation itself; a no-trace run banks none.
+func TestNoTrace_ADistillationBanksNothing(t *testing.T) {
+	srv, dbPath := makeServer(t, completingProvider(), noTraceConfig())
+	on := true
+	def := config.AgentDef{MemoryScopes: []string{"user"}, Compaction: &config.Compaction{MemoryFlush: &on}}
+	dropped := []providers.Message{{Role: "user", Content: []providers.ContentBlock{{Type: "text", Text: "an old turn " + canary}}}}
+	bank := func(retention string) string {
+		t.Helper()
+		sess, err := srv.store.CreateSession(context.Background(), "", "parent", "alice")
+		if err != nil {
+			t.Fatal(err)
+		}
+		run, err := srv.store.CreateRun(context.Background(), sess.ID, store.RunIdentity{AgentID: "a_bank_" + retention, UserID: "alice", Retention: retention})
+		if err != nil {
+			t.Fatal(err)
+		}
+		id, err := srv.bankCompactedSpanFn(def, false, "", "alice", "parent", run.ID, sess.ID)(context.Background(), dropped)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return id
+	}
+	if id := bank(store.RetentionNone); id != "" || onDisk(t, srv, dbPath) {
+		t.Errorf("a no-trace run banked a span (id %q, canary on disk: %v)", id, onDisk(t, srv, dbPath))
+	}
+	// The same call for an ordinary run does bank, so the check above means something.
+	if id := bank(""); id == "" || !onDisk(t, srv, dbPath) {
+		t.Errorf("an ordinary run banked nothing (id %q): this test cannot see a banked span", id)
+	}
+}
+
+// A run's span carries its error as the span's status and as a recorded
+// event. For a no-trace run both hold the class, on the path that finishes a
+// run and on the one that fails it before its loop began.
+func TestNoTrace_TheSpanCarriesTheErrorClassOnly(t *testing.T) {
+	srv, _ := makeServer(t, completingProvider(), noTraceConfig())
+	exp := tracetest.NewInMemoryExporter()
+	tp := sdktrace.NewTracerProvider(sdktrace.WithSyncer(exp))
+	defer func() { _ = tp.Shutdown(context.Background()) }()
+
+	newRun := func(agentID, retention string) string {
+		t.Helper()
+		sess, err := srv.store.CreateSession(context.Background(), "", "parent", "alice")
+		if err != nil {
+			t.Fatal(err)
+		}
+		run, err := srv.store.CreateRun(context.Background(), sess.ID, store.RunIdentity{AgentID: agentID, Retention: retention})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return run.ID
+	}
+	finish := func(name string, do func(meta runStateMeta)) string {
+		t.Helper()
+		_, span := tp.Tracer("test").Start(context.Background(), name)
+		do(runStateMeta{otelSpan: span})
+		span.End()
+		var out strings.Builder
+		for _, s := range exp.GetSpans() {
+			if s.Name != name {
+				continue
+			}
+			out.WriteString(s.Status.Description)
+			for _, ev := range s.Events {
+				for _, kv := range ev.Attributes {
+					out.WriteString(" " + kv.Value.Emit())
+				}
+			}
+		}
+		return out.String()
+	}
+	boom := fmt.Errorf("%w: prompt was %s", runner.ErrTokenLimitExceeded, canary)
+
+	for _, retention := range []string{store.RetentionNone, ""} {
+		a := finish("finish-"+retention, func(meta runStateMeta) {
+			srv.finishRun(context.Background(), newRun("a_span_f"+retention, retention), loop.RunResult{}, boom, meta)
+		})
+		b := finish("failed-"+retention, func(meta runStateMeta) {
+			srv.finishRunFailedReason(newRun("a_span_r"+retention, retention), "could not start: "+canary, meta)
+		})
+		for what, got := range map[string]string{"finishRun": a, "finishRunFailedReason": b} {
+			has := strings.Contains(got, canary)
+			if retention == store.RetentionNone && (has || !strings.Contains(got, "error class: ")) {
+				t.Errorf("%s: a no-trace run's span carries %q, want its class and no text", what, got)
+			}
+			// An ordinary run's span has the text, so the check above can fail.
+			if retention == "" && !has {
+				t.Errorf("%s: an ordinary run's span carries %q: this test cannot see the text", what, got)
+			}
+		}
+	}
+}
+
+// A no-trace run's configuration record stays at its mode whatever a later
+// writer adds, and the chats the legacy archiver ages out are never exported.
+func TestNoTrace_ALaterWriteToTheRunsRecordStoresNoSettings(t *testing.T) {
+	srv, _ := makeServer(t, completingProvider(), noTraceConfig())
+	sess, _ := srv.store.CreateSession(context.Background(), "", "parent", "alice")
+	run, err := srv.store.CreateRun(context.Background(), sess.ID, store.RunIdentity{AgentID: "a_cfg", Retention: store.RetentionNone,
+		RunConfig: json.RawMessage(`{"hooks":{"run_end":["` + canary + `"]}}`)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, _ := srv.store.GetRun(context.Background(), run.ID)
+	if string(got.RunConfig) != `{"retention":"none"}` {
+		t.Fatalf("run_config at creation = %s", got.RunConfig)
+	}
+	if _, err := updateRunConfigIn(context.Background(), srv.store, run.ID, func(rec *runConfigRecord, _ bool) error {
+		rec.Routing = &routingOverride{Model: canary}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := srv.store.GetRun(context.Background(), run.ID); string(got.RunConfig) != `{"retention":"none"}` {
+		t.Errorf("run_config after an update = %s, want only the mode", got.RunConfig)
+	}
+}
+
+// A hook fired outside the run's loop (a run_end hook, a manual compaction's)
+// can call tools as the run. For a no-trace run those tools must still know
+// it is one.
+func TestNoTrace_AHookFiredOutsideTheLoopStillRunsAsANoTraceRun(t *testing.T) {
+	srv, _ := makeServer(t, completingProvider(), noTraceConfig())
+	sess, _ := srv.store.CreateSession(context.Background(), "", "parent", "alice")
+	quiet, err := srv.store.CreateRun(context.Background(), sess.ID, store.RunIdentity{AgentID: "a_hook", Retention: store.RetentionNone})
+	if err != nil {
+		t.Fatal(err)
+	}
+	plain, err := srv.store.CreateRun(context.Background(), sess.ID, store.RunIdentity{AgentID: "a_hook_plain"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := tools.RunIdentity(srv.withHookRun(context.Background(), hooks.Identity{RunID: quiet.ID, AgentID: "a_hook"})).Retention; got != store.RetentionNone {
+		t.Errorf("a no-trace run's hook context has retention %q", got)
+	}
+	if got := tools.RunIdentity(srv.withHookRun(context.Background(), hooks.Identity{RunID: plain.ID, AgentID: "a_hook_plain"})).Retention; got != "" {
+		t.Errorf("an ordinary run's hook context has retention %q", got)
 	}
 }

@@ -1476,6 +1476,10 @@ export type ConfiguredRunPatch = Partial<
  *  Keys and nested values are the server's snake_case wire names (not the
  *  camelCase request options), so nested blocks are left untyped. */
 export interface RunSpec {
+  /** `"none"` for a no-trace run, whose record holds its mode and none of
+   *  its settings: such a run stores no content and is never resumed. Absent
+   *  on every other run. */
+  retention?: string;
   sampling?: Record<string, unknown>;
   tool_choice?: ToolChoiceOptions;
   output_format?: OutputFormatOptions;

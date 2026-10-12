@@ -824,6 +824,9 @@ func (s *Server) resumePausedRun(run store.Run) error {
 		// durable bit is the authority. Without this a paused isolated run could
 		// escape its data-scope confinement on resume.
 		Isolated: run.Isolated,
+		// Never "none" in practice — a no-trace run is not paused, so there is
+		// none to resume — but the row is the authority, as for the two above.
+		Retention: run.Retention,
 	}
 	// Store-only emit (no live client to forward to) — the resumed turns
 	// append to the same run's transcript so a re-attaching operator tails them.
@@ -960,7 +963,7 @@ func (s *Server) resumePausedRun(run store.Run) error {
 	// reResolve closure can capture it; it's populated before loop.Run runs.
 	provSlot := &providerSlot{}
 	fbPolicy, fbReResolve := s.fallbackForRun(run.TenantID, run.UserID, run.Agent, run.UserTier, run.OperatorKeyRestricted, provSlot, runCfg.Routing)
-	gate, deregGate := s.newPauseGate(run.ID)
+	gate, deregGate := s.newPauseGate(run.ID, run.Retention == store.RetentionNone)
 	// RFC X Phase 3: a re-dispatched run that itself fans out can park too.
 	loopCtx = tools.WithPauseGate(loopCtx, gate)
 

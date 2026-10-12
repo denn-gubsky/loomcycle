@@ -2204,6 +2204,27 @@ func (s *Store) SweepStaleRuns(ctx context.Context, cutoff time.Time) (int, erro
 	return int(tag.RowsAffected()), nil
 }
 
+// FailLostNoTraceRuns implements store.Store.
+func (s *Store) FailLostNoTraceRuns(ctx context.Context, replicaID string, startedBefore time.Time) (int, error) {
+	tag, err := s.pool.Exec(ctx,
+		`UPDATE runs SET
+			status = $1,
+			completed_at = $2,
+			error = 'error class: not_resumable',
+			stop_reason = 'not_resumable',
+			idempotency_key = NULL
+		 WHERE status = $3
+		   AND retention = 'none'
+		   AND started_at < $4
+		   AND ($5 = '' OR replica_id = $5)`,
+		string(store.RunFailed), time.Now().UTC(), string(store.RunRunning), startedBefore.UTC(), replicaID,
+	)
+	if err != nil {
+		return 0, fmt.Errorf("fail lost no-trace runs: %w", err)
+	}
+	return int(tag.RowsAffected()), nil
+}
+
 // SetRunPauseState implements store.Store. Writes runs.pause_state.
 // Refuses unknown state strings — the v0.8.17 PauseManager always uses
 // the PauseState* constants but a forward-compat guard at this layer

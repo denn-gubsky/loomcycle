@@ -48,7 +48,7 @@ func TestResumeFanout_AChildBusyThroughAPauseIsNotChargedIt(t *testing.T) {
 	}
 	// Live here, as a running loop is, and never at a boundary: it is in a
 	// tool call from before the pause to after the resume.
-	_, deregister := srv.newPauseGate(child.ID)
+	_, deregister := srv.newPauseGate(child.ID, false)
 	defer deregister()
 
 	pausedAt := time.Now()

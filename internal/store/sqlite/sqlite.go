@@ -3703,6 +3703,28 @@ func (s *Store) SetRunConfigCAS(ctx context.Context, runID string, prev, next js
 	return false, nil
 }
 
+// FailLostNoTraceRuns implements store.Store. SQLite is one process, with no
+// replica_id on runs: every such run is this process's, so replicaID is unused.
+func (s *Store) FailLostNoTraceRuns(ctx context.Context, _ string, startedBefore time.Time) (int, error) {
+	res, err := s.db.ExecContext(ctx,
+		`UPDATE runs SET
+			status = ?,
+			completed_at = ?,
+			error = 'error class: not_resumable',
+			stop_reason = 'not_resumable',
+			idempotency_key = NULL
+		 WHERE status = ?
+		   AND retention = 'none'
+		   AND started_at < ?`,
+		string(store.RunFailed), time.Now().UnixNano(), string(store.RunRunning), startedBefore.UnixNano(),
+	)
+	if err != nil {
+		return 0, fmt.Errorf("fail lost no-trace runs: %w", err)
+	}
+	n, err := res.RowsAffected()
+	return int(n), err
+}
+
 // SetRunReplica implements store.Store. SQLite's runs table has no replica_id
 // column: a single-file store is a single-replica deployment, so there is
 // nothing to route to and nothing to record.

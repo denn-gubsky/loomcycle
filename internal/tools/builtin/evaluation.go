@@ -181,6 +181,12 @@ func (e *Evaluation) execSubmit(ctx context.Context, policy tools.EvaluationPoli
 	if !ok {
 		return errResult(fmt.Sprintf("submit: run_id %q not found", in.RunID)), nil
 	}
+	// A judgement and its rationale describe what the run said, and outlive
+	// the run. A no-trace run has nothing stored to judge and may have
+	// nothing stored about it.
+	if target.Retention == store.RetentionNone {
+		return errResult(fmt.Sprintf("submit: run_id %q is a no-trace run: its content was not retained, and an evaluation of it would be", in.RunID)), nil
+	}
 	emitter := tools.RunIdentity(ctx)
 	role := deriveEmitterRole(emitter, target)
 	if err := checkSubmitScope(policy, role); err != nil {

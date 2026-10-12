@@ -3408,7 +3408,7 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 
 	// Cooperative pause quiesce (RFC X / F41): park at an iteration boundary
 	// while paused. Deregistered here, or by the detached goroutine.
-	gate, deregGate := s.newPauseGate(runID)
+	gate, deregGate := s.newPauseGate(runID, retention == store.RetentionNone)
 	defer func() {
 		if !handOff {
 			deregGate()
@@ -5495,7 +5495,7 @@ func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {
 	// boundary while paused. Registers the run with the pause barrier; the
 	// matching deregister runs after the loop (inline) or in the detached
 	// goroutine (interactive) — never a handler-level defer (handOff).
-	gate, deregGate := s.newPauseGate(runID)
+	gate, deregGate := s.newPauseGate(runID, retention == store.RetentionNone)
 	runOpts.PauseGate = gate
 	runOpts.BudgetGate = s.budgetGate(req.TenantID, req.UserID)
 	// RFC X Phase 3: expose the gate to the Agent tool so a parallel_spawn
@@ -6217,7 +6217,8 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 	loopCtx = s.withRunHooks(loopCtx, run.ID, sess.Agent, agentDef, hooks.Additions{Hooks: body.Hooks, ToolHooks: body.ToolHooks})
 	loopCtx = tools.WithDispatcher(loopCtx, dispatcher)
 	// Cooperative pause quiesce (RFC X / F41) — synchronous handler, defer-deregister.
-	gate, deregGate := s.newPauseGate(run.ID)
+	// A continuation is never a no-trace run: it is refused above.
+	gate, deregGate := s.newPauseGate(run.ID, false)
 	defer deregGate()
 	// RFC X Phase 3: expose the gate to the Agent tool (parallel_spawn parent park).
 	loopCtx = tools.WithPauseGate(loopCtx, gate)
@@ -8339,7 +8340,7 @@ func (s *Server) prepareSubRunValues(ctx context.Context, name string, src nameS
 	// Cooperative pause quiesce (RFC X / F41): a sub-agent parks at its own
 	// boundary while paused (so a fan-out tree quiesces). NOT admission-gated —
 	// it's a child of an already-admitted run, not new top-level work.
-	subGate, deregSubGate := s.newPauseGate(subRunID)
+	subGate, deregSubGate := s.newPauseGate(subRunID, subRetention == store.RetentionNone)
 	defer func() {
 		if !prepOK {
 			deregSubGate()
@@ -9074,6 +9075,9 @@ func (s *Server) handleRunInput(w http.ResponseWriter, r *http.Request) {
 	}
 	delivered, err := s.SteerRun(r.Context(), runID, text, source)
 	switch {
+	case errors.Is(err, runner.ErrRetentionUnsupported):
+		writeNoTraceRefusal(w, err)
+		return
 	case errors.Is(err, connector.ErrSteerQueueFull):
 		w.Header().Set("Retry-After", "1")
 		http.Error(w, "run input queue full; retry shortly", http.StatusTooManyRequests)
@@ -9777,6 +9781,12 @@ func (s *Server) publishRunState(m runStateMeta, status, stopReason, errMsg stri
 	if s.runStateBus == nil {
 		return
 	}
+	// The bus fans out to every replica (a Postgres NOTIFY in a cluster) and
+	// to every stream watching the tenant. A no-trace run's text does not
+	// ride it, whichever path is publishing.
+	if s.runIsNoTrace(context.Background(), m.RunID) {
+		stopReason, errMsg = safeStopReason(stopReason), safeErrorText(errMsg)
+	}
 	evt := m.runStateEvent(status)
 	evt.StopReason, evt.Error = stopReason, errMsg
 	s.runStateBus.Publish(evt)
@@ -9960,6 +9970,12 @@ func terminalStatusOf(runCtx context.Context, res loop.RunResult, runErr error) 
 // Mirrors finishRun's structure: fresh background ctx with 5s timeout
 // so the write isn't lost when the request ctx is already torn down.
 func (s *Server) finishRunFailedReason(runID, reason string, meta runStateMeta) {
+	// What is stored and traced of a no-trace run's failure is its class. The
+	// run_end hooks get the reason itself, as for any run.
+	stored := reason
+	if s.runIsNoTrace(context.Background(), runID) {
+		stored = safeErrorText(reason)
+	}
 	// v0.10.0 OTEL: stamp final attrs on the run span even when we
 	// can't write to the store (s.store == nil path). Span.End() is
 	// deferred at the open site, so failing to record here means the
@@ -9967,7 +9983,7 @@ func (s *Server) finishRunFailedReason(runID, reason string, meta runStateMeta) 
 	// store guard here gives operators consistent telemetry.
 	lcotel.SetRunDone(meta.otelSpan, lcotel.RunDoneAttrs{
 		StopReason: "failed",
-		Err:        errors.New(reason),
+		Err:        errors.New(stored),
 	})
 	if s.store == nil || runID == "" {
 		return
@@ -9976,10 +9992,10 @@ func (s *Server) finishRunFailedReason(runID, reason string, meta runStateMeta) 
 	defer cancelFn()
 	// No result (RFC DI): the loop never ran, so there is no answer — the
 	// reason is the run's error, and it already has a column.
-	if err := s.store.FinishRun(bg, runID, store.RunFailed, "", store.Usage{}, reason); err != nil {
-		log.Printf("store: FinishRun(failed reason=%q) failed (run=%s): %v", reason, runID, err)
+	if err := s.store.FinishRun(bg, runID, store.RunFailed, "", store.Usage{}, stored); err != nil {
+		log.Printf("store: FinishRun(failed reason=%q) failed (run=%s): %v", stored, runID, err)
 	}
-	s.publishRunState(meta, "failed", "", reason)
+	s.publishRunState(meta, "failed", "", stored)
 	s.observeRunEnd(meta, store.RunFailed, "", reason, "")
 	// RFC AH Phase 2b: a top-level run that fails (incl. mid-flight panic in
 	// the background-goroutine paths) must still purge its ephemeral subtree.
@@ -10152,6 +10168,15 @@ func (s *Server) rehydrateEphemeralVolumes(ctx context.Context, rootRunID string
 // (the client disconnected); we use a fresh background context with a short
 // timeout so the FinishRun write isn't lost.
 func (s *Server) finishRun(_ context.Context, runID string, res loop.RunResult, runErr error, meta runStateMeta) {
+	// A no-trace run's error reaches the span, the row and the run-state bus
+	// as its class and nothing else. Reduced here, where the error is still
+	// in hand to classify. The run_end hooks get what they always got: a hook
+	// is the operator's own endpoint, and what it is sent is the operator's
+	// choice, not something the runtime stores.
+	spanErr := runErr
+	if runErr != nil && s.runIsNoTrace(context.Background(), runID) {
+		spanErr = errors.New(noTraceErrorText(runErr))
+	}
 	// v0.10.0 OTEL: final attrs on the run span. Runs through this
 	// path on both completion + non-cancel failure. runErr maps to
 	// Error span status; the rest are scalar attribute writes.
@@ -10160,7 +10185,7 @@ func (s *Server) finishRun(_ context.Context, runID string, res loop.RunResult, 
 		OutputTokens:    res.Usage.OutputTokens,
 		CacheReadTokens: res.Usage.CacheReadTokens,
 		StopReason:      res.StopReason,
-		Err:             runErr,
+		Err:             spanErr,
 	})
 	if s.store == nil || runID == "" {
 		return
@@ -10175,14 +10200,11 @@ func (s *Server) finishRun(_ context.Context, runID string, res loop.RunResult, 
 	status := terminalStatusOf(nil, res, runErr)
 	errMsg := ""
 	if runErr != nil {
-		errMsg = runErr.Error()
-		// A no-trace run's error is reduced to its class here, where the
-		// error is still in hand, so the row, the run-state bus and the
-		// run_end hooks below all get the class. The store filter would
-		// reduce the text too, but without the error it cannot classify it.
-		if s.runIsNoTrace(bg, runID) {
-			errMsg = noTraceErrorText(runErr)
-		}
+		errMsg = spanErr.Error()
+	}
+	hookErr := ""
+	if runErr != nil {
+		hookErr = runErr.Error()
 	}
 	usage := store.Usage{
 		InputTokens:         res.Usage.InputTokens,
@@ -10215,7 +10237,7 @@ func (s *Server) finishRun(_ context.Context, runID string, res loop.RunResult, 
 		log.Printf("store: FinishRun failed (run=%s): %v", runID, err)
 	}
 	s.publishRunState(meta, string(status), res.StopReason, errMsg)
-	s.observeRunEnd(meta, status, res.StopReason, errMsg, res.FinalText)
+	s.observeRunEnd(meta, status, res.StopReason, hookErr, res.FinalText)
 }
 
 // observeRunEnd reports a run's end to its run_end hooks, off the finishing
@@ -10240,7 +10262,14 @@ func (s *Server) observeRunEnd(meta runStateMeta, status store.RunStatus, stopRe
 // Interruption call is recorded on that run, and refuses without one.
 func (s *Server) withHookRun(ctx context.Context, ident hooks.Identity) context.Context {
 	ctx = hooks.WithSet(ctx, s.runHookSet(ident.RunID))
-	ctx = tools.WithRunIdentity(ctx, tools.RunIdentityValue{UserID: ident.UserID, AgentID: ident.AgentID, TenantID: ident.Tenant})
+	rid := tools.RunIdentityValue{UserID: ident.UserID, AgentID: ident.AgentID, TenantID: ident.Tenant}
+	// A hook's code body can call tools as the run. For a no-trace run they
+	// have to know it is one, here as inside its loop: a question asked from
+	// a run_end hook would be stored like any other.
+	if s.runIsNoTrace(ctx, ident.RunID) {
+		rid.Retention = store.RetentionNone
+	}
+	ctx = tools.WithRunIdentity(ctx, rid)
 	ctx = tools.WithRunID(ctx, ident.RunID)
 	return tools.WithAgentName(ctx, ident.Agent)
 }
