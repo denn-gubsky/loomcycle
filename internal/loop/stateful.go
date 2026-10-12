@@ -869,11 +869,8 @@ func runStateful(ctx context.Context, opts RunOptions, system []providers.Conten
 				return RunResult{StopReason: "cancelled", Iterations: iter, Usage: total, State: sigma}, ctx.Err()
 			}
 		}
-		if opts.BudgetGate != nil {
-			if err := opts.BudgetGate(); err != nil {
-				emit(providers.Event{Type: providers.EventError, Error: err.Error()})
-				return RunResult{StopReason: StopReasonTokenLimit, Iterations: iter, Usage: total, State: sigma}, err
-			}
+		if err := overBudget(opts, emit); err != nil {
+			return RunResult{StopReason: StopReasonTokenLimit, Iterations: iter, Usage: total, State: sigma}, err
 		}
 		// The append loop reads its queue at the top of every iteration; this
 		// loop read it only while parked, so a message sent to an autonomous
@@ -895,6 +892,13 @@ func runStateful(ctx context.Context, opts RunOptions, system []providers.Conten
 		msgs := []providers.Message{statefulUserMessage(sigma, task, memo.render(helpTool, obs), obs)}
 		var es *emitStateOut
 		for attempt := 0; ; attempt++ {
+			// A re-prompt is a model call like the first: an answer that has
+			// to be asked for again is paid for again.
+			if attempt > 0 {
+				if err := overBudget(opts, emit); err != nil {
+					return RunResult{StopReason: StopReasonTokenLimit, Iterations: iter, Usage: total, State: sigma}, err
+				}
+			}
 			// RFC DG: say on the WIRE what the system prompt has only ever
 			// asked for. Narrowing `tools` to emit_state was never enough —
 			// the run that produced this RFC had exactly one tool offered and
@@ -1467,4 +1471,18 @@ func statefulActionHint(specs []providers.ToolSpec) string {
 	}
 	return "Available tools: " + strings.Join(names, ", ") +
 		". Omit `action` (or set `done: true`) when you are ready to answer."
+}
+
+// overBudget asks the run's BudgetGate, when it has one, and reports a
+// refusal as the run's error event. Asked before EVERY model call this loop
+// makes, a re-prompt included.
+func overBudget(opts RunOptions, emit func(providers.Event)) error {
+	if opts.BudgetGate == nil {
+		return nil
+	}
+	err := opts.BudgetGate()
+	if err != nil {
+		emit(providers.Event{Type: providers.EventError, Error: err.Error()})
+	}
+	return err
 }

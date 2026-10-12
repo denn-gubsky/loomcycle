@@ -123,3 +123,28 @@ func (p *toolThenEndProvider) Call(context.Context, providers.Request) (<-chan p
 	close(ch)
 	return ch, nil
 }
+
+// A stateful step re-prompts a model that did not answer in the required
+// form, inside one iteration. Each re-prompt is a paid call, so each asks.
+func TestRun_Stateful_AskForTheBudgetBeforeAReprompt(t *testing.T) {
+	prov := &proseThenComplyProvider{
+		proseTurns: 5,
+		prose:      "Hello! I can search the web.",
+		script:     `{"patch":{},"done":true,"final":"hi"}`,
+	}
+	spent := errors.New("budget spent")
+	gate, _ := budgetAfter(1, spent)
+	res, err := Run(context.Background(), RunOptions{
+		Provider: prov, Model: "x",
+		Dispatcher: tools.NewDispatcher(nil),
+		Segments:   statefulTaskSegs(),
+		Context:    statefulCtx(nil),
+		BudgetGate: gate,
+	})
+	if !errors.Is(err, spent) || res.StopReason != StopReasonTokenLimit {
+		t.Fatalf("Run = %q, %v; want %q and the gate's error", res.StopReason, err, StopReasonTokenLimit)
+	}
+	if n := prov.calls(); n != 1 {
+		t.Errorf("model calls = %d, want 1: the re-prompt was sent over budget", n)
+	}
+}

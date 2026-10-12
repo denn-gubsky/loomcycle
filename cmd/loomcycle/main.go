@@ -2027,6 +2027,19 @@ func main() {
 		srv.SetDefaultRunRate(rate)
 		log.Printf("auth: default run rate %d/min, burst %d", rate.PerMinute, rate.EffectiveBurst())
 	}
+	// Strict token budgets: also check a hard budget before each model call
+	// and each sub-agent start, so a run in flight stops when the budget is
+	// gone. Unset keeps the check at run admission only. Any other value is a
+	// mistake worth stopping for: a deployment that asked for enforcement and
+	// misspelled it must not run without it.
+	switch v := os.Getenv("LOOMCYCLE_LIMITS_ENFORCE"); v {
+	case "":
+	case "strict":
+		srv.SetStrictLimits(true)
+		log.Printf("limits: strict enforcement (a hard budget stops runs in flight and refuses sub-agents)")
+	default:
+		log.Fatalf("limits: LOOMCYCLE_LIMITS_ENFORCE=%q is not a known value (strict, or unset)", v)
+	}
 	// Expired token rows are removed once they have been dead for a while. A
 	// deployment minting short-lived tokens daily would otherwise keep every
 	// one of them. Only rows that carry an expiry are ever removed; a token
