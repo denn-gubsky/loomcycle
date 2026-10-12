@@ -3408,7 +3408,7 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 
 	// Cooperative pause quiesce (RFC X / F41): park at an iteration boundary
 	// while paused. Deregistered here, or by the detached goroutine.
-	gate, deregGate := s.newPauseGate(runID)
+	gate, deregGate := s.newPauseGate(runID, retention == store.RetentionNone)
 	defer func() {
 		if !handOff {
 			deregGate()
@@ -5495,7 +5495,7 @@ func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {
 	// boundary while paused. Registers the run with the pause barrier; the
 	// matching deregister runs after the loop (inline) or in the detached
 	// goroutine (interactive) — never a handler-level defer (handOff).
-	gate, deregGate := s.newPauseGate(runID)
+	gate, deregGate := s.newPauseGate(runID, retention == store.RetentionNone)
 	runOpts.PauseGate = gate
 	runOpts.BudgetGate = s.budgetGate(req.TenantID, req.UserID)
 	// RFC X Phase 3: expose the gate to the Agent tool so a parallel_spawn
@@ -6217,7 +6217,8 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 	loopCtx = s.withRunHooks(loopCtx, run.ID, sess.Agent, agentDef, hooks.Additions{Hooks: body.Hooks, ToolHooks: body.ToolHooks})
 	loopCtx = tools.WithDispatcher(loopCtx, dispatcher)
 	// Cooperative pause quiesce (RFC X / F41) — synchronous handler, defer-deregister.
-	gate, deregGate := s.newPauseGate(run.ID)
+	// A continuation is never a no-trace run: it is refused above.
+	gate, deregGate := s.newPauseGate(run.ID, false)
 	defer deregGate()
 	// RFC X Phase 3: expose the gate to the Agent tool (parallel_spawn parent park).
 	loopCtx = tools.WithPauseGate(loopCtx, gate)
@@ -8339,7 +8340,7 @@ func (s *Server) prepareSubRunValues(ctx context.Context, name string, src nameS
 	// Cooperative pause quiesce (RFC X / F41): a sub-agent parks at its own
 	// boundary while paused (so a fan-out tree quiesces). NOT admission-gated —
 	// it's a child of an already-admitted run, not new top-level work.
-	subGate, deregSubGate := s.newPauseGate(subRunID)
+	subGate, deregSubGate := s.newPauseGate(subRunID, subRetention == store.RetentionNone)
 	defer func() {
 		if !prepOK {
 			deregSubGate()
@@ -9969,8 +9970,11 @@ func terminalStatusOf(runCtx context.Context, res loop.RunResult, runErr error) 
 // Mirrors finishRun's structure: fresh background ctx with 5s timeout
 // so the write isn't lost when the request ctx is already torn down.
 func (s *Server) finishRunFailedReason(runID, reason string, meta runStateMeta) {
+	// What is stored and traced of a no-trace run's failure is its class. The
+	// run_end hooks get the reason itself, as for any run.
+	stored := reason
 	if s.runIsNoTrace(context.Background(), runID) {
-		reason = safeErrorText(reason)
+		stored = safeErrorText(reason)
 	}
 	// v0.10.0 OTEL: stamp final attrs on the run span even when we
 	// can't write to the store (s.store == nil path). Span.End() is
@@ -9979,7 +9983,7 @@ func (s *Server) finishRunFailedReason(runID, reason string, meta runStateMeta) 
 	// store guard here gives operators consistent telemetry.
 	lcotel.SetRunDone(meta.otelSpan, lcotel.RunDoneAttrs{
 		StopReason: "failed",
-		Err:        errors.New(reason),
+		Err:        errors.New(stored),
 	})
 	if s.store == nil || runID == "" {
 		return
@@ -9988,10 +9992,10 @@ func (s *Server) finishRunFailedReason(runID, reason string, meta runStateMeta) 
 	defer cancelFn()
 	// No result (RFC DI): the loop never ran, so there is no answer — the
 	// reason is the run's error, and it already has a column.
-	if err := s.store.FinishRun(bg, runID, store.RunFailed, "", store.Usage{}, reason); err != nil {
-		log.Printf("store: FinishRun(failed reason=%q) failed (run=%s): %v", reason, runID, err)
+	if err := s.store.FinishRun(bg, runID, store.RunFailed, "", store.Usage{}, stored); err != nil {
+		log.Printf("store: FinishRun(failed reason=%q) failed (run=%s): %v", stored, runID, err)
 	}
-	s.publishRunState(meta, "failed", "", reason)
+	s.publishRunState(meta, "failed", "", stored)
 	s.observeRunEnd(meta, store.RunFailed, "", reason, "")
 	// RFC AH Phase 2b: a top-level run that fails (incl. mid-flight panic in
 	// the background-goroutine paths) must still purge its ephemeral subtree.
@@ -10014,12 +10018,6 @@ func (s *Server) finishRunFailedReason(runID, reason string, meta runStateMeta) 
 // dispatches to one or the other), but it's a no-op input. If you
 // add real ctx propagation here, audit every caller.
 func (s *Server) finishRunCancelled(_ context.Context, runID string, res loop.RunResult, reason string, meta runStateMeta) {
-	noTrace := s.runIsNoTrace(context.Background(), runID)
-	if noTrace {
-		// A cancel can carry a reason somebody typed.
-		reason = safeStopReason(reason)
-		res.FinalText = ""
-	}
 	// v0.10.0 OTEL: final attrs on the run span.
 	lcotel.SetRunDone(meta.otelSpan, lcotel.RunDoneAttrs{
 		InputTokens:     res.Usage.InputTokens,
@@ -10170,14 +10168,14 @@ func (s *Server) rehydrateEphemeralVolumes(ctx context.Context, rootRunID string
 // (the client disconnected); we use a fresh background context with a short
 // timeout so the FinishRun write isn't lost.
 func (s *Server) finishRun(_ context.Context, runID string, res loop.RunResult, runErr error, meta runStateMeta) {
-	// A no-trace run's error leaves this function as its class and nothing
-	// else: to the span, the row, the run-state bus and the run_end hooks.
-	// Reduced here, where the error is still in hand to classify.
-	noTrace := s.runIsNoTrace(context.Background(), runID)
+	// A no-trace run's error reaches the span, the row and the run-state bus
+	// as its class and nothing else. Reduced here, where the error is still
+	// in hand to classify. The run_end hooks get what they always got: a hook
+	// is the operator's own endpoint, and what it is sent is the operator's
+	// choice, not something the runtime stores.
 	spanErr := runErr
-	if noTrace && runErr != nil {
+	if runErr != nil && s.runIsNoTrace(context.Background(), runID) {
 		spanErr = errors.New(noTraceErrorText(runErr))
-		res.StopReason = safeStopReason(res.StopReason)
 	}
 	// v0.10.0 OTEL: final attrs on the run span. Runs through this
 	// path on both completion + non-cancel failure. runErr maps to
@@ -10203,6 +10201,10 @@ func (s *Server) finishRun(_ context.Context, runID string, res loop.RunResult, 
 	errMsg := ""
 	if runErr != nil {
 		errMsg = spanErr.Error()
+	}
+	hookErr := ""
+	if runErr != nil {
+		hookErr = runErr.Error()
 	}
 	usage := store.Usage{
 		InputTokens:         res.Usage.InputTokens,
@@ -10235,13 +10237,7 @@ func (s *Server) finishRun(_ context.Context, runID string, res loop.RunResult, 
 		log.Printf("store: FinishRun failed (run=%s): %v", runID, err)
 	}
 	s.publishRunState(meta, string(status), res.StopReason, errMsg)
-	finalText := res.FinalText
-	if noTrace {
-		// The run_end hooks observe a finished run; the answer was the
-		// caller's, delivered on its stream.
-		finalText = ""
-	}
-	s.observeRunEnd(meta, status, res.StopReason, errMsg, finalText)
+	s.observeRunEnd(meta, status, res.StopReason, hookErr, res.FinalText)
 }
 
 // observeRunEnd reports a run's end to its run_end hooks, off the finishing

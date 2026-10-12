@@ -2118,10 +2118,6 @@ type Store interface {
 	// since `cutoff` as failed with error="heartbeat timeout". Returns
 	// the number of rows updated.
 	//
-	// A RetentionNone run is failed with stop_reason "not_resumable" instead,
-	// and its idempotency key is released (set NULL) so a retry with the same
-	// key starts a new run. An ordinary run keeps its key.
-	//
 	// "Hasn't heartbeated" includes runs that never set
 	// last_heartbeat_at at all (crashed before the first iteration);
 	// for those, started_at is the cutoff comparison. Implementations
@@ -2134,6 +2130,21 @@ type Store interface {
 	// see WHERE status='running' fail-match and update zero rows.
 	// Used by internal/heartbeat for the periodic sweep goroutine.
 	SweepStaleRuns(ctx context.Context, cutoff time.Time) (int, error)
+
+	// FailLostNoTraceRuns fails the RetentionNone runs a restart lost: rows
+	// still "running" that started before startedBefore — the moment this
+	// process began — and that this process owned. replicaID is the
+	// process's replica id; "" means it is the only one, and owns them all.
+	//
+	// Each is marked failed with stop_reason "not_resumable" and its
+	// idempotency key is released (set NULL), so a retry with that key starts
+	// a new run: the run has nothing stored to resume from, and its key
+	// would otherwise answer every retry with a run that can never finish.
+	//
+	// Called once, at boot, and never by the heartbeat sweep: a run that has
+	// only stopped heartbeating may still be alive, and releasing its key
+	// would let a retry run the work a second time. Returns the rows changed.
+	FailLostNoTraceRuns(ctx context.Context, replicaID string, startedBefore time.Time) (int, error)
 
 	// SetRunPauseState writes runs.pause_state. The v0.8.17 PauseManager
 	// uses this to transition runs through running → pausing → paused

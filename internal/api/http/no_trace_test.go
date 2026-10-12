@@ -15,6 +15,9 @@ import (
 	"testing"
 	"time"
 
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
+	"go.opentelemetry.io/otel/sdk/trace/tracetest"
+
 	"github.com/denn-gubsky/loomcycle/internal/config"
 	"github.com/denn-gubsky/loomcycle/internal/connector"
 	"github.com/denn-gubsky/loomcycle/internal/loop"
@@ -578,5 +581,92 @@ func TestNoTrace_ADistillationBanksNothing(t *testing.T) {
 	// The same call for an ordinary run does bank, so the check above means something.
 	if id := bank(""); id == "" || !onDisk(t, srv, dbPath) {
 		t.Errorf("an ordinary run banked nothing (id %q): this test cannot see a banked span", id)
+	}
+}
+
+// A run's span carries its error as the span's status and as a recorded
+// event. For a no-trace run both hold the class, on the path that finishes a
+// run and on the one that fails it before its loop began.
+func TestNoTrace_TheSpanCarriesTheErrorClassOnly(t *testing.T) {
+	srv, _ := makeServer(t, completingProvider(), noTraceConfig())
+	exp := tracetest.NewInMemoryExporter()
+	tp := sdktrace.NewTracerProvider(sdktrace.WithSyncer(exp))
+	defer func() { _ = tp.Shutdown(context.Background()) }()
+
+	newRun := func(agentID, retention string) string {
+		t.Helper()
+		sess, err := srv.store.CreateSession(context.Background(), "", "parent", "alice")
+		if err != nil {
+			t.Fatal(err)
+		}
+		run, err := srv.store.CreateRun(context.Background(), sess.ID, store.RunIdentity{AgentID: agentID, Retention: retention})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return run.ID
+	}
+	finish := func(name string, do func(meta runStateMeta)) string {
+		t.Helper()
+		_, span := tp.Tracer("test").Start(context.Background(), name)
+		do(runStateMeta{otelSpan: span})
+		span.End()
+		var out strings.Builder
+		for _, s := range exp.GetSpans() {
+			if s.Name != name {
+				continue
+			}
+			out.WriteString(s.Status.Description)
+			for _, ev := range s.Events {
+				for _, kv := range ev.Attributes {
+					out.WriteString(" " + kv.Value.Emit())
+				}
+			}
+		}
+		return out.String()
+	}
+	boom := fmt.Errorf("%w: prompt was %s", runner.ErrTokenLimitExceeded, canary)
+
+	for _, retention := range []string{store.RetentionNone, ""} {
+		a := finish("finish-"+retention, func(meta runStateMeta) {
+			srv.finishRun(context.Background(), newRun("a_span_f"+retention, retention), loop.RunResult{}, boom, meta)
+		})
+		b := finish("failed-"+retention, func(meta runStateMeta) {
+			srv.finishRunFailedReason(newRun("a_span_r"+retention, retention), "could not start: "+canary, meta)
+		})
+		for what, got := range map[string]string{"finishRun": a, "finishRunFailedReason": b} {
+			has := strings.Contains(got, canary)
+			if retention == store.RetentionNone && (has || !strings.Contains(got, "error class: ")) {
+				t.Errorf("%s: a no-trace run's span carries %q, want its class and no text", what, got)
+			}
+			// An ordinary run's span has the text, so the check above can fail.
+			if retention == "" && !has {
+				t.Errorf("%s: an ordinary run's span carries %q: this test cannot see the text", what, got)
+			}
+		}
+	}
+}
+
+// A no-trace run's configuration record stays at its mode whatever a later
+// writer adds, and the chats the legacy archiver ages out are never exported.
+func TestNoTrace_ALaterWriteToTheRunsRecordStoresNoSettings(t *testing.T) {
+	srv, _ := makeServer(t, completingProvider(), noTraceConfig())
+	sess, _ := srv.store.CreateSession(context.Background(), "", "parent", "alice")
+	run, err := srv.store.CreateRun(context.Background(), sess.ID, store.RunIdentity{AgentID: "a_cfg", Retention: store.RetentionNone,
+		RunConfig: json.RawMessage(`{"hooks":{"run_end":["` + canary + `"]}}`)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, _ := srv.store.GetRun(context.Background(), run.ID)
+	if string(got.RunConfig) != `{"retention":"none"}` {
+		t.Fatalf("run_config at creation = %s", got.RunConfig)
+	}
+	if _, err := updateRunConfigIn(context.Background(), srv.store, run.ID, func(rec *runConfigRecord, _ bool) error {
+		rec.Routing = &routingOverride{Model: canary}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := srv.store.GetRun(context.Background(), run.ID); string(got.RunConfig) != `{"retention":"none"}` {
+		t.Errorf("run_config after an update = %s, want only the mode", got.RunConfig)
 	}
 }

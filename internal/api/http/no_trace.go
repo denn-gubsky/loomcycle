@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"regexp"
 	"sync"
+	"time"
 
 	"github.com/denn-gubsky/loomcycle/internal/errclassify"
 	"github.com/denn-gubsky/loomcycle/internal/providers"
@@ -401,4 +402,15 @@ func writeNoTraceRefusal(w http.ResponseWriter, err error) {
 func (s *Server) runIsNoTrace(ctx context.Context, runID string) bool {
 	f, ok := s.store.(*traceFilterStore)
 	return ok && runID != "" && f.modes.noTrace(ctx, f.Store, runID)
+}
+
+// FailLostNoTraceRuns fails the no-trace runs a restart lost and releases
+// their idempotency keys (store.FailLostNoTraceRuns). bootedAt is when this
+// process started: a run begun since then is its own and alive. Called once,
+// at boot, before anything can resume or retry.
+func (s *Server) FailLostNoTraceRuns(ctx context.Context, bootedAt time.Time) (int, error) {
+	if s.store == nil {
+		return 0, nil
+	}
+	return s.store.FailLostNoTraceRuns(ctx, s.replicaID, bootedAt)
 }

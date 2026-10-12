@@ -416,6 +416,10 @@ func selectPresetNames(flags []string, env string) []string {
 	return out
 }
 
+// processStartedAt is when this process began. A run row older than it was
+// started by an earlier process.
+var processStartedAt = time.Now()
+
 func main() {
 	// Resolve build identifiers FIRST so subcommands (validate / agents
 	// / health / migrate) and --version see the same auto-resolved
@@ -2967,6 +2971,16 @@ func main() {
 	// the owner's heartbeat. Backgrounded so a long-lived resumed loop never
 	// blocks the rest of boot.
 	if storeIface != nil {
+		// A no-trace run has nothing stored to resume from, so the ones this
+		// process was running when it last stopped are lost. Say so on their
+		// rows and release their idempotency keys, so a caller's retry runs
+		// the work instead of being answered with a run that cannot finish.
+		// Synchronous and first: nothing may resume or retry before it.
+		if n, err := srv.FailLostNoTraceRuns(bgCtx, processStartedAt); err != nil {
+			log.Printf("no-trace: could not fail the runs lost in the last stop: %v", err)
+		} else if n > 0 {
+			log.Printf("no-trace: failed %d run(s) lost in the last stop (not resumable); their idempotency keys are released", n)
+		}
 		go func() {
 			resume := func(ctx context.Context) error {
 				n, warnings := srv.ResumePausedRuns(ctx)

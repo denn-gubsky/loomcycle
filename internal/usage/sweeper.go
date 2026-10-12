@@ -319,7 +319,19 @@ func (s *Sweeper) archiveSessionsOnce(parent context.Context) (int, error) {
 		if ctx.Err() != nil {
 			break
 		}
-		if s.runMode == "export+prune" {
+		doExport := s.runMode == "export+prune"
+		if doExport {
+			// A no-trace chat is deleted at its age and never exported, as in
+			// the retention sweeper that supersedes this archiver. A session
+			// that cannot be read is left for the next tick.
+			sess, err := s.store.GetSession(ctx, sid)
+			if err != nil {
+				s.logf("usage: read session %s failed, skipping: %v", sid, err)
+				continue
+			}
+			doExport = sess.Retention != store.RetentionNone
+		}
+		if doExport {
 			if err := s.exportSession(ctx, sid); err != nil {
 				// Never delete a session we failed to export — retry next tick.
 				s.logf("usage: export session %s failed, skipping delete: %v", sid, err)

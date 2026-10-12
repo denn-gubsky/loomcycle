@@ -140,7 +140,7 @@ func Run(t *testing.T, factory Factory) {
 		{"CreateRunUnderAMintedID", testCreateRunUnderAMintedID},
 		{"CreateRunOperatorKeyRestrictedRoundTrip", testCreateRunOperatorKeyRestrictedRoundTrip},
 		{"RetentionModeRoundTrip", testRetentionModeRoundTrip},
-		{"SweepStaleRunsReleasesANoTraceRunsKey", testSweepStaleRunsReleasesANoTraceRunsKey},
+		{"FailLostNoTraceRuns", testFailLostNoTraceRuns},
 		{"CreateRunIsolatedRoundTrip", testCreateRunIsolatedRoundTrip},
 		{"CreateRunConfigRoundTrip", testCreateRunConfigRoundTrip},
 		{"SetRunConfigCASRefusesAStalePrev", testSetRunConfigCASRefusesAStalePrev},
@@ -16871,41 +16871,77 @@ func testRetentionModeRoundTrip(t *testing.T, s store.Store) {
 	}
 }
 
-// testSweepStaleRunsReleasesANoTraceRunsKey: a no-trace run that stopped
-// heartbeating cannot be resumed, so the sweep says so and releases its
-// idempotency key — a retry with that key starts a new run. An ordinary run
-// swept the same way keeps its key and its usual reason.
-func testSweepStaleRunsReleasesANoTraceRunsKey(t *testing.T, s store.Store) {
+// testFailLostNoTraceRuns: at boot, the no-trace runs a restart lost are
+// failed as not resumable and give up their idempotency keys, so a retry
+// starts a new run. Ordinary runs, runs started after the boot, and (where
+// runs carry a replica) another replica's runs are left alone. The heartbeat
+// sweep never releases a key: a run it fails may still be alive.
+func testFailLostNoTraceRuns(t *testing.T, s store.Store) {
 	ctx := context.Background()
-	plainSess, _ := s.CreateSession(ctx, "t", "a", "u")
-	quietSess, _ := s.CreateSession(ctx, "t", "a", "u")
-	plain, err := s.CreateRun(ctx, plainSess.ID, store.RunIdentity{AgentID: "a_sw_plain", IdempotencyKey: "sw-plain"})
-	if err != nil {
-		t.Fatal(err)
+	mk := func(agentID, key, retention, replica string) store.Run {
+		t.Helper()
+		sess, err := s.CreateSession(ctx, "t", "a", "u")
+		if err != nil {
+			t.Fatal(err)
+		}
+		run, err := s.CreateRun(ctx, sess.ID, store.RunIdentity{AgentID: agentID, IdempotencyKey: key, Retention: retention, ReplicaID: replica})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return run
 	}
-	quiet, err := s.CreateRun(ctx, quietSess.ID, store.RunIdentity{AgentID: "a_sw_quiet", IdempotencyKey: "sw-quiet", Retention: store.RetentionNone})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if n, err := s.SweepStaleRuns(ctx, time.Now().Add(time.Hour)); err != nil || n < 2 {
-		t.Fatalf("SweepStaleRuns = %d, %v; want both runs swept", n, err)
-	}
+	lost := mk("a_lost", "k-lost", store.RetentionNone, "r1")
+	plain := mk("a_lost_plain", "k-plain", "", "r1")
+	other := mk("a_lost_other", "k-other", store.RetentionNone, "r2")
+	time.Sleep(20 * time.Millisecond)
+	boot := time.Now()
+	time.Sleep(20 * time.Millisecond)
+	fresh := mk("a_lost_fresh", "k-fresh", store.RetentionNone, "r1")
 
-	got, _ := s.GetRun(ctx, quiet.ID)
+	n, err := s.FailLostNoTraceRuns(ctx, "r1", boot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, _ := s.GetRun(ctx, lost.ID)
 	if got.Status != store.RunFailed || got.StopReason != "not_resumable" || got.ErrorMsg != "error class: not_resumable" || got.IdempotencyKey != "" {
-		t.Errorf("no-trace run after the sweep: status=%q stop=%q error=%q key=%q", got.Status, got.StopReason, got.ErrorMsg, got.IdempotencyKey)
+		t.Errorf("lost run: status=%q stop=%q error=%q key=%q", got.Status, got.StopReason, got.ErrorMsg, got.IdempotencyKey)
 	}
-	got, _ = s.GetRun(ctx, plain.ID)
-	if got.Status != store.RunFailed || got.StopReason != "heartbeat_timeout" || got.IdempotencyKey != "sw-plain" {
-		t.Errorf("ordinary run after the sweep: status=%q stop=%q key=%q", got.Status, got.StopReason, got.IdempotencyKey)
+	for what, id := range map[string]string{"an ordinary run": plain.ID, "a run started after the boot": fresh.ID} {
+		if got, _ := s.GetRun(ctx, id); got.Status != store.RunRunning || got.IdempotencyKey == "" {
+			t.Errorf("%s was touched: status=%q key=%q", what, got.Status, got.IdempotencyKey)
+		}
+	}
+	// A backend whose runs carry a replica leaves another replica's alone;
+	// one that is a single process owns them all.
+	otherRun, _ := s.GetRun(ctx, other.ID)
+	switch {
+	case otherRun.ReplicaID == "r2" && otherRun.Status != store.RunRunning:
+		t.Errorf("another replica's run was failed: status=%q", otherRun.Status)
+	case otherRun.ReplicaID == "" && otherRun.Status != store.RunFailed:
+		t.Errorf("a single-process store left a lost run running: status=%q", otherRun.Status)
+	}
+	if want := 1 + btoi(otherRun.ReplicaID == ""); n != want {
+		t.Errorf("FailLostNoTraceRuns = %d, want %d", n, want)
 	}
 
-	// The released key starts a new run; the kept one still refuses.
-	again, _ := s.CreateSession(ctx, "t", "a", "u")
-	if _, err := s.CreateRun(ctx, again.ID, store.RunIdentity{AgentID: "a_sw_quiet2", IdempotencyKey: "sw-quiet", Retention: store.RetentionNone}); err != nil {
+	// The released key starts a new run.
+	if _, err := s.CreateRun(ctx, lost.SessionID, store.RunIdentity{AgentID: "a_lost_retry", IdempotencyKey: "k-lost"}); err != nil {
 		t.Errorf("a retry with a lost no-trace run's key was refused: %v", err)
 	}
-	if _, err := s.CreateRun(ctx, again.ID, store.RunIdentity{AgentID: "a_sw_plain2", IdempotencyKey: "sw-plain"}); !errors.Is(err, store.ErrDuplicateIdempotencyKey) {
-		t.Errorf("a retry with a failed ordinary run's key: err = %v, want ErrDuplicateIdempotencyKey", err)
+
+	// The heartbeat sweep fails a stale no-trace run like any other and keeps
+	// its key.
+	if _, err := s.SweepStaleRuns(ctx, time.Now().Add(time.Hour)); err != nil {
+		t.Fatal(err)
 	}
+	if got, _ := s.GetRun(ctx, fresh.ID); got.Status != store.RunFailed || got.StopReason != "heartbeat_timeout" || got.IdempotencyKey != "k-fresh" {
+		t.Errorf("a no-trace run failed by the heartbeat sweep: status=%q stop=%q key=%q, want its key kept", got.Status, got.StopReason, got.IdempotencyKey)
+	}
+}
+
+func btoi(b bool) int {
+	if b {
+		return 1
+	}
+	return 0
 }

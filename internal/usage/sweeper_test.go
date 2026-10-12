@@ -337,3 +337,43 @@ func TestSweeperRun_NilStoreNoOp(t *testing.T) {
 		t.Fatal("Run with nil store should be a no-op; instead it blocked")
 	}
 }
+
+// A no-trace chat is deleted at its age by this archiver and never exported,
+// as by the retention sweeper that supersedes it.
+func TestArchiveSessionsOnce_ANoTraceChatIsNeverExported(t *testing.T) {
+	ctx := context.Background()
+	st := newTestStore(t)
+	exportDir := t.TempDir()
+	seed := func(agentID, retention string) string {
+		t.Helper()
+		sess, err := st.CreateSession(ctx, "t", "default", "")
+		if err != nil {
+			t.Fatal(err)
+		}
+		run, err := st.CreateRun(ctx, sess.ID, store.RunIdentity{AgentID: agentID, Retention: retention})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := st.FinishRun(ctx, run.ID, store.RunCompleted, "end_turn", store.Usage{}, ""); err != nil {
+			t.Fatal(err)
+		}
+		return sess.ID
+	}
+	plain, quiet := seed("arch-plain", ""), seed("arch-quiet", store.RetentionNone)
+	sw := New(st, Config{
+		RunRetention: 24 * time.Hour, RunRetentionMode: "export+prune", ExportDir: exportDir,
+		Logger: func(string, ...any) {}, Now: func() time.Time { return time.Now().Add(48 * time.Hour) },
+	})
+	if n, err := sw.archiveSessionsOnce(ctx); err != nil || n != 2 {
+		t.Fatalf("archiveSessionsOnce = (%d, %v), want (2, nil)", n, err)
+	}
+	if m, _ := filepath.Glob(filepath.Join(exportDir, "*", plain+".json")); len(m) != 1 {
+		t.Errorf("ordinary chat export = %v, want one", m)
+	}
+	if m, _ := filepath.Glob(filepath.Join(exportDir, "*", quiet+".json")); len(m) != 0 {
+		t.Errorf("a no-trace chat was exported to %v", m)
+	}
+	if _, err := st.GetSession(ctx, quiet); err == nil {
+		t.Error("the no-trace chat was not deleted")
+	}
+}

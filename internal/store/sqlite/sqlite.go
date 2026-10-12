@@ -3629,13 +3629,8 @@ func (s *Store) SweepStaleRuns(ctx context.Context, cutoff time.Time) (int, erro
 		`UPDATE runs SET
 			status = ?,
 			completed_at = ?,
-			-- A no-trace run has nothing stored to resume from, so one that
-			-- stopped heartbeating is lost for good. It says so, and gives up
-			-- its idempotency key: the key would otherwise answer every retry
-			-- with this dead run, and the caller could never run the work.
-			error = CASE WHEN retention = 'none' THEN 'error class: not_resumable' ELSE ? END,
-			stop_reason = CASE WHEN retention = 'none' THEN 'not_resumable' ELSE ? END,
-			idempotency_key = CASE WHEN retention = 'none' THEN NULL ELSE idempotency_key END
+			error = ?,
+			stop_reason = ?
 		 WHERE status = ?
 		   -- F42 / RFC X Phase 2: a paused/pausing run is INTENTIONALLY parked
 		   -- (no heartbeat by design), not crashed — never sweep it stale. A
@@ -3706,6 +3701,28 @@ func (s *Store) SetRunConfigCAS(ctx context.Context, runID string, prev, next js
 		return false, fmt.Errorf("set run config: %w", err)
 	}
 	return false, nil
+}
+
+// FailLostNoTraceRuns implements store.Store. SQLite is one process, with no
+// replica_id on runs: every such run is this process's, so replicaID is unused.
+func (s *Store) FailLostNoTraceRuns(ctx context.Context, _ string, startedBefore time.Time) (int, error) {
+	res, err := s.db.ExecContext(ctx,
+		`UPDATE runs SET
+			status = ?,
+			completed_at = ?,
+			error = 'error class: not_resumable',
+			stop_reason = 'not_resumable',
+			idempotency_key = NULL
+		 WHERE status = ?
+		   AND retention = 'none'
+		   AND started_at < ?`,
+		string(store.RunFailed), time.Now().UnixNano(), string(store.RunRunning), startedBefore.UnixNano(),
+	)
+	if err != nil {
+		return 0, fmt.Errorf("fail lost no-trace runs: %w", err)
+	}
+	n, err := res.RowsAffected()
+	return int(n), err
 }
 
 // SetRunReplica implements store.Store. SQLite's runs table has no replica_id

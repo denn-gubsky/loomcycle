@@ -2180,13 +2180,8 @@ func (s *Store) SweepStaleRuns(ctx context.Context, cutoff time.Time) (int, erro
 		`UPDATE runs SET
 			status = $1,
 			completed_at = $2,
-			-- A no-trace run has nothing stored to resume from, so one that
-			-- stopped heartbeating is lost for good. It says so, and gives up
-			-- its idempotency key: the key would otherwise answer every retry
-			-- with this dead run, and the caller could never run the work.
-			error = CASE WHEN retention = 'none' THEN 'error class: not_resumable' ELSE $3 END,
-			stop_reason = CASE WHEN retention = 'none' THEN 'not_resumable' ELSE $4 END,
-			idempotency_key = CASE WHEN retention = 'none' THEN NULL ELSE idempotency_key END
+			error = $3,
+			stop_reason = $4
 		 WHERE status = $5
 		   -- F42 / RFC X Phase 2: a paused/pausing run is INTENTIONALLY parked
 		   -- (no heartbeat by design), not crashed — never sweep it stale. A
@@ -2205,6 +2200,27 @@ func (s *Store) SweepStaleRuns(ctx context.Context, cutoff time.Time) (int, erro
 	)
 	if err != nil {
 		return 0, fmt.Errorf("sweep stale runs: %w", err)
+	}
+	return int(tag.RowsAffected()), nil
+}
+
+// FailLostNoTraceRuns implements store.Store.
+func (s *Store) FailLostNoTraceRuns(ctx context.Context, replicaID string, startedBefore time.Time) (int, error) {
+	tag, err := s.pool.Exec(ctx,
+		`UPDATE runs SET
+			status = $1,
+			completed_at = $2,
+			error = 'error class: not_resumable',
+			stop_reason = 'not_resumable',
+			idempotency_key = NULL
+		 WHERE status = $3
+		   AND retention = 'none'
+		   AND started_at < $4
+		   AND ($5 = '' OR replica_id = $5)`,
+		string(store.RunFailed), time.Now().UTC(), string(store.RunRunning), startedBefore.UTC(), replicaID,
+	)
+	if err != nil {
+		return 0, fmt.Errorf("fail lost no-trace runs: %w", err)
 	}
 	return int(tag.RowsAffected()), nil
 }

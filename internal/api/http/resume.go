@@ -960,7 +960,7 @@ func (s *Server) resumePausedRun(run store.Run) error {
 	// reResolve closure can capture it; it's populated before loop.Run runs.
 	provSlot := &providerSlot{}
 	fbPolicy, fbReResolve := s.fallbackForRun(run.TenantID, run.UserID, run.Agent, run.UserTier, run.OperatorKeyRestricted, provSlot, runCfg.Routing)
-	gate, deregGate := s.newPauseGate(run.ID)
+	gate, deregGate := s.newPauseGate(run.ID, run.Retention == store.RetentionNone)
 	// RFC X Phase 3: a re-dispatched run that itself fans out can park too.
 	loopCtx = tools.WithPauseGate(loopCtx, gate)
 
