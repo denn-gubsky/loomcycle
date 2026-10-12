@@ -1024,6 +1024,15 @@ func requiredScopeFor(method, path string) string {
 	// itself (/v1/runs/{run_id}, no further segment).
 	case method == http.MethodPost && strings.HasPrefix(path, "/v1/runs/") && strings.HasSuffix(path, "/start"):
 		return auth.ScopeRunsCreate
+	// Deleting a run tree (DELETE /v1/runs/{run_id}/tree) or a session with its
+	// runs' descendants (DELETE /v1/sessions/{id}) removes stored records, so it
+	// has a scope of its own. It is NOT substrate:tenant on purpose: a route at
+	// that scope is opened to every non-isolated member by
+	// tenantMemberAccessible, and a member must not delete run records unless
+	// the scope was granted to its token. The handler additionally requires
+	// read access to the root.
+	case isRunTreeDeletePath(method, path):
+		return auth.ScopeRunsDelete
 	case (method == http.MethodPatch || method == http.MethodDelete) && strings.HasPrefix(path, "/v1/runs/") &&
 		!strings.Contains(strings.TrimPrefix(path, "/v1/runs/"), "/"):
 		return auth.ScopeRunsCreate
@@ -1064,6 +1073,24 @@ func requiredScopeFor(method, path string) string {
 		}
 		return ""
 	}
+}
+
+// isRunTreeDeletePath matches the two run-tree delete routes exactly:
+// DELETE /v1/runs/{run_id}/tree and DELETE /v1/sessions/{id}. Exact, so the
+// draft discard (DELETE /v1/runs/{run_id}) keeps its own scope even for a run
+// whose id is the word "tree".
+func isRunTreeDeletePath(method, path string) bool {
+	if method != http.MethodDelete {
+		return false
+	}
+	if rest, ok := strings.CutPrefix(path, "/v1/runs/"); ok {
+		id, ok := strings.CutSuffix(rest, "/tree")
+		return ok && id != "" && !strings.Contains(id, "/")
+	}
+	if id, ok := strings.CutPrefix(path, "/v1/sessions/"); ok {
+		return id != "" && !strings.Contains(id, "/")
+	}
+	return false
 }
 
 // tenantMemberAccessible reports whether a NON-ISOLATED user token (a "tenant

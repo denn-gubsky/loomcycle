@@ -70,6 +70,11 @@ type mockConnector struct {
 	compactResult connector.CompactResult
 	compactErr    error
 
+	// delete_run_tree injection points.
+	deleteTreeReq    atomic.Value // connector.DeleteRunTreeRequest (last)
+	deleteTreeResult connector.RunTreeDeletion
+	deleteTreeErr    error
+
 	// get_run: which read it dispatched to, and with what.
 	getRunAgentID       atomic.Value // string: the agent_id GetRun was called with
 	getRunByRunIDArg    atomic.Value // string: the run_id GetRunByRunID was called with
@@ -116,6 +121,10 @@ func (m *mockConnector) GetRunByRunID(_ context.Context, runID string) (connecto
 func (m *mockConnector) CompactRun(_ context.Context, runID string) (connector.CompactResult, error) {
 	m.compactRunID.Store(runID)
 	return m.compactResult, m.compactErr
+}
+func (m *mockConnector) DeleteRunTree(_ context.Context, req connector.DeleteRunTreeRequest) (connector.RunTreeDeletion, error) {
+	m.deleteTreeReq.Store(req)
+	return m.deleteTreeResult, m.deleteTreeErr
 }
 
 // erasureFn lets a test drive the erasure ops; nil returns a zero report, which

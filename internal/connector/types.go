@@ -291,6 +291,44 @@ type CancelRunResult struct {
 	AlreadyEnded bool `json:"already_ended"` // run had already completed/failed
 }
 
+// DeleteRunTreeRequest names what DeleteRunTree deletes: exactly one of a run
+// (it and its descendants) or a session (every run of it, each with its
+// descendants).
+type DeleteRunTreeRequest struct {
+	RunID     string `json:"run_id,omitempty"`
+	SessionID string `json:"session_id,omitempty"`
+	// SourceAddr is the caller's network address, for the audit record. Set
+	// by a transport that knows it; never read from a request body.
+	SourceAddr string `json:"-"`
+}
+
+// RunTreeDeletion is DeleteRunTree's answer.
+type RunTreeDeletion struct {
+	RunID     string `json:"run_id,omitempty"`
+	SessionID string `json:"session_id,omitempty"`
+	// DeletedRuns is how many runs went (the root and its descendants).
+	DeletedRuns int `json:"deleted_runs"`
+	// Counts is rows removed, by table. Every table the delete covers is
+	// present, at zero when nothing went, so an absent key never has to be
+	// read as "not looked at".
+	Counts map[string]int `json:"counts"`
+	// Kept is what the delete leaves in place on purpose, and why.
+	Kept map[string]string `json:"kept"`
+	// NotReached is where a copy of the deleted content may still be, that
+	// this delete cannot remove. Empty when nothing was deleted.
+	NotReached []NotReached `json:"not_reached"`
+}
+
+// NotReached is one place a run-tree delete could not reach.
+type NotReached struct {
+	Name string `json:"name"`
+	// Count is how many items may be affected, when that is cheap to know.
+	Count *int `json:"count,omitempty"`
+	// CountIsFloor: the count stopped at a bound, so there may be more.
+	CountIsFloor bool   `json:"count_is_floor,omitempty"`
+	Reason       string `json:"reason"`
+}
+
 // CompactResult is the outcome of CompactRun — summarize a run's conversation
 // to free context. Mirrors POST /v1/runs/{run_id}/compact's response body.
 type CompactResult struct {
