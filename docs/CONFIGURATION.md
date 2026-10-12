@@ -1184,6 +1184,7 @@ Config knobs (full reference: `loomcycle context help operator-tokens` or the `C
 | `LOOMCYCLE_AUTH_CACHE_TTL_SECONDS` | Per-replica resolution-cache TTL (default 30; `0` = direct lookup, immediate revocation). Worst-case revocation lag if a cross-replica invalidation is dropped. |
 | `LOOMCYCLE_OPERATOR_TOKEN_ROTATION_GRACE_SECONDS` | Default rotation grace window (default 24h). |
 | `LOOMCYCLE_USER_TOKEN_MAX_TTL_SECONDS` | The longest lifetime a per-user token may be minted with. Unset = no cap. When set, a mint asking for more is refused, and a mint asking for no lifetime gets this one. See [Token lifetime](#token-lifetime). |
+| `LOOMCYCLE_RUN_RATE_PER_MINUTE` / `LOOMCYCLE_RUN_RATE_BURST` | A default rate for run starts, for a caller whose token carries none. Unset = no default. Operators are not bound by it. See [Limiting how often a token starts runs](#limiting-how-often-a-token-starts-runs). |
 | `LOOMCYCLE_EXPIRED_TOKEN_RETENTION_SECONDS` | How long an expired token's row is kept before it is deleted (default 7 days; `0` keeps expired rows). Only rows that carry an expiry are ever deleted. |
 | `LOOMCYCLE_AUDIT_LOG_PATH` | JSONL audit of every create/rotate/retire (never a token or hash). |
 | `LOOMCYCLE_AUTH_VERBOSE` | `1` logs a server-side reason on a rejected bearer (the wire 401 stays opaque). |
@@ -1349,6 +1350,28 @@ Rules worth knowing:
 - **A sub-agent runs on its own definition.** A locked request carries no overrides for a child to inherit.
 - **The lock is fixed at mint** and carried over by a rotation.
 - It combines with an agent allowlist: `{"agents": ["score"], "overrides": "none"}` is a token that can start one agent, exactly as defined.
+
+### Limiting how often a token starts runs
+
+**Since v1.112.0.** A token can carry a rate for run starts. A concurrency cap bounds how many runs a caller has going at once; a rate bounds how often it starts one. One run at a time still allows thousands of short runs an hour, and each start costs the server an authentication, a session row and a run row even when the run then does nothing.
+
+| Where | How |
+|---|---|
+| A per-user token | `POST /v1/_users/{subject}/tokens` with `{"rate": {"per_minute": 6, "burst": 20}}` |
+| An operator token | `loomcycle operator-token create … --rate-per-minute 6 --rate-burst 20`, or `rate` on the `create` op |
+| A declared principal | `rate: {per_minute: 6, burst: 20}` under the principal in `principals:` |
+| Every other caller | `LOOMCYCLE_RUN_RATE_PER_MINUTE` (and `LOOMCYCLE_RUN_RATE_BURST`): a default for a token that carries no rate |
+
+`per_minute` is the steady rate. `burst` is how many starts are allowed at once from idle; it defaults to `per_minute`. The example allows a client that was offline to catch up with 20 runs, then one every ten seconds.
+
+Rules worth knowing:
+
+- **A start past the rate is refused with `429 rate_limited` and a `Retry-After` header** (gRPC `ResourceExhausted`). Nothing is read from the request and no row is written.
+- **What counts as a start:** `POST /v1/runs` (a draft included), each child of `runs:batch`, a session continuation, a session replay, starting a configured run, a direct decision, a team walk started directly, and their gRPC and MCP equivalents. Reads, steering and retunes do not count.
+- **What does not count:** a sub-agent, a call an agent makes from inside its run, and a run started by a schedule, a webhook or a channel hook.
+- **The rate is per user, not per token.** Two tokens of one user share one bucket, so minting a new token does not refill it.
+- **The server default does not bind operators.** An admin, a tenant operator and the legacy token are not limited by `LOOMCYCLE_RUN_RATE_PER_MINUTE`. A rate set on such a token by name still applies.
+- **It is per replica.** With N replicas a caller's effective rate is up to N times the setting.
 
 ### Declared principals — static `(tenant, user)` logins (RFC AO)
 

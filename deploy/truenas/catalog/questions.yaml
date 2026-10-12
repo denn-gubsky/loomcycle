@@ -933,6 +933,18 @@ questions:
             schema:
               type: string
               default: ""
+          - variable: LOOMCYCLE_RUN_RATE_PER_MINUTE
+            label: LOOMCYCLE_RUN_RATE_PER_MINUTE
+            description: '(example: 60)'
+            schema:
+              type: string
+              default: ""
+          - variable: LOOMCYCLE_RUN_RATE_BURST
+            label: LOOMCYCLE_RUN_RATE_BURST
+            description: '(example: 120)'
+            schema:
+              type: string
+              default: ""
           - variable: LOOMCYCLE_EXPIRED_TOKEN_RETENTION_SECONDS
             label: LOOMCYCLE_EXPIRED_TOKEN_RETENTION_SECONDS
             description: '(example: 604800)'

@@ -184,6 +184,25 @@ names the ones the token may still set.
   are not locked.
 - The lock is fixed at mint and carried over by `rotate`.
 
+## Limiting how often a token starts runs
+
+`--rate-per-minute N [--rate-burst M]` on `operator-token create` (`rate`
+on the `create` op, `{"rate": {"per_minute": N, "burst": M}}` in the body
+of `POST /v1/_users/{subject}/tokens`, or `rate:` on a declared principal)
+bounds how often the token may start runs. `burst` is how many it may
+start at once from idle (default: `per_minute`).
+
+- A start past the rate is refused (`rate_limited`) with the time to
+  wait. Nothing is read or written for it.
+- A run start, each child of a batch, a continuation, a replay, a
+  configured run and a direct decision each count as one. Sub-agents and
+  an agent's own calls do not.
+- The rate is per user: two tokens of one user share it.
+- `LOOMCYCLE_RUN_RATE_PER_MINUTE` (with `LOOMCYCLE_RUN_RATE_BURST`) sets
+  a default for tokens that carry no rate. It does not bind an admin, a
+  tenant operator or the legacy token.
+- It is per replica.
+
 ## Migration from LOOMCYCLE_AUTH_TOKEN (zero-disruption)
 
 The legacy shared secret keeps working until the **first admin-scoped**
