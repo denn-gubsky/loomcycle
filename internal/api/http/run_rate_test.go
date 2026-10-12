@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/denn-gubsky/loomcycle/internal/auth"
+	"github.com/denn-gubsky/loomcycle/internal/loop"
 	"github.com/denn-gubsky/loomcycle/internal/runner"
 	"github.com/denn-gubsky/loomcycle/internal/store"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
@@ -362,5 +363,31 @@ func TestRateLimit_EveryIntakeTakesFromTheCallersRate(t *testing.T) {
 		if _, ok := reachedBy[fn]; !ok {
 			t.Errorf("%s creates a top-level run row and no counted intake is named for it: add it to rateCountedIntakes, or say here which counted intake reaches it", fn)
 		}
+	}
+}
+
+// A draft made on the surface gRPC and MCP use is one start, and its refusal
+// carries the wait as the HTTP one does.
+func TestRateLimitedToken_ADraftOverTheConnectorIsOneStart(t *testing.T) {
+	s, _, _ := restrictedFixtureServer(t)
+	ctx := auth.WithPrincipal(t.Context(), auth.Principal{TenantID: "acme", Subject: "drafter",
+		Scopes:       []string{auth.ScopeRunsCreate, auth.ScopeRunsRead},
+		Restrictions: auth.Restrictions{Rate: &auth.RateLimit{PerMinute: 1, Burst: 2}}})
+	draft := func() error {
+		var d runDraft
+		d.Agent = "other"
+		d.Segments = []loop.PromptSegment{{Role: "user", Content: []loop.PromptContentBlock{{Type: "trusted-text", Text: "go"}}}}
+		_, err := s.CreateConfiguredRun(ctx, d)
+		return err
+	}
+	for i := 0; i < 2; i++ {
+		if err := draft(); err != nil {
+			t.Fatalf("draft %d of a burst of 2: %v", i+1, err)
+		}
+	}
+	err := draft()
+	var de *draftErr
+	if !errors.As(err, &de) || de.status != http.StatusTooManyRequests || de.code != "rate_limited" || de.retryAfter < 1 {
+		t.Errorf("a third draft: err = %v (%+v), want 429 rate_limited with a wait", err, de)
 	}
 }
