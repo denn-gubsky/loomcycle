@@ -148,3 +148,25 @@ func TestRun_Stateful_AskForTheBudgetBeforeAReprompt(t *testing.T) {
 		t.Errorf("model calls = %d, want 1: the re-prompt was sent over budget", n)
 	}
 }
+
+// A call that failed and is retried on the same provider does not count as
+// an attempt, so a check keyed on the attempt number would skip it.
+func TestRun_Stateful_AskForTheBudgetBeforeARetriedCall(t *testing.T) {
+	prov := &flakyStatefulProvider{id: "p1", fail: 1, err: errors.New("fake 429: rate_limited")}
+	spent := errors.New("budget spent")
+	gate, _ := budgetAfter(1, spent)
+	res, err := Run(context.Background(), RunOptions{
+		Provider: prov, Model: "x",
+		Segments:               statefulTaskSegs(),
+		Context:                statefulCtx(nil),
+		MaxSameProviderRetries: 2,
+		BudgetGate:             gate,
+		OnEvent:                func(providers.Event) {},
+	})
+	if !errors.Is(err, spent) || res.StopReason != StopReasonTokenLimit {
+		t.Fatalf("Run = %q, %v; want %q and the gate's error", res.StopReason, err, StopReasonTokenLimit)
+	}
+	if prov.calls != 1 {
+		t.Errorf("model calls = %d, want 1: the retry was sent over budget", prov.calls)
+	}
+}

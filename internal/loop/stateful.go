@@ -869,9 +869,6 @@ func runStateful(ctx context.Context, opts RunOptions, system []providers.Conten
 				return RunResult{StopReason: "cancelled", Iterations: iter, Usage: total, State: sigma}, ctx.Err()
 			}
 		}
-		if err := overBudget(opts, emit); err != nil {
-			return RunResult{StopReason: StopReasonTokenLimit, Iterations: iter, Usage: total, State: sigma}, err
-		}
 		// The append loop reads its queue at the top of every iteration; this
 		// loop read it only while parked, so a message sent to an autonomous
 		// stateful run was acknowledged and never seen. An interactive run is
@@ -892,12 +889,11 @@ func runStateful(ctx context.Context, opts RunOptions, system []providers.Conten
 		msgs := []providers.Message{statefulUserMessage(sigma, task, memo.render(helpTool, obs), obs)}
 		var es *emitStateOut
 		for attempt := 0; ; attempt++ {
-			// A re-prompt is a model call like the first: an answer that has
-			// to be asked for again is paid for again.
-			if attempt > 0 {
-				if err := overBudget(opts, emit); err != nil {
-					return RunResult{StopReason: StopReasonTokenLimit, Iterations: iter, Usage: total, State: sigma}, err
-				}
+			// Asked here, on every pass, and not once per iteration: a
+			// re-prompt is a model call like the first, and some passes come
+			// back round without counting as an attempt.
+			if err := overBudget(opts, emit); err != nil {
+				return RunResult{StopReason: StopReasonTokenLimit, Iterations: iter, Usage: total, State: sigma}, err
 			}
 			// RFC DG: say on the WIRE what the system prompt has only ever
 			// asked for. Narrowing `tools` to emit_state was never enough —
