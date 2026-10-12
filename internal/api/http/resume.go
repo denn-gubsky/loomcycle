@@ -824,6 +824,9 @@ func (s *Server) resumePausedRun(run store.Run) error {
 		// durable bit is the authority. Without this a paused isolated run could
 		// escape its data-scope confinement on resume.
 		Isolated: run.Isolated,
+		// Never "none" in practice — a no-trace run is not paused, so there is
+		// none to resume — but the row is the authority, as for the two above.
+		Retention: run.Retention,
 	}
 	// Store-only emit (no live client to forward to) — the resumed turns
 	// append to the same run's transcript so a re-attaching operator tails them.

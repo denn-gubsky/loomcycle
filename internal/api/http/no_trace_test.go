@@ -20,6 +20,7 @@ import (
 
 	"github.com/denn-gubsky/loomcycle/internal/config"
 	"github.com/denn-gubsky/loomcycle/internal/connector"
+	"github.com/denn-gubsky/loomcycle/internal/hooks"
 	"github.com/denn-gubsky/loomcycle/internal/loop"
 	"github.com/denn-gubsky/loomcycle/internal/pause"
 	"github.com/denn-gubsky/loomcycle/internal/providers"
@@ -668,5 +669,27 @@ func TestNoTrace_ALaterWriteToTheRunsRecordStoresNoSettings(t *testing.T) {
 	}
 	if got, _ := srv.store.GetRun(context.Background(), run.ID); string(got.RunConfig) != `{"retention":"none"}` {
 		t.Errorf("run_config after an update = %s, want only the mode", got.RunConfig)
+	}
+}
+
+// A hook fired outside the run's loop (a run_end hook, a manual compaction's)
+// can call tools as the run. For a no-trace run those tools must still know
+// it is one.
+func TestNoTrace_AHookFiredOutsideTheLoopStillRunsAsANoTraceRun(t *testing.T) {
+	srv, _ := makeServer(t, completingProvider(), noTraceConfig())
+	sess, _ := srv.store.CreateSession(context.Background(), "", "parent", "alice")
+	quiet, err := srv.store.CreateRun(context.Background(), sess.ID, store.RunIdentity{AgentID: "a_hook", Retention: store.RetentionNone})
+	if err != nil {
+		t.Fatal(err)
+	}
+	plain, err := srv.store.CreateRun(context.Background(), sess.ID, store.RunIdentity{AgentID: "a_hook_plain"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := tools.RunIdentity(srv.withHookRun(context.Background(), hooks.Identity{RunID: quiet.ID, AgentID: "a_hook"})).Retention; got != store.RetentionNone {
+		t.Errorf("a no-trace run's hook context has retention %q", got)
+	}
+	if got := tools.RunIdentity(srv.withHookRun(context.Background(), hooks.Identity{RunID: plain.ID, AgentID: "a_hook_plain"})).Retention; got != "" {
+		t.Errorf("an ordinary run's hook context has retention %q", got)
 	}
 }

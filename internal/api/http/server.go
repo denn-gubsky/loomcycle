@@ -10262,7 +10262,14 @@ func (s *Server) observeRunEnd(meta runStateMeta, status store.RunStatus, stopRe
 // Interruption call is recorded on that run, and refuses without one.
 func (s *Server) withHookRun(ctx context.Context, ident hooks.Identity) context.Context {
 	ctx = hooks.WithSet(ctx, s.runHookSet(ident.RunID))
-	ctx = tools.WithRunIdentity(ctx, tools.RunIdentityValue{UserID: ident.UserID, AgentID: ident.AgentID, TenantID: ident.Tenant})
+	rid := tools.RunIdentityValue{UserID: ident.UserID, AgentID: ident.AgentID, TenantID: ident.Tenant}
+	// A hook's code body can call tools as the run. For a no-trace run they
+	// have to know it is one, here as inside its loop: a question asked from
+	// a run_end hook would be stored like any other.
+	if s.runIsNoTrace(ctx, ident.RunID) {
+		rid.Retention = store.RetentionNone
+	}
+	ctx = tools.WithRunIdentity(ctx, rid)
 	ctx = tools.WithRunID(ctx, ident.RunID)
 	return tools.WithAgentName(ctx, ident.Agent)
 }
