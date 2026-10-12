@@ -195,13 +195,33 @@ func TestResolvePrincipals_Agents(t *testing.T) {
 	if !r.RunPlaneOnly() || !r.AgentAllowed("score") || r.AgentAllowed("judge") {
 		t.Errorf("restrictions = %+v, want the list [score]", r)
 	}
-	for name, def := range map[string]PrincipalDef{
-		"empty list": {Tenant: "acme", Subject: "s", Scopes: []string{auth.ScopeRunsCreate}, TokenEnv: "LOOMCYCLE_TOKEN_SCORER", Agents: list()},
-		"bad name":   {Tenant: "acme", Subject: "s", Scopes: []string{auth.ScopeRunsCreate}, TokenEnv: "LOOMCYCLE_TOKEN_SCORER", Agents: list("has space")},
-		"admin":      {Tenant: "acme", Subject: "s", Scopes: []string{auth.ScopeAdmin}, TokenEnv: "LOOMCYCLE_TOKEN_SCORER", Agents: list("score")},
+	// Each case names its OWN token_env: resolving a principal records its
+	// env name as non-interpolatable for the rest of the process, and a later
+	// principal reusing the name is refused for that reason instead of the
+	// one under test.
+	for i, c := range []struct {
+		name   string
+		scopes []string
+		agents *[]string
+	}{
+		{"empty list", []string{auth.ScopeRunsCreate}, list()},
+		{"bad name", []string{auth.ScopeRunsCreate}, list("has space")},
+		{"admin", []string{auth.ScopeAdmin}, list("score")},
 	} {
-		if err := resolvePrincipals(&Config{Principals: map[string]PrincipalDef{"p": def}}); err == nil {
-			t.Errorf("%s: accepted", name)
+		env := "LOOMCYCLE_TOKEN_AGENTS_CASE_" + strconv.Itoa(i)
+		t.Setenv(env, "lct_case_secret_"+strconv.Itoa(i))
+		def := PrincipalDef{Tenant: "acme", Subject: "s", Scopes: c.scopes, TokenEnv: env, Agents: c.agents}
+		err := resolvePrincipals(&Config{Principals: map[string]PrincipalDef{"p": def}})
+		if err == nil || !strings.Contains(err.Error(), "agents") {
+			t.Errorf("%s: err = %v, want a refusal naming agents", c.name, err)
+		}
+		// The same principal without the list loads, so the refusal above is
+		// about the list and nothing else.
+		env2 := env + "_OK"
+		t.Setenv(env2, "lct_case_ok_"+strconv.Itoa(i))
+		def.TokenEnv, def.Agents = env2, nil
+		if err := resolvePrincipals(&Config{Principals: map[string]PrincipalDef{"p": def}}); err != nil {
+			t.Errorf("%s without agents: %v", c.name, err)
 		}
 	}
 }
