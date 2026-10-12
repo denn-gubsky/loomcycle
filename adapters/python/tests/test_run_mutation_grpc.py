@@ -103,6 +103,45 @@ async def test_spawn_run_batch_detach_sends_the_mode_and_decodes_running_handles
 
 
 @pytest.mark.asyncio
+async def test_delete_run_tree_sends_the_id_and_decodes_the_counts():
+    client = _make_client()
+    resp = pb.DeleteRunTreeResult(
+        run_id="r1",
+        deleted_runs=3,
+        counts={"runs": 3, "events": 12},
+        kept={"usage_ledger": "kept by design"},
+        not_reached=[
+            pb.RunTreeNotReached(name="snapshots", count=0, reason="a copy"),
+            pb.RunTreeNotReached(name="retention_exports", reason="files"),
+            pb.RunTreeNotReached(name="derived_facts", count=5000, count_is_floor=True, reason="memory"),
+        ],
+    )
+    fake, captured = _async_returning(resp)
+    client._stub.DeleteRunTree = fake  # type: ignore[attr-defined]
+
+    out = await client.delete_run_tree("r1")
+    assert captured["req"].run_id == "r1"
+    assert captured["req"].session_id == ""
+    assert out == {
+        "run_id": "r1",
+        "session_id": "",
+        "deleted_runs": 3,
+        "counts": {"runs": 3, "events": 12},
+        "kept": {"usage_ledger": "kept by design"},
+        # A count of 0 is a count; a count that was not computed is absent.
+        "not_reached": [
+            {"name": "snapshots", "count": 0, "reason": "a copy"},
+            {"name": "retention_exports", "reason": "files"},
+            {"name": "derived_facts", "count": 5000, "count_is_floor": True, "reason": "memory"},
+        ],
+    }
+
+    await client.delete_run_tree(session_id="s1")
+    assert captured["req"].run_id == ""
+    assert captured["req"].session_id == "s1"
+
+
+@pytest.mark.asyncio
 async def test_compact_run_decodes_result():
     client = _make_client()
     resp = pb.CompactRunResult(

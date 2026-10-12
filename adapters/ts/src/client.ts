@@ -140,6 +140,7 @@ import type {
   ResumeResult,
   ResolverMatrix,
   CompactRunResult,
+  RunTreeDeletion,
   ReplaySessionResult,
   CancelTurnResult,
   ReviewRunResult,
@@ -800,6 +801,44 @@ export class LoomcycleClient {
       this.ctx,
       `/v1/runs/${encodeURIComponent(runId)}/compact`,
       body,
+      opts,
+    );
+  }
+
+  /** Permanently delete a run and every run it spawned, with what is stored
+   *  about them: transcripts, their sessions when no other run is left in
+   *  them, interrupts, evaluations of them, queued memory rows and indexed
+   *  turns. The usage ledger (tokens, cost) is kept. Mirrors
+   *  `DELETE /v1/runs/{run_id}/tree`.
+   *
+   *  Needs the `runs:delete` scope (an admin and a tenant operator have it;
+   *  any other token only if it was granted at mint) — a token without it
+   *  raises `LoomcycleError` with status 403. A run that does not exist, was
+   *  already deleted, or is not yours to read resolves with `deleted_runs: 0`
+   *  rather than raising, so repeating the call is safe. A tree holding a run
+   *  that is still running, awaiting input or paused deletes nothing and
+   *  raises `LoomcycleError` with `code: "run_tree_live"` (status 409): cancel
+   *  it first. `not_reached` names where a copy may remain that this call
+   *  cannot remove. To discard a configured run that never started, use
+   *  {@link LoomcycleClient.deleteConfiguredRun}. */
+  async deleteRunTree(runId: string, opts?: { signal?: AbortSignal }): Promise<RunTreeDeletion> {
+    return deleteJSON<RunTreeDeletion>(this.ctx, `/v1/runs/${encodeURIComponent(runId)}/tree`, opts);
+  }
+
+  /** Permanently delete every run of a session, each with the runs it
+   *  spawned — {@link LoomcycleClient.deleteRunTree} for all of them at once.
+   *  `cascade: "children"` is required and is the only mode: there is no
+   *  delete that leaves sub-agent runs behind. Mirrors
+   *  `DELETE /v1/sessions/{session_id}?cascade=children`. Same scope, same
+   *  zero-count answer for a session you cannot read, same `run_tree_live`
+   *  refusal. */
+  async deleteSession(
+    sessionId: string,
+    opts: { cascade: "children"; signal?: AbortSignal },
+  ): Promise<RunTreeDeletion> {
+    return deleteJSON<RunTreeDeletion>(
+      this.ctx,
+      `/v1/sessions/${encodeURIComponent(sessionId)}?cascade=${encodeURIComponent(opts.cascade)}`,
       opts,
     );
   }

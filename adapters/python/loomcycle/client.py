@@ -1206,6 +1206,54 @@ class LoomcycleClient:
             "applied": resp.applied,
         }
 
+    async def delete_run_tree(
+        self, run_id: str = "", *, session_id: str = ""
+    ) -> Mapping[str, Any]:
+        """Permanently delete a run and every run it spawned, with what is
+        stored about them: transcripts, their sessions when no other run is
+        left in them, interrupts, evaluations of them, queued memory rows and
+        indexed turns. The usage ledger (tokens, cost) is kept. Mirror of the
+        HTTP ``DELETE /v1/runs/{run_id}/tree`` and
+        ``DELETE /v1/sessions/{session_id}?cascade=children``.
+
+        Pass exactly one of ``run_id`` (that run and its descendants) and
+        ``session_id`` (every run of that session, each with its
+        descendants).
+
+        Returns ``{run_id, session_id, deleted_runs, counts, kept,
+        not_reached}``. ``counts`` is rows removed per table; ``not_reached``
+        lists where a copy may remain that this call cannot remove, each
+        ``{name, reason}`` plus ``count`` when it is known.
+
+        Needs the ``runs:delete`` scope (an admin and a tenant operator have
+        it; any other token only if it was granted at mint): without it the
+        call raises ``PermissionDenied``. A run that does not exist, was
+        already deleted, or is not yours to read returns ``deleted_runs: 0``
+        rather than raising, so repeating the call is safe. A tree holding a
+        run that is still running, awaiting input or paused deletes nothing
+        and raises ``FailedPrecondition``: cancel it first."""
+        req = pb.DeleteRunTreeRequest(run_id=run_id, session_id=session_id)
+        try:
+            resp = await self._stub.DeleteRunTree(req, metadata=self._auth_metadata())
+        except grpc.aio.AioRpcError as e:
+            _raise_from_grpc(e)
+        not_reached = []
+        for nr in resp.not_reached:
+            item: dict[str, Any] = {"name": nr.name, "reason": nr.reason}
+            if nr.HasField("count"):
+                item["count"] = nr.count
+            if nr.count_is_floor:
+                item["count_is_floor"] = True
+            not_reached.append(item)
+        return {
+            "run_id": resp.run_id,
+            "session_id": resp.session_id,
+            "deleted_runs": resp.deleted_runs,
+            "counts": dict(resp.counts),
+            "kept": dict(resp.kept),
+            "not_reached": not_reached,
+        }
+
     async def create_configured_run(
         self,
         *,

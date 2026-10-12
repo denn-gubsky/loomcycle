@@ -27,6 +27,7 @@ The client surface mirrors the gRPC service in proto/loomcycle.proto:
     continue_session(...)     — server-stream events from a continuation
     spawn_run_batch(...)      — spawn up to 32 runs concurrently (RFC Y)
     compact_run(...)          — summarize a parked run's context
+    delete_run_tree(...)      — delete a run and every run it spawned
     replay_session(...)       — carry a session's transcript into a new agent
     get_agent(...)            — read one agent's status + usage
     get_run(...)              — read one run by its run id
@@ -145,4 +146,4 @@ __all__ = [
     "SubstrateToolRefusedError",
 ]
 
-__version__ = "1.111.0"
+__version__ = "1.112.0"
