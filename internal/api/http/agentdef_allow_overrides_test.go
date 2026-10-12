@@ -5,11 +5,15 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/denn-gubsky/loomcycle/internal/auth"
+	"github.com/denn-gubsky/loomcycle/internal/config"
 	"github.com/denn-gubsky/loomcycle/internal/loop"
 	"github.com/denn-gubsky/loomcycle/internal/providers"
 	"github.com/denn-gubsky/loomcycle/internal/runner"
+	"github.com/denn-gubsky/loomcycle/internal/store"
+	"github.com/denn-gubsky/loomcycle/internal/tools"
 )
 
 // An agent defined with allow_overrides: false runs on its definition only.
@@ -135,5 +139,68 @@ func TestFixedAgent_AParentsPerSpawnOverrideIsRefused(t *testing.T) {
 	_, body = bearerCall(t, ts, freeBearer, "POST", "/v1/runs", runBody("launcher"))
 	if res := toolResult(body); res == "" || strings.Contains(res, "override not allowed") || strings.Contains(res, `"is_error":true`) {
 		t.Errorf("a plain spawn of the fixed agent failed: %s", body)
+	}
+}
+
+// A spawn can pin its child to one version of the agent. The lock that
+// decides is that version's: a lock that held only for the active version
+// would be opened by naming another.
+func TestFixedAgent_APinnedVersionsOwnLockDecides(t *testing.T) {
+	lockedDef := strings.TrimSuffix(workerDef("prompt locked pin", "Narrow"), "}") + `,"allow_overrides":false}`
+	if got := applyAgentDefOverlay(config.AgentDef{}, []byte(lockedDef)); got.AllowOverrides == nil || *got.AllowOverrides {
+		t.Fatalf("a pinned version's lock was dropped by the merge: %v", got.AllowOverrides)
+	}
+	locked := false
+	if got := applyAgentDefOverlay(config.AgentDef{AllowOverrides: &locked}, []byte(workerDef("p"))); got.AllowOverrides == nil || *got.AllowOverrides {
+		t.Errorf("a version that says nothing removed the base's lock: %v", got.AllowOverrides)
+	}
+
+	f := pinTenantFixture(t)
+	row := store.AgentDefRow{DefID: "def_worker_locked", Name: "worker", Version: 2, TenantID: "acme", Definition: []byte(lockedDef), CreatedAt: time.Now()}
+	if _, err := f.st.AgentDefCreate(t.Context(), row); err != nil {
+		t.Fatal(err)
+	}
+	spawn := func(defID string, override bool) error {
+		ctx := tools.WithRunIdentity(t.Context(), tools.RunIdentityValue{UserID: "alice", AgentID: "a_acme_parent", TenantID: "acme"})
+		if override {
+			off := false
+			ctx = tools.WithCompactionOverride(ctx, &config.Compaction{Enabled: &off})
+		}
+		_, _, _, err := f.srv.runSubAgent(ctx, "worker", "", "hi", defID)
+		return err
+	}
+	if err := spawn("def_worker_locked", true); !errors.Is(err, runner.ErrOverrideNotAllowed) {
+		t.Errorf("an override on a spawn pinned to the locked version: err = %v, want it refused", err)
+	}
+	if err := spawn("def_worker_locked", false); err != nil {
+		t.Errorf("a plain spawn pinned to the locked version: %v", err)
+	}
+	if err := spawn("def_worker_acme", true); err != nil {
+		t.Errorf("an override on a spawn pinned to an open version: %v", err)
+	}
+
+	// A resident child is a run driven interactively, which is one of the
+	// locked settings.
+	ctx := tools.WithRunIdentity(t.Context(), tools.RunIdentityValue{UserID: "alice", AgentID: "a_acme_parent", TenantID: "acme"})
+	if _, err := f.srv.prepareSubRun(ctx, "worker", "", "hi", "def_worker_locked", true, func(providers.Event) {}); !errors.Is(err, runner.ErrOverrideNotAllowed) {
+		t.Errorf("a resident spawn of the locked version: err = %v, want it refused", err)
+	}
+}
+
+// A child of the same definition inherits its parent's overrides. Not once
+// the definition is locked: what was legal when the parent started is not
+// for a run that starts now.
+func TestFixedAgent_ALockedDefinitionInheritsNoOverrides(t *testing.T) {
+	srv := routingServer(t)
+	parentRec := runConfigRecord{Routing: &routingOverride{Model: "model-b"}}
+	ctx := tools.WithRunOverrides(t.Context(), tools.RunOverridesValue{Record: parentRec.marshal(), AgentName: "router"})
+
+	locked := false
+	got, cfg := srv.inheritOverridesForChild(ctx, config.AgentDef{Tier: "middle", AllowOverrides: &locked}, runConfigRecord{}, "", "router")
+	if got.Model != "" || cfg.Routing != nil {
+		t.Errorf("a locked child inherited its parent's model: def.Model=%q record=%+v", got.Model, cfg.Routing)
+	}
+	if open, _ := srv.inheritOverridesForChild(ctx, config.AgentDef{Tier: "middle"}, runConfigRecord{}, "", "router"); open.Model != "model-b" {
+		t.Errorf("an open child no longer inherits: model = %q", open.Model)
 	}
 }

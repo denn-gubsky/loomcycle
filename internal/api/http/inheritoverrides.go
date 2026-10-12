@@ -47,6 +47,13 @@ func (s *Server) inheritOverridesForChild(
 	if !ok {
 		return def, childCfg
 	}
+	// A definition locked since the parent started takes nothing from it: the
+	// parent's overrides were legal when it began, and are not for a run that
+	// begins now. Dropped like any inherited override that no longer holds.
+	if def.AllowOverrides != nil && !*def.AllowOverrides {
+		log.Printf("spawn: %q does not inherit its parent's overrides — its definition no longer allows them", childName)
+		return def, childCfg
+	}
 	// Interruption only ever NARROWS the definition, so there is nothing to
 	// re-validate and no reason to drop it: a run told not to ask a person must
 	// not ask one through a copy of itself.
