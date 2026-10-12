@@ -112,6 +112,12 @@ type Server struct {
 	// failing sink here REFUSES the operation rather than proceeding unrecorded — see
 	// SetEraseAudit.
 	eraseAudit audit.Sink
+	// tokenAudit records delegated user-token mints and revocations
+	// (SetTokenAudit); nil = not recorded.
+	tokenAudit audit.Sink
+	// userTokenMaxTTL caps a delegated user token's lifetime
+	// (SetUserTokenMaxTTL); zero = no cap.
+	userTokenMaxTTL time.Duration
 
 	// sqlMem is the RFC AA SQL Memory manager (per-scope sqlite databases
 	// backing the Memory tool's sql_query/sql_exec). Nil when the subsystem

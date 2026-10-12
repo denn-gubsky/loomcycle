@@ -31,6 +31,16 @@ import { useFocusTenant } from "../components/Layout";
 const ACCESS_MODES = ["tenant", "isolated"] as const;
 const STATUSES = ["active", "disabled"] as const;
 
+// tokenStatusLabel says why a token is dead: an operator revoked it, or its
+// lifetime ran out. A revoked token that would also have expired by now reads
+// as revoked, since that is what ended it first.
+export function tokenStatusLabel(t: { active: boolean; retired_at?: string; expires_at?: string }): string {
+  if (t.active) return "active";
+  if (!t.retired_at && t.expires_at) return "expired";
+  if (t.retired_at && t.expires_at && Date.parse(t.expires_at) < Date.parse(t.retired_at)) return "expired";
+  return "revoked";
+}
+
 function activityLabel(u: UserSummary): string {
   if (u.running_count > 0) return `${u.running_count} running`;
   return `${u.total_count} run${u.total_count === 1 ? "" : "s"}`;
@@ -456,8 +466,11 @@ function UserTokensPanel({ subject, disabled }: { subject: string; disabled: boo
                 <td className="settings-muted">{t.scopes.join(", ")}</td>
                 <td className="settings-muted">{new Date(t.created_at).toLocaleString()}</td>
                 <td>
-                  <span className={"status-pill " + (t.active ? "status-ok" : "status-retired")}>
-                    {t.active ? "active" : "revoked"}
+                  <span
+                    className={"status-pill " + (t.active ? "status-ok" : "status-retired")}
+                    title={t.expires_at ? "expires " + new Date(t.expires_at).toLocaleString() : undefined}
+                  >
+                    {tokenStatusLabel(t)}
                   </span>
                 </td>
                 <td className="settings-row-actions">

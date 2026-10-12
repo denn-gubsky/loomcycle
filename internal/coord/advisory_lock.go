@@ -171,6 +171,9 @@ var (
 	// It saves the other replicas the query; correctness does not rest on it,
 	// because a run's schedule_active_runs row is deleted once whoever tries.
 	LockKeyScheduleReconcile int64
+	// LockKeyExpiredTokenSweeper gates the hourly delete of token rows whose
+	// fixed lifetime ran out long enough ago.
+	LockKeyExpiredTokenSweeper int64
 )
 
 // TeamSubscriptionLockKey derives a team's subscription-sweep key from its
@@ -232,6 +235,7 @@ func init() {
 	LockKeyDeadLinkGC = fnvKey("deadlink_gc")
 	LockKeyMemoryPendingSweeper = fnvKey("memory_pending_sweeper")
 	LockKeyScheduleReconcile = fnvKey("schedule_reconcile")
+	LockKeyExpiredTokenSweeper = fnvKey("expired_token_sweeper")
 }
 
 // fnvKey hashes a sweeper-name string to a stable int64 lock key.

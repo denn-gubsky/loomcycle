@@ -1190,16 +1190,33 @@ export class LoomcycleClient {
    *  scopes are DERIVED server-side from the member's access_mode (never sent),
    *  and the plaintext `token` is returned exactly ONCE — store it now, it is
    *  never retrievable again. 404 for an unknown/cross-tenant subject; 409 for
-   *  a disabled user. */
+   *  a disabled user.
+   *
+   *  `ttlSeconds` gives the token a fixed lifetime: it stops authenticating
+   *  when that runs out, and the answer carries `expires_at`. It cannot run
+   *  past the end of the token making the call. `name` labels it (stored as
+   *  `u-<name>`).
+   *  `maxActive` keeps at most that many of the user's tokens alive — the
+   *  oldest beyond it are retired at once and listed in `retired`. With none
+   *  of the three the request has no body, as before. */
   async mintUserToken(
     subject: string,
-    opts?: { signal?: AbortSignal },
+    opts?: {
+      signal?: AbortSignal;
+      ttlSeconds?: number;
+      name?: string;
+      maxActive?: number;
+    },
   ): Promise<MintedUserToken> {
+    const body: Record<string, unknown> = {};
+    if (opts?.ttlSeconds !== undefined) body.ttl_seconds = opts.ttlSeconds;
+    if (opts?.name !== undefined) body.name = opts.name;
+    if (opts?.maxActive !== undefined) body.max_active = opts.maxActive;
     return postJSON<MintedUserToken>(
       this.ctx,
       `/v1/_users/${encodeURIComponent(subject)}/tokens`,
-      undefined,
-      opts,
+      Object.keys(body).length > 0 ? body : undefined,
+      { signal: opts?.signal },
     );
   }
 

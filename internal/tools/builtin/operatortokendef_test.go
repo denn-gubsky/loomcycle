@@ -5,9 +5,11 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/denn-gubsky/loomcycle/internal/audit"
 	"github.com/denn-gubsky/loomcycle/internal/auth"
+	"github.com/denn-gubsky/loomcycle/internal/store"
 	"github.com/denn-gubsky/loomcycle/internal/store/sqlite"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
 )
@@ -355,5 +357,130 @@ func TestOperatorTokenDef_RetireImmediate(t *testing.T) {
 	row, _ := s.OperatorTokenDefGet(ctx, defID)
 	if row.RetiredAt.IsZero() {
 		t.Error("retire should set retired_at")
+	}
+}
+
+// ttl_seconds on create gives the token a fixed end, shown on the row.
+func TestOperatorTokenDef_CreateWithTTLStoresTheExpiry(t *testing.T) {
+	tool, ctx, st, cleanup := operatorTokenDefFixture(t)
+	defer cleanup()
+
+	before := time.Now()
+	out := mustOp(t, tool, ctx, `{"op":"create","name":"ci","tenant_id":"acme","scopes":["runs:create"],"ttl_seconds":600}`)
+	if out["expires_at"] == nil || out["expired"] != false {
+		t.Fatalf("create response = %v, want expires_at and expired=false", out)
+	}
+	row, err := st.OperatorTokenDefGet(ctx, out["def_id"].(string))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if d := row.ExpiresAt.Sub(before); d < 599*time.Second || d > 601*time.Second {
+		t.Errorf("stored expiry is %s after the create, want ten minutes", d)
+	}
+	plain := mustOp(t, tool, ctx, `{"op":"create","name":"forever","tenant_id":"acme","scopes":["runs:create"]}`)
+	if _, has := plain["expires_at"]; has {
+		t.Errorf("a create without ttl_seconds carries expires_at: %v", plain)
+	}
+}
+
+// An admin token that expires locks the deployment out on a date: one admin
+// token turns the legacy login off, and when the last one runs out nothing can
+// mint its replacement.
+func TestOperatorTokenDef_TTLRefusedOnAnAdminToken(t *testing.T) {
+	tool, ctx, st, cleanup := operatorTokenDefFixture(t)
+	defer cleanup()
+	for _, in := range []string{
+		`{"op":"create","name":"root","tenant_id":"acme","scopes":["substrate:admin"],"ttl_seconds":600}`,
+		`{"op":"create","name":"z","tenant_id":"acme","scopes":["runs:create"],"ttl_seconds":0}`,
+		`{"op":"create","name":"n","tenant_id":"acme","scopes":["runs:create"],"ttl_seconds":-1}`,
+	} {
+		res, err := tool.Execute(ctx, json.RawMessage(in))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !res.IsError || !strings.Contains(res.Text, "ttl_seconds") {
+			t.Errorf("%s: is_error=%v text=%q, want a refusal naming ttl_seconds", in, res.IsError, res.Text)
+		}
+	}
+	if names, _ := st.OperatorTokenDefListNames(ctx); len(names) != 0 {
+		t.Errorf("%d token(s) written by refused creates", len(names))
+	}
+}
+
+// A rotation replaces the secret. It does not give the token more time.
+func TestOperatorTokenDef_RotateKeepsTheExpiry(t *testing.T) {
+	tool, ctx, st, cleanup := operatorTokenDefFixture(t)
+	defer cleanup()
+	created := mustOp(t, tool, ctx, `{"op":"create","name":"ci","tenant_id":"acme","scopes":["runs:create"],"ttl_seconds":600}`)
+	orig, _ := st.OperatorTokenDefGet(ctx, created["def_id"].(string))
+	time.Sleep(5 * time.Millisecond)
+	rotated := mustOp(t, tool, ctx, `{"op":"rotate","name":"ci"}`)
+	next, err := st.OperatorTokenDefGet(ctx, rotated["def_id"].(string))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !next.ExpiresAt.Equal(orig.ExpiresAt) {
+		t.Errorf("rotated token expires %v, the original %v — a rotation extended its life", next.ExpiresAt, orig.ExpiresAt)
+	}
+}
+
+// Rotating a token that has already run out would mint one dead on arrival.
+func TestOperatorTokenDef_RotateOfAnExpiredTokenIsRefused(t *testing.T) {
+	tool, ctx, st, cleanup := operatorTokenDefFixture(t)
+	defer cleanup()
+	if _, err := st.OperatorTokenDefCreate(ctx, store.OperatorTokenDefRow{
+		DefID: "def_dead", Name: "dead", TenantID: "acme", Subject: "s", TokenHash: "h-dead",
+		AllowedScopes: []string{"runs:create"}, ExpiresAt: time.Now().Add(-time.Minute),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	res, err := tool.Execute(ctx, json.RawMessage(`{"op":"rotate","def_id":"def_dead"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !res.IsError || !strings.Contains(res.Text, "expired") {
+		t.Errorf("rotate of an expired token: is_error=%v text=%q, want a refusal", res.IsError, res.Text)
+	}
+	// Its name is free again: an expired token is not the name's live one.
+	mustOp(t, tool, ctx, `{"op":"create","name":"dead","tenant_id":"acme","scopes":["runs:create"]}`)
+}
+
+// Names behind the per-user prefix are written by tenant operators and repeat
+// across tenants, so the operator tool neither creates there nor acts by name
+// there: "the current token named u-alice" is whichever tenant minted last.
+func TestOperatorTokenDef_StaysOutOfThePerUserTokenNamespace(t *testing.T) {
+	tool, ctx, st, cleanup := operatorTokenDefFixture(t)
+	defer cleanup()
+	for _, tenant := range []string{"t1", "t2"} {
+		if _, err := st.OperatorTokenDefCreate(ctx, store.OperatorTokenDefRow{
+			DefID: "def_" + tenant, Name: "u-alice", TenantID: tenant, Subject: "alice",
+			TokenHash: "h-" + tenant, AllowedScopes: []string{auth.ScopeUser},
+		}); err != nil {
+			t.Fatal(err)
+		}
+		time.Sleep(2 * time.Millisecond)
+	}
+	for _, in := range []string{
+		`{"op":"create","name":"u-new","tenant_id":"acme","scopes":["runs:create"]}`,
+		`{"op":"rotate","name":"u-alice"}`,
+		`{"op":"retire","name":"u-alice"}`,
+	} {
+		res, err := tool.Execute(ctx, json.RawMessage(in))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !res.IsError || !strings.Contains(res.Text, "per-user") {
+			t.Errorf("%s: is_error=%v text=%q, want a refusal", in, res.IsError, res.Text)
+		}
+	}
+	for _, id := range []string{"def_t1", "def_t2"} {
+		if row, _ := st.OperatorTokenDefGet(ctx, id); !row.RetiredAt.IsZero() {
+			t.Errorf("%s was retired by a by-name operation", id)
+		}
+	}
+	// By def_id the operator still reaches exactly the token it names.
+	mustOp(t, tool, ctx, `{"op":"retire","def_id":"def_t1"}`)
+	if row, _ := st.OperatorTokenDefGet(ctx, "def_t2"); !row.RetiredAt.IsZero() {
+		t.Error("retiring def_t1 by id touched def_t2")
 	}
 }

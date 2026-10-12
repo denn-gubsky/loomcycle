@@ -11,8 +11,9 @@ package http
 // server-derived properties, none of them from the request body/query:
 //
 //  1. The tenant is ALWAYS tenantFromCtx(ctx) (the bearer-derived principal),
-//     FORCED onto every row. The mint handler reads NO body, so there is no
-//     path by which a body/query "tenant" can reach the stored row.
+//     FORCED onto every row. The mint body is decoded strictly into a struct
+//     that has no tenant, subject or scope field, so there is no path by
+//     which a body/query "tenant" can reach the stored row.
 //  2. The granted scopes are DERIVED from the target user's access_mode
 //     (auth.GrantableUserScopes) — never free-form from the request. A tenant
 //     operator cannot mint a token more powerful than the member's dial, and
@@ -34,15 +35,174 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
+	"fmt"
+	"io"
 	"log"
 	"net/http"
+	"regexp"
+	"sort"
 	"strings"
 	"time"
 
+	"github.com/denn-gubsky/loomcycle/internal/audit"
 	"github.com/denn-gubsky/loomcycle/internal/auth"
 	"github.com/denn-gubsky/loomcycle/internal/store"
 )
+
+// mintUserTokenRequest is the OPTIONAL body of a user-token mint. Every field
+// only narrows what the token is or how long it lives; none can name a tenant,
+// a subject or a scope. It is decoded strictly: on a mint, a misspelled key
+// that was silently dropped would hand back a token that outlives what the
+// caller asked for.
+type mintUserTokenRequest struct {
+	// TTLSeconds is the token's lifetime. Absent = no expiry, unless the
+	// operator set a maximum, in which case absent means that maximum.
+	TTLSeconds *int64 `json:"ttl_seconds,omitempty"`
+	// Name is a label for the token. Absent = derived from the subject. It is
+	// stored behind the "u-" prefix every user token's name carries.
+	Name string `json:"name,omitempty"`
+	// MaxActive keeps at most this many of the user's tokens alive: after the
+	// mint, the oldest beyond the count are retired.
+	MaxActive *int `json:"max_active,omitempty"`
+}
+
+// userTokenLabelRe is what a caller may ask a user token to be called. The
+// stored name is userTokenNamePrefix + the label, so the label is two
+// characters shorter than the 64 a token name allows.
+var userTokenLabelRe = regexp.MustCompile(`^[a-zA-Z0-9_-]{1,62}$`)
+
+// userTokenNamePrefix starts every delegated user token's name; see
+// auth.UserTokenNamePrefix for why the namespace is fenced.
+const userTokenNamePrefix = auth.UserTokenNamePrefix
+
+// maxMintBodyBytes bounds the mint body. It holds three short fields.
+const maxMintBodyBytes = 4096
+
+// decodeMintUserTokenRequest reads the optional body. An empty body is the
+// zero request.
+func decodeMintUserTokenRequest(r *http.Request) (mintUserTokenRequest, error) {
+	var req mintUserTokenRequest
+	if r.Body == nil {
+		return req, nil
+	}
+	raw, err := io.ReadAll(io.LimitReader(r.Body, maxMintBodyBytes+1))
+	if err != nil {
+		return req, err
+	}
+	if len(raw) > maxMintBodyBytes {
+		return req, fmt.Errorf("body too large")
+	}
+	if len(strings.TrimSpace(string(raw))) == 0 {
+		return req, nil
+	}
+	dec := json.NewDecoder(strings.NewReader(string(raw)))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&req); err != nil {
+		return req, err
+	}
+	return req, nil
+}
+
+// SetUserTokenMaxTTL caps the lifetime of a delegated user token
+// (LOOMCYCLE_USER_TOKEN_MAX_TTL_SECONDS). Zero = no cap.
+func (s *Server) SetUserTokenMaxTTL(d time.Duration) { s.userTokenMaxTTL = d }
+
+// SetTokenAudit wires the sink user-token mints and revocations are recorded
+// to. nil = not recorded.
+func (s *Server) SetTokenAudit(sink audit.Sink) { s.tokenAudit = sink }
+
+// recordTokenAudit writes one user-token audit record. Best-effort, like every
+// other token audit write: it never blocks or fails the operation.
+func (s *Server) recordTokenAudit(ctx context.Context, action string, row store.OperatorTokenDefRow) {
+	if s.tokenAudit == nil {
+		return
+	}
+	ev := audit.Event{
+		Action: action, TargetDefID: row.DefID, TargetName: row.Name,
+		TargetTenant: row.TenantID, TargetSubject: row.Subject,
+		ActorTenant: tenantFromCtx(ctx), ActorSubject: principalSubject(ctx),
+	}
+	if action == "create" {
+		ev.ScopesAfter = row.AllowedScopes
+	}
+	if err := s.tokenAudit.Record(ev); err != nil {
+		log.Printf("users: token audit write failed: %v", err)
+	}
+}
+
+// minterExpiry returns when the token that authenticated this request stops
+// working; zero when it never does, or when the caller is not a minted token
+// (a config-declared principal, the legacy token, open mode).
+func (s *Server) minterExpiry(ctx context.Context) (time.Time, error) {
+	p, ok := auth.PrincipalFromContext(ctx)
+	if !ok || p.Legacy || p.TokenDefID == "" || strings.HasPrefix(p.TokenDefID, "cfg:") {
+		return time.Time{}, nil
+	}
+	// A principal that names a token row which cannot be read — missing
+	// included — is refused, not treated as unbounded: "I could not find out
+	// how long you have" must not become "you have forever".
+	row, err := s.store.OperatorTokenDefGet(ctx, p.TokenDefID)
+	if err != nil {
+		return time.Time{}, err
+	}
+	// The expiry, and not ValidUntil: a rotated-out token in its grace window
+	// also has an end (retired_at), but that end revokes one secret, not the
+	// principal — its successor carries on with the same authority. Bounding
+	// by it would make a routine rotation refuse every mint the old secret
+	// attempts, which is the zero-downtime roll the grace window exists for.
+	// An expiry is different: a rotation copies it, so nothing extends it.
+	return row.ExpiresAt, nil
+}
+
+// boundByMinter holds a new token's end under the minting token's own end.
+// expires and minterEnds are zero for "never".
+//
+// A token must not be able to make a credential that outlives it. Without
+// this, a tenant-operator token minted for an hour could spend that hour
+// minting user tokens that never expire.
+func boundByMinter(expires, minterEnds time.Time, asked bool) (time.Time, error) {
+	if minterEnds.IsZero() {
+		return expires, nil
+	}
+	if expires.IsZero() || expires.After(minterEnds) {
+		if asked {
+			return time.Time{}, errTTLOutlivesMinter
+		}
+		// Not asked for: the token gets as long as its minter has left.
+		return minterEnds, nil
+	}
+	return expires, nil
+}
+
+// errTTLOutlivesMinter refuses a lifetime that would run past the end of the
+// token that asked for it.
+var errTTLOutlivesMinter = errors.New("ttl_seconds would outlive the token minting it")
+
+// userTokenLifetime resolves a mint's lifetime against the operator's cap.
+// Zero = no expiry.
+func (s *Server) userTokenLifetime(asked *int64) (time.Duration, error) {
+	limit := s.userTokenMaxTTL
+	if asked == nil {
+		// With a cap set, "no TTL" means the cap: otherwise leaving the field
+		// out would be the way around it.
+		return limit, nil
+	}
+	if *asked <= 0 {
+		return 0, fmt.Errorf("ttl_seconds must be positive")
+	}
+	// Bounded before the multiply so a huge value cannot overflow a Duration.
+	const maxSeconds = int64(100 * 365 * 24 * 3600)
+	if *asked > maxSeconds {
+		return 0, fmt.Errorf("ttl_seconds is too large")
+	}
+	d := time.Duration(*asked) * time.Second
+	if limit > 0 && d > limit {
+		return 0, fmt.Errorf("ttl_seconds exceeds the maximum of %d", int64(limit/time.Second))
+	}
+	return d, nil
+}
 
 // mintUserTokenResponse is the show-once mint result. `token` is the plaintext,
 // returned exactly here and never retrievable again.
@@ -53,7 +213,11 @@ type mintUserTokenResponse struct {
 	Name        string    `json:"name"`
 	Scopes      []string  `json:"scopes"`
 	CreatedAt   time.Time `json:"created_at"`
-	Warning     string    `json:"warning"`
+	// ExpiresAt is set when the token has a fixed lifetime.
+	ExpiresAt *time.Time `json:"expires_at,omitempty"`
+	// Retired lists the older tokens of this user that max_active retired.
+	Retired []string `json:"retired,omitempty"`
+	Warning string   `json:"warning"`
 }
 
 // userTokenMeta is one token row in the list response — METADATA ONLY. It never
@@ -68,9 +232,10 @@ type userTokenMeta struct {
 	Scopes    []string   `json:"scopes"`
 	CreatedAt time.Time  `json:"created_at"`
 	RetiredAt *time.Time `json:"retired_at,omitempty"`
+	ExpiresAt *time.Time `json:"expires_at,omitempty"`
 	// Active applies the SAME validity rule as the auth hot path (a row
-	// authenticates iff never retired or still inside its grace window) so the UI
-	// can gray out a revoked token honestly.
+	// authenticates iff it is not retired, or still inside its grace window,
+	// and not expired) so the UI can gray out a dead token honestly.
 	Active bool `json:"active"`
 }
 
@@ -99,7 +264,7 @@ func newTokenDefID() string {
 // listing/revoke is keyed on (tenant, subject), never on name.
 func deriveTokenName(subject string) string {
 	var b strings.Builder
-	b.WriteString("u-")
+	b.WriteString(userTokenNamePrefix)
 	for _, r := range subject {
 		switch {
 		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9', r == '_', r == '-':
@@ -131,9 +296,44 @@ func isDelegatedUserToken(row store.OperatorTokenDefRow, tenant, subject string)
 }
 
 // tokenActive applies the auth-layer validity rule: a row authenticates iff it
-// was never retired, or its retired_at is still in the future (rotation grace).
+// was never retired, or its retired_at is still in the future (rotation
+// grace), and it has not expired.
 func tokenActive(row store.OperatorTokenDefRow) bool {
-	return row.RetiredAt.IsZero() || time.Now().Before(row.RetiredAt)
+	return row.ValidAt(time.Now())
+}
+
+// retireUserTokensBeyond retires the oldest active delegated tokens of
+// (tenant, subject) so that at most keep remain, and returns their def ids.
+// The caller invalidates the token cache.
+func (s *Server) retireUserTokensBeyond(ctx context.Context, tenant, subject string, keep int) ([]string, error) {
+	rows, err := s.store.OperatorTokenDefListBySubject(ctx, tenant, subject)
+	if err != nil {
+		return nil, err
+	}
+	var active []store.OperatorTokenDefRow
+	for _, row := range rows {
+		if isDelegatedUserToken(row, tenant, subject) && tokenActive(row) {
+			active = append(active, row)
+		}
+	}
+	// Newest first, by creation time and then id: the listing's order is not
+	// relied on, because which tokens die is decided here.
+	sort.SliceStable(active, func(i, j int) bool {
+		if !active[i].CreatedAt.Equal(active[j].CreatedAt) {
+			return active[i].CreatedAt.After(active[j].CreatedAt)
+		}
+		return active[i].DefID > active[j].DefID
+	})
+	var retired []string
+	now := time.Now().UTC()
+	for i := keep; i < len(active); i++ {
+		if err := s.store.OperatorTokenDefSetRetiredAt(ctx, active[i].DefID, now); err != nil {
+			return retired, err
+		}
+		retired = append(retired, active[i].DefID)
+		s.recordTokenAudit(ctx, "retire", active[i])
+	}
+	return retired, nil
 }
 
 // retireDelegatedUserTokens retires every currently-active DELEGATED member
@@ -169,9 +369,10 @@ func (s *Server) retireDelegatedUserTokens(ctx context.Context, tenant, subject 
 
 // handleMintUserToken serves POST /v1/_users/{subject}/tokens. Mints a bearer
 // token for one of the caller's OWN active users, with scopes derived from the
-// user's access_mode. Reads NO request body — subject is in the path and every
-// other field is server-derived — so a body/query "tenant" or "scopes" has no
-// path to the stored row.
+// user's access_mode. The subject is in the path and the tenant and scopes are
+// server-derived; the optional body (mintUserTokenRequest) can only shorten
+// the token's life, label it, and cap how many of the user's tokens stay
+// alive.
 func (s *Server) handleMintUserToken(w http.ResponseWriter, r *http.Request) {
 	if s.store == nil {
 		writeJSONError(w, http.StatusServiceUnavailable, "store_unavailable",
@@ -185,6 +386,29 @@ func (s *Server) handleMintUserToken(w http.ResponseWriter, r *http.Request) {
 	}
 	// tenant is FORCED from the authenticated principal — never the wire.
 	tenant := tenantFromCtx(r.Context())
+
+	req, err := decodeMintUserTokenRequest(r)
+	if err != nil {
+		writeJSONError(w, http.StatusBadRequest, "invalid_body", "invalid request body: "+err.Error())
+		return
+	}
+	lifetime, err := s.userTokenLifetime(req.TTLSeconds)
+	if err != nil {
+		writeJSONError(w, http.StatusBadRequest, "invalid_ttl", err.Error())
+		return
+	}
+	name := deriveTokenName(subject)
+	if req.Name != "" {
+		if !userTokenLabelRe.MatchString(req.Name) {
+			writeJSONError(w, http.StatusBadRequest, "invalid_name", "name must match [a-zA-Z0-9_-]{1,62}")
+			return
+		}
+		name = userTokenNamePrefix + req.Name
+	}
+	if req.MaxActive != nil && *req.MaxActive < 1 {
+		writeJSONError(w, http.StatusBadRequest, "invalid_max_active", "max_active must be at least 1")
+		return
+	}
 
 	// The target must be a registered member of THIS tenant. A cross-tenant (or
 	// unregistered) subject is an opaque 404 — no existence oracle.
@@ -220,9 +444,25 @@ func (s *Server) handleMintUserToken(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	now := time.Now().UTC()
+	// Read fresh, not from the principal: the bound has to hold against what
+	// the store says now. A failed read refuses the mint rather than issuing a
+	// token nothing bounds.
+	minterEnds, err := s.minterExpiry(r.Context())
+	if err != nil {
+		writeJSONError(w, http.StatusInternalServerError, "mint_failed", "reading the minting token: "+err.Error())
+		return
+	}
+	var expiresAt time.Time
+	if lifetime > 0 {
+		expiresAt = now.Add(lifetime)
+	}
+	if expiresAt, err = boundByMinter(expiresAt, minterEnds, req.TTLSeconds != nil); err != nil {
+		writeJSONError(w, http.StatusBadRequest, "invalid_ttl", err.Error())
+		return
+	}
 	row := store.OperatorTokenDefRow{
 		DefID:    newTokenDefID(),
-		Name:     deriveTokenName(subject),
+		Name:     name,
 		TenantID: tenant,  // FORCED — authoritative principal tenant
 		Subject:  subject, // the path user
 		// Hash with the SAME pepper the auth hot path uses (resolvePrincipal),
@@ -231,10 +471,25 @@ func (s *Server) handleMintUserToken(w http.ResponseWriter, r *http.Request) {
 		AllowedScopes: scopes,
 		CreatedAt:     now,
 	}
+	row.ExpiresAt = expiresAt
 	created, err := s.store.OperatorTokenDefCreate(r.Context(), row)
 	if err != nil {
 		writeJSONError(w, http.StatusInternalServerError, "token_create_failed", err.Error())
 		return
+	}
+	s.recordTokenAudit(r.Context(), "create", created)
+	// After the create, so the new token is among the ones kept. A failure
+	// here leaves a valid new token and too many old ones, and is reported:
+	// the caller asked for a bound and did not get it.
+	var retired []string
+	if req.MaxActive != nil {
+		retired, err = s.retireUserTokensBeyond(r.Context(), tenant, subject, *req.MaxActive)
+		if err != nil {
+			s.invalidateTokenCache(r.Context())
+			writeJSONError(w, http.StatusInternalServerError, "token_retire_failed",
+				"the token was minted (def_id "+created.DefID+") but older tokens could not be retired: "+err.Error())
+			return
+		}
 	}
 	// RFC L Decision 11: flush the per-replica auth cache (locally + cross-
 	// replica) so the fresh token authenticates within one backplane round-trip.
@@ -249,18 +504,24 @@ func (s *Server) handleMintUserToken(w http.ResponseWriter, r *http.Request) {
 
 	// Non-secret correlation only — NEVER the plaintext. The suffix + def_id are
 	// safe to log; the minting operator is attributed via principalSubject.
-	log.Printf("users: minted token tenant=%q subject=%q def_id=%q suffix=%q scopes=%v by=%q",
-		tenant, subject, created.DefID, suffix, scopes, principalSubject(r.Context()))
+	log.Printf("users: minted token tenant=%q subject=%q def_id=%q suffix=%q scopes=%v expires=%v retired=%d by=%q",
+		tenant, subject, created.DefID, suffix, scopes, !created.ExpiresAt.IsZero(), len(retired), principalSubject(r.Context()))
 
-	writeJSON(w, http.StatusCreated, mintUserTokenResponse{
+	resp := mintUserTokenResponse{
 		DefID:       created.DefID,
 		Token:       plaintext,
 		TokenSuffix: suffix,
 		Name:        created.Name,
 		Scopes:      scopes,
 		CreatedAt:   created.CreatedAt,
+		Retired:     retired,
 		Warning:     "store this token now — it is shown once and cannot be retrieved later",
-	})
+	}
+	if !created.ExpiresAt.IsZero() {
+		ea := created.ExpiresAt.UTC()
+		resp.ExpiresAt = &ea
+	}
+	writeJSON(w, http.StatusCreated, resp)
 }
 
 // handleListUserTokens serves GET /v1/_users/{subject}/tokens. Returns METADATA
@@ -300,6 +561,10 @@ func (s *Server) handleListUserTokens(w http.ResponseWriter, r *http.Request) {
 		if !row.RetiredAt.IsZero() {
 			ra := row.RetiredAt.UTC()
 			m.RetiredAt = &ra
+		}
+		if !row.ExpiresAt.IsZero() {
+			ea := row.ExpiresAt.UTC()
+			m.ExpiresAt = &ea
 		}
 		out = append(out, m)
 	}
@@ -352,6 +617,7 @@ func (s *Server) handleRevokeUserToken(w http.ResponseWriter, r *http.Request) {
 	}
 	// Stop the revoked token authenticating within one backplane round-trip.
 	s.invalidateTokenCache(r.Context())
+	s.recordTokenAudit(r.Context(), "retire", row)
 	log.Printf("users: revoked token tenant=%q subject=%q def_id=%q by=%q",
 		tenant, subject, defID, principalSubject(r.Context()))
 	writeJSON(w, http.StatusOK, map[string]any{

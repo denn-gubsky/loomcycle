@@ -14,7 +14,7 @@ import (
 // CLI. A thin HTTP client to POST /v1/_operatortokendef (and GET
 // /v1/_operatortokendef/names), mirroring the pause/snapshot CLIs.
 //
-//	loomcycle operator-token create --tenant T [--subject S] [--scopes a,b] --name N
+//	loomcycle operator-token create --tenant T [--subject S] [--scopes a,b] [--ttl-seconds N] --name N
 //	loomcycle operator-token rotate (--name N | --def-id D) [--grace-seconds N]
 //	loomcycle operator-token retire (--name N | --def-id D)
 //	loomcycle operator-token show   --def-id D
@@ -58,6 +58,7 @@ func runOperatorTokenCreate(args []string, stdout, stderr io.Writer) int {
 	subject := fs.String("subject", "", "authoritative subject (default tok-<name>)")
 	scopes := fs.String("scopes", "", "comma-separated scopes (required unless --copy-from-env; use substrate:admin for a full-power token)")
 	copyFromEnv := fs.Bool("copy-from-env", false, "migration: bind the existing $LOOMCYCLE_AUTH_TOKEN instead of minting (zero-disruption upgrade)")
+	ttlSeconds := fs.Int64("ttl-seconds", 0, "lifetime in seconds; the token stops working when it runs out (default: never expires; not allowed with substrate:admin)")
 	httpTimeout := fs.Duration("http-timeout", 15*time.Second, "client-side HTTP request timeout")
 	if err := fs.Parse(args); err != nil {
 		return 2
@@ -69,6 +70,9 @@ func runOperatorTokenCreate(args []string, stdout, stderr io.Writer) int {
 	payload := map[string]any{"op": "create", "name": *name, "tenant_id": *tenant}
 	if *subject != "" {
 		payload["subject"] = *subject
+	}
+	if *ttlSeconds != 0 {
+		payload["ttl_seconds"] = *ttlSeconds
 	}
 	if *scopes != "" {
 		payload["scopes"] = splitCSV(*scopes)

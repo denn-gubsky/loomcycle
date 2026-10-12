@@ -1983,6 +1983,34 @@ func main() {
 		}
 	}
 	srv.EnableTokenCache(time.Duration(authCacheTTL) * time.Second)
+	// Delegated user-token mints and revocations are recorded to the same
+	// sink as operator-token mutations. Not wired when there is no file: the
+	// handler treats a nil sink as "not recorded".
+	if cfg.Env.AuditLogPath != "" {
+		srv.SetTokenAudit(tokenAudit)
+	}
+	// A cap on how long a delegated user token may live. Unset = no cap; with
+	// a cap, a mint that asks for no lifetime gets the cap.
+	if v := os.Getenv("LOOMCYCLE_USER_TOKEN_MAX_TTL_SECONDS"); v != "" {
+		if n, perr := strconv.ParseInt(v, 10, 64); perr == nil && n > 0 {
+			srv.SetUserTokenMaxTTL(time.Duration(n) * time.Second)
+			log.Printf("auth: user tokens live at most %ds", n)
+		} else {
+			log.Fatalf("auth: LOOMCYCLE_USER_TOKEN_MAX_TTL_SECONDS=%q is not a positive number of seconds", v)
+		}
+	}
+	// Expired token rows are removed once they have been dead for a while. A
+	// deployment minting short-lived tokens daily would otherwise keep every
+	// one of them. Only rows that carry an expiry are ever removed; a token
+	// minted without one stays until an operator retires it, and stays after.
+	expiredTokenRetention := 7 * 24 * time.Hour
+	if v := os.Getenv("LOOMCYCLE_EXPIRED_TOKEN_RETENTION_SECONDS"); v != "" {
+		if n, perr := strconv.ParseInt(v, 10, 64); perr == nil && n >= 0 {
+			expiredTokenRetention = time.Duration(n) * time.Second
+		} else {
+			log.Fatalf("auth: LOOMCYCLE_EXPIRED_TOKEN_RETENTION_SECONDS=%q is not a number of seconds (0 keeps expired rows)", v)
+		}
+	}
 	// Surface the resolved build identifiers via /healthz so the Web UI
 	// can render the running binary's real version instead of a stale
 	// hard-coded string. Mirrors what gRPC's Health RPC has reported
@@ -2650,6 +2678,22 @@ func main() {
 	// written principal list is small, but it is one store round-trip each and boot
 	// should not wait on a convenience. Best-effort inside.
 	go srv.ProvisionDeclaredPrincipalDocs(bgCtx)
+
+	// Expired-token sweeper (the retention was resolved with the auth wiring
+	// above). One replica per cluster per tick; the delete is idempotent.
+	if expiredTokenRetention > 0 && storeIface != nil {
+		go runAdvisoryGatedSweeper(bgCtx, time.Hour, advisoryLock, coord.LockKeyExpiredTokenSweeper, "expired-token",
+			func(ctx context.Context) {
+				n, err := storeIface.OperatorTokenDefDeleteExpired(ctx, time.Now().Add(-expiredTokenRetention))
+				if err != nil {
+					log.Printf("expired-token sweep: %v", err)
+					return
+				}
+				if n > 0 {
+					log.Printf("expired-token sweep: deleted %d expired token row(s)", n)
+				}
+			})
+	}
 
 	// Memory tool TTL sweeper. Cheap periodic DELETE of expired rows.
 	// The store also filters expired entries at read time, so this

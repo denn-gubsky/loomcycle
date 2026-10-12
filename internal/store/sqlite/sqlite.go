@@ -1371,6 +1371,8 @@ func (s *Store) migrate(ctx context.Context) error {
 		`ALTER TABLE token_usage ADD COLUMN prefill_ms INTEGER`,
 		`ALTER TABLE token_usage ADD COLUMN decode_ms INTEGER`,
 		`ALTER TABLE token_usage ADD COLUMN queue_ms INTEGER`,
+		// A token's fixed lifetime (epoch-nanos; NULL = never expires).
+		`ALTER TABLE operator_token_defs ADD COLUMN expires_at INTEGER`,
 	}
 	for _, q := range addColumns {
 		if _, err := s.db.ExecContext(ctx, q); err != nil {

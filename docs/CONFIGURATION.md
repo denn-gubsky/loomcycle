@@ -1183,6 +1183,8 @@ Config knobs (full reference: `loomcycle context help operator-tokens` or the `C
 | `LOOMCYCLE_OPERATOR_TOKEN_PEPPER` | Mixed into the token hash; a stolen DB dump without it yields no usable lookup. Set it for multi-tenant deployments. |
 | `LOOMCYCLE_AUTH_CACHE_TTL_SECONDS` | Per-replica resolution-cache TTL (default 30; `0` = direct lookup, immediate revocation). Worst-case revocation lag if a cross-replica invalidation is dropped. |
 | `LOOMCYCLE_OPERATOR_TOKEN_ROTATION_GRACE_SECONDS` | Default rotation grace window (default 24h). |
+| `LOOMCYCLE_USER_TOKEN_MAX_TTL_SECONDS` | The longest lifetime a per-user token may be minted with. Unset = no cap. When set, a mint asking for more is refused, and a mint asking for no lifetime gets this one. See [Token lifetime](#token-lifetime). |
+| `LOOMCYCLE_EXPIRED_TOKEN_RETENTION_SECONDS` | How long an expired token's row is kept before it is deleted (default 7 days; `0` keeps expired rows). Only rows that carry an expiry are ever deleted. |
 | `LOOMCYCLE_AUDIT_LOG_PATH` | JSONL audit of every create/rotate/retire (never a token or hash). |
 | `LOOMCYCLE_AUTH_VERBOSE` | `1` logs a server-side reason on a rejected bearer (the wire 401 stays opaque). |
 | `LOOMCYCLE_OPERATOR_KEY_RESTRICTION` | **RFC AX** deployment gate (default OFF). When `1`, a run whose principal lacks `providers:operator-key` may not use the operator's host provider key — resolution routes it only to providers the tenant can key itself (an RFC AR CredentialDef) and refuses `403 operator_key_restricted` if none; the LLM-gateway + embeddings shims refuse a restricted principal outright. OFF ⇒ byte-identical for every existing token. |
@@ -1201,6 +1203,41 @@ Routes enforce a scope from a closed catalog; an under-scoped token gets `403` +
 `substrate:tenant` satisfies the within-tenant scopes (`runs:*`, `channel:*`, and the def/hook gate) but never `substrate:admin` — so a tenant operator passes the def + hook routes yet is refused minting/runtime-admin. Mint one with `--scopes substrate:tenant`. Confinement is automatic: a non-admin principal's def writes are stamped with its authoritative tenant, cross-tenant reads return an opaque `404`, and a tenant-registered hook fires only on that tenant's runs.
 
 On the **loomcycle-as-MCP-server transport** (`/v1/_mcp`, RFC AG) a `substrate:tenant` bearer may now OPEN a session — but the route scope decides only that. Inside the session a per-tool gate still withholds the admin-only meta-tools (token minting, runtime admin, snapshot capture/restore, cross-scope channel listing): they are hidden from the tenant's `tools/list` and refused on `tools/call`. The tools a tenant *can* call (def authoring, run lifecycle, memory/channel/path/document, hooks) are tenant-confined exactly like their HTTP twins. `substrate:admin` sees + may call the full meta-tool set. The thin client (`loomcycle mcp --upstream`) forwards the caller's bearer verbatim, so a tenant bearer there drives a tenant-confined session — see `docs/MCP_SERVER.md`.
+
+### Token lifetime
+
+**Since v1.112.0.** A token can be given a fixed lifetime when it is minted. It stops authenticating when the lifetime runs out, with the same `401` a retired token gets. This is for a token that lives somewhere you do not control, such as a developer's machine: a copy that leaks stops working on its own.
+
+| Where | How |
+|---|---|
+| A per-user token | `POST /v1/_users/{subject}/tokens` with a body: `{"ttl_seconds": 86400}` |
+| An operator token | `loomcycle operator-token create … --ttl-seconds N`, or `ttl_seconds` on the `create` op |
+
+The per-user mint takes three optional fields. With no body it behaves as before.
+
+| Field | Meaning |
+|---|---|
+| `ttl_seconds` | The token's lifetime. The answer carries `expires_at`. |
+| `name` | A label for the token (`[a-zA-Z0-9_-]{1,62}`). It is stored as `u-<name>`: every per-user token's name carries that prefix, so one can never take an operator token's name. Names behind `u-` are not unique across tenants: `operator-token create` refuses them, and `rotate` / `retire` reach such a token by `--def-id`, not by `--name`. Default: `u-<subject>`. |
+| `max_active` | Keep at most this many of the user's tokens alive. After the mint, the oldest beyond the count are retired at once, and the answer lists them in `retired`. |
+
+```sh
+curl -X POST "$LOOMCYCLE_BASE_URL/v1/_users/alice/tokens" \
+  -H "Authorization: Bearer $TENANT_OPERATOR_TOKEN" \
+  -d '{"ttl_seconds": 86400, "max_active": 2}'
+```
+
+Rules worth knowing:
+
+- **A rotation does not extend a lifetime.** The replacement token expires when the original would have. A token that has already expired cannot be rotated; mint a new one.
+- **A token cannot mint one that outlives it.** When the token doing the mint has a lifetime of its own, a longer `ttl_seconds` is refused, and a mint that asks for none ends when the minting token does.
+- **A token holding `substrate:admin` cannot have a lifetime.** One admin token turns the legacy `LOOMCYCLE_AUTH_TOKEN` login off, so an admin token that expires would lock the deployment out on a date.
+- **An unknown field in the mint body is refused** (`400`). A misspelled `ttl_seconds` that was silently dropped would hand back a token that never expires. Before v1.112.0 the body was ignored entirely.
+- **Expiry holds through the resolution cache.** A token stops at its own end, not up to `LOOMCYCLE_AUTH_CACHE_TTL_SECONDS` later. The same now applies to a rotated-out token at the end of its grace window.
+- **Expired rows are cleaned up.** A token's row is deleted `LOOMCYCLE_EXPIRED_TOKEN_RETENTION_SECONDS` after it expired (default 7 days). A token minted without a lifetime is never deleted this way.
+- **Mints and revocations of per-user tokens are written to the audit log** when `LOOMCYCLE_AUDIT_LOG_PATH` is set, as operator-token changes already are.
+
+Token listings (`GET /v1/_users/{subject}/tokens`, `operator-token show` / `list`) show `expires_at`, and `active` is false once a token has expired.
 
 ### Declared principals — static `(tenant, user)` logins (RFC AO)
 
