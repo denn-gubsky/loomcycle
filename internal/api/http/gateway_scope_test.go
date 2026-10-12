@@ -288,3 +288,86 @@ func TestGateway_AFailedCallStillRecordsWhatWasReported(t *testing.T) {
 		}
 	}
 }
+
+// A call that ends with no usage report — the caller hung up before it
+// arrived, or the provider failed first — is counted against the budget by an
+// estimate, and is not written to the ledger. Counting nothing would make
+// "read the answer, then drop the connection" a way to call the model for
+// free under a hard limit; writing a guess into the ledger would put a number
+// nobody measured into what an operator bills from.
+func TestGateway_ACallWithNoUsageReportStillCountsAgainstTheBudget(t *testing.T) {
+	for path := range gatewayBodies {
+		for _, stream := range []bool{false, true} {
+			req := gatewayBodies[path]
+			if stream {
+				req = gatewayStreamBodies[path]
+			}
+			// 990 of 1000 used: one more call fits, and a second does only
+			// if the first cost nothing.
+			ts, srv := gatewayBudgetServer(t, 1000, 990)
+			srv.providers = &stubResolver{p: &scriptedProvider{defaultS: []providers.Event{
+				{Type: providers.EventText, Text: strings.Repeat("answer ", 20)},
+				{Type: providers.EventDone, StopReason: "end_turn"}, // no usage
+			}}}
+			ledger := func() int64 {
+				rows, err := srv.store.UsageReport(context.Background(), store.UsageQuery{TenantID: "acme"})
+				if err != nil {
+					t.Fatal(err)
+				}
+				var n int64
+				for _, r := range rows {
+					n += r.InputTokens + r.OutputTokens + r.CacheCreationTokens + r.CacheReadTokens
+				}
+				return n
+			}
+			before := ledger()
+			if code, body := bearerCall(t, ts, "tok-alice", "POST", path, req); code != http.StatusOK {
+				t.Fatalf("%s stream=%v: the first call: status %d: %s", path, stream, code, body)
+			}
+			if got := ledger() - before; got != 0 {
+				t.Errorf("%s stream=%v: %d tokens written to the ledger for a call the provider did not report on", path, stream, got)
+			}
+			if code, body := bearerCall(t, ts, "tok-alice", "POST", path, req); code != http.StatusTooManyRequests {
+				t.Errorf("%s stream=%v: the next call: status %d, want 429 — the unreported call cost the budget nothing: %s", path, stream, code, body)
+			}
+		}
+	}
+}
+
+func TestGatewayMeter(t *testing.T) {
+	req := providers.Request{Messages: []providers.Message{{Role: "user", Content: []providers.ContentBlock{{Type: "text", Text: "hello there"}}}}}
+	feed := func(events ...providers.Event) *gatewayMeter {
+		m := newGatewayMeter(req)
+		ch := make(chan providers.Event, len(events))
+		for _, ev := range events {
+			ch <- ev
+		}
+		close(ch)
+		n := 0
+		for range m.tap(ch) {
+			n++
+		}
+		if n != len(events) {
+			t.Errorf("tap delivered %d of %d events", n, len(events))
+		}
+		return m
+	}
+	reported := feed(
+		providers.Event{Type: providers.EventText, Text: "hi"},
+		providers.Event{Type: providers.EventDone, Usage: &providers.Usage{InputTokens: 4, OutputTokens: 1, CacheReadTokens: 9}},
+	)
+	if !reported.reported || reported.usage.CacheReadTokens != 9 || reported.usage.InputTokens != 4 {
+		t.Errorf("a report on Done was not kept whole: %+v", reported)
+	}
+	afterError := feed(
+		providers.Event{Type: providers.EventError, Error: "boom"},
+		providers.Event{Type: providers.EventUsage, Usage: &providers.Usage{InputTokens: 3}},
+	)
+	if !afterError.reported || afterError.usage.InputTokens != 3 {
+		t.Errorf("a report that followed an error was lost: %+v", afterError)
+	}
+	silent := feed(providers.Event{Type: providers.EventText, Text: "twelve bytes"})
+	if silent.reported || silent.outputBytes != 12 || silent.inputBytes == 0 {
+		t.Errorf("an unreported call: reported=%v output=%d input=%d, want its sizes noted", silent.reported, silent.outputBytes, silent.inputBytes)
+	}
+}

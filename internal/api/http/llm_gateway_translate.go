@@ -209,13 +209,11 @@ func collectProviderEventsIntoResponse(
 				resp.StopReason = ev.StopReason
 			}
 		case providers.EventError:
-			// Keep reading: a usage report that follows the error is still
-			// tokens spent, and the caller records what resp.Usage holds.
+			// Read to the end before returning: a usage report that follows
+			// the error is still tokens spent, and the call's meter can only
+			// note what is read through it.
 			callErr := &gatewayProviderErr{Message: ev.Error}
-			for rest := range ch {
-				if u, ok := gatewayUsageOf(rest); ok {
-					resp.Usage = u
-				}
+			for range ch {
 			}
 			return resp, callErr
 		}

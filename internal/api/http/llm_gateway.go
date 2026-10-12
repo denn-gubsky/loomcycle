@@ -1,7 +1,6 @@
 package http
 
 import (
-	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
@@ -14,7 +13,6 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/auth"
 	"github.com/denn-gubsky/loomcycle/internal/providers"
 	"github.com/denn-gubsky/loomcycle/internal/resolve"
-	"github.com/denn-gubsky/loomcycle/internal/tools"
 )
 
 // llm_gateway.go — v0.11.0 LLM Gateway endpoint.
@@ -216,19 +214,18 @@ func (s *Server) serveLLMChatJSON(
 		writeJSONError(w, http.StatusBadGateway, "provider_call_failed", err.Error())
 		return
 	}
+	meter := newGatewayMeter(provReq)
+	// Deferred: however this function leaves, the call is settled.
+	defer s.settleGatewayCall(r.Context(), req.UserID, providerID, modelID, meter)
 	id := newLLMID()
-	resp, err := collectProviderEventsIntoResponse(ch, id, requestID, providerID, modelID)
+	resp, err := collectProviderEventsIntoResponse(meter.tap(ch), id, requestID, providerID, modelID)
 	if err != nil {
-		// A call that failed part-way may still have been billed for what
-		// it read and wrote; record whatever the provider reported.
-		s.recordGatewayUsage(r.Context(), req.UserID, providerID, modelID, resp.Usage.providerUsage())
 		writeJSONError(w, http.StatusBadGateway, "provider_call_failed", err.Error())
 		return
 	}
 	logGatewayRequest(requestID, providerID, modelID, req.Tier, req.UserID,
 		resp.Usage.InputTokens, resp.Usage.OutputTokens, resp.StopReason,
 		time.Since(startedAt), nil)
-	s.recordGatewayUsage(r.Context(), req.UserID, providerID, modelID, resp.Usage.providerUsage())
 	writeJSONOK(w, resp)
 }
 
@@ -267,6 +264,9 @@ func (s *Server) serveLLMChatStream(
 		logGatewayRequest(requestID, providerID, modelID, req.Tier, req.UserID, 0, 0, "error", time.Since(startedAt), err)
 		return
 	}
+	meter := newGatewayMeter(provReq)
+	defer s.settleGatewayCall(r.Context(), req.UserID, providerID, modelID, meter)
+	ch = meter.tap(ch)
 
 	// Block-index lifecycle: the gateway owns the index exclusively
 	// here (translate helpers in llm_gateway_translate.go don't
@@ -353,7 +353,6 @@ func (s *Server) serveLLMChatStream(
 	logGatewayRequest(requestID, providerID, modelID, req.Tier, req.UserID,
 		usage.InputTokens, usage.OutputTokens, stopReason,
 		time.Since(startedAt), runErr)
-	s.recordGatewayUsage(r.Context(), req.UserID, providerID, modelID, usage.providerUsage())
 }
 
 // resolveGatewayRequest applies the RFC §"Provider routing" precedence:
@@ -412,39 +411,6 @@ func (s *Server) admitGatewayBudget(w http.ResponseWriter, r *http.Request, wire
 	}
 	writeTokenLimitError(w, dec.Refusal)
 	return false
-}
-
-// recordGatewayUsage writes a gateway call to the usage ledger and counts its
-// tokens against the caller's budget. A gateway call used to be logged and
-// nothing else: it appeared in no usage report and moved no budget, so the
-// cheapest way to spend unaccounted tokens was to skip the agent.
-//
-// It belongs to no run, so it is filed under the caller alone (tenant and
-// subject), as an off-run decision is.
-//
-// u is the provider's own report, whole: the cache-creation and cache-read
-// counts are tokens the budget counts for a run, so they count here. Passing
-// only the input and output counts would let a caller with a large cached
-// prompt spend most of its tokens unseen.
-func (s *Server) recordGatewayUsage(ctx context.Context, wireUser, providerID, modelID string, u providers.Usage) {
-	if u.InputTokens+u.OutputTokens+u.CacheCreationTokens+u.CacheReadTokens == 0 {
-		return
-	}
-	// The provider and model the call was dispatched to, not whatever the
-	// report names: a usage row is priced by them.
-	u.Provider, u.Model = providerID, modelID
-	rid := tools.RunIdentityValue{TenantID: tenantFromCtx(ctx), UserID: auth.SubjectForFairness(ctx, wireUser)}
-	// Recorded on a ctx that outlives the request: the tokens were spent
-	// whether or not the caller is still there to hear the answer.
-	_ = s.recordCallUsage(context.WithoutCancel(ctx), "", rid, "", 0, &u)
-}
-
-// providerUsage turns a gateway response's usage back into the provider's shape.
-func (u llmUsage) providerUsage() providers.Usage {
-	return providers.Usage{
-		InputTokens: u.InputTokens, OutputTokens: u.OutputTokens,
-		CacheCreationTokens: u.CacheCreationInputTokens, CacheReadTokens: u.CacheReadInputTokens,
-	}
 }
 
 // logGatewayRequest emits the always-on structured audit line. The
