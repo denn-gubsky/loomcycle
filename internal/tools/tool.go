@@ -1584,6 +1584,27 @@ func SpawnUntrusted(ctx context.Context) []UntrustedInput {
 	return in
 }
 
+type ctxKeyRunUntrusted struct{}
+
+// WithRunUntrusted carries the untrusted input THIS run was started with: the
+// untrusted blocks of its opening user turn, raw, in order. The Agent tool
+// reads it to forward that text to a child by reference, so the text is never
+// retyped into a tool argument (where it would be recorded on this run's
+// transcript and fenced a second time). The loop sets it once per run and
+// ALWAYS sets it, nil included: a sub-run's ctx descends from its parent's
+// dispatch ctx, so a setter that did nothing for "none" would let a child
+// forward its parent's input as its own.
+func WithRunUntrusted(ctx context.Context, in []UntrustedInput) context.Context {
+	return context.WithValue(ctx, ctxKeyRunUntrusted{}, in)
+}
+
+// RunUntrusted returns the untrusted input of the run this ctx belongs to, or
+// nil.
+func RunUntrusted(ctx context.Context) []UntrustedInput {
+	in, _ := ctx.Value(ctxKeyRunUntrusted{}).([]UntrustedInput)
+	return in
+}
+
 // ctxKeyResolvedProvider / ctxKeyResolvedModel carry the run's
 // CURRENTLY-RESOLVED provider id and model name so the Context tool's
 // op=self can report them to the agent. The model never supplies these

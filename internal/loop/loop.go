@@ -423,6 +423,12 @@ type RunOptions struct {
 	Metadata        map[string]any
 	PayloadMetadata map[string]any
 
+	// Untrusted is the run's untrusted input for a run RE-ENTERED from the
+	// store, whose Segments carry no user turn to read it from: the caller
+	// rebuilds it from the run's stored user_input event (UntrustedOf). Nil,
+	// which every fresh run leaves it, means "read it from Segments".
+	Untrusted []tools.UntrustedInput
+
 	// RunTimeoutSeconds is the effective per-run/per-agent code-js wall-clock
 	// budget override (per-run wins over per-agent; resolved by the caller).
 	// 0 ⇒ the code-js provider's global default. Stamped onto RunMeta; LLM
@@ -2587,6 +2593,21 @@ func runLoop(ctx context.Context, opts RunOptions) (RunResult, error) {
 	// StartedAt is stamped once per Run() and stays stable across the run's
 	// turns, so code-js's anchored Date.now() is consistent across replays.
 	runIdent := tools.RunIdentity(ctx)
+	// The run's untrusted input, as data. A run re-entered from the store has
+	// no user segment to read it from (its conversation is PriorMessages,
+	// already flattened), so the caller hands it in.
+	runUntrusted := opts.Untrusted
+	if runUntrusted == nil {
+		runUntrusted = UntrustedOf(opts.Segments)
+	}
+	// Set here for the reason RunMeta is: every run goes through this
+	// function, a sub-run included, so each run's tools see its OWN input and
+	// no run-creation site can forget to replace its parent's.
+	ctx = tools.WithRunUntrusted(ctx, runUntrusted)
+	untrustedMeta := make([]providers.UntrustedEntry, len(runUntrusted))
+	for i, u := range runUntrusted {
+		untrustedMeta[i] = providers.UntrustedEntry{Kind: u.Kind, Text: u.Text}
+	}
 	ctx = providers.WithRunMeta(ctx, providers.RunMeta{
 		AgentName:         opts.AgentName,
 		UserID:            runIdent.UserID,
@@ -2595,6 +2616,7 @@ func runLoop(ctx context.Context, opts RunOptions) (RunResult, error) {
 		CodeBody:          opts.CodeBody,
 		Metadata:          opts.Metadata,
 		PayloadMetadata:   opts.PayloadMetadata,
+		Untrusted:         untrustedMeta,
 		RunTimeoutSeconds: opts.RunTimeoutSeconds,
 	})
 
@@ -4467,6 +4489,37 @@ func splitSegments(segs []PromptSegment) (system []providers.ContentBlock, messa
 	return
 }
 
+// UntrustedOf returns the untrusted blocks of the user-role segments, in
+// order, as raw text with the kind the loop would render them under. It is
+// the structured twin of what splitSegments flattens into the first user
+// message, for the two readers that need the text unfenced: a code-js script
+// (input.untrusted) and a spawn that forwards it by reference. Never nil, so
+// a caller can tell "this run has none" from "not worked out yet".
+func UntrustedOf(segs []PromptSegment) []tools.UntrustedInput {
+	out := []tools.UntrustedInput{}
+	for _, s := range segs {
+		if s.Role != "user" {
+			continue
+		}
+		for _, c := range s.Content {
+			if c.Type != "untrusted-block" {
+				continue
+			}
+			out = append(out, tools.UntrustedInput{Kind: untrustedKind(c.Kind), Text: c.Text})
+		}
+	}
+	return out
+}
+
+// untrustedKind is the tag an untrusted block is rendered under: its own kind
+// when the runtime knows it, "untrusted" otherwise.
+func untrustedKind(kind string) string {
+	if !allowedUntrustedKinds[kind] {
+		return "untrusted"
+	}
+	return kind
+}
+
 // allowedUntrustedKinds is the set of `kind` values an untrusted-block may
 // declare. Anything else is normalised to "untrusted" so a caller can't
 // inject a tag that the model treats as a trusted boundary (e.g. "system").
@@ -4562,10 +4615,7 @@ func FlattenContent(c PromptContentBlock) providers.ContentBlock {
 func flattenContent(c PromptContentBlock) providers.ContentBlock {
 	switch c.Type {
 	case "untrusted-block":
-		kind := c.Kind
-		if kind == "" || !allowedUntrustedKinds[kind] {
-			kind = "untrusted"
-		}
+		kind := untrustedKind(c.Kind)
 		safe := fence.EscapeUntrusted(c.Text)
 		return providers.ContentBlock{
 			Type: "text",

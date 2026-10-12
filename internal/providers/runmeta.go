@@ -54,12 +54,28 @@ type RunMeta struct {
 	Metadata        map[string]any
 	PayloadMetadata map[string]any
 
+	// Untrusted is the run's untrusted input as DATA: the untrusted blocks of
+	// the user turn the run was started with, raw (not fenced, not escaped),
+	// in order. The code-js provider surfaces it as input.untrusted, so a
+	// script can tell evidence from instructions without parsing the fenced
+	// copy out of input.prompt. Taken from the run's original segments and
+	// never re-derived from flattened messages, so every replay turn reads the
+	// same value. LLM drivers ignore it: they see the fenced text.
+	Untrusted []UntrustedEntry
+
 	// RunTimeoutSeconds is the effective per-run/per-agent budget override
 	// for a code-js run (resolved server-side: per-run wins over per-agent).
 	// 0 ⇒ the code-js provider uses its global default
 	// (LOOMCYCLE_CODE_AGENTS_RUN_TIMEOUT_SECONDS). The budget is ACTIVE time:
 	// the run's RunClock stops while it waits. LLM drivers ignore it.
 	RunTimeoutSeconds int
+}
+
+// UntrustedEntry is one untrusted block of a run's input. Kind is already
+// normalised to a label the runtime renders.
+type UntrustedEntry struct {
+	Kind string
+	Text string
 }
 
 type ctxKeyRunMeta struct{}

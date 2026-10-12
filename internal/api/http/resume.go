@@ -983,6 +983,7 @@ func (s *Server) resumePausedRun(run store.Run) error {
 		Dispatcher:          dispatcher,
 		Segments:            segments,
 		PriorMessages:       priorMessages,
+		Untrusted:           runUntrustedFromEvents(runEvents),
 		InitialState:        seed.Sigma, // RFC DH P2: nil unless the run was stateful
 		InitialObservation:  seed.Observation,
 		OnEvent:             emit,
@@ -2073,6 +2074,31 @@ func formatSubAgentOutput(agentID, runID, finalText string) string {
 		return fmt.Sprintf("[sub-agent agent_id=%s]\n%s", agentID, finalText)
 	}
 	return fmt.Sprintf("[sub-agent agent_id=%s run_id=%s]\n%s", agentID, runID, finalText)
+}
+
+// runUntrustedFromEvents rebuilds a run's untrusted input from the user_input
+// event it was started with, which holds the caller's blocks unflattened. A
+// resumed loop has only a system segment to read, so without this a code-js
+// script would see input.untrusted change from what it read before the pause
+// (and diverge on replay), and a forwarded reference would resolve to nothing.
+//
+// The FIRST user_input is the one: that is the turn the loop was given when
+// the run began, which is what the value is taken from on a run that was
+// never paused. Later ones are messages sent to it while it ran.
+//
+// Never nil: nil would tell the loop to read the value from its segments.
+func runUntrustedFromEvents(runEvents []store.Event) []tools.UntrustedInput {
+	for _, ev := range runEvents {
+		if ev.Type != "user_input" {
+			continue
+		}
+		var segs []loop.PromptSegment
+		if err := json.Unmarshal(ev.Payload, &segs); err != nil {
+			break
+		}
+		return loop.UntrustedOf(segs)
+	}
+	return []tools.UntrustedInput{}
 }
 
 // childFinalText reads a completed child's final assistant text from its
