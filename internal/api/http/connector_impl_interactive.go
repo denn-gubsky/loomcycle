@@ -141,6 +141,13 @@ func (s *Server) StreamRunEvents(ctx context.Context, runID string, fromSeq int6
 //     fallback. Single-process (no coordinator) folds back to ErrRunNotInFlight,
 //     byte-identical to P1's steer-miss.
 func (s *Server) CancelTurn(ctx context.Context, runID, reason string) (bool, bool, error) {
+	// A cancel always works; the reason somebody typed with it is content. It
+	// is dropped for a no-trace run (it would be relayed to the run's replica
+	// and recorded) and for a caller whose token makes its own words no-trace
+	// — first, before anything below is handed it.
+	if reason != "" && (principalIsNoTrace(ctx) || s.runIsNoTrace(ctx, runID)) {
+		reason = ""
+	}
 	// A team walk has no turns to stop — it is a container for the runs it
 	// spawns — so cancelling it ends it: stopped, not parked.
 	if stopped, isWalk, err := s.cancelTeamWalk(ctx, runID, reason); isWalk {
@@ -150,13 +157,6 @@ func (s *Server) CancelTurn(ctx context.Context, runID, reason string) (bool, bo
 		return false, false, connector.ErrTurnCancelUnavailable
 	}
 	reason = strings.TrimSpace(reason)
-	// A cancel always works; the reason somebody typed with it is content. It
-	// is dropped for a no-trace run (it would be relayed to the run's replica
-	// and recorded) and for a caller whose token makes its own words no-trace.
-	if reason != "" && (principalIsNoTrace(ctx) || s.runIsNoTrace(ctx, runID)) {
-		reason = ""
-	}
-
 	// Local fast path: the run is live on THIS replica. Gate ownership as
 	// SteerRun does, then fire the local armed token.
 	if entry, ok := s.steerReg.Get(runID); ok {

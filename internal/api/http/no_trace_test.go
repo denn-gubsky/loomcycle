@@ -504,13 +504,29 @@ func TestNoTrace_ARunInFlightIsUnpausableAndTakesNoMessages(t *testing.T) {
 		t.Errorf("the run under a pause: status=%q pause_state=%q, want it still running", got.Status, got.PauseState)
 	}
 
-	cancel()
+	// A cancel goes ahead, and the reason typed with it goes nowhere: not to
+	// the other replicas the cancel is broadcast to, not back to the caller,
+	// not onto the row.
+	ts := httptest.NewServer(srv.Mux())
+	defer ts.Close()
+	resp, err := http.Post(ts.URL+"/v1/agents/a_parent/cancel", "application/json", strings.NewReader(`{"reason":"because `+canary+`"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	cancelBody, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != 200 || strings.Contains(string(cancelBody), canary) {
+		t.Errorf("cancel: status %d, body %s — want it accepted with no reason echoed", resp.StatusCode, cancelBody)
+	}
 	select {
 	case <-done:
 	case <-time.After(5 * time.Second):
 		t.Fatal("the run did not end after its cancel")
 	}
 	waitRunsTerminal(t, srv)
+	if got, _ := srv.store.GetRun(context.Background(), run.ID); got.Status != store.RunCancelled || strings.Contains(got.StopReason+got.ErrorMsg, canary) {
+		t.Errorf("cancelled run: status=%q stop=%q error=%q", got.Status, got.StopReason, got.ErrorMsg)
+	}
 	if n := mgr.UnpausableRuns(); n != 0 {
 		t.Errorf("unpausable runs after it ended = %d, want 0", n)
 	}

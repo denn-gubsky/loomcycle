@@ -372,8 +372,8 @@ func (s *Server) CancelRun(ctx context.Context, agentID, reason string) (connect
 		return connector.CancelRunResult{}, fmt.Errorf("agent_id required")
 	}
 	// The cancel goes ahead; a typed reason from a caller whose words are
-	// no-trace does not go with it. (A no-trace RUN's reason is reduced where
-	// it is stored and published, in the store filter and the bus.)
+	// no-trace does not go with it, and neither does one for a no-trace run
+	// (below, once the run is read).
 	if principalIsNoTrace(ctx) {
 		reason = ""
 	}
@@ -392,6 +392,10 @@ func (s *Server) CancelRun(ctx context.Context, agentID, reason string) (connect
 		}
 		if !runOwnershipOK(ctx, run) {
 			return connector.CancelRunResult{}, &store.ErrNotFound{Kind: "run", ID: agentID}
+		}
+		// The cancel is broadcast to every replica with its reason.
+		if run.Retention == store.RetentionNone {
+			reason = ""
 		}
 	}
 	res, ok := s.cancelReg.Cancel(agentID, reason)

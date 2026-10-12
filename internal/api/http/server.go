@@ -8781,10 +8781,21 @@ func (s *Server) handleCancelAgent(w http.ResponseWriter, r *http.Request) {
 	// its tenant, so the ownership rule every other run mutation applies folds
 	// that run into the same 404 — else the 200-vs-404 is also an oracle for
 	// another user's agent ids and how their runs ended.
+	// A cancel always goes ahead; the reason typed with it is content. It is
+	// dropped — before it is broadcast to the other replicas, recorded or
+	// echoed back — for a caller whose token makes its words no-trace, and
+	// for a no-trace run.
+	reason := body.Reason
+	if principalIsNoTrace(r.Context()) {
+		reason = ""
+	}
 	if s.store != nil {
 		run, err := s.tenantStore(r.Context()).GetRunByAgentID(r.Context(), agentID)
 		if err == nil && !runOwnershipOK(r.Context(), run) {
 			err = &store.ErrNotFound{Kind: "run", ID: agentID}
+		}
+		if err == nil && run.Retention == store.RetentionNone {
+			reason = ""
 		}
 		if err != nil {
 			var nf *store.ErrNotFound
@@ -8798,7 +8809,7 @@ func (s *Server) handleCancelAgent(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	res, ok := s.cancelReg.Cancel(agentID, body.Reason)
+	res, ok := s.cancelReg.Cancel(agentID, reason)
 	if ok {
 		// v0.12.2: Cancel may now return ok=true with res.Cancelled=false
 		// when the cluster canceller found the run but couldn't cancel
@@ -8836,8 +8847,8 @@ func (s *Server) handleCancelAgent(w http.ResponseWriter, r *http.Request) {
 	}
 	// Still running on its row with no live loop behind it (left by a crash,
 	// or by a replica that is gone): this cancel ends the row.
-	if s.finishUnheldRun(r.Context(), run, body.Reason) {
-		writeJSON(w, http.StatusOK, cancelResponse{Cancelled: true, AgentID: agentID, Reason: body.Reason})
+	if s.finishUnheldRun(r.Context(), run, reason) {
+		writeJSON(w, http.StatusOK, cancelResponse{Cancelled: true, AgentID: agentID, Reason: reason})
 		return
 	}
 	// Idempotent: surface the existing terminal status. cancelled=false
