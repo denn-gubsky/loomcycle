@@ -270,6 +270,14 @@ type RunOptions struct {
 	// restores 'running'. nil disables pausing (direct loop callers / tests).
 	PauseGate PauseGate
 
+	// BudgetGate, when non-nil, is asked before every model call whether the
+	// run may still spend. A non-nil error ends the run there, failed, with
+	// stop reason StopReasonTokenLimit and that error: nothing further is
+	// sent to a provider. Checked at the top of an iteration, the same clean
+	// boundary a pause parks at, so the history a continuation replays is
+	// whole. nil = never asked.
+	BudgetGate func() error
+
 	// InitialState is the Σ a RESUMED stateful run starts from (RFC DH P2).
 	//
 	// ⚠️ A STATEFUL RUN'S HISTORY IS NOT ITS MESSAGES. PriorMessages carries a
@@ -3167,6 +3175,16 @@ outerLoop:
 			if err := opts.PauseGate.Park(iterCtx); err != nil {
 				iterSpan.End()
 				return RunResult{StopReason: "cancelled", Usage: totalUsage}, ctx.Err()
+			}
+		}
+		// After the park, so a run resumed into a spent budget stops here too.
+		if opts.BudgetGate != nil {
+			if err := opts.BudgetGate(); err != nil {
+				iterSpan.End()
+				// Emitted as well as returned: the event is what the transcript
+				// keeps and what a stream that is not HTTP's ends on.
+				emit(providers.Event{Type: providers.EventError, Error: err.Error()})
+				return RunResult{StopReason: StopReasonTokenLimit, Iterations: iter, Usage: totalUsage}, err
 			}
 		}
 

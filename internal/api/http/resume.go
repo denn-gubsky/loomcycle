@@ -1034,6 +1034,7 @@ func (s *Server) resumePausedRun(run store.Run) error {
 		// it is the one an operator comes back to and retunes.
 		ReResolveOnOperatorTurn: s.reResolveOnOperatorTurnFn(run.ID, run.TenantID, run.UserID, run.Agent, run.UserTier, run.OperatorKeyRestricted, liveInterruption),
 		PauseGate:               gate,
+		BudgetGate:              s.budgetGate(run.TenantID, run.UserID),
 
 		// The RECORD's tool_choice, not resumedToolChoice: the baseline is what
 		// the run holds, so a choice resume dropped as spent is not re-forced.

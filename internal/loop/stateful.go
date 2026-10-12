@@ -869,6 +869,12 @@ func runStateful(ctx context.Context, opts RunOptions, system []providers.Conten
 				return RunResult{StopReason: "cancelled", Iterations: iter, Usage: total, State: sigma}, ctx.Err()
 			}
 		}
+		if opts.BudgetGate != nil {
+			if err := opts.BudgetGate(); err != nil {
+				emit(providers.Event{Type: providers.EventError, Error: err.Error()})
+				return RunResult{StopReason: StopReasonTokenLimit, Iterations: iter, Usage: total, State: sigma}, err
+			}
+		}
 		// The append loop reads its queue at the top of every iteration; this
 		// loop read it only while parked, so a message sent to an autonomous
 		// stateful run was acknowledged and never seen. An interactive run is

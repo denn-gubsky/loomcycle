@@ -97,6 +97,11 @@ const StopReasonDeniedByHook = "denied_by_hook"
 // tools/repeat.go). Its own reason so a client can tell it from a crash.
 const StopReasonRepeatedFailedCall = "repeated_failed_call"
 
+// StopReasonTokenLimit is the stop reason of a run RunOptions.BudgetGate
+// stopped: its (tenant, user) went over a hard token budget while it ran.
+// The run is recorded failed.
+const StopReasonTokenLimit = "token_limit"
+
 // StopReasonMaxIterations is the stop reason of a run that used every
 // iteration it was allowed — its closing turn's answer included — before it
 // finished. The run is recorded completed; a parent is told it was capped.
