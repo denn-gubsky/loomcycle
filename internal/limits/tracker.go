@@ -127,7 +127,7 @@ func MonthToDate(ctx context.Context, st MonthToDateStore, month time.Time) (map
 		out[UsageKey{a.TenantID, a.UserID}] += tokensOf(a)
 	}
 	for _, c := range carried {
-		out[UsageKey{c.TenantID, c.UserID}] += c.Tokens
+		out[UsageKey{c.TenantID, c.UserID}] += c.Tokens + c.Estimated
 	}
 	for k, v := range out {
 		if v == 0 {

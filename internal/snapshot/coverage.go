@@ -144,7 +144,8 @@ var tableCoverageMap = map[string]tableCoverage{
 		Cache: "limits.Tracker (ceilings seeded at boot)"},
 	// usage_carry is written FROM the token_limits section's usage_mtd block,
 	// and read back into it by the next capture (limits.MonthToDate), so a
-	// second hop keeps the first source's usage.
+	// second hop keeps the first source's usage. Its estimated column (usage
+	// counted without a provider's report) is part of that same total.
 	"usage_carry": {Kind: coverSection, Section: "token_limits", Secrets: "none", Backends: onBoth,
 		Reason: "travels as the aggregate month-to-date total, not as rows",
 		Cache:  "limits.Tracker (month-to-date counters seeded at boot)"},

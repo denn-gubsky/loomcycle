@@ -4,8 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"log"
+	"time"
 
 	"github.com/denn-gubsky/loomcycle/internal/auth"
+	"github.com/denn-gubsky/loomcycle/internal/limits"
 	"github.com/denn-gubsky/loomcycle/internal/providers"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
 )
@@ -86,18 +88,16 @@ const bytesPerEstimatedToken = 3
 //
 // A call that ended with NO report — the caller hung up, the provider failed
 // first, or it reported zero — is counted against the BUDGET by an estimate
-// from its size, and written to the log, but not to the ledger. Counting nothing would make
-// "read the answer, then drop the connection before the usage arrives" a way
-// to call the model for free under a hard limit. Writing a guess into the
-// ledger would put a number nobody measured into what an operator bills from.
-// The budget is the control; the ledger is the record.
+// from its size, and written to the log, but not to the ledger. Counting
+// nothing would make "read the answer, then drop the connection before the
+// usage arrives" a way to call the model for free under a hard limit. Writing
+// a guess into the ledger would put a number nobody measured into what an
+// operator bills from. The budget is the control; the ledger is the record.
 //
-// KNOWN LIMIT: the estimate lives in this replica's month-to-date counter,
-// which is rebuilt from the ledger at a restart and is not shared with other
-// replicas. So it is as durable as the counter itself — the advisory,
-// per-replica enforcement the budgets have today — and no more. Making it
-// durable needs a ledger row marked as estimated, which belongs with strict
-// budget enforcement, where the counter stops being advisory.
+// The estimate is kept in the store's budget state (UsageEstimateAdd), which
+// the counter is rebuilt from at a restart, so a restart does not give the
+// tokens back. A failed write is logged and the call still counts on this
+// replica: a budgeting fault never fails a call that was already served.
 //
 // wireUser is the request's own user field, used only when there is no
 // principal. The call belongs to no run, so it is filed under the caller
@@ -122,6 +122,12 @@ func (s *Server) settleGatewayCall(ctx context.Context, wireUser, providerID, mo
 		return
 	}
 	s.limits.Add(tenant, user, est)
-	log.Printf("llm_gateway: no usage report (call ended early or failed) provider=%s model=%s user_id=%q — counted %d estimated tokens against the budget, not written to the usage ledger",
-		providerID, modelID, user, est)
+	kept := "kept"
+	if s.store == nil {
+		kept = "not kept across a restart (no store)"
+	} else if err := s.store.UsageEstimateAdd(context.WithoutCancel(ctx), tenant, user, limits.MonthStart(time.Now()), est); err != nil {
+		kept = "not kept across a restart: " + err.Error()
+	}
+	log.Printf("llm_gateway: no usage report (call ended early or failed) provider=%s model=%s user_id=%q — counted %d estimated tokens against the budget (%s), not written to the usage ledger",
+		providerID, modelID, user, est, kept)
 }
