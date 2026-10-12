@@ -67,12 +67,13 @@ func treeDeleteServer(t *testing.T) (*Server, http.Handler) {
 	return srv, srv.Mux()
 }
 
+// treeDeleteBody decodes either answer: the deletion, or an error body. Both
+// use the key run_id (the root asked for; the live run a refusal names), so a
+// test that needs the refusal's reads it from the raw body.
 type treeDeleteBody struct {
 	connector.RunTreeDeletion
 	Code  string `json:"code"`
 	Error string `json:"error"`
-	// LiveRunID is the run a run_tree_live refusal names; on a success the
-	// same key is the root that was asked for.
 }
 
 func doDelete(t *testing.T, mux http.Handler, token, path string) (int, treeDeleteBody, string) {
