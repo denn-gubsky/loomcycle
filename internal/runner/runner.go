@@ -69,6 +69,10 @@ var (
 	// agent's own definition (allow_overrides: false). Refused and never
 	// dropped: a dropped override would hide a client that asked for it.
 	ErrOverrideNotAllowed = errors.New("override not allowed")
+	// ErrRetentionUnsupported refuses something a no-trace run cannot do,
+	// because doing it would need the run's content stored: an interactive
+	// run, a review hold, continuing or replaying its session, a walk.
+	ErrRetentionUnsupported = errors.New("retention_none_unsupported")
 	// ErrInvalidArgument — caller-supplied field failed validation.
 	// Wire: HTTP 400 / gRPC InvalidArgument.
 	ErrInvalidArgument = errors.New("invalid argument")
@@ -151,6 +155,11 @@ var (
 // non-empty). The continuation path ignores Agent and TenantID —
 // they're derived from the existing session row.
 type RunInput struct {
+	// Retention is the run's retention mode: "" (stored as usual) or
+	// store.RetentionNone (content is delivered and stored nowhere). No wire
+	// decoder sets it in this version.
+	Retention string
+
 	// Agent is the registered agent name. Required for fresh runs;
 	// ignored for continuations (the session's stored agent is the
 	// source of truth).

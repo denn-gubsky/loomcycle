@@ -155,6 +155,11 @@ func CategoryOf(err error) (tools.ErrorInfo, bool) {
 			Description: "This token is limited to certain agents and this is not one of them. Retrying will not help — use a token that is allowed to start this agent.",
 		}, true
 
+	case errors.Is(err, runner.ErrRetentionUnsupported):
+		return business(
+			"This run stores none of its content, and what was asked for needs it stored. Retrying will not help; do it from a run that is not no-trace, or do without it.",
+		), true
+
 	case errors.Is(err, runner.ErrOverrideNotAllowed):
 		return tools.ErrorInfo{
 			Category:    tools.CategoryPermission,

@@ -129,6 +129,10 @@ type Server struct {
 	// strictLimits also checks a hard token budget before each model call
 	// and each sub-agent start (strict_limits.go).
 	strictLimits bool
+	// noTraceAgents names the agents whose runs are no-trace (no_trace.go).
+	// It stands in for the definition field until the mode is exposed, and
+	// nothing outside tests sets it.
+	noTraceAgents map[string]bool
 
 	// sqlMem is the RFC AA SQL Memory manager (per-scope sqlite databases
 	// backing the Memory tool's sql_query/sql_exec). Nil when the subsystem
@@ -630,7 +634,7 @@ func New(cfg *config.Config, pr ProviderResolver, builtinTools []tools.Tool, sem
 		providers:     pr,
 		tools:         builtinTools,
 		sem:           sem,
-		store:         st,
+		store:         wrapStore(st),
 		cancelReg:     cancel.NewRegistry(),
 		turnCancelReg: turncancel.NewRegistry(),
 		sessionLocks:  runner.NewSessionLockMap(),
@@ -1226,6 +1230,11 @@ func (s *Server) admitTeamRun(ctx context.Context) (context.Context, error) {
 	// cannot describe it.
 	if err := s.refuseAgentlessCall(ctx, "a team walk"); err != nil {
 		return nil, err
+	}
+	// A walk records its input and each decision it takes. A no-trace run
+	// that started one would be storing its content through it.
+	if tools.RunIdentity(ctx).Retention == store.RetentionNone {
+		return nil, &noTraceRefusal{Status: 403, Msg: "a no-trace run cannot start a team walk: a walk records its input and its decisions"}
 	}
 	// A walk started directly is a run start. One started by an agent's own
 	// tool is not counted (admitPrincipalRate skips a call from inside a run).
@@ -2931,6 +2940,14 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 	if err := admitAgentOverrides(effectiveAgentName, agentDef, overridesSetIn(&in)); err != nil {
 		return err
 	}
+	retention := s.resolveRetention(ctx, effectiveAgentName, in.Retention)
+	if err := admitNoTraceStart(retention, in.Interactive, in.Review, in.SessionID); err != nil {
+		return err
+	}
+	if retention == store.RetentionNone && startingDraft {
+		// A draft's row, and the prompt in it, were stored when it was made.
+		return &noTraceRefusal{Status: 409, Msg: "a configured run cannot be started as a no-trace run: its draft is already stored"}
+	}
 	// resolveAgent only consults s.cfg().Agents; dynamic agents loaded
 	// from the v0.8.15 fallback above are NOT in that map. Pass the
 	// already-resolved AgentDef through resolveAgentDef instead (same
@@ -3106,7 +3123,7 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 	}
 
 	// ---- Session+run creation ----
-	identity := store.RunIdentity{AgentID: agentID, UserID: effectiveUserID, TenantID: effectiveTenantID, UserTier: in.UserTier, Model: model, ReplicaID: s.replicaID, ParentContext: in.ParentContext, IdempotencyKey: in.IdempotencyKey, DeliveryAltKey: in.DeliveryAltKey, Interactive: in.Interactive, OperatorKeyRestricted: operatorKeyRestricted, Isolated: isolated, RunConfig: runCfg.marshal()}
+	identity := store.RunIdentity{AgentID: agentID, UserID: effectiveUserID, TenantID: effectiveTenantID, UserTier: in.UserTier, Model: model, ReplicaID: s.replicaID, ParentContext: in.ParentContext, IdempotencyKey: in.IdempotencyKey, DeliveryAltKey: in.DeliveryAltKey, Interactive: in.Interactive, OperatorKeyRestricted: operatorKeyRestricted, Isolated: isolated, Retention: retention, RunConfig: runCfg.marshal()}
 	var sessionID, runID string
 	var sessErr error
 	if startingDraft {
@@ -3267,6 +3284,7 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 		ParentContext:         in.ParentContext,   // v0.12.x: opaque tracking lineage, inherited by sub-agents
 		OperatorKeyRestricted: operatorKeyRestricted,
 		Isolated:              isolated, // RFC BX P2b: confine data tools to own scope
+		Retention:             retention,
 	}
 	fwd := func(ev providers.Event) {
 		if cb.OnEvent != nil {
@@ -4427,6 +4445,10 @@ func (s *Server) handleSystemChannelPublish(w http.ResponseWriter, r *http.Reque
 
 // runRequest is the JSON body shape for POST /v1/runs.
 type runRequest struct {
+	// Retention is the run's retention mode. Not decoded from the request in
+	// this version (see no_trace.go).
+	Retention string `json:"-"`
+
 	Agent string `json:"agent"`
 	// Start false creates the run as a configured DRAFT (RFC DI D5) instead of
 	// starting it: validated now, admitted and run by POST
@@ -4826,6 +4848,11 @@ func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {
 		writeOverrideNotAllowed(w, err)
 		return
 	}
+	retention := s.resolveRetention(r.Context(), req.Agent, req.Retention)
+	if err := admitNoTraceStart(retention, req.Interactive, req.Review, req.SessionID); err != nil {
+		writeNoTraceRefusal(w, err)
+		return
+	}
 
 	// v0.8.2: validate user_tier early so an unknown name surfaces as
 	// 400 before the resolver runs. Empty user_tier is fine — the
@@ -5099,7 +5126,7 @@ func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {
 	// emitted event through the store before forwarding to SSE. With
 	// s.store == nil the recording becomes a no-op so v0.2 callers see no
 	// behaviour change.
-	identity := store.RunIdentity{AgentID: agentID, UserID: req.UserID, TenantID: req.TenantID, UserTier: req.UserTier, Model: model, ReplicaID: s.replicaID, ParentContext: req.ParentContext, IdempotencyKey: storedKey, Interactive: req.Interactive, OperatorKeyRestricted: operatorKeyRestricted, Isolated: isolated, RunConfig: runCfg.marshal()}
+	identity := store.RunIdentity{AgentID: agentID, UserID: req.UserID, TenantID: req.TenantID, UserTier: req.UserTier, Model: model, ReplicaID: s.replicaID, ParentContext: req.ParentContext, IdempotencyKey: storedKey, Interactive: req.Interactive, OperatorKeyRestricted: operatorKeyRestricted, Isolated: isolated, Retention: retention, RunConfig: runCfg.marshal()}
 	sessionID, runID, sessErr := s.openOrCreateSessionAndRun(r.Context(), req.SessionID, req.Agent, req.TenantID, req.UserID, identity)
 	if storedKey != "" && errors.Is(sessErr, store.ErrDuplicateIdempotencyKey) {
 		// Lost the race to another request with the same key, between the
@@ -5120,6 +5147,10 @@ func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {
 		var nf *store.ErrNotFound
 		if errors.As(sessErr, &nf) {
 			http.Error(w, sessErr.Error(), http.StatusNotFound)
+			return
+		}
+		if errors.Is(sessErr, runner.ErrRetentionUnsupported) {
+			writeNoTraceRefusal(w, sessErr)
 			return
 		}
 		http.Error(w, sessErr.Error(), http.StatusInternalServerError)
@@ -5293,6 +5324,7 @@ func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {
 		ParentContext:         req.ParentContext,   // v0.12.x: opaque tracking lineage, inherited by sub-agents
 		OperatorKeyRestricted: operatorKeyRestricted,
 		Isolated:              isolated, // RFC BX P2b: confine data tools to own scope
+		Retention:             retention,
 	}
 	// Persist under runCtx so events survive a client disconnect on an
 	// interactive run (runCtx tracks the request for a normal run).
@@ -5747,6 +5779,12 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 	// RunOnce uses for a continuation), not tenantFromCtx — the ownership
 	// gate above already proved the caller is entitled to this session.
 	//
+	// A no-trace session has no transcript to continue from, and a session of
+	// an agent that is no-trace now cannot take a no-trace run.
+	if sess.Retention == store.RetentionNone || s.resolveRetention(r.Context(), sess.Agent, "") == store.RetentionNone {
+		writeNoTraceRefusal(w, errNoTraceSession)
+		return
+	}
 	// A session that began inside a team is continued inside it: the request
 	// carries that team scope from here on, so the session's agent — and any
 	// agent this continuation spawns — resolves in the team version the
@@ -6623,6 +6661,12 @@ func (s *Server) openOrCreateSessionAndRun(ctx context.Context, requestedSession
 		// (opaque not-found on mismatch).
 		if !sessionOwnershipOK(ctx, sess) {
 			return "", "", &store.ErrNotFound{Kind: "session", ID: requestedSessionID}
+		}
+		// A no-trace run opens its own session, and nothing joins one.
+		// Checked here as well as at the intakes, because this is where
+		// every run row of every path is created.
+		if identity.Retention == store.RetentionNone || sess.Retention == store.RetentionNone {
+			return "", "", errNoTraceSession
 		}
 	} else {
 		sess, err = s.store.CreateSession(ctx, tenantID, agent, userID)
@@ -7825,6 +7869,10 @@ func (s *Server) prepareSubRunValues(ctx context.Context, name string, src nameS
 	subCompaction := config.MergeCompaction(def.Compaction, tools.CompactionPolicy(ctx))
 	// A parent's per-spawn override is an override like a caller's: a child
 	// that runs on its definition only refuses it.
+	subRetention := s.resolveRetention(ctx, name, "")
+	if err := admitNoTraceStart(subRetention, interactive, false, ""); err != nil {
+		return nil, fmt.Errorf("sub-agent %q: %w", name, err)
+	}
 	// Checked on the definition the child will run — after a def_id pin, so
 	// the pinned version's own lock is the one that decides.
 	var spawnSet []string
@@ -7907,7 +7955,10 @@ func (s *Server) prepareSubRunValues(ctx context.Context, name string, src nameS
 		OperatorKeyRestricted: parentIdentity.OperatorKeyRestricted,
 		// RFC BX P2b: a child INHERITS the parent's isolation confinement — it
 		// cannot escape by spawning. Persisted so a resumed sub-run keeps it.
-		Isolated:  parentIdentity.Isolated,
+		Isolated: parentIdentity.Isolated,
+		// A child of a no-trace run is no-trace, whatever its own agent says:
+		// the parent's content reaches it as its prompt.
+		Retention: subRetention,
 		RunConfig: subRunCfg.marshal(),
 		// A poll-mode child was handed to its parent under this id before
 		// its run existed; "" (every other sub-run) lets the store mint one.
@@ -8185,7 +8236,8 @@ func (s *Server) prepareSubRunValues(ctx context.Context, name string, src nameS
 		OperatorKeyRestricted: parentIdentity.OperatorKeyRestricted,
 		// RFC BX P2b: inherit the parent's isolation confinement (a child cannot
 		// escape by spawning). Read from ctx RunIdentity by the data tools.
-		Isolated: parentIdentity.Isolated,
+		Isolated:  parentIdentity.Isolated,
+		Retention: subRetention,
 	}
 	// Sub-emit records to the sub's transcript only — the parent's SSE
 	// stream is fwd=no-op so sub events don't bleed into the parent's
@@ -9197,6 +9249,10 @@ func (s *Server) compactRunWithSource(ctx context.Context, runID, source string)
 		return connector.CompactResult{}, &compactErr{status: http.StatusNotFound, msg: "no run for that run_id"}
 	}
 
+	if run.Retention == store.RetentionNone {
+		return connector.CompactResult{}, &compactErr{status: http.StatusConflict, code: "retention_none_unsupported",
+			msg: "the run is a no-trace run: there is no stored conversation to compact"}
+	}
 	// RFC DI D5: a draft has no conversation to compact until it starts.
 	if run.Status == store.RunConfigured {
 		return connector.CompactResult{}, &compactErr{status: http.StatusConflict, code: "run_not_configured",
@@ -9478,6 +9534,9 @@ func (s *Server) RecapSession(ctx context.Context, sessionID string) (string, er
 	sess, err := s.store.GetSession(ctx, sessionID)
 	if err != nil {
 		return "", errors.New("no chat for that session_id")
+	}
+	if sess.Retention == store.RetentionNone {
+		return "", errNoTraceSession
 	}
 	events, err := s.store.GetTranscript(ctx, sessionID)
 	if err != nil {
@@ -10117,6 +10176,13 @@ func (s *Server) finishRun(_ context.Context, runID string, res loop.RunResult, 
 	errMsg := ""
 	if runErr != nil {
 		errMsg = runErr.Error()
+		// A no-trace run's error is reduced to its class here, where the
+		// error is still in hand, so the row, the run-state bus and the
+		// run_end hooks below all get the class. The store filter would
+		// reduce the text too, but without the error it cannot classify it.
+		if s.runIsNoTrace(bg, runID) {
+			errMsg = noTraceErrorText(runErr)
+		}
 	}
 	usage := store.Usage{
 		InputTokens:         res.Usage.InputTokens,

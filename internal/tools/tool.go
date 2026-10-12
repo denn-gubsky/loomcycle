@@ -607,6 +607,12 @@ type RunIdentityValue struct {
 	// unstamped path fails OPEN — matching the OperatorKeyRestricted posture and
 	// keeping existing runs byte-identical until a substrate:user token is minted.
 	Isolated bool
+
+	// Retention is the run's retention mode: "" or "none" (its content is
+	// stored nowhere). A sub-agent of a "none" run is "none" too, and a tool
+	// that would store what the run says (asking a person a question) reads
+	// it here to refuse.
+	Retention string
 }
 
 // WithRunIdentity attaches the current run's identity to ctx. The
