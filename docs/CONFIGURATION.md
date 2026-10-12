@@ -1190,6 +1190,20 @@ Config knobs (full reference: `loomcycle context help operator-tokens` or the `C
 | `LOOMCYCLE_OPERATOR_KEY_RESTRICTION` | **RFC AX** deployment gate (default OFF). When `1`, a run whose principal lacks `providers:operator-key` may not use the operator's host provider key — resolution routes it only to providers the tenant can key itself (an RFC AR CredentialDef) and refuses `403 operator_key_restricted` if none; the LLM-gateway + embeddings shims refuse a restricted principal outright. OFF ⇒ byte-identical for every existing token. |
 | `LOOMCYCLE_PUBLIC_CONFIG` | Deployment gate (default OFF). When `1`, `GET /v1/config` may be read with **no bearer**, returning a narrowed public view — for a hosted instance whose landing page shows which providers and models are live. OFF ⇒ the endpoint requires auth like every other `/v1` read, so upgrading changes nothing. A presented-but-**invalid** bearer still `401`s rather than downgrading to the public view. See [§ GET /v1/config](#get-v1config). |
 
+Routes enforce a scope from a closed catalog; an under-scoped token gets `403` + `WWW-Authenticate: Bearer scope="…"`. The legacy `LOOMCYCLE_AUTH_TOKEN` is disabled only once an admin-scoped token exists (the no-lockout gate). The catalog:
+
+| Scope | Grants |
+|---|---|
+| `substrate:admin` | **Superuser** — satisfies every scope, incl. token minting, runtime admin (pause/resume/snapshot), and **cross-tenant** focus. ⚠️ **Never implicit.** A mint with no `scopes` used to default here; it is now refused, because that made a mistyped key hand out a full-power token — and minting one also disables the legacy `LOOMCYCLE_AUTH_TOKEN` login, so the accident could lock a deployment out of its own API. Ask for it by name. |
+| `substrate:tenant` | **Tenant operator (RFC AF/AG)** — FULL power WITHIN the token's own tenant: runs, channels, authoring all 8 substrate Def families (incl. `_mcpserverdef`, the dynamic-MCP-ingestion surface), registering tool-use hooks, and opening a **tenant-confined** loomcycle-as-MCP-server session (`/v1/_mcp`, RFC AG) — but NOT the operator plane (no minting, no runtime admin, no cross-tenant access). Lets a self-provisioning tenant author its own surface without admin. |
+| `runs:create` / `runs:read` | Create/continue runs · read runs, agents, sessions. |
+| `channel:publish` / `channel:read` | Publish/ack · subscribe/peek on the per-user + system channel surface. |
+| `providers:operator-key` | **RFC AX** — permits a run to fall back to the operator's HOST provider key. **Tenant-implied** (`substrate:tenant` and `substrate:admin` already have it), and **inert unless** `LOOMCYCLE_OPERATOR_KEY_RESTRICTION=1`. To make a tenant pay its own way: set the gate, mint that tenant's principals with granular scopes that OMIT this one (e.g. `runs:create,runs:read`), and give the tenant its own key (an RFC AR CredentialDef). |
+
+`substrate:tenant` satisfies the within-tenant scopes (`runs:*`, `channel:*`, and the def/hook gate) but never `substrate:admin` — so a tenant operator passes the def + hook routes yet is refused minting/runtime-admin. Mint one with `--scopes substrate:tenant`. Confinement is automatic: a non-admin principal's def writes are stamped with its authoritative tenant, cross-tenant reads return an opaque `404`, and a tenant-registered hook fires only on that tenant's runs.
+
+On the **loomcycle-as-MCP-server transport** (`/v1/_mcp`, RFC AG) a `substrate:tenant` bearer may now OPEN a session — but the route scope decides only that. Inside the session a per-tool gate still withholds the admin-only meta-tools (token minting, runtime admin, snapshot capture/restore, cross-scope channel listing): they are hidden from the tenant's `tools/list` and refused on `tools/call`. The tools a tenant *can* call (def authoring, run lifecycle, memory/channel/path/document, hooks) are tenant-confined exactly like their HTTP twins. `substrate:admin` sees + may call the full meta-tool set. The thin client (`loomcycle mcp --upstream`) forwards the caller's bearer verbatim, so a tenant bearer there drives a tenant-confined session — see `docs/MCP_SERVER.md`.
+
 ### Token lifetime
 
 **Since v1.112.0.** A token can be given a fixed lifetime when it is minted. It stops authenticating when the lifetime runs out, with the same `401` a retired token gets. This is for a token that lives somewhere you do not control, such as a developer's machine: a copy that leaks stops working on its own.
@@ -1224,22 +1238,6 @@ Rules worth knowing:
 - **Mints and revocations of per-user tokens are written to the audit log** when `LOOMCYCLE_AUDIT_LOG_PATH` is set, as operator-token changes already are.
 
 Token listings (`GET /v1/_users/{subject}/tokens`, `operator-token show` / `list`) show `expires_at`, and `active` is false once a token has expired.
-
-### Scopes
-
-Routes enforce a scope from a closed catalog; an under-scoped token gets `403` + `WWW-Authenticate: Bearer scope="…"`. The legacy `LOOMCYCLE_AUTH_TOKEN` is disabled only once an admin-scoped token exists (the no-lockout gate). The catalog:
-
-| Scope | Grants |
-|---|---|
-| `substrate:admin` | **Superuser** — satisfies every scope, incl. token minting, runtime admin (pause/resume/snapshot), and **cross-tenant** focus. ⚠️ **Never implicit.** A mint with no `scopes` used to default here; it is now refused, because that made a mistyped key hand out a full-power token — and minting one also disables the legacy `LOOMCYCLE_AUTH_TOKEN` login, so the accident could lock a deployment out of its own API. Ask for it by name. |
-| `substrate:tenant` | **Tenant operator (RFC AF/AG)** — FULL power WITHIN the token's own tenant: runs, channels, authoring all 8 substrate Def families (incl. `_mcpserverdef`, the dynamic-MCP-ingestion surface), registering tool-use hooks, and opening a **tenant-confined** loomcycle-as-MCP-server session (`/v1/_mcp`, RFC AG) — but NOT the operator plane (no minting, no runtime admin, no cross-tenant access). Lets a self-provisioning tenant author its own surface without admin. |
-| `runs:create` / `runs:read` | Create/continue runs · read runs, agents, sessions. |
-| `channel:publish` / `channel:read` | Publish/ack · subscribe/peek on the per-user + system channel surface. |
-| `providers:operator-key` | **RFC AX** — permits a run to fall back to the operator's HOST provider key. **Tenant-implied** (`substrate:tenant` and `substrate:admin` already have it), and **inert unless** `LOOMCYCLE_OPERATOR_KEY_RESTRICTION=1`. To make a tenant pay its own way: set the gate, mint that tenant's principals with granular scopes that OMIT this one (e.g. `runs:create,runs:read`), and give the tenant its own key (an RFC AR CredentialDef). |
-
-`substrate:tenant` satisfies the within-tenant scopes (`runs:*`, `channel:*`, and the def/hook gate) but never `substrate:admin` — so a tenant operator passes the def + hook routes yet is refused minting/runtime-admin. Mint one with `--scopes substrate:tenant`. Confinement is automatic: a non-admin principal's def writes are stamped with its authoritative tenant, cross-tenant reads return an opaque `404`, and a tenant-registered hook fires only on that tenant's runs.
-
-On the **loomcycle-as-MCP-server transport** (`/v1/_mcp`, RFC AG) a `substrate:tenant` bearer may now OPEN a session — but the route scope decides only that. Inside the session a per-tool gate still withholds the admin-only meta-tools (token minting, runtime admin, snapshot capture/restore, cross-scope channel listing): they are hidden from the tenant's `tools/list` and refused on `tools/call`. The tools a tenant *can* call (def authoring, run lifecycle, memory/channel/path/document, hooks) are tenant-confined exactly like their HTTP twins. `substrate:admin` sees + may call the full meta-tool set. The thin client (`loomcycle mcp --upstream`) forwards the caller's bearer verbatim, so a tenant bearer there drives a tenant-confined session — see `docs/MCP_SERVER.md`.
 
 ### Declared principals — static `(tenant, user)` logins (RFC AO)
 
