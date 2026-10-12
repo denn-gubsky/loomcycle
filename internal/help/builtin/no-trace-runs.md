@@ -66,3 +66,22 @@ Each of these needs the content stored, so each is refused with
 - A restart loses it: at boot it is failed with stop reason
   `not_resumable` and its idempotency key is released.
 - Its chat is deleted at its age and never exported.
+
+## Debugging one
+
+An operator can store the runs of one no-trace agent, in one tenant, for
+a limited time:
+
+- `PUT /v1/_retention/overrides` with `{"agent": "judge", "until":
+  "<RFC 3339 time>"}`, at most 24 hours ahead. `DELETE
+  /v1/_retention/overrides?agent=judge` ends it early; `GET` lists what
+  is in force.
+- It lifts a mode that came from the agent's definition or the run
+  request. It never lifts one a caller's token requires, and it does not
+  lift the mode a sub-agent inherits from a no-trace parent.
+- An admin sets one for any tenant, a tenant operator for its own. A
+  member may not.
+- Setting and clearing are audited, and the console shows a banner while
+  one is in force.
+- Runs made in the window are ordinary stored runs; delete their run
+  trees when the debugging is done.

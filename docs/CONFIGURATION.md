@@ -1473,6 +1473,31 @@ Rules worth knowing:
 - **The console shows the run** with its metadata and the line "content not retained".
 - **To remove what an ordinary run did store, delete its run tree** (see [Deleting a run tree](#deleting-a-run-tree)).
 
+#### Debugging a no-trace agent: a timed override
+
+An agent whose runs store nothing cannot be debugged from its transcript. An operator can switch storage back on for **one agent, in one tenant, for a limited time**:
+
+```sh
+# Store the runs of `judge` for the next two hours.
+curl -X PUT "$LOOMCYCLE/v1/_retention/overrides" -H "Authorization: Bearer $TOKEN" \
+  -d '{"agent": "judge", "until": "2026-10-12T18:00:00Z"}'
+
+curl "$LOOMCYCLE/v1/_retention/overrides" -H "Authorization: Bearer $TOKEN"      # what is in force
+curl -X DELETE "$LOOMCYCLE/v1/_retention/overrides?agent=judge" -H "Authorization: Bearer $TOKEN"   # end it early
+```
+
+Runs of that agent started inside the window are ordinary stored runs. When the debugging is done, remove them with a [run-tree delete](#deleting-a-run-tree).
+
+Rules worth knowing:
+
+- **`until` is at most 24 hours ahead.** Setting one for an agent replaces the last. One that has run out is the same as none.
+- **It lifts a mode that came from the agent's definition or from the run request.** It never lifts one that a caller's **token** requires: a developer's own runs stay unstored whatever an operator switches on.
+- **It does not lift a child's inherited mode.** A sub-agent of a no-trace run stays no-trace; to store a whole tree, set the override on the parent agent (and on each child whose own definition says `none`).
+- **Who may set one:** an admin, for any tenant (`"tenant": "…"` in the body, `?tenant=` on the delete and the list); a tenant operator, for its own tenant only. A tenant member, an isolated user and a token limited to certain agents may not set, clear or list them.
+- **It is audited.** Setting and clearing each write a record (`retention_override_set`, `retention_override_clear`) to `LOOMCYCLE_AUDIT_LOG_PATH` with who, the agent, the tenant and until when. With an audit log configured, an override whose record cannot be written is not set. Both are also written to the process log.
+- **The console shows a banner** for as long as one is in force, and `GET /v1/_retention` lists them as `no_trace_overrides`.
+- **It is not carried by a snapshot**, and it is checked when a run starts: a run already going keeps the mode it started with.
+
 ### Declared principals — static `(tenant, user)` logins (RFC AO)
 
 Beyond the legacy `LOOMCYCLE_AUTH_TOKEN` (one identity, subject `default`) and runtime-minted `OperatorTokenDef` tokens, you can **declare** stable service identities in the YAML:
