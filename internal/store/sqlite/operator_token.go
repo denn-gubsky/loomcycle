@@ -19,7 +19,7 @@ import (
 
 const operatorTokenDefSelect = `SELECT def_id, name, tenant_id, subject, token_hash,
 	allowed_scopes, created_at, created_by_agent_id, created_by_run_id,
-	rotated_from, retired_at, expires_at FROM operator_token_defs`
+	rotated_from, retired_at, expires_at, restrictions FROM operator_token_defs`
 
 func scanOperatorTokenDef(sc interface{ Scan(...any) error }) (store.OperatorTokenDefRow, error) {
 	var (
@@ -31,9 +31,10 @@ func scanOperatorTokenDef(sc interface{ Scan(...any) error }) (store.OperatorTok
 		rotated    sql.NullString
 		retiredNs  sql.NullInt64
 		expiresNs  sql.NullInt64
+		restrict   sql.NullString
 	)
 	if err := sc.Scan(&row.DefID, &row.Name, &row.TenantID, &row.Subject, &row.TokenHash,
-		&scopesJSON, &createdNs, &agent, &runID, &rotated, &retiredNs, &expiresNs); err != nil {
+		&scopesJSON, &createdNs, &agent, &runID, &rotated, &retiredNs, &expiresNs, &restrict); err != nil {
 		return store.OperatorTokenDefRow{}, err
 	}
 	if err := json.Unmarshal([]byte(scopesJSON), &row.AllowedScopes); err != nil {
@@ -49,6 +50,7 @@ func scanOperatorTokenDef(sc interface{ Scan(...any) error }) (store.OperatorTok
 	if expiresNs.Valid {
 		row.ExpiresAt = time.Unix(0, expiresNs.Int64)
 	}
+	row.RestrictionsJSON = restrict.String
 	return row, nil
 }
 
@@ -81,11 +83,11 @@ func (s *Store) OperatorTokenDefCreate(ctx context.Context, row store.OperatorTo
 	if _, err := conn.ExecContext(ctx,
 		`INSERT INTO operator_token_defs (
 			def_id, name, tenant_id, subject, token_hash, allowed_scopes,
-			created_at, created_by_agent_id, created_by_run_id, rotated_from, retired_at, expires_at
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			created_at, created_by_agent_id, created_by_run_id, rotated_from, retired_at, expires_at, restrictions
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		row.DefID, row.Name, row.TenantID, row.Subject, row.TokenHash, string(scopesJSON),
 		row.CreatedAt.UnixNano(), nilIfEmpty(row.CreatedByAgentID), nilIfEmpty(row.CreatedByRunID),
-		nilIfEmpty(row.RotatedFrom), retired, expires,
+		nilIfEmpty(row.RotatedFrom), retired, expires, nilIfEmpty(row.RestrictionsJSON),
 	); err != nil {
 		return store.OperatorTokenDefRow{}, fmt.Errorf("operator_token_def insert: %w", err)
 	}

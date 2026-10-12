@@ -5845,6 +5845,12 @@ type OperatorTokenDefRow struct {
 	// it is never moved afterwards: a rotation copies it, so rotating cannot
 	// extend a token's life.
 	ExpiresAt time.Time `json:"expires_at,omitempty"`
+	// RestrictionsJSON is the token's restrictions record (auth.Restrictions)
+	// as JSON, "" for none. The store keeps it opaque: what a restriction
+	// means is the auth layer's business, and this package imports nothing of
+	// the runtime. Like the expiry it is fixed at mint and copied by a
+	// rotation.
+	RestrictionsJSON string `json:"-"`
 }
 
 // ValidAt reports whether the row authenticates at t: not retired (or still
