@@ -225,7 +225,7 @@ func (s *Server) serveLLMChatJSON(
 	logGatewayRequest(requestID, providerID, modelID, req.Tier, req.UserID,
 		resp.Usage.InputTokens, resp.Usage.OutputTokens, resp.StopReason,
 		time.Since(startedAt), nil)
-	s.recordGatewayUsage(r.Context(), req.UserID, providerID, modelID, resp.Usage.InputTokens, resp.Usage.OutputTokens)
+	s.recordGatewayUsage(r.Context(), req.UserID, providerID, modelID, resp.Usage.providerUsage())
 	writeJSONOK(w, resp)
 }
 
@@ -358,7 +358,7 @@ func (s *Server) serveLLMChatStream(
 	logGatewayRequest(requestID, providerID, modelID, req.Tier, req.UserID,
 		usage.InputTokens, usage.OutputTokens, stopReason,
 		time.Since(startedAt), runErr)
-	s.recordGatewayUsage(r.Context(), req.UserID, providerID, modelID, usage.InputTokens, usage.OutputTokens)
+	s.recordGatewayUsage(r.Context(), req.UserID, providerID, modelID, usage.providerUsage())
 }
 
 // resolveGatewayRequest applies the RFC §"Provider routing" precedence:
@@ -426,16 +426,30 @@ func (s *Server) admitGatewayBudget(w http.ResponseWriter, r *http.Request, wire
 //
 // It belongs to no run, so it is filed under the caller alone (tenant and
 // subject), as an off-run decision is.
-func (s *Server) recordGatewayUsage(ctx context.Context, wireUser, providerID, modelID string, inputTokens, outputTokens int) {
-	if inputTokens == 0 && outputTokens == 0 {
+//
+// u is the provider's own report, whole: the cache-creation and cache-read
+// counts are tokens the budget counts for a run, so they count here. Passing
+// only the input and output counts would let a caller with a large cached
+// prompt spend most of its tokens unseen.
+func (s *Server) recordGatewayUsage(ctx context.Context, wireUser, providerID, modelID string, u providers.Usage) {
+	if u.InputTokens+u.OutputTokens+u.CacheCreationTokens+u.CacheReadTokens == 0 {
 		return
 	}
+	// The provider and model the call was dispatched to, not whatever the
+	// report names: a usage row is priced by them.
+	u.Provider, u.Model = providerID, modelID
 	rid := tools.RunIdentityValue{TenantID: tenantFromCtx(ctx), UserID: auth.SubjectForFairness(ctx, wireUser)}
 	// Recorded on a ctx that outlives the request: the tokens were spent
 	// whether or not the caller is still there to hear the answer.
-	_ = s.recordCallUsage(context.WithoutCancel(ctx), "", rid, "", 0, &providers.Usage{
-		Provider: providerID, Model: modelID, InputTokens: inputTokens, OutputTokens: outputTokens,
-	})
+	_ = s.recordCallUsage(context.WithoutCancel(ctx), "", rid, "", 0, &u)
+}
+
+// providerUsage turns a gateway response's usage back into the provider's shape.
+func (u llmUsage) providerUsage() providers.Usage {
+	return providers.Usage{
+		InputTokens: u.InputTokens, OutputTokens: u.OutputTokens,
+		CacheCreationTokens: u.CacheCreationInputTokens, CacheReadTokens: u.CacheReadInputTokens,
+	}
 }
 
 // logGatewayRequest emits the always-on structured audit line. The

@@ -233,7 +233,7 @@ func (s *Server) serveOpenAICompatJSON(
 	logGatewayRequest(d.requestID, d.providerID, d.modelID, req.Tier, req.UserID,
 		resp.Usage.InputTokens, resp.Usage.OutputTokens, resp.StopReason,
 		time.Since(d.startedAt), nil)
-	s.recordGatewayUsage(r.Context(), req.UserID, d.providerID, d.modelID, resp.Usage.InputTokens, resp.Usage.OutputTokens)
+	s.recordGatewayUsage(r.Context(), req.UserID, d.providerID, d.modelID, resp.Usage.providerUsage())
 	writeJSONOK(w, llmResponseToOpenAI(&resp))
 }
 
@@ -358,6 +358,7 @@ func (s *Server) serveOpenAICompatStream(
 	nextToolIndex := 0
 	var (
 		usage      openaiUsage
+		provUsage  providers.Usage
 		stopReason string
 		runErr     error
 	)
@@ -387,6 +388,9 @@ func (s *Server) serveOpenAICompatStream(
 			nextToolIndex++
 		case providers.EventUsage:
 			if ev.Usage != nil {
+				// The whole report, for the ledger: the OpenAI wire shape
+				// below has no place for the cache counts.
+				provUsage = *ev.Usage
 				usage = openaiUsage{
 					PromptTokens:     ev.Usage.InputTokens,
 					CompletionTokens: ev.Usage.OutputTokens,
@@ -436,5 +440,5 @@ func (s *Server) serveOpenAICompatStream(
 	logGatewayRequest(d.requestID, d.providerID, d.modelID, req.Tier, req.UserID,
 		usage.PromptTokens, usage.CompletionTokens, stopReason,
 		time.Since(d.startedAt), runErr)
-	s.recordGatewayUsage(r.Context(), req.UserID, d.providerID, d.modelID, usage.PromptTokens, usage.CompletionTokens)
+	s.recordGatewayUsage(r.Context(), req.UserID, d.providerID, d.modelID, provUsage)
 }

@@ -70,12 +70,12 @@ func TestHasScope_LLMGateway(t *testing.T) {
 
 // gatewayBudgetServer is a server whose tenant "acme" has a hard token limit,
 // with a member token of that tenant and one scripted provider reply that
-// reports 10 input and 2 output tokens.
+// reports 20 tokens: 10 input, 2 output, 3 written to the cache and 5 read from it.
 func gatewayBudgetServer(t *testing.T, hard int64, used int) (*httptest.Server, *Server) {
 	t.Helper()
 	prov := &scriptedProvider{defaultS: []providers.Event{
 		{Type: providers.EventText, Text: "hi"},
-		{Type: providers.EventUsage, Usage: &providers.Usage{InputTokens: 10, OutputTokens: 2}, StopReason: "end_turn"},
+		{Type: providers.EventUsage, Usage: &providers.Usage{InputTokens: 10, OutputTokens: 2, CacheCreationTokens: 3, CacheReadTokens: 5}, StopReason: "end_turn"},
 		{Type: providers.EventDone, StopReason: "end_turn"},
 	}}
 	cfg := makeBaseConfig()
@@ -138,7 +138,7 @@ func TestEmbeddings_RefusesACallerAtItsHardTokenLimit(t *testing.T) {
 // usage report and the cheapest way to spend unaccounted tokens was to skip
 // the agent.
 func TestGateway_CallsAreRecordedAndCountAgainstTheBudget(t *testing.T) {
-	ts, srv := gatewayBudgetServer(t, 1020, 1000)
+	ts, srv := gatewayBudgetServer(t, 1030, 1000)
 	ctx := context.Background()
 	total := func() int64 {
 		rows, err := srv.store.UsageReport(ctx, store.UsageQuery{TenantID: "acme"})
@@ -147,21 +147,21 @@ func TestGateway_CallsAreRecordedAndCountAgainstTheBudget(t *testing.T) {
 		}
 		var n int64
 		for _, r := range rows {
-			n += r.InputTokens + r.OutputTokens
+			n += r.InputTokens + r.OutputTokens + r.CacheCreationTokens + r.CacheReadTokens
 		}
 		return n
 	}
 	before := total()
 
-	// Under the ceiling (1000 of 1020): the two calls are served, 12 tokens
-	// each, one per wire format.
+	// Under the ceiling (1000 of 1030): the two calls are served, 20 tokens
+	// each — the cache counts included — one per wire format.
 	for path, req := range gatewayBodies {
 		if code, body := bearerCall(t, ts, "tok-alice", "POST", path, req); code != http.StatusOK {
 			t.Fatalf("%s under the ceiling: status %d: %s", path, code, body)
 		}
 	}
-	if got := total() - before; got != 24 {
-		t.Errorf("the usage report grew by %d tokens after two gateway calls of 12, want 24", got)
+	if got := total() - before; got != 40 {
+		t.Errorf("the usage report grew by %d tokens after two gateway calls of 20, want 40 (cache tokens count)", got)
 	}
 }
 
@@ -175,7 +175,7 @@ func TestGateway_StreamedCallsAreRecordedToo(t *testing.T) {
 		}
 		var n int64
 		for _, r := range agg {
-			n += r.InputTokens + r.OutputTokens
+			n += r.InputTokens + r.OutputTokens + r.CacheCreationTokens + r.CacheReadTokens
 		}
 		return n
 	}
@@ -185,21 +185,21 @@ func TestGateway_StreamedCallsAreRecordedToo(t *testing.T) {
 			t.Fatalf("%s streamed: status %d: %s", path, code, body)
 		}
 	}
-	if got := rows() - before; got != 24 {
-		t.Errorf("the usage report grew by %d tokens after two streamed calls of 12, want 24", got)
+	if got := rows() - before; got != 40 {
+		t.Errorf("the usage report grew by %d tokens after two streamed calls of 20, want 40 (cache tokens count)", got)
 	}
 }
 
 // The calls themselves move the budget: once they cross the ceiling, the next
 // one is refused.
 func TestGateway_ACallThatCrossesTheCeilingRefusesTheNext(t *testing.T) {
-	ts, _ := gatewayBudgetServer(t, 1020, 1000)
+	ts, _ := gatewayBudgetServer(t, 1030, 1000)
 	for path, req := range gatewayBodies {
 		if code, body := bearerCall(t, ts, "tok-alice", "POST", path, req); code != http.StatusOK {
 			t.Fatalf("%s under the ceiling: status %d: %s", path, code, body)
 		}
 	}
-	// 1024 of 1020 now: the calls themselves moved the budget, so the next
+	// 1040 of 1030 now: the calls themselves moved the budget, so the next
 	// one is refused.
 	if code, body := bearerCall(t, ts, "tok-alice", "POST", "/v1/_llm/chat", gatewayBodies["/v1/_llm/chat"]); code != http.StatusTooManyRequests {
 		t.Errorf("a third call, past the ceiling the first two crossed: status %d, want 429: %s", code, body)
