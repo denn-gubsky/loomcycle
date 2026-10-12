@@ -1352,6 +1352,31 @@ Rules worth knowing:
 - **The lock is fixed at mint** and carried over by a rotation.
 - It combines with an agent allowlist: `{"agents": ["score"], "overrides": "none"}` is a token that can start one agent, exactly as defined.
 
+### Locking an agent's per-run settings
+
+**Since v1.112.0.** A token's lock protects one credential. An agent whose settings are meant to be fixed — a judge whose model and effort are part of what it measures — can still be re-tuned by every other caller. `allow_overrides: false` on the agent's definition closes that: every run of the agent uses the definition as written.
+
+```yaml
+agents:
+  judge:
+    tier: middle
+    effort: high
+    allow_overrides: false
+```
+
+It is also a key in a markdown agent's frontmatter and in the `AgentDef` create and fork overlay (`"allow_overrides": false`).
+
+Rules worth knowing:
+
+- **It refuses the same settings a token lock does** (the table above), and for every caller: an admin, the legacy token, a schedule, a webhook and a parent agent included. The request gets `403 override_not_allowed` naming the field.
+- **It applies at the same places:** a run start, `runs:batch`, a continuation, a configured run, a retune, and a parent's per-spawn `compaction` override in the `Agent` tool.
+- **Not locked:** the fields that only narrow, bound, name or deliver a run, as for a token.
+- **Compaction and context settings a parent passes down by inheritance still reach the agent.** Only a parent's explicit per-spawn override is refused. Give the agent its own `compaction:` block if it must not depend on its parent's.
+- **A schedule or webhook definition that sets an override for this agent fails when it fires**, not when it is saved.
+- **To change the agent, change its definition.** A new version (a config change, or an `AgentDef` fork) is the way to re-tune it; a fork that does not send `allow_overrides` keeps its parent's, and one that sends `true` opens it. Whoever may author the definition owns the lock.
+- **It is not part of the definition's content hash**, so adding or removing it does not change `content_sha256`. A create that changes only the lock still writes a new version.
+- Unset or `true` leaves the overrides to the caller, as before.
+
 ### Limiting how often a token starts runs
 
 **Since v1.112.0.** A token can carry a rate for run starts. A concurrency cap bounds how many runs a caller has going at once; a rate bounds how often it starts one. One run at a time still allows thousands of short runs an hour, and each start costs the server an authentication, a session row and a run row even when the run then does nothing.

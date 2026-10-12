@@ -183,6 +183,8 @@ names the ones the token may still set.
   `allowed_hosts`, `max_wall_seconds`, `idempotency_key`, `metadata`)
   are not locked.
 - The lock is fixed at mint and carried over by `rotate`.
+- To lock an agent for every caller instead, an operator included, set
+  `allow_overrides: false` on the agent's definition.
 
 ## Limiting how often a token starts runs
 
