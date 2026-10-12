@@ -4,7 +4,6 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
-	"errors"
 	"sort"
 
 	"github.com/denn-gubsky/loomcycle/internal/store"
@@ -16,65 +15,63 @@ import (
 const inJSON = `(SELECT value FROM json_each(?))`
 
 // DeleteRunSet: see the store.Store interface for the contract.
+//
+// BEGIN IMMEDIATE, on a pinned connection (the MemoryIncrement pattern: the
+// driver has no per-transaction way to ask for it). The checks below decide
+// whether to delete, so they must read the rows the delete will remove and no
+// writer may get between the two. A deferred transaction would read under a
+// shared lock and take the write lock only at the first DELETE; IMMEDIATE
+// holds it from the first statement, and SQLite has one writer.
 func (s *Store) DeleteRunSet(ctx context.Context, runIDs, sessionIDs []string) (store.RunSetDeletion, error) {
 	var out store.RunSetDeletion
 	runIDs, sessionIDs = store.DedupIDs(runIDs), store.DedupIDs(sessionIDs)
 	if len(runIDs) == 0 && len(sessionIDs) == 0 {
 		return out, nil
 	}
-	runs, err := json.Marshal(runIDs)
+	runsJSON, err := json.Marshal(runIDs)
 	if err != nil {
 		return out, err
 	}
-	tx, err := s.db.BeginTx(ctx, nil)
+	runs := string(runsJSON)
+
+	conn, err := s.db.Conn(ctx)
 	if err != nil {
 		return out, err
 	}
-	defer func() { _ = tx.Rollback() }()
-
-	// Both refusals read inside the transaction that deletes, so a run that
-	// went live, or a child that was started, after the caller walked the
-	// tree cannot be removed from under itself.
-	deletable := store.DeletableRunStatuses()
-	args := []any{string(runs)}
-	for _, st := range deletable {
-		args = append(args, string(st))
-	}
-	var live string
-	err = tx.QueryRowContext(ctx,
-		`SELECT id FROM runs WHERE id IN `+inJSON+`
-		   AND (status NOT IN (`+placeholders(len(deletable))+`)
-		        OR COALESCE(pause_state, 'running') IN ('paused', 'pausing'))
-		 ORDER BY id LIMIT 1`, args...).Scan(&live)
-	if err == nil {
-		return out, &store.ErrRunLive{RunID: live}
-	}
-	if !errors.Is(err, sql.ErrNoRows) {
+	defer conn.Close()
+	if _, err := conn.ExecContext(ctx, "BEGIN IMMEDIATE"); err != nil {
 		return out, err
 	}
-	err = tx.QueryRowContext(ctx,
-		`SELECT id FROM runs WHERE parent_run_id IN `+inJSON+` AND id NOT IN `+inJSON+`
-		 ORDER BY id LIMIT 1`, string(runs), string(runs)).Scan(&live)
-	if err == nil {
-		return out, &store.ErrRunLive{RunID: live, Outside: true}
-	}
-	if !errors.Is(err, sql.ErrNoRows) {
-		return out, err
-	}
+	committed := false
+	defer func() {
+		if !committed {
+			_, _ = conn.ExecContext(context.Background(), "ROLLBACK")
+		}
+	}()
 
-	// The sessions these runs belong to, read before the runs go.
+	// Every named run's state, and the session it belongs to. The columns are
+	// read as nullable so a NULL reaches RunDeletable as "" and is refused,
+	// rather than being coalesced into a state that passes.
 	candidates := append([]string(nil), sessionIDs...)
-	rows, err := tx.QueryContext(ctx, `SELECT DISTINCT session_id FROM runs WHERE id IN `+inJSON, string(runs))
+	rows, err := conn.QueryContext(ctx,
+		`SELECT id, session_id, status, pause_state FROM runs WHERE id IN `+inJSON+` ORDER BY id`, runs)
 	if err != nil {
 		return out, err
 	}
+	live := ""
 	for rows.Next() {
-		var id string
-		if err := rows.Scan(&id); err != nil {
+		var (
+			id, sessionID      string
+			status, pauseState sql.NullString
+		)
+		if err := rows.Scan(&id, &sessionID, &status, &pauseState); err != nil {
 			rows.Close()
 			return out, err
 		}
-		candidates = append(candidates, id)
+		if live == "" && !store.RunDeletable(status.String, pauseState.String) {
+			live = id
+		}
+		candidates = append(candidates, sessionID)
 	}
 	if err := rows.Close(); err != nil {
 		return out, err
@@ -82,9 +79,23 @@ func (s *Store) DeleteRunSet(ctx context.Context, runIDs, sessionIDs []string) (
 	if err := rows.Err(); err != nil {
 		return out, err
 	}
+	if live != "" {
+		return out, &store.ErrRunLive{RunID: live}
+	}
+	// The set must still be a whole tree: a child started under it after the
+	// caller walked it would otherwise be left with a parent that is gone.
+	var outside sql.NullString
+	if err := conn.QueryRowContext(ctx,
+		`SELECT MIN(id) FROM runs WHERE parent_run_id IN `+inJSON+` AND id NOT IN `+inJSON,
+		runs, runs).Scan(&outside); err != nil {
+		return out, err
+	}
+	if outside.Valid {
+		return out, &store.ErrRunLive{RunID: outside.String, Outside: true}
+	}
 
 	del := func(dst *int, query string, arg string) error {
-		res, err := tx.ExecContext(ctx, query, arg)
+		res, err := conn.ExecContext(ctx, query, arg)
 		if err != nil {
 			return err
 		}
@@ -104,20 +115,22 @@ func (s *Store) DeleteRunSet(ctx context.Context, runIDs, sessionIDs []string) (
 		{&out.MemoryPending, `DELETE FROM memory_pending WHERE source_run_id IN ` + inJSON},
 		{&out.Runs, `DELETE FROM runs WHERE id IN ` + inJSON},
 	} {
-		if err := del(d.dst, d.query, string(runs)); err != nil {
+		if err := del(d.dst, d.query, runs); err != nil {
 			return out, err
 		}
 	}
 
 	// A session goes only when no run of it is left: a continued session
-	// holds several runs, and the ones outside this set keep it.
-	cands, err := json.Marshal(store.DedupIDs(candidates))
+	// holds several runs, and the ones outside this set keep it. Decided here,
+	// from the rows as they are after the delete above and under the same
+	// write lock, so a continuation cannot add a run in between.
+	candsJSON, err := json.Marshal(store.DedupIDs(candidates))
 	if err != nil {
 		return out, err
 	}
-	rows, err = tx.QueryContext(ctx,
+	rows, err = conn.QueryContext(ctx,
 		`SELECT id FROM sessions WHERE id IN `+inJSON+`
-		   AND NOT EXISTS (SELECT 1 FROM runs r WHERE r.session_id = sessions.id)`, string(cands))
+		   AND NOT EXISTS (SELECT 1 FROM runs r WHERE r.session_id = sessions.id)`, string(candsJSON))
 	if err != nil {
 		return out, err
 	}
@@ -137,7 +150,7 @@ func (s *Store) DeleteRunSet(ctx context.Context, runIDs, sessionIDs []string) (
 	}
 	sort.Strings(out.RemovedSessionIDs)
 	if len(out.RemovedSessionIDs) > 0 {
-		removed, err := json.Marshal(out.RemovedSessionIDs)
+		removedJSON, err := json.Marshal(out.RemovedSessionIDs)
 		if err != nil {
 			return out, err
 		}
@@ -150,10 +163,14 @@ func (s *Store) DeleteRunSet(ctx context.Context, runIDs, sessionIDs []string) (
 			{&out.SessionEmbeddings, `DELETE FROM session_embeddings WHERE session_id IN ` + inJSON},
 			{&out.Sessions, `DELETE FROM sessions WHERE id IN ` + inJSON},
 		} {
-			if err := del(d.dst, d.query, string(removed)); err != nil {
+			if err := del(d.dst, d.query, string(removedJSON)); err != nil {
 				return out, err
 			}
 		}
 	}
-	return out, tx.Commit()
+	if _, err := conn.ExecContext(ctx, "COMMIT"); err != nil {
+		return out, err
+	}
+	committed = true
+	return out, nil
 }

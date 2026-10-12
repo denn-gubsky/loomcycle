@@ -6329,10 +6329,19 @@ type RunSetDeletion struct {
 	RemovedSessionIDs []string
 }
 
-// DeletableRunStatuses are the statuses DeleteRunSet accepts: a finished run,
-// or a draft that never started. Everything else is live.
-func DeletableRunStatuses() []RunStatus {
-	return append([]RunStatus{RunConfigured}, TerminalRunStatuses...)
+// RunDeletable reports whether DeleteRunSet may remove a run in this stored
+// state: it is finished, or a draft that never started, AND its pause state
+// is the resting one. Both backends decide with this one function, on the
+// columns as read under the delete's own lock.
+//
+// It names what is deletable and refuses the rest, so it fails closed: a
+// status this build does not know, a pause state it does not know, and a NULL
+// in either column (passed as "") all read as live.
+func RunDeletable(status, pauseState string) bool {
+	if pauseState != PauseStateRunning {
+		return false
+	}
+	return RunStatus(status) == RunConfigured || IsTerminalRunStatus(RunStatus(status))
 }
 
 // DedupIDs returns ids without empties and repeats, order kept.
