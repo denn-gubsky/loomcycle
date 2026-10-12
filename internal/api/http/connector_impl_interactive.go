@@ -52,6 +52,12 @@ func (s *Server) SteerRun(ctx context.Context, runID, text, source string) (bool
 	} else if _, err := s.remoteRunForSteer(ctx, runID); err != nil {
 		return false, connector.ErrRunNotInFlight
 	}
+	// A message to a run is stored as its input and, in a cluster, carried to
+	// the replica that owns the run in a notification. A no-trace run takes
+	// what it was started with and nothing after.
+	if s.runIsNoTrace(ctx, runID) {
+		return false, &noTraceRefusal{Status: 409, Msg: "a no-trace run cannot be sent a message: it would be stored and relayed"}
+	}
 	delivered, err := s.steerReg.Push(ctx, runID, steer.Message{
 		Text: text, Source: source, EnqueuedAt: time.Now(),
 	})

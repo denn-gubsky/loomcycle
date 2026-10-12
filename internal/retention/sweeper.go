@@ -860,7 +860,21 @@ func (s *Sweeper) pruneSessionBatch(ctx context.Context, cutoff time.Time, match
 		if ctx.Err() != nil {
 			break
 		}
-		if export && s.chatsMode == "export+prune" {
+		doExport := export && s.chatsMode == "export+prune"
+		if doExport {
+			// A no-trace chat is deleted at its age and never exported: the
+			// file would hold only markers, but "not retained" means no copy
+			// is made of it at all. A session that cannot be read is left for
+			// the next tick — deleting it unexported could lose an ordinary
+			// chat, and exporting it could copy a no-trace one.
+			sess, err := s.store.GetSession(ctx, sid)
+			if err != nil {
+				s.logf("retention: read chat session %s failed, skipping: %v", sid, err)
+				continue
+			}
+			doExport = sess.Retention != store.RetentionNone
+		}
+		if doExport {
 			if err := s.exportSession(ctx, sid); err != nil {
 				// Never delete a session we failed to export — retry next tick.
 				s.logf("retention: export chat session %s failed, skipping delete: %v", sid, err)

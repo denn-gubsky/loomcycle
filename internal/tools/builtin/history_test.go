@@ -1,6 +1,7 @@
 package builtin
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -887,4 +888,42 @@ func indexOf(ids []string, want string) int {
 		}
 	}
 	return -1
+}
+
+// A no-trace chat holds markers, not a conversation: nothing may put words
+// on it, and there is nothing in it to resume from. Reading it is allowed.
+func TestHistory_ANoTraceChatTakesNoTitleNoteOrSummary(t *testing.T) {
+	h, s := historyFixture(t)
+	ctx := context.Background()
+	id := seedChat(t, s, "acme", "helper", "alice")
+	if _, err := s.CreateRun(ctx, id, store.RunIdentity{AgentID: "a_quiet", Retention: store.RetentionNone}); err != nil {
+		t.Fatal(err)
+	}
+	plain := seedChat(t, s, "acme", "helper", "alice")
+	caller := histCtx([]string{"self"}, "helper", "alice", "acme")
+
+	for _, req := range []string{
+		fmt.Sprintf(`{"op":"rename","scope":"self","session_id":%q,"title":"a secret title"}`, id),
+		fmt.Sprintf(`{"op":"annotate","scope":"self","session_id":%q,"description":"a secret note"}`, id),
+		fmt.Sprintf(`{"op":"recap","scope":"self","session_id":%q}`, id),
+		fmt.Sprintf(`{"op":"resume","scope":"self","session_id":%q}`, id),
+	} {
+		res, err := h.Execute(caller, json.RawMessage(req))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !res.IsError || !bytes.Contains([]byte(res.Text), []byte("not retained")) {
+			t.Errorf("%s: result = %s, want it refused as not retained", req, res.Text)
+		}
+	}
+	if sess, _ := s.GetSession(ctx, id); sess.Title != "" || sess.Description != "" || sess.Summary != "" {
+		t.Errorf("a refused write changed the chat: %+v", sess)
+	}
+	if res, _ := h.Execute(caller, json.RawMessage(fmt.Sprintf(`{"op":"get","scope":"self","session_id":%q}`, id))); res.IsError {
+		t.Errorf("reading a no-trace chat's metadata was refused: %s", res.Text)
+	}
+	// An ordinary chat is unaffected.
+	if res, _ := h.Execute(caller, json.RawMessage(fmt.Sprintf(`{"op":"rename","scope":"self","session_id":%q,"title":"Launch planning"}`, plain))); res.IsError {
+		t.Errorf("renaming an ordinary chat: %s", res.Text)
+	}
 }

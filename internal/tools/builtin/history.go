@@ -846,6 +846,16 @@ func (h *History) loadSessionInScope(ctx context.Context, scope, op, sessionID s
 	if !visible {
 		return store.Session{}, notFound
 	}
+	// A no-trace chat holds markers, not a conversation. Nothing that would
+	// put words on it is allowed — a title, a note, a summary — and there is
+	// nothing in it to resume from. Reading it (get, window) shows the
+	// markers; pinning and archiving it store no text.
+	if sess.Retention == store.RetentionNone {
+		switch op {
+		case "rename", "annotate", "recap", "resume":
+			return store.Session{}, fmt.Errorf("history: %s is not available for chat %q: its content was not retained", op, sessionID)
+		}
+	}
 	return sess, nil
 }
 

@@ -140,6 +140,7 @@ func Run(t *testing.T, factory Factory) {
 		{"CreateRunUnderAMintedID", testCreateRunUnderAMintedID},
 		{"CreateRunOperatorKeyRestrictedRoundTrip", testCreateRunOperatorKeyRestrictedRoundTrip},
 		{"RetentionModeRoundTrip", testRetentionModeRoundTrip},
+		{"SweepStaleRunsReleasesANoTraceRunsKey", testSweepStaleRunsReleasesANoTraceRunsKey},
 		{"CreateRunIsolatedRoundTrip", testCreateRunIsolatedRoundTrip},
 		{"CreateRunConfigRoundTrip", testCreateRunConfigRoundTrip},
 		{"SetRunConfigCASRefusesAStalePrev", testSetRunConfigCASRefusesAStalePrev},
@@ -16867,5 +16868,44 @@ func testRetentionModeRoundTrip(t *testing.T, s store.Store) {
 	}
 	if got, _ := s.GetSession(ctx, other.ID); got.Retention != "" {
 		t.Errorf("a refused run changed its session's retention to %q", got.Retention)
+	}
+}
+
+// testSweepStaleRunsReleasesANoTraceRunsKey: a no-trace run that stopped
+// heartbeating cannot be resumed, so the sweep says so and releases its
+// idempotency key — a retry with that key starts a new run. An ordinary run
+// swept the same way keeps its key and its usual reason.
+func testSweepStaleRunsReleasesANoTraceRunsKey(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	plainSess, _ := s.CreateSession(ctx, "t", "a", "u")
+	quietSess, _ := s.CreateSession(ctx, "t", "a", "u")
+	plain, err := s.CreateRun(ctx, plainSess.ID, store.RunIdentity{AgentID: "a_sw_plain", IdempotencyKey: "sw-plain"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	quiet, err := s.CreateRun(ctx, quietSess.ID, store.RunIdentity{AgentID: "a_sw_quiet", IdempotencyKey: "sw-quiet", Retention: store.RetentionNone})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n, err := s.SweepStaleRuns(ctx, time.Now().Add(time.Hour)); err != nil || n < 2 {
+		t.Fatalf("SweepStaleRuns = %d, %v; want both runs swept", n, err)
+	}
+
+	got, _ := s.GetRun(ctx, quiet.ID)
+	if got.Status != store.RunFailed || got.StopReason != "not_resumable" || got.ErrorMsg != "error class: not_resumable" || got.IdempotencyKey != "" {
+		t.Errorf("no-trace run after the sweep: status=%q stop=%q error=%q key=%q", got.Status, got.StopReason, got.ErrorMsg, got.IdempotencyKey)
+	}
+	got, _ = s.GetRun(ctx, plain.ID)
+	if got.Status != store.RunFailed || got.StopReason != "heartbeat_timeout" || got.IdempotencyKey != "sw-plain" {
+		t.Errorf("ordinary run after the sweep: status=%q stop=%q key=%q", got.Status, got.StopReason, got.IdempotencyKey)
+	}
+
+	// The released key starts a new run; the kept one still refuses.
+	again, _ := s.CreateSession(ctx, "t", "a", "u")
+	if _, err := s.CreateRun(ctx, again.ID, store.RunIdentity{AgentID: "a_sw_quiet2", IdempotencyKey: "sw-quiet", Retention: store.RetentionNone}); err != nil {
+		t.Errorf("a retry with a lost no-trace run's key was refused: %v", err)
+	}
+	if _, err := s.CreateRun(ctx, again.ID, store.RunIdentity{AgentID: "a_sw_plain2", IdempotencyKey: "sw-plain"}); !errors.Is(err, store.ErrDuplicateIdempotencyKey) {
+		t.Errorf("a retry with a failed ordinary run's key: err = %v, want ErrDuplicateIdempotencyKey", err)
 	}
 }

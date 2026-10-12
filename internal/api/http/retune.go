@@ -252,6 +252,11 @@ func (s *Server) retuneRun(ctx context.Context, run store.Run, in *runOverridesW
 	if err := s.admitPrincipalOverrides(ctx, in.setFields()); err != nil {
 		return runConfigRecord{}, err
 	}
+	// A retune is recorded on the run's row and, for another replica, relayed
+	// to it. A no-trace run's row holds its mode and nothing else.
+	if run.Retention == store.RetentionNone {
+		return runConfigRecord{}, &noTraceRefusal{Status: 409, Msg: "a no-trace run cannot be retuned: its settings are not stored"}
+	}
 	agentDef, ok := s.lookupAgent(runTeamScopeCtx(ctx, run), run.TenantID, run.Agent)
 	if !ok {
 		return runConfigRecord{}, fmt.Errorf("%w: %s", runner.ErrUnknownAgent, run.Agent)

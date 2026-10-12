@@ -9074,6 +9074,9 @@ func (s *Server) handleRunInput(w http.ResponseWriter, r *http.Request) {
 	}
 	delivered, err := s.SteerRun(r.Context(), runID, text, source)
 	switch {
+	case errors.Is(err, runner.ErrRetentionUnsupported):
+		writeNoTraceRefusal(w, err)
+		return
 	case errors.Is(err, connector.ErrSteerQueueFull):
 		w.Header().Set("Retry-After", "1")
 		http.Error(w, "run input queue full; retry shortly", http.StatusTooManyRequests)
@@ -9777,6 +9780,12 @@ func (s *Server) publishRunState(m runStateMeta, status, stopReason, errMsg stri
 	if s.runStateBus == nil {
 		return
 	}
+	// The bus fans out to every replica (a Postgres NOTIFY in a cluster) and
+	// to every stream watching the tenant. A no-trace run's text does not
+	// ride it, whichever path is publishing.
+	if s.runIsNoTrace(context.Background(), m.RunID) {
+		stopReason, errMsg = safeStopReason(stopReason), safeErrorText(errMsg)
+	}
 	evt := m.runStateEvent(status)
 	evt.StopReason, evt.Error = stopReason, errMsg
 	s.runStateBus.Publish(evt)
@@ -9960,6 +9969,9 @@ func terminalStatusOf(runCtx context.Context, res loop.RunResult, runErr error) 
 // Mirrors finishRun's structure: fresh background ctx with 5s timeout
 // so the write isn't lost when the request ctx is already torn down.
 func (s *Server) finishRunFailedReason(runID, reason string, meta runStateMeta) {
+	if s.runIsNoTrace(context.Background(), runID) {
+		reason = safeErrorText(reason)
+	}
 	// v0.10.0 OTEL: stamp final attrs on the run span even when we
 	// can't write to the store (s.store == nil path). Span.End() is
 	// deferred at the open site, so failing to record here means the
@@ -10002,6 +10014,12 @@ func (s *Server) finishRunFailedReason(runID, reason string, meta runStateMeta) 
 // dispatches to one or the other), but it's a no-op input. If you
 // add real ctx propagation here, audit every caller.
 func (s *Server) finishRunCancelled(_ context.Context, runID string, res loop.RunResult, reason string, meta runStateMeta) {
+	noTrace := s.runIsNoTrace(context.Background(), runID)
+	if noTrace {
+		// A cancel can carry a reason somebody typed.
+		reason = safeStopReason(reason)
+		res.FinalText = ""
+	}
 	// v0.10.0 OTEL: final attrs on the run span.
 	lcotel.SetRunDone(meta.otelSpan, lcotel.RunDoneAttrs{
 		InputTokens:     res.Usage.InputTokens,
@@ -10152,6 +10170,15 @@ func (s *Server) rehydrateEphemeralVolumes(ctx context.Context, rootRunID string
 // (the client disconnected); we use a fresh background context with a short
 // timeout so the FinishRun write isn't lost.
 func (s *Server) finishRun(_ context.Context, runID string, res loop.RunResult, runErr error, meta runStateMeta) {
+	// A no-trace run's error leaves this function as its class and nothing
+	// else: to the span, the row, the run-state bus and the run_end hooks.
+	// Reduced here, where the error is still in hand to classify.
+	noTrace := s.runIsNoTrace(context.Background(), runID)
+	spanErr := runErr
+	if noTrace && runErr != nil {
+		spanErr = errors.New(noTraceErrorText(runErr))
+		res.StopReason = safeStopReason(res.StopReason)
+	}
 	// v0.10.0 OTEL: final attrs on the run span. Runs through this
 	// path on both completion + non-cancel failure. runErr maps to
 	// Error span status; the rest are scalar attribute writes.
@@ -10160,7 +10187,7 @@ func (s *Server) finishRun(_ context.Context, runID string, res loop.RunResult, 
 		OutputTokens:    res.Usage.OutputTokens,
 		CacheReadTokens: res.Usage.CacheReadTokens,
 		StopReason:      res.StopReason,
-		Err:             runErr,
+		Err:             spanErr,
 	})
 	if s.store == nil || runID == "" {
 		return
@@ -10175,14 +10202,7 @@ func (s *Server) finishRun(_ context.Context, runID string, res loop.RunResult, 
 	status := terminalStatusOf(nil, res, runErr)
 	errMsg := ""
 	if runErr != nil {
-		errMsg = runErr.Error()
-		// A no-trace run's error is reduced to its class here, where the
-		// error is still in hand, so the row, the run-state bus and the
-		// run_end hooks below all get the class. The store filter would
-		// reduce the text too, but without the error it cannot classify it.
-		if s.runIsNoTrace(bg, runID) {
-			errMsg = noTraceErrorText(runErr)
-		}
+		errMsg = spanErr.Error()
 	}
 	usage := store.Usage{
 		InputTokens:         res.Usage.InputTokens,
@@ -10215,7 +10235,13 @@ func (s *Server) finishRun(_ context.Context, runID string, res loop.RunResult, 
 		log.Printf("store: FinishRun failed (run=%s): %v", runID, err)
 	}
 	s.publishRunState(meta, string(status), res.StopReason, errMsg)
-	s.observeRunEnd(meta, status, res.StopReason, errMsg, res.FinalText)
+	finalText := res.FinalText
+	if noTrace {
+		// The run_end hooks observe a finished run; the answer was the
+		// caller's, delivered on its stream.
+		finalText = ""
+	}
+	s.observeRunEnd(meta, status, res.StopReason, errMsg, finalText)
 }
 
 // observeRunEnd reports a run's end to its run_end hooks, off the finishing

@@ -3629,8 +3629,13 @@ func (s *Store) SweepStaleRuns(ctx context.Context, cutoff time.Time) (int, erro
 		`UPDATE runs SET
 			status = ?,
 			completed_at = ?,
-			error = ?,
-			stop_reason = ?
+			-- A no-trace run has nothing stored to resume from, so one that
+			-- stopped heartbeating is lost for good. It says so, and gives up
+			-- its idempotency key: the key would otherwise answer every retry
+			-- with this dead run, and the caller could never run the work.
+			error = CASE WHEN retention = 'none' THEN 'error class: not_resumable' ELSE ? END,
+			stop_reason = CASE WHEN retention = 'none' THEN 'not_resumable' ELSE ? END,
+			idempotency_key = CASE WHEN retention = 'none' THEN NULL ELSE idempotency_key END
 		 WHERE status = ?
 		   -- F42 / RFC X Phase 2: a paused/pausing run is INTENTIONALLY parked
 		   -- (no heartbeat by design), not crashed — never sweep it stale. A

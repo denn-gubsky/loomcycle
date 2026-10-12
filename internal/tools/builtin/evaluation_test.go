@@ -326,3 +326,29 @@ func TestEvaluationTool_NoStore(t *testing.T) {
 		t.Errorf("error should mention not configured; got %s", res.Text)
 	}
 }
+
+// A judgement describes what a run said and outlives it. A no-trace run may
+// have nothing stored about it.
+func TestEvaluationTool_ANoTraceRunCannotBeEvaluated(t *testing.T) {
+	tool, s, runID, cleanup := evaluationFixture(t)
+	defer cleanup()
+	ctx := ctxWithEmitter("a_target", "submit_self")
+	sess, err := s.CreateSession(context.Background(), "", "researcher", "u1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	quiet, err := s.CreateRun(context.Background(), sess.ID, store.RunIdentity{AgentID: "a_target", Retention: store.RetentionNone})
+	if err != nil {
+		t.Fatal(err)
+	}
+	res, _ := tool.Execute(ctx, json.RawMessage(`{"op":"submit","run_id":"`+quiet.ID+`","score":0.5,"rationale":"a secret rationale"}`))
+	if !res.IsError || !strings.Contains(res.Text, "no-trace") {
+		t.Errorf("submit for a no-trace run: %s, want it refused", res.Text)
+	}
+	if rows, err := s.EvaluationListForRun(context.Background(), quiet.ID, 10); err != nil || len(rows) != 0 {
+		t.Errorf("a refused evaluation wrote %d row(s) (err %v)", len(rows), err)
+	}
+	if res, _ := tool.Execute(ctx, json.RawMessage(`{"op":"submit","run_id":"`+runID+`","score":0.5}`)); strings.Contains(res.Text, "no-trace") {
+		t.Errorf("an ordinary run was refused as no-trace: %s", res.Text)
+	}
+}

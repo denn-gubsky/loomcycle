@@ -215,6 +215,13 @@ func (s *Server) newPauseGate(runID string) (tools.PauseGate, func()) {
 	if s.pauseMgr == nil || s.store == nil || runID == "" {
 		return nil, func() {}
 	}
+	// A no-trace run is not parked: a parked run is one a snapshot captures
+	// and a resume rebuilds from its transcript, and it has none. It runs on
+	// through a pause and is reported as unpausable.
+	if s.runIsNoTrace(context.Background(), runID) {
+		s.pauseMgr.RegisterUnpausable(runID)
+		return nil, func() { s.pauseMgr.DeregisterUnpausable(runID) }
+	}
 	s.pauseMgr.RegisterRun(runID)
 	return &pauseGate{mgr: s.pauseMgr, store: s.store, runID: runID, saveClock: s.recordRunClock}, func() {
 		s.pauseMgr.DeregisterRun(runID)

@@ -34,6 +34,11 @@ func (s *Server) bankCompactedSpanFn(agentDef config.AgentDef, harvestToMemory b
 		return nil
 	}
 	return func(ctx context.Context, dropped []providers.Message) (string, error) {
+		// A banked span is the conversation itself, queued for a later pass to
+		// read. A no-trace run banks nothing; the distillation goes on without.
+		if s.runIsNoTrace(ctx, runID) {
+			return "", nil
+		}
 		if s.store == nil {
 			return "", fmt.Errorf("memory harvest: no persistent store on this instance")
 		}

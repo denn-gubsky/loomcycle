@@ -2118,6 +2118,10 @@ type Store interface {
 	// since `cutoff` as failed with error="heartbeat timeout". Returns
 	// the number of rows updated.
 	//
+	// A RetentionNone run is failed with stop_reason "not_resumable" instead,
+	// and its idempotency key is released (set NULL) so a retry with the same
+	// key starts a new run. An ordinary run keeps its key.
+	//
 	// "Hasn't heartbeated" includes runs that never set
 	// last_heartbeat_at at all (crashed before the first iteration);
 	// for those, started_at is the cutoff comparison. Implementations

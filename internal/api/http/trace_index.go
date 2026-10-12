@@ -91,6 +91,11 @@ func (s *Server) indexUserTurn(ctx context.Context, runID, sessionID, tenantID, 
 	if conf == nil || s.store == nil || !conf.Env.MemoryTraceIndexEnabled {
 		return
 	}
+	// This writer has the turn's text in hand, not a stored event to read:
+	// a no-trace run's turn is not indexed.
+	if s.runIsNoTrace(ctx, runID) {
+		return
+	}
 	// A turn with no user to file it under has no scope to live in. Skipping is right
 	// rather than falling back to some shared scope: a trace is one person's words,
 	// and a scope chosen by default is a disclosure chosen by default.
