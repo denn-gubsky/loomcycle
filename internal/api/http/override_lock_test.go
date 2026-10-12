@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/denn-gubsky/loomcycle/internal/auth"
+	"github.com/denn-gubsky/loomcycle/internal/loop"
 	"github.com/denn-gubsky/loomcycle/internal/runner"
 )
 
@@ -240,5 +241,49 @@ func TestOverridesSetIn_ReadsEveryShapeAndPromotedFields(t *testing.T) {
 	var nilReq *runRequest
 	if got := overridesSetIn(nilReq); got != nil {
 		t.Errorf("nil request: %v", got)
+	}
+}
+
+// A draft is held to the policy at both ends, on the surface gRPC and MCP use
+// (the HTTP route is refused earlier, by the run handler). An edit is checked
+// against the MERGED draft: a locked token must not be the one that runs an
+// override somebody else wrote into it.
+func TestLockedToken_DraftCreateAndEditAreHeldToThePolicy(t *testing.T) {
+	s, _, _ := restrictedFixtureServer(t)
+	ctx := t.Context()
+	principal := func(r auth.Restrictions) auth.Principal {
+		return auth.Principal{TenantID: "acme", Subject: "dev", Scopes: []string{auth.ScopeRunsCreate, auth.ScopeRunsRead}, Restrictions: r}
+	}
+	locked := auth.WithPrincipal(ctx, principal(auth.Restrictions{Overrides: &auth.OverridePolicy{}}))
+	free := auth.WithPrincipal(ctx, principal(auth.Restrictions{}))
+	draft := func(model string) runDraft {
+		var d runDraft
+		d.Agent, d.Model = "other", model
+		d.Segments = []loop.PromptSegment{{Role: "user", Content: []loop.PromptContentBlock{{Type: "trusted-text", Text: "go"}}}}
+		return d
+	}
+
+	if _, err := s.CreateConfiguredRun(locked, draft("stub-model")); err == nil || !strings.Contains(err.Error(), "override not allowed") {
+		t.Errorf("a locked token creating a draft with an override: err = %v, want it refused", err)
+	}
+	plain, err := s.CreateConfiguredRun(locked, draft(""))
+	if err != nil {
+		t.Fatalf("a locked token creating a draft with no override: %v", err)
+	}
+	if _, err := s.UpdateConfiguredRun(locked, plain.RunID, []byte(`{"model":"stub-model"}`)); err == nil || !strings.Contains(err.Error(), "override not allowed") {
+		t.Errorf("a locked token editing an override into its draft: err = %v, want it refused", err)
+	}
+
+	// Another caller's draft that already carries an override: the locked
+	// token may not edit it, even with a patch that names no override.
+	theirs, err := s.CreateConfiguredRun(free, draft("stub-model"))
+	if err != nil {
+		t.Fatalf("an unlocked token creating a draft with an override: %v", err)
+	}
+	if _, err := s.UpdateConfiguredRun(locked, theirs.RunID, []byte(`{"metadata":{"k":"v"}}`)); err == nil || !strings.Contains(err.Error(), "override not allowed") {
+		t.Errorf("a locked token editing a draft that carries an override: err = %v, want it refused", err)
+	}
+	if _, err := s.UpdateConfiguredRun(free, theirs.RunID, []byte(`{"metadata":{"k":"v"}}`)); err != nil {
+		t.Errorf("the unlocked token editing its own draft: %v", err)
 	}
 }
