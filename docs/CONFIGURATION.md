@@ -1426,6 +1426,51 @@ Rules worth knowing:
 - **A gateway call that ends without a usage report is counted by an estimate**, in either mode: the caller hung up, the provider failed first, or it reported zero. The estimate comes from the size of what was sent and returned and errs high. It counts against the budget and survives a restart, but it is not written to the usage ledger, so `/v1/_usage` and cost reports show only what a provider measured.
 - **Any value other than `strict` stops the server at boot**, so a misspelled setting cannot leave a deployment unenforced.
 
+### No-trace runs
+
+**Since v1.112.0.** By default loomcycle keeps everything a run says: transcripts are what make resume, continuation, the console and debugging work. A **no-trace run** is for content that has one purpose and one reader. What it says is delivered to whoever is waiting for it and stored nowhere. "Deleted within the hour" depends on a sweeper and a setting; "never written" does not.
+
+The mode is called `retention`, and it has two values: `none`, and the default.
+
+| Set on | How |
+|---|---|
+| A run | `"retention": "none"` on `POST /v1/runs`, a `runs:batch` child, gRPC `Run` / `SpawnRunBatch`, MCP `spawn_run` / `spawn_runs` |
+| An agent | `retention: none` in the yaml, a markdown agent's frontmatter, or the `AgentDef` create/fork overlay |
+| A token | `--retention none` on `operator-token create`, `retention` on the `create` op, `{"retention": "none"}` on `POST /v1/_users/{subject}/tokens`, or `retention: none` on a declared principal |
+| A parent run | every sub-agent of a no-trace run is a no-trace run |
+
+**The strictest wins, and nothing loosens it.** A request for `default` under a `none` token or agent runs as `none`. A child of a no-trace run is no-trace whatever its own definition says. An unknown value is refused, so a misspelled `none` cannot become a run that stores everything.
+
+**What is kept, and what is not:**
+
+| Kept | Not stored |
+|---|---|
+| The run and session rows, their links, agent, user, tenant | Prompts, the system prompt, model text, reasoning |
+| Status, a stop reason from the runtime's own list, the error's class | Tool arguments and results, a sub-agent's answer |
+| Model, provider, token counts, cost, timings; the usage ledger | The final answer, the error's text, a cancel reason somebody typed |
+| A marker for every event: its type, time, size, tool name, ids | The run's settings record, a title or summary, trace-index rows, banked turns |
+
+**What is still delivered:** a caller holding the connection gets the full stream and the full error text, and a parent gets its child's answer. A detached run returns its id and nothing readable afterwards, so its agent must deliver its own result (a tool call, a channel message).
+
+**What a no-trace run cannot do.** Each needs its content stored, so each is refused with `retention_none_unsupported` and not quietly degraded:
+
+- be interactive or held for review (400); a resident sub-agent of one is refused too;
+- join an existing session, be continued, replayed, compacted or recapped (409);
+- be configured as a draft (409), sent a message or retuned (409);
+- ask a person through the `Interruption` tool, or be evaluated;
+- start a team walk (403) — also refused for any caller whose token is `none`.
+
+Rules worth knowing:
+
+- **Tools that write on purpose are unchanged.** `Memory`, `Channel`, `Document`, `Write` and MCP tools store what the agent tells them to. Give a no-trace agent only the tools it should be able to write with.
+- **Hooks are unchanged.** A hook you configured is sent what it was always sent, including the final answer on `run_end`. That is your endpoint and your choice.
+- **A fork can add the mode to an agent and cannot remove it.** A mode written in the server config holds over a tenant's own version of the agent.
+- **A pause does not park a no-trace run.** It keeps running, a snapshot leaves it out, and the pause result counts it in `unpausable_runs_count`.
+- **A restart loses it.** At boot the no-trace runs that were in flight are failed with stop reason `not_resumable`, and their idempotency keys are released so a retry with the same key starts a new run. A run whose replica never comes back is failed as `heartbeat_timeout` and keeps its key; vary the key per attempt if that matters.
+- **Its chat is deleted at its age and never exported** by the retention sweeper.
+- **The console shows the run** with its metadata and the line "content not retained".
+- **To remove what an ordinary run did store, delete its run tree** (see [Deleting a run tree](#deleting-a-run-tree)).
+
 ### Declared principals — static `(tenant, user)` logins (RFC AO)
 
 Beyond the legacy `LOOMCYCLE_AUTH_TOKEN` (one identity, subject `default`) and runtime-minted `OperatorTokenDef` tokens, you can **declare** stable service identities in the YAML:

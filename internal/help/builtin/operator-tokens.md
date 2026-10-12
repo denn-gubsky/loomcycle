@@ -205,6 +205,22 @@ start at once from idle (default: `per_minute`).
   tenant operator or the legacy token.
 - It is per replica.
 
+## Making a token's runs no-trace
+
+`--retention none` on `operator-token create` (`retention` on the `create`
+op, `{"retention": "none"}` in the body of
+`POST /v1/_users/{subject}/tokens`, or `retention: none` on a declared
+principal) makes every run the token starts a no-trace run: what the run
+says is delivered to the caller and stored nowhere.
+
+- A request or an agent cannot loosen it: asking for `default` still runs
+  as `none`.
+- Such a token cannot store a prompt as a draft, start a team walk, or
+  continue a chat (`retention_none_unsupported`).
+- The setting is fixed at mint and carried over by `rotate`.
+- See `loomcycle help no-trace-runs` for what a no-trace run keeps and
+  what it cannot do.
+
 ## Migration from LOOMCYCLE_AUTH_TOKEN (zero-disruption)
 
 The legacy shared secret keeps working until the **first admin-scoped**
