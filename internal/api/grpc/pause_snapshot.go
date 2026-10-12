@@ -32,6 +32,7 @@ func (s *Server) PauseRuntime(ctx context.Context, req *loomcyclepb.PauseRuntime
 		DurationMs:          res.DurationMS,
 		ForceCancelledCount: int32(res.ForceCancelledCount),
 		PausedRunsCount:     int32(res.PausedRunsCount),
+		UnpausableRunsCount: int32(res.UnpausableRunsCount),
 		Warnings:            res.Warnings,
 	}, nil
 }

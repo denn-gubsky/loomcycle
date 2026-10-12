@@ -335,6 +335,7 @@ func TestAgent_DriftDetection(t *testing.T) {
 		// RFC AH Phase 2a — the dynamic-volume slice of the F40 closure.
 		"volume_def_scopes": true,
 		"allow_overrides":   true,
+		"retention":         true,
 		"hooks":             true, // the agent's own hooks (run events, all-tool events); content-identifying
 		"tool_hooks":        true, // each tool's own pre/post hooks; content-identifying
 		// v1.34.0 — the capability gates that were missing from the overlay

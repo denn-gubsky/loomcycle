@@ -1724,6 +1724,16 @@ type AgentDef struct {
 	// not content: it is not part of content_sha256.
 	AllowOverrides *bool `yaml:"allow_overrides,omitempty"`
 
+	// Retention: "none" makes every run of this agent a no-trace run: its
+	// content is delivered to the caller and stored nowhere — events are kept
+	// as markers, the result and error as a class. Unset (or "default")
+	// stores everything, as before.
+	//
+	// A run can also ask for it, and a token can require it; the strictest
+	// wins and nothing loosens it. Authority, not content: it is not part of
+	// content_sha256.
+	Retention string `yaml:"retention,omitempty"`
+
 	// EvaluationScopes is the v0.8.5 Evaluation tool capability gate.
 	// Multi-select; default-deny when empty. Closed set:
 	//
@@ -6359,6 +6369,7 @@ func agentFromDiscovered(d *agents.Agent) AgentDef {
 		AgentDefScopes:   d.AgentDefScopes,
 		VolumeDefScopes:  d.VolumeDefScopes,
 		AllowOverrides:   d.AllowOverrides,
+		Retention:        d.Retention,
 		EvaluationScopes: d.EvaluationScopes,
 		// F14: an MD-declared `interruption:` block now flows to config
 		// (parity with channels) so it takes effect at runtime AND the
@@ -6560,6 +6571,9 @@ func mergeAgentDef(base, override AgentDef) AgentDef {
 	if override.AllowOverrides != nil {
 		v := *override.AllowOverrides
 		out.AllowOverrides = &v
+	}
+	if override.Retention != "" {
+		out.Retention = override.Retention
 	}
 	if override.Hooks != nil {
 		out.Hooks = override.Hooks
@@ -8067,6 +8081,9 @@ func validate(c *Config) error {
 			}
 		}
 		if err := ValidateAgentHooks(agent); err != nil {
+			return fmt.Errorf("agent %q: %w", name, err)
+		}
+		if _, err := store.ParseRetention(agent.Retention); err != nil {
 			return fmt.Errorf("agent %q: %w", name, err)
 		}
 		// VolumeDef tool (RFC AH Phase 2a): validate volume_def_scopes

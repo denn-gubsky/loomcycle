@@ -654,6 +654,7 @@ func runToProto(r store.Run, live bool) *loomcyclepb.Agent {
 		Status:        string(r.Status),
 		StartedAt:     timestamppb.New(r.StartedAt),
 		StopReason:    r.StopReason,
+		Retention:     r.Retention,
 		Error:         r.ErrorMsg,
 		Usage: &loomcyclepb.AgentUsage{
 			InputTokens:         int64(r.InputTokens),
@@ -1074,6 +1075,7 @@ func (s *Server) Run(req *loomcyclepb.RunRequest, stream loomcyclepb.Loomcycle_R
 		MaxContextTokens: int(req.GetMaxContextTokens()), // RFC CJ per-run context-window override
 		IdempotencyKey:   req.GetIdempotencyKey(),
 		MaxWallSeconds:   int(req.GetMaxWallSeconds()),
+		Retention:        req.GetRetention(),
 		// RFC DC per-run overrides. One helper for all three call sites, so a
 		// typed gRPC caller and an HTTP one get the same answer from the same
 		// validation — and so adding a field means editing one place.
@@ -1365,6 +1367,7 @@ func spawnRequestFromProto(req *loomcyclepb.RunRequest) connector.SpawnRunReques
 		MaxContextTokens: int(req.GetMaxContextTokens()), // RFC CJ per-run context-window override
 		IdempotencyKey:   req.GetIdempotencyKey(),
 		MaxWallSeconds:   int(req.GetMaxWallSeconds()),
+		Retention:        req.GetRetention(),
 		// The same four Run maps: a configured run or a batch child built from
 		// this request must not silently lose them
 		// (TestSpawnRequestFromProto_MapsEveryFieldRunMaps guards the set).
@@ -1595,6 +1598,7 @@ type runInputProtoArgs struct {
 	MaxContextTokens int                          // RFC CJ per-run context-window override (0 = inherit agent def)
 	IdempotencyKey   string                       // the caller's key, as sent (Run only)
 	MaxWallSeconds   int                          // the run's own lifetime limit (Run only)
+	Retention        string                       // "none" = a no-trace run
 
 	// RFC DC per-run overrides. Routing selects within what the definition
 	// declares; the budget knobs are raisable except MaxConcurrentChildren,
@@ -1657,6 +1661,7 @@ func runInputFromProto(a runInputProtoArgs) runner.RunInput {
 		// As sent; RunOnce scopes and stores it.
 		ClientIdempotencyKey: a.IdempotencyKey,
 		MaxWallSeconds:       a.MaxWallSeconds,
+		Retention:            a.Retention,
 	}
 	if a.AllowedHosts != nil {
 		// Proto3 message-type field present → caller did supply a
@@ -2032,6 +2037,10 @@ func runnerErrStatus(err error) error {
 		// Per-scope token budget hard cap reached (RFC AW). ResourceExhausted
 		// mirrors the HTTP 429 refusal + the backpressure/quota flavors above.
 		return status.Error(codes.ResourceExhausted, err.Error())
+	case errors.Is(err, runner.ErrRetentionUnsupported):
+		// The request is well formed and cannot be served by a no-trace run:
+		// it needs the run's content stored. Mirrors the HTTP 400/409.
+		return status.Error(codes.FailedPrecondition, err.Error())
 	case errors.Is(err, resolve.ErrOperatorKeyRestricted),
 		errors.Is(err, providers.ErrOperatorKeyForbidden):
 		// RFC AX: the run's principal may not spend the operator's provider key

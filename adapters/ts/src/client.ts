@@ -267,6 +267,7 @@ function runBody(opts: RunOptions): Record<string, unknown> {
   if (opts.parentContext !== undefined) body.parent_context = opts.parentContext;
   if (opts.idempotencyKey !== undefined) body.idempotency_key = opts.idempotencyKey;
   if (opts.maxWallSeconds !== undefined) body.max_wall_seconds = opts.maxWallSeconds;
+  if (opts.retention !== undefined) body.retention = opts.retention;
   if (opts.metadata !== undefined) body.metadata = opts.metadata;
   if (opts.runTimeoutSeconds !== undefined) body.run_timeout_seconds = opts.runTimeoutSeconds;
   if (opts.reviewTtlSeconds !== undefined) body.review_ttl_seconds = opts.reviewTtlSeconds;
@@ -1266,6 +1267,9 @@ export class LoomcycleClient {
       agents?: string[];
       overrides?: "none" | string[];
       rate?: { perMinute: number; burst?: number };
+      /** `"none"`: every run the token starts is a no-trace run, whatever
+       *  the request or the agent says. */
+      retention?: "none";
     },
   ): Promise<MintedUserToken> {
     const body: Record<string, unknown> = {};
@@ -1277,6 +1281,7 @@ export class LoomcycleClient {
     if (opts?.rate !== undefined) {
       body.rate = { per_minute: opts.rate.perMinute, burst: opts.rate.burst };
     }
+    if (opts?.retention !== undefined) body.retention = opts.retention;
     return postJSON<MintedUserToken>(
       this.ctx,
       `/v1/_users/${encodeURIComponent(subject)}/tokens`,

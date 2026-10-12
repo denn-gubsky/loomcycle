@@ -18,7 +18,7 @@ const AGENTDEF_OVERLAY_KEYS = [
   "memory_index_max_bytes", "memory_inject_max_tokens", "memory_protocol",
   "memory_quota_bytes", "memory_rerank", "memory_roots", "memory_scopes", "memory_units", "model", "models",
   "output_format", "provider", "providers", "recall_attach_traces", "recall_include_turns",
-  "retry_attempts",
+  "retention", "retry_attempts",
   "run_timeout_seconds", "sampling",
   "schedule_def_scopes", "search_providers", "skills", "sql_quota_bytes",
   "sql_scopes", "system_prompt", "system_prompt_base", "tier", "tool_choice", "tool_hooks", "tools",

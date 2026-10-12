@@ -348,6 +348,11 @@ function AgentDetailPaneBody({ agentId, runId, ancestors, onSelect }: AgentDetai
             )}
             <RunClockFacts run={agent} />
           </div>
+          {agent.retention === "none" && (
+            <div className="agent-note">
+              content not retained — this is a no-trace run; its events are kept as markers only
+            </div>
+          )}
           {agent.error && <div className="agent-err">error: {agent.error}</div>}
           {agent.status === "configured" && (
             <DraftPanel

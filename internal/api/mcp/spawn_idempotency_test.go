@@ -108,3 +108,19 @@ func TestSpawnRunStreaming_ReportsARunEndedFromOutsideAsItsRecordSays(t *testing
 		t.Errorf("result = %+v, want completed: the record read was a different run's", res)
 	}
 }
+
+// retention reaches the runner from spawn_run.
+func TestSpawnRun_RetentionReachesTheRunner(t *testing.T) {
+	fr := &fakeRunner{}
+	sess := NewSession()
+	sess.MarkInitialized()
+	sess.SetRunEventsEnabled(true)
+	mc := &mockConnector{getRunResult: connector.Run{AgentID: "a_1", RunID: "r_1", Status: "completed"}}
+	env := &handlerEnv{connector: mc, runner: fr, session: sess}
+	if _, err := spawnRunStreaming(context.Background(), env, connector.SpawnRunRequest{Agent: "a", Retention: "none"}); err != nil {
+		t.Fatalf("spawnRunStreaming: %v", err)
+	}
+	if fr.lastInput.Retention != "none" {
+		t.Errorf("RunOnce got Retention %q, want none", fr.lastInput.Retention)
+	}
+}

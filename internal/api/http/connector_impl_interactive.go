@@ -38,6 +38,13 @@ func (s *Server) SteerRun(ctx context.Context, runID, text, source string) (bool
 		// defensive floor so an empty turn never reaches the loop.
 		return false, connector.ErrRunNotInFlight
 	}
+	// A caller whose own runs are no-trace does not get its words stored by
+	// writing them into somebody's ordinary run. Before the run is looked at:
+	// the answer is the same whatever the run is, so it tells the caller
+	// nothing about one.
+	if principalIsNoTrace(ctx) {
+		return false, errNoTracePrincipalWrite
+	}
 	// Tenant-ownership gate: a cross-tenant (or unknown) run is folded into an
 	// opaque ErrRunNotInFlight — run_ids are not secret, so the gate must not
 	// become an existence oracle. Mirrors handleRunInput's gate exactly. A run
@@ -134,6 +141,13 @@ func (s *Server) StreamRunEvents(ctx context.Context, runID string, fromSeq int6
 //     fallback. Single-process (no coordinator) folds back to ErrRunNotInFlight,
 //     byte-identical to P1's steer-miss.
 func (s *Server) CancelTurn(ctx context.Context, runID, reason string) (bool, bool, error) {
+	// A cancel always works; the reason somebody typed with it is content. It
+	// is dropped for a no-trace run (it would be relayed to the run's replica
+	// and recorded) and for a caller whose token makes its own words no-trace
+	// — first, before anything below is handed it.
+	if reason != "" && (principalIsNoTrace(ctx) || s.runIsNoTrace(ctx, runID)) {
+		reason = ""
+	}
 	// A team walk has no turns to stop — it is a container for the runs it
 	// spawns — so cancelling it ends it: stopped, not parked.
 	if stopped, isWalk, err := s.cancelTeamWalk(ctx, runID, reason); isWalk {
@@ -143,7 +157,6 @@ func (s *Server) CancelTurn(ctx context.Context, runID, reason string) (bool, bo
 		return false, false, connector.ErrTurnCancelUnavailable
 	}
 	reason = strings.TrimSpace(reason)
-
 	// Local fast path: the run is live on THIS replica. Gate ownership as
 	// SteerRun does, then fire the local armed token.
 	if entry, ok := s.steerReg.Get(runID); ok {
@@ -219,6 +232,11 @@ func (s *Server) CancelTurn(ctx context.Context, runID, reason string) (bool, bo
 func (s *Server) ResolveInterrupt(ctx context.Context, runID, interruptID, kind, answer, resolvedBy, disposition string) (string, error) {
 	if s.store == nil {
 		return "", connector.WithMessage(connector.ErrInterruptStoreUnavailable, "interrupts require persistence (Store not configured)")
+	}
+	// An answer is stored beside the question it answers. A caller whose
+	// token makes its words no-trace cannot leave one.
+	if answer != "" && principalIsNoTrace(ctx) {
+		return "", errNoTracePrincipalWrite
 	}
 	if kind == "" {
 		kind = store.InterruptKindQuestion

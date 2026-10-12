@@ -203,6 +203,8 @@ export interface Agent {
   started_at: string;
   completed_at: string | null;
   stop_reason: string | null;
+  // "none" for a no-trace run: nothing it said was stored.
+  retention?: string;
   error: string | null;
   usage: {
     input_tokens?: number;

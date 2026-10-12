@@ -128,6 +128,7 @@ func TestGrpcPauseRuntime_HappyPath(t *testing.T) {
 			DurationMS:          42,
 			ForceCancelledCount: 0, // always 0: pause cancels no tool call
 			PausedRunsCount:     2,
+			UnpausableRunsCount: 3,
 			Warnings:            []string{"run r_slow did not park within the timeout"},
 		},
 	}
@@ -146,6 +147,9 @@ func TestGrpcPauseRuntime_HappyPath(t *testing.T) {
 	}
 	if resp.GetPausedRunsCount() != 2 {
 		t.Errorf("paused_runs_count = %d, want 2", resp.GetPausedRunsCount())
+	}
+	if resp.GetUnpausableRunsCount() != 3 {
+		t.Errorf("unpausable_runs_count = %d, want 3", resp.GetUnpausableRunsCount())
 	}
 	if got := mc.lastPauseMS; got != 5000 {
 		t.Errorf("Connector saw timeout_ms = %d, want 5000", got)

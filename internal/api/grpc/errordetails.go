@@ -38,6 +38,8 @@ func reasonFor(err error) string {
 		return "agent_not_allowed"
 	case errors.Is(err, runner.ErrOverrideNotAllowed):
 		return "override_not_allowed"
+	case errors.Is(err, runner.ErrRetentionUnsupported):
+		return "retention_none_unsupported"
 	case errors.Is(err, runner.ErrTokenLimitExceeded):
 		return "token_limit_exceeded"
 	case errors.Is(err, runner.ErrProviderConcurrencyExhausted):

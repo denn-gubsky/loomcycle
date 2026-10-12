@@ -899,6 +899,19 @@ func (a *AgentDef) buildDefinition(ctx context.Context, name, parentJSON string,
 		if static, ok := a.Cfg.Agents[name]; ok && static.AllowOverrides != nil && !*static.AllowOverrides {
 			lockedBase = true
 		}
+		// The retention mode works the same way: a fork may make an agent
+		// no-trace and may not undo it. "default" on an agent that is "none"
+		// is the attempt; saying nothing keeps the parent's.
+		noTraceBase := base.Retention == store.RetentionNone
+		if static, ok := a.Cfg.Agents[name]; ok && static.Retention == store.RetentionNone {
+			noTraceBase = true
+		}
+		if noTraceBase && ov.Retention == "default" {
+			return mergedDef{}, fmt.Errorf("AgentDef tool: a fork cannot set retention to %q on %q, whose runs are no-trace (retention: none); change it in the server config, or create the agent anew", ov.Retention, name)
+		}
+		if ov.Retention == "default" {
+			ov.Retention = ""
+		}
 		if lockedBase && ov.AllowOverrides != nil && *ov.AllowOverrides {
 			return mergedDef{}, fmt.Errorf("AgentDef tool: a fork cannot set allow_overrides to true on %q, whose definition locks its per-run settings (allow_overrides: false); remove the lock in the server config, or create the agent anew", name)
 		}
@@ -921,6 +934,12 @@ func decodeAgentOverlay(overlay json.RawMessage) (mergedDef, error) {
 		return mergedDef{}, fmt.Errorf("parse overlay: %w", err)
 	}
 	if err := validateOverlayNamedScopes(ov.AgentDefScopes); err != nil {
+		return mergedDef{}, err
+	}
+	// Left as written ("none" or "default") so a fork can tell "say nothing"
+	// from "ask for the default"; buildDefinition turns it into the stored
+	// form.
+	if _, err := store.ParseRetention(ov.Retention); err != nil {
 		return mergedDef{}, err
 	}
 	// The same rule operator yaml is held to: a def whose tool_choice
@@ -1268,6 +1287,11 @@ type mergedDef struct {
 	// is excluded from content_sha256 like the gates above. A fork that does
 	// not send it keeps its parent's.
 	AllowOverrides *bool `json:"allow_overrides,omitempty"`
+	// Retention: "none" makes the agent's runs no-trace
+	// (config.AgentDef.Retention). Authority, not content: excluded from
+	// content_sha256. A fork that does not send it keeps its parent's, and
+	// cannot loosen it.
+	Retention string `json:"retention,omitempty"`
 	// Hooks / ToolHooks: the agent's hooks (see config.AgentDef). Content — part
 	// of content_sha256 — and carried through fork like any other field.
 	Hooks     hooks.EventHooks `json:"hooks,omitempty"`
@@ -1477,6 +1501,9 @@ func (d *mergedDef) applyOverlay(ov mergedDef) {
 		v := *ov.AllowOverrides
 		d.AllowOverrides = &v
 	}
+	if ov.Retention != "" {
+		d.Retention = ov.Retention
+	}
 	if ov.Hooks != nil {
 		d.Hooks = ov.Hooks
 	}
@@ -1519,6 +1546,7 @@ func (d *mergedDef) normalize() {
 // a future unhashed field cannot silently reopen the collision.
 var unhashedCapabilityTags = []string{
 	"allow_overrides",
+	"retention",
 	"a2a_agent_def_scopes",
 	"a2a_server_card_def_scopes",
 	"agent_def_scopes",
@@ -1631,6 +1659,7 @@ func staticToMergedDef(s config.AgentDef) mergedDef {
 		A2AAgentDefScopes:      s.A2AAgentDefScopes,
 		VolumeDefScopes:        s.VolumeDefScopes,
 		AllowOverrides:         boolPtrCopy(s.AllowOverrides),
+		Retention:              s.Retention,
 		Hooks:                  s.Hooks,
 		ToolHooks:              s.ToolHooks,
 	}

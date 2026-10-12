@@ -92,6 +92,7 @@ const operatorTokenDefInputSchema = `{
     "agents": {"type": "array", "items": {"type": "string"}, "description": "Optional (create). Limits the token to starting these agents as top-level runs, and to the run endpoints: it is refused everywhere else, whatever its scopes. An agent a listed one spawns is not limited. Omit for no limit; an empty list is refused."},
     "overrides": {"description": "Optional (create). Locks the per-run settings for runs this token starts, and for retunes it makes: the string \"none\" (every such setting is locked — the model, provider, tier, effort, sampling, limits, output format and the rest), or an array of the settings it may still set. A request that sets a locked one is refused, not ignored. Omit for no lock."},
     "rate": {"type": "object", "description": "Optional (create). Bounds how often this token may start runs: {\"per_minute\": N, \"burst\": M}. burst is how many it may start at once from idle (default: per_minute). A start past the rate is refused with a time to wait. Omit to use the server's default, if it has one.", "properties": {"per_minute": {"type": "integer"}, "burst": {"type": "integer"}}, "required": ["per_minute"]},
+    "retention": {"type": "string", "enum": ["none", "default"], "description": "Optional (create). \"none\" makes every run this token starts a no-trace run: its content is delivered to the caller and stored nowhere, and neither a request nor an agent can change that. Omit (or \"default\") to leave the mode to the request and the agent."},
     "grace_seconds": {"type": "integer", "description": "Rotation grace window override (rotate)."},
     "import_token": {"type": "string", "description": "Migration only (create): bind an existing secret (the legacy LOOMCYCLE_AUTH_TOKEN) instead of minting. Hashed, never echoed."}
   },
@@ -111,6 +112,7 @@ type operatorTokenDefInput struct {
 	Agents       *[]string            `json:"agents,omitempty"`
 	Overrides    *auth.OverridePolicy `json:"overrides,omitempty"`
 	Rate         *auth.RateLimit      `json:"rate,omitempty"`
+	Retention    string               `json:"retention,omitempty"`
 	GraceSeconds *int                 `json:"grace_seconds,omitempty"`
 	// ImportToken (Decision 10 migration) binds an existing secret —
 	// the legacy LOOMCYCLE_AUTH_TOKEN via `--copy-from-env` — instead of
@@ -265,6 +267,11 @@ func (s *OperatorTokenDef) execCreate(ctx context.Context, in operatorTokenDefIn
 		restrictions.Agents = *in.Agents
 	}
 	restrictions.Overrides, restrictions.Rate = in.Overrides, in.Rate
+	retention, rerr := auth.ParseRetention(in.Retention)
+	if rerr != nil {
+		return errResult(fmt.Sprintf("create: %s", rerr)), nil
+	}
+	restrictions.Retention = retention
 	if err := restrictions.Validate(in.Agents != nil); err != nil {
 		return errResult(fmt.Sprintf("create: %s", err)), nil
 	}

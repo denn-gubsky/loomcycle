@@ -263,7 +263,7 @@ func TestNoTraceCanary(t *testing.T) {
 					logged := captureCanaryLog(t)
 					srv := New(canaryConfig(), &stubResolver{p: sc.provider()}, []tools.Tool{}, concurrency.New(8, 8, time.Second), st)
 					if noTrace {
-						srv.noTraceAgents = map[string]bool{"parent": true}
+						markNoTrace(srv, "parent")
 					}
 					sc.run(t, srv)
 					// A run's last writes happen as it ends; a detached one's

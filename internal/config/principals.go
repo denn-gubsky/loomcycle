@@ -35,6 +35,8 @@ type PrincipalDef struct {
 	// Rate bounds how often the principal may start runs:
 	// `rate: {per_minute: 6, burst: 20}`.
 	Rate *RateLimitYAML `yaml:"rate"`
+	// Retention: `none` makes every run the principal starts a no-trace run.
+	Retention string `yaml:"retention"`
 }
 
 // RateLimitYAML is a principal's `rate:` block.
@@ -171,6 +173,11 @@ func resolvePrincipals(c *Config) error {
 		if def.Rate != nil {
 			restrictions.Rate = &auth.RateLimit{PerMinute: def.Rate.PerMinute, Burst: def.Rate.Burst}
 		}
+		retention, rerr := auth.ParseRetention(def.Retention)
+		if rerr != nil {
+			return fmt.Errorf("principals.%s: %w", name, rerr)
+		}
+		restrictions.Retention = retention
 		if err := restrictions.Validate(def.Agents != nil); err != nil {
 			return fmt.Errorf("principals.%s: %w", name, err)
 		}

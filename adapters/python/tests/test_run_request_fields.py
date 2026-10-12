@@ -208,3 +208,17 @@ async def test_max_wall_seconds_lands_on_the_run_request():
 
     assert _run_request_from_dict({"agent": "judge", "max_wall_seconds": 90}).max_wall_seconds == 90
     assert _run_request_from_dict({"agent": "judge"}).max_wall_seconds == 0
+
+
+@pytest.mark.asyncio
+async def test_retention_lands_on_the_run_request():
+    stub = _FakeStub()
+    client = _make_client_with_stub(stub)
+    async for _ in client.run_streaming(agent="judge", segments=[], retention="none"):
+        pass
+    assert stub.last_run_req.retention == "none"
+
+    from loomcycle.client import _run_request_from_dict
+
+    assert _run_request_from_dict({"agent": "judge", "retention": "none"}).retention == "none"
+    assert _run_request_from_dict({"agent": "judge"}).retention == ""

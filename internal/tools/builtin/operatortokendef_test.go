@@ -614,3 +614,39 @@ func TestOperatorTokenDef_RateIsStoredAndSurvivesRotation(t *testing.T) {
 		t.Errorf("a zero rate: is_error=%v text=%q, want a refusal naming rate", res.IsError, res.Text)
 	}
 }
+
+func TestOperatorTokenDef_RetentionIsStoredAndSurvivesRotation(t *testing.T) {
+	tool, ctx, st, cleanup := operatorTokenDefFixture(t)
+	defer cleanup()
+	retentionOf := func(defID string) string {
+		t.Helper()
+		row, err := st.OperatorTokenDefGet(ctx, defID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		r, err := auth.ParseRestrictions(row.RestrictionsJSON)
+		if err != nil {
+			t.Fatalf("stored %q: %v", row.RestrictionsJSON, err)
+		}
+		return r.Retention
+	}
+	out := mustOp(t, tool, ctx, `{"op":"create","name":"quiet","tenant_id":"acme","scopes":["runs:create"],"retention":"none"}`)
+	if got := retentionOf(out["def_id"].(string)); got != auth.RetentionNone {
+		t.Errorf("stored retention = %q, want none", got)
+	}
+	rotated := mustOp(t, tool, ctx, `{"op":"rotate","name":"quiet"}`)
+	if got := retentionOf(rotated["def_id"].(string)); got != auth.RetentionNone {
+		t.Errorf("a rotation dropped the mode: %q", got)
+	}
+	plain := mustOp(t, tool, ctx, `{"op":"create","name":"plain","tenant_id":"acme","scopes":["runs:create"],"retention":"default"}`)
+	if got := retentionOf(plain["def_id"].(string)); got != "" {
+		t.Errorf("retention default stored as %q, want no setting", got)
+	}
+	res, err := tool.Execute(ctx, json.RawMessage(`{"op":"create","name":"bad","tenant_id":"acme","scopes":["runs:create"],"retention":"nonee"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !res.IsError || !strings.Contains(res.Text, "retention") {
+		t.Errorf("a misspelled retention: is_error=%v text=%q, want a refusal naming retention", res.IsError, res.Text)
+	}
+}

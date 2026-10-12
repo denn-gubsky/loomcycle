@@ -28,6 +28,27 @@ type Restrictions struct {
 	// Rate, when set, bounds how often this credential may start runs. Nil
 	// leaves it to the server's default, if there is one.
 	Rate *RateLimit `json:"rate,omitempty"`
+	// Retention, when "none", makes every run this credential starts a
+	// no-trace run: its content is delivered and stored nowhere. A request or
+	// an agent cannot loosen it, and neither can the operator's timed
+	// override. "" leaves the mode to the request and the agent.
+	Retention string `json:"retention,omitempty"`
+}
+
+// RetentionNone is the retention mode of a credential whose runs store no
+// content. The same value as store.RetentionNone.
+const RetentionNone = "none"
+
+// ParseRetention reads a retention setting as written on a mint surface:
+// "none", or no setting spelled "default" or left empty.
+func ParseRetention(s string) (string, error) {
+	switch s {
+	case "", "default":
+		return "", nil
+	case RetentionNone:
+		return RetentionNone, nil
+	}
+	return "", fmt.Errorf("retention: %q is not a mode (use %q or %q)", s, RetentionNone, "default")
 }
 
 // RateLimit is a token bucket for run creation: PerMinute runs a minute once
@@ -172,7 +193,7 @@ var restrictedAgentNameRe = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9_.:-]{0,12
 
 // IsZero reports whether nothing is restricted.
 func (r Restrictions) IsZero() bool {
-	return len(r.Agents) == 0 && r.Overrides == nil && r.Rate == nil
+	return len(r.Agents) == 0 && r.Overrides == nil && r.Rate == nil && r.Retention == ""
 }
 
 // RunPlaneOnly reports whether the credential is confined to the run plane:
@@ -225,6 +246,12 @@ func (r Restrictions) Validate(agentsWasSet bool) error {
 		if err := r.Rate.Validate(); err != nil {
 			return err
 		}
+	}
+	// The stored form only: a surface that takes "default" turns it into ""
+	// before it gets here (ParseRetention). An unknown value is refused, here
+	// and when a stored record is read: it must never read as "no setting".
+	if r.Retention != "" && r.Retention != RetentionNone {
+		return fmt.Errorf("retention: %q is not a mode (use %q)", r.Retention, RetentionNone)
 	}
 	if r.Overrides != nil {
 		lockable := make(map[string]bool, len(LockableOverrides))
@@ -304,6 +331,12 @@ func ParseRestrictions(s string) (Restrictions, error) {
 	var r Restrictions
 	if err := dec.Decode(&r); err != nil {
 		return Restrictions{}, fmt.Errorf("restrictions: %w", err)
+	}
+	// A value this build does not know is refused like a key it does not
+	// know: read as "no setting", it would store what the token's holder was
+	// told is never stored.
+	if r.Retention != "" && r.Retention != RetentionNone {
+		return Restrictions{}, fmt.Errorf("restrictions: retention %q is not a mode this build knows", r.Retention)
 	}
 	return r, nil
 }

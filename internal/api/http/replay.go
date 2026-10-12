@@ -78,7 +78,7 @@ func (s *Server) ReplaySession(ctx context.Context, req connector.ReplaySessionR
 	}
 	// A no-trace session holds markers, not a conversation; and a replay
 	// writes the conversation it copies, so it cannot produce a no-trace run.
-	if src.Retention == store.RetentionNone || s.resolveRetention(ctx, req.Agent, "") == store.RetentionNone {
+	if src.Retention == store.RetentionNone {
 		return connector.ReplaySessionResult{}, &replayErr{status: http.StatusConflict, code: "retention_none_unsupported", msg: errNoTraceSession.Error()}
 	}
 
@@ -95,6 +95,9 @@ func (s *Server) ReplaySession(ctx context.Context, req connector.ReplaySessionR
 	agentDef, ok := s.lookupAgent(ctx, tenant, req.Agent)
 	if !ok {
 		return connector.ReplaySessionResult{}, &replayErr{status: http.StatusConflict, code: "agent_gone", msg: "target agent not found: " + req.Agent}
+	}
+	if s.resolveRetention(ctx, agentDef, "") == store.RetentionNone {
+		return connector.ReplaySessionResult{}, &replayErr{status: http.StatusConflict, code: "retention_none_unsupported", msg: errNoTraceSession.Error()}
 	}
 
 	events, terr := s.store.GetTranscript(ctx, req.SourceSessionID)

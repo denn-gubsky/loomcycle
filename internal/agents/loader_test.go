@@ -411,3 +411,10 @@ func TestParseAgent_ReadsAllowOverrides(t *testing.T) {
 		t.Errorf("without the key: %v (err %v), want unset", b.AllowOverrides, err)
 	}
 }
+
+func TestParseAgent_ReadsRetention(t *testing.T) {
+	a, err := parseAgent([]byte("---\nname: judge\ndescription: d\nretention: none\n---\nbody\n"))
+	if err != nil || a.Retention != "none" {
+		t.Errorf("retention = %q (err %v), want none", a.Retention, err)
+	}
+}

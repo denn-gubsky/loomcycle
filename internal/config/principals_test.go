@@ -294,3 +294,28 @@ func TestResolvePrincipals_Rate(t *testing.T) {
 		t.Errorf("a rate with no per_minute: err = %v, want a refusal naming rate", err)
 	}
 }
+
+func TestResolvePrincipals_Retention(t *testing.T) {
+	t.Setenv("LOOMCYCLE_TOKEN_RET_OK", "lct_ret_ok")
+	t.Setenv("LOOMCYCLE_TOKEN_RET_DEF", "lct_ret_def")
+	t.Setenv("LOOMCYCLE_TOKEN_RET_BAD", "lct_ret_bad")
+	var def PrincipalDef
+	if err := yaml.Unmarshal([]byte("tenant: acme\nsubject: s\nscopes: [runs:create]\ntoken_env: LOOMCYCLE_TOKEN_RET_OK\nretention: none\n"), &def); err != nil {
+		t.Fatal(err)
+	}
+	c := &Config{Principals: map[string]PrincipalDef{"p": def}}
+	if err := resolvePrincipals(c); err != nil {
+		t.Fatalf("resolvePrincipals: %v", err)
+	}
+	if got := c.ResolvedPrincipals[0].Principal.Restrictions.Retention; got != auth.RetentionNone {
+		t.Errorf("resolved retention = %q, want none", got)
+	}
+	plain := &Config{Principals: map[string]PrincipalDef{"p": {Tenant: "acme", Subject: "s", Scopes: []string{auth.ScopeRunsCreate}, TokenEnv: "LOOMCYCLE_TOKEN_RET_DEF", Retention: "default"}}}
+	if err := resolvePrincipals(plain); err != nil || plain.ResolvedPrincipals[0].Principal.Restrictions.Retention != "" {
+		t.Errorf("retention: default must be no setting: err = %v", err)
+	}
+	bad := PrincipalDef{Tenant: "acme", Subject: "s", Scopes: []string{auth.ScopeRunsCreate}, TokenEnv: "LOOMCYCLE_TOKEN_RET_BAD", Retention: "nonee"}
+	if err := resolvePrincipals(&Config{Principals: map[string]PrincipalDef{"p": bad}}); err == nil || !strings.Contains(err.Error(), "retention") {
+		t.Errorf("a misspelled retention: err = %v, want a refusal naming retention", err)
+	}
+}

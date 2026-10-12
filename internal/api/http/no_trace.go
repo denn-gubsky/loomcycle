@@ -10,6 +10,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/denn-gubsky/loomcycle/internal/auth"
+	"github.com/denn-gubsky/loomcycle/internal/config"
 	"github.com/denn-gubsky/loomcycle/internal/errclassify"
 	"github.com/denn-gubsky/loomcycle/internal/providers"
 	"github.com/denn-gubsky/loomcycle/internal/runner"
@@ -31,12 +33,8 @@ import (
 // eleven paths, and a writer was missed here once already. A filter every
 // write has to pass cannot be forgotten by the next writer.
 //
-// NOT ON THE WIRE YET. No request field, definition field or token setting
-// selects the mode in this version: the only way in is Server.noTraceAgents,
-// which nothing outside this package's tests sets. Half of the places that
-// hold a run's content are not events and get their rule in the next phase;
-// until then a caller must not be able to ask for a mode that only half
-// holds.
+// The mode comes from the request, the agent's definition, the caller's
+// token or the parent run (resolveRetention).
 
 // runModes answers "is this run no-trace" for the store filter.
 //
@@ -326,14 +324,26 @@ func cutPrefix(s, prefix string) (string, bool) {
 	return "", false
 }
 
-// resolveRetention is the mode a new run of agent runs under.
+// resolveRetention is the mode a new run of the agent def runs under.
 //
-// The strictest source wins and nothing loosens it: what the request asked
-// for, what the agent is set to, and what the run that is starting it runs
-// under. A child of a no-trace run is no-trace whatever its own agent says.
-func (s *Server) resolveRetention(ctx context.Context, agent, requested string) string {
-	if requested == store.RetentionNone || s.noTraceAgents[agent] ||
+// The strictest source wins and nothing loosens it:
+//
+//   - what the request asked for;
+//   - what the agent's definition says;
+//   - what the caller's token requires;
+//   - what the run that is starting it runs under — a child of a no-trace run
+//     is no-trace whatever its own agent says, because the parent's content
+//     reaches it as its prompt.
+//
+// A request for "default" is not a way out of any of the others. There is no
+// source that can say "store this after all" (the timed override an operator
+// can set for debugging is the one exception, and it never lifts a token's).
+func (s *Server) resolveRetention(ctx context.Context, def config.AgentDef, requested string) string {
+	if requested == store.RetentionNone || def.Retention == store.RetentionNone ||
 		tools.RunIdentity(ctx).Retention == store.RetentionNone {
+		return store.RetentionNone
+	}
+	if p, ok := auth.PrincipalFromContext(ctx); ok && p.Restrictions.Retention == store.RetentionNone {
 		return store.RetentionNone
 	}
 	return ""
@@ -414,3 +424,16 @@ func (s *Server) FailLostNoTraceRuns(ctx context.Context, bootedAt time.Time) (i
 	}
 	return s.store.FailLostNoTraceRuns(ctx, s.replicaID, bootedAt)
 }
+
+// principalIsNoTrace reports whether the caller's token makes its runs
+// no-trace. Such a caller's content is not stored by any route it can reach,
+// not only by the one that starts a run: it cannot write a prompt into a
+// draft, or send a message into a run that stores its input.
+func principalIsNoTrace(ctx context.Context) bool {
+	p, ok := auth.PrincipalFromContext(ctx)
+	return ok && p.Restrictions.Retention == store.RetentionNone
+}
+
+// errNoTracePrincipalWrite refuses a no-trace token writing content that
+// would be stored.
+var errNoTracePrincipalWrite = &noTraceRefusal{Status: 409, Msg: "this token's runs are no-trace, so it cannot write content that would be stored: start the run directly"}

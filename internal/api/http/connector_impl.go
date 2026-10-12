@@ -66,6 +66,7 @@ func spawnRequestToRunInput(req connector.SpawnRunRequest) runner.RunInput {
 		// The caller's key, as sent; RunOnce scopes and stores it.
 		ClientIdempotencyKey: req.IdempotencyKey,
 		MaxWallSeconds:       req.MaxWallSeconds,
+		Retention:            req.Retention,
 		Metadata:             req.Metadata,         // non-secret trusted agent metadata
 		Sampling:             req.Sampling,         // per-run LLM sampling override
 		ToolChoice:           req.ToolChoice,       // per-run tool_choice (RFC DI)
@@ -370,6 +371,12 @@ func (s *Server) CancelRun(ctx context.Context, agentID, reason string) (connect
 	if agentID == "" {
 		return connector.CancelRunResult{}, fmt.Errorf("agent_id required")
 	}
+	// The cancel goes ahead; a typed reason from a caller whose words are
+	// no-trace does not go with it, and neither does one for a no-trace run
+	// (below, once the run is read).
+	if principalIsNoTrace(ctx) {
+		reason = ""
+	}
 	// Tenant ownership gate (RFC L/N): this method backs gRPC CancelAgent + the
 	// MCP cancel_run tool, both of which dispatch with a principal-bearing ctx.
 	// A cancel keyed only by agent_id must not reach another tenant's run (ids
@@ -385,6 +392,10 @@ func (s *Server) CancelRun(ctx context.Context, agentID, reason string) (connect
 		}
 		if !runOwnershipOK(ctx, run) {
 			return connector.CancelRunResult{}, &store.ErrNotFound{Kind: "run", ID: agentID}
+		}
+		// The cancel is broadcast to every replica with its reason.
+		if run.Retention == store.RetentionNone {
+			reason = ""
 		}
 	}
 	res, ok := s.cancelReg.Cancel(agentID, reason)
@@ -591,6 +602,7 @@ func storeRunToConnector(r store.Run) connector.Run {
 		Status:        string(r.Status),
 		StartedAt:     r.StartedAt,
 		StopReason:    r.StopReason,
+		Retention:     r.Retention,
 		Usage:         usage,
 		Error:         r.ErrorMsg,
 		ParentContext: r.ParentContext,
@@ -1136,6 +1148,7 @@ func (s *Server) PauseRuntime(ctx context.Context, timeoutMS int) (connector.Pau
 		DurationMS:          res.DurationMs,
 		ForceCancelledCount: res.ForceCancelledCount,
 		PausedRunsCount:     res.PausedRunsCount,
+		UnpausableRunsCount: res.UnpausableRunsCount,
 		Warnings:            res.Warnings,
 	}, nil
 }

@@ -436,6 +436,7 @@ func spawnRunStreaming(ctx context.Context, env *handlerEnv, req connector.Spawn
 		// The caller's key, as sent; RunOnce scopes and stores it.
 		ClientIdempotencyKey: req.IdempotencyKey,
 		MaxWallSeconds:       req.MaxWallSeconds,
+		Retention:            req.Retention,
 		Metadata:             req.Metadata,         // non-secret trusted agent metadata
 		Sampling:             req.Sampling,         // per-run LLM sampling override (was dropped on this streaming path)
 		ToolChoice:           req.ToolChoice,       // per-run tool_choice
