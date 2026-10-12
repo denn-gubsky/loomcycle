@@ -47,6 +47,14 @@ const (
 	// (RFC AR CredentialDef). Absent the deployment gate the scope is inert.
 	ScopeProvidersOperatorKey = "providers:operator-key"
 
+	// ScopeRunsDelete permits deleting a run tree: the run, its descendants and
+	// what is stored about them. It is tenant-implied (below), so substrate:admin
+	// and substrate:tenant hold it. It is DELIBERATELY absent from userImplied
+	// and from GrantableUserScopes: a run's record is also the accounting trail
+	// of what a member's token spent, so a member or an isolated user removes
+	// runs only when an operator granted this scope at mint.
+	ScopeRunsDelete = "runs:delete"
+
 	// ScopeLLMGateway gates the raw model endpoints: the LLM gateway and the
 	// OpenAI-compatible chat and embeddings shims. They reach a model with no
 	// agent, no definition and no allowlist in the way, and trust the provider
@@ -80,6 +88,7 @@ var scopeCatalog = map[string]struct{}{
 	ScopeChannelPublish:       {},
 	ScopeChannelRead:          {},
 	ScopeProvidersOperatorKey: {},
+	ScopeRunsDelete:           {},
 	ScopeLLMGateway:           {},
 }
 
@@ -95,6 +104,7 @@ var tenantImplied = map[string]struct{}{
 	ScopeChannelPublish:       {},
 	ScopeChannelRead:          {},
 	ScopeProvidersOperatorKey: {},
+	ScopeRunsDelete:           {},
 	ScopeLLMGateway:           {},
 }
 

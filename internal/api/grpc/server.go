@@ -813,6 +813,10 @@ var grpcConsumerScopes = map[string]string{
 	"StreamRun":        auth.ScopeRunsRead,   // RFC AI — pure read tail (mirrors handleRunStream)
 	"SpawnRunBatch":    auth.ScopeRunsCreate,
 	"CompactRun":       auth.ScopeRunsCreate,
+	// Deleting a run tree removes stored records: its own scope, as on HTTP.
+	// Not substrate:tenant-or-less by implication for a member or an isolated
+	// user; the connector checks it again and requires read access to the root.
+	"DeleteRunTree": auth.ScopeRunsDelete,
 	// RFC DI configured runs: creating, editing, starting and discarding a
 	// draft are run writes, the scope that creates a run (mirrors HTTP).
 	"CreateConfiguredRun": auth.ScopeRunsCreate,
@@ -1215,6 +1219,61 @@ func (s *Server) CompactRun(ctx context.Context, req *loomcyclepb.CompactRunRequ
 		AfterTokens:  int32(res.AfterTokens),
 		Applied:      res.Applied,
 	}, nil
+}
+
+// DeleteRunTree mirrors DELETE /v1/runs/{run_id}/tree and DELETE
+// /v1/sessions/{session_id}?cascade=children: a run (or every run of a
+// session) with its descendants and what is stored about them. The
+// authorization, the walk and the delete are the connector's, shared with
+// HTTP; the interceptor has already required runs:delete.
+func (s *Server) DeleteRunTree(ctx context.Context, req *loomcyclepb.DeleteRunTreeRequest) (*loomcyclepb.DeleteRunTreeResult, error) {
+	if s.connector == nil {
+		return nil, status.Error(codes.Unimplemented, "DeleteRunTree requires a connector; this Server was constructed without one")
+	}
+	res, err := s.connector.DeleteRunTree(ctx, connector.DeleteRunTreeRequest{
+		RunID: req.GetRunId(), SessionID: req.GetSessionId(),
+	})
+	if err != nil {
+		return nil, deleteRunTreeErrToStatus(err)
+	}
+	out := &loomcyclepb.DeleteRunTreeResult{
+		RunId:       res.RunID,
+		SessionId:   res.SessionID,
+		DeletedRuns: int32(res.DeletedRuns),
+		Counts:      make(map[string]int32, len(res.Counts)),
+		Kept:        res.Kept,
+	}
+	for table, n := range res.Counts {
+		out.Counts[table] = int32(n)
+	}
+	for _, nr := range res.NotReached {
+		item := &loomcyclepb.RunTreeNotReached{Name: nr.Name, CountIsFloor: nr.CountIsFloor, Reason: nr.Reason}
+		if nr.Count != nil {
+			n := int32(*nr.Count)
+			item.Count = &n
+		}
+		out.NotReached = append(out.NotReached, item)
+	}
+	return out, nil
+}
+
+// deleteRunTreeErrToStatus maps the connector's refusals by their HTTP status,
+// so the two transports cannot disagree about which refusal is which.
+func deleteRunTreeErrToStatus(err error) error {
+	var hse interface{ HTTPStatus() int }
+	if errors.As(err, &hse) {
+		switch hse.HTTPStatus() {
+		case nethttp.StatusBadRequest:
+			return status.Error(codes.InvalidArgument, err.Error())
+		case nethttp.StatusForbidden:
+			return status.Error(codes.PermissionDenied, err.Error())
+		case nethttp.StatusConflict, nethttp.StatusUnprocessableEntity:
+			return status.Error(codes.FailedPrecondition, err.Error())
+		case nethttp.StatusServiceUnavailable:
+			return status.Error(codes.Unavailable, err.Error())
+		}
+	}
+	return status.Error(codes.Internal, err.Error())
 }
 
 // ReplaySession mirrors POST /v1/sessions/{id}/replay (RFC BJ Phase 4): copy a

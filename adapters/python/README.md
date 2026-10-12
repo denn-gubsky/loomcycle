@@ -122,6 +122,7 @@ All methods are coroutine methods on `LoomcycleClient`.
 | `delete_snapshot(snapshot_id)` | `bool` | v0.8.18 — idempotent; returns True. |
 | `spawn_run_batch(spawns, mode="join", timeout_ms=0)` | `dict` | v0.8.0 — spawn up to 32 runs concurrently (RFC Y); index-aligned `{spawned, results}`, per-child failures in-envelope. |
 | `compact_run(run_id, reason="")` | `dict` | v0.8.0 — summarize a parked run's context. `{run_id, compacted, before_tokens, after_tokens, applied}`. |
+| `delete_run_tree(run_id="", session_id="")` | `dict` | Permanently delete a run and every run it spawned (or, with `session_id`, every run of a session), with what is stored about them. The usage ledger is kept. Needs the `runs:delete` scope. `{run_id, session_id, deleted_runs, counts, kept, not_reached}`; an unknown, already deleted or unreadable root returns `deleted_runs: 0`. A tree with a live or paused run deletes nothing and raises `FailedPrecondition`. |
 | `resolve_probe()` | `dict` | v0.8.0 — resolver provider/model availability matrix. |
 | `decide(state, questions, model="")` | `dict` | Ask a decision model typed questions (`choice` / `noul` / `score`) about `state`. `{model, provider, served_model, answers, usage}`; each answer is a dict under its question's name. See [Decision models](#decision-models). |
 | `list_decision_models()` | `dict` | The decision models a `decide` call may name, and the default: `{"default": str, "models": [{name, provider, model, limits}]}`. |

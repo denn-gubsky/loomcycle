@@ -1821,6 +1821,26 @@ type Store interface {
 	// RFC AV Phase 2b2.
 	DeleteSessionCascade(ctx context.Context, sessionID string) error
 
+	// DeleteRunSet deletes the named runs and what is stored about them, in one
+	// transaction: their events, interrupts, evaluations (by the run they
+	// judge) and memory_pending rows, then the run rows. A session is removed —
+	// with its session_embeddings row and any memory_pending row naming it —
+	// only when none of its runs is left afterwards; sessionIDs names further
+	// sessions to remove on the same condition (a session that holds no run at
+	// all). The usage ledger (token_usage, usage_archive) is LEFT INTACT.
+	//
+	// The caller collects the set (a run tree) and authorizes it; the store
+	// re-checks, inside the transaction, the two things that can change between
+	// that walk and the delete, and deletes nothing when either fails:
+	//
+	//   - every named run is finished or a never-started draft, and not paused
+	//     or pausing (*ErrRunLive names one that is not);
+	//   - no run outside the set names a run inside it as its parent, i.e. the
+	//     set is still a whole tree (*ErrRunLive names the outside child).
+	//
+	// Ids that match no row are ignored, so a repeated call returns zero counts.
+	DeleteRunSet(ctx context.Context, runIDs, sessionIDs []string) (RunSetDeletion, error)
+
 	// ListPurgeableRetiredDefVersions returns retired-and-old substrate def
 	// versions eligible for the RFC BM data-retention purge, for one def-type
 	// (agent / skill / team / hook / mcp_server / schedule / a2a_server_card /
@@ -6278,6 +6298,68 @@ type ErrNotFound struct {
 }
 
 func (e *ErrNotFound) Error() string { return e.Kind + " not found: " + e.ID }
+
+// ErrRunLive is DeleteRunSet's refusal: RunID is a run the delete may not
+// remove yet. Outside is false for a run in the set that is still running,
+// awaiting input, paused or pausing; true for a run OUTSIDE the set whose
+// parent is in it (the tree gained a child after it was collected).
+type ErrRunLive struct {
+	RunID   string
+	Outside bool
+}
+
+func (e *ErrRunLive) Error() string {
+	if e.Outside {
+		return "run " + e.RunID + " was started under this tree while it was being deleted; retry"
+	}
+	return "run " + e.RunID + " is still live (running, awaiting input, or paused); cancel it first"
+}
+
+// RunSetDeletion is what DeleteRunSet removed, one count per table.
+type RunSetDeletion struct {
+	Runs              int
+	Events            int
+	Sessions          int
+	SessionEmbeddings int
+	Interrupts        int
+	Evaluations       int
+	MemoryPending     int
+	// RemovedSessionIDs are the sessions that went, sorted. The caller needs
+	// them to clean up what is keyed by session outside these tables.
+	RemovedSessionIDs []string
+}
+
+// RunDeletable reports whether DeleteRunSet may remove a run in this stored
+// state: it is finished, or a draft that never started, AND its pause state
+// is the resting one. Both backends decide with this one function, on the
+// columns as read under the delete's own lock.
+//
+// It names what is deletable and refuses the rest, so it fails closed: a
+// status this build does not know, a pause state it does not know, and a NULL
+// in either column (passed as "") all read as live.
+func RunDeletable(status, pauseState string) bool {
+	if pauseState != PauseStateRunning {
+		return false
+	}
+	return RunStatus(status) == RunConfigured || IsTerminalRunStatus(RunStatus(status))
+}
+
+// DedupIDs returns ids without empties and repeats, order kept.
+func DedupIDs(ids []string) []string {
+	seen := make(map[string]struct{}, len(ids))
+	out := make([]string, 0, len(ids))
+	for _, id := range ids {
+		if id == "" {
+			continue
+		}
+		if _, dup := seen[id]; dup {
+			continue
+		}
+		seen[id] = struct{}{}
+		out = append(out, id)
+	}
+	return out
+}
 
 // ErrConflict is returned by inserts that collide with an existing
 // primary key. Used by SnapshotCreate so a caller doing

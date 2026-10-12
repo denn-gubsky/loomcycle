@@ -759,6 +759,11 @@ type mockConnector struct {
 	lastReason     atomic.Value // string
 	cancelOK       atomic.Bool  // controls return value
 	cascade        atomic.Int32 // CascadeCount returned
+
+	// DeleteRunTree injection points.
+	deleteTreeReq    atomic.Value // connector.DeleteRunTreeRequest (last)
+	deleteTreeResult connector.RunTreeDeletion
+	deleteTreeErr    error
 }
 
 func (m *mockConnector) CancelRun(_ context.Context, agentID, reason string) (connector.CancelRunResult, error) {
@@ -798,6 +803,10 @@ func (m *mockConnector) ListChildRuns(context.Context, string, int, string) (con
 }
 func (m *mockConnector) CompactRun(context.Context, string) (connector.CompactResult, error) {
 	return connector.CompactResult{}, nil
+}
+func (m *mockConnector) DeleteRunTree(_ context.Context, req connector.DeleteRunTreeRequest) (connector.RunTreeDeletion, error) {
+	m.deleteTreeReq.Store(req)
+	return m.deleteTreeResult, m.deleteTreeErr
 }
 
 // erasureFn lets a test drive the erasure ops; nil returns a zero report, which

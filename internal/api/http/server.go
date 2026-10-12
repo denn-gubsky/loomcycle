@@ -112,6 +112,9 @@ type Server struct {
 	// failing sink here REFUSES the operation rather than proceeding unrecorded — see
 	// SetEraseAudit.
 	eraseAudit audit.Sink
+	// runDeleteAudit records run-tree deletes (SetRunDeleteAudit); nil = logged
+	// only. Unlike eraseAudit, a nil sink does not refuse the operation.
+	runDeleteAudit audit.Sink
 	// tokenAudit records delegated user-token mints and revocations
 	// (SetTokenAudit); nil = not recorded.
 	tokenAudit audit.Sink
@@ -4049,6 +4052,11 @@ func (s *Server) Mux() http.Handler {
 	mux.Handle("PATCH /v1/runs/{run_id}", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handlePatchConfiguredRun))))
 	mux.Handle("DELETE /v1/runs/{run_id}", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleDeleteConfiguredRun))))
 	mux.Handle("POST /v1/runs/{run_id}/start", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleStartConfiguredRun))))
+	// Delete one run tree: a run (or every run of a session) with its
+	// descendants and what is stored about them. Distinct from the draft
+	// discard above, which is DELETE on the run itself.
+	mux.Handle("DELETE /v1/runs/{run_id}/tree", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleDeleteRunTree))))
+	mux.Handle("DELETE /v1/sessions/{id}", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleDeleteSession))))
 	// RFC BC: the client-tool host WebSocket. auth runs on the initial GET before
 	// the upgrade (authMiddleware wraps a plain handler), so the principal is on
 	// ctx by the time handleClientTools upgrades.

@@ -70,6 +70,11 @@ type mockConnector struct {
 	compactResult connector.CompactResult
 	compactErr    error
 
+	// delete_run_tree injection points.
+	deleteTreeReq    atomic.Value // connector.DeleteRunTreeRequest (last)
+	deleteTreeResult connector.RunTreeDeletion
+	deleteTreeErr    error
+
 	// get_run: which read it dispatched to, and with what.
 	getRunAgentID       atomic.Value // string: the agent_id GetRun was called with
 	getRunByRunIDArg    atomic.Value // string: the run_id GetRunByRunID was called with
@@ -116,6 +121,10 @@ func (m *mockConnector) GetRunByRunID(_ context.Context, runID string) (connecto
 func (m *mockConnector) CompactRun(_ context.Context, runID string) (connector.CompactResult, error) {
 	m.compactRunID.Store(runID)
 	return m.compactResult, m.compactErr
+}
+func (m *mockConnector) DeleteRunTree(_ context.Context, req connector.DeleteRunTreeRequest) (connector.RunTreeDeletion, error) {
+	m.deleteTreeReq.Store(req)
+	return m.deleteTreeResult, m.deleteTreeErr
 }
 
 // erasureFn lets a test drive the erasure ops; nil returns a zero report, which
@@ -472,8 +481,8 @@ func TestServer_ToolsList_ReturnsFullCatalogue(t *testing.T) {
 	if err := json.Unmarshal(resps[0].Result, &result); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
-	if len(result.Tools) != 57 {
-		t.Errorf("got %d tools, want 57 (+list_team_channels, +peek_team_channel, +release_team_channel; register_hook, list_hooks and delete_hook removed; +hookdef, +review_run, +configured_run, +decision on top of retune_run and the directory/erasure/history/teamdef/credentialdef/path/document/volumedef/documentsourcedef list)", len(result.Tools))
+	if len(result.Tools) != 58 {
+		t.Errorf("got %d tools, want 58 (+delete_run_tree, +list_team_channels, +peek_team_channel, +release_team_channel; register_hook, list_hooks and delete_hook removed; +hookdef, +review_run, +configured_run, +decision on top of retune_run and the directory/erasure/history/teamdef/credentialdef/path/document/volumedef/documentsourcedef list)", len(result.Tools))
 	}
 	names := map[string]bool{}
 	for _, td := range result.Tools {
@@ -482,7 +491,7 @@ func TestServer_ToolsList_ReturnsFullCatalogue(t *testing.T) {
 	if !names["credentialdef"] {
 		t.Error("catalogue missing the credentialdef meta-tool")
 	}
-	for _, want := range []string{"list_team_channels", "peek_team_channel", "release_team_channel"} {
+	for _, want := range []string{"list_team_channels", "peek_team_channel", "release_team_channel", "delete_run_tree"} {
 		if !names[want] {
 			t.Errorf("catalogue missing %s", want)
 		}

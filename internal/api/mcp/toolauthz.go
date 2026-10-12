@@ -60,6 +60,11 @@ var tenantConfinableTools = map[string]bool{
 	// through the connector's tenant gate and keeps the draft's identity.
 	"configured_run": true,
 	"list_runs":      true,
+	// delete_run_tree: the connector requires read access to the root through
+	// the tenant gate and refuses a tree that leaves the root's tenant. It
+	// additionally needs runs:delete (toolRequiredScope), which a member holds
+	// only by explicit grant.
+	"delete_run_tree": true,
 
 	// Agent management.
 	"register_agent":   true,
@@ -180,6 +185,9 @@ var toolRequiredScope = map[string]string{
 	"review_run":           auth.ScopeRunsCreate,
 	"configured_run":       auth.ScopeRunsCreate,
 	"interruption_resolve": auth.ScopeRunsCreate,
+	// Deleting a run tree removes stored records: a scope of its own, not
+	// implied for a member.
+	"delete_run_tree": auth.ScopeRunsDelete,
 	// Reading runs.
 	"get_run":                auth.ScopeRunsRead,
 	"list_runs":              auth.ScopeRunsRead,

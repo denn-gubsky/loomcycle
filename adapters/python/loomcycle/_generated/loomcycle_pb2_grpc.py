@@ -58,6 +58,11 @@ class LoomcycleStub:
                 request_serializer=loomcycle__pb2.CompactRunRequest.SerializeToString,
                 response_deserializer=loomcycle__pb2.CompactRunResult.FromString,
                 _registered_method=True)
+        self.DeleteRunTree = channel.unary_unary(
+                '/loomcycle.v1.Loomcycle/DeleteRunTree',
+                request_serializer=loomcycle__pb2.DeleteRunTreeRequest.SerializeToString,
+                response_deserializer=loomcycle__pb2.DeleteRunTreeResult.FromString,
+                _registered_method=True)
         self.CreateConfiguredRun = channel.unary_unary(
                 '/loomcycle.v1.Loomcycle/CreateConfiguredRun',
                 request_serializer=loomcycle__pb2.RunRequest.SerializeToString,
@@ -449,6 +454,24 @@ class LoomcycleServicer:
         a mid-turn run returns FailedPrecondition. Keyed by run_id.
 
         Mirrors POST /v1/runs/{run_id}/compact + the compact_run MCP tool.
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def DeleteRunTree(self, request, context):
+        """DeleteRunTree deletes a run and every descendant run, with what is
+        stored about them (events, sessions left without a run, interrupts,
+        evaluations, queued memory rows, indexed turns). The usage ledger is
+        kept. Name a run, or a session to delete every run of it. Requires the
+        runs:delete scope and read access to the root. A root that does not
+        exist, or that the caller cannot read, deletes nothing and returns zero
+        counts, so a repeated call is not an error. A tree holding a live or
+        paused run returns FailedPrecondition and deletes nothing: cancel first.
+
+        Mirrors DELETE /v1/runs/{run_id}/tree, DELETE
+        /v1/sessions/{session_id}?cascade=children and the delete_run_tree MCP
+        tool.
         """
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
         context.set_details('Method not implemented!')
@@ -1280,6 +1303,11 @@ def add_LoomcycleServicer_to_server(servicer, server):
                     request_deserializer=loomcycle__pb2.CompactRunRequest.FromString,
                     response_serializer=loomcycle__pb2.CompactRunResult.SerializeToString,
             ),
+            'DeleteRunTree': grpc.unary_unary_rpc_method_handler(
+                    servicer.DeleteRunTree,
+                    request_deserializer=loomcycle__pb2.DeleteRunTreeRequest.FromString,
+                    response_serializer=loomcycle__pb2.DeleteRunTreeResult.SerializeToString,
+            ),
             'CreateConfiguredRun': grpc.unary_unary_rpc_method_handler(
                     servicer.CreateConfiguredRun,
                     request_deserializer=loomcycle__pb2.RunRequest.FromString,
@@ -1733,6 +1761,33 @@ class Loomcycle:
             '/loomcycle.v1.Loomcycle/CompactRun',
             loomcycle__pb2.CompactRunRequest.SerializeToString,
             loomcycle__pb2.CompactRunResult.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def DeleteRunTree(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/loomcycle.v1.Loomcycle/DeleteRunTree',
+            loomcycle__pb2.DeleteRunTreeRequest.SerializeToString,
+            loomcycle__pb2.DeleteRunTreeResult.FromString,
             options,
             channel_credentials,
             insecure,
