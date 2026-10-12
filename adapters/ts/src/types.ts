@@ -1006,6 +1006,17 @@ export interface RunOptions extends RunOverrideOptions {
    *  is the time bound for a `mode: "detach"` batch child, where `timeoutMs`
    *  is refused. Any agent, model-driven or code-js. */
   maxWallSeconds?: number;
+  /** `"none"` makes this a no-trace run: what it says is delivered on this
+   *  stream and stored nowhere — the server keeps a marker for each event
+   *  (its type and size) and a class for an error, never the text. Omit (or
+   *  `"default"`) to leave the mode to the agent and your token, either of
+   *  which may still make the run no-trace: the strictest wins.
+   *
+   *  A no-trace run cannot be interactive, held for review, put in an
+   *  existing session, continued, compacted or retuned; each is refused with
+   *  `retention_none_unsupported`. A detached one returns its id and nothing
+   *  readable afterwards, so the agent must deliver its own result. */
+  retention?: "none" | "default";
   /** Optional NON-SECRET structured metadata passed to the agent (repo
    *  name, review policy, preferred skills, …) — symmetric with the
    *  WebHook/Schedule trigger paths. As a first-party (bearer-authed)
@@ -1406,6 +1417,9 @@ export interface Agent {
   started_at: string;
   completed_at: string | null;
   stop_reason: string | null;
+  /** `"none"` for a no-trace run: its transcript holds markers, not content,
+   *  and `error` is a class. Absent on every other run. */
+  retention?: string;
   error: string | null;
   usage: AgentUsage;
   last_heartbeat_at: string | null;
@@ -2039,6 +2053,8 @@ export interface TokenRestrictions {
   overrides?: "none" | string[];
   /** How often the token may start runs. */
   rate?: { per_minute: number; burst?: number };
+  /** `"none"` when every run the token starts is a no-trace run. */
+  retention?: "none";
 }
 
 /** One token row from GET /v1/_users/{subject}/tokens — METADATA ONLY (never
@@ -2098,6 +2114,10 @@ export interface PauseResult {
   /** Always 0: pause cancels no tool call. Kept for wire compatibility. */
   force_cancelled_count: number;
   paused_runs_count: number;
+  /** No-trace runs on the serving replica that the pause did not park: they
+   *  have nothing stored to resume from, keep running, and are left out of a
+   *  snapshot. Absent when there are none. */
+  unpausable_runs_count?: number;
   warnings?: string[];
 }
 
@@ -4241,6 +4261,10 @@ export interface AgentDefOverlay {
    *  refused with `override_not_allowed`. Unset or `true` leaves them to the
    *  caller. A fork that does not send it keeps its parent's. */
   allow_overrides?: boolean;
+  /** `"none"` makes every run of the agent a no-trace run: its content is
+   *  delivered to the caller and stored nowhere. A fork that does not send it
+   *  keeps its parent's, and `"default"` on a no-trace parent is refused. */
+  retention?: "none" | "default";
   memory_quota_bytes?: number;
   memory_backend?: string;
   retry_attempts?: number;

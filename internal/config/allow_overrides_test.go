@@ -37,3 +37,20 @@ func TestAllowOverrides_ReachesTheAgentDefFromEverySource(t *testing.T) {
 		t.Errorf("a layer that did not mention the lock removed it: %v", kept.AllowOverrides)
 	}
 }
+
+func TestRetention_ReachesTheAgentDefFromEverySourceAndRefusesAnUnknownValue(t *testing.T) {
+	var fromYAML AgentDef
+	if err := yaml.Unmarshal([]byte("model: m\nretention: none\n"), &fromYAML); err != nil || fromYAML.Retention != "none" {
+		t.Errorf("yaml: retention = %q (err %v)", fromYAML.Retention, err)
+	}
+	if got := agentFromDiscovered(&agents.Agent{Name: "a", Retention: "none"}); got.Retention != "none" {
+		t.Errorf("a markdown agent's mode was dropped: %q", got.Retention)
+	}
+	merged := mergeAgentDef(AgentDef{Model: "m"}, AgentDef{Retention: "none"})
+	if merged.Retention != "none" {
+		t.Errorf("a layer's mode was dropped by the merge: %q", merged.Retention)
+	}
+	if kept := mergeAgentDef(merged, AgentDef{Effort: "low"}); kept.Retention != "none" {
+		t.Errorf("a layer that did not mention the mode removed it: %q", kept.Retention)
+	}
+}

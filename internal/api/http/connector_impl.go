@@ -66,6 +66,7 @@ func spawnRequestToRunInput(req connector.SpawnRunRequest) runner.RunInput {
 		// The caller's key, as sent; RunOnce scopes and stores it.
 		ClientIdempotencyKey: req.IdempotencyKey,
 		MaxWallSeconds:       req.MaxWallSeconds,
+		Retention:            req.Retention,
 		Metadata:             req.Metadata,         // non-secret trusted agent metadata
 		Sampling:             req.Sampling,         // per-run LLM sampling override
 		ToolChoice:           req.ToolChoice,       // per-run tool_choice (RFC DI)
@@ -591,6 +592,7 @@ func storeRunToConnector(r store.Run) connector.Run {
 		Status:        string(r.Status),
 		StartedAt:     r.StartedAt,
 		StopReason:    r.StopReason,
+		Retention:     r.Retention,
 		Usage:         usage,
 		Error:         r.ErrorMsg,
 		ParentContext: r.ParentContext,
@@ -1136,6 +1138,7 @@ func (s *Server) PauseRuntime(ctx context.Context, timeoutMS int) (connector.Pau
 		DurationMS:          res.DurationMs,
 		ForceCancelledCount: res.ForceCancelledCount,
 		PausedRunsCount:     res.PausedRunsCount,
+		UnpausableRunsCount: res.UnpausableRunsCount,
 		Warnings:            res.Warnings,
 	}, nil
 }

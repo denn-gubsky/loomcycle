@@ -132,6 +132,9 @@ type Agent struct {
 	// AllowOverrides: false refuses every per-run override of this agent
 	// (see config.AgentDef.AllowOverrides). nil = allowed.
 	AllowOverrides *bool
+	// Retention: "none" makes the agent's runs no-trace (see
+	// config.AgentDef.Retention). "" = stored as usual.
+	Retention string
 	// EvaluationScopes is the v0.8.5 Evaluation-tool capability gate.
 	// Closed set: "submit_self" / "submit_siblings" /
 	// "submit_descendants" / "submit_any" / "read_any". Empty =
@@ -418,6 +421,7 @@ type frontmatter struct {
 	AgentDefScopes        []string                   `yaml:"agent_def_scopes"`
 	VolumeDefScopes       []string                   `yaml:"volume_def_scopes"`
 	AllowOverrides        *bool                      `yaml:"allow_overrides"`
+	Retention             string                     `yaml:"retention"`
 	EvaluationScopes      []string                   `yaml:"evaluation_scopes"`
 	Interruption          AgentInterruptionACL       `yaml:"interruption"` // F14: round-trips like channels
 	SystemPromptFile      string                     `yaml:"system_prompt_file"`
@@ -502,6 +506,7 @@ func parseAgent(raw []byte) (*Agent, error) {
 	a.AgentDefScopes = fm.AgentDefScopes
 	a.VolumeDefScopes = fm.VolumeDefScopes
 	a.AllowOverrides = fm.AllowOverrides
+	a.Retention = fm.Retention
 	a.EvaluationScopes = fm.EvaluationScopes
 	a.Interruption = fm.Interruption
 	a.SystemPromptFile = fm.SystemPromptFile

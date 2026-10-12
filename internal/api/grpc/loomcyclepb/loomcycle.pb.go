@@ -190,8 +190,16 @@ type RunRequest struct {
 	// a detached batch child takes, where timeout_ms is refused. Mirrors
 	// POST /v1/runs `max_wall_seconds`.
 	MaxWallSeconds int32 `protobuf:"varint,39,opt,name=max_wall_seconds,json=maxWallSeconds,proto3" json:"max_wall_seconds,omitempty"`
-	unknownFields  protoimpl.UnknownFields
-	sizeCache      protoimpl.SizeCache
+	// "none" makes this a no-trace run: its content is delivered on this
+	// stream and stored nowhere — events are kept as markers, the result and
+	// error as a class. "default" or empty leaves the mode to the agent and the
+	// caller's token, either of which may still make the run no-trace: the
+	// strictest wins. A no-trace run cannot be interactive, held for review,
+	// continued or retuned (FAILED_PRECONDITION / INVALID_ARGUMENT). Mirrors
+	// POST /v1/runs `retention`.
+	Retention     string `protobuf:"bytes,40,opt,name=retention,proto3" json:"retention,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *RunRequest) Reset() {
@@ -495,6 +503,13 @@ func (x *RunRequest) GetMaxWallSeconds() int32 {
 		return x.MaxWallSeconds
 	}
 	return 0
+}
+
+func (x *RunRequest) GetRetention() string {
+	if x != nil {
+		return x.Retention
+	}
+	return ""
 }
 
 type ContinueRequest struct {
@@ -7909,6 +7924,10 @@ type PauseRuntimeResponse struct {
 	ForceCancelledCount int32    `protobuf:"varint,3,opt,name=force_cancelled_count,json=forceCancelledCount,proto3" json:"force_cancelled_count,omitempty"`
 	PausedRunsCount     int32    `protobuf:"varint,4,opt,name=paused_runs_count,json=pausedRunsCount,proto3" json:"paused_runs_count,omitempty"`
 	Warnings            []string `protobuf:"bytes,5,rep,name=warnings,proto3" json:"warnings,omitempty"`
+	// No-trace runs on the serving replica that the pause did not park: they
+	// have nothing stored to resume from, keep running, and are left out of a
+	// snapshot. 0 when there are none.
+	UnpausableRunsCount int32 `protobuf:"varint,6,opt,name=unpausable_runs_count,json=unpausableRunsCount,proto3" json:"unpausable_runs_count,omitempty"`
 	unknownFields       protoimpl.UnknownFields
 	sizeCache           protoimpl.SizeCache
 }
@@ -7976,6 +7995,13 @@ func (x *PauseRuntimeResponse) GetWarnings() []string {
 		return x.Warnings
 	}
 	return nil
+}
+
+func (x *PauseRuntimeResponse) GetUnpausableRunsCount() int32 {
+	if x != nil {
+		return x.UnpausableRunsCount
+	}
+	return 0
 }
 
 type ResumeRuntimeRequest struct {
@@ -12158,7 +12184,7 @@ var File_loomcycle_proto protoreflect.FileDescriptor
 
 const file_loomcycle_proto_rawDesc = "" +
 	"\n" +
-	"\x0floomcycle.proto\x12\floomcycle.v1\x1a\x1fgoogle/protobuf/timestamp.proto\"\xe7\x0e\n" +
+	"\x0floomcycle.proto\x12\floomcycle.v1\x1a\x1fgoogle/protobuf/timestamp.proto\"\x85\x0f\n" +
 	"\n" +
 	"RunRequest\x12\x14\n" +
 	"\x05agent\x18\x01 \x01(\tR\x05agent\x12\x1d\n" +
@@ -12207,7 +12233,8 @@ const file_loomcycle_proto_rawDesc = "" +
 	"\n" +
 	"hooks_json\x18% \x01(\fR\thooksJson\x12'\n" +
 	"\x0fidempotency_key\x18& \x01(\tR\x0eidempotencyKey\x12(\n" +
-	"\x10max_wall_seconds\x18' \x01(\x05R\x0emaxWallSeconds\x1aB\n" +
+	"\x10max_wall_seconds\x18' \x01(\x05R\x0emaxWallSeconds\x12\x1c\n" +
+	"\tretention\x18( \x01(\tR\tretention\x1aB\n" +
 	"\x14UserCredentialsEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
 	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01B\x17\n" +
@@ -12908,14 +12935,15 @@ const file_loomcycle_proto_rawDesc = "" +
 	"\x0euptime_seconds\x18\x04 \x01(\x03R\ruptimeSeconds\"4\n" +
 	"\x13PauseRuntimeRequest\x12\x1d\n" +
 	"\n" +
-	"timeout_ms\x18\x01 \x01(\x03R\ttimeoutMs\"\xcb\x01\n" +
+	"timeout_ms\x18\x01 \x01(\x03R\ttimeoutMs\"\xff\x01\n" +
 	"\x14PauseRuntimeResponse\x12\x16\n" +
 	"\x06status\x18\x01 \x01(\tR\x06status\x12\x1f\n" +
 	"\vduration_ms\x18\x02 \x01(\x03R\n" +
 	"durationMs\x122\n" +
 	"\x15force_cancelled_count\x18\x03 \x01(\x05R\x13forceCancelledCount\x12*\n" +
 	"\x11paused_runs_count\x18\x04 \x01(\x05R\x0fpausedRunsCount\x12\x1a\n" +
-	"\bwarnings\x18\x05 \x03(\tR\bwarnings\"\x16\n" +
+	"\bwarnings\x18\x05 \x03(\tR\bwarnings\x122\n" +
+	"\x15unpausable_runs_count\x18\x06 \x01(\x05R\x13unpausableRunsCount\"\x16\n" +
 	"\x14ResumeRuntimeRequest\"w\n" +
 	"\x15ResumeRuntimeResponse\x12\x16\n" +
 	"\x06status\x18\x01 \x01(\tR\x06status\x12*\n" +

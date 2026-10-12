@@ -764,6 +764,15 @@ message RunRequest {
   // a detached batch child takes, where timeout_ms is refused. Mirrors
   // POST /v1/runs `max_wall_seconds`.
   int32 max_wall_seconds = 39;
+
+  // "none" makes this a no-trace run: its content is delivered on this
+  // stream and stored nowhere — events are kept as markers, the result and
+  // error as a class. "default" or empty leaves the mode to the agent and the
+  // caller's token, either of which may still make the run no-trace: the
+  // strictest wins. A no-trace run cannot be interactive, held for review,
+  // continued or retuned (FAILED_PRECONDITION / INVALID_ARGUMENT). Mirrors
+  // POST /v1/runs `retention`.
+  string retention = 40;
 }
 
 message ContinueRequest {
@@ -1976,6 +1985,10 @@ message PauseRuntimeResponse {
   int32 force_cancelled_count = 3;
   int32 paused_runs_count = 4;
   repeated string warnings = 5;
+  // No-trace runs on the serving replica that the pause did not park: they
+  // have nothing stored to resume from, keep running, and are left out of a
+  // snapshot. 0 when there are none.
+  int32 unpausable_runs_count = 6;
 }
 
 message ResumeRuntimeRequest {}

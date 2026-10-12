@@ -156,3 +156,88 @@ func firstStaticAgent(t *testing.T, cfg *config.Config) (config.AgentDef, string
 	t.Fatal("the fixture declares no static agent")
 	return config.AgentDef{}, ""
 }
+
+// retention travels like the override lock: it survives create and fork, a
+// fork can add it and cannot undo it, the config's holds over a tenant's
+// version, and a create that changes only it still writes a version.
+func TestAgentDefTool_RetentionSurvivesCreateAndForkAndCannotBeLoosened(t *testing.T) {
+	tool, ctx, cleanup := agentDefFixture(t)
+	defer cleanup()
+	retentionOf := func(tenant, name string) string {
+		t.Helper()
+		def, ok := lookup.Agent(context.Background(), tool.Store, tool.Cfg, tenant, name)
+		if !ok {
+			t.Fatalf("%s did not resolve", name)
+		}
+		return def.Retention
+	}
+	exec := func(input string) tools.Result {
+		t.Helper()
+		res, _ := tool.Execute(ctx, json.RawMessage(input))
+		return res
+	}
+
+	if res := exec(`{"op":"create","name":"quiet","overlay":{"system_prompt":"q","retention":"none"}}`); res.IsError {
+		t.Fatalf("create: %s", res.Text)
+	}
+	if got := retentionOf("", "quiet"); got != "none" {
+		t.Fatalf("after create: retention = %q — the mode did not survive the overlay", got)
+	}
+	if res := exec(`{"op":"fork","name":"quiet","promote":true,"overlay":{"system_prompt":"q2"}}`); res.IsError {
+		t.Fatalf("fork: %s", res.Text)
+	}
+	if got := retentionOf("", "quiet"); got != "none" {
+		t.Errorf("after a fork that did not send it: retention = %q, want the parent's", got)
+	}
+	if res := exec(`{"op":"fork","name":"quiet","promote":true,"overlay":{"retention":"default"}}`); !res.IsError || !strings.Contains(res.Text, "retention") {
+		t.Errorf("a fork that asked for the default on a no-trace parent: %s, want it refused", res.Text)
+	}
+	if res := exec(`{"op":"create","name":"bad","overlay":{"system_prompt":"b","retention":"nonee"}}`); !res.IsError {
+		t.Errorf("a misspelled retention was accepted: %s", res.Text)
+	}
+	// "default" on an agent that is not no-trace is simply the default.
+	if res := exec(`{"op":"create","name":"plain","overlay":{"system_prompt":"p","retention":"default"}}`); res.IsError {
+		t.Fatalf("create with the default: %s", res.Text)
+	}
+	if got := retentionOf("", "plain"); got != "" {
+		t.Errorf("retention %q stored for the default", got)
+	}
+	// A create that changes only the mode is not answered with the old row.
+	res := exec(`{"op":"create","name":"plain","promote":true,"overlay":{"system_prompt":"p","retention":"none"}}`)
+	var out map[string]any
+	if err := json.Unmarshal([]byte(res.Text), &out); err != nil || out["deduplicated"] == true {
+		t.Errorf("a create that adds the mode was deduplicated: %s", res.Text)
+	}
+	if got := retentionOf("", "plain"); got != "none" {
+		t.Errorf("active def retention = %q, want none", got)
+	}
+}
+
+func TestRetention_TheConfigModeHoldsOverATenantsVersionAndRoundTrips(t *testing.T) {
+	tool, ctx, cleanup := agentDefFixture(t)
+	defer cleanup()
+	ctx = tools.WithRunIdentity(operatorPlane(ctx), tools.RunIdentityValue{TenantID: "acme", AgentID: "a_author"})
+	static, name := firstStaticAgent(t, tool.Cfg)
+	if res, _ := tool.Execute(ctx, json.RawMessage(`{"op":"fork","name":"`+name+`","promote":true,"overlay":{"system_prompt":"tenant version"}}`)); res.IsError {
+		t.Fatalf("fork: %s", res.Text)
+	}
+	static.Retention = "none"
+	tool.Cfg.Agents[name] = static
+	if d, _ := lookup.Agent(context.Background(), tool.Store, tool.Cfg, "acme", name); d.SystemPrompt != "tenant version" || d.Retention != "none" {
+		t.Errorf("the tenant's version resolves without the config's mode: %q", d.Retention)
+	}
+	if d, _, _ := lookup.AgentChecked(context.Background(), tool.Store, tool.Cfg, "acme", name); d.Retention != "none" {
+		t.Errorf("AgentChecked: retention %q", d.Retention)
+	}
+	res, _ := tool.Execute(ctx, json.RawMessage(`{"op":"fork","name":"`+name+`","promote":true,"overlay":{"retention":"default"}}`))
+	if !res.IsError {
+		t.Errorf("a fork loosened a config-level mode: %s", res.Text)
+	}
+
+	if md := staticToMergedDef(config.AgentDef{Retention: "none"}); md.Retention != "none" {
+		t.Errorf("staticToMergedDef dropped the mode: %q", md.Retention)
+	}
+	if back := lookup.SubstrateAgentDefFromConfig(config.AgentDef{Retention: "none"}).ToConfigDef(); back.Retention != "none" {
+		t.Errorf("the read adapter dropped the mode: %q", back.Retention)
+	}
+}

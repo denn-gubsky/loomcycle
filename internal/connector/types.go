@@ -115,6 +115,14 @@ type SpawnRunRequest struct {
 	// detached run takes where timeout_ms is refused.
 	MaxWallSeconds int `json:"max_wall_seconds,omitempty"`
 
+	// Retention: "none" makes this a no-trace run — its content is delivered
+	// to the caller and stored nowhere (events as markers, the result and
+	// error as a class). "default" or absent leaves it to the agent and the
+	// caller's token, either of which may still make it "none": the strictest
+	// wins. A no-trace run cannot be interactive, held for review, continued
+	// or retuned.
+	Retention string `json:"retention,omitempty"`
+
 	// Metadata is the optional NON-SECRET structured metadata passed to the
 	// agent (repo name, review policy, …) — the same trusted channel the HTTP
 	// /v1/runs `metadata` field feeds, so a gRPC / LoomCycle-MCP spawn_run /
@@ -387,19 +395,21 @@ type ReplaySessionResult struct {
 // Run is the status snapshot returned by GetRun / GetRunByRunID / ListRuns. Distinct
 // from store.Run — this is the wire shape (no internal-only fields).
 type Run struct {
-	AgentID       string           `json:"agent_id"`
-	RunID         string           `json:"run_id"`
-	SessionID     string           `json:"session_id"`
-	UserID        string           `json:"user_id,omitempty"`
-	Agent         string           `json:"agent"`
-	ParentAgentID string           `json:"parent_agent_id,omitempty"`
-	ParentRunID   string           `json:"parent_run_id,omitempty"`
-	Status        string           `json:"status"` // "running" | "completed" | "failed" | "cancelled"
-	StartedAt     time.Time        `json:"started_at"`
-	CompletedAt   *time.Time       `json:"completed_at,omitempty"`
-	StopReason    string           `json:"stop_reason,omitempty"`
-	Usage         *providers.Usage `json:"usage,omitempty"`
-	Error         string           `json:"error,omitempty"`
+	AgentID       string     `json:"agent_id"`
+	RunID         string     `json:"run_id"`
+	SessionID     string     `json:"session_id"`
+	UserID        string     `json:"user_id,omitempty"`
+	Agent         string     `json:"agent"`
+	ParentAgentID string     `json:"parent_agent_id,omitempty"`
+	ParentRunID   string     `json:"parent_run_id,omitempty"`
+	Status        string     `json:"status"` // "running" | "completed" | "failed" | "cancelled"
+	StartedAt     time.Time  `json:"started_at"`
+	CompletedAt   *time.Time `json:"completed_at,omitempty"`
+	StopReason    string     `json:"stop_reason,omitempty"`
+	// Retention is "none" for a no-trace run, whose content was not stored.
+	Retention string           `json:"retention,omitempty"`
+	Usage     *providers.Usage `json:"usage,omitempty"`
+	Error     string           `json:"error,omitempty"`
 	// Result is the run's answer (RFC DI): {final_text, state}. Set by GetRun,
 	// and by ListWalkRuns on the walk's own row only; ListRuns leaves it empty
 	// so a listing stays small.
@@ -503,10 +513,14 @@ type AgentDescriptor struct {
 
 // PauseResult reports the outcome of PauseRuntime.
 type PauseResult struct {
-	Status              string   `json:"status"`                   // "paused"
-	DurationMS          int64    `json:"duration_ms"`              // time taken to reach paused state
-	ForceCancelledCount int      `json:"force_cancelled_count"`    // always 0: pause cancels no tool call
-	PausedRunsCount     int      `json:"paused_runs_count"`        // runs marked pause_state='paused' in the store
+	Status              string `json:"status"`                // "paused"
+	DurationMS          int64  `json:"duration_ms"`           // time taken to reach paused state
+	ForceCancelledCount int    `json:"force_cancelled_count"` // always 0: pause cancels no tool call
+	PausedRunsCount     int    `json:"paused_runs_count"`     // runs marked pause_state='paused' in the store
+	// UnpausableRunsCount is the no-trace runs on the serving replica that
+	// the pause did not park: they have nothing stored to resume from, keep
+	// running, and are left out of a snapshot. Absent when zero.
+	UnpausableRunsCount int      `json:"unpausable_runs_count,omitempty"`
 	Warnings            []string `json:"warnings,omitempty"`       // non-fatal issues encountered during pause
 	FeatureStatus       string   `json:"feature_status,omitempty"` // empty in v0.8.18+; "preview" historically
 	Note                string   `json:"note,omitempty"`           // human-readable feature-status explanation

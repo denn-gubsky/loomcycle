@@ -146,8 +146,13 @@ var agentDefOverridability = map[string]overridability{
 	"SkillDefScopes":         notOverridable,
 	"VolumeDefScopes":        notOverridable,
 	"AllowOverrides":         notOverridable,
-	"Hooks":                  notOverridable,
-	"ToolHooks":              notOverridable,
+	// A run can ask for "none" with its own request field (no_trace.go), which
+	// only ever stores less. It is not an override of the definition: nothing
+	// a run sends can loosen the definition's mode, and the override
+	// machinery never touches it.
+	"Retention": notOverridable,
+	"Hooks":     notOverridable,
+	"ToolHooks": notOverridable,
 
 	// --- identity and instructions: letting a caller replace these lets them
 	// replace the agent, which is the whole point of a definition being a

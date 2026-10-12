@@ -250,6 +250,17 @@ describe("runStreaming", () => {
     expect("idempotency_key" in without).toBe(false);
   });
 
+  it("forwards retention when set and omits it otherwise", async () => {
+    const { client, fetchMock } = makeClient([
+      sseResponse(['event: done\ndata: {"type":"done"}\n\n']),
+      sseResponse(['event: done\ndata: {"type":"done"}\n\n']),
+    ]);
+    for await (const _ of client.runStreaming({ agent: "judge", segments: [], retention: "none" })) {}
+    expect(JSON.parse(fetchMock.mock.calls[0]![1]!.body as string).retention).toBe("none");
+    for await (const _ of client.runStreaming({ agent: "judge", segments: [] })) {}
+    expect("retention" in JSON.parse(fetchMock.mock.calls[1]![1]!.body as string)).toBe(false);
+  });
+
   it("forwards max_wall_seconds when set and omits it otherwise", async () => {
     const { client, fetchMock } = makeClient([
       sseResponse(['event: done\ndata: {"type":"done"}\n\n']),

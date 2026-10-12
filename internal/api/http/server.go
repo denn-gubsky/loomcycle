@@ -129,10 +129,6 @@ type Server struct {
 	// strictLimits also checks a hard token budget before each model call
 	// and each sub-agent start (strict_limits.go).
 	strictLimits bool
-	// noTraceAgents names the agents whose runs are no-trace (no_trace.go).
-	// It stands in for the definition field until the mode is exposed, and
-	// nothing outside tests sets it.
-	noTraceAgents map[string]bool
 
 	// sqlMem is the RFC AA SQL Memory manager (per-scope sqlite databases
 	// backing the Memory tool's sql_query/sql_exec). Nil when the subsystem
@@ -1235,6 +1231,11 @@ func (s *Server) admitTeamRun(ctx context.Context) (context.Context, error) {
 	// that started one would be storing its content through it.
 	if tools.RunIdentity(ctx).Retention == store.RetentionNone {
 		return nil, &noTraceRefusal{Status: 403, Msg: "a no-trace run cannot start a team walk: a walk records its input and its decisions"}
+	}
+	// The same for a caller whose token makes its runs no-trace: the walk
+	// would store what the token says is never stored.
+	if p, ok := auth.PrincipalFromContext(ctx); ok && p.Restrictions.Retention == store.RetentionNone {
+		return nil, &noTraceRefusal{Status: 403, Msg: "this token's runs are no-trace, so it cannot start a team walk: a walk records its input and its decisions"}
 	}
 	// A walk started directly is a run start. One started by an agent's own
 	// tool is not counted (admitPrincipalRate skips a call from inside a run).
@@ -2346,6 +2347,8 @@ func applyAgentDefOverlay(base config.AgentDef, definition json.RawMessage) conf
 		// lock: like every other policy field, a pinned version never
 		// loosens what the base says.
 		AllowOverrides *bool `json:"allow_overrides,omitempty"`
+		// The version's retention mode, add-only for the same reason.
+		Retention string `json:"retention,omitempty"`
 	}
 	if err := json.Unmarshal(definition, &ov); err != nil {
 		log.Printf("agent_def overlay: malformed definition JSON, falling back to static: %v", err)
@@ -2417,6 +2420,9 @@ func applyAgentDefOverlay(base config.AgentDef, definition json.RawMessage) conf
 	if ov.AllowOverrides != nil && !*ov.AllowOverrides {
 		locked := false
 		out.AllowOverrides = &locked
+	}
+	if ov.Retention == store.RetentionNone {
+		out.Retention = store.RetentionNone
 	}
 	return out
 }
@@ -2781,6 +2787,9 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 	if err := in.OutputFormat.Validate(); err != nil {
 		return fmt.Errorf("%w: %v", runner.ErrInvalidArgument, err)
 	}
+	if _, err := store.ParseRetention(in.Retention); err != nil {
+		return fmt.Errorf("%w: %v", runner.ErrInvalidArgument, err)
+	}
 	if msg, ok := connector.ValidateMaxWallSeconds(in.MaxWallSeconds); !ok {
 		return fmt.Errorf("%w: %s", runner.ErrInvalidArgument, msg)
 	}
@@ -2940,7 +2949,7 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 	if err := admitAgentOverrides(effectiveAgentName, agentDef, overridesSetIn(&in)); err != nil {
 		return err
 	}
-	retention := s.resolveRetention(ctx, effectiveAgentName, in.Retention)
+	retention := s.resolveRetention(ctx, agentDef, in.Retention)
 	if err := admitNoTraceStart(retention, in.Interactive, in.Review, in.SessionID); err != nil {
 		return err
 	}
@@ -4445,9 +4454,10 @@ func (s *Server) handleSystemChannelPublish(w http.ResponseWriter, r *http.Reque
 
 // runRequest is the JSON body shape for POST /v1/runs.
 type runRequest struct {
-	// Retention is the run's retention mode. Not decoded from the request in
-	// this version (see no_trace.go).
-	Retention string `json:"-"`
+	// Retention: "none" makes this a no-trace run — its content is delivered
+	// on this connection and stored nowhere. "default" or absent leaves it to
+	// the agent and the caller's token. See no_trace.go.
+	Retention string `json:"retention,omitempty"`
 
 	Agent string `json:"agent"`
 	// Start false creates the run as a configured DRAFT (RFC DI D5) instead of
@@ -4794,6 +4804,10 @@ func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
+	if _, err := store.ParseRetention(req.Retention); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
 	if msg, ok := connector.ValidateMaxWallSeconds(req.MaxWallSeconds); !ok {
 		http.Error(w, msg, http.StatusBadRequest)
 		return
@@ -4848,7 +4862,7 @@ func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {
 		writeOverrideNotAllowed(w, err)
 		return
 	}
-	retention := s.resolveRetention(r.Context(), req.Agent, req.Retention)
+	retention := s.resolveRetention(r.Context(), agentDef, req.Retention)
 	if err := admitNoTraceStart(retention, req.Interactive, req.Review, req.SessionID); err != nil {
 		writeNoTraceRefusal(w, err)
 		return
@@ -5779,9 +5793,8 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 	// RunOnce uses for a continuation), not tenantFromCtx — the ownership
 	// gate above already proved the caller is entitled to this session.
 	//
-	// A no-trace session has no transcript to continue from, and a session of
-	// an agent that is no-trace now cannot take a no-trace run.
-	if sess.Retention == store.RetentionNone || s.resolveRetention(r.Context(), sess.Agent, "") == store.RetentionNone {
+	// A no-trace session has no transcript to continue from.
+	if sess.Retention == store.RetentionNone {
 		writeNoTraceRefusal(w, errNoTraceSession)
 		return
 	}
@@ -5816,6 +5829,12 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := admitAgentOverrides(sess.Agent, agentDef, overridesSetIn(&body)); err != nil {
 		writeOverrideNotAllowed(w, err)
+		return
+	}
+	// A run that would be no-trace now — its agent's mode, or the caller's
+	// token's — opens its own session; it cannot continue this one.
+	if s.resolveRetention(r.Context(), agentDef, "") == store.RetentionNone {
+		writeNoTraceRefusal(w, errNoTraceSession)
 		return
 	}
 	// v0.8.2: validate user_tier early (same shape as handleRuns).
@@ -7870,7 +7889,7 @@ func (s *Server) prepareSubRunValues(ctx context.Context, name string, src nameS
 	subCompaction := config.MergeCompaction(def.Compaction, tools.CompactionPolicy(ctx))
 	// A parent's per-spawn override is an override like a caller's: a child
 	// that runs on its definition only refuses it.
-	subRetention := s.resolveRetention(ctx, name, "")
+	subRetention := s.resolveRetention(ctx, def, "")
 	if err := admitNoTraceStart(subRetention, interactive, false, ""); err != nil {
 		return nil, fmt.Errorf("sub-agent %q: %w", name, err)
 	}
@@ -8461,14 +8480,17 @@ type agentResponse struct {
 	// SQL JOIN so consumers don't have to fetch the session row
 	// separately. Empty when the session row is missing (manual
 	// pruning / very-old data).
-	Agent           string             `json:"agent,omitempty"`
-	UserID          string             `json:"user_id,omitempty"`
-	ParentAgentID   string             `json:"parent_agent_id,omitempty"`
-	ParentRunID     string             `json:"parent_run_id,omitempty"` // the run that spawned this one; empty for a top-level run
-	Status          store.RunStatus    `json:"status"`
-	StartedAt       time.Time          `json:"started_at"`
-	CompletedAt     *time.Time         `json:"completed_at,omitempty"`
-	StopReason      string             `json:"stop_reason,omitempty"`
+	Agent         string          `json:"agent,omitempty"`
+	UserID        string          `json:"user_id,omitempty"`
+	ParentAgentID string          `json:"parent_agent_id,omitempty"`
+	ParentRunID   string          `json:"parent_run_id,omitempty"` // the run that spawned this one; empty for a top-level run
+	Status        store.RunStatus `json:"status"`
+	StartedAt     time.Time       `json:"started_at"`
+	CompletedAt   *time.Time      `json:"completed_at,omitempty"`
+	StopReason    string          `json:"stop_reason,omitempty"`
+	// Retention is "none" for a no-trace run: its transcript holds markers
+	// and its result reads "content not retained". Absent otherwise.
+	Retention       string             `json:"retention,omitempty"`
 	Error           string             `json:"error,omitempty"`
 	Usage           agentResponseUsage `json:"usage"`
 	LastHeartbeatAt *time.Time         `json:"last_heartbeat_at,omitempty"`
@@ -8559,6 +8581,7 @@ func runToAgentResponse(r store.Run, live bool) agentResponse {
 		Status:        r.Status,
 		StartedAt:     r.StartedAt,
 		StopReason:    r.StopReason,
+		Retention:     r.Retention,
 		Error:         r.ErrorMsg,
 		Usage: agentResponseUsage{
 			InputTokens:         r.InputTokens,

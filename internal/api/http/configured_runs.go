@@ -160,6 +160,13 @@ func (s *Server) createConfiguredRunCore(ctx context.Context, req runDraft) (con
 	if err := s.admitAgentOverridesByName(ctx, tenant, req.Agent, overridesSetIn(&req)); err != nil {
 		return connector.ConfiguredRun{}, draftRefusal(http.StatusForbidden, "override_not_allowed", "%s", err.Error())
 	}
+	// A draft is its prompt, stored until someone starts it. A run that would
+	// be no-trace — by its agent or by this caller's token — cannot be
+	// prepared that way; it is started directly.
+	if def, ok := s.lookupAgent(ctx, tenant, req.Agent); ok && s.resolveRetention(ctx, def, "") == store.RetentionNone {
+		return connector.ConfiguredRun{}, draftRefusal(http.StatusConflict, "retention_none_unsupported",
+			"%s: a no-trace run cannot be configured as a draft: the draft would store its prompt", runner.ErrRetentionUnsupported)
+	}
 	okr := s.operatorKeyRestrictedForCtx(ctx)
 	isolated := s.isolatedForCtx(ctx)
 	// Stripped before it is stored: the draft body and the row both keep it,

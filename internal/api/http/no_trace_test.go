@@ -101,7 +101,7 @@ func TestNoTrace_ARunTreeLeavesItsContentNowhereOnDisk(t *testing.T) {
 		prov := canaryTree()
 		srv, dbPath := makeServer(t, prov, noTraceConfig())
 		if noTrace {
-			srv.noTraceAgents = map[string]bool{"parent": true}
+			markNoTrace(srv, "parent")
 		}
 		code, body := postStrictRun(t, srv, canaryRunBody)
 		if code != 200 {
@@ -190,7 +190,7 @@ func TestNoTrace_ARunTreeLeavesItsContentNowhereOnDisk(t *testing.T) {
 // class of the error; the caller still gets the text.
 func TestNoTrace_AnErrorIsStoredAsItsClass(t *testing.T) {
 	srv, dbPath := makeServer(t, &failingProvider{err: fmt.Errorf("%w: invalid request, prompt was: %s", runner.ErrTokenLimitExceeded, canary)}, noTraceConfig())
-	srv.noTraceAgents = map[string]bool{"parent": true}
+	markNoTrace(srv, "parent")
 	_, body := postStrictRun(t, srv, canaryRunBody)
 	if !strings.Contains(body, "prompt was: "+canary) {
 		t.Errorf("the caller did not get its own error text:\n%s", body)
@@ -219,7 +219,7 @@ func (p *failingProvider) Call(context.Context, providers.Request) (<-chan provi
 
 func TestNoTrace_WhatANoTraceRunCannotDo(t *testing.T) {
 	srv, _ := makeServer(t, &scriptedProvider{defaultS: finalAnswer}, noTraceConfig())
-	srv.noTraceAgents = map[string]bool{"parent": true}
+	markNoTrace(srv, "parent")
 	ctx := context.Background()
 	seg := `"segments":[{"role":"user","content":[{"type":"trusted-text","text":"go"}]}]`
 	segs := []loop.PromptSegment{{Role: "user", Content: []loop.PromptContentBlock{{Type: "trusted-text", Text: "go"}}}}
@@ -459,7 +459,7 @@ func TestNoTraceFilter_NothingInThisPackageWritesAroundIt(t *testing.T) {
 func TestNoTrace_ARunInFlightIsUnpausableAndTakesNoMessages(t *testing.T) {
 	prov := &canaryHangProvider{started: make(chan struct{})}
 	srv, _ := makeServer(t, prov, noTraceConfig())
-	srv.noTraceAgents = map[string]bool{"parent": true}
+	markNoTrace(srv, "parent")
 	srv.SetSteerRegistry(steer.NewRegistry(8))
 	mgr := pause.NewManager(srv.store, 2*time.Second)
 	srv.SetPauseManager(mgr)
@@ -692,4 +692,12 @@ func TestNoTrace_AHookFiredOutsideTheLoopStillRunsAsANoTraceRun(t *testing.T) {
 	if got := tools.RunIdentity(srv.withHookRun(context.Background(), hooks.Identity{RunID: plain.ID, AgentID: "a_hook_plain"})).Retention; got != "" {
 		t.Errorf("an ordinary run's hook context has retention %q", got)
 	}
+}
+
+// markNoTrace makes agent a no-trace agent in the server's config, as
+// `retention: none` on its definition does.
+func markNoTrace(srv *Server, agent string) {
+	def := srv.cfg().Agents[agent]
+	def.Retention = store.RetentionNone
+	srv.cfg().Agents[agent] = def
 }

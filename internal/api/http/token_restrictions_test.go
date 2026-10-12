@@ -30,6 +30,7 @@ const (
 	freeBearer       = "tok-free"
 	lockedBearer     = "tok-locked"      // overrides: none
 	effortOnlyBearer = "tok-effort-only" // overrides: [effort]
+	quietBearer      = "tok-quiet"       // retention: none
 )
 
 // restrictedFixture is a full server with two agents and two member tokens of
@@ -71,6 +72,7 @@ func restrictedFixtureServer(t *testing.T, scripts ...[]providers.Event) (*Serve
 		{"def_free", freeBearer, ""},
 		{"def_locked", lockedBearer, `{"overrides":"none"}`},
 		{"def_effort", effortOnlyBearer, `{"overrides":["effort"]}`},
+		{"def_quiet", quietBearer, `{"retention":"none"}`},
 	} {
 		if _, err := st.OperatorTokenDefCreate(context.Background(), store.OperatorTokenDefRow{
 			DefID: tok.id, Name: "u-" + tok.id, TenantID: "acme", Subject: "dev",

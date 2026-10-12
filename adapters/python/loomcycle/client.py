@@ -553,6 +553,7 @@ class LoomcycleClient:
             "duration_ms": resp.duration_ms,
             "force_cancelled_count": resp.force_cancelled_count,
             "paused_runs_count": resp.paused_runs_count,
+            "unpausable_runs_count": resp.unpausable_runs_count,
             "warnings": list(resp.warnings),
         }
 
@@ -1924,6 +1925,7 @@ class LoomcycleClient:
         parent_context: Optional[Mapping[str, str]] = None,
         idempotency_key: str = "",
         max_wall_seconds: int = 0,
+        retention: str = "",
         user_credentials: Optional[Mapping[str, str]] = None,
         sampling: Optional[Mapping[str, Any]] = None,
         tool_choice: Optional[Mapping[str, Any]] = None,
@@ -2012,6 +2014,7 @@ class LoomcycleClient:
             parent_context=parent_context,
             idempotency_key=idempotency_key,
             max_wall_seconds=max_wall_seconds,
+            retention=retention,
             user_credentials=user_credentials,
             sampling=sampling,
             tool_choice=tool_choice,
@@ -2541,6 +2544,7 @@ def _build_run_request(
     parent_context: Optional[Mapping[str, str]] = None,
     idempotency_key: str = "",
     max_wall_seconds: int = 0,
+    retention: str = "",
     user_credentials: Optional[Mapping[str, str]] = None,
     sampling: Optional[Mapping[str, Any]] = None,
     tool_choice: Optional[Mapping[str, Any]] = None,
@@ -2608,6 +2612,7 @@ def _build_run_request(
         hooks_json=_hooks_json(hooks, tool_hooks),
         idempotency_key=idempotency_key,
         max_wall_seconds=max_wall_seconds,
+        retention=retention,
         # Canonical JSON bytes: the value is map[string]any by definition, so
         # there is no typed message to map it onto.
         metadata=json.dumps(metadata).encode() if metadata is not None else b"",
@@ -2656,6 +2661,7 @@ def _run_request_from_dict(spawn: Mapping[str, Any]) -> "pb.RunRequest":
         session_id=spawn.get("session_id", ""),
         idempotency_key=spawn.get("idempotency_key", ""),
         max_wall_seconds=spawn.get("max_wall_seconds", 0),
+        retention=spawn.get("retention", ""),
         tools=spawn.get("tools"),
         allowed_hosts=spawn.get("allowed_hosts"),
         web_search_filter=spawn.get("web_search_filter", ""),

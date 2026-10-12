@@ -131,9 +131,19 @@ func keepStaticOverrideLock(cfg *config.Config, name string, def *config.AgentDe
 	if cfg == nil {
 		return
 	}
-	if static, ok := cfg.Agents[name]; ok && static.AllowOverrides != nil && !*static.AllowOverrides {
+	static, ok := cfg.Agents[name]
+	if !ok {
+		return
+	}
+	if static.AllowOverrides != nil && !*static.AllowOverrides {
 		locked := false
 		def.AllowOverrides = &locked
+	}
+	// The operator's retention mode holds over the tenant's version the same
+	// way, and for the same reason: "none" written in the config must not
+	// stop applying because a tenant forked the agent.
+	if static.Retention == store.RetentionNone {
+		def.Retention = store.RetentionNone
 	}
 }
 
@@ -411,6 +421,10 @@ type SubstrateAgentDef struct {
 	// builtin.mergedDef: a lock that did not survive the read would come back
 	// open.
 	AllowOverrides *bool `json:"allow_overrides,omitempty"`
+	// Retention mirrors config.AgentDef.Retention. Kept in sync with
+	// builtin.mergedDef: a mode that did not survive the read would store
+	// what it promised not to.
+	Retention string `json:"retention,omitempty"`
 	// Hooks / ToolHooks mirror config.AgentDef / builtin.mergedDef.
 	Hooks     hooks.EventHooks `json:"hooks,omitempty"`
 	ToolHooks hooks.ToolHooks  `json:"tool_hooks,omitempty"`
@@ -491,6 +505,7 @@ func SubstrateAgentDefFromConfig(def config.AgentDef) SubstrateAgentDef {
 		A2AAgentDefScopes:      def.A2AAgentDefScopes,
 		VolumeDefScopes:        def.VolumeDefScopes,
 		AllowOverrides:         copyBoolPtr(def.AllowOverrides),
+		Retention:              def.Retention,
 		Hooks:                  def.Hooks,
 		ToolHooks:              def.ToolHooks,
 	}
@@ -557,6 +572,7 @@ func (s SubstrateAgentDef) ToConfigDef() config.AgentDef {
 		A2AAgentDefScopes:      s.A2AAgentDefScopes,
 		VolumeDefScopes:        s.VolumeDefScopes,
 		AllowOverrides:         copyBoolPtr(s.AllowOverrides),
+		Retention:              s.Retention,
 		Hooks:                  s.Hooks,
 		ToolHooks:              s.ToolHooks,
 	}

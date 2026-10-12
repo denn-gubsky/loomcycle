@@ -752,6 +752,20 @@ type TokenLimitRow struct {
 // The default mode is the empty string.
 const RetentionNone = "none"
 
+// ParseRetention reads a retention mode as a caller wrote it: "none", or the
+// default spelled "default" or left empty. It returns the stored form
+// (RetentionNone or ""). Anything else is an error — a misspelled "none" must
+// not become a run that stores everything.
+func ParseRetention(s string) (string, error) {
+	switch s {
+	case "", "default":
+		return "", nil
+	case RetentionNone:
+		return RetentionNone, nil
+	}
+	return "", fmt.Errorf("retention must be %q or %q, not %q", RetentionNone, "default", s)
+}
+
 // UsageCarryRow is month-to-date token usage a snapshot restore carried in
 // from another instance, one row per (tenant, user, month). Month is the UTC
 // month start the tokens belong to; UserID is "" for runs with no user.

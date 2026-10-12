@@ -6,6 +6,7 @@ import (
 	"errors"
 	"io"
 	"net"
+	"strings"
 	"testing"
 
 	googlegrpc "google.golang.org/grpc"
@@ -145,5 +146,27 @@ func TestRun_MaxWallSecondsReachesTheRunner(t *testing.T) {
 	}
 	if r := spawnRequestFromProto(&loomcyclepb.RunRequest{MaxWallSeconds: 90}); r.MaxWallSeconds != 90 {
 		t.Errorf("spawnRequestFromProto: MaxWallSeconds = %d, want 90", r.MaxWallSeconds)
+	}
+}
+
+// retention reaches the runner from Run and a batch child alike, and a
+// refusal a no-trace run meets is FAILED_PRECONDITION with its code.
+func TestRun_RetentionReachesTheRunner(t *testing.T) {
+	fr := &fakeRunner{registered: registrationFrame{AgentID: "a", RunID: "r", SessionID: "s"}}
+	client, cleanup := startTestServerWithRunner(t, fr)
+	defer cleanup()
+	stream, err := client.Run(context.Background(), &loomcyclepb.RunRequest{Agent: "default", Retention: "none"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	drain(t, stream)
+	if fr.lastInput.Retention != "none" {
+		t.Errorf("Run: RunInput.Retention = %q, want none", fr.lastInput.Retention)
+	}
+	if r := spawnRequestFromProto(&loomcyclepb.RunRequest{Retention: "none"}); r.Retention != "none" {
+		t.Errorf("spawnRequestFromProto: Retention = %q, want none", r.Retention)
+	}
+	if got := mapRunnerErr(errors.Join(runner.ErrRetentionUnsupported)); !strings.Contains(got.Error(), "FailedPrecondition") {
+		t.Errorf("a no-trace refusal maps to %v, want FailedPrecondition", got)
 	}
 }
