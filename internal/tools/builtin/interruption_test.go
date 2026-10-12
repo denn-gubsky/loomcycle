@@ -588,3 +588,37 @@ func TestStoreSentinelErrCheck(t *testing.T) {
 		t.Error("errors.Is failed on direct sentinel")
 	}
 }
+
+// A question or a notice is stored for the person it is for. A no-trace run
+// stores none of what it says, so it may send neither; nothing is written.
+func TestInterruption_ANoTraceRunMayNotAskOrNotify(t *testing.T) {
+	tool, ctx, runID, cleanup := interruptionFixture(t)
+	defer cleanup()
+	quiet := tools.WithRunIdentity(ctx, tools.RunIdentityValue{UserID: "alice", AgentID: "a_test", Retention: store.RetentionNone})
+
+	for _, call := range []string{
+		`{"op":"ask","question":"a secret question?","timeout_ms":50}`,
+		`{"op":"notify","message":"a secret notice"}`,
+	} {
+		res, err := tool.Execute(quiet, json.RawMessage(call))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !res.IsError || !strings.Contains(res.Text, "no-trace") {
+			t.Errorf("%s: result = %+v, want it refused as a no-trace run", call, res)
+		}
+	}
+	for _, status := range []string{store.InterruptStatusPending, ""} {
+		rows, err := tool.Store.InterruptListByRun(ctx, runID, status)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(rows) != 0 {
+			t.Errorf("a refused interruption wrote %d row(s) (status %q)", len(rows), status)
+		}
+	}
+	// The same run with an ordinary mode is not refused that way.
+	if res, _ := tool.Execute(ctx, json.RawMessage(`{"op":"notify","message":"hello"}`)); strings.Contains(res.Text, "no-trace") {
+		t.Errorf("an ordinary run was refused as no-trace: %s", res.Text)
+	}
+}

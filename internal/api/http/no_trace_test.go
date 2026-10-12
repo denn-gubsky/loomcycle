@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -180,15 +181,16 @@ func TestNoTrace_ARunTreeLeavesItsContentNowhereOnDisk(t *testing.T) {
 // A provider's error can quote the prompt it was sent. The run row keeps the
 // class of the error; the caller still gets the text.
 func TestNoTrace_AnErrorIsStoredAsItsClass(t *testing.T) {
-	srv, dbPath := makeServer(t, &failingProvider{err: errors.New("anthropic 400: invalid request, prompt was: " + canary)}, noTraceConfig())
+	srv, dbPath := makeServer(t, &failingProvider{err: fmt.Errorf("%w: invalid request, prompt was: %s", runner.ErrTokenLimitExceeded, canary)}, noTraceConfig())
 	srv.noTraceAgents = map[string]bool{"parent": true}
 	_, body := postStrictRun(t, srv, canaryRunBody)
 	if !strings.Contains(body, "prompt was: "+canary) {
 		t.Errorf("the caller did not get its own error text:\n%s", body)
 	}
 	run := runOfAgent(t, srv, "a_parent")
-	if run.Status != store.RunFailed || !regexp.MustCompile(`^error class: [a-z_]+$`).MatchString(run.ErrorMsg) {
-		t.Errorf("run row: status=%q error=%q, want failed with a class and no text", run.Status, run.ErrorMsg)
+	// The class, which only the place that still holds the error can know.
+	if run.Status != store.RunFailed || run.ErrorMsg != "error class: business" {
+		t.Errorf("run row: status=%q error=%q, want failed with its class and no text", run.Status, run.ErrorMsg)
 	}
 	if onDisk(t, srv, dbPath) {
 		t.Error("the canary is on disk after a no-trace run that failed")
