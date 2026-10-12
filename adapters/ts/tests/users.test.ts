@@ -130,6 +130,37 @@ describe("mintUserToken", () => {
     expect(init.body).toBeUndefined();
   });
 
+  it("sends ttl_seconds / name / max_active when asked, and returns expires_at", async () => {
+    const { client, fetchMock } = makeClient([
+      jsonResponse({
+        def_id: "def_abc",
+        token: "lc_secret_plaintext",
+        token_suffix: "aintext",
+        name: "laptop-1",
+        scopes: ["substrate:user"],
+        created_at: "2026-10-12T00:00:00Z",
+        expires_at: "2026-10-13T00:00:00Z",
+        retired: ["def_old"],
+        warning: "store this token now",
+      }),
+    ]);
+
+    const minted = await client.mintUserToken("alice", {
+      ttlSeconds: 86400,
+      name: "laptop-1",
+      maxActive: 2,
+    });
+
+    expect(minted.expires_at).toBe("2026-10-13T00:00:00Z");
+    expect(minted.retired).toEqual(["def_old"]);
+    const [, init] = fetchMock.mock.calls[0]!;
+    expect(JSON.parse(init.body as string)).toEqual({
+      ttl_seconds: 86400,
+      name: "laptop-1",
+      max_active: 2,
+    });
+  });
+
   it("surfaces a 409 disabled-user as typed", async () => {
     const { client } = makeClient([
       errorResponse(409, `{"code":"user_disabled","error":"disabled"}`),

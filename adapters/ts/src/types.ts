@@ -1984,6 +1984,11 @@ export interface MintedUserToken {
   name: string;
   scopes: string[];
   created_at: string;
+  /** Set when the token was minted with a lifetime: it stops authenticating
+   *  at this instant. */
+  expires_at?: string;
+  /** def_ids of the user's older tokens that `maxActive` retired. */
+  retired?: string[];
   warning: string;
 }
 
@@ -1995,6 +2000,8 @@ export interface UserTokenMeta {
   scopes: string[];
   created_at: string;
   retired_at?: string;
+  expires_at?: string;
+  /** False once the token is retired or expired. */
   active: boolean;
 }
 

@@ -116,6 +116,7 @@ export interface MintedUserToken {
   name: string;
   scopes: string[];
   created_at: string;
+  expires_at?: string;
   warning: string;
 }
 
@@ -136,6 +137,7 @@ export interface UserTokenMeta {
   scopes: string[];
   created_at: string;
   retired_at?: string;
+  expires_at?: string;
   active: boolean;
 }
 
