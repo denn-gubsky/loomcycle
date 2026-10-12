@@ -2,8 +2,12 @@ package http
 
 import (
 	"context"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -73,10 +77,13 @@ func TestHasScope_LLMGateway(t *testing.T) {
 // reports 20 tokens: 10 input, 2 output, 3 written to the cache and 5 read from it.
 func gatewayBudgetServer(t *testing.T, hard int64, used int) (*httptest.Server, *Server) {
 	t.Helper()
+	// The usage rides on the Done event, as it does from every real driver
+	// (Anthropic, OpenAI, Gemini, Ollama). A fixture that sent a separate
+	// usage event would pass against a gateway that records nothing in
+	// production — which is what the first version of this test did.
 	prov := &scriptedProvider{defaultS: []providers.Event{
 		{Type: providers.EventText, Text: "hi"},
-		{Type: providers.EventUsage, Usage: &providers.Usage{InputTokens: 10, OutputTokens: 2, CacheCreationTokens: 3, CacheReadTokens: 5}, StopReason: "end_turn"},
-		{Type: providers.EventDone, StopReason: "end_turn"},
+		{Type: providers.EventDone, StopReason: "end_turn", Usage: &providers.Usage{InputTokens: 10, OutputTokens: 2, CacheCreationTokens: 3, CacheReadTokens: 5}},
 	}}
 	cfg := makeBaseConfig()
 	cfg.Env.AuthToken = "legacy-admin"
@@ -203,5 +210,81 @@ func TestGateway_ACallThatCrossesTheCeilingRefusesTheNext(t *testing.T) {
 	// one is refused.
 	if code, body := bearerCall(t, ts, "tok-alice", "POST", "/v1/_llm/chat", gatewayBodies["/v1/_llm/chat"]); code != http.StatusTooManyRequests {
 		t.Errorf("a third call, past the ceiling the first two crossed: status %d, want 429: %s", code, body)
+	}
+}
+
+// The shape the usage arrives in is the driver's choice, so the fixture above
+// must not drift from the real ones: every real driver's Done event carries
+// its usage, and none sends a separate usage event. If a driver changes that,
+// this test says so before the gateway silently stops metering it.
+func TestGatewayFixture_MatchesHowRealDriversReportUsage(t *testing.T) {
+	for _, driver := range []string{"anthropic", "openai", "gemini", "ollama"} {
+		src, err := os.ReadFile(filepath.Join("..", "..", "providers", driver, "driver.go"))
+		if err != nil {
+			t.Fatalf("read %s driver: %v", driver, err)
+		}
+		if strings.Contains(string(src), "providers.EventUsage") {
+			t.Errorf("the %s driver now sends a separate usage event; the gateway reads both, but check gatewayUsageOf still sees every report", driver)
+		}
+		done := regexp.MustCompile(`(?s)Type:\s*providers\.EventDone.{0,200}?Usage:`)
+		if !done.Match(src) {
+			t.Errorf("the %s driver's Done event no longer carries Usage: the gateway would record nothing for it", driver)
+		}
+	}
+}
+
+// A real provider's answer through the gateway reports its usage to the
+// caller too. It read zero for every real provider before: the response was
+// built from a usage event no driver sends.
+func TestGateway_TheResponseCarriesUsageReportedOnDone(t *testing.T) {
+	ts, _ := gatewayBudgetServer(t, 100000, 0)
+	code, body := bearerCall(t, ts, "tok-alice", "POST", "/v1/_llm/chat", gatewayBodies["/v1/_llm/chat"])
+	if code != http.StatusOK || !strings.Contains(body, `"input_tokens":10`) || !strings.Contains(body, `"output_tokens":2`) {
+		t.Errorf("native response: status %d, want usage 10/2 in the body: %s", code, body)
+	}
+	code, body = bearerCall(t, ts, "tok-alice", "POST", "/v1/chat/completions", gatewayBodies["/v1/chat/completions"])
+	if code != http.StatusOK || !strings.Contains(body, `"prompt_tokens":10`) || !strings.Contains(body, `"completion_tokens":2`) {
+		t.Errorf("OpenAI-shaped response: status %d, want usage 10/2 in the body: %s", code, body)
+	}
+}
+
+// A call that fails part-way is still recorded with whatever the provider
+// reported before it failed: an error must not be the way to spend unseen.
+func TestGateway_AFailedCallStillRecordsWhatWasReported(t *testing.T) {
+	failing := []providers.Event{
+		{Type: providers.EventText, Text: "partial"},
+		{Type: providers.EventError, Error: "upstream cut the stream"},
+		{Type: providers.EventDone, StopReason: "error", Usage: &providers.Usage{InputTokens: 7, OutputTokens: 1}},
+	}
+	for path, req := range gatewayBodies {
+		for _, stream := range []bool{false, true} {
+			if stream {
+				req = gatewayStreamBodies[path]
+			}
+			prov := &scriptedProvider{defaultS: failing}
+			cfg := makeBaseConfig()
+			srv, _ := makeServer(t, prov, cfg)
+			ts := httptest.NewServer(srv.Mux())
+			resp, err := http.Post(ts.URL+path, "application/json", strings.NewReader(req))
+			if err != nil {
+				t.Fatal(err)
+			}
+			// To the end of the body: a streamed answer's headers arrive
+			// before the handler has finished, and it records as it ends.
+			_, _ = io.Copy(io.Discard, resp.Body)
+			resp.Body.Close()
+			rows, err := srv.store.UsageReport(context.Background(), store.UsageQuery{})
+			ts.Close()
+			if err != nil {
+				t.Fatal(err)
+			}
+			var n int64
+			for _, r := range rows {
+				n += r.InputTokens + r.OutputTokens
+			}
+			if n != 8 {
+				t.Errorf("%s stream=%v: %d tokens recorded for a call that failed after reporting 8", path, stream, n)
+			}
+		}
 	}
 }

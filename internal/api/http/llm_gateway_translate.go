@@ -128,6 +128,22 @@ func usageFrameFromEvent(ev providers.Event) *llmStreamMessageDelta {
 	}
 }
 
+// gatewayUsageOf returns the usage an event carries, in the gateway's shape.
+// It reads the event whatever its type, because where a usage report rides is
+// the driver's choice: on Done for every real driver, on a usage event for a
+// stream the run loop produced.
+func gatewayUsageOf(ev providers.Event) (llmUsage, bool) {
+	if ev.Usage == nil {
+		return llmUsage{}, false
+	}
+	return llmUsage{
+		InputTokens:              ev.Usage.InputTokens,
+		OutputTokens:             ev.Usage.OutputTokens,
+		CacheCreationInputTokens: ev.Usage.CacheCreationTokens,
+		CacheReadInputTokens:     ev.Usage.CacheReadTokens,
+	}, true
+}
+
 // toolUseBlockFromEvent extracts the tool_use content block payload
 // from an EventToolCall. Returns nil for malformed events (ToolUse
 // pointer unset). The caller wraps it in a content_block_start with
@@ -181,24 +197,27 @@ func collectProviderEventsIntoResponse(
 					Input: ev.ToolUse.Input,
 				})
 			}
-		case providers.EventUsage:
-			if ev.Usage != nil {
-				resp.Usage = llmUsage{
-					InputTokens:              ev.Usage.InputTokens,
-					OutputTokens:             ev.Usage.OutputTokens,
-					CacheCreationInputTokens: ev.Usage.CacheCreationTokens,
-					CacheReadInputTokens:     ev.Usage.CacheReadTokens,
-				}
+		case providers.EventUsage, providers.EventDone:
+			// Every real driver reports its usage on the Done event; a
+			// separate usage event is what the run loop synthesises for its
+			// own stream. Reading only the latter left this response's usage
+			// at zero for every real provider.
+			if u, ok := gatewayUsageOf(ev); ok {
+				resp.Usage = u
 			}
-			if ev.StopReason != "" {
-				resp.StopReason = ev.StopReason
-			}
-		case providers.EventDone:
 			if ev.StopReason != "" {
 				resp.StopReason = ev.StopReason
 			}
 		case providers.EventError:
-			return resp, &gatewayProviderErr{Message: ev.Error}
+			// Keep reading: a usage report that follows the error is still
+			// tokens spent, and the caller records what resp.Usage holds.
+			callErr := &gatewayProviderErr{Message: ev.Error}
+			for rest := range ch {
+				if u, ok := gatewayUsageOf(rest); ok {
+					resp.Usage = u
+				}
+			}
+			return resp, callErr
 		}
 	}
 	if textBuf != "" {

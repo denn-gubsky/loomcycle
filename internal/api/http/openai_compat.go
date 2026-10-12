@@ -227,6 +227,8 @@ func (s *Server) serveOpenAICompatJSON(
 	id := newLLMID()
 	resp, err := collectProviderEventsIntoResponse(ch, id, d.requestID, d.providerID, d.modelID)
 	if err != nil {
+		// As the native route: record what a failed call reported.
+		s.recordGatewayUsage(r.Context(), req.UserID, d.providerID, d.modelID, resp.Usage.providerUsage())
 		writeJSONError(w, http.StatusBadGateway, "provider_call_failed", err.Error())
 		return
 	}
@@ -386,7 +388,8 @@ func (s *Server) serveOpenAICompatStream(
 				}},
 			}, nil, nil)
 			nextToolIndex++
-		case providers.EventUsage:
+		case providers.EventUsage, providers.EventDone:
+			// Usage rides on Done for every real driver (gatewayUsageOf).
 			if ev.Usage != nil {
 				// The whole report, for the ledger: the OpenAI wire shape
 				// below has no place for the cache counts.
@@ -397,10 +400,6 @@ func (s *Server) serveOpenAICompatStream(
 					TotalTokens:      ev.Usage.InputTokens + ev.Usage.OutputTokens,
 				}
 			}
-			if ev.StopReason != "" {
-				stopReason = ev.StopReason
-			}
-		case providers.EventDone:
 			if ev.StopReason != "" {
 				stopReason = ev.StopReason
 			}
@@ -426,7 +425,11 @@ func (s *Server) serveOpenAICompatStream(
 			// finish_reason chunk on any future driver that
 			// emits trailing events. SDK iterators on the client
 			// side have already committed to terminal state.
-			for range ch {
+			for rest := range ch {
+				// ...but a usage report among them is still tokens spent.
+				if rest.Usage != nil {
+					provUsage = *rest.Usage
+				}
 			}
 		}
 	}

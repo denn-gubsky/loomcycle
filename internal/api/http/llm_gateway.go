@@ -219,6 +219,9 @@ func (s *Server) serveLLMChatJSON(
 	id := newLLMID()
 	resp, err := collectProviderEventsIntoResponse(ch, id, requestID, providerID, modelID)
 	if err != nil {
+		// A call that failed part-way may still have been billed for what
+		// it read and wrote; record whatever the provider reported.
+		s.recordGatewayUsage(r.Context(), req.UserID, providerID, modelID, resp.Usage.providerUsage())
 		writeJSONError(w, http.StatusBadGateway, "provider_call_failed", err.Error())
 		return
 	}
@@ -315,24 +318,16 @@ func (s *Server) serveLLMChatStream(
 			openBlockIndex = nextBlockIndex
 			nextBlockIndex++
 			closeOpenBlock()
-		case providers.EventUsage:
-			if ev.Usage != nil {
-				usage = llmUsage{
-					InputTokens:              ev.Usage.InputTokens,
-					OutputTokens:             ev.Usage.OutputTokens,
-					CacheCreationInputTokens: ev.Usage.CacheCreationTokens,
-					CacheReadInputTokens:     ev.Usage.CacheReadTokens,
-				}
+		case providers.EventUsage, providers.EventDone:
+			// Usage rides on Done for every real driver (gatewayUsageOf).
+			if u, ok := gatewayUsageOf(ev); ok {
+				usage = u
 			}
 			if ev.StopReason != "" {
 				stopReason = ev.StopReason
 			}
 			if frame := usageFrameFromEvent(ev); frame != nil {
 				stream.sendRaw("message_delta", *frame)
-			}
-		case providers.EventDone:
-			if ev.StopReason != "" {
-				stopReason = ev.StopReason
 			}
 		case providers.EventError:
 			closeOpenBlock()
