@@ -205,6 +205,17 @@ func toolDescriptors() []loommcp.ToolDescriptor {
 			}`),
 		},
 		{
+			Name:        "delete_run_tree",
+			Description: "Permanently delete a run together with every run it spawned, and what is stored about them: their transcripts (events), their sessions when no other run is left in them, interrupts, evaluations of them, queued memory rows and indexed conversation turns. Pass exactly one of `run_id` (that run and all its descendants) or `session_id` (every run of that session, each with its descendants). Returns {deleted_runs, counts, kept, not_reached}: `counts` is rows removed per table, `kept` names what is left on purpose (the usage ledger: tokens and cost stay), and `not_reached` names where a copy may still be that this call cannot remove \u2014 stored snapshots, export files already written, and facts memory consolidation derived from the sessions. A tree with a run that is still running, awaiting input or paused is refused whole and nothing is deleted: stop it with cancel_run first. A run that does not exist, was already deleted, or is not yours to read returns zero counts rather than an error, so repeating the call is safe. It needs the `runs:delete` scope, which a token has only if it was granted when the token was minted (an admin or a tenant operator always has it). This cannot be undone. Do NOT use it to stop a run \u2014 that is cancel_run. Do NOT use it to discard a run that was configured and never started \u2014 that is configured_run op=delete. Do NOT use it to remove everything about a person \u2014 that is erasure.",
+			InputSchema: rawJSON(`{
+				"type": "object",
+				"properties": {
+					"run_id":     {"type": "string", "description": "Delete this run and every run under it. Exclusive with session_id."},
+					"session_id": {"type": "string", "description": "Delete every run of this session, each with the runs under it. Exclusive with run_id."}
+				}
+			}`),
+		},
+		{
 			Name:        "configured_run",
 			Description: "Create a run WITHOUT starting it, edit it, then start or discard it. op=create validates a run exactly as spawn_run would \u2014 same agent, segments and per-run overrides \u2014 but stores it instead of running it: it takes no concurrency slot and no token budget, and returns {run_id, agent_id, session_id, status:\"configured\", draft}. op=update replaces fields of the draft: pass `patch`, an object in the same field names, where null removes a field; the agent, the user, the agent_id and credentials cannot be changed. op=start runs the draft to completion and BLOCKS like spawn_run, returning the same result; admission happens here, so a busy or over-budget refusal leaves the run configured to start again later. op=delete discards the draft. Use it when a run should be reviewed or adjusted before it spends anything. Do NOT pass user_bearer or user_credentials to create \u2014 a configured run never stores them; give them to start. Do NOT use op=delete on a run that has started \u2014 cancel_run stops a live run.",
 			InputSchema: rawJSON(`{

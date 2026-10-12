@@ -42,6 +42,7 @@ const (
 	Loomcycle_Continue_FullMethodName            = "/loomcycle.v1.Loomcycle/Continue"
 	Loomcycle_SpawnRunBatch_FullMethodName       = "/loomcycle.v1.Loomcycle/SpawnRunBatch"
 	Loomcycle_CompactRun_FullMethodName          = "/loomcycle.v1.Loomcycle/CompactRun"
+	Loomcycle_DeleteRunTree_FullMethodName       = "/loomcycle.v1.Loomcycle/DeleteRunTree"
 	Loomcycle_CreateConfiguredRun_FullMethodName = "/loomcycle.v1.Loomcycle/CreateConfiguredRun"
 	Loomcycle_UpdateConfiguredRun_FullMethodName = "/loomcycle.v1.Loomcycle/UpdateConfiguredRun"
 	Loomcycle_StartConfiguredRun_FullMethodName  = "/loomcycle.v1.Loomcycle/StartConfiguredRun"
@@ -143,6 +144,19 @@ type LoomcycleClient interface {
 	//
 	// Mirrors POST /v1/runs/{run_id}/compact + the compact_run MCP tool.
 	CompactRun(ctx context.Context, in *CompactRunRequest, opts ...grpc.CallOption) (*CompactRunResult, error)
+	// DeleteRunTree deletes a run and every descendant run, with what is
+	// stored about them (events, sessions left without a run, interrupts,
+	// evaluations, queued memory rows, indexed turns). The usage ledger is
+	// kept. Name a run, or a session to delete every run of it. Requires the
+	// runs:delete scope and read access to the root. A root that does not
+	// exist, or that the caller cannot read, deletes nothing and returns zero
+	// counts, so a repeated call is not an error. A tree holding a live or
+	// paused run returns FailedPrecondition and deletes nothing: cancel first.
+	//
+	// Mirrors DELETE /v1/runs/{run_id}/tree, DELETE
+	// /v1/sessions/{session_id}?cascade=children and the delete_run_tree MCP
+	// tool.
+	DeleteRunTree(ctx context.Context, in *DeleteRunTreeRequest, opts ...grpc.CallOption) (*DeleteRunTreeResult, error)
 	// Configured runs (RFC DI): create a run now, start it later. A configured
 	// run is validated like a Run but admitted only at start — it takes no slot
 	// and no budget until then — and never stores a secret. Mirrors POST
@@ -642,6 +656,16 @@ func (c *loomcycleClient) CompactRun(ctx context.Context, in *CompactRunRequest,
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(CompactRunResult)
 	err := c.cc.Invoke(ctx, Loomcycle_CompactRun_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *loomcycleClient) DeleteRunTree(ctx context.Context, in *DeleteRunTreeRequest, opts ...grpc.CallOption) (*DeleteRunTreeResult, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(DeleteRunTreeResult)
+	err := c.cc.Invoke(ctx, Loomcycle_DeleteRunTree_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -1386,6 +1410,19 @@ type LoomcycleServer interface {
 	//
 	// Mirrors POST /v1/runs/{run_id}/compact + the compact_run MCP tool.
 	CompactRun(context.Context, *CompactRunRequest) (*CompactRunResult, error)
+	// DeleteRunTree deletes a run and every descendant run, with what is
+	// stored about them (events, sessions left without a run, interrupts,
+	// evaluations, queued memory rows, indexed turns). The usage ledger is
+	// kept. Name a run, or a session to delete every run of it. Requires the
+	// runs:delete scope and read access to the root. A root that does not
+	// exist, or that the caller cannot read, deletes nothing and returns zero
+	// counts, so a repeated call is not an error. A tree holding a live or
+	// paused run returns FailedPrecondition and deletes nothing: cancel first.
+	//
+	// Mirrors DELETE /v1/runs/{run_id}/tree, DELETE
+	// /v1/sessions/{session_id}?cascade=children and the delete_run_tree MCP
+	// tool.
+	DeleteRunTree(context.Context, *DeleteRunTreeRequest) (*DeleteRunTreeResult, error)
 	// Configured runs (RFC DI): create a run now, start it later. A configured
 	// run is validated like a Run but admitted only at start — it takes no slot
 	// and no budget until then — and never stores a secret. Mirrors POST
@@ -1845,6 +1882,9 @@ func (UnimplementedLoomcycleServer) SpawnRunBatch(context.Context, *BatchSpawnRe
 func (UnimplementedLoomcycleServer) CompactRun(context.Context, *CompactRunRequest) (*CompactRunResult, error) {
 	return nil, status.Error(codes.Unimplemented, "method CompactRun not implemented")
 }
+func (UnimplementedLoomcycleServer) DeleteRunTree(context.Context, *DeleteRunTreeRequest) (*DeleteRunTreeResult, error) {
+	return nil, status.Error(codes.Unimplemented, "method DeleteRunTree not implemented")
+}
 func (UnimplementedLoomcycleServer) CreateConfiguredRun(context.Context, *RunRequest) (*ConfiguredRun, error) {
 	return nil, status.Error(codes.Unimplemented, "method CreateConfiguredRun not implemented")
 }
@@ -2124,6 +2164,24 @@ func _Loomcycle_CompactRun_Handler(srv interface{}, ctx context.Context, dec fun
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
 		return srv.(LoomcycleServer).CompactRun(ctx, req.(*CompactRunRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _Loomcycle_DeleteRunTree_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(DeleteRunTreeRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(LoomcycleServer).DeleteRunTree(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: Loomcycle_DeleteRunTree_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(LoomcycleServer).DeleteRunTree(ctx, req.(*DeleteRunTreeRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
@@ -3345,6 +3403,10 @@ var Loomcycle_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "CompactRun",
 			Handler:    _Loomcycle_CompactRun_Handler,
+		},
+		{
+			MethodName: "DeleteRunTree",
+			Handler:    _Loomcycle_DeleteRunTree_Handler,
 		},
 		{
 			MethodName: "CreateConfiguredRun",

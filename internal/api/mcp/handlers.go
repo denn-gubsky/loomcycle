@@ -59,6 +59,8 @@ var handlersByName = map[string]toolHandler{
 	"directory":      handleDirectory,
 	"erasure":        handleErasure,
 	"list_runs":      handleListRuns,
+	// Removes a run tree and what is stored about it (delete_run_tree.go).
+	"delete_run_tree": handleDeleteRunTree,
 
 	// Agent management
 	"register_agent":   handleRegisterAgent,
