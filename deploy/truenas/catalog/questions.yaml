@@ -927,6 +927,18 @@ questions:
             schema:
               type: string
               default: ""
+          - variable: LOOMCYCLE_USER_TOKEN_MAX_TTL_SECONDS
+            label: LOOMCYCLE_USER_TOKEN_MAX_TTL_SECONDS
+            description: '(example: 86400)'
+            schema:
+              type: string
+              default: ""
+          - variable: LOOMCYCLE_EXPIRED_TOKEN_RETENTION_SECONDS
+            label: LOOMCYCLE_EXPIRED_TOKEN_RETENTION_SECONDS
+            description: '(example: 604800)'
+            schema:
+              type: string
+              default: ""
           - variable: LOOMCYCLE_AUTH_VERBOSE
             label: LOOMCYCLE_AUTH_VERBOSE
             description: '(example: 1)'

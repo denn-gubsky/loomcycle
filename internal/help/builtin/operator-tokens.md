@@ -116,6 +116,29 @@ one to retire after a grace window (default 24h,
 `--grace-seconds`). Both authenticate during the window — a zero-downtime
 roll. `retire` revokes immediately.
 
+## Token lifetime
+
+A token can be minted with a fixed lifetime: `--ttl-seconds N` on
+`operator-token create` (`ttl_seconds` on the `create` op), or
+`{"ttl_seconds": N}` in the body of `POST /v1/_users/{subject}/tokens`.
+It stops authenticating when the lifetime runs out, exactly as a retired
+token does. Use it for a token that lives on a machine you do not
+control.
+
+- `rotate` does not extend a lifetime: the replacement expires when the
+  original would have. An expired token cannot be rotated.
+- A token holding `substrate:admin` cannot have a lifetime — it would lock
+  the deployment out when it ran out.
+- The per-user mint also takes `name` (a label) and `max_active` (keep at
+  most N of the user's tokens alive; the oldest beyond it are retired).
+  An unknown field in that body is refused.
+- `LOOMCYCLE_USER_TOKEN_MAX_TTL_SECONDS` caps a per-user token's
+  lifetime; with it set, a mint that asks for none gets the cap.
+- An expired token's row is deleted
+  `LOOMCYCLE_EXPIRED_TOKEN_RETENTION_SECONDS` after it expired (default 7
+  days; `0` keeps them). A token minted without a lifetime is never
+  deleted this way.
+
 ## Migration from LOOMCYCLE_AUTH_TOKEN (zero-disruption)
 
 The legacy shared secret keeps working until the **first admin-scoped**
