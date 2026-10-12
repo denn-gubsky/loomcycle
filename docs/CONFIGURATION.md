@@ -1369,9 +1369,11 @@ It is also a key in a markdown agent's frontmatter and in the `AgentDef` create 
 Rules worth knowing:
 
 - **It refuses the same settings a token lock does** (the table above), and for every caller: an admin, the legacy token, a schedule, a webhook and a parent agent included. The request gets `403 override_not_allowed` naming the field.
-- **It applies at the same places:** a run start, `runs:batch`, a continuation, a configured run, a retune, and a parent's per-spawn `compaction` override in the `Agent` tool.
+- **It applies at the same places:** a run start, `runs:batch`, a continuation, a configured run and a retune. In the `Agent` tool it refuses a parent's per-spawn `compaction` override and a resident (interactive) spawn of the agent.
+- **A spawn that pins a version (`def_id`) is held to that version's lock**, not the active version's.
 - **Not locked:** the fields that only narrow, bound, name or deliver a run, as for a token.
 - **Compaction and context settings a parent passes down by inheritance still reach the agent.** Only a parent's explicit per-spawn override is refused. Give the agent its own `compaction:` block if it must not depend on its parent's.
+- **A run of the agent that spawns itself passes no overrides down.** A child of the same definition normally inherits its parent's overrides; a locked definition inherits none, including for a parent that started before the lock was added.
 - **A schedule or webhook definition that sets an override for this agent fails when it fires**, not when it is saved.
 - **To change the agent, change its definition.** A new version (a config change, or an `AgentDef` fork) is the way to re-tune it; a fork that does not send `allow_overrides` keeps its parent's, and one that sends `true` opens it. Whoever may author the definition owns the lock.
 - **It is not part of the definition's content hash**, so adding or removing it does not change `content_sha256`. A create that changes only the lock still writes a new version.
