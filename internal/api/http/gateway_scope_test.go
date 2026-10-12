@@ -307,7 +307,9 @@ func TestGateway_ACallWithNoUsageReportStillCountsAgainstTheBudget(t *testing.T)
 			ts, srv := gatewayBudgetServer(t, 1000, 990)
 			srv.providers = &stubResolver{p: &scriptedProvider{defaultS: []providers.Event{
 				{Type: providers.EventText, Text: strings.Repeat("answer ", 20)},
-				{Type: providers.EventDone, StopReason: "end_turn"}, // no usage
+				// No usage; or, on the streamed pass, a report of zero, which
+				// is a provider that did not count and must cost the same.
+				{Type: providers.EventDone, StopReason: "end_turn", Usage: zeroIf(stream)},
 			}}}
 			ledger := func() int64 {
 				rows, err := srv.store.UsageReport(context.Background(), store.UsageQuery{TenantID: "acme"})
@@ -370,4 +372,13 @@ func TestGatewayMeter(t *testing.T) {
 	if silent.reported || silent.outputBytes != 12 || silent.inputBytes == 0 {
 		t.Errorf("an unreported call: reported=%v output=%d input=%d, want its sizes noted", silent.reported, silent.outputBytes, silent.inputBytes)
 	}
+}
+
+// zeroIf returns a usage report of zero tokens when on, and no report at all
+// otherwise.
+func zeroIf(on bool) *providers.Usage {
+	if on {
+		return &providers.Usage{}
+	}
+	return nil
 }

@@ -84,24 +84,31 @@ const bytesPerEstimatedToken = 3
 // against the caller's budget, whole: cache-creation and cache-read tokens
 // are tokens a run's budget counts, so they count here.
 //
-// A call that ended with NO report — the caller hung up, or the provider
-// failed first — is counted against the BUDGET by an estimate from its size,
-// and written to the log, but not to the ledger. Counting nothing would make
+// A call that ended with NO report — the caller hung up, the provider failed
+// first, or it reported zero — is counted against the BUDGET by an estimate
+// from its size, and written to the log, but not to the ledger. Counting nothing would make
 // "read the answer, then drop the connection before the usage arrives" a way
 // to call the model for free under a hard limit. Writing a guess into the
 // ledger would put a number nobody measured into what an operator bills from.
 // The budget is the control; the ledger is the record.
+//
+// KNOWN LIMIT: the estimate lives in this replica's month-to-date counter,
+// which is rebuilt from the ledger at a restart and is not shared with other
+// replicas. So it is as durable as the counter itself — the advisory,
+// per-replica enforcement the budgets have today — and no more. Making it
+// durable needs a ledger row marked as estimated, which belongs with strict
+// budget enforcement, where the counter stops being advisory.
 //
 // wireUser is the request's own user field, used only when there is no
 // principal. The call belongs to no run, so it is filed under the caller
 // alone, as an off-run decision is.
 func (s *Server) settleGatewayCall(ctx context.Context, wireUser, providerID, modelID string, m *gatewayMeter) {
 	tenant, user := tenantFromCtx(ctx), auth.SubjectForFairness(ctx, wireUser)
-	if m.reported {
-		u := m.usage
-		if u.InputTokens+u.OutputTokens+u.CacheCreationTokens+u.CacheReadTokens == 0 {
-			return
-		}
+	// A report of zero tokens for a call that sent a prompt is not a report:
+	// it is a driver or a provider that did not count. Treating it as "this
+	// call was free" would let any provider that omits its usage serve
+	// unmetered calls, so it falls through to the estimate like no report.
+	if u := m.usage; m.reported && u.InputTokens+u.OutputTokens+u.CacheCreationTokens+u.CacheReadTokens > 0 {
 		// The provider and model the call was dispatched to: a usage row is
 		// priced by them.
 		u.Provider, u.Model = providerID, modelID
