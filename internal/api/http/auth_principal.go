@@ -157,6 +157,13 @@ func writeAgentNotAllowed(w http.ResponseWriter, err error) {
 // an agent with no allowlist in the way), channels, memory, documents, and
 // the credential store.
 func runPlaneRoute(method, path string) bool {
+	// Deleting a run tree or a session is not part of starting and following
+	// runs, and is off the run plane on gRPC and MCP too: a token limited to
+	// certain agents does not erase records, whatever scope it was given.
+	if method == http.MethodDelete && (strings.HasPrefix(path, "/v1/sessions/") ||
+		strings.HasPrefix(path, "/v1/runs/") && strings.HasSuffix(path, "/tree")) {
+		return false
+	}
 	switch {
 	case path == "/v1/runs", path == "/v1/runs:batch", strings.HasPrefix(path, "/v1/runs/"):
 		return true
