@@ -12,6 +12,7 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/loop"
 	"github.com/denn-gubsky/loomcycle/internal/providers"
 	"github.com/denn-gubsky/loomcycle/internal/runner"
+	"github.com/denn-gubsky/loomcycle/internal/steer"
 	"github.com/denn-gubsky/loomcycle/internal/store"
 )
 
@@ -144,6 +145,26 @@ func TestNoTraceWire_ATokenMakesEveryRunItStartsNoTrace(t *testing.T) {
 	}
 	quiet := auth.WithPrincipal(ctx, auth.Principal{TenantID: "acme", Subject: "dev", Scopes: []string{auth.ScopeTenant},
 		Restrictions: auth.Restrictions{Retention: auth.RetentionNone}})
+	// It cannot write its words into what is stored by another road either:
+	// an edit of somebody's draft, a message into somebody's ordinary run.
+	free := auth.WithPrincipal(ctx, auth.Principal{TenantID: "acme", Subject: "dev", Scopes: []string{auth.ScopeTenant}})
+	var d runDraft
+	d.Agent = "other"
+	d.Segments = []loop.PromptSegment{{Role: "user", Content: []loop.PromptContentBlock{{Type: "trusted-text", Text: "go"}}}}
+	theirs, err := s.CreateConfiguredRun(free, d)
+	if err != nil {
+		t.Fatalf("an ordinary token's draft: %v", err)
+	}
+	if _, err := s.UpdateConfiguredRun(quiet, theirs.RunID, []byte(`{"metadata":{"k":"`+canary+`"}}`)); err == nil || !strings.Contains(err.Error(), "retention_none_unsupported") {
+		t.Errorf("a draft edit: err = %v, want it refused", err)
+	}
+	if _, err := s.CreateConfiguredRun(quiet, d); err == nil || !strings.Contains(err.Error(), "retention_none_unsupported") {
+		t.Errorf("a draft created through the connector: err = %v, want it refused", err)
+	}
+	s.SetSteerRegistry(steer.NewRegistry(8))
+	if _, err := s.SteerRun(quiet, run.ID, "a message "+canary, "api"); !errors.Is(err, runner.ErrRetentionUnsupported) {
+		t.Errorf("a message from a no-trace token: err = %v, want ErrRetentionUnsupported", err)
+	}
 	if _, err := s.admitTeamRun(quiet); !errors.Is(err, runner.ErrRetentionUnsupported) {
 		t.Errorf("a team walk: err = %v, want ErrRetentionUnsupported", err)
 	}

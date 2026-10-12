@@ -163,6 +163,11 @@ func (s *Server) createConfiguredRunCore(ctx context.Context, req runDraft) (con
 	// A draft is its prompt, stored until someone starts it. A run that would
 	// be no-trace — by its agent or by this caller's token — cannot be
 	// prepared that way; it is started directly.
+	// The token's own mode is checked first and on its own: it does not
+	// depend on the agent resolving, and it holds for an edit as well.
+	if principalIsNoTrace(ctx) {
+		return connector.ConfiguredRun{}, draftRefusal(http.StatusConflict, "retention_none_unsupported", "%s", errNoTracePrincipalWrite.Error())
+	}
 	if def, ok := s.lookupAgent(ctx, tenant, req.Agent); ok && s.resolveRetention(ctx, def, "") == store.RetentionNone {
 		return connector.ConfiguredRun{}, draftRefusal(http.StatusConflict, "retention_none_unsupported",
 			"%s: a no-trace run cannot be configured as a draft: the draft would store its prompt", runner.ErrRetentionUnsupported)
@@ -289,6 +294,9 @@ func (s *Server) updateConfiguredRunCore(ctx context.Context, runID string, patc
 	run, err := s.configuredRunCore(ctx, runID)
 	if err != nil {
 		return connector.ConfiguredRun{}, err
+	}
+	if principalIsNoTrace(ctx) {
+		return connector.ConfiguredRun{}, draftRefusal(http.StatusConflict, "retention_none_unsupported", "%s", errNoTracePrincipalWrite.Error())
 	}
 	var patch map[string]json.RawMessage
 	if err := json.Unmarshal(patchJSON, &patch); err != nil {

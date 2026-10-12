@@ -38,6 +38,13 @@ func (s *Server) SteerRun(ctx context.Context, runID, text, source string) (bool
 		// defensive floor so an empty turn never reaches the loop.
 		return false, connector.ErrRunNotInFlight
 	}
+	// A caller whose own runs are no-trace does not get its words stored by
+	// writing them into somebody's ordinary run. Before the run is looked at:
+	// the answer is the same whatever the run is, so it tells the caller
+	// nothing about one.
+	if principalIsNoTrace(ctx) {
+		return false, errNoTracePrincipalWrite
+	}
 	// Tenant-ownership gate: a cross-tenant (or unknown) run is folded into an
 	// opaque ErrRunNotInFlight — run_ids are not secret, so the gate must not
 	// become an existence oracle. Mirrors handleRunInput's gate exactly. A run

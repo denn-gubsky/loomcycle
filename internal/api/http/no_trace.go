@@ -424,3 +424,16 @@ func (s *Server) FailLostNoTraceRuns(ctx context.Context, bootedAt time.Time) (i
 	}
 	return s.store.FailLostNoTraceRuns(ctx, s.replicaID, bootedAt)
 }
+
+// principalIsNoTrace reports whether the caller's token makes its runs
+// no-trace. Such a caller's content is not stored by any route it can reach,
+// not only by the one that starts a run: it cannot write a prompt into a
+// draft, or send a message into a run that stores its input.
+func principalIsNoTrace(ctx context.Context) bool {
+	p, ok := auth.PrincipalFromContext(ctx)
+	return ok && p.Restrictions.Retention == store.RetentionNone
+}
+
+// errNoTracePrincipalWrite refuses a no-trace token writing content that
+// would be stored.
+var errNoTracePrincipalWrite = &noTraceRefusal{Status: 409, Msg: "this token's runs are no-trace, so it cannot write content that would be stored: start the run directly"}
