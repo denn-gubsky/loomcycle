@@ -2,6 +2,7 @@ package http
 
 import (
 	"encoding/json"
+	"log"
 	"net/http"
 	"time"
 
@@ -20,12 +21,16 @@ import (
 // sees the config knobs (so its UI can show that retention exists + how it's
 // tuned), mirroring /v1/_routing's admin-vs-tenant split.
 type retentionReportResponse struct {
-	Admin         bool   `json:"admin"`
-	Enabled       bool   `json:"enabled"`
-	IntervalMS    int64  `json:"interval_ms"`
-	DefsMode      string `json:"defs_mode"`
-	DefsMaxAgeMS  int64  `json:"defs_max_age_ms"`
-	DefsKeepLastN int    `json:"defs_keep_last_n"`
+	// NoTraceOverrides is the timed overrides in force for the caller's
+	// tenant (every tenant, for an admin): agents whose no-trace mode an
+	// operator has lifted, and until when. Empty when there are none.
+	NoTraceOverrides []retentionOverrideResponse `json:"no_trace_overrides"`
+	Admin            bool                        `json:"admin"`
+	Enabled          bool                        `json:"enabled"`
+	IntervalMS       int64                       `json:"interval_ms"`
+	DefsMode         string                      `json:"defs_mode"`
+	DefsMaxAgeMS     int64                       `json:"defs_max_age_ms"`
+	DefsKeepLastN    int                         `json:"defs_keep_last_n"`
 	// ChatsMode / ChatsMaxAgeMS are the RFC BM Phase 2 aged-chat archiver knobs
 	// (config only — tenant-readable). ChatsMode reflects the effective value
 	// after the legacy LOOMCYCLE_USAGE_RUN_RETENTION_* alias in config.Load.
@@ -139,6 +144,13 @@ func (s *Server) handleRetentionReport(w http.ResponseWriter, r *http.Request) {
 		MemContentMaxAgeMS:    s.cfg().Env.RetentionMemContentMaxAge.Milliseconds(),
 		EmptyDossierMode:      emptyDossierMode,
 		EmptyDossierMaxAgeMS:  s.cfg().Env.RetentionEmptyDossierMaxAge.Milliseconds(),
+	}
+
+	if list, err := s.activeRetentionOverrides(r.Context(), r.URL.Query().Get("tenant")); err != nil {
+		log.Printf("retention report: listing no-trace overrides: %v", err)
+		resp.NoTraceOverrides = []retentionOverrideResponse{}
+	} else {
+		resp.NoTraceOverrides = list
 	}
 
 	if s.store == nil {

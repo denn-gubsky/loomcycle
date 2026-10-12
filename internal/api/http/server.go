@@ -2949,7 +2949,7 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 	if err := admitAgentOverrides(effectiveAgentName, agentDef, overridesSetIn(&in)); err != nil {
 		return err
 	}
-	retention := s.resolveRetention(ctx, agentDef, in.Retention)
+	retention := s.resolveRetention(ctx, effectiveTenantID, effectiveAgentName, agentDef, in.Retention)
 	if err := admitNoTraceStart(retention, in.Interactive, in.Review, in.SessionID); err != nil {
 		return err
 	}
@@ -3831,6 +3831,11 @@ func (s *Server) Mux() http.Handler {
 	// purgeable counts + export dir are admin-only (stripped in the handler).
 	// Scope-gated to substrate:tenant in requiredScopeFor.
 	mux.Handle("GET /v1/_retention", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleRetentionReport))))
+	// Timed overrides of an agent's no-trace mode (retention_override.go). An
+	// admin for any tenant, a tenant operator for its own; never a member.
+	mux.Handle("GET /v1/_retention/overrides", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleRetentionOverridesList))))
+	mux.Handle("PUT /v1/_retention/overrides", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleRetentionOverridePut))))
+	mux.Handle("DELETE /v1/_retention/overrides", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleRetentionOverrideDelete))))
 	// Instance configuration + the live provider/model/search cascade — the
 	// out-of-band twin of `Context op=capabilities`, sharing one probe
 	// (internal/capabilities) so the two cannot disagree. Any authenticated
@@ -4862,7 +4867,7 @@ func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {
 		writeOverrideNotAllowed(w, err)
 		return
 	}
-	retention := s.resolveRetention(r.Context(), agentDef, req.Retention)
+	retention := s.resolveRetention(r.Context(), req.TenantID, req.Agent, agentDef, req.Retention)
 	if err := admitNoTraceStart(retention, req.Interactive, req.Review, req.SessionID); err != nil {
 		writeNoTraceRefusal(w, err)
 		return
@@ -5833,7 +5838,7 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 	}
 	// A run that would be no-trace now — its agent's mode, or the caller's
 	// token's — opens its own session; it cannot continue this one.
-	if s.resolveRetention(r.Context(), agentDef, "") == store.RetentionNone {
+	if s.resolveRetention(r.Context(), sess.TenantID, sess.Agent, agentDef, "") == store.RetentionNone {
 		writeNoTraceRefusal(w, errNoTraceSession)
 		return
 	}
@@ -7889,7 +7894,7 @@ func (s *Server) prepareSubRunValues(ctx context.Context, name string, src nameS
 	subCompaction := config.MergeCompaction(def.Compaction, tools.CompactionPolicy(ctx))
 	// A parent's per-spawn override is an override like a caller's: a child
 	// that runs on its definition only refuses it.
-	subRetention := s.resolveRetention(ctx, def, "")
+	subRetention := s.resolveRetention(ctx, tenant, name, def, "")
 	if err := admitNoTraceStart(subRetention, interactive, false, ""); err != nil {
 		return nil, fmt.Errorf("sub-agent %q: %w", name, err)
 	}

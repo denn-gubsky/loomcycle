@@ -904,7 +904,7 @@ func requiredScopeFor(method, path string) string {
 	// can see whether retention is enabled + how it's tuned; the HANDLER strips
 	// the cross-tenant purgeable counts + the export dir for a non-admin caller
 	// (admin gets the full view). ScopeAdmin also satisfies. Read-only GET.
-	case path == "/v1/_retention":
+	case path == "/v1/_retention", path == "/v1/_retention/overrides":
 		return auth.ScopeTenant
 	// RFC AW: the token-budget management surface (GET list + PUT upsert + DELETE).
 	// Tenant-readable/writable so a tenant operator manages its own tenant + user
@@ -1173,6 +1173,12 @@ func memberCarveOut(method, path string) bool {
 	case path == "/v1/_erasure":
 		return true
 	case path == "/v1/_limits" && (method == http.MethodPut || method == http.MethodDelete):
+		return true
+	// Switching storage back on for a no-trace agent is the operator's call:
+	// a member who could do it could read what its colleagues' runs said.
+	// Reading the list stays operator-only too; it names what is being
+	// debugged.
+	case path == "/v1/_retention/overrides":
 		return true
 	// RFC CD Part C — the memory/document CHANGE FEED is substrate:tenant-only,
 	// NOT member-accessible (locked decision): the feed exposes the tenant's

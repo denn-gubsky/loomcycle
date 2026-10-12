@@ -209,6 +209,16 @@ func (s *Store) migrate(ctx context.Context) error {
 		// month). Budget state only: the tracker adds it to the ledger aggregate,
 		// and no usage report reads it. month is the unix-nano UTC month start.
 		// Mirrors postgres migration 0088.
+		// Timed overrides of an agent's no-trace mode, one per (tenant, agent).
+		// until and created_at are unix nanos. Mirrors postgres migration 0102.
+		`CREATE TABLE IF NOT EXISTS retention_overrides (
+			tenant_id  TEXT    NOT NULL DEFAULT '',
+			agent      TEXT    NOT NULL,
+			until      INTEGER NOT NULL,
+			set_by     TEXT    NOT NULL DEFAULT '',
+			created_at INTEGER NOT NULL,
+			PRIMARY KEY (tenant_id, agent)
+		)`,
 		`CREATE TABLE IF NOT EXISTS usage_carry (
 			tenant_id  TEXT    NOT NULL DEFAULT '',
 			user_id    TEXT    NOT NULL DEFAULT '',
@@ -2234,6 +2244,77 @@ func (s *Store) UsageCarryForMonth(ctx context.Context, month time.Time) ([]stor
 		}
 		r.Month = time.Unix(0, monthNano).UTC()
 		r.UpdatedAt = time.Unix(0, updatedNano).UTC()
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
+// RetentionOverridePut sets the override for (tenant, agent) and removes
+// expired rows.
+func (s *Store) RetentionOverridePut(ctx context.Context, row store.RetentionOverrideRow, now time.Time) error {
+	if row.Agent == "" || row.Until.IsZero() {
+		return fmt.Errorf("retention override: agent and until are required")
+	}
+	created := row.CreatedAt
+	if created.IsZero() {
+		created = now
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("retention override put: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	if _, err := tx.ExecContext(ctx, `DELETE FROM retention_overrides WHERE until <= ?`, now.UnixNano()); err != nil {
+		return fmt.Errorf("retention override put: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx,
+		`INSERT INTO retention_overrides (tenant_id, agent, until, set_by, created_at) VALUES (?,?,?,?,?)
+		 ON CONFLICT (tenant_id, agent) DO UPDATE SET until = excluded.until, set_by = excluded.set_by, created_at = excluded.created_at`,
+		row.TenantID, row.Agent, row.Until.UnixNano(), row.SetBy, created.UnixNano()); err != nil {
+		return fmt.Errorf("retention override put: %w", err)
+	}
+	return tx.Commit()
+}
+
+// RetentionOverrideDelete ends the override for (tenant, agent).
+func (s *Store) RetentionOverrideDelete(ctx context.Context, tenantID, agent string) (bool, error) {
+	res, err := s.db.ExecContext(ctx, `DELETE FROM retention_overrides WHERE tenant_id = ? AND agent = ?`, tenantID, agent)
+	if err != nil {
+		return false, fmt.Errorf("retention override delete: %w", err)
+	}
+	n, err := res.RowsAffected()
+	return n > 0, err
+}
+
+// RetentionOverrideActive reports whether (tenant, agent) has a live override.
+func (s *Store) RetentionOverrideActive(ctx context.Context, tenantID, agent string, now time.Time) (bool, error) {
+	var n int
+	err := s.db.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM retention_overrides WHERE tenant_id = ? AND agent = ? AND until > ?`,
+		tenantID, agent, now.UnixNano()).Scan(&n)
+	if err != nil {
+		return false, fmt.Errorf("retention override active: %w", err)
+	}
+	return n > 0, nil
+}
+
+// RetentionOverridesActive lists every live override.
+func (s *Store) RetentionOverridesActive(ctx context.Context, now time.Time) ([]store.RetentionOverrideRow, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT tenant_id, agent, until, set_by, created_at FROM retention_overrides
+		 WHERE until > ? ORDER BY tenant_id, agent`, now.UnixNano())
+	if err != nil {
+		return nil, fmt.Errorf("retention overrides active: %w", err)
+	}
+	defer rows.Close()
+	var out []store.RetentionOverrideRow
+	for rows.Next() {
+		var r store.RetentionOverrideRow
+		var until, created int64
+		if err := rows.Scan(&r.TenantID, &r.Agent, &until, &r.SetBy, &created); err != nil {
+			return nil, fmt.Errorf("retention overrides active scan: %w", err)
+		}
+		r.Until, r.CreatedAt = time.Unix(0, until).UTC(), time.Unix(0, created).UTC()
 		out = append(out, r)
 	}
 	return out, rows.Err()

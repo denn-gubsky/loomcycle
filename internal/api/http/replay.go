@@ -96,7 +96,7 @@ func (s *Server) ReplaySession(ctx context.Context, req connector.ReplaySessionR
 	if !ok {
 		return connector.ReplaySessionResult{}, &replayErr{status: http.StatusConflict, code: "agent_gone", msg: "target agent not found: " + req.Agent}
 	}
-	if s.resolveRetention(ctx, agentDef, "") == store.RetentionNone {
+	if s.resolveRetention(ctx, tenant, req.Agent, agentDef, "") == store.RetentionNone {
 		return connector.ReplaySessionResult{}, &replayErr{status: http.StatusConflict, code: "retention_none_unsupported", msg: errNoTraceSession.Error()}
 	}
 

@@ -2108,6 +2108,19 @@ export interface WhoamiResponse {
 
 export type RuntimeStateStatus = "running" | "pausing" | "paused";
 
+/** A timed override of an agent's no-trace mode: until `until`, runs of
+ *  `agent` in `tenant` are stored like any other. It lifts a mode that came
+ *  from the agent's definition or the run request, never one a token
+ *  requires. */
+export interface RetentionOverride {
+  tenant: string;
+  agent: string;
+  /** RFC 3339. */
+  until: string;
+  set_by?: string;
+  created_at?: string;
+}
+
 export interface PauseResult {
   state: string; // "paused"
   duration_ms: number;

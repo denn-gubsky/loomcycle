@@ -748,6 +748,18 @@ type TokenLimitRow struct {
 	UpdatedBy string
 }
 
+// RetentionOverrideRow is a timed override of an agent's no-trace mode: until
+// Until, runs of Agent in TenantID are ordinary stored runs even though the
+// agent's definition or the request says "none". It never lifts a mode a
+// caller's token requires.
+type RetentionOverrideRow struct {
+	TenantID  string    `json:"tenant_id"`
+	Agent     string    `json:"agent"`
+	Until     time.Time `json:"until"`
+	SetBy     string    `json:"set_by,omitempty"`
+	CreatedAt time.Time `json:"created_at"`
+}
+
 // RetentionNone is the retention mode of a run whose content is never stored.
 // The default mode is the empty string.
 const RetentionNone = "none"
@@ -1763,6 +1775,19 @@ type Store interface {
 	// subject's carry rows across every month, for subject erasure.
 	UsageCarryCountSubject(ctx context.Context, tenantID, userID string) (int, error)
 	UsageCarryDeleteSubject(ctx context.Context, tenantID, userID string) (int, error)
+
+	// RetentionOverridePut sets the timed override for (TenantID, Agent),
+	// replacing any there, and removes rows that expired before now.
+	RetentionOverridePut(ctx context.Context, row RetentionOverrideRow, now time.Time) error
+	// RetentionOverrideDelete ends the override for (tenantID, agent). It
+	// reports whether there was one.
+	RetentionOverrideDelete(ctx context.Context, tenantID, agent string) (bool, error)
+	// RetentionOverrideActive reports whether (tenantID, agent) has an
+	// override that has not run out at now.
+	RetentionOverrideActive(ctx context.Context, tenantID, agent string, now time.Time) (bool, error)
+	// RetentionOverridesActive lists every override that has not run out at
+	// now, across tenants, ordered by tenant and agent.
+	RetentionOverridesActive(ctx context.Context, now time.Time) ([]RetentionOverrideRow, error)
 
 	// RollupAndPruneUsage folds every token_usage row older than olderThan into
 	// usage_archive (day-bucketed, summed per dimension tuple) and deletes the
