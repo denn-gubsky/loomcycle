@@ -70,6 +70,9 @@ type mintUserTokenRequest struct {
 	// to the run endpoints. A pointer so "absent" (unrestricted) and "[]"
 	// (refused) are told apart.
 	Agents *[]string `json:"agents,omitempty"`
+	// Overrides locks the per-run overrides for runs this token starts:
+	// "none", or the list of overrides it may still set.
+	Overrides *auth.OverridePolicy `json:"overrides,omitempty"`
 }
 
 // restrictions builds the token's restrictions record from the request.
@@ -78,6 +81,7 @@ func (r mintUserTokenRequest) restrictions() (auth.Restrictions, error) {
 	if r.Agents != nil {
 		out.Agents = *r.Agents
 	}
+	out.Overrides = r.Overrides
 	return out, out.Validate(r.Agents != nil)
 }
 

@@ -744,3 +744,32 @@ func TestHandleMintUserToken_AgentsRestrictsTheToken(t *testing.T) {
 		t.Errorf("%d token rows, want the two successful mints only", len(rows))
 	}
 }
+
+// overrides in the mint body locks the token's per-run settings and takes
+// effect at login.
+func TestHandleMintUserToken_OverridesLocksTheToken(t *testing.T) {
+	s, st := tokenAuthServer(t, "legacy")
+	ctx := context.Background()
+	acme := auth.Principal{TenantID: "acme", Subject: "ops", Scopes: []string{auth.ScopeTenant}}
+	seedUser(t, st, "acme", "alice", "isolated", "active")
+
+	resp := mintFor(t, s, acme, "alice", `{"agents":["score"],"overrides":"none"}`)
+	if resp.Restrictions == nil || resp.Restrictions.Overrides == nil {
+		t.Fatalf("mint answer restrictions = %+v, want the lock shown", resp.Restrictions)
+	}
+	p, ok := s.resolvePrincipal(ctx, resp.Token)
+	if !ok || p.Restrictions.OverrideAllowed("model") || !p.Restrictions.AgentAllowed("score") {
+		t.Errorf("resolved principal = %+v (ok=%v), want overrides locked and agents kept", p.Restrictions, ok)
+	}
+	list := mintFor(t, s, acme, "alice", `{"overrides":["effort"]}`)
+	if p, _ := s.resolvePrincipal(ctx, list.Token); !p.Restrictions.OverrideAllowed("effort") || p.Restrictions.OverrideAllowed("model") {
+		t.Errorf("list policy resolved as %+v", p.Restrictions)
+	}
+	for _, body := range []string{`{"overrides":"all"}`, `{"overrides":[]}`, `{"overrides":["temperature"]}`} {
+		rec := httptest.NewRecorder()
+		s.handleMintUserToken(rec, bodyReq("POST", "/v1/_users/alice/tokens", body, acme, "subject", "alice"))
+		if rec.Code != http.StatusBadRequest {
+			t.Errorf("body %s: status %d, want 400: %s", body, rec.Code, rec.Body.String())
+		}
+	}
+}

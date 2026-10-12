@@ -1205,6 +1205,12 @@ export class LoomcycleClient {
    *  `agent_not_allowed`). An agent that a listed one spawns is not limited.
    *  An empty list is refused; omit the option for no limit.
    *
+   *  `overrides` locks the per-run settings for runs the token starts, and
+   *  for retunes it makes: `"none"` locks them all (model, provider, tier,
+   *  effort, sampling, limits, output format and the rest), a list names the
+   *  ones it may still set. A request that sets a locked one is refused with
+   *  403 `override_not_allowed`.
+   *
    *  With none of the options the request has no body, as before. */
   async mintUserToken(
     subject: string,
@@ -1214,6 +1220,7 @@ export class LoomcycleClient {
       name?: string;
       maxActive?: number;
       agents?: string[];
+      overrides?: "none" | string[];
     },
   ): Promise<MintedUserToken> {
     const body: Record<string, unknown> = {};
@@ -1221,6 +1228,7 @@ export class LoomcycleClient {
     if (opts?.name !== undefined) body.name = opts.name;
     if (opts?.maxActive !== undefined) body.max_active = opts.maxActive;
     if (opts?.agents !== undefined) body.agents = opts.agents;
+    if (opts?.overrides !== undefined) body.overrides = opts.overrides;
     return postJSON<MintedUserToken>(
       this.ctx,
       `/v1/_users/${encodeURIComponent(subject)}/tokens`,

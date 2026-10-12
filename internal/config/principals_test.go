@@ -2,6 +2,8 @@ package config
 
 import (
 	"fmt"
+
+	"gopkg.in/yaml.v3"
 	"strconv"
 	"strings"
 	"testing"
@@ -223,5 +225,52 @@ func TestResolvePrincipals_Agents(t *testing.T) {
 		if err := resolvePrincipals(&Config{Principals: map[string]PrincipalDef{"p": def}}); err != nil {
 			t.Errorf("%s without agents: %v", c.name, err)
 		}
+	}
+}
+
+// `overrides:` on a declared principal reads as `none`, a comma-separated
+// scalar or a list, and anything else fails the load.
+func TestPrincipalDef_OverridesYAML(t *testing.T) {
+	for in, want := range map[string][]string{
+		"overrides: none":           {},
+		"overrides: effort, tier":   {"effort", "tier"},
+		"overrides: [effort, tier]": {"effort", "tier"},
+	} {
+		var def PrincipalDef
+		if err := yaml.Unmarshal([]byte(in), &def); err != nil {
+			t.Errorf("%q: %v", in, err)
+			continue
+		}
+		if def.Overrides == nil || len(def.Overrides.Allow) != len(want) {
+			t.Errorf("%q read as %+v, want allow %v", in, def.Overrides, want)
+		}
+	}
+	for _, bad := range []string{"overrides: all,", "overrides: []", "overrides: {a: b}"} {
+		var def PrincipalDef
+		if err := yaml.Unmarshal([]byte(bad), &def); err == nil && (def.Overrides == nil || len(def.Overrides.Allow) == 0) && bad != "overrides: all," {
+			t.Errorf("%q accepted as %+v", bad, def.Overrides)
+		}
+	}
+	var absent PrincipalDef
+	if err := yaml.Unmarshal([]byte("subject: s"), &absent); err != nil || absent.Overrides != nil {
+		t.Errorf("an absent key read as %+v (err %v)", absent.Overrides, err)
+	}
+
+	t.Setenv("LOOMCYCLE_TOKEN_OVR_OK", "lct_ovr_ok")
+	t.Setenv("LOOMCYCLE_TOKEN_OVR_BAD", "lct_ovr_bad")
+	c := &Config{Principals: map[string]PrincipalDef{"p": {Tenant: "acme", Subject: "s", Scopes: []string{auth.ScopeRunsCreate},
+		TokenEnv: "LOOMCYCLE_TOKEN_OVR_OK", Overrides: &overridePolicyYAML{}}}}
+	if err := resolvePrincipals(c); err != nil {
+		t.Fatalf("resolvePrincipals: %v", err)
+	}
+	if r := c.ResolvedPrincipals[0].Principal.Restrictions; r.Overrides == nil || r.OverrideAllowed("model") {
+		t.Errorf("resolved restrictions = %+v, want every override locked", r)
+	}
+	bad := &overridePolicyYAML{}
+	bad.Allow = []string{"temperature"}
+	err := resolvePrincipals(&Config{Principals: map[string]PrincipalDef{"p": {Tenant: "acme", Subject: "s", Scopes: []string{auth.ScopeRunsCreate},
+		TokenEnv: "LOOMCYCLE_TOKEN_OVR_BAD", Overrides: bad}}})
+	if err == nil || !strings.Contains(err.Error(), "overrides") {
+		t.Errorf("an unknown override name: err = %v, want a refusal naming overrides", err)
 	}
 }
