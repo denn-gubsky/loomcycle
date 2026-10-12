@@ -224,6 +224,21 @@ jobs:
           LOOMCYCLE_TEST_PG_DSN: postgres://loomcycle:loomcycle@127.0.0.1:5432/loomcycle_test?sslmode=disable
         run: go test -count=1 -timeout 600s ./internal/snapshot/...
 
+      # NO-TRACE CANARY (Postgres). A no-trace run must leave its content in no
+      # table. The canary suite runs on both store backends, and without a DSN
+      # its postgres half skips — and Postgres is where it found something
+      # sqlite could not: event payloads are bytea there, and a search that
+      # looked for the plain string walked straight past them.
+      #
+      # A -run filter here, unlike the step above: the rest of this package is
+      # the whole HTTP API on sqlite and already runs in the `Go` job. Per-test
+      # schemas are prefixed canary_. !cancelled() so it gates on its own.
+      - name: No-trace canary (Postgres)
+        if: ${{ !cancelled() }}
+        env:
+          LOOMCYCLE_TEST_PG_DSN: postgres://loomcycle:loomcycle@127.0.0.1:5432/loomcycle_test?sslmode=disable
+        run: go test -count=1 -timeout 600s -run 'TestNoTraceCanary' ./internal/api/http/
+
       # COORDINATION TIER (multi-replica): cancel/steer coordinators, the
       # Postgres backplane, the replica store + heartbeat, the replicas sweeper
       # and user quotas. Every test here is PG-gated, and until now nothing ran
