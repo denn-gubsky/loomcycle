@@ -371,6 +371,12 @@ func (s *Server) CancelRun(ctx context.Context, agentID, reason string) (connect
 	if agentID == "" {
 		return connector.CancelRunResult{}, fmt.Errorf("agent_id required")
 	}
+	// The cancel goes ahead; a typed reason from a caller whose words are
+	// no-trace does not go with it. (A no-trace RUN's reason is reduced where
+	// it is stored and published, in the store filter and the bus.)
+	if principalIsNoTrace(ctx) {
+		reason = ""
+	}
 	// Tenant ownership gate (RFC L/N): this method backs gRPC CancelAgent + the
 	// MCP cancel_run tool, both of which dispatch with a principal-bearing ctx.
 	// A cancel keyed only by agent_id must not reach another tenant's run (ids

@@ -2375,6 +2375,7 @@ def _agent_to_dict(a: pb.Agent) -> Mapping[str, Any]:
         "started_at": _ts_to_iso(a.started_at),
         "completed_at": _ts_to_iso(a.completed_at) if a.HasField("completed_at") else None,
         "stop_reason": a.stop_reason,
+        "retention": a.retention,
         "error": a.error,
         "usage": {
             "input_tokens": a.usage.input_tokens,

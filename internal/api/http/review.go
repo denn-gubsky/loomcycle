@@ -42,6 +42,11 @@ func (s *Server) ReviewRun(ctx context.Context, runID, decision, feedback, sourc
 		return false, connector.ErrSteeringUnavailable
 	}
 	feedback = strings.TrimSpace(feedback)
+	// Feedback is written into the run it sends back. A caller whose token
+	// makes its words no-trace may approve or reject, and may not attach any.
+	if feedback != "" && principalIsNoTrace(ctx) {
+		return false, errNoTracePrincipalWrite
+	}
 	var kind string
 	switch decision {
 	case "approve":

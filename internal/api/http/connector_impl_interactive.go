@@ -150,6 +150,12 @@ func (s *Server) CancelTurn(ctx context.Context, runID, reason string) (bool, bo
 		return false, false, connector.ErrTurnCancelUnavailable
 	}
 	reason = strings.TrimSpace(reason)
+	// A cancel always works; the reason somebody typed with it is content. It
+	// is dropped for a no-trace run (it would be relayed to the run's replica
+	// and recorded) and for a caller whose token makes its own words no-trace.
+	if reason != "" && (principalIsNoTrace(ctx) || s.runIsNoTrace(ctx, runID)) {
+		reason = ""
+	}
 
 	// Local fast path: the run is live on THIS replica. Gate ownership as
 	// SteerRun does, then fire the local armed token.
@@ -226,6 +232,11 @@ func (s *Server) CancelTurn(ctx context.Context, runID, reason string) (bool, bo
 func (s *Server) ResolveInterrupt(ctx context.Context, runID, interruptID, kind, answer, resolvedBy, disposition string) (string, error) {
 	if s.store == nil {
 		return "", connector.WithMessage(connector.ErrInterruptStoreUnavailable, "interrupts require persistence (Store not configured)")
+	}
+	// An answer is stored beside the question it answers. A caller whose
+	// token makes its words no-trace cannot leave one.
+	if answer != "" && principalIsNoTrace(ctx) {
+		return "", errNoTracePrincipalWrite
 	}
 	if kind == "" {
 		kind = store.InterruptKindQuestion

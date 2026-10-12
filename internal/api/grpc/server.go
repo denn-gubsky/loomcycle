@@ -654,6 +654,7 @@ func runToProto(r store.Run, live bool) *loomcyclepb.Agent {
 		Status:        string(r.Status),
 		StartedAt:     timestamppb.New(r.StartedAt),
 		StopReason:    r.StopReason,
+		Retention:     r.Retention,
 		Error:         r.ErrorMsg,
 		Usage: &loomcyclepb.AgentUsage{
 			InputTokens:         int64(r.InputTokens),

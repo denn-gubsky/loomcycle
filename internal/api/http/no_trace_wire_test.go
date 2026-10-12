@@ -165,6 +165,14 @@ func TestNoTraceWire_ATokenMakesEveryRunItStartsNoTrace(t *testing.T) {
 	if _, err := s.SteerRun(quiet, run.ID, "a message "+canary, "api"); !errors.Is(err, runner.ErrRetentionUnsupported) {
 		t.Errorf("a message from a no-trace token: err = %v, want ErrRetentionUnsupported", err)
 	}
+	// Nor an answer to a question, nor feedback on a held answer: both are
+	// stored beside what they respond to.
+	if _, err := s.ResolveInterrupt(quiet, run.ID, "i_any", "", "an answer "+canary, "api", ""); !errors.Is(err, runner.ErrRetentionUnsupported) {
+		t.Errorf("an interrupt answer from a no-trace token: err = %v, want ErrRetentionUnsupported", err)
+	}
+	if _, err := s.ReviewRun(quiet, run.ID, "revise", "feedback "+canary, "api"); !errors.Is(err, runner.ErrRetentionUnsupported) {
+		t.Errorf("review feedback from a no-trace token: err = %v, want ErrRetentionUnsupported", err)
+	}
 	if _, err := s.admitTeamRun(quiet); !errors.Is(err, runner.ErrRetentionUnsupported) {
 		t.Errorf("a team walk: err = %v, want ErrRetentionUnsupported", err)
 	}

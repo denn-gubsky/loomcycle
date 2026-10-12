@@ -1788,6 +1788,10 @@ message Agent {
   // Unlike parent_agent_id it names one run: an agent id is reused by every
   // run of that agent.
   string parent_run_id = 23;
+
+  // "none" for a no-trace run: its transcript holds markers, not content, and
+  // `error` is a class. Empty on every other run.
+  string retention = 24;
 }
 
 // AgentUsage mirrors agentResponseUsage.

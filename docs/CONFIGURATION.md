@@ -1460,6 +1460,8 @@ The mode is called `retention`, and it has two values: `none`, and the default.
 - ask a person through the `Interruption` tool, or be evaluated;
 - start a team walk (403) — also refused for any caller whose token is `none`.
 
+**A token whose runs are no-trace** is held to that on every route it can reach, not only where it starts a run: it cannot create or edit a draft, send a message into a run, answer an interrupt, or attach feedback to a review (each `retention_none_unsupported`), and a reason it types with a cancel is dropped while the cancel goes ahead.
+
 Rules worth knowing:
 
 - **Tools that write on purpose are unchanged.** `Memory`, `Channel`, `Document`, `Write` and MCP tools store what the agent tells them to. Give a no-trace agent only the tools it should be able to write with.
