@@ -332,6 +332,14 @@ func TestGateway_ACallWithNoUsageReportStillCountsAgainstTheBudget(t *testing.T)
 			if code, body := bearerCall(t, ts, "tok-alice", "POST", path, req); code != http.StatusTooManyRequests {
 				t.Errorf("%s stream=%v: the next call: status %d, want 429 — the unreported call cost the budget nothing: %s", path, stream, code, body)
 			}
+			// A restart rebuilds the counter from the store. The estimate has
+			// to be there, or restarting the server hands the tokens back.
+			if err := srv.SeedLimits(context.Background()); err != nil {
+				t.Fatal(err)
+			}
+			if code, body := bearerCall(t, ts, "tok-alice", "POST", path, req); code != http.StatusTooManyRequests {
+				t.Errorf("%s stream=%v: after a restart: status %d, want 429 — the estimate did not survive it: %s", path, stream, code, body)
+			}
 		}
 	}
 }

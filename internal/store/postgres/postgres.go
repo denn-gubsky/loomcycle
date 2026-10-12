@@ -819,10 +819,30 @@ func (s *Store) UsageCarryRaise(ctx context.Context, row store.UsageCarryRow) (i
 	return row.Tokens - stored, nil
 }
 
+// UsageEstimateAdd adds to the estimated usage of one (tenant, user, month).
+func (s *Store) UsageEstimateAdd(ctx context.Context, tenantID, userID string, month time.Time, tokens int64) error {
+	if tokens < 0 {
+		return fmt.Errorf("usage estimate add: negative tokens %d", tokens)
+	}
+	if tokens == 0 {
+		return nil
+	}
+	if month.IsZero() {
+		return fmt.Errorf("usage estimate add: month is required")
+	}
+	if _, err := s.pool.Exec(ctx,
+		`INSERT INTO usage_carry (tenant_id, user_id, month, tokens, estimated, updated_at) VALUES ($1,$2,$3,0,$4,$5)
+		 ON CONFLICT (tenant_id, user_id, month) DO UPDATE SET estimated = usage_carry.estimated + EXCLUDED.estimated, updated_at = EXCLUDED.updated_at`,
+		tenantID, userID, month, tokens, time.Now().UTC()); err != nil {
+		return fmt.Errorf("usage estimate add: %w", err)
+	}
+	return nil
+}
+
 // UsageCarryForMonth returns every carry row for one UTC month start.
 func (s *Store) UsageCarryForMonth(ctx context.Context, month time.Time) ([]store.UsageCarryRow, error) {
 	rows, err := s.pool.Query(ctx,
-		`SELECT tenant_id, user_id, month, tokens, updated_at FROM usage_carry
+		`SELECT tenant_id, user_id, month, tokens, estimated, updated_at FROM usage_carry
 		 WHERE month = $1 ORDER BY tenant_id, user_id`, month)
 	if err != nil {
 		return nil, fmt.Errorf("usage carry for month: %w", err)
@@ -831,7 +851,7 @@ func (s *Store) UsageCarryForMonth(ctx context.Context, month time.Time) ([]stor
 	var out []store.UsageCarryRow
 	for rows.Next() {
 		var r store.UsageCarryRow
-		if err := rows.Scan(&r.TenantID, &r.UserID, &r.Month, &r.Tokens, &r.UpdatedAt); err != nil {
+		if err := rows.Scan(&r.TenantID, &r.UserID, &r.Month, &r.Tokens, &r.Estimated, &r.UpdatedAt); err != nil {
 			return nil, fmt.Errorf("usage carry for month scan: %w", err)
 		}
 		r.Month = r.Month.UTC()

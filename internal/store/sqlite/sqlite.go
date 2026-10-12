@@ -1375,6 +1375,9 @@ func (s *Store) migrate(ctx context.Context) error {
 		`ALTER TABLE operator_token_defs ADD COLUMN expires_at INTEGER`,
 		// A token's restrictions record as JSON (NULL = unrestricted).
 		`ALTER TABLE operator_token_defs ADD COLUMN restrictions TEXT`,
+		// Usage counted against a budget without a provider's report of it.
+		// Mirrors postgres migration 0100.
+		`ALTER TABLE usage_carry ADD COLUMN estimated INTEGER NOT NULL DEFAULT 0`,
 	}
 	for _, q := range addColumns {
 		if _, err := s.db.ExecContext(ctx, q); err != nil {
@@ -2162,10 +2165,31 @@ func (s *Store) UsageCarryRaise(ctx context.Context, row store.UsageCarryRow) (i
 	return row.Tokens - stored, nil
 }
 
+// UsageEstimateAdd adds to the estimated usage of one (tenant, user, month).
+func (s *Store) UsageEstimateAdd(ctx context.Context, tenantID, userID string, month time.Time, tokens int64) error {
+	if tokens < 0 {
+		return fmt.Errorf("usage estimate add: negative tokens %d", tokens)
+	}
+	if tokens == 0 {
+		return nil
+	}
+	if month.IsZero() {
+		return fmt.Errorf("usage estimate add: month is required")
+	}
+	now := time.Now().UTC().UnixNano()
+	if _, err := s.db.ExecContext(ctx,
+		`INSERT INTO usage_carry (tenant_id, user_id, month, tokens, estimated, updated_at) VALUES (?,?,?,0,?,?)
+		 ON CONFLICT (tenant_id, user_id, month) DO UPDATE SET estimated = estimated + excluded.estimated, updated_at = excluded.updated_at`,
+		tenantID, userID, month.UnixNano(), tokens, now); err != nil {
+		return fmt.Errorf("usage estimate add: %w", err)
+	}
+	return nil
+}
+
 // UsageCarryForMonth returns every carry row for one UTC month start.
 func (s *Store) UsageCarryForMonth(ctx context.Context, month time.Time) ([]store.UsageCarryRow, error) {
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT tenant_id, user_id, month, tokens, updated_at FROM usage_carry
+		`SELECT tenant_id, user_id, month, tokens, estimated, updated_at FROM usage_carry
 		 WHERE month = ? ORDER BY tenant_id, user_id`, month.UnixNano())
 	if err != nil {
 		return nil, fmt.Errorf("usage carry for month: %w", err)
@@ -2175,7 +2199,7 @@ func (s *Store) UsageCarryForMonth(ctx context.Context, month time.Time) ([]stor
 	for rows.Next() {
 		var r store.UsageCarryRow
 		var monthNano, updatedNano int64
-		if err := rows.Scan(&r.TenantID, &r.UserID, &monthNano, &r.Tokens, &updatedNano); err != nil {
+		if err := rows.Scan(&r.TenantID, &r.UserID, &monthNano, &r.Tokens, &r.Estimated, &updatedNano); err != nil {
 			return nil, fmt.Errorf("usage carry for month scan: %w", err)
 		}
 		r.Month = time.Unix(0, monthNano).UTC()

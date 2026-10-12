@@ -748,6 +748,11 @@ type UsageCarryRow struct {
 	UserID    string
 	Month     time.Time
 	Tokens    int64
+	// Estimated is usage this instance counted against the budget without a
+	// provider's report of it (a raw model call that ended before its usage
+	// arrived). Added to call by call, never max-merged, and added to Tokens
+	// by whatever seeds a budget counter.
+	Estimated int64
 	UpdatedAt time.Time
 }
 
@@ -1708,6 +1713,12 @@ type Store interface {
 	// the carry rather than add to it. A zero Tokens is a no-op; a negative one
 	// is refused.
 	UsageCarryRaise(ctx context.Context, row UsageCarryRow) (grew int64, err error)
+
+	// UsageEstimateAdd adds tokens to the estimated usage of (tenantID, userID)
+	// for the UTC month starting at month. Unlike UsageCarryRaise it ADDS: each
+	// call is one unmeasured model call. A zero is a no-op; a negative count is
+	// refused.
+	UsageEstimateAdd(ctx context.Context, tenantID, userID string, month time.Time, tokens int64) error
 
 	// UsageCarryForMonth returns every carry row for one UTC month start.
 	// limits.MonthToDate adds them to the ledger aggregate. They are never part

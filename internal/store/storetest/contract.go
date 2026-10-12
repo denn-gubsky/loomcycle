@@ -573,6 +573,7 @@ func Run(t *testing.T, factory Factory) {
 		// The month-to-date usage a snapshot restore carries in: max-not-add,
 		// per month, per subject, and deletable for erasure.
 		{"UsageCarryKeepsTheMaximum", testUsageCarryKeepsTheMaximum},
+		{"UsageEstimateAddsUp", testUsageEstimateAddsUp},
 		// Snapshot restore of schedules: every column lands, the live rows
 		// stand, and a re-restore never resets a fire count.
 		{"SnapshotScheduleRestoreKeepsLiveRows", testSnapshotScheduleRestoreKeepsLiveRows},
@@ -16729,5 +16730,77 @@ func testMemorySearchFilterExcludesUnits(t *testing.T, s store.Store) {
 		if len(lex) != 2 {
 			t.Errorf("full-text leg returned %d rows, want 2", len(lex))
 		}
+	}
+}
+
+// testUsageEstimateAddsUp: an estimate is ADDED to, call by call, where a
+// carry is raised to a maximum; the two share a row and neither changes the
+// other; the subject delete removes both.
+func testUsageEstimateAddsUp(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	sep := time.Date(2026, 9, 1, 0, 0, 0, 0, time.UTC)
+	aug := time.Date(2026, 8, 1, 0, 0, 0, 0, time.UTC)
+	add := func(tenant, user string, month time.Time, tokens int64) {
+		t.Helper()
+		if err := s.UsageEstimateAdd(ctx, tenant, user, month, tokens); err != nil {
+			t.Fatalf("UsageEstimateAdd(%s/%s %d): %v", tenant, user, tokens, err)
+		}
+	}
+	read := func(month time.Time) map[string][2]int64 {
+		t.Helper()
+		rows, err := s.UsageCarryForMonth(ctx, month)
+		if err != nil {
+			t.Fatalf("UsageCarryForMonth: %v", err)
+		}
+		out := map[string][2]int64{}
+		for _, r := range rows {
+			out[r.TenantID+"|"+r.UserID] = [2]int64{r.Tokens, r.Estimated}
+		}
+		return out
+	}
+
+	add("est", "u1", sep, 40)
+	add("est", "u1", sep, 2) // added, not raised to
+	add("est", "u1", aug, 9)
+	add("est", "u2", sep, 5)
+	add("est", "u3", sep, 0) // a no-op: no row
+	if err := s.UsageEstimateAdd(ctx, "est", "u3", sep, -1); err == nil {
+		t.Error("a negative estimate was accepted")
+	}
+	if err := s.UsageEstimateAdd(ctx, "est", "u3", time.Time{}, 1); err == nil {
+		t.Error("an estimate with no month was accepted")
+	}
+	// A carry on the same row, before and after: each keeps its own column.
+	if _, err := s.UsageCarryRaise(ctx, store.UsageCarryRow{TenantID: "est", UserID: "u1", Month: sep, Tokens: 300}); err != nil {
+		t.Fatal(err)
+	}
+	add("est", "u1", sep, 1)
+	// A raise that does not grow the carry leaves the row, and its estimate.
+	if _, err := s.UsageCarryRaise(ctx, store.UsageCarryRow{TenantID: "est", UserID: "u2", Month: sep, Tokens: 0}); err != nil {
+		t.Fatal(err)
+	}
+
+	got := read(sep)
+	want := map[string][2]int64{"est|u1": {300, 43}, "est|u2": {0, 5}}
+	for k, v := range want {
+		if got[k] != v {
+			t.Errorf("September %s = %v (carried, estimated), want %v", k, got[k], v)
+		}
+	}
+	if _, ok := got["est|u3"]; ok {
+		t.Error("a zero or refused estimate inserted a row")
+	}
+	if got := read(aug)["est|u1"]; got != [2]int64{0, 9} {
+		t.Errorf("August est|u1 = %v, want {0 9}: an estimate belongs to its month", got)
+	}
+
+	if n, err := s.UsageCarryDeleteSubject(ctx, "est", "u1"); err != nil || n != 2 {
+		t.Errorf("delete est/u1 removed %d (err %v), want 2 (both months)", n, err)
+	}
+	if _, ok := read(sep)["est|u1"]; ok {
+		t.Error("an erased subject's estimate is still there")
+	}
+	if got := read(sep)["est|u2"]; got != [2]int64{0, 5} {
+		t.Errorf("another subject's estimate after the delete = %v, want {0 5}", got)
 	}
 }

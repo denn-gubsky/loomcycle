@@ -1,0 +1,15 @@
+-- 0100_usage_carry_estimated.up.sql — a durable count of usage nobody measured.
+--
+-- A raw model call that ends with no usage report (the caller hung up, the
+-- provider failed first, or it reported zero) is counted against the caller's
+-- budget by an estimate from its size. That estimate lived only in the
+-- replica's in-memory counter, so a restart gave the tokens back: under a hard
+-- limit, "drop the connection before the usage arrives, then wait for a
+-- restart" was spend the budget forgot.
+--
+-- It is kept here and not in token_usage because it is a guess: the ledger is
+-- what an operator bills from, and this table is budget state that no usage
+-- report reads. `tokens` keeps its meaning (what a snapshot restore carried
+-- in, max-merged); `estimated` is ADDED to, one call at a time. The budget
+-- tracker sums both when it seeds. A subject erasure already deletes the row.
+ALTER TABLE usage_carry ADD COLUMN IF NOT EXISTS estimated BIGINT NOT NULL DEFAULT 0;
