@@ -2033,6 +2033,8 @@ export interface TokenRestrictions {
   /** `"none"` when every per-run override is locked, or the overrides the
    *  token may still set. Absent when nothing is locked. */
   overrides?: "none" | string[];
+  /** How often the token may start runs. */
+  rate?: { per_minute: number; burst?: number };
 }
 
 /** One token row from GET /v1/_users/{subject}/tokens — METADATA ONLY (never

@@ -91,6 +91,7 @@ const operatorTokenDefInputSchema = `{
     "ttl_seconds": {"type": "integer", "description": "Lifetime in seconds (create). The token stops authenticating when it runs out, and a later rotate does not extend it. Omit for a token that never expires. Refused for a token holding substrate:admin."},
     "agents": {"type": "array", "items": {"type": "string"}, "description": "Optional (create). Limits the token to starting these agents as top-level runs, and to the run endpoints: it is refused everywhere else, whatever its scopes. An agent a listed one spawns is not limited. Omit for no limit; an empty list is refused."},
     "overrides": {"description": "Optional (create). Locks the per-run settings for runs this token starts, and for retunes it makes: the string \"none\" (every such setting is locked — the model, provider, tier, effort, sampling, limits, output format and the rest), or an array of the settings it may still set. A request that sets a locked one is refused, not ignored. Omit for no lock."},
+    "rate": {"type": "object", "description": "Optional (create). Bounds how often this token may start runs: {\"per_minute\": N, \"burst\": M}. burst is how many it may start at once from idle (default: per_minute). A start past the rate is refused with a time to wait. Omit to use the server's default, if it has one.", "properties": {"per_minute": {"type": "integer"}, "burst": {"type": "integer"}}, "required": ["per_minute"]},
     "grace_seconds": {"type": "integer", "description": "Rotation grace window override (rotate)."},
     "import_token": {"type": "string", "description": "Migration only (create): bind an existing secret (the legacy LOOMCYCLE_AUTH_TOKEN) instead of minting. Hashed, never echoed."}
   },
@@ -109,6 +110,7 @@ type operatorTokenDefInput struct {
 	// (refused) are told apart.
 	Agents       *[]string            `json:"agents,omitempty"`
 	Overrides    *auth.OverridePolicy `json:"overrides,omitempty"`
+	Rate         *auth.RateLimit      `json:"rate,omitempty"`
 	GraceSeconds *int                 `json:"grace_seconds,omitempty"`
 	// ImportToken (Decision 10 migration) binds an existing secret —
 	// the legacy LOOMCYCLE_AUTH_TOKEN via `--copy-from-env` — instead of
@@ -262,7 +264,7 @@ func (s *OperatorTokenDef) execCreate(ctx context.Context, in operatorTokenDefIn
 	if in.Agents != nil {
 		restrictions.Agents = *in.Agents
 	}
-	restrictions.Overrides = in.Overrides
+	restrictions.Overrides, restrictions.Rate = in.Overrides, in.Rate
 	if err := restrictions.Validate(in.Agents != nil); err != nil {
 		return errResult(fmt.Sprintf("create: %s", err)), nil
 	}

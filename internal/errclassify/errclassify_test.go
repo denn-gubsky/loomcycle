@@ -206,6 +206,7 @@ func TestCategoryOf_NoUnclassifiedSentinelDrift(t *testing.T) {
 		"runner": {
 			"ErrUnknownAgent":                 runner.ErrUnknownAgent,
 			"ErrAgentNotAllowed":              runner.ErrAgentNotAllowed,
+			"ErrRateLimited":                  runner.ErrRateLimited,
 			"ErrOverrideNotAllowed":           runner.ErrOverrideNotAllowed,
 			"ErrInvalidArgument":              runner.ErrInvalidArgument,
 			"ErrUnknownProvider":              runner.ErrUnknownProvider,

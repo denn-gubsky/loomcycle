@@ -2,6 +2,7 @@ package grpc
 
 import (
 	"context"
+	"fmt"
 	"testing"
 
 	"google.golang.org/grpc/codes"
@@ -9,6 +10,7 @@ import (
 	"google.golang.org/grpc/status"
 
 	"github.com/denn-gubsky/loomcycle/internal/auth"
+	"github.com/denn-gubsky/loomcycle/internal/runner"
 )
 
 func mdCtx(bearer string) context.Context {
@@ -168,5 +170,17 @@ func TestGRPCRunPlaneRPCs_AreAllKnownRPCs(t *testing.T) {
 		if _, ok := grpcConsumerScopes[rpc]; !ok {
 			t.Errorf("grpcRunPlaneRPCs lists %q, which the scope table does not know", rpc)
 		}
+	}
+}
+
+// A rate refusal is ResourceExhausted with its own reason, so a client can
+// tell "too often" from "too many at once".
+func TestMapRunnerErr_RateLimited(t *testing.T) {
+	err := mapRunnerErr(fmt.Errorf("%w: starting runs too often; retry in 3s", runner.ErrRateLimited))
+	if status.Code(err) != codes.ResourceExhausted {
+		t.Errorf("code = %v, want ResourceExhausted", status.Code(err))
+	}
+	if got := reasonFor(runner.ErrRateLimited); got != "rate_limited" {
+		t.Errorf("reason = %q, want rate_limited", got)
 	}
 }

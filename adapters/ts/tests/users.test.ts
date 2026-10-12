@@ -151,6 +151,7 @@ describe("mintUserToken", () => {
       maxActive: 2,
       agents: ["score"],
       overrides: "none",
+      rate: { perMinute: 6, burst: 20 },
     });
 
     expect(minted.expires_at).toBe("2026-10-13T00:00:00Z");
@@ -162,6 +163,7 @@ describe("mintUserToken", () => {
       max_active: 2,
       agents: ["score"],
       overrides: "none",
+      rate: { per_minute: 6, burst: 20 },
     });
   });
 

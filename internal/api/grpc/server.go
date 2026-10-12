@@ -1319,6 +1319,10 @@ func replayErrToStatus(err error) error {
 			return status.Error(codes.FailedPrecondition, err.Error())
 		case nethttp.StatusServiceUnavailable, nethttp.StatusBadGateway:
 			return status.Error(codes.Unavailable, err.Error())
+		case nethttp.StatusTooManyRequests:
+			return status.Error(codes.ResourceExhausted, err.Error())
+		case nethttp.StatusForbidden:
+			return status.Error(codes.PermissionDenied, err.Error())
 		}
 	}
 	return status.Error(codes.Internal, err.Error())
@@ -2010,7 +2014,8 @@ func runnerErrStatus(err error) error {
 		// A read-modify-write conflict: the draft was edited while this start
 		// waited. Starting again runs the edited draft.
 		return status.Error(codes.Aborted, err.Error())
-	case errors.Is(err, runner.ErrBackpressure),
+	case errors.Is(err, runner.ErrRateLimited),
+		errors.Is(err, runner.ErrBackpressure),
 		errors.Is(err, runner.ErrPerUserQuotaExhausted),
 		errors.Is(err, runner.ErrProviderConcurrencyExhausted):
 		// All backpressure flavors share ResourceExhausted on the gRPC

@@ -32,6 +32,15 @@ type PrincipalDef struct {
 	// Overrides locks the per-run overrides for runs the principal starts:
 	// `none`, or the fields it may still set, comma-separated or as a list.
 	Overrides *overridePolicyYAML `yaml:"overrides"`
+	// Rate bounds how often the principal may start runs:
+	// `rate: {per_minute: 6, burst: 20}`.
+	Rate *RateLimitYAML `yaml:"rate"`
+}
+
+// RateLimitYAML is a principal's `rate:` block.
+type RateLimitYAML struct {
+	PerMinute int `yaml:"per_minute"`
+	Burst     int `yaml:"burst"`
 }
 
 // overridePolicyYAML reads `overrides:` as the scalar `none`, a
@@ -158,6 +167,9 @@ func resolvePrincipals(c *Config) error {
 		}
 		if def.Overrides != nil {
 			restrictions.Overrides = &auth.OverridePolicy{Allow: append([]string(nil), def.Overrides.Allow...)}
+		}
+		if def.Rate != nil {
+			restrictions.Rate = &auth.RateLimit{PerMinute: def.Rate.PerMinute, Burst: def.Rate.Burst}
 		}
 		if err := restrictions.Validate(def.Agents != nil); err != nil {
 			return fmt.Errorf("principals.%s: %w", name, err)

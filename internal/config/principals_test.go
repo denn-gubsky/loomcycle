@@ -274,3 +274,23 @@ func TestPrincipalDef_OverridesYAML(t *testing.T) {
 		t.Errorf("an unknown override name: err = %v, want a refusal naming overrides", err)
 	}
 }
+
+func TestResolvePrincipals_Rate(t *testing.T) {
+	t.Setenv("LOOMCYCLE_TOKEN_RATE_OK", "lct_rate_ok")
+	t.Setenv("LOOMCYCLE_TOKEN_RATE_BAD", "lct_rate_bad")
+	var def PrincipalDef
+	if err := yaml.Unmarshal([]byte("tenant: acme\nsubject: s\nscopes: [runs:create]\ntoken_env: LOOMCYCLE_TOKEN_RATE_OK\nrate: {per_minute: 6, burst: 20}\n"), &def); err != nil {
+		t.Fatal(err)
+	}
+	c := &Config{Principals: map[string]PrincipalDef{"p": def}}
+	if err := resolvePrincipals(c); err != nil {
+		t.Fatalf("resolvePrincipals: %v", err)
+	}
+	if r := c.ResolvedPrincipals[0].Principal.Restrictions.Rate; r == nil || r.PerMinute != 6 || r.Burst != 20 {
+		t.Errorf("resolved rate = %+v, want 6/min burst 20", r)
+	}
+	bad := PrincipalDef{Tenant: "acme", Subject: "s", Scopes: []string{auth.ScopeRunsCreate}, TokenEnv: "LOOMCYCLE_TOKEN_RATE_BAD", Rate: &RateLimitYAML{PerMinute: 0, Burst: 5}}
+	if err := resolvePrincipals(&Config{Principals: map[string]PrincipalDef{"p": bad}}); err == nil || !strings.Contains(err.Error(), "rate") {
+		t.Errorf("a rate with no per_minute: err = %v, want a refusal naming rate", err)
+	}
+}

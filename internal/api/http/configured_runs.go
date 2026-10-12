@@ -440,6 +440,15 @@ func (s *Server) configuredRunInputCore(ctx context.Context, runID string, secre
 
 // CreateConfiguredRun implements connector.Connector.
 func (s *Server) CreateConfiguredRun(ctx context.Context, req connector.ConfiguredRunRequest) (connector.ConfiguredRun, error) {
+	// A draft is counted where it is asked for. Over HTTP that is handleRuns,
+	// which has already counted it; this is the gRPC and MCP entry.
+	if err := s.admitPrincipalRate(ctx); err != nil {
+		var rl *rateLimitedError
+		errors.As(err, &rl)
+		de := draftRefusal(http.StatusTooManyRequests, "rate_limited", "%s", err.Error())
+		de.retryAfter = retryAfterSeconds(rl.RetryAfter)
+		return connector.ConfiguredRun{}, de
+	}
 	return s.createConfiguredRunCore(ctx, req)
 }
 
@@ -587,6 +596,8 @@ func writeRunOnceError(w http.ResponseWriter, err error) {
 	switch {
 	case errors.Is(err, resolve.ErrOperatorKeyRestricted):
 		writeResolveError(w, err)
+	case errors.Is(err, runner.ErrRateLimited):
+		writeRateLimited(w, err)
 	case errors.Is(err, runner.ErrAgentNotAllowed):
 		writeAgentNotAllowed(w, err)
 	case errors.Is(err, runner.ErrOverrideNotAllowed):

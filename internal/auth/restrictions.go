@@ -25,6 +25,45 @@ type Restrictions struct {
 	// starts runs on its agent's own settings, except for the fields the
 	// policy allows. Nil locks nothing.
 	Overrides *OverridePolicy `json:"overrides,omitempty"`
+	// Rate, when set, bounds how often this credential may start runs. Nil
+	// leaves it to the server's default, if there is one.
+	Rate *RateLimit `json:"rate,omitempty"`
+}
+
+// RateLimit is a token bucket for run creation: PerMinute runs a minute once
+// the bucket is empty, with Burst allowed at once from a full one. It bounds
+// how often a caller may START work, which a concurrency cap does not: one
+// run at a time still allows thousands of short runs an hour.
+type RateLimit struct {
+	PerMinute int `json:"per_minute"`
+	// Burst is the bucket's size. Zero means PerMinute.
+	Burst int `json:"burst,omitempty"`
+}
+
+// Bounds on a rate. The floor is one run a minute; the ceilings are far above
+// any use and exist so a typo cannot build a bucket that never empties.
+const (
+	MaxRatePerMinute = 60000
+	MaxRateBurst     = 60000
+)
+
+// EffectiveBurst is the bucket's size.
+func (r RateLimit) EffectiveBurst() int {
+	if r.Burst > 0 {
+		return r.Burst
+	}
+	return r.PerMinute
+}
+
+// Validate checks a rate as a caller supplied it.
+func (r RateLimit) Validate() error {
+	if r.PerMinute < 1 || r.PerMinute > MaxRatePerMinute {
+		return fmt.Errorf("rate: per_minute must be between 1 and %d", MaxRatePerMinute)
+	}
+	if r.Burst < 0 || r.Burst > MaxRateBurst {
+		return fmt.Errorf("rate: burst must be between 0 and %d (0 means per_minute)", MaxRateBurst)
+	}
+	return nil
 }
 
 // LockableOverrides is every per-run override a policy locks, by wire name:
@@ -132,7 +171,9 @@ const MaxRestrictedAgents = 64
 var restrictedAgentNameRe = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9_.:-]{0,127}$`)
 
 // IsZero reports whether nothing is restricted.
-func (r Restrictions) IsZero() bool { return len(r.Agents) == 0 && r.Overrides == nil }
+func (r Restrictions) IsZero() bool {
+	return len(r.Agents) == 0 && r.Overrides == nil && r.Rate == nil
+}
 
 // RunPlaneOnly reports whether the credential is confined to the run plane:
 // starting, continuing, reading and controlling runs, and nothing else.
@@ -180,6 +221,11 @@ func (r Restrictions) Validate(agentsWasSet bool) error {
 		}
 		seen[a] = true
 	}
+	if r.Rate != nil {
+		if err := r.Rate.Validate(); err != nil {
+			return err
+		}
+	}
 	if r.Overrides != nil {
 		lockable := make(map[string]bool, len(LockableOverrides))
 		for _, f := range LockableOverrides {
@@ -214,6 +260,9 @@ func (r Restrictions) Describe() string {
 		} else {
 			parts = append(parts, "overrides=["+strings.Join(r.Overrides.Allow, ",")+"]")
 		}
+	}
+	if r.Rate != nil {
+		parts = append(parts, fmt.Sprintf("rate=%d/min burst=%d", r.Rate.PerMinute, r.Rate.EffectiveBurst()))
 	}
 	return strings.Join(parts, " ")
 }

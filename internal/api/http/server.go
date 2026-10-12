@@ -121,6 +121,11 @@ type Server struct {
 	// userTokenMaxTTL caps a delegated user token's lifetime
 	// (SetUserTokenMaxTTL); zero = no cap.
 	userTokenMaxTTL time.Duration
+	// runRate bounds how often each caller may start runs (run_rate.go);
+	// defaultRunRate is what a token with no rate of its own gets
+	// (SetDefaultRunRate; zero = none).
+	runRate        *runRateLimiter
+	defaultRunRate auth.RateLimit
 
 	// sqlMem is the RFC AA SQL Memory manager (per-scope sqlite databases
 	// backing the Memory tool's sql_query/sql_exec). Nil when the subsystem
@@ -644,6 +649,7 @@ func New(cfg *config.Config, pr ProviderResolver, builtinTools []tools.Tool, sem
 	// (Check always allows, Add no-ops), so a store-less server keeps today's
 	// unlimited behavior. Seeded from the ledger at boot via SeedLimits.
 	s.limits = limits.New(st)
+	s.runRate = newRunRateLimiter(nil)
 	// RFC DT: the throughput estimate (nil when timeout_scaling.mode is off).
 	s.throughput = throughput.New(cfg, s.isLocalProvider, s.concreteModel)
 	// F32: build the secret redactor from the process env (secret-classified
@@ -1218,6 +1224,11 @@ func (s *Server) admitTeamRun(ctx context.Context) (context.Context, error) {
 	if err := s.refuseAgentlessCall(ctx, "a team walk"); err != nil {
 		return nil, err
 	}
+	// A walk started directly is a run start. One started by an agent's own
+	// tool is not counted (admitPrincipalRate skips a call from inside a run).
+	if err := s.admitPrincipalRate(ctx); err != nil {
+		return nil, err
+	}
 	if builtin.AgentDepth(ctx) >= builtin.MaxAgentDepth {
 		return nil, fmt.Errorf("team run exceeds max agent depth %d (nested too deep)", builtin.MaxAgentDepth)
 	}
@@ -1506,6 +1517,10 @@ func writeResolveError(w http.ResponseWriter, err error) {
 	// The two token-restriction refusals carry a typed body wherever they
 	// surface, so a client branches on the code and not on which route it
 	// happened to call.
+	if errors.Is(err, runner.ErrRateLimited) {
+		writeRateLimited(w, err)
+		return
+	}
 	if errors.Is(err, runner.ErrOverrideNotAllowed) {
 		writeOverrideNotAllowed(w, err)
 		return
@@ -2726,6 +2741,11 @@ func (s *Server) grantRecallTool(allowed []tools.Tool, cx *config.Context) []too
 }
 
 func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunCallbacks) error {
+	// The caller's rate, before anything else: every run a transport asks for
+	// through here (each child of a batch included) is one start.
+	if err := s.admitPrincipalRate(ctx); err != nil {
+		return err
+	}
 	// ---- Validation phase ----
 	if in.UserID != "" && !validIdent(in.UserID) {
 		return fmt.Errorf("%w: user_id must match [A-Za-z0-9_-]{1,128}", runner.ErrInvalidArgument)
@@ -4678,6 +4698,11 @@ func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
+	// First, before the body is read: a caller over its rate costs nothing.
+	if err := s.admitPrincipalRate(r.Context()); err != nil {
+		writeRateLimited(w, err)
+		return
+	}
 	if ct := r.Header.Get("Content-Type"); ct != "" && !strings.HasPrefix(ct, "application/json") {
 		http.Error(w, "Content-Type must be application/json", http.StatusUnsupportedMediaType)
 		return
@@ -5618,6 +5643,11 @@ type messagesRequest struct {
 func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 	if s.store == nil {
 		http.Error(w, "session continuation requires persistence (Store not configured)", http.StatusNotFound)
+		return
+	}
+	// A continuation is a run start, and is counted as one.
+	if err := s.admitPrincipalRate(r.Context()); err != nil {
+		writeRateLimited(w, err)
 		return
 	}
 	if ct := r.Header.Get("Content-Type"); ct != "" && !strings.HasPrefix(ct, "application/json") {

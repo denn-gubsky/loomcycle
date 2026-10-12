@@ -1250,6 +1250,11 @@ export class LoomcycleClient {
    *  ones it may still set. A request that sets a locked one is refused with
    *  403 `override_not_allowed`.
    *
+   *  `rate` bounds how often the token may start runs: `perMinute` runs a
+   *  minute, with `burst` allowed at once from idle (default: `perMinute`).
+   *  A start past the rate is refused with 429 `rate_limited` and a
+   *  `Retry-After` header.
+   *
    *  With none of the options the request has no body, as before. */
   async mintUserToken(
     subject: string,
@@ -1260,6 +1265,7 @@ export class LoomcycleClient {
       maxActive?: number;
       agents?: string[];
       overrides?: "none" | string[];
+      rate?: { perMinute: number; burst?: number };
     },
   ): Promise<MintedUserToken> {
     const body: Record<string, unknown> = {};
@@ -1268,6 +1274,9 @@ export class LoomcycleClient {
     if (opts?.maxActive !== undefined) body.max_active = opts.maxActive;
     if (opts?.agents !== undefined) body.agents = opts.agents;
     if (opts?.overrides !== undefined) body.overrides = opts.overrides;
+    if (opts?.rate !== undefined) {
+      body.rate = { per_minute: opts.rate.perMinute, burst: opts.rate.burst };
+    }
     return postJSON<MintedUserToken>(
       this.ctx,
       `/v1/_users/${encodeURIComponent(subject)}/tokens`,

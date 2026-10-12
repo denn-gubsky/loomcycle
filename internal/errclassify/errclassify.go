@@ -74,6 +74,12 @@ func CategoryOf(err error) (tools.ErrorInfo, bool) {
 			nil,
 		), true
 
+	case errors.Is(err, runner.ErrRateLimited):
+		return transient(
+			"Runs are being started too often for this caller. The request is valid; wait the time the response names and retry.",
+			nil,
+		), true
+
 	case errors.Is(err, runner.ErrBackpressure),
 		errors.Is(err, runner.ErrPerUserQuotaExhausted),
 		errors.Is(err, runner.ErrProviderConcurrencyExhausted),
