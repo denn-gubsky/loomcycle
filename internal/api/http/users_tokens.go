@@ -60,16 +60,30 @@ type mintUserTokenRequest struct {
 	// TTLSeconds is the token's lifetime. Absent = no expiry, unless the
 	// operator set a maximum, in which case absent means that maximum.
 	TTLSeconds *int64 `json:"ttl_seconds,omitempty"`
-	// Name is a label for the token. Absent = derived from the subject.
+	// Name is a label for the token. Absent = derived from the subject. It is
+	// stored behind the "u-" prefix every user token's name carries.
 	Name string `json:"name,omitempty"`
 	// MaxActive keeps at most this many of the user's tokens alive: after the
 	// mint, the oldest beyond the count are retired.
 	MaxActive *int `json:"max_active,omitempty"`
 }
 
-// userTokenNameRe is the token-name charset (the same one the operator-token
-// tool enforces).
-var userTokenNameRe = regexp.MustCompile(`^[a-zA-Z0-9_-]{1,64}$`)
+// userTokenLabelRe is what a caller may ask a user token to be called. The
+// stored name is userTokenNamePrefix + the label, so the label is two
+// characters shorter than the 64 a token name allows.
+var userTokenLabelRe = regexp.MustCompile(`^[a-zA-Z0-9_-]{1,62}$`)
+
+// userTokenNamePrefix starts every delegated user token's name.
+//
+// A token's name is not tenant-qualified, and the operator-token tool acts on
+// "the name's current token": rotate and retire by name take the newest live
+// row of that name, and create refuses a name that has one. A tenant operator
+// who could choose a user token's whole name could therefore take an
+// operator's token name — and have the operator's next rotate or retire land
+// on the tenant's token, or block the operator from creating that name at
+// all. The prefix keeps every name this route writes inside its own corner of
+// that namespace, as the derived default (u-<subject>) always was.
+const userTokenNamePrefix = "u-"
 
 // maxMintBodyBytes bounds the mint body. It holds three short fields.
 const maxMintBodyBytes = 4096
@@ -125,6 +139,51 @@ func (s *Server) recordTokenAudit(ctx context.Context, action string, row store.
 		log.Printf("users: token audit write failed: %v", err)
 	}
 }
+
+// minterExpiry returns when the token that authenticated this request stops
+// working; zero when it never does, or when the caller is not a minted token
+// (a config-declared principal, the legacy token, open mode).
+func (s *Server) minterExpiry(ctx context.Context) (time.Time, error) {
+	p, ok := auth.PrincipalFromContext(ctx)
+	if !ok || p.Legacy || p.TokenDefID == "" || strings.HasPrefix(p.TokenDefID, "cfg:") {
+		return time.Time{}, nil
+	}
+	row, err := s.store.OperatorTokenDefGet(ctx, p.TokenDefID)
+	if err != nil {
+		var nf *store.ErrNotFound
+		if errors.As(err, &nf) {
+			// A principal built without a stored row (a test, an embedder's
+			// own resolver) has no lifetime to bound by.
+			return time.Time{}, nil
+		}
+		return time.Time{}, err
+	}
+	return row.ExpiresAt, nil
+}
+
+// boundByMinter holds a new token's end under the minting token's own end.
+// expires and minterEnds are zero for "never".
+//
+// A token must not be able to make a credential that outlives it. Without
+// this, a tenant-operator token minted for an hour could spend that hour
+// minting user tokens that never expire.
+func boundByMinter(expires, minterEnds time.Time, asked bool) (time.Time, error) {
+	if minterEnds.IsZero() {
+		return expires, nil
+	}
+	if expires.IsZero() || expires.After(minterEnds) {
+		if asked {
+			return time.Time{}, errTTLOutlivesMinter
+		}
+		// Not asked for: the token gets as long as its minter has left.
+		return minterEnds, nil
+	}
+	return expires, nil
+}
+
+// errTTLOutlivesMinter refuses a lifetime that would run past the end of the
+// token that asked for it.
+var errTTLOutlivesMinter = errors.New("ttl_seconds would outlive the token minting it")
 
 // userTokenLifetime resolves a mint's lifetime against the operator's cap.
 // Zero = no expiry.
@@ -345,11 +404,11 @@ func (s *Server) handleMintUserToken(w http.ResponseWriter, r *http.Request) {
 	}
 	name := deriveTokenName(subject)
 	if req.Name != "" {
-		if !userTokenNameRe.MatchString(req.Name) {
-			writeJSONError(w, http.StatusBadRequest, "invalid_name", "name must match [a-zA-Z0-9_-]{1,64}")
+		if !userTokenLabelRe.MatchString(req.Name) {
+			writeJSONError(w, http.StatusBadRequest, "invalid_name", "name must match [a-zA-Z0-9_-]{1,62}")
 			return
 		}
-		name = req.Name
+		name = userTokenNamePrefix + req.Name
 	}
 	if req.MaxActive != nil && *req.MaxActive < 1 {
 		writeJSONError(w, http.StatusBadRequest, "invalid_max_active", "max_active must be at least 1")
@@ -390,6 +449,22 @@ func (s *Server) handleMintUserToken(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	now := time.Now().UTC()
+	// Read fresh, not from the principal: the bound has to hold against what
+	// the store says now. A failed read refuses the mint rather than issuing a
+	// token nothing bounds.
+	minterEnds, err := s.minterExpiry(r.Context())
+	if err != nil {
+		writeJSONError(w, http.StatusInternalServerError, "mint_failed", "reading the minting token: "+err.Error())
+		return
+	}
+	var expiresAt time.Time
+	if lifetime > 0 {
+		expiresAt = now.Add(lifetime)
+	}
+	if expiresAt, err = boundByMinter(expiresAt, minterEnds, req.TTLSeconds != nil); err != nil {
+		writeJSONError(w, http.StatusBadRequest, "invalid_ttl", err.Error())
+		return
+	}
 	row := store.OperatorTokenDefRow{
 		DefID:    newTokenDefID(),
 		Name:     name,
@@ -401,9 +476,7 @@ func (s *Server) handleMintUserToken(w http.ResponseWriter, r *http.Request) {
 		AllowedScopes: scopes,
 		CreatedAt:     now,
 	}
-	if lifetime > 0 {
-		row.ExpiresAt = now.Add(lifetime)
-	}
+	row.ExpiresAt = expiresAt
 	created, err := s.store.OperatorTokenDefCreate(r.Context(), row)
 	if err != nil {
 		writeJSONError(w, http.StatusInternalServerError, "token_create_failed", err.Error())
@@ -436,8 +509,8 @@ func (s *Server) handleMintUserToken(w http.ResponseWriter, r *http.Request) {
 
 	// Non-secret correlation only — NEVER the plaintext. The suffix + def_id are
 	// safe to log; the minting operator is attributed via principalSubject.
-	log.Printf("users: minted token tenant=%q subject=%q def_id=%q suffix=%q scopes=%v ttl=%s retired=%d by=%q",
-		tenant, subject, created.DefID, suffix, scopes, lifetime, len(retired), principalSubject(r.Context()))
+	log.Printf("users: minted token tenant=%q subject=%q def_id=%q suffix=%q scopes=%v expires=%v retired=%d by=%q",
+		tenant, subject, created.DefID, suffix, scopes, !created.ExpiresAt.IsZero(), len(retired), principalSubject(r.Context()))
 
 	resp := mintUserTokenResponse{
 		DefID:       created.DefID,

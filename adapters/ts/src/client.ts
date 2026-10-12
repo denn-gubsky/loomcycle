@@ -1193,7 +1193,9 @@ export class LoomcycleClient {
    *  a disabled user.
    *
    *  `ttlSeconds` gives the token a fixed lifetime: it stops authenticating
-   *  when that runs out, and the answer carries `expires_at`. `name` labels it.
+   *  when that runs out, and the answer carries `expires_at`. It cannot run
+   *  past the end of the token making the call. `name` labels it (stored as
+   *  `u-<name>`).
    *  `maxActive` keeps at most that many of the user's tokens alive — the
    *  oldest beyond it are retired at once and listed in `retired`. With none
    *  of the three the request has no body, as before. */

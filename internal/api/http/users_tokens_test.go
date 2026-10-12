@@ -426,8 +426,8 @@ func TestHandleMintUserToken_TTLSetsExpiry(t *testing.T) {
 	if d := resp.ExpiresAt.Sub(before); d < 3599*time.Second || d > 3601*time.Second {
 		t.Errorf("expires_at is %s after the mint, want one hour", d)
 	}
-	if resp.Name != "laptop-1" {
-		t.Errorf("name = %q, want the one asked for", resp.Name)
+	if resp.Name != "u-laptop-1" {
+		t.Errorf("name = %q, want the label asked for behind the user-token prefix", resp.Name)
 	}
 	plain := mintFor(t, s, acme, "alice", "")
 	if plain.ExpiresAt != nil {
@@ -459,7 +459,7 @@ func TestHandleMintUserToken_RefusesBadTTLNameAndMaxActive(t *testing.T) {
 	seedUser(t, st, "acme", "alice", "isolated", "active")
 	for _, body := range []string{
 		`{"ttl_seconds":0}`, `{"ttl_seconds":-5}`, `{"ttl_seconds":99999999999999}`,
-		`{"name":"has space"}`, `{"max_active":0}`,
+		`{"name":"has space"}`, `{"name":"` + strings.Repeat("n", 63) + `"}`, `{"max_active":0}`,
 	} {
 		rec := httptest.NewRecorder()
 		s.handleMintUserToken(rec, bodyReq("POST", "/v1/_users/alice/tokens", body, acme, "subject", "alice"))
@@ -610,5 +610,76 @@ func TestResolvePrincipal_RotationGraceEndsThroughAWarmCache(t *testing.T) {
 	time.Sleep(400 * time.Millisecond)
 	if _, ok := s.resolvePrincipal(ctx, "tok-grace"); ok {
 		t.Error("the token authenticated after its grace window ended")
+	}
+}
+
+// A token's name is one namespace for the whole deployment, and the
+// operator-token tool acts on "the name's current token". A tenant operator
+// who could name a user token freely could take an operator's token name, so
+// that the operator's next rotate or retire by name landed on the tenant's
+// token. Every name this route writes stays behind its own prefix.
+func TestHandleMintUserToken_NameCannotTakeAnOperatorTokensName(t *testing.T) {
+	s, st := tokenAuthServer(t, "legacy")
+	ctx := context.Background()
+	if _, err := st.OperatorTokenDefCreate(ctx, store.OperatorTokenDefRow{
+		DefID: "def_ops", Name: "ops", TenantID: "root", Subject: "ops",
+		TokenHash: "h-ops", AllowedScopes: []string{auth.ScopeAdmin},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	acme := auth.Principal{TenantID: "acme", Subject: "ops", Scopes: []string{auth.ScopeTenant}}
+	seedUser(t, st, "acme", "alice", "isolated", "active")
+	time.Sleep(2 * time.Millisecond) // the user token is the newer row
+
+	resp := mintFor(t, s, acme, "alice", `{"name":"ops"}`)
+	if resp.Name != "u-ops" {
+		t.Errorf("stored name = %q, want u-ops", resp.Name)
+	}
+	cur, err := st.OperatorTokenDefGetCurrentByName(ctx, "ops")
+	if err != nil || cur.DefID != "def_ops" {
+		t.Errorf("the current token named \"ops\" is %q (err=%v), want the operator's def_ops", cur.DefID, err)
+	}
+}
+
+// A token must not be able to mint one that outlives it: with an expiring
+// tenant-operator token, a longer lifetime is refused and a mint that asks for
+// none ends when the minter does.
+func TestHandleMintUserToken_CannotOutliveTheMintingToken(t *testing.T) {
+	s, st := tokenAuthServer(t, "legacy")
+	ctx := context.Background()
+	minterEnds := time.Now().Add(10 * time.Minute)
+	if _, err := st.OperatorTokenDefCreate(ctx, store.OperatorTokenDefRow{
+		DefID: "def_minter", Name: "acme-ops", TenantID: "acme", Subject: "ops",
+		TokenHash: "h-minter", AllowedScopes: []string{auth.ScopeTenant}, ExpiresAt: minterEnds,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	acme := auth.Principal{TenantID: "acme", Subject: "ops", Scopes: []string{auth.ScopeTenant}, TokenDefID: "def_minter"}
+	seedUser(t, st, "acme", "alice", "isolated", "active")
+
+	rec := httptest.NewRecorder()
+	s.handleMintUserToken(rec, bodyReq("POST", "/v1/_users/alice/tokens", `{"ttl_seconds":3600}`, acme, "subject", "alice"))
+	if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "outlive") {
+		t.Errorf("a lifetime past the minter's end: status %d, want 400: %s", rec.Code, rec.Body.String())
+	}
+
+	for _, body := range []string{"", `{"name":"x"}`} {
+		resp := mintFor(t, s, acme, "alice", body)
+		if resp.ExpiresAt == nil {
+			t.Errorf("body %q: the minted token never expires, though its minter does", body)
+			continue
+		}
+		if d := resp.ExpiresAt.Sub(minterEnds); d < -time.Second || d > time.Second {
+			t.Errorf("body %q: expires %v, want the minter's end %v", body, resp.ExpiresAt, minterEnds)
+		}
+	}
+	if resp := mintFor(t, s, acme, "alice", `{"ttl_seconds":60}`); resp.ExpiresAt == nil || resp.ExpiresAt.After(minterEnds) {
+		t.Errorf("a lifetime inside the minter's was not honoured: %v", resp.ExpiresAt)
+	}
+
+	// A minter with no end of its own bounds nothing.
+	free := auth.Principal{TenantID: "acme", Subject: "ops2", Scopes: []string{auth.ScopeTenant}}
+	if resp := mintFor(t, s, free, "alice", ""); resp.ExpiresAt != nil {
+		t.Errorf("an unbounded minter minted a token ending %v", resp.ExpiresAt)
 	}
 }

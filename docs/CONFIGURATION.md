@@ -1204,7 +1204,7 @@ The per-user mint takes three optional fields. With no body it behaves as before
 | Field | Meaning |
 |---|---|
 | `ttl_seconds` | The token's lifetime. The answer carries `expires_at`. |
-| `name` | A label for the token (`[a-zA-Z0-9_-]{1,64}`). Default: derived from the subject. |
+| `name` | A label for the token (`[a-zA-Z0-9_-]{1,62}`). It is stored as `u-<name>`: every per-user token's name carries that prefix, so one can never take an operator token's name. Default: `u-<subject>`. |
 | `max_active` | Keep at most this many of the user's tokens alive. After the mint, the oldest beyond the count are retired at once, and the answer lists them in `retired`. |
 
 ```sh
@@ -1216,6 +1216,7 @@ curl -X POST "$LOOMCYCLE_BASE_URL/v1/_users/alice/tokens" \
 Rules worth knowing:
 
 - **A rotation does not extend a lifetime.** The replacement token expires when the original would have. A token that has already expired cannot be rotated; mint a new one.
+- **A token cannot mint one that outlives it.** When the token doing the mint has a lifetime of its own, a longer `ttl_seconds` is refused, and a mint that asks for none ends when the minting token does.
 - **A token holding `substrate:admin` cannot have a lifetime.** One admin token turns the legacy `LOOMCYCLE_AUTH_TOKEN` login off, so an admin token that expires would lock the deployment out on a date.
 - **An unknown field in the mint body is refused** (`400`). A misspelled `ttl_seconds` that was silently dropped would hand back a token that never expires. Before v1.112.0 the body was ignored entirely.
 - **Expiry holds through the resolution cache.** A token stops at its own end, not up to `LOOMCYCLE_AUTH_CACHE_TTL_SECONDS` later. The same now applies to a rotated-out token at the end of its grace window.
