@@ -1273,6 +1273,34 @@ Rules worth knowing:
 - **A token whose stored restrictions this version cannot read is refused at login.** This matters after a downgrade: a newer version may have written a restriction this one does not know how to enforce.
 - `GET /v1/_me`, token listings and `Context op=self` show a token's `restrictions`.
 
+### Locking a token's per-run settings
+
+**Since v1.112.0.** A token can be locked out of the per-run overrides, so every run it starts uses its agent's own settings. Use it where results must be comparable, or cost predictable, whoever holds the token: a caller cannot pick another model, a lower effort, a different temperature or a higher limit.
+
+| Where | How |
+|---|---|
+| A per-user token | `POST /v1/_users/{subject}/tokens` with `{"overrides": "none"}` |
+| An operator token | `loomcycle operator-token create … --overrides none`, or `overrides` on the `create` op |
+| A declared principal | `overrides: none` under the principal in `principals:` |
+
+`"none"` locks every override. A list names the ones the token may still set, for example `{"overrides": ["effort"]}`.
+
+| Group | Locked settings |
+|---|---|
+| Which model answers | `model`, `provider`, `tier`, `effort`, `user_tier` |
+| How much it may spend | `max_tokens`, `max_iterations`, `unbounded_iterations`, `max_concurrent_children`, `run_timeout_seconds` |
+| How it is asked | `sampling`, `compaction`, `context`, `max_context_tokens`, `tool_choice`, `output_format`, `web_search_filter`, `retry_attempts`, `memory_inject_max_tokens`, `memory_index_max_bytes`, `inject_tool_guide` |
+| How the run is driven | `interactive`, `review`, `review_ttl_seconds`, `interruption`, `hooks`, `tool_hooks` |
+
+Rules worth knowing:
+
+- **A locked setting is refused, not ignored.** The request gets `403 override_not_allowed` naming the field. A dropped override would let a client believe it got the model it asked for.
+- **It applies wherever a setting can be set:** a run start, `runs:batch`, a session continuation, a configured run (create, edit and start), and a retune of a run that is going (`POST /v1/runs/{id}/retune`, `/input` with `overrides`), on HTTP, gRPC and MCP.
+- **Not locked:** fields that can only narrow a run (`tools`, `allowed_hosts`), bound it (`max_wall_seconds`), or name and deliver it (`agent_id`, `idempotency_key`, `metadata`, `user_bearer`, `user_credentials`).
+- **A sub-agent runs on its own definition.** A locked request carries no overrides for a child to inherit.
+- **The lock is fixed at mint** and carried over by a rotation.
+- It combines with an agent allowlist: `{"agents": ["score"], "overrides": "none"}` is a token that can start one agent, exactly as defined.
+
 ### Declared principals — static `(tenant, user)` logins (RFC AO)
 
 Beyond the legacy `LOOMCYCLE_AUTH_TOKEN` (one identity, subject `default`) and runtime-minted `OperatorTokenDef` tokens, you can **declare** stable service identities in the YAML:
