@@ -22,13 +22,14 @@ import (
 
 const operatorTokenDefSelect = `SELECT def_id, name, tenant_id, subject, token_hash,
 	allowed_scopes, created_at, created_by_agent_id, created_by_run_id,
-	rotated_from, retired_at FROM operator_token_defs`
+	rotated_from, retired_at, expires_at FROM operator_token_defs`
 
 func scanOperatorTokenDef(row pgx.Row) (store.OperatorTokenDefRow, error) {
 	var (
 		out        store.OperatorTokenDefRow
 		scopesJSON string
 		retiredAt  *time.Time
+		expiresAt  *time.Time
 		// created_by_agent_id / created_by_run_id / rotated_from are
 		// NULLABLE columns (the CREATE path writes NULL via nullableString
 		// when empty — e.g. a token minted through the HTTP/CLI admin path
@@ -45,7 +46,7 @@ func scanOperatorTokenDef(row pgx.Row) (store.OperatorTokenDefRow, error) {
 	if err := row.Scan(
 		&out.DefID, &out.Name, &out.TenantID, &out.Subject, &out.TokenHash,
 		&scopesJSON, &out.CreatedAt, &agentID, &runID,
-		&rotated, &retiredAt,
+		&rotated, &retiredAt, &expiresAt,
 	); err != nil {
 		return store.OperatorTokenDefRow{}, err
 	}
@@ -57,6 +58,9 @@ func scanOperatorTokenDef(row pgx.Row) (store.OperatorTokenDefRow, error) {
 	}
 	if retiredAt != nil {
 		out.RetiredAt = *retiredAt
+	}
+	if expiresAt != nil {
+		out.ExpiresAt = *expiresAt
 	}
 	return out, nil
 }
@@ -75,19 +79,23 @@ func (s *Store) OperatorTokenDefCreate(ctx context.Context, row store.OperatorTo
 	if row.CreatedAt.IsZero() {
 		row.CreatedAt = time.Now().UTC()
 	}
-	var retired *time.Time
+	var retired, expires *time.Time
 	if !row.RetiredAt.IsZero() {
 		t := row.RetiredAt.UTC()
 		retired = &t
 	}
+	if !row.ExpiresAt.IsZero() {
+		t := row.ExpiresAt.UTC()
+		expires = &t
+	}
 	if _, err := s.pool.Exec(ctx, `
 		INSERT INTO operator_token_defs (
 			def_id, name, tenant_id, subject, token_hash, allowed_scopes,
-			created_at, created_by_agent_id, created_by_run_id, rotated_from, retired_at
-		) VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7, $8, $9, $10, $11)`,
+			created_at, created_by_agent_id, created_by_run_id, rotated_from, retired_at, expires_at
+		) VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7, $8, $9, $10, $11, $12)`,
 		row.DefID, row.Name, row.TenantID, row.Subject, row.TokenHash, string(scopesJSON),
 		row.CreatedAt, nullableString(row.CreatedByAgentID), nullableString(row.CreatedByRunID),
-		nullableString(row.RotatedFrom), retired,
+		nullableString(row.RotatedFrom), retired, expires,
 	); err != nil {
 		return store.OperatorTokenDefRow{}, fmt.Errorf("operator_token_def insert: %w", err)
 	}
@@ -112,7 +120,8 @@ func (s *Store) OperatorTokenDefGetByTokenHash(ctx context.Context, tokenHash st
 
 func (s *Store) OperatorTokenDefGetCurrentByName(ctx context.Context, name string) (store.OperatorTokenDefRow, error) {
 	row, err := scanOperatorTokenDef(s.pool.QueryRow(ctx,
-		operatorTokenDefSelect+` WHERE name = $1 AND retired_at IS NULL ORDER BY created_at DESC LIMIT 1`, name))
+		operatorTokenDefSelect+` WHERE name = $1 AND retired_at IS NULL
+			AND (expires_at IS NULL OR expires_at > now()) ORDER BY created_at DESC LIMIT 1`, name))
 	if errors.Is(err, pgx.ErrNoRows) {
 		return store.OperatorTokenDefRow{}, &store.ErrNotFound{Kind: "operator_token_def", ID: name}
 	}
@@ -161,7 +170,7 @@ func (s *Store) OperatorTokenDefListNames(ctx context.Context) ([]store.Operator
 		SELECT name,
 		       COUNT(*) AS token_count,
 		       MAX(created_at) AS last_updated,
-		       BOOL_OR(retired_at IS NULL) AS has_current,
+		       BOOL_OR(retired_at IS NULL AND (expires_at IS NULL OR expires_at > now())) AS has_current,
 		       (ARRAY_AGG(tenant_id ORDER BY created_at DESC))[1] AS tenant_id,
 		       (ARRAY_AGG(subject   ORDER BY created_at DESC))[1] AS subject
 		FROM operator_token_defs GROUP BY name ORDER BY name`)
@@ -201,6 +210,30 @@ func (s *Store) OperatorTokenDefCountActiveAdmin(ctx context.Context) (int, erro
 	err := s.pool.QueryRow(ctx, `
 		SELECT COUNT(*) FROM operator_token_defs
 		WHERE (retired_at IS NULL OR retired_at > now())
+		  AND (expires_at IS NULL OR expires_at > now())
 		  AND allowed_scopes @> '["substrate:admin"]'::jsonb`).Scan(&n)
 	return n, err
+}
+
+func (s *Store) OperatorTokenDefDeleteExpired(ctx context.Context, before time.Time) (int, error) {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return 0, err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	cutoff := before.UTC()
+	// See the SQLite twin: detach rotated_from first so the reference can
+	// never refuse the delete.
+	if _, err := tx.Exec(ctx, `
+		UPDATE operator_token_defs SET rotated_from = NULL
+		WHERE rotated_from IN (
+			SELECT def_id FROM operator_token_defs WHERE expires_at IS NOT NULL AND expires_at < $1)`, cutoff); err != nil {
+		return 0, err
+	}
+	tag, err := tx.Exec(ctx,
+		`DELETE FROM operator_token_defs WHERE expires_at IS NOT NULL AND expires_at < $1`, cutoff)
+	if err != nil {
+		return 0, err
+	}
+	return int(tag.RowsAffected()), tx.Commit(ctx)
 }

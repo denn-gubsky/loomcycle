@@ -481,6 +481,8 @@ func Run(t *testing.T, factory Factory) {
 		{"OperatorTokenDefRetireAndCountAdmin", testOperatorTokenDefRetireAndCountAdmin},
 		{"OperatorTokenDefListNames", testOperatorTokenDefListNames},
 		{"OperatorTokenDefListBySubject", testOperatorTokenDefListBySubject},
+		{"OperatorTokenDefExpiry", testOperatorTokenDefExpiry},
+		{"OperatorTokenDefDeleteExpired", testOperatorTokenDefDeleteExpired},
 		// v1.x RFC E ScheduleDef runtime — sweeper-side state.
 		{"ScheduleRunStateSeedAndGet", testScheduleRunStateSeedAndGet},
 		{"ScheduleRunStateListDueRespectsRetiredAndPaused", testScheduleRunStateListDueRespectsRetiredAndPaused},
@@ -13769,6 +13771,107 @@ func testOperatorTokenDefRetireAndCountAdmin(t *testing.T, s store.Store) {
 	}
 	if n, _ := s.OperatorTokenDefCountActiveAdmin(ctx); n != 0 {
 		t.Errorf("retired admin token must not count; got %d", n)
+	}
+}
+
+// testOperatorTokenDefExpiry: expires_at round-trips, an absent one stays
+// absent, and every "is this token alive" query treats an expired row as dead.
+func testOperatorTokenDefExpiry(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	live := mkOperatorTokenDef("ot-exp-live", "exp-live", "acme", "a", "h-exp-live", []string{"substrate:admin"})
+	live.ExpiresAt = time.Now().Add(time.Hour)
+	dead := mkOperatorTokenDef("ot-exp-dead", "exp-dead", "acme", "b", "h-exp-dead", []string{"substrate:admin"})
+	dead.ExpiresAt = time.Now().Add(-time.Hour)
+	none := mkOperatorTokenDef("ot-exp-none", "exp-none", "acme", "c", "h-exp-none", []string{"runs:read"})
+	for _, r := range []store.OperatorTokenDefRow{live, dead, none} {
+		if _, err := s.OperatorTokenDefCreate(ctx, r); err != nil {
+			t.Fatalf("create %s: %v", r.DefID, err)
+		}
+	}
+	got, err := s.OperatorTokenDefGetByTokenHash(ctx, "h-exp-live")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if d := got.ExpiresAt.Sub(live.ExpiresAt); d < -time.Millisecond || d > time.Millisecond {
+		t.Errorf("expires_at round-trip: got %v, want %v", got.ExpiresAt, live.ExpiresAt)
+	}
+	if !got.ValidAt(time.Now()) {
+		t.Error("a token inside its lifetime reads as not valid")
+	}
+	if got, _ := s.OperatorTokenDefGet(ctx, "ot-exp-none"); !got.ExpiresAt.IsZero() {
+		t.Errorf("a token created without an expiry came back with %v", got.ExpiresAt)
+	}
+	if got, _ := s.OperatorTokenDefGet(ctx, "ot-exp-dead"); got.ValidAt(time.Now()) {
+		t.Error("an expired token reads as valid")
+	}
+
+	// The expired admin token must not count: counting it would keep the
+	// legacy login disabled while no admin token can authenticate.
+	if n, err := s.OperatorTokenDefCountActiveAdmin(ctx); err != nil || n != 1 {
+		t.Errorf("active admin count = %d (err=%v), want 1: the expired one must not count", n, err)
+	}
+	if _, err := s.OperatorTokenDefGetCurrentByName(ctx, "exp-live"); err != nil {
+		t.Errorf("current-by-name of a live expiring token: %v", err)
+	}
+	var nf *store.ErrNotFound
+	if _, err := s.OperatorTokenDefGetCurrentByName(ctx, "exp-dead"); !errors.As(err, &nf) {
+		t.Errorf("current-by-name of an expired token = %v, want ErrNotFound", err)
+	}
+	names, err := s.OperatorTokenDefListNames(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, n := range names {
+		if want := n.Name != "exp-dead"; n.HasCurrent != want {
+			t.Errorf("names: %s has_current = %v, want %v", n.Name, n.HasCurrent, want)
+		}
+	}
+}
+
+// testOperatorTokenDefDeleteExpired: the sweep removes rows whose expiry is
+// before the cutoff and nothing else — not a row that expires later, and never
+// a row without an expiry, however long ago it was retired. A rotation link to
+// a deleted row does not block the delete.
+func testOperatorTokenDefDeleteExpired(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	now := time.Now()
+	old := mkOperatorTokenDef("ot-sw-old", "sw-old", "acme", "a", "h-sw-old", []string{"runs:read"})
+	old.ExpiresAt = now.Add(-10 * 24 * time.Hour)
+	// Rotated from the old row; expired later than the cutoff, so it stays
+	// and has to lose its link.
+	recent := mkOperatorTokenDef("ot-sw-recent", "sw-recent", "acme", "a", "h-sw-recent", []string{"runs:read"})
+	recent.ExpiresAt = now.Add(-time.Hour)
+	recent.RotatedFrom = "ot-sw-old"
+	future := mkOperatorTokenDef("ot-sw-future", "sw-future", "acme", "a", "h-sw-future", []string{"runs:read"})
+	future.ExpiresAt = now.Add(time.Hour)
+	retired := mkOperatorTokenDef("ot-sw-retired", "sw-retired", "acme", "a", "h-sw-retired", []string{"runs:read"})
+	retired.RetiredAt = now.Add(-365 * 24 * time.Hour)
+	for _, r := range []store.OperatorTokenDefRow{old, recent, future, retired} {
+		if _, err := s.OperatorTokenDefCreate(ctx, r); err != nil {
+			t.Fatalf("create %s: %v", r.DefID, err)
+		}
+	}
+	n, err := s.OperatorTokenDefDeleteExpired(ctx, now.Add(-7*24*time.Hour))
+	if err != nil {
+		t.Fatalf("delete expired: %v", err)
+	}
+	if n != 1 {
+		t.Errorf("deleted %d row(s), want 1", n)
+	}
+	var nf *store.ErrNotFound
+	if _, err := s.OperatorTokenDefGet(ctx, "ot-sw-old"); !errors.As(err, &nf) {
+		t.Errorf("the long-expired row is still there (err=%v)", err)
+	}
+	for _, id := range []string{"ot-sw-recent", "ot-sw-future", "ot-sw-retired"} {
+		if _, err := s.OperatorTokenDefGet(ctx, id); err != nil {
+			t.Errorf("%s was deleted: %v", id, err)
+		}
+	}
+	if got, _ := s.OperatorTokenDefGet(ctx, "ot-sw-recent"); got.RotatedFrom != "" {
+		t.Errorf("the surviving row still names the deleted one: rotated_from=%q", got.RotatedFrom)
+	}
+	if n, err := s.OperatorTokenDefDeleteExpired(ctx, now.Add(-7*24*time.Hour)); err != nil || n != 0 {
+		t.Errorf("a second sweep deleted %d (err=%v), want 0", n, err)
 	}
 }
 

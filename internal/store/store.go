@@ -3804,8 +3804,9 @@ type Store interface {
 	// (retired_at vs now) is decided by the caller (the auth layer),
 	// keeping the rotation-grace logic testable in one place.
 	OperatorTokenDefGetByTokenHash(ctx context.Context, tokenHash string) (OperatorTokenDefRow, error)
-	// OperatorTokenDefGetCurrentByName returns the name's current
-	// (retired_at IS NULL) token, or ErrNotFound. There is at most one.
+	// OperatorTokenDefGetCurrentByName returns the name's current token
+	// (retired_at IS NULL and not expired), or ErrNotFound. There is at most
+	// one.
 	OperatorTokenDefGetCurrentByName(ctx context.Context, name string) (OperatorTokenDefRow, error)
 	OperatorTokenDefListByName(ctx context.Context, name string) ([]OperatorTokenDefRow, error)
 	// OperatorTokenDefListBySubject returns every token row for
@@ -3821,9 +3822,14 @@ type Store interface {
 	// OperatorTokenDefSetRetiredAt sets retired_at. Used by both retire
 	// (now → immediate) and rotate (now+grace on the prior row).
 	OperatorTokenDefSetRetiredAt(ctx context.Context, defID string, retiredAt time.Time) error
-	// OperatorTokenDefCountActiveAdmin counts non-retired tokens whose
-	// allowed_scopes include "substrate:admin" (the no-lockout guard).
+	// OperatorTokenDefCountActiveAdmin counts tokens that still authenticate
+	// (not retired, not expired) whose allowed_scopes include
+	// "substrate:admin" (the no-lockout guard).
 	OperatorTokenDefCountActiveAdmin(ctx context.Context) (int, error)
+	// OperatorTokenDefDeleteExpired removes rows whose expires_at is before
+	// `before`, and returns how many went. A row that never had an expiry is
+	// never touched, however long ago it was retired.
+	OperatorTokenDefDeleteExpired(ctx context.Context, before time.Time) (int, error)
 
 	// ScheduleRunStatePause sets paused_until = until (or NULL if
 	// until.IsZero()). Resume = call with zero time.
@@ -5835,7 +5841,35 @@ type OperatorTokenDefRow struct {
 	CreatedByRunID   string    `json:"created_by_run_id,omitempty"`
 	RotatedFrom      string    `json:"rotated_from,omitempty"`
 	RetiredAt        time.Time `json:"retired_at,omitempty"`
+	// ExpiresAt (zero = never) is a lifetime fixed at mint. Unlike RetiredAt
+	// it is never moved afterwards: a rotation copies it, so rotating cannot
+	// extend a token's life.
+	ExpiresAt time.Time `json:"expires_at,omitempty"`
 }
+
+// ValidAt reports whether the row authenticates at t: not retired (or still
+// inside its rotation grace) and not expired. The one rule every reader of a
+// token's validity uses.
+func (r OperatorTokenDefRow) ValidAt(t time.Time) bool {
+	return t.Before(r.ValidUntil())
+}
+
+// ValidUntil is the instant the row stops authenticating: the earlier of
+// RetiredAt and ExpiresAt. A row with neither is valid until farFuture.
+func (r OperatorTokenDefRow) ValidUntil() time.Time {
+	until := tokenFarFuture
+	if !r.RetiredAt.IsZero() && r.RetiredAt.Before(until) {
+		until = r.RetiredAt
+	}
+	if !r.ExpiresAt.IsZero() && r.ExpiresAt.Before(until) {
+		until = r.ExpiresAt
+	}
+	return until
+}
+
+// tokenFarFuture stands for "never" in ValidUntil. Year 9999 is the largest
+// value both backends and JSON round-trip.
+var tokenFarFuture = time.Date(9999, 1, 1, 0, 0, 0, 0, time.UTC)
 
 // OperatorTokenDefNameSummary is one row of the names listing — no
 // secret material, suitable for GET /v1/_operatortokendef/names.
