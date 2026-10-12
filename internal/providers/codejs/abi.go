@@ -43,4 +43,6 @@ package codejs
 //
 //	1.1.0  Agent.spawn takes `untrusted`.
 //	1.2.0  Agent.spawn takes `result: "object"` and then returns an object.
-const ABIVersion = "1.2.0"
+//	1.3.0  run(input) gets `input.untrusted`; a spawn's `untrusted` list takes
+//	       `{ref: "input"}` to forward it.
+const ABIVersion = "1.3.0"
