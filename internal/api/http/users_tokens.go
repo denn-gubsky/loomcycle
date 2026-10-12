@@ -66,6 +66,19 @@ type mintUserTokenRequest struct {
 	// MaxActive keeps at most this many of the user's tokens alive: after the
 	// mint, the oldest beyond the count are retired.
 	MaxActive *int `json:"max_active,omitempty"`
+	// Agents limits the token to starting these agents as top-level runs, and
+	// to the run endpoints. A pointer so "absent" (unrestricted) and "[]"
+	// (refused) are told apart.
+	Agents *[]string `json:"agents,omitempty"`
+}
+
+// restrictions builds the token's restrictions record from the request.
+func (r mintUserTokenRequest) restrictions() (auth.Restrictions, error) {
+	var out auth.Restrictions
+	if r.Agents != nil {
+		out.Agents = *r.Agents
+	}
+	return out, out.Validate(r.Agents != nil)
 }
 
 // userTokenLabelRe is what a caller may ask a user token to be called. The
@@ -77,8 +90,9 @@ var userTokenLabelRe = regexp.MustCompile(`^[a-zA-Z0-9_-]{1,62}$`)
 // auth.UserTokenNamePrefix for why the namespace is fenced.
 const userTokenNamePrefix = auth.UserTokenNamePrefix
 
-// maxMintBodyBytes bounds the mint body. It holds three short fields.
-const maxMintBodyBytes = 4096
+// maxMintBodyBytes bounds the mint body: a few short fields and an agent
+// allowlist of at most auth.MaxRestrictedAgents names.
+const maxMintBodyBytes = 16 << 10
 
 // decodeMintUserTokenRequest reads the optional body. An empty body is the
 // zero request.
@@ -217,7 +231,10 @@ type mintUserTokenResponse struct {
 	ExpiresAt *time.Time `json:"expires_at,omitempty"`
 	// Retired lists the older tokens of this user that max_active retired.
 	Retired []string `json:"retired,omitempty"`
-	Warning string   `json:"warning"`
+	// Restrictions is what narrows the token below its scopes, when anything
+	// does.
+	Restrictions *auth.Restrictions `json:"restrictions,omitempty"`
+	Warning      string             `json:"warning"`
 }
 
 // userTokenMeta is one token row in the list response — METADATA ONLY. It never
@@ -233,6 +250,8 @@ type userTokenMeta struct {
 	CreatedAt time.Time  `json:"created_at"`
 	RetiredAt *time.Time `json:"retired_at,omitempty"`
 	ExpiresAt *time.Time `json:"expires_at,omitempty"`
+	// Restrictions is the token's restrictions record, when it has one.
+	Restrictions *auth.Restrictions `json:"restrictions,omitempty"`
 	// Active applies the SAME validity rule as the auth hot path (a row
 	// authenticates iff it is not retired, or still inside its grace window,
 	// and not expired) so the UI can gray out a dead token honestly.
@@ -409,6 +428,16 @@ func (s *Server) handleMintUserToken(w http.ResponseWriter, r *http.Request) {
 		writeJSONError(w, http.StatusBadRequest, "invalid_max_active", "max_active must be at least 1")
 		return
 	}
+	restrictions, err := req.restrictions()
+	if err != nil {
+		writeJSONError(w, http.StatusBadRequest, "invalid_restrictions", err.Error())
+		return
+	}
+	restrictionsJSON, err := auth.MarshalRestrictions(restrictions)
+	if err != nil {
+		writeJSONError(w, http.StatusInternalServerError, "mint_failed", err.Error())
+		return
+	}
 
 	// The target must be a registered member of THIS tenant. A cross-tenant (or
 	// unregistered) subject is an opaque 404 — no existence oracle.
@@ -472,6 +501,7 @@ func (s *Server) handleMintUserToken(w http.ResponseWriter, r *http.Request) {
 		CreatedAt:     now,
 	}
 	row.ExpiresAt = expiresAt
+	row.RestrictionsJSON = restrictionsJSON
 	created, err := s.store.OperatorTokenDefCreate(r.Context(), row)
 	if err != nil {
 		writeJSONError(w, http.StatusInternalServerError, "token_create_failed", err.Error())
@@ -504,8 +534,8 @@ func (s *Server) handleMintUserToken(w http.ResponseWriter, r *http.Request) {
 
 	// Non-secret correlation only — NEVER the plaintext. The suffix + def_id are
 	// safe to log; the minting operator is attributed via principalSubject.
-	log.Printf("users: minted token tenant=%q subject=%q def_id=%q suffix=%q scopes=%v expires=%v retired=%d by=%q",
-		tenant, subject, created.DefID, suffix, scopes, !created.ExpiresAt.IsZero(), len(retired), principalSubject(r.Context()))
+	log.Printf("users: minted token tenant=%q subject=%q def_id=%q suffix=%q scopes=%v expires=%v restrictions=%s retired=%d by=%q",
+		tenant, subject, created.DefID, suffix, scopes, !created.ExpiresAt.IsZero(), restrictions.Describe(), len(retired), principalSubject(r.Context()))
 
 	resp := mintUserTokenResponse{
 		DefID:       created.DefID,
@@ -520,6 +550,9 @@ func (s *Server) handleMintUserToken(w http.ResponseWriter, r *http.Request) {
 	if !created.ExpiresAt.IsZero() {
 		ea := created.ExpiresAt.UTC()
 		resp.ExpiresAt = &ea
+	}
+	if !restrictions.IsZero() {
+		resp.Restrictions = &restrictions
 	}
 	writeJSON(w, http.StatusCreated, resp)
 }
@@ -565,6 +598,11 @@ func (s *Server) handleListUserTokens(w http.ResponseWriter, r *http.Request) {
 		if !row.ExpiresAt.IsZero() {
 			ea := row.ExpiresAt.UTC()
 			m.ExpiresAt = &ea
+		}
+		// A record that cannot be read is shown as nothing here; the token
+		// itself is refused at login (resolvePrincipalUncached).
+		if rs, perr := auth.ParseRestrictions(row.RestrictionsJSON); perr == nil && !rs.IsZero() {
+			m.Restrictions = &rs
 		}
 		out = append(out, m)
 	}

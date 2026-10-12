@@ -89,6 +89,7 @@ const operatorTokenDefInputSchema = `{
     "subject":    {"type": "string", "description": "Authoritative subject (optional for create; defaults to tok-<name>)."},
     "scopes":     {"type": "array", "items": {"type": "string"}, "description": "Allowed scopes from the closed catalog. REQUIRED on create (except with import_token) — an omitted list is refused rather than defaulting to [substrate:admin], because that made a mistyped key mint a full-power token. Note the asymmetry: the request field is scopes, the response echoes it as allowed_scopes."},
     "ttl_seconds": {"type": "integer", "description": "Lifetime in seconds (create). The token stops authenticating when it runs out, and a later rotate does not extend it. Omit for a token that never expires. Refused for a token holding substrate:admin."},
+    "agents": {"type": "array", "items": {"type": "string"}, "description": "Optional (create). Limits the token to starting these agents as top-level runs, and to the run endpoints: it is refused everywhere else, whatever its scopes. An agent a listed one spawns is not limited. Omit for no limit; an empty list is refused."},
     "grace_seconds": {"type": "integer", "description": "Rotation grace window override (rotate)."},
     "import_token": {"type": "string", "description": "Migration only (create): bind an existing secret (the legacy LOOMCYCLE_AUTH_TOKEN) instead of minting. Hashed, never echoed."}
   },
@@ -96,14 +97,17 @@ const operatorTokenDefInputSchema = `{
 }`
 
 type operatorTokenDefInput struct {
-	Op           string   `json:"op"`
-	Name         string   `json:"name,omitempty"`
-	DefID        string   `json:"def_id,omitempty"`
-	TenantID     string   `json:"tenant_id,omitempty"`
-	Subject      string   `json:"subject,omitempty"`
-	Scopes       []string `json:"scopes,omitempty"`
-	TTLSeconds   *int64   `json:"ttl_seconds,omitempty"`
-	GraceSeconds *int     `json:"grace_seconds,omitempty"`
+	Op         string   `json:"op"`
+	Name       string   `json:"name,omitempty"`
+	DefID      string   `json:"def_id,omitempty"`
+	TenantID   string   `json:"tenant_id,omitempty"`
+	Subject    string   `json:"subject,omitempty"`
+	Scopes     []string `json:"scopes,omitempty"`
+	TTLSeconds *int64   `json:"ttl_seconds,omitempty"`
+	// Agents is a pointer so an absent list (no limit) and an empty one
+	// (refused) are told apart.
+	Agents       *[]string `json:"agents,omitempty"`
+	GraceSeconds *int      `json:"grace_seconds,omitempty"`
 	// ImportToken (Decision 10 migration) binds an existing secret —
 	// the legacy LOOMCYCLE_AUTH_TOKEN via `--copy-from-env` — instead of
 	// minting. Admin-only; the plaintext is hashed, never echoed.
@@ -252,6 +256,23 @@ func (s *OperatorTokenDef) execCreate(ctx context.Context, in operatorTokenDefIn
 		return errResult(fmt.Sprintf("create: unknown scope(s) %v — not in the closed catalog", bad)), nil
 	}
 
+	var restrictions auth.Restrictions
+	if in.Agents != nil {
+		restrictions.Agents = *in.Agents
+	}
+	if err := restrictions.Validate(in.Agents != nil); err != nil {
+		return errResult(fmt.Sprintf("create: %s", err)), nil
+	}
+	// A token confined to the run plane cannot mint, rotate or retire, so an
+	// admin token carrying an allowlist would be an admin token that cannot
+	// administer — and one that still switches the legacy login off.
+	if restrictions.RunPlaneOnly() && auth.HasScope(scopes, auth.ScopeAdmin) {
+		return errResult("create: agents is not allowed on a token holding " + auth.ScopeAdmin), nil
+	}
+	restrictionsJSON, err := auth.MarshalRestrictions(restrictions)
+	if err != nil {
+		return errResult(fmt.Sprintf("create: %s", err)), nil
+	}
 	var expiresAt time.Time
 	if in.TTLSeconds != nil {
 		if imported {
@@ -314,6 +335,7 @@ func (s *OperatorTokenDef) execCreate(ctx context.Context, in operatorTokenDefIn
 		AllowedScopes:    scopes,
 		CreatedByAgentID: ident.AgentID,
 		ExpiresAt:        expiresAt,
+		RestrictionsJSON: restrictionsJSON,
 	}
 	created, err := s.Store.OperatorTokenDefCreate(ctx, row)
 	if err != nil {
@@ -429,8 +451,9 @@ func (s *OperatorTokenDef) execRotate(ctx context.Context, in operatorTokenDefIn
 		CreatedByAgentID: ident.AgentID,
 		RotatedFrom:      prior.DefID,
 		// Copied, never recomputed: a rotation replaces the secret, it does
-		// not grant the token more time.
-		ExpiresAt: prior.ExpiresAt,
+		// not grant the token more time — or more reach.
+		ExpiresAt:        prior.ExpiresAt,
+		RestrictionsJSON: prior.RestrictionsJSON,
 	}
 	created, err := s.Store.OperatorTokenDefCreate(ctx, row)
 	if err != nil {
@@ -592,6 +615,11 @@ func operatorTokenRowResponse(row store.OperatorTokenDefRow) map[string]any {
 	if !row.ExpiresAt.IsZero() {
 		m["expires_at"] = row.ExpiresAt.UTC().Format(time.RFC3339Nano)
 		m["expired"] = !time.Now().Before(row.ExpiresAt)
+	}
+	if row.RestrictionsJSON != "" {
+		// Shown as stored. A record this build cannot read still shows, so an
+		// operator can see why the token is refused at login.
+		m["restrictions"] = json.RawMessage(row.RestrictionsJSON)
 	}
 	return m
 }

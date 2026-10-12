@@ -179,3 +179,29 @@ func TestResolvePrincipals_NonAdminWithoutTenantIsError(t *testing.T) {
 		t.Errorf("an admin principal with no tenant: err = %v, resolved %d — want it to load", err, len(c.ResolvedPrincipals))
 	}
 }
+
+// A declared principal can carry an agent allowlist, and the same mistakes a
+// mint refuses are refused at load.
+func TestResolvePrincipals_Agents(t *testing.T) {
+	t.Setenv("LOOMCYCLE_TOKEN_SCORER", "lct_scorer_secret")
+	list := func(names ...string) *[]string { return &names }
+	c := &Config{Principals: map[string]PrincipalDef{
+		"scorer": {Tenant: "acme", Subject: "scorer", Scopes: []string{auth.ScopeRunsCreate}, TokenEnv: "LOOMCYCLE_TOKEN_SCORER", Agents: list("score")},
+	}}
+	if err := resolvePrincipals(c); err != nil {
+		t.Fatalf("resolvePrincipals: %v", err)
+	}
+	r := c.ResolvedPrincipals[0].Principal.Restrictions
+	if !r.RunPlaneOnly() || !r.AgentAllowed("score") || r.AgentAllowed("judge") {
+		t.Errorf("restrictions = %+v, want the list [score]", r)
+	}
+	for name, def := range map[string]PrincipalDef{
+		"empty list": {Tenant: "acme", Subject: "s", Scopes: []string{auth.ScopeRunsCreate}, TokenEnv: "LOOMCYCLE_TOKEN_SCORER", Agents: list()},
+		"bad name":   {Tenant: "acme", Subject: "s", Scopes: []string{auth.ScopeRunsCreate}, TokenEnv: "LOOMCYCLE_TOKEN_SCORER", Agents: list("has space")},
+		"admin":      {Tenant: "acme", Subject: "s", Scopes: []string{auth.ScopeAdmin}, TokenEnv: "LOOMCYCLE_TOKEN_SCORER", Agents: list("score")},
+	} {
+		if err := resolvePrincipals(&Config{Principals: map[string]PrincipalDef{"p": def}}); err == nil {
+			t.Errorf("%s: accepted", name)
+		}
+	}
+}

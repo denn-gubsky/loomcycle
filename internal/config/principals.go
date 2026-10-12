@@ -18,11 +18,17 @@ import (
 // (default-deny — useful for a read-nothing identity, but normally you list
 // scopes). `token_env` names a LOOMCYCLE_*-prefixed (or allowlisted) env var
 // holding the bearer SECRET — the yaml carries the NAME, never the value.
+//
+// `agents`, when present, limits the principal to starting those agents as
+// top-level runs and to the run endpoints (auth.Restrictions). A pointer so a
+// key written with an empty list is refused at load and not read as "no
+// limit".
 type PrincipalDef struct {
-	Tenant   string   `yaml:"tenant"`
-	Subject  string   `yaml:"subject"`
-	Scopes   []string `yaml:"scopes"`
-	TokenEnv string   `yaml:"token_env"`
+	Tenant   string    `yaml:"tenant"`
+	Subject  string    `yaml:"subject"`
+	Scopes   []string  `yaml:"scopes"`
+	TokenEnv string    `yaml:"token_env"`
+	Agents   *[]string `yaml:"agents"`
 }
 
 // resolvePrincipals validates the `principals:` block and builds
@@ -118,6 +124,16 @@ func resolvePrincipals(c *Config) error {
 		if def.Tenant == "" && !auth.HasScope(def.Scopes, auth.ScopeAdmin) {
 			return fmt.Errorf("principals.%s: tenant is required unless the principal is %s — an empty tenant reads as every tenant in the store's list queries", name, auth.ScopeAdmin)
 		}
+		var restrictions auth.Restrictions
+		if def.Agents != nil {
+			restrictions.Agents = append([]string(nil), (*def.Agents)...)
+		}
+		if err := restrictions.Validate(def.Agents != nil); err != nil {
+			return fmt.Errorf("principals.%s: %w", name, err)
+		}
+		if restrictions.RunPlaneOnly() && auth.HasScope(def.Scopes, auth.ScopeAdmin) {
+			return fmt.Errorf("principals.%s: agents is not allowed on a principal holding %s", name, auth.ScopeAdmin)
+		}
 		secret := os.Getenv(def.TokenEnv)
 		if secret == "" {
 			c.Warnings = append(c.Warnings, fmt.Sprintf("principals.%s: token_env %s is empty — principal is inert (no token resolves to it)", name, def.TokenEnv))
@@ -130,10 +146,11 @@ func resolvePrincipals(c *Config) error {
 		c.ResolvedPrincipals = append(c.ResolvedPrincipals, auth.DeclaredPrincipal{
 			Secret: secret,
 			Principal: auth.Principal{
-				TenantID:   def.Tenant,
-				Subject:    def.Subject,
-				Scopes:     append([]string(nil), def.Scopes...),
-				TokenDefID: "cfg:" + name,
+				TenantID:     def.Tenant,
+				Subject:      def.Subject,
+				Scopes:       append([]string(nil), def.Scopes...),
+				TokenDefID:   "cfg:" + name,
+				Restrictions: restrictions,
 			},
 		})
 	}

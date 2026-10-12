@@ -484,3 +484,55 @@ func TestOperatorTokenDef_StaysOutOfThePerUserTokenNamespace(t *testing.T) {
 		t.Error("retiring def_t1 by id touched def_t2")
 	}
 }
+
+// agents on create limits the token; a rotation carries the limit over; and
+// the mistakes a mint must not guess at are refused with nothing written.
+func TestOperatorTokenDef_AgentsRestrictionIsStoredAndSurvivesRotation(t *testing.T) {
+	tool, ctx, st, cleanup := operatorTokenDefFixture(t)
+	defer cleanup()
+
+	out := mustOp(t, tool, ctx, `{"op":"create","name":"ci","tenant_id":"acme","scopes":["runs:create"],"agents":["score","review"]}`)
+	row, err := st.OperatorTokenDefGet(ctx, out["def_id"].(string))
+	if err != nil {
+		t.Fatal(err)
+	}
+	r, err := auth.ParseRestrictions(row.RestrictionsJSON)
+	if err != nil || len(r.Agents) != 2 || !r.AgentAllowed("score") || r.AgentAllowed("judge") {
+		t.Fatalf("stored restrictions = %q → %+v (err %v), want [score review]", row.RestrictionsJSON, r, err)
+	}
+	if out["restrictions"] == nil {
+		t.Errorf("create response does not show the restrictions: %v", out)
+	}
+
+	rotated := mustOp(t, tool, ctx, `{"op":"rotate","name":"ci"}`)
+	next, err := st.OperatorTokenDefGet(ctx, rotated["def_id"].(string))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if nr, err := auth.ParseRestrictions(next.RestrictionsJSON); err != nil || !nr.RunPlaneOnly() || nr.AgentAllowed("judge") {
+		t.Errorf("rotated token restrictions = %q (err %v): a rotation dropped the limit", next.RestrictionsJSON, err)
+	}
+
+	plain := mustOp(t, tool, ctx, `{"op":"create","name":"free","tenant_id":"acme","scopes":["runs:create"]}`)
+	if row, _ := st.OperatorTokenDefGet(ctx, plain["def_id"].(string)); row.RestrictionsJSON != "" {
+		t.Errorf("a create without agents stored %q", row.RestrictionsJSON)
+	}
+
+	before, _ := st.OperatorTokenDefListNames(ctx)
+	for _, in := range []string{
+		`{"op":"create","name":"e","tenant_id":"acme","scopes":["runs:create"],"agents":[]}`,
+		`{"op":"create","name":"b","tenant_id":"acme","scopes":["runs:create"],"agents":["has space"]}`,
+		`{"op":"create","name":"root2","tenant_id":"acme","scopes":["substrate:admin"],"agents":["score"]}`,
+	} {
+		res, err := tool.Execute(ctx, json.RawMessage(in))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !res.IsError || !strings.Contains(res.Text, "agents") {
+			t.Errorf("%s: is_error=%v text=%q, want a refusal naming agents", in, res.IsError, res.Text)
+		}
+	}
+	if after, _ := st.OperatorTokenDefListNames(ctx); len(after) != len(before) {
+		t.Errorf("refused creates wrote %d token name(s)", len(after)-len(before))
+	}
+}

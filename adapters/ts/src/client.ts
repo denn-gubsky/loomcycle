@@ -1197,8 +1197,15 @@ export class LoomcycleClient {
    *  past the end of the token making the call. `name` labels it (stored as
    *  `u-<name>`).
    *  `maxActive` keeps at most that many of the user's tokens alive — the
-   *  oldest beyond it are retired at once and listed in `retired`. With none
-   *  of the three the request has no body, as before. */
+   *  oldest beyond it are retired at once and listed in `retired`.
+   *
+   *  `agents` limits the token to starting those agents as top-level runs, and
+   *  to the run endpoints: it is refused everywhere else (403
+   *  `restricted_token`), and refused any other agent (403
+   *  `agent_not_allowed`). An agent that a listed one spawns is not limited.
+   *  An empty list is refused; omit the option for no limit.
+   *
+   *  With none of the options the request has no body, as before. */
   async mintUserToken(
     subject: string,
     opts?: {
@@ -1206,12 +1213,14 @@ export class LoomcycleClient {
       ttlSeconds?: number;
       name?: string;
       maxActive?: number;
+      agents?: string[];
     },
   ): Promise<MintedUserToken> {
     const body: Record<string, unknown> = {};
     if (opts?.ttlSeconds !== undefined) body.ttl_seconds = opts.ttlSeconds;
     if (opts?.name !== undefined) body.name = opts.name;
     if (opts?.maxActive !== undefined) body.max_active = opts.maxActive;
+    if (opts?.agents !== undefined) body.agents = opts.agents;
     return postJSON<MintedUserToken>(
       this.ctx,
       `/v1/_users/${encodeURIComponent(subject)}/tokens`,

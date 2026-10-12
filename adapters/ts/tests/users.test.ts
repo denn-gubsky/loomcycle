@@ -149,6 +149,7 @@ describe("mintUserToken", () => {
       ttlSeconds: 86400,
       name: "laptop-1",
       maxActive: 2,
+      agents: ["score"],
     });
 
     expect(minted.expires_at).toBe("2026-10-13T00:00:00Z");
@@ -158,6 +159,7 @@ describe("mintUserToken", () => {
       ttl_seconds: 86400,
       name: "laptop-1",
       max_active: 2,
+      agents: ["score"],
     });
   });
 

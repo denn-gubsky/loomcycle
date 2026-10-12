@@ -201,6 +201,7 @@ export type {
   CreateUserBody,
   UpdateUserBody,
   MintedUserToken,
+  TokenRestrictions,
   UserTokenMeta,
   ListUserTokensResponse,
   // RFC BY: runnable-agent discovery (v1.51.0+)
