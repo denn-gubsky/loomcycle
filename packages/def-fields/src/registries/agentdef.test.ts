@@ -9,7 +9,7 @@ import { AGENTDEF_EXCLUDED, agentDefRegistry } from "./agentdef";
 // list; the "drift against the Go source" test at the bottom is what keeps the
 // copy honest while this package lives in the loomcycle repo.
 const AGENTDEF_OVERLAY_KEYS = [
-  "a2a_agent_def_scopes", "a2a_server_card_def_scopes", "agent_def_scopes",
+  "a2a_agent_def_scopes", "a2a_server_card_def_scopes", "agent_def_scopes", "allow_overrides",
   "channels", "code_body", "compaction", "context", "core_blocks",
   "decision", "description", "effort", "evaluation_scopes", "history_scope", "hooks",
   "inherit_core_blocks", "inject_tool_guide", "internal", "interruption",

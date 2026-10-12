@@ -387,6 +387,10 @@ type SubstrateAgentDef struct {
 	// F40 closure, so a runtime-authored ensemble launcher's volume
 	// authority survives the round-trip instead of defaulting to deny.
 	VolumeDefScopes []string `json:"volume_def_scopes,omitempty"`
+	// AllowOverrides mirrors config.AgentDef.AllowOverrides. Kept in sync with
+	// builtin.mergedDef: a lock that did not survive the read would come back
+	// open.
+	AllowOverrides *bool `json:"allow_overrides,omitempty"`
 	// Hooks / ToolHooks mirror config.AgentDef / builtin.mergedDef.
 	Hooks     hooks.EventHooks `json:"hooks,omitempty"`
 	ToolHooks hooks.ToolHooks  `json:"tool_hooks,omitempty"`
@@ -466,6 +470,7 @@ func SubstrateAgentDefFromConfig(def config.AgentDef) SubstrateAgentDef {
 		A2AServerCardDefScopes: def.A2AServerCardDefScopes,
 		A2AAgentDefScopes:      def.A2AAgentDefScopes,
 		VolumeDefScopes:        def.VolumeDefScopes,
+		AllowOverrides:         copyBoolPtr(def.AllowOverrides),
 		Hooks:                  def.Hooks,
 		ToolHooks:              def.ToolHooks,
 	}
@@ -531,6 +536,7 @@ func (s SubstrateAgentDef) ToConfigDef() config.AgentDef {
 		A2AServerCardDefScopes: s.A2AServerCardDefScopes,
 		A2AAgentDefScopes:      s.A2AAgentDefScopes,
 		VolumeDefScopes:        s.VolumeDefScopes,
+		AllowOverrides:         copyBoolPtr(s.AllowOverrides),
 		Hooks:                  s.Hooks,
 		ToolHooks:              s.ToolHooks,
 	}

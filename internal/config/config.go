@@ -1713,6 +1713,17 @@ type AgentDef struct {
 	// read posture).
 	VolumeDefScopes []string `yaml:"volume_def_scopes"`
 
+	// AllowOverrides: false makes every run of this agent run on the
+	// definition as written: a request that sets a per-run override (the
+	// fields auth.LockableOverrides lists — model, effort, limits, sampling,
+	// hooks, …) is refused, whoever sends it, an operator and a schedule
+	// included. Unset or true leaves the overrides to the caller.
+	//
+	// The same lock a token can carry (auth.Restrictions.Overrides), set
+	// where the agent is defined instead of where the caller is. Authority,
+	// not content: it is not part of content_sha256.
+	AllowOverrides *bool `yaml:"allow_overrides,omitempty"`
+
 	// EvaluationScopes is the v0.8.5 Evaluation tool capability gate.
 	// Multi-select; default-deny when empty. Closed set:
 	//
@@ -6347,6 +6358,7 @@ func agentFromDiscovered(d *agents.Agent) AgentDef {
 		},
 		AgentDefScopes:   d.AgentDefScopes,
 		VolumeDefScopes:  d.VolumeDefScopes,
+		AllowOverrides:   d.AllowOverrides,
 		EvaluationScopes: d.EvaluationScopes,
 		// F14: an MD-declared `interruption:` block now flows to config
 		// (parity with channels) so it takes effect at runtime AND the
@@ -6544,6 +6556,10 @@ func mergeAgentDef(base, override AgentDef) AgentDef {
 	}
 	if override.VolumeDefScopes != nil {
 		out.VolumeDefScopes = override.VolumeDefScopes
+	}
+	if override.AllowOverrides != nil {
+		v := *override.AllowOverrides
+		out.AllowOverrides = &v
 	}
 	if override.Hooks != nil {
 		out.Hooks = override.Hooks

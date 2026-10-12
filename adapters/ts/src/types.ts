@@ -4232,6 +4232,11 @@ export interface AgentDefOverlay {
    *  (only where an operator generated them). A chunk found through a unit carries
    *  `matched_unit: {kind, text}`. */
   memory_units?: boolean;
+  /** `false` locks the agent's per-run overrides for every caller: a run
+   *  request that sets one (model, effort, limits, sampling, hooks, …) is
+   *  refused with `override_not_allowed`. Unset or `true` leaves them to the
+   *  caller. A fork that does not send it keeps its parent's. */
+  allow_overrides?: boolean;
   memory_quota_bytes?: number;
   memory_backend?: string;
   retry_attempts?: number;

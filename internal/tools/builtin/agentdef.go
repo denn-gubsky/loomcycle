@@ -1248,6 +1248,11 @@ type mergedDef struct {
 	// dynamic volumes comes back default-deny on reload. Same exclusion
 	// from content_sha256 (authority, not content).
 	VolumeDefScopes []string `json:"volume_def_scopes,omitempty"`
+	// AllowOverrides: false locks the agent's per-run overrides for every
+	// caller (config.AgentDef.AllowOverrides). Authority, not content, so it
+	// is excluded from content_sha256 like the gates above. A fork that does
+	// not send it keeps its parent's.
+	AllowOverrides *bool `json:"allow_overrides,omitempty"`
 	// Hooks / ToolHooks: the agent's hooks (see config.AgentDef). Content — part
 	// of content_sha256 — and carried through fork like any other field.
 	Hooks     hooks.EventHooks `json:"hooks,omitempty"`
@@ -1453,6 +1458,10 @@ func (d *mergedDef) applyOverlay(ov mergedDef) {
 	if ov.VolumeDefScopes != nil {
 		d.VolumeDefScopes = ov.VolumeDefScopes
 	}
+	if ov.AllowOverrides != nil {
+		v := *ov.AllowOverrides
+		d.AllowOverrides = &v
+	}
 	if ov.Hooks != nil {
 		d.Hooks = ov.Hooks
 	}
@@ -1494,6 +1503,7 @@ func (d *mergedDef) normalize() {
 // hash. A drift test pins this list to exactly (mergedDef ∖ AgentContent), so
 // a future unhashed field cannot silently reopen the collision.
 var unhashedCapabilityTags = []string{
+	"allow_overrides",
 	"a2a_agent_def_scopes",
 	"a2a_server_card_def_scopes",
 	"agent_def_scopes",
@@ -1605,6 +1615,7 @@ func staticToMergedDef(s config.AgentDef) mergedDef {
 		A2AServerCardDefScopes: s.A2AServerCardDefScopes,
 		A2AAgentDefScopes:      s.A2AAgentDefScopes,
 		VolumeDefScopes:        s.VolumeDefScopes,
+		AllowOverrides:         boolPtrCopy(s.AllowOverrides),
 		Hooks:                  s.Hooks,
 		ToolHooks:              s.ToolHooks,
 	}

@@ -398,3 +398,16 @@ body
 		t.Errorf("error %q should mention 'tools'", err.Error())
 	}
 }
+
+func TestParseAgent_ReadsAllowOverrides(t *testing.T) {
+	a, err := parseAgent([]byte("---\nname: judge\ndescription: d\nallow_overrides: false\n---\nbody\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if a.AllowOverrides == nil || *a.AllowOverrides {
+		t.Errorf("allow_overrides = %v, want false", a.AllowOverrides)
+	}
+	if b, err := parseAgent([]byte("---\nname: judge\ndescription: d\n---\nbody\n")); err != nil || b.AllowOverrides != nil {
+		t.Errorf("without the key: %v (err %v), want unset", b.AllowOverrides, err)
+	}
+}

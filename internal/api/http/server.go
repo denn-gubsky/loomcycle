@@ -2918,6 +2918,9 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 	if !ok {
 		return fmt.Errorf("%w: %s", runner.ErrUnknownAgent, effectiveAgentName)
 	}
+	if err := admitAgentOverrides(effectiveAgentName, agentDef, overridesSetIn(&in)); err != nil {
+		return err
+	}
 	// resolveAgent only consults s.cfg().Agents; dynamic agents loaded
 	// from the v0.8.15 fallback above are NOT in that map. Pass the
 	// already-resolved AgentDef through resolveAgentDef instead (same
@@ -4809,6 +4812,10 @@ func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, fmt.Sprintf("unknown agent %q", req.Agent), http.StatusBadRequest)
 		return
 	}
+	if err := admitAgentOverrides(req.Agent, agentDef, overridesSetIn(&req)); err != nil {
+		writeOverrideNotAllowed(w, err)
+		return
+	}
 
 	// v0.8.2: validate user_tier early so an unknown name surfaces as
 	// 400 before the resolver runs. Empty user_tier is fine — the
@@ -5757,6 +5764,10 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 	agentDef, ok := s.lookupAgent(r.Context(), sess.TenantID, sess.Agent)
 	if !ok {
 		http.Error(w, fmt.Sprintf("session refers to unknown agent %q", sess.Agent), http.StatusBadRequest)
+		return
+	}
+	if err := admitAgentOverrides(sess.Agent, agentDef, overridesSetIn(&body)); err != nil {
+		writeOverrideNotAllowed(w, err)
 		return
 	}
 	// v0.8.2: validate user_tier early (same shape as handleRuns).
@@ -7802,6 +7813,13 @@ func (s *Server) prepareSubRunValues(ctx context.Context, name string, src nameS
 	// the timeout are the child's own — a breeder varies temperature by FORKING a
 	// def — and the host narrowing is the parent's, inherited through ctx.
 	subCompaction := config.MergeCompaction(def.Compaction, tools.CompactionPolicy(ctx))
+	// A parent's per-spawn override is an override like a caller's: a child
+	// that runs on its definition only refuses it.
+	if tools.CompactionOverride(ctx) != nil {
+		if err := admitAgentOverrides(name, def, []string{"compaction"}); err != nil {
+			return nil, fmt.Errorf("sub-agent %q: %w", name, err)
+		}
+	}
 	subCompaction = config.MergeCompaction(subCompaction, tools.CompactionOverride(ctx))
 	subContext := config.MergeContext(def.Context, tools.ContextPolicy(ctx))
 	subRunCfg := runConfigRecord{

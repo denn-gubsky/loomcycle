@@ -157,6 +157,9 @@ func (s *Server) createConfiguredRunCore(ctx context.Context, req runDraft) (con
 		return connector.ConfiguredRun{}, draftRefusal(http.StatusForbidden, "override_not_allowed", "%s", err.Error())
 	}
 	tenant, user := s.applyPrincipal(ctx, req.TenantID, req.UserID)
+	if err := s.admitAgentOverridesByName(ctx, tenant, req.Agent, overridesSetIn(&req)); err != nil {
+		return connector.ConfiguredRun{}, draftRefusal(http.StatusForbidden, "override_not_allowed", "%s", err.Error())
+	}
 	okr := s.operatorKeyRestrictedForCtx(ctx)
 	isolated := s.isolatedForCtx(ctx)
 	// Stripped before it is stored: the draft body and the row both keep it,
@@ -332,6 +335,9 @@ func (s *Server) updateConfiguredRunCore(ctx context.Context, runID string, patc
 	// The merged draft, not the patch: an edit by a locked token must not be
 	// the way an override another caller wrote into the draft gets run.
 	if err := s.admitPrincipalOverrides(ctx, overridesSetIn(&d)); err != nil {
+		return connector.ConfiguredRun{}, draftRefusal(http.StatusForbidden, "override_not_allowed", "%s", err.Error())
+	}
+	if err := s.admitAgentOverridesByName(ctx, run.TenantID, d.Agent, overridesSetIn(&d)); err != nil {
 		return connector.ConfiguredRun{}, draftRefusal(http.StatusForbidden, "override_not_allowed", "%s", err.Error())
 	}
 	if msg, ok := s.validateDraft(ctx, run.TenantID, d); !ok {

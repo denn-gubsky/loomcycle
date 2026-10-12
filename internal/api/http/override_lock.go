@@ -9,6 +9,7 @@ import (
 	"sort"
 
 	"github.com/denn-gubsky/loomcycle/internal/auth"
+	"github.com/denn-gubsky/loomcycle/internal/config"
 	"github.com/denn-gubsky/loomcycle/internal/runner"
 )
 
@@ -79,6 +80,37 @@ func (s *Server) admitPrincipalOverrides(ctx context.Context, set []string) erro
 		}
 	}
 	return nil
+}
+
+// admitAgentOverrides refuses a request that sets a per-run override on an
+// agent whose definition does not allow them (allow_overrides: false). set is
+// the overrides the request carries, as for admitPrincipalOverrides.
+//
+// It is the same lock, placed on the agent instead of on the caller, and it
+// asks nothing about the caller: an operator, a schedule and a parent agent
+// are refused like anyone else. That is the point of it — the definition says
+// how the agent runs, and no request can say otherwise.
+//
+// Called at the same places as the caller's lock, once the agent is known.
+func admitAgentOverrides(name string, def config.AgentDef, set []string) error {
+	if def.AllowOverrides == nil || *def.AllowOverrides || len(set) == 0 {
+		return nil
+	}
+	return fmt.Errorf("%w: %q (agent %q runs on its definition only: allow_overrides is false)", runner.ErrOverrideNotAllowed, set[0], name)
+}
+
+// admitAgentOverridesByName is admitAgentOverrides for a caller that has the
+// agent's name and not its definition. An agent that does not resolve is not
+// refused here: saying so is the caller's own validation.
+func (s *Server) admitAgentOverridesByName(ctx context.Context, tenant, name string, set []string) error {
+	if len(set) == 0 {
+		return nil
+	}
+	def, ok := s.lookupAgent(ctx, tenant, name)
+	if !ok {
+		return nil
+	}
+	return admitAgentOverrides(name, def, set)
 }
 
 // writeOverrideNotAllowed is the HTTP form of that refusal.
