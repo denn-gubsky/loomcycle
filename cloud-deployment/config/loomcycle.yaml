@@ -11,9 +11,12 @@
 providers:
   ollama-local:               # base_url from OLLAMA_BASE_URL (.env.insecure)
     options:
-      num_ctx: 32768            # unset → Ollama's 4096 floor. Set HERE, not in env:
+      num_ctx: 65536            # unset → Ollama's 4096 floor. Set HERE, not in env:
       num_gpu: 999              # these options win over LOOMCYCLE_OLLAMA_LOCAL_NUM_*
       header_timeout_ms: 600000 # first-token budget for a cold model load
+      # Not 32768: on the shared Spark host (Ollama 0.35.1), qwen3.6 at a
+      # 32768 window crashes with "CUDA error: an illegal memory access" on
+      # prompts of about 1,100 tokens, every time. 49152, 65536 and 131072 pass.
       idle_timeout_ms: 600000
     max_concurrent: 4
 
