@@ -524,6 +524,7 @@ interface AgentDefBody {
   memory_protocol?: boolean;
   inject_tool_guide?: boolean;
   unbounded_iterations?: boolean;
+  allow_overrides?: boolean;
   max_context_tokens?: number;
   memory_quota_bytes?: number;
   sql_quota_bytes?: number;
@@ -613,6 +614,8 @@ function AgentGrants({ body }: { body: AgentDefBody }) {
     ["memory_protocol", body.memory_protocol],
     ["inject_tool_guide", body.inject_tool_guide],
     ["unbounded_iterations", body.unbounded_iterations],
+    // The state worth showing is the lock, which is the field being false.
+    ["allow_overrides: false", body.allow_overrides === false],
   ];
   const shownGates = scopeGates.filter(([, v]) => v && v.length > 0);
   const shownFlags = flags.filter(([, v]) => v === true);

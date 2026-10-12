@@ -2331,6 +2331,12 @@ func applyAgentDefOverlay(base config.AgentDef, definition json.RawMessage) conf
 		// "explicitly disable" into the same case and silently strip
 		// the static yaml's high-stakes intent on a substrate sub-run.
 		RetryAttempts *int `json:"retry_attempts,omitempty"`
+		// The version's own override lock. Without it a spawn that pins a
+		// locked version would run it open, and the lock would hold only
+		// for the version that happens to be active. It can only ADD the
+		// lock: like every other policy field, a pinned version never
+		// loosens what the base says.
+		AllowOverrides *bool `json:"allow_overrides,omitempty"`
 	}
 	if err := json.Unmarshal(definition, &ov); err != nil {
 		log.Printf("agent_def overlay: malformed definition JSON, falling back to static: %v", err)
@@ -2398,6 +2404,10 @@ func applyAgentDefOverlay(base config.AgentDef, definition json.RawMessage) conf
 		// RetryAttempts in place — including the static yaml's own
 		// "force 0" for high-stakes agents.
 		out.RetryAttempts = ov.RetryAttempts
+	}
+	if ov.AllowOverrides != nil && !*ov.AllowOverrides {
+		locked := false
+		out.AllowOverrides = &locked
 	}
 	return out
 }
@@ -2917,6 +2927,9 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 	agentDef, ok := s.lookupAgent(ctx, effectiveTenantID, effectiveAgentName)
 	if !ok {
 		return fmt.Errorf("%w: %s", runner.ErrUnknownAgent, effectiveAgentName)
+	}
+	if err := admitAgentOverrides(effectiveAgentName, agentDef, overridesSetIn(&in)); err != nil {
+		return err
 	}
 	// resolveAgent only consults s.cfg().Agents; dynamic agents loaded
 	// from the v0.8.15 fallback above are NOT in that map. Pass the
@@ -4809,6 +4822,10 @@ func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, fmt.Sprintf("unknown agent %q", req.Agent), http.StatusBadRequest)
 		return
 	}
+	if err := admitAgentOverrides(req.Agent, agentDef, overridesSetIn(&req)); err != nil {
+		writeOverrideNotAllowed(w, err)
+		return
+	}
 
 	// v0.8.2: validate user_tier early so an unknown name surfaces as
 	// 400 before the resolver runs. Empty user_tier is fine — the
@@ -5757,6 +5774,10 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 	agentDef, ok := s.lookupAgent(r.Context(), sess.TenantID, sess.Agent)
 	if !ok {
 		http.Error(w, fmt.Sprintf("session refers to unknown agent %q", sess.Agent), http.StatusBadRequest)
+		return
+	}
+	if err := admitAgentOverrides(sess.Agent, agentDef, overridesSetIn(&body)); err != nil {
+		writeOverrideNotAllowed(w, err)
 		return
 	}
 	// v0.8.2: validate user_tier early (same shape as handleRuns).
@@ -7802,6 +7823,20 @@ func (s *Server) prepareSubRunValues(ctx context.Context, name string, src nameS
 	// the timeout are the child's own — a breeder varies temperature by FORKING a
 	// def — and the host narrowing is the parent's, inherited through ctx.
 	subCompaction := config.MergeCompaction(def.Compaction, tools.CompactionPolicy(ctx))
+	// A parent's per-spawn override is an override like a caller's: a child
+	// that runs on its definition only refuses it.
+	// Checked on the definition the child will run — after a def_id pin, so
+	// the pinned version's own lock is the one that decides.
+	var spawnSet []string
+	if tools.CompactionOverride(ctx) != nil {
+		spawnSet = append(spawnSet, "compaction")
+	}
+	if interactive {
+		spawnSet = append(spawnSet, "interactive")
+	}
+	if err := admitAgentOverrides(name, def, spawnSet); err != nil {
+		return nil, fmt.Errorf("sub-agent %q: %w", name, err)
+	}
 	subCompaction = config.MergeCompaction(subCompaction, tools.CompactionOverride(ctx))
 	subContext := config.MergeContext(def.Context, tools.ContextPolicy(ctx))
 	subRunCfg := runConfigRecord{

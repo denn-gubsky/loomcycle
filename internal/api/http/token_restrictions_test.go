@@ -52,6 +52,9 @@ func restrictedFixtureServer(t *testing.T, scripts ...[]providers.Event) (*Serve
 	cfg.Agents = map[string]config.AgentDef{
 		"allowed": {Model: "stub-model", Tools: []string{"Agent"}, SystemPrompt: "allowed"},
 		"other":   {Model: "stub-model", Tools: []string{}, SystemPrompt: "other"},
+		// fixed runs on its definition only; launcher is a parent that spawns it.
+		"fixed":    {Model: "stub-model", Tools: []string{}, SystemPrompt: "fixed", AllowOverrides: new(bool)},
+		"launcher": {Model: "stub-model", Tools: []string{"Agent"}, SystemPrompt: "launcher"},
 	}
 	done := []providers.Event{
 		{Type: providers.EventText, Text: "done"},
@@ -298,8 +301,8 @@ func TestRestrictedToken_RunnableAgentsListsOnlyItsOwn(t *testing.T) {
 	if got := names(restrictedBearer); len(got) != 1 || got[0] != "allowed" {
 		t.Errorf("restricted token sees %v, want [allowed]", got)
 	}
-	if got := names(freeBearer); len(got) != 2 {
-		t.Errorf("unrestricted token sees %v, want both agents", got)
+	if got := names(freeBearer); len(got) != 4 {
+		t.Errorf("unrestricted token sees %v, want every agent", got)
 	}
 }
 

@@ -145,6 +145,7 @@ var agentDefOverridability = map[string]overridability{
 	"A2AAgentDefScopes":      notOverridable,
 	"SkillDefScopes":         notOverridable,
 	"VolumeDefScopes":        notOverridable,
+	"AllowOverrides":         notOverridable,
 	"Hooks":                  notOverridable,
 	"ToolHooks":              notOverridable,
 

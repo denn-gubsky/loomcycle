@@ -256,6 +256,9 @@ func (s *Server) retuneRun(ctx context.Context, run store.Run, in *runOverridesW
 	if !ok {
 		return runConfigRecord{}, fmt.Errorf("%w: %s", runner.ErrUnknownAgent, run.Agent)
 	}
+	if err := admitAgentOverrides(run.Agent, agentDef, in.setFields()); err != nil {
+		return runConfigRecord{}, err
+	}
 
 	// Merged onto the record as it is when written, not as runForSteer read
 	// it: a writer that got in between keeps its field. See updateRunConfig.

@@ -159,7 +159,7 @@ func CategoryOf(err error) (tools.ErrorInfo, bool) {
 		return tools.ErrorInfo{
 			Category:    tools.CategoryPermission,
 			Retryable:   false,
-			Description: "This token may not change that setting for a run. Retrying will not help — send the request without it, and the run uses its agent's own setting.",
+			Description: "That setting may not be changed for this run: the caller's token or the agent's definition locks it. Retrying will not help — send the request without it, and the run uses its agent's own setting.",
 		}, true
 
 	// --- validation: caller can fix this alone ---
