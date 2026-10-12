@@ -1693,16 +1693,28 @@ func (s *Store) CreateSession(ctx context.Context, tenantID, agent, userID strin
 	return store.Session{ID: id, TenantID: tenantID, Agent: agent, CreatedAt: now, UserID: userID}, nil
 }
 
-// SessionSetRetention records a session's retention mode.
-func (s *Store) SessionSetRetention(ctx context.Context, sessionID, mode string) error {
-	res, err := s.db.ExecContext(ctx, `UPDATE sessions SET retention = ? WHERE id = ?`, mode, sessionID)
+// insertRunMarkingSession inserts a run row and, for a run with a retention
+// mode, records that mode on its session in the same transaction. The two
+// must not be able to disagree: a session read without its run in hand (a
+// continuation, a replay) is refused on the session's own mode, and a
+// no-trace run whose session still read as ordinary would be continued.
+func (s *Store) insertRunMarkingSession(ctx context.Context, sessionID, retention, query string, args ...any) error {
+	if retention == "" {
+		_, err := s.db.ExecContext(ctx, query, args...)
+		return err
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
-		return fmt.Errorf("session set retention: %w", err)
+		return err
 	}
-	if n, _ := res.RowsAffected(); n == 0 {
-		return &store.ErrNotFound{Kind: "session", ID: sessionID}
+	defer func() { _ = tx.Rollback() }()
+	if _, err := tx.ExecContext(ctx, query, args...); err != nil {
+		return err
 	}
-	return nil
+	if _, err := tx.ExecContext(ctx, `UPDATE sessions SET retention = ? WHERE id = ?`, retention, sessionID); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 // GetSession returns session metadata or *store.ErrNotFound.
@@ -1781,7 +1793,7 @@ func (s *Store) createRun(ctx context.Context, sessionID string, identity store.
 	if pcOK {
 		pcVal = pcJSON
 	}
-	_, err := s.db.ExecContext(ctx,
+	err := s.insertRunMarkingSession(ctx, sessionID, identity.Retention,
 		`INSERT INTO runs(id, session_id, status, started_at, agent_id, parent_agent_id, parent_run_id, user_id, tenant_id, user_tier, agent_def_id, model, parent_context, idempotency_key, interactive, operator_key_restricted, isolated, run_config, draft, walk_id, delivery_alt_key, retention)
 		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		id, sessionID, string(status), now.UnixNano(),

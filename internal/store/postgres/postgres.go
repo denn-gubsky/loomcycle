@@ -291,18 +291,6 @@ func (s *Store) CreateSession(ctx context.Context, tenantID, agent, userID strin
 	}, nil
 }
 
-// SessionSetRetention records a session's retention mode.
-func (s *Store) SessionSetRetention(ctx context.Context, sessionID, mode string) error {
-	tag, err := s.pool.Exec(ctx, `UPDATE sessions SET retention = $1 WHERE id = $2`, mode, sessionID)
-	if err != nil {
-		return fmt.Errorf("session set retention: %w", err)
-	}
-	if tag.RowsAffected() == 0 {
-		return &store.ErrNotFound{Kind: "session", ID: sessionID}
-	}
-	return nil
-}
-
 // GetSession returns the row by ID or *store.ErrNotFound.
 func (s *Store) GetSession(ctx context.Context, sessionID string) (store.Session, error) {
 	var (
@@ -396,11 +384,19 @@ func (s *Store) createRun(ctx context.Context, sessionID string, identity store.
 		pcVal = pcJSON
 	}
 	if err := retryOnTransientConn(ctx, func() error {
+		// A run with a retention mode records it on its session in the SAME
+		// statement. The two must not be able to disagree: a session read
+		// without its run in hand (a continuation, a replay) is refused on the
+		// session's own mode, and a no-trace run whose session still read as
+		// ordinary would be continued.
 		_, err := s.pool.Exec(ctx,
-			`INSERT INTO runs (
+			`WITH marked AS (
+				UPDATE sessions SET retention = $23::text WHERE id = $2 AND $23::text <> ''
+			)
+			INSERT INTO runs (
 				id, session_id, status, started_at,
 				agent_id, parent_agent_id, parent_run_id, user_id, tenant_id, user_tier, agent_def_id, model, replica_id, parent_context, idempotency_key, interactive, operator_key_restricted, isolated, run_config, draft, walk_id, delivery_alt_key, retention
-			) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19::jsonb, $20::jsonb, $21, $22, $23)`,
+			) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19::jsonb, $20::jsonb, $21, $22, $23::text)`,
 			id, sessionID, string(status), now,
 			nullableText(identity.AgentID),
 			nullableText(identity.ParentAgentID),

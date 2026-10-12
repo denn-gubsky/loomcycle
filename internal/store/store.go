@@ -200,7 +200,8 @@ type Session struct {
 
 	// Retention is the session's retention mode: "" or RetentionNone. A
 	// RetentionNone session holds one no-trace run and is never continued.
-	// Read by GetSession only.
+	// Written by CreateRun, with the run row, when the run has a mode; read
+	// by GetSession only.
 	Retention string `json:"retention,omitempty"`
 
 	// --- RFC BE: human/organizational chat metadata. ---
@@ -981,7 +982,8 @@ type RunIdentity struct {
 	Isolated bool
 	// Retention is the run's retention mode, persisted to runs.retention: ""
 	// or RetentionNone. Decided before the row is written; nothing sets it
-	// afterwards.
+	// afterwards. A run with a mode stamps it on its session in the same
+	// write.
 	Retention string
 	// RunConfig is the run's configuration record, stamped at CreateRun and
 	// restored verbatim on resume (RFC DD). Opaque JSON: the store persists it,
@@ -1600,11 +1602,6 @@ type Store interface {
 	// CreateSession creates a new session with a generated ID. userID
 	// may be empty for v0.3 back-compat callers.
 	CreateSession(ctx context.Context, tenantID, agent, userID string) (Session, error)
-
-	// SessionSetRetention records a session's retention mode ("" or
-	// RetentionNone). Called once, when a no-trace run opens the session.
-	// *ErrNotFound when the session does not exist.
-	SessionSetRetention(ctx context.Context, sessionID, mode string) error
 
 	// GetSession returns the session metadata. Returns ErrNotFound if
 	// the ID doesn't exist.

@@ -16847,17 +16847,25 @@ func testRetentionModeRoundTrip(t *testing.T, s store.Store) {
 		t.Errorf("another run's retention = %q, want empty", got.Retention)
 	}
 
-	if err := s.SessionSetRetention(ctx, quiet.ID, store.RetentionNone); err != nil {
-		t.Fatalf("SessionSetRetention: %v", err)
-	}
+	// The run's mode is on its session too, written with the run row.
 	if got, err := s.GetSession(ctx, quiet.ID); err != nil || got.Retention != store.RetentionNone {
 		t.Errorf("session retention = %q (err %v), want %q", got.Retention, err, store.RetentionNone)
 	}
 	if got, _ := s.GetSession(ctx, sess.ID); got.Retention != "" {
 		t.Errorf("another session's retention = %q, want empty", got.Retention)
 	}
-	var nf *store.ErrNotFound
-	if err := s.SessionSetRetention(ctx, "s_no_such", store.RetentionNone); !errors.As(err, &nf) {
-		t.Errorf("SessionSetRetention on a missing session: %v, want ErrNotFound", err)
+	// A run that could not be created leaves its session as it was.
+	other, err := s.CreateSession(ctx, "acme", "agent", "u1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.CreateRun(ctx, other.ID, store.RunIdentity{AgentID: "a_ret_dup", IdempotencyKey: "ret-dup"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.CreateRun(ctx, other.ID, store.RunIdentity{AgentID: "a_ret_dup2", IdempotencyKey: "ret-dup", Retention: store.RetentionNone}); err == nil {
+		t.Fatal("a duplicate idempotency key was accepted")
+	}
+	if got, _ := s.GetSession(ctx, other.ID); got.Retention != "" {
+		t.Errorf("a refused run changed its session's retention to %q", got.Retention)
 	}
 }
