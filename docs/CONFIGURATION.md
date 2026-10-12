@@ -1207,7 +1207,7 @@ On the **loomcycle-as-MCP-server transport** (`/v1/_mcp`, RFC AG) a `substrate:t
 
 ### Deleting a run tree
 
-A run can be deleted together with every run it spawned. Before this, stored run content could be removed only for a whole user (`POST /v1/_erasure`) or by age (the retention sweeper).
+**Since v1.112.0.** A run can be deleted together with every run it spawned. Before this, stored run content could be removed only for a whole user (`POST /v1/_erasure`) or by age (the retention sweeper).
 
 | Route | Deletes |
 |---|---|
@@ -1224,7 +1224,7 @@ A run can be deleted together with every run it spawned. Before this, stored run
 | Indexed conversation turns (the trace index) | Deleted. |
 | The usage ledger (tokens, model, cost) | **Kept.** It holds no content. |
 
-- **Who may call it.** The caller needs the `runs:delete` scope and must be able to read the run. An admin and a tenant operator have the scope. A member token and an isolated user do not, unless it was granted when the token was minted.
+- **Who may call it.** The caller needs the `runs:delete` scope and must be able to read the run. An admin and a tenant operator have the scope. A member token and an isolated user do not, unless it was granted when the token was minted. A token limited to certain agents cannot delete at all.
 - **A live tree is refused.** If any run in the tree is still running, awaiting input or paused, the answer is `409` with code `run_tree_live` and the id of that run, and nothing is deleted. Cancel it first.
 - **Unknown is not an error.** A run that does not exist, was already deleted, or is not the caller's to read answers `200` with every count at zero. So a repeated call is safe, and the answer does not reveal whether a run exists.
 - **The answer says what it could not reach.** `not_reached` names where a copy may remain: stored snapshots taken while a run was paused, export files a sweep already wrote, and facts that memory consolidation derived from the sessions. Each has a count where one is cheap to compute.
