@@ -1210,6 +1210,11 @@ func (s *Server) SetTeamDefTool(t tools.Tool) {
 //     stamped on the RunIdentity + provider ctx so restricted callers can't fall
 //     back to the operator's keys through the spawned agents.
 func (s *Server) admitTeamRun(ctx context.Context) (context.Context, error) {
+	// A walk starts many agents under one name; an allowlist of agent names
+	// cannot describe it.
+	if err := s.refuseAgentlessCall(ctx, "a team walk"); err != nil {
+		return nil, err
+	}
 	if builtin.AgentDepth(ctx) >= builtin.MaxAgentDepth {
 		return nil, fmt.Errorf("team run exceeds max agent depth %d (nested too deep)", builtin.MaxAgentDepth)
 	}
@@ -1463,6 +1468,8 @@ func resolveErrorToStatus(err error) int {
 	case errors.Is(err, resolve.ErrTierUnavailable),
 		errors.Is(err, resolve.ErrPinUnavailable):
 		return http.StatusServiceUnavailable
+	case errors.Is(err, runner.ErrAgentNotAllowed):
+		return http.StatusForbidden
 	case errors.Is(err, resolve.ErrOperatorKeyRestricted),
 		errors.Is(err, resolve.ErrTierAgentNotAvailable):
 		// RFC AX §5: the operator-key restriction is a POLICY refusal (the
@@ -2862,6 +2869,11 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 	// (effectiveTenantID), NOT tenantFromCtx(ctx) — WithRunIdentity isn't
 	// stamped until ~line 1500, so for non-HTTP-principal spawn surfaces
 	// the ctx tenant is wrong here.
+	// The agent is final here (a continuation has taken its session's, a
+	// started draft its row's), so this covers all three.
+	if err := s.admitPrincipalAgent(ctx, effectiveAgentName); err != nil {
+		return err
+	}
 	agentDef, ok := s.lookupAgent(ctx, effectiveTenantID, effectiveAgentName)
 	if !ok {
 		return fmt.Errorf("%w: %s", runner.ErrUnknownAgent, effectiveAgentName)
@@ -4732,6 +4744,10 @@ func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {
 	// confine an isolated member to its own user/agent scope.
 	isolated := s.isolatedForCtx(r.Context())
 
+	if err := s.admitPrincipalAgent(r.Context(), req.Agent); err != nil {
+		writeAgentNotAllowed(w, err)
+		return
+	}
 	// Existence-check the agent at the run's authoritative tenant.
 	agentDef, ok := s.lookupAgent(r.Context(), req.TenantID, req.Agent)
 	if !ok {
@@ -5668,6 +5684,11 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	r = r.WithContext(scopedCtx)
+	// A continuation is a new top-level run of the session's agent.
+	if err := s.admitPrincipalAgent(r.Context(), sess.Agent); err != nil {
+		writeAgentNotAllowed(w, err)
+		return
+	}
 	agentDef, ok := s.lookupAgent(r.Context(), sess.TenantID, sess.Agent)
 	if !ok {
 		http.Error(w, fmt.Sprintf("session refers to unknown agent %q", sess.Agent), http.StatusBadRequest)

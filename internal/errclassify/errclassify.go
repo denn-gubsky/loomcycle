@@ -142,6 +142,13 @@ func CategoryOf(err error) (tools.ErrorInfo, bool) {
 			Description: "This principal may not use the operator's provider API keys. Retrying will not help — supply the tenant's own provider credential, or ask an operator for the scope that permits it.",
 		}, true
 
+	case errors.Is(err, runner.ErrAgentNotAllowed):
+		return tools.ErrorInfo{
+			Category:    tools.CategoryPermission,
+			Retryable:   false,
+			Description: "This token is limited to certain agents and this is not one of them. Retrying will not help — use a token that is allowed to start this agent.",
+		}, true
+
 	// --- validation: caller can fix this alone ---
 
 	case errors.Is(err, runner.ErrUnknownAgent),

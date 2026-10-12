@@ -60,6 +60,10 @@ var (
 	// ErrUnknownAgent — agent name not in the operator yaml.
 	// Wire: HTTP 400 / gRPC InvalidArgument.
 	ErrUnknownAgent = errors.New("unknown agent")
+	// ErrAgentNotAllowed refuses a top-level run of an agent the caller's
+	// token is not limited to (its restrictions list other agents). It is a
+	// policy refusal, answered whether or not the agent exists.
+	ErrAgentNotAllowed = errors.New("agent not allowed for this token")
 	// ErrInvalidArgument — caller-supplied field failed validation.
 	// Wire: HTTP 400 / gRPC InvalidArgument.
 	ErrInvalidArgument = errors.New("invalid argument")

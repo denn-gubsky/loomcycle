@@ -70,6 +70,11 @@ func (s *Server) ReplaySession(ctx context.Context, req connector.ReplaySessionR
 	// The new session belongs to the AUTHORITATIVE caller (never the wire).
 	tenant, subject := s.applyPrincipal(ctx, "", "")
 
+	// The seed run is a run of the target agent in all but execution, and the
+	// session it opens can be continued as that agent.
+	if err := s.admitPrincipalAgent(ctx, req.Agent); err != nil {
+		return connector.ReplaySessionResult{}, &replayErr{status: http.StatusForbidden, code: "agent_not_allowed", msg: err.Error()}
+	}
 	// The target agent must resolve in the caller's tenant so the new session
 	// binds a usable agent (static or dynamic; the clone flow's typical target).
 	agentDef, ok := s.lookupAgent(ctx, tenant, req.Agent)

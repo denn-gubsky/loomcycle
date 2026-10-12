@@ -3,6 +3,7 @@ package http
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log"
 	"net/http"
 	"strings"
@@ -10,6 +11,7 @@ import (
 
 	"github.com/denn-gubsky/loomcycle/internal/auth"
 	"github.com/denn-gubsky/loomcycle/internal/coord"
+	"github.com/denn-gubsky/loomcycle/internal/runner"
 	"github.com/denn-gubsky/loomcycle/internal/store"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
 	"github.com/denn-gubsky/loomcycle/internal/webui"
@@ -90,8 +92,94 @@ func (s *Server) authMiddleware(next http.Handler) http.Handler {
 				return
 			}
 		}
+		// After the scope check, and independent of it: a credential limited
+		// to certain agents is held to the run plane however wide its scopes.
+		if p.Restrictions.RunPlaneOnly() && !runPlaneRoute(r.Method, r.URL.Path) {
+			writeJSONError(w, http.StatusForbidden, "restricted_token",
+				"this token is limited to starting and following runs of its allowed agents")
+			return
+		}
 		next.ServeHTTP(w, r.WithContext(auth.WithPrincipal(r.Context(), p)))
 	})
+}
+
+// admitPrincipalAgent refuses a top-level run of an agent the caller's token
+// is not limited to. EVERY place that creates a top-level run row calls it
+// (TestRunRowCreators_AllAdmitThePrincipal holds that), before it looks the
+// agent up, so the answer does not say whether the agent exists.
+//
+// It reads the live principal, so a run started under a definition's own
+// identity — a schedule, a webhook, a channel hook — is not gated: there is no
+// credential there to restrict. Neither is an agent the allowed one spawns,
+// which never comes this way.
+func (s *Server) admitPrincipalAgent(ctx context.Context, agent string) error {
+	p, ok := auth.PrincipalFromContext(ctx)
+	if auth.MayStartAgent(p, ok, agent) {
+		return nil
+	}
+	log.Printf("auth: agent_not_allowed agent=%q subject=%q token_def=%q", agent, p.Subject, p.TokenDefID)
+	return fmt.Errorf("%w: %q", runner.ErrAgentNotAllowed, agent)
+}
+
+// refuseAgentlessCall refuses a call that reaches a model or starts agents
+// with no single agent name to check — a team walk, a decision — when it is
+// made DIRECTLY by a credential limited to certain agents. The run-plane gate
+// on each transport already keeps such a credential off those surfaces; this
+// is the same rule held at the call, for a transport that forgets.
+//
+// A call made from inside a run is not refused: that is the allowed agent
+// using a tool its definition gives it, which the allowlist does not govern.
+func (s *Server) refuseAgentlessCall(ctx context.Context, what string) error {
+	if tools.RunID(ctx) != "" {
+		return nil
+	}
+	p, ok := auth.PrincipalFromContext(ctx)
+	if !ok || !p.Restrictions.RunPlaneOnly() {
+		return nil
+	}
+	return fmt.Errorf("%w: %s", runner.ErrAgentNotAllowed, what)
+}
+
+// writeAgentNotAllowed is the HTTP form of that refusal.
+func writeAgentNotAllowed(w http.ResponseWriter, err error) {
+	writeJSONError(w, http.StatusForbidden, "agent_not_allowed", err.Error())
+}
+
+// runPlaneRoute reports whether a route belongs to the run plane: starting,
+// continuing, reading and controlling runs. It is the WHOLE of what a
+// credential with an agent allowlist may reach (auth.Restrictions.RunPlaneOnly
+// says why the rule is an allowlist and not a list of refusals), so a route
+// added later is refused to such a credential until someone decides it
+// belongs here.
+//
+// What is deliberately absent: every definition route, the team and schedule
+// triggers, the model gateways and the decision call (each reaches a model or
+// an agent with no allowlist in the way), channels, memory, documents, and
+// the credential store.
+func runPlaneRoute(method, path string) bool {
+	switch {
+	case path == "/v1/runs", path == "/v1/runs:batch", strings.HasPrefix(path, "/v1/runs/"):
+		return true
+	case strings.HasPrefix(path, "/v1/sessions/"):
+		return true
+	case path == "/v1/_runnable-agents", path == "/v1/_me", path == "/v1/config":
+		return method == http.MethodGet
+	case path == "/v1/_mcp":
+		// The MCP transport itself; the per-tool gate inside it applies the
+		// same rule to each tool (the MCP package's runPlaneTools).
+		return true
+	}
+	// /v1/agents/{agent_id} and its cancel are a run by its agent id;
+	// /v1/agents/{name}/channels is not.
+	if rest, ok := strings.CutPrefix(path, "/v1/agents/"); ok {
+		return !strings.Contains(rest, "/") || strings.HasSuffix(rest, "/cancel") && strings.Count(rest, "/") == 1
+	}
+	// A user's own runs and pending interrupts; not their channels.
+	if rest, ok := strings.CutPrefix(path, "/v1/users/"); ok && method == http.MethodGet {
+		_, tail, found := strings.Cut(rest, "/")
+		return found && (tail == "agents" || tail == "agents/stream" || tail == "interrupts")
+	}
+	return false
 }
 
 // tokenInvalidateTopic is the backplane channel for cross-replica auth
@@ -253,15 +341,24 @@ func (s *Server) resolvePrincipalUncached(ctx context.Context, bearer, hash stri
 			// Valid iff not retired (or still inside the grace window) and
 			// not past its fixed lifetime. Both refusals look the same.
 			if row.ValidAt(time.Now()) {
+				// A restrictions record this build cannot read refuses the
+				// token. Reading it as "unrestricted" would give a narrowed
+				// credential the whole of its scopes.
+				restrictions, rerr := auth.ParseRestrictions(row.RestrictionsJSON)
+				if rerr != nil {
+					log.Printf("auth: token_def=%q refused: %v", row.DefID, rerr)
+					return auth.Principal{}, false, true, never
+				}
 				validUntil := never
 				if !row.RetiredAt.IsZero() || !row.ExpiresAt.IsZero() {
 					validUntil = row.ValidUntil()
 				}
 				return auth.Principal{
-					TenantID:   row.TenantID,
-					Subject:    row.Subject,
-					Scopes:     row.AllowedScopes,
-					TokenDefID: row.DefID,
+					TenantID:     row.TenantID,
+					Subject:      row.Subject,
+					Scopes:       row.AllowedScopes,
+					TokenDefID:   row.DefID,
+					Restrictions: restrictions,
 				}, true, true, validUntil
 			}
 			return auth.Principal{}, false, true, never // expired → opaque 401, cacheable
@@ -466,14 +563,18 @@ func (s *Server) handleWhoami(w http.ResponseWriter, r *http.Request) {
 		})
 		return
 	}
-	writeJSONOK(w, map[string]any{
+	out := map[string]any{
 		"tenant_id":    p.TenantID,
 		"subject":      p.Subject,
 		"scopes":       p.Scopes,
 		"is_admin":     auth.HasScope(p.Scopes, auth.ScopeAdmin),
 		"legacy":       p.Legacy,
 		"capabilities": s.serverCapabilities(),
-	})
+	}
+	if !p.Restrictions.IsZero() {
+		out["restrictions"] = p.Restrictions
+	}
+	writeJSONOK(w, out)
 }
 
 // serverCapabilities is a NON-SECRET, booleans-only advertisement of runtime

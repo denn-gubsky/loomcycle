@@ -103,3 +103,26 @@ func TestFrontierAuthenticator_LegacyPeerKeepsName(t *testing.T) {
 		t.Errorf("legacy peer: name=%q restricted=%v ok=%v, want (\"a2a-peer\", false, true)", name, restricted, ok)
 	}
 }
+
+// A token limited to certain agents is refused on this plane outright: a card
+// starts whichever agent it exposes, and no principal reaches the run for an
+// allowlist to be checked against.
+func TestFrontierAuthenticator_RefusesATokenWithAnAgentAllowlist(t *testing.T) {
+	resolve := func(_ context.Context, bearer string) (auth.Principal, bool) {
+		switch bearer {
+		case "restricted":
+			return auth.Principal{TenantID: "acme", Subject: "dev", Scopes: []string{auth.ScopeRunsCreate},
+				Restrictions: auth.Restrictions{Agents: []string{"score"}}}, true
+		case "free":
+			return auth.Principal{TenantID: "acme", Subject: "ops", Scopes: []string{auth.ScopeRunsCreate}}, true
+		}
+		return auth.Principal{}, false
+	}
+	authn := FrontierAuthenticator(func(context.Context) bool { return true }, resolve, false)
+	if _, _, _, ok := authn(http.Header{"Authorization": []string{"Bearer restricted"}}); ok {
+		t.Error("a restricted token was accepted as an A2A peer")
+	}
+	if _, _, _, ok := authn(http.Header{"Authorization": []string{"Bearer free"}}); !ok {
+		t.Error("an unrestricted token was refused")
+	}
+}
