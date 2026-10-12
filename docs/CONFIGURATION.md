@@ -1375,7 +1375,8 @@ Rules worth knowing:
 - **Compaction and context settings a parent passes down by inheritance still reach the agent.** Only a parent's explicit per-spawn override is refused. Give the agent its own `compaction:` block if it must not depend on its parent's.
 - **A run of the agent that spawns itself passes no overrides down.** A child of the same definition normally inherits its parent's overrides; a locked definition inherits none, including for a parent that started before the lock was added.
 - **A schedule or webhook definition that sets an override for this agent fails when it fires**, not when it is saved.
-- **To change the agent, change its definition.** A new version (a config change, or an `AgentDef` fork) is the way to re-tune it; a fork that does not send `allow_overrides` keeps its parent's, and one that sends `true` opens it. Whoever may author the definition owns the lock.
+- **To change the agent, change its definition.** A new version (a config change, or an `AgentDef` fork) is the way to re-tune it.
+- **A fork can add the lock and cannot remove it.** A fork that does not send `allow_overrides` keeps its parent's; one that sends `true` on a locked parent is refused. The lock comes off where it was put on: in the server config for a static agent, by a fresh `create` for one defined at runtime. A pinned version likewise can only add it.
 - **It is not part of the definition's content hash**, so adding or removing it does not change `content_sha256`. A create that changes only the lock still writes a new version.
 - Unset or `true` leaves the overrides to the caller, as before.
 

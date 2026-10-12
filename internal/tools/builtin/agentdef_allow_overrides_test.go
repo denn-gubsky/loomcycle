@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/denn-gubsky/loomcycle/internal/config"
@@ -45,10 +46,20 @@ func TestAgentDefTool_AllowOverridesSurvivesCreateAndFork(t *testing.T) {
 		t.Errorf("after a fork that did not send it: allow_overrides = %v, want the parent's false", got)
 	}
 
-	// A fork that sends true opens it; that is the author's to decide.
-	run("fork open", `{"op":"fork","name":"judge","promote":true,"overlay":{"allow_overrides":true}}`)
-	if got := allowOverridesOf(t, tool, "judge"); got == nil || !*got {
-		t.Errorf("after a fork that sent true: allow_overrides = %v, want true", got)
+	// A fork cannot remove it: forking a locked agent would otherwise be the
+	// way to run it with other settings.
+	res, _ := tool.Execute(ctx, json.RawMessage(`{"op":"fork","name":"judge","promote":true,"overlay":{"allow_overrides":true}}`))
+	if !res.IsError || !strings.Contains(res.Text, "allow_overrides") {
+		t.Errorf("a fork that sent true on a locked parent: %s, want it refused", res.Text)
+	}
+	if got := allowOverridesOf(t, tool, "judge"); got == nil || *got {
+		t.Errorf("after the refused fork: allow_overrides = %v, want false", got)
+	}
+	// A fork of an open agent may add it.
+	run("create open", `{"op":"create","name":"scorer","overlay":{"system_prompt":"score"}}`)
+	run("fork lock", `{"op":"fork","name":"scorer","promote":true,"overlay":{"allow_overrides":false}}`)
+	if got := allowOverridesOf(t, tool, "scorer"); got == nil || *got {
+		t.Errorf("after a fork that added the lock: allow_overrides = %v, want false", got)
 	}
 }
 

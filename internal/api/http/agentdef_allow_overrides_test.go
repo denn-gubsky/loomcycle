@@ -155,6 +155,11 @@ func TestFixedAgent_APinnedVersionsOwnLockDecides(t *testing.T) {
 		t.Errorf("a version that says nothing removed the base's lock: %v", got.AllowOverrides)
 	}
 
+	open := strings.TrimSuffix(workerDef("p"), "}") + `,"allow_overrides":true}`
+	if got := applyAgentDefOverlay(config.AgentDef{AllowOverrides: &locked}, []byte(open)); got.AllowOverrides == nil || *got.AllowOverrides {
+		t.Errorf("a version that says true opened a locked base: %v", got.AllowOverrides)
+	}
+
 	f := pinTenantFixture(t)
 	row := store.AgentDefRow{DefID: "def_worker_locked", Name: "worker", Version: 2, TenantID: "acme", Definition: []byte(lockedDef), CreatedAt: time.Now()}
 	if _, err := f.st.AgentDefCreate(t.Context(), row); err != nil {
@@ -199,6 +204,13 @@ func TestFixedAgent_ALockedDefinitionInheritsNoOverrides(t *testing.T) {
 	got, cfg := srv.inheritOverridesForChild(ctx, config.AgentDef{Tier: "middle", AllowOverrides: &locked}, runConfigRecord{}, "", "router")
 	if got.Model != "" || cfg.Routing != nil {
 		t.Errorf("a locked child inherited its parent's model: def.Model=%q record=%+v", got.Model, cfg.Routing)
+	}
+	// What only takes away is still passed down: a run told not to ask a
+	// person must not ask one through a locked copy of itself.
+	narrowed := runConfigRecord{Routing: &routingOverride{Model: "model-b"}, Interruption: &config.AgentInterruptionACL{}}
+	nctx := tools.WithRunOverrides(t.Context(), tools.RunOverridesValue{Record: narrowed.marshal(), AgentName: "router"})
+	if _, ncfg := srv.inheritOverridesForChild(nctx, config.AgentDef{Tier: "middle", AllowOverrides: &locked}, runConfigRecord{}, "", "router"); ncfg.Interruption == nil {
+		t.Error("a locked child dropped its parent's interruption narrowing")
 	}
 	if open, _ := srv.inheritOverridesForChild(ctx, config.AgentDef{Tier: "middle"}, runConfigRecord{}, "", "router"); open.Model != "model-b" {
 		t.Errorf("an open child no longer inherits: model = %q", open.Model)

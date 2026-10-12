@@ -887,6 +887,14 @@ func (a *AgentDef) buildDefinition(ctx context.Context, name, parentJSON string,
 		if err := a.Cfg.CheckAgentDecision(ov.Decision); err != nil {
 			return mergedDef{}, err
 		}
+		// A fork can add the override lock and cannot remove it, as it cannot
+		// widen its parent's tools: otherwise forking a locked agent would be
+		// the way to run it with other settings. The lock comes off where it
+		// was put on — the operator's config for a static agent, a fresh
+		// create for one defined at runtime.
+		if base.AllowOverrides != nil && !*base.AllowOverrides && ov.AllowOverrides != nil && *ov.AllowOverrides {
+			return mergedDef{}, fmt.Errorf("AgentDef tool: a fork cannot set allow_overrides to true on %q, whose definition locks its per-run settings (allow_overrides: false); remove the lock in the server config, or create the agent anew", name)
+		}
 		base.applyOverlay(ov)
 	}
 	return base, nil

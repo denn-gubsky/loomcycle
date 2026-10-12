@@ -2333,7 +2333,9 @@ func applyAgentDefOverlay(base config.AgentDef, definition json.RawMessage) conf
 		RetryAttempts *int `json:"retry_attempts,omitempty"`
 		// The version's own override lock. Without it a spawn that pins a
 		// locked version would run it open, and the lock would hold only
-		// for the version that happens to be active.
+		// for the version that happens to be active. It can only ADD the
+		// lock: like every other policy field, a pinned version never
+		// loosens what the base says.
 		AllowOverrides *bool `json:"allow_overrides,omitempty"`
 	}
 	if err := json.Unmarshal(definition, &ov); err != nil {
@@ -2403,9 +2405,9 @@ func applyAgentDefOverlay(base config.AgentDef, definition json.RawMessage) conf
 		// "force 0" for high-stakes agents.
 		out.RetryAttempts = ov.RetryAttempts
 	}
-	if ov.AllowOverrides != nil {
-		v := *ov.AllowOverrides
-		out.AllowOverrides = &v
+	if ov.AllowOverrides != nil && !*ov.AllowOverrides {
+		locked := false
+		out.AllowOverrides = &locked
 	}
 	return out
 }
