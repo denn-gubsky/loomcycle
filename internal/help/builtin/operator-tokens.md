@@ -142,6 +142,25 @@ control.
   days; `0` keeps them). A token minted without a lifetime is never
   deleted this way.
 
+## Limiting a token to certain agents
+
+`--agents a,b` on `operator-token create` (`agents` on the `create` op,
+or `{"agents": [...]}` in the body of `POST /v1/_users/{subject}/tokens`,
+or `agents:` on a declared principal) limits the token to starting those
+agents as top-level runs.
+
+- Any other agent is refused (`agent_not_allowed`), whether or not it
+  exists.
+- The token is limited to the run endpoints: starting, continuing,
+  reading and controlling runs. It is refused everywhere else
+  (`restricted_token`) whatever its scopes — definitions, team walks,
+  schedules, the model gateways, a direct decision, channels, memory,
+  documents, the credential store, A2A.
+- A sub-agent that a listed agent spawns is not limited; it follows the
+  parent agent's definition.
+- The list is fixed at mint and carried over by `rotate`. An empty list
+  is refused. A token holding `substrate:admin` cannot have one.
+
 ## Migration from LOOMCYCLE_AUTH_TOKEN (zero-disruption)
 
 The legacy shared secret keeps working until the **first admin-scoped**
