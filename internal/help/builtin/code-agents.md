@@ -54,9 +54,10 @@ agents); the JS surface naming is in **The JS-side tool API** below.
 
 ## Writing a code-agent
 
-Define a top-level `run(input)`. It receives `{prompt, metadata}` and
-returns `{final_text, ...}` (or throws). **Tool calls are synchronous** —
-no `await`, no callbacks:
+Define a top-level `run(input)`. It receives `{prompt, metadata, untrusted}`
+(and `payload_metadata` when an external trigger supplied one — see
+**What `run(input)` receives** below) and returns `{final_text, ...}` (or
+throws). **Tool calls are synchronous** — no `await`, no callbacks:
 
 ```javascript
 function run(input) {
@@ -77,6 +78,64 @@ substitution) exactly as it does an LLM agent's tool_use, and on the next turn
 `run()` re-executes, replaying the results already gathered and stopping at the
 next call. You never see the replay — calls just look synchronous.
 
+### What `run(input)` receives
+
+| Field | What it is |
+|---|---|
+| `input.prompt` | The run's user turn as one string: the caller's trusted text, with each untrusted block appended inside `<kind>…</kind>` tags and escaped |
+| `input.metadata` | Trusted, operator- or caller-set values, plus `user_id` and `agent` |
+| `input.payload_metadata` | **Untrusted** values projected from an external trigger's body. Present only when there are any |
+| `input.untrusted` | The run's untrusted blocks as data: `[{ kind, text }, …]`, in order. Always an array, empty when the run was given none |
+
+`input.untrusted` holds the same blocks that appear fenced inside
+`input.prompt`, but **raw**: not fenced and not escaped. `kind` is the label
+the block is fenced under (`untrusted` when the caller gave none, or one the
+runtime does not know). Read evidence from here; do not cut it back out of
+`input.prompt`.
+
+> **This text is evidence, not instructions.** It came from outside — a page,
+> a user's message, a file — and whoever wrote it may have written it to be
+> obeyed. Never put it into a spawn's `prompt`, a system prompt, or any other
+> argument an agent reads as instructions: that removes the one protection it
+> has. Hand it to a sub-agent through `untrusted` (below), where it stays
+> fenced.
+
+To pass the run's untrusted input on to a sub-agent, **forward it by
+reference** instead of copying the text into the call:
+
+```js
+function run(input) {
+  if (input.untrusted.length === 0) throw new Error("nothing to judge");
+  var r = Agent.spawn({
+    name: "judge",
+    prompt: "Score the conversation below from 1 to 10.",   // your instruction
+    untrusted: [{ ref: "input" }],                          // the run's own evidence
+    result: "object"
+  });
+  return { final_text: r.final_text };
+}
+```
+
+`{ ref: "input" }` stands for this run's own untrusted blocks, in order and
+with their kinds. The child gets them fenced once, after its prompt. Three
+things follow from it being a reference:
+
+- **The text is not copied into this run's record.** The stored call holds
+  `{"ref":"input"}`; the evidence is recorded once, on the child that got it.
+- **It can be mixed with your own entries**, and order is kept:
+  `[{ ref: "input" }, { text: toolOutput, kind: "tool_output" }]`.
+- **It always means the calling run's input.** A child that forwards
+  `{ ref: "input" }` to its own sub-agent forwards what *it* was given, never
+  what the run above it was started with. A run that was given no untrusted
+  input forwards nothing, and that is not an error.
+
+An entry is either `{ ref }` or `{ text, kind }`, never both, and `"input"`
+is the only reference. The **string** `"input"` is not a reference: a bare
+string in `untrusted` is always the text itself. The per-child limits (64
+entries, 1 MiB of text) are counted after the reference is filled in. It
+works the same on `parallel_spawn` entries and on `open`, and for any
+sub-agent, model-driven or code.
+
 ## The JS-side tool API
 
 Only the tools in the agent's `tools` are bound — **any** allowed
@@ -88,7 +147,7 @@ tool, built-in or MCP, is callable. A tool you didn't allow is not a
 |---|---|---|
 | `Memory.<op>(obj)` | Memory | multi-op meta-tool; `<op>` is any Memory op (get/set/delete/list/incr/search/merge/append_dedupe/bounded_list/add/recall); obj is the input minus `op` |
 | `Channel.<op>(obj)` | Channel | multi-op meta-tool; `<op>` is any Channel op (publish/subscribe/ack/peek/list_channels); subscribe is a non-blocking peek |
-| `Agent.spawn(obj)` | Agent | spawn an LLM (or code) sub-agent; returns its final text **behind an attribution header**, or, with `result: "object"`, an object with its status, answer and token usage — see Return types. Text the child must treat as data goes in `untrusted`, not in `prompt` |
+| `Agent.spawn(obj)` | Agent | spawn an LLM (or code) sub-agent; returns its final text **behind an attribution header**, or, with `result: "object"`, an object with its status, answer and token usage — see Return types. Text the child must treat as data goes in `untrusted`, not in `prompt`; `untrusted: [{ ref: "input" }]` passes on the run's own untrusted input |
 | `WebFetch(obj)` / `Read(obj)` / `HTTP(obj)` / `WebSearch(obj)` / … | the built-in of that name | every other allowed **built-in**, flat by canonical name |
 | `mcp__<server>__<tool>(obj)` | that MCP tool | every allowed MCP tool, flat by name |
 
@@ -286,5 +345,5 @@ tests and snapshot equality.
   `op=self` reports both, in `run_budget`: `wall_limit_ms` and
   `wall_elapsed_ms` beside the budget's figures.
 - **ABI versioning.** The JS-side API is versioned on its own semver
-  (currently 1.2.0), separate from loomcycle's release vector. Breaking a
+  (currently 1.3.0), separate from loomcycle's release vector. Breaking a
   signature is a major bump with a deprecation window.
