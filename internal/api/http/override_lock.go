@@ -76,7 +76,7 @@ func (s *Server) admitPrincipalOverrides(ctx context.Context, set []string) erro
 	for _, field := range set {
 		if !p.Restrictions.OverrideAllowed(field) {
 			log.Printf("auth: override_not_allowed field=%q subject=%q token_def=%q", field, p.Subject, p.TokenDefID)
-			return fmt.Errorf("%w: %q", runner.ErrOverrideNotAllowed, field)
+			return fmt.Errorf("%w for this token: %q", runner.ErrOverrideNotAllowed, field)
 		}
 	}
 	return nil
