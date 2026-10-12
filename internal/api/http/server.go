@@ -1468,7 +1468,7 @@ func resolveErrorToStatus(err error) int {
 	case errors.Is(err, resolve.ErrTierUnavailable),
 		errors.Is(err, resolve.ErrPinUnavailable):
 		return http.StatusServiceUnavailable
-	case errors.Is(err, runner.ErrAgentNotAllowed):
+	case errors.Is(err, runner.ErrAgentNotAllowed), errors.Is(err, runner.ErrOverrideNotAllowed):
 		return http.StatusForbidden
 	case errors.Is(err, resolve.ErrOperatorKeyRestricted),
 		errors.Is(err, resolve.ErrTierAgentNotAvailable):
@@ -1500,6 +1500,17 @@ const operatorKeyRestrictedMsg = "this principal may not use the operator's prov
 // adapters can branch on it — mirroring the token_limit_exceeded shape. Every
 // other resolver error keeps the historical plain-text http.Error surface.
 func writeResolveError(w http.ResponseWriter, err error) {
+	// The two token-restriction refusals carry a typed body wherever they
+	// surface, so a client branches on the code and not on which route it
+	// happened to call.
+	if errors.Is(err, runner.ErrOverrideNotAllowed) {
+		writeOverrideNotAllowed(w, err)
+		return
+	}
+	if errors.Is(err, runner.ErrAgentNotAllowed) {
+		writeAgentNotAllowed(w, err)
+		return
+	}
 	if errors.Is(err, resolve.ErrOperatorKeyRestricted) {
 		writeJSONError(w, http.StatusForbidden, "operator_key_restricted", operatorKeyRestrictedMsg)
 		return
@@ -2872,6 +2883,9 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 	// The agent is final here (a continuation has taken its session's, a
 	// started draft its row's), so this covers all three.
 	if err := s.admitPrincipalAgent(ctx, effectiveAgentName); err != nil {
+		return err
+	}
+	if err := s.admitPrincipalOverrides(ctx, overridesSetIn(&in)); err != nil {
 		return err
 	}
 	agentDef, ok := s.lookupAgent(ctx, effectiveTenantID, effectiveAgentName)
@@ -4748,6 +4762,10 @@ func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {
 		writeAgentNotAllowed(w, err)
 		return
 	}
+	if err := s.admitPrincipalOverrides(r.Context(), overridesSetIn(&req)); err != nil {
+		writeOverrideNotAllowed(w, err)
+		return
+	}
 	// Existence-check the agent at the run's authoritative tenant.
 	agentDef, ok := s.lookupAgent(r.Context(), req.TenantID, req.Agent)
 	if !ok {
@@ -5687,6 +5705,10 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 	// A continuation is a new top-level run of the session's agent.
 	if err := s.admitPrincipalAgent(r.Context(), sess.Agent); err != nil {
 		writeAgentNotAllowed(w, err)
+		return
+	}
+	if err := s.admitPrincipalOverrides(r.Context(), overridesSetIn(&body)); err != nil {
+		writeOverrideNotAllowed(w, err)
 		return
 	}
 	agentDef, ok := s.lookupAgent(r.Context(), sess.TenantID, sess.Agent)

@@ -21,6 +21,105 @@ type Restrictions struct {
 	// plane (see RunPlaneOnly). An agent the listed one spawns is not gated:
 	// that follows the agent's own definition.
 	Agents []string `json:"agents,omitempty"`
+	// Overrides, when set, locks the per-run overrides: a run this credential
+	// starts runs on its agent's own settings, except for the fields the
+	// policy allows. Nil locks nothing.
+	Overrides *OverridePolicy `json:"overrides,omitempty"`
+}
+
+// LockableOverrides is every per-run override a policy locks, by wire name:
+// the fields of a run request that change which model answers, how it is
+// asked, how much it may spend, or how the run behaves. A request field that
+// can only narrow the run (tools, allowed_hosts), bound it (max_wall_seconds)
+// or name and deliver it (idempotency_key, metadata, credentials) is not an
+// override and is not here.
+//
+// The HTTP layer maps each name to the request field that carries it, and a
+// test there holds the two lists equal and makes every new request field be
+// classified as one or the other.
+var LockableOverrides = []string{
+	// routing: which model answers
+	"model", "provider", "tier", "effort", "user_tier",
+	// resources: how much it may spend
+	"max_tokens", "max_iterations", "unbounded_iterations", "max_concurrent_children",
+	"run_timeout_seconds",
+	// tuning: how it is asked
+	"sampling", "compaction", "context", "max_context_tokens",
+	"tool_choice", "output_format", "web_search_filter",
+	"retry_attempts", "memory_inject_max_tokens", "memory_index_max_bytes", "inject_tool_guide",
+	// behaviour: how the run is driven and what watches it
+	"interactive", "review", "review_ttl_seconds", "interruption", "hooks", "tool_hooks",
+}
+
+// OverridePolicy locks the per-run overrides except those it allows. On the
+// wire it is the string "none" (nothing allowed) or the list of allowed
+// fields.
+type OverridePolicy struct {
+	// Allow is the overrides the credential may still set. Empty = none.
+	Allow []string
+}
+
+// MarshalJSON renders "none" or the allow list.
+func (p OverridePolicy) MarshalJSON() ([]byte, error) {
+	if len(p.Allow) == 0 {
+		return []byte(`"none"`), nil
+	}
+	return json.Marshal(p.Allow)
+}
+
+// UnmarshalJSON reads "none" or a list of field names. Anything else is an
+// error: a policy that could not be read must never become a looser one.
+func (p *OverridePolicy) UnmarshalJSON(b []byte) error {
+	var word string
+	if err := json.Unmarshal(b, &word); err == nil {
+		if word != "none" {
+			return fmt.Errorf(`overrides: %q is not a policy (use "none" or a list of fields)`, word)
+		}
+		p.Allow = nil
+		return nil
+	}
+	var list []string
+	if err := json.Unmarshal(b, &list); err != nil {
+		return fmt.Errorf(`overrides: want "none" or a list of fields`)
+	}
+	if len(list) == 0 {
+		return fmt.Errorf(`overrides: an empty list is ambiguous; write "none" to lock every override`)
+	}
+	p.Allow = list
+	return nil
+}
+
+// ParseOverridePolicy reads a policy written as text: "none", or field names
+// separated by commas (a CLI flag, a yaml scalar).
+func ParseOverridePolicy(s string) (*OverridePolicy, error) {
+	s = strings.TrimSpace(s)
+	if s == "none" {
+		return &OverridePolicy{}, nil
+	}
+	var allow []string
+	for _, f := range strings.Split(s, ",") {
+		if f = strings.TrimSpace(f); f != "" {
+			allow = append(allow, f)
+		}
+	}
+	if len(allow) == 0 {
+		return nil, fmt.Errorf(`overrides: want "none" or a list of fields`)
+	}
+	return &OverridePolicy{Allow: allow}, nil
+}
+
+// OverrideAllowed reports whether the credential may set the named per-run
+// override.
+func (r Restrictions) OverrideAllowed(field string) bool {
+	if r.Overrides == nil {
+		return true
+	}
+	for _, a := range r.Overrides.Allow {
+		if a == field {
+			return true
+		}
+	}
+	return false
 }
 
 // MaxRestrictedAgents bounds an allowlist. It is a list of the few agents a
@@ -33,7 +132,7 @@ const MaxRestrictedAgents = 64
 var restrictedAgentNameRe = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9_.:-]{0,127}$`)
 
 // IsZero reports whether nothing is restricted.
-func (r Restrictions) IsZero() bool { return len(r.Agents) == 0 }
+func (r Restrictions) IsZero() bool { return len(r.Agents) == 0 && r.Overrides == nil }
 
 // RunPlaneOnly reports whether the credential is confined to the run plane:
 // starting, continuing, reading and controlling runs, and nothing else.
@@ -81,6 +180,22 @@ func (r Restrictions) Validate(agentsWasSet bool) error {
 		}
 		seen[a] = true
 	}
+	if r.Overrides != nil {
+		lockable := make(map[string]bool, len(LockableOverrides))
+		for _, f := range LockableOverrides {
+			lockable[f] = true
+		}
+		allowed := make(map[string]bool, len(r.Overrides.Allow))
+		for _, f := range r.Overrides.Allow {
+			if !lockable[f] {
+				return fmt.Errorf("overrides: %q is not a per-run override (one of: %s)", f, strings.Join(LockableOverrides, ", "))
+			}
+			if allowed[f] {
+				return fmt.Errorf("overrides: %q is listed twice", f)
+			}
+			allowed[f] = true
+		}
+	}
 	return nil
 }
 
@@ -89,7 +204,18 @@ func (r Restrictions) Describe() string {
 	if r.IsZero() {
 		return "none"
 	}
-	return "agents=[" + strings.Join(r.Agents, ",") + "]"
+	var parts []string
+	if len(r.Agents) > 0 {
+		parts = append(parts, "agents=["+strings.Join(r.Agents, ",")+"]")
+	}
+	if r.Overrides != nil {
+		if len(r.Overrides.Allow) == 0 {
+			parts = append(parts, "overrides=none")
+		} else {
+			parts = append(parts, "overrides=["+strings.Join(r.Overrides.Allow, ",")+"]")
+		}
+	}
+	return strings.Join(parts, " ")
 }
 
 // MayStartAgent reports whether the principal on hand may start name as a

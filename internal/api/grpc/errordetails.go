@@ -34,6 +34,8 @@ func reasonFor(err error) string {
 	switch {
 	case errors.Is(err, runner.ErrAgentNotAllowed):
 		return "agent_not_allowed"
+	case errors.Is(err, runner.ErrOverrideNotAllowed):
+		return "override_not_allowed"
 	case errors.Is(err, runner.ErrTokenLimitExceeded):
 		return "token_limit_exceeded"
 	case errors.Is(err, runner.ErrProviderConcurrencyExhausted):

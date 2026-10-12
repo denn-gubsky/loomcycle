@@ -153,6 +153,9 @@ func (s *Server) createConfiguredRunCore(ctx context.Context, req runDraft) (con
 	if err := s.admitPrincipalAgent(ctx, req.Agent); err != nil {
 		return connector.ConfiguredRun{}, draftRefusal(http.StatusForbidden, "agent_not_allowed", "%s", err.Error())
 	}
+	if err := s.admitPrincipalOverrides(ctx, overridesSetIn(&req)); err != nil {
+		return connector.ConfiguredRun{}, draftRefusal(http.StatusForbidden, "override_not_allowed", "%s", err.Error())
+	}
 	tenant, user := s.applyPrincipal(ctx, req.TenantID, req.UserID)
 	okr := s.operatorKeyRestrictedForCtx(ctx)
 	isolated := s.isolatedForCtx(ctx)
@@ -325,6 +328,11 @@ func (s *Server) updateConfiguredRunCore(ctx context.Context, runID string, patc
 	// An edit may name another agent, so it is admitted as a create is.
 	if err := s.admitPrincipalAgent(ctx, d.Agent); err != nil {
 		return connector.ConfiguredRun{}, draftRefusal(http.StatusForbidden, "agent_not_allowed", "%s", err.Error())
+	}
+	// The merged draft, not the patch: an edit by a locked token must not be
+	// the way an override another caller wrote into the draft gets run.
+	if err := s.admitPrincipalOverrides(ctx, overridesSetIn(&d)); err != nil {
+		return connector.ConfiguredRun{}, draftRefusal(http.StatusForbidden, "override_not_allowed", "%s", err.Error())
 	}
 	if msg, ok := s.validateDraft(ctx, run.TenantID, d); !ok {
 		return connector.ConfiguredRun{}, draftRefusal(http.StatusBadRequest, "invalid_draft", "%s", msg)
@@ -581,6 +589,8 @@ func writeRunOnceError(w http.ResponseWriter, err error) {
 		writeResolveError(w, err)
 	case errors.Is(err, runner.ErrAgentNotAllowed):
 		writeAgentNotAllowed(w, err)
+	case errors.Is(err, runner.ErrOverrideNotAllowed):
+		writeOverrideNotAllowed(w, err)
 	case errors.Is(err, runner.ErrRunNotConfigured):
 		writeJSONError(w, http.StatusConflict, "run_not_configured", err.Error())
 	case errors.Is(err, runner.ErrDraftChanged):

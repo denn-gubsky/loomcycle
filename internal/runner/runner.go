@@ -64,6 +64,10 @@ var (
 	// token is not limited to (its restrictions list other agents). It is a
 	// policy refusal, answered whether or not the agent exists.
 	ErrAgentNotAllowed = errors.New("agent not allowed for this token")
+	// ErrOverrideNotAllowed refuses a run request, or a retune, that sets a
+	// per-run override the caller's token is locked out of. Refused and never
+	// dropped: a dropped override would hide a client that asked for it.
+	ErrOverrideNotAllowed = errors.New("override not allowed for this token")
 	// ErrInvalidArgument — caller-supplied field failed validation.
 	// Wire: HTTP 400 / gRPC InvalidArgument.
 	ErrInvalidArgument = errors.New("invalid argument")
