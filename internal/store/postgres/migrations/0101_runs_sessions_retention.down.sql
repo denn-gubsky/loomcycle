@@ -1,0 +1,2 @@
+ALTER TABLE runs     DROP COLUMN IF EXISTS retention;
+ALTER TABLE sessions DROP COLUMN IF EXISTS retention;

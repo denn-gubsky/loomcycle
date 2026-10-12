@@ -1338,6 +1338,10 @@ func (s *Store) migrate(ctx context.Context) error {
 		`ALTER TABLE sessions ADD COLUMN archived_at INTEGER`,
 		`ALTER TABLE sessions ADD COLUMN summary TEXT`,
 		`ALTER TABLE sessions ADD COLUMN summary_updated_at INTEGER`,
+		// A run's retention mode ('' = stored as usual, 'none' = content never
+		// stored), and its session's. Mirrors postgres migration 0101.
+		`ALTER TABLE runs ADD COLUMN retention TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE sessions ADD COLUMN retention TEXT NOT NULL DEFAULT ''`,
 		// RFC BL — tenant-scope the Memory store + provenance/access columns.
 		// On an UPGRADED DB these ALTERs add the columns to the existing
 		// memory table; its old (scope, scope_id, key) PK is then replaced by
@@ -1689,6 +1693,30 @@ func (s *Store) CreateSession(ctx context.Context, tenantID, agent, userID strin
 	return store.Session{ID: id, TenantID: tenantID, Agent: agent, CreatedAt: now, UserID: userID}, nil
 }
 
+// insertRunMarkingSession inserts a run row and, for a run with a retention
+// mode, records that mode on its session in the same transaction. The two
+// must not be able to disagree: a session read without its run in hand (a
+// continuation, a replay) is refused on the session's own mode, and a
+// no-trace run whose session still read as ordinary would be continued.
+func (s *Store) insertRunMarkingSession(ctx context.Context, sessionID, retention, query string, args ...any) error {
+	if retention == "" {
+		_, err := s.db.ExecContext(ctx, query, args...)
+		return err
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+	if _, err := tx.ExecContext(ctx, query, args...); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE sessions SET retention = ? WHERE id = ?`, retention, sessionID); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
 // GetSession returns session metadata or *store.ErrNotFound.
 func (s *Store) GetSession(ctx context.Context, sessionID string) (store.Session, error) {
 	var sess store.Session
@@ -1697,10 +1725,10 @@ func (s *Store) GetSession(ctx context.Context, sessionID string) (store.Session
 	var pinned, archivedNs, summaryUpdNs sql.NullInt64
 	err := s.db.QueryRowContext(ctx,
 		`SELECT id, tenant_id, agent, created_at, user_id,
-		        title, description, tags, pinned, archived_at, summary, summary_updated_at
+		        title, description, tags, pinned, archived_at, summary, summary_updated_at, retention
 		 FROM sessions WHERE id = ?`, sessionID,
 	).Scan(&sess.ID, &sess.TenantID, &sess.Agent, &createdNs, &userID,
-		&title, &description, &tags, &pinned, &archivedNs, &summary, &summaryUpdNs)
+		&title, &description, &tags, &pinned, &archivedNs, &summary, &summaryUpdNs, &sess.Retention)
 	if errors.Is(err, sql.ErrNoRows) {
 		return store.Session{}, &store.ErrNotFound{Kind: "session", ID: sessionID}
 	}
@@ -1765,9 +1793,9 @@ func (s *Store) createRun(ctx context.Context, sessionID string, identity store.
 	if pcOK {
 		pcVal = pcJSON
 	}
-	_, err := s.db.ExecContext(ctx,
-		`INSERT INTO runs(id, session_id, status, started_at, agent_id, parent_agent_id, parent_run_id, user_id, tenant_id, user_tier, agent_def_id, model, parent_context, idempotency_key, interactive, operator_key_restricted, isolated, run_config, draft, walk_id, delivery_alt_key)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+	err := s.insertRunMarkingSession(ctx, sessionID, identity.Retention,
+		`INSERT INTO runs(id, session_id, status, started_at, agent_id, parent_agent_id, parent_run_id, user_id, tenant_id, user_tier, agent_def_id, model, parent_context, idempotency_key, interactive, operator_key_restricted, isolated, run_config, draft, walk_id, delivery_alt_key, retention)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		id, sessionID, string(status), now.UnixNano(),
 		nilIfEmpty(identity.AgentID),
 		nilIfEmpty(identity.ParentAgentID),
@@ -1786,6 +1814,7 @@ func (s *Store) createRun(ctx context.Context, sessionID string, identity store.
 		nilIfEmptyRaw(draft),
 		nilIfEmpty(store.RunWalkID(identity.ParentContext)),
 		nilIfEmpty(identity.DeliveryAltKey),
+		identity.Retention,
 	)
 	if err != nil {
 		// RFC H Decision 10: a collision on the runs_idempotency_key
@@ -1825,6 +1854,7 @@ func (s *Store) createRun(ctx context.Context, sessionID string, identity store.
 		Interactive:           identity.Interactive,
 		OperatorKeyRestricted: identity.OperatorKeyRestricted,
 		Isolated:              identity.Isolated,
+		Retention:             identity.Retention,
 		RunConfig:             identity.RunConfig,
 	}, nil
 }
@@ -3110,7 +3140,7 @@ func scanRun(scanner interface{ Scan(...any) error }) (store.Run, error) {
 		&agentID, &parentAgentID, &parentRunID, &userID, &lastHbNs,
 		&userTier,
 		&agentDefID, &pauseState, &parentContext, &idempotencyKey, &deliveryAltKey, &tenantID,
-		&interactive, &operatorKeyRestricted, &isolated,
+		&interactive, &operatorKeyRestricted, &isolated, &r.Retention,
 		&cost, &costCurrency, &credentialSource, &credentialScopeID,
 		&runConfig,
 		&result,
@@ -3222,7 +3252,7 @@ const runColumns = `r.id, r.session_id, r.status, r.started_at, r.completed_at,
 		r.agent_id, r.parent_agent_id, r.parent_run_id, r.user_id, r.last_heartbeat_at,
 		r.user_tier,
 		r.agent_def_id, r.pause_state, r.parent_context, r.idempotency_key, r.delivery_alt_key, r.tenant_id,
-		r.interactive, r.operator_key_restricted, r.isolated,
+		r.interactive, r.operator_key_restricted, r.isolated, r.retention,
 		r.cost, r.cost_currency, r.credential_source, r.credential_scope_id,
 		r.run_config,
 		r.result,
@@ -4559,8 +4589,8 @@ func (s *Store) SnapshotRestoreRun(ctx context.Context, r store.Run) (bool, erro
 			model, provider, error,
 			agent_id, parent_agent_id, parent_run_id, user_id, last_heartbeat_at,
 			user_tier, agent_def_id, pause_state, parent_context, interactive, operator_key_restricted, isolated,
-			run_config, walk_id, tenant_id, idempotency_key, delivery_alt_key
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			run_config, walk_id, tenant_id, idempotency_key, delivery_alt_key, retention
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		r.ID, r.SessionID, status, startedNs, completedNs, nilIfEmpty(r.StopReason),
 		r.InputTokens, r.OutputTokens, r.CacheCreationTokens, r.CacheReadTokens,
 		nilIfEmpty(r.Model), nilIfEmpty(r.Provider), nilIfEmpty(r.ErrorMsg),
@@ -4569,7 +4599,7 @@ func (s *Store) SnapshotRestoreRun(ctx context.Context, r store.Run) (bool, erro
 		nilIfEmpty(r.UserTier), nilIfEmpty(r.AgentDefID), pauseState, pcVal,
 		boolToInt(r.Interactive), boolToInt(r.OperatorKeyRestricted), boolToInt(r.Isolated),
 		nilIfEmptyRaw(r.RunConfig), nilIfEmpty(store.RunWalkID(r.ParentContext)),
-		nilIfEmpty(r.TenantID), nilIfEmpty(r.IdempotencyKey), nilIfEmpty(r.DeliveryAltKey),
+		nilIfEmpty(r.TenantID), nilIfEmpty(r.IdempotencyKey), nilIfEmpty(r.DeliveryAltKey), r.Retention,
 	)
 	if err != nil {
 		return false, fmt.Errorf("snapshot restore run: %w", err)

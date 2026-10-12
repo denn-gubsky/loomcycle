@@ -154,7 +154,8 @@ func TestOverrideLock_EveryRequestFieldIsClassified(t *testing.T) {
 		"AgentID": "identity", "UserBearer": "the caller's own credential", "UserCredentials": "the caller's own credentials",
 		"ParentContext": "lineage labels", "IdempotencyKey": "delivery", "ClientIdempotencyKey": "delivery",
 		"DeliveryAltKey": "delivery", "MaxWallSeconds": "bounds the run's life; cannot extend it",
-		"Metadata": "non-secret labels", "PayloadMetadata": "set by a trigger, not a caller",
+		"Retention": "narrow-only: it can only make a run store less, never more",
+		"Metadata":  "non-secret labels", "PayloadMetadata": "set by a trigger, not a caller",
 		"OperatorKeyRestricted": "server-derived", "Isolated": "server-derived",
 		"ConfiguredRunID": "which draft to start", "ConfiguredDraft": "the stored draft", "Detached": "delivery",
 	}

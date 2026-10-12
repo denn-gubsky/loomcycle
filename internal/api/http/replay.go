@@ -76,6 +76,11 @@ func (s *Server) ReplaySession(ctx context.Context, req connector.ReplaySessionR
 	if serr != nil || !sessionOwnershipOK(ctx, src) {
 		return connector.ReplaySessionResult{}, &replayErr{status: http.StatusNotFound, msg: "no session for that id"}
 	}
+	// A no-trace session holds markers, not a conversation; and a replay
+	// writes the conversation it copies, so it cannot produce a no-trace run.
+	if src.Retention == store.RetentionNone || s.resolveRetention(ctx, req.Agent, "") == store.RetentionNone {
+		return connector.ReplaySessionResult{}, &replayErr{status: http.StatusConflict, code: "retention_none_unsupported", msg: errNoTraceSession.Error()}
+	}
 
 	// The new session belongs to the AUTHORITATIVE caller (never the wire).
 	tenant, subject := s.applyPrincipal(ctx, "", "")

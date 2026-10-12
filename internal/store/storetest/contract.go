@@ -139,6 +139,7 @@ func Run(t *testing.T, factory Factory) {
 		{"CreateRunInteractiveRoundTrip", testCreateRunInteractiveRoundTrip},
 		{"CreateRunUnderAMintedID", testCreateRunUnderAMintedID},
 		{"CreateRunOperatorKeyRestrictedRoundTrip", testCreateRunOperatorKeyRestrictedRoundTrip},
+		{"RetentionModeRoundTrip", testRetentionModeRoundTrip},
 		{"CreateRunIsolatedRoundTrip", testCreateRunIsolatedRoundTrip},
 		{"CreateRunConfigRoundTrip", testCreateRunConfigRoundTrip},
 		{"SetRunConfigCASRefusesAStalePrev", testSetRunConfigCASRefusesAStalePrev},
@@ -16802,5 +16803,69 @@ func testUsageEstimateAddsUp(t *testing.T, s store.Store) {
 	}
 	if got := read(sep)["est|u2"]; got != [2]int64{0, 5} {
 		t.Errorf("another subject's estimate after the delete = %v, want {0 5}", got)
+	}
+}
+
+// testRetentionModeRoundTrip: a run's retention mode is written at creation
+// and read back by every reader of the row; a session's is set once and read
+// by GetSession. The default is the empty string on both.
+func testRetentionModeRoundTrip(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	sess, err := s.CreateSession(ctx, "acme", "agent", "u1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	plain, err := s.CreateRun(ctx, sess.ID, store.RunIdentity{AgentID: "a_ret_plain"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if plain.Retention != "" {
+		t.Errorf("default run retention = %q, want empty", plain.Retention)
+	}
+	if got, _ := s.GetSession(ctx, sess.ID); got.Retention != "" {
+		t.Errorf("default session retention = %q, want empty", got.Retention)
+	}
+
+	quiet, err := s.CreateSession(ctx, "acme", "agent", "u1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	run, err := s.CreateRun(ctx, quiet.ID, store.RunIdentity{AgentID: "a_ret_none", Retention: store.RetentionNone})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if run.Retention != store.RetentionNone {
+		t.Errorf("CreateRun returned retention %q, want %q", run.Retention, store.RetentionNone)
+	}
+	if got, err := s.GetRun(ctx, run.ID); err != nil || got.Retention != store.RetentionNone {
+		t.Errorf("GetRun retention = %q (err %v), want %q", got.Retention, err, store.RetentionNone)
+	}
+	if got, err := s.GetRunByAgentID(ctx, "a_ret_none"); err != nil || got.Retention != store.RetentionNone {
+		t.Errorf("GetRunByAgentID retention = %q (err %v), want %q", got.Retention, err, store.RetentionNone)
+	}
+	if got, _ := s.GetRun(ctx, plain.ID); got.Retention != "" {
+		t.Errorf("another run's retention = %q, want empty", got.Retention)
+	}
+
+	// The run's mode is on its session too, written with the run row.
+	if got, err := s.GetSession(ctx, quiet.ID); err != nil || got.Retention != store.RetentionNone {
+		t.Errorf("session retention = %q (err %v), want %q", got.Retention, err, store.RetentionNone)
+	}
+	if got, _ := s.GetSession(ctx, sess.ID); got.Retention != "" {
+		t.Errorf("another session's retention = %q, want empty", got.Retention)
+	}
+	// A run that could not be created leaves its session as it was.
+	other, err := s.CreateSession(ctx, "acme", "agent", "u1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.CreateRun(ctx, other.ID, store.RunIdentity{AgentID: "a_ret_dup", IdempotencyKey: "ret-dup"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.CreateRun(ctx, other.ID, store.RunIdentity{AgentID: "a_ret_dup2", IdempotencyKey: "ret-dup", Retention: store.RetentionNone}); err == nil {
+		t.Fatal("a duplicate idempotency key was accepted")
+	}
+	if got, _ := s.GetSession(ctx, other.ID); got.Retention != "" {
+		t.Errorf("a refused run changed its session's retention to %q", got.Retention)
 	}
 }

@@ -304,11 +304,11 @@ func (s *Store) GetSession(ctx context.Context, sessionID string) (store.Session
 	)
 	row := s.pool.QueryRow(ctx,
 		`SELECT id, tenant_id, agent, user_id, created_at,
-		        title, description, tags, pinned, archived_at, summary, summary_updated_at
+		        title, description, tags, pinned, archived_at, summary, summary_updated_at, retention
 		 FROM sessions WHERE id = $1`, sessionID,
 	)
 	if err := row.Scan(&out.ID, &out.TenantID, &out.Agent, &userID, &createdAt,
-		&title, &description, &tags, &pinned, &archivedNs, &summary, &summaryUpdedNs); err != nil {
+		&title, &description, &tags, &pinned, &archivedNs, &summary, &summaryUpdedNs, &out.Retention); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return store.Session{}, &store.ErrNotFound{Kind: "session", ID: sessionID}
 		}
@@ -384,11 +384,19 @@ func (s *Store) createRun(ctx context.Context, sessionID string, identity store.
 		pcVal = pcJSON
 	}
 	if err := retryOnTransientConn(ctx, func() error {
+		// A run with a retention mode records it on its session in the SAME
+		// statement. The two must not be able to disagree: a session read
+		// without its run in hand (a continuation, a replay) is refused on the
+		// session's own mode, and a no-trace run whose session still read as
+		// ordinary would be continued.
 		_, err := s.pool.Exec(ctx,
-			`INSERT INTO runs (
+			`WITH marked AS (
+				UPDATE sessions SET retention = $23::text WHERE id = $2 AND $23::text <> ''
+			)
+			INSERT INTO runs (
 				id, session_id, status, started_at,
-				agent_id, parent_agent_id, parent_run_id, user_id, tenant_id, user_tier, agent_def_id, model, replica_id, parent_context, idempotency_key, interactive, operator_key_restricted, isolated, run_config, draft, walk_id, delivery_alt_key
-			) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19::jsonb, $20::jsonb, $21, $22)`,
+				agent_id, parent_agent_id, parent_run_id, user_id, tenant_id, user_tier, agent_def_id, model, replica_id, parent_context, idempotency_key, interactive, operator_key_restricted, isolated, run_config, draft, walk_id, delivery_alt_key, retention
+			) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19::jsonb, $20::jsonb, $21, $22, $23::text)`,
 			id, sessionID, string(status), now,
 			nullableText(identity.AgentID),
 			nullableText(identity.ParentAgentID),
@@ -408,6 +416,7 @@ func (s *Store) createRun(ctx context.Context, sessionID string, identity store.
 			nullableJSONArg(draft),
 			nullableText(store.RunWalkID(identity.ParentContext)),
 			nullableText(identity.DeliveryAltKey),
+			identity.Retention,
 		)
 		return err
 	}); err != nil {
@@ -450,6 +459,7 @@ func (s *Store) createRun(ctx context.Context, sessionID string, identity store.
 		Interactive:           identity.Interactive,
 		OperatorKeyRestricted: identity.OperatorKeyRestricted,
 		Isolated:              identity.Isolated,
+		Retention:             identity.Retention,
 		RunConfig:             identity.RunConfig,
 	}, nil
 }
@@ -1273,7 +1283,7 @@ func (s *Store) RunsForSession(ctx context.Context, sessionID string) ([]store.R
 		        r.input_tokens, r.output_tokens, r.cache_creation_tokens, r.cache_read_tokens,
 		        r.model, r.provider, r.error,
 		        r.agent_id, r.parent_agent_id, r.parent_run_id, r.user_id, r.last_heartbeat_at, r.user_tier,
-		        r.agent_def_id, r.pause_state, r.replica_id, r.parent_context, r.idempotency_key, r.delivery_alt_key, r.tenant_id, r.interactive, r.operator_key_restricted, r.isolated,
+		        r.agent_def_id, r.pause_state, r.replica_id, r.parent_context, r.idempotency_key, r.delivery_alt_key, r.tenant_id, r.interactive, r.operator_key_restricted, r.isolated, r.retention,
 		        r.cost, r.cost_currency, r.credential_source, r.credential_scope_id,
 		        r.run_config::text, r.result::text,
 		        s.agent
@@ -1783,7 +1793,7 @@ func (s *Store) GetRunByAgentID(ctx context.Context, agentID string) (store.Run,
 		        r.input_tokens, r.output_tokens, r.cache_creation_tokens, r.cache_read_tokens,
 		        r.model, r.provider, r.error,
 		        r.agent_id, r.parent_agent_id, r.parent_run_id, r.user_id, r.last_heartbeat_at, r.user_tier,
-		        r.agent_def_id, r.pause_state, r.replica_id, r.parent_context, r.idempotency_key, r.delivery_alt_key, r.tenant_id, r.interactive, r.operator_key_restricted, r.isolated,
+		        r.agent_def_id, r.pause_state, r.replica_id, r.parent_context, r.idempotency_key, r.delivery_alt_key, r.tenant_id, r.interactive, r.operator_key_restricted, r.isolated, r.retention,
 		        r.cost, r.cost_currency, r.credential_source, r.credential_scope_id,
 		        r.run_config::text, r.result::text,
 		        s.agent
@@ -1814,7 +1824,7 @@ func (s *Store) RunByIdempotencyKey(ctx context.Context, key string) (store.Run,
 		        r.input_tokens, r.output_tokens, r.cache_creation_tokens, r.cache_read_tokens,
 		        r.model, r.provider, r.error,
 		        r.agent_id, r.parent_agent_id, r.parent_run_id, r.user_id, r.last_heartbeat_at, r.user_tier,
-		        r.agent_def_id, r.pause_state, r.replica_id, r.parent_context, r.idempotency_key, r.delivery_alt_key, r.tenant_id, r.interactive, r.operator_key_restricted, r.isolated,
+		        r.agent_def_id, r.pause_state, r.replica_id, r.parent_context, r.idempotency_key, r.delivery_alt_key, r.tenant_id, r.interactive, r.operator_key_restricted, r.isolated, r.retention,
 		        r.cost, r.cost_currency, r.credential_source, r.credential_scope_id,
 		        r.run_config::text, r.result::text,
 		        s.agent
@@ -1849,7 +1859,7 @@ func (s *Store) RunByDeliveryKeys(ctx context.Context, keys []string) (store.Run
 		        r.input_tokens, r.output_tokens, r.cache_creation_tokens, r.cache_read_tokens,
 		        r.model, r.provider, r.error,
 		        r.agent_id, r.parent_agent_id, r.parent_run_id, r.user_id, r.last_heartbeat_at, r.user_tier,
-		        r.agent_def_id, r.pause_state, r.replica_id, r.parent_context, r.idempotency_key, r.delivery_alt_key, r.tenant_id, r.interactive, r.operator_key_restricted, r.isolated,
+		        r.agent_def_id, r.pause_state, r.replica_id, r.parent_context, r.idempotency_key, r.delivery_alt_key, r.tenant_id, r.interactive, r.operator_key_restricted, r.isolated, r.retention,
 		        r.cost, r.cost_currency, r.credential_source, r.credential_scope_id,
 		        r.run_config::text, r.result::text,
 		        s.agent
@@ -1877,7 +1887,7 @@ func (s *Store) GetRun(ctx context.Context, runID string) (store.Run, error) {
 		        r.input_tokens, r.output_tokens, r.cache_creation_tokens, r.cache_read_tokens,
 		        r.model, r.provider, r.error,
 		        r.agent_id, r.parent_agent_id, r.parent_run_id, r.user_id, r.last_heartbeat_at, r.user_tier,
-		        r.agent_def_id, r.pause_state, r.replica_id, r.parent_context, r.idempotency_key, r.delivery_alt_key, r.tenant_id, r.interactive, r.operator_key_restricted, r.isolated,
+		        r.agent_def_id, r.pause_state, r.replica_id, r.parent_context, r.idempotency_key, r.delivery_alt_key, r.tenant_id, r.interactive, r.operator_key_restricted, r.isolated, r.retention,
 		        r.cost, r.cost_currency, r.credential_source, r.credential_scope_id,
 		        r.run_config::text, r.result::text,
 		        s.agent
@@ -1958,7 +1968,7 @@ func (s *Store) ListActiveRunsByUser(ctx context.Context, tenantID, userID strin
 		        r.input_tokens, r.output_tokens, r.cache_creation_tokens, r.cache_read_tokens,
 		        r.model, r.provider, r.error,
 		        r.agent_id, r.parent_agent_id, r.parent_run_id, r.user_id, r.last_heartbeat_at, r.user_tier,
-		        r.agent_def_id, r.pause_state, r.replica_id, r.parent_context, r.idempotency_key, r.delivery_alt_key, r.tenant_id, r.interactive, r.operator_key_restricted, r.isolated,
+		        r.agent_def_id, r.pause_state, r.replica_id, r.parent_context, r.idempotency_key, r.delivery_alt_key, r.tenant_id, r.interactive, r.operator_key_restricted, r.isolated, r.retention,
 		        r.cost, r.cost_currency, r.credential_source, r.credential_scope_id,
 		        r.run_config::text, r.result::text,
 		        s.agent
@@ -2007,7 +2017,7 @@ func (s *Store) ListRunsByWalk(ctx context.Context, tenantID, walkID string, lim
 		        r.input_tokens, r.output_tokens, r.cache_creation_tokens, r.cache_read_tokens,
 		        r.model, r.provider, r.error,
 		        r.agent_id, r.parent_agent_id, r.parent_run_id, r.user_id, r.last_heartbeat_at, r.user_tier,
-		        r.agent_def_id, r.pause_state, r.replica_id, r.parent_context, r.idempotency_key, r.delivery_alt_key, r.tenant_id, r.interactive, r.operator_key_restricted, r.isolated,
+		        r.agent_def_id, r.pause_state, r.replica_id, r.parent_context, r.idempotency_key, r.delivery_alt_key, r.tenant_id, r.interactive, r.operator_key_restricted, r.isolated, r.retention,
 		        r.cost, r.cost_currency, r.credential_source, r.credential_scope_id,
 		        r.run_config::text, r.result::text,
 		        s.agent
@@ -2064,7 +2074,7 @@ func (s *Store) ListChildRuns(ctx context.Context, tenantID, parentRunID string,
 		        r.input_tokens, r.output_tokens, r.cache_creation_tokens, r.cache_read_tokens,
 		        r.model, r.provider, r.error,
 		        r.agent_id, r.parent_agent_id, r.parent_run_id, r.user_id, r.last_heartbeat_at, r.user_tier,
-		        r.agent_def_id, r.pause_state, r.replica_id, r.parent_context, r.idempotency_key, r.delivery_alt_key, r.tenant_id, r.interactive, r.operator_key_restricted, r.isolated,
+		        r.agent_def_id, r.pause_state, r.replica_id, r.parent_context, r.idempotency_key, r.delivery_alt_key, r.tenant_id, r.interactive, r.operator_key_restricted, r.isolated, r.retention,
 		        r.cost, r.cost_currency, r.credential_source, r.credential_scope_id,
 		        r.run_config::text, r.result::text,
 		        s.agent
@@ -2100,7 +2110,7 @@ func (s *Store) ListRunsByParentAgentID(ctx context.Context, parentAgentID strin
 		        r.input_tokens, r.output_tokens, r.cache_creation_tokens, r.cache_read_tokens,
 		        r.model, r.provider, r.error,
 		        r.agent_id, r.parent_agent_id, r.parent_run_id, r.user_id, r.last_heartbeat_at, r.user_tier,
-		        r.agent_def_id, r.pause_state, r.replica_id, r.parent_context, r.idempotency_key, r.delivery_alt_key, r.tenant_id, r.interactive, r.operator_key_restricted, r.isolated,
+		        r.agent_def_id, r.pause_state, r.replica_id, r.parent_context, r.idempotency_key, r.delivery_alt_key, r.tenant_id, r.interactive, r.operator_key_restricted, r.isolated, r.retention,
 		        r.cost, r.cost_currency, r.credential_source, r.credential_scope_id,
 		        r.run_config::text, r.result::text,
 		        s.agent
@@ -2127,7 +2137,7 @@ func (s *Store) ListRunsByParentRunID(ctx context.Context, parentRunID string) (
 		        r.input_tokens, r.output_tokens, r.cache_creation_tokens, r.cache_read_tokens,
 		        r.model, r.provider, r.error,
 		        r.agent_id, r.parent_agent_id, r.parent_run_id, r.user_id, r.last_heartbeat_at, r.user_tier,
-		        r.agent_def_id, r.pause_state, r.replica_id, r.parent_context, r.idempotency_key, r.delivery_alt_key, r.tenant_id, r.interactive, r.operator_key_restricted, r.isolated,
+		        r.agent_def_id, r.pause_state, r.replica_id, r.parent_context, r.idempotency_key, r.delivery_alt_key, r.tenant_id, r.interactive, r.operator_key_restricted, r.isolated, r.retention,
 		        r.cost, r.cost_currency, r.credential_source, r.credential_scope_id,
 		        r.run_config::text, r.result::text,
 		        s.agent
@@ -2283,7 +2293,7 @@ func (s *Store) ListPausedRuns(ctx context.Context) ([]store.Run, error) {
 		        r.input_tokens, r.output_tokens, r.cache_creation_tokens, r.cache_read_tokens,
 		        r.model, r.provider, r.error,
 		        r.agent_id, r.parent_agent_id, r.parent_run_id, r.user_id, r.last_heartbeat_at, r.user_tier,
-		        r.agent_def_id, r.pause_state, r.replica_id, r.parent_context, r.idempotency_key, r.delivery_alt_key, r.tenant_id, r.interactive, r.operator_key_restricted, r.isolated,
+		        r.agent_def_id, r.pause_state, r.replica_id, r.parent_context, r.idempotency_key, r.delivery_alt_key, r.tenant_id, r.interactive, r.operator_key_restricted, r.isolated, r.retention,
 		        r.cost, r.cost_currency, r.credential_source, r.credential_scope_id,
 		        r.run_config::text, r.result::text,
 		        s.agent
@@ -3071,8 +3081,8 @@ func (s *Store) SnapshotRestoreRun(ctx context.Context, r store.Run) (bool, erro
 			model, provider, error,
 			agent_id, parent_agent_id, parent_run_id, user_id, last_heartbeat_at,
 			user_tier, agent_def_id, pause_state, parent_context, interactive, operator_key_restricted, isolated, run_config, walk_id, tenant_id,
-			idempotency_key, delivery_alt_key
-		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26::jsonb, $27, $28, $29, $30)
+			idempotency_key, delivery_alt_key, retention
+		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26::jsonb, $27, $28, $29, $30, $31)
 		 ON CONFLICT (id) DO NOTHING`,
 		r.ID, r.SessionID, status, startedAt, completedAt, nullIfEmpty(r.StopReason),
 		r.InputTokens, r.OutputTokens, r.CacheCreationTokens, r.CacheReadTokens,
@@ -3081,7 +3091,7 @@ func (s *Store) SnapshotRestoreRun(ctx context.Context, r store.Run) (bool, erro
 		nullIfEmpty(r.UserID), lastHbAt,
 		nullIfEmpty(r.UserTier), nullIfEmpty(r.AgentDefID), pauseState, pcVal, r.Interactive, r.OperatorKeyRestricted, r.Isolated,
 		nullableJSONArg(r.RunConfig), nullIfEmpty(store.RunWalkID(r.ParentContext)),
-		nullIfEmpty(r.TenantID), nullIfEmpty(r.IdempotencyKey), nullIfEmpty(r.DeliveryAltKey),
+		nullIfEmpty(r.TenantID), nullIfEmpty(r.IdempotencyKey), nullIfEmpty(r.DeliveryAltKey), r.Retention,
 	)
 	if err != nil {
 		return false, fmt.Errorf("snapshot restore run: %w", err)
@@ -10175,7 +10185,7 @@ func scanRun(r rowScanner) (store.Run, error) {
 		&agentID, &parentAgentID, &parentRunID, &userID, &lastHeartbeatAt,
 		&userTier,
 		&agentDefID, &pauseState, &replicaID, &parentContext, &idempotencyKey, &deliveryAltKey, &tenantID,
-		&interactive, &operatorKeyRestricted, &isolated,
+		&interactive, &operatorKeyRestricted, &isolated, &out.Retention,
 		&cost, &costCurrency, &credentialSource, &credentialScopeID,
 		&runConfig,
 		&result,

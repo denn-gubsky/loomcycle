@@ -198,6 +198,12 @@ type Session struct {
 	// creation; sub-agent sessions inherit the parent's value.
 	UserID string `json:"user_id,omitempty"`
 
+	// Retention is the session's retention mode: "" or RetentionNone. A
+	// RetentionNone session holds one no-trace run and is never continued.
+	// Written by CreateRun, with the run row, when the run has a mode; read
+	// by GetSession only.
+	Retention string `json:"retention,omitempty"`
+
 	// --- RFC BE: human/organizational chat metadata. ---
 	// A "chat" is a session; these give it a human handle for the History
 	// tool's browse/search/annotate surface. All additive + nullable — legacy
@@ -535,6 +541,11 @@ type Run struct {
 	// unstamped path (fail-open).
 	Isolated bool `json:"isolated,omitempty"`
 
+	// Retention is the run's retention mode: "" (everything is stored) or
+	// RetentionNone (content is delivered and stored nowhere). Persisted to
+	// runs.retention at creation and never changed.
+	Retention string `json:"retention,omitempty"`
+
 	// --- RFC AV: per-run cost + credential-source summary. ---
 	// Cost is nil when the run was never priced (legacy rows, or an unknown
 	// model absent from the pricing table). CredentialSource is the primary key
@@ -736,6 +747,10 @@ type TokenLimitRow struct {
 	UpdatedAt time.Time
 	UpdatedBy string
 }
+
+// RetentionNone is the retention mode of a run whose content is never stored.
+// The default mode is the empty string.
+const RetentionNone = "none"
 
 // UsageCarryRow is month-to-date token usage a snapshot restore carried in
 // from another instance, one row per (tenant, user, month). Month is the UTC
@@ -965,6 +980,11 @@ type RunIdentity struct {
 	// original substrate:user principal on ctx. Additive; false on legacy rows +
 	// every unstamped path (fail-open).
 	Isolated bool
+	// Retention is the run's retention mode, persisted to runs.retention: ""
+	// or RetentionNone. Decided before the row is written; nothing sets it
+	// afterwards. A run with a mode stamps it on its session in the same
+	// write.
+	Retention string
 	// RunConfig is the run's configuration record, stamped at CreateRun and
 	// restored verbatim on resume (RFC DD). Opaque JSON: the store persists it,
 	// the caller owns its shape. nil when the run overrode nothing.
