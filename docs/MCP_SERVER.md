@@ -109,7 +109,7 @@ Since v1.107.0 an MCP session is held to its token's scopes the same way the HTT
 |---|---|
 | No bearer (embedded stdio, or a runtime with no authentication configured) | All of them. |
 | `substrate:admin`, including the legacy `LOOMCYCLE_AUTH_TOKEN` | All of them. |
-| `substrate:tenant` | The tenant-confinable tools: everything except token minting, runtime pause/resume/state, `resolve_probe`, the snapshot tools and `list_channels`. It satisfies all four scopes in the next table. |
+| `substrate:tenant` | The tenant-confinable tools: everything except token minting, runtime pause/resume/state, `resolve_probe`, the snapshot tools and `list_channels`. It satisfies every scope in the next table. |
 | A member token (no `substrate:admin` or `substrate:tenant`, and not isolated) | The tenant-confinable tools, minus those whose scope in the next table it does not hold. |
 | An isolated `substrate:user` token | `credentialdef` only, for its own user-scope credentials. |
 
@@ -119,6 +119,7 @@ These tools need a scope of their own:
 |---|---|
 | `spawn_run`, `spawn_runs`, `cancel_run`, `compact_run`, `retune_run`, `review_run`, `configured_run`, `interruption_resolve` | `runs:create` |
 | `get_run`, `list_runs`, `stream_user_run_states` | `runs:read` |
+| `delete_run_tree` | `runs:delete` (a member token has it only if it was granted at mint) |
 | `publish_channel`, `ack_channel` | `channel:publish` |
 | `subscribe_channel`, `peek_channel` | `channel:read` |
 | `decision` | `runs:create` (it spends tokens) |
