@@ -60,6 +60,20 @@ service Loomcycle {
   // Mirrors POST /v1/runs/{run_id}/compact + the compact_run MCP tool.
   rpc CompactRun(CompactRunRequest) returns (CompactRunResult);
 
+  // DeleteRunTree deletes a run and every descendant run, with what is
+  // stored about them (events, sessions left without a run, interrupts,
+  // evaluations, queued memory rows, indexed turns). The usage ledger is
+  // kept. Name a run, or a session to delete every run of it. Requires the
+  // runs:delete scope and read access to the root. A root that does not
+  // exist, or that the caller cannot read, deletes nothing and returns zero
+  // counts, so a repeated call is not an error. A tree holding a live or
+  // paused run returns FailedPrecondition and deletes nothing: cancel first.
+  //
+  // Mirrors DELETE /v1/runs/{run_id}/tree, DELETE
+  // /v1/sessions/{session_id}?cascade=children and the delete_run_tree MCP
+  // tool.
+  rpc DeleteRunTree(DeleteRunTreeRequest) returns (DeleteRunTreeResult);
+
   // Configured runs (RFC DI): create a run now, start it later. A configured
   // run is validated like a Run but admitted only at start — it takes no slot
   // and no budget until then — and never stores a secret. Mirrors POST
@@ -1103,6 +1117,40 @@ message CompactRunResult {
   int32 before_tokens = 3;
   int32 after_tokens = 4;
   string applied = 5;  // live | marker | noop
+}
+
+// DeleteRunTreeRequest names what to delete: exactly one of run_id (the run
+// and its descendants) and session_id (every run of the session, each with
+// its descendants).
+message DeleteRunTreeRequest {
+  string run_id = 1;
+  string session_id = 2;
+}
+
+// DeleteRunTreeResult mirrors connector.RunTreeDeletion.
+message DeleteRunTreeResult {
+  string run_id = 1;
+  string session_id = 2;
+  // How many runs went: the root and its descendants.
+  int32 deleted_runs = 3;
+  // Rows removed, by table. Every table the delete covers is present, at
+  // zero when nothing went.
+  map<string, int32> counts = 4;
+  // What the delete leaves in place on purpose, and why (the usage ledger).
+  map<string, string> kept = 5;
+  // Where a copy of the deleted content may still be. Empty when nothing
+  // was deleted.
+  repeated RunTreeNotReached not_reached = 6;
+}
+
+// RunTreeNotReached is one place a run-tree delete could not reach.
+message RunTreeNotReached {
+  string name = 1;
+  // How many items may be affected; unset when that is not cheap to know.
+  optional int32 count = 2;
+  // The count stopped at a bound, so there may be more.
+  bool count_is_floor = 3;
+  string reason = 4;
 }
 
 // ConfiguredRun is a draft as the configured-run RPCs return it (RFC DI).

@@ -257,6 +257,8 @@ func TestRunPlaneRoute(t *testing.T) {
 	}{
 		{"POST", "/v1/runs", true}, {"POST", "/v1/runs:batch", true}, {"GET", "/v1/runs/r1/stream", true},
 		{"DELETE", "/v1/runs/r1", true}, {"POST", "/v1/sessions/s1/messages", true},
+		{"DELETE", "/v1/runs/r1/tree", false}, {"DELETE", "/v1/sessions/s1", false},
+		{"GET", "/v1/runs/r1/tree", true},
 		{"GET", "/v1/agents/a1", true}, {"POST", "/v1/agents/a1/cancel", true},
 		{"GET", "/v1/agents/name/channels", false}, {"POST", "/v1/agents/a1/cancel/x", false},
 		{"GET", "/v1/users/u/agents", true}, {"GET", "/v1/users/u/agents/stream", true},

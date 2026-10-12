@@ -47,6 +47,14 @@ const (
 	// (RFC AR CredentialDef). Absent the deployment gate the scope is inert.
 	ScopeProvidersOperatorKey = "providers:operator-key"
 
+	// ScopeRunsDelete permits deleting a run tree: the run, its descendants and
+	// what is stored about them. It is tenant-implied (below), so substrate:admin
+	// and substrate:tenant hold it. It is DELIBERATELY absent from userImplied
+	// and from GrantableUserScopes: a run's record is also the accounting trail
+	// of what a member's token spent, so a member or an isolated user removes
+	// runs only when an operator granted this scope at mint.
+	ScopeRunsDelete = "runs:delete"
+
 	// NOTE: memory:read / memory:write are intentionally NOT in the
 	// catalog. They were inert — grantable but enforced by no route: the
 	// HTTP memory surface (/v1/_memory/*) is operator-admin, and
@@ -69,6 +77,7 @@ var scopeCatalog = map[string]struct{}{
 	ScopeChannelPublish:       {},
 	ScopeChannelRead:          {},
 	ScopeProvidersOperatorKey: {},
+	ScopeRunsDelete:           {},
 }
 
 // tenantImplied is the set ScopeTenant satisfies. A tenant operator covers
@@ -83,6 +92,7 @@ var tenantImplied = map[string]struct{}{
 	ScopeChannelPublish:       {},
 	ScopeChannelRead:          {},
 	ScopeProvidersOperatorKey: {},
+	ScopeRunsDelete:           {},
 }
 
 // userImplied is the set ScopeUser satisfies (RFC BX P2b). An isolated member

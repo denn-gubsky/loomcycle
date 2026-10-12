@@ -68,6 +68,42 @@ func TestHasScope_ProvidersOperatorKey(t *testing.T) {
 	}
 }
 
+// TestHasScope_RunsDelete: runs:delete is held by an admin and by a tenant
+// operator, and by nobody else without an explicit grant — not an isolated
+// user, and not a member's delegated scopes in either access mode.
+func TestHasScope_RunsDelete(t *testing.T) {
+	if !ValidScope(ScopeRunsDelete) {
+		t.Fatal("runs:delete must be a valid catalog scope (grantable at mint)")
+	}
+	for name, granted := range map[string][]string{
+		"substrate:admin":  {ScopeAdmin},
+		"substrate:tenant": {ScopeTenant},
+		"explicit grant":   {ScopeRunsCreate, ScopeRunsRead, ScopeRunsDelete},
+	} {
+		if !HasScope(granted, ScopeRunsDelete) {
+			t.Errorf("%s should satisfy runs:delete", name)
+		}
+	}
+	for name, granted := range map[string][]string{
+		"substrate:user":        {ScopeUser},
+		"runs:create+runs:read": {ScopeRunsCreate, ScopeRunsRead},
+		"channel scopes":        {ScopeChannelPublish, ScopeChannelRead},
+	} {
+		if HasScope(granted, ScopeRunsDelete) {
+			t.Errorf("%s must NOT satisfy runs:delete", name)
+		}
+	}
+	for _, mode := range []string{"tenant", "isolated"} {
+		granted, err := GrantableUserScopes(mode)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if HasScope(granted, ScopeRunsDelete) {
+			t.Errorf("a delegated %s-mode member token must NOT hold runs:delete", mode)
+		}
+	}
+}
+
 // TestHasScope_UserImplication locks RFC BX P2b's scope semantics: substrate:user
 // satisfies ONLY itself + runs:create/runs:read, and NOT the tenant plane
 // (substrate:tenant), the operator plane (substrate:admin), or the channel

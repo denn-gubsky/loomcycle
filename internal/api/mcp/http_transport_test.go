@@ -72,6 +72,9 @@ func (m *httpMockConnector) ListChildRuns(context.Context, string, int, string) 
 func (m *httpMockConnector) CompactRun(context.Context, string) (connector.CompactResult, error) {
 	return connector.CompactResult{}, nil
 }
+func (m *httpMockConnector) DeleteRunTree(context.Context, connector.DeleteRunTreeRequest) (connector.RunTreeDeletion, error) {
+	return connector.RunTreeDeletion{}, nil
+}
 func (m *httpMockConnector) ReplaySession(context.Context, connector.ReplaySessionRequest) (connector.ReplaySessionResult, error) {
 	return connector.ReplaySessionResult{}, nil
 }

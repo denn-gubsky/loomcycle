@@ -36,7 +36,9 @@ user/tenant by editing the request body.
 
 `substrate:admin` (superuser — satisfies every scope), `substrate:tenant`
 (tenant operator), `runs:create`, `runs:read`, `channel:publish`,
-`channel:read`, `providers:operator-key` (may spend the operator's
+`channel:read`, `runs:delete` (may delete a run tree; tenant-implied, and
+not implied for an isolated user or a member token, so grant it by name),
+`providers:operator-key` (may spend the operator's
 host provider key; tenant-implied). Every catalog scope is enforced by at least one route —
 operators can't invent scope names, and the catalog intentionally excludes
 scopes no route checks (a scope that enforces nothing is a false

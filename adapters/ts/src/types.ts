@@ -1825,6 +1825,37 @@ export interface CompactRunResult {
   applied: "live" | "marker" | "noop";
 }
 
+/** One place a run-tree delete could not reach: a copy of the deleted
+ *  content may still be there. */
+export interface RunTreeNotReached {
+  /** `snapshots`, `retention_exports`, `derived_facts` or `trace_index`. */
+  name: string;
+  /** How many items may be affected. Absent when that is not cheap to know. */
+  count?: number;
+  /** The count stopped at a bound: there may be more. */
+  count_is_floor?: boolean;
+  reason: string;
+}
+
+/** Result of {@link LoomcycleClient.deleteRunTree} and
+ *  {@link LoomcycleClient.deleteSession}. */
+export interface RunTreeDeletion {
+  /** The root that was asked for (one of the two). */
+  run_id?: string;
+  session_id?: string;
+  /** How many runs went: the root and its descendants. 0 when the root does
+   *  not exist, was already deleted, or is not the caller's to read. */
+  deleted_runs: number;
+  /** Rows removed, by table (`runs`, `events`, `sessions`,
+   *  `session_embeddings`, `interrupts`, `evaluations`, `memory_pending`,
+   *  `trace_index`). Every table is present, at 0 when nothing went. */
+  counts: Record<string, number>;
+  /** What is left in place on purpose, and why (the usage ledger). */
+  kept: Record<string, string>;
+  /** Empty when nothing was deleted. */
+  not_reached: RunTreeNotReached[];
+}
+
 /** Result of {@link LoomcycleClient.replaySession} (RFC BJ Phase 4) — a NEW
  * session bound to the target agent, seeded with the source conversation.
  * Continue `new_session_id` with the normal message/run path; the carried

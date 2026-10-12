@@ -1198,11 +1198,59 @@ Routes enforce a scope from a closed catalog; an under-scoped token gets `403` +
 | `substrate:tenant` | **Tenant operator (RFC AF/AG)** — FULL power WITHIN the token's own tenant: runs, channels, authoring all 8 substrate Def families (incl. `_mcpserverdef`, the dynamic-MCP-ingestion surface), registering tool-use hooks, and opening a **tenant-confined** loomcycle-as-MCP-server session (`/v1/_mcp`, RFC AG) — but NOT the operator plane (no minting, no runtime admin, no cross-tenant access). Lets a self-provisioning tenant author its own surface without admin. |
 | `runs:create` / `runs:read` | Create/continue runs · read runs, agents, sessions. |
 | `channel:publish` / `channel:read` | Publish/ack · subscribe/peek on the per-user + system channel surface. |
+| `runs:delete` | Delete a run tree: a run, the runs it spawned and what is stored about them (see [Deleting a run tree](#deleting-a-run-tree)). **Tenant-implied** (`substrate:tenant` and `substrate:admin` already have it). **Not** implied by `substrate:user`, and not among the scopes a member's delegated token gets: grant it by name when the token is minted. |
 | `providers:operator-key` | **RFC AX** — permits a run to fall back to the operator's HOST provider key. **Tenant-implied** (`substrate:tenant` and `substrate:admin` already have it), and **inert unless** `LOOMCYCLE_OPERATOR_KEY_RESTRICTION=1`. To make a tenant pay its own way: set the gate, mint that tenant's principals with granular scopes that OMIT this one (e.g. `runs:create,runs:read`), and give the tenant its own key (an RFC AR CredentialDef). |
 
 `substrate:tenant` satisfies the within-tenant scopes (`runs:*`, `channel:*`, and the def/hook gate) but never `substrate:admin` — so a tenant operator passes the def + hook routes yet is refused minting/runtime-admin. Mint one with `--scopes substrate:tenant`. Confinement is automatic: a non-admin principal's def writes are stamped with its authoritative tenant, cross-tenant reads return an opaque `404`, and a tenant-registered hook fires only on that tenant's runs.
 
 On the **loomcycle-as-MCP-server transport** (`/v1/_mcp`, RFC AG) a `substrate:tenant` bearer may now OPEN a session — but the route scope decides only that. Inside the session a per-tool gate still withholds the admin-only meta-tools (token minting, runtime admin, snapshot capture/restore, cross-scope channel listing): they are hidden from the tenant's `tools/list` and refused on `tools/call`. The tools a tenant *can* call (def authoring, run lifecycle, memory/channel/path/document, hooks) are tenant-confined exactly like their HTTP twins. `substrate:admin` sees + may call the full meta-tool set. The thin client (`loomcycle mcp --upstream`) forwards the caller's bearer verbatim, so a tenant bearer there drives a tenant-confined session — see `docs/MCP_SERVER.md`.
+
+### Deleting a run tree
+
+**Since v1.112.0.** A run can be deleted together with every run it spawned. Before this, stored run content could be removed only for a whole user (`POST /v1/_erasure`) or by age (the retention sweeper).
+
+| Route | Deletes |
+|---|---|
+| `DELETE /v1/runs/{run_id}/tree` | The run and every descendant run. |
+| `DELETE /v1/sessions/{session_id}?cascade=children` | Every run of the session, each with its descendants. `cascade=children` is required. |
+
+`DELETE /v1/runs/{run_id}` without `/tree` is a different route: it discards a configured run that never started.
+
+| Stored | What happens |
+|---|---|
+| The runs and their events (the transcript) | Deleted. |
+| A session | Deleted when none of its runs is left. A session that was continued holds several runs; it stays while one remains. |
+| Interrupts and evaluations of the deleted runs, queued memory rows from them | Deleted. |
+| Indexed conversation turns (the trace index) | Deleted. |
+| The usage ledger (tokens, model, cost) | **Kept.** It holds no content. |
+
+- **Who may call it.** The caller needs the `runs:delete` scope and must be able to read the run. An admin and a tenant operator have the scope. A member token and an isolated user do not, unless it was granted when the token was minted. A token limited to certain agents cannot delete at all.
+- **A live tree is refused.** If any run in the tree is still running, awaiting input or paused, the answer is `409` with code `run_tree_live` and the id of that run, and nothing is deleted. Cancel it first.
+- **Unknown is not an error.** A run that does not exist, was already deleted, or is not the caller's to read answers `200` with every count at zero. So a repeated call is safe, and the answer does not reveal whether a run exists.
+- **The answer says what it could not reach.** `not_reached` names where a copy may remain: stored snapshots taken while a run was paused, export files a sweep already wrote, and facts that memory consolidation derived from the sessions. Each has a count where one is cheap to compute.
+- **One call deletes at most 10,000 runs.** A larger tree is refused with `run_tree_too_large`; delete its sub-trees first.
+- **Each call is recorded** in the audit log when `LOOMCYCLE_AUDIT_LOG_PATH` is set: who called, which root, and the row counts. Never content. Without an audit path the delete still runs and is written to the process log.
+
+The same operation is the `DeleteRunTree` RPC, the `delete_run_tree` MCP tool, `deleteRunTree` / `deleteSession` in the TypeScript client and `delete_run_tree` in the Python client.
+
+```bash
+curl -X DELETE -H "Authorization: Bearer $TOKEN" http://127.0.0.1:8787/v1/runs/r_4f2a/tree
+```
+
+```json
+{
+  "run_id": "r_4f2a",
+  "deleted_runs": 3,
+  "counts": {"runs": 3, "events": 41, "sessions": 3, "session_embeddings": 0,
+             "interrupts": 0, "evaluations": 1, "memory_pending": 0, "trace_index": 2},
+  "kept": {"usage_ledger": "kept by design: ..."},
+  "not_reached": [
+    {"name": "snapshots", "count": 0, "reason": "..."},
+    {"name": "retention_exports", "reason": "..."},
+    {"name": "derived_facts", "count": 4, "reason": "..."}
+  ]
+}
+```
 
 ### Token lifetime
 

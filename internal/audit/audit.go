@@ -61,6 +61,18 @@ type Event struct {
 	// deletions would read as complete when it is not.
 	EraseRetained map[string]string `json:"erase_retained,omitempty"`
 	EraseErrors   []string          `json:"erase_errors,omitempty"`
+
+	// --- Run-tree delete (Action = "run_tree_delete") ---
+	//
+	// One record per call, written after the delete: ids and row counts, never
+	// content. The tenant of the deleted tree travels in TargetTenant.
+	DeleteRunID     string `json:"delete_run_id,omitempty"`
+	DeleteSessionID string `json:"delete_session_id,omitempty"`
+	// DeleteCounts is table → rows removed.
+	DeleteCounts map[string]int `json:"delete_counts,omitempty"`
+	// DeleteRefused is the error code of a call that deleted nothing because
+	// it was refused (a live run in the tree, a tree over the size cap).
+	DeleteRefused string `json:"delete_refused,omitempty"`
 }
 
 // Sink records audit events. Record must be safe for concurrent use and

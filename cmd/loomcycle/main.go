@@ -1951,6 +1951,12 @@ func main() {
 		log.Printf("audit: no LOOMCYCLE_AUDIT_LOG_PATH — subject erasure is DISABLED " +
 			"(it will not delete without a durable record of who asked)")
 	}
+	// Run-tree deletes are recorded to the same file when there is one. With
+	// none they still work and are logged: nil here, not the NopSink, so the
+	// server knows nothing durable was written.
+	if cfg.Env.AuditLogPath != "" {
+		srv.SetRunDeleteAudit(tokenAudit)
+	}
 	graceSecs := 0
 	if v := os.Getenv("LOOMCYCLE_OPERATOR_TOKEN_ROTATION_GRACE_SECONDS"); v != "" {
 		if n, perr := strconv.Atoi(v); perr == nil && n >= 0 {

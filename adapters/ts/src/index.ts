@@ -16,6 +16,8 @@
  *     cancelAgent(agentId, opts?): Promise<CancelAgentResult>
  *     listUserAgents(userId, opts?): Promise<Agent[]>
  *     listWalkRuns(walkId, opts?): Promise<WalkRunsPage>
+ *     deleteRunTree(runId, opts?): Promise<RunTreeDeletion>     // needs runs:delete
+ *     deleteSession(sessionId, {cascade: "children"}): Promise<RunTreeDeletion>
  *     getTranscript(sessionId): Promise<TranscriptResponse>
  *     health(): Promise<HealthResponse>
  *     listUsers(opts?): Promise<ListUsersResponse>   // tenant-scoped (RFC L)
@@ -179,6 +181,8 @@ export type {
   RunBatchResult,
   SpawnRunResult,
   CompactRunResult,
+  RunTreeDeletion,
+  RunTreeNotReached,
   DirectoryBudget,
   DirectoryInspection,
   DirectoryTenant,

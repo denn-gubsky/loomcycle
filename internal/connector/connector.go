@@ -86,6 +86,15 @@ type Connector interface {
 	// opaque not-found.
 	CompactRun(ctx context.Context, runID string) (CompactResult, error)
 
+	// DeleteRunTree deletes a run and every descendant run, with what is
+	// stored about them — mirrors DELETE /v1/runs/{run_id}/tree and DELETE
+	// /v1/sessions/{session_id}?cascade=children. The usage ledger is kept.
+	// It needs the runs:delete scope and read access to the root; a root the
+	// caller cannot read, or that does not exist (any more), deletes nothing
+	// and returns zero counts, so a repeated call is not an error. A tree
+	// holding a live or paused run is refused whole.
+	DeleteRunTree(ctx context.Context, req DeleteRunTreeRequest) (RunTreeDeletion, error)
+
 	// --- Configured runs (created now, started later) ---
 	//
 	// The same operations as POST /v1/runs {start:false}, PATCH / DELETE
