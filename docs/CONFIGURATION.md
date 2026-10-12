@@ -1186,6 +1186,7 @@ Config knobs (full reference: `loomcycle context help operator-tokens` or the `C
 | `LOOMCYCLE_USER_TOKEN_MAX_TTL_SECONDS` | The longest lifetime a per-user token may be minted with. Unset = no cap. When set, a mint asking for more is refused, and a mint asking for no lifetime gets this one. See [Token lifetime](#token-lifetime). |
 | `LOOMCYCLE_RUN_RATE_PER_MINUTE` / `LOOMCYCLE_RUN_RATE_BURST` | A default rate for run starts, for a caller whose token carries none. Unset = no default. Operators are not bound by it. See [Limiting how often a token starts runs](#limiting-how-often-a-token-starts-runs). |
 | `LOOMCYCLE_EXPIRED_TOKEN_RETENTION_SECONDS` | How long an expired token's row is kept before it is deleted (default 7 days; `0` keeps expired rows). Only rows that carry an expiry are ever deleted. |
+| `LOOMCYCLE_LIMITS_ENFORCE` | `strict` makes a hard token budget also stop runs in flight and refuse sub-agents. Unset = checked only when a run starts. See [Strict token budgets](#strict-token-budgets). |
 | `LOOMCYCLE_AUDIT_LOG_PATH` | JSONL audit of every create/rotate/retire (never a token or hash). |
 | `LOOMCYCLE_AUTH_VERBOSE` | `1` logs a server-side reason on a rejected bearer (the wire 401 stays opaque). |
 | `LOOMCYCLE_OPERATOR_KEY_RESTRICTION` | **RFC AX** deployment gate (default OFF). When `1`, a run whose principal lacks `providers:operator-key` may not use the operator's host provider key — resolution routes it only to providers the tenant can key itself (an RFC AR CredentialDef) and refuses `403 operator_key_restricted` if none; the LLM-gateway + embeddings shims refuse a restricted principal outright. OFF ⇒ byte-identical for every existing token. |
@@ -1372,6 +1373,27 @@ Rules worth knowing:
 - **The rate is per user, not per token.** Two tokens of one user share one bucket, so minting a new token does not refill it.
 - **The server default does not bind operators.** An admin, a tenant operator and the legacy token are not limited by `LOOMCYCLE_RUN_RATE_PER_MINUTE`. A rate set on such a token by name still applies.
 - **It is per replica.** With N replicas a caller's effective rate is up to N times the setting.
+
+### Strict token budgets
+
+**Since v1.112.0.** A hard token budget (`PUT /v1/_limits`) is checked when a run starts: a caller over its budget is refused a new run with `429 token_limit_exceeded`. A run that is already going is not stopped, and neither are the sub-agents it spawns, so one long run can spend well past the budget. Setting `LOOMCYCLE_LIMITS_ENFORCE=strict` closes that:
+
+| Where the budget is checked | Default | `strict` |
+|---|---|---|
+| A new run, a continuation, a team walk, a direct decision, a gateway or embeddings call | yes | yes |
+| Before each model call of a run in flight | no | yes |
+| Before a run starts a sub-agent | no | yes |
+| A paused run being resumed (after a restore or a restart) | no | yes |
+
+Rules worth knowing:
+
+- **A run stopped in flight ends `failed` with `stop_reason` `token_limit`.** Its error is `token_limit_exceeded: …`, on its stream and on its run row. What it had written is kept, and the session can be continued once the budget allows.
+- **A refused sub-agent is the parent's tool error**, in the `business` category and not retryable. No row is written for the child. The parent is then stopped at its own next model call.
+- **The overshoot is bounded by one model call per run in flight.** The check runs between calls; a call that has started is not cut off.
+- **Runs that take no model call are stopped too.** A code agent over its budget stops at its next step.
+- **It is the same counter as the default mode**, so the same limits hold: exact on one replica, best effort across several, and a counter that could not be loaded at boot refuses nothing.
+- **Not covered:** a compaction summary and the model calls a tool makes on a run's behalf (an evaluation, a decision, memory consolidation) are not checked one by one. The run's own next call is.
+- **Any value other than `strict` stops the server at boot**, so a misspelled setting cannot leave a deployment unenforced.
 
 ### Declared principals — static `(tenant, user)` logins (RFC AO)
 

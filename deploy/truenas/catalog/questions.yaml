@@ -951,6 +951,12 @@ questions:
             schema:
               type: string
               default: ""
+          - variable: LOOMCYCLE_LIMITS_ENFORCE
+            label: LOOMCYCLE_LIMITS_ENFORCE
+            description: '(example: strict)'
+            schema:
+              type: string
+              default: ""
           - variable: LOOMCYCLE_AUTH_VERBOSE
             label: LOOMCYCLE_AUTH_VERBOSE
             description: '(example: 1)'

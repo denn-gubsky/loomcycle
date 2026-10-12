@@ -889,6 +889,12 @@ func runStateful(ctx context.Context, opts RunOptions, system []providers.Conten
 		msgs := []providers.Message{statefulUserMessage(sigma, task, memo.render(helpTool, obs), obs)}
 		var es *emitStateOut
 		for attempt := 0; ; attempt++ {
+			// Asked here, on every pass, and not once per iteration: a
+			// re-prompt is a model call like the first, and some passes come
+			// back round without counting as an attempt.
+			if err := overBudget(opts, emit); err != nil {
+				return RunResult{StopReason: StopReasonTokenLimit, Iterations: iter, Usage: total, State: sigma}, err
+			}
 			// RFC DG: say on the WIRE what the system prompt has only ever
 			// asked for. Narrowing `tools` to emit_state was never enough —
 			// the run that produced this RFC had exactly one tool offered and
@@ -1461,4 +1467,18 @@ func statefulActionHint(specs []providers.ToolSpec) string {
 	}
 	return "Available tools: " + strings.Join(names, ", ") +
 		". Omit `action` (or set `done: true`) when you are ready to answer."
+}
+
+// overBudget asks the run's BudgetGate, when it has one, and reports a
+// refusal as the run's error event. Asked before EVERY model call this loop
+// makes, a re-prompt included.
+func overBudget(opts RunOptions, emit func(providers.Event)) error {
+	if opts.BudgetGate == nil {
+		return nil
+	}
+	err := opts.BudgetGate()
+	if err != nil {
+		emit(providers.Event{Type: providers.EventError, Error: err.Error()})
+	}
+	return err
 }

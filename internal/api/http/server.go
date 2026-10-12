@@ -126,6 +126,9 @@ type Server struct {
 	// (SetDefaultRunRate; zero = none).
 	runRate        *runRateLimiter
 	defaultRunRate auth.RateLimit
+	// strictLimits also checks a hard token budget before each model call
+	// and each sub-agent start (strict_limits.go).
+	strictLimits bool
 
 	// sqlMem is the RFC AA SQL Memory manager (per-scope sqlite databases
 	// backing the Memory tool's sql_query/sql_exec). Nil when the subsystem
@@ -3415,6 +3418,7 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 		InitialState:        seed.Sigma,
 		InitialObservation:  seed.Observation,
 		PauseGate:           gate,
+		BudgetGate:          s.budgetGate(effectiveTenantID, effectiveUserID),
 		OnEvent:             emit,
 		OnHeartbeat:         heartbeat,
 		MaxTokens:           agentDef.MaxTokens,      // RFC DC: the run's own budget
@@ -5444,6 +5448,7 @@ func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {
 	// goroutine (interactive) — never a handler-level defer (handOff).
 	gate, deregGate := s.newPauseGate(runID)
 	runOpts.PauseGate = gate
+	runOpts.BudgetGate = s.budgetGate(req.TenantID, req.UserID)
 	// RFC X Phase 3: expose the gate to the Agent tool so a parallel_spawn
 	// fan-out parent can park mid-tool-call (no-op unless LOOMCYCLE_RESUME_FANOUT).
 	loopCtx = tools.WithPauseGate(loopCtx, gate)
@@ -6176,6 +6181,7 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 		InitialState:            seed.Sigma,
 		InitialObservation:      seed.Observation,
 		PauseGate:               gate,
+		BudgetGate:              s.budgetGate(sess.TenantID, sess.UserID),
 		OnEvent:                 emit,
 		OnHeartbeat:             heartbeat,
 		MaxTokens:               agentDef.MaxTokens,      // 0 → driver default
@@ -7727,6 +7733,12 @@ func (s *Server) prepareSubRunValues(ctx context.Context, name string, src nameS
 	// policy + fallback posture applied to the whole sub-run tree.
 	parentIdentity := tools.RunIdentity(ctx)
 	parentTier := parentIdentity.UserTier
+	// Strict budgets: a tree whose (tenant, user) is over a hard budget starts
+	// no more sub-agents. The parent gets it as the spawn's error and decides
+	// what to do; before anything is resolved or written for the child.
+	if err := s.strictBudgetCheck(parentIdentity.TenantID, parentIdentity.UserID); err != nil {
+		return nil, fmt.Errorf("sub-agent %q: %w", name, err)
+	}
 
 	// Route through resolveAgentDef so an overlay's Model/Tier/Provider/
 	// Effort actually take effect. resolveAgent re-reads cfg.Agents and
@@ -8276,6 +8288,7 @@ func (s *Server) prepareSubRunValues(ctx context.Context, name string, src nameS
 		OnEvent:             subEmit,
 		OnHeartbeat:         subHeartbeat,
 		PauseGate:           subGate,
+		BudgetGate:          s.budgetGate(subIdentity.TenantID, subIdentity.UserID),
 		MaxTokens:           def.MaxTokens,        // 0 → driver default
 		MaxContextTokens:    def.MaxContextTokens, // RFC CJ; 0 → provider/driver default
 		MaxIterations:       def.MaxIterations,    // 0 → loop default (16)
