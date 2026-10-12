@@ -103,3 +103,56 @@ func TestAllowOverrides_StaticAndAdapterRoundTrip(t *testing.T) {
 		t.Error("an agent that never set it reads back as having set it")
 	}
 }
+
+// The operator's lock, written in the config, holds over a tenant's own
+// version of the agent: one forked before the lock was added, and one that
+// tries to open it.
+func TestAllowOverrides_TheConfigLockHoldsOverATenantsVersion(t *testing.T) {
+	tool, ctx, cleanup := agentDefFixture(t)
+	defer cleanup()
+	ctx = tools.WithRunIdentity(operatorPlane(ctx), tools.RunIdentityValue{TenantID: "acme", AgentID: "a_author"})
+	static, name := firstStaticAgent(t, tool.Cfg)
+
+	// Forked while the config left the agent open.
+	if res, _ := tool.Execute(ctx, json.RawMessage(`{"op":"fork","name":"`+name+`","promote":true,"overlay":{"system_prompt":"tenant version"}}`)); res.IsError {
+		t.Fatalf("fork: %s", res.Text)
+	}
+	def, ok := lookup.Agent(context.Background(), tool.Store, tool.Cfg, "acme", name)
+	if !ok || def.SystemPrompt != "tenant version" || def.AllowOverrides != nil {
+		t.Fatalf("the tenant version is not what resolves, or is locked before the config says so: ok=%v %+v", ok, def.AllowOverrides)
+	}
+
+	// The operator locks the agent in the config.
+	locked := false
+	static.AllowOverrides = &locked
+	tool.Cfg.Agents[name] = static
+	for what, resolve := range map[string]func() config.AgentDef{
+		"Agent": func() config.AgentDef {
+			d, _ := lookup.Agent(context.Background(), tool.Store, tool.Cfg, "acme", name)
+			return d
+		},
+		"AgentChecked": func() config.AgentDef {
+			d, _, _ := lookup.AgentChecked(context.Background(), tool.Store, tool.Cfg, "acme", name)
+			return d
+		},
+	} {
+		if d := resolve(); d.SystemPrompt != "tenant version" || d.AllowOverrides == nil || *d.AllowOverrides {
+			t.Errorf("%s: the tenant's version resolves without the config's lock: %v", what, d.AllowOverrides)
+		}
+	}
+
+	// And its open parent version does not let a fork switch the lock off.
+	res, _ := tool.Execute(ctx, json.RawMessage(`{"op":"fork","name":"`+name+`","promote":true,"overlay":{"allow_overrides":true}}`))
+	if !res.IsError || !strings.Contains(res.Text, "allow_overrides") {
+		t.Errorf("a fork that sent true under a config lock: %s, want it refused", res.Text)
+	}
+}
+
+func firstStaticAgent(t *testing.T, cfg *config.Config) (config.AgentDef, string) {
+	t.Helper()
+	for name, def := range cfg.Agents {
+		return def, name
+	}
+	t.Fatal("the fixture declares no static agent")
+	return config.AgentDef{}, ""
+}

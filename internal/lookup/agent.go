@@ -109,6 +109,7 @@ func Agent(ctx context.Context, s AgentStore, cfg *config.Config, tenantID, name
 	//    pre-RFC-N).
 	if tenantID != "" {
 		if def, ok := resolveDynamic(ctx, s, tenantID, name); ok {
+			keepStaticOverrideLock(cfg, name, &def)
 			return def, true
 		}
 	}
@@ -118,6 +119,22 @@ func Agent(ctx context.Context, s AgentStore, cfg *config.Config, tenantID, name
 	}
 	// 3. Shared dynamic (tenant_id="").
 	return resolveDynamic(ctx, s, "", name)
+}
+
+// keepStaticOverrideLock carries the operator's allow_overrides: false onto a
+// tenant's own version of the same agent. A tenant version shadows the static
+// definition whole, so without this a lock the operator wrote in the config
+// would stop applying the moment a tenant forked the agent — and a version
+// forked before the lock was added would never pick it up. The operator's
+// lock is removed in the operator's config and nowhere else.
+func keepStaticOverrideLock(cfg *config.Config, name string, def *config.AgentDef) {
+	if cfg == nil {
+		return
+	}
+	if static, ok := cfg.Agents[name]; ok && static.AllowOverrides != nil && !*static.AllowOverrides {
+		locked := false
+		def.AllowOverrides = &locked
+	}
 }
 
 // AgentChecked is Agent for a caller that must tell "no such agent" from "could
@@ -133,6 +150,9 @@ func AgentChecked(ctx context.Context, s AgentStore, cfg *config.Config, tenantI
 	if tenantID != "" {
 		def, ok, err := resolveDynamicChecked(ctx, s, tenantID, name)
 		if err != nil || ok {
+			if ok {
+				keepStaticOverrideLock(cfg, name, &def)
+			}
 			return def, ok, err
 		}
 	}

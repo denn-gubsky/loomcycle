@@ -892,7 +892,14 @@ func (a *AgentDef) buildDefinition(ctx context.Context, name, parentJSON string,
 		// the way to run it with other settings. The lock comes off where it
 		// was put on — the operator's config for a static agent, a fresh
 		// create for one defined at runtime.
-		if base.AllowOverrides != nil && !*base.AllowOverrides && ov.AllowOverrides != nil && *ov.AllowOverrides {
+		// The operator's config counts as well as the parent version: a
+		// version forked before the config locked the agent is open on paper,
+		// and lookup serves it locked regardless.
+		lockedBase := base.AllowOverrides != nil && !*base.AllowOverrides
+		if static, ok := a.Cfg.Agents[name]; ok && static.AllowOverrides != nil && !*static.AllowOverrides {
+			lockedBase = true
+		}
+		if lockedBase && ov.AllowOverrides != nil && *ov.AllowOverrides {
 			return mergedDef{}, fmt.Errorf("AgentDef tool: a fork cannot set allow_overrides to true on %q, whose definition locks its per-run settings (allow_overrides: false); remove the lock in the server config, or create the agent anew", name)
 		}
 		base.applyOverlay(ov)
