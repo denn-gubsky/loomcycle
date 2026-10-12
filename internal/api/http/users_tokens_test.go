@@ -699,3 +699,48 @@ func TestHandleMintUserToken_UnreadableMintingTokenRefuses(t *testing.T) {
 		t.Errorf("%d token(s) minted by a principal whose own token could not be read", len(rows))
 	}
 }
+
+// agents in the mint body limits the user's token, shows on the answer and in
+// the listing, and takes effect at login. A written-but-empty list is refused.
+func TestHandleMintUserToken_AgentsRestrictsTheToken(t *testing.T) {
+	s, st := tokenAuthServer(t, "legacy")
+	ctx := context.Background()
+	acme := auth.Principal{TenantID: "acme", Subject: "ops", Scopes: []string{auth.ScopeTenant}}
+	seedUser(t, st, "acme", "alice", "isolated", "active")
+
+	resp := mintFor(t, s, acme, "alice", `{"agents":["score"]}`)
+	if resp.Restrictions == nil || len(resp.Restrictions.Agents) != 1 {
+		t.Fatalf("mint answer restrictions = %+v, want [score]", resp.Restrictions)
+	}
+	p, ok := s.resolvePrincipal(ctx, resp.Token)
+	if !ok || !p.Restrictions.RunPlaneOnly() || !p.Restrictions.AgentAllowed("score") || p.Restrictions.AgentAllowed("judge") {
+		t.Errorf("resolved principal restrictions = %+v (ok=%v), want the list [score]", p.Restrictions, ok)
+	}
+	plain := mintFor(t, s, acme, "alice", "")
+	if p, _ := s.resolvePrincipal(ctx, plain.Token); !p.Restrictions.IsZero() || plain.Restrictions != nil {
+		t.Errorf("a mint with no body is restricted: %+v", p.Restrictions)
+	}
+
+	rec := httptest.NewRecorder()
+	s.handleListUserTokens(rec, bodyReq("GET", "/v1/_users/alice/tokens", "", acme, "subject", "alice"))
+	var list listUserTokensResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &list); err != nil {
+		t.Fatal(err)
+	}
+	for _, m := range list.Tokens {
+		if want := m.DefID == resp.DefID; (m.Restrictions != nil) != want {
+			t.Errorf("listing of %s: restrictions=%+v, want shown=%v", m.DefID, m.Restrictions, want)
+		}
+	}
+
+	for _, body := range []string{`{"agents":[]}`, `{"agents":["has space"]}`, `{"agents":"score"}`} {
+		rec := httptest.NewRecorder()
+		s.handleMintUserToken(rec, bodyReq("POST", "/v1/_users/alice/tokens", body, acme, "subject", "alice"))
+		if rec.Code != http.StatusBadRequest {
+			t.Errorf("body %s: status %d, want 400: %s", body, rec.Code, rec.Body.String())
+		}
+	}
+	if rows, _ := st.OperatorTokenDefListBySubject(ctx, "acme", "alice"); len(rows) != 2 {
+		t.Errorf("%d token rows, want the two successful mints only", len(rows))
+	}
+}

@@ -13798,6 +13798,19 @@ func testOperatorTokenDefExpiry(t *testing.T, s store.Store) {
 	if !got.ValidAt(time.Now()) {
 		t.Error("a token inside its lifetime reads as not valid")
 	}
+	// The restrictions record is opaque to the store: what goes in comes out,
+	// and a row written without one reads back empty (not "null", not "{}").
+	withRec := mkOperatorTokenDef("ot-exp-restr", "exp-restr", "acme", "d", "h-exp-restr", []string{"runs:read"})
+	withRec.RestrictionsJSON = `{"agents":["score"]}`
+	if _, err := s.OperatorTokenDefCreate(ctx, withRec); err != nil {
+		t.Fatalf("create with restrictions: %v", err)
+	}
+	if got, _ := s.OperatorTokenDefGetByTokenHash(ctx, "h-exp-restr"); !strings.Contains(got.RestrictionsJSON, `"agents"`) || !strings.Contains(got.RestrictionsJSON, `"score"`) {
+		t.Errorf("restrictions round-trip: got %q", got.RestrictionsJSON)
+	}
+	if got, _ := s.OperatorTokenDefGet(ctx, "ot-exp-none"); got.RestrictionsJSON != "" {
+		t.Errorf("a token created without restrictions came back with %q", got.RestrictionsJSON)
+	}
 	if got, _ := s.OperatorTokenDefGet(ctx, "ot-exp-none"); !got.ExpiresAt.IsZero() {
 		t.Errorf("a token created without an expiry came back with %v", got.ExpiresAt)
 	}

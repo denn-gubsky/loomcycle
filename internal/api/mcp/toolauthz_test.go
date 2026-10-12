@@ -184,3 +184,41 @@ func TestToolRequiredScope_NamesRealTenantTools(t *testing.T) {
 		}
 	}
 }
+
+// A credential with an agent allowlist is held to the run plane on MCP too:
+// the run tools only, whatever its scopes — including for an admin token,
+// which otherwise passes every tool.
+func TestPrincipalMayCallTool_RestrictedTokenIsHeldToTheRunPlane(t *testing.T) {
+	for _, scopes := range [][]string{{auth.ScopeTenant}, {auth.ScopeAdmin}} {
+		restricted := auth.WithPrincipal(context.Background(), auth.Principal{
+			TenantID: "acme", Subject: "dev", Scopes: scopes,
+			Restrictions: auth.Restrictions{Agents: []string{"score"}},
+		})
+		for _, name := range []string{"spawn_run", "spawn_runs", "get_run", "list_runs", "cancel_run", "configured_run"} {
+			if !principalMayCallTool(restricted, name) {
+				t.Errorf("scopes %v: %s is a run tool but was refused", scopes, name)
+			}
+		}
+		for _, name := range []string{"agentdef", "teamdef", "scheduledef", "credentialdef", "decision", "memory", "document", "channel", "publish_channel", "operatortokendef", "a_tool_added_later"} {
+			if principalMayCallTool(restricted, name) {
+				t.Errorf("scopes %v: %s was allowed to a restricted token", scopes, name)
+			}
+		}
+	}
+	free := auth.WithPrincipal(context.Background(), auth.Principal{TenantID: "acme", Subject: "ops", Scopes: []string{auth.ScopeTenant}})
+	for _, name := range []string{"agentdef", "teamdef", "decision", "memory"} {
+		if !principalMayCallTool(free, name) {
+			t.Errorf("%s refused an UNRESTRICTED tenant token", name)
+		}
+	}
+}
+
+// A run-plane tool name that is not a real tool would admit nothing and hide
+// a rename.
+func TestRunPlaneTools_AreAllDispatchable(t *testing.T) {
+	for name := range runPlaneTools {
+		if _, ok := handlersByName[name]; !ok {
+			t.Errorf("runPlaneTools lists %q, which is not a dispatchable tool", name)
+		}
+	}
+}

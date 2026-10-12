@@ -1989,7 +1989,16 @@ export interface MintedUserToken {
   expires_at?: string;
   /** def_ids of the user's older tokens that `maxActive` retired. */
   retired?: string[];
+  /** What narrows the token below its scopes, when anything does. */
+  restrictions?: TokenRestrictions;
   warning: string;
+}
+
+/** A token's restrictions. `agents` is the complete list of agents the token
+ *  may start as top-level runs; a token carrying one is also limited to the
+ *  run endpoints. */
+export interface TokenRestrictions {
+  agents?: string[];
 }
 
 /** One token row from GET /v1/_users/{subject}/tokens — METADATA ONLY (never
@@ -2001,6 +2010,7 @@ export interface UserTokenMeta {
   created_at: string;
   retired_at?: string;
   expires_at?: string;
+  restrictions?: TokenRestrictions;
   /** False once the token is retired or expired. */
   active: boolean;
 }

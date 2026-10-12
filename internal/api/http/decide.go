@@ -67,6 +67,9 @@ func (s *Server) Decision(ctx context.Context, input json.RawMessage) (connector
 		return connector.ToolResult{Text: res.Text, IsError: res.IsError, ErrorInfo: res.Error}, nil
 	}
 
+	if err := s.refuseAgentlessCall(ctx, "a decision"); err != nil {
+		return connector.ToolResult{}, err
+	}
 	p, authed := auth.PrincipalFromContext(ctx)
 	var tenant, user string
 	if authed {

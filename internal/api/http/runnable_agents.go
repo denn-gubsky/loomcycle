@@ -72,6 +72,19 @@ func (s *Server) handleRunnableAgents(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// A token limited to certain agents is shown those and no others: the
+	// catalogue is "what you may run", and listing the rest would only
+	// advertise names the token is refused.
+	if p, ok := auth.PrincipalFromContext(ctx); ok && p.Restrictions.RunPlaneOnly() {
+		allowed := agents[:0]
+		for _, a := range agents {
+			if p.Restrictions.AgentAllowed(a.Name) {
+				allowed = append(allowed, a)
+			}
+		}
+		agents = allowed
+	}
+
 	sort.Slice(agents, func(i, j int) bool { return agents[i].Name < agents[j].Name })
 	writeJSONOK(w, runnableAgentsResponse{Agents: agents})
 }

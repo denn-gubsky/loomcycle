@@ -512,7 +512,7 @@ func (c *Context) execSelf(ctx context.Context) (tools.Result, error) {
 		out["self_names"] = names
 	}
 	if p, ok := auth.PrincipalFromContext(ctx); ok {
-		out["principal"] = map[string]any{
+		principal := map[string]any{
 			"tenant_id":    p.TenantID,
 			"subject":      p.Subject,
 			"scopes":       nonNilStrings(p.Scopes),
@@ -521,6 +521,10 @@ func (c *Context) execSelf(ctx context.Context) (tools.Result, error) {
 			"token_def_id": p.TokenDefID,
 			"token_suffix": p.TokenSuffix,
 		}
+		if !p.Restrictions.IsZero() {
+			principal["restrictions"] = p.Restrictions
+		}
+		out["principal"] = principal
 	}
 	// loomcycle: which BUILD is running. An agent (or an MCP client deciding
 	// whether a feature exists) otherwise has no way to ask, and "unknown"

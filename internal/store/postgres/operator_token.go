@@ -22,7 +22,7 @@ import (
 
 const operatorTokenDefSelect = `SELECT def_id, name, tenant_id, subject, token_hash,
 	allowed_scopes, created_at, created_by_agent_id, created_by_run_id,
-	rotated_from, retired_at, expires_at FROM operator_token_defs`
+	rotated_from, retired_at, expires_at, restrictions FROM operator_token_defs`
 
 func scanOperatorTokenDef(row pgx.Row) (store.OperatorTokenDefRow, error) {
 	var (
@@ -30,6 +30,7 @@ func scanOperatorTokenDef(row pgx.Row) (store.OperatorTokenDefRow, error) {
 		scopesJSON string
 		retiredAt  *time.Time
 		expiresAt  *time.Time
+		restrict   sql.NullString
 		// created_by_agent_id / created_by_run_id / rotated_from are
 		// NULLABLE columns (the CREATE path writes NULL via nullableString
 		// when empty — e.g. a token minted through the HTTP/CLI admin path
@@ -46,7 +47,7 @@ func scanOperatorTokenDef(row pgx.Row) (store.OperatorTokenDefRow, error) {
 	if err := row.Scan(
 		&out.DefID, &out.Name, &out.TenantID, &out.Subject, &out.TokenHash,
 		&scopesJSON, &out.CreatedAt, &agentID, &runID,
-		&rotated, &retiredAt, &expiresAt,
+		&rotated, &retiredAt, &expiresAt, &restrict,
 	); err != nil {
 		return store.OperatorTokenDefRow{}, err
 	}
@@ -62,6 +63,7 @@ func scanOperatorTokenDef(row pgx.Row) (store.OperatorTokenDefRow, error) {
 	if expiresAt != nil {
 		out.ExpiresAt = *expiresAt
 	}
+	out.RestrictionsJSON = restrict.String
 	return out, nil
 }
 
@@ -91,11 +93,11 @@ func (s *Store) OperatorTokenDefCreate(ctx context.Context, row store.OperatorTo
 	if _, err := s.pool.Exec(ctx, `
 		INSERT INTO operator_token_defs (
 			def_id, name, tenant_id, subject, token_hash, allowed_scopes,
-			created_at, created_by_agent_id, created_by_run_id, rotated_from, retired_at, expires_at
-		) VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7, $8, $9, $10, $11, $12)`,
+			created_at, created_by_agent_id, created_by_run_id, rotated_from, retired_at, expires_at, restrictions
+		) VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7, $8, $9, $10, $11, $12, $13::jsonb)`,
 		row.DefID, row.Name, row.TenantID, row.Subject, row.TokenHash, string(scopesJSON),
 		row.CreatedAt, nullableString(row.CreatedByAgentID), nullableString(row.CreatedByRunID),
-		nullableString(row.RotatedFrom), retired, expires,
+		nullableString(row.RotatedFrom), retired, expires, nullableString(row.RestrictionsJSON),
 	); err != nil {
 		return store.OperatorTokenDefRow{}, fmt.Errorf("operator_token_def insert: %w", err)
 	}

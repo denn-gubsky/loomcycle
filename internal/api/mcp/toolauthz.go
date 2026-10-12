@@ -213,10 +213,27 @@ var toolRequiredScope = map[string]string{
 //     tool — is admin-only (deny-by-default).
 //   - Any non-admin principal additionally needs a tool's toolRequiredScope,
 //     when it has one.
+//
+// runPlaneTools is the run plane on this transport: the whole of what a
+// credential with an agent allowlist may call (auth.Restrictions.RunPlaneOnly).
+// `decision` is deliberately absent — a model call with no agent — and so are
+// teamdef, every other definition tool, channels, memory and documents.
+var runPlaneTools = map[string]bool{
+	"spawn_run": true, "spawn_runs": true, "configured_run": true,
+	"cancel_run": true, "compact_run": true, "retune_run": true, "review_run": true,
+	"interruption_resolve": true,
+	"get_run":              true, "list_runs": true, "stream_user_run_states": true,
+}
+
 func principalMayCallTool(ctx context.Context, toolName string) bool {
 	p, ok := auth.PrincipalFromContext(ctx)
 	if !ok {
 		return true
+	}
+	// Before the admin shortcut: a credential limited to certain agents is
+	// held to the run plane however wide its scopes.
+	if p.Restrictions.RunPlaneOnly() && !runPlaneTools[toolName] {
+		return false
 	}
 	if auth.HasScope(p.Scopes, auth.ScopeAdmin) {
 		return true

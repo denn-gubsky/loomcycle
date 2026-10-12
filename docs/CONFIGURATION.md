@@ -1239,6 +1239,40 @@ Rules worth knowing:
 
 Token listings (`GET /v1/_users/{subject}/tokens`, `operator-token show` / `list`) show `expires_at`, and `active` is false once a token has expired.
 
+### Limiting a token to certain agents
+
+**Since v1.112.0.** A token can be limited to starting particular agents. This is for a token held by a client you do not control: it states the token's one purpose on the token itself, so it holds on every transport and not only behind a proxy route.
+
+| Where | How |
+|---|---|
+| A per-user token | `POST /v1/_users/{subject}/tokens` with `{"agents": ["score"]}` |
+| An operator token | `loomcycle operator-token create … --agents score,review`, or `agents` on the `create` op |
+| A declared principal | `agents: [score]` under the principal in `principals:` |
+
+A token with an `agents` list:
+
+- **Starts only the listed agents** as top-level runs. Any other agent is refused with `403 agent_not_allowed`, whether or not it exists. This covers `POST /v1/runs`, `runs:batch`, continuing a session, a configured run, a session replay, and the gRPC and MCP equivalents.
+- **Is limited to the run endpoints.** It can start, continue, read and control runs, and is refused everywhere else with `403 restricted_token`, whatever its scopes.
+- **Does not limit what a listed agent spawns.** A sub-agent follows the parent agent's own definition. A token for an orchestrating agent reaches the agent that does the work this way.
+
+| A restricted token may use | It is refused |
+|---|---|
+| `/v1/runs`, `/v1/runs:batch`, `/v1/runs/{id}/…` | every definition route (`/v1/_agentdef`, `_skilldef`, `_teamdef`, `_scheduledef`, …) |
+| `/v1/sessions/{id}/…` | starting a team walk; firing or pausing a schedule |
+| `/v1/agents/{agent_id}` and its `cancel` | the model gateways (`/v1/_llm/chat`, `/v1/chat/completions`, `/v1/embeddings`) and `/v1/_decide` |
+| `GET /v1/users/{id}/agents`, `…/agents/stream`, `…/interrupts` | channels, memory, documents, paths, usage, the credential store |
+| `GET /v1/_runnable-agents` (lists only its agents), `GET /v1/_me`, `GET /v1/config` | A2A: such a token is not accepted as an A2A peer |
+| `/v1/_mcp` (run tools only) | anything added later, until it is listed as a run endpoint |
+
+Rules worth knowing:
+
+- **The list is fixed at mint.** A rotation carries it over unchanged.
+- **An empty list is refused.** Omit `agents` for a token with no limit.
+- **A token holding `substrate:admin` cannot have a list.** It could no longer administer, and would still switch the legacy login off.
+- **A run started by a schedule, a webhook or a channel hook is not gated.** It runs under the definition's own identity; there is no token there to limit.
+- **A token whose stored restrictions this version cannot read is refused at login.** This matters after a downgrade: a newer version may have written a restriction this one does not know how to enforce.
+- `GET /v1/_me`, token listings and `Context op=self` show a token's `restrictions`.
+
 ### Declared principals — static `(tenant, user)` logins (RFC AO)
 
 Beyond the legacy `LOOMCYCLE_AUTH_TOKEN` (one identity, subject `default`) and runtime-minted `OperatorTokenDef` tokens, you can **declare** stable service identities in the YAML:

@@ -130,3 +130,43 @@ func TestGrpcAuthenticate_StampsPrincipal(t *testing.T) {
 		t.Errorf("missing md: code = %v, want Unauthenticated", status.Code(err))
 	}
 }
+
+// A credential with an agent allowlist is held to the run plane on gRPC too,
+// however wide its scopes: it may start and follow runs, and is refused
+// everything else — including a definition RPC its scope would otherwise
+// allow, a direct decision, and an RPC nobody has listed.
+func TestEnforceScope_RestrictedTokenIsHeldToTheRunPlane(t *testing.T) {
+	restricted := auth.WithPrincipal(context.Background(), auth.Principal{
+		TenantID: "acme", Subject: "dev", Scopes: []string{auth.ScopeTenant},
+		Restrictions: auth.Restrictions{Agents: []string{"score"}},
+	})
+	free := auth.WithPrincipal(context.Background(), auth.Principal{
+		TenantID: "acme", Subject: "ops", Scopes: []string{auth.ScopeTenant},
+	})
+	for _, rpc := range []string{"Run", "Continue", "SpawnRunBatch", "GetRun", "StreamRun", "CancelAgent", "StartConfiguredRun"} {
+		if err := enforceScope(restricted, grpcMethodPrefix+rpc); err != nil {
+			t.Errorf("%s is on the run plane but was refused: %v", rpc, err)
+		}
+	}
+	for _, rpc := range []string{"AgentDef", "TeamDef", "ScheduleDef", "CredentialDef", "Decide", "ListDecisionModels", "Document", "PublishChannel", "UsageReport", "SomeRPCAddedLater"} {
+		if err := enforceScope(restricted, grpcMethodPrefix+rpc); status.Code(err) != codes.PermissionDenied {
+			t.Errorf("%s: err = %v, want PermissionDenied for a restricted token", rpc, err)
+		}
+	}
+	for _, rpc := range []string{"AgentDef", "TeamDef", "Decide", "Document"} {
+		if err := enforceScope(free, grpcMethodPrefix+rpc); err != nil {
+			t.Errorf("%s refused an UNRESTRICTED tenant token: %v", rpc, err)
+		}
+	}
+}
+
+// Every run-plane RPC must be one the scope table knows: a name here that the
+// table does not list would be a typo that admits nothing, or worse, a stale
+// name that outlived its RPC.
+func TestGRPCRunPlaneRPCs_AreAllKnownRPCs(t *testing.T) {
+	for rpc := range grpcRunPlaneRPCs {
+		if _, ok := grpcConsumerScopes[rpc]; !ok {
+			t.Errorf("grpcRunPlaneRPCs lists %q, which the scope table does not know", rpc)
+		}
+	}
+}

@@ -57,6 +57,13 @@ func FrontierAuthenticator(
 		if !ok {
 			return "", false, false, false
 		}
+		// A credential limited to certain agents is refused here outright.
+		// This plane starts whichever agent a card exposes and carries no
+		// principal to the run for an allowlist to be checked against, so the
+		// only safe answer for a restricted token is no.
+		if p.Restrictions.RunPlaneOnly() {
+			return "", false, false, false
+		}
 		// RFC AX: derive the operator-key restriction from the peer's OWN
 		// resolved scopes — the SAME auth.OperatorKeyRestricted used on the
 		// HTTP/gRPC planes, so there's one source of truth. A granular A2A peer

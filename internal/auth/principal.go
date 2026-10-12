@@ -32,6 +32,9 @@ type Principal struct {
 	// Legacy is true when this principal came from the LOOMCYCLE_AUTH_TOKEN
 	// shared-secret fallback rather than an OperatorTokenDef row.
 	Legacy bool
+	// Restrictions narrows the principal below its scopes. Zero for a token
+	// minted without any, a legacy principal, and open mode.
+	Restrictions Restrictions
 }
 
 type ctxKeyPrincipal struct{}

@@ -150,6 +150,9 @@ func (s *Server) createConfiguredRunCore(ctx context.Context, req runDraft) (con
 	if req.AgentID != "" && !validIdent(req.AgentID) {
 		return connector.ConfiguredRun{}, draftRefusal(http.StatusBadRequest, "invalid_draft", "agent_id must match [A-Za-z0-9_-]{1,128}")
 	}
+	if err := s.admitPrincipalAgent(ctx, req.Agent); err != nil {
+		return connector.ConfiguredRun{}, draftRefusal(http.StatusForbidden, "agent_not_allowed", "%s", err.Error())
+	}
 	tenant, user := s.applyPrincipal(ctx, req.TenantID, req.UserID)
 	okr := s.operatorKeyRestrictedForCtx(ctx)
 	isolated := s.isolatedForCtx(ctx)
@@ -318,6 +321,10 @@ func (s *Server) updateConfiguredRunCore(ctx context.Context, runID string, patc
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(&d); err != nil {
 		return connector.ConfiguredRun{}, draftRefusal(http.StatusBadRequest, "invalid_draft", "invalid draft: %v", err)
+	}
+	// An edit may name another agent, so it is admitted as a create is.
+	if err := s.admitPrincipalAgent(ctx, d.Agent); err != nil {
+		return connector.ConfiguredRun{}, draftRefusal(http.StatusForbidden, "agent_not_allowed", "%s", err.Error())
 	}
 	if msg, ok := s.validateDraft(ctx, run.TenantID, d); !ok {
 		return connector.ConfiguredRun{}, draftRefusal(http.StatusBadRequest, "invalid_draft", "%s", msg)
@@ -572,6 +579,8 @@ func writeRunOnceError(w http.ResponseWriter, err error) {
 	switch {
 	case errors.Is(err, resolve.ErrOperatorKeyRestricted):
 		writeResolveError(w, err)
+	case errors.Is(err, runner.ErrAgentNotAllowed):
+		writeAgentNotAllowed(w, err)
 	case errors.Is(err, runner.ErrRunNotConfigured):
 		writeJSONError(w, http.StatusConflict, "run_not_configured", err.Error())
 	case errors.Is(err, runner.ErrDraftChanged):

@@ -915,6 +915,23 @@ var grpcConsumerScopes = map[string]string{
 // the gRPC analogue of the HTTP requiredScopeFor: PR2 stamped the principal
 // over gRPC but never enforced per-RPC scope, so any valid token could reach
 // every admin RPC (incl. OperatorTokenDef mint) — closed here.
+// grpcRunPlaneRPCs is the run plane on this transport: the whole of what a
+// credential with an agent allowlist may call. Decide is deliberately absent —
+// it reaches a model with no agent, so no allowlist can admit it — and so is
+// every definition, channel, memory and admin RPC.
+var grpcRunPlaneRPCs = map[string]bool{
+	"Run": true, "Continue": true, "SpawnRunBatch": true,
+	"RunInput": true, "RetuneRun": true, "CancelTurn": true, "ReviewRun": true,
+	"ResolveInterrupt": true, "CompactRun": true, "CancelAgent": true,
+	"CreateConfiguredRun": true, "UpdateConfiguredRun": true,
+	"StartConfiguredRun": true, "DeleteConfiguredRun": true,
+	"ReplaySession": true,
+	"StreamRun":     true, "GetTranscript": true, "GetAgent": true, "GetRun": true,
+	"ListUserAgents": true, "ListWalkRuns": true, "ListChildRuns": true,
+	"StreamUserRunStates": true,
+	"Config":              true,
+}
+
 func requiredScopeForRPC(fullMethod string) string {
 	name := strings.TrimPrefix(fullMethod, grpcMethodPrefix)
 	if sc, ok := grpcConsumerScopes[name]; ok {
@@ -932,6 +949,12 @@ func enforceScope(ctx context.Context, fullMethod string) error {
 	p, ok := auth.PrincipalFromContext(ctx)
 	if !ok {
 		return nil
+	}
+	// A credential limited to certain agents is held to the run plane, however
+	// wide its scopes (auth.Restrictions.RunPlaneOnly). Default-deny: an RPC
+	// added later is refused to such a credential until it is listed.
+	if p.Restrictions.RunPlaneOnly() && !grpcRunPlaneRPCs[strings.TrimPrefix(fullMethod, grpcMethodPrefix)] {
+		return status.Error(codes.PermissionDenied, "this token is limited to starting and following runs of its allowed agents")
 	}
 	required := requiredScopeForRPC(fullMethod)
 	if required != "" && !auth.HasScope(p.Scopes, required) {
@@ -1902,6 +1925,10 @@ func runnerErrStatus(err error) error {
 		return nil
 	}
 	switch {
+	case errors.Is(err, runner.ErrAgentNotAllowed):
+		// The caller's token is limited to other agents. PermissionDenied
+		// mirrors the HTTP 403.
+		return status.Error(codes.PermissionDenied, err.Error())
 	case errors.Is(err, runner.ErrUnknownAgent):
 		return status.Error(codes.InvalidArgument, err.Error())
 	case errors.Is(err, runner.ErrInvalidArgument):
