@@ -29,6 +29,34 @@ type PrincipalDef struct {
 	Scopes   []string  `yaml:"scopes"`
 	TokenEnv string    `yaml:"token_env"`
 	Agents   *[]string `yaml:"agents"`
+	// Overrides locks the per-run overrides for runs the principal starts:
+	// `none`, or the fields it may still set, comma-separated or as a list.
+	Overrides *overridePolicyYAML `yaml:"overrides"`
+}
+
+// overridePolicyYAML reads `overrides:` as the scalar `none`, a
+// comma-separated scalar, or a list of field names.
+type overridePolicyYAML struct{ auth.OverridePolicy }
+
+func (o *overridePolicyYAML) UnmarshalYAML(unmarshal func(any) error) error {
+	var list []string
+	if err := unmarshal(&list); err == nil {
+		if len(list) == 0 {
+			return fmt.Errorf(`overrides: an empty list is ambiguous; write "none" to lock every override`)
+		}
+		o.Allow = list
+		return nil
+	}
+	var word string
+	if err := unmarshal(&word); err != nil {
+		return fmt.Errorf(`overrides: want "none" or a list of fields`)
+	}
+	p, err := auth.ParseOverridePolicy(word)
+	if err != nil {
+		return err
+	}
+	o.OverridePolicy = *p
+	return nil
 }
 
 // resolvePrincipals validates the `principals:` block and builds
@@ -127,6 +155,9 @@ func resolvePrincipals(c *Config) error {
 		var restrictions auth.Restrictions
 		if def.Agents != nil {
 			restrictions.Agents = append([]string(nil), (*def.Agents)...)
+		}
+		if def.Overrides != nil {
+			restrictions.Overrides = &auth.OverridePolicy{Allow: append([]string(nil), def.Overrides.Allow...)}
 		}
 		if err := restrictions.Validate(def.Agents != nil); err != nil {
 			return fmt.Errorf("principals.%s: %w", name, err)

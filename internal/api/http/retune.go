@@ -246,6 +246,12 @@ func (s *Server) retuneRun(ctx context.Context, run store.Run, in *runOverridesW
 	if in.isZero() {
 		return runConfigRecord{}, nil
 	}
+	// A retune is the same overrides, set on a run that is already going. A
+	// token locked out of them at the start is locked out of them here: this
+	// is the one function every retune surface calls.
+	if err := s.admitPrincipalOverrides(ctx, in.setFields()); err != nil {
+		return runConfigRecord{}, err
+	}
 	agentDef, ok := s.lookupAgent(runTeamScopeCtx(ctx, run), run.TenantID, run.Agent)
 	if !ok {
 		return runConfigRecord{}, fmt.Errorf("%w: %s", runner.ErrUnknownAgent, run.Agent)

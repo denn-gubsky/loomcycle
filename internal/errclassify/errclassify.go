@@ -149,6 +149,13 @@ func CategoryOf(err error) (tools.ErrorInfo, bool) {
 			Description: "This token is limited to certain agents and this is not one of them. Retrying will not help — use a token that is allowed to start this agent.",
 		}, true
 
+	case errors.Is(err, runner.ErrOverrideNotAllowed):
+		return tools.ErrorInfo{
+			Category:    tools.CategoryPermission,
+			Retryable:   false,
+			Description: "This token may not change that setting for a run. Retrying will not help — send the request without it, and the run uses its agent's own setting.",
+		}, true
+
 	// --- validation: caller can fix this alone ---
 
 	case errors.Is(err, runner.ErrUnknownAgent),

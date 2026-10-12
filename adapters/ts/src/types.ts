@@ -1999,6 +1999,9 @@ export interface MintedUserToken {
  *  run endpoints. */
 export interface TokenRestrictions {
   agents?: string[];
+  /** `"none"` when every per-run override is locked, or the overrides the
+   *  token may still set. Absent when nothing is locked. */
+  overrides?: "none" | string[];
 }
 
 /** One token row from GET /v1/_users/{subject}/tokens — METADATA ONLY (never

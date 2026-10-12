@@ -55,6 +55,7 @@ func TestCategoryOf_ClassifiesEveryKnownSentinel(t *testing.T) {
 
 		{"unknown agent (runner)", runner.ErrUnknownAgent, tools.CategoryValidation, false, nil},
 		{"agent not allowed for this token", runner.ErrAgentNotAllowed, tools.CategoryPermission, false, nil},
+		{"override not allowed for this token", runner.ErrOverrideNotAllowed, tools.CategoryPermission, false, nil},
 		{"unknown agent (resolve)", resolve.ErrUnknownAgent, tools.CategoryValidation, false, nil},
 		{"unknown provider", runner.ErrUnknownProvider, tools.CategoryValidation, false, nil},
 		{"invalid argument (runner)", runner.ErrInvalidArgument, tools.CategoryValidation, false, nil},
@@ -205,6 +206,7 @@ func TestCategoryOf_NoUnclassifiedSentinelDrift(t *testing.T) {
 		"runner": {
 			"ErrUnknownAgent":                 runner.ErrUnknownAgent,
 			"ErrAgentNotAllowed":              runner.ErrAgentNotAllowed,
+			"ErrOverrideNotAllowed":           runner.ErrOverrideNotAllowed,
 			"ErrInvalidArgument":              runner.ErrInvalidArgument,
 			"ErrUnknownProvider":              runner.ErrUnknownProvider,
 			"ErrSessionRequired":              runner.ErrSessionRequired,

@@ -1925,9 +1925,9 @@ func runnerErrStatus(err error) error {
 		return nil
 	}
 	switch {
-	case errors.Is(err, runner.ErrAgentNotAllowed):
-		// The caller's token is limited to other agents. PermissionDenied
-		// mirrors the HTTP 403.
+	case errors.Is(err, runner.ErrAgentNotAllowed), errors.Is(err, runner.ErrOverrideNotAllowed):
+		// The caller's token is limited to other agents, or locked out of the
+		// override it set. PermissionDenied mirrors the HTTP 403.
 		return status.Error(codes.PermissionDenied, err.Error())
 	case errors.Is(err, runner.ErrUnknownAgent):
 		return status.Error(codes.InvalidArgument, err.Error())

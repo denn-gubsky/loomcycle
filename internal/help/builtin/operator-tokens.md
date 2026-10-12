@@ -161,6 +161,25 @@ agents as top-level runs.
 - The list is fixed at mint and carried over by `rotate`. An empty list
   is refused. A token holding `substrate:admin` cannot have one.
 
+## Locking a token's per-run settings
+
+`--overrides none` on `operator-token create` (`overrides` on the
+`create` op, `{"overrides": "none"}` in the body of
+`POST /v1/_users/{subject}/tokens`, or `overrides: none` on a declared
+principal) locks the per-run overrides for runs the token starts: the
+model, provider, tier and effort, the limits, sampling, compaction,
+output format, hooks and the rest. A list (`--overrides effort,tier`)
+names the ones the token may still set.
+
+- A request that sets a locked setting is refused
+  (`override_not_allowed`, naming the field); it is never ignored.
+- It applies at a run start, a continuation, a configured run and a
+  retune.
+- Fields that only narrow, bound or name a run (`tools`,
+  `allowed_hosts`, `max_wall_seconds`, `idempotency_key`, `metadata`)
+  are not locked.
+- The lock is fixed at mint and carried over by `rotate`.
+
 ## Migration from LOOMCYCLE_AUTH_TOKEN (zero-disruption)
 
 The legacy shared secret keeps working until the **first admin-scoped**

@@ -28,12 +28,22 @@ import (
 const (
 	restrictedBearer = "tok-restricted"
 	freeBearer       = "tok-free"
+	lockedBearer     = "tok-locked"      // overrides: none
+	effortOnlyBearer = "tok-effort-only" // overrides: [effort]
 )
 
 // restrictedFixture is a full server with two agents and two member tokens of
 // one tenant: one limited to the agent "allowed", one not limited. scripts are
 // the provider's replies in call order; every later call answers "done".
 func restrictedFixture(t *testing.T, scripts ...[]providers.Event) (*httptest.Server, store.Store) {
+	t.Helper()
+	_, ts, st := restrictedFixtureServer(t, scripts...)
+	return ts, st
+}
+
+// restrictedFixtureServer is restrictedFixture with the Server itself, for a
+// test that calls one of its methods directly.
+func restrictedFixtureServer(t *testing.T, scripts ...[]providers.Event) (*Server, *httptest.Server, store.Store) {
 	t.Helper()
 	cfg := makeBaseConfig()
 	cfg.Defaults.Provider = "scripted"
@@ -56,6 +66,8 @@ func restrictedFixture(t *testing.T, scripts ...[]providers.Event) (*httptest.Se
 	for _, tok := range []struct{ id, bearer, restrictions string }{
 		{"def_restricted", restrictedBearer, `{"agents":["allowed"]}`},
 		{"def_free", freeBearer, ""},
+		{"def_locked", lockedBearer, `{"overrides":"none"}`},
+		{"def_effort", effortOnlyBearer, `{"overrides":["effort"]}`},
 	} {
 		if _, err := st.OperatorTokenDefCreate(context.Background(), store.OperatorTokenDefRow{
 			DefID: tok.id, Name: "u-" + tok.id, TenantID: "acme", Subject: "dev",
@@ -68,7 +80,7 @@ func restrictedFixture(t *testing.T, scripts ...[]providers.Event) (*httptest.Se
 	srv := New(cfg, &stubResolver{p: &scriptedProvider{scripts: scripts, defaultS: done}}, []tools.Tool{}, concurrency.New(8, 8, 5*time.Second), st)
 	ts := httptest.NewServer(srv.Mux())
 	t.Cleanup(ts.Close)
-	return ts, st
+	return srv, ts, st
 }
 
 // bearerCall sends one request with a bearer and returns the status and body.

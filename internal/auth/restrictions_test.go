@@ -85,3 +85,74 @@ func TestRestrictions_StoredFormFailsClosed(t *testing.T) {
 		}
 	}
 }
+
+// The override policy: nil locks nothing, "none" locks every override, a list
+// allows exactly what it names.
+func TestRestrictions_OverridePolicy(t *testing.T) {
+	if !(Restrictions{}).OverrideAllowed("model") {
+		t.Error("no policy must allow every override")
+	}
+	none := Restrictions{Overrides: &OverridePolicy{}}
+	if none.IsZero() {
+		t.Error(`a "none" policy is a restriction; IsZero said otherwise`)
+	}
+	for _, f := range LockableOverrides {
+		if none.OverrideAllowed(f) {
+			t.Errorf(`"none" allows %q`, f)
+		}
+	}
+	some := Restrictions{Overrides: &OverridePolicy{Allow: []string{"effort"}}}
+	if !some.OverrideAllowed("effort") || some.OverrideAllowed("model") {
+		t.Error("a list policy must allow exactly what it names")
+	}
+	if none.RunPlaneOnly() {
+		t.Error("an override lock alone must not confine a token to the run plane")
+	}
+}
+
+func TestRestrictions_OverridePolicyOnTheWire(t *testing.T) {
+	for in, want := range map[string]string{
+		`{"overrides":"none"}`:                `{"overrides":"none"}`,
+		`{"overrides":["effort","tier"]}`:     `{"overrides":["effort","tier"]}`,
+		`{"agents":["a"],"overrides":"none"}`: `{"agents":["a"],"overrides":"none"}`,
+	} {
+		r, err := ParseRestrictions(in)
+		if err != nil {
+			t.Errorf("%s: %v", in, err)
+			continue
+		}
+		if r.Overrides == nil {
+			t.Errorf("%s: policy lost on read", in)
+		}
+		if out, err := MarshalRestrictions(r); err != nil || out != want {
+			t.Errorf("%s: stored as %s (err %v), want %s", in, out, err, want)
+		}
+	}
+	// A policy that cannot be read is an error, never a looser policy.
+	for _, bad := range []string{`{"overrides":"all"}`, `{"overrides":[]}`, `{"overrides":true}`, `{"overrides":{"allow":["x"]}}`} {
+		if r, err := ParseRestrictions(bad); err == nil {
+			t.Errorf("%s read as %+v with no error", bad, r)
+		}
+	}
+	for name, r := range map[string]Restrictions{
+		"unknown field": {Overrides: &OverridePolicy{Allow: []string{"temperature"}}},
+		"not lockable":  {Overrides: &OverridePolicy{Allow: []string{"tools"}}},
+		"duplicate":     {Overrides: &OverridePolicy{Allow: []string{"effort", "effort"}}},
+	} {
+		if err := r.Validate(false); err == nil {
+			t.Errorf("%s: accepted", name)
+		}
+	}
+	if err := (Restrictions{Overrides: &OverridePolicy{Allow: []string{"effort", "sampling"}}}).Validate(false); err != nil {
+		t.Errorf("a valid list refused: %v", err)
+	}
+	for in, wantAllow := range map[string]int{"none": 0, "effort, tier": 2} {
+		p, err := ParseOverridePolicy(in)
+		if err != nil || len(p.Allow) != wantAllow {
+			t.Errorf("ParseOverridePolicy(%q) = %+v (err %v)", in, p, err)
+		}
+	}
+	if _, err := ParseOverridePolicy(" , "); err == nil {
+		t.Error("an empty text policy was accepted")
+	}
+}

@@ -536,3 +536,50 @@ func TestOperatorTokenDef_AgentsRestrictionIsStoredAndSurvivesRotation(t *testin
 		t.Errorf("refused creates wrote %d token name(s)", len(after)-len(before))
 	}
 }
+
+// overrides on create locks the per-run settings, survives a rotation, and is
+// refused when it is not a policy.
+func TestOperatorTokenDef_OverridesLockIsStoredAndSurvivesRotation(t *testing.T) {
+	tool, ctx, st, cleanup := operatorTokenDefFixture(t)
+	defer cleanup()
+	policyOf := func(defID string) *auth.OverridePolicy {
+		row, err := st.OperatorTokenDefGet(ctx, defID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		r, err := auth.ParseRestrictions(row.RestrictionsJSON)
+		if err != nil {
+			t.Fatalf("stored %q: %v", row.RestrictionsJSON, err)
+		}
+		return r.Overrides
+	}
+	none := mustOp(t, tool, ctx, `{"op":"create","name":"locked","tenant_id":"acme","scopes":["runs:create"],"overrides":"none"}`)
+	if p := policyOf(none["def_id"].(string)); p == nil || len(p.Allow) != 0 {
+		t.Errorf(`"none" stored as %+v`, p)
+	}
+	some := mustOp(t, tool, ctx, `{"op":"create","name":"some","tenant_id":"acme","scopes":["runs:create"],"overrides":["effort"]}`)
+	if p := policyOf(some["def_id"].(string)); p == nil || len(p.Allow) != 1 || p.Allow[0] != "effort" {
+		t.Errorf("list stored as %+v", p)
+	}
+	rotated := mustOp(t, tool, ctx, `{"op":"rotate","name":"locked"}`)
+	if p := policyOf(rotated["def_id"].(string)); p == nil {
+		t.Error("a rotation dropped the override lock")
+	}
+	plain := mustOp(t, tool, ctx, `{"op":"create","name":"plain","tenant_id":"acme","scopes":["runs:create"]}`)
+	if p := policyOf(plain["def_id"].(string)); p != nil {
+		t.Errorf("a create without overrides stored a policy: %+v", p)
+	}
+	for _, in := range []string{
+		`{"op":"create","name":"x1","tenant_id":"acme","scopes":["runs:create"],"overrides":"all"}`,
+		`{"op":"create","name":"x2","tenant_id":"acme","scopes":["runs:create"],"overrides":[]}`,
+		`{"op":"create","name":"x3","tenant_id":"acme","scopes":["runs:create"],"overrides":["temperature"]}`,
+	} {
+		res, err := tool.Execute(ctx, json.RawMessage(in))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !res.IsError || !strings.Contains(res.Text, "overrides") {
+			t.Errorf("%s: is_error=%v text=%q, want a refusal naming overrides", in, res.IsError, res.Text)
+		}
+	}
+}
