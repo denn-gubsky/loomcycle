@@ -61,10 +61,18 @@ func retentionOverrideView(r store.RetentionOverrideRow) retentionOverrideRespon
 }
 
 // retentionOverrideTenant is the tenant a write is for: the caller's own,
-// unless the caller is an admin, who names it.
+// unless the caller is an admin and names another.
+//
+// An admin that names none gets its own too, and that matters most for the
+// plainest deployment: with the one shared token every run is in that token's
+// tenant, and an override filed under the empty tenant would be accepted,
+// listed, and apply to nothing.
 func retentionOverrideTenant(ctx context.Context, wire string) string {
 	p, ok := auth.PrincipalFromContext(ctx)
-	if !ok || auth.HasScope(p.Scopes, auth.ScopeAdmin) {
+	if !ok {
+		return wire // open mode: runs carry the tenant the caller gives, or none
+	}
+	if wire != "" && auth.HasScope(p.Scopes, auth.ScopeAdmin) {
 		return wire
 	}
 	return p.TenantID

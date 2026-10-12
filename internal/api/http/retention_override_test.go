@@ -192,6 +192,14 @@ func TestRetentionOverride_WhoMaySetOneAndForWhom(t *testing.T) {
 	if code, body := bearerCall(t, ts, adminBearer, "PUT", "/v1/_retention/overrides", overrideBody("other", time.Hour, `,"tenant":"globex"`)); code != 200 || !strings.Contains(body, `"tenant":"globex"`) {
 		t.Errorf("an admin: %d %s", code, body)
 	}
+	// An admin that names no tenant gets its own, as anyone does — and with
+	// the one shared token that is the tenant every run is in.
+	if code, body := bearerCall(t, ts, adminBearer, "PUT", "/v1/_retention/overrides", overrideBody("allowed", time.Hour, "")); code != 200 || !strings.Contains(body, `"tenant":"root"`) {
+		t.Errorf("an admin naming no tenant: %d %s, want its own", code, body)
+	}
+	if code, _ := bearerCall(t, ts, adminBearer, "DELETE", "/v1/_retention/overrides?agent=allowed", ""); code != 204 {
+		t.Errorf("clearing the admin's own: %d", code)
+	}
 	// A member, and a token limited to certain agents, may not — to set, to
 	// clear, or to see what is being debugged.
 	for _, bearer := range []string{freeBearer, restrictedBearer, quietBearer} {
@@ -288,5 +296,32 @@ func TestRetentionOverride_IsAuditedAndRefusedWhenItCannotBe(t *testing.T) {
 	}
 	if ok, _ := st.RetentionOverrideActive(context.Background(), "acme", "other", time.Now()); ok {
 		t.Error("an override was set although its audit record could not be written")
+	}
+}
+
+// The plainest deployment: one shared token. Its runs are in its own tenant,
+// and an override it sets without naming a tenant has to apply to them — an
+// override filed under the empty tenant would be accepted, listed, and lift
+// nothing.
+func TestRetentionOverride_TheSharedTokensOverrideAppliesToItsOwnRuns(t *testing.T) {
+	s, ts, st := restrictedFixtureServer(t)
+	markNoTrace(s, "other")
+	if code, body := bearerCall(t, ts, legacyAdminBearer, "PUT", "/v1/_retention/overrides", overrideBody("other", time.Hour, "")); code != 200 {
+		t.Fatalf("set: %d %s", code, body)
+	}
+	if code, body := bearerCall(t, ts, legacyAdminBearer, "POST", "/v1/runs", runWithID("other", "a_legacy", "")); code != 200 {
+		t.Fatalf("run: %d %s", code, body)
+	}
+	if got := retentionOfAgentID(t, st, "a_legacy"); got != "" {
+		t.Errorf("the shared token's override did not apply to its own run: retention = %q", got)
+	}
+	if code, _ := bearerCall(t, ts, legacyAdminBearer, "DELETE", "/v1/_retention/overrides?agent=other", ""); code != 204 {
+		t.Fatalf("clear: %d", code)
+	}
+	if code, body := bearerCall(t, ts, legacyAdminBearer, "POST", "/v1/runs", runWithID("other", "a_legacy2", "")); code != 200 {
+		t.Fatalf("run after clear: %d %s", code, body)
+	}
+	if got := retentionOfAgentID(t, st, "a_legacy2"); got != store.RetentionNone {
+		t.Errorf("after the clear: retention = %q, want none", got)
 	}
 }
