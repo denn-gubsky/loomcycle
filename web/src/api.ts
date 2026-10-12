@@ -3180,6 +3180,11 @@ export const TOKEN_SCOPES = [
   // force that tenant to bring its own key (an RFC AR CredentialDef). Inert when
   // the gate is off.
   "providers:operator-key",
+  // The raw model endpoints (the LLM gateway and the OpenAI-compatible shims).
+  // Tenant-implied, and a non-isolated member has them anyway, so it only
+  // matters on an ISOLATED user's token: grant it there to let that user call
+  // a model directly.
+  "llm:gateway",
 ] as const;
 
 // ---- Routing view (GET /v1/_routing) ----

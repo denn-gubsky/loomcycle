@@ -55,6 +55,17 @@ const (
 	// runs only when an operator granted this scope at mint.
 	ScopeRunsDelete = "runs:delete"
 
+	// ScopeLLMGateway gates the raw model endpoints: the LLM gateway and the
+	// OpenAI-compatible chat and embeddings shims. They reach a model with no
+	// agent, no definition and no allowlist in the way, and trust the provider
+	// and model the caller names. It is tenant-implied, and a non-isolated
+	// member is admitted by the same rule that opens the tenant plane to it,
+	// so every token that could use them before still can — except an
+	// ISOLATED user's, which must be granted this scope by name. A sandboxed
+	// user is the one principal for whom "any model, any prompt" was never
+	// intended.
+	ScopeLLMGateway = "llm:gateway"
+
 	// NOTE: memory:read / memory:write are intentionally NOT in the
 	// catalog. They were inert — grantable but enforced by no route: the
 	// HTTP memory surface (/v1/_memory/*) is operator-admin, and
@@ -78,6 +89,7 @@ var scopeCatalog = map[string]struct{}{
 	ScopeChannelRead:          {},
 	ScopeProvidersOperatorKey: {},
 	ScopeRunsDelete:           {},
+	ScopeLLMGateway:           {},
 }
 
 // tenantImplied is the set ScopeTenant satisfies. A tenant operator covers
@@ -93,6 +105,7 @@ var tenantImplied = map[string]struct{}{
 	ScopeChannelRead:          {},
 	ScopeProvidersOperatorKey: {},
 	ScopeRunsDelete:           {},
+	ScopeLLMGateway:           {},
 }
 
 // userImplied is the set ScopeUser satisfies (RFC BX P2b). An isolated member

@@ -126,6 +126,14 @@ func (s *Server) prepareGatewayDispatch(w http.ResponseWriter, r *http.Request, 
 		return gatewayDispatch{}, false
 	}
 
+	// The caller's token budget, checked as a run's admission checks it. A
+	// gateway call spends the same tokens a run does; without this a caller at
+	// its hard ceiling was refused new runs and could go on calling the model
+	// here.
+	if !s.admitGatewayBudget(w, r, req.UserID) {
+		return gatewayDispatch{}, false
+	}
+
 	requestID := newRequestID()
 	startedAt := time.Now()
 
@@ -206,8 +214,11 @@ func (s *Server) serveLLMChatJSON(
 		writeJSONError(w, http.StatusBadGateway, "provider_call_failed", err.Error())
 		return
 	}
+	meter := newGatewayMeter(provReq)
+	// Deferred: however this function leaves, the call is settled.
+	defer s.settleGatewayCall(r.Context(), req.UserID, providerID, modelID, meter)
 	id := newLLMID()
-	resp, err := collectProviderEventsIntoResponse(ch, id, requestID, providerID, modelID)
+	resp, err := collectProviderEventsIntoResponse(meter.tap(ch), id, requestID, providerID, modelID)
 	if err != nil {
 		writeJSONError(w, http.StatusBadGateway, "provider_call_failed", err.Error())
 		return
@@ -253,6 +264,9 @@ func (s *Server) serveLLMChatStream(
 		logGatewayRequest(requestID, providerID, modelID, req.Tier, req.UserID, 0, 0, "error", time.Since(startedAt), err)
 		return
 	}
+	meter := newGatewayMeter(provReq)
+	defer s.settleGatewayCall(r.Context(), req.UserID, providerID, modelID, meter)
+	ch = meter.tap(ch)
 
 	// Block-index lifecycle: the gateway owns the index exclusively
 	// here (translate helpers in llm_gateway_translate.go don't
@@ -304,24 +318,16 @@ func (s *Server) serveLLMChatStream(
 			openBlockIndex = nextBlockIndex
 			nextBlockIndex++
 			closeOpenBlock()
-		case providers.EventUsage:
-			if ev.Usage != nil {
-				usage = llmUsage{
-					InputTokens:              ev.Usage.InputTokens,
-					OutputTokens:             ev.Usage.OutputTokens,
-					CacheCreationInputTokens: ev.Usage.CacheCreationTokens,
-					CacheReadInputTokens:     ev.Usage.CacheReadTokens,
-				}
+		case providers.EventUsage, providers.EventDone:
+			// Usage rides on Done for every real driver (gatewayUsageOf).
+			if u, ok := gatewayUsageOf(ev); ok {
+				usage = u
 			}
 			if ev.StopReason != "" {
 				stopReason = ev.StopReason
 			}
 			if frame := usageFrameFromEvent(ev); frame != nil {
 				stream.sendRaw("message_delta", *frame)
-			}
-		case providers.EventDone:
-			if ev.StopReason != "" {
-				stopReason = ev.StopReason
 			}
 		case providers.EventError:
 			closeOpenBlock()
@@ -393,6 +399,18 @@ func (s *Server) resolveGatewayRequest(req *llmChatRequest) (providerID, modelID
 		return "", "", "", err
 	}
 	return dec.Provider, dec.Model, dec.Effort, nil
+}
+
+// admitGatewayBudget refuses a raw model call from a caller at its hard token
+// ceiling, with the answer a run start gets. wireUser is the request's own
+// user field, used only when there is no principal.
+func (s *Server) admitGatewayBudget(w http.ResponseWriter, r *http.Request, wireUser string) bool {
+	dec := s.limits.Check(tenantFromCtx(r.Context()), auth.SubjectForFairness(r.Context(), wireUser))
+	if dec.Allowed {
+		return true
+	}
+	writeTokenLimitError(w, dec.Refusal)
+	return false
 }
 
 // logGatewayRequest emits the always-on structured audit line. The

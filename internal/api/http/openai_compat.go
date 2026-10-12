@@ -225,7 +225,9 @@ func (s *Server) serveOpenAICompatJSON(
 		return
 	}
 	id := newLLMID()
-	resp, err := collectProviderEventsIntoResponse(ch, id, d.requestID, d.providerID, d.modelID)
+	meter := newGatewayMeter(d.provReq)
+	defer s.settleGatewayCall(r.Context(), req.UserID, d.providerID, d.modelID, meter)
+	resp, err := collectProviderEventsIntoResponse(meter.tap(ch), id, d.requestID, d.providerID, d.modelID)
 	if err != nil {
 		writeJSONError(w, http.StatusBadGateway, "provider_call_failed", err.Error())
 		return
@@ -348,6 +350,9 @@ func (s *Server) serveOpenAICompatStream(
 		logGatewayRequest(d.requestID, d.providerID, d.modelID, req.Tier, req.UserID, 0, 0, "error", time.Since(d.startedAt), err)
 		return
 	}
+	meter := newGatewayMeter(d.provReq)
+	defer s.settleGatewayCall(r.Context(), req.UserID, d.providerID, d.modelID, meter)
+	ch = meter.tap(ch)
 
 	// Tool-call index tracking — OpenAI requires per-tool index +
 	// `id`/`type`/`function.name` on the FIRST chunk for each tool,
@@ -384,7 +389,8 @@ func (s *Server) serveOpenAICompatStream(
 				}},
 			}, nil, nil)
 			nextToolIndex++
-		case providers.EventUsage:
+		case providers.EventUsage, providers.EventDone:
+			// Usage rides on Done for every real driver (gatewayUsageOf).
 			if ev.Usage != nil {
 				usage = openaiUsage{
 					PromptTokens:     ev.Usage.InputTokens,
@@ -392,10 +398,6 @@ func (s *Server) serveOpenAICompatStream(
 					TotalTokens:      ev.Usage.InputTokens + ev.Usage.OutputTokens,
 				}
 			}
-			if ev.StopReason != "" {
-				stopReason = ev.StopReason
-			}
-		case providers.EventDone:
 			if ev.StopReason != "" {
 				stopReason = ev.StopReason
 			}

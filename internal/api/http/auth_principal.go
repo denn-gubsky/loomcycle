@@ -85,7 +85,12 @@ func (s *Server) authMiddleware(next http.Handler) http.Handler {
 			// to scope=user on its own subject; tenant/agent scope still requires
 			// substrate:tenant.
 			selfOK := userSelfServiceRoute(r.Method, r.URL.Path) && p.Subject != ""
-			if !(memberOK || selfOK) {
+			// The raw model endpoints stay open to every principal that is
+			// not an isolated user: a member token holds no llm:gateway scope
+			// of its own, and requiring one would have broken every member
+			// token minted before the scope existed.
+			gatewayMemberOK := required == auth.ScopeLLMGateway && !auth.IsIsolated(p, ok)
+			if !(memberOK || selfOK || gatewayMemberOK) {
 				// Scope names are public; token state is not.
 				w.Header().Set("WWW-Authenticate", `Bearer scope="`+required+`"`)
 				http.Error(w, "insufficient scope", http.StatusForbidden)
@@ -143,6 +148,11 @@ func (s *Server) refuseAgentlessCall(ctx context.Context, what string) error {
 // writeAgentNotAllowed is the HTTP form of that refusal.
 func writeAgentNotAllowed(w http.ResponseWriter, err error) {
 	writeJSONError(w, http.StatusForbidden, "agent_not_allowed", err.Error())
+}
+
+// isGatewayRoute reports whether path is one of the raw model endpoints.
+func isGatewayRoute(path string) bool {
+	return path == "/v1/_llm/chat" || path == "/v1/chat/completions" || path == "/v1/embeddings"
 }
 
 // runPlaneRoute reports whether a route belongs to the run plane: starting,
@@ -733,10 +743,12 @@ func requirePrincipalOwnsPathUser(ctx context.Context, pathUserID string) bool {
 // through to "" rather than risk locking a legitimate narrow token out.
 func requiredScopeFor(method, path string) string {
 	switch {
-	// Consumer LLM gateway / OpenAI-compat shims — NOT an admin surface;
-	// any authenticated principal may drive inference.
-	case path == "/v1/_llm/chat" || path == "/v1/chat/completions" || path == "/v1/embeddings":
-		return ""
+	// The raw model endpoints: the LLM gateway and the OpenAI-compatible
+	// shims. Not an admin surface, but not open to every principal either:
+	// see auth.ScopeLLMGateway. authMiddleware admits a non-isolated member
+	// without the scope (gatewayMemberOK).
+	case isGatewayRoute(path):
+		return auth.ScopeLLMGateway
 	// Whoami — any authenticated principal must be able to learn its own
 	// identity (the Web UI's role source); a tenant token needs it too.
 	case path == "/v1/_me":
