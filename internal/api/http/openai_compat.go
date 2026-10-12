@@ -233,6 +233,7 @@ func (s *Server) serveOpenAICompatJSON(
 	logGatewayRequest(d.requestID, d.providerID, d.modelID, req.Tier, req.UserID,
 		resp.Usage.InputTokens, resp.Usage.OutputTokens, resp.StopReason,
 		time.Since(d.startedAt), nil)
+	s.recordGatewayUsage(r.Context(), req.UserID, d.providerID, d.modelID, resp.Usage.InputTokens, resp.Usage.OutputTokens)
 	writeJSONOK(w, llmResponseToOpenAI(&resp))
 }
 
@@ -435,4 +436,5 @@ func (s *Server) serveOpenAICompatStream(
 	logGatewayRequest(d.requestID, d.providerID, d.modelID, req.Tier, req.UserID,
 		usage.PromptTokens, usage.CompletionTokens, stopReason,
 		time.Since(d.startedAt), runErr)
+	s.recordGatewayUsage(r.Context(), req.UserID, d.providerID, d.modelID, usage.PromptTokens, usage.CompletionTokens)
 }

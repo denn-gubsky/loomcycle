@@ -328,9 +328,9 @@ func TestRequiredScopeFor(t *testing.T) {
 		{"GET", "/v1/_presets/base", auth.ScopeAdmin},
 		{"GET", "/v1/_env_template", auth.ScopeAdmin},
 		// Consumer gateway endpoints are NOT admin.
-		{"POST", "/v1/_llm/chat", ""},
-		{"POST", "/v1/chat/completions", ""},
-		{"POST", "/v1/embeddings", ""},
+		{"POST", "/v1/_llm/chat", auth.ScopeLLMGateway},
+		{"POST", "/v1/chat/completions", auth.ScopeLLMGateway},
+		{"POST", "/v1/embeddings", auth.ScopeLLMGateway},
 		{"GET", "/healthz", ""},
 		// S2 default-deny: an UNLISTED mutating route falls through to
 		// ScopeAdmin (not any-authenticated), so a forgotten new state-changing

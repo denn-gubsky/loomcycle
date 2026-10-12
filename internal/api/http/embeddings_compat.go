@@ -75,6 +75,13 @@ func (s *Server) handleEmbeddings(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// As the chat gateway: a caller at its hard token ceiling is refused here
+	// too. (An embedding call reports no token count, so it is not written to
+	// the usage ledger; the budget check is what it shares with a run.)
+	if !s.admitGatewayBudget(w, r, req.User) {
+		return
+	}
+
 	texts, err := parseEmbeddingsInput(req.Input)
 	if err != nil {
 		writeJSONError(w, http.StatusBadRequest, "bad_request", err.Error())

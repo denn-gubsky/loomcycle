@@ -1,6 +1,7 @@
 package http
 
 import (
+	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
@@ -13,6 +14,7 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/auth"
 	"github.com/denn-gubsky/loomcycle/internal/providers"
 	"github.com/denn-gubsky/loomcycle/internal/resolve"
+	"github.com/denn-gubsky/loomcycle/internal/tools"
 )
 
 // llm_gateway.go — v0.11.0 LLM Gateway endpoint.
@@ -126,6 +128,14 @@ func (s *Server) prepareGatewayDispatch(w http.ResponseWriter, r *http.Request, 
 		return gatewayDispatch{}, false
 	}
 
+	// The caller's token budget, checked as a run's admission checks it. A
+	// gateway call spends the same tokens a run does; without this a caller at
+	// its hard ceiling was refused new runs and could go on calling the model
+	// here.
+	if !s.admitGatewayBudget(w, r, req.UserID) {
+		return gatewayDispatch{}, false
+	}
+
 	requestID := newRequestID()
 	startedAt := time.Now()
 
@@ -215,6 +225,7 @@ func (s *Server) serveLLMChatJSON(
 	logGatewayRequest(requestID, providerID, modelID, req.Tier, req.UserID,
 		resp.Usage.InputTokens, resp.Usage.OutputTokens, resp.StopReason,
 		time.Since(startedAt), nil)
+	s.recordGatewayUsage(r.Context(), req.UserID, providerID, modelID, resp.Usage.InputTokens, resp.Usage.OutputTokens)
 	writeJSONOK(w, resp)
 }
 
@@ -347,6 +358,7 @@ func (s *Server) serveLLMChatStream(
 	logGatewayRequest(requestID, providerID, modelID, req.Tier, req.UserID,
 		usage.InputTokens, usage.OutputTokens, stopReason,
 		time.Since(startedAt), runErr)
+	s.recordGatewayUsage(r.Context(), req.UserID, providerID, modelID, usage.InputTokens, usage.OutputTokens)
 }
 
 // resolveGatewayRequest applies the RFC §"Provider routing" precedence:
@@ -393,6 +405,37 @@ func (s *Server) resolveGatewayRequest(req *llmChatRequest) (providerID, modelID
 		return "", "", "", err
 	}
 	return dec.Provider, dec.Model, dec.Effort, nil
+}
+
+// admitGatewayBudget refuses a raw model call from a caller at its hard token
+// ceiling, with the answer a run start gets. wireUser is the request's own
+// user field, used only when there is no principal.
+func (s *Server) admitGatewayBudget(w http.ResponseWriter, r *http.Request, wireUser string) bool {
+	dec := s.limits.Check(tenantFromCtx(r.Context()), auth.SubjectForFairness(r.Context(), wireUser))
+	if dec.Allowed {
+		return true
+	}
+	writeTokenLimitError(w, dec.Refusal)
+	return false
+}
+
+// recordGatewayUsage writes a gateway call to the usage ledger and counts its
+// tokens against the caller's budget. A gateway call used to be logged and
+// nothing else: it appeared in no usage report and moved no budget, so the
+// cheapest way to spend unaccounted tokens was to skip the agent.
+//
+// It belongs to no run, so it is filed under the caller alone (tenant and
+// subject), as an off-run decision is.
+func (s *Server) recordGatewayUsage(ctx context.Context, wireUser, providerID, modelID string, inputTokens, outputTokens int) {
+	if inputTokens == 0 && outputTokens == 0 {
+		return
+	}
+	rid := tools.RunIdentityValue{TenantID: tenantFromCtx(ctx), UserID: auth.SubjectForFairness(ctx, wireUser)}
+	// Recorded on a ctx that outlives the request: the tokens were spent
+	// whether or not the caller is still there to hear the answer.
+	_ = s.recordCallUsage(context.WithoutCancel(ctx), "", rid, "", 0, &providers.Usage{
+		Provider: providerID, Model: modelID, InputTokens: inputTokens, OutputTokens: outputTokens,
+	})
 }
 
 // logGatewayRequest emits the always-on structured audit line. The
