@@ -744,10 +744,10 @@ type TokenLimitRow struct {
 // It seeds the budget counters (limits.MonthToDate) and nothing else: it is not
 // a ledger row, never appears in a usage report, and is never billed.
 type UsageCarryRow struct {
-	TenantID  string
-	UserID    string
-	Month     time.Time
-	Tokens    int64
+	TenantID string
+	UserID   string
+	Month    time.Time
+	Tokens   int64
 	// Estimated is usage this instance counted against the budget without a
 	// provider's report of it (a raw model call that ended before its usage
 	// arrived). Added to call by call, never max-merged, and added to Tokens
