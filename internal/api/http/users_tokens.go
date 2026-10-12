@@ -73,6 +73,8 @@ type mintUserTokenRequest struct {
 	// Overrides locks the per-run overrides for runs this token starts:
 	// "none", or the list of overrides it may still set.
 	Overrides *auth.OverridePolicy `json:"overrides,omitempty"`
+	// Rate bounds how often the token may start runs.
+	Rate *auth.RateLimit `json:"rate,omitempty"`
 }
 
 // restrictions builds the token's restrictions record from the request.
@@ -81,7 +83,7 @@ func (r mintUserTokenRequest) restrictions() (auth.Restrictions, error) {
 	if r.Agents != nil {
 		out.Agents = *r.Agents
 	}
-	out.Overrides = r.Overrides
+	out.Overrides, out.Rate = r.Overrides, r.Rate
 	return out, out.Validate(r.Agents != nil)
 }
 

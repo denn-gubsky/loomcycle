@@ -773,3 +773,26 @@ func TestHandleMintUserToken_OverridesLocksTheToken(t *testing.T) {
 		}
 	}
 }
+
+// rate in the mint body bounds how often the token may start runs.
+func TestHandleMintUserToken_RateIsStoredOnTheToken(t *testing.T) {
+	s, st := tokenAuthServer(t, "legacy")
+	acme := auth.Principal{TenantID: "acme", Subject: "ops", Scopes: []string{auth.ScopeTenant}}
+	seedUser(t, st, "acme", "alice", "isolated", "active")
+
+	resp := mintFor(t, s, acme, "alice", `{"rate":{"per_minute":6,"burst":20}}`)
+	p, ok := s.resolvePrincipal(context.Background(), resp.Token)
+	if !ok || p.Restrictions.Rate == nil || p.Restrictions.Rate.PerMinute != 6 || p.Restrictions.Rate.Burst != 20 {
+		t.Errorf("resolved rate = %+v (ok=%v), want 6/min burst 20", p.Restrictions.Rate, ok)
+	}
+	if resp.Restrictions == nil || resp.Restrictions.Rate == nil {
+		t.Errorf("the mint answer does not show the rate: %+v", resp.Restrictions)
+	}
+	for _, body := range []string{`{"rate":{"per_minute":0}}`, `{"rate":{"burst":5}}`, `{"rate":{"per_minute":6,"per_hour":1}}`, `{"rate":6}`} {
+		rec := httptest.NewRecorder()
+		s.handleMintUserToken(rec, bodyReq("POST", "/v1/_users/alice/tokens", body, acme, "subject", "alice"))
+		if rec.Code != http.StatusBadRequest {
+			t.Errorf("body %s: status %d, want 400: %s", body, rec.Code, rec.Body.String())
+		}
+	}
+}

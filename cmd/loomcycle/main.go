@@ -40,6 +40,7 @@ import (
 	lchttp "github.com/denn-gubsky/loomcycle/internal/api/http"
 	webhookapi "github.com/denn-gubsky/loomcycle/internal/api/webhook"
 	"github.com/denn-gubsky/loomcycle/internal/audit"
+	"github.com/denn-gubsky/loomcycle/internal/auth"
 	"github.com/denn-gubsky/loomcycle/internal/channels"
 	"github.com/denn-gubsky/loomcycle/internal/cli"
 	"github.com/denn-gubsky/loomcycle/internal/clienttools"
@@ -2004,6 +2005,27 @@ func main() {
 		} else {
 			log.Fatalf("auth: LOOMCYCLE_USER_TOKEN_MAX_TTL_SECONDS=%q is not a positive number of seconds", v)
 		}
+	}
+	// A default rate for run starts, for a caller whose token carries none.
+	// Unset = no default. Operators (admin, tenant operator, the legacy token)
+	// are never bound by the default.
+	if v := os.Getenv("LOOMCYCLE_RUN_RATE_PER_MINUTE"); v != "" {
+		rate := auth.RateLimit{}
+		n, perr := strconv.Atoi(v)
+		if perr != nil {
+			log.Fatalf("auth: LOOMCYCLE_RUN_RATE_PER_MINUTE=%q is not a number", v)
+		}
+		rate.PerMinute = n
+		if b := os.Getenv("LOOMCYCLE_RUN_RATE_BURST"); b != "" {
+			if rate.Burst, perr = strconv.Atoi(b); perr != nil {
+				log.Fatalf("auth: LOOMCYCLE_RUN_RATE_BURST=%q is not a number", b)
+			}
+		}
+		if err := rate.Validate(); err != nil {
+			log.Fatalf("auth: LOOMCYCLE_RUN_RATE_PER_MINUTE / _BURST: %v", err)
+		}
+		srv.SetDefaultRunRate(rate)
+		log.Printf("auth: default run rate %d/min, burst %d", rate.PerMinute, rate.EffectiveBurst())
 	}
 	// Expired token rows are removed once they have been dead for a while. A
 	// deployment minting short-lived tokens daily would otherwise keep every

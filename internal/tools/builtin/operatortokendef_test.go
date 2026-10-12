@@ -583,3 +583,34 @@ func TestOperatorTokenDef_OverridesLockIsStoredAndSurvivesRotation(t *testing.T)
 		}
 	}
 }
+
+func TestOperatorTokenDef_RateIsStoredAndSurvivesRotation(t *testing.T) {
+	tool, ctx, st, cleanup := operatorTokenDefFixture(t)
+	defer cleanup()
+	rateOf := func(defID string) *auth.RateLimit {
+		row, err := st.OperatorTokenDefGet(ctx, defID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		r, err := auth.ParseRestrictions(row.RestrictionsJSON)
+		if err != nil {
+			t.Fatalf("stored %q: %v", row.RestrictionsJSON, err)
+		}
+		return r.Rate
+	}
+	out := mustOp(t, tool, ctx, `{"op":"create","name":"ci","tenant_id":"acme","scopes":["runs:create"],"rate":{"per_minute":6,"burst":20}}`)
+	if r := rateOf(out["def_id"].(string)); r == nil || r.PerMinute != 6 || r.Burst != 20 {
+		t.Errorf("stored rate = %+v", r)
+	}
+	rotated := mustOp(t, tool, ctx, `{"op":"rotate","name":"ci"}`)
+	if r := rateOf(rotated["def_id"].(string)); r == nil || r.PerMinute != 6 {
+		t.Errorf("a rotation dropped the rate: %+v", r)
+	}
+	res, err := tool.Execute(ctx, json.RawMessage(`{"op":"create","name":"bad","tenant_id":"acme","scopes":["runs:create"],"rate":{"per_minute":0}}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !res.IsError || !strings.Contains(res.Text, "rate") {
+		t.Errorf("a zero rate: is_error=%v text=%q, want a refusal naming rate", res.IsError, res.Text)
+	}
+}
