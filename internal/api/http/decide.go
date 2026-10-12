@@ -12,6 +12,7 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/connector"
 	"github.com/denn-gubsky/loomcycle/internal/decision"
 	"github.com/denn-gubsky/loomcycle/internal/providers"
+	"github.com/denn-gubsky/loomcycle/internal/runner"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
 	"github.com/denn-gubsky/loomcycle/internal/tools/builtin"
 )
@@ -68,6 +69,10 @@ func (s *Server) Decision(ctx context.Context, input json.RawMessage) (connector
 	}
 
 	if err := s.refuseAgentlessCall(ctx, "a decision"); err != nil {
+		return connector.ToolResult{}, err
+	}
+	// A direct decision is a model call a caller asked for, like a run start.
+	if err := s.admitPrincipalRate(ctx); err != nil {
 		return connector.ToolResult{}, err
 	}
 	p, authed := auth.PrincipalFromContext(ctx)
@@ -179,6 +184,10 @@ func (s *Server) handleDecide(w http.ResponseWriter, r *http.Request) {
 		var over *connector.TokenLimitError
 		if errors.As(err, &over) {
 			writeTokenLimitError(w, &over.Info)
+			return
+		}
+		if errors.Is(err, runner.ErrRateLimited) {
+			writeRateLimited(w, err)
 			return
 		}
 		writeJSONError(w, http.StatusInternalServerError, "internal", err.Error())

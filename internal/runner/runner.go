@@ -108,6 +108,12 @@ var (
 	// immediately rather than backing off operator-wide.
 	// Wire: HTTP 429 + Retry-After: 5 / gRPC ResourceExhausted.
 	ErrProviderConcurrencyExhausted = errors.New("provider_concurrency_exhausted")
+	// ErrRateLimited refuses a run start from a caller that is starting runs
+	// faster than its rate allows. Unlike the concurrency refusals above it
+	// is about how OFTEN, not how many at once; the answer says how long to
+	// wait.
+	ErrRateLimited = errors.New("rate_limited")
+
 	// ErrRuntimePaused — a runtime-wide pause (POST /v1/_pause) is in
 	// effect, so new runs are not admitted (RFC X / F41). The runtime is
 	// quiescing for a snapshot; retry after resume. Wire: HTTP 503 / gRPC

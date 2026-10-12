@@ -156,3 +156,36 @@ func TestRestrictions_OverridePolicyOnTheWire(t *testing.T) {
 		t.Error("an empty text policy was accepted")
 	}
 }
+
+func TestRestrictions_Rate(t *testing.T) {
+	r := Restrictions{Rate: &RateLimit{PerMinute: 6, Burst: 20}}
+	if r.IsZero() || r.RunPlaneOnly() {
+		t.Errorf("a rate alone: IsZero=%v RunPlaneOnly=%v, want a restriction that does not confine the token", r.IsZero(), r.RunPlaneOnly())
+	}
+	if err := r.Validate(false); err != nil {
+		t.Errorf("a valid rate refused: %v", err)
+	}
+	if got := (RateLimit{PerMinute: 6}).EffectiveBurst(); got != 6 {
+		t.Errorf("burst defaults to %d, want per_minute", got)
+	}
+	for name, bad := range map[string]RateLimit{
+		"zero rate": {}, "negative": {PerMinute: -1}, "negative burst": {PerMinute: 1, Burst: -1},
+		"absurd rate": {PerMinute: MaxRatePerMinute + 1}, "absurd burst": {PerMinute: 1, Burst: MaxRateBurst + 1},
+	} {
+		rate := bad
+		if err := (Restrictions{Rate: &rate}).Validate(false); err == nil {
+			t.Errorf("%s: accepted", name)
+		}
+	}
+	s, err := MarshalRestrictions(r)
+	if err != nil {
+		t.Fatal(err)
+	}
+	back, err := ParseRestrictions(s)
+	if err != nil || back.Rate == nil || back.Rate.PerMinute != 6 || back.Rate.Burst != 20 {
+		t.Errorf("round trip of %s = %+v (err %v)", s, back.Rate, err)
+	}
+	if _, err := ParseRestrictions(`{"rate":{"per_minute":6,"per_hour":1}}`); err == nil {
+		t.Error("a rate with an unknown key was read without error")
+	}
+}

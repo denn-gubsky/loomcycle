@@ -8,6 +8,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"strconv"
 	"strings"
 
 	"github.com/denn-gubsky/loomcycle/internal/agents"
@@ -25,6 +26,8 @@ type replayErr struct {
 	status int
 	code   string
 	msg    string
+	// retryAfter, when set, is the Retry-After header in seconds.
+	retryAfter int
 }
 
 func (e *replayErr) Error() string { return e.msg }
@@ -57,6 +60,13 @@ func (s *Server) ReplaySession(ctx context.Context, req connector.ReplaySessionR
 	}
 	if err := agents.ValidateName(req.Agent); err != nil {
 		return connector.ReplaySessionResult{}, &replayErr{status: http.StatusBadRequest, msg: "invalid target agent name: " + err.Error()}
+	}
+	// A replay opens a session and seeds a run: counted as a run start.
+	if err := s.admitPrincipalRate(ctx); err != nil {
+		var rl *rateLimitedError
+		errors.As(err, &rl)
+		return connector.ReplaySessionResult{}, &replayErr{status: http.StatusTooManyRequests, code: "rate_limited",
+			msg: err.Error(), retryAfter: retryAfterSeconds(rl.RetryAfter)}
 	}
 
 	// Source session — tenant-gated read; a cross-tenant or missing id both fold
@@ -281,6 +291,9 @@ func (s *Server) handleReplay(w http.ResponseWriter, r *http.Request) {
 			status := re.status
 			if status == 0 {
 				status = http.StatusInternalServerError
+			}
+			if re.retryAfter > 0 {
+				w.Header().Set("Retry-After", strconv.Itoa(re.retryAfter))
 			}
 			if re.code != "" {
 				writeJSONError(w, status, re.code, re.msg)

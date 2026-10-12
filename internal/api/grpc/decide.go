@@ -33,7 +33,7 @@ func (s *Server) Decide(ctx context.Context, req *loomcyclepb.DecideRequest) (*l
 	}
 	res, err := s.connector.Decision(ctx, input)
 	if err != nil {
-		if errors.Is(err, runner.ErrTokenLimitExceeded) {
+		if errors.Is(err, runner.ErrTokenLimitExceeded) || errors.Is(err, runner.ErrRateLimited) {
 			// The refusal, code and details run admission gives.
 			return nil, mapRunnerErr(err)
 		}

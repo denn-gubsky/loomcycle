@@ -32,6 +32,8 @@ const errorDomain = "loomcycle"
 // spellings of the same condition inside one product.
 func reasonFor(err error) string {
 	switch {
+	case errors.Is(err, runner.ErrRateLimited):
+		return "rate_limited"
 	case errors.Is(err, runner.ErrAgentNotAllowed):
 		return "agent_not_allowed"
 	case errors.Is(err, runner.ErrOverrideNotAllowed):
