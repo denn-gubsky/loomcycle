@@ -2663,6 +2663,14 @@ func runLoop(ctx context.Context, opts RunOptions) (RunResult, error) {
 	// EventFallbackSuppressed event (RFC AT §4.4), never a silent leak to a
 	// raw 400. PriorMessages were validated when first sent, so only the fresh
 	// segments need re-validating here.
+	// Backstop for the block-type check every intake makes before it gets
+	// here (ValidateSegmentTypes). Run-creation sites that build their own
+	// segments are covered by this one, and a new intake that forgets the
+	// check fails closed instead of reading a misspelled type as trusted.
+	if err := ValidateSegmentTypes(opts.Segments); err != nil {
+		emit(providers.Event{Type: providers.EventError, Error: err.Error()})
+		return RunResult{}, err
+	}
 	if messagesHaveImage(messages) {
 		if err := validateImageSegments(opts.Segments); err != nil {
 			emit(providers.Event{Type: providers.EventError, Error: err.Error()})
@@ -4532,6 +4540,28 @@ var allowedUntrustedKinds = map[string]bool{
 	"tool_output":   true,
 	"search_result": true,
 	"run_metadata":  true, // non-secret metadata projected from an external trigger body
+}
+
+// ValidateSegmentTypes refuses a content block whose type is set and is not
+// one the loop knows. flattenContent reads anything it does not recognise as
+// trusted text, so without this a caller that misspells "untrusted-block"
+// sends its evidence as instructions and is told nothing. An EMPTY type is
+// left alone: it has always meant trusted text, and callers rely on it.
+//
+// Every run intake calls it and answers with a client error. It is not
+// applied to stored transcripts: a block recorded before this check existed
+// must still replay.
+func ValidateSegmentTypes(segs []PromptSegment) error {
+	for i, s := range segs {
+		for j, c := range s.Content {
+			switch c.Type {
+			case "", "trusted-text", "untrusted-block", "image":
+			default:
+				return fmt.Errorf("segments[%d].content[%d]: unknown type %q (allowed: trusted-text, untrusted-block, image)", i, j, c.Type)
+			}
+		}
+	}
+	return nil
 }
 
 // validImageMediaTypes is the whitelist of media types an "image" content

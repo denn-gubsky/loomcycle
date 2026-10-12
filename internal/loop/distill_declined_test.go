@@ -1420,9 +1420,9 @@ func TestRun_NoContextReportBeforeTheFirstMeasuredTurn(t *testing.T) {
 		Tools:      []tools.Tool{peek},
 		Dispatcher: tools.NewDispatcher([]tools.Tool{peek}),
 		Segments: []PromptSegment{
-			{Role: "system", Content: []PromptContentBlock{{Type: "text",
+			{Role: "system", Content: []PromptContentBlock{{Type: "trusted-text",
 				Text: strings.Repeat("system prompt filler. ", 3200)}}},
-			{Role: "user", Content: []PromptContentBlock{{Type: "text", Text: "hi"}}},
+			{Role: "user", Content: []PromptContentBlock{{Type: "trusted-text", Text: "hi"}}},
 		},
 		// keep_last_n 99 pins the whole conversation → every tier declines, so
 		// the exhaustion report is reachable once the footprint is measured.

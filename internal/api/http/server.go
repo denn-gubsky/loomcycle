@@ -2715,6 +2715,12 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 	if msg, ok := connector.ValidateMaxWallSeconds(in.MaxWallSeconds); !ok {
 		return fmt.Errorf("%w: %s", runner.ErrInvalidArgument, msg)
 	}
+	// The one seam gRPC Run / Continue, the spawn tools, a started draft and
+	// the triggers share: a block type nobody knows is the caller's mistake,
+	// reported as one, and never run as trusted text.
+	if err := loop.ValidateSegmentTypes(in.Segments); err != nil {
+		return fmt.Errorf("%w: %v", runner.ErrInvalidArgument, err)
+	}
 	startingDraft := in.ConfiguredRunID != ""
 	if startingDraft && s.store == nil {
 		return runner.ErrSessionRequired
@@ -4679,6 +4685,11 @@ func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, `no input: provide "segments" (or a top-level "prompt" string)`, http.StatusBadRequest)
 		return
 	}
+	// A misspelled block type would otherwise be read as trusted text.
+	if err := loop.ValidateSegmentTypes(req.Segments); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
 	if msg, ok := connector.ValidateMaxWallSeconds(req.MaxWallSeconds); !ok {
 		http.Error(w, msg, http.StatusBadRequest)
 		return
@@ -5590,6 +5601,10 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := body.OutputFormat.Validate(); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	if err := loop.ValidateSegmentTypes(body.Segments); err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}

@@ -4181,7 +4181,7 @@ func (x *PromptSegment) GetContent() []*PromptContentBlock {
 
 // PromptContentBlock mirrors loop.PromptContentBlock. The trust
 // vocabulary stays HTTP-compatible:
-//   - "trusted-text" / "user-text" / "tool-output-text" / "third-party-text"
+//   - "trusted-text" / "untrusted-block" / "image" (empty = "trusted-text"; any other type is refused)
 //
 // Cacheable=true marks this block for native provider caching
 // (Anthropic cache_control). Ignored on providers that don't support it.

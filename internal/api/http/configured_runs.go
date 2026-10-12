@@ -339,6 +339,9 @@ func (s *Server) validateDraft(ctx context.Context, tenant string, d runDraft) (
 	if len(d.Segments) == 0 {
 		return `no input: the draft must have "segments" (or a "prompt")`, false
 	}
+	if err := loop.ValidateSegmentTypes(d.Segments); err != nil {
+		return err.Error(), false
+	}
 	if err := d.ToolChoice.Validate(); err != nil {
 		return err.Error(), false
 	}
