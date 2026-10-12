@@ -552,27 +552,65 @@ func (u *untrustedInputs) UnmarshalJSON(b []byte) error {
 // Forwarded entries go through the same kind allowlist as written ones: a
 // run's own input may carry a label only the runtime may write, and a parent
 // must not be able to hand that label on by reference either.
+//
+// The work done here is bounded by the limits it feeds, not by what the
+// caller wrote. A reference is a few bytes that stand for a whole input, and
+// a list may repeat it, so expanding first and checking afterwards would let
+// a short argument build a list of (references x entries) before anything
+// refused it. Expansion therefore stops as soon as the result is past a
+// limit: what comes back is then already over it, and checkUntrusted refuses
+// it. The figures in that refusal are how far expansion got, a lower bound.
 func (u untrustedInputs) resolve(ctx context.Context) []tools.UntrustedInput {
 	if u == nil {
 		return nil
 	}
 	out := make([]tools.UntrustedInput, 0, len(u))
+	var (
+		own      []tools.UntrustedInput // what one reference expands to
+		ownBytes int
+		ownReady bool
+		refBytes int // text added through references so far
+	)
 	for _, e := range u {
 		if !e.ref {
 			out = append(out, e.UntrustedInput)
 			continue
 		}
-		for _, own := range tools.RunUntrusted(ctx) {
-			if own.Text == "" {
-				continue
-			}
-			if !spawnUntrustedKinds[own.Kind] {
-				own.Kind = ""
-			}
-			out = append(out, own)
+		if !ownReady {
+			own, ownBytes = forwardableUntrusted(tools.RunUntrusted(ctx))
+			ownReady = true
 		}
+		// Past a limit already: every further reference could only add to a
+		// list that will be refused.
+		if len(out) > MaxSpawnUntrustedEntries || refBytes > MaxSpawnUntrustedBytes {
+			return out
+		}
+		out = append(out, own...)
+		refBytes += ownBytes
 	}
 	return out
+}
+
+// forwardableUntrusted is what a reference to a run's untrusted input expands
+// to: its entries that carry text, each under a label a parent may write. It
+// reads the input once, however many references a list holds, and returns no
+// more than is needed to be over a limit: one entry past the entry limit, or
+// up to the entry that crosses the byte limit. The text is shared, not copied.
+func forwardableUntrusted(in []tools.UntrustedInput) (out []tools.UntrustedInput, bytes int) {
+	for _, own := range in {
+		if own.Text == "" {
+			continue
+		}
+		if !spawnUntrustedKinds[own.Kind] {
+			own.Kind = ""
+		}
+		out = append(out, own)
+		bytes += len(own.Text)
+		if len(out) > MaxSpawnUntrustedEntries || bytes > MaxSpawnUntrustedBytes {
+			break
+		}
+	}
+	return out, bytes
 }
 
 // A poll-mode spawn answers before its child has done anything, and what a

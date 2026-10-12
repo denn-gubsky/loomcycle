@@ -3,8 +3,10 @@ package builtin
 import (
 	"context"
 	"encoding/json"
+	"strconv"
 	"strings"
 	"testing"
+	"unsafe"
 
 	"github.com/denn-gubsky/loomcycle/internal/tools"
 )
@@ -252,5 +254,106 @@ func TestAgentTool_SchemaDocumentsTheRefEntry(t *testing.T) {
 	}
 	if !strings.Contains(u.Description, `{"ref": "input"}`) {
 		t.Errorf("the description does not show the entry: %q", u.Description)
+	}
+}
+
+// A reference is a few bytes standing for a whole input, and a list may
+// repeat it. The list a child is handed is bounded while it is built, not
+// only checked once it exists: a short argument must not be able to make the
+// tool assemble (references x entries) before anything refuses it.
+func TestAgentTool_RefExpansionStopsAtTheLimitInsteadOfBuildingTheWholeList(t *testing.T) {
+	refs := func(n int) untrustedInputs {
+		u := make(untrustedInputs, n)
+		for i := range u {
+			u[i] = untrustedEntry{ref: true}
+		}
+		return u
+	}
+	entries := func(n int, text string) context.Context {
+		own := make([]tools.UntrustedInput, n)
+		for i := range own {
+			own[i] = tools.UntrustedInput{Kind: "untrusted", Text: text}
+		}
+		return tools.WithRunUntrusted(context.Background(), own)
+	}
+	for name, tc := range map[string]struct {
+		ctx  context.Context
+		list untrustedInputs
+		max  int // the most entries expansion may assemble
+	}{
+		// 2000 x 64 = 128000 entries if expanded in full.
+		"a reference repeated":        {entries(MaxSpawnUntrustedEntries, "x"), refs(2000), 2*MaxSpawnUntrustedEntries + 1},
+		"one reference, a huge input": {entries(100_000, "x"), refs(1), MaxSpawnUntrustedEntries + 1},
+		// Each expansion is at the byte limit on its own; a second is over it.
+		"a reference at the byte limit, repeated": {entries(1, strings.Repeat("x", MaxSpawnUntrustedBytes)), refs(2000), 2},
+		"written entries then references": {entries(MaxSpawnUntrustedEntries, "x"),
+			append(untrustedInputs{{UntrustedInput: tools.UntrustedInput{Text: "own"}}}, refs(2000)...), 2*MaxSpawnUntrustedEntries + 2},
+	} {
+		t.Run(name, func(t *testing.T) {
+			got := tc.list.resolve(tc.ctx)
+			if len(got) > tc.max {
+				t.Errorf("expansion assembled %d entries before any limit was applied, want at most %d", len(got), tc.max)
+			}
+			// Stopping early must never turn an over-limit list into an
+			// accepted one: what comes back is still refused.
+			if _, ok := checkUntrusted("untrusted", got); ok {
+				t.Errorf("a list cut short at %d entries passed the limits", len(got))
+			}
+		})
+	}
+	// No input at all: any number of references is nothing, and accepted.
+	if got := refs(2000).resolve(context.Background()); len(got) != 0 {
+		t.Errorf("references to no input resolved to %d entries", len(got))
+	}
+}
+
+// A fan-out is refused as a whole, before any child starts, when an entry's
+// reference resolves past a limit. Every entry is bounded on its own, and
+// entries forwarding the same input share its text: a fan-out by reference
+// holds one copy, where the same fan-out written out would hold one each.
+func TestAgentTool_ParallelSpawnBoundsEachEntrysRefBeforeAnyChildStarts(t *testing.T) {
+	spawns := func(untrusted string) string {
+		var b strings.Builder
+		b.WriteString(`{"op":"parallel_spawn","spawns":[`)
+		for i := 0; i < MaxParallelSpawns; i++ {
+			if i > 0 {
+				b.WriteString(",")
+			}
+			b.WriteString(`{"name":"c` + strconv.Itoa(i) + `","prompt":"p","untrusted":` + untrusted + `}`)
+		}
+		b.WriteString(`]}`)
+		return b.String()
+	}
+	atLimit := tools.WithRunUntrusted(context.Background(), []tools.UntrustedInput{
+		{Kind: "untrusted", Text: strings.Repeat("x", MaxSpawnUntrustedBytes)},
+	})
+	// Every entry over its own limit: refused, nothing started.
+	r := &untrustedRunner{}
+	res := execJSON(t, r.tool(), atLimit, spawns(`[{"ref":"input"},{"ref":"input"}]`))
+	if !res.IsError || !strings.Contains(res.Text, "spawns[0].untrusted") || !strings.Contains(res.Text, "over the limit") {
+		t.Errorf("want the first entry refused by name, got IsError=%v %q", res.IsError, res.Text)
+	}
+	if len(r.got) != 0 {
+		t.Errorf("children started despite the refusal: %d", len(r.got))
+	}
+	// Every entry exactly at its limit: accepted, each child handed the one
+	// entry.
+	r = &untrustedRunner{}
+	if res := execJSON(t, r.tool(), atLimit, spawns(`[{"ref":"input"}]`)); res.IsError {
+		t.Fatalf("a fan-out with every entry at the limit was refused: %s", res.Text)
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if len(r.got) != MaxParallelSpawns {
+		t.Fatalf("%d children ran, want %d", len(r.got), MaxParallelSpawns)
+	}
+	own := tools.RunUntrusted(atLimit)[0].Text
+	for name, got := range r.got {
+		if len(got) != 1 || len(got[0].Text) != MaxSpawnUntrustedBytes {
+			t.Fatalf("child %s got %d entries", name, len(got))
+		}
+		if unsafe.StringData(got[0].Text) != unsafe.StringData(own) {
+			t.Errorf("child %s was handed a copy of the text, not the run's own", name)
+		}
 	}
 }
