@@ -92,7 +92,7 @@ const (
 type bgEntry struct {
 	name, prompt, defID string
 	compaction          *config.Compaction
-	untrusted           untrustedInputs
+	untrusted           []tools.UntrustedInput // references already resolved
 	timeoutMs           int
 	index               int // -1 for a spawn
 }

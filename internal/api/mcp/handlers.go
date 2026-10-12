@@ -266,6 +266,11 @@ func handleSpawnRun(ctx context.Context, env *handlerEnv, args json.RawMessage) 
 	if req.SessionID == "" && len(req.Segments) == 0 {
 		return toolErr(`spawn_run: segments is required for a fresh run — a run with no user turn sends the model an empty prompt. Pass segments: [{"role":"user","content":[{"type":"trusted-text","text":"..."}]}]`), nil
 	}
+	// Refused here as a tool error. Left to the run path it comes back as a
+	// result with status "failed", which reads as a run that was tried.
+	if err := loop.ValidateSegmentTypes(req.Segments); err != nil {
+		return toolErr("spawn_run: " + err.Error()), nil
+	}
 	if errMsg, ok := connector.ValidateUserCredentialsMap(req.UserCredentials); !ok {
 		return toolErr("spawn_run: " + errMsg), nil
 	}

@@ -20,7 +20,13 @@ conversation — so put all it needs in it.
   what to do it to here. `kind` is one of `untrusted` (the default),
   `user_input`, `web_content`, `tool_output`, `search_result`, `uploaded_cv`,
   `qa_question`; any other value becomes `untrusted`. Placeholders in it are
-  not expanded. At most 64 entries and 1 MiB of text per child.
+  not expanded. An entry may instead be `{"ref": "input"}`: it stands for the
+  untrusted text **your own run was given**, in order and with its kinds, so
+  you pass it on without copying it into the call (your record of the call
+  keeps the reference, not the text). It can sit among `{text, kind}` entries;
+  it adds nothing when your run was given none; `"input"` is the only
+  reference, and an entry is never both `ref` and `text`. At most 64 entries
+  and 1 MiB of text per child, counted after a reference is filled in.
 - `def_id` — run a specific version of that agent (from `AgentDef`). The
   version's name must match `name`.
 - `result` — how the child's outcome comes back. `text` (default): its final
@@ -95,6 +101,9 @@ comes back from `poll`.
   answers before the child has run; read it with `poll`.
 - `untrusted: N bytes of text is over the limit of 1048576` — pass less, or
   split the work across several children.
+- `untrusted: unknown ref "X" ...` or `... either {ref} or {text, kind}, not
+  both` — the only reference is `{"ref": "input"}`, written as an entry of
+  its own.
 - `unknown sub-agent "X" ...` — no agent is registered under that name for
   your tenant. Check `Context {"op":"agents"}`; retrying is pointless.
 - `Agent tool: def_id "..." is for agent "Y", not "X" ...` or `... is

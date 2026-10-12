@@ -11,7 +11,7 @@ func sysSeg(text string) loop.PromptSegment {
 	return loop.PromptSegment{Role: "system", Content: []loop.PromptContentBlock{{Type: "trusted-text", Text: text}}}
 }
 func userSeg(text string) loop.PromptSegment {
-	return loop.PromptSegment{Role: "user", Content: []loop.PromptContentBlock{{Type: "text", Text: text}}}
+	return loop.PromptSegment{Role: "user", Content: []loop.PromptContentBlock{{Type: "trusted-text", Text: text}}}
 }
 
 // TestInjectMetadataSegments_TrustedAndUntrusted pins that an LLM agent gets

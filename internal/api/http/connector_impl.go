@@ -261,6 +261,12 @@ func (s *Server) SpawnRunBatch(ctx context.Context, req connector.BatchSpawnRequ
 			return connector.BatchSpawnResult{}, fmt.Errorf(
 				`spawn_runs: spawns[%d].segments is required — a run with no user turn sends the model an empty prompt and completes anyway. Pass segments: [{"role":"user","content":[{"type":"trusted-text","text":"..."}]}]`, i)
 		}
+		// So is a block type nobody knows. RunOnce refuses it too, but as one
+		// failed child in a green envelope; here it fails the batch, on
+		// runs:batch, gRPC and MCP alike.
+		if err := loop.ValidateSegmentTypes(req.Spawns[i].Segments); err != nil {
+			return connector.BatchSpawnResult{}, fmt.Errorf("spawn_runs: spawns[%d]: %v", i, err)
+		}
 		// An over-long parent_context field is the same kind of malformed spec,
 		// and the MCP tool already refuses the batch for it with this message.
 		// RunOnce would catch it too, but as one failed child in an otherwise

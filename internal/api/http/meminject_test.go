@@ -89,7 +89,7 @@ func TestEffectiveCoreBlocks_EmptyIsNil(t *testing.T) {
 func TestFirstUserText(t *testing.T) {
 	segs := []loop.PromptSegment{
 		{Role: "system", Content: []loop.PromptContentBlock{{Type: "trusted-text", Text: "sys"}}},
-		{Role: "user", Content: []loop.PromptContentBlock{{Type: "text", Text: "find my "}, {Type: "text", Text: "prefs"}}},
+		{Role: "user", Content: []loop.PromptContentBlock{{Type: "trusted-text", Text: "find my "}, {Type: "trusted-text", Text: "prefs"}}},
 	}
 	if got := firstUserText(segs); got != "find my  prefs" {
 		t.Errorf("firstUserText = %q", got)
