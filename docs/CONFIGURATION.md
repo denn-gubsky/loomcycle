@@ -1393,6 +1393,7 @@ Rules worth knowing:
 - **Runs that take no model call are stopped too.** A code agent over its budget stops at its next step.
 - **It is the same counter as the default mode**, so the same limits hold: exact on one replica, best effort across several, and a counter that could not be loaded at boot refuses nothing.
 - **Not covered:** a compaction summary and the model calls a tool makes on a run's behalf (an evaluation, a decision, memory consolidation) are not checked one by one. The run's own next call is.
+- **A gateway call that ends without a usage report is counted by an estimate**, in either mode: the caller hung up, the provider failed first, or it reported zero. The estimate comes from the size of what was sent and returned and errs high. It counts against the budget and survives a restart, but it is not written to the usage ledger, so `/v1/_usage` and cost reports show only what a provider measured.
 - **Any value other than `strict` stops the server at boot**, so a misspelled setting cannot leave a deployment unenforced.
 
 ### Declared principals — static `(tenant, user)` logins (RFC AO)
