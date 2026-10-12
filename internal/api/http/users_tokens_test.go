@@ -683,3 +683,19 @@ func TestHandleMintUserToken_CannotOutliveTheMintingToken(t *testing.T) {
 		t.Errorf("an unbounded minter minted a token ending %v", resp.ExpiresAt)
 	}
 }
+
+// A principal that names a token row the store does not have is refused: not
+// being able to learn how long the minter has must not read as "forever".
+func TestHandleMintUserToken_UnreadableMintingTokenRefuses(t *testing.T) {
+	s, st := tokenAuthServer(t, "legacy")
+	ghost := auth.Principal{TenantID: "acme", Subject: "ops", Scopes: []string{auth.ScopeTenant}, TokenDefID: "def_gone"}
+	seedUser(t, st, "acme", "alice", "isolated", "active")
+	rec := httptest.NewRecorder()
+	s.handleMintUserToken(rec, bodyReq("POST", "/v1/_users/alice/tokens", "", ghost, "subject", "alice"))
+	if rec.Code != http.StatusInternalServerError {
+		t.Errorf("status %d, want 500: %s", rec.Code, rec.Body.String())
+	}
+	if rows, _ := st.OperatorTokenDefListBySubject(context.Background(), "acme", "alice"); len(rows) != 0 {
+		t.Errorf("%d token(s) minted by a principal whose own token could not be read", len(rows))
+	}
+}

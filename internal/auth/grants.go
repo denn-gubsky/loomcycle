@@ -39,3 +39,20 @@ func GrantableUserScopes(accessMode string) ([]string, error) {
 		return nil, fmt.Errorf("auth: no grantable scopes for access_mode %q (want tenant|isolated)", accessMode)
 	}
 }
+
+// UserTokenNamePrefix starts the name of every delegated per-user token.
+//
+// A token's name is one namespace for the whole deployment: it is not
+// tenant-qualified, and the operator-token tool acts on "the name's current
+// token" — rotate and retire by name take the newest live row of that name,
+// and create refuses a name that has one. Names behind this prefix are
+// written by tenant operators (for their users) and may repeat across
+// tenants, so the prefix is a boundary held from both sides: the user-token
+// mint writes only inside it, and the operator-token tool neither creates
+// inside it nor acts by name on it.
+const UserTokenNamePrefix = "u-"
+
+// IsUserTokenName reports whether name is in the per-user token namespace.
+func IsUserTokenName(name string) bool {
+	return len(name) >= len(UserTokenNamePrefix) && name[:len(UserTokenNamePrefix)] == UserTokenNamePrefix
+}

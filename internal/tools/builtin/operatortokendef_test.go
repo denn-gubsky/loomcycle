@@ -444,3 +444,43 @@ func TestOperatorTokenDef_RotateOfAnExpiredTokenIsRefused(t *testing.T) {
 	// Its name is free again: an expired token is not the name's live one.
 	mustOp(t, tool, ctx, `{"op":"create","name":"dead","tenant_id":"acme","scopes":["runs:create"]}`)
 }
+
+// Names behind the per-user prefix are written by tenant operators and repeat
+// across tenants, so the operator tool neither creates there nor acts by name
+// there: "the current token named u-alice" is whichever tenant minted last.
+func TestOperatorTokenDef_StaysOutOfThePerUserTokenNamespace(t *testing.T) {
+	tool, ctx, st, cleanup := operatorTokenDefFixture(t)
+	defer cleanup()
+	for _, tenant := range []string{"t1", "t2"} {
+		if _, err := st.OperatorTokenDefCreate(ctx, store.OperatorTokenDefRow{
+			DefID: "def_" + tenant, Name: "u-alice", TenantID: tenant, Subject: "alice",
+			TokenHash: "h-" + tenant, AllowedScopes: []string{auth.ScopeUser},
+		}); err != nil {
+			t.Fatal(err)
+		}
+		time.Sleep(2 * time.Millisecond)
+	}
+	for _, in := range []string{
+		`{"op":"create","name":"u-new","tenant_id":"acme","scopes":["runs:create"]}`,
+		`{"op":"rotate","name":"u-alice"}`,
+		`{"op":"retire","name":"u-alice"}`,
+	} {
+		res, err := tool.Execute(ctx, json.RawMessage(in))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !res.IsError || !strings.Contains(res.Text, "per-user") {
+			t.Errorf("%s: is_error=%v text=%q, want a refusal", in, res.IsError, res.Text)
+		}
+	}
+	for _, id := range []string{"def_t1", "def_t2"} {
+		if row, _ := st.OperatorTokenDefGet(ctx, id); !row.RetiredAt.IsZero() {
+			t.Errorf("%s was retired by a by-name operation", id)
+		}
+	}
+	// By def_id the operator still reaches exactly the token it names.
+	mustOp(t, tool, ctx, `{"op":"retire","def_id":"def_t1"}`)
+	if row, _ := st.OperatorTokenDefGet(ctx, "def_t2"); !row.RetiredAt.IsZero() {
+		t.Error("retiring def_t1 by id touched def_t2")
+	}
+}

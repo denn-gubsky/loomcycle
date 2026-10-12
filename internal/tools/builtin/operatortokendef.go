@@ -190,6 +190,10 @@ func (s *OperatorTokenDef) execCreate(ctx context.Context, in operatorTokenDefIn
 	if !operatorTokenNameRe.MatchString(in.Name) {
 		return errResult(fmt.Sprintf("create: name %q invalid (must match [a-zA-Z0-9_-]{1,64})", in.Name)), nil
 	}
+	if auth.IsUserTokenName(in.Name) {
+		return errResult(fmt.Sprintf("create: name %q is in the per-user token namespace (%q…) — choose another name",
+			in.Name, auth.UserTokenNamePrefix)), nil
+	}
 	if in.TenantID == "" {
 		return errResult("create: missing required field: tenant_id"), nil
 	}
@@ -535,6 +539,13 @@ func (s *OperatorTokenDef) resolveTarget(ctx context.Context, op string, in oper
 		return row, nil
 	}
 	if in.Name != "" {
+		// Names in the per-user namespace are chosen by tenant operators and
+		// repeat across tenants, so "the current token named X" there is
+		// whichever tenant minted last. Acting on it by name could rotate or
+		// retire another tenant's token than the one meant.
+		if auth.IsUserTokenName(in.Name) {
+			return store.OperatorTokenDefRow{}, fmt.Errorf("%s: name %q is a per-user token name, which is not unique across tenants — target it by def_id", op, in.Name)
+		}
 		row, err := s.Store.OperatorTokenDefGetCurrentByName(ctx, in.Name)
 		if err != nil {
 			var nf *store.ErrNotFound

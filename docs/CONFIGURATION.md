@@ -1204,7 +1204,7 @@ The per-user mint takes three optional fields. With no body it behaves as before
 | Field | Meaning |
 |---|---|
 | `ttl_seconds` | The token's lifetime. The answer carries `expires_at`. |
-| `name` | A label for the token (`[a-zA-Z0-9_-]{1,62}`). It is stored as `u-<name>`: every per-user token's name carries that prefix, so one can never take an operator token's name. Default: `u-<subject>`. |
+| `name` | A label for the token (`[a-zA-Z0-9_-]{1,62}`). It is stored as `u-<name>`: every per-user token's name carries that prefix, so one can never take an operator token's name. Names behind `u-` are not unique across tenants: `operator-token create` refuses them, and `rotate` / `retire` reach such a token by `--def-id`, not by `--name`. Default: `u-<subject>`. |
 | `max_active` | Keep at most this many of the user's tokens alive. After the mint, the oldest beyond the count are retired at once, and the answer lists them in `retired`. |
 
 ```sh

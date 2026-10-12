@@ -73,17 +73,9 @@ type mintUserTokenRequest struct {
 // characters shorter than the 64 a token name allows.
 var userTokenLabelRe = regexp.MustCompile(`^[a-zA-Z0-9_-]{1,62}$`)
 
-// userTokenNamePrefix starts every delegated user token's name.
-//
-// A token's name is not tenant-qualified, and the operator-token tool acts on
-// "the name's current token": rotate and retire by name take the newest live
-// row of that name, and create refuses a name that has one. A tenant operator
-// who could choose a user token's whole name could therefore take an
-// operator's token name — and have the operator's next rotate or retire land
-// on the tenant's token, or block the operator from creating that name at
-// all. The prefix keeps every name this route writes inside its own corner of
-// that namespace, as the derived default (u-<subject>) always was.
-const userTokenNamePrefix = "u-"
+// userTokenNamePrefix starts every delegated user token's name; see
+// auth.UserTokenNamePrefix for why the namespace is fenced.
+const userTokenNamePrefix = auth.UserTokenNamePrefix
 
 // maxMintBodyBytes bounds the mint body. It holds three short fields.
 const maxMintBodyBytes = 4096
@@ -148,16 +140,19 @@ func (s *Server) minterExpiry(ctx context.Context) (time.Time, error) {
 	if !ok || p.Legacy || p.TokenDefID == "" || strings.HasPrefix(p.TokenDefID, "cfg:") {
 		return time.Time{}, nil
 	}
+	// A principal that names a token row which cannot be read — missing
+	// included — is refused, not treated as unbounded: "I could not find out
+	// how long you have" must not become "you have forever".
 	row, err := s.store.OperatorTokenDefGet(ctx, p.TokenDefID)
 	if err != nil {
-		var nf *store.ErrNotFound
-		if errors.As(err, &nf) {
-			// A principal built without a stored row (a test, an embedder's
-			// own resolver) has no lifetime to bound by.
-			return time.Time{}, nil
-		}
 		return time.Time{}, err
 	}
+	// The expiry, and not ValidUntil: a rotated-out token in its grace window
+	// also has an end (retired_at), but that end revokes one secret, not the
+	// principal — its successor carries on with the same authority. Bounding
+	// by it would make a routine rotation refuse every mint the old secret
+	// attempts, which is the zero-downtime roll the grace window exists for.
+	// An expiry is different: a rotation copies it, so nothing extends it.
 	return row.ExpiresAt, nil
 }
 
@@ -269,7 +264,7 @@ func newTokenDefID() string {
 // listing/revoke is keyed on (tenant, subject), never on name.
 func deriveTokenName(subject string) string {
 	var b strings.Builder
-	b.WriteString("u-")
+	b.WriteString(userTokenNamePrefix)
 	for _, r := range subject {
 		switch {
 		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9', r == '_', r == '-':
