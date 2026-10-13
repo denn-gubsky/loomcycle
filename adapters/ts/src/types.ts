@@ -2658,7 +2658,8 @@ export type SubstrateToolInput = {
   // `delete` + `purge` are the flat VolumeDef lifecycle ops (RFC AH) — a
   // Volume points at mutable on-disk state, so it has no version chain to
   // retire/promote/fork. `delete` unmaps (keeps files); `purge` removes the
-  // row AND the directory tree.
+  // row AND the directory tree. `set_mode` (with `mode: "ro"`) makes a run's
+  // ephemeral volume read-only for good; it works only from inside that run.
   op:
     | "create"
     | "fork"
@@ -2669,7 +2670,8 @@ export type SubstrateToolInput = {
     | "rediscover"
     | "verify"
     | "delete"
-    | "purge";
+    | "purge"
+    | "set_mode";
   name?: string;
   def_id?: string;
   parent_def_id?: string;

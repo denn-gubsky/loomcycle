@@ -3648,6 +3648,12 @@ type Store interface {
 	// EphemeralVolumeListByRun returns all ephemeral rows for one root run,
 	// ordered by name. Empty slice (not error) when the run owns none.
 	EphemeralVolumeListByRun(ctx context.Context, rootRunID string) ([]EphemeralVolumeDefRow, error)
+	// EphemeralVolumeSetReadOnly sets the mode in one row's definition to
+	// "ro" and reports whether the row exists. It is one-way on purpose:
+	// there is no call that sets "rw", so a volume made read-only stays so,
+	// and a resumed run that rebuilds its volumes from these rows sees it.
+	// Nothing else in the definition changes.
+	EphemeralVolumeSetReadOnly(ctx context.Context, rootRunID, name string) (bool, error)
 	// EphemeralVolumeListByTenant returns all LIVE ephemeral rows owned by one
 	// tenant, ordered by (root_run_id, name). The persisted table is the
 	// cross-replica source of truth — rows are deleted at run completion (inline

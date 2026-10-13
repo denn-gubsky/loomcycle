@@ -133,6 +133,20 @@ func TestRehydrateEphemeralVolumes_RoundTrip(t *testing.T) {
 	}
 }
 
+// A volume made read-only before a pause comes back read-only: the resumed
+// run rebuilds its set from the rows, and set_mode wrote the row.
+func TestRehydrateEphemeralVolumes_KeepsAVolumeReadOnly(t *testing.T) {
+	srv, st, root := ephemeralPurgeServer(t)
+	runID, dir := seedEphemeral(t, st, root, "work")
+	if found, err := st.EphemeralVolumeSetReadOnly(context.Background(), runID, "work"); err != nil || !found {
+		t.Fatalf("set read-only: found=%v err=%v", found, err)
+	}
+	ref, ok := srv.rehydrateEphemeralVolumes(context.Background(), runID).Get("work")
+	if !ok || ref.Root != dir || !ref.ReadOnly {
+		t.Errorf("rehydrated = %+v ok=%v, want root=%q read-only", ref, ok, dir)
+	}
+}
+
 // rehydrate is scoped to its own run — it must NOT load another run's ephemeral
 // volumes (a regression to list-all would breach run isolation).
 func TestRehydrateEphemeralVolumes_DoesNotLeakOtherRun(t *testing.T) {

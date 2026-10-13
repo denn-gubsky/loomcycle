@@ -477,6 +477,7 @@ func Run(t *testing.T, factory Factory) {
 		{"DirentTenantIsolation", testDirentTenantIsolation},
 		// RFC AH Phase 2b ephemeral (run-tree-scoped) volumes.
 		{"EphemeralVolumeCreateListDelete", testEphemeralVolumeCreateListDelete},
+		{"EphemeralVolumeSetReadOnlyIsOneRowAndKeepsThePath", testEphemeralVolumeSetReadOnlyIsOneRowAndKeepsThePath},
 		{"EphemeralVolumeSweepCandidatesTerminalOnly", testEphemeralVolumeSweepCandidatesTerminalOnly},
 		{"EphemeralVolumeSweepCandidatesSkipsPaused", testEphemeralVolumeSweepCandidatesSkipsPaused},
 		{"EphemeralVolumeSweepCandidatesWaitForRunsBeneathRoot", testEphemeralVolumeSweepCandidatesWaitForRunsBeneathRoot},
@@ -14187,6 +14188,55 @@ func mkEphemeralVolume(rootRunID, name, tenantID, path, mode string) store.Ephem
 		Name:       name,
 		TenantID:   tenantID,
 		Definition: json.RawMessage(fmt.Sprintf(`{"path":%q,"mode":%q}`, path, mode)),
+	}
+}
+
+// testEphemeralVolumeSetReadOnlyIsOneRowAndKeepsThePath pins that the update
+// changes the mode of exactly the named row of the named run, leaves the path
+// (which resume reads back) as it was, and reports a row that is not there.
+func testEphemeralVolumeSetReadOnlyIsOneRowAndKeepsThePath(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	for _, v := range []store.EphemeralVolumeDefRow{
+		mkEphemeralVolume("ro-run-1", "repo", "", "/pool/_ephemeral/ro-run-1/repo", "rw"),
+		mkEphemeralVolume("ro-run-1", "scratch", "", "/pool/_ephemeral/ro-run-1/scratch", "rw"),
+		mkEphemeralVolume("ro-run-2", "repo", "", "/pool/_ephemeral/ro-run-2/repo", "rw"),
+	} {
+		if _, err := s.EphemeralVolumeCreate(ctx, v); err != nil {
+			t.Fatalf("create %s/%s: %v", v.RootRunID, v.Name, err)
+		}
+	}
+	body := func(run, name string) string {
+		t.Helper()
+		rows, err := s.EphemeralVolumeListByRun(ctx, run)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, r := range rows {
+			if r.Name == name {
+				return string(r.Definition)
+			}
+		}
+		t.Fatalf("no row %s/%s", run, name)
+		return ""
+	}
+
+	for i := 0; i < 2; i++ { // the second call finds it read-only already
+		found, err := s.EphemeralVolumeSetReadOnly(ctx, "ro-run-1", "repo")
+		if err != nil || !found {
+			t.Fatalf("call %d: found=%v err=%v, want (true, nil)", i+1, found, err)
+		}
+	}
+	if got := body("ro-run-1", "repo"); !jsonEqual([]byte(got), `{"path":"/pool/_ephemeral/ro-run-1/repo","mode":"ro"}`) {
+		t.Errorf("the row = %s, want mode ro and the path unchanged", got)
+	}
+	if got := body("ro-run-1", "scratch"); !jsonEqual([]byte(got), `{"path":"/pool/_ephemeral/ro-run-1/scratch","mode":"rw"}`) {
+		t.Errorf("another volume of the run changed: %s", got)
+	}
+	if got := body("ro-run-2", "repo"); !jsonEqual([]byte(got), `{"path":"/pool/_ephemeral/ro-run-2/repo","mode":"rw"}`) {
+		t.Errorf("the same name in another run changed: %s", got)
+	}
+	if found, err := s.EphemeralVolumeSetReadOnly(ctx, "ro-run-1", "absent"); err != nil || found {
+		t.Errorf("a missing row: found=%v err=%v, want (false, nil)", found, err)
 	}
 }
 

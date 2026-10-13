@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sort"
 	"sync"
 	"sync/atomic"
 
@@ -455,6 +456,39 @@ func (s *EphemeralVolumeSet) Get(name string) (EphemeralVolumeRef, bool) {
 	defer s.mu.RUnlock()
 	ref, ok := s.m[name]
 	return ref, ok
+}
+
+// SetReadOnly makes the named volume read-only for every run that shares
+// this set, and reports whether the name exists. There is no way back: the
+// set has no call that makes a volume writable again.
+func (s *EphemeralVolumeSet) SetReadOnly(name string) bool {
+	if s == nil {
+		return false
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	ref, ok := s.m[name]
+	if !ok {
+		return false
+	}
+	ref.ReadOnly = true
+	s.m[name] = ref
+	return true
+}
+
+// Names returns the registered volume names, sorted.
+func (s *EphemeralVolumeSet) Names() []string {
+	if s == nil {
+		return nil
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	out := make([]string, 0, len(s.m))
+	for name := range s.m {
+		out = append(out, name)
+	}
+	sort.Strings(out)
+	return out
 }
 
 // Has reports whether name is already registered (used by the create op to
