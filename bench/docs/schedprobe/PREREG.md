@@ -84,15 +84,47 @@ P0 reports it as a finding.
 
 ## Host
 
-To be fixed by amendment before E1 runs:
-- the host;
-- its Ollama version;
-- `OLLAMA_NUM_PARALLEL` and `OLLAMA_MAX_LOADED_MODELS`;
-- the models per kind;
-- the chat `num_ctx`.
-
 Nothing else may run on the host during a run. A run that sees a `load_ms` it did not
 cause is discarded and repeated.
+
+### Amendment 1 — 2026-10-13, before E1
+
+**Host.** The owner's local AMD inference box, `ollama-host`, running Ollama 0.40.3.
+
+| setting | value |
+|---|---|
+| `OLLAMA_CONTEXT_LENGTH` | 65536 |
+| `OLLAMA_KEEP_ALIVE` | 10m |
+| `OLLAMA_NUM_PARALLEL` | 4 |
+| `OLLAMA_MAX_LOADED_MODELS` | 4 |
+
+**Models.**
+- chat: `qwen3.6:latest` (36B MoE, 23.6 GB loaded at `num_ctx` 65536);
+- embed: `bge-m3:latest`;
+- decision: `nimble:latest`.
+
+**Chat `num_ctx`** is 65536, so the E5 pair is 8192 and 65536.
+
+**Mechanics smoke tests — seen, not scored, and the reason for the changes below:**
+- Two of the first runs lost calls to runner crashes: `llama-server process has terminated: signal: aborted (core dumped)` and `unexpected EOF`.
+  - The first crash happened while the three models were loading together.
+  - The second happened with all three loaded and in use together, and took all three down at once.
+- Four diagnostic runs did **not** crash:
+  - D1: four agents on the chat model;
+  - D2: chat + embed;
+  - D3: chat + decision;
+  - D4: chat + embed + decision, all at once.
+- So the fault is intermittent rather than tied to a model combination.
+- In those runs `prompt_eval_count` reported the **full** prompt on warm calls, while `prefill_ms` fell from about 12 s to about 2 s. Reuse is therefore read from time, as the instrument section already provides.
+
+**Changes:**
+1. **A run in which any call fails is discarded and repeated once.** A second failure is reported as a host fault for that setting, not scored. A crash costs every agent in flight a call, which would otherwise read as a scheduling effect.
+2. **E2 and E3 use 6 turns per agent, not 10. E1 keeps 10.**
+   - On this host a cold 16,000-character turn costs about 12 s of prefill, a warm one about 2 s, and a reply about 6 s.
+   - At 10 turns the E3 grid alone takes about four hours.
+   - Reuse is read from turn 2 on, so six turns give five readings per agent.
+3. **E2 runs at host N = 4 only**, with K = 2, 4, 6, 8. Changing N needs a restart of the owner's host. The slot-bound rule still decides: it compares K ≤ N (2 and 4) against K ≥ 2N (8). The N = 2 arm is dropped, not deferred.
+4. **E4's three models** are the chat, embed and decision models above.
 
 ## Output
 
