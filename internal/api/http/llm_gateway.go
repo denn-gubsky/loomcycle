@@ -190,8 +190,8 @@ type gatewaySlots struct {
 	release  func()
 }
 
-// acquireGatewaySlots takes the two slots a gateway request runs on: a global
-// slot (under the caller's per-user cap) and its provider's call slot.
+// acquireGatewaySlots takes what a gateway request runs on: its place under the
+// caller's per-user cap, a global slot, and its provider's call slot.
 //
 // A gateway request is sent directly, outside any run, so nothing else limits
 // how many can pile onto a saturated provider. Two rules keep one caller from
@@ -206,10 +206,16 @@ type gatewaySlots struct {
 //     the provider and waiting for a global slot would face it the other way
 //     round.
 //
-// So: the global slot first — the per-user cap is enforced before any provider
-// capacity is touched — then the provider slot only if one is free at once. If
-// the provider is busy the global slot is given back and the request queues for
-// the provider holding nothing, bounded by provider_queue_depth (past it: 429
+// The caller's per-user cap is a third thing, and it is held THROUGHOUT: the
+// request is counted against its user from before it takes anything until it is
+// over, waiting for the provider included. Counted only while it held a global
+// slot, one user could pile waiting requests onto the provider past their cap
+// and fill its bounded queue for everyone else.
+//
+// So: the per-user reservation, then a global slot, then the provider slot only
+// if one is free at once. If the provider is busy the global slot is given back
+// and the request queues for the provider — still counted against its user,
+// taking turns with other users, bounded by provider_queue_depth (past it: 429
 // provider_concurrency_exhausted). Once it has the provider slot it takes a
 // global slot without waiting; if none is free it gives the provider slot back
 // and is refused (429 backpressure).
@@ -222,31 +228,43 @@ func (s *Server) acquireGatewaySlots(r *http.Request, wireUserID string, provide
 	// bypasses the per-user cap (global semaphore only).
 	userID := auth.SubjectForFairness(ctx, wireUserID)
 
-	global, err := s.sem.AcquireForUser(ctx, tenantID, userID)
+	user, err := s.sem.ReserveUser(ctx, tenantID, userID)
 	if err != nil {
 		return gatewaySlots{}, err
 	}
+	global, err := s.sem.Acquire(ctx)
+	if err != nil {
+		user()
+		return gatewaySlots{}, err
+	}
+	// The provider's queue takes turns across (tenant, user), which it reads off
+	// the run identity on ctx. A gateway request is no run — no run id, so it
+	// earns no lease — but it has the same fairness identity as a run would.
+	laneCtx := providers.WithRunMeta(ctx, providers.RunMeta{TenantID: tenantID, UserID: userID})
 	// Bound 0: take the provider's slot only if that needs no wait.
-	held, lane, err := lanegate.Hold(lanegate.WithQueueBound(ctx, 0), provider, provReq)
+	held, lane, err := lanegate.Hold(lanegate.WithQueueBound(laneCtx, 0), provider, provReq)
 	if err == nil {
-		return gatewaySlots{provider: held, release: func() { lane(); global() }}, nil
+		return gatewaySlots{provider: held, release: func() { lane(); global(); user() }}, nil
 	}
 	global()
 	if !concurrency.IsProviderConcurrencyExhausted(err) {
+		user()
 		return gatewaySlots{}, err
 	}
 
 	depth := s.cfg().Concurrency.ProviderQueueDepthOrDefault()
-	held, lane, err = lanegate.Hold(lanegate.WithQueueBound(ctx, depth), provider, provReq)
+	held, lane, err = lanegate.Hold(lanegate.WithQueueBound(laneCtx, depth), provider, provReq)
 	if err != nil {
+		user()
 		return gatewaySlots{}, err
 	}
-	global, err = s.sem.TryAcquireForUser(tenantID, userID)
+	global, err = s.sem.TryAcquire()
 	if err != nil {
 		lane()
+		user()
 		return gatewaySlots{}, err
 	}
-	return gatewaySlots{provider: held, release: func() { lane(); global() }}, nil
+	return gatewaySlots{provider: held, release: func() { lane(); global(); user() }}, nil
 }
 
 // serveLLMChatJSON drains the provider channel and writes a single

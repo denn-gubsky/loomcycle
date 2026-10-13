@@ -170,3 +170,57 @@ func TestLLMGateway_ProviderSlotIsGivenBackWhenNoGlobalSlotIsFree(t *testing.T) 
 		rel()
 	}
 }
+
+func gatewayBodyFor(user string) string {
+	return `{"messages":[{"role":"user","content":"hi"}],"max_tokens":8,"provider":"P","model":"m","user_id":"` + user + `"}`
+}
+
+// TestLLMGateway_RequestWaitingForItsProviderStaysCountedAgainstItsUser — a
+// request waiting for its provider has given its global slot back, but it is
+// still that user's request: it stays counted against the per-user cap. With a
+// cap of 1, a user whose request is waiting cannot send another; a different
+// user can.
+//
+// Counted only while it held a global slot, one user could pile waiting
+// requests onto the provider past their cap and fill its bounded queue for
+// everyone else.
+func TestLLMGateway_RequestWaitingForItsProviderStaysCountedAgainstItsUser(t *testing.T) {
+	cfg := makeBaseConfig()
+	cfg.Concurrency.ProviderQueueDepth = 8
+	prov := &heldProvider{gate: make(chan struct{})}
+	srv, sched := lanedServer(t, cfg, map[string]int{"P": 1}, map[string]providers.Provider{"P": prov})
+	srv.sem.WithPerUserCap(1)
+	ts := httptest.NewServer(srv.Mux())
+	defer ts.Close()
+
+	relP, err := sched.Acquire(context.Background(), "P", "chat", concurrency.CallInfo{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	aliceWaiting := postGateway(ts, gatewayBodyFor("alice"))
+	waitForLane(t, sched, "P", 1, 1)
+	if st := srv.sem.Stats(); st.Active != 0 || st.PerUser["alice"] != 1 {
+		t.Fatalf("alice waiting for P: global active=%d perUser=%v, want no global slot and alice counted once", st.Active, st.PerUser)
+	}
+
+	again := <-postGateway(ts, gatewayBodyFor("alice"))
+	if again.status != http.StatusTooManyRequests || !strings.Contains(again.body, `"per_user_quota_exhausted"`) {
+		t.Fatalf("alice's second request while her first waits: status=%d body=%s, want 429 per_user_quota_exhausted", again.status, again.body)
+	}
+	waitForLane(t, sched, "P", 1, 1) // it joined no queue
+
+	bobWaiting := postGateway(ts, gatewayBodyFor("bob"))
+	waitForLane(t, sched, "P", 1, 2)
+
+	relP()
+	close(prov.gate)
+	for name, ch := range map[string]<-chan gatewayResult{"alice": aliceWaiting, "bob": bobWaiting} {
+		if r := <-ch; r.status != http.StatusOK {
+			t.Errorf("%s: status=%d body=%s, want 200", name, r.status, r.body)
+		}
+	}
+	waitForLane(t, sched, "P", 0, 0)
+	if st := srv.sem.Stats(); st.Active != 0 || len(st.PerUser) != 0 {
+		t.Errorf("at the end: global active=%d perUser=%v, want 0 and nobody counted", st.Active, st.PerUser)
+	}
+}

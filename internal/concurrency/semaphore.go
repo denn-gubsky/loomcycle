@@ -305,23 +305,73 @@ func (s *Semaphore) AcquireForUser(ctx context.Context, tenantID, userID string)
 	}
 }
 
-// TryAcquireForUser is AcquireForUser that never waits: it takes a slot only
-// if one is free right now, under the same per-user cap, and otherwise returns
-// *BackpressureError (or *ErrPerUserQuotaExhausted) at once. It is for a caller
-// that already holds something others queue for and must not block on a slot
-// while holding it.
-func (s *Semaphore) TryAcquireForUser(tenantID, userID string) (release func(), err error) {
-	// A context that is already done makes the queued path give up the moment
-	// it would have started to wait, with every counter (the per-user count and
-	// the cluster quota included) unwound by the ordinary cancel path. A free
-	// slot is taken before ctx is ever looked at.
-	ctx, cancel := context.WithCancel(context.Background())
-	cancel()
-	release, err = s.AcquireForUser(ctx, tenantID, userID)
-	if errors.Is(err, context.Canceled) {
-		return nil, &BackpressureError{msg: "no free slot"}
+// ReserveUser counts one request against (tenantID, userID)'s per-user cap
+// WITHOUT taking an execution slot, and returns the release for that count.
+// Over the cap it returns *ErrPerUserQuotaExhausted. With no cap configured, or
+// an empty user, nothing is counted and the release does nothing.
+//
+// AcquireForUser takes the count and a slot as one step, which fits a request
+// that keeps its slot for its whole life. A request that has to give its slot
+// up while it waits for something else (the LLM gateway, waiting for a
+// provider) must STAY counted against its user for that time, or one user could
+// pile up waiting requests past their cap. Such a request reserves here once,
+// takes and re-takes its slot with Acquire / TryAcquire (which count no user),
+// and releases the reservation when it is over.
+//
+// In cluster mode the count is the cluster-wide one, as for AcquireForUser.
+func (s *Semaphore) ReserveUser(ctx context.Context, tenantID, userID string) (release func(), err error) {
+	key := userKey{tenant: tenantID, user: userID}
+	s.mu.Lock()
+	qs := s.quotaStore
+	cap := s.maxPerUser
+	s.mu.Unlock()
+	if cap <= 0 || key.user == "" {
+		return noopRelease, nil
 	}
-	return release, err
+	var once sync.Once
+	if qs != nil {
+		ok, qerr := qs.TryAcquire(ctx, key.tenant, key.user, cap)
+		if qerr != nil {
+			return nil, fmt.Errorf("user_quotas acquire: %w", qerr)
+		}
+		if !ok {
+			return nil, &ErrPerUserQuotaExhausted{TenantID: key.tenant, UserID: key.user, Cap: cap}
+		}
+		return func() { once.Do(func() { go releaseInBackground(qs, key) }) }, nil
+	}
+	s.mu.Lock()
+	if s.perUser == nil {
+		s.perUser = map[userKey]int{}
+	}
+	if s.perUser[key] >= cap {
+		s.mu.Unlock()
+		return nil, &ErrPerUserQuotaExhausted{TenantID: key.tenant, UserID: key.user, Cap: cap}
+	}
+	s.perUser[key]++
+	s.mu.Unlock()
+	return func() {
+		once.Do(func() {
+			s.mu.Lock()
+			s.decrementPerUser(key)
+			s.mu.Unlock()
+		})
+	}, nil
+}
+
+// TryAcquire takes an execution slot only if one is free right now, and
+// otherwise returns *BackpressureError at once: it never queues and never
+// waits. It counts no user (see ReserveUser). It is for a caller that already
+// holds something others queue for and must not block on a slot while holding
+// it.
+func (s *Semaphore) TryAcquire() (release func(), err error) {
+	s.mu.Lock()
+	if s.active < s.maxConcurrent {
+		s.active++
+		s.mu.Unlock()
+		return s.releaseFn(userKey{}, nil), nil
+	}
+	s.mu.Unlock()
+	return nil, &BackpressureError{msg: "no free slot"}
 }
 
 // Wait takes a slot for work that was ALREADY admitted — a sub-agent of an
