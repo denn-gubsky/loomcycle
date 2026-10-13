@@ -948,6 +948,7 @@ func (s *Server) resumePausedRun(run store.Run) error {
 	// hold for the others too.
 	ephSet, releaseEphSet := s.treeSets.acquire(rootRunID)
 	loopCtx = tools.WithEphemeralVolumes(loopCtx, s.loadEphemeralVolumes(loopCtx, rootRunID, ephSet))
+	loopCtx = tools.WithEphemeralModeCheck(loopCtx, s.ephemeralModeCheck(rootRunID))
 	loopCtx = tools.WithEventEmitter(loopCtx, emit)
 	adPolicy, evPolicy := s.substratePoliciesForAgent(agentDef, run.Agent)
 	loopCtx = tools.WithAgentDefPolicy(loopCtx, adPolicy)

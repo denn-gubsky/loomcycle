@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -13,6 +14,8 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/loop"
 	"github.com/denn-gubsky/loomcycle/internal/store"
 	storesqlite "github.com/denn-gubsky/loomcycle/internal/store/sqlite"
+	"github.com/denn-gubsky/loomcycle/internal/tools"
+	"github.com/denn-gubsky/loomcycle/internal/tools/builtin"
 )
 
 // ephemeralPurgeServer builds a minimal Server with a sqlite store + a
@@ -221,6 +224,56 @@ func TestTreeVolumeSets_AResumedRunJoinsTheLiveTreeAndPurgeForgetsIt(t *testing.
 		t.Error("the set outlived the tree's purge")
 	} else {
 		rel()
+	}
+}
+
+// Two replicas each hold their own set for one tree; the rows are what they
+// share. A volume made read-only through one must be read-only for a write
+// made through the other, whose set still says writable.
+func TestEphemeralModeCheck_AnotherReplicasSetModeStopsAWriteHere(t *testing.T) {
+	srv, st, root := ephemeralPurgeServer(t)
+	runID, dir := seedEphemeral(t, st, root, "work")
+	ctx := context.Background()
+
+	// This replica: its own set, loaded from the rows while they said rw.
+	here := srv.loadEphemeralVolumes(ctx, runID, tools.NewEphemeralVolumeSet())
+	runCtx := tools.WithEphemeralModeCheck(tools.WithEphemeralVolumes(ctx, here), srv.ephemeralModeCheck(runID))
+	write := func() tools.Result {
+		in, _ := json.Marshal(map[string]any{"volume": "work", "path": "a.txt", "content": "x"})
+		res, err := (&builtin.Write{}).Execute(runCtx, in)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return res
+	}
+	if res := write(); res.IsError {
+		t.Fatalf("before the other replica's set_mode the write must work: %s", res.Text)
+	}
+
+	// The other replica's set_mode: it writes the row and its OWN set.
+	if found, err := st.EphemeralVolumeSetReadOnly(ctx, runID, "work"); err != nil || !found {
+		t.Fatalf("set read-only: found=%v err=%v", found, err)
+	}
+	if ref, _ := here.Get("work"); ref.ReadOnly {
+		t.Fatal("this replica's set changed by itself; the test would prove nothing")
+	}
+
+	if err := os.Remove(filepath.Join(dir, "a.txt")); err != nil {
+		t.Fatal(err)
+	}
+	res := write()
+	if !res.IsError || !strings.Contains(res.Text, "read-only") {
+		t.Errorf("the write went through a set that had not heard of the set_mode: error=%v %q", res.IsError, res.Text)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "a.txt")); err == nil {
+		t.Error("the file was written")
+	}
+
+	// And once the tree's volumes are purged, the rows are gone: a late write
+	// is refused, not waved through.
+	srv.purgeEphemeralVolumesForRun(runID)
+	if res := write(); !res.IsError {
+		t.Error("a write after the tree's purge was accepted")
 	}
 }
 
