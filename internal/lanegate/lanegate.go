@@ -113,15 +113,19 @@ func (p *Provider) Call(ctx context.Context, req providers.Request) (<-chan prov
 
 // Hold takes p's lane slot for ONE call the caller is about to make itself, and
 // returns the provider to make it on plus the release for the slot. It is for a
-// request that must take the provider's slot BEFORE some other admission step —
-// the LLM gateway takes it before the global run slot, so a request queued on a
-// saturated provider holds no global slot and cannot use the global cap up.
+// request that must know at ADMISSION whether its provider can take it — the
+// LLM gateway, which answers 429 before any stream opens when the provider's
+// queue is at its bound (WithQueueBound on ctx is honoured as Call honours it).
+//
+// Take it AFTER the global run slot, never before: a run takes the global slot
+// and then its lane, and the opposite order here would let a request sit on a
+// provider slot while it waited for a global slot held by a run that is waiting
+// for that provider slot.
 //
 // The provider returned is the driver itself: its Call takes no second slot.
 // The slot is held until release, not until the stream ends, so the caller
-// releases when its request is over. Honour WithQueueBound on ctx as Call does.
-// A provider that is not gated is returned as is, with a release that does
-// nothing.
+// releases when its request is over. A provider that is not gated is returned
+// as is, with a release that does nothing.
 func Hold(ctx context.Context, p providers.Provider, req providers.Request) (providers.Provider, func(), error) {
 	lp, ok := p.(*Provider)
 	if !ok || !lp.sched.Gated(lp.id, kind) {

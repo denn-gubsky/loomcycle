@@ -41,17 +41,19 @@ func (p *heldProvider) Call(ctx context.Context, _ providers.Request) (<-chan pr
 	return ch, nil
 }
 
-// TestLLMGateway_SaturatedProviderHoldsNoGlobalSlotAndRefusesPastTheBound — a
-// gateway request is sent directly, outside any run, so it takes its provider's
-// call slot BEFORE the global slot and its wait is bounded. With provider P at
+// TestLLMGateway_SaturatedProviderRefusesPastTheBoundAndGivesItsSlotBack — a
+// gateway request is sent directly, outside any run, and holds its global slot
+// while it waits for its provider, so that wait is BOUNDED. With provider P at
 // max_concurrent 1 and provider_queue_depth 1: the first request computes, the
-// second waits for P holding NO global slot, and the third is refused with 429
-// provider_concurrency_exhausted.
+// second waits for P, and the third is refused with 429
+// provider_concurrency_exhausted and gives its global slot back.
 //
-// Taken the other way round (global slot first, an unbounded wait for P), every
-// waiting request would sit on a global slot and one caller could use the
-// global cap up for every tenant.
-func TestLLMGateway_SaturatedProviderHoldsNoGlobalSlotAndRefusesPastTheBound(t *testing.T) {
+// With an unbounded wait, every request queued on a saturated provider would
+// sit on a global slot and one caller could use the global cap up for every
+// tenant. The slots are taken global-first, the order a run uses: lane-first, a
+// request would hold a provider slot while it waited for a global slot held by
+// a run that is waiting for that provider slot.
+func TestLLMGateway_SaturatedProviderRefusesPastTheBoundAndGivesItsSlotBack(t *testing.T) {
 	cfg := makeBaseConfig()
 	cfg.Concurrency.ProviderQueueDepth = 1
 	prov := &heldProvider{gate: make(chan struct{})}
@@ -85,9 +87,9 @@ func TestLLMGateway_SaturatedProviderHoldsNoGlobalSlotAndRefusesPastTheBound(t *
 	second := post()
 	waitForLane(t, sched, "P", 1, 1)
 
-	// The waiting request holds no global slot: only the computing one does.
-	if st := srv.sem.Stats(); st.Active != 1 || st.Queued != 0 {
-		t.Fatalf("global slots while one request waits for P: active=%d queued=%d, want 1/0", st.Active, st.Queued)
+	// Both hold a global slot: the one computing and the one waiting for P.
+	if st := srv.sem.Stats(); st.Active != 2 {
+		t.Fatalf("global slots with one request computing and one waiting for P: active=%d, want 2", st.Active)
 	}
 
 	// P's queue is at its bound: the next request is refused at once.
@@ -106,8 +108,8 @@ func TestLLMGateway_SaturatedProviderHoldsNoGlobalSlotAndRefusesPastTheBound(t *
 	if refusal.Code != "provider_concurrency_exhausted" || refusal.Provider != "P" || refusal.Cap != 1 {
 		t.Fatalf("refusal = %+v, want provider_concurrency_exhausted for P with cap 1", refusal)
 	}
-	if st := srv.sem.Stats(); st.Active != 1 {
-		t.Fatalf("global active after the refusal = %d, want 1: a refused request takes nothing", st.Active)
+	if st := srv.sem.Stats(); st.Active != 2 {
+		t.Fatalf("global active after the refusal = %d, want 2: a refused request gives its slot back", st.Active)
 	}
 	waitForLane(t, sched, "P", 1, 1)
 

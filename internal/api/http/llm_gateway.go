@@ -163,22 +163,6 @@ func (s *Server) prepareGatewayDispatch(w http.ResponseWriter, r *http.Request, 
 	// us emit content_block_delta frames live when stream:true.
 	provReq.Stream = true
 
-	// The provider's call slot is taken HERE, before the global slot, and its
-	// wait is bounded. A gateway request is sent directly and nothing else
-	// limits how many can queue on a saturated provider; taken the other way
-	// round, each one would sit on a global slot while it waited, and one
-	// caller could use the global cap up for every tenant. A request past the
-	// bound gets 429 provider_concurrency_exhausted and holds nothing.
-	// Uncapped provider ⇒ nothing is taken. The provider Hold returns makes the
-	// one call on the slot already held.
-	held, laneRelease, err := lanegate.Hold(
-		lanegate.WithQueueBound(r.Context(), s.cfg().Concurrency.ProviderQueueDepthOrDefault()), provider, provReq)
-	if err != nil {
-		writeQuotaError(w, err)
-		return gatewayDispatch{}, false
-	}
-	provider = held
-
 	// Per-subject quota acquisition. RFC L: when an authenticated
 	// principal is present its Subject is the authoritative fairness key
 	// (a caller can't forge a different user_id to dodge their cap); the
@@ -186,12 +170,34 @@ func (s *Server) prepareGatewayDispatch(w http.ResponseWriter, r *http.Request, 
 	// key bypasses the per-user cap (global semaphore only).
 	globalRelease, err := s.sem.AcquireForUser(r.Context(), tenantFromCtx(r.Context()), auth.SubjectForFairness(r.Context(), req.UserID))
 	if err != nil {
-		laneRelease()
 		writeQuotaError(w, err)
 		return gatewayDispatch{}, false
 	}
-	// One handle for the caller to defer: global first, the provider slot last.
-	release := func() { globalRelease(); laneRelease() }
+
+	// Then the provider's call slot, with a BOUNDED wait. The order is the one a
+	// run uses — global slot, then the provider's lane — and must stay that way:
+	// taken lane-first, a gateway request would sit on a provider slot while it
+	// waited for a global slot held by a run that is itself waiting for that
+	// provider slot. It also means the per-user cap is enforced before any
+	// provider capacity is taken.
+	//
+	// The bound is what a gateway request needs and a run does not. A request
+	// here is sent directly, outside any run, and holds its global slot while it
+	// queues; with provider_queue_depth requests already waiting on the provider
+	// the next one is refused (429 provider_concurrency_exhausted) and gives its
+	// global slot back, so a saturated provider can hold at most that many of
+	// the global slots through the gateway. Uncapped provider ⇒ nothing is taken.
+	// The provider Hold returns makes the one call on the slot already held.
+	held, laneRelease, err := lanegate.Hold(
+		lanegate.WithQueueBound(r.Context(), s.cfg().Concurrency.ProviderQueueDepthOrDefault()), provider, provReq)
+	if err != nil {
+		globalRelease()
+		writeQuotaError(w, err)
+		return gatewayDispatch{}, false
+	}
+	provider = held
+	// One handle for the caller to defer: the provider slot first, then global.
+	release := func() { laneRelease(); globalRelease() }
 
 	return gatewayDispatch{
 		requestID:  requestID,
