@@ -37,10 +37,12 @@ type providerGateStat struct {
 	Queued int `json:"queued"`
 	// Lanes is the provider's lanes by model kind (chat, decision, embedder).
 	Lanes map[string]laneStat `json:"lanes,omitempty"`
-	// ModelsInFlight is the calls in flight per model identity, as the provider's
+	// ModelsInFlight is the calls ADMITTED per model identity, as the provider's
 	// cap on models computing at once counts them (a model at another context
-	// size is another model). Present only while that cap is set and something
-	// is in flight.
+	// size is another model). A call is counted from the moment its model is
+	// admitted, so it includes calls still waiting for a slot in their lane:
+	// the number of KEYS is the models in flight, a value can exceed the lane's
+	// cap. Present only while that cap is set and something is admitted.
 	ModelsInFlight map[string]int `json:"models_in_flight,omitempty"`
 	// ModelWaiters is the calls waiting for their model to be admitted.
 	ModelWaiters int `json:"model_waiters,omitempty"`
