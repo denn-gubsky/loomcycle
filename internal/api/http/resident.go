@@ -28,9 +28,9 @@ import (
 // from one send to the next. Each send blocks until the child re-parks.
 //
 // P1 is single-replica: the registry is in-process. A child is addressable only
-// within its opener's tenant. The provider slot is held for the child's life
-// (bounded by the per-run cap; a same-provider child gets the RFC BF ancestor
-// carve-out so it pins nothing). Prompt sandbox-container teardown on close is a
+// within its opener's tenant. A parked child holds no provider slot: each of
+// its model calls takes one in its provider's call lane and gives it back when
+// the call ends. Prompt sandbox-container teardown on close is a
 // follow-up — on close/idle the container idle-reaps on the sidecar's own TTL.
 
 const (
@@ -654,7 +654,6 @@ func (s *Server) openResidentChild(ctx context.Context, name, prompt, defID stri
 			}
 			deregSteer()
 			prep.cleanup()
-			prep.Slot.releaseCurrent()
 			s.residentReg.remove(rc)
 			live[0]()
 			releaseTree()

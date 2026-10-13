@@ -13,6 +13,7 @@ import (
 
 	"github.com/denn-gubsky/loomcycle/internal/concurrency"
 	"github.com/denn-gubsky/loomcycle/internal/config"
+	"github.com/denn-gubsky/loomcycle/internal/lanegate"
 	"github.com/denn-gubsky/loomcycle/internal/providers"
 	"github.com/denn-gubsky/loomcycle/internal/resolve"
 	"github.com/denn-gubsky/loomcycle/internal/sqlmem"
@@ -414,26 +415,53 @@ func TestDescribeImages_BudgetLeavesRoomForAThinkingTrace(t *testing.T) {
 }
 
 // TestDescribeImages_SaturatedProviderQueueRefusesTheCall — the describe route
-// is a request any caller with the scope can send and takes no run slot, so the
-// provider gate's queue depth is its only bound: with the queue full, a vision
-// call is refused at once rather than queued without limit (where, counted in
-// the queue, it would turn every other caller's new runs away).
+// is a request any caller with the scope can send and takes no run slot, so
+// provider_queue_depth is its only bound: with that many calls already waiting
+// on a capped provider, a vision call is refused at once rather than queued
+// without limit. The route does not gate anything itself — it marks its ctx,
+// and the provider it resolved (wrapped in its call lane, as every registry
+// provider is) refuses.
 func TestDescribeImages_SaturatedProviderQueueRefusesTheCall(t *testing.T) {
-	gates := concurrency.NewProviderGates(map[string]int{"P": 1}, 0)
-	s := &Server{providerGates: gates}
-	held, err := gates.Acquire(context.Background(), "P")
+	sched := concurrency.NewCallScheduler(map[string]concurrency.ProviderLanesConfig{
+		"P": {Lanes: map[string]concurrency.LaneConfig{config.ModelKindChat: {MaxConcurrent: 1}}},
+	})
+	vision := &scriptedProvider{defaultS: []providers.Event{
+		{Type: providers.EventText, Text: "a chart"},
+		{Type: providers.EventDone, StopReason: "end_turn", Usage: &providers.Usage{InputTokens: 1, OutputTokens: 1}},
+	}}
+	prov := lanegate.Wrap("P", vision, sched)
+	cfg := makeBaseConfig()
+	cfg.Concurrency.MaxQueueDepth, cfg.Concurrency.ProviderQueueDepth = 0, 0 // nothing may wait
+	s, _ := makeServer(t, prov, cfg)
+	s.SetCallScheduler(sched)
+
+	held, err := sched.Acquire(context.Background(), "P", config.ModelKindChat, concurrency.CallInfo{})
 	if err != nil {
 		t.Fatalf("take P: %v", err)
 	}
-	defer held()
+	var once sync.Once
+	defer once.Do(held)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
-	_, err = s.describeOneImage(ctx, "P", nil, "m", "image/png", []byte{1}, "")
+	_, err = s.describeOneImage(ctx, "P", prov, "m", "image/png", []byte{1}, "")
 	if !concurrency.IsProviderConcurrencyExhausted(err) {
 		t.Fatalf("describe with P's queue full: err = %v, want provider_concurrency_exhausted (not a wait)", err)
 	}
-	if st := gates.Stats()["P"]; st.Queued != 0 {
+	if n := vision.calls.Load(); n != 0 {
+		t.Fatalf("the model was called %d times for a refused request", n)
+	}
+	if st := sched.Stats()["P"].Lanes[config.ModelKindChat]; st.Queued != 0 {
 		t.Fatalf("P queued = %d after the refusal, want 0", st.Queued)
+	}
+
+	// With the slot free the same call goes through and gives it back.
+	once.Do(held)
+	desc, err := s.describeOneImage(ctx, "P", prov, "m", "image/png", []byte{1}, "")
+	if err != nil || desc != "a chart" {
+		t.Fatalf("describe with P free: desc=%q err=%v", desc, err)
+	}
+	if st := sched.Stats()["P"].Lanes[config.ModelKindChat]; st.Active != 0 {
+		t.Fatalf("P active = %d after the call, want 0", st.Active)
 	}
 }

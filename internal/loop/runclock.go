@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/denn-gubsky/loomcycle/internal/providers"
+	"github.com/denn-gubsky/loomcycle/internal/tools"
 )
 
 // errWallLimit is the cancel cause the wall-limit watcher sets on the run's ctx.
@@ -23,6 +24,20 @@ const wallRecheckFloor = 100 * time.Millisecond
 const wallCancelGrace = 5 * time.Second
 
 // Run drives one agent run to completion.
+//
+// When it returns, the run's provider is told the run is over
+// (providers.RunDone): a provider that keeps something for a run between its
+// calls — the slot a call lane reserves for the run's next call — gives it up
+// now instead of holding it until it lapses. The id is the one the run's calls
+// carry (RunMeta.RunID).
+func Run(ctx context.Context, opts RunOptions) (RunResult, error) {
+	if opts.Provider != nil {
+		defer providers.RunDone(opts.Provider, tools.RunIdentity(ctx).AgentID)
+	}
+	return runClocked(ctx, opts)
+}
+
+// runClocked is Run without the end-of-run notice: it gives the run its clock.
 //
 // A provider that bounds the whole run by time (Capabilities().
 // UnboundedIterations — code-js) gets a RunClock on the run's ctx: its budget
@@ -41,7 +56,7 @@ const wallCancelGrace = 5 * time.Second
 // The run's own limit is enforced by the same watcher when it is the tighter
 // of the two. It ends the run differently: OnWallLimit cancels it, so the run
 // is recorded as cancelled with the limit as the reason, not as failed.
-func Run(ctx context.Context, opts RunOptions) (RunResult, error) {
+func runClocked(ctx context.Context, opts RunOptions) (RunResult, error) {
 	if opts.Provider == nil {
 		return runLoop(ctx, opts)
 	}

@@ -46,8 +46,9 @@ var agentDefOverridability = map[string]overridability{
 	"MaxIterations":       runMayChoose,
 	"UnboundedIterations": runMayChoose,
 	// The ONLY bound on sub-agent fan-out that exists anywhere — a child takes
-	// no admission slot, is not budget-checked at spawn, and skips the
-	// per-provider gate for its parent's provider.
+	// no admission slot and is not budget-checked at spawn. (A provider's
+	// max_concurrent counts a child's model calls, but that bounds calls in
+	// flight, not how many children exist.)
 	"MaxConcurrentChildren": runMayNarrow,
 
 	// --- tuning: how the run is shaped, not what it may reach ---

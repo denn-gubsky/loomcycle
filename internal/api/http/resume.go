@@ -973,12 +973,7 @@ func (s *Server) resumePausedRun(run store.Run) error {
 	loopCtx = tools.WithDispatcher(loopCtx, dispatcher)
 
 	heartbeat := s.makeHeartbeat(run.ID)
-	// RFC BF P2b: the per-provider slot is acquired INSIDE the resume goroutine
-	// (below), after the fan-out reconcile, so the caller's resume loop never
-	// blocks on a full gate. Create the holder empty here so fallbackForRun's
-	// reResolve closure can capture it; it's populated before loop.Run runs.
-	provSlot := &providerSlot{}
-	fbPolicy, fbReResolve := s.fallbackForRun(run.TenantID, run.UserID, run.Agent, run.UserTier, run.OperatorKeyRestricted, provSlot, runCfg.Routing)
+	fbPolicy, fbReResolve := s.fallbackForRun(run.TenantID, run.UserID, run.Agent, run.UserTier, run.OperatorKeyRestricted, runCfg.Routing)
 	gate, deregGate := s.newPauseGate(run.ID, run.Retention == store.RetentionNone)
 	// RFC X Phase 3: a re-dispatched run that itself fans out can park too.
 	loopCtx = tools.WithPauseGate(loopCtx, gate)
@@ -1137,27 +1132,9 @@ func (s *Server) resumePausedRun(run store.Run) error {
 			}
 		}
 
-		// RFC BF P2b per-provider gate: acquire BEFORE the global slot (same
-		// ordering rationale as a fresh run) and AFTER the fan-out reconcile
-		// above (holding a provider slot while awaiting children could deadlock).
-		// Populate the holder so a mid-run fallback swaps the slot; released via
-		// the holder at run end. The run was admitted before it paused, so it
-		// WAITS for a saturated provider rather than failing; only runCtx (a
-		// cancel) ends the wait.
-		provRelease, provErr := s.providerGates.Wait(runCtx, providerID)
-		if provErr != nil {
-			s.finishRunFailedReason(run.ID, "resume: acquire provider slot: "+provErr.Error(), meta)
-			return
-		}
-		provSlot.release = provRelease
-		provSlot.providerID = providerID
-		defer provSlot.releaseCurrent()
-		// RFC BF P2c: a resumed run holds provSlot for its whole re-entered loop,
-		// so publish its provider into the ancestor-held set — sub-agents it spawns
-		// (a resumed fan-out parent) skip the gate for the SAME provider (deadlock
-		// carve-out). Without this a same-provider parent→child spawn after resume
-		// would self-deadlock. No-op for uncapped/noop slots.
-		loopCtx = s.heldSlotCtx(loopCtx, provSlot)
+		// A capped provider is not waited for here: each model call the resumed
+		// loop makes takes its own slot in the provider's call lane, and waits
+		// there for as long as the lane is full.
 
 		// Respect the global run cap so a boot that resumes many runs doesn't
 		// blow past MAX_CONCURRENT_RUNS. Acquired inside the goroutine so the

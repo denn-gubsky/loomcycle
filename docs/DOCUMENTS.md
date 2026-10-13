@@ -322,7 +322,7 @@ A decision answer needs no repair: candidates are ordered by probability, and ti
 - Each rerank is booked as a `token_usage` row on the **run that searched** and counts against its token budget.
   - Measured for listwise: about 250 prompt tokens for a handful of short sections, up to about 6,000 for 20 × 1,200 characters (about 12,000 at the default 40).
   - Measured for decision: about 2,650 input tokens and 1 output token for 20 sections.
-- A rerank takes no provider concurrency slot, because the searching run already holds one; `max_concurrent` bounds reranks instead.
+- A rerank is not counted against its provider's `max_concurrent` (the reranker makes its calls on its own client); `memory.reranker.max_concurrent` bounds reranks instead.
 - A tenant's own provider key pays for its reranks when the reranker uses the provider's own endpoint.
 - With `base_url` overridden and no `api_key_env`, only a credential named `LOOMCYCLE_RERANKER_API_KEY` can override, so a tenant's vendor key never travels to an operator endpoint.
 - The operator-key restriction holds for both kinds: a restricted run with no key of its own gets `call_failed` and search's order, and no request leaves. A keyless local Ollama endpoint has no operator key to protect, so it is never restricted.

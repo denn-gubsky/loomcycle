@@ -49,12 +49,12 @@ type Model struct {
 	// waiting keeps search's order like any other timeout.
 	slots chan struct{}
 
-	// NO PROVIDER CONCURRENCY SLOT IS TAKEN, deliberately. The per-provider gates
-	// cap in-flight RUNS, and a rerank runs inside a run that already holds a slot
-	// on its own provider: with the reranker on that same provider and a cap of 1
-	// (the usual setting for a local model host), the rerank would wait on the
-	// slot its own run holds until the gate timed out. It is part of the run's
-	// work, like a tool call, and is admitted by the run's admission.
+	// NO PROVIDER CONCURRENCY SLOT IS TAKEN: the reranker makes its calls on a
+	// driver of its own (providerbuild.ServiceProvider), not on a provider from
+	// the registry, so a provider's max_concurrent does not count them. slots
+	// above is their bound. (The old reason — a rerank would wait on the slot
+	// its own run held — is gone: a provider's cap counts calls now, and a run
+	// inside a tool holds none.)
 
 	// OnUsage records the call's tokens against the run whose context it is. The
 	// rerank is spent on that run's behalf, so it belongs in that run's cost.

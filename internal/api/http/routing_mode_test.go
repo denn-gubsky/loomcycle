@@ -129,7 +129,7 @@ func TestFallbackForRun_PinAndTierRowNeverFallsBackToTierProvider(t *testing.T) 
 	_, restore := captureLog(t)
 	defer restore()
 
-	policy, reResolve := s.fallbackForRun("", "", "walker", "", false, nil, nil)
+	policy, reResolve := s.fallbackForRun("", "", "walker", "", false, nil)
 	if !policy.Enabled || reResolve == nil {
 		t.Fatal("fallback policy not armed — fixture does not exercise the fallback path")
 	}

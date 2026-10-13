@@ -281,15 +281,21 @@ func TestReloadConfig_RegistryDispatch(t *testing.T) {
 }
 
 // TestReloadConcurrency: the Server method raises the live semaphore cap and
-// (re)builds a per-provider gate from providers[*].max_concurrent, in place.
+// (re)builds the providers' call lanes from providers[*].max_concurrent /
+// lanes / max_models_in_flight, in place — on the scheduler the registry gates
+// with, not a copy.
 func TestReloadConcurrency(t *testing.T) {
 	s := &Server{}
 	s.sem = concurrency.New(1, 0, 50*time.Millisecond)
-	s.providerGates = concurrency.NewProviderGates(map[string]int{}, 4)
+	sched := concurrency.NewCallScheduler(nil)
+	s.SetCallScheduler(sched)
 
 	s.ReloadConcurrency(&config.Config{
 		Concurrency: config.Concurrency{MaxConcurrentRuns: 3, MaxQueueDepth: 0, QueueTimeoutMS: 100},
-		Providers:   map[string]config.ProviderConfig{"p": {MaxConcurrent: 2}},
+		Providers: map[string]config.ProviderConfig{
+			"p": {MaxConcurrent: 2},
+			"q": {MaxModelsInFlight: 1, Lanes: map[string]config.ProviderLane{config.ModelKindDecision: {MaxConcurrent: 4}}},
+		},
 	})
 
 	// Global cap now 3: three acquires succeed.
@@ -304,8 +310,20 @@ func TestReloadConcurrency(t *testing.T) {
 	for _, r := range rels {
 		r()
 	}
-	// Provider p is now gated.
-	if !s.providerGates.Has("p") {
-		t.Error("provider gate p not created by ReloadConcurrency")
+	// Provider p's chat calls are now capped at 2; q caps its decision calls and
+	// its models in flight, and leaves chat calls to the models cap alone.
+	if got := sched.LaneCap("p", config.ModelKindChat); got != 2 {
+		t.Errorf("p chat lane cap = %d after ReloadConcurrency, want 2", got)
+	}
+	if got := sched.LaneCap("q", config.ModelKindDecision); got != 4 {
+		t.Errorf("q decision lane cap = %d, want 4", got)
+	}
+	if sched.LaneCap("q", config.ModelKindChat) != 0 || !sched.Gated("q", config.ModelKindChat) {
+		t.Error("q's chat calls should have no lane and still be bound by its models-in-flight cap")
+	}
+	// Removing the caps ungates the next call.
+	s.ReloadConcurrency(&config.Config{Concurrency: config.Concurrency{MaxConcurrentRuns: 3}})
+	if sched.Gated("p", config.ModelKindChat) || sched.Gated("q", config.ModelKindChat) {
+		t.Error("a reload that drops every cap left a provider gated")
 	}
 }

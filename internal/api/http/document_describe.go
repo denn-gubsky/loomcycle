@@ -35,6 +35,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/denn-gubsky/loomcycle/internal/lanegate"
 	"github.com/denn-gubsky/loomcycle/internal/providers"
 	"github.com/denn-gubsky/loomcycle/internal/resolve"
 	"github.com/denn-gubsky/loomcycle/internal/tools/builtin"
@@ -307,18 +308,12 @@ func (s *Server) resolveVisionModel(tier string) (string, providers.Provider, st
 func (s *Server) describeOneImage(ctx context.Context, providerID string, prov providers.Provider,
 	model, mediaType string, raw []byte, caption string) (string, error) {
 
-	// Respect the per-provider concurrency cap (RFC BF P2b) per CALL rather than
-	// around the sweep: holding one slot for an entire multi-minute sweep would
-	// starve real traffic behind a maintenance pass. Acquire, not Wait: this route
-	// is a request anyone with the scope can send, and it takes no run slot, so
-	// the gate's queue depth is its only bound — with Wait, concurrent requests
-	// would queue without limit and, counted in the queue, turn every other
-	// caller's new runs on this provider away.
-	release, err := s.providerGates.Acquire(ctx, providerID)
-	if err != nil {
-		return "", err
-	}
-	defer release()
+	// The call below takes a slot in the provider's call lane like any other.
+	// What is particular to this route is the BOUND: it is a request anyone with
+	// the scope can send and it takes no run slot, so nothing else limits how
+	// many of them can wait on a capped provider. Past provider_queue_depth
+	// waiting, the call is refused (provider_concurrency_exhausted) instead.
+	ctx = lanegate.WithQueueBound(ctx, s.cfg().Concurrency.ProviderQueueDepthOrDefault())
 
 	// The caption is given to the model so it can add what the author did NOT say.
 	// Without it a describe pass tends to restate the caption, which adds tokens to

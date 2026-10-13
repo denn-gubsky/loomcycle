@@ -42,8 +42,6 @@ func reasonFor(err error) string {
 		return "retention_none_unsupported"
 	case errors.Is(err, runner.ErrTokenLimitExceeded):
 		return "token_limit_exceeded"
-	case errors.Is(err, runner.ErrProviderConcurrencyExhausted):
-		return "provider_concurrency_exhausted"
 	case errors.Is(err, runner.ErrPerUserQuotaExhausted):
 		return "per_user_quota_exhausted"
 	case errors.Is(err, runner.ErrBackpressure):

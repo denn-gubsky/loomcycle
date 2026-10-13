@@ -152,15 +152,9 @@ func (s *Server) prepareGatewayDispatch(w http.ResponseWriter, r *http.Request, 
 		return gatewayDispatch{}, false
 	}
 
-	// Per-provider concurrency gate (RFC BF P2b): acquire BEFORE the global slot
-	// so a request queued on a full per-provider cap doesn't hold a global slot.
-	// The gateway is a one-shot provider.Call (no loop fallback), so there's no
-	// slot to swap — just release both at dispatch end. Uncapped ⇒ noop.
-	provRelease, provErr := s.providerGates.Acquire(r.Context(), providerID)
-	if provErr != nil {
-		writeQuotaError(w, provErr)
-		return gatewayDispatch{}, false
-	}
+	// A capped provider is not waited for here: the provider call below takes
+	// its own slot in the provider's call lane. The global slot acquired next is
+	// what bounds how many gateway requests can wait there.
 
 	// Per-subject quota acquisition. RFC L: when an authenticated
 	// principal is present its Subject is the authoritative fairness key
@@ -169,15 +163,9 @@ func (s *Server) prepareGatewayDispatch(w http.ResponseWriter, r *http.Request, 
 	// key bypasses the per-user cap (global semaphore only).
 	release, err := s.sem.AcquireForUser(r.Context(), tenantFromCtx(r.Context()), auth.SubjectForFairness(r.Context(), req.UserID))
 	if err != nil {
-		provRelease()
 		writeQuotaError(w, err)
 		return gatewayDispatch{}, false
 	}
-	// Fold both slot releases into the single handle the caller defers, so the
-	// provider gate slot is freed alongside the global slot (provider acquired
-	// first, released last).
-	globalRelease := release
-	release = func() { globalRelease(); provRelease() }
 
 	provReq, err := llmRequestToProviderRequest(req, modelID, effort)
 	if err != nil {

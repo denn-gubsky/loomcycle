@@ -30,7 +30,10 @@ The built-in providers in the table above ship as an **embedded default layer** 
 | `dialect` | Wire dialect when a driver speaks more than one; omit for the driver's default (today each has one: `anthropic-messages`, `openai-chat`, `gemini-v1beta`, `ollama-chat`). |
 | `base_url` | Override the driver's default endpoint (a self-hosted mirror, Vertex Gemini, a LAN Ollama). Empty = driver default. |
 | `api_key_env` | The **env-var NAME** (never the value) whose credential authenticates this provider — resolved server-side, and overridable per-tenant/user (a tenant's own key shadows the operator's — see [CREDENTIALS.md](CREDENTIALS.md)). **Omit for a keyless endpoint.** |
-| `max_concurrent` | Cap in-flight runs to this provider (see below). `0` / unset = unbounded. |
+| `max_concurrent` | Cap the model **calls** in flight to this provider (see below) — shorthand for `lanes.chat.max_concurrent`. `0` / unset = unbounded. |
+| `lanes` | A queue per kind of model (`chat` / `decision` / `embedder`): its own `max_concurrent`, plus `affinity_hold_ms`, `quantum_calls` and `background_share` (see below). |
+| `max_models_in_flight` | How many different models may compute on this provider at once, across all lanes. `0` / unset = unlimited. |
+| `model_switch_max_wait_ms` | How long a waiting model can be held off by calls to the models in flight. Default `30000`; only with `max_models_in_flight`. |
 | `options` | Driver-specific tuning, passed opaquely: `ollama` `num_ctx` / `num_gpu`; `code-js` `code_root` / `deterministic` / `run_timeout_seconds`; `mock` `stable`. Unknown keys log a warning, never fatal. |
 | `capabilities` | Override the driver's advertised capabilities (`supports_thinking` / `supports_vision` / `supports_effort` / `native_prompt_cache` / `parallel_tool_calls` / `max_context_tokens`). Only the coarse flag is overridable; per-model heuristics stay in the driver. |
 
@@ -54,22 +57,58 @@ tiers:
 
 A **keyless** endpoint (no auth) is declared by simply omitting `api_key_env` — declaring the provider *is* the opt-in; loomcycle calls `base_url` with no key. (Before v1.21.0 a declared provider without `api_key_env` was silently treated as "not configured".)
 
-### Per-provider concurrency (`max_concurrent`)
+### Per-provider concurrency (`max_concurrent`, `lanes`)
 
-`max_concurrent` caps how many runs whose resolved provider is that id execute at once; the rest **queue inside loomcycle** until a slot frees. A queued run never times out. Only a NEW top-level request can be turned away, and only when the provider's queue is already full (`429 provider_concurrency_exhausted` / gRPC `ResourceExhausted`). The motivating case is a **local model on one GPU**: cap `ollama-local` so a stable batch runs to completion without VRAM context-swapping, and the next batch starts only when a slot frees.
+`max_concurrent` caps how many **model calls** are in flight to a provider at once. A slot is taken just before a call and given back when its response stream ends; nothing is held while a run executes a tool, waits for a sub-agent or waits for its operator. Calls over the cap **queue inside loomcycle** and never time out. The motivating case is a **local model on one GPU**: cap `ollama-local` so the host computes a fixed number of requests at a time.
 
 ```yaml
 providers:
   ollama-local:
     driver: ollama
-    max_concurrent: 2     # ≤2 local runs in flight; a fan-out of 10 drains in pairs
+    max_concurrent: 2     # ≤2 model calls in flight, whoever makes them
 ```
 
-- The provider gate is acquired **before** the global concurrency slot, so a run queued on a full provider cap never starves runs targeting other (uncapped) providers.
-- Cloud providers are vendor-rate-limited — leave them uncapped.
-- Work that was already admitted always queues for its slot, whatever the queue depth, and is never cancelled by the queue: sub-agents, resumed runs and mid-run provider fallbacks. A sub-agent's time spent queued does not count against its `timeout_ms`.
-- Sub-agents gate on their own resolved provider too, with a deadlock carve-out: a fan-out parent holding provider P's slot does not make its P-targeting children queue behind it. The same carve-out applies when a run fails over to a provider one of its ancestors holds.
-- Advisory / per-replica (exact for the single-replica local case). Tune the shared queue depth with `concurrency.provider_queue_depth` / `LOOMCYCLE_PROVIDER_QUEUE_DEPTH` (defaults to the global `max_queue_depth`); it bounds new top-level requests only. There is no per-provider wait timeout. It complements — does not replace — Ollama's own `OLLAMA_NUM_PARALLEL`.
+Because the cap counts calls and not runs, eight agents on two slots take turns call by call: no agent waits for another's whole conversation.
+
+- **Every call is counted.** Top-level runs, sub-agents, interactive runs, resumed runs, compaction summaries, the LLM gateway and the OpenAI-compatible routes, and the image-describe route all go through the same queue. A fan-out parent and its same-provider children share the cap, and a run that fails over to another provider simply makes its next call in that provider's queue.
+- **A run's calls always wait**, however long the queue is: the run was admitted, so a busy provider never fails it. Time a sub-agent spends queued does not count against its `timeout_ms`.
+- **A request that holds no run slot is bounded.** The image-describe route is sent directly, outside any run, so nothing else limits how many can wait. With `concurrency.provider_queue_depth` (`LOOMCYCLE_PROVIDER_QUEUE_DEPTH`; defaults to the global `max_queue_depth`) requests already waiting, the next one is refused (`provider concurrency exhausted`, reported as that image's failure) instead of queueing. That is all `provider_queue_depth` bounds.
+- A run waiting for a provider slot holds its global run slot (`concurrency.max_concurrent_runs`). Size the global cap for the runs you want admitted, the provider cap for what the host can compute.
+- Cloud providers are vendor-rate-limited — leave them uncapped. An uncapped provider costs nothing.
+- Advisory / per-replica (exact for the single-replica local case). It complements — does not replace — Ollama's own `OLLAMA_NUM_PARALLEL`.
+- `GET /v1/_concurrency/stats` (`providers.<id>`) and the `loomcycle_provider_slots_in_use` / `loomcycle_provider_queue_depth` gauges report each capped provider's chat calls in flight and waiting.
+- A config reload applies a changed cap to the next call.
+
+#### Lanes: a queue per kind of model
+
+`max_concurrent` is shorthand for the **chat** lane. A provider can cap each kind of model it serves (the `models:` `kind` tag — `chat`, `decision`, `embedder`) separately, and shape how the runs waiting in a lane take turns:
+
+```yaml
+providers:
+  ollama-local:
+    driver: ollama
+    max_models_in_flight: 1
+    model_switch_max_wait_ms: 30000
+    lanes:
+      chat:     { max_concurrent: 4, quantum_calls: 4, affinity_hold_ms: 5000 }
+      decision: { max_concurrent: 2 }
+      embedder: { max_concurrent: 2, background_share: 0.25 }
+```
+
+| Key | Meaning |
+|---|---|
+| `lanes.<kind>.max_concurrent` | Calls of that kind in flight. `0` / unset = that kind is not capped, and then none of the keys below may be set. Setting both `max_concurrent` and `lanes.chat.max_concurrent` to different values is refused at load. |
+| `lanes.<kind>.affinity_hold_ms` | The **lease**: how long a slot stays reserved for the run that just used it, so the run's next call lands on the same slot — on a local host, on a warm prompt cache. `0` (default) = no reservation, a plain fair queue call by call. The lease belongs to the **run**: it is dropped as soon as the run ends, and a run gone for longer than the hold (a slow tool, a sub-agent, its operator) loses it. |
+| `lanes.<kind>.quantum_calls` | How many consecutive calls a run may make on its reserved slot while other runs wait; after that it yields and queues again. `0` = unlimited (the lease is bounded by `affinity_hold_ms` alone). |
+| `lanes.<kind>.background_share` | The least fraction of the lane's turns given to background work (consolidation, reindexing) while both it and live runs wait, in `[0, 1)`. `0` (default) = live runs always go first. |
+| `max_models_in_flight` | How many **different models** may compute on the provider at once, across all lanes. Some local hosts fail, or thrash loading and evicting weights, when several do. Any number of calls to a model already in flight are admitted; a call to another model waits until one drains. `0` / unset = unlimited. |
+| `model_switch_max_wait_ms` | How long a waiting model can be held off by new calls to the models in flight: after this long those queue behind it, so it gets its turn. Default `30000`; only meaningful with `max_models_in_flight`. |
+
+Waiting calls are served round-robin across (tenant, user), so one user's fan-out cannot hold a lane against everyone else.
+
+**Ollama: one model at two context sizes is two models.** Ollama loads a model at one `num_ctx`; the same model requested at another size is reloaded (about 10 s measured) and loses its prompt cache. `max_models_in_flight` counts `model@num_ctx`, so the two do not compute together — and the driver logs a warning, once per combination, when an agent's `max_context_tokens` differs from the provider's pinned `num_ctx`. Set them to the same value.
+
+**What is queued today.** Only chat calls made through `providers:` — everything a run, the LLM gateway or the image-describe route sends. The `decision:` block, the embedder and the `memory.reranker` / `memory.unit_generator` services build their own clients: they are bounded by their own `max_concurrent` settings and are not counted against a provider's cap or its `max_models_in_flight`. The `decision` and `embedder` lanes are accepted and validated, and take effect when those callers are moved onto them. Likewise no caller marks its calls as background yet, so `background_share` has nothing to share until one does.
 
 ### Capability overrides
 

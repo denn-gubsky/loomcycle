@@ -1,16 +1,52 @@
 // callscheduler.go — the lanes and the model gate of every capped provider.
 //
-// A CallScheduler is to model CALLS what ProviderGates is to runs: one lookup
-// by provider id that is a zero-allocation noop for a provider nobody capped.
+// A CallScheduler caps model CALLS, not runs: a slot is held from just before a
+// provider call until its stream ends, never while a run executes a tool or
+// waits. It is one lookup by provider id that is a zero-allocation noop for a
+// provider nobody capped.
 // A capped provider has one Lane per model kind it caps (chat, decision,
 // embedder — the kind is an opaque key here) and one ModelGate across them.
 package concurrency
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"sync"
 	"time"
 )
+
+// noopRelease is the shared release for a call nothing gates. One package-level
+// value keeps the ungated path free of allocations.
+var noopRelease = func() {}
+
+// ErrProviderConcurrencyExhausted is the refusal of a request that holds no
+// run slot (one sent directly, outside any run) when the queue it would have
+// joined on a capped provider is already full. A call made by a run is never
+// refused this way: the run was admitted, so its calls wait.
+//
+// Today the one such request is the document image-describe route, which
+// reports it as that image's failure; errclassify reads it as transient.
+type ErrProviderConcurrencyExhausted struct {
+	Provider string
+	// Cap is the provider's max_concurrent for the kind of call refused; 0
+	// when it was the cap on models in flight that the request queued behind.
+	Cap int
+}
+
+func (e *ErrProviderConcurrencyExhausted) Error() string {
+	return fmt.Sprintf("provider concurrency exhausted: provider=%s cap=%d", e.Provider, e.Cap)
+}
+
+// Code is the refusal's typed identifier.
+func (e *ErrProviderConcurrencyExhausted) Code() string { return "provider_concurrency_exhausted" }
+
+// IsProviderConcurrencyExhausted reports whether err is an
+// *ErrProviderConcurrencyExhausted.
+func IsProviderConcurrencyExhausted(err error) bool {
+	var e *ErrProviderConcurrencyExhausted
+	return errors.As(err, &e)
+}
 
 // ProviderLanesConfig is the call-level caps of one provider.
 type ProviderLanesConfig struct {
@@ -73,6 +109,25 @@ func (s *CallScheduler) lane(providerID, kind string) (*Lane, *ModelGate) {
 	return p.lanes[kind], p.gate
 }
 
+// Gated reports whether a call of the given kind to providerID is capped at
+// all right now — by a lane, or by the provider's cap on models in flight. A
+// caller uses it to keep an uncapped call free of any bookkeeping; the answer
+// can change at the next Reload, and Acquire is correct either way.
+func (s *CallScheduler) Gated(providerID, kind string) bool {
+	lane, gate := s.lane(providerID, kind)
+	return lane != nil || gate.enabled()
+}
+
+// LaneCap returns the max_concurrent of the (providerID, kind) lane, 0 when
+// that kind has no lane.
+func (s *CallScheduler) LaneCap(providerID, kind string) int {
+	lane, _ := s.lane(providerID, kind)
+	if lane == nil {
+		return 0
+	}
+	return lane.Stats().MaxConcurrent
+}
+
 // Acquire blocks until c may make one call of the given kind to providerID and
 // returns the release for it. Call release when the call ends; it is
 // idempotent. An ungated (provider, kind) — and a nil scheduler — returns a
@@ -89,7 +144,7 @@ func (s *CallScheduler) Acquire(ctx context.Context, providerID, kind string, c 
 // caller sends directly, outside any run, so nothing else bounds how many can
 // wait. With maxQueued callers already waiting at the model gate or in the
 // lane, a call that would have to wait there is refused with *QueueFullError
-// instead (callers surface provider_concurrency_exhausted, HTTP 429).
+// instead.
 func (s *CallScheduler) AcquireBounded(ctx context.Context, providerID, kind string, c CallInfo, maxQueued int) (release func(), err error) {
 	if maxQueued < 0 {
 		maxQueued = 0

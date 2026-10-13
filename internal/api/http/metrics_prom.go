@@ -29,6 +29,7 @@ import (
 	"strings"
 
 	"github.com/denn-gubsky/loomcycle/internal/concurrency"
+	"github.com/denn-gubsky/loomcycle/internal/config"
 	"github.com/denn-gubsky/loomcycle/internal/throughput"
 )
 
@@ -96,24 +97,24 @@ func (s *Server) handleMetricsProm(w http.ResponseWriter, _ *http.Request) {
 		fmt.Fprintln(w)
 	}
 
-	// RFC BF P2b per-provider concurrency gates — only emitted when at least one
-	// provider sets max_concurrent (otherwise no gates exist and the series would
+	// Per-provider call caps (each capped provider's chat lane) — only emitted
+	// when at least one provider sets max_concurrent (otherwise no lane exists and the series would
 	// be empty). Two gauges (slots in use + queue depth), labelled by provider,
 	// sorted for deterministic scrape output.
-	if pg := providerGateSnapshot(s); len(pg) > 0 {
+	if pg := providerLaneSnapshot(s); len(pg) > 0 {
 		provs := make([]string, 0, len(pg))
 		for id := range pg {
 			provs = append(provs, id)
 		}
 		sort.Strings(provs)
-		fmt.Fprintln(w, "# HELP loomcycle_provider_slots_in_use Runs currently holding a per-provider concurrency slot (providers.<id>.max_concurrent).")
+		fmt.Fprintln(w, "# HELP loomcycle_provider_slots_in_use Model calls in flight on a capped provider (providers.<id>.max_concurrent).")
 		fmt.Fprintln(w, "# TYPE loomcycle_provider_slots_in_use gauge")
 		for _, id := range provs {
 			labels := mergeLabels(replicaLabels, map[string]string{"provider": id})
 			fmt.Fprintf(w, "loomcycle_provider_slots_in_use%s %d\n", labels, pg[id].Active)
 		}
 		fmt.Fprintln(w)
-		fmt.Fprintln(w, "# HELP loomcycle_provider_queue_depth Runs waiting for a per-provider concurrency slot.")
+		fmt.Fprintln(w, "# HELP loomcycle_provider_queue_depth Model calls waiting for a slot on a capped provider.")
 		fmt.Fprintln(w, "# TYPE loomcycle_provider_queue_depth gauge")
 		for _, id := range provs {
 			labels := mergeLabels(replicaLabels, map[string]string{"provider": id})
@@ -209,13 +210,27 @@ func semaphoreSnapshot(s *Server) (active, queued int, perUser map[string]int) {
 	return stats.Active, stats.Queued, stats.PerUser
 }
 
-// providerGateSnapshot is a nil-safe view of the RFC BF P2b per-provider gates.
-// Returns nil when none are wired (the common case), so the gauges are omitted.
-func providerGateSnapshot(s *Server) map[string]concurrency.Stats {
+// providerLaneSnapshot is a nil-safe view of each capped provider's CHAT lane
+// (providers.<id>.max_concurrent), keyed by provider id: its calls in flight
+// and its calls waiting. A provider that caps only other kinds of call, or only
+// models in flight, is left out. Returns nil when no provider caps chat calls
+// (the common case), so the gauges and the stats block are omitted.
+func providerLaneSnapshot(s *Server) map[string]concurrency.LaneStats {
 	if s == nil {
 		return nil
 	}
-	return s.providerGates.Stats()
+	var out map[string]concurrency.LaneStats
+	for id, ps := range s.callSched.Stats() {
+		ls, ok := ps.Lanes[config.ModelKindChat]
+		if !ok {
+			continue
+		}
+		if out == nil {
+			out = map[string]concurrency.LaneStats{}
+		}
+		out[id] = ls
+	}
+	return out
 }
 
 // promReplicaLabels returns `{replica_id="..."}` when running in

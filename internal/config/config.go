@@ -950,8 +950,9 @@ type ProviderConfig struct {
 	// provider and can be overridden per-tenant (RFC AR). Empty = the driver's
 	// built-in default (e.g. OPENAI_API_KEY).
 	APIKeyEnv string `json:"api_key_env,omitempty" yaml:"api_key_env,omitempty"`
-	// MaxConcurrent caps in-flight calls to this provider. 0 = unbounded (the
-	// current behaviour). Must be >= 0.
+	// MaxConcurrent caps the model CALLS in flight to this provider — the chat
+	// lane's cap (see EffectiveLanes). A slot is held for one call, never for a
+	// run. 0 = unbounded. Must be >= 0.
 	MaxConcurrent int `json:"max_concurrent,omitempty" yaml:"max_concurrent,omitempty"`
 	// MaxModelsInFlight is how many DIFFERENT models may compute on this
 	// provider at once, across all lanes (some local hosts fail when several
@@ -3533,16 +3534,17 @@ type Concurrency struct {
 	// `code: "per_user_quota_exhausted"` + `Retry-After: 5`.
 	// Env: LOOMCYCLE_MAX_CONCURRENT_RUNS_PER_USER.
 	MaxConcurrentRunsPerUser int `yaml:"max_concurrent_runs_per_user"`
-	// ProviderQueueDepth is the queue depth of each RFC BF P2b per-provider
-	// concurrency gate (max_concurrent). 0 (default) = inherit MaxQueueDepth, so
-	// a provider cap queues the same way the global semaphore does. Only used by
-	// providers whose `max_concurrent` > 0.
+	// ProviderQueueDepth is how many requests that hold NO run slot may wait
+	// for a capped provider (max_concurrent / lanes) at once. 0 (default) =
+	// inherit MaxQueueDepth.
 	//
-	// It bounds only NEW top-level requests (a full queue → 429
-	// provider_concurrency_exhausted). Work already admitted — a sub-agent, a
-	// resumed run, a mid-run provider fallback — always queues for its slot,
-	// whatever the depth. A per-provider wait never times out: queue_timeout_ms
-	// is the global semaphore's knob only.
+	// A provider's cap counts model calls, and a call made by a run always
+	// waits for its slot: the run was admitted, and the global run cap already
+	// bounds how many runs can be waiting. A request sent directly, outside any
+	// run (today: the document image-describe route), has no such bound, so
+	// this is it — past the depth the request is refused with
+	// provider_concurrency_exhausted instead of queueing. A wait for a provider
+	// never times out: queue_timeout_ms is the global semaphore's knob only.
 	// Env: LOOMCYCLE_PROVIDER_QUEUE_DEPTH.
 	ProviderQueueDepth int `yaml:"provider_queue_depth"`
 }
@@ -3552,8 +3554,9 @@ func (c Concurrency) QueueTimeout() time.Duration {
 	return time.Duration(c.QueueTimeoutMS) * time.Millisecond
 }
 
-// ProviderQueueDepthOrDefault returns the per-provider gate queue depth,
-// inheriting the global MaxQueueDepth when unset (RFC BF P2b).
+// ProviderQueueDepthOrDefault returns how many requests holding no run slot
+// may wait for a capped provider, inheriting the global MaxQueueDepth when
+// unset.
 func (c Concurrency) ProviderQueueDepthOrDefault() int {
 	if c.ProviderQueueDepth > 0 {
 		return c.ProviderQueueDepth
@@ -5493,9 +5496,10 @@ func LoadLayers(layers ...Layer) (*Config, error) {
 		}
 	}
 
-	// RFC BF P2b — per-provider gate queue depth. Defaults to the global
-	// max_queue_depth (see ProviderQueueDepthOrDefault); this env override lets a
-	// containerized operator tune the gate without editing mounted yaml.
+	// How many requests that hold no run slot may wait for a capped provider.
+	// Defaults to the global max_queue_depth (see ProviderQueueDepthOrDefault);
+	// this env override lets a containerized operator tune it without editing
+	// mounted yaml.
 	// Negative values are ignored (keep the inherit-0).
 	if v := strings.TrimSpace(os.Getenv("LOOMCYCLE_PROVIDER_QUEUE_DEPTH")); v != "" {
 		if n, err := strconv.Atoi(v); err == nil && n >= 0 {

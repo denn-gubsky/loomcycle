@@ -31,49 +31,58 @@ func TestSemaphore_SetCaps(t *testing.T) {
 	rel3()
 }
 
-// TestProviderGates_Reload: RFC CK — Reload adds/removes/re-caps gates in place.
-func TestProviderGates_Reload(t *testing.T) {
-	g := NewProviderGates(map[string]int{"a": 1}, 0)
-	if !g.Has("a") || g.Has("b") {
-		t.Fatalf("initial: Has(a)=%v Has(b)=%v", g.Has("a"), g.Has("b"))
+// TestCallScheduler_GatedFollowsReload — Gated is what lets a caller skip all
+// bookkeeping for an uncapped call, so it must be false for a provider nobody
+// capped, true for a lane and for a models-in-flight cap with no lane, and
+// follow a Reload both ways. LaneCap reports the lane's cap.
+func TestCallScheduler_GatedFollowsReload(t *testing.T) {
+	var nilSched *CallScheduler
+	if nilSched.Gated("p", "chat") || nilSched.LaneCap("p", "chat") != 0 {
+		t.Fatal("a nil scheduler gates nothing")
 	}
-	// Reload: raise a to 2, add b.
-	g.Reload(map[string]int{"a": 2, "b": 1}, 0)
-	if !g.Has("a") || !g.Has("b") || g.Len() != 2 {
-		t.Fatalf("after reload: Has(a)=%v Has(b)=%v Len=%d", g.Has("a"), g.Has("b"), g.Len())
+	s := NewCallScheduler(map[string]ProviderLanesConfig{
+		"laned":  {Lanes: map[string]LaneConfig{"chat": {MaxConcurrent: 3}}},
+		"models": {MaxModelsInFlight: 1},
+	})
+	if !s.Gated("laned", "chat") || s.LaneCap("laned", "chat") != 3 {
+		t.Errorf("laned/chat: gated=%v cap=%d, want true/3", s.Gated("laned", "chat"), s.LaneCap("laned", "chat"))
 	}
-	r1, _ := g.Acquire(context.Background(), "a")
-	r2, err := g.Acquire(context.Background(), "a") // a is now cap 2
-	if err != nil {
-		t.Fatalf("a should admit 2 after reload: %v", err)
+	if s.Gated("laned", "decision") {
+		t.Error("a kind with no lane on a provider with no models cap is not gated")
 	}
-	r1()
-	r2()
-	// Reload: drop a entirely.
-	g.Reload(map[string]int{"b": 1}, 0)
-	if g.Has("a") {
-		t.Error("a should be uncapped (noop) after being removed on reload")
+	if !s.Gated("models", "chat") || s.LaneCap("models", "chat") != 0 {
+		t.Error("a models-in-flight cap gates every kind, with no lane cap")
+	}
+	if s.Gated("other", "chat") {
+		t.Error("an uncapped provider is not gated")
+	}
+	s.Reload(map[string]ProviderLanesConfig{"other": {Lanes: map[string]LaneConfig{"chat": {MaxConcurrent: 1}}}})
+	if s.Gated("laned", "chat") || s.Gated("models", "chat") || !s.Gated("other", "chat") {
+		t.Errorf("after reload: laned=%v models=%v other=%v, want false/false/true",
+			s.Gated("laned", "chat"), s.Gated("models", "chat"), s.Gated("other", "chat"))
 	}
 }
 
-// TestProviderGates_ReloadRace: concurrent Acquire/Has/Len vs Reload — under -race
-// this fails if the byID swap is not synchronized.
-func TestProviderGates_ReloadRace(t *testing.T) {
-	g := NewProviderGates(map[string]int{"a": 5}, 4)
+// TestCallScheduler_ReloadRace: Acquire/Gated/Stats against Reload — under
+// -race this fails if the provider map swap is not synchronized.
+func TestCallScheduler_ReloadRace(t *testing.T) {
+	cfg := func(n int) map[string]ProviderLanesConfig {
+		return map[string]ProviderLanesConfig{"a": {Lanes: map[string]LaneConfig{"chat": {MaxConcurrent: n}}}}
+	}
+	s := NewCallScheduler(cfg(5))
 	done := make(chan struct{})
 	go func() {
+		defer close(done)
 		for i := 0; i < 2000; i++ {
-			if rel, err := g.Acquire(context.Background(), "a"); err == nil {
+			if rel, err := s.Acquire(context.Background(), "a", "chat", CallInfo{}); err == nil {
 				rel()
 			}
-			g.Has("a")
-			g.Len()
-			g.Stats()
+			s.Gated("a", "chat")
+			s.Stats()
 		}
-		close(done)
 	}()
 	for i := 0; i < 2000; i++ {
-		g.Reload(map[string]int{"a": 5, "b": 1}, 4)
+		s.Reload(cfg(1 + i%5))
 	}
 	<-done
 }

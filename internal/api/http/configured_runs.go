@@ -636,9 +636,6 @@ func writeRunOnceError(w http.ResponseWriter, err error) {
 	case errors.Is(err, runner.ErrPerUserQuotaExhausted):
 		w.Header().Set("Retry-After", "5")
 		writeJSONError(w, http.StatusTooManyRequests, "per_user_quota_exhausted", err.Error())
-	case errors.Is(err, runner.ErrProviderConcurrencyExhausted):
-		w.Header().Set("Retry-After", "5")
-		writeJSONError(w, http.StatusTooManyRequests, "provider_concurrency_exhausted", err.Error())
 	case errors.Is(err, runner.ErrBackpressure):
 		writeJSONError(w, http.StatusTooManyRequests, "backpressure", err.Error())
 	case errors.Is(err, runner.ErrRuntimePaused):

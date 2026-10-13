@@ -932,7 +932,7 @@ func tryProviderFallback(
 	// downgrade to the non-thinking sibling for the remaining iterations rather
 	// than let the request 400. No assistant turn yet ⇒ nothing to satisfy ⇒ no
 	// downgrade (a fresh history is fine for a thinking model).
-	if dg, ok := newProvider.(providers.ThinkingDowngrader); ok && hasReasoningLessAssistantTurn(messages) {
+	if dg, ok := providers.As[providers.ThinkingDowngrader](newProvider); ok && hasReasoningLessAssistantTurn(messages) {
 		if sibling, downgraded := dg.NonThinkingSibling(newModel); downgraded {
 			emit(providers.Event{
 				Type: providers.EventModelDowngraded,
@@ -1808,6 +1808,13 @@ func runSummarizeCall(ctx context.Context, provider providers.Provider, req prov
 		case providers.EventDone:
 			usage = ev.Usage
 		case providers.EventError:
+			// Whatever follows the error is discarded, but still read: a sender
+			// left blocked on this channel (a driver's goroutine, or the lane
+			// forwarder in front of it) would live until the run's ctx ends.
+			go func() {
+				for range ch {
+				}
+			}()
 			return "", errors.New(ev.Error)
 		}
 	}
@@ -2619,6 +2626,7 @@ func runLoop(ctx context.Context, opts RunOptions) (RunResult, error) {
 	ctx = providers.WithRunMeta(ctx, providers.RunMeta{
 		AgentName:         opts.AgentName,
 		UserID:            runIdent.UserID,
+		TenantID:          runIdent.TenantID,
 		RunID:             runIdent.AgentID,
 		StartedAt:         time.Now(),
 		CodeBody:          opts.CodeBody,
@@ -3447,7 +3455,12 @@ outerLoop:
 			// (provider, model) stalled would poison the shared availability
 			// matrix and wrongly exclude the model from OTHER (non-restricted)
 			// runs for the probe interval. Skip matrix feedback for it.
-			if ctx.Err() == nil && !errors.Is(err, providers.ErrOperatorKeyForbidden) {
+			//
+			// A cancelled TURN (turnCtx done, run ctx alive) is not a provider
+			// fault either. Call can now sit in a provider's call lane for as long
+			// as the queue is, so an operator cancelling the turn of a queued run
+			// is an ordinary event — and must not mark a healthy model stalled.
+			if ctx.Err() == nil && turnCtx.Err() == nil && !errors.Is(err, providers.ErrOperatorKeyForbidden) {
 				if providers.IsRateLimit(err) {
 					if opts.MarkRateLimited != nil {
 						opts.MarkRateLimited(opts.Provider.ID(), opts.Model, 0)

@@ -31,9 +31,9 @@ type resourceOverride struct {
 	// on sub-agent fan-out that exists. A child bypasses every other gate: it
 	// calls loop.Run directly rather than RunOnce, so it takes no global
 	// admission slot and is not counted against the per-user cap; the budget
-	// check lives inside RunOnce, so it is not budget-checked at spawn; and it
-	// deliberately skips the per-provider gate for its parent's provider to
-	// avoid a parent-holds-slot deadlock.
+	// check lives inside RunOnce, so it is not budget-checked at spawn. (A
+	// provider's max_concurrent counts a child's model calls, but that bounds
+	// calls in flight, not how many children exist.)
 	//
 	// Let a caller raise this and fan-out width has no ceiling anywhere.
 	MaxConcurrentChildren int `json:"max_concurrent_children,omitempty"`
