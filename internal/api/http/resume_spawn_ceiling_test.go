@@ -450,7 +450,7 @@ func TestResumedChild_FanOutWidthFailsClosedWithoutASpawnRecord(t *testing.T) {
 	}, {
 		name:      "sub-run with a recorded width keeps it",
 		sub:       true,
-		runConfig: runConfigRecord{Spawn: spawnRecordOf(tools.VolumePolicyValue{}, 2, false)}.marshal(),
+		runConfig: runConfigRecord{Spawn: spawnRecordOf(tools.VolumePolicyValue{}, 2)}.marshal(),
 		want:      2,
 	}, {
 		name:      "top-level run keeps its definition's width",
@@ -622,7 +622,7 @@ func TestSpawnRecord_AccountsForEveryVolumeField(t *testing.T) {
 	// And what is recorded survives the column's JSON round trip.
 	rec := runConfigRecord{Spawn: spawnRecordOf(tools.VolumePolicyValue{Active: true, Bindings: []tools.VolumeBinding{
 		{Name: "docs", Root: "/must/not/persist", ReadOnly: true, Default: true},
-	}}, 3, true)}
+	}}, 3)}
 	raw := rec.marshal()
 	if strings.Contains(string(raw), "/must/not/persist") {
 		t.Errorf("the record carries a volume root: %s", raw)
@@ -631,9 +631,6 @@ func TestSpawnRecord_AccountsForEveryVolumeField(t *testing.T) {
 	want := &spawnRecord{
 		Volumes:   volumeCeilingRecord{Active: true, Bindings: []volumeCeilingBinding{{Name: "docs", ReadOnly: true, Default: true}}},
 		FanoutCap: 3,
-		// What a resumed child inherits from an ancestor that held ephemeral
-		// volumes read-only: it has no parent ctx to read it from.
-		EphemeralReadOnly: true,
 	}
 	if !ok || !reflect.DeepEqual(back.Spawn, want) {
 		t.Errorf("round trip = %+v, want %+v", back.Spawn, want)

@@ -1505,6 +1505,10 @@ export interface RunSpec {
    *  `maxWallSeconds`: past it the run ends `cancelled` with
    *  `stop_reason: "wall_limit"`. Absent when the run has no such limit. */
   max_wall_seconds?: number;
+  /** The run started with its tree's ephemeral volumes read-only: its own
+   *  definition, or an ancestor's, says `ephemeral_volumes: "ro"`. A resume
+   *  restores it whatever the definition says by then. */
+  ephemeral_read_only?: boolean;
   review_ttl_seconds?: number;
   /** Which model serves the run: model / provider / tier / effort. */
   routing?: Record<string, unknown>;
@@ -1551,10 +1555,6 @@ export interface RunSpec {
      *  replica that does not hold it; its own replica reads it before it
      *  reaps the child as idle. */
     addressed_at?: number;
-    /** The child's parent held ephemeral volumes read-only (an
-     *  `ephemeral_volumes: "ro"` definition somewhere above it), which the
-     *  child inherits; a resume reads it back from here. */
-    ephemeral_read_only?: boolean;
   };
   /** The iteration limit the run started with. Absent for a run with none
    *  (unbounded, or an interactive run with no `max_iterations` of its own)

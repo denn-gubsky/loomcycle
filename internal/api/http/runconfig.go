@@ -48,6 +48,15 @@ type runConfigRecord struct {
 	// a resumed run is still bound by it, and so the run's spec shows it.
 	MaxWallSeconds int `json:"max_wall_seconds,omitempty"`
 
+	// EphemeralReadOnly is true when the run started with its tree's
+	// ephemeral volumes read-only: its own definition said
+	// `ephemeral_volumes: ro`, or an ancestor's did. It is recorded, and a
+	// resume reads it back, for two reasons. A resumed child has no parent
+	// ctx to inherit from. And the definition can change while a run is
+	// paused: a run that could not write before the pause must not be able to
+	// after it because a later version dropped the setting.
+	EphemeralReadOnly bool `json:"ephemeral_read_only,omitempty"`
+
 	// Routing is the run's own answer to which model serves it (RFC DC P1).
 	// It lives here rather than beside it on the run row for the same reason
 	// everything else here does: it must survive a pause, and resume must
@@ -595,11 +604,6 @@ type spawnRecord struct {
 	// (residentAddressedSince). Written at most once per
 	// residentAddressedEvery.
 	AddressedAt int64 `json:"addressed_at,omitempty"`
-	// EphemeralReadOnly is set when the child's parent held ephemeral volumes
-	// read-only (tools.EphemeralReadOnly), which the child inherits whatever
-	// its own definition says. A resumed child has no parent ctx to inherit
-	// from, so the record is where that survives.
-	EphemeralReadOnly bool `json:"ephemeral_read_only,omitempty"`
 }
 
 // volumeCeilingRecord mirrors tools.VolumePolicyValue minus each binding's
@@ -622,11 +626,10 @@ type volumeCeilingBinding struct {
 // the fan-out cap on the parent's ctx. Always non-nil: its presence is what
 // tells resume the child's ceiling is known, including "the parent was not
 // confined by volumes" (Active false), which a nil record cannot say.
-func spawnRecordOf(parentVol tools.VolumePolicyValue, fanoutCap int, ephemeralReadOnly bool) *spawnRecord {
+func spawnRecordOf(parentVol tools.VolumePolicyValue, fanoutCap int) *spawnRecord {
 	rec := &spawnRecord{
-		Volumes:           volumeCeilingRecord{Active: parentVol.Active},
-		FanoutCap:         fanoutCap,
-		EphemeralReadOnly: ephemeralReadOnly,
+		Volumes:   volumeCeilingRecord{Active: parentVol.Active},
+		FanoutCap: fanoutCap,
 	}
 	for _, b := range parentVol.Bindings {
 		rec.Volumes.Bindings = append(rec.Volumes.Bindings, volumeCeilingBinding{

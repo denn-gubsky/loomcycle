@@ -31,15 +31,19 @@ func TestEphemeralReadOnlyFor_MarksAndNeverUnmarks(t *testing.T) {
 	}
 }
 
-// What a child inherits from its parent is written into its spawn record.
-func TestSpawnRecord_CarriesInheritedEphemeralReadOnly(t *testing.T) {
-	ctx := tools.WithEphemeralReadOnly(context.Background())
-	rec := spawnRecordOf(tools.VolumePolicy(ctx), tools.FanoutCap(ctx), tools.EphemeralReadOnly(ctx))
-	if !rec.EphemeralReadOnly {
-		t.Error("the record did not take the parent's mark")
+// A spawn pinned to a stored version runs with that version's setting, and
+// can only gain it: the base's is never dropped by a version without one.
+func TestPinnedSubAgentDef_KeepsAndAddsEphemeralVolumesReadOnly(t *testing.T) {
+	added := pinnedSubAgentDef(config.AgentDef{SystemPrompt: "base"}, json.RawMessage(`{"ephemeral_volumes":"ro"}`))
+	if added.EphemeralVolumes != "ro" {
+		t.Errorf("a pinned read-only version ran without the setting: %q", added.EphemeralVolumes)
 	}
-	if spawnRecordOf(tools.VolumePolicyValue{}, 0, false).EphemeralReadOnly {
-		t.Error("an unmarked parent produced a marked record")
+	kept := pinnedSubAgentDef(config.AgentDef{SystemPrompt: "base", EphemeralVolumes: "ro"}, json.RawMessage(`{"system_prompt":"v2"}`))
+	if kept.EphemeralVolumes != "ro" {
+		t.Errorf("a pinned version without the setting removed the base's: %q", kept.EphemeralVolumes)
+	}
+	if got := pinnedSubAgentDef(config.AgentDef{}, json.RawMessage(`{"system_prompt":"v2"}`)).EphemeralVolumes; got != "" {
+		t.Errorf("a version that never set it reads as %q", got)
 	}
 }
 
@@ -49,12 +53,15 @@ func TestSpawnRecord_CarriesInheritedEphemeralReadOnly(t *testing.T) {
 // when neither does (the case that shows this test can fail).
 func TestResumedChild_KeepsEphemeralVolumesReadOnly(t *testing.T) {
 	for _, tc := range []struct {
-		name          string
-		parent, child string
-		wantRefused   bool
+		name            string
+		parent, child   string
+		dropWhilePaused bool
+		wantRefused     bool
 	}{
 		{name: "the parent's definition says ro", parent: "ro", wantRefused: true},
 		{name: "the child's own definition says ro", child: "ro", wantRefused: true},
+		{name: "the parent's says ro, and loses it while the child is paused", parent: "ro", dropWhilePaused: true, wantRefused: true},
+		{name: "the child's own says ro, and loses it while the child is paused", child: "ro", dropWhilePaused: true, wantRefused: true},
 		{name: "neither says ro", wantRefused: false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -80,6 +87,12 @@ func TestResumedChild_KeepsEphemeralVolumesReadOnly(t *testing.T) {
 				t.Fatal(err)
 			}
 
+			if tc.dropWhilePaused {
+				// The definitions lose the setting while the run is parked.
+				p, c := cfg.Agents["parent"], cfg.Agents["child"]
+				p.EphemeralVolumes, c.EphemeralVolumes = "", ""
+				cfg.Agents["parent"], cfg.Agents["child"] = p, c
+			}
 			resumeAndFinish(t, srv, child)
 
 			res := resumedToolResult(t, srv, child, "tu_write")
