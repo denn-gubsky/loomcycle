@@ -69,8 +69,9 @@ func TestProviderGate_CappedOverflowDoesNotHoldGlobalSlot(t *testing.T) {
 	t.Cleanup(func() { _ = st.Close() })
 
 	sem := concurrency.New(8, 8, time.Second) // global cap high — never gates first
-	// Long queue timeout so the 2nd capped run STAYS queued while we observe it.
-	gates := concurrency.NewProviderGates(map[string]int{"capped-prov": 1}, 4, 5*time.Second)
+	// A gate has no wait timeout, so the 2nd capped run STAYS queued while we
+	// observe it.
+	gates := concurrency.NewProviderGates(map[string]int{"capped-prov": 1}, 4)
 	srv := New(cfg, &stubResolver{p: prov}, []tools.Tool{}, sem, st)
 	srv.SetProviderGates(gates)
 	ts := httptest.NewServer(srv.Mux())
@@ -141,7 +142,7 @@ func TestProviderGate_BatchesToCap(t *testing.T) {
 	t.Cleanup(func() { _ = st.Close() })
 
 	sem := concurrency.New(16, 16, 5*time.Second) // global never gates first
-	gates := concurrency.NewProviderGates(map[string]int{"capped-prov": cap}, total, 5*time.Second)
+	gates := concurrency.NewProviderGates(map[string]int{"capped-prov": cap}, total)
 	srv := New(cfg, &stubResolver{p: prov}, []tools.Tool{}, sem, st)
 	srv.SetProviderGates(gates)
 	ts := httptest.NewServer(srv.Mux())
@@ -187,7 +188,7 @@ func TestProviderGate_OverCapReturns429(t *testing.T) {
 
 	sem := concurrency.New(8, 8, time.Second)
 	// cap 1, queue depth 0 → the 2nd run is refused immediately (deterministic).
-	gates := concurrency.NewProviderGates(map[string]int{"capped-prov": 1}, 0, time.Second)
+	gates := concurrency.NewProviderGates(map[string]int{"capped-prov": 1}, 0)
 	srv := New(cfg, &stubResolver{p: prov}, []tools.Tool{}, sem, st)
 	srv.SetProviderGates(gates)
 	ts := httptest.NewServer(srv.Mux())
@@ -260,7 +261,7 @@ func TestProviderGate_ZeroOverheadWhenUnconfigured(t *testing.T) {
 
 	sem := concurrency.New(8, 8, 5*time.Second)
 	// The default deployment: NewProviderGates with an empty caps map → zero gates.
-	gates := concurrency.NewProviderGates(map[string]int{}, 16, time.Second)
+	gates := concurrency.NewProviderGates(map[string]int{}, 16)
 	if gates.Len() != 0 {
 		t.Fatalf("expected 0 gates built, got %d", gates.Len())
 	}
@@ -304,7 +305,7 @@ func TestProviderGate_ZeroOverheadWhenUnconfigured(t *testing.T) {
 // and holds Q's, and after the final release BOTH gate counts return to 0 — no
 // leak. Also covers the same-provider no-op and the uncapped-target case.
 func TestProviderSlot_SwapMovesSlotNoLeak(t *testing.T) {
-	gates := concurrency.NewProviderGates(map[string]int{"P": 1, "Q": 1}, 2, time.Second)
+	gates := concurrency.NewProviderGates(map[string]int{"P": 1, "Q": 1}, 2)
 
 	slot, err := (&Server{providerGates: gates}).acquireProviderSlot(context.Background(), "P")
 	if err != nil {

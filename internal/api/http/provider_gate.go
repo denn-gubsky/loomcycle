@@ -8,24 +8,22 @@
 // uncapped provider acquires a noop and goes straight to the global slot — zero
 // overhead, no starvation. See the acquire sites in server.go (RunOnce /
 // handleRuns / handleMessages), resume.go, and llm_gateway.go.
+//
+// Two ways in. A NEW top-level request uses ProviderGates.Acquire and may be
+// turned away (429) when the gate's queue is full. Work that was already
+// admitted — a sub-agent, a resumed run, a mid-run fallback — uses Wait and
+// queues as long as it takes: no queue limit may cancel work that started.
 package http
 
 import (
 	"context"
 	"fmt"
 	"log"
-	"time"
 
 	"github.com/denn-gubsky/loomcycle/internal/concurrency"
 	"github.com/denn-gubsky/loomcycle/internal/runner"
+	"github.com/denn-gubsky/loomcycle/internal/teamrun"
 )
-
-// providerFallbackAcquireTimeout bounds how long a mid-run provider fallback
-// waits to acquire the NEW provider's gate slot. Short on purpose: a mid-run
-// block waiting on a saturated downstream cap is worse than briefly exceeding
-// that cap, so on timeout the run proceeds UNCAPPED for the swapped provider
-// (see providerSlot.swap). Long enough to admit past a brief burst.
-const providerFallbackAcquireTimeout = 2 * time.Second
 
 // providerSlot is the per-provider concurrency slot a single run currently
 // occupies (RFC BF P2b). The initial slot is acquired at admission; the
@@ -59,10 +57,11 @@ func (ps *providerSlot) releaseCurrent() {
 	ps.release()
 }
 
-// swap releases the current provider's gate slot and acquires newProviderID's,
-// under a SHORT bounded timeout. On timeout/backpressure it proceeds UNCAPPED (a
-// noop release) and logs a WARN — never blocks the mid-run fallback nor fails it
-// (RFC BF P2b Deliverable 4). No-op when the holder is nil (sub-agent /
+// swap releases the current provider's gate slot and waits for newProviderID's
+// (ProviderGates.Wait: the run was admitted, so it queues for as long as it
+// takes, bounded only by ctx). If ctx ends while it queues the run is being
+// stopped anyway: the holder is left with a noop release on the new provider and
+// the run's next call fails on its ctx. No-op when the holder is nil (sub-agent /
 // interactive-detached runs, which never own a swappable slot) or when the
 // resolver returned the same provider (a same-provider/different-model retry
 // keeps its slot — releasing then re-acquiring could hand our only slot to a
@@ -98,14 +97,26 @@ func (ps *providerSlot) swap(ctx context.Context, gates *concurrency.ProviderGat
 	// also means we never hold two provider slots at once (no cross-gate
 	// deadlock).
 	ps.releaseCurrent()
+	ps.release = nil
 
-	swapCtx, cancel := context.WithTimeout(ctx, providerFallbackAcquireTimeout)
-	defer cancel()
-	rel, err := gates.Acquire(swapCtx, newProviderID)
+	// An ANCESTOR holding the target's slot is the P2c deadlock again, reached
+	// through a fallback instead of a spawn: that ancestor is blocked awaiting
+	// this run, so waiting behind its slot would never end. Run ungated on the
+	// target, as acquireProviderSlot's carve-out does. (Before waits became
+	// unbounded a 2 s timeout hid this by running uncapped.) Not marked noop: a
+	// later fallback to a provider no ancestor holds gates normally.
+	if holdsProviderSlot(ctx, newProviderID) {
+		ps.providerID = newProviderID
+		return
+	}
+	// A sub-agent's fallback wait is a wait for its provider slot too, so it
+	// stops the child's timeout_ms clock like the first one (waitProviderSlot).
+	endHold := holdWhileQueued(ctx, gates, newProviderID)
+	rel, err := gates.Wait(ctx, newProviderID)
+	endHold()
 	if err != nil {
-		log.Printf("provider-gate: fallback %s->%s could not acquire the new slot within %s (%v); proceeding UNCAPPED for %s",
-			ps.providerID, newProviderID, providerFallbackAcquireTimeout, err, newProviderID)
-		ps.release = func() {}
+		log.Printf("provider-gate: fallback %s->%s ended while waiting for the new slot (%v)",
+			ps.providerID, newProviderID, err)
 		ps.providerID = newProviderID
 		return
 	}
@@ -141,6 +152,43 @@ func (s *Server) acquireProviderSlot(ctx context.Context, providerID string) (*p
 		return nil, err
 	}
 	return &providerSlot{release: release, providerID: providerID}, nil
+}
+
+// waitProviderSlot is acquireProviderSlot for a SUB-AGENT: its run tree was
+// admitted when its top-level run was, so it waits for its provider slot
+// (ProviderGates.Wait) instead of being refused — no queue depth, no timeout,
+// only ctx ends the wait. The P2c ancestor-held carve-out is identical.
+//
+// The wait does not count against the sub-agent's timeout_ms: while it queues
+// on a real gate it reports itself held to the hold observer on ctx (set by the
+// Agent tool for a bounded child, or a team walk's clock for a member), the way
+// a review hold stops that clock. A team clock that bounds a whole state stops
+// only when every run it bounds is held, so one queued member does not pause a
+// state whose other members are working.
+func (s *Server) waitProviderSlot(ctx context.Context, providerID string) (*providerSlot, error) {
+	if holdsProviderSlot(ctx, providerID) {
+		return &providerSlot{noop: true}, nil
+	}
+	defer holdWhileQueued(ctx, s.providerGates, providerID)()
+	release, err := s.providerGates.Wait(ctx, providerID)
+	if err != nil {
+		return nil, err
+	}
+	return &providerSlot{release: release, providerID: providerID}, nil
+}
+
+// holdWhileQueued stops the clock bounding the run (teamrun.ClockObserver) while
+// it waits for id's gate; call the returned func when the wait ends, however it
+// ends. It reports to the CLOCK only, never as a review hold: a team walk's poll
+// table shows a hold as a person deciding, which a queued run is not. Inert when
+// ctx has no clock or id is uncapped (an uncapped provider never queues).
+func holdWhileQueued(ctx context.Context, gates *concurrency.ProviderGates, id string) (end func()) {
+	held := teamrun.ClockObserver(ctx)
+	if held == nil || !gates.Has(id) {
+		return func() {}
+	}
+	held(true)
+	return func() { held(false) }
 }
 
 // heldSlotCtx augments ctx with slot's provider in the ancestor-held set (P2c)

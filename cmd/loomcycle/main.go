@@ -726,7 +726,7 @@ func main() {
 	sem := concurrency.New(
 		cfg.Concurrency.MaxConcurrentRuns,
 		cfg.Concurrency.MaxQueueDepth,
-		cfg.Concurrency.QueueTimeout(),
+		globalQueueTimeout(cfg.Concurrency),
 	).WithPerUserCap(cfg.Concurrency.MaxConcurrentRunsPerUser)
 	if cfg.Concurrency.MaxConcurrentRunsPerUser > 0 {
 		log.Printf("concurrency: per-user cap enabled — max_concurrent_runs_per_user=%d (global cap=%d)",
@@ -3846,11 +3846,24 @@ func providerEnabled(id string, pc config.ProviderConfig, cfg *config.Config) bo
 	}
 }
 
+// globalQueueTimeout is the global semaphore's per-acquire wait. A
+// queue_timeout_ms <= 0 passes validation and has always meant "refuse at once
+// when every slot is busy" (the old wait armed a zero timer). Semaphore now
+// reads a timeout <= 0 as "no wait timeout" — the per-provider gates rely on
+// that — so a non-positive global knob maps to the smallest positive wait,
+// which keeps its meaning instead of silently turning into an unbounded queue.
+func globalQueueTimeout(c config.Concurrency) time.Duration {
+	if d := c.QueueTimeout(); d > 0 {
+		return d
+	}
+	return time.Nanosecond
+}
+
 // newProviderGates builds the RFC BF P2b per-provider concurrency gates from
 // cfg.Providers: one gate per provider whose max_concurrent > 0 (the rest are
-// uncapped → a noop at admission). Shared queue depth + timeout come from the
-// concurrency block (LOOMCYCLE_PROVIDER_QUEUE_DEPTH / _TIMEOUT_MS, defaulting to
-// the global MaxQueueDepth / QueueTimeout). Returns empty gates — hence zero
+// uncapped → a noop at admission). The shared queue depth comes from the
+// concurrency block (LOOMCYCLE_PROVIDER_QUEUE_DEPTH, defaulting to the global
+// MaxQueueDepth); a gate has no wait timeout. Returns empty gates — hence zero
 // admission overhead — when no provider sets a cap (the default deployment).
 func newProviderGates(cfg *config.Config) *concurrency.ProviderGates {
 	caps := make(map[string]int)
@@ -3860,8 +3873,7 @@ func newProviderGates(cfg *config.Config) *concurrency.ProviderGates {
 		}
 	}
 	depth := cfg.Concurrency.ProviderQueueDepthOrDefault()
-	timeout := cfg.Concurrency.ProviderQueueTimeout()
-	gates := concurrency.NewProviderGates(caps, depth, timeout)
+	gates := concurrency.NewProviderGates(caps, depth)
 	if len(caps) > 0 {
 		ids := make([]string, 0, len(caps))
 		for id := range caps {
@@ -3875,8 +3887,8 @@ func newProviderGates(cfg *config.Config) *concurrency.ProviderGates {
 			}
 			fmt.Fprintf(&b, "%s=%d", id, caps[id])
 		}
-		log.Printf("providers: per-provider concurrency caps enabled — %s (queue_depth=%d timeout=%s)",
-			b.String(), depth, timeout)
+		log.Printf("providers: per-provider concurrency caps enabled — %s (queue_depth=%d for new requests; waits do not time out)",
+			b.String(), depth)
 	}
 	return gates
 }

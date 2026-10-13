@@ -13,7 +13,7 @@ import (
 func TestProviderGates_CapsConcurrentToN(t *testing.T) {
 	// cap=2, queueDepth=0 so the 3rd acquire is refused immediately rather than
 	// queuing — keeps the "peak == cap" assertion deterministic.
-	g := NewProviderGates(map[string]int{"p": 2}, 0, 50*time.Millisecond)
+	g := NewProviderGates(map[string]int{"p": 2}, 0)
 
 	rel1, err := g.Acquire(context.Background(), "p")
 	if err != nil {
@@ -56,25 +56,142 @@ func TestProviderGates_CapsConcurrentToN(t *testing.T) {
 	}
 }
 
-// TestProviderGates_QueueThenTimeoutReturnsTypedError — with queue room, an
-// over-cap acquire waits then times out (no releaser arrives) and returns the
-// typed error rather than blocking forever.
-func TestProviderGates_QueueThenTimeoutReturnsTypedError(t *testing.T) {
-	g := NewProviderGates(map[string]int{"p": 1}, 4, 30*time.Millisecond)
+// TestProviderGates_AcquireQueuesWithoutTimeout — with queue room, an over-cap
+// Acquire waits for as long as the slot stays taken (a gate has no wait timeout)
+// and is admitted when it frees. Before, the gate timed the waiter out after
+// the provider queue timeout and refused it with provider_concurrency_exhausted.
+func TestProviderGates_AcquireQueuesWithoutTimeout(t *testing.T) {
+	g := NewProviderGates(map[string]int{"p": 1}, 4)
 	rel, err := g.Acquire(context.Background(), "p")
 	if err != nil {
 		t.Fatalf("acquire 1: %v", err)
 	}
-	defer rel()
+
+	got := make(chan error, 1)
+	go func() {
+		r, err := g.Acquire(context.Background(), "p")
+		if err == nil {
+			defer r()
+		}
+		got <- err
+	}()
+	// Several times the 30 ms timeout this test used to build the gate with.
+	select {
+	case err := <-got:
+		t.Fatalf("queued Acquire returned before a slot freed: %v", err)
+	case <-time.After(150 * time.Millisecond):
+	}
+	if st := g.Stats()["p"]; st.Queued != 1 {
+		t.Fatalf("queued = %d, want 1 while waiting", st.Queued)
+	}
+	rel()
+	select {
+	case err := <-got:
+		if err != nil {
+			t.Fatalf("queued Acquire after release: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("queued Acquire not admitted after the slot was released")
+	}
+}
+
+// TestProviderGates_AcquireRefusesWhenQueueFull — the queue depth still turns
+// a NEW request away: with the slot taken and the queue holding one waiter,
+// the next Acquire is refused at once with the typed error.
+func TestProviderGates_AcquireRefusesWhenQueueFull(t *testing.T) {
+	g := NewProviderGates(map[string]int{"p": 1}, 1)
+	rel, err := g.Acquire(context.Background(), "p")
+	if err != nil {
+		t.Fatalf("acquire 1: %v", err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	queued := make(chan struct{})
+	go func() {
+		defer close(queued)
+		if r, err := g.Acquire(ctx, "p"); err == nil {
+			r()
+		}
+	}()
+	waitGateStats(t, g, "p", 1, 1)
 
 	start := time.Now()
 	_, err = g.Acquire(context.Background(), "p")
 	if !IsProviderConcurrencyExhausted(err) {
-		t.Fatalf("queued acquire err = %v, want ErrProviderConcurrencyExhausted", err)
+		t.Fatalf("Acquire with a full queue: err = %v, want ErrProviderConcurrencyExhausted", err)
 	}
-	if elapsed := time.Since(start); elapsed < 20*time.Millisecond {
-		t.Errorf("returned after %s, expected to wait ~the queue timeout (30ms)", elapsed)
+	if d := time.Since(start); d > time.Second {
+		t.Errorf("refusal took %s, want immediate", d)
 	}
+	cancel()
+	<-queued
+	rel()
+}
+
+// TestProviderGates_WaitNeverRefusesNorTimesOut — Wait is for work already
+// admitted: with the slot taken and the queue full (depth 0, where Acquire is
+// refused), Wait queues, stays queued past any old timeout, and gets the slot
+// when it frees. Counts return to zero after release.
+func TestProviderGates_WaitNeverRefusesNorTimesOut(t *testing.T) {
+	g := NewProviderGates(map[string]int{"p": 1}, 0)
+	rel, err := g.Acquire(context.Background(), "p")
+	if err != nil {
+		t.Fatalf("acquire 1: %v", err)
+	}
+	if _, err := g.Acquire(context.Background(), "p"); !IsProviderConcurrencyExhausted(err) {
+		t.Fatalf("Acquire with depth 0 and the slot taken: err = %v, want refused", err)
+	}
+
+	got := make(chan error, 1)
+	var waitRel func()
+	go func() {
+		r, err := g.Wait(context.Background(), "p")
+		waitRel = r
+		got <- err
+	}()
+	select {
+	case err := <-got:
+		t.Fatalf("Wait returned before a slot freed: %v", err)
+	case <-time.After(150 * time.Millisecond):
+	}
+	rel()
+	select {
+	case err := <-got:
+		if err != nil {
+			t.Fatalf("Wait: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Wait not admitted after the slot was released")
+	}
+	if st := g.Stats()["p"]; st.Active != 1 || st.Queued != 0 {
+		t.Fatalf("after Wait admitted: active=%d queued=%d, want 1/0", st.Active, st.Queued)
+	}
+	waitRel()
+	if st := g.Stats()["p"]; st.Active != 0 || st.Queued != 0 {
+		t.Errorf("after release: active=%d queued=%d, want 0/0", st.Active, st.Queued)
+	}
+
+	// Uncapped and nil gates: Wait is the shared noop.
+	if r, err := g.Wait(context.Background(), "free"); err != nil || r == nil {
+		t.Errorf("uncapped Wait: rel==nil=%v err=%v, want noop+nil", r == nil, err)
+	}
+	var nilGates *ProviderGates
+	if r, err := nilGates.Wait(context.Background(), "p"); err != nil || r == nil {
+		t.Errorf("nil gates Wait: rel==nil=%v err=%v, want noop+nil", r == nil, err)
+	}
+}
+
+// waitGateStats polls a gate until (active, queued) match, or fails after 2 s.
+func waitGateStats(t *testing.T, g *ProviderGates, id string, active, queued int) {
+	t.Helper()
+	end := time.Now().Add(2 * time.Second)
+	for time.Now().Before(end) {
+		if st := g.Stats()[id]; st.Active == active && st.Queued == queued {
+			return
+		}
+		time.Sleep(2 * time.Millisecond)
+	}
+	st := g.Stats()[id]
+	t.Fatalf("gate %s: active=%d queued=%d, want %d/%d", id, st.Active, st.Queued, active, queued)
 }
 
 // TestProviderGates_BatchesToCap — N runs (> cap) resolving to a capped provider
@@ -83,8 +200,8 @@ func TestProviderGates_QueueThenTimeoutReturnsTypedError(t *testing.T) {
 func TestProviderGates_BatchesToCap(t *testing.T) {
 	const cap = 2
 	const total = 6
-	// Generous queue + timeout so every run eventually admits (none refused).
-	g := NewProviderGates(map[string]int{"p": cap}, total, 2*time.Second)
+	// A queue deep enough for every run, so none is refused.
+	g := NewProviderGates(map[string]int{"p": cap}, total)
 
 	var mu sync.Mutex
 	inFlight, peak := 0, 0
@@ -126,7 +243,7 @@ func TestProviderGates_BatchesToCap(t *testing.T) {
 // matter how many are outstanding.
 func TestProviderGates_UncappedProviderIsNoop(t *testing.T) {
 	// Only "capped" is gated; "free" has no entry.
-	g := NewProviderGates(map[string]int{"capped": 1, "free": 0}, 0, time.Second)
+	g := NewProviderGates(map[string]int{"capped": 1, "free": 0}, 0)
 	if g.Has("free") {
 		t.Fatal("free should not be gated (cap 0)")
 	}
@@ -151,7 +268,7 @@ func TestProviderGates_UncappedProviderIsNoop(t *testing.T) {
 // a noop for every id. This is the default deployment (no operator set
 // max_concurrent).
 func TestProviderGates_NoCapsBuildsNoGates(t *testing.T) {
-	g := NewProviderGates(map[string]int{"a": 0, "b": 0}, 16, time.Second)
+	g := NewProviderGates(map[string]int{"a": 0, "b": 0}, 16)
 	if g.Len() != 0 {
 		t.Fatalf("Len = %d, want 0 gates built", g.Len())
 	}

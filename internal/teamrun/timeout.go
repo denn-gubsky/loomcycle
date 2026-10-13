@@ -93,6 +93,29 @@ func HoldObserver(ctx context.Context) func(bool) {
 	return f
 }
 
+type clockObserverKey struct{}
+
+// WithClockObserver attaches the clock bounding a run, as the hold observer
+// does, but for waits that are NOT a hold: a run queued for its provider slot
+// stops that clock (queueing is not working time) without being reported held,
+// which a walk's poll table reads as a person deciding. Whoever sets a hold
+// observer for a clock sets this one beside it; nil clears an inherited one.
+func WithClockObserver(ctx context.Context, held func(bool)) context.Context {
+	return context.WithValue(ctx, clockObserverKey{}, held)
+}
+
+// ClockObserver returns the clock observer, or nil.
+func ClockObserver(ctx context.Context) func(bool) {
+	f, _ := ctx.Value(clockObserverKey{}).(func(bool))
+	return f
+}
+
+// WithClock sets both observers to one clock's setter (nil clears both): what a
+// clock bounding a run attaches to that run's ctx.
+func WithClock(ctx context.Context, held func(bool)) context.Context {
+	return WithClockObserver(WithHoldObserver(ctx, held), held)
+}
+
 type clockKey struct{}
 
 // spawnMember starts one member run, reporting its holds to the clock bounding
@@ -105,12 +128,12 @@ type clockKey struct{}
 func (r *agentRunner) spawnMember(ctx context.Context, agent string, p Prompt, defID string) (SpawnResult, error) {
 	clk, _ := ctx.Value(clockKey{}).(*heldClock)
 	if clk == nil {
-		return r.spawn(WithHoldObserver(ctx, nil), agent, p, defID)
+		return r.spawn(WithClock(ctx, nil), agent, p, defID)
 	}
 	m := clk.join()
 	defer m.leave()
 	ctx = context.WithValue(ctx, clockKey{}, (*heldClock)(nil))
-	return r.spawn(WithHoldObserver(ctx, m.setHeld), agent, p, defID)
+	return r.spawn(WithClock(ctx, m.setHeld), agent, p, defID)
 }
 
 // heldClock is a deadline that does not run while every run it bounds is held,

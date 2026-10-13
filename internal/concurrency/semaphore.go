@@ -1,7 +1,9 @@
 // Package concurrency caps simultaneous agent runs and queues bursts.
 //
 // Same shape as jobs-search-agent's concurrency.ts: a counting semaphore plus
-// a bounded FIFO queue with a per-acquire timeout. Excess returns BackpressureError.
+// a bounded FIFO queue with an optional per-acquire timeout. Excess returns
+// BackpressureError. Wait is the second entry point: it queues for a slot with
+// no timeout and no queue-depth check, for work that was already admitted.
 //
 // v0.10.1 — per-tenant fairness. AcquireForUser(ctx, userID) enforces a
 // per-user cap on (active + queued) runs. When the cap is exceeded the
@@ -78,14 +80,14 @@ type userKey struct {
 	user   string
 }
 
-// Semaphore caps concurrent acquisitions. Acquire blocks (with timeout) when
-// slots are full and the queue has room; returns BackpressureError when the
-// queue is also full.
+// Semaphore caps concurrent acquisitions. Acquire blocks (up to the timeout,
+// if one is set) when slots are full and the queue has room; returns
+// BackpressureError when the queue is also full.
 type Semaphore struct {
 	maxConcurrent int
 	maxQueue      int
-	maxPerUser    int // 0 = disabled (no per-user check)
-	timeout       time.Duration
+	maxPerUser    int           // 0 = disabled (no per-user check)
+	timeout       time.Duration // <= 0 = an Acquire waits until a slot frees or ctx ends
 
 	mu     sync.Mutex
 	active int
@@ -119,7 +121,8 @@ type Stats struct {
 	PerUser map[string]int
 }
 
-// New constructs a Semaphore. timeout is the max wait per acquire.
+// New constructs a Semaphore. timeout is the max wait per acquire; a timeout
+// <= 0 means no wait timeout (a queued Acquire ends only on a slot or ctx).
 // Per-tenant fairness is off by default; opt in via WithPerUserCap.
 // This keeps the constructor signature stable across the 58 existing
 // callers (mostly tests) — only main.go needs to chain the new setter.
@@ -170,8 +173,8 @@ func (s *Semaphore) WithUserQuotaStore(qs userQuotaGate) *Semaphore {
 // acquire path, so this is race-safe and applies to subsequent acquires. In-flight
 // runs are NOT retroactively trimmed — shrinking a cap lets the excess drain as
 // releases unwind, matching WithPerUserCap. The queue TIMEOUT is deliberately not
-// changed here: it is read unlocked on the wait path (time.NewTimer(s.timeout)),
-// so it stays boot-fixed (a restart changes it).
+// changed here: it is read unlocked on the wait path, so it stays boot-fixed (a
+// restart changes it).
 func (s *Semaphore) SetCaps(maxConcurrent, maxQueue int) {
 	s.mu.Lock()
 	s.maxConcurrent = maxConcurrent
@@ -277,8 +280,14 @@ func (s *Semaphore) AcquireForUser(ctx context.Context, tenantID, userID string)
 	}
 	s.mu.Unlock()
 
-	timer := time.NewTimer(s.timeout)
-	defer timer.Stop()
+	// A nil channel never fires, so with no timeout the select below waits on
+	// the slot and ctx only.
+	var timeout <-chan time.Time
+	if s.timeout > 0 {
+		timer := time.NewTimer(s.timeout)
+		defer timer.Stop()
+		timeout = timer.C
+	}
 
 	select {
 	case <-w:
@@ -290,9 +299,48 @@ func (s *Semaphore) AcquireForUser(ctx context.Context, tenantID, userID string)
 	case <-ctx.Done():
 		s.cancelWaiter(w, key, qs)
 		return nil, ctx.Err()
-	case <-timer.C:
+	case <-timeout:
 		s.cancelWaiter(w, key, qs)
 		return nil, &BackpressureError{msg: "queue timeout"}
+	}
+}
+
+// Wait takes a slot for work that was ALREADY admitted — a sub-agent of an
+// admitted run, a resumed run, a mid-run provider fallback, a background sweep
+// — so it never refuses: it ignores maxQueue and the timeout, and ends only
+// when a slot frees (FIFO with the Acquire waiters) or ctx ends (ctx.Err()).
+// Refusing here would cancel work that already started, which a queue limit
+// must never do; the limits exist to turn away NEW requests.
+//
+// It does no per-user accounting (no cap check, no count): the work it admits
+// was counted, or deliberately not counted, when it was first admitted — a
+// resumed run was admitted before its pause, and its sub-agents never take a
+// per-user slot. Holding it to the per-user cap here could only refuse it.
+// A Wait-er does count in Queued while it waits, so a provider whose slots are
+// taken by already-admitted work also turns NEW requests away sooner.
+//
+// Call the returned release exactly once when done (it is idempotent).
+func (s *Semaphore) Wait(ctx context.Context) (release func(), err error) {
+	// The zero key and a nil quota store: releaseFn and cancelWaiter then
+	// touch only the global active/queued counters.
+	var key userKey
+	s.mu.Lock()
+	if s.active < s.maxConcurrent {
+		s.active++
+		s.mu.Unlock()
+		return s.releaseFn(key, nil), nil
+	}
+	w := make(chan struct{}, 1)
+	s.waiters = append(s.waiters, w)
+	s.queued++
+	s.mu.Unlock()
+
+	select {
+	case <-w:
+		return s.releaseFn(key, nil), nil
+	case <-ctx.Done():
+		s.cancelWaiter(w, key, nil)
+		return nil, ctx.Err()
 	}
 }
 

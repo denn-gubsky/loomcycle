@@ -91,7 +91,7 @@ func TestWithHeldProviderSlot_CopyOnAddIndependentSupersets(t *testing.T) {
 // An uncapped provider, a carve-out (noop) holder, and a nil holder all leave the
 // ctx (and thus the held-set) untouched.
 func TestHeldSlotCtx_StampsOnlyRealCappedSlot(t *testing.T) {
-	gates := concurrency.NewProviderGates(map[string]int{"capped": 2}, 4, time.Second)
+	gates := concurrency.NewProviderGates(map[string]int{"capped": 2}, 4)
 	s := &Server{providerGates: gates}
 	base := context.Background()
 
@@ -125,7 +125,7 @@ func TestHeldSlotCtx_StampsOnlyRealCappedSlot(t *testing.T) {
 // carve-out branch instead occupies P's gate (Active=1) — this test's Active==0
 // assertion fails.
 func TestAcquireProviderSlot_CarveOutWhenAncestorHolds(t *testing.T) {
-	gates := concurrency.NewProviderGates(map[string]int{"P": 1, "Q": 1}, 2, time.Second)
+	gates := concurrency.NewProviderGates(map[string]int{"P": 1, "Q": 1}, 2)
 	s := &Server{providerGates: gates}
 
 	// Ancestor holds P → the child's acquire takes the carve-out.
@@ -221,7 +221,7 @@ func TestProviderGate_SubAgentFanoutBatchesToCap(t *testing.T) {
 	t.Cleanup(func() { _ = st.Close() })
 
 	sem := concurrency.New(16, 16, 5*time.Second) // global never gates first
-	gates := concurrency.NewProviderGates(map[string]int{"ollama-prov": cap}, workers, 5*time.Second)
+	gates := concurrency.NewProviderGates(map[string]int{"ollama-prov": cap}, workers)
 	resolver := &multiResolver{byID: map[string]providers.Provider{"codejs-prov": parentProv, "ollama-prov": workerProv}}
 	srv := New(cfg, resolver, []tools.Tool{}, sem, st)
 	srv.SetProviderGates(gates)
@@ -262,13 +262,13 @@ func TestProviderGate_SubAgentFanoutBatchesToCap(t *testing.T) {
 // TestProviderGate_SameProviderParentChildTakesCarveOut is the deadlock carve-out
 // end-to-end (RFC BF §4): a PARENT resolving to provider P (cap 1) holds P's only
 // slot, then spawns a child ALSO resolving to P. Without the carve-out the child
-// would queue behind the parent's own slot and time out — the parent awaiting its
-// own child is a self-deadlock. With the carve-out the child runs UNGATED and the
-// parent completes.
+// would queue behind the parent's own slot for good — the parent awaiting its
+// own child is a self-deadlock (a sub-agent's gate wait has no timeout). With
+// the carve-out the child runs UNGATED and the parent completes.
 //
-// Fail-before (revert the carve-out): the child's acquire blocks then times out
-// on P's cap BEFORE its sub-run row is created, so ListRunsByParentAgentID
-// returns 0 children and the parent's tool_result carries the exhaustion error.
+// Fail-before (revert the carve-out): the child queues on P's cap BEFORE its
+// sub-run row is created and never gets the slot, so the bounded POST below
+// gives up and the test fails rather than hanging.
 func TestProviderGate_SameProviderParentChildTakesCarveOut(t *testing.T) {
 	// One provider instance serves parent + child (they share provider id "P", the
 	// gate key). op=spawn is synchronous, so the three Calls arrive in a fixed
@@ -303,15 +303,17 @@ func TestProviderGate_SameProviderParentChildTakesCarveOut(t *testing.T) {
 	t.Cleanup(func() { _ = st.Close() })
 
 	sem := concurrency.New(8, 8, 5*time.Second)
-	// cap 1: the parent takes the only slot. Short timeout so the FAIL-BEFORE path
-	// (child gated) times out fast instead of hanging the test.
-	gates := concurrency.NewProviderGates(map[string]int{"P": 1}, 1, 500*time.Millisecond)
+	// cap 1: the parent takes the only slot.
+	gates := concurrency.NewProviderGates(map[string]int{"P": 1}, 1)
 	srv := New(cfg, &stubResolver{p: prov}, []tools.Tool{}, sem, st)
 	srv.SetProviderGates(gates)
 	ts := httptest.NewServer(srv.Mux())
 	defer ts.Close()
 
-	resp, err := http.Post(ts.URL+"/v1/runs", "application/json", strings.NewReader(
+	// Bounded: in the fail-before path the child waits for good, and the client
+	// giving up cancels the run (and so the child's wait) instead of hanging.
+	client := &http.Client{Timeout: 10 * time.Second}
+	resp, err := client.Post(ts.URL+"/v1/runs", "application/json", strings.NewReader(
 		`{"agent":"parent","agent_id":"parent-carveout","segments":[{"role":"user","content":[{"type":"trusted-text","text":"go"}]}]}`,
 	))
 	if err != nil {
@@ -408,7 +410,7 @@ func TestProviderGate_SubAgentZeroOverheadWhenUnconfigured(t *testing.T) {
 
 	sem := concurrency.New(16, 16, 5*time.Second)
 	// The default deployment: no caps → zero gates built.
-	gates := concurrency.NewProviderGates(map[string]int{}, 16, time.Second)
+	gates := concurrency.NewProviderGates(map[string]int{}, 16)
 	if gates.Len() != 0 {
 		t.Fatalf("expected 0 gates, got %d", gates.Len())
 	}

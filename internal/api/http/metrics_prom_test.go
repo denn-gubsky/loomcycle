@@ -141,7 +141,7 @@ func TestMetricsProm_ProviderGateSeries(t *testing.T) {
 	}
 
 	// Cap provider "P" at 2 and hold one slot → slots_in_use{P}=1, queue_depth{P}=0.
-	gates := concurrency.NewProviderGates(map[string]int{"P": 2}, 4, time.Second)
+	gates := concurrency.NewProviderGates(map[string]int{"P": 2}, 4)
 	srv.SetProviderGates(gates)
 	rel, err := gates.Acquire(t.Context(), "P")
 	if err != nil {

@@ -281,12 +281,12 @@ func (a *AgentTool) runChild(ctx context.Context, name, prompt, defID string) (o
 // bounded child, or a team member — must never see this child's holds.
 func (a *AgentTool) runChildBounded(ctx context.Context, timeoutMs int, name, prompt, defID string) (output string, state map[string]any, runID string, timedOut bool, err error) {
 	if timeoutMs <= 0 {
-		output, state, runID, err = a.runChild(teamrun.WithHoldObserver(ctx, nil), name, prompt, defID)
+		output, state, runID, err = a.runChild(teamrun.WithClock(ctx, nil), name, prompt, defID)
 		return output, state, runID, false, err
 	}
 	cctx, dl := teamrun.StartDeadline(ctx, time.Duration(timeoutMs)*time.Millisecond, childTimeout{ms: timeoutMs}, a.PauseSignal)
 	defer dl.Finish()
-	output, state, runID, err = a.runChild(teamrun.WithHoldObserver(cctx, dl.SetHeld), name, prompt, defID)
+	output, state, runID, err = a.runChild(teamrun.WithClock(cctx, dl.SetHeld), name, prompt, defID)
 	// A child that finished as the bound ran out keeps its answer — one that
 	// stopped at its iteration limit too: it ended, it was not cut.
 	var capped *ChildCappedError
