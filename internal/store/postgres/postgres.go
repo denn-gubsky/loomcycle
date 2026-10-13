@@ -871,6 +871,75 @@ func (s *Store) UsageCarryForMonth(ctx context.Context, month time.Time) ([]stor
 	return out, rows.Err()
 }
 
+// RetentionOverridePut sets the override for (tenant, agent) and removes
+// expired rows.
+func (s *Store) RetentionOverridePut(ctx context.Context, row store.RetentionOverrideRow, now time.Time) error {
+	if row.Agent == "" || row.Until.IsZero() {
+		return fmt.Errorf("retention override: agent and until are required")
+	}
+	created := row.CreatedAt
+	if created.IsZero() {
+		created = now
+	}
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("retention override put: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	if _, err := tx.Exec(ctx, `DELETE FROM retention_overrides WHERE until <= $1`, now.UTC()); err != nil {
+		return fmt.Errorf("retention override put: %w", err)
+	}
+	if _, err := tx.Exec(ctx,
+		`INSERT INTO retention_overrides (tenant_id, agent, until, set_by, created_at) VALUES ($1,$2,$3,$4,$5)
+		 ON CONFLICT (tenant_id, agent) DO UPDATE SET until = EXCLUDED.until, set_by = EXCLUDED.set_by, created_at = EXCLUDED.created_at`,
+		row.TenantID, row.Agent, row.Until.UTC(), row.SetBy, created.UTC()); err != nil {
+		return fmt.Errorf("retention override put: %w", err)
+	}
+	return tx.Commit(ctx)
+}
+
+// RetentionOverrideDelete ends the override for (tenant, agent).
+func (s *Store) RetentionOverrideDelete(ctx context.Context, tenantID, agent string) (bool, error) {
+	tag, err := s.pool.Exec(ctx, `DELETE FROM retention_overrides WHERE tenant_id = $1 AND agent = $2`, tenantID, agent)
+	if err != nil {
+		return false, fmt.Errorf("retention override delete: %w", err)
+	}
+	return tag.RowsAffected() > 0, nil
+}
+
+// RetentionOverrideActive reports whether (tenant, agent) has a live override.
+func (s *Store) RetentionOverrideActive(ctx context.Context, tenantID, agent string, now time.Time) (bool, error) {
+	var n int
+	err := s.pool.QueryRow(ctx,
+		`SELECT COUNT(*) FROM retention_overrides WHERE tenant_id = $1 AND agent = $2 AND until > $3`,
+		tenantID, agent, now.UTC()).Scan(&n)
+	if err != nil {
+		return false, fmt.Errorf("retention override active: %w", err)
+	}
+	return n > 0, nil
+}
+
+// RetentionOverridesActive lists every live override.
+func (s *Store) RetentionOverridesActive(ctx context.Context, now time.Time) ([]store.RetentionOverrideRow, error) {
+	rows, err := s.pool.Query(ctx,
+		`SELECT tenant_id, agent, until, set_by, created_at FROM retention_overrides
+		 WHERE until > $1 ORDER BY tenant_id, agent`, now.UTC())
+	if err != nil {
+		return nil, fmt.Errorf("retention overrides active: %w", err)
+	}
+	defer rows.Close()
+	var out []store.RetentionOverrideRow
+	for rows.Next() {
+		var r store.RetentionOverrideRow
+		if err := rows.Scan(&r.TenantID, &r.Agent, &r.Until, &r.SetBy, &r.CreatedAt); err != nil {
+			return nil, fmt.Errorf("retention overrides active scan: %w", err)
+		}
+		r.Until, r.CreatedAt = r.Until.UTC(), r.CreatedAt.UTC()
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
 // UsageCarryCountSubject counts one subject's carry rows across every month.
 func (s *Store) UsageCarryCountSubject(ctx context.Context, tenantID, userID string) (int, error) {
 	var n int

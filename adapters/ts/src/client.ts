@@ -134,6 +134,7 @@ import type {
   MemorySearchInput,
   MemorySearchResponse,
   PauseResult,
+  RetentionOverride,
   PersistentVolumesResponse,
   EphemeralVolumesResponse,
   ResolveInterruptOptions,
@@ -1110,6 +1111,51 @@ export class LoomcycleClient {
     if (opts?.scopeId) params.set("scope_id", opts.scopeId);
     if (opts?.tenant) params.set("tenant", opts.tenant);
     return deleteRequest(this.ctx, `/v1/_limits?${params.toString()}`, opts);
+  }
+
+  /** The timed no-trace overrides in force: agents whose runs are being
+   *  stored although they normally store none. An admin sees every tenant's
+   *  (or one with `tenant`); a tenant operator sees its own. Mirrors
+   *  `GET /v1/_retention/overrides`. */
+  async listRetentionOverrides(opts?: {
+    /** Admin-only tenant focus; ignored for a tenant operator. */
+    tenant?: string;
+    signal?: AbortSignal;
+  }): Promise<{ overrides: RetentionOverride[] }> {
+    const q = opts?.tenant ? `?tenant=${encodeURIComponent(opts.tenant)}` : "";
+    return jsonFetch<{ overrides: RetentionOverride[] }>(this.ctx, `/v1/_retention/overrides${q}`, opts);
+  }
+
+  /** Store the runs of one no-trace agent until `until`, to debug it. At
+   *  most 24 hours ahead; setting one replaces the last. It lifts a mode
+   *  that came from the agent's definition or the run request, never one a
+   *  token requires. Audited. `tenant` is admin-only: a tenant operator's
+   *  override is always for its own tenant. Mirrors
+   *  `PUT /v1/_retention/overrides`. */
+  async setRetentionOverride(
+    body: { agent: string; until: string | Date; tenant?: string },
+    opts?: { signal?: AbortSignal },
+  ): Promise<RetentionOverride> {
+    const until = body.until instanceof Date ? body.until.toISOString() : body.until;
+    const wire: Record<string, unknown> = { agent: body.agent, until };
+    if (body.tenant !== undefined) wire.tenant = body.tenant;
+    return putJSON<RetentionOverride>(this.ctx, "/v1/_retention/overrides", wire, opts);
+  }
+
+  /** End an agent's no-trace override before it runs out. Clearing one that
+   *  is not there is not an error. Mirrors
+   *  `DELETE /v1/_retention/overrides`. */
+  async clearRetentionOverride(
+    agent: string,
+    opts?: {
+      /** Admin-only target tenant; ignored for a tenant operator. */
+      tenant?: string;
+      signal?: AbortSignal;
+    },
+  ): Promise<void> {
+    const params = new URLSearchParams({ agent });
+    if (opts?.tenant) params.set("tenant", opts.tenant);
+    return deleteRequest(this.ctx, `/v1/_retention/overrides?${params.toString()}`, opts);
   }
 
   /** Ask a decision model typed questions (`choice` / `noul` / `score`) about

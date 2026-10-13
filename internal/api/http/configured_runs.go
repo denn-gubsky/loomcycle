@@ -168,7 +168,7 @@ func (s *Server) createConfiguredRunCore(ctx context.Context, req runDraft) (con
 	if principalIsNoTrace(ctx) {
 		return connector.ConfiguredRun{}, draftRefusal(http.StatusConflict, "retention_none_unsupported", "%s", errNoTracePrincipalWrite.Error())
 	}
-	if def, ok := s.lookupAgent(ctx, tenant, req.Agent); ok && s.resolveRetention(ctx, def, "") == store.RetentionNone {
+	if def, ok := s.lookupAgent(ctx, tenant, req.Agent); ok && s.resolveRetention(ctx, tenant, req.Agent, def, "") == store.RetentionNone {
 		return connector.ConfiguredRun{}, draftRefusal(http.StatusConflict, "retention_none_unsupported",
 			"%s: a no-trace run cannot be configured as a draft: the draft would store its prompt", runner.ErrRetentionUnsupported)
 	}

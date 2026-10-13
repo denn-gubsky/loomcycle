@@ -169,6 +169,8 @@ var tableCoverageMap = map[string]tableCoverage{
 		Reason: "the per-call billing ledger; only a month-to-date aggregate may travel, with token_limits"},
 	"usage_archive": {Kind: coverNever, Backends: onBoth,
 		Reason: "rolled-up billing ledger"},
+	"retention_overrides": {Kind: coverNever, Backends: onBoth,
+		Reason: "a timed decision (24 hours at most) to store one agent's runs on THIS deployment; carrying it would switch storage on somewhere nobody asked for it"},
 
 	// ---- deliberately not carried -------------------------------------------
 	"change_subscription_cursors": {Kind: coverOmitted, Backends: onBoth,

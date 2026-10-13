@@ -215,6 +215,7 @@ export type {
   WhoamiResponse,
   // Pause / Resume / State
   PauseResult,
+  RetentionOverride,
   ResumeResult,
   RuntimeStateResponse,
   RuntimeStateStatus,

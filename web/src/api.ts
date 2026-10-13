@@ -1001,6 +1001,20 @@ export interface ResumeResult {
   warnings?: string[];
 }
 
+// A timed override of an agent's no-trace mode: until `until`, runs of
+// `agent` in `tenant` are stored like any other.
+export interface RetentionOverride {
+  tenant: string;
+  agent: string;
+  until: string;
+  set_by?: string;
+  created_at?: string;
+}
+
+export function listRetentionOverrides(): Promise<{ overrides: RetentionOverride[] }> {
+  return jsonFetch<{ overrides: RetentionOverride[] }>("/v1/_retention/overrides");
+}
+
 export function getRuntimeState(): Promise<RuntimeStateResponse> {
   return jsonFetch<RuntimeStateResponse>("/v1/_state");
 }

@@ -141,6 +141,7 @@ func Run(t *testing.T, factory Factory) {
 		{"CreateRunOperatorKeyRestrictedRoundTrip", testCreateRunOperatorKeyRestrictedRoundTrip},
 		{"RetentionModeRoundTrip", testRetentionModeRoundTrip},
 		{"FailLostNoTraceRuns", testFailLostNoTraceRuns},
+		{"RetentionOverrides", testRetentionOverrides},
 		{"CreateRunIsolatedRoundTrip", testCreateRunIsolatedRoundTrip},
 		{"CreateRunConfigRoundTrip", testCreateRunConfigRoundTrip},
 		{"SetRunConfigCASRefusesAStalePrev", testSetRunConfigCASRefusesAStalePrev},
@@ -16944,4 +16945,71 @@ func btoi(b bool) int {
 		return 1
 	}
 	return 0
+}
+
+// testRetentionOverrides: one override per (tenant, agent), replaced by a
+// later put; live only until its time; listed and checked by that time; a
+// delete ends it and says whether there was one; a put clears what expired.
+func testRetentionOverrides(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	now := time.Date(2026, 10, 12, 12, 0, 0, 0, time.UTC)
+	put := func(tenant, agent string, until time.Time, by string) {
+		t.Helper()
+		if err := s.RetentionOverridePut(ctx, store.RetentionOverrideRow{TenantID: tenant, Agent: agent, Until: until, SetBy: by}, now); err != nil {
+			t.Fatalf("put %s/%s: %v", tenant, agent, err)
+		}
+	}
+	active := func(tenant, agent string, at time.Time) bool {
+		t.Helper()
+		ok, err := s.RetentionOverrideActive(ctx, tenant, agent, at)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return ok
+	}
+	put("acme", "judge", now.Add(time.Hour), "ops")
+	put("acme", "judge", now.Add(2*time.Hour), "ops2") // replaces
+	put("other", "judge", now.Add(time.Hour), "ops")
+	put("acme", "gone", now.Add(time.Minute), "ops")
+
+	if !active("acme", "judge", now.Add(90*time.Minute)) {
+		t.Error("the later put did not replace the earlier one")
+	}
+	if active("acme", "judge", now.Add(2*time.Hour)) || active("acme", "judge", now.Add(3*time.Hour)) {
+		t.Error("an override is live at or after its time")
+	}
+	if active("acme", "scorer", now) || active("", "judge", now) {
+		t.Error("an override applies to another agent or another tenant")
+	}
+	rows, err := s.RetentionOverridesActive(ctx, now.Add(30*time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 2 || rows[0].TenantID != "acme" || rows[0].Agent != "judge" || rows[0].SetBy != "ops2" || !rows[0].Until.Equal(now.Add(2*time.Hour)) || rows[1].TenantID != "other" {
+		t.Errorf("live overrides at +30m = %+v, want acme/judge (ops2, +2h) and other/judge", rows)
+	}
+	if err := s.RetentionOverridePut(ctx, store.RetentionOverrideRow{TenantID: "acme", Until: now.Add(time.Hour)}, now); err == nil {
+		t.Error("an override with no agent was accepted")
+	}
+	if err := s.RetentionOverridePut(ctx, store.RetentionOverrideRow{TenantID: "acme", Agent: "x"}, now); err == nil {
+		t.Error("an override with no time was accepted")
+	}
+
+	if had, err := s.RetentionOverrideDelete(ctx, "acme", "judge"); err != nil || !had {
+		t.Errorf("delete = %v, %v; want true", had, err)
+	}
+	if had, err := s.RetentionOverrideDelete(ctx, "acme", "judge"); err != nil || had {
+		t.Errorf("a second delete = %v, %v; want false", had, err)
+	}
+	if active("acme", "judge", now) || !active("other", "judge", now) {
+		t.Error("a delete did not end its own override, or ended another tenant's")
+	}
+	// A put removes what has run out: acme/gone expired a minute after now.
+	later := now.Add(10 * time.Minute)
+	if err := s.RetentionOverridePut(ctx, store.RetentionOverrideRow{TenantID: "acme", Agent: "new", Until: later.Add(time.Hour)}, later); err != nil {
+		t.Fatal(err)
+	}
+	if had, _ := s.RetentionOverrideDelete(ctx, "acme", "gone"); had {
+		t.Error("an expired override was still stored after a later put")
+	}
 }

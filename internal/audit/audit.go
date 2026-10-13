@@ -73,6 +73,14 @@ type Event struct {
 	// DeleteRefused is the error code of a call that deleted nothing because
 	// it was refused (a live run in the tree, a tree over the size cap).
 	DeleteRefused string `json:"delete_refused,omitempty"`
+
+	// --- No-trace override (Action = "retention_override_set" |
+	// "retention_override_clear") ---
+	//
+	// An operator switching storage back on for an agent whose runs store
+	// none. The agent travels in TargetName, its tenant in TargetTenant.
+	// RetentionUntil is when the override stops applying (set only).
+	RetentionUntil string `json:"retention_until,omitempty"`
 }
 
 // Sink records audit events. Record must be safe for concurrent use and

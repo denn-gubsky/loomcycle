@@ -324,29 +324,35 @@ func cutPrefix(s, prefix string) (string, bool) {
 	return "", false
 }
 
-// resolveRetention is the mode a new run of the agent def runs under.
+// resolveRetention is the mode a new run of agent (defined by def) in tenant
+// runs under.
 //
-// The strictest source wins and nothing loosens it:
+// The strictest source wins and nothing a caller sends loosens it:
 //
-//   - what the request asked for;
-//   - what the agent's definition says;
 //   - what the caller's token requires;
 //   - what the run that is starting it runs under — a child of a no-trace run
 //     is no-trace whatever its own agent says, because the parent's content
-//     reaches it as its prompt.
+//     reaches it as its prompt;
+//   - what the request asked for;
+//   - what the agent's definition says.
 //
-// A request for "default" is not a way out of any of the others. There is no
-// source that can say "store this after all" (the timed override an operator
-// can set for debugging is the one exception, and it never lifts a token's).
-func (s *Server) resolveRetention(ctx context.Context, def config.AgentDef, requested string) string {
-	if requested == store.RetentionNone || def.Retention == store.RetentionNone ||
-		tools.RunIdentity(ctx).Retention == store.RetentionNone {
-		return store.RetentionNone
-	}
+// The last two, and only they, can be lifted for a while by an operator's
+// override for that agent (retention_override.go). A token's mode never is:
+// a developer's own runs stay unstored whatever an operator switches on.
+func (s *Server) resolveRetention(ctx context.Context, tenant, agent string, def config.AgentDef, requested string) string {
 	if p, ok := auth.PrincipalFromContext(ctx); ok && p.Restrictions.Retention == store.RetentionNone {
 		return store.RetentionNone
 	}
-	return ""
+	if tools.RunIdentity(ctx).Retention == store.RetentionNone {
+		return store.RetentionNone
+	}
+	if requested != store.RetentionNone && def.Retention != store.RetentionNone {
+		return ""
+	}
+	if s.retentionLifted(ctx, tenant, agent) {
+		return ""
+	}
+	return store.RetentionNone
 }
 
 // noTraceRefusal is a request a no-trace run cannot serve, with the HTTP

@@ -852,6 +852,12 @@ textarea::placeholder {
 .resume-btn:hover {
   filter: brightness(1.1);
 }
+.no-trace-override-banner {
+  padding: 8px 16px;
+  background: rgba(255, 184, 77, 0.14);
+  border-bottom: 1px solid var(--border);
+  font-size: var(--lc-text-sm);
+}
 .agent-note {
   margin-top: 8px;
   padding: 6px 10px;
