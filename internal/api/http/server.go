@@ -1563,6 +1563,10 @@ func writeResolveError(w http.ResponseWriter, err error) {
 //     it in error messages or rate-limit telemetry.
 //   - `code: "backpressure"`. The global queue is full (or timed out).
 //     Operator-wide load signal; back off with longer jitter.
+//   - `code: "provider_concurrency_exhausted"` + `Retry-After: 5`. A request
+//     that holds no run slot (the LLM gateway) found that provider's queue at
+//     its bound. Body carries `provider` + `cap`; another tier can be tried
+//     at once.
 //
 // Anything else falls through to 500 with the raw error string —
 // shouldn't happen with the current AcquireForUser implementation but
@@ -1577,6 +1581,20 @@ func writeQuotaError(w http.ResponseWriter, err error) {
 			UserID string `json:"user_id"`
 			Cap    int    `json:"cap"`
 		}{"per_user_quota_exhausted", pue.Error(), pue.UserID, pue.Cap})
+		return
+	}
+	var pce *concurrency.ErrProviderConcurrencyExhausted
+	if errors.As(err, &pce) {
+		// One provider's queue is at its bound, not the whole runtime: a distinct
+		// code with the provider named, so an adapter can try another tier at
+		// once instead of backing off operator-wide.
+		w.Header().Set("Retry-After", "5")
+		writeJSONErrorBody(w, http.StatusTooManyRequests, struct {
+			Code     string `json:"code"`
+			Error    string `json:"error"`
+			Provider string `json:"provider"`
+			Cap      int    `json:"cap"`
+		}{"provider_concurrency_exhausted", pce.Error(), pce.Provider, pce.Cap})
 		return
 	}
 	if concurrency.IsBackpressure(err) {

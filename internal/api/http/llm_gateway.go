@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/denn-gubsky/loomcycle/internal/auth"
+	"github.com/denn-gubsky/loomcycle/internal/lanegate"
 	"github.com/denn-gubsky/loomcycle/internal/providers"
 	"github.com/denn-gubsky/loomcycle/internal/resolve"
 )
@@ -152,24 +153,8 @@ func (s *Server) prepareGatewayDispatch(w http.ResponseWriter, r *http.Request, 
 		return gatewayDispatch{}, false
 	}
 
-	// A capped provider is not waited for here: the provider call below takes
-	// its own slot in the provider's call lane. The global slot acquired next is
-	// what bounds how many gateway requests can wait there.
-
-	// Per-subject quota acquisition. RFC L: when an authenticated
-	// principal is present its Subject is the authoritative fairness key
-	// (a caller can't forge a different user_id to dodge their cap); the
-	// wire user_id is only the fallback for open / un-authed mode. Empty
-	// key bypasses the per-user cap (global semaphore only).
-	release, err := s.sem.AcquireForUser(r.Context(), tenantFromCtx(r.Context()), auth.SubjectForFairness(r.Context(), req.UserID))
-	if err != nil {
-		writeQuotaError(w, err)
-		return gatewayDispatch{}, false
-	}
-
 	provReq, err := llmRequestToProviderRequest(req, modelID, effort)
 	if err != nil {
-		release()
 		writeJSONError(w, http.StatusBadRequest, "bad_request", err.Error())
 		return gatewayDispatch{}, false
 	}
@@ -177,6 +162,36 @@ func (s *Server) prepareGatewayDispatch(w http.ResponseWriter, r *http.Request, 
 	// and we re-aggregate for the non-streaming response path. Lets
 	// us emit content_block_delta frames live when stream:true.
 	provReq.Stream = true
+
+	// The provider's call slot is taken HERE, before the global slot, and its
+	// wait is bounded. A gateway request is sent directly and nothing else
+	// limits how many can queue on a saturated provider; taken the other way
+	// round, each one would sit on a global slot while it waited, and one
+	// caller could use the global cap up for every tenant. A request past the
+	// bound gets 429 provider_concurrency_exhausted and holds nothing.
+	// Uncapped provider ⇒ nothing is taken. The provider Hold returns makes the
+	// one call on the slot already held.
+	held, laneRelease, err := lanegate.Hold(
+		lanegate.WithQueueBound(r.Context(), s.cfg().Concurrency.ProviderQueueDepthOrDefault()), provider, provReq)
+	if err != nil {
+		writeQuotaError(w, err)
+		return gatewayDispatch{}, false
+	}
+	provider = held
+
+	// Per-subject quota acquisition. RFC L: when an authenticated
+	// principal is present its Subject is the authoritative fairness key
+	// (a caller can't forge a different user_id to dodge their cap); the
+	// wire user_id is only the fallback for open / un-authed mode. Empty
+	// key bypasses the per-user cap (global semaphore only).
+	globalRelease, err := s.sem.AcquireForUser(r.Context(), tenantFromCtx(r.Context()), auth.SubjectForFairness(r.Context(), req.UserID))
+	if err != nil {
+		laneRelease()
+		writeQuotaError(w, err)
+		return gatewayDispatch{}, false
+	}
+	// One handle for the caller to defer: global first, the provider slot last.
+	release := func() { globalRelease(); laneRelease() }
 
 	return gatewayDispatch{
 		requestID:  requestID,
