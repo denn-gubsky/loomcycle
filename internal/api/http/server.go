@@ -3413,6 +3413,7 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 	// tree's purge.
 	treeSet, _ := s.treeSets.acquire(runID)
 	loopCtx = tools.WithEphemeralVolumes(loopCtx, treeSet)
+	loopCtx = tools.WithEphemeralModeCheck(loopCtx, s.ephemeralModeCheck(runID))
 	loopCtx = tools.WithChannelPolicy(loopCtx, s.channelPolicyForAgent(loopCtx, agentDef))
 	loopCtx = tools.WithOperatorAuthored(loopCtx, agentDef.OperatorAuthored)
 	loopCtx = tools.WithEventEmitter(loopCtx, emit)
@@ -5445,6 +5446,7 @@ func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {
 	// tree's purge.
 	treeSet, _ := s.treeSets.acquire(runID)
 	loopCtx = tools.WithEphemeralVolumes(loopCtx, treeSet)
+	loopCtx = tools.WithEphemeralModeCheck(loopCtx, s.ephemeralModeCheck(runID))
 	loopCtx = tools.WithChannelPolicy(loopCtx, s.channelPolicyForAgent(loopCtx, agentDef))
 	loopCtx = tools.WithOperatorAuthored(loopCtx, agentDef.OperatorAuthored)
 	loopCtx = tools.WithEventEmitter(loopCtx, emit)
@@ -6253,6 +6255,7 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 	// tree's purge.
 	treeSet, _ := s.treeSets.acquire(run.ID)
 	loopCtx = tools.WithEphemeralVolumes(loopCtx, treeSet)
+	loopCtx = tools.WithEphemeralModeCheck(loopCtx, s.ephemeralModeCheck(run.ID))
 	loopCtx = tools.WithChannelPolicy(loopCtx, s.channelPolicyForAgent(loopCtx, agentDef))
 	loopCtx = tools.WithOperatorAuthored(loopCtx, agentDef.OperatorAuthored)
 	loopCtx = tools.WithEventEmitter(loopCtx, emit)
@@ -10218,6 +10221,35 @@ func ephemeralReadOnlyFor(ctx context.Context, def config.AgentDef) context.Cont
 		return tools.WithEphemeralReadOnly(ctx)
 	}
 	return ctx
+}
+
+// ephemeralModeCheck returns the check a write to one of the tree's ephemeral
+// volumes makes against the stored rows (tools.WithEphemeralModeCheck). The
+// rows are what every replica reads, so this is how a volume made read-only
+// by a run of the tree on another replica is read-only here.
+func (s *Server) ephemeralModeCheck(rootRunID string) tools.EphemeralModeCheck {
+	if s.store == nil || rootRunID == "" {
+		return nil
+	}
+	return func(ctx context.Context, name string) (bool, error) {
+		rows, err := s.store.EphemeralVolumeListByRun(ctx, rootRunID)
+		if err != nil {
+			return false, err
+		}
+		for _, r := range rows {
+			if r.Name != name {
+				continue
+			}
+			var body struct {
+				Mode string `json:"mode"`
+			}
+			if err := json.Unmarshal(r.Definition, &body); err != nil {
+				return false, fmt.Errorf("its record is unreadable: %w", err)
+			}
+			return body.Mode == "ro", nil
+		}
+		return false, errors.New("it is no longer recorded for this run")
+	}
 }
 
 // rehydrateEphemeralVolumes builds a run-scoped EphemeralVolumeSet from the

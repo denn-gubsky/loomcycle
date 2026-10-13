@@ -104,10 +104,48 @@ func effectiveRoot(ctx context.Context, volumeName string, needWrite bool) (stri
 	if err != nil {
 		return "", err
 	}
+	if needWrite && !readOnly {
+		// The in-memory set says writable. For an ephemeral volume that is
+		// only what THIS process knows; ask the record before writing.
+		if readOnly, err = confirmEphemeralWritable(ctx, volumeName); err != nil {
+			return "", fmt.Errorf("volume %q: could not confirm it is still writable, so nothing was written: %w", name, err)
+		}
+	}
 	if needWrite && readOnly {
 		return "", fmt.Errorf("volume %q is read-only; this operation requires a read-write volume", name)
 	}
 	return root, nil
+}
+
+// confirmEphemeralWritable is asked when the in-memory set holds volumeName
+// as a writable ephemeral volume. It reads the volume's record and reports
+// whether it is read-only there, which a set_mode made by a run of the tree
+// in another process would have made it. A read-only answer is also taken
+// into the set, so later calls need no read.
+//
+// It answers (false, nil) with nothing read when the name is not an
+// ephemeral volume or no check is attached. An error is the record being
+// unreadable or no longer naming the volume: the caller must not write.
+func confirmEphemeralWritable(ctx context.Context, volumeName string) (readOnly bool, err error) {
+	if volumeName == "" {
+		return false, nil
+	}
+	set := tools.EphemeralVolumes(ctx)
+	if !set.Has(volumeName) {
+		return false, nil
+	}
+	check := tools.EphemeralModeCheckFrom(ctx)
+	if check == nil {
+		return false, nil
+	}
+	readOnly, err = check(ctx, volumeName)
+	if err != nil {
+		return false, err
+	}
+	if readOnly {
+		set.SetReadOnly(volumeName)
+	}
+	return readOnly, nil
 }
 
 // defaultBinding returns the binding a call with no explicit `volume`

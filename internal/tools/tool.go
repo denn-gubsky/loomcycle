@@ -529,6 +529,33 @@ func EphemeralReadOnly(ctx context.Context) bool {
 	return v
 }
 
+// EphemeralModeCheck reads a tree's ephemeral volume from where it is
+// recorded and reports whether it is read-only there. An error means the
+// record could not be read, or no longer names the volume.
+type EphemeralModeCheck func(ctx context.Context, name string) (readOnly bool, err error)
+
+type ctxKeyEphemeralModeCheck struct{}
+
+// WithEphemeralModeCheck attaches the check a write to an ephemeral volume
+// makes before it trusts the in-memory set's "writable".
+//
+// The set is shared by the runs of a tree in ONE process. A run of the same
+// tree in another process has its own, so a set_mode made there is not in
+// this one. The record is the one thing both read, and asking it before each
+// write is what makes read-only hold across processes. A nil check is a no-op.
+func WithEphemeralModeCheck(ctx context.Context, check EphemeralModeCheck) context.Context {
+	if check == nil {
+		return ctx
+	}
+	return context.WithValue(ctx, ctxKeyEphemeralModeCheck{}, check)
+}
+
+// EphemeralModeCheckFrom returns the check attached to ctx, or nil.
+func EphemeralModeCheckFrom(ctx context.Context) EphemeralModeCheck {
+	c, _ := ctx.Value(ctxKeyEphemeralModeCheck{}).(EphemeralModeCheck)
+	return c
+}
+
 // WithEphemeralVolumes attaches the run-tree's ephemeral volume set to ctx.
 // nil set is a no-op (EphemeralVolumes then returns nil → no ephemeral
 // resolution, and the create op refuses with "no ephemeral set on ctx").

@@ -263,6 +263,15 @@ func (b *Bashbox) Execute(ctx context.Context, input json.RawMessage) (tools.Res
 	if rootErr != nil {
 		return tools.Result{Text: rootErr.Error(), IsError: true}, nil
 	}
+	if !readOnly {
+		// A writable mount lets the command change the host directory, so
+		// ask the record first, as the file tools do. If it cannot be read,
+		// mount read-only: the command still runs, and nothing it writes
+		// reaches the volume.
+		if ro, err := confirmEphemeralWritable(ctx, args.Volume); err != nil || ro {
+			readOnly = true
+		}
+	}
 	rootResolved, err := filepath.EvalSymlinks(root)
 	if err != nil {
 		return tools.Result{Text: "volume root: " + err.Error(), IsError: true}, nil
