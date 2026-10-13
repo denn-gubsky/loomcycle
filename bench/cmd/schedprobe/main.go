@@ -256,7 +256,7 @@ func (p *prober) runAgent(ctx context.Context, s agentSpec, l *lane) error {
 			return err
 		}
 	case "decision":
-		d, err := decision.New("ollama", decision.Options{ProviderID: "ollama-local", BaseURL: p.baseURL, Timeout: time.Hour, MaxConcurrent: 1 << 10})
+		d, err := decision.New("ollama", decision.Options{ProviderID: "ollama-local", BaseURL: p.baseURL, Timeout: time.Hour})
 		if err != nil {
 			return err
 		}

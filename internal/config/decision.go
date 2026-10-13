@@ -1,6 +1,7 @@
 package config
 
 import (
+	"errors"
 	"fmt"
 	"reflect"
 	"sort"
@@ -32,13 +33,17 @@ type DecisionConfig struct {
 	// Provider serves the entries that are plain model names. An alias carries
 	// its own provider and ignores this.
 	Provider string `yaml:"provider"`
-	// TimeoutMs bounds one call, including its wait for a slot. 0 = 30000.
+	// TimeoutMs bounds one call. 0 = 30000. A call waiting for a slot in its
+	// provider's decision lane (providers.<id>.lanes.decision) has not started:
+	// that wait is not counted.
 	TimeoutMs int `yaml:"timeout_ms"`
-	// MaxConcurrent bounds the calls in flight to each provider the block uses.
-	// 0 = 4. It is not a provider run slot: a decision is asked from inside a run
-	// that already holds one.
-	MaxConcurrent int `yaml:"max_concurrent"`
 }
+
+// decisionMaxConcurrentRemoved is the load error for a block that still sets
+// the block's own cap. The key is gone, not ignored: an operator who set it to
+// protect a model host must be told where that protection lives now, and a
+// config that loaded without it would run with no cap at all.
+const decisionMaxConcurrentRemoved = "decision.max_concurrent was removed: cap decision calls per provider with providers.<id>.lanes.decision.max_concurrent"
 
 // UnmarshalYAML refuses a key the block does not have. A dropped key here is a
 // silent change of meaning (`model: nimble` for `default: nimble` would leave
@@ -54,6 +59,9 @@ func (d *DecisionConfig) UnmarshalYAML(n *yaml.Node) error {
 			known[name] = true
 		}
 		for i := 0; i+1 < len(n.Content); i += 2 {
+			if n.Content[i].Value == "max_concurrent" {
+				return errors.New(decisionMaxConcurrentRemoved)
+			}
 			if key := n.Content[i].Value; !known[key] {
 				names := make([]string, 0, len(known))
 				for k := range known {
@@ -126,9 +134,6 @@ func (d DecisionConfig) validate(c *Config) error {
 	}
 	if d.TimeoutMs < 0 {
 		return fmt.Errorf("decision.timeout_ms must be >= 0")
-	}
-	if d.MaxConcurrent < 0 {
-		return fmt.Errorf("decision.max_concurrent must be >= 0")
 	}
 	declared := func() []string {
 		ids := make([]string, 0, len(c.Providers))

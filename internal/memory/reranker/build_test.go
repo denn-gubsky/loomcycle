@@ -5,9 +5,12 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
+	"github.com/denn-gubsky/loomcycle/internal/concurrency"
 	"github.com/denn-gubsky/loomcycle/internal/config"
 	"github.com/denn-gubsky/loomcycle/internal/providers"
 	_ "github.com/denn-gubsky/loomcycle/internal/providers/openai"
@@ -39,11 +42,13 @@ func TestBuild_AnOverriddenEndpointDoesNotTakeATenantsProviderKey(t *testing.T) 
 		{"own endpoint, no key named", config.RerankerConfig{BaseURL: "http://gpu.internal:8000/v1"}, rerankerKeyEnvName},
 		{"own endpoint, key named", config.RerankerConfig{BaseURL: "http://gpu.internal:8000/v1", APIKeyEnv: "MY_RERANK_KEY"}, "MY_RERANK_KEY"},
 	} {
-		m, err := Build(openAIConfig(c.rc))
+		m, err := Build(openAIConfig(c.rc), nil)
 		if err != nil {
 			t.Fatalf("%s: Build: %v", c.name, err)
 		}
-		keyed, ok := m.provider.(interface{ KeyEnvName() string })
+		// The driver is inside its provider's chat lane, so it is reached as
+		// every registry provider is: through providers.As.
+		keyed, ok := providers.As[providers.KeyedProvider](m.provider)
 		if !ok {
 			t.Fatalf("%s: the openai driver no longer reports its credential name", c.name)
 		}
@@ -65,7 +70,7 @@ func TestModel_ARestrictedRunCannotSpendTheOperatorsKey(t *testing.T) {
 		http.Error(w, "unexpected", http.StatusTeapot)
 	}))
 	defer srv.Close()
-	m, err := Build(openAIConfig(config.RerankerConfig{BaseURL: srv.URL + "/v1"}))
+	m, err := Build(openAIConfig(config.RerankerConfig{BaseURL: srv.URL + "/v1"}), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -93,11 +98,96 @@ func TestBuild_ResolvesAModelsAlias(t *testing.T) {
 	cfg.Memory.Reranker.Provider = ""
 	cfg.Memory.Reranker.Model = "fast-rerank"
 	cfg.Models = map[string]config.ModelRef{"fast-rerank": {Provider: "openai", Model: "gpt-5.4-mini"}}
-	m, err := Build(cfg)
+	m, err := Build(cfg, nil)
 	if err != nil || m == nil {
 		t.Fatalf("Build = %v, %v", m, err)
 	}
 	if m.ModelID() != "gpt-5.4-mini" || m.ProviderID() != "openai" {
 		t.Errorf("reranker = %s/%s, want openai/gpt-5.4-mini", m.ProviderID(), m.ModelID())
+	}
+}
+
+// slowEndpoint is a provider endpoint that holds each request a moment and
+// remembers the most it had at once. It refuses them all: what is measured is
+// how many calls were AT the endpoint together, not what came back.
+type slowEndpoint struct {
+	mu                   sync.Mutex
+	inFlight, peak, hits int
+	url                  string
+}
+
+func newSlowEndpoint(t *testing.T) *slowEndpoint {
+	t.Helper()
+	e := &slowEndpoint{}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		e.mu.Lock()
+		e.hits++
+		e.inFlight++
+		if e.inFlight > e.peak {
+			e.peak = e.inFlight
+		}
+		e.mu.Unlock()
+		time.Sleep(30 * time.Millisecond)
+		e.mu.Lock()
+		e.inFlight--
+		e.mu.Unlock()
+		http.Error(w, "not today", http.StatusTeapot)
+	}))
+	t.Cleanup(srv.Close)
+	e.url = srv.URL
+	return e
+}
+
+func (e *slowEndpoint) seen() (hits, peak int) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.hits, e.peak
+}
+
+// TestBuild_ARerankIsCountedInItsProvidersChatLane — a listwise rerank is a
+// chat call. The reranker builds a driver of its own, so Build puts that driver
+// in the chat lane of the provider the block RESOLVED to (here through a
+// models: alias): with the lane at 1, four reranks asked for at once reach the
+// endpoint one at a time. With no scheduler they overlap.
+func TestBuild_ARerankIsCountedInItsProvidersChatLane(t *testing.T) {
+	t.Setenv("OPENAI_API_KEY", "test-operator-key")
+	rerankAll := func(sched *concurrency.CallScheduler) int {
+		t.Helper()
+		e := newSlowEndpoint(t)
+		cfg := openAIConfig(config.RerankerConfig{BaseURL: e.url + "/v1"})
+		cfg.Memory.Reranker.Provider = ""
+		cfg.Memory.Reranker.Model = "fast-rerank"
+		cfg.Models = map[string]config.ModelRef{"fast-rerank": {Provider: "openai", Model: "gpt-5.4-mini"}}
+		m, err := Build(cfg, sched)
+		if err != nil || m == nil {
+			t.Fatalf("Build = %v, %v", m, err)
+		}
+		var wg sync.WaitGroup
+		for i := 0; i < 4; i++ {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				_, _ = m.Complete(context.Background(), "prompt")
+			}()
+		}
+		wg.Wait()
+		hits, peak := e.seen()
+		if hits < 4 {
+			t.Fatalf("the endpoint saw %d requests, want at least 4", hits)
+		}
+		return peak
+	}
+	sched := concurrency.NewCallScheduler(map[string]concurrency.ProviderLanesConfig{
+		"openai": {Lanes: map[string]concurrency.LaneConfig{config.ModelKindChat: {MaxConcurrent: 1}}},
+	})
+	if peak := rerankAll(sched); peak != 1 {
+		t.Errorf("gated: %d reranks at the endpoint at once, want 1 (providers.openai.max_concurrent)", peak)
+	}
+	if st := sched.Stats()["openai"].Lanes[config.ModelKindChat]; st.Grants < 4 || st.Active != 0 || st.Queued != 0 {
+		t.Errorf("chat lane = %+v, want the 4 reranks granted and nothing left in it", st)
+	}
+	// Control: the same four with no lane overlap, so the 1 above is the lane.
+	if peak := rerankAll(nil); peak < 2 {
+		t.Errorf("ungated: peak %d, want the reranks to overlap — the check above proves nothing", peak)
 	}
 }

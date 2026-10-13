@@ -42,13 +42,12 @@ decision:
   models: [decide-deep, nimble-lit]
   provider: ollama-local
   timeout_ms: 20000
-  max_concurrent: 2
 `)))
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
 	want := DecisionConfig{Default: "decide", Models: []string{"decide-deep", "nimble-lit"},
-		Provider: "ollama-local", TimeoutMs: 20000, MaxConcurrent: 2}
+		Provider: "ollama-local", TimeoutMs: 20000}
 	if !reflect.DeepEqual(cfg.Decision, want) {
 		t.Errorf("decision = %+v, want %+v", cfg.Decision, want)
 	}
@@ -129,7 +128,6 @@ func TestDecisionConfig_RejectsABlockThatCouldNotBeBuilt(t *testing.T) {
 		{"a plain name on such a provider", "default: gpt-x\n  provider: openai", []string{`"openai" driver serves no decision models`}},
 		{"an alias with no provider", "default: homeless", []string{"decision.default", "models.homeless names no provider"}},
 		{"a negative timeout", "default: decide\n  timeout_ms: -1", []string{"decision.timeout_ms"}},
-		{"a negative bound", "default: decide\n  max_concurrent: -1", []string{"decision.max_concurrent"}},
 		{"an empty entry", "default: decide\n  models: [\"\"]", []string{"decision.models", "empty"}},
 		{"an unknown key", "default: decide\n  model: nimble", []string{`decision: unknown key "model"`, "default"}},
 	} {

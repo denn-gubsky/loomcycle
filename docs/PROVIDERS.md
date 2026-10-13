@@ -70,13 +70,13 @@ providers:
 
 Because the cap counts calls and not runs, eight agents on two slots take turns call by call: no agent waits for another's whole conversation.
 
-- **Every call is counted.** Top-level runs, sub-agents, interactive runs, resumed runs, compaction summaries, the LLM gateway and the OpenAI-compatible routes, and the image-describe route all go through the same queue. A fan-out parent and its same-provider children share the cap, and a run that fails over to another provider simply makes its next call in that provider's queue.
+- **Every call is counted.** Top-level runs, sub-agents, interactive runs, resumed runs, compaction summaries, the LLM gateway and the OpenAI-compatible routes, the image-describe route, the memory reranker (listwise) and the unit generator all go through the same queue. A fan-out parent and its same-provider children share the cap, and a run that fails over to another provider simply makes its next call in that provider's queue. Decision models and the embedder have lanes of their own (below).
 - **A run's calls always wait**, however long the queue is: the run was admitted, so a busy provider never fails it. Time a sub-agent spends queued does not count against its `timeout_ms`.
-- **A request sent directly, outside any run, is bounded.** That is the LLM gateway (`/v1/_llm/chat`, the OpenAI-compatible routes) and the image-describe route. With `concurrency.provider_queue_depth` (`LOOMCYCLE_PROVIDER_QUEUE_DEPTH`; defaults to the global `max_queue_depth`) calls already waiting on the provider, the next such request is refused instead of queueing: the gateway answers `429 provider_concurrency_exhausted` (with `provider` and `cap`, so a client can try another tier at once), the describe route reports it as that image's failure. A gateway request waiting for its provider holds no global run slot (it takes one, under the caller's per-user cap, only when the provider can take it), so requests piled onto a saturated provider cannot use the global cap up; if no global slot is free at the moment the provider frees up, the request is refused with `429 backpressure`. That is all `provider_queue_depth` bounds.
+- **A request sent directly, outside any run, is bounded.** That is the LLM gateway (`/v1/_llm/chat`, the OpenAI-compatible routes), `POST /v1/embeddings`, `POST /v1/_decide` and the image-describe route. With `concurrency.provider_queue_depth` (`LOOMCYCLE_PROVIDER_QUEUE_DEPTH`; defaults to the global `max_queue_depth`) calls already waiting on the provider, the next such request is refused instead of queueing: the gateway and `/v1/embeddings` answer `429 provider_concurrency_exhausted` (with `provider` and `cap`, so a client can try another tier at once), `/v1/_decide` reports the refusal as the call's failure, the describe route as that image's. A gateway or embeddings request waiting for its provider holds no global run slot (it takes one only when the provider can take it) but stays counted against its caller's per-user cap, so requests piled onto a saturated provider cannot use the global cap up; if no global slot is free at the moment the provider frees up, the request is refused with `429 backpressure`. That is all `provider_queue_depth` bounds.
 - A run waiting for a provider slot holds its global run slot (`concurrency.max_concurrent_runs`). Size the global cap for the runs you want admitted, the provider cap for what the host can compute.
 - Cloud providers are vendor-rate-limited — leave them uncapped. An uncapped provider costs nothing.
 - Advisory / per-replica (exact for the single-replica local case). It complements — does not replace — Ollama's own `OLLAMA_NUM_PARALLEL`.
-- `GET /v1/_concurrency/stats` (`providers.<id>`) and the `loomcycle_provider_slots_in_use` / `loomcycle_provider_queue_depth` gauges report each capped provider's chat calls in flight and waiting.
+- `GET /v1/_concurrency/stats` (`providers.<id>`) and the `loomcycle_provider_slots_in_use` / `loomcycle_provider_queue_depth` gauges report each capped provider's chat calls in flight and waiting. They report the **chat** lane only: the `decision` and `embedder` lanes are enforced but not yet shown there.
 - A config reload applies a changed cap to the next call.
 
 #### Lanes: a queue per kind of model
@@ -100,7 +100,7 @@ providers:
 | `lanes.<kind>.max_concurrent` | Calls of that kind in flight. `0` / unset = that kind is not capped, and then none of the keys below may be set. Setting both `max_concurrent` and `lanes.chat.max_concurrent` to different values is refused at load. |
 | `lanes.<kind>.affinity_hold_ms` | The **lease**: how long a slot stays reserved for the run that just used it, so the run's next call lands on the same slot — on a local host, on a warm prompt cache. `0` (default) = no reservation, a plain fair queue call by call. The lease belongs to the **run**: it is dropped as soon as the run ends, and a run gone for longer than the hold (a slow tool, a sub-agent, its operator) loses it. |
 | `lanes.<kind>.quantum_calls` | How many consecutive calls a run may make on its reserved slot while other runs wait; after that it yields and queues again. `0` = unlimited (the lease is bounded by `affinity_hold_ms` alone). |
-| `lanes.<kind>.background_share` | The least fraction of the lane's turns given to background work (consolidation, reindexing) while both it and live runs wait, in `[0, 1)`. `0` (default) = live runs always go first. |
+| `lanes.<kind>.background_share` | The least fraction of the lane's turns given to background work (see below) while both it and live runs wait, in `[0, 1)`. `0` (default) = live runs always go first, and background work on a lane that is never idle does not run at all. |
 | `max_models_in_flight` | How many **different models** may compute on the provider at once, across all lanes. Some local hosts fail, or thrash loading and evicting weights, when several do. Any number of calls to a model already in flight are admitted; a call to another model waits until one drains. `0` / unset = unlimited. |
 | `model_switch_max_wait_ms` | How long a waiting model can be held off by new calls to the models in flight: after this long those queue behind it, so it gets its turn. Default `30000`; only meaningful with `max_models_in_flight`. |
 
@@ -108,7 +108,30 @@ Waiting calls are served round-robin across (tenant, user), so one user's fan-ou
 
 **Ollama: one model at two context sizes is two models.** Ollama loads a model at one `num_ctx`; the same model requested at another size is reloaded (about 10 s measured) and loses its prompt cache. `max_models_in_flight` counts `model@num_ctx`, so the two do not compute together — and the driver logs a warning, once per combination, when an agent's `max_context_tokens` differs from the provider's pinned `num_ctx`. Set them to the same value.
 
-**What is queued today.** Only chat calls made through `providers:` — everything a run, the LLM gateway or the image-describe route sends. The `decision:` block, the embedder and the `memory.reranker` / `memory.unit_generator` services build their own clients: they are bounded by their own `max_concurrent` settings and are not counted against a provider's cap or its `max_models_in_flight`. The `decision` and `embedder` lanes are accepted and validated, and take effect when those callers are moved onto them. Likewise no caller marks its calls as background yet, so `background_share` has nothing to share until one does.
+**Which lane a call takes.** Every model call the server makes is counted in a lane of the provider it goes to, and against that provider's `max_models_in_flight`:
+
+| Call | Lane |
+|---|---|
+| A run's own calls, compaction, the LLM gateway, the image-describe route | `chat` |
+| `memory.reranker` with `kind: listwise`; `memory.unit_generator` | `chat` of the provider the block resolves to |
+| The `decision:` block (the `Decision` tool, a team's decision states, `POST /v1/_decide`); `memory.reranker` with `kind: decision` | `decision` |
+| The embedder (`memory.embedder`): Memory, Document and History searches and writes, trace indexing, `/v1/embeddings` | `embedder` |
+
+- The lane is the **provider's**, even when a block points its calls at another endpoint with its own `base_url`. An embedder moved to a host of its own is capped by the provider's `embedder` lane, which no chat call takes.
+- A call made by a tool inside a run queues **as that run**: it takes its turn by the run's (tenant, user), and a listwise rerank uses the slot the run's lease holds.
+- A decision's `timeout_ms` starts when the call does; its wait for a lane slot is not counted. A rerank is different: `memory.reranker.timeout_ms` bounds the whole rerank, wait included, and a rerank that runs out of time keeps search's own order.
+- The CLI commands that call a model themselves (`memory-eval-live`, `memory-calibrate`) run in their own process with no server scheduler, and are not queued.
+
+**There is no other cap.** The `decision:` block and `memory.reranker` used to bound their own calls (`max_concurrent`, default 4 each), blind to each other and to the chat calls on the same host. Both keys are removed, and a config that still sets one fails to load, naming the lane that replaces it. With them gone, a local-model host is protected only by the lanes you set: if you relied on those defaults of 4, set `max_concurrent` / `lanes` on that provider. A provider with no cap sends every call at once.
+
+**Background work.** These calls queue behind live runs on the same lane, with the share `background_share` gives them:
+
+- a **memory consolidation** pass: the consolidator's run, the sub-agents it spawns, and the embeddings its writes make;
+- the operator-run **sweeps**: `POST /v1/_document/reindex`, `/v1/_document/derive_units`, `/v1/_document/describe_images`, `/v1/_memory/backfill_embeddings`, `/v1/_memory/backfill_traces`, `/v1/_memory/reembed`;
+- the part of a large Document re-index that continues after the edit that caused it has returned;
+- indexing the built-in help and seeding `memory.entries` at boot.
+
+Anything a live run asks for — an agent's Memory search, a `Decision` call, an ordinary scheduled run — is not background. A consolidation sweep still has its own time budget, so on a lane that live runs keep full give background work a share (`background_share: 0.25`) rather than leaving it at `0`.
 
 ### Capability overrides
 

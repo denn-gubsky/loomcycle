@@ -402,84 +402,54 @@ func TestOllama_ARestrictedRunCannotSpendTheOperatorsKey(t *testing.T) {
 	})
 }
 
-// TestOllama_TimesOut — a call that outlives the driver's timeout, and one whose
-// time runs out while it waits for a slot, are both a timeout and both
-// context.DeadlineExceeded; the one that never got a slot never calls.
-//
-// The waiting call gets its deadline from its caller, shorter than the driver's
-// timeout. Two calls on the driver's timeout alone cannot show this: the first
-// frees the slot when its own time is up, which is always before the second's,
-// so the second gets the slot with whatever it has left and calls.
+// TestOllama_TimesOut — a call that outlives the driver's timeout is a timeout
+// wrapping context.DeadlineExceeded. (The driver holds no slot of its own: how
+// many decisions are in flight is the provider's decision lane, which wraps the
+// driver — see internal/lanegate.)
 func TestOllama_TimesOut(t *testing.T) {
 	release := make(chan struct{})
-	s, url := serve(t, func(w http.ResponseWriter) { <-release })
+	_, url := serve(t, func(w http.ResponseWriter) { <-release })
 	// Registered after serve's own cleanup, so it runs first: the server's Close
 	// waits for the handler this releases.
 	t.Cleanup(func() { close(release) })
-	d := newDriver(t, Options{BaseURL: url, Timeout: 400 * time.Millisecond, MaxConcurrent: 1})
-	req := Request{Model: "nimble", Questions: questionsOf(1)}
-
-	holder := make(chan error, 1)
-	go func() {
-		_, err := d.Decide(context.Background(), req)
-		holder <- err
-	}()
-	// The holder has the only slot once the endpoint has its call.
-	deadline := time.Now().Add(5 * time.Second)
-	for s.calls() == 0 {
-		if time.Now().After(deadline) {
-			t.Fatal("the first call never reached the endpoint")
-		}
-		time.Sleep(time.Millisecond)
-	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
-	defer cancel()
-	_, err := d.Decide(ctx, req)
+	d := newDriver(t, Options{BaseURL: url, Timeout: 100 * time.Millisecond})
+	_, err := d.Decide(context.Background(), Request{Model: "nimble", Questions: questionsOf(1)})
 	if CodeOf(err) != CodeTimeout || !errors.Is(err, context.DeadlineExceeded) {
-		t.Errorf("the waiting call: err = %v, want a timeout wrapping context.DeadlineExceeded", err)
-	}
-	// Counted while the holder still has the slot: its own time is not up yet.
-	if n := s.calls(); n != 1 {
-		t.Errorf("the endpoint saw %d calls, want 1: the second ran out of time waiting for the slot", n)
-	}
-
-	if err := <-holder; CodeOf(err) != CodeTimeout || !errors.Is(err, context.DeadlineExceeded) {
-		t.Errorf("the holding call: err = %v, want a timeout wrapping context.DeadlineExceeded", err)
+		t.Errorf("err = %v, want a timeout wrapping context.DeadlineExceeded", err)
 	}
 }
 
-// TestOllama_BoundsCallsInFlight — max_concurrent is the most calls the driver
-// has at the endpoint at once.
-func TestOllama_BoundsCallsInFlight(t *testing.T) {
-	var inFlight, peak atomic.Int64
+// TestOllama_HoldsNoSlotOfItsOwn — the driver sends every call it is given at
+// once. The bound on decisions in flight used to live here, where it knew
+// nothing of the chat calls on the same host; it is the provider's decision
+// lane now, and a second, private one underneath would cap a lane the operator
+// set wider.
+func TestOllama_HoldsNoSlotOfItsOwn(t *testing.T) {
+	const n = 8
+	var inFlight atomic.Int64
+	all := make(chan struct{})
+	var once sync.Once
 	_, url := serve(t, func(w http.ResponseWriter) {
-		n := inFlight.Add(1)
-		for {
-			p := peak.Load()
-			if n <= p || peak.CompareAndSwap(p, n) {
-				break
-			}
+		if inFlight.Add(1) == n {
+			once.Do(func() { close(all) })
 		}
-		time.Sleep(30 * time.Millisecond)
-		inFlight.Add(-1)
+		<-all
 		_, _ = io.WriteString(w, `{"answers":{}}`)
 	})
-	d := newDriver(t, Options{BaseURL: url, MaxConcurrent: 2})
+	d := newDriver(t, Options{BaseURL: url, Timeout: 5 * time.Second})
 	var wg sync.WaitGroup
-	for i := 0; i < 8; i++ {
+	for i := 0; i < n; i++ {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
+			// Every handler waits until all n are in it, so a driver that held
+			// any back would time out here instead of answering.
 			if _, err := d.Decide(context.Background(), Request{Model: "nimble", Questions: questionsOf(1)}); err != nil {
 				t.Errorf("Decide: %v", err)
 			}
 		}()
 	}
 	wg.Wait()
-	if p := peak.Load(); p != 2 {
-		t.Errorf("peak calls in flight = %d, want exactly 2 (bounded, and the bound used)", p)
-	}
 }
 
 // TestNew_KnowsWhichDriversServeDecisionModels — the registry is keyed by the

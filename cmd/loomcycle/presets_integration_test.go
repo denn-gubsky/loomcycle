@@ -209,7 +209,7 @@ func TestEmbedded_LocalPresetDecisionExampleTurnsItOn(t *testing.T) {
 	if cfg.Decision.Default != "local-decide" || len(entries) != 1 || entries[0].Name != "local-decide" {
 		t.Fatalf("decision = %+v entries %+v, want default local-decide and that one entry", cfg.Decision, entries)
 	}
-	svc, err := decisionbuild.Build(cfg)
+	svc, err := decisionbuild.Build(cfg, nil)
 	if err != nil || svc == nil {
 		t.Fatalf("decisionbuild.Build = %v, %v; the example must build a service", svc, err)
 	}

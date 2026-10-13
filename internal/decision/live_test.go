@@ -32,7 +32,7 @@ func TestLive_Decision(t *testing.T) {
 	if model == "" {
 		model = "nimble"
 	}
-	d, err := New("ollama", Options{ProviderID: "ollama-local", BaseURL: baseURL, Timeout: 90 * time.Second, MaxConcurrent: 1})
+	d, err := New("ollama", Options{ProviderID: "ollama-local", BaseURL: baseURL, Timeout: 90 * time.Second})
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}

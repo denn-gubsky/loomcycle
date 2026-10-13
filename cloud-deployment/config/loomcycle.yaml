@@ -18,7 +18,11 @@ providers:
       # 32768 window crashes with "CUDA error: an illegal memory access" on
       # prompts of about 1,100 tokens, every time. 49152, 65536 and 131072 pass.
       idle_timeout_ms: 600000
-    max_concurrent: 4
+    max_concurrent: 4           # chat calls in flight (shorthand for lanes.chat)
+    # Decision calls — the decision: block's and the memory reranker's — share
+    # this lane. It replaces the two blocks' own max_concurrent, which are gone.
+    lanes:
+      decision: { max_concurrent: 2 }
 
 # ─── Models: name each model once, reference it by alias everywhere ───
 # kind: chat (default) | decision | embedder. A tagged alias used in the
@@ -100,14 +104,12 @@ memory:
     kind: decision
     model: decide
     timeout_ms: 120000        # covers the decision model reloading after a chat model evicts it
-    max_concurrent: 2
 
 # ─── Decision models (a change here needs a restart) ──────────────────
 decision:
   default: decide
   models: [decide, decide-deep]   # listed explicitly so no other tagged alias joins
   timeout_ms: 120000
-  max_concurrent: 2
 
 # ─── Agents: overrides of bundled agents only ─────────────────────────
 agents:

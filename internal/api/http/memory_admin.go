@@ -204,6 +204,7 @@ func (s *Server) writeReembeddedRow(ctx context.Context, tenantID, scope, storeS
 // current embedder and writes them back via MemoryEmbedSet. Failures
 // are collected (not fatal) — operators see which keys to retry.
 func (s *Server) handleMemoryReembed(w http.ResponseWriter, r *http.Request) {
+	r = sweepRequest(r)
 	if s.store == nil {
 		writeJSONError(w, http.StatusServiceUnavailable, "store_unavailable",
 			"store not configured; Memory admin requires a persistent store")

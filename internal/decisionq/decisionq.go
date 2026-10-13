@@ -88,7 +88,9 @@ const (
 	CodeModelNotFound = "model_not_found"
 	// CodeModelNotAllowed: the model is not one the operator's decision block lists.
 	CodeModelNotAllowed = "model_not_allowed"
-	// CodeTimeout: the call, or its wait for a slot, outlived the timeout. It
+	// CodeTimeout: the call outlived the block's timeout, or the caller's own
+	// deadline ran out — during the call or while it waited for a slot in its
+	// provider's decision lane (a wait the block's timeout does not count). It
 	// wraps context.DeadlineExceeded.
 	CodeTimeout = "timeout"
 	// CodeCallFailed: anything else: the transport, the key, an unreadable reply.

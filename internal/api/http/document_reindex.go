@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"strconv"
 
+	"github.com/denn-gubsky/loomcycle/internal/lanegate"
 	"github.com/denn-gubsky/loomcycle/internal/store"
 	"github.com/denn-gubsky/loomcycle/internal/tools/builtin"
 )
@@ -26,7 +27,21 @@ import (
 //
 // Re-invoke with the returned next_cursor while `more` is true. The pass is idempotent:
 // a chunk already indexed under its current text costs a read and no embedding call.
+// sweepRequest marks r as an operator-run maintenance sweep (re-index,
+// backfill, re-embed, unit generation, image descriptions): every model call
+// made under it — an embedding, a generation, a description — queues in its
+// provider's lane as background work, behind the calls of live runs, with the
+// share the lane's background_share guarantees. Each sweep handler calls it
+// first, so no later use of r.Context() can miss the mark.
+//
+// The same operations asked for by an agent inside a run are not sweeps: that
+// run is live, and they queue as its calls.
+func sweepRequest(r *http.Request) *http.Request {
+	return r.WithContext(lanegate.WithBackground(r.Context()))
+}
+
 func (s *Server) handleDocumentReindex(w http.ResponseWriter, r *http.Request) {
+	r = sweepRequest(r)
 	if s.store == nil || s.sqlMem == nil {
 		writeJSONError(w, http.StatusServiceUnavailable, "sqlmem_unavailable",
 			"re-indexing documents requires SQL Memory (set LOOMCYCLE_SQLMEM_ENABLED=1)")

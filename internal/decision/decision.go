@@ -103,18 +103,16 @@ type Options struct {
 	// takes no key at all, and then no run is restricted from it.
 	APIKey     string
 	KeyEnvName string
-	// Timeout bounds one call, including its wait for a slot. 0 = 30s.
+	// Timeout bounds one call. 0 = 30s.
+	//
+	// A driver bounds nothing else: how many decisions are in flight to a
+	// provider is that provider's decision lane (internal/lanegate), which the
+	// caller that builds the driver wraps it in. The wait for a lane slot is
+	// outside this timeout.
 	Timeout time.Duration
-	// MaxConcurrent bounds this driver's calls in flight. 0 = 4. It is the driver's
-	// own bound, not a provider run slot: a decision is asked from inside a run
-	// that already holds one, and would wait on itself where the provider's cap is 1.
-	MaxConcurrent int
 }
 
-const (
-	defaultTimeout       = 30 * time.Second
-	defaultMaxConcurrent = 4
-)
+const defaultTimeout = 30 * time.Second
 
 // Factory builds a driver for one provider endpoint.
 type Factory func(Options) (Driver, error)

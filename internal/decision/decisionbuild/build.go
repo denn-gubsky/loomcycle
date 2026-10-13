@@ -9,8 +9,10 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/denn-gubsky/loomcycle/internal/concurrency"
 	"github.com/denn-gubsky/loomcycle/internal/config"
 	"github.com/denn-gubsky/loomcycle/internal/decision"
+	"github.com/denn-gubsky/loomcycle/internal/lanegate"
 	"github.com/denn-gubsky/loomcycle/internal/providerbuild"
 )
 
@@ -21,9 +23,14 @@ import (
 // Each entry resolves through providerbuild.ServiceDriverOptions, as the
 // memory reranker and the unit generator do, so an alias reaches the provider
 // as the model it names and the endpoint and key are the provider's own. One
-// driver is built per provider: its entries share that provider's
-// max_concurrent bound.
-func Build(cfg *config.Config) (*decision.Service, error) {
+// driver is built per provider.
+//
+// Every driver is handed out inside its provider's decision lane (sched, the
+// server's call scheduler): providers.<id>.lanes.decision caps the decisions in
+// flight to that provider, and its max_models_in_flight counts a decision
+// model beside the chat models. A nil sched gates nothing — a caller with no
+// server scheduler, such as a CLI command.
+func Build(cfg *config.Config, sched *concurrency.CallScheduler) (*decision.Service, error) {
 	dc := cfg.Decision
 	if !dc.Configured() {
 		return nil, nil
@@ -43,12 +50,12 @@ func Build(cfg *config.Config) (*decision.Service, error) {
 			d, err = decision.New(driverName, decision.Options{
 				ProviderID: provider, BaseURL: opts.BaseURL,
 				APIKey: opts.APIKey, KeyEnvName: opts.KeyEnvName,
-				Timeout:       time.Duration(dc.TimeoutMs) * time.Millisecond,
-				MaxConcurrent: dc.MaxConcurrent,
+				Timeout: time.Duration(dc.TimeoutMs) * time.Millisecond,
 			})
 			if err != nil {
 				return nil, fmt.Errorf("decision: %q on provider %q: %w", e.Name, provider, err)
 			}
+			d = lanegate.WrapDecision(provider, d, sched)
 			drivers[provider] = d
 		}
 		specs = append(specs, decision.ModelSpec{Name: e.Name, Provider: provider, Model: model, Driver: d})

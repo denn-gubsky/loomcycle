@@ -10,6 +10,12 @@
 //
 // A wrapper hides whatever its driver implements beyond providers.Provider.
 // Callers reach those through providers.As, never a type assertion.
+//
+// Not every model call goes through a registry provider. A service that makes
+// its calls on a driver of its own (the memory reranker, the unit generator) is
+// wrapped with the same Wrap under the provider id it resolved to; a decision
+// model and an embedder speak protocols of their own and have their own
+// wrappers (services.go). Every one of them takes its slot through acquire.
 package lanegate
 
 import (
@@ -23,7 +29,7 @@ import (
 )
 
 // kind is the lane every Provider.Call takes. The other model kinds (decision,
-// embedder) do not go through Provider.Call.
+// embedder) do not go through Provider.Call: see services.go.
 const kind = config.ModelKindChat
 
 type backgroundKey struct{}
@@ -33,6 +39,12 @@ type backgroundKey struct{}
 // share its background_share guarantees.
 func WithBackground(ctx context.Context) context.Context {
 	return context.WithValue(ctx, backgroundKey{}, true)
+}
+
+// IsBackground reports whether ctx carries the WithBackground mark.
+func IsBackground(ctx context.Context) bool {
+	background, _ := ctx.Value(backgroundKey{}).(bool)
+	return background
 }
 
 type queueBoundKey struct{}
@@ -95,7 +107,7 @@ func (p *Provider) Call(ctx context.Context, req providers.Request) (<-chan prov
 	if !p.sched.Gated(p.id, kind) {
 		return p.inner.Call(ctx, req)
 	}
-	release, err := p.acquire(ctx, req)
+	release, err := acquire(ctx, p.sched, p.id, kind, providers.ModelIdentity(p.inner, req))
 	if err != nil {
 		return nil, err
 	}
@@ -131,23 +143,60 @@ func Hold(ctx context.Context, p providers.Provider, req providers.Request) (pro
 	if !ok || !lp.sched.Gated(lp.id, kind) {
 		return p, func() {}, nil
 	}
-	release, err := lp.acquire(ctx, req)
+	release, err := acquire(ctx, lp.sched, lp.id, kind, providers.ModelIdentity(lp.inner, req))
 	if err != nil {
 		return nil, nil, err
 	}
 	return lp.inner, release, nil
 }
 
-// acquire takes the lane slot for one call.
-func (p *Provider) acquire(ctx context.Context, req providers.Request) (release func(), err error) {
+// heldKey marks a ctx whose caller already holds the slot of one (provider,
+// kind): the value under it is true.
+type heldKey struct{ id, kind string }
+
+// HoldLane is Hold for a call that is NOT a Provider.Call — an embedding or a
+// decision, made through this package's WrapEmbedder / WrapDecision. It takes
+// the slot of (provider id, kind) for ONE call to model, and returns the ctx to
+// make that call under: the wrapper sees the slot is already held and takes no
+// second one. The same rules as Hold: take it after the global run slot, never
+// before; WithQueueBound on ctx is honoured; release when the request is over.
+// An ungated (provider, kind) returns ctx as is and a release that does nothing.
+//
+// The returned ctx is for that one call. Passed on to other work it would let
+// that work's calls of the same kind through uncounted.
+func HoldLane(ctx context.Context, sched *concurrency.CallScheduler, id, kind, model string) (context.Context, func(), error) {
+	if !sched.Gated(id, kind) {
+		return ctx, func() {}, nil
+	}
+	release, err := acquire(ctx, sched, id, kind, model)
+	if err != nil {
+		return ctx, nil, err
+	}
+	return context.WithValue(ctx, heldKey{id, kind}, true), release, nil
+}
+
+// acquire takes the slot for one call of the given kind to model on provider
+// id: the one way every wrapper in this package enters a lane, so a chat call, a
+// decision and an embedding are identified, queued and refused by the same
+// rules.
+//
+// The run identity comes from the RunMeta the loop stamps on a run's ctx, which
+// a tool's ctx inherits — so a call a tool makes on a run's behalf (a Memory
+// search's embedding, a Decision) queues as that run. A call made outside any
+// run carries none: it is a one-shot in the anonymous bucket.
+//
+// A ctx from HoldLane already holds this slot: nothing more is taken.
+func acquire(ctx context.Context, sched *concurrency.CallScheduler, id, kind, model string) (release func(), err error) {
+	if held, _ := ctx.Value(heldKey{id, kind}).(bool); held {
+		return func() {}, nil
+	}
 	meta, _ := providers.RunMetaFromContext(ctx)
-	background, _ := ctx.Value(backgroundKey{}).(bool)
 	info := concurrency.CallInfo{
 		Owner:      meta.RunID,
 		TenantID:   meta.TenantID,
 		UserID:     meta.UserID,
-		Background: background,
-		Model:      providers.ModelIdentity(p.inner, req),
+		Background: IsBackground(ctx),
+		Model:      model,
 	}
 	// Queueing is not working time: the clock bounding the run (a sub-agent's
 	// timeout_ms, a team state's) stops while it waits here. Reported to the
@@ -159,11 +208,11 @@ func (p *Provider) acquire(ctx context.Context, req providers.Request) (release 
 	}
 	bound, bounded := ctx.Value(queueBoundKey{}).(int)
 	if !bounded {
-		return p.sched.Acquire(ctx, p.id, kind, info)
+		return sched.Acquire(ctx, id, kind, info)
 	}
-	release, err = p.sched.AcquireBounded(ctx, p.id, kind, info, bound)
+	release, err = sched.AcquireBounded(ctx, id, kind, info, bound)
 	if concurrency.IsQueueFull(err) {
-		return nil, &concurrency.ErrProviderConcurrencyExhausted{Provider: p.id, Cap: p.sched.LaneCap(p.id, kind)}
+		return nil, &concurrency.ErrProviderConcurrencyExhausted{Provider: id, Cap: sched.LaneCap(id, kind)}
 	}
 	return release, err
 }

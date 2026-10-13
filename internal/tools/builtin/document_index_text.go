@@ -29,6 +29,7 @@ import (
 	"log"
 	"strings"
 
+	"github.com/denn-gubsky/loomcycle/internal/lanegate"
 	"github.com/denn-gubsky/loomcycle/internal/sqlmem"
 	"github.com/denn-gubsky/loomcycle/internal/store"
 )
@@ -303,7 +304,10 @@ func (d *Document) reindexSubtree(ctx context.Context, key sqlmem.ScopeKey, msco
 	}
 	// Detached from the caller's cancellation (the op has returned) but keeping its
 	// values — the run identity and tenant the store keys on.
-	bg := context.WithoutCancel(ctx)
+	//
+	// It is also no longer anybody's request: the embeddings it makes queue in
+	// the embedder's lane as background work, behind the calls of live runs.
+	bg := lanegate.WithBackground(context.WithoutCancel(ctx))
 	d.reindexJobs.Add(1)
 	owned = false // the goroutine owns the entry from here
 	go func() {

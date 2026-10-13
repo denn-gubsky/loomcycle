@@ -69,6 +69,7 @@ const backfillFailedKeyCap = 20
 // until `candidates` reaches zero. There is no cursor to persist, and therefore no
 // way for a crash to double-embed a row or skip one.
 func (s *Server) handleMemoryBackfillEmbeddings(w http.ResponseWriter, r *http.Request) {
+	r = sweepRequest(r)
 	if s.store == nil {
 		writeJSONError(w, http.StatusServiceUnavailable, "store_unavailable",
 			"store not configured; backfill requires a persistent store")

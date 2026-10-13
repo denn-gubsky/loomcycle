@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/denn-gubsky/loomcycle/internal/concurrency"
 	"github.com/denn-gubsky/loomcycle/internal/config"
 	"github.com/denn-gubsky/loomcycle/internal/decision"
 	"github.com/denn-gubsky/loomcycle/internal/providers"
@@ -94,7 +95,7 @@ models:
 
 func build(t *testing.T, cfg *config.Config) *decision.Service {
 	t.Helper()
-	s, err := Build(cfg)
+	s, err := Build(cfg, nil)
 	if err != nil {
 		t.Fatalf("Build: %v", err)
 	}
@@ -106,7 +107,7 @@ func build(t *testing.T, cfg *config.Config) *decision.Service {
 
 // TestBuild_NoBlockIsNoService — the capability is off unless declared.
 func TestBuild_NoBlockIsNoService(t *testing.T) {
-	if s, err := Build(load(t, newEndpoint(t), "")); err != nil || s != nil {
+	if s, err := Build(load(t, newEndpoint(t), ""), nil); err != nil || s != nil {
 		t.Errorf("Build = %v, %v; want nil, nil", s, err)
 	}
 }
@@ -211,15 +212,21 @@ func TestBuild_RefusesAProviderWithNoDecisionDriver(t *testing.T) {
 		Providers: map[string]config.ProviderConfig{"openai": {Driver: "openai", APIKeyEnv: "OPENAI_API_KEY"}},
 		Decision:  config.DecisionConfig{Default: "gpt-x", Provider: "openai"},
 	}
-	if _, err := Build(cfg); err == nil || !strings.Contains(err.Error(), "serves no decision models") {
+	if _, err := Build(cfg, nil); err == nil || !strings.Contains(err.Error(), "serves no decision models") {
 		t.Errorf("err = %v, want a refusal", err)
 	}
 }
 
-// TestBuild_TheBlocksTimeoutAndBoundReachTheDriver — timeout_ms and
-// max_concurrent are the block's to set: a slow model is cut off at the
-// timeout, and no more calls than the bound are at the provider at once.
-func TestBuild_TheBlocksTimeoutAndBoundReachTheDriver(t *testing.T) {
+// decisionLane is a scheduler whose only lane is ollama-local's decision lane.
+func decisionLane(n int) *concurrency.CallScheduler {
+	return concurrency.NewCallScheduler(map[string]concurrency.ProviderLanesConfig{
+		"ollama-local": {Lanes: map[string]concurrency.LaneConfig{config.ModelKindDecision: {MaxConcurrent: n}}},
+	})
+}
+
+// TestBuild_TheBlocksTimeoutReachesTheDriver — timeout_ms is the block's to
+// set: a slow model is cut off at it.
+func TestBuild_TheBlocksTimeoutReachesTheDriver(t *testing.T) {
 	e := newEndpoint(t)
 	e.delay = 300 * time.Millisecond
 	s := build(t, load(t, e, "decision:\n  default: decide\n  timeout_ms: 40\n"))
@@ -227,16 +234,25 @@ func TestBuild_TheBlocksTimeoutAndBoundReachTheDriver(t *testing.T) {
 	if decision.CodeOf(err) != decision.CodeTimeout {
 		t.Errorf("timeout_ms: 40 against a 300ms reply: err = %v, want a timeout", err)
 	}
+}
 
-	e = newEndpoint(t)
+// TestBuild_DecisionsAreCountedInTheProvidersDecisionLane — the block has no
+// cap of its own: the decisions in flight to a provider are bounded by that
+// provider's decision lane, which every model the block serves from it shares.
+func TestBuild_DecisionsAreCountedInTheProvidersDecisionLane(t *testing.T) {
+	e := newEndpoint(t)
 	e.delay = 30 * time.Millisecond
-	s = build(t, load(t, e, "decision:\n  default: decide\n  max_concurrent: 1\n"))
+	sched := decisionLane(1)
+	s, err := Build(load(t, e, "decision:\n  default: decide\n"), sched)
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
 	var wg sync.WaitGroup
 	for i := 0; i < 5; i++ {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			// decide and decide-deep are one provider, so they share its bound.
+			// decide and decide-deep are one provider, so they share its lane.
 			name := []string{"decide", "decide-deep"}[i%2]
 			if _, err := s.Decide(context.Background(), name, nil, oneQuestion); err != nil {
 				t.Errorf("Decide: %v", err)
@@ -246,5 +262,36 @@ func TestBuild_TheBlocksTimeoutAndBoundReachTheDriver(t *testing.T) {
 	wg.Wait()
 	if e.calls() != 5 || e.peak != 1 {
 		t.Errorf("%d calls, %d at once; want 5 calls, one at a time", e.calls(), e.peak)
+	}
+	st := sched.Stats()["ollama-local"].Lanes[config.ModelKindDecision]
+	if st.Grants != 5 || st.Active != 0 || st.Queued != 0 {
+		t.Errorf("decision lane = %+v, want 5 grants and nothing left in it", st)
+	}
+}
+
+// TestBuild_AQueuedDecisionIsNotFailedByTheTimeout — timeout_ms bounds how long
+// the model may take to answer, not how long a decision waits its turn. Four
+// decisions of 150ms each through a lane of one: the last waits 450ms for its
+// slot, well past the 300ms timeout, and is still answered.
+func TestBuild_AQueuedDecisionIsNotFailedByTheTimeout(t *testing.T) {
+	e := newEndpoint(t)
+	e.delay = 150 * time.Millisecond
+	s, err := Build(load(t, e, "decision:\n  default: decide\n  timeout_ms: 300\n"), decisionLane(1))
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	var wg sync.WaitGroup
+	for i := 0; i < 4; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if _, err := s.Decide(context.Background(), "", nil, oneQuestion); err != nil {
+				t.Errorf("a decision that only waited its turn failed: %v", err)
+			}
+		}()
+	}
+	wg.Wait()
+	if e.calls() != 4 || e.peak != 1 {
+		t.Errorf("%d calls, %d at once; want 4 calls, one at a time", e.calls(), e.peak)
 	}
 }

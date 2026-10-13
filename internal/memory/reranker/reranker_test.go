@@ -9,7 +9,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/denn-gubsky/loomcycle/internal/concurrency"
 	"github.com/denn-gubsky/loomcycle/internal/config"
+	"github.com/denn-gubsky/loomcycle/internal/lanegate"
 	"github.com/denn-gubsky/loomcycle/internal/memory"
 	"github.com/denn-gubsky/loomcycle/internal/providers"
 )
@@ -114,11 +116,11 @@ func TestModel_AProviderErrorFailsTheCall(t *testing.T) {
 
 // TestBuild_NoBlockMeansNoReranker and an undeclared provider fails loudly.
 func TestBuild_NoBlockMeansNoReranker(t *testing.T) {
-	m, err := Build(&config.Config{})
+	m, err := Build(&config.Config{}, nil)
 	if err != nil || m != nil {
 		t.Errorf("Build(no block) = %v, %v; want nil, nil", m, err)
 	}
-	_, err = Build(&config.Config{Memory: config.MemoryConfig{Reranker: config.RerankerConfig{Provider: "nope", Model: "m"}}})
+	_, err = Build(&config.Config{Memory: config.MemoryConfig{Reranker: config.RerankerConfig{Provider: "nope", Model: "m"}}}, nil)
 	if err == nil || !strings.Contains(err.Error(), `"nope" is not declared`) {
 		t.Errorf("undeclared provider: err = %v", err)
 	}
@@ -186,12 +188,16 @@ func TestModel_AParentCancellationIsNotATimeout(t *testing.T) {
 	}
 }
 
-// TestModel_ConcurrencyIsBoundedAndAWaitIsATimeout — with max_concurrent 1 a
-// second rerank waits for the first; one that cannot get a slot before its own
+// TestModel_ARerankWaitsInItsProvidersChatLaneAndAWaitIsATimeout — the
+// reranker has no cap of its own: with its provider's chat lane at 1 a second
+// rerank waits for the first, and one that cannot get a slot before its own
 // timeout never reaches the provider and reports a timeout.
-func TestModel_ConcurrencyIsBoundedAndAWaitIsATimeout(t *testing.T) {
+func TestModel_ARerankWaitsInItsProvidersChatLaneAndAWaitIsATimeout(t *testing.T) {
 	p := &scriptedStream{hang: true}
-	m := New(p, config.RerankerConfig{Provider: "p", Model: "m", TimeoutMs: 300, MaxConcurrent: 1})
+	sched := concurrency.NewCallScheduler(map[string]concurrency.ProviderLanesConfig{
+		"p": {Lanes: map[string]concurrency.LaneConfig{config.ModelKindChat: {MaxConcurrent: 1}}},
+	})
+	m := New(lanegate.Wrap("p", p, sched), config.RerankerConfig{Provider: "p", Model: "m", TimeoutMs: 300})
 	first := make(chan struct{})
 	go func() { _, _ = m.Complete(context.Background(), "hold the slot"); close(first) }()
 	for p.calls.Load() == 0 {
@@ -206,4 +212,7 @@ func TestModel_ConcurrencyIsBoundedAndAWaitIsATimeout(t *testing.T) {
 		t.Errorf("provider saw %d calls, want 1 — the waiting rerank must not reach it", n)
 	}
 	<-first
+	if st := sched.Stats()["p"].Lanes[config.ModelKindChat]; st.Active != 0 || st.Queued != 0 {
+		t.Errorf("chat lane = %+v, want it empty once both reranks are over", st)
+	}
 }

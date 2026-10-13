@@ -381,7 +381,10 @@ channels:
 #     effort: low                            # thinking off on a hybrid local model
 #     timeout_ms: 30000                      # a slower rerank keeps search's own order
 #                                            # (on a GPU shared with other models, cover a reload)
-#     max_concurrent: 2                      # reranks in flight (default 4)
+#                                            # No cap of its own: a listwise rerank is a
+#                                            # chat call on its provider (max_concurrent /
+#                                            # lanes.chat), a decision rerank a decision
+#                                            # call (lanes.decision). See providers: above.
 #     sources: [documents]                   # what it may reorder (the default). Add
 #                                            # facts, notes to rerank agents' `recall`
 #                                            # too: +15pp recall@5 on LoCoMo memory,
@@ -425,8 +428,11 @@ channels:
 #   models: [decide, decide-deep]  # optional; omitted = every alias tagged
 #                                  # `kind: decision` (the default is always allowed)
 #   provider: ollama-local         # only for entries that are plain model names
-#   timeout_ms: 30000              # one call, including its wait for a slot (default)
-#   max_concurrent: 4              # calls in flight per provider (default)
+#   timeout_ms: 30000              # one call (default); the wait for a slot in the
+#                                  # provider's decision lane is not counted
+# The block has no cap of its own. How many decisions are in flight to a
+# provider is that provider's decision lane:
+#   providers: { ollama-local: { lanes: { decision: { max_concurrent: 2 } } } }
 #
 # An agent asks them through the `Decision` tool: list it in the agent's
 # `tools:`. With no decision: block the tool is not offered to any agent (load
