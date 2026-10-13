@@ -925,6 +925,16 @@ func (s *Server) resumePausedRun(run store.Run) error {
 	// agent would resume with no volume policy at all. A top-level run's is its
 	// agent's own; a sub-run's is narrowed to its parent's, as it was live.
 	loopCtx = tools.WithVolumePolicy(loopCtx, s.resumedVolumePolicy(loopCtx, run, runCfg.Spawn, agentDef))
+	// Read-only ephemeral volumes: what the run started with, read from its
+	// record, or what its definition says now. Either is enough, so a
+	// definition that gained the setting during the pause applies, and one
+	// that lost it does not hand write access back. A sub-run with no spawn
+	// record at all cannot say what it started with, so it resumes
+	// read-only, as it resumes confined to no volume.
+	loopCtx = ephemeralReadOnlyFor(loopCtx, agentDef)
+	if runCfg.EphemeralReadOnly || (runCfg.Spawn == nil && isSubRun(run)) {
+		loopCtx = tools.WithEphemeralReadOnly(loopCtx)
+	}
 	// RFC AH Phase 2b: re-attach a fresh run-scoped ephemeral set, REHYDRATED
 	// from any ephemeral_volume_defs rows this run created before it was
 	// paused/snapshotted (the sweeper skips paused runs, so the rows + on-disk

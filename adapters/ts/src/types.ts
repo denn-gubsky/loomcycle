@@ -1505,6 +1505,10 @@ export interface RunSpec {
    *  `maxWallSeconds`: past it the run ends `cancelled` with
    *  `stop_reason: "wall_limit"`. Absent when the run has no such limit. */
   max_wall_seconds?: number;
+  /** The run started with its tree's ephemeral volumes read-only: its own
+   *  definition, or an ancestor's, says `ephemeral_volumes: "ro"`. A resume
+   *  restores it whatever the definition says by then. */
+  ephemeral_read_only?: boolean;
   review_ttl_seconds?: number;
   /** Which model serves the run: model / provider / tier / effort. */
   routing?: Record<string, unknown>;
@@ -4276,6 +4280,10 @@ export interface AgentDefOverlay {
    *  refused with `override_not_allowed`. Unset or `true` leaves them to the
    *  caller. A fork that does not send it keeps its parent's. */
   allow_overrides?: boolean;
+  /** `"ro"` gives the agent every ephemeral volume of its run read-only,
+   *  whatever mode the volume was created with, and the same to every agent
+   *  it spawns. The only value; a fork cannot clear it. */
+  ephemeral_volumes?: "ro";
   /** `"none"` makes every run of the agent a no-trace run: its content is
    *  delivered to the caller and stored nowhere. A fork that does not send it
    *  keeps its parent's, and `"default"` on a no-trace parent is refused. */

@@ -1724,6 +1724,16 @@ type AgentDef struct {
 	// not content: it is not part of content_sha256.
 	AllowOverrides *bool `yaml:"allow_overrides,omitempty"`
 
+	// EphemeralVolumes: "ro" gives this agent every ephemeral volume of its
+	// run read-only, whatever mode the volume was created with, and the same
+	// to every agent it spawns. The only value is "ro"; unset leaves a
+	// volume's own mode to decide.
+	//
+	// It lets a definition promise that it never writes to a run's scratch
+	// space, whoever spawns it and however the volume was made. Authority,
+	// not content: it is not part of content_sha256.
+	EphemeralVolumes string `yaml:"ephemeral_volumes,omitempty"`
+
 	// Retention: "none" makes every run of this agent a no-trace run: its
 	// content is delivered to the caller and stored nowhere — events are kept
 	// as markers, the result and error as a class. Unset (or "default")
@@ -6356,6 +6366,7 @@ func agentFromDiscovered(d *agents.Agent) AgentDef {
 		AgentDefScopes:   d.AgentDefScopes,
 		VolumeDefScopes:  d.VolumeDefScopes,
 		AllowOverrides:   d.AllowOverrides,
+		EphemeralVolumes: d.EphemeralVolumes,
 		Retention:        d.Retention,
 		EvaluationScopes: d.EvaluationScopes,
 		// F14: an MD-declared `interruption:` block now flows to config
@@ -6558,6 +6569,9 @@ func mergeAgentDef(base, override AgentDef) AgentDef {
 	if override.AllowOverrides != nil {
 		v := *override.AllowOverrides
 		out.AllowOverrides = &v
+	}
+	if override.EphemeralVolumes != "" {
+		out.EphemeralVolumes = override.EphemeralVolumes
 	}
 	if override.Retention != "" {
 		out.Retention = override.Retention
@@ -8073,6 +8087,9 @@ func validate(c *Config) error {
 		if _, err := store.ParseRetention(agent.Retention); err != nil {
 			return fmt.Errorf("agent %q: %w", name, err)
 		}
+		if err := ValidateEphemeralVolumes(agent.EphemeralVolumes); err != nil {
+			return fmt.Errorf("agent %q: %w", name, err)
+		}
 		// VolumeDef tool (RFC AH Phase 2a): validate volume_def_scopes
 		// entries. Closed set: "named:<volume-name>" / "any".
 		for i, sc := range agent.VolumeDefScopes {
@@ -8507,4 +8524,17 @@ func validateReplicaID(id string) error {
 		return fmt.Errorf("must match [A-Za-z0-9][A-Za-z0-9_-]{0,63} (got %q)", id)
 	}
 	return nil
+}
+
+// EphemeralVolumesReadOnly is the one value AgentDef.EphemeralVolumes takes.
+const EphemeralVolumesReadOnly = "ro"
+
+// ValidateEphemeralVolumes checks an agent's ephemeral_volumes setting: unset,
+// or "ro". There is no "rw": the setting only takes access away, and a value
+// that asked for it back would read as a grant the runtime does not make.
+func ValidateEphemeralVolumes(v string) error {
+	if v == "" || v == EphemeralVolumesReadOnly {
+		return nil
+	}
+	return fmt.Errorf("ephemeral_volumes: unknown value %q (the only value is %q; leave it unset for a volume's own mode)", v, EphemeralVolumesReadOnly)
 }

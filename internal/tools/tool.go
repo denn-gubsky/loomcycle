@@ -507,6 +507,28 @@ func (s *EphemeralVolumeSet) Has(name string) bool {
 	return ok
 }
 
+type ctxKeyEphemeralReadOnly struct{}
+
+// WithEphemeralReadOnly marks ctx so every ephemeral volume resolves
+// read-only for this run, whatever the volume's own mode. It is set for an
+// agent whose definition says `ephemeral_volumes: ro`, and reaches the agents
+// it spawns through the ctx chain.
+//
+// There is no call that clears it, which is what makes inheriting it correct:
+// a descendant of a run that gave up write access cannot get it back.
+func WithEphemeralReadOnly(ctx context.Context) context.Context {
+	if EphemeralReadOnly(ctx) {
+		return ctx
+	}
+	return context.WithValue(ctx, ctxKeyEphemeralReadOnly{}, true)
+}
+
+// EphemeralReadOnly reports whether this run gets ephemeral volumes read-only.
+func EphemeralReadOnly(ctx context.Context) bool {
+	v, _ := ctx.Value(ctxKeyEphemeralReadOnly{}).(bool)
+	return v
+}
+
 // WithEphemeralVolumes attaches the run-tree's ephemeral volume set to ctx.
 // nil set is a no-op (EphemeralVolumes then returns nil → no ephemeral
 // resolution, and the create op refuses with "no ephemeral set on ctx").

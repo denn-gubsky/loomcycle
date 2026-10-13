@@ -48,7 +48,10 @@ import (
 func resolveVolume(ctx context.Context, volumeName string) (root string, readOnly bool, name string, err error) {
 	if volumeName != "" {
 		if ref, ok := tools.EphemeralVolumes(ctx).Get(volumeName); ok {
-			return ref.Root, ref.ReadOnly, volumeName, nil
+			// Read-only when the volume is, or when this run was given
+			// ephemeral volumes read-only by its own or an ancestor's
+			// definition. Either is enough; nothing here widens.
+			return ref.Root, ref.ReadOnly || tools.EphemeralReadOnly(ctx), volumeName, nil
 		}
 	}
 

@@ -2352,6 +2352,10 @@ func applyAgentDefOverlay(base config.AgentDef, definition json.RawMessage) conf
 		AllowOverrides *bool `json:"allow_overrides,omitempty"`
 		// The version's retention mode, add-only for the same reason.
 		Retention string `json:"retention,omitempty"`
+		// The version's read-only setting for ephemeral volumes, add-only
+		// for the same reason: a spawn that pins a read-only version must
+		// not run it with write access because the active version has none.
+		EphemeralVolumes string `json:"ephemeral_volumes,omitempty"`
 	}
 	if err := json.Unmarshal(definition, &ov); err != nil {
 		log.Printf("agent_def overlay: malformed definition JSON, falling back to static: %v", err)
@@ -2426,6 +2430,9 @@ func applyAgentDefOverlay(base config.AgentDef, definition json.RawMessage) conf
 	}
 	if ov.Retention == store.RetentionNone {
 		out.Retention = store.RetentionNone
+	}
+	if ov.EphemeralVolumes == config.EphemeralVolumesReadOnly {
+		out.EphemeralVolumes = config.EphemeralVolumesReadOnly
 	}
 	return out
 }
@@ -3113,7 +3120,8 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 	// back on these values rather than on whatever the definition resolves to
 	// by then.
 	runCfg := runConfigRecord{
-		Sampling:          config.MergeSampling(agentDef.Sampling, in.Sampling),       // per-run wins per field
+		Sampling:          config.MergeSampling(agentDef.Sampling, in.Sampling), // per-run wins per field
+		EphemeralReadOnly: agentDef.EphemeralVolumes == config.EphemeralVolumesReadOnly,
 		ToolChoice:        config.MergeToolChoice(agentDef.ToolChoice, in.ToolChoice), // per-run replaces whole
 		OutputFormat:      config.MergeOutputFormat(agentDef.OutputFormat, in.OutputFormat),
 		Compaction:        config.MergeCompaction(agentDef.Compaction, in.Compaction), // per-run wins per field
@@ -3395,6 +3403,7 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 	// empty policy (the file tools fall back to the legacy jail Root);
 	// sub-agents inherit + narrow this via runSubAgent.
 	loopCtx = tools.WithVolumePolicy(loopCtx, s.volumePolicyForAgent(loopCtx, agentDef))
+	loopCtx = ephemeralReadOnlyFor(loopCtx, agentDef)
 	// RFC AH Phase 2b: a FRESH run-scoped ephemeral volume set, attached ONCE
 	// at this top-level start. Sub-agents inherit this SAME pointer via the
 	// ctx chain (runSubAgent must not re-attach it) — never shared across
@@ -5128,7 +5137,8 @@ func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {
 	// The run's own resolved configuration — merged once, persisted with the
 	// run, and restored on resume (see runConfigRecord).
 	runCfg := runConfigRecord{
-		Sampling:          config.MergeSampling(agentDef.Sampling, req.Sampling),       // per-run wins per field
+		Sampling:          config.MergeSampling(agentDef.Sampling, req.Sampling), // per-run wins per field
+		EphemeralReadOnly: agentDef.EphemeralVolumes == config.EphemeralVolumesReadOnly,
 		ToolChoice:        config.MergeToolChoice(agentDef.ToolChoice, req.ToolChoice), // per-run replaces whole
 		OutputFormat:      config.MergeOutputFormat(agentDef.OutputFormat, req.OutputFormat),
 		Compaction:        config.MergeCompaction(agentDef.Compaction, req.Compaction), // per-run wins per field
@@ -5427,6 +5437,7 @@ func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {
 	// empty policy (the file tools fall back to the legacy jail Root);
 	// sub-agents inherit + narrow this via runSubAgent.
 	loopCtx = tools.WithVolumePolicy(loopCtx, s.volumePolicyForAgent(loopCtx, agentDef))
+	loopCtx = ephemeralReadOnlyFor(loopCtx, agentDef)
 	// RFC AH Phase 2b: fresh run-scoped ephemeral volume set (inherited by
 	// sub-agents via ctx; never shared across top-level runs).
 	// Registered under the tree's root, so a run of this tree that resume
@@ -6021,7 +6032,8 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 	// The continuation's own resolved configuration — merged once, persisted
 	// with the run, and restored on resume (see runConfigRecord).
 	runCfg := runConfigRecord{
-		Sampling:          config.MergeSampling(agentDef.Sampling, body.Sampling),       // per-run wins per field
+		Sampling:          config.MergeSampling(agentDef.Sampling, body.Sampling), // per-run wins per field
+		EphemeralReadOnly: agentDef.EphemeralVolumes == config.EphemeralVolumesReadOnly,
 		ToolChoice:        config.MergeToolChoice(agentDef.ToolChoice, body.ToolChoice), // per-run replaces whole
 		OutputFormat:      config.MergeOutputFormat(agentDef.OutputFormat, body.OutputFormat),
 		Compaction:        config.MergeCompaction(agentDef.Compaction, body.Compaction), // per-run wins per field
@@ -6233,6 +6245,7 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 	// empty policy (the file tools fall back to the legacy jail Root);
 	// sub-agents inherit + narrow this via runSubAgent.
 	loopCtx = tools.WithVolumePolicy(loopCtx, s.volumePolicyForAgent(loopCtx, agentDef))
+	loopCtx = ephemeralReadOnlyFor(loopCtx, agentDef)
 	// RFC AH Phase 2b: fresh run-scoped ephemeral volume set (inherited by
 	// sub-agents via ctx; never shared across top-level runs).
 	// Registered under the tree's root, so a run of this tree that resume
@@ -7944,6 +7957,8 @@ func (s *Server) prepareSubRunValues(ctx context.Context, name string, src nameS
 		// The parent's volume confinement and inherited fan-out width, both read
 		// off ctx below and never re-derivable once the parent's ctx is gone.
 		Spawn: spawnRecordOf(tools.VolumePolicy(ctx), tools.FanoutCap(ctx)),
+		// What the child runs with: its parent's, read off ctx, or its own.
+		EphemeralReadOnly: tools.EphemeralReadOnly(ctx) || def.EphemeralVolumes == config.EphemeralVolumesReadOnly,
 		// The version the child's NAME resolved to — under a def_id pin, the
 		// base the pinned version was laid over — so a resume rebuilds the same
 		// definition; the pin itself is AgentDefID on the row.
@@ -8341,6 +8356,10 @@ func (s *Server) prepareSubRunValues(ctx context.Context, name string, src nameS
 	// where both hold one the ro/rw axis resolves to the more restrictive.
 	// Mirrors the host-allowlist narrowing read from ctx just above (4376).
 	subCtx = tools.WithVolumePolicy(subCtx, s.childVolumePolicy(subCtx, tools.VolumePolicy(ctx), def))
+	// The child's own definition can take write access to ephemeral volumes
+	// away. What its parent gave up is already on subCtx, which derives from
+	// the parent's ctx, and nothing here gives it back.
+	subCtx = ephemeralReadOnlyFor(subCtx, def)
 	// RFC AH Phase 2b: the run-tree's ephemeral volume SET is deliberately NOT
 	// re-attached here — subCtx derives from the parent's ctx (via subRunCtx ←
 	// WithCancelCause(ctx)), so the SAME *EphemeralVolumeSet pointer flows down
@@ -10189,6 +10208,16 @@ func (s *Server) purgeEphemeralVolumesForRun(rootRunID string) {
 	if _, err := s.store.EphemeralVolumeDeleteByRun(bg, rootRunID); err != nil {
 		log.Printf("ephemeral inline purge: delete rows (run=%s): %v", rootRunID, err)
 	}
+}
+
+// ephemeralReadOnlyFor marks ctx when the agent's definition gives it
+// ephemeral volumes read-only. It never unmarks: an agent whose definition
+// does not say so keeps whatever its ancestors' did.
+func ephemeralReadOnlyFor(ctx context.Context, def config.AgentDef) context.Context {
+	if def.EphemeralVolumes == config.EphemeralVolumesReadOnly {
+		return tools.WithEphemeralReadOnly(ctx)
+	}
+	return ctx
 }
 
 // rehydrateEphemeralVolumes builds a run-scoped EphemeralVolumeSet from the

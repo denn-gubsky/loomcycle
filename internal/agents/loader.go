@@ -132,6 +132,9 @@ type Agent struct {
 	// AllowOverrides: false refuses every per-run override of this agent
 	// (see config.AgentDef.AllowOverrides). nil = allowed.
 	AllowOverrides *bool
+	// EphemeralVolumes: "ro" makes the run's ephemeral volumes read-only for
+	// this agent and its children (see config.AgentDef.EphemeralVolumes).
+	EphemeralVolumes string
 	// Retention: "none" makes the agent's runs no-trace (see
 	// config.AgentDef.Retention). "" = stored as usual.
 	Retention string
@@ -421,6 +424,7 @@ type frontmatter struct {
 	AgentDefScopes        []string                   `yaml:"agent_def_scopes"`
 	VolumeDefScopes       []string                   `yaml:"volume_def_scopes"`
 	AllowOverrides        *bool                      `yaml:"allow_overrides"`
+	EphemeralVolumes      string                     `yaml:"ephemeral_volumes"`
 	Retention             string                     `yaml:"retention"`
 	EvaluationScopes      []string                   `yaml:"evaluation_scopes"`
 	Interruption          AgentInterruptionACL       `yaml:"interruption"` // F14: round-trips like channels
@@ -506,6 +510,7 @@ func parseAgent(raw []byte) (*Agent, error) {
 	a.AgentDefScopes = fm.AgentDefScopes
 	a.VolumeDefScopes = fm.VolumeDefScopes
 	a.AllowOverrides = fm.AllowOverrides
+	a.EphemeralVolumes = fm.EphemeralVolumes
 	a.Retention = fm.Retention
 	a.EvaluationScopes = fm.EvaluationScopes
 	a.Interruption = fm.Interruption
