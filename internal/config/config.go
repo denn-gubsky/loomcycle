@@ -7189,7 +7189,9 @@ func validateAgentDefScope(sc string) error {
 //   - "any"
 //   - "named:<volume-name>" where <volume-name> is non-empty
 func validateVolumeDefScope(sc string) error {
-	if sc == "any" {
+	// "source:git" lets the agent create a volume from a git source. It is a
+	// grant of its own: "any" is about volume NAMES and does not imply it.
+	if sc == "any" || sc == "source:git" {
 		return nil
 	}
 	if strings.HasPrefix(sc, "named:") {
@@ -7199,7 +7201,7 @@ func validateVolumeDefScope(sc string) error {
 		}
 		return nil
 	}
-	return fmt.Errorf("unknown scope %q (want \"any\" or \"named:<volume-name>\")", sc)
+	return fmt.Errorf("unknown scope %q (want \"any\", \"named:<volume-name>\" or \"source:git\")", sc)
 }
 
 // validateAgentChannelEntry checks one publish/subscribe entry on

@@ -81,3 +81,16 @@ func TestEphemeralVolumes_ReachesTheAgentDefFromEverySourceAndRefusesAnUnknownVa
 		}
 	}
 }
+
+func TestValidateVolumeDefScope_KnowsTheGitSourceGrant(t *testing.T) {
+	for _, ok := range []string{"any", "named:repo", "source:git"} {
+		if err := validateVolumeDefScope(ok); err != nil {
+			t.Errorf("%q refused: %v", ok, err)
+		}
+	}
+	for _, bad := range []string{"source:", "source:svn", "source:git ", "named:", "git"} {
+		if err := validateVolumeDefScope(bad); err == nil {
+			t.Errorf("%q was accepted", bad)
+		}
+	}
+}

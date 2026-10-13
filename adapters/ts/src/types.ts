@@ -2686,6 +2686,22 @@ export type SubstrateToolInput = {
   // VolumeDef create takes a flat `mode` (ro|rw); the runtime derives the
   // path, so callers never supply one.
   mode?: VolumeMode;
+  // VolumeDef create, ephemeral only: fill the new volume with one commit of
+  // a git repository, fetched by the runtime. Works only from inside a run.
+  source?: {
+    git: {
+      /** https URL of the repository, on a host the operator allows. */
+      url: string;
+      /** The full 40-digit sha-1 of the commit. */
+      commit: string;
+      /** Where to find the commit when the server serves none by sha. */
+      ref?: string;
+      /** `$cred:<name>` or `$ghapp:<name>`; must be restricted to this URL. */
+      credential?: string;
+      /** May only lower the operator's limit. */
+      max_bytes?: number;
+    };
+  };
   [extra: string]: unknown;
 };
 

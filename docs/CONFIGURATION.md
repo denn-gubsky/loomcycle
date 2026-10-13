@@ -1668,8 +1668,45 @@ Create one with `ephemeral: true`:
 - **Mode, and who gets it.** Every agent of the run tree reaches an ephemeral volume by name and gets the mode it was created with. A sub-agent's own `volumes:` list neither grants nor narrows it. `Context op=self` lists the run's ephemeral volumes with their mode under `ephemeral_volumes`.
 - **Read-only, one way — `set_mode`.** `{"op": "set_mode", "name": "work", "mode": "ro"}` makes the volume read-only for the whole run tree at once: the caller, and sub-agents already running, are refused on their next `Write`, `Edit`, `NotebookEdit` or `Bash`; `Read`, `Grep` and `Glob` go on working. Nothing turns it back: `mode: "rw"` is refused. So it only takes access away, and any agent holding the `volume_def_scopes` grant for the name may call it. The mode is stored on the volume's row, so a resumed run keeps it. It also holds across replicas: before a write to an ephemeral volume that the local process believes writable, the row is read, and a volume another replica made read-only is refused here. That is one indexed read per write-type tool call on such a volume; reads cost nothing extra. If the row cannot be read the write is refused. Under `Bashbox` a write to a read-only volume appears to succeed inside one command and is not kept.
 - **Read-only for one agent — `ephemeral_volumes: ro`.** An agent whose definition says `ephemeral_volumes: ro` gets every ephemeral volume of its run read-only, whatever mode the volume has, and so does every agent it spawns. Other agents of the run are not affected, and the agent's own `volumes:` bindings keep their modes. It is a key of an agent in the config, of a markdown agent's frontmatter and of the `AgentDef` create and fork overlay. The only value is `ro`: a fork that does not send it keeps its parent's, none can clear it, and a setting in the operator's config holds over a tenant's own version of the agent. A child resumed after a pause keeps what it inherited. Use it for agents that read material others prepared, such as reviewers.
+- **From a git repository — `source`.** `{"op":"create","name":"repo","ephemeral":true,"mode":"ro","source":{"git":{"url":"https://github.com/acme/app","commit":"<40-digit sha>","credential":"$cred:repo-acme-app"}}}` fills the new volume with one commit, fetched inside the runtime. No agent holds the token: an agent that ran `git clone` through a shell tool would, and any text it read could ask it to print it. See §9d.2.1.
 - **Requires an active run.** `ephemeral: true` is refused outside a run (no root run id) and on a static-name or in-run-duplicate collision. Same `volume_def_scopes` gate as the persistent op.
 - **Crash backstop — `LOOMCYCLE_EPHEMERAL_VOLUME_SWEEP_MS`.** A singleton sweeper (default **60s**; `0` disables — the inline purge still runs) periodically purges ephemeral volumes whose owning run is terminal **and not paused/pausing** (a paused run is parked, not crashed — its volumes survive to be reused on resume; a resumed run rehydrates its in-memory set from the persisted rows). Cluster-gated, so one replica per tick does the work. Skipped when no `dynamic_root` is configured.
+
+### 9d.2.1 A volume from a git source
+
+Off unless the operator lists the hosts a repository may be fetched from.
+
+| Setting | Default | Meaning |
+|---|---|---|
+| `LOOMCYCLE_GIT_SOURCE_HOSTS` | unset: the feature is off | hosts, comma-separated, as `host` or `host:port` |
+| `LOOMCYCLE_GIT_SOURCE_MAX_BYTES` | 256 MiB | bytes fetched, and bytes written, per clone. A request's `max_bytes` may lower it |
+| `LOOMCYCLE_GIT_SOURCE_MAX_OBJECT_BYTES` | 64 MiB | the largest single object once inflated. **This is what bounds memory**: a pack is compressed, so the bytes fetched do not. A larger object fails the clone |
+| `LOOMCYCLE_GIT_SOURCE_MAX_FILE_BYTES` | 5 MiB | the largest file written. A larger one is left out and listed |
+| `LOOMCYCLE_GIT_SOURCE_MAX_FILES` | 100000 | files, links and submodule directories per clone |
+| `LOOMCYCLE_GIT_SOURCE_TIMEOUT_SECONDS` | 120 | time for one clone, waiting for a slot included |
+| `LOOMCYCLE_GIT_SOURCE_MAX_CONCURRENT` | 1 | clones running at once, per replica |
+
+**Who may ask.** An agent needs `VolumeDef` in its tools, the usual grant for the volume's name, and `source:git` in `volume_def_scopes`. `any` does not include `source:git`.
+
+**The credential.** `$cred:<name>` or `$ghapp:<name>`, resolved for the run. It must carry `allowed_urls` covering the repository's URL (`docs/CREDENTIALS.md`): the URL of a clone can come from untrusted text, and the restriction is what stops the token following it. A credential with no `allowed_urls` is refused. The token is sent as HTTP basic auth, with the user name `oauth2` for a host whose name has a `gitlab` label and `x-access-token` otherwise.
+
+**What is fetched and how.** One commit, by its full sha, over HTTPS only, through the same guard as the HTTP tools (no private or metadata address unless `LOOMCYCLE_HTTP_PRIVATE_HOST_ALLOWLIST` vouches for the host). No redirect is followed. Nothing from the repository runs: no hook, no filter, no LFS, no submodule fetch.
+
+**What is in the volume.**
+
+- Regular files, mode `0644`. No file is executable.
+- A symbolic link whose target is relative, has `..` only at its start and no more of them than the link is deep. Every other link is left out.
+- A submodule is an empty directory.
+- `_meta/omitted.json` lists what was left out and why: `symlink`, `submodule`, `too_large`, `unsafe_path`, `collision`.
+- No `.git`.
+
+**The answer** names the commit and gives counts. It carries no file content, and a failure is one word from a closed list; the remote's own text goes to the operator's log, with the repository's path removed.
+
+**All or nothing.** A clone that fails, or passes a limit, leaves no directory, no object store and no row, and the name can be used again.
+
+**Memory.** A clone holds its pack on disk and at most a few objects in memory, each no larger than the object limit. Budget a small multiple of `LOOMCYCLE_GIT_SOURCE_MAX_OBJECT_BYTES` per clone running at once.
+
+**Not yet:** a diff against a base commit, and narrowing a GitHub App token to the one repository.
 
 ### 9d.3 Volumes console tab (RFC AH Phase 4)
 

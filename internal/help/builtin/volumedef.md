@@ -56,6 +56,40 @@ the create fails instead of following it out of the dynamic root.
   top-level run. Requires an active run; refused if the name
   collides with a static volume or already exists in this run. There is no
   `delete`/`purge` for ephemeral volumes — lifetime is the run.
+- **create** `{name, ephemeral: true, mode, source: {git: {...}}}` — make a
+  run-scoped volume holding **one commit of a git repository**. The runtime
+  fetches it; you never see the token, and neither does any agent.
+
+  ```json
+  {"op": "create", "name": "repo", "ephemeral": true, "mode": "ro",
+   "source": {"git": {"url": "https://github.com/acme/app",
+                      "commit": "<40-digit sha>",
+                      "ref": "refs/heads/feature-x",
+                      "credential": "$cred:repo-acme-app"}}}
+  ```
+
+  - `url` — https only, on a host the operator allows.
+  - `commit` — the full 40-digit sha. The volume holds exactly this commit.
+  - `ref` — optional: where to look for the commit when the server will not
+    serve a commit by its sha.
+  - `credential` — `$cred:<name>` or `$ghapp:<name>`. It must be a credential
+    restricted (`allowed_urls`) to a URL covering this repository. Leave it
+    out for a public repository.
+  - `max_bytes` — optional; may only lower the operator's limit.
+  - `mode` applies to the agents of the run once the volume exists: with
+    `ro`, nobody can change what was fetched.
+
+  The answer gives the commit, the number of files and bytes written, and how
+  many paths were left out. It carries no file content. What was left out
+  (links that leave the tree, submodules, files over the size limit) is
+  listed in `_meta/omitted.json` in the volume; there is no `.git`.
+
+  It needs `source:git` in `volume_def_scopes` besides the grant for the
+  name. A failure is one word (`auth_failed`, `not_found`,
+  `commit_not_found`, `source_too_large`, `timeout`, `host_not_allowed`,
+  `credential_url_not_allowed`, `credential_unresolvable`,
+  `git_source_disabled`, `fetch_failed`) and leaves nothing behind: the name
+  can be used again.
 - **set_mode** `{name, mode: "ro"}` — make one of this run's **ephemeral**
   volumes read-only. It applies at once to every agent of the run, you
   included, and to sub-agents already running: their next `Write`, `Edit` or
@@ -82,7 +116,9 @@ the create fails instead of following it out of the dynamic root.
 
 The tool is default-deny. The operator grants it per-agent via
 `volume_def_scopes` in the agent yaml — `any` (create/delete/purge/set_mode
-any name) or `named:<volume>` (a single name). Without a grant,
+any name) or `named:<volume>` (a single name). `source:git` is a third value,
+needed in addition to create a volume from a git source; `any` does not
+include it. Without a grant,
 create/delete/purge/set_mode are refused; `get`/`list` are tenant-scoped
 reads.
 

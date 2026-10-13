@@ -141,6 +141,14 @@ type ghAppConfig struct {
 	BaseURL        string            `json:"base_url,omitempty"`     // GitHub Enterprise; default api.github.com
 }
 
+// TokenFromConfig mints (or returns the cached) installation access token for
+// an App config the caller has already resolved, for a consumer that is not a
+// header substitution: it resolved the credential itself, with its own rules
+// about where the token may go.
+func (m *GitHubAppMinter) TokenFromConfig(ctx context.Context, tenantID, cfgJSON string) (string, error) {
+	return m.token(ctx, tenantID, cfgJSON)
+}
+
 // token returns a valid installation access token for the given App config,
 // minting a new one (and caching it) when none is cached or the cached one is
 // within 5 minutes of expiry.
