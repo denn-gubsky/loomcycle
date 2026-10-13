@@ -37,7 +37,7 @@ providers:
 - **A change needs a restart**, as the memory reranker's block does.
 - **Concurrency is the provider's.** The block has no cap of its own: all decision calls to a provider — this block's and a `kind: decision` memory reranker's — share that provider's decision lane (`providers.<id>.lanes.decision.max_concurrent`), and the provider's `max_models_in_flight` counts a decision model beside its chat models. See [PROVIDERS.md](PROVIDERS.md#lanes-a-queue-per-kind-of-model).
 - **`timeout_ms` is one call.** A decision waiting for a slot in the lane has not been asked yet, and the wait is not counted.
-- **`decision.max_concurrent` was removed** (it defaulted to 4). A config that still sets it fails to load. Without a decision lane on the provider nothing bounds decisions in flight: set one for a local-model host.
+- **`decision.max_concurrent` was removed** (it defaulted to 4). A config that still sets it fails to load, naming the lane key that replaces it. Its bound stays as a floor: while the provider has no decision lane, decisions to it are held to 4 in flight. Set `providers.<id>.lanes.decision.max_concurrent` to choose your own number; it replaces the floor.
 
 ### Model kinds
 

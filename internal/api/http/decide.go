@@ -11,6 +11,7 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/auth"
 	"github.com/denn-gubsky/loomcycle/internal/connector"
 	"github.com/denn-gubsky/loomcycle/internal/decision"
+	"github.com/denn-gubsky/loomcycle/internal/lanegate"
 	"github.com/denn-gubsky/loomcycle/internal/providers"
 	"github.com/denn-gubsky/loomcycle/internal/runner"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
@@ -56,6 +57,11 @@ func (s *Server) decisionTool() *builtin.Decision {
 // It does not wait out a runtime pause, like the LLM gateway and unlike a new
 // run: a pause quiesces RUNS for a snapshot, and this call belongs to none.
 func (s *Server) Decision(ctx context.Context, input json.RawMessage) (connector.ToolResult, error) {
+	// A direct decision holds no run slot, so nothing else limits how many can
+	// wait on a busy provider: with provider_queue_depth of them already
+	// waiting, the next is refused instead of queueing. Set here, the one entry
+	// every transport's direct decision comes through.
+	ctx = lanegate.WithQueueBound(ctx, s.cfg().Concurrency.ProviderQueueDepthOrDefault())
 	tool := s.decisionTool()
 	if tool == nil {
 		// Answered by the tool itself (decision_not_configured), so a caller can

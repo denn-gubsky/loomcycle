@@ -66,6 +66,9 @@ type Provider struct {
 	inner providers.Provider
 	id    string
 	sched *concurrency.CallScheduler
+	// floor is this wrapper's built-in bound while no lane is configured for
+	// its provider (WrapWithFloor); nil for none.
+	floor *concurrency.Lane
 }
 
 // Wrap returns inner gated by sched under the provider id it is registered as
@@ -75,6 +78,14 @@ type Provider struct {
 // A nil sched gates nothing.
 func Wrap(id string, inner providers.Provider, sched *concurrency.CallScheduler) *Provider {
 	return &Provider{inner: inner, id: id, sched: sched}
+}
+
+// WrapWithFloor is Wrap for a SERVICE's own driver (the memory reranker): while
+// the operator has configured no chat lane for the provider, its calls are
+// bounded at FloorCap in flight instead of not at all. A registry provider is
+// never wrapped this way — an uncapped provider's chat calls stay uncapped.
+func WrapWithFloor(id string, inner providers.Provider, sched *concurrency.CallScheduler) *Provider {
+	return &Provider{inner: inner, id: id, sched: sched, floor: newFloor()}
 }
 
 // Unwrap returns the wrapped provider (providers.Unwrapper).
@@ -104,10 +115,10 @@ func (p *Provider) RunDone(runID string) {
 // A provider nobody capped is called directly: the driver's own channel is
 // returned and nothing is allocated.
 func (p *Provider) Call(ctx context.Context, req providers.Request) (<-chan providers.Event, error) {
-	if !p.sched.Gated(p.id, kind) {
+	if p.floor == nil && !p.sched.Gated(p.id, kind) {
 		return p.inner.Call(ctx, req)
 	}
-	release, err := acquire(ctx, p.sched, p.id, kind, providers.ModelIdentity(p.inner, req))
+	release, err := acquire(ctx, p.sched, p.floor, p.id, kind, providers.ModelIdentity(p.inner, req))
 	if err != nil {
 		return nil, err
 	}
@@ -143,7 +154,7 @@ func Hold(ctx context.Context, p providers.Provider, req providers.Request) (pro
 	if !ok || !lp.sched.Gated(lp.id, kind) {
 		return p, func() {}, nil
 	}
-	release, err := acquire(ctx, lp.sched, lp.id, kind, providers.ModelIdentity(lp.inner, req))
+	release, err := acquire(ctx, lp.sched, nil, lp.id, kind, providers.ModelIdentity(lp.inner, req))
 	if err != nil {
 		return nil, nil, err
 	}
@@ -168,7 +179,7 @@ func HoldLane(ctx context.Context, sched *concurrency.CallScheduler, id, kind, m
 	if !sched.Gated(id, kind) {
 		return ctx, func() {}, nil
 	}
-	release, err := acquire(ctx, sched, id, kind, model)
+	release, err := acquire(ctx, sched, nil, id, kind, model)
 	if err != nil {
 		return ctx, nil, err
 	}
@@ -186,8 +197,17 @@ func HoldLane(ctx context.Context, sched *concurrency.CallScheduler, id, kind, m
 // run carries none: it is a one-shot in the anonymous bucket.
 //
 // A ctx from HoldLane already holds this slot: nothing more is taken.
-func acquire(ctx context.Context, sched *concurrency.CallScheduler, id, kind, model string) (release func(), err error) {
+//
+// floor is the caller's built-in bound (see FloorCap), nil for none. It applies
+// only while the operator has configured NO lane for (id, kind): a configured
+// lane replaces it, so it never undercuts a cap the operator chose. With
+// neither, the call is not gated and the release does nothing.
+func acquire(ctx context.Context, sched *concurrency.CallScheduler, floor *concurrency.Lane, id, kind, model string) (release func(), err error) {
 	if held, _ := ctx.Value(heldKey{id, kind}).(bool); held {
+		return func() {}, nil
+	}
+	gated := sched.Gated(id, kind)
+	if !gated && floor == nil {
 		return func() {}, nil
 	}
 	meta, _ := providers.RunMetaFromContext(ctx)
@@ -207,6 +227,16 @@ func acquire(ctx context.Context, sched *concurrency.CallScheduler, id, kind, mo
 		defer held(false)
 	}
 	bound, bounded := ctx.Value(queueBoundKey{}).(int)
+	if !gated {
+		if !bounded {
+			return floor.Acquire(ctx, info)
+		}
+		release, err = floor.AcquireBounded(ctx, info, bound)
+		if concurrency.IsQueueFull(err) {
+			return nil, &concurrency.ErrProviderConcurrencyExhausted{Provider: id, Cap: FloorCap}
+		}
+		return release, err
+	}
 	if !bounded {
 		return sched.Acquire(ctx, id, kind, info)
 	}
@@ -215,6 +245,22 @@ func acquire(ctx context.Context, sched *concurrency.CallScheduler, id, kind, mo
 		return nil, &concurrency.ErrProviderConcurrencyExhausted{Provider: id, Cap: sched.LaneCap(id, kind)}
 	}
 	return release, err
+}
+
+// FloorCap is the built-in bound on a service's calls in flight when the
+// operator has configured no lane for them: decisions per provider, and reranks.
+//
+// These services had a private limit of this size before their calls moved to
+// lanes. A rerank is a prompt of several thousand tokens and they arrive per
+// SEARCH; a decision is asked per item being routed or judged. A fan-out of
+// agents sends dozens at once, and with no lane configured nothing else would
+// stop every one from reaching the provider together. A lane the operator
+// configures for that provider and kind replaces the floor entirely.
+const FloorCap = 4
+
+// newFloor builds the built-in bound for one service.
+func newFloor() *concurrency.Lane {
+	return concurrency.NewLane(concurrency.LaneConfig{MaxConcurrent: FloorCap})
 }
 
 // forward relays the driver's events to the consumer and releases the slot when

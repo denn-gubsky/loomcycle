@@ -46,10 +46,12 @@ type Model struct {
 	// prompt, and they arrive per SEARCH: a fan-out of agents, each searching
 	// several times a turn, sends many at once. The reranker makes its calls on
 	// a driver of its own (providerbuild.ServiceProvider), so Build wraps that
-	// driver in the provider's chat lane (lanegate.Wrap): the provider's
-	// max_concurrent counts a rerank like any other chat call, and there is no
-	// bound here. The wait for a slot is inside the rerank's timeout, and a
-	// rerank that times out waiting keeps search's order like any other timeout.
+	// driver in the provider's chat lane (lanegate.WrapWithFloor): the
+	// provider's max_concurrent counts a rerank like any other chat call. While
+	// the operator has set no cap on that provider, the wrapper's built-in floor
+	// (lanegate.FloorCap in flight) keeps a fan-out from sending every rerank at
+	// once. The wait for a slot is inside the rerank's timeout, and a rerank
+	// that times out waiting keeps search's order like any other timeout.
 
 	// OnUsage records the call's tokens against the run whose context it is. The
 	// rerank is spent on that run's behalf, so it belongs in that run's cost.
@@ -112,8 +114,9 @@ func Build(cfg *config.Config, sched *concurrency.CallScheduler) (*Model, error)
 		return nil, err
 	}
 	rc.Provider, rc.Model = provider, model
-	// Under the id the block RESOLVED to: an alias may have supplied it.
-	return New(lanegate.Wrap(provider, p, sched), rc), nil
+	// Under the id the block RESOLVED to: an alias may have supplied it. With a
+	// floor: while that provider has no chat lane, reranks are still bounded.
+	return New(lanegate.WrapWithFloor(provider, p, sched), rc), nil
 }
 
 // New wraps an already-constructed provider with the reranker settings. Build
