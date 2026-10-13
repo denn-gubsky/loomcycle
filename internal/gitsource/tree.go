@@ -35,7 +35,9 @@ type Omitted struct {
 type TreeLimits struct {
 	// MaxBytes bounds the total size of the files written. Required.
 	MaxBytes int64
-	// MaxFiles bounds how many files and links are written. Required.
+	// MaxFiles bounds how many files, links and submodule directories are
+	// written. Required. With the depth limit on a path it also bounds how
+	// many directories exist when the tree is done.
 	MaxFiles int
 	// MaxFileBytes is the largest single file written; a larger one is
 	// omitted, not an error. Required.
@@ -88,6 +90,11 @@ func (f *Fetched) WriteTree(ctx context.Context, dest string, lim TreeLimits) (T
 	var res TreeResult
 	if lim.MaxBytes <= 0 || lim.MaxFiles <= 0 || lim.MaxFileBytes <= 0 {
 		return res, fmt.Errorf("%w: tree limits are required", ErrInvalidRequest)
+	}
+	// The object store must not be inside the tree: a reader of the tree
+	// would find git's files in it.
+	if within(f.storeDir, dest) {
+		return res, fmt.Errorf("%w: the object store is inside the destination directory", ErrInvalidRequest)
 	}
 	entries, err := os.ReadDir(dest)
 	if err != nil {
@@ -151,9 +158,15 @@ func (f *Fetched) WriteTree(ctx context.Context, dest string, lim TreeLimits) (T
 		}
 		switch e.Mode {
 		case filemode.Submodule:
+			// It makes a directory, so it counts: a commit of nothing but
+			// submodule entries must not be a way past the file limit.
+			if res.Files >= lim.MaxFiles {
+				return res, fmt.Errorf("%w: more than %d files", ErrTooLarge, lim.MaxFiles)
+			}
 			if err := root.MkdirAll(filepath.FromSlash(name), 0o755); err != nil {
 				return res, fmt.Errorf("%w: %s: %v", ErrFetchFailed, name, err)
 			}
+			res.Files++
 			omit(name, ReasonSubmodule, 0)
 			continue
 		case filemode.Regular, filemode.Executable, filemode.Deprecated, filemode.Symlink:
@@ -228,13 +241,30 @@ func (f *Fetched) WriteTree(ctx context.Context, dest string, lim TreeLimits) (T
 		if err != nil {
 			continue // dangling (its target was omitted): it leads nowhere
 		}
-		if rel, rerr := filepath.Rel(realRoot, resolved); rerr != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
-			_ = os.Remove(full)
+		if !within(resolved, realRoot) {
+			_ = root.Remove(filepath.FromSlash(name))
 			res.Files--
 			omit(name, ReasonSymlink, 0)
 		}
 	}
 	return res, nil
+}
+
+// Limits on one path. A file brings its directories with it, so a path of a
+// thousand segments would be a thousand directories for one counted file.
+const (
+	maxPathLength = 4096
+	maxPathDepth  = 64
+)
+
+// within reports whether p is dir or inside it. Both are cleaned; neither is
+// resolved.
+func within(p, dir string) bool {
+	if p == "" || dir == "" {
+		return false
+	}
+	rel, err := filepath.Rel(filepath.Clean(dir), filepath.Clean(p))
+	return err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
 }
 
 // maxLinkTarget is the longest link target read: a real one is a short path.
@@ -261,7 +291,7 @@ func readLinkTarget(blob *object.Blob) (string, bool) {
 // any letter case, and no character that means something else on some file
 // system (a backslash, a colon, a control character).
 func safeRelPath(p string) bool {
-	if p == "" || strings.HasPrefix(p, "/") {
+	if p == "" || strings.HasPrefix(p, "/") || len(p) > maxPathLength || strings.Count(p, "/") >= maxPathDepth {
 		return false
 	}
 	for _, r := range p {

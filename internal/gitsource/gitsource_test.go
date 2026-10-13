@@ -1,14 +1,19 @@
 package gitsource
 
 import (
+	"bytes"
+	"compress/zlib"
 	"context"
+	"encoding/binary"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/cgi"
 	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -63,6 +68,8 @@ type fixture struct {
 	old       string // the first commit: not the tip of any ref
 	head      string // the tip of refs/heads/main
 	requests  *atomic.Int64
+	work      string        // the working copy the served repository was cloned from
+	bare      string        // the served repository
 	sawAuth   *atomic.Value // the last Authorization header the server saw
 }
 
@@ -137,7 +144,7 @@ func newFixture(t *testing.T, requireAuth, bySHA bool) *fixture {
 		run(t, bare, "config", "uploadpack.allowTipSHA1InWant", "false")
 	}
 
-	f := &fixture{old: old, head: head, requests: new(atomic.Int64), sawAuth: new(atomic.Value)}
+	f := &fixture{old: old, head: head, work: work, bare: bare, requests: new(atomic.Int64), sawAuth: new(atomic.Value)}
 	git := &cgi.Handler{
 		Path: backend,
 		Env: []string{
@@ -170,7 +177,7 @@ func (f *fixture) request(t *testing.T, commit string) Request {
 	return Request{
 		URL: f.url, Commit: commit, Transport: f.transport,
 		StoreDir:      filepath.Join(t.TempDir(), "store"),
-		MaxFetchBytes: 16 << 20,
+		MaxFetchBytes: 16 << 20, MaxObjectBytes: 1 << 20,
 	}
 }
 
@@ -240,8 +247,8 @@ func TestFetchAndWriteTree_TheCommitAsFilesAndNothingElse(t *testing.T) {
 	if entries, err := os.ReadDir(filepath.Join(dest, "vendor/lib")); err != nil || len(entries) != 0 {
 		t.Errorf("vendor/lib: %v entries (err %v), want an empty directory", len(entries), err)
 	}
-	// 3 files + 3 links.
-	if res.Files != 6 || res.Bytes != int64(len("readme\n")+len("package a\n")+len("#!/bin/sh\necho hi\n")) {
+	// 3 files + 3 links + the submodule's directory.
+	if res.Files != 7 || res.Bytes != int64(len("readme\n")+len("package a\n")+len("#!/bin/sh\necho hi\n")) {
 		t.Errorf("result = %d files, %d bytes", res.Files, res.Bytes)
 	}
 	// Nothing of git's is in the tree, and every link resolves inside it.
@@ -449,7 +456,7 @@ func TestFetch_ARedirectIsNotFollowedAndTheTokenStaysHome(t *testing.T) {
 		// One transport that trusts both test servers.
 		Transport:     trustBoth(t, redirecting, elsewhere),
 		StoreDir:      filepath.Join(t.TempDir(), "store"),
-		MaxFetchBytes: 1 << 20,
+		MaxFetchBytes: 1 << 20, MaxObjectBytes: 1 << 20,
 	}
 	if _, err := Fetch(context.Background(), req); err == nil {
 		t.Fatal("a fetch through a redirect succeeded")
@@ -542,7 +549,7 @@ func TestWriteTree_LimitsAreErrorsAndTheDestinationMustBeEmpty(t *testing.T) {
 }
 
 func TestRequestValidate_RefusesWhatWouldMisleadBeforeAnyNetwork(t *testing.T) {
-	good := Request{URL: "https://git.example/acme/app", Commit: strings.Repeat("a", 40), StoreDir: "/tmp/x", MaxFetchBytes: 1,
+	good := Request{URL: "https://git.example/acme/app", Commit: strings.Repeat("a", 40), StoreDir: "/tmp/x", MaxFetchBytes: 1, MaxObjectBytes: 1,
 		Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
 			t.Error("a refused request reached the network")
 			return nil, errors.New("no")
@@ -555,6 +562,12 @@ func TestRequestValidate_RefusesWhatWouldMisleadBeforeAnyNetwork(t *testing.T) {
 		"ssh":                func(r *Request) { r.URL = "ssh://git@git.example/acme/app" },
 		"a token in the URL": func(r *Request) { r.URL = "https://tok@git.example/acme/app" },
 		"a query":            func(r *Request) { r.URL = "https://git.example/acme/app?x=1" },
+		"an encoded path":    func(r *Request) { r.URL = "https://git.example/acme/%61pp" },
+		"a backslash":        func(r *Request) { r.URL = "https://git.example\\@evil.example/acme/app" },
+		"a space":            func(r *Request) { r.URL = "https://git.example/acme/app x" },
+		"a newline":          func(r *Request) { r.URL = "https://git.example/acme/app\n" },
+		"a sha-256":          func(r *Request) { r.Commit = strings.Repeat("a", 64) },
+		"no object limit":    func(r *Request) { r.MaxObjectBytes = 0 },
 		"a short sha":        func(r *Request) { r.Commit = "abc123" },
 		"an upper-case sha":  func(r *Request) { r.Commit = strings.Repeat("A", 40) },
 		"a branch name":      func(r *Request) { r.Commit = "main" },
@@ -609,6 +622,9 @@ func TestSafeRelPath(t *testing.T) {
 		"": false, "/abs": false, "a//b": false, "a/./b": false, "a/../b": false, "..": false,
 		".git/config": false, "a/.git/config": false, "a/.GIT/x": false, ".git": false, ".git./config": false, ".git /config": false,
 		"a\\b": false, "a:b": false, "a\nb": false, "a\x00b": false, "a/...": false,
+		strings.Repeat("d/", maxPathDepth-1) + "f": true,
+		strings.Repeat("d/", maxPathDepth) + "f":   false, // a directory per segment, for one counted file
+		strings.Repeat("n", maxPathLength+1):       false,
 	} {
 		if got := safeRelPath(p); got != want {
 			t.Errorf("safeRelPath(%q) = %v, want %v", p, got, want)
@@ -619,5 +635,178 @@ func TestSafeRelPath(t *testing.T) {
 func TestClass_IsOneOfTheClosedList(t *testing.T) {
 	if got := Class(errors.New("anything else")); got != "fetch_failed" {
 		t.Errorf("an unknown error is class %q, want fetch_failed", got)
+	}
+}
+
+// commit adds one file to the served repository as a new commit on main and
+// returns its sha.
+func (f *fixture) commit(t *testing.T, name string, content []byte) string {
+	t.Helper()
+	if err := os.WriteFile(filepath.Join(f.work, name), content, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	run(t, f.work, "add", name)
+	run(t, f.work, "commit", "-q", "-m", "add "+name)
+	run(t, f.work, "push", "-q", f.bare, "HEAD:refs/heads/main")
+	return run(t, f.work, "rev-parse", "HEAD")
+}
+
+// A pack is compressed, so a limit on the bytes fetched says nothing about
+// what they become: 64 MiB of zeros travels as about 64 KiB. Before the pack
+// was checked on arrival the library inflated such an object whole into
+// memory (600 MiB for a 600 KiB fetch, measured). It must fail the fetch,
+// and without the memory.
+func TestFetch_AnObjectThatInflatesPastTheLimitFailsWithoutBeingInflated(t *testing.T) {
+	f := newFixture(t, false, true)
+	const bomb = 64 << 20
+	head := f.commit(t, "zeros.bin", make([]byte, bomb))
+
+	req := f.request(t, head) // MaxObjectBytes is 1 MiB, MaxFetchBytes 16 MiB
+	var before, after runtime.MemStats
+	runtime.ReadMemStats(&before)
+	_, err := Fetch(context.Background(), req)
+	runtime.ReadMemStats(&after)
+
+	if !errors.Is(err, ErrTooLarge) || Class(err) != "source_too_large" {
+		t.Fatalf("err = %v (class %s), want source_too_large", err, Class(err))
+	}
+	if grew := after.TotalAlloc - before.TotalAlloc; grew > bomb/4 {
+		t.Errorf("the fetch allocated %d MiB on the way to refusing a %d MiB object", grew>>20, bomb>>20)
+	}
+	if _, err := os.Stat(req.StoreDir); !os.IsNotExist(err) {
+		t.Error("the refused fetch left its object store behind")
+	}
+
+	// The same commit with room for the object is fetched: it was the
+	// object's size that was refused, and the fetch itself was small.
+	roomy := f.request(t, head)
+	roomy.MaxObjectBytes = 2 * bomb
+	got, err := Fetch(context.Background(), roomy)
+	if err != nil {
+		t.Fatalf("with room for the object: %v", err)
+	}
+	defer got.Close()
+	if got.FetchedBytes > 4<<20 {
+		t.Errorf("the fetch read %d bytes; the test expects a small pack for a large object", got.FetchedBytes)
+	}
+}
+
+// packOf builds a pack holding one object: its type, the length its header
+// declares, and its (compressed) body.
+func packOf(t *testing.T, objType byte, declared uint64, body []byte) []byte {
+	t.Helper()
+	var b bytes.Buffer
+	b.WriteString("PACK")
+	_ = binary.Write(&b, binary.BigEndian, uint32(2))
+	_ = binary.Write(&b, binary.BigEndian, uint32(1))
+	// The object header: 3 bits of type and the length, 4 bits then 7 at a time.
+	first := objType<<4 | byte(declared&0x0f)
+	declared >>= 4
+	for declared > 0 {
+		b.WriteByte(first | 0x80)
+		first = byte(declared & 0x7f)
+		declared >>= 7
+	}
+	b.WriteByte(first)
+	if objType == 7 { // a delta against an object named by its sha
+		b.Write(make([]byte, 20))
+	}
+	z := zlib.NewWriter(&b)
+	_, _ = z.Write(body)
+	_ = z.Close()
+	b.Write(make([]byte, 20)) // the pack's checksum, not read by the check
+	return b.Bytes()
+}
+
+func varint(n uint64) []byte {
+	var out []byte
+	for {
+		c := byte(n & 0x7f)
+		n >>= 7
+		if n == 0 {
+			return append(out, c)
+		}
+		out = append(out, c|0x80)
+	}
+}
+
+// The two ways a few bytes name a huge object: a header that declares it,
+// and a delta whose instructions build it.
+func TestCheckPack_RefusesAnObjectDeclaredOrBuiltPastTheLimit(t *testing.T) {
+	const limit = 1 << 20
+	small := packOf(t, 3, 5, []byte("hello")) // a blob of 5 bytes
+	if err := checkPack(bytes.NewReader(small), limit); err != nil {
+		t.Fatalf("a small object: %v", err)
+	}
+	declared := packOf(t, 3, 1<<40, []byte("hello")) // a blob that says it is a terabyte
+	if err := checkPack(bytes.NewReader(declared), limit); !errors.Is(err, errObjectTooLarge) {
+		t.Errorf("a header declaring a terabyte: %v, want the refusal", err)
+	}
+	// A delta of a dozen bytes whose own header says the result is a terabyte.
+	instr := append(append(varint(10), varint(1<<40)...), 0x01, 'x')
+	delta := packOf(t, 7, uint64(len(instr)), instr)
+	if err := checkPack(bytes.NewReader(delta), limit); !errors.Is(err, errObjectTooLarge) {
+		t.Errorf("a delta that builds a terabyte: %v, want the refusal", err)
+	}
+	// The same delta building something small passes.
+	fine := append(append(varint(10), varint(100)...), 0x01, 'x')
+	if err := checkPack(bytes.NewReader(packOf(t, 7, uint64(len(fine)), fine)), limit); err != nil {
+		t.Errorf("a delta that builds 100 bytes: %v", err)
+	}
+	if err := checkPack(bytes.NewReader([]byte("not a pack")), limit); err == nil || errors.Is(err, errObjectTooLarge) {
+		t.Errorf("garbage: %v, want an error that is not the size refusal", err)
+	}
+}
+
+func TestDeltaResultSize(t *testing.T) {
+	for _, want := range []uint64{0, 1, 127, 128, 300, 1 << 20, 1 << 40} {
+		b := append(varint(12345), varint(want)...)
+		if got, ok := deltaResultSize(b); !ok || uint64(got) != want {
+			t.Errorf("deltaResultSize(...%d) = %d, %v", want, got, ok)
+		}
+	}
+	for _, bad := range [][]byte{nil, {0x80}, {0x05}, {0x05, 0x80}} {
+		if _, ok := deltaResultSize(bad); ok {
+			t.Errorf("deltaResultSize(%v) read a size from a cut-off header", bad)
+		}
+	}
+}
+
+// The object store may not sit inside the tree it is written to.
+func TestWriteTree_RefusesAStoreInsideTheDestination(t *testing.T) {
+	f := newFixture(t, false, true)
+	dest := t.TempDir()
+	req := f.request(t, f.head)
+	req.StoreDir = filepath.Join(dest, ".store")
+	got, err := Fetch(context.Background(), req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer got.Close()
+	if _, err := got.WriteTree(context.Background(), dest, limits); !errors.Is(err, ErrInvalidRequest) {
+		t.Errorf("err = %v, want invalid_request", err)
+	}
+}
+
+// A submodule entry makes a directory, so it counts toward the file limit.
+func TestWriteTree_SubmoduleDirectoriesCountTowardTheFileLimit(t *testing.T) {
+	f := newFixture(t, false, true)
+	for i := 0; i < 5; i++ {
+		run(t, f.work, "update-index", "--add", "--cacheinfo", fmt.Sprintf("160000,%s,mods/m%d", f.old, i))
+	}
+	run(t, f.work, "commit", "-q", "-m", "more submodules")
+	run(t, f.work, "push", "-q", f.bare, "HEAD:refs/heads/main")
+	got, err := Fetch(context.Background(), f.request(t, run(t, f.work, "rev-parse", "HEAD")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer got.Close()
+	// 3 files, 3 links and 6 submodule directories are 12; a limit of 10 is passed.
+	tight := TreeLimits{MaxBytes: 1 << 20, MaxFiles: 10, MaxFileBytes: 1000}
+	if _, err := got.WriteTree(context.Background(), t.TempDir(), tight); !errors.Is(err, ErrTooLarge) {
+		t.Errorf("err = %v, want source_too_large", err)
+	}
+	if _, err := got.WriteTree(context.Background(), t.TempDir(), TreeLimits{MaxBytes: 1 << 20, MaxFiles: 12, MaxFileBytes: 1000}); err != nil {
+		t.Errorf("at exactly the limit: %v", err)
 	}
 }

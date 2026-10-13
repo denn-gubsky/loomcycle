@@ -29,6 +29,9 @@ type call struct {
 	max  int64
 	read atomic.Int64
 	over atomic.Bool
+	// packRefused points at the store's flag for a pack turned away over an
+	// object's size (packguard.go).
+	packRefused *atomic.Bool
 }
 
 var errOverLimit = errors.New("gitsource: fetch passed its byte limit")

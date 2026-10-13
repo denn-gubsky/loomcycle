@@ -33,13 +33,17 @@ import (
 	"os"
 	"regexp"
 	"strings"
+	"sync/atomic"
 
+	"github.com/go-git/go-billy/v5/osfs"
 	git "github.com/go-git/go-git/v5"
 	"github.com/go-git/go-git/v5/config"
 	"github.com/go-git/go-git/v5/plumbing"
+	"github.com/go-git/go-git/v5/plumbing/cache"
 	"github.com/go-git/go-git/v5/plumbing/object"
 	"github.com/go-git/go-git/v5/plumbing/transport"
 	githttp "github.com/go-git/go-git/v5/plumbing/transport/http"
+	"github.com/go-git/go-git/v5/storage/filesystem"
 )
 
 // The classes of failure a caller may report. They are a closed list so that
@@ -70,7 +74,9 @@ func Class(err error) string {
 type Request struct {
 	// URL is the repository: https only, no user or password, no query.
 	URL string
-	// Commit is the full sha (40 or 64 hex) of the commit to fetch.
+	// Commit is the full sha-1 of the commit to fetch: 40 lower-case hex
+	// digits. A sha-256 repository is not supported by the library, and a
+	// longer name must not be accepted here only to be cut short there.
 	Commit string
 	// Ref is where to look for Commit when the server will not serve a
 	// commit by its sha ("refs/heads/x"). Optional.
@@ -87,6 +93,12 @@ type Request struct {
 	Transport http.RoundTripper
 	// MaxFetchBytes bounds the response bytes of the whole fetch. Required.
 	MaxFetchBytes int64
+	// MaxObjectBytes bounds the size of any one object once inflated.
+	// Required. It is what bounds memory: fetched bytes do not, because a
+	// pack is compressed and the library holds each object whole while it
+	// indexes one. A pack holding a larger object fails the fetch
+	// (ErrTooLarge); it is not possible to skip just that object.
+	MaxObjectBytes int64
 	// MaxHistory bounds how many commits deep the fallback by Ref looks for
 	// Commit. Zero means 512.
 	MaxHistory int
@@ -113,13 +125,21 @@ func (f *Fetched) Close() error {
 	return os.RemoveAll(dir)
 }
 
-var shaRe = regexp.MustCompile(`^(?:[0-9a-f]{40}|[0-9a-f]{64})$`)
+var shaRe = regexp.MustCompile(`^[0-9a-f]{40}$`)
 
 // validate checks a request without touching the network and returns the
 // repository's host.
 func (r Request) validate() (host string, err error) {
 	bad := func(format string, a ...any) (string, error) {
 		return "", fmt.Errorf("%w: "+format, append([]any{ErrInvalidRequest}, a...)...)
+	}
+	// The URL is checked here and then used, as text, by the library. So
+	// only text that every URL parser reads the same way is let through:
+	// nothing encoded, no backslash, no space or control character.
+	for _, c := range r.URL {
+		if c <= 0x20 || c == 0x7f || c == '\\' || c == '%' {
+			return bad("the repository URL has a space, a control character, a backslash or a percent-encoding")
+		}
 	}
 	u, perr := url.Parse(r.URL)
 	if perr != nil || u.Scheme != "https" || u.Host == "" {
@@ -132,13 +152,13 @@ func (r Request) validate() (host string, err error) {
 		return bad("the repository URL must not carry a query or a fragment")
 	}
 	if !shaRe.MatchString(r.Commit) {
-		return bad("commit must be a full lower-case sha")
+		return bad("commit must be a full sha-1: 40 lower-case hex digits")
 	}
 	if r.Ref != "" && (!strings.HasPrefix(r.Ref, "refs/") || strings.ContainsAny(r.Ref, " :^~?*[\\\x00") || strings.Contains(r.Ref, "..")) {
 		return bad("ref must be a full ref name such as refs/heads/main")
 	}
-	if r.StoreDir == "" || r.Transport == nil || r.MaxFetchBytes <= 0 {
-		return bad("a store directory, a transport and a fetch limit are required")
+	if r.StoreDir == "" || r.Transport == nil || r.MaxFetchBytes <= 0 || r.MaxObjectBytes <= 0 {
+		return bad("a store directory, a transport, a fetch limit and an object limit are required")
 	}
 	return strings.ToLower(u.Host), nil
 }
@@ -156,7 +176,7 @@ func Fetch(ctx context.Context, req Request) (_ *Fetched, err error) {
 		return nil, err
 	}
 	installTransport()
-	st := &call{rt: req.Transport, host: host, max: req.MaxFetchBytes}
+	st := &call{rt: req.Transport, host: host, max: req.MaxFetchBytes, packRefused: new(atomic.Bool)}
 	ctx = context.WithValue(ctx, callKey{}, st)
 
 	if err := os.MkdirAll(req.StoreDir, 0o700); err != nil {
@@ -167,7 +187,19 @@ func Fetch(ctx context.Context, req Request) (_ *Fetched, err error) {
 			_ = os.RemoveAll(req.StoreDir)
 		}
 	}()
-	repo, err := git.PlainInit(req.StoreDir, true)
+	if err := os.MkdirAll(spoolDirFor(req.StoreDir), 0o700); err != nil {
+		return nil, fmt.Errorf("%w: store directory: %v", ErrFetchFailed, err)
+	}
+	// The store checks every pack before it takes it (packguard.go), and
+	// reads objects over a megabyte as streams, not into memory.
+	store := &guardedStorage{
+		Storage: filesystem.NewStorageWithOptions(osfs.New(req.StoreDir), cache.NewObjectLRUDefault(),
+			filesystem.Options{LargeObjectThreshold: 1 << 20}),
+		spoolDir:  spoolDirFor(req.StoreDir),
+		maxObject: req.MaxObjectBytes,
+	}
+	st.packRefused = &store.refused
+	repo, err := git.Init(store, nil)
 	if err != nil {
 		return nil, fmt.Errorf("%w: init store: %v", ErrFetchFailed, err)
 	}
@@ -239,6 +271,9 @@ func Fetch(ctx context.Context, req Request) (_ *Fetched, err error) {
 	if st.over.Load() {
 		return nil, fmt.Errorf("%w: the fetch passed %d bytes", ErrTooLarge, st.max)
 	}
+	if st.packRefused.Load() {
+		return nil, fmt.Errorf("%w: the pack holds an object over %d bytes", ErrTooLarge, req.MaxObjectBytes)
+	}
 	commit, err := repo.CommitObject(hash)
 	if err != nil {
 		return nil, fmt.Errorf("%w: the fetch did not deliver the commit: %v", ErrCommitNotFound, err)
@@ -261,6 +296,8 @@ func classify(ctx context.Context, st *call, err error) error {
 	switch {
 	case errors.Is(err, errOverLimit) || st.over.Load():
 		return fmt.Errorf("%w: the fetch passed %d bytes", ErrTooLarge, st.max)
+	case errors.Is(err, errObjectTooLarge) || st.packRefused.Load():
+		return fmt.Errorf("%w: the pack holds an object over the size limit: %v", ErrTooLarge, err)
 	case errors.Is(ctx.Err(), context.DeadlineExceeded) || errors.Is(err, context.DeadlineExceeded):
 		return fmt.Errorf("%w: %v", ErrTimeout, err)
 	case errors.Is(ctx.Err(), context.Canceled):
