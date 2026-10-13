@@ -9,6 +9,7 @@ import (
 	"net/http"
 
 	"github.com/denn-gubsky/loomcycle/internal/auth"
+	"github.com/denn-gubsky/loomcycle/internal/concurrency"
 	"github.com/denn-gubsky/loomcycle/internal/connector"
 	"github.com/denn-gubsky/loomcycle/internal/decision"
 	"github.com/denn-gubsky/loomcycle/internal/lanegate"
@@ -93,6 +94,28 @@ func (s *Server) Decision(ctx context.Context, input json.RawMessage) (connector
 	if dec := s.limits.Check(tenant, user); !dec.Allowed {
 		return connector.ToolResult{}, &connector.TokenLimitError{Info: *dec.Refusal}
 	}
+
+	// Counted against the caller's per-user cap for as long as the call lasts —
+	// its wait for the decision lane included — like the LLM gateway and
+	// /v1/embeddings. A direct decision takes no run slot, so without this
+	// nothing tied the calls one caller has waiting on a provider to that
+	// caller: the queue bound above is shared by everyone.
+	if s.sem != nil {
+		releaseUser, err := s.sem.ReserveUser(ctx, tenant, user)
+		if err != nil {
+			if concurrency.IsPerUserQuotaExhausted(err) {
+				// Both wrapped: the sentinel is what gRPC and MCP map, the typed
+				// error is what the HTTP 429 body is built from.
+				return connector.ToolResult{}, fmt.Errorf("%w: %w", runner.ErrPerUserQuotaExhausted, err)
+			}
+			return connector.ToolResult{}, fmt.Errorf("%w: %v", runner.ErrInternal, err)
+		}
+		defer releaseUser()
+	}
+	// The decision lane takes turns across (tenant, user), which it reads off
+	// the run identity on ctx. This call is no run — no run id, so it earns no
+	// lease — but it has the same fairness identity as a run would.
+	ctx = providers.WithRunMeta(ctx, providers.RunMeta{TenantID: tenant, UserID: user})
 
 	// The identity the credential resolver looks a tenant's own key up under.
 	// The agent name is cleared: an off-run call belongs to no agent, and a
@@ -194,6 +217,10 @@ func (s *Server) handleDecide(w http.ResponseWriter, r *http.Request) {
 		}
 		if errors.Is(err, runner.ErrRateLimited) {
 			writeRateLimited(w, err)
+			return
+		}
+		if concurrency.IsPerUserQuotaExhausted(err) {
+			writeQuotaError(w, err)
 			return
 		}
 		writeJSONError(w, http.StatusInternalServerError, "internal", err.Error())

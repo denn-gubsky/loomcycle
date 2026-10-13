@@ -42,6 +42,12 @@ func TestDecision_WithNoLaneIsBoundedByTheFloor(t *testing.T) {
 		"no lane configured": concurrency.NewCallScheduler(nil),
 		// A lane of another kind on the same provider is not a decision lane.
 		"only a chat lane": kindLane(config.ModelKindChat, concurrency.LaneConfig{MaxConcurrent: 1}),
+		// A cap on MODELS in flight gates the provider's calls, but bounds
+		// nothing about how many calls to one model there are: the floor must
+		// still hold. (All six decisions here ask the same model.)
+		"only a models-in-flight cap": concurrency.NewCallScheduler(map[string]concurrency.ProviderLanesConfig{
+			"p": {MaxModelsInFlight: 1},
+		}),
 	} {
 		t.Run(name, func(t *testing.T) {
 			f := &fakeDecision{gate: make(chan struct{})}

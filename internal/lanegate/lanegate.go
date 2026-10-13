@@ -199,14 +199,20 @@ func HoldLane(ctx context.Context, sched *concurrency.CallScheduler, id, kind, m
 // A ctx from HoldLane already holds this slot: nothing more is taken.
 //
 // floor is the caller's built-in bound (see FloorCap), nil for none. It applies
-// only while the operator has configured NO lane for (id, kind): a configured
-// lane replaces it, so it never undercuts a cap the operator chose. With
-// neither, the call is not gated and the release does nothing.
+// while the operator has configured NO LANE for (id, kind): a configured lane
+// replaces it, so it never undercuts a cap the operator chose. The test is the
+// lane, not "is anything gated": a provider that sets only max_models_in_flight
+// is gated — its calls wait for their model — yet nothing there bounds how MANY
+// of them are in flight, so the floor still applies, around the scheduler. With
+// neither a floor nor a gate, the release does nothing.
 func acquire(ctx context.Context, sched *concurrency.CallScheduler, floor *concurrency.Lane, id, kind, model string) (release func(), err error) {
 	if held, _ := ctx.Value(heldKey{id, kind}).(bool); held {
 		return func() {}, nil
 	}
 	gated := sched.Gated(id, kind)
+	if sched.LaneCap(id, kind) > 0 {
+		floor = nil
+	}
 	if !gated && floor == nil {
 		return func() {}, nil
 	}
@@ -227,24 +233,47 @@ func acquire(ctx context.Context, sched *concurrency.CallScheduler, floor *concu
 		defer held(false)
 	}
 	bound, bounded := ctx.Value(queueBoundKey{}).(int)
-	if !gated {
-		if !bounded {
-			return floor.Acquire(ctx, info)
+
+	// The floor first, then the scheduler: the floor is this service's own, so
+	// holding its slot while waiting for the provider's model gate keeps nobody
+	// else out of anything.
+	releaseFloor := func() {}
+	if floor != nil {
+		if bounded {
+			releaseFloor, err = floor.AcquireBounded(ctx, info, bound)
+		} else {
+			releaseFloor, err = floor.Acquire(ctx, info)
 		}
-		release, err = floor.AcquireBounded(ctx, info, bound)
 		if concurrency.IsQueueFull(err) {
 			return nil, &concurrency.ErrProviderConcurrencyExhausted{Provider: id, Cap: FloorCap}
 		}
-		return release, err
+		if err != nil {
+			return nil, err
+		}
 	}
-	if !bounded {
-		return sched.Acquire(ctx, id, kind, info)
+	if !gated {
+		return releaseFloor, nil
 	}
-	release, err = sched.AcquireBounded(ctx, id, kind, info, bound)
-	if concurrency.IsQueueFull(err) {
-		return nil, &concurrency.ErrProviderConcurrencyExhausted{Provider: id, Cap: sched.LaneCap(id, kind)}
+	// A local, not the named result: the closure below must not capture the
+	// variable it is itself returned through.
+	var releaseSched func()
+	if bounded {
+		releaseSched, err = sched.AcquireBounded(ctx, id, kind, info, bound)
+	} else {
+		releaseSched, err = sched.Acquire(ctx, id, kind, info)
 	}
-	return release, err
+	if err != nil {
+		releaseFloor()
+		if concurrency.IsQueueFull(err) {
+			return nil, &concurrency.ErrProviderConcurrencyExhausted{Provider: id, Cap: sched.LaneCap(id, kind)}
+		}
+		return nil, err
+	}
+	if floor == nil {
+		return releaseSched, nil
+	}
+	// Both are idempotent, so the pair is too.
+	return func() { releaseSched(); releaseFloor() }, nil
 }
 
 // FloorCap is the built-in bound on a service's calls in flight when the
