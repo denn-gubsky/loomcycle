@@ -80,6 +80,9 @@ type Driver struct {
 	// request per model, not per turn. Concurrent-safe (the Driver is
 	// shared across runs).
 	ctxCache sync.Map
+	// runnerRetryWaits overrides the package's runner-death retry waits; nil
+	// means the defaults. Tests shorten it.
+	runnerRetryWaits []time.Duration
 }
 
 // New constructs a Driver.
@@ -513,11 +516,38 @@ func (d *Driver) Call(ctx context.Context, req providers.Request) (<-chan provid
 		return resp, err
 	}
 
-	resp, err := ratelimit.Do(streamCtx, ratelimit.Config{
-		Provider:    d.providerID,
-		ParseHeader: ratelimit.OllamaRetryAfter,
-		OnEvent:     req.OnEvent,
-	}, attempt)
+	// A runner death is retried around the 429 loop, not inside it: ratelimit.Do
+	// decides on the status alone and spends one budget on one schedule, while a
+	// runner death is told apart by the response BODY and has its own, much
+	// shorter bound. Each retry gets a fresh 429 budget.
+	waits := d.runnerRetryWaits
+	if waits == nil {
+		waits = runnerRetryWaits
+	}
+	resp, err := retryOnRunnerDeath(streamCtx, waits, func(n int, wait time.Duration) {
+		logRunnerRetry(d.providerID, req.Model, "/api/chat", n, wait)
+		if req.OnEvent != nil {
+			// The same event the 429 path emits, so a consumer already
+			// rendering "retrying" needs nothing new. The reason is the
+			// existing fixed-schedule value: the reason strings are a wire
+			// contract, and a new one would be a wire change.
+			req.OnEvent(providers.Event{
+				Type: providers.EventRetry,
+				Retry: &providers.RetryInfo{
+					Provider: d.providerID,
+					Attempt:  n,
+					WaitMs:   wait.Milliseconds(),
+					Reason:   providers.RetryReasonSchedule,
+				},
+			})
+		}
+	}, func() (*http.Response, error) {
+		return ratelimit.Do(streamCtx, ratelimit.Config{
+			Provider:    d.providerID,
+			ParseHeader: ratelimit.OllamaRetryAfter,
+			OnEvent:     req.OnEvent,
+		}, attempt)
+	})
 	if err != nil {
 		cancelStream()
 		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
