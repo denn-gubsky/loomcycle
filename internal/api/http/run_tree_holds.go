@@ -1,6 +1,10 @@
 package http
 
-import "sync"
+import (
+	"sync"
+
+	"github.com/denn-gubsky/loomcycle/internal/tools"
+)
 
 // runTreeHolds keeps a run tree's ephemeral state — its ephemeral volumes and
 // run-scope SQL database — alive past its top-level run while a run started
@@ -88,6 +92,60 @@ func (s *Server) holdRunTree(root string) (release func()) {
 		once.Do(func() {
 			if s.runTrees.release(root) {
 				s.purgeEphemeralVolumesForRun(root)
+			}
+		})
+	}
+}
+
+// resumedVolumeSets gives every resumed run of one tree the same ephemeral
+// volume set.
+//
+// A live tree shares one set by passing the pointer down its contexts. Resume
+// has no such chain: each paused run of the tree is started again on its own,
+// and each used to rebuild a private set from the stored rows. From then on a
+// volume one of them created, or made read-only, was not seen by the others.
+// The read-only switch is an access control, so that gap let a resumed child
+// keep writing to a volume its parent had just closed.
+//
+// Entries are counted and dropped with the last resumed run of the tree.
+// In-process only: a run of the tree on another replica has its own set.
+//
+// Zero value works.
+type resumedVolumeSets struct {
+	mu   sync.Mutex
+	sets map[string]*resumedVolumeSet
+}
+
+type resumedVolumeSet struct {
+	set  *tools.EphemeralVolumeSet
+	refs int
+}
+
+// acquire returns the tree's shared set, creating it when this is the first
+// resumed run of the tree, and a release to call when the run has ended. An
+// empty root gets a private set and a no-op release.
+func (r *resumedVolumeSets) acquire(root string) (*tools.EphemeralVolumeSet, func()) {
+	if root == "" {
+		return tools.NewEphemeralVolumeSet(), func() {}
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.sets == nil {
+		r.sets = map[string]*resumedVolumeSet{}
+	}
+	e := r.sets[root]
+	if e == nil {
+		e = &resumedVolumeSet{set: tools.NewEphemeralVolumeSet()}
+		r.sets[root] = e
+	}
+	e.refs++
+	var once sync.Once
+	return e.set, func() {
+		once.Do(func() {
+			r.mu.Lock()
+			defer r.mu.Unlock()
+			if e.refs--; e.refs <= 0 && r.sets[root] == e {
+				delete(r.sets, root)
 			}
 		})
 	}

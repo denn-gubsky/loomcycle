@@ -184,6 +184,9 @@ type Server struct {
 	// runTrees defers a run tree's ephemeral purge past its top-level run
 	// while a detached walk started inside it still runs.
 	runTrees runTreeHolds
+	// resumedSets is the one ephemeral volume set the resumed runs of a tree
+	// share (see resumedVolumeSets).
+	resumedSets resumedVolumeSets
 	// walkHeartbeatEvery overrides how often a live walk's run is heartbeated;
 	// zero means the loop's own interval. Tests set it.
 	walkHeartbeatEvery time.Duration
@@ -10184,6 +10187,15 @@ func (s *Server) purgeEphemeralVolumesForRun(rootRunID string) {
 // (an empty set in the worst case — the agent can re-create).
 func (s *Server) rehydrateEphemeralVolumes(ctx context.Context, rootRunID string) *tools.EphemeralVolumeSet {
 	set := tools.NewEphemeralVolumeSet()
+	s.loadEphemeralVolumes(ctx, rootRunID, set)
+	return set
+}
+
+// loadEphemeralVolumes adds the tree's stored ephemeral volumes to set. It
+// only ever adds a volume or makes one read-only: a volume the set already
+// holds as read-only stays so whatever the row says, so loading into a set
+// other runs are using cannot hand back write access.
+func (s *Server) loadEphemeralVolumes(ctx context.Context, rootRunID string, set *tools.EphemeralVolumeSet) *tools.EphemeralVolumeSet {
 	if s.store == nil || rootRunID == "" {
 		return set
 	}
@@ -10200,6 +10212,8 @@ func (s *Server) rehydrateEphemeralVolumes(ctx context.Context, rootRunID string
 		if err := json.Unmarshal(r.Definition, &body); err != nil || body.Path == "" {
 			continue
 		}
+		// Add keeps an entry read-only, so a row read before another run's
+		// set_mode cannot hand write access back.
 		set.Add(r.Name, tools.EphemeralVolumeRef{Root: body.Path, ReadOnly: body.Mode == "ro"})
 	}
 	return set

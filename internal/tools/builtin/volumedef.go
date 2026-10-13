@@ -285,6 +285,27 @@ func (v *VolumeDef) execCreateEphemeral(ctx context.Context, in volumeDefInput, 
 	if set.Has(in.Name) {
 		return errResult(fmt.Sprintf("create: ephemeral volume %q already exists in this run", in.Name)), nil
 	}
+	// The set can lack a volume the run tree does have: a resumed run whose
+	// volumes could not be read back starts with an empty one. Creating over
+	// the stored volume would hand out its directory again under whatever
+	// mode this call asks for, a read-only volume included. So the rows
+	// decide: a recorded volume is taken into the set as it is recorded, and
+	// the create is refused like any other duplicate. A failed lookup is not
+	// evidence that there is none, so it refuses too.
+	recorded, err := v.Store.EphemeralVolumeListByRun(ctx, rootRunID)
+	if err != nil {
+		return errResult(fmt.Sprintf("create: could not check this run's ephemeral volumes: %s", err)), nil
+	}
+	for _, r := range recorded {
+		if r.Name != in.Name {
+			continue
+		}
+		var body dynvol.Body
+		if err := json.Unmarshal(r.Definition, &body); err == nil && body.Path != "" {
+			set.Add(in.Name, tools.EphemeralVolumeRef{Root: body.Path, ReadOnly: body.Mode == "ro"})
+		}
+		return errResult(fmt.Sprintf("create: ephemeral volume %q already exists in this run", in.Name)), nil
+	}
 	// Refuse a name that collides with a PERSISTENT dynamic volume (the static
 	// collision is already refused in execCreate above). effectiveRoot resolves
 	// ephemeral FIRST, so an ephemeral volume shadowing a durable same-named one
@@ -331,6 +352,12 @@ func (v *VolumeDef) execCreateEphemeral(ctx context.Context, in volumeDefInput, 
 	}
 	// Register in the run-scoped set ONLY after the row + dir are in place, so
 	// a failed persist never leaves a resolvable-but-unrecorded volume.
+	// The mode comes from the stored row, not from this call: two creates of
+	// one name can race past the checks above, and the row keeps read-only.
+	var stored dynvol.Body
+	if err := json.Unmarshal(row.Definition, &stored); err == nil && stored.Mode != "" {
+		mode = stored.Mode
+	}
 	set.Add(in.Name, tools.EphemeralVolumeRef{Root: path, ReadOnly: mode == "ro"})
 
 	resp := map[string]any{

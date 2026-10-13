@@ -143,7 +143,9 @@ func (s *Store) SnapshotRestoreVolumeDef(ctx context.Context, row store.VolumeDe
 
 // EphemeralVolumeCreate UPSERTs the (root_run_id, name) row on Postgres.
 // Re-creating an existing name within the same run updates the definition,
-// leaving created_at intact (mirrors VolumeDefCreate).
+// leaving created_at intact (mirrors VolumeDefCreate). An update never turns a
+// read-only volume writable: read-only is one-way, and this is the only other
+// writer of the row.
 func (s *Store) EphemeralVolumeCreate(ctx context.Context, row store.EphemeralVolumeDefRow) (store.EphemeralVolumeDefRow, error) {
 	now := time.Now().UTC()
 	if _, err := s.pool.Exec(ctx,
@@ -151,7 +153,10 @@ func (s *Store) EphemeralVolumeCreate(ctx context.Context, row store.EphemeralVo
 		 VALUES ($1, $2, $3, $4::jsonb, $5)
 		 ON CONFLICT (root_run_id, name) DO UPDATE SET
 		     tenant_id  = EXCLUDED.tenant_id,
-		     definition = EXCLUDED.definition`,
+		     definition = CASE
+		         WHEN ephemeral_volume_defs.definition->>'mode' = 'ro'
+		         THEN jsonb_set(EXCLUDED.definition, '{mode}', '"ro"')
+		         ELSE EXCLUDED.definition END`,
 		row.RootRunID, row.Name, row.TenantID, string(row.Definition), now,
 	); err != nil {
 		return store.EphemeralVolumeDefRow{}, err

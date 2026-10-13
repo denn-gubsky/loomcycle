@@ -434,6 +434,12 @@ func NewEphemeralVolumeSet() *EphemeralVolumeSet {
 
 // Add registers (or overwrites) an ephemeral volume by name. Thread-safe —
 // concurrent sub-agents may create ephemeral volumes simultaneously.
+//
+// It never makes a read-only volume writable: adding over a read-only entry
+// keeps it read-only. Read-only is one-way, and callers add from a mode they
+// read a moment earlier (a stored row, the answer to a create). Deciding here,
+// under the lock, is what stops such a stale mode from undoing a SetReadOnly
+// that ran in between.
 func (s *EphemeralVolumeSet) Add(name string, ref EphemeralVolumeRef) {
 	if s == nil {
 		return
@@ -442,6 +448,9 @@ func (s *EphemeralVolumeSet) Add(name string, ref EphemeralVolumeRef) {
 	defer s.mu.Unlock()
 	if s.m == nil {
 		s.m = make(map[string]EphemeralVolumeRef)
+	}
+	if old, ok := s.m[name]; ok && old.ReadOnly {
+		ref.ReadOnly = true
 	}
 	s.m[name] = ref
 }
