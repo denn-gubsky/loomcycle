@@ -20,6 +20,7 @@ and threadsafe.
 from __future__ import annotations
 
 import asyncio
+import datetime
 import json
 from dataclasses import dataclass
 from typing import (
@@ -32,6 +33,7 @@ from typing import (
     Optional,
     Sequence,
     Tuple,
+    Union,
 )
 
 import grpc
@@ -397,6 +399,62 @@ class LoomcycleClient:
             )
         except grpc.aio.AioRpcError as e:
             _raise_from_grpc(e)
+
+    # ---- No-trace overrides (RetentionOverride RPC) ----
+
+    async def list_retention_overrides(self, *, tenant: str = "") -> Sequence[Mapping[str, Any]]:
+        """List the timed no-trace overrides in force: agents whose runs are
+        being stored although they normally store none. An admin sees every
+        tenant's, or one with ``tenant``; a tenant operator sees its own.
+        Operator-only (PermissionDenied otherwise). Returns a list of dicts
+        with ``tenant``/``agent``/``until``/``set_by``/``created_at``."""
+        try:
+            resp = await self._stub.RetentionOverride(
+                pb.RetentionOverrideRequest(op="list", tenant=tenant),
+                metadata=self._auth_metadata(),
+            )
+        except grpc.aio.AioRpcError as e:
+            _raise_from_grpc(e)
+        return [_retention_override_entry(o) for o in resp.overrides]
+
+    async def set_retention_override(
+        self, *, agent: str, until: Union[str, datetime.datetime], tenant: str = ""
+    ) -> Mapping[str, Any]:
+        """Store the runs of one no-trace agent until ``until``, to debug it.
+        ``until`` is an RFC 3339 string or a timezone-aware ``datetime``, at
+        most 24 hours ahead; setting one for an agent replaces the last.
+
+        It lifts a mode that came from the agent's definition or the run
+        request, never one a caller's token requires, and not the mode a
+        sub-agent inherits from a no-trace parent. ``tenant`` is admin-only: a
+        tenant operator's override is always for its own tenant. Audited; an
+        override whose audit record cannot be written is not set. Returns the
+        override (same shape as ``list_retention_overrides`` entries)."""
+        if isinstance(until, datetime.datetime):
+            if until.tzinfo is None:
+                raise ValueError("until must be timezone-aware: a naive datetime does not say which instant it is")
+            until = until.astimezone(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        try:
+            resp = await self._stub.RetentionOverride(
+                pb.RetentionOverrideRequest(op="set", agent=agent, until=until, tenant=tenant),
+                metadata=self._auth_metadata(),
+            )
+        except grpc.aio.AioRpcError as e:
+            _raise_from_grpc(e)
+        return _retention_override_entry(resp.overrides[0]) if resp.overrides else {}
+
+    async def clear_retention_override(self, *, agent: str, tenant: str = "") -> bool:
+        """End an agent's no-trace override before it runs out. Returns whether
+        there was one to end; clearing one that is not there is not an error.
+        Same tenant rule as ``set_retention_override``."""
+        try:
+            resp = await self._stub.RetentionOverride(
+                pb.RetentionOverrideRequest(op="clear", agent=agent, tenant=tenant),
+                metadata=self._auth_metadata(),
+            )
+        except grpc.aio.AioRpcError as e:
+            _raise_from_grpc(e)
+        return bool(resp.cleared)
 
     # ---- Decision models (Decide / ListDecisionModels RPCs) ----
 
@@ -2340,6 +2398,16 @@ def _decision_json(what: str, value: Any) -> bytes:
         return json.dumps(value, allow_nan=False).encode("utf-8")
     except (TypeError, ValueError) as e:
         raise InvalidArgumentError("decide: %s is not JSON-serializable: %s" % (what, e)) from e
+
+
+def _retention_override_entry(o: "pb.RetentionOverrideEntry") -> Mapping[str, Any]:
+    return {
+        "tenant": o.tenant,
+        "agent": o.agent,
+        "until": o.until,
+        "set_by": o.set_by,
+        "created_at": o.created_at,
+    }
 
 
 def _token_limit_entry(e: "pb.TokenLimitEntry") -> Mapping[str, Any]:

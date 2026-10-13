@@ -29,6 +29,10 @@ import (
 // the ones explicitly exercised. Lets tests focus on what they care
 // about without faking unrelated surfaces.
 type mockConnector struct {
+	retentionReq connector.RetentionOverrideRequest
+	retentionRes connector.RetentionOverrideResult
+	retentionErr error
+
 	dirTenant      atomic.Value
 	erasureTenant  atomic.Value
 	erasureSubject atomic.Value
@@ -481,8 +485,8 @@ func TestServer_ToolsList_ReturnsFullCatalogue(t *testing.T) {
 	if err := json.Unmarshal(resps[0].Result, &result); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
-	if len(result.Tools) != 58 {
-		t.Errorf("got %d tools, want 58 (+delete_run_tree, +list_team_channels, +peek_team_channel, +release_team_channel; register_hook, list_hooks and delete_hook removed; +hookdef, +review_run, +configured_run, +decision on top of retune_run and the directory/erasure/history/teamdef/credentialdef/path/document/volumedef/documentsourcedef list)", len(result.Tools))
+	if len(result.Tools) != 59 {
+		t.Errorf("got %d tools, want 59 (+retention_override, +delete_run_tree, +list_team_channels, +peek_team_channel, +release_team_channel; register_hook, list_hooks and delete_hook removed; +hookdef, +review_run, +configured_run, +decision on top of retune_run and the directory/erasure/history/teamdef/credentialdef/path/document/volumedef/documentsourcedef list)", len(result.Tools))
 	}
 	names := map[string]bool{}
 	for _, td := range result.Tools {
@@ -1797,5 +1801,80 @@ func TestServer_AReadOnlyMemberCannotStartARun(t *testing.T) {
 	}
 	if !strings.Contains(resps[0].Error.Message, auth.ScopeRunsCreate) {
 		t.Errorf("refusal %q must name the scope the token lacks", resps[0].Error.Message)
+	}
+}
+
+// RetentionOverride records the request and answers with the configured
+// result (connector.Connector).
+func (m *mockConnector) RetentionOverride(_ context.Context, req connector.RetentionOverrideRequest) (connector.RetentionOverrideResult, error) {
+	m.retentionReq = req
+	return m.retentionRes, m.retentionErr
+}
+
+// retention_override hands its arguments to the connector as they are: the
+// rules, the tenant and the audit all live there. list is the default op, and
+// an until that is not a time is refused before the call.
+func TestRetentionOverrideTool_DelegatesToTheConnector(t *testing.T) {
+	mc := &mockConnector{retentionRes: connector.RetentionOverrideResult{Overrides: []connector.RetentionOverride{
+		{Tenant: "acme", Agent: "judge", Until: "2026-10-12T18:00:00Z", SetBy: "ops"},
+	}}}
+	env := &handlerEnv{connector: mc}
+	call := func(args string) *loommcp.CallToolResult {
+		t.Helper()
+		res, err := handleRetentionOverride(context.Background(), env, json.RawMessage(args))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return res
+	}
+
+	res := call(`{}`)
+	if res.IsError || mc.retentionReq.Op != "list" {
+		t.Errorf("default op: is_error=%v, connector got %+v", res.IsError, mc.retentionReq)
+	}
+	if text := res.Content[0].Text; !strings.Contains(text, `"agent":"judge"`) {
+		t.Errorf("result = %s", text)
+	}
+
+	call(`{"op":"set","agent":"judge","until":"2026-10-12T18:00:00Z","tenant":"globex"}`)
+	want := time.Date(2026, 10, 12, 18, 0, 0, 0, time.UTC)
+	if got := mc.retentionReq; got.Op != "set" || got.Agent != "judge" || got.Tenant != "globex" || !got.Until.Equal(want) {
+		t.Errorf("set: connector got %+v", got)
+	}
+	call(`{"op":"clear","agent":"judge"}`)
+	if got := mc.retentionReq; got.Op != "clear" || got.Agent != "judge" || !got.Until.IsZero() {
+		t.Errorf("clear: connector got %+v", got)
+	}
+
+	mc.retentionReq = connector.RetentionOverrideRequest{}
+	if res := call(`{"op":"set","agent":"judge","until":"tomorrow"}`); !res.IsError || mc.retentionReq.Op != "" {
+		t.Errorf("a bad until reached the connector: is_error=%v req=%+v", res.IsError, mc.retentionReq)
+	}
+	mc.retentionErr = connector.WithMessage(connector.ErrRetentionOverrideForbidden, "retention overrides are for an admin or a tenant operator")
+	if res := call(`{"op":"list"}`); !res.IsError || !strings.Contains(res.Content[0].Text, "tenant operator") {
+		t.Errorf("a refusal was not surfaced: %+v", res)
+	}
+}
+
+// Who may call it on this transport: an admin and a tenant operator. A
+// member, an isolated user and a token limited to certain agents may not, and
+// do not see it listed.
+func TestRetentionOverrideTool_IsOperatorOnly(t *testing.T) {
+	as := func(scopes []string, r auth.Restrictions) context.Context {
+		return auth.WithPrincipal(context.Background(), auth.Principal{TenantID: "acme", Subject: "s", Scopes: scopes, Restrictions: r})
+	}
+	for what, tc := range map[string]struct {
+		ctx  context.Context
+		want bool
+	}{
+		"an admin":           {as([]string{auth.ScopeAdmin}, auth.Restrictions{}), true},
+		"a tenant operator":  {as([]string{auth.ScopeTenant}, auth.Restrictions{}), true},
+		"a member":           {as([]string{auth.ScopeRunsCreate, auth.ScopeRunsRead}, auth.Restrictions{}), false},
+		"an isolated user":   {as([]string{auth.ScopeUser}, auth.Restrictions{}), false},
+		"a restricted token": {as([]string{auth.ScopeTenant}, auth.Restrictions{Agents: []string{"judge"}}), false},
+	} {
+		if got := principalMayCallTool(tc.ctx, "retention_override"); got != tc.want {
+			t.Errorf("%s may call retention_override = %v, want %v", what, got, tc.want)
+		}
 	}
 }

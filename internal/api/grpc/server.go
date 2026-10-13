@@ -857,6 +857,10 @@ var grpcConsumerScopes = map[string]string{
 	// writes to the caller's own tenant (operator-global + cross-tenant stay
 	// admin-only), mirroring the HTTP /v1/_limits ScopeTenant gate.
 	"TokenLimit": auth.ScopeTenant,
+	// The timed override of an agent's no-trace mode: an admin for any tenant,
+	// a tenant operator for its own. gRPC has no member bypass, so this gate
+	// alone keeps a member out; the connector checks the caller again.
+	"RetentionOverride": auth.ScopeTenant,
 
 	// RFC BL P5 erasure. ScopeTenant, mirroring the HTTP gate: answering a
 	// data-subject request is the tenant operator's job, and both RPCs confine

@@ -45,6 +45,11 @@ var tenantConfinableTools = map[string]bool{
 	// as credentialdef. The destructive half is guarded by dry_run defaulting true
 	// plus a confirm that must equal the subject, not by the scope.
 	"erasure": true,
+	// retention_override: the connector takes the tenant from the PRINCIPAL
+	// for anyone but an admin, so a tenant operator's session can only reach
+	// its own tenant's agents. It also needs substrate:tenant by name
+	// (toolRequiredScope): a member must not switch storage back on.
+	"retention_override": true,
 	// Run lifecycle — tenant flows via the run identity (applyPrincipal on
 	// the wire identity lands in RFC AG Phase 1).
 	"spawn_run":   true,
@@ -176,6 +181,9 @@ var userSelfServiceTools = map[string]bool{
 // alone: the def-authoring and data tools, whose HTTP routes a member also
 // reaches on the member path.
 var toolRequiredScope = map[string]string{
+	// An operator's control, not member data: a member who could set one could
+	// read what its colleagues' no-trace runs said.
+	"retention_override": auth.ScopeTenant,
 	// Starting a run, and every write on a run's state.
 	"spawn_run":            auth.ScopeRunsCreate,
 	"spawn_runs":           auth.ScopeRunsCreate,
