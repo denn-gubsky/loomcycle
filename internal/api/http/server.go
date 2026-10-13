@@ -3395,6 +3395,7 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 	// empty policy (the file tools fall back to the legacy jail Root);
 	// sub-agents inherit + narrow this via runSubAgent.
 	loopCtx = tools.WithVolumePolicy(loopCtx, s.volumePolicyForAgent(loopCtx, agentDef))
+	loopCtx = ephemeralReadOnlyFor(loopCtx, agentDef)
 	// RFC AH Phase 2b: a FRESH run-scoped ephemeral volume set, attached ONCE
 	// at this top-level start. Sub-agents inherit this SAME pointer via the
 	// ctx chain (runSubAgent must not re-attach it) — never shared across
@@ -5427,6 +5428,7 @@ func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {
 	// empty policy (the file tools fall back to the legacy jail Root);
 	// sub-agents inherit + narrow this via runSubAgent.
 	loopCtx = tools.WithVolumePolicy(loopCtx, s.volumePolicyForAgent(loopCtx, agentDef))
+	loopCtx = ephemeralReadOnlyFor(loopCtx, agentDef)
 	// RFC AH Phase 2b: fresh run-scoped ephemeral volume set (inherited by
 	// sub-agents via ctx; never shared across top-level runs).
 	// Registered under the tree's root, so a run of this tree that resume
@@ -6233,6 +6235,7 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 	// empty policy (the file tools fall back to the legacy jail Root);
 	// sub-agents inherit + narrow this via runSubAgent.
 	loopCtx = tools.WithVolumePolicy(loopCtx, s.volumePolicyForAgent(loopCtx, agentDef))
+	loopCtx = ephemeralReadOnlyFor(loopCtx, agentDef)
 	// RFC AH Phase 2b: fresh run-scoped ephemeral volume set (inherited by
 	// sub-agents via ctx; never shared across top-level runs).
 	// Registered under the tree's root, so a run of this tree that resume
@@ -7943,7 +7946,7 @@ func (s *Server) prepareSubRunValues(ctx context.Context, name string, src nameS
 		Hosts:             hostRecordOf(tools.HostPolicy(ctx)),
 		// The parent's volume confinement and inherited fan-out width, both read
 		// off ctx below and never re-derivable once the parent's ctx is gone.
-		Spawn: spawnRecordOf(tools.VolumePolicy(ctx), tools.FanoutCap(ctx)),
+		Spawn: spawnRecordOf(tools.VolumePolicy(ctx), tools.FanoutCap(ctx), tools.EphemeralReadOnly(ctx)),
 		// The version the child's NAME resolved to — under a def_id pin, the
 		// base the pinned version was laid over — so a resume rebuilds the same
 		// definition; the pin itself is AgentDefID on the row.
@@ -8341,6 +8344,10 @@ func (s *Server) prepareSubRunValues(ctx context.Context, name string, src nameS
 	// where both hold one the ro/rw axis resolves to the more restrictive.
 	// Mirrors the host-allowlist narrowing read from ctx just above (4376).
 	subCtx = tools.WithVolumePolicy(subCtx, s.childVolumePolicy(subCtx, tools.VolumePolicy(ctx), def))
+	// The child's own definition can take write access to ephemeral volumes
+	// away. What its parent gave up is already on subCtx, which derives from
+	// the parent's ctx, and nothing here gives it back.
+	subCtx = ephemeralReadOnlyFor(subCtx, def)
 	// RFC AH Phase 2b: the run-tree's ephemeral volume SET is deliberately NOT
 	// re-attached here — subCtx derives from the parent's ctx (via subRunCtx ←
 	// WithCancelCause(ctx)), so the SAME *EphemeralVolumeSet pointer flows down
@@ -10189,6 +10196,16 @@ func (s *Server) purgeEphemeralVolumesForRun(rootRunID string) {
 	if _, err := s.store.EphemeralVolumeDeleteByRun(bg, rootRunID); err != nil {
 		log.Printf("ephemeral inline purge: delete rows (run=%s): %v", rootRunID, err)
 	}
+}
+
+// ephemeralReadOnlyFor marks ctx when the agent's definition gives it
+// ephemeral volumes read-only. It never unmarks: an agent whose definition
+// does not say so keeps whatever its ancestors' did.
+func ephemeralReadOnlyFor(ctx context.Context, def config.AgentDef) context.Context {
+	if def.EphemeralVolumes == config.EphemeralVolumesReadOnly {
+		return tools.WithEphemeralReadOnly(ctx)
+	}
+	return ctx
 }
 
 // rehydrateEphemeralVolumes builds a run-scoped EphemeralVolumeSet from the

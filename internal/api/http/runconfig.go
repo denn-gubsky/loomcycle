@@ -595,6 +595,11 @@ type spawnRecord struct {
 	// (residentAddressedSince). Written at most once per
 	// residentAddressedEvery.
 	AddressedAt int64 `json:"addressed_at,omitempty"`
+	// EphemeralReadOnly is set when the child's parent held ephemeral volumes
+	// read-only (tools.EphemeralReadOnly), which the child inherits whatever
+	// its own definition says. A resumed child has no parent ctx to inherit
+	// from, so the record is where that survives.
+	EphemeralReadOnly bool `json:"ephemeral_read_only,omitempty"`
 }
 
 // volumeCeilingRecord mirrors tools.VolumePolicyValue minus each binding's
@@ -617,10 +622,11 @@ type volumeCeilingBinding struct {
 // the fan-out cap on the parent's ctx. Always non-nil: its presence is what
 // tells resume the child's ceiling is known, including "the parent was not
 // confined by volumes" (Active false), which a nil record cannot say.
-func spawnRecordOf(parentVol tools.VolumePolicyValue, fanoutCap int) *spawnRecord {
+func spawnRecordOf(parentVol tools.VolumePolicyValue, fanoutCap int, ephemeralReadOnly bool) *spawnRecord {
 	rec := &spawnRecord{
-		Volumes:   volumeCeilingRecord{Active: parentVol.Active},
-		FanoutCap: fanoutCap,
+		Volumes:           volumeCeilingRecord{Active: parentVol.Active},
+		FanoutCap:         fanoutCap,
+		EphemeralReadOnly: ephemeralReadOnly,
 	}
 	for _, b := range parentVol.Bindings {
 		rec.Volumes.Bindings = append(rec.Volumes.Bindings, volumeCeilingBinding{

@@ -146,6 +146,9 @@ var agentDefOverridability = map[string]overridability{
 	"SkillDefScopes":         notOverridable,
 	"VolumeDefScopes":        notOverridable,
 	"AllowOverrides":         notOverridable,
+	// Takes write access to a run's ephemeral volumes away. A run request has
+	// no field for it: it is a property of the definition.
+	"EphemeralVolumes": notOverridable,
 	// A run can ask for "none" with its own request field (no_trace.go), which
 	// only ever stores less. It is not an override of the definition: nothing
 	// a run sends can loosen the definition's mode, and the override

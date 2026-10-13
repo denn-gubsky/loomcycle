@@ -1551,6 +1551,10 @@ export interface RunSpec {
      *  replica that does not hold it; its own replica reads it before it
      *  reaps the child as idle. */
     addressed_at?: number;
+    /** The child's parent held ephemeral volumes read-only (an
+     *  `ephemeral_volumes: "ro"` definition somewhere above it), which the
+     *  child inherits; a resume reads it back from here. */
+    ephemeral_read_only?: boolean;
   };
   /** The iteration limit the run started with. Absent for a run with none
    *  (unbounded, or an interactive run with no `max_iterations` of its own)
@@ -4276,6 +4280,10 @@ export interface AgentDefOverlay {
    *  refused with `override_not_allowed`. Unset or `true` leaves them to the
    *  caller. A fork that does not send it keeps its parent's. */
   allow_overrides?: boolean;
+  /** `"ro"` gives the agent every ephemeral volume of its run read-only,
+   *  whatever mode the volume was created with, and the same to every agent
+   *  it spawns. The only value; a fork cannot clear it. */
+  ephemeral_volumes?: "ro";
   /** `"none"` makes every run of the agent a no-trace run: its content is
    *  delivered to the caller and stored nowhere. A fork that does not send it
    *  keeps its parent's, and `"default"` on a no-trace parent is refused. */

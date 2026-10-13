@@ -942,6 +942,9 @@ func decodeAgentOverlay(overlay json.RawMessage) (mergedDef, error) {
 	if _, err := store.ParseRetention(ov.Retention); err != nil {
 		return mergedDef{}, err
 	}
+	if err := config.ValidateEphemeralVolumes(ov.EphemeralVolumes); err != nil {
+		return mergedDef{}, fmt.Errorf("AgentDef tool: %w", err)
+	}
 	// The same rule operator yaml is held to: a def whose tool_choice
 	// could never let a run finish is refused at authoring time.
 	if err := ov.ToolChoice.Validate(); err != nil {
@@ -1287,6 +1290,12 @@ type mergedDef struct {
 	// is excluded from content_sha256 like the gates above. A fork that does
 	// not send it keeps its parent's.
 	AllowOverrides *bool `json:"allow_overrides,omitempty"`
+	// EphemeralVolumes: "ro" makes the run's ephemeral volumes read-only for
+	// the agent and its children (config.AgentDef.EphemeralVolumes).
+	// Authority, not content, so it is excluded from content_sha256. A fork
+	// that does not send it keeps its parent's, and none can clear it: the
+	// only value is "ro".
+	EphemeralVolumes string `json:"ephemeral_volumes,omitempty"`
 	// Retention: "none" makes the agent's runs no-trace
 	// (config.AgentDef.Retention). Authority, not content: excluded from
 	// content_sha256. A fork that does not send it keeps its parent's, and
@@ -1501,6 +1510,9 @@ func (d *mergedDef) applyOverlay(ov mergedDef) {
 		v := *ov.AllowOverrides
 		d.AllowOverrides = &v
 	}
+	if ov.EphemeralVolumes != "" {
+		d.EphemeralVolumes = ov.EphemeralVolumes
+	}
 	if ov.Retention != "" {
 		d.Retention = ov.Retention
 	}
@@ -1546,6 +1558,7 @@ func (d *mergedDef) normalize() {
 // a future unhashed field cannot silently reopen the collision.
 var unhashedCapabilityTags = []string{
 	"allow_overrides",
+	"ephemeral_volumes",
 	"retention",
 	"a2a_agent_def_scopes",
 	"a2a_server_card_def_scopes",
@@ -1659,6 +1672,7 @@ func staticToMergedDef(s config.AgentDef) mergedDef {
 		A2AAgentDefScopes:      s.A2AAgentDefScopes,
 		VolumeDefScopes:        s.VolumeDefScopes,
 		AllowOverrides:         boolPtrCopy(s.AllowOverrides),
+		EphemeralVolumes:       s.EphemeralVolumes,
 		Retention:              s.Retention,
 		Hooks:                  s.Hooks,
 		ToolHooks:              s.ToolHooks,

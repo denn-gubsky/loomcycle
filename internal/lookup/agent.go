@@ -139,6 +139,12 @@ func keepStaticOverrideLock(cfg *config.Config, name string, def *config.AgentDe
 		locked := false
 		def.AllowOverrides = &locked
 	}
+	// Read-only ephemeral volumes hold over the tenant's version too: a
+	// tenant that re-created the agent without the setting would otherwise
+	// have handed it write access the operator's config withholds.
+	if static.EphemeralVolumes == config.EphemeralVolumesReadOnly {
+		def.EphemeralVolumes = config.EphemeralVolumesReadOnly
+	}
 	// The operator's retention mode holds over the tenant's version the same
 	// way, and for the same reason: "none" written in the config must not
 	// stop applying because a tenant forked the agent.
@@ -421,6 +427,10 @@ type SubstrateAgentDef struct {
 	// builtin.mergedDef: a lock that did not survive the read would come back
 	// open.
 	AllowOverrides *bool `json:"allow_overrides,omitempty"`
+	// EphemeralVolumes mirrors config.AgentDef.EphemeralVolumes. Kept in sync
+	// with builtin.mergedDef: a read that dropped it would hand the agent
+	// write access to its run's scratch volumes.
+	EphemeralVolumes string `json:"ephemeral_volumes,omitempty"`
 	// Retention mirrors config.AgentDef.Retention. Kept in sync with
 	// builtin.mergedDef: a mode that did not survive the read would store
 	// what it promised not to.
@@ -505,6 +515,7 @@ func SubstrateAgentDefFromConfig(def config.AgentDef) SubstrateAgentDef {
 		A2AAgentDefScopes:      def.A2AAgentDefScopes,
 		VolumeDefScopes:        def.VolumeDefScopes,
 		AllowOverrides:         copyBoolPtr(def.AllowOverrides),
+		EphemeralVolumes:       def.EphemeralVolumes,
 		Retention:              def.Retention,
 		Hooks:                  def.Hooks,
 		ToolHooks:              def.ToolHooks,
@@ -572,6 +583,7 @@ func (s SubstrateAgentDef) ToConfigDef() config.AgentDef {
 		A2AAgentDefScopes:      s.A2AAgentDefScopes,
 		VolumeDefScopes:        s.VolumeDefScopes,
 		AllowOverrides:         copyBoolPtr(s.AllowOverrides),
+		EphemeralVolumes:       s.EphemeralVolumes,
 		Retention:              s.Retention,
 		Hooks:                  s.Hooks,
 		ToolHooks:              s.ToolHooks,

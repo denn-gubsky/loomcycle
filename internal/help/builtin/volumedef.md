@@ -47,8 +47,10 @@ the create fails instead of following it out of the dynamic root.
   (even in one tenant) each get their OWN `work` with no collision. **Every
   agent of the run can use it, with the mode it was created with**: a
   sub-agent reaches it by name whatever its own `volumes:` list says, and
-  its own volume rules do not narrow it. To take write access away, use
-  `set_mode`. It is **auto-purged when the top-level run completes** (a
+  its own volume rules do not narrow it. To take write access away from
+  everyone, use `set_mode`; an agent whose definition says
+  `ephemeral_volumes: ro` gets every ephemeral volume read-only, and so do
+  the agents it spawns. It is **auto-purged when the top-level run completes** (a
   singleton sweeper backstops crashes). A team walk started with `mode: "detach"` uses
   its starter's ephemeral volumes and keeps them until it ends, even past the
   top-level run. Requires an active run; refused if the name

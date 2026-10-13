@@ -54,3 +54,30 @@ func TestRetention_ReachesTheAgentDefFromEverySourceAndRefusesAnUnknownValue(t *
 		t.Errorf("a layer that did not mention the mode removed it: %q", kept.Retention)
 	}
 }
+
+func TestEphemeralVolumes_ReachesTheAgentDefFromEverySourceAndRefusesAnUnknownValue(t *testing.T) {
+	var fromYAML AgentDef
+	if err := yaml.Unmarshal([]byte("model: m\nephemeral_volumes: ro\n"), &fromYAML); err != nil || fromYAML.EphemeralVolumes != "ro" {
+		t.Errorf("yaml: ephemeral_volumes = %q (err %v)", fromYAML.EphemeralVolumes, err)
+	}
+	if got := agentFromDiscovered(&agents.Agent{Name: "a", EphemeralVolumes: "ro"}); got.EphemeralVolumes != "ro" {
+		t.Errorf("a markdown agent's setting was dropped: %q", got.EphemeralVolumes)
+	}
+	merged := mergeAgentDef(AgentDef{Model: "m"}, AgentDef{EphemeralVolumes: "ro"})
+	if merged.EphemeralVolumes != "ro" {
+		t.Errorf("a layer's setting was dropped by the merge: %q", merged.EphemeralVolumes)
+	}
+	if kept := mergeAgentDef(merged, AgentDef{Effort: "low"}); kept.EphemeralVolumes != "ro" {
+		t.Errorf("a layer that did not mention the setting removed it: %q", kept.EphemeralVolumes)
+	}
+	for _, ok := range []string{"", "ro"} {
+		if err := ValidateEphemeralVolumes(ok); err != nil {
+			t.Errorf("%q refused: %v", ok, err)
+		}
+	}
+	for _, bad := range []string{"rw", "RO", "none", "read-only"} {
+		if err := ValidateEphemeralVolumes(bad); err == nil {
+			t.Errorf("%q was accepted", bad)
+		}
+	}
+}

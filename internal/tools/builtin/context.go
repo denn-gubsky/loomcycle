@@ -484,7 +484,7 @@ func (c *Context) execSelf(ctx context.Context) (tools.Result, error) {
 				continue
 			}
 			mode := "rw"
-			if ref.ReadOnly {
+			if ref.ReadOnly || tools.EphemeralReadOnly(ctx) {
 				mode = "ro"
 			}
 			list = append(list, map[string]any{"name": name, "path": ref.Root, "mode": mode})
