@@ -309,10 +309,12 @@ func (s *Server) describeOneImage(ctx context.Context, providerID string, prov p
 
 	// Respect the per-provider concurrency cap (RFC BF P2b) per CALL rather than
 	// around the sweep: holding one slot for an entire multi-minute sweep would
-	// starve real traffic behind a maintenance pass. A pass already under way
-	// waits its turn for each call (Wait) rather than being refused half-way by
-	// the queue meant for new requests; its request ctx bounds the wait.
-	release, err := s.providerGates.Wait(ctx, providerID)
+	// starve real traffic behind a maintenance pass. Acquire, not Wait: this route
+	// is a request anyone with the scope can send, and it takes no run slot, so
+	// the gate's queue depth is its only bound — with Wait, concurrent requests
+	// would queue without limit and, counted in the queue, turn every other
+	// caller's new runs on this provider away.
+	release, err := s.providerGates.Acquire(ctx, providerID)
 	if err != nil {
 		return "", err
 	}
