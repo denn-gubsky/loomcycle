@@ -33,7 +33,7 @@ func TestSemaphore_SetCaps(t *testing.T) {
 
 // TestProviderGates_Reload: RFC CK — Reload adds/removes/re-caps gates in place.
 func TestProviderGates_Reload(t *testing.T) {
-	g := NewProviderGates(map[string]int{"a": 1}, 0, 50*time.Millisecond)
+	g := NewProviderGates(map[string]int{"a": 1}, 0)
 	if !g.Has("a") || g.Has("b") {
 		t.Fatalf("initial: Has(a)=%v Has(b)=%v", g.Has("a"), g.Has("b"))
 	}
@@ -59,7 +59,7 @@ func TestProviderGates_Reload(t *testing.T) {
 // TestProviderGates_ReloadRace: concurrent Acquire/Has/Len vs Reload — under -race
 // this fails if the byID swap is not synchronized.
 func TestProviderGates_ReloadRace(t *testing.T) {
-	g := NewProviderGates(map[string]int{"a": 5}, 4, 50*time.Millisecond)
+	g := NewProviderGates(map[string]int{"a": 5}, 4)
 	done := make(chan struct{})
 	go func() {
 		for i := 0; i < 2000; i++ {

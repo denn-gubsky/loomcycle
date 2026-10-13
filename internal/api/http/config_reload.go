@@ -164,8 +164,8 @@ func (s *Server) ReloadConfig(ctx context.Context, dryRun bool) (ReloadResult, e
 // ReloadConcurrency applies a changed `concurrency` (or `providers.max_concurrent`)
 // section in place (RFC CK): the global semaphore's concurrency + queue-depth caps
 // (SetCaps), the per-user cap (WithPerUserCap), and the per-provider gates (rebuilt
-// from providers[*].max_concurrent). The queue TIMEOUTs stay boot-fixed (they are
-// read unlocked on the wait path). In-flight runs keep their slot; the new caps
+// from providers[*].max_concurrent). The global queue TIMEOUT stays boot-fixed (it
+// is read unlocked on the wait path); the per-provider gates have none. In-flight runs keep their slot; the new caps
 // apply to subsequent admissions. Nil-safe for a bare Server (tests).
 func (s *Server) ReloadConcurrency(newCfg *config.Config) {
 	if s.sem != nil {

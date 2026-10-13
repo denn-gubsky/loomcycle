@@ -285,7 +285,7 @@ func TestReloadConfig_RegistryDispatch(t *testing.T) {
 func TestReloadConcurrency(t *testing.T) {
 	s := &Server{}
 	s.sem = concurrency.New(1, 0, 50*time.Millisecond)
-	s.providerGates = concurrency.NewProviderGates(map[string]int{}, 4, 50*time.Millisecond)
+	s.providerGates = concurrency.NewProviderGates(map[string]int{}, 4)
 
 	s.ReloadConcurrency(&config.Config{
 		Concurrency: config.Concurrency{MaxConcurrentRuns: 3, MaxQueueDepth: 0, QueueTimeoutMS: 100},

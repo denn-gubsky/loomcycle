@@ -2,11 +2,16 @@
 //
 // A ProviderGates holds one counting Semaphore PER provider id. A provider whose
 // config sets `max_concurrent > 0` gets a gate that caps in-flight runs to that
-// provider (the rest queue in loomcycle, then 429); a provider with
-// max_concurrent 0/unset gets NO gate and Acquire is a zero-alloc noop — the
-// common, uncapped case. This is the per-provider analogue of the per-user cap
-// (WithPerUserCap): it deliberately reuses the same queue/timeout/backpressure
-// machinery rather than reinventing it.
+// provider (the rest queue in loomcycle); a provider with max_concurrent 0/unset
+// gets NO gate and Acquire/Wait are a zero-alloc noop — the common, uncapped
+// case. This is the per-provider analogue of the per-user cap (WithPerUserCap):
+// it deliberately reuses the same queue/backpressure machinery rather than
+// reinventing it.
+//
+// A gate never times a waiter out. Acquire (a NEW top-level request) is refused
+// only when the gate's queue is already full; Wait (work already admitted — a
+// sub-agent, a resumed run, a mid-run fallback) is never refused. Cancelling
+// admitted work because a queue was slow is never the right answer.
 //
 // Admission acquires the provider gate BEFORE the global execution slot (see the
 // ordering rationale in internal/api/http RunOnce): a run blocked on a full
@@ -19,7 +24,6 @@ import (
 	"errors"
 	"fmt"
 	"sync"
-	"time"
 )
 
 // noopRelease is the shared release func returned for uncapped providers. A
@@ -27,8 +31,8 @@ import (
 var noopRelease = func() {}
 
 // ErrProviderConcurrencyExhausted signals a provider's per-provider concurrency
-// cap (max_concurrent) rejected the run — that provider's queue was full or the
-// wait timed out. Distinct from BackpressureError (global queue) and
+// cap (max_concurrent) rejected a new run — that provider's queue was full.
+// Distinct from BackpressureError (global queue) and
 // ErrPerUserQuotaExhausted (per-user cap) because the retry strategy differs: the
 // run targets a specific saturated provider, so a caller could retry a different
 // tier/provider immediately rather than backing off operator-wide.
@@ -62,57 +66,67 @@ func IsProviderConcurrencyExhausted(err error) bool {
 // reload) can swap it while admissions read it; the underlying Semaphores carry
 // their own locking.
 type ProviderGates struct {
-	mu      sync.RWMutex
-	byID    map[string]*Semaphore
-	timeout time.Duration
+	mu   sync.RWMutex
+	byID map[string]*Semaphore
 }
 
 // NewProviderGates builds one gate per provider id whose cap is > 0. queueDepth
-// and timeout are shared across all gates (the RFC BF P2b
-// LOOMCYCLE_PROVIDER_QUEUE_DEPTH / _TIMEOUT_MS knobs). A caps map with no
-// positive entry (the common case — no operator set max_concurrent) yields an
-// empty ProviderGates whose Acquire is always a noop: zero gates built, zero
-// overhead on the admission path.
-func NewProviderGates(caps map[string]int, queueDepth int, timeout time.Duration) *ProviderGates {
-	g := &ProviderGates{byID: make(map[string]*Semaphore, len(caps)), timeout: timeout}
+// is shared across all gates (the RFC BF P2b LOOMCYCLE_PROVIDER_QUEUE_DEPTH
+// knob) and bounds only Acquire. A caps map with no positive entry (the common
+// case — no operator set max_concurrent) yields an empty ProviderGates whose
+// Acquire is always a noop: zero gates built, zero overhead on the admission
+// path.
+func NewProviderGates(caps map[string]int, queueDepth int) *ProviderGates {
+	return &ProviderGates{byID: buildGates(caps, queueDepth)}
+}
+
+// buildGates makes one gate per positive cap, each with NO wait timeout.
+func buildGates(caps map[string]int, queueDepth int) map[string]*Semaphore {
+	out := make(map[string]*Semaphore, len(caps))
 	for id, c := range caps {
 		if c > 0 {
 			// Per-user cap intentionally left off: this gate counts the GLOBAL
 			// in-flight runs to the provider, not per-user — the whole point is
 			// bounding total load against a shared resource (e.g. one GPU).
-			g.byID[id] = New(c, queueDepth, timeout)
+			out[id] = New(c, queueDepth, 0)
 		}
 	}
-	return g
+	return out
 }
 
-// Acquire reserves a slot for provider id. If no gate exists for id (uncapped —
-// the common case), returns the shared noop release + nil with zero contention.
-// If gated, blocks up to the queue timeout; a full queue / timeout maps to
-// *ErrProviderConcurrencyExhausted and a ctx cancel returns ctx.Err(). Nil-safe:
-// a nil *ProviderGates is always a noop, so a Server with no gates wired keeps
-// today's behaviour.
+// gate returns provider id's gate, or nil when id is uncapped (or g is nil).
+func (g *ProviderGates) gate(id string) *Semaphore {
+	if g == nil {
+		return nil
+	}
+	g.mu.RLock()
+	defer g.mu.RUnlock()
+	return g.byID[id]
+}
+
+// Acquire reserves a slot for provider id for a NEW top-level request. If no
+// gate exists for id (uncapped — the common case), returns the shared noop
+// release + nil with zero contention. If gated, it queues with no timeout; a
+// full queue maps to *ErrProviderConcurrencyExhausted and a ctx cancel returns
+// ctx.Err(). Nil-safe: a nil *ProviderGates is always a noop, so a Server with
+// no gates wired keeps today's behaviour. Work that was already admitted uses
+// Wait instead.
 //
 // Call the returned release exactly once when the run's use of the provider
 // ends. The Semaphore's release is idempotent (sync.Once), so a double call —
 // e.g. defer + a fallback slot-swap — is safe.
 func (g *ProviderGates) Acquire(ctx context.Context, id string) (release func(), err error) {
-	if g == nil {
-		return noopRelease, nil
-	}
-	g.mu.RLock()
-	sem, ok := g.byID[id]
-	g.mu.RUnlock()
-	if !ok {
+	sem := g.gate(id)
+	if sem == nil {
 		return noopRelease, nil
 	}
 	// Empty userID → the per-user path is skipped; this counts the provider's
 	// GLOBAL in-flight total, which is exactly the semantics we want.
 	rel, aerr := sem.Acquire(ctx)
 	if aerr != nil {
-		// Queue full or per-acquire timeout → the provider's cap is saturated.
-		// Reclassify to the provider-typed error so wire surfaces emit the right
-		// 429 code; ctx cancel and any other error pass through unchanged.
+		// Queue full → the provider's cap is saturated. Reclassify to the
+		// provider-typed error so wire surfaces emit the right 429 code; ctx
+		// cancel and any other error pass through unchanged.
 		if IsBackpressure(aerr) {
 			return nil, &ErrProviderConcurrencyExhausted{Provider: id, Cap: sem.maxConcurrent}
 		}
@@ -121,17 +135,24 @@ func (g *ProviderGates) Acquire(ctx context.Context, id string) (release func(),
 	return rel, nil
 }
 
+// Wait reserves a slot for provider id for work that was already admitted (a
+// sub-agent, a resumed run, a mid-run fallback). It is never refused: no queue
+// depth, no timeout — it returns when a slot frees, FIFO with every other
+// waiter, or with ctx.Err() when ctx ends first. Uncapped (or a nil g) is the
+// shared noop. Release exactly once (idempotent).
+func (g *ProviderGates) Wait(ctx context.Context, id string) (release func(), err error) {
+	sem := g.gate(id)
+	if sem == nil {
+		return noopRelease, nil
+	}
+	return sem.Wait(ctx)
+}
+
 // Has reports whether provider id is gated (has a positive cap). Used by the
 // admission fast-path and tests asserting the zero-overhead-when-unconfigured
 // guarantee.
 func (g *ProviderGates) Has(id string) bool {
-	if g == nil {
-		return false
-	}
-	g.mu.RLock()
-	defer g.mu.RUnlock()
-	_, ok := g.byID[id]
-	return ok
+	return g.gate(id) != nil
 }
 
 // Len returns the number of gated providers. Zero means fully uncapped.
@@ -149,18 +170,13 @@ func (g *ProviderGates) Len() int {
 // removed provider max_concurrent takes effect on the next admission. In-flight
 // runs hold a release closure over their ORIGINAL Semaphore, so they drain on the
 // old gate while new admissions use the new one — no count corruption, no leak.
-// queueDepth may change; the shared timeout stays boot-fixed. Nil-safe (a Server
-// with no gates never reloads them — the caller guards).
+// queueDepth may change. Nil-safe (a Server with no gates never reloads them —
+// the caller guards).
 func (g *ProviderGates) Reload(caps map[string]int, queueDepth int) {
 	if g == nil {
 		return
 	}
-	next := make(map[string]*Semaphore, len(caps))
-	for id, c := range caps {
-		if c > 0 {
-			next[id] = New(c, queueDepth, g.timeout)
-		}
-	}
+	next := buildGates(caps, queueDepth)
 	g.mu.Lock()
 	g.byID = next
 	g.mu.Unlock()

@@ -2666,7 +2666,7 @@ func (s *Server) fallbackForRun(tenantID, userID, agentName, userTier string, re
 		// RFC BF P2b: move the per-provider concurrency slot to the fallback
 		// target so a capped provider's counter tracks the provider actually in
 		// use — releasing the failed provider's slot for a queued run there and
-		// (short-timeout) acquiring the new one. Done here rather than at the
+		// waiting for the new one. Done here rather than at the
 		// loop's commit point to keep the loop package free of admission
 		// concerns; in the rare case tryProviderFallback then refuses the switch
 		// (e.g. the RFC AT vision re-check), the run terminates and the deferred
@@ -7846,14 +7846,17 @@ func (s *Server) prepareSubRunValues(ctx context.Context, name string, src nameS
 
 	// RFC BF P2c: gate the sub-agent on ITS resolved provider so a fan-out parent's
 	// same-provider children run at most `max_concurrent` at a time (the rest queue
-	// inside acquireProviderSlot), EXCEPT when an ANCESTOR already holds that
-	// provider — acquireProviderSlot then returns a noop carve-out holder so the
+	// inside waitProviderSlot), EXCEPT when an ANCESTOR already holds that
+	// provider — waitProviderSlot then returns a noop carve-out holder so the
 	// parent never awaits a child queued behind the parent's own slot (self-
-	// deadlock). Acquired BEFORE the sub-session row so a saturated cap fails fast
-	// without leaving an orphan run. The whole run tree still takes ONE global slot
-	// (the parent's) — sub-runs never touch s.sem, so there is no global-semaphore
-	// deadlock. Uncapped ⇒ noop, zero overhead.
-	subSlot, provErr := s.acquireProviderSlot(ctx, providerID)
+	// deadlock). The child belongs to an admitted run tree, so it WAITS for its
+	// slot (never refused for a full queue or a timeout; only ctx ends the wait),
+	// and the wait is not counted against its timeout_ms. Taken BEFORE the
+	// sub-session row, so a child cancelled while it queues leaves no orphan run.
+	// The whole run tree still takes ONE global slot (the parent's) — sub-runs
+	// never touch s.sem, so there is no global-semaphore deadlock. Uncapped ⇒
+	// noop, zero overhead.
+	subSlot, provErr := s.waitProviderSlot(ctx, providerID)
 	if provErr != nil {
 		return nil, fmt.Errorf("sub-agent %q provider gate: %w", name, provErr)
 	}

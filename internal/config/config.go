@@ -3390,13 +3390,14 @@ type Concurrency struct {
 	// concurrency gate (max_concurrent). 0 (default) = inherit MaxQueueDepth, so
 	// a provider cap queues the same way the global semaphore does. Only used by
 	// providers whose `max_concurrent` > 0.
+	//
+	// It bounds only NEW top-level requests (a full queue → 429
+	// provider_concurrency_exhausted). Work already admitted — a sub-agent, a
+	// resumed run, a mid-run provider fallback — always queues for its slot,
+	// whatever the depth. A per-provider wait never times out: queue_timeout_ms
+	// is the global semaphore's knob only.
 	// Env: LOOMCYCLE_PROVIDER_QUEUE_DEPTH.
 	ProviderQueueDepth int `yaml:"provider_queue_depth"`
-	// ProviderQueueTimeoutMS is the per-acquire wait cap of each per-provider
-	// gate before it returns provider_concurrency_exhausted (429). 0 (default) =
-	// inherit QueueTimeoutMS.
-	// Env: LOOMCYCLE_PROVIDER_QUEUE_TIMEOUT_MS.
-	ProviderQueueTimeoutMS int `yaml:"provider_queue_timeout_ms"`
 }
 
 // QueueTimeout returns QueueTimeoutMS as a duration.
@@ -3411,15 +3412,6 @@ func (c Concurrency) ProviderQueueDepthOrDefault() int {
 		return c.ProviderQueueDepth
 	}
 	return c.MaxQueueDepth
-}
-
-// ProviderQueueTimeout returns the per-provider gate per-acquire timeout,
-// inheriting the global QueueTimeout() when unset (RFC BF P2b).
-func (c Concurrency) ProviderQueueTimeout() time.Duration {
-	if c.ProviderQueueTimeoutMS > 0 {
-		return time.Duration(c.ProviderQueueTimeoutMS) * time.Millisecond
-	}
-	return c.QueueTimeout()
 }
 
 // CacheConfig is the cache layer config; v0.1 only honours .Native.Enabled.
@@ -5354,18 +5346,13 @@ func LoadLayers(layers ...Layer) (*Config, error) {
 		}
 	}
 
-	// RFC BF P2b — per-provider gate tuning. Both default to the global
-	// concurrency knobs (see ProviderQueueDepthOrDefault / ProviderQueueTimeout);
-	// these env overrides let a containerized operator tune the gate without
-	// editing mounted yaml. Negative values are ignored (keep the inherit-0).
+	// RFC BF P2b — per-provider gate queue depth. Defaults to the global
+	// max_queue_depth (see ProviderQueueDepthOrDefault); this env override lets a
+	// containerized operator tune the gate without editing mounted yaml.
+	// Negative values are ignored (keep the inherit-0).
 	if v := strings.TrimSpace(os.Getenv("LOOMCYCLE_PROVIDER_QUEUE_DEPTH")); v != "" {
 		if n, err := strconv.Atoi(v); err == nil && n >= 0 {
 			cfg.Concurrency.ProviderQueueDepth = n
-		}
-	}
-	if v := strings.TrimSpace(os.Getenv("LOOMCYCLE_PROVIDER_QUEUE_TIMEOUT_MS")); v != "" {
-		if n, err := strconv.Atoi(v); err == nil && n >= 0 {
-			cfg.Concurrency.ProviderQueueTimeoutMS = n
 		}
 	}
 

@@ -56,7 +56,7 @@ A **keyless** endpoint (no auth) is declared by simply omitting `api_key_env` �
 
 ### Per-provider concurrency (`max_concurrent`)
 
-`max_concurrent` caps how many runs whose resolved provider is that id execute at once; the rest **queue inside loomcycle** (then `429 provider_concurrency_exhausted` / gRPC `ResourceExhausted` on queue timeout). The motivating case is a **local model on one GPU**: cap `ollama-local` so a stable batch runs to completion without VRAM context-swapping, and the next batch starts only when a slot frees.
+`max_concurrent` caps how many runs whose resolved provider is that id execute at once; the rest **queue inside loomcycle** until a slot frees. A queued run never times out. Only a NEW top-level request can be turned away, and only when the provider's queue is already full (`429 provider_concurrency_exhausted` / gRPC `ResourceExhausted`). The motivating case is a **local model on one GPU**: cap `ollama-local` so a stable batch runs to completion without VRAM context-swapping, and the next batch starts only when a slot frees.
 
 ```yaml
 providers:
@@ -67,8 +67,9 @@ providers:
 
 - The provider gate is acquired **before** the global concurrency slot, so a run queued on a full provider cap never starves runs targeting other (uncapped) providers.
 - Cloud providers are vendor-rate-limited — leave them uncapped.
-- Sub-agents gate on their own resolved provider too, with a deadlock carve-out: a fan-out parent holding provider P's slot does not make its P-targeting children queue behind it.
-- Advisory / per-replica (exact for the single-replica local case). Tune the shared queue with `LOOMCYCLE_PROVIDER_QUEUE_DEPTH` / `LOOMCYCLE_PROVIDER_QUEUE_TIMEOUT_MS` (both default to the global concurrency knobs). It complements — does not replace — Ollama's own `OLLAMA_NUM_PARALLEL`.
+- Work that was already admitted always queues for its slot, whatever the queue depth, and is never cancelled by the queue: sub-agents, resumed runs and mid-run provider fallbacks. A sub-agent's time spent queued does not count against its `timeout_ms`.
+- Sub-agents gate on their own resolved provider too, with a deadlock carve-out: a fan-out parent holding provider P's slot does not make its P-targeting children queue behind it. The same carve-out applies when a run fails over to a provider one of its ancestors holds.
+- Advisory / per-replica (exact for the single-replica local case). Tune the shared queue depth with `concurrency.provider_queue_depth` / `LOOMCYCLE_PROVIDER_QUEUE_DEPTH` (defaults to the global `max_queue_depth`); it bounds new top-level requests only. There is no per-provider wait timeout. It complements — does not replace — Ollama's own `OLLAMA_NUM_PARALLEL`.
 
 ### Capability overrides
 

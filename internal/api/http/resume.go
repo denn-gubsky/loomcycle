@@ -1124,9 +1124,10 @@ func (s *Server) resumePausedRun(run store.Run) error {
 		// ordering rationale as a fresh run) and AFTER the fan-out reconcile
 		// above (holding a provider slot while awaiting children could deadlock).
 		// Populate the holder so a mid-run fallback swaps the slot; released via
-		// the holder at run end. A saturated cap fails the resume loudly rather
-		// than silently un-resuming.
-		provRelease, provErr := s.providerGates.Acquire(runCtx, providerID)
+		// the holder at run end. The run was admitted before it paused, so it
+		// WAITS for a saturated provider rather than failing; only runCtx (a
+		// cancel) ends the wait.
+		provRelease, provErr := s.providerGates.Wait(runCtx, providerID)
 		if provErr != nil {
 			s.finishRunFailedReason(run.ID, "resume: acquire provider slot: "+provErr.Error(), meta)
 			return
@@ -1141,10 +1142,13 @@ func (s *Server) resumePausedRun(run store.Run) error {
 		// would self-deadlock. No-op for uncapped/noop slots.
 		loopCtx = s.heldSlotCtx(loopCtx, provSlot)
 
-		// Respect the per-tenant fairness semaphore so a boot that resumes many
-		// runs doesn't blow past MAX_CONCURRENT_RUNS. Acquired inside the
-		// goroutine so the caller's resume loop never blocks.
-		release, aerr := s.sem.AcquireForUser(runCtx, run.TenantID, run.UserID)
+		// Respect the global run cap so a boot that resumes many runs doesn't
+		// blow past MAX_CONCURRENT_RUNS. Acquired inside the goroutine so the
+		// caller's resume loop never blocks. Wait, not AcquireForUser: the run
+		// was admitted before its pause, so a full queue, the queue timeout or
+		// the per-user cap must not turn it into a failed run — it queues
+		// until a slot frees or it is cancelled.
+		release, aerr := s.sem.Wait(runCtx)
 		if aerr != nil {
 			s.finishRunFailedReason(run.ID, "resume: acquire run slot: "+aerr.Error(), meta)
 			return

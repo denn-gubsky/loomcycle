@@ -107,7 +107,8 @@ var (
 	ErrPerUserQuotaExhausted = errors.New("per_user_quota_exhausted")
 	// ErrProviderConcurrencyExhausted — a per-provider concurrency cap
 	// (providers.<id>.max_concurrent, RFC BF P2b) rejected the run: that
-	// provider's in-flight count is at cap and its queue is full/timed out.
+	// provider's in-flight count is at cap and its queue is full (a new
+	// top-level request only; a gate wait never times out).
 	// Distinct from ErrBackpressure (global queue) because the run targets a
 	// specific saturated provider — a caller could retry a different tier
 	// immediately rather than backing off operator-wide.

@@ -412,3 +412,28 @@ func TestDescribeImages_BudgetLeavesRoomForAThinkingTrace(t *testing.T) {
 			"producing any description", describeMaxTokens)
 	}
 }
+
+// TestDescribeImages_SaturatedProviderQueueRefusesTheCall — the describe route
+// is a request any caller with the scope can send and takes no run slot, so the
+// provider gate's queue depth is its only bound: with the queue full, a vision
+// call is refused at once rather than queued without limit (where, counted in
+// the queue, it would turn every other caller's new runs away).
+func TestDescribeImages_SaturatedProviderQueueRefusesTheCall(t *testing.T) {
+	gates := concurrency.NewProviderGates(map[string]int{"P": 1}, 0)
+	s := &Server{providerGates: gates}
+	held, err := gates.Acquire(context.Background(), "P")
+	if err != nil {
+		t.Fatalf("take P: %v", err)
+	}
+	defer held()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	_, err = s.describeOneImage(ctx, "P", nil, "m", "image/png", []byte{1}, "")
+	if !concurrency.IsProviderConcurrencyExhausted(err) {
+		t.Fatalf("describe with P's queue full: err = %v, want provider_concurrency_exhausted (not a wait)", err)
+	}
+	if st := gates.Stats()["P"]; st.Queued != 0 {
+		t.Fatalf("P queued = %d after the refusal, want 0", st.Queued)
+	}
+}
