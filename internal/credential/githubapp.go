@@ -102,7 +102,7 @@ func (m *GitHubAppMinter) Substitute(ctx context.Context, tenantID, agentName, u
 			unresolved = append(unresolved, name)
 			return tok
 		}
-		access, terr := m.token(ctx, cfgJSON)
+		access, terr := m.token(ctx, tenantID, cfgJSON)
 		if terr != nil {
 			if firstErr == nil {
 				firstErr = fmt.Errorf("github app %q: %w", name, terr)
@@ -144,7 +144,7 @@ type ghAppConfig struct {
 // token returns a valid installation access token for the given App config,
 // minting a new one (and caching it) when none is cached or the cached one is
 // within 5 minutes of expiry.
-func (m *GitHubAppMinter) token(ctx context.Context, cfgJSON string) (string, error) {
+func (m *GitHubAppMinter) token(ctx context.Context, tenantID, cfgJSON string) (string, error) {
 	var cfg ghAppConfig
 	if err := json.Unmarshal([]byte(cfgJSON), &cfg); err != nil {
 		return "", fmt.Errorf("credential is not a GitHub App config (expected JSON with app_id, private_key, installation_id): %w", err)
@@ -152,7 +152,7 @@ func (m *GitHubAppMinter) token(ctx context.Context, cfgJSON string) (string, er
 	if cfg.AppID == "" || cfg.PrivateKey == "" || cfg.InstallationID == "" {
 		return "", errors.New("github app config requires app_id, private_key, and installation_id")
 	}
-	key := ghCacheKey(cfg)
+	key := ghCacheKey(tenantID, cfg)
 	m.mu.Lock()
 	if c, ok := m.cache[key]; ok && m.now().Before(c.exp.Add(-5*time.Minute)) {
 		tok := c.token
@@ -293,11 +293,17 @@ func parseRSAPrivateKey(pemStr string) (*rsa.PrivateKey, error) {
 	return rk, nil
 }
 
-// ghCacheKey keys the token cache by the token's SCOPE (app + installation +
-// repos + permissions), not the private key — a key rotation reuses a still-valid
-// token, while a different app/installation/scope re-mints.
-func ghCacheKey(cfg ghAppConfig) string {
+// ghCacheKey keys the token cache by who asked and by everything the mint
+// depends on: tenant, server, private key, app, installation, repos and
+// permissions. The key and the tenant are in it because app and installation
+// ids are not secret: without them, a config that only copied another tenant's
+// ids was served that tenant's cached token and never had to sign anything.
+// The private key enters as a digest, so the cache holds no key material. A
+// rotated key therefore re-mints, which costs one call.
+func ghCacheKey(tenantID string, cfg ghAppConfig) string {
 	h := sha256.New()
+	keyDigest := sha256.Sum256([]byte(cfg.PrivateKey))
+	fmt.Fprintf(h, "%s\x00%s\x00%x\x00", tenantID, strings.TrimRight(cfg.BaseURL, "/"), keyDigest)
 	fmt.Fprintf(h, "%s\x00%s\x00", cfg.AppID, cfg.InstallationID)
 	repos := append([]string(nil), cfg.Repositories...)
 	sort.Strings(repos)

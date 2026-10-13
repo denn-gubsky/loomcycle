@@ -100,7 +100,7 @@ func TestMinter_MintCacheAndRefresh(t *testing.T) {
 	cfg := fmt.Sprintf(`{"app_id":12345,"installation_id":"999","private_key":%q,"base_url":%q}`, keyPEM, srv.URL)
 
 	// First mint.
-	tok1, err := m.token(context.Background(), cfg)
+	tok1, err := m.token(context.Background(), "t", cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -108,7 +108,7 @@ func TestMinter_MintCacheAndRefresh(t *testing.T) {
 		t.Fatalf("first mint: tok=%q hits=%d", tok1, hits)
 	}
 	// Cached — no new HTTP call.
-	tok2, err := m.token(context.Background(), cfg)
+	tok2, err := m.token(context.Background(), "t", cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -117,7 +117,7 @@ func TestMinter_MintCacheAndRefresh(t *testing.T) {
 	}
 	// Advance to within 5m of expiry → refresh.
 	clock = time.Unix(1_800_003_600, 0).Add(-4 * time.Minute)
-	tok3, err := m.token(context.Background(), cfg)
+	tok3, err := m.token(context.Background(), "t", cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -180,16 +180,123 @@ func TestGHAppRefNames(t *testing.T) {
 
 func TestMinter_BadConfig(t *testing.T) {
 	m := NewGitHubAppMinter(nil, nil)
-	if _, err := m.token(context.Background(), "not json"); err == nil {
+	if _, err := m.token(context.Background(), "t", "not json"); err == nil {
 		t.Errorf("non-JSON config should error")
 	}
-	if _, err := m.token(context.Background(), `{"app_id":"1"}`); err == nil {
+	if _, err := m.token(context.Background(), "t", `{"app_id":"1"}`); err == nil {
 		t.Errorf("missing fields should error")
 	}
 	// Non-numeric installation_id is rejected before any network call.
 	_, keyPEM := testKeyPEM(t)
 	bad := fmt.Sprintf(`{"app_id":"1","installation_id":"abc","private_key":%q}`, keyPEM)
-	if _, err := m.token(context.Background(), bad); err == nil {
+	if _, err := m.token(context.Background(), "t", bad); err == nil {
 		t.Errorf("non-numeric installation_id should error")
+	}
+}
+
+// ghTenantFixture is a fake GitHub that mints a numbered token per call, plus a
+// resolver that hands each tenant its own stored App config.
+func ghTenantFixture(t *testing.T, configs func(baseURL string) map[string]string) (*GitHubAppMinter, *int) {
+	t.Helper()
+	hits := new(int)
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		*hits++
+		w.WriteHeader(http.StatusCreated)
+		fmt.Fprintf(w, `{"token":"ghs_minted_%d","expires_at":%q}`, *hits, time.Now().Add(time.Hour).UTC().Format(time.RFC3339))
+	}))
+	t.Cleanup(srv.Close)
+	byTenant := configs(srv.URL)
+	resolve := func(_ context.Context, tenantID, _, _, _ string) (string, bool, error) {
+		cfg, ok := byTenant[tenantID]
+		return cfg, ok, nil
+	}
+	return NewGitHubAppMinter(resolve, srv.Client()), hits
+}
+
+// App and installation ids are not secret. A tenant that stores them with a
+// key it made up must not be handed the token another tenant minted with the
+// real key.
+func TestMinter_ForeignTenantWithoutTheKeyGetsNoCachedToken(t *testing.T) {
+	_, keyPEM := testKeyPEM(t)
+	m, hits := ghTenantFixture(t, func(base string) map[string]string {
+		return map[string]string{
+			"victim":   fmt.Sprintf(`{"app_id":"1","installation_id":"2","private_key":%q,"base_url":%q}`, keyPEM, base),
+			"attacker": fmt.Sprintf(`{"app_id":"1","installation_id":"2","private_key":"not a key","base_url":%q}`, base),
+		}
+	})
+
+	out, _, err := m.Substitute(context.Background(), "victim", "a", "u", "$ghapp:app", nil)
+	if err != nil || out != "ghs_minted_1" {
+		t.Fatalf("victim mint: out=%q err=%v", out, err)
+	}
+	out, _, err = m.Substitute(context.Background(), "attacker", "a", "u", "$ghapp:app", nil)
+	if err == nil {
+		t.Fatalf("attacker got %q with a made-up key; want an error and no token", out)
+	}
+	if strings.Contains(out, "ghs_") {
+		t.Errorf("attacker output carries a token: %q", out)
+	}
+	if *hits != 1 {
+		t.Errorf("GitHub was called %d times, want 1 (the attacker's key cannot sign a request)", *hits)
+	}
+}
+
+// A config with a different key is a different credential: it mints for
+// itself, so GitHub is the one that accepts or refuses the key.
+func TestMinter_DifferentKeySameIDsMintsItsOwnToken(t *testing.T) {
+	_, keyA := testKeyPEM(t)
+	_, keyB := testKeyPEM(t)
+	m, hits := ghTenantFixture(t, func(base string) map[string]string {
+		return map[string]string{
+			"a": fmt.Sprintf(`{"app_id":"1","installation_id":"2","private_key":%q,"base_url":%q}`, keyA, base),
+			"b": fmt.Sprintf(`{"app_id":"1","installation_id":"2","private_key":%q,"base_url":%q}`, keyB, base),
+		}
+	})
+	for _, tenant := range []string{"a", "b"} {
+		if _, _, err := m.Substitute(context.Background(), tenant, "a", "u", "$ghapp:app", nil); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if *hits != 2 {
+		t.Errorf("GitHub was called %d times, want 2: the second key must not reuse the first key's token", *hits)
+	}
+}
+
+// The same config stored by two tenants is cached per tenant.
+func TestMinter_SameConfigInTwoTenantsIsCachedPerTenant(t *testing.T) {
+	_, keyPEM := testKeyPEM(t)
+	m, hits := ghTenantFixture(t, func(base string) map[string]string {
+		cfg := fmt.Sprintf(`{"app_id":"1","installation_id":"2","private_key":%q,"base_url":%q}`, keyPEM, base)
+		return map[string]string{"a": cfg, "b": cfg}
+	})
+	for _, tenant := range []string{"a", "b", "a", "b"} {
+		if _, _, err := m.Substitute(context.Background(), tenant, "a", "u", "$ghapp:app", nil); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if *hits != 2 {
+		t.Errorf("GitHub was called %d times, want 2 (one mint per tenant, then cached)", *hits)
+	}
+}
+
+// Two GitHub servers can use the same numeric ids; a token from one must not
+// be served for the other.
+func TestGHCacheKey_SeparatesServersKeysAndTenants(t *testing.T) {
+	base := ghAppConfig{AppID: "1", InstallationID: "2", PrivateKey: "k1", BaseURL: "https://one.example"}
+	otherServer, otherKey := base, base
+	otherServer.BaseURL = "https://two.example"
+	otherKey.PrivateKey = "k2"
+	k := ghCacheKey("t", base)
+	if k == ghCacheKey("t", otherServer) {
+		t.Error("two base URLs share a cache key")
+	}
+	if k == ghCacheKey("t", otherKey) {
+		t.Error("two private keys share a cache key")
+	}
+	if k == ghCacheKey("u", base) {
+		t.Error("two tenants share a cache key")
+	}
+	if k != ghCacheKey("t", base) {
+		t.Error("the same tenant and config must share a cache key")
 	}
 }
