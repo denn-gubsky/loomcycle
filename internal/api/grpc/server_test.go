@@ -747,6 +747,10 @@ func startTestServerWithRunner(t *testing.T, r runner.Runner) (loomcyclepb.Loomc
 // return meaningful results — the rest return zero values, which is
 // fine because the test only calls CancelAgent.
 type mockConnector struct {
+	retentionReq connector.RetentionOverrideRequest
+	retentionRes connector.RetentionOverrideResult
+	retentionErr error
+
 	dirTenant      atomic.Value
 	erasureTenant  atomic.Value
 	erasureSubject atomic.Value
@@ -1246,3 +1250,10 @@ func (m *mockConnector) ConfiguredRunInput(context.Context, string, connector.Ru
 	return runner.RunInput{}, nil
 }
 func (m *mockConnector) DeleteConfiguredRun(context.Context, string) error { return nil }
+
+// RetentionOverride records the request and answers with the configured
+// result (connector.Connector).
+func (m *mockConnector) RetentionOverride(_ context.Context, req connector.RetentionOverrideRequest) (connector.RetentionOverrideResult, error) {
+	m.retentionReq = req
+	return m.retentionRes, m.retentionErr
+}

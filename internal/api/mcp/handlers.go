@@ -58,7 +58,9 @@ var handlersByName = map[string]toolHandler{
 	"review_run":     handleReviewRun,
 	"directory":      handleDirectory,
 	"erasure":        handleErasure,
-	"list_runs":      handleListRuns,
+	// The timed override of an agent's no-trace mode (retention_override.go).
+	"retention_override": handleRetentionOverride,
+	"list_runs":          handleListRuns,
 	// Removes a run tree and what is stored about it (delete_run_tree.go).
 	"delete_run_tree": handleDeleteRunTree,
 

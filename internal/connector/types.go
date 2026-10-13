@@ -1197,3 +1197,36 @@ type TeamChannelReleaseResult struct {
 	ReleasedCount int      `json:"released_count"`
 	StillHeld     int      `json:"still_held"`
 }
+
+// RetentionOverrideRequest is one call on the timed override of an agent's
+// no-trace mode. Op is "list", "set" or "clear".
+//
+// Tenant is whose runs the override applies to. Only an admin may name one;
+// for a tenant operator, and for an admin that names none, it is the caller's
+// own tenant. On op "list" an admin that names none sees every tenant's.
+type RetentionOverrideRequest struct {
+	Op     string `json:"op"`
+	Tenant string `json:"tenant,omitempty"`
+	// Agent is the agent whose runs are to be stored (set, clear).
+	Agent string `json:"agent,omitempty"`
+	// Until is when the override stops applying (set): at most 24 hours ahead.
+	Until time.Time `json:"until,omitempty"`
+}
+
+// RetentionOverride is one override in force: until Until, runs of Agent in
+// Tenant are stored like any other.
+type RetentionOverride struct {
+	Tenant    string `json:"tenant"`
+	Agent     string `json:"agent"`
+	Until     string `json:"until"` // RFC 3339
+	SetBy     string `json:"set_by,omitempty"`
+	CreatedAt string `json:"created_at,omitempty"`
+}
+
+// RetentionOverrideResult answers a RetentionOverrideRequest: the overrides
+// in force the caller may see (list), the one just set (set), or none
+// (clear). Cleared reports whether a clear found one to end.
+type RetentionOverrideResult struct {
+	Overrides []RetentionOverride `json:"overrides"`
+	Cleared   bool                `json:"cleared,omitempty"`
+}

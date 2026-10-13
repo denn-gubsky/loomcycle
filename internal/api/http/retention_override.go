@@ -3,6 +3,8 @@ package http
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"log"
 	"net/http"
 	"time"
@@ -10,6 +12,7 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/agents"
 	"github.com/denn-gubsky/loomcycle/internal/audit"
 	"github.com/denn-gubsky/loomcycle/internal/auth"
+	"github.com/denn-gubsky/loomcycle/internal/connector"
 	"github.com/denn-gubsky/loomcycle/internal/store"
 )
 
@@ -44,13 +47,9 @@ type retentionOverridePutRequest struct {
 	Until time.Time `json:"until"`
 }
 
-type retentionOverrideResponse struct {
-	Tenant    string `json:"tenant"`
-	Agent     string `json:"agent"`
-	Until     string `json:"until"`
-	SetBy     string `json:"set_by,omitempty"`
-	CreatedAt string `json:"created_at,omitempty"`
-}
+// retentionOverrideResponse is one override on the wire; the connector's
+// shape, so every transport renders the same record.
+type retentionOverrideResponse = connector.RetentionOverride
 
 func retentionOverrideView(r store.RetentionOverrideRow) retentionOverrideResponse {
 	out := retentionOverrideResponse{Tenant: r.TenantID, Agent: r.Agent, Until: r.Until.UTC().Format(time.RFC3339), SetBy: r.SetBy}
@@ -78,8 +77,22 @@ func retentionOverrideTenant(ctx context.Context, wire string) string {
 	return p.TenantID
 }
 
+// retentionOverrideOperator reports whether the caller may touch overrides
+// at all: an admin or a tenant operator, and not a token held to the run
+// plane. Each transport gates this too; it is repeated here because this is
+// the one function all of them call, and switching storage back on for an
+// agent that promised none must not depend on every gate being right.
+func retentionOverrideOperator(ctx context.Context) bool {
+	p, ok := auth.PrincipalFromContext(ctx)
+	if !ok {
+		return true // open mode
+	}
+	return auth.HasScope(p.Scopes, auth.ScopeTenant) && !p.Restrictions.RunPlaneOnly()
+}
+
 // activeRetentionOverrides lists the overrides the caller may see: an admin
-// all of them (or one tenant's with ?tenant=), a tenant operator its own.
+// all of them (or one tenant's with a tenant named), a tenant operator its
+// own.
 func (s *Server) activeRetentionOverrides(ctx context.Context, wireTenant string) ([]retentionOverrideResponse, error) {
 	out := []retentionOverrideResponse{}
 	if s.store == nil {
@@ -98,22 +111,103 @@ func (s *Server) activeRetentionOverrides(ctx context.Context, wireTenant string
 	return out, nil
 }
 
+// RetentionOverride implements connector.Connector: the one implementation
+// of list, set and clear, behind HTTP, gRPC and MCP alike.
+func (s *Server) RetentionOverride(ctx context.Context, req connector.RetentionOverrideRequest) (connector.RetentionOverrideResult, error) {
+	none := connector.RetentionOverrideResult{Overrides: []connector.RetentionOverride{}}
+	invalid := func(msg string) (connector.RetentionOverrideResult, error) {
+		return none, connector.WithMessage(connector.ErrRetentionOverrideInvalid, msg)
+	}
+	if !retentionOverrideOperator(ctx) {
+		return none, connector.WithMessage(connector.ErrRetentionOverrideForbidden,
+			"retention overrides are for an admin or a tenant operator")
+	}
+	switch req.Op {
+	case "list":
+		list, err := s.activeRetentionOverrides(ctx, req.Tenant)
+		if err != nil {
+			return none, err
+		}
+		return connector.RetentionOverrideResult{Overrides: list}, nil
+	case "set", "clear":
+	default:
+		return invalid(fmt.Sprintf("op must be one of: list, set, clear (got %q)", req.Op))
+	}
+	if s.store == nil {
+		return none, connector.WithMessage(connector.ErrRetentionOverrideStoreUnavailable, "store not configured")
+	}
+	if err := agents.ValidateName(req.Agent); err != nil {
+		return invalid("agent: " + err.Error())
+	}
+	tenant := retentionOverrideTenant(ctx, req.Tenant)
+
+	if req.Op == "clear" {
+		had, err := s.store.RetentionOverrideDelete(ctx, tenant, req.Agent)
+		if err != nil {
+			return none, err
+		}
+		if had {
+			s.recordRetentionOverrideAudit(ctx, "retention_override_clear", store.RetentionOverrideRow{TenantID: tenant, Agent: req.Agent})
+			log.Printf("retention: override cleared by %q: agent %q in tenant %q", principalSubject(ctx), req.Agent, tenant)
+		}
+		return connector.RetentionOverrideResult{Overrides: []connector.RetentionOverride{}, Cleared: had}, nil
+	}
+
+	now := time.Now()
+	switch {
+	case req.Until.IsZero():
+		return invalid("until is required: when the override stops applying (RFC 3339)")
+	case !req.Until.After(now):
+		return invalid("until is in the past")
+	case req.Until.After(now.Add(retentionOverrideMax)):
+		return invalid("until is more than 24 hours ahead: an override is for one debugging session")
+	}
+	row := store.RetentionOverrideRow{
+		TenantID: tenant, Agent: req.Agent,
+		Until: req.Until.UTC(), SetBy: principalSubject(ctx), CreatedAt: now.UTC(),
+	}
+	// Audited before it takes effect, and refused if it cannot be: switching
+	// storage back on for an agent that promised none is exactly what an
+	// audit log is for.
+	if !s.recordRetentionOverrideAudit(ctx, "retention_override_set", row) {
+		return none, connector.WithMessage(connector.ErrRetentionOverrideAuditUnavailable,
+			"the override was not set: its audit record could not be written")
+	}
+	if err := s.store.RetentionOverridePut(ctx, row, now); err != nil {
+		return none, err
+	}
+	log.Printf("retention: override set by %q: runs of agent %q in tenant %q are stored until %s", row.SetBy, row.Agent, row.TenantID, row.Until.Format(time.RFC3339))
+	return connector.RetentionOverrideResult{Overrides: []connector.RetentionOverride{retentionOverrideView(row)}}, nil
+}
+
+// writeRetentionOverrideError is the HTTP form of a RetentionOverride error.
+func writeRetentionOverrideError(w http.ResponseWriter, err error) {
+	switch {
+	case errors.Is(err, connector.ErrRetentionOverrideInvalid):
+		writeJSONError(w, http.StatusBadRequest, "bad_request", err.Error())
+	case errors.Is(err, connector.ErrRetentionOverrideForbidden):
+		writeJSONError(w, http.StatusForbidden, "forbidden", err.Error())
+	case errors.Is(err, connector.ErrRetentionOverrideAuditUnavailable):
+		writeJSONError(w, http.StatusServiceUnavailable, "audit_unavailable", err.Error())
+	case errors.Is(err, connector.ErrRetentionOverrideStoreUnavailable):
+		writeJSONError(w, http.StatusServiceUnavailable, "store_unavailable", err.Error())
+	default:
+		writeJSONError(w, http.StatusInternalServerError, "internal", err.Error())
+	}
+}
+
 // handleRetentionOverridesList serves GET /v1/_retention/overrides.
 func (s *Server) handleRetentionOverridesList(w http.ResponseWriter, r *http.Request) {
-	list, err := s.activeRetentionOverrides(r.Context(), r.URL.Query().Get("tenant"))
+	res, err := s.RetentionOverride(r.Context(), connector.RetentionOverrideRequest{Op: "list", Tenant: r.URL.Query().Get("tenant")})
 	if err != nil {
-		writeJSONError(w, http.StatusInternalServerError, "internal", err.Error())
+		writeRetentionOverrideError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"overrides": list})
+	writeJSON(w, http.StatusOK, map[string]any{"overrides": res.Overrides})
 }
 
 // handleRetentionOverridePut serves PUT /v1/_retention/overrides.
 func (s *Server) handleRetentionOverridePut(w http.ResponseWriter, r *http.Request) {
-	if s.store == nil {
-		writeJSONError(w, http.StatusServiceUnavailable, "store_unavailable", "store not configured")
-		return
-	}
 	var body retentionOverridePutRequest
 	dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, 4096))
 	dec.DisallowUnknownFields()
@@ -121,62 +215,22 @@ func (s *Server) handleRetentionOverridePut(w http.ResponseWriter, r *http.Reque
 		writeJSONError(w, http.StatusBadRequest, "bad_request", "invalid JSON body: "+err.Error())
 		return
 	}
-	if err := agents.ValidateName(body.Agent); err != nil {
-		writeJSONError(w, http.StatusBadRequest, "bad_request", "agent: "+err.Error())
+	res, err := s.RetentionOverride(r.Context(), connector.RetentionOverrideRequest{
+		Op: "set", Tenant: deref(body.Tenant), Agent: body.Agent, Until: body.Until,
+	})
+	if err != nil {
+		writeRetentionOverrideError(w, err)
 		return
 	}
-	now := time.Now()
-	switch {
-	case body.Until.IsZero():
-		writeJSONError(w, http.StatusBadRequest, "bad_request", "until is required: when the override stops applying (RFC 3339)")
-		return
-	case !body.Until.After(now):
-		writeJSONError(w, http.StatusBadRequest, "bad_request", "until is in the past")
-		return
-	case body.Until.After(now.Add(retentionOverrideMax)):
-		writeJSONError(w, http.StatusBadRequest, "bad_request", "until is more than 24 hours ahead: an override is for one debugging session")
-		return
-	}
-	row := store.RetentionOverrideRow{
-		TenantID: retentionOverrideTenant(r.Context(), deref(body.Tenant)), Agent: body.Agent,
-		Until: body.Until.UTC(), SetBy: principalSubject(r.Context()), CreatedAt: now.UTC(),
-	}
-	// Audited before it takes effect, and refused if it cannot be: switching
-	// storage back on for an agent that promised none is exactly what an
-	// audit log is for.
-	if !s.recordRetentionOverrideAudit(r.Context(), "retention_override_set", row) {
-		writeJSONError(w, http.StatusServiceUnavailable, "audit_unavailable", "the override was not set: its audit record could not be written")
-		return
-	}
-	if err := s.store.RetentionOverridePut(r.Context(), row, now); err != nil {
-		writeJSONError(w, http.StatusInternalServerError, "internal", err.Error())
-		return
-	}
-	log.Printf("retention: override set by %q: runs of agent %q in tenant %q are stored until %s", row.SetBy, row.Agent, row.TenantID, row.Until.Format(time.RFC3339))
-	writeJSON(w, http.StatusOK, retentionOverrideView(row))
+	writeJSON(w, http.StatusOK, res.Overrides[0])
 }
 
 // handleRetentionOverrideDelete serves DELETE /v1/_retention/overrides?agent=&tenant=.
 func (s *Server) handleRetentionOverrideDelete(w http.ResponseWriter, r *http.Request) {
-	if s.store == nil {
-		writeJSONError(w, http.StatusServiceUnavailable, "store_unavailable", "store not configured")
-		return
-	}
 	q := r.URL.Query()
-	agent := q.Get("agent")
-	if err := agents.ValidateName(agent); err != nil {
-		writeJSONError(w, http.StatusBadRequest, "bad_request", "agent: "+err.Error())
+	if _, err := s.RetentionOverride(r.Context(), connector.RetentionOverrideRequest{Op: "clear", Tenant: q.Get("tenant"), Agent: q.Get("agent")}); err != nil {
+		writeRetentionOverrideError(w, err)
 		return
-	}
-	tenant := retentionOverrideTenant(r.Context(), q.Get("tenant"))
-	had, err := s.store.RetentionOverrideDelete(r.Context(), tenant, agent)
-	if err != nil {
-		writeJSONError(w, http.StatusInternalServerError, "internal", err.Error())
-		return
-	}
-	if had {
-		s.recordRetentionOverrideAudit(r.Context(), "retention_override_clear", store.RetentionOverrideRow{TenantID: tenant, Agent: agent})
-		log.Printf("retention: override cleared by %q: agent %q in tenant %q", principalSubject(r.Context()), agent, tenant)
 	}
 	w.WriteHeader(http.StatusNoContent)
 }

@@ -561,3 +561,7 @@ func (m *parityMock) ConfiguredRunInput(context.Context, string, connector.RunSe
 	return runner.RunInput{}, nil
 }
 func (m *parityMock) DeleteConfiguredRun(context.Context, string) error { return nil }
+
+func (m *parityMock) RetentionOverride(context.Context, connector.RetentionOverrideRequest) (connector.RetentionOverrideResult, error) {
+	return connector.RetentionOverrideResult{}, nil
+}

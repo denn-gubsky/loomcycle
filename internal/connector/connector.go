@@ -149,6 +149,22 @@ type Connector interface {
 	// service, so every transport inherits them rather than re-deriving them.
 	ErasureExecute(ctx context.Context, req erasure.ExecuteRequest) (erasure.Result, error)
 
+	// RetentionOverride lists, sets or clears the timed overrides of an
+	// agent's no-trace mode (req.Op "list" | "set" | "clear"): for one agent
+	// in one tenant, until a time at most 24 hours ahead, runs are stored
+	// like any other so the agent can be debugged. It lifts a mode that came
+	// from the agent's definition or the run request, never one a caller's
+	// token requires.
+	//
+	// Operator-only on every transport: an admin for any tenant, a tenant
+	// operator for its own. The check is made here as well as at each
+	// transport's gate, and setting or clearing is audited here, so no
+	// transport can reach the store around either. Errors wrap the
+	// ErrRetentionOverride* sentinels. Reachable via
+	// /v1/_retention/overrides, the gRPC RetentionOverride RPC and the MCP
+	// retention_override tool.
+	RetentionOverride(ctx context.Context, req RetentionOverrideRequest) (RetentionOverrideResult, error)
+
 	// ReplaySession copies a SOURCE session's transcript into a NEW session bound
 	// to a (possibly different) target agent, so that agent continues from the
 	// same context — mirrors POST /v1/sessions/{id}/replay. Provider-specific

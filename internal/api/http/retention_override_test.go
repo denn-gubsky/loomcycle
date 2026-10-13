@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/denn-gubsky/loomcycle/internal/auth"
+	"github.com/denn-gubsky/loomcycle/internal/connector"
 	"github.com/denn-gubsky/loomcycle/internal/providers"
 	"github.com/denn-gubsky/loomcycle/internal/store"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
@@ -323,5 +324,61 @@ func TestRetentionOverride_TheSharedTokensOverrideAppliesToItsOwnRuns(t *testing
 	}
 	if got := retentionOfAgentID(t, st, "a_legacy2"); got != store.RetentionNone {
 		t.Errorf("after the clear: retention = %q, want none", got)
+	}
+}
+
+// The connector method is what gRPC and MCP call, with no HTTP route gate in
+// front of it. It checks the caller itself: a transport whose own gate was
+// wrong must still not let a member switch storage back on.
+func TestRetentionOverride_TheConnectorChecksTheCallerItself(t *testing.T) {
+	s, _, st := overrideFixture(t)
+	as := func(tenant string, scopes []string, r auth.Restrictions) context.Context {
+		return auth.WithPrincipal(context.Background(), auth.Principal{TenantID: tenant, Subject: "s", Scopes: scopes, Restrictions: r})
+	}
+	set := connector.RetentionOverrideRequest{Op: "set", Agent: "other", Until: time.Now().Add(time.Hour)}
+	for what, ctx := range map[string]context.Context{
+		"a member":           as("acme", []string{auth.ScopeRunsCreate, auth.ScopeRunsRead}, auth.Restrictions{}),
+		"an isolated user":   as("acme", []string{auth.ScopeUser}, auth.Restrictions{}),
+		"a restricted token": as("acme", []string{auth.ScopeTenant}, auth.Restrictions{Agents: []string{"other"}}),
+	} {
+		for _, req := range []connector.RetentionOverrideRequest{set, {Op: "clear", Agent: "other"}, {Op: "list"}} {
+			if _, err := s.RetentionOverride(ctx, req); !errors.Is(err, connector.ErrRetentionOverrideForbidden) {
+				t.Errorf("%s, op %s: err = %v, want ErrRetentionOverrideForbidden", what, req.Op, err)
+			}
+		}
+	}
+	if ok, _ := st.RetentionOverrideActive(context.Background(), "acme", "other", time.Now()); ok {
+		t.Fatal("a refused caller set an override")
+	}
+
+	// A tenant operator through the connector: its own tenant, whatever it
+	// names; the result is the override, and a clear says whether it found one.
+	ops := as("acme", []string{auth.ScopeTenant}, auth.Restrictions{})
+	set.Tenant = "globex"
+	res, err := s.RetentionOverride(ops, set)
+	if err != nil || len(res.Overrides) != 1 || res.Overrides[0].Tenant != "acme" || res.Overrides[0].Agent != "other" {
+		t.Fatalf("set: %+v, %v", res, err)
+	}
+	if list, err := s.RetentionOverride(ops, connector.RetentionOverrideRequest{Op: "list", Tenant: "globex"}); err != nil || len(list.Overrides) != 1 || list.Overrides[0].Tenant != "acme" {
+		t.Errorf("list: %+v, %v", list, err)
+	}
+	if res, err := s.RetentionOverride(ops, connector.RetentionOverrideRequest{Op: "clear", Agent: "other"}); err != nil || !res.Cleared {
+		t.Errorf("clear: %+v, %v", res, err)
+	}
+	if res, err := s.RetentionOverride(ops, connector.RetentionOverrideRequest{Op: "clear", Agent: "other"}); err != nil || res.Cleared {
+		t.Errorf("a second clear: %+v, %v", res, err)
+	}
+	for what, req := range map[string]connector.RetentionOverrideRequest{
+		// With everything a set needs, so that falling through to one would show.
+		"an unknown op": {Op: "extend", Agent: "other", Until: time.Now().Add(time.Hour)},
+		"no agent":      {Op: "set", Until: time.Now().Add(time.Hour)},
+		"no until":      {Op: "set", Agent: "other"},
+	} {
+		if _, err := s.RetentionOverride(ops, req); !errors.Is(err, connector.ErrRetentionOverrideInvalid) {
+			t.Errorf("%s: err = %v, want ErrRetentionOverrideInvalid", what, err)
+		}
+	}
+	if ok, _ := st.RetentionOverrideActive(context.Background(), "acme", "other", time.Now()); ok {
+		t.Error("a refused request set an override")
 	}
 }

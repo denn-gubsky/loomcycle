@@ -745,3 +745,7 @@ func (m *httpMockConnector) ConfiguredRunInput(context.Context, string, connecto
 	return runner.RunInput{}, nil
 }
 func (m *httpMockConnector) DeleteConfiguredRun(context.Context, string) error { return nil }
+
+func (m *httpMockConnector) RetentionOverride(context.Context, connector.RetentionOverrideRequest) (connector.RetentionOverrideResult, error) {
+	return connector.RetentionOverrideResult{}, nil
+}

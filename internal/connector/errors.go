@@ -241,6 +241,23 @@ var (
 	ErrInterruptExpired = errors.New("connector: interrupt expired")
 )
 
+// The timed override of an agent's no-trace mode (Connector.RetentionOverride).
+// Each is returned wrapped WithMessage, so a transport classifies on the
+// sentinel and shows the caller the exact text.
+var (
+	// ErrRetentionOverrideInvalid — a malformed request: an unknown op, a bad
+	// agent name, an until that is missing, past or more than 24 hours ahead.
+	ErrRetentionOverrideInvalid = errors.New("connector: invalid retention override request")
+	// ErrRetentionOverrideForbidden — the caller is not an operator: only an
+	// admin or a tenant operator may set, clear or list overrides.
+	ErrRetentionOverrideForbidden = errors.New("connector: retention overrides are operator-only")
+	// ErrRetentionOverrideAuditUnavailable — the override was NOT set because
+	// its audit record could not be written.
+	ErrRetentionOverrideAuditUnavailable = errors.New("connector: retention override audit record could not be written")
+	// ErrRetentionOverrideStoreUnavailable — no store is configured.
+	ErrRetentionOverrideStoreUnavailable = errors.New("connector: retention overrides require persistence")
+)
+
 // codedError pairs a classification sentinel (matched via errors.Is) with the
 // exact caller-facing message a transport renders verbatim. It lets the shared
 // connector core preserve each transport's byte-identical wording (the HTTP

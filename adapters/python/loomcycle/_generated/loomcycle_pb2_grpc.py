@@ -188,6 +188,11 @@ class LoomcycleStub:
                 request_serializer=loomcycle__pb2.TokenLimitRequest.SerializeToString,
                 response_deserializer=loomcycle__pb2.TokenLimitResponse.FromString,
                 _registered_method=True)
+        self.RetentionOverride = channel.unary_unary(
+                '/loomcycle.v1.Loomcycle/RetentionOverride',
+                request_serializer=loomcycle__pb2.RetentionOverrideRequest.SerializeToString,
+                response_deserializer=loomcycle__pb2.RetentionOverrideResponse.FromString,
+                _registered_method=True)
         self.Decide = channel.unary_unary(
                 '/loomcycle.v1.Loomcycle/Decide',
                 request_serializer=loomcycle__pb2.DecideRequest.SerializeToString,
@@ -759,6 +764,25 @@ class LoomcycleServicer:
         admin-only.
 
         Mirrors GET/PUT/DELETE /v1/_limits.
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def RetentionOverride(self, request, context):
+        """RetentionOverride lists, sets or clears the timed overrides of an agent's
+        no-trace mode: one op-based RPC (op ∈ list|set|clear). While one is in
+        force, runs of that agent in that tenant are stored like any other, so a
+        no-trace agent can be debugged. It lifts a mode that came from the
+        agent's definition or the run request, never one a caller's token
+        requires.
+
+        Operator-only: an admin for any tenant, a tenant operator for its own
+        (PERMISSION_DENIED otherwise). `until` is at most 24 hours ahead
+        (INVALID_ARGUMENT). Setting and clearing are audited; an override whose
+        audit record cannot be written is not set (UNAVAILABLE).
+
+        Mirrors GET/PUT/DELETE /v1/_retention/overrides.
         """
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
         context.set_details('Method not implemented!')
@@ -1432,6 +1456,11 @@ def add_LoomcycleServicer_to_server(servicer, server):
                     servicer.TokenLimit,
                     request_deserializer=loomcycle__pb2.TokenLimitRequest.FromString,
                     response_serializer=loomcycle__pb2.TokenLimitResponse.SerializeToString,
+            ),
+            'RetentionOverride': grpc.unary_unary_rpc_method_handler(
+                    servicer.RetentionOverride,
+                    request_deserializer=loomcycle__pb2.RetentionOverrideRequest.FromString,
+                    response_serializer=loomcycle__pb2.RetentionOverrideResponse.SerializeToString,
             ),
             'Decide': grpc.unary_unary_rpc_method_handler(
                     servicer.Decide,
@@ -2463,6 +2492,33 @@ class Loomcycle:
             '/loomcycle.v1.Loomcycle/TokenLimit',
             loomcycle__pb2.TokenLimitRequest.SerializeToString,
             loomcycle__pb2.TokenLimitResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def RetentionOverride(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/loomcycle.v1.Loomcycle/RetentionOverride',
+            loomcycle__pb2.RetentionOverrideRequest.SerializeToString,
+            loomcycle__pb2.RetentionOverrideResponse.FromString,
             options,
             channel_credentials,
             insecure,

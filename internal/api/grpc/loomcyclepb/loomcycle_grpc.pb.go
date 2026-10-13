@@ -68,6 +68,7 @@ const (
 	Loomcycle_ListChildRuns_FullMethodName       = "/loomcycle.v1.Loomcycle/ListChildRuns"
 	Loomcycle_UsageReport_FullMethodName         = "/loomcycle.v1.Loomcycle/UsageReport"
 	Loomcycle_TokenLimit_FullMethodName          = "/loomcycle.v1.Loomcycle/TokenLimit"
+	Loomcycle_RetentionOverride_FullMethodName   = "/loomcycle.v1.Loomcycle/RetentionOverride"
 	Loomcycle_Decide_FullMethodName              = "/loomcycle.v1.Loomcycle/Decide"
 	Loomcycle_ListDecisionModels_FullMethodName  = "/loomcycle.v1.Loomcycle/ListDecisionModels"
 	Loomcycle_Health_FullMethodName              = "/loomcycle.v1.Loomcycle/Health"
@@ -319,6 +320,20 @@ type LoomcycleClient interface {
 	//
 	// Mirrors GET/PUT/DELETE /v1/_limits.
 	TokenLimit(ctx context.Context, in *TokenLimitRequest, opts ...grpc.CallOption) (*TokenLimitResponse, error)
+	// RetentionOverride lists, sets or clears the timed overrides of an agent's
+	// no-trace mode: one op-based RPC (op ∈ list|set|clear). While one is in
+	// force, runs of that agent in that tenant are stored like any other, so a
+	// no-trace agent can be debugged. It lifts a mode that came from the
+	// agent's definition or the run request, never one a caller's token
+	// requires.
+	//
+	// Operator-only: an admin for any tenant, a tenant operator for its own
+	// (PERMISSION_DENIED otherwise). `until` is at most 24 hours ahead
+	// (INVALID_ARGUMENT). Setting and clearing are audited; an override whose
+	// audit record cannot be written is not set (UNAVAILABLE).
+	//
+	// Mirrors GET/PUT/DELETE /v1/_retention/overrides.
+	RetentionOverride(ctx context.Context, in *RetentionOverrideRequest, opts ...grpc.CallOption) (*RetentionOverrideResponse, error)
 	// Decide asks a decision model typed questions (choice / noul / score)
 	// about a piece of state and returns each answer as the model gave it. It
 	// is a judgement with probabilities, not generated text, and it needs no
@@ -934,6 +949,16 @@ func (c *loomcycleClient) TokenLimit(ctx context.Context, in *TokenLimitRequest,
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(TokenLimitResponse)
 	err := c.cc.Invoke(ctx, Loomcycle_TokenLimit_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *loomcycleClient) RetentionOverride(ctx context.Context, in *RetentionOverrideRequest, opts ...grpc.CallOption) (*RetentionOverrideResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(RetentionOverrideResponse)
+	err := c.cc.Invoke(ctx, Loomcycle_RetentionOverride_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -1585,6 +1610,20 @@ type LoomcycleServer interface {
 	//
 	// Mirrors GET/PUT/DELETE /v1/_limits.
 	TokenLimit(context.Context, *TokenLimitRequest) (*TokenLimitResponse, error)
+	// RetentionOverride lists, sets or clears the timed overrides of an agent's
+	// no-trace mode: one op-based RPC (op ∈ list|set|clear). While one is in
+	// force, runs of that agent in that tenant are stored like any other, so a
+	// no-trace agent can be debugged. It lifts a mode that came from the
+	// agent's definition or the run request, never one a caller's token
+	// requires.
+	//
+	// Operator-only: an admin for any tenant, a tenant operator for its own
+	// (PERMISSION_DENIED otherwise). `until` is at most 24 hours ahead
+	// (INVALID_ARGUMENT). Setting and clearing are audited; an override whose
+	// audit record cannot be written is not set (UNAVAILABLE).
+	//
+	// Mirrors GET/PUT/DELETE /v1/_retention/overrides.
+	RetentionOverride(context.Context, *RetentionOverrideRequest) (*RetentionOverrideResponse, error)
 	// Decide asks a decision model typed questions (choice / noul / score)
 	// about a piece of state and returns each answer as the model gave it. It
 	// is a judgement with probabilities, not generated text, and it needs no
@@ -1959,6 +1998,9 @@ func (UnimplementedLoomcycleServer) UsageReport(context.Context, *UsageReportReq
 }
 func (UnimplementedLoomcycleServer) TokenLimit(context.Context, *TokenLimitRequest) (*TokenLimitResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method TokenLimit not implemented")
+}
+func (UnimplementedLoomcycleServer) RetentionOverride(context.Context, *RetentionOverrideRequest) (*RetentionOverrideResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method RetentionOverride not implemented")
 }
 func (UnimplementedLoomcycleServer) Decide(context.Context, *DecideRequest) (*DecideResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method Decide not implemented")
@@ -2618,6 +2660,24 @@ func _Loomcycle_TokenLimit_Handler(srv interface{}, ctx context.Context, dec fun
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
 		return srv.(LoomcycleServer).TokenLimit(ctx, req.(*TokenLimitRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _Loomcycle_RetentionOverride_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(RetentionOverrideRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(LoomcycleServer).RetentionOverride(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: Loomcycle_RetentionOverride_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(LoomcycleServer).RetentionOverride(ctx, req.(*RetentionOverrideRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
@@ -3499,6 +3559,10 @@ var Loomcycle_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "TokenLimit",
 			Handler:    _Loomcycle_TokenLimit_Handler,
+		},
+		{
+			MethodName: "RetentionOverride",
+			Handler:    _Loomcycle_RetentionOverride_Handler,
 		},
 		{
 			MethodName: "Decide",

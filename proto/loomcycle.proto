@@ -256,6 +256,21 @@ service Loomcycle {
   // Mirrors GET/PUT/DELETE /v1/_limits.
   rpc TokenLimit(TokenLimitRequest) returns (TokenLimitResponse);
 
+  // RetentionOverride lists, sets or clears the timed overrides of an agent's
+  // no-trace mode: one op-based RPC (op ∈ list|set|clear). While one is in
+  // force, runs of that agent in that tenant are stored like any other, so a
+  // no-trace agent can be debugged. It lifts a mode that came from the
+  // agent's definition or the run request, never one a caller's token
+  // requires.
+  //
+  // Operator-only: an admin for any tenant, a tenant operator for its own
+  // (PERMISSION_DENIED otherwise). `until` is at most 24 hours ahead
+  // (INVALID_ARGUMENT). Setting and clearing are audited; an override whose
+  // audit record cannot be written is not set (UNAVAILABLE).
+  //
+  // Mirrors GET/PUT/DELETE /v1/_retention/overrides.
+  rpc RetentionOverride(RetentionOverrideRequest) returns (RetentionOverrideResponse);
+
   // Decide asks a decision model typed questions (choice / noul / score)
   // about a piece of state and returns each answer as the model gave it. It
   // is a judgement with probabilities, not generated text, and it needs no
@@ -1932,6 +1947,33 @@ message TokenLimitEntry {
 // op=list; for op=set it echoes the written row; empty for op=delete.
 message TokenLimitResponse {
   repeated TokenLimitEntry limits = 1;
+}
+
+message RetentionOverrideRequest {
+  string op = 1;      // "list" | "set" | "clear"
+  // Whose runs the override applies to. Only an admin may name a tenant; for a
+  // tenant operator, and for an admin that names none, it is the caller's own.
+  // On op=list an admin that names none sees every tenant's.
+  string tenant = 2;
+  string agent = 3;   // set, clear
+  string until = 4;   // set: RFC 3339, at most 24 hours ahead
+}
+
+// RetentionOverrideEntry is one override in force.
+message RetentionOverrideEntry {
+  string tenant = 1;
+  string agent = 2;
+  string until = 3;       // RFC 3339
+  string set_by = 4;      // principal subject that set it
+  string created_at = 5;  // RFC 3339 (empty when unknown)
+}
+
+// RetentionOverrideResponse carries the overrides in force the caller may see
+// (op=list), the one just set (op=set), or none (op=clear).
+message RetentionOverrideResponse {
+  repeated RetentionOverrideEntry overrides = 1;
+  // op=clear: whether there was one to end.
+  bool cleared = 2;
 }
 
 // ========================

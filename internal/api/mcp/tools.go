@@ -314,6 +314,29 @@ func toolDescriptors() []loommcp.ToolDescriptor {
 			}`),
 		},
 		{
+			Name: "retention_override",
+			Description: "Store the runs of ONE no-trace agent for a limited time, so it can be debugged. " +
+				"An agent whose retention is \"none\" stores nothing it says, so there is no transcript to read when it misbehaves. " +
+				"op=set with an agent and an until (an RFC 3339 time, at most 24 hours ahead) makes runs of that agent started before then ordinary stored runs; setting one for an agent replaces the last. " +
+				"op=clear with an agent ends it early. op=list (default) returns the overrides in force. " +
+				"It lifts a mode that came from the agent's definition or from a run request. It NEVER lifts one that a caller's token requires, and it does not lift the mode a sub-agent inherits from a no-trace parent: to store a whole tree, set it on the parent agent and on each child whose own definition says none. " +
+				"A run already going keeps the mode it started with. " +
+				"For an admin or a tenant operator only. The tenant is your own unless you are an admin and pass another. " +
+				"Setting and clearing are written to the audit log, and an override whose audit record cannot be written is not set. " +
+				"When the debugging is done, delete the runs made meanwhile with delete_run_tree: the override only stops new runs being stored, it removes nothing. " +
+				"Do NOT use it to make an agent no-trace or to change what an agent keeps permanently \u2014 that is the agent's retention setting (agentdef). " +
+				"Do NOT use it to read a run that already finished as no-trace: its content was never stored and cannot be recovered.",
+			InputSchema: rawJSON(`{
+				"type": "object",
+				"properties": {
+					"op":     {"type": "string", "enum": ["list", "set", "clear"], "description": "list (default), set or clear."},
+					"agent":  {"type": "string", "description": "set, clear: the agent whose runs are to be stored."},
+					"until":  {"type": "string", "description": "set: when the override stops applying, as an RFC 3339 time (for example 2026-10-12T18:00:00Z). At most 24 hours ahead."},
+					"tenant": {"type": "string", "description": "Admin only: whose runs it applies to (set, clear), or which tenant to list. Ignored for a tenant operator, whose overrides are always for its own tenant."}
+				}
+			}`),
+		},
+		{
 			Name:        "list_runs",
 			Description: "Enumerate runs in one of three ways \u2014 pass exactly one of `user_id`, `walk_id` or `parent_run_id`; there is no unfiltered listing of everything in the deployment. With `user_id`: that user's runs, newest first; optional `status` filters to running / completed / failed / cancelled and `limit` (1\u2013200) caps the list. With `walk_id` \u2014 the run_id a team walk returned: the walk's own run and every run it spawned, oldest first, one page at a time; `limit` (1\u20131000, default 100) sizes the page and `cursor` continues from the previous page's `next_cursor`, which is empty on the last page (`status` does not apply). With `parent_run_id` \u2014 any run's run_id: that run's direct children (the runs it started itself, for example through the Agent tool), of every status, oldest first, paged like `walk_id`; the run itself and its grandchildren are not in it. Use it to find runs when you do not already hold an agent_id, or to see every agent one walk ran. Do NOT use it to poll one run you already have a handle for \u2014 get_run answers that directly and more cheaply. It returns run metadata, never transcripts or final text.",
 			InputSchema: rawJSON(`{
