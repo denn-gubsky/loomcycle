@@ -65,7 +65,16 @@ type Embedder struct {
 	// could be anything but wrong. 0 = not yet observed. Atomic because a
 	// single Embedder is shared across concurrent runs.
 	dim atomic.Int64
+
+	// runnerRetryWaits overrides the package's runner-death retry waits; nil
+	// means the defaults. Tests shorten it.
+	runnerRetryWaits []time.Duration
 }
+
+// runnerDeathError marks an /api/embed failure as a runner death, so
+// embedBatch retries it. It does not leave this package: after the last retry
+// the error inside it is returned.
+type runnerDeathError struct{ error }
 
 // init registers BOTH ids the chat side uses, so the embedder inherits the
 // same naming — `ollama-local` is the self-hosted runtime, `ollama` is Ollama
@@ -169,7 +178,7 @@ func (e *Embedder) Embed(ctx context.Context, texts []string) ([][]float32, erro
 			end = len(texts)
 		}
 		batch := texts[i:end]
-		got, err := e.embedOnce(ctx, batch)
+		got, err := e.embedBatch(ctx, batch)
 		if err != nil {
 			return nil, err
 		}
@@ -179,6 +188,32 @@ func (e *Embedder) Embed(ctx context.Context, texts []string) ([][]float32, erro
 		out = append(out, got...)
 	}
 	return out, nil
+}
+
+// embedBatch is embedOnce, sent again after a wait when the response says the
+// model runner died. An embed request has no side effect on the server, and a
+// failed one returned no vectors, so sending the same batch again is safe.
+// Each attempt gets its own e.timeout: the retried call is the one that waits
+// for the runner to reload.
+func (e *Embedder) embedBatch(ctx context.Context, batch []string) ([][]float32, error) {
+	waits := e.runnerRetryWaits
+	if waits == nil {
+		waits = runnerRetryWaits
+	}
+	for i := 0; ; i++ {
+		got, err := e.embedOnce(ctx, batch)
+		var died runnerDeathError
+		if !errors.As(err, &died) {
+			return got, err
+		}
+		if i >= len(waits) {
+			return nil, died.error
+		}
+		logRunnerRetry(e.providerID, e.model, "/api/embed", i+1, waits[i])
+		if err := sleepCtx(ctx, waits[i]); err != nil {
+			return nil, err
+		}
+	}
 }
 
 // embedOnce sends one /api/embed POST and decodes the response.
@@ -234,7 +269,11 @@ func (e *Embedder) embedOnce(ctx context.Context, texts []string) ([][]float32, 
 			// name plus the exact remedy instead of a bare status code.
 			return nil, fmt.Errorf("ollama /api/embed: model %q not found — run `ollama pull %s` on the Ollama host: %s", e.model, e.model, preview)
 		}
-		return nil, fmt.Errorf("ollama /api/embed: model %q: status %d: %s", e.model, resp.StatusCode, preview)
+		err := fmt.Errorf("ollama /api/embed: model %q: status %d: %s", e.model, resp.StatusCode, preview)
+		if IsRunnerDeath(resp.StatusCode, raw) {
+			return nil, runnerDeathError{err}
+		}
+		return nil, err
 	}
 
 	var doc struct {

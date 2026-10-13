@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"regexp"
 	"strconv"
@@ -14,6 +15,7 @@ import (
 	"time"
 
 	"github.com/denn-gubsky/loomcycle/internal/providers"
+	"github.com/denn-gubsky/loomcycle/internal/providers/ollama"
 )
 
 // ollamaPath is Ollama's decision endpoint (Ollama 0.35 and later).
@@ -35,7 +37,16 @@ type ollamaDriver struct {
 	timeout    time.Duration
 	slots      chan struct{}
 	client     *http.Client
+	// runnerRetryWait is the wait before the one retry of a call that failed
+	// because the model runner died. Tests shorten it.
+	runnerRetryWait time.Duration
 }
+
+// defaultRunnerRetryWait: Ollama restarts a dead runner on the next request and
+// that request waits for the model to load, so the wait only has to let Ollama
+// notice the dead process. One retry, not the chat driver's two: a decision
+// call runs under a short timeout that a second wait would mostly spend.
+const defaultRunnerRetryWait = 2 * time.Second
 
 func newOllama(o Options) (Driver, error) {
 	if strings.TrimSpace(o.BaseURL) == "" {
@@ -55,6 +66,8 @@ func newOllama(o Options) (Driver, error) {
 		timeout: timeout,
 		slots:   make(chan struct{}, n),
 		client:  &http.Client{},
+
+		runnerRetryWait: defaultRunnerRetryWait,
 	}, nil
 }
 
@@ -112,25 +125,31 @@ func (d *ollamaDriver) Decide(ctx context.Context, req Request) (*Response, erro
 	if err != nil {
 		return nil, &Error{Code: CodeBadQuestion, Message: "the state or criteria is not JSON", Err: err}
 	}
-	httpReq, err := http.NewRequestWithContext(callCtx, http.MethodPost, d.baseURL+ollamaPath, bytes.NewReader(body))
+	status, raw, err := d.post(callCtx, body, key)
+	// Only a 500: this endpoint's 400s quote the caller's own question names,
+	// which may say anything.
+	if err == nil && status == http.StatusInternalServerError && ollama.IsRunnerDeath(status, raw) {
+		// The runner died under this call; Ollama starts a new one on the next
+		// request. The whole reply was an error, so nothing was answered and the
+		// same body is sent once more — inside the same callCtx, so the retry
+		// cannot outlive the call's timeout, and still holding the slot, so it
+		// does not add to the load on a runner that is reloading.
+		log.Printf(`{"event":"ollama_runner_retry","provider":%q,"model":%q,"endpoint":%q,"attempt":1,"wait":%q}`,
+			d.providerID, req.Model, ollamaPath, d.runnerRetryWait.String())
+		t := time.NewTimer(d.runnerRetryWait)
+		select {
+		case <-t.C:
+		case <-callCtx.Done():
+			t.Stop()
+			return nil, callError(callCtx, callCtx.Err(), ollamaPath)
+		}
+		status, raw, err = d.post(callCtx, body, key)
+	}
 	if err != nil {
-		return nil, &Error{Code: CodeCallFailed, Err: err}
+		return nil, err
 	}
-	httpReq.Header.Set("Content-Type", "application/json")
-	if key != "" {
-		httpReq.Header.Set("Authorization", "Bearer "+key)
-	}
-	resp, err := d.client.Do(httpReq)
-	if err != nil {
-		return nil, callError(callCtx, err, ollamaPath)
-	}
-	defer resp.Body.Close()
-	raw, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
-	if err != nil {
-		return nil, callError(callCtx, err, ollamaPath)
-	}
-	if resp.StatusCode != http.StatusOK {
-		return nil, ollamaRefusal(resp.StatusCode, raw)
+	if status != http.StatusOK {
+		return nil, ollamaRefusal(status, raw)
 	}
 	var out ollamaResponse
 	if err := json.Unmarshal(raw, &out); err != nil {
@@ -153,6 +172,28 @@ func (d *ollamaDriver) Decide(ctx context.Context, req Request) (*Response, erro
 			CredentialSource: source, CredentialScopeID: scopeID,
 		},
 	}, nil
+}
+
+// post sends one request and returns the reply's status and body.
+func (d *ollamaDriver) post(callCtx context.Context, body []byte, key string) (int, []byte, error) {
+	httpReq, err := http.NewRequestWithContext(callCtx, http.MethodPost, d.baseURL+ollamaPath, bytes.NewReader(body))
+	if err != nil {
+		return 0, nil, &Error{Code: CodeCallFailed, Err: err}
+	}
+	httpReq.Header.Set("Content-Type", "application/json")
+	if key != "" {
+		httpReq.Header.Set("Authorization", "Bearer "+key)
+	}
+	resp, err := d.client.Do(httpReq)
+	if err != nil {
+		return 0, nil, callError(callCtx, err, ollamaPath)
+	}
+	defer resp.Body.Close()
+	raw, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if err != nil {
+		return 0, nil, callError(callCtx, err, ollamaPath)
+	}
+	return resp.StatusCode, raw, nil
 }
 
 // callError reports a call cut off by the driver's own timeout as CodeTimeout,
