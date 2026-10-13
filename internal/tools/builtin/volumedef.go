@@ -62,16 +62,18 @@ type VolumeDef struct {
 const volumeDefDescription = `Provision, inspect, and remove CONFINED dynamic filesystem volumes at runtime (see Context op=help topic=volumedef). ` +
 	`A volume is created by NAME + MODE only — the runtime derives the path inside an operator-blessed ` +
 	`parent (<dynamic_root>/<tenant>/<name>); you never supply a host path. Static yaml volumes: are the ` +
-	`operator's ground truth and cannot be created over. Operations: create, get, list, delete, purge. ` +
+	`operator's ground truth and cannot be created over. Operations: create, get, list, delete, purge, set_mode. ` +
 	`delete removes the mapping but LEAVES files on disk; purge removes the mapping AND deletes the ` +
-	`directory tree (fenced: it can only ever delete a runtime-derived path strictly inside the dynamic root).`
+	`directory tree (fenced: it can only ever delete a runtime-derived path strictly inside the dynamic root). ` +
+	`set_mode {name, mode: "ro"} makes one of this run's EPHEMERAL volumes read-only for every agent of the run, ` +
+	`yourself included, and cannot be undone.`
 
 const volumeDefInputSchema = `{
   "type": "object",
   "properties": {
-    "op":   {"type": "string", "enum": ["create","get","list","delete","purge"]},
-    "name": {"type": "string", "description": "Dynamic volume name (required for create/get/delete/purge). Charset ^[a-z0-9][a-z0-9_-]{0,63}$ — no slashes or dots."},
-    "mode": {"type": "string", "enum": ["rw","ro"], "description": "Access mode for create (default rw). rw allows Write/Edit/Bash; ro is read-only."},
+    "op":   {"type": "string", "enum": ["create","get","list","delete","purge","set_mode"]},
+    "name": {"type": "string", "description": "Dynamic volume name (required for create/get/delete/purge/set_mode). Charset ^[a-z0-9][a-z0-9_-]{0,63}$ — no slashes or dots."},
+    "mode": {"type": "string", "enum": ["rw","ro"], "description": "Access mode for create (default rw). rw allows Write/Edit/Bash; ro is read-only. For set_mode it must be ro: an ephemeral volume can be made read-only and never writable again."},
     "ephemeral": {"type": "boolean", "description": "create only: make a RUN-SCOPED ephemeral volume instead of a persistent tenant volume. Resolvable by this run + its sub-agents; auto-purged when the top-level run completes. Requires an active run."}
   },
   "required": ["op"]
@@ -136,10 +138,12 @@ func (v *VolumeDef) Execute(ctx context.Context, raw json.RawMessage) (tools.Res
 		return v.execDelete(ctx, in)
 	case "purge":
 		return v.execPurge(ctx, in)
+	case "set_mode":
+		return v.execSetMode(ctx, in)
 	case "":
 		return errResult("missing required field: op"), nil
 	default:
-		return errResult(fmt.Sprintf("unknown op %q (must be one of: create, get, list, delete, purge)", in.Op)), nil
+		return errResult(fmt.Sprintf("unknown op %q (must be one of: create, get, list, delete, purge, set_mode)", in.Op)), nil
 	}
 }
 
@@ -336,6 +340,59 @@ func (v *VolumeDef) execCreateEphemeral(ctx context.Context, in volumeDefInput, 
 		"ephemeral":  true,
 		"created_at": row.CreatedAt.UTC().Format("2006-01-02T15:04:05.000000000Z"),
 	}
+	return okJSON(resp)
+}
+
+// ---- set_mode ----
+
+// execSetMode makes one of the run's ephemeral volumes read-only.
+//
+// It goes one way only. An agent that fills a volume and then hands it to
+// others needs to fix it; nothing needs the reverse, and a way back would let
+// any run of the tree undo a guarantee another run relies on. Because the
+// operation can only take access away, it does not ask who created the
+// volume: the usual volume_def_scopes grant for the name is enough.
+//
+// The mode lives in two places and both change: the row, which a resumed run
+// rebuilds its volumes from, and the set every run of the tree resolves
+// through, so the caller and children already running lose write access on
+// their next call. The row goes first, so a failed write leaves the volume
+// as it was everywhere.
+func (v *VolumeDef) execSetMode(ctx context.Context, in volumeDefInput) (tools.Result, error) {
+	if err := v.checkScopeForName(ctx, in.Name); err != nil {
+		return errResult(err.Error()), nil
+	}
+	if err := v.validateName(in.Name); err != nil {
+		return errResult(fmt.Sprintf("set_mode: %s", err)), nil
+	}
+	switch in.Mode {
+	case "ro":
+	case "rw":
+		return errResult("set_mode: a volume cannot be made writable again; set_mode only takes mode \"ro\""), nil
+	default:
+		return errResult(fmt.Sprintf("set_mode: mode must be \"ro\" (got %q)", in.Mode)), nil
+	}
+	rootRunID := tools.RunIdentity(ctx).RootRunID
+	set := tools.EphemeralVolumes(ctx)
+	if rootRunID == "" || set == nil {
+		return errResult("set_mode: ephemeral volumes exist only inside a run, and this call is not in one"), nil
+	}
+	ref, ok := set.Get(in.Name)
+	if !ok {
+		return errResult(fmt.Sprintf("set_mode: this run has no ephemeral volume %q; set_mode applies to ephemeral volumes only (re-create a persistent volume with the mode you want)", in.Name)), nil
+	}
+	resp := map[string]any{"name": in.Name, "mode": "ro", "ephemeral": true}
+	if ref.ReadOnly {
+		return okJSON(resp) // already read-only: nothing to change
+	}
+	found, err := v.Store.EphemeralVolumeSetReadOnly(ctx, rootRunID, in.Name)
+	if err != nil {
+		return errResult(fmt.Sprintf("set_mode: %s", err)), nil
+	}
+	if !found {
+		return errResult(fmt.Sprintf("set_mode: ephemeral volume %q is no longer recorded; the run is ending", in.Name)), nil
+	}
+	set.SetReadOnly(in.Name)
 	return okJSON(resp)
 }
 

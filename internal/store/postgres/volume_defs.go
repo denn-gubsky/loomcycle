@@ -202,6 +202,18 @@ func (s *Store) EphemeralVolumeListByRun(ctx context.Context, rootRunID string) 
 	return out, rows.Err()
 }
 
+// EphemeralVolumeSetReadOnly sets one row's mode to "ro" and reports whether
+// the row exists.
+func (s *Store) EphemeralVolumeSetReadOnly(ctx context.Context, rootRunID, name string) (bool, error) {
+	tag, err := s.pool.Exec(ctx,
+		`UPDATE ephemeral_volume_defs SET definition = jsonb_set(definition, '{mode}', '"ro"')
+		  WHERE root_run_id = $1 AND name = $2`, rootRunID, name)
+	if err != nil {
+		return false, err
+	}
+	return tag.RowsAffected() > 0, nil
+}
+
 // EphemeralVolumeListByTenant returns the tenant's LIVE ephemeral rows
 // (RFC AH Phase 4 Web UI). Ordered by (root_run_id, name) for a stable
 // view. Tenant-scoped at the query, so a tenant never sees another's rows.

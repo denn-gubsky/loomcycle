@@ -470,6 +470,32 @@ func (c *Context) execSelf(ctx context.Context) (tools.Result, error) {
 	} else {
 		out["filesystem"] = "none — no volume bound; Read/Write/Edit/Glob/Grep/Bash refuse. Bind a volume via the agent's `volumes:` list (operator declares the universe in the top-level `volumes:` config)."
 	}
+	// The run's ephemeral volumes are not bindings: any agent of the run
+	// reaches one by naming it in the `volume` argument, whatever its own
+	// `volumes:` list says. Reported apart from the bindings so an agent that
+	// was told "no volume bound" above still learns what it can read, and
+	// with the mode it will actually get.
+	if eph := tools.EphemeralVolumes(ctx); eph != nil {
+		names := eph.Names()
+		list := make([]map[string]any, 0, len(names))
+		for _, name := range names {
+			ref, ok := eph.Get(name)
+			if !ok {
+				continue
+			}
+			mode := "rw"
+			if ref.ReadOnly {
+				mode = "ro"
+			}
+			list = append(list, map[string]any{"name": name, "path": ref.Root, "mode": mode})
+		}
+		if len(list) > 0 {
+			out["ephemeral_volumes"] = map[string]any{
+				"volumes": list,
+				"note":    "Scratch volumes of this run, shared by every agent in it and deleted when the run ends. Name one in a tool's \"volume\" argument to use it; it is never the default.",
+			}
+		}
+	}
 	// network: the host allowlist the HTTP/WebFetch/WebSearch tools enforce for
 	// this run, so an agent knows which hosts it may reach instead of probing
 	// blind. A per-run caller list (allowed_hosts on POST /v1/runs) wins; else

@@ -44,14 +44,26 @@ the create fails instead of following it out of the dynamic root.
 - **create** `{name, mode, ephemeral: true}` — provision a **run-scoped
   ephemeral** volume instead of a tenant volume. The path is derived as
   `<dynamic_root>/_ephemeral/<root_run_id>/<name>`, so two concurrent runs
-  (even in one tenant) each get their OWN `work` with no collision. The
-  whole spawn tree resolves it (sub-agents inherit it via the narrow-only
-  rule); it is **auto-purged when the top-level run completes** (a singleton
-  sweeper backstops crashes). A team walk started with `mode: "detach"` uses
+  (even in one tenant) each get their OWN `work` with no collision. **Every
+  agent of the run can use it, with the mode it was created with**: a
+  sub-agent reaches it by name whatever its own `volumes:` list says, and
+  its own volume rules do not narrow it. To take write access away, use
+  `set_mode`. It is **auto-purged when the top-level run completes** (a
+  singleton sweeper backstops crashes). A team walk started with `mode: "detach"` uses
   its starter's ephemeral volumes and keeps them until it ends, even past the
   top-level run. Requires an active run; refused if the name
   collides with a static volume or already exists in this run. There is no
   `delete`/`purge` for ephemeral volumes — lifetime is the run.
+- **set_mode** `{name, mode: "ro"}` — make one of this run's **ephemeral**
+  volumes read-only. It applies at once to every agent of the run, you
+  included, and to sub-agents already running: their next `Write`, `Edit` or
+  `Bash` on the volume is refused, while `Read`, `Grep` and `Glob` go on
+  working. **It cannot be undone**: `mode: "rw"` is refused, and so is
+  re-creating the volume. Use it after you have filled a volume and before
+  you hand it to agents that must not change it. It is not for a persistent
+  volume (re-create that with the mode you want), and it works only inside a
+  run. Under `Bashbox` a write to a read-only volume appears to succeed
+  inside one command and is not kept.
 - **get** `{name}` / **list** — inspect your tenant's dynamic volumes.
   A volume owned by another tenant is reported as not-found.
 - **delete** `{name}` — remove the mapping but **LEAVE the files on disk**.
@@ -67,9 +79,10 @@ the create fails instead of following it out of the dynamic root.
 ## Capability gate
 
 The tool is default-deny. The operator grants it per-agent via
-`volume_def_scopes` in the agent yaml — `any` (create/delete/purge any
-name) or `named:<volume>` (a single name). Without a grant,
-create/delete/purge are refused; `get`/`list` are tenant-scoped reads.
+`volume_def_scopes` in the agent yaml — `any` (create/delete/purge/set_mode
+any name) or `named:<volume>` (a single name). Without a grant,
+create/delete/purge/set_mode are refused; `get`/`list` are tenant-scoped
+reads.
 
 ## Binding to a dynamic volume
 
