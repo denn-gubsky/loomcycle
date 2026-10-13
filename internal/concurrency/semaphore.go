@@ -306,9 +306,10 @@ func (s *Semaphore) AcquireForUser(ctx context.Context, tenantID, userID string)
 }
 
 // Wait takes a slot for work that was ALREADY admitted — a sub-agent of an
-// admitted run, a resumed run, a mid-run provider fallback, a background sweep
-// — so it never refuses: it ignores maxQueue and the timeout, and ends only
-// when a slot frees (FIFO with the Acquire waiters) or ctx ends (ctx.Err()).
+// admitted run, a resumed run, a mid-run provider fallback — so it never
+// refuses: it ignores maxQueue and the timeout, and ends only when a slot frees
+// (FIFO with the Acquire waiters) or ctx ends (ctx.Err()). A request that takes
+// no admission slot must not use it: queue depth is that request's only bound.
 // Refusing here would cancel work that already started, which a queue limit
 // must never do; the limits exist to turn away NEW requests.
 //

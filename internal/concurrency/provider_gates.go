@@ -136,10 +136,10 @@ func (g *ProviderGates) Acquire(ctx context.Context, id string) (release func(),
 }
 
 // Wait reserves a slot for provider id for work that was already admitted (a
-// sub-agent, a resumed run, a mid-run fallback, a background pass). It is never
-// refused: no queue depth, no timeout — it returns when a slot frees, FIFO with
-// every other waiter, or with ctx.Err() when ctx ends first. Uncapped (or a nil
-// g) is the shared noop. Release exactly once (idempotent).
+// sub-agent, a resumed run, a mid-run fallback). It is never refused: no queue
+// depth, no timeout — it returns when a slot frees, FIFO with every other
+// waiter, or with ctx.Err() when ctx ends first. Uncapped (or a nil g) is the
+// shared noop. Release exactly once (idempotent).
 func (g *ProviderGates) Wait(ctx context.Context, id string) (release func(), err error) {
 	sem := g.gate(id)
 	if sem == nil {
