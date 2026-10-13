@@ -30,20 +30,27 @@ The prompt size is in characters (`prompt_chars`). The probe never tokenizes.
 **Cold calls.** A cold call (`-cold`) prefixes the system prompt with a fresh nonce, so
 no cached prefix can match.
 
-**Model calibration** (`analyze.py`). From the cold calls of a model, it fits:
-- tokens per character, from `prompt_eval_count` over `prompt_chars`. Valid because on a cold call the whole prompt is evaluated.
-- prefill ms per token, as a function of prompt size: a linear fit on the cold calls.
+**Model calibration** (`analyze.py`). It comes from the **E1 cold arm only**: one agent,
+alone on the host, every call cold. For each model it fits:
+- tokens per character: the median of `prompt_eval_count` / `prompt_chars`. Valid because on a cold call the whole prompt is evaluated.
+- cold prefill time: a least-squares line, `prefill_ms = a + b · prompt_chars`, over the arm's calls.
 
 **Two reuse readings per warm call:**
-- `count_ratio` = `prompt_eval_count` / the expected tokens. Near 1 means the server counts the whole prompt either way. Well below 1 means it counts only what it evaluated.
-- `time_reuse` = 1 − `prefill_ms` / the expected cold prefill at that size. This works whichever way the server counts.
+- `count_ratio` = `prompt_eval_count` / (`prompt_chars` × tokens per character). Near 1 means the server counts the whole prompt either way. Well below 1 means it counts only what it evaluated.
+- `reuse` = 1 − `prefill_ms` / (a + b · `prompt_chars`). This works whichever way the server counts.
 
-**Reuse** is `time_reuse`, unless `count_ratio` turns out to separate the cold and warm
-arms better (decided by the instrument check below).
+**Bias, known in advance.** In multi-agent runs the host's concurrent prefill can lengthen
+a call's `prefill_ms`, which reads as less reuse. The estimate is conservative there; that
+is accepted, because what scheduling changes is the prefill time actually paid.
 
-**Instrument check, which must be able to fail.** In E1 the cold arm must read
-median reuse **≤ 0.2** on turns 2–10. If it does not, the measure is broken: nothing
-after E1 is scored, and P0 reports that.
+**Instrument checks, on E1, which must be able to fail.** If either fails, the measure
+is broken: nothing after E1 is scored, and P0 reports that.
+
+1. **The nonce busts the cache.** In the cold arm, prefill grows with the prompt:
+   - Let the size ratio be `prompt_chars` on turn 10 / `prompt_chars` on turn 1.
+   - Then `prefill_ms` on turn 10 / `prefill_ms` on turn 1 must be **≥ 0.8 ×** that size ratio.
+   - If the nonce left a prefix reusable, later cold turns would evaluate only the new text, and this ratio collapses.
+2. **The warm arm starts cold.** Turn 1 is the first sight of the prompt in both arms, so the warm arm's turn-1 `prefill_ms` must be within **±30 %** of the cold arm's turn 1.
 
 ## Workload
 
@@ -65,7 +72,7 @@ after E1 is scored, and P0 reports that.
 
 | # | Setup | Pass / decision |
 |---|---|---|
-| **E1** | 1 agent; one cold run, one warm run | **Instrument check above.** Then: warm median reuse on turns 2–10 **≥ 0.5** means reuse is observable. Below 0.5 means **no affinity is built**: `affinity_hold_ms` is fixed at 0 and the chat lane does call-level round-robin only. |
+| **E1** | 1 agent; one cold run, one warm run | **Instrument checks above.** Then: warm median reuse on turns 2–10 **≥ 0.5** means reuse is observable. Below 0.5 means **no affinity is built**: `affinity_hold_ms` is fixed at 0 and the chat lane does call-level round-robin only. |
 | **E2** | Policy `call` (quantum 1, no hold); K = 2, 4, 6, 8 agents; host `OLLAMA_NUM_PARALLEL` N = 2 and 4 | **Slot-bound cache:** reuse ≥ 0.5 at K ≤ N and **< 0.3** at K ≥ 2N. **Unbounded cache:** reuse ≥ 0.5 at K = 2N; then affinity is unnecessary and the hold defaults to 0. **No prefix matching:** reuse < 0.3 at K ≤ N; affinity cannot help on this host; hold 0. |
 | **E3** | K = 8 agents, host N = 4, probe chat slots 4. Policies: `none`, `run` (today), `call`, and `lease` with quantum ∈ {1, 2, 4, 8} × hold ∈ {0, 2000, 5000} ms | Metrics: aggregate output tokens/s (Σ `eval_count` / makespan), p50 and p95 TTFT, and the spread of agent finish times (sd / mean). **Choose:** the `lease` setting with the highest tokens/s among those whose p95 TTFT is within **1.25×** of the best p95 of all `lease` settings. On a tie (within 5%), take the smaller quantum, then the shorter hold. If E1/E2 ruled affinity out, only hold 0 is eligible. |
 | **E4** | Concurrent: 4 chat agents, 2 embed agents, 1 decision agent; 3 distinct models; probe lanes chat 4 / embed 2 / decision 1 | **No thrash:** after each model's first call, **0** calls with `load_ms` > 1000. **Isolation:** embed and decision p95 latency under the chat load **≤ 2×** their solo baseline (the same agents with the chat lane empty). Failing isolation means the lanes need a reserved host share, which becomes a P2 design input. |
