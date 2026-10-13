@@ -932,7 +932,12 @@ func (s *Server) resumePausedRun(run store.Run) error {
 	// resolution of its own ephemeral volumes. Best-effort: a store fault
 	// leaves an empty set (the agent can re-create) rather than failing resume.
 	// Keyed by the tree's root, which is what a volume is created under.
-	loopCtx = tools.WithEphemeralVolumes(loopCtx, s.rehydrateEphemeralVolumes(loopCtx, rootRunID))
+	//
+	// Every resumed run of one tree gets the SAME set, as a live tree does:
+	// a volume one of them creates or makes read-only after the resume has to
+	// hold for the others too.
+	ephSet, releaseEphSet := s.treeSets.acquire(rootRunID)
+	loopCtx = tools.WithEphemeralVolumes(loopCtx, s.loadEphemeralVolumes(loopCtx, rootRunID, ephSet))
 	loopCtx = tools.WithEventEmitter(loopCtx, emit)
 	adPolicy, evPolicy := s.substratePoliciesForAgent(agentDef, run.Agent)
 	loopCtx = tools.WithAgentDefPolicy(loopCtx, adPolicy)
@@ -1095,6 +1100,7 @@ func (s *Server) resumePausedRun(run store.Run) error {
 			runSpan.End()
 			cancelFn(nil)
 			releaseTree()
+			releaseEphSet()
 		}()
 		// RFC X Phase 3: reconcile a parked fan-out parent BEFORE acquiring a run
 		// slot. The reconcile awaits this parent's children (which acquire their

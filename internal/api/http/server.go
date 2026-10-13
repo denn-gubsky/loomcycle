@@ -184,6 +184,9 @@ type Server struct {
 	// runTrees defers a run tree's ephemeral purge past its top-level run
 	// while a detached walk started inside it still runs.
 	runTrees runTreeHolds
+	// treeSets is the one ephemeral volume set each run tree shares, looked
+	// up by the tree's root so a resumed run joins it (see treeVolumeSets).
+	treeSets treeVolumeSets
 	// walkHeartbeatEvery overrides how often a live walk's run is heartbeated;
 	// zero means the loop's own interval. Tests set it.
 	walkHeartbeatEvery time.Duration
@@ -3396,7 +3399,11 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 	// at this top-level start. Sub-agents inherit this SAME pointer via the
 	// ctx chain (runSubAgent must not re-attach it) — never shared across
 	// top-level runs (the load-bearing isolation property).
-	loopCtx = tools.WithEphemeralVolumes(loopCtx, tools.NewEphemeralVolumeSet())
+	// Registered under the tree's root, so a run of this tree that resume
+	// starts again joins this set and not a copy of it. Dropped with the
+	// tree's purge.
+	treeSet, _ := s.treeSets.acquire(runID)
+	loopCtx = tools.WithEphemeralVolumes(loopCtx, treeSet)
 	loopCtx = tools.WithChannelPolicy(loopCtx, s.channelPolicyForAgent(loopCtx, agentDef))
 	loopCtx = tools.WithOperatorAuthored(loopCtx, agentDef.OperatorAuthored)
 	loopCtx = tools.WithEventEmitter(loopCtx, emit)
@@ -5422,7 +5429,11 @@ func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {
 	loopCtx = tools.WithVolumePolicy(loopCtx, s.volumePolicyForAgent(loopCtx, agentDef))
 	// RFC AH Phase 2b: fresh run-scoped ephemeral volume set (inherited by
 	// sub-agents via ctx; never shared across top-level runs).
-	loopCtx = tools.WithEphemeralVolumes(loopCtx, tools.NewEphemeralVolumeSet())
+	// Registered under the tree's root, so a run of this tree that resume
+	// starts again joins this set and not a copy of it. Dropped with the
+	// tree's purge.
+	treeSet, _ := s.treeSets.acquire(runID)
+	loopCtx = tools.WithEphemeralVolumes(loopCtx, treeSet)
 	loopCtx = tools.WithChannelPolicy(loopCtx, s.channelPolicyForAgent(loopCtx, agentDef))
 	loopCtx = tools.WithOperatorAuthored(loopCtx, agentDef.OperatorAuthored)
 	loopCtx = tools.WithEventEmitter(loopCtx, emit)
@@ -6224,7 +6235,11 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 	loopCtx = tools.WithVolumePolicy(loopCtx, s.volumePolicyForAgent(loopCtx, agentDef))
 	// RFC AH Phase 2b: fresh run-scoped ephemeral volume set (inherited by
 	// sub-agents via ctx; never shared across top-level runs).
-	loopCtx = tools.WithEphemeralVolumes(loopCtx, tools.NewEphemeralVolumeSet())
+	// Registered under the tree's root, so a run of this tree that resume
+	// starts again joins this set and not a copy of it. Dropped with the
+	// tree's purge.
+	treeSet, _ := s.treeSets.acquire(run.ID)
+	loopCtx = tools.WithEphemeralVolumes(loopCtx, treeSet)
 	loopCtx = tools.WithChannelPolicy(loopCtx, s.channelPolicyForAgent(loopCtx, agentDef))
 	loopCtx = tools.WithOperatorAuthored(loopCtx, agentDef.OperatorAuthored)
 	loopCtx = tools.WithEventEmitter(loopCtx, emit)
@@ -10143,6 +10158,7 @@ func (s *Server) purgeEphemeralVolumesForRun(rootRunID string) {
 	if rootRunID == "" || s.runTrees.deferPurge(rootRunID) {
 		return
 	}
+	s.treeSets.drop(rootRunID)
 	// RFC AA SQL Memory: roll back any explicit transactions this run tree left
 	// open (Phase 3a) — releasing their pinned scope connections — BEFORE
 	// dropping the run-scope database (an open txn on the run scope would hold a
@@ -10184,6 +10200,15 @@ func (s *Server) purgeEphemeralVolumesForRun(rootRunID string) {
 // (an empty set in the worst case — the agent can re-create).
 func (s *Server) rehydrateEphemeralVolumes(ctx context.Context, rootRunID string) *tools.EphemeralVolumeSet {
 	set := tools.NewEphemeralVolumeSet()
+	s.loadEphemeralVolumes(ctx, rootRunID, set)
+	return set
+}
+
+// loadEphemeralVolumes adds the tree's stored ephemeral volumes to set. It
+// only ever adds a volume or makes one read-only: a volume the set already
+// holds as read-only stays so whatever the row says, so loading into a set
+// other runs are using cannot hand back write access.
+func (s *Server) loadEphemeralVolumes(ctx context.Context, rootRunID string, set *tools.EphemeralVolumeSet) *tools.EphemeralVolumeSet {
 	if s.store == nil || rootRunID == "" {
 		return set
 	}
@@ -10200,6 +10225,8 @@ func (s *Server) rehydrateEphemeralVolumes(ctx context.Context, rootRunID string
 		if err := json.Unmarshal(r.Definition, &body); err != nil || body.Path == "" {
 			continue
 		}
+		// Add keeps an entry read-only, so a row read before another run's
+		// set_mode cannot hand write access back.
 		set.Add(r.Name, tools.EphemeralVolumeRef{Root: body.Path, ReadOnly: body.Mode == "ro"})
 	}
 	return set

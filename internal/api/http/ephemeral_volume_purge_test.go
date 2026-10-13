@@ -147,6 +147,83 @@ func TestRehydrateEphemeralVolumes_KeepsAVolumeReadOnly(t *testing.T) {
 	}
 }
 
+// The resumed runs of one tree share one set, so a volume one of them makes
+// read-only after the resume is read-only for the others. Each used to get a
+// set of its own, and a resumed child kept writing to a volume its parent
+// had closed.
+func TestTreeVolumeSets_RunsOfOneTreeShareOneSet(t *testing.T) {
+	srv, st, root := ephemeralPurgeServer(t)
+	runID, dir := seedEphemeral(t, st, root, "work")
+	ctx := context.Background()
+
+	parentSet, releaseParent := srv.treeSets.acquire(runID)
+	srv.loadEphemeralVolumes(ctx, runID, parentSet)
+	childSet, releaseChild := srv.treeSets.acquire(runID)
+	srv.loadEphemeralVolumes(ctx, runID, childSet)
+	if parentSet != childSet {
+		t.Fatal("two resumed runs of one tree got different sets")
+	}
+	parentSet.SetReadOnly("work")
+	if ref, ok := childSet.Get("work"); !ok || ref.Root != dir || !ref.ReadOnly {
+		t.Errorf("the other run sees %+v ok=%v, want read-only", ref, ok)
+	}
+
+	// Loading the rows again, where the row still says rw, gives nothing back.
+	srv.loadEphemeralVolumes(ctx, runID, parentSet)
+	if ref, _ := parentSet.Get("work"); !ref.ReadOnly {
+		t.Error("loading the stored rows made a read-only volume writable")
+	}
+
+	// Another tree gets its own set.
+	otherSet, releaseOther := srv.treeSets.acquire("another-root")
+	defer releaseOther()
+	if otherSet == parentSet {
+		t.Error("two trees share a set")
+	}
+
+	// The entry goes with the last run of the tree, and release counts once.
+	releaseParent()
+	releaseParent()
+	if again, release := srv.treeSets.acquire(runID); again != parentSet {
+		t.Error("the set was dropped while a run of the tree still held it")
+	} else {
+		release()
+	}
+	releaseChild()
+	if fresh, release := srv.treeSets.acquire(runID); fresh == parentSet {
+		t.Error("the set outlived the last run of the tree")
+	} else {
+		release()
+	}
+}
+
+// A run that resume starts again joins the set of its tree's live top-level
+// run, and the tree's purge forgets the set.
+func TestTreeVolumeSets_AResumedRunJoinsTheLiveTreeAndPurgeForgetsIt(t *testing.T) {
+	srv, st, root := ephemeralPurgeServer(t)
+	runID, _ := seedEphemeral(t, st, root, "work")
+	ctx := context.Background()
+
+	live, _ := srv.treeSets.acquire(runID) // what a top-level start does
+	srv.loadEphemeralVolumes(ctx, runID, live)
+	resumed, release := srv.treeSets.acquire(runID) // what resume does for a child
+	defer release()
+	if resumed != live {
+		t.Fatal("a resumed run of a live tree got a set of its own")
+	}
+	resumed.SetReadOnly("work")
+	if ref, _ := live.Get("work"); !ref.ReadOnly {
+		t.Error("read-only set by the resumed run is not seen by the live one")
+	}
+
+	srv.purgeEphemeralVolumesForRun(runID)
+	if after, rel := srv.treeSets.acquire(runID); after == live {
+		t.Error("the set outlived the tree's purge")
+	} else {
+		rel()
+	}
+}
+
 // rehydrate is scoped to its own run — it must NOT load another run's ephemeral
 // volumes (a regression to list-all would breach run isolation).
 func TestRehydrateEphemeralVolumes_DoesNotLeakOtherRun(t *testing.T) {

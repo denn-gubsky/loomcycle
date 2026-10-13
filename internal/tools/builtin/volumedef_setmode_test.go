@@ -175,3 +175,36 @@ func TestContextTool_SelfListsEphemeralVolumesWithTheirMode(t *testing.T) {
 		t.Error("an empty set was reported")
 	}
 }
+
+// A run whose set does not know the tree's volume (a resumed run that could
+// not read its volumes back) must not get it back writable by creating it
+// again. The create is refused, and the volume is taken into the set with the
+// mode that is recorded.
+func TestVolumeDefTool_CreateOverARecordedReadOnlyVolumeIsRefusedAndStaysReadOnly(t *testing.T) {
+	tool, base, _, done := volumeDefFixture(t)
+	defer done()
+	first, _ := ephemeralCtx(base, "run-1")
+	if _, res := vdExec(t, tool, first, `{"op":"create","name":"repo","ephemeral":true}`); res.IsError {
+		t.Fatal(res.Text)
+	}
+	if _, res := vdExec(t, tool, first, `{"op":"set_mode","name":"repo","mode":"ro"}`); res.IsError {
+		t.Fatal(res.Text)
+	}
+
+	// The same tree, an empty set.
+	again, set := ephemeralCtx(base, "run-1")
+	if _, res := vdExec(t, tool, again, `{"op":"create","name":"repo","mode":"rw","ephemeral":true}`); !res.IsError || !strings.Contains(res.Text, "already exists") {
+		t.Fatalf("create over a recorded volume: error=%v %q", res.IsError, res.Text)
+	}
+	ref, ok := set.Get("repo")
+	if !ok || !ref.ReadOnly {
+		t.Fatalf("after the refused create the set holds %+v ok=%v, want the volume, read-only", ref, ok)
+	}
+	if res := fileCall(t, again, &Write{}, map[string]any{"volume": "repo", "path": "a.txt", "content": "x"}); !res.IsError || !strings.Contains(res.Text, "read-only") {
+		t.Errorf("the run can write to it: error=%v %q", res.IsError, res.Text)
+	}
+	rows, _ := tool.Store.EphemeralVolumeListByRun(context.Background(), "run-1")
+	if len(rows) != 1 || !strings.Contains(string(rows[0].Definition), `"ro"`) {
+		t.Errorf("stored row = %+v, want one row, mode ro", rows)
+	}
+}

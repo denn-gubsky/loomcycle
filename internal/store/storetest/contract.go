@@ -14238,6 +14238,27 @@ func testEphemeralVolumeSetReadOnlyIsOneRowAndKeepsThePath(t *testing.T, s store
 	if found, err := s.EphemeralVolumeSetReadOnly(ctx, "ro-run-1", "absent"); err != nil || found {
 		t.Errorf("a missing row: found=%v err=%v, want (false, nil)", found, err)
 	}
+
+	// Writing the row again cannot hand write access back: the create is the
+	// only other writer of the row, and it keeps a read-only mode. The rest
+	// of the new definition is taken, and the returned row says what is stored.
+	row, err := s.EphemeralVolumeCreate(ctx, mkEphemeralVolume("ro-run-1", "repo", "", "/pool/_ephemeral/ro-run-1/repo", "rw"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !jsonEqual(row.Definition, `{"path":"/pool/_ephemeral/ro-run-1/repo","mode":"ro"}`) {
+		t.Errorf("a create over a read-only volume returned %s, want mode ro", row.Definition)
+	}
+	if got := body("ro-run-1", "repo"); !jsonEqual([]byte(got), `{"path":"/pool/_ephemeral/ro-run-1/repo","mode":"ro"}`) {
+		t.Errorf("a create over a read-only volume stored %s, want mode ro", got)
+	}
+	// A writable volume is still replaced as before.
+	if _, err := s.EphemeralVolumeCreate(ctx, mkEphemeralVolume("ro-run-1", "scratch", "", "/pool/_ephemeral/ro-run-1/scratch", "ro")); err != nil {
+		t.Fatal(err)
+	}
+	if got := body("ro-run-1", "scratch"); !jsonEqual([]byte(got), `{"path":"/pool/_ephemeral/ro-run-1/scratch","mode":"ro"}`) {
+		t.Errorf("a create over a writable volume stored %s, want the new definition", got)
+	}
 }
 
 // testEphemeralVolumeCreateListDelete pins the create/list/delete-by-run

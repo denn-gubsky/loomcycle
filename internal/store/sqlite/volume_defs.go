@@ -168,6 +168,10 @@ func (s *Store) SnapshotRestoreVolumeDef(ctx context.Context, row store.VolumeDe
 // existing name within the same run updates the definition + leaves
 // created_at intact (mirrors VolumeDefCreate). created_at is stamped here
 // (server clock).
+//
+// One thing an update never does: turn a read-only volume writable. Read-only
+// is one-way (EphemeralVolumeSetReadOnly), and this is the only other writer
+// of the row, so the rule is kept here and not left to each caller.
 func (s *Store) EphemeralVolumeCreate(ctx context.Context, row store.EphemeralVolumeDefRow) (store.EphemeralVolumeDefRow, error) {
 	now := time.Now()
 	if _, err := s.db.ExecContext(ctx,
@@ -175,7 +179,10 @@ func (s *Store) EphemeralVolumeCreate(ctx context.Context, row store.EphemeralVo
 		 VALUES (?, ?, ?, ?, ?)
 		 ON CONFLICT(root_run_id, name) DO UPDATE SET
 		     tenant_id  = excluded.tenant_id,
-		     definition = excluded.definition`,
+		     definition = CASE
+		         WHEN json_extract(ephemeral_volume_defs.definition, '$.mode') = 'ro'
+		         THEN json_set(excluded.definition, '$.mode', 'ro')
+		         ELSE excluded.definition END`,
 		row.RootRunID, row.Name, row.TenantID, string(row.Definition), now.UnixNano(),
 	); err != nil {
 		return store.EphemeralVolumeDefRow{}, err

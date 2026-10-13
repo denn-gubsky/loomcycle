@@ -3644,6 +3644,10 @@ type Store interface {
 	// derived by the tool — never caller-supplied. The purge paths re-derive
 	// the path rather than trust this stored value (same posture as VolumeDef
 	// purge), so a tampered row can't redirect an os.RemoveAll.
+	//
+	// Writing a row that already exists replaces its definition, with one
+	// exception: a row whose mode is "ro" keeps that mode. The returned row
+	// is what is stored, so a caller reads the mode from it.
 	EphemeralVolumeCreate(ctx context.Context, row EphemeralVolumeDefRow) (EphemeralVolumeDefRow, error)
 	// EphemeralVolumeListByRun returns all ephemeral rows for one root run,
 	// ordered by name. Empty slice (not error) when the run owns none.
