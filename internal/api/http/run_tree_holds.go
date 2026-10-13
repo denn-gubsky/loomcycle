@@ -97,45 +97,49 @@ func (s *Server) holdRunTree(root string) (release func()) {
 	}
 }
 
-// resumedVolumeSets gives every resumed run of one tree the same ephemeral
-// volume set.
+// treeVolumeSets holds the one ephemeral volume set of each run tree that has
+// a run in this process.
 //
-// A live tree shares one set by passing the pointer down its contexts. Resume
-// has no such chain: each paused run of the tree is started again on its own,
-// and each used to rebuild a private set from the stored rows. From then on a
-// volume one of them created, or made read-only, was not seen by the others.
+// A live tree shares its set by passing the pointer down its contexts. That
+// chain does not reach a run started again by resume: each paused run of a
+// tree is re-dispatched on its own, and each used to rebuild a private set
+// from the stored rows. From then on a volume one of them created, or made
+// read-only, was not seen by the others, nor by a parent that was still live.
 // The read-only switch is an access control, so that gap let a resumed child
 // keep writing to a volume its parent had just closed.
 //
-// Entries are counted and dropped with the last resumed run of the tree.
-// In-process only: a run of the tree on another replica has its own set.
+// So the set is looked up by the tree's root: a top-level run registers the
+// set it starts with, and every resumed run of the tree joins it. An entry is
+// counted, and goes with its last holder or when the tree's volumes are
+// purged, whichever is first. In-process only: a run of the tree on another
+// replica has its own set.
 //
 // Zero value works.
-type resumedVolumeSets struct {
+type treeVolumeSets struct {
 	mu   sync.Mutex
-	sets map[string]*resumedVolumeSet
+	sets map[string]*treeVolumeSet
 }
 
-type resumedVolumeSet struct {
+type treeVolumeSet struct {
 	set  *tools.EphemeralVolumeSet
 	refs int
 }
 
-// acquire returns the tree's shared set, creating it when this is the first
-// resumed run of the tree, and a release to call when the run has ended. An
-// empty root gets a private set and a no-op release.
-func (r *resumedVolumeSets) acquire(root string) (*tools.EphemeralVolumeSet, func()) {
+// acquire returns the tree's set, creating it when no run of the tree holds
+// one yet, and a release to call when the caller's run has ended. An empty
+// root gets a private set and a no-op release.
+func (r *treeVolumeSets) acquire(root string) (*tools.EphemeralVolumeSet, func()) {
 	if root == "" {
 		return tools.NewEphemeralVolumeSet(), func() {}
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if r.sets == nil {
-		r.sets = map[string]*resumedVolumeSet{}
+		r.sets = map[string]*treeVolumeSet{}
 	}
 	e := r.sets[root]
 	if e == nil {
-		e = &resumedVolumeSet{set: tools.NewEphemeralVolumeSet()}
+		e = &treeVolumeSet{set: tools.NewEphemeralVolumeSet()}
 		r.sets[root] = e
 	}
 	e.refs++
@@ -149,4 +153,13 @@ func (r *resumedVolumeSets) acquire(root string) (*tools.EphemeralVolumeSet, fun
 			}
 		})
 	}
+}
+
+// drop forgets the tree's set. Called when the tree's volumes are purged:
+// nothing is left for the set to name, and a top-level run that registered
+// it has no later point at which to release.
+func (r *treeVolumeSets) drop(root string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	delete(r.sets, root)
 }

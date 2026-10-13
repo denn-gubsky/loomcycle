@@ -936,7 +936,7 @@ func (s *Server) resumePausedRun(run store.Run) error {
 	// Every resumed run of one tree gets the SAME set, as a live tree does:
 	// a volume one of them creates or makes read-only after the resume has to
 	// hold for the others too.
-	ephSet, releaseEphSet := s.resumedSets.acquire(rootRunID)
+	ephSet, releaseEphSet := s.treeSets.acquire(rootRunID)
 	loopCtx = tools.WithEphemeralVolumes(loopCtx, s.loadEphemeralVolumes(loopCtx, rootRunID, ephSet))
 	loopCtx = tools.WithEventEmitter(loopCtx, emit)
 	adPolicy, evPolicy := s.substratePoliciesForAgent(agentDef, run.Agent)
