@@ -369,12 +369,16 @@ func TestRetentionOverride_TheConnectorChecksTheCallerItself(t *testing.T) {
 		t.Errorf("a second clear: %+v, %v", res, err)
 	}
 	for what, req := range map[string]connector.RetentionOverrideRequest{
-		"an unknown op": {Op: "extend", Agent: "other"},
+		// With everything a set needs, so that falling through to one would show.
+		"an unknown op": {Op: "extend", Agent: "other", Until: time.Now().Add(time.Hour)},
 		"no agent":      {Op: "set", Until: time.Now().Add(time.Hour)},
 		"no until":      {Op: "set", Agent: "other"},
 	} {
 		if _, err := s.RetentionOverride(ops, req); !errors.Is(err, connector.ErrRetentionOverrideInvalid) {
 			t.Errorf("%s: err = %v, want ErrRetentionOverrideInvalid", what, err)
 		}
+	}
+	if ok, _ := st.RetentionOverrideActive(context.Background(), "acme", "other", time.Now()); ok {
+		t.Error("a refused request set an override")
 	}
 }

@@ -83,5 +83,8 @@ a limited time:
   member may not.
 - Setting and clearing are audited, and the console shows a banner while
   one is in force.
+- The same three operations are the gRPC `RetentionOverride` RPC, the MCP
+  tool `retention_override`, and methods on the TypeScript and Python
+  clients.
 - Runs made in the window are ordinary stored runs; delete their run
   trees when the debugging is done.
