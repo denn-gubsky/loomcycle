@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"regexp"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -952,6 +953,19 @@ type ProviderConfig struct {
 	// MaxConcurrent caps in-flight calls to this provider. 0 = unbounded (the
 	// current behaviour). Must be >= 0.
 	MaxConcurrent int `json:"max_concurrent,omitempty" yaml:"max_concurrent,omitempty"`
+	// MaxModelsInFlight is how many DIFFERENT models may compute on this
+	// provider at once, across all lanes (some local hosts fail when several
+	// do). 0 = unlimited. Must be >= 0.
+	MaxModelsInFlight int `json:"max_models_in_flight,omitempty" yaml:"max_models_in_flight,omitempty"`
+	// ModelSwitchMaxWaitMS bounds how long a call for a waiting model can be
+	// starved: after this long, newer calls on the in-flight model stop being
+	// admitted so it can drain. 0 = the default; read it through
+	// ModelSwitchMaxWaitMSOrDefault. Only meaningful with MaxModelsInFlight > 0.
+	ModelSwitchMaxWaitMS int `json:"model_switch_max_wait_ms,omitempty" yaml:"model_switch_max_wait_ms,omitempty"`
+	// Lanes caps model calls per model kind (the models: `kind` tag — chat /
+	// decision / embedder). Read them through EffectiveLanes, which folds in the
+	// MaxConcurrent shorthand for the chat lane.
+	Lanes map[string]ProviderLane `json:"lanes,omitempty" yaml:"lanes,omitempty"`
 	// Options carries driver-specific tuning (ollama num_ctx/num_gpu, code-js
 	// code_root, …), passed opaquely to the driver factory. Unknown keys are
 	// logged and ignored by the driver, never fatal.
@@ -960,6 +974,129 @@ type ProviderConfig struct {
 	// Capabilities (a model behind an OpenAI-compatible base URL that DOES
 	// support vision, say). Nil = advertise the driver defaults.
 	Capabilities *CapabilityOverride `json:"capabilities,omitempty" yaml:"capabilities,omitempty"`
+}
+
+// ProviderLane is one model kind's queue on a provider: how many calls of that
+// kind are in flight, and how the runs waiting for one take turns.
+type ProviderLane struct {
+	// MaxConcurrent caps the lane's in-flight calls. 0 = the lane is ungated,
+	// and then none of the fields below may be set: they shape a queue that
+	// would not exist.
+	MaxConcurrent int `json:"max_concurrent,omitempty" yaml:"max_concurrent,omitempty"`
+	// QuantumCalls is how many consecutive calls a RUN may make on the slot
+	// reserved for it while other runs wait; after that it yields and queues
+	// again. 0 = unlimited. Only matters with AffinityHoldMS > 0.
+	QuantumCalls int `json:"quantum_calls,omitempty" yaml:"quantum_calls,omitempty"`
+	// AffinityHoldMS is how long a slot stays reserved for the run that just
+	// used it, so its next call lands on a warm prompt cache. 0 = no
+	// reservation: a plain fair queue, call by call.
+	AffinityHoldMS int `json:"affinity_hold_ms,omitempty" yaml:"affinity_hold_ms,omitempty"`
+	// BackgroundShare is the least fraction of the lane's turns given to
+	// background work (consolidation, reindexing) while both it and live runs
+	// wait, in [0, 1). 0 = live runs always go first.
+	BackgroundShare float64 `json:"background_share,omitempty" yaml:"background_share,omitempty"`
+}
+
+// defaultModelSwitchMaxWaitMS is the model-switch wait when
+// max_models_in_flight is set and model_switch_max_wait_ms is not.
+const defaultModelSwitchMaxWaitMS = 30000
+
+// modelKinds are the lane keys a provider may declare, in the order errors
+// list them.
+var modelKinds = []string{ModelKindChat, ModelKindDecision, ModelKindEmbedder}
+
+// EffectiveLanes returns the provider's gated lanes keyed by model kind, with
+// the max_concurrent shorthand applied: it is the chat lane's cap when that
+// lane sets none. A lane with no cap is ungated and is left out, so a provider
+// with neither key returns an empty map.
+func (p ProviderConfig) EffectiveLanes() map[string]ProviderLane {
+	out := make(map[string]ProviderLane, len(p.Lanes)+1)
+	for kind, lane := range p.Lanes {
+		if lane.MaxConcurrent > 0 {
+			out[kind] = lane
+		}
+	}
+	if _, ok := out[ModelKindChat]; !ok && p.MaxConcurrent > 0 {
+		chat := p.Lanes[ModelKindChat]
+		chat.MaxConcurrent = p.MaxConcurrent
+		out[ModelKindChat] = chat
+	}
+	return out
+}
+
+// ModelSwitchMaxWaitMSOrDefault returns how long a waiting model may be held
+// off by newer calls on the in-flight one: the configured value, else 30000.
+// 0 when max_models_in_flight is unset — nothing waits for a model switch.
+func (p ProviderConfig) ModelSwitchMaxWaitMSOrDefault() int {
+	if p.MaxModelsInFlight <= 0 {
+		return 0
+	}
+	if p.ModelSwitchMaxWaitMS > 0 {
+		return p.ModelSwitchMaxWaitMS
+	}
+	return defaultModelSwitchMaxWaitMS
+}
+
+// validateLanes checks the per-kind lane block and the two model-switch keys of
+// providers.<id>. Lanes are walked in key order so the same config always
+// reports the same error.
+func (p ProviderConfig) validateLanes(id string) error {
+	if p.MaxModelsInFlight < 0 {
+		return fmt.Errorf("providers.%s: max_models_in_flight must be >= 0", id)
+	}
+	if p.ModelSwitchMaxWaitMS < 0 {
+		return fmt.Errorf("providers.%s: model_switch_max_wait_ms must be >= 0", id)
+	}
+	kinds := make([]string, 0, len(p.Lanes))
+	for kind := range p.Lanes {
+		kinds = append(kinds, kind)
+	}
+	sort.Strings(kinds)
+	for _, kind := range kinds {
+		lane := p.Lanes[kind]
+		place := fmt.Sprintf("providers.%s.lanes.%s", id, kind)
+		if !slices.Contains(modelKinds, kind) {
+			return fmt.Errorf("providers.%s: lanes: unknown lane %q (want one of %v)", id, kind, modelKinds)
+		}
+		if lane.MaxConcurrent < 0 {
+			return fmt.Errorf("%s: max_concurrent must be >= 0", place)
+		}
+		if lane.QuantumCalls < 0 {
+			return fmt.Errorf("%s: quantum_calls must be >= 0", place)
+		}
+		if lane.AffinityHoldMS < 0 {
+			return fmt.Errorf("%s: affinity_hold_ms must be >= 0", place)
+		}
+		// Written as "not in range" so a NaN is refused too.
+		if !(lane.BackgroundShare >= 0 && lane.BackgroundShare < 1) {
+			return fmt.Errorf("%s: background_share must be >= 0 and < 1", place)
+		}
+		capped := lane.MaxConcurrent
+		if kind == ModelKindChat {
+			if lane.MaxConcurrent > 0 && p.MaxConcurrent > 0 && lane.MaxConcurrent != p.MaxConcurrent {
+				return fmt.Errorf("providers.%s: max_concurrent (%d) and lanes.chat.max_concurrent (%d) both cap the chat lane and differ: set one of them",
+					id, p.MaxConcurrent, lane.MaxConcurrent)
+			}
+			if capped == 0 {
+				capped = p.MaxConcurrent
+			}
+		}
+		if capped == 0 {
+			for _, f := range []struct {
+				key string
+				set bool
+			}{
+				{"quantum_calls", lane.QuantumCalls != 0},
+				{"affinity_hold_ms", lane.AffinityHoldMS != 0},
+				{"background_share", lane.BackgroundShare != 0},
+			} {
+				if f.set {
+					return fmt.Errorf("%s: %s is set but the lane has no max_concurrent, so the lane is ungated and %s would do nothing", place, f.key, f.key)
+				}
+			}
+		}
+	}
+	return nil
 }
 
 // CapabilityOverride is the operator-facing override of a driver's advertised
@@ -7586,6 +7723,9 @@ func validate(c *Config) error {
 		}
 		if pc.MaxConcurrent < 0 {
 			return fmt.Errorf("providers.%s: max_concurrent must be >= 0", id)
+		}
+		if err := pc.validateLanes(id); err != nil {
+			return err
 		}
 		dialects, ok := providers.DriverDialects(pc.Driver)
 		if !ok {

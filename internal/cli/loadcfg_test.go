@@ -3,7 +3,10 @@ package cli
 import (
 	"os"
 	"path/filepath"
+	"reflect"
 	"testing"
+
+	"github.com/denn-gubsky/loomcycle/internal/config"
 )
 
 // TestLoadLayeredConfig_PresetAliasResolvesInOverlayAgent is the regression for
@@ -53,5 +56,45 @@ func TestLoadLayeredConfig_NoPresetsUnchanged(t *testing.T) {
 	}
 	if _, ok := cfg.Models["deepseek-pro"]; ok {
 		t.Error("deepseek-pro alias present without presets — layering leaked the base preset")
+	}
+}
+
+// TestLoadLayeredConfig_OperatorLanesMergeOverBuiltinProvider: an operator entry
+// that sets only the lane keys lands on the embedded built-in provider — the
+// built-in's driver survives, and the max_concurrent shorthand caps the chat
+// lane whose entry sets only tuning.
+func TestLoadLayeredConfig_OperatorLanesMergeOverBuiltinProvider(t *testing.T) {
+	t.Setenv("LOOMCYCLE_PRESETS", "")
+	t.Setenv("LOOMCYCLE_CONFIG_DIR", "")
+	t.Setenv("LOOMCYCLE_CONFIG_FILES", "")
+	t.Setenv("LOOMCYCLE_NO_DEFAULT_PROVIDERS", "")
+	overlay := filepath.Join(t.TempDir(), "overlay.yaml")
+	src := "providers:\n" +
+		"  ollama-local:\n" +
+		"    max_concurrent: 4\n" +
+		"    max_models_in_flight: 1\n" +
+		"    lanes:\n" +
+		"      chat: { quantum_calls: 4 }\n" +
+		"      embedder: { max_concurrent: 2, background_share: 0.25 }\n"
+	if err := os.WriteFile(overlay, []byte(src), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := loadLayeredConfig(overlay)
+	if err != nil {
+		t.Fatalf("loadLayeredConfig: %v", err)
+	}
+	pc := cfg.Providers["ollama-local"]
+	if pc.Driver != "ollama" {
+		t.Errorf("driver = %q, want the built-in's ollama", pc.Driver)
+	}
+	want := map[string]config.ProviderLane{
+		config.ModelKindChat:     {MaxConcurrent: 4, QuantumCalls: 4},
+		config.ModelKindEmbedder: {MaxConcurrent: 2, BackgroundShare: 0.25},
+	}
+	if got := pc.EffectiveLanes(); !reflect.DeepEqual(got, want) {
+		t.Errorf("EffectiveLanes() = %+v, want %+v", got, want)
+	}
+	if got := pc.ModelSwitchMaxWaitMSOrDefault(); got != 30000 {
+		t.Errorf("ModelSwitchMaxWaitMSOrDefault() = %d, want 30000", got)
 	}
 }
