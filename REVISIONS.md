@@ -8,6 +8,108 @@ Each entry is the release's tag annotation, so the tag and this file cannot disa
 
 For the **public roadmap**, see [`docs/PLAN.md`](docs/PLAN.md).
 
+## What's in v1.112.0
+
+*A deployment can now hand a token to a machine it does not control, and run agents on content it may not keep. A token can **expire**, be **limited to certain agents**, be **locked out of per-run settings**, be **rate limited**, and be made **no-trace**. A **no-trace run** delivers what it says to its caller and stores none of it. A stored **run tree can be deleted**. Token budgets can be **enforced on runs in flight**, and the raw model endpoints are now gated and metered.*
+
+A minor release: #1727 to #1743, except #1738 (README wording).
+- #1727, #1730, #1731, #1734 restrict a token: lifetime, agents, per-run settings, rate;
+- #1733 gates and meters the raw model endpoints; #1735 and #1736 make budgets strict and the gateway's estimate durable;
+- #1737 locks an agent's per-run settings on its definition;
+- #1728 lets a code agent forward untrusted input to a child by reference;
+- #1732 deletes one run tree;
+- #1739 to #1743 are no-trace runs and the timed override that debugs them;
+- #1729 changes the bundled cloud-deployment config only.
+
+### A token that is safe to hand out (#1727, #1730, #1731, #1734)
+
+A token minted for a client machine can now be narrowed to one purpose. Each restriction is set where a token is minted — `operator-token create`, the `operatortokendef` tool, `POST /v1/_users/{subject}/tokens`, and a declared principal — and is carried over by a rotation.
+
+- **Lifetime.** `ttl_seconds` gives a token a fixed life; it stops authenticating when it runs out, and a rotation does not extend it. A token cannot mint one that outlives it. A `substrate:admin` token cannot have one. The per-user mint also takes `name` and `max_active` (keep at most N of a user's tokens alive). `LOOMCYCLE_USER_TOKEN_MAX_TTL_SECONDS` caps a per-user token's life.
+- **Agents.** `agents: [...]` limits the token to starting those agents as top-level runs. Such a token is also held to the run endpoints on every transport: definitions, team walks, schedules, the model gateways, channels, memory, documents, the credential store and A2A are all refused (`restricted_token`), whatever its scopes.
+- **Per-run settings.** `overrides: "none"` locks the model, provider, tier, effort, the limits, sampling, compaction, hooks and the rest for runs the token starts; a list names the ones it may still set. A locked setting is refused (`override_not_allowed`), never ignored.
+- **Rate.** `rate: {per_minute, burst}` bounds how often the token starts runs (`429 rate_limited` with `Retry-After`). It is per user, not per token, and per replica. `LOOMCYCLE_RUN_RATE_PER_MINUTE` sets a default for tokens that carry none; it does not bind operators.
+
+See "Multi-tenant authentication" in [`docs/CONFIGURATION.md`](docs/CONFIGURATION.md).
+
+### The raw model endpoints are gated and metered (#1733, #1736)
+
+`POST /v1/_llm/chat`, `/v1/chat/completions` and `/v1/embeddings` call a model with no agent, no tool allowlist and no run row.
+
+- **A new scope, `llm:gateway`.** Admins and tenant operators have it. An isolated user's token needs it by name.
+- **Budgets apply.** A caller at a hard token budget is refused before the call.
+- **Usage is recorded.** A call the provider reports on is written to the usage ledger and counts against the caller's budget, cache tokens included.
+- **A call that ends with no usage report** — the caller hung up, the provider failed first, or it reported zero — is counted against the budget by an estimate from its size. The estimate survives a restart and stays out of the usage ledger.
+
+### Strict token budgets (#1735)
+
+A hard budget was checked when a run starts and nowhere else, so a run already going, and every sub-agent it spawned, kept spending. `LOOMCYCLE_LIMITS_ENFORCE=strict` also checks it before each model call of a run in flight, before each sub-agent starts, and when a paused run is resumed.
+
+- A run stopped this way ends `failed` with `stop_reason` `token_limit`.
+- A refused sub-agent is the parent's tool error; no row is written for the child.
+- The overshoot is bounded by one model call per run in flight.
+- Any value other than `strict` stops the server at boot.
+
+Unset, nothing changes.
+
+### An agent that runs on its definition only (#1737)
+
+`allow_overrides: false` on an agent's definition refuses the same per-run settings a token lock does, for every caller: an admin, a schedule and a parent agent included. A fork can add the lock and cannot remove it, and a lock written in the server config holds over a tenant's own version of the agent.
+
+### Untrusted input by reference in a code agent (#1728)
+
+A code agent receives its run's untrusted input as `input.untrusted`, as data. It can forward it to a child without copying it through a prompt: `untrusted: [{ref: "input"}]` on a spawn. The code-agent ABI is 1.3.0. A run request with a segment block type the server does not know is now refused with 400.
+
+### Deleting one run tree (#1732)
+
+`DELETE /v1/runs/{run_id}/tree` removes a run and every run it spawned; `DELETE /v1/sessions/{session_id}?cascade=children` does the same for every run of a session. Events, runs, sessions left empty, interrupts, evaluations, queued memory rows and indexed turns go; the usage ledger stays.
+
+- It needs the new **`runs:delete`** scope and read access to the run. Admins and tenant operators have the scope; an isolated user and a member do not unless it was granted at mint.
+- A tree with a live run is refused whole (409). A second call returns zero counts.
+- The answer names what it could not reach: stored snapshots, export files already written, and facts consolidation derived from the sessions.
+- Also the gRPC `DeleteRunTree` RPC, the MCP `delete_run_tree` tool and both clients.
+
+### No-trace runs (#1739, #1740, #1741)
+
+By default loomcycle keeps everything a run says. A **no-trace run** is for content with one purpose and one reader: what it says is delivered to whoever is waiting for it and stored nowhere.
+
+The mode is `retention: "none"`. It is set on a run (`POST /v1/runs`, a batch child, gRPC `Run` / `SpawnRunBatch`, MCP `spawn_run` / `spawn_runs`), on an agent's definition, or on a token. A sub-agent of a no-trace run is one too. The strictest wins and nothing loosens it; an unknown value is refused.
+
+- **Kept:** the run and session rows and their links, status, a stop reason from the runtime's own list, the error's class, model and token counts, the usage ledger, and a marker for every event (its type, time, size, tool name and ids).
+- **Not stored:** prompts, the system prompt, model text and reasoning, tool arguments and results, the final answer, the error's text, the run's settings record, trace-index rows and banked turns.
+- **Still delivered:** the caller on the connection gets the full stream and the full error; a parent gets its child's answer.
+- **Refused** (`retention_none_unsupported`), because each needs stored content: interactive and review runs, joining or continuing a session, replay, compaction, recap, a draft, a message or a retune, an `Interruption` question, an evaluation, and a team walk.
+- **A token whose runs are no-trace** is held to it on every route: it cannot write a draft, a message, an interrupt answer or review feedback either.
+- **A pause does not park it.** It keeps running, a snapshot leaves it out, and the pause result counts it in the new `unpausable_runs_count`.
+- **A restart loses it.** At boot it is failed with stop reason `not_resumable` and its idempotency key is released, so a retry with the same key starts a new run.
+- **Tools that write on purpose, and hooks, are unchanged.** `Memory`, `Channel`, `Document`, `Write` and MCP tools store what the agent tells them to; a hook is sent what it always was.
+
+See "No-trace runs" in [`docs/CONFIGURATION.md`](docs/CONFIGURATION.md).
+
+### Debugging a no-trace agent (#1742, #1743)
+
+`PUT /v1/_retention/overrides {agent, until}` stores the runs of one no-trace agent, in one tenant, for at most 24 hours. `DELETE` ends it early and `GET` lists what is in force.
+
+- It lifts a mode that came from the agent's definition or the run request. It never lifts one a token requires, and not the mode a sub-agent inherits from a no-trace parent.
+- An admin sets one for any tenant, a tenant operator for its own. A member may not set, clear or list them.
+- Setting and clearing are audited; with an audit log configured, an override whose record cannot be written is not set.
+- The console shows a banner while one is in force.
+- Also the gRPC `RetentionOverride` RPC, the MCP `retention_override` tool and both clients.
+
+### Upgrade notes
+
+- **Migrations 0098 to 0102** add columns for token expiry and restrictions, an estimate column on `usage_carry`, a `retention` column on `runs` and `sessions`, and a `retention_overrides` table. All are additive.
+- **An isolated user's token loses the raw model endpoints** unless it is granted `llm:gateway`. Admin and tenant-operator tokens are unaffected.
+- **Raw model calls now count against token budgets and appear in the usage ledger.** A deployment with a hard budget will see gateway callers refused at it.
+- **Expired token rows are deleted** seven days after they expire (`LOOMCYCLE_EXPIRED_TOKEN_RETENTION_SECONDS`; `0` keeps them). Only a token minted with a lifetime is ever removed this way.
+- **A per-user token's name is stored as `u-<name>`,** and the operator tool no longer creates or acts on names in that namespace.
+- **A run request with an unknown segment block type is refused (400).** It was passed through before.
+- **gRPC:** new RPCs `DeleteRunTree` and `RetentionOverride`; new fields `RunRequest.retention`, `Agent.retention` and `PauseRuntimeResponse.unpausable_runs_count`.
+- **MCP:** two new tools, `delete_run_tree` and `retention_override`.
+- **Clients:** `@loomcycle/client` 1.112.0 publishes with this tag. The Python client is at 1.112.0 and publishes on its own `python-v1.112.0` tag.
+- **`@loomcycle/def-fields`** gained the `allow_overrides` and `retention` agent fields and is still at 0.4.0; they reach npm with its next release.
+- **New settings, all off or unbound unless set:** `LOOMCYCLE_USER_TOKEN_MAX_TTL_SECONDS`, `LOOMCYCLE_RUN_RATE_PER_MINUTE` / `LOOMCYCLE_RUN_RATE_BURST`, `LOOMCYCLE_LIMITS_ENFORCE`.
+
 ## What's in v1.111.0
 
 *The runs a team walk's member starts are now **part of the walk**. A sub-agent, at any depth, carries its member's walk, state and visit, so it is in the walk's listing and on the walk's stream. Before, a member reported as waiting on its children named runs that a client following the walk could not see. And **any run can be asked for its children**: a listing by parent run, and the same filter on the run-state stream.*

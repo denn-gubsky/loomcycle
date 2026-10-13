@@ -187,16 +187,25 @@ been primitives plus hardening: memory, documents, teams, sandboxing, retention
 and erasure. The agentic-memory subsystem and the document surfaces built on it
 remain the main direction.
 
-The most recent line (v1.111.0) makes the runs a team walk's member starts part
+The most recent line (v1.112.0) is about handing a token to a machine you do not
+control, and running agents on content you may not keep. A token can expire, be
+limited to certain agents, be locked out of per-run settings and be rate
+limited. A no-trace run (`retention: "none"`, set on a run, an agent or a
+token) delivers what it says to its caller and stores none of it: the server
+keeps a marker for each event and the error's class, never the text. A stored
+run tree can be deleted, token budgets can be enforced on runs in flight, and
+the raw model endpoints are now gated and metered. See "No-trace runs" and
+"Multi-tenant authentication" in [`docs/CONFIGURATION.md`](docs/CONFIGURATION.md).
+
+Before it, v1.111.0 made the runs a team walk's member starts part
 of the walk. A sub-agent, at any depth, carries its member's walk, state and
 visit, so it is in the walk's listing and on the walk's stream; it is told from
-a member by its parent run. Before, a member reported as waiting on its
-children named runs that a client following the walk could not see. Any run
-can also be asked for its children now: a paged listing by parent run, and the
-same filter on the run-state stream, on every transport. See
-"Watching a team walk live" in [`docs/CONFIGURATION.md`](docs/CONFIGURATION.md).
+a member by its parent run. Any run can also be asked for its children: a paged
+listing by parent run, and the same filter on the run-state stream, on every
+transport. See "Watching a team walk live" in
+[`docs/CONFIGURATION.md`](docs/CONFIGURATION.md).
 
-Before it, v1.110.0 put a team decision's answer on the walk's own
+Earlier, v1.110.0 put a team decision's answer on the walk's own
 run. A walk started detached returns no steps, and a `decision` state starts no
 member run, so a client holding only the walk's run id could not read what a
 decision answered. Each decision is one `team_decision` event on that run:
