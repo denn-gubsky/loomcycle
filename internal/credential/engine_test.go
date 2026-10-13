@@ -26,7 +26,7 @@ func TestEngine_PutResolveRoundTrip(t *testing.T) {
 	ctx := context.Background()
 	id := Identity{TenantID: "t", Scope: "tenant", Name: "serper"}
 
-	meta, err := e.PutInline(ctx, id, "sk-secret", nil)
+	meta, err := e.PutInline(ctx, id, "sk-secret", nil, nil)
 	if err != nil {
 		t.Fatalf("PutInline: %v", err)
 	}
@@ -54,7 +54,7 @@ func TestEngine_ResolvePrecedence(t *testing.T) {
 	e := newEngine(t, testKey(1))
 	ctx := context.Background()
 	put := func(scope, scopeID, val string) {
-		if _, err := e.PutInline(ctx, Identity{TenantID: "t", Scope: scope, ScopeID: scopeID, Name: "telegram"}, val, nil); err != nil {
+		if _, err := e.PutInline(ctx, Identity{TenantID: "t", Scope: scope, ScopeID: scopeID, Name: "telegram"}, val, nil, nil); err != nil {
 			t.Fatalf("put %s/%s: %v", scope, scopeID, err)
 		}
 	}
@@ -91,7 +91,7 @@ func TestEngine_MissAndFailClosed(t *testing.T) {
 	if disabled.InlineEnabled() {
 		t.Error("engine with no KEK should report InlineEnabled()==false")
 	}
-	if _, err := disabled.PutInline(ctx, Identity{TenantID: "t", Scope: "tenant", Name: "x"}, "v", nil); err == nil {
+	if _, err := disabled.PutInline(ctx, Identity{TenantID: "t", Scope: "tenant", Name: "x"}, "v", nil, nil); err == nil {
 		t.Error("PutInline with no KEK must fail (never store plaintext)")
 	}
 }
@@ -103,7 +103,7 @@ func TestEngine_HasKey_PrecedenceAndFastPath(t *testing.T) {
 	e := newEngine(t, testKey(1))
 	ctx := context.Background()
 	put := func(scope, scopeID string) {
-		if _, err := e.PutInline(ctx, Identity{TenantID: "t", Scope: scope, ScopeID: scopeID, Name: "ANTHROPIC_API_KEY"}, "sk-x", nil); err != nil {
+		if _, err := e.PutInline(ctx, Identity{TenantID: "t", Scope: scope, ScopeID: scopeID, Name: "ANTHROPIC_API_KEY"}, "sk-x", nil, nil); err != nil {
 			t.Fatalf("put %s/%s: %v", scope, scopeID, err)
 		}
 	}
@@ -143,7 +143,7 @@ func TestEngine_HasKey_PrecedenceAndFastPath(t *testing.T) {
 func TestEngine_ResolveIsTenantIsolated(t *testing.T) {
 	e := newEngine(t, testKey(1))
 	ctx := context.Background()
-	if _, err := e.PutInline(ctx, Identity{TenantID: "tnt-a", Scope: "tenant", Name: "serper"}, "a-secret", nil); err != nil {
+	if _, err := e.PutInline(ctx, Identity{TenantID: "tnt-a", Scope: "tenant", Name: "serper"}, "a-secret", nil, nil); err != nil {
 		t.Fatal(err)
 	}
 	// A different tenant resolving the same name gets nothing.

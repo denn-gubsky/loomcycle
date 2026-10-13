@@ -45,6 +45,23 @@ type Backend interface {
 // sealed envelope, no plaintext.
 type inlineDefinition struct {
 	Value Sealed `json:"value"`
+	// AllowedURLs restricts where the secret may be sent (see urls.go). nil =
+	// no restriction; present and empty = nowhere. It is stored in the clear,
+	// so a listing can show it without opening the secret, and it is part of
+	// what the value is sealed with (Identity.Bound): a row whose list was
+	// edited, added or removed no longer decrypts.
+	AllowedURLs *[]string `json:"allowed_urls,omitempty"`
+}
+
+// restrictionOf reads the URL restriction out of a stored definition without
+// opening the secret. What it returns is NOT yet authenticated; only a
+// successful Resolve proves the list is the one the secret was stored with.
+func restrictionOf(def json.RawMessage) *[]string {
+	var d inlineDefinition
+	if err := json.Unmarshal(def, &d); err != nil {
+		return nil
+	}
+	return d.AllowedURLs
 }
 
 // inlineBackend decrypts sealed values with the deployment Sealer.
@@ -57,6 +74,9 @@ func (b inlineBackend) Resolve(_ context.Context, def json.RawMessage, id Identi
 	if err := json.Unmarshal(def, &d); err != nil {
 		return "", fmt.Errorf("credential: malformed inline definition: %w", err)
 	}
+	// The restriction stored beside the value is part of what it was sealed
+	// with, so this opens only when that list is untouched.
+	id.Bound = boundURLs(d.AllowedURLs)
 	pt, err := b.sealer.Open(d.Value, id)
 	if err != nil {
 		return "", err
@@ -64,13 +84,21 @@ func (b inlineBackend) Resolve(_ context.Context, def json.RawMessage, id Identi
 	return string(pt), nil
 }
 
-// sealInline builds the stored definition for a plaintext secret.
-func (b inlineBackend) sealInline(plaintext string, id Identity) (json.RawMessage, error) {
+// sealInline builds the stored definition for a plaintext secret and its URL
+// restriction (nil for none).
+func (b inlineBackend) sealInline(plaintext string, id Identity, allowedURLs *[]string) (json.RawMessage, error) {
+	// A pointer to a nil slice would be written as JSON null and read back
+	// as "no restriction", while the value was sealed as "sent nowhere": a
+	// credential that can never be opened. Store an empty list as one.
+	if allowedURLs != nil && *allowedURLs == nil {
+		allowedURLs = &[]string{}
+	}
+	id.Bound = boundURLs(allowedURLs)
 	sealed, err := b.sealer.Seal([]byte(plaintext), id)
 	if err != nil {
 		return nil, err
 	}
-	return json.Marshal(inlineDefinition{Value: sealed})
+	return json.Marshal(inlineDefinition{Value: sealed, AllowedURLs: allowedURLs})
 }
 
 // externalStub is a placeholder for the Phase-4 external backends: the pointer

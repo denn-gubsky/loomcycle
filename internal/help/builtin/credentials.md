@@ -9,7 +9,7 @@ the runtime without ever appearing in a config file, a prompt, or a transcript.
 
 ## Storing a credential
 
-Use the `CredentialDef` tool: `op=put` a named secret at a **scope**, `op=get`
+Use the `CredentialDef` tool: `op=create` a named secret at a **scope**, `op=get`
 (metadata only — never the plaintext), `op=list`, `op=delete`. Each credential is
 keyed by `(scope, name)`:
 - `agent` — visible only to that agent;
@@ -20,6 +20,36 @@ Secrets are encrypted at rest with a per-tenant key derived from the server's
 master key; resolution is tenant-isolated (one tenant can never read another's).
 A server without the master key configured can store nothing and resolves
 nothing (fails soft).
+
+### Restricting where a credential may be sent — `allowed_urls`
+
+`op=create` takes an optional `allowed_urls`: the https URLs the value may be
+sent to.
+
+```json
+{"op": "create", "name": "repo-acme-app", "value": "<token>",
+ "allowed_urls": ["https://github.com/acme/app"]}
+```
+
+- An entry covers that URL and everything under it, compared by host and by
+  whole path segments. `https://github.com/acme/app` covers
+  `https://github.com/acme/app.git` and does not cover
+  `https://github.com/acme/app-fork` or `https://github.com/acme`.
+- Entries must be plain https URLs: no user or password, no query, no
+  fragment. `get` and `list` show them in a canonical form.
+- **Left out**: no restriction, as before. **An empty list `[]`**: the value
+  is sent nowhere. It can still be compared against, which is what a webhook
+  signing secret needs.
+- **A restricted credential is given only to a caller that says where the
+  value is going**, and only when that destination is covered. It therefore
+  does **not** resolve in a `$cred:<name>` header, as a provider key, or in a
+  `Bash` / `Bashbox` environment: none of those name a destination. Use it
+  for the things that do.
+- Creating the credential again without `allowed_urls` (a rotation) **keeps
+  the list it has**. Sending a list replaces it. To remove a restriction,
+  delete the credential and create it again.
+- The list is sealed together with the value. A row whose list was changed
+  outside the tool no longer opens.
 
 ## Consuming a credential — `$cred:<name>`
 

@@ -8,10 +8,10 @@ import (
 func TestEngine_Substitute(t *testing.T) {
 	e := newEngine(t, testKey(1))
 	ctx := context.Background()
-	if _, err := e.PutInline(ctx, Identity{TenantID: "t", Scope: "tenant", Name: "serper"}, "SK-tenant", nil); err != nil {
+	if _, err := e.PutInline(ctx, Identity{TenantID: "t", Scope: "tenant", Name: "serper"}, "SK-tenant", nil, nil); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := e.PutInline(ctx, Identity{TenantID: "t", Scope: "user", ScopeID: "uA", Name: "telegram"}, "A-TOKEN", nil); err != nil {
+	if _, err := e.PutInline(ctx, Identity{TenantID: "t", Scope: "user", ScopeID: "uA", Name: "telegram"}, "A-TOKEN", nil, nil); err != nil {
 		t.Fatal(err)
 	}
 

@@ -3329,9 +3329,15 @@ export class LoomcycleClient {
 
   /** Store or rotate a credential (RFC AR). The plaintext `value` is write-only:
    *  the server encrypts it, masks it from the transcript, and never returns it.
-   *  Returns the stored row's metadata. Mirrors `POST /v1/_credentialdef {op:create}`. */
+   *  Returns the stored row's metadata. Mirrors `POST /v1/_credentialdef {op:create}`.
+   *
+   *  `allowed_urls` restricts where the value may be sent: https URLs, each
+   *  covering itself and everything under it. `[]` stores a value that is
+   *  sent nowhere. Leave it out for no restriction, or, when the credential
+   *  already exists, to keep the list it has. A restricted credential does
+   *  not resolve in a `$cred:` header or as a provider key. */
   async createCredential(
-    input: { scope: CredentialScope; name: string; value: string },
+    input: { scope: CredentialScope; name: string; value: string; allowed_urls?: string[] },
     opts?: { signal?: AbortSignal },
   ): Promise<CredentialMeta> {
     return postJSON<CredentialMeta>(

@@ -45,6 +45,31 @@ Via the `credentialdef` MCP meta-tool (thin client) or in-band
 Scope is `tenant` | `user` | `agent`; `scope_id` is derived from your identity,
 never supplied. `create` is create-or-rotate (re-supplying the value re-seals it).
 
+### Restricting where a credential may be sent — `allowed_urls`
+
+`create` takes an optional `allowed_urls`: the https URLs the value may be sent to.
+
+```jsonc
+{"op":"create","name":"repo-acme-app","value":"<token>",
+ "allowed_urls":["https://github.com/acme/app"]}
+```
+
+It answers a question a secret store otherwise cannot. When the destination of a request comes from somewhere untrusted, such as a repository URL in a webhook body, is this the place the secret was stored for?
+
+| `allowed_urls` | Meaning |
+|---|---|
+| left out | no restriction, as before |
+| `[]` | the value is sent nowhere. It can still be compared against, which is what a webhook signing secret needs |
+| a list | the value is sent only to a URL under one entry |
+
+- **Matching.** By host, exactly and without regard to case, and by whole path segments. `https://github.com/acme/app` covers `https://github.com/acme/app.git` and what is under it, and does not cover `https://github.com/acme/app-fork` or `https://github.com/acme`.
+- **Entries** must be plain https URLs: no user or password, no query, no fragment, no encoded or dotted path segment. At most 32. `get` and `list` show them in canonical form.
+- **A restricted credential is given only to a caller that names its destination,** and only when the destination is covered. So it does **not** resolve in a `$cred:<name>` header, as a provider key, or in a `Bash` / `Bashbox` environment: none of those name a destination. Such a use fails as an unresolved credential would, and a provider falls back to the operator's key as it does for any credential it cannot read.
+- **Rotation keeps the list.** Creating the credential again without `allowed_urls` keeps the list it has; sending a list replaces it. To remove a restriction, delete the credential and create it again.
+- **The list cannot be changed apart from the value.** It is stored in the clear, so a listing can show it, and it is part of what the value is sealed with. A row whose list was edited, added or removed outside the tool no longer opens.
+
+Nothing in this release sends a restricted credential anywhere yet: the first consumer that names a destination is the git source for ephemeral volumes. Until then the field is useful for `[]`, and for preparing credentials.
+
 ## Using a credential — `$cred:<name>`
 
 Reference a credential by name as `$cred:<name>` in an **http / streamable-http**

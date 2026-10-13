@@ -267,7 +267,7 @@ func (e *env) storeTenantKey(tenant, value string) {
 // storeKey stores a key for the decision provider under any scope.
 func (e *env) storeKey(id credential.Identity, value string) {
 	e.t.Helper()
-	if _, err := e.creds.PutInline(context.Background(), id, value, nil); err != nil {
+	if _, err := e.creds.PutInline(context.Background(), id, value, nil, nil); err != nil {
 		e.t.Fatalf("store a key: %v", err)
 	}
 }

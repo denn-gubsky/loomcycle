@@ -4833,6 +4833,9 @@ export interface CredentialMeta {
   updated_at?: string;
   expires_at?: string;
   status?: string;
+  /** The https URLs the value may be sent to, in canonical form. Absent for
+   *  an unrestricted credential; `[]` for one that is sent nowhere. */
+  allowed_urls?: string[];
 }
 
 /** CredentialListResponse is the {op:list} result: metadata for the given scope. */
