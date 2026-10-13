@@ -97,6 +97,28 @@ Response size (network tools):
 - `HTTP` returns at most **256 KiB** of response body, marked `[truncated at N bytes]` when cut.
 - `WebFetch` goes through the same guarded request path but reads up to **2 MiB** of raw page before stripping HTML, so a page whose first few hundred KiB are inline CSS still yields its text; a `<script>`/`<style>` block cut off by that read is dropped rather than returned as text. The stripped text is then cut — on a character boundary, marked `[truncated]` — to the run's context window in tokens, as bytes of text (about a quarter of the window at ~4 bytes a token), never above 256 KiB. The window is the one the model actually runs with — what its provider reports, lowered by `max_context_tokens` when that is set — so an agent with no `max_context_tokens` on a small local model is still sized to that model; only when no window is known at all is it 256 KiB. The optional `max_chars` input (bytes of UTF-8, so multi-byte text cannot overrun the window) asks for less or more, clamped to 1–256 KiB.
 
+### `Read` by line range
+
+`Read` has two modes, chosen by its arguments alone.
+
+- **Whole file.** `{path}` (and `volume`) returns the file from its first byte, up to 256 KiB. A longer file is cut there with no notice.
+- **Line range.** Any of `offset` (first line, counted from 1), `limit` (number of lines) or `line_numbers: true` (each line prefixed by its number, as `cat -n` does) returns whole lines and one closing status line.
+
+The status line is always the last line of a line-range result:
+
+| Status line | Meaning |
+|---|---|
+| `[lines 812-818 of 3044]` | those lines were returned; the file has 3044 |
+| `[lines 1-2210 of 3044; cut at 256 KiB, continue with offset 2211]` | the size limit was reached at the end of a line; call again with that `offset` |
+| `[no lines: the file has 120 lines]` | `offset` is past the end. Not an error |
+| `… of more than 900000]` | the file is larger than the 64 MiB that is scanned to count lines |
+
+- A result never ends inside a line or inside a character. A single line longer than the size limit is returned cut between two characters, with its own note (`[line 3 cut at 262144 bytes of 1048576]`).
+- Line endings are returned as they are in the file.
+- A binary file (a zero byte in its first 8 KiB) is refused in line mode and read as before without it.
+- A program reading the result should pass `line_numbers: true`: every line of the file then starts with its number and the status line does not.
+- `Read` refuses an argument it does not declare, naming it. Before v1.113 an unknown argument, a misspelt `offset` included, was dropped and the whole file returned.
+
 ### MCP servers
 
 MCP servers are declared in YAML under `mcp_servers`. Each server's tools are registered as `mcp__{server}__{tool}` after the server's `tools/list` discovery completes.
