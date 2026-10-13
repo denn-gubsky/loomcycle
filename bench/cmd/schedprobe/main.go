@@ -164,6 +164,13 @@ func run(args []string, stdout io.Writer) error {
 	for kind, n := range slots {
 		lanes[kind] = policyLane(*policy, n, *quantum, hold)
 	}
+	// Checked before any agent starts: a refusal once some are running would
+	// return with their calls still writing to the output.
+	for _, s := range specs {
+		if _, ok := lanes[s.Kind]; !ok && *policy != "none" {
+			return fmt.Errorf("agent %s: no slots for kind %q in -slots", s.Agent, s.Kind)
+		}
+	}
 
 	f, err := os.OpenFile(*out, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)
 	if err != nil {
@@ -185,10 +192,7 @@ func run(args []string, stdout io.Writer) error {
 	var wg sync.WaitGroup
 	errs := make(chan error, len(specs))
 	for _, s := range specs {
-		l, ok := lanes[s.Kind]
-		if !ok && *policy != "none" {
-			return fmt.Errorf("agent %s: no slots for kind %q in -slots", s.Agent, s.Kind)
-		}
+		l := lanes[s.Kind]
 		wg.Add(1)
 		go func(s agentSpec, l *lane) {
 			defer wg.Done()

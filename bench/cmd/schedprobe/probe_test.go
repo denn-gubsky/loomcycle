@@ -68,6 +68,33 @@ func (f *fakeOllama) handler(t *testing.T) http.Handler {
 	})
 }
 
+func TestProbe_AKindWithNoLaneIsRefusedBeforeAnyCall(t *testing.T) {
+	fake := &fakeOllama{}
+	srv := httptest.NewServer(fake.handler(t))
+	defer srv.Close()
+	dir := t.TempDir()
+	wl, err := os.Create(filepath.Join(dir, "w.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := run([]string{"-gen", "-agents", "2", "-turns", "2", "-model", "m", "-embed-agents", "1", "-embed-model", "e"}, wl); err != nil {
+		t.Fatal(err)
+	}
+	wl.Close()
+	out := filepath.Join(dir, "calls.jsonl")
+	err = run([]string{"-base-url", srv.URL, "-workload", wl.Name(), "-policy", "call", "-slots", "chat=1",
+		"-tool-ms", "0", "-label", "t", "-out", out}, io.Discard)
+	if err == nil {
+		t.Fatal("an embed agent with no embed lane was accepted")
+	}
+	if fake.peak.Load() != 0 {
+		t.Fatal("calls were made before the workload was refused")
+	}
+	if _, statErr := os.Stat(out); !os.IsNotExist(statErr) {
+		t.Fatal("output was written for a refused workload")
+	}
+}
+
 func TestProbe_RecordsServerTimingsAndHoldsTheChatCap(t *testing.T) {
 	fake := &fakeOllama{}
 	srv := httptest.NewServer(fake.handler(t))
