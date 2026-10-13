@@ -143,6 +143,52 @@ func TestSemaphore_WaitCancelLeavesCountsBalanced(t *testing.T) {
 	}
 }
 
+// TryAcquireForUser never waits: a free slot is taken, a full semaphore refuses
+// at once even with room in its queue, and a refusal leaves nothing queued and
+// no per-user count behind.
+func TestSemaphore_TryAcquireTakesAFreeSlotAndNeverQueues(t *testing.T) {
+	s := New(1, 8, time.Hour).WithPerUserCap(4)
+	rel, err := s.TryAcquireForUser("t", "alice")
+	if err != nil {
+		t.Fatalf("TryAcquireForUser with a free slot: %v", err)
+	}
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := s.TryAcquireForUser("t", "alice")
+		done <- err
+	}()
+	select {
+	case err := <-done:
+		if !IsBackpressure(err) {
+			t.Fatalf("TryAcquireForUser with no free slot = %v, want backpressure", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("TryAcquireForUser waited for a slot")
+	}
+	if st := s.Stats(); st.Active != 1 || st.Queued != 0 || st.PerUser["t/alice"] != 1 {
+		t.Fatalf("after the refusal: active=%d queued=%d perUser=%v, want 1/0 and one run for t/alice", st.Active, st.Queued, st.PerUser)
+	}
+
+	rel()
+	if st := s.Stats(); st.Active != 0 || len(st.PerUser) != 0 {
+		t.Fatalf("after release: active=%d perUser=%v, want 0 and none", st.Active, st.PerUser)
+	}
+}
+
+// The per-user cap is enforced by TryAcquireForUser as by AcquireForUser.
+func TestSemaphore_TryAcquireHonoursThePerUserCap(t *testing.T) {
+	s := New(4, 8, time.Hour).WithPerUserCap(1)
+	rel, err := s.TryAcquireForUser("t", "alice")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rel()
+	if _, err := s.TryAcquireForUser("t", "alice"); !IsPerUserQuotaExhausted(err) {
+		t.Fatalf("second TryAcquireForUser for a user at its cap = %v, want per-user quota exhausted", err)
+	}
+}
+
 func waitQueued(t *testing.T, s *Semaphore, want int) {
 	t.Helper()
 	end := time.Now().Add(2 * time.Second)

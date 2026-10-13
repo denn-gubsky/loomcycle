@@ -850,7 +850,7 @@ providers:
 - **`background_share`** is the least share of a lane's turns given to background work while live runs also wait (`0` = live runs first).
 - Today only **chat** calls made through `providers:` are queued, and no caller marks its work as background yet: the `decision` / `embedder` lanes and `background_share` are accepted and validated ahead of the callers that will use them ([details](PROVIDERS.md#lanes-a-queue-per-kind-of-model)).
 - **`max_models_in_flight`** stops several models computing at once on a host that cannot take it. For Ollama a model at two different `num_ctx` sizes counts as two.
-- **`concurrency.provider_queue_depth`** (`LOOMCYCLE_PROVIDER_QUEUE_DEPTH`, default: the global `max_queue_depth`) bounds only requests that hold no run slot — today the image-describe route — which are refused (`provider concurrency exhausted`) once that many wait. A run's calls always wait.
+- **`concurrency.provider_queue_depth`** (`LOOMCYCLE_PROVIDER_QUEUE_DEPTH`, default: the global `max_queue_depth`) bounds only requests sent directly, outside any run — the LLM gateway (including the OpenAI-compatible routes) and the image-describe route — which are refused (`provider_concurrency_exhausted`; HTTP 429 on the gateway) once that many calls wait on the provider. A run's calls always wait.
 
 Full field reference (dialect, `options`, capability overrides) + the concurrency internals: [`docs/PROVIDERS.md`](PROVIDERS.md#config-driven-providers-providers-map).
 

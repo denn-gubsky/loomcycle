@@ -305,6 +305,25 @@ func (s *Semaphore) AcquireForUser(ctx context.Context, tenantID, userID string)
 	}
 }
 
+// TryAcquireForUser is AcquireForUser that never waits: it takes a slot only
+// if one is free right now, under the same per-user cap, and otherwise returns
+// *BackpressureError (or *ErrPerUserQuotaExhausted) at once. It is for a caller
+// that already holds something others queue for and must not block on a slot
+// while holding it.
+func (s *Semaphore) TryAcquireForUser(tenantID, userID string) (release func(), err error) {
+	// A context that is already done makes the queued path give up the moment
+	// it would have started to wait, with every counter (the per-user count and
+	// the cluster quota included) unwound by the ordinary cancel path. A free
+	// slot is taken before ctx is ever looked at.
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	release, err = s.AcquireForUser(ctx, tenantID, userID)
+	if errors.Is(err, context.Canceled) {
+		return nil, &BackpressureError{msg: "no free slot"}
+	}
+	return release, err
+}
+
 // Wait takes a slot for work that was ALREADY admitted — a sub-agent of an
 // admitted run, a resumed run, a mid-run provider fallback — so it never
 // refuses: it ignores maxQueue and the timeout, and ends only when a slot frees
