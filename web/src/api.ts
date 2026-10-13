@@ -3403,6 +3403,9 @@ export interface CredentialMeta {
   updated_at?: string;
   expires_at?: string;
   status?: string;
+  // The https URLs the value may be sent to. Absent = unrestricted;
+  // [] = sent nowhere.
+  allowed_urls?: string[];
 }
 
 export interface CredentialListResponse {
@@ -3428,6 +3431,8 @@ export function createCredential(input: {
   scope: CredentialScope;
   name: string;
   value: string;
+  // Omitted = no restriction (or keep the stored one on a rotation).
+  allowed_urls?: string[];
 }): Promise<CredentialMeta> {
   return jsonFetch<CredentialMeta>("/v1/_credentialdef", {
     method: "POST",

@@ -52,6 +52,9 @@ export function CredentialsPanel({ userOnly = false }: { userOnly?: boolean }) {
   // and never re-displayed. userOnly locks the scope to the caller's own subject.
   const [name, setName] = useState("");
   const [value, setValue] = useState("");
+  // Optional URL restriction, as typed: comma- or space-separated https URLs,
+  // or the word "none" for a value that is sent nowhere.
+  const [allowedURLs, setAllowedURLs] = useState("");
   const [scope, setScope] = useState<CredentialScope>(
     userOnly ? "user" : "tenant",
   );
@@ -106,9 +109,15 @@ export function CredentialsPanel({ userOnly = false }: { userOnly?: boolean }) {
     const created = name.trim();
     const useScope: CredentialScope = userOnly ? "user" : scope;
     try {
-      await createCredential({ scope: useScope, name: created, value });
+      await createCredential({
+        scope: useScope,
+        name: created,
+        value,
+        ...parseAllowedURLs(allowedURLs),
+      });
       setValue(""); // clear the secret immediately
       setName("");
+      setAllowedURLs("");
       setFlash(`stored ${useScope} credential "${created}"`);
       setDisabled(false);
       await refresh();
@@ -199,6 +208,20 @@ export function CredentialsPanel({ userOnly = false }: { userOnly?: boolean }) {
           onChange={(e) => setValue(e.target.value)}
           autoComplete="new-password"
         />
+        <input
+          type="text"
+          placeholder="allowed URLs (optional)"
+          title={
+            "https URLs this value may be sent to, separated by commas. " +
+            "Type none for a value that is never sent anywhere. " +
+            "Left empty: no restriction, or the stored one is kept on a rotation. " +
+            "A restricted credential does not work in a $cred: header or as a provider key."
+          }
+          value={allowedURLs}
+          onChange={(e) => setAllowedURLs(e.target.value)}
+          autoComplete="off"
+          spellCheck={false}
+        />
         {!userOnly && (
           <select
             value={scope}
@@ -239,6 +262,13 @@ export function CredentialsPanel({ userOnly = false }: { userOnly?: boolean }) {
               <tr key={`${r._scope}/${r.name}`}>
                 <td>
                   <code>{r.name}</code>
+                  {r.allowed_urls && (
+                    <div className="settings-muted">
+                      {r.allowed_urls.length === 0
+                        ? "sent nowhere"
+                        : `only to ${r.allowed_urls.join(", ")}`}
+                    </div>
+                  )}
                 </td>
                 {!userOnly && <td>{r._scope}</td>}
                 <td>
@@ -260,4 +290,15 @@ export function CredentialsPanel({ userOnly = false }: { userOnly?: boolean }) {
       </table>
     </div>
   );
+}
+
+// parseAllowedURLs turns the form's text into the request field. Empty text
+// sends no field at all, which the server reads as "no restriction" for a new
+// credential and "keep what it has" for an existing one. "none" sends an
+// empty list: the value is sent nowhere.
+function parseAllowedURLs(text: string): { allowed_urls?: string[] } {
+  const t = text.trim();
+  if (!t) return {};
+  if (t.toLowerCase() === "none") return { allowed_urls: [] };
+  return { allowed_urls: t.split(/[\s,]+/).filter(Boolean) };
 }

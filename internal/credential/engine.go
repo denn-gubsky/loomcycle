@@ -39,46 +39,99 @@ func (e *Engine) InlineEnabled() bool { return e.sealer.Enabled() }
 // once an external backend is wired + configured.
 func (e *Engine) CanResolve() bool { return e.sealer.Enabled() }
 
+// Meta is what the engine tells a caller about a stored credential: the row
+// with its sealed definition removed, and the URL restriction read out of it.
+type Meta struct {
+	store.CredentialDefRow
+	// AllowedURLs is the credential's URL restriction: nil for none, empty
+	// for "sent nowhere". Read from the stored row without opening the
+	// secret, so it is what the row SAYS; a row whose list was changed
+	// behind the engine's back shows the changed list and no longer resolves.
+	AllowedURLs *[]string
+}
+
 // PutInline seals plaintext and upserts the row (create / update / rotate —
-// rotation re-seals in place with a fresh nonce). Returns row METADATA only
-// (Definition stripped). Fails with ErrNoKey when no KEK is configured.
-func (e *Engine) PutInline(ctx context.Context, id Identity, plaintext string, expiresAt *time.Time) (store.CredentialDefRow, error) {
+// rotation re-seals in place with a fresh nonce). allowedURLs is the URL
+// restriction to store with it, already normalised (NormalizeAllowedURLs).
+// Returns METADATA only. Fails with ErrNoKey when no KEK is configured.
+//
+// A nil allowedURLs means "the caller said nothing about it", and keeps the
+// restriction the credential already has. Rotating a secret is the common
+// second write, and a rotation that forgot the list must not quietly turn a
+// restricted credential into one that can be sent anywhere. The restriction
+// comes off by deleting the credential and creating it again.
+func (e *Engine) PutInline(ctx context.Context, id Identity, plaintext string, expiresAt *time.Time, allowedURLs *[]string) (Meta, error) {
 	if !e.sealer.Enabled() {
-		return store.CredentialDefRow{}, ErrNoKey
+		return Meta{}, ErrNoKey
 	}
-	def, err := e.inline.sealInline(plaintext, id)
+	if allowedURLs == nil {
+		kept, err := e.existingRestriction(ctx, id)
+		if err != nil {
+			return Meta{}, err
+		}
+		allowedURLs = kept
+	}
+	def, err := e.inline.sealInline(plaintext, id, allowedURLs)
 	if err != nil {
-		return store.CredentialDefRow{}, err
+		return Meta{}, err
 	}
 	row, err := e.store.CredentialDefPut(ctx, store.CredentialDefRow{
 		TenantID: id.TenantID, Scope: id.Scope, ScopeID: id.ScopeID, Name: id.Name,
 		Backend: BackendInline, Definition: def, ExpiresAt: expiresAt,
 	})
 	if err != nil {
-		return store.CredentialDefRow{}, err
+		return Meta{}, err
 	}
-	return stripSecret(row), nil
+	return metaOf(row), nil
 }
 
-// Get returns row metadata (Definition stripped). *ErrNotFound on a miss.
-func (e *Engine) Get(ctx context.Context, id Identity) (store.CredentialDefRow, error) {
+// existingRestriction returns the URL restriction of the credential stored
+// under id, or nil when there is no such credential or it has none.
+//
+// The list is about to be sealed into the new value, so it has to be the one
+// the old value was sealed with and not merely what the row says: the old
+// value is opened to prove it. A restricted row that does not open is refused
+// rather than carried over, since carrying it would turn an edited list into
+// an authenticated one.
+func (e *Engine) existingRestriction(ctx context.Context, id Identity) (*[]string, error) {
 	row, err := e.store.CredentialDefGet(ctx, id.TenantID, id.Scope, id.ScopeID, id.Name)
 	if err != nil {
-		return store.CredentialDefRow{}, err
+		var nf *store.ErrNotFound
+		if errors.As(err, &nf) {
+			return nil, nil
+		}
+		return nil, err
 	}
-	return stripSecret(row), nil
+	allowed := restrictionOf(row.Definition)
+	if allowed == nil || row.Backend != BackendInline {
+		return nil, nil
+	}
+	if _, err := e.inline.Resolve(ctx, row.Definition, id); err != nil {
+		return nil, fmt.Errorf("the stored credential is restricted to URLs and could not be opened to carry the restriction over (%w); send allowed_urls again, or delete the credential first", err)
+	}
+	return allowed, nil
+}
+
+// Get returns a credential's metadata. *ErrNotFound on a miss.
+func (e *Engine) Get(ctx context.Context, id Identity) (Meta, error) {
+	row, err := e.store.CredentialDefGet(ctx, id.TenantID, id.Scope, id.ScopeID, id.Name)
+	if err != nil {
+		return Meta{}, err
+	}
+	return metaOf(row), nil
 }
 
 // List returns metadata for a single (tenant, scope, scope_id) bucket.
-func (e *Engine) List(ctx context.Context, tenantID, scope, scopeID string) ([]store.CredentialDefRow, error) {
+func (e *Engine) List(ctx context.Context, tenantID, scope, scopeID string) ([]Meta, error) {
 	rows, err := e.store.CredentialDefList(ctx, tenantID, scope, scopeID)
 	if err != nil {
 		return nil, err
 	}
+	out := make([]Meta, len(rows))
 	for i := range rows {
-		rows[i] = stripSecret(rows[i])
+		out[i] = metaOf(rows[i])
 	}
-	return rows, nil
+	return out, nil
 }
 
 // Delete removes a credential row. Returns (found, error).
@@ -93,6 +146,10 @@ type Resolved struct {
 	Scope   string
 	ScopeID string
 	Backend string
+	// AllowedURLs is the URL restriction the secret was stored with: nil for
+	// none. Unlike Meta.AllowedURLs it is proven: the value would not have
+	// opened with any other list.
+	AllowedURLs *[]string
 }
 
 // Resolve finds a credential by NAME using scope precedence agent > user >
@@ -102,7 +159,25 @@ type Resolved struct {
 // straight to a header/env/provider, never into a transcript. agentName/userID
 // may be "" (that scope is skipped). Returns (_, false, nil) when the name is
 // absent from every visible scope.
+//
+// Resolve is for a caller that does not say where the secret is going. A
+// credential that carries a URL restriction is therefore refused here with
+// ErrRestricted: handing it out would be the very thing the restriction is
+// there to stop. Use ResolveFor to name the destination.
 func (e *Engine) Resolve(ctx context.Context, tenantID, agentName, userID, name string) (Resolved, bool, error) {
+	return e.resolve(ctx, tenantID, agentName, userID, name, nil)
+}
+
+// ResolveFor is Resolve for a secret that is about to be sent to targetURL.
+// A credential with a URL restriction resolves only when targetURL is under
+// one of its entries, and is refused with ErrURLNotAllowed otherwise, before
+// the secret is opened. An unrestricted credential resolves as with Resolve;
+// a caller that requires a restriction checks Resolved.AllowedURLs.
+func (e *Engine) ResolveFor(ctx context.Context, tenantID, agentName, userID, name, targetURL string) (Resolved, bool, error) {
+	return e.resolve(ctx, tenantID, agentName, userID, name, &targetURL)
+}
+
+func (e *Engine) resolve(ctx context.Context, tenantID, agentName, userID, name string, target *string) (Resolved, bool, error) {
 	buckets := []struct{ scope, id string }{
 		{"agent", agentName},
 		{"user", userID},
@@ -120,17 +195,32 @@ func (e *Engine) Resolve(ctx context.Context, tenantID, agentName, userID, name 
 			}
 			return Resolved{}, false, err
 		}
+		// The restriction is decided on the row that the name resolves to,
+		// and before the secret is opened. It does not fall through to a
+		// less specific scope: a restricted credential must not be bypassed
+		// by an unrestricted one of the same name further down.
+		allowed := restrictionOf(row.Definition)
+		if allowed != nil {
+			if target == nil {
+				return Resolved{}, false, fmt.Errorf("%w (%q)", ErrRestricted, name)
+			}
+			if !URLAllowed(allowed, *target) {
+				return Resolved{}, false, fmt.Errorf("%w (%q)", ErrURLNotAllowed, name)
+			}
+		}
 		backend, err := e.backendFor(row.Backend)
 		if err != nil {
 			return Resolved{}, false, err
 		}
+		// Opening proves the list just checked is the one the secret was
+		// stored with: it is part of what the value was sealed with.
 		val, err := backend.Resolve(ctx, row.Definition, Identity{
 			TenantID: tenantID, Scope: b.scope, ScopeID: b.id, Name: name,
 		})
 		if err != nil {
 			return Resolved{}, false, err
 		}
-		return Resolved{Value: val, Scope: b.scope, ScopeID: b.id, Backend: row.Backend}, true, nil
+		return Resolved{Value: val, Scope: b.scope, ScopeID: b.id, Backend: row.Backend, AllowedURLs: allowed}, true, nil
 	}
 	return Resolved{}, false, nil
 }
@@ -157,7 +247,7 @@ func (e *Engine) HasKey(ctx context.Context, tenantID, agentName, userID, name s
 		if b.scope != "tenant" && b.id == "" {
 			continue // no identity for this scope on the run
 		}
-		_, err := e.store.CredentialDefGet(ctx, tenantID, b.scope, b.id, name)
+		row, err := e.store.CredentialDefGet(ctx, tenantID, b.scope, b.id, name)
 		if err != nil {
 			var nf *store.ErrNotFound
 			if errors.As(err, &nf) {
@@ -165,7 +255,10 @@ func (e *Engine) HasKey(ctx context.Context, tenantID, agentName, userID, name s
 			}
 			return false, err
 		}
-		return true, nil // present in this scope — no decrypt needed
+		// A URL-restricted credential is not a key a provider can be given:
+		// Resolve refuses it, so reporting it here would promise a key the
+		// run then does not get.
+		return restrictionOf(row.Definition) == nil, nil // no decrypt needed
 	}
 	return false, nil
 }
@@ -181,9 +274,11 @@ func (e *Engine) backendFor(name string) (Backend, error) {
 	}
 }
 
-// stripSecret returns a copy of the row with the sealed Definition removed — the
-// only shape that ever leaves the engine toward a caller/log (metadata only).
-func stripSecret(row store.CredentialDefRow) store.CredentialDefRow {
+// metaOf reads what may be shown out of a row and drops the sealed Definition
+// — the only shape that ever leaves the engine toward a caller or a log.
+func metaOf(row store.CredentialDefRow) Meta {
+	m := Meta{AllowedURLs: restrictionOf(row.Definition)}
 	row.Definition = nil
-	return row
+	m.CredentialDefRow = row
+	return m
 }

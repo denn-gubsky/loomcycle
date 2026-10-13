@@ -49,7 +49,9 @@ func (c *CredentialDef) Description() string {
 		"encrypted at rest, that other config references as $cred:<name> and the runtime binds server-side — the " +
 		"model never sees the value. user scope keys on YOUR subject (per-user tokens, e.g. a personal Telegram/Slack " +
 		"bot token); tenant scope is shared across the tenant. Ops: create (store/rotate a value), get + list (metadata " +
-		"only, never the secret), delete. Requires LOOMCYCLE_SECRET_KEY for the inline backend."
+		"only, never the secret), delete. allowed_urls on create restricts where the value may be sent: a restricted " +
+		"credential is given only to a caller that names a matching destination, and an empty list means it is sent nowhere. " +
+		"Requires LOOMCYCLE_SECRET_KEY for the inline backend."
 }
 
 const credentialDefInputSchema = `{
@@ -60,7 +62,8 @@ const credentialDefInputSchema = `{
     "scope":      {"type": "string", "enum": ["tenant","user","agent"], "description": "Which bucket (default tenant). user = the calling principal's own subject (per-user tokens); agent = the calling agent. scope_id is derived from your identity, never supplied."},
     "value":      {"type": "string", "description": "create only: the plaintext secret to encrypt (inline backend). Masked from the persisted transcript; never returned."},
     "backend":    {"type": "string", "enum": ["inline"], "description": "create only: storage backend (default inline; external backends are a future addition)."},
-    "expires_at": {"type": "string", "description": "create only: optional RFC3339 soft-expiry (advisory rotation reminder)."}
+    "expires_at": {"type": "string", "description": "create only: optional RFC3339 soft-expiry (advisory rotation reminder)."},
+    "allowed_urls": {"type": "array", "items": {"type": "string"}, "description": "create only: the https URLs this value may be sent to, e.g. [\"https://github.com/acme/app\"]. An entry covers that URL and everything under it, by whole path segments. Omit for no restriction; pass [] for a value that is never sent anywhere. Omitting it when the credential already exists keeps the list it has, so rotating a value does not lift its restriction; to lift one, delete the credential and create it again. A restricted credential cannot be used in a $cred: header or as a provider key."}
   },
   "required": ["op"]
 }`
@@ -76,6 +79,9 @@ type credentialDefInput struct {
 	Value     string `json:"value"`
 	Backend   string `json:"backend"`
 	ExpiresAt string `json:"expires_at"`
+	// A pointer, so an absent list (no restriction) and an empty one (sent
+	// nowhere) stay different.
+	AllowedURLs *[]string `json:"allowed_urls"`
 }
 
 var credNameRe = regexp.MustCompile(`^[A-Za-z0-9_-]{1,128}$`)
@@ -162,8 +168,12 @@ func (c *CredentialDef) execCreate(ctx context.Context, tenantID, scope, scopeID
 		}
 		expires = &t
 	}
+	allowed, uerr := credential.NormalizeAllowedURLs(in.AllowedURLs)
+	if uerr != nil {
+		return errResult("create: " + uerr.Error()), nil
+	}
 	id := credential.Identity{TenantID: tenantID, Scope: scope, ScopeID: scopeID, Name: in.Name}
-	row, err := c.Engine.PutInline(ctx, id, in.Value, expires)
+	row, err := c.Engine.PutInline(ctx, id, in.Value, expires, allowed)
 	if err != nil {
 		return errResult("create: " + err.Error()), nil
 	}
@@ -210,7 +220,7 @@ func (c *CredentialDef) execDelete(ctx context.Context, tenantID, scope, scopeID
 
 // credentialMeta renders a row as METADATA ONLY — never the sealed definition or
 // the secret value. `note` is an optional status word (e.g. "stored").
-func credentialMeta(row store.CredentialDefRow, note string) map[string]any {
+func credentialMeta(row credential.Meta, note string) map[string]any {
 	m := map[string]any{
 		"name":       row.Name,
 		"scope":      row.Scope,
@@ -220,6 +230,10 @@ func credentialMeta(row store.CredentialDefRow, note string) map[string]any {
 	}
 	if row.ExpiresAt != nil {
 		m["expires_at"] = *row.ExpiresAt
+	}
+	// Present only for a restricted credential; [] means "sent nowhere".
+	if row.AllowedURLs != nil {
+		m["allowed_urls"] = *row.AllowedURLs
 	}
 	if note != "" {
 		m["status"] = note

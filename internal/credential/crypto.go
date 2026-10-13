@@ -122,14 +122,30 @@ type Identity struct {
 	Scope    string
 	ScopeID  string
 	Name     string
+	// Bound is extra data the value is sealed together with: what the row
+	// says ABOUT the secret and must not be changeable apart from it (its
+	// URL restriction). It is authenticated, not encrypted. Empty for a
+	// credential with nothing bound, which seals exactly as it always did.
+	Bound []byte
 }
 
 // aad renders (key_id + row identity) as authenticated (not encrypted)
 // associated data. Field separation via the ASCII unit separator (0x1f), which
 // the credential name/scope charset excludes, so distinct tuples can't collide.
+//
+// Bound data, when there is any, follows under its own marker. A row with
+// none produces the same bytes as before the field existed, so every value
+// sealed earlier still opens. Removing the bound data from a row that was
+// sealed with it, or adding some to one that was not, changes these bytes
+// and the value no longer opens.
 func (id Identity) aad(kid string) []byte {
-	return fmt.Appendf(nil, "%s\x1f%s\x1f%s\x1f%s\x1f%s",
+	out := fmt.Appendf(nil, "%s\x1f%s\x1f%s\x1f%s\x1f%s",
 		kid, id.TenantID, id.Scope, id.ScopeID, id.Name)
+	if len(id.Bound) > 0 {
+		out = append(out, "\x1fbound\x1f"...)
+		out = append(out, id.Bound...)
+	}
+	return out
 }
 
 // Sealed is the persisted envelope (stored as JSON in the credential row's

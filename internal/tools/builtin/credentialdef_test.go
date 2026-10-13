@@ -114,3 +114,70 @@ func TestMaskCredentialCreateValue_ViaTool(t *testing.T) {
 		t.Error("create with an invalid name charset should be refused")
 	}
 }
+
+// allowed_urls is stored with the credential, shown by get and list in its
+// canonical form, and never loosened by a rotation that leaves it out.
+func TestCredentialDefTool_AllowedURLsAreStoredShownAndKeptAcrossARotation(t *testing.T) {
+	c, ctx := credFixture(t, "u1", testKEK())
+
+	out, res := credExec(t, c, ctx, `{"op":"create","name":"repo","value":"ghs_x","allowed_urls":["https://GitHub.com/acme/app.git"]}`)
+	if res.IsError {
+		t.Fatalf("create: %s", res.Text)
+	}
+	shown := func(m map[string]any) []any { l, _ := m["allowed_urls"].([]any); return l }
+	if got := shown(out); len(got) != 1 || got[0] != "https://github.com/acme/app" {
+		t.Fatalf("create answered allowed_urls = %v, want the canonical entry", out["allowed_urls"])
+	}
+	if strings.Contains(res.Text, "ghs_x") {
+		t.Error("the create answer carries the value")
+	}
+	if out, _ := credExec(t, c, ctx, `{"op":"get","name":"repo"}`); len(shown(out)) != 1 {
+		t.Errorf("get does not show the list: %v", out)
+	}
+	listed, _ := credExec(t, c, ctx, `{"op":"list"}`)
+	creds, _ := listed["credentials"].([]any)
+	if len(creds) != 1 || len(shown(creds[0].(map[string]any))) != 1 {
+		t.Errorf("list does not show the list: %v", listed)
+	}
+
+	// A rotation that says nothing about the list keeps it.
+	if out, res := credExec(t, c, ctx, `{"op":"create","name":"repo","value":"ghs_y"}`); res.IsError || len(shown(out)) != 1 {
+		t.Errorf("a rotation without allowed_urls: %s %v, want the list kept", res.Text, out)
+	}
+	// The restricted value is not handed to a caller that names no destination.
+	if _, _, err := c.Engine.Resolve(ctx, "tnt", "", "", "repo"); err == nil {
+		t.Error("the restricted credential resolved with no destination")
+	}
+	if got, _, err := c.Engine.ResolveFor(ctx, "tnt", "", "", "repo", "https://github.com/acme/app"); err != nil || got.Value != "ghs_y" {
+		t.Errorf("for its own URL: %q err=%v", got.Value, err)
+	}
+}
+
+func TestCredentialDefTool_AllowedURLs_EmptyMeansNowhereAndBadEntriesAreRefused(t *testing.T) {
+	c, ctx := credFixture(t, "u1", testKEK())
+
+	out, res := credExec(t, c, ctx, `{"op":"create","name":"hook","value":"whsec","allowed_urls":[]}`)
+	if res.IsError {
+		t.Fatalf("create with an empty list: %s", res.Text)
+	}
+	if l, ok := out["allowed_urls"].([]any); !ok || len(l) != 0 {
+		t.Errorf("an empty list must be shown as an empty list, not left out: %v", out)
+	}
+	if _, _, err := c.Engine.ResolveFor(ctx, "tnt", "", "", "hook", "https://github.com/acme/app"); err == nil {
+		t.Error("a credential that is sent nowhere resolved for a URL")
+	}
+	// An unrestricted credential shows no list at all.
+	if out, _ := credExec(t, c, ctx, `{"op":"create","name":"plain","value":"v"}`); out["allowed_urls"] != nil {
+		t.Errorf("an unrestricted credential shows allowed_urls: %v", out["allowed_urls"])
+	}
+	for _, bad := range []string{
+		`["http://github.com/acme/app"]`, `["https://tok@github.com/acme/app"]`, `["https://github.com/a?b=1"]`, `["github.com/acme/app"]`, `[""]`,
+	} {
+		if _, res := credExec(t, c, ctx, `{"op":"create","name":"bad","value":"v","allowed_urls":`+bad+`}`); !res.IsError || !strings.Contains(res.Text, "allowed_urls") {
+			t.Errorf("allowed_urls %s: error=%v %q, want a refusal naming the field", bad, res.IsError, res.Text)
+		}
+	}
+	if _, res := credExec(t, c, ctx, `{"op":"get","name":"bad"}`); !res.IsError {
+		t.Error("a refused create stored the credential")
+	}
+}
