@@ -84,15 +84,75 @@ P0 reports it as a finding.
 
 ## Host
 
-To be fixed by amendment before E1 runs:
-- the host;
-- its Ollama version;
-- `OLLAMA_NUM_PARALLEL` and `OLLAMA_MAX_LOADED_MODELS`;
-- the models per kind;
-- the chat `num_ctx`.
-
 Nothing else may run on the host during a run. A run that sees a `load_ms` it did not
 cause is discarded and repeated.
+
+### Amendment 1 — 2026-10-13, before E1
+
+**Host.** The owner's local AMD inference box, `ollama-host`, running Ollama 0.40.3.
+
+| setting | value |
+|---|---|
+| `OLLAMA_CONTEXT_LENGTH` | 65536 |
+| `OLLAMA_KEEP_ALIVE` | 10m |
+| `OLLAMA_NUM_PARALLEL` | 4 |
+| `OLLAMA_MAX_LOADED_MODELS` | 4 |
+
+**Models.**
+- chat: `qwen3.6:latest` (36B MoE, 23.6 GB loaded at `num_ctx` 65536);
+- embed: `bge-m3:latest`;
+- decision: `nimble:latest`.
+
+**Chat `num_ctx`** is 65536, so the E5 pair is 8192 and 65536.
+
+**Mechanics smoke tests — seen, not scored, and the reason for the changes below:**
+- Two of the first runs lost calls to runner crashes: `llama-server process has terminated: signal: aborted (core dumped)` and `unexpected EOF`.
+  - The first crash happened while the three models were loading together.
+  - The second happened with all three loaded and in use together, and took all three down at once.
+- Four diagnostic runs did **not** crash:
+  - D1: four agents on the chat model;
+  - D2: chat + embed;
+  - D3: chat + decision;
+  - D4: chat + embed + decision, all at once.
+- So the fault is intermittent rather than tied to a model combination.
+- In those runs `prompt_eval_count` reported the **full** prompt on warm calls, while `prefill_ms` fell from about 12 s to about 2 s. Reuse is therefore read from time, as the instrument section already provides.
+
+**Changes:**
+1. **A run in which any call fails is discarded and repeated once.** A second failure is reported as a host fault for that setting, not scored. A crash costs every agent in flight a call, which would otherwise read as a scheduling effect.
+2. **E2 and E3 use 6 turns per agent, not 10. E1 keeps 10.**
+   - On this host a cold 16,000-character turn costs about 12 s of prefill, a warm one about 2 s, and a reply about 6 s.
+   - At 10 turns the E3 grid alone takes about four hours.
+   - Reuse is read from turn 2 on, so six turns give five readings per agent.
+3. **E2 runs at host N = 4 only**, with K = 2, 4, 6, 8. Changing N needs a restart of the owner's host. The slot-bound rule still decides: it compares K ≤ N (2 and 4) against K ≥ 2N (8). The N = 2 arm is dropped, not deferred.
+4. **E4's three models** are the chat, embed and decision models above.
+
+### Amendment 2 — 2026-10-13, after E1 and E2, before any E3 comparison was read
+
+**What happened.**
+- E1 and E2 ran and were analysed.
+- The E3 grid was 12 of 15 runs in. Its throughput table had **not** been computed or read.
+- Three E3 runs lost calls to runner crashes (`E3-q2-h2000`, `E3-q2-h5000`, `E3-q4-h2000`) and were repeated under amendment 1.
+- The owner then found the cause: the host was overheating. The cooling is fixed (CPU now under 75 °C).
+
+**What a speed check of the recorded runs showed.** It read only each run's cold first-turn prefill rate and decode rate — no policy comparison.
+
+1. **The host's raw speed shifted by about 5 % partway through the grid.**
+   - Cold prefill went from about 628 to about 601 ms per 1,000 characters.
+   - Decode went from about 19.1 to about 19.8–20.2 tokens/s.
+   - Five percent is the tie margin of the E3 rule, so settings measured before and after the shift cannot be ranked against each other.
+2. **Two repeated runs started warm.**
+   - A repeat reused its first try's workload, so its prompts were still in the host's cache.
+   - `E3-q2-h2000` and `E3-q4-h2000` paid 124 and 113 ms per 1,000 characters on their "cold" first turns, where a cold turn costs about 630.
+   - This is a fault in the run script, not in the host.
+
+**Changes.**
+1. **All of E3 is re-run on the fixed host.** The runs so far are kept under `runs/pre-fix/` and `runs/discarded/` as a record, and are not scored.
+2. **A repeat uses a fresh workload seed.** No run may reuse a workload another run or try has sent.
+3. **A contaminated run is discarded and repeated.** A run is contaminated when the median cold first-turn prefill rate of its chat agents is below **0.8 ×** the E1 calibration's rate at that prompt size: its first turns were not cold.
+4. **E1 and E2 stand.**
+   - They ran before the shift, at a steady speed (626–641 ms per 1,000 characters).
+   - Their verdicts are reuse ratios, which a 5 % speed change moves by well under 0.01.
+5. **E4 and E5 run after E3**, on the fixed host, as planned.
 
 ## Output
 
