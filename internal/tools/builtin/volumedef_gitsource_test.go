@@ -325,11 +325,6 @@ func TestVolumeDefGitSource_MaxBytesOnlyLowers(t *testing.T) {
 // deadline with nothing left behind.
 func TestVolumeDefGitSource_WaitsForASlotUntilTheDeadline(t *testing.T) {
 	f := newGitSourceFixture(t, false)
-	// Timeout bounds the slot wait AND the clone, so the short deadline is
-	// only for the wait; the clone after the slot frees gets the fixture's
-	// own budget back — 150ms was not enough for a real clone on a loaded
-	// machine, which made the second half fail on speed, not on slots.
-	cloneTimeout := f.tool.Git.Timeout
 	f.tool.Git.Timeout = 150 * time.Millisecond
 	f.tool.Git.Slots <- struct{}{} // another clone holds the only slot
 	start := time.Now()
@@ -345,7 +340,6 @@ func TestVolumeDefGitSource_WaitsForASlotUntilTheDeadline(t *testing.T) {
 	}
 	f.assertNothingLeft(t, "repo")
 	<-f.tool.Git.Slots
-	f.tool.Git.Timeout = cloneTimeout
 	if _, res := f.create(t, f.ctx, "repo", map[string]any{"url": f.repo.URL, "commit": f.repo.Head}, nil); res.IsError {
 		t.Errorf("once the slot is free: %s", res.Text)
 	}
