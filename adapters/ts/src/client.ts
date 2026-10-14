@@ -3351,15 +3351,45 @@ export class LoomcycleClient {
    *
    *  `username` is the user name sent with the value where a destination
    *  takes one (HTTP basic auth for a git source). Leave it out to keep the
-   *  stored one; `""` removes it. */
+   *  stored one; `""` removes it.
+   *
+   *  `expires_at` is an RFC3339 timestamp (`"2026-12-31T00:00:00Z"`) stored
+   *  with the credential and reported back in its metadata; any other format
+   *  is refused. `backend` is where the value is kept: `"inline"` (encrypted
+   *  in loomcycle's own store, the default) is the only one accepted. */
   async createCredential(
-    input: { scope: CredentialScope; name: string; value: string; allowed_urls?: string[]; username?: string },
+    input: {
+      scope: CredentialScope;
+      name: string;
+      value: string;
+      allowed_urls?: string[];
+      username?: string;
+      expires_at?: string;
+      backend?: "inline";
+    },
     opts?: { signal?: AbortSignal },
   ): Promise<CredentialMeta> {
     return postJSON<CredentialMeta>(
       this.ctx,
       "/v1/_credentialdef",
       { op: "create", ...input },
+      opts,
+    );
+  }
+
+  /** Read ONE credential's metadata (RFC AR) — never its value. Answers
+   *  whether a name is stored, and its `allowed_urls` / `username` /
+   *  `expires_at`, without listing the whole scope. An absent name raises
+   *  {@link SubstrateToolRefusedError}. Mirrors
+   *  `POST /v1/_credentialdef {op:get}`. */
+  async getCredential(
+    input: { scope: CredentialScope; name: string },
+    opts?: { signal?: AbortSignal },
+  ): Promise<CredentialMeta> {
+    return postJSON<CredentialMeta>(
+      this.ctx,
+      "/v1/_credentialdef",
+      { op: "get", ...input },
       opts,
     );
   }
