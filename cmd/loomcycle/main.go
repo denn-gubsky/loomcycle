@@ -1462,7 +1462,13 @@ func main() {
 				return "", found, err
 			}
 			return res.Value, true, nil
-		}, nil)
+		},
+		// The token request goes to the config's base_url, which a tenant
+		// writes. Through the guard, it cannot be pointed at a private or
+		// metadata address unless the operator vouched for that host
+		// (LOOMCYCLE_HTTP_PRIVATE_HOST_ALLOWLIST, e.g. a GitHub Enterprise
+		// server on the internal network).
+		netguard.NewGuardedClient(15*time.Second, cfg.Env.HTTPPrivateHostAllowlist))
 	// srv is assigned below at lchttp.New; the credential closures capture it by
 	// reference so a resolved value can be registered in the server's redactor.
 	// registerSecret is only CALLED during a run (long after srv exists), so the
@@ -1487,7 +1493,7 @@ func main() {
 		log.Fatalf("git source: %v", gerr)
 	}
 	if gitSource != nil {
-		gitSource.Credential = builtin.GitCredentialResolver(credEngine, ghAppMinter.TokenFromConfig, registerSecret)
+		gitSource.Credential = builtin.GitCredentialResolver(credEngine, ghAppMinter.TokenForRepository, registerSecret)
 		volumeDefTool.Git = gitSource
 		log.Printf("git source: enabled for %s (max %d MiB fetched, %d MiB per object, %d at once)",
 			strings.Join(gitSource.Hosts, ", "), gitSource.MaxBytes>>20, gitSource.MaxObjectBytes>>20, cap(gitSource.Slots))

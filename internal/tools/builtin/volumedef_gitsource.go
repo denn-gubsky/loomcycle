@@ -94,11 +94,13 @@ var gitCredentialRefRe = regexp.MustCompile(`^\$(cred|ghapp):([A-Za-z0-9_-]{1,12
 // go, and the URL of a clone is not something to take on trust.
 //
 // "$ghapp:<name>" names a stored GitHub App config; mintApp turns it into a
-// short-lived installation token. register is called with the token so the
-// transcript redactor masks any later echo of it.
+// short-lived installation token for the one repository being cloned, with
+// read access to its contents only (GitHubAppMinter.TokenForRepository).
+// register is called with the token so the transcript redactor masks any
+// later echo of it.
 func GitCredentialResolver(
 	engine *credential.Engine,
-	mintApp func(ctx context.Context, tenantID, cfgJSON string) (string, error),
+	mintApp func(ctx context.Context, tenantID, cfgJSON, repository string) (string, error),
 	register func(string),
 ) GitCredentialFunc {
 	return func(ctx context.Context, ref, targetURL string) (string, string, error) {
@@ -120,21 +122,31 @@ func GitCredentialResolver(
 			// Stored with no allowed_urls at all.
 			return "", "", ErrGitCredentialURLNotAllowed
 		}
+		u, perr := url.Parse(targetURL)
+		if perr != nil {
+			return "", "", fmt.Errorf("%w: %v", ErrGitCredentialUnresolvable, perr)
+		}
 		token := res.Value
 		if kind == "ghapp" {
 			if mintApp == nil {
 				return "", "", fmt.Errorf("%w: GitHub App credentials are not available", ErrGitCredentialUnresolvable)
 			}
-			if token, err = mintApp(ctx, ri.TenantID, res.Value); err != nil {
+			if token, err = mintApp(ctx, ri.TenantID, res.Value, repositoryName(u.Path)); err != nil {
 				return "", "", fmt.Errorf("%w: %v", ErrGitCredentialUnresolvable, err)
 			}
 		}
 		if register != nil {
 			register(token)
 		}
-		u, _ := url.Parse(targetURL)
 		return gitAuthUsername(u.Hostname()), token, nil
 	}
+}
+
+// repositoryName is the repository's name in a forge URL's path: its last
+// segment, without ".git". "/acme/app.git" is "app".
+func repositoryName(urlPath string) string {
+	segs := strings.Split(strings.Trim(urlPath, "/"), "/")
+	return strings.TrimSuffix(segs[len(segs)-1], ".git")
 }
 
 // gitAuthUsername is the basic-auth user name sent with a token. Forges take

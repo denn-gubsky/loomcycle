@@ -74,7 +74,8 @@ the create fails instead of following it out of the dynamic root.
     serve a commit by its sha.
   - `credential` — `$cred:<name>` or `$ghapp:<name>`. It must be a credential
     restricted (`allowed_urls`) to a URL covering this repository. Leave it
-    out for a public repository.
+    out for a public repository. For a GitHub App the token is made for this
+    repository alone, read-only.
   - `max_bytes` — optional; may only lower the operator's limit.
   - `diff_base` — optional: also write a diff from another commit to this
     one. `"merge-base:default"` diffs against the point where this commit's

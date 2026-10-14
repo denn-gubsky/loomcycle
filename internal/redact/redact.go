@@ -85,11 +85,17 @@ var patternRules = []patternRule{
 	{regexp.MustCompile(`\bAKIA[0-9A-Z]{16}\b`), "[redacted-aws-key]"},
 	// Slack tokens: xoxb-/xoxp-/xoxa-/xoxr-/xoxs- prefix.
 	{regexp.MustCompile(`\bxox[baprs]-[A-Za-z0-9-]{10,}\b`), "[redacted-slack]"},
-	// GitHub PAT: ghp_ + >=36 base62. Distinctive prefix. We do NOT match a bare
-	// 40-hex string — that collides with git commit SHAs (a real false positive
-	// in dev transcripts); env-sourced 40-hex PATs are caught by Tier A and
-	// inline ones by the Authorization rule above.
-	{regexp.MustCompile(`\bghp_[A-Za-z0-9]{36,}\b`), "[redacted-token]"},
+	// GitHub tokens: ghp_ (personal), gho_ (OAuth), ghu_ (user-to-server),
+	// ghs_ (an App installation's, which is what a git source clones with),
+	// ghr_ (refresh) + >=36 base62. Distinctive prefixes. We do NOT match a
+	// bare 40-hex string — that collides with git commit SHAs (a real false
+	// positive in dev transcripts); env-sourced 40-hex PATs are caught by
+	// Tier A and inline ones by the Authorization rule above.
+	{regexp.MustCompile(`\bgh[pousr]_[A-Za-z0-9]{36,}\b`), "[redacted-token]"},
+	// GitHub fine-grained personal token: github_pat_ + base62 and _.
+	{regexp.MustCompile(`\bgithub_pat_[A-Za-z0-9_]{50,}\b`), "[redacted-token]"},
+	// GitLab personal, project and group token: glpat- + base62, - and _.
+	{regexp.MustCompile(`\bglpat-[A-Za-z0-9_-]{20,}\b`), "[redacted-token]"},
 	// key=value / key: "value" assignments for secret-named keys (the *_API_KEY=…
 	// family). Masks only the value; the key + delimiter are preserved so the
 	// structure stays legible.

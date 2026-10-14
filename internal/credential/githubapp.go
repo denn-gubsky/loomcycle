@@ -141,25 +141,68 @@ type ghAppConfig struct {
 	BaseURL        string            `json:"base_url,omitempty"`     // GitHub Enterprise; default api.github.com
 }
 
-// TokenFromConfig mints (or returns the cached) installation access token for
-// an App config the caller has already resolved, for a consumer that is not a
-// header substitution: it resolved the credential itself, with its own rules
-// about where the token may go.
-func (m *GitHubAppMinter) TokenFromConfig(ctx context.Context, tenantID, cfgJSON string) (string, error) {
-	return m.token(ctx, tenantID, cfgJSON)
+// TokenForRepository mints (or returns the cached) installation access token
+// for an App config the caller has already resolved, narrowed to ONE
+// repository of the installation with read access to its contents and
+// nothing else.
+//
+// The config may allow much more: every repository the App is installed on,
+// write access. A token that goes into a clone needs none of that, and is
+// held by the runtime while it reads text an outsider wrote. GitHub enforces
+// the narrowing: the token it returns cannot reach another repository or
+// write. A config that names its own list of repositories must include this
+// one; the narrowing never widens.
+func (m *GitHubAppMinter) TokenForRepository(ctx context.Context, tenantID, cfgJSON, repository string) (string, error) {
+	cfg, err := parseGHAppConfig(cfgJSON)
+	if err != nil {
+		return "", err
+	}
+	if !ghRepoNameRe.MatchString(repository) {
+		return "", fmt.Errorf("github app: %q is not a repository name", repository)
+	}
+	if len(cfg.Repositories) > 0 {
+		covered := false
+		for _, r := range cfg.Repositories {
+			if strings.EqualFold(r, repository) {
+				covered = true
+			}
+		}
+		if !covered {
+			return "", fmt.Errorf("github app: the stored config does not cover repository %q", repository)
+		}
+	}
+	cfg.Repositories = []string{repository}
+	cfg.Permissions = map[string]string{"contents": "read"}
+	return m.tokenFor(ctx, tenantID, cfg)
+}
+
+// ghRepoNameRe is the shape of a GitHub repository name.
+var ghRepoNameRe = regexp.MustCompile(`^[A-Za-z0-9._-]{1,100}$`)
+
+func parseGHAppConfig(cfgJSON string) (ghAppConfig, error) {
+	var cfg ghAppConfig
+	if err := json.Unmarshal([]byte(cfgJSON), &cfg); err != nil {
+		return cfg, fmt.Errorf("credential is not a GitHub App config (expected JSON with app_id, private_key, installation_id): %w", err)
+	}
+	if cfg.AppID == "" || cfg.PrivateKey == "" || cfg.InstallationID == "" {
+		return cfg, errors.New("github app config requires app_id, private_key, and installation_id")
+	}
+	return cfg, nil
 }
 
 // token returns a valid installation access token for the given App config,
 // minting a new one (and caching it) when none is cached or the cached one is
 // within 5 minutes of expiry.
 func (m *GitHubAppMinter) token(ctx context.Context, tenantID, cfgJSON string) (string, error) {
-	var cfg ghAppConfig
-	if err := json.Unmarshal([]byte(cfgJSON), &cfg); err != nil {
-		return "", fmt.Errorf("credential is not a GitHub App config (expected JSON with app_id, private_key, installation_id): %w", err)
+	cfg, err := parseGHAppConfig(cfgJSON)
+	if err != nil {
+		return "", err
 	}
-	if cfg.AppID == "" || cfg.PrivateKey == "" || cfg.InstallationID == "" {
-		return "", errors.New("github app config requires app_id, private_key, and installation_id")
-	}
+	return m.tokenFor(ctx, tenantID, cfg)
+}
+
+// tokenFor is token for a config already parsed.
+func (m *GitHubAppMinter) tokenFor(ctx context.Context, tenantID string, cfg ghAppConfig) (string, error) {
 	key := ghCacheKey(tenantID, cfg)
 	m.mu.Lock()
 	if c, ok := m.cache[key]; ok && m.now().Before(c.exp.Add(-5*time.Minute)) {

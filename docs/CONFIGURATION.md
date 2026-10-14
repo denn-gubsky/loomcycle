@@ -1573,7 +1573,7 @@ cp .env.insecure.example  .env.insecure   # then adjust paths/flags
 **Secrets at rest (F32).** Two mechanisms keep resolved credentials out of the on-disk state:
 
 - **Definition plane — store the reference, resolve at use-time.** A substrate def persists the `${ENV_NAME}` reference, never the expanded value. Webhook defs store `signing_secret_env` / `bearer_token_env` (env-var *names*), and a dynamic MCP server's `url` / `headers` keep their `${LOOMCYCLE_*}` placeholders in `mcp_server_defs.content` — the secret is resolved only when the pool dials the server (mirroring how a yaml `mcp_servers.*` entry is expanded at config load). `content_sha256` is computed over the reference, so it stays stable when the token rotates. Only an admin (or the open-mode / stdio operator) may store a `${NAME}` in a dynamic MCP server def: a `substrate:tenant` author or an agent uses `${run.credentials.<name>}` or `$cred:<name>`, and a stored version holding a `${NAME}` that an admin did not save (an *unattributed* one: written before this rule, restored from an older snapshot, or hand-edited) is listed in a boot `WARNING` and warned once per version when dialed. It still dials for now; `LOOMCYCLE_MCP_REFUSE_UNATTRIBUTED_ENV=1` refuses it now, and the next release refuses it by default.
-- **Transcript plane — redact before persisting (`LOOMCYCLE_REDACT_SECRETS`, default ON).** Tool I/O (tool_call inputs + tool_result outputs) is scanned for secret-shaped substrings and masked before it reaches the events store (and thus snapshots + the `/v1/_events` audit API): the exact values of secret-named env vars (`*_KEY` / `*_TOKEN` / `*_SECRET` / `*_AUTH` / `*_PASSWORD` / `*_CREDENTIAL`) become `[redacted:NAME]`, plus conservative heuristics for `Authorization:` headers, `sk-`/`AKIA`/`xox`/`ghp_` keys, and `*_API_KEY=` assignments. The live SSE stream is **not** redacted (the caller already holds the secret). Set `LOOMCYCLE_REDACT_SECRETS=0` to disable. This is defense-in-depth — agents should still pass secrets out-of-band (env / stdin / credential helper), never inline on a cmdline.
+- **Transcript plane — redact before persisting (`LOOMCYCLE_REDACT_SECRETS`, default ON).** Tool I/O (tool_call inputs + tool_result outputs) is scanned for secret-shaped substrings and masked before it reaches the events store (and thus snapshots + the `/v1/_events` audit API): the exact values of secret-named env vars (`*_KEY` / `*_TOKEN` / `*_SECRET` / `*_AUTH` / `*_PASSWORD` / `*_CREDENTIAL`) become `[redacted:NAME]`, plus conservative heuristics for `Authorization:` headers, `sk-`/`AKIA`/`xox` keys, GitHub tokens (`ghp_`, `gho_`, `ghu_`, `ghs_`, `ghr_`, `github_pat_`), GitLab tokens (`glpat-`), and `*_API_KEY=` assignments. The live SSE stream is **not** redacted (the caller already holds the secret). Set `LOOMCYCLE_REDACT_SECRETS=0` to disable. This is defense-in-depth — agents should still pass secrets out-of-band (env / stdin / credential helper), never inline on a cmdline.
 
 **Sub-agent limits.** Bounds on the children an agent starts with the `Agent` tool. Each is per run, not per tree (a child's own children count against the child); unset or `0` means the default.
 
@@ -1712,6 +1712,8 @@ Off unless the operator lists the hosts a repository may be fetched from.
 
 **The credential.** `$cred:<name>` or `$ghapp:<name>`, resolved for the run. It must carry `allowed_urls` covering the repository's URL (`docs/CREDENTIALS.md`): the URL of a clone can come from untrusted text, and the restriction is what stops the token following it. A credential with no `allowed_urls` is refused. The token is sent as HTTP basic auth, with the user name `oauth2` for a host whose name has a `gitlab` label and `x-access-token` otherwise.
 
+**A GitHub App token is narrowed to the clone.** For `$ghapp:<name>` the runtime asks GitHub for an installation token for the one repository in the URL, with read access to its contents and nothing else, whatever the stored App config allows. GitHub enforces it: the token cannot reach another repository or write. A config that lists its own `repositories` must include the one being cloned. The token request goes through the network guard: a `base_url` on a private network (GitHub Enterprise) must be listed in `LOOMCYCLE_HTTP_PRIVATE_HOST_ALLOWLIST`. That applies to `$ghapp:` in headers too.
+
 **What is fetched and how.** One commit, by its full sha, over HTTPS only, through the same guard as the HTTP tools (no private or metadata address unless `LOOMCYCLE_HTTP_PRIVATE_HOST_ALLOWLIST` vouches for the host). No redirect is followed. Nothing from the repository runs: no hook, no filter, no LFS, no submodule fetch.
 
 **What is in the volume.**
@@ -1730,7 +1732,6 @@ Off unless the operator lists the hosts a repository may be fetched from.
 
 **Memory.** A clone holds its pack on disk and at most a few objects in memory, each no larger than the object limit. Budget a small multiple of `LOOMCYCLE_GIT_SOURCE_MAX_OBJECT_BYTES` per clone running at once.
 
-**Not yet:** narrowing a GitHub App token to the one repository.
 
 ### 9d.3 Volumes console tab (RFC AH Phase 4)
 
