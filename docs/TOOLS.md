@@ -1118,6 +1118,10 @@ A webhook hook is a `POST` of JSON to its `url`, with the hook's configured `hea
 
 **`channel_publish`** hooks belong to a channel, not an agent (`owner` is `channel:<name>`). They receive the message (`channel`, `scope`, `message_id`, `published_at`, `attempt`, `body`) and answer `release` (optionally with `updated_body`), `drop` or `hold`.
 
+### Signed deliveries
+
+A HookDef's http body may name `signing_secret: "$cred:<name>"` (a literal is refused; a non-admin must name a tenant-level credential of its own tenant that covers `body.url`). Every call then carries `X-Loomcycle-Signature: t=<unix>,v1=<hex HMAC-SHA256 of t + "." + raw body>`, `X-Loomcycle-Hook: <definition name>` and `X-Loomcycle-Delivery: <id>`. Verify over the raw bytes, refuse a `t` more than 300 s from your clock, and dedupe on the delivery id (a channel hook's retry of the same message keeps it, re-signed with a new `t`). The secret resolves per call like a header credential, so rotation needs no restart; one that does not resolve fails the call, which is never sent unsigned. The three header names are reserved — a hook's `headers` cannot set them. `verifyLoomcycleSignature` (`@loomcycle/client`) and `verify_loomcycle_signature` (Python) implement the check; see *Verifying a delivery* in the `hooks` help topic.
+
 ### Composition
 
 - **Order**: a tool's own hooks run before the agent-level ones, each in the order the definition lists them. The first `deny` ends the `pre` chain.
