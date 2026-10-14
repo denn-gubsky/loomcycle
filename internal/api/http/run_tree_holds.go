@@ -112,7 +112,8 @@ func (s *Server) holdRunTree(root string) (release func()) {
 // set it starts with, and every resumed run of the tree joins it. An entry is
 // counted, and goes with its last holder or when the tree's volumes are
 // purged, whichever is first. In-process only: a run of the tree on another
-// replica has its own set.
+// replica has its own set. A name this set lacks is looked up in the tree's
+// record (withEphemeralRecord), which is how a volume made there is found.
 //
 // Zero value works.
 type treeVolumeSets struct {

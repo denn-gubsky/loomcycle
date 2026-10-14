@@ -46,8 +46,19 @@ import (
 //   - volumeName != "" → that binding; the agent isn't bound to it → error
 //     listing the volumes it IS bound to.
 func resolveVolume(ctx context.Context, volumeName string) (root string, readOnly bool, name string, err error) {
+	pol := tools.VolumePolicy(ctx)
 	if volumeName != "" {
-		if ref, ok := tools.EphemeralVolumes(ctx).Get(volumeName); ok {
+		ref, ok := tools.EphemeralVolumes(ctx).Get(volumeName)
+		if !ok && !boundTo(pol, volumeName) {
+			// Not a volume this process knows of: a run of the tree on
+			// another replica may have created it since this run started.
+			// Asked only for a name that is not one of the agent's own
+			// bindings, so using a bound volume costs no read.
+			if ref, ok, err = recordedEphemeral(ctx, volumeName); err != nil {
+				return "", false, "", err
+			}
+		}
+		if ok {
 			// Read-only when the volume is, or when this run was given
 			// ephemeral volumes read-only by its own or an ancestor's
 			// definition. Either is enough; nothing here widens.
@@ -55,7 +66,6 @@ func resolveVolume(ctx context.Context, volumeName string) (root string, readOnl
 		}
 	}
 
-	pol := tools.VolumePolicy(ctx)
 	if !pol.Active {
 		// No volume confinement in force → DENY (RFC AH Phase 3:
 		// sandbox-by-default; the legacy fallback root is gone). An agent
@@ -115,6 +125,76 @@ func effectiveRoot(ctx context.Context, volumeName string, needWrite bool) (stri
 		return "", fmt.Errorf("volume %q is read-only; this operation requires a read-write volume", name)
 	}
 	return root, nil
+}
+
+// boundTo reports whether the agent's volume policy binds name.
+func boundTo(pol tools.VolumePolicyValue, name string) bool {
+	for _, b := range pol.Bindings {
+		if b.Name == name {
+			return true
+		}
+	}
+	return false
+}
+
+// recordedEphemeral looks name up in the tree's recorded ephemeral volumes
+// when the in-memory set lacks it, and takes a volume found there into the
+// set, so the next call needs no read. The set is per process; the record is
+// what every replica reads. Add keeps a read-only entry read-only.
+//
+// (false, nil) when the name is not recorded or nothing can be read. A volume
+// recorded but whose files are on another replica's disk is an error that
+// says so, rather than "not bound": the name is right, and the run can do
+// nothing about where the files are.
+func recordedEphemeral(ctx context.Context, name string) (tools.EphemeralVolumeRef, bool, error) {
+	read := tools.EphemeralRecordsFrom(ctx)
+	set := tools.EphemeralVolumes(ctx)
+	if read == nil || set == nil || name == "" {
+		return tools.EphemeralVolumeRef{}, false, nil
+	}
+	recs, err := read(ctx)
+	if err != nil {
+		return tools.EphemeralVolumeRef{}, false, fmt.Errorf("volume %q: could not read this run's ephemeral volumes: %w", name, err)
+	}
+	for _, r := range recs {
+		if r.Name != name {
+			continue
+		}
+		if r.Elsewhere {
+			return tools.EphemeralVolumeRef{}, false, fmt.Errorf("ephemeral volume %q belongs to this run, but it was created on another server and its files are not on this one", name)
+		}
+		set.Add(name, tools.EphemeralVolumeRef{Root: r.Root, ReadOnly: r.ReadOnly})
+		ref, _ := set.Get(name)
+		return ref, true, nil
+	}
+	return tools.EphemeralVolumeRef{}, false, nil
+}
+
+// recordedEphemeralForMode is recordedEphemeral for set_mode, which changes
+// the record and not the files: a volume whose files are on another replica
+// is found too (with no Root, and not taken into the set), so it can still be
+// made read-only for every replica.
+func recordedEphemeralForMode(ctx context.Context, name string) (tools.EphemeralVolumeRef, bool, error) {
+	read := tools.EphemeralRecordsFrom(ctx)
+	if read == nil || name == "" {
+		return tools.EphemeralVolumeRef{}, false, nil
+	}
+	recs, err := read(ctx)
+	if err != nil {
+		return tools.EphemeralVolumeRef{}, false, fmt.Errorf("could not read this run's ephemeral volumes: %w", err)
+	}
+	for _, r := range recs {
+		if r.Name != name {
+			continue
+		}
+		if !r.Elsewhere {
+			if set := tools.EphemeralVolumes(ctx); set != nil {
+				set.Add(name, tools.EphemeralVolumeRef{Root: r.Root, ReadOnly: r.ReadOnly})
+			}
+		}
+		return tools.EphemeralVolumeRef{Root: r.Root, ReadOnly: r.ReadOnly}, true, nil
+	}
+	return tools.EphemeralVolumeRef{}, false, nil
 }
 
 // confirmEphemeralWritable is asked when the in-memory set holds volumeName

@@ -556,6 +556,43 @@ func EphemeralModeCheckFrom(ctx context.Context) EphemeralModeCheck {
 	return c
 }
 
+// EphemeralRecord is one of a run tree's ephemeral volumes as it is recorded,
+// which is what every replica reads, placed on THIS replica's disk.
+type EphemeralRecord struct {
+	Name     string
+	ReadOnly bool
+	// Root is the volume's directory on this replica, derived from this
+	// replica's own dynamic root, never taken from the record. Empty when
+	// Elsewhere.
+	Root string
+	// Elsewhere: the volume is recorded, but its directory is not on this
+	// replica's disk. It was made by a run of the tree on another replica,
+	// and the dynamic root is not storage the replicas share.
+	Elsewhere bool
+}
+
+// EphemeralRecords reads the run tree's recorded ephemeral volumes.
+type EphemeralRecords func(ctx context.Context) ([]EphemeralRecord, error)
+
+type ctxKeyEphemeralRecords struct{}
+
+// WithEphemeralRecords attaches the reader a lookup uses when the in-memory
+// set does not hold a name. The set is per process: a volume a run of the
+// same tree creates on another replica after this run started is only in
+// the record. A nil reader is a no-op.
+func WithEphemeralRecords(ctx context.Context, read EphemeralRecords) context.Context {
+	if read == nil {
+		return ctx
+	}
+	return context.WithValue(ctx, ctxKeyEphemeralRecords{}, read)
+}
+
+// EphemeralRecordsFrom returns the reader attached to ctx, or nil.
+func EphemeralRecordsFrom(ctx context.Context) EphemeralRecords {
+	r, _ := ctx.Value(ctxKeyEphemeralRecords{}).(EphemeralRecords)
+	return r
+}
+
 // WithEphemeralVolumes attaches the run-tree's ephemeral volume set to ctx.
 // nil set is a no-op (EphemeralVolumes then returns nil → no ephemeral
 // resolution, and the create op refuses with "no ephemeral set on ctx").
