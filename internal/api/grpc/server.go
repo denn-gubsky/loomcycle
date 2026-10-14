@@ -2500,22 +2500,33 @@ func configuredRunToProto(r connector.ConfiguredRun) *loomcyclepb.ConfiguredRun 
 }
 
 // configuredErrToStatus maps a configured-run refusal (carrying an HTTP
-// status) to the gRPC code the same refusal gets elsewhere on this surface.
+// status) to the gRPC code the same refusal gets elsewhere on this surface,
+// with the refusal's own code as the ErrorInfo reason. The code alone is not
+// enough: ResourceExhausted is both configured_run_cap, which needs the caller
+// to start or discard a draft, and rate_limited, which clears by waiting.
 func configuredErrToStatus(err error) error {
 	var hse interface{ HTTPStatus() int }
-	if errors.As(err, &hse) {
-		switch hse.HTTPStatus() {
-		case nethttp.StatusBadRequest, nethttp.StatusUnprocessableEntity:
-			return status.Error(codes.InvalidArgument, err.Error())
-		case nethttp.StatusNotFound:
-			return status.Error(codes.NotFound, err.Error())
-		case nethttp.StatusConflict:
-			return status.Error(codes.FailedPrecondition, err.Error())
-		case nethttp.StatusTooManyRequests:
-			return status.Error(codes.ResourceExhausted, err.Error())
-		case nethttp.StatusServiceUnavailable:
-			return status.Error(codes.Unavailable, err.Error())
-		}
+	if !errors.As(err, &hse) {
+		return mapRunnerErr(err)
 	}
-	return mapRunnerErr(err)
+	var code codes.Code
+	switch hse.HTTPStatus() {
+	case nethttp.StatusBadRequest, nethttp.StatusUnprocessableEntity:
+		code = codes.InvalidArgument
+	case nethttp.StatusForbidden:
+		// agent_not_allowed / override_not_allowed. The refusal wraps no
+		// runner sentinel, so the mapRunnerErr fallback filed it as Internal.
+		code = codes.PermissionDenied
+	case nethttp.StatusNotFound:
+		code = codes.NotFound
+	case nethttp.StatusConflict:
+		code = codes.FailedPrecondition
+	case nethttp.StatusTooManyRequests:
+		code = codes.ResourceExhausted
+	case nethttp.StatusServiceUnavailable:
+		code = codes.Unavailable
+	default:
+		return mapRunnerErr(err)
+	}
+	return withErrorDetails(status.New(code, err.Error()), err)
 }

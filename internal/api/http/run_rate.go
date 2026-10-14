@@ -107,6 +107,12 @@ func (e *rateLimitedError) Error() string {
 
 func (e *rateLimitedError) Is(target error) bool { return target == runner.ErrRateLimited }
 
+// RetryDelay is the wait as Retry-After states it (whole seconds, at least
+// one), so gRPC's RetryInfo names the same wait the HTTP header does.
+func (e *rateLimitedError) RetryDelay() time.Duration {
+	return time.Duration(retryAfterSeconds(e.RetryAfter)) * time.Second
+}
+
 // retryAfterSeconds rounds a wait up to whole seconds, at least one: the
 // header carries seconds, and "0" would tell a client to retry at once.
 func retryAfterSeconds(d time.Duration) int {
