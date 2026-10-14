@@ -3570,7 +3570,9 @@ type Concurrency struct {
 	// MaxQueuedRunsPerUser is how many runs one (tenant, user) may have
 	// queued on its MaxConcurrentRunsPerUser cap. Default 16; 0 refuses a run
 	// over the cap at once, as before runs could queue. In cluster mode the
-	// bound is per replica.
+	// bound is per replica. With no per-user cap it bounds instead how many
+	// places one (tenant, user) holds in the queue for a run slot (runs
+	// naming no user share their tenant's), so one caller cannot fill it.
 	// Env: LOOMCYCLE_MAX_QUEUED_RUNS_PER_USER.
 	MaxQueuedRunsPerUser int `yaml:"max_queued_runs_per_user"`
 	// ProviderQueueDepth is how many requests that hold NO run slot may wait
