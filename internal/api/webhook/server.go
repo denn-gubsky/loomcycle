@@ -802,7 +802,8 @@ func writeError(w http.ResponseWriter, status int, code, detail string) {
 	writeJSON(w, status, body)
 }
 
-// writeSecretUnresolvable emits the 503 with the env-var NAME (never value).
+// writeSecretUnresolvable emits the 503 with the env-var NAME, or the
+// "$cred:<name>" reference of a stored secret — never a value.
 func writeSecretUnresolvable(w http.ResponseWriter, ae *authError) {
 	body := map[string]string{"error": "secret_unresolvable"}
 	if ae.secretRef != "" {
