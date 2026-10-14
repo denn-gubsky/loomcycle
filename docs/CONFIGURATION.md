@@ -2148,7 +2148,7 @@ decision:
   timeout_ms: 30000               # default 30000; one call, not its wait for a slot
 ```
 
-- The block has no cap of its own. How many decisions are in flight to a provider is that provider's decision lane: `providers.<id>.lanes.decision.max_concurrent`. (`decision.max_concurrent` was removed; a config that sets it fails to load.)
+- The block has no cap of its own. How many decisions are in flight to a provider is that provider's decision lane: `providers.<id>.lanes.decision.max_concurrent`; with no lane set, a built-in floor holds them to 4 in flight. (`decision.max_concurrent` was removed; a config that sets it fails to load.)
 
 - Config load fails on: a `model_pattern` alias, an undeclared provider, a provider with no decision support (only Ollama has it today), a plain model name with no `decision.provider`, an alias tagged another kind, or an unknown key in the block.
 - With `models` omitted, every alias tagged `kind: decision` must be buildable, or load fails.
