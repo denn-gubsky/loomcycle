@@ -17,10 +17,12 @@ import (
 
 	"github.com/denn-gubsky/loomcycle/internal/api/grpc/loomcyclepb"
 	lchttp "github.com/denn-gubsky/loomcycle/internal/api/http"
+	"github.com/denn-gubsky/loomcycle/internal/auth"
 	"github.com/denn-gubsky/loomcycle/internal/cancel"
 	"github.com/denn-gubsky/loomcycle/internal/concurrency"
 	"github.com/denn-gubsky/loomcycle/internal/config"
 	"github.com/denn-gubsky/loomcycle/internal/providers"
+	"github.com/denn-gubsky/loomcycle/internal/runner"
 	"github.com/denn-gubsky/loomcycle/internal/store"
 	storesqlite "github.com/denn-gubsky/loomcycle/internal/store/sqlite"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
@@ -228,6 +230,40 @@ func TestConfiguredRunRPCs_CapRefusalNamesItsReason(t *testing.T) {
 	if v.hasRetry {
 		t.Errorf("over the cap carries RetryInfo (%v): waiting does not free a draft", v.retryIn)
 	}
+}
+
+// rate_limited is the 429 that clears by waiting, and the limiter knows how
+// long: the gRPC refusal carries the reason, the transient class and a
+// RetryInfo naming the same whole-second wait HTTP's Retry-After does. The
+// configured-run create and the run start (RunOnce, which the Run RPC drives
+// and maps with mapRunnerErr) are the two intakes that refuse with it.
+func TestRateLimited_RefusalCarriesTheLimitersWait(t *testing.T) {
+	httpSrv, adapter, _, _ := configuredServers(t, nil)
+	// One start a minute, one at once: the second start waits ~60s.
+	httpSrv.SetDefaultRunRate(auth.RateLimit{PerMinute: 1, Burst: 1})
+	ctx := auth.WithPrincipal(context.Background(), auth.Principal{
+		TenantID: "acme", Subject: "alice", Scopes: []string{auth.ScopeRunsCreate},
+	})
+	req := &loomcyclepb.RunRequest{Agent: "agent", Segments: userSegment("x")}
+	// The first start takes the bucket's only token, whatever becomes of it.
+	_, _ = adapter.CreateConfiguredRun(ctx, req)
+
+	check := func(name string, err error) {
+		t.Helper()
+		v := viewOf(t, err)
+		if v.code != codes.ResourceExhausted || v.reason != "rate_limited" {
+			t.Fatalf("%s: %v / %q (%v), want ResourceExhausted / rate_limited", name, v.code, v.reason, err)
+		}
+		if v.retryable != "true" {
+			t.Errorf("%s: is_retryable = %q, want true", name, v.retryable)
+		}
+		if !v.hasRetry || v.retryIn <= 0 || v.retryIn > time.Minute || v.retryIn%time.Second != 0 {
+			t.Errorf("%s: RetryInfo present=%v delay=%v, want a whole-second wait in (0, 1m]", name, v.hasRetry, v.retryIn)
+		}
+	}
+	_, err := adapter.CreateConfiguredRun(ctx, req)
+	check("CreateConfiguredRun", err)
+	check("RunOnce", mapRunnerErr(httpSrv.RunOnce(ctx, runner.RunInput{Agent: "agent"}, runner.RunCallbacks{})))
 }
 
 // Every configured-run refusal reaches gRPC with the code its HTTP body
