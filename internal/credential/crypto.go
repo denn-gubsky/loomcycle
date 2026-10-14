@@ -114,6 +114,14 @@ func decodeKey(b64 string) ([]byte, error) {
 // Enabled reports whether inline encryption is available (a KEK is configured).
 func (s *Sealer) Enabled() bool { return len(s.keks) > 0 }
 
+// Holds reports whether this Sealer has the key whose fingerprint is kid —
+// whether a value sealed under it could be opened at all — without opening
+// anything. The fingerprint is not secret (it is stored beside the value).
+func (s *Sealer) Holds(kid string) bool {
+	_, ok := s.keks[kid]
+	return ok
+}
+
 // Identity binds a sealed value to the credential row it belongs to. It becomes
 // the GCM AAD, so decryption only succeeds when the row's identity matches what
 // was sealed — a ciphertext copied to another tenant/scope/name won't open.

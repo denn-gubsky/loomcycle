@@ -2,6 +2,7 @@ package credential
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"math"
@@ -24,6 +25,15 @@ type Engine struct {
 	// now is the clock expires_at is judged against; time.Now outside tests.
 	now func() time.Time
 }
+
+// ErrUnopenable is returned when the credential a name resolves to is stored
+// but its value cannot be opened: no LOOMCYCLE_SECRET_KEY is configured, the
+// key does not open it (rotated without LOOMCYCLE_SECRET_KEY_PREVIOUS, or
+// wrong), the seal is corrupt, or its backend is not readable by this build.
+// It is held, not missing (HeldButUnusable): nothing may stand in for it. The
+// wrapped message names the credential and the reason, never key material or
+// stored bytes.
+var ErrUnopenable = errors.New("credential: this credential is stored but its value cannot be opened")
 
 // ErrExpired is returned when the credential a name resolves to has passed
 // its expires_at. The wrapped message names the credential, its scope and
@@ -48,10 +58,14 @@ func (e *Engine) InlineEnabled() bool { return e.sealer.Enabled() }
 // CanResolve reports whether ANY credential could ever resolve in this build.
 // The inline backend needs the Sealer enabled (a configured KEK); external
 // backends are unimplemented stubs (RFC AR Phase 4), so nothing can resolve
-// through them yet. When this is false, the $cred: / provider-key resolvers skip
-// the per-call store reads entirely — with no way to resolve, the three scope
-// lookups on every LLM call would only ever miss. Extend the disjunction here
-// once an external backend is wired + configured.
+// through them yet. Extend the disjunction here once an external backend is
+// wired + configured.
+//
+// It must NOT be used to skip a lookup whose miss falls back to some other
+// value (the operator's provider key, a host env var): with no KEK, a stored
+// row is still the run's credential — one that cannot be opened — and the
+// lookup has to find it to refuse it (ErrUnopenable). A caller whose miss
+// and refusal end the same way (both refuse the call) may still use it.
 func (e *Engine) CanResolve() bool { return e.sealer.Enabled() }
 
 // Meta is what the engine tells a caller about a stored credential: the row
@@ -273,13 +287,9 @@ func (e *Engine) resolve(ctx context.Context, tenantID, agentName, userID, name 
 			return Resolved{}, false, fmt.Errorf("%w (%q)", ErrNotPinnable, name)
 		}
 	}
-	backend, err := e.backendFor(row.Backend)
-	if err != nil {
-		return Resolved{}, false, err
-	}
 	// Opening proves the list just checked is the one the secret was stored
 	// with: it is part of what the value was sealed with.
-	val, err := backend.Resolve(ctx, row.Definition, Identity{
+	val, err := e.open(ctx, row, Identity{
 		TenantID: tenantID, Scope: row.Scope, ScopeID: row.ScopeID, Name: name,
 	})
 	if err != nil {
@@ -332,6 +342,58 @@ func (e *Engine) expired(row store.CredentialDefRow) bool {
 	return row.ExpiresAt != nil && !e.now().Before(*row.ExpiresAt)
 }
 
+// open returns row's value. Every failure to open it is ErrUnopenable (see
+// there): the row exists, so whatever went wrong, the caller must refuse
+// rather than treat the name as unknown.
+func (e *Engine) open(ctx context.Context, row store.CredentialDefRow, id Identity) (string, error) {
+	backend, err := e.backendFor(row.Backend)
+	if err != nil {
+		return "", unopenable(id.Name, row.Scope, err)
+	}
+	val, err := backend.Resolve(ctx, row.Definition, id)
+	if err != nil {
+		return "", unopenable(id.Name, row.Scope, err)
+	}
+	return val, nil
+}
+
+// unopenable wraps cause in ErrUnopenable, naming the credential. Only causes
+// whose text is known to carry nothing stored are kept; any other (a
+// malformed definition's parse error could quote stored bytes) is replaced
+// by a plain description.
+func unopenable(name, scope string, cause error) error {
+	if errors.Is(cause, ErrNoKey) || errors.Is(cause, ErrDecrypt) || errors.Is(cause, ErrUnsupportedBackend) {
+		return fmt.Errorf("%w (%q in %s scope): %w", ErrUnopenable, name, scope, cause)
+	}
+	return fmt.Errorf("%w (%q in %s scope): its stored definition cannot be read", ErrUnopenable, name, scope)
+}
+
+// unopenableErr is what a metadata-only check reports for a row it found but
+// that Resolve could not open, as far as can be told WITHOUT opening it: no
+// key configured, a backend this build cannot read, a definition that does
+// not parse, or a value sealed under a key this server does not hold (a KEK
+// rotated without _PREVIOUS, or a wrong one). A corrupt seal under a held key
+// passes here and is refused when opened.
+func (e *Engine) unopenableErr(row store.CredentialDefRow, name string) error {
+	if !e.CanResolve() {
+		return unopenable(name, row.Scope, ErrNoKey)
+	}
+	if row.Backend != BackendInline {
+		if _, err := e.backendFor(row.Backend); err != nil {
+			return unopenable(name, row.Scope, err)
+		}
+		return unopenable(name, row.Scope, fmt.Errorf("%w: %q", ErrUnsupportedBackend, row.Backend))
+	}
+	var d inlineDefinition
+	if err := json.Unmarshal(row.Definition, &d); err != nil {
+		return unopenable(name, row.Scope, err)
+	}
+	if !e.sealer.Holds(d.Value.KeyID) {
+		return unopenable(name, row.Scope, ErrDecrypt)
+	}
+	return nil
+}
+
 // expiredErr is ErrExpired for an expired row, naming the credential, its
 // scope and when it expired (never its value); nil otherwise.
 func (e *Engine) expiredErr(row store.CredentialDefRow, name string) error {
@@ -352,11 +414,8 @@ func (e *Engine) expiredErr(row store.CredentialDefRow, name string) error {
 // is sent nowhere, so a restricted credential resolves here as any other
 // does; one restricted to no URL at all is the way to store a secret that
 // must only ever be compared. Returns (_, false, nil) when the tenant has no
-// such credential, or the engine cannot open any.
+// such credential; one it holds that cannot be opened is ErrUnopenable.
 func (e *Engine) ResolveToCompare(ctx context.Context, tenantID, name string) (string, bool, error) {
-	if !e.CanResolve() {
-		return "", false, nil
-	}
 	row, err := e.store.CredentialDefGet(ctx, tenantID, "tenant", "", name)
 	if err != nil {
 		var nf *store.ErrNotFound
@@ -370,11 +429,7 @@ func (e *Engine) ResolveToCompare(ctx context.Context, tenantID, name string) (s
 	if err := e.expiredErr(row, name); err != nil {
 		return "", false, err
 	}
-	backend, err := e.backendFor(row.Backend)
-	if err != nil {
-		return "", false, err
-	}
-	val, err := backend.Resolve(ctx, row.Definition, Identity{TenantID: tenantID, Scope: "tenant", Name: name})
+	val, err := e.open(ctx, row, Identity{TenantID: tenantID, Scope: "tenant", Name: name})
 	if err != nil {
 		return "", false, err
 	}
@@ -385,9 +440,6 @@ func (e *Engine) ResolveToCompare(ctx context.Context, tenantID, name string) (s
 // metadata only, nothing is opened. An authoring check asks it before saving
 // a definition that names the credential.
 func (e *Engine) HasToCompare(ctx context.Context, tenantID, name string) (bool, error) {
-	if !e.CanResolve() {
-		return false, nil
-	}
 	row, err := e.store.CredentialDefGet(ctx, tenantID, "tenant", "", name)
 	if err != nil {
 		var nf *store.ErrNotFound
@@ -400,6 +452,9 @@ func (e *Engine) HasToCompare(ctx context.Context, tenantID, name string) (bool,
 	if err := e.expiredErr(row, name); err != nil {
 		return false, err
 	}
+	if err := e.unopenableErr(row, name); err != nil {
+		return false, err
+	}
 	return true, nil
 }
 
@@ -408,9 +463,10 @@ func (e *Engine) HasToCompare(ctx context.Context, tenantID, name string) (bool,
 // precedence as Resolve — but a METADATA-ONLY presence check: it calls
 // CredentialDefGet and NEVER decrypts (no backend.Resolve), so RFC AX Layer-1
 // credential-aware routing can test provider keyability without touching any
-// plaintext. Respects CanResolve (no KEK ⇒ false ⇒ nothing is tenant-keyable,
-// the correct restricted-run default). agentName / userID may be "" (that scope
-// is skipped). Returns (false, nil) when absent from every visible scope; a
+// plaintext. With no KEK nothing is tenant-keyable, and a stored row is
+// reported as held-but-unusable (ErrUnopenable) rather than absent, so the
+// operator's key never stands in for it. agentName / userID may be "" (that
+// scope is skipped). Returns (false, nil) when absent from every visible scope; a
 // store fault other than not-found propagates.
 //
 // An expired or URL-restricted credential is (false, ErrExpired /
@@ -418,11 +474,11 @@ func (e *Engine) HasToCompare(ctx context.Context, tenantID, name string) (bool,
 // may not be used (HeldButUnusable), and a caller that treats "absent" as
 // "use the operator's key instead" must not do so for it.
 func (e *Engine) HasKey(ctx context.Context, tenantID, agentName, userID, name string) (bool, error) {
-	if !e.CanResolve() {
-		return false, nil
-	}
 	row, found, err := e.find(ctx, tenantID, agentName, userID, name)
 	if err != nil || !found {
+		return false, err
+	}
+	if err := e.unopenableErr(row, name); err != nil {
 		return false, err
 	}
 	// A URL-restricted credential is not a key a provider can be given:
@@ -435,15 +491,17 @@ func (e *Engine) HasKey(ctx context.Context, tenantID, agentName, userID, name s
 }
 
 // HeldButUnusable reports whether err, from a by-name lookup, means the run
-// HOLDS a credential of that name that may not be used here: expired, or
-// restricted to URLs this use does not name or cover. That is not a miss. A
+// HOLDS a credential of that name that may not be used here: expired,
+// restricted to URLs this use does not name or cover, or stored but not
+// openable (no key, a wrong key, a corrupt seal). That is not a miss. A
 // caller that falls back to some other value when the run has no credential
 // (the operator's provider key, an operator-allowlisted host variable) must
 // not do so for it: the tenant's credential would be quietly replaced by the
 // operator's, and the tenant never told.
 func HeldButUnusable(err error) bool {
 	return errors.Is(err, ErrExpired) || errors.Is(err, ErrRestricted) ||
-		errors.Is(err, ErrURLNotAllowed) || errors.Is(err, ErrNotPinnable)
+		errors.Is(err, ErrURLNotAllowed) || errors.Is(err, ErrNotPinnable) ||
+		errors.Is(err, ErrUnopenable)
 }
 
 // HasKeyFor is HasKey for a credential about to be sent to targetURL: it
@@ -454,12 +512,12 @@ func HeldButUnusable(err error) bool {
 // An expired credential is found and refused with ErrExpired, so the check
 // can say why rather than blame its URL list.
 func (e *Engine) HasKeyFor(ctx context.Context, tenantID, agentName, userID, name, targetURL string) (found, usable bool, err error) {
-	if !e.CanResolve() {
-		return false, false, nil
-	}
 	row, found, err := e.find(ctx, tenantID, agentName, userID, name)
 	if err != nil || !found {
 		return found, false, err
+	}
+	if err := e.unopenableErr(row, name); err != nil {
+		return true, false, err
 	}
 	allowed := restrictionOf(row.Definition)
 	return true, allowed == nil || URLAllowed(allowed, targetURL), nil

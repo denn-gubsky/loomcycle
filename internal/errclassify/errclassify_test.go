@@ -50,6 +50,7 @@ func TestCategoryOf_ClassifiesEveryKnownSentinel(t *testing.T) {
 		{"memory quota", store.ErrMemoryQuotaExceeded, tools.CategoryBusiness, false, nil},
 		{"value too large", store.ErrMemoryValueTooLarge, tools.CategoryBusiness, false, nil},
 		{"stored credential expired", credential.ErrExpired, tools.CategoryBusiness, false, nil},
+		{"stored credential unopenable", credential.ErrUnopenable, tools.CategoryBusiness, false, nil},
 		{"own provider key unusable", providers.ErrCredentialUnusable, tools.CategoryBusiness, false, nil},
 
 		{"operator key restricted", resolve.ErrOperatorKeyRestricted, tools.CategoryPermission, false, nil},
