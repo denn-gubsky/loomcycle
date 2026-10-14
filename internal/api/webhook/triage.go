@@ -136,11 +136,7 @@ func (rec *Receiver) handleTest(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	limit := wd.BodySizeLimitBytes
-	if limit <= 0 {
-		limit = defaultBodySizeLimitBytes
-	}
-	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, int64(limit)))
+	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, rec.bodyLimit(wd)))
 	if err != nil {
 		writeError(w, http.StatusBadRequest, "bad_body", "")
 		return

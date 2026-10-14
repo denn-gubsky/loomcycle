@@ -4,7 +4,9 @@ import (
 	"encoding/json"
 	"fmt"
 
+	"bytes"
 	"github.com/denn-gubsky/loomcycle/internal/jsonpath"
+	"io"
 )
 
 // projectResult is the outcome of applying a WebhookDef's payload_mapping
@@ -52,6 +54,9 @@ type projectResult struct {
 func projectPayload(mapping map[string]string, body []byte) (projectResult, error) {
 	res := projectResult{Fields: make(map[string]string, len(mapping)), RawBody: body}
 
+	if err := checkJSONShape(body, maxJSONDepth, maxJSONTokens); err != nil {
+		return projectResult{}, fmt.Errorf("malformed json body: %w", err)
+	}
 	var doc interface{}
 	if err := json.Unmarshal(body, &doc); err != nil {
 		return projectResult{}, fmt.Errorf("malformed json body: %w", err)
@@ -71,4 +76,43 @@ func projectPayload(mapping map[string]string, body []byte) (projectResult, erro
 		res.Fields[target] = jsonpath.Stringify(v)
 	}
 	return res, nil
+}
+
+// A delivery's body is scanned before it is decoded. Decoding builds the whole
+// document in memory, and its cost follows the body's shape more than its
+// size: deep nesting, or a few bytes per value repeated over the whole limit.
+// The scan reads tokens one at a time and stops at the first limit passed.
+// Far above any forge's payload (GitHub's nest about ten deep).
+const (
+	maxJSONDepth  = 128
+	maxJSONTokens = 1_000_000
+)
+
+// checkJSONShape reports a body nested deeper than maxDepth, or holding more
+// than maxTokens tokens. Malformed JSON is left to the decoder that follows.
+func checkJSONShape(body []byte, maxDepth, maxTokens int) error {
+	dec := json.NewDecoder(bytes.NewReader(body))
+	depth, tokens := 0, 0
+	for {
+		tok, err := dec.Token()
+		if err == io.EOF {
+			return nil
+		}
+		if err != nil {
+			return nil
+		}
+		if tokens++; tokens > maxTokens {
+			return fmt.Errorf("more than %d JSON values", maxTokens)
+		}
+		if d, ok := tok.(json.Delim); ok {
+			switch d {
+			case '{', '[':
+				if depth++; depth > maxDepth {
+					return fmt.Errorf("nested deeper than %d", maxDepth)
+				}
+			default:
+				depth--
+			}
+		}
+	}
 }
