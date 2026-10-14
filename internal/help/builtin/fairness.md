@@ -58,9 +58,11 @@ clients) takes `admission`:
 | `per_user_quota_exhausted` | This user is at its cap | Wait `Retry-After` seconds (server hint: 5) then retry; your own runs free the slot. |
 | `backpressure` | No run slot is free, or the queue is full | Exponential backoff with jitter; the wait depends on system-wide load. |
 
-A session continuation on POST /v1/sessions/{id}/messages and a request
-to the LLM gateway do not queue yet: they wait up to
-`concurrency.queue_timeout_ms` and then answer 429.
+A request to the LLM gateway (and POST /v1/embeddings) waits for a run
+slot in the same queue, taking turns with runs, with no timeout; it is
+not a run, so it has no row and no `queued` event. A session continuation
+on POST /v1/sessions/{id}/messages does not queue yet: it waits up to
+`concurrency.queue_timeout_ms` and then answers 429.
 
 ## Seeing a queued run
 

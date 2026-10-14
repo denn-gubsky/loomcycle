@@ -171,6 +171,47 @@ func TestLLMGateway_ProviderSlotIsGivenBackWhenNoGlobalSlotIsFree(t *testing.T) 
 	}
 }
 
+// TestLLMGateway_WaitsForARunSlotInTheQueueWithoutTimingOut — with every run
+// slot taken, a gateway request waits in the run queue, as a run does: it does
+// not give up after queue_timeout_ms (here 50ms) and answer 429, and it gets
+// the first slot that frees.
+func TestLLMGateway_WaitsForARunSlotInTheQueueWithoutTimingOut(t *testing.T) {
+	cfg := makeBaseConfig()
+	prov := &heldProvider{gate: make(chan struct{})}
+	close(prov.gate) // P answers at once: only the run slot is scarce
+	srv, _ := lanedServer(t, cfg, map[string]int{"P": 1}, map[string]providers.Provider{"P": prov})
+	srv.sem = concurrency.New(1, 8, 50*time.Millisecond)
+	ts := httptest.NewServer(srv.Mux())
+	defer ts.Close()
+
+	relRun, err := srv.sem.Admit(context.Background(), concurrency.AdmitRequest{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	waiting := postGateway(ts, gatewayBodyFor("alice"))
+	deadline := time.Now().Add(3 * time.Second)
+	for srv.sem.Stats().Queued != 1 {
+		if time.Now().After(deadline) {
+			t.Fatalf("the gateway request never queued for a run slot: %+v", srv.sem.Stats())
+		}
+		time.Sleep(2 * time.Millisecond)
+	}
+	time.Sleep(200 * time.Millisecond) // four times the old wait timeout
+	select {
+	case r := <-waiting:
+		t.Fatalf("the request gave up while queued: status=%d body=%s, want it still waiting", r.status, r.body)
+	default:
+	}
+
+	relRun()
+	if r := <-waiting; r.status != http.StatusOK {
+		t.Fatalf("after a slot freed: status=%d body=%s, want 200", r.status, r.body)
+	}
+	if st := srv.sem.Stats(); st.Active != 0 || st.Queued != 0 {
+		t.Errorf("at the end: active=%d queued=%d, want 0/0", st.Active, st.Queued)
+	}
+}
+
 func gatewayBodyFor(user string) string {
 	return `{"messages":[{"role":"user","content":"hi"}],"max_tokens":8,"provider":"P","model":"m","user_id":"` + user + `"}`
 }

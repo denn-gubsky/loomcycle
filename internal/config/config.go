@@ -3587,11 +3587,11 @@ type Concurrency struct {
 	// (waiting for a slot or on their user's cap) and direct requests waiting
 	// for a run slot. Past it a new run is refused with backpressure (429).
 	MaxQueueDepth int `yaml:"max_queue_depth"`
-	// QueueTimeoutMS bounds how long a request sent directly, outside any run
-	// (the LLM gateway), and a session continuation on POST
-	// /v1/sessions/{id}/messages wait for a run slot; <= 0 refuses at once. A
-	// run started any other way never times out in the queue: it waits until a
-	// slot frees or it is cancelled.
+	// QueueTimeoutMS bounds how long a session continuation on POST
+	// /v1/sessions/{id}/messages waits for a run slot; <= 0 refuses at once. A
+	// run started any other way, and a request sent directly outside any run
+	// (the LLM gateway, /v1/embeddings), never times out in the queue: it waits
+	// until a slot frees or its caller leaves.
 	QueueTimeoutMS int `yaml:"queue_timeout_ms"`
 	// MaxConcurrentRunsPerUser caps the runs per non-empty (tenant, user)
 	// that hold a run slot or wait for one, inside the global
