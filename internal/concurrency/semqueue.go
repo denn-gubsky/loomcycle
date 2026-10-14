@@ -5,6 +5,12 @@ package concurrency
 type semWaiter struct {
 	ch  chan struct{}
 	key userKey
+	// ticket, reason and pos serve Admit's Position (admit.go). pos is set
+	// only for a cluster-mode run polling the shared per-user counter, which
+	// has no ch and no place in any queue.
+	ticket string
+	reason string
+	pos    int
 }
 
 // semBucket is the FIFO of one (tenant, user)'s waiting requests.
@@ -96,7 +102,9 @@ func (s *Semaphore) nextWaiter() *semWaiter {
 		return w
 	}
 	if s.queue.n > 0 {
-		return s.queue.pop()
+		w := s.queue.pop()
+		s.untrack(w)
+		return w
 	}
 	return nil
 }
@@ -110,5 +118,9 @@ func (s *Semaphore) removeWaiter(w *semWaiter) bool {
 			return true
 		}
 	}
-	return s.queue.remove(w)
+	if s.queue.remove(w) {
+		s.untrack(w)
+		return true
+	}
+	return false
 }
