@@ -22,9 +22,14 @@ type ChannelHookCall struct {
 	// Owner is "channel:<name>", the channel whose definition carries the hook.
 	Owner    string `json:"owner"`
 	HookName string `json:"hook_name"`
-	Channel  string `json:"channel"`
-	Scope    string `json:"scope"`
-	ScopeID  string `json:"scope_id,omitempty"`
+	// DeliveryID identifies this delivery of a signed hook (a HookDef with a
+	// signing_secret); absent on an unsigned call. It is inside the signed
+	// body, so a receiver dedupes on it — never on the X-Loomcycle-Delivery
+	// header, which is an unsigned copy a replayer can change.
+	DeliveryID string `json:"delivery_id,omitempty"`
+	Channel    string `json:"channel"`
+	Scope      string `json:"scope"`
+	ScopeID    string `json:"scope_id,omitempty"`
 	// MessageID is the message's id; a hook called again for the same message
 	// (a retry after it failed, or after a restart) sees the same id.
 	MessageID   string    `json:"message_id"`
@@ -142,6 +147,11 @@ func (d *Dispatcher) InvokeChannel(ctx context.Context, h *Hook, call ChannelHoo
 		h = &cp
 	}
 	call.Phase, call.Owner, call.HookName = h.Phase, h.Owner, h.Name
+	// Every attempt at this hook's decision on this message is one delivery:
+	// a receiver that saw the first and answered too late sees the retry as
+	// the same delivery_id. Each attempt is still signed afresh (a new t), and
+	// its body carries the attempt number.
+	ctx = withDeliveryID(ctx, channelDeliveryID(h.Owner, h.Name, call.MessageID))
 	var res ChannelHookResult
 	if err := d.invoke(ctx, h, &call, &res); err != nil {
 		return ChannelHookResult{}, err

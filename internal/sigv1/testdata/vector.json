@@ -1,0 +1,38 @@
+{
+  "secret": "sigv1-vector-secret",
+  "body": "{\"phase\":\"pre\",\"owner\":\"agent:w\",\"hook_name\":\"gate\",\"delivery_id\":\"7c0e2b6a-1d2f-4a3b-8c4d-5e6f7a8b9c0d\",\"note\":\"café \\u2014 ok\"}\n",
+  "t": 1760000000,
+  "header": "t=1760000000,v1=821dd1da11e4ed491052c0ff21bc7cff5b7358615b8ea4e15cd8ccb785395a17",
+  "unusable": [
+    {
+      "name": "no delivery_id",
+      "body": "{\"phase\":\"pre\",\"owner\":\"agent:w\",\"hook_name\":\"gate\"}",
+      "header": "t=1760000000,v1=408920ceff4518fd5156611f528ba77353d54f842f580a980877f6a1780fcb33"
+    },
+    {
+      "name": "empty delivery_id",
+      "body": "{\"phase\":\"pre\",\"owner\":\"agent:w\",\"hook_name\":\"gate\",\"delivery_id\":\"\"}",
+      "header": "t=1760000000,v1=976e834d0435a2336867e1373cec9330b2515bec0d7fd15ae5eddc84ee5cdf10"
+    },
+    {
+      "name": "delivery_id not a string",
+      "body": "{\"phase\":\"pre\",\"owner\":\"agent:w\",\"hook_name\":\"gate\",\"delivery_id\":7}",
+      "header": "t=1760000000,v1=e50c0f4ec658cb3e9ad9246653726eb3acc2cf45511ca8fecee1c4b1d40c82e6"
+    },
+    {
+      "name": "no hook_name",
+      "body": "{\"phase\":\"pre\",\"owner\":\"agent:w\",\"delivery_id\":\"7c0e2b6a-1d2f-4a3b-8c4d-5e6f7a8b9c0d\"}",
+      "header": "t=1760000000,v1=843b48af766532137fd82f8a0544c7a78d1a97b22b45a980b68760e760d70366"
+    },
+    {
+      "name": "not an object",
+      "body": "[\"7c0e2b6a-1d2f-4a3b-8c4d-5e6f7a8b9c0d\"]",
+      "header": "t=1760000000,v1=2954817190aa734f27b60bc843d399c2dd4482d96086298defac43df57ae847f"
+    },
+    {
+      "name": "not JSON",
+      "body": "delivery_id=7c0e2b6a",
+      "header": "t=1760000000,v1=35900640a256b18ec7651992a74d9d6c699bdd760cf5ceda3bcf4e09029e3c58"
+    }
+  ]
+}

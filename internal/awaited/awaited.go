@@ -37,6 +37,10 @@ const (
 	Children = "children"
 )
 
+// States is every awaited_state a run read can report — what a listing's
+// awaited_state filter is validated against.
+var States = []string{Channel, Interrupted, Review, Input, Children}
+
 // EventReader is the slice of store.Store the derivation reads.
 type EventReader interface {
 	GetLastEventOfTypes(ctx context.Context, runID string, types []string) (store.Event, error)

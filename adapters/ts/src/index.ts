@@ -14,7 +14,7 @@
  *     getAgent(agentId): Promise<Agent>
  *     getRun(runId): Promise<Agent>
  *     cancelAgent(agentId, opts?): Promise<CancelAgentResult>
- *     listUserAgents(userId, opts?): Promise<Agent[]>
+ *     listUserAgents(userId, opts?): Promise<AgentList>
  *     listWalkRuns(walkId, opts?): Promise<WalkRunsPage>
  *     deleteRunTree(runId, opts?): Promise<RunTreeDeletion>     // needs runs:delete
  *     deleteSession(sessionId, {cascade: "children"}): Promise<RunTreeDeletion>
@@ -35,6 +35,9 @@
  *     resumeRuntime(): Promise<ResumeResult>
  *     getRuntimeState(): Promise<RuntimeStateResponse>
  *     resolveProbe(opts?): Promise<ResolverMatrix>
+ *     listModels(): Promise<ModelAliasesResponse>                 // configured model aliases
+ *     getRouting(): Promise<RoutingResponse>                      // per user_tier × tier cascade
+ *     listProviderModels(providerId): Promise<ProviderModelsResponse>   // admin token only
  *
  *     // Snapshot lifecycle (v0.8.17/8.18)
  *     createSnapshot(opts?): Promise<SnapshotCreateResponse>
@@ -84,6 +87,20 @@
  *     createScheduleDef / forkScheduleDef(name, overlay, opts?)          // ditto (overlay open: types of known keys checked)
  *     createWebhookDef / forkWebhookDef(name, overlay, opts?)            // ditto
  *
+ *     // Def name enumeration (tenant-scoped; opts.tenant = admin focus)
+ *     listAgentDefNames / listSkillDefNames / listHookDefNames / listMcpServerDefNames /
+ *     listScheduleDefNames / listA2AServerCardDefNames / listA2AAgentDefNames /
+ *     listWebhookDefNames / listMemoryBackendDefNames / listDocumentSourceDefNames
+ *       (opts?): Promise<DefNamesResponse>
+ *     listOperatorTokenDefNames(opts?): Promise<OperatorTokenDefNamesResponse>   // admin token only
+ *
+ *     // Schedules admin
+ *     listAllSchedules(opts?): Promise<ScheduleListResponse>      // static yaml + ScheduleDefs, merged
+ *     getScheduleState(defId): Promise<ScheduleStateView>
+ *     runScheduleNow(defId): Promise<ScheduleRunNowResult>        // fires on the next tick
+ *     pauseSchedule(defId): Promise<SchedulePauseResult>          // indefinite
+ *     resumeSchedule(defId): Promise<SchedulePauseResult>
+ *
  *     // Dynamic filesystem volumes (v0.35.0 — RFC AH; tenant-confined)
  *     volumeDef(input): Promise<SubstrateToolResponse>            // create/get/list/delete/purge
  *     listVolumes(): Promise<PersistentVolumesResponse>
@@ -93,8 +110,8 @@
  *     listTeams(): Promise<ListTeamsResponse>
  *     renderTeamDiagram(name, opts?): Promise<TeamDiagram>
  *     getTeamDef(defId): Promise<TeamDefDetail>
- *     createTeam(name, overlay): Promise<CreatedTeam>
- *     forkTeam(name, overlay): Promise<CreatedTeam>
+ *     createTeam(name, overlay, opts?): Promise<CreatedTeam>       // opts: promote (default true) / description
+ *     forkTeam(name, overlay, opts?): Promise<CreatedTeam>         // opts: promote / parentDefId / description
  *     deleteTeam(name): Promise<{name, deleted}>
  *     runTeam({name|defId, input}): Promise<TeamRunResult>
  *     runTeam({..., mode:"detach"}): Promise<TeamRunDetached>     // the handle, now — the walk runs on
@@ -156,6 +173,8 @@
 export { LoomcycleClient } from "./client.js";
 export { InteractiveSession } from "./interactive.js";
 export type { InteractiveSessionOps } from "./interactive.js";
+export { verifyLoomcycleSignature, verifyLoomcycleDelivery } from "./signature.js";
+export type { VerifySignatureOptions, VerifiedDelivery } from "./signature.js";
 export { ClientToolHost, clientToolsURL, CLIENT_TOOL_SUBPROTOCOL } from "./client-tools.js";
 export type {
   ClientToolSchema,
@@ -199,6 +218,8 @@ export type {
   OutputFormatOptions,
   CancelAgentResult,
   ListAgentsResponse,
+  ListUserAgentsOptions,
+  AgentList,
   WalkRunsPage,
   // Fan-out (RFC Y) + compaction
   RunBatchOptions,
@@ -314,6 +335,31 @@ export type {
   TeamRunDetached,
   TeamRunResult,
   TeamRunTarget,
+  CreateTeamOptions,
+  ForkTeamOptions,
+  // Def name enumeration (GET /v1/_<family>def/names)
+  DefNameSummary,
+  DefNamesResponse,
+  OperatorTokenDefNameSummary,
+  OperatorTokenDefNamesResponse,
+  // Schedules admin (/v1/_schedules/...)
+  ScheduleListEntry,
+  ScheduleListResponse,
+  ScheduleActiveRun,
+  ScheduleStateView,
+  ScheduleRunNowResult,
+  SchedulePauseResult,
+  // Model aliases, routing view, live provider models
+  ModelAlias,
+  ModelAliasesResponse,
+  RoutingResponse,
+  RoutingUserTier,
+  RoutingTier,
+  RoutingCandidate,
+  RoutingThroughput,
+  RoutingProvider,
+  SearchRoutingProvider,
+  ProviderModelsResponse,
   TeamRunStep,
   TeamDecisionHandler,
   TeamDecisionQuestion,

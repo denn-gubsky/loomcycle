@@ -24,6 +24,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -256,6 +257,34 @@ const (
 	// refused, not failed.
 	RunRejected RunStatus = "rejected"
 )
+
+// RunStatuses is every status a run row can hold — what a run listing's
+// status filter is validated against, so an unknown value is refused rather
+// than read as a filter that matches nothing.
+var RunStatuses = []RunStatus{RunConfigured, RunQueued, RunRunning, RunCompleted, RunFailed, RunCancelled, RunRejected}
+
+// IsRunStatus reports whether s is one of RunStatuses.
+func IsRunStatus(s RunStatus) bool {
+	for _, k := range RunStatuses {
+		if s == k {
+			return true
+		}
+	}
+	return false
+}
+
+// RunStatusFilter is a run listing's status filter as the distinct, non-empty
+// values a store matches with IN (…). Empty entries are dropped, so a filter
+// of only "" — what a caller passing no status sends — is no filter.
+func RunStatusFilter(statuses []RunStatus) []string {
+	var out []string
+	for _, st := range statuses {
+		if st != "" && !slices.Contains(out, string(st)) {
+			out = append(out, string(st))
+		}
+	}
+	return out
+}
 
 // TerminalRunStatuses are the statuses a run ends in. Every reader that asks
 // "has this run finished?" — the retention and consolidation queries, the
@@ -2088,17 +2117,32 @@ type Store interface {
 	// external / unrelated) server-side. Returns *ErrNotFound on miss.
 	GetRun(ctx context.Context, runID string) (Run, error)
 
-	// ListActiveRunsByUser returns runs for userID whose status matches
-	// the supplied filter. An empty status returns ALL statuses
-	// (caller can filter further). Results are bounded — 100 rows max,
-	// ordered by started_at DESC.
+	// ListActiveRunsByUser returns runs for userID whose status is one of
+	// statuses. No statuses (or only empty ones) returns ALL statuses
+	// (caller can filter further); an empty entry is ignored, so a single
+	// "" keeps meaning "no filter". Results are bounded — 100 rows max,
+	// ordered by started_at DESC, id DESC: the first page of
+	// ListRunsByUser.
 	//
 	// tenantID scopes the result to one tenant; "" returns all tenants
 	// (mirrors ListUsers). The tenant is applied BEFORE the bound: user
 	// ids are unique only within a tenant, so filtering after it let
 	// another tenant's newer runs for a colliding user id crowd a
 	// tenant's own runs out of the 100.
-	ListActiveRunsByUser(ctx context.Context, tenantID, userID string, status RunStatus) ([]Run, error)
+	ListActiveRunsByUser(ctx context.Context, tenantID, userID string, statuses ...RunStatus) ([]Run, error)
+
+	// ListRunsByUser is ListActiveRunsByUser one keyset page at a time:
+	// newest first by (started_at, id), at most limit per page (<= 0 → 100,
+	// capped at 1000). cursor is "" for the first page, else a previous
+	// call's nextCursor; nextCursor is "" on the last page. A cursor this
+	// store did not issue wraps ErrInvalidRunCursor. statuses and tenantID
+	// read as in ListActiveRunsByUser.
+	//
+	// A keyset rather than an offset because the runs it pages through are
+	// live: a run that starts between two pages lands above the cursor and
+	// shifts nothing, where with an offset it would push a row from one
+	// page onto the next and that row would be read twice.
+	ListRunsByUser(ctx context.Context, tenantID, userID string, statuses []RunStatus, limit int, cursor string) (runs []Run, nextCursor string, err error)
 
 	// ListRunsByWalk returns one team walk's runs: the walk's own run (id ==
 	// walkID) and every member it spawned (runs.walk_id == walkID), ordered by

@@ -3561,7 +3561,15 @@ outerLoop:
 			case providers.EventDone:
 				sawDone = true
 				iterStop = ev.StopReason
-				iterUsage = ev.Usage
+				// A copy: the loop stamps provider, window and timing onto
+				// it below, and the provider's value is not ours to write —
+				// a driver or fixture may hand the same *Usage to several
+				// concurrent runs, which made those stamps a data race.
+				iterUsage = nil
+				if ev.Usage != nil {
+					u := *ev.Usage
+					iterUsage = &u
+				}
 				iterReasoning = ev.Reasoning
 				iterReasoningSignature = ev.ReasoningSignature
 			case providers.EventError:

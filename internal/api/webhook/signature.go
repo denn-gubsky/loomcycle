@@ -12,18 +12,15 @@ package webhook
 
 import (
 	"context"
-	"crypto/hmac"
-	"crypto/sha256"
-	"encoding/hex"
 	"errors"
 	"fmt"
-	"strconv"
 	"strings"
 	"time"
 
 	"github.com/denn-gubsky/loomcycle/internal/auth"
 	"github.com/denn-gubsky/loomcycle/internal/config"
 	"github.com/denn-gubsky/loomcycle/internal/credential"
+	"github.com/denn-gubsky/loomcycle/internal/sigv1"
 )
 
 // signatureTolerance is the ±window applied to the timestamp embedded in
@@ -291,27 +288,21 @@ func verifyHMAC(a config.WebhookAuth, secrets []string, body []byte, headerGet f
 		return compareHMAC(secrets, body, raw)
 	}
 
-	// Stripe envelope: `t=<unix>, v1=<hexmac>` over `<t>.<rawbody>`.
-	tsStr, macHex := stripeFields(raw)
-	if tsStr == "" || macHex == "" {
+	// Stripe envelope: `t=<unix>, v1=<hexmac>` over `<t>.<rawbody>`, its `t`
+	// within ±signatureTolerance. A stale or future `t` collapses to the same
+	// verdict as a bad MAC, so the client cannot probe the tolerance. Every
+	// secret is compared, whichever matches, as compareHMAC does.
+	at := now()
+	matched := false
+	for _, secret := range secrets {
+		if sigv1.Verify(secret, body, raw, at, signatureTolerance) {
+			matched = true
+		}
+	}
+	if !matched {
 		return errSignatureMismatch
 	}
-	tsUnix, perr := strconv.ParseInt(tsStr, 10, 64)
-	if perr != nil {
-		return errSignatureMismatch
-	}
-	ts := time.Unix(tsUnix, 0)
-	skew := now().Sub(ts)
-	if skew < 0 {
-		skew = -skew
-	}
-	if skew > signatureTolerance {
-		// Stale or future timestamp — replay-window guard. Collapses to
-		// the same verdict so the client cannot probe the tolerance.
-		return errSignatureMismatch
-	}
-	signedPayload := append([]byte(tsStr+"."), body...)
-	return compareHMAC(secrets, signedPayload, macHex)
+	return nil
 }
 
 // hmacSignatureHeader returns the signature header value verifyHMAC checks:
@@ -330,21 +321,6 @@ func hmacSignatureHeader(a config.WebhookAuth, headerGet func(string) string) st
 		raw = strings.TrimSpace(headerGet("X-Hub-Signature-256"))
 	}
 	return raw
-}
-
-// stripeFields returns the `t=` and `v1=` values of a Stripe-style
-// `t=<unix>, v1=<hexmac>` signature header ("" when absent).
-func stripeFields(raw string) (ts, mac string) {
-	for _, part := range strings.Split(raw, ",") {
-		part = strings.TrimSpace(part)
-		switch {
-		case strings.HasPrefix(part, "t="):
-			ts = strings.TrimPrefix(part, "t=")
-		case strings.HasPrefix(part, "v1="):
-			mac = strings.TrimPrefix(part, "v1=")
-		}
-	}
-	return ts, mac
 }
 
 // envelope is what the signature of a request that PASSED verifySignature
@@ -371,7 +347,7 @@ func signedEnvelope(a config.WebhookAuth, headerGet func(string) string) envelop
 	if strings.HasPrefix(raw, "sha256=") || isHexString(raw) {
 		return envelope{signsBody: true}
 	}
-	ts, _ := stripeFields(raw)
+	ts, _ := sigv1.Fields(raw)
 	return envelope{signsBody: true, timestamp: ts}
 }
 
@@ -392,21 +368,15 @@ func isHexString(s string) bool {
 	return true
 }
 
-// compareHMAC computes HMAC-SHA256(secret, payload) for each secret and
-// compares it to the hex-decoded wantHex using crypto/hmac.Equal
-// (constant-time), every secret whichever matches. Returns
-// errSignatureMismatch on any failure (bad hex, length mismatch, MAC
-// mismatch) — all collapse to one verdict so no information leaks.
+// compareHMAC checks a body-only MAC (the GitHub and bare-hex envelopes)
+// against each secret, every secret whichever matches, so the time taken does
+// not say which did. Bad hex, a wrong length and a wrong MAC all collapse to
+// one verdict, so no information leaks; each compare is constant-time
+// (sigv1.VerifyBare).
 func compareHMAC(secrets []string, payload []byte, wantHex string) error {
-	want, derr := hex.DecodeString(strings.TrimSpace(wantHex))
-	if derr != nil {
-		return errSignatureMismatch
-	}
 	matched := false
 	for _, secret := range secrets {
-		mac := hmac.New(sha256.New, []byte(secret))
-		mac.Write(payload)
-		if hmac.Equal(mac.Sum(nil), want) {
+		if sigv1.VerifyBare(secret, payload, wantHex) {
 			matched = true
 		}
 	}

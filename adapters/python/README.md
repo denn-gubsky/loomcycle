@@ -103,7 +103,7 @@ All methods are coroutine methods on `LoomcycleClient`.
 | `get_agent(agent_id)` | `dict` | One agent's status + usage. |
 | `get_run(run_id)` | `dict` | One run by its run id — `get_agent`'s shape; use it when an agent id names several runs (every walk of a team is `team:<name>`). |
 | `cancel_agent(agent_id, reason="")` | `int` | Returns count of agents cancelled (cascades to children). |
-| `list_user_agents(user_id, status="")` | `list[dict]` | Filters: `running`, `completed`, `failed`, `cancelled`. |
+| `list_user_agents(user_id, status="", awaited_state=())` | `AgentList` (a `list[dict]`) | `status`: one string (`running`, `completed`, `failed`, `cancelled`, …; `""` = all) or a list of them (a run in any; `["all"]` = all). `awaited_state`: one or more of `channel`, `interrupted`, `review`, `input`, `children` — only running runs blocked on one of those waits; the server reads at most 1,000 running runs and `.truncated` is True when it left some unread. An unknown value raises `InvalidArgumentError`. |
 | `list_walk_runs(walk_id, limit=None, cursor=None)` | `dict` | One page of a team walk's runs — its own run and every member, oldest first: `{"agents": [...], "next_cursor": str}`. Pass `next_cursor` back as `cursor`; `""` on the last page. `limit` defaults to 100, at most 1000. |
 | `list_child_runs(parent_run_id, limit=None, cursor=None)` | `dict` | One page of a run's direct children (the runs it started itself), of every status, oldest first, paged like `list_walk_runs`. Not the run itself, and not its grandchildren. |
 | `get_transcript(session_id)` | `list[dict]` | Persisted event log; `payload` is raw JSON bytes. |
@@ -312,6 +312,35 @@ for attempt in range(5):
 This is enforced server-side in `internal/tools/builtin/narrowing.go`;
 `allowed_hosts` is a trust boundary — it must come from your
 application code, never from a model.
+
+## Verifying a signed hook delivery
+
+A HookDef whose webhook body names a `signing_secret` signs every call with
+`X-Loomcycle-Signature: t=<unix>,v1=<hex HMAC-SHA256 of t + "." + raw body>`.
+**Only the body is signed.** It carries `delivery_id` (a retry keeps it),
+`hook_name` and `owner`; the `X-Loomcycle-Delivery` and `X-Loomcycle-Hook`
+headers are unsigned copies a replayer can change, so dedupe and identify the
+hook from the verified body, never from them. Verify the **raw** body, before
+parsing it:
+
+```python
+from loomcycle import verify_loomcycle_delivery
+
+raw = request.get_data()  # the exact bytes received
+body = verify_loomcycle_delivery(raw, request.headers.get("X-Loomcycle-Signature", ""), SECRET)
+if body is None:
+    abort(401)
+if already_seen(body["delivery_id"]):  # keep ids at least 300 s
+    return previous_answer(body["delivery_id"])
+```
+
+`verify_loomcycle_delivery` returns the parsed body, or `None` when the
+signature fails or the body has no `delivery_id`/`hook_name`.
+`verify_loomcycle_signature` is the bare check: `True` only for a signature
+made within `tolerance_sec` (default 300) of now; a malformed header, a stale
+or future `t`, or a wrong MAC is `False`. Standard library only; the compare
+is `hmac.compare_digest`. Give each receiver its own signing secret, so a
+delivery captured at one cannot be replayed to another.
 
 ## Development
 

@@ -1120,6 +1120,10 @@ A webhook hook is a `POST` of JSON to its `url`, with the hook's configured `hea
 
 **`channel_publish`** hooks belong to a channel, not an agent (`owner` is `channel:<name>`). They receive the message (`channel`, `scope`, `message_id`, `published_at`, `attempt`, `body`) and answer `release` (optionally with `updated_body`), `drop` or `hold`.
 
+### Signed deliveries
+
+A HookDef's http body may name `signing_secret: "$cred:<name>"` (a literal is refused; a non-admin must name a tenant-level credential of its own tenant that covers `body.url`). Every call then carries `X-Loomcycle-Signature: t=<unix>,v1=<hex HMAC-SHA256 of t + "." + raw body>`, and its body carries `delivery_id` beside `owner` and `hook_name`. Only the body is signed: verify over the raw bytes, refuse a `t` more than 300 s from your clock, then parse the body and dedupe on its `delivery_id` (keep each id at least 300 s; a channel hook's retry of the same message keeps it, re-signed with a new `t`) and identify the hook by its `hook_name` / `owner`. `X-Loomcycle-Delivery` and `X-Loomcycle-Hook` are unsigned convenience copies a replayer can change — never dedupe or authorize on them. Give each receiver its own signing secret so a delivery captured at one cannot be replayed to another. The secret resolves per call like a header credential, so rotation needs no restart; one that does not resolve fails the call, which is never sent unsigned. The three header names are reserved — a hook's `headers` cannot set them. `verifyLoomcycleDelivery` (`@loomcycle/client`) and `verify_loomcycle_delivery` (Python) verify and return the body's identity; see *Verifying a delivery* in the `hooks` help topic.
+
 ### Composition
 
 - **Order**: a tool's own hooks run before the agent-level ones, each in the order the definition lists them. The first `deny` ends the `pre` chain.

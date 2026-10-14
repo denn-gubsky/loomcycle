@@ -19,9 +19,6 @@ package changesub
 import (
 	"bytes"
 	"context"
-	"crypto/hmac"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -29,6 +26,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/denn-gubsky/loomcycle/internal/sigv1"
 	"github.com/denn-gubsky/loomcycle/internal/store"
 )
 
@@ -221,13 +219,9 @@ func (d *Deliverer) post(ctx context.Context, sub Subscription, body []byte) err
 	return lastErr
 }
 
-// sign returns hex(hmac-sha256(secret, body)) — symmetric with loomcycle's
-// inbound webhook verifier (internal/api/webhook/signature.go compareHMAC).
-func sign(secret string, body []byte) string {
-	mac := hmac.New(sha256.New, []byte(secret))
-	mac.Write(body)
-	return hex.EncodeToString(mac.Sum(nil))
-}
+// sign returns hex(hmac-sha256(secret, body)): the bare form, which
+// loomcycle's inbound webhook receiver accepts (one implementation, sigv1).
+func sign(secret string, body []byte) string { return sigv1.SignBare(secret, body) }
 
 func backoff(attempt int) time.Duration {
 	d := 100 * time.Millisecond

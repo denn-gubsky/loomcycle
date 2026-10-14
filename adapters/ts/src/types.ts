@@ -1757,7 +1757,33 @@ export interface RunResult {
 
 export interface ListAgentsResponse {
   agents: Agent[];
+  /** True when an `awaited_state` listing stopped before reading every
+   *  running run (it reads at most 1,000), so a matching run may be missing.
+   *  Absent otherwise. */
+  truncated?: boolean;
 }
+
+/** {@link LoomcycleClient.listUserAgents}'s filters. */
+export interface ListUserAgentsOptions {
+  /** One status or several (a run in any of them is listed). Omitted → only
+   *  running runs; `"all"` → every status. An unknown status is a 400. */
+  status?: AgentStatus | "all" | AgentStatus[];
+  /** List only running runs blocked on one of these waits. Implies running:
+   *  a `status` other than `"running"` with it is a 400. */
+  awaitedState?: AwaitedState | AwaitedState[];
+  /** Narrows the result CLIENT-SIDE to runs whose `parent_agent_id`
+   *  matches. */
+  parentAgentId?: string;
+  /** Super-admin tenant-focus (?tenant=, RFC L v0.17.0). Ignored
+   *  server-side for a tenant principal — its own tenant is forced. */
+  tenant?: string;
+  signal?: AbortSignal;
+}
+
+/** {@link LoomcycleClient.listUserAgents}'s answer: the runs, still an array,
+ *  carrying `truncated: true` when an `awaitedState` listing stopped before
+ *  reading every running run. */
+export type AgentList = Agent[] & { truncated?: boolean };
 
 /** One page of a team walk's runs ({@link LoomcycleClient.listWalkRuns}),
  *  ordered by started_at then run id. `next_cursor` is "" on the last page. */
@@ -2670,6 +2696,9 @@ export interface PreHookCall {
   phase: "pre";
   owner: string;
   hook_name: string;
+  /** Present on a signed call only: this delivery's id, inside the signed body.
+   *  Dedupe on it, never on the unsigned X-Loomcycle-Delivery header copy. */
+  delivery_id?: string;
   agent: string;
   user_id?: string;
   agent_id?: string;
@@ -2698,6 +2727,9 @@ export interface PostHookCall {
   phase: "post";
   owner: string;
   hook_name: string;
+  /** Present on a signed call only: this delivery's id, inside the signed body.
+   *  Dedupe on it, never on the unsigned X-Loomcycle-Delivery header copy. */
+  delivery_id?: string;
   agent: string;
   user_id?: string;
   agent_id?: string;
@@ -2712,6 +2744,9 @@ export interface ChannelHookCall {
   /** `"channel:<name>"`. */
   owner: string;
   hook_name: string;
+  /** Present on a signed call only: this delivery's id, inside the signed body.
+   *  Dedupe on it, never on the unsigned X-Loomcycle-Delivery header copy. */
+  delivery_id?: string;
   channel: string;
   scope: string;
   scope_id?: string;
@@ -3186,6 +3221,11 @@ export interface TeamRunTarget {
    *  it has no `steps`: read the walk's member runs for those. Refused with
    *  `boardChunkId`, which already resumes a stored position. */
   idempotencyKey?: string;
+  /** When a state hits its iteration cap, ask a human (an interruption)
+   *  whether to continue, `reroute:<state>` or abort, instead of ending with
+   *  the `iteration_cap` outcome. An ask nobody answers, that times out or is
+   *  declined aborts the walk. Default false. */
+  interruptOnCap?: boolean;
 }
 
 /** What {@link LoomcycleClient.runTeam} returns for `mode: "detach"` — the
@@ -5797,6 +5837,271 @@ export interface DecisionModelsResponse {
   /** The name used when a call names no model. */
   default: string;
   models: DecisionModel[];
+}
+
+// ---- Def name enumeration (GET /v1/_<family>def/names) ----
+//
+// One roll-up per declared name in a substrate family. Tenant-scoped
+// server-side: a substrate:tenant principal sees only its own tenant's names;
+// an admin sees every tenant's, or focuses one with `tenant`.
+
+/** One name's version roll-up from a `list*DefNames` method. Shared by every
+ *  def family except OperatorTokenDef ({@link OperatorTokenDefNameSummary}). */
+export interface DefNameSummary {
+  name: string;
+  /** The owning tenant; absent for the shared "" tenant. */
+  tenant_id?: string;
+  version_count: number;
+  active_def_id?: string;
+  latest_version: number;
+  /** When the newest version was created (RFC 3339). */
+  last_updated: string;
+  /** Versions not retired. Reported by the AgentDef, SkillDef, HookDef and
+   *  MCPServerDef families only. */
+  live_version_count?: number;
+  /** The active version is retired. Same families as `live_version_count`. */
+  active_retired?: boolean;
+}
+
+/** Response of the `list*DefNames` methods. `names` is `[]`, never `null`,
+ *  when nothing is declared. */
+export interface DefNamesResponse {
+  names: DefNameSummary[];
+}
+
+/** One token name's summary from {@link LoomcycleClient.listOperatorTokenDefNames}.
+ *  Carries no secret material. */
+export interface OperatorTokenDefNameSummary {
+  name: string;
+  tenant_id: string;
+  subject: string;
+  /** Every token minted under the name, rotated and retired ones included. */
+  token_count: number;
+  /** A non-retired token exists. */
+  has_current: boolean;
+  last_updated: string;
+}
+
+/** Response of {@link LoomcycleClient.listOperatorTokenDefNames}. */
+export interface OperatorTokenDefNamesResponse {
+  names: OperatorTokenDefNameSummary[];
+}
+
+// ---- Schedules admin (GET/POST /v1/_schedules/...) ----
+
+/** One schedule in {@link LoomcycleClient.listAllSchedules}: a static yaml
+ *  `scheduled_runs` entry, a ScheduleDef, or both under one name. */
+export interface ScheduleListEntry {
+  name: string;
+  source: "static-only" | "dynamic-only" | "both";
+  in_static: boolean;
+  in_substrate: boolean;
+  version_count?: number;
+  /** The def id the per-schedule methods take. Absent for a static-only
+   *  schedule, which has no ScheduleDef to address. */
+  active_def_id?: string;
+  latest_version?: number;
+  /** When the newest ScheduleDef version was created. Absent for a
+   *  static-only schedule. */
+  last_updated?: string;
+  /** The yaml definition, for a static entry. */
+  static_definition?: unknown;
+}
+
+/** Response of {@link LoomcycleClient.listAllSchedules}. */
+export interface ScheduleListResponse {
+  entries: ScheduleListEntry[];
+}
+
+/** A run a schedule started and has not finished. */
+export interface ScheduleActiveRun {
+  def_id: string;
+  run_id: string;
+  /** The slot the run was fired for. */
+  slot_at: string;
+  /** Fired for a missed slot rather than a live one. */
+  catch_up?: boolean;
+  started_at: string;
+  /** The replica that claimed the slot; absent outside cluster mode. */
+  claimed_by?: string;
+}
+
+/** A schedule's runtime state from {@link LoomcycleClient.getScheduleState}.
+ *  Credentials never appear here. An optional instant is absent when unset —
+ *  test for presence. (A server before the fix that dropped them sent
+ *  `last_run_at` and `paused_until` as "0001-01-01T00:00:00Z" instead.) */
+export interface ScheduleStateView {
+  def_id: string;
+  /** Absent until the schedule first fires. */
+  last_run_at?: string;
+  last_run_id?: string;
+  /** completed | failed | cancelled | rejected | running | skipped_overlap | skipped… */
+  last_status?: string;
+  last_error?: string;
+  next_run_at: string;
+  /** Present while paused. {@link LoomcycleClient.pauseSchedule} sets it about
+   *  100 years ahead: an indefinite pause. */
+  paused_until?: string;
+  /** Fires so far, the count `max_fires` is measured against. */
+  fire_count: number;
+  /** The last claim: which slot, which replica, when. */
+  slot_at?: string;
+  claimed_by?: string;
+  claimed_at?: string;
+  /** When the last tracked run finished. */
+  finished_at?: string;
+  /** Present while a `catch_up_max` backlog drains: its newest slot. */
+  catch_up_until?: string;
+  /** Slots the last outage dropped (older than `catch_up_max`). */
+  missed_slots?: number;
+  /** Every run the schedule started and has not finished — `[]`, never absent. */
+  active_runs: ScheduleActiveRun[];
+}
+
+/** Result of {@link LoomcycleClient.runScheduleNow}. The run starts on the
+ *  scheduler's next tick, not during the call. */
+export interface ScheduleRunNowResult {
+  def_id: string;
+  scheduled: "next-tick";
+}
+
+/** Result of {@link LoomcycleClient.pauseSchedule} / {@link LoomcycleClient.resumeSchedule}. */
+export interface SchedulePauseResult {
+  def_id: string;
+  paused: boolean;
+}
+
+// ---- Models, routing, provider models ----
+
+/** One configured model alias (the top-level `models:` map). */
+export interface ModelAlias {
+  provider: string;
+  model: string;
+  /** chat | decision | embedder. Absent for an untagged alias, which is a chat
+   *  model. */
+  kind?: string;
+}
+
+/** Response of {@link LoomcycleClient.listModels}: alias name → target. */
+export interface ModelAliasesResponse {
+  aliases: Record<string, ModelAlias>;
+}
+
+/** A candidate's throughput estimate. `multiplier` is what a scaled timeout
+ *  would be multiplied by. */
+export interface RoutingThroughput {
+  slowdown?: number;
+  multiplier: number;
+  samples: number;
+  source: string;
+  decode_tps?: number;
+  prefill_tps?: number;
+  ttft_ms?: number;
+  cold_load_ms?: number;
+  /** Admin only. */
+  queue_ms_p50?: number;
+  max_multiplier?: number;
+}
+
+/** One candidate in a routing cascade. */
+export interface RoutingCandidate {
+  provider: string;
+  model: string;
+  /** First in the displayed cascade. */
+  primary: boolean;
+  available?: boolean;
+  /** The first available candidate: what a run resolves to now. */
+  selected?: boolean;
+  stalled?: boolean;
+  rate_limited?: boolean;
+  reachable?: boolean;
+  /** Absent when throughput estimation is off. */
+  throughput?: RoutingThroughput;
+}
+
+/** One tier's ordered cascade, top first. */
+export interface RoutingTier {
+  /** low | middle | high */
+  tier: string;
+  cascade: RoutingCandidate[];
+}
+
+/** One user tier's tiers. */
+export interface RoutingUserTier {
+  /** "" when no user tiers are configured. */
+  name: string;
+  tiers: RoutingTier[];
+}
+
+/** One provider in the active-providers header. */
+export interface RoutingProvider {
+  provider: string;
+  reachable: boolean;
+  excluded: boolean;
+  /** The raw probe error — admin only. */
+  last_error?: string;
+}
+
+/** One web-search provider in the search cascade. */
+export interface SearchRoutingProvider {
+  provider: string;
+  primary: boolean;
+  /** This caller has a usable key. */
+  keyable?: boolean;
+  /** Keyable and not in a failure cooldown. */
+  available?: boolean;
+  selected?: boolean;
+  reachable?: boolean;
+  /** Admin only. */
+  last_error?: string;
+}
+
+/** Response of {@link LoomcycleClient.getRouting}. */
+export interface RoutingResponse {
+  generated_at: string;
+  /** The caller gets the admin view: raw `last_error`, nothing filtered. */
+  admin: boolean;
+  providers?: RoutingProvider[];
+  user_tiers: RoutingUserTier[];
+  /** The operator-key gate is on and this tenant's view is filtered to the
+   *  providers it can key itself. */
+  operator_key_restricted?: boolean;
+  /** `timeout_scaling.mode` when throughput estimation is on. */
+  throughput_mode?: string;
+  /** Absent when no search providers are configured. */
+  search?: SearchRoutingProvider[];
+}
+
+/** Response of {@link LoomcycleClient.listProviderModels}: a live listing from
+ *  the provider, not the cached probe matrix. */
+export interface ProviderModelsResponse {
+  provider: string;
+  fetched_at: string;
+  duration_ms: number;
+  /** Provider-native model ids. `[]` when the provider answered with none. */
+  models: string[];
+}
+
+/** Options of {@link LoomcycleClient.createTeam}. */
+export interface CreateTeamOptions {
+  signal?: AbortSignal;
+  /** Make the new version the team's active one. The server default is true
+   *  for a create; pass `false` to author it without putting it in force
+   *  (then {@link LoomcycleClient.promoteTeam}). */
+  promote?: boolean;
+  /** Free-text rationale stored on the version. */
+  description?: string;
+}
+
+/** Options of {@link LoomcycleClient.forkTeam}. Note `promote` defaults the
+ *  other way from a create: false. */
+export interface ForkTeamOptions extends CreateTeamOptions {
+  /** Make the new version the team's active one. The server default is false:
+   *  a fork is authored first and put in force with
+   *  {@link LoomcycleClient.promoteTeam}. */
+  promote?: boolean;
+  /** Fork this version instead of the name's active one. */
+  parentDefId?: string;
 }
 
 // ---- Memory / document change feeds (RFC CD Part C) ----

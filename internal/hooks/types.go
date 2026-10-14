@@ -130,10 +130,14 @@ type Hook struct {
 	// Headers are sent with every call to CallbackURL. A value may name a
 	// credential ($cred:<name>), resolved for the run at call time, so a secret
 	// the callback needs lives in the credential store, not the definition.
-	Headers   map[string]string `json:"headers,omitempty"`
-	FailMode  FailMode          `json:"fail_mode"` // "open" (default) | "closed"
-	TimeoutMs int               `json:"timeout_ms"`
-	Timeout   time.Duration     `json:"-"` // resolved when added to a Set
+	Headers map[string]string `json:"headers,omitempty"`
+	// SigningSecret is the credential reference ($cred:<name>) that signs each
+	// call, from a HookDef's body.signing_secret; "" = unsigned. Only a HookDef
+	// carries one: an inline webhook has no such field.
+	SigningSecret string        `json:"signing_secret,omitempty"`
+	FailMode      FailMode      `json:"fail_mode"` // "open" (default) | "closed"
+	TimeoutMs     int           `json:"timeout_ms"`
+	Timeout       time.Duration `json:"-"` // resolved when added to a Set
 	// RegisteredAt is when the hook was added to its Set.
 	RegisteredAt time.Time `json:"registered_at"`
 	// DefID is the HookDef version the hook was resolved from; "" for an inline
@@ -184,9 +188,14 @@ type PreHookCall struct {
 	Phase    Phase  `json:"phase"`
 	Owner    string `json:"owner"`
 	HookName string `json:"hook_name"`
-	Agent    string `json:"agent"`
-	UserID   string `json:"user_id,omitempty"`
-	AgentID  string `json:"agent_id,omitempty"`
+	// DeliveryID identifies this delivery of a signed hook (a HookDef with a
+	// signing_secret); absent on an unsigned call. It is inside the signed
+	// body, so a receiver dedupes on it — never on the X-Loomcycle-Delivery
+	// header, which is an unsigned copy a replayer can change.
+	DeliveryID string `json:"delivery_id,omitempty"`
+	Agent      string `json:"agent"`
+	UserID     string `json:"user_id,omitempty"`
+	AgentID    string `json:"agent_id,omitempty"`
 	RunContext
 	ToolCall ToolCall `json:"tool_call"`
 }
@@ -235,9 +244,14 @@ type PostHookCall struct {
 	Phase    Phase  `json:"phase"`
 	Owner    string `json:"owner"`
 	HookName string `json:"hook_name"`
-	Agent    string `json:"agent"`
-	UserID   string `json:"user_id,omitempty"`
-	AgentID  string `json:"agent_id,omitempty"`
+	// DeliveryID identifies this delivery of a signed hook (a HookDef with a
+	// signing_secret); absent on an unsigned call. It is inside the signed
+	// body, so a receiver dedupes on it — never on the X-Loomcycle-Delivery
+	// header, which is an unsigned copy a replayer can change.
+	DeliveryID string `json:"delivery_id,omitempty"`
+	Agent      string `json:"agent"`
+	UserID     string `json:"user_id,omitempty"`
+	AgentID    string `json:"agent_id,omitempty"`
 	RunContext
 	ToolCall   ToolCall   `json:"tool_call"`
 	ToolResult ToolResult `json:"tool_result"`
@@ -263,9 +277,14 @@ type LifecycleHookCall struct {
 	Phase    Phase  `json:"phase"`
 	Owner    string `json:"owner"`
 	HookName string `json:"hook_name"`
-	Agent    string `json:"agent"`
-	UserID   string `json:"user_id,omitempty"`
-	AgentID  string `json:"agent_id,omitempty"`
+	// DeliveryID identifies this delivery of a signed hook (a HookDef with a
+	// signing_secret); absent on an unsigned call. It is inside the signed
+	// body, so a receiver dedupes on it — never on the X-Loomcycle-Delivery
+	// header, which is an unsigned copy a replayer can change.
+	DeliveryID string `json:"delivery_id,omitempty"`
+	Agent      string `json:"agent"`
+	UserID     string `json:"user_id,omitempty"`
+	AgentID    string `json:"agent_id,omitempty"`
 	RunContext
 	// FinalText and StopReason are the answer an agent_stop hook decides on.
 	FinalText  string `json:"final_text,omitempty"`

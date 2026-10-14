@@ -81,6 +81,47 @@ describe("createTeam / forkTeam", () => {
     expect(body.overlay.entry).toBe("start");
   });
 
+  it("createTeam sends neither promote nor description when not given", async () => {
+    const { client, fetchMock } = makeClient([
+      jsonResponse({ def_id: "team_1", name: "triage", version: 1 }),
+    ]);
+    await client.createTeam("triage", { entry: "start" });
+    const body = JSON.parse((fetchMock.mock.calls[0]![1] as RequestInit).body as string);
+    // The server defaults a create's promote to true; absent must stay absent.
+    expect("promote" in body).toBe(false);
+    expect("description" in body).toBe(false);
+  });
+
+  it("createTeam sends promote:false and description from its options", async () => {
+    const { client, fetchMock } = makeClient([
+      jsonResponse({ def_id: "team_1", name: "triage", version: 1 }),
+    ]);
+    const ctl = new AbortController();
+    await client.createTeam(
+      "triage",
+      { entry: "start" },
+      { promote: false, description: "first draft", signal: ctl.signal },
+    );
+    const init = fetchMock.mock.calls[0]![1] as RequestInit;
+    expect(JSON.parse(init.body as string)).toEqual({
+      op: "create",
+      name: "triage",
+      overlay: { entry: "start" },
+      promote: false,
+      description: "first draft",
+    });
+    expect(init.signal).toBe(ctl.signal);
+  });
+
+  it("createTeam sends an explicit promote:true", async () => {
+    const { client, fetchMock } = makeClient([
+      jsonResponse({ def_id: "team_1", name: "triage", version: 1 }),
+    ]);
+    await client.createTeam("triage", { entry: "start" }, { promote: true });
+    const body = JSON.parse((fetchMock.mock.calls[0]![1] as RequestInit).body as string);
+    expect(body.promote).toBe(true);
+  });
+
   it("forkTeam POSTs op=fork with the overlay graph", async () => {
     const { client, fetchMock } = makeClient([
       jsonResponse({ def_id: "team_2", name: "triage", version: 2 }),
@@ -89,6 +130,44 @@ describe("createTeam / forkTeam", () => {
     await client.forkTeam("triage", { entry: "start", states: [], transitions: [] });
     const body = JSON.parse((fetchMock.mock.calls[0]![1] as RequestInit).body as string);
     expect(body.op).toBe("fork");
+    // No options → none of the fork's own fields are sent; the server defaults
+    // promote to false.
+    expect("promote" in body).toBe(false);
+    expect("parent_def_id" in body).toBe(false);
+    expect("description" in body).toBe(false);
+  });
+
+  it("forkTeam sends promote / parent_def_id / description from its options", async () => {
+    const { client, fetchMock } = makeClient([
+      jsonResponse({ def_id: "team_3", name: "triage", version: 3 }),
+    ]);
+
+    const ctl = new AbortController();
+    await client.forkTeam(
+      "triage",
+      { entry: "start" },
+      { promote: true, parentDefId: "team_1", description: "widen review", signal: ctl.signal },
+    );
+    const init = fetchMock.mock.calls[0]![1] as RequestInit;
+    const body = JSON.parse(init.body as string);
+    expect(body).toEqual({
+      op: "fork",
+      name: "triage",
+      overlay: { entry: "start" },
+      promote: true,
+      parent_def_id: "team_1",
+      description: "widen review",
+    });
+    expect(init.signal).toBe(ctl.signal);
+  });
+
+  it("forkTeam sends an explicit promote:false", async () => {
+    const { client, fetchMock } = makeClient([
+      jsonResponse({ def_id: "team_3", name: "triage", version: 3 }),
+    ]);
+    await client.forkTeam("triage", { entry: "start" }, { promote: false });
+    const body = JSON.parse((fetchMock.mock.calls[0]![1] as RequestInit).body as string);
+    expect(body.promote).toBe(false);
   });
 
   it("createTeam surfaces a 422 graph refusal as SubstrateToolRefusedError", async () => {
@@ -146,6 +225,20 @@ describe("runTeam", () => {
     const body = JSON.parse((fetchMock.mock.calls[0]![1] as RequestInit).body as string);
     expect(body.idempotency_key).toBe("press-1");
     expect("idempotencyKey" in body).toBe(false);
+  });
+
+  it("sends interruptOnCap as interrupt_on_cap, and omits it when unset", async () => {
+    const { client, fetchMock } = makeClient([
+      jsonResponse({ name: "triage", def_id: "team_1", status: "completed", steps: [] }),
+      jsonResponse({ name: "triage", def_id: "team_1", status: "completed", steps: [] }),
+    ]);
+    await client.runTeam({ name: "triage", interruptOnCap: true });
+    await client.runTeam({ name: "triage" });
+    const first = JSON.parse((fetchMock.mock.calls[0]![1] as RequestInit).body as string);
+    const second = JSON.parse((fetchMock.mock.calls[1]![1] as RequestInit).body as string);
+    expect(first.interrupt_on_cap).toBe(true);
+    expect("interruptOnCap" in first).toBe(false);
+    expect("interrupt_on_cap" in second).toBe(false);
   });
 
   it("targets a specific version by def_id", async () => {

@@ -398,3 +398,71 @@ func TestScheduleState_CarriesActiveRunsAndTheBacklog(t *testing.T) {
 		t.Errorf("last_status=%v fire_count=%v, want running 1", m["last_status"], m["fire_count"])
 	}
 }
+
+// A never-run, unpaused schedule has no last_run_at or paused_until on the
+// wire. Both were plain time.Time with omitempty, which never omits a struct,
+// so they went out as "0001-01-01T00:00:00Z" — and a reader that checks
+// presence (the Web UI's "paused?" and "last run" fields) took year 1 for a
+// real instant.
+func TestScheduleState_OmitsLastRunAndPausedUntilWhenUnset(t *testing.T) {
+	ts, _, defID := schedulesAdminFixture(t)
+	resp := authGET(t, ts, "/v1/_schedules/"+defID+"/state")
+	defer resp.Body.Close()
+	var m map[string]any
+	if err := json.NewDecoder(resp.Body).Decode(&m); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	for _, k := range []string{"last_run_at", "paused_until"} {
+		if v, present := m[k]; present {
+			t.Errorf("%s present on a never-run, unpaused schedule: %v", k, v)
+		}
+	}
+	if _, present := m["next_run_at"]; !present {
+		t.Errorf("next_run_at missing; it is always set once a def is seeded")
+	}
+
+	pause := authPOST(t, ts, "/v1/_schedules/"+defID+"/pause")
+	pause.Body.Close()
+	resp2 := authGET(t, ts, "/v1/_schedules/"+defID+"/state")
+	defer resp2.Body.Close()
+	var paused map[string]any
+	if err := json.NewDecoder(resp2.Body).Decode(&paused); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if _, present := paused["paused_until"]; !present {
+		t.Errorf("paused_until absent after pause")
+	}
+}
+
+// A static-only schedule has no substrate version, so no last_updated: the
+// key is absent rather than year 1. The substrate entry keeps its real time.
+func TestSchedulesList_OmitsLastUpdatedForStaticOnly(t *testing.T) {
+	ts, _, _ := schedulesAdminFixture(t)
+	resp := authGET(t, ts, "/v1/_schedules/list-all")
+	defer resp.Body.Close()
+	var env struct {
+		Entries []map[string]any `json:"entries"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&env); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	seen := 0
+	for _, e := range env.Entries {
+		v, present := e["last_updated"]
+		switch e["name"] {
+		case "yaml-sched":
+			seen++
+			if present {
+				t.Errorf("static-only entry carries last_updated: %v", v)
+			}
+		case "substrate-sched":
+			seen++
+			if !present {
+				t.Errorf("substrate entry lost last_updated")
+			}
+		}
+	}
+	if seen != 2 {
+		t.Fatalf("saw %d of the 2 fixture entries: %v", seen, env.Entries)
+	}
+}

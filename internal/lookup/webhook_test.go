@@ -224,6 +224,10 @@ func TestWebhook_DriftDetection(t *testing.T) {
 		"payload_mapping":           true,
 		"sync_response":             true,
 		"on_complete":               true,
+		"provider":                  true, // a forge preset: header, auth and shape defaults
+		"event_header":              true, // the header naming a delivery's event
+		"events":                    true, // the only events that start anything
+		"event_shapes":              true, // the paths a listed event's signed body must hold
 		"team":                      true, // delivery=team: the team whose walk a delivery starts
 		"vars":                      true, // delivery=team: the walk's variables, as JSONPaths into the body
 		"operator_key_restricted":   true, // RFC AX: captured operator-key restriction (anti-bypass)

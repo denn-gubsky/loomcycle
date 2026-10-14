@@ -135,6 +135,7 @@ func (rec *Receiver) handleTest(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "unknown_webhook", "")
 		return
 	}
+	wd = wd.WithProviderDefaults() // as the receiver applies it
 
 	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, rec.bodyLimit(wd)))
 	if err != nil {
@@ -169,6 +170,13 @@ func (rec *Receiver) handleTest(w http.ResponseWriter, r *http.Request) {
 			Verdict:         verdict,
 			RunInputPreview: runInputPreview{},
 		})
+		return
+	}
+
+	// 1b. The event check the receiver makes next: a ping, an event not
+	//     listed, or a body without the event's shape starts nothing.
+	if o := classifyEvent(wd, r.Header, body); !o.proceed {
+		writeJSON(w, http.StatusOK, testResult{WouldAccept: false, Verdict: o.verdict, RunInputPreview: runInputPreview{}})
 		return
 	}
 
