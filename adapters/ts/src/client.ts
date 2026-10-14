@@ -60,7 +60,7 @@ import type {
   ErasureResult,
   Agent,
   AgentEvent,
-  AgentStatus,
+  AgentList,
   CancelAgentResult,
   ClientOptions,
   AgentDefOverlay,
@@ -80,6 +80,7 @@ import type {
   InterruptListResponse,
   InterruptStatus,
   ListAgentsResponse,
+  ListUserAgentsOptions,
   WalkRunsPage,
   AckChannelOptions,
   AwaitChannelsOptions,
@@ -964,27 +965,24 @@ export class LoomcycleClient {
     return { cancelledCount: resp.cancelled_count };
   }
 
-  /** List a user's recent agent runs, optionally filtered by status. With no
-   *  `status` only running runs are returned; `"all"` returns every status.
+  /** List a user's recent agent runs (at most 100), optionally filtered by
+   *  status. With no `status` only running runs are returned; `"all"` returns
+   *  every status; several statuses list a run in any of them.
+   *
+   *  `awaitedState` lists only running runs blocked on one of the named waits
+   *  (`"review"`, `"input"`, …). The state is derived per run, so the server
+   *  reads at most 1,000 running runs; the returned array carries
+   *  `truncated: true` when it stopped with some unread.
    *
    *  v0.9.x — `parentAgentId` narrows the result CLIENT-SIDE to runs
    *  whose `parent_agent_id` matches. The server still returns the
    *  full set (server-side `?parent_agent_id=` filter is a future
    *  request); the adapter trims before returning. Useful for the
    *  n8n trigger pattern "show me all sub-runs spawned by parent X." */
-  async listUserAgents(
-    userId: string,
-    opts?: {
-      status?: AgentStatus | "all";
-      parentAgentId?: string;
-      /** Super-admin tenant-focus (?tenant=, RFC L v0.17.0). Ignored
-       *  server-side for a tenant principal — its own tenant is forced. */
-      tenant?: string;
-      signal?: AbortSignal;
-    },
-  ): Promise<Agent[]> {
+  async listUserAgents(userId: string, opts?: ListUserAgentsOptions): Promise<AgentList> {
     const params = new URLSearchParams();
-    if (opts?.status) params.set("status", opts.status);
+    for (const s of ([] as string[]).concat(opts?.status ?? [])) params.append("status", s);
+    for (const s of ([] as string[]).concat(opts?.awaitedState ?? [])) params.append("awaited_state", s);
     if (opts?.tenant) params.set("tenant", opts.tenant);
     const q = params.toString() ? `?${params.toString()}` : "";
     const resp = await jsonFetch<ListAgentsResponse>(
@@ -992,11 +990,12 @@ export class LoomcycleClient {
       `/v1/users/${encodeURIComponent(userId)}/agents${q}`,
       opts,
     );
-    const all = resp.agents ?? [];
+    let out: AgentList = resp.agents ?? [];
     if (opts?.parentAgentId !== undefined && opts.parentAgentId !== "") {
-      return all.filter((a) => a.parent_agent_id === opts.parentAgentId);
+      out = out.filter((a) => a.parent_agent_id === opts.parentAgentId);
     }
-    return all;
+    if (resp.truncated) out.truncated = true;
+    return out;
   }
 
   /** One page of a team walk's runs — the walk's own run (its run id IS the

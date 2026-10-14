@@ -1707,7 +1707,33 @@ export interface RunResult {
 
 export interface ListAgentsResponse {
   agents: Agent[];
+  /** True when an `awaited_state` listing stopped before reading every
+   *  running run (it reads at most 1,000), so a matching run may be missing.
+   *  Absent otherwise. */
+  truncated?: boolean;
 }
+
+/** {@link LoomcycleClient.listUserAgents}'s filters. */
+export interface ListUserAgentsOptions {
+  /** One status or several (a run in any of them is listed). Omitted → only
+   *  running runs; `"all"` → every status. An unknown status is a 400. */
+  status?: AgentStatus | "all" | AgentStatus[];
+  /** List only running runs blocked on one of these waits. Implies running:
+   *  a `status` other than `"running"` with it is a 400. */
+  awaitedState?: AwaitedState | AwaitedState[];
+  /** Narrows the result CLIENT-SIDE to runs whose `parent_agent_id`
+   *  matches. */
+  parentAgentId?: string;
+  /** Super-admin tenant-focus (?tenant=, RFC L v0.17.0). Ignored
+   *  server-side for a tenant principal — its own tenant is forced. */
+  tenant?: string;
+  signal?: AbortSignal;
+}
+
+/** {@link LoomcycleClient.listUserAgents}'s answer: the runs, still an array,
+ *  carrying `truncated: true` when an `awaitedState` listing stopped before
+ *  reading every running run. */
+export type AgentList = Agent[] & { truncated?: boolean };
 
 /** One page of a team walk's runs ({@link LoomcycleClient.listWalkRuns}),
  *  ordered by started_at then run id. `next_cursor` is "" on the last page. */
