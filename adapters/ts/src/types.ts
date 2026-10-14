@@ -4194,17 +4194,6 @@ export interface EnsureMcpServerResult {
   discoveredToolCount?: number;
 }
 
-/** Typed `overlay` for an {@link LoomcycleClient.agentDef} create/fork —
- *  the mutable subset of an agent definition. All fields optional (a fork
- *  overlays only what changes). The `[extra]` tail keeps it forward-compatible
- *  with fields the in-process tool may accept that the adapter doesn't model
- *  yet — the tool owns the authoritative schema; the adapter doesn't re-validate.
- *
- *  `code_body` is the inline code-js orchestrator source (RFC J): set it (with
- *  `provider: "code-js"`) to ingest a code agent through the substrate with NO
- *  host filesystem bind — the symmetry that makes code agents work in
- *  containers / pure-cloud. Requires `LOOMCYCLE_CODE_AGENTS_ENABLED=1` on the
- *  sidecar; create/fork refuses a non-empty `code_body` otherwise. */
 /** Per-agent Channel tool ACL (mirrors the sidecar `channels:` agent yaml).
  *  The Channel tool default-denies until publish/subscribe patterns are granted. */
 export interface AgentChannelACL {
@@ -4278,6 +4267,87 @@ export interface AgentDecision {
   models?: string[];
 }
 
+/** The `sampling` block of an {@link AgentDefOverlay}: {@link SamplingOptions}
+ *  in its wire spelling. The overlay is sent verbatim, so its nested blocks are
+ *  snake_case — the camelCase run-option types are converted by the client and
+ *  would be ignored here. A fork merges it per field; an explicit
+ *  `temperature: 0` is deterministic, not unset. */
+export interface AgentSampling {
+  temperature?: number;
+  top_p?: number;
+  top_k?: number;
+  frequency_penalty?: number;
+  presence_penalty?: number;
+  seed?: number;
+  stop?: string[];
+}
+
+/** The `compaction` block of an {@link AgentDefOverlay}: {@link CompactionOptions}
+ *  in its wire spelling, plus `memory_flush`, which only an agent definition
+ *  may set. A fork merges it per field. */
+export interface AgentCompaction {
+  enabled?: boolean;
+  target_percentage?: number;
+  keep_last_n?: number;
+  keep_first?: boolean;
+  autocompact_at_pct?: number;
+  model?: string;
+  /** Bank the span a compaction discards for the memory consolidator.
+   *  Per-agent only: a run cannot set it, because it makes the agent persist
+   *  memory its definition must authorize. */
+  memory_flush?: boolean;
+}
+
+/** The `context` block of an {@link AgentDefOverlay}: {@link ContextOptions}
+ *  in its wire spelling — see there for what each field does. A fork merges it
+ *  per field, and the spawn tree inherits it. */
+export interface AgentContext {
+  mode?: ContextOptions["mode"];
+  keep_last_n?: number;
+  reasoning?: ContextOptions["reasoning"];
+  recap_max_chars?: number;
+  model?: string;
+  autorecap_at_pct?: number;
+  state_schema?: Record<string, unknown>;
+  on_invalid_patch?: ContextOptions["onInvalidPatch"];
+  max_patch_retries?: number;
+  recall?: boolean;
+  harvest_to_memory?: boolean;
+}
+
+/** One entry of a per-tier candidate list (`models` on an
+ *  {@link AgentDefOverlay}). */
+export interface TierCandidate {
+  provider: string;
+  model: string;
+}
+
+/** A core memory block an agent carries (`core_blocks`). Its value is the
+ *  Memory entry `core/<label>` in the block's scope, rendered into the system
+ *  prompt. */
+export interface CoreBlock {
+  /** One path segment: no `/`, no whitespace. */
+  label: string;
+  /** Where the value lives. An `agent` block never crosses a spawn boundary. */
+  scope?: "agent" | "user" | "tenant";
+  /** Caps an agent write to the block, in bytes of the JSON value. 0 = only the
+   *  scope's `memory_quota_bytes`. */
+  limit_bytes?: number;
+  /** Operator-authored: the agent's writes to it are refused. */
+  read_only?: boolean;
+}
+
+/** Typed `overlay` for an {@link LoomcycleClient.agentDef} create/fork —
+ *  the mutable subset of an agent definition. All fields optional (a fork
+ *  overlays only what changes). The `[extra]` tail keeps it forward-compatible
+ *  with fields the in-process tool may accept that the adapter doesn't model
+ *  yet — the tool owns the authoritative schema; the adapter doesn't re-validate.
+ *
+ *  `code_body` is the inline code-js orchestrator source (RFC J): set it (with
+ *  `provider: "code-js"`) to ingest a code agent through the substrate with NO
+ *  host filesystem bind — the symmetry that makes code agents work in
+ *  containers / pure-cloud. Requires `LOOMCYCLE_CODE_AGENTS_ENABLED=1` on the
+ *  sidecar; create/fork refuses a non-empty `code_body` otherwise. */
 export interface AgentDefOverlay {
   provider?: string;
   model?: string;
@@ -4364,6 +4434,88 @@ export interface AgentDefOverlay {
   channels?: AgentChannelACL;
   /** Interruption tool gate — `enabled: true` REQUIRED for the tool to work. */
   interruption?: AgentInterruptionACL;
+  /** The agent's own description — what an agent file's frontmatter
+   *  carries — and part of its content hash. Not the request's top-level
+   *  `description`, which is the rationale for this create/fork. */
+  description?: string;
+  /** Tier-routing override: the providers this agent's tier resolution tries,
+   *  in order, replacing the server's priority list. No effect on a
+   *  provider+model pin. */
+  providers?: string[];
+  /** Per-tier candidate lists, keyed by tier name. A tier set here replaces
+   *  the server's definition of that tier for this agent. */
+  models?: Record<string, TierCandidate[]>;
+  /** The web-search providers the WebSearch tool tries, in order. Empty uses
+   *  the server's default order. */
+  search_providers?: string[];
+  /** The context window this agent uses, in tokens — distinct from
+   *  `max_tokens`, the output cap. Sizes the window on a local model; on a
+   *  hosted one it can only lower the effective window. */
+  max_context_tokens?: number;
+  /** Lift the `max_iterations` cap for an LLM agent (cancel is the stop). A
+   *  fork can set it but cannot clear it. */
+  unbounded_iterations?: boolean;
+  /** Wall-clock budget, in seconds, for a code-js agent; 0 = the server's
+   *  default. Ignored by LLM agents. */
+  run_timeout_seconds?: number;
+  /** The system prompt before skill bodies are baked in. Defaults to
+   *  `system_prompt`; set it only to rebuild a prompt from a different base. */
+  system_prompt_base?: string;
+  /** Per-agent LLM sampling, merged per field over the parent's. */
+  sampling?: AgentSampling;
+  /** Context compaction in `append` mode, merged per field. */
+  compaction?: AgentCompaction;
+  /** How history is distilled, merged per field. */
+  context?: AgentContext;
+  /** Volumes the file and exec tools may resolve paths against. None declared
+   *  means `default`; declaring any confines the agent to exactly those. */
+  volumes?: string[];
+  /** SQL Memory scopes: `agent` | `user` | `run`. Unset means `["user"]`;
+   *  `["-*"]` grants none. */
+  sql_scopes?: string[];
+  /** Per-scope SQL database byte cap; 0 = the server's default. */
+  sql_quota_bytes?: number;
+  /** Whose past chats the History tool may read: `self` | `user` | `tenant` |
+   *  `global` (honored only for an admin). Unset means `["user"]`; `["-*"]`
+   *  grants none. */
+  history_scope?: string[];
+  /** Core memory blocks rendered into the system prompt. */
+  core_blocks?: CoreBlock[];
+  /** A sub-agent also receives its parent run's user- and tenant-scope core
+   *  blocks. */
+  inherit_core_blocks?: boolean;
+  /** Cap on all memory-injected prompt content, in tokens (estimated); 0 = the
+   *  server's default. */
+  memory_inject_max_tokens?: number;
+  /** Opt into the memory-usage protocol note. */
+  memory_protocol?: boolean;
+  /** Soft size cap, in bytes, the memory protocol asks the agent to keep its
+   *  index document under; 0 = the server's default. */
+  memory_index_max_bytes?: number;
+  /** Grant the Memory tool's consolidation control ops. Default-deny. */
+  memory_consolidation?: boolean;
+  /** Provisioning of the user-root memory document: `lazy` (default),
+   *  `force` or `suppress`. */
+  memory_roots?: "lazy" | "force" | "suppress";
+  /** Append the runtime's capability and tool-guide text to the system prompt
+   *  — for small models that under-read tool schemas. */
+  inject_tool_guide?: boolean;
+  /** Mark the agent as maintenance plumbing: its chats are excluded from
+   *  memory consolidation and hidden from History by default. A fork can set
+   *  it and cannot clear it. */
+  internal?: boolean;
+  /** Which AgentDef names this agent may fork / promote / retire: `self`,
+   *  `descendants`, `named:<name>` or `any`. Default-deny. */
+  agent_def_scopes?: string[];
+  /** Same closed set as `agent_def_scopes`, for ScheduleDef. Default-deny. */
+  schedule_def_scopes?: string[];
+  /** Same closed set as `agent_def_scopes`, for A2AServerCardDef. Default-deny. */
+  a2a_server_card_def_scopes?: string[];
+  /** Same closed set as `agent_def_scopes`, for A2AAgentDef. Default-deny. */
+  a2a_agent_def_scopes?: string[];
+  /** Which volumes this agent may create / delete / purge: `named:<volume>`
+   *  or `any`. Default-deny. */
+  volume_def_scopes?: string[];
   [extra: string]: unknown;
 }
 
