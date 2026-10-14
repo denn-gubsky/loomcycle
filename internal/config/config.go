@@ -3392,6 +3392,21 @@ type Webhook struct {
 	PayloadMapping map[string]string   `json:"payload_mapping,omitempty" yaml:"payload_mapping"`
 	SyncResponse   WebhookSyncResponse `json:"sync_response,omitempty" yaml:"sync_response"`
 	OnComplete     []ScheduledRunHook  `json:"on_complete,omitempty" yaml:"on_complete"`
+	// Provider names a forge preset (github, gitea, gitlab): defaults for
+	// the auth kind and headers, the event header, the ping and the shapes
+	// of the events it knows. A field the definition sets overrides it. See
+	// webhook_events.go.
+	Provider string `json:"provider,omitempty" yaml:"provider"`
+	// EventHeader is the request header naming a delivery's event.
+	EventHeader string `json:"event_header,omitempty" yaml:"event_header"`
+	// Events, when set, are the only events that start anything: another
+	// is answered 202 ignored, the provider's ping 200, and a listed event
+	// counts only when the signed body has its shape. Unset: every
+	// delivery is handled as before.
+	Events []string `json:"events,omitempty" yaml:"events"`
+	// EventShapes are the JSONPaths the body of a listed event must hold,
+	// for an event the provider has no shape for, or in place of its.
+	EventShapes map[string][]string `json:"event_shapes,omitempty" yaml:"event_shapes"`
 	// Team is the team whose walk a delivery=team webhook starts, detached,
 	// with the raw request body as its input. Looked up in TenantID only, when
 	// a delivery arrives (teams are runtime definitions).
@@ -7638,6 +7653,9 @@ func validateStaticWebhook(name string, w Webhook) error {
 		return fmt.Errorf("webhooks.%s: unknown auth.kind %q (want hmac, bearer, or none)", name, w.Auth.Kind)
 	}
 	if err := CheckWebhookSecretRefs(w.Auth); err != nil {
+		return fmt.Errorf("webhooks.%s: %w", name, err)
+	}
+	if err := CheckWebhookEvents(w); err != nil {
 		return fmt.Errorf("webhooks.%s: %w", name, err)
 	}
 	return nil

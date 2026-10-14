@@ -2745,6 +2745,10 @@ func TestValidateStaticWebhook(t *testing.T) {
 		{"literal secret", Webhook{Agent: "a", Auth: WebhookAuth{Secret: "plain-value"}}, "auth.secret takes only a stored credential"},
 		{"secret beside env", Webhook{Agent: "a", Auth: WebhookAuth{Secret: "$cred:hook", SigningSecretEnv: "LOOMCYCLE_S"}}, "one of the two forms"},
 		{"previous alone", Webhook{Agent: "a", Auth: WebhookAuth{SigningSecretEnv: "LOOMCYCLE_S", PreviousSecret: "$cred:old"}}, "set auth.secret with it"},
+		{"github push", Webhook{Agent: "a", Provider: "github", Events: []string{"push"}}, ""},
+		{"unknown provider", Webhook{Agent: "a", Provider: "bitbucket"}, `provider "bitbucket" is not one`},
+		{"event without a shape", Webhook{Agent: "a", Provider: "github", Events: []string{"star"}}, "has no shape"},
+		{"events without a header", Webhook{Agent: "a", Events: []string{"x"}, EventShapes: map[string][]string{"x": {"$.a"}}}, "set event_header, or a provider"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

@@ -156,6 +156,11 @@ type SubstrateWebhookDef struct {
 	PayloadMapping         map[string]string         `json:"payload_mapping,omitempty"`
 	SyncResponse           SubstrateWebhookSyncResp  `json:"sync_response,omitempty"`
 	OnComplete             []config.ScheduledRunHook `json:"on_complete,omitempty"`
+	// Provider, EventHeader, Events and EventShapes mirror config.Webhook's.
+	Provider    string              `json:"provider,omitempty"`
+	EventHeader string              `json:"event_header,omitempty"`
+	Events      []string            `json:"events,omitempty"`
+	EventShapes map[string][]string `json:"event_shapes,omitempty"`
 	// Team / Vars are the delivery=team target: the team whose walk a delivery
 	// starts, and its variables as JSONPaths into the body.
 	Team string            `json:"team,omitempty"`
@@ -239,6 +244,10 @@ func (s SubstrateWebhookDef) ToConfigDef() config.Webhook {
 			TimeoutMs: s.SyncResponse.TimeoutMs,
 		},
 		OnComplete:            s.OnComplete,
+		Provider:              s.Provider,
+		EventHeader:           s.EventHeader,
+		Events:                s.Events,
+		EventShapes:           s.EventShapes,
 		Team:                  s.Team,
 		Vars:                  s.Vars,
 		OperatorKeyRestricted: s.OperatorKeyRestricted,

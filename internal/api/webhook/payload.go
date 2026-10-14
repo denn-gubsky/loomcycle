@@ -54,12 +54,9 @@ type projectResult struct {
 func projectPayload(mapping map[string]string, body []byte) (projectResult, error) {
 	res := projectResult{Fields: make(map[string]string, len(mapping)), RawBody: body}
 
-	if err := checkJSONShape(body, maxJSONDepth, maxJSONTokens); err != nil {
-		return projectResult{}, fmt.Errorf("malformed json body: %w", err)
-	}
-	var doc interface{}
-	if err := json.Unmarshal(body, &doc); err != nil {
-		return projectResult{}, fmt.Errorf("malformed json body: %w", err)
+	doc, err := decodeJSONBody(body)
+	if err != nil {
+		return projectResult{}, err
 	}
 
 	for target, path := range mapping {
@@ -76,6 +73,19 @@ func projectPayload(mapping map[string]string, body []byte) (projectResult, erro
 		res.Fields[target] = jsonpath.Stringify(v)
 	}
 	return res, nil
+}
+
+// decodeJSONBody decodes a delivery's body, after checkJSONShape has bounded
+// what decoding it costs.
+func decodeJSONBody(body []byte) (interface{}, error) {
+	if err := checkJSONShape(body, maxJSONDepth, maxJSONTokens); err != nil {
+		return nil, fmt.Errorf("malformed json body: %w", err)
+	}
+	var doc interface{}
+	if err := json.Unmarshal(body, &doc); err != nil {
+		return nil, fmt.Errorf("malformed json body: %w", err)
+	}
+	return doc, nil
 }
 
 // A delivery's body is scanned before it is decoded. Decoding builds the whole
