@@ -125,7 +125,10 @@ A shared front-half runs for every request, then forks on `delivery`:
 
 1. **Resolve** the active `WebhookDef` by the `{name}` in the URL (never
    from the body). Unknown or disabled → opaque `404`.
-2. **Read** the raw body under `body_size_limit_bytes` (default 1 MiB).
+2. **Read** the raw body under `body_size_limit_bytes` (default 1 MiB),
+   never past the server's request limit (`LOOMCYCLE_MAX_REQUEST_BYTES`).
+   A body nested more than 128 deep, or holding more than a million values,
+   is refused as malformed before it is decoded.
 3. **Verify the signature over the raw bytes, before any parsing.**
    HMAC-SHA256 with a constant-time compare. Three envelopes auto-detected
    from the header *value* (so a custom header name still parses):
@@ -350,7 +353,15 @@ result lists them in `disabled_until_credentials_supplied`, and
 merges both credential maps key by key with the parent's, so re-supplying
 the stripped keys keeps every other credential; an empty value removes a
 key. A `create` on the same name writes a new version and follows the
-same rules. An overlay can neither set nor clear the marker.
+same rules. An overlay can neither set nor clear the marker: one that
+names `capture_disabled` is refused.
+
+**An overlay is read as written.** A key the definition does not have (a
+misspelling, or a field a newer server knows), a key written twice, a key
+that matches a field only by ignoring its case, and a key the server sets
+(`operator_key_restricted`, `isolated`, `capture_disabled`) are refused,
+where they used to be dropped without a word. An older server drops keys it
+does not know, so read a definition back after writing it.
 
 ## `tenant_id` — which tenant the spawned run executes as
 
@@ -379,7 +390,8 @@ from the wire.
 `user_tier` is pinned the same way: it comes from the def's `user_tier`,
 and a `payload_mapping` entry that targets it is ignored (config load warns
 about it). A sender must not be able to pick the plan its run is billed and
-routed under.
+routed under. A definition written through the WebhookDef tool can set
+`user_tier` too; it must name one of the server's `user_tiers`.
 
 **Through the WebhookDef tool, `tenant_id` may name only your own tenant
 unless you are an admin.** Omitted, it defaults to your tenant. A non-admin
