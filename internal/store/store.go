@@ -231,19 +231,26 @@ type Session struct {
 }
 
 // RunStatus is the terminal state of a run, "running" while it's still in
-// flight, or "configured" for a created-but-not-started draft (RFC DI D5).
+// flight, "queued" while it waits for a run slot (RFC EI P3), or "configured"
+// for a created-but-not-started draft (RFC DI D5).
 // Transitions: configured → running (StartConfiguredRun) or the row is
-// deleted (DeleteConfiguredRun, the expiry sweep); running → (completed |
-// failed | cancelled | rejected). FinishRun moves only running rows, so it
-// cannot end a draft by accident.
+// deleted (DeleteConfiguredRun, the expiry sweep); configured → queued
+// (QueueConfiguredRun) when its start has to wait; queued → running
+// (StartQueuedRun); running or queued → (completed | failed | cancelled |
+// rejected). FinishRun moves only running and queued rows, so it cannot end a
+// draft by accident.
 type RunStatus string
 
 const (
 	RunConfigured RunStatus = "configured"
-	RunRunning    RunStatus = "running"
-	RunCompleted  RunStatus = "completed"
-	RunFailed     RunStatus = "failed"
-	RunCancelled  RunStatus = "cancelled"
+	// RunQueued: accepted, waiting for a run slot. It has no loop and no
+	// heartbeat yet, which is why it is not "running": the stale-run sweeper
+	// fails a running row that stops heartbeating.
+	RunQueued    RunStatus = "queued"
+	RunRunning   RunStatus = "running"
+	RunCompleted RunStatus = "completed"
+	RunFailed    RunStatus = "failed"
+	RunCancelled RunStatus = "cancelled"
 	// RunRejected: a run held for review whose reviewer rejected it without
 	// feedback (RFC DJ). Terminal, like cancelled — the work was done and
 	// refused, not failed.
@@ -1672,6 +1679,31 @@ type Store interface {
 	// reads the draft before it waits for admission, and an edit landing in
 	// between must not be silently discarded. ErrDraftChanged when it moved.
 	StartConfiguredRun(ctx context.Context, runID string, identity RunIdentity, draft json.RawMessage) (Run, error)
+
+	// CreateQueuedRun inserts a run in status "queued" (RFC EI P3): accepted,
+	// waiting for a run slot, with no loop yet. identity carries what is known
+	// before the run starts; StartQueuedRun records the rest. The idempotency
+	// key is claimed here, as CreateRun claims it. Returns ErrNotFound if
+	// sessionID doesn't exist.
+	CreateQueuedRun(ctx context.Context, sessionID string, identity RunIdentity) (Run, error)
+
+	// QueueConfiguredRun moves a draft whose start has to wait for a run slot
+	// to "queued", guarded like StartConfiguredRun on the draft it was read
+	// as (ErrDraftChanged when it moved). The draft stays on the row until
+	// StartQueuedRun; it can no longer be edited or deleted, only cancelled.
+	QueueConfiguredRun(ctx context.Context, runID string, draft json.RawMessage) error
+
+	// StartQueuedRun moves a queued run to "running", recording what was
+	// resolved at start as StartConfiguredRun does (started_at and the
+	// heartbeat re-stamped to now, the draft cleared). ErrRunNotQueued when
+	// the run is no longer queued (a cancel won); ErrNotFound for none.
+	StartQueuedRun(ctx context.Context, runID string, identity RunIdentity) (Run, error)
+
+	// FailQueuedRuns fails every queued run whose waiter is gone: the queued
+	// rows of replicaID (or, when replicaID is empty, every queued row — a
+	// single-replica store) at boot, since a restart ends every wait. reason
+	// is the error recorded. Returns how many it failed.
+	FailQueuedRuns(ctx context.Context, replicaID, reason string) (int, error)
 
 	// DeleteConfiguredRun discards a draft: its events, the run row, and its
 	// session when nothing else is in it. ErrRunNotConfigured for a run that is
@@ -6481,6 +6513,10 @@ var ErrDuplicateIdempotencyKey = errors.New("duplicate idempotency_key")
 // run exists but is not in status "configured" — it has started, or it never
 // was a draft. A sentinel (errors.Is-comparable), distinct from ErrNotFound.
 var ErrRunNotConfigured = errors.New("run is not configured")
+
+// ErrRunNotQueued is returned by StartQueuedRun when the run is no longer
+// waiting for a slot: it was cancelled (or failed at a restart) meanwhile.
+var ErrRunNotQueued = errors.New("run is not queued")
 
 // ErrDraftChanged is returned by StartConfiguredRun when the run is still a
 // draft but its draft is no longer the one the start was built from — it was

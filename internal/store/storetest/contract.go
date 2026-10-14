@@ -157,6 +157,11 @@ func Run(t *testing.T, factory Factory) {
 		{"RunJSONColumnsAcceptNUL", testRunJSONColumnsAcceptNUL},
 		{"ConfiguredRunStartIsConditionalOnTheDraft", testConfiguredRunStartIsConditionalOnTheDraft},
 		{"ConfiguredRunNotReapedAsStale", testConfiguredRunNotReapedAsStale},
+		// RFC EI P3: queued runs, waiting for a run slot.
+		{"QueuedRunLifecycle", testQueuedRunLifecycle},
+		{"QueuedRunCancelledBeforeStart", testQueuedRunCancelledBeforeStart},
+		{"ConfiguredRunQueuesThenStarts", testConfiguredRunQueuesThenStarts},
+		{"QueuedRunFailedOnRestartNotSwept", testQueuedRunFailedOnRestartNotSwept},
 		{"SetRunPauseStateRoundTrip", testSetRunPauseStateRoundTrip},
 		{"SetRunPauseStateUnknownStateRefused", testSetRunPauseStateUnknownStateRefused},
 		{"SetRunPauseStateMissingRunReturnsNotFound", testSetRunPauseStateMissingRunReturnsNotFound},

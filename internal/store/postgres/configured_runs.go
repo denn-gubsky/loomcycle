@@ -70,6 +70,20 @@ func (s *Store) UpdateRunDraft(ctx context.Context, runID string, draft json.Raw
 }
 
 func (s *Store) StartConfiguredRun(ctx context.Context, runID string, identity store.RunIdentity, draft json.RawMessage) (store.Run, error) {
+	n, err := s.startRun(ctx, runID, identity, store.RunConfigured, draft)
+	if err != nil {
+		return store.Run{}, fmt.Errorf("start configured run: %w", err)
+	}
+	if n == 0 {
+		return store.Run{}, s.draftGuardErr(ctx, runID)
+	}
+	return s.GetRun(ctx, runID)
+}
+
+// startRun moves a run from status `from` to running and records what was
+// resolved at start; with a non-empty draft, only while the stored draft is
+// still that one. Returns how many rows moved (0 or 1).
+func (s *Store) startRun(ctx context.Context, runID string, identity store.RunIdentity, from store.RunStatus, draft json.RawMessage) (int64, error) {
 	now := time.Now().UTC()
 	tag, err := s.pool.Exec(ctx,
 		`UPDATE runs SET
@@ -95,16 +109,13 @@ func (s *Store) StartConfiguredRun(ctx context.Context, runID string, identity s
 		identity.Isolated,
 		nullableJSONArg(identity.RunConfig),
 		nullableText(identity.ReplicaID),
-		string(store.RunConfigured),
+		string(from),
 		nullableJSONArg(draft),
 	)
 	if err != nil {
-		return store.Run{}, fmt.Errorf("start configured run: %w", err)
+		return 0, err
 	}
-	if tag.RowsAffected() == 0 {
-		return store.Run{}, s.draftGuardErr(ctx, runID)
-	}
-	return s.GetRun(ctx, runID)
+	return tag.RowsAffected(), nil
 }
 
 func (s *Store) DeleteConfiguredRun(ctx context.Context, runID string) error {
