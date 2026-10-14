@@ -356,6 +356,56 @@ export interface InertContextSetting {
   fix?: string;
 }
 
+/** Why a per-run override is refused, in {@link OverridableField.reason}:
+ *  - `token_locked` — the caller's token carries an overrides policy that
+ *                     leaves the field out
+ *  - `agent_locked` — the agent's definition says `allow_overrides: false`
+ *
+ *  When both apply the token is named, because a run setting the field is
+ *  refused for that reason first. */
+export type OverrideLockReason = "token_locked" | "agent_locked";
+
+/** One per-run override in {@link AgentOverridableResponse.fields}. */
+export interface OverridableField {
+  /** Whether a run of the agent, started by this caller, may set it. */
+  overridable: boolean;
+  /** Present when `overridable` is false. */
+  reason?: OverrideLockReason;
+  /** The run may only make it smaller than the definition allows
+   *  (`max_concurrent_children`, `interruption`). */
+  narrow_only?: boolean;
+  /** The largest value accepted (`max_concurrent_children`: the fan-out
+   *  ceiling, the definition's or the runtime default). */
+  max?: number;
+  /** The values accepted, when the run path checks against a closed set this
+   *  agent has: `effort`, the configured `tier`s, and the `provider` and
+   *  `model` sets the definition declares. Absent means no closed set here —
+   *  any value the deployment accepts (see `listModels()` / `getRouting()`),
+   *  not anything at all. Each describes the field set on its own. */
+  values?: string[];
+}
+
+/** The reply from `GET /v1/_agentdef/{name}/overridable` — for every per-run
+ *  override, whether a run of this agent started by THIS caller may set it.
+ *
+ *  Folds the definition's `allow_overrides` with the caller's token overrides
+ *  policy, through the same checks the run path refuses with. The answer is
+ *  the caller's: do not reuse it for another token. Keys of `fields` are wire
+ *  names (`max_tokens`, not `maxTokens`), one per run option a token's
+ *  overrides policy can name. */
+export interface AgentOverridableResponse {
+  agent: string;
+  /** The AgentDef version answered for; absent for a yaml or registered agent,
+   *  which have no versions. Always the active version: a run cannot pin one. */
+  def_id?: string;
+  /** The definition's `allow_overrides`; unset reads as true. */
+  allow_overrides: boolean;
+  /** True when the caller's token carries an overrides policy, so `fields`
+   *  reflects this caller and not only the agent. */
+  restricted_by_token: boolean;
+  fields: Record<string, OverridableField>;
+}
+
 /** The reply from `retuneRun` — the run's MERGED configuration, not an echo of
  *  the request.
  *
@@ -3480,6 +3530,137 @@ export type HistoryToolInput = {
  *  `resume` a continuation handle. Callers narrow as needed. */
 export type HistoryToolResponse = unknown;
 
+/** Who recorded an evaluation, relative to the run it scores. The server
+ *  derives it from the caller and the target run; it is never sent. A call
+ *  outside a run (this client) records `external` or `unrelated`. */
+export type EvaluationEmitterRole =
+  | "self"
+  | "sibling"
+  | "parent"
+  | "external"
+  | "unrelated";
+
+/** `evaluation({op:"submit"})`: record a score against a run. Scores are
+ *  additive — submitting again records another evaluation. */
+export interface EvaluationSubmitInput {
+  op: "submit";
+  run_id: string;
+  /** Required. Convention [-1,1] or [0,1]; the operator chooses. */
+  score: number;
+  /** Named axes to numeric values, e.g. `{correctness: 0.8}`. */
+  dimensions?: Record<string, number>;
+  /** Free-form structured payload. */
+  judgement?: unknown;
+  /** Natural-language reasoning. */
+  rationale?: string;
+}
+
+/** `evaluation({op:"get"})`: one evaluation by id. */
+export interface EvaluationGetInput {
+  op: "get";
+  eval_id: string;
+}
+
+/** `evaluation({op:"list_for_run"})`: every evaluation of one run. */
+export interface EvaluationListForRunInput {
+  op: "list_for_run";
+  run_id: string;
+  /** Max rows (default 100). */
+  limit?: number;
+}
+
+/** `evaluation({op:"list_for_def"})`: every evaluation of runs of one
+ *  definition version, in the caller's tenant. */
+export interface EvaluationListForDefInput {
+  op: "list_for_def";
+  def_id: string;
+  /** Max rows (default 100). */
+  limit?: number;
+}
+
+/** `evaluation({op:"aggregate"})`: the scores of a definition rolled up. */
+export interface EvaluationAggregateInput {
+  op: "aggregate";
+  def_id: string;
+  /** Walk parent_def_id and include the ancestors' evaluations. */
+  include_lineage?: boolean;
+}
+
+/** Input for {@link LoomcycleClient.evaluation}, discriminated by `op`. */
+export type EvaluationInput =
+  | EvaluationSubmitInput
+  | EvaluationGetInput
+  | EvaluationListForRunInput
+  | EvaluationListForDefInput
+  | EvaluationAggregateInput;
+
+/** What `submit` returns: the stored row's identity and the derived role. */
+export interface EvaluationSubmitResult {
+  eval_id: string;
+  run_id: string;
+  /** The definition version the run was running, denormalised at submit
+   *  time; `""` for a run that resolved through static config only. */
+  def_id: string;
+  emitter_role: EvaluationEmitterRole;
+  score: number;
+  /** RFC 3339 UTC. */
+  created_at: string;
+}
+
+/** One stored evaluation, as `get` and the `list_for_*` ops return it. */
+export interface EvaluationRecord {
+  eval_id: string;
+  run_id: string;
+  def_id: string;
+  score: number;
+  /** `null` when the submit carried none. */
+  dimensions: Record<string, number> | null;
+  /** `null` when the submit carried none. */
+  judgement: unknown;
+  rationale: string;
+  emitter_role: EvaluationEmitterRole;
+  emitter_agent_id: string;
+  emitter_run_id: string;
+  /** RFC 3339 UTC. */
+  created_at: string;
+}
+
+/** What `list_for_run` returns. An unknown run, or one the caller may not
+ *  read, lists nothing rather than refusing. */
+export interface EvaluationListForRunResult {
+  run_id: string;
+  evaluations: EvaluationRecord[];
+}
+
+/** What `list_for_def` returns. An unknown definition, or one the caller may
+ *  not read, lists nothing rather than refusing. */
+export interface EvaluationListForDefResult {
+  def_id: string;
+  evaluations: EvaluationRecord[];
+}
+
+/** Summary statistics over a set of scores. */
+export interface EvaluationScoreStats {
+  mean: number;
+  median: number;
+  min: number;
+  max: number;
+  latest: number;
+  count: number;
+}
+
+/** What `aggregate` returns. `count: 0` for an unknown definition. */
+export interface EvaluationAggregate {
+  def_id: string;
+  count: number;
+  score: EvaluationScoreStats;
+  /** Keyed by dimension name; only dimensions some row supplied. */
+  dimensions?: Record<string, EvaluationScoreStats>;
+  /** Keyed by emitter role. */
+  by_emitter_role?: Record<string, EvaluationScoreStats>;
+  lineage_included: boolean;
+}
+
 /** Volume access mode — read-only or read-write (RFC AH). */
 export type VolumeMode = "ro" | "rw";
 
@@ -5285,16 +5466,30 @@ export interface ChangeFeedStatus {
   embedder?: EmbedderHealth;
 }
 
+/** A change-feed `event: error` frame: the server could not read its change
+ *  log. NON-FATAL — the stream stays open, the server keeps retrying with
+ *  backoff, and its cursor does not advance, so change frames resume after
+ *  recovery without a gap. Sent once per failure streak, not per retry. */
+export interface ChangeFeedError {
+  /** Machine-readable; `store_unavailable` today. Branch on this. */
+  code: string;
+  /** Human-readable description. */
+  error: string;
+}
+
 /** Yielded by {@link LoomcycleClient.streamMemoryChanges} and
  *  {@link LoomcycleClient.streamDocumentChanges}.
  *
  *  Same `{ kind, payload }` shape as {@link RunStateStreamItem}: the first
- *  item is `{ kind: "feed" }`, then one `{ kind: "change" }` per change.
- *  `kind` rather than `type` so the wrapper's discriminator cannot be confused
- *  with the change's own `payload.type`. */
+ *  item is `{ kind: "feed" }`, then one `{ kind: "change" }` per change, with
+ *  an occasional `{ kind: "error" }` (see {@link ChangeFeedError}) when the
+ *  server cannot read its change log — iteration continues past it. `kind`
+ *  rather than `type` so the wrapper's discriminator cannot be confused with
+ *  the change's own `payload.type`. */
 export type ChangeFeedFrame =
   | { kind: "feed"; payload: ChangeFeedStatus }
-  | { kind: "change"; payload: MemoryChange };
+  | { kind: "change"; payload: MemoryChange }
+  | { kind: "error"; payload: ChangeFeedError };
 
 /** Options for {@link LoomcycleClient.streamMemoryChanges} /
  *  {@link LoomcycleClient.streamDocumentChanges}. */

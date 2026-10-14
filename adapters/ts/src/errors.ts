@@ -293,6 +293,31 @@ export class AuthError extends LoomcycleError {
   }
 }
 
+/** An HTTP 403 because the bearer token lacks a scope the call needs: body code
+ *  `insufficient_scope`. The token is valid; it was minted without that
+ *  grant. Ask an operator for a token that carries `requiredScope`; sending
+ *  the same call again never succeeds, so `retryable` is false.
+ *
+ *  Any other 403 (`restricted_token`, `operator_key_restricted`, …) stays a
+ *  plain LoomcycleError: those refuse the caller for something a new scope
+ *  does not fix. */
+export class InsufficientScopeError extends LoomcycleError {
+  /** The scope the token lacks, e.g. `runs:create` or `substrate:tenant`.
+   *  Read from the body's `required_scope`, or, from a server that predates
+   *  that field, from the `WWW-Authenticate: Bearer scope="…"` header. Null
+   *  when neither names one (a browser does not see that header on a
+   *  cross-origin response unless the server exposes it). */
+  readonly requiredScope: string | null;
+  constructor(
+    message: string,
+    opts?: { status?: number; bodyText?: string; code?: string; requiredScope?: string },
+  ) {
+    super(message, opts);
+    this.name = "InsufficientScopeError";
+    this.requiredScope = opts?.requiredScope ?? null;
+  }
+}
+
 /** Every HTTP 503. The status is shared between a condition that clears on
  *  its own and features this deployment does not have
  *  (`decision_not_configured`, `store_unavailable`, `vector_unsupported`, …),

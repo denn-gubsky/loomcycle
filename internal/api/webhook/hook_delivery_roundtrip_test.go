@@ -59,21 +59,31 @@ func TestVerifySignature_AcceptsASignedHookDelivery(t *testing.T) {
 		return ""
 	}
 	sent := time.Now()
-	verify := func(a config.WebhookAuth, at time.Time) error {
-		return verifySignature(a, req.body, req.header.Get, nil, getenv, func() time.Time { return at })
+	// The receiver's own path: resolve the def's secrets, then verify.
+	verifyBody := func(a config.WebhookAuth, body []byte, at time.Time) error {
+		secrets, err := verificationSecrets(context.Background(), a, "", nil, nil, getenv, t.Logf)
+		if err != nil {
+			return err
+		}
+		return verifySignature(a, secrets, body, req.header.Get, func() time.Time { return at })
 	}
-	if err := verify(auth, sent); err != nil {
+	if err := verifyBody(auth, req.body, sent); err != nil {
 		t.Fatalf("the receiver refused a signed hook delivery: %v (header %q)", err, req.header.Get("X-Loomcycle-Signature"))
 	}
-	if err := verify(config.WebhookAuth{Kind: "hmac", SigningSecretEnv: "LOOMCYCLE_TEST_OTHER"}, sent); err == nil {
+	if err := verifyBody(config.WebhookAuth{Kind: "hmac", SigningSecretEnv: "LOOMCYCLE_TEST_OTHER"}, req.body, sent); err == nil {
 		t.Fatal("the delivery verified against another secret")
 	}
-	if err := verify(auth, sent.Add(signatureTolerance+time.Minute)); err == nil {
+	if err := verifyBody(auth, req.body, sent.Add(signatureTolerance+time.Minute)); err == nil {
 		t.Fatal("a delivery older than the tolerance verified")
 	}
 	tampered := append([]byte(nil), req.body...)
 	tampered[len(tampered)-2] ^= 1
-	if err := verifySignature(auth, tampered, req.header.Get, nil, getenv, func() time.Time { return sent }); err == nil {
+	if err := verifyBody(auth, tampered, sent); err == nil {
 		t.Fatal("a tampered body verified")
+	}
+	// Mid-rotation the receiver holds two secrets; the delivery signed with
+	// either one verifies.
+	if err := verifySignature(auth, []string{"the-new-secret", secret}, req.body, req.header.Get, func() time.Time { return sent }); err != nil {
+		t.Fatalf("a delivery signed with the previous secret was refused mid-rotation: %v", err)
 	}
 }

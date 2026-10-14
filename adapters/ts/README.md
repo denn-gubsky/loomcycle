@@ -204,6 +204,7 @@ Each change is a **value-free coordinate** (`seq`, `type`, `scope`, `scope_id`, 
 - **Off by default.** The server only records changes with `LOOMCYCLE_MEMORY_CHANGES_ENABLED`. Without it the stream opens and idles forever, so check `payload.enabled` on the feed frame rather than waiting.
 - **Tenant-scoped, operator-only.** You see your own tenant's changes, never another's. The routes need `substrate:tenant` (or admin); a tenant member's token gets a 403 (`LoomcycleError`, `status: 403`).
 - **Resumable.** Persist the last `seq` you processed and pass it back as `since` on reconnect; delivery is strictly after it. `since` must be a non-negative integer — the client throws otherwise, because the server would read a bad value as `0` and replay everything it retains.
+- **Read failures are reported, not fatal.** A `{ kind: "error", payload: { code, error } }` item (`code: "store_unavailable"`) means the server could not read its change log. Keep iterating: the server retries with backoff without advancing its cursor, so changes resume after recovery with nothing skipped. You get one item per failure streak.
 - **The embedder's health rides along.** An embedding failure does not fail the write, so a busy feed can sit over rows that are no longer searchable; `payload.embedder.state === "failing"` (with a `failures` count) is the signal to run `backfillEmbeddings`.
 
 ```ts
@@ -213,6 +214,10 @@ const ac = new AbortController();
 for await (const item of client.streamMemoryChanges({ since, signal: ac.signal })) {
   if (item.kind === "feed") {
     if (!item.payload.enabled) throw new Error("change feed is off on this server");
+    continue;
+  }
+  if (item.kind === "error") {
+    console.warn(`change feed: ${item.payload.code}: ${item.payload.error}`); // stream continues
     continue;
   }
   const ch = item.payload; // { seq, type, scope, scope_id, key?, at }
@@ -330,6 +335,7 @@ Two op-discriminated methods that mirror the in-process `AgentDef` / `SkillDef` 
 |---|---|---|
 | `agentDef(input)` | `Promise<SubstrateToolResponse>` | Op-discriminated. Mirrors `POST /v1/_agentdef`. |
 | `skillDef(input)` | `Promise<SubstrateToolResponse>` | Op-discriminated. Mirrors `POST /v1/_skilldef`. |
+| `getAgentOverridable(name, { tenant? })` | `Promise<AgentOverridableResponse>` | Which per-run overrides a run of `name` may set, **for this caller**: one entry per override (`model`, `effort`, `max_tokens`, …) with `overridable`, and a `reason` (`token_locked` / `agent_locked`) when refused. Folds the agent's `allow_overrides` with your token's overrides policy, as a run would. An overridable field may carry `narrow_only`, `max`, or `values` (a closed set the definition declares). For building run forms. `substrate:tenant`; a token limited to certain agents may ask about those. Raises `AgentNotFoundError` for an unknown or another tenant's agent. Mirrors `GET /v1/_agentdef/{name}/overridable`. |
 
 The response type is intentionally `unknown` because the shape varies per op (`create`/`fork` return a row envelope; `list` returns `{name, versions: [...]}`; `verify` returns `AgentDefVerifyResult` / `SkillDefVerifyResult`). Cast / narrow as needed:
 
@@ -463,6 +469,26 @@ All four post to `POST /v1/_credentialdef`.
 ```ts
 const meta = await client.getCredential({ scope: "user", name: "GIT_TOKEN" });
 console.log(meta.allowed_urls ?? "unrestricted");
+```
+
+### Evaluations
+
+Scores attached to runs: record a verdict on a run, read the scores back, and roll them up per definition version to compare versions. All of these post to `POST /v1/_evaluation`; `evaluation(input)` takes the op-discriminated input directly and its return type follows `op`.
+
+| Method | Returns | Notes |
+|---|---|---|
+| `submitEvaluation(runId, score, { dimensions?, judgement?, rationale? })` | `Promise<EvaluationSubmitResult>` | Additive: submitting again records another evaluation. `{op: "submit"}`. |
+| `getEvaluation(evalId)` | `Promise<EvaluationRecord>` | `{op: "get"}`. |
+| `listEvaluationsForRun(runId, { limit? })` | `Promise<EvaluationListForRunResult>` | `{op: "list_for_run"}`. |
+| `listEvaluationsForDef(defId, { limit? })` | `Promise<EvaluationListForDefResult>` | Your tenant's scores of that definition version. `{op: "list_for_def"}`. |
+| `aggregateEvaluations(defId, { includeLineage? })` | `Promise<EvaluationAggregate>` | Mean / median / min / max / latest, per dimension and per emitter role. `{op: "aggregate"}`. |
+
+What a token may do: `substrate:tenant` every op inside its own tenant; admin every op in every tenant; any other token (an isolated `substrate:user`, a tenant member) only `submit_self`, which a call from outside a run cannot use, so each op is refused with `SubstrateToolRefusedError`. A token without `runs:read` gets a 403. Another tenant's evaluation or run reads exactly like one that does not exist.
+
+```ts
+await client.submitEvaluation(runId, 0.8, { rationale: "correct, but slow" });
+const agg = await client.aggregateEvaluations(defId);
+console.log(agg.count, agg.score.mean);
 ```
 
 ### Team runs
@@ -626,6 +652,8 @@ When the error body is JSON with a string `code` (`token_limit_exceeded`, `per_u
 |---|---|
 | 400 | `InvalidArgumentError` |
 | 401 | `AuthError` |
+| 403 + code `insufficient_scope` | `InsufficientScopeError` (not retryable; `e.requiredScope` names the scope the token lacks — from the body's `required_scope`, or from `WWW-Authenticate` on an older server that sent plain text) |
+| 403 (other) | `LoomcycleError` (base; e.g. `restricted_token`, `operator_key_restricted` on `e.code`) |
 | 404 + "snapshot" | `SnapshotNotFoundError` ⎫ |
 | 404 + "session" | `SessionNotFoundError` ⎬ all extend `NotFoundError` |
 | 404 + "agent" | `AgentNotFoundError` ⎬ |

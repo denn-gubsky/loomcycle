@@ -15,6 +15,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/denn-gubsky/loomcycle/internal/credential"
 	"github.com/denn-gubsky/loomcycle/internal/providers"
 	"github.com/denn-gubsky/loomcycle/internal/store"
 	"github.com/denn-gubsky/loomcycle/internal/teamgraph"
@@ -59,6 +60,11 @@ type TeamDef struct {
 
 	// MaxDescriptionBytes caps the free-text description field. 0 = no cap.
 	MaxDescriptionBytes int
+
+	// Credentials answers whether the author's tenant holds the credential a
+	// webhook of the team's own names as its secret. nil: only an operator
+	// may name one.
+	Credentials *credential.Engine
 
 	// Spawn runs one of a team's agents and returns its output. It mirrors the
 	// Agent tool's SubAgentRunner exactly, so op=run reuses the existing
