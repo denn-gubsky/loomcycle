@@ -489,6 +489,29 @@ func (c *Context) execSelf(ctx context.Context) (tools.Result, error) {
 			}
 			list = append(list, map[string]any{"name": name, "path": ref.Root, "mode": mode})
 		}
+		// The set is this process's; a run of the tree on another replica
+		// may have made more since this run started. Best-effort: a failed
+		// read leaves the list as the set has it.
+		if read := tools.EphemeralRecordsFrom(ctx); read != nil {
+			if recs, err := read(ctx); err == nil {
+				for _, r := range recs {
+					if eph.Has(r.Name) {
+						continue
+					}
+					mode := "rw"
+					if r.ReadOnly || tools.EphemeralReadOnly(ctx) {
+						mode = "ro"
+					}
+					entry := map[string]any{"name": r.Name, "mode": mode}
+					if r.Elsewhere {
+						entry["note"] = "created on another server; its files are not on this one"
+					} else {
+						entry["path"] = r.Root
+					}
+					list = append(list, entry)
+				}
+			}
+		}
 		if len(list) > 0 {
 			out["ephemeral_volumes"] = map[string]any{
 				"volumes": list,

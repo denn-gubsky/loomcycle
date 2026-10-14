@@ -52,7 +52,11 @@ By design, these are not cluster-wide:
 - **Snapshot `--file` restoration.** The snapshot file lives on one replica's disk. The inline `raw_json` body path is cluster-safe.
 - **Global concurrency cap.** `concurrency.max_concurrent_runs: 10` in `loomcycle.yaml` (default 8; there is no env var for it) on a 2-replica deployment means 20 actual concurrent runs. Per-user fairness IS cluster-wide; global cap is per-replica.
 - **`/v1/_concurrency/stats` `active`+`queued` counts.** These reflect the replica that handled the request. `per_user` reads the cluster-wide DB counter.
-- **Ephemeral volumes.** A run-scoped volume (`VolumeDef create {ephemeral:true}`, with or without a git source) is a directory on the disk of the replica that runs the top-level run, and is not in a snapshot. A run resumed on another replica finds none: a tool call that names it fails as an unknown volume, and the runtime does not clone again on its own. `LOOMCYCLE_GIT_SOURCE_MAX_CONCURRENT` (clones at once) is per replica, as is the memory a clone uses.
+- **Ephemeral volumes.** A run-scoped volume (`VolumeDef create {ephemeral:true}`, with or without a git source) is a directory under the dynamic root of the replica whose run created it, and is not in a snapshot. Its record is in Postgres, so every replica knows of it: a run of the same tree on another replica that names it, even one started before it was created, finds it there, and `Context op=self` lists it. Whether that run can use it depends on the disk:
+  - **dynamic root on storage every replica mounts at the same path:** the volume is used as if it were local;
+  - **a dynamic root of its own per replica:** the tool call fails, saying the volume was created on another server and its files are not on this one. The runtime does not copy or clone again on its own.
+
+  `set_mode` to read-only works from any replica either way, since it changes the record every replica reads before it writes. The path is always derived from the replica's own dynamic root and the name, never taken from the record. `LOOMCYCLE_GIT_SOURCE_MAX_CONCURRENT` (clones at once) is per replica, as is the memory a clone uses.
 
 ## Deployment checklist
 

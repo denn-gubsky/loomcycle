@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/denn-gubsky/loomcycle/internal/config"
+	"github.com/denn-gubsky/loomcycle/internal/dynvol"
 	"github.com/denn-gubsky/loomcycle/internal/store"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
 	"github.com/denn-gubsky/loomcycle/internal/tools/builtin"
@@ -70,14 +71,21 @@ func TestResumedChild_KeepsEphemeralVolumesReadOnly(t *testing.T) {
 			p, c := cfg.Agents["parent"], cfg.Agents["child"]
 			p.EphemeralVolumes, c.EphemeralVolumes = tc.parent, tc.child
 			cfg.Agents["parent"], cfg.Agents["child"] = p, c
+			// Ephemeral volumes live under the dynamic root, where a run
+			// finds them by name.
+			pool, err := filepath.EvalSymlinks(t.TempDir())
+			if err != nil {
+				t.Fatal(err)
+			}
+			cfg.Volumes["pool"] = config.Volume{Path: pool, Mode: "rw", DynamicRoot: true}
 			srv, st, ts := spawnCeilingServer(t, cfg, prov, []tools.Tool{&builtin.Write{}, &builtin.Read{}})
 
 			child := spawnLiveChild(t, st, ts, "a_eph_parent", "")
 
 			// The tree's ephemeral volume, recorded read-write, as a create
 			// by any run of the tree would have left it.
-			dir, err := filepath.EvalSymlinks(t.TempDir())
-			if err != nil {
+			dir := dynvol.DerivedEphemeralPath(pool, child.ParentRunID, "scratchpad")
+			if err := os.MkdirAll(dir, 0o755); err != nil {
 				t.Fatal(err)
 			}
 			body, _ := json.Marshal(map[string]string{"path": dir, "mode": "rw"})

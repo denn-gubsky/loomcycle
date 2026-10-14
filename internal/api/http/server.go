@@ -64,6 +64,7 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/turncancel"
 	"github.com/denn-gubsky/loomcycle/internal/webui"
 
+	"github.com/denn-gubsky/loomcycle/internal/dynvol"
 	"go.opentelemetry.io/otel/trace"
 	"golang.org/x/sync/singleflight"
 )
@@ -3393,7 +3394,7 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 	// tree's purge.
 	treeSet, _ := s.treeSets.acquire(runID)
 	loopCtx = tools.WithEphemeralVolumes(loopCtx, treeSet)
-	loopCtx = tools.WithEphemeralModeCheck(loopCtx, s.ephemeralModeCheck(runID))
+	loopCtx = s.withEphemeralRecord(loopCtx, runID)
 	loopCtx = tools.WithChannelPolicy(loopCtx, s.channelPolicyForAgent(loopCtx, agentDef))
 	loopCtx = tools.WithOperatorAuthored(loopCtx, agentDef.OperatorAuthored)
 	loopCtx = tools.WithEventEmitter(loopCtx, emit)
@@ -5400,7 +5401,7 @@ func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {
 	// tree's purge.
 	treeSet, _ := s.treeSets.acquire(runID)
 	loopCtx = tools.WithEphemeralVolumes(loopCtx, treeSet)
-	loopCtx = tools.WithEphemeralModeCheck(loopCtx, s.ephemeralModeCheck(runID))
+	loopCtx = s.withEphemeralRecord(loopCtx, runID)
 	loopCtx = tools.WithChannelPolicy(loopCtx, s.channelPolicyForAgent(loopCtx, agentDef))
 	loopCtx = tools.WithOperatorAuthored(loopCtx, agentDef.OperatorAuthored)
 	loopCtx = tools.WithEventEmitter(loopCtx, emit)
@@ -6186,7 +6187,7 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 	// tree's purge.
 	treeSet, _ := s.treeSets.acquire(run.ID)
 	loopCtx = tools.WithEphemeralVolumes(loopCtx, treeSet)
-	loopCtx = tools.WithEphemeralModeCheck(loopCtx, s.ephemeralModeCheck(run.ID))
+	loopCtx = s.withEphemeralRecord(loopCtx, run.ID)
 	loopCtx = tools.WithChannelPolicy(loopCtx, s.channelPolicyForAgent(loopCtx, agentDef))
 	loopCtx = tools.WithOperatorAuthored(loopCtx, agentDef.OperatorAuthored)
 	loopCtx = tools.WithEventEmitter(loopCtx, emit)
@@ -10113,6 +10114,57 @@ func ephemeralReadOnlyFor(ctx context.Context, def config.AgentDef) context.Cont
 	return ctx
 }
 
+// withEphemeralRecord attaches what a run reads of its tree's recorded
+// ephemeral volumes: the mode check a write makes, and the records a lookup of
+// a name the in-memory set lacks falls back to. Both read the rows every
+// replica reads, which is how a run sees what a run of its tree on another
+// replica did after it started.
+func (s *Server) withEphemeralRecord(ctx context.Context, rootRunID string) context.Context {
+	ctx = tools.WithEphemeralModeCheck(ctx, s.ephemeralModeCheck(rootRunID))
+	return tools.WithEphemeralRecords(ctx, s.ephemeralRecords(rootRunID))
+}
+
+// ephemeralRecords reads the tree's recorded ephemeral volumes and places
+// each on this replica's disk. The path is derived from this replica's
+// dynamic root and the name, never taken from the row: a row is data any
+// replica wrote. A volume whose directory is not here (a link, a path
+// outside the root, or simply absent) is reported Elsewhere.
+func (s *Server) ephemeralRecords(rootRunID string) tools.EphemeralRecords {
+	if s.store == nil || rootRunID == "" {
+		return nil
+	}
+	return func(ctx context.Context) ([]tools.EphemeralRecord, error) {
+		rows, err := s.store.EphemeralVolumeListByRun(ctx, rootRunID)
+		if err != nil {
+			return nil, err
+		}
+		dynRoot, haveRoot := builtin.DynamicVolumeRoot(s.cfg())
+		out := make([]tools.EphemeralRecord, 0, len(rows))
+		for _, r := range rows {
+			if dynvol.ValidName(r.Name) != nil {
+				continue
+			}
+			var body struct {
+				Mode string `json:"mode"`
+			}
+			if err := json.Unmarshal(r.Definition, &body); err != nil {
+				continue
+			}
+			rec := tools.EphemeralRecord{Name: r.Name, ReadOnly: body.Mode == "ro", Elsewhere: true}
+			if haveRoot {
+				path := dynvol.DerivedEphemeralPath(dynRoot, rootRunID, r.Name)
+				if dynvol.AssertInsideRoot(dynRoot, path) == nil {
+					if fi, err := os.Lstat(path); err == nil && fi.IsDir() {
+						rec.Root, rec.Elsewhere = path, false
+					}
+				}
+			}
+			out = append(out, rec)
+		}
+		return out, nil
+	}
+}
+
 // ephemeralModeCheck returns the check a write to one of the tree's ephemeral
 // volumes makes against the stored rows (tools.WithEphemeralModeCheck). The
 // rows are what every replica reads, so this is how a volume made read-only
@@ -10160,25 +10212,25 @@ func (s *Server) rehydrateEphemeralVolumes(ctx context.Context, rootRunID string
 // holds as read-only stays so whatever the row says, so loading into a set
 // other runs are using cannot hand back write access.
 func (s *Server) loadEphemeralVolumes(ctx context.Context, rootRunID string, set *tools.EphemeralVolumeSet) *tools.EphemeralVolumeSet {
-	if s.store == nil || rootRunID == "" {
+	read := s.ephemeralRecords(rootRunID)
+	if read == nil {
 		return set
 	}
-	rows, err := s.store.EphemeralVolumeListByRun(ctx, rootRunID)
+	recs, err := read(ctx)
 	if err != nil {
 		log.Printf("ephemeral rehydrate (run=%s): %v", rootRunID, err)
 		return set
 	}
-	for _, r := range rows {
-		var body struct {
-			Path string `json:"path"`
-			Mode string `json:"mode"`
-		}
-		if err := json.Unmarshal(r.Definition, &body); err != nil || body.Path == "" {
+	for _, r := range recs {
+		// A volume whose files are not on this replica stays out of the set:
+		// a lookup of its name then finds it in the record and says where
+		// it is, instead of resolving to a directory that is not here.
+		if r.Elsewhere {
 			continue
 		}
 		// Add keeps an entry read-only, so a row read before another run's
 		// set_mode cannot hand write access back.
-		set.Add(r.Name, tools.EphemeralVolumeRef{Root: body.Path, ReadOnly: body.Mode == "ro"})
+		set.Add(r.Name, tools.EphemeralVolumeRef{Root: r.Root, ReadOnly: r.ReadOnly})
 	}
 	return set
 }

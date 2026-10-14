@@ -433,6 +433,16 @@ func (v *VolumeDef) execSetMode(ctx context.Context, in volumeDefInput) (tools.R
 	}
 	ref, ok := set.Get(in.Name)
 	if !ok {
+		// Possibly created by a run of the tree on another replica after
+		// this one started: the record has it. The switch below writes the
+		// record, so a volume whose files are elsewhere is still closed for
+		// every replica.
+		var rerr error
+		if ref, ok, rerr = recordedEphemeralForMode(ctx, in.Name); rerr != nil {
+			return errResult(fmt.Sprintf("set_mode: %s", rerr)), nil
+		}
+	}
+	if !ok {
 		return errResult(fmt.Sprintf("set_mode: this run has no ephemeral volume %q; set_mode applies to ephemeral volumes only (re-create a persistent volume with the mode you want)", in.Name)), nil
 	}
 	resp := map[string]any{"name": in.Name, "mode": "ro", "ephemeral": true}
