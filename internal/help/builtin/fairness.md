@@ -78,6 +78,10 @@ to the LLM gateway do not queue yet: they wait up to
   run with per-run secrets when no `LOOMCYCLE_SECRET_KEY` is set (they
   are never stored in plaintext), a no-trace run (its prompt is stored
   nowhere), or one whose sealed secrets the key at boot cannot open.
+- A paused runtime starts no queued run: one whose slot frees during
+  the pause keeps it, stays `queued`, and starts on the resume. A
+  snapshot carries the queued runs, without their per-run secrets; a
+  restore queues them again, and they run without those secrets.
 
 ## Anonymous calls bypass the per-user cap
 
