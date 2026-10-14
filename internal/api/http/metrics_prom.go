@@ -122,6 +122,7 @@ func (s *Server) handleMetricsProm(w http.ResponseWriter, _ *http.Request) {
 		}
 		fmt.Fprintln(w)
 	}
+	writeLaneGauges(w, replicaLabels, s.callSched.Stats())
 
 	// RFC DT per-(provider, model) throughput — only models this replica has
 	// measured (the estimate is per replica, like every gauge here). The
@@ -208,6 +209,90 @@ func semaphoreSnapshot(s *Server) (active, queued int, perUser map[string]int) {
 	}
 	stats := s.sem.Stats()
 	return stats.Active, stats.Queued, stats.PerUser
+}
+
+// laneSeries is one per-lane series: its name, type, help and the value it
+// reads off a lane.
+type laneSeries struct {
+	name, typ, help string
+	value           func(concurrency.LaneStats) uint64
+}
+
+// laneSeriesList is the per-lane series, in scrape order. The two
+// loomcycle_provider_* gauges above are the chat lane alone and predate lanes;
+// these carry every lane, labelled by kind.
+var laneSeriesList = []laneSeries{
+	{"loomcycle_provider_lane_max_concurrent", "gauge", "Configured cap on calls in flight in a provider's lane (providers.<id>.lanes.<kind>.max_concurrent).",
+		func(l concurrency.LaneStats) uint64 { return uint64(l.MaxConcurrent) }},
+	{"loomcycle_provider_lane_slots_in_use", "gauge", "Calls in flight in a provider's lane.",
+		func(l concurrency.LaneStats) uint64 { return uint64(l.Active) }},
+	{"loomcycle_provider_lane_slots_reserved", "gauge", "Slots idle but held for the run that last used them (affinity_hold_ms).",
+		func(l concurrency.LaneStats) uint64 { return uint64(l.Reserved) }},
+	{"loomcycle_provider_lane_queue_depth", "gauge", "Calls waiting for a slot in a provider's lane.",
+		func(l concurrency.LaneStats) uint64 { return uint64(l.Queued) }},
+	{"loomcycle_provider_lane_queue_depth_background", "gauge", "Of the calls waiting in a provider's lane, those that are maintenance work.",
+		func(l concurrency.LaneStats) uint64 { return uint64(l.QueuedBackground) }},
+	{"loomcycle_provider_lane_grants_total", "counter", "Calls admitted to a provider's lane since it was built.",
+		func(l concurrency.LaneStats) uint64 { return l.Grants }},
+	{"loomcycle_provider_lane_preemptions_total", "counter", "Times a run gave its held slot up to a waiter (quantum_calls).",
+		func(l concurrency.LaneStats) uint64 { return l.Preemptions }},
+}
+
+// writeLaneGauges emits one series per (provider, kind) lane plus, per provider,
+// how many distinct models are computing and how many calls wait for their
+// model (max_models_in_flight). Nothing is written when no provider caps
+// anything; output is sorted so a scrape is deterministic.
+func writeLaneGauges(w io.Writer, replicaLabels string, stats map[string]concurrency.ProviderLaneStats) {
+	if len(stats) == 0 {
+		return
+	}
+	provs := make([]string, 0, len(stats))
+	for id := range stats {
+		provs = append(provs, id)
+	}
+	sort.Strings(provs)
+	type lane struct {
+		labels string
+		stats  concurrency.LaneStats
+	}
+	var lanes []lane
+	for _, id := range provs {
+		kinds := make([]string, 0, len(stats[id].Lanes))
+		for kind := range stats[id].Lanes {
+			kinds = append(kinds, kind)
+		}
+		sort.Strings(kinds)
+		for _, kind := range kinds {
+			lanes = append(lanes, lane{
+				labels: mergeLabels(replicaLabels, map[string]string{"provider": id, "kind": kind}),
+				stats:  stats[id].Lanes[kind],
+			})
+		}
+	}
+	if len(lanes) > 0 {
+		for _, s := range laneSeriesList {
+			fmt.Fprintf(w, "# HELP %s %s\n", s.name, s.help)
+			fmt.Fprintf(w, "# TYPE %s %s\n", s.name, s.typ)
+			for _, l := range lanes {
+				fmt.Fprintf(w, "%s%s %d\n", s.name, l.labels, s.value(l.stats))
+			}
+			fmt.Fprintln(w)
+		}
+	}
+	fmt.Fprintln(w, "# HELP loomcycle_provider_models_in_flight Distinct models computing on a provider, as its max_models_in_flight counts them.")
+	fmt.Fprintln(w, "# TYPE loomcycle_provider_models_in_flight gauge")
+	for _, id := range provs {
+		fmt.Fprintf(w, "loomcycle_provider_models_in_flight%s %d\n",
+			mergeLabels(replicaLabels, map[string]string{"provider": id}), len(stats[id].Models.InFlight))
+	}
+	fmt.Fprintln(w)
+	fmt.Fprintln(w, "# HELP loomcycle_provider_model_waiters Calls waiting for their model to be admitted on a provider.")
+	fmt.Fprintln(w, "# TYPE loomcycle_provider_model_waiters gauge")
+	for _, id := range provs {
+		fmt.Fprintf(w, "loomcycle_provider_model_waiters%s %d\n",
+			mergeLabels(replicaLabels, map[string]string{"provider": id}), stats[id].Models.Waiting)
+	}
+	fmt.Fprintln(w)
 }
 
 // providerLaneSnapshot is a nil-safe view of each capped provider's CHAT lane

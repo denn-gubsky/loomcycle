@@ -1,6 +1,7 @@
 package http
 
 import (
+	"context"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -165,8 +166,96 @@ func TestMetricsProm_ProviderGateSeries(t *testing.T) {
 	if !strings.Contains(body, `loomcycle_provider_queue_depth{provider="P"} 0`) {
 		t.Errorf("expected queue_depth{P}=0; body:\n%s", body)
 	}
-	if strings.Contains(body, `provider="decision"`) {
-		t.Errorf("a provider with no chat lane must not appear in the chat-call gauges; body:\n%s", body)
+	for _, chatOnly := range []string{"loomcycle_provider_slots_in_use", "loomcycle_provider_queue_depth"} {
+		if strings.Contains(body, chatOnly+`{provider="decision"}`) {
+			t.Errorf("a provider with no chat lane must not appear in the chat-call gauge %s; body:\n%s", chatOnly, body)
+		}
+	}
+}
+
+// TestMetricsProm_LaneSeriesCoverEveryLaneByKind — the two provider gauges above
+// are the chat lane alone. Every lane, whatever its kind, has its own series
+// labelled by provider and kind, and each provider reports how many distinct
+// models are computing and how many calls wait for their model. Without them a
+// saturated decision or embedder lane is invisible.
+func TestMetricsProm_LaneSeriesCoverEveryLaneByKind(t *testing.T) {
+	srv := newMetricsPromServer(t, false)
+	rec := httptest.NewRecorder()
+	srv.handleMetricsProm(rec, httptest.NewRequest("GET", "/metrics", nil))
+	if strings.Contains(rec.Body.String(), "loomcycle_provider_lane_") || strings.Contains(rec.Body.String(), "loomcycle_provider_model") {
+		t.Fatalf("lane series must be omitted when no provider caps anything; body:\n%s", rec.Body.String())
+	}
+
+	sched := concurrency.NewCallScheduler(map[string]concurrency.ProviderLanesConfig{
+		"P": {
+			Lanes: map[string]concurrency.LaneConfig{
+				config.ModelKindChat:     {MaxConcurrent: 2, AffinityHold: time.Minute},
+				config.ModelKindEmbedder: {MaxConcurrent: 1},
+			},
+			MaxModelsInFlight: 1,
+		},
+	})
+	srv.SetCallScheduler(sched)
+	ctx := t.Context()
+	// A run's chat call that has ended keeps its slot reserved (the hold).
+	relChat, err := sched.Acquire(ctx, "P", config.ModelKindChat, concurrency.CallInfo{Owner: "run-1", Model: "chat-m"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	relChat()
+	// One embedding in flight, one background embedding queued behind it. Both
+	// are the same model, so the model cap admits them; the lane holds one.
+	relEmb, err := sched.Acquire(ctx, "P", config.ModelKindEmbedder, concurrency.CallInfo{Model: "embed-m"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer relEmb()
+	waitCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	go func() {
+		if rel, err := sched.Acquire(waitCtx, "P", config.ModelKindEmbedder, concurrency.CallInfo{Model: "embed-m", Background: true}); err == nil {
+			rel()
+		}
+	}()
+	// A call to a second model waits at the model cap.
+	go func() {
+		if rel, err := sched.Acquire(waitCtx, "P", config.ModelKindChat, concurrency.CallInfo{Model: "other-m"}); err == nil {
+			rel()
+		}
+	}()
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		st := sched.Stats()["P"]
+		if st.Lanes[config.ModelKindEmbedder].QueuedBackground == 1 && st.Models.Waiting == 1 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("never reached one background embedding queued and one model waiter: %+v", st)
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+
+	rec = httptest.NewRecorder()
+	srv.handleMetricsProm(rec, httptest.NewRequest("GET", "/metrics", nil))
+	body := rec.Body.String()
+	for _, want := range []string{
+		"# TYPE loomcycle_provider_lane_slots_in_use gauge",
+		"# TYPE loomcycle_provider_lane_grants_total counter",
+		`loomcycle_provider_lane_max_concurrent{kind="chat",provider="P"} 2`,
+		`loomcycle_provider_lane_slots_in_use{kind="chat",provider="P"} 0`,
+		`loomcycle_provider_lane_slots_reserved{kind="chat",provider="P"} 1`,
+		`loomcycle_provider_lane_grants_total{kind="chat",provider="P"} 1`,
+		`loomcycle_provider_lane_max_concurrent{kind="embedder",provider="P"} 1`,
+		`loomcycle_provider_lane_slots_in_use{kind="embedder",provider="P"} 1`,
+		`loomcycle_provider_lane_queue_depth{kind="embedder",provider="P"} 1`,
+		`loomcycle_provider_lane_queue_depth_background{kind="embedder",provider="P"} 1`,
+		`loomcycle_provider_lane_preemptions_total{kind="embedder",provider="P"} 0`,
+		`loomcycle_provider_models_in_flight{provider="P"} 1`,
+		`loomcycle_provider_model_waiters{provider="P"} 1`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("missing %q; body:\n%s", want, body)
+		}
 	}
 }
 

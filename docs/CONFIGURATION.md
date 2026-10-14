@@ -851,7 +851,7 @@ providers:
 - **Every model call takes a lane**: a run's calls, the listwise reranker and the unit generator the `chat` lane; the `decision:` block and a `kind: decision` reranker the `decision` lane; the embedder the `embedder` lane. Consolidation passes and the operator-run sweeps (re-index, backfill, re-embed, derived units, image descriptions) queue as background work ([details](PROVIDERS.md#lanes-a-queue-per-kind-of-model)).
 - **`decision.max_concurrent` and `memory.reranker.max_concurrent` are removed.** A config that still sets either fails to load and names the lane that replaces it. Their built-in bound stays as a floor: while a provider has no lane for them, decisions to it and reranks are each held to 4 in flight. A lane you configure (`max_concurrent` / `lanes` on that provider) replaces the floor, higher or lower.
 - **`max_models_in_flight`** stops several models computing at once on a host that cannot take it. For Ollama a model at two different `num_ctx` sizes counts as two.
-- **`concurrency.provider_queue_depth`** (`LOOMCYCLE_PROVIDER_QUEUE_DEPTH`, default: the global `max_queue_depth`) bounds only requests sent directly, outside any run — the LLM gateway (including the OpenAI-compatible routes) and the image-describe route — which are refused (`provider_concurrency_exhausted`; HTTP 429 on the gateway) once that many calls wait on the provider. A run's calls always wait.
+- **`concurrency.provider_queue_depth`** (`LOOMCYCLE_PROVIDER_QUEUE_DEPTH`, default: the global `max_queue_depth`) bounds only requests sent directly, outside any run — the LLM gateway (including the OpenAI-compatible routes), `POST /v1/embeddings`, `POST /v1/_decide` and the image-describe route — which are refused (`provider_concurrency_exhausted`; HTTP 429 on the gateway and `/v1/embeddings`) once that many calls wait on the provider. A run's calls always wait.
 
 Full field reference (dialect, `options`, capability overrides) + the concurrency internals: [`docs/PROVIDERS.md`](PROVIDERS.md#config-driven-providers-providers-map).
 
@@ -2148,7 +2148,7 @@ decision:
   timeout_ms: 30000               # default 30000; one call, not its wait for a slot
 ```
 
-- The block has no cap of its own. How many decisions are in flight to a provider is that provider's decision lane: `providers.<id>.lanes.decision.max_concurrent`. (`decision.max_concurrent` was removed; a config that sets it fails to load.)
+- The block has no cap of its own. How many decisions are in flight to a provider is that provider's decision lane: `providers.<id>.lanes.decision.max_concurrent`; with no lane set, a built-in floor holds them to 4 in flight. (`decision.max_concurrent` was removed; a config that sets it fails to load.)
 
 - Config load fails on: a `model_pattern` alias, an undeclared provider, a provider with no decision support (only Ollama has it today), a plain model name with no `decision.provider`, an alias tagged another kind, or an unknown key in the block.
 - With `models` omitted, every alias tagged `kind: decision` must be buildable, or load fails.
