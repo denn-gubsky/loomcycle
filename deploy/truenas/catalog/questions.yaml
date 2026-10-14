@@ -1107,6 +1107,12 @@ questions:
             schema:
               type: string
               default: ""
+          - variable: LOOMCYCLE_GIT_SOURCE_MAX_HISTORY
+            label: LOOMCYCLE_GIT_SOURCE_MAX_HISTORY
+            description: '(example: 500)'
+            schema:
+              type: string
+              default: ""
           - variable: LOOMCYCLE_MAX_LIVE_CHILDREN_PER_RUN
             label: LOOMCYCLE_MAX_LIVE_CHILDREN_PER_RUN
             description: 'Children one run has alive at once, across every Agent op that starts one; a spawn past it is refused. Per run, not per tree: a child''s children count against the child. Default 32. (example: 32)'

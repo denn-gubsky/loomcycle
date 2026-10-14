@@ -57,12 +57,15 @@ var (
 	ErrTooLarge       = errors.New("source_too_large")
 	ErrTimeout        = errors.New("timeout")
 	ErrFetchFailed    = errors.New("fetch_failed")
+	// ErrMergeBaseNotFound is a diff base asked for as the merge base with
+	// the default branch, which was not within the history fetched.
+	ErrMergeBaseNotFound = errors.New("merge_base_not_found")
 )
 
 // Class returns the class of an error from this package: one of the Err*
 // values' text, or "fetch_failed" for anything else.
 func Class(err error) string {
-	for _, c := range []error{ErrInvalidRequest, ErrAuthFailed, ErrNotFound, ErrCommitNotFound, ErrTooLarge, ErrTimeout} {
+	for _, c := range []error{ErrInvalidRequest, ErrAuthFailed, ErrNotFound, ErrCommitNotFound, ErrTooLarge, ErrTimeout, ErrMergeBaseNotFound} {
 		if errors.Is(err, c) {
 			return c.Error()
 		}
@@ -99,10 +102,19 @@ type Request struct {
 	// indexes one. A pack holding a larger object fails the fetch
 	// (ErrTooLarge); it is not possible to skip just that object.
 	MaxObjectBytes int64
-	// MaxHistory bounds how many commits deep the fallback by Ref looks for
-	// Commit. Zero means 512.
+	// MaxHistory bounds how many commits deep a fetch goes looking: for
+	// Commit along Ref, for a DiffBase commit along the default branch, and
+	// for a merge base on both sides. Zero means 512.
 	MaxHistory int
+	// DiffBase asks for a second commit to diff Commit against (WriteDiff):
+	// "merge-base:default" for the merge base of Commit and the repository's
+	// default branch, or a full sha. Empty fetches no base.
+	DiffBase string
 }
+
+// DiffBaseMergeBaseDefault is the DiffBase that names the merge base of the
+// commit and the repository's default branch.
+const DiffBaseMergeBaseDefault = "merge-base:default"
 
 // Fetched is a commit that has been fetched and can be written out.
 type Fetched struct {
@@ -110,9 +122,12 @@ type Fetched struct {
 	storeDir string
 	// Head is the fetched commit's sha.
 	Head string
+	// Base is the diff base's sha, when the request asked for one.
+	Base string
 	// FetchedBytes is how many response bytes the fetch read.
 	FetchedBytes int64
 	commit       *object.Commit
+	baseCommit   *object.Commit
 }
 
 // Close removes the object store. Safe to call more than once.
@@ -126,6 +141,12 @@ func (f *Fetched) Close() error {
 }
 
 var shaRe = regexp.MustCompile(`^[0-9a-f]{40}$`)
+
+// validRef reports whether a ref name is one this package will put in a
+// refspec: a full name with none of the characters a refspec gives meaning to.
+func validRef(ref string) bool {
+	return strings.HasPrefix(ref, "refs/") && !strings.ContainsAny(ref, " :^~?*[\\\x00") && !strings.Contains(ref, "..")
+}
 
 // validate checks a request without touching the network and returns the
 // repository's host.
@@ -154,8 +175,11 @@ func (r Request) validate() (host string, err error) {
 	if !shaRe.MatchString(r.Commit) {
 		return bad("commit must be a full sha-1: 40 lower-case hex digits")
 	}
-	if r.Ref != "" && (!strings.HasPrefix(r.Ref, "refs/") || strings.ContainsAny(r.Ref, " :^~?*[\\\x00") || strings.Contains(r.Ref, "..")) {
+	if r.Ref != "" && !validRef(r.Ref) {
 		return bad("ref must be a full ref name such as refs/heads/main")
+	}
+	if r.DiffBase != "" && r.DiffBase != DiffBaseMergeBaseDefault && !shaRe.MatchString(r.DiffBase) {
+		return bad("diff base must be %q or a full sha-1", DiffBaseMergeBaseDefault)
 	}
 	if r.StoreDir == "" || r.Transport == nil || r.MaxFetchBytes <= 0 || r.MaxObjectBytes <= 0 {
 		return bad("a store directory, a transport, a fetch limit and an object limit are required")
@@ -224,47 +248,80 @@ func Fetch(ctx context.Context, req Request) (_ *Fetched, err error) {
 		}
 		return ferr
 	}
-	hash := plumbing.NewHash(req.Commit)
-
-	ferr := fetch(req.Commit+":refs/loomcycle/head", 1)
-	if ferr != nil {
+	maxHistory := req.MaxHistory
+	if maxHistory <= 0 {
+		maxHistory = 512
+	}
+	// fetchCommit fetches one commit into local, by its sha at depth 1 and,
+	// when the server will not serve a commit by sha, along ref, a little
+	// deeper each time. It returns the refspec that worked, so the history
+	// behind the commit can be deepened the same way.
+	fetchCommit := func(sha, ref, local string) (string, error) {
+		bySHA := sha + ":" + local
+		ferr := fetch(bySHA, 1)
+		if ferr == nil {
+			return bySHA, nil
+		}
 		c := classify(ctx, st, ferr)
 		if !errors.Is(c, ErrFetchFailed) || !shaNotServed(ferr) {
 			// Auth, size, time, a repository that is not there, or a failure
 			// that says nothing about the commit (a refused connection). The
 			// fallback cannot help, and calling it "commit not found" would
 			// send the caller looking in the wrong place.
-			return nil, c
+			return "", c
 		}
-		if req.Ref == "" {
-			return nil, fmt.Errorf("%w: the server did not serve the commit by its sha, and no ref was given: %v", ErrCommitNotFound, ferr)
+		if ref == "" {
+			return "", fmt.Errorf("%w: the server did not serve %s by its sha, and no ref was given: %v", ErrCommitNotFound, sha, ferr)
 		}
-		// The server may simply not serve a commit by sha. Look for it on the
-		// ref, a little deeper each time.
-		maxHistory := req.MaxHistory
-		if maxHistory <= 0 {
-			maxHistory = 512
-		}
-		found := false
+		byRef := ref + ":" + local
 		for depth := 1; ; depth *= 8 {
 			if depth > maxHistory {
 				depth = maxHistory
 			}
-			if rerr := fetch(req.Ref+":refs/loomcycle/head", depth); rerr != nil {
-				return nil, classify(ctx, st, rerr)
+			if rerr := fetch(byRef, depth); rerr != nil {
+				return "", classify(ctx, st, rerr)
 			}
-			if _, cerr := repo.CommitObject(hash); cerr == nil {
-				found = true
-				break
+			if _, cerr := repo.CommitObject(plumbing.NewHash(sha)); cerr == nil {
+				return byRef, nil
 			}
 			if depth >= maxHistory {
-				break
+				return "", fmt.Errorf("%w: %s is not within %d commits of %s", ErrCommitNotFound, sha, maxHistory, ref)
 			}
 		}
-		if !found {
-			return nil, fmt.Errorf("%w: not within %d commits of %s", ErrCommitNotFound, maxHistory, req.Ref)
+	}
+
+	headSpec, err := fetchCommit(req.Commit, req.Ref, "refs/loomcycle/head")
+	if err != nil {
+		return nil, err
+	}
+
+	var base *object.Commit
+	if req.DiffBase != "" {
+		// The default branch is what the server's HEAD names. It is needed
+		// for a merge base, and as where to look for a base commit that the
+		// server will not serve by its sha.
+		defaultRef, lerr := defaultBranch(ctx, remote, auth)
+		if lerr != nil {
+			return nil, classify(ctx, st, lerr)
+		}
+		if req.DiffBase == DiffBaseMergeBaseDefault {
+			if defaultRef == "" {
+				return nil, fmt.Errorf("%w: the server names no default branch", ErrMergeBaseNotFound)
+			}
+			if base, err = findMergeBase(repo, fetch, headSpec, defaultRef, req.Commit, maxHistory); err != nil {
+				return nil, classifyBase(ctx, st, err)
+			}
+		} else {
+			if _, err := fetchCommit(req.DiffBase, defaultRef, "refs/loomcycle/base"); err != nil {
+				return nil, err
+			}
+			if base, err = repo.CommitObject(plumbing.NewHash(req.DiffBase)); err != nil {
+				return nil, fmt.Errorf("%w: the fetch did not deliver the base: %v", ErrCommitNotFound, err)
+			}
 		}
 	}
+	hash := plumbing.NewHash(req.Commit)
+
 	// A reader that stopped looking at errors once it had what it needed
 	// would let a fetch over its limit end "successfully". The limit is the
 	// caller's promise about memory and disk, so it is checked here too.
@@ -278,7 +335,151 @@ func Fetch(ctx context.Context, req Request) (_ *Fetched, err error) {
 	if err != nil {
 		return nil, fmt.Errorf("%w: the fetch did not deliver the commit: %v", ErrCommitNotFound, err)
 	}
-	return &Fetched{repo: repo, storeDir: req.StoreDir, Head: req.Commit, FetchedBytes: st.read.Load(), commit: commit}, nil
+	f := &Fetched{repo: repo, storeDir: req.StoreDir, Head: req.Commit, FetchedBytes: st.read.Load(), commit: commit, baseCommit: base}
+	if base != nil {
+		f.Base = base.Hash.String()
+	}
+	return f, nil
+}
+
+// classifyBase is classify for the merge-base search, whose own failure is
+// already one of the package's classes.
+func classifyBase(ctx context.Context, st *call, err error) error {
+	if errors.Is(err, ErrMergeBaseNotFound) {
+		return err
+	}
+	return classify(ctx, st, err)
+}
+
+// defaultBranch asks the server which branch its HEAD names. An empty answer
+// is a server that names none.
+func defaultBranch(ctx context.Context, remote *git.Remote, auth transport.AuthMethod) (string, error) {
+	refs, err := remote.ListContext(ctx, &git.ListOptions{Auth: auth})
+	if err != nil {
+		return "", err
+	}
+	for _, r := range refs {
+		if r.Name() == plumbing.HEAD && r.Type() == plumbing.SymbolicReference {
+			if target := r.Target().String(); validRef(target) {
+				return target, nil
+			}
+		}
+	}
+	return "", nil
+}
+
+// findMergeBase deepens the history of both the head and the default branch,
+// starting at 64 commits and doubling, until a merge base is in what has been
+// fetched or maxHistory is reached.
+func findMergeBase(repo *git.Repository, fetch func(spec string, depth int) error, headSpec, defaultRef, head string, maxHistory int) (*object.Commit, error) {
+	for depth := 64; ; depth *= 2 {
+		if depth > maxHistory {
+			depth = maxHistory
+		}
+		if err := fetch(headSpec, depth); err != nil {
+			return nil, err
+		}
+		if err := fetch(defaultRef+":refs/loomcycle/default", depth); err != nil {
+			return nil, err
+		}
+		headCommit, err := repo.CommitObject(plumbing.NewHash(head))
+		if err != nil {
+			return nil, err
+		}
+		tipRef, err := repo.Reference("refs/loomcycle/default", true)
+		if err != nil {
+			return nil, err
+		}
+		tip, err := repo.CommitObject(tipRef.Hash())
+		if err != nil {
+			return nil, err
+		}
+		base, err := shallowMergeBase(repo, headCommit, tip)
+		if err != nil {
+			return nil, err
+		}
+		if base != nil {
+			return base, nil
+		}
+		if depth >= maxHistory {
+			return nil, fmt.Errorf("%w: not within %d commits of %s", ErrMergeBaseNotFound, maxHistory, defaultRef)
+		}
+	}
+}
+
+// shallowMergeBase finds a merge base of a and b using only the commits in
+// the store. A parent that is not there is the edge of a shallow fetch, not an
+// error; the library's own MergeBase fails on it, which is why this exists.
+//
+// It returns the best common ancestors' newest: common to both histories and
+// not an ancestor of another common one. On history cut short a deeper fetch
+// could find a different one where merges cross, as git itself would on the
+// same shallow clone. nil means no common commit was fetched.
+func shallowMergeBase(repo *git.Repository, a, b *object.Commit) (*object.Commit, error) {
+	ancestors := func(start *object.Commit) (map[plumbing.Hash]*object.Commit, error) {
+		seen := map[plumbing.Hash]*object.Commit{start.Hash: start}
+		queue := []*object.Commit{start}
+		for len(queue) > 0 {
+			c := queue[0]
+			queue = queue[1:]
+			for _, ph := range c.ParentHashes {
+				if _, ok := seen[ph]; ok {
+					continue
+				}
+				p, err := repo.CommitObject(ph)
+				if errors.Is(err, plumbing.ErrObjectNotFound) {
+					continue // the edge of the fetched history
+				}
+				if err != nil {
+					return nil, err
+				}
+				seen[ph] = p
+				queue = append(queue, p)
+			}
+		}
+		return seen, nil
+	}
+	aa, err := ancestors(a)
+	if err != nil {
+		return nil, err
+	}
+	bb, err := ancestors(b)
+	if err != nil {
+		return nil, err
+	}
+	common := map[plumbing.Hash]*object.Commit{}
+	for h, c := range aa {
+		if _, ok := bb[h]; ok {
+			common[h] = c
+		}
+	}
+	// Drop every common commit that is an ancestor of another common one.
+	dominated := map[plumbing.Hash]bool{}
+	for _, c := range common {
+		queue := append([]plumbing.Hash(nil), c.ParentHashes...)
+		for len(queue) > 0 {
+			h := queue[0]
+			queue = queue[1:]
+			if dominated[h] {
+				continue
+			}
+			if p, ok := common[h]; ok {
+				dominated[h] = true
+				queue = append(queue, p.ParentHashes...)
+			}
+		}
+	}
+	var best *object.Commit
+	for h, c := range common {
+		if dominated[h] {
+			continue
+		}
+		if best == nil || c.Committer.When.After(best.Committer.When) ||
+			(c.Committer.When.Equal(best.Committer.When) && c.Hash.String() < best.Hash.String()) {
+			best = c
+		}
+	}
+	return best, nil
 }
 
 // shaNotServed reports whether a fetch by sha failed because of the commit

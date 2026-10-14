@@ -69,6 +69,9 @@ type GitSourceConfig struct {
 	MaxFileBytes int64
 	// MaxFiles bounds the files, links and submodule directories written.
 	MaxFiles int
+	// MaxHistory bounds how many commits deep a clone looks for a commit or
+	// a merge base. Zero means the package's default.
+	MaxHistory int
 	// Timeout bounds one clone, waiting for a slot included.
 	Timeout time.Duration
 	// Slots limits how many clones run at once: a clone holds one slot.
@@ -158,6 +161,14 @@ type gitSourceInput struct {
 		Ref        string `json:"ref"`
 		Credential string `json:"credential"`
 		MaxBytes   int64  `json:"max_bytes"`
+		// DiffBase asks for a diff: "merge-base:default", or a full sha.
+		DiffBase string `json:"diff_base"`
+		// Outputs names the diff's two files inside the volume. Both must be
+		// under _meta/, the runtime's own directory of the volume.
+		Outputs *struct {
+			Diff    string `json:"diff"`
+			Numstat string `json:"numstat"`
+		} `json:"outputs"`
 	} `json:"git"`
 }
 
@@ -201,6 +212,28 @@ func (v *VolumeDef) execCreateFromGit(ctx context.Context, in volumeDefInput, mo
 	}
 	if !hostListed(cfg.Hosts, u.Host) {
 		return gitSourceRefusal("host_not_allowed", ""), nil
+	}
+	diffRel, numstatRel := gitSourceMetaDir+"/diff.patch", gitSourceMetaDir+"/numstat.json"
+	if g.Outputs != nil {
+		if g.DiffBase == "" {
+			return gitSourceRefusal("invalid_request", "outputs names the diff's files; it needs diff_base"), nil
+		}
+		if g.Outputs.Diff != "" {
+			diffRel = g.Outputs.Diff
+		}
+		if g.Outputs.Numstat != "" {
+			numstatRel = g.Outputs.Numstat
+		}
+	}
+	if g.DiffBase != "" {
+		for _, rel := range []string{diffRel, numstatRel} {
+			if !validMetaOutput(rel) {
+				return gitSourceRefusal("invalid_request", fmt.Sprintf("an output must be a plain file name under %s/ (got %q)", gitSourceMetaDir, rel)), nil
+			}
+		}
+		if diffRel == numstatRel {
+			return gitSourceRefusal("invalid_request", "the two outputs must be different files"), nil
+		}
 	}
 	maxBytes := cfg.MaxBytes
 	if g.MaxBytes < 0 {
@@ -290,6 +323,8 @@ func (v *VolumeDef) execCreateFromGit(ctx context.Context, in volumeDefInput, mo
 		Transport:      cfg.Transport,
 		MaxFetchBytes:  maxBytes,
 		MaxObjectBytes: cfg.MaxObjectBytes,
+		MaxHistory:     cfg.MaxHistory,
+		DiffBase:       g.DiffBase,
 	})
 	if err != nil {
 		return fail(err)
@@ -298,10 +333,24 @@ func (v *VolumeDef) execCreateFromGit(ctx context.Context, in volumeDefInput, mo
 		MaxBytes: maxBytes, MaxFiles: cfg.MaxFiles, MaxFileBytes: cfg.MaxFileBytes,
 		Reserved: []string{gitSourceMetaDir},
 	})
-	_ = fetched.Close()
 	if err != nil {
+		_ = fetched.Close()
 		return fail(err)
 	}
+	var diff gitsource.DiffResult
+	if g.DiffBase != "" {
+		// The patch shares the volume's byte limit with the tree: what is
+		// written in all stays under it.
+		diff, err = fetched.WriteDiff(ctx, path, diffRel, numstatRel, gitsource.DiffLimits{
+			MaxBytes: maxBytes - tree.Bytes, MaxFileBytes: cfg.MaxFileBytes, MaxFiles: cfg.MaxFiles,
+			Reserved: []string{gitSourceMetaDir},
+		})
+		if err != nil {
+			_ = fetched.Close()
+			return fail(err)
+		}
+	}
+	_ = fetched.Close()
 	omittedPath := gitSourceMetaDir + "/omitted.json"
 	if err := writeOmitted(path, omittedPath, tree); err != nil {
 		return fail(fmt.Errorf("write %s: %w", omittedPath, err))
@@ -312,13 +361,21 @@ func (v *VolumeDef) execCreateFromGit(ctx context.Context, in volumeDefInput, mo
 		cleanup()
 		return errResult(fmt.Sprintf("create: %s", err)), nil
 	}
-	res["source"] = map[string]any{
+	outputs := map[string]any{"omitted": omittedPath}
+	source := map[string]any{
 		"head":    fetched.Head,
 		"files":   tree.Files,
 		"bytes":   tree.Bytes,
 		"omitted": tree.OmittedCount,
-		"outputs": map[string]any{"omitted": omittedPath},
+		"outputs": outputs,
 	}
+	if g.DiffBase != "" {
+		source["base"] = fetched.Base
+		source["changed_files"] = diff.Files
+		outputs["diff"] = diffRel
+		outputs["numstat"] = numstatRel
+	}
+	res["source"] = source
 	return okJSON(res)
 }
 
@@ -354,6 +411,23 @@ func writeOmitted(volumeRoot, rel string, tree gitsource.TreeResult) error {
 		return err
 	}
 	return f.Close()
+}
+
+// validMetaOutput reports whether rel names a file directly under the
+// runtime's own directory of the volume, other than the list of omitted
+// paths. The commit's paths can never be written there, so an output cannot
+// collide with one, nor be passed off as one.
+func validMetaOutput(rel string) bool {
+	name, ok := strings.CutPrefix(rel, gitSourceMetaDir+"/")
+	if !ok || name == "" || name == "omitted.json" || strings.HasPrefix(name, ".") {
+		return false
+	}
+	for _, r := range name {
+		if !(r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || r == '.' || r == '_' || r == '-') {
+			return false
+		}
+	}
+	return len(name) <= 64
 }
 
 func volumeScopeGranted(scopes []string, want string) bool {

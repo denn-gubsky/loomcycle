@@ -76,6 +76,16 @@ the create fails instead of following it out of the dynamic root.
     restricted (`allowed_urls`) to a URL covering this repository. Leave it
     out for a public repository.
   - `max_bytes` — optional; may only lower the operator's limit.
+  - `diff_base` — optional: also write a diff from another commit to this
+    one. `"merge-base:default"` diffs against the point where this commit's
+    history meets the repository's default branch (what a pull request
+    shows); a 40-digit sha diffs against that commit. The diff goes to
+    `_meta/diff.patch` (a unified diff, renames shown as a deletion and an
+    addition) and `_meta/numstat.json` (each changed path with its status,
+    lines added and deleted, and why a change has no body, when it has none).
+  - `outputs` — optional, with `diff_base`: `{"diff": "_meta/<name>",
+    "numstat": "_meta/<name>"}` to name the two files. Both must be plain
+    file names directly under `_meta/`.
   - `mode` applies to the agents of the run once the volume exists: with
     `ro`, nobody can change what was fetched.
 
@@ -86,7 +96,7 @@ the create fails instead of following it out of the dynamic root.
 
   It needs `source:git` in `volume_def_scopes` besides the grant for the
   name. A failure is one word (`auth_failed`, `not_found`,
-  `commit_not_found`, `source_too_large`, `timeout`, `host_not_allowed`,
+  `commit_not_found`, `merge_base_not_found`, `source_too_large`, `timeout`, `host_not_allowed`,
   `credential_url_not_allowed`, `credential_unresolvable`,
   `git_source_disabled`, `fetch_failed`) and leaves nothing behind: the name
   can be used again.
