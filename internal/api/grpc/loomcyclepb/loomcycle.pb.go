@@ -6952,8 +6952,19 @@ type ListUserAgentsRequest struct {
 	state  protoimpl.MessageState `protogen:"open.v1"`
 	UserId string                 `protobuf:"bytes,1,opt,name=user_id,json=userId,proto3" json:"user_id,omitempty"`
 	// Optional status filter ("running" | "completed" | "failed" |
-	// "cancelled"). Empty → all statuses.
-	Status        string `protobuf:"bytes,2,opt,name=status,proto3" json:"status,omitempty"`
+	// "cancelled"). Empty → all statuses. Superseded by `statuses`; set one
+	// or the other, not both.
+	Status string `protobuf:"bytes,2,opt,name=status,proto3" json:"status,omitempty"`
+	// Optional status filter of one or more run statuses: a run in any of them
+	// is listed. "all" alone is no filter. An unknown value is
+	// InvalidArgument. Empty (and `status` empty) → all statuses.
+	Statuses []string `protobuf:"bytes,3,rep,name=statuses,proto3" json:"statuses,omitempty"`
+	// Optional awaited-state filter: list only running runs blocked on one of
+	// these ("channel" | "interrupted" | "review" | "input" | "children").
+	// Implies running: a status filter other than "running" with it is
+	// InvalidArgument. The state is derived per run, so at most 1,000 running
+	// runs are read; `truncated` says when some were left unread.
+	AwaitedStates []string `protobuf:"bytes,4,rep,name=awaited_states,json=awaitedStates,proto3" json:"awaited_states,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -7002,9 +7013,26 @@ func (x *ListUserAgentsRequest) GetStatus() string {
 	return ""
 }
 
+func (x *ListUserAgentsRequest) GetStatuses() []string {
+	if x != nil {
+		return x.Statuses
+	}
+	return nil
+}
+
+func (x *ListUserAgentsRequest) GetAwaitedStates() []string {
+	if x != nil {
+		return x.AwaitedStates
+	}
+	return nil
+}
+
 type ListUserAgentsResponse struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Agents        []*Agent               `protobuf:"bytes,1,rep,name=agents,proto3" json:"agents,omitempty"`
+	state  protoimpl.MessageState `protogen:"open.v1"`
+	Agents []*Agent               `protobuf:"bytes,1,rep,name=agents,proto3" json:"agents,omitempty"`
+	// True when an awaited_states scan stopped before reading every running
+	// run, so a matching run may be missing. Never set otherwise.
+	Truncated     bool `protobuf:"varint,2,opt,name=truncated,proto3" json:"truncated,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -7044,6 +7072,13 @@ func (x *ListUserAgentsResponse) GetAgents() []*Agent {
 		return x.Agents
 	}
 	return nil
+}
+
+func (x *ListUserAgentsResponse) GetTruncated() bool {
+	if x != nil {
+		return x.Truncated
+	}
+	return false
 }
 
 // ListWalkRunsRequest names a walk by its own run id. limit 0 = 100, at most
@@ -13185,12 +13220,15 @@ const file_loomcycle_proto_rawDesc = "" +
 	"\bagent_id\x18\x01 \x01(\tR\aagentId\x12\x16\n" +
 	"\x06reason\x18\x02 \x01(\tR\x06reason\">\n" +
 	"\x13CancelAgentResponse\x12'\n" +
-	"\x0fcancelled_count\x18\x01 \x01(\x05R\x0ecancelledCount\"H\n" +
+	"\x0fcancelled_count\x18\x01 \x01(\x05R\x0ecancelledCount\"\x8b\x01\n" +
 	"\x15ListUserAgentsRequest\x12\x17\n" +
 	"\auser_id\x18\x01 \x01(\tR\x06userId\x12\x16\n" +
-	"\x06status\x18\x02 \x01(\tR\x06status\"E\n" +
+	"\x06status\x18\x02 \x01(\tR\x06status\x12\x1a\n" +
+	"\bstatuses\x18\x03 \x03(\tR\bstatuses\x12%\n" +
+	"\x0eawaited_states\x18\x04 \x03(\tR\rawaitedStates\"c\n" +
 	"\x16ListUserAgentsResponse\x12+\n" +
-	"\x06agents\x18\x01 \x03(\v2\x13.loomcycle.v1.AgentR\x06agents\"\\\n" +
+	"\x06agents\x18\x01 \x03(\v2\x13.loomcycle.v1.AgentR\x06agents\x12\x1c\n" +
+	"\ttruncated\x18\x02 \x01(\bR\ttruncated\"\\\n" +
 	"\x13ListWalkRunsRequest\x12\x17\n" +
 	"\awalk_id\x18\x01 \x01(\tR\x06walkId\x12\x14\n" +
 	"\x05limit\x18\x02 \x01(\x05R\x05limit\x12\x16\n" +

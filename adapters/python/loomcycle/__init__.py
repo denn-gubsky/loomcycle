@@ -66,7 +66,7 @@ For environments that can't use gRPC, use HTTP+SSE through your own
 documented in the project README.
 """
 
-from .client import LoomcycleClient, RunHandle
+from .client import AgentList, LoomcycleClient, RunHandle
 from .events import (
     AgentEvent,
     ToolUse,
@@ -110,6 +110,7 @@ from .errors import (
 __all__ = [
     "LoomcycleClient",
     "RunHandle",
+    "AgentList",
     "AgentEvent",
     "ToolUse",
     "Usage",

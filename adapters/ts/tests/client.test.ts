@@ -623,6 +623,41 @@ describe("getAgent / cancelAgent / listUserAgents", () => {
       "http://test-loomcycle:8787/v1/users/u1/agents?status=running&tenant=acme",
     );
   });
+
+  it("listUserAgents sends several statuses and awaited states as repeated params", async () => {
+    const { client, fetchMock } = makeClient([
+      jsonResponse({ agents: [] }),
+      jsonResponse({ agents: [] }),
+    ]);
+    await client.listUserAgents("u1", { status: ["completed", "failed"] });
+    expect(fetchMock.mock.calls[0]![0]).toBe(
+      "http://test-loomcycle:8787/v1/users/u1/agents?status=completed&status=failed",
+    );
+    await client.listUserAgents("u1", { status: "running", awaitedState: ["review", "input"] });
+    expect(fetchMock.mock.calls[1]![0]).toBe(
+      "http://test-loomcycle:8787/v1/users/u1/agents?status=running&awaited_state=review&awaited_state=input",
+    );
+  });
+
+  it("listUserAgents carries truncated from an awaited-state scan, and only then", async () => {
+    const row = { agent_id: "a1", run_id: "r1", session_id: "s1", agent: "x", parent_agent_id: "p", status: "running", started_at: "2026-05-22T00:00:00Z", awaited_state: "review" };
+    const { client, fetchMock } = makeClient([
+      jsonResponse({ agents: [row], truncated: true }),
+      jsonResponse({ agents: [row], truncated: true }),
+      jsonResponse({ agents: [row] }),
+    ]);
+    const cut = await client.listUserAgents("u1", { awaitedState: "review" });
+    expect(fetchMock.mock.calls[0]![0]).toBe(
+      "http://test-loomcycle:8787/v1/users/u1/agents?awaited_state=review",
+    );
+    expect(cut.length).toBe(1);
+    expect(cut.truncated).toBe(true);
+    // The client-side parent filter keeps the flag.
+    const narrowed = await client.listUserAgents("u1", { awaitedState: "review", parentAgentId: "p" });
+    expect(narrowed.truncated).toBe(true);
+    const whole = await client.listUserAgents("u1", { awaitedState: "review" });
+    expect(whole.truncated).toBeUndefined();
+  });
 });
 
 describe("getTranscript / health / listUsers", () => {

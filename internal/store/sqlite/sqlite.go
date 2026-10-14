@@ -3486,12 +3486,24 @@ func (s *Store) ListUsers(ctx context.Context, tenantID string) ([]store.UserSum
 	return out, rows.Err()
 }
 
-// ListActiveRunsByUser returns runs for userID whose status matches the
-// supplied filter. An empty status returns ALL statuses; an empty tenantID
-// returns all tenants. Capped at 100 rows ordered by started_at DESC.
-func (s *Store) ListActiveRunsByUser(ctx context.Context, tenantID, userID string, status store.RunStatus) ([]store.Run, error) {
+// ListActiveRunsByUser returns the first page of ListRunsByUser: up to 100
+// runs for userID, newest first. See store.Store.
+func (s *Store) ListActiveRunsByUser(ctx context.Context, tenantID, userID string, statuses ...store.RunStatus) ([]store.Run, error) {
+	runs, _, err := s.ListRunsByUser(ctx, tenantID, userID, statuses, 100, "")
+	return runs, err
+}
+
+// ListRunsByUser returns userID's runs in (started_at, id) DESC order, one
+// keyset page at a time. See store.Store.
+func (s *Store) ListRunsByUser(ctx context.Context, tenantID, userID string, statuses []store.RunStatus, limit int, cursor string) ([]store.Run, string, error) {
 	if userID == "" {
-		return nil, nil
+		return nil, "", nil
+	}
+	if limit <= 0 {
+		limit = 100
+	}
+	if limit > 1000 {
+		limit = 1000
 	}
 	where := `r.user_id = ?`
 	args := []any{userID}
@@ -3499,27 +3511,48 @@ func (s *Store) ListActiveRunsByUser(ctx context.Context, tenantID, userID strin
 		where += ` AND r.tenant_id = ?`
 		args = append(args, tenantID)
 	}
-	if status != "" {
-		where += ` AND r.status = ?`
-		args = append(args, string(status))
+	if in := store.RunStatusFilter(statuses); len(in) > 0 {
+		where += ` AND r.status IN (?` + strings.Repeat(`, ?`, len(in)-1) + `)`
+		for _, st := range in {
+			args = append(args, st)
+		}
 	}
+	if cursor != "" {
+		before, beforeID, err := store.DecodeRunCursor(cursor)
+		if err != nil {
+			return nil, "", err
+		}
+		where += ` AND (r.started_at, r.id) < (?, ?)`
+		args = append(args, before.UnixNano(), beforeID)
+	}
+	// One extra row says whether another page follows.
+	args = append(args, limit+1)
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT `+runColumns+` FROM `+runFromTable+` WHERE `+where+` ORDER BY r.started_at DESC LIMIT 100`,
+		`SELECT `+runColumns+` FROM `+runFromTable+` WHERE `+where+` ORDER BY r.started_at DESC, r.id DESC LIMIT ?`,
 		args...,
 	)
 	if err != nil {
-		return nil, err
+		return nil, "", fmt.Errorf("list runs by user: %w", err)
 	}
 	defer rows.Close()
 	var out []store.Run
 	for rows.Next() {
 		r, err := scanRun(rows)
 		if err != nil {
-			return nil, err
+			return nil, "", err
 		}
 		out = append(out, r)
 	}
-	return out, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, "", err
+	}
+	next := ""
+	if len(out) > limit {
+		out = out[:limit]
+		last := out[len(out)-1]
+		next = store.EncodeRunCursor(last.StartedAt, last.ID)
+	}
+	return out, next, nil
 }
 
 // ListRunsByWalk returns a walk's own run and its members in (started_at, id)

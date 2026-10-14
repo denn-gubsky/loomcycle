@@ -71,6 +71,16 @@ PromptContent = Mapping[str, Any]
 PromptSegment = Mapping[str, Any]
 
 
+class AgentList(list):
+    """``list_user_agents``' answer: a plain list of agent dicts, so every
+    caller that indexes or iterates it keeps working, plus ``truncated`` —
+    True when an ``awaited_state`` listing stopped before reading every
+    running run (the server reads at most 1,000), so a matching run may be
+    missing."""
+
+    truncated: bool = False
+
+
 @dataclass(frozen=True)
 class RunHandle:
     """Captures the IDs the gRPC server emits in its synthetic
@@ -228,19 +238,36 @@ class LoomcycleClient:
         self,
         user_id: str,
         *,
-        status: str = "",
-    ) -> Sequence[Mapping[str, Any]]:
-        """List a user's recent agent runs, optionally filtered by
-        status (``"running"`` | ``"completed"`` | ``"failed"`` |
-        ``"cancelled"``; empty = all)."""
+        status: str | Sequence[str] = "",
+        awaited_state: str | Sequence[str] = (),
+    ) -> AgentList:
+        """List a user's recent agent runs (at most 100), optionally
+        filtered by status (``"running"`` | ``"completed"`` | ``"failed"`` |
+        ``"cancelled"`` | …; empty = all).
+
+        ``status`` as one string is sent as before; as a list or tuple it
+        lists a run in any of the statuses (``["all"]`` alone = no filter),
+        and an unknown one raises ``InvalidArgumentError``.
+
+        ``awaited_state`` (one state or several: ``"channel"`` |
+        ``"interrupted"`` | ``"review"`` | ``"input"`` | ``"children"``) lists
+        only running runs blocked on one of those waits; a status other than
+        running with it raises ``InvalidArgumentError``. The server reads at
+        most 1,000 running runs for it; the answer's ``truncated`` is True
+        when some were left unread."""
+        req = pb.ListUserAgentsRequest(user_id=user_id)
+        if isinstance(status, str):
+            req.status = status
+        else:
+            req.statuses.extend(status)
+        req.awaited_states.extend([awaited_state] if isinstance(awaited_state, str) else awaited_state)
         try:
-            resp = await self._stub.ListUserAgents(
-                pb.ListUserAgentsRequest(user_id=user_id, status=status),
-                metadata=self._auth_metadata(),
-            )
+            resp = await self._stub.ListUserAgents(req, metadata=self._auth_metadata())
         except grpc.aio.AioRpcError as e:
             _raise_from_grpc(e)
-        return [_agent_to_dict(a) for a in resp.agents]
+        out = AgentList(_agent_to_dict(a) for a in resp.agents)
+        out.truncated = resp.truncated
+        return out
 
     async def list_walk_runs(
         self,
