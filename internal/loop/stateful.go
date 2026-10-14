@@ -596,7 +596,13 @@ func callForEmitState(ctx context.Context, provider providers.Provider, req prov
 		case providers.EventThinking:
 			thinking.WriteString(ev.Text)
 		case providers.EventDone:
-			out.usage = ev.Usage
+			// A copy, for the same reason as the append loop's: the timing
+			// is stamped onto it, and the provider's value may be shared.
+			out.usage = nil
+			if ev.Usage != nil {
+				u := *ev.Usage
+				out.usage = &u
+			}
 			out.reasoning, out.reasoningSig = ev.Reasoning, ev.ReasoningSignature
 		case providers.EventError:
 			streamErr = ev.Error
