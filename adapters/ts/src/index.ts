@@ -58,7 +58,7 @@
  *     purgeStaleEmbeddings(scope, scopeId, opts?): Promise<MemoryPurgeResponse>    // DELETES; dry_run defaults true
  *
  *     // Memory / document change feeds (RFC CD Part C; SSE; substrate:tenant)
- *     streamMemoryChanges(opts?): AsyncIterable<ChangeFeedFrame>     // resume with opts.since = last seq
+ *     streamMemoryChanges(opts?): AsyncIterable<ChangeFeedFrame>     // feed | change | error (non-fatal); resume with opts.since = last seq
  *     streamDocumentChanges(opts?): AsyncIterable<ChangeFeedFrame>
  *
  *     // Interruption (v0.8.16; decline RFC BH)
@@ -329,6 +329,7 @@ export type {
   RunStateStreamOpen,
   StreamUserRunStatesOptions,
   // Memory / document change feeds (RFC CD Part C)
+  ChangeFeedError,
   ChangeFeedFrame,
   ChangeFeedStatus,
   EmbedderHealth,
