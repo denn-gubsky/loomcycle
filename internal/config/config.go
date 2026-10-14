@@ -975,6 +975,14 @@ type ProviderConfig struct {
 	// provider at once, across all lanes (some local hosts fail when several
 	// do). 0 = unlimited. Must be >= 0.
 	MaxModelsInFlight int `json:"max_models_in_flight,omitempty" yaml:"max_models_in_flight,omitempty"`
+	// ModelsInFlightExemptKinds lists model kinds (chat / decision / embedder)
+	// whose calls max_models_in_flight does not count and never holds back;
+	// they are still capped by their own lane. For a host that runs a small
+	// embedding model beside an LLM without trouble but fails with two LLMs
+	// at once (measured: chat + embed passed, chat + decision did not), so
+	// `[embedder]` keeps embeddings from waiting for the chat model. Only
+	// with max_models_in_flight > 0.
+	ModelsInFlightExemptKinds []string `json:"models_in_flight_exempt_kinds,omitempty" yaml:"models_in_flight_exempt_kinds,omitempty"`
 	// ModelSwitchMaxWaitMS bounds how long a call for a waiting model can be
 	// starved: after this long, newer calls on the in-flight model stop being
 	// admitted so it can drain. 0 = the default; read it through
@@ -1064,6 +1072,14 @@ func (p ProviderConfig) validateLanes(id string) error {
 	}
 	if p.ModelSwitchMaxWaitMS < 0 {
 		return fmt.Errorf("providers.%s: model_switch_max_wait_ms must be >= 0", id)
+	}
+	if len(p.ModelsInFlightExemptKinds) > 0 && p.MaxModelsInFlight <= 0 {
+		return fmt.Errorf("providers.%s: models_in_flight_exempt_kinds is set but max_models_in_flight is not, so there is no count to leave a kind out of", id)
+	}
+	for _, kind := range p.ModelsInFlightExemptKinds {
+		if !slices.Contains(modelKinds, kind) {
+			return fmt.Errorf("providers.%s: models_in_flight_exempt_kinds: unknown kind %q (want one of %v)", id, kind, modelKinds)
+		}
 	}
 	kinds := make([]string, 0, len(p.Lanes))
 	for kind := range p.Lanes {

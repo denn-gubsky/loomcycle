@@ -33,6 +33,7 @@ The built-in providers in the table above ship as an **embedded default layer** 
 | `max_concurrent` | Cap the model **calls** in flight to this provider (see below) — shorthand for `lanes.chat.max_concurrent`. `0` / unset = unbounded. |
 | `lanes` | A queue per kind of model (`chat` / `decision` / `embedder`): its own `max_concurrent`, plus `affinity_hold_ms`, `quantum_calls` and `background_share` (see below). |
 | `max_models_in_flight` | How many different models may compute on this provider at once, across all lanes. `0` / unset = unlimited. |
+| `models_in_flight_exempt_kinds` | Model kinds `max_models_in_flight` leaves out, e.g. `[embedder]`. Only with `max_models_in_flight`. |
 | `model_switch_max_wait_ms` | How long a waiting model can be held off by calls to the models in flight. Default `30000`; only with `max_models_in_flight`. |
 | `options` | Driver-specific tuning, passed opaquely: `ollama` `num_ctx` / `num_gpu`; `code-js` `code_root` / `deterministic` / `run_timeout_seconds`; `mock` `stable`. Unknown keys log a warning, never fatal. |
 | `capabilities` | Override the driver's advertised capabilities (`supports_thinking` / `supports_vision` / `supports_effort` / `native_prompt_cache` / `parallel_tool_calls` / `max_context_tokens`). Only the coarse flag is overridable; per-model heuristics stay in the driver. |
@@ -104,12 +105,24 @@ providers:
 | `lanes.<kind>.background_share` | The least fraction of the lane's turns given to background work (see below) while both it and live runs wait, in `[0, 1)`. `0` (default) = live runs always go first, and background work on a lane that is never idle does not run at all. |
 | `max_models_in_flight` | How many **different models** may compute on the provider at once, across all lanes. Some local hosts fail, or thrash loading and evicting weights, when several do. Any number of calls to a model already in flight are admitted; a call to another model waits until one drains. `0` / unset = unlimited. |
 | `model_switch_max_wait_ms` | How long a waiting model can be held off by new calls to the models in flight: after this long those queue behind it, so it gets its turn. Default `30000`; only meaningful with `max_models_in_flight`. |
+| `models_in_flight_exempt_kinds` | Kinds of model (`chat` / `decision` / `embedder`) that `max_models_in_flight` does not count and never holds back; their own lane still caps them. Setting it without `max_models_in_flight` is refused at load. |
 
 Waiting calls are served round-robin across (tenant, user), so one user's fan-out cannot hold a lane against everyone else.
 
 **Ollama: one model at two context sizes is two models.** Ollama loads a model at one `num_ctx`; the same model requested at another size is reloaded (about 10 s measured) and loses its prompt cache. `max_models_in_flight` counts `model@num_ctx`, so the two do not compute together — and the driver logs a warning, once per combination, when an agent's `max_context_tokens` differs from the provider's pinned `num_ctx`. Set them to the same value.
 
-**Which lane a call takes.** Every model call the server makes is counted in a lane of the provider it goes to, and against that provider's `max_models_in_flight`:
+**Leaving the embedder out.** On a host that fails when two LLMs compute at once, `max_models_in_flight: 1` keeps them apart, but it counts every model, so an embedding then waits for the chat model to finish. When the host runs a small embedding model beside an LLM without trouble (measured on the lab host: chat + embed passed, chat + decision did not), leave it out:
+
+```yaml
+providers:
+  ollama-local:
+    max_models_in_flight: 1
+    models_in_flight_exempt_kinds: [embedder]   # embeddings do not wait for the chat model
+    lanes:
+      embedder: { max_concurrent: 2 }           # still capped by their lane
+```
+
+**Which lane a call takes.** Every model call the server makes is counted in a lane of the provider it goes to, and against that provider's `max_models_in_flight` unless its kind is exempt:
 
 | Call | Lane |
 |---|---|
