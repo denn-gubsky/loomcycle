@@ -183,8 +183,8 @@ func TestAgentOverridable_ReportsWhatTheRunPathAccepts(t *testing.T) {
 	// A static definition that declares no ceiling gets the Agent tool's
 	// default, which is what a run's narrowing is checked against; it has
 	// no version, and declares no provider or model set.
-	_, rep, _ = getOverridable(t, ts, freeBearer, "other", "")
-	if rep.DefID != "" || rep.Fields["max_concurrent_children"].Max != builtin.DefaultMaxConcurrentChildren ||
+	_, rep, body = getOverridable(t, ts, freeBearer, "other", "")
+	if strings.Contains(body, `"def_id"`) || rep.Fields["max_concurrent_children"].Max != builtin.DefaultMaxConcurrentChildren ||
 		rep.Fields["model"].Values != nil || rep.Fields["provider"].Values != nil {
 		t.Errorf("static agent: %+v", rep)
 	}

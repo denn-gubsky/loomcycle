@@ -77,13 +77,18 @@ func (s *Server) handleAgentOverridable(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	p, hasPrincipal := auth.PrincipalFromContext(ctx)
-	writeJSON(w, http.StatusOK, map[string]any{
+	out := map[string]any{
 		"agent":               name,
-		"def_id":              def.DefID,
 		"allow_overrides":     !agentLocksOverrides(def),
 		"restricted_by_token": hasPrincipal && p.Restrictions.Overrides != nil,
 		"fields":              s.overridableFields(def, p, hasPrincipal),
-	})
+	}
+	// Only a dynamic AgentDef has versions; yaml and a registered agent do
+	// not, and an empty id would read as "a version with no id".
+	if def.DefID != "" {
+		out["def_id"] = def.DefID
+	}
+	writeJSON(w, http.StatusOK, out)
 }
 
 // overridableFields has one entry per lockable per-run override
