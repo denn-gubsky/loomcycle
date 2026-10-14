@@ -55,25 +55,38 @@ never supplied. `create` is create-or-rotate (re-supplying the value re-seals it
 instant on (`now >= expires_at`) the credential is refused everywhere it is
 referenced — a `$cred:` header (the MCP call is refused; a closed hook denies), a
 remote peer's or git source's key (the dial or clone is refused), a `$ghapp:` App
-config (no token is minted, a cached one is not served), and a Bash / Bashbox env
-injection (the variable is not set from it; an operator-allowlisted host variable
-of the same name still applies, as when the credential is missing). The error
-names the credential, its scope and when it expired, never the value.
+config (no token is minted, a cached one is not served), a provider / tool key
+override, and a Bash / Bashbox env injection. The error names the credential,
+its scope and when it expired, never the value.
+
+**An expired credential is never replaced by the operator's value.** Where a
+*missing* credential falls back to something the operator supplies, an expired
+one does not:
+
+- **Provider / tool key override** (below): the LLM call fails with the expiry
+  error instead of using the operator's host key, and the provider cascade does
+  not carry it to another provider on the operator's key either. `WebSearch`
+  fails the search the same way. A run restricted from operator keys
+  (`LOOMCYCLE_OPERATOR_KEY_RESTRICTION`) does not count a provider whose key
+  expired as one it can key — the same answer a URL-restricted key gets — so it
+  is routed to a provider it holds a valid key for, or refused
+  `operator_key_restricted`.
+- **Bash / Bashbox env injection**: the variable is left **unset**, and an
+  operator-allowlisted host variable of the same name is removed too; the
+  command's output (Bash) or stderr (the Bashbox host-command fallback) says
+  which variable and why.
+
+Also:
 
 - An expired credential does **not** fall through to a less specific scope: a
   user whose own token expired is refused, not sent under the tenant's token of
   the same name.
-- A provider / tool key override (below) that has expired is treated like a
-  missing one: the run falls back to the operator's host key — unless the run is
-  restricted from operator keys (`LOOMCYCLE_OPERATOR_KEY_RESTRICTION`), in which
-  case routing does not count the expired key and the run is refused
-  `operator_key_restricted`, as with no key at all.
 - The row is **kept**: `get` / `list` show it with `"expired": true` (and
   `"expired": false` while it is still valid).
 - To rotate, `create` it again with the same name. A create without `expires_at`
   clears the expiry; send a new one to keep it time-bound.
-- `expires_at` must lie between the years 1678 and 2262; leave it unset for no
-  expiry.
+- `create` refuses an `expires_at` that is not in the future (such a credential
+  could never be used) or is past the year 2262; leave it unset for no expiry.
 
 ### Restricting where a credential may be sent — `allowed_urls`
 
@@ -191,7 +204,7 @@ request under a different identity with no error anywhere.
 Some credentials aren't referenced with `$cred:` — they **override the operator's
 host key automatically**, keyed by the credential's *name*. Store a credential
 **named after the well-known env var** and loomcycle uses it for that
-tenant/user's requests, falling back to the operator's key when absent. Scope
+tenant/user's requests, falling back to the operator's key when absent (not when expired — see Expiry above). Scope
 precedence is the same **agent > user > tenant**, and the key stays runtime-side —
 the model never sees it.
 
