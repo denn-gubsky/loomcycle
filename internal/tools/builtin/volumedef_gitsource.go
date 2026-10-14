@@ -342,7 +342,7 @@ func (v *VolumeDef) execCreateFromGit(ctx context.Context, in volumeDefInput, mo
 		// The patch shares the volume's byte limit with the tree: what is
 		// written in all stays under it.
 		diff, err = fetched.WriteDiff(ctx, path, diffRel, numstatRel, gitsource.DiffLimits{
-			MaxBytes: maxBytes - tree.Bytes, MaxFileBytes: cfg.MaxFileBytes,
+			MaxBytes: maxBytes - tree.Bytes, MaxFileBytes: cfg.MaxFileBytes, MaxFiles: cfg.MaxFiles,
 			Reserved: []string{gitSourceMetaDir},
 		})
 		if err != nil {

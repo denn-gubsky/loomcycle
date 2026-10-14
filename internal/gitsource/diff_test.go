@@ -5,11 +5,13 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"sort"
 	"strings"
 	"testing"
+	"time"
 )
 
 // branchFixture adds to the fixture a branch "feature" that leaves main at
@@ -57,7 +59,7 @@ func branchFixture(t *testing.T, f *fixture) (feature, mainTip string) {
 	return feature, mainTip
 }
 
-var diffLimits = DiffLimits{MaxBytes: 1 << 20, MaxFileBytes: 1000, Reserved: []string{"_meta"}}
+var diffLimits = DiffLimits{MaxBytes: 1 << 20, MaxFileBytes: 1000, MaxFiles: 1000, Reserved: []string{"_meta"}}
 
 func TestFetchWithMergeBase_WritesADiffThatMatchesGit(t *testing.T) {
 	f := newFixture(t, false, true)
@@ -198,8 +200,20 @@ func TestWriteDiff_LimitsAndMisuse(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer got.Close()
-	if _, err := got.WriteDiff(context.Background(), t.TempDir(), "d.patch", "n.json", DiffLimits{MaxBytes: 50, MaxFileBytes: 1000}); !errors.Is(err, ErrTooLarge) {
+	if _, err := got.WriteDiff(context.Background(), t.TempDir(), "d.patch", "n.json", DiffLimits{MaxBytes: 50, MaxFileBytes: 1000, MaxFiles: 1000}); !errors.Is(err, ErrTooLarge) {
 		t.Errorf("a patch over its limit: %v, want source_too_large", err)
+	}
+	// More changed paths than the limit: refused before anything is diffed.
+	if _, err := got.WriteDiff(context.Background(), t.TempDir(), "d.patch", "n.json", DiffLimits{MaxBytes: 1 << 20, MaxFileBytes: 1000, MaxFiles: 3}); !errors.Is(err, ErrTooLarge) {
+		t.Errorf("more changed paths than allowed: %v, want source_too_large", err)
+	}
+	// The summary counts too: room for the patch alone is not enough.
+	full, err := got.WriteDiff(context.Background(), t.TempDir(), "d.patch", "n.json", diffLimits)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := got.WriteDiff(context.Background(), t.TempDir(), "d.patch", "n.json", DiffLimits{MaxBytes: full.Bytes + 10, MaxFileBytes: 1000, MaxFiles: 1000}); !errors.Is(err, ErrTooLarge) {
+		t.Errorf("room for the patch but not its summary: %v, want source_too_large", err)
 	}
 	for _, rel := range []string{"../out.patch", "/abs.patch", ".git/x", ""} {
 		if _, err := got.WriteDiff(context.Background(), t.TempDir(), rel, "n.json", diffLimits); !errors.Is(err, ErrInvalidRequest) {
@@ -241,5 +255,43 @@ func TestRequestValidate_DiffBase(t *testing.T) {
 		if _, err := r.validate(); !errors.Is(err, ErrInvalidRequest) {
 			t.Errorf("diff base %q: %v, want invalid_request", bad, err)
 		}
+	}
+}
+
+// One file's diff runs inside the clone's deadline. The library allows each
+// file an hour, and a pair of files built to be hard to diff takes seconds
+// at a few hundred kilobytes (5.3s measured at 650 KB) and grows with the
+// square of their size.
+func TestWriteDiff_AHardDiffStopsAtTheDeadline(t *testing.T) {
+	f := newFixture(t, false, true)
+	var a, b strings.Builder
+	for i := 0; i < 60000; i++ {
+		fmt.Fprintf(&a, "line %d\n", i)
+		if i%2 == 0 {
+			fmt.Fprintf(&b, "line %d\n", i)
+		} else {
+			fmt.Fprintf(&b, "other %d\n", i)
+		}
+	}
+	base := f.commit(t, "hard.txt", []byte(a.String()))
+	head := f.commit(t, "hard.txt", []byte(b.String()))
+	req := f.request(t, head)
+	req.DiffBase = base
+	got, err := Fetch(context.Background(), req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer got.Close()
+
+	lim := DiffLimits{MaxBytes: 64 << 20, MaxFileBytes: 4 << 20, MaxFiles: 1000}
+	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
+	defer cancel()
+	start := time.Now()
+	_, err = got.WriteDiff(ctx, t.TempDir(), "d.patch", "n.json", lim)
+	if d := time.Since(start); d > 3*time.Second {
+		t.Errorf("a 300ms deadline was kept to within %s", d)
+	}
+	if !errors.Is(err, ErrTimeout) {
+		t.Errorf("err = %v, want timeout", err)
 	}
 }
