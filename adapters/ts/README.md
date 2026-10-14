@@ -240,9 +240,12 @@ for await (const item of client.streamMemoryChanges({ since, signal: ac.signal }
 
 | Method | Returns | Notes |
 |---|---|---|
-| `hookDef(input)` | `Promise<SubstrateToolResponse>` | Reusable hook definitions (create / fork / get / list / promote / retire / verify / delete). An agent attaches hooks in its own definition (`tools` entries `{name, hooks}` and `hooks`). |
+| `hookDef(input)` | `Promise<SubstrateToolResponse>` | Reusable hook definitions (create / fork / get / list / promote / retire / verify / delete). An agent attaches hooks in its own definition (`tools` entries `{name, hooks}` and `hooks`). `input` is a `HookDefInput` or the loose `SubstrateToolInput` — see [Typed HookDef / ScheduleDef / WebhookDef inputs](#typed-hookdef--scheduledef--webhookdef-inputs-rfc-eo). |
+| `createHookDef(name, overlay, opts?)` | `Promise<HookDefRowResponse>` | `op: "create"` with a strictly-typed `HookDefOverlay` — a misspelt key is a compile error even in a bare literal. Promoted unless `promote: false`. |
+| `forkHookDef(name, overlay, opts?)` | `Promise<HookDefRowResponse>` | `op: "fork"` with a `HookDefForkOverlay` (partial; `null` clears a field). `opts.parentDefId` picks the parent (default: the active version). Not promoted unless `promote: true`. |
+| `ensureHookDef(name, overlay, opts?)` | `Promise<EnsureHookDefResult>` | Idempotent register-if-changed for a `HookDefOverlay` — safe to call on every boot. `changed: false` when the active version already carries the same definition. |
 
-A hook is attached in the agent's definition — a tool entry `{name, hooks}` or the agent's own `hooks` — and loomcycle posts to its URL during the agent's runs. The other side is the **callback receiver**, a small HTTP endpoint your app runs at that URL. The adapter exports the wire shapes (`PreHookCall` / `PostHookCall` / `PreHookResult` / `PostHookResult`) so you can type the handler against the same JSON loomcycle posts.
+A **HookDef** is a stored, versioned hook definition in your tenant: the event it answers, the tools it matches, its body (a `code-js` script run in-process, or a webhook URL), its fail mode and timeout. It fires on nothing by itself. An agent definition, a team definition or a run attaches it by name — in a tool entry `{name, hooks}` or the agent's own `hooks` — as `"scan"` (the active version) or `"scan@3"` (pinned). A hook can also be written inline as a webhook `{name, url, …}` in the definition that attaches it. For a webhook body, loomcycle posts to its URL during the agent's runs. The other side is the **callback receiver**, a small HTTP endpoint your app runs at that URL. The adapter exports the wire shapes (`PreHookCall` / `PostHookCall` / `PreHookResult` / `PostHookResult`) so you can type the handler against the same JSON loomcycle posts.
 
 **Attach it in the agent's definition:**
 
@@ -305,10 +308,78 @@ export async function POST(req: Request) {
 
 **Important constraints**:
 
-- Hook registrations are **in-memory** on the loomcycle server. Re-register on every app startup; the `(owner, name)` idempotency contract makes this safe (replaces in place).
-- Auth flows one-way: loomcycle → your callback URL. Loomcycle does NOT attach a bearer token to callback POSTs by default. If you need to authenticate the caller, validate by source IP or include a shared secret in the `callback_url` path/query (`https://jobember.example/hooks/scan?secret=...`).
+- HookDefs are **stored and versioned**, not in-memory: they survive restarts, and every `create` mints a new version (the active one is what a by-name reference runs). To register from app startup without piling up versions, use `ensureHookDef`, which writes only when the definition changed. `fork` + `promote` (or `forkHookDef(…, {promote: true})`) derives a version from an existing one.
+- Auth flows one-way: loomcycle → your receiver. Loomcycle attaches no credential of its own. To authenticate the caller, send a secret in the hook's `headers` as `$cred:<name>` (a stored credential, resolved for the run when the hook is called) rather than in the URL.
 - `fail_mode: "open"` (default) is right for telemetry hooks where a down receiver shouldn't break tool dispatch. `"closed"` is right for security hooks where a down receiver should fail the tool call (don't let bypassed payloads through).
 - `allow_hosts` in `PreHookResult` is a **trust-sensitive surface** — it widens the agent's outbound network policy for one tool call. Server enforces an operator-yaml allowlist (`hooks.permit_host_widen.owners`); your owner has to be on that list for `allow_hosts` to take effect. See the SECURITY note in `internal/hooks/types.go` before using.
+
+### Typed HookDef / ScheduleDef / WebhookDef inputs (RFC EO)
+
+**For checked keys, use the create / fork methods.** They take only the typed overlay, so a bare object literal is checked against it:
+
+| Method | Returns | Notes |
+|---|---|---|
+| `createHookDef(name, overlay, opts?)` / `forkHookDef(name, overlay, opts?)` | `Promise<HookDefRowResponse>` | See [Hook management](#hook-management-v0818). Any unknown key is a compile error. |
+| `createScheduleDef(name, overlay, opts?)` / `forkScheduleDef(name, overlay, opts?)` | `Promise<ScheduleDefRowResponse>` | Both promoted unless `promote: false`; a fork defaults to the active version, or the yaml template of `name`. |
+| `createWebhookDef(name, overlay, opts?)` / `forkWebhookDef(name, overlay, opts?)` | `Promise<WebhookDefRowResponse>` | Same defaults as the schedule pair. |
+
+`opts` is `{description?, promote?, signal?}`, plus `parentDefId?` on a fork. `promote` is sent only when you set it, so each def's own default applies otherwise.
+
+The op-discriminated methods keep working as before. `hookDef`, `scheduleDef` and `webhookDef` accept a typed per-op input — `HookDefInput`, `ScheduleDefInput`, `WebhookDefInput` — or the loose `SubstrateToolInput` they always took, so existing calls compile unchanged. There the checking is opt-in: annotate the input (or use `satisfies`). A bare object literal with a misspelt key still compiles, because it matches the loose shape.
+
+| Method | Returns | Notes |
+|---|---|---|
+| `scheduleDef(input)` | `Promise<SubstrateToolResponse>` | Scheduled-run definitions (create / fork / get / list / retire / add_hook / remove_hook). Mirrors `POST /v1/_scheduledef`. `add_hook` / `remove_hook` are expressible only through `ScheduleDefInput`. |
+| `webhookDef(input)` | `Promise<SubstrateToolResponse>` | Inbound webhook definitions (create / fork / get / list / retire). Mirrors `POST /v1/_webhookdef`. |
+
+- **`HookDefOverlay` is closed.** The server decodes a HookDef overlay strictly and refuses an unknown key, so the type has no index signature: a misspelt key is a compile error. `body` is a union on `kind` — `{kind: "code-js", code}` or `{kind: "http", url, headers?}` — because the server refuses a body that mixes them. A fork takes `HookDefForkOverlay`: every field optional, and `null` clears one.
+- **`ScheduleDefOverlay` and `WebhookDefOverlay` stay open** (`[extra: string]: unknown`): the server decodes them loosely and drops keys it does not know. So even through `createScheduleDef` / `createWebhookDef`, a misspelt key compiles. What fails is a wrong type or value on a declared key, such as `concurrency_policy: "skip"`, `delivery: "run"` on a webhook, or an `mcp.call` hook without `tool`. They leave out the fields the server stamps itself (`operator_key_restricted`, `isolated`, `capture_disabled`, and on schedules `operator_layer`) — an overlay can neither set nor clear those.
+- `on_complete` entries on both are a `ScheduledRunHook`: `channel.publish` (`channel`), `mcp.call` (`server` + `tool`) or `memory.set` (`scope` + `key`).
+
+```ts
+await client.createHookDef("scan-webfetch", {
+  event: "post",
+  match: { tools: ["WebFetch"] },
+  body: { kind: "http", url: "https://jobember.example/hooks/scan", headers: { Authorization: "$cred:scan" } },
+  fail_mode: "open",
+  timeout_ms: 3000,
+});
+
+await client.createScheduleDef("weekly-digest", {
+  agent: "digest",
+  schedule: "0 6 * * 1",
+  timezone: "Europe/Berlin",
+  prompt: [{ role: "user", content: [{ type: "trusted-text", text: "Write this week's digest." }] }],
+  on_complete: [{ kind: "channel.publish", channel: "digests" }],
+});
+
+await client.createWebhookDef("gh-push", {
+  delivery: "spawn",
+  agent: "ingest",
+  auth: { kind: "hmac", algorithm: "sha256", header: "X-Hub-Signature-256", signing_secret_env: "LOOMCYCLE_GH_WEBHOOK_SECRET" },
+  payload_mapping: { goal: "$.head_commit.message" },
+});
+
+// The op-discriminated form, checked by annotation:
+import type { ScheduleDefInput } from "@loomcycle/client";
+const addHook: ScheduleDefInput = {
+  op: "add_hook",
+  def_id: "sdf_…",
+  hook: { kind: "memory.set", scope: "user", key: "last_digest" },
+};
+await client.scheduleDef(addHook);
+```
+
+**Register a HookDef on every boot** with `ensureHookDef`. A HookDef `create` always mints a new version, so this reads the active version first and compares its stored definition with yours, normalized the way the server stores it (`fail_mode` defaults to `"open"`; empty `match.tools`, description, headers and timeout are dropped). Equal → no write. A difference it cannot see through mints a redundant version rather than skipping a real change; `opts.description` is a rationale, not part of the definition, and does not count as a change.
+
+```ts
+const r = await client.ensureHookDef("scan-webfetch", {
+  event: "post",
+  match: { tools: ["WebFetch"] },
+  body: { kind: "http", url: "https://jobember.example/hooks/scan" },
+});
+console.log(r.changed ? `registered v${r.version}` : "already current");
+```
 
 ### Substrate admin: AgentDef + SkillDef (v0.8.22)
 

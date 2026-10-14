@@ -79,7 +79,13 @@
  *     mcpServerDef(input): Promise<SubstrateToolResponse>
  *     mcpServerDefVerify(name, sha): Promise<MCPServerDefVerifyResult>   // v0.18.0
  *     ensureMcpServer(opts): Promise<EnsureMcpServerResult>              // v0.18.0 — idempotent register-if-changed
- *     scheduleDef(input): Promise<SubstrateToolResponse>
+ *     scheduleDef(input): Promise<SubstrateToolResponse>                // input: ScheduleDefInput | SubstrateToolInput
+ *     webhookDef(input): Promise<SubstrateToolResponse>                 // input: WebhookDefInput | SubstrateToolInput
+ *     hookDef(input): Promise<SubstrateToolResponse>                    // input: HookDefInput | SubstrateToolInput
+ *     ensureHookDef(name, overlay, opts?): Promise<EnsureHookDefResult>  // idempotent register-if-changed
+ *     createHookDef / forkHookDef(name, overlay, opts?)                  // overlay strictly typed, no loose fallback
+ *     createScheduleDef / forkScheduleDef(name, overlay, opts?)          // ditto (overlay open: types of known keys checked)
+ *     createWebhookDef / forkWebhookDef(name, overlay, opts?)            // ditto
  *
  *     // Def name enumeration (tenant-scoped; opts.tenant = admin focus)
  *     listAgentDefNames / listSkillDefNames / listHookDefNames / listMcpServerDefNames /
@@ -466,6 +472,30 @@ export type {
   ToolHooksByTool,
   EnsureCodeAgentOptions,
   EnsureCodeAgentResult,
+  // Typed HookDef / ScheduleDef / WebhookDef inputs (RFC EO)
+  CreateDefOptions,
+  ForkDefOptions,
+  EnsureHookDefOptions,
+  EnsureHookDefResult,
+  HookDefBody,
+  HookDefForkOverlay,
+  HookDefInput,
+  HookDefMatch,
+  HookDefOverlay,
+  HookDefRowResponse,
+  HookDefVerifyResult,
+  ScheduleDefInput,
+  ScheduleDefOverlay,
+  ScheduleDefRowResponse,
+  ScheduledRunHook,
+  ScheduledRunPromptContent,
+  ScheduledRunPromptSegment,
+  WebhookDefAuth,
+  WebhookDefInput,
+  WebhookDefOverlay,
+  WebhookDefRateLimit,
+  WebhookDefRowResponse,
+  WebhookDefSyncResponse,
   // Library v2 enumeration (v0.10.3)
   LibraryAgentDefinition,
   LibraryEntry,

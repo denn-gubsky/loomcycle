@@ -4750,6 +4750,427 @@ export interface MCPServerDefVerifyResult {
   deployed: boolean;
 }
 
+// ---- Typed HookDef / ScheduleDef / WebhookDef inputs (RFC EO) ----
+//
+// The overlays below mirror the Go shapes the server decodes them into
+// (hooks.Def, mergedScheduleDef, mergedWebhookDef). A Go test
+// (internal/tools/builtin/def_overlay_ts_parity_test.go) reflects over those
+// structs and fails when a field is added on either side without the other.
+//
+// hookDef / scheduleDef / webhookDef accept these OR the loose
+// SubstrateToolInput, so existing callers compile unchanged — and a bare
+// object literal with a misspelt key still matches the loose shape there. The
+// create / fork methods (createHookDef, forkHookDef, createScheduleDef, …) and
+// ensureHookDef take ONLY the typed overlay, so a bare literal is checked.
+
+/** A HookDef's body: a code-js script the server runs in-process, or a webhook
+ *  it calls. The server refuses a code-js body carrying a url or headers, and
+ *  an http body carrying code. */
+export type HookDefBody =
+  | {
+      kind: "code-js";
+      /** A script defining `function hook(ev)` that returns the decision. */
+      code: string;
+    }
+  | {
+      kind: "http";
+      /** http:// or https://. */
+      url: string;
+      /** Sent with each call. A value may name a credential as
+       *  `$cred:<name>`, resolved for the run when the hook is called — keep
+       *  secrets there, not in the URL or a literal value. */
+      headers?: Record<string, string>;
+    };
+
+/** Narrows a tool-event hook (`pre` / `post` / `post_failure`) within what it
+ *  is attached to. The server refuses it on any other event. */
+export type HookDefMatch = {
+  /** Exact tool names or trailing-`*` globs; empty = every tool. */
+  tools?: string[];
+};
+
+/** A HookDef's definition — the `overlay` of a `hookDef` create.
+ *
+ *  CLOSED on purpose (no index signature): the server decodes the overlay
+ *  strictly and refuses any key it does not know, so an unknown key here is a
+ *  compile error rather than a runtime refusal. A type alias rather than an
+ *  interface so it stays assignable to the loose `SubstrateToolInput.overlay`. */
+export type HookDefOverlay = {
+  /** Shown to whoever the hook denies, holds or rewrites — including a tenant
+   *  that did not write it. The body is never shown. At most 4 KiB. */
+  description?: string;
+  /** What the hook answers. Wherever it is attached, it is attached under this
+   *  event; `channel_publish` is a channel's own. */
+  event: HookEvent;
+  match?: HookDefMatch;
+  body: HookDefBody;
+  /** `"open"` (default): a failing hook lets the call through. `"closed"`: it
+   *  stops it. */
+  fail_mode?: HookFailMode;
+  /** Webhook: the whole call (default 5 s, max 60 s). code-js: each run of the
+   *  script (default 50 ms, max 1 s). */
+  timeout_ms?: number;
+};
+
+/** The `overlay` of a `hookDef` fork: each top-level field given replaces the
+ *  parent's, and `null` clears one (it decodes to the field's zero value). */
+export type HookDefForkOverlay = {
+  [K in keyof HookDefOverlay]?: HookDefOverlay[K] | null;
+};
+
+/** Typed input for {@link LoomcycleClient.hookDef}, one shape per op. */
+export type HookDefInput =
+  | {
+      op: "create";
+      name: string;
+      overlay: HookDefOverlay;
+      /** Free-text rationale (distinct from `overlay.description`). */
+      description?: string;
+      /** Default true. */
+      promote?: boolean;
+    }
+  | {
+      op: "fork";
+      name: string;
+      /** Default: the active version of `name` in your tenant. */
+      parent_def_id?: string;
+      overlay?: HookDefForkOverlay;
+      description?: string;
+      /** Default false. */
+      promote?: boolean;
+    }
+  /** By `def_id`, or the active version of `name`. */
+  | { op: "get"; name?: string; def_id?: string }
+  | { op: "list"; name: string }
+  | { op: "promote"; def_id: string }
+  | { op: "retire"; def_id: string; retired: boolean }
+  | { op: "verify"; name: string; content_sha256?: string }
+  | { op: "delete"; name: string };
+
+/** One HookDef version, as create / fork / get return it (`list` returns
+ *  `{name, versions: HookDefRowResponse[]}`). */
+export interface HookDefRowResponse {
+  def_id: string;
+  name: string;
+  version: number;
+  parent_def_id?: string;
+  description?: string;
+  created_at: string;
+  created_by_agent_id?: string;
+  retired: boolean;
+  /** "sha256:" + 64 hex chars, over the name and the normalized definition. */
+  content_sha256: string;
+  tenant_id?: string;
+  /** The stored definition, normalized: `fail_mode` filled in, empty fields
+   *  left out. */
+  definition: HookDefOverlay;
+  /** On create / fork: whether the new version was made active. */
+  promoted?: boolean;
+}
+
+/** Response shape for `HookDef verify`; same semantics as
+ *  {@link MCPServerDefVerifyResult}. Asking without `content_sha256` is how to
+ *  learn whether `name` is deployed at all: `deployed: false`, never an error. */
+export interface HookDefVerifyResult {
+  matches: boolean;
+  current_sha256: string;
+  current_def_id: string;
+  version: number;
+  name: string;
+  deployed: boolean;
+}
+
+/** Options for the strictly-typed create methods
+ *  ({@link LoomcycleClient.createHookDef},
+ *  {@link LoomcycleClient.createScheduleDef},
+ *  {@link LoomcycleClient.createWebhookDef}). */
+export interface CreateDefOptions {
+  /** Free-text rationale stored on the version (not part of the definition). */
+  description?: string;
+  /** Make the new version active. Server default: true. */
+  promote?: boolean;
+  signal?: AbortSignal;
+}
+
+/** Options for the strictly-typed fork methods. */
+export interface ForkDefOptions extends CreateDefOptions {
+  /** The version to fork. Default: the active version of the name in your
+   *  tenant (ScheduleDef / WebhookDef fall back to the yaml template of that
+   *  name). Server default for `promote` on a fork: false for HookDef, true
+   *  for ScheduleDef and WebhookDef. */
+  parentDefId?: string;
+}
+
+/** Options for {@link LoomcycleClient.ensureHookDef}. */
+export interface EnsureHookDefOptions {
+  /** Free-text rationale stored on a NEW version. Not part of the definition,
+   *  so changing only this does not mint one. */
+  description?: string;
+  signal?: AbortSignal;
+}
+
+/** Result of {@link LoomcycleClient.ensureHookDef}. */
+export interface EnsureHookDefResult {
+  name: string;
+  defId: string;
+  version: number;
+  /** True when this call created a version; false when the active version
+   *  already carried the same definition. */
+  changed: boolean;
+}
+
+/** One `on_complete` entry of a ScheduleDef or WebhookDef: what the server
+ *  does after the triggered run finishes. Mirrors config.ScheduledRunHook. */
+export type ScheduledRunHook =
+  | {
+      kind: "channel.publish";
+      channel: string;
+      payload?: Record<string, unknown>;
+    }
+  | {
+      kind: "mcp.call";
+      server: string;
+      tool: string;
+      args?: Record<string, unknown>;
+    }
+  | {
+      kind: "memory.set";
+      scope: string;
+      key: string;
+      /** The value written. */
+      payload?: Record<string, unknown>;
+    };
+
+/** One block of a scheduled run's prompt. Only text survives into the run, so
+ *  there is no image form here. */
+export interface ScheduledRunPromptContent {
+  /** Default `"trusted-text"`. `"untrusted-block"` wraps the text as external
+   *  input. */
+  type?: "trusted-text" | "untrusted-block";
+  text: string;
+}
+
+/** One segment of a scheduled run's prompt. */
+export interface ScheduledRunPromptSegment {
+  role: "system" | "user";
+  content: ScheduledRunPromptContent[];
+}
+
+/** The `overlay` of a `scheduleDef` create / fork. On fork, a field the
+ *  overlay leaves out keeps the parent's; the credential maps merge key by key.
+ *
+ *  The `[extra]` tail stays because the server decodes the overlay loosely and
+ *  ignores keys it does not know — including the fields it stamps itself
+ *  (`operator_key_restricted`, `isolated`, `capture_disabled`,
+ *  `operator_layer`), which an overlay can neither set nor clear. */
+export interface ScheduleDefOverlay {
+  /** `"run"` (default) invokes `agent`; `"channel"` publishes a tick to
+   *  `channel` and starts no run; `"team"` starts a detached walk of `team`. */
+  delivery?: "run" | "channel" | "team";
+  channel?: string;
+  agent?: string;
+  prompt?: ScheduledRunPromptSegment[];
+  /** A 5-field cron expression. Setting it clears `user_tier_schedules`. */
+  schedule?: string;
+  /** Cron per user tier, for a template a fork picks from with `user_tier`.
+   *  Setting it clears `schedule`. */
+  user_tier_schedules?: Record<string, string>;
+  required_credentials?: string[];
+  /** IANA zone the cron is read in, e.g. `"Europe/Berlin"`. Default UTC. */
+  timezone?: string;
+  enabled?: boolean;
+  /** 0–1000: run the newest N slots missed during an outage, in slot order.
+   *  0 (default) collapses them into one fire. */
+  catch_up_max?: number;
+  /** N > 0 retires the def after its Nth fire; 0 = unbounded (a fork sends 0
+   *  to lift a parent's cap). */
+  max_fires?: number;
+  user_id?: string;
+  /** What a slot does while the previous run is still going. Default
+   *  `"forbid"`; refused on `delivery: "channel"`. */
+  concurrency_policy?: "forbid" | "allow" | "replace";
+  user_tier?: string;
+  /** Credential key → value, handed to the fired run. */
+  user_credentials?: Record<string, string>;
+  /** Credential key → env-var NAME the scheduler reads it from (the variable
+   *  must be on LOOMCYCLE_SCHEDULER_ENV_ALLOWLIST). */
+  user_credentials_from_env?: Record<string, string>;
+  on_complete?: ScheduledRunHook[];
+  /** Non-secret metadata the agent receives as trusted. */
+  metadata?: Record<string, unknown>;
+  /** The tenant fired runs execute in. Your own unless you are an admin;
+   *  omit it to use yours. */
+  tenant_id?: string;
+  /** `delivery: "team"` only: the team, its variables as literals, and the
+   *  walk's optional input. */
+  team?: string;
+  vars?: Record<string, string>;
+  input?: string;
+  [extra: string]: unknown;
+}
+
+/** Typed input for {@link LoomcycleClient.scheduleDef}, one shape per op. */
+export type ScheduleDefInput =
+  | {
+      op: "create" | "fork";
+      name: string;
+      /** fork only. Default: the active version of `name`, or its yaml
+       *  template. */
+      parent_def_id?: string;
+      overlay?: ScheduleDefOverlay;
+      description?: string;
+      /** Default true on both create and fork. */
+      promote?: boolean;
+    }
+  | { op: "get"; def_id: string }
+  | { op: "list"; name: string }
+  | { op: "retire"; def_id: string; retired: boolean }
+  /** Fork `def_id` with `hook` appended to its `on_complete`. */
+  | { op: "add_hook"; def_id: string; hook: ScheduledRunHook }
+  /** Fork `def_id` without its `on_complete[hook_index]` (0-based). */
+  | { op: "remove_hook"; def_id: string; hook_index: number };
+
+/** One ScheduleDef version, as create / fork return it. */
+export interface ScheduleDefRowResponse {
+  def_id: string;
+  name: string;
+  version: number;
+  parent_def_id?: string;
+  description?: string;
+  created_at: string;
+  created_by_agent_id?: string;
+  retired: boolean;
+  bootstrapped_from_static: boolean;
+  /** The stored definition, including the fields the server stamps. */
+  definition: ScheduleDefOverlay;
+  /** Whether the new version was made active. */
+  promoted?: boolean;
+  /** Credential keys a snapshot stripped that this write did not re-supply;
+   *  the def stays disabled until they are. */
+  disabled_until_credentials_supplied?: string[];
+  /** Why a key you did name did not count, one line per key. */
+  unusable_credentials?: string[];
+}
+
+/** How a WebhookDef authenticates an inbound request. */
+export interface WebhookDefAuth {
+  /** `"hmac"` (default) verifies a body signature; `"bearer"` a token;
+   *  `"none"` neither. */
+  kind?: "hmac" | "bearer" | "none";
+  /** hmac only; the only one implemented. */
+  algorithm?: "sha256";
+  /** The header carrying the signature. */
+  header?: string;
+  /** Env-var NAME holding the hmac secret — never the secret itself. */
+  signing_secret_env?: string;
+  /** The header naming each delivery, for dedup; without it a body hash is
+   *  the delivery's identity. */
+  delivery_id_header?: string;
+  /** Env-var NAME holding the bearer token — never the token itself. */
+  bearer_token_env?: string;
+  /** The verification secret as a stored credential, `"$cred:<name>"` — a
+   *  tenant credential of the definition's own tenant, resolved on each
+   *  delivery so a rotation needs no restart. Takes the place of
+   *  `signing_secret_env` / `bearer_token_env`: set one form, not both. A
+   *  literal is refused. */
+  secret?: string;
+  /** The previous secret during a rotation, also `"$cred:<name>"`: a delivery
+   *  verified by either is accepted. */
+  previous_secret?: string;
+}
+
+/** Inbound request rate bound for one webhook. */
+export interface WebhookDefRateLimit {
+  requests_per_minute?: number;
+  burst?: number;
+}
+
+/** Hold the inbound request open until the run finishes (or the timeout). */
+export interface WebhookDefSyncResponse {
+  enabled?: boolean;
+  timeout_ms?: number;
+}
+
+/** The `overlay` of a `webhookDef` create / fork. On fork, a field the overlay
+ *  leaves out keeps the parent's; naming exactly one of `agent` / `channel` /
+ *  `team` clears the other two.
+ *
+ *  The `[extra]` tail stays for now: the server decodes the overlay loosely
+ *  and ignores keys it does not know — including the fields it stamps itself
+ *  (`operator_key_restricted`, `isolated`, `capture_disabled`). */
+export interface WebhookDefOverlay {
+  /** An overlay can only turn a webhook on; to turn one off, restate it. */
+  enabled?: boolean;
+  /** `"spawn"` (default) starts a run of `agent`; `"channel"` publishes the
+   *  body to `channel`; `"team"` starts a detached walk of `team` with the body
+   *  as its input. */
+  delivery?: "spawn" | "channel" | "team";
+  agent?: string;
+  channel?: string;
+  auth?: WebhookDefAuth;
+  rate_limit?: WebhookDefRateLimit;
+  body_size_limit_bytes?: number;
+  /** Credential key → env-var NAME the receiver reads it from. */
+  user_credentials_from_env?: Record<string, string>;
+  /** Credential key → value, handed to the run. */
+  user_credentials?: Record<string, string>;
+  /** Pins the started run's user tier; a delivery never chooses it. Must be
+   *  one of the server's user tiers. */
+  user_tier?: string;
+  /** Non-secret metadata the agent receives as trusted. */
+  metadata?: Record<string, unknown>;
+  /** The tenant spawned runs execute in — taken from the def, never from the
+   *  payload. Your own unless you are an admin; omit it to use yours. */
+  tenant_id?: string;
+  /** Target → JSONPath into the request body (`$`, `.key` and `[N]` only).
+   *  Targets: `goal`, `user_id`, `user_credentials.<KEY>`,
+   *  `run_metadata.<key>`. */
+  payload_mapping?: Record<string, string>;
+  sync_response?: WebhookDefSyncResponse;
+  on_complete?: ScheduledRunHook[];
+  /** `delivery: "team"` only: the team, and each variable as a JSONPath into
+   *  the body (`$`, `.key` and `[N]` only). */
+  team?: string;
+  vars?: Record<string, string>;
+  [extra: string]: unknown;
+}
+
+/** One WebhookDef version, as create / fork return it. */
+export interface WebhookDefRowResponse {
+  def_id: string;
+  name: string;
+  version: number;
+  parent_def_id?: string;
+  description?: string;
+  created_at: string;
+  created_by_agent_id?: string;
+  retired: boolean;
+  bootstrapped_from_static: boolean;
+  /** The stored definition, including the fields the server stamps. */
+  definition: WebhookDefOverlay;
+  promoted?: boolean;
+  /** Same meaning as on {@link ScheduleDefRowResponse}. */
+  disabled_until_credentials_supplied?: string[];
+  unusable_credentials?: string[];
+}
+
+/** Typed input for {@link LoomcycleClient.webhookDef}, one shape per op. */
+export type WebhookDefInput =
+  | {
+      op: "create" | "fork";
+      name: string;
+      /** fork only. Default: the active version of `name`, or its yaml
+       *  template. */
+      parent_def_id?: string;
+      overlay?: WebhookDefOverlay;
+      description?: string;
+      /** Default true on both create and fork. */
+      promote?: boolean;
+    }
+  | { op: "get"; def_id: string }
+  | { op: "list"; name: string }
+  | { op: "retire"; def_id: string; retired: boolean };
+
 // ---- v0.10.3 Library v2 — unified yaml + substrate enumeration ----
 //
 // Wraps GET /v1/_library/{agents,skills,mcp-servers} (shipped in v0.9.3).

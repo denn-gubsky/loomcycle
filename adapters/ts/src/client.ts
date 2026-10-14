@@ -76,6 +76,21 @@ import type {
   CreateSnapshotOptions,
   EnsureCodeAgentOptions,
   EnsureCodeAgentResult,
+  EnsureHookDefOptions,
+  EnsureHookDefResult,
+  HookDefInput,
+  HookDefOverlay,
+  HookDefRowResponse,
+  HookDefVerifyResult,
+  CreateDefOptions,
+  ForkDefOptions,
+  HookDefForkOverlay,
+  ScheduleDefInput,
+  ScheduleDefOverlay,
+  ScheduleDefRowResponse,
+  WebhookDefInput,
+  WebhookDefOverlay,
+  WebhookDefRowResponse,
   EnsureMcpServerOptions,
   EnsureMcpServerResult,
   HealthResponse,
@@ -2139,12 +2154,51 @@ export class LoomcycleClient {
    *  Raises {@link SubstrateToolRefusedError} on tool-level refusals
    *  (static-name collision, missing required credential, invalid
    *  cron, etc.); {@link InvalidArgumentError} on 400 (malformed
-   *  JSON); {@link AuthError} on 401. */
+   *  JSON); {@link AuthError} on 401.
+   *
+   *  Annotate the input as {@link ScheduleDefInput} to have the overlay and
+   *  each op's fields checked (including `add_hook` / `remove_hook`, which the
+   *  loose {@link SubstrateToolInput} does not list); a loose input is sent
+   *  as it is. For create / fork, {@link LoomcycleClient.createScheduleDef} /
+   *  {@link LoomcycleClient.forkScheduleDef} check a bare literal too. */
   async scheduleDef(
-    input: SubstrateToolInput,
+    input: ScheduleDefInput | SubstrateToolInput,
     opts?: { signal?: AbortSignal },
   ): Promise<SubstrateToolResponse> {
     return postJSON<SubstrateToolResponse>(this.ctx, "/v1/_scheduledef", input, opts);
+  }
+
+  /** `scheduleDef({op: "create"})` with the overlay typed and no loose
+   *  fallback. {@link ScheduleDefOverlay} stays OPEN (the server drops keys it
+   *  does not know), so a misspelt key still compiles here; what fails is a
+   *  wrong type or value on a key it declares (`concurrency_policy: "skip"`,
+   *  an `on_complete` entry missing its `tool`). New versions are promoted
+   *  unless `promote: false`. */
+  async createScheduleDef(
+    name: string,
+    overlay: ScheduleDefOverlay,
+    opts?: CreateDefOptions,
+  ): Promise<ScheduleDefRowResponse> {
+    return (await this.scheduleDef(
+      defWriteInput("create", name, overlay, opts),
+      signalOpts(opts),
+    )) as ScheduleDefRowResponse;
+  }
+
+  /** `scheduleDef({op: "fork"})`, typed like
+   *  {@link LoomcycleClient.createScheduleDef}. A field the overlay leaves out
+   *  keeps the parent's; the credential maps merge key by key. Forks the
+   *  active version of `name` (or its yaml template) unless `parentDefId` is
+   *  given; promoted unless `promote: false`. */
+  async forkScheduleDef(
+    name: string,
+    overlay: ScheduleDefOverlay,
+    opts?: ForkDefOptions,
+  ): Promise<ScheduleDefRowResponse> {
+    return (await this.scheduleDef(
+      defWriteInput("fork", name, overlay, opts),
+      signalOpts(opts),
+    )) as ScheduleDefRowResponse;
   }
 
   /** Invoke the v1.x RFC G A2AServerCardDef substrate tool over HTTP.
@@ -2196,12 +2250,51 @@ export class LoomcycleClient {
    *
    *  Raises {@link SubstrateToolRefusedError} on tool-level refusals;
    *  {@link InvalidArgumentError} on 400 (malformed JSON);
-   *  {@link AuthError} on 401. */
+   *  {@link AuthError} on 401.
+   *
+   *  Annotate the input as {@link WebhookDefInput} to have the overlay and
+   *  each op's fields checked; a loose input is sent as it is. For create /
+   *  fork, {@link LoomcycleClient.createWebhookDef} /
+   *  {@link LoomcycleClient.forkWebhookDef} check a bare literal too. */
   async webhookDef(
-    input: SubstrateToolInput,
+    input: WebhookDefInput | SubstrateToolInput,
     opts?: { signal?: AbortSignal },
   ): Promise<SubstrateToolResponse> {
     return postJSON<SubstrateToolResponse>(this.ctx, "/v1/_webhookdef", input, opts);
+  }
+
+  /** `webhookDef({op: "create"})` with the overlay typed and no loose
+   *  fallback. {@link WebhookDefOverlay} stays OPEN for now (the server drops
+   *  keys it does not know), so a misspelt key still compiles here; what
+   *  fails is a wrong type or value on a key it declares (`delivery: "run"`,
+   *  `auth.kind: "basic"`, a misspelt key inside `rate_limit`). Promoted
+   *  unless `promote: false`. */
+  async createWebhookDef(
+    name: string,
+    overlay: WebhookDefOverlay,
+    opts?: CreateDefOptions,
+  ): Promise<WebhookDefRowResponse> {
+    return (await this.webhookDef(
+      defWriteInput("create", name, overlay, opts),
+      signalOpts(opts),
+    )) as WebhookDefRowResponse;
+  }
+
+  /** `webhookDef({op: "fork"})`, typed like
+   *  {@link LoomcycleClient.createWebhookDef}. A field the overlay leaves out
+   *  keeps the parent's; naming exactly one of `agent` / `channel` / `team`
+   *  clears the other two. Forks the active version of `name` (or its yaml
+   *  template) unless `parentDefId` is given; promoted unless
+   *  `promote: false`. */
+  async forkWebhookDef(
+    name: string,
+    overlay: WebhookDefOverlay,
+    opts?: ForkDefOptions,
+  ): Promise<WebhookDefRowResponse> {
+    return (await this.webhookDef(
+      defWriteInput("fork", name, overlay, opts),
+      signalOpts(opts),
+    )) as WebhookDefRowResponse;
   }
 
   /** Invoke the RFC I MR-3a MemoryBackendDef substrate tool over HTTP.
@@ -2240,12 +2333,99 @@ export class LoomcycleClient {
    *  matches, its body (code-js or a webhook URL), fail mode and timeout.
    *  Tenant-confined like agentDef. A HookDef fires on nothing by itself; an
    *  agent definition, a team definition or a run names it. Mirrors
-   *  POST /v1/_hookdef. */
+   *  POST /v1/_hookdef.
+   *
+   *  Annotate the input as {@link HookDefInput} to have the overlay checked
+   *  against the definition the server decodes STRICTLY — an unknown overlay
+   *  key is then a compile error instead of a refusal. A loose
+   *  {@link SubstrateToolInput} is sent as it is — including a bare literal
+   *  with a misspelt key, which falls through to that loose shape. To have a
+   *  bare literal checked, use {@link LoomcycleClient.createHookDef} /
+   *  {@link LoomcycleClient.forkHookDef}. */
   async hookDef(
-    input: SubstrateToolInput,
+    input: HookDefInput | SubstrateToolInput,
     opts?: { signal?: AbortSignal },
   ): Promise<SubstrateToolResponse> {
     return postJSON<SubstrateToolResponse>(this.ctx, "/v1/_hookdef", input, opts);
+  }
+
+  /** `hookDef({op: "create"})` with no loose fallback: `overlay` is the
+   *  CLOSED {@link HookDefOverlay}, so any key the server would refuse is a
+   *  compile error, even in a bare literal. Every create mints a new version
+   *  (use {@link LoomcycleClient.ensureHookDef} to register only on change);
+   *  promoted unless `promote: false`. */
+  async createHookDef(
+    name: string,
+    overlay: HookDefOverlay,
+    opts?: CreateDefOptions,
+  ): Promise<HookDefRowResponse> {
+    return (await this.hookDef(
+      defWriteInput("create", name, overlay, opts),
+      signalOpts(opts),
+    )) as HookDefRowResponse;
+  }
+
+  /** `hookDef({op: "fork"})`, closed like
+   *  {@link LoomcycleClient.createHookDef}. Each top-level field given replaces
+   *  the parent's; `null` clears one. Forks the active version of `name` in
+   *  your tenant unless `parentDefId` is given. NOT promoted unless
+   *  `promote: true` — authoring and putting in force are two steps. */
+  async forkHookDef(
+    name: string,
+    overlay: HookDefForkOverlay,
+    opts?: ForkDefOptions,
+  ): Promise<HookDefRowResponse> {
+    return (await this.hookDef(
+      defWriteInput("fork", name, overlay, opts),
+      signalOpts(opts),
+    )) as HookDefRowResponse;
+  }
+
+  /** Register a HookDef idempotently — the register-on-every-boot
+   *  convenience, sibling of {@link LoomcycleClient.ensureMcpServer}.
+   *
+   *  Unlike MCPServerDef and AgentDef, a HookDef `create` is NOT
+   *  content-addressed: every create mints a new version. And the hash
+   *  `verify` compares is computed over the server's own JSON encoding of the
+   *  definition, which this client cannot reproduce byte for byte. So instead
+   *  this reads the active version (`verify` for its def_id — it answers
+   *  `deployed: false` rather than raising — then `get`) and compares its
+   *  stored definition with `overlay`, both normalized the way the server
+   *  normalizes (`fail_mode` defaults to `"open"`, an empty `match.tools`,
+   *  description, header map or timeout is dropped). Equal → no write,
+   *  `changed: false`. Otherwise `create` with the default promote, which
+   *  makes the new version active.
+   *
+   *  The normalization only collapses what the server collapses, so a real
+   *  change is never skipped; should the server come to normalize something
+   *  more, the cost is a redundant version, not a lost one. The rationale
+   *  in {@link EnsureHookDefOptions.description} is not part of the
+   *  definition and does not count as a change. */
+  async ensureHookDef(
+    name: string,
+    overlay: HookDefOverlay,
+    opts?: EnsureHookDefOptions,
+  ): Promise<EnsureHookDefResult> {
+    const callOpts = signalOpts(opts);
+    const verified = (await this.hookDef(
+      { op: "verify", name },
+      callOpts,
+    )) as HookDefVerifyResult;
+    if (verified.deployed && verified.current_def_id) {
+      // By def_id, not name: the version verify reported, even if another
+      // writer promotes a different one in between.
+      const active = (await this.hookDef(
+        { op: "get", def_id: verified.current_def_id },
+        callOpts,
+      )) as HookDefRowResponse;
+      if (sameJSON(normalizeHookDef(active.definition), normalizeHookDef(overlay))) {
+        return { name, defId: active.def_id, version: active.version, changed: false };
+      }
+    }
+    const input: HookDefInput = { op: "create", name, overlay };
+    if (opts?.description) input.description = opts.description;
+    const row = (await this.hookDef(input, callOpts)) as HookDefRowResponse;
+    return { name, defId: row.def_id, version: row.version, changed: true };
   }
 
   /** OperatorTokenDef substrate ops (create/rotate/retire/get/list) —
@@ -3910,6 +4090,75 @@ async function* parseRunStateSSE(
       else if (line.startsWith("data:")) data = line.slice("data:".length).trim();
     }
   }
+}
+
+/** The wire input of a typed create / fork. `promote` goes out only when the
+ *  caller set it — false included — so the server's per-def default applies
+ *  otherwise. */
+function defWriteInput(
+  op: "create" | "fork",
+  name: string,
+  overlay: Record<string, unknown>,
+  opts?: ForkDefOptions,
+): SubstrateToolInput {
+  const input: SubstrateToolInput = { op, name, overlay };
+  if (opts?.parentDefId) input.parent_def_id = opts.parentDefId;
+  if (opts?.description) input.description = opts.description;
+  if (opts?.promote !== undefined) input.promote = opts.promote;
+  return input;
+}
+
+function signalOpts(opts?: { signal?: AbortSignal }): { signal?: AbortSignal } | undefined {
+  return opts?.signal ? { signal: opts.signal } : undefined;
+}
+
+/** The form a HookDef definition is stored in: hooks.Def.Normalize followed
+ *  by Go's omitempty encoding. Applied to both sides of ensureHookDef's
+ *  comparison; the stored side is already in this form, so what matters is
+ *  that the overlay lands exactly where the server would put it. */
+function normalizeHookDef(d: HookDefOverlay): Record<string, unknown> {
+  const out: Record<string, unknown> = { event: d.event };
+  const description = goTrimSpace(d.description ?? "");
+  if (description) out.description = description;
+  if (d.match?.tools && d.match.tools.length > 0) out.match = { tools: d.match.tools };
+  const body: Record<string, unknown> = { kind: d.body.kind };
+  if (d.body.kind === "code-js") {
+    if (d.body.code) body.code = d.body.code;
+  } else {
+    if (d.body.url) body.url = d.body.url;
+    if (d.body.headers && Object.keys(d.body.headers).length > 0) body.headers = d.body.headers;
+  }
+  out.body = body;
+  out.fail_mode = d.fail_mode || "open";
+  if (d.timeout_ms) out.timeout_ms = d.timeout_ms;
+  return out;
+}
+
+/** strings.TrimSpace: Go's Unicode White_Space set, which is not
+ *  String.prototype.trim's (Go trims U+0085 and keeps U+FEFF; JavaScript does
+ *  the reverse). Trimming differently could make two descriptions the server
+ *  stores differently compare equal, and skip a real change. */
+const goTrimRe =
+  /^[\t\n\v\f\r \u0085\u00A0\u1680\u2000-\u200A\u2028\u2029\u202F\u205F\u3000]+|[\t\n\v\f\r \u0085\u00A0\u1680\u2000-\u200A\u2028\u2029\u202F\u205F\u3000]+$/g;
+function goTrimSpace(s: string): string {
+  return s.replace(goTrimRe, "");
+}
+
+/** Structural JSON equality, ignoring object key order (the server's
+ *  encoding orders keys by struct field, a caller's literal by whatever it
+ *  wrote). Arrays compare in order. */
+function sameJSON(a: unknown, b: unknown): boolean {
+  if (a === b) return true;
+  if (typeof a !== "object" || typeof b !== "object" || a === null || b === null) return false;
+  if (Array.isArray(a) !== Array.isArray(b)) return false;
+  if (Array.isArray(a) && Array.isArray(b)) {
+    return a.length === b.length && a.every((v, i) => sameJSON(v, b[i]));
+  }
+  const ao = a as Record<string, unknown>;
+  const bo = b as Record<string, unknown>;
+  const keys = Object.keys(ao);
+  if (keys.length !== Object.keys(bo).length) return false;
+  return keys.every((k) => Object.prototype.hasOwnProperty.call(bo, k) && sameJSON(ao[k], bo[k]));
 }
 
 /** toChangeFeedFrame types one frame of a change feed, or returns null for a
