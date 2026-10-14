@@ -311,6 +311,25 @@ This is enforced server-side in `internal/tools/builtin/narrowing.go`;
 `allowed_hosts` is a trust boundary — it must come from your
 application code, never from a model.
 
+## Verifying a signed hook delivery
+
+A HookDef whose webhook body names a `signing_secret` signs every call with
+`X-Loomcycle-Signature: t=<unix>,v1=<hex HMAC-SHA256 of t + "." + raw body>`,
+plus `X-Loomcycle-Hook` and `X-Loomcycle-Delivery` (an id a retry keeps —
+dedupe on it). A receiver verifies the **raw** body, before parsing it:
+
+```python
+from loomcycle import verify_loomcycle_signature
+
+raw = request.get_data()  # the exact bytes received
+if not verify_loomcycle_signature(raw, request.headers.get("X-Loomcycle-Signature", ""), SECRET):
+    abort(401)
+```
+
+It returns `True` only for a signature made within `tolerance_sec` (default
+300) of now; a malformed header, a stale or future `t`, or a wrong MAC is
+`False`. Standard library only; the compare is `hmac.compare_digest`.
+
 ## Development
 
 ```bash
