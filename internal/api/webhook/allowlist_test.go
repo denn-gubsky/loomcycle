@@ -125,6 +125,10 @@ func TestUnresolvableStaticSecrets_Warnings(t *testing.T) {
 			"unset":      {Enabled: true, Auth: config.WebhookAuth{Kind: "hmac", SigningSecretEnv: "LOOMCYCLE_UNSET"}},
 			"nosecret":   {Enabled: true, Auth: config.WebhookAuth{Kind: "hmac"}},
 			"none":       {Enabled: true, Auth: config.WebhookAuth{Kind: "none"}},
+			// The yaml load accepts a mapping path that does not parse, as
+			// it always has; every delivery answers 400 bad_mapping.
+			"badmapping": {Enabled: true, Auth: config.WebhookAuth{Kind: "hmac", SigningSecretEnv: "LOOMCYCLE_OK"},
+				PayloadMapping: map[string]string{"goal": "$.commits[*].message"}},
 		},
 	}
 	allow := BuildEnvAllowlist(cfg) // seeds GITEA_SECRET (static) — so it must NOT warn for "notallowed"
@@ -133,7 +137,7 @@ func TestUnresolvableStaticSecrets_Warnings(t *testing.T) {
 	warns := UnresolvableStaticSecrets(cfg, allow, env)
 	joined := strings.Join(warns, "\n")
 
-	mustContain := []string{"disabled", "unset", "nosecret"}
+	mustContain := []string{"disabled", "unset", "nosecret", "badmapping"}
 	for _, name := range mustContain {
 		if !strings.Contains(joined, "\""+name+"\"") {
 			t.Errorf("expected a warning naming %q; warnings:\n%s", name, joined)

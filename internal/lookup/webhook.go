@@ -161,6 +161,8 @@ type SubstrateWebhookDef struct {
 	EventHeader string              `json:"event_header,omitempty"`
 	Events      []string            `json:"events,omitempty"`
 	EventShapes map[string][]string `json:"event_shapes,omitempty"`
+	// Filters mirrors config.Webhook's.
+	Filters []config.WebhookFilter `json:"filters,omitempty"`
 	// Team / Vars are the delivery=team target: the team whose walk a delivery
 	// starts, and its variables as JSONPaths into the body.
 	Team string            `json:"team,omitempty"`
@@ -248,6 +250,7 @@ func (s SubstrateWebhookDef) ToConfigDef() config.Webhook {
 		EventHeader:           s.EventHeader,
 		Events:                s.Events,
 		EventShapes:           s.EventShapes,
+		Filters:               s.Filters,
 		Team:                  s.Team,
 		Vars:                  s.Vars,
 		OperatorKeyRestricted: s.OperatorKeyRestricted,

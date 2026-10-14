@@ -52,9 +52,15 @@ type projectResult struct {
 // a well-formed body is NOT an error: it yields an empty string and a
 // MissingKeys entry.
 func projectPayload(mapping map[string]string, body []byte) (projectResult, error) {
-	res := projectResult{Fields: make(map[string]string, len(mapping)), RawBody: body}
+	return projectDecoded(mapping, &deliveryBody{raw: body})
+}
 
-	doc, err := decodeJSONBody(body)
+// projectDecoded is projectPayload over a body the delivery's earlier checks
+// may already have decoded.
+func projectDecoded(mapping map[string]string, b *deliveryBody) (projectResult, error) {
+	res := projectResult{Fields: make(map[string]string, len(mapping)), RawBody: b.raw}
+
+	doc, err := b.decoded()
 	if err != nil {
 		return projectResult{}, err
 	}
@@ -73,6 +79,23 @@ func projectPayload(mapping map[string]string, body []byte) (projectResult, erro
 		res.Fields[target] = jsonpath.Stringify(v)
 	}
 	return res, nil
+}
+
+// deliveryBody is a delivery's raw body, decoded at most once for the checks
+// that read it: an event's shape, the filters and the payload mapping.
+type deliveryBody struct {
+	raw  []byte
+	doc  any
+	err  error
+	done bool
+}
+
+func (b *deliveryBody) decoded() (any, error) {
+	if !b.done {
+		b.doc, b.err = decodeJSONBody(b.raw)
+		b.done = true
+	}
+	return b.doc, b.err
 }
 
 // decodeJSONBody decodes a delivery's body, after checkJSONShape has bounded

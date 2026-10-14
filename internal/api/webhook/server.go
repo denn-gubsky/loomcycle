@@ -240,8 +240,10 @@ func (rec *Receiver) handle(w http.ResponseWriter, r *http.Request) {
 	// 3b. Events, when the definition lists them: a bad event header, the
 	//     provider's ping, an event not listed and a body without the
 	//     listed event's shape are answered here, before anything is
-	//     claimed or started.
-	if o := classifyEvent(wd, r.Header, body); !o.proceed {
+	//     claimed or started. Then the filters: a body that misses one is
+	//     answered 202 filtered, also claiming nothing.
+	dbody := &deliveryBody{raw: body}
+	if o := screenDelivery(wd, r.Header, dbody); !o.proceed {
 		rec.answerEvent(w, span, whKey, name, deliveryID(wd.Auth, body, r.Header.Get), o)
 		return
 	}
@@ -270,7 +272,7 @@ func (rec *Receiver) handle(w http.ResponseWriter, r *http.Request) {
 
 	// 5. Project the payload through the allowlisted mapping. A malformed
 	//    body or invalid mapping expression → 400.
-	proj, perr := projectPayload(wd.PayloadMapping, body)
+	proj, perr := projectDecoded(wd.PayloadMapping, dbody)
 	if perr != nil {
 		rec.finish(span, whKey, did, "rejected_mapping", "")
 		rec.logf("webhook %q: payload mapping failed: %v", name, perr)

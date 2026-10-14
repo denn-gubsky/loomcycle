@@ -69,6 +69,7 @@ func TestDefOverlayTSMirror_MatchesGoShapes(t *testing.T) {
 		{"ScheduleDefInput", reflect.TypeOf(scheduleDefInput{})},
 		{"WebhookDefOverlay", reflect.TypeOf(mergedWebhookDef{})},
 		{"WebhookDefAuth", reflect.TypeOf(mergedWebhookAuth{})},
+		{"WebhookDefFilter", reflect.TypeOf(config.WebhookFilter{})},
 		{"WebhookDefRateLimit", reflect.TypeOf(mergedWebhookRateLimit{})},
 		{"WebhookDefSyncResponse", reflect.TypeOf(mergedWebhookSyncResp{})},
 		{"WebhookDefInput", reflect.TypeOf(webhookDefInput{})},

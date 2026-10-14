@@ -81,7 +81,7 @@ func TestWebhookDefTool_AnOverlayIsReadAsWritten(t *testing.T) {
 
 	for _, tc := range []struct{ name, overlay, want string }{
 		{"misspelt", `{` + webhookBase + `,"payload_maping":{"a":"$.a"}}`, `unknown key "payload_maping"`},
-		{"from a newer server", `{` + webhookBase + `,"filters":[{"path":"$.ref","op":"eq","value":"x"}]}`, `unknown key "filters"`},
+		{"from a newer server", `{` + webhookBase + `,"forward_to":[{"url":"https://example.test"}]}`, `unknown key "forward_to"`},
 		{"case only", `{"enabled":true,"delivery":"spawn","Agent":"a","auth":{"signing_secret_env":"LOOMCYCLE_S"}}`, `only by ignoring its case`},
 		{"repeated", `{` + webhookBase + `,"agent":"b"}`, `written twice`},
 		{"nested", `{"enabled":true,"delivery":"spawn","agent":"a","auth":{"signing_secret_env":"LOOMCYCLE_S","token":"x"}}`, `unknown key "token"`},

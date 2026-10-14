@@ -96,6 +96,8 @@ type testResult struct {
 	WouldAccept     bool            `json:"would_accept"`
 	Verdict         string          `json:"verdict"`
 	RunInputPreview runInputPreview `json:"run_input_preview"`
+	// Filter is the index of the filter a filtered delivery missed.
+	Filter *int `json:"filter,omitempty"`
 }
 
 // runInputPreview is the non-sensitive projection of the RunInput a real
@@ -173,15 +175,21 @@ func (rec *Receiver) handleTest(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 1b. The event check the receiver makes next: a ping, an event not
-	//     listed, or a body without the event's shape starts nothing.
-	if o := classifyEvent(wd, r.Header, body); !o.proceed {
-		writeJSON(w, http.StatusOK, testResult{WouldAccept: false, Verdict: o.verdict, RunInputPreview: runInputPreview{}})
+	// 1b. The event check and the filters the receiver applies next: a
+	//     ping, an event not listed, a body without the event's shape or
+	//     one a filter misses starts nothing.
+	dbody := &deliveryBody{raw: body}
+	if o := screenDelivery(wd, r.Header, dbody); !o.proceed {
+		res := testResult{WouldAccept: false, Verdict: o.verdict, RunInputPreview: runInputPreview{}}
+		if o.verdict == verdictFiltered {
+			res.Filter = &o.filter
+		}
+		writeJSON(w, http.StatusOK, res)
 		return
 	}
 
 	// 2. Project the payload (same allowlisted mapping the receive path uses).
-	proj, perr := projectPayload(wd.PayloadMapping, body)
+	proj, perr := projectDecoded(wd.PayloadMapping, dbody)
 	if perr != nil {
 		writeJSON(w, http.StatusOK, testResult{
 			WouldAccept:     false,

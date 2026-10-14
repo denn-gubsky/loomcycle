@@ -3407,6 +3407,10 @@ type Webhook struct {
 	// EventShapes are the JSONPaths the body of a listed event must hold,
 	// for an event the provider has no shape for, or in place of its.
 	EventShapes map[string][]string `json:"event_shapes,omitempty" yaml:"event_shapes"`
+	// Filters are conditions on the signed body every delivery must meet to
+	// start anything; one that misses is answered 202 filtered. See
+	// webhook_filters.go.
+	Filters []WebhookFilter `json:"filters,omitempty" yaml:"filters"`
 	// Team is the team whose walk a delivery=team webhook starts, detached,
 	// with the raw request body as its input. Looked up in TenantID only, when
 	// a delivery arrives (teams are runtime definitions).
@@ -7656,6 +7660,9 @@ func validateStaticWebhook(name string, w Webhook) error {
 		return fmt.Errorf("webhooks.%s: %w", name, err)
 	}
 	if err := CheckWebhookEvents(w); err != nil {
+		return fmt.Errorf("webhooks.%s: %w", name, err)
+	}
+	if err := CheckWebhookFilters(w); err != nil {
 		return fmt.Errorf("webhooks.%s: %w", name, err)
 	}
 	return nil
