@@ -18,19 +18,19 @@ func TestResolveKey_OverridesHostKey(t *testing.T) {
 		t.Errorf("no resolver: (%q, %q, %v), want (host-key, operator, nil)", key, source, err)
 	}
 
-	ctx := providers.WithCredentialResolver(context.Background(), func(_ context.Context, name string) (providers.CredentialResolution, bool) {
+	ctx := providers.WithCredentialResolver(context.Background(), func(_ context.Context, name string) (providers.CredentialResolution, bool, error) {
 		if name == "ANTHROPIC_API_KEY" {
-			return providers.CredentialResolution{Value: "tenant-key", Scope: "tenant"}, true
+			return providers.CredentialResolution{Value: "tenant-key", Scope: "tenant"}, true, nil
 		}
-		return providers.CredentialResolution{}, false
+		return providers.CredentialResolution{}, false, nil
 	})
 	if key, source, _, err := d.resolveKey(ctx); err != nil || key != "tenant-key" || source != "tenant" {
 		t.Errorf("with override: (%q, %q, %v), want (tenant-key, tenant, nil)", key, source, err)
 	}
 
 	// A resolver that only knows a DIFFERENT provider's key leaves us on the host key.
-	ctxOther := providers.WithCredentialResolver(context.Background(), func(_ context.Context, name string) (providers.CredentialResolution, bool) {
-		return providers.CredentialResolution{Value: "openai-key"}, name == "OPENAI_API_KEY"
+	ctxOther := providers.WithCredentialResolver(context.Background(), func(_ context.Context, name string) (providers.CredentialResolution, bool, error) {
+		return providers.CredentialResolution{Value: "openai-key"}, name == "OPENAI_API_KEY", nil
 	})
 	if key, source, _, err := d.resolveKey(ctxOther); err != nil || key != "host-key" || source != "operator" {
 		t.Errorf("unrelated override: (%q, %q, %v), want (host-key, operator, nil)", key, source, err)
@@ -50,8 +50,8 @@ func TestResolveKey_RestrictedRefusesHostKey(t *testing.T) {
 	}
 
 	// Override present → used regardless of the restriction (the tenant pays).
-	withOverride := providers.WithCredentialResolver(restricted, func(_ context.Context, name string) (providers.CredentialResolution, bool) {
-		return providers.CredentialResolution{Value: "tenant-key", Scope: "tenant"}, name == "ANTHROPIC_API_KEY"
+	withOverride := providers.WithCredentialResolver(restricted, func(_ context.Context, name string) (providers.CredentialResolution, bool, error) {
+		return providers.CredentialResolution{Value: "tenant-key", Scope: "tenant"}, name == "ANTHROPIC_API_KEY", nil
 	})
 	if key, source, _, err := d.resolveKey(withOverride); err != nil || key != "tenant-key" || source != "tenant" {
 		t.Errorf("restricted, with override: (%q, %q, %v), want (tenant-key, tenant, nil)", key, source, err)

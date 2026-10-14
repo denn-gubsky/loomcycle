@@ -91,10 +91,12 @@ type Bashbox struct {
 	FallbackAllowedCreds []string
 	// CredResolve resolves an RFC AR credential by NAME for the run on ctx (the
 	// tenant/user/agent come from the run identity on ctx, so resolution is
-	// tenant-isolated), returning (value, ok). Wired to credential.Engine.Resolve.
-	// nil = credential injection disabled. The value is a secret — it goes only
-	// into the host child's env and must never be logged.
-	CredResolve func(ctx context.Context, name string) (string, bool)
+	// tenant-isolated), returning (value, ok). An error means the run holds the
+	// credential but may not use it (expired): the variable is then left unset,
+	// host var included, and the command's stderr says why. nil = credential
+	// injection disabled. The value is a secret — it goes only into the host
+	// child's env and must never be logged.
+	CredResolve CredEnvResolver
 
 	// regOnce builds the base command registry exactly once per tool instance
 	// (default builtins + contrib awk/jq), shared read-only across concurrent
@@ -196,7 +198,11 @@ func (b *Bashbox) fallbackProxy(name, hostRoot string, readOnly bool) commands.C
 		// is not a container; run loomcycle in one for hard isolation.
 		cmd := exec.CommandContext(ctx, name, inv.Args...)
 		cmd.Dir = hostCwd
-		cmd.Env = b.fallbackEnv(ctx)
+		env, envNotes := b.fallbackEnv(ctx)
+		for _, n := range envNotes {
+			fmt.Fprintf(inv.Stderr, "%s: %s\n", name, n)
+		}
+		cmd.Env = env
 		cmd.Stdin = inv.Stdin
 		cmd.Stdout = inv.Stdout
 		cmd.Stderr = inv.Stderr
@@ -221,8 +227,9 @@ func (b *Bashbox) fallbackProxy(name, hostRoot string, readOnly bool) commands.C
 // CredResolve (per-tenant). A resolved cred overrides a same-named host var
 // (tenant-specific wins). Nothing else leaks into the child (PATH + these only).
 // Deterministic order: host names first (in declared order), then creds that were
-// not already contributed by a host var.
-func (b *Bashbox) fallbackEnv(ctx context.Context) []string {
+// not already contributed by a host var. The notes say which credentials were
+// left unset and why (mergeCredEnv).
+func (b *Bashbox) fallbackEnv(ctx context.Context) (env, notes []string) {
 	return mergeCredEnv(ctx, scrubbedHostEnv(b.FallbackAllowedEnv), b.FallbackAllowedCreds, b.CredResolve)
 }
 

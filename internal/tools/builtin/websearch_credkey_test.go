@@ -3,8 +3,10 @@ package builtin
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/denn-gubsky/loomcycle/internal/providers"
@@ -33,14 +35,40 @@ func TestWebSearch_BraveKeyOverride(t *testing.T) {
 	}
 
 	// (2) Tenant override → the tenant key is sent instead of the host key.
-	ctx := providers.WithCredentialResolver(context.Background(), func(_ context.Context, name string) (providers.CredentialResolution, bool) {
-		return providers.CredentialResolution{Value: "tenant-brave"}, name == "BRAVE_API_KEY"
+	ctx := providers.WithCredentialResolver(context.Background(), func(_ context.Context, name string) (providers.CredentialResolution, bool, error) {
+		return providers.CredentialResolution{Value: "tenant-brave"}, name == "BRAVE_API_KEY", nil
 	})
 	if res, err := ws.Execute(ctx, input); err != nil || res.IsError {
 		t.Fatalf("override call failed: err=%v res=%+v", err, res)
 	}
 	if gotToken != "tenant-brave" {
 		t.Errorf("override: X-Subscription-Token = %q, want tenant-brave", gotToken)
+	}
+}
+
+// A tenant's own BRAVE_API_KEY that may not be used (expired) fails the
+// search with the reason; the operator's host key is never sent in its place.
+func TestWebSearch_AnUnusableOverrideFailsWithoutTheHostKey(t *testing.T) {
+	sent := false
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		sent = true
+		_, _ = w.Write([]byte(`{"web":{"results":[{"title":"t","url":"https://e.com","description":"d"}]}}`))
+	}))
+	defer srv.Close()
+
+	ws := braveWS(t, srv.URL, "host-key")
+	ctx := providers.WithCredentialResolver(context.Background(), func(_ context.Context, name string) (providers.CredentialResolution, bool, error) {
+		return providers.CredentialResolution{}, false, fmt.Errorf("%w: %q expired", providers.ErrCredentialUnusable, name)
+	})
+	res, err := ws.Execute(ctx, json.RawMessage(`{"query":"x"}`))
+	if err != nil {
+		t.Fatalf("unexpected transport error: %v", err)
+	}
+	if !res.IsError || !strings.Contains(res.Text, `"BRAVE_API_KEY" expired`) {
+		t.Errorf("an unusable override: %+v, want a refusal naming it", res)
+	}
+	if sent {
+		t.Error("the search was sent — on the operator's host key — in place of the unusable override")
 	}
 }
 
@@ -74,8 +102,8 @@ func TestWebSearch_RestrictedRunRefusesHostKey(t *testing.T) {
 	}
 
 	// A tenant override still enables the call under restriction.
-	withOverride := providers.WithCredentialResolver(restricted, func(_ context.Context, name string) (providers.CredentialResolution, bool) {
-		return providers.CredentialResolution{Value: "tenant-brave"}, name == "BRAVE_API_KEY"
+	withOverride := providers.WithCredentialResolver(restricted, func(_ context.Context, name string) (providers.CredentialResolution, bool, error) {
+		return providers.CredentialResolution{Value: "tenant-brave"}, name == "BRAVE_API_KEY", nil
 	})
 	if res, err := ws.Execute(withOverride, input); err != nil || res.IsError {
 		t.Fatalf("restricted, with override should succeed: err=%v res=%+v", err, res)
@@ -102,8 +130,8 @@ func TestWebSearch_TenantKeyEnablesWithNoHostKey(t *testing.T) {
 		t.Errorf("no host key + no override should refuse, got %+v", res)
 	}
 
-	ctx := providers.WithCredentialResolver(context.Background(), func(_ context.Context, name string) (providers.CredentialResolution, bool) {
-		return providers.CredentialResolution{Value: "tenant-brave"}, name == "BRAVE_API_KEY"
+	ctx := providers.WithCredentialResolver(context.Background(), func(_ context.Context, name string) (providers.CredentialResolution, bool, error) {
+		return providers.CredentialResolution{Value: "tenant-brave"}, name == "BRAVE_API_KEY", nil
 	})
 	if res, err := ws.Execute(ctx, json.RawMessage(`{"query":"x"}`)); err != nil || res.IsError {
 		t.Fatalf("tenant key should enable the call: err=%v res=%+v", err, res)

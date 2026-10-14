@@ -85,11 +85,13 @@ func TestEngine_ExpiredCredentialIsRefusedByEveryLookup(t *testing.T) {
 				t.Errorf("Substitute: out=%q", out)
 			}
 
-			// HasKey answers "would Resolve hand out a key", like it does for
-			// a restricted credential: no, without an error.
+			// HasKey says no key, and says why: the name is not absent, so
+			// a caller that falls back to the operator's key on "absent"
+			// must not here.
 			has, err := e.HasKey(ctx, "t", "", "", "gh")
-			if err != nil || has == tc.expired {
-				t.Errorf("HasKey = %v, %v; want %v, nil", has, err, !tc.expired)
+			checkErr("HasKey", err)
+			if has == tc.expired {
+				t.Errorf("HasKey = %v; want %v", has, !tc.expired)
 			}
 
 			found, usable, err := e.HasKeyFor(ctx, "t", "", "", "gh", target)

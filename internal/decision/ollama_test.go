@@ -354,11 +354,11 @@ func TestOllama_AcceptsARequestAtItsLimits(t *testing.T) {
 func TestOllama_ARestrictedRunCannotSpendTheOperatorsKey(t *testing.T) {
 	keyed := Options{ProviderID: "ollama", APIKey: "test-operator-key", KeyEnvName: "OLLAMA_API_KEY"}
 	restricted := providers.WithOperatorKeyAllowed(context.Background(), false)
-	ownKey := providers.WithCredentialResolver(restricted, func(_ context.Context, name string) (providers.CredentialResolution, bool) {
+	ownKey := providers.WithCredentialResolver(restricted, func(_ context.Context, name string) (providers.CredentialResolution, bool, error) {
 		if name == "OLLAMA_API_KEY" {
-			return providers.CredentialResolution{Value: "test-tenant-key", Scope: "tenant", ScopeID: "acme"}, true
+			return providers.CredentialResolution{Value: "test-tenant-key", Scope: "tenant", ScopeID: "acme"}, true, nil
 		}
-		return providers.CredentialResolution{}, false
+		return providers.CredentialResolution{}, false, nil
 	})
 	req := Request{Model: "nimble", Questions: questionsOf(1)}
 	reply := replyJSON(http.StatusOK, `{"answers":{"q00":{"type":"noul","noul":1}},"usage":{"input_tokens":5,"output_tokens":1}}`)

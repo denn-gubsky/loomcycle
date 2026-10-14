@@ -11,8 +11,8 @@ import (
 // Hosted ollama.com honors an OLLAMA_API_KEY override; ollama-local is
 // unauthenticated local-network, so no override ever applies there (RFC AR).
 func TestCallKey_HostedOverride_LocalNever(t *testing.T) {
-	ctx := providers.WithCredentialResolver(context.Background(), func(_ context.Context, name string) (providers.CredentialResolution, bool) {
-		return providers.CredentialResolution{Value: "tenant-ollama"}, name == "OLLAMA_API_KEY"
+	ctx := providers.WithCredentialResolver(context.Background(), func(_ context.Context, name string) (providers.CredentialResolution, bool, error) {
+		return providers.CredentialResolution{Value: "tenant-ollama"}, name == "OLLAMA_API_KEY", nil
 	})
 
 	hosted := &Driver{providerID: "ollama", apiKey: "host-key", keyEnvName: "OLLAMA_API_KEY"}

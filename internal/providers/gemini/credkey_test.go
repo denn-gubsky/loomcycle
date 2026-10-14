@@ -13,8 +13,8 @@ func TestCallKey_OverridesHostKey(t *testing.T) {
 	if got, _, _, err := d.resolveKey(context.Background()); err != nil || got != "host-key" {
 		t.Errorf("no resolver: resolveKey = (%q, %v), want (host-key, nil)", got, err)
 	}
-	ctx := providers.WithCredentialResolver(context.Background(), func(_ context.Context, name string) (providers.CredentialResolution, bool) {
-		return providers.CredentialResolution{Value: "tenant-gemini"}, name == "GEMINI_API_KEY"
+	ctx := providers.WithCredentialResolver(context.Background(), func(_ context.Context, name string) (providers.CredentialResolution, bool, error) {
+		return providers.CredentialResolution{Value: "tenant-gemini"}, name == "GEMINI_API_KEY", nil
 	})
 	if got, _, _, err := d.resolveKey(ctx); err != nil || got != "tenant-gemini" {
 		t.Errorf("with override: resolveKey = (%q, %v), want (tenant-gemini, nil)", got, err)

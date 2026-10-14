@@ -276,11 +276,11 @@ func TestDecision_ARestrictedRunCannotSpendTheOperatorsKey(t *testing.T) {
 		f := &fakeSystemOne{replies: []func(http.ResponseWriter, systemOneRequest){reply}}
 		srv := httptest.NewServer(f.handler(t))
 		defer srv.Close()
-		ctx := providers.WithCredentialResolver(restricted, func(_ context.Context, name string) (providers.CredentialResolution, bool) {
+		ctx := providers.WithCredentialResolver(restricted, func(_ context.Context, name string) (providers.CredentialResolution, bool, error) {
 			if name == "OLLAMA_API_KEY" {
-				return providers.CredentialResolution{Value: "test-tenant-key", Scope: "tenant"}, true
+				return providers.CredentialResolution{Value: "test-tenant-key", Scope: "tenant"}, true, nil
 			}
-			return providers.CredentialResolution{}, false
+			return providers.CredentialResolution{}, false, nil
 		})
 		_, rep := newDecision(t, srv.URL, config.RerankerConfig{Provider: "ollama"}).Rank(ctx, "q", fiveTexts, 0)
 		if !rep.Applied || f.auth[0] != "Bearer test-tenant-key" {

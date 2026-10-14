@@ -1541,98 +1541,33 @@ func main() {
 	// RFC AR: resolve a tenant/user credential by env-var NAME (ANTHROPIC_API_KEY,
 	// BRAVE_API_KEY, …) for the run's identity, so a tenant's own key overrides
 	// the operator host key (scope agent>user>tenant). Wired onto the Server
-	// below; provider drivers + WebSearch consult it via the run ctx. Fails soft
-	// (a lookup error → no override → host key), never blocking a run on a KEK
-	// gap. Reused by every transport since gRPC routes through the http Server.
-	credResolver := providers.CredentialResolver(func(ctx context.Context, name string) (providers.CredentialResolution, bool) {
-		// Fast-path: no configured backend can resolve → skip the three per-call
-		// scope lookups that would only ever miss (they run on EVERY LLM call).
-		if !credEngine.CanResolve() {
-			return providers.CredentialResolution{}, false
-		}
-		ri := tools.RunIdentity(ctx)
-		res, found, err := credEngine.Resolve(ctx, ri.TenantID, tools.AgentName(ctx), ri.UserID, name)
-		if err != nil {
-			// A store/decrypt fault is NOT a legitimate miss — still fail soft to
-			// the host key (never block a run on a KEK gap), but make it observable
-			// so a silent bill-to-operator regression is diagnosable.
-			log.Printf("credential: resolve %q failed for tenant=%s: %v", name, ri.TenantID, err)
-			return providers.CredentialResolution{}, false
-		}
-		if !found {
-			return providers.CredentialResolution{}, false
-		}
-		// Mask a downstream echo of the override key in the transcript.
-		registerSecret(res.Value)
-		// RFC AV: carry the owning scope + scope_id so a driver can tag usage
-		// (operator vs tenant/user spend) from the same resolve it uses for the key.
-		return providers.CredentialResolution{Value: res.Value, Scope: res.Scope, ScopeID: res.ScopeID}, true
-	})
+	// below; provider drivers + WebSearch consult it via the run ctx. Reused by
+	// every transport since gRPC routes through the http Server. A miss (or a
+	// store/KEK fault) falls back to the host key; an EXPIRED override fails
+	// the call instead — see credentialBinding.
+	credBinding := credentialBinding{engine: credEngine, register: registerSecret}
+	credResolver := providers.CredentialResolver(credBinding.providerKey)
 	// RFC BD: let a software team's Bashbox host-command fallback (git/gh) inject
 	// PER-TENANT credentials named in LOOMCYCLE_BASHBOX_FALLBACK_ALLOWED_CREDS,
 	// resolved for the run's own identity (agent>user>tenant) — so a tenant's own
 	// GITHUB_TOKEN reaches git/gh instead of one shared operator host token. Only
 	// the operator-allowlisted names are injected; the value goes solely into the
-	// host child's env (registerSecret masks any transcript echo). Fails soft (no
-	// KEK / miss → the host-env fallback still applies).
-	bashboxTool.CredResolve = func(ctx context.Context, name string) (string, bool) {
-		if !credEngine.CanResolve() {
-			return "", false
-		}
-		ri := tools.RunIdentity(ctx)
-		res, found, err := credEngine.Resolve(ctx, ri.TenantID, tools.AgentName(ctx), ri.UserID, name)
-		if err != nil {
-			log.Printf("bashbox: credential resolve %q failed for tenant=%s: %v", name, ri.TenantID, err)
-			return "", false
-		}
-		if !found {
-			return "", false
-		}
-		registerSecret(res.Value)
-		return res.Value, true
-	}
+	// host child's env (registerSecret masks any transcript echo). A miss keeps
+	// the host-env fallback; an expired credential leaves the variable unset.
+	bashboxTool.CredResolve = credBinding.envVar("bashbox")
 	// Raw Bash mirrors the Bashbox fallback: inject PER-TENANT credentials named
 	// in LOOMCYCLE_BASH_ALLOWED_CREDS into the child's env, resolved for the run's
 	// own identity (agent>user>tenant) — so a tenant's own GITHUB_TOKEN reaches
-	// the command instead of one shared operator host var. Only the
-	// operator-allowlisted names are injected; the value goes solely into the
-	// child's env (registerSecret masks any transcript echo). Fails soft (no KEK /
-	// miss → the host-env allowlist still applies).
-	bashTool.CredResolve = func(ctx context.Context, name string) (string, bool) {
-		if !credEngine.CanResolve() {
-			return "", false
-		}
-		ri := tools.RunIdentity(ctx)
-		res, found, err := credEngine.Resolve(ctx, ri.TenantID, tools.AgentName(ctx), ri.UserID, name)
-		if err != nil {
-			log.Printf("bash: credential resolve %q failed for tenant=%s: %v", name, ri.TenantID, err)
-			return "", false
-		}
-		if !found {
-			return "", false
-		}
-		registerSecret(res.Value)
-		return res.Value, true
-	}
+	// the command instead of one shared operator host var. Same miss / expired
+	// rule as the Bashbox fallback.
+	bashTool.CredResolve = credBinding.envVar("bash")
 	// RFC AX Layer 1: a metadata-only keyability probe — does (tenant, agent,
-	// user) have its OWN CredentialDef for env-var `name`? Reuses Engine.Resolve's
-	// agent>user>tenant precedence but NEVER decrypts (no backend.Resolve), so
+	// user) have its OWN usable CredentialDef for env-var `name`? Reuses
+	// Engine.Resolve's agent>user>tenant precedence but NEVER decrypts, so
 	// building a restricted run's keyable-provider set costs at most three store
-	// metadata reads and touches no plaintext. Fast-path false when nothing can
-	// resolve (no KEK) — with no resolvable credentials no provider is
-	// tenant-keyable, the correct restricted-run posture. Wired onto the Server
-	// beside credResolver; consulted in the server BEFORE the lock-free resolver.
-	credKeyable := func(ctx context.Context, tenantID, agentName, userID, name string) bool {
-		if !credEngine.CanResolve() {
-			return false
-		}
-		ok, err := credEngine.HasKey(ctx, tenantID, agentName, userID, name)
-		if err != nil {
-			log.Printf("credential: keyable check %q failed for tenant=%s: %v", name, tenantID, err)
-			return false
-		}
-		return ok
-	}
+	// metadata reads and touches no plaintext. Wired onto the Server beside
+	// credResolver; consulted in the server BEFORE the lock-free resolver.
+	credKeyable := credBinding.keyable
 	pathTool.Store = storeIface
 	documentTool.Store = storeIface
 	// Document op=search runs the SAME backend instance as the Memory tool, so a

@@ -3,6 +3,7 @@ package builtin
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -195,20 +196,20 @@ func TestBash_BuildEnv_InjectsTenantCreds(t *testing.T) {
 	b := &Bash{
 		AllowedExtraEnv: []string{"LOOMCYCLE_TEST_HOSTVAR", "LOOMCYCLE_TEST_SHARED"},
 		AllowedCreds:    []string{"GITHUB_TOKEN", "LOOMCYCLE_TEST_SHARED"},
-		CredResolve: func(ctx context.Context, name string) (string, bool) {
+		CredResolve: func(ctx context.Context, name string) (string, bool, error) {
 			ten := tools.RunIdentity(ctx).TenantID
 			switch name {
 			case "GITHUB_TOKEN":
-				return "tok-" + ten, true
+				return "tok-" + ten, true, nil
 			case "LOOMCYCLE_TEST_SHARED":
-				return "from-cred", true
+				return "from-cred", true, nil
 			}
-			return "", false
+			return "", false, nil
 		},
 	}
 	envMap := func(ctx context.Context) map[string]string {
 		m := map[string]string{}
-		for _, kv := range b.buildEnv(ctx) {
+		for _, kv := range envOnly(b.buildEnv(ctx)) {
 			if i := strings.IndexByte(kv, '='); i > 0 {
 				m[kv[:i]] = kv[i+1:]
 			}
@@ -241,7 +242,7 @@ func TestBash_BuildEnv_InjectsTenantCreds(t *testing.T) {
 // pre-feature behavior (operator must opt in).
 func TestBash_BuildEnv_NoResolverIsHostOnly(t *testing.T) {
 	b := &Bash{AllowedCreds: []string{"GITHUB_TOKEN"}} // CredResolve nil
-	for _, kv := range b.buildEnv(context.Background()) {
+	for _, kv := range envOnly(b.buildEnv(context.Background())) {
 		if strings.HasPrefix(kv, "GITHUB_TOKEN=") {
 			t.Errorf("no CredResolve → creds must not resolve, got %q", kv)
 		}
@@ -261,11 +262,11 @@ func TestBash_InjectsCredIntoChildEnv(t *testing.T) {
 		Enabled:         true,
 		AllowedExtraEnv: []string{"LOOMCYCLE_TEST_CRED"},
 		AllowedCreds:    []string{"LOOMCYCLE_TEST_CRED"},
-		CredResolve: func(ctx context.Context, name string) (string, bool) {
+		CredResolve: func(ctx context.Context, name string) (string, bool, error) {
 			if name == "LOOMCYCLE_TEST_CRED" {
-				return "tenant-cred-" + tools.RunIdentity(ctx).TenantID, true
+				return "tenant-cred-" + tools.RunIdentity(ctx).TenantID, true, nil
 			}
-			return "", false
+			return "", false, nil
 		},
 	}
 	ctx := tools.WithRunIdentity(bashCtx(cwd), tools.RunIdentityValue{TenantID: "acme"})
@@ -282,5 +283,43 @@ func TestBash_InjectsCredIntoChildEnv(t *testing.T) {
 	}
 	if strings.Contains(res.Text, "LOOMCYCLE_TEST_CRED=from-host") {
 		t.Errorf("cred must override the same-named host var, but host value leaked: %q", res.Text)
+	}
+}
+
+// envOnly drops buildEnv / fallbackEnv's notes, for range loops.
+func envOnly(env, _ []string) []string { return env }
+
+// A credential the run holds but may not use (expired) is left unset in the
+// child, and the operator's same-named host var does NOT stand in for it;
+// the output says which variable and why.
+func TestBash_AnUnusableCredLeavesTheVarUnsetHostVarIncluded(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip()
+	}
+	t.Setenv("LOOMCYCLE_TEST_CRED", "from-host")
+	t.Setenv("LOOMCYCLE_TEST_OTHER", "other-host")
+	cwd, _ := filepath.EvalSymlinks(t.TempDir())
+	b := &Bash{
+		Enabled:         true,
+		AllowedExtraEnv: []string{"LOOMCYCLE_TEST_CRED", "LOOMCYCLE_TEST_OTHER"},
+		AllowedCreds:    []string{"LOOMCYCLE_TEST_CRED"},
+		CredResolve: func(ctx context.Context, name string) (string, bool, error) {
+			return "", false, errors.New(`credential "` + name + `" has expired`)
+		},
+	}
+	ctx := tools.WithRunIdentity(bashCtx(cwd), tools.RunIdentityValue{TenantID: "acme"})
+	body, _ := json.Marshal(map[string]string{"command": "env"})
+	res, err := b.Execute(ctx, body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(res.Text, "LOOMCYCLE_TEST_CRED=") {
+		t.Errorf("the host var stood in for an unusable credential: %q", res.Text)
+	}
+	if !strings.Contains(res.Text, "LOOMCYCLE_TEST_OTHER=other-host") {
+		t.Errorf("an unrelated host var was dropped too: %q", res.Text)
+	}
+	if !strings.Contains(res.Text, `[LOOMCYCLE_TEST_CRED is not set: credential "LOOMCYCLE_TEST_CRED" has expired]`) {
+		t.Errorf("the output does not say why the variable is unset: %q", res.Text)
 	}
 }

@@ -342,16 +342,15 @@ func (e *Engine) expired(row store.CredentialDefRow) bool {
 // the correct restricted-run default). agentName / userID may be "" (that scope
 // is skipped). Returns (false, nil) when absent from every visible scope; a
 // store fault other than not-found propagates.
+//
+// An expired credential is (false, ErrExpired), not (false, nil): the run
+// HAS a key of that name, it just may not be used, and a caller that treats
+// "absent" as "use the operator's key instead" must not do so for it.
 func (e *Engine) HasKey(ctx context.Context, tenantID, agentName, userID, name string) (bool, error) {
 	if !e.CanResolve() {
 		return false, nil
 	}
 	row, found, err := e.find(ctx, tenantID, agentName, userID, name)
-	if errors.Is(err, ErrExpired) {
-		// Not a key either: Resolve refuses it, so a provider routed to on
-		// the strength of it would get none.
-		return false, nil
-	}
 	if err != nil || !found {
 		return false, err
 	}

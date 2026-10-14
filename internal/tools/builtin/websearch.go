@@ -3,6 +3,7 @@ package builtin
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"net/url"
@@ -154,6 +155,12 @@ func (s *WebSearch) Execute(ctx context.Context, input json.RawMessage) (tools.R
 			// gets ErrOperatorKeyForbidden. Either "no key" case → skip this
 			// provider silently (it isn't a failure, so no cooldown).
 			k, _, _, err := providers.ResolveKeyOrOperator(reqCtx, env, s.HostKeys[id])
+			if errors.Is(err, providers.ErrCredentialUnusable) {
+				// The tenant's own key for this provider lapsed. Falling over
+				// would search on the next provider's operator key instead —
+				// the replacement the refusal exists to stop. Say why.
+				return tools.Result{Text: "WebSearch: " + err.Error(), IsError: true}, nil
+			}
 			if err != nil || k == "" {
 				continue
 			}

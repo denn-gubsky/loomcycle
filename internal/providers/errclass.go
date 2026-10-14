@@ -124,6 +124,12 @@ func ClassifyError(err error) ErrorClass {
 	if errors.Is(err, ErrOperatorKeyForbidden) {
 		return ErrorClassPermanent
 	}
+	// The run's own key exists but may not be used (expired). Cascading would
+	// send the call to another provider on the operator's key — the very
+	// replacement ErrCredentialUnusable exists to stop.
+	if errors.Is(err, ErrCredentialUnusable) {
+		return ErrorClassPermanent
+	}
 	// Stream-idle deadline (v0.8.1 per-byte idle wrap) surfaces as
 	// "stream read: context deadline exceeded ...". errors.Is on the
 	// outer err DOES report DeadlineExceeded (the wrap chain), but
