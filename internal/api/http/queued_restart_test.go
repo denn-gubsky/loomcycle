@@ -17,6 +17,7 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/pause"
 	"github.com/denn-gubsky/loomcycle/internal/providers"
 	"github.com/denn-gubsky/loomcycle/internal/runner"
+	"github.com/denn-gubsky/loomcycle/internal/snapshot"
 	"github.com/denn-gubsky/loomcycle/internal/store"
 )
 
@@ -335,6 +336,63 @@ func TestRestartQueuedRuns_WaitsOutAPause(t *testing.T) {
 	waitRunStatus(t, s.store, run.ID, store.RunRunning)
 	gate <- struct{}{}
 	waitRunStatus(t, s.store, run.ID, store.RunCompleted)
+}
+
+// A snapshot carries the queued runs: restored on another instance, each is
+// queued again under its run id and runs to its end. Its sealed secrets do not
+// travel — the envelope holds no ciphertext — and the restore says so.
+func TestSnapshot_CarriesQueuedRunsAndQueuesThemAgain(t *testing.T) {
+	src, _ := newGatedBatchServer(t, 1)
+	src.SetQueueSealer(testSealer(t, 1))
+	withSecret := queuedFixture(t, src, "a_snapq1", "key-snap",
+		runner.RunInput{Agent: "r", Segments: oneUserSeg("carried by the snapshot"), UserBearer: testQueueBearer}, "")
+	plain := queuedFixture(t, src, "a_snapq2", "", runner.RunInput{Agent: "r", Segments: oneUserSeg("second")}, "")
+
+	_, raw, err := snapshot.Capture(context.Background(), src.store, snapshot.CaptureOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var env struct {
+		Sections struct {
+			QueuedRuns snapshot.QueuedRunsSection `json:"queued_runs"`
+		} `json:"sections"`
+	}
+	if err := json.Unmarshal(raw, &env); err != nil {
+		t.Fatal(err)
+	}
+	if n := len(env.Sections.QueuedRuns.Entries); n != 2 {
+		t.Fatalf("captured %d queued runs, want 2", n)
+	}
+	for _, e := range env.Sections.QueuedRuns.Entries {
+		if strings.Contains(string(e.QueuedInput), "ciphertext") || strings.Contains(string(e.QueuedInput), testQueueBearer) {
+			t.Fatalf("captured queued input carries its secrets: %s", e.QueuedInput)
+		}
+	}
+
+	dst, gate := newGatedBatchServer(t, 1)
+	dst.SetQueueSealer(testSealer(t, 1))
+	result, err := snapshot.Restore(context.Background(), dst.store, raw, dst.snapshotRestoreOptions(context.Background(), false))
+	if err != nil {
+		t.Fatal(err)
+	}
+	dst.finishRestore(context.Background(), &result)
+	if result.QueuedRunsRestored != 2 || result.QueuedRunsRequeued != 2 {
+		t.Fatalf("restored %d, requeued %d, want 2/2 (warnings %v)", result.QueuedRunsRestored, result.QueuedRunsRequeued, result.Warnings)
+	}
+	if c := result.Counts(); c["queued_runs"] != 2 || c["queued_runs_requeued"] != 2 {
+		t.Errorf("restored counts = %v, want queued_runs and queued_runs_requeued on every transport's map", c)
+	}
+	if !strings.Contains(strings.Join(result.Warnings, "\n"), "secrets are not carried") {
+		t.Errorf("warnings = %v, want one saying the secrets did not travel", result.Warnings)
+	}
+	gate <- struct{}{}
+	gate <- struct{}{}
+	for _, id := range []string{withSecret.ID, plain.ID} {
+		done := waitRunStatus(t, dst.store, id, store.RunCompleted)
+		if id == withSecret.ID && done.IdempotencyKey != "key-snap" {
+			t.Errorf("restored run's key = %q, want it carried", done.IdempotencyKey)
+		}
+	}
 }
 
 func transcriptMentions(evs []store.Event, text string) bool {

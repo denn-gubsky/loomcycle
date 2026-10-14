@@ -380,19 +380,54 @@ func (s *Server) RestartQueuedRuns(ctx context.Context, bootedAt time.Time) (res
 	if err != nil {
 		return 0, 0, err
 	}
+	restarted, failedIDs := s.queueAgain(ctx, rows)
+	return restarted, len(failedIDs), nil
+}
+
+// requeueRestoredRuns queues again the queued runs a snapshot restore just
+// inserted — those only, by id: every other queued row has a live waiter. A
+// run that cannot be is failed and named in the warnings.
+func (s *Server) requeueRestoredRuns(ctx context.Context, ids []string) (requeued int, warnings []string) {
+	if s.store == nil || len(ids) == 0 {
+		return 0, nil
+	}
+	want := make(map[string]bool, len(ids))
+	for _, id := range ids {
+		want[id] = true
+	}
+	rows, err := s.store.ListQueuedRuns(ctx, "", time.Now().Add(time.Second))
+	if err != nil {
+		return 0, []string{fmt.Sprintf("queued_runs: listing the restored queued runs failed, so none was queued again: %v", err)}
+	}
+	var restored []store.QueuedRun
+	for _, q := range rows {
+		if want[q.Run.ID] {
+			restored = append(restored, q)
+		}
+	}
+	requeued, failed := s.queueAgain(ctx, restored)
+	for _, f := range failed {
+		warnings = append(warnings, fmt.Sprintf("queued_run %s: not queued again and failed: %s", f[0], f[1]))
+	}
+	return requeued, warnings
+}
+
+// queueAgain starts each of rows again, in order, or fails it with the reason
+// it cannot be. failed holds (run id, reason) pairs.
+func (s *Server) queueAgain(ctx context.Context, rows []store.QueuedRun) (started int, failed [][2]string) {
 	for _, q := range rows {
 		in, why := s.restartInput(q)
 		if why != "" {
 			if ferr := s.store.FailQueuedRun(ctx, q.Run.ID, why); ferr != nil && !errors.Is(ferr, store.ErrRunNotQueued) {
 				log.Printf("queue: restart: could not fail run %s: %v", q.Run.ID, ferr)
 			}
-			failed++
+			failed = append(failed, [2]string{q.Run.ID, why})
 			continue
 		}
 		s.startQueuedAgain(in)
-		restarted++
+		started++
 	}
-	return restarted, failed, nil
+	return started, failed
 }
 
 // startQueuedAgain runs a restarted queued run in its own goroutine, and

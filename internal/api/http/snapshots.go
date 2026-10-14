@@ -507,6 +507,11 @@ func (s *Server) finishRestore(ctx context.Context, result *snapshot.RestoreResu
 	result.PausedRunsResumed = r.Resumed
 	result.PausedRunsAlreadyLive = r.AlreadyLive
 	result.Warnings = append(result.Warnings, r.Warnings...)
+	// The restored queued runs wait for a slot like any other; a paused
+	// runtime starts none of them until it resumes.
+	n, warnings := s.requeueRestoredRuns(context.WithoutCancel(ctx), result.Refresh.QueuedRunIDs)
+	result.QueuedRunsRequeued = n
+	result.Warnings = append(result.Warnings, warnings...)
 }
 
 // postRestoreRefresh brings the in-process caches over restored tables in
