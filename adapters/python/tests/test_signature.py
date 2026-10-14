@@ -10,7 +10,7 @@ import pathlib
 
 import pytest
 
-from loomcycle import verify_loomcycle_signature
+from loomcycle import verify_loomcycle_delivery, verify_loomcycle_signature
 
 VECTOR = json.loads(
     (pathlib.Path(__file__).resolve().parents[3] / "internal" / "sigv1" / "testdata" / "vector.json").read_text("utf-8")
@@ -64,3 +64,25 @@ def test_fails_closed_on_every_malformed_header(header):
 
 def test_an_empty_secret_never_verifies():
     assert not verify(secret="")
+
+
+def test_delivery_returns_the_signed_bodys_id_and_hook():
+    body = verify_loomcycle_delivery(VECTOR["body"], VECTOR["header"], VECTOR["secret"], now=AT)
+    assert body is not None
+    assert body["delivery_id"] == "7c0e2b6a-1d2f-4a3b-8c4d-5e6f7a8b9c0d"
+    assert body["hook_name"] == "gate" and body["owner"] == "agent:w"
+    as_bytes = verify_loomcycle_delivery(VECTOR["body"].encode("utf-8"), VECTOR["header"], VECTOR["secret"], now=AT)
+    assert as_bytes == body
+
+
+def test_delivery_is_none_when_the_signature_fails():
+    assert verify_loomcycle_delivery(VECTOR["body"], VECTOR["header"], "another-secret", now=AT) is None
+    swapped = VECTOR["body"].replace("7c0e2b6a-1d2f", "00000000-0000")
+    assert verify_loomcycle_delivery(swapped, VECTOR["header"], VECTOR["secret"], now=AT) is None
+
+
+@pytest.mark.parametrize("case", VECTOR["unusable"], ids=lambda c: c["name"])
+def test_delivery_is_none_for_a_signed_body_that_is_not_a_delivery(case):
+    # The signature is valid; it is the body that is refused.
+    assert verify_loomcycle_signature(case["body"], case["header"], VECTOR["secret"], now=AT)
+    assert verify_loomcycle_delivery(case["body"], case["header"], VECTOR["secret"], now=AT) is None

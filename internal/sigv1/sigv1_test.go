@@ -5,6 +5,7 @@ import (
 	"flag"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strconv"
 	"strings"
 	"testing"
@@ -93,6 +94,17 @@ type vector struct {
 	Body   string `json:"body"`
 	T      int64  `json:"t"`
 	Header string `json:"header"`
+	// Unusable are bodies signed with the same secret at the same t whose
+	// signature is valid but which are not a usable hook delivery (no
+	// delivery_id, not JSON, ...): an adapter helper that returns the
+	// verified delivery must refuse each.
+	Unusable []signedBody `json:"unusable"`
+}
+
+type signedBody struct {
+	Name   string `json:"name"`
+	Body   string `json:"body"`
+	Header string `json:"header"`
 }
 
 // TestSign_MatchesTheCrossLanguageVector pins testdata/vector.json to the Go
@@ -103,10 +115,22 @@ func TestSign_MatchesTheCrossLanguageVector(t *testing.T) {
 	// hashes anything other than the exact UTF-8 bytes fails on it.
 	want := vector{
 		Secret: "sigv1-vector-secret",
-		Body:   "{\"phase\":\"pre\",\"hook_name\":\"gate\",\"note\":\"café \\u2014 ok\"}\n",
+		Body:   "{\"phase\":\"pre\",\"owner\":\"agent:w\",\"hook_name\":\"gate\",\"delivery_id\":\"7c0e2b6a-1d2f-4a3b-8c4d-5e6f7a8b9c0d\",\"note\":\"café \\u2014 ok\"}\n",
 		T:      1_760_000_000,
 	}
-	want.Header = Sign(want.Secret, []byte(want.Body), time.Unix(want.T, 0))
+	at := time.Unix(want.T, 0)
+	want.Header = Sign(want.Secret, []byte(want.Body), at)
+	for _, u := range []signedBody{
+		{Name: "no delivery_id", Body: `{"phase":"pre","owner":"agent:w","hook_name":"gate"}`},
+		{Name: "empty delivery_id", Body: `{"phase":"pre","owner":"agent:w","hook_name":"gate","delivery_id":""}`},
+		{Name: "delivery_id not a string", Body: `{"phase":"pre","owner":"agent:w","hook_name":"gate","delivery_id":7}`},
+		{Name: "no hook_name", Body: `{"phase":"pre","owner":"agent:w","delivery_id":"7c0e2b6a-1d2f-4a3b-8c4d-5e6f7a8b9c0d"}`},
+		{Name: "not an object", Body: `["7c0e2b6a-1d2f-4a3b-8c4d-5e6f7a8b9c0d"]`},
+		{Name: "not JSON", Body: `delivery_id=7c0e2b6a`},
+	} {
+		u.Header = Sign(want.Secret, []byte(u.Body), at)
+		want.Unusable = append(want.Unusable, u)
+	}
 	if *updateVector {
 		buf, err := json.MarshalIndent(want, "", "  ")
 		if err != nil {
@@ -124,7 +148,7 @@ func TestSign_MatchesTheCrossLanguageVector(t *testing.T) {
 	if err := json.Unmarshal(raw, &got); err != nil {
 		t.Fatal(err)
 	}
-	if got != want {
+	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("testdata/vector.json is not what the Go signer produces:\n got %+v\nwant %+v", got, want)
 	}
 }

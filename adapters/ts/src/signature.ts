@@ -7,9 +7,12 @@
  *     X-Loomcycle-Signature: t=<unix seconds>,v1=<hex HMAC-SHA256>
  *
  * where the MAC is keyed by the secret and computed over `<t>.<raw body>` —
- * the exact bytes of the request body. `X-Loomcycle-Hook` names the hook and
- * `X-Loomcycle-Delivery` identifies the delivery (a retry keeps it), so a
- * receiver can drop one it has already handled.
+ * the exact bytes of the request body. Only the body is signed: the body's
+ * `delivery_id` (a retry keeps it) is what a receiver dedupes on, and its
+ * `hook_name` / `owner` say which hook sent it. `X-Loomcycle-Delivery` and
+ * `X-Loomcycle-Hook` are UNSIGNED copies of those two fields — a replayer can
+ * change them — so never dedupe or authorize on them.
+ * {@link verifyLoomcycleDelivery} verifies and returns the body's identity.
  *
  * Web Crypto only (`crypto.subtle`), so the same function runs in Node and in
  * a browser or edge runtime. It is async because Web Crypto is.
@@ -104,4 +107,53 @@ export async function verifyLoomcycleSignature(
   } catch {
     return false;
   }
+}
+
+/** A delivery {@link verifyLoomcycleDelivery} verified: what to dedupe on and
+ *  which hook sent it, read from the signed body, plus the parsed body. */
+export interface VerifiedDelivery<T = Record<string, unknown>> {
+  /** The body's `delivery_id`. Dedupe on this — keep each id at least as long
+   *  as the tolerance window — never on the `X-Loomcycle-Delivery` header,
+   *  which is an unsigned copy a replayer can change. */
+  deliveryId: string;
+  /** The body's `hook_name`: the HookDef that sent it. The `X-Loomcycle-Hook`
+   *  header is an unsigned copy. */
+  hookName: string;
+  /** The body's `owner` (`agent:<name>`, `team:<name>`, `channel:<name>`). */
+  owner: string;
+  /** The parsed body. */
+  body: T;
+}
+
+/**
+ * {@link verifyLoomcycleSignature}, then parse the verified body and return
+ * the identity a receiver should act on: its `delivery_id`, `hook_name` and
+ * `owner`. Resolves `null` when the signature does not verify, or the body is
+ * not a JSON object carrying a non-empty string `delivery_id` and `hook_name`
+ * — a signed delivery always has both. Deduplicating on `deliveryId` stays the
+ * caller's job.
+ */
+export async function verifyLoomcycleDelivery<T = Record<string, unknown>>(
+  rawBody: string | Uint8Array,
+  header: string,
+  secret: string,
+  opts: VerifySignatureOptions = {},
+): Promise<VerifiedDelivery<T> | null> {
+  if (!(await verifyLoomcycleSignature(rawBody, header, secret, opts))) {
+    return null;
+  }
+  let body: unknown;
+  try {
+    body = JSON.parse(typeof rawBody === "string" ? rawBody : new TextDecoder().decode(rawBody));
+  } catch {
+    return null;
+  }
+  if (body === null || typeof body !== "object" || Array.isArray(body)) {
+    return null;
+  }
+  const { delivery_id: deliveryId, hook_name: hookName, owner } = body as Record<string, unknown>;
+  if (typeof deliveryId !== "string" || deliveryId === "" || typeof hookName !== "string" || hookName === "") {
+    return null;
+  }
+  return { deliveryId, hookName, owner: typeof owner === "string" ? owner : "", body: body as T };
 }

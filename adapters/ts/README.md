@@ -298,21 +298,22 @@ export async function POST(req: Request) {
 }
 ```
 
-**Verify a signed delivery.** A HookDef whose webhook body names a `signing_secret` (a credential, `"$cred:<name>"`) signs every call: `X-Loomcycle-Signature: t=<unix>,v1=<hex HMAC-SHA256 of t + "." + raw body>`, plus `X-Loomcycle-Hook` (the definition's name) and `X-Loomcycle-Delivery` (an id a retry keeps — dedupe on it). Verify against the **raw** body, before parsing it:
+**Verify a signed delivery.** A HookDef whose webhook body names a `signing_secret` (a credential, `"$cred:<name>"`) signs every call: `X-Loomcycle-Signature: t=<unix>,v1=<hex HMAC-SHA256 of t + "." + raw body>`. **Only the body is signed.** It carries `delivery_id` (a retry keeps it), `hook_name` and `owner`; the `X-Loomcycle-Delivery` and `X-Loomcycle-Hook` headers are unsigned copies a replayer can change, so dedupe and identify the hook from the verified body, never from them. Verify against the **raw** body, before parsing it:
 
 ```ts
-import { verifyLoomcycleSignature } from "@loomcycle/client";
+import { verifyLoomcycleDelivery } from "@loomcycle/client";
+import type { PreHookCall } from "@loomcycle/client";
 
 export async function POST(req: Request) {
   const raw = await req.text(); // the exact bytes; JSON.stringify(await req.json()) will not match
-  const ok = await verifyLoomcycleSignature(raw, req.headers.get("x-loomcycle-signature") ?? "", process.env.HOOK_SIGNING_SECRET!);
-  if (!ok) return new Response(null, { status: 401 });
-  const body = JSON.parse(raw) as PreHookCall;
-  // ...
+  const d = await verifyLoomcycleDelivery<PreHookCall>(raw, req.headers.get("x-loomcycle-signature") ?? "", process.env.HOOK_SIGNING_SECRET!);
+  if (!d) return new Response(null, { status: 401 });
+  if (await seen(d.deliveryId)) return Response.json(previousAnswer(d.deliveryId)); // keep ids ≥ 300 s
+  // d.hookName / d.owner say which hook sent it; d.body is the payload.
 }
 ```
 
-`verifyLoomcycleSignature(rawBody, header, secret, { toleranceSec = 300, now?, subtle? })` resolves `true` only for a signature made within the tolerance; every malformed header, stale or future `t`, or wrong MAC is `false`. It uses Web Crypto (`crypto.subtle`), so it runs in Node 19+, browsers and edge runtimes; on Node 18 pass `subtle: require("node:crypto").webcrypto.subtle`.
+`verifyLoomcycleDelivery(rawBody, header, secret, opts)` resolves the body's `{deliveryId, hookName, owner, body}`, or `null` when the signature fails or the body has no `delivery_id`/`hook_name`. `verifyLoomcycleSignature(rawBody, header, secret, { toleranceSec = 300, now?, subtle? })` is the bare check: `true` only for a signature made within the tolerance; every malformed header, stale or future `t`, or wrong MAC is `false`. Both use Web Crypto (`crypto.subtle`), so they run in Node 19+, browsers and edge runtimes; on Node 18 pass `subtle: require("node:crypto").webcrypto.subtle`. Give each receiver its own signing secret, so a delivery captured at one cannot be replayed to another.
 
 **Important constraints**:
 

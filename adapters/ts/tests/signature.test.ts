@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
-import { verifyLoomcycleSignature } from "../src/index.js";
+import { verifyLoomcycleDelivery, verifyLoomcycleSignature } from "../src/index.js";
 
 /**
  * The vector is written by the Go signer (internal/sigv1, pinned by
@@ -14,6 +14,8 @@ interface Vector {
   body: string;
   t: number;
   header: string;
+  /** Validly signed bodies that are not a usable delivery. */
+  unusable: { name: string; body: string; header: string }[];
 }
 const vector = JSON.parse(
   readFileSync(resolve(__dirname, "..", "..", "..", "internal", "sigv1", "testdata", "vector.json"), "utf8"),
@@ -83,6 +85,34 @@ describe("verifyLoomcycleSignature", () => {
       );
     } finally {
       if (saved) Object.defineProperty(globalThis, "crypto", saved);
+    }
+  });
+});
+
+describe("verifyLoomcycleDelivery", () => {
+  it("returns the delivery id and hook from the signed body, not the headers", async () => {
+    const d = await verifyLoomcycleDelivery(vector.body, vector.header, vector.secret, { now: at });
+    expect(d).not.toBeNull();
+    expect(d!.deliveryId).toBe("7c0e2b6a-1d2f-4a3b-8c4d-5e6f7a8b9c0d");
+    expect(d!.hookName).toBe("gate");
+    expect(d!.owner).toBe("agent:w");
+    expect(d!.body).toEqual(JSON.parse(vector.body));
+    const bytes = await verifyLoomcycleDelivery(new TextEncoder().encode(vector.body), vector.header, vector.secret, { now: at });
+    expect(bytes?.deliveryId).toBe(d!.deliveryId);
+  });
+
+  it("returns null when the signature does not verify", async () => {
+    expect(await verifyLoomcycleDelivery(vector.body, vector.header, "another-secret", { now: at })).toBeNull();
+    const swapped = vector.body.replace("7c0e2b6a-1d2f", "00000000-0000");
+    expect(await verifyLoomcycleDelivery(swapped, vector.header, vector.secret, { now: at })).toBeNull();
+  });
+
+  it("returns null for a validly signed body that is not a usable delivery", async () => {
+    expect(vector.unusable.length).toBeGreaterThan(0);
+    for (const u of vector.unusable) {
+      // The signature itself is fine — what is refused is the body.
+      expect(await verifyLoomcycleSignature(u.body, u.header, vector.secret, { now: at }), u.name).toBe(true);
+      expect(await verifyLoomcycleDelivery(u.body, u.header, vector.secret, { now: at }), u.name).toBeNull();
     }
   });
 });
