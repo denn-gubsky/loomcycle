@@ -13,6 +13,7 @@ Host: `ollama-host`, Ollama 0.40.3, `NUM_PARALLEL` 4, `MAX_LOADED_MODELS` 4,
 | **E3** | Rule output: **quantum 1, hold 0** — per-call round-robin. | `quantum_calls` defaults to **1**. |
 | **E4** | **Host fault, not scored.** The mixed run failed on both tries. | Nothing; it is a finding (below). |
 | **E5** | Every `num_ctx` switch reloaded the model (about 10.7 s) and lost all reuse. | Model identity is **(model, `num_ctx`)**. |
+| **E4 re-run** (2026-10-14, amendment 3) | Chat + embed **passes** (no reload, embed isolated). Chat + decision and all three are **host faults** on both tries: the chat runner dies whenever a second LLM is loaded beside it. Decision lane 2 vs 1: **1.78×** (threshold 1.8). | The fault follows **two LLMs at once**, not the one-slot chat model. The decision lane default stays 1 (below). |
 
 Side check: on warm calls `prompt_eval_count` still reports the full prompt (count
 ratio 1.00). The usage ledger does not under-report Ollama input tokens.
@@ -82,6 +83,34 @@ between these.
 - Per amendment 1 this is a host fault for the setting, **not scored**. The isolation question (do embed and decision calls stay fast under chat load) is unanswered.
 - Short diagnostic runs of each pair (chat + embed, chat + decision) and of all three had passed before E1. The fault needs sustained load to show.
 
+## E4 re-run (2026-10-14) — two LLMs at once take the chat runner down
+
+Amendment 3: chat on `gemma4:latest` (four real slots), embed `bge-m3`, decision `nimble` (one slot), chat `num_ctx` 65536, lanes chat 4 / embed 2 / decision 1. `qwen3.6` arms not run: they were conditional on the three mixed arms passing.
+
+| arm | calls | failed | chat p50 / p95 | embed p50 / p95 | decision p50 / p95 | reloads after the first load |
+|---|---|---|---|---|---|---|
+| `E4-solo-r` | 30 | 0 | — | 0.15 s / 2.2 s | 1.8 s / 9.5 s | 0 |
+| `E4-ce` | 60 | 0 | 18.5 s / 52 s | 0.14 s / 0.19 s | — | 0 |
+| `E4-cd` try 1 | 50 | 5 (chat) | 24.9 s / 87 s | — | 3.2 s / 83 s | 4 (chat) |
+| `E4-cd` try 2 | 50 | 3 (chat) | 23.0 s / 99 s | — | 3.3 s / 18 s | 4 (chat) |
+| `E4-ced` try 1 | 70 | 3 chat, 1 decision | 18.5 s / 210 s | 0.16 s / 62 s | 3.4 s / 18 s | 5 (chat) |
+| `E4-ced` try 2 | 70 | 4 (chat) | 18.7 s / 102 s | 0.15 s / 2.3 s | 3.1 s / 85 s | 5 (chat) |
+| `E4-d1` | 20 | 0 | — | — | 1.9 s (wait 1.4 s) | 0 |
+| `E4-d2` | 20 | 0 | — | — | 3.3 s | 0 |
+
+(The solo decision p95 is its first call, which paid the 8.8 s load; there are 10 decision calls.)
+
+- **Chat + embed passes both rules.** No reload after the first load; embed under chat load p50 0.14 s, p95 0.19 s against the solo 0.15 s / 2.2 s.
+- **Every arm with `gemma4` and `nimble` loaded together is a host fault**, on both tries. The failures are chat calls: `unexpected EOF` while running the model, and 500s, each followed by a reload of `gemma4` (4–5 per run). The decision model alone (`E4-d1`, `E4-d2`) and the chat model with the embedder (`E4-ce`) never fail.
+- **So the fault is not the one-slot chat model**: `gemma4` has four real slots and still dies, and only when a second LLM is resident. An embedder beside it is fine. The likeliest cause is memory: two LLMs, one with four 64K-context slots, on the host's shared memory. Not confirmed — the host's own logs were not read.
+- **Isolation** is met where the run is clean (`E4-ce`). In the faulted arms the decision p95 reached 83–85 s, but those runs are not scored.
+- **Decision lane:** two calls at once took 3.34 s each against 1.88 s for one: **1.78×**, just under the pre-registered 1.8 threshold, so by the rule the host does not serialise the decision model. The gain is small: 0.60 calls/s at lane 2 against 0.53 calls/s at lane 1 (+13 %).
+
+**Decides, per amendment 3:**
+- The multi-model fault follows **two LLMs computing at once**. On this host `max_models_in_flight: 1` on the Ollama provider is the setting that avoids it. It also makes the embedder wait for the chat model, which `E4-ce` showed is not needed: the cap counts every model, and no setting today leaves the embedder out of it (a follow-up, if that wait matters).
+- Isolation did not fail in a clean arm: no reserved host share is needed.
+- `E4-d2` does not serialise by the rule, but the 13 % gain does not pay for a second decision slot beside a chat model: the decision lane default on Ollama stays **1**.
+
 ## E5 — a different `num_ctx` is a different model
 
 Two agents on one model, alternating calls at `num_ctx` 8192 and 65536:
@@ -97,6 +126,7 @@ Two agents on one model, alternating calls at `num_ctx` 8192 and 65536:
 | E3 re-run, 15:50 | 1 run lost 4 calls | chat model only, after the cooling fix |
 | E4 mixed | both tries failed; host unresponsive on the second | three models in use |
 | E5 try 1 | first 2 calls failed | host recovering from E4 |
+| E4 re-run, `E4-cd` and `E4-ced` | every try lost 3–5 chat calls (`unexpected EOF`, 500) and reloaded `gemma4` | `gemma4` (4 slots, 64K) and `nimble` both loaded |
 
 ## What RFC EI takes from this
 
@@ -105,4 +135,4 @@ Two agents on one model, alternating calls at `num_ctx` 8192 and 65536:
 3. **Call-level gating is the fix for the starvation**, independent of any tuning: it removes the 257 s p95 and the 0.40 spread of the run-level gate.
 4. **Model identity is (model, `num_ctx`).** Two agents on one model with different context sizes cost a reload and a full cold prefill on every switch. P2 must treat them as different models and should warn when an agent's context size differs from the provider's.
 5. **Lanes cannot assume a host tolerates several models computing at once.** P2 needs an opt-in cap on models in flight per provider, and a call must survive a runner crash (retry once the runner is back).
-6. **Open:** the loaded-model budget and the embed/decision lane caps. E4 has to be repeated — pair by pair, under sustained load — once the host's multi-model fault is understood.
+6. **Answered by the E4 re-run (2026-10-14):** the fault follows two LLMs computing at once on this host, not the one-slot model and not the embedder. `max_models_in_flight: 1` on the Ollama provider avoids it, at the cost of making embeddings wait for the chat model (the cap counts every model; leaving the embedder out of it would be a follow-up). Decision lane 1 per decision model. Whether two LLMs fit on a host with more memory is a property of the host, not of loomcycle.

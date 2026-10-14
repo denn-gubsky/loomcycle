@@ -154,6 +154,43 @@ cause is discarded and repeated.
    - Their verdicts are reuse ratios, which a 5 % speed change moves by well under 0.01.
 5. **E4 and E5 run after E3**, on the fixed host, as planned.
 
+### Amendment 3 — 2026-10-14, before the E4 re-run
+
+**Why E4 is re-run, and why on other models.**
+- E4 failed on both tries with three models computing at once (a host fault, not scored). RFC EI P2 then shipped without the numbers E4 was to give: the loaded-model budget and the embed and decision lane caps.
+- A research note (`/documents/research/ollama-kv-cache-slot-pinning`, 2026-10-13/14) found that Ollama 0.40.3 runs **one slot** for the `qwen35` and `qwen35moe` families, whatever `OLLAMA_NUM_PARALLEL` says. That covers the E1–E4 chat model (`qwen3.6`) and every decision model (`nimble`, `clef`, `clef-flash`, `tev1`). E4's "chat lane 4" was therefore one slot with three calls queued inside Ollama.
+- A live probe in that note found two lab models that do run four requests at once: `gpt-oss:latest` (2.4× aggregate throughput) and `gemma4:latest` (2.8×).
+- So E4 is repeated pair by pair, as RESULTS.md asked, with the chat lane on a model that really has four slots.
+
+**Models.**
+- chat: `gemma4:latest` (8B, Q4_K_M, architecture `gemma4`, not on the one-slot list). `gpt-oss` is not used: the probe turns thinking off with `effort: low`, which `gpt-oss` does not accept as off.
+- embed: `bge-m3:latest` (unchanged).
+- decision: `nimble:latest` (unchanged; one slot).
+- chat `num_ctx`: 65536, the host default, so no arm reloads a model for its context size.
+
+**Arms, in this order.** Every arm uses a fresh workload seed (amendment 2). The chat lane is 4, the embed lane 2, the decision lane 1, as in the original E4.
+
+| arm | chat agents | embed agents | decision agents | what it answers |
+|---|---|---|---|---|
+| `E4-solo-r` | 0 | 2 | 1 | the solo baseline again, on today's host |
+| `E4-ce` | 4 | 2 | 0 | chat + embed |
+| `E4-cd` | 4 | 0 | 1 | chat + decision |
+| `E4-ced` | 4 | 2 | 1 | all three (the original E4) |
+| `E4-d1` | 0 | 0 | 2 | two decision agents, decision lane 1 |
+| `E4-d2` | 0 | 0 | 2 | two decision agents, decision lane 2 |
+
+Only if `E4-ce`, `E4-cd` and `E4-ced` all pass are the same three arms repeated with `qwen3.6:latest` as the chat model (`E4-q-ce`, `E4-q-cd`, `E4-q-ced`). They tell whether the fault belongs to the one-slot chat model.
+
+**Rules.**
+- **No thrash** and **isolation** are E4's original rules: after each model's first call, 0 calls with `load_ms` > 1000; embed and decision p95 latency under chat load ≤ 2× the `E4-solo-r` baseline.
+- **Host fault:** a run with any failed call is discarded and repeated once, on a fresh seed (amendments 1 and 2). A second failure is a host fault for that arm, and the remaining arms still run. After a host fault, the next arm starts only once `/api/ps` shows no model loaded, and after a 60 s wait.
+- **Decision lane:** if `E4-d2`'s median decision latency is ≥ 1.8× `E4-d1`'s per-call median, the host serialises the decision model, and a decision lane cap above 1 per model buys nothing on this Ollama.
+
+**What each outcome decides.**
+- `E4-ce`, `E4-cd` and `E4-ced` pass → the multi-model fault is not a property of lanes in general. If the `qwen3.6` arms then fail, the fault follows the one-slot chat model, and `max_models_in_flight` is the setting for that model's provider.
+- Isolation fails in an arm that otherwise passes → the lanes need a reserved host share (the original E4 decision).
+- `E4-d2` serialises → the decision lane default on Ollama is 1 per decision model.
+
 ## Output
 
 - **Per run:** `bench/docs/schedprobe/runs/<label>.jsonl` (one record per call).
