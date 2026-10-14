@@ -49,6 +49,32 @@ Via the `credentialdef` MCP meta-tool (thin client) or in-band
 Scope is `tenant` | `user` | `agent`; `scope_id` is derived from your identity,
 never supplied. `create` is create-or-rotate (re-supplying the value re-seals it).
 
+### Expiry — `expires_at`
+
+`create` takes an optional RFC3339 `expires_at`. It is **enforced**: from that
+instant on (`now >= expires_at`) the credential is refused everywhere it is
+referenced — a `$cred:` header (the MCP call is refused; a closed hook denies), a
+remote peer's or git source's key (the dial or clone is refused), a `$ghapp:` App
+config (no token is minted, a cached one is not served), and a Bash / Bashbox env
+injection (the variable is not set from it; an operator-allowlisted host variable
+of the same name still applies, as when the credential is missing). The error
+names the credential, its scope and when it expired, never the value.
+
+- An expired credential does **not** fall through to a less specific scope: a
+  user whose own token expired is refused, not sent under the tenant's token of
+  the same name.
+- A provider / tool key override (below) that has expired is treated like a
+  missing one: the run falls back to the operator's host key — unless the run is
+  restricted from operator keys (`LOOMCYCLE_OPERATOR_KEY_RESTRICTION`), in which
+  case routing does not count the expired key and the run is refused
+  `operator_key_restricted`, as with no key at all.
+- The row is **kept**: `get` / `list` show it with `"expired": true` (and
+  `"expired": false` while it is still valid).
+- To rotate, `create` it again with the same name. A create without `expires_at`
+  clears the expiry; send a new one to keep it time-bound.
+- `expires_at` must lie between the years 1678 and 2262; leave it unset for no
+  expiry.
+
 ### Restricting where a credential may be sent — `allowed_urls`
 
 `create` takes an optional `allowed_urls`: the https URLs the value may be sent to.
