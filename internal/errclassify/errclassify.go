@@ -22,6 +22,7 @@ import (
 	"time"
 
 	"github.com/denn-gubsky/loomcycle/internal/concurrency"
+	"github.com/denn-gubsky/loomcycle/internal/credential"
 	"github.com/denn-gubsky/loomcycle/internal/providers"
 	"github.com/denn-gubsky/loomcycle/internal/resolve"
 	"github.com/denn-gubsky/loomcycle/internal/runner"
@@ -132,6 +133,21 @@ func CategoryOf(err error) (tools.ErrorInfo, bool) {
 		errors.Is(err, store.ErrMemoryValueTooLarge):
 		return business(
 			"The write exceeds a configured storage limit. Retrying the same write will fail; store less, or ask an operator to raise the limit.",
+		), true
+
+	// Not permission: nobody lacks authority. The value itself is past its
+	// expires_at, and waiting only moves further past it.
+	case errors.Is(err, credential.ErrExpired):
+		return business(
+			"A stored credential this needs has passed its expiry and is no longer sent. Retrying will not help; the credential must be rotated by creating it again with the same name.",
+		), true
+
+	// After ErrExpired, which it also wraps when that is the cause: what is
+	// left is a key the run holds that is restricted by allowed_urls, so it
+	// cannot be a provider key. The operator's key is not used in its place.
+	case errors.Is(err, providers.ErrCredentialUnusable):
+		return business(
+			"The run's own stored credential for this provider key cannot be used here (it is restricted to specific URLs), and the operator's key is not used in its place. Retrying will not help; store the key without allowed_urls, or remove it to use the operator's key.",
 		), true
 
 	// --- permission: caller lacks authority it could be granted ---

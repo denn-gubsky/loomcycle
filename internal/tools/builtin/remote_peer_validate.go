@@ -2,6 +2,7 @@ package builtin
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"net/url"
@@ -177,6 +178,10 @@ func requireAuthorBoundCredential(ctx context.Context, creds *PeerCredentials, d
 		// The question the dial will ask (PeerCredentials.Resolve for
 		// base_url), so a definition is saved only when it can be used.
 		found, usable, err := creds.ExistsFor(ctx, tenantID, name, def.BaseURL)
+		if errors.Is(err, credential.ErrExpired) {
+			// The check worked; the answer is no, and the error says why.
+			return fmt.Errorf("config.api_key_env %q: %v", def.APIKeyEnv, err)
+		}
 		if err != nil {
 			return fmt.Errorf("config.api_key_env %q: could not check the credential: %v", def.APIKeyEnv, err)
 		}

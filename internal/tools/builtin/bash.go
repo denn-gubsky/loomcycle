@@ -57,10 +57,12 @@ type Bash struct {
 	AllowedCreds []string
 	// CredResolve resolves an RFC AR credential by NAME for the run on ctx (the
 	// tenant/user/agent come from the run identity on ctx, so resolution is
-	// tenant-isolated), returning (value, ok). Wired to credential.Engine.Resolve.
-	// nil = credential injection disabled. The value is a secret — it goes only
-	// into the child's env and must never be logged.
-	CredResolve func(ctx context.Context, name string) (string, bool)
+	// tenant-isolated), returning (value, ok). An error means the run holds the
+	// credential but may not use it (expired): the variable is then left unset,
+	// host var included, and the call's output says why. nil = credential
+	// injection disabled. The value is a secret — it goes only into the child's
+	// env and must never be logged.
+	CredResolve CredEnvResolver
 }
 
 func (b *Bash) Name() string { return "Bash" }
@@ -146,7 +148,8 @@ func (b *Bash) Execute(ctx context.Context, input json.RawMessage) (tools.Result
 	cmd.Dir = cwd
 	// Pass the original Execute ctx (carries the run identity) rather than the
 	// timeout-bound runCtx — see buildEnv.
-	cmd.Env = b.buildEnv(ctx)
+	env, envNotes := b.buildEnv(ctx)
+	cmd.Env = env
 	// Capture combined output through a bounded buffer. We write to a
 	// LimitedWriter rather than reading all-at-once so a malicious command
 	// can't OOM us by producing 100 GiB of output before we read it.
@@ -167,6 +170,9 @@ func (b *Bash) Execute(ctx context.Context, input json.RawMessage) (tools.Result
 	out := bw.bytes()
 	var b2 bytes.Buffer
 	b2.Write(out)
+	for _, n := range envNotes {
+		fmt.Fprintf(&b2, "\n[%s]", n)
+	}
 	if bw.truncated {
 		fmt.Fprintf(&b2, "\n[output truncated at %d bytes]", maxOut)
 	}
@@ -194,7 +200,8 @@ func (b *Bash) Execute(ctx context.Context, input json.RawMessage) (tools.Result
 // caller's Execute ctx (carries the run identity), NOT the command's
 // timeout-bound context — a credential store read is setup, not part of the
 // bounded command execution, so it must not race the command's wall-clock.
-func (b *Bash) buildEnv(ctx context.Context) []string {
+// The notes say which credentials were left unset and why (mergeCredEnv).
+func (b *Bash) buildEnv(ctx context.Context) (env, notes []string) {
 	return mergeCredEnv(ctx, scrubbedHostEnv(b.AllowedExtraEnv), b.AllowedCreds, b.CredResolve)
 }
 
@@ -228,9 +235,15 @@ func scrubbedHostEnv(allowedExtra []string) []string {
 // names first (declared order), then creds not already contributed by a host
 // var. The resolved value is a secret — the caller must registerSecret it and
 // it goes only into the child's env, never a log.
-func mergeCredEnv(ctx context.Context, host, allowedCreds []string, resolve func(ctx context.Context, name string) (string, bool)) []string {
+//
+// A name whose resolve fails (the run holds the credential but may not use
+// it) is left unset, and a same-named host var is REMOVED: the operator's
+// value must not stand in for a tenant's lapsed one. notes carries one line
+// per such name, naming it and the reason (never a value), for the caller to
+// show the model.
+func mergeCredEnv(ctx context.Context, host, allowedCreds []string, resolve CredEnvResolver) (env, notes []string) {
 	if resolve == nil || len(allowedCreds) == 0 {
-		return host
+		return host, nil
 	}
 	idx := make(map[string]int, len(host)) // name -> position in out
 	out := make([]string, 0, len(host)+len(allowedCreds))
@@ -240,8 +253,18 @@ func mergeCredEnv(ctx context.Context, host, allowedCreds []string, resolve func
 		}
 		out = append(out, kv)
 	}
+	removed := false
 	for _, name := range allowedCreds {
-		v, ok := resolve(ctx, name)
+		v, ok, err := resolve(ctx, name)
+		if err != nil {
+			if pos, seen := idx[name]; seen {
+				out[pos] = "" // dropped below; positions stay valid meanwhile
+				delete(idx, name)
+				removed = true
+			}
+			notes = append(notes, fmt.Sprintf("%s is not set: %v", name, err))
+			continue
+		}
 		if !ok || v == "" {
 			continue
 		}
@@ -252,8 +275,23 @@ func mergeCredEnv(ctx context.Context, host, allowedCreds []string, resolve func
 			out = append(out, name+"="+v)
 		}
 	}
-	return out
+	if removed {
+		kept := out[:0]
+		for _, kv := range out {
+			if kv != "" {
+				kept = append(kept, kv)
+			}
+		}
+		out = kept
+	}
+	return out, notes
 }
+
+// CredEnvResolver resolves a credential injected into a host child's env:
+// (value, true, nil) to inject it, ("", false, nil) for none (any host var of
+// that name stays), and an error when the run holds the credential but may
+// not use it (expired) — the variable is then unset, host var included.
+type CredEnvResolver func(ctx context.Context, name string) (string, bool, error)
 
 // boundedWriter is an io.Writer with a hard byte cap. After cap bytes
 // are written, further writes are silently discarded and truncated is

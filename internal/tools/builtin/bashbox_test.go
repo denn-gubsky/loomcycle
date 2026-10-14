@@ -3,6 +3,7 @@ package builtin
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -23,20 +24,20 @@ func TestBashbox_FallbackEnv_InjectsTenantCreds(t *testing.T) {
 	b := &Bashbox{
 		FallbackAllowedEnv:   []string{"LOOMCYCLE_TEST_HOSTVAR", "LOOMCYCLE_TEST_SHARED"},
 		FallbackAllowedCreds: []string{"GITHUB_TOKEN", "LOOMCYCLE_TEST_SHARED"},
-		CredResolve: func(ctx context.Context, name string) (string, bool) {
+		CredResolve: func(ctx context.Context, name string) (string, bool, error) {
 			ten := tools.RunIdentity(ctx).TenantID
 			switch name {
 			case "GITHUB_TOKEN":
-				return "tok-" + ten, true
+				return "tok-" + ten, true, nil
 			case "LOOMCYCLE_TEST_SHARED":
-				return "from-cred", true
+				return "from-cred", true, nil
 			}
-			return "", false
+			return "", false, nil
 		},
 	}
 	envMap := func(ctx context.Context) map[string]string {
 		m := map[string]string{}
-		for _, kv := range b.fallbackEnv(ctx) {
+		for _, kv := range envOnly(b.fallbackEnv(ctx)) {
 			if i := strings.IndexByte(kv, '='); i > 0 {
 				m[kv[:i]] = kv[i+1:]
 			}
@@ -69,10 +70,33 @@ func TestBashbox_FallbackEnv_InjectsTenantCreds(t *testing.T) {
 // pre-feature behavior.
 func TestBashbox_FallbackEnv_NoResolverIsHostOnly(t *testing.T) {
 	b := &Bashbox{FallbackAllowedCreds: []string{"GITHUB_TOKEN"}} // CredResolve nil
-	for _, kv := range b.fallbackEnv(context.Background()) {
+	for _, kv := range envOnly(b.fallbackEnv(context.Background())) {
 		if strings.HasPrefix(kv, "GITHUB_TOKEN=") {
 			t.Errorf("no CredResolve → creds must not resolve, got %q", kv)
 		}
+	}
+}
+
+// The Bashbox fallback shares mergeCredEnv's rule: an unusable credential
+// (expired) leaves its variable unset, the operator's same-named host var
+// included, and a note says why.
+func TestBashbox_FallbackEnv_AnUnusableCredRemovesTheHostVar(t *testing.T) {
+	t.Setenv("LOOMCYCLE_TEST_SHARED", "from-host")
+	b := &Bashbox{
+		FallbackAllowedEnv:   []string{"LOOMCYCLE_TEST_SHARED"},
+		FallbackAllowedCreds: []string{"LOOMCYCLE_TEST_SHARED"},
+		CredResolve: func(ctx context.Context, name string) (string, bool, error) {
+			return "", false, errors.New("expired")
+		},
+	}
+	env, notes := b.fallbackEnv(context.Background())
+	for _, kv := range env {
+		if strings.HasPrefix(kv, "LOOMCYCLE_TEST_SHARED=") {
+			t.Errorf("the host var stood in for an unusable credential: %q", kv)
+		}
+	}
+	if len(notes) != 1 || notes[0] != "LOOMCYCLE_TEST_SHARED is not set: expired" {
+		t.Errorf("notes = %q, want one naming the variable and the reason", notes)
 	}
 }
 

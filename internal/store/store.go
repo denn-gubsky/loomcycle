@@ -5694,8 +5694,9 @@ type CredentialDefRow struct {
 	// Definition is the sealed value ({"value":{key_id,nonce,ciphertext}}) for
 	// inline, or the external pointer JSON. Never plaintext, never logged.
 	Definition json.RawMessage `json:"definition"`
-	// ExpiresAt is an optional advisory soft-expiry (rotation reminder); nil =
-	// no expiry. Not enforced at resolve in v1.
+	// ExpiresAt is when the credential stops resolving; nil = no expiry. The
+	// credential engine refuses an expired row on every by-name lookup; the
+	// row is kept so it can be listed and rotated.
 	ExpiresAt *time.Time `json:"expires_at,omitempty"`
 	CreatedAt time.Time  `json:"created_at"`
 	UpdatedAt time.Time  `json:"updated_at"`

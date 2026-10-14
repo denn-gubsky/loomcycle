@@ -259,14 +259,14 @@ func newCanaryEnv(t *testing.T, restricted bool, scripts func(e *canaryEnv) map[
 	bash := &builtin.Bash{
 		Enabled:      true,
 		AllowedCreds: []string{"GITHUB_TOKEN"},
-		CredResolve: func(ctx context.Context, name string) (string, bool) {
+		CredResolve: func(ctx context.Context, name string) (string, bool, error) {
 			ri := tools.RunIdentity(ctx)
 			res, found, err := engine.Resolve(ctx, ri.TenantID, tools.AgentName(ctx), ri.UserID, name)
 			if err != nil || !found {
-				return "", false
+				return "", false, nil
 			}
 			register(res.Value)
-			return res.Value, true
+			return res.Value, true, nil
 		},
 	}
 	e.scan = &scanTool{

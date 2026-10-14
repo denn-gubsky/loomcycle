@@ -201,13 +201,13 @@ func newEnv(t *testing.T, o envOptions) *env {
 		t.Fatal(err)
 	}
 	creds := credential.NewEngine(st, sealer)
-	srv.SetCredentialResolver(func(ctx context.Context, name string) (providers.CredentialResolution, bool) {
+	srv.SetCredentialResolver(func(ctx context.Context, name string) (providers.CredentialResolution, bool, error) {
 		ri := tools.RunIdentity(ctx)
 		res, found, err := creds.Resolve(ctx, ri.TenantID, tools.AgentName(ctx), ri.UserID, name)
 		if err != nil || !found {
-			return providers.CredentialResolution{}, false
+			return providers.CredentialResolution{}, false, nil
 		}
-		return providers.CredentialResolution{Value: res.Value, Scope: res.Scope, ScopeID: res.ScopeID}, true
+		return providers.CredentialResolution{Value: res.Value, Scope: res.Scope, ScopeID: res.ScopeID}, true, nil
 	})
 
 	srv.SetMCPHTTPHandler(lcmcp.NewHTTPHandler(lcmcp.Config{

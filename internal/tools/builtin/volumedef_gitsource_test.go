@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/denn-gubsky/loomcycle/internal/credential"
+	"github.com/denn-gubsky/loomcycle/internal/credential/credentialtest"
 	"github.com/denn-gubsky/loomcycle/internal/gitsource/gitsourcetest"
 	"github.com/denn-gubsky/loomcycle/internal/store/sqlite"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
@@ -29,6 +30,7 @@ type gitSourceFixture struct {
 	set        *tools.EphemeralVolumeSet
 	repo       *gitsourcetest.Repo
 	engine     *credential.Engine
+	credStore  *sqlite.Store // the engine's store, to put a row in a state create refuses
 	root       string
 	registered []string // what the redactor was told to mask
 }
@@ -64,6 +66,7 @@ func newGitSourceFixtureFor(t *testing.T, user string) *gitSourceFixture {
 		t.Fatal(err)
 	}
 	f.engine = credential.NewEngine(st, sealer)
+	f.credStore = st
 
 	tool.Git = &GitSourceConfig{
 		Hosts:    []string{f.repo.Host},
@@ -385,6 +388,37 @@ func TestGitCredentialResolver_AppCredentialIsMintedAndAnOpenOneRefused(t *testi
 	}
 	if got := gitAuthUsername("notgitlab.example.com"); got != "x-access-token" {
 		t.Errorf("a host that only contains the word: user %q", got)
+	}
+}
+
+// A clone credential past its expires_at is unresolvable: neither a $cred:
+// token nor a $ghapp: App config is handed out, and no App token is minted
+// from an expired config.
+func TestGitCredentialResolver_AnExpiredCredentialIsUnresolvable(t *testing.T) {
+	f := newGitSourceFixture(t, false)
+	target := "https://github.com/acme/app"
+	for name, value := range map[string]string{"token": "glpat_stale", "app": `{"app_id":"1"}`} {
+		f.credential(t, name, value, &[]string{target})
+		credentialtest.Expire(t, f.credStore, credential.Identity{TenantID: "tnt", Scope: "tenant", Name: name}, time.Now().Add(-time.Minute))
+	}
+	minted := false
+	var registered []string
+	resolve := GitCredentialResolver(f.engine, func(context.Context, string, string, string) (string, error) {
+		minted = true
+		return "ghs_minted", nil
+	}, func(v string) { registered = append(registered, v) })
+
+	for _, ref := range []string{"$cred:token", "$ghapp:app"} {
+		_, token, err := resolve(f.ctx, ref, target)
+		if !errors.Is(err, ErrGitCredentialUnresolvable) || !strings.Contains(err.Error(), "expired") {
+			t.Errorf("%s: err = %v, want it unresolvable because it expired", ref, err)
+		}
+		if token != "" {
+			t.Errorf("%s: a token was returned for an expired credential", ref)
+		}
+	}
+	if minted || len(registered) != 0 {
+		t.Errorf("minted=%v registered=%d; want nothing minted or handed out", minted, len(registered))
 	}
 }
 

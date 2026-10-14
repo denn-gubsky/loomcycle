@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
 	"time"
 
 	"github.com/denn-gubsky/loomcycle/internal/netguard"
@@ -20,12 +21,25 @@ type Engine struct {
 	store  store.Store
 	sealer *Sealer
 	inline inlineBackend
+	// now is the clock expires_at is judged against; time.Now outside tests.
+	now func() time.Time
 }
+
+// ErrExpired is returned when the credential a name resolves to has passed
+// its expires_at. The wrapped message names the credential, its scope and
+// when it expired — never its value.
+var ErrExpired = errors.New("credential: this credential has expired")
+
+// The span of times an int64 count of nanoseconds since 1970 can name.
+var (
+	minExpiry = time.Unix(0, math.MinInt64).UTC()
+	maxExpiry = time.Unix(0, math.MaxInt64).UTC()
+)
 
 // NewEngine builds an Engine over a store and a Sealer (the Sealer may be
 // disabled — no KEK — in which case PutInline fails and inline resolves error).
 func NewEngine(st store.Store, sealer *Sealer) *Engine {
-	return &Engine{store: st, sealer: sealer, inline: inlineBackend{sealer: sealer}}
+	return &Engine{store: st, sealer: sealer, inline: inlineBackend{sealer: sealer}, now: time.Now}
 }
 
 // InlineEnabled reports whether inline (encrypted) credentials can be stored.
@@ -51,6 +65,9 @@ type Meta struct {
 	AllowedURLs *[]string
 	// Username is the user name stored with the value ("" for none).
 	Username string
+	// Expired reports that ExpiresAt has passed: the credential no longer
+	// resolves, and is kept only so it can be seen and rotated.
+	Expired bool
 }
 
 // PutInline seals plaintext and upserts the row (create / update / rotate —
@@ -67,9 +84,27 @@ type Meta struct {
 // username, already checked (ValidUsername), is the user name to store with
 // the value. nil keeps the one the credential has, so a rotation keeps it
 // too; a pointer to "" removes it.
+//
+// expiresAt (nil for none) must be in the future and before 2262, which every
+// store can hold. A new write replaces it, so a rotation without one clears it.
 func (e *Engine) PutInline(ctx context.Context, id Identity, plaintext string, expiresAt *time.Time, allowedURLs *[]string, username *string) (Meta, error) {
 	if !e.sealer.Enabled() {
 		return Meta{}, ErrNoKey
+	}
+	// The SQLite store keeps the time as int64 nanoseconds, which wraps
+	// outside this range: a "never, really" expiry of 2999 would read back
+	// as a time long past and the credential would be refused from the day
+	// it was stored.
+	if expiresAt != nil && (expiresAt.Before(minExpiry) || expiresAt.After(maxExpiry)) {
+		return Meta{}, fmt.Errorf("expires_at %s is outside the range a credential can store (%s to %s); leave it unset for no expiry",
+			expiresAt.UTC().Format(time.RFC3339), minExpiry.Format(time.RFC3339), maxExpiry.Format(time.RFC3339))
+	}
+	// A credential created already expired could never be used: every lookup
+	// would refuse it. That is always a mistake (a typo'd year, a stale
+	// script), so say so at create rather than at the first failed send.
+	if expiresAt != nil && !e.now().Before(*expiresAt) {
+		return Meta{}, fmt.Errorf("expires_at %s is not in the future, so the credential could never be used; send a later time, or leave it unset for no expiry",
+			expiresAt.UTC().Format(time.RFC3339))
 	}
 	if allowedURLs == nil {
 		kept, err := e.existingRestriction(ctx, id)
@@ -99,7 +134,7 @@ func (e *Engine) PutInline(ctx context.Context, id Identity, plaintext string, e
 	if err != nil {
 		return Meta{}, err
 	}
-	return metaOf(row), nil
+	return e.metaOf(row), nil
 }
 
 // existingUsername returns the user name of the credential stored under id,
@@ -149,7 +184,7 @@ func (e *Engine) Get(ctx context.Context, id Identity) (Meta, error) {
 	if err != nil {
 		return Meta{}, err
 	}
-	return metaOf(row), nil
+	return e.metaOf(row), nil
 }
 
 // List returns metadata for a single (tenant, scope, scope_id) bucket.
@@ -160,7 +195,7 @@ func (e *Engine) List(ctx context.Context, tenantID, scope, scopeID string) ([]M
 	}
 	out := make([]Meta, len(rows))
 	for i := range rows {
-		out[i] = metaOf(rows[i])
+		out[i] = e.metaOf(rows[i])
 	}
 	return out, nil
 }
@@ -218,6 +253,53 @@ func (e *Engine) ResolveFor(ctx context.Context, tenantID, agentName, userID, na
 }
 
 func (e *Engine) resolve(ctx context.Context, tenantID, agentName, userID, name string, target *string) (Resolved, bool, error) {
+	row, found, err := e.find(ctx, tenantID, agentName, userID, name)
+	if err != nil || !found {
+		return Resolved{}, false, err
+	}
+	// The restriction is decided on the row that the name resolves to, and
+	// before the secret is opened. It does not fall through to a less
+	// specific scope: a restricted credential must not be bypassed by an
+	// unrestricted one of the same name further down.
+	allowed := restrictionOf(row.Definition)
+	if allowed != nil {
+		if target == nil {
+			return Resolved{}, false, fmt.Errorf("%w (%q)", ErrRestricted, name)
+		}
+		if !URLAllowed(allowed, *target) {
+			return Resolved{}, false, fmt.Errorf("%w (%q)", ErrURLNotAllowed, name)
+		}
+		if !netguard.Pin(ctx) {
+			return Resolved{}, false, fmt.Errorf("%w (%q)", ErrNotPinnable, name)
+		}
+	}
+	backend, err := e.backendFor(row.Backend)
+	if err != nil {
+		return Resolved{}, false, err
+	}
+	// Opening proves the list just checked is the one the secret was stored
+	// with: it is part of what the value was sealed with.
+	val, err := backend.Resolve(ctx, row.Definition, Identity{
+		TenantID: tenantID, Scope: row.Scope, ScopeID: row.ScopeID, Name: name,
+	})
+	if err != nil {
+		return Resolved{}, false, err
+	}
+	return Resolved{Value: val, Scope: row.Scope, ScopeID: row.ScopeID, Backend: row.Backend, AllowedURLs: allowed, Username: usernameOf(row.Definition)}, true, nil
+}
+
+// find returns the row a credential name resolves to for a run identity:
+// the most specific of agent > user > tenant that holds the name.
+// agentName / userID may be "" (that scope is skipped). found is false when
+// the name is in no visible scope; a store fault other than not-found is
+// returned. Every by-name lookup goes through here, so a rule about which
+// row a name may resolve to is decided once.
+//
+// An expired row is found (found is true) and refused with ErrExpired. It
+// does not fall through to a less specific scope, for the reason a
+// restricted one does not: a user whose own token expired must be told so,
+// not quietly sent under the tenant's token of the same name.
+func (e *Engine) find(ctx context.Context, tenantID, agentName, userID, name string) (row store.CredentialDefRow, found bool, err error) {
 	buckets := []struct{ scope, id string }{
 		{"agent", agentName},
 		{"user", userID},
@@ -233,39 +315,31 @@ func (e *Engine) resolve(ctx context.Context, tenantID, agentName, userID, name 
 			if errors.As(err, &nf) {
 				continue // not in this scope — try the next
 			}
-			return Resolved{}, false, err
+			return store.CredentialDefRow{}, false, err
 		}
-		// The restriction is decided on the row that the name resolves to,
-		// and before the secret is opened. It does not fall through to a
-		// less specific scope: a restricted credential must not be bypassed
-		// by an unrestricted one of the same name further down.
-		allowed := restrictionOf(row.Definition)
-		if allowed != nil {
-			if target == nil {
-				return Resolved{}, false, fmt.Errorf("%w (%q)", ErrRestricted, name)
-			}
-			if !URLAllowed(allowed, *target) {
-				return Resolved{}, false, fmt.Errorf("%w (%q)", ErrURLNotAllowed, name)
-			}
-			if !netguard.Pin(ctx) {
-				return Resolved{}, false, fmt.Errorf("%w (%q)", ErrNotPinnable, name)
-			}
+		if err := e.expiredErr(row, name); err != nil {
+			return row, true, err
 		}
-		backend, err := e.backendFor(row.Backend)
-		if err != nil {
-			return Resolved{}, false, err
-		}
-		// Opening proves the list just checked is the one the secret was
-		// stored with: it is part of what the value was sealed with.
-		val, err := backend.Resolve(ctx, row.Definition, Identity{
-			TenantID: tenantID, Scope: b.scope, ScopeID: b.id, Name: name,
-		})
-		if err != nil {
-			return Resolved{}, false, err
-		}
-		return Resolved{Value: val, Scope: b.scope, ScopeID: b.id, Backend: row.Backend, AllowedURLs: allowed, Username: usernameOf(row.Definition)}, true, nil
+		return row, true, nil
 	}
-	return Resolved{}, false, nil
+	return store.CredentialDefRow{}, false, nil
+}
+
+// expired reports whether row has reached its expires_at. A credential is
+// expired AT its expires_at, not after it: a value valid "until" a time is
+// not handed out at that time.
+func (e *Engine) expired(row store.CredentialDefRow) bool {
+	return row.ExpiresAt != nil && !e.now().Before(*row.ExpiresAt)
+}
+
+// expiredErr is ErrExpired for an expired row, naming the credential, its
+// scope and when it expired (never its value); nil otherwise.
+func (e *Engine) expiredErr(row store.CredentialDefRow, name string) error {
+	if !e.expired(row) {
+		return nil
+	}
+	return fmt.Errorf("%w (%q in %s scope, expired %s); create it again with the same name to rotate it",
+		ErrExpired, name, row.Scope, row.ExpiresAt.UTC().Format(time.RFC3339))
 }
 
 // ResolveToCompare returns the tenant-level credential name of tenantID for a
@@ -291,6 +365,11 @@ func (e *Engine) ResolveToCompare(ctx context.Context, tenantID, name string) (s
 		}
 		return "", false, err
 	}
+	// An expired verification secret verifies nothing: a webhook whose
+	// secret lapsed refuses its deliveries rather than accepting them.
+	if err := e.expiredErr(row, name); err != nil {
+		return "", false, err
+	}
 	backend, err := e.backendFor(row.Backend)
 	if err != nil {
 		return "", false, err
@@ -309,11 +388,16 @@ func (e *Engine) HasToCompare(ctx context.Context, tenantID, name string) (bool,
 	if !e.CanResolve() {
 		return false, nil
 	}
-	if _, err := e.store.CredentialDefGet(ctx, tenantID, "tenant", "", name); err != nil {
+	row, err := e.store.CredentialDefGet(ctx, tenantID, "tenant", "", name)
+	if err != nil {
 		var nf *store.ErrNotFound
 		if errors.As(err, &nf) {
 			return false, nil
 		}
+		return false, err
+	}
+	// Held, but ResolveToCompare would refuse it.
+	if err := e.expiredErr(row, name); err != nil {
 		return false, err
 	}
 	return true, nil
@@ -328,33 +412,38 @@ func (e *Engine) HasToCompare(ctx context.Context, tenantID, name string) (bool,
 // the correct restricted-run default). agentName / userID may be "" (that scope
 // is skipped). Returns (false, nil) when absent from every visible scope; a
 // store fault other than not-found propagates.
+//
+// An expired or URL-restricted credential is (false, ErrExpired /
+// ErrRestricted), not (false, nil): the run HAS a key of that name, it just
+// may not be used (HeldButUnusable), and a caller that treats "absent" as
+// "use the operator's key instead" must not do so for it.
 func (e *Engine) HasKey(ctx context.Context, tenantID, agentName, userID, name string) (bool, error) {
 	if !e.CanResolve() {
 		return false, nil
 	}
-	buckets := []struct{ scope, id string }{
-		{"agent", agentName},
-		{"user", userID},
-		{"tenant", ""},
+	row, found, err := e.find(ctx, tenantID, agentName, userID, name)
+	if err != nil || !found {
+		return false, err
 	}
-	for _, b := range buckets {
-		if b.scope != "tenant" && b.id == "" {
-			continue // no identity for this scope on the run
-		}
-		row, err := e.store.CredentialDefGet(ctx, tenantID, b.scope, b.id, name)
-		if err != nil {
-			var nf *store.ErrNotFound
-			if errors.As(err, &nf) {
-				continue // not in this scope — try the next
-			}
-			return false, err
-		}
-		// A URL-restricted credential is not a key a provider can be given:
-		// Resolve refuses it, so reporting it here would promise a key the
-		// run then does not get.
-		return restrictionOf(row.Definition) == nil, nil // no decrypt needed
+	// A URL-restricted credential is not a key a provider can be given:
+	// Resolve refuses it, so reporting it here would promise a key the run
+	// then does not get. Like an expired one, it is held, not absent.
+	if restrictionOf(row.Definition) != nil {
+		return false, fmt.Errorf("%w (%q)", ErrRestricted, name)
 	}
-	return false, nil
+	return true, nil // no decrypt needed
+}
+
+// HeldButUnusable reports whether err, from a by-name lookup, means the run
+// HOLDS a credential of that name that may not be used here: expired, or
+// restricted to URLs this use does not name or cover. That is not a miss. A
+// caller that falls back to some other value when the run has no credential
+// (the operator's provider key, an operator-allowlisted host variable) must
+// not do so for it: the tenant's credential would be quietly replaced by the
+// operator's, and the tenant never told.
+func HeldButUnusable(err error) bool {
+	return errors.Is(err, ErrExpired) || errors.Is(err, ErrRestricted) ||
+		errors.Is(err, ErrURLNotAllowed) || errors.Is(err, ErrNotPinnable)
 }
 
 // HasKeyFor is HasKey for a credential about to be sent to targetURL: it
@@ -362,31 +451,18 @@ func (e *Engine) HasKey(ctx context.Context, tenantID, agentName, userID, name s
 // ResolveFor would hand it out for targetURL (usable) — unrestricted, or
 // restricted to a list that covers targetURL. Metadata only, like HasKey: an
 // authoring check can ask the question a send will ask, without decrypting.
+// An expired credential is found and refused with ErrExpired, so the check
+// can say why rather than blame its URL list.
 func (e *Engine) HasKeyFor(ctx context.Context, tenantID, agentName, userID, name, targetURL string) (found, usable bool, err error) {
 	if !e.CanResolve() {
 		return false, false, nil
 	}
-	buckets := []struct{ scope, id string }{
-		{"agent", agentName},
-		{"user", userID},
-		{"tenant", ""},
+	row, found, err := e.find(ctx, tenantID, agentName, userID, name)
+	if err != nil || !found {
+		return found, false, err
 	}
-	for _, b := range buckets {
-		if b.scope != "tenant" && b.id == "" {
-			continue
-		}
-		row, err := e.store.CredentialDefGet(ctx, tenantID, b.scope, b.id, name)
-		if err != nil {
-			var nf *store.ErrNotFound
-			if errors.As(err, &nf) {
-				continue
-			}
-			return false, false, err
-		}
-		allowed := restrictionOf(row.Definition)
-		return true, allowed == nil || URLAllowed(allowed, targetURL), nil
-	}
-	return false, false, nil
+	allowed := restrictionOf(row.Definition)
+	return true, allowed == nil || URLAllowed(allowed, targetURL), nil
 }
 
 func (e *Engine) backendFor(name string) (Backend, error) {
@@ -402,8 +478,8 @@ func (e *Engine) backendFor(name string) (Backend, error) {
 
 // metaOf reads what may be shown out of a row and drops the sealed Definition
 // — the only shape that ever leaves the engine toward a caller or a log.
-func metaOf(row store.CredentialDefRow) Meta {
-	m := Meta{AllowedURLs: restrictionOf(row.Definition), Username: usernameOf(row.Definition)}
+func (e *Engine) metaOf(row store.CredentialDefRow) Meta {
+	m := Meta{AllowedURLs: restrictionOf(row.Definition), Username: usernameOf(row.Definition), Expired: e.expired(row)}
 	row.Definition = nil
 	m.CredentialDefRow = row
 	return m

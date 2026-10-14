@@ -19,6 +19,16 @@ import (
 // guarantees a restricted run never spends the operator's key.
 var ErrOperatorKeyForbidden = errors.New("operator key forbidden for restricted run (RFC AX)")
 
+// ErrCredentialUnusable is returned when the run HOLDS its own credential for a
+// key but that credential may not be used (it has expired). It is not a miss:
+// ResolveKeyOrOperator returns it instead of the operator's host key, whatever
+// the run's operator-key permission, because a tenant's own key that lapsed
+// must never be quietly replaced by the operator's. Classified permanent
+// (errclass.go) so the provider cascade does not carry the call to another
+// provider on the operator's key either. The resolver wraps the cause, so the
+// message names the credential and why.
+var ErrCredentialUnusable = errors.New("the run's own credential for this key cannot be used")
+
 // credResolverKey is the ctx key for the per-run credential resolver.
 type credResolverKey struct{}
 
@@ -40,12 +50,16 @@ type CredentialResolution struct {
 // provider key is used for that tenant/user's requests; the operator key is the
 // fallback. RFC AV: the returned Scope/ScopeID tag the usage record.
 //
+// A non-nil error means the run holds a credential of that name that must not
+// be used, and must wrap ErrCredentialUnusable; it is never a miss. A lookup
+// fault the resolver chooses to treat as a miss returns (_, false, nil).
+//
 // It lives on the leaf providers package so LLM drivers can consult it without
 // importing internal/tools (the provider→loop→tools layering boundary); builtin
 // tools (WebSearch) may import providers and use it too. The resolver returns a
 // NAME→value lookup, never carries a secret in ctx — the value is fetched +
 // decrypted on demand.
-type CredentialResolver func(ctx context.Context, name string) (CredentialResolution, bool)
+type CredentialResolver func(ctx context.Context, name string) (CredentialResolution, bool, error)
 
 // WithCredentialResolver stamps r onto ctx. The run-launch sites set it from the
 // credential engine; it flows via ctx to every provider Call and tool Execute.
@@ -60,28 +74,32 @@ func WithCredentialResolver(ctx context.Context, r CredentialResolver) context.C
 // returning the full resolution (value + owning scope) + true on a hit. Safe
 // when no resolver is stamped (returns zero, false → callers fall back to the
 // operator's host key). A hit with an empty value is treated as a miss — an
-// empty override must never blank the host key.
-func ResolveCredentialFull(ctx context.Context, name string) (CredentialResolution, bool) {
+// empty override must never blank the host key. The resolver's error (an
+// override that exists but may not be used) is returned as is, never as a miss.
+func ResolveCredentialFull(ctx context.Context, name string) (CredentialResolution, bool, error) {
 	r, ok := ctx.Value(credResolverKey{}).(CredentialResolver)
 	if !ok || r == nil {
-		return CredentialResolution{}, false
+		return CredentialResolution{}, false, nil
 	}
-	res, found := r(ctx, name)
+	res, found, err := r(ctx, name)
+	if err != nil {
+		return CredentialResolution{}, false, err
+	}
 	if !found || res.Value == "" {
-		return CredentialResolution{}, false
+		return CredentialResolution{}, false, nil
 	}
-	return res, true
+	return res, true, nil
 }
 
 // ResolveCredential is the value-only convenience over ResolveCredentialFull:
 // the single call site a driver / tool uses when it needs only the key to send
 // (the override value), not the owning scope.
-func ResolveCredential(ctx context.Context, name string) (string, bool) {
-	res, ok := ResolveCredentialFull(ctx, name)
-	if !ok {
-		return "", false
+func ResolveCredential(ctx context.Context, name string) (string, bool, error) {
+	res, ok, err := ResolveCredentialFull(ctx, name)
+	if err != nil || !ok {
+		return "", false, err
 	}
-	return res.Value, true
+	return res.Value, true, nil
 }
 
 // operatorKeyAllowedKey is the ctx key for the RFC AX operator-key permission,
@@ -116,6 +134,8 @@ func OperatorKeyAllowed(ctx context.Context) bool {
 // (e.g. "ANTHROPIC_API_KEY"); operatorKey is the driver's host key. Precedence:
 //
 //   - a tenant/user override for name exists  → use it (source = its scope);
+//   - an override exists but may not be used (expired) → its error, wrapping
+//     ErrCredentialUnusable — never the operator key, restricted or not;
 //   - no override + the run may use the operator key → the operator's host key
 //     (source "operator");
 //   - no override + the run is RESTRICTED → ErrOperatorKeyForbidden (never the
@@ -125,7 +145,11 @@ func OperatorKeyAllowed(ctx context.Context) bool {
 // attribute spend (RFC AV). It reads the run identity + the operator-key
 // permission from ctx, so it works uniformly across every transport.
 func ResolveKeyOrOperator(ctx context.Context, name, operatorKey string) (key, source, scopeID string, err error) {
-	if r, ok := ResolveCredentialFull(ctx, name); ok {
+	r, ok, err := ResolveCredentialFull(ctx, name)
+	if err != nil {
+		return "", "", "", err
+	}
+	if ok {
 		return r.Value, r.Scope, r.ScopeID, nil
 	}
 	if OperatorKeyAllowed(ctx) {
