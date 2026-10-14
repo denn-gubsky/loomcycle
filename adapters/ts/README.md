@@ -430,6 +430,44 @@ try {
 
 Two of these have a class of their own: a `prompt_too_large` throws `PromptTooLargeError` and a `token_limit_exceeded` throws `TokenLimitExceededError` (with the budget on `e.scope` / `e.used` / `e.limit`). For the rest, branch on `e.code`, not on the class: the class follows the HTTP status alone.
 
+### Credentials (RFC AR)
+
+The encrypted credential store an agent's `$cred:<name>` references resolve against. `scope` is `user` (your own subject's credentials) or `tenant` (shared across the tenant; needs `substrate:tenant`). Every read is metadata only — a stored value is never returned.
+
+| Method | Returns | Notes |
+|---|---|---|
+| `listCredentials(scope)` | `Promise<CredentialListResponse>` | Every credential's metadata in the scope. `{op: "list"}`. |
+| `getCredential({ scope, name })` | `Promise<CredentialMeta>` | One credential's metadata: `backend`, `created_at` / `updated_at`, and `expires_at` / `allowed_urls` / `username` when set. Raises `SubstrateToolRefusedError` for an absent name. `{op: "get"}`. |
+| `createCredential({ scope, name, value, allowed_urls?, username?, expires_at?, backend? })` | `Promise<CredentialMeta>` | Store or rotate. `value` is write-only. `expires_at` is RFC3339; `backend` is `"inline"`, the only one accepted. `{op: "create"}`. |
+| `deleteCredential({ scope, name })` | `Promise<{ name, scope, deleted }>` | Anything referencing `$cred:<name>` at that scope stops resolving. `{op: "delete"}`. |
+
+All four post to `POST /v1/_credentialdef`.
+
+```ts
+const meta = await client.getCredential({ scope: "user", name: "GIT_TOKEN" });
+console.log(meta.allowed_urls ?? "unrestricted");
+```
+
+### Team runs
+
+`runTeam(target)` walks a team's state graph. Its return type follows `target.mode`:
+
+| Call | Returns |
+|---|---|
+| `runTeam({ name, input, mode: "detach" })` | `Promise<TeamRunDetached>` — the `run_id` at once; the walk keeps running. |
+| `runTeam({ name, input })` | `Promise<TeamRunResult>` — waits for the walk; `steps` is the per-state trace. |
+| `runTeam(target: TeamRunTarget)` | `Promise<TeamRunResult \| TeamRunDetached>` — for a target whose `mode` is not known statically (built from a form or a node parameter). Narrow by the `mode` you sent. |
+
+A start with an `idempotencyKey` another start already holds is answered with that walk, marked `deduplicated: true`, and carries no `steps` — the trace is not stored on the run. Once that walk has ended it also has `final_output`, and `final_state` / `stop_reason` / `error` where they were recorded.
+
+```ts
+import type { TeamRunTarget } from "@loomcycle/client";
+
+const target: TeamRunTarget = { name: "triage", input, mode: detach ? "detach" : undefined };
+const res = await client.runTeam(target);
+console.log(res.run_id);
+```
+
 ### Channels + run-state stream (v0.9.x n8n Phase 0)
 
 Two substrate-side surfaces added in the n8n integration's Phase 0 wire-API work. Useful for any orchestrator (not just n8n) that needs to see channel state or subscribe to run-state transitions.
@@ -573,7 +611,6 @@ When the error body is JSON with a string `code` (`token_limit_exceeded`, `per_u
 | 401 | `AuthError` |
 | 404 + "snapshot" | `SnapshotNotFoundError` ⎫ |
 | 404 + "session" | `SessionNotFoundError` ⎬ all extend `NotFoundError` |
-| 404 + "hook" | `HookNotFoundError` ⎬ |
 | 404 + "agent" | `AgentNotFoundError` ⎬ |
 | 404 (other) | `NotFoundError` (base) ⎭ catch any 404 with one `instanceof` |
 | 409 + "already_pausing" / "already paused" | `AlreadyPausingError` |
@@ -617,7 +654,7 @@ try {
 
 `e.name` (and the `meta_reason` of a `stream_close` frame) is the most specific class name, so it reads `TokenLimitExceededError`, `PromptTooLargeError` or `RequestTooLargeError` where it used to read `BackpressureError` or `SnapshotTooLargeError`. Match with `instanceof` or `e.code`, not on the name.
 
-Priority within `404`: most-specific keyword wins (`snapshot` → `session` → `hook` → `agent` → base). The dispatch is keyword-matched on the response body lowercase; a hook with id `hook_agent_scan` still routes to `HookNotFoundError`, not `AgentNotFoundError`.
+Priority within `404`: most-specific keyword wins (`snapshot` → `session` → `agent` → base). The dispatch is keyword-matched on the response body lowercase, so a body that names none of them — a missing hook, memory row or interrupt — is a plain `NotFoundError`, while one that happens to contain "agent" (a hook id like `hook_agent_scan`) is an `AgentNotFoundError`. There is no hook-specific class; catch `NotFoundError` for any 404.
 
 ```ts
 import {
@@ -675,7 +712,7 @@ for await (const item of client.streamUserRunStates(userId, {
 A detached team walk returns a `run_id`, and that id **is** the walk id every run it spawns carries in `parent_context.walk_id`. Pass it back as `walkId` and the server filters the stream to that workflow — no second identifier, nothing to map:
 
 ```ts
-const { run_id } = await client.runTeam({ team: "triage", detach: true });
+const { run_id } = await client.runTeam({ name: "triage", mode: "detach" });
 
 for await (const item of client.streamUserRunStates(userId, { walkId: run_id })) {
   if (item.kind === "open") {

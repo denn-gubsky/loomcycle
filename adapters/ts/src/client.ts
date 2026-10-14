@@ -2355,6 +2355,15 @@ export class LoomcycleClient {
     target: TeamRunTarget & { mode?: undefined },
     opts?: { signal?: AbortSignal },
   ): Promise<TeamRunResult>;
+  // A target whose `mode` is not known statically — one built from a form, a
+  // config or a node parameter, typed plain TeamRunTarget — matches neither
+  // overload above, and an implementation signature is not callable. This one
+  // accepts it and answers the union, which the caller narrows by the `mode`
+  // it sent (a deduplicated synchronous answer has no `steps` either).
+  async runTeam(
+    target: TeamRunTarget,
+    opts?: { signal?: AbortSignal },
+  ): Promise<TeamRunResult | TeamRunDetached>;
   async runTeam(
     target: TeamRunTarget,
     opts?: { signal?: AbortSignal },
@@ -2371,7 +2380,7 @@ export class LoomcycleClient {
     if (target.review !== undefined) body.review = target.review;
     if (target.reviewTtlSeconds !== undefined) body.review_ttl_seconds = target.reviewTtlSeconds;
     if (target.idempotencyKey !== undefined) body.idempotency_key = target.idempotencyKey;
-    return postJSON<TeamRunResult>(this.ctx, "/v1/_teamdef", body, opts);
+    return postJSON<TeamRunResult | TeamRunDetached>(this.ctx, "/v1/_teamdef", body, opts);
   }
 
   /** Read the debug breakpoints armed on a live team walk
@@ -3218,11 +3227,11 @@ export class LoomcycleClient {
    *
    *  v1.78.0 — `walkId` is a SERVER-side filter: only the runs one team
    *  walk spawned. A walk's own run_id IS its walk id, so a caller that
-   *  started a team with `detach: true` passes back the handle it already
+   *  started a team with `mode: "detach"` passes back the handle it already
    *  holds and gets a live view of that workflow's agents:
    *
    *  ```ts
-   *  const { run_id } = await client.runTeam({ team: "triage", detach: true });
+   *  const { run_id } = await client.runTeam({ name: "triage", mode: "detach" });
    *  for await (const item of client.streamUserRunStates(userId, { walkId: run_id })) {
    *    if (item.kind === "event") place(item.payload.parent_context?.wave_index);
    *  }
@@ -3407,15 +3416,45 @@ export class LoomcycleClient {
    *
    *  `username` is the user name sent with the value where a destination
    *  takes one (HTTP basic auth for a git source). Leave it out to keep the
-   *  stored one; `""` removes it. */
+   *  stored one; `""` removes it.
+   *
+   *  `expires_at` is an RFC3339 timestamp (`"2026-12-31T00:00:00Z"`) stored
+   *  with the credential and reported back in its metadata; any other format
+   *  is refused. `backend` is where the value is kept: `"inline"` (encrypted
+   *  in loomcycle's own store, the default) is the only one accepted. */
   async createCredential(
-    input: { scope: CredentialScope; name: string; value: string; allowed_urls?: string[]; username?: string },
+    input: {
+      scope: CredentialScope;
+      name: string;
+      value: string;
+      allowed_urls?: string[];
+      username?: string;
+      expires_at?: string;
+      backend?: "inline";
+    },
     opts?: { signal?: AbortSignal },
   ): Promise<CredentialMeta> {
     return postJSON<CredentialMeta>(
       this.ctx,
       "/v1/_credentialdef",
       { op: "create", ...input },
+      opts,
+    );
+  }
+
+  /** Read ONE credential's metadata (RFC AR) — never its value. Answers
+   *  whether a name is stored, and its `allowed_urls` / `username` /
+   *  `expires_at`, without listing the whole scope. An absent name raises
+   *  {@link SubstrateToolRefusedError}. Mirrors
+   *  `POST /v1/_credentialdef {op:get}`. */
+  async getCredential(
+    input: { scope: CredentialScope; name: string },
+    opts?: { signal?: AbortSignal },
+  ): Promise<CredentialMeta> {
+    return postJSON<CredentialMeta>(
+      this.ctx,
+      "/v1/_credentialdef",
+      { op: "get", ...input },
       opts,
     );
   }
