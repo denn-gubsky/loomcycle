@@ -1,9 +1,10 @@
 // Package concurrency caps simultaneous agent runs and queues bursts.
 //
-// Same shape as jobs-search-agent's concurrency.ts: a counting semaphore plus
-// a bounded FIFO queue with an optional per-acquire timeout. Excess returns
-// BackpressureError. Wait is the second entry point: it queues for a slot with
-// no timeout and no queue-depth check, for work that was already admitted.
+// A counting semaphore plus a bounded queue with an optional per-acquire
+// timeout. The queue is served round-robin across (tenant, user), FIFO within
+// one. Excess returns BackpressureError. Wait is the second entry point: it
+// queues for a slot with no timeout and no queue-depth check, for work that was
+// already admitted, and is served ahead of the round-robin queue.
 //
 // v0.10.1 — per-tenant fairness. AcquireForUser(ctx, userID) enforces a
 // per-user cap on (active + queued) runs. When the cap is exceeded the
@@ -102,7 +103,13 @@ type Semaphore struct {
 	// replica deployments (quotaStore == nil) use perUser exactly as
 	// v0.10.1 did.
 	perUser map[userKey]int
-	waiters []chan struct{}
+	// admitted holds Wait-ers (work that was already admitted) in FIFO order;
+	// they are served before any new request. queue holds Acquire waiters,
+	// round-robin across (tenant, user): when a slot frees, the next user in
+	// turn gets it, so one user's burst cannot hold every other user back for
+	// the length of that burst.
+	admitted []*semWaiter
+	queue    semQueue
 
 	// quotaStore is the v0.12.1 cluster-wide per-user counter. Nil in
 	// single-replica mode (LOOMCYCLE_REPLICA_ID unset); set by
@@ -272,8 +279,8 @@ func (s *Semaphore) AcquireForUser(ctx context.Context, tenantID, userID string)
 		}
 		return nil, &BackpressureError{msg: "queue full"}
 	}
-	w := make(chan struct{}, 1)
-	s.waiters = append(s.waiters, w)
+	w := &semWaiter{ch: make(chan struct{}, 1), key: key}
+	s.queue.push(w)
 	s.queued++
 	if perUserActive && qs == nil {
 		s.perUser[key]++
@@ -290,7 +297,7 @@ func (s *Semaphore) AcquireForUser(ctx context.Context, tenantID, userID string)
 	}
 
 	select {
-	case <-w:
+	case <-w.ch:
 		// Slot acquired. The releaseFn from the previous holder
 		// already promoted us (queued--; active++). Our perUser count
 		// (or DB slot) stays the same — increment happened at enqueue,
@@ -377,7 +384,8 @@ func (s *Semaphore) TryAcquire() (release func(), err error) {
 // Wait takes a slot for work that was ALREADY admitted — a sub-agent of an
 // admitted run, a resumed run, a mid-run provider fallback — so it never
 // refuses: it ignores maxQueue and the timeout, and ends only when a slot frees
-// (FIFO with the Acquire waiters) or ctx ends (ctx.Err()). A request that takes
+// or ctx ends (ctx.Err()). Wait-ers are served first, in FIFO order, before any
+// Acquire waiter: their work already started once. A request that takes
 // no admission slot must not use it: queue depth is that request's only bound.
 // Refusing here would cancel work that already started, which a queue limit
 // must never do; the limits exist to turn away NEW requests.
@@ -400,13 +408,13 @@ func (s *Semaphore) Wait(ctx context.Context) (release func(), err error) {
 		s.mu.Unlock()
 		return s.releaseFn(key, nil), nil
 	}
-	w := make(chan struct{}, 1)
-	s.waiters = append(s.waiters, w)
+	w := &semWaiter{ch: make(chan struct{}, 1)}
+	s.admitted = append(s.admitted, w)
 	s.queued++
 	s.mu.Unlock()
 
 	select {
-	case <-w:
+	case <-w.ch:
 		return s.releaseFn(key, nil), nil
 	case <-ctx.Done():
 		s.cancelWaiter(w, key, nil)
@@ -480,13 +488,11 @@ func (s *Semaphore) releaseFn(key userKey, qs userQuotaGate) func() {
 			// perUser count (or DB slot) stays as-is — its increment
 			// happened at enqueue, its decrement happens when ITS
 			// release fires.
-			if len(s.waiters) > 0 {
-				w := s.waiters[0]
-				s.waiters = s.waiters[1:]
+			if w := s.nextWaiter(); w != nil {
 				s.queued--
 				s.active++
 				select {
-				case w <- struct{}{}:
+				case w.ch <- struct{}{}:
 				default:
 				}
 			}
@@ -501,24 +507,21 @@ func (s *Semaphore) releaseFn(key userKey, qs userQuotaGate) func() {
 	}
 }
 
-func (s *Semaphore) cancelWaiter(target chan struct{}, key userKey, qs userQuotaGate) {
+func (s *Semaphore) cancelWaiter(target *semWaiter, key userKey, qs userQuotaGate) {
 	s.mu.Lock()
 	needRelease := false
-	for i, w := range s.waiters {
-		if w == target {
-			s.waiters = append(s.waiters[:i], s.waiters[i+1:]...)
-			s.queued--
-			if qs == nil {
-				s.decrementPerUser(key)
-			} else {
-				needRelease = true
-			}
-			s.mu.Unlock()
-			if needRelease && key.user != "" {
-				go releaseInBackground(qs, key)
-			}
-			return
+	if s.removeWaiter(target) {
+		s.queued--
+		if qs == nil {
+			s.decrementPerUser(key)
+		} else {
+			needRelease = true
 		}
+		s.mu.Unlock()
+		if needRelease && key.user != "" {
+			go releaseInBackground(qs, key)
+		}
+		return
 	}
 	// Not found: releaseFn already won the race and transferred a slot to
 	// us. The buffered chan holds a stranded token; drain it and decrement
@@ -531,15 +534,15 @@ func (s *Semaphore) cancelWaiter(target chan struct{}, key userKey, qs userQuota
 	// (target is a buffered-1 chan with releaseFn as its only sender,
 	// and releaseFn holds s.mu while sending — by the time we reach
 	// this select with s.mu held, releaseFn has already either
-	// (a) appeared in s.waiters and the loop above found it, or
-	// (b) removed target from waiters AND placed the token in the
+	// (a) still held target in a queue and removeWaiter above found it, or
+	// (b) removed target from its queue AND placed the token in the
 	// buffer, so the case <-target arm will fire). The panic is the
 	// CLAUDE.md "intentional panic('unreachable') site" pattern — a
 	// future refactor that changes the buffer size or introduces a
 	// second sender turns a silent active-counter leak into an
 	// immediate, debuggable crash.
 	select {
-	case <-target:
+	case <-target.ch:
 		s.active--
 		if qs == nil {
 			s.decrementPerUser(key)
