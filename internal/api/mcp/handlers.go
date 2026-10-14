@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	nethttp "net/http"
 	"strconv"
 	"strings"
 	"time"
@@ -1606,8 +1605,11 @@ func handleReviewRun(ctx context.Context, env *handlerEnv, args json.RawMessage)
 // handleConfiguredRun is the configured_run tool: a run created now and started
 // later. Every rule — validation, the draft cap, agent_id reservation, the
 // identity kept at start, secrets never stored — lives in the connector,
-// shared with the HTTP routes and the gRPC RPCs; this maps its arguments and
-// its refusals.
+// shared with the HTTP routes and the gRPC RPCs; this maps its arguments.
+// Its refusals are classified by errclassify from the code each one names,
+// the classification gRPC reads too — so the two cannot disagree about which
+// refusal clears by waiting (rate_limited) and which needs the caller to act
+// (configured_run_cap).
 func handleConfiguredRun(ctx context.Context, env *handlerEnv, args json.RawMessage) (*loommcp.CallToolResult, error) {
 	if env.connector == nil {
 		return nil, fmt.Errorf("configured_run: no connector wired")
@@ -1634,7 +1636,7 @@ func handleConfiguredRun(ctx context.Context, env *handlerEnv, args json.RawMess
 		}
 		res, err := env.connector.CreateConfiguredRun(ctx, req)
 		if err != nil {
-			return configuredToolErr("configured_run create", err), nil
+			return toolErrFrom("configured_run create", err), nil
 		}
 		return toolResultJSON(res), nil
 	case "update":
@@ -1646,7 +1648,7 @@ func handleConfiguredRun(ctx context.Context, env *handlerEnv, args json.RawMess
 		}
 		res, err := env.connector.UpdateConfiguredRun(ctx, p.RunID, p.Patch)
 		if err != nil {
-			return configuredToolErr("configured_run update", err), nil
+			return toolErrFrom("configured_run update", err), nil
 		}
 		return toolResultJSON(res), nil
 	case "start":
@@ -1657,7 +1659,7 @@ func handleConfiguredRun(ctx context.Context, env *handlerEnv, args json.RawMess
 		_ = json.Unmarshal(args, &secrets)
 		res, err := env.connector.StartConfiguredRun(ctx, p.RunID, secrets)
 		if err != nil {
-			return configuredToolErr("configured_run start", err), nil
+			return toolErrFrom("configured_run start", err), nil
 		}
 		// The same render point spawn_run uses, so a run that failed is an
 		// error-shaped tool result here too.
@@ -1667,7 +1669,7 @@ func handleConfiguredRun(ctx context.Context, env *handlerEnv, args json.RawMess
 			return r, nil
 		}
 		if err := env.connector.DeleteConfiguredRun(ctx, p.RunID); err != nil {
-			return configuredToolErr("configured_run delete", err), nil
+			return toolErrFrom("configured_run delete", err), nil
 		}
 		return toolResultJSON(map[string]any{"run_id": p.RunID, "deleted": true}), nil
 	case "":
@@ -1675,35 +1677,4 @@ func handleConfiguredRun(ctx context.Context, env *handlerEnv, args json.RawMess
 	default:
 		return toolErrValidation("configured_run: unknown op "+strconv.Quote(p.Op), "Use op create, update, start or delete."), nil
 	}
-}
-
-// configuredToolErr classifies a configured-run refusal by the status it
-// carries, so a caller knows whether to fix its call, wait, or stop.
-func configuredToolErr(prefix string, err error) *loommcp.CallToolResult {
-	var hse interface{ HTTPStatus() int }
-	if !errors.As(err, &hse) {
-		return toolErrFrom(prefix, err)
-	}
-	msg := prefix + ": " + err.Error()
-	switch hse.HTTPStatus() {
-	case nethttp.StatusBadRequest, nethttp.StatusUnprocessableEntity:
-		return toolErrValidation(msg, "Correct the named field and call again.")
-	case nethttp.StatusNotFound:
-		return toolErrValidation(msg, "No configured run with that run_id is visible to you. Create one with op=create.")
-	case nethttp.StatusConflict:
-		res := toolErr(msg)
-		res.StructuredContent = loommcp.StructuredErrorJSON(tools.ErrorInfo{
-			Category: tools.CategoryBusiness, Retryable: false,
-			Description: "The run is not in a state that allows this: it has already started, been discarded, or the id is taken. Read it with get_run rather than retrying.",
-		})
-		return res
-	case nethttp.StatusTooManyRequests, nethttp.StatusServiceUnavailable:
-		res := toolErr(msg)
-		res.StructuredContent = loommcp.StructuredErrorJSON(tools.ErrorInfo{
-			Category: tools.CategoryTransient, Retryable: true,
-			Description: "A limit is in the way right now. The draft is unchanged; try again later or discard a configured run first.",
-		})
-		return res
-	}
-	return toolErrFrom(prefix, err)
 }

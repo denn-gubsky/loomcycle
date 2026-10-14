@@ -230,6 +230,10 @@ func TestConfiguredRunRPCs_CapRefusalNamesItsReason(t *testing.T) {
 	if v.hasRetry {
 		t.Errorf("over the cap carries RetryInfo (%v): waiting does not free a draft", v.retryIn)
 	}
+	// The same classification the MCP surface reports for it.
+	if v.category != "business" || v.retryable != "false" {
+		t.Errorf("over the cap: category=%q is_retryable=%q, want business / false", v.category, v.retryable)
+	}
 }
 
 // rate_limited is the 429 that clears by waiting, and the limiter knows how
@@ -276,8 +280,12 @@ func TestConfiguredRunRPCs_AgentNotAllowedIsPermissionDenied(t *testing.T) {
 		Restrictions: auth.Restrictions{Agents: []string{"other"}},
 	})
 	_, err := adapter.CreateConfiguredRun(ctx, &loomcyclepb.RunRequest{Agent: "agent", Segments: userSegment("x")})
-	if v := viewOf(t, err); v.code != codes.PermissionDenied || v.reason != "agent_not_allowed" {
+	v := viewOf(t, err)
+	if v.code != codes.PermissionDenied || v.reason != "agent_not_allowed" {
 		t.Errorf("draft of a disallowed agent = %v / %q (%v), want PermissionDenied / agent_not_allowed", v.code, v.reason, err)
+	}
+	if v.category != "permission" || v.retryable != "false" {
+		t.Errorf("draft of a disallowed agent: category=%q is_retryable=%q, want permission / false", v.category, v.retryable)
 	}
 }
 

@@ -3,7 +3,6 @@ package grpc
 import (
 	"errors"
 	"strconv"
-	"time"
 
 	"google.golang.org/genproto/googleapis/rpc/errdetails"
 	"google.golang.org/grpc/status"
@@ -72,30 +71,6 @@ func reasonFor(err error) string {
 	return ""
 }
 
-// codedRefusal is a typed refusal that names its own machine code: the HTTP
-// package's configured-run refusal, which other transports see only through
-// interfaces (the HTTPStatus() pattern) because the type is unexported.
-type codedRefusal interface{ ErrorCode() string }
-
-// refusalCode returns the code a typed refusal names, or "".
-//
-// It is preferred over reasonFor because it IS the string the HTTP surface
-// puts in that refusal's body, while reasonFor can only recognise a sentinel
-// the refusal wraps — and these refusals mostly wrap none, so without this
-// they reached gRPC with no reason at all.
-func refusalCode(err error) string {
-	var cr codedRefusal
-	if errors.As(err, &cr) {
-		return cr.ErrorCode()
-	}
-	return ""
-}
-
-// retryDelayer is a refusal that names how long to wait before retrying — the
-// wait the HTTP surface sends as Retry-After. Whether to attach it is still
-// the classifier's call (see withErrorDetails).
-type retryDelayer interface{ RetryDelay() time.Duration }
-
 // withErrorDetails attaches google.rpc.ErrorInfo — and RetryInfo where there is
 // a backoff to give — to a status, so a caller can tell apart conditions that
 // share a gRPC code.
@@ -119,7 +94,11 @@ func withErrorDetails(st *status.Status, err error) error {
 		return nil
 	}
 	info, classified := errclassify.CategoryOf(err)
-	reason := refusalCode(err)
+	// A coded refusal's own code is preferred over reasonFor because it IS
+	// the string the HTTP surface puts in that refusal's body, while reasonFor
+	// only recognises a sentinel the refusal wraps — and these mostly wrap
+	// none, so without this they reached gRPC with no reason at all.
+	reason := errclassify.RefusalCode(err)
 	if reason == "" {
 		reason = reasonFor(err)
 	}
@@ -144,22 +123,10 @@ func withErrorDetails(st *status.Status, err error) error {
 	// to a budget exhaustion would tell a caller to wait and then retry
 	// something that cannot succeed until a human acts — the exact confusion
 	// this function exists to remove.
-	if classified && info.Retryable {
-		delay := info.RetryAfter
-		// The refusal's own wait beats the class's default: the rate limiter
-		// knows when this caller's bucket refills, and the class (shared by
-		// every rate_limited) has no default to give, so without this the one
-		// refusal that names an exact wait reached gRPC with none.
-		var rd retryDelayer
-		if errors.As(err, &rd) && rd.RetryDelay() > 0 {
-			own := rd.RetryDelay()
-			delay = &own
-		}
-		if delay != nil {
-			details = append(details, &errdetails.RetryInfo{
-				RetryDelay: durationpb.New(*delay),
-			})
-		}
+	if classified && info.Retryable && info.RetryAfter != nil {
+		details = append(details, &errdetails.RetryInfo{
+			RetryDelay: durationpb.New(*info.RetryAfter),
+		})
 	}
 
 	withDetails, derr := st.WithDetails(details...)
