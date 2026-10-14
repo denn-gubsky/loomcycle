@@ -614,18 +614,34 @@ type RerankerConfig struct {
 	// and Ollama silently truncates a prompt to its 4,096-token default when no
 	// window is sent — the rerank would then rank the candidates it could see.
 	ContextTokens int `yaml:"context_tokens"`
-	// MaxConcurrent bounds reranks in flight across the process. 0 = 4. A rerank
-	// arrives per search, so a fan-out of agents searching in parallel would
-	// otherwise send every prompt at once; one that waits past timeout_ms keeps
-	// search's own order. Lower it for a local model host that serves one or two
-	// requests at a time.
-	MaxConcurrent int `yaml:"max_concurrent"`
 	// Sources are the kinds of memory the rerank may reorder, for every agent that
 	// enables memory_rerank: documents, facts, notes, traces. A search is reranked
 	// when it can return at least one of them. Unset is [documents] — the rule the
 	// rerank shipped with — so adding facts and notes is what reranks an agent's
 	// `recall`. Measured on LoCoMo memory: recall@5 0.588 -> 0.74.
 	Sources []string `yaml:"sources"`
+}
+
+// rerankerMaxConcurrentRemoved is the load error for a block that still sets
+// the reranker's own cap. See UnmarshalYAML.
+const rerankerMaxConcurrentRemoved = "memory.reranker.max_concurrent was removed: a listwise rerank is a chat call, capped by providers.<id>.lanes.chat.max_concurrent (or max_concurrent); a decision rerank by providers.<id>.lanes.decision.max_concurrent"
+
+// UnmarshalYAML refuses the one key the block used to take and no longer does.
+// The rest of the block is decoded leniently, like the rest of the config, so
+// without this an old `max_concurrent` would be dropped in silence — and the
+// operator who set it to protect a model host would run with no cap on reranks
+// at all, believing they had one. It runs for a single file and for the merged
+// tree of a layered config alike: both end in one decode of the whole.
+func (r *RerankerConfig) UnmarshalYAML(n *yaml.Node) error {
+	if n.Kind == yaml.MappingNode {
+		for i := 0; i+1 < len(n.Content); i += 2 {
+			if n.Content[i].Value == "max_concurrent" {
+				return errors.New(rerankerMaxConcurrentRemoved)
+			}
+		}
+	}
+	type plain RerankerConfig // no UnmarshalYAML, so the decode does not recurse
+	return n.Decode((*plain)(r))
 }
 
 // Configured reports whether a reranker is declared at all. A block naming only
@@ -8454,9 +8470,6 @@ func validate(c *Config) error {
 		}
 		if rr.ContextTokens < 0 {
 			return fmt.Errorf("memory.reranker.context_tokens must be >= 0")
-		}
-		if rr.MaxConcurrent < 0 {
-			return fmt.Errorf("memory.reranker.max_concurrent must be >= 0")
 		}
 		for _, src := range rr.Sources {
 			known := false

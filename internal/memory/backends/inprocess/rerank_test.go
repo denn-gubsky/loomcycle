@@ -388,7 +388,7 @@ func TestInProcessRerank_TheDecisionKindReordersASearch(t *testing.T) {
 		Providers: map[string]config.ProviderConfig{"ollama-local": {Driver: "ollama", BaseURL: srv.URL}},
 		Memory: config.MemoryConfig{Reranker: config.RerankerConfig{
 			Kind: config.RerankerKindDecision, Provider: "ollama-local", Model: "nimble"}},
-	})
+	}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

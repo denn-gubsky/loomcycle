@@ -2,10 +2,14 @@ package unitgen
 
 import (
 	"context"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
+	"github.com/denn-gubsky/loomcycle/internal/concurrency"
 	"github.com/denn-gubsky/loomcycle/internal/config"
 	"github.com/denn-gubsky/loomcycle/internal/memory"
 	"github.com/denn-gubsky/loomcycle/internal/providers"
@@ -109,17 +113,23 @@ func TestBuild_ResolvesTheBlockLikeTheReranker(t *testing.T) {
 		Providers: map[string]config.ProviderConfig{"openai": {Driver: "openai", APIKeyEnv: "OPENAI_API_KEY"}},
 		Models:    map[string]config.ModelRef{"writer": {Provider: "openai", Model: "gpt-5.4-mini"}},
 		Memory:    config.MemoryConfig{UnitGenerator: config.UnitGeneratorConfig{Model: "writer", BaseURL: "http://gpu.internal:8000/v1"}},
-	})
+	}, nil)
 	if err != nil || g == nil {
 		t.Fatalf("Build = %v, %v", g, err)
 	}
 	if g.ModelID() != "gpt-5.4-mini" {
 		t.Errorf("model = %q", g.ModelID())
 	}
-	if k := g.provider.(interface{ KeyEnvName() string }).KeyEnvName(); k != keyEnvName {
+	// The driver is inside its provider's chat lane, so it is reached as every
+	// registry provider is: through providers.As.
+	keyed, ok := providers.As[providers.KeyedProvider](g.provider)
+	if !ok {
+		t.Fatal("the openai driver no longer reports its credential name")
+	}
+	if k := keyed.KeyEnvName(); k != keyEnvName {
 		t.Errorf("credential name = %q, want %q", k, keyEnvName)
 	}
-	if none, err := Build(&config.Config{}); none != nil || err != nil {
+	if none, err := Build(&config.Config{}, nil); none != nil || err != nil {
 		t.Errorf("no block: %v, %v", none, err)
 	}
 }
@@ -159,5 +169,72 @@ func TestGenerate_ReportsEachCallsTimingToTheObserver(t *testing.T) {
 	}
 	if seen[0].Provider != "stub" || seen[0].Model != "m" {
 		t.Fatalf("call attributed to %q/%q, want stub/m", seen[0].Provider, seen[0].Model)
+	}
+}
+
+// TestBuild_AGenerationCallIsCountedInItsProvidersChatLane — the generator
+// builds a driver of its own, so Build puts that driver in the chat lane of the
+// provider the block resolved to: with the lane at 1, four generation calls
+// asked for at once reach the endpoint one at a time. With no scheduler they
+// overlap.
+func TestBuild_AGenerationCallIsCountedInItsProvidersChatLane(t *testing.T) {
+	t.Setenv("OPENAI_API_KEY", "test-operator-key")
+	generateAll := func(sched *concurrency.CallScheduler) int {
+		t.Helper()
+		var mu sync.Mutex
+		inFlight, peak, hits := 0, 0, 0
+		// It refuses every request: what is measured is how many calls were AT
+		// the endpoint together, not what came back.
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			mu.Lock()
+			hits++
+			inFlight++
+			if inFlight > peak {
+				peak = inFlight
+			}
+			mu.Unlock()
+			time.Sleep(30 * time.Millisecond)
+			mu.Lock()
+			inFlight--
+			mu.Unlock()
+			http.Error(w, "not today", http.StatusTeapot)
+		}))
+		defer srv.Close()
+		g, err := Build(&config.Config{
+			Providers: map[string]config.ProviderConfig{"openai": {Driver: "openai", APIKeyEnv: "OPENAI_API_KEY"}},
+			Models:    map[string]config.ModelRef{"writer": {Provider: "openai", Model: "gpt-5.4-mini"}},
+			Memory:    config.MemoryConfig{UnitGenerator: config.UnitGeneratorConfig{Model: "writer", BaseURL: srv.URL + "/v1"}},
+		}, sched)
+		if err != nil || g == nil {
+			t.Fatalf("Build = %v, %v", g, err)
+		}
+		var wg sync.WaitGroup
+		for i := 0; i < 4; i++ {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				_, _ = g.call(context.Background(), "prompt", nil, 0)
+			}()
+		}
+		wg.Wait()
+		mu.Lock()
+		defer mu.Unlock()
+		if hits < 4 {
+			t.Fatalf("the endpoint saw %d requests, want at least 4", hits)
+		}
+		return peak
+	}
+	sched := concurrency.NewCallScheduler(map[string]concurrency.ProviderLanesConfig{
+		"openai": {Lanes: map[string]concurrency.LaneConfig{config.ModelKindChat: {MaxConcurrent: 1}}},
+	})
+	if peak := generateAll(sched); peak != 1 {
+		t.Errorf("gated: %d generation calls at the endpoint at once, want 1 (providers.openai.max_concurrent)", peak)
+	}
+	if st := sched.Stats()["openai"].Lanes[config.ModelKindChat]; st.Grants < 4 || st.Active != 0 || st.Queued != 0 {
+		t.Errorf("chat lane = %+v, want the 4 calls granted and nothing left in it", st)
+	}
+	// Control: the same four with no lane overlap, so the 1 above is the lane.
+	if peak := generateAll(nil); peak < 2 {
+		t.Errorf("ungated: peak %d, want the calls to overlap — the check above proves nothing", peak)
 	}
 }

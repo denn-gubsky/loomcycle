@@ -244,7 +244,6 @@ memory:
     effort: low                   # thinking off on a hybrid local model (as measured)
     timeout_ms: 30000             # default 30000 — raise it on a shared GPU (see below)
     context_tokens: 16384         # default; Ollama num_ctx (it silently truncates to 4096 otherwise)
-    max_concurrent: 4             # reranks in flight, default 4; lower it for a local host
     sources: [documents]          # the default; add facts, notes to rerank agents' recall
     # base_url / api_key_env: override the provider's, as for the embedder
 ```
@@ -256,7 +255,6 @@ memory:
     provider: ollama-local        # must be an Ollama provider (/v1/systemone is Ollama's)
     model: nimble                 # `ollama pull nimble`
     timeout_ms: 30000
-    max_concurrent: 4
 ```
 
 **Rules for the decision kind:**
@@ -322,7 +320,8 @@ A decision answer needs no repair: candidates are ordered by probability, and ti
 - Each rerank is booked as a `token_usage` row on the **run that searched** and counts against its token budget.
   - Measured for listwise: about 250 prompt tokens for a handful of short sections, up to about 6,000 for 20 × 1,200 characters (about 12,000 at the default 40).
   - Measured for decision: about 2,650 input tokens and 1 output token for 20 sections.
-- A rerank is not counted against its provider's `max_concurrent` (the reranker makes its calls on its own client); `memory.reranker.max_concurrent` bounds reranks instead.
+- A rerank is counted against its provider like any other call: a listwise rerank is a chat call (`providers.<id>.max_concurrent` / `lanes.chat`), a decision rerank a decision call (`lanes.decision`). One that waits for a slot past `timeout_ms` keeps search's own order.
+- `memory.reranker.max_concurrent` was removed (it defaulted to 4), and a config that still sets it fails to load, naming the lane key that replaces it. Its bound stays as a floor: while the reranker's provider has no lane for the call (chat for a listwise rerank, decision for a decision rerank), reranks are held to 4 in flight. A lane on that provider replaces the floor.
 - A tenant's own provider key pays for its reranks when the reranker uses the provider's own endpoint.
 - With `base_url` overridden and no `api_key_env`, only a credential named `LOOMCYCLE_RERANKER_API_KEY` can override, so a tenant's vendor key never travels to an operator endpoint.
 - The operator-key restriction holds for both kinds: a restricted run with no key of its own gets `call_failed` and search's order, and no request leaves. A keyless local Ollama endpoint has no operator key to protect, so it is never restricted.

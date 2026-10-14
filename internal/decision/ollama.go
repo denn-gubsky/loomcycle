@@ -35,7 +35,6 @@ type ollamaDriver struct {
 	apiKey     string
 	keyEnvName string
 	timeout    time.Duration
-	slots      chan struct{}
 	client     *http.Client
 	// runnerRetryWait is the wait before the one retry of a call that failed
 	// because the model runner died. Tests shorten it.
@@ -56,15 +55,10 @@ func newOllama(o Options) (Driver, error) {
 	if timeout <= 0 {
 		timeout = defaultTimeout
 	}
-	n := o.MaxConcurrent
-	if n <= 0 {
-		n = defaultMaxConcurrent
-	}
 	return &ollamaDriver{
 		baseURL: strings.TrimRight(o.BaseURL, "/"), providerID: o.ProviderID,
 		apiKey: o.APIKey, keyEnvName: o.KeyEnvName,
 		timeout: timeout,
-		slots:   make(chan struct{}, n),
 		client:  &http.Client{},
 
 		runnerRetryWait: defaultRunnerRetryWait,
@@ -94,12 +88,6 @@ func (d *ollamaDriver) Decide(ctx context.Context, req Request) (*Response, erro
 	}
 	callCtx, cancel := context.WithTimeout(ctx, d.timeout)
 	defer cancel()
-	select {
-	case d.slots <- struct{}{}:
-		defer func() { <-d.slots }()
-	case <-callCtx.Done():
-		return nil, callError(callCtx, callCtx.Err(), "waiting for a slot")
-	}
 	// The same key rule as the Ollama chat driver: a keyless endpoint has no
 	// operator key to protect and is never restricted; otherwise a tenant's own
 	// stored key wins, and a run barred from the operator's key gets no call at all.
@@ -132,8 +120,9 @@ func (d *ollamaDriver) Decide(ctx context.Context, req Request) (*Response, erro
 		// The runner died under this call; Ollama starts a new one on the next
 		// request. The whole reply was an error, so nothing was answered and the
 		// same body is sent once more — inside the same callCtx, so the retry
-		// cannot outlive the call's timeout, and still holding the slot, so it
-		// does not add to the load on a runner that is reloading.
+		// cannot outlive the call's timeout, and inside the same Decide, so the
+		// caller's lane slot is still held and the retry does not add to the
+		// load on a runner that is reloading.
 		log.Printf(`{"event":"ollama_runner_retry","provider":%q,"model":%q,"endpoint":%q,"attempt":1,"wait":%q}`,
 			d.providerID, req.Model, ollamaPath, d.runnerRetryWait.String())
 		t := time.NewTimer(d.runnerRetryWait)

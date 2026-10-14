@@ -24,14 +24,20 @@ decision:
   default: decide                 # the model a call gets when it names none
   models: [decide, decide-deep]   # optional; omitted = every alias tagged kind: decision
   timeout_ms: 30000               # default 30000; must cover a model reload on a shared GPU
-  max_concurrent: 4               # default 4, per provider
+
+providers:
+  ollama-local:
+    lanes:
+      decision: { max_concurrent: 2 }   # decisions in flight to this provider
 ```
 
 - **Providers.** Today the only provider that serves decision models is Ollama, version 0.35 or later (`nimble`, `clef`, `clef-flash`, `tev1`). Config load fails if the block names a provider with no decision support.
 - **No block, no capability.** Without a `decision:` block nothing changes: the tool is not offered and the endpoints answer `decision_not_configured`.
 - **A plain model name** (not an alias) is allowed in the list when `decision.provider` is set.
 - **A change needs a restart**, as the memory reranker's block does.
-- **`max_concurrent` is per provider:** all the block's models on one provider share that bound.
+- **Concurrency is the provider's.** The block has no cap of its own: all decision calls to a provider — this block's and a `kind: decision` memory reranker's — share that provider's decision lane (`providers.<id>.lanes.decision.max_concurrent`), and the provider's `max_models_in_flight` counts a decision model beside its chat models. See [PROVIDERS.md](PROVIDERS.md#lanes-a-queue-per-kind-of-model).
+- **`timeout_ms` is one call.** A decision waiting for a slot in the lane has not been asked yet, and the wait is not counted.
+- **`decision.max_concurrent` was removed** (it defaulted to 4). A config that still sets it fails to load, naming the lane key that replaces it. Its bound stays as a floor: while the provider has no decision lane, decisions to it are held to 4 in flight. Set `providers.<id>.lanes.decision.max_concurrent` to choose your own number; it replaces the floor.
 
 ### Model kinds
 

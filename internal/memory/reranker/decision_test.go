@@ -95,7 +95,7 @@ func decisionConfig(url string, rc config.RerankerConfig) *config.Config {
 
 func newDecision(t *testing.T, url string, rc config.RerankerConfig) *Decision {
 	t.Helper()
-	r, err := BuildRanker(decisionConfig(url, rc))
+	r, err := BuildRanker(decisionConfig(url, rc), nil)
 	if err != nil {
 		t.Fatalf("BuildRanker: %v", err)
 	}
@@ -304,7 +304,7 @@ func TestDecision_ARestrictedRunCannotSpendTheOperatorsKey(t *testing.T) {
 // An agent's own candidates win over either.
 func TestBuildRanker_TheDefaultPoolFollowsTheKind(t *testing.T) {
 	t.Setenv("OPENAI_API_KEY", "test-operator-key")
-	listwise, err := BuildRanker(openAIConfig(config.RerankerConfig{}))
+	listwise, err := BuildRanker(openAIConfig(config.RerankerConfig{}), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -328,14 +328,14 @@ func TestBuildRanker_TheDefaultPoolFollowsTheKind(t *testing.T) {
 // block is an untyped nil, so main never holds a Reranker that would be called.
 func TestBuildRanker_BuildsTheDeclaredKind(t *testing.T) {
 	t.Setenv("OPENAI_API_KEY", "test-operator-key")
-	if r, err := BuildRanker(&config.Config{}); err != nil || r != nil {
+	if r, err := BuildRanker(&config.Config{}, nil); err != nil || r != nil {
 		t.Fatalf("no block: %v, %v; want nil, nil", r, err)
 	}
-	r, err := BuildRanker(openAIConfig(config.RerankerConfig{}))
+	r, err := BuildRanker(openAIConfig(config.RerankerConfig{}), nil)
 	if err != nil || r.Kind() != config.RerankerKindListwise {
 		t.Fatalf("default kind: %v, %v; want a listwise reranker", r, err)
 	}
-	if _, err := BuildRanker(decisionConfig("http://ollama.test:11434", config.RerankerConfig{Provider: "openai"})); err == nil ||
+	if _, err := BuildRanker(decisionConfig("http://ollama.test:11434", config.RerankerConfig{Provider: "openai"}), nil); err == nil ||
 		!strings.Contains(err.Error(), "Ollama provider") {
 		t.Errorf("decision on openai: err = %v, want an Ollama-provider refusal", err)
 	}
@@ -348,7 +348,7 @@ func TestBuildRanker_BuildsTheDeclaredKind(t *testing.T) {
 		t.Errorf("override: base %q key name %q, want the block's endpoint answering only to %s",
 			d.baseURL, d.keyEnvName, rerankerKeyEnvName)
 	}
-	if _, err := Build(decisionConfig("http://ollama.test:11434", config.RerankerConfig{})); err == nil {
+	if _, err := Build(decisionConfig("http://ollama.test:11434", config.RerankerConfig{}), nil); err == nil {
 		t.Error("Build (listwise) accepted a decision block; it must refuse rather than build a chat driver for it")
 	}
 }

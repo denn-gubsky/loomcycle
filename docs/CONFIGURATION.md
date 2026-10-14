@@ -848,7 +848,8 @@ providers:
 - **`affinity_hold_ms`** is the lease: a slot stays reserved that long for the **run** that just used it, so its next call lands on a warm prompt cache. The lease is the run's — it ends when the run does, or when the run stays away longer than the hold. `0` (default) = no reservation.
 - **`quantum_calls`** is how many consecutive calls a run may make on its reserved slot while others wait (`0` = unlimited).
 - **`background_share`** is the least share of a lane's turns given to background work while live runs also wait (`0` = live runs first).
-- Today only **chat** calls made through `providers:` are queued, and no caller marks its work as background yet: the `decision` / `embedder` lanes and `background_share` are accepted and validated ahead of the callers that will use them ([details](PROVIDERS.md#lanes-a-queue-per-kind-of-model)).
+- **Every model call takes a lane**: a run's calls, the listwise reranker and the unit generator the `chat` lane; the `decision:` block and a `kind: decision` reranker the `decision` lane; the embedder the `embedder` lane. Consolidation passes and the operator-run sweeps (re-index, backfill, re-embed, derived units, image descriptions) queue as background work ([details](PROVIDERS.md#lanes-a-queue-per-kind-of-model)).
+- **`decision.max_concurrent` and `memory.reranker.max_concurrent` are removed.** A config that still sets either fails to load and names the lane that replaces it. Their built-in bound stays as a floor: while a provider has no lane for them, decisions to it and reranks are each held to 4 in flight. A lane you configure (`max_concurrent` / `lanes` on that provider) replaces the floor, higher or lower.
 - **`max_models_in_flight`** stops several models computing at once on a host that cannot take it. For Ollama a model at two different `num_ctx` sizes counts as two.
 - **`concurrency.provider_queue_depth`** (`LOOMCYCLE_PROVIDER_QUEUE_DEPTH`, default: the global `max_queue_depth`) bounds only requests sent directly, outside any run — the LLM gateway (including the OpenAI-compatible routes) and the image-describe route — which are refused (`provider_concurrency_exhausted`; HTTP 429 on the gateway) once that many calls wait on the provider. A run's calls always wait.
 
@@ -2144,9 +2145,10 @@ decision:
   default: decide                 # required when the block is set
   models: [decide, decide-deep]   # optional; omitted = every alias tagged kind: decision, plus the default
   provider: ollama-local          # only for plain model names in the list
-  timeout_ms: 30000               # default 30000
-  max_concurrent: 4               # default 4, per provider
+  timeout_ms: 30000               # default 30000; one call, not its wait for a slot
 ```
+
+- The block has no cap of its own. How many decisions are in flight to a provider is that provider's decision lane: `providers.<id>.lanes.decision.max_concurrent`. (`decision.max_concurrent` was removed; a config that sets it fails to load.)
 
 - Config load fails on: a `model_pattern` alias, an undeclared provider, a provider with no decision support (only Ollama has it today), a plain model name with no `decision.provider`, an alias tagged another kind, or an unknown key in the block.
 - With `models` omitted, every alias tagged `kind: decision` must be buildable, or load fails.

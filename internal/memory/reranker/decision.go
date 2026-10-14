@@ -9,8 +9,10 @@ import (
 	"strings"
 	"time"
 
+	"github.com/denn-gubsky/loomcycle/internal/concurrency"
 	"github.com/denn-gubsky/loomcycle/internal/config"
 	"github.com/denn-gubsky/loomcycle/internal/decision"
+	"github.com/denn-gubsky/loomcycle/internal/lanegate"
 	"github.com/denn-gubsky/loomcycle/internal/memory"
 	"github.com/denn-gubsky/loomcycle/internal/providerbuild"
 	"github.com/denn-gubsky/loomcycle/internal/providers"
@@ -43,11 +45,16 @@ const (
 // Decision is one configured decision-kind reranker. Safe for concurrent use:
 // every field is set at boot and only read afterwards.
 type Decision struct {
-	// driver makes the call: the endpoint, the key rule, the timeout and the
-	// bound on calls in flight are its own.
+	// driver makes the call: the endpoint, the key rule and the call's timeout
+	// are its own, and it is wrapped in its provider's decision lane.
 	driver     decision.Driver
 	model      string
 	providerID string
+	// timeout bounds one rerank, its wait for a lane slot included: a rerank
+	// that has not answered by then keeps search's order, which is what
+	// memory.reranker.timeout_ms promises for either kind. (The driver's own
+	// timeout does not count the wait.)
+	timeout time.Duration
 	// baseURL and keyEnvName are what the block resolved to: the endpoint called,
 	// and the credential name a tenant's own key would be stored under. The driver
 	// holds its own copies; these are kept so the resolution can be read back.
@@ -60,7 +67,7 @@ type Decision struct {
 // resolve exactly as a listwise reranker's (providerbuild.ServiceDriverOptions);
 // the provider must be an Ollama one: the option letters, the 26-option clamp
 // and the shrink-and-retry below were measured against Ollama's decision models.
-func buildDecision(cfg *config.Config, rc config.RerankerConfig) (*Decision, error) {
+func buildDecision(cfg *config.Config, rc config.RerankerConfig, sched *concurrency.CallScheduler) (*Decision, error) {
 	opts, provider, model, driver, err := providerbuild.ServiceDriverOptions(cfg, "memory.reranker", providerbuild.ServiceEndpoint{
 		Provider: rc.Provider, Model: rc.Model, BaseURL: rc.BaseURL, APIKeyEnv: rc.APIKeyEnv,
 	}, rerankerKeyEnvName)
@@ -77,21 +84,18 @@ func buildDecision(cfg *config.Config, rc config.RerankerConfig) (*Decision, err
 	if timeout <= 0 {
 		timeout = defaultTimeout
 	}
-	n := rc.MaxConcurrent
-	if n <= 0 {
-		n = defaultMaxConcurrent
-	}
 	baseURL := strings.TrimRight(opts.BaseURL, "/")
 	drv, err := decision.New(driver, decision.Options{
 		ProviderID: provider, BaseURL: baseURL,
 		APIKey: opts.APIKey, KeyEnvName: opts.KeyEnvName,
-		Timeout: timeout, MaxConcurrent: n,
+		Timeout: timeout,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("memory.reranker: %w", err)
 	}
 	return &Decision{
-		driver: drv, model: model, providerID: provider,
+		driver: lanegate.WrapDecision(provider, drv, sched), model: model, providerID: provider,
+		timeout: timeout,
 		baseURL: baseURL, keyEnvName: opts.KeyEnvName,
 	}, nil
 }
@@ -167,6 +171,11 @@ func (d *Decision) choose(ctx context.Context, query string, texts []string, cha
 	criteria, err := json.Marshal(options)
 	if err != nil {
 		return nil, err
+	}
+	if d.timeout > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, d.timeout)
+		defer cancel()
 	}
 	resp, err := d.driver.Decide(ctx, decision.Request{
 		Model: d.model,

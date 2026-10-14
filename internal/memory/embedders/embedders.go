@@ -19,7 +19,9 @@ import (
 	"os"
 	"time"
 
+	"github.com/denn-gubsky/loomcycle/internal/concurrency"
 	"github.com/denn-gubsky/loomcycle/internal/config"
+	"github.com/denn-gubsky/loomcycle/internal/lanegate"
 	"github.com/denn-gubsky/loomcycle/internal/providerbuild"
 	"github.com/denn-gubsky/loomcycle/internal/providers"
 )
@@ -48,17 +50,42 @@ import (
 // defaults when set; the env-var fallback gives operators a single-place
 // override for many embedders without touching yaml.
 func Build(cfg *config.Config) (providers.Embedder, error) {
+	e, _, err := build(cfg)
+	return e, err
+}
+
+// BuildGated is Build for the running server: the embedder's calls take the
+// embedder lane of the provider the block resolved to (sched, the server's call
+// scheduler), so providers.<id>.lanes.embedder caps the embeddings in flight
+// and the provider's max_models_in_flight counts the embedding model beside
+// the chat models. Build stays ungated for a caller with no server scheduler
+// (the CLI's memory commands).
+//
+// The lane is the PROVIDER's, whatever endpoint the block's own base_url points
+// the embedder at: an operator who moved the embedder to a host of its own and
+// wants it capped apart from chat sets the embedder lane, which no chat call
+// takes.
+func BuildGated(cfg *config.Config, sched *concurrency.CallScheduler) (providers.Embedder, error) {
+	e, provider, err := build(cfg)
+	if err != nil {
+		return nil, err
+	}
+	return lanegate.WrapEmbedder(provider, e, sched), nil
+}
+
+// build is Build plus the provider id the block resolved to ("" with no embedder).
+func build(cfg *config.Config) (providers.Embedder, string, error) {
 	if cfg.Memory.Embedder.Provider == "" && cfg.Memory.Embedder.Model == "" {
-		return nil, nil
+		return nil, "", nil
 	}
 	// The model may be a models: alias; resolve it (and the provider it carries,
 	// when the block names none) the way an agent's model resolves.
 	provider, model, err := cfg.ExpandServiceModel("memory.embedder", cfg.Memory.Embedder.Provider, cfg.Memory.Embedder.Model)
 	if err != nil {
-		return nil, err
+		return nil, "", err
 	}
 	if provider == "" {
-		return nil, nil
+		return nil, "", nil
 	}
 
 	var apiKey, baseURL string
@@ -137,7 +164,7 @@ func Build(cfg *config.Config) (providers.Embedder, error) {
 		batchSize = cfg.Env.MemoryEmbedBatchSize
 	}
 
-	return providers.NewEmbedder(provider, providers.EmbedderOptions{
+	e, err := providers.NewEmbedder(provider, providers.EmbedderOptions{
 		APIKey:     apiKey,
 		BaseURL:    baseURL,
 		Model:      model,
@@ -145,4 +172,5 @@ func Build(cfg *config.Config) (providers.Embedder, error) {
 		Timeout:    time.Duration(timeoutMs) * time.Millisecond,
 		BatchSize:  batchSize,
 	})
+	return e, provider, err
 }

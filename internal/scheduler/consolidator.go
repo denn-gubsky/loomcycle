@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/denn-gubsky/loomcycle/internal/config"
+	"github.com/denn-gubsky/loomcycle/internal/lanegate"
 	lcotel "github.com/denn-gubsky/loomcycle/internal/otel"
 	"github.com/denn-gubsky/loomcycle/internal/providers"
 	"github.com/denn-gubsky/loomcycle/internal/runner"
@@ -1223,6 +1224,12 @@ func (s *Scheduler) isolatedMembers(ctx context.Context, def scheduleDef, allTen
 // isolatedMembers): an isolated member's pass runs confined, as that member's
 // own runs do.
 func (s *Scheduler) runConsolidationTarget(ctx context.Context, def scheduleDef, target consolidationTarget, isolatedMember bool) (string, error) {
+	// A consolidation pass is maintenance, not somebody's request: every model
+	// call under it — the consolidator's own, its sub-agents', the embeddings
+	// its Memory writes make — queues in its provider's lane behind the calls
+	// of live runs. Marked on the pass's ROOT ctx, which the run and everything
+	// it spawns inherit.
+	ctx = lanegate.WithBackground(ctx)
 	in := buildRunInput(def, s.cfg.EnvAllowlist, s.logf)
 	in.UserID = target.UserID
 	in.TenantID = target.TenantID

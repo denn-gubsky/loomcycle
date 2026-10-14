@@ -12,7 +12,9 @@ import (
 	"strings"
 	"time"
 
+	"github.com/denn-gubsky/loomcycle/internal/concurrency"
 	"github.com/denn-gubsky/loomcycle/internal/config"
+	"github.com/denn-gubsky/loomcycle/internal/lanegate"
 	"github.com/denn-gubsky/loomcycle/internal/memory"
 	"github.com/denn-gubsky/loomcycle/internal/providerbuild"
 	"github.com/denn-gubsky/loomcycle/internal/providers"
@@ -75,7 +77,12 @@ type Generator struct {
 
 // Build constructs the generator declared in cfg.Memory.UnitGenerator, or returns
 // nil when none is declared. A declared one that cannot be built is an error.
-func Build(cfg *config.Config) (*Generator, error) {
+//
+// The generator makes its calls on a driver of its own, so that driver is
+// wrapped in the chat lane of the provider the block resolved to (sched, the
+// server's call scheduler): a generation call is counted by the provider's
+// max_concurrent like any other chat call. nil gates nothing.
+func Build(cfg *config.Config, sched *concurrency.CallScheduler) (*Generator, error) {
 	gc := cfg.Memory.UnitGenerator
 	if !gc.Configured() {
 		return nil, nil
@@ -87,7 +94,7 @@ func Build(cfg *config.Config) (*Generator, error) {
 		return nil, err
 	}
 	gc.Provider, gc.Model = provider, model
-	return New(p, gc), nil
+	return New(lanegate.Wrap(provider, p, sched), gc), nil
 }
 
 // New wraps a constructed provider; Build is the production path.

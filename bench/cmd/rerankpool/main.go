@@ -85,7 +85,7 @@ func run() error {
 	if err != nil {
 		return err
 	}
-	model, err := reranker.BuildRanker(cfg)
+	model, err := reranker.BuildRanker(cfg, nil)
 	if err != nil {
 		return err
 	}

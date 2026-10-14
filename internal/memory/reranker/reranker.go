@@ -13,7 +13,9 @@ import (
 	"strings"
 	"time"
 
+	"github.com/denn-gubsky/loomcycle/internal/concurrency"
 	"github.com/denn-gubsky/loomcycle/internal/config"
+	"github.com/denn-gubsky/loomcycle/internal/lanegate"
 	"github.com/denn-gubsky/loomcycle/internal/memory"
 	"github.com/denn-gubsky/loomcycle/internal/providerbuild"
 	"github.com/denn-gubsky/loomcycle/internal/providers"
@@ -22,11 +24,6 @@ import (
 const (
 	defaultTimeout       = 30 * time.Second
 	defaultContextTokens = 16384
-	// defaultMaxConcurrent bounds reranks in flight across the process. Each one
-	// is a ~6,000-token prompt, and they arrive per SEARCH: a fan-out of agents,
-	// each searching several times a turn, would otherwise send every one at
-	// once, whatever the operator set for the provider.
-	defaultMaxConcurrent = 4
 	// rerankerKeyEnvName is the credential name a reranker answers to when the
 	// operator pointed it at its own endpoint without naming a key. See Build.
 	rerankerKeyEnvName = "LOOMCYCLE_RERANKER_API_KEY"
@@ -44,17 +41,17 @@ type Model struct {
 	timeout       time.Duration
 	effort        string
 	contextTokens int
-	// slots bounds reranks in flight (memory.reranker.max_concurrent). A rerank
-	// waiting for one spends its own timeout doing so, and one that times out
-	// waiting keeps search's order like any other timeout.
-	slots chan struct{}
 
-	// NO PROVIDER CONCURRENCY SLOT IS TAKEN: the reranker makes its calls on a
-	// driver of its own (providerbuild.ServiceProvider), not on a provider from
-	// the registry, so a provider's max_concurrent does not count them. slots
-	// above is their bound. (The old reason — a rerank would wait on the slot
-	// its own run held — is gone: a provider's cap counts calls now, and a run
-	// inside a tool holds none.)
+	// A RERANK IS A CHAT CALL ON ITS PROVIDER'S LANE. Each one is a ~6,000-token
+	// prompt, and they arrive per SEARCH: a fan-out of agents, each searching
+	// several times a turn, sends many at once. The reranker makes its calls on
+	// a driver of its own (providerbuild.ServiceProvider), so Build wraps that
+	// driver in the provider's chat lane (lanegate.WrapWithFloor): the
+	// provider's max_concurrent counts a rerank like any other chat call. While
+	// the operator has set no cap on that provider, the wrapper's built-in floor
+	// (lanegate.FloorCap in flight) keeps a fan-out from sending every rerank at
+	// once. The wait for a slot is inside the rerank's timeout, and a rerank
+	// that times out waiting keeps search's order like any other timeout.
 
 	// OnUsage records the call's tokens against the run whose context it is. The
 	// rerank is spent on that run's behalf, so it belongs in that run's cost.
@@ -76,19 +73,24 @@ type Reranker interface {
 // or returns nil (an untyped nil) when none is declared. A declared reranker that
 // cannot be built is an error: an operator who configured one expects it to run,
 // and would otherwise learn otherwise only from `reranked: false` on every search.
-func BuildRanker(cfg *config.Config) (Reranker, error) {
+//
+// sched is the server's call scheduler: the reranker's calls take the lane of
+// their kind on the provider the block resolved to (chat for listwise, decision
+// for the decision kind). nil gates nothing — a caller with no server
+// scheduler, such as a bench command.
+func BuildRanker(cfg *config.Config, sched *concurrency.CallScheduler) (Reranker, error) {
 	rc := cfg.Memory.Reranker
 	if !rc.Configured() {
 		return nil, nil
 	}
 	if rc.EffectiveKind() == config.RerankerKindDecision {
-		d, err := buildDecision(cfg, rc)
+		d, err := buildDecision(cfg, rc, sched)
 		if err != nil {
 			return nil, err
 		}
 		return d, nil
 	}
-	m, err := Build(cfg)
+	m, err := Build(cfg, sched)
 	if err != nil {
 		return nil, err
 	}
@@ -97,7 +99,7 @@ func BuildRanker(cfg *config.Config) (Reranker, error) {
 
 // Build constructs the listwise reranker cfg.Memory.Reranker declares, or nil when
 // none is declared. BuildRanker is the production path, for either kind.
-func Build(cfg *config.Config) (*Model, error) {
+func Build(cfg *config.Config, sched *concurrency.CallScheduler) (*Model, error) {
 	rc := cfg.Memory.Reranker
 	if !rc.Configured() {
 		return nil, nil
@@ -112,7 +114,9 @@ func Build(cfg *config.Config) (*Model, error) {
 		return nil, err
 	}
 	rc.Provider, rc.Model = provider, model
-	return New(p, rc), nil
+	// Under the id the block RESOLVED to: an alias may have supplied it. With a
+	// floor: while that provider has no chat lane, reranks are still bounded.
+	return New(lanegate.WrapWithFloor(provider, p, sched), rc), nil
 }
 
 // New wraps an already-constructed provider with the reranker settings. Build
@@ -135,11 +139,6 @@ func New(p providers.Provider, rc config.RerankerConfig) *Model {
 	if m.contextTokens <= 0 {
 		m.contextTokens = defaultContextTokens
 	}
-	n := rc.MaxConcurrent
-	if n <= 0 {
-		n = defaultMaxConcurrent
-	}
-	m.slots = make(chan struct{}, n)
 	return m
 }
 
@@ -166,12 +165,6 @@ func (m *Model) ModelID() string    { return m.model }
 func (m *Model) Complete(ctx context.Context, prompt string) (string, error) {
 	callCtx, cancel := context.WithTimeout(ctx, m.timeout)
 	defer cancel()
-	select {
-	case m.slots <- struct{}{}:
-		defer func() { <-m.slots }()
-	case <-callCtx.Done():
-		return "", deadlineAware(callCtx, callCtx.Err())
-	}
 
 	zero := 0.0
 	req := providers.Request{

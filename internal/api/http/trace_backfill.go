@@ -39,6 +39,7 @@ type traceBackfillReport struct {
 // handleMemoryBackfillTraces serves
 // POST /v1/_memory/backfill_traces?tenant=&user_id=&limit=&dry_run=&assistant=
 func (s *Server) handleMemoryBackfillTraces(w http.ResponseWriter, r *http.Request) {
+	r = sweepRequest(r)
 	if s.store == nil {
 		writeJSONError(w, http.StatusServiceUnavailable, "store_unavailable",
 			"the trace backfill needs a persistent store")

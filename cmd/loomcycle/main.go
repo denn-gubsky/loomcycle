@@ -876,7 +876,10 @@ func main() {
 	// endpoint (PR 4) can reach it too. When the embedder block is
 	// unset, vector ops refuse with embedder_not_configured at the
 	// tool layer.
-	embedder, err := embedders.Build(cfg)
+	//
+	// Built inside its provider's embedder lane (pr.sched), as every model call
+	// this process makes is counted in a lane: providers.<id>.lanes.embedder.
+	embedder, err := embedders.BuildGated(cfg, pr.sched)
 	if err != nil {
 		log.Fatalf("embedder: %v", err)
 	}
@@ -890,6 +893,9 @@ func main() {
 		//
 		// Only reachable when an embedder is configured — an unconfigured
 		// deployment stays byte-identical, holding a nil embedder as before.
+		//
+		// The observer is OUTSIDE the lane wrapper: it is what the health
+		// report asserts the embedder to, so it must be the outermost value.
 		embedder = providers.ObserveEmbedder(embedder)
 	}
 
@@ -1379,7 +1385,8 @@ func main() {
 	// rewritten the value between boots). Synchronous: a slow embedder
 	// will delay boot — logged below per-entry so the cost is visible.
 	if len(cfg.Memory.Entries) > 0 {
-		bootstrapMemoryEntries(context.Background(), cfg, storeIface, embedder)
+		// Seeding is maintenance: its embeddings queue as background work.
+		bootstrapMemoryEntries(lanegate.WithBackground(context.Background()), cfg, storeIface, embedder)
 	}
 
 	// Memory tool depends on the Store; wire the live backend in now
@@ -1409,7 +1416,7 @@ func main() {
 	// then an agent that enables memory_rerank reports not_configured. A declared
 	// one that cannot be built fails boot, as the embedder does. Only a non-nil
 	// model is handed on: a typed-nil in the interface fields would be called.
-	rerankModel, rrErr := reranker.BuildRanker(cfg)
+	rerankModel, rrErr := reranker.BuildRanker(cfg, pr.sched)
 	if rrErr != nil {
 		log.Fatalf("reranker: %v", rrErr)
 	}
@@ -1693,7 +1700,7 @@ func main() {
 	// only when there is a block: an agent that lists it on a deployment without
 	// one is not offered a tool whose every call would fail (config load says so
 	// in a warning). Built before the server so the tool is in its catalogue.
-	decisionService, dsErr := decisionbuild.Build(cfg)
+	decisionService, dsErr := decisionbuild.Build(cfg, pr.sched)
 	if dsErr != nil {
 		log.Fatalf("decision: %v", dsErr)
 	}
@@ -1725,7 +1732,7 @@ func main() {
 	}
 	// The Document derived-unit writer (memory.unit_generator): a declared one that
 	// cannot be built fails boot, as the embedder and the reranker do.
-	unitGenerator, ugErr := unitgen.Build(cfg)
+	unitGenerator, ugErr := unitgen.Build(cfg, pr.sched)
 	if ugErr != nil {
 		log.Fatalf("unit generator: %v", ugErr)
 	}
@@ -3084,7 +3091,8 @@ func main() {
 	if storeIface != nil && helpSet != nil {
 		go func() {
 			reconcile := func(ctx context.Context) error {
-				stats, err := help.ReconcileIndex(ctx, helpSet, storeIface, embedder)
+				// Indexing the help docs is maintenance: behind live runs.
+				stats, err := help.ReconcileIndex(lanegate.WithBackground(ctx), helpSet, storeIface, embedder)
 				if err != nil {
 					log.Printf("help index: reconcile failed (search degrades): %v", err)
 					return nil // non-fatal — degrade, don't fail boot

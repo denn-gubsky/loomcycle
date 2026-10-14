@@ -29,6 +29,7 @@ func (s *Server) SetUnitGenerator(g memrank.UnitGenerator) { s.unitGenerator = g
 // Re-invoke with next_cursor while `more` is true. Re-running is safe: a chunk whose
 // units were written from its current body is up to date and costs nothing.
 func (s *Server) handleDeriveUnits(w http.ResponseWriter, r *http.Request) {
+	r = sweepRequest(r)
 	if s.store == nil || s.sqlMem == nil {
 		writeJSONError(w, http.StatusServiceUnavailable, "sqlmem_unavailable",
 			"derived units require SQL Memory (set LOOMCYCLE_SQLMEM_ENABLED=1)")

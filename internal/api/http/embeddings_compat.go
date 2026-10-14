@@ -1,6 +1,7 @@
 package http
 
 import (
+	"context"
 	"encoding/base64"
 	"encoding/binary"
 	"encoding/json"
@@ -12,7 +13,7 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/denn-gubsky/loomcycle/internal/auth"
+	"github.com/denn-gubsky/loomcycle/internal/lanegate"
 )
 
 // embeddings_compat.go — v0.11.4 OpenAI Embeddings compatibility
@@ -108,7 +109,19 @@ func (s *Server) handleEmbeddings(w http.ResponseWriter, r *http.Request) {
 	// present; the wire user is the open/un-authed fallback. Empty
 	// key bypasses the per-user cap. Mirrors the chat-completions
 	// gateway exactly.
-	release, err := s.sem.AcquireForUser(r.Context(), tenantFromCtx(r.Context()), auth.SubjectForFairness(r.Context(), req.User))
+	//
+	// It takes the embedder's call slot the way the gateway takes its
+	// provider's (acquireDirectSlots): never waiting for the embedder on a
+	// global slot, bounded, and counted against its user while it waits. The
+	// Embed below runs under the ctx that already holds that slot.
+	embedCtx := r.Context()
+	release, err := s.acquireDirectSlots(r.Context(), req.User, func(ctx context.Context) (func(), error) {
+		held, rel, err := lanegate.HoldEmbedder(ctx, s.embedder)
+		if err == nil {
+			embedCtx = held
+		}
+		return rel, err
+	})
 	if err != nil {
 		writeQuotaError(w, err)
 		return
@@ -116,7 +129,7 @@ func (s *Server) handleEmbeddings(w http.ResponseWriter, r *http.Request) {
 	defer release()
 
 	startedAt := time.Now()
-	vectors, err := s.embedder.Embed(r.Context(), texts)
+	vectors, err := s.embedder.Embed(embedCtx, texts)
 	if err != nil {
 		logEmbeddingsRequest(req.Model, s.embedder.Model(), req.User, len(texts), 0, time.Since(startedAt), err)
 		writeJSONError(w, http.StatusBadGateway, "embed_failed", err.Error())

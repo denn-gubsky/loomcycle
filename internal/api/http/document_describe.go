@@ -112,6 +112,7 @@ type describeSample struct {
 // path the Path/Document browse routes use: an admin may target any tenant, a
 // substrate:tenant operator only its own, and neither may be supplied by a model.
 func (s *Server) handleDescribeImages(w http.ResponseWriter, r *http.Request) {
+	r = sweepRequest(r)
 	if s.store == nil || s.sqlMem == nil {
 		writeJSONError(w, http.StatusServiceUnavailable, "sqlmem_unavailable",
 			"image descriptions require SQL Memory (set LOOMCYCLE_SQLMEM_ENABLED=1)")
