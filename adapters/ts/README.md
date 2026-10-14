@@ -326,6 +326,60 @@ const { entries } = await client.listVolumes();
 
 Refusals throw `SubstrateToolRefusedError` (collision with a static volume name, no `dynamic_root` configured, cross-tenant); transport failures throw the usual typed errors.
 
+### Schedules admin
+
+The schedules surface the Web UI drives: one merged list, a schedule's runtime state, and run-now / pause / resume. Authoring stays on `scheduleDef(input)`. Tenant-confined: a `substrate:tenant` token sees and acts on its own tenant's ScheduleDefs only, and another tenant's `def_id` answers 404 like an unknown one.
+
+| Method | Returns | Notes |
+|---|---|---|
+| `listAllSchedules(opts?)` | `Promise<ScheduleListResponse>` | Static yaml `scheduled_runs` + ScheduleDefs, merged by name. Statics appear for an admin only; `opts.tenant` focuses one tenant. `GET /v1/_schedules/list-all`. |
+| `getScheduleState(defId)` | `Promise<ScheduleStateView>` | Last/next fire, pause, last slot claim, catch-up backlog, runs in flight. `GET /v1/_schedules/{def_id}/state`. |
+| `runScheduleNow(defId)` | `Promise<ScheduleRunNowResult>` | Fires on the scheduler's next tick; the cadence continues after it. `POST .../run-now`. |
+| `pauseSchedule(defId)` | `Promise<SchedulePauseResult>` | Indefinite (no duration). `POST .../pause`. |
+| `resumeSchedule(defId)` | `Promise<SchedulePauseResult>` | `POST .../resume`. |
+
+The per-schedule methods take the ScheduleDef's `active_def_id` from the list; a static-only schedule has none. Every optional instant in `ScheduleStateView` (`last_run_at`, `paused_until`, `slot_at`, `catch_up_until`, …) is **absent** when unset — test for presence. (Servers before this release sent `last_run_at` and `paused_until` as `"0001-01-01T00:00:00Z"`.)
+
+```ts
+const { entries } = await client.listAllSchedules();
+for (const e of entries.filter((e) => e.active_def_id)) {
+  const st = await client.getScheduleState(e.active_def_id!);
+  if (st.paused_until) console.log(`${e.name} is paused`);
+}
+```
+
+### Models, routing + provider models
+
+| Method | Returns | Notes |
+|---|---|---|
+| `listModels()` | `Promise<ModelAliasesResponse>` | The configured model aliases (`models:`), alias → `{provider, model, kind?}`. Tenant-readable. `GET /v1/_models`. |
+| `getRouting()` | `Promise<RoutingResponse>` | Per user tier × tier, the ordered provider/model cascade with live availability and the `selected` candidate. Tenant-readable; a non-admin gets no raw `last_error`, and under the operator-key gate only providers it can key. `GET /v1/_routing`. |
+| `listProviderModels(providerId)` | `Promise<ProviderModelsResponse>` | A live listing from the provider. **Admin token only** — a tenant token gets a 403 `LoomcycleError`; fall back to `listModels()` plus free-text entry. `GET /v1/_providers/{id}/models`. |
+
+Store an alias from `listModels()` on an agent or fork rather than the model it names: the agent then follows the operator's retarget of the alias.
+
+### Def name listings
+
+One method per substrate family returns every declared name with its version roll-up (`version_count`, `active_def_id`, `latest_version`, `last_updated`) — what a family's `list` op cannot, since it lists the versions of one name. Tenant-scoped server-side; `opts.tenant` focuses one tenant for an admin and is ignored for a tenant token. `names` is `[]` when nothing is declared.
+
+| Method | Route |
+|---|---|
+| `listAgentDefNames(opts?)` | `GET /v1/_agentdef/names` |
+| `listSkillDefNames(opts?)` | `GET /v1/_skilldef/names` |
+| `listHookDefNames(opts?)` | `GET /v1/_hookdef/names` |
+| `listMcpServerDefNames(opts?)` | `GET /v1/_mcpserverdef/names` |
+| `listScheduleDefNames(opts?)` | `GET /v1/_scheduledef/names` |
+| `listA2AServerCardDefNames(opts?)` | `GET /v1/_a2aservercarddef/names` |
+| `listA2AAgentDefNames(opts?)` | `GET /v1/_a2aagentdef/names` |
+| `listWebhookDefNames(opts?)` | `GET /v1/_webhookdef/names` |
+| `listMemoryBackendDefNames(opts?)` | `GET /v1/_memorybackenddef/names` |
+| `listDocumentSourceDefNames(opts?)` | `GET /v1/_documentsourcedef/names` |
+| `listOperatorTokenDefNames(opts?)` | `GET /v1/_operatortokendef/names` — **admin token only**; `{name, tenant_id, subject, token_count, has_current, last_updated}`, never a token. |
+
+All but the last return `DefNamesResponse`; `live_version_count` / `active_retired` are reported by the AgentDef, SkillDef, HookDef and MCPServerDef families. Teams have `listTeams()`.
+
+Two team options ride on existing methods: `forkTeam(name, overlay, { promote, parentDefId, description })` sends the fork's own fields (omitted, the fork is authored but not active — the server default), and `runTeam({ ..., interruptOnCap: true })` asks a human whether to continue, reroute or abort when a state hits its iteration cap, instead of ending with `iteration_cap`.
+
 ### Decision models
 
 Ask a **decision model** typed questions about a piece of text and get each answer with its probabilities. A decision model does not write: it reads the `state` you give it and answers a choice, a yes/no or a score, so there is no reply to parse and a call costs a few output tokens. Use it to route, gate, rank or grade text you already have. No run is involved; the tokens are charged to the caller and count against its token budget.

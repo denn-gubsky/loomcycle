@@ -164,6 +164,16 @@ import type {
   SubstrateToolInput,
   SubstrateToolResponse,
   CreatedTeam,
+  DefNamesResponse,
+  ForkTeamOptions,
+  ModelAliasesResponse,
+  OperatorTokenDefNamesResponse,
+  ProviderModelsResponse,
+  RoutingResponse,
+  ScheduleListResponse,
+  SchedulePauseResult,
+  ScheduleRunNowResult,
+  ScheduleStateView,
   ListTeamsResponse,
   PromotedTeam,
   RetiredTeam,
@@ -1438,6 +1448,48 @@ export class LoomcycleClient {
     );
   }
 
+  /** The configured model aliases — the operator's top-level `models:` map,
+   *  alias name → `{provider, model, kind?}` (`GET /v1/_models`). Non-secret and
+   *  global (the same set for every tenant); tenant-readable. Store an alias on
+   *  an agent or fork rather than the concrete model it names, and the agent
+   *  follows when the operator retargets the alias. */
+  async listModels(opts?: { signal?: AbortSignal }): Promise<ModelAliasesResponse> {
+    return jsonFetch<ModelAliasesResponse>(this.ctx, "/v1/_models", opts);
+  }
+
+  /** For each user tier × tier, the ordered provider/model cascade a run
+   *  resolves to now, top first, with live availability and the candidate
+   *  `selected` (`GET /v1/_routing`). Tenant-readable. A non-admin caller gets
+   *  `admin: false`, no raw `last_error`, and — when the operator-key gate
+   *  restricts it — only the providers it can key itself
+   *  (`operator_key_restricted: true`). */
+  async getRouting(opts?: { signal?: AbortSignal }): Promise<RoutingResponse> {
+    return jsonFetch<RoutingResponse>(this.ctx, "/v1/_routing", opts);
+  }
+
+  /** List the models a provider serves right now, by a live round-trip to it
+   *  (`GET /v1/_providers/{id}/models`) rather than the cached probe matrix.
+   *
+   *  **Requires an admin token.** A `substrate:tenant` token is refused with a
+   *  {@link LoomcycleError} whose `status` is 403 ("insufficient scope"); a
+   *  model picker built on a tenant token should fall back to
+   *  {@link LoomcycleClient.listModels} plus free-text model entry.
+   *
+   *  Errors carry the server's code on `e.code`: 404 `provider_unknown` (no such
+   *  driver), 503 `provider_unavailable` (known, but not configured — e.g. no
+   *  key), 502 `provider_list_failed` (the round-trip failed; bounded at 10 s
+   *  server-side). */
+  async listProviderModels(
+    providerId: string,
+    opts?: { signal?: AbortSignal },
+  ): Promise<ProviderModelsResponse> {
+    return jsonFetch<ProviderModelsResponse>(
+      this.ctx,
+      `/v1/_providers/${encodeURIComponent(providerId)}/models`,
+      opts,
+    );
+  }
+
   // ---- Snapshot lifecycle ----
 
   /** Capture running-state into a per-section-semver JSON envelope.
@@ -2188,6 +2240,154 @@ export class LoomcycleClient {
     return postJSON<SubstrateToolResponse>(this.ctx, "/v1/_volumedef", input, opts);
   }
 
+  // ---- Def name enumeration (GET /v1/_<family>def/names) ----
+  //
+  // Every name declared in one substrate family, each with its version
+  // roll-up — what the op-dispatched `list` op cannot give (it lists the
+  // versions of ONE name). Tenant-scoped server-side: a substrate:tenant token
+  // sees only its own tenant's names; an admin sees all, or focuses one tenant
+  // with `tenant` (ignored for a tenant token). The TeamDef family is
+  // {@link LoomcycleClient.listTeams}.
+
+  private listDefNames<T>(
+    family: string,
+    opts?: { tenant?: string; signal?: AbortSignal },
+  ): Promise<T> {
+    const q = opts?.tenant ? `?tenant=${encodeURIComponent(opts.tenant)}` : "";
+    return jsonFetch<T>(this.ctx, `/v1/_${family}/names${q}`, opts);
+  }
+
+  /** Every AgentDef name (`GET /v1/_agentdef/names`). */
+  async listAgentDefNames(opts?: { tenant?: string; signal?: AbortSignal }): Promise<DefNamesResponse> {
+    return this.listDefNames<DefNamesResponse>("agentdef", opts);
+  }
+
+  /** Every SkillDef name (`GET /v1/_skilldef/names`). */
+  async listSkillDefNames(opts?: { tenant?: string; signal?: AbortSignal }): Promise<DefNamesResponse> {
+    return this.listDefNames<DefNamesResponse>("skilldef", opts);
+  }
+
+  /** Every HookDef name (`GET /v1/_hookdef/names`). */
+  async listHookDefNames(opts?: { tenant?: string; signal?: AbortSignal }): Promise<DefNamesResponse> {
+    return this.listDefNames<DefNamesResponse>("hookdef", opts);
+  }
+
+  /** Every MCPServerDef name (`GET /v1/_mcpserverdef/names`). */
+  async listMcpServerDefNames(opts?: { tenant?: string; signal?: AbortSignal }): Promise<DefNamesResponse> {
+    return this.listDefNames<DefNamesResponse>("mcpserverdef", opts);
+  }
+
+  /** Every ScheduleDef name (`GET /v1/_scheduledef/names`). Substrate only —
+   *  {@link LoomcycleClient.listAllSchedules} merges in the static yaml ones. */
+  async listScheduleDefNames(opts?: { tenant?: string; signal?: AbortSignal }): Promise<DefNamesResponse> {
+    return this.listDefNames<DefNamesResponse>("scheduledef", opts);
+  }
+
+  /** Every A2AServerCardDef name (`GET /v1/_a2aservercarddef/names`). */
+  async listA2AServerCardDefNames(opts?: { tenant?: string; signal?: AbortSignal }): Promise<DefNamesResponse> {
+    return this.listDefNames<DefNamesResponse>("a2aservercarddef", opts);
+  }
+
+  /** Every A2AAgentDef name (`GET /v1/_a2aagentdef/names`). */
+  async listA2AAgentDefNames(opts?: { tenant?: string; signal?: AbortSignal }): Promise<DefNamesResponse> {
+    return this.listDefNames<DefNamesResponse>("a2aagentdef", opts);
+  }
+
+  /** Every WebhookDef name (`GET /v1/_webhookdef/names`). */
+  async listWebhookDefNames(opts?: { tenant?: string; signal?: AbortSignal }): Promise<DefNamesResponse> {
+    return this.listDefNames<DefNamesResponse>("webhookdef", opts);
+  }
+
+  /** Every MemoryBackendDef name (`GET /v1/_memorybackenddef/names`). */
+  async listMemoryBackendDefNames(opts?: { tenant?: string; signal?: AbortSignal }): Promise<DefNamesResponse> {
+    return this.listDefNames<DefNamesResponse>("memorybackenddef", opts);
+  }
+
+  /** Every DocumentSourceDef name (`GET /v1/_documentsourcedef/names`). */
+  async listDocumentSourceDefNames(opts?: { tenant?: string; signal?: AbortSignal }): Promise<DefNamesResponse> {
+    return this.listDefNames<DefNamesResponse>("documentsourcedef", opts);
+  }
+
+  /** Every OperatorTokenDef name (`GET /v1/_operatortokendef/names`), with its
+   *  subject and token counts — never a token. **Admin token only**: token
+   *  minting stays operator-only, so a `substrate:tenant` token is refused
+   *  with 403. */
+  async listOperatorTokenDefNames(
+    opts?: { tenant?: string; signal?: AbortSignal },
+  ): Promise<OperatorTokenDefNamesResponse> {
+    return this.listDefNames<OperatorTokenDefNamesResponse>("operatortokendef", opts);
+  }
+
+  // ---- Schedules admin (GET/POST /v1/_schedules/...) ----
+  //
+  // What the Web UI's schedules page drives: the merged list, one schedule's
+  // runtime state, and run-now / pause / resume. Authoring stays on
+  // {@link LoomcycleClient.scheduleDef}. The per-schedule methods take the
+  // ScheduleDef's `active_def_id`; a static yaml schedule has none to give, and
+  // a tenant token reaching another tenant's def gets the same 404 as an
+  // unknown one ({@link NotFoundError}).
+
+  /** Every schedule: static yaml `scheduled_runs` and ScheduleDefs, merged by
+   *  name (`GET /v1/_schedules/list-all`), sorted by name. A tenant token sees
+   *  only its own tenant's ScheduleDefs — static schedules are operator
+   *  automation and appear only for an admin, who may focus one tenant with
+   *  `tenant`. */
+  async listAllSchedules(
+    opts?: { tenant?: string; signal?: AbortSignal },
+  ): Promise<ScheduleListResponse> {
+    const q = opts?.tenant ? `?tenant=${encodeURIComponent(opts.tenant)}` : "";
+    return jsonFetch<ScheduleListResponse>(this.ctx, `/v1/_schedules/list-all${q}`, opts);
+  }
+
+  /** One schedule's runtime state (`GET /v1/_schedules/{def_id}/state`): last
+   *  and next fire, pause, the last slot claim, the catch-up backlog and the
+   *  runs it has in flight. 404 when the def has no state row (never promoted,
+   *  retired, or not yours). */
+  async getScheduleState(defId: string, opts?: { signal?: AbortSignal }): Promise<ScheduleStateView> {
+    return jsonFetch<ScheduleStateView>(
+      this.ctx,
+      `/v1/_schedules/${encodeURIComponent(defId)}/state`,
+      opts,
+    );
+  }
+
+  /** Fire a schedule now (`POST /v1/_schedules/{def_id}/run-now`). The run
+   *  starts on the scheduler's next tick, not during this call, and the regular
+   *  cadence continues after it. A run already in flight is handled by the
+   *  schedule's `concurrency_policy`. 404 for an unknown def. */
+  async runScheduleNow(defId: string, opts?: { signal?: AbortSignal }): Promise<ScheduleRunNowResult> {
+    return postJSON<ScheduleRunNowResult>(
+      this.ctx,
+      `/v1/_schedules/${encodeURIComponent(defId)}/run-now`,
+      undefined,
+      opts,
+    );
+  }
+
+  /** Pause a schedule indefinitely (`POST /v1/_schedules/{def_id}/pause`) until
+   *  {@link LoomcycleClient.resumeSchedule}. Takes no duration: the server sets
+   *  `paused_until` about 100 years ahead. Distinct from
+   *  {@link LoomcycleClient.pauseRuntime}, which stops the whole runtime. */
+  async pauseSchedule(defId: string, opts?: { signal?: AbortSignal }): Promise<SchedulePauseResult> {
+    return postJSON<SchedulePauseResult>(
+      this.ctx,
+      `/v1/_schedules/${encodeURIComponent(defId)}/pause`,
+      undefined,
+      opts,
+    );
+  }
+
+  /** Clear a schedule's pause (`POST /v1/_schedules/{def_id}/resume`), so the
+   *  scheduler considers it due again; `next_run_at` is left as it was. */
+  async resumeSchedule(defId: string, opts?: { signal?: AbortSignal }): Promise<SchedulePauseResult> {
+    return postJSON<SchedulePauseResult>(
+      this.ctx,
+      `/v1/_schedules/${encodeURIComponent(defId)}/resume`,
+      undefined,
+      opts,
+    );
+  }
+
   // ---- RFC AP Agent Teams (TeamDef substrate) ----
   //
   // TeamDefs are agent-team workflow graphs (states + transitions + a per-state
@@ -2232,14 +2432,23 @@ export class LoomcycleClient {
   }
 
   /** Save an edited graph as a NEW version of an existing team (op=fork). With
-   *  no parent the server forks the name's active def; `overlay` (a full graph)
-   *  replaces it. Validated server-side ({@link SubstrateToolRefusedError}). */
+   *  no `parentDefId` the server forks the name's active def; `overlay` (a full
+   *  graph) replaces it. Validated server-side ({@link SubstrateToolRefusedError}).
+   *
+   *  The fork's own fields ride in `opts` beside `signal` — the pattern
+   *  {@link LoomcycleClient.setRunBreakpoints} uses — so existing two- and
+   *  three-argument calls are unchanged. `promote: true` puts the new version
+   *  in force in the same call; omitted, it is authored but not active. */
   async forkTeam(
     name: string,
     overlay: Record<string, unknown>,
-    opts?: { signal?: AbortSignal },
+    opts?: ForkTeamOptions,
   ): Promise<CreatedTeam> {
-    return postJSON<CreatedTeam>(this.ctx, "/v1/_teamdef", { op: "fork", name, overlay }, opts);
+    const body: Record<string, unknown> = { op: "fork", name, overlay };
+    if (opts?.promote !== undefined) body.promote = opts.promote;
+    if (opts?.parentDefId !== undefined) body.parent_def_id = opts.parentDefId;
+    if (opts?.description !== undefined) body.description = opts.description;
+    return postJSON<CreatedTeam>(this.ctx, "/v1/_teamdef", body, { signal: opts?.signal });
   }
 
   /** List every version of ONE team, newest first (op=list) — the lineage
@@ -2367,6 +2576,7 @@ export class LoomcycleClient {
     if (target.review !== undefined) body.review = target.review;
     if (target.reviewTtlSeconds !== undefined) body.review_ttl_seconds = target.reviewTtlSeconds;
     if (target.idempotencyKey !== undefined) body.idempotency_key = target.idempotencyKey;
+    if (target.interruptOnCap !== undefined) body.interrupt_on_cap = target.interruptOnCap;
     return postJSON<TeamRunResult>(this.ctx, "/v1/_teamdef", body, opts);
   }
 
