@@ -1,0 +1,39 @@
+{
+  "$schema": "https://developer.microsoft.com/json-schemas/teams/v1.19/MicrosoftTeams.schema.json",
+  "manifestVersion": "1.19",
+  "version": "1.0.0",
+  "id": "${{BOT_ID}}",
+  "developer": {
+    "name": "${{DEVELOPER_NAME}}",
+    "websiteUrl": "${{DEVELOPER_URL}}",
+    "privacyUrl": "${{PRIVACY_URL}}",
+    "termsOfUseUrl": "${{TERMS_URL}}"
+  },
+  "name": { "short": "${{BOT_NAME}}", "full": "${{BOT_NAME}}" },
+  "description": {
+    "short": "Chat with a loomcycle agent.",
+    "full": "Chat with a loomcycle agent in Teams: streamed answers, questions answered with buttons, and /new, /stop and /help commands."
+  },
+  "icons": { "color": "color.png", "outline": "outline.png" },
+  "accentColor": "#3B5BDB",
+  "bots": [
+    {
+      "botId": "${{BOT_ID}}",
+      "scopes": ["personal", "groupChat", "team"],
+      "supportsFiles": false,
+      "isNotificationOnly": false,
+      "commandLists": [
+        {
+          "scopes": ["personal", "groupChat", "team"],
+          "commands": [
+            { "title": "/new", "description": "Start a new conversation" },
+            { "title": "/stop", "description": "Stop the current answer" },
+            { "title": "/help", "description": "Show the commands" }
+          ]
+        }
+      ]
+    }
+  ],
+  "permissions": ["identity", "messageTeamMembers"],
+  "validDomains": []
+}
