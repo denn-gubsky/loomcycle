@@ -14,6 +14,9 @@ internal/api/grpc/server.go's ``mapRunnerErr``:
     Unavailable        → UnavailableError
     Internal / other   → LoomcycleError (with the original message)
 
+Every error has a read-only ``retryable``: True only for a refusal that
+clears on its own, judged from the class and ``reason``.
+
 The ``code`` and ``message`` attributes preserve the gRPC payload
 for log correlation when the typed class doesn't carry enough.
 The ``reason`` attribute names the condition when the server said which
@@ -41,6 +44,20 @@ class LoomcycleError(Exception):
         # message. ``None`` when the server attached none.
         self.reason: Optional[str] = None
 
+    @property
+    def retryable(self) -> bool:
+        """Whether the same call, sent again unchanged, can succeed once time
+        has passed: True only for a refusal that clears on its own (see
+        ``BackpressureError`` and ``UnavailableError``), False otherwise.
+
+        A read-only property rather than an attribute because it follows
+        ``reason``, which is filled in after the error is built. False is the
+        default because a wrong True turns a refusal that never clears into a
+        retry loop that never ends, while a wrong False only surfaces an error
+        the caller could have waited out. The client never retries on its
+        own; bound your retries even when this is True."""
+        return False
+
 
 class AgentNotFoundError(LoomcycleError):
     """Raised by ``get_agent`` / ``cancel_agent`` when the agent_id
@@ -66,9 +83,22 @@ class AgentIDInUseError(LoomcycleError):
 
 
 class BackpressureError(LoomcycleError):
-    """Raised when the concurrency semaphore rejected the run. Wait
-    until in-flight runs drain, or raise the operator's
-    ``max_concurrent_runs``."""
+    """Raised for every gRPC ``RESOURCE_EXHAUSTED`` except a snapshot over
+    its size cap. ``reason`` says which condition it is:
+
+    * ``backpressure`` — the run queue is full; ``per_user_quota_exhausted``
+      — the caller's own in-flight runs are at their cap; ``rate_limited``
+      — the caller is starting runs too fast. These clear on their own:
+      ``retryable`` is True.
+    * ``token_limit_exceeded`` — a hard token budget. It does not clear
+      until an operator raises the budget or the month rolls over, so
+      ``retryable`` is False. Test ``retryable`` (or ``reason``) before
+      retrying a BackpressureError; ``except BackpressureError: retry()``
+      alone spins on the budget for the rest of the month."""
+
+    @property
+    def retryable(self) -> bool:
+        return self.reason != "token_limit_exceeded"
 
 
 class AuthError(LoomcycleError):
@@ -77,9 +107,22 @@ class AuthError(LoomcycleError):
 
 
 class UnavailableError(LoomcycleError):
-    """Raised when the gRPC channel can't reach the server (network
-    error, server down, TLS handshake failure). Adapters should
-    retry with backoff."""
+    """Raised for gRPC ``UNAVAILABLE``: the channel can't reach the server
+    (network error, server down, TLS handshake failure), the runtime is
+    paused, no provider in the tier is up, or a feature the deployment does
+    not have (``decision_not_configured``, an unwired connector).
+
+    ``retryable`` is True only where the server's ``reason`` names a
+    condition that clears on its own: ``runtime_paused`` (until the operator
+    resumes), ``tier_unavailable`` and ``pin_unavailable`` (until a provider
+    recovers). A transport failure carries no reason and neither does an
+    unwired connector, so ``retryable`` cannot tell them apart and stays
+    False; retry a reason-less UnavailableError on your own judgement, with
+    backoff and a bound."""
+
+    @property
+    def retryable(self) -> bool:
+        return self.reason in ("runtime_paused", "tier_unavailable", "pin_unavailable")
 
 
 class InvalidArgumentError(LoomcycleError):
@@ -107,6 +150,10 @@ class PauseNotConfiguredError(UnavailableError):
     """Raised when the server has no pause Manager wired (no Store
     backend on the deployment). Operator config issue; not a transient
     failure. Server returns gRPC Unavailable for this case."""
+
+    @property
+    def retryable(self) -> bool:
+        return False
 
 
 class AlreadyPausingError(LoomcycleError):
