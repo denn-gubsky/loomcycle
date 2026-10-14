@@ -1228,17 +1228,6 @@ func memberCarveOut(method, path string) bool {
 //
 // The def handlers confine a non-admin principal to its own tenant (write-stamp
 // + opaque-404), so opening these gates to ScopeTenant doesn't widen reach.
-// isAgentOverridablePath reports whether path is
-// /v1/_agentdef/{name}/overridable.
-func isAgentOverridablePath(path string) bool {
-	rest, ok := strings.CutPrefix(path, "/v1/_agentdef/")
-	if !ok {
-		return false
-	}
-	name, ok := strings.CutSuffix(rest, "/overridable")
-	return ok && name != "" && !strings.Contains(name, "/")
-}
-
 // memberReadable reports whether path is a USER-FACING READ surface (RFC BY): a
 // route any member of a tenant may read — an end-user (isolated OR tenant-mode),
 // a tenant operator, or admin — with the HANDLER doing the real per-principal
@@ -1255,6 +1244,17 @@ func memberReadable(path string) bool {
 		return true
 	}
 	return false
+}
+
+// isAgentOverridablePath reports whether path is
+// /v1/_agentdef/{name}/overridable.
+func isAgentOverridablePath(path string) bool {
+	rest, ok := strings.CutPrefix(path, "/v1/_agentdef/")
+	if !ok {
+		return false
+	}
+	name, ok := strings.CutSuffix(rest, "/overridable")
+	return ok && name != "" && !strings.Contains(name, "/")
 }
 
 // isTeamChannelsPath reports whether path is one of the team-channel routes:
