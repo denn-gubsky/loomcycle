@@ -312,8 +312,7 @@ func teamChannelScopeOK(w http.ResponseWriter, r *http.Request, need string) boo
 	if !ok || auth.HasScope(p.Scopes, need) {
 		return true
 	}
-	w.Header().Set("WWW-Authenticate", `Bearer scope="`+need+`"`)
-	writeJSONError(w, http.StatusForbidden, "insufficient_scope", "insufficient scope: a team's own channels require "+need)
+	writeScopeError(w, need, "insufficient scope: a team's own channels require "+need)
 	return false
 }
 

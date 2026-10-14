@@ -1214,7 +1214,7 @@ Config knobs (full reference: `loomcycle context help operator-tokens` or the `C
 | `LOOMCYCLE_OPERATOR_KEY_RESTRICTION` | **RFC AX** deployment gate (default OFF). When `1`, a run whose principal lacks `providers:operator-key` may not use the operator's host provider key — resolution routes it only to providers the tenant can key itself (an RFC AR CredentialDef) and refuses `403 operator_key_restricted` if none; the LLM-gateway + embeddings shims refuse a restricted principal outright. OFF ⇒ byte-identical for every existing token. |
 | `LOOMCYCLE_PUBLIC_CONFIG` | Deployment gate (default OFF). When `1`, `GET /v1/config` may be read with **no bearer**, returning a narrowed public view — for a hosted instance whose landing page shows which providers and models are live. OFF ⇒ the endpoint requires auth like every other `/v1` read, so upgrading changes nothing. A presented-but-**invalid** bearer still `401`s rather than downgrading to the public view. See [§ GET /v1/config](#get-v1config). |
 
-Routes enforce a scope from a closed catalog; an under-scoped token gets `403` + `WWW-Authenticate: Bearer scope="…"`. The legacy `LOOMCYCLE_AUTH_TOKEN` is disabled only once an admin-scoped token exists (the no-lockout gate). The catalog:
+Routes enforce a scope from a closed catalog; an under-scoped token gets `403` with the JSON body `{"code":"insufficient_scope","error":"insufficient scope","required_scope":"…"}` and the same scope in `WWW-Authenticate: Bearer scope="…"`. The legacy `LOOMCYCLE_AUTH_TOKEN` is disabled only once an admin-scoped token exists (the no-lockout gate). The catalog:
 
 | Scope | Grants |
 |---|---|

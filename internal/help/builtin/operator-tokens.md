@@ -47,7 +47,9 @@ scopes no route checks (a scope that enforces nothing is a false
 limitation). The default at create is `["substrate:admin"]`, so a first
 token keeps "single token, full power". Narrow app tokens
 (`["runs:create"]`) are the upgrade path; a route that needs a scope the
-token lacks returns **403** with `WWW-Authenticate: Bearer scope="…"`.
+token lacks returns **403** with the JSON body
+`{"code":"insufficient_scope","error":"insufficient scope","required_scope":"…"}`
+and the same scope in `WWW-Authenticate: Bearer scope="…"`.
 
 **`substrate:tenant`** is the middle ground between an admin token and a
 narrow `runs:*` app token: it grants FULL power WITHIN the token's own

@@ -614,6 +614,8 @@ When the error body is JSON with a string `code` (`token_limit_exceeded`, `per_u
 |---|---|
 | 400 | `InvalidArgumentError` |
 | 401 | `AuthError` |
+| 403 + code `insufficient_scope` | `InsufficientScopeError` (not retryable; `e.requiredScope` names the scope the token lacks — from the body's `required_scope`, or from `WWW-Authenticate` on an older server that sent plain text) |
+| 403 (other) | `LoomcycleError` (base; e.g. `restricted_token`, `operator_key_restricted` on `e.code`) |
 | 404 + "snapshot" | `SnapshotNotFoundError` ⎫ |
 | 404 + "session" | `SessionNotFoundError` ⎬ all extend `NotFoundError` |
 | 404 + "agent" | `AgentNotFoundError` ⎬ |

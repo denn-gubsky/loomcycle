@@ -78,10 +78,8 @@ func (s *Server) handleSubstrateTeamDef(w http.ResponseWriter, r *http.Request) 
 			return body, nil
 		}
 		return nil, &guardError{
-			status: http.StatusForbidden,
-			code:   "insufficient_scope",
-			msg:    "insufficient scope: TeamDef op=" + op + " requires " + need,
-			scope:  need,
+			msg:   "insufficient scope: TeamDef op=" + op + " requires " + need,
+			scope: need,
 		}
 	}
 	s.dispatchSubstrateCtxGuarded(w, r, "TeamDef", s.TeamDef, substrateAdminUserCtx, guard)
@@ -257,8 +255,9 @@ type guardError struct {
 	status int
 	code   string
 	msg    string
-	// scope, when set, is the scope the caller lacks: it goes out in
-	// WWW-Authenticate, as the route gate's own refusal does.
+	// scope, when set, is the scope the caller lacks, and the refusal is the
+	// route gate's own: a 403 insufficient_scope naming it (status and code
+	// are not read).
 	scope string
 }
 
@@ -337,7 +336,8 @@ func (s *Server) dispatchSubstrateCtxGuarded(
 		newBody, gerr := guard(ctx, body)
 		if gerr != nil {
 			if gerr.scope != "" {
-				w.Header().Set("WWW-Authenticate", `Bearer scope="`+gerr.scope+`"`)
+				writeScopeError(w, gerr.scope, gerr.msg)
+				return
 			}
 			writeJSONError(w, gerr.status, gerr.code, gerr.msg)
 			return
