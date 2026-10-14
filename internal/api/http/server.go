@@ -294,6 +294,12 @@ type Server struct {
 	// resolver never does credential-store I/O.
 	credKeyable func(ctx context.Context, tenantID, agentName, userID, name string) bool
 
+	// credToCompare: does tenantID hold the tenant-level credential name,
+	// whatever its allowed_urls — the snapshot scan's check for a webhook's
+	// stored verification secret, which is only compared. Metadata only.
+	// Wired via SetCredToCompare; nil leaves those references unchecked.
+	credToCompare func(ctx context.Context, tenantID, name string) bool
+
 	// searchRegistry / searchResolver / searchHostKeys back the RFC BB search
 	// routing view (GET /v1/_routing → "search" block). searchHostKeys maps a
 	// provider id → its operator host key value (non-empty = the operator can
@@ -1406,6 +1412,12 @@ func (s *Server) SetCredentialResolver(r providers.CredentialResolver) { s.credR
 // before resolution. Nil ⇒ no provider is tenant-keyable.
 func (s *Server) SetCredKeyable(fn func(ctx context.Context, tenantID, agentName, userID, name string) bool) {
 	s.credKeyable = fn
+}
+
+// SetCredToCompare wires the snapshot scan's check for a credential that is
+// only ever compared (a webhook's stored verification secret).
+func (s *Server) SetCredToCompare(fn func(ctx context.Context, tenantID, name string) bool) {
+	s.credToCompare = fn
 }
 
 // SetSearchRouting wires the RFC BB search catalog for the routing view (main.go

@@ -64,6 +64,9 @@ type Receiver struct {
 	publisher    channels.SystemPublisher
 	runStateBus  *runstate.Bus
 	envAllowlist map[string]bool
+	// creds reads a verification secret stored as a credential (auth.secret).
+	// nil: such a webhook refuses every delivery as unresolvable.
+	creds CredentialResolver
 	// allowUnauthenticated honors auth.kind="none" (skip verification). When
 	// false (default) a none-auth webhook 503s rather than silently accepting
 	// unsigned external POSTs. Set from LOOMCYCLE_WEBHOOKS_ALLOW_UNAUTHENTICATED.
@@ -101,6 +104,9 @@ type Deps struct {
 	Publisher    channels.SystemPublisher
 	RunStateBus  *runstate.Bus
 	EnvAllowlist map[string]bool
+	// Credentials reads a verification secret stored as a credential. May
+	// be nil (a webhook whose auth.secret names one then 503s).
+	Credentials CredentialResolver
 	// AllowUnauthenticated enables auth.kind="none" webhooks. Default false.
 	AllowUnauthenticated bool
 	Logf                 func(format string, args ...any)
@@ -134,6 +140,7 @@ func New(d Deps) *Receiver {
 		publisher:            d.Publisher,
 		runStateBus:          d.RunStateBus,
 		envAllowlist:         d.EnvAllowlist,
+		creds:                d.Credentials,
 		allowUnauthenticated: d.AllowUnauthenticated,
 		logf:                 logf,
 		dedup:                newDedupCache(now),
@@ -222,7 +229,7 @@ func (rec *Receiver) handle(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// 3. AUTHENTICATE (VERIFY BEFORE PARSE — over the raw bytes).
-	if !rec.authenticate(w, r, span, whKey, name, wd.Auth, body) {
+	if !rec.authenticate(w, r, span, whKey, name, wd.Auth, owner.TenantID, body) {
 		return
 	}
 
@@ -288,13 +295,15 @@ func (rec *Receiver) handle(w http.ResponseWriter, r *http.Request) {
 // parses it, and answers the request itself when it does not pass: false
 // means the response is written. whKey names the per-webhook state the
 // verdict is recorded against ("" records nothing); name is for the log.
+// tenant is the tenant a secret stored as a credential is read from: that of
+// whoever wrote the definition.
 //
 // auth.kind="none" is the trusted-network escape hatch: skip verification
 // entirely, but ONLY when the operator has explicitly opted in
 // (LOOMCYCLE_WEBHOOKS_ALLOW_UNAUTHENTICATED=1). Otherwise it 503s loudly —
 // silently accepting unsigned external POSTs would be a footgun, so the
 // default refuses even though the Def asked for no auth.
-func (rec *Receiver) authenticate(w http.ResponseWriter, r *http.Request, span trace.Span, whKey, name string, a config.WebhookAuth, body []byte) bool {
+func (rec *Receiver) authenticate(w http.ResponseWriter, r *http.Request, span trace.Span, whKey, name string, a config.WebhookAuth, tenant string, body []byte) bool {
 	if strings.EqualFold(strings.TrimSpace(a.Kind), "none") {
 		if !rec.allowUnauthenticated {
 			rec.finish(span, whKey, "", verdictUnresolved, "")
@@ -303,14 +312,15 @@ func (rec *Receiver) authenticate(w http.ResponseWriter, r *http.Request, span t
 			return false
 		}
 		rec.logf("webhook %q: accepted UNAUTHENTICATED delivery (auth.kind=none)", name)
-	} else if verr := verifySignature(a, body, r.Header.Get, rec.envAllowlist, rec.getenv, rec.now); verr != nil {
+	} else if verr := rec.verify(r.Context(), a, tenant, body, r.Header.Get); verr != nil {
 		var ae *authError
 		if errors.As(verr, &ae) && ae.verdict == verdictUnresolved {
-			// Config-side failure (secret not allowlisted / unset). 503 names
-			// the env var (NAME, not value) so the operator can fix it.
+			// Config-side failure (secret not allowlisted / unset / no such
+			// credential). 503 names the env var or the reference (a NAME,
+			// not a value) so the operator can fix it.
 			rec.finish(span, whKey, "", verdictUnresolved, "")
-			rec.logf("webhook %q: secret unresolvable (env=%q)", name, ae.secretEnv)
-			writeSecretUnresolvable(w, ae.secretEnv)
+			rec.logf("webhook %q: secret unresolvable: %s", name, ae.msg)
+			writeSecretUnresolvable(w, ae)
 			return false
 		}
 		// Signature mismatch / replay-window / bad header / wrong bearer:
@@ -321,6 +331,15 @@ func (rec *Receiver) authenticate(w http.ResponseWriter, r *http.Request, span t
 		return false
 	}
 	return true
+}
+
+// verify resolves auth's secrets and checks the request against them.
+func (rec *Receiver) verify(ctx context.Context, a config.WebhookAuth, tenant string, body []byte, headerGet func(string) string) error {
+	secrets, err := verificationSecrets(ctx, a, tenant, rec.creds, rec.envAllowlist, rec.getenv, rec.logf)
+	if err != nil {
+		return err
+	}
+	return verifySignature(a, secrets, body, headerGet, rec.now)
 }
 
 // replayAck answers a delivery already accepted — the idempotent re-send
@@ -784,11 +803,14 @@ func writeError(w http.ResponseWriter, status int, code, detail string) {
 }
 
 // writeSecretUnresolvable emits the 503 with the env-var NAME (never value).
-func writeSecretUnresolvable(w http.ResponseWriter, secretEnv string) {
-	writeJSON(w, http.StatusServiceUnavailable, map[string]string{
-		"error":      "secret_unresolvable",
-		"secret_env": secretEnv,
-	})
+func writeSecretUnresolvable(w http.ResponseWriter, ae *authError) {
+	body := map[string]string{"error": "secret_unresolvable"}
+	if ae.secretRef != "" {
+		body["secret"] = ae.secretRef
+	} else {
+		body["secret_env"] = ae.secretEnv
+	}
+	writeJSON(w, http.StatusServiceUnavailable, body)
 }
 
 // writeRetryAfter emits 429 + Retry-After (whole seconds, min 1).
