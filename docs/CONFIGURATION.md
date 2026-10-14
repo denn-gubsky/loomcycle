@@ -1706,6 +1706,7 @@ Off unless the operator lists the hosts a repository may be fetched from.
 | `LOOMCYCLE_GIT_SOURCE_MAX_FILES` | 100000 | files, links and submodule directories per clone |
 | `LOOMCYCLE_GIT_SOURCE_TIMEOUT_SECONDS` | 120 | time for one clone, waiting for a slot included |
 | `LOOMCYCLE_GIT_SOURCE_MAX_CONCURRENT` | 1 | clones running at once, per replica |
+| `LOOMCYCLE_GIT_SOURCE_MAX_HISTORY` | 500 | commits deep a clone looks for its commit, a diff base, or a merge base |
 
 **Who may ask.** An agent needs `VolumeDef` in its tools, the usual grant for the volume's name, and `source:git` in `volume_def_scopes`. `any` does not include `source:git`.
 
@@ -1721,13 +1722,15 @@ Off unless the operator lists the hosts a repository may be fetched from.
 - `_meta/omitted.json` lists what was left out and why: `symlink`, `submodule`, `too_large`, `unsafe_path`, `collision`.
 - No `.git`.
 
+**A diff.** With `"diff_base": "merge-base:default"` (the merge base of the commit and the repository's default branch, as its HEAD names it) or a 40-digit sha, the volume also holds `_meta/diff.patch` and `_meta/numstat.json`, or the names `outputs` gives under `_meta/`. The merge base is found by deepening both histories from 64 commits, doubling, up to `LOOMCYCLE_GIT_SOURCE_MAX_HISTORY`; not found within it, the clone fails with `merge_base_not_found`. The patch describes the tree the volume holds: a change to a path left out of the tree is listed in `numstat.json` with the reason and has no body. Renames are a deletion and an addition. The patch applies with `git apply`; its text is not byte for byte what `git diff` prints. The patch counts against `LOOMCYCLE_GIT_SOURCE_MAX_BYTES` together with the tree.
+
 **The answer** names the commit and gives counts. It carries no file content, and a failure is one word from a closed list; the remote's own text goes to the operator's log, with the repository's path removed.
 
 **All or nothing.** A clone that fails, or passes a limit, leaves no directory, no object store and no row, and the name can be used again.
 
 **Memory.** A clone holds its pack on disk and at most a few objects in memory, each no larger than the object limit. Budget a small multiple of `LOOMCYCLE_GIT_SOURCE_MAX_OBJECT_BYTES` per clone running at once.
 
-**Not yet:** a diff against a base commit, and narrowing a GitHub App token to the one repository.
+**Not yet:** narrowing a GitHub App token to the one repository.
 
 ### 9d.3 Volumes console tab (RFC AH Phase 4)
 

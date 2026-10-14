@@ -238,7 +238,7 @@ func TestVolumeDefGitSource_RefusedWithNoNetworkCall(t *testing.T) {
 		{name: "a credential that is sent nowhere", ctx: f.ctx, git: git(map[string]any{"credential": nowhere}), want: "credential_url_not_allowed"},
 		{name: "a credential that does not exist", ctx: f.ctx, git: git(map[string]any{"credential": "$cred:missing"}), want: "credential_unresolvable"},
 		{name: "a credential given as a value", ctx: f.ctx, git: git(map[string]any{"credential": gitTestToken}), want: "credential_unresolvable"},
-		{name: "a field this build does not know", ctx: f.ctx, git: git(map[string]any{"diff_base": "merge-base:default"}), want: "invalid_request"},
+		{name: "a field this build does not know", ctx: f.ctx, git: git(map[string]any{"keep_git": true}), want: "invalid_request"},
 		{name: "an http URL", ctx: f.ctx, git: git(map[string]any{"url": "http://" + f.repo.Host + "/acme/app.git"}), want: "invalid_request"},
 		{name: "not ephemeral", ctx: f.ctx, git: git(nil), extra: map[string]any{"ephemeral": false}, want: "invalid_request"},
 		{name: "a negative max_bytes", ctx: f.ctx, git: git(map[string]any{"max_bytes": -1}), want: "invalid_request"},
@@ -383,6 +383,89 @@ func TestHostListed(t *testing.T) {
 	} {
 		if got := hostListed(hosts, host); got != want {
 			t.Errorf("hostListed(%q) = %v, want %v", host, got, want)
+		}
+	}
+}
+
+// With a diff base the volume also holds the diff, under _meta/, and the
+// answer names the base and the files.
+func TestVolumeDefGitSource_WritesTheDiffAgainstABase(t *testing.T) {
+	f := newGitSourceFixture(t, false)
+	head := f.repo.Commit(t, "NEW.md", []byte("added after the fixture's head\n"))
+
+	out, res := f.create(t, f.ctx, "repo", map[string]any{"url": f.repo.URL, "commit": head, "diff_base": f.repo.Head}, map[string]any{"mode": "ro"})
+	if res.IsError {
+		t.Fatalf("create: %s", res.Text)
+	}
+	src, _ := out["source"].(map[string]any)
+	outputs, _ := src["outputs"].(map[string]any)
+	if src["base"] != f.repo.Head || src["changed_files"] != float64(1) ||
+		outputs["diff"] != "_meta/diff.patch" || outputs["numstat"] != "_meta/numstat.json" {
+		t.Errorf("source = %v", src)
+	}
+	patch := fileCall(t, f.ctx, &Read{}, map[string]any{"volume": "repo", "path": "_meta/diff.patch"})
+	if !strings.Contains(patch.Text, "+added after the fixture's head") || !strings.Contains(patch.Text, "NEW.md") {
+		t.Errorf("the patch:\n%s", patch.Text)
+	}
+	stat := fileCall(t, f.ctx, &Read{}, map[string]any{"volume": "repo", "path": "_meta/numstat.json"})
+	if !strings.Contains(stat.Text, `"path": "NEW.md"`) || !strings.Contains(stat.Text, `"status": "added"`) {
+		t.Errorf("numstat.json:\n%s", stat.Text)
+	}
+
+	// merge-base:default, with the commit on the default branch itself: the
+	// base is the commit, and the diff is empty.
+	out, res = f.create(t, f.ctx, "same", map[string]any{"url": f.repo.URL, "commit": head, "diff_base": "merge-base:default",
+		"outputs": map[string]any{"diff": "_meta/changes.patch", "numstat": "_meta/changes.json"}}, nil)
+	if res.IsError {
+		t.Fatalf("merge-base:default: %s", res.Text)
+	}
+	src, _ = out["source"].(map[string]any)
+	outputs, _ = src["outputs"].(map[string]any)
+	if src["base"] != head || src["changed_files"] != float64(0) || outputs["diff"] != "_meta/changes.patch" {
+		t.Errorf("merge-base of the default branch's own tip: %v", src)
+	}
+	if r := fileCall(t, f.ctx, &Read{}, map[string]any{"volume": "same", "path": "_meta/changes.json"}); r.IsError {
+		t.Errorf("the named numstat output is missing: %s", r.Text)
+	}
+}
+
+func TestVolumeDefGitSource_DiffRefusals(t *testing.T) {
+	f := newGitSourceFixture(t, false)
+	for _, c := range []struct {
+		name string
+		git  map[string]any
+		want string
+	}{
+		{"an output outside _meta", map[string]any{"diff_base": f.repo.Old, "outputs": map[string]any{"diff": "diff.patch"}}, "invalid_request"},
+		{"an output that climbs out", map[string]any{"diff_base": f.repo.Old, "outputs": map[string]any{"diff": "_meta/../x.patch"}}, "invalid_request"},
+		{"an output in a subdirectory", map[string]any{"diff_base": f.repo.Old, "outputs": map[string]any{"numstat": "_meta/a/b.json"}}, "invalid_request"},
+		{"the omitted list as an output", map[string]any{"diff_base": f.repo.Old, "outputs": map[string]any{"diff": "_meta/omitted.json"}}, "invalid_request"},
+		{"both outputs the same file", map[string]any{"diff_base": f.repo.Old, "outputs": map[string]any{"diff": "_meta/x", "numstat": "_meta/x"}}, "invalid_request"},
+		{"outputs with no base", map[string]any{"outputs": map[string]any{"diff": "_meta/x.patch"}}, "invalid_request"},
+		{"a base that is not a sha", map[string]any{"diff_base": "main"}, "invalid_request"},
+		{"a base the repository does not have", map[string]any{"diff_base": strings.Repeat("ab", 20)}, "commit_not_found"},
+	} {
+		git := map[string]any{"url": f.repo.URL, "commit": f.repo.Head}
+		for k, v := range c.git {
+			git[k] = v
+		}
+		_, res := f.create(t, f.ctx, "repo", git, nil)
+		if !res.IsError || !strings.Contains(res.Text, c.want) {
+			t.Errorf("%s: %q, want %s", c.name, res.Text, c.want)
+		}
+		f.assertNothingLeft(t, "repo")
+	}
+}
+
+func TestValidMetaOutput(t *testing.T) {
+	for rel, want := range map[string]bool{
+		"_meta/diff.patch": true, "_meta/numstat.json": true, "_meta/a_b-c.1": true,
+		"_meta/omitted.json": false, "_meta/": false, "_meta/.hidden": false, "_meta/a/b": false,
+		"diff.patch": false, "_META/diff.patch": false, "_meta/a b": false, "_meta/../x": false,
+		"_meta/" + strings.Repeat("a", 65): false,
+	} {
+		if got := validMetaOutput(rel); got != want {
+			t.Errorf("validMetaOutput(%q) = %v, want %v", rel, got, want)
 		}
 	}
 }

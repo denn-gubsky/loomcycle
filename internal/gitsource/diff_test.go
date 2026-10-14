@@ -1,0 +1,245 @@
+package gitsource
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"errors"
+	"os"
+	"path/filepath"
+	"sort"
+	"strings"
+	"testing"
+)
+
+// branchFixture adds to the fixture a branch "feature" that leaves main at
+// its head and makes four commits, while main gets one more of its own. The
+// merge base of the two is the fixture's head.
+func branchFixture(t *testing.T, f *fixture) (feature, mainTip string) {
+	t.Helper()
+	w := f.work
+	write := func(rel, content string) {
+		t.Helper()
+		if err := os.MkdirAll(filepath.Dir(filepath.Join(w, rel)), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(w, rel), []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	run(t, w, "checkout", "-q", "-b", "feature")
+	write("README.md", "readme\nwith a second line\n")
+	run(t, w, "commit", "-q", "-am", "f1")
+	write("src/b.go", "package a\n\nfunc B() int { return 2 }\n")
+	run(t, w, "add", ".")
+	run(t, w, "commit", "-q", "-m", "f2")
+	run(t, w, "rm", "-q", "bin/run.sh")
+	write("data.bin", "bin\x00ary\x01")
+	write("huge.txt", strings.Repeat("y\n", 1000)) // 2000 bytes: over the diff's file limit below
+	run(t, w, "add", ".")
+	run(t, w, "commit", "-q", "-m", "f3")
+	if err := os.Remove(filepath.Join(w, "docs/latest")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink("../src/a.go", filepath.Join(w, "docs/latest")); err != nil {
+		t.Fatal(err)
+	}
+	run(t, w, "add", ".")
+	run(t, w, "commit", "-q", "-m", "f4")
+	feature = run(t, w, "rev-parse", "HEAD")
+
+	run(t, w, "checkout", "-q", "main")
+	write("MAIN.md", "only on main\n")
+	run(t, w, "add", ".")
+	run(t, w, "commit", "-q", "-m", "m1")
+	mainTip = run(t, w, "rev-parse", "HEAD")
+	run(t, w, "push", "-q", "--force", f.bare, "main:refs/heads/main", "feature:refs/heads/feature")
+	return feature, mainTip
+}
+
+var diffLimits = DiffLimits{MaxBytes: 1 << 20, MaxFileBytes: 1000, Reserved: []string{"_meta"}}
+
+func TestFetchWithMergeBase_WritesADiffThatMatchesGit(t *testing.T) {
+	f := newFixture(t, false, true)
+	feature, _ := branchFixture(t, f)
+	wantBase := run(t, f.work, "merge-base", "main", feature)
+	if wantBase != f.head {
+		t.Fatalf("fixture: git's merge base is %s, the test expects the old head %s", wantBase, f.head)
+	}
+
+	req := f.request(t, feature)
+	req.DiffBase = DiffBaseMergeBaseDefault
+	got, err := Fetch(context.Background(), req)
+	if err != nil {
+		t.Fatalf("Fetch: %v", err)
+	}
+	defer got.Close()
+	if got.Base != wantBase {
+		t.Fatalf("Base = %s, want git's merge base %s", got.Base, wantBase)
+	}
+
+	dest := t.TempDir()
+	if _, err := got.WriteTree(context.Background(), dest, limits); err != nil {
+		t.Fatal(err)
+	}
+	res, err := got.WriteDiff(context.Background(), dest, "_meta/diff.patch", "_meta/numstat.json", diffLimits)
+	if err != nil {
+		t.Fatalf("WriteDiff: %v", err)
+	}
+
+	var sum struct {
+		Base, Head string
+		Files      []DiffFile
+	}
+	raw, _ := os.ReadFile(filepath.Join(dest, "_meta/numstat.json"))
+	if err := json.Unmarshal(raw, &sum); err != nil {
+		t.Fatalf("numstat.json: %v\n%s", err, raw)
+	}
+	if sum.Base != wantBase || sum.Head != feature || res.Files != len(sum.Files) {
+		t.Errorf("summary base=%s head=%s files=%d, result %+v", sum.Base, sum.Head, len(sum.Files), res)
+	}
+
+	// The changed paths are exactly git's, renames off. main's own commit
+	// (MAIN.md) is not in it: the base is the merge base, not main's tip.
+	gitPaths := strings.Fields(run(t, f.work, "diff", "--no-renames", "--name-only", wantBase, feature))
+	var ours []string
+	byPath := map[string]DiffFile{}
+	for _, d := range sum.Files {
+		ours = append(ours, d.Path)
+		byPath[d.Path] = d
+	}
+	sort.Strings(gitPaths)
+	sort.Strings(ours)
+	if strings.Join(ours, " ") != strings.Join(gitPaths, " ") {
+		t.Errorf("changed paths:\n ours %v\n git  %v", ours, gitPaths)
+	}
+	for p, want := range map[string]DiffFile{
+		"README.md":   {Status: "modified", Added: 1},
+		"src/b.go":    {Status: "added", Added: 3},
+		"bin/run.sh":  {Status: "deleted", Deleted: 2},
+		"data.bin":    {Status: "added", Binary: true},
+		"huge.txt":    {Status: "added", Skipped: ReasonTooLarge},
+		"docs/latest": {Status: "modified", Skipped: ReasonSymlink},
+	} {
+		d := byPath[p]
+		if d.Status != want.Status || d.Added != want.Added || d.Deleted != want.Deleted || d.Binary != want.Binary || d.Skipped != want.Skipped {
+			t.Errorf("%s = %+v, want %+v", p, d, want)
+		}
+	}
+
+	// The patch, applied to the base, gives the head's content for every
+	// change it carries a body for.
+	check := filepath.Join(t.TempDir(), "check")
+	run(t, filepath.Dir(check), "clone", "-q", f.bare, check)
+	run(t, check, "checkout", "-q", wantBase)
+	patch := filepath.Join(dest, "_meta/diff.patch")
+	run(t, check, "apply", "--check", patch)
+	run(t, check, "apply", patch)
+	for _, p := range []string{"README.md", "src/b.go"} {
+		want := run(t, f.work, "show", feature+":"+p)
+		b, err := os.ReadFile(filepath.Join(check, p))
+		if err != nil || strings.TrimSpace(string(b)) != want {
+			t.Errorf("%s after applying the patch = %q (err %v), want the head's", p, b, err)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(check, "bin/run.sh")); !os.IsNotExist(err) {
+		t.Error("the patch did not delete bin/run.sh")
+	}
+	// A skipped change has no body: huge.txt is listed but not in the patch.
+	if b, _ := os.ReadFile(patch); bytes.Contains(b, []byte("huge.txt")) {
+		t.Error("a change over the file limit has a body in the patch")
+	}
+}
+
+func TestFetchWithShaBase(t *testing.T) {
+	for _, bySHA := range []bool{true, false} {
+		f := newFixture(t, false, bySHA)
+		feature, _ := branchFixture(t, f)
+		req := f.request(t, feature)
+		req.Ref = "refs/heads/feature"
+		req.DiffBase = f.old // the very first commit, on main's history
+		got, err := Fetch(context.Background(), req)
+		if err != nil {
+			t.Fatalf("by sha %v: Fetch: %v", bySHA, err)
+		}
+		if got.Base != f.old {
+			t.Errorf("by sha %v: Base = %s, want %s", bySHA, got.Base, f.old)
+		}
+		dest := t.TempDir()
+		if _, err := got.WriteDiff(context.Background(), dest, "d.patch", "n.json", diffLimits); err != nil {
+			t.Errorf("by sha %v: WriteDiff: %v", bySHA, err)
+		}
+		got.Close()
+	}
+}
+
+func TestFetchWithMergeBase_NotWithinTheHistoryLookedAt(t *testing.T) {
+	f := newFixture(t, false, true)
+	feature, _ := branchFixture(t, f) // four commits ahead, one behind
+	req := f.request(t, feature)
+	req.DiffBase = DiffBaseMergeBaseDefault
+	req.MaxHistory = 2
+	_, err := Fetch(context.Background(), req)
+	if !errors.Is(err, ErrMergeBaseNotFound) || Class(err) != "merge_base_not_found" {
+		t.Errorf("err = %v (class %s), want merge_base_not_found", err, Class(err))
+	}
+	if _, err := os.Stat(req.StoreDir); !os.IsNotExist(err) {
+		t.Error("the failed fetch left its object store")
+	}
+}
+
+func TestWriteDiff_LimitsAndMisuse(t *testing.T) {
+	f := newFixture(t, false, true)
+	feature, _ := branchFixture(t, f)
+	req := f.request(t, feature)
+	req.DiffBase = DiffBaseMergeBaseDefault
+	got, err := Fetch(context.Background(), req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer got.Close()
+	if _, err := got.WriteDiff(context.Background(), t.TempDir(), "d.patch", "n.json", DiffLimits{MaxBytes: 50, MaxFileBytes: 1000}); !errors.Is(err, ErrTooLarge) {
+		t.Errorf("a patch over its limit: %v, want source_too_large", err)
+	}
+	for _, rel := range []string{"../out.patch", "/abs.patch", ".git/x", ""} {
+		if _, err := got.WriteDiff(context.Background(), t.TempDir(), rel, "n.json", diffLimits); !errors.Is(err, ErrInvalidRequest) {
+			t.Errorf("output path %q: %v, want invalid_request", rel, err)
+		}
+	}
+	// An output that already exists is not replaced.
+	dest := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dest, "d.patch"), []byte("keep"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := got.WriteDiff(context.Background(), dest, "d.patch", "n.json", diffLimits); err == nil {
+		t.Error("an existing output file was replaced")
+	}
+	// No base fetched: refused.
+	plain, err := Fetch(context.Background(), f.request(t, feature))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer plain.Close()
+	if _, err := plain.WriteDiff(context.Background(), t.TempDir(), "d.patch", "n.json", diffLimits); !errors.Is(err, ErrInvalidRequest) {
+		t.Errorf("no base: %v, want invalid_request", err)
+	}
+}
+
+func TestRequestValidate_DiffBase(t *testing.T) {
+	good := Request{URL: "https://git.example/acme/app", Commit: strings.Repeat("a", 40), StoreDir: "/tmp/x", MaxFetchBytes: 1, MaxObjectBytes: 1,
+		Transport: roundTripFunc(nil)}
+	for _, ok := range []string{"", DiffBaseMergeBaseDefault, strings.Repeat("b", 40)} {
+		r := good
+		r.DiffBase = ok
+		if _, err := r.validate(); err != nil {
+			t.Errorf("diff base %q: %v", ok, err)
+		}
+	}
+	for _, bad := range []string{"main", "merge-base:main", "merge-base", strings.Repeat("b", 64), "HEAD~1"} {
+		r := good
+		r.DiffBase = bad
+		if _, err := r.validate(); !errors.Is(err, ErrInvalidRequest) {
+			t.Errorf("diff base %q: %v, want invalid_request", bad, err)
+		}
+	}
+}

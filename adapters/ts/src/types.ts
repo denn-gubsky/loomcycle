@@ -2700,6 +2700,10 @@ export type SubstrateToolInput = {
       credential?: string;
       /** May only lower the operator's limit. */
       max_bytes?: number;
+      /** Also write a diff from this commit: "merge-base:default" or a sha. */
+      diff_base?: string;
+      /** Names for the diff's files, each a plain name under `_meta/`. */
+      outputs?: { diff?: string; numstat?: string };
     };
   };
   [extra: string]: unknown;

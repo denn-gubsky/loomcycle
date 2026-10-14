@@ -21,6 +21,7 @@ const (
 	gitSourceDefaultMaxFiles       = 100_000
 	gitSourceDefaultTimeoutSeconds = 120
 	gitSourceDefaultMaxConcurrent  = 1
+	gitSourceDefaultMaxHistory     = 500
 )
 
 // gitSourceConfigFromEnv reads the operator's settings for git sources. It
@@ -79,6 +80,11 @@ func gitSourceConfigFromEnv(getenv func(string) string, privateHostAllowlist []s
 		return nil, err
 	}
 	cfg.Slots = make(chan struct{}, slots)
+	history, err := num("LOOMCYCLE_GIT_SOURCE_MAX_HISTORY", gitSourceDefaultMaxHistory)
+	if err != nil {
+		return nil, err
+	}
+	cfg.MaxHistory = int(history)
 	// Every dial goes through the guard: a host that resolves to a private
 	// or metadata address is refused, unless the operator vouched for it.
 	cfg.Transport = &http.Transport{
