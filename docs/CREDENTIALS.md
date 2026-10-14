@@ -22,6 +22,17 @@ LOOMCYCLE_SECRET_KEY=$(openssl rand -base64 32)   # 32 bytes, base64
   created (the runtime never stores plaintext). External backends aren't affected.
 - **Rotation:** set `LOOMCYCLE_SECRET_KEY_PREVIOUS` to the old key during a grace
   window — rows sealed under it still decrypt while new writes use the new key.
+- **A stored credential that can't be decrypted is never replaced.** If the key
+  is removed, rotated without `LOOMCYCLE_SECRET_KEY_PREVIOUS`, or wrong — or a
+  row is corrupt — every credential stored under it is *held but unusable*,
+  exactly like an expired one: a provider call that names it fails instead of
+  using the operator's provider key, a Bash / Bashbox variable is left unset
+  instead of taking the operator's host variable, an MCP / hook header or a
+  webhook verification secret refuses the call or delivery. The error names
+  the credential, never key material. Only a name with **no stored row** falls
+  back as before. (A store *read* error still falls back, logged: it says
+  nothing about whether the run holds a key, and failing closed on it would
+  turn a database blip into an outage for every tenant.)
 - **Queued runs:** the same key seals a queued run's `user_bearer` and
   `user_credentials` on its row while it waits for a slot, so a restart can
   queue it again. Without the key such a run still queues, but a restart fails

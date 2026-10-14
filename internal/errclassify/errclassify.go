@@ -142,9 +142,18 @@ func CategoryOf(err error) (tools.ErrorInfo, bool) {
 			"A stored credential this needs has passed its expiry and is no longer sent. Retrying will not help; the credential must be rotated by creating it again with the same name.",
 		), true
 
-	// After ErrExpired, which it also wraps when that is the cause: what is
-	// left is a key the run holds that is restricted by allowed_urls, so it
-	// cannot be a provider key. The operator's key is not used in its place.
+	// A stored credential the server cannot open (no LOOMCYCLE_SECRET_KEY, a
+	// key rotated without _PREVIOUS, a corrupt seal). Ahead of the generic
+	// ErrCredentialUnusable, which wraps it on the provider-key path.
+	case errors.Is(err, credential.ErrUnopenable):
+		return business(
+			"A stored credential this needs exists but this server cannot decrypt it, and nothing is used in its place. Retrying will not help; an operator must restore the credential key, or the credential must be created again.",
+		), true
+
+	// After ErrExpired and ErrUnopenable, which it also wraps when they are
+	// the cause: what is left is a key the run holds that is restricted by
+	// allowed_urls, so it cannot be a provider key. The operator's key is not
+	// used in its place.
 	case errors.Is(err, providers.ErrCredentialUnusable):
 		return business(
 			"The run's own stored credential for this provider key cannot be used here (it is restricted to specific URLs), and the operator's key is not used in its place. Retrying will not help; store the key without allowed_urls, or remove it to use the operator's key.",

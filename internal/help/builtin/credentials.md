@@ -19,7 +19,12 @@ keyed by `(scope, name)`:
 Secrets are encrypted at rest with a per-tenant key derived from the server's
 master key; resolution is tenant-isolated (one tenant can never read another's).
 A server without the master key configured can store nothing and resolves
-nothing (fails soft).
+nothing. A credential that is stored but cannot be decrypted (no master key,
+a key rotated without the previous one, a wrong key, a corrupt row) is never
+replaced by anything else: a provider call naming it fails instead of using
+the operator's key, a Bash / Bashbox variable is left unset, a header or
+webhook secret refuses the call. Only a name with no stored credential falls
+back.
 
 ### Restricting where a credential may be sent — `allowed_urls`
 
