@@ -10,6 +10,7 @@ import { describe, expect, it } from "vitest";
 
 import { jsonResponse, makeClient } from "./helpers.js";
 import type {
+  LoomcycleClient,
   HookDefInput,
   HookDefOverlay,
   ScheduleDefInput,
@@ -275,5 +276,137 @@ describe("ensureHookDef", () => {
     for (const call of fetchMock.mock.calls) {
       expect((call[1] as RequestInit).signal).toBe(ac.signal);
     }
+  });
+});
+
+describe("strictly-typed create / fork methods (compile-time, bare literals)", () => {
+  // Never called: these lines exist for `npm run typecheck:tests`. Each
+  // directive sits directly above the line TypeScript reports the error on.
+  async function typeOnly(client: LoomcycleClient): Promise<void> {
+    // HookDef is closed: ANY unknown key fails, even in a bare literal — the
+    // case hookDef(...) cannot catch because of its loose fallback.
+    await client.createHookDef("g", {
+      event: "pre",
+      body: { kind: "http", url: "https://x" },
+      // @ts-expect-error misspelt top-level key
+      timout_ms: 10,
+    });
+    await client.createHookDef("g", {
+      event: "pre",
+      // @ts-expect-error a code-js body takes code, not url
+      body: { kind: "code-js", code: "c", url: "https://x" },
+    });
+    // @ts-expect-error a create overlay needs event and body
+    await client.createHookDef("g", { description: "d" });
+    await client.forkHookDef("g", {
+      fail_mode: null,
+      // @ts-expect-error misspelt key on a fork
+      timeoutms: 5,
+    });
+    await client.ensureHookDef("g", {
+      event: "pre",
+      body: { kind: "http", url: "https://x" },
+      // @ts-expect-error ensureHookDef's overlay is closed too
+      evnt: "post",
+    });
+
+    // ScheduleDef / WebhookDef overlays keep [extra]: a misspelt key compiles
+    // (the server drops it), so only a wrong type on a DECLARED key fails.
+    await client.createScheduleDef("s", { agent: "a", schedulee: "0 6 * * 1" });
+    await client.createScheduleDef("s", {
+      agent: "a",
+      // @ts-expect-error concurrency_policy is forbid, allow or replace
+      concurrency_policy: "skip",
+    });
+    await client.forkScheduleDef("s", {
+      // @ts-expect-error max_fires is a number
+      max_fires: "3",
+    });
+    await client.createWebhookDef("w", { agent: "a", delivry: "spawn" });
+    await client.createWebhookDef("w", {
+      // @ts-expect-error not a delivery a webhook has
+      delivery: "run",
+    });
+    await client.forkWebhookDef("w", {
+      // @ts-expect-error enabled is a boolean
+      enabled: "yes",
+    });
+  }
+
+  it("is a type-level check only", () => {
+    expect(typeof typeOnly).toBe("function");
+  });
+});
+
+describe("strictly-typed create / fork methods (wire)", () => {
+  const cases = [
+    {
+      method: "HookDef",
+      path: "/v1/_hookdef",
+      create: (c: LoomcycleClient) =>
+        c.createHookDef("g", { event: "pre", body: { kind: "http", url: "https://x" } }, { description: "why", promote: false }),
+      fork: (c: LoomcycleClient) => c.forkHookDef("g", { timeout_ms: 500 }, { parentDefId: "hdf_1", promote: true }),
+      name: "g",
+      createOverlay: { event: "pre", body: { kind: "http", url: "https://x" } },
+      forkOverlay: { timeout_ms: 500 },
+    },
+    {
+      method: "ScheduleDef",
+      path: "/v1/_scheduledef",
+      create: (c: LoomcycleClient) =>
+        c.createScheduleDef("s", { agent: "a", schedule: "0 6 * * 1" }, { description: "why", promote: false }),
+      fork: (c: LoomcycleClient) => c.forkScheduleDef("s", { max_fires: 0 }, { parentDefId: "sdf_1", promote: true }),
+      name: "s",
+      createOverlay: { agent: "a", schedule: "0 6 * * 1" },
+      forkOverlay: { max_fires: 0 },
+    },
+    {
+      method: "WebhookDef",
+      path: "/v1/_webhookdef",
+      create: (c: LoomcycleClient) =>
+        c.createWebhookDef("w", { delivery: "spawn", agent: "a" }, { description: "why", promote: false }),
+      fork: (c: LoomcycleClient) => c.forkWebhookDef("w", { enabled: true }, { parentDefId: "whd_1", promote: true }),
+      name: "w",
+      createOverlay: { delivery: "spawn", agent: "a" },
+      forkOverlay: { enabled: true },
+    },
+  ];
+
+  for (const tc of cases) {
+    it(`create${tc.method} posts op:create with the options as wire fields, promote:false included`, async () => {
+      const { client, fetchMock } = makeClient([jsonResponse({ def_id: "d_1", version: 1 })]);
+      const row = await tc.create(client);
+      expect(row.def_id).toBe("d_1");
+      const call = fetchMock.mock.calls[0]!;
+      expect(call[0]).toBe(`http://test-loomcycle:8787${tc.path}`);
+      expect(sentBody(call)).toEqual({
+        op: "create",
+        name: tc.name,
+        overlay: tc.createOverlay,
+        description: "why",
+        promote: false,
+      });
+    });
+
+    it(`fork${tc.method} posts op:fork with parent_def_id`, async () => {
+      const { client, fetchMock } = makeClient([jsonResponse({ def_id: "d_2", version: 2 })]);
+      await tc.fork(client);
+      const body = sentBody(fetchMock.mock.calls[0]);
+      expect(body.op).toBe("fork");
+      expect(body.name).toBe(tc.name);
+      expect(body.parent_def_id).toMatch(/_1$/);
+      expect(body.overlay).toEqual(tc.forkOverlay);
+      expect(body.promote).toBe(true);
+    });
+  }
+
+  it("leaves promote and parent_def_id off when not given, so the server's default applies", async () => {
+    const { client, fetchMock } = makeClient([jsonResponse({ def_id: "d_1" })]);
+    await client.forkHookDef("g", { description: "only this" });
+    expect(sentBody(fetchMock.mock.calls[0])).toEqual({
+      op: "fork",
+      name: "g",
+      overlay: { description: "only this" },
+    });
   });
 });

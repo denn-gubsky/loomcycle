@@ -76,6 +76,9 @@
  *     webhookDef(input): Promise<SubstrateToolResponse>                 // input: WebhookDefInput | SubstrateToolInput
  *     hookDef(input): Promise<SubstrateToolResponse>                    // input: HookDefInput | SubstrateToolInput
  *     ensureHookDef(name, overlay, opts?): Promise<EnsureHookDefResult>  // idempotent register-if-changed
+ *     createHookDef / forkHookDef(name, overlay, opts?)                  // overlay strictly typed, no loose fallback
+ *     createScheduleDef / forkScheduleDef(name, overlay, opts?)          // ditto (overlay open: types of known keys checked)
+ *     createWebhookDef / forkWebhookDef(name, overlay, opts?)            // ditto
  *
  *     // Dynamic filesystem volumes (v0.35.0 — RFC AH; tenant-confined)
  *     volumeDef(input): Promise<SubstrateToolResponse>            // create/get/list/delete/purge
@@ -373,6 +376,8 @@ export type {
   EnsureCodeAgentOptions,
   EnsureCodeAgentResult,
   // Typed HookDef / ScheduleDef / WebhookDef inputs (RFC EO)
+  CreateDefOptions,
+  ForkDefOptions,
   EnsureHookDefOptions,
   EnsureHookDefResult,
   HookDefBody,
@@ -384,6 +389,7 @@ export type {
   HookDefVerifyResult,
   ScheduleDefInput,
   ScheduleDefOverlay,
+  ScheduleDefRowResponse,
   ScheduledRunHook,
   ScheduledRunPromptContent,
   ScheduledRunPromptSegment,
@@ -391,6 +397,7 @@ export type {
   WebhookDefInput,
   WebhookDefOverlay,
   WebhookDefRateLimit,
+  WebhookDefRowResponse,
   WebhookDefSyncResponse,
   // Library v2 enumeration (v0.10.3)
   LibraryAgentDefinition,

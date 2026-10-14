@@ -76,8 +76,15 @@ import type {
   HookDefOverlay,
   HookDefRowResponse,
   HookDefVerifyResult,
+  CreateDefOptions,
+  ForkDefOptions,
+  HookDefForkOverlay,
   ScheduleDefInput,
+  ScheduleDefOverlay,
+  ScheduleDefRowResponse,
   WebhookDefInput,
+  WebhookDefOverlay,
+  WebhookDefRowResponse,
   EnsureMcpServerOptions,
   EnsureMcpServerResult,
   HealthResponse,
@@ -2053,12 +2060,46 @@ export class LoomcycleClient {
    *  Annotate the input as {@link ScheduleDefInput} to have the overlay and
    *  each op's fields checked (including `add_hook` / `remove_hook`, which the
    *  loose {@link SubstrateToolInput} does not list); a loose input is sent
-   *  as it is. */
+   *  as it is. For create / fork, {@link LoomcycleClient.createScheduleDef} /
+   *  {@link LoomcycleClient.forkScheduleDef} check a bare literal too. */
   async scheduleDef(
     input: ScheduleDefInput | SubstrateToolInput,
     opts?: { signal?: AbortSignal },
   ): Promise<SubstrateToolResponse> {
     return postJSON<SubstrateToolResponse>(this.ctx, "/v1/_scheduledef", input, opts);
+  }
+
+  /** `scheduleDef({op: "create"})` with the overlay typed and no loose
+   *  fallback. {@link ScheduleDefOverlay} stays OPEN (the server drops keys it
+   *  does not know), so a misspelt key still compiles here; what fails is a
+   *  wrong type or value on a key it declares (`concurrency_policy: "skip"`,
+   *  an `on_complete` entry missing its `tool`). New versions are promoted
+   *  unless `promote: false`. */
+  async createScheduleDef(
+    name: string,
+    overlay: ScheduleDefOverlay,
+    opts?: CreateDefOptions,
+  ): Promise<ScheduleDefRowResponse> {
+    return (await this.scheduleDef(
+      defWriteInput("create", name, overlay, opts),
+      signalOpts(opts),
+    )) as ScheduleDefRowResponse;
+  }
+
+  /** `scheduleDef({op: "fork"})`, typed like
+   *  {@link LoomcycleClient.createScheduleDef}. A field the overlay leaves out
+   *  keeps the parent's; the credential maps merge key by key. Forks the
+   *  active version of `name` (or its yaml template) unless `parentDefId` is
+   *  given; promoted unless `promote: false`. */
+  async forkScheduleDef(
+    name: string,
+    overlay: ScheduleDefOverlay,
+    opts?: ForkDefOptions,
+  ): Promise<ScheduleDefRowResponse> {
+    return (await this.scheduleDef(
+      defWriteInput("fork", name, overlay, opts),
+      signalOpts(opts),
+    )) as ScheduleDefRowResponse;
   }
 
   /** Invoke the v1.x RFC G A2AServerCardDef substrate tool over HTTP.
@@ -2113,12 +2154,48 @@ export class LoomcycleClient {
    *  {@link AuthError} on 401.
    *
    *  Annotate the input as {@link WebhookDefInput} to have the overlay and
-   *  each op's fields checked; a loose input is sent as it is. */
+   *  each op's fields checked; a loose input is sent as it is. For create /
+   *  fork, {@link LoomcycleClient.createWebhookDef} /
+   *  {@link LoomcycleClient.forkWebhookDef} check a bare literal too. */
   async webhookDef(
     input: WebhookDefInput | SubstrateToolInput,
     opts?: { signal?: AbortSignal },
   ): Promise<SubstrateToolResponse> {
     return postJSON<SubstrateToolResponse>(this.ctx, "/v1/_webhookdef", input, opts);
+  }
+
+  /** `webhookDef({op: "create"})` with the overlay typed and no loose
+   *  fallback. {@link WebhookDefOverlay} stays OPEN for now (the server drops
+   *  keys it does not know), so a misspelt key still compiles here; what
+   *  fails is a wrong type or value on a key it declares (`delivery: "run"`,
+   *  `auth.kind: "basic"`, a misspelt key inside `rate_limit`). Promoted
+   *  unless `promote: false`. */
+  async createWebhookDef(
+    name: string,
+    overlay: WebhookDefOverlay,
+    opts?: CreateDefOptions,
+  ): Promise<WebhookDefRowResponse> {
+    return (await this.webhookDef(
+      defWriteInput("create", name, overlay, opts),
+      signalOpts(opts),
+    )) as WebhookDefRowResponse;
+  }
+
+  /** `webhookDef({op: "fork"})`, typed like
+   *  {@link LoomcycleClient.createWebhookDef}. A field the overlay leaves out
+   *  keeps the parent's; naming exactly one of `agent` / `channel` / `team`
+   *  clears the other two. Forks the active version of `name` (or its yaml
+   *  template) unless `parentDefId` is given; promoted unless
+   *  `promote: false`. */
+  async forkWebhookDef(
+    name: string,
+    overlay: WebhookDefOverlay,
+    opts?: ForkDefOptions,
+  ): Promise<WebhookDefRowResponse> {
+    return (await this.webhookDef(
+      defWriteInput("fork", name, overlay, opts),
+      signalOpts(opts),
+    )) as WebhookDefRowResponse;
   }
 
   /** Invoke the RFC I MR-3a MemoryBackendDef substrate tool over HTTP.
@@ -2162,12 +2239,47 @@ export class LoomcycleClient {
    *  Annotate the input as {@link HookDefInput} to have the overlay checked
    *  against the definition the server decodes STRICTLY — an unknown overlay
    *  key is then a compile error instead of a refusal. A loose
-   *  {@link SubstrateToolInput} is sent as it is. */
+   *  {@link SubstrateToolInput} is sent as it is — including a bare literal
+   *  with a misspelt key, which falls through to that loose shape. To have a
+   *  bare literal checked, use {@link LoomcycleClient.createHookDef} /
+   *  {@link LoomcycleClient.forkHookDef}. */
   async hookDef(
     input: HookDefInput | SubstrateToolInput,
     opts?: { signal?: AbortSignal },
   ): Promise<SubstrateToolResponse> {
     return postJSON<SubstrateToolResponse>(this.ctx, "/v1/_hookdef", input, opts);
+  }
+
+  /** `hookDef({op: "create"})` with no loose fallback: `overlay` is the
+   *  CLOSED {@link HookDefOverlay}, so any key the server would refuse is a
+   *  compile error, even in a bare literal. Every create mints a new version
+   *  (use {@link LoomcycleClient.ensureHookDef} to register only on change);
+   *  promoted unless `promote: false`. */
+  async createHookDef(
+    name: string,
+    overlay: HookDefOverlay,
+    opts?: CreateDefOptions,
+  ): Promise<HookDefRowResponse> {
+    return (await this.hookDef(
+      defWriteInput("create", name, overlay, opts),
+      signalOpts(opts),
+    )) as HookDefRowResponse;
+  }
+
+  /** `hookDef({op: "fork"})`, closed like
+   *  {@link LoomcycleClient.createHookDef}. Each top-level field given replaces
+   *  the parent's; `null` clears one. Forks the active version of `name` in
+   *  your tenant unless `parentDefId` is given. NOT promoted unless
+   *  `promote: true` — authoring and putting in force are two steps. */
+  async forkHookDef(
+    name: string,
+    overlay: HookDefForkOverlay,
+    opts?: ForkDefOptions,
+  ): Promise<HookDefRowResponse> {
+    return (await this.hookDef(
+      defWriteInput("fork", name, overlay, opts),
+      signalOpts(opts),
+    )) as HookDefRowResponse;
   }
 
   /** Register a HookDef idempotently — the register-on-every-boot
@@ -2195,7 +2307,7 @@ export class LoomcycleClient {
     overlay: HookDefOverlay,
     opts?: EnsureHookDefOptions,
   ): Promise<EnsureHookDefResult> {
-    const callOpts = opts?.signal ? { signal: opts.signal } : undefined;
+    const callOpts = signalOpts(opts);
     const verified = (await this.hookDef(
       { op: "verify", name },
       callOpts,
@@ -3490,6 +3602,26 @@ async function* parseRunStateSSE(
       else if (line.startsWith("data:")) data = line.slice("data:".length).trim();
     }
   }
+}
+
+/** The wire input of a typed create / fork. `promote` goes out only when the
+ *  caller set it — false included — so the server's per-def default applies
+ *  otherwise. */
+function defWriteInput(
+  op: "create" | "fork",
+  name: string,
+  overlay: Record<string, unknown>,
+  opts?: ForkDefOptions,
+): SubstrateToolInput {
+  const input: SubstrateToolInput = { op, name, overlay };
+  if (opts?.parentDefId) input.parent_def_id = opts.parentDefId;
+  if (opts?.description) input.description = opts.description;
+  if (opts?.promote !== undefined) input.promote = opts.promote;
+  return input;
+}
+
+function signalOpts(opts?: { signal?: AbortSignal }): { signal?: AbortSignal } | undefined {
+  return opts?.signal ? { signal: opts.signal } : undefined;
 }
 
 /** The form a HookDef definition is stored in: hooks.Def.Normalize followed

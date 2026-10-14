@@ -4412,10 +4412,10 @@ export interface MCPServerDefVerifyResult {
 // structs and fails when a field is added on either side without the other.
 //
 // hookDef / scheduleDef / webhookDef accept these OR the loose
-// SubstrateToolInput, so existing callers compile unchanged. The checking is
-// opt-in: annotate the input (`const input: HookDefInput = …`, or
-// `… satisfies HookDefInput`) — a bare object literal still matches the loose
-// shape. ensureHookDef takes only the typed overlay.
+// SubstrateToolInput, so existing callers compile unchanged — and a bare
+// object literal with a misspelt key still matches the loose shape there. The
+// create / fork methods (createHookDef, forkHookDef, createScheduleDef, …) and
+// ensureHookDef take ONLY the typed overlay, so a bare literal is checked.
 
 /** A HookDef's body: a code-js script the server runs in-process, or a webhook
  *  it calls. The server refuses a code-js body carrying a url or headers, and
@@ -4532,6 +4532,27 @@ export interface HookDefVerifyResult {
   version: number;
   name: string;
   deployed: boolean;
+}
+
+/** Options for the strictly-typed create methods
+ *  ({@link LoomcycleClient.createHookDef},
+ *  {@link LoomcycleClient.createScheduleDef},
+ *  {@link LoomcycleClient.createWebhookDef}). */
+export interface CreateDefOptions {
+  /** Free-text rationale stored on the version (not part of the definition). */
+  description?: string;
+  /** Make the new version active. Server default: true. */
+  promote?: boolean;
+  signal?: AbortSignal;
+}
+
+/** Options for the strictly-typed fork methods. */
+export interface ForkDefOptions extends CreateDefOptions {
+  /** The version to fork. Default: the active version of the name in your
+   *  tenant (ScheduleDef / WebhookDef fall back to the yaml template of that
+   *  name). Server default for `promote` on a fork: false for HookDef, true
+   *  for ScheduleDef and WebhookDef. */
+  parentDefId?: string;
 }
 
 /** Options for {@link LoomcycleClient.ensureHookDef}. */
@@ -4663,6 +4684,28 @@ export type ScheduleDefInput =
   /** Fork `def_id` without its `on_complete[hook_index]` (0-based). */
   | { op: "remove_hook"; def_id: string; hook_index: number };
 
+/** One ScheduleDef version, as create / fork return it. */
+export interface ScheduleDefRowResponse {
+  def_id: string;
+  name: string;
+  version: number;
+  parent_def_id?: string;
+  description?: string;
+  created_at: string;
+  created_by_agent_id?: string;
+  retired: boolean;
+  bootstrapped_from_static: boolean;
+  /** The stored definition, including the fields the server stamps. */
+  definition: ScheduleDefOverlay;
+  /** Whether the new version was made active. */
+  promoted?: boolean;
+  /** Credential keys a snapshot stripped that this write did not re-supply;
+   *  the def stays disabled until they are. */
+  disabled_until_credentials_supplied?: string[];
+  /** Why a key you did name did not count, one line per key. */
+  unusable_credentials?: string[];
+}
+
 /** How a WebhookDef authenticates an inbound request. */
 export interface WebhookDefAuth {
   /** `"hmac"` (default) verifies a body signature; `"bearer"` a token;
@@ -4732,6 +4775,25 @@ export interface WebhookDefOverlay {
   team?: string;
   vars?: Record<string, string>;
   [extra: string]: unknown;
+}
+
+/** One WebhookDef version, as create / fork return it. */
+export interface WebhookDefRowResponse {
+  def_id: string;
+  name: string;
+  version: number;
+  parent_def_id?: string;
+  description?: string;
+  created_at: string;
+  created_by_agent_id?: string;
+  retired: boolean;
+  bootstrapped_from_static: boolean;
+  /** The stored definition, including the fields the server stamps. */
+  definition: WebhookDefOverlay;
+  promoted?: boolean;
+  /** Same meaning as on {@link ScheduleDefRowResponse}. */
+  disabled_until_credentials_supplied?: string[];
+  unusable_credentials?: string[];
 }
 
 /** Typed input for {@link LoomcycleClient.webhookDef}, one shape per op. */
