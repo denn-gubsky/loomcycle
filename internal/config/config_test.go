@@ -2749,6 +2749,8 @@ func TestValidateStaticWebhook(t *testing.T) {
 		{"unknown provider", Webhook{Agent: "a", Provider: "bitbucket"}, `provider "bitbucket" is not one`},
 		{"event without a shape", Webhook{Agent: "a", Provider: "github", Events: []string{"star"}}, "has no shape"},
 		{"events without a header", Webhook{Agent: "a", Events: []string{"x"}, EventShapes: map[string][]string{"x": {"$.a"}}}, "set event_header, or a provider"},
+		{"a filter", Webhook{Agent: "a", Filters: []WebhookFilter{{Path: "$.ref", Op: "glob", Value: "refs/heads/*"}}}, ""},
+		{"a filter with a bad op", Webhook{Agent: "a", Filters: []WebhookFilter{{Path: "$.ref", Op: "regex", Value: "x"}}}, `filters[0]: op "regex"`},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
