@@ -14,6 +14,7 @@ import (
 
 	"github.com/denn-gubsky/loomcycle/internal/concurrency"
 	"github.com/denn-gubsky/loomcycle/internal/credential"
+	"github.com/denn-gubsky/loomcycle/internal/pause"
 	"github.com/denn-gubsky/loomcycle/internal/providers"
 	"github.com/denn-gubsky/loomcycle/internal/runner"
 	"github.com/denn-gubsky/loomcycle/internal/store"
@@ -271,6 +272,69 @@ func TestHandleRuns_QueuedRunStoresItsRequest(t *testing.T) {
 	gate <- struct{}{}
 	_ = holder.wait(t)
 	_, _ = io.Copy(io.Discard, resp.Body)
+}
+
+// A paused runtime starts nothing: a queued run whose slot frees during a
+// pause keeps waiting — still queued, no admitted event — and starts when the
+// runtime resumes.
+func TestQueuedRun_DoesNotStartWhileThePauseLasts(t *testing.T) {
+	s, gate := newGatedBatchServer(t, 1)
+	s.sem = concurrency.New(1, 8, 0)
+	pm := pause.NewManager(s.store, 50*time.Millisecond)
+	s.SetPauseManager(pm)
+	holder := startRunOnce(s, context.Background(), runner.RunInput{Agent: "r", Segments: oneUserSeg("holds")})
+	holderAgent, _ := holder.ids(t)
+	queued := startRunOnce(s, context.Background(), runner.RunInput{Agent: "r", Segments: oneUserSeg("waits")})
+	_, runID := queued.ids(t)
+	queued.waitEvents(t, providers.EventQueued, 1)
+
+	if _, err := pm.Pause(context.Background(), 50*time.Millisecond); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := s.cancelReg.Cancel(holderAgent, "free the slot during the pause"); !ok {
+		t.Fatal("holder not cancellable")
+	}
+	_ = holder.wait(t)
+	time.Sleep(300 * time.Millisecond)
+	if got, _ := s.store.GetRun(context.Background(), runID); got.Status != store.RunQueued {
+		t.Fatalf("queued run during the pause = %q, want still queued", got.Status)
+	}
+	if a := eventsOfType(queued.seen(), providers.EventAdmitted); len(a) != 0 {
+		t.Fatalf("queued run reported admitted during the pause: %+v", a)
+	}
+
+	if _, err := pm.Resume(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	waitRunStatus(t, s.store, runID, store.RunRunning)
+	gate <- struct{}{}
+	if err := queued.wait(t); err != nil {
+		t.Fatal(err)
+	}
+	waitRunStatus(t, s.store, runID, store.RunCompleted)
+}
+
+// A run a restart queues again while the runtime is paused is not refused as
+// a new run would be: it waits for the resume, then runs.
+func TestRestartQueuedRuns_WaitsOutAPause(t *testing.T) {
+	s, gate := newGatedBatchServer(t, 1)
+	pm := pause.NewManager(s.store, 50*time.Millisecond)
+	s.SetPauseManager(pm)
+	if _, err := pm.Pause(context.Background(), 50*time.Millisecond); err != nil {
+		t.Fatal(err)
+	}
+	run := queuedFixture(t, s, "a_qpaused", "", runner.RunInput{Agent: "r", Segments: oneUserSeg("x")}, "")
+	go func() { _, _, _ = s.RestartQueuedRuns(context.Background(), time.Now().Add(time.Second)) }()
+	time.Sleep(300 * time.Millisecond)
+	if got, _ := s.store.GetRun(context.Background(), run.ID); got.Status != store.RunQueued {
+		t.Fatalf("restarted run during the pause = %q %q, want still queued", got.Status, got.ErrorMsg)
+	}
+	if _, err := pm.Resume(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	waitRunStatus(t, s.store, run.ID, store.RunRunning)
+	gate <- struct{}{}
+	waitRunStatus(t, s.store, run.ID, store.RunCompleted)
 }
 
 func transcriptMentions(evs []store.Event, text string) bool {

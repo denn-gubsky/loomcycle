@@ -35,6 +35,10 @@ type admitArgs struct {
 	// agentID names the run in the queue, so get_run can report its place.
 	agentID string
 	reject  bool
+	// waitOutPause makes a run that did not queue wait out a pause too: a run
+	// a restart is queuing again is not a new run, so the pause does not
+	// refuse it.
+	waitOutPause bool
 	// createRow creates the run's row in status queued (and its session).
 	// Called at most once, when the run first has to wait.
 	createRow func() (sessionID, runID string, err error)
@@ -81,6 +85,14 @@ func (s *Server) admitRun(ctx context.Context, a admitArgs) (release func(), q *
 		Reject:   a.reject,
 		OnQueued: onQueued,
 	})
+	if err == nil && (q != nil || a.waitOutPause) {
+		// A paused runtime starts nothing: a run that got its slot during a
+		// pause keeps the slot, stays queued, and starts on the resume.
+		if werr := s.waitOutPause(ctx); werr != nil {
+			release()
+			release, err = nil, werr
+		}
+	}
 	mu.Lock()
 	defer mu.Unlock()
 	if err != nil {
@@ -96,6 +108,22 @@ func (s *Server) admitRun(ctx context.Context, a admitArgs) (release func(), q *
 		})
 	}
 	return release, q, nil
+}
+
+// waitOutPause returns once the runtime is not paused (at once when it is
+// not), or ctx's error if ctx ends first.
+func (s *Server) waitOutPause(ctx context.Context) error {
+	for {
+		paused, changed := s.pauseMgr.PauseWatch()
+		if !paused {
+			return nil
+		}
+		select {
+		case <-changed:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
 }
 
 // endQueuedRun ends a queued run whose wait ended without a slot.

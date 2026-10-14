@@ -3022,8 +3022,12 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 	// Runtime-pause admission gate (RFC X / F41) — reject new runs while
 	// pausing/paused. Covers the gRPC / webhook / A2A / scheduler surfaces
 	// that drive runs through RunOnce. Checked before the concurrency slot.
-	if err := s.pausedRunErr(); err != nil {
-		return err
+	// A run a restart is queuing again is not new: it waits the pause out in
+	// admitRun instead.
+	if !restarting {
+		if err := s.pausedRunErr(); err != nil {
+			return err
+		}
 	}
 
 	// RFC AW token-budget admission, first before the run may queue: a run
@@ -3104,10 +3108,11 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 	queuedIdentity := store.RunIdentity{AgentID: agentID, UserID: effectiveUserID, TenantID: effectiveTenantID, UserTier: in.UserTier, Model: model, ReplicaID: s.replicaID, ParentContext: in.ParentContext, IdempotencyKey: in.IdempotencyKey, DeliveryAltKey: in.DeliveryAltKey, Interactive: in.Interactive, OperatorKeyRestricted: operatorKeyRestricted, Isolated: isolated, Retention: retention, RunConfig: nil}
 	acquireStart := time.Now()
 	release, queued, err := s.admitRun(runCtx, admitArgs{
-		tenantID: effectiveTenantID,
-		userID:   effectiveUserID,
-		agentID:  agentID,
-		reject:   in.Admission == runner.AdmissionReject,
+		tenantID:     effectiveTenantID,
+		userID:       effectiveUserID,
+		agentID:      agentID,
+		reject:       in.Admission == runner.AdmissionReject,
+		waitOutPause: restarting,
 		createRow: func() (string, string, error) {
 			if restarting {
 				// Queued already, with its request stored.
