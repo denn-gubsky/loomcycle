@@ -218,6 +218,10 @@ func (rec *Receiver) handle(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "unknown_webhook", "")
 		return
 	}
+	// A provider preset fills the headers and auth kind the definition
+	// leaves empty — here, when the delivery is handled, so the stored
+	// definition keeps what its author wrote.
+	wd = wd.WithProviderDefaults()
 
 	// 2. Read the raw body under the Def's size limit. Raw bytes are what
 	//    the signature is verified against — we never re-serialize.
@@ -230,6 +234,15 @@ func (rec *Receiver) handle(w http.ResponseWriter, r *http.Request) {
 
 	// 3. AUTHENTICATE (VERIFY BEFORE PARSE — over the raw bytes).
 	if !rec.authenticate(w, r, span, whKey, name, wd.Auth, owner.TenantID, body) {
+		return
+	}
+
+	// 3b. Events, when the definition lists them: a bad event header, the
+	//     provider's ping, an event not listed and a body without the
+	//     listed event's shape are answered here, before anything is
+	//     claimed or started.
+	if o := classifyEvent(wd, r.Header, body); !o.proceed {
+		rec.answerEvent(w, span, whKey, name, deliveryID(wd.Auth, body, r.Header.Get), o)
 		return
 	}
 

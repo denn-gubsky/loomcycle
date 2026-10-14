@@ -80,7 +80,7 @@ const webhookDefInputSchema = `{
     "parent_def_id": {"type": "string", "description": "Fork parent (optional for fork — when absent, forks the active def of the name, or bootstraps from a yaml template)."},
     "overlay": {
       "type": "object",
-      "description": "Mutable subset of the webhook definition for create/fork. delivery is spawn (default — start a run of agent), channel (publish the body to channel) or team (start a detached walk of the team named in team, as TeamDef op=run mode=detach does, with the raw request body as the walk's input). For team, vars maps a variable the team declares to a JSONPath into the body ($, .key and [N] only), e.g. {\"delivery\":\"team\",\"team\":\"pr-review\",\"vars\":{\"repo\":\"$.repository.full_name\",\"pr\":\"$.pull_request.number\"}}; a path the body lacks leaves that variable at the team's default. delivery=team forbids agent, channel, credentials, metadata, on_complete, sync_response and every payload_mapping target except user_id; team and vars are refused on the other deliveries. The team is looked up in the webhook's tenant when a delivery arrives: a missing or retired team, a variable it does not declare, or a projected value it refuses (too long, or containing {{ or }}) starts no walk and answers 400 invalid_run. An accepted delivery answers 202 with the walk's run_id. tenant_id (where spawned runs execute) may name only your own tenant unless you are an admin; omit it to use yours. user_tier pins the tier a spawned run is routed and billed under; a delivery never chooses it, and it must be one of the server's tiers. body_size_limit_bytes may not exceed the server's request limit. The verification secret is named either by an env var (auth.signing_secret_env for hmac, auth.bearer_token_env for bearer; never one of loomcycle's own secrets) or by auth.secret, a stored credential written \"$cred:<name>\" that must be a tenant-level credential of your tenant, read on every delivery so a rotation needs no restart; a literal secret is refused. While rotating, auth.previous_secret names the old credential and a delivery signed with either is accepted; naming a new auth.secret in a fork drops the previous one unless the fork names it too, and naming one form of the secret drops the other. Store such a credential with allowed_urls: [] so it can be compared but never sent. Keys are read as written: a key the definition does not have, a key repeated, a key that matches a field only by ignoring case, and a server-set key (operator_key_restricted, isolated, capture_disabled) are refused.",
+      "description": "Mutable subset of the webhook definition for create/fork. delivery is spawn (default — start a run of agent), channel (publish the body to channel) or team (start a detached walk of the team named in team, as TeamDef op=run mode=detach does, with the raw request body as the walk's input). For team, vars maps a variable the team declares to a JSONPath into the body ($, .key and [N] only), e.g. {\"delivery\":\"team\",\"team\":\"pr-review\",\"vars\":{\"repo\":\"$.repository.full_name\",\"pr\":\"$.pull_request.number\"}}; a path the body lacks leaves that variable at the team's default. delivery=team forbids agent, channel, credentials, metadata, on_complete, sync_response and every payload_mapping target except user_id; team and vars are refused on the other deliveries. The team is looked up in the webhook's tenant when a delivery arrives: a missing or retired team, a variable it does not declare, or a projected value it refuses (too long, or containing {{ or }}) starts no walk and answers 400 invalid_run. An accepted delivery answers 202 with the walk's run_id. tenant_id (where spawned runs execute) may name only your own tenant unless you are an admin; omit it to use yours. user_tier pins the tier a spawned run is routed and billed under; a delivery never chooses it, and it must be one of the server's tiers. body_size_limit_bytes may not exceed the server's request limit. The verification secret is named either by an env var (auth.signing_secret_env for hmac, auth.bearer_token_env for bearer; never one of loomcycle's own secrets) or by auth.secret, a stored credential written \"$cred:<name>\" that must be a tenant-level credential of your tenant, read on every delivery so a rotation needs no restart; a literal secret is refused. While rotating, auth.previous_secret names the old credential and a delivery signed with either is accepted; naming a new auth.secret in a fork drops the previous one unless the fork names it too, and naming one form of the secret drops the other. Store such a credential with allowed_urls: [] so it can be compared but never sent. provider (github, gitea or gitlab) supplies defaults for auth.kind, auth.header, auth.delivery_id_header and event_header, applied when a delivery arrives; a field you set overrides it. events lists the only events that start anything, by the name the event header carries (gitlab's "Push Hook" is listed as push, "Merge Request Hook" as merge_request): with events set, a delivery whose event header is missing, repeated or malformed answers 400 bad_event, the provider's ping (github) answers 200 and starts nothing, an event not listed answers 202 ignored, and a listed event whose signed body lacks one of its shape's paths answers 400 event_shape_mismatch — the header is not signed, so the body must look like the event. Every listed event needs a shape: github and gitea have them for push, pull_request, issues, issue_comment, create, delete and release (github also pull_request_review, pull_request_review_comment and workflow_run), gitlab for push, tag_push, merge_request, note, issue and pipeline; event_shapes {"<event>": ["$.path", ...]} gives one for any other event or replaces the provider's, and a fork merges it key by key ([] removes one). Without events every delivery is handled as before. Keys are read as written: a key the definition does not have, a key repeated, a key that matches a field only by ignoring case, and a server-set key (operator_key_restricted, isolated, capture_disabled) are refused.",
       "additionalProperties": true
     },
     "description":   {"type": "string", "description": "Free-text rationale for create/fork."},
@@ -801,7 +801,17 @@ func validateWebhookDef(def mergedWebhookDef) error {
 		return fmt.Errorf("unknown delivery %q (must be one of: spawn, channel, team)", def.Delivery)
 	}
 
-	if err := validateWebhookAuth(def.Auth); err != nil {
+	// The auth block as a delivery sees it: a provider's defaults in the
+	// fields it leaves empty (a gitlab definition is a bearer one).
+	events := config.Webhook{
+		Auth:     config.WebhookAuth(def.Auth),
+		Provider: def.Provider, EventHeader: def.EventHeader,
+		Events: def.Events, EventShapes: def.EventShapes,
+	}
+	if err := validateWebhookAuth(mergedWebhookAuth(events.WithProviderDefaults().Auth)); err != nil {
+		return err
+	}
+	if err := config.CheckWebhookEvents(events); err != nil {
 		return err
 	}
 
@@ -991,6 +1001,12 @@ type mergedWebhookDef struct {
 	PayloadMapping map[string]string         `json:"payload_mapping,omitempty"`
 	SyncResponse   mergedWebhookSyncResp     `json:"sync_response,omitempty"`
 	OnComplete     []config.ScheduledRunHook `json:"on_complete,omitempty"`
+	// Provider, EventHeader, Events and EventShapes mirror config.Webhook's:
+	// which events start anything, and the shape each must have.
+	Provider    string              `json:"provider,omitempty"`
+	EventHeader string              `json:"event_header,omitempty"`
+	Events      []string            `json:"events,omitempty"`
+	EventShapes map[string][]string `json:"event_shapes,omitempty"`
 	// OperatorKeyRestricted is the RFC AX bit CAPTURED from the authoring
 	// principal at create/fork (server authority, NOT payload/overlay-set); the
 	// webhook receiver copies it into RunInput so a fired run keeps its creator's
@@ -1228,6 +1244,35 @@ func (d *mergedWebhookDef) applyOverlay(ov mergedWebhookDef) {
 	if ov.OnComplete != nil {
 		d.OnComplete = ov.OnComplete
 	}
+	if ov.Provider != "" {
+		d.Provider = ov.Provider
+	}
+	if ov.EventHeader != "" {
+		d.EventHeader = ov.EventHeader
+	}
+	if len(ov.Events) > 0 {
+		d.Events = ov.Events
+	}
+	// event_shapes merges key by key, so a fork changing one event's shape
+	// does not restate the others; an empty list removes that event's. Into
+	// a copy: the parent's map may be the static config's.
+	if len(ov.EventShapes) > 0 {
+		merged := make(map[string][]string, len(d.EventShapes)+len(ov.EventShapes))
+		for e, paths := range d.EventShapes {
+			merged[e] = paths
+		}
+		for e, paths := range ov.EventShapes {
+			if len(paths) == 0 {
+				delete(merged, e)
+			} else {
+				merged[e] = paths
+			}
+		}
+		if len(merged) == 0 {
+			merged = nil
+		}
+		d.EventShapes = merged
+	}
 }
 
 func staticToMergedWebhookDef(w config.Webhook) mergedWebhookDef {
@@ -1264,9 +1309,13 @@ func staticToMergedWebhookDef(w config.Webhook) mergedWebhookDef {
 		// OnComplete is config.ScheduledRunHook on BOTH sides (the merged
 		// shape reuses ScheduleDef's hook type), so the slice is copied by
 		// reference — no field-by-field projection needed.
-		OnComplete: w.OnComplete,
-		Team:       w.Team,
-		Vars:       w.Vars,
+		OnComplete:  w.OnComplete,
+		Provider:    w.Provider,
+		EventHeader: w.EventHeader,
+		Events:      w.Events,
+		EventShapes: w.EventShapes,
+		Team:        w.Team,
+		Vars:        w.Vars,
 	}
 	return out
 }

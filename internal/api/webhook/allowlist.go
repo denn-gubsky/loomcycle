@@ -34,6 +34,7 @@ func UnresolvableStaticSecrets(cfg *config.Config, allow map[string]bool, getenv
 		return warns
 	}
 	for name, w := range cfg.Webhooks {
+		w = w.WithProviderDefaults() // as a delivery sees it
 		if !w.Enabled {
 			warns = append(warns, fmt.Sprintf("webhook %q: enabled:false — addressable but inert (every delivery 404s)", name))
 			continue

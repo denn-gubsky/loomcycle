@@ -140,6 +140,10 @@ A shared front-half runs for every request, then forks on `delivery`:
    - **bare hex** — the whole value is the hex MAC over the body, no prefix
      (Linear and many custom sources).
    Plus a **bearer** fallback (`kind: bearer`) for systems that can't sign.
+   **Events** (only when the definition lists `events` — see **Forge
+   events**): a bad event header, the provider's ping, an event not listed
+   and a body without the event's shape are answered here, after the
+   signature and before anything is claimed or started.
 4. **Replay/dedup** (Layer 1, in-memory, per `delivery_id`) + **idempotency**
    (Layer 2, durable on the run row) so a re-delivered event lands
    on the same run instead of spawning twice. Both are scoped to the webhook
@@ -181,6 +185,71 @@ A shared front-half runs for every request, then forks on `delivery`:
    **untrusted-block**, fenced in `<untrusted>` tags — a webhook payload is
    external, attacker-influenceable input) and run it; channel → publish +
    notify; team → start a detached walk (see "`delivery: team`" below).
+
+## Forge events — `provider` and `events`
+
+A forge sends every kind of event (a push, a ping, a star, a comment) to the
+same URL. With `events`, the receiver answers the ones you do not want
+itself, before anything starts:
+
+```yaml
+webhooks:
+  gh-push:
+    enabled: true
+    agent: code-reviewer
+    provider: github          # github | gitea | gitlab
+    events: [push]
+    auth: { secret: "$cred:gh-hook-acme-app" }
+```
+
+| Delivery (after the signature passes) | Answer |
+|---|---|
+| no event header, two, or one that is not a short plain name | `400 bad_event` |
+| the provider's ping (GitHub `ping`) | `200 {"outcome":"ping"}`, no run |
+| an event not in `events` | `202 {"outcome":"ignored"}`, no run |
+| a listed event whose body lacks a path of its shape | `400 event_shape_mismatch` |
+| a listed event whose body fits | handled as any delivery |
+
+- **`provider`** is a set of defaults, applied when a delivery arrives;
+  anything you set yourself wins. A later fix to a preset reaches existing
+  definitions.
+
+  | `provider` | auth | signature / token header | event header | delivery id header |
+  |---|---|---|---|---|
+  | `github` | hmac | `X-Hub-Signature-256` | `X-GitHub-Event` | `X-GitHub-Delivery` |
+  | `gitea` | hmac | `X-Gitea-Signature` | `X-Gitea-Event` | `X-Gitea-Delivery` |
+  | `gitlab` | bearer (a shared token) | `X-Gitlab-Token` | `X-Gitlab-Event` | `X-Gitlab-Event-UUID` |
+
+- **Event names** are listed as the header carries them; for GitLab,
+  `Push Hook` is listed as `push`, `Merge Request Hook` as `merge_request`.
+- **Shapes.** The event header is not signed: whoever holds one signed body
+  can send it again under any event name. So a listed event counts only
+  when the signed body has that event's shape — the JSONPaths its body
+  always holds; a push body sent as `pull_request` is refused. `github` and
+  `gitea` have shapes for `push`, `pull_request`, `issues`,
+  `issue_comment`, `create`, `delete` and `release` (`github` also
+  `pull_request_review`, `pull_request_review_comment`, `workflow_run`);
+  `gitlab` for `push`, `tag_push`, `merge_request`, `note`, `issue`,
+  `pipeline`. Any other event needs its own, and every listed event must
+  have one or the definition is refused:
+
+  ```yaml
+  events: [push, star]
+  event_shapes:
+    star: ["$.action", "$.starred_at", "$.repository.id"]
+  ```
+
+  The limit: two events whose shapes are the same (`create` and `delete`)
+  cannot be told apart. Only listed events start anything, so the most that
+  can happen is one listed event passing as another listed one. For GitLab,
+  which signs nothing, the token is the only check.
+- **Without a provider**, set `event_header` and give every event a shape.
+- **Without `events`**, every delivery is handled exactly as before — a
+  GitHub ping included.
+- A ping or an ignored event claims no replay key: the same body sent later
+  as a listed event is handled.
+- The `/test` dry-run reports `ping`, `ignored`, `rejected_event` and
+  `rejected_shape` as its verdict.
 
 ## `delivery: team` — a delivery that starts a team walk
 
