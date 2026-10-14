@@ -1895,6 +1895,7 @@ func main() {
 	// The HookDef substrate compiles a code-js body when it is saved, with the
 	// same runner that will run it; without code hooks a code body is refused.
 	hookDefTool := &builtin.HookDef{
+		Credentials:         peerCreds,
 		Store:               storeIface,
 		MaxDescriptionBytes: cfg.Env.AgentDefMaxDescriptionBytes,
 	}
