@@ -100,6 +100,7 @@ const (
 	Loomcycle_Document_FullMethodName            = "/loomcycle.v1.Loomcycle/Document"
 	Loomcycle_CredentialDef_FullMethodName       = "/loomcycle.v1.Loomcycle/CredentialDef"
 	Loomcycle_History_FullMethodName             = "/loomcycle.v1.Loomcycle/History"
+	Loomcycle_Evaluation_FullMethodName          = "/loomcycle.v1.Loomcycle/Evaluation"
 	Loomcycle_Memory_FullMethodName              = "/loomcycle.v1.Loomcycle/Memory"
 	Loomcycle_ListChannels_FullMethodName        = "/loomcycle.v1.Loomcycle/ListChannels"
 	Loomcycle_StreamUserRunStates_FullMethodName = "/loomcycle.v1.Loomcycle/StreamUserRunStates"
@@ -549,6 +550,15 @@ type LoomcycleClient interface {
 	// search / rename / annotate / pin / archive / recap / resume); same
 	// SubstrateRequest/Response body shape (is_error carries tool refusals).
 	History(ctx context.Context, in *SubstrateRequest, opts ...grpc.CallOption) (*SubstrateResponse, error)
+	// Evaluation dispatches to the Evaluation tool outside a run (submit / get /
+	// list_for_run / list_for_def / aggregate). Mirrors POST /v1/_evaluation.
+	// Gate runs:read; the ops a caller may use come from its token, the same
+	// grant HTTP and MCP use: substrate:tenant and admin get every op, confined
+	// to the caller's tenant by the tool (admin crosses tenants); anyone else
+	// (an isolated substrate:user, a tenant member) gets submit_self only.
+	// Op-discriminated input_json; same SubstrateRequest/Response body shape
+	// (is_error carries tool refusals, incl. an unknown or foreign id).
+	Evaluation(ctx context.Context, in *SubstrateRequest, opts ...grpc.CallOption) (*SubstrateResponse, error)
 	// Memory dispatches to the Memory tool (RFC CD Part D — Python/gRPC memory
 	// parity; the TS adapter reaches memory over HTTP). Op-discriminated
 	// input_json (key/value: get/set/delete/list/incr/merge/append_dedupe/
@@ -1275,6 +1285,16 @@ func (c *loomcycleClient) History(ctx context.Context, in *SubstrateRequest, opt
 	return out, nil
 }
 
+func (c *loomcycleClient) Evaluation(ctx context.Context, in *SubstrateRequest, opts ...grpc.CallOption) (*SubstrateResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(SubstrateResponse)
+	err := c.cc.Invoke(ctx, Loomcycle_Evaluation_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (c *loomcycleClient) Memory(ctx context.Context, in *SubstrateRequest, opts ...grpc.CallOption) (*SubstrateResponse, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(SubstrateResponse)
@@ -1839,6 +1859,15 @@ type LoomcycleServer interface {
 	// search / rename / annotate / pin / archive / recap / resume); same
 	// SubstrateRequest/Response body shape (is_error carries tool refusals).
 	History(context.Context, *SubstrateRequest) (*SubstrateResponse, error)
+	// Evaluation dispatches to the Evaluation tool outside a run (submit / get /
+	// list_for_run / list_for_def / aggregate). Mirrors POST /v1/_evaluation.
+	// Gate runs:read; the ops a caller may use come from its token, the same
+	// grant HTTP and MCP use: substrate:tenant and admin get every op, confined
+	// to the caller's tenant by the tool (admin crosses tenants); anyone else
+	// (an isolated substrate:user, a tenant member) gets submit_self only.
+	// Op-discriminated input_json; same SubstrateRequest/Response body shape
+	// (is_error carries tool refusals, incl. an unknown or foreign id).
+	Evaluation(context.Context, *SubstrateRequest) (*SubstrateResponse, error)
 	// Memory dispatches to the Memory tool (RFC CD Part D — Python/gRPC memory
 	// parity; the TS adapter reaches memory over HTTP). Op-discriminated
 	// input_json (key/value: get/set/delete/list/incr/merge/append_dedupe/
@@ -2094,6 +2123,9 @@ func (UnimplementedLoomcycleServer) CredentialDef(context.Context, *SubstrateReq
 }
 func (UnimplementedLoomcycleServer) History(context.Context, *SubstrateRequest) (*SubstrateResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method History not implemented")
+}
+func (UnimplementedLoomcycleServer) Evaluation(context.Context, *SubstrateRequest) (*SubstrateResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method Evaluation not implemented")
 }
 func (UnimplementedLoomcycleServer) Memory(context.Context, *SubstrateRequest) (*SubstrateResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method Memory not implemented")
@@ -3240,6 +3272,24 @@ func _Loomcycle_History_Handler(srv interface{}, ctx context.Context, dec func(i
 	return interceptor(ctx, in, info, handler)
 }
 
+func _Loomcycle_Evaluation_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(SubstrateRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(LoomcycleServer).Evaluation(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: Loomcycle_Evaluation_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(LoomcycleServer).Evaluation(ctx, req.(*SubstrateRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 func _Loomcycle_Memory_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(SubstrateRequest)
 	if err := dec(in); err != nil {
@@ -3687,6 +3737,10 @@ var Loomcycle_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "History",
 			Handler:    _Loomcycle_History_Handler,
+		},
+		{
+			MethodName: "Evaluation",
+			Handler:    _Loomcycle_Evaluation_Handler,
 		},
 		{
 			MethodName: "Memory",

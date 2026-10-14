@@ -106,6 +106,42 @@ describe("streamMemoryChanges", () => {
     expect(frames.map((f) => f.kind)).toEqual(["change"]);
   });
 
+  it("yields a non-fatal error item between changes and keeps iterating", async () => {
+    const { client } = makeClient([
+      sseResponse([
+        FEED,
+        SET,
+        // As the server writes it: no `type` in the JSON.
+        'event: error\ndata: {"code":"store_unavailable","error":"memory change log read failed"}\n\n',
+        SCOPE_DELETED,
+      ]),
+    ]);
+
+    const frames = await collect(client.streamMemoryChanges());
+
+    expect(frames.map((f) => f.kind)).toEqual(["feed", "change", "error", "change"]);
+    // The backfilled `type` does not leak into the error payload.
+    expect(frames[2]).toEqual({
+      kind: "error",
+      payload: { code: "store_unavailable", error: "memory change log read failed" },
+    });
+    const after = frames[3]!;
+    if (after.kind !== "change") throw new Error("expected a change frame");
+    expect(after.payload.seq).toBe(44);
+  });
+
+  it.each([
+    ['{"code":"store_unavailable"}', "missing error"],
+    ['{"error":"read failed"}', "missing code"],
+    ['{"code":7,"error":"read failed"}', "non-string code"],
+  ])("skips a malformed error frame %s (%s)", async (data) => {
+    const { client } = makeClient([sseResponse([`event: error\ndata: ${data}\n\n`, SET])]);
+
+    const frames = await collect(client.streamMemoryChanges());
+
+    expect(frames.map((f) => f.kind)).toEqual(["change"]);
+  });
+
   it.each([-1, 1.5, Number.NaN])(
     "refuses since=%s before any request instead of letting the server replay from 0",
     async (since) => {

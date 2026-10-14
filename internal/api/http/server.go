@@ -294,6 +294,12 @@ type Server struct {
 	// resolver never does credential-store I/O.
 	credKeyable func(ctx context.Context, tenantID, agentName, userID, name string) bool
 
+	// credToCompare: does tenantID hold the tenant-level credential name,
+	// whatever its allowed_urls — the snapshot scan's check for a webhook's
+	// stored verification secret, which is only compared. Metadata only.
+	// Wired via SetCredToCompare; nil leaves those references unchecked.
+	credToCompare func(ctx context.Context, tenantID, name string) bool
+
 	// searchRegistry / searchResolver / searchHostKeys back the RFC BB search
 	// routing view (GET /v1/_routing → "search" block). searchHostKeys maps a
 	// provider id → its operator host key value (non-empty = the operator can
@@ -1406,6 +1412,12 @@ func (s *Server) SetCredentialResolver(r providers.CredentialResolver) { s.credR
 // before resolution. Nil ⇒ no provider is tenant-keyable.
 func (s *Server) SetCredKeyable(fn func(ctx context.Context, tenantID, agentName, userID, name string) bool) {
 	s.credKeyable = fn
+}
+
+// SetCredToCompare wires the snapshot scan's check for a credential that is
+// only ever compared (a webhook's stored verification secret).
+func (s *Server) SetCredToCompare(fn func(ctx context.Context, tenantID, name string) bool) {
+	s.credToCompare = fn
 }
 
 // SetSearchRouting wires the RFC BB search catalog for the routing view (main.go
@@ -4007,6 +4019,7 @@ func (s *Server) Mux() http.Handler {
 	// (ScopeTenant via isTenantConfinedDefPath); the tool's own scope fold +
 	// admin-gated `global` keep a tenant operator inside its own tenant.
 	mux.Handle("POST /v1/_history", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleSubstrateHistory))))
+	mux.Handle("POST /v1/_evaluation", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleSubstrateEvaluation))))
 	// RFC AR secure credential store (the Web UI Settings → Credentials panel's
 	// ingress). Bearer-authed; tenant-confined (ScopeTenant via
 	// isTenantConfinedDefPath) — the tool derives scope_id from the operator-trust
@@ -4071,6 +4084,10 @@ func (s *Server) Mux() http.Handler {
 	// declared names per substrate. The companion to the op-dispatched
 	// substrate write endpoints; drives the Web UI's /ui/library tab.
 	mux.Handle("GET /v1/_agentdef/names", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleListAgentDefNames))))
+	// Which per-run overrides a run of one agent may set (RFC EO §5.5). Four
+	// segments to names' three, so the two never match the same path — not
+	// even for an agent called "names".
+	mux.Handle("GET /v1/_agentdef/{name}/overridable", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleAgentOverridable))))
 	mux.Handle("GET /v1/_skilldef/names", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleListSkillDefNames))))
 	mux.Handle("GET /v1/_teamdef/names", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleListTeamDefNames))))
 	// A team's own channels, for the person who runs the team: its channels

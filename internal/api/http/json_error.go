@@ -34,3 +34,18 @@ func writeJSONErrorBody(w http.ResponseWriter, status int, body any) {
 	w.WriteHeader(status)
 	_, _ = w.Write(bytes.TrimSuffix(buf.Bytes(), []byte("\n")))
 }
+
+// writeScopeError writes the 403 for a caller whose token lacks the scope an
+// operation needs: the envelope with code insufficient_scope, the scope by name
+// in required_scope, and the same scope in the RFC 6750 WWW-Authenticate hint.
+// A client reads the scope from the body instead of parsing a header; the
+// header stays for clients that already do. Scope names are public; nothing
+// about the token's own grants goes out.
+func writeScopeError(w http.ResponseWriter, scope, msg string) {
+	w.Header().Set("WWW-Authenticate", `Bearer scope="`+scope+`"`)
+	writeJSONErrorBody(w, http.StatusForbidden, struct {
+		Code          string `json:"code"`
+		Error         string `json:"error"`
+		RequiredScope string `json:"required_scope"`
+	}{"insufficient_scope", msg, scope})
+}

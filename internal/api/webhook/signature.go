@@ -11,6 +11,7 @@
 package webhook
 
 import (
+	"context"
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
@@ -22,6 +23,7 @@ import (
 
 	"github.com/denn-gubsky/loomcycle/internal/auth"
 	"github.com/denn-gubsky/loomcycle/internal/config"
+	"github.com/denn-gubsky/loomcycle/internal/credential"
 )
 
 // signatureTolerance is the ±window applied to the timestamp embedded in
@@ -43,6 +45,9 @@ type authError struct {
 	// 503 body can name WHICH env var is missing (the env-var NAME is not a
 	// secret; its value is). Never holds a secret value.
 	secretEnv string
+	// secretRef is secretEnv for a secret stored as a credential: the
+	// "$cred:<name>" reference that did not resolve. A name, never a value.
+	secretRef string
 	// msg is an operator-facing description for the log line only. Never
 	// returned in an HTTP body for the signature-mismatch verdicts.
 	msg string
@@ -93,12 +98,93 @@ func resolveSecret(envName string, allowlist map[string]bool, getenv func(string
 	if envName == "" {
 		return "", &authError{verdict: verdictUnresolved, secretEnv: envName, msg: "auth: no secret env var configured"}
 	}
+	// loomcycle's own secrets (the operator bearer, the database DSN, the
+	// credential key, ...) verify nothing: a definition naming one would make
+	// whoever can sign or send it a webhook sender. The value is only ever
+	// compared, but it must not be nameable. No allowlist entry admits one.
+	if config.IsInfraSecretEnv(envName) {
+		return "", &authError{verdict: verdictUnresolved, secretEnv: envName, msg: fmt.Sprintf("auth: env var %q is one of loomcycle's own secrets and cannot verify a webhook", envName)}
+	}
 	if !allowlist[envName] && !config.ExpandEnvAllowed(envName) {
 		return "", &authError{verdict: verdictUnresolved, secretEnv: envName, msg: fmt.Sprintf("auth: env var %q not allowlisted (add it to LOOMCYCLE_WEBHOOKS_ENV_ALLOWLIST, or use a LOOMCYCLE_*-prefixed name)", envName)}
 	}
 	v := getenv(envName)
 	if v == "" {
 		return "", &authError{verdict: verdictUnresolved, secretEnv: envName, msg: fmt.Sprintf("auth: env var %q unset or empty", envName)}
+	}
+	return v, nil
+}
+
+// CredentialResolver reads a verification secret stored as a credential:
+// the tenant-level credential name of tenantID, for an in-process comparison
+// only. *credential.Engine satisfies it (ResolveToCompare).
+type CredentialResolver interface {
+	ResolveToCompare(ctx context.Context, tenantID, name string) (string, bool, error)
+}
+
+// envSecretName is the env var an auth block of kind hmac or bearer names its
+// secret by, "" for any other kind.
+func envSecretName(a config.WebhookAuth) string {
+	switch strings.ToLower(strings.TrimSpace(a.Kind)) {
+	case "", "hmac":
+		return a.SigningSecretEnv
+	case "bearer":
+		return a.BearerTokenEnv
+	}
+	return ""
+}
+
+// verificationSecrets resolves what a delivery is checked against: the
+// secret auth names, and while a stored secret is rotated, its previous one
+// too. Each is a secret — never logged.
+//
+// The env form is read through the allowlist gate (resolveSecret). The
+// stored form is read on each delivery from creds, in tenant: the tenant of
+// whoever wrote the definition, which the authoring check made sure holds
+// it. A previous secret that does not resolve is left out: a rotation ends by
+// deleting it, and leaving it out can only refuse more, never accept more.
+func verificationSecrets(ctx context.Context, a config.WebhookAuth, tenant string, creds CredentialResolver, allowlist map[string]bool, getenv func(string) string, logf func(string, ...any)) ([]string, error) {
+	if a.Secret == "" {
+		v, err := resolveSecret(envSecretName(a), allowlist, getenv)
+		if err != nil {
+			return nil, err
+		}
+		return []string{v}, nil
+	}
+	current, err := storedSecret(ctx, a.Secret, tenant, creds)
+	if err != nil {
+		return nil, err
+	}
+	out := []string{current}
+	if a.PreviousSecret != "" {
+		previous, err := storedSecret(ctx, a.PreviousSecret, tenant, creds)
+		if err != nil {
+			logf("webhook: previous secret %s not used: %v", a.PreviousSecret, err)
+		} else {
+			out = append(out, previous)
+		}
+	}
+	return out, nil
+}
+
+// storedSecret resolves one "$cred:<name>" reference for verification.
+func storedSecret(ctx context.Context, ref, tenant string, creds CredentialResolver) (string, error) {
+	unresolved := func(why string) error {
+		return &authError{verdict: verdictUnresolved, secretRef: ref, msg: fmt.Sprintf("auth: secret %s: %s", ref, why)}
+	}
+	name, ok := credential.ParseRef(ref)
+	if !ok {
+		return "", unresolved("not a credential reference")
+	}
+	if creds == nil {
+		return "", unresolved("this server does not read stored credentials")
+	}
+	v, found, err := creds.ResolveToCompare(ctx, tenant, name)
+	switch {
+	case err != nil:
+		return "", unresolved(err.Error())
+	case !found || v == "":
+		return "", unresolved(fmt.Sprintf("no tenant-level credential %q in tenant %q", name, tenant))
 	}
 	return v, nil
 }
@@ -125,19 +211,22 @@ func resolveSecret(envName string, allowlist map[string]bool, getenv func(string
 // bearer case. We never compare hex strings with == and never use
 // bytes.Equal on the MAC.
 //
+// secrets are the resolved secrets (verificationSecrets): the request passes
+// when it matches any of them. Every one is compared, whichever matches, so
+// the time taken does not say which did.
+//
 // now is injected so the timestamp-window check is deterministic in tests.
-func verifySignature(a config.WebhookAuth, body []byte, headerGet func(string) string, allowlist map[string]bool, getenv func(string) string, now func() time.Time) error {
+func verifySignature(a config.WebhookAuth, secrets []string, body []byte, headerGet func(string) string, now func() time.Time) error {
 	kind := strings.ToLower(strings.TrimSpace(a.Kind))
 	if kind == "" {
 		kind = "hmac"
 	}
+	if len(secrets) == 0 && (kind == "hmac" || kind == "bearer") {
+		return &authError{verdict: verdictUnresolved, msg: "auth: no secret resolved"}
+	}
 
 	switch kind {
 	case "bearer":
-		want, err := resolveSecret(a.BearerTokenEnv, allowlist, getenv)
-		if err != nil {
-			return err
-		}
 		// Two shapes. Default (no auth.header): the standard
 		// `Authorization: Bearer <token>`. When auth.header is set, the
 		// shared secret is carried RAW in that header instead — e.g.
@@ -145,25 +234,28 @@ func verifySignature(a config.WebhookAuth, body []byte, headerGet func(string) s
 		// CompareBearer hashes both sides to a fixed length before the
 		// constant-time compare, so neither the "Bearer " prefix nor the
 		// token length leaks via timing.
+		var got, prefix string
 		if a.Header != "" {
-			got := strings.TrimSpace(headerGet(a.Header))
-			if got == "" || !auth.CompareBearer(got, want) {
-				return errSignatureMismatch
-			}
-			return nil
+			got = strings.TrimSpace(headerGet(a.Header))
+		} else {
+			got, prefix = headerGet("Authorization"), "Bearer "
 		}
-		got := headerGet("Authorization")
-		if got == "" || !auth.CompareBearer(got, "Bearer "+want) {
+		if got == "" {
+			return errSignatureMismatch
+		}
+		matched := false
+		for _, want := range secrets {
+			if auth.CompareBearer(got, prefix+want) {
+				matched = true
+			}
+		}
+		if !matched {
 			return errSignatureMismatch
 		}
 		return nil
 
 	case "hmac":
-		secret, err := resolveSecret(a.SigningSecretEnv, allowlist, getenv)
-		if err != nil {
-			return err
-		}
-		return verifyHMAC(a, secret, body, headerGet, now)
+		return verifyHMAC(a, secrets, body, headerGet, now)
 
 	default:
 		// Unknown auth kind is a config error, not a request error. Treat
@@ -178,7 +270,7 @@ func verifySignature(a config.WebhookAuth, body []byte, headerGet func(string) s
 // Stripe header. The envelope shape (Stripe `t=,v1=` vs GitHub `sha256=`
 // vs bare hex) is detected from the header VALUE, not just its name, so an
 // operator who points a.Header at a custom name still gets correct parsing.
-func verifyHMAC(a config.WebhookAuth, secret string, body []byte, headerGet func(string) string, now func() time.Time) error {
+func verifyHMAC(a config.WebhookAuth, secrets []string, body []byte, headerGet func(string) string, now func() time.Time) error {
 	raw := hmacSignatureHeader(a, headerGet)
 	if raw == "" {
 		return errSignatureMismatch
@@ -187,7 +279,7 @@ func verifyHMAC(a config.WebhookAuth, secret string, body []byte, headerGet func
 	// GitHub envelope: `sha256=<hexmac>` over the raw body only.
 	if strings.HasPrefix(raw, "sha256=") {
 		wantHex := strings.TrimPrefix(raw, "sha256=")
-		return compareHMAC(secret, body, wantHex)
+		return compareHMAC(secrets, body, wantHex)
 	}
 
 	// Bare-hex envelope (Linear `Linear-Signature`, and many custom HMAC
@@ -196,7 +288,7 @@ func verifyHMAC(a config.WebhookAuth, secret string, body []byte, headerGet func
 	// and '=' so it is never all-hex; this branch is therefore unambiguous
 	// and must be checked BEFORE the Stripe parse.
 	if isHexString(raw) {
-		return compareHMAC(secret, body, raw)
+		return compareHMAC(secrets, body, raw)
 	}
 
 	// Stripe envelope: `t=<unix>, v1=<hexmac>` over `<t>.<rawbody>`.
@@ -219,7 +311,7 @@ func verifyHMAC(a config.WebhookAuth, secret string, body []byte, headerGet func
 		return errSignatureMismatch
 	}
 	signedPayload := append([]byte(tsStr+"."), body...)
-	return compareHMAC(secret, signedPayload, macHex)
+	return compareHMAC(secrets, signedPayload, macHex)
 }
 
 // hmacSignatureHeader returns the signature header value verifyHMAC checks:
@@ -300,19 +392,25 @@ func isHexString(s string) bool {
 	return true
 }
 
-// compareHMAC computes HMAC-SHA256(secret, payload) and compares it to the
-// hex-decoded wantHex using crypto/hmac.Equal (constant-time). Returns
+// compareHMAC computes HMAC-SHA256(secret, payload) for each secret and
+// compares it to the hex-decoded wantHex using crypto/hmac.Equal
+// (constant-time), every secret whichever matches. Returns
 // errSignatureMismatch on any failure (bad hex, length mismatch, MAC
 // mismatch) — all collapse to one verdict so no information leaks.
-func compareHMAC(secret string, payload []byte, wantHex string) error {
+func compareHMAC(secrets []string, payload []byte, wantHex string) error {
 	want, derr := hex.DecodeString(strings.TrimSpace(wantHex))
 	if derr != nil {
 		return errSignatureMismatch
 	}
-	mac := hmac.New(sha256.New, []byte(secret))
-	mac.Write(payload)
-	got := mac.Sum(nil)
-	if !hmac.Equal(got, want) {
+	matched := false
+	for _, secret := range secrets {
+		mac := hmac.New(sha256.New, []byte(secret))
+		mac.Write(payload)
+		if hmac.Equal(mac.Sum(nil), want) {
+			matched = true
+		}
+	}
+	if !matched {
 		return errSignatureMismatch
 	}
 	return nil

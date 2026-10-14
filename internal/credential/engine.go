@@ -333,6 +333,57 @@ func (e *Engine) expired(row store.CredentialDefRow) bool {
 	return row.ExpiresAt != nil && !e.now().Before(*row.ExpiresAt)
 }
 
+// ResolveToCompare returns the tenant-level credential name of tenantID for a
+// caller that compares the value in process and sends it nowhere: a webhook's
+// verification secret, checked against what a request carries. Only the
+// tenant level is read — the secret belongs to whoever wrote the definition,
+// not to a run's agent or user.
+//
+// A URL restriction (allowed_urls) says where a value may be sent. This one
+// is sent nowhere, so a restricted credential resolves here as any other
+// does; one restricted to no URL at all is the way to store a secret that
+// must only ever be compared. Returns (_, false, nil) when the tenant has no
+// such credential, or the engine cannot open any.
+func (e *Engine) ResolveToCompare(ctx context.Context, tenantID, name string) (string, bool, error) {
+	if !e.CanResolve() {
+		return "", false, nil
+	}
+	row, err := e.store.CredentialDefGet(ctx, tenantID, "tenant", "", name)
+	if err != nil {
+		var nf *store.ErrNotFound
+		if errors.As(err, &nf) {
+			return "", false, nil
+		}
+		return "", false, err
+	}
+	backend, err := e.backendFor(row.Backend)
+	if err != nil {
+		return "", false, err
+	}
+	val, err := backend.Resolve(ctx, row.Definition, Identity{TenantID: tenantID, Scope: "tenant", Name: name})
+	if err != nil {
+		return "", false, err
+	}
+	return val, true, nil
+}
+
+// HasToCompare reports whether ResolveToCompare would find name in tenantID:
+// metadata only, nothing is opened. An authoring check asks it before saving
+// a definition that names the credential.
+func (e *Engine) HasToCompare(ctx context.Context, tenantID, name string) (bool, error) {
+	if !e.CanResolve() {
+		return false, nil
+	}
+	if _, err := e.store.CredentialDefGet(ctx, tenantID, "tenant", "", name); err != nil {
+		var nf *store.ErrNotFound
+		if errors.As(err, &nf) {
+			return false, nil
+		}
+		return false, err
+	}
+	return true, nil
+}
+
 // HasKey reports whether a credential named `name` exists in ANY scope visible
 // to (tenantID, agentName, userID), using the SAME agent > user > tenant
 // precedence as Resolve — but a METADATA-ONLY presence check: it calls

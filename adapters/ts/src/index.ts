@@ -58,7 +58,7 @@
  *     purgeStaleEmbeddings(scope, scopeId, opts?): Promise<MemoryPurgeResponse>    // DELETES; dry_run defaults true
  *
  *     // Memory / document change feeds (RFC CD Part C; SSE; substrate:tenant)
- *     streamMemoryChanges(opts?): AsyncIterable<ChangeFeedFrame>     // resume with opts.since = last seq
+ *     streamMemoryChanges(opts?): AsyncIterable<ChangeFeedFrame>     // feed | change | error (non-fatal); resume with opts.since = last seq
  *     streamDocumentChanges(opts?): AsyncIterable<ChangeFeedFrame>
  *
  *     // Interruption (v0.8.16; decline RFC BH)
@@ -102,6 +102,14 @@
  *     // History — browse/search/annotate past chats (RFC BE; tenant-confined)
  *     history(input): Promise<HistoryToolResponse>                // list/get/search/rename/annotate/pin/archive/recap/resume
  *
+ *     // Evaluation — score runs and read the scores back, outside a run
+ *     evaluation(input): Promise<…>                               // submit/get/list_for_run/list_for_def/aggregate
+ *     submitEvaluation(runId, score, opts?): Promise<EvaluationSubmitResult>
+ *     getEvaluation(evalId): Promise<EvaluationRecord>
+ *     listEvaluationsForRun(runId, opts?): Promise<EvaluationListForRunResult>
+ *     listEvaluationsForDef(defId, opts?): Promise<EvaluationListForDefResult>
+ *     aggregateEvaluations(defId, opts?): Promise<EvaluationAggregate>
+ *
  *     // Library v2 enumeration (v0.10.3 — yaml+substrate merged)
  *     listLibraryAgents(): Promise<LibraryListResponse<LibraryAgentDefinition>>
  *     listLibrarySkills(): Promise<LibraryListResponse<LibrarySkillDefinition>>
@@ -119,7 +127,8 @@
  *     LoomcycleError, AgentNotFoundError, SessionNotFoundError,
  *     SessionBusyError, AgentIDInUseError, BackpressureError,
  *     RateLimitedError (subclass of BackpressureError),
- *     PerUserQuotaExhaustedError, AuthError, UnavailableError,
+ *     PerUserQuotaExhaustedError, AuthError, InsufficientScopeError (a 403
+ *     naming the scope the token lacks), UnavailableError,
  *     InvalidArgumentError,
  *     PauseNotConfiguredError (subclass of UnavailableError),
  *     AlreadyPausingError, NotPausedError, SnapshotNotFoundError,
@@ -311,6 +320,20 @@ export type {
   // RFC BE History (browse/search/annotate past chats)
   HistoryToolInput,
   HistoryToolResponse,
+  // Evaluation outside a run (POST /v1/_evaluation)
+  EvaluationEmitterRole,
+  EvaluationSubmitInput,
+  EvaluationGetInput,
+  EvaluationListForRunInput,
+  EvaluationListForDefInput,
+  EvaluationAggregateInput,
+  EvaluationInput,
+  EvaluationSubmitResult,
+  EvaluationRecord,
+  EvaluationListForRunResult,
+  EvaluationListForDefResult,
+  EvaluationScoreStats,
+  EvaluationAggregate,
   // RFC AH dynamic volumes (v0.35.0)
   VolumeMode,
   PersistentVolumeEntry,
@@ -329,6 +352,7 @@ export type {
   RunStateStreamOpen,
   StreamUserRunStatesOptions,
   // Memory / document change feeds (RFC CD Part C)
+  ChangeFeedError,
   ChangeFeedFrame,
   ChangeFeedStatus,
   EmbedderHealth,
@@ -456,6 +480,9 @@ export type {
   EffectiveConfigSource,
   EffectiveValue,
   InertContextSetting,
+  AgentOverridableResponse,
+  OverridableField,
+  OverrideLockReason,
   RetuneRunResponse,
   RunConfigRecord,
   SubagentHoldInfo,
@@ -497,6 +524,7 @@ export {
   AuthError,
   BackpressureError,
   NotFoundError,
+  InsufficientScopeError,
   InvalidArgumentError,
   ChannelCursorRegressionError,
   LoomcycleError,
