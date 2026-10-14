@@ -1,6 +1,7 @@
 package builtin
 
 import (
+	"context"
 	"encoding/json"
 	"reflect"
 	"strings"
@@ -87,5 +88,31 @@ func TestWebhookDefBody_ARestoreAcceptsAnUnparseableMappingPath(t *testing.T) {
 	body := json.RawMessage(`{"enabled":true,"delivery":"spawn","agent":"a","auth":{"signing_secret_env":"LOOMCYCLE_S"},"payload_mapping":{"goal":"$.commits[*].message"}}`)
 	if err := ValidateWebhookDefBody(body); err != nil {
 		t.Fatalf("a body a restore accepted before is refused: %v", err)
+	}
+}
+
+// A fork of a static definition that leaves filters out keeps the static
+// definition's.
+func TestWebhookDefTool_AForkOfAStaticDefinitionKeepsItsFilters(t *testing.T) {
+	tool, ctx, cleanup := webhookDefFixture(t)
+	defer cleanup()
+	static := tool.Cfg.Webhooks["gh-push"]
+	static.Filters = []config.WebhookFilter{{Path: "$.ref", Op: "glob", Value: "refs/heads/*"}}
+	tool.Cfg.Webhooks["gh-push"] = static
+
+	res, err := tool.Execute(ctx, json.RawMessage(`{"op":"fork","name":"gh-push","overlay":{"rate_limit":{"requests_per_minute":10}}}`))
+	if err != nil || res.IsError {
+		t.Fatalf("%v %s", err, res.Text)
+	}
+	row, err := tool.Store.WebhookDefGetActive(context.Background(), "", "gh-push")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var w mergedWebhookDef
+	if err := json.Unmarshal(row.Definition, &w); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(w.Filters, static.Filters) {
+		t.Errorf("the fork's filters: %+v, want the static definition's %+v", w.Filters, static.Filters)
 	}
 }
