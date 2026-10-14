@@ -8,6 +8,271 @@ Each entry is the release's tag annotation, so the tag and this file cannot disa
 
 For the **public roadmap**, see [`docs/PLAN.md`](docs/PLAN.md).
 
+## What's in v1.113.0
+
+*A run that cannot start at once is now **queued**, not refused. It gets its row, its id and its events before it waits, it can be cancelled, and it comes back after a restart. A provider's `max_concurrent` now counts **model calls**, in a lane per kind of model, so a run holds no provider slot while it runs a tool or waits for a child. An agent can be given **a repository the runtime fetched itself**, so the forge token never enters a shell, and can **read it by line range** with the volume read-only. Forge **webhooks** can say which events start a run, hook deliveries can be **signed**, stored credentials **expire** and can be **limited to certain URLs**, and a **Microsoft Teams** bot can front an interactive agent.*
+
+A minor release: #1745 to #1803.
+- #1750, #1773, #1776, #1779, #1787 queue runs instead of refusing them;
+- #1758, #1760, #1762, #1767, #1769, #1788 make a provider's cap count model calls, by kind;
+- #1759, #1761, #1763, #1764, #1765, #1766, #1775 create an ephemeral volume from a git source;
+- #1748, #1756, #1770, #1772, #1800 change how a stored credential is used;
+- #1749, #1751 to #1754 are for reading code under review: `Read` by line range and read-only scratch volumes;
+- #1781, #1785, #1801 are forge webhooks;
+- #1798 signs hook deliveries;
+- #1790 to #1796 fill gaps the n8n nodes found: Evaluation over HTTP and gRPC, run listing filters, a JSON 403, an overridable report, clearer refusals, change-feed errors, and MCP definitions that are refused by default;
+- #1777, #1778, #1780, #1782 to #1784, #1789, #1802 are `@loomcycle/client` fixes and new methods, and #1803 sets it to 1.113.0;
+- #1771 is the Teams bridge, a separate package;
+- #1757 and #1799 are fixes; #1768 ships `LICENSE` and `NOTICE` in archives and images;
+- #1745 and #1746 are `@loomcycle/def-fields` 0.5.0 and `@loomcycle/library` 0.8.0, published by their own tags;
+- #1747, #1755 and #1774 are benchmark records, and #1786 and #1797 change tests only. None changes the runtime.
+
+### A run that cannot start at once is queued (#1750, #1773, #1776, #1779, #1787)
+
+A new run waited up to `queue_timeout_ms` (30 s) for a slot and was then refused with 429. A run over its user's cap was refused at once. A burst lost work, and while a run waited its caller had no row, no events and nothing to cancel.
+
+A new run now never times out in the queue. When it must wait it gets its row with the new status **`queued`**, its cancel registration and its caller's announcement first, and then waits.
+
+| Event | Payload (`admission`) | When |
+|---|---|---|
+| `queued` | `reason` (`user_cap` or `global_cap`), `position` | it starts to wait; a run can wait on its user's cap, then for a slot |
+| `admitted` | `wait_ms` | it has its slot; the row moves to `running` |
+
+- **Where it applies.** `POST /v1/runs`, gRPC, MCP, batches, configured-run starts, schedules, webhooks and A2A. On `POST /v1/runs` the SSE stream sends its session and agent frames before it waits.
+- **Reading one.** A single-run read reports `queue_position` and `queue_reason` (HTTP, gRPC `Agent`, MCP `get_run`, both clients).
+- **Cancelling one.** A queued run is cancellable; its row ends `cancelled`.
+- **The old answer on request.** `admission: "reject"` refuses instead of waiting (HTTP, gRPC `RunRequest`, MCP `spawn_run` / `spawn_runs`, both clients). An unknown value is 400.
+- **Bounds.** `max_queue_depth` (now 32, was 16) bounds all waiting runs together. `max_queued_runs_per_user` (16, `LOOMCYCLE_MAX_QUEUED_RUNS_PER_USER`) bounds one user's runs waiting on its cap. With no per-user cap it bounds the places one user holds in the queue, so one caller cannot fill it. A run that names no user shares its tenant's places. Past a bound: `429 backpressure`.
+- **Turns.** Waiting runs are served round-robin across (tenant, user), first in first out within one. A resumed run is served first. A schedule, webhook or A2A run now counts under its own tenant, where they all shared one count.
+- **Budgets.** A token budget is checked before a run may queue and again when it starts.
+- **Triggers.** A scheduled fire is counted when it queues, where it was recorded `skipped`. An async webhook answers 202 with the queued run's id, where it answered 503. A fire refused because the queue is full is still `skipped`.
+- **Batches.** A detached batch child that queues is reported `queued` and outlives its caller.
+- **Not yet queued.** `POST /v1/sessions/{id}/messages` and the LLM gateway keep `queue_timeout_ms`.
+
+**A queued run survives a restart.** Its request is stored on the row (`runs.queued_input`). A run's `user_bearer` and `user_credentials` are sealed with `LOOMCYCLE_SECRET_KEY`, and the seal is bound to that run. At boot, each replica starts its own queued runs again, oldest first, under their own rows and idempotency keys. A caller re-attaches by run id. A run that cannot come back is failed with stop reason `restarted` and the reason, and its idempotency key is released:
+- a run with per-run secrets when no `LOOMCYCLE_SECRET_KEY` is set;
+- a no-trace run, whose prompt is stored nowhere;
+- sealed secrets that the key at boot cannot open;
+- a row an older build queued.
+
+A restarted run has no principal on its context, as a resumed paused run has not. Work its first caller did in memory after the run (a webhook's `on_complete`, A2A task state) does not happen. The scheduler's `on_complete` does.
+
+**A pause holds the queue.** A run whose slot frees during a pause keeps the slot, stays `queued` and starts on the resume.
+
+**A snapshot carries queued runs** in a new `queued_runs` section: identity, keys, events and the stored request, less its sealed secrets. Restore queues exactly the runs it inserted. A run restored without its secrets runs without them, and the restore warns. The restore counts are `queued_runs` and `queued_runs_requeued`.
+
+**Admitted work never times out on a provider.** A sub-agent, a resumed run and a mid-run fallback waiting for a provider slot used to be refused or failed after 30 s; a fallback ran uncapped after 2 s. They now wait. Time a sub-agent spends queued does not count against its `timeout_ms`. `provider_queue_timeout_ms` and `LOOMCYCLE_PROVIDER_QUEUE_TIMEOUT_MS` are removed.
+
+See `loomcycle help fairness`.
+
+### A provider's cap counts model calls, by kind (#1758, #1760, #1762, #1767, #1769, #1788)
+
+A provider's `max_concurrent` counted whole runs. A run took a slot when it was admitted and kept it through tool calls, waits for sub-agents and waits for its operator. Measured with 8 agents on 4 slots, four agents finished while the other four waited for whole conversations: first token at p95 took 257 s, against about 120 s when slots are taken per call. The cap also did not hold: a child of a parent holding the same provider ran ungated, and interactive runs were never counted.
+
+`max_concurrent` now counts model **calls**. A run takes a slot just before each call and gives it back when the call ends. Each kind of model call has its own queue, a **lane**:
+
+```yaml
+providers:
+  ollama-local:
+    max_concurrent: 4               # shorthand for lanes.chat.max_concurrent
+    max_models_in_flight: 1         # different models computing at once; 0 = unlimited
+    model_switch_max_wait_ms: 30000 # how long a waiting model can be held off
+    lanes:
+      chat:     { max_concurrent: 4, quantum_calls: 4, affinity_hold_ms: 5000 }
+      decision: { max_concurrent: 2 }
+      embedder: { max_concurrent: 2, background_share: 0.25 }
+```
+
+- **Fair turns.** Live runs go before background work, round-robin across (tenant, user). `background_share` guarantees background work (memory consolidation, reindex and describe sweeps) a share of turns.
+- **Keeping a slot warm.** `affinity_hold_ms` keeps a slot for the run that just used it, so its next call lands on a warm prompt cache; `quantum_calls` bounds its turns while others wait. The default is 0, a plain fair queue: on Ollama, measurement showed that keeping a slot saves nothing.
+- **Models in flight.** `max_models_in_flight` caps the different models computing at once on a provider. It counts every call to the provider, of any kind. On Ollama a model's identity is the model and its context size (`qwen3.6:latest@65536`): switching context size reloads the model. The driver warns once when an agent's context size differs from the provider's.
+- **Every call is counted.** Runs, compaction, the LLM gateway, the OpenAI-compatible routes, the image-describe route, decision models, embedders, the memory reranker and the consolidation unit generator. Decisions and reranks with no lane configured are held to 4 in flight per provider, as before.
+- **A run sees its calls wait.** A model call that has to wait puts `call_queued` on the run's stream and transcript (`admission.reason` `lane` or `models_in_flight`, `position`, `provider`, `kind`), then `call_admitted` with `wait_ms`. A call that gets its slot at once reports nothing. A decision or embedding a tool makes does not report yet.
+- **Requests outside a run stay bounded.** The LLM gateway, `/v1/embeddings`, `/v1/_decide` and the describe route wait at most `provider_queue_depth` deep (default: `max_queue_depth`), counted against their user. Past it: `429 provider_concurrency_exhausted`. This answer now goes only to those requests, never to a run.
+- **Watching it.** `GET /v1/_concurrency/stats` lists every provider that caps anything, with each lane (`max_concurrent`, `active`, `reserved`, `queued`, `queued_background`, `grants`, `preemptions`), `models_in_flight` and `model_waiters`. `active` / `queued` stay the chat lane. Prometheus gains `loomcycle_provider_lane_*` series labelled `provider` and `kind`, plus `loomcycle_provider_models_in_flight` and `loomcycle_provider_model_waiters`.
+
+See "Per-provider concurrency (`max_concurrent`, `lanes`)" in [`docs/PROVIDERS.md`](docs/PROVIDERS.md).
+
+### A repository in an ephemeral volume, fetched by the runtime (#1759, #1761, #1763, #1764, #1765, #1766, #1775)
+
+An agent that needed a repository ran git through a shell tool, with the forge token in that process's environment. Code under review is text an outsider wrote, and it can ask the agent to print the token.
+
+`VolumeDef op=create` on an ephemeral volume now takes a git source. The runtime fetches the commit and writes its tree into the volume; the token is a value in loomcycle's memory, sent to one host.
+
+```json
+{"op": "create", "name": "repo", "ephemeral": true, "mode": "ro",
+ "source": {"git": {"url": "https://github.com/acme/app", "commit": "<40-digit sha>",
+                    "ref": "refs/heads/feature-x", "credential": "$cred:repo-acme-app",
+                    "diff_base": "merge-base:default"}}}
+```
+
+- **Off by default.** `LOOMCYCLE_GIT_SOURCE_HOSTS` lists the hosts a repository may come from. Unset, a request is refused with `git_source_disabled`.
+- **Who may ask.** The agent needs `source:git` in `volume_def_scopes`, besides the grant for the name. `any` does not include it.
+- **The credential.** `$cred:<name>` or `$ghapp:<name>`, and it must carry `allowed_urls` covering the repository. One without is refused: the URL can come from untrusted text. A public repository needs none.
+- **A GitHub App token is narrowed.** For `$ghapp:` the runtime asks for a token for the one repository, with `contents: read` and nothing else. A config that lists its own repositories or permissions must already allow it; it is never widened.
+- **What lands.** Regular files, mode `0644`. Links only when they stay inside the tree. A submodule is an empty directory. No `.git`. `_meta/omitted.json` lists what was left out and why.
+- **A diff.** With `diff_base` (`merge-base:default` or a sha), the volume also holds `_meta/diff.patch` and `_meta/numstat.json`. The patch applies with `git apply`; it is not byte for byte what `git diff` prints.
+- **All or nothing.** A failed clone leaves no directory, store or row, and the name is free. A failure is one word from a closed list (`auth_failed`, `not_found`, `commit_not_found`, `merge_base_not_found`, `source_too_large`, `timeout`, `fetch_failed`, …); the remote's own text goes to the operator's log.
+- **No git process, no redirect.** HTTPS only, through the same network guard as the HTTP tools. No redirect is followed, even to the same host. Nothing from the repository runs.
+- **Redaction.** The redactor now also masks `gho_`, `ghu_`, `ghs_`, `ghr_`, `github_pat_` and GitLab `glpat-` tokens.
+- **Another replica.** A run of the tree on another replica finds the volume by name. If the files are on another replica's disk, the call says so.
+
+| Setting | Default |
+|---|---|
+| `LOOMCYCLE_GIT_SOURCE_HOSTS` | unset: off |
+| `LOOMCYCLE_GIT_SOURCE_MAX_BYTES` | 256 MiB, fetched and written; a request may lower it |
+| `LOOMCYCLE_GIT_SOURCE_MAX_OBJECT_BYTES` | 64 MiB; this is what bounds memory |
+| `LOOMCYCLE_GIT_SOURCE_MAX_FILE_BYTES` | 5 MiB; a larger file is left out and listed |
+| `LOOMCYCLE_GIT_SOURCE_MAX_FILES` | 100000 |
+| `LOOMCYCLE_GIT_SOURCE_TIMEOUT_SECONDS` | 120, waiting for a slot included |
+| `LOOMCYCLE_GIT_SOURCE_MAX_CONCURRENT` | 1 clone at once, per replica |
+| `LOOMCYCLE_GIT_SOURCE_MAX_HISTORY` | 500 commits |
+
+A setting that is not a positive number stops the server at boot. A test runs a code agent through the server against two private repositories and finds neither token in the stream, the database, the log, the volumes or a `Bash` environment. The binary grows by about 4 MiB (the go-git library).
+
+See "9d.2.1 A volume from a git source" in [`docs/CONFIGURATION.md`](docs/CONFIGURATION.md).
+
+### Where a stored credential may go (#1748, #1756, #1770, #1772, #1800)
+
+- **`allowed_urls`.** `CredentialDef op=create` takes a list of https URLs. The value is sent only to a URL under one entry, matched by host and whole path segments. `[]` means it is sent nowhere. Left out, nothing changes. The list is shown by `get` and `list` and is bound to the sealed value, so an edited list no longer opens. A rotation that leaves it out keeps it.
+- **Where a restricted credential works.** An MCP server's `$cred:` / `$ghapp:` header, a hook's webhook header, a remote memory backend's or document source's key, and a git source, each to a covered URL. A request carrying one follows no redirect. A provider key and the `Bash` / `Bashbox` environment name no destination, so they refuse it.
+- **`username`.** An optional user name, stored beside the value and shown by `get` and `list`. A git source sends it as the basic-auth user.
+- **`expires_at` is enforced.** It was stored and reported, and an expired credential kept being sent. It is now refused at its expiry, everywhere it resolves. `get` and `list` add `expired`. To rotate, create again with the same name.
+- **An unusable key is never replaced.** An expired or URL-restricted credential that holds a provider or tool key fails the call. It does not fall back to the operator's key, to a host variable of the same name, or to another provider. In `Bash` / `Bashbox` the variable is left unset and the host's variable of that name is removed. A credential that is simply missing still falls back, as before.
+- **GitHub App token cache.** The cache key now covers the tenant, the server and a digest of the private key. A config that copied another credential's ids, with any key, was served that credential's cached token.
+
+See [`docs/CREDENTIALS.md`](docs/CREDENTIALS.md).
+
+### Reading code under review (#1749, #1751, #1752, #1753, #1754)
+
+**`Read` by line range.** `Read` returned the first 256 KiB of a file and nothing else, and the cut was silent. It now takes `offset` (first line, from 1), `limit` (lines) and `line_numbers`. Any of them turns on line mode: whole lines, and a closing line that says where the read stopped.
+
+```text
+[lines 812-818 of 3044]
+[lines 1-2210 of 3044; cut at 256 KiB, continue with offset 2211]
+```
+
+A call with none of the three returns exactly what it did before. A binary file is refused in line mode. See "`Read` by line range" in [`docs/TOOLS.md`](docs/TOOLS.md).
+
+**Read-only scratch volumes.**
+- `VolumeDef op=set_mode {name, mode: "ro"}` makes an ephemeral volume read-only for the whole run tree at once, children already running included. It is one way: `rw` is refused.
+- `ephemeral_volumes: ro` on an agent gives it, and every agent it spawns, all of the run's ephemeral volumes read-only. Its own `volumes:` bindings keep their modes. It is set in the config, a markdown agent's frontmatter or an `AgentDef` overlay. A fork cannot clear it, and a run cannot override it.
+- The mode holds on resume and on another replica: a write to an ephemeral volume first reads the volume's stored mode. That is one indexed read per write-type tool call.
+- `Context op=self` lists `ephemeral_volumes` with the mode the agent gets.
+
+See "9d.2 Ephemeral (run-scoped) volumes" in [`docs/CONFIGURATION.md`](docs/CONFIGURATION.md).
+
+### Forge webhooks (#1781, #1785, #1801)
+
+A forge sends every kind of event to one URL. The receiver started a run for each delivery it accepted, a GitHub `ping` included.
+
+- **`provider`: `github`, `gitea` or `gitlab`.** A preset of the auth kind, the signature, delivery-id and event headers, the ping, and the body shapes of the events it knows. Anything the definition sets wins.
+- **`events`** lists the only events that start a run. It is checked after the signature and before a replay key is claimed:
+
+| Delivery | Answer |
+|---|---|
+| no event header, two of them, or a malformed one | `400 bad_event` |
+| GitHub's ping | `200 {"outcome":"ping"}`, no run |
+| an event not listed | `202 {"outcome":"ignored"}`, no run |
+| a listed event whose body lacks a path of its shape | `400 event_shape_mismatch` |
+
+A definition without `events` is handled as before, a ping included.
+
+- **`event_shapes`** gives a shape to an event the preset has none for. Every listed event needs a shape, or the definition is refused when written. Presets give shapes only to events whose bodies no other event holds, so GitHub `issues`, `create` and `delete` need one the author writes.
+- **Secrets from stored credentials.** `auth.secret: "$cred:<name>"` names a tenant credential, read on every delivery, so a new value applies with no restart. `auth.previous_secret` is accepted beside it during a rotation. Store it with `allowed_urls: []`: a comparison sends it nowhere. A literal is refused.
+- **`user_tier`** is now kept on a runtime definition; it was dropped.
+- **Overlays are read as written.** An unknown, repeated or case-only key is refused, and so is a key the server sets.
+- **Bounded bodies.** `body_size_limit_bytes` is capped at `LOOMCYCLE_MAX_REQUEST_BYTES`. A body more than 128 deep or with more than a million values is refused as `bad_mapping`.
+
+See `loomcycle help input-webhooks`.
+
+### Signed hook deliveries (#1798)
+
+An http `HookDef` can name `body.signing_secret: "$cred:<name>"`. Each delivery then carries `X-Loomcycle-Signature: t=<unix>,v1=<hex>`, an HMAC-SHA256 of `t + "." + body`, plus `X-Loomcycle-Hook` and `X-Loomcycle-Delivery`.
+
+- The delivery id is also inside the signed body as `delivery_id`. Receivers should dedupe on that and treat the headers as unsigned copies.
+- A secret that cannot be resolved fails the call by its `fail_mode`. A delivery is never sent unsigned.
+- The credential must be unrestricted or cover the hook's URL; a non-admin may name only one of its own tenant's.
+- Unsigned hooks are byte for byte unchanged.
+- Verifiers: TypeScript `verifyLoomcycleSignature` / `verifyLoomcycleDelivery`, Python `verify_loomcycle_signature` / `verify_loomcycle_delivery`.
+
+See "Signed deliveries" in [`docs/TOOLS.md`](docs/TOOLS.md), which also now shows the current hook payload (#1777).
+
+### Evaluation from outside a run (#1793)
+
+Evaluation was reachable only inside a run and as an MCP tool. It is now `POST /v1/_evaluation` and the gRPC `Evaluation` RPC, and one grant rule serves HTTP, gRPC and MCP:
+
+| Token | Ops | Reach |
+|---|---|---|
+| admin, legacy, open mode | all | every tenant |
+| `substrate:tenant` | all | its own tenant |
+| isolated `substrate:user`, or a member | `submit_self` | its own runs |
+| no `runs:read`, or limited to the run endpoints | refused | |
+
+A tenant operator on MCP now gets every op, where it had only `submit_self`. Outside a run, `submit_self` is refused today, because "self" means the run's own agent. Both clients have `evaluation()` and five helpers. See [`docs/TOOLS.md`](docs/TOOLS.md).
+
+### Run listing, overrides and refusals (#1790, #1791, #1792, #1794, #1795, #1796)
+
+- **Listing a user's runs.** `GET /v1/users/{user_id}/agents` takes several statuses (`?status=completed,failed`) and `?awaited_state=review,input`, which lists running runs blocked on those waits. The awaited scan stops at 1,000 runs and reports `truncated`. Also gRPC `ListUserAgents` (`statuses`, `awaited_states`, `truncated`) and both clients. MCP `list_runs` still takes one status.
+- **Which overrides an agent permits.** `GET /v1/_agentdef/{name}/overridable` reports, for the calling token, each of 27 per-run settings: whether it may be set, the reason if not (`token_locked` or `agent_locked`), and the allowed values where the run checks a closed set. It uses the same checks as a run. TypeScript: `getAgentOverridable`. See "Asking which settings a run may set" in [`docs/CONFIGURATION.md`](docs/CONFIGURATION.md).
+- **A missing scope is a JSON 403:** `{"code":"insufficient_scope","error":"insufficient scope","required_scope":"<scope>"}`. The text and the `WWW-Authenticate` header are unchanged. TypeScript: `InsufficientScopeError` with `requiredScope`.
+- **Configured-run refusals name their reason** on gRPC (an `ErrorInfo` reason, and `RetryInfo` on `rate_limited`) and MCP. A 403 on gRPC is now `PermissionDenied`; it was `Internal`.
+- **Change feeds report a broken store.** `GET /v1/_memory/changes` and `/v1/_document/changes` send `event: error` (`store_unavailable`) once per failure streak, back off, and skip no change on recovery. They used to look like a quiet feed.
+- **MCP server definitions with an unattributed `${NAME}` are refused by default.** A runtime version that reads the server's environment but was not saved by an admin used to warn and dial. It now is not dialed. See the upgrade notes.
+
+### `@loomcycle/client` (#1777, #1778, #1780, #1782, #1783, #1784, #1789, #1802)
+
+- **Exports.** Every public type is exported from the package root; 23 were not. A test now fails on a type left out.
+- **Errors.** `TokenLimitExceededError` is no longer a `BackpressureError`. Every error has `retryable`. A new `RateLimitedError` (a `BackpressureError`) carries `retryAfterMs` from `Retry-After`. See the upgrade notes.
+- **Typed overlays.** `AgentDefOverlay` types all its fields, with wire-shaped (snake_case) nested blocks. `createHookDef` / `forkHookDef`, `createScheduleDef` / `forkScheduleDef` and `createWebhookDef` / `forkWebhookDef` check their overlays at compile time. `ensureHookDef(name, overlay)` registers a hook only when it changed.
+- **New methods.** Schedules (`listAllSchedules`, `getScheduleState`, `runScheduleNow`, `pauseSchedule`, `resumeSchedule`), `listModels`, `getRouting`, eleven `list<X>DefNames`, `getCredential`, and the change feeds `streamMemoryChanges` / `streamDocumentChanges`, which yield `feed`, `change` and `error` items.
+- **Fixes.** `runTeam` accepts a target whose mode is chosen at run time, and `TeamRunResult.steps` is optional. `forkTeam` takes `promote`, `parentDefId` and `description`. `TeamRunTarget.interruptOnCap` is sent.
+- **Schedule times.** On the server, an unset `last_run_at` or `paused_until` on `GET /v1/_schedules/{def_id}/state`, and an unset `last_updated` on `GET /v1/_schedules/list-all`, are now left out. They were sent as `0001-01-01T00:00:00Z`.
+
+### The Teams bridge (#1771)
+
+`@loomcycle/teams-bridge` 0.1.0 is a Microsoft Teams bot for loomcycle interactive agents. It is a separate package that talks to loomcycle through `@loomcycle/client` and needs no runtime change. Run it with `npx @loomcycle/teams-bridge`, or use it as a library.
+
+- Each Teams user gets their own loomcycle user (`teams-<entra object id>`) and a 12-hour token limited to the one agent. A group chat or channel runs as a user of its own, never as one of its members.
+- 1:1 chats stream; groups and channels get one message per turn. An interruption or a review hold becomes an Adaptive Card that only the conversation's owner can answer.
+- After a restart, the next message continues the stored session.
+- Activities from Entra tenants outside the allowlist never reach loomcycle.
+
+It publishes to npm on its own `teams-bridge-v*` tag, not with this release. Setup is in `packages/teams-bridge/README.md`.
+
+### Fixes (#1757, #1799, #1768)
+
+- **Ollama survives a model-runner crash** (#1757). Ollama's runner sometimes dies under load and fails every call on it before the stream starts. A chat or embedding call is now retried at most twice (after 2 s, then 5 s), a decision call once. Each retry emits the existing `retry` event. A fault inside a started stream is never retried.
+- **A data race in the loop** (#1799). The loop wrote timing onto the provider's own usage value, which a provider may share between calls. It now stamps a copy. Nothing a client sees changes.
+- **`LICENSE` and `NOTICE`** (#1768). The repository has an Apache-2.0 `NOTICE`. Release archives ship it beside `LICENSE`, and every Docker image has both under `/usr/share/doc/loomcycle/`. The browser image also carries pinchtab's MIT license under `/usr/share/doc/pinchtab/`.
+
+### Upgrade notes
+
+- **A config that sets `decision.max_concurrent` or `memory.reranker.max_concurrent` no longer loads** (#1767), in any layer or on hot reload. Move the cap to `providers.<id>.lanes.decision.max_concurrent`, or for a listwise rerank to `providers.<id>.lanes.chat.max_concurrent` (or `max_concurrent`). The error names the replacement.
+- **Unattributed `${NAME}` MCP server definitions are refused by default** (#1796). Before upgrading, look in the boot log for `mcp_server_defs: WARNING:` lines; each listed version will stop dialing. An admin acting in that tenant re-saves it (`create` with the same overlay) or retires it. `LOOMCYCLE_MCP_REFUSE_UNATTRIBUTED_ENV=0` keeps the old warn-and-dial while the re-saves are pending; any other value, or none, refuses.
+- **A run that cannot start at once is queued, not refused** (#1776). A client that relied on an immediate 429 should send `admission: "reject"`. A run over its user's `max_concurrent_runs_per_user` now waits too (up to `max_queued_runs_per_user`); with `reject` it still gets `429 per_user_quota_exhausted`. Clients that switch on run status or event type will see the new status `queued` and the events `queued`, `admitted`, `call_queued` and `call_admitted`.
+- **A run on a busy provider waits instead of failing** (#1750, #1762). `provider_concurrency_exhausted` now goes only to the LLM gateway, `/v1/embeddings`, `/v1/_decide` and the describe route.
+- **Size `max_concurrent_runs` for call lanes** (#1762). A run waiting for a provider's lane holds its run slot. With a small `max_concurrent_runs` and a capped local provider, local runs can fill it and hold cloud runs at admission. Raise `max_concurrent_runs`; the lanes now bound the provider's load.
+- **Queued runs and secrets** (#1779). A queued run's per-run secrets come back after a restart only when `LOOMCYCLE_SECRET_KEY` is set and unchanged. Without it, such a run is failed at boot with stop reason `restarted`.
+- **Removed:** `provider_queue_timeout_ms` and `LOOMCYCLE_PROVIDER_QUEUE_TIMEOUT_MS` (#1750). An old yaml key is ignored.
+- **Default changed:** `max_queue_depth` is 32, was 16 (#1776). `provider_queue_depth` inherits it when unset.
+- **Credential `expires_at` is enforced** (#1800). An expired credential is refused wherever it resolves. An expired or URL-restricted provider or tool key is never replaced by the operator's key or a host variable of the same name; the call fails. Check for expired credentials before upgrading and create them again. A create with an `expires_at` that is not in the future, or outside 1678–2262, is refused.
+- **A GitHub App token request goes through the network guard** (#1764). A GitHub Enterprise server on a private network must be listed in `LOOMCYCLE_HTTP_PRIVATE_HOST_ALLOWLIST`. This applies to `$ghapp:` in MCP headers too, not only to clones.
+- **Webhooks** (#1781, #1785). A `WebhookDef` overlay with an unknown, repeated or case-only key, or a key the server sets, is refused where it was accepted or ignored. A fork of a definition whose `body_size_limit_bytes` is above `LOOMCYCLE_MAX_REQUEST_BYTES` is refused until it lowers it. A verification secret that names one of loomcycle's own secrets (`LOOMCYCLE_AUTH_TOKEN`, `LOOMCYCLE_PG_DSN`, `LOOMCYCLE_SECRET_KEY`, a principal's `token_env`, …) is refused when written; an existing one answers every delivery with 503 and gets a boot warning.
+- **`Read` refuses an unknown argument** by name (#1749); it was ignored. The tool's description changed, so agents with `Read` miss the prompt cache once.
+- **`GET /v1/users/{user_id}/agents`** (#1794): an unknown `status`, or `all` with other statuses, is now `400 invalid_status`, and an unknown `awaited_state` is `400 invalid_awaited_state`. They returned an empty list.
+- **Schedule state** (#1783): an unset `last_run_at` / `paused_until`, and `last_updated` on list-all, are left out, not `0001-01-01T00:00:00Z`.
+- **Scope 403s have a JSON body** (#1792). The status, the `insufficient scope` text and the `WWW-Authenticate` header are unchanged. A client that parsed the body as text should read `error`.
+- **MCP `configured_run` refusals** (#1791): `configured_run_cap` is category `business` and not retryable (was transient); `no_store` is `business`; the 403s are `permission`; `rate_limited` carries `retryAfterSeconds`. On gRPC, a 403 is `PermissionDenied`, was `Internal`.
+- **`@loomcycle/client`: `TokenLimitExceededError` is no longer a `BackpressureError`** (#1782). Code that retried every `BackpressureError` retried a hard budget refusal forever. Check `e.retryable` instead. The Python client keeps its classes and adds `retryable`, false for `token_limit_exceeded` and `configured_run_cap`.
+- **Migration 0103** adds `runs.queued_input` (#1779). It is additive.
+- **Snapshots** gain a `queued_runs` section (#1779), and the restore result two counts, `queued_runs` and `queued_runs_requeued`.
+- **gRPC:** new RPC `Evaluation`; new fields `Event.admission` (`AdmissionInfo`, with `provider` and `kind`), `RunRequest.admission`, `Agent.queue_position` / `queue_reason`, and `ListUserAgents` `statuses` / `awaited_states` / `truncated`.
+- **New HTTP routes:** `POST /v1/_evaluation` and `GET /v1/_agentdef/{name}/overridable`.
+- **New settings:** the eight `LOOMCYCLE_GIT_SOURCE_*` settings above (off unless `LOOMCYCLE_GIT_SOURCE_HOSTS` is set); `LOOMCYCLE_MAX_QUEUED_RUNS_PER_USER` (16); and on a provider, `lanes`, `max_models_in_flight` (0, unlimited) and `model_switch_max_wait_ms` (30000 when `max_models_in_flight` is set).
+- **Clients:** `@loomcycle/client` 1.113.0 publishes with this tag (#1803). New in it: the queued-run and call-lane events, `admission`, `retryable` and `RateLimitedError`, `InsufficientScopeError`, the evaluation, schedule, routing, model, def-name, credential, overridable and change-feed methods, typed overlays, and the hook signature verifiers. The Python client gains `admission`, `queue_position`, the lane fields on `AdmissionInfo`, `retryable`, `evaluation()` and its helpers, `list_user_agents` statuses and awaited states, and the signature verifiers; it publishes on its own `python-v*` tag.
+- **Packages:** `@loomcycle/def-fields` 0.5.0 (the `allow_overrides` and `retention` agent fields) and `@loomcycle/library` 0.8.0 (on def-fields `^0.5.0`) are on npm, published by their own tags. The `ephemeral_volumes` and `signing_secret` fields are in def-fields and reach npm with its next release. `@loomcycle/teams-bridge` publishes on its own tag.
+
 ## What's in v1.112.0
 
 *A deployment can now hand a token to a machine it does not control, and run agents on content it may not keep. A token can **expire**, be **limited to certain agents**, be **locked out of per-run settings**, be **rate limited**, and be made **no-trace**. A **no-trace run** delivers what it says to its caller and stores none of it. A stored **run tree can be deleted**. Token budgets can be **enforced on runs in flight**, and the raw model endpoints are now gated and metered.*
