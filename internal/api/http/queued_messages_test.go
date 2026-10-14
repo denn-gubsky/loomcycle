@@ -30,6 +30,19 @@ func finishedSession(t *testing.T, s *Server, gate chan struct{}) string {
 	return run.SessionID
 }
 
+// postStream POSTs body and returns once the response headers arrive: a
+// queued continuation answers with its stream at once, so a handler that
+// instead holds the request until it has a slot fails here rather than hanging.
+func postStream(t *testing.T, url, body string) *http.Response {
+	t.Helper()
+	client := &http.Client{Transport: &http.Transport{ResponseHeaderTimeout: 3 * time.Second}}
+	resp, err := client.Post(url, "application/json", strings.NewReader(body))
+	if err != nil {
+		t.Fatalf("POST %s: %v (a continuation that has to wait should answer with its stream at once)", url, err)
+	}
+	return resp
+}
+
 // POST /v1/sessions/{id}/messages queues like POST /v1/runs: a continuation
 // that cannot start at once opens its stream when it queues — session, agent
 // and queued frames while it waits, its row in status queued with its request
@@ -46,10 +59,7 @@ func TestHandleMessages_QueuedContinuationStreamsWhileItWaits(t *testing.T) {
 	ts := httptest.NewServer(s.Mux())
 	defer ts.Close()
 	body := `{"agent_id":"a_qmsg","segments":[{"role":"user","content":[{"type":"trusted-text","text":"continued while full"}]}]}`
-	resp, err := http.Post(ts.URL+"/v1/sessions/"+sessionID+"/messages", "application/json", strings.NewReader(body))
-	if err != nil {
-		t.Fatal(err)
-	}
+	resp := postStream(t, ts.URL+"/v1/sessions/"+sessionID+"/messages", body)
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("status = %d, want 200 (a stream)", resp.StatusCode)
@@ -132,11 +142,8 @@ func TestHandleMessages_CancelledWhileQueuedEndsCancelled(t *testing.T) {
 
 	ts := httptest.NewServer(s.Mux())
 	defer ts.Close()
-	resp, err := http.Post(ts.URL+"/v1/sessions/"+sessionID+"/messages", "application/json",
-		strings.NewReader(`{"agent_id":"a_qmsgcancel","segments":[{"role":"user","content":[{"type":"trusted-text","text":"x"}]}]}`))
-	if err != nil {
-		t.Fatal(err)
-	}
+	resp := postStream(t, ts.URL+"/v1/sessions/"+sessionID+"/messages",
+		`{"agent_id":"a_qmsgcancel","segments":[{"role":"user","content":[{"type":"trusted-text","text":"x"}]}]}`)
 	defer resp.Body.Close()
 	sc := bufio.NewScanner(resp.Body)
 	for sc.Scan() {
