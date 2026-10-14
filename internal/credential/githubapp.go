@@ -282,7 +282,14 @@ func (m *GitHubAppMinter) mint(ctx context.Context, cfg ghAppConfig) (string, ti
 	defer resp.Body.Close()
 	rb, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	if resp.StatusCode != http.StatusCreated {
-		return "", time.Time{}, fmt.Errorf("installation token request: HTTP %d: %s", resp.StatusCode, truncateGH(string(rb), 200))
+		// Only GitHub's own message is reported, never the body: this error
+		// reaches the operator's log, and the body of an answer from a token
+		// endpoint can hold a token (a server or a proxy answering 200).
+		var ghErr struct {
+			Message string `json:"message"`
+		}
+		_ = json.Unmarshal(rb, &ghErr)
+		return "", time.Time{}, fmt.Errorf("installation token request: HTTP %d: %s", resp.StatusCode, truncateGH(ghErr.Message, 200))
 	}
 	var out struct {
 		Token     string    `json:"token"`
