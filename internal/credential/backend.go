@@ -51,6 +51,20 @@ type inlineDefinition struct {
 	// what the value is sealed with (Identity.Bound): a row whose list was
 	// edited, added or removed no longer decrypts.
 	AllowedURLs *[]string `json:"allowed_urls,omitempty"`
+	// Username is the user name sent with the value where a destination
+	// takes one (HTTP basic auth for a git source). Optional. Stored in the
+	// clear and NOT part of what the value is sealed with: it is not secret,
+	// and changing it cannot send the value anywhere new.
+	Username string `json:"username,omitempty"`
+}
+
+// usernameOf reads the user name out of a stored definition ("" for none).
+func usernameOf(def json.RawMessage) string {
+	var d inlineDefinition
+	if err := json.Unmarshal(def, &d); err != nil {
+		return ""
+	}
+	return d.Username
 }
 
 // restrictionOf reads the URL restriction out of a stored definition without
@@ -84,9 +98,9 @@ func (b inlineBackend) Resolve(_ context.Context, def json.RawMessage, id Identi
 	return string(pt), nil
 }
 
-// sealInline builds the stored definition for a plaintext secret and its URL
-// restriction (nil for none).
-func (b inlineBackend) sealInline(plaintext string, id Identity, allowedURLs *[]string) (json.RawMessage, error) {
+// sealInline builds the stored definition for a plaintext secret, its URL
+// restriction (nil for none) and its user name ("" for none).
+func (b inlineBackend) sealInline(plaintext string, id Identity, allowedURLs *[]string, username string) (json.RawMessage, error) {
 	// A pointer to a nil slice would be written as JSON null and read back
 	// as "no restriction", while the value was sealed as "sent nowhere": a
 	// credential that can never be opened. Store an empty list as one.
@@ -98,7 +112,7 @@ func (b inlineBackend) sealInline(plaintext string, id Identity, allowedURLs *[]
 	if err != nil {
 		return nil, err
 	}
-	return json.Marshal(inlineDefinition{Value: sealed, AllowedURLs: allowedURLs})
+	return json.Marshal(inlineDefinition{Value: sealed, AllowedURLs: allowedURLs, Username: username})
 }
 
 // externalStub is a placeholder for the Phase-4 external backends: the pointer

@@ -48,6 +48,8 @@ type Meta struct {
 	// secret, so it is what the row SAYS; a row whose list was changed
 	// behind the engine's back shows the changed list and no longer resolves.
 	AllowedURLs *[]string
+	// Username is the user name stored with the value ("" for none).
+	Username string
 }
 
 // PutInline seals plaintext and upserts the row (create / update / rotate —
@@ -60,7 +62,11 @@ type Meta struct {
 // second write, and a rotation that forgot the list must not quietly turn a
 // restricted credential into one that can be sent anywhere. The restriction
 // comes off by deleting the credential and creating it again.
-func (e *Engine) PutInline(ctx context.Context, id Identity, plaintext string, expiresAt *time.Time, allowedURLs *[]string) (Meta, error) {
+//
+// username, already checked (ValidUsername), is the user name to store with
+// the value. nil keeps the one the credential has, so a rotation keeps it
+// too; a pointer to "" removes it.
+func (e *Engine) PutInline(ctx context.Context, id Identity, plaintext string, expiresAt *time.Time, allowedURLs *[]string, username *string) (Meta, error) {
 	if !e.sealer.Enabled() {
 		return Meta{}, ErrNoKey
 	}
@@ -71,7 +77,17 @@ func (e *Engine) PutInline(ctx context.Context, id Identity, plaintext string, e
 		}
 		allowedURLs = kept
 	}
-	def, err := e.inline.sealInline(plaintext, id, allowedURLs)
+	name := ""
+	if username != nil {
+		name = *username
+	} else {
+		kept, err := e.existingUsername(ctx, id)
+		if err != nil {
+			return Meta{}, err
+		}
+		name = kept
+	}
+	def, err := e.inline.sealInline(plaintext, id, allowedURLs, name)
 	if err != nil {
 		return Meta{}, err
 	}
@@ -83,6 +99,20 @@ func (e *Engine) PutInline(ctx context.Context, id Identity, plaintext string, e
 		return Meta{}, err
 	}
 	return metaOf(row), nil
+}
+
+// existingUsername returns the user name of the credential stored under id,
+// or "" when there is no such credential or it has none.
+func (e *Engine) existingUsername(ctx context.Context, id Identity) (string, error) {
+	row, err := e.store.CredentialDefGet(ctx, id.TenantID, id.Scope, id.ScopeID, id.Name)
+	if err != nil {
+		var nf *store.ErrNotFound
+		if errors.As(err, &nf) {
+			return "", nil
+		}
+		return "", err
+	}
+	return usernameOf(row.Definition), nil
 }
 
 // existingRestriction returns the URL restriction of the credential stored
@@ -150,6 +180,10 @@ type Resolved struct {
 	// none. Unlike Meta.AllowedURLs it is proven: the value would not have
 	// opened with any other list.
 	AllowedURLs *[]string
+	// Username is the user name stored with the value ("" for none). Not
+	// sealed with it: a caller uses it only beside the value, to a
+	// destination the value is already allowed to reach.
+	Username string
 }
 
 // Resolve finds a credential by NAME using scope precedence agent > user >
@@ -220,7 +254,7 @@ func (e *Engine) resolve(ctx context.Context, tenantID, agentName, userID, name 
 		if err != nil {
 			return Resolved{}, false, err
 		}
-		return Resolved{Value: val, Scope: b.scope, ScopeID: b.id, Backend: row.Backend, AllowedURLs: allowed}, true, nil
+		return Resolved{Value: val, Scope: b.scope, ScopeID: b.id, Backend: row.Backend, AllowedURLs: allowed, Username: usernameOf(row.Definition)}, true, nil
 	}
 	return Resolved{}, false, nil
 }
@@ -277,7 +311,7 @@ func (e *Engine) backendFor(name string) (Backend, error) {
 // metaOf reads what may be shown out of a row and drops the sealed Definition
 // — the only shape that ever leaves the engine toward a caller or a log.
 func metaOf(row store.CredentialDefRow) Meta {
-	m := Meta{AllowedURLs: restrictionOf(row.Definition)}
+	m := Meta{AllowedURLs: restrictionOf(row.Definition), Username: usernameOf(row.Definition)}
 	row.Definition = nil
 	m.CredentialDefRow = row
 	return m

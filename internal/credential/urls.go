@@ -155,3 +155,25 @@ func boundURLs(allowed *[]string) []byte {
 	// Entries are canonical URLs, which cannot contain the separator.
 	return []byte("urls\x1e" + strings.Join(*allowed, "\x1e"))
 }
+
+// maxUsernameLen bounds a stored user name.
+const maxUsernameLen = 256
+
+// ValidUsername checks a user name to store with a credential. It goes into
+// HTTP basic auth as "<username>:<value>", so it may not hold a colon, nor a
+// control character (a header could be split by one). Empty is valid: it
+// means none.
+func ValidUsername(u string) error {
+	if len(u) > maxUsernameLen {
+		return fmt.Errorf("credential: username is longer than %d bytes", maxUsernameLen)
+	}
+	for _, r := range u {
+		if r == ':' {
+			return errors.New("credential: username may not contain ':'")
+		}
+		if r < 0x20 || r == 0x7f {
+			return errors.New("credential: username may not contain a control character")
+		}
+	}
+	return nil
+}

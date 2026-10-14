@@ -3406,6 +3406,8 @@ export interface CredentialMeta {
   // The https URLs the value may be sent to. Absent = unrestricted;
   // [] = sent nowhere.
   allowed_urls?: string[];
+  // The user name sent with the value (basic auth for a git source).
+  username?: string;
 }
 
 export interface CredentialListResponse {
@@ -3433,6 +3435,8 @@ export function createCredential(input: {
   value: string;
   // Omitted = no restriction (or keep the stored one on a rotation).
   allowed_urls?: string[];
+  // Omitted = none (or keep the stored one on a rotation).
+  username?: string;
 }): Promise<CredentialMeta> {
   return jsonFetch<CredentialMeta>("/v1/_credentialdef", {
     method: "POST",

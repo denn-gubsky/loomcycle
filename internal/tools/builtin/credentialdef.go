@@ -63,7 +63,8 @@ const credentialDefInputSchema = `{
     "value":      {"type": "string", "description": "create only: the plaintext secret to encrypt (inline backend). Masked from the persisted transcript; never returned."},
     "backend":    {"type": "string", "enum": ["inline"], "description": "create only: storage backend (default inline; external backends are a future addition)."},
     "expires_at": {"type": "string", "description": "create only: optional RFC3339 soft-expiry (advisory rotation reminder)."},
-    "allowed_urls": {"type": "array", "items": {"type": "string"}, "description": "create only: the https URLs this value may be sent to, e.g. [\"https://github.com/acme/app\"]. An entry covers that URL and everything under it, by whole path segments. Omit for no restriction; pass [] for a value that is never sent anywhere. Omitting it when the credential already exists keeps the list it has, so rotating a value does not lift its restriction; to lift one, delete the credential and create it again. A restricted credential cannot be used in a $cred: header or as a provider key."}
+    "allowed_urls": {"type": "array", "items": {"type": "string"}, "description": "create only: the https URLs this value may be sent to, e.g. [\"https://github.com/acme/app\"]. An entry covers that URL and everything under it, by whole path segments. Omit for no restriction; pass [] for a value that is never sent anywhere. Omitting it when the credential already exists keeps the list it has, so rotating a value does not lift its restriction; to lift one, delete the credential and create it again. A restricted credential is used only where the destination is known and covered: an MCP server's header, a hook's webhook header, a remote memory or document peer's key, a git source. It is never a provider key or a Bash environment variable."},
+    "username":   {"type": "string", "description": "create only: optional user name sent with the value where the destination takes one: HTTP basic auth for a git source (default by host: oauth2 for GitLab, x-access-token otherwise). No ':' and no control characters. Omitting it when the credential already exists keeps the one it has; pass \"\" to remove it."}
   },
   "required": ["op"]
 }`
@@ -82,6 +83,9 @@ type credentialDefInput struct {
 	// A pointer, so an absent list (no restriction) and an empty one (sent
 	// nowhere) stay different.
 	AllowedURLs *[]string `json:"allowed_urls"`
+	// A pointer, so an absent user name (keep the stored one) and an empty
+	// one (remove it) stay different.
+	Username *string `json:"username"`
 }
 
 var credNameRe = regexp.MustCompile(`^[A-Za-z0-9_-]{1,128}$`)
@@ -172,8 +176,13 @@ func (c *CredentialDef) execCreate(ctx context.Context, tenantID, scope, scopeID
 	if uerr != nil {
 		return errResult("create: " + uerr.Error()), nil
 	}
+	if in.Username != nil {
+		if err := credential.ValidUsername(*in.Username); err != nil {
+			return errResult("create: " + err.Error()), nil
+		}
+	}
 	id := credential.Identity{TenantID: tenantID, Scope: scope, ScopeID: scopeID, Name: in.Name}
-	row, err := c.Engine.PutInline(ctx, id, in.Value, expires, allowed)
+	row, err := c.Engine.PutInline(ctx, id, in.Value, expires, allowed, in.Username)
 	if err != nil {
 		return errResult("create: " + err.Error()), nil
 	}
@@ -234,6 +243,9 @@ func credentialMeta(row credential.Meta, note string) map[string]any {
 	// Present only for a restricted credential; [] means "sent nowhere".
 	if row.AllowedURLs != nil {
 		m["allowed_urls"] = *row.AllowedURLs
+	}
+	if row.Username != "" {
+		m["username"] = row.Username
 	}
 	if note != "" {
 		m["status"] = note

@@ -40,7 +40,7 @@ func peerCredsOver(t *testing.T, s store.Store, creds ...storedCred) *PeerCreden
 	}
 	eng := credential.NewEngine(s, sealer)
 	for _, c := range creds {
-		if _, err := eng.PutInline(context.Background(), credential.Identity{TenantID: c.tenant, Scope: c.scope, ScopeID: c.scopeID, Name: c.name}, c.value, nil, nil); err != nil {
+		if _, err := eng.PutInline(context.Background(), credential.Identity{TenantID: c.tenant, Scope: c.scope, ScopeID: c.scopeID, Name: c.name}, c.value, nil, nil, nil); err != nil {
 			t.Fatalf("seed credential %s/%s: %v", c.tenant, c.name, err)
 		}
 	}

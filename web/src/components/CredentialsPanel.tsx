@@ -55,6 +55,8 @@ export function CredentialsPanel({ userOnly = false }: { userOnly?: boolean }) {
   // Optional URL restriction, as typed: comma- or space-separated https URLs,
   // or the word "none" for a value that is sent nowhere.
   const [allowedURLs, setAllowedURLs] = useState("");
+  // Optional user name sent with the value (basic auth for a git source).
+  const [username, setUsername] = useState("");
   const [scope, setScope] = useState<CredentialScope>(
     userOnly ? "user" : "tenant",
   );
@@ -114,10 +116,12 @@ export function CredentialsPanel({ userOnly = false }: { userOnly?: boolean }) {
         name: created,
         value,
         ...parseAllowedURLs(allowedURLs),
+        ...(username.trim() ? { username: username.trim() } : {}),
       });
       setValue(""); // clear the secret immediately
       setName("");
       setAllowedURLs("");
+      setUsername("");
       setFlash(`stored ${useScope} credential "${created}"`);
       setDisabled(false);
       await refresh();
@@ -215,10 +219,23 @@ export function CredentialsPanel({ userOnly = false }: { userOnly?: boolean }) {
             "https URLs this value may be sent to, separated by commas. " +
             "Type none for a value that is never sent anywhere. " +
             "Left empty: no restriction, or the stored one is kept on a rotation. " +
-            "A restricted credential does not work in a $cred: header or as a provider key."
+            "A restricted credential is used only where the destination is covered " +
+            "(an MCP server's or a hook's header, a remote peer, a git source), never as a provider key."
           }
           value={allowedURLs}
           onChange={(e) => setAllowedURLs(e.target.value)}
+          autoComplete="off"
+          spellCheck={false}
+        />
+        <input
+          type="text"
+          placeholder="username (optional)"
+          title={
+            "The user name sent with the value where a destination takes one " +
+            "(HTTP basic auth for a git source). Left empty: none, or the stored one is kept on a rotation."
+          }
+          value={username}
+          onChange={(e) => setUsername(e.target.value)}
           autoComplete="off"
           spellCheck={false}
         />
@@ -268,6 +285,9 @@ export function CredentialsPanel({ userOnly = false }: { userOnly?: boolean }) {
                         ? "sent nowhere"
                         : `only to ${r.allowed_urls.join(", ")}`}
                     </div>
+                  )}
+                  {r.username && (
+                    <div className="settings-muted">user {r.username}</div>
                   )}
                 </td>
                 {!userOnly && <td>{r._scope}</td>}
