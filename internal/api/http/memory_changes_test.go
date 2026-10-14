@@ -3,6 +3,7 @@ package http
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -219,3 +220,157 @@ func (s *stubEmbedder) Embed(context.Context, []string) ([][]float32, error) {
 func (s *stubEmbedder) Model() string    { return "stub-model" }
 func (s *stubEmbedder) Provider() string { return "stub" }
 func (s *stubEmbedder) Dimension() int   { return 1 }
+
+// failingChangeStore serves GetMemoryChangesSince from a script, one step per
+// call; every other Store method is unimplemented (the nil embedded interface
+// panics), which is fine because the change feed calls nothing else.
+type failingChangeStore struct {
+	store.Store
+	steps  []changeStep
+	sinces []int64
+	// done is called when the script runs out; the call then reports ctx's error,
+	// as a real driver does when its context is cancelled mid-read.
+	done func()
+}
+
+type changeStep struct {
+	rows []store.MemoryChange
+	err  error
+}
+
+func (f *failingChangeStore) GetMemoryChangesSince(ctx context.Context, _ string, afterSeq int64, _ int) ([]store.MemoryChange, error) {
+	f.sinces = append(f.sinces, afterSeq)
+	if len(f.sinces) > len(f.steps) {
+		if f.done != nil {
+			f.done()
+		}
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		return nil, errors.New("script exhausted")
+	}
+	st := f.steps[len(f.sinces)-1]
+	return st.rows, st.err
+}
+
+// TestMemoryChanges_StoreReadFailureSendsAnErrorFrame.
+//
+// A store read error used to be swallowed and polling simply continued, so a
+// broken store looked exactly like a quiet feed: keepalives, no change frames, no
+// sign anything was wrong. The reader must be told — and told without the
+// driver's own error text, which can name hosts, roles or credentials.
+func TestMemoryChanges_StoreReadFailureSendsAnErrorFrame(t *testing.T) {
+	leaky := errors.New("dial tcp db.internal:5432: password authentication failed for user hunter2")
+	fs := &failingChangeStore{}
+	for i := 0; i < 50; i++ {
+		fs.steps = append(fs.steps, changeStep{err: leaky})
+	}
+	srv := &Server{store: fs, cfgHolder: config.NewHolder(&config.Config{})}
+
+	for path, h := range map[string]http.HandlerFunc{
+		"/v1/_memory/changes":   srv.handleMemoryChanges,
+		"/v1/_document/changes": srv.handleDocumentChanges,
+	} {
+		fs.sinces = nil
+		body := runSSEOnce(t, h, path)
+		if n := strings.Count(body, "event: error\n"); n != 1 {
+			t.Fatalf("%s: want exactly one error frame, got %d:\n%s", path, n, body)
+		}
+		frame := body[strings.Index(body, "event: error\n"):]
+		frame = frame[:strings.Index(frame, "\n\n")]
+		if !strings.Contains(frame, `"code":"store_unavailable"`) {
+			t.Errorf("%s: error frame missing code store_unavailable:\n%s", path, frame)
+		}
+		// The client backfills `type` from the event name, as for `feed`; a type in
+		// the payload would override that.
+		if strings.Contains(frame, `"type"`) {
+			t.Errorf("%s: error frame must not carry a type field:\n%s", path, frame)
+		}
+		for _, secret := range []string{"hunter2", "db.internal", "password"} {
+			if strings.Contains(body, secret) {
+				t.Errorf("%s: the frame leaked the driver's error text (%q):\n%s", path, secret, body)
+			}
+		}
+	}
+}
+
+// TestMemoryChanges_FailureStreakSendsOneErrorFrameAndSkipsNothing drives the
+// tail loop through two failure streaks and checks the four properties that make
+// the error frame trustworthy: one frame per streak (not one per poll), the
+// cursor holds across a failure so no change is skipped, changes resume after
+// recovery, and the backoff resets once reads succeed.
+func TestMemoryChanges_FailureStreakSendsOneErrorFrameAndSkipsNothing(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	boom := errors.New("boom")
+	fs := &failingChangeStore{
+		steps: []changeStep{
+			{err: boom}, // streak 1 begins: one error frame
+			{err: boom},
+			{err: boom},
+			{rows: []store.MemoryChange{ // recovery: everything since 0 arrives
+				{Seq: 1, Type: store.MemoryChangeSet, ScopeID: "a1", Key: "k1"},
+				{Seq: 2, Type: store.DocumentChangeUpdated, ScopeID: "a1", ChunkID: "CID"},
+				{Seq: 3, Type: store.MemoryChangeSet, ScopeID: "a1", Key: "k3"},
+			}},
+			{},          // quiet
+			{err: boom}, // streak 2 begins: a second error frame
+			{},          // recovered, nothing new
+		},
+		done: cancel,
+	}
+	srv := &Server{store: fs, cfgHolder: config.NewHolder(&config.Config{})}
+
+	rec := httptest.NewRecorder()
+	stream, ok := newSSE(rec)
+	if !ok {
+		t.Fatal("recorder does not support streaming")
+	}
+	stream.start()
+
+	const base, ceiling = 10 * time.Millisecond, 40 * time.Millisecond
+	var slept []time.Duration
+	srv.tailMemoryChanges(ctx, stream, "t1", 0, false, changeFeedPolling{
+		base: base, max: ceiling,
+		sleep: func(ctx context.Context, d time.Duration) bool {
+			slept = append(slept, d)
+			return ctx.Err() == nil
+		},
+	})
+	body := rec.Body.String()
+
+	// The final read is cut short by the cancelled context; that is the reader
+	// leaving, not a third streak.
+	if n := strings.Count(body, "event: error\n"); n != 2 {
+		t.Errorf("want one error frame per streak (2), got %d:\n%s", n, body)
+	}
+
+	// The cursor stays at 0 through the failures, so the recovering read asks for
+	// everything the failed ones would have returned.
+	wantSince := []int64{0, 0, 0, 0, 3, 3, 3, 3}
+	if fmt.Sprint(fs.sinces) != fmt.Sprint(wantSince) {
+		t.Errorf("read cursors = %v, want %v (a failure must not move the cursor)", fs.sinces, wantSince)
+	}
+
+	if strings.Count(body, `"key":"k1"`) != 1 || strings.Count(body, `"key":"k3"`) != 1 {
+		t.Errorf("each memory change must arrive exactly once after recovery:\n%s", body)
+	}
+	if strings.Contains(body, `"CID"`) {
+		t.Errorf("memory feed leaked a document change:\n%s", body)
+	}
+	if strings.Index(body, `"k1"`) > strings.Index(body, `"k3"`) {
+		t.Errorf("changes arrived out of order:\n%s", body)
+	}
+	// Recovery does not repeat the opening frame (sent by the handler, never by
+	// the tail loop).
+	if strings.Contains(body, "event: feed") {
+		t.Errorf("recovery must not re-send the feed frame:\n%s", body)
+	}
+
+	// Doubling up to the cap during a streak; back to base on success; and the
+	// second streak starts from base again rather than where the first left off.
+	wantSlept := []time.Duration{2 * base, 4 * base, ceiling, base, base, 2 * base, base}
+	if fmt.Sprint(slept) != fmt.Sprint(wantSlept) {
+		t.Errorf("sleeps = %v, want %v", slept, wantSlept)
+	}
+}
