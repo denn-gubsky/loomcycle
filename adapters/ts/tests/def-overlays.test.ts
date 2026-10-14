@@ -266,6 +266,27 @@ describe("ensureHookDef", () => {
     expect((await client.ensureHookDef("gate", overlay)).changed).toBe(true);
   });
 
+  it("a changed or added signing secret is a change", async () => {
+    const signed: HookDefOverlay = { ...overlay, body: { ...overlay.body, kind: "http", url: "https://hooks.example/gate", signing_secret: "$cred:sign-new" } };
+    const rotated = makeClient([
+      jsonResponse({ deployed: true, current_def_id: "hdf_3", version: 3, name: "gate", matches: false, current_sha256: "x" }),
+      jsonResponse({ def_id: "hdf_3", name: "gate", version: 3, definition: { ...stored, body: { ...stored.body, signing_secret: "$cred:sign-old" } } }),
+      jsonResponse({ def_id: "hdf_4", name: "gate", version: 4 }),
+    ]);
+    expect((await rotated.client.ensureHookDef("gate", signed)).changed).toBe(true);
+    const added = makeClient([
+      jsonResponse({ deployed: true, current_def_id: "hdf_3", version: 3, name: "gate", matches: false, current_sha256: "x" }),
+      jsonResponse({ def_id: "hdf_3", name: "gate", version: 3, definition: stored }),
+      jsonResponse({ def_id: "hdf_4", name: "gate", version: 4 }),
+    ]);
+    expect((await added.client.ensureHookDef("gate", signed)).changed).toBe(true);
+    const same = makeClient([
+      jsonResponse({ deployed: true, current_def_id: "hdf_3", version: 3, name: "gate", matches: false, current_sha256: "x" }),
+      jsonResponse({ def_id: "hdf_3", name: "gate", version: 3, definition: { ...stored, body: { ...stored.body, signing_secret: "$cred:sign-new" } } }),
+    ]);
+    expect((await same.client.ensureHookDef("gate", signed)).changed).toBe(false);
+  });
+
   it("forwards the abort signal on every call", async () => {
     const { client, fetchMock } = makeClient([
       jsonResponse({ deployed: false, current_def_id: "", version: 0, name: "g", matches: false, current_sha256: "" }),

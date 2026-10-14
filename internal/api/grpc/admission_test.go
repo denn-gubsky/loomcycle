@@ -37,6 +37,24 @@ func TestEventToProto_CarriesTheAdmissionPayload(t *testing.T) {
 	}
 }
 
+// A call_queued / call_admitted frame names the provider and lane kind the
+// call waits on: without them a client cannot tell which provider is slow.
+func TestEventToProto_CarriesTheCallLane(t *testing.T) {
+	q := eventToProto(providers.Event{Type: providers.EventCallQueued,
+		Admission: &providers.AdmissionInfo{Reason: "lane", Position: 2, Provider: "ollama-local", Kind: "chat"}})
+	if q.GetType() != "call_queued" {
+		t.Fatalf("type = %q, want call_queued", q.GetType())
+	}
+	if a := q.GetAdmission(); a == nil || a.GetReason() != "lane" || a.GetPosition() != 2 || a.GetProvider() != "ollama-local" || a.GetKind() != "chat" {
+		t.Fatalf("call_queued payload = %+v, want lane, position 2, ollama-local, chat", a)
+	}
+	ad := eventToProto(providers.Event{Type: providers.EventCallAdmitted,
+		Admission: &providers.AdmissionInfo{WaitMs: 900, Provider: "ollama-local", Kind: "chat"}})
+	if a := ad.GetAdmission(); a == nil || a.GetWaitMs() != 900 || a.GetProvider() != "ollama-local" || a.GetKind() != "chat" {
+		t.Fatalf("call_admitted payload = %+v, want wait_ms 900, ollama-local, chat", a)
+	}
+}
+
 // An event with no admission payload must not grow an empty one — a client
 // that checks presence would read every frame as an admission report.
 func TestEventToProto_LeavesOtherEventsWithoutAnAdmission(t *testing.T) {

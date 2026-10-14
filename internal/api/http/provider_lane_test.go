@@ -742,3 +742,70 @@ func waitForQueued(t *testing.T, sem *concurrency.Semaphore, want int) {
 	}
 	t.Fatalf("global queued = %d, want %d", sem.Stats().Queued, want)
 }
+
+// TestProviderLane_AWaitingCallIsReportedOnItsRun — a run whose model call has
+// to wait for its provider's lane reports it: call_queued (the provider, the
+// lane kind, why, its place) then call_admitted (how long), on its live stream
+// and in its transcript. A run whose call gets the slot at once reports
+// neither.
+func TestProviderLane_AWaitingCallIsReportedOnItsRun(t *testing.T) {
+	host := &meteredProvider{meter: &flightMeter{}, delay: 150 * time.Millisecond}
+	cfg := makeBaseConfig()
+	cfg.Agents["capped"] = config.AgentDef{Provider: "P", Model: "m", Tools: []string{}}
+	srv, sched := lanedServer(t, cfg, map[string]int{"P": 1}, map[string]providers.Provider{"P": host})
+	ts := httptest.NewServer(srv.Mux())
+	defer ts.Close()
+
+	bodies := make([]string, 2)
+	var wg sync.WaitGroup
+	for i := range bodies {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			bodies[i] = postLaneRun(t, ts, laneRunBody("capped", fmt.Sprintf("call-wait-%d", i)))
+		}()
+	}
+	wg.Wait()
+	assertLaneIdle(t, sched, "P")
+
+	waited := -1
+	for i, b := range bodies {
+		if strings.Contains(b, "event: call_queued") {
+			if waited >= 0 {
+				t.Fatalf("both runs reported a wait on a lane of one slot")
+			}
+			waited = i
+		}
+	}
+	if waited < 0 {
+		t.Fatalf("neither run reported its call's wait:\n%s\n---\n%s", bodies[0], bodies[1])
+	}
+	b := bodies[waited]
+	if !strings.Contains(b, `"admission":{"reason":"lane","position":1,"provider":"P","kind":"chat"}`) {
+		t.Errorf("call_queued payload missing or wrong in:\n%s", b)
+	}
+	if !strings.Contains(b, "event: call_admitted") || strings.Index(b, "event: call_admitted") < strings.Index(b, "event: call_queued") {
+		t.Errorf("call_admitted missing or before call_queued in:\n%s", b)
+	}
+	if strings.Contains(bodies[1-waited], "event: call_") {
+		t.Errorf("the run that got the slot at once reported a call wait:\n%s", bodies[1-waited])
+	}
+
+	run, err := srv.store.GetRunByAgentID(context.Background(), fmt.Sprintf("call-wait-%d", waited))
+	if err != nil {
+		t.Fatal(err)
+	}
+	evs, err := srv.store.GetRunEventsSince(context.Background(), run.ID, 0, 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var types []string
+	for _, ev := range evs {
+		if strings.HasPrefix(ev.Type, "call_") {
+			types = append(types, ev.Type)
+		}
+	}
+	if strings.Join(types, ",") != "call_queued,call_admitted" {
+		t.Errorf("transcript call events = %v, want call_queued then call_admitted", types)
+	}
+}

@@ -50,7 +50,7 @@ func (d *decisionDriver) Decide(ctx context.Context, req decision.Request) (*dec
 	if err := decision.Validate(req, d.inner.Limits(req.Model)); err != nil {
 		return nil, err
 	}
-	release, err := acquire(ctx, d.sched, d.floor, d.id, config.ModelKindDecision, req.Model)
+	release, err := acquire(ctx, d.sched, d.floor, d.id, config.ModelKindDecision, req.Model, nil)
 	if err != nil {
 		code := decision.CodeCallFailed
 		if errors.Is(err, context.DeadlineExceeded) {
@@ -119,7 +119,7 @@ func (e *Embedder) Embed(ctx context.Context, texts []string) ([][]float32, erro
 	if !e.sched.Gated(e.id, config.ModelKindEmbedder) {
 		return e.inner.Embed(ctx, texts)
 	}
-	release, err := acquire(ctx, e.sched, nil, e.id, config.ModelKindEmbedder, e.inner.Model())
+	release, err := acquire(ctx, e.sched, nil, e.id, config.ModelKindEmbedder, e.inner.Model(), nil)
 	if err != nil {
 		return nil, err
 	}

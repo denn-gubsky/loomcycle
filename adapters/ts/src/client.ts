@@ -4126,6 +4126,7 @@ function normalizeHookDef(d: HookDefOverlay): Record<string, unknown> {
   } else {
     if (d.body.url) body.url = d.body.url;
     if (d.body.headers && Object.keys(d.body.headers).length > 0) body.headers = d.body.headers;
+    if (d.body.signing_secret) body.signing_secret = d.body.signing_secret;
   }
   out.body = body;
   out.fail_mode = d.fail_mode || "open";

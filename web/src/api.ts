@@ -316,9 +316,13 @@ export interface LimitEventInfo {
 }
 
 export interface AdmissionEventInfo {
-  reason?: "user_cap" | "global_cap" | string; // on queued: the user's cap, or every slot taken
-  position?: number; // on queued: place when queued, 1 = next to start
-  wait_ms?: number; // on admitted: how long the run waited
+  // on queued: the user's cap, or every slot taken; on call_queued: "lane"
+  // (every slot of the call lane taken) or "models_in_flight"
+  reason?: "user_cap" | "global_cap" | "lane" | "models_in_flight" | string;
+  position?: number; // on queued / call_queued: place when queued, 1 = next
+  wait_ms?: number; // on admitted / call_admitted: how long it waited
+  provider?: string; // on call_*: the provider id the call waits on
+  kind?: string; // on call_*: the call lane's model kind ("chat")
 }
 
 // EventPayload mirrors providers.Event on the server side. Carried
@@ -383,7 +387,8 @@ export interface EventPayload {
   // both the live SSE `limit` frame and the persisted `limit` transcript row.
   limit?: LimitEventInfo;
   // "queued" / "admitted" sidecar — the run waits for a run slot (why, and its
-  // place when queued) / got one (how long it waited). Mirrors
+  // place when queued) / got one (how long it waited); on "call_queued" /
+  // "call_admitted" the same for one model call, with its provider. Mirrors
   // providers.AdmissionInfo.
   admission?: AdmissionEventInfo;
   // "hook_decision" sidecar — what one hook did to a call, to the run, or to a

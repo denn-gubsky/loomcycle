@@ -139,6 +139,13 @@ any value other than `wait`, `reject` or empty is `INVALID_ARGUMENT`.
 `GetAgent` / `GetRun` report a queued run's current `queue_position` and
 `queue_reason`.
 
+Once a run is running, a model call that has to wait for its provider
+(its call lane is full, or the provider has its cap of models in flight)
+puts a `call_queued` frame on the stream — `admission.reason` (`lane` |
+`models_in_flight`), `admission.position`, `admission.provider` and
+`admission.kind` — then `call_admitted` (`admission.wait_ms`, with the
+same provider and kind) when it gets its slot.
+
 Real provider events follow: `text`, `tool_use`, `tool_result`,
 `usage`, `retry`, `done`, `error`. Stream completion comes via either
 a `done` frame followed by a clean half-close, or a gRPC status error

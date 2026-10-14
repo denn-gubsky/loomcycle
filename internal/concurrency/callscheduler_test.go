@@ -428,3 +428,70 @@ func TestCallScheduler_AcquireBoundedRefusesWhenTheModelGateQueueIsFull(t *testi
 	rel()
 	relX()
 }
+
+// queueReports collects what a call's OnQueued saw.
+type queueReports struct {
+	mu  sync.Mutex
+	got []CallQueueInfo
+}
+
+func (r *queueReports) on(q CallQueueInfo) {
+	r.mu.Lock()
+	r.got = append(r.got, q)
+	r.mu.Unlock()
+}
+
+func (r *queueReports) list() []CallQueueInfo {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return append([]CallQueueInfo(nil), r.got...)
+}
+
+// TestCallScheduler_ReportsEachWaitBeforeItBlocks — a call that has to wait is
+// told why and where before it blocks, once per wait: for its model, then for a
+// lane slot. A call granted at once is told nothing. The lane position follows
+// the round-robin across users, not arrival order.
+func TestCallScheduler_ReportsEachWaitBeforeItBlocks(t *testing.T) {
+	s := NewCallScheduler(oneLane(LaneConfig{MaxConcurrent: 1}, 1))
+	var first queueReports
+	holdA := schedNow(t, s, "p", "chat", CallInfo{TenantID: "t", UserID: "a", Model: "m1", OnQueued: first.on})
+	if got := first.list(); len(got) != 0 {
+		t.Fatalf("a call granted at once reported %+v", got)
+	}
+
+	// m2 waits for its model: m1 holds the only model place.
+	var model queueReports
+	m2 := schedAsync(t, s, "p", "chat", CallInfo{TenantID: "t", UserID: "c", Model: "m2", OnQueued: model.on})
+	eventually(t, "m2 reported", func() bool { return len(model.list()) == 1 })
+	if got := model.list()[0]; got != (CallQueueInfo{Reason: CallQueueReasonModel, Position: 1}) {
+		t.Fatalf("m2 reported %+v, want models_in_flight position 1", got)
+	}
+
+	// Two more m1 calls from user a, then one from user b: b is served second,
+	// ahead of a3. Each place is the one it got when it queued.
+	var a2, a3, b1 queueReports
+	ra2 := schedAsync(t, s, "p", "chat", CallInfo{TenantID: "t", UserID: "a", Model: "m1", OnQueued: a2.on})
+	eventually(t, "a2 queued", func() bool { return len(a2.list()) == 1 })
+	ra3 := schedAsync(t, s, "p", "chat", CallInfo{TenantID: "t", UserID: "a", Model: "m1", OnQueued: a3.on})
+	eventually(t, "a3 queued", func() bool { return len(a3.list()) == 1 })
+	rb1 := schedAsync(t, s, "p", "chat", CallInfo{TenantID: "t", UserID: "b", Model: "m1", OnQueued: b1.on})
+	eventually(t, "b1 queued", func() bool { return len(b1.list()) == 1 })
+	for name, tc := range map[string]struct {
+		r    *queueReports
+		want int
+	}{"a2": {&a2, 1}, "a3": {&a3, 2}, "b1": {&b1, 2}} {
+		if got := tc.r.list()[0]; got != (CallQueueInfo{Reason: CallQueueReasonLane, Position: tc.want}) {
+			t.Errorf("%s reported %+v, want lane position %d", name, got, tc.want)
+		}
+	}
+
+	holdA()
+	mustGrant(t, ra2, "a2")()
+	mustGrant(t, rb1, "b1")()
+	mustGrant(t, ra3, "a3")()
+	// m1 has left: m2 gets its model, then the free lane slot without waiting.
+	mustGrant(t, m2, "m2")()
+	if got := model.list(); len(got) != 1 {
+		t.Fatalf("m2 reported %+v, want only its model wait", got)
+	}
+}
