@@ -275,12 +275,14 @@ func TestMCPServerDefOperatorEnvWarnings_ListsAStoredNonOperatorReference(t *tes
 	if strings.Contains(w, "globex-secret-value") || strings.Contains(w, "Bearer") {
 		t.Errorf("warning carries a value, not only a location: %s", w)
 	}
-	if !strings.Contains(w, "still dials this release") {
-		t.Errorf("the default-mode warning does not say the def still dials: %s", w)
+	for _, want := range []string{"WILL NOT be dialed", "LOOMCYCLE_MCP_REFUSE_UNATTRIBUTED_ENV=0", "create with the same overlay"} {
+		if !strings.Contains(w, want) {
+			t.Errorf("the default-mode warning lacks %q (it must say the def is refused and how to fix it): %s", want, w)
+		}
 	}
-	tool.Cfg.Env.MCPRefuseUnattributedEnv = true
-	if warns, _ = tool.OperatorEnvWarnings(context.Background()); len(warns) != 1 || !strings.Contains(warns[0], "it is not dialed") {
-		t.Errorf("the strict-mode warning does not say the def is not dialed: %q", warns)
+	tool.Cfg.Env.MCPDialUnattributedEnv = true
+	if warns, _ = tool.OperatorEnvWarnings(context.Background()); len(warns) != 1 || !strings.Contains(warns[0], "still dialed only because") {
+		t.Errorf("the opt-out warning does not say the def still dials: %q", warns)
 	}
 }
 
