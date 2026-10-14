@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/denn-gubsky/loomcycle/internal/credential"
+	"github.com/denn-gubsky/loomcycle/internal/netguard"
 	"github.com/denn-gubsky/loomcycle/internal/store/sqlite"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
 )
@@ -148,7 +149,7 @@ func TestCredentialDefTool_AllowedURLsAreStoredShownAndKeptAcrossARotation(t *te
 	if _, _, err := c.Engine.Resolve(ctx, "tnt", "", "", "repo"); err == nil {
 		t.Error("the restricted credential resolved with no destination")
 	}
-	if got, _, err := c.Engine.ResolveFor(ctx, "tnt", "", "", "repo", "https://github.com/acme/app"); err != nil || got.Value != "ghs_y" {
+	if got, _, err := c.Engine.ResolveFor(netguard.WithPinnable(ctx), "tnt", "", "", "repo", "https://github.com/acme/app"); err != nil || got.Value != "ghs_y" {
 		t.Errorf("for its own URL: %q err=%v", got.Value, err)
 	}
 }

@@ -48,8 +48,13 @@ func RefNames(s string) []string {
 // Substitute replaces every $cred:<name> token in s with the resolved plaintext
 // credential for the given run identity (scope precedence agent > user > tenant,
 // so a user's own token shadows the tenant default). This is the runtime-side
-// bind: the plaintext is injected into an outbound MCP request header / child
-// process env — never into the agent transcript.
+// bind: the plaintext is injected into an outbound request header — never into
+// the agent transcript.
+//
+// targetURL is where the request goes. Each credential resolves for it
+// (ResolveFor): one restricted by allowed_urls resolves only when targetURL is
+// covered, and then pins the request, so ctx must come from
+// netguard.WithPinnable and be the context the request is sent with.
 //
 //   - register, if non-nil, is called with each resolved plaintext so the caller
 //     can add it to a redactor (defence against a downstream echo).
@@ -58,14 +63,14 @@ func RefNames(s string) []string {
 //     env entry rather than sending a literal "$cred:foo" downstream.
 //   - a hard resolve error (store fault / decrypt failure) aborts and is
 //     returned; the partially-substituted string is discarded by the caller.
-func (e *Engine) Substitute(ctx context.Context, tenantID, agentName, userID, s string, register func(string)) (out string, unresolved []string, err error) {
+func (e *Engine) Substitute(ctx context.Context, tenantID, agentName, userID, s, targetURL string, register func(string)) (out string, unresolved []string, err error) {
 	if !credTokenRe.MatchString(s) {
 		return s, nil, nil
 	}
 	var firstErr error
 	out = credTokenRe.ReplaceAllStringFunc(s, func(m string) string {
 		name := credTokenRe.FindStringSubmatch(m)[1]
-		res, found, rerr := e.Resolve(ctx, tenantID, agentName, userID, name)
+		res, found, rerr := e.ResolveFor(ctx, tenantID, agentName, userID, name, targetURL)
 		if rerr != nil {
 			if firstErr == nil {
 				firstErr = rerr

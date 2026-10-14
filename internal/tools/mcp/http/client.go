@@ -60,9 +60,12 @@ type Config struct {
 	// value against the tenant credential store using the request ctx's run
 	// identity (so per-USER tokens bind per-request — the pooled client serves
 	// many users, each getting their own credential). Returns (substituted,
-	// unresolvedNames, error). nil = $cred: binding disabled. A func-typed field
-	// keeps this package free of an internal/credential import.
-	CredSubstitute func(ctx context.Context, s string) (string, []string, error)
+	// unresolvedNames, error). targetURL is the server's URL: a credential
+	// restricted by allowed_urls resolves only when it covers it, and then pins
+	// ctx (netguard.Pin), which do() made pinnable. nil = $cred: binding
+	// disabled. A func-typed field keeps this package free of an
+	// internal/credential import.
+	CredSubstitute func(ctx context.Context, s, targetURL string) (string, []string, error)
 }
 
 // Client speaks MCP over HTTP. Implements mcp.Caller.
@@ -78,7 +81,7 @@ type Client struct {
 	sessionID string // populated after first response that carries one
 
 	// credSubstitute resolves $cred:<name> header tokens per-request (RFC AR).
-	credSubstitute func(ctx context.Context, s string) (string, []string, error)
+	credSubstitute func(ctx context.Context, s, targetURL string) (string, []string, error)
 }
 
 // New constructs a Client. URL must be absolute.
@@ -98,9 +101,11 @@ func New(cfg Config) (*Client, error) {
 		}
 	}
 	return &Client{
-		url:            cfg.URL,
-		headers:        cfg.Headers,
-		http:           hc,
+		url:     cfg.URL,
+		headers: cfg.Headers,
+		// A request carrying a credential restricted to this URL is pinned
+		// (do) and follows no redirect, whichever client was chosen.
+		http:           netguard.HonorPins(hc),
 		credSubstitute: cfg.CredSubstitute,
 	}, nil
 }
@@ -231,6 +236,10 @@ func (c *Client) Close() error { return nil }
 // do performs one POST with the JSON-RPC body and returns the raw http
 // response (caller closes Body). Adds session header + operator headers.
 func (c *Client) do(ctx context.Context, body []byte) (*http.Response, error) {
+	// Pinnable before the headers resolve: a credential restricted by
+	// allowed_urls resolves for c.url and pins this request, so the client
+	// will not follow a redirect that would carry it elsewhere.
+	ctx = netguard.WithPinnable(ctx)
 	req, err := http.NewRequestWithContext(ctx, "POST", c.url, bytes.NewReader(body))
 	if err != nil {
 		return nil, err
@@ -305,7 +314,7 @@ func (c *Client) do(ctx context.Context, body []byte) (*http.Response, error) {
 		// rather than sending a literal "$cred:foo" downstream — or sending
 		// nothing at all.
 		if c.credSubstitute != nil {
-			resolvedV, unresolved, cerr := c.credSubstitute(ctx, subV)
+			resolvedV, unresolved, cerr := c.credSubstitute(ctx, subV, c.url)
 			if cerr != nil {
 				log.Printf("mcp http: $cred resolve failed for header %q on %q (agent_id=%s): %v; %s",
 					k, c.url, runIdent.AgentID, cerr, unresolvedAction(refuseUnresolved))

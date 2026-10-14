@@ -25,7 +25,7 @@ func headerHook(t *testing.T) (*httptest.Server, func() http.Header) {
 	return srv, func() http.Header { mu.Lock(); defer mu.Unlock(); return last }
 }
 
-var sub = func(_ context.Context, s string) (string, []string, error) {
+var sub = func(_ context.Context, s, _ string) (string, []string, error) {
 	if strings.Contains(s, "$cred:hook_secret") {
 		return strings.ReplaceAll(s, "$cred:hook_secret", "s3cr3t"), nil, nil
 	}

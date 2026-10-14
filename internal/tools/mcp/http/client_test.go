@@ -154,7 +154,10 @@ func TestCredSubstitute_PerRequestAndDrop(t *testing.T) {
 		Headers: map[string]string{"Authorization": "Bearer $cred:telegram"},
 		// Mock resolver: per-user token from the request ctx; unresolved when no
 		// user id (mirrors the engine's found=false → unresolved contract).
-		CredSubstitute: func(ctx context.Context, s string) (string, []string, error) {
+		CredSubstitute: func(ctx context.Context, s, targetURL string) (string, []string, error) {
+			if targetURL != srv.URL {
+				return "", nil, fmt.Errorf("resolved for %q, want the server's URL", targetURL)
+			}
 			uid := tools.RunIdentity(ctx).UserID
 			if uid == "" {
 				return s, []string{"telegram"}, nil

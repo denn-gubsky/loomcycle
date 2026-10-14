@@ -11,7 +11,6 @@ package netguard
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"net"
 	"net/http"
@@ -268,17 +267,13 @@ func GuardedDialContext(allowPrivate bool, privateHostAllowlist []string) func(c
 
 // NewGuardedClient returns an *http.Client that BLOCKS private-IP dials (subject
 // to privateHostAllowlist) and bounds redirects — each hop re-dials through the
-// guard, so a 302 to an internal/metadata IP is refused too. For callers that
-// always want the block (the MCP-HTTP client when the operator opts in).
+// guard, so a 302 to an internal/metadata IP is refused too. A pinned request
+// (see Pin) follows no redirect. For callers that always want the block (the
+// MCP-HTTP client when the operator opts in).
 func NewGuardedClient(timeout time.Duration, privateHostAllowlist []string) *http.Client {
 	return &http.Client{
-		Timeout:   timeout,
-		Transport: &http.Transport{DialContext: GuardedDialContext(false, privateHostAllowlist)},
-		CheckRedirect: func(_ *http.Request, via []*http.Request) error {
-			if len(via) >= 5 {
-				return errors.New("too many redirects")
-			}
-			return nil
-		},
+		Timeout:       timeout,
+		Transport:     &http.Transport{DialContext: GuardedDialContext(false, privateHostAllowlist)},
+		CheckRedirect: RedirectPolicy(5),
 	}
 }

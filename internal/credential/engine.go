@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/denn-gubsky/loomcycle/internal/netguard"
 	"github.com/denn-gubsky/loomcycle/internal/store"
 )
 
@@ -173,6 +174,11 @@ func (e *Engine) Resolve(ctx context.Context, tenantID, agentName, userID, name 
 // one of its entries, and is refused with ErrURLNotAllowed otherwise, before
 // the secret is opened. An unrestricted credential resolves as with Resolve;
 // a caller that requires a restriction checks Resolved.AllowedURLs.
+//
+// A restricted credential also pins the request: ctx must come from
+// netguard.WithPinnable, and the request must be sent with it, so that its
+// client follows no redirect away from targetURL. Without that it is refused
+// with ErrNotPinnable.
 func (e *Engine) ResolveFor(ctx context.Context, tenantID, agentName, userID, name, targetURL string) (Resolved, bool, error) {
 	return e.resolve(ctx, tenantID, agentName, userID, name, &targetURL)
 }
@@ -206,6 +212,9 @@ func (e *Engine) resolve(ctx context.Context, tenantID, agentName, userID, name 
 			}
 			if !URLAllowed(allowed, *target) {
 				return Resolved{}, false, fmt.Errorf("%w (%q)", ErrURLNotAllowed, name)
+			}
+			if !netguard.Pin(ctx) {
+				return Resolved{}, false, fmt.Errorf("%w (%q)", ErrNotPinnable, name)
 			}
 		}
 		backend, err := e.backendFor(row.Backend)

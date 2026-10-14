@@ -180,9 +180,9 @@ func TestRunHooks_AHeaderCredentialIsResolvedForTheRun(t *testing.T) {
 		_, _ = w.Write([]byte(`{}`))
 	}))
 	defer hook.Close()
-	var seenAgent string
-	h.srv.SetHookHeaderSubstitute(func(ctx context.Context, s string) (string, []string, error) {
-		seenAgent = tools.AgentName(ctx)
+	var seenAgent, seenTarget string
+	h.srv.SetHookHeaderSubstitute(func(ctx context.Context, s, targetURL string) (string, []string, error) {
+		seenAgent, seenTarget = tools.AgentName(ctx), targetURL
 		return strings.ReplaceAll(s, "$cred:hook_secret", "s3cr3t"), nil, nil
 	})
 	setAgentHooks(h.srv, "writer", hooks.EventHooks{hooks.PhaseAgentStart: {{Inline: &hooks.Inline{
@@ -200,6 +200,9 @@ func TestRunHooks_AHeaderCredentialIsResolvedForTheRun(t *testing.T) {
 	}
 	if seenAgent != "writer" {
 		t.Fatalf("the resolver saw agent %q; want the run's", seenAgent)
+	}
+	if seenTarget != hook.URL {
+		t.Fatalf("the resolver was asked for %q; want the hook's URL %q", seenTarget, hook.URL)
 	}
 }
 
