@@ -24,6 +24,7 @@ import {
   PauseNotConfiguredError,
   PerUserQuotaExhaustedError,
   PromptTooLargeError,
+  RateLimitedError,
   RequestTooLargeError,
   SessionBusyError,
   SessionNotFoundError,
@@ -342,8 +343,8 @@ export async function raiseFromResponse(resp: Response): Promise<never> {
     }
     case 429: {
       // A hard token budget is not transient the way backpressure is, so
-      // it gets its own class (a BackpressureError subclass, for callers
-      // that already catch that).
+      // it gets its own class, deliberately outside BackpressureError: a
+      // retry loop keyed on that class must not spin on it all month.
       if (opts.code === "token_limit_exceeded") {
         const body = bodyObject(bodyText) ?? {};
         throw new TokenLimitExceededError(msg, {
@@ -354,6 +355,9 @@ export async function raiseFromResponse(resp: Response): Promise<never> {
           limit: numberField(body.limit),
           window: stringField(body.window),
         });
+      }
+      if (opts.code === "rate_limited") {
+        throw new RateLimitedError(msg, { ...opts, retryAfterMs: retryAfterMs(resp) });
       }
       // v0.10.1: distinguish per-user quota exhaustion from
       // operator-wide backpressure. The shapes share the 429 status
@@ -367,18 +371,13 @@ export async function raiseFromResponse(resp: Response): Promise<never> {
           error?: string;
         };
         if (parsed.code === "per_user_quota_exhausted") {
-          // Retry-After is `<seconds>` per RFC; convert to ms.
-          const retryAfterRaw = resp.headers.get("retry-after");
-          const retryAfterMs = retryAfterRaw
-            ? Number.parseInt(retryAfterRaw, 10) * 1000
-            : undefined;
           throw new PerUserQuotaExhaustedError(parsed.error ?? msg, {
             status,
             bodyText,
             code: parsed.code,
             userId: parsed.user_id,
             cap: parsed.cap,
-            retryAfterMs: Number.isFinite(retryAfterMs) ? retryAfterMs : undefined,
+            retryAfterMs: retryAfterMs(resp),
           });
         }
       } catch (e) {
@@ -394,6 +393,16 @@ export async function raiseFromResponse(resp: Response): Promise<never> {
     default:
       throw new LoomcycleError(msg, opts);
   }
+}
+
+/** retryAfterMs reads a `Retry-After` header given in seconds, as the server
+ *  always sends it, and returns milliseconds; undefined when the header is
+ *  absent or not a number (an HTTP-date form is not parsed). */
+function retryAfterMs(resp: Response): number | undefined {
+  const raw = resp.headers.get("retry-after");
+  if (!raw) return undefined;
+  const ms = Number.parseInt(raw, 10) * 1000;
+  return Number.isFinite(ms) ? ms : undefined;
 }
 
 /** bodyCode returns the string `code` of a JSON error body, or undefined when

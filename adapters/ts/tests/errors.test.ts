@@ -33,6 +33,7 @@ import { jsonResponse, makeClient } from "./helpers.js";
 // from here fails when the export is dropped.
 import {
   PromptTooLargeError,
+  RateLimitedError,
   RequestTooLargeError,
   TokenLimitExceededError,
 } from "../src/index.js";
@@ -298,12 +299,14 @@ describe("raiseFromResponse — a 429 token budget is not plain backpressure", (
     expect(err.message).toContain("monthly token limit");
   });
 
-  it("a token budget refusal is still caught by instanceof BackpressureError", async () => {
-    // Callers written before the class existed catch it this way.
+  it("a token budget refusal is not caught by instanceof BackpressureError", async () => {
+    // A `catch (e) { if (e instanceof BackpressureError) retry(); }` loop
+    // would otherwise retry a refusal that holds for the rest of the month.
     const e = await expectErrorFor(429, tokenLimitBody);
-    expect(e).toBeInstanceOf(BackpressureError);
+    expect(e).not.toBeInstanceOf(BackpressureError);
     expect(e).toBeInstanceOf(LoomcycleError);
     expect(e).not.toBeInstanceOf(PerUserQuotaExhaustedError);
+    expect((e as LoomcycleError).retryable).toBe(false);
   });
 
   it("a token budget refusal without the budget fields has them null", async () => {
@@ -360,7 +363,7 @@ describe("raiseFromResponse — a 429 token budget is not plain backpressure", (
     const used: Exact<typeof e.used, number | null> = true;
     const limit: Exact<typeof e.limit, number | null> = true;
     const window: Exact<typeof e.window, string | null> = true;
-    const base: BackpressureError = e;
+    const base: LoomcycleError = e;
     const tooLarge: SnapshotTooLargeError = new PromptTooLargeError("x");
     const request: RequestTooLargeError = new PromptTooLargeError("x");
     expect([scope, scopeId, used, limit, window]).toEqual([true, true, true, true, true]);
@@ -420,6 +423,155 @@ describe("raiseFromResponse — a 413 is named for what was too large", () => {
   });
 });
 
+/** A 429 (or any status) with a JSON body and optional headers. */
+async function errorFor(
+  status: number,
+  body: Record<string, unknown>,
+  headers: Record<string, string> = {},
+): Promise<LoomcycleError> {
+  const resp = new Response(JSON.stringify(body), {
+    status,
+    headers: { "Content-Type": "application/json", ...headers },
+  });
+  try {
+    await raiseFromResponse(resp);
+  } catch (e) {
+    return e as LoomcycleError;
+  }
+  throw new Error("expected raiseFromResponse to throw");
+}
+
+describe("raiseFromResponse — a 429 says whether retrying can help", () => {
+  it("token_limit_exceeded is TokenLimitExceededError, not retryable, not backpressure", async () => {
+    const e = await errorFor(429, JSON.parse(tokenLimitBody) as Record<string, unknown>);
+    expect(e).toBeInstanceOf(TokenLimitExceededError);
+    expect(e).not.toBeInstanceOf(BackpressureError);
+    expect(e.retryable).toBe(false);
+  });
+
+  it("rate_limited is a retryable RateLimitedError carrying Retry-After in ms", async () => {
+    const e = await errorFor(
+      429,
+      { code: "rate_limited", error: "run-start rate limit reached" },
+      { "Retry-After": "3" },
+    );
+    expect(e).toBeInstanceOf(RateLimitedError);
+    expect(e).toBeInstanceOf(BackpressureError);
+    expect(e.name).toBe("RateLimitedError");
+    expect(e.code).toBe("rate_limited");
+    expect(e.status).toBe(429);
+    expect(e.retryable).toBe(true);
+    expect((e as RateLimitedError).retryAfterMs).toBe(3000);
+  });
+
+  it("rate_limited without a usable Retry-After has retryAfterMs null", async () => {
+    // The server always sends whole seconds; an HTTP-date form is not parsed.
+    const cases: Array<Record<string, string>> = [
+      {},
+      { "Retry-After": "Wed, 21 Oct 2026 07:28:00 GMT" },
+    ];
+    for (const headers of cases) {
+      const e = await errorFor(429, { code: "rate_limited", error: "x" }, headers);
+      expect(e).toBeInstanceOf(RateLimitedError);
+      expect(e.retryable).toBe(true);
+      expect((e as RateLimitedError).retryAfterMs).toBeNull();
+    }
+  });
+
+  it("per_user_quota_exhausted is retryable and keeps its Retry-After", async () => {
+    const e = await errorFor(
+      429,
+      { code: "per_user_quota_exhausted", user_id: "u", cap: 2 },
+      { "Retry-After": "5" },
+    );
+    expect(e).toBeInstanceOf(PerUserQuotaExhaustedError);
+    expect(e.retryable).toBe(true);
+    expect((e as PerUserQuotaExhaustedError).retryAfterMs).toBe(5000);
+  });
+
+  it("configured_run_cap stays a BackpressureError but is not retryable", async () => {
+    // The body POST /v1/runs {start:false} writes at the per-user draft cap
+    // (internal/api/http configured_runs.go): only starting or discarding a
+    // configured run makes room, so waiting never does.
+    const e = await errorFor(429, {
+      code: "configured_run_cap",
+      error: "this user already holds 2 configured runs (the cap is 2); start or discard one first",
+    });
+    expect(e.constructor).toBe(BackpressureError);
+    expect(e.code).toBe("configured_run_cap");
+    expect(e.retryable).toBe(false);
+  });
+
+  it("an unknown or absent 429 code is a plain, retryable BackpressureError", async () => {
+    for (const code of ["backpressure", "provider_concurrency_exhausted", "something_new", undefined]) {
+      const e = await errorFor(429, { code, error: "busy" });
+      expect(e.constructor).toBe(BackpressureError);
+      expect(e.retryable).toBe(true);
+    }
+    const plain = (await expectErrorFor(429, "queue full")) as LoomcycleError;
+    expect(plain.constructor).toBe(BackpressureError);
+    expect(plain.retryable).toBe(true);
+  });
+});
+
+describe("retryable on the other classes", () => {
+  it("is false for a refusal that does not clear on its own", async () => {
+    const cases: Array<[number, string]> = [
+      [400, "bad request"],
+      [401, "unauthorized"],
+      [404, "agent not found"],
+      [409, "session busy"],
+      [409, "agent_id in use"],
+      [413, JSON.stringify({ code: "prompt_too_large" })],
+      [422, "snapshot version"],
+      [500, "boom"],
+      [503, JSON.stringify({ code: "decision_not_configured" })],
+      [503, "pause manager not configured on this server"],
+      [503, "service unavailable"],
+    ];
+    for (const [status, body] of cases) {
+      const e = (await expectErrorFor(status, body)) as LoomcycleError;
+      expect(e).toBeInstanceOf(LoomcycleError);
+      expect(`${status} ${e.name} ${e.retryable}`).toBe(`${status} ${e.name} false`);
+    }
+  });
+
+  it("is true for a decision call that failed (502 call_failed) or timed out (504 timeout)", async () => {
+    // decide()'s own codes; the server classifies both as transient and
+    // tells the caller to send the same call again.
+    for (const [status, code] of [[502, "call_failed"], [504, "timeout"]] as const) {
+      const e = await errorFor(status, { code, error: "Decision: " + code });
+      expect(e.constructor).toBe(LoomcycleError);
+      expect(`${status} ${code} ${e.retryable}`).toBe(`${status} ${code} true`);
+    }
+    // The same statuses with another code, or none, stay false.
+    for (const [status, body] of [
+      [502, JSON.stringify({ code: "model_not_found" })],
+      [502, "bad gateway"],
+      [504, "gateway timeout"],
+    ] as const) {
+      const e = (await expectErrorFor(status, body)) as LoomcycleError;
+      expect(`${status} ${e.retryable}`).toBe(`${status} false`);
+    }
+  });
+
+  it("is true for a 503 runtime_paused, which clears when the operator resumes", async () => {
+    const e = await errorFor(503, { code: "runtime_paused", error: "runtime is paused" });
+    expect(e).toBeInstanceOf(UnavailableError);
+    expect(e.retryable).toBe(true);
+  });
+
+  it("is false on a bare LoomcycleError and read-only", () => {
+    const e = new LoomcycleError("x");
+    expect(e.retryable).toBe(false);
+    // Checked by `npm run typecheck:tests`: a caller cannot set it.
+    // @ts-expect-error retryable has no setter
+    expect(() => { e.retryable = true; }).toThrow(TypeError);
+    const typed: Exact<typeof e.retryable, boolean> = true;
+    expect(typed).toBe(true);
+  });
+});
+
 describe("the refusal classes reach a caller of the client", () => {
   it("run creation at a hard token budget throws TokenLimitExceededError", async () => {
     const { client } = makeClient([jsonResponse(JSON.parse(tokenLimitBody), 429)]);
@@ -431,6 +583,24 @@ describe("the refusal classes reach a caller of the client", () => {
     }
     expect(caught).toBeInstanceOf(TokenLimitExceededError);
     expect((caught as TokenLimitExceededError).limit).toBe(1_000_000);
+  });
+
+  it("run creation over the run-start rate throws RateLimitedError", async () => {
+    const { client } = makeClient([
+      () =>
+        new Response(JSON.stringify({ code: "rate_limited", error: "slow down" }), {
+          status: 429,
+          headers: { "Content-Type": "application/json", "Retry-After": "2" },
+        }),
+    ]);
+    let caught: unknown;
+    try {
+      for await (const _ of client.runStreaming({ agent: "x", segments: [] })) {}
+    } catch (e) {
+      caught = e;
+    }
+    expect(caught).toBeInstanceOf(RateLimitedError);
+    expect((caught as RateLimitedError).retryAfterMs).toBe(2000);
   });
 
   it("decide() over the model's context throws PromptTooLargeError", async () => {

@@ -413,10 +413,10 @@ A refusal throws with the decision's own code on `e.code` (see [Errors](#errors)
 | 400 | `model_not_allowed` | Omit `model`, or use a name from `listDecisionModels()`. |
 | 403 | `operator_key_restricted` | The caller may not use the operator's provider key and has none of its own. Do not retry. |
 | 413 | `prompt_too_large` | The request does not fit the model's context and is never shortened for you: shorten `state` or ask fewer questions. |
-| 429 | `token_limit_exceeded` | The caller is at a hard token budget. Retrying does not help until the budget is raised or the month rolls over. |
-| 502 | `model_not_found` / `call_failed` | The provider does not serve that model (the same call fails again) / the call did not complete (try once more). |
+| 429 | `token_limit_exceeded` | The caller is at a hard token budget (`TokenLimitExceededError`, `retryable` false). Retrying does not help until the budget is raised or the month rolls over. |
+| 502 | `model_not_found` / `call_failed` | The provider does not serve that model (the same call fails again) / the call did not complete (try once more; `retryable` is true). |
 | 503 | `decision_not_configured` | This deployment declares no decision models. Do not retry. |
-| 504 | `timeout` | Send the same call again; if it repeats, make it smaller. |
+| 504 | `timeout` | Send the same call again (`retryable` is true); if it repeats, make it smaller. |
 
 ```ts
 try {
@@ -622,37 +622,53 @@ When the error body is JSON with a string `code` (`token_limit_exceeded`, `per_u
 | 413 + code `prompt_too_large` | `PromptTooLargeError` ⎬ all are `instanceof SnapshotTooLargeError` (back-compat) |
 | 413 (other) | `RequestTooLargeError` ⎭ |
 | 422 | `SnapshotVersionError` |
-| 429 + code `per_user_quota_exhausted` | `PerUserQuotaExhaustedError` |
-| 429 + code `token_limit_exceeded` | `TokenLimitExceededError` (subclass of `BackpressureError` — back-compat) |
-| 429 (other) | `BackpressureError` |
+| 429 + code `per_user_quota_exhausted` | `PerUserQuotaExhaustedError` (retryable; `e.retryAfterMs` from `Retry-After`) |
+| 429 + code `token_limit_exceeded` | `TokenLimitExceededError` (NOT a `BackpressureError`; not retryable) |
+| 429 + code `rate_limited` | `RateLimitedError` (subclass of `BackpressureError`; retryable; `e.retryAfterMs` from `Retry-After`) |
+| 429 + code `configured_run_cap` | `BackpressureError` (NOT retryable: start or discard a configured run first) |
+| 429 (other) | `BackpressureError` (retryable) |
 | 503 + "pause manager not configured" | `PauseNotConfiguredError` (subclass of `UnavailableError` — back-compat) |
 | 503 (other) | `UnavailableError` |
 | 500 / other | `LoomcycleError` (base) |
 
-**429: a token budget is not backpressure.** A plain `BackpressureError` is transient: the server is busy, back off and retry. `TokenLimitExceededError` is not: the caller is at a hard token budget (run creation and `decide()` both refuse with it), and the same call is refused until the budget is raised or the calendar month rolls over. It extends `BackpressureError` only so that an existing `instanceof BackpressureError` keeps catching it, so test for it first. The client never retries on its own; this matters to your retry loop.
+**`e.retryable`: can the same call succeed later?** Every error carries a read-only `retryable`. It is `true` only for a refusal that clears on its own: a `BackpressureError` (the server or a provider queue is busy), a `RateLimitedError` (the caller is starting runs faster than its run-start rate allows), a `PerUserQuotaExhaustedError` (the caller's own in-flight runs are at their cap), a 503 `UnavailableError` with code `runtime_paused` (the operator has paused the runtime), and a `decide()` call that failed (502 `call_failed`) or timed out (504 `timeout`). It is `false` for everything else, a hard token budget included, and so is a `BackpressureError` with code `configured_run_cap`: the user already holds as many configured runs as allowed, and waiting never makes room — start or discard one first. A 503 is shared between a paused runtime and features the deployment does not have (`decision_not_configured`, `store_unavailable`, …), and many 503 bodies carry no code, so only `runtime_paused` counts; a code-less 503 from run creation can also be a model tier with no provider available, which you may retry on your own judgement. The default is `false` because a wrong `true` turns a refusal that never clears into an endless loop. The client never retries on its own, so bound your loop even when `retryable` is true, and prefer `e.retryAfterMs` where the class has it.
+
+**429: a token budget is not backpressure.** A `BackpressureError` is transient: back off and retry. `TokenLimitExceededError` is not: the caller is at a hard token budget (run creation and `decide()` both refuse with it), and the same call is refused until the budget is raised or the calendar month rolls over. **It is no longer a `BackpressureError`** (it was, through 1.112.x). It extended that class so that an older `instanceof BackpressureError` check kept catching it, but such a check is nearly always a retry loop, which then retried the refusal for the rest of the month; that relation was dropped on purpose. If your code caught the budget through `instanceof BackpressureError`, catch `TokenLimitExceededError` (or test `e.code === "token_limit_exceeded"`) instead.
 
 ```ts
-import { BackpressureError, TokenLimitExceededError } from "@loomcycle/client";
+import {
+  LoomcycleError,
+  PerUserQuotaExhaustedError,
+  RateLimitedError,
+  TokenLimitExceededError,
+} from "@loomcycle/client";
 
-try {
-  for await (const ev of client.runStreaming({ /* ... */ })) {}
-} catch (e) {
-  if (e instanceof TokenLimitExceededError) {
-    // Not retryable now. e.scope is "operator" | "tenant" | "user"; e.scopeId is
-    // the tenant or user (null for the operator-wide budget); e.used and e.limit
-    // are tokens; e.window is "month". Each is null if the server did not send it.
-    console.error(`token budget reached for ${e.scope}: ${e.used}/${e.limit} this ${e.window}`);
-  } else if (e instanceof BackpressureError) {
-    // Transient: back off and retry.
-  } else {
-    throw e;
+for (let attempt = 0; ; attempt++) {
+  try {
+    for await (const ev of client.runStreaming({ /* ... */ })) {}
+    break;
+  } catch (e) {
+    if (e instanceof TokenLimitExceededError) {
+      // Not retryable. e.scope is "operator" | "tenant" | "user"; e.scopeId is
+      // the tenant or user (null for the operator-wide budget); e.used and e.limit
+      // are tokens; e.window is "month". Each is null if the server did not send it.
+      console.error(`token budget reached for ${e.scope}: ${e.used}/${e.limit} this ${e.window}`);
+      throw e;
+    }
+    if (!(e instanceof LoomcycleError) || !e.retryable || attempt >= 5) throw e;
+    // These two carry the server's own hint; otherwise back off exponentially.
+    const hint =
+      e instanceof RateLimitedError || e instanceof PerUserQuotaExhaustedError
+        ? e.retryAfterMs
+        : null;
+    await new Promise((r) => setTimeout(r, hint ?? 1000 * 2 ** attempt));
   }
 }
 ```
 
 **413: three classes, one legacy base.** Every 413 used to throw `SnapshotTooLargeError`, whatever was too large. A 413 is now named for its cause: `PromptTooLargeError` for a `decide()` request that does not fit the model's context (shorten `state` or ask fewer questions), `RequestTooLargeError` for any other non-snapshot 413 (a request body over the server's limit, a memory value or quota, a channel payload — `e.code` says which), and `SnapshotTooLargeError` itself for a snapshot over its cap. `PromptTooLargeError` extends `RequestTooLargeError`, which extends `SnapshotTooLargeError`, so an existing `instanceof SnapshotTooLargeError` still matches every 413; that relation is for compatibility and says nothing about snapshots. To single out a snapshot that is too large, test `e.code === "snapshot_too_large"`.
 
-`e.name` (and the `meta_reason` of a `stream_close` frame) is the most specific class name, so it reads `TokenLimitExceededError`, `PromptTooLargeError` or `RequestTooLargeError` where it used to read `BackpressureError` or `SnapshotTooLargeError`. Match with `instanceof` or `e.code`, not on the name.
+`e.name` (and the `meta_reason` of a `stream_close` frame) is the most specific class name, so it reads `TokenLimitExceededError`, `RateLimitedError`, `PromptTooLargeError` or `RequestTooLargeError` where it used to read `BackpressureError` or `SnapshotTooLargeError`. Match with `instanceof` or `e.code`, not on the name.
 
 Priority within `404`: most-specific keyword wins (`snapshot` → `session` → `agent` → base). The dispatch is keyword-matched on the response body lowercase, so a body that names none of them — a missing hook, memory row or interrupt — is a plain `NotFoundError`, while one that happens to contain "agent" (a hook id like `hook_agent_scan`) is an `AgentNotFoundError`. There is no hook-specific class; catch `NotFoundError` for any 404.
 

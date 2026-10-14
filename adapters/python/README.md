@@ -203,11 +203,11 @@ A refusal raises with the decision's code on `e.reason`:
 | `model_not_allowed` | `INVALID_ARGUMENT` → `InvalidArgumentError` | Leave `model` out, or use a name from `list_decision_models()`. |
 | `prompt_too_large` | `INVALID_ARGUMENT` → `InvalidArgumentError` | The request does not fit the model's context and is never shortened for you: shorten `state` or ask fewer questions. |
 | `operator_key_restricted` | `PERMISSION_DENIED` → `LoomcycleError` | The caller may not use the operator's provider key and has none of its own. Do not retry. |
-| `token_limit_exceeded` | `RESOURCE_EXHAUSTED` → `BackpressureError` | The caller is at a hard token budget. Retrying does not help until it is raised or the month rolls over. |
+| `token_limit_exceeded` | `RESOURCE_EXHAUSTED` → `BackpressureError` (`retryable` False) | The caller is at a hard token budget. Retrying does not help until it is raised or the month rolls over. |
 | `model_not_found` | `FAILED_PRECONDITION` → `LoomcycleError` | The provider does not serve that model; the same call fails again. |
 | `decision_not_configured` | `FAILED_PRECONDITION` → `LoomcycleError` | This deployment declares no decision models. Do not retry. |
-| `timeout` | `DEADLINE_EXCEEDED` → `LoomcycleError` | Send the same call again; if it repeats, make it smaller. |
-| `call_failed` | `UNAVAILABLE` → `UnavailableError` | Try once more. |
+| `timeout` | `DEADLINE_EXCEEDED` → `LoomcycleError` | Send the same call again (`retryable` is True); if it repeats, make it smaller. |
+| `call_failed` | `UNAVAILABLE` → `UnavailableError` | Try once more (`retryable` is True). |
 
 ```python
 from loomcycle import LoomcycleError
@@ -233,7 +233,7 @@ Every method translates gRPC error codes to typed Python exceptions:
 | `FAILED_PRECONDITION` (other) | `LoomcycleError` |
 | `ALREADY_EXISTS` | `AgentIDInUseError` |
 | `RESOURCE_EXHAUSTED` (snapshot) | `SnapshotTooLargeError` (v0.8.18) |
-| `RESOURCE_EXHAUSTED` (other) | `BackpressureError` |
+| `RESOURCE_EXHAUSTED` (other) | `BackpressureError` (`retryable` unless `.reason` is `token_limit_exceeded` or it is the configured-run cap) |
 | `UNAUTHENTICATED` | `AuthError` |
 | `UNAVAILABLE` (pause not configured) | `PauseNotConfiguredError` (v0.8.18, subclass of UnavailableError) |
 | `UNAVAILABLE` (other) | `UnavailableError` |
@@ -253,13 +253,48 @@ that name is on `.reason` — `token_limit_exceeded`, `backpressure`,
 body's `code`. Branch on `.reason` rather than on the message. It is `None`
 when the server attached none.
 
-```python
-from loomcycle import BackpressureError
+**`e.retryable`: can the same call succeed later?** Every exception has a
+read-only `retryable`, judged from its class and `.reason`. It is `True` only
+for a refusal that clears on its own:
 
-try:
-    async for ev in client.run_streaming(...): ...
-except BackpressureError as e:
-    log.warning("loomcycle backpressure (code=%s): %s", e.code, e.message)
+- a `BackpressureError` whose `.reason` is `backpressure`,
+  `per_user_quota_exhausted`, `rate_limited` or absent (a full queue, the
+  caller's own run cap, starting runs too fast);
+- an `UnavailableError` whose `.reason` is `runtime_paused`,
+  `tier_unavailable` or `pin_unavailable` (the operator paused the runtime;
+  no provider in the tier is up right now);
+- a `decide()` refusal whose `.reason` is `call_failed` (`UnavailableError`:
+  the decision-model call did not complete) or `timeout` (`LoomcycleError`
+  from `DEADLINE_EXCEEDED`: it did not answer in time).
+
+It is `False` for everything else — in particular a `BackpressureError` with
+`.reason == "token_limit_exceeded"`, and the configured-run cap (a
+`BackpressureError` whose message ends "start or discard one first": the user
+already holds as many configured runs as allowed, and only starting or
+discarding one makes room; the server sends no reason for it over gRPC, so it
+is recognised by that message). Every `RESOURCE_EXHAUSTED` raises
+`BackpressureError`, so `except BackpressureError: retry()` alone retries a
+hard token budget for the rest of the month; test `e.retryable` first. A
+`UnavailableError` with no reason may be a dropped connection (worth a retry)
+or a feature the server does not have (not), which `retryable` cannot tell
+apart, so it is `False`: retry it on your own judgement. The default is
+`False` because a wrong `True` turns a refusal that never clears into an
+endless loop. The client never retries on its own, so bound your loop.
+
+```python
+import asyncio
+
+from loomcycle import LoomcycleError
+
+for attempt in range(5):
+    try:
+        async for ev in client.run_streaming(...): ...
+        break
+    except LoomcycleError as e:
+        if not e.retryable or attempt == 4:
+            raise  # e.g. e.reason == "token_limit_exceeded": do not retry
+        log.warning("loomcycle refused (reason=%s), retrying: %s", e.reason, e.message)
+        await asyncio.sleep(2 ** attempt)
 ```
 
 ## Allowed-hosts semantics
