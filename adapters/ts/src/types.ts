@@ -5036,3 +5036,105 @@ export interface DecisionModelsResponse {
   default: string;
   models: DecisionModel[];
 }
+
+// ---- Memory / document change feeds (RFC CD Part C) ----
+
+/** The kind of change a {@link MemoryChange} names. `memory.*` arrive on
+ *  {@link LoomcycleClient.streamMemoryChanges}, `document.chunk.*` on
+ *  {@link LoomcycleClient.streamDocumentChanges}. Mirrors the runtime's
+ *  `store.MemoryChangeType`. */
+export type MemoryChangeType =
+  | "memory.set"
+  | "memory.delete"
+  | "memory.scope_deleted"
+  | "document.chunk.updated"
+  | "document.chunk.deleted";
+
+/** The memory scope a change landed in. `global` is listed because the
+ *  runtime's scope enum has it and the feed passes the written scope through
+ *  unchanged, not because Memory writes it today. */
+export type MemoryChangeScope = "agent" | "user" | "tenant" | "global";
+
+/** One change coordinate, exactly as the runtime's `store.MemoryChange`
+ *  serialises.
+ *
+ *  VALUE-FREE by design: it names WHAT changed, never the value — pull the
+ *  current value through the data API (`getMemoryEntry`, `document`). `key` is
+ *  set for `memory.set` / `memory.delete`; `chunk_id` for `document.chunk.*`;
+ *  neither for `memory.scope_deleted`, which covers the whole scope. */
+export interface MemoryChange {
+  /** Monotonic cursor. Persist the last one you processed and pass it back as
+   *  `since` to resume after a disconnect. */
+  seq: number;
+  /** The caller's own tenant — the feed is never cross-tenant. Omitted for
+   *  the shared "" tenant. */
+  tenant?: string;
+  type: MemoryChangeType;
+  scope: MemoryChangeScope;
+  scope_id: string;
+  key?: string;
+  chunk_id?: string;
+  /** RFC3339 time of the write. */
+  at: string;
+}
+
+/** What the runtime's embedder has actually been doing, since boot. Mirrors
+ *  `providers.EmbedderHealth`.
+ *
+ *  Carried on the change feed because an embedding failure on a content write
+ *  is NOT fatal — the body is stored and the embedding skipped — so an
+ *  embedder outage shows as a perfectly busy feed over rows that are no longer
+ *  searchable. `untried` is "configured, nothing embedded yet", not a warning;
+ *  `absent` is "no embedder configured". */
+export interface EmbedderHealth {
+  state: "absent" | "untried" | "ok" | "failing";
+  provider?: string;
+  model?: string;
+  calls: number;
+  /** Failed embeddings since boot — roughly how many rows need
+   *  `backfillEmbeddings` to become searchable. */
+  failures: number;
+  /** A classified failure kind, never the raw error text (which can carry an
+   *  address). */
+  last_failure_kind?: string;
+  /** Unix seconds; absent when never. */
+  last_ok_unix?: number;
+  last_failure_unix?: number;
+}
+
+/** The opening frame of a change feed (`event: feed`). */
+export interface ChangeFeedStatus {
+  /** Whether writes are being captured at all. `false` means the server runs
+   *  without `LOOMCYCLE_MEMORY_CHANGES_ENABLED`: the stream stays open and
+   *  idles, and NO change will ever arrive — check this before waiting. */
+  enabled: boolean;
+  /** The cursor the server accepted. `0` when `since` was absent OR
+   *  unparseable — the server does not reject a bad cursor. */
+  since: number;
+  /** Reported beside `enabled`, never folded into it: capturing and embedding
+   *  fail independently. Absent on a runtime older than the field. */
+  embedder?: EmbedderHealth;
+}
+
+/** Yielded by {@link LoomcycleClient.streamMemoryChanges} and
+ *  {@link LoomcycleClient.streamDocumentChanges}.
+ *
+ *  Same `{ kind, payload }` shape as {@link RunStateStreamItem}: the first
+ *  item is `{ kind: "feed" }`, then one `{ kind: "change" }` per change.
+ *  `kind` rather than `type` so the wrapper's discriminator cannot be confused
+ *  with the change's own `payload.type`. */
+export type ChangeFeedFrame =
+  | { kind: "feed"; payload: ChangeFeedStatus }
+  | { kind: "change"; payload: MemoryChange };
+
+/** Options for {@link LoomcycleClient.streamMemoryChanges} /
+ *  {@link LoomcycleClient.streamDocumentChanges}. */
+export interface StreamChangesOptions {
+  /** Resume cursor: deliver only changes with `seq` greater than this. Omit
+   *  (or `0`) to start from the oldest change the server still retains. Must
+   *  be a non-negative integer — the client throws rather than send a value
+   *  the server would silently read as `0` and replay everything. */
+  since?: number;
+  /** Abort to close the stream; the iterator then throws an `AbortError`. */
+  signal?: AbortSignal;
+}

@@ -43,6 +43,10 @@ import {
   type ConnectClientToolsOptions,
 } from "./client-tools.js";
 import type {
+  ChangeFeedFrame,
+  ChangeFeedStatus,
+  MemoryChange,
+  StreamChangesOptions,
   CredentialListResponse,
   CredentialMeta,
   DecideRequest,
@@ -3311,6 +3315,67 @@ export class LoomcycleClient {
     }
   }
 
+  /** Tail the caller's tenant's MEMORY change feed (RFC CD Part C) — one
+   *  value-free coordinate per `memory.set` / `memory.delete` /
+   *  `memory.scope_deleted`. Mirrors `GET /v1/_memory/changes?since=<seq>`.
+   *
+   *  The first item is always `{ kind: "feed", payload: ChangeFeedStatus }`,
+   *  then one `{ kind: "change", payload: MemoryChange }` per change, oldest
+   *  first. Pull the current value through the data API; the feed never
+   *  carries it.
+   *
+   *  - The feed is EMPTY unless the server runs with
+   *    `LOOMCYCLE_MEMORY_CHANGES_ENABLED`. The stream still opens and idles,
+   *    so read `payload.enabled` on the feed frame instead of waiting.
+   *  - Scope is the caller's OWN tenant; there is no cross-tenant feed.
+   *  - Needs `substrate:tenant` (or admin). A tenant MEMBER's token is refused
+   *    — the feed exposes the tenant's write pattern, which is operator
+   *    observability, not member data.
+   *  - To resume after a disconnect, persist the last `payload.seq` you
+   *    processed and pass it back as `since`. A cursor older than the
+   *    server's change retention resumes past the pruned gap without saying
+   *    so.
+   *  - The stream has no end of its own: iteration ends when the server
+   *    closes it (shutdown — reconnect with `since`) or throws an
+   *    `AbortError` when `signal` aborts. */
+  async *streamMemoryChanges(
+    opts?: StreamChangesOptions,
+  ): AsyncIterable<ChangeFeedFrame> {
+    yield* this.streamChangeFeed("/v1/_memory/changes", opts);
+  }
+
+  /** Tail the caller's tenant's DOCUMENT change feed (RFC CD Part C) — one
+   *  coordinate per `document.chunk.updated` / `document.chunk.deleted`,
+   *  naming the `chunk_id`. Mirrors `GET /v1/_document/changes?since=<seq>`.
+   *  Same frames, scope, auth and resume contract as
+   *  {@link LoomcycleClient.streamMemoryChanges}; a reader wanting both
+   *  families opens both. */
+  async *streamDocumentChanges(
+    opts?: StreamChangesOptions,
+  ): AsyncIterable<ChangeFeedFrame> {
+    yield* this.streamChangeFeed("/v1/_document/changes", opts);
+  }
+
+  private async *streamChangeFeed(
+    path: string,
+    opts?: StreamChangesOptions,
+  ): AsyncIterable<ChangeFeedFrame> {
+    const since = opts?.since;
+    // The server reads an unparseable or negative `since` as 0 rather than
+    // refusing it, which replays every retained change — a resume bug that
+    // would look like a burst of activity. Refuse it here instead.
+    if (since !== undefined && !(Number.isSafeInteger(since) && since >= 0)) {
+      throw new Error(
+        `loomcycle: change feed "since" must be a non-negative integer, got ${String(since)}`,
+      );
+    }
+    const q = since ? `?since=${since}` : "";
+    for await (const ev of this.streamSSEGet(path + q, opts?.signal)) {
+      const frame = toChangeFeedFrame(ev as unknown as Record<string, unknown>);
+      if (frame) yield frame;
+    }
+  }
+
   /** List credential METADATA for a scope (RFC AR) — never a secret value.
    *  `user` = your own subject's tokens (per-user, e.g. a personal Telegram bot
    *  token); `tenant` = shared across the tenant (operator authority). RFC CN: a
@@ -3422,6 +3487,31 @@ async function* parseRunStateSSE(
       else if (line.startsWith("data:")) data = line.slice("data:".length).trim();
     }
   }
+}
+
+/** toChangeFeedFrame types one frame of a change feed, or returns null for a
+ *  frame it does not recognise.
+ *
+ *  The frames arrive through parseSSE, which backfills `type` from the SSE
+ *  event name ONLY when the payload has none. The `feed` frame deliberately
+ *  carries no `type`, so it surfaces as `type: "feed"`; a `change` frame
+ *  carries its own change type (`memory.set`, …), so it is recognised by its
+ *  numeric `seq` instead. Anything else — an event name a newer server adds —
+ *  is skipped, the adapter's usual ignore-what-you-don't-know posture. */
+function toChangeFeedFrame(
+  raw: Record<string, unknown>,
+): ChangeFeedFrame | null {
+  if (raw.type === "feed") {
+    // An unreadable status must not default to enabled: the frame exists so a
+    // disabled feed is not mistaken for a quiet one.
+    if (typeof raw.enabled !== "boolean") return null;
+    const { type: _type, ...status } = raw;
+    return { kind: "feed", payload: status as unknown as ChangeFeedStatus };
+  }
+  if (typeof raw.seq === "number" && typeof raw.type === "string") {
+    return { kind: "change", payload: raw as unknown as MemoryChange };
+  }
+  return null;
 }
 
 // channelOpPath builds the v0.9.x Channel CRUD URL. Two families:
