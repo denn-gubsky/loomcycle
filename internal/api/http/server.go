@@ -6174,26 +6174,164 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 	if s.rejectIfPausedHTTP(w) {
 		return
 	}
-
-	// Acquire concurrency slot before opening the SSE stream so backpressure
-	// is reported as 429. user_id comes from the session (set at original
-	// creation); continuations don't accept a new user_id.
-	acquireStart := time.Now()
-	// Keyed on the session's tenant, as the run row is. This route does not
-	// queue yet: past queue_timeout_ms it answers 429.
-	release, err := s.sem.AcquireForUser(r.Context(), sess.TenantID, sess.UserID)
-	queueWait := time.Since(acquireStart)
-	if err != nil {
-		writeQuotaError(w, err)
+	// RFC AW token-budget admission, first before the run may queue: a
+	// continuation whose (tenant, user) is over a hard ceiling is refused, not
+	// queued.
+	if dec := s.limits.Check(sess.TenantID, sess.UserID); !dec.Allowed {
+		writeTokenLimitError(w, dec.Refusal)
 		return
 	}
-	// RFC AW token-budget admission: a continuation starts a new turn/run, so
-	// refuse with 429 when the session's (tenant, user) hard ceiling is at/over
-	// its month-to-date cap. Release the slot first; check BEFORE `defer
-	// release()` so the manual release() isn't double-fired.
+
+	// Validate any caller-supplied agent_id and reserve one for the new
+	// run (sub-fresh per continuation; never inherited from the prior
+	// run since "the run" is what agent_id addresses). Before admission: a
+	// run that has to wait is named in the queue by it.
+	if body.AgentID != "" && !validIdent(body.AgentID) {
+		http.Error(w, `agent_id must match [A-Za-z0-9_-]{1,128}`, http.StatusBadRequest)
+		return
+	}
+	if held, err := s.agentIDHeldByDraft(r.Context(), body.AgentID); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	} else if held {
+		writeJSONError(w, http.StatusConflict, "agent_id_in_use", fmt.Sprintf(agentIDInUseMsg, body.AgentID))
+		return
+	}
+	agentID := body.AgentID
+	if agentID == "" {
+		agentID = newAgentID()
+	}
+
+	// The run's ctx, with a cancel-cause registered in the cancel registry.
+	// Same shape as handleRuns, including its detach for review: a
+	// continuation held for a verdict must not be cancelled by the caller
+	// leaving, since a review can take far longer than a client keeps its
+	// stream. It keeps the request's ctx values; the cancel registry still
+	// stops it. The loop still runs in this handler, so nothing else changes
+	// hands; the stream just has no reader once the client is gone. Built
+	// before admission so a cancel reaches a continuation while it is queued.
+	runParent := r.Context()
+	if body.Review {
+		runParent = context.WithoutCancel(r.Context())
+	}
+	runCtx, cancelFn := context.WithCancelCause(runParent)
+	defer cancelFn(nil)
+
+	// The SSE stream. A continuation that starts at once opens it after its
+	// row exists; one that has to wait opens it when it queues, so the caller
+	// sees its ids and its `queued` event while it waits.
+	var stream *sse
+	openStream := func(runID string) bool {
+		st, ok := newSSE(w)
+		if !ok {
+			return false
+		}
+		st.start()
+		// See handleRuns for the keepalive rationale.
+		st.startKeepalive(r.Context(), s.cfg().Env.SSEKeepaliveInterval)
+		stream = st
+		st.send(providers.Event{Type: "session", Text: id})
+		st.sendRaw("agent", map[string]any{
+			"agent_id":        agentID,
+			"run_id":          runID,
+			"session_id":      id,
+			"parent_agent_id": nil,
+			"parent_context":  body.ParentContext, // v0.12.x: opaque tracking lineage (nil when absent)
+		})
+		return true
+	}
+
+	// Run slot (RFC EI P3), keyed on the session's (tenant, user) as the run
+	// row is; continuations don't accept a new user_id. A continuation that
+	// cannot start at once is queued — its row (status queued), its
+	// registration and its stream exist before it waits — exactly as POST
+	// /v1/runs. It keeps the session lock while it waits, so the session
+	// takes no other turn meanwhile.
+	var (
+		run        store.Run
+		rowErr     error
+		registered bool
+	)
+	queuedIdentity := store.RunIdentity{
+		AgentID: agentID, UserID: sess.UserID, TenantID: sess.TenantID, UserTier: body.UserTier,
+		Model: model, ReplicaID: s.replicaID, ParentContext: body.ParentContext,
+		Interactive: body.Interactive, OperatorKeyRestricted: operatorKeyRestricted, Isolated: isolated,
+	}
+	acquireStart := time.Now()
+	release, queued, err := s.admitRun(runCtx, admitArgs{
+		tenantID: sess.TenantID,
+		userID:   sess.UserID,
+		agentID:  agentID,
+		createRow: func() (string, string, error) {
+			// RunConfig is nil on purpose: StartQueuedRun writes it from the
+			// identity built at start, after the wait.
+			queuedRun, err := s.store.CreateQueuedRun(r.Context(), id, queuedIdentity)
+			if err != nil {
+				rowErr = err
+				return "", "", err
+			}
+			if in, err := messagesRunInput(id, sess, body); err != nil {
+				log.Printf("queue: run %s: could not convert its request for a restart: %v", queuedRun.ID, err)
+			} else {
+				s.recordQueuedInput(r.Context(), queuedRun.ID, sess.TenantID, sess.Retention, in)
+			}
+			return id, queuedRun.ID, nil
+		},
+		announce: func(sessionID, runID string) error {
+			if err := s.cancelReg.Register(cancel.Entry{
+				AgentID: agentID, RunID: runID, SessionID: sessionID,
+				UserID: sess.UserID, StartedAt: time.Now(),
+			}, cancelFn); err != nil {
+				return err
+			}
+			registered = true
+			if !openStream(runID) {
+				return errStreamingUnsupported
+			}
+			return nil
+		},
+		forward: func(ev providers.Event) {
+			if stream != nil {
+				stream.send(ev)
+			}
+		},
+	})
+	queueWait := time.Since(acquireStart)
+	if registered {
+		defer s.cancelReg.Deregister(agentID)
+	}
+	if stream != nil {
+		defer stream.end()
+	}
+	if err != nil {
+		switch {
+		case stream != nil:
+			// The caller already has the run's stream: end it with the reason.
+			stream.send(providers.Event{Type: providers.EventError, Error: "the run did not start: " + err.Error()})
+		case rowErr != nil:
+			writeRunRowError(w, rowErr)
+		case errors.Is(err, cancel.ErrInUse):
+			writeJSONError(w, http.StatusConflict, "agent_id_in_use",
+				fmt.Sprintf("agent_id %q is already mapped to an active run", agentID))
+		case errors.Is(err, errStreamingUnsupported):
+			http.Error(w, "server does not support streaming on this transport", http.StatusInternalServerError)
+		default:
+			writeQuotaError(w, err)
+		}
+		return
+	}
+	// RFC AW token-budget admission, again at start: a continuation that
+	// queued may have crossed its ceiling while it waited. Release the slot
+	// first; check BEFORE `defer release()` so the manual release() isn't
+	// double-fired.
 	limitDec := s.limits.Check(sess.TenantID, sess.UserID)
 	if !limitDec.Allowed {
 		release()
+		if queued != nil {
+			s.endQueuedRun(queued.runID, fmt.Errorf("%s", limitDec.Refusal.Message))
+			stream.send(providers.Event{Type: providers.EventError, Error: limitDec.Refusal.Message})
+			return
+		}
 		writeTokenLimitError(w, limitDec.Refusal)
 		return
 	}
@@ -6244,25 +6382,6 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 		}}, segments...)
 	}
 
-	// Validate any caller-supplied agent_id and reserve one for the new
-	// run (sub-fresh per continuation; never inherited from the prior
-	// run since "the run" is what agent_id addresses).
-	if body.AgentID != "" && !validIdent(body.AgentID) {
-		http.Error(w, `agent_id must match [A-Za-z0-9_-]{1,128}`, http.StatusBadRequest)
-		return
-	}
-	if held, err := s.agentIDHeldByDraft(r.Context(), body.AgentID); err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	} else if held {
-		writeJSONError(w, http.StatusConflict, "agent_id_in_use", fmt.Sprintf(agentIDInUseMsg, body.AgentID))
-		return
-	}
-	agentID := body.AgentID
-	if agentID == "" {
-		agentID = newAgentID()
-	}
-
 	// The continuation's own resolved configuration — merged once, persisted
 	// with the run, and restored on resume (see runConfigRecord).
 	runCfg := runConfigRecord{
@@ -6292,7 +6411,7 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 	// is per-request (v0.8.2) — a user upgrading mid-session sees
 	// the new tier applied immediately on this continuation.
 	// operatorKeyRestricted was computed above from the presenting principal.
-	run, err := s.store.CreateRun(r.Context(), id, store.RunIdentity{
+	identity := store.RunIdentity{
 		AgentID:       agentID,
 		UserID:        sess.UserID,
 		TenantID:      sess.TenantID, // RFC L: continuation inherits the session's authoritative tenant
@@ -6307,25 +6426,26 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 		OperatorKeyRestricted: operatorKeyRestricted,
 		Isolated:              isolated, // RFC BX P2b: confine data tools to own scope
 		RunConfig:             runCfg.marshal(),
-	})
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
+	}
+	if queued != nil {
+		// It waited: its row exists, queued, and only moves to running now. A
+		// cancel that ended it meanwhile wins.
+		run, err = s.store.StartQueuedRun(r.Context(), queued.runID, identity)
+		if err != nil {
+			if !errors.Is(err, store.ErrRunNotQueued) {
+				s.endQueuedRun(queued.runID, err)
+			}
+			stream.send(providers.Event{Type: providers.EventError, Error: "the run did not start: " + err.Error()})
+			return
+		}
+	} else {
+		run, err = s.store.CreateRun(r.Context(), id, identity)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
 	}
 
-	// Derive a runCtx with cancel-cause and register in the cancel
-	// registry. Same shape as handleRuns, including its detach for review: a
-	// continuation held for a verdict must not be cancelled by the caller
-	// leaving, since a review can take far longer than a client keeps its
-	// stream. It keeps the request's ctx values; the cancel registry still
-	// stops it. The loop still runs in this handler, so nothing else changes
-	// hands; the stream just has no reader once the client is gone.
-	runParent := r.Context()
-	if body.Review {
-		runParent = context.WithoutCancel(r.Context())
-	}
-	runCtx, cancelFn := context.WithCancelCause(runParent)
-	defer cancelFn(nil)
 	// v0.10.0 OTEL: top-level loomcycle.run span for session
 	// continuations. Each /v1/messages turn = one span.
 	runCtx, runSpan := lcotel.RecordRunStart(runCtx, lcotel.RunStartAttrs{
@@ -6337,13 +6457,17 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 	defer runSpan.End()
 	lcotel.RecordQueueWait(runSpan, queueWait)
 
-	regErr := s.cancelReg.Register(cancel.Entry{
-		AgentID:   agentID,
-		RunID:     run.ID,
-		SessionID: id,
-		UserID:    sess.UserID,
-		StartedAt: time.Now(),
-	}, cancelFn)
+	// A continuation that queued was registered before it waited.
+	var regErr error
+	if !registered {
+		regErr = s.cancelReg.Register(cancel.Entry{
+			AgentID:   agentID,
+			RunID:     run.ID,
+			SessionID: id,
+			UserID:    sess.UserID,
+			StartedAt: time.Now(),
+		}, cancelFn)
+	}
 	// v0.9.x: per-run meta for runstate.Bus.
 	meta := runStateMeta{
 		RunID:         run.ID,
@@ -6371,7 +6495,9 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, regErr.Error(), http.StatusInternalServerError)
 		return
 	}
-	defer s.cancelReg.Deregister(agentID)
+	if !registered {
+		defer s.cancelReg.Deregister(agentID)
+	}
 	s.publishRunState(meta, "running", "", "")
 
 	// Persist the new user input segments so a future replay sees them.
@@ -6382,23 +6508,13 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 	// records the instructions the agent saw at THAT moment.
 	s.emitSystemPromptEvent(r.Context(), run.ID, agentDef.SystemPrompt, "", promptProv)
 
-	stream, ok := newSSE(w)
-	if !ok {
-		http.Error(w, "server does not support streaming on this transport", http.StatusInternalServerError)
-		return
+	if stream == nil {
+		if !openStream(run.ID) {
+			http.Error(w, "server does not support streaming on this transport", http.StatusInternalServerError)
+			return
+		}
+		defer stream.end()
 	}
-	stream.start()
-	// See handleRuns for the keepalive rationale.
-	stream.startKeepalive(r.Context(), s.cfg().Env.SSEKeepaliveInterval)
-	defer stream.end()
-	stream.send(providers.Event{Type: "session", Text: id})
-	stream.sendRaw("agent", map[string]any{
-		"agent_id":        agentID,
-		"run_id":          run.ID,
-		"session_id":      id,
-		"parent_agent_id": nil,
-		"parent_context":  body.ParentContext, // v0.12.x: opaque tracking lineage (nil when absent)
-	})
 
 	// Hoisted above the recording emit so usage is attributed under the run's
 	// true identity (see makeRecordingEmit) and WithRunIdentity below reuses it.
