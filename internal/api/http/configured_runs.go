@@ -55,6 +55,12 @@ func (e *draftErr) Error() string { return e.msg }
 // (the compactErr / replayErr pattern).
 func (e *draftErr) HTTPStatus() int { return e.status }
 
+// ErrorCode is the refusal's machine code — the `code` its HTTP body carries —
+// so gRPC can name the refusal in ErrorInfo.reason without importing this
+// type. The status alone cannot: 429 is both configured_run_cap, which only
+// starting or discarding a draft clears, and rate_limited, which waiting does.
+func (e *draftErr) ErrorCode() string { return e.code }
+
 func draftRefusal(status int, code, format string, args ...any) *draftErr {
 	return &draftErr{status: status, code: code, msg: fmt.Sprintf(format, args...)}
 }

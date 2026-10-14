@@ -55,20 +55,14 @@ type oneProvider struct{ p providers.Provider }
 func (r oneProvider) Get(string) (providers.Provider, error) { return r.p, nil }
 
 func configuredGRPC(t *testing.T) (loomcyclepb.LoomcycleClient, *answerProvider, store.Store) {
+	return configuredGRPCWith(t, nil)
+}
+
+// configuredGRPCWith is configuredGRPC with the config edited before the
+// server is built.
+func configuredGRPCWith(t *testing.T, edit func(*config.Config)) (loomcyclepb.LoomcycleClient, *answerProvider, store.Store) {
 	t.Helper()
-	st, err := storesqlite.Open(filepath.Join(t.TempDir(), "grpc-configured.db"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = st.Close() })
-	cfg := &config.Config{
-		Defaults:    config.Defaults{Provider: "stub", Model: "stub-model"},
-		Agents:      map[string]config.AgentDef{"agent": {Model: "stub-model", SystemPrompt: "hi"}},
-		Concurrency: config.Concurrency{MaxConcurrentRuns: 4, MaxQueueDepth: 4, QueueTimeoutMS: 1000},
-	}
-	prov := &answerProvider{}
-	httpSrv := lchttp.New(cfg, oneProvider{prov}, []tools.Tool{}, concurrency.New(4, 4, time.Second), st)
-	adapter := New(Config{Store: st, CancelReg: cancel.NewRegistry(), Connector: httpSrv, Runner: httpSrv})
+	_, adapter, prov, st := configuredServers(t, edit)
 	gs := googlegrpc.NewServer(
 		googlegrpc.UnaryInterceptor(adapter.UnaryAuthInterceptor()),
 		googlegrpc.StreamInterceptor(adapter.StreamAuthInterceptor()),
@@ -86,6 +80,30 @@ func configuredGRPC(t *testing.T) (loomcyclepb.LoomcycleClient, *answerProvider,
 	}
 	t.Cleanup(func() { _ = conn.Close() })
 	return loomcyclepb.NewLoomcycleClient(conn), prov, st
+}
+
+// configuredServers builds the HTTP server (connector and runner) and the gRPC
+// adapter over it, without a listener, for a test that calls a handler
+// in-process with a principal of its own on the context.
+func configuredServers(t *testing.T, edit func(*config.Config)) (*lchttp.Server, *Server, *answerProvider, store.Store) {
+	t.Helper()
+	st, err := storesqlite.Open(filepath.Join(t.TempDir(), "grpc-configured.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+	cfg := &config.Config{
+		Defaults:    config.Defaults{Provider: "stub", Model: "stub-model"},
+		Agents:      map[string]config.AgentDef{"agent": {Model: "stub-model", SystemPrompt: "hi"}},
+		Concurrency: config.Concurrency{MaxConcurrentRuns: 4, MaxQueueDepth: 4, QueueTimeoutMS: 1000},
+	}
+	if edit != nil {
+		edit(cfg)
+	}
+	prov := &answerProvider{}
+	httpSrv := lchttp.New(cfg, oneProvider{prov}, []tools.Tool{}, concurrency.New(4, 4, time.Second), st)
+	adapter := New(Config{Store: st, CancelReg: cancel.NewRegistry(), Connector: httpSrv, Runner: httpSrv})
+	return httpSrv, adapter, prov, st
 }
 
 func userSegment(text string) []*loomcyclepb.PromptSegment {
@@ -186,6 +204,44 @@ func TestConfiguredRunRPCs_RefusalsMapToCodes(t *testing.T) {
 	}
 	if _, err := client.UpdateConfiguredRun(ctx, &loomcyclepb.UpdateConfiguredRunRequest{RunId: "r_missing", Patch: []byte(`{"prompt":"x"}`)}); status.Code(err) != codes.NotFound {
 		t.Errorf("patch of a missing run = %v, want NotFound", err)
+	}
+}
+
+// configured_run_cap and rate_limited are both ResourceExhausted, and only one
+// of them clears by waiting: the cap needs the caller to start or discard a
+// draft. The ErrorInfo reason is what tells them apart, so it must arrive
+// over the wire — without it a client can only match the message.
+func TestConfiguredRunRPCs_CapRefusalNamesItsReason(t *testing.T) {
+	client, _, _ := configuredGRPCWith(t, func(c *config.Config) { c.Env.MaxConfiguredRunsPerUser = 1 })
+	ctx := context.Background()
+	if _, err := client.CreateConfiguredRun(ctx, &loomcyclepb.RunRequest{Agent: "agent", UserId: "u1", Segments: userSegment("first")}); err != nil {
+		t.Fatalf("first draft: %v", err)
+	}
+	_, err := client.CreateConfiguredRun(ctx, &loomcyclepb.RunRequest{Agent: "agent", UserId: "u1", Segments: userSegment("second")})
+	v := viewOf(t, err)
+	if v.code != codes.ResourceExhausted {
+		t.Fatalf("over the cap: code = %v (%v), want ResourceExhausted", v.code, err)
+	}
+	if v.reason != "configured_run_cap" {
+		t.Errorf("over the cap: reason = %q, want configured_run_cap", v.reason)
+	}
+	if v.hasRetry {
+		t.Errorf("over the cap carries RetryInfo (%v): waiting does not free a draft", v.retryIn)
+	}
+}
+
+// Every configured-run refusal reaches gRPC with the code its HTTP body
+// carries as the reason, not only the 429s.
+func TestConfiguredRunRPCs_RefusalsNameTheirHTTPCode(t *testing.T) {
+	client, _, _ := configuredGRPC(t)
+	ctx := context.Background()
+	_, err := client.UpdateConfiguredRun(ctx, &loomcyclepb.UpdateConfiguredRunRequest{RunId: "r_missing", Patch: []byte(`{"prompt":"x"}`)})
+	if v := viewOf(t, err); v.code != codes.NotFound || v.reason != "unknown_run" {
+		t.Errorf("patch of a missing run = %v / %q, want NotFound / unknown_run", v.code, v.reason)
+	}
+	_, err = client.CreateConfiguredRun(ctx, &loomcyclepb.RunRequest{Agent: "agent", Segments: userSegment("x"), UserBearer: "abcdefghijklmnopqrstuvwxyz"})
+	if v := viewOf(t, err); v.code != codes.InvalidArgument || v.reason != "invalid_draft" {
+		t.Errorf("create with a secret = %v / %q, want InvalidArgument / invalid_draft", v.code, v.reason)
 	}
 }
 

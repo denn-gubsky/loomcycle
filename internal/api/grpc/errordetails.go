@@ -71,6 +71,25 @@ func reasonFor(err error) string {
 	return ""
 }
 
+// codedRefusal is a typed refusal that names its own machine code: the HTTP
+// package's configured-run refusal, which other transports see only through
+// interfaces (the HTTPStatus() pattern) because the type is unexported.
+type codedRefusal interface{ ErrorCode() string }
+
+// refusalCode returns the code a typed refusal names, or "".
+//
+// It is preferred over reasonFor because it IS the string the HTTP surface
+// puts in that refusal's body, while reasonFor can only recognise a sentinel
+// the refusal wraps — and these refusals mostly wrap none, so without this
+// they reached gRPC with no reason at all.
+func refusalCode(err error) string {
+	var cr codedRefusal
+	if errors.As(err, &cr) {
+		return cr.ErrorCode()
+	}
+	return ""
+}
+
 // withErrorDetails attaches google.rpc.ErrorInfo — and RetryInfo where there is
 // a backoff to give — to a status, so a caller can tell apart conditions that
 // share a gRPC code.
@@ -94,7 +113,10 @@ func withErrorDetails(st *status.Status, err error) error {
 		return nil
 	}
 	info, classified := errclassify.CategoryOf(err)
-	reason := reasonFor(err)
+	reason := refusalCode(err)
+	if reason == "" {
+		reason = reasonFor(err)
+	}
 	if !classified && reason == "" {
 		return st.Err()
 	}
