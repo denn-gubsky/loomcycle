@@ -1870,12 +1870,26 @@ message CancelAgentResponse {
 message ListUserAgentsRequest {
   string user_id = 1;
   // Optional status filter ("running" | "completed" | "failed" |
-  // "cancelled"). Empty → all statuses.
+  // "cancelled"). Empty → all statuses. Superseded by `statuses`; set one
+  // or the other, not both.
   string status = 2;
+  // Optional status filter of one or more run statuses: a run in any of them
+  // is listed. "all" alone is no filter. An unknown value is
+  // InvalidArgument. Empty (and `status` empty) → all statuses.
+  repeated string statuses = 3;
+  // Optional awaited-state filter: list only running runs blocked on one of
+  // these ("channel" | "interrupted" | "review" | "input" | "children").
+  // Implies running: a status filter other than "running" with it is
+  // InvalidArgument. The state is derived per run, so at most 1,000 running
+  // runs are read; `truncated` says when some were left unread.
+  repeated string awaited_states = 4;
 }
 
 message ListUserAgentsResponse {
   repeated Agent agents = 1;
+  // True when an awaited_states scan stopped before reading every running
+  // run, so a matching run may be missing. Never set otherwise.
+  bool truncated = 2;
 }
 
 // ListWalkRunsRequest names a walk by its own run id. limit 0 = 100, at most
