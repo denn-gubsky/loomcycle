@@ -106,6 +106,7 @@ from .errors import (
     SubstrateToolRefusedError,
     InvalidArgumentError,
 )
+from .signature import verify_loomcycle_delivery, verify_loomcycle_signature
 
 __all__ = [
     "LoomcycleClient",
@@ -147,6 +148,8 @@ __all__ = [
     "InvalidArgumentError",
     # v0.8.22 substrate admin
     "SubstrateToolRefusedError",
+    "verify_loomcycle_signature",
+    "verify_loomcycle_delivery",
 ]
 
 __version__ = "1.112.0"

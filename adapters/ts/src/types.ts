@@ -2696,6 +2696,9 @@ export interface PreHookCall {
   phase: "pre";
   owner: string;
   hook_name: string;
+  /** Present on a signed call only: this delivery's id, inside the signed body.
+   *  Dedupe on it, never on the unsigned X-Loomcycle-Delivery header copy. */
+  delivery_id?: string;
   agent: string;
   user_id?: string;
   agent_id?: string;
@@ -2724,6 +2727,9 @@ export interface PostHookCall {
   phase: "post";
   owner: string;
   hook_name: string;
+  /** Present on a signed call only: this delivery's id, inside the signed body.
+   *  Dedupe on it, never on the unsigned X-Loomcycle-Delivery header copy. */
+  delivery_id?: string;
   agent: string;
   user_id?: string;
   agent_id?: string;
@@ -2738,6 +2744,9 @@ export interface ChannelHookCall {
   /** `"channel:<name>"`. */
   owner: string;
   hook_name: string;
+  /** Present on a signed call only: this delivery's id, inside the signed body.
+   *  Dedupe on it, never on the unsigned X-Loomcycle-Delivery header copy. */
+  delivery_id?: string;
   channel: string;
   scope: string;
   scope_id?: string;

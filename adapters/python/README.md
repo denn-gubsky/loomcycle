@@ -313,6 +313,35 @@ This is enforced server-side in `internal/tools/builtin/narrowing.go`;
 `allowed_hosts` is a trust boundary — it must come from your
 application code, never from a model.
 
+## Verifying a signed hook delivery
+
+A HookDef whose webhook body names a `signing_secret` signs every call with
+`X-Loomcycle-Signature: t=<unix>,v1=<hex HMAC-SHA256 of t + "." + raw body>`.
+**Only the body is signed.** It carries `delivery_id` (a retry keeps it),
+`hook_name` and `owner`; the `X-Loomcycle-Delivery` and `X-Loomcycle-Hook`
+headers are unsigned copies a replayer can change, so dedupe and identify the
+hook from the verified body, never from them. Verify the **raw** body, before
+parsing it:
+
+```python
+from loomcycle import verify_loomcycle_delivery
+
+raw = request.get_data()  # the exact bytes received
+body = verify_loomcycle_delivery(raw, request.headers.get("X-Loomcycle-Signature", ""), SECRET)
+if body is None:
+    abort(401)
+if already_seen(body["delivery_id"]):  # keep ids at least 300 s
+    return previous_answer(body["delivery_id"])
+```
+
+`verify_loomcycle_delivery` returns the parsed body, or `None` when the
+signature fails or the body has no `delivery_id`/`hook_name`.
+`verify_loomcycle_signature` is the bare check: `True` only for a signature
+made within `tolerance_sec` (default 300) of now; a malformed header, a stale
+or future `t`, or a wrong MAC is `False`. Standard library only; the compare
+is `hmac.compare_digest`. Give each receiver its own signing secret, so a
+delivery captured at one cannot be replayed to another.
+
 ## Development
 
 ```bash

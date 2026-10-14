@@ -145,6 +145,10 @@ tools it matches, its body, its fail mode and timeout.
 - `body.kind` is `http` (a `url`) or `code-js` (a `code` body defining
   `hook(ev)`, see *Code hooks*). A code body is compiled when it is saved, and
   is refused unless the server enables code hooks.
+- `body.signing_secret` (http only) names a credential, `"$cred:<name>"`, that
+  signs every call — see *Verifying a delivery*. A literal secret is refused.
+  Unless you are an admin, it must be a tenant-level credential of your own
+  tenant, and one restricted by `allowed_urls` must cover `body.url`.
 - `description` is what someone the hook stops is told about it; the body and
   URL are never shown to them.
 - Ops: `create` (promotes), `fork` (each top-level overlay field replaces the
@@ -185,6 +189,62 @@ When several hooks match, they run in the order the definition lists them — a
 tool's own hooks before the agent-level ones — and `post` hooks run in reverse
 (classic middleware nesting: the outer hook sees what the inner ones did). The
 same order holds for the run hooks below.
+
+## Verifying a delivery
+
+A webhook receiver cannot otherwise tell a call from loomcycle from anyone
+else's POST. A HookDef whose http body names a `signing_secret` signs every
+call it makes, and the receiver checks it:
+
+```
+X-Loomcycle-Signature: t=1760000000,v1=<64 hex digits>
+
+{"phase":"pre","owner":"agent:researcher","hook_name":"net/deny-internal",
+ "delivery_id":"7c0e2b6a-…", …}
+```
+
+- **What is signed:** `v1` is the hex HMAC-SHA256, keyed by the secret, of
+  `t`, a `.`, and the **raw request body** — the exact bytes received. Only
+  the body is signed, never a header. Verify before parsing: a body parsed and
+  serialized again has different bytes and will not match.
+- **Then read the body.** After the signature verifies, parse the body and
+  act on what it says: `delivery_id` identifies the delivery, and
+  `hook_name` and `owner` say which hook sent it.
+- **Freshness:** `t` is when the call was signed, in unix seconds. Refuse a
+  call whose `t` is more than **300 seconds** from your clock either way, so a
+  captured call cannot be replayed later.
+- **Dedupe on the body's `delivery_id`.** Within those 300 seconds a captured
+  call can be sent again unchanged, so remember each `delivery_id` you handled
+  for at least 300 seconds and answer a repeat as you did before. When
+  loomcycle itself calls again for the same decision — a channel hook's retry
+  on the same message — `delivery_id` stays the same and only `t` and the
+  signature change. A run hook's calls are each their own delivery.
+- **The headers are unsigned copies.** `X-Loomcycle-Delivery` repeats the
+  body's `delivery_id` and `X-Loomcycle-Hook` its `hook_name`, for logs and
+  routing. Anyone replaying a call can change them without breaking the
+  signature, so never dedupe on them and never decide which hook called from
+  them.
+- **One secret per receiver.** A delivery signed for one receiver verifies at
+  any other that holds the same secret. Give each receiver (or each hook) its
+  own credential so a call captured at one cannot be replayed to another.
+- **Fail closed:** a missing or malformed header, a stale `t`, a wrong MAC, or
+  a body with no `delivery_id` is a refusal (`401`), with no reason given.
+  Compare MACs in constant time.
+- The secret is resolved for each call, so rotating the credential takes
+  effect on the next call, with no restart. A call whose secret cannot be
+  resolved is never sent unsigned: the call fails and `fail_mode` decides.
+- `X-Loomcycle-Signature`, `X-Loomcycle-Hook` and `X-Loomcycle-Delivery` are
+  loomcycle's: a hook's own `headers` cannot set them.
+
+The adapters ship the check: `verifyLoomcycleDelivery(rawBody, header,
+secret)` in `@loomcycle/client` and `verify_loomcycle_delivery` in the Python
+package verify the signature and return the body's `delivery_id`, `hook_name`
+and `owner` (`verifyLoomcycleSignature` / `verify_loomcycle_signature` are
+the bare check). Remembering the ids you handled stays yours. The signature
+is the same envelope loomcycle's own inbound webhooks verify.
+
+Only a HookDef can sign. Hooks a run request adds cannot name credentials at
+all, so they are never signed, and their bodies carry no `delivery_id`.
 
 ## Run hooks
 

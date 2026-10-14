@@ -37,6 +37,8 @@ type Dispatcher struct {
 	// the run on ctx. nil = no credentials here: a header naming one fails the
 	// call, which is never sent with the literal reference.
 	headerSub HeaderSubstitute
+	// now stamps a signed call's t; nil = time.Now. Tests pin it.
+	now func() time.Time
 
 	hostWidenPermitted atomic.Int64
 	hostWidenDenied    atomic.Int64
@@ -435,7 +437,53 @@ func (d *Dispatcher) invoke(ctx context.Context, h *Hook, body, out any) error {
 	if err != nil {
 		return err
 	}
-	return d.client.post(hookCtx, d.client.clientFor(h), h.CallbackURL, headers, body, out)
+	sig, err := d.signer(hookCtx, h)
+	if err != nil {
+		return err
+	}
+	if sig != nil {
+		// The id goes in the body, under the signature: a header alone would
+		// let a replay within the tolerance pass as a new delivery.
+		p, ok := body.(deliveryStamped)
+		if !ok {
+			return callError("the hook's payload could not be signed", fmt.Errorf("hooks: payload %T carries no delivery_id", body))
+		}
+		p.stampDelivery(sig.delivery)
+	}
+	return d.client.post(hookCtx, d.client.clientFor(h), h.CallbackURL, headers, sig, body, out)
+}
+
+// signer resolves a hook's signing secret for this call, or returns nil for an
+// unsigned hook. It resolves exactly as a header credential does — for the run
+// on ctx and for the callback URL, so a credential restricted by allowed_urls
+// signs only a call to a URL it covers, and the resolved value is registered
+// with the run's redactor by the resolver. A secret that does not resolve fails
+// the call: a hook that signs is never sent unsigned, and its fail mode decides.
+// Errors name the reference, never a value.
+func (d *Dispatcher) signer(ctx context.Context, h *Hook) (*signing, error) {
+	if h.SigningSecret == "" {
+		return nil, nil
+	}
+	const category = "the hook's signing secret could not be resolved"
+	if d.headerSub == nil {
+		return nil, callError(category, fmt.Errorf("signing_secret %s names a credential, and no credential store is configured", h.SigningSecret))
+	}
+	secret, unresolved, err := d.headerSub(ctx, h.SigningSecret, h.CallbackURL)
+	if err != nil {
+		return nil, callError(category, fmt.Errorf("signing_secret %s: %w", h.SigningSecret, err))
+	}
+	if len(unresolved) > 0 || secret == "" || secret == h.SigningSecret {
+		return nil, callError(category, fmt.Errorf("signing_secret %s: no such credential for this run", h.SigningSecret))
+	}
+	now := d.now
+	if now == nil {
+		now = time.Now
+	}
+	id := deliveryIDFrom(ctx)
+	if id == "" {
+		id = newDeliveryID()
+	}
+	return &signing{secret: secret, hook: h.Name, delivery: id, now: now}, nil
 }
 
 // errCodeHooksDisabled is a code hook met with no runner installed.

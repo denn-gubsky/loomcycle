@@ -202,6 +202,11 @@ func validateHeaders(h map[string]string) error {
 		switch strings.ToLower(k) {
 		case "host", "content-type", "content-length", "accept", "transfer-encoding", "connection":
 			return fmt.Errorf("header %q is set by the call itself", k)
+		case "x-loomcycle-signature", "x-loomcycle-hook", "x-loomcycle-delivery":
+			// Refused for every hook, signed or not: a receiver reads these as
+			// loomcycle's own, and an author's value would let an unsigned
+			// call pass for a signed one, or two deliveries share an id.
+			return fmt.Errorf("header %q is set by loomcycle on a signed call", k)
 		}
 		if strings.ContainsAny(v, "\r\n") {
 			return fmt.Errorf("header %q: a value cannot contain a line break", k)
@@ -325,7 +330,7 @@ func resolveEntry(ctx context.Context, src Source, tool string, phase Phase, ent
 		case BodyKindCode:
 			h.Code = def.Body.Code
 		default:
-			h.CallbackURL, h.Headers = def.Body.URL, def.Body.Headers
+			h.CallbackURL, h.Headers, h.SigningSecret = def.Body.URL, def.Body.Headers, def.Body.SigningSecret
 		}
 		if def.Match != nil && len(def.Match.Tools) > 0 {
 			if tool != "" && !globsMatch(def.Match.Tools, tool) {
