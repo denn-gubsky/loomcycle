@@ -51,7 +51,7 @@ func peerCredsOver(t *testing.T, s store.Store, creds ...storedCred) *PeerCreden
 				t.Fatal(err)
 			}
 		}
-		if _, err := eng.PutInline(context.Background(), credential.Identity{TenantID: c.tenant, Scope: c.scope, ScopeID: c.scopeID, Name: c.name}, c.value, nil, list); err != nil {
+		if _, err := eng.PutInline(context.Background(), credential.Identity{TenantID: c.tenant, Scope: c.scope, ScopeID: c.scopeID, Name: c.name}, c.value, nil, list, nil); err != nil {
 			t.Fatalf("seed credential %s/%s: %v", c.tenant, c.name, err)
 		}
 	}

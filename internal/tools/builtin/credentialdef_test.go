@@ -182,3 +182,33 @@ func TestCredentialDefTool_AllowedURLs_EmptyMeansNowhereAndBadEntriesAreRefused(
 		t.Error("a refused create stored the credential")
 	}
 }
+
+// username is stored with the credential, shown by get and list, kept by a
+// rotation that leaves it out, removed by "", and refused when it would break
+// basic auth.
+func TestCredentialDefTool_UsernameIsStoredShownKeptAndCleared(t *testing.T) {
+	c, ctx := credFixture(t, "u1", testKEK())
+
+	out, res := credExec(t, c, ctx, `{"op":"create","name":"repo","value":"glpat_x","username":"bob"}`)
+	if res.IsError || out["username"] != "bob" {
+		t.Fatalf("create: %s %v", res.Text, out)
+	}
+	if out, _ := credExec(t, c, ctx, `{"op":"get","name":"repo"}`); out["username"] != "bob" {
+		t.Errorf("get does not show the user name: %v", out)
+	}
+	listed, _ := credExec(t, c, ctx, `{"op":"list"}`)
+	if creds, _ := listed["credentials"].([]any); len(creds) != 1 || creds[0].(map[string]any)["username"] != "bob" {
+		t.Errorf("list does not show the user name: %v", listed)
+	}
+	if out, res := credExec(t, c, ctx, `{"op":"create","name":"repo","value":"glpat_y"}`); res.IsError || out["username"] != "bob" {
+		t.Errorf("a rotation without username: %s %v, want it kept", res.Text, out)
+	}
+	if out, res := credExec(t, c, ctx, `{"op":"create","name":"repo","value":"glpat_z","username":""}`); res.IsError || out["username"] != nil {
+		t.Errorf("username \"\": %s %v, want it removed", res.Text, out)
+	}
+	for _, bad := range []string{`"a:b"`, `"a\nb"`} {
+		if _, res := credExec(t, c, ctx, `{"op":"create","name":"repo","value":"v","username":`+bad+`}`); !res.IsError {
+			t.Errorf("username %s accepted", bad)
+		}
+	}
+}

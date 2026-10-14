@@ -100,7 +100,7 @@ func TestRestrictedCredential_ReachesOnlyTheURLsItAllows(t *testing.T) {
 				t.Fatal(err)
 			}
 		}
-		if _, err := engine.PutInline(context.Background(), credential.Identity{TenantID: "t", Scope: "tenant", Name: name}, value, nil, list); err != nil {
+		if _, err := engine.PutInline(context.Background(), credential.Identity{TenantID: "t", Scope: "tenant", Name: name}, value, nil, list, nil); err != nil {
 			t.Fatal(err)
 		}
 	}

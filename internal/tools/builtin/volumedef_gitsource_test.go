@@ -35,9 +35,19 @@ type gitSourceFixture struct {
 
 func newGitSourceFixture(t *testing.T, requireAuth bool) *gitSourceFixture {
 	t.Helper()
-	opt := gitsourcetest.Options{}
 	if requireAuth {
-		opt = gitsourcetest.Options{User: gitTestUser, Token: gitTestToken}
+		return newGitSourceFixtureFor(t, gitTestUser)
+	}
+	return newGitSourceFixtureFor(t, "")
+}
+
+// newGitSourceFixtureFor serves a repository that requires user and the test
+// token as basic auth, or nothing when user is "".
+func newGitSourceFixtureFor(t *testing.T, user string) *gitSourceFixture {
+	t.Helper()
+	opt := gitsourcetest.Options{}
+	if user != "" {
+		opt = gitsourcetest.Options{User: user, Token: gitTestToken}
 	}
 	f := &gitSourceFixture{repo: gitsourcetest.New(t, opt)}
 	tool, base, root, done := volumeDefFixture(t)
@@ -78,7 +88,7 @@ func (f *gitSourceFixture) credential(t *testing.T, name, value string, allowed 
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := f.engine.PutInline(context.Background(), credential.Identity{TenantID: "tnt", Scope: "tenant", Name: name}, value, nil, norm); err != nil {
+	if _, err := f.engine.PutInline(context.Background(), credential.Identity{TenantID: "tnt", Scope: "tenant", Name: name}, value, nil, norm, nil); err != nil {
 		t.Fatal(err)
 	}
 	return "$cred:" + name
@@ -477,5 +487,32 @@ func TestValidMetaOutput(t *testing.T) {
 		if got := validMetaOutput(rel); got != want {
 			t.Errorf("validMetaOutput(%q) = %v, want %v", rel, got, want)
 		}
+	}
+}
+
+// A credential's username is the basic-auth user name a clone sends. A forge
+// that wants a particular name accepts the credential that carries it, and
+// refuses the same token sent with the default name.
+func TestVolumeDefGitSource_TheCredentialsUsernameIsSent(t *testing.T) {
+	f := newGitSourceFixtureFor(t, "bob")
+	allowed, err := credential.NormalizeAllowedURLs(&[]string{f.repo.URL})
+	if err != nil {
+		t.Fatal(err)
+	}
+	put := func(name string, username *string) {
+		t.Helper()
+		if _, err := f.engine.PutInline(context.Background(), credential.Identity{TenantID: "tnt", Scope: "tenant", Name: name}, gitTestToken, nil, allowed, username); err != nil {
+			t.Fatal(err)
+		}
+	}
+	bob := "bob"
+	put("named", &bob)
+	put("unnamed", nil)
+
+	if _, res := f.create(t, f.ctx, "named", map[string]any{"url": f.repo.URL, "commit": f.repo.Head, "credential": "$cred:named"}, nil); res.IsError {
+		t.Errorf("the credential with the forge's user name: %s", res.Text)
+	}
+	if _, res := f.create(t, f.ctx, "unnamed", map[string]any{"url": f.repo.URL, "commit": f.repo.Head, "credential": "$cred:unnamed"}, nil); !res.IsError || !strings.Contains(res.Text, "auth_failed") {
+		t.Errorf("the same token with the default user name: %s, want auth_failed", res.Text)
 	}
 }

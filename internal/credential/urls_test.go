@@ -99,7 +99,7 @@ func TestEngine_ARestrictedCredentialResolvesOnlyForAnAllowedURL(t *testing.T) {
 	e := newEngine(t, testKey(1))
 	ctx := netguard.WithPinnable(context.Background())
 	id := Identity{TenantID: "t", Scope: "tenant", Name: "repo"}
-	meta, err := e.PutInline(ctx, id, "ghs_secret", nil, urls("https://github.com/acme/app"))
+	meta, err := e.PutInline(ctx, id, "ghs_secret", nil, urls("https://github.com/acme/app"), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -129,7 +129,7 @@ func TestEngine_ARestrictedCredentialResolvesOnlyForAnAllowedURL(t *testing.T) {
 
 	// "Sent nowhere" resolves for no destination at all.
 	nowhere := Identity{TenantID: "t", Scope: "tenant", Name: "hook-secret"}
-	if _, err := e.PutInline(ctx, nowhere, "whsec", nil, urls()); err != nil {
+	if _, err := e.PutInline(ctx, nowhere, "whsec", nil, urls(), nil); err != nil {
 		t.Fatal(err)
 	}
 	if _, _, err := e.ResolveFor(ctx, "t", "", "", "hook-secret", "https://github.com/acme/app"); !errors.Is(err, ErrURLNotAllowed) {
@@ -138,7 +138,7 @@ func TestEngine_ARestrictedCredentialResolvesOnlyForAnAllowedURL(t *testing.T) {
 
 	// An unrestricted credential is unchanged, with or without a destination.
 	plain := Identity{TenantID: "t", Scope: "tenant", Name: "plain"}
-	if _, err := e.PutInline(ctx, plain, "v", nil, nil); err != nil {
+	if _, err := e.PutInline(ctx, plain, "v", nil, nil, nil); err != nil {
 		t.Fatal(err)
 	}
 	for _, f := range []func() (Resolved, bool, error){
@@ -156,10 +156,10 @@ func TestEngine_ARestrictedCredentialResolvesOnlyForAnAllowedURL(t *testing.T) {
 func TestEngine_ARestrictedCredentialIsNotShadowedAwayByALessSpecificOne(t *testing.T) {
 	e := newEngine(t, testKey(1))
 	ctx := context.Background()
-	if _, err := e.PutInline(ctx, Identity{TenantID: "t", Scope: "agent", ScopeID: "reviewer", Name: "repo"}, "agent-secret", nil, urls("https://github.com/acme/app")); err != nil {
+	if _, err := e.PutInline(ctx, Identity{TenantID: "t", Scope: "agent", ScopeID: "reviewer", Name: "repo"}, "agent-secret", nil, urls("https://github.com/acme/app"), nil); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := e.PutInline(ctx, Identity{TenantID: "t", Scope: "tenant", Name: "repo"}, "tenant-secret", nil, nil); err != nil {
+	if _, err := e.PutInline(ctx, Identity{TenantID: "t", Scope: "tenant", Name: "repo"}, "tenant-secret", nil, nil, nil); err != nil {
 		t.Fatal(err)
 	}
 	if res, _, err := e.Resolve(ctx, "t", "reviewer", "", "repo"); !errors.Is(err, ErrRestricted) || res.Value != "" {
@@ -193,7 +193,7 @@ func TestEngine_AnEditedRestrictionNoLongerOpens(t *testing.T) {
 
 	t.Run("the list is widened", func(t *testing.T) {
 		e := newEngine(t, testKey(1))
-		if _, err := e.PutInline(ctx, id, "s", nil, urls("https://github.com/acme/app")); err != nil {
+		if _, err := e.PutInline(ctx, id, "s", nil, urls("https://github.com/acme/app"), nil); err != nil {
 			t.Fatal(err)
 		}
 		rewrite(t, e, id, func(def map[string]json.RawMessage) {
@@ -205,7 +205,7 @@ func TestEngine_AnEditedRestrictionNoLongerOpens(t *testing.T) {
 	})
 	t.Run("the list is removed", func(t *testing.T) {
 		e := newEngine(t, testKey(1))
-		if _, err := e.PutInline(ctx, id, "s", nil, urls("https://github.com/acme/app")); err != nil {
+		if _, err := e.PutInline(ctx, id, "s", nil, urls("https://github.com/acme/app"), nil); err != nil {
 			t.Fatal(err)
 		}
 		rewrite(t, e, id, func(def map[string]json.RawMessage) { delete(def, "allowed_urls") })
@@ -215,7 +215,7 @@ func TestEngine_AnEditedRestrictionNoLongerOpens(t *testing.T) {
 	})
 	t.Run("an empty list is removed", func(t *testing.T) {
 		e := newEngine(t, testKey(1))
-		if _, err := e.PutInline(ctx, id, "s", nil, urls()); err != nil {
+		if _, err := e.PutInline(ctx, id, "s", nil, urls(), nil); err != nil {
 			t.Fatal(err)
 		}
 		rewrite(t, e, id, func(def map[string]json.RawMessage) { delete(def, "allowed_urls") })
@@ -225,7 +225,7 @@ func TestEngine_AnEditedRestrictionNoLongerOpens(t *testing.T) {
 	})
 	t.Run("a list is added to an unrestricted credential", func(t *testing.T) {
 		e := newEngine(t, testKey(1))
-		if _, err := e.PutInline(ctx, id, "s", nil, nil); err != nil {
+		if _, err := e.PutInline(ctx, id, "s", nil, nil, nil); err != nil {
 			t.Fatal(err)
 		}
 		rewrite(t, e, id, func(def map[string]json.RawMessage) {
@@ -262,10 +262,10 @@ func TestEngine_RotationKeepsTheRestrictionUnlessOneIsSent(t *testing.T) {
 	e := newEngine(t, testKey(1))
 	ctx := netguard.WithPinnable(context.Background())
 	id := Identity{TenantID: "t", Scope: "tenant", Name: "repo"}
-	if _, err := e.PutInline(ctx, id, "v1", nil, urls("https://github.com/acme/app")); err != nil {
+	if _, err := e.PutInline(ctx, id, "v1", nil, urls("https://github.com/acme/app"), nil); err != nil {
 		t.Fatal(err)
 	}
-	meta, err := e.PutInline(ctx, id, "v2", nil, nil) // a rotation that says nothing about the list
+	meta, err := e.PutInline(ctx, id, "v2", nil, nil, nil) // a rotation that says nothing about the list
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -279,7 +279,7 @@ func TestEngine_RotationKeepsTheRestrictionUnlessOneIsSent(t *testing.T) {
 		t.Errorf("the rotated value: %q err=%v", res.Value, err)
 	}
 	// A list that is sent replaces the old one.
-	if meta, err := e.PutInline(ctx, id, "v3", nil, urls("https://gitea.example/a/b")); err != nil || !reflect.DeepEqual(*meta.AllowedURLs, []string{"https://gitea.example/a/b"}) {
+	if meta, err := e.PutInline(ctx, id, "v3", nil, urls("https://gitea.example/a/b"), nil); err != nil || !reflect.DeepEqual(*meta.AllowedURLs, []string{"https://gitea.example/a/b"}) {
 		t.Errorf("a new list: %v err=%v", meta.AllowedURLs, err)
 	}
 	// An edited stored list is refused, not sealed into the new value.
@@ -291,8 +291,67 @@ func TestEngine_RotationKeepsTheRestrictionUnlessOneIsSent(t *testing.T) {
 	if _, err := e.store.CredentialDefPut(ctx, row); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := e.PutInline(ctx, id, "v4", nil, nil); err == nil {
+	if _, err := e.PutInline(ctx, id, "v4", nil, nil, nil); err == nil {
 		t.Error("a rotation carried an edited list into the new value")
+	}
+}
+
+// A user name is stored with the value, shown with the metadata and handed
+// out with a resolution. A rotation that says nothing about it keeps it; an
+// empty one removes it. It is not part of what the value is sealed with, so
+// a row whose user name was changed behind the engine still opens.
+func TestEngine_AUserNameIsStoredKeptAndCleared(t *testing.T) {
+	e := newEngine(t, testKey(1))
+	ctx := context.Background()
+	id := Identity{TenantID: "t", Scope: "tenant", Name: "repo"}
+	bob, empty := "bob", ""
+
+	meta, err := e.PutInline(ctx, id, "v1", nil, nil, &bob)
+	if err != nil || meta.Username != "bob" {
+		t.Fatalf("create: meta.Username=%q err=%v", meta.Username, err)
+	}
+	if res, _, err := e.Resolve(ctx, "t", "", "", "repo"); err != nil || res.Username != "bob" || res.Value != "v1" {
+		t.Fatalf("resolve: %+v err=%v", res, err)
+	}
+	if meta, err = e.PutInline(ctx, id, "v2", nil, nil, nil); err != nil || meta.Username != "bob" {
+		t.Errorf("a rotation dropped the user name: %q err=%v", meta.Username, err)
+	}
+	if meta, err = e.PutInline(ctx, id, "v3", nil, nil, &empty); err != nil || meta.Username != "" {
+		t.Errorf("an empty user name did not remove it: %q err=%v", meta.Username, err)
+	}
+
+	// Not sealed with the value: an edited user name still opens.
+	if _, err := e.PutInline(ctx, id, "v4", nil, nil, &bob); err != nil {
+		t.Fatal(err)
+	}
+	row, err := e.store.CredentialDefGet(ctx, "t", "tenant", "", "repo")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var def map[string]any
+	if err := json.Unmarshal(row.Definition, &def); err != nil {
+		t.Fatal(err)
+	}
+	def["username"] = "mallory"
+	row.Definition, _ = json.Marshal(def)
+	if _, err := e.store.CredentialDefPut(ctx, row); err != nil {
+		t.Fatal(err)
+	}
+	if res, _, err := e.Resolve(ctx, "t", "", "", "repo"); err != nil || res.Value != "v4" || res.Username != "mallory" {
+		t.Errorf("an edited user name: %+v err=%v", res, err)
+	}
+}
+
+func TestValidUsername(t *testing.T) {
+	for _, ok := range []string{"", "bob", "oauth2", "x-access-token", "a.b@example.com"} {
+		if err := ValidUsername(ok); err != nil {
+			t.Errorf("%q refused: %v", ok, err)
+		}
+	}
+	for _, bad := range []string{"a:b", "a\nb", "a\rb", "a\x00b", "a\x7fb", strings.Repeat("a", 257)} {
+		if err := ValidUsername(bad); err == nil {
+			t.Errorf("%q accepted", bad)
+		}
 	}
 }
 
@@ -304,10 +363,10 @@ func TestEngine_RotationKeepsTheRestrictionUnlessOneIsSent(t *testing.T) {
 func TestEngine_ARestrictedCredentialPinsItsRequest(t *testing.T) {
 	e := newEngine(t, testKey(1))
 	setup := context.Background()
-	if _, err := e.PutInline(setup, Identity{TenantID: "t", Scope: "tenant", Name: "repo"}, "ghs_secret", nil, urls("https://github.com/acme/app")); err != nil {
+	if _, err := e.PutInline(setup, Identity{TenantID: "t", Scope: "tenant", Name: "repo"}, "ghs_secret", nil, urls("https://github.com/acme/app"), nil); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := e.PutInline(setup, Identity{TenantID: "t", Scope: "tenant", Name: "plain"}, "v", nil, nil); err != nil {
+	if _, err := e.PutInline(setup, Identity{TenantID: "t", Scope: "tenant", Name: "plain"}, "v", nil, nil, nil); err != nil {
 		t.Fatal(err)
 	}
 

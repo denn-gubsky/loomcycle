@@ -228,7 +228,7 @@ func newCanaryEnv(t *testing.T, restricted bool, scripts func(e *canaryEnv) map[
 			}
 			list = norm
 		}
-		if _, err := engine.PutInline(context.Background(), credential.Identity{Scope: "tenant", Name: name}, value, nil, list); err != nil {
+		if _, err := engine.PutInline(context.Background(), credential.Identity{Scope: "tenant", Name: name}, value, nil, list, nil); err != nil {
 			t.Fatal(err)
 		}
 	}

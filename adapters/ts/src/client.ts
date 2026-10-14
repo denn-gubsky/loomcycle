@@ -3334,10 +3334,16 @@ export class LoomcycleClient {
    *  `allowed_urls` restricts where the value may be sent: https URLs, each
    *  covering itself and everything under it. `[]` stores a value that is
    *  sent nowhere. Leave it out for no restriction, or, when the credential
-   *  already exists, to keep the list it has. A restricted credential does
-   *  not resolve in a `$cred:` header or as a provider key. */
+   *  already exists, to keep the list it has. A restricted credential is used
+   *  only where the destination is known and covered (an MCP server's or a
+   *  hook's header, a remote peer's key, a git source), never as a provider
+   *  key.
+   *
+   *  `username` is the user name sent with the value where a destination
+   *  takes one (HTTP basic auth for a git source). Leave it out to keep the
+   *  stored one; `""` removes it. */
   async createCredential(
-    input: { scope: CredentialScope; name: string; value: string; allowed_urls?: string[] },
+    input: { scope: CredentialScope; name: string; value: string; allowed_urls?: string[]; username?: string },
     opts?: { signal?: AbortSignal },
   ): Promise<CredentialMeta> {
     return postJSON<CredentialMeta>(

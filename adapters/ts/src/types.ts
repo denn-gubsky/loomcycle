@@ -4856,6 +4856,9 @@ export interface CredentialMeta {
   /** The https URLs the value may be sent to, in canonical form. Absent for
    *  an unrestricted credential; `[]` for one that is sent nowhere. */
   allowed_urls?: string[];
+  /** The user name sent with the value where a destination takes one (HTTP
+   *  basic auth for a git source). Absent when none is stored. */
+  username?: string;
 }
 
 /** CredentialListResponse is the {op:list} result: metadata for the given scope. */

@@ -50,7 +50,7 @@ func TestWebhook_ARestrictedCredentialGoesOnlyToItsCallback(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := engine.PutInline(context.Background(), credential.Identity{Scope: "tenant", Name: "hook_key"}, "restricted-value", nil, list); err != nil {
+	if _, err := engine.PutInline(context.Background(), credential.Identity{Scope: "tenant", Name: "hook_key"}, "restricted-value", nil, list, nil); err != nil {
 		t.Fatal(err)
 	}
 

@@ -130,6 +130,13 @@ func GitCredentialResolver(
 			return "", "", fmt.Errorf("%w: %v", ErrGitCredentialUnresolvable, perr)
 		}
 		token := res.Value
+		// The user name stored with a $cred: credential, else the default
+		// for the kind of host. An App's installation token always goes
+		// with x-access-token, whatever its stored config says.
+		user := res.Username
+		if user == "" || kind == "ghapp" {
+			user = gitAuthUsername(u.Hostname())
+		}
 		if kind == "ghapp" {
 			if mintApp == nil {
 				return "", "", fmt.Errorf("%w: GitHub App credentials are not available", ErrGitCredentialUnresolvable)
@@ -141,7 +148,7 @@ func GitCredentialResolver(
 		if register != nil {
 			register(token)
 		}
-		return gitAuthUsername(u.Hostname()), token, nil
+		return user, token, nil
 	}
 }
 
