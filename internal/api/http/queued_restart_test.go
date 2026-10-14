@@ -193,6 +193,22 @@ func TestRestartQueuedRuns_StartsTheRunUnderItsOwnRow(t *testing.T) {
 	if !transcriptMentions(evs, "queued before the restart") {
 		t.Errorf("transcript = %+v, want the prompt the run queued with", evs)
 	}
+	// It started at once, but it had queued: its transcript says admitted.
+	admitted := false
+	for _, ev := range evs {
+		admitted = admitted || ev.Type == string(providers.EventAdmitted)
+	}
+	if !admitted {
+		t.Errorf("transcript types = %v, want an admitted event", eventTypes(evs))
+	}
+}
+
+func eventTypes(evs []store.Event) []string {
+	out := make([]string, 0, len(evs))
+	for _, ev := range evs {
+		out = append(out, ev.Type)
+	}
+	return out
 }
 
 // The restarted runs queue again in the order they first queued.

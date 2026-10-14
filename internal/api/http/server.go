@@ -3280,6 +3280,13 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 		qRunID := in.QueuedRunID
 		if queued != nil {
 			qRunID = queued.runID
+		} else if r, err := s.store.GetRun(ctx, qRunID); err == nil {
+			// Restarted into a free slot: its transcript says queued, so it
+			// says admitted too, counting the wait from when it first queued.
+			s.emitAdmissionEvent(ctx, qRunID, cb.OnEvent, providers.Event{
+				Type:      providers.EventAdmitted,
+				Admission: &providers.AdmissionInfo{WaitMs: time.Since(r.StartedAt).Milliseconds()},
+			})
 		}
 		started, err := s.store.StartQueuedRun(ctx, qRunID, identity)
 		if err != nil {
