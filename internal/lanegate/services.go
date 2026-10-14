@@ -44,13 +44,14 @@ func (d *decisionDriver) Limits(model string) decision.Limits { return d.inner.L
 //
 // The wait is OUTSIDE the driver's own timeout: that bounds how long the model
 // may take to answer, and a decision queued behind other work has not been
-// asked yet. Only ctx ends the wait.
+// asked yet. Only ctx ends the wait. A decision a tool asks for a run reports
+// its wait on the run's stream (runReporter).
 func (d *decisionDriver) Decide(ctx context.Context, req decision.Request) (*decision.Response, error) {
 	// A request the driver would refuse unasked must not queue for a slot first.
 	if err := decision.Validate(req, d.inner.Limits(req.Model)); err != nil {
 		return nil, err
 	}
-	release, err := acquire(ctx, d.sched, d.floor, d.id, config.ModelKindDecision, req.Model, nil)
+	release, err := acquire(ctx, d.sched, d.floor, d.id, config.ModelKindDecision, req.Model, runReporter(ctx))
 	if err != nil {
 		code := decision.CodeCallFailed
 		if errors.Is(err, context.DeadlineExceeded) {
@@ -114,12 +115,13 @@ func (e *Embedder) Provider() string { return e.inner.Provider() }
 func (e *Embedder) Dimension() int   { return e.inner.Dimension() }
 
 // Embed holds one slot for the whole call, however many requests the driver
-// batches texts into: the host is busy with it until it returns.
+// batches texts into: the host is busy with it until it returns. An embedding
+// made for a run reports its wait on the run's stream (runReporter).
 func (e *Embedder) Embed(ctx context.Context, texts []string) ([][]float32, error) {
 	if !e.sched.Gated(e.id, config.ModelKindEmbedder) {
 		return e.inner.Embed(ctx, texts)
 	}
-	release, err := acquire(ctx, e.sched, nil, e.id, config.ModelKindEmbedder, e.inner.Model(), nil)
+	release, err := acquire(ctx, e.sched, nil, e.id, config.ModelKindEmbedder, e.inner.Model(), runReporter(ctx))
 	if err != nil {
 		return nil, err
 	}

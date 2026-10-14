@@ -1990,10 +1990,15 @@ type EventEmitterFunc func(providers.Event)
 // event onto the same SSE stream the loop uses. Sub-agent contexts
 // inherit the parent's emitter automatically — the parent and
 // child run share the same SSE stream.
+//
+// The same function becomes the ctx's providers.EventSink, so a model call a
+// tool makes for the run (a decision, an embedding) reports a wait for its
+// call lane on the run's stream.
 func WithEventEmitter(ctx context.Context, fn EventEmitterFunc) context.Context {
 	if fn == nil {
 		return ctx
 	}
+	ctx = providers.WithEventSink(ctx, fn)
 	return context.WithValue(ctx, ctxKeyEventEmitter{}, fn)
 }
 
