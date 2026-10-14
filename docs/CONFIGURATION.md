@@ -1404,6 +1404,28 @@ Rules worth knowing:
 - **It is not part of the definition's content hash**, so adding or removing it does not change `content_sha256`. A create that changes only the lock still writes a new version.
 - Unset or `true` leaves the overrides to the caller, as before.
 
+#### Asking which settings a run may set
+
+**Since v1.113.0.** A client that builds a run form needs to know which per-run settings it may offer before it sends anything. `GET /v1/_agentdef/{name}/overridable` answers it for the calling token (TypeScript: `getAgentOverridable(name)`):
+
+```json
+{
+  "agent": "judge",
+  "allow_overrides": false,
+  "restricted_by_token": false,
+  "fields": {
+    "model": {"overridable": false, "reason": "agent_locked"},
+    "effort": {"overridable": false, "reason": "agent_locked"}
+  }
+}
+```
+
+- **One entry per setting a token lock can name** (the table above), keyed by its run-request field name.
+- **The answer is the caller's.** It folds the agent's `allow_overrides` with the token's own `overrides` policy, through the same checks a run is refused with, so it cannot report a setting as open that a run is then refused. `reason` names the lock a run would cite: `token_locked` or `agent_locked` (the token is named when both apply). `restricted_by_token` says the token's policy took part; do not reuse the answer for another token.
+- **An open setting may say what the run accepts:** `narrow_only` (`max_concurrent_children`, `interruption` can only be lowered), `max` (the fan-out ceiling), and `values` where the check is against a closed set — the efforts, the configured tiers, and the `providers` and `models` the definition declares. No `values` means any value the deployment accepts (`GET /v1/_models`, `GET /v1/_routing`), not anything at all.
+- **It resolves the agent as a run does:** the server config, then the tenant's active `AgentDef` version (`def_id`, absent for an unversioned agent). An unknown agent and another tenant's are the same `404 agent_not_found`. An admin may name another tenant with `?tenant=`.
+- **Who may ask:** `substrate:tenant` and a tenant's non-isolated members. A token limited to certain agents may ask about those agents only; any other is `403 agent_not_allowed`, as for a run. An isolated user token may not.
+
 ### Limiting how often a token starts runs
 
 **Since v1.112.0.** A token can carry a rate for run starts. A concurrency cap bounds how many runs a caller has going at once; a rate bounds how often it starts one. One run at a time still allows thousands of short runs an hour, and each start costs the server an authentication, a session row and a run row even when the run then does nothing.
