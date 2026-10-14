@@ -356,3 +356,51 @@ func TestAdmit_ClusterModePollsTheSharedCount(t *testing.T) {
 		t.Fatalf("queued = %d after start, want 0", st.Queued)
 	}
 }
+
+// TestAdmit_OneUserCannotHoldTheWholeQueue — with no per-user cap (the
+// default) one user's runs hold at most max_queued_runs_per_user places in
+// the queue, so another tenant's run still queues instead of being refused as
+// "queue full". A queued run never times out, so without the bound one caller
+// could keep every place.
+func TestAdmit_OneUserCannotHoldTheWholeQueue(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	s := New(1, 8, 0).WithQueuedPerUserCap(2)
+	busy, err := s.Admit(ctx, AdmitRequest{TenantID: "a", UserID: "u"})
+	if err != nil {
+		t.Fatalf("first: %v", err)
+	}
+	defer busy()
+	for i := 0; i < 2; i++ {
+		_, infos := admitAsync(t, ctx, s, AdmitRequest{TenantID: "a", UserID: "u"})
+		recvInfo(t, infos)
+	}
+	// refused admits r with a deadline: a run that queues instead of being
+	// refused would otherwise wait forever.
+	refused := func(r AdmitRequest) error {
+		short, stop := context.WithTimeout(ctx, time.Second)
+		defer stop()
+		_, err := s.Admit(short, r)
+		return err
+	}
+	var bp *BackpressureError
+	if err := refused(AdmitRequest{TenantID: "a", UserID: "u"}); !errors.As(err, &bp) {
+		t.Fatalf("third waiting run of one user: err %v, want backpressure", err)
+	}
+	// A run naming no user shares its tenant's key and is bounded the same way.
+	for i := 0; i < 2; i++ {
+		_, infos := admitAsync(t, ctx, s, AdmitRequest{TenantID: "a"})
+		recvInfo(t, infos)
+	}
+	if err := refused(AdmitRequest{TenantID: "a"}); !errors.As(err, &bp) {
+		t.Fatalf("third user-less waiting run: err %v, want backpressure", err)
+	}
+	out, infos := admitAsync(t, ctx, s, AdmitRequest{TenantID: "b", UserID: "v"})
+	if q := recvInfo(t, infos); q.Reason != QueueReasonGlobalCap {
+		t.Fatalf("other tenant queued as %+v, want global_cap", q)
+	}
+	assertWaiting(t, out)
+	if st := s.Stats(); st.Queued != 5 {
+		t.Fatalf("queued = %d, want 5 (refusals must not count)", st.Queued)
+	}
+}
