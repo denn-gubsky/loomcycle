@@ -2741,6 +2741,10 @@ func TestValidateStaticWebhook(t *testing.T) {
 		{"unknown delivery", Webhook{Delivery: "carrier-pigeon", Agent: "a"}, "unknown delivery"},
 		{"auth none ok", Webhook{Delivery: "spawn", Agent: "a", Auth: WebhookAuth{Kind: "none"}}, ""},
 		{"unknown auth.kind", Webhook{Delivery: "spawn", Agent: "a", Auth: WebhookAuth{Kind: "magic"}}, "unknown auth.kind"},
+		{"stored secret ok", Webhook{Agent: "a", Auth: WebhookAuth{Secret: "$cred:hook", PreviousSecret: "$cred:hook-old"}}, ""},
+		{"literal secret", Webhook{Agent: "a", Auth: WebhookAuth{Secret: "plain-value"}}, "auth.secret takes only a stored credential"},
+		{"secret beside env", Webhook{Agent: "a", Auth: WebhookAuth{Secret: "$cred:hook", SigningSecretEnv: "LOOMCYCLE_S"}}, "one of the two forms"},
+		{"previous alone", Webhook{Agent: "a", Auth: WebhookAuth{SigningSecretEnv: "LOOMCYCLE_S", PreviousSecret: "$cred:old"}}, "set auth.secret with it"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

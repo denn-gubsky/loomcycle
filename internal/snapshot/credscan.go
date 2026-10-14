@@ -87,12 +87,68 @@ type credScanBody struct {
 	TenantID               string            `json:"tenant_id"`
 	UserCredentials        map[string]string `json:"user_credentials"`
 	UserCredentialsFromEnv map[string]string `json:"user_credentials_from_env"`
-	Auth                   struct {
-		Kind             string `json:"kind"`
-		SigningSecretEnv string `json:"signing_secret_env"`
-		BearerTokenEnv   string `json:"bearer_token_env"`
-	} `json:"auth"`
-	SignWithKeyEnv string `json:"sign_with_key_env"`
+	Auth                   credScanAuth      `json:"auth"`
+	SignWithKeyEnv         string            `json:"sign_with_key_env"`
+}
+
+// credScanAuth is a webhook's auth block, a WebhookDef's or one of a team's
+// own webhooks'.
+type credScanAuth struct {
+	Kind             string `json:"kind"`
+	SigningSecretEnv string `json:"signing_secret_env"`
+	BearerTokenEnv   string `json:"bearer_token_env"`
+	Secret           string `json:"secret"`
+	PreviousSecret   string `json:"previous_secret"`
+}
+
+// authRefs lists the verification secrets an auth block names, under prefix
+// ("" for a WebhookDef's own auth).
+func authRefs(prefix string, a credScanAuth) []credRef {
+	var out []credRef
+	switch a.Kind {
+	case "", "hmac":
+		if a.SigningSecretEnv != "" {
+			out = append(out, credRef{field: prefix + "auth.signing_secret_env", env: a.SigningSecretEnv})
+		}
+	case "bearer":
+		if a.BearerTokenEnv != "" {
+			out = append(out, credRef{field: prefix + "auth.bearer_token_env", env: a.BearerTokenEnv})
+		}
+	default:
+		return nil
+	}
+	// A stored secret is read from the tenant-level credentials of the
+	// definition's owning tenant, and only compared: toCompare.
+	for _, f := range []struct{ field, value string }{{"auth.secret", a.Secret}, {"auth.previous_secret", a.PreviousSecret}} {
+		if m := credRefRe.FindStringSubmatch(f.value); m != nil && m[0] == f.value && m[1] == "cred" {
+			out = append(out, credRef{field: prefix + f.field, cred: f.value, name: m[2], tenantOnly: true, toCompare: true})
+		}
+	}
+	return out
+}
+
+// teamWebhookRefs lists the verification secrets a team's own webhooks name.
+func teamWebhookRefs(body json.RawMessage) []credRef {
+	var def struct {
+		Local struct {
+			Webhooks map[string]struct {
+				Auth credScanAuth `json:"auth"`
+			} `json:"webhooks"`
+		} `json:"local"`
+	}
+	if err := json.Unmarshal(body, &def); err != nil {
+		return nil
+	}
+	names := make([]string, 0, len(def.Local.Webhooks))
+	for n := range def.Local.Webhooks {
+		names = append(names, n)
+	}
+	sort.Strings(names)
+	var out []credRef
+	for _, n := range names {
+		out = append(out, authRefs("local.webhooks."+n+".", def.Local.Webhooks[n].Auth)...)
+	}
+	return out
 }
 
 // defRefs lists the references in a definition body: in every header map it
@@ -173,6 +229,10 @@ type credRef struct {
 	// tenantOnly marks a reference that resolves only at tenant level (a
 	// remote peer's api_key_env), so no per-user credential could supply it.
 	tenantOnly bool
+	// toCompare marks a reference only ever compared, never sent (a
+	// webhook's stored verification secret): resolved in the row's owning
+	// tenant, and found whatever its allowed_urls say.
+	toCompare bool
 }
 
 // refsOf lists a body's references in a stable order.
@@ -192,16 +252,7 @@ func refsOf(b credScanBody) []credRef {
 			out = append(out, credRef{field: "user_credentials." + k, env: m[1]})
 		}
 	}
-	switch b.Auth.Kind {
-	case "", "hmac":
-		if b.Auth.SigningSecretEnv != "" {
-			out = append(out, credRef{field: "auth.signing_secret_env", env: b.Auth.SigningSecretEnv})
-		}
-	case "bearer":
-		if b.Auth.BearerTokenEnv != "" {
-			out = append(out, credRef{field: "auth.bearer_token_env", env: b.Auth.BearerTokenEnv})
-		}
-	}
+	out = append(out, authRefs("", b.Auth)...)
 	if b.SignWithKeyEnv != "" {
 		out = append(out, credRef{field: "sign_with_key_env", env: b.SignWithKeyEnv})
 	}
@@ -249,6 +300,16 @@ func (c *credScan) run(ctx context.Context, opts RestoreOptions, result *Restore
 				if !opts.EnvSet(r.env) {
 					result.Warnings = append(result.Warnings, fmt.Sprintf(
 						"missing credential: %s: %s names env var %s, which is not set on this host", t.where, r.field, r.env))
+				}
+			case r.toCompare:
+				if opts.CredentialToCompare == nil {
+					uncheckedCred++
+					continue
+				}
+				if !opts.CredentialToCompare(ctx, t.tenantID, r.name) {
+					result.Warnings = append(result.Warnings, fmt.Sprintf(
+						"missing credential: %s: %s references %s, which no tenant-level credential for tenant %q provides on this host",
+						t.where, r.field, r.cred, t.tenantID))
 				}
 			case r.cred != "":
 				if opts.CredentialExists == nil {

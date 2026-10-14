@@ -74,7 +74,7 @@ func (rec *Receiver) handleTeam(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// 3. Verify before parse.
-	if !rec.authenticate(w, r, span, "", display, hook.Auth, body) {
+	if !rec.authenticate(w, r, span, "", display, hook.Auth, tenant, body) {
 		return
 	}
 

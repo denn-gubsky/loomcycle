@@ -185,6 +185,8 @@ type SubstrateWebhookAuth struct {
 	SigningSecretEnv string `json:"signing_secret_env,omitempty"`
 	DeliveryIDHeader string `json:"delivery_id_header,omitempty"`
 	BearerTokenEnv   string `json:"bearer_token_env,omitempty"`
+	Secret           string `json:"secret,omitempty"`
+	PreviousSecret   string `json:"previous_secret,omitempty"`
 }
 
 // SubstrateWebhookRateLimit mirrors config.WebhookRateLimit.
@@ -218,6 +220,8 @@ func (s SubstrateWebhookDef) ToConfigDef() config.Webhook {
 			SigningSecretEnv: s.Auth.SigningSecretEnv,
 			DeliveryIDHeader: s.Auth.DeliveryIDHeader,
 			BearerTokenEnv:   s.Auth.BearerTokenEnv,
+			Secret:           s.Auth.Secret,
+			PreviousSecret:   s.Auth.PreviousSecret,
 		},
 		RateLimit: config.WebhookRateLimit{
 			RequestsPerMinute: s.RateLimit.RequestsPerMinute,

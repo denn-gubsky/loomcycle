@@ -84,7 +84,7 @@ func TestWebhookDefTool_AnOverlayIsReadAsWritten(t *testing.T) {
 		{"from a newer server", `{` + webhookBase + `,"events":["push"]}`, `unknown key "events"`},
 		{"case only", `{"enabled":true,"delivery":"spawn","Agent":"a","auth":{"signing_secret_env":"LOOMCYCLE_S"}}`, `only by ignoring its case`},
 		{"repeated", `{` + webhookBase + `,"agent":"b"}`, `written twice`},
-		{"nested", `{"enabled":true,"delivery":"spawn","agent":"a","auth":{"signing_secret_env":"LOOMCYCLE_S","secret":"x"}}`, `unknown key "secret"`},
+		{"nested", `{"enabled":true,"delivery":"spawn","agent":"a","auth":{"signing_secret_env":"LOOMCYCLE_S","token":"x"}}`, `unknown key "token"`},
 		{"server-set", `{` + webhookBase + `,"operator_key_restricted":false}`, `"operator_key_restricted" cannot be set`},
 		{"server-set", `{` + webhookBase + `,"isolated":false}`, `"isolated" cannot be set`},
 	} {

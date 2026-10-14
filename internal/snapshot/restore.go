@@ -65,6 +65,13 @@ type RestoreOptions struct {
 	// with one warning.
 	CredentialExists func(ctx context.Context, tenantID, agentName, userID, name string) bool
 	EnvSet           func(name string) bool
+	// CredentialToCompare backs the scan for a credential only ever compared
+	// (a webhook's stored verification secret): does tenantID hold a
+	// tenant-level credential name, whatever its allowed_urls. Unlike
+	// CredentialExists it must not refuse a URL-restricted credential, which
+	// is how such a secret is meant to be stored. nil skips these with the
+	// same warning.
+	CredentialToCompare func(ctx context.Context, tenantID, name string) bool
 
 	// VolumeRoot is this host's dynamic volume root (the static volume
 	// marked dynamic_root: true). Every restored dynamic volume's path is
@@ -519,7 +526,8 @@ func Restore(ctx context.Context, s store.Store, raw []byte, opts RestoreOptions
 			if inserted {
 				result.TeamDefsRestored++
 				if !e.Retired {
-					scan.addRefs("team_def "+qualifiedName(e.TenantID, e.Name), e.TenantID, defRefs("", e.Definition))
+					scan.addRefs("team_def "+qualifiedName(e.TenantID, e.Name), e.TenantID,
+						append(defRefs("", e.Definition), teamWebhookRefs(e.Definition)...))
 				}
 			}
 		}

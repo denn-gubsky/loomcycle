@@ -39,6 +39,11 @@ func UnresolvableStaticSecrets(cfg *config.Config, allow map[string]bool, getenv
 			continue
 		}
 		kind := strings.ToLower(strings.TrimSpace(w.Auth.Kind))
+		if w.Auth.Secret != "" && kind != "none" {
+			// A stored credential, read on each delivery from the shared
+			// tenant's credentials: nothing in the environment to check.
+			continue
+		}
 		var envName string
 		switch kind {
 		case "", "hmac":
@@ -53,6 +58,10 @@ func UnresolvableStaticSecrets(cfg *config.Config, allow map[string]bool, getenv
 		}
 		if envName == "" {
 			warns = append(warns, fmt.Sprintf("webhook %q: auth.kind=%s but no secret env configured — every delivery 503s", name, kindOrHMAC(kind)))
+			continue
+		}
+		if config.IsInfraSecretEnv(envName) {
+			warns = append(warns, fmt.Sprintf("webhook %q: secret env %q is one of loomcycle's own secrets and cannot verify a webhook — every delivery 503s", name, envName))
 			continue
 		}
 		if !allow[envName] && !config.ExpandEnvAllowed(envName) {
