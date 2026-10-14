@@ -44,3 +44,18 @@ func TestConcurrency_MaxQueuedRunsPerUser(t *testing.T) {
 		t.Errorf("negative value: err = %v, want a refusal naming the key", err)
 	}
 }
+
+// The queue bound defaults to 32 — room for two users' full per-user queue —
+// and a provider queue with no depth of its own inherits it.
+func TestConcurrency_MaxQueueDepthDefaultsTo32(t *testing.T) {
+	cfg, err := loadYAMLString(t, minimalQueueYAML)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Concurrency.MaxQueueDepth != 32 {
+		t.Errorf("max_queue_depth default = %d, want 32", cfg.Concurrency.MaxQueueDepth)
+	}
+	if got := cfg.Concurrency.ProviderQueueDepthOrDefault(); got != 32 {
+		t.Errorf("provider queue depth default = %d, want the inherited 32", got)
+	}
+}

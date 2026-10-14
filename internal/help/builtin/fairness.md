@@ -31,7 +31,7 @@ served first.
 
 | Limit | Default | Past it |
 |---|---|---|
-| `concurrency.max_queue_depth` | 16 | a new run is refused: 429 `backpressure` |
+| `concurrency.max_queue_depth` | 32 | a new run is refused: 429 `backpressure` |
 | `concurrency.max_queued_runs_per_user` | 16 | a run over its user's cap is refused: 429 `per_user_quota_exhausted` |
 
 `max_queued_runs_per_user: 0` refuses a run over the per-user cap at
@@ -86,7 +86,7 @@ takes 1 slot and 1 per-user count, not 6.
 ```yaml
 concurrency:
   max_concurrent_runs: 8              # global cap
-  max_queue_depth: 16                 # waiting runs, all reasons together
+  max_queue_depth: 32                 # waiting runs, all reasons together
   max_concurrent_runs_per_user: 4     # per-user cap (0 = off)
   max_queued_runs_per_user: 16        # waiting runs per user over its cap
 ```

@@ -4828,7 +4828,7 @@ func LoadLayers(layers ...Layer) (*Config, error) {
 	cfg := &Config{
 		Concurrency: Concurrency{
 			MaxConcurrentRuns:    8,
-			MaxQueueDepth:        16,
+			MaxQueueDepth:        32,
 			QueueTimeoutMS:       30000,
 			MaxQueuedRunsPerUser: 16,
 		},
