@@ -295,3 +295,37 @@ func TestWriteDiff_AHardDiffStopsAtTheDeadline(t *testing.T) {
 		t.Errorf("err = %v, want timeout", err)
 	}
 }
+
+// deadlinePassed reports a deadline already gone while its Err still says
+// nil: the moment between the loop's check and a file's own, which a real
+// clock hits only now and then (it did under -race).
+type deadlinePassed struct{ context.Context }
+
+func (deadlinePassed) Deadline() (time.Time, bool) { return time.Now().Add(-time.Second), true }
+
+// A deadline that passes while a diff is being made is a timeout, wherever
+// it lands: not a failed fetch.
+func TestWriteDiff_ADeadlineAnywhereIsATimeout(t *testing.T) {
+	f := newFixture(t, false, true)
+	base := f.commit(t, "a.txt", []byte("one\n"))
+	head := f.commit(t, "a.txt", []byte("two\n"))
+	req := f.request(t, head)
+	req.DiffBase = base
+	got, err := Fetch(context.Background(), req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer got.Close()
+	lim := DiffLimits{MaxBytes: 1 << 20, MaxFileBytes: 1 << 20, MaxFiles: 100}
+
+	// Gone before a file's diff starts.
+	if _, err := got.WriteDiff(deadlinePassed{context.Background()}, t.TempDir(), "d.patch", "n.json", lim); !errors.Is(err, ErrTimeout) {
+		t.Errorf("deadline gone before a file's diff: err = %v, want timeout", err)
+	}
+	// Gone while the trees are compared.
+	done, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, err := got.WriteDiff(done, t.TempDir(), "d.patch", "n.json", lim); !errors.Is(err, ErrTimeout) {
+		t.Errorf("context done while the trees are compared: err = %v, want timeout", err)
+	}
+}
