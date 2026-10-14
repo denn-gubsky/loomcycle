@@ -6256,6 +6256,9 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 		AgentID: agentID, UserID: sess.UserID, TenantID: sess.TenantID, UserTier: body.UserTier,
 		Model: model, ReplicaID: s.replicaID, ParentContext: body.ParentContext,
 		Interactive: body.Interactive, OperatorKeyRestricted: operatorKeyRestricted, Isolated: isolated,
+		// Nil on purpose, as on POST /v1/runs: the configuration is resolved
+		// after the wait, and StartQueuedRun writes it from `identity` below.
+		RunConfig: nil,
 	}
 	acquireStart := time.Now()
 	release, queued, err := s.admitRun(runCtx, admitArgs{
@@ -6263,8 +6266,6 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 		userID:   sess.UserID,
 		agentID:  agentID,
 		createRow: func() (string, string, error) {
-			// RunConfig is nil on purpose: StartQueuedRun writes it from the
-			// identity built at start, after the wait.
 			queuedRun, err := s.store.CreateQueuedRun(r.Context(), id, queuedIdentity)
 			if err != nil {
 				rowErr = err
