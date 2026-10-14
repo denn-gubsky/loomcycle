@@ -318,6 +318,7 @@ Two op-discriminated methods that mirror the in-process `AgentDef` / `SkillDef` 
 |---|---|---|
 | `agentDef(input)` | `Promise<SubstrateToolResponse>` | Op-discriminated. Mirrors `POST /v1/_agentdef`. |
 | `skillDef(input)` | `Promise<SubstrateToolResponse>` | Op-discriminated. Mirrors `POST /v1/_skilldef`. |
+| `getAgentOverridable(name, { tenant? })` | `Promise<AgentOverridableResponse>` | Which per-run overrides a run of `name` may set, **for this caller**: one entry per override (`model`, `effort`, `max_tokens`, …) with `overridable`, and a `reason` (`token_locked` / `agent_locked`) when refused. Folds the agent's `allow_overrides` with your token's overrides policy, as a run would. An overridable field may carry `narrow_only`, `max`, or `values` (a closed set the definition declares). For building run forms. `substrate:tenant`; a token limited to certain agents may ask about those. Raises `AgentNotFoundError` for an unknown or another tenant's agent. Mirrors `GET /v1/_agentdef/{name}/overridable`. |
 
 The response type is intentionally `unknown` because the shape varies per op (`create`/`fork` return a row envelope; `list` returns `{name, versions: [...]}`; `verify` returns `AgentDefVerifyResult` / `SkillDefVerifyResult`). Cast / narrow as needed:
 

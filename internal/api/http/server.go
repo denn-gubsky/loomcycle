@@ -4084,6 +4084,10 @@ func (s *Server) Mux() http.Handler {
 	// declared names per substrate. The companion to the op-dispatched
 	// substrate write endpoints; drives the Web UI's /ui/library tab.
 	mux.Handle("GET /v1/_agentdef/names", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleListAgentDefNames))))
+	// Which per-run overrides a run of one agent may set (RFC EO §5.5). Four
+	// segments to names' three, so the two never match the same path — not
+	// even for an agent called "names".
+	mux.Handle("GET /v1/_agentdef/{name}/overridable", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleAgentOverridable))))
 	mux.Handle("GET /v1/_skilldef/names", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleListSkillDefNames))))
 	mux.Handle("GET /v1/_teamdef/names", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleListTeamDefNames))))
 	// A team's own channels, for the person who runs the team: its channels
