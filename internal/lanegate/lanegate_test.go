@@ -647,3 +647,101 @@ func TestSchedulerConfig_FoldsTheShorthandIntoTheChatLane(t *testing.T) {
 		t.Errorf("model switch wait = %s, want the 30s default", laned.ModelSwitchMaxWait)
 	}
 }
+
+// eventLog records what a call reported on req.OnEvent.
+type eventLog struct {
+	mu  sync.Mutex
+	evs []providers.Event
+}
+
+func (l *eventLog) on(ev providers.Event) {
+	l.mu.Lock()
+	l.evs = append(l.evs, ev)
+	l.mu.Unlock()
+}
+
+func (l *eventLog) list() []providers.Event {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return append([]providers.Event(nil), l.evs...)
+}
+
+// TestCall_ReportsItsWaitOnTheRequestsEventHook — a call that has to wait for
+// its lane reports call_queued (why, where, which provider and kind) before it
+// blocks, and call_admitted with its wait once it has the slot, on the hook the
+// loop gives every call. A call that gets its slot at once reports nothing.
+func TestCall_ReportsItsWaitOnTheRequestsEventHook(t *testing.T) {
+	sched := chatLane(concurrency.LaneConfig{MaxConcurrent: 1})
+	first := &fakeProvider{next: make(chan providers.Event)}
+	var firstLog eventLog
+	out, err := Wrap("p", first, sched).Call(context.Background(), providers.Request{Model: "m", OnEvent: firstLog.on})
+	if err != nil {
+		t.Fatalf("Call: %v", err)
+	}
+	if evs := firstLog.list(); len(evs) != 0 {
+		t.Fatalf("a call granted at once reported %+v", evs)
+	}
+
+	second := &fakeProvider{next: make(chan providers.Event)}
+	var log eventLog
+	admitted := make(chan error, 1)
+	go func() {
+		ch, err := Wrap("p", second, sched).Call(context.Background(), providers.Request{Model: "m", OnEvent: log.on})
+		admitted <- err
+		if err == nil {
+			for range ch {
+			}
+		}
+	}()
+	waitLane(t, sched, "one call queued", func(s concurrency.LaneStats) bool { return s.Queued == 1 })
+	evs := log.list()
+	if len(evs) != 1 || evs[0].Type != providers.EventCallQueued {
+		t.Fatalf("while waiting the call reported %+v, want one call_queued", evs)
+	}
+	if a := evs[0].Admission; a == nil || *a != (providers.AdmissionInfo{Reason: "lane", Position: 1, Provider: "p", Kind: config.ModelKindChat}) {
+		t.Fatalf("call_queued payload = %+v, want lane, position 1, provider p, kind chat", a)
+	}
+
+	time.Sleep(20 * time.Millisecond) // a wait the admission can measure
+	first.next <- done()
+	<-out
+	if err := <-admitted; err != nil {
+		t.Fatalf("second Call: %v", err)
+	}
+	evs = log.list()
+	if len(evs) != 2 || evs[1].Type != providers.EventCallAdmitted {
+		t.Fatalf("after the slot freed the call reported %+v, want call_queued then call_admitted", evs)
+	}
+	if a := evs[1].Admission; a == nil || a.Provider != "p" || a.Kind != config.ModelKindChat || a.WaitMs < 20 {
+		t.Fatalf("call_admitted payload = %+v, want provider p, kind chat, wait_ms >= 20", a)
+	}
+	close(second.next)
+	close(first.next)
+}
+
+// TestCall_ReportsNoAdmissionWhenTheWaitIsCancelled — a call whose ctx ends
+// while it waits never got a slot, so it reports no admission.
+func TestCall_ReportsNoAdmissionWhenTheWaitIsCancelled(t *testing.T) {
+	sched := chatLane(concurrency.LaneConfig{MaxConcurrent: 1})
+	first := &fakeProvider{next: make(chan providers.Event)}
+	if _, err := Wrap("p", first, sched).Call(context.Background(), providers.Request{Model: "m"}); err != nil {
+		t.Fatalf("Call: %v", err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	var log eventLog
+	failed := make(chan error, 1)
+	go func() {
+		_, err := Wrap("p", &fakeProvider{}, sched).Call(ctx, providers.Request{Model: "m", OnEvent: log.on})
+		failed <- err
+	}()
+	waitLane(t, sched, "one call queued", func(s concurrency.LaneStats) bool { return s.Queued == 1 })
+	cancel()
+	if err := <-failed; !errors.Is(err, context.Canceled) {
+		t.Fatalf("cancelled wait: err %v, want context.Canceled", err)
+	}
+	if evs := log.list(); len(evs) != 1 || evs[0].Type != providers.EventCallQueued {
+		t.Fatalf("a cancelled wait reported %+v, want only call_queued", evs)
+	}
+	first.next <- done()
+	close(first.next)
+}

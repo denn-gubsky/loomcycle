@@ -157,7 +157,7 @@ func (s *CallScheduler) acquire(ctx context.Context, providerID, kind string, c 
 	if lane == nil && gate == nil {
 		return noopRelease, nil
 	}
-	leave, counted, err := gate.enter(ctx, c.Model, maxQueued)
+	leave, counted, err := gate.enter(ctx, c.Model, maxQueued, c.OnQueued)
 	if err != nil {
 		return nil, err
 	}
