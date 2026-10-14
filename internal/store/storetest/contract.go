@@ -102,6 +102,8 @@ func Run(t *testing.T, factory Factory) {
 		{"GetRunByAgentIDReturnsMostRecent", testGetRunByAgentIDReturnsMostRecent},
 		{"ListActiveRunsByUser", testListActiveRunsByUser},
 		{"ListActiveRunsByUserTenantFilterBeforeLimit", testListActiveRunsByUserTenantFilterBeforeLimit},
+		{"ListActiveRunsByUserMatchesAnyListedStatus", testListActiveRunsByUserMatchesAnyListedStatus},
+		{"ListRunsByUserPagesEveryRunOnceNewestFirst", testListRunsByUserPagesEveryRunOnceNewestFirst},
 		{"ListRunsByWalkPagesEveryMemberOnceInOrder", testListRunsByWalkPagesEveryMemberOnceInOrder},
 		{"ListRunsByWalkTenantFilter", testListRunsByWalkTenantFilter},
 		{"ListRunsByWalkEveryWriterStampsTheColumn", testListRunsByWalkEveryWriterStampsTheColumn},

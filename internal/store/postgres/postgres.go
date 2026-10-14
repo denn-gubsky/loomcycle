@@ -2014,26 +2014,45 @@ func (s *Store) ListUsers(ctx context.Context, tenantID string) ([]store.UserSum
 	return out, rows.Err()
 }
 
-// ListActiveRunsByUser returns up to 100 runs for the user, ordered by
-// started_at DESC. Empty status returns all statuses; non-empty filters
-// to the exact status string; empty tenantID returns all tenants. Empty
-// userID short-circuits to no rows.
-func (s *Store) ListActiveRunsByUser(ctx context.Context, tenantID, userID string, status store.RunStatus) ([]store.Run, error) {
+// ListActiveRunsByUser returns the first page of ListRunsByUser: up to 100
+// runs for userID, newest first. See store.Store.
+func (s *Store) ListActiveRunsByUser(ctx context.Context, tenantID, userID string, statuses ...store.RunStatus) ([]store.Run, error) {
+	runs, _, err := s.ListRunsByUser(ctx, tenantID, userID, statuses, 100, "")
+	return runs, err
+}
+
+// ListRunsByUser returns userID's runs in (started_at, id) DESC order, one
+// keyset page at a time. See store.Store.
+func (s *Store) ListRunsByUser(ctx context.Context, tenantID, userID string, statuses []store.RunStatus, limit int, cursor string) ([]store.Run, string, error) {
 	if userID == "" {
-		return nil, nil
+		return nil, "", nil
 	}
-	const limit = 100
+	if limit <= 0 {
+		limit = 100
+	}
+	if limit > 1000 {
+		limit = 1000
+	}
 	where := `r.user_id = $1`
 	args := []any{userID}
 	if tenantID != "" {
 		args = append(args, tenantID)
 		where += fmt.Sprintf(` AND r.tenant_id = $%d`, len(args))
 	}
-	if status != "" {
-		args = append(args, string(status))
-		where += fmt.Sprintf(` AND r.status = $%d`, len(args))
+	if in := store.RunStatusFilter(statuses); len(in) > 0 {
+		args = append(args, in)
+		where += fmt.Sprintf(` AND r.status = ANY($%d)`, len(args))
 	}
-	args = append(args, limit)
+	if cursor != "" {
+		before, beforeID, err := store.DecodeRunCursor(cursor)
+		if err != nil {
+			return nil, "", err
+		}
+		args = append(args, before, beforeID)
+		where += fmt.Sprintf(` AND (r.started_at, r.id) < ($%d, $%d)`, len(args)-1, len(args))
+	}
+	// One extra row says whether another page follows.
+	args = append(args, limit+1)
 	rows, err := s.pool.Query(ctx,
 		`SELECT r.id, r.session_id, r.status, r.started_at, r.completed_at, r.stop_reason,
 		        r.input_tokens, r.output_tokens, r.cache_creation_tokens, r.cache_read_tokens,
@@ -2045,12 +2064,22 @@ func (s *Store) ListActiveRunsByUser(ctx context.Context, tenantID, userID strin
 		        s.agent
 		 FROM runs r LEFT JOIN sessions s ON r.session_id = s.id
 		 WHERE `+where+`
-		 ORDER BY r.started_at DESC LIMIT $`+fmt.Sprint(len(args)), args...)
+		 ORDER BY r.started_at DESC, r.id DESC LIMIT $`+fmt.Sprint(len(args)), args...)
 	if err != nil {
-		return nil, fmt.Errorf("list active runs: %w", err)
+		return nil, "", fmt.Errorf("list runs by user: %w", err)
 	}
 	defer rows.Close()
-	return scanRunRows(rows)
+	out, err := scanRunRows(rows)
+	if err != nil {
+		return nil, "", fmt.Errorf("list runs by user: %w", err)
+	}
+	next := ""
+	if len(out) > limit {
+		out = out[:limit]
+		last := out[len(out)-1]
+		next = store.EncodeRunCursor(last.StartedAt, last.ID)
+	}
+	return out, next, nil
 }
 
 // ListRunsByWalk returns a walk's own run and its members in (started_at, id)
