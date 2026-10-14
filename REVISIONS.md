@@ -12,7 +12,7 @@ For the **public roadmap**, see [`docs/PLAN.md`](docs/PLAN.md).
 
 *A run that cannot start at once is now **queued**, not refused. It gets its row, its id and its events before it waits, it can be cancelled, and it comes back after a restart. A provider's `max_concurrent` now counts **model calls**, in a lane per kind of model, so a run holds no provider slot while it runs a tool or waits for a child. An agent can be given **a repository the runtime fetched itself**, so the forge token never enters a shell, and can **read it by line range** with the volume read-only. Forge **webhooks** can say which events start a run, hook deliveries can be **signed**, stored credentials **expire** and can be **limited to certain URLs**, and a **Microsoft Teams** bot can front an interactive agent.*
 
-A minor release: #1745 to #1802.
+A minor release: #1745 to #1803.
 - #1750, #1773, #1776, #1779, #1787 queue runs instead of refusing them;
 - #1758, #1760, #1762, #1767, #1769, #1788 make a provider's cap count model calls, by kind;
 - #1759, #1761, #1763, #1764, #1765, #1766, #1775 create an ephemeral volume from a git source;
@@ -21,7 +21,7 @@ A minor release: #1745 to #1802.
 - #1781, #1785, #1801 are forge webhooks;
 - #1798 signs hook deliveries;
 - #1790 to #1796 fill gaps the n8n nodes found: Evaluation over HTTP and gRPC, run listing filters, a JSON 403, an overridable report, clearer refusals, change-feed errors, and MCP definitions that are refused by default;
-- #1777, #1778, #1780, #1782 to #1784, #1789, #1802 are `@loomcycle/client` fixes and new methods;
+- #1777, #1778, #1780, #1782 to #1784, #1789, #1802 are `@loomcycle/client` fixes and new methods, and #1803 sets it to 1.113.0;
 - #1771 is the Teams bridge, a separate package;
 - #1757 and #1799 are fixes; #1768 ships `LICENSE` and `NOTICE` in archives and images;
 - #1745 and #1746 are `@loomcycle/def-fields` 0.5.0 and `@loomcycle/library` 0.8.0, published by their own tags;
@@ -270,7 +270,7 @@ It publishes to npm on its own `teams-bridge-v*` tag, not with this release. Set
 - **gRPC:** new RPC `Evaluation`; new fields `Event.admission` (`AdmissionInfo`, with `provider` and `kind`), `RunRequest.admission`, `Agent.queue_position` / `queue_reason`, and `ListUserAgents` `statuses` / `awaited_states` / `truncated`.
 - **New HTTP routes:** `POST /v1/_evaluation` and `GET /v1/_agentdef/{name}/overridable`.
 - **New settings:** the eight `LOOMCYCLE_GIT_SOURCE_*` settings above (off unless `LOOMCYCLE_GIT_SOURCE_HOSTS` is set); `LOOMCYCLE_MAX_QUEUED_RUNS_PER_USER` (16); and on a provider, `lanes`, `max_models_in_flight` (0, unlimited) and `model_switch_max_wait_ms` (30000 when `max_models_in_flight` is set).
-- **Clients:** `@loomcycle/client` 1.113.0 publishes with this tag when its package version matches it. New in it: the queued-run and call-lane events, `admission`, `retryable` and `RateLimitedError`, `InsufficientScopeError`, the evaluation, schedule, routing, model, def-name, credential, overridable and change-feed methods, typed overlays, and the hook signature verifiers. The Python client gains `admission`, `queue_position`, the lane fields on `AdmissionInfo`, `retryable`, `evaluation()` and its helpers, `list_user_agents` statuses and awaited states, and the signature verifiers; it publishes on its own `python-v*` tag.
+- **Clients:** `@loomcycle/client` 1.113.0 publishes with this tag (#1803). New in it: the queued-run and call-lane events, `admission`, `retryable` and `RateLimitedError`, `InsufficientScopeError`, the evaluation, schedule, routing, model, def-name, credential, overridable and change-feed methods, typed overlays, and the hook signature verifiers. The Python client gains `admission`, `queue_position`, the lane fields on `AdmissionInfo`, `retryable`, `evaluation()` and its helpers, `list_user_agents` statuses and awaited states, and the signature verifiers; it publishes on its own `python-v*` tag.
 - **Packages:** `@loomcycle/def-fields` 0.5.0 (the `allow_overrides` and `retention` agent fields) and `@loomcycle/library` 0.8.0 (on def-fields `^0.5.0`) are on npm, published by their own tags. The `ephemeral_volumes` and `signing_secret` fields are in def-fields and reach npm with its next release. `@loomcycle/teams-bridge` publishes on its own tag.
 
 ## What's in v1.112.0
