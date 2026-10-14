@@ -85,10 +85,12 @@ func getOverridable(t *testing.T, ts *httptest.Server, bearer, agent, query stri
 }
 
 // runVerdict starts a run that sets one override and reports how the lock
-// treated it. The lock answers before the run exists; an admitted run is
-// abandoned as soon as its status line arrives, because what follows is the
-// run, not the lock — and some overrides (interactive, review) make a run
-// that waits for a person.
+// treated it. The lock answers before the run exists.
+//
+// An admitted run is read to its end, not abandoned at its status line: the
+// fixture's provider hands every run the same scripted Usage, which the loop
+// writes to, so runs left going in the background race each other (-race
+// caught exactly that). The timeout bounds a run that would wait for a person.
 func runVerdict(t *testing.T, ts *httptest.Server, bearer, agent, field string) (refused bool, body string) {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(t.Context(), 20*time.Second)
@@ -104,10 +106,13 @@ func runVerdict(t *testing.T, ts *httptest.Server, bearer, agent, field string) 
 		t.Fatalf("POST /v1/runs %s=%s: %v", field, overrideSamples[field], err)
 	}
 	defer resp.Body.Close()
+	b, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("POST /v1/runs %s: reading the run: %v", field, err)
+	}
 	if resp.StatusCode == 200 {
 		return false, ""
 	}
-	b, _ := io.ReadAll(resp.Body)
 	return resp.StatusCode == 403 && strings.Contains(string(b), "override_not_allowed"), string(b)
 }
 
