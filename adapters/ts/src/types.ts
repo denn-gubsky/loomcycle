@@ -356,6 +356,56 @@ export interface InertContextSetting {
   fix?: string;
 }
 
+/** Why a per-run override is refused, in {@link OverridableField.reason}:
+ *  - `token_locked` — the caller's token carries an overrides policy that
+ *                     leaves the field out
+ *  - `agent_locked` — the agent's definition says `allow_overrides: false`
+ *
+ *  When both apply the token is named, because a run setting the field is
+ *  refused for that reason first. */
+export type OverrideLockReason = "token_locked" | "agent_locked";
+
+/** One per-run override in {@link AgentOverridableResponse.fields}. */
+export interface OverridableField {
+  /** Whether a run of the agent, started by this caller, may set it. */
+  overridable: boolean;
+  /** Present when `overridable` is false. */
+  reason?: OverrideLockReason;
+  /** The run may only make it smaller than the definition allows
+   *  (`max_concurrent_children`, `interruption`). */
+  narrow_only?: boolean;
+  /** The largest value accepted (`max_concurrent_children`: the fan-out
+   *  ceiling, the definition's or the runtime default). */
+  max?: number;
+  /** The values accepted, when the run path checks against a closed set this
+   *  agent has: `effort`, the configured `tier`s, and the `provider` and
+   *  `model` sets the definition declares. Absent means no closed set here —
+   *  any value the deployment accepts (see `listModels()` / `getRouting()`),
+   *  not anything at all. Each describes the field set on its own. */
+  values?: string[];
+}
+
+/** The reply from `GET /v1/_agentdef/{name}/overridable` — for every per-run
+ *  override, whether a run of this agent started by THIS caller may set it.
+ *
+ *  Folds the definition's `allow_overrides` with the caller's token overrides
+ *  policy, through the same checks the run path refuses with. The answer is
+ *  the caller's: do not reuse it for another token. Keys of `fields` are wire
+ *  names (`max_tokens`, not `maxTokens`), one per run option a token's
+ *  overrides policy can name. */
+export interface AgentOverridableResponse {
+  agent: string;
+  /** The AgentDef version answered for; absent for a yaml or registered agent,
+   *  which have no versions. Always the active version: a run cannot pin one. */
+  def_id?: string;
+  /** The definition's `allow_overrides`; unset reads as true. */
+  allow_overrides: boolean;
+  /** True when the caller's token carries an overrides policy, so `fields`
+   *  reflects this caller and not only the agent. */
+  restricted_by_token: boolean;
+  fields: Record<string, OverridableField>;
+}
+
 /** The reply from `retuneRun` — the run's MERGED configuration, not an echo of
  *  the request.
  *

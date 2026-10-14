@@ -68,6 +68,7 @@ import type {
   ContinueOptions,
   RunOverrideOptions,
   EffectiveConfigResponse,
+  AgentOverridableResponse,
   RetuneRunResponse,
   RunConfigResponse,
   RunPromptResponse,
@@ -598,6 +599,35 @@ export class LoomcycleClient {
     return jsonFetch<EffectiveConfigResponse>(
       this.ctx,
       `/v1/runs/${encodeURIComponent(runId)}/effective-config`,
+      opts,
+    );
+  }
+
+  /** Which per-run overrides a run of `name` may set, for this caller — what a
+   *  run form needs before it sends anything. Mirrors
+   *  `GET /v1/_agentdef/{name}/overridable`.
+   *
+   *  Folds the agent's `allow_overrides` with the caller's token overrides
+   *  policy, through the same checks the run path refuses with; a refused field
+   *  names which (`reason`). Overridable fields carry what the run path then
+   *  accepts: `narrow_only`, `max`, and `values` for a closed set.
+   *
+   *  `substrate:tenant` (a non-isolated member too). A token limited to certain
+   *  agents may ask about those agents only. Raises {@link AgentNotFoundError}
+   *  (404) for an unknown or another tenant's agent, and a 403
+   *  `agent_not_allowed` for an agent outside the token's allowlist. */
+  async getAgentOverridable(
+    name: string,
+    opts?: {
+      /** Admin-only tenant focus (?tenant=); ignored for a tenant principal. */
+      tenant?: string;
+      signal?: AbortSignal;
+    },
+  ): Promise<AgentOverridableResponse> {
+    const q = opts?.tenant ? `?tenant=${encodeURIComponent(opts.tenant)}` : "";
+    return jsonFetch<AgentOverridableResponse>(
+      this.ctx,
+      `/v1/_agentdef/${encodeURIComponent(name)}/overridable${q}`,
       opts,
     );
   }
