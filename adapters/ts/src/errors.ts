@@ -38,6 +38,22 @@ export class LoomcycleError extends Error {
     this.bodyText = opts?.bodyText;
     this.code = opts?.code;
   }
+
+  /** Whether the same call, sent again unchanged, can succeed once time has
+   *  passed: true for a refusal that clears on its own (backpressure, a rate
+   *  limit, a per-user run quota, a paused runtime), false for everything
+   *  else, including a hard token budget, a bad request and a missing
+   *  resource. A retry loop can test this instead of a list of classes.
+   *
+   *  It is a getter rather than a constructor field so that a subclass states
+   *  its answer by overriding it, without a constructor option any caller
+   *  could set. False is the default because a wrong `true` turns a refusal
+   *  that never clears into a loop that never ends, while a wrong `false`
+   *  only surfaces an error the caller could have waited out. The client
+   *  itself never retries; bound your own retries even when this is true. */
+  get retryable(): boolean {
+    return false;
+  }
 }
 
 /** Base class for every HTTP 404 the client surfaces. Lets callers
@@ -80,14 +96,44 @@ export class AgentIDInUseError extends LoomcycleError {
   }
 }
 
-/** Every HTTP 429 that is not a per-user quota. A plain BackpressureError is
- *  the transient case (the server is busy; back off and retry). It has one
- *  subclass that is NOT transient, TokenLimitExceededError — check for that
- *  first when deciding whether to retry. */
+/** An HTTP 429 that clears on its own: the server is busy (`backpressure`),
+ *  a provider's queue is full (`provider_concurrency_exhausted`), or the
+ *  caller is starting runs too fast (`rate_limited`, raised as the
+ *  RateLimitedError subclass). Back off and retry; `retryable` is true.
+ *
+ *  Two 429s are not this class: a per-user run quota
+ *  (PerUserQuotaExhaustedError, also retryable) and a hard token budget
+ *  (TokenLimitExceededError, not retryable). */
 export class BackpressureError extends LoomcycleError {
   constructor(message: string, opts?: { status?: number; bodyText?: string; code?: string }) {
     super(message, opts);
     this.name = "BackpressureError";
+  }
+
+  override get retryable(): boolean {
+    return true;
+  }
+}
+
+/**
+ * RateLimitedError signals that the caller is starting runs faster than its
+ * per-caller run-start rate allows: HTTP 429 with body code `rate_limited`.
+ * The server says when the next start will be admitted in `Retry-After`,
+ * surfaced here as `retryAfterMs`; wait that long rather than backing off on
+ * a guess. Retryable, like every BackpressureError.
+ */
+export class RateLimitedError extends BackpressureError {
+  /** Server-suggested retry window in milliseconds, from the Retry-After
+   *  header. Null when the header is absent or not a whole number of
+   *  seconds. */
+  readonly retryAfterMs: number | null;
+  constructor(
+    message: string,
+    opts?: { status?: number; bodyText?: string; code?: string; retryAfterMs?: number },
+  ) {
+    super(message, opts);
+    this.name = "RateLimitedError";
+    this.retryAfterMs = opts?.retryAfterMs ?? null;
   }
 }
 
@@ -100,20 +146,18 @@ export class BackpressureError extends LoomcycleError {
  * month's tokens for an operator, tenant or user; the same call is refused
  * until an operator raises the budget or the window rolls over.
  *
- * It extends BackpressureError only so that code written before this class
- * existed, which caught this refusal with `instanceof BackpressureError`,
- * keeps catching it. Test for this class BEFORE BackpressureError:
- *
- *   if (e instanceof TokenLimitExceededError) {
- *     // not retryable now: report e.scope / e.used / e.limit
- *   } else if (e instanceof BackpressureError) {
- *     // transient: back off and retry
- *   }
+ * It is not a BackpressureError, and `retryable` is false. It used to
+ * extend BackpressureError so that an older `instanceof BackpressureError`
+ * check kept catching it, but such a check is almost always a retry loop, and
+ * that loop then retried a refusal that cannot clear for the rest of the
+ * month. The relation was dropped on purpose: a retry loop keyed on
+ * BackpressureError or on `retryable` now stops here, and code that wants to
+ * report the budget tests for this class.
  *
  * The fields come from the response body and are null when the server did
  * not send them.
  */
-export class TokenLimitExceededError extends BackpressureError {
+export class TokenLimitExceededError extends LoomcycleError {
   /** Whose budget was hit: "operator", "tenant" or "user". */
   readonly scope: string | null;
   /** The id of that scope: the tenant id or the user subject. Null for the
@@ -207,6 +251,12 @@ export class PerUserQuotaExhaustedError extends LoomcycleError {
     this.cap = opts?.cap ?? null;
     this.retryAfterMs = opts?.retryAfterMs ?? null;
   }
+
+  /** The quota counts the caller's own in-flight runs, so it frees up as
+   *  they finish. */
+  override get retryable(): boolean {
+    return true;
+  }
 }
 
 export class AuthError extends LoomcycleError {
@@ -216,10 +266,22 @@ export class AuthError extends LoomcycleError {
   }
 }
 
+/** Every HTTP 503. The status is shared between a condition that clears on
+ *  its own and features this deployment does not have
+ *  (`decision_not_configured`, `store_unavailable`, `vector_unsupported`, …),
+ *  which never will, and many 503 bodies carry no code at all. So
+ *  `retryable` is true only for `runtime_paused` (new runs are refused while
+ *  the operator has the runtime paused) and false otherwise. A code-less 503
+ *  from run creation can also be a model tier with no provider available
+ *  right now; retry that one on your own judgement, with a bound. */
 export class UnavailableError extends LoomcycleError {
   constructor(message: string, opts?: { status?: number; bodyText?: string; code?: string }) {
     super(message, opts);
     this.name = "UnavailableError";
+  }
+
+  override get retryable(): boolean {
+    return this.code === "runtime_paused";
   }
 }
 
@@ -239,6 +301,11 @@ export class PauseNotConfiguredError extends UnavailableError {
   constructor(message: string, opts?: { status?: number; bodyText?: string; code?: string }) {
     super(message, opts);
     this.name = "PauseNotConfiguredError";
+  }
+
+  /** The server has no pause manager; asking again does not give it one. */
+  override get retryable(): boolean {
+    return false;
   }
 }
 

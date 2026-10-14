@@ -114,13 +114,17 @@
  *   full HTTP-status → typed-error mapping table):
  *     LoomcycleError, AgentNotFoundError, SessionNotFoundError,
  *     SessionBusyError, AgentIDInUseError, BackpressureError,
- *     AuthError, UnavailableError, InvalidArgumentError,
+ *     RateLimitedError (subclass of BackpressureError),
+ *     PerUserQuotaExhaustedError, AuthError, UnavailableError,
+ *     InvalidArgumentError,
  *     PauseNotConfiguredError (subclass of UnavailableError),
  *     AlreadyPausingError, NotPausedError, SnapshotNotFoundError,
  *     SnapshotTooLargeError, RequestTooLargeError + PromptTooLargeError
  *     (both subclasses of SnapshotTooLargeError), TokenLimitExceededError
- *     (subclass of BackpressureError), SnapshotVersionError,
- *     SubstrateToolRefusedError (v0.8.22)
+ *     (NOT a BackpressureError: a hard budget, not retryable),
+ *     SnapshotVersionError, SubstrateToolRefusedError (v0.8.22).
+ *     Every one carries `retryable` (true only for a refusal that clears
+ *     on its own).
  *
  * Transport: HTTP+SSE. Auth: Bearer token via the Authorization
  * header. Designed for Node ≥18 (engines pinned); Bun/Deno likely
@@ -457,6 +461,7 @@ export {
   PauseNotConfiguredError,
   PerUserQuotaExhaustedError,
   PromptTooLargeError,
+  RateLimitedError,
   RequestTooLargeError,
   SessionBusyError,
   SessionNotFoundError,
