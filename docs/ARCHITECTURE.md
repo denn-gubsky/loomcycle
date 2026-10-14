@@ -19,7 +19,7 @@ Diagram source: [`docs/architecture.d2`](architecture.d2) (regenerate with `d2 d
 5. **Exposes itself as an MCP server** via the `loomcycle mcp` subcommand (v0.8.15+) — 30+ meta-tools: run lifecycle (`spawn_run`, `cancel_run`, `get_run`, `list_runs`), agent registry (`register_agent`, `unregister_agent`, `list_agents`), the substrate builtins (`memory`, `channel`, `agentdef`, `skilldef`, `mcpserverdef`, `scheduledef`, `webhookdef`, `memorybackenddef`, `a2aservercarddef`, `a2aagentdef`, `evaluation`, `context`, `interruption_resolve`), Pause/Resume/Snapshot, and hook management. The `connector.Connector` interface is what every wire surface dispatches through.
 6. **Quiesces on operator command** via `/v1/_pause` (v0.8.17) — each in-flight run parks at its next iteration boundary (no tool call is cancelled; the call waits up to a configurable timeout for runs to park), new `/v1/runs` get 503; `/v1/_resume` releases the brakes; `/v1/_snapshots` captures running-state into a per-section-semver JSON envelope portable across loomcycle versions.
 7. Persists sessions, runs, events (including the v0.9.1 `system_prompt` + `user_input` first-cycle events), agent_defs, skill_defs, evaluations, memory rows (with optional pgvector embeddings since v0.9.0), channel messages, process samples, dynamic_agents, interrupts, and snapshots to a pluggable `Store` (SQLite default; Postgres for HA, with pgvector when `LOOMCYCLE_PGVECTOR_ENABLED=1`). Runs carry a `pause_state` column (`running` / `pausing` / `paused`) so the resume sweep finds quiesced runs efficiently; runs also carry an optional `max_iterations` overlay (v0.9.0) sourced from yaml or the pinned AgentDef.
-8. Caps concurrency with a **semaphore + bounded FIFO queue** to keep memory predictable on a small VPS.
+8. Caps concurrency with a **semaphore + bounded queue, served round-robin across users**, to keep memory predictable on a small VPS.
 
 Single-tenant out of the box; multi-tenant-capable (every run carries `user_id` + optional `user_tier` + per-run named credentials; tracking + cancel APIs scope by user; per-tenant fairness on the concurrency layer shipped in v0.10.1 / cluster-wide v0.12.1; per-run credential substitution lets each agent authenticate to downstream MCP servers as the actual end-user). Since **v0.17.0** (RFC L) the `user_id` / `tenant_id` are no longer merely caller-asserted: a per-principal bearer token (`OperatorTokenDef`) resolves to an **authoritative `(tenant, subject, scopes)`** that overrides the wire fields, turning attribution + fairness keys into a real authorization boundary (per-tenant memory / run isolation, per-route + per-RPC scopes). The single shared `LOOMCYCLE_AUTH_TOKEN` still works unchanged for a single operator or trusted team — multi-tenancy is available, never required. See [Multi-tenant authorization](#multi-tenant-authorization-v0170-rfc-l) below.
 
@@ -42,7 +42,7 @@ loomcycle/
 │   ├── cancel/                        in-memory registry (agent_id → cancelFn) + cascade
 │   ├── channels/                      persistent channel storage + notification bus (v0.8.4)
 │   ├── cli/                           subcommands (pause/resume/snapshot/agent/run/operator-token)
-│   ├── concurrency/                   semaphore + bounded FIFO queue + per-tenant fairness (v0.10.1)
+│   ├── concurrency/                   semaphore + bounded round-robin queue + per-user caps; call lanes
 │   ├── config/                        YAML + .env loader, agent/model/MCP/user-tier/schedule definitions
 │   ├── connector/                     connector.Connector — 39-method Go interface (v0.8.15 → v0.16.x)
 │   ├── coord/                         cluster backplane (Postgres LISTEN/NOTIFY) — cancel/pause/fanout/locks (v0.12.x)
@@ -370,14 +370,14 @@ References: `internal/store/store.go` (interface), `internal/store/sqlite/` + `i
 
 ## Concurrency
 
-`internal/concurrency/semaphore.go` — counting semaphore with a bounded FIFO waiter queue.
+`internal/concurrency/semaphore.go` — counting semaphore with a bounded waiter queue.
 
 - `MaxConcurrentRuns` slots active simultaneously.
 - `MaxQueueDepth` waiters queue when slots are full.
+- Waiters are served round-robin across (tenant, user), FIFO within one, so one user's burst cannot hold every other user back. Work that was already admitted once (a resumed run) is served first.
 - Past the queue depth, `Acquire()` returns `BackpressureError` → HTTP 429 with `code:"backpressure"`.
 - `QueueTimeoutMS` per acquire.
-
-Single global pool — no per-tenant fairness through v0.9.x. A noisy tenant can monopolise the pool. Per-tenant token-bucket on top is the obvious v0.9.x high-load step.
+- `MaxConcurrentRunsPerUser` caps one (tenant, user)'s active plus queued runs.
 
 References: `internal/concurrency/semaphore.go`, YAML `concurrency:` block in `loomcycle.example.yaml`.
 
