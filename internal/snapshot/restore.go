@@ -1392,10 +1392,14 @@ func restoreQueuedRun(ctx context.Context, s store.Store, e QueuedRunEntry, resu
 		return
 	}
 	result.QueuedRunsRestored++
-	if len(e.QueuedInput) > 0 {
-		if err := s.SetQueuedInput(ctx, e.RunID, e.QueuedInput); err != nil {
+	// The envelope is input, not what Capture is known to write: a hand-made
+	// or edited one is checked here as Capture would have shaped it.
+	if input, ok := restorableQueuedInput(e); ok {
+		if err := s.SetQueuedInput(ctx, e.RunID, input); err != nil {
 			result.Warnings = append(result.Warnings, fmt.Sprintf("queued_run %s: its request was not written (%v); it will be failed when queued again", e.RunID, err))
 		}
+	} else if len(e.QueuedInput) > 0 {
+		result.Warnings = append(result.Warnings, fmt.Sprintf("queued_run %s: its request was not restored (a no-trace run stores none, or it is not a JSON object); it will be failed when queued again", e.RunID))
 	}
 	if e.SecretsDropped {
 		result.Warnings = append(result.Warnings, fmt.Sprintf("queued_run %s: its per-run secrets are not carried by a snapshot; it runs without them", e.RunID))
@@ -1412,6 +1416,22 @@ func restoreQueuedRun(ctx context.Context, s store.Store, e QueuedRunEntry, resu
 		result.TranscriptEventsRestored += written
 	}
 	result.Refresh.QueuedRunIDs = append(result.Refresh.QueuedRunIDs, e.RunID)
+}
+
+// restorableQueuedInput is the request to store for a restored queued run, or
+// false when none may be: a no-trace run stores no prompt anywhere, and bytes
+// that are not a JSON object are not a request. Sealed secrets are removed
+// whatever the envelope says — a snapshot never brings one in, even sealed.
+func restorableQueuedInput(e QueuedRunEntry) (json.RawMessage, bool) {
+	if len(e.QueuedInput) == 0 || e.Retention == store.RetentionNone {
+		return nil, false
+	}
+	var obj map[string]json.RawMessage
+	if err := json.Unmarshal(e.QueuedInput, &obj); err != nil {
+		return nil, false
+	}
+	input, _ := StripQueuedSecrets(e.QueuedInput)
+	return input, len(input) > 0
 }
 
 // nonEmpty returns the non-empty strings of vals.
