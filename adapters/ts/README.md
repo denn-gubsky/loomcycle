@@ -202,7 +202,8 @@ console.log(`restored memory rows: ${result.memory_restored}`);
 
 | Method | Returns | Notes |
 |---|---|---|
-| `hookDef(input)` | `Promise<SubstrateToolResponse>` | Reusable hook definitions (create / fork / get / list / promote / retire / verify / delete). An agent attaches hooks in its own definition (`tools` entries `{name, hooks}` and `hooks`). |
+| `hookDef(input)` | `Promise<SubstrateToolResponse>` | Reusable hook definitions (create / fork / get / list / promote / retire / verify / delete). An agent attaches hooks in its own definition (`tools` entries `{name, hooks}` and `hooks`). `input` is a `HookDefInput` or the loose `SubstrateToolInput` — see [Typed HookDef / ScheduleDef / WebhookDef inputs](#typed-hookdef--scheduledef--webhookdef-inputs-rfc-eo). |
+| `ensureHookDef(name, overlay, opts?)` | `Promise<EnsureHookDefResult>` | Idempotent register-if-changed for a `HookDefOverlay` — safe to call on every boot. `changed: false` when the active version already carries the same definition. |
 
 A hook is attached in the agent's definition — a tool entry `{name, hooks}` or the agent's own `hooks` — and loomcycle posts to its URL during the agent's runs. The other side is the **callback receiver**, a small HTTP endpoint your app runs at that URL. The adapter exports the wire shapes (`PreHookCall` / `PostHookCall` / `PreHookResult` / `PostHookResult`) so you can type the handler against the same JSON loomcycle posts.
 
@@ -271,6 +272,72 @@ export async function POST(req: Request) {
 - Auth flows one-way: loomcycle → your callback URL. Loomcycle does NOT attach a bearer token to callback POSTs by default. If you need to authenticate the caller, validate by source IP or include a shared secret in the `callback_url` path/query (`https://jobember.example/hooks/scan?secret=...`).
 - `fail_mode: "open"` (default) is right for telemetry hooks where a down receiver shouldn't break tool dispatch. `"closed"` is right for security hooks where a down receiver should fail the tool call (don't let bypassed payloads through).
 - `allow_hosts` in `PreHookResult` is a **trust-sensitive surface** — it widens the agent's outbound network policy for one tool call. Server enforces an operator-yaml allowlist (`hooks.permit_host_widen.owners`); your owner has to be on that list for `allow_hosts` to take effect. See the SECURITY note in `internal/hooks/types.go` before using.
+
+### Typed HookDef / ScheduleDef / WebhookDef inputs (RFC EO)
+
+`hookDef`, `scheduleDef` and `webhookDef` accept a typed per-op input — `HookDefInput`, `ScheduleDefInput`, `WebhookDefInput` — or the loose `SubstrateToolInput` they always took, so existing calls compile unchanged. The checking is opt-in: annotate the input (or use `satisfies`); a bare object literal still matches the loose shape.
+
+| Method | Returns | Notes |
+|---|---|---|
+| `scheduleDef(input)` | `Promise<SubstrateToolResponse>` | Scheduled-run definitions (create / fork / get / list / retire / add_hook / remove_hook). Mirrors `POST /v1/_scheduledef`. `add_hook` / `remove_hook` are expressible only through `ScheduleDefInput`. |
+| `webhookDef(input)` | `Promise<SubstrateToolResponse>` | Inbound webhook definitions (create / fork / get / list / retire). Mirrors `POST /v1/_webhookdef`. |
+
+- **`HookDefOverlay` is closed.** The server decodes a HookDef overlay strictly and refuses an unknown key, so the type has no index signature: a misspelt key is a compile error. `body` is a union on `kind` — `{kind: "code-js", code}` or `{kind: "http", url, headers?}` — because the server refuses a body that mixes them. A fork takes `HookDefForkOverlay`: every field optional, and `null` clears one.
+- **`ScheduleDefOverlay` and `WebhookDefOverlay` stay open** (`[extra: string]: unknown`): the server decodes them loosely and drops keys it does not know. The declared fields are checked; others pass through. They leave out the fields the server stamps itself (`operator_key_restricted`, `isolated`, `capture_disabled`, and on schedules `operator_layer`) — an overlay can neither set nor clear those.
+- `on_complete` entries on both are a `ScheduledRunHook`: `channel.publish` (`channel`), `mcp.call` (`server` + `tool`) or `memory.set` (`scope` + `key`).
+
+```ts
+import type { HookDefInput, ScheduleDefInput, WebhookDefInput } from "@loomcycle/client";
+
+const gate: HookDefInput = {
+  op: "create",
+  name: "scan-webfetch",
+  overlay: {
+    event: "post",
+    match: { tools: ["WebFetch"] },
+    body: { kind: "http", url: "https://jobember.example/hooks/scan", headers: { Authorization: "$cred:scan" } },
+    fail_mode: "open",
+    timeout_ms: 3000,
+  },
+};
+await client.hookDef(gate);
+
+const digest: ScheduleDefInput = {
+  op: "create",
+  name: "weekly-digest",
+  overlay: {
+    agent: "digest",
+    schedule: "0 6 * * 1",
+    timezone: "Europe/Berlin",
+    prompt: [{ role: "user", content: [{ type: "trusted-text", text: "Write this week's digest." }] }],
+    on_complete: [{ kind: "channel.publish", channel: "digests" }],
+  },
+};
+await client.scheduleDef(digest);
+
+const push: WebhookDefInput = {
+  op: "create",
+  name: "gh-push",
+  overlay: {
+    delivery: "spawn",
+    agent: "ingest",
+    auth: { kind: "hmac", algorithm: "sha256", header: "X-Hub-Signature-256", signing_secret_env: "LOOMCYCLE_GH_WEBHOOK_SECRET" },
+    payload_mapping: { goal: "$.head_commit.message" },
+  },
+};
+await client.webhookDef(push);
+```
+
+**Register a HookDef on every boot** with `ensureHookDef`. A HookDef `create` always mints a new version, so this reads the active version first and compares its stored definition with yours, normalized the way the server stores it (`fail_mode` defaults to `"open"`; empty `match.tools`, description, headers and timeout are dropped). Equal → no write. A difference it cannot see through mints a redundant version rather than skipping a real change; `opts.description` is a rationale, not part of the definition, and does not count as a change.
+
+```ts
+const r = await client.ensureHookDef("scan-webfetch", {
+  event: "post",
+  match: { tools: ["WebFetch"] },
+  body: { kind: "http", url: "https://jobember.example/hooks/scan" },
+});
+console.log(r.changed ? `registered v${r.version}` : "already current");
+```
 
 ### Substrate admin: AgentDef + SkillDef (v0.8.22)
 
