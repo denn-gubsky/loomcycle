@@ -263,6 +263,10 @@ func TestRequiredScopeFor(t *testing.T) {
 		// to [self, user] history scopes, and discovery tiers by access mode.
 		{"POST", "/v1/_history", auth.ScopeRunsRead},
 		{"GET", "/v1/_runnable-agents", auth.ScopeRunsRead},
+		// Evaluation outside a run: runs:read so an isolated user reaches its
+		// submit_self; the token's grant, not the gate, decides the ops. The
+		// /v1/_* catch-all would make it admin-only.
+		{"POST", "/v1/_evaluation", auth.ScopeRunsRead},
 		// RFC AS: the schedules surface (list-all + per-def ops) is tenant-
 		// reachable; the handlers confine a tenant to its own schedule defs.
 		{"GET", "/v1/_schedules/list-all", auth.ScopeTenant},

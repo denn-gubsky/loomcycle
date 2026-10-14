@@ -4019,6 +4019,7 @@ func (s *Server) Mux() http.Handler {
 	// (ScopeTenant via isTenantConfinedDefPath); the tool's own scope fold +
 	// admin-gated `global` keep a tenant operator inside its own tenant.
 	mux.Handle("POST /v1/_history", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleSubstrateHistory))))
+	mux.Handle("POST /v1/_evaluation", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleSubstrateEvaluation))))
 	// RFC AR secure credential store (the Web UI Settings → Credentials panel's
 	// ingress). Bearer-authed; tenant-confined (ScopeTenant via
 	// isTenantConfinedDefPath) — the tool derives scope_id from the operator-trust

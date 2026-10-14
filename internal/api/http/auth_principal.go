@@ -779,6 +779,14 @@ func requiredScopeFor(method, path string) string {
 	// on substrate:user would lock TENANT-MODE users out (they hold neither).
 	case memberReadable(path):
 		return auth.ScopeRunsRead
+	// Evaluation outside a run. runs:read is the floor every principal that may
+	// read a run holds — an isolated user included, which is why it is not
+	// substrate:tenant. The gate admits; it grants nothing: which ops the caller
+	// may use is tools.OffRunEvaluationPolicy (every op for a tenant operator or
+	// admin, submit_self for anyone else), the same grant as the Evaluation RPC
+	// and the MCP `evaluation` tool, which gate on runs:read too.
+	case path == "/v1/_evaluation":
+		return auth.ScopeRunsRead
 	// RFC BC: the client-tool host WebSocket. A client registers tools it runs on
 	// the user's own machine; the connection serves ONLY its own principal's runs
 	// (filed under (tenant, subject) from the bearer). Requires runs:create — you

@@ -132,9 +132,9 @@ func substrateGRPCCtx(ctx context.Context) context.Context {
 	ctx = tools.WithVolumeDefPolicy(ctx, tools.VolumeDefPolicyValue{
 		Scopes: []string{"any"},
 	})
-	ctx = tools.WithEvaluationPolicy(ctx, tools.EvaluationPolicyValue{
-		Scopes: []string{"submit_self", "submit_descendants", "submit_any", "read_any"},
-	})
+	// Evaluation: the grant every off-run transport shares (HTTP, MCP), from the
+	// token — not every op for every principal.
+	ctx = tools.WithEvaluationPolicy(ctx, tools.OffRunEvaluationPolicy(principal, ok))
 	// History tool (RFC BE): own-scope access (self/user/tenant) always; the
 	// cross-tenant `global` scope only for an admin principal — mirrors the HTTP
 	// substrateAdminUserCtx grant + the in-loop historyGlobalAllowed gate. The
@@ -396,6 +396,17 @@ func (s *Server) Document(ctx context.Context, req *loomcyclepb.SubstrateRequest
 			return connector.ToolResult{}, err
 		}
 		return res, nil
+	})
+}
+
+// Evaluation serves the Evaluation RPC: the Evaluation tool outside a run.
+// Mirrors POST /v1/_evaluation. The grant is tools.OffRunEvaluationPolicy
+// (stamped by substrateGRPCCtx); the user ctx carries the principal's own
+// subject and isolated bit, which the tool reads to hold an isolated user to
+// its own runs.
+func (s *Server) Evaluation(ctx context.Context, req *loomcyclepb.SubstrateRequest) (*loomcyclepb.SubstrateResponse, error) {
+	return s.dispatchSubstrateRPCCtx(ctx, "Evaluation", req, substrateGRPCUserCtx, func(ctx context.Context, in json.RawMessage) (connector.ToolResult, error) {
+		return s.connector.Evaluation(ctx, in)
 	})
 }
 

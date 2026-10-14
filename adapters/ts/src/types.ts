@@ -3471,6 +3471,137 @@ export type HistoryToolInput = {
  *  `resume` a continuation handle. Callers narrow as needed. */
 export type HistoryToolResponse = unknown;
 
+/** Who recorded an evaluation, relative to the run it scores. The server
+ *  derives it from the caller and the target run; it is never sent. A call
+ *  outside a run (this client) records `external` or `unrelated`. */
+export type EvaluationEmitterRole =
+  | "self"
+  | "sibling"
+  | "parent"
+  | "external"
+  | "unrelated";
+
+/** `evaluation({op:"submit"})`: record a score against a run. Scores are
+ *  additive — submitting again records another evaluation. */
+export interface EvaluationSubmitInput {
+  op: "submit";
+  run_id: string;
+  /** Required. Convention [-1,1] or [0,1]; the operator chooses. */
+  score: number;
+  /** Named axes to numeric values, e.g. `{correctness: 0.8}`. */
+  dimensions?: Record<string, number>;
+  /** Free-form structured payload. */
+  judgement?: unknown;
+  /** Natural-language reasoning. */
+  rationale?: string;
+}
+
+/** `evaluation({op:"get"})`: one evaluation by id. */
+export interface EvaluationGetInput {
+  op: "get";
+  eval_id: string;
+}
+
+/** `evaluation({op:"list_for_run"})`: every evaluation of one run. */
+export interface EvaluationListForRunInput {
+  op: "list_for_run";
+  run_id: string;
+  /** Max rows (default 100). */
+  limit?: number;
+}
+
+/** `evaluation({op:"list_for_def"})`: every evaluation of runs of one
+ *  definition version, in the caller's tenant. */
+export interface EvaluationListForDefInput {
+  op: "list_for_def";
+  def_id: string;
+  /** Max rows (default 100). */
+  limit?: number;
+}
+
+/** `evaluation({op:"aggregate"})`: the scores of a definition rolled up. */
+export interface EvaluationAggregateInput {
+  op: "aggregate";
+  def_id: string;
+  /** Walk parent_def_id and include the ancestors' evaluations. */
+  include_lineage?: boolean;
+}
+
+/** Input for {@link LoomcycleClient.evaluation}, discriminated by `op`. */
+export type EvaluationInput =
+  | EvaluationSubmitInput
+  | EvaluationGetInput
+  | EvaluationListForRunInput
+  | EvaluationListForDefInput
+  | EvaluationAggregateInput;
+
+/** What `submit` returns: the stored row's identity and the derived role. */
+export interface EvaluationSubmitResult {
+  eval_id: string;
+  run_id: string;
+  /** The definition version the run was running, denormalised at submit
+   *  time; `""` for a run that resolved through static config only. */
+  def_id: string;
+  emitter_role: EvaluationEmitterRole;
+  score: number;
+  /** RFC 3339 UTC. */
+  created_at: string;
+}
+
+/** One stored evaluation, as `get` and the `list_for_*` ops return it. */
+export interface EvaluationRecord {
+  eval_id: string;
+  run_id: string;
+  def_id: string;
+  score: number;
+  /** `null` when the submit carried none. */
+  dimensions: Record<string, number> | null;
+  /** `null` when the submit carried none. */
+  judgement: unknown;
+  rationale: string;
+  emitter_role: EvaluationEmitterRole;
+  emitter_agent_id: string;
+  emitter_run_id: string;
+  /** RFC 3339 UTC. */
+  created_at: string;
+}
+
+/** What `list_for_run` returns. An unknown run, or one the caller may not
+ *  read, lists nothing rather than refusing. */
+export interface EvaluationListForRunResult {
+  run_id: string;
+  evaluations: EvaluationRecord[];
+}
+
+/** What `list_for_def` returns. An unknown definition, or one the caller may
+ *  not read, lists nothing rather than refusing. */
+export interface EvaluationListForDefResult {
+  def_id: string;
+  evaluations: EvaluationRecord[];
+}
+
+/** Summary statistics over a set of scores. */
+export interface EvaluationScoreStats {
+  mean: number;
+  median: number;
+  min: number;
+  max: number;
+  latest: number;
+  count: number;
+}
+
+/** What `aggregate` returns. `count: 0` for an unknown definition. */
+export interface EvaluationAggregate {
+  def_id: string;
+  count: number;
+  score: EvaluationScoreStats;
+  /** Keyed by dimension name; only dimensions some row supplied. */
+  dimensions?: Record<string, EvaluationScoreStats>;
+  /** Keyed by emitter role. */
+  by_emitter_role?: Record<string, EvaluationScoreStats>;
+  lineage_included: boolean;
+}
+
 /** Volume access mode — read-only or read-write (RFC AH). */
 export type VolumeMode = "ro" | "rw";
 

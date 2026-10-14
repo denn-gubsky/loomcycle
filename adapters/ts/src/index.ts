@@ -102,6 +102,14 @@
  *     // History — browse/search/annotate past chats (RFC BE; tenant-confined)
  *     history(input): Promise<HistoryToolResponse>                // list/get/search/rename/annotate/pin/archive/recap/resume
  *
+ *     // Evaluation — score runs and read the scores back, outside a run
+ *     evaluation(input): Promise<…>                               // submit/get/list_for_run/list_for_def/aggregate
+ *     submitEvaluation(runId, score, opts?): Promise<EvaluationSubmitResult>
+ *     getEvaluation(evalId): Promise<EvaluationRecord>
+ *     listEvaluationsForRun(runId, opts?): Promise<EvaluationListForRunResult>
+ *     listEvaluationsForDef(defId, opts?): Promise<EvaluationListForDefResult>
+ *     aggregateEvaluations(defId, opts?): Promise<EvaluationAggregate>
+ *
  *     // Library v2 enumeration (v0.10.3 — yaml+substrate merged)
  *     listLibraryAgents(): Promise<LibraryListResponse<LibraryAgentDefinition>>
  *     listLibrarySkills(): Promise<LibraryListResponse<LibrarySkillDefinition>>
@@ -312,6 +320,20 @@ export type {
   // RFC BE History (browse/search/annotate past chats)
   HistoryToolInput,
   HistoryToolResponse,
+  // Evaluation outside a run (POST /v1/_evaluation)
+  EvaluationEmitterRole,
+  EvaluationSubmitInput,
+  EvaluationGetInput,
+  EvaluationListForRunInput,
+  EvaluationListForDefInput,
+  EvaluationAggregateInput,
+  EvaluationInput,
+  EvaluationSubmitResult,
+  EvaluationRecord,
+  EvaluationListForRunResult,
+  EvaluationListForDefResult,
+  EvaluationScoreStats,
+  EvaluationAggregate,
   // RFC AH dynamic volumes (v0.35.0)
   VolumeMode,
   PersistentVolumeEntry,

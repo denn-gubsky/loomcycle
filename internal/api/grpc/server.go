@@ -941,6 +941,10 @@ var grpcConsumerScopes = map[string]string{
 	// floor (a tenant operator may call it); the cross-tenant `global` scope is
 	// admin-gated inside the tool. Same posture as the HTTP /v1/_history route.
 	"History": auth.ScopeTenant,
+	// Evaluation outside a run: runs:read, as POST /v1/_evaluation and the MCP
+	// `evaluation` tool. The floor admits an isolated user; which ops it may use
+	// is tools.OffRunEvaluationPolicy (substrateGRPCCtx), not this gate.
+	"Evaluation": auth.ScopeRunsRead,
 }
 
 // requiredScopeForRPC returns the scope a caller must hold for fullMethod.
