@@ -128,6 +128,42 @@ func TestCallScheduler_KindWithoutLaneStillWaitsForItsModel(t *testing.T) {
 	mustGrant(t, emb, "the embed call once the chat model drained")
 }
 
+// An exempt kind is left out of the models-in-flight cap entirely: its call
+// neither waits for the model in flight nor counts as one, so a call to
+// another model does not wait for it. Its own lane still caps it.
+func TestCallScheduler_ExemptKindBypassesTheModelCapButNotItsLane(t *testing.T) {
+	s := NewCallScheduler(map[string]ProviderLanesConfig{"p": {
+		Lanes:             map[string]LaneConfig{"chat": {MaxConcurrent: 2}, "embedder": {MaxConcurrent: 1}},
+		MaxModelsInFlight: 1,
+		ExemptKinds:       []string{"embedder"},
+	}})
+	relChat := schedNow(t, s, "p", "chat", CallInfo{Model: "chat-model"})
+	relEmb := schedNow(t, s, "p", "embedder", CallInfo{Model: "embed-model"})
+	if in := s.Stats()["p"].Models.InFlight; len(in) != 1 || in["chat-model"] == 0 {
+		t.Fatalf("models in flight = %v, want only the chat model counted", in)
+	}
+	second := schedAsync(t, s, "p", "embedder", CallInfo{Model: "embed-model"})
+	eventually(t, "the second embed call queued in its lane", func() bool { return s.Stats()["p"].Lanes["embedder"].Queued == 1 })
+	mustStillWait(t, second, "a second embed call on a one-slot embedder lane")
+	relEmb()
+	mustGrant(t, second, "the queued embed call after a release")
+
+	// A chat call to another model waits for the chat model only.
+	relChat()
+	schedNow(t, s, "p", "chat", CallInfo{Model: "other-chat-model"})()
+
+	// With no embedder lane, an exempt embed call is not gated at all.
+	s.Reload(map[string]ProviderLanesConfig{"p": {
+		Lanes:             map[string]LaneConfig{"chat": {MaxConcurrent: 2}},
+		MaxModelsInFlight: 1,
+		ExemptKinds:       []string{"embedder"},
+	}})
+	if s.Gated("p", "embedder") || !s.Gated("p", "decision") {
+		t.Fatalf("Gated(embedder)=%v Gated(decision)=%v, want the exempt kind ungated and the other still under the model cap",
+			s.Gated("p", "embedder"), s.Gated("p", "decision"))
+	}
+}
+
 // A provider that sets only the models-in-flight cap, and no lane, is capped.
 func TestCallScheduler_ModelCapAloneGatesAProviderWithNoLanes(t *testing.T) {
 	s := NewCallScheduler(map[string]ProviderLanesConfig{"p": {MaxModelsInFlight: 1}})

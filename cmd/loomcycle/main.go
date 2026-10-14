@@ -3903,6 +3903,9 @@ func describeCallCaps(caps map[string]concurrency.ProviderLanesConfig) string {
 		}
 		if pc.MaxModelsInFlight > 0 {
 			parts = append(parts, fmt.Sprintf("models=%d", pc.MaxModelsInFlight))
+			if len(pc.ExemptKinds) > 0 {
+				parts = append(parts, "models-exempt="+strings.Join(pc.ExemptKinds, ","))
+			}
 		}
 		fmt.Fprintf(&b, "%s[%s]", id, strings.Join(parts, " "))
 	}

@@ -16,6 +16,7 @@ providers:
     driver: ollama
     max_concurrent: 4
     max_models_in_flight: 1
+    models_in_flight_exempt_kinds: [embedder]
     model_switch_max_wait_ms: 30000
     lanes:
       chat:     { max_concurrent: 4, quantum_calls: 4, affinity_hold_ms: 5000 }
@@ -25,10 +26,11 @@ providers:
 
 func wantLanesBlock() ProviderConfig {
 	return ProviderConfig{
-		Driver:               "ollama",
-		MaxConcurrent:        4,
-		MaxModelsInFlight:    1,
-		ModelSwitchMaxWaitMS: 30000,
+		Driver:                    "ollama",
+		MaxConcurrent:             4,
+		MaxModelsInFlight:         1,
+		ModelSwitchMaxWaitMS:      30000,
+		ModelsInFlightExemptKinds: []string{ModelKindEmbedder},
 		Lanes: map[string]ProviderLane{
 			ModelKindChat:     {MaxConcurrent: 4, QuantumCalls: 4, AffinityHoldMS: 5000},
 			ModelKindDecision: {MaxConcurrent: 2},
@@ -79,7 +81,7 @@ func TestProviderLanes_RoundTripKeepsEveryKey(t *testing.T) {
 	if err != nil {
 		t.Fatalf("json marshal: %v", err)
 	}
-	for _, key := range []string{`"max_models_in_flight":1`, `"model_switch_max_wait_ms":30000`, `"lanes":{`,
+	for _, key := range []string{`"max_models_in_flight":1`, `"model_switch_max_wait_ms":30000`, `"models_in_flight_exempt_kinds":["embedder"]`, `"lanes":{`,
 		`"quantum_calls":4`, `"affinity_hold_ms":5000`, `"background_share":0.25`} {
 		if !strings.Contains(string(j), key) {
 			t.Errorf("json %s is missing %s", j, key)
@@ -106,7 +108,7 @@ func TestProviderLanes_UnsetKeysAreNotSerialised(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, key := range []string{"lanes", "max_models_in_flight", "model_switch_max_wait_ms"} {
+	for _, key := range []string{"lanes", "max_models_in_flight", "model_switch_max_wait_ms", "models_in_flight_exempt_kinds"} {
 		if strings.Contains(string(y), key) || strings.Contains(string(j), key) {
 			t.Errorf("%s serialised on an entry that does not set it:\nyaml: %sjson: %s", key, y, j)
 		}
@@ -193,6 +195,8 @@ func TestValidate_ProviderLanesAccepted(t *testing.T) {
 			ProviderConfig{Lanes: map[string]ProviderLane{ModelKindDecision: {}}}},
 		{"model_switch_max_wait_ms without max_models_in_flight",
 			ProviderConfig{ModelSwitchMaxWaitMS: 1000}},
+		{"every kind exempt from max_models_in_flight",
+			ProviderConfig{MaxModelsInFlight: 1, ModelsInFlightExemptKinds: []string{ModelKindChat, ModelKindDecision, ModelKindEmbedder}}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -221,6 +225,12 @@ func TestValidate_ProviderLanesRejected(t *testing.T) {
 		{"negative model_switch_max_wait_ms",
 			ProviderConfig{MaxModelsInFlight: 1, ModelSwitchMaxWaitMS: -1},
 			[]string{"providers.ollama-local: model_switch_max_wait_ms must be >= 0"}},
+		{"models_in_flight_exempt_kinds without max_models_in_flight",
+			ProviderConfig{ModelsInFlightExemptKinds: []string{ModelKindEmbedder}},
+			[]string{"providers.ollama-local: models_in_flight_exempt_kinds is set but max_models_in_flight is not"}},
+		{"unknown kind in models_in_flight_exempt_kinds",
+			ProviderConfig{MaxModelsInFlight: 1, ModelsInFlightExemptKinds: []string{"rerank"}},
+			[]string{"providers.ollama-local: models_in_flight_exempt_kinds: unknown kind \"rerank\"", "[chat decision embedder]"}},
 		{"negative lane max_concurrent",
 			lanes(ModelKindDecision, ProviderLane{MaxConcurrent: -1}),
 			[]string{"providers.ollama-local.lanes.decision: max_concurrent must be >= 0"}},

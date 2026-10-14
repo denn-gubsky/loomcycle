@@ -648,6 +648,22 @@ func TestSchedulerConfig_FoldsTheShorthandIntoTheChatLane(t *testing.T) {
 	}
 }
 
+// The exempt kinds reach the scheduler, so an embedding call on a provider with
+// max_models_in_flight: 1 does not wait for the chat model.
+func TestSchedulerConfig_CarriesTheModelCapsExemptKinds(t *testing.T) {
+	got := SchedulerConfig(map[string]config.ProviderConfig{
+		"p": {MaxModelsInFlight: 1, ModelsInFlightExemptKinds: []string{config.ModelKindEmbedder}},
+	})
+	if ex := got["p"].ExemptKinds; len(ex) != 1 || ex[0] != config.ModelKindEmbedder {
+		t.Fatalf("exempt kinds = %v, want [embedder]", ex)
+	}
+	s := concurrency.NewCallScheduler(got)
+	if s.Gated("p", config.ModelKindEmbedder) || !s.Gated("p", config.ModelKindChat) {
+		t.Errorf("Gated(embedder)=%v Gated(chat)=%v, want embeddings ungated and chat under the model cap",
+			s.Gated("p", config.ModelKindEmbedder), s.Gated("p", config.ModelKindChat))
+	}
+}
+
 // eventLog records what a call reported on req.OnEvent.
 type eventLog struct {
 	mu  sync.Mutex

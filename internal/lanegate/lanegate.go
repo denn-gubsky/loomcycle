@@ -368,6 +368,7 @@ func SchedulerConfig(provs map[string]config.ProviderConfig) map[string]concurre
 			Lanes:              make(map[string]concurrency.LaneConfig, len(lanes)),
 			MaxModelsInFlight:  pc.MaxModelsInFlight,
 			ModelSwitchMaxWait: time.Duration(pc.ModelSwitchMaxWaitMSOrDefault()) * time.Millisecond,
+			ExemptKinds:        pc.ModelsInFlightExemptKinds,
 		}
 		for k, l := range lanes {
 			plc.Lanes[k] = concurrency.LaneConfig{

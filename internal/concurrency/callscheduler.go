@@ -60,6 +60,9 @@ type ProviderLanesConfig struct {
 	MaxModelsInFlight int
 	// ModelSwitchMaxWait is the ModelGate anti-starvation bound.
 	ModelSwitchMaxWait time.Duration
+	// ExemptKinds are the kinds the model gate leaves out: their calls are
+	// neither counted nor held back by it, only by their own lane.
+	ExemptKinds []string
 }
 
 // ProviderLaneStats is one provider's snapshot.
@@ -75,6 +78,8 @@ type ProviderLaneStats struct {
 type providerLanes struct {
 	lanes map[string]*Lane
 	gate  *ModelGate
+	// exempt holds the kinds the gate does not apply to.
+	exempt map[string]bool
 }
 
 // CallScheduler holds the lanes and model gate of every capped provider. A nil
@@ -95,7 +100,8 @@ func NewCallScheduler(cfgs map[string]ProviderLanesConfig) *CallScheduler {
 // lane returns the lane for (providerID, kind), nil when that kind has none,
 // and the provider's model gate, nil when the provider caps nothing at all.
 // The gate does not depend on the lane: a provider's cap on models computing
-// at once covers every call to it, whichever kinds it also gives a lane.
+// at once covers every call to it, whichever kinds it also gives a lane —
+// except a kind the provider exempts, for which the gate is nil.
 func (s *CallScheduler) lane(providerID, kind string) (*Lane, *ModelGate) {
 	if s == nil {
 		return nil, nil
@@ -105,6 +111,9 @@ func (s *CallScheduler) lane(providerID, kind string) (*Lane, *ModelGate) {
 	p := s.byID[providerID]
 	if p == nil {
 		return nil, nil
+	}
+	if p.exempt[kind] {
+		return p.lanes[kind], nil
 	}
 	return p.lanes[kind], p.gate
 }
@@ -233,6 +242,12 @@ func (s *CallScheduler) Reload(cfgs map[string]ProviderLanesConfig) {
 			continue
 		}
 		p := &providerLanes{lanes: lanes}
+		if len(cfg.ExemptKinds) > 0 {
+			p.exempt = make(map[string]bool, len(cfg.ExemptKinds))
+			for _, k := range cfg.ExemptKinds {
+				p.exempt[k] = true
+			}
+		}
 		if old != nil {
 			p.gate = old.gate
 		} else {
