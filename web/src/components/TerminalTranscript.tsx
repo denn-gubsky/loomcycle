@@ -257,6 +257,19 @@ export function formatLine(row: TranscriptEvent): FormattedLine {
       const ms = ev.admission?.wait_ms ?? 0;
       return { key, ts, kind, cls: "tl-meta", payload: `admitted after ${(ms / 1000).toFixed(1)} s` };
     }
+    case "call_queued": {
+      // One of the run's model calls waits for its provider: every slot of
+      // its call lane is taken, or the provider has its cap of models loaded.
+      const a = ev.admission;
+      const pos = a?.position ? `, position ${a.position}` : "";
+      const why = a?.reason === "models_in_flight" ? "waiting for its model to load" : "waiting for a slot";
+      return { key, ts, kind, cls: "tl-meta", payload: `model call queued on ${a?.provider ?? "provider"} — ${why}${pos}` };
+    }
+    case "call_admitted": {
+      const a = ev.admission;
+      const ms = a?.wait_ms ?? 0;
+      return { key, ts, kind, cls: "tl-meta", payload: `model call on ${a?.provider ?? "provider"} started after ${(ms / 1000).toFixed(1)} s` };
+    }
     case "subagent_hold": {
       // A sub-agent this run started is held for a verdict: this run waits on
       // it, and the verdict goes to the child's run.

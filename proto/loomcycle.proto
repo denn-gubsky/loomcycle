@@ -1505,8 +1505,10 @@ message Event {
 
   // admission carries the payload on type=queued frames (the run was accepted
   // but waits for a run slot: why, and its place) and type=admitted frames (it
-  // got its slot: how long it waited). SERVER-generated before the run's loop
-  // starts. Nil on every other event type.
+  // got its slot: how long it waited), SERVER-generated before the run's loop
+  // starts; and on type=call_queued / type=call_admitted frames, the same for
+  // one model call of a running run, with its provider and lane kind. Nil on
+  // every other event type.
   AdmissionInfo admission = 22;
 }
 
@@ -1673,14 +1675,23 @@ message LimitInfo {
 // providers.AdmissionInfo. No secrets: a reason word and two integers.
 message AdmissionInfo {
   // On queued: "user_cap" (the run's user already has its cap of runs active)
-  // or "global_cap" (every run slot of the runtime is taken).
+  // or "global_cap" (every run slot of the runtime is taken). On call_queued:
+  // "lane" (every slot of the call's lane is taken) or "models_in_flight" (the
+  // provider has its cap of models in flight and this call's model is not
+  // among them).
   string reason = 1;
   // On queued: the run's place when it was queued, 1 being the next to start.
   // For user_cap it counts only the same user's waiting runs. It moves as
-  // other runs start and end; GetAgent / GetRun report the current place.
+  // other runs start and end; GetAgent / GetRun report the current place. On
+  // call_queued: the call's place when it queued.
   int32 position = 2;
-  // On admitted: how long the run waited for its slot, in milliseconds.
+  // On admitted: how long the run waited for its slot, in milliseconds. On
+  // call_admitted: how long the call waited.
   int64 wait_ms = 3;
+  // On call_queued / call_admitted: the provider id as configured and the
+  // call lane's model kind ("chat"). Empty on queued / admitted.
+  string provider = 4;
+  string kind = 5;
 }
 
 // ErrorInfo is the machine-readable half of a terminal run failure, carried on

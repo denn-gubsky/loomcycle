@@ -1963,13 +1963,16 @@ func eventToProto(ev providers.Event) *loomcyclepb.Event {
 			Fields:    ev.Override.Fields,
 		}
 	}
-	// The admission payload on type=queued / type=admitted frames: without it
-	// a typed client sees that a run waits but not why or for how long.
+	// The admission payload on type=queued / type=admitted frames, and on
+	// call_queued / call_admitted: without it a typed client sees that a run
+	// or call waits but not why, for which provider, or for how long.
 	if ev.Admission != nil {
 		out.Admission = &loomcyclepb.AdmissionInfo{
 			Reason:   ev.Admission.Reason,
 			Position: int32(ev.Admission.Position),
 			WaitMs:   ev.Admission.WaitMs,
+			Provider: ev.Admission.Provider,
+			Kind:     ev.Admission.Kind,
 		}
 	}
 	if ev.Limit != nil {

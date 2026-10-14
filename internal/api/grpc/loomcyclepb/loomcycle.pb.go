@@ -4591,8 +4591,10 @@ type Event struct {
 	TeamDecision *TeamDecision `protobuf:"bytes,21,opt,name=team_decision,json=teamDecision,proto3" json:"team_decision,omitempty"`
 	// admission carries the payload on type=queued frames (the run was accepted
 	// but waits for a run slot: why, and its place) and type=admitted frames (it
-	// got its slot: how long it waited). SERVER-generated before the run's loop
-	// starts. Nil on every other event type.
+	// got its slot: how long it waited), SERVER-generated before the run's loop
+	// starts; and on type=call_queued / type=call_admitted frames, the same for
+	// one model call of a running run, with its provider and lane kind. Nil on
+	// every other event type.
 	Admission     *AdmissionInfo `protobuf:"bytes,22,opt,name=admission,proto3" json:"admission,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -5910,14 +5912,23 @@ func (x *LimitInfo) GetMessage() string {
 type AdmissionInfo struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// On queued: "user_cap" (the run's user already has its cap of runs active)
-	// or "global_cap" (every run slot of the runtime is taken).
+	// or "global_cap" (every run slot of the runtime is taken). On call_queued:
+	// "lane" (every slot of the call's lane is taken) or "models_in_flight" (the
+	// provider has its cap of models in flight and this call's model is not
+	// among them).
 	Reason string `protobuf:"bytes,1,opt,name=reason,proto3" json:"reason,omitempty"`
 	// On queued: the run's place when it was queued, 1 being the next to start.
 	// For user_cap it counts only the same user's waiting runs. It moves as
-	// other runs start and end; GetAgent / GetRun report the current place.
+	// other runs start and end; GetAgent / GetRun report the current place. On
+	// call_queued: the call's place when it queued.
 	Position int32 `protobuf:"varint,2,opt,name=position,proto3" json:"position,omitempty"`
-	// On admitted: how long the run waited for its slot, in milliseconds.
-	WaitMs        int64 `protobuf:"varint,3,opt,name=wait_ms,json=waitMs,proto3" json:"wait_ms,omitempty"`
+	// On admitted: how long the run waited for its slot, in milliseconds. On
+	// call_admitted: how long the call waited.
+	WaitMs int64 `protobuf:"varint,3,opt,name=wait_ms,json=waitMs,proto3" json:"wait_ms,omitempty"`
+	// On call_queued / call_admitted: the provider id as configured and the
+	// call lane's model kind ("chat"). Empty on queued / admitted.
+	Provider      string `protobuf:"bytes,4,opt,name=provider,proto3" json:"provider,omitempty"`
+	Kind          string `protobuf:"bytes,5,opt,name=kind,proto3" json:"kind,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -5971,6 +5982,20 @@ func (x *AdmissionInfo) GetWaitMs() int64 {
 		return x.WaitMs
 	}
 	return 0
+}
+
+func (x *AdmissionInfo) GetProvider() string {
+	if x != nil {
+		return x.Provider
+	}
+	return ""
+}
+
+func (x *AdmissionInfo) GetKind() string {
+	if x != nil {
+		return x.Kind
+	}
+	return ""
 }
 
 // ErrorInfo is the machine-readable half of a terminal run failure, carried on
@@ -13131,11 +13156,13 @@ const file_loomcycle_proto_rawDesc = "" +
 	"\x06window\x18\x04 \x01(\tR\x06window\x12\x12\n" +
 	"\x04used\x18\x05 \x01(\x03R\x04used\x12\x14\n" +
 	"\x05limit\x18\x06 \x01(\x03R\x05limit\x12\x18\n" +
-	"\amessage\x18\a \x01(\tR\amessage\"\\\n" +
+	"\amessage\x18\a \x01(\tR\amessage\"\x8c\x01\n" +
 	"\rAdmissionInfo\x12\x16\n" +
 	"\x06reason\x18\x01 \x01(\tR\x06reason\x12\x1a\n" +
 	"\bposition\x18\x02 \x01(\x05R\bposition\x12\x17\n" +
-	"\await_ms\x18\x03 \x01(\x03R\x06waitMs\"\xe5\x01\n" +
+	"\await_ms\x18\x03 \x01(\x03R\x06waitMs\x12\x1a\n" +
+	"\bprovider\x18\x04 \x01(\tR\bprovider\x12\x12\n" +
+	"\x04kind\x18\x05 \x01(\tR\x04kind\"\xe5\x01\n" +
 	"\tErrorInfo\x12\x1a\n" +
 	"\bcategory\x18\x01 \x01(\tR\bcategory\x12!\n" +
 	"\fis_retryable\x18\x02 \x01(\bR\visRetryable\x12 \n" +

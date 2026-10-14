@@ -37,6 +37,27 @@ type CallInfo struct {
 	// Model is the model identity as the host loads it. "" is not subject to
 	// the models-in-flight cap (see ModelGate). A Lane ignores it.
 	Model string
+	// OnQueued, when set, is called each time the call has to wait — for its
+	// model (CallQueueReasonModel) or for a lane slot (CallQueueReasonLane) —
+	// just before it blocks, on the caller's goroutine and with no lock held.
+	// A call that gets its slot at once never calls it.
+	OnQueued func(CallQueueInfo)
+}
+
+// Why a model call waits, as reported to CallInfo.OnQueued.
+const (
+	// CallQueueReasonModel: the provider already has its cap of models in
+	// flight (max_models_in_flight) and this call's model is not among them.
+	CallQueueReasonModel = "models_in_flight"
+	// CallQueueReasonLane: every slot of the call's lane is taken.
+	CallQueueReasonLane = "lane"
+)
+
+// CallQueueInfo says why and where a model call waits.
+type CallQueueInfo struct {
+	Reason string
+	// Position is the call's place when it queued, 1 being the next served.
+	Position int
 }
 
 // LaneConfig is the policy of one lane.
@@ -309,7 +330,11 @@ func (l *Lane) acquire(ctx context.Context, c CallInfo, maxQueued int) (release 
 	if c.Owner != "" {
 		l.ownerQueued[c.Owner]++
 	}
+	pos := l.position(w)
 	l.mu.Unlock()
+	if c.OnQueued != nil {
+		c.OnQueued(CallQueueInfo{Reason: CallQueueReasonLane, Position: pos})
+	}
 
 	select {
 	case <-w.ch:
@@ -516,6 +541,48 @@ func (l *Lane) next() *laneWaiter {
 		return l.bg.pop()
 	}
 	return l.fg.pop()
+}
+
+// position is w's place in the lane, 1 being the next served: the waiters of
+// its class served before it, round by round across buckets. A background
+// waiter is also counted behind every foreground one, though the background
+// share may let it in sooner. Caller holds mu and w is queued.
+func (l *Lane) position(w *laneWaiter) int {
+	if w.info.Background {
+		return l.fg.n + l.bg.ahead(w) + 1
+	}
+	return l.fg.ahead(w) + 1
+}
+
+// ahead counts the waiters q serves before w: in each bucket's turn ahead of
+// w's in the ring, as many as w has ahead in its own bucket plus one; in each
+// turn after, as many as w has ahead. w is in q.
+func (q *laneQueue) ahead(w *laneWaiter) int {
+	b := q.buckets[userKey{tenant: w.info.TenantID, user: w.info.UserID}]
+	if b == nil {
+		return 0
+	}
+	idx := 0
+	for i, x := range b.waiters {
+		if x == w {
+			idx = i
+			break
+		}
+	}
+	n := idx
+	seen := false
+	for _, rb := range q.ring {
+		if rb == b {
+			seen = true
+			continue
+		}
+		if seen {
+			n += min(len(rb.waiters), idx)
+		} else {
+			n += min(len(rb.waiters), idx+1)
+		}
+	}
+	return n
 }
 
 // unqueue removes a waiter that gave up while still queued. Caller holds mu.

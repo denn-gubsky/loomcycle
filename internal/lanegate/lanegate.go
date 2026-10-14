@@ -114,11 +114,16 @@ func (p *Provider) RunDone(runID string) {
 //
 // A provider nobody capped is called directly: the driver's own channel is
 // returned and nothing is allocated.
+//
+// A call that has to wait reports it on req.OnEvent, the hook the loop gives
+// every call for the driver's own retry reports: EventCallQueued before each
+// wait, EventCallAdmitted once it has its slot. It is called here, on the
+// caller's goroutine, before Call returns — as a driver's retry report is.
 func (p *Provider) Call(ctx context.Context, req providers.Request) (<-chan providers.Event, error) {
 	if p.floor == nil && !p.sched.Gated(p.id, kind) {
 		return p.inner.Call(ctx, req)
 	}
-	release, err := acquire(ctx, p.sched, p.floor, p.id, kind, providers.ModelIdentity(p.inner, req))
+	release, err := acquire(ctx, p.sched, p.floor, p.id, kind, providers.ModelIdentity(p.inner, req), req.OnEvent)
 	if err != nil {
 		return nil, err
 	}
@@ -154,7 +159,7 @@ func Hold(ctx context.Context, p providers.Provider, req providers.Request) (pro
 	if !ok || !lp.sched.Gated(lp.id, kind) {
 		return p, func() {}, nil
 	}
-	release, err := acquire(ctx, lp.sched, nil, lp.id, kind, providers.ModelIdentity(lp.inner, req))
+	release, err := acquire(ctx, lp.sched, nil, lp.id, kind, providers.ModelIdentity(lp.inner, req), nil)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -179,7 +184,7 @@ func HoldLane(ctx context.Context, sched *concurrency.CallScheduler, id, kind, m
 	if !sched.Gated(id, kind) {
 		return ctx, func() {}, nil
 	}
-	release, err := acquire(ctx, sched, nil, id, kind, model)
+	release, err := acquire(ctx, sched, nil, id, kind, model, nil)
 	if err != nil {
 		return ctx, nil, err
 	}
@@ -205,7 +210,11 @@ func HoldLane(ctx context.Context, sched *concurrency.CallScheduler, id, kind, m
 // is gated — its calls wait for their model — yet nothing there bounds how MANY
 // of them are in flight, so the floor still applies, around the scheduler. With
 // neither a floor nor a gate, the release does nothing.
-func acquire(ctx context.Context, sched *concurrency.CallScheduler, floor *concurrency.Lane, id, kind, model string) (release func(), err error) {
+//
+// report, when set, is told of each wait (EventCallQueued) and of the slot
+// that ends it (EventCallAdmitted); a call that waits for nothing reports
+// nothing, and one whose wait ends with ctx reports no admission.
+func acquire(ctx context.Context, sched *concurrency.CallScheduler, floor *concurrency.Lane, id, kind, model string, report func(providers.Event)) (release func(), err error) {
 	if held, _ := ctx.Value(heldKey{id, kind}).(bool); held {
 		return func() {}, nil
 	}
@@ -223,6 +232,26 @@ func acquire(ctx context.Context, sched *concurrency.CallScheduler, floor *concu
 		UserID:     meta.UserID,
 		Background: IsBackground(ctx),
 		Model:      model,
+	}
+	var queuedAt time.Time
+	if report != nil {
+		info.OnQueued = func(q concurrency.CallQueueInfo) {
+			if queuedAt.IsZero() {
+				queuedAt = time.Now()
+			}
+			report(providers.Event{
+				Type:      providers.EventCallQueued,
+				Admission: &providers.AdmissionInfo{Reason: q.Reason, Position: q.Position, Provider: id, Kind: kind},
+			})
+		}
+		defer func() {
+			if err == nil && !queuedAt.IsZero() {
+				report(providers.Event{
+					Type:      providers.EventCallAdmitted,
+					Admission: &providers.AdmissionInfo{WaitMs: time.Since(queuedAt).Milliseconds(), Provider: id, Kind: kind},
+				})
+			}
+		}()
 	}
 	// Queueing is not working time: the clock bounding the run (a sub-agent's
 	// timeout_ms, a team state's) stops while it waits here. Reported to the

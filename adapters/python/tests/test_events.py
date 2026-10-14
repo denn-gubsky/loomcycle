@@ -122,6 +122,26 @@ def test_queued_and_admitted_events_unwrap_the_admission_payload():
     assert AgentEvent._from_proto(pb.Event(type="text", text="hi")).admission is None
 
 
+def test_call_queued_and_call_admitted_name_the_call_lane():
+    # A model call waiting for its provider says which provider and lane kind.
+    q = AgentEvent._from_proto(
+        pb.Event(
+            type="call_queued",
+            admission=pb.AdmissionInfo(reason="lane", position=2, provider="ollama-local", kind="chat"),
+        )
+    )
+    assert q.type == "call_queued"
+    assert q.admission == AdmissionInfo(reason="lane", position=2, provider="ollama-local", kind="chat")
+
+    a = AgentEvent._from_proto(
+        pb.Event(
+            type="call_admitted",
+            admission=pb.AdmissionInfo(wait_ms=900, provider="ollama-local", kind="chat"),
+        )
+    )
+    assert a.admission == AdmissionInfo(wait_ms=900, provider="ollama-local", kind="chat")
+
+
 def test_agentevent_is_frozen():
     ev = AgentEvent(type="text", text="x")
     try:

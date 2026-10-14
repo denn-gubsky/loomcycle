@@ -185,18 +185,27 @@ class LimitInfo:
 
 @dataclass(frozen=True)
 class AdmissionInfo:
-    """Structured payload on ``queued`` and ``admitted`` events.
+    """Structured payload on ``queued`` and ``admitted`` events, and on
+    ``call_queued`` and ``call_admitted``.
 
     ``queued``: the run was accepted but waits for a run slot — ``reason`` says
     why (``"user_cap"``: its user already has its cap of runs active;
     ``"global_cap"``: every run slot is taken) and ``position`` its place when
     queued, 1 being the next to start (for ``user_cap`` it counts only the same
     user's waiting runs). ``admitted``: it got its slot; ``wait_ms`` is how long
-    it waited. Mirrors ``providers.AdmissionInfo`` on the Go side."""
+    it waited.
 
-    reason: str = ""  # "user_cap" | "global_cap" (on queued)
-    position: int = 0  # place when queued, 1 = next to start (on queued)
-    wait_ms: int = 0  # how long the run waited (on admitted)
+    ``call_queued`` / ``call_admitted``: the same for one model call of a
+    running run, waiting for its provider — ``reason`` is ``"lane"`` (every
+    slot of the call lane is taken) or ``"models_in_flight"`` (the provider has
+    its cap of models in flight), and ``provider`` / ``kind`` name the lane.
+    Mirrors ``providers.AdmissionInfo`` on the Go side."""
+
+    reason: str = ""  # "user_cap" | "global_cap" | "lane" | "models_in_flight"
+    position: int = 0  # place when queued, 1 = next served (on *queued)
+    wait_ms: int = 0  # how long the run or call waited (on *admitted)
+    provider: str = ""  # the call lane's provider id (on call_*)
+    kind: str = ""  # the call lane's model kind, e.g. "chat" (on call_*)
 
 
 @dataclass(frozen=True)
@@ -494,6 +503,8 @@ class AgentEvent:
                 reason=ev.admission.reason,
                 position=ev.admission.position,
                 wait_ms=ev.admission.wait_ms,
+                provider=ev.admission.provider,
+                kind=ev.admission.kind,
             )
         ci: Optional[CapabilityInertInfo] = None
         if ev.HasField("capability_inert"):

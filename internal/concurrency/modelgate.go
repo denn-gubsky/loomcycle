@@ -66,7 +66,7 @@ func NewModelGate(maxModels int, maxWait time.Duration) *ModelGate {
 // A disabled gate (maxModels <= 0) and a call with no model ("") are not
 // counted at all.
 func (g *ModelGate) Enter(ctx context.Context, model string) (leave func(), err error) {
-	leave, _, err = g.enter(ctx, model, -1)
+	leave, _, err = g.enter(ctx, model, -1, nil)
 	return leave, err
 }
 
@@ -76,7 +76,10 @@ func (g *ModelGate) Enter(ctx context.Context, model string) (leave func(), err 
 // maxWaiting >= 0 bounds the queue for a caller that holds no admission slot
 // (see Lane.AcquireBounded): with that many already waiting, a call that would
 // have to wait gets *QueueFullError instead. < 0 is no bound.
-func (g *ModelGate) enter(ctx context.Context, model string, maxWaiting int) (leave func(), counted bool, err error) {
+//
+// onQueued, when set, is called once the call has queued, before it blocks
+// (see CallInfo.OnQueued).
+func (g *ModelGate) enter(ctx context.Context, model string, maxWaiting int, onQueued func(CallQueueInfo)) (leave func(), counted bool, err error) {
 	if g == nil || model == "" {
 		return noopRelease, false, nil
 	}
@@ -101,7 +104,11 @@ func (g *ModelGate) enter(ctx context.Context, model string, maxWaiting int) (le
 	}
 	w := &gateWaiter{model: model, since: time.Now(), ch: make(chan struct{})}
 	g.waiters = append(g.waiters, w)
+	pos := len(g.waiters)
 	g.mu.Unlock()
+	if onQueued != nil {
+		onQueued(CallQueueInfo{Reason: CallQueueReasonModel, Position: pos})
+	}
 
 	select {
 	case <-w.ch:
