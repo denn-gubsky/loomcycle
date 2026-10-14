@@ -4832,6 +4832,12 @@ export type HookDefBody =
        *  `$cred:<name>`, resolved for the run when the hook is called — keep
        *  secrets there, not in the URL or a literal value. */
       headers?: Record<string, string>;
+      /** Signs every delivery: the credential, as `"$cred:<name>"` and nothing
+       *  else, whose value keys the `X-Loomcycle-Signature` HMAC. It must be
+       *  usable for this `url` (unrestricted, or its `allowed_urls` covering
+       *  it). A secret that cannot be resolved fails the call; it is never
+       *  sent unsigned. Verify with `verifyLoomcycleDelivery`. */
+      signing_secret?: string;
     };
 
 /** Narrows a tool-event hook (`pre` / `post` / `post_failure`) within what it
@@ -5169,6 +5175,20 @@ export interface WebhookDefOverlay {
   /** Pins the started run's user tier; a delivery never chooses it. Must be
    *  one of the server's user tiers. */
   user_tier?: string;
+  /** A forge preset — `"github"`, `"gitea"` or `"gitlab"` — supplying
+   *  defaults for the auth kind and headers, the event header, the ping and
+   *  the shapes of the events it knows. A field set here overrides it. */
+  provider?: string;
+  /** The request header naming a delivery's event. */
+  event_header?: string;
+  /** When set, the only events that start anything: another is answered 202
+   *  `ignored`, the provider's ping 200, and a listed event counts only when
+   *  the signed body has its shape. Unset: every delivery is handled. */
+  events?: string[];
+  /** The JSONPaths the body of a listed event must hold, for an event the
+   *  provider has no shape for, or in place of its. A fork merges key by key;
+   *  an empty list removes that event's shape. */
+  event_shapes?: Record<string, string[]>;
   /** Non-secret metadata the agent receives as trusted. */
   metadata?: Record<string, unknown>;
   /** The tenant spawned runs execute in — taken from the def, never from the
