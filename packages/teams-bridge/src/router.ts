@@ -3,7 +3,7 @@
 
 import { parseCardAction } from "./cards.js";
 import { Conversation, type CardResult, type ConversationDeps } from "./conversation.js";
-import { identify, type ActivityIdentityFields, type Identified } from "./identity.js";
+import { conversationSubject, identify, type ActivityIdentityFields, type Identified } from "./identity.js";
 import type { ConversationRef } from "./ports.js";
 
 export interface RouterOptions {
@@ -70,7 +70,7 @@ export class ConversationRouter {
     for (const rec of await this.deps.store.list().catch(() => [])) {
       if (!rec.agentId || this.convs.has(rec.conversationId) || now - rec.lastActivityAt < idleMs) continue;
       try {
-        const token = await this.deps.broker.tokenFor(rec.ownerSubject, rec.ownerName);
+        const token = await this.deps.broker.tokenFor(rec.runSubject, rec.runName);
         await this.deps.clients(token).cancelAgent(rec.agentId, { reason: "teams-bridge: idle" });
         await this.deps.store.put({ ...rec, agentId: undefined, runId: undefined });
       } catch (err) {
@@ -111,6 +111,7 @@ export class ConversationRouter {
         ref,
         ownerSubject: id.speaker.subject,
         ownerName: id.speaker.name,
+        ...runIdentity(id),
         lastActivityAt: (this.deps.now ?? Date.now)(),
       };
       const conv = new Conversation(rec, this.deps);
@@ -120,4 +121,13 @@ export class ConversationRouter {
     this.loading.set(id.conversationId, p);
     return p;
   }
+}
+
+/** runIdentity is who a new conversation's runs act as (identity.ts). */
+function runIdentity(id: Ok): { runSubject: string; runName: string } {
+  if (id.scope === "personal") return { runSubject: id.speaker.subject, runName: id.speaker.name };
+  return {
+    runSubject: conversationSubject(id.tenantId, id.conversationId),
+    runName: id.scope === "channel" ? "Teams channel" : "Teams group chat",
+  };
 }

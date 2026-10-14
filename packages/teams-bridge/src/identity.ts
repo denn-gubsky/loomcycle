@@ -1,5 +1,7 @@
 // Who sent an activity, taken only from fields the Bot Connector signs.
 
+import { createHash } from "node:crypto";
+
 export type Scope = "personal" | "groupChat" | "channel";
 
 export interface Speaker {
@@ -27,6 +29,17 @@ const GUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 export function subjectFor(aadObjectId: string): string | undefined {
   const id = aadObjectId.trim().toLowerCase();
   return GUID.test(id) ? `teams-${id}` : undefined;
+}
+
+/** conversationSubject is the loomcycle user a group chat or channel runs as.
+ *  A shared chat runs as itself, never as one of its members: anyone in it may
+ *  talk to the agent, so the agent must not hold any one person's data or
+ *  tools. A channel's threads share one identity (the thread suffix is
+ *  dropped), so its memory spans the channel; each thread is still its own run. */
+export function conversationSubject(tenantId: string, conversationId: string): string {
+  const base = conversationId.split(";messageid=")[0];
+  const h = createHash("sha256").update(`${tenantId.toLowerCase()}\n${base}`).digest("hex").slice(0, 32);
+  return `teams-conv-${h}`;
 }
 
 export function identify(activity: ActivityIdentityFields, allowedTenants: ReadonlySet<string>): Identified {

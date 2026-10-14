@@ -163,6 +163,8 @@ describe("file store", () => {
       ref: { conversation: { id: "c1" }, serviceUrl: "https://x/" },
       ownerSubject: "teams-u",
       ownerName: "U",
+      runSubject: "teams-u",
+      runName: "U",
       sessionId: "s1",
       lastActivityAt: 5,
     });

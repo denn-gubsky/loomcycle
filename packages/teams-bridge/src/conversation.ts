@@ -125,9 +125,11 @@ export class Conversation {
     return p;
   }
 
-  private ownerClient(): Promise<RunClient> {
+  /** runClient is loomcycle as the conversation's run identity: the person in
+   *  a 1:1 chat, the conversation itself in a shared one. */
+  private runClient(): Promise<RunClient> {
     return this.deps.broker
-      .tokenFor(this.rec.ownerSubject, this.rec.ownerName)
+      .tokenFor(this.rec.runSubject, this.rec.runName)
       .then((token) => this.deps.clients(token));
   }
 
@@ -183,16 +185,12 @@ export class Conversation {
       return;
     }
 
-    // In a shared chat the agent must know who is speaking, and that it is
-    // not necessarily the person whose data and tools the run uses.
-    const forAgent =
-      this.rec.scope !== "personal" && !isOwner
-        ? `[Message from ${speaker.name}, another member of this ${this.rec.scope === "channel" ? "channel" : "chat"}; not ${this.rec.ownerName}, who owns this conversation]\n${text}`
-        : text;
+    // A shared chat runs as itself, so the agent needs every speaker named.
+    const forAgent = this.rec.scope !== "personal" ? `[${speaker.name}] ${text}` : text;
 
     if (this.live?.runId) {
       try {
-        const client = await this.ownerClient();
+        const client = await this.runClient();
         await client.sendRunInput(this.live.runId, forAgent);
         await this.save();
         return;
@@ -207,7 +205,7 @@ export class Conversation {
   }
 
   private async startRun(text: string): Promise<void> {
-    const client = await this.ownerClient();
+    const client = await this.runClient();
     // A run left by an earlier process is not ours to drive: end it, so two
     // runs never write into one session.
     if (this.rec.agentId) {
@@ -244,7 +242,7 @@ export class Conversation {
           status: statusOf(err),
           error: (err as Error)?.name,
         });
-        if (statusOf(err) === 401) this.deps.broker.forget(this.rec.ownerSubject);
+        if (statusOf(err) === 401) this.deps.broker.forget(this.rec.runSubject);
         await this.finishTurn(friendlyError(statusOf(err)), true).catch(() => undefined);
       }
     } finally {
@@ -365,7 +363,7 @@ export class Conversation {
     this.rec.lastActivityAt = this.now();
     const runId = action.runId;
     try {
-      const client = await this.ownerClient();
+      const client = await this.runClient();
       switch (action.verb) {
         case VERB.answer: {
           if (!action.interruptId) return { card: resultCard("This is no longer open.") };
@@ -398,7 +396,7 @@ export class Conversation {
 
   private async resolve(p: PendingQuestion, answer: string, by: string): Promise<void> {
     try {
-      const client = await this.ownerClient();
+      const client = await this.runClient();
       await client.resolveInterrupt(p.runId, p.interruptId, { answer, resolvedBy: by });
     } catch (err) {
       const s = statusOf(err);
@@ -411,7 +409,7 @@ export class Conversation {
     const runId = this.live?.runId;
     if (!runId) return;
     try {
-      const client = await this.ownerClient();
+      const client = await this.runClient();
       await client.cancelTurn(runId, { reason });
     } catch (err) {
       // 409: the run was not mid-turn. Nothing to stop.
@@ -434,7 +432,7 @@ export class Conversation {
     this.dropLive();
     await this.finishTurn().catch(() => undefined);
     if (agentId) {
-      const client = await this.ownerClient();
+      const client = await this.runClient();
       await client.cancelAgent(agentId, { reason: `teams-bridge: ${reason}` }).catch(() => undefined);
     }
     await this.save();

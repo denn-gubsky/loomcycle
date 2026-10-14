@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it } from "vitest";
 
 import { VERB } from "../src/cards.js";
+import { conversationSubject } from "../src/identity.js";
 import type { ConversationRef } from "../src/ports.js";
 import { ConversationRouter, NOT_AVAILABLE_TEXT } from "../src/router.js";
 import { MemoryStore } from "../src/store.js";
@@ -145,6 +146,8 @@ describe("teams bridge conversation", () => {
       ref: refFor(),
       ownerSubject: `teams-${ALICE}`,
       ownerName: "Alice",
+      runSubject: `teams-${ALICE}`,
+      runName: "Alice",
       sessionId: "sess-old",
       runId: "run-old",
       agentId: "agent-old",
@@ -262,10 +265,27 @@ describe("teams bridge conversation", () => {
 
     await say("add the action items", BOB, "Bob", "conv-g", "groupChat");
     const steer = lc.callsTo("sendRunInput")[0];
-    expect(steer.args[1]).toContain("Message from Bob");
-    expect(steer.args[1]).toContain("add the action items");
-    // Still the owner's run, with the owner's token.
-    expect(steer.token).toMatch(/^tok-teams-aaaaaaaa-/);
+    expect(steer.args[1]).toBe("[Bob] add the action items");
+    expect(run.opts.segments[0].content[0]).toMatchObject({ text: "[Alice] summarise the thread" });
+  });
+
+  it("runs a shared chat as the conversation itself, never as one of its members", async () => {
+    await say("hello", ALICE, "Alice", "conv-g", "groupChat");
+    const subject = conversationSubject(TENANT, "conv-g");
+    expect(subject).toMatch(/^teams-conv-[0-9a-f]{32}$/);
+    // Registered and minted for the conversation; Alice is never registered.
+    expect(lc.createdUsers.map((u) => u.subject)).toEqual([subject]);
+    expect(lc.runs[0].token).toMatch(/^tok-teams-conv-/);
+
+    await say("and me", BOB, "Bob", "conv-g", "groupChat");
+    expect(lc.callsTo("sendRunInput")[0].token).toBe(lc.runs[0].token);
+  });
+
+  it("gives every thread of a channel the channel's one identity", () => {
+    const a = conversationSubject(TENANT, "19:chan@thread.tacv2;messageid=111");
+    const b = conversationSubject(TENANT, "19:chan@thread.tacv2;messageid=222");
+    expect(a).toBe(b);
+    expect(a).not.toBe(conversationSubject(TENANT, "19:other@thread.tacv2;messageid=111"));
   });
 
   it("does not let another member of a group throw the conversation away", async () => {
@@ -299,6 +319,8 @@ describe("teams bridge conversation", () => {
       ref: refFor("conv-old"),
       ownerSubject: `teams-${ALICE}`,
       ownerName: "Alice",
+      runSubject: `teams-${ALICE}`,
+      runName: "Alice",
       sessionId: "sess-old",
       runId: "run-old",
       agentId: "agent-old",

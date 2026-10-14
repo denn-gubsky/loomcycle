@@ -13,9 +13,14 @@ export interface ConversationRecord {
   scope: Scope;
   /** Where to send replies (the inbound activity's conversation reference). */
   ref: ConversationRef;
-  /** The user who started the conversation; the run runs as them. */
+  /** The user who started the conversation: the one who answers its cards
+   *  and may /new or /stop it. */
   ownerSubject: string;
   ownerName: string;
+  /** The loomcycle user the runs act as: the person in a 1:1 chat, the
+   *  conversation itself in a group chat or channel (identity.ts). */
+  runSubject: string;
+  runName: string;
   /** The loomcycle session; a new run continues it with full history. */
   sessionId?: string;
   /** The live run, if any. */

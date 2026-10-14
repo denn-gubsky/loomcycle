@@ -1,6 +1,6 @@
 # @loomcycle/teams-bridge
 
-A Microsoft Teams bot for a [loomcycle](https://github.com/denn-gubsky/loomcycle) interactive agent. People chat with the agent in Teams; each person is their own loomcycle user, with their own runs, memory, history, budget and rate limit.
+A Microsoft Teams bot for a [loomcycle](https://github.com/denn-gubsky/loomcycle) interactive agent. People chat with the agent in Teams. In a 1:1 chat each person is their own loomcycle user, with their own runs, memory, history, budget and rate limit; a group chat or channel is a loomcycle user of its own.
 
 - **Streamed answers** in 1:1 chats, with Teams' Stop button. Group chats and channels get one message per turn.
 - **Steering:** a message sent while the agent is working reaches it mid-turn.
@@ -77,9 +77,9 @@ With `TEAMS_BRIDGE_STORE=memory`, a restart forgets which loomcycle session each
 
 ## Group chats and channels
 
-- The conversation's run belongs to the person who started it. Its data stays in their scope, and its tools act with their token.
-- Anyone in the chat may talk to the agent. A message from someone else reaches the agent marked with that person's name, so the agent knows who is speaking.
-- Only the owner can answer the agent's question and review cards, and only the owner can `/new` or `/stop`.
+- **A shared chat runs as itself, never as one of its members.** A group chat, or a channel, is its own loomcycle user (`teams-conv-<hash>`), with its own memory and history. Anyone in it may talk to the agent, so no single person's private data or tools are reachable from it. A channel's threads share the channel's identity; each thread is its own run.
+- Every message reaches the agent labelled with the speaker's name, so it knows who is talking.
+- The person who started the conversation answers the agent's question and review cards, and only they can `/new` or `/stop`.
 - Teams sends the bot channel messages only when it is @mentioned.
 
 ## Security
