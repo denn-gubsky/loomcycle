@@ -55,8 +55,10 @@ never supplied. `create` is create-or-rotate (re-supplying the value re-seals it
 instant on (`now >= expires_at`) the credential is refused everywhere it is
 referenced — a `$cred:` header (the MCP call is refused; a closed hook denies), a
 remote peer's or git source's key (the dial or clone is refused), a `$ghapp:` App
-config (no token is minted, a cached one is not served), a provider / tool key
-override, and a Bash / Bashbox env injection. The error names the credential,
+config (no token is minted, a cached one is not served), a webhook's stored
+verification secret (the delivery is refused; an expired `previous_secret` just
+drops out of a rotation), a provider / tool key override, and a Bash / Bashbox
+env injection. The error names the credential,
 its scope and when it expired, never the value.
 
 **An expired credential is never replaced by the operator's value.** Where a
@@ -113,7 +115,7 @@ It answers a question a secret store otherwise cannot. When the destination of a
   - a remote memory backend's or document source's `api_key_env: "$cred:<name>"`: its `base_url` (saving such a definition checks this too);
   - a git source for an ephemeral volume: the repository's URL.
 
-  A provider key and a `Bash` / `Bashbox` environment name no destination, and a restricted credential does **not** resolve there. Such a use fails as an unresolved credential would, and a provider falls back to the operator's key as it does for any credential it cannot read.
+  A provider key and a `Bash` / `Bashbox` environment name no destination, and a restricted credential does **not** resolve there — and, like an expired one, nothing is used in its place: the provider call fails naming it instead of taking the operator's key, and the `Bash` / `Bashbox` variable is left unset, the operator's same-named host variable included.
 - **A webhook's verification secret is compared, never sent.** A webhook's `auth.secret: "$cred:<name>"` (and its `previous_secret`) is a tenant-level credential of the webhook's own tenant, which the receiver checks a request's signature or token against. It resolves whatever its list says, so store it with `allowed_urls: []`: then it can verify deliveries and can never be sent anywhere (`Context.help input-webhooks`).
 - **A request carrying a restricted credential follows no redirect.** The request's URL was checked; a redirect is the server choosing another one, and an HTTP client forwards most headers to it (a custom header such as `X-API-Key` to any host). So the redirect is refused and the call fails. An unrestricted credential follows redirects as before.
 - **Rotation keeps the list.** Creating the credential again without `allowed_urls` keeps the list it has; sending a list replaces it. To remove a restriction, delete the credential and create it again.

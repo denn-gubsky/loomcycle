@@ -45,7 +45,9 @@ sent to.
   header (the callback URL), a remote memory backend's or document source's
   key (its `base_url`), and a git source (the repository URL). It does
   **not** resolve as a provider key or in a `Bash` / `Bashbox` environment:
-  those name no destination.
+  those name no destination. Nothing is used in its place either: the
+  provider call fails instead of taking the operator's key, and the variable
+  is left unset instead of taking the operator's host variable.
 - A request carrying a restricted credential **follows no redirect**: the
   redirect is refused and the call fails.
 - Creating the credential again without `allowed_urls` (a rotation) **keeps
@@ -59,7 +61,8 @@ sent to.
 `op=create` takes an optional RFC3339 `expires_at` (it must be in the future),
 and it is **enforced**: from that instant on the credential is refused wherever
 it is referenced (a `$cred:` header, a peer or git key, a `$ghapp:` App config, a
-provider key override, a Bash / Bashbox env var). An expired credential is never
+webhook verification secret, a provider key override, a Bash / Bashbox env var).
+An expired credential is never
 replaced by anything else: not by a same-named credential in a wider scope, not
 by the operator's provider key (the call fails, naming the credential), and not
 by the operator's same-named host variable in Bash / Bashbox (the variable is
