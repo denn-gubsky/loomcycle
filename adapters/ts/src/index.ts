@@ -141,6 +141,8 @@
 export { LoomcycleClient } from "./client.js";
 export { InteractiveSession } from "./interactive.js";
 export type { InteractiveSessionOps } from "./interactive.js";
+export { verifyLoomcycleSignature } from "./signature.js";
+export type { VerifySignatureOptions } from "./signature.js";
 export { ClientToolHost, clientToolsURL, CLIENT_TOOL_SUBPROTOCOL } from "./client-tools.js";
 export type {
   ClientToolSchema,

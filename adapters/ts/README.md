@@ -298,6 +298,22 @@ export async function POST(req: Request) {
 }
 ```
 
+**Verify a signed delivery.** A HookDef whose webhook body names a `signing_secret` (a credential, `"$cred:<name>"`) signs every call: `X-Loomcycle-Signature: t=<unix>,v1=<hex HMAC-SHA256 of t + "." + raw body>`, plus `X-Loomcycle-Hook` (the definition's name) and `X-Loomcycle-Delivery` (an id a retry keeps — dedupe on it). Verify against the **raw** body, before parsing it:
+
+```ts
+import { verifyLoomcycleSignature } from "@loomcycle/client";
+
+export async function POST(req: Request) {
+  const raw = await req.text(); // the exact bytes; JSON.stringify(await req.json()) will not match
+  const ok = await verifyLoomcycleSignature(raw, req.headers.get("x-loomcycle-signature") ?? "", process.env.HOOK_SIGNING_SECRET!);
+  if (!ok) return new Response(null, { status: 401 });
+  const body = JSON.parse(raw) as PreHookCall;
+  // ...
+}
+```
+
+`verifyLoomcycleSignature(rawBody, header, secret, { toleranceSec = 300, now?, subtle? })` resolves `true` only for a signature made within the tolerance; every malformed header, stale or future `t`, or wrong MAC is `false`. It uses Web Crypto (`crypto.subtle`), so it runs in Node 19+, browsers and edge runtimes; on Node 18 pass `subtle: require("node:crypto").webcrypto.subtle`.
+
 **Important constraints**:
 
 - Hook registrations are **in-memory** on the loomcycle server. Re-register on every app startup; the `(owner, name)` idempotency contract makes this safe (replaces in place).
