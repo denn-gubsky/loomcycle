@@ -43,6 +43,7 @@ import {
   type ConnectClientToolsOptions,
 } from "./client-tools.js";
 import type {
+  ChangeFeedError,
   ChangeFeedFrame,
   ChangeFeedStatus,
   MemoryChange,
@@ -3335,6 +3336,11 @@ export class LoomcycleClient {
    *    processed and pass it back as `since`. A cursor older than the
    *    server's change retention resumes past the pruned gap without saying
    *    so.
+   *  - A `{ kind: "error", payload: ChangeFeedError }` item means the server
+   *    could not read its change log. It is NOT fatal and iteration
+   *    continues: the server retries with backoff without advancing its
+   *    cursor, so changes resume after recovery with no gap. One item per
+   *    failure streak.
    *  - The stream has no end of its own: iteration ends when the server
    *    closes it (shutdown — reconnect with `since`) or throws an
    *    `AbortError` when `signal` aborts. */
@@ -3493,8 +3499,9 @@ async function* parseRunStateSSE(
  *  frame it does not recognise.
  *
  *  The frames arrive through parseSSE, which backfills `type` from the SSE
- *  event name ONLY when the payload has none. The `feed` frame deliberately
- *  carries no `type`, so it surfaces as `type: "feed"`; a `change` frame
+ *  event name ONLY when the payload has none. The `feed` and `error` frames
+ *  deliberately carry no `type`, so they surface as `type: "feed"` /
+ *  `type: "error"`; a `change` frame
  *  carries its own change type (`memory.set`, …), so it is recognised by its
  *  numeric `seq` instead. Anything else — an event name a newer server adds —
  *  is skipped, the adapter's usual ignore-what-you-don't-know posture. */
@@ -3507,6 +3514,14 @@ function toChangeFeedFrame(
     if (typeof raw.enabled !== "boolean") return null;
     const { type: _type, ...status } = raw;
     return { kind: "feed", payload: status as unknown as ChangeFeedStatus };
+  }
+  if (raw.type === "error") {
+    // Like `feed`, the error frame carries no `type` of its own, so this one
+    // was backfilled from the event name. Both fields are required: a
+    // half-read error is skipped rather than surfaced as a blank one.
+    if (typeof raw.code !== "string" || typeof raw.error !== "string") return null;
+    const { type: _type, ...failure } = raw;
+    return { kind: "error", payload: failure as unknown as ChangeFeedError };
   }
   if (typeof raw.seq === "number" && typeof raw.type === "string") {
     return { kind: "change", payload: raw as unknown as MemoryChange };
