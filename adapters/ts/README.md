@@ -204,6 +204,7 @@ Each change is a **value-free coordinate** (`seq`, `type`, `scope`, `scope_id`, 
 - **Off by default.** The server only records changes with `LOOMCYCLE_MEMORY_CHANGES_ENABLED`. Without it the stream opens and idles forever, so check `payload.enabled` on the feed frame rather than waiting.
 - **Tenant-scoped, operator-only.** You see your own tenant's changes, never another's. The routes need `substrate:tenant` (or admin); a tenant member's token gets a 403 (`LoomcycleError`, `status: 403`).
 - **Resumable.** Persist the last `seq` you processed and pass it back as `since` on reconnect; delivery is strictly after it. `since` must be a non-negative integer — the client throws otherwise, because the server would read a bad value as `0` and replay everything it retains.
+- **Read failures are reported, not fatal.** A `{ kind: "error", payload: { code, error } }` item (`code: "store_unavailable"`) means the server could not read its change log. Keep iterating: the server retries with backoff without advancing its cursor, so changes resume after recovery with nothing skipped. You get one item per failure streak.
 - **The embedder's health rides along.** An embedding failure does not fail the write, so a busy feed can sit over rows that are no longer searchable; `payload.embedder.state === "failing"` (with a `failures` count) is the signal to run `backfillEmbeddings`.
 
 ```ts
@@ -213,6 +214,10 @@ const ac = new AbortController();
 for await (const item of client.streamMemoryChanges({ since, signal: ac.signal })) {
   if (item.kind === "feed") {
     if (!item.payload.enabled) throw new Error("change feed is off on this server");
+    continue;
+  }
+  if (item.kind === "error") {
+    console.warn(`change feed: ${item.payload.code}: ${item.payload.error}`); // stream continues
     continue;
   }
   const ch = item.payload; // { seq, type, scope, scope_id, key?, at }

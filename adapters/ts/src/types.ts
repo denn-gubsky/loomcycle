@@ -5276,16 +5276,30 @@ export interface ChangeFeedStatus {
   embedder?: EmbedderHealth;
 }
 
+/** A change-feed `event: error` frame: the server could not read its change
+ *  log. NON-FATAL — the stream stays open, the server keeps retrying with
+ *  backoff, and its cursor does not advance, so change frames resume after
+ *  recovery without a gap. Sent once per failure streak, not per retry. */
+export interface ChangeFeedError {
+  /** Machine-readable; `store_unavailable` today. Branch on this. */
+  code: string;
+  /** Human-readable description. */
+  error: string;
+}
+
 /** Yielded by {@link LoomcycleClient.streamMemoryChanges} and
  *  {@link LoomcycleClient.streamDocumentChanges}.
  *
  *  Same `{ kind, payload }` shape as {@link RunStateStreamItem}: the first
- *  item is `{ kind: "feed" }`, then one `{ kind: "change" }` per change.
- *  `kind` rather than `type` so the wrapper's discriminator cannot be confused
- *  with the change's own `payload.type`. */
+ *  item is `{ kind: "feed" }`, then one `{ kind: "change" }` per change, with
+ *  an occasional `{ kind: "error" }` (see {@link ChangeFeedError}) when the
+ *  server cannot read its change log — iteration continues past it. `kind`
+ *  rather than `type` so the wrapper's discriminator cannot be confused with
+ *  the change's own `payload.type`. */
 export type ChangeFeedFrame =
   | { kind: "feed"; payload: ChangeFeedStatus }
-  | { kind: "change"; payload: MemoryChange };
+  | { kind: "change"; payload: MemoryChange }
+  | { kind: "error"; payload: ChangeFeedError };
 
 /** Options for {@link LoomcycleClient.streamMemoryChanges} /
  *  {@link LoomcycleClient.streamDocumentChanges}. */
