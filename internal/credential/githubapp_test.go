@@ -402,12 +402,14 @@ func TestMinter_AnUnexpectedAnswerIsReportedWithoutItsBody(t *testing.T) {
 	m := NewGitHubAppMinter(nil, srv.Client())
 	cfg := fmt.Sprintf(`{"app_id":"1","installation_id":"2","private_key":%q,"base_url":%q}`, keyPEM, srv.URL)
 
-	status, body = http.StatusOK, `{"token":"ghs_leakedThroughTheErrorPath0123456789","expires_at":"2030-01-01T00:00:00Z"}`
+	// Built here, so a secret scanner does not take the test value for a token.
+	leaked := "ghs_" + strings.Repeat("x", 36)
+	status, body = http.StatusOK, `{"token":"`+leaked+`","expires_at":"2030-01-01T00:00:00Z"}`
 	_, err := m.TokenForRepository(context.Background(), "t", cfg, "app")
 	if err == nil {
 		t.Fatal("a 200 was taken as a minted token")
 	}
-	if strings.Contains(err.Error(), "ghs_leaked") {
+	if strings.Contains(err.Error(), leaked) {
 		t.Errorf("the error carries the token: %v", err)
 	}
 

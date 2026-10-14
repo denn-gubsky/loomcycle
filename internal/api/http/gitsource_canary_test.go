@@ -49,9 +49,10 @@ import (
 const (
 	// Neither has a shape the redactor's patterns know, so what masks them in
 	// the database is the registration of the resolved value, as for any
-	// credential, and nothing else.
-	canaryCredToken = "canary-cred-0f6e3b9d4a1c57e28b"
-	canaryAppToken  = "canary-app-7c2d9e4f1b8a63d05e"
+	// credential, and nothing else. Plain words, so a secret scanner does not
+	// take a test value for a real one.
+	canaryCredToken = "canary-for-the-cred-credential"
+	canaryAppToken  = "canary-for-the-app-credential"
 	canaryGitUser   = "x-access-token"
 )
 
