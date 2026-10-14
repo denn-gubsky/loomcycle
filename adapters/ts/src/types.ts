@@ -5063,6 +5063,15 @@ export interface WebhookDefAuth {
   delivery_id_header?: string;
   /** Env-var NAME holding the bearer token — never the token itself. */
   bearer_token_env?: string;
+  /** The verification secret as a stored credential, `"$cred:<name>"` — a
+   *  tenant credential of the definition's own tenant, resolved on each
+   *  delivery so a rotation needs no restart. Takes the place of
+   *  `signing_secret_env` / `bearer_token_env`: set one form, not both. A
+   *  literal is refused. */
+  secret?: string;
+  /** The previous secret during a rotation, also `"$cred:<name>"`: a delivery
+   *  verified by either is accepted. */
+  previous_secret?: string;
 }
 
 /** Inbound request rate bound for one webhook. */
@@ -5100,6 +5109,9 @@ export interface WebhookDefOverlay {
   user_credentials_from_env?: Record<string, string>;
   /** Credential key → value, handed to the run. */
   user_credentials?: Record<string, string>;
+  /** Pins the started run's user tier; a delivery never chooses it. Must be
+   *  one of the server's user tiers. */
+  user_tier?: string;
   /** Non-secret metadata the agent receives as trusted. */
   metadata?: Record<string, unknown>;
   /** The tenant spawned runs execute in — taken from the def, never from the
