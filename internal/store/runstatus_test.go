@@ -7,7 +7,7 @@ import (
 	"testing"
 )
 
-// Every RunStatus declared in store.go is either one of the two live states or
+// Every RunStatus declared in store.go is either one of the live states or
 // in TerminalRunStatuses. Parsed from source, not restated: a list here would
 // be a second copy, and the eleven hand-written copies of "the terminal
 // statuses" this list replaced are exactly how a new status goes unhandled.
@@ -16,13 +16,13 @@ func TestRunStatus_EveryDeclaredStatusIsLiveOrTerminal(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	live := map[string]bool{"RunConfigured": true, "RunRunning": true}
+	live := map[string]bool{"RunConfigured": true, "RunQueued": true, "RunRunning": true}
 	terminal := map[RunStatus]bool{}
 	for _, s := range TerminalRunStatuses {
 		terminal[s] = true
 	}
 	values := map[string]RunStatus{
-		"RunConfigured": RunConfigured, "RunRunning": RunRunning, "RunCompleted": RunCompleted,
+		"RunConfigured": RunConfigured, "RunQueued": RunQueued, "RunRunning": RunRunning, "RunCompleted": RunCompleted,
 		"RunFailed": RunFailed, "RunCancelled": RunCancelled, "RunRejected": RunRejected,
 	}
 	found := 0

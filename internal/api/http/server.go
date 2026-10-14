@@ -3086,7 +3086,9 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 	// it waits, so it can be read, cancelled and re-attached meanwhile.
 	var rowErr error
 	registered := false
-	queuedIdentity := store.RunIdentity{AgentID: agentID, UserID: effectiveUserID, TenantID: effectiveTenantID, UserTier: in.UserTier, Model: model, ReplicaID: s.replicaID, ParentContext: in.ParentContext, IdempotencyKey: in.IdempotencyKey, DeliveryAltKey: in.DeliveryAltKey, Interactive: in.Interactive, OperatorKeyRestricted: operatorKeyRestricted, Isolated: isolated, Retention: retention}
+	// RunConfig is nil on purpose: the run's configuration is resolved after it
+	// waits, and StartQueuedRun writes it from the identity built at start.
+	queuedIdentity := store.RunIdentity{AgentID: agentID, UserID: effectiveUserID, TenantID: effectiveTenantID, UserTier: in.UserTier, Model: model, ReplicaID: s.replicaID, ParentContext: in.ParentContext, IdempotencyKey: in.IdempotencyKey, DeliveryAltKey: in.DeliveryAltKey, Interactive: in.Interactive, OperatorKeyRestricted: operatorKeyRestricted, Isolated: isolated, Retention: retention, RunConfig: nil}
 	acquireStart := time.Now()
 	release, queued, err := s.admitRun(runCtx, admitArgs{
 		tenantID: effectiveTenantID,
@@ -5191,7 +5193,9 @@ func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {
 	// that is a plain 429, as before.
 	var rowErr error
 	registered := false
-	queuedIdentity := store.RunIdentity{AgentID: agentID, UserID: req.UserID, TenantID: req.TenantID, UserTier: req.UserTier, Model: model, ReplicaID: s.replicaID, ParentContext: req.ParentContext, IdempotencyKey: storedKey, Interactive: req.Interactive, OperatorKeyRestricted: operatorKeyRestricted, Isolated: isolated, Retention: retention}
+	// RunConfig is nil on purpose: the run's configuration is resolved after it
+	// waits, and StartQueuedRun writes it from the identity built at start.
+	queuedIdentity := store.RunIdentity{AgentID: agentID, UserID: req.UserID, TenantID: req.TenantID, UserTier: req.UserTier, Model: model, ReplicaID: s.replicaID, ParentContext: req.ParentContext, IdempotencyKey: storedKey, Interactive: req.Interactive, OperatorKeyRestricted: operatorKeyRestricted, Isolated: isolated, Retention: retention, RunConfig: nil}
 	acquireStart := time.Now()
 	release, queued, err := s.admitRun(runCtx, admitArgs{
 		tenantID: req.TenantID,

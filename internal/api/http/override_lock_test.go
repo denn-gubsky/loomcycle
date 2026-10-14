@@ -158,6 +158,7 @@ func TestOverrideLock_EveryRequestFieldIsClassified(t *testing.T) {
 		"Metadata":  "non-secret labels", "PayloadMetadata": "set by a trigger, not a caller",
 		"OperatorKeyRestricted": "server-derived", "Isolated": "server-derived",
 		"ConfiguredRunID": "which draft to start", "ConfiguredDraft": "the stored draft", "Detached": "delivery",
+		"Admission": "delivery: wait for a run slot or be refused at once; it takes no capacity the caps do not already bound",
 	}
 	lockable := map[string]string{} // Go field → wire name
 	for wire, field := range lockableOverrideFields {
