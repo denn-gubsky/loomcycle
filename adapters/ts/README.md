@@ -448,6 +448,26 @@ const meta = await client.getCredential({ scope: "user", name: "GIT_TOKEN" });
 console.log(meta.allowed_urls ?? "unrestricted");
 ```
 
+### Evaluations
+
+Scores attached to runs: record a verdict on a run, read the scores back, and roll them up per definition version to compare versions. All of these post to `POST /v1/_evaluation`; `evaluation(input)` takes the op-discriminated input directly and its return type follows `op`.
+
+| Method | Returns | Notes |
+|---|---|---|
+| `submitEvaluation(runId, score, { dimensions?, judgement?, rationale? })` | `Promise<EvaluationSubmitResult>` | Additive: submitting again records another evaluation. `{op: "submit"}`. |
+| `getEvaluation(evalId)` | `Promise<EvaluationRecord>` | `{op: "get"}`. |
+| `listEvaluationsForRun(runId, { limit? })` | `Promise<EvaluationListForRunResult>` | `{op: "list_for_run"}`. |
+| `listEvaluationsForDef(defId, { limit? })` | `Promise<EvaluationListForDefResult>` | Your tenant's scores of that definition version. `{op: "list_for_def"}`. |
+| `aggregateEvaluations(defId, { includeLineage? })` | `Promise<EvaluationAggregate>` | Mean / median / min / max / latest, per dimension and per emitter role. `{op: "aggregate"}`. |
+
+What a token may do: `substrate:tenant` every op inside its own tenant; admin every op in every tenant; any other token (an isolated `substrate:user`, a tenant member) only `submit_self`, which a call from outside a run cannot use, so each op is refused with `SubstrateToolRefusedError`. A token without `runs:read` gets a 403. Another tenant's evaluation or run reads exactly like one that does not exist.
+
+```ts
+await client.submitEvaluation(runId, 0.8, { rationale: "correct, but slow" });
+const agg = await client.aggregateEvaluations(defId);
+console.log(agg.count, agg.score.mean);
+```
+
 ### Team runs
 
 `runTeam(target)` walks a team's state graph. Its return type follows `target.mode`:

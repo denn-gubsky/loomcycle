@@ -187,6 +187,17 @@ import type {
   DocumentToolResponse,
   HistoryToolInput,
   HistoryToolResponse,
+  EvaluationSubmitInput,
+  EvaluationGetInput,
+  EvaluationListForRunInput,
+  EvaluationListForDefInput,
+  EvaluationAggregateInput,
+  EvaluationInput,
+  EvaluationSubmitResult,
+  EvaluationRecord,
+  EvaluationListForRunResult,
+  EvaluationListForDefResult,
+  EvaluationAggregate,
   TranscriptResponse,
   WhoamiResponse,
   UsageDimension,
@@ -2557,6 +2568,124 @@ export class LoomcycleClient {
     opts?: { signal?: AbortSignal },
   ): Promise<HistoryToolResponse> {
     return postJSON<HistoryToolResponse>(this.ctx, "/v1/_history", input, opts);
+  }
+
+  /** Invoke the Evaluation tool outside a run (`POST /v1/_evaluation`):
+   *  record scores against runs and read them back. Op-discriminated
+   *  (`submit` / `get` / `list_for_run` / `list_for_def` / `aggregate`); the
+   *  return type follows the op. The `*Evaluation*` methods below are the same
+   *  call with positional arguments.
+   *
+   *  What a token may do: `substrate:tenant` every op, inside its own tenant;
+   *  admin every op, in every tenant; any other token (an isolated
+   *  `substrate:user`, a tenant member) `submit_self` only, which a call from
+   *  outside a run cannot use — it is not the run's agent — so each op is
+   *  refused. A token without `runs:read` gets a 403.
+   *
+   *  Another tenant's evaluation or run reads exactly like one that does not
+   *  exist. Raises {@link SubstrateToolRefusedError} on a tool refusal (an
+   *  unknown id, an op the token may not use); {@link InvalidArgumentError}
+   *  on 400; {@link AuthError} on 401. */
+  async evaluation(
+    input: EvaluationSubmitInput,
+    opts?: { signal?: AbortSignal },
+  ): Promise<EvaluationSubmitResult>;
+  async evaluation(
+    input: EvaluationGetInput,
+    opts?: { signal?: AbortSignal },
+  ): Promise<EvaluationRecord>;
+  async evaluation(
+    input: EvaluationListForRunInput,
+    opts?: { signal?: AbortSignal },
+  ): Promise<EvaluationListForRunResult>;
+  async evaluation(
+    input: EvaluationListForDefInput,
+    opts?: { signal?: AbortSignal },
+  ): Promise<EvaluationListForDefResult>;
+  async evaluation(
+    input: EvaluationAggregateInput,
+    opts?: { signal?: AbortSignal },
+  ): Promise<EvaluationAggregate>;
+  async evaluation(
+    input: EvaluationInput,
+    opts?: { signal?: AbortSignal },
+  ): Promise<
+    | EvaluationSubmitResult
+    | EvaluationRecord
+    | EvaluationListForRunResult
+    | EvaluationListForDefResult
+    | EvaluationAggregate
+  >;
+  async evaluation(
+    input: EvaluationInput,
+    opts?: { signal?: AbortSignal },
+  ): Promise<
+    | EvaluationSubmitResult
+    | EvaluationRecord
+    | EvaluationListForRunResult
+    | EvaluationListForDefResult
+    | EvaluationAggregate
+  > {
+    return postJSON(this.ctx, "/v1/_evaluation", input, opts);
+  }
+
+  /** Record a score against a run — `evaluation({op:"submit"})`. Scores are
+   *  additive: a second submit records another evaluation. */
+  async submitEvaluation(
+    runId: string,
+    score: number,
+    opts?: {
+      dimensions?: Record<string, number>;
+      judgement?: unknown;
+      rationale?: string;
+      signal?: AbortSignal;
+    },
+  ): Promise<EvaluationSubmitResult> {
+    const input: EvaluationSubmitInput = { op: "submit", run_id: runId, score };
+    if (opts?.dimensions !== undefined) input.dimensions = opts.dimensions;
+    if (opts?.judgement !== undefined) input.judgement = opts.judgement;
+    if (opts?.rationale !== undefined) input.rationale = opts.rationale;
+    return this.evaluation(input, { signal: opts?.signal });
+  }
+
+  /** One evaluation by id — `evaluation({op:"get"})`. */
+  async getEvaluation(
+    evalId: string,
+    opts?: { signal?: AbortSignal },
+  ): Promise<EvaluationRecord> {
+    return this.evaluation({ op: "get", eval_id: evalId }, opts);
+  }
+
+  /** Every evaluation of one run — `evaluation({op:"list_for_run"})`. */
+  async listEvaluationsForRun(
+    runId: string,
+    opts?: { limit?: number; signal?: AbortSignal },
+  ): Promise<EvaluationListForRunResult> {
+    const input: EvaluationListForRunInput = { op: "list_for_run", run_id: runId };
+    if (opts?.limit !== undefined) input.limit = opts.limit;
+    return this.evaluation(input, { signal: opts?.signal });
+  }
+
+  /** Every evaluation of one definition version, in your tenant —
+   *  `evaluation({op:"list_for_def"})`. */
+  async listEvaluationsForDef(
+    defId: string,
+    opts?: { limit?: number; signal?: AbortSignal },
+  ): Promise<EvaluationListForDefResult> {
+    const input: EvaluationListForDefInput = { op: "list_for_def", def_id: defId };
+    if (opts?.limit !== undefined) input.limit = opts.limit;
+    return this.evaluation(input, { signal: opts?.signal });
+  }
+
+  /** A definition's scores rolled up — `evaluation({op:"aggregate"})`.
+   *  `includeLineage` adds the ancestors' evaluations along parent_def_id. */
+  async aggregateEvaluations(
+    defId: string,
+    opts?: { includeLineage?: boolean; signal?: AbortSignal },
+  ): Promise<EvaluationAggregate> {
+    const input: EvaluationAggregateInput = { op: "aggregate", def_id: defId };
+    if (opts?.includeLineage !== undefined) input.include_lineage = opts.includeLineage;
+    return this.evaluation(input, { signal: opts?.signal });
   }
 
   /** List the PERSISTENT volume universe for the caller's tenant — every
