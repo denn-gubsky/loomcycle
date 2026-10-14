@@ -2,6 +2,7 @@ package storetest
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"testing"
 	"time"
@@ -97,11 +98,21 @@ func testConfiguredRunQueuesThenStarts(t *testing.T, s store.Store) {
 }
 
 // A queued run is not a crashed running run: the stale sweeper leaves it
-// alone. FailQueuedRuns ends it with the reason given, and leaves running
-// rows alone.
+// alone. FailQueuedRun ends it with the reason given and releases its
+// idempotency keys, so a retry with the same key runs the work; it refuses a
+// run that is no longer queued.
 func testQueuedRunFailedOnRestartNotSwept(t *testing.T, s store.Store) {
 	ctx := context.Background()
-	queued := newQueuedRun(t, s, "tq", "dee", "a_qfail")
+	sess, err := s.CreateSession(ctx, "tq", "default", "dee")
+	if err != nil {
+		t.Fatal(err)
+	}
+	keyed := store.RunIdentity{AgentID: "a_qfail", UserID: "dee", TenantID: "tq",
+		IdempotencyKey: "qkey-fail", DeliveryAltKey: "qalt-fail"}
+	queued, err := s.CreateQueuedRun(ctx, sess.ID, keyed)
+	if err != nil {
+		t.Fatal(err)
+	}
 	running := newQueuedRun(t, s, "tq", "dee", "a_qrun")
 	if _, err := s.StartQueuedRun(ctx, running.ID, store.RunIdentity{}); err != nil {
 		t.Fatal(err)
@@ -113,22 +124,96 @@ func testQueuedRunFailedOnRestartNotSwept(t *testing.T, s store.Store) {
 	if got, _ := s.GetRun(ctx, queued.ID); got.Status != store.RunQueued {
 		t.Fatalf("stale sweep changed a queued run to %q", got.Status)
 	}
-	other := newQueuedRun(t, s, "tq", "dee", "a_qrun2")
-	if _, err := s.StartQueuedRun(ctx, other.ID, store.RunIdentity{}); err != nil {
+	// Started after the sweep, which would fail a just-started run as stale.
+	running = newQueuedRun(t, s, "tq", "dee", "a_qrun2")
+	if _, err := s.StartQueuedRun(ctx, running.ID, store.RunIdentity{}); err != nil {
 		t.Fatal(err)
 	}
-	n, err := s.FailQueuedRuns(ctx, "", time.Now(), "queued when loomcycle restarted")
+	if err := s.FailQueuedRun(ctx, queued.ID, "queued when loomcycle restarted"); err != nil {
+		t.Fatal(err)
+	}
+	got, _ := s.GetRun(ctx, queued.ID)
+	if got.Status != store.RunFailed || got.ErrorMsg != "queued when loomcycle restarted" || got.StopReason != "restarted" {
+		t.Errorf("queued run after FailQueuedRun = %q %q %q, want failed, the reason, restarted", got.Status, got.ErrorMsg, got.StopReason)
+	}
+	if err := s.FailQueuedRun(ctx, running.ID, "x"); !errors.Is(err, store.ErrRunNotQueued) {
+		t.Errorf("FailQueuedRun of a running run = %v, want ErrRunNotQueued", err)
+	}
+	if got, _ := s.GetRun(ctx, running.ID); got.Status != store.RunRunning {
+		t.Errorf("FailQueuedRun changed a running run to %q", got.Status)
+	}
+	// Both keys are free again: a new run may claim them.
+	if _, err := s.CreateQueuedRun(ctx, sess.ID, store.RunIdentity{AgentID: "a_qretry", UserID: "dee", TenantID: "tq",
+		IdempotencyKey: "qkey-fail", DeliveryAltKey: "qalt-fail"}); err != nil {
+		t.Errorf("a retry with the failed run's keys = %v, want accepted", err)
+	}
+}
+
+// The request a queued run will start from is recorded while it is queued,
+// listed for a restart oldest first with it, and cleared when the run starts
+// or ends. A run queued after the restart's boot is not listed.
+func testQueuedRunsListedWithTheirInput(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	first := newQueuedRun(t, s, "tql", "eve", "a_ql1")
+	time.Sleep(2 * time.Millisecond)
+	second := newQueuedRun(t, s, "tql", "eve", "a_ql2")
+	bare := newQueuedRun(t, s, "tql", "eve", "a_ql3")
+	if err := s.SetQueuedInput(ctx, first.ID, []byte(`{"agent":"one"}`)); err != nil {
+		t.Fatalf("SetQueuedInput: %v", err)
+	}
+	if err := s.SetQueuedInput(ctx, second.ID, []byte(`{"agent":"two"}`)); err != nil {
+		t.Fatal(err)
+	}
+	boot := time.Now()
+	time.Sleep(2 * time.Millisecond)
+	late := newQueuedRun(t, s, "tql", "eve", "a_ql4")
+
+	list, err := s.ListQueuedRuns(ctx, "", boot)
+	if err != nil {
+		t.Fatalf("ListQueuedRuns: %v", err)
+	}
+	pos := map[string]int{}
+	inputs := map[string]string{}
+	for i, q := range list {
+		pos[q.Run.ID] = i
+		inputs[q.Run.ID] = string(q.Input)
+	}
+	if _, ok := pos[late.ID]; ok {
+		t.Error("a run queued after boot was listed")
+	}
+	if _, ok := pos[bare.ID]; !ok {
+		t.Fatal("a queued run with no input was not listed")
+	}
+	if inputs[bare.ID] != "" {
+		t.Errorf("input of a run that recorded none = %q, want empty", inputs[bare.ID])
+	}
+	if pos[first.ID] > pos[second.ID] {
+		t.Error("queued runs were not listed oldest first")
+	}
+	var v map[string]string
+	if err := json.Unmarshal([]byte(inputs[first.ID]), &v); err != nil || v["agent"] != "one" {
+		t.Errorf("listed input = %q (%v), want the recorded request", inputs[first.ID], err)
+	}
+
+	if _, err := s.StartQueuedRun(ctx, first.ID, store.RunIdentity{}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.FinishRun(ctx, second.ID, store.RunCancelled, "", store.Usage{}, ""); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SetQueuedInput(ctx, first.ID, []byte(`{}`)); !errors.Is(err, store.ErrRunNotQueued) {
+		t.Errorf("SetQueuedInput on a started run = %v, want ErrRunNotQueued", err)
+	}
+	list, err = s.ListQueuedRuns(ctx, "", time.Now())
 	if err != nil {
 		t.Fatal(err)
 	}
-	if n < 1 {
-		t.Errorf("FailQueuedRuns = %d, want at least the one queued run", n)
+	for _, q := range list {
+		if q.Run.ID == first.ID || q.Run.ID == second.ID {
+			t.Errorf("run %s was listed after it started or ended", q.Run.ID)
+		}
 	}
-	got, _ := s.GetRun(ctx, queued.ID)
-	if got.Status != store.RunFailed || got.ErrorMsg != "queued when loomcycle restarted" {
-		t.Errorf("queued run after FailQueuedRuns = %q %q, want failed with the reason", got.Status, got.ErrorMsg)
-	}
-	if got, _ := s.GetRun(ctx, other.ID); got.Status != store.RunRunning {
-		t.Errorf("FailQueuedRuns changed a running run to %q", got.Status)
-	}
+	// That the column itself is cleared at start and end is checked per
+	// backend (TestQueuedInput_ClearedWhenTheRunStartsOrEnds): no store call
+	// reads it off a row that is not queued.
 }

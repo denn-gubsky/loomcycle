@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/denn-gubsky/loomcycle/internal/concurrency"
+	"github.com/denn-gubsky/loomcycle/internal/credential"
 	"github.com/denn-gubsky/loomcycle/internal/providers"
 	"github.com/denn-gubsky/loomcycle/internal/runner"
 	"github.com/denn-gubsky/loomcycle/internal/store"
@@ -189,13 +190,206 @@ func (s *Server) QueuePosition(agentID string) (position int, reason string, ok 
 	return q.Position, q.Reason, ok
 }
 
-// FailQueuedRunsLostInLastStop fails the runs this replica had queued when it
-// last stopped: their waits ended with the process, and nothing will start
-// them. Called once at boot, before any run is admitted.
-func (s *Server) FailQueuedRunsLostInLastStop(ctx context.Context, bootedAt time.Time) (int, error) {
-	if s.store == nil {
-		return 0, nil
+// --- restart (RFC EI P3) ---
+//
+// A queued run's waiter is a goroutine, gone with the process. So that a
+// restart can start the run again, the request it was queued with is stored
+// on its row (runs.queued_input) when it queues: the RunInput without its
+// secrets, and the secrets — user_bearer, user_credentials — sealed per tenant
+// and bound to the run. Every queued run is restarted, a caller-bound one too:
+// its caller lost the connection with the restart and re-attaches by run id.
+//
+// Stored only for a run that can be started that way. A no-trace run stores
+// its prompt nowhere, and a run with secrets on a deployment with no
+// LOOMCYCLE_SECRET_KEY never stores them in plaintext: both record why they
+// cannot be restarted instead, and the restart fails them with that reason.
+
+// queuedRecord is what runs.queued_input holds.
+type queuedRecord struct {
+	// Input is the run's request, secrets removed. Nil when Lost is set.
+	Input *runner.RunInput `json:"input,omitempty"`
+	// Secrets are the run's per-run secrets (queuedSecrets), sealed.
+	Secrets *credential.Sealed `json:"secrets,omitempty"`
+	// Lost says why the run cannot be started after a restart.
+	Lost string `json:"lost,omitempty"`
+}
+
+type queuedSecrets struct {
+	UserBearer      string            `json:"user_bearer,omitempty"`
+	UserCredentials map[string]string `json:"user_credentials,omitempty"`
+}
+
+// queuedSecretsIdentity binds sealed secrets to one run of one tenant: a
+// ciphertext copied onto another row does not open.
+func queuedSecretsIdentity(tenantID, runID string) credential.Identity {
+	return credential.Identity{TenantID: tenantID, Scope: "queued_run", ScopeID: runID, Name: "run_secrets"}
+}
+
+const (
+	lostNoTrace = "a no-trace run stores its prompt nowhere, so a restart cannot start it again; start it again"
+	lostNoKey   = "the run carried per-run secrets and LOOMCYCLE_SECRET_KEY is not set, so they were not stored and a restart cannot start it again; start it again"
+)
+
+// SetQueueSealer gives the server the sealer for a queued run's secrets. A
+// disabled sealer (no LOOMCYCLE_SECRET_KEY) or none stores no secrets.
+func (s *Server) SetQueueSealer(sealer *credential.Sealer) { s.queueSealer = sealer }
+
+// recordQueuedInput stores what a restart needs to start the queued run runID
+// again. Best effort: a run whose request could not be stored is failed at
+// the next restart, never lost silently.
+func (s *Server) recordQueuedInput(ctx context.Context, runID, tenantID, retention string, in runner.RunInput) {
+	if s.store == nil || runID == "" {
+		return
 	}
-	return s.store.FailQueuedRuns(ctx, s.replicaID, bootedAt,
-		"the run was still queued when loomcycle restarted, so it never started; start it again")
+	var rec queuedRecord
+	switch {
+	case retention == store.RetentionNone:
+		rec.Lost = lostNoTrace
+	case in.UserBearer != "" || len(in.UserCredentials) > 0:
+		if s.queueSealer == nil || !s.queueSealer.Enabled() {
+			rec.Lost = lostNoKey
+			break
+		}
+		pt, err := json.Marshal(queuedSecrets{UserBearer: in.UserBearer, UserCredentials: in.UserCredentials})
+		if err != nil {
+			log.Printf("queue: run %s: could not encode its secrets: %v", runID, err)
+			return
+		}
+		sealed, err := s.queueSealer.Seal(pt, queuedSecretsIdentity(tenantID, runID))
+		if err != nil {
+			log.Printf("queue: run %s: could not seal its secrets: %v", runID, err)
+			return
+		}
+		rec.Secrets = &sealed
+	}
+	if rec.Lost == "" {
+		stored := in
+		stored.UserBearer, stored.UserCredentials = "", nil
+		rec.Input = &stored
+	}
+	b, err := json.Marshal(rec)
+	if err != nil {
+		log.Printf("queue: run %s: could not encode its request: %v", runID, err)
+		return
+	}
+	if err := s.store.SetQueuedInput(context.WithoutCancel(ctx), runID, b); err != nil && !errors.Is(err, store.ErrRunNotQueued) {
+		log.Printf("queue: run %s: could not store its request: %v", runID, err)
+	}
+}
+
+// requestRunInput is the RunInput a POST /v1/runs request starts as after a
+// restart: the conversion a configured run's start uses, so a request field
+// that conversion carries is carried here too (TestRunDraft_CarriesEveryRequestField).
+func requestRunInput(req runRequest) (runner.RunInput, error) {
+	d, err := requestToDraft(req)
+	if err != nil {
+		return runner.RunInput{}, err
+	}
+	in := spawnRequestToRunInput(d.SpawnRunRequest)
+	in.RunTimeoutSeconds = d.RunTimeoutSeconds
+	in.Interactive = req.Interactive
+	return in, nil
+}
+
+// restartInput rebuilds the RunInput that starts a queued run again, or says
+// why it cannot be.
+func (s *Server) restartInput(q store.QueuedRun) (runner.RunInput, string) {
+	const unrecorded = "the run was still queued when loomcycle restarted and its request was not stored, so it never started; start it again"
+	if len(q.Input) == 0 {
+		return runner.RunInput{}, unrecorded
+	}
+	var rec queuedRecord
+	if err := json.Unmarshal(q.Input, &rec); err != nil {
+		return runner.RunInput{}, "the run was still queued when loomcycle restarted and its stored request is unreadable; start it again"
+	}
+	if rec.Lost != "" {
+		return runner.RunInput{}, rec.Lost
+	}
+	if rec.Input == nil {
+		return runner.RunInput{}, unrecorded
+	}
+	in := *rec.Input
+	r := q.Run
+	if rec.Secrets != nil {
+		if s.queueSealer == nil || !s.queueSealer.Enabled() {
+			return runner.RunInput{}, "the run's sealed secrets cannot be opened: LOOMCYCLE_SECRET_KEY is not set; start it again"
+		}
+		pt, err := s.queueSealer.Open(*rec.Secrets, queuedSecretsIdentity(r.TenantID, r.ID))
+		if err != nil {
+			return runner.RunInput{}, "the run's sealed secrets cannot be opened with this LOOMCYCLE_SECRET_KEY; start it again"
+		}
+		var sec queuedSecrets
+		if err := json.Unmarshal(pt, &sec); err != nil {
+			return runner.RunInput{}, "the run's sealed secrets are unreadable; start it again"
+		}
+		in.UserBearer, in.UserCredentials = sec.UserBearer, sec.UserCredentials
+	}
+	// Identity and confinement are the row's, fixed when the run was accepted.
+	in.QueuedRunID = r.ID
+	in.AgentID, in.TenantID, in.UserID, in.UserTier = r.AgentID, r.TenantID, r.UserID, r.UserTier
+	in.ParentContext = r.ParentContext
+	in.Interactive = r.Interactive
+	in.OperatorKeyRestricted, in.Isolated = r.OperatorKeyRestricted, r.Isolated
+	// The keys the row already holds; nothing is claimed a second time.
+	in.IdempotencyKey, in.DeliveryAltKey, in.ClientIdempotencyKey = r.IdempotencyKey, r.DeliveryAltKey, ""
+	// A started draft's row is queued now; it starts as a queued run.
+	in.ConfiguredRunID, in.ConfiguredDraft = "", nil
+	// Nobody waits on it: it runs to its end, and its caller re-attaches.
+	in.Detached = true
+	in.Admission = runner.AdmissionWait
+	return in, ""
+}
+
+// RestartQueuedRuns starts again the runs this replica had queued when it
+// last stopped — those created before bootedAt; a run queued since belongs to
+// this process — in the order they queued. A run that cannot be started again
+// is failed with the reason. Called once at boot.
+func (s *Server) RestartQueuedRuns(ctx context.Context, bootedAt time.Time) (restarted, failed int, err error) {
+	if s.store == nil {
+		return 0, 0, nil
+	}
+	rows, err := s.store.ListQueuedRuns(ctx, s.replicaID, bootedAt)
+	if err != nil {
+		return 0, 0, err
+	}
+	for _, q := range rows {
+		in, why := s.restartInput(q)
+		if why != "" {
+			if ferr := s.store.FailQueuedRun(ctx, q.Run.ID, why); ferr != nil && !errors.Is(ferr, store.ErrRunNotQueued) {
+				log.Printf("queue: restart: could not fail run %s: %v", q.Run.ID, ferr)
+			}
+			failed++
+			continue
+		}
+		s.startQueuedAgain(in)
+		restarted++
+	}
+	return restarted, failed, nil
+}
+
+// startQueuedAgain runs a restarted queued run in its own goroutine, and
+// returns once it has its place in the queue (or has started, or failed), so
+// the runs re-queue in their original order. A run RunOnce refuses before it
+// reaches the queue is failed here: its row would otherwise stay queued with
+// nothing to start it.
+func (s *Server) startQueuedAgain(in runner.RunInput) {
+	placed := make(chan struct{})
+	var once sync.Once
+	mark := func() { once.Do(func() { close(placed) }) }
+	go func() {
+		defer mark()
+		err := s.RunOnce(context.Background(), in, runner.RunCallbacks{
+			OnQueued:     mark,
+			OnRegistered: func(string, string, string, string) { mark() },
+		})
+		if err == nil {
+			return
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if ferr := s.store.FailQueuedRun(ctx, in.QueuedRunID, "loomcycle restarted and the run could not be queued again: "+err.Error()); ferr != nil && !errors.Is(ferr, store.ErrRunNotQueued) {
+			log.Printf("queue: restart: could not fail run %s: %v", in.QueuedRunID, ferr)
+		}
+	}()
+	<-placed
 }

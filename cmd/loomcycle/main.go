@@ -1753,6 +1753,9 @@ func main() {
 	// RFC AR: stamp the credential resolver onto each run so a tenant/user's own
 	// provider key (ANTHROPIC_API_KEY, BRAVE_API_KEY, …) overrides the host key.
 	srv.SetCredentialResolver(credResolver)
+	// RFC EI P3: a queued run's per-run secrets are sealed with the same key,
+	// so a restart can start it again. No key ⇒ such a run is failed instead.
+	srv.SetQueueSealer(credSealer)
 	// RFC AX: the keyability probe backs credential-aware routing for a
 	// restricted run (resolves only to providers the tenant can key itself).
 	srv.SetCredKeyable(credKeyable)
@@ -3012,11 +3015,14 @@ func main() {
 			log.Printf("no-trace: failed %d run(s) lost in the last stop (not resumable); their idempotency keys are released", n)
 		}
 		// A run still queued for a slot when this process stopped lost its
-		// wait with it: nothing will start it. Same footing as above.
-		if n, err := srv.FailQueuedRunsLostInLastStop(bgCtx, processStartedAt); err != nil {
-			log.Printf("queue: could not fail the queued runs lost in the last stop: %v", err)
-		} else if n > 0 {
-			log.Printf("queue: failed %d run(s) still queued when loomcycle last stopped; their idempotency keys are released", n)
+		// wait with it. Each is queued again, in its old order, from the
+		// request stored when it queued; one that cannot be (no request, or
+		// sealed secrets this key cannot open) is failed with the reason and
+		// its idempotency keys released.
+		if n, failed, err := srv.RestartQueuedRuns(bgCtx, processStartedAt); err != nil {
+			log.Printf("queue: could not restart the runs queued when loomcycle last stopped: %v", err)
+		} else if n > 0 || failed > 0 {
+			log.Printf("queue: %d run(s) queued when loomcycle last stopped are queued again; %d could not be and were failed", n, failed)
 		}
 		go func() {
 			resume := func(ctx context.Context) error {
