@@ -748,6 +748,7 @@ func validateWebhookDef(def mergedWebhookDef) error {
 		if field := config.WebhookTeamDeliveryForbids(config.Webhook{
 			Agent:                  def.Agent,
 			Channel:                def.Channel,
+			UserTier:               def.UserTier,
 			UserCredentials:        def.UserCredentials,
 			UserCredentialsFromEnv: def.UserCredentialsFromEnv,
 			Metadata:               def.Metadata,
