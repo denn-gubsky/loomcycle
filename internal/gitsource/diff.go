@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path"
@@ -94,6 +95,11 @@ func (f *Fetched) WriteDiff(ctx context.Context, dest, patchRel, numstatRel stri
 	}
 	changes, err := object.DiffTreeWithOptions(ctx, baseTree, headTree, &object.DiffTreeOptions{DetectRenames: false})
 	if err != nil {
+		// go-git reports a done context as its own ErrCanceled, which says
+		// nothing of the deadline: the context does.
+		if ctx.Err() != nil || errors.Is(err, object.ErrCanceled) {
+			return res, fmt.Errorf("%w: diff the trees: %v", ErrTimeout, err)
+		}
 		return res, fmt.Errorf("%w: diff the trees: %v", ErrFetchFailed, err)
 	}
 	if len(changes) > lim.MaxFiles {
@@ -135,6 +141,9 @@ func (f *Fetched) WriteDiff(ctx context.Context, dest, patchRel, numstatRel stri
 		}
 		fp, err := f.filePatch(ctx, c)
 		if err != nil {
+			if errors.Is(err, ErrTimeout) || ctx.Err() != nil {
+				return res, fmt.Errorf("%w: diff %s: %v", ErrTimeout, df.Path, err)
+			}
 			return res, fmt.Errorf("%w: diff %s: %v", ErrFetchFailed, df.Path, err)
 		}
 		if err := ctx.Err(); err != nil {
@@ -278,7 +287,8 @@ func (f *Fetched) filePatch(ctx context.Context, c *object.Change) (*filePatch, 
 		budget = time.Until(deadline)
 	}
 	if budget <= 0 {
-		return nil, ctx.Err()
+		// The deadline can pass between the loop's check and this one.
+		return nil, fmt.Errorf("%w: no time left for this file", ErrTimeout)
 	}
 	for _, d := range godiff.DoWithTimeout(fromText, toText, budget) {
 		op := fdiff.Equal
