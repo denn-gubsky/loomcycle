@@ -127,7 +127,6 @@ func TestPrepareSubRun_ChildRowRecordsTheParentRunID(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer prep.Slot.releaseCurrent()
 	defer prep.cleanup()
 	row, err := h.st.GetRun(context.Background(), prep.RunID)
 	if err != nil {

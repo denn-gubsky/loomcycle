@@ -128,9 +128,10 @@ func TestMetricsProm_ReplicaIDLabelWhenSet(t *testing.T) {
 	}
 }
 
-// TestMetricsProm_ProviderGateSeries pins the RFC BF P2b per-provider gauges:
-// slots-in-use + queue-depth appear (labelled by provider) only when a provider
-// is capped, and stay absent otherwise (empty-series guard).
+// TestMetricsProm_ProviderGateSeries pins the per-provider gauges: slots-in-use
+// + queue-depth appear (labelled by provider) only when a provider caps its
+// chat calls, count CALLS in that lane, and stay absent otherwise (empty-series
+// guard) — including for a provider that caps only another kind of call.
 func TestMetricsProm_ProviderGateSeries(t *testing.T) {
 	// No gates wired → the provider gauges must be absent.
 	srv := newMetricsPromServer(t, false)
@@ -141,9 +142,12 @@ func TestMetricsProm_ProviderGateSeries(t *testing.T) {
 	}
 
 	// Cap provider "P" at 2 and hold one slot → slots_in_use{P}=1, queue_depth{P}=0.
-	gates := concurrency.NewProviderGates(map[string]int{"P": 2}, 4)
-	srv.SetProviderGates(gates)
-	rel, err := gates.Acquire(t.Context(), "P")
+	sched := concurrency.NewCallScheduler(map[string]concurrency.ProviderLanesConfig{
+		"P":        {Lanes: map[string]concurrency.LaneConfig{config.ModelKindChat: {MaxConcurrent: 2}}},
+		"decision": {Lanes: map[string]concurrency.LaneConfig{config.ModelKindDecision: {MaxConcurrent: 1}}},
+	})
+	srv.SetCallScheduler(sched)
+	rel, err := sched.Acquire(t.Context(), "P", config.ModelKindChat, concurrency.CallInfo{})
 	if err != nil {
 		t.Fatalf("acquire P: %v", err)
 	}
@@ -160,6 +164,9 @@ func TestMetricsProm_ProviderGateSeries(t *testing.T) {
 	}
 	if !strings.Contains(body, `loomcycle_provider_queue_depth{provider="P"} 0`) {
 		t.Errorf("expected queue_depth{P}=0; body:\n%s", body)
+	}
+	if strings.Contains(body, `provider="decision"`) {
+		t.Errorf("a provider with no chat lane must not appear in the chat-call gauges; body:\n%s", body)
 	}
 }
 

@@ -59,7 +59,6 @@ func TestResourceExhausted_TransientAndBudgetAreDistinguishable(t *testing.T) {
 	}{
 		{"backpressure", runner.ErrBackpressure},
 		{"per-user quota", runner.ErrPerUserQuotaExhausted},
-		{"provider concurrency", runner.ErrProviderConcurrencyExhausted},
 	}
 	budget := runner.ErrTokenLimitExceeded
 
@@ -112,12 +111,11 @@ func TestResourceExhausted_TransientAndBudgetAreDistinguishable(t *testing.T) {
 // deliberate. These mirror the HTTP surface's `code` values on purpose.
 func TestErrorDetails_ReasonsAreStable(t *testing.T) {
 	for err, want := range map[error]string{
-		runner.ErrTokenLimitExceeded:           "token_limit_exceeded",
-		runner.ErrProviderConcurrencyExhausted: "provider_concurrency_exhausted",
-		runner.ErrPerUserQuotaExhausted:        "per_user_quota_exhausted",
-		runner.ErrBackpressure:                 "backpressure",
-		runner.ErrRuntimePaused:                "runtime_paused",
-		runner.ErrUnknownAgent:                 "unknown_agent",
+		runner.ErrTokenLimitExceeded:    "token_limit_exceeded",
+		runner.ErrPerUserQuotaExhausted: "per_user_quota_exhausted",
+		runner.ErrBackpressure:          "backpressure",
+		runner.ErrRuntimePaused:         "runtime_paused",
+		runner.ErrUnknownAgent:          "unknown_agent",
 	} {
 		if got := viewOf(t, mapRunnerErr(err)).reason; got != want {
 			t.Errorf("reason for %v = %q, want %q", err, got, want)
@@ -144,18 +142,17 @@ func TestErrorDetails_SurviveWrapping(t *testing.T) {
 // consumer branching on the code keeps working.
 func TestErrorDetails_CodesAreUnchanged(t *testing.T) {
 	for err, want := range map[error]codes.Code{
-		runner.ErrUnknownAgent:                 codes.InvalidArgument,
-		runner.ErrInvalidArgument:              codes.InvalidArgument,
-		runner.ErrUnknownProvider:              codes.InvalidArgument,
-		runner.ErrSessionRequired:              codes.FailedPrecondition,
-		runner.ErrSessionNotFound:              codes.NotFound,
-		runner.ErrSessionBusy:                  codes.FailedPrecondition,
-		runner.ErrAgentIDInUse:                 codes.AlreadyExists,
-		runner.ErrBackpressure:                 codes.ResourceExhausted,
-		runner.ErrPerUserQuotaExhausted:        codes.ResourceExhausted,
-		runner.ErrProviderConcurrencyExhausted: codes.ResourceExhausted,
-		runner.ErrTokenLimitExceeded:           codes.ResourceExhausted,
-		runner.ErrRuntimePaused:                codes.Unavailable,
+		runner.ErrUnknownAgent:          codes.InvalidArgument,
+		runner.ErrInvalidArgument:       codes.InvalidArgument,
+		runner.ErrUnknownProvider:       codes.InvalidArgument,
+		runner.ErrSessionRequired:       codes.FailedPrecondition,
+		runner.ErrSessionNotFound:       codes.NotFound,
+		runner.ErrSessionBusy:           codes.FailedPrecondition,
+		runner.ErrAgentIDInUse:          codes.AlreadyExists,
+		runner.ErrBackpressure:          codes.ResourceExhausted,
+		runner.ErrPerUserQuotaExhausted: codes.ResourceExhausted,
+		runner.ErrTokenLimitExceeded:    codes.ResourceExhausted,
+		runner.ErrRuntimePaused:         codes.Unavailable,
 	} {
 		if got := status.Code(mapRunnerErr(err)); got != want {
 			t.Errorf("code for %v = %v, want %v (codes must not change — this PR is additive)", err, got, want)
@@ -198,7 +195,6 @@ func TestErrorDetails_RetryInfoImpliesRetryable(t *testing.T) {
 	for _, err := range []error{
 		runner.ErrBackpressure,
 		runner.ErrPerUserQuotaExhausted,
-		runner.ErrProviderConcurrencyExhausted,
 		runner.ErrRuntimePaused,
 		runner.ErrTokenLimitExceeded,
 		runner.ErrUnknownAgent,

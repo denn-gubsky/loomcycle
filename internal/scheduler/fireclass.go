@@ -62,8 +62,7 @@ func classifyFire(err error) fireClass {
 	case errors.Is(err, runner.ErrTeamNotStartable):
 		return fireTeamNotStartable
 	case errors.Is(err, runner.ErrBackpressure),
-		errors.Is(err, runner.ErrPerUserQuotaExhausted),
-		errors.Is(err, runner.ErrProviderConcurrencyExhausted):
+		errors.Is(err, runner.ErrPerUserQuotaExhausted):
 		return fireBackpressure
 	case errors.Is(err, runner.ErrTokenLimitExceeded), isOperatorKeyErr(err):
 		return fireDeferred

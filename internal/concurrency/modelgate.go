@@ -122,6 +122,16 @@ func (g *ModelGate) enter(ctx context.Context, model string, maxWaiting int) (le
 	}
 }
 
+// enabled reports whether the gate caps anything right now.
+func (g *ModelGate) enabled() bool {
+	if g == nil {
+		return false
+	}
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return g.max > 0
+}
+
 // SetLimit changes the cap and the anti-starvation bound in place (config
 // reload). Raising or disabling the cap admits waiters at once; lowering it
 // never interrupts a call in flight, the excess models drain. Calls that

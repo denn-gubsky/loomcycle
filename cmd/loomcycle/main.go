@@ -52,6 +52,7 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/heartbeat"
 	"github.com/denn-gubsky/loomcycle/internal/help"
 	"github.com/denn-gubsky/loomcycle/internal/hooks/codehook"
+	"github.com/denn-gubsky/loomcycle/internal/lanegate"
 	"github.com/denn-gubsky/loomcycle/internal/lookup"
 	mcpsign "github.com/denn-gubsky/loomcycle/internal/mcp"
 	"github.com/denn-gubsky/loomcycle/internal/metrics"
@@ -1706,10 +1707,10 @@ func main() {
 	// server's tool set, which isn't in allTools here (F45). New re-points any
 	// Context tool to the COMPLETE post-append catalog, so don't set it here.
 	srv = lchttp.New(cfg, pr, allTools, sem, storeIface)
-	// RFC BF P2b: per-provider concurrency gates (providers.<id>.max_concurrent).
-	// Acquired at run admission before the global slot; empty ⇒ every provider
-	// uncapped, admission unchanged.
-	srv.SetProviderGates(newProviderGates(cfg))
+	// The providers' call lanes (providers.<id>.max_concurrent / lanes). The
+	// registry already gates every provider with this scheduler; the server
+	// gets the same instance to report it and to reload it.
+	srv.SetCallScheduler(pr.sched)
 	// A rerank is spent on the searching run's behalf, so its tokens go to that
 	// run's ledger and budget. Set here because srv exists only now; no run can
 	// have started yet.
@@ -3464,8 +3465,9 @@ func main() {
 			},
 		},
 		{
-			// Concurrency: global semaphore caps + per-user cap + per-provider gates.
-			// Owns `providers` too because the gates key on providers[*].max_concurrent.
+			// Concurrency: global semaphore caps + per-user cap + the providers'
+			// call lanes. Owns `providers` too because the lanes are built from
+			// providers[*].max_concurrent / lanes / max_models_in_flight.
 			Sections: []string{"concurrency", "providers"},
 			Reload:   func(newCfg *config.Config) error { srv.ReloadConcurrency(newCfg); return nil },
 		},
@@ -3727,6 +3729,12 @@ type providerResolver struct {
 	// into byID like any other; this field only carries the refresher handle for
 	// teardown. See newProviderResolver.
 	anthropicOAuthRefresher *anthropic_oauth_dev.Refresher
+	// sched is the call scheduler every provider in byID is gated by: each one
+	// is handed out wrapped in its call lane (lanegate.Wrap), so a holder of a
+	// registry provider — the loop, compaction, the LLM gateway, the
+	// image-describe route — cannot make a call the provider's max_concurrent
+	// does not count. The Server reports and reloads this same instance.
+	sched *concurrency.CallScheduler
 }
 
 // buildProviderMap constructs every ENABLED provider from cfg.Providers via the
@@ -3735,7 +3743,11 @@ type providerResolver struct {
 // exact same set WITHOUT re-running the one-time boot side effects
 // (anthropic-oauth-dev refresher Start, the mock/code-js diagnostic logs). An
 // unconstructable provider is an error (the reload is rejected, old set kept).
-func buildProviderMap(cfg *config.Config) (map[string]providers.Provider, error) {
+//
+// Every provider is returned wrapped in its call lane, capped or not: the
+// wrapper looks the cap up per call, so one a later reload adds applies to a
+// provider built before it, and an uncapped call costs one map lookup.
+func buildProviderMap(cfg *config.Config, sched *concurrency.CallScheduler) (map[string]providers.Provider, error) {
 	byID := map[string]providers.Provider{}
 	for id, pc := range cfg.Providers {
 		if !providerEnabled(id, pc, cfg) {
@@ -3745,7 +3757,7 @@ func buildProviderMap(cfg *config.Config) (map[string]providers.Provider, error)
 		if err != nil {
 			return nil, fmt.Errorf("provider %q: %w", id, err)
 		}
-		byID[id] = p
+		byID[id] = lanegate.Wrap(id, p, sched)
 	}
 	return byID, nil
 }
@@ -3757,11 +3769,12 @@ func buildProviderMap(cfg *config.Config) (map[string]providers.Provider, error)
 // and providerbuild.DriverOptions/providerEnabled port the exact env behaviour. An
 // unconstructable provider (bad driver/dialect/base_url) is a boot error.
 func newProviderResolver(cfg *config.Config) (*providerResolver, error) {
-	byID, err := buildProviderMap(cfg)
+	sched := newCallScheduler(cfg)
+	byID, err := buildProviderMap(cfg, sched)
 	if err != nil {
 		return nil, err
 	}
-	pr := &providerResolver{byID: byID, cfg: cfg}
+	pr := &providerResolver{byID: byID, cfg: cfg, sched: sched}
 
 	// Residual per-provider boot diagnostics (operator-facing knob echoes, NOT
 	// resolution logic) — kept id-keyed so the boot log is unchanged from pre-P2a
@@ -3802,9 +3815,9 @@ func newProviderResolver(cfg *config.Config) (*providerResolver, error) {
 				refresher := anthropic_oauth_dev.NewRefresher(store, anthropic_oauth_dev.ExchangeOptions{}, log.Printf)
 				refresher.Start(context.Background())
 				pr.anthropicOAuthRefresher = refresher
-				pr.byID["anthropic-oauth-dev"] = anthropic_oauth_dev.New(
+				pr.byID["anthropic-oauth-dev"] = lanegate.Wrap("anthropic-oauth-dev", anthropic_oauth_dev.New(
 					refresher, streamOpts, anthropic_oauth_dev.ResolveClaudeCodeVersion(), nil,
-				)
+				), sched)
 				log.Printf("anthropic-oauth-dev: registered (token expires %s; user-agent=claude-cli/%s)",
 					refresher.Token().ExpiresAt.Format(time.RFC3339),
 					anthropic_oauth_dev.ResolveClaudeCodeVersion())
@@ -3862,8 +3875,8 @@ func providerEnabled(id string, pc config.ProviderConfig, cfg *config.Config) bo
 // globalQueueTimeout is the global semaphore's per-acquire wait. A
 // queue_timeout_ms <= 0 passes validation and has always meant "refuse at once
 // when every slot is busy" (the old wait armed a zero timer). Semaphore now
-// reads a timeout <= 0 as "no wait timeout" — the per-provider gates rely on
-// that — so a non-positive global knob maps to the smallest positive wait,
+// reads a timeout <= 0 as "no wait timeout", so a non-positive global knob
+// maps to the smallest positive wait,
 // which keeps its meaning instead of silently turning into an unbounded queue.
 func globalQueueTimeout(c config.Concurrency) time.Duration {
 	if d := c.QueueTimeout(); d > 0 {
@@ -3872,38 +3885,50 @@ func globalQueueTimeout(c config.Concurrency) time.Duration {
 	return time.Nanosecond
 }
 
-// newProviderGates builds the RFC BF P2b per-provider concurrency gates from
-// cfg.Providers: one gate per provider whose max_concurrent > 0 (the rest are
-// uncapped → a noop at admission). The shared queue depth comes from the
-// concurrency block (LOOMCYCLE_PROVIDER_QUEUE_DEPTH, defaulting to the global
-// MaxQueueDepth); a gate has no wait timeout. Returns empty gates — hence zero
-// admission overhead — when no provider sets a cap (the default deployment).
-func newProviderGates(cfg *config.Config) *concurrency.ProviderGates {
-	caps := make(map[string]int)
-	for id, pc := range cfg.Providers {
-		if pc.MaxConcurrent > 0 {
-			caps[id] = pc.MaxConcurrent
-		}
-	}
-	depth := cfg.Concurrency.ProviderQueueDepthOrDefault()
-	gates := concurrency.NewProviderGates(caps, depth)
+// newCallScheduler builds the providers' call lanes from cfg.Providers: one
+// lane per (provider, model kind) that sets a cap — max_concurrent is the chat
+// lane's — plus each provider's cap on models in flight. A slot is held for one
+// model CALL, never for a run, and a wait for one does not time out. Returns a
+// scheduler with nothing in it — an uncapped call then costs one map lookup —
+// when no provider sets a cap (the default deployment).
+func newCallScheduler(cfg *config.Config) *concurrency.CallScheduler {
+	caps := lanegate.SchedulerConfig(cfg.Providers)
 	if len(caps) > 0 {
-		ids := make([]string, 0, len(caps))
-		for id := range caps {
-			ids = append(ids, id)
-		}
-		sort.Strings(ids) // deterministic log order
-		var b strings.Builder
-		for i, id := range ids {
-			if i > 0 {
-				b.WriteString(", ")
-			}
-			fmt.Fprintf(&b, "%s=%d", id, caps[id])
-		}
-		log.Printf("providers: per-provider concurrency caps enabled — %s (queue_depth=%d for new requests; waits do not time out)",
-			b.String(), depth)
+		log.Printf("providers: per-provider call caps enabled — %s (queue_depth=%d for requests that hold no run slot; a run's calls wait without timing out)",
+			describeCallCaps(caps), cfg.Concurrency.ProviderQueueDepthOrDefault())
 	}
-	return gates
+	return concurrency.NewCallScheduler(caps)
+}
+
+// describeCallCaps renders the caps for the boot log, in a stable order:
+// `ollama-local[chat=2 decision=1 models=1], openai[chat=8]`.
+func describeCallCaps(caps map[string]concurrency.ProviderLanesConfig) string {
+	ids := make([]string, 0, len(caps))
+	for id := range caps {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	var b strings.Builder
+	for i, id := range ids {
+		if i > 0 {
+			b.WriteString(", ")
+		}
+		pc := caps[id]
+		kinds := make([]string, 0, len(pc.Lanes))
+		for k := range pc.Lanes {
+			kinds = append(kinds, k)
+		}
+		sort.Strings(kinds)
+		parts := make([]string, 0, len(kinds)+1)
+		for _, k := range kinds {
+			parts = append(parts, fmt.Sprintf("%s=%d", k, pc.Lanes[k].MaxConcurrent))
+		}
+		if pc.MaxModelsInFlight > 0 {
+			parts = append(parts, fmt.Sprintf("models=%d", pc.MaxModelsInFlight))
+		}
+		fmt.Fprintf(&b, "%s[%s]", id, strings.Join(parts, " "))
+	}
+	return b.String()
 }
 
 // notConfiguredError reproduces the pre-P2a "not configured" error for a
@@ -3970,7 +3995,7 @@ func logProviderSummary(pr *providerResolver, cfg *config.Config) {
 func validateCodeAgents(cfg *config.Config, pr *providerResolver) {
 	// nil interface → (nil,false): cp stays nil when code-js is disabled, matching
 	// the pre-P2a pr.codeJS==nil path.
-	cp, _ := pr.byID["code-js"].(*codejs.Provider)
+	cp, _ := providers.As[*codejs.Provider](pr.byID["code-js"])
 	var broken []string
 	for name, def := range cfg.Agents {
 		if def.Provider != "code-js" {
@@ -4055,7 +4080,7 @@ func (p *providerResolver) currentCfg() *config.Config {
 }
 
 func (p *providerResolver) Reload(cfg *config.Config) error {
-	next, err := buildProviderMap(cfg)
+	next, err := buildProviderMap(cfg, p.sched)
 	if err != nil {
 		return err
 	}

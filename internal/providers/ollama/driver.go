@@ -25,6 +25,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -80,6 +81,9 @@ type Driver struct {
 	// request per model, not per turn. Concurrent-safe (the Driver is
 	// shared across runs).
 	ctxCache sync.Map
+	// ctxMismatchWarned holds the (model, requested, pinned) triples already
+	// warned about (see warnIfContextMismatch), so each is logged once.
+	ctxMismatchWarned sync.Map
 	// runnerRetryWaits overrides the package's runner-death retry waits; nil
 	// means the defaults. Tests shorten it.
 	runnerRetryWaits []time.Duration
@@ -248,6 +252,41 @@ func (d *Driver) resolveContext(req providers.Request) ctxWindow {
 		return ctxWindow{send: n, advertise: n, source: "loaded"}
 	}
 	return ctxWindow{send: 0, advertise: defaultNumCtx, source: "assumed"}
+}
+
+// ModelIdentity names the model as the HOST holds it: the model plus the
+// num_ctx this request will send (providers.ModelIdentifier). Ollama loads a
+// model at one context size; the same model asked for at another size is
+// reloaded (about 10 s measured) and loses its prompt cache, so to the host the
+// two are different models — and a provider's cap on models in flight must
+// count them as such. A request that sends no num_ctx is just the model name.
+func (d *Driver) ModelIdentity(req providers.Request) string {
+	if n := d.resolveContext(req).send; n > 0 {
+		return req.Model + "@" + strconv.Itoa(n)
+	}
+	return req.Model
+}
+
+// ctxMismatch is one (model, requested, pinned) combination warned about.
+type ctxMismatch struct {
+	model             string
+	requested, pinned int
+}
+
+// warnIfContextMismatch logs, once per combination, a request whose own
+// context size differs from the one this provider is pinned to. Both are
+// legitimate on their own; together they make the host swap the model between
+// two sizes, and nothing else tells the operator why calls got slow.
+func (d *Driver) warnIfContextMismatch(req providers.Request) {
+	if req.MaxContextTokens <= 0 || d.numCtx <= 0 || req.MaxContextTokens == d.numCtx {
+		return
+	}
+	key := ctxMismatch{model: req.Model, requested: req.MaxContextTokens, pinned: d.numCtx}
+	if _, seen := d.ctxMismatchWarned.LoadOrStore(key, struct{}{}); seen {
+		return
+	}
+	log.Printf("ollama: model %q on %s is requested with a %d-token context (an agent's max_context_tokens) while the provider is pinned to %d (%s) — Ollama reloads the model and drops its prompt cache on every switch between the two sizes (about 10 s per switch measured); set them to the same value",
+		req.Model, d.providerID, req.MaxContextTokens, d.numCtx, d.numCtxSetting())
 }
 
 // loadedContext returns the window the model is currently loaded with, read
@@ -468,6 +507,7 @@ func (d *Driver) Call(ctx context.Context, req providers.Request) (<-chan provid
 	// would let the cache TTL expire mid-generation and re-open the gap this
 	// closes.
 	window := d.resolveContext(req)
+	d.warnIfContextMismatch(req)
 	d.warnIfPromptOverWindow(req, window)
 
 	body, err := d.buildRequestBody(req, window.send)

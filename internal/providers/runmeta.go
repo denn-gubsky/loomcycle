@@ -25,6 +25,9 @@ import (
 type RunMeta struct {
 	AgentName string
 	UserID    string
+	// TenantID is the run's tenant. With UserID it is the fairness identity a
+	// provider's call lane takes turns by; no driver reads it.
+	TenantID string
 	// RunID is a stable per-run identifier (the agent-instance id). It seeds
 	// the code-js deterministic RNG so every replay re-execution of a run
 	// regenerates the identical Math.random() sequence. Stable across a run's

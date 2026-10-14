@@ -18,13 +18,14 @@ type concurrencyStatsResponse struct {
 	Active  int            `json:"active"`
 	Queued  int            `json:"queued"`
 	PerUser map[string]int `json:"per_user,omitempty"`
-	// Providers is the RFC BF P2b per-provider gate breakdown, keyed by provider
-	// id. omitempty so the (common) no-max_concurrent deployment returns the
+	// Providers is each capped provider's chat-call lane, keyed by provider id.
+	// omitempty so the (common) no-max_concurrent deployment returns the
 	// leaner shape without a providers block.
 	Providers map[string]providerGateStat `json:"providers,omitempty"`
 }
 
-// providerGateStat is one gated provider's live counts in the stats response.
+// providerGateStat is one capped provider's live counts in the stats response:
+// model calls in flight, and model calls waiting for a slot.
 type providerGateStat struct {
 	Active int `json:"active"`
 	Queued int `json:"queued"`
@@ -52,9 +53,9 @@ func (s *Server) handleConcurrencyStats(w http.ResponseWriter, r *http.Request) 
 		Queued:  st.Queued,
 		PerUser: st.PerUser,
 	}
-	// RFC BF P2b: fold in the per-provider gate breakdown when any provider is
-	// capped. nil (no gates) leaves the field omitted.
-	if pg := s.providerGates.Stats(); len(pg) > 0 {
+	// Fold in the per-provider breakdown when any provider caps its chat calls.
+	// nil (none) leaves the field omitted.
+	if pg := providerLaneSnapshot(s); len(pg) > 0 {
 		resp.Providers = make(map[string]providerGateStat, len(pg))
 		for id, gs := range pg {
 			resp.Providers[id] = providerGateStat{Active: gs.Active, Queued: gs.Queued}

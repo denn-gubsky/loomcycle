@@ -829,7 +829,28 @@ tiers:
 - **Per-provider stream timeouts in YAML** — `options: { header_timeout_ms: 600000, idle_timeout_ms: 600000 }` on any `providers:` entry tunes that provider's first-token and idle windows (a slow local backend's cold model load can exceed the global 60s/90s default). This is the YAML home for what were the `LOOMCYCLE_OLLAMA_LOCAL_*_TIMEOUT_MS` env knobs; a YAML value wins over the env.
 - **Advertise a local model's window.** vLLM (`--max-model-len`) and llama.cpp (`-c`) fix the context window at server launch — there is no per-request `num_ctx` for them. Set `capabilities: { max_context_tokens: <window> }` on the provider entry so loomcycle's compaction budget, the context gauge, and `Context op=self` match the served window (otherwise it advertises the openai default and can over-claim → truncation). The **`local` preset** (`LOOMCYCLE_PRESETS=base,local`) ships `vllm-local` / `llamacpp-local` templates carrying exactly these settings, commented out, to copy into your own config (`providers:` line included) — `loomcycle presets show local`.
 
-**Per-provider concurrency (`max_concurrent`)** caps in-flight runs to one provider; the rest queue inside loomcycle and never time out (only a new top-level request is refused, `429 provider_concurrency_exhausted`, and only when the queue is full; sub-agents, resumed runs and fallbacks always queue). Its point is a **local model on one GPU**: `ollama-local: { driver: ollama, max_concurrent: 2 }` runs a stable batch to completion without VRAM context-swapping, draining a fan-out in pairs. The gate is taken **before** the global concurrency slot so a saturated local cap never starves cloud runs — leave cloud providers uncapped.
+**Per-provider concurrency (`max_concurrent`)** caps the model **calls** in flight to one provider, not its runs: a slot is taken just before a call and given back when the response ends, so nothing is held while a run executes a tool, awaits a sub-agent or waits for its operator. Calls over the cap queue inside loomcycle and never time out, and every call is counted — sub-agents, interactive runs, compaction, the LLM gateway. Its point is a **local model on one GPU**: with `ollama-local: { driver: ollama, max_concurrent: 2 }` the host computes two requests at a time and the agents waiting take turns call by call. Leave cloud providers uncapped.
+
+`max_concurrent` is shorthand for the **chat lane**. A provider can cap each kind of model separately and shape the queue:
+
+```yaml
+providers:
+  ollama-local:
+    driver: ollama
+    max_models_in_flight: 1          # different models computing at once (0 = unlimited)
+    model_switch_max_wait_ms: 30000  # how long a waiting model can be held off (default)
+    lanes:
+      chat:     { max_concurrent: 4, quantum_calls: 4, affinity_hold_ms: 5000 }
+      decision: { max_concurrent: 2 }
+      embedder: { max_concurrent: 2, background_share: 0.25 }
+```
+
+- **`affinity_hold_ms`** is the lease: a slot stays reserved that long for the **run** that just used it, so its next call lands on a warm prompt cache. The lease is the run's — it ends when the run does, or when the run stays away longer than the hold. `0` (default) = no reservation.
+- **`quantum_calls`** is how many consecutive calls a run may make on its reserved slot while others wait (`0` = unlimited).
+- **`background_share`** is the least share of a lane's turns given to background work while live runs also wait (`0` = live runs first).
+- Today only **chat** calls made through `providers:` are queued, and no caller marks its work as background yet: the `decision` / `embedder` lanes and `background_share` are accepted and validated ahead of the callers that will use them ([details](PROVIDERS.md#lanes-a-queue-per-kind-of-model)).
+- **`max_models_in_flight`** stops several models computing at once on a host that cannot take it. For Ollama a model at two different `num_ctx` sizes counts as two.
+- **`concurrency.provider_queue_depth`** (`LOOMCYCLE_PROVIDER_QUEUE_DEPTH`, default: the global `max_queue_depth`) bounds only requests sent directly, outside any run — the LLM gateway (including the OpenAI-compatible routes) and the image-describe route — which are refused (`provider_concurrency_exhausted`; HTTP 429 on the gateway) once that many calls wait on the provider. A run's calls always wait.
 
 Full field reference (dialect, `options`, capability overrides) + the concurrency internals: [`docs/PROVIDERS.md`](PROVIDERS.md#config-driven-providers-providers-map).
 
@@ -1112,7 +1133,7 @@ curl -s -X POST -H "Authorization: Bearer $LOOMCYCLE_AUTH_TOKEN" \
 
 - **Validate-before-apply.** A candidate that fails to load or validate (a YAML typo, a bad driver) is rejected whole — `422 config_invalid` with the parse/validation error, and the **running config is left untouched** (the server keeps serving). A reload never crashes a live server.
 - **Applied live (this build):** `providers`, `models`, `tiers`, `provider_priority`, `user_tiers`, `agents`, `defaults`, `channels`, `concurrency`, `scheduled_runs`. Two mechanisms back them:
-  - *Rebuilt in place* — a changed `providers` / `models` / `tiers` / `provider_priority` rebuilds the provider set + resolver policy; a changed `concurrency` retunes the global semaphore caps + per-user cap + per-provider gates; a changed `scheduled_runs` re-materializes the static schedules into the store (the sweeper picks them up next tick). In-flight runs keep the slot/provider they already hold; the new values apply to subsequent admissions.
+  - *Rebuilt in place* — a changed `providers` / `models` / `tiers` / `provider_priority` rebuilds the provider set + resolver policy; a changed `concurrency` retunes the global semaphore caps + per-user cap + the providers' call caps (`max_concurrent` / `lanes` / `max_models_in_flight`); a changed `scheduled_runs` re-materializes the static schedules into the store (the sweeper picks them up next tick). In-flight runs keep the global slot and the provider they already hold; the new values apply to subsequent admissions, and a changed provider cap to the next model call.
   - *Live off the config holder* — `user_tiers` / `agents` / `defaults` (read at run admission) and `channels` defs/scope/ACL are read through an atomic config pointer, so the reload's one swap makes the next run see them.
 - **`restart_required` (with reasons):** `memory` — the embedder is captured by-value in many consumers and changing its model/dimension invalidates every stored vector (use the `/v1/_memory/reembed` migration, then restart); `skills` — three aliased holders plus runtime skill authoring make a live swap unsafe; the **queue timeout** and **scheduler tick/allowlist** knobs, **heartbeat-channel timing**, the **listen address**, and the **store DSN**. Host allowlists are **ENV-only** (`LOOMCYCLE_HTTP_HOST_ALLOWLIST`), so a YAML reload can't change them at all. Also: a static `scheduled_runs` entry **removed** from YAML keeps its store row (add/change reload; remove needs a restart).
 - Admin-token-gated. The response's `applied` / `restart_required` are the top-level config sections that changed since the last successful reload (or boot).

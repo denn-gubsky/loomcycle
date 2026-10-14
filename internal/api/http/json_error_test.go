@@ -68,8 +68,6 @@ func TestWriteQuotaError_BodiesDecodeWithControlBytes(t *testing.T) {
 	}{
 		{"per-user quota", &concurrency.ErrPerUserQuotaExhausted{UserID: "u\x01", Cap: 2},
 			"per_user_quota_exhausted", "user_id", "u\x01"},
-		{"provider cap", &concurrency.ErrProviderConcurrencyExhausted{Provider: "p\x01", Cap: 3},
-			"provider_concurrency_exhausted", "provider", "p\x01"},
 		{"backpressure", fmt.Errorf("queue \x01: %w", &concurrency.BackpressureError{}),
 			"backpressure", "", ""},
 	}

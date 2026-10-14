@@ -100,14 +100,15 @@ type Server struct {
 	reloaders     []SectionReloader
 	reloadableSet map[string]bool
 	reloadMu      sync.Mutex
-	// providerGates caps in-flight runs PER provider id (RFC BF P2b,
-	// providers.<id>.max_concurrent). Acquired at admission BEFORE the global
-	// sem so a run blocked on a full per-provider cap doesn't hold a global slot
-	// (see internal/api/http/provider_gate.go for the ordering rationale). nil /
-	// empty ⇒ every provider is uncapped and every Acquire is a noop (its methods
-	// are nil-safe). Wired at boot via SetProviderGates.
-	providerGates *concurrency.ProviderGates
-	store         store.Store // optional; nil means "don't persist"
+	// callSched is the scheduler behind every capped provider's call lanes
+	// (providers.<id>.max_concurrent / lanes). The server never acquires from
+	// it: the registry hands out providers already wrapped in their lane
+	// (internal/lanegate), so each model call takes its own slot. It is held
+	// here to report it (/v1/_concurrency/stats, the Prometheus gauges) and to
+	// reload it. nil ⇒ nothing is capped; its methods are nil-safe. Wired at
+	// boot via SetCallScheduler.
+	callSched *concurrency.CallScheduler
+	store     store.Store // optional; nil means "don't persist"
 	// eraseAudit records subject erasures. Unlike every other audit consumer, a nil or
 	// failing sink here REFUSES the operation rather than proceeding unrecorded — see
 	// SetEraseAudit.
@@ -1381,11 +1382,11 @@ func (s *Server) cfg() *config.Config {
 	return s.cfgHolder.Load()
 }
 
-// SetProviderGates wires the RFC BF P2b per-provider concurrency gates. Call
-// from cmd/loomcycle/main.go after building them from cfg.Providers. Optional:
-// when unset (nil), every provider is uncapped and admission is unchanged —
-// ProviderGates' methods are nil-safe.
-func (s *Server) SetProviderGates(g *concurrency.ProviderGates) { s.providerGates = g }
+// SetCallScheduler hands the server the scheduler the provider registry gates
+// its calls with — the SAME instance, or the stats would describe lanes no
+// call goes through and a reload would reconfigure them. Call from
+// cmd/loomcycle/main.go before serving. Optional: nil means nothing is capped.
+func (s *Server) SetCallScheduler(cs *concurrency.CallScheduler) { s.callSched = cs }
 
 // SetCredentialResolver wires the RFC AR credential resolver (env-var-name →
 // tenant/user credential value, scope agent>user>tenant). The Server stamps it
@@ -1560,31 +1561,17 @@ func writeResolveError(w http.ResponseWriter, err error) {
 //     The user has hit their personal cap; they specifically need to
 //     wait. Body carries `user_id` + `cap` so the adapter can surface
 //     it in error messages or rate-limit telemetry.
-//   - `code: "provider_concurrency_exhausted"` + `Retry-After: 5`. A
-//     specific provider's `max_concurrent` cap is saturated (RFC BF P2b).
-//     Body carries `provider` + `cap`; retry a different tier immediately.
 //   - `code: "backpressure"`. The global queue is full (or timed out).
 //     Operator-wide load signal; back off with longer jitter.
+//   - `code: "provider_concurrency_exhausted"` + `Retry-After: 5`. A request
+//     that holds no run slot (the LLM gateway) found that provider's queue at
+//     its bound. Body carries `provider` + `cap`; another tier can be tried
+//     at once.
 //
 // Anything else falls through to 500 with the raw error string —
 // shouldn't happen with the current AcquireForUser implementation but
 // the safe-default keeps a panic from surfacing as an opaque 200.
 func writeQuotaError(w http.ResponseWriter, err error) {
-	var pce *concurrency.ErrProviderConcurrencyExhausted
-	if errors.As(err, &pce) {
-		// RFC BF P2b: a specific provider's max_concurrent cap is saturated.
-		// 429 + Retry-After like per-user quota, but a distinct `code` +
-		// `provider`/`cap` fields so an adapter can retry a different tier
-		// immediately rather than backing off operator-wide.
-		w.Header().Set("Retry-After", "5")
-		writeJSONErrorBody(w, http.StatusTooManyRequests, struct {
-			Code     string `json:"code"`
-			Error    string `json:"error"`
-			Provider string `json:"provider"`
-			Cap      int    `json:"cap"`
-		}{"provider_concurrency_exhausted", pce.Error(), pce.Provider, pce.Cap})
-		return
-	}
 	var pue *concurrency.ErrPerUserQuotaExhausted
 	if errors.As(err, &pue) {
 		w.Header().Set("Retry-After", "5")
@@ -1594,6 +1581,20 @@ func writeQuotaError(w http.ResponseWriter, err error) {
 			UserID string `json:"user_id"`
 			Cap    int    `json:"cap"`
 		}{"per_user_quota_exhausted", pue.Error(), pue.UserID, pue.Cap})
+		return
+	}
+	var pce *concurrency.ErrProviderConcurrencyExhausted
+	if errors.As(err, &pce) {
+		// One provider's queue is at its bound, not the whole runtime: a distinct
+		// code with the provider named, so an adapter can try another tier at
+		// once instead of backing off operator-wide.
+		w.Header().Set("Retry-After", "5")
+		writeJSONErrorBody(w, http.StatusTooManyRequests, struct {
+			Code     string `json:"code"`
+			Error    string `json:"error"`
+			Provider string `json:"provider"`
+			Cap      int    `json:"cap"`
+		}{"provider_concurrency_exhausted", pce.Error(), pce.Provider, pce.Cap})
 		return
 	}
 	if concurrency.IsBackpressure(err) {
@@ -1837,7 +1838,7 @@ func (s *Server) keyableProvidersFor(ctx context.Context, req resolve.AgentReque
 		seen[c.Provider] = true
 		env := ""
 		if p, perr := s.providers.Get(c.Provider); perr == nil {
-			if kp, ok := p.(providers.KeyedProvider); ok {
+			if kp, ok := providers.As[providers.KeyedProvider](p); ok {
 				env = kp.KeyEnvName()
 			}
 		}
@@ -2631,12 +2632,10 @@ func (s *Server) ChannelHookDef(ctx context.Context, tenant, channel string) (ch
 // On no-more-candidates the closure returns an error — the loop
 // then surfaces the ORIGINAL provider error to the caller (the
 // fallback path is terminal for this run).
-// slot (RFC BF P2b) is the run's per-provider concurrency slot; on a committed
-// fallback the closure moves it from the failed provider to the new one so the
-// gate counters track the provider actually in use. nil for runs that hold no
-// swappable slot (sub-agents — they never take a provider slot — and
-// interactive-detached runs, which release their slots at hand-off).
-func (s *Server) fallbackForRun(tenantID, userID, agentName, userTier string, restricted bool, slot *providerSlot, routing *routingOverride) (loop.FallbackPolicy, func(ctx context.Context, failedProvider, failedModel string, cause error) (providers.Provider, string, string, error)) {
+//
+// A fallback moves no concurrency slot: a run holds none between calls, and
+// its next call takes one in the lane of whichever provider it is made to.
+func (s *Server) fallbackForRun(tenantID, userID, agentName, userTier string, restricted bool, routing *routingOverride) (loop.FallbackPolicy, func(ctx context.Context, failedProvider, failedModel string, cause error) (providers.Provider, string, string, error)) {
 	overlay := s.userTierOverlay(userTier)
 	if overlay == nil || !overlay.FallbackOnError {
 		return loop.FallbackPolicy{}, nil
@@ -2673,16 +2672,6 @@ func (s *Server) fallbackForRun(tenantID, userID, agentName, userTier string, re
 		if err != nil {
 			return nil, "", "", err
 		}
-		// RFC BF P2b: move the per-provider concurrency slot to the fallback
-		// target so a capped provider's counter tracks the provider actually in
-		// use — releasing the failed provider's slot for a queued run there and
-		// waiting for the new one. Done here rather than at the
-		// loop's commit point to keep the loop package free of admission
-		// concerns; in the rare case tryProviderFallback then refuses the switch
-		// (e.g. the RFC AT vision re-check), the run terminates and the deferred
-		// releaseCurrent frees the newly-acquired slot — a negligible transient
-		// on a failing run. No-op when slot is nil.
-		slot.swap(ctx, s.providerGates, newProviderID)
 		return newProvider, newModel, newEffort, nil
 	}
 	return policy, reResolve
@@ -3019,18 +3008,6 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 	if err := s.pausedRunErr(); err != nil {
 		return err
 	}
-
-	// ---- Per-provider concurrency gate (RFC BF P2b) ----
-	// Acquire the provider slot BEFORE the global slot so a run blocked on a full
-	// per-provider cap doesn't already hold a global slot (which would starve
-	// runs targeting other, uncapped providers). Uncapped providers get a noop
-	// holder — zero overhead. The holder is threaded into fallbackForRun so a
-	// mid-run provider switch moves the slot with it.
-	provSlot, provErr := s.acquireProviderSlot(ctx, providerID)
-	if provErr != nil {
-		return providerAcquireErrToRunner(provErr)
-	}
-	defer provSlot.releaseCurrent()
 
 	// ---- Concurrency slot ----
 	acquireStart := time.Now()
@@ -3444,23 +3421,7 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 	// fan-out parent can park mid-tool-call (no-op unless LOOMCYCLE_RESUME_FANOUT).
 	loopCtx = tools.WithPauseGate(loopCtx, gate)
 
-	// RFC BF P2c: publish this run's provider into the ancestor-held set so any
-	// sub-agents it spawns skip the gate for the SAME provider (the deadlock
-	// carve-out) while still gating on any OTHER provider. No-op for an
-	// uncapped/noop slot, so uncapped runs stay zero-overhead.
-	//
-	// A detached run releases both slots when this call returns, which can be
-	// before the run ends (the caller left), as POST /v1/runs does for its
-	// detached runs. So it neither publishes the held provider nor hands the
-	// holder to the fallback: a swap on an already-released holder would
-	// acquire a slot that nothing releases.
-	fbSlot := provSlot
-	if detached {
-		fbSlot = nil
-	} else {
-		loopCtx = s.heldSlotCtx(loopCtx, provSlot)
-	}
-	fbPolicy, fbReResolve := s.fallbackForRun(effectiveTenantID, effectiveUserID, effectiveAgentName, in.UserTier, operatorKeyRestricted, fbSlot, runRouting)
+	fbPolicy, fbReResolve := s.fallbackForRun(effectiveTenantID, effectiveUserID, effectiveAgentName, in.UserTier, operatorKeyRestricted, runRouting)
 	seed, seeded := statefulContinuationSeed(sessionEvents, mergedContext, provider.Capabilities().Local, in.Interactive, segments)
 	if seeded {
 		priorMessages = nil
@@ -4665,8 +4626,9 @@ type runRequest struct {
 	// unbounded_iterations may be RAISED — both are bounded in practice by the
 	// per-scope token budget. max_concurrent_children may only be LOWERED: it is
 	// the only bound on sub-agent fan-out that exists anywhere, because a child
-	// takes no admission slot, is not budget-checked at spawn, and skips the
-	// per-provider gate for its parent's provider.
+	// takes no admission slot and is not budget-checked at spawn. (A provider's
+	// max_concurrent counts a child's model calls, but that bounds calls in
+	// flight, not how many children exist.)
 	//
 	// unbounded_iterations is a pointer so a caller can turn it OFF as well as
 	// on; a plain bool could only raise the cap.
@@ -5034,17 +4996,6 @@ func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {
 	if s.rejectIfPausedHTTP(w) {
 		return
 	}
-
-	// Per-provider concurrency gate (RFC BF P2b): acquire BEFORE the global slot
-	// so a run queued on a full per-provider cap doesn't hold a global slot and
-	// starve uncapped-provider runs. Reported as 429 (provider_concurrency_
-	// exhausted) before the SSE stream opens. Uncapped ⇒ noop.
-	provSlot, provErr := s.acquireProviderSlot(r.Context(), providerID)
-	if provErr != nil {
-		writeQuotaError(w, provErr)
-		return
-	}
-	defer provSlot.releaseCurrent()
 
 	// Acquire concurrency slot first so backpressure is reported as 429
 	// before we open the SSE stream.
@@ -5468,16 +5419,7 @@ func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {
 	// minutes → presumed dead). Cheap (~10–100 calls per run).
 	heartbeat := s.makeHeartbeat(runID)
 
-	// RFC BF P2b: an interactive run detaches into a goroutine that OUTLIVES this
-	// handler, and the deferred releaseCurrent frees the provider slot at
-	// hand-off (mirroring the global slot). Pass nil so the detached loop doesn't
-	// swap an already-released holder (which would acquire + leak a slot with no
-	// releaser). Synchronous runs get the real holder and swap on fallback.
-	fbSlot := provSlot
-	if detached && s.store != nil {
-		fbSlot = nil
-	}
-	fbPolicy, fbReResolve := s.fallbackForRun(req.TenantID, req.UserID, req.Agent, req.UserTier, operatorKeyRestricted, fbSlot, runRouting)
+	fbPolicy, fbReResolve := s.fallbackForRun(req.TenantID, req.UserID, req.Agent, req.UserTier, operatorKeyRestricted, runRouting)
 	runOpts := loop.RunOptions{
 		Provider:            provider,
 		Model:               model,
@@ -5581,12 +5523,7 @@ func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// RFC BF P2c: the synchronous run holds provSlot for the whole loop, so
-	// publish its provider into the ancestor-held set — sub-agents it spawns skip
-	// the gate for the SAME provider (carve-out). The interactive-detached branch
-	// above does NOT do this: it releases provSlot at hand-off (fbSlot=nil), so its
-	// sub-agents must gate normally. No-op for uncapped/noop slots.
-	loopRes, runErr := loop.Run(s.heldSlotCtx(loopCtx, provSlot), runOpts)
+	loopRes, runErr := loop.Run(loopCtx, runOpts)
 	if runErr != nil {
 		stream.send(runErrorEvent(runErr))
 	}
@@ -5704,8 +5641,9 @@ type messagesRequest struct {
 	// unbounded_iterations may be RAISED — both are bounded in practice by the
 	// per-scope token budget. max_concurrent_children may only be LOWERED: it is
 	// the only bound on sub-agent fan-out that exists anywhere, because a child
-	// takes no admission slot, is not budget-checked at spawn, and skips the
-	// per-provider gate for its parent's provider.
+	// takes no admission slot and is not budget-checked at spawn. (A provider's
+	// max_concurrent counts a child's model calls, but that bounds calls in
+	// flight, not how many children exist.)
 	//
 	// unbounded_iterations is a pointer so a caller can turn it OFF as well as
 	// on; a plain bool could only raise the cap.
@@ -5934,16 +5872,6 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 	if s.rejectIfPausedHTTP(w) {
 		return
 	}
-
-	// Per-provider concurrency gate (RFC BF P2b): a continuation starts a new
-	// turn, so gate it too — before the global slot, same ordering rationale as a
-	// fresh run. Uncapped ⇒ noop.
-	provSlot, provErr := s.acquireProviderSlot(r.Context(), providerID)
-	if provErr != nil {
-		writeQuotaError(w, provErr)
-		return
-	}
-	defer provSlot.releaseCurrent()
 
 	// Acquire concurrency slot before opening the SSE stream so backpressure
 	// is reported as 429. user_id comes from the session (set at original
@@ -6277,11 +6205,7 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 	defer deregGate()
 	// RFC X Phase 3: expose the gate to the Agent tool (parallel_spawn parent park).
 	loopCtx = tools.WithPauseGate(loopCtx, gate)
-	// RFC BF P2c: publish this run's provider into the ancestor-held set so its
-	// sub-agents skip the gate for the SAME provider (deadlock carve-out). No-op
-	// for uncapped/noop slots.
-	loopCtx = s.heldSlotCtx(loopCtx, provSlot)
-	fbPolicy, fbReResolve := s.fallbackForRun(sess.TenantID, sess.UserID, sess.Agent, body.UserTier, operatorKeyRestricted, provSlot, runRouting)
+	fbPolicy, fbReResolve := s.fallbackForRun(sess.TenantID, sess.UserID, sess.Agent, body.UserTier, operatorKeyRestricted, runRouting)
 	seed, seeded := statefulContinuationSeed(transcript, runCfg.Context, provider.Capabilities().Local, body.Interactive, segments)
 	if seeded {
 		priorMessages = nil
@@ -7362,8 +7286,7 @@ func (s *Server) runSubRun(ctx context.Context, name, systemExtra, prompt, defID
 	if err != nil {
 		return "", nil, "", err
 	}
-	defer prep.Slot.releaseCurrent() // registered first → runs LAST (matches original)
-	defer prep.cleanup()             // registered second → runs first
+	defer prep.cleanup()
 	if hold != nil {
 		hold.runID = prep.RunID
 		// Verdict-only: makeSteerEntry gives it no close func.
@@ -7526,7 +7449,6 @@ func (s *Server) runTeamMember(ctx context.Context, name string, p teamrun.Promp
 	if err != nil {
 		return teamrun.SpawnResult{}, err
 	}
-	defer prep.Slot.releaseCurrent()
 	defer prep.cleanup()
 	steerQ, onSteer, closeSteer, deregSteer := s.makeSteer(prep.SteerCtx, prep.RunID, prep.AgentID, prep.SessionID, prep.UserID, prep.Emit)
 	defer deregSteer()
@@ -7627,22 +7549,19 @@ func (s *Server) writeReviewRecord(ctx context.Context, runID string, armed bool
 // share this setup so tenant/tool-ceiling/credential/policy wiring has ONE
 // source of truth. cleanup() releases the span / pause gate / cancel-registry
 // entry / run-cancel func in the SAME order runSubAgent's defers did (LIFO of
-// their original registration), EXCLUDING the provider Slot — the caller
-// releases Slot itself (sync: defer at return; interactive: after hand-off, so
-// a parked child does not pin the provider gate).
+// their original registration).
 type subRunPrep struct {
 	AgentID   string
 	SessionID string
 	RunID     string
 	UserID    string
 	TenantID  string
-	LoopCtx   context.Context         // == s.heldSlotCtx(subCtx, Slot); pass to loop.Run
+	LoopCtx   context.Context         // pass to loop.Run
 	SteerCtx  context.Context         // subRunCtx (the WithCancelCause base); for finishRunWithCancel + makeSteer + cancel wiring
 	CancelFn  context.CancelCauseFunc // cancels the sub-run (used by RFC BK close)
 	Meta      runStateMeta
 	Emit      func(providers.Event) // the recording emit (also set as Opts.OnEvent)
 	Opts      loop.RunOptions       // fully built; interactive fields (SteerQueue/OnSteer/Interactive/ArmTurnCancel) left ZERO for the caller to set
-	Slot      *providerSlot         // acquired provider slot; caller releases
 	cleanup   func()
 }
 
@@ -7780,9 +7699,9 @@ func withUntrustedBlocks(segs []loop.PromptSegment, in []tools.UntrustedInput) [
 // prepareSubRun does all sub-run setup shared by the synchronous spawn path and
 // the resident interactive path. fwd is the recording emit's forward sink (the
 // sync path passes a no-op; the interactive path passes a turn-capturer).
-// interactive=true means: pass a nil provider slot to fallbackForRun (a parked
-// resident child, like a top-level interactive run, must not swap/hold the
-// provider gate across turns) — everything else is identical.
+// interactive=true marks the child a resident interactive run (its retention
+// admission, its spawn record and its iteration limit differ) — everything else
+// is identical.
 func (s *Server) prepareSubRun(ctx context.Context, name, systemExtra, prompt, defID string, interactive bool, fwd func(providers.Event)) (*subRunPrep, error) {
 	return s.prepareSubRunValues(ctx, name, nameFromAgentTool, systemExtra, prompt, defID, interactive, fwd, nil, nil, false, false)
 }
@@ -7875,36 +7794,19 @@ func (s *Server) prepareSubRunValues(ctx context.Context, name string, src nameS
 		return nil, fmt.Errorf("provider for sub-agent %q: %w", name, err)
 	}
 
-	// RFC BF P2c: gate the sub-agent on ITS resolved provider so a fan-out parent's
-	// same-provider children run at most `max_concurrent` at a time (the rest queue
-	// inside waitProviderSlot), EXCEPT when an ANCESTOR already holds that
-	// provider — waitProviderSlot then returns a noop carve-out holder so the
-	// parent never awaits a child queued behind the parent's own slot (self-
-	// deadlock). The child belongs to an admitted run tree, so it WAITS for its
-	// slot (never refused for a full queue or a timeout; only ctx ends the wait),
-	// and the wait is not counted against its timeout_ms. Taken BEFORE the
-	// sub-session row, so a child cancelled while it queues leaves no orphan run.
-	// The whole run tree still takes ONE global slot (the parent's) — sub-runs
-	// never touch s.sem, so there is no global-semaphore deadlock. Uncapped ⇒
-	// noop, zero overhead.
-	subSlot, provErr := s.waitProviderSlot(ctx, providerID)
-	if provErr != nil {
-		return nil, fmt.Errorf("sub-agent %q provider gate: %w", name, provErr)
-	}
+	// A sub-agent takes no provider slot here. Every model call it makes takes
+	// one in its provider's call lane, like its parent's: a fan-out parent and
+	// its same-provider children are all counted against max_concurrent, and a
+	// parent awaiting a child holds nothing the child could queue behind. The
+	// whole run tree still takes ONE global slot (the parent's) — sub-runs
+	// never touch s.sem.
+	//
 	// prepOK guards the acquired-resource cleanups below. On any early-error
-	// return prepOK is still false, so each guarded defer fires — reproducing
-	// the net effect of runSubAgent's original five defers (no leaked slot /
+	// return prepOK is still false, so each guarded defer fires (no leaked
 	// span / registry entry / cancel func). On success prepOK flips true right
 	// before the return, so NONE of the guarded defers fire: the caller owns
-	// teardown via prep.cleanup() + prep.Slot.releaseCurrent(). The provider
-	// Slot is released here ONLY on the error path — on success it is handed
-	// back in prep.Slot for the caller to release.
+	// teardown via prep.cleanup().
 	prepOK := false
-	defer func() {
-		if !prepOK {
-			subSlot.releaseCurrent()
-		}
-	}()
 
 	// Generate a fresh agent_id for the sub-run. Always generated;
 	// callers can't override (the sub is loomcycle-controlled).
@@ -8414,23 +8316,10 @@ func (s *Server) prepareSubRunValues(ctx context.Context, name string, src nameS
 	// that itself parallel_spawns) can park mid-tool-call too.
 	subCtx = tools.WithPauseGate(subCtx, subGate)
 
-	// RFC BF P2c: the sub-agent's fallback moves ITS OWN provider slot (subSlot,
-	// acquired above), mirroring a top-level run — so a mid-run failover to another
-	// capped provider re-gates on the new one. A carve-out (noop) subSlot never
-	// swaps (it's deliberately ungated). Sub-runs still take no GLOBAL slot.
-	// A resident interactive child (like a top-level interactive run) must NOT
-	// swap/hold the provider gate across parked turns, so it passes a nil slot.
-	fbSlot := subSlot
-	if interactive {
-		fbSlot = nil
-	}
 	// nil routing: inheritance is RFC DC P5. A child resolves from its own
 	// definition today, which is what it did before this phase.
-	fbPolicy, fbReResolve := s.fallbackForRun(tenantFromCtx(ctx), parentIdentity.UserID, name, parentTier, parentIdentity.OperatorKeyRestricted, fbSlot, nil)
-	// RFC BF P2c: publish the sub-agent's provider into the ancestor-held set on
-	// its OWN loop ctx (copy-on-add) so grandchildren it spawns take the carve-out
-	// for the same provider. No-op for a carve-out/uncapped subSlot.
-	loopCtx := s.heldSlotCtx(subCtx, subSlot)
+	fbPolicy, fbReResolve := s.fallbackForRun(tenantFromCtx(ctx), parentIdentity.UserID, name, parentTier, parentIdentity.OperatorKeyRestricted, nil)
+	loopCtx := subCtx
 	opts := loop.RunOptions{
 		Provider:            provider,
 		Model:               model,
@@ -8477,8 +8366,7 @@ func (s *Server) prepareSubRunValues(ctx context.Context, name string, src nameS
 
 	// cleanup fires the SAME releases as the guarded error-defers above, in the
 	// SAME order runSubAgent's original defers ran LIFO (deregSubGate →
-	// subRunSpan.End → cancelReg.Deregister when registered → subCancelFn). The
-	// provider Slot is EXCLUDED — the caller releases prep.Slot itself.
+	// subRunSpan.End → cancelReg.Deregister when registered → subCancelFn).
 	cleanup := func() {
 		deregSubGate()
 		subRunSpan.End()
@@ -8501,7 +8389,6 @@ func (s *Server) prepareSubRunValues(ctx context.Context, name string, src nameS
 		Meta:      subMeta,
 		Emit:      subEmit,
 		Opts:      opts,
-		Slot:      subSlot,
 		cleanup:   cleanup,
 	}, nil
 }

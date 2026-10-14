@@ -1,9 +1,9 @@
 // lane.go — one call lane: the cap on individual model CALLS for one
 // (provider, model kind).
 //
-// The run-level gate (provider_gates.go) gives a run a slot for its whole life,
-// so a run that is waiting on a tool, a sub-agent or its operator keeps a slot
-// it is not using. A Lane counts calls instead, and adds a short LEASE so that
+// A cap that counts runs gives a run a slot for its whole life, so a run that
+// is waiting on a tool, a sub-agent or its operator keeps a slot it is not
+// using. A Lane counts calls instead, and adds a short LEASE so that
 // counting calls does not cost the host its warm prompt cache: after a call the
 // slot stays reserved for the run that made it, so that run's next call lands
 // on the same slot instead of behind an unrelated one.
@@ -58,8 +58,8 @@ type LaneConfig struct {
 }
 
 // QueueFullError is why a bounded acquire (AcquireBounded) was refused: the
-// queue it would have joined already held Limit waiters. Callers surface it as
-// provider_concurrency_exhausted (HTTP 429).
+// queue it would have joined already held Limit waiters. The provider wrapper
+// (internal/lanegate) turns it into *ErrProviderConcurrencyExhausted.
 type QueueFullError struct {
 	Queued, Limit int
 }

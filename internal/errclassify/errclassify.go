@@ -82,7 +82,6 @@ func CategoryOf(err error) (tools.ErrorInfo, bool) {
 
 	case errors.Is(err, runner.ErrBackpressure),
 		errors.Is(err, runner.ErrPerUserQuotaExhausted),
-		errors.Is(err, runner.ErrProviderConcurrencyExhausted),
 		isProviderConcurrency(err):
 		return transient(
 			"The runtime is at a concurrency limit. The request is valid and should succeed on retry.",
@@ -214,9 +213,9 @@ func CategoryOf(err error) (tools.ErrorInfo, bool) {
 	return tools.ErrorInfo{}, false
 }
 
-// isProviderConcurrency reports whether err is the per-provider gate's typed
-// refusal. It is a struct pointer rather than a sentinel, so errors.Is on the
-// runner alias does not catch it on its own.
+// isProviderConcurrency reports whether err is a capped provider's typed
+// refusal of a request that holds no run slot. It is a struct pointer rather
+// than a sentinel.
 func isProviderConcurrency(err error) bool {
 	var pce *concurrency.ErrProviderConcurrencyExhausted
 	return errors.As(err, &pce)

@@ -22,6 +22,7 @@ import (
 	"net/http"
 
 	"github.com/denn-gubsky/loomcycle/internal/config"
+	"github.com/denn-gubsky/loomcycle/internal/lanegate"
 )
 
 // holderLiveSections take effect on the atomic config-holder swap ALONE — read
@@ -163,22 +164,18 @@ func (s *Server) ReloadConfig(ctx context.Context, dryRun bool) (ReloadResult, e
 
 // ReloadConcurrency applies a changed `concurrency` (or `providers.max_concurrent`)
 // section in place (RFC CK): the global semaphore's concurrency + queue-depth caps
-// (SetCaps), the per-user cap (WithPerUserCap), and the per-provider gates (rebuilt
-// from providers[*].max_concurrent). The global queue TIMEOUT stays boot-fixed (it
-// is read unlocked on the wait path); the per-provider gates have none. In-flight runs keep their slot; the new caps
-// apply to subsequent admissions. Nil-safe for a bare Server (tests).
+// (SetCaps), the per-user cap (WithPerUserCap), and the providers' call lanes
+// (providers[*].max_concurrent / lanes / max_models_in_flight). The global queue
+// TIMEOUT stays boot-fixed (it is read unlocked on the wait path); a lane has
+// none. In-flight runs keep their global slot and calls in flight keep their
+// lane slot; the new caps apply to the next admission and the next model call.
+// Nil-safe for a bare Server (tests).
 func (s *Server) ReloadConcurrency(newCfg *config.Config) {
 	if s.sem != nil {
 		s.sem.SetCaps(newCfg.Concurrency.MaxConcurrentRuns, newCfg.Concurrency.MaxQueueDepth)
 		s.sem.WithPerUserCap(newCfg.Concurrency.MaxConcurrentRunsPerUser)
 	}
-	caps := map[string]int{}
-	for id, pc := range newCfg.Providers {
-		if pc.MaxConcurrent > 0 {
-			caps[id] = pc.MaxConcurrent
-		}
-	}
-	s.providerGates.Reload(caps, newCfg.Concurrency.ProviderQueueDepthOrDefault())
+	s.callSched.Reload(lanegate.SchedulerConfig(newCfg.Providers))
 }
 
 // intersectsChanged reports whether any of a reloader's owned sections changed.

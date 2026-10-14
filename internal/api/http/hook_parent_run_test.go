@@ -17,7 +17,6 @@ func TestPrepareSubRun_StampsTheParentRun(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer prep.Slot.releaseCurrent()
 	defer prep.cleanup()
 	if got := tools.ParentRunID(prep.LoopCtx); got != "r_parent" {
 		t.Errorf("parent run id = %q, want r_parent", got)

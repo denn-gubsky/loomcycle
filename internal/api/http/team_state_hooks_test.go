@@ -70,7 +70,6 @@ func startSub(t *testing.T, h *reviewHarness, ctx context.Context) *subRunPrep {
 	}
 	t.Cleanup(func() {
 		prep.cleanup()
-		prep.Slot.releaseCurrent()
 	})
 	return prep
 }

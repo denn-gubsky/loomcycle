@@ -254,7 +254,7 @@ func EnforcesToolChoice(p Provider, model, effort string, tc ToolChoice) bool {
 	if !tc.Forces() {
 		return true
 	}
-	if e, ok := p.(ModelToolChoiceEnforcer); ok {
+	if e, ok := As[ModelToolChoiceEnforcer](p); ok {
 		return e.EnforcesToolChoice(model, effort, tc)
 	}
 	return p.Capabilities().SupportsToolChoice
@@ -281,7 +281,7 @@ type ModelStructuredOutputEnforcer interface {
 // the schema: the driver's per-model answer when it has one, else the
 // Capabilities bit.
 func EnforcesStructuredOutput(p Provider, model string, hasTools bool) bool {
-	if e, ok := p.(ModelStructuredOutputEnforcer); ok {
+	if e, ok := As[ModelStructuredOutputEnforcer](p); ok {
 		return e.EnforcesStructuredOutput(model, hasTools)
 	}
 	return p.Capabilities().SupportsStructuredOutput

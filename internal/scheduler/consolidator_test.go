@@ -926,12 +926,11 @@ func TestFanout_UnresolvedAgentDoesNotBurnMaxFires(t *testing.T) {
 // alert on. It also must not fire on_complete hooks — the batch largely did not
 // run.
 //
-// Fails-before: status is "failed" for all three sentinels.
+// Fails-before: status is "failed" for both sentinels.
 func TestFanout_BackpressureIsSkippedNotFailed(t *testing.T) {
 	for _, sentinel := range []error{
 		runner.ErrBackpressure,
 		runner.ErrPerUserQuotaExhausted,
-		runner.ErrProviderConcurrencyExhausted,
 	} {
 		t.Run(sentinel.Error(), func(t *testing.T) {
 			sched, fr, st, _ := fanoutFixture(t, fanoutDef(nil), nil)

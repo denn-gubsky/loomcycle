@@ -2025,12 +2025,11 @@ func runnerErrStatus(err error) error {
 		return status.Error(codes.Aborted, err.Error())
 	case errors.Is(err, runner.ErrRateLimited),
 		errors.Is(err, runner.ErrBackpressure),
-		errors.Is(err, runner.ErrPerUserQuotaExhausted),
-		errors.Is(err, runner.ErrProviderConcurrencyExhausted):
+		errors.Is(err, runner.ErrPerUserQuotaExhausted):
 		// All backpressure flavors share ResourceExhausted on the gRPC
-		// wire — global queue, per-user cap, and the RFC BF P2b per-
-		// provider cap. HTTP distinguishes them via the JSON body's
-		// `code` field + Retry-After header; gRPC consumers branch on
+		// wire — the global queue and the per-user cap. HTTP distinguishes
+		// them via the JSON body's `code` field + Retry-After header; gRPC
+		// consumers branch on
 		// the error message if they need to distinguish.
 		return status.Error(codes.ResourceExhausted, err.Error())
 	case errors.Is(err, runner.ErrRuntimePaused):

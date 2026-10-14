@@ -414,7 +414,6 @@ func TestClassifyFire_SharedLadder(t *testing.T) {
 		{runner.ErrUnknownAgent, "failed", false},
 		{runner.ErrBackpressure, "skipped", true},
 		{runner.ErrPerUserQuotaExhausted, "skipped", true},
-		{runner.ErrProviderConcurrencyExhausted, "skipped", true},
 		{runner.ErrTokenLimitExceeded, "skipped", true},
 		{resolve.ErrOperatorKeyRestricted, "skipped", true},
 		{providers.ErrOperatorKeyForbidden, "skipped", true},
