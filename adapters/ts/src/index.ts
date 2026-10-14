@@ -495,6 +495,7 @@ export type {
   ScheduledRunPromptContent,
   ScheduledRunPromptSegment,
   WebhookDefAuth,
+  WebhookDefFilter,
   WebhookDefInput,
   WebhookDefOverlay,
   WebhookDefRateLimit,

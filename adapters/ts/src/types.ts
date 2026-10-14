@@ -5137,6 +5137,21 @@ export interface WebhookDefAuth {
   previous_secret?: string;
 }
 
+/** One condition a webhook delivery's signed body must meet. Comparison is
+ *  typed (a string never equals a number), and a path that is missing, null,
+ *  or of another type than the value misses for every `op`, `ne` included. */
+export interface WebhookDefFilter {
+  /** A JSONPath into the body: `$`, `.key` and `[N]` only. */
+  path: string;
+  /** `glob` takes a string pattern (`*` any run of characters, `?` one);
+   *  `in` takes a list of values. */
+  op: "eq" | "ne" | "glob" | "in";
+  /** A literal; set this or `value_from`. */
+  value?: string | number | boolean | Array<string | number | boolean>;
+  /** `"metadata.<key>"`: the definition's own metadata entry of that key. */
+  value_from?: string;
+}
+
 /** Inbound request rate bound for one webhook. */
 export interface WebhookDefRateLimit {
   requests_per_minute?: number;
@@ -5189,6 +5204,10 @@ export interface WebhookDefOverlay {
    *  provider has no shape for, or in place of its. A fork merges key by key;
    *  an empty list removes that event's shape. */
   event_shapes?: Record<string, string[]>;
+  /** Conditions on the signed body every delivery must meet before anything
+   *  starts; one that misses answers 202 `filtered`. A fork replaces the
+   *  whole list; `[]` removes it. */
+  filters?: WebhookDefFilter[];
   /** Non-secret metadata the agent receives as trusted. */
   metadata?: Record<string, unknown>;
   /** The tenant spawned runs execute in — taken from the def, never from the
