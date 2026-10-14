@@ -227,6 +227,24 @@ describe("ensureHookDef", () => {
     expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 
+  it("trims a description as the server does, not as String.prototype.trim does", async () => {
+    const deployed = () =>
+      jsonResponse({ deployed: true, current_def_id: "hdf_1", version: 1, name: "g", matches: false, current_sha256: "x" });
+    const active = () =>
+      jsonResponse({ def_id: "hdf_1", name: "g", version: 1, definition: { description: "x", event: "run_end", body: { kind: "code-js", code: "c" }, fail_mode: "open" } });
+    const body = { kind: "code-js", code: "c" } as const;
+
+    // Go's TrimSpace trims U+0085 — the server would store "x": no change.
+    const same = makeClient([deployed(), active()]);
+    expect((await same.client.ensureHookDef("g", { description: "x\u0085", event: "run_end", body })).changed).toBe(false);
+
+    // It keeps U+FEFF, which trim() would drop — the server stores "x\uFEFF",
+    // a different description, so this must write.
+    const differs = makeClient([deployed(), active(), jsonResponse({ def_id: "hdf_2", name: "g", version: 2 })]);
+    expect((await differs.client.ensureHookDef("g", { description: "x\uFEFF", event: "run_end", body })).changed).toBe(true);
+    expect(differs.fetchMock).toHaveBeenCalledTimes(3);
+  });
+
   it("creates a new version when the active definition differs", async () => {
     const { client, fetchMock } = makeClient([
       jsonResponse({ deployed: true, current_def_id: "hdf_3", version: 3, name: "gate", matches: false, current_sha256: "x" }),

@@ -2185,9 +2185,9 @@ export class LoomcycleClient {
    *  `changed: false`. Otherwise `create` with the default promote, which
    *  makes the new version active.
    *
-   *  The comparison is conservative: a difference this client cannot see
-   *  through (say, Unicode whitespace the server trims and JavaScript does not)
-   *  mints a redundant version — it never skips a real change. The rationale
+   *  The normalization only collapses what the server collapses, so a real
+   *  change is never skipped; should the server come to normalize something
+   *  more, the cost is a redundant version, not a lost one. The rationale
    *  in {@link EnsureHookDefOptions.description} is not part of the
    *  definition and does not count as a change. */
   async ensureHookDef(
@@ -3492,17 +3492,13 @@ async function* parseRunStateSSE(
   }
 }
 
-// channelOpPath builds the v0.9.x Channel CRUD URL. Two families:
-//   - scope === "global" → /v1/_channels/{channel}/{op}
-//   - scope === "user"   → /v1/users/{userId}/channels/{channel}/{op}
-// Channel name is URL-encoded so names containing slashes
-// ("findings/alpha", "_system/foo") survive transport.
 /** The form a HookDef definition is stored in: hooks.Def.Normalize followed
  *  by Go's omitempty encoding. Applied to both sides of ensureHookDef's
- *  comparison, so it only has to agree with itself on what the server keeps. */
+ *  comparison; the stored side is already in this form, so what matters is
+ *  that the overlay lands exactly where the server would put it. */
 function normalizeHookDef(d: HookDefOverlay): Record<string, unknown> {
   const out: Record<string, unknown> = { event: d.event };
-  const description = (d.description ?? "").trim();
+  const description = goTrimSpace(d.description ?? "");
   if (description) out.description = description;
   if (d.match?.tools && d.match.tools.length > 0) out.match = { tools: d.match.tools };
   const body: Record<string, unknown> = { kind: d.body.kind };
@@ -3516,6 +3512,16 @@ function normalizeHookDef(d: HookDefOverlay): Record<string, unknown> {
   out.fail_mode = d.fail_mode || "open";
   if (d.timeout_ms) out.timeout_ms = d.timeout_ms;
   return out;
+}
+
+/** strings.TrimSpace: Go's Unicode White_Space set, which is not
+ *  String.prototype.trim's (Go trims U+0085 and keeps U+FEFF; JavaScript does
+ *  the reverse). Trimming differently could make two descriptions the server
+ *  stores differently compare equal, and skip a real change. */
+const goTrimRe =
+  /^[\t\n\v\f\r \u0085\u00A0\u1680\u2000-\u200A\u2028\u2029\u202F\u205F\u3000]+|[\t\n\v\f\r \u0085\u00A0\u1680\u2000-\u200A\u2028\u2029\u202F\u205F\u3000]+$/g;
+function goTrimSpace(s: string): string {
+  return s.replace(goTrimRe, "");
 }
 
 /** Structural JSON equality, ignoring object key order (the server's
@@ -3535,6 +3541,11 @@ function sameJSON(a: unknown, b: unknown): boolean {
   return keys.every((k) => Object.prototype.hasOwnProperty.call(bo, k) && sameJSON(ao[k], bo[k]));
 }
 
+// channelOpPath builds the v0.9.x Channel CRUD URL. Two families:
+//   - scope === "global" → /v1/_channels/{channel}/{op}
+//   - scope === "user"   → /v1/users/{userId}/channels/{channel}/{op}
+// Channel name is URL-encoded so names containing slashes
+// ("findings/alpha", "_system/foo") survive transport.
 function channelOpPath(
   channel: string,
   scope: "global" | "user",
