@@ -218,6 +218,31 @@ func (s *Server) handleSubstrateHistory(w http.ResponseWriter, r *http.Request) 
 	s.dispatchSubstrateCtx(w, r, "History", s.History, substrateAdminUserCtx)
 }
 
+// handleSubstrateEvaluation serves POST /v1/_evaluation: the Evaluation tool
+// (submit / get / list_for_run / list_for_def / aggregate) outside a run.
+//
+// What the caller may do is tools.OffRunEvaluationPolicy, stamped by
+// substrateAdminCtx — the same grant gRPC and MCP use. The tool confines every
+// op to the caller's tenant, and an isolated user further to its own runs; for
+// that the ctx carries the principal's own subject and its isolated bit, which
+// substrateAdminUserCtx alone does not stamp.
+func (s *Server) handleSubstrateEvaluation(w http.ResponseWriter, r *http.Request) {
+	s.dispatchSubstrateCtx(w, r, "Evaluation", s.Evaluation, substrateEvaluationCtx)
+}
+
+// substrateEvaluationCtx is substrateAdminUserCtx plus the isolated bit, which
+// the Evaluation tool reads to hold an isolated user to its own runs.
+func substrateEvaluationCtx(ctx context.Context) context.Context {
+	base := substrateAdminUserCtx(ctx)
+	p, ok := auth.PrincipalFromContext(ctx)
+	if !auth.IsIsolated(p, ok) {
+		return base
+	}
+	id := tools.RunIdentity(base)
+	id.Isolated = true
+	return tools.WithRunIdentity(base, id)
+}
+
 // handleSubstrateCredentialDef serves POST /v1/_credentialdef.
 // RFC AR secure per-tenant credential store. Bearer-authed; tenant-confined
 // (ScopeTenant via isTenantConfinedDefPath). Uses the USER-aware ctx
@@ -527,10 +552,10 @@ func substrateAdminCtx(ctx context.Context) context.Context {
 		Scopes:   []string{"any"},
 		SelfName: substrateAdminAgentName,
 	})
-	// Evaluation: all 4 valid scope values.
-	ctx = tools.WithEvaluationPolicy(ctx, tools.EvaluationPolicyValue{
-		Scopes: []string{"submit_self", "submit_descendants", "submit_any", "read_any"},
-	})
+	// Evaluation: the grant every off-run transport shares. It used to be every
+	// op for every principal here, which an isolated user would have reached the
+	// moment a route dispatched to the tool.
+	ctx = tools.WithEvaluationPolicy(ctx, tools.OffRunEvaluationPolicy(principal, hasPrincipal))
 	// History tool (RFC BE / RFC BY): scope by principal authority.
 	//   - a delegated USER (a member — neither tenant operator nor admin) sees
 	//     ONLY its own chats: [self, user]. This is the cap that makes
