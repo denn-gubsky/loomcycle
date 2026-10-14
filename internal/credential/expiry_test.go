@@ -3,6 +3,7 @@ package credential
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -203,5 +204,59 @@ func TestEngine_ExpiredCredentialIsListedAndRotatable(t *testing.T) {
 	}
 	if res, found, err := e.Resolve(ctx, "t", "", "", "gh"); err != nil || !found || res.Value != "sk-rotated" {
 		t.Fatalf("Resolve after rotation = %q found=%v err=%v", res.Value, found, err)
+	}
+}
+
+// The compare-only reads (a webhook's verification secret) apply the expiry
+// rule too: an expired secret is not found-and-usable, and is reported as
+// expired rather than as missing.
+func TestEngine_CompareReadsRefuseAnExpiredSecret(t *testing.T) {
+	e, expiresAt, setNow := expiringEngine(t)
+	ctx := context.Background()
+	if v, found, err := e.ResolveToCompare(ctx, "t", "gh"); err != nil || !found || v != "sk-expiring" {
+		t.Fatalf("ResolveToCompare before expiry = found %v err %v", found, err)
+	}
+	if found, err := e.HasToCompare(ctx, "t", "gh"); err != nil || !found {
+		t.Fatalf("HasToCompare before expiry = %v, %v", found, err)
+	}
+	setNow(expiresAt)
+	if v, found, err := e.ResolveToCompare(ctx, "t", "gh"); !errors.Is(err, ErrExpired) || found || v != "" {
+		t.Errorf("ResolveToCompare after expiry = found %v err %v; want ErrExpired and no value", found, err)
+	}
+	if found, err := e.HasToCompare(ctx, "t", "gh"); !errors.Is(err, ErrExpired) || found {
+		t.Errorf("HasToCompare after expiry = %v, %v; want false, ErrExpired", found, err)
+	}
+}
+
+// HasKey tells a credential the run holds but may not use apart from one it
+// does not hold, and HeldButUnusable names exactly the held cases: expired,
+// and URL-restricted (with or without a destination). A miss and a store
+// fault are not "held".
+func TestEngine_HeldButUnusableIsNotAMiss(t *testing.T) {
+	e := newEngine(t, testKey(1))
+	ctx := context.Background()
+	if _, err := e.PutInline(ctx, Identity{TenantID: "t", Scope: "tenant", Name: "scoped"}, "v", nil, urls("https://api.example.com"), nil); err != nil {
+		t.Fatal(err)
+	}
+	has, err := e.HasKey(ctx, "t", "", "", "scoped")
+	if has || !errors.Is(err, ErrRestricted) || !HeldButUnusable(err) {
+		t.Errorf("HasKey(restricted) = %v, %v; want false and a held-but-unusable ErrRestricted", has, err)
+	}
+	if has, err := e.HasKey(ctx, "t", "", "", "absent"); has || err != nil || HeldButUnusable(err) {
+		t.Errorf("HasKey(absent) = %v, %v; want a plain miss", has, err)
+	}
+	_, _, rerr := e.Resolve(ctx, "t", "", "", "scoped")
+	if !HeldButUnusable(rerr) {
+		t.Errorf("Resolve(restricted) err %v is not held-but-unusable", rerr)
+	}
+	for _, err := range []error{ErrExpired, ErrRestricted, ErrURLNotAllowed, ErrNotPinnable} {
+		if !HeldButUnusable(fmt.Errorf("wrapped: %w", err)) {
+			t.Errorf("HeldButUnusable(%v) = false", err)
+		}
+	}
+	for _, err := range []error{nil, errors.New("store: connection refused"), ErrNoKey} {
+		if HeldButUnusable(err) {
+			t.Errorf("HeldButUnusable(%v) = true; a fault or a miss is not a held credential", err)
+		}
 	}
 }

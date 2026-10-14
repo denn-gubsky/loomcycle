@@ -413,9 +413,10 @@ func (e *Engine) HasToCompare(ctx context.Context, tenantID, name string) (bool,
 // is skipped). Returns (false, nil) when absent from every visible scope; a
 // store fault other than not-found propagates.
 //
-// An expired credential is (false, ErrExpired), not (false, nil): the run
-// HAS a key of that name, it just may not be used, and a caller that treats
-// "absent" as "use the operator's key instead" must not do so for it.
+// An expired or URL-restricted credential is (false, ErrExpired /
+// ErrRestricted), not (false, nil): the run HAS a key of that name, it just
+// may not be used (HeldButUnusable), and a caller that treats "absent" as
+// "use the operator's key instead" must not do so for it.
 func (e *Engine) HasKey(ctx context.Context, tenantID, agentName, userID, name string) (bool, error) {
 	if !e.CanResolve() {
 		return false, nil
@@ -426,8 +427,23 @@ func (e *Engine) HasKey(ctx context.Context, tenantID, agentName, userID, name s
 	}
 	// A URL-restricted credential is not a key a provider can be given:
 	// Resolve refuses it, so reporting it here would promise a key the run
-	// then does not get.
-	return restrictionOf(row.Definition) == nil, nil // no decrypt needed
+	// then does not get. Like an expired one, it is held, not absent.
+	if restrictionOf(row.Definition) != nil {
+		return false, fmt.Errorf("%w (%q)", ErrRestricted, name)
+	}
+	return true, nil // no decrypt needed
+}
+
+// HeldButUnusable reports whether err, from a by-name lookup, means the run
+// HOLDS a credential of that name that may not be used here: expired, or
+// restricted to URLs this use does not name or cover. That is not a miss. A
+// caller that falls back to some other value when the run has no credential
+// (the operator's provider key, an operator-allowlisted host variable) must
+// not do so for it: the tenant's credential would be quietly replaced by the
+// operator's, and the tenant never told.
+func HeldButUnusable(err error) bool {
+	return errors.Is(err, ErrExpired) || errors.Is(err, ErrRestricted) ||
+		errors.Is(err, ErrURLNotAllowed) || errors.Is(err, ErrNotPinnable)
 }
 
 // HasKeyFor is HasKey for a credential about to be sent to targetURL: it

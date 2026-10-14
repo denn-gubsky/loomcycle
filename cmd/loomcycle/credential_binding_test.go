@@ -115,3 +115,38 @@ func TestCredentialBinding_AnExpiredKeyIsNotKeyable(t *testing.T) {
 		t.Error("a live tenant key was reported not keyable")
 	}
 }
+
+// A key the run holds but has restricted by allowed_urls is held, not
+// missing: the provider call fails instead of taking the operator's key, the
+// Bash / Bashbox variable is reported unusable instead of letting the host
+// variable through, and a restricted run is not routed on it.
+func TestCredentialBinding_ARestrictedKeyIsNeverReplaced(t *testing.T) {
+	b, registered := bindingWith(t, nil)
+	scoped := &[]string{"https://api.example.com"}
+	for _, name := range []string{"ANTHROPIC_API_KEY", "GITHUB_TOKEN"} {
+		if _, err := b.engine.PutInline(context.Background(), credential.Identity{TenantID: "t", Scope: "tenant", Name: name}, name+"-value", nil, scoped, nil); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	for _, allowed := range []bool{true, false} {
+		ctx := providers.WithOperatorKeyAllowed(providers.WithCredentialResolver(runCtx(), b.providerKey), allowed)
+		key, source, _, err := providers.ResolveKeyOrOperator(ctx, "ANTHROPIC_API_KEY", "sk-operator")
+		if !errors.Is(err, providers.ErrCredentialUnusable) || !errors.Is(err, credential.ErrRestricted) {
+			t.Errorf("operator key allowed=%v: err = %v, want ErrCredentialUnusable wrapping ErrRestricted", allowed, err)
+		}
+		if key != "" || source != "" {
+			t.Errorf("operator key allowed=%v: key=%q source=%q; want no key at all", allowed, key, source)
+		}
+	}
+
+	if v, ok, err := b.envVar("bash")(runCtx(), "GITHUB_TOKEN"); !errors.Is(err, credential.ErrRestricted) || ok || v != "" {
+		t.Errorf("env var: (%q, %v, %v), want a restricted error and no value", v, ok, err)
+	}
+	if b.keyable(context.Background(), "t", "", "u", "ANTHROPIC_API_KEY") {
+		t.Error("a restricted tenant key was reported keyable")
+	}
+	if len(*registered) != 0 {
+		t.Errorf("registered %d value(s) for a key that was not used", len(*registered))
+	}
+}
