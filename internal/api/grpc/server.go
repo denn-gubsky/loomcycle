@@ -389,12 +389,12 @@ func (s *Server) ListUserAgents(ctx context.Context, req *loomcyclepb.ListUserAg
 	if s.store == nil {
 		return &loomcyclepb.ListUserAgentsResponse{}, nil
 	}
-	// The tenant goes into the query so it applies before the store's row
-	// bound; "" = every tenant (admin / legacy / open).
 	statuses, awaitedStates, err := userAgentsFilter(req)
 	if err != nil {
 		return nil, err
 	}
+	// The tenant goes into the query so it applies before the store's row
+	// bound; "" = every tenant (admin / legacy / open).
 	queryTenant, allTenants := grpcTenantScope(ctx)
 	if allTenants {
 		queryTenant = ""
