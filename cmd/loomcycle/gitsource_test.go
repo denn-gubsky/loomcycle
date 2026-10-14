@@ -1,7 +1,10 @@
 package main
 
 import (
+	"net/http"
+	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -70,5 +73,44 @@ func TestGitSourceConfigFromEnv_RefusesWhatItCannotRead(t *testing.T) {
 		if cfg, err := gitSourceConfigFromEnv(envOf(env), nil); err == nil {
 			t.Errorf("%s: accepted as %+v", name, cfg)
 		}
+	}
+}
+
+// The transport a clone uses dials through the network guard: a host on a
+// loopback address is refused before any connection, so the server sees no
+// request, unless the operator vouched for it in the private host allowlist.
+// The two cases differ in that list alone. Every other git source test hands
+// in its own transport, so this is the one place the guard on the clone path
+// is exercised.
+func TestGitSourceConfigFromEnv_TheTransportRefusesAPrivateAddress(t *testing.T) {
+	var hits atomic.Int64
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { hits.Add(1) }))
+	defer srv.Close()
+	env := envOf(map[string]string{"LOOMCYCLE_GIT_SOURCE_HOSTS": strings.TrimPrefix(srv.URL, "https://")})
+	get := func(allowlist []string) error {
+		t.Helper()
+		cfg, err := gitSourceConfigFromEnv(env, allowlist)
+		if err != nil || cfg == nil {
+			t.Fatalf("cfg=%v err=%v", cfg, err)
+		}
+		tr, ok := cfg.Transport.(*http.Transport)
+		if !ok {
+			t.Fatalf("transport is %T", cfg.Transport)
+		}
+		// Trust the test server's certificate, and nothing else changes.
+		tr.TLSClientConfig = srv.Client().Transport.(*http.Transport).TLSClientConfig
+		req, _ := http.NewRequest(http.MethodGet, srv.URL+"/acme/app.git/info/refs", nil)
+		resp, err := tr.RoundTrip(req)
+		if err == nil {
+			resp.Body.Close()
+		}
+		return err
+	}
+
+	if err := get(nil); err == nil || hits.Load() != 0 {
+		t.Errorf("a loopback host: err=%v, %d request(s) reached it; want refused before any", err, hits.Load())
+	}
+	if err := get([]string{"127.0.0.1"}); err != nil || hits.Load() != 1 {
+		t.Errorf("a loopback host the operator vouched for: err=%v, %d request(s); want one", err, hits.Load())
 	}
 }
