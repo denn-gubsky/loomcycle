@@ -190,6 +190,39 @@ console.log(`restored memory rows: ${result.memory_restored}`);
 | `listMemoryEntries(scope, scopeID, opts?)` | `Promise<MemoryEntriesResponse>` | Optional `prefix` + `limit`. |
 | `getMemoryEntry(scope, scopeID, key)` | `Promise<MemoryEntryResponse>` | Single row read. |
 
+### Memory / document change feeds (RFC CD Part C)
+
+Live SSE tails of what changed in the caller's tenant's memory and documents — for a cache, an index, or a console that reacts to writes without polling.
+
+| Method | Returns | Notes |
+|---|---|---|
+| `streamMemoryChanges(opts?)` | `AsyncIterable<ChangeFeedFrame>` | `memory.set` / `memory.delete` / `memory.scope_deleted`. Mirrors `GET /v1/_memory/changes`. |
+| `streamDocumentChanges(opts?)` | `AsyncIterable<ChangeFeedFrame>` | `document.chunk.updated` / `document.chunk.deleted`, naming the `chunk_id`. Mirrors `GET /v1/_document/changes`. |
+
+Each change is a **value-free coordinate** (`seq`, `type`, `scope`, `scope_id`, `key` or `chunk_id`, `at`): it says *what* changed, and you pull the current value through the data API. The first item is always `{ kind: "feed", payload: { enabled, since, embedder? } }`, then one `{ kind: "change", payload: MemoryChange }` per change, oldest first.
+
+- **Off by default.** The server only records changes with `LOOMCYCLE_MEMORY_CHANGES_ENABLED`. Without it the stream opens and idles forever, so check `payload.enabled` on the feed frame rather than waiting.
+- **Tenant-scoped, operator-only.** You see your own tenant's changes, never another's. The routes need `substrate:tenant` (or admin); a tenant member's token gets a 403 (`LoomcycleError`, `status: 403`).
+- **Resumable.** Persist the last `seq` you processed and pass it back as `since` on reconnect; delivery is strictly after it. `since` must be a non-negative integer — the client throws otherwise, because the server would read a bad value as `0` and replay everything it retains.
+- **The embedder's health rides along.** An embedding failure does not fail the write, so a busy feed can sit over rows that are no longer searchable; `payload.embedder.state === "failing"` (with a `failures` count) is the signal to run `backfillEmbeddings`.
+
+```ts
+let since = await loadCursor(); // your own persistence
+const ac = new AbortController();
+
+for await (const item of client.streamMemoryChanges({ since, signal: ac.signal })) {
+  if (item.kind === "feed") {
+    if (!item.payload.enabled) throw new Error("change feed is off on this server");
+    continue;
+  }
+  const ch = item.payload; // { seq, type, scope, scope_id, key?, at }
+  await invalidate(ch.scope, ch.scope_id, ch.key);
+  since = ch.seq;
+  await saveCursor(since);
+}
+// The loop ends when the server closes the stream (e.g. a restart): reconnect with `since`.
+```
+
 ### Interruption (v0.8.16)
 
 | Method | Returns | Notes |
