@@ -397,10 +397,18 @@ func TestResidentElsewhere_SendCancelAndCloseReachTheChild(t *testing.T) {
 	if out, state, err := b.sendResidentChild(ctx, runID, "slow", 50); err != nil || state != "running" || out != "" {
 		t.Fatalf("bounded send elsewhere = %q %q %v, want running with no answer yet", out, state, err)
 	}
+	// The bounded send returns after 50ms whether or not the child has taken
+	// the instruction yet. On a loaded machine it may not have: the store then
+	// still says awaiting_input, and a second send would be accepted. Refusing
+	// a send over a running turn needs the turn to be running.
+	waitFor(t, "the slow turn to arm its cancel", func() bool { return a.turnCancelReg.IsArmed(runID) })
+	waitFor(t, "the store to show the slow turn running", func() bool {
+		v, err := b.readStoredResident(ctx, runID)
+		return err == nil && v.state == "running"
+	})
 	if _, _, err := b.sendResidentChild(ctx, runID, "more", 0); err == nil || !strings.Contains(err.Error(), "still running its previous turn") {
 		t.Errorf("send elsewhere over a running turn: %v, want it refused", err)
 	}
-	waitFor(t, "the slow turn to arm its cancel", func() bool { return a.turnCancelReg.IsArmed(runID) })
 	if _, state, err := b.cancelResidentChildTurn(ctx, runID); err != nil || state != "awaiting_input" {
 		t.Errorf("cancel elsewhere = %q %v, want the child parked again", state, err)
 	}
