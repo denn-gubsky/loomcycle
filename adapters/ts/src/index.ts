@@ -72,7 +72,10 @@
  *     mcpServerDef(input): Promise<SubstrateToolResponse>
  *     mcpServerDefVerify(name, sha): Promise<MCPServerDefVerifyResult>   // v0.18.0
  *     ensureMcpServer(opts): Promise<EnsureMcpServerResult>              // v0.18.0 — idempotent register-if-changed
- *     scheduleDef(input): Promise<SubstrateToolResponse>
+ *     scheduleDef(input): Promise<SubstrateToolResponse>                // input: ScheduleDefInput | SubstrateToolInput
+ *     webhookDef(input): Promise<SubstrateToolResponse>                 // input: WebhookDefInput | SubstrateToolInput
+ *     hookDef(input): Promise<SubstrateToolResponse>                    // input: HookDefInput | SubstrateToolInput
+ *     ensureHookDef(name, overlay, opts?): Promise<EnsureHookDefResult>  // idempotent register-if-changed
  *
  *     // Dynamic filesystem volumes (v0.35.0 — RFC AH; tenant-confined)
  *     volumeDef(input): Promise<SubstrateToolResponse>            // create/get/list/delete/purge
@@ -369,6 +372,26 @@ export type {
   ToolHooksByTool,
   EnsureCodeAgentOptions,
   EnsureCodeAgentResult,
+  // Typed HookDef / ScheduleDef / WebhookDef inputs (RFC EO)
+  EnsureHookDefOptions,
+  EnsureHookDefResult,
+  HookDefBody,
+  HookDefForkOverlay,
+  HookDefInput,
+  HookDefMatch,
+  HookDefOverlay,
+  HookDefRowResponse,
+  HookDefVerifyResult,
+  ScheduleDefInput,
+  ScheduleDefOverlay,
+  ScheduledRunHook,
+  ScheduledRunPromptContent,
+  ScheduledRunPromptSegment,
+  WebhookDefAuth,
+  WebhookDefInput,
+  WebhookDefOverlay,
+  WebhookDefRateLimit,
+  WebhookDefSyncResponse,
   // Library v2 enumeration (v0.10.3)
   LibraryAgentDefinition,
   LibraryEntry,

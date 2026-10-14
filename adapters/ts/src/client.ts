@@ -70,6 +70,14 @@ import type {
   CreateSnapshotOptions,
   EnsureCodeAgentOptions,
   EnsureCodeAgentResult,
+  EnsureHookDefOptions,
+  EnsureHookDefResult,
+  HookDefInput,
+  HookDefOverlay,
+  HookDefRowResponse,
+  HookDefVerifyResult,
+  ScheduleDefInput,
+  WebhookDefInput,
   EnsureMcpServerOptions,
   EnsureMcpServerResult,
   HealthResponse,
@@ -2040,9 +2048,14 @@ export class LoomcycleClient {
    *  Raises {@link SubstrateToolRefusedError} on tool-level refusals
    *  (static-name collision, missing required credential, invalid
    *  cron, etc.); {@link InvalidArgumentError} on 400 (malformed
-   *  JSON); {@link AuthError} on 401. */
+   *  JSON); {@link AuthError} on 401.
+   *
+   *  Annotate the input as {@link ScheduleDefInput} to have the overlay and
+   *  each op's fields checked (including `add_hook` / `remove_hook`, which the
+   *  loose {@link SubstrateToolInput} does not list); a loose input is sent
+   *  as it is. */
   async scheduleDef(
-    input: SubstrateToolInput,
+    input: ScheduleDefInput | SubstrateToolInput,
     opts?: { signal?: AbortSignal },
   ): Promise<SubstrateToolResponse> {
     return postJSON<SubstrateToolResponse>(this.ctx, "/v1/_scheduledef", input, opts);
@@ -2097,9 +2110,12 @@ export class LoomcycleClient {
    *
    *  Raises {@link SubstrateToolRefusedError} on tool-level refusals;
    *  {@link InvalidArgumentError} on 400 (malformed JSON);
-   *  {@link AuthError} on 401. */
+   *  {@link AuthError} on 401.
+   *
+   *  Annotate the input as {@link WebhookDefInput} to have the overlay and
+   *  each op's fields checked; a loose input is sent as it is. */
   async webhookDef(
-    input: SubstrateToolInput,
+    input: WebhookDefInput | SubstrateToolInput,
     opts?: { signal?: AbortSignal },
   ): Promise<SubstrateToolResponse> {
     return postJSON<SubstrateToolResponse>(this.ctx, "/v1/_webhookdef", input, opts);
@@ -2141,12 +2157,64 @@ export class LoomcycleClient {
    *  matches, its body (code-js or a webhook URL), fail mode and timeout.
    *  Tenant-confined like agentDef. A HookDef fires on nothing by itself; an
    *  agent definition, a team definition or a run names it. Mirrors
-   *  POST /v1/_hookdef. */
+   *  POST /v1/_hookdef.
+   *
+   *  Annotate the input as {@link HookDefInput} to have the overlay checked
+   *  against the definition the server decodes STRICTLY — an unknown overlay
+   *  key is then a compile error instead of a refusal. A loose
+   *  {@link SubstrateToolInput} is sent as it is. */
   async hookDef(
-    input: SubstrateToolInput,
+    input: HookDefInput | SubstrateToolInput,
     opts?: { signal?: AbortSignal },
   ): Promise<SubstrateToolResponse> {
     return postJSON<SubstrateToolResponse>(this.ctx, "/v1/_hookdef", input, opts);
+  }
+
+  /** Register a HookDef idempotently — the register-on-every-boot
+   *  convenience, sibling of {@link LoomcycleClient.ensureMcpServer}.
+   *
+   *  Unlike MCPServerDef and AgentDef, a HookDef `create` is NOT
+   *  content-addressed: every create mints a new version. And the hash
+   *  `verify` compares is computed over the server's own JSON encoding of the
+   *  definition, which this client cannot reproduce byte for byte. So instead
+   *  this reads the active version (`verify` for its def_id — it answers
+   *  `deployed: false` rather than raising — then `get`) and compares its
+   *  stored definition with `overlay`, both normalized the way the server
+   *  normalizes (`fail_mode` defaults to `"open"`, an empty `match.tools`,
+   *  description, header map or timeout is dropped). Equal → no write,
+   *  `changed: false`. Otherwise `create` with the default promote, which
+   *  makes the new version active.
+   *
+   *  The comparison is conservative: a difference this client cannot see
+   *  through (say, Unicode whitespace the server trims and JavaScript does not)
+   *  mints a redundant version — it never skips a real change. The rationale
+   *  in {@link EnsureHookDefOptions.description} is not part of the
+   *  definition and does not count as a change. */
+  async ensureHookDef(
+    name: string,
+    overlay: HookDefOverlay,
+    opts?: EnsureHookDefOptions,
+  ): Promise<EnsureHookDefResult> {
+    const callOpts = opts?.signal ? { signal: opts.signal } : undefined;
+    const verified = (await this.hookDef(
+      { op: "verify", name },
+      callOpts,
+    )) as HookDefVerifyResult;
+    if (verified.deployed && verified.current_def_id) {
+      // By def_id, not name: the version verify reported, even if another
+      // writer promotes a different one in between.
+      const active = (await this.hookDef(
+        { op: "get", def_id: verified.current_def_id },
+        callOpts,
+      )) as HookDefRowResponse;
+      if (sameJSON(normalizeHookDef(active.definition), normalizeHookDef(overlay))) {
+        return { name, defId: active.def_id, version: active.version, changed: false };
+      }
+    }
+    const input: HookDefInput = { op: "create", name, overlay };
+    if (opts?.description) input.description = opts.description;
+    const row = (await this.hookDef(input, callOpts)) as HookDefRowResponse;
+    return { name, defId: row.def_id, version: row.version, changed: true };
   }
 
   /** OperatorTokenDef substrate ops (create/rotate/retire/get/list) —
@@ -3429,6 +3497,44 @@ async function* parseRunStateSSE(
 //   - scope === "user"   → /v1/users/{userId}/channels/{channel}/{op}
 // Channel name is URL-encoded so names containing slashes
 // ("findings/alpha", "_system/foo") survive transport.
+/** The form a HookDef definition is stored in: hooks.Def.Normalize followed
+ *  by Go's omitempty encoding. Applied to both sides of ensureHookDef's
+ *  comparison, so it only has to agree with itself on what the server keeps. */
+function normalizeHookDef(d: HookDefOverlay): Record<string, unknown> {
+  const out: Record<string, unknown> = { event: d.event };
+  const description = (d.description ?? "").trim();
+  if (description) out.description = description;
+  if (d.match?.tools && d.match.tools.length > 0) out.match = { tools: d.match.tools };
+  const body: Record<string, unknown> = { kind: d.body.kind };
+  if (d.body.kind === "code-js") {
+    if (d.body.code) body.code = d.body.code;
+  } else {
+    if (d.body.url) body.url = d.body.url;
+    if (d.body.headers && Object.keys(d.body.headers).length > 0) body.headers = d.body.headers;
+  }
+  out.body = body;
+  out.fail_mode = d.fail_mode || "open";
+  if (d.timeout_ms) out.timeout_ms = d.timeout_ms;
+  return out;
+}
+
+/** Structural JSON equality, ignoring object key order (the server's
+ *  encoding orders keys by struct field, a caller's literal by whatever it
+ *  wrote). Arrays compare in order. */
+function sameJSON(a: unknown, b: unknown): boolean {
+  if (a === b) return true;
+  if (typeof a !== "object" || typeof b !== "object" || a === null || b === null) return false;
+  if (Array.isArray(a) !== Array.isArray(b)) return false;
+  if (Array.isArray(a) && Array.isArray(b)) {
+    return a.length === b.length && a.every((v, i) => sameJSON(v, b[i]));
+  }
+  const ao = a as Record<string, unknown>;
+  const bo = b as Record<string, unknown>;
+  const keys = Object.keys(ao);
+  if (keys.length !== Object.keys(bo).length) return false;
+  return keys.every((k) => Object.prototype.hasOwnProperty.call(bo, k) && sameJSON(ao[k], bo[k]));
+}
+
 function channelOpPath(
   channel: string,
   scope: "global" | "user",
