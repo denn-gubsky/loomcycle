@@ -1,6 +1,8 @@
 package http
 
 import (
+	"context"
+	"log"
 	"net/http"
 	"strconv"
 	"time"
@@ -137,30 +139,114 @@ func (s *Server) streamMemoryChanges(w http.ResponseWriter, r *http.Request, doc
 	stream.startKeepalive(r.Context(), s.cfg().Env.SSEKeepaliveInterval)
 	defer stream.end()
 
-	ticker := time.NewTicker(memoryChangesPollInterval)
-	defer ticker.Stop()
+	s.tailMemoryChanges(r.Context(), stream, tenantID, cursor, documents, changeFeedPolling{
+		base:  memoryChangesPollInterval,
+		max:   memoryChangesMaxBackoff,
+		sleep: sleepCtx,
+	})
+}
+
+// memoryChangesMaxBackoff caps the retry interval while the store keeps failing:
+// long enough that a down database is not hammered by every connected reader,
+// short enough that a recovery reaches the reader within a few seconds.
+const memoryChangesMaxBackoff = 5 * time.Second
+
+// changeFeedBatch is the page size of one store read. A full page means more rows
+// may be waiting, so the drain reads again before sleeping.
+const changeFeedBatch = 500
+
+// changeFeedPolling is the tail loop's timing. Injected so a test can observe
+// the backoff sequence without waiting on wall-clock time.
+type changeFeedPolling struct {
+	base, max time.Duration
+	// sleep waits d or until ctx is done; it reports false when ctx is done.
+	sleep func(ctx context.Context, d time.Duration) bool
+}
+
+func sleepCtx(ctx context.Context, d time.Duration) bool {
+	t := time.NewTimer(d)
+	defer t.Stop()
+	select {
+	case <-ctx.Done():
+		return false
+	case <-t.C:
+		return true
+	}
+}
+
+// changeFeedStoreUnavailable is the fixed text of the `error` frame. The store's
+// own error is NOT forwarded: a driver error can name hosts, roles or SQL, and the
+// reader of this frame needs only "the feed cannot read right now" — the detail
+// is in the server log.
+const changeFeedStoreUnavailable = "the change store could not be read; the feed is retrying"
+
+// tailMemoryChanges polls the change table past cursor until ctx is done.
+//
+// A FAILED READ IS REPORTED, NOT SWALLOWED. It used to `break` and poll again, so
+// a broken store produced exactly what a quiet one does — keepalives and no
+// change frames — and a reader watching the feed had no way to tell "nothing is
+// changing" from "nothing can be read". Now the first failure of a streak sends
+// one `error` frame; later failures in the same streak stay silent (a frame every
+// poll would flood the reader with the same news) and the interval doubles up to
+// the cap so a down store is not hammered. The cursor only moves past rows that
+// were actually sent, so a failure skips nothing: the next successful read starts
+// where the last one stopped. Recovery needs no frame of its own — the next
+// `change` frame is the evidence — and the `feed` frame is not re-sent because
+// nothing it states (capture on, cursor accepted, embedder) changed.
+func (s *Server) tailMemoryChanges(ctx context.Context, stream *sse, tenantID string, cursor int64, documents bool, p changeFeedPolling) {
+	delay := p.base
+	failures := 0
 	for {
-		// Drain everything past the cursor, then wait for the next tick.
-		for {
-			changes, err := s.store.GetMemoryChangesSince(r.Context(), tenantID, cursor, 500)
-			if err != nil {
-				break
-			}
-			for _, ch := range changes {
-				cursor = ch.Seq
-				if isDocumentChange(ch.Type) != documents {
-					continue
-				}
-				stream.sendRaw("change", ch)
-			}
-			if len(changes) < 500 {
-				break
-			}
-		}
-		select {
-		case <-r.Context().Done():
+		err := s.drainMemoryChanges(ctx, stream, tenantID, &cursor, documents)
+		if ctx.Err() != nil {
+			// The reader went away; a read cut short by that is not a store fault.
 			return
-		case <-ticker.C:
+		}
+		if err != nil {
+			failures++
+			if failures == 1 {
+				log.Printf("change feed: store read failed (tenant=%q after_seq=%d), retrying with backoff: %v", tenantID, cursor, err)
+				// No `type` in the payload, like the feed frame: a client that backfills
+				// from the event name sees `error`.
+				stream.sendRaw("error", map[string]string{
+					"code":  "store_unavailable",
+					"error": changeFeedStoreUnavailable,
+				})
+			}
+			if delay *= 2; delay > p.max {
+				delay = p.max
+			}
+		} else {
+			if failures > 0 {
+				log.Printf("change feed: store reads recovered (tenant=%q) after %d failed attempts", tenantID, failures)
+				failures = 0
+			}
+			delay = p.base
+		}
+		if !p.sleep(ctx, delay) {
+			return
+		}
+	}
+}
+
+// drainMemoryChanges sends everything past *cursor, page by page, advancing the
+// cursor over every row it reads (both families, so the two feeds stay
+// consistent; filtering happens on the way out).
+func (s *Server) drainMemoryChanges(ctx context.Context, stream *sse, tenantID string, cursor *int64, documents bool) error {
+	for {
+		changes, err := s.store.GetMemoryChangesSince(ctx, tenantID, *cursor, changeFeedBatch)
+		if err != nil {
+			return err
+		}
+		for _, ch := range changes {
+			*cursor = ch.Seq
+			if isDocumentChange(ch.Type) != documents {
+				continue
+			}
+			stream.sendRaw("change", ch)
+		}
+		if len(changes) < changeFeedBatch {
+			return nil
 		}
 	}
 }

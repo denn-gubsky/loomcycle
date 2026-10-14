@@ -286,8 +286,8 @@ func TestTeamChannels_AMemberNeedsTheChannelReadScope(t *testing.T) {
 			"channel:publish only": {auth.ScopeChannelPublish},
 			"no scope at all":      nil,
 		} {
-			if code, out := h.get(memberWith(scopes...), path); code != http.StatusForbidden || out["code"] != "insufficient_scope" {
-				t.Errorf("%s with %s: HTTP %d %v, want 403 insufficient_scope", path, name, code, out)
+			if code, out := h.get(memberWith(scopes...), path); code != http.StatusForbidden || out["code"] != "insufficient_scope" || out["required_scope"] != auth.ScopeChannelRead {
+				t.Errorf("%s with %s: HTTP %d %v, want 403 insufficient_scope naming %s", path, name, code, out, auth.ScopeChannelRead)
 			}
 		}
 		if code, out := h.get(memberWith(auth.ScopeChannelRead), path); code != http.StatusOK {
@@ -486,8 +486,8 @@ func TestTeamChannels_AMemberNeedsTheChannelPublishScopeToRelease(t *testing.T) 
 		"runs:create only":  {auth.ScopeRunsCreate},
 		"no scope at all":   nil,
 	} {
-		if code, out := h.release(memberWith(scopes...), "held", "events", ""); code != http.StatusForbidden || out["code"] != "insufficient_scope" {
-			t.Errorf("%s: HTTP %d %v, want 403 insufficient_scope", name, code, out)
+		if code, out := h.release(memberWith(scopes...), "held", "events", ""); code != http.StatusForbidden || out["code"] != "insufficient_scope" || out["required_scope"] != auth.ScopeChannelPublish {
+			t.Errorf("%s: HTTP %d %v, want 403 insufficient_scope naming %s", name, code, out, auth.ScopeChannelPublish)
 		}
 	}
 	if got := h.stored("_team/held/events", store.MemoryScopeTenant, ""); len(got) != 0 {

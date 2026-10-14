@@ -1459,6 +1459,8 @@ func main() {
 	}
 	credEngine := credential.NewEngine(storeIface, credSealer)
 	credentialDefTool.Engine = credEngine
+	// A team's own webhook may name a stored secret of the author's tenant.
+	teamDefTool.Credentials = credEngine
 	// $ghapp:<name> — mint a short-lived GitHub App installation token from a
 	// stored App config (the private key never leaves loomcycle; only the ~1h,
 	// repo-scoped token is substituted). Resolves the App config through the same
@@ -1665,7 +1667,8 @@ func main() {
 		log.Printf("mcp_server_defs: loaded %d active registration(s) into pool registry", size)
 	}
 	// Read-only: name every stored version that reads the server environment
-	// without being operator-authored. The pool refuses to dial those.
+	// without being operator-authored. The pool refuses to dial those unless
+	// LOOMCYCLE_MCP_REFUSE_UNATTRIBUTED_ENV=0; each line says which.
 	if warns, err := mcpServerDefTool.OperatorEnvWarnings(context.Background()); err != nil {
 		log.Printf("mcp_server_defs: environment-reference audit: %v (continuing)", err)
 	} else {
@@ -1759,6 +1762,11 @@ func main() {
 	// RFC AX: the keyability probe backs credential-aware routing for a
 	// restricted run (resolves only to providers the tenant can key itself).
 	srv.SetCredKeyable(credKeyable)
+	// The snapshot scan's check for a webhook's stored verification secret.
+	srv.SetCredToCompare(func(ctx context.Context, tenantID, name string) bool {
+		ok, err := credEngine.HasToCompare(ctx, tenantID, name)
+		return err == nil && ok
+	})
 	// RFC BE: the History tool's op=recap summarizer. Store was late-bound above
 	// (before srv existed); Recap needs server-side provider/model resolution, so
 	// it's the off-loop twin of the compaction summarizer (Server.RecapSession).
@@ -1895,6 +1903,7 @@ func main() {
 	// The HookDef substrate compiles a code-js body when it is saved, with the
 	// same runner that will run it; without code hooks a code body is refused.
 	hookDefTool := &builtin.HookDef{
+		Credentials:         peerCreds,
 		Store:               storeIface,
 		MaxDescriptionBytes: cfg.Env.AgentDefMaxDescriptionBytes,
 	}
@@ -1936,6 +1945,7 @@ func main() {
 		Cfg:                 cfg,
 		MaxDefinitionBytes:  cfg.Env.AgentDefMaxDefinitionBytes,
 		MaxDescriptionBytes: cfg.Env.AgentDefMaxDescriptionBytes,
+		Credentials:         credEngine,
 	})
 	// RFC I MR-3a — wire the MemoryBackendDef substrate tool. Same
 	// operator-admin-only posture as WebhookDef; reached via
@@ -2338,6 +2348,7 @@ func main() {
 			Publisher:            sysPublisher,
 			RunStateBus:          runStateBus,
 			EnvAllowlist:         webhookAllowlist,
+			Credentials:          credEngine, // auth.secret: a stored verification secret
 			AllowUnauthenticated: cfg.Env.WebhooksAllowUnauthenticated,
 			Logf:                 log.Printf,
 		})
@@ -4383,17 +4394,18 @@ func mcpPoolBuild(cfg *config.Config, mcpDynView mcpLookupView,
 		// rest; what reaches here unstamped is a row stored before that rule,
 		// a restored older snapshot, or a hand edit.
 		//
-		// This release warns and still dials it, so an upgrade does not cut
-		// off a server an admin wrote before authority was recorded.
-		// LOOMCYCLE_MCP_REFUSE_UNATTRIBUTED_ENV=1 refuses it now, before any
-		// client exists or request is sent. The default flips to refuse in
-		// the next release.
+		// The default refuses it here, before any client exists or request is
+		// sent. LOOMCYCLE_MCP_REFUSE_UNATTRIBUTED_ENV=0 is the upgrade escape
+		// hatch: it warns and still dials, so an operator who has not yet had
+		// the boot-listed defs re-saved is not cut off mid-upgrade. Neither
+		// message carries a value — only where the reference sits.
 		if spec.Source != "static" && !spec.OperatorAuthored {
 			if locs := mcp.EnvRefLocations(spec.URL, spec.Headers, spec.Command, spec.Args, spec.Env); len(locs) > 0 {
 				fields := strings.Join(locs, ", ")
-				if cfg.Env.MCPRefuseUnattributedEnv {
-					return nil, fmt.Errorf("mcp_servers.%s (tenant=%q): %s holds a ${NAME} reference to the server environment, but this definition was not saved by an admin; refusing to dial it (an admin re-save restores it)",
-						name, tenant, fields)
+				if !cfg.Env.MCPDialUnattributedEnv {
+					return nil, fmt.Errorf("mcp_servers.%s v%d (def_id %s, tenant=%q): %s holds a ${NAME} reference to the server environment, but this definition was not saved by an admin; refusing to dial it. "+
+						"An admin acting in that tenant re-saves it (create with the same overlay) to restore it; LOOMCYCLE_MCP_REFUSE_UNATTRIBUTED_ENV=0 dials it meanwhile",
+						name, spec.Version, spec.DefID, tenant, fields)
 				}
 				key := tenant + "\x00" + name + "\x00" + spec.DefID
 				warnedMu.Lock()
@@ -4402,7 +4414,7 @@ func mcpPoolBuild(cfg *config.Config, mcpDynView mcpLookupView,
 				warnedMu.Unlock()
 				if first {
 					logf("mcp_servers: WARNING: %q v%d (def_id %s, tenant %q) expands %s from the server environment but was not saved by an admin; "+
-						"a future release will refuse to dial it unless an admin re-saves it (LOOMCYCLE_MCP_REFUSE_UNATTRIBUTED_ENV=1 refuses it now)",
+						"dialing it only because LOOMCYCLE_MCP_REFUSE_UNATTRIBUTED_ENV=0 — have an admin acting in that tenant re-save it (create with the same overlay), then unset the variable",
 						name, spec.Version, spec.DefID, tenant, fields)
 				}
 			}

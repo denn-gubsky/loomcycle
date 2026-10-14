@@ -257,6 +257,18 @@ func (s *Semaphore) admitGlobal(ctx context.Context, key, acct userKey, acctQS u
 		s.mu.Unlock()
 		return nil, &BackpressureError{msg: msg}
 	}
+	// A run not counted against a per-user cap (the cap is off, the default,
+	// or the run names no user) has nothing else bounding its key's share of
+	// the queue. Since a queued run never times out, one caller could hold
+	// every place and turn every other tenant's runs away as "queue full".
+	// A run counted against its user needs no check: the key's waiting runs
+	// are already at most its per-user cap.
+	if acct.user == "" && s.maxQueuedPerUser > 0 {
+		if b := s.queue.buckets[key]; b != nil && len(b.waiters) >= s.maxQueuedPerUser {
+			s.mu.Unlock()
+			return nil, &BackpressureError{msg: "queue full for this user"}
+		}
+	}
 	w := &semWaiter{ch: make(chan struct{}, 1), key: key, ticket: r.Ticket, reason: QueueReasonGlobalCap}
 	s.queue.push(w)
 	s.queued++

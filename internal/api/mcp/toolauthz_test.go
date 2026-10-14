@@ -159,6 +159,9 @@ func TestPrincipalMayCallTool_AMemberNeedsTheToolsOwnScope(t *testing.T) {
 func TestPrincipalMayCallTool_AnIsolatedUserIsNotWidened(t *testing.T) {
 	ctx := member(auth.ScopeUser)
 	for tool := range toolRequiredScope {
+		if userSelfServiceTools[tool] {
+			continue // gated AND self-service: evaluation, at runs:read
+		}
 		if principalMayCallTool(ctx, tool) {
 			t.Errorf("an isolated user must not reach %q", tool)
 		}

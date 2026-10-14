@@ -24,6 +24,7 @@ import (
 
 	"github.com/denn-gubsky/loomcycle/internal/audit"
 	"github.com/denn-gubsky/loomcycle/internal/auth"
+	"github.com/denn-gubsky/loomcycle/internal/awaited"
 	"github.com/denn-gubsky/loomcycle/internal/breakpoints"
 	"github.com/denn-gubsky/loomcycle/internal/cancel"
 	"github.com/denn-gubsky/loomcycle/internal/channelhooks"
@@ -251,6 +252,11 @@ type Server struct {
 	// drives Agent op=open/send/close + the idle sweeper + parent-teardown reap.
 	residentReg *residentRegistry
 
+	// awaitedScanCap bounds how many running runs one ?awaited_state= listing
+	// reads; 0 = awaited.ScanCap. Only tests set it, to reach the cap without
+	// writing a thousand runs.
+	awaitedScanCap int
+
 	// liveChildren counts each run's live children across every Agent op
 	// (LOOMCYCLE_MAX_LIVE_CHILDREN_PER_RUN). Shared with the Agent tool, which
 	// admits spawn children; resident children are admitted at open.
@@ -293,6 +299,12 @@ type Server struct {
 	// a keyless provider). Called in the SERVER before Resolve — the lock-free
 	// resolver never does credential-store I/O.
 	credKeyable func(ctx context.Context, tenantID, agentName, userID, name string) bool
+
+	// credToCompare: does tenantID hold the tenant-level credential name,
+	// whatever its allowed_urls — the snapshot scan's check for a webhook's
+	// stored verification secret, which is only compared. Metadata only.
+	// Wired via SetCredToCompare; nil leaves those references unchecked.
+	credToCompare func(ctx context.Context, tenantID, name string) bool
 
 	// searchRegistry / searchResolver / searchHostKeys back the RFC BB search
 	// routing view (GET /v1/_routing → "search" block). searchHostKeys maps a
@@ -1406,6 +1418,12 @@ func (s *Server) SetCredentialResolver(r providers.CredentialResolver) { s.credR
 // before resolution. Nil ⇒ no provider is tenant-keyable.
 func (s *Server) SetCredKeyable(fn func(ctx context.Context, tenantID, agentName, userID, name string) bool) {
 	s.credKeyable = fn
+}
+
+// SetCredToCompare wires the snapshot scan's check for a credential that is
+// only ever compared (a webhook's stored verification secret).
+func (s *Server) SetCredToCompare(fn func(ctx context.Context, tenantID, name string) bool) {
+	s.credToCompare = fn
 }
 
 // SetSearchRouting wires the RFC BB search catalog for the routing view (main.go
@@ -4007,6 +4025,7 @@ func (s *Server) Mux() http.Handler {
 	// (ScopeTenant via isTenantConfinedDefPath); the tool's own scope fold +
 	// admin-gated `global` keep a tenant operator inside its own tenant.
 	mux.Handle("POST /v1/_history", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleSubstrateHistory))))
+	mux.Handle("POST /v1/_evaluation", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleSubstrateEvaluation))))
 	// RFC AR secure credential store (the Web UI Settings → Credentials panel's
 	// ingress). Bearer-authed; tenant-confined (ScopeTenant via
 	// isTenantConfinedDefPath) — the tool derives scope_id from the operator-trust
@@ -4071,6 +4090,10 @@ func (s *Server) Mux() http.Handler {
 	// declared names per substrate. The companion to the op-dispatched
 	// substrate write endpoints; drives the Web UI's /ui/library tab.
 	mux.Handle("GET /v1/_agentdef/names", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleListAgentDefNames))))
+	// Which per-run overrides a run of one agent may set (RFC EO §5.5). Four
+	// segments to names' three, so the two never match the same path — not
+	// even for an agent called "names".
+	mux.Handle("GET /v1/_agentdef/{name}/overridable", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleAgentOverridable))))
 	mux.Handle("GET /v1/_skilldef/names", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleListSkillDefNames))))
 	mux.Handle("GET /v1/_teamdef/names", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleListTeamDefNames))))
 	// A team's own channels, for the person who runs the team: its channels
@@ -9100,8 +9123,12 @@ func (s *Server) handleCancelAgent(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// userAgentsListMax bounds one GET /v1/users/{user_id}/agents answer.
+const userAgentsListMax = 100
+
 // handleListUserAgents serves GET /v1/users/{user_id}/agents?status=running.
-// Returns at most 100 runs ordered by started_at DESC.
+// Returns at most 100 runs ordered by started_at DESC. See
+// parseUserAgentsFilter for the filters.
 func (s *Server) handleListUserAgents(w http.ResponseWriter, r *http.Request) {
 	userID := r.PathValue("user_id")
 	if !validIdent(userID) {
@@ -9112,21 +9139,17 @@ func (s *Server) handleListUserAgents(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "list-by-user requires persistence (Store not configured)", http.StatusNotFound)
 		return
 	}
+	statuses, awaitedStates, code, msg := parseUserAgentsFilter(r.URL.Query())
+	if code != "" {
+		writeJSONError(w, http.StatusBadRequest, code, msg)
+		return
+	}
 	// RFC BX P2b: an isolated member sees only its OWN run metadata — another
 	// user_id yields an empty list (no cross-user enumeration), matching the
 	// session-plane confinement. Non-isolated principals keep the tenant view.
 	if s.isolatedCrossUser(r.Context(), userID) {
 		writeJSON(w, http.StatusOK, map[string]any{"agents": []agentResponse{}})
 		return
-	}
-	statusFilter := store.RunStatus(r.URL.Query().Get("status"))
-	// Default to running — the most useful view for "what's in flight
-	// for me?". Pass status=all to override.
-	if statusFilter == "" {
-		statusFilter = store.RunRunning
-	}
-	if statusFilter == "all" {
-		statusFilter = ""
 	}
 	// Multi-tenant authz: a tenant principal sees only runs in its own
 	// tenant (requesting another tenant's user_id yields an empty list);
@@ -9138,26 +9161,52 @@ func (s *Server) handleListUserAgents(w http.ResponseWriter, r *http.Request) {
 	if allTenants {
 		queryTenant = ""
 	}
-	runs, err := s.store.ListActiveRunsByUser(r.Context(), queryTenant, userID, statusFilter)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-	out := make([]agentResponse, 0, len(runs))
-	for _, run := range runs {
-		// Still needed: the store reads tenant "" as "all tenants", so a
-		// non-admin principal whose tenant is "" (a config-declared
-		// principal may omit it) gets every tenant's rows back and must be
-		// narrowed here.
-		if !allTenants && run.TenantID != scopeTenant {
-			continue
+	// Still needed: the store reads tenant "" as "all tenants", so a
+	// non-admin principal whose tenant is "" (a config-declared principal
+	// may omit it) gets every tenant's rows back and must be narrowed here.
+	visible := func(run store.Run) bool { return allTenants || run.TenantID == scopeTenant }
+	var (
+		out       []agentResponse
+		truncated bool
+	)
+	if len(awaitedStates) > 0 {
+		held, cut, err := awaited.RunningInStates(r.Context(), s.store, queryTenant, userID, awaitedStates, visible, s.awaitedScanCap, userAgentsListMax)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
 		}
-		_, live := s.cancelReg.Get(run.AgentID)
-		out = append(out, runToAgentResponse(run, live))
+		out = make([]agentResponse, 0, len(held))
+		for _, h := range held {
+			_, live := s.cancelReg.Get(h.Run.AgentID)
+			a := runToAgentResponse(h.Run, live)
+			a.AwaitedState, a.AwaitedOn = h.State, h.On
+			out = append(out, a)
+		}
+		truncated = cut
+	} else {
+		runs, err := s.store.ListActiveRunsByUser(r.Context(), queryTenant, userID, statuses...)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		out = make([]agentResponse, 0, len(runs))
+		for _, run := range runs {
+			if !visible(run) {
+				continue
+			}
+			_, live := s.cancelReg.Get(run.AgentID)
+			out = append(out, runToAgentResponse(run, live))
+		}
+		fillAwaitedStateForRunning(r.Context(), s.store, out)
 	}
-	fillAwaitedStateForRunning(r.Context(), s.store, out)
 	s.fillResidentState(out) // RFC BK P3: badge resident children + their live state
-	writeJSON(w, http.StatusOK, map[string]any{"agents": out})
+	resp := map[string]any{"agents": out}
+	// Only when it is true: a listing that read every matching run looks
+	// exactly as it always has.
+	if truncated {
+		resp["truncated"] = true
+	}
+	writeJSON(w, http.StatusOK, resp)
 }
 
 // fillResidentState enriches agent rows that are LIVE resident children (RFC BK

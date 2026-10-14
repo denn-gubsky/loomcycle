@@ -22,6 +22,7 @@ import (
 	"errors"
 	"log"
 	nethttp "net/http"
+	"slices"
 	"strings"
 	"time"
 
@@ -388,17 +389,36 @@ func (s *Server) ListUserAgents(ctx context.Context, req *loomcyclepb.ListUserAg
 	if s.store == nil {
 		return &loomcyclepb.ListUserAgentsResponse{}, nil
 	}
+	statuses, awaitedStates, err := userAgentsFilter(req)
+	if err != nil {
+		return nil, err
+	}
 	// The tenant goes into the query so it applies before the store's row
 	// bound; "" = every tenant (admin / legacy / open).
 	queryTenant, allTenants := grpcTenantScope(ctx)
 	if allTenants {
 		queryTenant = ""
 	}
-	runs, err := s.store.ListActiveRunsByUser(ctx, queryTenant, req.GetUserId(), store.RunStatus(req.GetStatus()))
+	p, ok := auth.PrincipalFromContext(ctx)
+	if len(awaitedStates) > 0 {
+		visible := func(r store.Run) bool { return auth.OwnedRowVisible(p, ok, r.TenantID, r.UserID) }
+		held, truncated, err := awaited.RunningInStates(ctx, s.store, queryTenant, req.GetUserId(), awaitedStates, visible, 0, userAgentsListMax)
+		if err != nil {
+			return nil, status.Errorf(codes.Internal, "store: %v", err)
+		}
+		out := &loomcyclepb.ListUserAgentsResponse{Agents: make([]*loomcyclepb.Agent, 0, len(held)), Truncated: truncated}
+		for _, h := range held {
+			_, live := s.cancelReg.Get(h.Run.AgentID)
+			a := runToProto(h.Run, live)
+			a.AwaitedState, a.AwaitedOn = h.State, h.On
+			out.Agents = append(out.Agents, a)
+		}
+		return out, nil
+	}
+	runs, err := s.store.ListActiveRunsByUser(ctx, queryTenant, req.GetUserId(), statuses...)
 	if err != nil {
 		return nil, status.Errorf(codes.Internal, "store: %v", err)
 	}
-	p, ok := auth.PrincipalFromContext(ctx)
 	out := &loomcyclepb.ListUserAgentsResponse{Agents: make([]*loomcyclepb.Agent, 0, len(runs))}
 	for _, r := range runs {
 		// Drop cross-tenant rows, and for an isolated member another user's rows,
@@ -418,6 +438,50 @@ func (s *Server) ListUserAgents(ctx context.Context, req *loomcyclepb.ListUserAg
 		out.Agents = append(out.Agents, a)
 	}
 	return out, nil
+}
+
+// userAgentsListMax bounds one ListUserAgents answer, as HTTP bounds its twin.
+const userAgentsListMax = 100
+
+// userAgentsFilter reads ListUserAgents' filters, with HTTP's semantics except
+// the default: no status filter here has always meant every status.
+//
+// The single `status` field keeps its old reading (taken verbatim, "" → every
+// status) so existing callers see no change; the repeated `statuses` is
+// validated, and "all" alone in it is no filter. Setting both is refused rather
+// than guessing which wins. awaited_states implies running, so any other status
+// with it is refused.
+func userAgentsFilter(req *loomcyclepb.ListUserAgentsRequest) ([]store.RunStatus, []string, error) {
+	var statuses []store.RunStatus
+	switch raw := req.GetStatuses(); {
+	case req.GetStatus() != "" && len(raw) > 0:
+		return nil, nil, status.Error(codes.InvalidArgument, "set status or statuses, not both")
+	case req.GetStatus() != "":
+		statuses = []store.RunStatus{store.RunStatus(req.GetStatus())}
+	case len(raw) == 1 && raw[0] == "all":
+	default:
+		for _, v := range raw {
+			if !store.IsRunStatus(store.RunStatus(v)) {
+				return nil, nil, status.Errorf(codes.InvalidArgument, "statuses: %q is not a run status (or \"all\", alone)", v)
+			}
+			statuses = append(statuses, store.RunStatus(v))
+		}
+	}
+	for _, v := range req.GetAwaitedStates() {
+		if !slices.Contains(awaited.States, v) {
+			return nil, nil, status.Errorf(codes.InvalidArgument, "awaited_states: %q is not one of %s", v, strings.Join(awaited.States, ", "))
+		}
+	}
+	if len(req.GetAwaitedStates()) > 0 {
+		if req.GetStatus() == "" && len(req.GetStatuses()) == 0 {
+			return nil, req.GetAwaitedStates(), nil
+		}
+		// A filter of "all" left statuses nil; it takes in every other status.
+		if len(statuses) == 0 || slices.ContainsFunc(statuses, func(st store.RunStatus) bool { return st != store.RunRunning }) {
+			return nil, nil, status.Error(codes.InvalidArgument, "awaited_states lists running runs only; leave the status filter empty or running")
+		}
+	}
+	return statuses, req.GetAwaitedStates(), nil
 }
 
 // ListWalkRuns mirrors HTTP's GET /v1/runs?walk_id=: one team walk's runs, the
@@ -941,6 +1005,10 @@ var grpcConsumerScopes = map[string]string{
 	// floor (a tenant operator may call it); the cross-tenant `global` scope is
 	// admin-gated inside the tool. Same posture as the HTTP /v1/_history route.
 	"History": auth.ScopeTenant,
+	// Evaluation outside a run: runs:read, as POST /v1/_evaluation and the MCP
+	// `evaluation` tool. The floor admits an isolated user; which ops it may use
+	// is tools.OffRunEvaluationPolicy (substrateGRPCCtx), not this gate.
+	"Evaluation": auth.ScopeRunsRead,
 }
 
 // requiredScopeForRPC returns the scope a caller must hold for fullMethod.
@@ -2503,22 +2571,33 @@ func configuredRunToProto(r connector.ConfiguredRun) *loomcyclepb.ConfiguredRun 
 }
 
 // configuredErrToStatus maps a configured-run refusal (carrying an HTTP
-// status) to the gRPC code the same refusal gets elsewhere on this surface.
+// status) to the gRPC code the same refusal gets elsewhere on this surface,
+// with the refusal's own code as the ErrorInfo reason. The code alone is not
+// enough: ResourceExhausted is both configured_run_cap, which needs the caller
+// to start or discard a draft, and rate_limited, which clears by waiting.
 func configuredErrToStatus(err error) error {
 	var hse interface{ HTTPStatus() int }
-	if errors.As(err, &hse) {
-		switch hse.HTTPStatus() {
-		case nethttp.StatusBadRequest, nethttp.StatusUnprocessableEntity:
-			return status.Error(codes.InvalidArgument, err.Error())
-		case nethttp.StatusNotFound:
-			return status.Error(codes.NotFound, err.Error())
-		case nethttp.StatusConflict:
-			return status.Error(codes.FailedPrecondition, err.Error())
-		case nethttp.StatusTooManyRequests:
-			return status.Error(codes.ResourceExhausted, err.Error())
-		case nethttp.StatusServiceUnavailable:
-			return status.Error(codes.Unavailable, err.Error())
-		}
+	if !errors.As(err, &hse) {
+		return mapRunnerErr(err)
 	}
-	return mapRunnerErr(err)
+	var code codes.Code
+	switch hse.HTTPStatus() {
+	case nethttp.StatusBadRequest, nethttp.StatusUnprocessableEntity:
+		code = codes.InvalidArgument
+	case nethttp.StatusForbidden:
+		// agent_not_allowed / override_not_allowed. The refusal wraps no
+		// runner sentinel, so the mapRunnerErr fallback filed it as Internal.
+		code = codes.PermissionDenied
+	case nethttp.StatusNotFound:
+		code = codes.NotFound
+	case nethttp.StatusConflict:
+		code = codes.FailedPrecondition
+	case nethttp.StatusTooManyRequests:
+		code = codes.ResourceExhausted
+	case nethttp.StatusServiceUnavailable:
+		code = codes.Unavailable
+	default:
+		return mapRunnerErr(err)
+	}
+	return withErrorDetails(status.New(code, err.Error()), err)
 }

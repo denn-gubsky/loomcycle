@@ -107,14 +107,15 @@ Each version records who saved it (`operator_authored`, set by the
 server, never from the overlay, and not part of `content_sha256`). A
 stored version that holds a `${NAME}` without it is **unattributed**: it
 was written before this rule, restored from an older snapshot, or edited
-by hand. For now an unattributed version **still dials** and expands as
-before, but it is listed at boot in a `mcp_server_defs: WARNING:` line,
-and the first dial of each one logs a `mcp_servers: WARNING:` line. Both
-name the def, version, tenant and fields, never the value. Set
-`LOOMCYCLE_MCP_REFUSE_UNATTRIBUTED_ENV=1` to refuse to dial unattributed
-versions now. **A future release refuses them by default.** To keep one,
-an admin acting in that tenant re-saves it (`create` with the same
-overlay mints a new, attributed version); otherwise retire it.
+by hand. An unattributed version is **not dialed**: it is listed at boot
+in a `mcp_server_defs: WARNING:` line, and a call that needs it fails
+with an error. Both name the def, version, tenant and fields, never the
+value. To keep one, an admin acting in that tenant re-saves it (`create`
+with the same overlay mints a new, attributed version); otherwise retire
+it. While those re-saves are pending, an operator may set
+`LOOMCYCLE_MCP_REFUSE_UNATTRIBUTED_ENV=0` to dial unattributed versions
+as before (each logs one `mcp_servers: WARNING:` line when first
+dialed); unset, `1`, or any unrecognised value refuses.
 
 ## Ops
 

@@ -72,6 +72,20 @@ A parent agent scoring its own sub-runs gets `emitter_role=parent`
 (use `submit_descendants` scope). An unrelated coordinator scoring
 any run gets `unrelated` (needs `submit_any`).
 
+### Scoring from outside a run
+
+A person or an application can score runs and read the scores back
+without starting a run: `POST /v1/_evaluation` over HTTP, the
+`Evaluation` gRPC RPC, the MCP `evaluation` tool, or the TS / Python
+client's `evaluation()`. The body is the same op-discriminated input.
+What the caller may do comes from its token, identically on all
+three: a tenant operator token (`substrate:tenant`) may use every op
+inside its own tenant, an admin token every op in every tenant. Any
+other token holds `submit_self` only, and a caller outside a run is
+not the run's agent, so for it every op is refused. A run or
+evaluation in another tenant reads exactly like one that does not
+exist.
+
 ## Aggregating
 
 After N forks × M runs each:

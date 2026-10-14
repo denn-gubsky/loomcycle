@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 
+	"github.com/denn-gubsky/loomcycle/internal/credential"
 	"github.com/denn-gubsky/loomcycle/internal/hooks"
 	"github.com/denn-gubsky/loomcycle/internal/store"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
@@ -49,6 +50,11 @@ type HookDef struct {
 	// MaxDescriptionBytes caps the free-text rationale on create/fork. 0 = no
 	// cap. (The hook's own description is capped by hooks.MaxDescriptionBytes.)
 	MaxDescriptionBytes int
+
+	// Credentials answers whether the credential an http body's signing_secret
+	// names exists in the author's tenant (requireAuthorBoundSigningSecret).
+	// nil = no credential store: a non-admin's signing_secret is refused.
+	Credentials *PeerCredentials
 }
 
 const hookDefDescription = `Author, fork, promote, retire, delete and inspect hook definitions. ` +
@@ -70,7 +76,7 @@ const hookDefInputSchema = `{
         "description": {"type": "string", "description": "Shown to whoever the hook denies, holds or rewrites. The body is never shown."},
         "event":       {"type": "string", "enum": ["pre","post","post_failure","agent_start","agent_stop","subagent_start","subagent_stop","pre_compact","post_compact","run_end","channel_publish"], "description": "What the hook answers. pre/post/post_failure wrap a tool call; channel_publish decides on each message of a channel that attaches it (release, rewrite, drop or hold); the others are about the run."},
         "match":       {"type": "object", "properties": {"tools": {"type": "array", "items": {"type": "string"}, "description": "Exact tool names or trailing-* globs; empty = every tool. Tool events only."}}, "additionalProperties": false},
-        "body":        {"type": "object", "properties": {"kind": {"type": "string", "enum": ["code-js","http"]}, "code": {"type": "string", "description": "code-js: a script defining function hook(ev) that returns the decision."}, "url": {"type": "string", "description": "http: the webhook URL."}, "headers": {"type": "object", "additionalProperties": {"type": "string"}, "description": "http: headers sent with each call. A value may name a credential as $cred:<name>, resolved for the run when the hook is called — keep secrets there, not in the URL or a literal value."}}, "required": ["kind"], "additionalProperties": false},
+        "body":        {"type": "object", "properties": {"kind": {"type": "string", "enum": ["code-js","http"]}, "code": {"type": "string", "description": "code-js: a script defining function hook(ev) that returns the decision."}, "url": {"type": "string", "description": "http: the webhook URL."}, "headers": {"type": "object", "additionalProperties": {"type": "string"}, "description": "http: headers sent with each call. A value may name a credential as $cred:<name>, resolved for the run when the hook is called — keep secrets there, not in the URL or a literal value. X-Loomcycle-Signature, X-Loomcycle-Hook and X-Loomcycle-Delivery are reserved."}, "signing_secret": {"type": "string", "description": "http: sign every call with this credential, named as $cred:<name> (a literal secret is refused). Each call then carries X-Loomcycle-Signature: t=<unix>,v1=<hex HMAC-SHA256 of t + \".\" + the raw body>, and its body a delivery_id, so the receiver can tell the call came from here; it dedupes on the body's delivery_id, not on the unsigned X-Loomcycle-Delivery header. The credential must exist in your tenant and, if it is restricted to URLs, cover url. A call whose secret cannot be resolved is not sent; fail_mode decides."}}, "required": ["kind"], "additionalProperties": false},
         "fail_mode":   {"type": "string", "enum": ["open","closed"], "description": "open (default): a failing hook lets the call through. closed: it stops it."},
         "timeout_ms":  {"type": "integer", "minimum": 0, "description": "Webhook: the whole call (default 5 s, max 60 s). code-js: each run of the script (default 50 ms, max 1 s)."}
       },
@@ -213,6 +219,9 @@ func (h *HookDef) write(ctx context.Context, op string, in hookDefInput, parentD
 			return errResult(fmt.Sprintf("%s: body.code: %s", op, err)), nil
 		}
 	}
+	if err := requireAuthorBoundSigningSecret(ctx, h.Credentials, def.Body); err != nil {
+		return errResult(fmt.Sprintf("%s: %s", op, err)), nil
+	}
 	if h.MaxDescriptionBytes > 0 && len(in.Description) > h.MaxDescriptionBytes {
 		return errResult(fmt.Sprintf("%s: description (%d bytes) exceeds the limit (%d)", op, len(in.Description), h.MaxDescriptionBytes)), nil
 	}
@@ -244,6 +253,52 @@ func (h *HookDef) write(ctx context.Context, op string, in hookDefInput, parentD
 		}
 	}
 	return okJSON(hookDefRowResponse(created, promote))
+}
+
+// requireAuthorBoundSigningSecret limits the credential a NON-ADMIN author may
+// name as an http body's signing_secret to a tenant-level credential of the
+// author's own tenant — the tenant the definition is written in — that a call
+// to the body's url could resolve: unrestricted, or restricted by allowed_urls
+// to a list covering url. The secret is never sent, but every call carries an
+// HMAC keyed by it to a URL the author chose; naming a credential the author's
+// tenant does not hold, or one restricted away from url, would make the hook a
+// way to obtain MACs under a key the author cannot read.
+//
+// Refused for an author with no tenant: that definition lands in the shared
+// layer, where the reference would resolve in every tenant that runs it.
+//
+// An admin, and an open-mode or stdio operator (callerHasOperatorAuthority),
+// may name any credential, including one created after the definition — as an
+// admin's api_key_env "$cred:" is not checked. A snapshot restore is an admin
+// action, so its validator checks the reference's shape only (hooks.Def.Validate).
+//
+// A fork re-checks the merged definition: a credential deleted or restricted
+// since the parent was written is refused even when the fork leaves the field
+// as it was, because the version written must be one that can be used.
+func requireAuthorBoundSigningSecret(ctx context.Context, creds *PeerCredentials, body hooks.DefBody) error {
+	if body.SigningSecret == "" || callerHasOperatorAuthority(ctx) {
+		return nil
+	}
+	name, ok := credential.ParseRef(body.SigningSecret)
+	if !ok {
+		return fmt.Errorf("body.signing_secret must name a credential as \"$cred:<name>\"") // Validate refuses it first
+	}
+	tenantID := tools.RunIdentity(ctx).TenantID
+	if tenantID == "" {
+		return fmt.Errorf("body.signing_secret %q may not be set by an author with no tenant: the definition would be shared by every tenant", body.SigningSecret)
+	}
+	found, usable, err := creds.ExistsFor(ctx, tenantID, name, body.URL)
+	if err != nil {
+		return fmt.Errorf("body.signing_secret %q: could not check the credential: %v", body.SigningSecret, err)
+	}
+	if !found {
+		return fmt.Errorf("body.signing_secret %q names no tenant-level credential in tenant %q. "+
+			"Create it first with CredentialDef (op=create, scope=tenant, name=%q)", body.SigningSecret, tenantID, name)
+	}
+	if !usable {
+		return fmt.Errorf("body.signing_secret %q is restricted by allowed_urls to URLs that do not cover body.url %q", body.SigningSecret, body.URL)
+	}
+	return nil
 }
 
 // buildDefinition merges an overlay onto a parent definition: each top-level

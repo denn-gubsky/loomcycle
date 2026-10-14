@@ -1,6 +1,7 @@
 package webhook
 
 import (
+	"context"
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
@@ -36,6 +37,16 @@ func stripeSig(secret string, body []byte, ts time.Time) string {
 	return fmt.Sprintf("t=%s, v1=%s", tsStr, hex.EncodeToString(mac.Sum(nil)))
 }
 
+// verifyFromEnv is the receiver's env-form path: resolve the secret auth
+// names through the allowlist gate, then verify against it.
+func verifyFromEnv(a config.WebhookAuth, body []byte, headerGet func(string) string, allowlist map[string]bool, getenv func(string) string, now func() time.Time) error {
+	secrets, err := verificationSecrets(context.Background(), a, "", nil, allowlist, getenv, func(string, ...any) {})
+	if err != nil {
+		return err
+	}
+	return verifySignature(a, secrets, body, headerGet, now)
+}
+
 func headerGetter(h http.Header) func(string) string {
 	return func(k string) string { return h.Get(k) }
 }
@@ -50,7 +61,7 @@ func TestVerifySignature_GitHubStyleValid_Accepts(t *testing.T) {
 	h.Set("X-Hub-Signature-256", githubSig(secret, body))
 
 	a := config.WebhookAuth{Kind: "hmac", Header: "X-Hub-Signature-256", SigningSecretEnv: "WH_SECRET"}
-	if err := verifySignature(a, body, headerGetter(h), allow, env, time.Now); err != nil {
+	if err := verifyFromEnv(a, body, headerGetter(h), allow, env, time.Now); err != nil {
 		t.Fatalf("want accept, got %v", err)
 	}
 }
@@ -71,11 +82,11 @@ func TestVerifySignature_BareHexStyleValid_Accepts(t *testing.T) {
 	h.Set("Linear-Signature", bareHex)
 
 	a := config.WebhookAuth{Kind: "hmac", Header: "Linear-Signature", SigningSecretEnv: "WH_SECRET"}
-	if err := verifySignature(a, body, headerGetter(h), allow, env, time.Now); err != nil {
+	if err := verifyFromEnv(a, body, headerGetter(h), allow, env, time.Now); err != nil {
 		t.Fatalf("want accept for bare-hex envelope, got %v", err)
 	}
 	// A tampered body under the same envelope must still be rejected.
-	if err := verifySignature(a, []byte(`{"action":"remove"}`), headerGetter(h), allow, env, time.Now); !errors.Is(err, errSignatureMismatch) {
+	if err := verifyFromEnv(a, []byte(`{"action":"remove"}`), headerGetter(h), allow, env, time.Now); !errors.Is(err, errSignatureMismatch) {
 		t.Fatalf("tampered bare-hex: want errSignatureMismatch, got %v", err)
 	}
 }
@@ -90,13 +101,13 @@ func TestVerifySignature_BearerCustomHeaderRawToken_Accepts(t *testing.T) {
 
 	ok := http.Header{}
 	ok.Set("X-Gitlab-Token", "s3cr3t-shared")
-	if err := verifySignature(a, body, headerGetter(ok), allow, env, time.Now); err != nil {
+	if err := verifyFromEnv(a, body, headerGetter(ok), allow, env, time.Now); err != nil {
 		t.Fatalf("raw-token custom header: want accept, got %v", err)
 	}
 
 	bad := http.Header{}
 	bad.Set("X-Gitlab-Token", "wrong")
-	if err := verifySignature(a, body, headerGetter(bad), allow, env, time.Now); !errors.Is(err, errSignatureMismatch) {
+	if err := verifyFromEnv(a, body, headerGetter(bad), allow, env, time.Now); !errors.Is(err, errSignatureMismatch) {
 		t.Fatalf("wrong raw token: want errSignatureMismatch, got %v", err)
 	}
 }
@@ -112,7 +123,7 @@ func TestVerifySignature_TamperedBody_Rejects(t *testing.T) {
 	h.Set("X-Hub-Signature-256", githubSig(secret, signed))
 
 	a := config.WebhookAuth{Kind: "hmac", Header: "X-Hub-Signature-256", SigningSecretEnv: "WH_SECRET"}
-	err := verifySignature(a, tampered, headerGetter(h), allow, env, time.Now)
+	err := verifyFromEnv(a, tampered, headerGetter(h), allow, env, time.Now)
 	if !errors.Is(err, errSignatureMismatch) {
 		t.Fatalf("want errSignatureMismatch, got %v", err)
 	}
@@ -129,7 +140,7 @@ func TestVerifySignature_StripeStyleValid_Accepts(t *testing.T) {
 	h.Set("X-Loomcycle-Signature", stripeSig(secret, body, now))
 
 	a := config.WebhookAuth{Kind: "hmac", SigningSecretEnv: "WH_SECRET"}
-	if err := verifySignature(a, body, headerGetter(h), allow, env, fixedClock(now)); err != nil {
+	if err := verifyFromEnv(a, body, headerGetter(h), allow, env, fixedClock(now)); err != nil {
 		t.Fatalf("want accept, got %v", err)
 	}
 }
@@ -147,7 +158,7 @@ func TestVerifySignature_OutOfWindowTimestamp_Rejects(t *testing.T) {
 	h.Set("X-Loomcycle-Signature", stripeSig(secret, body, signedAt))
 
 	a := config.WebhookAuth{Kind: "hmac", SigningSecretEnv: "WH_SECRET"}
-	err := verifySignature(a, body, headerGetter(h), allow, env, fixedClock(checkAt))
+	err := verifyFromEnv(a, body, headerGetter(h), allow, env, fixedClock(checkAt))
 	if !errors.Is(err, errSignatureMismatch) {
 		t.Fatalf("want errSignatureMismatch (stale ts), got %v", err)
 	}
@@ -162,7 +173,7 @@ func TestVerifySignature_BearerValid_Accepts(t *testing.T) {
 	h.Set("Authorization", "Bearer "+token)
 
 	a := config.WebhookAuth{Kind: "bearer", BearerTokenEnv: "WH_BEARER"}
-	if err := verifySignature(a, []byte(`{}`), headerGetter(h), allow, env, time.Now); err != nil {
+	if err := verifyFromEnv(a, []byte(`{}`), headerGetter(h), allow, env, time.Now); err != nil {
 		t.Fatalf("want accept, got %v", err)
 	}
 }
@@ -174,7 +185,7 @@ func TestVerifySignature_BearerMissing_Rejects(t *testing.T) {
 	h := http.Header{} // no Authorization header
 
 	a := config.WebhookAuth{Kind: "bearer", BearerTokenEnv: "WH_BEARER"}
-	err := verifySignature(a, []byte(`{}`), headerGetter(h), allow, env, time.Now)
+	err := verifyFromEnv(a, []byte(`{}`), headerGetter(h), allow, env, time.Now)
 	if !errors.Is(err, errSignatureMismatch) {
 		t.Fatalf("want errSignatureMismatch, got %v", err)
 	}
@@ -189,7 +200,7 @@ func TestVerifySignature_SecretNotInAllowlist_Unresolvable(t *testing.T) {
 	h.Set("X-Hub-Signature-256", githubSig("shhh", body))
 
 	a := config.WebhookAuth{Kind: "hmac", Header: "X-Hub-Signature-256", SigningSecretEnv: "WH_SECRET"}
-	err := verifySignature(a, body, headerGetter(h), allow, env, time.Now)
+	err := verifyFromEnv(a, body, headerGetter(h), allow, env, time.Now)
 	var ae *authError
 	if !errors.As(err, &ae) || ae.verdict != verdictUnresolved {
 		t.Fatalf("want unresolvable authError, got %v", err)
@@ -208,7 +219,7 @@ func TestVerifySignature_SecretUnsetInEnv_Unresolvable(t *testing.T) {
 	h.Set("X-Hub-Signature-256", githubSig("shhh", body))
 
 	a := config.WebhookAuth{Kind: "hmac", Header: "X-Hub-Signature-256", SigningSecretEnv: "WH_SECRET"}
-	err := verifySignature(a, body, headerGetter(h), allow, env, time.Now)
+	err := verifyFromEnv(a, body, headerGetter(h), allow, env, time.Now)
 	var ae *authError
 	if !errors.As(err, &ae) || ae.verdict != verdictUnresolved {
 		t.Fatalf("want unresolvable authError, got %v", err)

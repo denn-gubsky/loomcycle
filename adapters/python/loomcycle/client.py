@@ -71,6 +71,16 @@ PromptContent = Mapping[str, Any]
 PromptSegment = Mapping[str, Any]
 
 
+class AgentList(list):
+    """``list_user_agents``' answer: a plain list of agent dicts, so every
+    caller that indexes or iterates it keeps working, plus ``truncated`` —
+    True when an ``awaited_state`` listing stopped before reading every
+    running run (the server reads at most 1,000), so a matching run may be
+    missing."""
+
+    truncated: bool = False
+
+
 @dataclass(frozen=True)
 class RunHandle:
     """Captures the IDs the gRPC server emits in its synthetic
@@ -228,19 +238,36 @@ class LoomcycleClient:
         self,
         user_id: str,
         *,
-        status: str = "",
-    ) -> Sequence[Mapping[str, Any]]:
-        """List a user's recent agent runs, optionally filtered by
-        status (``"running"`` | ``"completed"`` | ``"failed"`` |
-        ``"cancelled"``; empty = all)."""
+        status: str | Sequence[str] = "",
+        awaited_state: str | Sequence[str] = (),
+    ) -> AgentList:
+        """List a user's recent agent runs (at most 100), optionally
+        filtered by status (``"running"`` | ``"completed"`` | ``"failed"`` |
+        ``"cancelled"`` | …; empty = all).
+
+        ``status`` as one string is sent as before; as a list or tuple it
+        lists a run in any of the statuses (``["all"]`` alone = no filter),
+        and an unknown one raises ``InvalidArgumentError``.
+
+        ``awaited_state`` (one state or several: ``"channel"`` |
+        ``"interrupted"`` | ``"review"`` | ``"input"`` | ``"children"``) lists
+        only running runs blocked on one of those waits; a status other than
+        running with it raises ``InvalidArgumentError``. The server reads at
+        most 1,000 running runs for it; the answer's ``truncated`` is True
+        when some were left unread."""
+        req = pb.ListUserAgentsRequest(user_id=user_id)
+        if isinstance(status, str):
+            req.status = status
+        else:
+            req.statuses.extend(status)
+        req.awaited_states.extend([awaited_state] if isinstance(awaited_state, str) else awaited_state)
         try:
-            resp = await self._stub.ListUserAgents(
-                pb.ListUserAgentsRequest(user_id=user_id, status=status),
-                metadata=self._auth_metadata(),
-            )
+            resp = await self._stub.ListUserAgents(req, metadata=self._auth_metadata())
         except grpc.aio.AioRpcError as e:
             _raise_from_grpc(e)
-        return [_agent_to_dict(a) for a in resp.agents]
+        out = AgentList(_agent_to_dict(a) for a in resp.agents)
+        out.truncated = resp.truncated
+        return out
 
     async def list_walk_runs(
         self,
@@ -976,6 +1003,80 @@ class LoomcycleClient:
         cross-tenant ``scope="global"`` is admin-only (a tenant caller
         requesting it is refused). Mirror of :meth:`document`."""
         return await self._dispatch_substrate("History", input)
+
+    async def evaluation(self, input: Mapping[str, Any]) -> Mapping[str, Any]:
+        """Invoke the Evaluation tool outside a run — record scores against
+        runs and read them back. Op-discriminated: ``submit`` / ``get`` /
+        ``list_for_run`` / ``list_for_def`` / ``aggregate``. The typed helpers
+        below (:meth:`submit_evaluation` and friends) build the same input.
+
+        What a token may do: ``substrate:tenant`` every op, inside its own
+        tenant; admin every op, in every tenant; any other token (an isolated
+        ``substrate:user``, a tenant member) ``submit_self`` only, which a call
+        from outside a run cannot use — it is not the run's agent — so each op
+        raises :class:`SubstrateToolRefusedError`. A token without
+        ``runs:read`` is refused by the RPC gate. Another tenant's evaluation
+        or run reads exactly like one that does not exist. Mirror of
+        :meth:`history`."""
+        return await self._dispatch_substrate("Evaluation", input)
+
+    async def submit_evaluation(
+        self,
+        run_id: str,
+        score: float,
+        *,
+        dimensions: Optional[Mapping[str, float]] = None,
+        judgement: Any = None,
+        rationale: Optional[str] = None,
+    ) -> Mapping[str, Any]:
+        """Record a score against a run (``evaluation`` op ``submit``). Scores
+        are additive: a second submit records another evaluation. Returns the
+        stored row's ``eval_id``, ``run_id``, ``def_id``, ``emitter_role``,
+        ``score`` and ``created_at``."""
+        body: dict[str, Any] = {"op": "submit", "run_id": run_id, "score": score}
+        if dimensions is not None:
+            body["dimensions"] = dict(dimensions)
+        if judgement is not None:
+            body["judgement"] = judgement
+        if rationale is not None:
+            body["rationale"] = rationale
+        return await self.evaluation(body)
+
+    async def get_evaluation(self, eval_id: str) -> Mapping[str, Any]:
+        """One evaluation by id (``evaluation`` op ``get``)."""
+        return await self.evaluation({"op": "get", "eval_id": eval_id})
+
+    async def list_evaluations_for_run(
+        self, run_id: str, *, limit: Optional[int] = None
+    ) -> Mapping[str, Any]:
+        """Every evaluation of one run (``evaluation`` op ``list_for_run``):
+        ``{run_id, evaluations}``."""
+        body: dict[str, Any] = {"op": "list_for_run", "run_id": run_id}
+        if limit is not None:
+            body["limit"] = limit
+        return await self.evaluation(body)
+
+    async def list_evaluations_for_def(
+        self, def_id: str, *, limit: Optional[int] = None
+    ) -> Mapping[str, Any]:
+        """Every evaluation of one definition version, in your tenant
+        (``evaluation`` op ``list_for_def``): ``{def_id, evaluations}``."""
+        body: dict[str, Any] = {"op": "list_for_def", "def_id": def_id}
+        if limit is not None:
+            body["limit"] = limit
+        return await self.evaluation(body)
+
+    async def aggregate_evaluations(
+        self, def_id: str, *, include_lineage: bool = False
+    ) -> Mapping[str, Any]:
+        """A definition's scores rolled up (``evaluation`` op ``aggregate``):
+        ``{def_id, count, score, dimensions, by_emitter_role,
+        lineage_included}``. ``include_lineage`` adds the ancestors'
+        evaluations along ``parent_def_id``."""
+        body: dict[str, Any] = {"op": "aggregate", "def_id": def_id}
+        if include_lineage:
+            body["include_lineage"] = True
+        return await self.evaluation(body)
 
     async def memory(self, input: Mapping[str, Any]) -> Mapping[str, Any]:
         """Invoke the Memory tool — persistent key/value + vector memory scoped

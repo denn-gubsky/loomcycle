@@ -43,6 +43,7 @@ import {
   type ConnectClientToolsOptions,
 } from "./client-tools.js";
 import type {
+  ChangeFeedError,
   ChangeFeedFrame,
   ChangeFeedStatus,
   MemoryChange,
@@ -60,7 +61,7 @@ import type {
   ErasureResult,
   Agent,
   AgentEvent,
-  AgentStatus,
+  AgentList,
   CancelAgentResult,
   ClientOptions,
   AgentDefOverlay,
@@ -68,18 +69,35 @@ import type {
   ContinueOptions,
   RunOverrideOptions,
   EffectiveConfigResponse,
+  AgentOverridableResponse,
   RetuneRunResponse,
   RunConfigResponse,
   RunPromptResponse,
   CreateSnapshotOptions,
   EnsureCodeAgentOptions,
   EnsureCodeAgentResult,
+  EnsureHookDefOptions,
+  EnsureHookDefResult,
+  HookDefInput,
+  HookDefOverlay,
+  HookDefRowResponse,
+  HookDefVerifyResult,
+  CreateDefOptions,
+  ForkDefOptions,
+  HookDefForkOverlay,
+  ScheduleDefInput,
+  ScheduleDefOverlay,
+  ScheduleDefRowResponse,
+  WebhookDefInput,
+  WebhookDefOverlay,
+  WebhookDefRowResponse,
   EnsureMcpServerOptions,
   EnsureMcpServerResult,
   HealthResponse,
   InterruptListResponse,
   InterruptStatus,
   ListAgentsResponse,
+  ListUserAgentsOptions,
   WalkRunsPage,
   AckChannelOptions,
   AwaitChannelsOptions,
@@ -168,6 +186,17 @@ import type {
   SubstrateToolInput,
   SubstrateToolResponse,
   CreatedTeam,
+  CreateTeamOptions,
+  DefNamesResponse,
+  ForkTeamOptions,
+  ModelAliasesResponse,
+  OperatorTokenDefNamesResponse,
+  ProviderModelsResponse,
+  RoutingResponse,
+  ScheduleListResponse,
+  SchedulePauseResult,
+  ScheduleRunNowResult,
+  ScheduleStateView,
   ListTeamsResponse,
   PromotedTeam,
   RetiredTeam,
@@ -187,6 +216,17 @@ import type {
   DocumentToolResponse,
   HistoryToolInput,
   HistoryToolResponse,
+  EvaluationSubmitInput,
+  EvaluationGetInput,
+  EvaluationListForRunInput,
+  EvaluationListForDefInput,
+  EvaluationAggregateInput,
+  EvaluationInput,
+  EvaluationSubmitResult,
+  EvaluationRecord,
+  EvaluationListForRunResult,
+  EvaluationListForDefResult,
+  EvaluationAggregate,
   TranscriptResponse,
   WhoamiResponse,
   UsageDimension,
@@ -602,6 +642,35 @@ export class LoomcycleClient {
     );
   }
 
+  /** Which per-run overrides a run of `name` may set, for this caller — what a
+   *  run form needs before it sends anything. Mirrors
+   *  `GET /v1/_agentdef/{name}/overridable`.
+   *
+   *  Folds the agent's `allow_overrides` with the caller's token overrides
+   *  policy, through the same checks the run path refuses with; a refused field
+   *  names which (`reason`). Overridable fields carry what the run path then
+   *  accepts: `narrow_only`, `max`, and `values` for a closed set.
+   *
+   *  `substrate:tenant` (a non-isolated member too). A token limited to certain
+   *  agents may ask about those agents only. Raises {@link AgentNotFoundError}
+   *  (404) for an unknown or another tenant's agent, and a 403
+   *  `agent_not_allowed` for an agent outside the token's allowlist. */
+  async getAgentOverridable(
+    name: string,
+    opts?: {
+      /** Admin-only tenant focus (?tenant=); ignored for a tenant principal. */
+      tenant?: string;
+      signal?: AbortSignal;
+    },
+  ): Promise<AgentOverridableResponse> {
+    const q = opts?.tenant ? `?tenant=${encodeURIComponent(opts.tenant)}` : "";
+    return jsonFetch<AgentOverridableResponse>(
+      this.ctx,
+      `/v1/_agentdef/${encodeURIComponent(name)}/overridable${q}`,
+      opts,
+    );
+  }
+
   /** Re-attach to a run's event stream by `run_id` (RFC AI), replaying from
    *  `fromSeq` (default 0) then live-tailing — the gRPC-free twin of the Web
    *  UI's resume-in-terminal. Mirrors `GET /v1/runs/{run_id}/stream`. The
@@ -964,27 +1033,24 @@ export class LoomcycleClient {
     return { cancelledCount: resp.cancelled_count };
   }
 
-  /** List a user's recent agent runs, optionally filtered by status. With no
-   *  `status` only running runs are returned; `"all"` returns every status.
+  /** List a user's recent agent runs (at most 100), optionally filtered by
+   *  status. With no `status` only running runs are returned; `"all"` returns
+   *  every status; several statuses list a run in any of them.
+   *
+   *  `awaitedState` lists only running runs blocked on one of the named waits
+   *  (`"review"`, `"input"`, …). The state is derived per run, so the server
+   *  reads at most 1,000 running runs; the returned array carries
+   *  `truncated: true` when it stopped with some unread.
    *
    *  v0.9.x — `parentAgentId` narrows the result CLIENT-SIDE to runs
    *  whose `parent_agent_id` matches. The server still returns the
    *  full set (server-side `?parent_agent_id=` filter is a future
    *  request); the adapter trims before returning. Useful for the
    *  n8n trigger pattern "show me all sub-runs spawned by parent X." */
-  async listUserAgents(
-    userId: string,
-    opts?: {
-      status?: AgentStatus | "all";
-      parentAgentId?: string;
-      /** Super-admin tenant-focus (?tenant=, RFC L v0.17.0). Ignored
-       *  server-side for a tenant principal — its own tenant is forced. */
-      tenant?: string;
-      signal?: AbortSignal;
-    },
-  ): Promise<Agent[]> {
+  async listUserAgents(userId: string, opts?: ListUserAgentsOptions): Promise<AgentList> {
     const params = new URLSearchParams();
-    if (opts?.status) params.set("status", opts.status);
+    for (const s of ([] as string[]).concat(opts?.status ?? [])) params.append("status", s);
+    for (const s of ([] as string[]).concat(opts?.awaitedState ?? [])) params.append("awaited_state", s);
     if (opts?.tenant) params.set("tenant", opts.tenant);
     const q = params.toString() ? `?${params.toString()}` : "";
     const resp = await jsonFetch<ListAgentsResponse>(
@@ -992,11 +1058,12 @@ export class LoomcycleClient {
       `/v1/users/${encodeURIComponent(userId)}/agents${q}`,
       opts,
     );
-    const all = resp.agents ?? [];
+    let out: AgentList = resp.agents ?? [];
     if (opts?.parentAgentId !== undefined && opts.parentAgentId !== "") {
-      return all.filter((a) => a.parent_agent_id === opts.parentAgentId);
+      out = out.filter((a) => a.parent_agent_id === opts.parentAgentId);
     }
-    return all;
+    if (resp.truncated) out.truncated = true;
+    return out;
   }
 
   /** One page of a team walk's runs — the walk's own run (its run id IS the
@@ -1438,6 +1505,48 @@ export class LoomcycleClient {
       this.ctx,
       "/v1/_resolve/probe",
       undefined,
+      opts,
+    );
+  }
+
+  /** The configured model aliases — the operator's top-level `models:` map,
+   *  alias name → `{provider, model, kind?}` (`GET /v1/_models`). Non-secret and
+   *  global (the same set for every tenant); tenant-readable. Store an alias on
+   *  an agent or fork rather than the concrete model it names, and the agent
+   *  follows when the operator retargets the alias. */
+  async listModels(opts?: { signal?: AbortSignal }): Promise<ModelAliasesResponse> {
+    return jsonFetch<ModelAliasesResponse>(this.ctx, "/v1/_models", opts);
+  }
+
+  /** For each user tier × tier, the ordered provider/model cascade a run
+   *  resolves to now, top first, with live availability and the candidate
+   *  `selected` (`GET /v1/_routing`). Tenant-readable. A non-admin caller gets
+   *  `admin: false`, no raw `last_error`, and — when the operator-key gate
+   *  restricts it — only the providers it can key itself
+   *  (`operator_key_restricted: true`). */
+  async getRouting(opts?: { signal?: AbortSignal }): Promise<RoutingResponse> {
+    return jsonFetch<RoutingResponse>(this.ctx, "/v1/_routing", opts);
+  }
+
+  /** List the models a provider serves right now, by a live round-trip to it
+   *  (`GET /v1/_providers/{id}/models`) rather than the cached probe matrix.
+   *
+   *  **Requires an admin token.** A `substrate:tenant` token is refused with a
+   *  {@link LoomcycleError} whose `status` is 403 ("insufficient scope"); a
+   *  model picker built on a tenant token should fall back to
+   *  {@link LoomcycleClient.listModels} plus free-text model entry.
+   *
+   *  Errors carry the server's code on `e.code`: 404 `provider_unknown` (no such
+   *  driver), 503 `provider_unavailable` (known, but not configured — e.g. no
+   *  key), 502 `provider_list_failed` (the round-trip failed; bounded at 10 s
+   *  server-side). */
+  async listProviderModels(
+    providerId: string,
+    opts?: { signal?: AbortSignal },
+  ): Promise<ProviderModelsResponse> {
+    return jsonFetch<ProviderModelsResponse>(
+      this.ctx,
+      `/v1/_providers/${encodeURIComponent(providerId)}/models`,
       opts,
     );
   }
@@ -2044,12 +2153,51 @@ export class LoomcycleClient {
    *  Raises {@link SubstrateToolRefusedError} on tool-level refusals
    *  (static-name collision, missing required credential, invalid
    *  cron, etc.); {@link InvalidArgumentError} on 400 (malformed
-   *  JSON); {@link AuthError} on 401. */
+   *  JSON); {@link AuthError} on 401.
+   *
+   *  Annotate the input as {@link ScheduleDefInput} to have the overlay and
+   *  each op's fields checked (including `add_hook` / `remove_hook`, which the
+   *  loose {@link SubstrateToolInput} does not list); a loose input is sent
+   *  as it is. For create / fork, {@link LoomcycleClient.createScheduleDef} /
+   *  {@link LoomcycleClient.forkScheduleDef} check a bare literal too. */
   async scheduleDef(
-    input: SubstrateToolInput,
+    input: ScheduleDefInput | SubstrateToolInput,
     opts?: { signal?: AbortSignal },
   ): Promise<SubstrateToolResponse> {
     return postJSON<SubstrateToolResponse>(this.ctx, "/v1/_scheduledef", input, opts);
+  }
+
+  /** `scheduleDef({op: "create"})` with the overlay typed and no loose
+   *  fallback. {@link ScheduleDefOverlay} stays OPEN (the server drops keys it
+   *  does not know), so a misspelt key still compiles here; what fails is a
+   *  wrong type or value on a key it declares (`concurrency_policy: "skip"`,
+   *  an `on_complete` entry missing its `tool`). New versions are promoted
+   *  unless `promote: false`. */
+  async createScheduleDef(
+    name: string,
+    overlay: ScheduleDefOverlay,
+    opts?: CreateDefOptions,
+  ): Promise<ScheduleDefRowResponse> {
+    return (await this.scheduleDef(
+      defWriteInput("create", name, overlay, opts),
+      signalOpts(opts),
+    )) as ScheduleDefRowResponse;
+  }
+
+  /** `scheduleDef({op: "fork"})`, typed like
+   *  {@link LoomcycleClient.createScheduleDef}. A field the overlay leaves out
+   *  keeps the parent's; the credential maps merge key by key. Forks the
+   *  active version of `name` (or its yaml template) unless `parentDefId` is
+   *  given; promoted unless `promote: false`. */
+  async forkScheduleDef(
+    name: string,
+    overlay: ScheduleDefOverlay,
+    opts?: ForkDefOptions,
+  ): Promise<ScheduleDefRowResponse> {
+    return (await this.scheduleDef(
+      defWriteInput("fork", name, overlay, opts),
+      signalOpts(opts),
+    )) as ScheduleDefRowResponse;
   }
 
   /** Invoke the v1.x RFC G A2AServerCardDef substrate tool over HTTP.
@@ -2101,12 +2249,51 @@ export class LoomcycleClient {
    *
    *  Raises {@link SubstrateToolRefusedError} on tool-level refusals;
    *  {@link InvalidArgumentError} on 400 (malformed JSON);
-   *  {@link AuthError} on 401. */
+   *  {@link AuthError} on 401.
+   *
+   *  Annotate the input as {@link WebhookDefInput} to have the overlay and
+   *  each op's fields checked; a loose input is sent as it is. For create /
+   *  fork, {@link LoomcycleClient.createWebhookDef} /
+   *  {@link LoomcycleClient.forkWebhookDef} check a bare literal too. */
   async webhookDef(
-    input: SubstrateToolInput,
+    input: WebhookDefInput | SubstrateToolInput,
     opts?: { signal?: AbortSignal },
   ): Promise<SubstrateToolResponse> {
     return postJSON<SubstrateToolResponse>(this.ctx, "/v1/_webhookdef", input, opts);
+  }
+
+  /** `webhookDef({op: "create"})` with the overlay typed and no loose
+   *  fallback. {@link WebhookDefOverlay} stays OPEN for now (the server drops
+   *  keys it does not know), so a misspelt key still compiles here; what
+   *  fails is a wrong type or value on a key it declares (`delivery: "run"`,
+   *  `auth.kind: "basic"`, a misspelt key inside `rate_limit`). Promoted
+   *  unless `promote: false`. */
+  async createWebhookDef(
+    name: string,
+    overlay: WebhookDefOverlay,
+    opts?: CreateDefOptions,
+  ): Promise<WebhookDefRowResponse> {
+    return (await this.webhookDef(
+      defWriteInput("create", name, overlay, opts),
+      signalOpts(opts),
+    )) as WebhookDefRowResponse;
+  }
+
+  /** `webhookDef({op: "fork"})`, typed like
+   *  {@link LoomcycleClient.createWebhookDef}. A field the overlay leaves out
+   *  keeps the parent's; naming exactly one of `agent` / `channel` / `team`
+   *  clears the other two. Forks the active version of `name` (or its yaml
+   *  template) unless `parentDefId` is given; promoted unless
+   *  `promote: false`. */
+  async forkWebhookDef(
+    name: string,
+    overlay: WebhookDefOverlay,
+    opts?: ForkDefOptions,
+  ): Promise<WebhookDefRowResponse> {
+    return (await this.webhookDef(
+      defWriteInput("fork", name, overlay, opts),
+      signalOpts(opts),
+    )) as WebhookDefRowResponse;
   }
 
   /** Invoke the RFC I MR-3a MemoryBackendDef substrate tool over HTTP.
@@ -2145,12 +2332,99 @@ export class LoomcycleClient {
    *  matches, its body (code-js or a webhook URL), fail mode and timeout.
    *  Tenant-confined like agentDef. A HookDef fires on nothing by itself; an
    *  agent definition, a team definition or a run names it. Mirrors
-   *  POST /v1/_hookdef. */
+   *  POST /v1/_hookdef.
+   *
+   *  Annotate the input as {@link HookDefInput} to have the overlay checked
+   *  against the definition the server decodes STRICTLY — an unknown overlay
+   *  key is then a compile error instead of a refusal. A loose
+   *  {@link SubstrateToolInput} is sent as it is — including a bare literal
+   *  with a misspelt key, which falls through to that loose shape. To have a
+   *  bare literal checked, use {@link LoomcycleClient.createHookDef} /
+   *  {@link LoomcycleClient.forkHookDef}. */
   async hookDef(
-    input: SubstrateToolInput,
+    input: HookDefInput | SubstrateToolInput,
     opts?: { signal?: AbortSignal },
   ): Promise<SubstrateToolResponse> {
     return postJSON<SubstrateToolResponse>(this.ctx, "/v1/_hookdef", input, opts);
+  }
+
+  /** `hookDef({op: "create"})` with no loose fallback: `overlay` is the
+   *  CLOSED {@link HookDefOverlay}, so any key the server would refuse is a
+   *  compile error, even in a bare literal. Every create mints a new version
+   *  (use {@link LoomcycleClient.ensureHookDef} to register only on change);
+   *  promoted unless `promote: false`. */
+  async createHookDef(
+    name: string,
+    overlay: HookDefOverlay,
+    opts?: CreateDefOptions,
+  ): Promise<HookDefRowResponse> {
+    return (await this.hookDef(
+      defWriteInput("create", name, overlay, opts),
+      signalOpts(opts),
+    )) as HookDefRowResponse;
+  }
+
+  /** `hookDef({op: "fork"})`, closed like
+   *  {@link LoomcycleClient.createHookDef}. Each top-level field given replaces
+   *  the parent's; `null` clears one. Forks the active version of `name` in
+   *  your tenant unless `parentDefId` is given. NOT promoted unless
+   *  `promote: true` — authoring and putting in force are two steps. */
+  async forkHookDef(
+    name: string,
+    overlay: HookDefForkOverlay,
+    opts?: ForkDefOptions,
+  ): Promise<HookDefRowResponse> {
+    return (await this.hookDef(
+      defWriteInput("fork", name, overlay, opts),
+      signalOpts(opts),
+    )) as HookDefRowResponse;
+  }
+
+  /** Register a HookDef idempotently — the register-on-every-boot
+   *  convenience, sibling of {@link LoomcycleClient.ensureMcpServer}.
+   *
+   *  Unlike MCPServerDef and AgentDef, a HookDef `create` is NOT
+   *  content-addressed: every create mints a new version. And the hash
+   *  `verify` compares is computed over the server's own JSON encoding of the
+   *  definition, which this client cannot reproduce byte for byte. So instead
+   *  this reads the active version (`verify` for its def_id — it answers
+   *  `deployed: false` rather than raising — then `get`) and compares its
+   *  stored definition with `overlay`, both normalized the way the server
+   *  normalizes (`fail_mode` defaults to `"open"`, an empty `match.tools`,
+   *  description, header map or timeout is dropped). Equal → no write,
+   *  `changed: false`. Otherwise `create` with the default promote, which
+   *  makes the new version active.
+   *
+   *  The normalization only collapses what the server collapses, so a real
+   *  change is never skipped; should the server come to normalize something
+   *  more, the cost is a redundant version, not a lost one. The rationale
+   *  in {@link EnsureHookDefOptions.description} is not part of the
+   *  definition and does not count as a change. */
+  async ensureHookDef(
+    name: string,
+    overlay: HookDefOverlay,
+    opts?: EnsureHookDefOptions,
+  ): Promise<EnsureHookDefResult> {
+    const callOpts = signalOpts(opts);
+    const verified = (await this.hookDef(
+      { op: "verify", name },
+      callOpts,
+    )) as HookDefVerifyResult;
+    if (verified.deployed && verified.current_def_id) {
+      // By def_id, not name: the version verify reported, even if another
+      // writer promotes a different one in between.
+      const active = (await this.hookDef(
+        { op: "get", def_id: verified.current_def_id },
+        callOpts,
+      )) as HookDefRowResponse;
+      if (sameJSON(normalizeHookDef(active.definition), normalizeHookDef(overlay))) {
+        return { name, defId: active.def_id, version: active.version, changed: false };
+      }
+    }
+    const input: HookDefInput = { op: "create", name, overlay };
+    if (opts?.description) input.description = opts.description;
+    const row = (await this.hookDef(input, callOpts)) as HookDefRowResponse;
+    return { name, defId: row.def_id, version: row.version, changed: true };
   }
 
   /** OperatorTokenDef substrate ops (create/rotate/retire/get/list) —
@@ -2192,6 +2466,154 @@ export class LoomcycleClient {
     return postJSON<SubstrateToolResponse>(this.ctx, "/v1/_volumedef", input, opts);
   }
 
+  // ---- Def name enumeration (GET /v1/_<family>def/names) ----
+  //
+  // Every name declared in one substrate family, each with its version
+  // roll-up — what the op-dispatched `list` op cannot give (it lists the
+  // versions of ONE name). Tenant-scoped server-side: a substrate:tenant token
+  // sees only its own tenant's names; an admin sees all, or focuses one tenant
+  // with `tenant` (ignored for a tenant token). The TeamDef family is
+  // {@link LoomcycleClient.listTeams}.
+
+  private listDefNames<T>(
+    family: string,
+    opts?: { tenant?: string; signal?: AbortSignal },
+  ): Promise<T> {
+    const q = opts?.tenant ? `?tenant=${encodeURIComponent(opts.tenant)}` : "";
+    return jsonFetch<T>(this.ctx, `/v1/_${family}/names${q}`, opts);
+  }
+
+  /** Every AgentDef name (`GET /v1/_agentdef/names`). */
+  async listAgentDefNames(opts?: { tenant?: string; signal?: AbortSignal }): Promise<DefNamesResponse> {
+    return this.listDefNames<DefNamesResponse>("agentdef", opts);
+  }
+
+  /** Every SkillDef name (`GET /v1/_skilldef/names`). */
+  async listSkillDefNames(opts?: { tenant?: string; signal?: AbortSignal }): Promise<DefNamesResponse> {
+    return this.listDefNames<DefNamesResponse>("skilldef", opts);
+  }
+
+  /** Every HookDef name (`GET /v1/_hookdef/names`). */
+  async listHookDefNames(opts?: { tenant?: string; signal?: AbortSignal }): Promise<DefNamesResponse> {
+    return this.listDefNames<DefNamesResponse>("hookdef", opts);
+  }
+
+  /** Every MCPServerDef name (`GET /v1/_mcpserverdef/names`). */
+  async listMcpServerDefNames(opts?: { tenant?: string; signal?: AbortSignal }): Promise<DefNamesResponse> {
+    return this.listDefNames<DefNamesResponse>("mcpserverdef", opts);
+  }
+
+  /** Every ScheduleDef name (`GET /v1/_scheduledef/names`). Substrate only —
+   *  {@link LoomcycleClient.listAllSchedules} merges in the static yaml ones. */
+  async listScheduleDefNames(opts?: { tenant?: string; signal?: AbortSignal }): Promise<DefNamesResponse> {
+    return this.listDefNames<DefNamesResponse>("scheduledef", opts);
+  }
+
+  /** Every A2AServerCardDef name (`GET /v1/_a2aservercarddef/names`). */
+  async listA2AServerCardDefNames(opts?: { tenant?: string; signal?: AbortSignal }): Promise<DefNamesResponse> {
+    return this.listDefNames<DefNamesResponse>("a2aservercarddef", opts);
+  }
+
+  /** Every A2AAgentDef name (`GET /v1/_a2aagentdef/names`). */
+  async listA2AAgentDefNames(opts?: { tenant?: string; signal?: AbortSignal }): Promise<DefNamesResponse> {
+    return this.listDefNames<DefNamesResponse>("a2aagentdef", opts);
+  }
+
+  /** Every WebhookDef name (`GET /v1/_webhookdef/names`). */
+  async listWebhookDefNames(opts?: { tenant?: string; signal?: AbortSignal }): Promise<DefNamesResponse> {
+    return this.listDefNames<DefNamesResponse>("webhookdef", opts);
+  }
+
+  /** Every MemoryBackendDef name (`GET /v1/_memorybackenddef/names`). */
+  async listMemoryBackendDefNames(opts?: { tenant?: string; signal?: AbortSignal }): Promise<DefNamesResponse> {
+    return this.listDefNames<DefNamesResponse>("memorybackenddef", opts);
+  }
+
+  /** Every DocumentSourceDef name (`GET /v1/_documentsourcedef/names`). */
+  async listDocumentSourceDefNames(opts?: { tenant?: string; signal?: AbortSignal }): Promise<DefNamesResponse> {
+    return this.listDefNames<DefNamesResponse>("documentsourcedef", opts);
+  }
+
+  /** Every OperatorTokenDef name (`GET /v1/_operatortokendef/names`), with its
+   *  subject and token counts — never a token. **Admin token only**: token
+   *  minting stays operator-only, so a `substrate:tenant` token is refused
+   *  with 403. */
+  async listOperatorTokenDefNames(
+    opts?: { tenant?: string; signal?: AbortSignal },
+  ): Promise<OperatorTokenDefNamesResponse> {
+    return this.listDefNames<OperatorTokenDefNamesResponse>("operatortokendef", opts);
+  }
+
+  // ---- Schedules admin (GET/POST /v1/_schedules/...) ----
+  //
+  // What the Web UI's schedules page drives: the merged list, one schedule's
+  // runtime state, and run-now / pause / resume. Authoring stays on
+  // {@link LoomcycleClient.scheduleDef}. The per-schedule methods take the
+  // ScheduleDef's `active_def_id`; a static yaml schedule has none to give, and
+  // a tenant token reaching another tenant's def gets the same 404 as an
+  // unknown one ({@link NotFoundError}).
+
+  /** Every schedule: static yaml `scheduled_runs` and ScheduleDefs, merged by
+   *  name (`GET /v1/_schedules/list-all`), sorted by name. A tenant token sees
+   *  only its own tenant's ScheduleDefs — static schedules are operator
+   *  automation and appear only for an admin, who may focus one tenant with
+   *  `tenant`. */
+  async listAllSchedules(
+    opts?: { tenant?: string; signal?: AbortSignal },
+  ): Promise<ScheduleListResponse> {
+    const q = opts?.tenant ? `?tenant=${encodeURIComponent(opts.tenant)}` : "";
+    return jsonFetch<ScheduleListResponse>(this.ctx, `/v1/_schedules/list-all${q}`, opts);
+  }
+
+  /** One schedule's runtime state (`GET /v1/_schedules/{def_id}/state`): last
+   *  and next fire, pause, the last slot claim, the catch-up backlog and the
+   *  runs it has in flight. 404 when the def has no state row (never promoted,
+   *  retired, or not yours). */
+  async getScheduleState(defId: string, opts?: { signal?: AbortSignal }): Promise<ScheduleStateView> {
+    return jsonFetch<ScheduleStateView>(
+      this.ctx,
+      `/v1/_schedules/${encodeURIComponent(defId)}/state`,
+      opts,
+    );
+  }
+
+  /** Fire a schedule now (`POST /v1/_schedules/{def_id}/run-now`). The run
+   *  starts on the scheduler's next tick, not during this call, and the regular
+   *  cadence continues after it. A run already in flight is handled by the
+   *  schedule's `concurrency_policy`. 404 for an unknown def. */
+  async runScheduleNow(defId: string, opts?: { signal?: AbortSignal }): Promise<ScheduleRunNowResult> {
+    return postJSON<ScheduleRunNowResult>(
+      this.ctx,
+      `/v1/_schedules/${encodeURIComponent(defId)}/run-now`,
+      undefined,
+      opts,
+    );
+  }
+
+  /** Pause a schedule indefinitely (`POST /v1/_schedules/{def_id}/pause`) until
+   *  {@link LoomcycleClient.resumeSchedule}. Takes no duration: the server sets
+   *  `paused_until` about 100 years ahead. Distinct from
+   *  {@link LoomcycleClient.pauseRuntime}, which stops the whole runtime. */
+  async pauseSchedule(defId: string, opts?: { signal?: AbortSignal }): Promise<SchedulePauseResult> {
+    return postJSON<SchedulePauseResult>(
+      this.ctx,
+      `/v1/_schedules/${encodeURIComponent(defId)}/pause`,
+      undefined,
+      opts,
+    );
+  }
+
+  /** Clear a schedule's pause (`POST /v1/_schedules/{def_id}/resume`), so the
+   *  scheduler considers it due again; `next_run_at` is left as it was. */
+  async resumeSchedule(defId: string, opts?: { signal?: AbortSignal }): Promise<SchedulePauseResult> {
+    return postJSON<SchedulePauseResult>(
+      this.ctx,
+      `/v1/_schedules/${encodeURIComponent(defId)}/resume`,
+      undefined,
+      opts,
+    );
+  }
+
   // ---- RFC AP Agent Teams (TeamDef substrate) ----
   //
   // TeamDefs are agent-team workflow graphs (states + transitions + a per-state
@@ -2226,24 +2648,41 @@ export class LoomcycleClient {
 
   /** Author a new TeamDef (op=create). `overlay` is the workflow graph
    *  (`{entry, states, transitions, max_iterations?, colors?}`), validated
-   *  server-side — an invalid graph raises {@link SubstrateToolRefusedError}. */
+   *  server-side — an invalid graph raises {@link SubstrateToolRefusedError}.
+   *
+   *  `opts.promote` and `opts.description` ride beside `signal`, as on
+   *  {@link LoomcycleClient.forkTeam}; each is sent only when set. Omitted,
+   *  the server promotes a create (unlike a fork); `promote: false` authors the
+   *  version without putting it in force. */
   async createTeam(
     name: string,
     overlay: Record<string, unknown>,
-    opts?: { signal?: AbortSignal },
+    opts?: CreateTeamOptions,
   ): Promise<CreatedTeam> {
-    return postJSON<CreatedTeam>(this.ctx, "/v1/_teamdef", { op: "create", name, overlay }, opts);
+    const body: Record<string, unknown> = { op: "create", name, overlay };
+    if (opts?.promote !== undefined) body.promote = opts.promote;
+    if (opts?.description !== undefined) body.description = opts.description;
+    return postJSON<CreatedTeam>(this.ctx, "/v1/_teamdef", body, { signal: opts?.signal });
   }
 
   /** Save an edited graph as a NEW version of an existing team (op=fork). With
-   *  no parent the server forks the name's active def; `overlay` (a full graph)
-   *  replaces it. Validated server-side ({@link SubstrateToolRefusedError}). */
+   *  no `parentDefId` the server forks the name's active def; `overlay` (a full
+   *  graph) replaces it. Validated server-side ({@link SubstrateToolRefusedError}).
+   *
+   *  The fork's own fields ride in `opts` beside `signal` — the pattern
+   *  {@link LoomcycleClient.setRunBreakpoints} uses — so existing two- and
+   *  three-argument calls are unchanged. `promote: true` puts the new version
+   *  in force in the same call; omitted, it is authored but not active. */
   async forkTeam(
     name: string,
     overlay: Record<string, unknown>,
-    opts?: { signal?: AbortSignal },
+    opts?: ForkTeamOptions,
   ): Promise<CreatedTeam> {
-    return postJSON<CreatedTeam>(this.ctx, "/v1/_teamdef", { op: "fork", name, overlay }, opts);
+    const body: Record<string, unknown> = { op: "fork", name, overlay };
+    if (opts?.promote !== undefined) body.promote = opts.promote;
+    if (opts?.parentDefId !== undefined) body.parent_def_id = opts.parentDefId;
+    if (opts?.description !== undefined) body.description = opts.description;
+    return postJSON<CreatedTeam>(this.ctx, "/v1/_teamdef", body, { signal: opts?.signal });
   }
 
   /** List every version of ONE team, newest first (op=list) — the lineage
@@ -2380,6 +2819,7 @@ export class LoomcycleClient {
     if (target.review !== undefined) body.review = target.review;
     if (target.reviewTtlSeconds !== undefined) body.review_ttl_seconds = target.reviewTtlSeconds;
     if (target.idempotencyKey !== undefined) body.idempotency_key = target.idempotencyKey;
+    if (target.interruptOnCap !== undefined) body.interrupt_on_cap = target.interruptOnCap;
     return postJSON<TeamRunResult | TeamRunDetached>(this.ctx, "/v1/_teamdef", body, opts);
   }
 
@@ -2557,6 +2997,124 @@ export class LoomcycleClient {
     opts?: { signal?: AbortSignal },
   ): Promise<HistoryToolResponse> {
     return postJSON<HistoryToolResponse>(this.ctx, "/v1/_history", input, opts);
+  }
+
+  /** Invoke the Evaluation tool outside a run (`POST /v1/_evaluation`):
+   *  record scores against runs and read them back. Op-discriminated
+   *  (`submit` / `get` / `list_for_run` / `list_for_def` / `aggregate`); the
+   *  return type follows the op. The `*Evaluation*` methods below are the same
+   *  call with positional arguments.
+   *
+   *  What a token may do: `substrate:tenant` every op, inside its own tenant;
+   *  admin every op, in every tenant; any other token (an isolated
+   *  `substrate:user`, a tenant member) `submit_self` only, which a call from
+   *  outside a run cannot use — it is not the run's agent — so each op is
+   *  refused. A token without `runs:read` gets a 403.
+   *
+   *  Another tenant's evaluation or run reads exactly like one that does not
+   *  exist. Raises {@link SubstrateToolRefusedError} on a tool refusal (an
+   *  unknown id, an op the token may not use); {@link InvalidArgumentError}
+   *  on 400; {@link AuthError} on 401. */
+  async evaluation(
+    input: EvaluationSubmitInput,
+    opts?: { signal?: AbortSignal },
+  ): Promise<EvaluationSubmitResult>;
+  async evaluation(
+    input: EvaluationGetInput,
+    opts?: { signal?: AbortSignal },
+  ): Promise<EvaluationRecord>;
+  async evaluation(
+    input: EvaluationListForRunInput,
+    opts?: { signal?: AbortSignal },
+  ): Promise<EvaluationListForRunResult>;
+  async evaluation(
+    input: EvaluationListForDefInput,
+    opts?: { signal?: AbortSignal },
+  ): Promise<EvaluationListForDefResult>;
+  async evaluation(
+    input: EvaluationAggregateInput,
+    opts?: { signal?: AbortSignal },
+  ): Promise<EvaluationAggregate>;
+  async evaluation(
+    input: EvaluationInput,
+    opts?: { signal?: AbortSignal },
+  ): Promise<
+    | EvaluationSubmitResult
+    | EvaluationRecord
+    | EvaluationListForRunResult
+    | EvaluationListForDefResult
+    | EvaluationAggregate
+  >;
+  async evaluation(
+    input: EvaluationInput,
+    opts?: { signal?: AbortSignal },
+  ): Promise<
+    | EvaluationSubmitResult
+    | EvaluationRecord
+    | EvaluationListForRunResult
+    | EvaluationListForDefResult
+    | EvaluationAggregate
+  > {
+    return postJSON(this.ctx, "/v1/_evaluation", input, opts);
+  }
+
+  /** Record a score against a run — `evaluation({op:"submit"})`. Scores are
+   *  additive: a second submit records another evaluation. */
+  async submitEvaluation(
+    runId: string,
+    score: number,
+    opts?: {
+      dimensions?: Record<string, number>;
+      judgement?: unknown;
+      rationale?: string;
+      signal?: AbortSignal;
+    },
+  ): Promise<EvaluationSubmitResult> {
+    const input: EvaluationSubmitInput = { op: "submit", run_id: runId, score };
+    if (opts?.dimensions !== undefined) input.dimensions = opts.dimensions;
+    if (opts?.judgement !== undefined) input.judgement = opts.judgement;
+    if (opts?.rationale !== undefined) input.rationale = opts.rationale;
+    return this.evaluation(input, { signal: opts?.signal });
+  }
+
+  /** One evaluation by id — `evaluation({op:"get"})`. */
+  async getEvaluation(
+    evalId: string,
+    opts?: { signal?: AbortSignal },
+  ): Promise<EvaluationRecord> {
+    return this.evaluation({ op: "get", eval_id: evalId }, opts);
+  }
+
+  /** Every evaluation of one run — `evaluation({op:"list_for_run"})`. */
+  async listEvaluationsForRun(
+    runId: string,
+    opts?: { limit?: number; signal?: AbortSignal },
+  ): Promise<EvaluationListForRunResult> {
+    const input: EvaluationListForRunInput = { op: "list_for_run", run_id: runId };
+    if (opts?.limit !== undefined) input.limit = opts.limit;
+    return this.evaluation(input, { signal: opts?.signal });
+  }
+
+  /** Every evaluation of one definition version, in your tenant —
+   *  `evaluation({op:"list_for_def"})`. */
+  async listEvaluationsForDef(
+    defId: string,
+    opts?: { limit?: number; signal?: AbortSignal },
+  ): Promise<EvaluationListForDefResult> {
+    const input: EvaluationListForDefInput = { op: "list_for_def", def_id: defId };
+    if (opts?.limit !== undefined) input.limit = opts.limit;
+    return this.evaluation(input, { signal: opts?.signal });
+  }
+
+  /** A definition's scores rolled up — `evaluation({op:"aggregate"})`.
+   *  `includeLineage` adds the ancestors' evaluations along parent_def_id. */
+  async aggregateEvaluations(
+    defId: string,
+    opts?: { includeLineage?: boolean; signal?: AbortSignal },
+  ): Promise<EvaluationAggregate> {
+    const input: EvaluationAggregateInput = { op: "aggregate", def_id: defId };
+    if (opts?.includeLineage !== undefined) input.include_lineage = opts.includeLineage;
+    return this.evaluation(input, { signal: opts?.signal });
   }
 
   /** List the PERSISTENT volume universe for the caller's tenant — every
@@ -3344,6 +3902,11 @@ export class LoomcycleClient {
    *    processed and pass it back as `since`. A cursor older than the
    *    server's change retention resumes past the pruned gap without saying
    *    so.
+   *  - A `{ kind: "error", payload: ChangeFeedError }` item means the server
+   *    could not read its change log. It is NOT fatal and iteration
+   *    continues: the server retries with backoff without advancing its
+   *    cursor, so changes resume after recovery with no gap. One item per
+   *    failure streak.
    *  - The stream has no end of its own: iteration ends when the server
    *    closes it (shutdown — reconnect with `since`) or throws an
    *    `AbortError` when `signal` aborts. */
@@ -3528,12 +4091,82 @@ async function* parseRunStateSSE(
   }
 }
 
+/** The wire input of a typed create / fork. `promote` goes out only when the
+ *  caller set it — false included — so the server's per-def default applies
+ *  otherwise. */
+function defWriteInput(
+  op: "create" | "fork",
+  name: string,
+  overlay: Record<string, unknown>,
+  opts?: ForkDefOptions,
+): SubstrateToolInput {
+  const input: SubstrateToolInput = { op, name, overlay };
+  if (opts?.parentDefId) input.parent_def_id = opts.parentDefId;
+  if (opts?.description) input.description = opts.description;
+  if (opts?.promote !== undefined) input.promote = opts.promote;
+  return input;
+}
+
+function signalOpts(opts?: { signal?: AbortSignal }): { signal?: AbortSignal } | undefined {
+  return opts?.signal ? { signal: opts.signal } : undefined;
+}
+
+/** The form a HookDef definition is stored in: hooks.Def.Normalize followed
+ *  by Go's omitempty encoding. Applied to both sides of ensureHookDef's
+ *  comparison; the stored side is already in this form, so what matters is
+ *  that the overlay lands exactly where the server would put it. */
+function normalizeHookDef(d: HookDefOverlay): Record<string, unknown> {
+  const out: Record<string, unknown> = { event: d.event };
+  const description = goTrimSpace(d.description ?? "");
+  if (description) out.description = description;
+  if (d.match?.tools && d.match.tools.length > 0) out.match = { tools: d.match.tools };
+  const body: Record<string, unknown> = { kind: d.body.kind };
+  if (d.body.kind === "code-js") {
+    if (d.body.code) body.code = d.body.code;
+  } else {
+    if (d.body.url) body.url = d.body.url;
+    if (d.body.headers && Object.keys(d.body.headers).length > 0) body.headers = d.body.headers;
+  }
+  out.body = body;
+  out.fail_mode = d.fail_mode || "open";
+  if (d.timeout_ms) out.timeout_ms = d.timeout_ms;
+  return out;
+}
+
+/** strings.TrimSpace: Go's Unicode White_Space set, which is not
+ *  String.prototype.trim's (Go trims U+0085 and keeps U+FEFF; JavaScript does
+ *  the reverse). Trimming differently could make two descriptions the server
+ *  stores differently compare equal, and skip a real change. */
+const goTrimRe =
+  /^[\t\n\v\f\r \u0085\u00A0\u1680\u2000-\u200A\u2028\u2029\u202F\u205F\u3000]+|[\t\n\v\f\r \u0085\u00A0\u1680\u2000-\u200A\u2028\u2029\u202F\u205F\u3000]+$/g;
+function goTrimSpace(s: string): string {
+  return s.replace(goTrimRe, "");
+}
+
+/** Structural JSON equality, ignoring object key order (the server's
+ *  encoding orders keys by struct field, a caller's literal by whatever it
+ *  wrote). Arrays compare in order. */
+function sameJSON(a: unknown, b: unknown): boolean {
+  if (a === b) return true;
+  if (typeof a !== "object" || typeof b !== "object" || a === null || b === null) return false;
+  if (Array.isArray(a) !== Array.isArray(b)) return false;
+  if (Array.isArray(a) && Array.isArray(b)) {
+    return a.length === b.length && a.every((v, i) => sameJSON(v, b[i]));
+  }
+  const ao = a as Record<string, unknown>;
+  const bo = b as Record<string, unknown>;
+  const keys = Object.keys(ao);
+  if (keys.length !== Object.keys(bo).length) return false;
+  return keys.every((k) => Object.prototype.hasOwnProperty.call(bo, k) && sameJSON(ao[k], bo[k]));
+}
+
 /** toChangeFeedFrame types one frame of a change feed, or returns null for a
  *  frame it does not recognise.
  *
  *  The frames arrive through parseSSE, which backfills `type` from the SSE
- *  event name ONLY when the payload has none. The `feed` frame deliberately
- *  carries no `type`, so it surfaces as `type: "feed"`; a `change` frame
+ *  event name ONLY when the payload has none. The `feed` and `error` frames
+ *  deliberately carry no `type`, so they surface as `type: "feed"` /
+ *  `type: "error"`; a `change` frame
  *  carries its own change type (`memory.set`, …), so it is recognised by its
  *  numeric `seq` instead. Anything else — an event name a newer server adds —
  *  is skipped, the adapter's usual ignore-what-you-don't-know posture. */
@@ -3546,6 +4179,14 @@ function toChangeFeedFrame(
     if (typeof raw.enabled !== "boolean") return null;
     const { type: _type, ...status } = raw;
     return { kind: "feed", payload: status as unknown as ChangeFeedStatus };
+  }
+  if (raw.type === "error") {
+    // Like `feed`, the error frame carries no `type` of its own, so this one
+    // was backfilled from the event name. Both fields are required: a
+    // half-read error is skipped rather than surfaced as a blank one.
+    if (typeof raw.code !== "string" || typeof raw.error !== "string") return null;
+    const { type: _type, ...failure } = raw;
+    return { kind: "error", payload: failure as unknown as ChangeFeedError };
   }
   if (typeof raw.seq === "number" && typeof raw.type === "string") {
     return { kind: "change", payload: raw as unknown as MemoryChange };

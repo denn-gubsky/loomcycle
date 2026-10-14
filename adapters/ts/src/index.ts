@@ -14,7 +14,7 @@
  *     getAgent(agentId): Promise<Agent>
  *     getRun(runId): Promise<Agent>
  *     cancelAgent(agentId, opts?): Promise<CancelAgentResult>
- *     listUserAgents(userId, opts?): Promise<Agent[]>
+ *     listUserAgents(userId, opts?): Promise<AgentList>
  *     listWalkRuns(walkId, opts?): Promise<WalkRunsPage>
  *     deleteRunTree(runId, opts?): Promise<RunTreeDeletion>     // needs runs:delete
  *     deleteSession(sessionId, {cascade: "children"}): Promise<RunTreeDeletion>
@@ -35,6 +35,9 @@
  *     resumeRuntime(): Promise<ResumeResult>
  *     getRuntimeState(): Promise<RuntimeStateResponse>
  *     resolveProbe(opts?): Promise<ResolverMatrix>
+ *     listModels(): Promise<ModelAliasesResponse>                 // configured model aliases
+ *     getRouting(): Promise<RoutingResponse>                      // per user_tier × tier cascade
+ *     listProviderModels(providerId): Promise<ProviderModelsResponse>   // admin token only
  *
  *     // Snapshot lifecycle (v0.8.17/8.18)
  *     createSnapshot(opts?): Promise<SnapshotCreateResponse>
@@ -58,7 +61,7 @@
  *     purgeStaleEmbeddings(scope, scopeId, opts?): Promise<MemoryPurgeResponse>    // DELETES; dry_run defaults true
  *
  *     // Memory / document change feeds (RFC CD Part C; SSE; substrate:tenant)
- *     streamMemoryChanges(opts?): AsyncIterable<ChangeFeedFrame>     // resume with opts.since = last seq
+ *     streamMemoryChanges(opts?): AsyncIterable<ChangeFeedFrame>     // feed | change | error (non-fatal); resume with opts.since = last seq
  *     streamDocumentChanges(opts?): AsyncIterable<ChangeFeedFrame>
  *
  *     // Interruption (v0.8.16; decline RFC BH)
@@ -76,7 +79,27 @@
  *     mcpServerDef(input): Promise<SubstrateToolResponse>
  *     mcpServerDefVerify(name, sha): Promise<MCPServerDefVerifyResult>   // v0.18.0
  *     ensureMcpServer(opts): Promise<EnsureMcpServerResult>              // v0.18.0 — idempotent register-if-changed
- *     scheduleDef(input): Promise<SubstrateToolResponse>
+ *     scheduleDef(input): Promise<SubstrateToolResponse>                // input: ScheduleDefInput | SubstrateToolInput
+ *     webhookDef(input): Promise<SubstrateToolResponse>                 // input: WebhookDefInput | SubstrateToolInput
+ *     hookDef(input): Promise<SubstrateToolResponse>                    // input: HookDefInput | SubstrateToolInput
+ *     ensureHookDef(name, overlay, opts?): Promise<EnsureHookDefResult>  // idempotent register-if-changed
+ *     createHookDef / forkHookDef(name, overlay, opts?)                  // overlay strictly typed, no loose fallback
+ *     createScheduleDef / forkScheduleDef(name, overlay, opts?)          // ditto (overlay open: types of known keys checked)
+ *     createWebhookDef / forkWebhookDef(name, overlay, opts?)            // ditto
+ *
+ *     // Def name enumeration (tenant-scoped; opts.tenant = admin focus)
+ *     listAgentDefNames / listSkillDefNames / listHookDefNames / listMcpServerDefNames /
+ *     listScheduleDefNames / listA2AServerCardDefNames / listA2AAgentDefNames /
+ *     listWebhookDefNames / listMemoryBackendDefNames / listDocumentSourceDefNames
+ *       (opts?): Promise<DefNamesResponse>
+ *     listOperatorTokenDefNames(opts?): Promise<OperatorTokenDefNamesResponse>   // admin token only
+ *
+ *     // Schedules admin
+ *     listAllSchedules(opts?): Promise<ScheduleListResponse>      // static yaml + ScheduleDefs, merged
+ *     getScheduleState(defId): Promise<ScheduleStateView>
+ *     runScheduleNow(defId): Promise<ScheduleRunNowResult>        // fires on the next tick
+ *     pauseSchedule(defId): Promise<SchedulePauseResult>          // indefinite
+ *     resumeSchedule(defId): Promise<SchedulePauseResult>
  *
  *     // Dynamic filesystem volumes (v0.35.0 — RFC AH; tenant-confined)
  *     volumeDef(input): Promise<SubstrateToolResponse>            // create/get/list/delete/purge
@@ -87,8 +110,8 @@
  *     listTeams(): Promise<ListTeamsResponse>
  *     renderTeamDiagram(name, opts?): Promise<TeamDiagram>
  *     getTeamDef(defId): Promise<TeamDefDetail>
- *     createTeam(name, overlay): Promise<CreatedTeam>
- *     forkTeam(name, overlay): Promise<CreatedTeam>
+ *     createTeam(name, overlay, opts?): Promise<CreatedTeam>       // opts: promote (default true) / description
+ *     forkTeam(name, overlay, opts?): Promise<CreatedTeam>         // opts: promote / parentDefId / description
  *     deleteTeam(name): Promise<{name, deleted}>
  *     runTeam({name|defId, input}): Promise<TeamRunResult>
  *     runTeam({..., mode:"detach"}): Promise<TeamRunDetached>     // the handle, now — the walk runs on
@@ -101,6 +124,14 @@
  *
  *     // History — browse/search/annotate past chats (RFC BE; tenant-confined)
  *     history(input): Promise<HistoryToolResponse>                // list/get/search/rename/annotate/pin/archive/recap/resume
+ *
+ *     // Evaluation — score runs and read the scores back, outside a run
+ *     evaluation(input): Promise<…>                               // submit/get/list_for_run/list_for_def/aggregate
+ *     submitEvaluation(runId, score, opts?): Promise<EvaluationSubmitResult>
+ *     getEvaluation(evalId): Promise<EvaluationRecord>
+ *     listEvaluationsForRun(runId, opts?): Promise<EvaluationListForRunResult>
+ *     listEvaluationsForDef(defId, opts?): Promise<EvaluationListForDefResult>
+ *     aggregateEvaluations(defId, opts?): Promise<EvaluationAggregate>
  *
  *     // Library v2 enumeration (v0.10.3 — yaml+substrate merged)
  *     listLibraryAgents(): Promise<LibraryListResponse<LibraryAgentDefinition>>
@@ -119,7 +150,8 @@
  *     LoomcycleError, AgentNotFoundError, SessionNotFoundError,
  *     SessionBusyError, AgentIDInUseError, BackpressureError,
  *     RateLimitedError (subclass of BackpressureError),
- *     PerUserQuotaExhaustedError, AuthError, UnavailableError,
+ *     PerUserQuotaExhaustedError, AuthError, InsufficientScopeError (a 403
+ *     naming the scope the token lacks), UnavailableError,
  *     InvalidArgumentError,
  *     PauseNotConfiguredError (subclass of UnavailableError),
  *     AlreadyPausingError, NotPausedError, SnapshotNotFoundError,
@@ -141,6 +173,8 @@
 export { LoomcycleClient } from "./client.js";
 export { InteractiveSession } from "./interactive.js";
 export type { InteractiveSessionOps } from "./interactive.js";
+export { verifyLoomcycleSignature, verifyLoomcycleDelivery } from "./signature.js";
+export type { VerifySignatureOptions, VerifiedDelivery } from "./signature.js";
 export { ClientToolHost, clientToolsURL, CLIENT_TOOL_SUBPROTOCOL } from "./client-tools.js";
 export type {
   ClientToolSchema,
@@ -184,6 +218,8 @@ export type {
   OutputFormatOptions,
   CancelAgentResult,
   ListAgentsResponse,
+  ListUserAgentsOptions,
+  AgentList,
   WalkRunsPage,
   // Fan-out (RFC Y) + compaction
   RunBatchOptions,
@@ -299,6 +335,31 @@ export type {
   TeamRunDetached,
   TeamRunResult,
   TeamRunTarget,
+  CreateTeamOptions,
+  ForkTeamOptions,
+  // Def name enumeration (GET /v1/_<family>def/names)
+  DefNameSummary,
+  DefNamesResponse,
+  OperatorTokenDefNameSummary,
+  OperatorTokenDefNamesResponse,
+  // Schedules admin (/v1/_schedules/...)
+  ScheduleListEntry,
+  ScheduleListResponse,
+  ScheduleActiveRun,
+  ScheduleStateView,
+  ScheduleRunNowResult,
+  SchedulePauseResult,
+  // Model aliases, routing view, live provider models
+  ModelAlias,
+  ModelAliasesResponse,
+  RoutingResponse,
+  RoutingUserTier,
+  RoutingTier,
+  RoutingCandidate,
+  RoutingThroughput,
+  RoutingProvider,
+  SearchRoutingProvider,
+  ProviderModelsResponse,
   TeamRunStep,
   TeamDecisionHandler,
   TeamDecisionQuestion,
@@ -311,6 +372,20 @@ export type {
   // RFC BE History (browse/search/annotate past chats)
   HistoryToolInput,
   HistoryToolResponse,
+  // Evaluation outside a run (POST /v1/_evaluation)
+  EvaluationEmitterRole,
+  EvaluationSubmitInput,
+  EvaluationGetInput,
+  EvaluationListForRunInput,
+  EvaluationListForDefInput,
+  EvaluationAggregateInput,
+  EvaluationInput,
+  EvaluationSubmitResult,
+  EvaluationRecord,
+  EvaluationListForRunResult,
+  EvaluationListForDefResult,
+  EvaluationScoreStats,
+  EvaluationAggregate,
   // RFC AH dynamic volumes (v0.35.0)
   VolumeMode,
   PersistentVolumeEntry,
@@ -329,6 +404,7 @@ export type {
   RunStateStreamOpen,
   StreamUserRunStatesOptions,
   // Memory / document change feeds (RFC CD Part C)
+  ChangeFeedError,
   ChangeFeedFrame,
   ChangeFeedStatus,
   EmbedderHealth,
@@ -400,6 +476,30 @@ export type {
   ToolHooksByTool,
   EnsureCodeAgentOptions,
   EnsureCodeAgentResult,
+  // Typed HookDef / ScheduleDef / WebhookDef inputs (RFC EO)
+  CreateDefOptions,
+  ForkDefOptions,
+  EnsureHookDefOptions,
+  EnsureHookDefResult,
+  HookDefBody,
+  HookDefForkOverlay,
+  HookDefInput,
+  HookDefMatch,
+  HookDefOverlay,
+  HookDefRowResponse,
+  HookDefVerifyResult,
+  ScheduleDefInput,
+  ScheduleDefOverlay,
+  ScheduleDefRowResponse,
+  ScheduledRunHook,
+  ScheduledRunPromptContent,
+  ScheduledRunPromptSegment,
+  WebhookDefAuth,
+  WebhookDefInput,
+  WebhookDefOverlay,
+  WebhookDefRateLimit,
+  WebhookDefRowResponse,
+  WebhookDefSyncResponse,
   // Library v2 enumeration (v0.10.3)
   LibraryAgentDefinition,
   LibraryEntry,
@@ -456,6 +556,9 @@ export type {
   EffectiveConfigSource,
   EffectiveValue,
   InertContextSetting,
+  AgentOverridableResponse,
+  OverridableField,
+  OverrideLockReason,
   RetuneRunResponse,
   RunConfigRecord,
   SubagentHoldInfo,
@@ -497,6 +600,7 @@ export {
   AuthError,
   BackpressureError,
   NotFoundError,
+  InsufficientScopeError,
   InvalidArgumentError,
   ChannelCursorRegressionError,
   LoomcycleError,

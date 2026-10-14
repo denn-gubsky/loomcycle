@@ -8,6 +8,7 @@ import (
 	"sort"
 
 	"github.com/denn-gubsky/loomcycle/internal/config"
+	"github.com/denn-gubsky/loomcycle/internal/credential"
 	"github.com/denn-gubsky/loomcycle/internal/jsonpath"
 	"github.com/denn-gubsky/loomcycle/internal/teamgraph"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
@@ -163,8 +164,10 @@ func LocalWebhookOf(def teamgraph.Definition, name string) (LocalWebhookDefiniti
 // localWebhookIssues refuses, at create and fork, a definition declaring a
 // webhook its author may not open or that could not work. A fork is judged on
 // what it writes: the webhooks it carries over from its parent are judged
-// under the forker's authority like the ones it adds.
-func localWebhookIssues(ctx context.Context, team string, def teamgraph.Definition) []teamIssue {
+// under the forker's authority like the ones it adds. A stored secret must be
+// a tenant-level credential of the author's tenant, as a WebhookDef's must
+// (checkWebhookSecretAuthority); creds answers that.
+func localWebhookIssues(ctx context.Context, creds *credential.Engine, team string, def teamgraph.Definition) []teamIssue {
 	names := def.LocalWebhookNames()
 	if len(names) == 0 {
 		return nil
@@ -188,8 +191,14 @@ func localWebhookIssues(ctx context.Context, team string, def teamgraph.Definiti
 				"(A-Z a-z 0-9 _ -), because each is reached under the team's name: %v", err)))
 	}
 	for _, name := range names {
-		if _, err := LocalWebhookOf(def, name); err != nil {
+		hook, err := LocalWebhookOf(def, name)
+		if err != nil {
 			issues = append(issues, refused(teamIssueLocalWebhookInvalid, teamgraph.PathKey("local.webhooks", name),
+				fmt.Sprintf("local.webhooks[%q]: %v", name, err)))
+			continue
+		}
+		if err := checkWebhookSecretAuthority(ctx, creds, mergedWebhookAuth(hook.Auth)); err != nil {
+			issues = append(issues, refused(teamIssueLocalWebhookAuthority, teamgraph.PathKey("local.webhooks", name),
 				fmt.Sprintf("local.webhooks[%q]: %v", name, err)))
 		}
 	}

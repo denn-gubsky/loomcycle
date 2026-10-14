@@ -24,7 +24,7 @@ const SRC = resolve(__dirname, "..", "src");
 
 /** Modules whose every top-level export is public surface. client.ts is
  *  covered by its single class; fetch-helpers.ts and stream.ts are internal. */
-const PUBLIC_MODULES = ["types", "errors", "client-tools", "interactive"];
+const PUBLIC_MODULES = ["types", "errors", "client-tools", "interactive", "signature"];
 
 function read(file: string): string {
   return readFileSync(resolve(SRC, file), "utf8");
@@ -34,7 +34,7 @@ function read(file: string): string {
  *  declaration split across lines is still read. */
 function declaredExports(source: string): string[] {
   const re =
-    /^export\s+(?:declare\s+)?(?:abstract\s+)?(?:interface|type|enum|const|class|function)\s+([A-Za-z_$][\w$]*)/gm;
+    /^export\s+(?:declare\s+)?(?:abstract\s+)?(?:async\s+)?(?:interface|type|enum|const|class|function)\s+([A-Za-z_$][\w$]*)/gm;
   return [...new Set([...source.matchAll(re)].map((m) => m[1]!))].sort();
 }
 

@@ -426,6 +426,17 @@ func TestDeleteRunTree_TheOperationItselfRefusesACallerWithoutTheScope(t *testin
 		if !errors.As(err, &hse) || hse.HTTPStatus() != http.StatusForbidden {
 			t.Errorf("%s: err = %v, want a 403 refusal", name, err)
 		}
+		// Written over HTTP it is the route gate's refusal: the scope in the
+		// body and in WWW-Authenticate.
+		rec := httptest.NewRecorder()
+		writeRunTreeErr(rec, err)
+		var body map[string]any
+		_ = json.Unmarshal(rec.Body.Bytes(), &body)
+		if body["code"] != "insufficient_scope" || body["required_scope"] != auth.ScopeRunsDelete ||
+			rec.Header().Get("WWW-Authenticate") != `Bearer scope="`+auth.ScopeRunsDelete+`"` {
+			t.Errorf("%s: written as %d %s (WWW-Authenticate %q), want insufficient_scope naming %s",
+				name, rec.Code, rec.Body.String(), rec.Header().Get("WWW-Authenticate"), auth.ScopeRunsDelete)
+		}
 	}
 	if !runExists(t, srv.store, run.ID) {
 		t.Fatal("the run was deleted")

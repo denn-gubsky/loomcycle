@@ -363,6 +363,56 @@ export interface InertContextSetting {
   fix?: string;
 }
 
+/** Why a per-run override is refused, in {@link OverridableField.reason}:
+ *  - `token_locked` — the caller's token carries an overrides policy that
+ *                     leaves the field out
+ *  - `agent_locked` — the agent's definition says `allow_overrides: false`
+ *
+ *  When both apply the token is named, because a run setting the field is
+ *  refused for that reason first. */
+export type OverrideLockReason = "token_locked" | "agent_locked";
+
+/** One per-run override in {@link AgentOverridableResponse.fields}. */
+export interface OverridableField {
+  /** Whether a run of the agent, started by this caller, may set it. */
+  overridable: boolean;
+  /** Present when `overridable` is false. */
+  reason?: OverrideLockReason;
+  /** The run may only make it smaller than the definition allows
+   *  (`max_concurrent_children`, `interruption`). */
+  narrow_only?: boolean;
+  /** The largest value accepted (`max_concurrent_children`: the fan-out
+   *  ceiling, the definition's or the runtime default). */
+  max?: number;
+  /** The values accepted, when the run path checks against a closed set this
+   *  agent has: `effort`, the configured `tier`s, and the `provider` and
+   *  `model` sets the definition declares. Absent means no closed set here —
+   *  any value the deployment accepts (see `listModels()` / `getRouting()`),
+   *  not anything at all. Each describes the field set on its own. */
+  values?: string[];
+}
+
+/** The reply from `GET /v1/_agentdef/{name}/overridable` — for every per-run
+ *  override, whether a run of this agent started by THIS caller may set it.
+ *
+ *  Folds the definition's `allow_overrides` with the caller's token overrides
+ *  policy, through the same checks the run path refuses with. The answer is
+ *  the caller's: do not reuse it for another token. Keys of `fields` are wire
+ *  names (`max_tokens`, not `maxTokens`), one per run option a token's
+ *  overrides policy can name. */
+export interface AgentOverridableResponse {
+  agent: string;
+  /** The AgentDef version answered for; absent for a yaml or registered agent,
+   *  which have no versions. Always the active version: a run cannot pin one. */
+  def_id?: string;
+  /** The definition's `allow_overrides`; unset reads as true. */
+  allow_overrides: boolean;
+  /** True when the caller's token carries an overrides policy, so `fields`
+   *  reflects this caller and not only the agent. */
+  restricted_by_token: boolean;
+  fields: Record<string, OverridableField>;
+}
+
 /** The reply from `retuneRun` — the run's MERGED configuration, not an echo of
  *  the request.
  *
@@ -1724,7 +1774,33 @@ export interface RunResult {
 
 export interface ListAgentsResponse {
   agents: Agent[];
+  /** True when an `awaited_state` listing stopped before reading every
+   *  running run (it reads at most 1,000), so a matching run may be missing.
+   *  Absent otherwise. */
+  truncated?: boolean;
 }
+
+/** {@link LoomcycleClient.listUserAgents}'s filters. */
+export interface ListUserAgentsOptions {
+  /** One status or several (a run in any of them is listed). Omitted → only
+   *  running runs; `"all"` → every status. An unknown status is a 400. */
+  status?: AgentStatus | "all" | AgentStatus[];
+  /** List only running runs blocked on one of these waits. Implies running:
+   *  a `status` other than `"running"` with it is a 400. */
+  awaitedState?: AwaitedState | AwaitedState[];
+  /** Narrows the result CLIENT-SIDE to runs whose `parent_agent_id`
+   *  matches. */
+  parentAgentId?: string;
+  /** Super-admin tenant-focus (?tenant=, RFC L v0.17.0). Ignored
+   *  server-side for a tenant principal — its own tenant is forced. */
+  tenant?: string;
+  signal?: AbortSignal;
+}
+
+/** {@link LoomcycleClient.listUserAgents}'s answer: the runs, still an array,
+ *  carrying `truncated: true` when an `awaitedState` listing stopped before
+ *  reading every running run. */
+export type AgentList = Agent[] & { truncated?: boolean };
 
 /** One page of a team walk's runs ({@link LoomcycleClient.listWalkRuns}),
  *  ordered by started_at then run id. `next_cursor` is "" on the last page. */
@@ -2637,6 +2713,9 @@ export interface PreHookCall {
   phase: "pre";
   owner: string;
   hook_name: string;
+  /** Present on a signed call only: this delivery's id, inside the signed body.
+   *  Dedupe on it, never on the unsigned X-Loomcycle-Delivery header copy. */
+  delivery_id?: string;
   agent: string;
   user_id?: string;
   agent_id?: string;
@@ -2665,6 +2744,9 @@ export interface PostHookCall {
   phase: "post";
   owner: string;
   hook_name: string;
+  /** Present on a signed call only: this delivery's id, inside the signed body.
+   *  Dedupe on it, never on the unsigned X-Loomcycle-Delivery header copy. */
+  delivery_id?: string;
   agent: string;
   user_id?: string;
   agent_id?: string;
@@ -2679,6 +2761,9 @@ export interface ChannelHookCall {
   /** `"channel:<name>"`. */
   owner: string;
   hook_name: string;
+  /** Present on a signed call only: this delivery's id, inside the signed body.
+   *  Dedupe on it, never on the unsigned X-Loomcycle-Delivery header copy. */
+  delivery_id?: string;
   channel: string;
   scope: string;
   scope_id?: string;
@@ -3153,6 +3238,11 @@ export interface TeamRunTarget {
    *  it has no `steps`: read the walk's member runs for those. Refused with
    *  `boardChunkId`, which already resumes a stored position. */
   idempotencyKey?: string;
+  /** When a state hits its iteration cap, ask a human (an interruption)
+   *  whether to continue, `reroute:<state>` or abort, instead of ending with
+   *  the `iteration_cap` outcome. An ask nobody answers, that times out or is
+   *  declined aborts the walk. Default false. */
+  interruptOnCap?: boolean;
 }
 
 /** What {@link LoomcycleClient.runTeam} returns for `mode: "detach"` — the
@@ -3487,6 +3577,137 @@ export type HistoryToolInput = {
  *  returns the chat metadata + transcript (or Markdown), `recap` a summary,
  *  `resume` a continuation handle. Callers narrow as needed. */
 export type HistoryToolResponse = unknown;
+
+/** Who recorded an evaluation, relative to the run it scores. The server
+ *  derives it from the caller and the target run; it is never sent. A call
+ *  outside a run (this client) records `external` or `unrelated`. */
+export type EvaluationEmitterRole =
+  | "self"
+  | "sibling"
+  | "parent"
+  | "external"
+  | "unrelated";
+
+/** `evaluation({op:"submit"})`: record a score against a run. Scores are
+ *  additive — submitting again records another evaluation. */
+export interface EvaluationSubmitInput {
+  op: "submit";
+  run_id: string;
+  /** Required. Convention [-1,1] or [0,1]; the operator chooses. */
+  score: number;
+  /** Named axes to numeric values, e.g. `{correctness: 0.8}`. */
+  dimensions?: Record<string, number>;
+  /** Free-form structured payload. */
+  judgement?: unknown;
+  /** Natural-language reasoning. */
+  rationale?: string;
+}
+
+/** `evaluation({op:"get"})`: one evaluation by id. */
+export interface EvaluationGetInput {
+  op: "get";
+  eval_id: string;
+}
+
+/** `evaluation({op:"list_for_run"})`: every evaluation of one run. */
+export interface EvaluationListForRunInput {
+  op: "list_for_run";
+  run_id: string;
+  /** Max rows (default 100). */
+  limit?: number;
+}
+
+/** `evaluation({op:"list_for_def"})`: every evaluation of runs of one
+ *  definition version, in the caller's tenant. */
+export interface EvaluationListForDefInput {
+  op: "list_for_def";
+  def_id: string;
+  /** Max rows (default 100). */
+  limit?: number;
+}
+
+/** `evaluation({op:"aggregate"})`: the scores of a definition rolled up. */
+export interface EvaluationAggregateInput {
+  op: "aggregate";
+  def_id: string;
+  /** Walk parent_def_id and include the ancestors' evaluations. */
+  include_lineage?: boolean;
+}
+
+/** Input for {@link LoomcycleClient.evaluation}, discriminated by `op`. */
+export type EvaluationInput =
+  | EvaluationSubmitInput
+  | EvaluationGetInput
+  | EvaluationListForRunInput
+  | EvaluationListForDefInput
+  | EvaluationAggregateInput;
+
+/** What `submit` returns: the stored row's identity and the derived role. */
+export interface EvaluationSubmitResult {
+  eval_id: string;
+  run_id: string;
+  /** The definition version the run was running, denormalised at submit
+   *  time; `""` for a run that resolved through static config only. */
+  def_id: string;
+  emitter_role: EvaluationEmitterRole;
+  score: number;
+  /** RFC 3339 UTC. */
+  created_at: string;
+}
+
+/** One stored evaluation, as `get` and the `list_for_*` ops return it. */
+export interface EvaluationRecord {
+  eval_id: string;
+  run_id: string;
+  def_id: string;
+  score: number;
+  /** `null` when the submit carried none. */
+  dimensions: Record<string, number> | null;
+  /** `null` when the submit carried none. */
+  judgement: unknown;
+  rationale: string;
+  emitter_role: EvaluationEmitterRole;
+  emitter_agent_id: string;
+  emitter_run_id: string;
+  /** RFC 3339 UTC. */
+  created_at: string;
+}
+
+/** What `list_for_run` returns. An unknown run, or one the caller may not
+ *  read, lists nothing rather than refusing. */
+export interface EvaluationListForRunResult {
+  run_id: string;
+  evaluations: EvaluationRecord[];
+}
+
+/** What `list_for_def` returns. An unknown definition, or one the caller may
+ *  not read, lists nothing rather than refusing. */
+export interface EvaluationListForDefResult {
+  def_id: string;
+  evaluations: EvaluationRecord[];
+}
+
+/** Summary statistics over a set of scores. */
+export interface EvaluationScoreStats {
+  mean: number;
+  median: number;
+  min: number;
+  max: number;
+  latest: number;
+  count: number;
+}
+
+/** What `aggregate` returns. `count: 0` for an unknown definition. */
+export interface EvaluationAggregate {
+  def_id: string;
+  count: number;
+  score: EvaluationScoreStats;
+  /** Keyed by dimension name; only dimensions some row supplied. */
+  dimensions?: Record<string, EvaluationScoreStats>;
+  /** Keyed by emitter role. */
+  by_emitter_role?: Record<string, EvaluationScoreStats>;
+  lineage_included: boolean;
+}
 
 /** Volume access mode — read-only or read-write (RFC AH). */
 export type VolumeMode = "ro" | "rw";
@@ -4581,6 +4802,427 @@ export interface MCPServerDefVerifyResult {
   deployed: boolean;
 }
 
+// ---- Typed HookDef / ScheduleDef / WebhookDef inputs (RFC EO) ----
+//
+// The overlays below mirror the Go shapes the server decodes them into
+// (hooks.Def, mergedScheduleDef, mergedWebhookDef). A Go test
+// (internal/tools/builtin/def_overlay_ts_parity_test.go) reflects over those
+// structs and fails when a field is added on either side without the other.
+//
+// hookDef / scheduleDef / webhookDef accept these OR the loose
+// SubstrateToolInput, so existing callers compile unchanged — and a bare
+// object literal with a misspelt key still matches the loose shape there. The
+// create / fork methods (createHookDef, forkHookDef, createScheduleDef, …) and
+// ensureHookDef take ONLY the typed overlay, so a bare literal is checked.
+
+/** A HookDef's body: a code-js script the server runs in-process, or a webhook
+ *  it calls. The server refuses a code-js body carrying a url or headers, and
+ *  an http body carrying code. */
+export type HookDefBody =
+  | {
+      kind: "code-js";
+      /** A script defining `function hook(ev)` that returns the decision. */
+      code: string;
+    }
+  | {
+      kind: "http";
+      /** http:// or https://. */
+      url: string;
+      /** Sent with each call. A value may name a credential as
+       *  `$cred:<name>`, resolved for the run when the hook is called — keep
+       *  secrets there, not in the URL or a literal value. */
+      headers?: Record<string, string>;
+    };
+
+/** Narrows a tool-event hook (`pre` / `post` / `post_failure`) within what it
+ *  is attached to. The server refuses it on any other event. */
+export type HookDefMatch = {
+  /** Exact tool names or trailing-`*` globs; empty = every tool. */
+  tools?: string[];
+};
+
+/** A HookDef's definition — the `overlay` of a `hookDef` create.
+ *
+ *  CLOSED on purpose (no index signature): the server decodes the overlay
+ *  strictly and refuses any key it does not know, so an unknown key here is a
+ *  compile error rather than a runtime refusal. A type alias rather than an
+ *  interface so it stays assignable to the loose `SubstrateToolInput.overlay`. */
+export type HookDefOverlay = {
+  /** Shown to whoever the hook denies, holds or rewrites — including a tenant
+   *  that did not write it. The body is never shown. At most 4 KiB. */
+  description?: string;
+  /** What the hook answers. Wherever it is attached, it is attached under this
+   *  event; `channel_publish` is a channel's own. */
+  event: HookEvent;
+  match?: HookDefMatch;
+  body: HookDefBody;
+  /** `"open"` (default): a failing hook lets the call through. `"closed"`: it
+   *  stops it. */
+  fail_mode?: HookFailMode;
+  /** Webhook: the whole call (default 5 s, max 60 s). code-js: each run of the
+   *  script (default 50 ms, max 1 s). */
+  timeout_ms?: number;
+};
+
+/** The `overlay` of a `hookDef` fork: each top-level field given replaces the
+ *  parent's, and `null` clears one (it decodes to the field's zero value). */
+export type HookDefForkOverlay = {
+  [K in keyof HookDefOverlay]?: HookDefOverlay[K] | null;
+};
+
+/** Typed input for {@link LoomcycleClient.hookDef}, one shape per op. */
+export type HookDefInput =
+  | {
+      op: "create";
+      name: string;
+      overlay: HookDefOverlay;
+      /** Free-text rationale (distinct from `overlay.description`). */
+      description?: string;
+      /** Default true. */
+      promote?: boolean;
+    }
+  | {
+      op: "fork";
+      name: string;
+      /** Default: the active version of `name` in your tenant. */
+      parent_def_id?: string;
+      overlay?: HookDefForkOverlay;
+      description?: string;
+      /** Default false. */
+      promote?: boolean;
+    }
+  /** By `def_id`, or the active version of `name`. */
+  | { op: "get"; name?: string; def_id?: string }
+  | { op: "list"; name: string }
+  | { op: "promote"; def_id: string }
+  | { op: "retire"; def_id: string; retired: boolean }
+  | { op: "verify"; name: string; content_sha256?: string }
+  | { op: "delete"; name: string };
+
+/** One HookDef version, as create / fork / get return it (`list` returns
+ *  `{name, versions: HookDefRowResponse[]}`). */
+export interface HookDefRowResponse {
+  def_id: string;
+  name: string;
+  version: number;
+  parent_def_id?: string;
+  description?: string;
+  created_at: string;
+  created_by_agent_id?: string;
+  retired: boolean;
+  /** "sha256:" + 64 hex chars, over the name and the normalized definition. */
+  content_sha256: string;
+  tenant_id?: string;
+  /** The stored definition, normalized: `fail_mode` filled in, empty fields
+   *  left out. */
+  definition: HookDefOverlay;
+  /** On create / fork: whether the new version was made active. */
+  promoted?: boolean;
+}
+
+/** Response shape for `HookDef verify`; same semantics as
+ *  {@link MCPServerDefVerifyResult}. Asking without `content_sha256` is how to
+ *  learn whether `name` is deployed at all: `deployed: false`, never an error. */
+export interface HookDefVerifyResult {
+  matches: boolean;
+  current_sha256: string;
+  current_def_id: string;
+  version: number;
+  name: string;
+  deployed: boolean;
+}
+
+/** Options for the strictly-typed create methods
+ *  ({@link LoomcycleClient.createHookDef},
+ *  {@link LoomcycleClient.createScheduleDef},
+ *  {@link LoomcycleClient.createWebhookDef}). */
+export interface CreateDefOptions {
+  /** Free-text rationale stored on the version (not part of the definition). */
+  description?: string;
+  /** Make the new version active. Server default: true. */
+  promote?: boolean;
+  signal?: AbortSignal;
+}
+
+/** Options for the strictly-typed fork methods. */
+export interface ForkDefOptions extends CreateDefOptions {
+  /** The version to fork. Default: the active version of the name in your
+   *  tenant (ScheduleDef / WebhookDef fall back to the yaml template of that
+   *  name). Server default for `promote` on a fork: false for HookDef, true
+   *  for ScheduleDef and WebhookDef. */
+  parentDefId?: string;
+}
+
+/** Options for {@link LoomcycleClient.ensureHookDef}. */
+export interface EnsureHookDefOptions {
+  /** Free-text rationale stored on a NEW version. Not part of the definition,
+   *  so changing only this does not mint one. */
+  description?: string;
+  signal?: AbortSignal;
+}
+
+/** Result of {@link LoomcycleClient.ensureHookDef}. */
+export interface EnsureHookDefResult {
+  name: string;
+  defId: string;
+  version: number;
+  /** True when this call created a version; false when the active version
+   *  already carried the same definition. */
+  changed: boolean;
+}
+
+/** One `on_complete` entry of a ScheduleDef or WebhookDef: what the server
+ *  does after the triggered run finishes. Mirrors config.ScheduledRunHook. */
+export type ScheduledRunHook =
+  | {
+      kind: "channel.publish";
+      channel: string;
+      payload?: Record<string, unknown>;
+    }
+  | {
+      kind: "mcp.call";
+      server: string;
+      tool: string;
+      args?: Record<string, unknown>;
+    }
+  | {
+      kind: "memory.set";
+      scope: string;
+      key: string;
+      /** The value written. */
+      payload?: Record<string, unknown>;
+    };
+
+/** One block of a scheduled run's prompt. Only text survives into the run, so
+ *  there is no image form here. */
+export interface ScheduledRunPromptContent {
+  /** Default `"trusted-text"`. `"untrusted-block"` wraps the text as external
+   *  input. */
+  type?: "trusted-text" | "untrusted-block";
+  text: string;
+}
+
+/** One segment of a scheduled run's prompt. */
+export interface ScheduledRunPromptSegment {
+  role: "system" | "user";
+  content: ScheduledRunPromptContent[];
+}
+
+/** The `overlay` of a `scheduleDef` create / fork. On fork, a field the
+ *  overlay leaves out keeps the parent's; the credential maps merge key by key.
+ *
+ *  The `[extra]` tail stays because the server decodes the overlay loosely and
+ *  ignores keys it does not know — including the fields it stamps itself
+ *  (`operator_key_restricted`, `isolated`, `capture_disabled`,
+ *  `operator_layer`), which an overlay can neither set nor clear. */
+export interface ScheduleDefOverlay {
+  /** `"run"` (default) invokes `agent`; `"channel"` publishes a tick to
+   *  `channel` and starts no run; `"team"` starts a detached walk of `team`. */
+  delivery?: "run" | "channel" | "team";
+  channel?: string;
+  agent?: string;
+  prompt?: ScheduledRunPromptSegment[];
+  /** A 5-field cron expression. Setting it clears `user_tier_schedules`. */
+  schedule?: string;
+  /** Cron per user tier, for a template a fork picks from with `user_tier`.
+   *  Setting it clears `schedule`. */
+  user_tier_schedules?: Record<string, string>;
+  required_credentials?: string[];
+  /** IANA zone the cron is read in, e.g. `"Europe/Berlin"`. Default UTC. */
+  timezone?: string;
+  enabled?: boolean;
+  /** 0–1000: run the newest N slots missed during an outage, in slot order.
+   *  0 (default) collapses them into one fire. */
+  catch_up_max?: number;
+  /** N > 0 retires the def after its Nth fire; 0 = unbounded (a fork sends 0
+   *  to lift a parent's cap). */
+  max_fires?: number;
+  user_id?: string;
+  /** What a slot does while the previous run is still going. Default
+   *  `"forbid"`; refused on `delivery: "channel"`. */
+  concurrency_policy?: "forbid" | "allow" | "replace";
+  user_tier?: string;
+  /** Credential key → value, handed to the fired run. */
+  user_credentials?: Record<string, string>;
+  /** Credential key → env-var NAME the scheduler reads it from (the variable
+   *  must be on LOOMCYCLE_SCHEDULER_ENV_ALLOWLIST). */
+  user_credentials_from_env?: Record<string, string>;
+  on_complete?: ScheduledRunHook[];
+  /** Non-secret metadata the agent receives as trusted. */
+  metadata?: Record<string, unknown>;
+  /** The tenant fired runs execute in. Your own unless you are an admin;
+   *  omit it to use yours. */
+  tenant_id?: string;
+  /** `delivery: "team"` only: the team, its variables as literals, and the
+   *  walk's optional input. */
+  team?: string;
+  vars?: Record<string, string>;
+  input?: string;
+  [extra: string]: unknown;
+}
+
+/** Typed input for {@link LoomcycleClient.scheduleDef}, one shape per op. */
+export type ScheduleDefInput =
+  | {
+      op: "create" | "fork";
+      name: string;
+      /** fork only. Default: the active version of `name`, or its yaml
+       *  template. */
+      parent_def_id?: string;
+      overlay?: ScheduleDefOverlay;
+      description?: string;
+      /** Default true on both create and fork. */
+      promote?: boolean;
+    }
+  | { op: "get"; def_id: string }
+  | { op: "list"; name: string }
+  | { op: "retire"; def_id: string; retired: boolean }
+  /** Fork `def_id` with `hook` appended to its `on_complete`. */
+  | { op: "add_hook"; def_id: string; hook: ScheduledRunHook }
+  /** Fork `def_id` without its `on_complete[hook_index]` (0-based). */
+  | { op: "remove_hook"; def_id: string; hook_index: number };
+
+/** One ScheduleDef version, as create / fork return it. */
+export interface ScheduleDefRowResponse {
+  def_id: string;
+  name: string;
+  version: number;
+  parent_def_id?: string;
+  description?: string;
+  created_at: string;
+  created_by_agent_id?: string;
+  retired: boolean;
+  bootstrapped_from_static: boolean;
+  /** The stored definition, including the fields the server stamps. */
+  definition: ScheduleDefOverlay;
+  /** Whether the new version was made active. */
+  promoted?: boolean;
+  /** Credential keys a snapshot stripped that this write did not re-supply;
+   *  the def stays disabled until they are. */
+  disabled_until_credentials_supplied?: string[];
+  /** Why a key you did name did not count, one line per key. */
+  unusable_credentials?: string[];
+}
+
+/** How a WebhookDef authenticates an inbound request. */
+export interface WebhookDefAuth {
+  /** `"hmac"` (default) verifies a body signature; `"bearer"` a token;
+   *  `"none"` neither. */
+  kind?: "hmac" | "bearer" | "none";
+  /** hmac only; the only one implemented. */
+  algorithm?: "sha256";
+  /** The header carrying the signature. */
+  header?: string;
+  /** Env-var NAME holding the hmac secret — never the secret itself. */
+  signing_secret_env?: string;
+  /** The header naming each delivery, for dedup; without it a body hash is
+   *  the delivery's identity. */
+  delivery_id_header?: string;
+  /** Env-var NAME holding the bearer token — never the token itself. */
+  bearer_token_env?: string;
+  /** The verification secret as a stored credential, `"$cred:<name>"` — a
+   *  tenant credential of the definition's own tenant, resolved on each
+   *  delivery so a rotation needs no restart. Takes the place of
+   *  `signing_secret_env` / `bearer_token_env`: set one form, not both. A
+   *  literal is refused. */
+  secret?: string;
+  /** The previous secret during a rotation, also `"$cred:<name>"`: a delivery
+   *  verified by either is accepted. */
+  previous_secret?: string;
+}
+
+/** Inbound request rate bound for one webhook. */
+export interface WebhookDefRateLimit {
+  requests_per_minute?: number;
+  burst?: number;
+}
+
+/** Hold the inbound request open until the run finishes (or the timeout). */
+export interface WebhookDefSyncResponse {
+  enabled?: boolean;
+  timeout_ms?: number;
+}
+
+/** The `overlay` of a `webhookDef` create / fork. On fork, a field the overlay
+ *  leaves out keeps the parent's; naming exactly one of `agent` / `channel` /
+ *  `team` clears the other two.
+ *
+ *  The `[extra]` tail stays for now: the server decodes the overlay loosely
+ *  and ignores keys it does not know — including the fields it stamps itself
+ *  (`operator_key_restricted`, `isolated`, `capture_disabled`). */
+export interface WebhookDefOverlay {
+  /** An overlay can only turn a webhook on; to turn one off, restate it. */
+  enabled?: boolean;
+  /** `"spawn"` (default) starts a run of `agent`; `"channel"` publishes the
+   *  body to `channel`; `"team"` starts a detached walk of `team` with the body
+   *  as its input. */
+  delivery?: "spawn" | "channel" | "team";
+  agent?: string;
+  channel?: string;
+  auth?: WebhookDefAuth;
+  rate_limit?: WebhookDefRateLimit;
+  body_size_limit_bytes?: number;
+  /** Credential key → env-var NAME the receiver reads it from. */
+  user_credentials_from_env?: Record<string, string>;
+  /** Credential key → value, handed to the run. */
+  user_credentials?: Record<string, string>;
+  /** Pins the started run's user tier; a delivery never chooses it. Must be
+   *  one of the server's user tiers. */
+  user_tier?: string;
+  /** Non-secret metadata the agent receives as trusted. */
+  metadata?: Record<string, unknown>;
+  /** The tenant spawned runs execute in — taken from the def, never from the
+   *  payload. Your own unless you are an admin; omit it to use yours. */
+  tenant_id?: string;
+  /** Target → JSONPath into the request body (`$`, `.key` and `[N]` only).
+   *  Targets: `goal`, `user_id`, `user_credentials.<KEY>`,
+   *  `run_metadata.<key>`. */
+  payload_mapping?: Record<string, string>;
+  sync_response?: WebhookDefSyncResponse;
+  on_complete?: ScheduledRunHook[];
+  /** `delivery: "team"` only: the team, and each variable as a JSONPath into
+   *  the body (`$`, `.key` and `[N]` only). */
+  team?: string;
+  vars?: Record<string, string>;
+  [extra: string]: unknown;
+}
+
+/** One WebhookDef version, as create / fork return it. */
+export interface WebhookDefRowResponse {
+  def_id: string;
+  name: string;
+  version: number;
+  parent_def_id?: string;
+  description?: string;
+  created_at: string;
+  created_by_agent_id?: string;
+  retired: boolean;
+  bootstrapped_from_static: boolean;
+  /** The stored definition, including the fields the server stamps. */
+  definition: WebhookDefOverlay;
+  promoted?: boolean;
+  /** Same meaning as on {@link ScheduleDefRowResponse}. */
+  disabled_until_credentials_supplied?: string[];
+  unusable_credentials?: string[];
+}
+
+/** Typed input for {@link LoomcycleClient.webhookDef}, one shape per op. */
+export type WebhookDefInput =
+  | {
+      op: "create" | "fork";
+      name: string;
+      /** fork only. Default: the active version of `name`, or its yaml
+       *  template. */
+      parent_def_id?: string;
+      overlay?: WebhookDefOverlay;
+      description?: string;
+      /** Default true on both create and fork. */
+      promote?: boolean;
+    }
+  | { op: "get"; def_id: string }
+  | { op: "list"; name: string }
+  | { op: "retire"; def_id: string; retired: boolean };
+
 // ---- v0.10.3 Library v2 — unified yaml + substrate enumeration ----
 //
 // Wraps GET /v1/_library/{agents,skills,mcp-servers} (shipped in v0.9.3).
@@ -5214,6 +5856,271 @@ export interface DecisionModelsResponse {
   models: DecisionModel[];
 }
 
+// ---- Def name enumeration (GET /v1/_<family>def/names) ----
+//
+// One roll-up per declared name in a substrate family. Tenant-scoped
+// server-side: a substrate:tenant principal sees only its own tenant's names;
+// an admin sees every tenant's, or focuses one with `tenant`.
+
+/** One name's version roll-up from a `list*DefNames` method. Shared by every
+ *  def family except OperatorTokenDef ({@link OperatorTokenDefNameSummary}). */
+export interface DefNameSummary {
+  name: string;
+  /** The owning tenant; absent for the shared "" tenant. */
+  tenant_id?: string;
+  version_count: number;
+  active_def_id?: string;
+  latest_version: number;
+  /** When the newest version was created (RFC 3339). */
+  last_updated: string;
+  /** Versions not retired. Reported by the AgentDef, SkillDef, HookDef and
+   *  MCPServerDef families only. */
+  live_version_count?: number;
+  /** The active version is retired. Same families as `live_version_count`. */
+  active_retired?: boolean;
+}
+
+/** Response of the `list*DefNames` methods. `names` is `[]`, never `null`,
+ *  when nothing is declared. */
+export interface DefNamesResponse {
+  names: DefNameSummary[];
+}
+
+/** One token name's summary from {@link LoomcycleClient.listOperatorTokenDefNames}.
+ *  Carries no secret material. */
+export interface OperatorTokenDefNameSummary {
+  name: string;
+  tenant_id: string;
+  subject: string;
+  /** Every token minted under the name, rotated and retired ones included. */
+  token_count: number;
+  /** A non-retired token exists. */
+  has_current: boolean;
+  last_updated: string;
+}
+
+/** Response of {@link LoomcycleClient.listOperatorTokenDefNames}. */
+export interface OperatorTokenDefNamesResponse {
+  names: OperatorTokenDefNameSummary[];
+}
+
+// ---- Schedules admin (GET/POST /v1/_schedules/...) ----
+
+/** One schedule in {@link LoomcycleClient.listAllSchedules}: a static yaml
+ *  `scheduled_runs` entry, a ScheduleDef, or both under one name. */
+export interface ScheduleListEntry {
+  name: string;
+  source: "static-only" | "dynamic-only" | "both";
+  in_static: boolean;
+  in_substrate: boolean;
+  version_count?: number;
+  /** The def id the per-schedule methods take. Absent for a static-only
+   *  schedule, which has no ScheduleDef to address. */
+  active_def_id?: string;
+  latest_version?: number;
+  /** When the newest ScheduleDef version was created. Absent for a
+   *  static-only schedule. */
+  last_updated?: string;
+  /** The yaml definition, for a static entry. */
+  static_definition?: unknown;
+}
+
+/** Response of {@link LoomcycleClient.listAllSchedules}. */
+export interface ScheduleListResponse {
+  entries: ScheduleListEntry[];
+}
+
+/** A run a schedule started and has not finished. */
+export interface ScheduleActiveRun {
+  def_id: string;
+  run_id: string;
+  /** The slot the run was fired for. */
+  slot_at: string;
+  /** Fired for a missed slot rather than a live one. */
+  catch_up?: boolean;
+  started_at: string;
+  /** The replica that claimed the slot; absent outside cluster mode. */
+  claimed_by?: string;
+}
+
+/** A schedule's runtime state from {@link LoomcycleClient.getScheduleState}.
+ *  Credentials never appear here. An optional instant is absent when unset —
+ *  test for presence. (A server before the fix that dropped them sent
+ *  `last_run_at` and `paused_until` as "0001-01-01T00:00:00Z" instead.) */
+export interface ScheduleStateView {
+  def_id: string;
+  /** Absent until the schedule first fires. */
+  last_run_at?: string;
+  last_run_id?: string;
+  /** completed | failed | cancelled | rejected | running | skipped_overlap | skipped… */
+  last_status?: string;
+  last_error?: string;
+  next_run_at: string;
+  /** Present while paused. {@link LoomcycleClient.pauseSchedule} sets it about
+   *  100 years ahead: an indefinite pause. */
+  paused_until?: string;
+  /** Fires so far, the count `max_fires` is measured against. */
+  fire_count: number;
+  /** The last claim: which slot, which replica, when. */
+  slot_at?: string;
+  claimed_by?: string;
+  claimed_at?: string;
+  /** When the last tracked run finished. */
+  finished_at?: string;
+  /** Present while a `catch_up_max` backlog drains: its newest slot. */
+  catch_up_until?: string;
+  /** Slots the last outage dropped (older than `catch_up_max`). */
+  missed_slots?: number;
+  /** Every run the schedule started and has not finished — `[]`, never absent. */
+  active_runs: ScheduleActiveRun[];
+}
+
+/** Result of {@link LoomcycleClient.runScheduleNow}. The run starts on the
+ *  scheduler's next tick, not during the call. */
+export interface ScheduleRunNowResult {
+  def_id: string;
+  scheduled: "next-tick";
+}
+
+/** Result of {@link LoomcycleClient.pauseSchedule} / {@link LoomcycleClient.resumeSchedule}. */
+export interface SchedulePauseResult {
+  def_id: string;
+  paused: boolean;
+}
+
+// ---- Models, routing, provider models ----
+
+/** One configured model alias (the top-level `models:` map). */
+export interface ModelAlias {
+  provider: string;
+  model: string;
+  /** chat | decision | embedder. Absent for an untagged alias, which is a chat
+   *  model. */
+  kind?: string;
+}
+
+/** Response of {@link LoomcycleClient.listModels}: alias name → target. */
+export interface ModelAliasesResponse {
+  aliases: Record<string, ModelAlias>;
+}
+
+/** A candidate's throughput estimate. `multiplier` is what a scaled timeout
+ *  would be multiplied by. */
+export interface RoutingThroughput {
+  slowdown?: number;
+  multiplier: number;
+  samples: number;
+  source: string;
+  decode_tps?: number;
+  prefill_tps?: number;
+  ttft_ms?: number;
+  cold_load_ms?: number;
+  /** Admin only. */
+  queue_ms_p50?: number;
+  max_multiplier?: number;
+}
+
+/** One candidate in a routing cascade. */
+export interface RoutingCandidate {
+  provider: string;
+  model: string;
+  /** First in the displayed cascade. */
+  primary: boolean;
+  available?: boolean;
+  /** The first available candidate: what a run resolves to now. */
+  selected?: boolean;
+  stalled?: boolean;
+  rate_limited?: boolean;
+  reachable?: boolean;
+  /** Absent when throughput estimation is off. */
+  throughput?: RoutingThroughput;
+}
+
+/** One tier's ordered cascade, top first. */
+export interface RoutingTier {
+  /** low | middle | high */
+  tier: string;
+  cascade: RoutingCandidate[];
+}
+
+/** One user tier's tiers. */
+export interface RoutingUserTier {
+  /** "" when no user tiers are configured. */
+  name: string;
+  tiers: RoutingTier[];
+}
+
+/** One provider in the active-providers header. */
+export interface RoutingProvider {
+  provider: string;
+  reachable: boolean;
+  excluded: boolean;
+  /** The raw probe error — admin only. */
+  last_error?: string;
+}
+
+/** One web-search provider in the search cascade. */
+export interface SearchRoutingProvider {
+  provider: string;
+  primary: boolean;
+  /** This caller has a usable key. */
+  keyable?: boolean;
+  /** Keyable and not in a failure cooldown. */
+  available?: boolean;
+  selected?: boolean;
+  reachable?: boolean;
+  /** Admin only. */
+  last_error?: string;
+}
+
+/** Response of {@link LoomcycleClient.getRouting}. */
+export interface RoutingResponse {
+  generated_at: string;
+  /** The caller gets the admin view: raw `last_error`, nothing filtered. */
+  admin: boolean;
+  providers?: RoutingProvider[];
+  user_tiers: RoutingUserTier[];
+  /** The operator-key gate is on and this tenant's view is filtered to the
+   *  providers it can key itself. */
+  operator_key_restricted?: boolean;
+  /** `timeout_scaling.mode` when throughput estimation is on. */
+  throughput_mode?: string;
+  /** Absent when no search providers are configured. */
+  search?: SearchRoutingProvider[];
+}
+
+/** Response of {@link LoomcycleClient.listProviderModels}: a live listing from
+ *  the provider, not the cached probe matrix. */
+export interface ProviderModelsResponse {
+  provider: string;
+  fetched_at: string;
+  duration_ms: number;
+  /** Provider-native model ids. `[]` when the provider answered with none. */
+  models: string[];
+}
+
+/** Options of {@link LoomcycleClient.createTeam}. */
+export interface CreateTeamOptions {
+  signal?: AbortSignal;
+  /** Make the new version the team's active one. The server default is true
+   *  for a create; pass `false` to author it without putting it in force
+   *  (then {@link LoomcycleClient.promoteTeam}). */
+  promote?: boolean;
+  /** Free-text rationale stored on the version. */
+  description?: string;
+}
+
+/** Options of {@link LoomcycleClient.forkTeam}. Note `promote` defaults the
+ *  other way from a create: false. */
+export interface ForkTeamOptions extends CreateTeamOptions {
+  /** Make the new version the team's active one. The server default is false:
+   *  a fork is authored first and put in force with
+   *  {@link LoomcycleClient.promoteTeam}. */
+  promote?: boolean;
+  /** Fork this version instead of the name's active one. */
+  parentDefId?: string;
+}
+
 // ---- Memory / document change feeds (RFC CD Part C) ----
 
 /** The kind of change a {@link MemoryChange} names. `memory.*` arrive on
@@ -5293,16 +6200,30 @@ export interface ChangeFeedStatus {
   embedder?: EmbedderHealth;
 }
 
+/** A change-feed `event: error` frame: the server could not read its change
+ *  log. NON-FATAL — the stream stays open, the server keeps retrying with
+ *  backoff, and its cursor does not advance, so change frames resume after
+ *  recovery without a gap. Sent once per failure streak, not per retry. */
+export interface ChangeFeedError {
+  /** Machine-readable; `store_unavailable` today. Branch on this. */
+  code: string;
+  /** Human-readable description. */
+  error: string;
+}
+
 /** Yielded by {@link LoomcycleClient.streamMemoryChanges} and
  *  {@link LoomcycleClient.streamDocumentChanges}.
  *
  *  Same `{ kind, payload }` shape as {@link RunStateStreamItem}: the first
- *  item is `{ kind: "feed" }`, then one `{ kind: "change" }` per change.
- *  `kind` rather than `type` so the wrapper's discriminator cannot be confused
- *  with the change's own `payload.type`. */
+ *  item is `{ kind: "feed" }`, then one `{ kind: "change" }` per change, with
+ *  an occasional `{ kind: "error" }` (see {@link ChangeFeedError}) when the
+ *  server cannot read its change log — iteration continues past it. `kind`
+ *  rather than `type` so the wrapper's discriminator cannot be confused with
+ *  the change's own `payload.type`. */
 export type ChangeFeedFrame =
   | { kind: "feed"; payload: ChangeFeedStatus }
-  | { kind: "change"; payload: MemoryChange };
+  | { kind: "change"; payload: MemoryChange }
+  | { kind: "error"; payload: ChangeFeedError };
 
 /** Options for {@link LoomcycleClient.streamMemoryChanges} /
  *  {@link LoomcycleClient.streamDocumentChanges}. */

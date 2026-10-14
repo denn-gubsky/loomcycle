@@ -55,14 +55,16 @@ func (s *Server) scheduleDefTenantVisible(ctx context.Context, defID string) boo
 // POST /v1/_scheduledef {op:"get",def_id} when the user expands the
 // row).
 type ScheduleListEntry struct {
-	Name             string          `json:"name"`
-	Source           string          `json:"source"` // "static-only" | "dynamic-only" | "both"
-	InStatic         bool            `json:"in_static"`
-	InSubstrate      bool            `json:"in_substrate"`
-	VersionCount     int             `json:"version_count,omitempty"`
-	ActiveDefID      string          `json:"active_def_id,omitempty"`
-	LatestVersion    int             `json:"latest_version,omitempty"`
-	LastUpdated      time.Time       `json:"last_updated,omitempty"`
+	Name          string `json:"name"`
+	Source        string `json:"source"` // "static-only" | "dynamic-only" | "both"
+	InStatic      bool   `json:"in_static"`
+	InSubstrate   bool   `json:"in_substrate"`
+	VersionCount  int    `json:"version_count,omitempty"`
+	ActiveDefID   string `json:"active_def_id,omitempty"`
+	LatestVersion int    `json:"latest_version,omitempty"`
+	// LastUpdated is a pointer so a static-only entry (no substrate
+	// version) omits it rather than sending year 1.
+	LastUpdated      *time.Time      `json:"last_updated,omitempty"`
 	StaticDefinition json.RawMessage `json:"static_definition,omitempty"`
 }
 
@@ -113,7 +115,7 @@ func (s *Server) handleListSchedules(w http.ResponseWriter, r *http.Request) {
 			entry.VersionCount = sub.VersionCount
 			entry.ActiveDefID = sub.ActiveDefID
 			entry.LatestVersion = sub.LatestVersion
-			entry.LastUpdated = sub.LastUpdated
+			entry.LastUpdated = optTime(sub.LastUpdated)
 		}
 		entry.Source = deriveSource(entry.InStatic, entry.InSubstrate)
 		entries = append(entries, entry)
@@ -130,7 +132,7 @@ func (s *Server) handleListSchedules(w http.ResponseWriter, r *http.Request) {
 			VersionCount:  sub.VersionCount,
 			ActiveDefID:   sub.ActiveDefID,
 			LatestVersion: sub.LatestVersion,
-			LastUpdated:   sub.LastUpdated,
+			LastUpdated:   optTime(sub.LastUpdated),
 		})
 	}
 	sort.Slice(entries, func(i, j int) bool { return entries[i].Name < entries[j].Name })
@@ -142,13 +144,17 @@ func (s *Server) handleListSchedules(w http.ResponseWriter, r *http.Request) {
 // path (POST /v1/_scheduledef {op:"get"}); this endpoint only
 // surfaces runtime telemetry (last/next + status + error).
 type ScheduleStateView struct {
-	DefID       string    `json:"def_id"`
-	LastRunAt   time.Time `json:"last_run_at,omitempty"`
-	LastRunID   string    `json:"last_run_id,omitempty"`
-	LastStatus  string    `json:"last_status,omitempty"`
-	LastError   string    `json:"last_error,omitempty"`
-	NextRunAt   time.Time `json:"next_run_at"`
-	PausedUntil time.Time `json:"paused_until,omitempty"`
+	// LastRunAt and PausedUntil are pointers for the same reason as the
+	// instants below: omitempty never omits a time.Time, so an unset one
+	// went out as year 1 and a presence check read it as "has run" /
+	// "paused". NextRunAt stays a value — a seeded def always has one.
+	DefID       string     `json:"def_id"`
+	LastRunAt   *time.Time `json:"last_run_at,omitempty"`
+	LastRunID   string     `json:"last_run_id,omitempty"`
+	LastStatus  string     `json:"last_status,omitempty"`
+	LastError   string     `json:"last_error,omitempty"`
+	NextRunAt   time.Time  `json:"next_run_at"`
+	PausedUntil *time.Time `json:"paused_until,omitempty"`
 
 	// RFC DZ: the slot claims, and what the schedule is running. FireCount
 	// counts toward max_fires. SlotAt/ClaimedBy/ClaimedAt are the last
@@ -211,12 +217,12 @@ func (s *Server) handleGetScheduleState(w http.ResponseWriter, r *http.Request) 
 	}
 	writeJSONOK(w, ScheduleStateView{
 		DefID:        row.DefID,
-		LastRunAt:    row.LastRunAt,
+		LastRunAt:    optTime(row.LastRunAt),
 		LastRunID:    row.LastRunID,
 		LastStatus:   row.LastStatus,
 		LastError:    row.LastError,
 		NextRunAt:    row.NextRunAt,
-		PausedUntil:  row.PausedUntil,
+		PausedUntil:  optTime(row.PausedUntil),
 		FireCount:    row.FireCount,
 		SlotAt:       optTime(row.SlotAt),
 		ClaimedBy:    row.ClaimedBy,

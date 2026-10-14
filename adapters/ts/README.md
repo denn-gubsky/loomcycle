@@ -141,7 +141,7 @@ The low-level primitives (`runStreaming({interactive:true})` + `sendRunInput` + 
 | `getAgent(agentId)` | `Promise<Agent>` | One agent's status + usage. Raises `AgentNotFoundError` if unknown. |
 | `getRun(runId)` | `Promise<Agent>` | One run by its run id — `getAgent`'s shape. Use it when an agent id names several runs (every walk of a team is `team:<name>`). Raises `NotFoundError` if unknown. |
 | `cancelAgent(agentId, opts?)` | `Promise<{ cancelledCount: number }>` | Cascades to children via `parent_agent_id`. Idempotent. |
-| `listUserAgents(userId, opts?)` | `Promise<Agent[]>` | Optional filter by status (`running` / `completed` / `failed` / `cancelled`). |
+| `listUserAgents(userId, opts?)` | `Promise<AgentList>` | Up to 100 runs. `status`: one status or an array (a run in any of them; omitted = running, `"all"` = every status). `awaitedState`: one or more of `channel` / `interrupted` / `review` / `input` / `children` — only running runs blocked on one of those waits; the server reads at most 1,000 running runs and the returned array carries `truncated: true` when it left some unread. An unknown value is a 400. `AgentList` is an `Agent[]`. |
 | `listWalkRuns(walkId, { limit?, cursor? })` | `Promise<WalkRunsPage>` | One page of a team walk's runs — its own run and every member, oldest first: `{ agents, next_cursor }`. Pass `next_cursor` back as `cursor`; `""` on the last page. `limit` defaults to 100, at most 1000. Raises `NotFoundError` for a walk you cannot read. |
 | `listChildRuns(parentRunId, { limit?, cursor? })` | `Promise<WalkRunsPage>` | One page of a run's direct children (the runs it started itself), of every status, oldest first, paged like `listWalkRuns`. Not the run itself, and not its grandchildren. Raises `NotFoundError` for a run you cannot read. |
 | `deleteRunTree(runId)` | `Promise<RunTreeDeletion>` | Permanently delete a run and every run it spawned, with what is stored about them. The usage ledger is kept. Needs the `runs:delete` scope. Returns `{ deleted_runs, counts, kept, not_reached }`; an unknown, already deleted or unreadable run returns `deleted_runs: 0` instead of raising. A tree with a live or paused run deletes nothing and raises with `code: "run_tree_live"`. |
@@ -204,6 +204,7 @@ Each change is a **value-free coordinate** (`seq`, `type`, `scope`, `scope_id`, 
 - **Off by default.** The server only records changes with `LOOMCYCLE_MEMORY_CHANGES_ENABLED`. Without it the stream opens and idles forever, so check `payload.enabled` on the feed frame rather than waiting.
 - **Tenant-scoped, operator-only.** You see your own tenant's changes, never another's. The routes need `substrate:tenant` (or admin); a tenant member's token gets a 403 (`LoomcycleError`, `status: 403`).
 - **Resumable.** Persist the last `seq` you processed and pass it back as `since` on reconnect; delivery is strictly after it. `since` must be a non-negative integer — the client throws otherwise, because the server would read a bad value as `0` and replay everything it retains.
+- **Read failures are reported, not fatal.** A `{ kind: "error", payload: { code, error } }` item (`code: "store_unavailable"`) means the server could not read its change log. Keep iterating: the server retries with backoff without advancing its cursor, so changes resume after recovery with nothing skipped. You get one item per failure streak.
 - **The embedder's health rides along.** An embedding failure does not fail the write, so a busy feed can sit over rows that are no longer searchable; `payload.embedder.state === "failing"` (with a `failures` count) is the signal to run `backfillEmbeddings`.
 
 ```ts
@@ -213,6 +214,10 @@ const ac = new AbortController();
 for await (const item of client.streamMemoryChanges({ since, signal: ac.signal })) {
   if (item.kind === "feed") {
     if (!item.payload.enabled) throw new Error("change feed is off on this server");
+    continue;
+  }
+  if (item.kind === "error") {
+    console.warn(`change feed: ${item.payload.code}: ${item.payload.error}`); // stream continues
     continue;
   }
   const ch = item.payload; // { seq, type, scope, scope_id, key?, at }
@@ -235,9 +240,12 @@ for await (const item of client.streamMemoryChanges({ since, signal: ac.signal }
 
 | Method | Returns | Notes |
 |---|---|---|
-| `hookDef(input)` | `Promise<SubstrateToolResponse>` | Reusable hook definitions (create / fork / get / list / promote / retire / verify / delete). An agent attaches hooks in its own definition (`tools` entries `{name, hooks}` and `hooks`). |
+| `hookDef(input)` | `Promise<SubstrateToolResponse>` | Reusable hook definitions (create / fork / get / list / promote / retire / verify / delete). An agent attaches hooks in its own definition (`tools` entries `{name, hooks}` and `hooks`). `input` is a `HookDefInput` or the loose `SubstrateToolInput` — see [Typed HookDef / ScheduleDef / WebhookDef inputs](#typed-hookdef--scheduledef--webhookdef-inputs-rfc-eo). |
+| `createHookDef(name, overlay, opts?)` | `Promise<HookDefRowResponse>` | `op: "create"` with a strictly-typed `HookDefOverlay` — a misspelt key is a compile error even in a bare literal. Promoted unless `promote: false`. |
+| `forkHookDef(name, overlay, opts?)` | `Promise<HookDefRowResponse>` | `op: "fork"` with a `HookDefForkOverlay` (partial; `null` clears a field). `opts.parentDefId` picks the parent (default: the active version). Not promoted unless `promote: true`. |
+| `ensureHookDef(name, overlay, opts?)` | `Promise<EnsureHookDefResult>` | Idempotent register-if-changed for a `HookDefOverlay` — safe to call on every boot. `changed: false` when the active version already carries the same definition. |
 
-A hook is attached in the agent's definition — a tool entry `{name, hooks}` or the agent's own `hooks` — and loomcycle posts to its URL during the agent's runs. The other side is the **callback receiver**, a small HTTP endpoint your app runs at that URL. The adapter exports the wire shapes (`PreHookCall` / `PostHookCall` / `PreHookResult` / `PostHookResult`) so you can type the handler against the same JSON loomcycle posts.
+A **HookDef** is a stored, versioned hook definition in your tenant: the event it answers, the tools it matches, its body (a `code-js` script run in-process, or a webhook URL), its fail mode and timeout. It fires on nothing by itself. An agent definition, a team definition or a run attaches it by name — in a tool entry `{name, hooks}` or the agent's own `hooks` — as `"scan"` (the active version) or `"scan@3"` (pinned). A hook can also be written inline as a webhook `{name, url, …}` in the definition that attaches it. For a webhook body, loomcycle posts to its URL during the agent's runs. The other side is the **callback receiver**, a small HTTP endpoint your app runs at that URL. The adapter exports the wire shapes (`PreHookCall` / `PostHookCall` / `PreHookResult` / `PostHookResult`) so you can type the handler against the same JSON loomcycle posts.
 
 **Attach it in the agent's definition:**
 
@@ -298,12 +306,97 @@ export async function POST(req: Request) {
 }
 ```
 
+**Verify a signed delivery.** A HookDef whose webhook body names a `signing_secret` (a credential, `"$cred:<name>"`) signs every call: `X-Loomcycle-Signature: t=<unix>,v1=<hex HMAC-SHA256 of t + "." + raw body>`. **Only the body is signed.** It carries `delivery_id` (a retry keeps it), `hook_name` and `owner`; the `X-Loomcycle-Delivery` and `X-Loomcycle-Hook` headers are unsigned copies a replayer can change, so dedupe and identify the hook from the verified body, never from them. Verify against the **raw** body, before parsing it:
+
+```ts
+import { verifyLoomcycleDelivery } from "@loomcycle/client";
+import type { PreHookCall } from "@loomcycle/client";
+
+export async function POST(req: Request) {
+  const raw = await req.text(); // the exact bytes; JSON.stringify(await req.json()) will not match
+  const d = await verifyLoomcycleDelivery<PreHookCall>(raw, req.headers.get("x-loomcycle-signature") ?? "", process.env.HOOK_SIGNING_SECRET!);
+  if (!d) return new Response(null, { status: 401 });
+  if (await seen(d.deliveryId)) return Response.json(previousAnswer(d.deliveryId)); // keep ids ≥ 300 s
+  // d.hookName / d.owner say which hook sent it; d.body is the payload.
+}
+```
+
+`verifyLoomcycleDelivery(rawBody, header, secret, opts)` resolves the body's `{deliveryId, hookName, owner, body}`, or `null` when the signature fails or the body has no `delivery_id`/`hook_name`. `verifyLoomcycleSignature(rawBody, header, secret, { toleranceSec = 300, now?, subtle? })` is the bare check: `true` only for a signature made within the tolerance; every malformed header, stale or future `t`, or wrong MAC is `false`. Both use Web Crypto (`crypto.subtle`), so they run in Node 19+, browsers and edge runtimes; on Node 18 pass `subtle: require("node:crypto").webcrypto.subtle`. Give each receiver its own signing secret, so a delivery captured at one cannot be replayed to another.
+
 **Important constraints**:
 
-- Hook registrations are **in-memory** on the loomcycle server. Re-register on every app startup; the `(owner, name)` idempotency contract makes this safe (replaces in place).
-- Auth flows one-way: loomcycle → your callback URL. Loomcycle does NOT attach a bearer token to callback POSTs by default. If you need to authenticate the caller, validate by source IP or include a shared secret in the `callback_url` path/query (`https://jobember.example/hooks/scan?secret=...`).
+- HookDefs are **stored and versioned**, not in-memory: they survive restarts, and every `create` mints a new version (the active one is what a by-name reference runs). To register from app startup without piling up versions, use `ensureHookDef`, which writes only when the definition changed. `fork` + `promote` (or `forkHookDef(…, {promote: true})`) derives a version from an existing one.
+- Auth flows one-way: loomcycle → your receiver. Loomcycle attaches no credential of its own. To authenticate the caller, send a secret in the hook's `headers` as `$cred:<name>` (a stored credential, resolved for the run when the hook is called) rather than in the URL.
 - `fail_mode: "open"` (default) is right for telemetry hooks where a down receiver shouldn't break tool dispatch. `"closed"` is right for security hooks where a down receiver should fail the tool call (don't let bypassed payloads through).
 - `allow_hosts` in `PreHookResult` is a **trust-sensitive surface** — it widens the agent's outbound network policy for one tool call. Server enforces an operator-yaml allowlist (`hooks.permit_host_widen.owners`); your owner has to be on that list for `allow_hosts` to take effect. See the SECURITY note in `internal/hooks/types.go` before using.
+
+### Typed HookDef / ScheduleDef / WebhookDef inputs (RFC EO)
+
+**For checked keys, use the create / fork methods.** They take only the typed overlay, so a bare object literal is checked against it:
+
+| Method | Returns | Notes |
+|---|---|---|
+| `createHookDef(name, overlay, opts?)` / `forkHookDef(name, overlay, opts?)` | `Promise<HookDefRowResponse>` | See [Hook management](#hook-management-v0818). Any unknown key is a compile error. |
+| `createScheduleDef(name, overlay, opts?)` / `forkScheduleDef(name, overlay, opts?)` | `Promise<ScheduleDefRowResponse>` | Both promoted unless `promote: false`; a fork defaults to the active version, or the yaml template of `name`. |
+| `createWebhookDef(name, overlay, opts?)` / `forkWebhookDef(name, overlay, opts?)` | `Promise<WebhookDefRowResponse>` | Same defaults as the schedule pair. |
+
+`opts` is `{description?, promote?, signal?}`, plus `parentDefId?` on a fork. `promote` is sent only when you set it, so each def's own default applies otherwise.
+
+The op-discriminated methods keep working as before. `hookDef`, `scheduleDef` and `webhookDef` accept a typed per-op input — `HookDefInput`, `ScheduleDefInput`, `WebhookDefInput` — or the loose `SubstrateToolInput` they always took, so existing calls compile unchanged. There the checking is opt-in: annotate the input (or use `satisfies`). A bare object literal with a misspelt key still compiles, because it matches the loose shape.
+
+| Method | Returns | Notes |
+|---|---|---|
+| `scheduleDef(input)` | `Promise<SubstrateToolResponse>` | Scheduled-run definitions (create / fork / get / list / retire / add_hook / remove_hook). Mirrors `POST /v1/_scheduledef`. `add_hook` / `remove_hook` are expressible only through `ScheduleDefInput`. |
+| `webhookDef(input)` | `Promise<SubstrateToolResponse>` | Inbound webhook definitions (create / fork / get / list / retire). Mirrors `POST /v1/_webhookdef`. |
+
+- **`HookDefOverlay` is closed.** The server decodes a HookDef overlay strictly and refuses an unknown key, so the type has no index signature: a misspelt key is a compile error. `body` is a union on `kind` — `{kind: "code-js", code}` or `{kind: "http", url, headers?}` — because the server refuses a body that mixes them. A fork takes `HookDefForkOverlay`: every field optional, and `null` clears one.
+- **`ScheduleDefOverlay` and `WebhookDefOverlay` stay open** (`[extra: string]: unknown`): the server decodes them loosely and drops keys it does not know. So even through `createScheduleDef` / `createWebhookDef`, a misspelt key compiles. What fails is a wrong type or value on a declared key, such as `concurrency_policy: "skip"`, `delivery: "run"` on a webhook, or an `mcp.call` hook without `tool`. They leave out the fields the server stamps itself (`operator_key_restricted`, `isolated`, `capture_disabled`, and on schedules `operator_layer`) — an overlay can neither set nor clear those.
+- `on_complete` entries on both are a `ScheduledRunHook`: `channel.publish` (`channel`), `mcp.call` (`server` + `tool`) or `memory.set` (`scope` + `key`).
+
+```ts
+await client.createHookDef("scan-webfetch", {
+  event: "post",
+  match: { tools: ["WebFetch"] },
+  body: { kind: "http", url: "https://jobember.example/hooks/scan", headers: { Authorization: "$cred:scan" } },
+  fail_mode: "open",
+  timeout_ms: 3000,
+});
+
+await client.createScheduleDef("weekly-digest", {
+  agent: "digest",
+  schedule: "0 6 * * 1",
+  timezone: "Europe/Berlin",
+  prompt: [{ role: "user", content: [{ type: "trusted-text", text: "Write this week's digest." }] }],
+  on_complete: [{ kind: "channel.publish", channel: "digests" }],
+});
+
+await client.createWebhookDef("gh-push", {
+  delivery: "spawn",
+  agent: "ingest",
+  auth: { kind: "hmac", algorithm: "sha256", header: "X-Hub-Signature-256", signing_secret_env: "LOOMCYCLE_GH_WEBHOOK_SECRET" },
+  payload_mapping: { goal: "$.head_commit.message" },
+});
+
+// The op-discriminated form, checked by annotation:
+import type { ScheduleDefInput } from "@loomcycle/client";
+const addHook: ScheduleDefInput = {
+  op: "add_hook",
+  def_id: "sdf_…",
+  hook: { kind: "memory.set", scope: "user", key: "last_digest" },
+};
+await client.scheduleDef(addHook);
+```
+
+**Register a HookDef on every boot** with `ensureHookDef`. A HookDef `create` always mints a new version, so this reads the active version first and compares its stored definition with yours, normalized the way the server stores it (`fail_mode` defaults to `"open"`; empty `match.tools`, description, headers and timeout are dropped). Equal → no write. A difference it cannot see through mints a redundant version rather than skipping a real change; `opts.description` is a rationale, not part of the definition, and does not count as a change.
+
+```ts
+const r = await client.ensureHookDef("scan-webfetch", {
+  event: "post",
+  match: { tools: ["WebFetch"] },
+  body: { kind: "http", url: "https://jobember.example/hooks/scan" },
+});
+console.log(r.changed ? `registered v${r.version}` : "already current");
+```
 
 ### Substrate admin: AgentDef + SkillDef (v0.8.22)
 
@@ -313,6 +406,7 @@ Two op-discriminated methods that mirror the in-process `AgentDef` / `SkillDef` 
 |---|---|---|
 | `agentDef(input)` | `Promise<SubstrateToolResponse>` | Op-discriminated. Mirrors `POST /v1/_agentdef`. |
 | `skillDef(input)` | `Promise<SubstrateToolResponse>` | Op-discriminated. Mirrors `POST /v1/_skilldef`. |
+| `getAgentOverridable(name, { tenant? })` | `Promise<AgentOverridableResponse>` | Which per-run overrides a run of `name` may set, **for this caller**: one entry per override (`model`, `effort`, `max_tokens`, …) with `overridable`, and a `reason` (`token_locked` / `agent_locked`) when refused. Folds the agent's `allow_overrides` with your token's overrides policy, as a run would. An overridable field may carry `narrow_only`, `max`, or `values` (a closed set the definition declares). For building run forms. `substrate:tenant`; a token limited to certain agents may ask about those. Raises `AgentNotFoundError` for an unknown or another tenant's agent. Mirrors `GET /v1/_agentdef/{name}/overridable`. |
 
 The response type is intentionally `unknown` because the shape varies per op (`create`/`fork` return a row envelope; `list` returns `{name, versions: [...]}`; `verify` returns `AgentDefVerifyResult` / `SkillDefVerifyResult`). Cast / narrow as needed:
 
@@ -358,6 +452,60 @@ const { entries } = await client.listVolumes();
 ```
 
 Refusals throw `SubstrateToolRefusedError` (collision with a static volume name, no `dynamic_root` configured, cross-tenant); transport failures throw the usual typed errors.
+
+### Schedules admin
+
+The schedules surface the Web UI drives: one merged list, a schedule's runtime state, and run-now / pause / resume. Authoring stays on `scheduleDef(input)`. Tenant-confined: a `substrate:tenant` token sees and acts on its own tenant's ScheduleDefs only, and another tenant's `def_id` answers 404 like an unknown one.
+
+| Method | Returns | Notes |
+|---|---|---|
+| `listAllSchedules(opts?)` | `Promise<ScheduleListResponse>` | Static yaml `scheduled_runs` + ScheduleDefs, merged by name. Statics appear for an admin only; `opts.tenant` focuses one tenant. `GET /v1/_schedules/list-all`. |
+| `getScheduleState(defId)` | `Promise<ScheduleStateView>` | Last/next fire, pause, last slot claim, catch-up backlog, runs in flight. `GET /v1/_schedules/{def_id}/state`. |
+| `runScheduleNow(defId)` | `Promise<ScheduleRunNowResult>` | Fires on the scheduler's next tick; the cadence continues after it. `POST .../run-now`. |
+| `pauseSchedule(defId)` | `Promise<SchedulePauseResult>` | Indefinite (no duration). `POST .../pause`. |
+| `resumeSchedule(defId)` | `Promise<SchedulePauseResult>` | `POST .../resume`. |
+
+The per-schedule methods take the ScheduleDef's `active_def_id` from the list; a static-only schedule has none. Every optional instant in `ScheduleStateView` (`last_run_at`, `paused_until`, `slot_at`, `catch_up_until`, …) is **absent** when unset — test for presence. (Servers before this release sent `last_run_at` and `paused_until` as `"0001-01-01T00:00:00Z"`.)
+
+```ts
+const { entries } = await client.listAllSchedules();
+for (const e of entries.filter((e) => e.active_def_id)) {
+  const st = await client.getScheduleState(e.active_def_id!);
+  if (st.paused_until) console.log(`${e.name} is paused`);
+}
+```
+
+### Models, routing + provider models
+
+| Method | Returns | Notes |
+|---|---|---|
+| `listModels()` | `Promise<ModelAliasesResponse>` | The configured model aliases (`models:`), alias → `{provider, model, kind?}`. Tenant-readable. `GET /v1/_models`. |
+| `getRouting()` | `Promise<RoutingResponse>` | Per user tier × tier, the ordered provider/model cascade with live availability and the `selected` candidate. Tenant-readable; a non-admin gets no raw `last_error`, and under the operator-key gate only providers it can key. `GET /v1/_routing`. |
+| `listProviderModels(providerId)` | `Promise<ProviderModelsResponse>` | A live listing from the provider. **Admin token only** — a tenant token gets a 403 `LoomcycleError`; fall back to `listModels()` plus free-text entry. `GET /v1/_providers/{id}/models`. |
+
+Store an alias from `listModels()` on an agent or fork rather than the model it names: the agent then follows the operator's retarget of the alias.
+
+### Def name listings
+
+One method per substrate family returns every declared name with its version roll-up (`version_count`, `active_def_id`, `latest_version`, `last_updated`) — what a family's `list` op cannot, since it lists the versions of one name. Tenant-scoped server-side; `opts.tenant` focuses one tenant for an admin and is ignored for a tenant token. `names` is `[]` when nothing is declared.
+
+| Method | Route |
+|---|---|
+| `listAgentDefNames(opts?)` | `GET /v1/_agentdef/names` |
+| `listSkillDefNames(opts?)` | `GET /v1/_skilldef/names` |
+| `listHookDefNames(opts?)` | `GET /v1/_hookdef/names` |
+| `listMcpServerDefNames(opts?)` | `GET /v1/_mcpserverdef/names` |
+| `listScheduleDefNames(opts?)` | `GET /v1/_scheduledef/names` |
+| `listA2AServerCardDefNames(opts?)` | `GET /v1/_a2aservercarddef/names` |
+| `listA2AAgentDefNames(opts?)` | `GET /v1/_a2aagentdef/names` |
+| `listWebhookDefNames(opts?)` | `GET /v1/_webhookdef/names` |
+| `listMemoryBackendDefNames(opts?)` | `GET /v1/_memorybackenddef/names` |
+| `listDocumentSourceDefNames(opts?)` | `GET /v1/_documentsourcedef/names` |
+| `listOperatorTokenDefNames(opts?)` | `GET /v1/_operatortokendef/names` — **admin token only**; `{name, tenant_id, subject, token_count, has_current, last_updated}`, never a token. |
+
+All but the last return `DefNamesResponse`; `live_version_count` / `active_retired` are reported by the AgentDef, SkillDef, HookDef and MCPServerDef families. Teams have `listTeams()`.
+
+Team options ride on existing methods: `createTeam(name, overlay, { promote, description })` sends the create's own fields (omitted, a create is promoted — the server default; `promote: false` authors it without putting it in force), `forkTeam(name, overlay, { promote, parentDefId, description })` sends the fork's (omitted, the fork is authored but not active — the server default for a fork), and `runTeam({ ..., interruptOnCap: true })` asks a human whether to continue, reroute or abort when a state hits its iteration cap, instead of ending with `iteration_cap`.
 
 ### Decision models
 
@@ -446,6 +594,26 @@ All four post to `POST /v1/_credentialdef`.
 ```ts
 const meta = await client.getCredential({ scope: "user", name: "GIT_TOKEN" });
 console.log(meta.allowed_urls ?? "unrestricted");
+```
+
+### Evaluations
+
+Scores attached to runs: record a verdict on a run, read the scores back, and roll them up per definition version to compare versions. All of these post to `POST /v1/_evaluation`; `evaluation(input)` takes the op-discriminated input directly and its return type follows `op`.
+
+| Method | Returns | Notes |
+|---|---|---|
+| `submitEvaluation(runId, score, { dimensions?, judgement?, rationale? })` | `Promise<EvaluationSubmitResult>` | Additive: submitting again records another evaluation. `{op: "submit"}`. |
+| `getEvaluation(evalId)` | `Promise<EvaluationRecord>` | `{op: "get"}`. |
+| `listEvaluationsForRun(runId, { limit? })` | `Promise<EvaluationListForRunResult>` | `{op: "list_for_run"}`. |
+| `listEvaluationsForDef(defId, { limit? })` | `Promise<EvaluationListForDefResult>` | Your tenant's scores of that definition version. `{op: "list_for_def"}`. |
+| `aggregateEvaluations(defId, { includeLineage? })` | `Promise<EvaluationAggregate>` | Mean / median / min / max / latest, per dimension and per emitter role. `{op: "aggregate"}`. |
+
+What a token may do: `substrate:tenant` every op inside its own tenant; admin every op in every tenant; any other token (an isolated `substrate:user`, a tenant member) only `submit_self`, which a call from outside a run cannot use, so each op is refused with `SubstrateToolRefusedError`. A token without `runs:read` gets a 403. Another tenant's evaluation or run reads exactly like one that does not exist.
+
+```ts
+await client.submitEvaluation(runId, 0.8, { rationale: "correct, but slow" });
+const agg = await client.aggregateEvaluations(defId);
+console.log(agg.count, agg.score.mean);
 ```
 
 ### Team runs
@@ -609,6 +777,8 @@ When the error body is JSON with a string `code` (`token_limit_exceeded`, `per_u
 |---|---|
 | 400 | `InvalidArgumentError` |
 | 401 | `AuthError` |
+| 403 + code `insufficient_scope` | `InsufficientScopeError` (not retryable; `e.requiredScope` names the scope the token lacks — from the body's `required_scope`, or from `WWW-Authenticate` on an older server that sent plain text) |
+| 403 (other) | `LoomcycleError` (base; e.g. `restricted_token`, `operator_key_restricted` on `e.code`) |
 | 404 + "snapshot" | `SnapshotNotFoundError` ⎫ |
 | 404 + "session" | `SessionNotFoundError` ⎬ all extend `NotFoundError` |
 | 404 + "agent" | `AgentNotFoundError` ⎬ |

@@ -84,9 +84,12 @@ func TestTeamRun_HTTPRefusalNamesTheScope(t *testing.T) {
 	if got := resp.Header.Get("WWW-Authenticate"); got != `Bearer scope="runs:create"` {
 		t.Errorf("WWW-Authenticate = %q", got)
 	}
-	var body struct{ Code, Error string }
+	var body struct {
+		Code, Error   string
+		RequiredScope string `json:"required_scope"`
+	}
 	if err := json.Unmarshal(raw, &body); err != nil || body.Code != "insufficient_scope" ||
-		body.Error != "insufficient scope: TeamDef op=run requires runs:create" {
+		body.Error != "insufficient scope: TeamDef op=run requires runs:create" || body.RequiredScope != auth.ScopeRunsCreate {
 		t.Errorf("body = %s (%v)", raw, err)
 	}
 }

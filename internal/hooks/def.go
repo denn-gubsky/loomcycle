@@ -6,6 +6,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+
+	"github.com/denn-gubsky/loomcycle/internal/credential"
 )
 
 // Def is a HookDef's definition: one hook, stored once and named wherever it
@@ -37,6 +39,17 @@ type DefBody struct {
 	// Headers go with each webhook call; a value may name a credential
 	// ($cred:<name>), resolved for the run at call time. http bodies only.
 	Headers map[string]string `json:"headers,omitempty"`
+	// SigningSecret names the credential ($cred:<name>, nothing else) that
+	// signs each webhook call: X-Loomcycle-Signature t=<unix>,v1=<hex>, an
+	// HMAC-SHA256 over "<t>.<body>". Resolved per call, so rotating the
+	// credential needs no restart; a call whose secret does not resolve is
+	// never sent unsigned. http bodies only.
+	//
+	// It is part of the definition the author wrote, so the REFERENCE takes part
+	// in content_sha256 exactly as a header value does (empty is omitted, so a
+	// definition without it hashes as it always has). The secret's value never
+	// does: rotating the credential changes no hash.
+	SigningSecret string `json:"signing_secret,omitempty"`
 }
 
 // Body kinds.
@@ -81,8 +94,8 @@ func (d Def) Validate() error {
 		if strings.TrimSpace(d.Body.Code) == "" {
 			return fmt.Errorf("body.code is required for a %s body", BodyKindCode)
 		}
-		if d.Body.URL != "" || len(d.Body.Headers) > 0 {
-			return fmt.Errorf("a %s body takes code, not url or headers", BodyKindCode)
+		if d.Body.URL != "" || len(d.Body.Headers) > 0 || d.Body.SigningSecret != "" {
+			return fmt.Errorf("a %s body takes code, not url, headers or signing_secret", BodyKindCode)
 		}
 		if len(d.Body.Code) > MaxCodeBytes {
 			return fmt.Errorf("body.code is %d bytes; the limit is %d", len(d.Body.Code), MaxCodeBytes)
@@ -96,6 +109,13 @@ func (d Def) Validate() error {
 		}
 		if err := validateHeaders(d.Body.Headers); err != nil {
 			return fmt.Errorf("body.headers: %w", err)
+		}
+		if d.Body.SigningSecret != "" {
+			// A literal would store the secret in the definition, which every
+			// reader of the definition sees and its hash is computed over.
+			if _, ok := credential.ParseRef(d.Body.SigningSecret); !ok {
+				return fmt.Errorf("body.signing_secret must name a credential as \"$cred:<name>\" and nothing else; a literal secret is not stored in a definition")
+			}
 		}
 	case "":
 		return fmt.Errorf("body.kind is required (%s or %s)", BodyKindCode, BodyKindHTTP)
