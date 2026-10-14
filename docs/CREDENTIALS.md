@@ -22,6 +22,10 @@ LOOMCYCLE_SECRET_KEY=$(openssl rand -base64 32)   # 32 bytes, base64
   created (the runtime never stores plaintext). External backends aren't affected.
 - **Rotation:** set `LOOMCYCLE_SECRET_KEY_PREVIOUS` to the old key during a grace
   window — rows sealed under it still decrypt while new writes use the new key.
+- **Queued runs:** the same key seals a queued run's `user_bearer` and
+  `user_credentials` on its row while it waits for a slot, so a restart can
+  queue it again. Without the key such a run still queues, but a restart fails
+  it (its secrets were never stored).
 
 Encryption: AES-256-GCM, a per-tenant key derived via HKDF from the master key,
 with the ciphertext bound to its row (a row copied to another tenant/name won't

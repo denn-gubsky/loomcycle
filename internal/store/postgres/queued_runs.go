@@ -53,15 +53,74 @@ func (s *Store) StartQueuedRun(ctx context.Context, runID string, identity store
 	return s.GetRun(ctx, runID)
 }
 
-func (s *Store) FailQueuedRuns(ctx context.Context, replicaID string, startedBefore time.Time, reason string) (int, error) {
+func (s *Store) SetQueuedInput(ctx context.Context, runID string, input json.RawMessage) error {
 	tag, err := s.pool.Exec(ctx,
-		`UPDATE runs SET status = $1, completed_at = $2, error = $3, stop_reason = 'restarted',
-			draft = NULL, idempotency_key = NULL
-		WHERE status = $4 AND started_at < $6 AND ($5 = '' OR COALESCE(replica_id, '') = $5)`,
-		string(store.RunFailed), time.Now().UTC(), reason, string(store.RunQueued), replicaID, startedBefore.UTC(),
+		`UPDATE runs SET queued_input = $2::jsonb WHERE id = $1 AND status = $3`,
+		runID, nullableJSONArg(input), string(store.RunQueued),
 	)
 	if err != nil {
-		return 0, fmt.Errorf("fail queued runs: %w", err)
+		return fmt.Errorf("set queued input: %w", err)
 	}
-	return int(tag.RowsAffected()), nil
+	if tag.RowsAffected() == 0 {
+		return store.ErrRunNotQueued
+	}
+	return nil
+}
+
+func (s *Store) ListQueuedRuns(ctx context.Context, replicaID string, startedBefore time.Time) ([]store.QueuedRun, error) {
+	rows, err := s.pool.Query(ctx,
+		`SELECT id, queued_input FROM runs
+		WHERE status = $1 AND started_at < $2 AND ($3 = '' OR COALESCE(replica_id, '') = $3)
+		ORDER BY started_at, id`,
+		string(store.RunQueued), startedBefore.UTC(), replicaID,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("list queued runs: %w", err)
+	}
+	type found struct {
+		id    string
+		input []byte
+	}
+	var ids []found
+	for rows.Next() {
+		var f found
+		if err := rows.Scan(&f.id, &f.input); err != nil {
+			rows.Close()
+			return nil, fmt.Errorf("list queued runs: %w", err)
+		}
+		ids = append(ids, f)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("list queued runs: %w", err)
+	}
+	out := make([]store.QueuedRun, 0, len(ids))
+	for _, f := range ids {
+		run, err := s.GetRun(ctx, f.id)
+		if err != nil {
+			return nil, err
+		}
+		q := store.QueuedRun{Run: run}
+		if len(f.input) > 0 {
+			q.Input = json.RawMessage(f.input)
+		}
+		out = append(out, q)
+	}
+	return out, nil
+}
+
+func (s *Store) FailQueuedRun(ctx context.Context, runID, reason string) error {
+	tag, err := s.pool.Exec(ctx,
+		`UPDATE runs SET status = $2, completed_at = $3, error = $4, stop_reason = 'restarted',
+			draft = NULL, queued_input = NULL, idempotency_key = NULL, delivery_alt_key = NULL
+		WHERE id = $1 AND status = $5`,
+		runID, string(store.RunFailed), time.Now().UTC(), reason, string(store.RunQueued),
+	)
+	if err != nil {
+		return fmt.Errorf("fail queued run: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return store.ErrRunNotQueued
+	}
+	return nil
 }

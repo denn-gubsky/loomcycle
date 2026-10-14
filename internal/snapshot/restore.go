@@ -168,6 +168,8 @@ type RestoreResult struct {
 	ChannelDefsRefused             int      `json:"channel_defs_refused"`
 	EvaluationsRestored            int      `json:"evaluations_restored"`
 	PausedRunsRestored             int      `json:"paused_runs_restored"`
+	QueuedRunsRestored             int      `json:"queued_runs_restored"`
+	QueuedRunsRequeued             int      `json:"queued_runs_requeued"` // set by the caller's post-restore restart, not by Restore
 	SynthesizedSessions            int      `json:"synthesized_sessions"`
 	TranscriptEventsRestored       int      `json:"transcript_events_restored"`
 	InteractionHistoryRestored     int      `json:"interaction_history_restored"`
@@ -1187,6 +1189,17 @@ func Restore(ctx context.Context, s store.Store, raw []byte, opts RestoreOptions
 		}
 	}
 
+	// queued_runs (after sessions; absent from snapshots older than it)
+	if rawSection, ok := sections[migrations.SectionQueuedRuns]; ok {
+		var sec QueuedRunsSection
+		if err := decodeWithMigration(migrations.SectionQueuedRuns, rawSection, &sec); err != nil {
+			return result, err
+		}
+		for _, e := range sec.Entries {
+			restoreQueuedRun(ctx, s, e, &result)
+		}
+	}
+
 	// interaction_history (optional, opt-in via RestoreOptions)
 	if opts.IncludeHistory {
 		if rawSection, ok := sections[migrations.SectionInteractionHistory]; ok {
@@ -1329,6 +1342,96 @@ func decodeWithMigration(section string, raw json.RawMessage, dst any) error {
 		return fmt.Errorf("snapshot section %s: decode migrated bytes: %w", section, err)
 	}
 	return nil
+}
+
+// restoreQueuedRun inserts one captured queued run as queued, with the
+// request it was queued with and its events so far, and names it for the
+// caller to queue again (Refresh.QueuedRunIDs). A run already on the target
+// is left as it is: it has its own waiter there, or has moved on.
+func restoreQueuedRun(ctx context.Context, s store.Store, e QueuedRunEntry, result *RestoreResult) {
+	sessionID := e.SessionID
+	if sessionID == "" {
+		sessionID = "snap_sess_" + e.RunID
+	}
+	sessInserted, err := s.SnapshotRestoreSession(ctx, store.Session{
+		ID: sessionID, TenantID: e.TenantID, Agent: e.Agent, CreatedAt: e.StartedAt, UserID: e.UserID,
+	})
+	if err != nil {
+		result.Warnings = append(result.Warnings, fmt.Sprintf("queued_run %s: session %s: %v", e.RunID, sessionID, err))
+		return
+	}
+	if sessInserted && e.SessionID == "" {
+		result.SynthesizedSessions++
+	}
+	row := store.Run{
+		ID: e.RunID, SessionID: sessionID, TenantID: e.TenantID, Status: store.RunQueued,
+		StartedAt: e.StartedAt, AgentID: e.AgentID, UserID: e.UserID, UserTier: e.UserTier,
+		Interactive: e.Interactive, OperatorKeyRestricted: e.OperatorKeyRestricted, Isolated: e.Isolated,
+		Retention: e.Retention, ParentContext: e.ParentContext,
+		IdempotencyKey: e.IdempotencyKey, DeliveryAltKey: e.DeliveryAltKey,
+	}
+	// As for a paused run: a key another run here already holds is dropped,
+	// and the run still comes back.
+	if keys := nonEmpty(e.IdempotencyKey, e.DeliveryAltKey); len(keys) > 0 {
+		held, found, err := s.RunByDeliveryKeys(ctx, keys)
+		switch {
+		case err != nil:
+			result.Warnings = append(result.Warnings, fmt.Sprintf("queued_run %s: check its dedup keys: %v — restored without them", e.RunID, err))
+			row.IdempotencyKey, row.DeliveryAltKey = "", ""
+		case found && held.ID != e.RunID:
+			result.Warnings = append(result.Warnings, fmt.Sprintf("queued_run %s: run %s on this target already holds its dedup key — restored without it", e.RunID, held.ID))
+			row.IdempotencyKey, row.DeliveryAltKey = "", ""
+		}
+	}
+	inserted, err := s.SnapshotRestoreRun(ctx, row)
+	if err != nil {
+		result.Warnings = append(result.Warnings, fmt.Sprintf("queued_run %s: %v", e.RunID, err))
+		return
+	}
+	if !inserted {
+		return
+	}
+	result.QueuedRunsRestored++
+	// The envelope is input, not what Capture is known to write: a hand-made
+	// or edited one is checked here as Capture would have shaped it.
+	if input, ok := restorableQueuedInput(e); ok {
+		if err := s.SetQueuedInput(ctx, e.RunID, input); err != nil {
+			result.Warnings = append(result.Warnings, fmt.Sprintf("queued_run %s: its request was not written (%v); it will be failed when queued again", e.RunID, err))
+		}
+	} else if len(e.QueuedInput) > 0 {
+		result.Warnings = append(result.Warnings, fmt.Sprintf("queued_run %s: its request was not restored (a no-trace run stores none, or it is not a JSON object); it will be failed when queued again", e.RunID))
+	}
+	if e.SecretsDropped {
+		result.Warnings = append(result.Warnings, fmt.Sprintf("queued_run %s: its per-run secrets are not carried by a snapshot; it runs without them", e.RunID))
+	}
+	if len(e.TranscriptEvents) > 0 {
+		evs := make([]store.Event, 0, len(e.TranscriptEvents))
+		for _, te := range e.TranscriptEvents {
+			evs = append(evs, store.Event{Timestamp: time.Unix(0, te.TsNs), Type: te.Type, Payload: te.Payload})
+		}
+		written, err := s.SnapshotRestoreRunEvents(ctx, e.RunID, sessionID, evs)
+		if err != nil {
+			result.Warnings = append(result.Warnings, fmt.Sprintf("queued_run %s: its %d captured events were not written: %v", e.RunID, len(evs), err))
+		}
+		result.TranscriptEventsRestored += written
+	}
+	result.Refresh.QueuedRunIDs = append(result.Refresh.QueuedRunIDs, e.RunID)
+}
+
+// restorableQueuedInput is the request to store for a restored queued run, or
+// false when none may be: a no-trace run stores no prompt anywhere, and bytes
+// that are not a JSON object are not a request. Sealed secrets are removed
+// whatever the envelope says — a snapshot never brings one in, even sealed.
+func restorableQueuedInput(e QueuedRunEntry) (json.RawMessage, bool) {
+	if len(e.QueuedInput) == 0 || e.Retention == store.RetentionNone {
+		return nil, false
+	}
+	var obj map[string]json.RawMessage
+	if err := json.Unmarshal(e.QueuedInput, &obj); err != nil {
+		return nil, false
+	}
+	input, _ := StripQueuedSecrets(e.QueuedInput)
+	return input, len(input) > 0
 }
 
 // nonEmpty returns the non-empty strings of vals.

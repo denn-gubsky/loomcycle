@@ -34,6 +34,7 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/connector"
 	"github.com/denn-gubsky/loomcycle/internal/contextplugin"
 	"github.com/denn-gubsky/loomcycle/internal/coord"
+	"github.com/denn-gubsky/loomcycle/internal/credential"
 	"github.com/denn-gubsky/loomcycle/internal/errclassify"
 	"github.com/denn-gubsky/loomcycle/internal/hooks"
 	"github.com/denn-gubsky/loomcycle/internal/limits"
@@ -109,7 +110,11 @@ type Server struct {
 	// reload it. nil ⇒ nothing is capped; its methods are nil-safe. Wired at
 	// boot via SetCallScheduler.
 	callSched *concurrency.CallScheduler
-	store     store.Store // optional; nil means "don't persist"
+	// queueSealer seals a queued run's per-run secrets so a restart can start
+	// it again (queued_runs.go). nil or disabled ⇒ such a run stores none and
+	// is failed at the restart. Wired at boot via SetQueueSealer.
+	queueSealer *credential.Sealer
+	store       store.Store // optional; nil means "don't persist"
 	// eraseAudit records subject erasures. Unlike every other audit consumer, a nil or
 	// failing sink here REFUSES the operation rather than proceeding unrecorded — see
 	// SetEraseAudit.
@@ -2806,7 +2811,13 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 	if startingDraft && s.store == nil {
 		return runner.ErrSessionRequired
 	}
-	if !startingDraft {
+	// A run a restart found queued (RestartQueuedRuns): its row exists, and
+	// its identity and keys are the row's.
+	restarting := in.QueuedRunID != ""
+	if restarting && (s.store == nil || startingDraft) {
+		return fmt.Errorf("%w: a restarted queued run needs a store and is not a draft", runner.ErrInternal)
+	}
+	if !startingDraft && !restarting {
 		// A draft's reserved id is not this run's to take (agentIDHeldByDraft).
 		if held, err := s.agentIDHeldByDraft(ctx, in.AgentID); err != nil {
 			return fmt.Errorf("%w: %v", runner.ErrInternal, err)
@@ -2847,7 +2858,9 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 	// caller hands RunOnce the row's own tenant/user, and the starter's
 	// principal must not re-attribute the run (an admin starting a tenant's
 	// draft does not make it the admin's run).
-	if !isContinuation && !startingDraft {
+	// A restarted queued run is the same: it runs as the identity it was
+	// accepted under, recorded on its row.
+	if !isContinuation && !startingDraft && !restarting {
 		effectiveTenantID, effectiveUserID = s.applyPrincipal(ctx, in.TenantID, in.UserID)
 	}
 	// A caller's idempotency_key is resolved HERE: after the identity it is
@@ -2923,9 +2936,9 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 	// bit CAPTURED on the trigger def and supplied via RunInput.Isolated. Confines
 	// the fired run's data tools to its own user/agent scope (anti-bypass).
 	isolated := s.isolatedOrCaptured(ctx, in.Isolated)
-	if startingDraft {
+	if startingDraft || restarting {
 		// Fail toward confinement: the bits captured when the draft was
-		// created still bind, whoever starts it.
+		// created (or the run queued) still bind, whoever starts it.
 		operatorKeyRestricted = operatorKeyRestricted || in.OperatorKeyRestricted
 		isolated = isolated || in.Isolated
 	}
@@ -3009,8 +3022,12 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 	// Runtime-pause admission gate (RFC X / F41) — reject new runs while
 	// pausing/paused. Covers the gRPC / webhook / A2A / scheduler surfaces
 	// that drive runs through RunOnce. Checked before the concurrency slot.
-	if err := s.pausedRunErr(); err != nil {
-		return err
+	// A run a restart is queuing again is not new: it waits the pause out in
+	// admitRun instead.
+	if !restarting {
+		if err := s.pausedRunErr(); err != nil {
+			return err
+		}
 	}
 
 	// RFC AW token-budget admission, first before the run may queue: a run
@@ -3091,11 +3108,20 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 	queuedIdentity := store.RunIdentity{AgentID: agentID, UserID: effectiveUserID, TenantID: effectiveTenantID, UserTier: in.UserTier, Model: model, ReplicaID: s.replicaID, ParentContext: in.ParentContext, IdempotencyKey: in.IdempotencyKey, DeliveryAltKey: in.DeliveryAltKey, Interactive: in.Interactive, OperatorKeyRestricted: operatorKeyRestricted, Isolated: isolated, Retention: retention, RunConfig: nil}
 	acquireStart := time.Now()
 	release, queued, err := s.admitRun(runCtx, admitArgs{
-		tenantID: effectiveTenantID,
-		userID:   effectiveUserID,
-		agentID:  agentID,
-		reject:   in.Admission == runner.AdmissionReject,
+		tenantID:     effectiveTenantID,
+		userID:       effectiveUserID,
+		agentID:      agentID,
+		reject:       in.Admission == runner.AdmissionReject,
+		waitOutPause: restarting,
 		createRow: func() (string, string, error) {
+			if restarting {
+				// Queued already, with its request stored.
+				r, err := s.store.GetRun(ctx, in.QueuedRunID)
+				if err != nil {
+					rowErr = err
+				}
+				return r.SessionID, r.ID, err
+			}
 			if startingDraft {
 				if err := s.store.QueueConfiguredRun(ctx, in.ConfiguredRunID, in.ConfiguredDraft); err != nil {
 					rowErr = err
@@ -3104,14 +3130,18 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 				r, err := s.store.GetRun(ctx, in.ConfiguredRunID)
 				if err != nil {
 					rowErr = err
+					return "", "", err
 				}
-				return r.SessionID, r.ID, err
+				s.recordQueuedInput(ctx, r.ID, effectiveTenantID, retention, in)
+				return r.SessionID, r.ID, nil
 			}
 			sid, rid, err := s.openOrCreateSessionAndQueuedRun(ctx, in.SessionID, effectiveAgentName, effectiveTenantID, effectiveUserID, queuedIdentity)
 			if err != nil {
 				rowErr = err
+				return sid, rid, err
 			}
-			return sid, rid, err
+			s.recordQueuedInput(ctx, rid, effectiveTenantID, retention, in)
+			return sid, rid, nil
 		},
 		announce: func(sessionID, runID string) error {
 			if err := s.cancelReg.Register(cancel.Entry{
@@ -3248,17 +3278,30 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 	identity := store.RunIdentity{AgentID: agentID, UserID: effectiveUserID, TenantID: effectiveTenantID, UserTier: in.UserTier, Model: model, ReplicaID: s.replicaID, ParentContext: in.ParentContext, IdempotencyKey: in.IdempotencyKey, DeliveryAltKey: in.DeliveryAltKey, Interactive: in.Interactive, OperatorKeyRestricted: operatorKeyRestricted, Isolated: isolated, Retention: retention, RunConfig: runCfg.marshal()}
 	var sessionID, runID string
 	switch {
-	case queued != nil:
-		// It waited: its row exists, queued, and only moves to running now. A
-		// cancel that ended it meanwhile wins.
-		if _, err := s.store.StartQueuedRun(ctx, queued.runID, identity); err != nil {
+	case queued != nil || restarting:
+		// It waited, or was waiting when loomcycle restarted: its row exists,
+		// queued, and only moves to running now. A cancel that ended it
+		// meanwhile wins.
+		qRunID := in.QueuedRunID
+		if queued != nil {
+			qRunID = queued.runID
+		} else if r, err := s.store.GetRun(ctx, qRunID); err == nil {
+			// Restarted into a free slot: its transcript says queued, so it
+			// says admitted too, counting the wait from when it first queued.
+			s.emitAdmissionEvent(ctx, qRunID, cb.OnEvent, providers.Event{
+				Type:      providers.EventAdmitted,
+				Admission: &providers.AdmissionInfo{WaitMs: time.Since(r.StartedAt).Milliseconds()},
+			})
+		}
+		started, err := s.store.StartQueuedRun(ctx, qRunID, identity)
+		if err != nil {
 			if errors.Is(err, store.ErrRunNotQueued) {
-				return fmt.Errorf("%w: run %s was cancelled while it was queued", runner.ErrInternal, queued.runID)
+				return fmt.Errorf("%w: run %s was cancelled while it was queued", runner.ErrInternal, qRunID)
 			}
-			s.endQueuedRun(queued.runID, err)
+			s.endQueuedRun(qRunID, err)
 			return fmt.Errorf("%w: %v", runner.ErrInternal, err)
 		}
-		sessionID, runID = queued.sessionID, queued.runID
+		sessionID, runID = started.SessionID, started.ID
 	case startingDraft:
 		// RFC DI D5: after admission, so a refusal above leaves the draft as it
 		// was; before registration, so every failure path below finds a
@@ -5206,8 +5249,14 @@ func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {
 			sid, rid, err := s.openOrCreateSessionAndQueuedRun(r.Context(), req.SessionID, req.Agent, req.TenantID, req.UserID, queuedIdentity)
 			if err != nil {
 				rowErr = err
+				return sid, rid, err
 			}
-			return sid, rid, err
+			if in, err := requestRunInput(req); err != nil {
+				log.Printf("queue: run %s: could not convert its request for a restart: %v", rid, err)
+			} else {
+				s.recordQueuedInput(r.Context(), rid, req.TenantID, retention, in)
+			}
+			return sid, rid, nil
 		},
 		announce: func(sessionID, runID string) error {
 			if err := s.cancelReg.Register(cancel.Entry{

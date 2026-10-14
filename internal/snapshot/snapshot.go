@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
@@ -206,6 +207,9 @@ func capture(ctx context.Context, s store.Store, opts CaptureOptions) (*store.Sn
 		return nil, nil, nil, err
 	}
 	if err := capturePausedRuns(ctx, s, &envelope.Sections.PausedRuns); err != nil {
+		return nil, nil, nil, err
+	}
+	if err := captureQueuedRuns(ctx, s, &envelope.Sections.QueuedRuns); err != nil {
 		return nil, nil, nil, err
 	}
 	interruptFindings, err := pausedRunInterruptFindings(ctx, s, envelope.Sections.PausedRuns.Entries)
@@ -811,6 +815,65 @@ func capturePausedRuns(ctx context.Context, s store.Store, out *PausedRunsSectio
 		out.Entries = append(out.Entries, entry)
 	}
 	return nil
+}
+
+// captureQueuedRuns reads every queued run — of every replica: a snapshot is
+// of the store — with the request it was queued with, less its sealed
+// secrets, and its events so far.
+func captureQueuedRuns(ctx context.Context, s store.Store, out *QueuedRunsSection) error {
+	out.Version = SectionVersion
+	rows, err := s.ListQueuedRuns(ctx, "", time.Now().Add(time.Second))
+	if err != nil {
+		return fmt.Errorf("snapshot queued_runs: %w", err)
+	}
+	out.Entries = make([]QueuedRunEntry, 0, len(rows))
+	for _, q := range rows {
+		r := q.Run
+		input, dropped := StripQueuedSecrets(q.Input)
+		entry := QueuedRunEntry{
+			RunID: r.ID, AgentID: r.AgentID, UserID: r.UserID, UserTier: r.UserTier,
+			Agent: r.Agent, SessionID: r.SessionID, StartedAt: r.StartedAt, TenantID: r.TenantID,
+			Interactive: r.Interactive, OperatorKeyRestricted: r.OperatorKeyRestricted, Isolated: r.Isolated,
+			Retention: r.Retention, ParentContext: r.ParentContext.Clone(),
+			IdempotencyKey: r.IdempotencyKey, DeliveryAltKey: r.DeliveryAltKey,
+			QueuedInput: input, SecretsDropped: dropped,
+			TranscriptEvents: []TranscriptEvent{},
+		}
+		// Best effort, as for a paused run: a failed read loses only the
+		// queued event, never the run.
+		if evs, err := s.GetRunEventsSince(ctx, r.ID, 0, 1000); err == nil {
+			for _, e := range evs {
+				entry.TranscriptEvents = append(entry.TranscriptEvents, TranscriptEvent{
+					Seq: e.Seq, TsNs: e.Timestamp.UnixNano(), Type: e.Type, Payload: e.Payload,
+				})
+			}
+		}
+		out.Entries = append(out.Entries, entry)
+	}
+	return nil
+}
+
+// StripQueuedSecrets removes the sealed per-run secrets from a queued run's
+// stored request (the "secrets" member of the record the HTTP server writes,
+// internal/api/http queuedRecord) and reports whether there were any. Bytes
+// that do not decode as an object are returned as they are.
+func StripQueuedSecrets(raw json.RawMessage) (json.RawMessage, bool) {
+	if len(raw) == 0 {
+		return raw, false
+	}
+	var rec map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &rec); err != nil {
+		return raw, false
+	}
+	if _, ok := rec["secrets"]; !ok {
+		return raw, false
+	}
+	delete(rec, "secrets")
+	out, err := json.Marshal(rec)
+	if err != nil {
+		return nil, true
+	}
+	return out, true
 }
 
 // captureInteractionHistory reads events ts >= sinceTs across all

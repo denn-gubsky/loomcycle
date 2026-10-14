@@ -121,10 +121,13 @@ type Sections struct {
 	// ScheduleDefs carry each def's run state inside its entry, so a fire
 	// count can never travel without its def or a def without its count.
 	// Literal user_credentials values are stripped at capture.
-	ScheduleDefs       ScheduleDefsSection        `json:"schedule_defs"`
-	ScheduleDefActive  ScheduleDefActiveSection   `json:"schedule_def_active"`
-	Evaluations        EvaluationsSection         `json:"evaluations"`
-	PausedRuns         PausedRunsSection          `json:"paused_runs"`
+	ScheduleDefs      ScheduleDefsSection      `json:"schedule_defs"`
+	ScheduleDefActive ScheduleDefActiveSection `json:"schedule_def_active"`
+	Evaluations       EvaluationsSection       `json:"evaluations"`
+	PausedRuns        PausedRunsSection        `json:"paused_runs"`
+	// QueuedRuns are the runs waiting for a run slot. A paused runtime starts
+	// none of them, so the set is stable while it is paused.
+	QueuedRuns         QueuedRunsSection          `json:"queued_runs"`
 	InteractionHistory *InteractionHistorySection `json:"interaction_history,omitempty"`
 	// SqlMem is the optional RFC AA Phase-3e SQL Memory facet — a logical dump
 	// of every durable per-scope SQL database. Present only when the runtime has
@@ -1059,6 +1062,46 @@ type TranscriptEvent struct {
 	TsNs    int64           `json:"ts_ns"`
 	Type    string          `json:"type"`
 	Payload json.RawMessage `json:"payload"`
+}
+
+// QueuedRunsSection carries the runs accepted but still waiting for a run
+// slot (status queued, RFC EI P3). A queued run has not started: what it will
+// start from is the request stored on its row (QueuedInput), not a
+// transcript. Restore inserts each as queued and the caller queues it again.
+type QueuedRunsSection struct {
+	Version string           `json:"version"`
+	Entries []QueuedRunEntry `json:"entries"`
+}
+
+// QueuedRunEntry is one queued run: its row's identity, confinement bits and
+// keys — the fields PausedRunEntry carries for the same reasons — and the
+// request it was queued with.
+type QueuedRunEntry struct {
+	RunID                 string               `json:"run_id"`
+	AgentID               string               `json:"agent_id,omitempty"`
+	UserID                string               `json:"user_id,omitempty"`
+	UserTier              string               `json:"user_tier,omitempty"`
+	Agent                 string               `json:"agent"`
+	SessionID             string               `json:"session_id"`
+	StartedAt             time.Time            `json:"started_at"`
+	TenantID              string               `json:"tenant_id,omitempty"`
+	Interactive           bool                 `json:"interactive,omitempty"`
+	OperatorKeyRestricted bool                 `json:"operator_key_restricted,omitempty"`
+	Isolated              bool                 `json:"isolated,omitempty"`
+	Retention             string               `json:"retention,omitempty"`
+	ParentContext         *store.ParentContext `json:"parent_context,omitempty"`
+	IdempotencyKey        string               `json:"idempotency_key,omitempty"`
+	DeliveryAltKey        string               `json:"delivery_alt_key,omitempty"`
+	// QueuedInput is the request the run was queued with, opaque here as
+	// RunConfig is. Its sealed per-run secrets are removed at capture
+	// (StripQueuedSecrets): a snapshot carries no secret, sealed or not, and
+	// the run restored from it runs without them, as a resumed paused run
+	// does. Empty when the row recorded none; the restart then fails it.
+	QueuedInput json.RawMessage `json:"queued_input,omitempty"`
+	// SecretsDropped says the capture removed per-run secrets from it.
+	SecretsDropped bool `json:"secrets_dropped,omitempty"`
+	// TranscriptEvents are the events the run has so far (its `queued`).
+	TranscriptEvents []TranscriptEvent `json:"transcript_events"`
 }
 
 // InteractionHistorySection is optional — captured only when

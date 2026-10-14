@@ -97,7 +97,7 @@ func (s *Store) startRun(ctx context.Context, runID string, identity store.RunId
 			operator_key_restricted = ?,
 			isolated                = ?,
 			run_config              = ?,
-			draft                   = NULL
+			draft                   = NULL, queued_input = NULL
 		WHERE id = ? AND status = ? AND (? IS NULL OR draft = ?)`,
 		string(store.RunRunning), now, now,
 		nilIfEmpty(identity.AgentDefID),

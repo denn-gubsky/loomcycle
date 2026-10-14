@@ -1352,6 +1352,9 @@ func (s *Store) migrate(ctx context.Context) error {
 		// stored), and its session's. Mirrors postgres migration 0101.
 		`ALTER TABLE runs ADD COLUMN retention TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE sessions ADD COLUMN retention TEXT NOT NULL DEFAULT ''`,
+		// RFC EI P3: a queued run's request, so a restart can start it. See
+		// internal/store/postgres/migrations/0103_runs_queued_input.
+		`ALTER TABLE runs ADD COLUMN queued_input TEXT`,
 		// RFC BL — tenant-scope the Memory store + provenance/access columns.
 		// On an UPGRADED DB these ALTERs add the columns to the existing
 		// memory table; its old (scope, scope_id, key) PK is then replaced by
@@ -1915,7 +1918,7 @@ func (s *Store) FinishRun(ctx context.Context, runID string, status store.RunSta
 			credential_source     = ?,
 			credential_scope_id   = ?,
 			result                = ?,
-			draft                 = NULL
+			draft                 = NULL, queued_input = NULL
 		WHERE id = ? AND status IN (?, ?)`,
 		string(status), now, stopReason,
 		usage.InputTokens, usage.OutputTokens,
