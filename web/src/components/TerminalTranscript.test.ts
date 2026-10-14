@@ -102,3 +102,21 @@ describe("admission rows", () => {
     expect(adm("admitted", { wait_ms: 4200 }).payload).toBe("admitted after 4.2 s");
   });
 });
+
+describe("call admission rows", () => {
+  const call = (type: string, admission: { reason?: string; position?: number; wait_ms?: number; provider?: string; kind?: string }) =>
+    formatLine({ seq: 1, run_id: "run-1", ts_ns: 0, type, event: { type, admission } });
+
+  it("names the provider a model call waits on, and why", () => {
+    expect(call("call_queued", { reason: "lane", position: 3, provider: "ollama-local", kind: "chat" }).payload)
+      .toBe("model call queued on ollama-local — waiting for a slot, position 3");
+    expect(call("call_queued", { reason: "models_in_flight", position: 1, provider: "ollama-local", kind: "chat" }).payload)
+      .toBe("model call queued on ollama-local — waiting for its model to load, position 1");
+  });
+
+  it("says how long a model call waited", () => {
+    const l = call("call_admitted", { wait_ms: 1500, provider: "ollama-local", kind: "chat" });
+    expect(l.payload).toBe("model call on ollama-local started after 1.5 s");
+    expect(l.cls).toBe("tl-meta");
+  });
+});

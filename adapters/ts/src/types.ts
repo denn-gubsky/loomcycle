@@ -121,6 +121,13 @@ export type EventType =
   // run's loop starts; the payload rides `AgentEvent.admission`.
   | "queued"
   | "admitted"
+  // Call admission: `call_queued` = one of the run's model calls waits for its
+  // provider (every slot of its call lane is taken, or the provider has its cap
+  // of models in flight); `call_admitted` = it got its slot. Sent by the
+  // provider's call lane before the call; the payload rides
+  // `AgentEvent.admission`, with `provider` and `kind` set.
+  | "call_queued"
+  | "call_admitted"
   // v0.9.x — client-synthesized lifecycle events emitted ONLY when the
   // streaming caller passes `debug: true`. Never originate from the
   // server. The leading underscore signals "synthetic, not on the wire."
@@ -522,15 +529,23 @@ export interface CapabilityInertInfo {
  *  Mirrors providers.AdmissionInfo. */
 export interface AdmissionInfo {
   /** On `queued`: why the run waits — `"user_cap"` (its user already has its
-   *  cap of runs active) or `"global_cap"` (every run slot is taken). */
-  reason?: "user_cap" | "global_cap";
+   *  cap of runs active) or `"global_cap"` (every run slot is taken). On
+   *  `call_queued`: why the call waits — `"lane"` (every slot of its call lane
+   *  is taken) or `"models_in_flight"` (the provider has its cap of models in
+   *  flight and this call's model is not among them). */
+  reason?: "user_cap" | "global_cap" | "lane" | "models_in_flight";
   /** On `queued`: the run's place when it was queued, 1 being the next to
    *  start. For `user_cap` it counts only the same user's waiting runs. It
    *  moves as other runs start and end; `getRun` reports the current place
    *  (`Agent.queue_position`). */
   position?: number;
-  /** On `admitted`: how long the run waited for its slot, in milliseconds. */
+  /** On `admitted`: how long the run waited for its slot, in milliseconds. On
+   *  `call_admitted`: how long the call waited. */
   wait_ms?: number;
+  /** On `call_queued` / `call_admitted`: the provider id as configured. */
+  provider?: string;
+  /** On `call_queued` / `call_admitted`: the call lane's model kind (`"chat"`). */
+  kind?: string;
 }
 
 export interface LimitInfo {
@@ -765,7 +780,9 @@ export interface AgentEvent {
    *  Nil on all other event types. */
   limit?: LimitInfo;
   /** Payload on `event: queued` (why the run waits, and its place) and
-   *  `event: admitted` (how long it waited). Nil on all other event types. */
+   *  `event: admitted` (how long it waited), and on `event: call_queued` /
+   *  `event: call_admitted` (the same for one model call, with its provider
+   *  and lane kind). Nil on all other event types. */
   admission?: AdmissionInfo;
   /** Set on `capability_inert` events: a tool the agent holds and cannot use. */
   capability_inert?: CapabilityInertInfo;

@@ -61,6 +61,12 @@ to the LLM gateway do not queue yet: they wait up to
 - The run's stream carries `queued` (with `admission.reason` and
   `admission.position`, 1 = next) and, when it starts, `admitted` (with
   `admission.wait_ms`). Both are in the run's transcript.
+- Once it runs, each of its model calls that has to wait for its
+  provider (the provider's call lane is full, or it has its cap of
+  models in flight) reports `call_queued` (`admission.reason` `lane` or
+  `models_in_flight`, `admission.position`, `admission.provider`,
+  `admission.kind`) and then `call_admitted` (`admission.wait_ms`), on
+  the stream and in the transcript.
 - A single-run read (HTTP GET /v1/runs/{run_id} or /v1/agents/{agent_id}, gRPC GetRun, MCP `get_run`)
   reports `status: "queued"`, `queue_position` and `queue_reason` while
   it waits. For `user_cap` the position counts only that user's waiting
