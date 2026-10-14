@@ -16,6 +16,7 @@ const (
 	verdictIgnored       = "ignored"
 	verdictRejectedEvent = "rejected_event"
 	verdictRejectedShape = "rejected_shape"
+	verdictFiltered      = "filtered"
 )
 
 // eventOutcome is what the event check decided for a delivery.
@@ -28,6 +29,27 @@ type eventOutcome struct {
 	verdict string
 	code    string // the error code of a refusal
 	event   string
+	// filter is the index of the filter a filtered delivery missed.
+	filter int
+}
+
+// screenDelivery is what a delivery that has passed the signature check
+// meets before anything is claimed or started: the event check, then the
+// filters. The receiver and the /test dry-run both call it, so the dry-run
+// never promises a run the receiver would not start.
+func screenDelivery(wd config.Webhook, header http.Header, b *deliveryBody) eventOutcome {
+	o := classifyEvent(wd, header, b)
+	if !o.proceed || len(wd.Filters) == 0 {
+		return o
+	}
+	doc, err := b.decoded()
+	if err != nil {
+		return eventOutcome{status: http.StatusBadRequest, verdict: "rejected_mapping", code: "bad_mapping", event: o.event}
+	}
+	if i := wd.FirstFailingFilter(doc); i >= 0 {
+		return eventOutcome{status: http.StatusAccepted, verdict: verdictFiltered, event: o.event, filter: i}
+	}
+	return o
 }
 
 // classifyEvent applies a definition's events to a delivery that has passed
@@ -38,7 +60,7 @@ type eventOutcome struct {
 // The event header is not signed, so it counts only when the signed body has
 // the shape of the event it names: a push body sent again as pull_request is
 // refused. wd is the definition with its provider's defaults applied.
-func classifyEvent(wd config.Webhook, header http.Header, body []byte) eventOutcome {
+func classifyEvent(wd config.Webhook, header http.Header, b *deliveryBody) eventOutcome {
 	if len(wd.Events) == 0 {
 		return eventOutcome{proceed: true}
 	}
@@ -53,7 +75,7 @@ func classifyEvent(wd config.Webhook, header http.Header, body []byte) eventOutc
 	case !wd.ListsEvent(event):
 		return eventOutcome{status: http.StatusAccepted, verdict: verdictIgnored, event: event}
 	}
-	doc, err := decodeJSONBody(body)
+	doc, err := b.decoded()
 	if err != nil {
 		return eventOutcome{status: http.StatusBadRequest, verdict: "rejected_mapping", code: "bad_mapping", event: event}
 	}
@@ -84,7 +106,12 @@ func (rec *Receiver) answerEvent(w http.ResponseWriter, span trace.Span, whKey, 
 		writeError(w, o.status, o.code, "")
 		return
 	}
-	writeJSON(w, o.status, map[string]string{
-		"webhook_name": name, "delivery_id": did, "event": o.event, "outcome": o.verdict,
-	})
+	resp := map[string]any{"webhook_name": name, "delivery_id": did, "outcome": o.verdict}
+	if o.event != "" {
+		resp["event"] = o.event
+	}
+	if o.verdict == verdictFiltered {
+		resp["filter"] = o.filter
+	}
+	writeJSON(w, o.status, resp)
 }

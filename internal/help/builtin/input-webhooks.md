@@ -143,7 +143,9 @@ A shared front-half runs for every request, then forks on `delivery`:
    **Events** (only when the definition lists `events` — see **Forge
    events**): a bad event header, the provider's ping, an event not listed
    and a body without the event's shape are answered here, after the
-   signature and before anything is claimed or started.
+   signature and before anything is claimed or started. Then the
+   **filters** (see **Filters**): a body that misses one is answered
+   `202 {"outcome":"filtered"}`, also before anything is claimed.
 4. **Replay/dedup** (Layer 1, in-memory, per `delivery_id`) + **idempotency**
    (Layer 2, durable on the run row) so a re-delivered event lands
    on the same run instead of spawning twice. Both are scoped to the webhook
@@ -177,7 +179,10 @@ A shared front-half runs for every request, then forks on `delivery`:
    its keys back, so the sender's retry is published.
 5. **Project** the payload via the Def's `payload_mapping` (strict JSONPath
    subset: `$.a.b`, `$.a[0]` — no wildcards/filters/recursion). An absent
-   path resolves to empty + a tracing note, never a failure.
+   path resolves to empty + a tracing note, never a failure. A path that
+   does not parse is refused when a `WebhookDef` is created or forked; in
+   static yaml it is a boot warning, and every delivery answers
+   `400 bad_mapping`.
 6. **Rate limit** (per-Def token bucket) → `429` + `Retry-After` when
    exceeded. Each def has its own bucket (same-named webhooks in two tenants
    never share one), and a `rate_limit` edit applies to the next delivery.
@@ -255,6 +260,58 @@ webhooks:
   as a listed event is handled.
 - The `/test` dry-run reports `ping`, `ignored`, `rejected_event` and
   `rejected_shape` as its verdict.
+
+## Filters — `filters`
+
+Conditions on the signed body that every delivery must meet before
+anything starts. A push to a tag, or a branch deletion, is answered by the
+receiver instead of starting a run that would only decide to do nothing:
+
+```yaml
+webhooks:
+  gh-push:
+    enabled: true
+    agent: code-reviewer
+    provider: github
+    events: [push]
+    metadata: { repo: acme/app }
+    filters:
+      - { path: "$.ref",                  op: glob, value: "refs/heads/*" }
+      - { path: "$.deleted",              op: eq,   value: false }
+      - { path: "$.repository.full_name", op: eq,   value_from: metadata.repo }
+    auth: { secret: "$cred:gh-hook-acme-app" }
+```
+
+| `op` | holds when the body's value at `path` … |
+|---|---|
+| `eq` | equals `value` |
+| `ne` | is of `value`'s type and does not equal it |
+| `glob` | is a string matching the pattern: `*` is any run of characters, `/` included, `?` exactly one; every other character, `[` and `\` among them, is itself |
+| `in` | equals one of `value`'s list (1 to 64 entries) |
+
+- **Every filter must hold.** A delivery that misses one is answered
+  `202 {"outcome":"filtered","filter":<index>}` and starts nothing. Like a
+  ping or an ignored event, it claims no replay key.
+- **Comparison is typed.** A value is a string, a number or a boolean; the
+  string `"1"` never equals the number `1`.
+- **A missing path is a miss**, for every `op`, `ne` included — as is a
+  `null`, an object, a list, or a value of another type than the filter's.
+  A filter that cannot be evaluated never starts a run.
+- **`value_from: metadata.<key>`** compares with the definition's own
+  `metadata` entry instead of a literal: one definition shape, written once
+  per repository. The key must exist when the definition is written.
+  Nothing is ever taken from the body but the value under test.
+- **`path`** is the same JSONPath subset as `payload_mapping` (`$`, `.key`,
+  `[N]`). Paths, operators and value types are checked when the definition
+  is written. At most 32 filters; a glob pattern is at most 256 bytes.
+- The filters run after the event check, so with `events` they apply to a
+  listed event whose body has its shape. They also work without `events`,
+  for any sender.
+- A fork replaces the whole list; `filters: []` removes it.
+- The `/test` dry-run reports the verdict `filtered` and the index of the
+  filter that missed.
+- This is a closed list. There is no expression language and no regular
+  expression, so what a definition lets through can be read off it.
 
 ## `delivery: team` — a delivery that starts a team walk
 
