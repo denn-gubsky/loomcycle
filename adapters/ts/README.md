@@ -378,7 +378,7 @@ One method per substrate family returns every declared name with its version rol
 
 All but the last return `DefNamesResponse`; `live_version_count` / `active_retired` are reported by the AgentDef, SkillDef, HookDef and MCPServerDef families. Teams have `listTeams()`.
 
-Two team options ride on existing methods: `forkTeam(name, overlay, { promote, parentDefId, description })` sends the fork's own fields (omitted, the fork is authored but not active — the server default), and `runTeam({ ..., interruptOnCap: true })` asks a human whether to continue, reroute or abort when a state hits its iteration cap, instead of ending with `iteration_cap`.
+Team options ride on existing methods: `createTeam(name, overlay, { promote, description })` sends the create's own fields (omitted, a create is promoted — the server default; `promote: false` authors it without putting it in force), `forkTeam(name, overlay, { promote, parentDefId, description })` sends the fork's (omitted, the fork is authored but not active — the server default for a fork), and `runTeam({ ..., interruptOnCap: true })` asks a human whether to continue, reroute or abort when a state hits its iteration cap, instead of ending with `iteration_cap`.
 
 ### Decision models
 

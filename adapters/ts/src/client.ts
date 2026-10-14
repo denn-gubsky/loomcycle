@@ -164,6 +164,7 @@ import type {
   SubstrateToolInput,
   SubstrateToolResponse,
   CreatedTeam,
+  CreateTeamOptions,
   DefNamesResponse,
   ForkTeamOptions,
   ModelAliasesResponse,
@@ -2422,13 +2423,21 @@ export class LoomcycleClient {
 
   /** Author a new TeamDef (op=create). `overlay` is the workflow graph
    *  (`{entry, states, transitions, max_iterations?, colors?}`), validated
-   *  server-side — an invalid graph raises {@link SubstrateToolRefusedError}. */
+   *  server-side — an invalid graph raises {@link SubstrateToolRefusedError}.
+   *
+   *  `opts.promote` and `opts.description` ride beside `signal`, as on
+   *  {@link LoomcycleClient.forkTeam}; each is sent only when set. Omitted,
+   *  the server promotes a create (unlike a fork); `promote: false` authors the
+   *  version without putting it in force. */
   async createTeam(
     name: string,
     overlay: Record<string, unknown>,
-    opts?: { signal?: AbortSignal },
+    opts?: CreateTeamOptions,
   ): Promise<CreatedTeam> {
-    return postJSON<CreatedTeam>(this.ctx, "/v1/_teamdef", { op: "create", name, overlay }, opts);
+    const body: Record<string, unknown> = { op: "create", name, overlay };
+    if (opts?.promote !== undefined) body.promote = opts.promote;
+    if (opts?.description !== undefined) body.description = opts.description;
+    return postJSON<CreatedTeam>(this.ctx, "/v1/_teamdef", body, { signal: opts?.signal });
   }
 
   /** Save an edited graph as a NEW version of an existing team (op=fork). With

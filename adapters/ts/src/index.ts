@@ -100,7 +100,7 @@
  *     listTeams(): Promise<ListTeamsResponse>
  *     renderTeamDiagram(name, opts?): Promise<TeamDiagram>
  *     getTeamDef(defId): Promise<TeamDefDetail>
- *     createTeam(name, overlay): Promise<CreatedTeam>
+ *     createTeam(name, overlay, opts?): Promise<CreatedTeam>       // opts: promote (default true) / description
  *     forkTeam(name, overlay, opts?): Promise<CreatedTeam>         // opts: promote / parentDefId / description
  *     deleteTeam(name): Promise<{name, deleted}>
  *     runTeam({name|defId, input}): Promise<TeamRunResult>
@@ -306,6 +306,7 @@ export type {
   TeamRunDetached,
   TeamRunResult,
   TeamRunTarget,
+  CreateTeamOptions,
   ForkTeamOptions,
   // Def name enumeration (GET /v1/_<family>def/names)
   DefNameSummary,

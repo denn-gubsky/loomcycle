@@ -5285,15 +5285,24 @@ export interface ProviderModelsResponse {
   models: string[];
 }
 
-/** Options of {@link LoomcycleClient.forkTeam}. */
-export interface ForkTeamOptions {
+/** Options of {@link LoomcycleClient.createTeam}. */
+export interface CreateTeamOptions {
   signal?: AbortSignal;
+  /** Make the new version the team's active one. The server default is true
+   *  for a create; pass `false` to author it without putting it in force
+   *  (then {@link LoomcycleClient.promoteTeam}). */
+  promote?: boolean;
+  /** Free-text rationale stored on the version. */
+  description?: string;
+}
+
+/** Options of {@link LoomcycleClient.forkTeam}. Note `promote` defaults the
+ *  other way from a create: false. */
+export interface ForkTeamOptions extends CreateTeamOptions {
   /** Make the new version the team's active one. The server default is false:
    *  a fork is authored first and put in force with
    *  {@link LoomcycleClient.promoteTeam}. */
   promote?: boolean;
   /** Fork this version instead of the name's active one. */
   parentDefId?: string;
-  /** Free-text rationale stored on the version. */
-  description?: string;
 }

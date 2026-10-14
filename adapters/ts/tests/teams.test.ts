@@ -80,6 +80,47 @@ describe("createTeam / forkTeam", () => {
     expect(body.overlay.entry).toBe("start");
   });
 
+  it("createTeam sends neither promote nor description when not given", async () => {
+    const { client, fetchMock } = makeClient([
+      jsonResponse({ def_id: "team_1", name: "triage", version: 1 }),
+    ]);
+    await client.createTeam("triage", { entry: "start" });
+    const body = JSON.parse((fetchMock.mock.calls[0]![1] as RequestInit).body as string);
+    // The server defaults a create's promote to true; absent must stay absent.
+    expect("promote" in body).toBe(false);
+    expect("description" in body).toBe(false);
+  });
+
+  it("createTeam sends promote:false and description from its options", async () => {
+    const { client, fetchMock } = makeClient([
+      jsonResponse({ def_id: "team_1", name: "triage", version: 1 }),
+    ]);
+    const ctl = new AbortController();
+    await client.createTeam(
+      "triage",
+      { entry: "start" },
+      { promote: false, description: "first draft", signal: ctl.signal },
+    );
+    const init = fetchMock.mock.calls[0]![1] as RequestInit;
+    expect(JSON.parse(init.body as string)).toEqual({
+      op: "create",
+      name: "triage",
+      overlay: { entry: "start" },
+      promote: false,
+      description: "first draft",
+    });
+    expect(init.signal).toBe(ctl.signal);
+  });
+
+  it("createTeam sends an explicit promote:true", async () => {
+    const { client, fetchMock } = makeClient([
+      jsonResponse({ def_id: "team_1", name: "triage", version: 1 }),
+    ]);
+    await client.createTeam("triage", { entry: "start" }, { promote: true });
+    const body = JSON.parse((fetchMock.mock.calls[0]![1] as RequestInit).body as string);
+    expect(body.promote).toBe(true);
+  });
+
   it("forkTeam POSTs op=fork with the overlay graph", async () => {
     const { client, fetchMock } = makeClient([
       jsonResponse({ def_id: "team_2", name: "triage", version: 2 }),
