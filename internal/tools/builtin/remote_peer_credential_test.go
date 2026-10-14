@@ -10,6 +10,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/denn-gubsky/loomcycle/internal/config"
 	"github.com/denn-gubsky/loomcycle/internal/credential"
@@ -29,6 +30,7 @@ import (
 type storedCred struct {
 	tenant, scope, scopeID, name, value string
 	allowed                             []string // allowed_urls; nil = unrestricted
+	expires                             *time.Time
 }
 
 func tenantCred(tenant, name, value string) storedCred {
@@ -51,7 +53,7 @@ func peerCredsOver(t *testing.T, s store.Store, creds ...storedCred) *PeerCreden
 				t.Fatal(err)
 			}
 		}
-		if _, err := eng.PutInline(context.Background(), credential.Identity{TenantID: c.tenant, Scope: c.scope, ScopeID: c.scopeID, Name: c.name}, c.value, nil, list, nil); err != nil {
+		if _, err := eng.PutInline(context.Background(), credential.Identity{TenantID: c.tenant, Scope: c.scope, ScopeID: c.scopeID, Name: c.name}, c.value, c.expires, list, nil); err != nil {
 			t.Fatalf("seed credential %s/%s: %v", c.tenant, c.name, err)
 		}
 	}
@@ -134,7 +136,43 @@ func TestRemotePeerAuthoring_CredRefRefusedWithNoCredentialStore(t *testing.T) {
 	}
 }
 
+// A reference to a tenant credential that has expired is refused at
+// authoring, and the refusal says it expired rather than blaming its URLs.
+func TestRemotePeerAuthoring_AnExpiredCredRefIsRefusedAsExpired(t *testing.T) {
+	tool, base, done := memoryBackendDefFixture(t)
+	defer done()
+	past := time.Now().Add(-time.Minute)
+	tool.PeerCredentials = peerCredsOver(t, tool.Store, storedCred{tenant: "acme", scope: "tenant", name: "peer_key", value: "v-acme", expires: &past})
+	res := execDef(t, tool, asTenant(base, "acme"), `{"op":"create","name":"peer","overlay":{"kind":"remote","config":{"base_url":"https://peer.example.com","api_key_env":"$cred:peer_key"}}}`)
+	if !res.IsError || !strings.Contains(res.Text, "expired") {
+		t.Fatalf("a def naming an expired credential: %s; want it refused as expired", res.Text)
+	}
+	if strings.Contains(res.Text, "v-acme") {
+		t.Fatal("the refusal carries the credential's value")
+	}
+}
+
 // ---- dial ----
+
+// A def whose credential expired after it was authored dials with nothing:
+// the peer is not sent the expired value, nor a request without it.
+func TestRemoteMemoryBackend_AnExpiredCredRefSendsNothing(t *testing.T) {
+	peer := newHeaderPeer(t, nil)
+	defTool, _, done := memoryBackendDefFixture(t)
+	defer done()
+	plantRemoteMemoryBackend(t, defTool.Store, "acme", fmt.Sprintf(`{"name":"peer","kind":"remote","config":{"base_url":%q,"api_key_env":"$cred:peer_key"}}`, localhostURL(t, peer.srv.URL)))
+	past := time.Now().Add(-time.Minute)
+	m := &Memory{Store: defTool.Store, Cfg: localPeerCfg(), PeerCredentials: peerCredsOver(t, defTool.Store,
+		storedCred{tenant: "acme", scope: "tenant", name: "peer_key", value: "v-acme", expires: &past})}
+	ctx := memoryRunCtx("acme")
+	_, err := m.backend(ctx).Get(ctx, store.MemoryScopeUser, "u1", "k")
+	if err == nil || !strings.Contains(err.Error(), "expired") {
+		t.Errorf("Get through a peer whose credential expired: err = %v, want it to say the credential expired", err)
+	}
+	if got := peer.sent(labelled); len(got) != 0 {
+		t.Errorf("the peer received %v; want no request once the credential expired", got)
+	}
+}
 
 // headerPeer is an httptest peer that records every Authorization header.
 type headerPeer struct {

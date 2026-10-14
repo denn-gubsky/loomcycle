@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
 	"time"
 
 	"github.com/denn-gubsky/loomcycle/internal/netguard"
@@ -20,12 +21,25 @@ type Engine struct {
 	store  store.Store
 	sealer *Sealer
 	inline inlineBackend
+	// now is the clock expires_at is judged against; time.Now outside tests.
+	now func() time.Time
 }
+
+// ErrExpired is returned when the credential a name resolves to has passed
+// its expires_at. The wrapped message names the credential, its scope and
+// when it expired — never its value.
+var ErrExpired = errors.New("credential: this credential has expired")
+
+// The span of times an int64 count of nanoseconds since 1970 can name.
+var (
+	minExpiry = time.Unix(0, math.MinInt64).UTC()
+	maxExpiry = time.Unix(0, math.MaxInt64).UTC()
+)
 
 // NewEngine builds an Engine over a store and a Sealer (the Sealer may be
 // disabled — no KEK — in which case PutInline fails and inline resolves error).
 func NewEngine(st store.Store, sealer *Sealer) *Engine {
-	return &Engine{store: st, sealer: sealer, inline: inlineBackend{sealer: sealer}}
+	return &Engine{store: st, sealer: sealer, inline: inlineBackend{sealer: sealer}, now: time.Now}
 }
 
 // InlineEnabled reports whether inline (encrypted) credentials can be stored.
@@ -51,6 +65,9 @@ type Meta struct {
 	AllowedURLs *[]string
 	// Username is the user name stored with the value ("" for none).
 	Username string
+	// Expired reports that ExpiresAt has passed: the credential no longer
+	// resolves, and is kept only so it can be seen and rotated.
+	Expired bool
 }
 
 // PutInline seals plaintext and upserts the row (create / update / rotate —
@@ -67,9 +84,20 @@ type Meta struct {
 // username, already checked (ValidUsername), is the user name to store with
 // the value. nil keeps the one the credential has, so a rotation keeps it
 // too; a pointer to "" removes it.
+//
+// expiresAt (nil for none) must lie between 1678 and 2262, which every store
+// can hold. A new write replaces it, so a rotation without one clears it.
 func (e *Engine) PutInline(ctx context.Context, id Identity, plaintext string, expiresAt *time.Time, allowedURLs *[]string, username *string) (Meta, error) {
 	if !e.sealer.Enabled() {
 		return Meta{}, ErrNoKey
+	}
+	// The SQLite store keeps the time as int64 nanoseconds, which wraps
+	// outside this range: a "never, really" expiry of 2999 would read back
+	// as a time long past and the credential would be refused from the day
+	// it was stored.
+	if expiresAt != nil && (expiresAt.Before(minExpiry) || expiresAt.After(maxExpiry)) {
+		return Meta{}, fmt.Errorf("expires_at %s is outside the range a credential can store (%s to %s); leave it unset for no expiry",
+			expiresAt.UTC().Format(time.RFC3339), minExpiry.Format(time.RFC3339), maxExpiry.Format(time.RFC3339))
 	}
 	if allowedURLs == nil {
 		kept, err := e.existingRestriction(ctx, id)
@@ -99,7 +127,7 @@ func (e *Engine) PutInline(ctx context.Context, id Identity, plaintext string, e
 	if err != nil {
 		return Meta{}, err
 	}
-	return metaOf(row), nil
+	return e.metaOf(row), nil
 }
 
 // existingUsername returns the user name of the credential stored under id,
@@ -149,7 +177,7 @@ func (e *Engine) Get(ctx context.Context, id Identity) (Meta, error) {
 	if err != nil {
 		return Meta{}, err
 	}
-	return metaOf(row), nil
+	return e.metaOf(row), nil
 }
 
 // List returns metadata for a single (tenant, scope, scope_id) bucket.
@@ -160,7 +188,7 @@ func (e *Engine) List(ctx context.Context, tenantID, scope, scopeID string) ([]M
 	}
 	out := make([]Meta, len(rows))
 	for i := range rows {
-		out[i] = metaOf(rows[i])
+		out[i] = e.metaOf(rows[i])
 	}
 	return out, nil
 }
@@ -259,6 +287,11 @@ func (e *Engine) resolve(ctx context.Context, tenantID, agentName, userID, name 
 // the name is in no visible scope; a store fault other than not-found is
 // returned. Every by-name lookup goes through here, so a rule about which
 // row a name may resolve to is decided once.
+//
+// An expired row is found (found is true) and refused with ErrExpired. It
+// does not fall through to a less specific scope, for the reason a
+// restricted one does not: a user whose own token expired must be told so,
+// not quietly sent under the tenant's token of the same name.
 func (e *Engine) find(ctx context.Context, tenantID, agentName, userID, name string) (row store.CredentialDefRow, found bool, err error) {
 	buckets := []struct{ scope, id string }{
 		{"agent", agentName},
@@ -277,9 +310,20 @@ func (e *Engine) find(ctx context.Context, tenantID, agentName, userID, name str
 			}
 			return store.CredentialDefRow{}, false, err
 		}
+		if e.expired(row) {
+			return row, true, fmt.Errorf("%w (%q in %s scope, expired %s); create it again with the same name to rotate it",
+				ErrExpired, name, row.Scope, row.ExpiresAt.UTC().Format(time.RFC3339))
+		}
 		return row, true, nil
 	}
 	return store.CredentialDefRow{}, false, nil
+}
+
+// expired reports whether row has reached its expires_at. A credential is
+// expired AT its expires_at, not after it: a value valid "until" a time is
+// not handed out at that time.
+func (e *Engine) expired(row store.CredentialDefRow) bool {
+	return row.ExpiresAt != nil && !e.now().Before(*row.ExpiresAt)
 }
 
 // HasKey reports whether a credential named `name` exists in ANY scope visible
@@ -296,6 +340,11 @@ func (e *Engine) HasKey(ctx context.Context, tenantID, agentName, userID, name s
 		return false, nil
 	}
 	row, found, err := e.find(ctx, tenantID, agentName, userID, name)
+	if errors.Is(err, ErrExpired) {
+		// Not a key either: Resolve refuses it, so a provider routed to on
+		// the strength of it would get none.
+		return false, nil
+	}
 	if err != nil || !found {
 		return false, err
 	}
@@ -310,13 +359,15 @@ func (e *Engine) HasKey(ctx context.Context, tenantID, agentName, userID, name s
 // ResolveFor would hand it out for targetURL (usable) — unrestricted, or
 // restricted to a list that covers targetURL. Metadata only, like HasKey: an
 // authoring check can ask the question a send will ask, without decrypting.
+// An expired credential is found and refused with ErrExpired, so the check
+// can say why rather than blame its URL list.
 func (e *Engine) HasKeyFor(ctx context.Context, tenantID, agentName, userID, name, targetURL string) (found, usable bool, err error) {
 	if !e.CanResolve() {
 		return false, false, nil
 	}
 	row, found, err := e.find(ctx, tenantID, agentName, userID, name)
 	if err != nil || !found {
-		return false, false, err
+		return found, false, err
 	}
 	allowed := restrictionOf(row.Definition)
 	return true, allowed == nil || URLAllowed(allowed, targetURL), nil
@@ -335,8 +386,8 @@ func (e *Engine) backendFor(name string) (Backend, error) {
 
 // metaOf reads what may be shown out of a row and drops the sealed Definition
 // — the only shape that ever leaves the engine toward a caller or a log.
-func metaOf(row store.CredentialDefRow) Meta {
-	m := Meta{AllowedURLs: restrictionOf(row.Definition), Username: usernameOf(row.Definition)}
+func (e *Engine) metaOf(row store.CredentialDefRow) Meta {
+	m := Meta{AllowedURLs: restrictionOf(row.Definition), Username: usernameOf(row.Definition), Expired: e.expired(row)}
 	row.Definition = nil
 	m.CredentialDefRow = row
 	return m

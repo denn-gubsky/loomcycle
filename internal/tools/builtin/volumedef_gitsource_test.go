@@ -385,6 +385,43 @@ func TestGitCredentialResolver_AppCredentialIsMintedAndAnOpenOneRefused(t *testi
 	}
 }
 
+// A clone credential past its expires_at is unresolvable: neither a $cred:
+// token nor a $ghapp: App config is handed out, and no App token is minted
+// from an expired config.
+func TestGitCredentialResolver_AnExpiredCredentialIsUnresolvable(t *testing.T) {
+	f := newGitSourceFixture(t, false)
+	target := "https://github.com/acme/app"
+	past := time.Now().Add(-time.Minute)
+	for name, value := range map[string]string{"token": "glpat_stale", "app": `{"app_id":"1"}`} {
+		norm, err := credential.NormalizeAllowedURLs(&[]string{target})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := f.engine.PutInline(context.Background(), credential.Identity{TenantID: "tnt", Scope: "tenant", Name: name}, value, &past, norm, nil); err != nil {
+			t.Fatal(err)
+		}
+	}
+	minted := false
+	var registered []string
+	resolve := GitCredentialResolver(f.engine, func(context.Context, string, string, string) (string, error) {
+		minted = true
+		return "ghs_minted", nil
+	}, func(v string) { registered = append(registered, v) })
+
+	for _, ref := range []string{"$cred:token", "$ghapp:app"} {
+		_, token, err := resolve(f.ctx, ref, target)
+		if !errors.Is(err, ErrGitCredentialUnresolvable) || !strings.Contains(err.Error(), "expired") {
+			t.Errorf("%s: err = %v, want it unresolvable because it expired", ref, err)
+		}
+		if token != "" {
+			t.Errorf("%s: a token was returned for an expired credential", ref)
+		}
+	}
+	if minted || len(registered) != 0 {
+		t.Errorf("minted=%v registered=%d; want nothing minted or handed out", minted, len(registered))
+	}
+}
+
 func TestRepositoryName(t *testing.T) {
 	for p, want := range map[string]string{
 		"/acme/app": "app", "/acme/app.git": "app", "/acme/app/": "app", "/group/sub/app.git": "app", "/app": "app",

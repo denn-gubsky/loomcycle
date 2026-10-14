@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/denn-gubsky/loomcycle/internal/concurrency"
+	"github.com/denn-gubsky/loomcycle/internal/credential"
 	"github.com/denn-gubsky/loomcycle/internal/providers"
 	"github.com/denn-gubsky/loomcycle/internal/resolve"
 	"github.com/denn-gubsky/loomcycle/internal/runner"
@@ -48,6 +49,7 @@ func TestCategoryOf_ClassifiesEveryKnownSentinel(t *testing.T) {
 		{"dimension mismatch", store.ErrDimensionMismatch, tools.CategoryBusiness, false, nil},
 		{"memory quota", store.ErrMemoryQuotaExceeded, tools.CategoryBusiness, false, nil},
 		{"value too large", store.ErrMemoryValueTooLarge, tools.CategoryBusiness, false, nil},
+		{"stored credential expired", credential.ErrExpired, tools.CategoryBusiness, false, nil},
 
 		{"operator key restricted", resolve.ErrOperatorKeyRestricted, tools.CategoryPermission, false, nil},
 		{"operator key forbidden", providers.ErrOperatorKeyForbidden, tools.CategoryPermission, false, nil},
