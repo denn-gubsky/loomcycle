@@ -1,0 +1,6 @@
+{
+  "secret": "sigv1-vector-secret",
+  "body": "{\"phase\":\"pre\",\"hook_name\":\"gate\",\"note\":\"café \\u2014 ok\"}\n",
+  "t": 1760000000,
+  "header": "t=1760000000,v1=43cae3c6909f4e4d4915c89437bb2fb9af987febfad46ffee7b7618e8094d266"
+}
