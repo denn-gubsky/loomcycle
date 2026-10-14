@@ -272,6 +272,38 @@ func (e *Engine) HasKey(ctx context.Context, tenantID, agentName, userID, name s
 	return false, nil
 }
 
+// HasKeyFor is HasKey for a credential about to be sent to targetURL: it
+// reports whether the name exists in a visible scope (found), and whether
+// ResolveFor would hand it out for targetURL (usable) — unrestricted, or
+// restricted to a list that covers targetURL. Metadata only, like HasKey: an
+// authoring check can ask the question a send will ask, without decrypting.
+func (e *Engine) HasKeyFor(ctx context.Context, tenantID, agentName, userID, name, targetURL string) (found, usable bool, err error) {
+	if !e.CanResolve() {
+		return false, false, nil
+	}
+	buckets := []struct{ scope, id string }{
+		{"agent", agentName},
+		{"user", userID},
+		{"tenant", ""},
+	}
+	for _, b := range buckets {
+		if b.scope != "tenant" && b.id == "" {
+			continue
+		}
+		row, err := e.store.CredentialDefGet(ctx, tenantID, b.scope, b.id, name)
+		if err != nil {
+			var nf *store.ErrNotFound
+			if errors.As(err, &nf) {
+				continue
+			}
+			return false, false, err
+		}
+		allowed := restrictionOf(row.Definition)
+		return true, allowed == nil || URLAllowed(allowed, targetURL), nil
+	}
+	return false, false, nil
+}
+
 func (e *Engine) backendFor(name string) (Backend, error) {
 	switch name {
 	case BackendInline:

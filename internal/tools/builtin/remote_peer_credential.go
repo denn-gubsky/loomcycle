@@ -40,13 +40,15 @@ func NewPeerCredentials(engine *credential.Engine, register func(string)) *PeerC
 	return &PeerCredentials{engine: engine, register: register}
 }
 
-// Exists reports whether tenantID holds a tenant-level credential named name.
-// Metadata only: nothing is decrypted.
-func (p *PeerCredentials) Exists(ctx context.Context, tenantID, name string) (bool, error) {
+// ExistsFor reports whether tenantID holds a tenant-level credential named
+// name (found), and whether it may be sent to baseURL (usable): unrestricted,
+// or restricted by allowed_urls to a list covering baseURL, which is what
+// Resolve will check at dial. Metadata only: nothing is decrypted.
+func (p *PeerCredentials) ExistsFor(ctx context.Context, tenantID, name, baseURL string) (found, usable bool, err error) {
 	if p == nil || p.engine == nil {
-		return false, nil
+		return false, false, nil
 	}
-	return p.engine.HasKey(ctx, tenantID, "", "", name)
+	return p.engine.HasKeyFor(ctx, tenantID, "", "", name, baseURL)
 }
 
 // Resolve returns the value of the tenant-level credential name in tenantID,
