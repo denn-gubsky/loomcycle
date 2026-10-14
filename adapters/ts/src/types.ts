@@ -4014,7 +4014,7 @@ export interface StreamUserRunStatesOptions {
    *  `parent_context.walk_id`).
    *
    *  A team walk's own run_id IS its walk id, so a caller that started a team
-   *  with `detach: true` passes back exactly the handle it already holds —
+   *  with `mode: "detach"` passes back exactly the handle it already holds —
    *  there is no second identifier and nothing to map. That is what makes a
    *  live view of one running workflow's agents a filter rather than a
    *  feature.

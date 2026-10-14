@@ -540,7 +540,6 @@ When the error body is JSON with a string `code` (`token_limit_exceeded`, `per_u
 | 401 | `AuthError` |
 | 404 + "snapshot" | `SnapshotNotFoundError` ⎫ |
 | 404 + "session" | `SessionNotFoundError` ⎬ all extend `NotFoundError` |
-| 404 + "hook" | `HookNotFoundError` ⎬ |
 | 404 + "agent" | `AgentNotFoundError` ⎬ |
 | 404 (other) | `NotFoundError` (base) ⎭ catch any 404 with one `instanceof` |
 | 409 + "already_pausing" / "already paused" | `AlreadyPausingError` |
@@ -584,7 +583,7 @@ try {
 
 `e.name` (and the `meta_reason` of a `stream_close` frame) is the most specific class name, so it reads `TokenLimitExceededError`, `PromptTooLargeError` or `RequestTooLargeError` where it used to read `BackpressureError` or `SnapshotTooLargeError`. Match with `instanceof` or `e.code`, not on the name.
 
-Priority within `404`: most-specific keyword wins (`snapshot` → `session` → `hook` → `agent` → base). The dispatch is keyword-matched on the response body lowercase; a hook with id `hook_agent_scan` still routes to `HookNotFoundError`, not `AgentNotFoundError`.
+Priority within `404`: most-specific keyword wins (`snapshot` → `session` → `agent` → base). The dispatch is keyword-matched on the response body lowercase, so a body that names none of them — a missing hook, memory row or interrupt — is a plain `NotFoundError`, while one that happens to contain "agent" (a hook id like `hook_agent_scan`) is an `AgentNotFoundError`. There is no hook-specific class; catch `NotFoundError` for any 404.
 
 ```ts
 import {
@@ -642,7 +641,7 @@ for await (const item of client.streamUserRunStates(userId, {
 A detached team walk returns a `run_id`, and that id **is** the walk id every run it spawns carries in `parent_context.walk_id`. Pass it back as `walkId` and the server filters the stream to that workflow — no second identifier, nothing to map:
 
 ```ts
-const { run_id } = await client.runTeam({ team: "triage", detach: true });
+const { run_id } = await client.runTeam({ name: "triage", mode: "detach" });
 
 for await (const item of client.streamUserRunStates(userId, { walkId: run_id })) {
   if (item.kind === "open") {

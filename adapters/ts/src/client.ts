@@ -3223,11 +3223,11 @@ export class LoomcycleClient {
    *
    *  v1.78.0 — `walkId` is a SERVER-side filter: only the runs one team
    *  walk spawned. A walk's own run_id IS its walk id, so a caller that
-   *  started a team with `detach: true` passes back the handle it already
+   *  started a team with `mode: "detach"` passes back the handle it already
    *  holds and gets a live view of that workflow's agents:
    *
    *  ```ts
-   *  const { run_id } = await client.runTeam({ team: "triage", detach: true });
+   *  const { run_id } = await client.runTeam({ name: "triage", mode: "detach" });
    *  for await (const item of client.streamUserRunStates(userId, { walkId: run_id })) {
    *    if (item.kind === "event") place(item.payload.parent_context?.wave_index);
    *  }

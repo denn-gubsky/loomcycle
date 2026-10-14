@@ -228,7 +228,6 @@ Every method translates gRPC error codes to typed Python exceptions:
 | gRPC code | Exception |
 |---|---|
 | `NOT_FOUND` (with session in msg) | `SessionNotFoundError` |
-| `NOT_FOUND` (with hook in msg) | `HookNotFoundError` |
 | `NOT_FOUND` (otherwise — agent ctx) | `AgentNotFoundError` |
 | `FAILED_PRECONDITION` (session busy) | `SessionBusyError` |
 | `FAILED_PRECONDITION` (other) | `LoomcycleError` |
