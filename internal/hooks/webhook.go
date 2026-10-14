@@ -38,8 +38,10 @@ func newWebhookClient(httpClient *http.Client, privateHostAllowlist []string) *w
 	if httpClient == nil {
 		httpClient = &http.Client{}
 	}
+	// Both honor a pinned request (one carrying a credential restricted to the
+	// callback URL): it follows no redirect.
 	return &webhookClient{
-		http:    httpClient,
+		http:    netguard.HonorPins(httpClient),
 		guarded: netguard.NewGuardedClient(0, privateHostAllowlist),
 	}
 }

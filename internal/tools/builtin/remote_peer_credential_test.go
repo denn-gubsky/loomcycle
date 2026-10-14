@@ -13,8 +13,12 @@ import (
 
 	"github.com/denn-gubsky/loomcycle/internal/config"
 	"github.com/denn-gubsky/loomcycle/internal/credential"
+	"github.com/denn-gubsky/loomcycle/internal/memory/backends/remote"
+	"github.com/denn-gubsky/loomcycle/internal/netguard"
 	"github.com/denn-gubsky/loomcycle/internal/store"
+	"github.com/denn-gubsky/loomcycle/internal/store/sqlite"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
+	"net/http/httptest"
 )
 
 // These tests pin the "$cred:<name>" form of a remote peer's api_key_env: a
@@ -24,6 +28,7 @@ import (
 // storedCred is one credential to seed.
 type storedCred struct {
 	tenant, scope, scopeID, name, value string
+	allowed                             []string // allowed_urls; nil = unrestricted
 }
 
 func tenantCred(tenant, name, value string) storedCred {
@@ -40,7 +45,13 @@ func peerCredsOver(t *testing.T, s store.Store, creds ...storedCred) *PeerCreden
 	}
 	eng := credential.NewEngine(s, sealer)
 	for _, c := range creds {
-		if _, err := eng.PutInline(context.Background(), credential.Identity{TenantID: c.tenant, Scope: c.scope, ScopeID: c.scopeID, Name: c.name}, c.value, nil, nil, nil); err != nil {
+		var list *[]string
+		if c.allowed != nil {
+			if list, err = credential.NormalizeAllowedURLs(&c.allowed); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if _, err := eng.PutInline(context.Background(), credential.Identity{TenantID: c.tenant, Scope: c.scope, ScopeID: c.scopeID, Name: c.name}, c.value, nil, list, nil); err != nil {
 			t.Fatalf("seed credential %s/%s: %v", c.tenant, c.name, err)
 		}
 	}
@@ -66,13 +77,26 @@ func credRefCases(remoteKind string) []credentialCase {
 			"an admin keeps free api_key_env"},
 		{"tenant embeds a reference in text", false, "acme", create(`Bearer $cred:peer_key`), false,
 			"api_key_env is a whole reference or an env-var name"},
+		{"tenant names a credential restricted to its base_url", false, "acme", create(`$cred:scoped_key`), true,
+			"allowed_urls covers base_url, so the dial will resolve it"},
+		{"tenant names a credential restricted to other URLs", false, "acme", create(`$cred:elsewhere_key`), false,
+			"allowed_urls does not cover base_url: the dial would refuse it"},
+	}
+}
+
+// restrictedPeerCreds are the two restricted credentials the authoring cases
+// name, beside the unrestricted ones.
+func restrictedPeerCreds() []storedCred {
+	return []storedCred{
+		{tenant: "acme", scope: "tenant", name: "scoped_key", value: "v-scoped", allowed: []string{"https://peer.example.com"}},
+		{tenant: "acme", scope: "tenant", name: "elsewhere_key", value: "v-elsewhere", allowed: []string{"https://elsewhere.example.com"}},
 	}
 }
 
 func TestRemoteMemoryBackendAuthoring_CredRefMustExistInTheAuthorsTenant(t *testing.T) {
 	runCredentialCases(t, func(t *testing.T) (tools.Tool, context.Context, func()) {
 		tool, ctx, done := memoryBackendDefFixture(t)
-		tool.PeerCredentials = peerCredsOver(t, tool.Store, tenantCred("acme", "peer_key", "v-acme"), tenantCred("globex", "globex_key", "v-globex"), tenantCred("", "peer_key", "v-shared"))
+		tool.PeerCredentials = peerCredsOver(t, tool.Store, append([]storedCred{tenantCred("acme", "peer_key", "v-acme"), tenantCred("globex", "globex_key", "v-globex"), tenantCred("", "peer_key", "v-shared")}, restrictedPeerCreds()...)...)
 		return tool, ctx, done
 	}, credRefCases(`"kind":"remote",`))
 }
@@ -80,7 +104,7 @@ func TestRemoteMemoryBackendAuthoring_CredRefMustExistInTheAuthorsTenant(t *test
 func TestRemoteDocumentSourceAuthoring_CredRefMustExistInTheAuthorsTenant(t *testing.T) {
 	runCredentialCases(t, func(t *testing.T) (tools.Tool, context.Context, func()) {
 		tool, ctx, done := documentSourceDefFixture(t)
-		tool.PeerCredentials = peerCredsOver(t, tool.Store, tenantCred("acme", "peer_key", "v-acme"), tenantCred("globex", "globex_key", "v-globex"), tenantCred("", "peer_key", "v-shared"))
+		tool.PeerCredentials = peerCredsOver(t, tool.Store, append([]storedCred{tenantCred("acme", "peer_key", "v-acme"), tenantCred("globex", "globex_key", "v-globex"), tenantCred("", "peer_key", "v-shared")}, restrictedPeerCreds()...)...)
 		return tool, ctx, done
 	}, credRefCases(``))
 }
@@ -328,5 +352,66 @@ func TestRemoteDocumentSource_SharedDefCredRefNeverResolvesTheCallersTenant(t *t
 				t.Errorf("sync did not fail on the missing credential: %s", res.Text)
 			}
 		})
+	}
+}
+
+// At dial, a tenant credential restricted by allowed_urls is sent to a peer
+// whose base_url its list covers, and to nowhere else: not to a peer it does
+// not cover, and not through a covered peer's redirect to another host. The
+// client is the pin-honouring policy every peer client has (NewGuardedClient
+// in production; here wrapped around one that trusts the test certificate).
+func TestRemoteMemoryBackend_ARestrictedCredReachesOnlyItsBaseURL(t *testing.T) {
+	var mu sync.Mutex
+	seen := map[string][]string{} // server -> Authorization values
+	record := func(name string) http.HandlerFunc {
+		return func(w http.ResponseWriter, r *http.Request) {
+			mu.Lock()
+			seen[name] = append(seen[name], r.Header.Get("Authorization"))
+			mu.Unlock()
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusNotFound)
+			_, _ = w.Write([]byte(`{"error":"not found"}`))
+		}
+	}
+	covered := httptest.NewTLSServer(record("covered"))
+	defer covered.Close()
+	sink := httptest.NewTLSServer(record("sink"))
+	defer sink.Close()
+	hop := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, sink.URL+r.URL.Path, http.StatusTemporaryRedirect)
+	}))
+	defer hop.Close()
+
+	st, err := sqlite.Open(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	creds := peerCredsOver(t, st, storedCred{tenant: "acme", scope: "tenant", name: "peer_key", value: "v-acme", allowed: []string{covered.URL, hop.URL}})
+	dial := func(base string) {
+		t.Helper()
+		b, err := remote.New(remote.Options{
+			BaseURL:          base,
+			DefaultAPIKeyEnv: "$cred:peer_key",
+			KeyResolver:      peerKeyResolver(creds, "acme", base),
+			HTTPClient:       netguard.HonorPins(covered.Client()), // httptest's one certificate serves all three
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		ctx := memoryRunCtx("acme")
+		_, _ = b.Get(ctx, store.MemoryScopeUser, "u1", "k")
+	}
+
+	dial(covered.URL)
+	dial(sink.URL)
+	dial(hop.URL)
+	mu.Lock()
+	defer mu.Unlock()
+	if got := seen["covered"]; len(got) != 1 || got[0] != "Bearer v-acme" {
+		t.Errorf("the covered peer received %d request(s); want one carrying the credential", len(got))
+	}
+	if got := seen["sink"]; len(got) != 0 {
+		t.Errorf("a host outside the credential's list received %d request(s)", len(got))
 	}
 }

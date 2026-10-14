@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/denn-gubsky/loomcycle/internal/netguard"
 	"log"
 	"net/http"
 	"strings"
@@ -90,8 +91,9 @@ func (d *Dispatcher) match(ctx context.Context, ident Identity, tool string, pha
 func (d *Dispatcher) SetCodeRunner(r CodeRunner) { d.code = r }
 
 // HeaderSubstitute replaces the credential references ($cred:<name>) in s with
-// their values for the run on ctx, returning the names it could not resolve.
-type HeaderSubstitute func(ctx context.Context, s string) (string, []string, error)
+// their values for the run on ctx, for a request to targetURL, returning the
+// names it could not resolve.
+type HeaderSubstitute func(ctx context.Context, s, targetURL string) (string, []string, error)
 
 // SetHeaderSubstitute installs the credential resolver for webhook headers. Same
 // boot-wiring rule as SetCodeRunner.
@@ -113,7 +115,7 @@ func (d *Dispatcher) headers(ctx context.Context, h *Hook) (map[string]string, e
 		if d.headerSub == nil {
 			return nil, callError("a header credential could not be resolved", fmt.Errorf("header %s names a credential, and no credential store is configured", k))
 		}
-		resolved, unresolved, err := d.headerSub(ctx, v)
+		resolved, unresolved, err := d.headerSub(ctx, v, h.CallbackURL)
 		if err != nil {
 			return nil, callError("a header credential could not be resolved", fmt.Errorf("header %s: %w", k, err))
 		}
@@ -425,6 +427,10 @@ func (d *Dispatcher) invoke(ctx context.Context, h *Hook, body, out any) error {
 	}
 	hookCtx, cancel := context.WithTimeout(ctx, h.Timeout)
 	defer cancel()
+	// Pinnable before the headers resolve: a credential restricted by
+	// allowed_urls resolves for the callback URL and pins the POST, so it
+	// follows no redirect that would carry the credential elsewhere.
+	hookCtx = netguard.WithPinnable(hookCtx)
 	headers, err := d.headers(hookCtx, h)
 	if err != nil {
 		return err

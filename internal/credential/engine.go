@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/denn-gubsky/loomcycle/internal/netguard"
 	"github.com/denn-gubsky/loomcycle/internal/store"
 )
 
@@ -207,6 +208,11 @@ func (e *Engine) Resolve(ctx context.Context, tenantID, agentName, userID, name 
 // one of its entries, and is refused with ErrURLNotAllowed otherwise, before
 // the secret is opened. An unrestricted credential resolves as with Resolve;
 // a caller that requires a restriction checks Resolved.AllowedURLs.
+//
+// A restricted credential also pins the request: ctx must come from
+// netguard.WithPinnable, and the request must be sent with it, so that its
+// client follows no redirect away from targetURL. Without that it is refused
+// with ErrNotPinnable.
 func (e *Engine) ResolveFor(ctx context.Context, tenantID, agentName, userID, name, targetURL string) (Resolved, bool, error) {
 	return e.resolve(ctx, tenantID, agentName, userID, name, &targetURL)
 }
@@ -240,6 +246,9 @@ func (e *Engine) resolve(ctx context.Context, tenantID, agentName, userID, name 
 			}
 			if !URLAllowed(allowed, *target) {
 				return Resolved{}, false, fmt.Errorf("%w (%q)", ErrURLNotAllowed, name)
+			}
+			if !netguard.Pin(ctx) {
+				return Resolved{}, false, fmt.Errorf("%w (%q)", ErrNotPinnable, name)
 			}
 		}
 		backend, err := e.backendFor(row.Backend)
@@ -295,6 +304,38 @@ func (e *Engine) HasKey(ctx context.Context, tenantID, agentName, userID, name s
 		return restrictionOf(row.Definition) == nil, nil // no decrypt needed
 	}
 	return false, nil
+}
+
+// HasKeyFor is HasKey for a credential about to be sent to targetURL: it
+// reports whether the name exists in a visible scope (found), and whether
+// ResolveFor would hand it out for targetURL (usable) — unrestricted, or
+// restricted to a list that covers targetURL. Metadata only, like HasKey: an
+// authoring check can ask the question a send will ask, without decrypting.
+func (e *Engine) HasKeyFor(ctx context.Context, tenantID, agentName, userID, name, targetURL string) (found, usable bool, err error) {
+	if !e.CanResolve() {
+		return false, false, nil
+	}
+	buckets := []struct{ scope, id string }{
+		{"agent", agentName},
+		{"user", userID},
+		{"tenant", ""},
+	}
+	for _, b := range buckets {
+		if b.scope != "tenant" && b.id == "" {
+			continue
+		}
+		row, err := e.store.CredentialDefGet(ctx, tenantID, b.scope, b.id, name)
+		if err != nil {
+			var nf *store.ErrNotFound
+			if errors.As(err, &nf) {
+				continue
+			}
+			return false, false, err
+		}
+		allowed := restrictionOf(row.Definition)
+		return true, allowed == nil || URLAllowed(allowed, targetURL), nil
+	}
+	return false, false, nil
 }
 
 func (e *Engine) backendFor(name string) (Backend, error) {

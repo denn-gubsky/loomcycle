@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/denn-gubsky/loomcycle/internal/netguard"
 	"github.com/denn-gubsky/loomcycle/internal/store"
 )
 
@@ -96,7 +97,7 @@ func TestNormalizeAllowedURLs_CanonicalSortedAndRefusesWhatCouldMislead(t *testi
 // every consumer that existed before the restriction did.
 func TestEngine_ARestrictedCredentialResolvesOnlyForAnAllowedURL(t *testing.T) {
 	e := newEngine(t, testKey(1))
-	ctx := context.Background()
+	ctx := netguard.WithPinnable(context.Background())
 	id := Identity{TenantID: "t", Scope: "tenant", Name: "repo"}
 	meta, err := e.PutInline(ctx, id, "ghs_secret", nil, urls("https://github.com/acme/app"), nil)
 	if err != nil {
@@ -116,8 +117,11 @@ func TestEngine_ARestrictedCredentialResolvesOnlyForAnAllowedURL(t *testing.T) {
 	if res, _, err := e.Resolve(ctx, "t", "", "", "repo"); !errors.Is(err, ErrRestricted) || res.Value != "" {
 		t.Errorf("a caller that names no destination: value=%q err=%v, want ErrRestricted and no value", res.Value, err)
 	}
-	if out, _, err := e.Substitute(ctx, "t", "", "", "Bearer $cred:repo", nil); err == nil || strings.Contains(out, "ghs_secret") {
-		t.Errorf("a header substitution got the restricted value: %q err=%v", out, err)
+	if out, _, err := e.Substitute(ctx, "t", "", "", "Bearer $cred:repo", "https://github.com/acme/other", nil); err == nil || strings.Contains(out, "ghs_secret") {
+		t.Errorf("a header for another URL got the restricted value: %q err=%v", out, err)
+	}
+	if out, _, err := e.Substitute(ctx, "t", "", "", "Bearer $cred:repo", "https://github.com/acme/app/mcp", nil); err != nil || out != "Bearer ghs_secret" {
+		t.Errorf("a header for a covered URL: %q err=%v", out, err)
 	}
 	if has, _ := e.HasKey(ctx, "t", "", "", "repo"); has {
 		t.Error("HasKey reported a restricted credential as a usable key")
@@ -167,7 +171,7 @@ func TestEngine_ARestrictedCredentialIsNotShadowedAwayByALessSpecificOne(t *test
 // it, removing it, or adding one to a credential that had none must leave a
 // value that no longer opens, not a wider one.
 func TestEngine_AnEditedRestrictionNoLongerOpens(t *testing.T) {
-	ctx := context.Background()
+	ctx := netguard.WithPinnable(context.Background())
 	rewrite := func(t *testing.T, e *Engine, id Identity, f func(def map[string]json.RawMessage)) {
 		t.Helper()
 		row, err := e.store.CredentialDefGet(ctx, id.TenantID, id.Scope, id.ScopeID, id.Name)
@@ -256,7 +260,7 @@ func TestEngine_ACredentialStoredBeforeTheFieldStillOpens(t *testing.T) {
 // replaces it. A stored list that was edited is not carried over.
 func TestEngine_RotationKeepsTheRestrictionUnlessOneIsSent(t *testing.T) {
 	e := newEngine(t, testKey(1))
-	ctx := context.Background()
+	ctx := netguard.WithPinnable(context.Background())
 	id := Identity{TenantID: "t", Scope: "tenant", Name: "repo"}
 	if _, err := e.PutInline(ctx, id, "v1", nil, urls("https://github.com/acme/app"), nil); err != nil {
 		t.Fatal(err)
@@ -348,5 +352,39 @@ func TestValidUsername(t *testing.T) {
 		if err := ValidUsername(bad); err == nil {
 			t.Errorf("%q accepted", bad)
 		}
+	}
+}
+
+// A restricted credential handed out for a URL pins the request it goes into,
+// so the request's client follows no redirect away from that URL. A context
+// that cannot be pinned gets nothing: a consumer that forgot to make its
+// request pinnable would otherwise let a redirect carry the value elsewhere.
+// An unrestricted credential pins nothing.
+func TestEngine_ARestrictedCredentialPinsItsRequest(t *testing.T) {
+	e := newEngine(t, testKey(1))
+	setup := context.Background()
+	if _, err := e.PutInline(setup, Identity{TenantID: "t", Scope: "tenant", Name: "repo"}, "ghs_secret", nil, urls("https://github.com/acme/app"), nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := e.PutInline(setup, Identity{TenantID: "t", Scope: "tenant", Name: "plain"}, "v", nil, nil, nil); err != nil {
+		t.Fatal(err)
+	}
+
+	if res, _, err := e.ResolveFor(context.Background(), "t", "", "", "repo", "https://github.com/acme/app"); !errors.Is(err, ErrNotPinnable) || res.Value != "" {
+		t.Errorf("a context that cannot be pinned: value=%q err=%v, want ErrNotPinnable", res.Value, err)
+	}
+
+	pinnable := netguard.WithPinnable(context.Background())
+	if res, _, err := e.ResolveFor(pinnable, "t", "", "", "plain", "https://x.example"); err != nil || res.Value != "v" {
+		t.Fatalf("an unrestricted credential: %q %v", res.Value, err)
+	}
+	if netguard.Pinned(pinnable) {
+		t.Error("an unrestricted credential pinned the request")
+	}
+	if res, _, err := e.ResolveFor(pinnable, "t", "", "", "repo", "https://github.com/acme/app"); err != nil || res.Value != "ghs_secret" {
+		t.Fatalf("a restricted credential for a covered URL: %q %v", res.Value, err)
+	}
+	if !netguard.Pinned(pinnable) {
+		t.Error("a restricted credential did not pin the request")
 	}
 }

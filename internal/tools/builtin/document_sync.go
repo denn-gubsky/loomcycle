@@ -52,7 +52,7 @@ func newRemoteDocumentClient(cfg *config.Config, creds *PeerCredentials, ds conf
 		DefaultAPIKeyEnv: ds.Config.APIKeyEnv,
 		TenancyKind:      ds.TenancyStrategy.Kind,
 		EnvPattern:       ds.TenancyStrategy.EnvPattern,
-		KeyResolver:      peerKeyResolver(creds, prov.TenantID),
+		KeyResolver:      peerKeyResolver(creds, prov.TenantID, ds.Config.BaseURL),
 		HTTPClient:       client,
 	})
 }

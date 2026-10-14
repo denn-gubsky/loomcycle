@@ -36,6 +36,11 @@ var ErrRestricted = errors.New("credential: this credential is restricted to spe
 // the credential's list.
 var ErrURLNotAllowed = errors.New("credential: the destination URL is not one this credential is allowed to be sent to")
 
+// ErrNotPinnable is returned when a restricted credential is asked for with a
+// context the request cannot be pinned on (netguard.WithPinnable): nothing
+// would then stop a redirect from carrying it to another URL.
+var ErrNotPinnable = errors.New("credential: this credential is restricted to specific URLs, and the request would not be kept from following a redirect")
+
 // NormalizeAllowedURLs checks a list as written and returns its stored form:
 // every entry canonical, the list sorted and without duplicates. nil stays
 // nil (no restriction); an empty list stays empty (sent nowhere).

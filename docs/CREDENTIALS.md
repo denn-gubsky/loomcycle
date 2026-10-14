@@ -64,11 +64,18 @@ It answers a question a secret store otherwise cannot. When the destination of a
 
 - **Matching.** By host, exactly and without regard to case, and by whole path segments. `https://github.com/acme/app` covers `https://github.com/acme/app.git` and what is under it, and does not cover `https://github.com/acme/app-fork` or `https://github.com/acme`.
 - **Entries** must be plain https URLs: no user or password, no query, no fragment, no encoded or dotted path segment. At most 32. `get` and `list` show them in canonical form.
-- **A restricted credential is given only to a caller that names its destination,** and only when the destination is covered. So it does **not** resolve in a `$cred:<name>` header, as a provider key, or in a `Bash` / `Bashbox` environment: none of those name a destination. Such a use fails as an unresolved credential would, and a provider falls back to the operator's key as it does for any credential it cannot read.
+- **A restricted credential is given only to a caller that names its destination,** and only when the destination is covered. These name one:
+  - an MCP server's `$cred:<name>` or `$ghapp:<name>` header: the server's URL;
+  - a hook's webhook header: the hook's callback URL;
+  - a remote memory backend's or document source's `api_key_env: "$cred:<name>"`: its `base_url` (saving such a definition checks this too);
+  - a git source for an ephemeral volume: the repository's URL.
+
+  A provider key and a `Bash` / `Bashbox` environment name no destination, and a restricted credential does **not** resolve there. Such a use fails as an unresolved credential would, and a provider falls back to the operator's key as it does for any credential it cannot read.
+- **A request carrying a restricted credential follows no redirect.** The request's URL was checked; a redirect is the server choosing another one, and an HTTP client forwards most headers to it (a custom header such as `X-API-Key` to any host). So the redirect is refused and the call fails. An unrestricted credential follows redirects as before.
 - **Rotation keeps the list.** Creating the credential again without `allowed_urls` keeps the list it has; sending a list replaces it. To remove a restriction, delete the credential and create it again.
 - **The list cannot be changed apart from the value.** It is stored in the clear, so a listing can show it, and it is part of what the value is sealed with. A row whose list was edited, added or removed outside the tool no longer opens.
 
-Nothing in this release sends a restricted credential anywhere yet: the first consumer that names a destination is the git source for ephemeral volumes. Until then the field is useful for `[]`, and for preparing credentials.
+A `$ghapp:<name>` App config can be restricted the same way: the minted token then goes only to a covered URL. For a git source the token is also narrowed to the one repository, read-only (`docs/CONFIGURATION.md` §9d.2.1).
 
 ### A user name — `username`
 

@@ -17,6 +17,7 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/credential"
 	"github.com/denn-gubsky/loomcycle/internal/dynvol"
 	"github.com/denn-gubsky/loomcycle/internal/gitsource"
+	"github.com/denn-gubsky/loomcycle/internal/netguard"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
 )
 
@@ -110,7 +111,9 @@ func GitCredentialResolver(
 		}
 		kind, name := m[1], m[2]
 		ri := tools.RunIdentity(ctx)
-		res, found, err := engine.ResolveFor(ctx, ri.TenantID, tools.AgentName(ctx), ri.UserID, name, targetURL)
+		// The fetch's own transport follows no redirect at all (gitsource), so
+		// the pin a restricted credential asks for is already kept.
+		res, found, err := engine.ResolveFor(netguard.WithPinnable(ctx), ri.TenantID, tools.AgentName(ctx), ri.UserID, name, targetURL)
 		switch {
 		case errors.Is(err, credential.ErrURLNotAllowed):
 			return "", "", ErrGitCredentialURLNotAllowed
