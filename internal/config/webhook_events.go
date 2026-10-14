@@ -41,17 +41,19 @@ type WebhookProvider struct {
 	canonical func(string) string
 }
 
-// Body shapes shared by GitHub and Gitea, whose payloads Gitea models on
-// GitHub's. Two events whose shapes are equal cannot be told apart by them
-// (create and delete); only listed events start runs, so the exposure is one
-// listed event passing as another listed event.
+// A shape is a set of paths a body must hold, so it can tell an event apart
+// only from events whose bodies lack one of them: a body of ANY other event
+// — listed or not — that holds them all passes as this one. A preset
+// therefore gives a shape only to an event no other event's body is known to
+// hold. GitHub's issues is not among them (an issue_comment body holds every
+// path an issues body does), nor create and delete (the same paths), nor, on
+// Gitea, pull_request (its review events send the same body). Such an event
+// can still be listed, with a shape of the author's own in event_shapes.
+//
+// Paths shared by GitHub and Gitea, whose payloads Gitea models on GitHub's.
 var githubLikeShapes = map[string][]string{
 	"push":          {"$.ref", "$.before", "$.after", "$.repository.id"},
-	"pull_request":  {"$.action", "$.number", "$.pull_request.head.sha", "$.repository.id"},
-	"issues":        {"$.action", "$.issue.number", "$.repository.id"},
 	"issue_comment": {"$.action", "$.issue.number", "$.comment.id", "$.repository.id"},
-	"create":        {"$.ref", "$.ref_type", "$.repository.id"},
-	"delete":        {"$.ref", "$.ref_type", "$.repository.id"},
 	"release":       {"$.action", "$.release.id", "$.repository.id"},
 }
 
@@ -61,6 +63,7 @@ var webhookProviders = map[string]WebhookProvider{
 		EventHeader: "X-GitHub-Event", DeliveryIDHeader: "X-GitHub-Delivery",
 		PingEvent: "ping",
 		Shapes: mergeShapes(githubLikeShapes, map[string][]string{
+			"pull_request":                {"$.action", "$.number", "$.pull_request.head.sha", "$.repository.id"},
 			"pull_request_review":         {"$.action", "$.review.id", "$.pull_request.number", "$.repository.id"},
 			"pull_request_review_comment": {"$.action", "$.comment.id", "$.pull_request.number", "$.repository.id"},
 			"workflow_run":                {"$.action", "$.workflow_run.id", "$.repository.id"},
@@ -72,7 +75,9 @@ var webhookProviders = map[string]WebhookProvider{
 		Shapes: githubLikeShapes,
 	},
 	"gitlab": {
-		// A shared token sent in the clear inside TLS, not a signature.
+		// A shared token sent in the clear inside TLS, not a signature: the
+		// body is not signed, so these shapes check that a delivery is what
+		// its header says, and protect nothing from whoever holds the token.
 		AuthKind: "bearer", SignatureHeader: "X-Gitlab-Token",
 		EventHeader: "X-Gitlab-Event", DeliveryIDHeader: "X-Gitlab-Event-UUID",
 		Shapes: map[string][]string{

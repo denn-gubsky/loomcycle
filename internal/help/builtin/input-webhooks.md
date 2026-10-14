@@ -225,13 +225,13 @@ webhooks:
 - **Shapes.** The event header is not signed: whoever holds one signed body
   can send it again under any event name. So a listed event counts only
   when the signed body has that event's shape — the JSONPaths its body
-  always holds; a push body sent as `pull_request` is refused. `github` and
-  `gitea` have shapes for `push`, `pull_request`, `issues`,
-  `issue_comment`, `create`, `delete` and `release` (`github` also
-  `pull_request_review`, `pull_request_review_comment`, `workflow_run`);
-  `gitlab` for `push`, `tag_push`, `merge_request`, `note`, `issue`,
-  `pipeline`. Any other event needs its own, and every listed event must
-  have one or the definition is refused:
+  always holds; a push body sent as `pull_request` is refused. `github` has
+  shapes for `push`, `pull_request`, `issue_comment`, `release`,
+  `pull_request_review`, `pull_request_review_comment` and `workflow_run`;
+  `gitea` for `push`, `issue_comment` and `release`; `gitlab` for `push`,
+  `tag_push`, `merge_request`, `note`, `issue` and `pipeline`. Any other
+  event needs its own, and every listed event must have one or the
+  definition is refused:
 
   ```yaml
   events: [push, star]
@@ -239,10 +239,15 @@ webhooks:
     star: ["$.action", "$.starred_at", "$.repository.id"]
   ```
 
-  The limit: two events whose shapes are the same (`create` and `delete`)
-  cannot be told apart. Only listed events start anything, so the most that
-  can happen is one listed event passing as another listed one. For GitLab,
-  which signs nothing, the token is the only check.
+  **The limit.** A shape lets through any signed body that holds its paths,
+  whatever event it came from — listed or not. That is why the presets give
+  none to GitHub's `issues` (an `issue_comment` body holds every path an
+  `issues` body does) or to `create` and `delete` (the same paths), nor to
+  Gitea's `pull_request` (its review events send the same body). Before
+  you give one of your own, check that no other event's body holds all its
+  paths: a captured signed body of that event, re-sent under your event's
+  name, would pass. For GitLab, which signs nothing, the token is the only
+  check and a shape only confirms the body is what the header says.
 - **Without a provider**, set `event_header` and give every event a shape.
 - **Without `events`**, every delivery is handled exactly as before — a
   GitHub ping included.

@@ -65,7 +65,7 @@ func TestWebhookDefTool_APresetIsNotWrittenIntoTheDefinition(t *testing.T) {
 }
 
 // A fork merges event_shapes key by key, and an empty list removes one. A
-// fork of a static definition does not change the static one.
+// definition built from a static one does not change the static one.
 func TestWebhookDefTool_AForkMergesEventShapes(t *testing.T) {
 	tool, ctx, cleanup := webhookDefFixture(t)
 	defer cleanup()
@@ -96,6 +96,11 @@ func TestWebhookDefTool_AForkMergesEventShapes(t *testing.T) {
 	}
 	if want := map[string][]string{"star": {"$.action"}, "fork": {"$.forkee.id"}}; !reflect.DeepEqual(w.EventShapes, want) {
 		t.Errorf("after the fork: %v, want %v", w.EventShapes, want)
+	}
+	// A definition built straight from the static entry (no stored parent)
+	// merges into a copy: the static entry itself is unchanged.
+	if _, err := tool.buildDefinition("gh-push", "", json.RawMessage(`{"event_shapes":{"star":[],"fork":["$.forkee.id"]}}`)); err != nil {
+		t.Fatal(err)
 	}
 	if want := map[string][]string{"star": {"$.action"}}; !reflect.DeepEqual(tool.Cfg.Webhooks["gh-push"].EventShapes, want) {
 		t.Errorf("the static definition changed: %v", tool.Cfg.Webhooks["gh-push"].EventShapes)
