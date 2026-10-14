@@ -2,8 +2,8 @@
 // DELETE /v1/sessions/{session_id}?cascade=children.
 import { describe, expect, it } from "vitest";
 
-import { LoomcycleError } from "../src/errors.js";
-import { errorResponse, jsonResponse, makeClient } from "./helpers.js";
+import { InsufficientScopeError, LoomcycleError } from "../src/errors.js";
+import { jsonResponse, makeClient } from "./helpers.js";
 
 const deletion = {
   run_id: "r_1",
@@ -56,11 +56,14 @@ describe("run tree delete", () => {
     expect((err as LoomcycleError).bodyText).toContain("r_2");
   });
 
-  it("a token without runs:delete raises with status 403", async () => {
-    const { client } = makeClient([errorResponse(403, "insufficient scope")]);
+  it("a token without runs:delete raises InsufficientScopeError naming the scope", async () => {
+    const { client } = makeClient([
+      jsonResponse({ code: "insufficient_scope", error: "insufficient scope", required_scope: "runs:delete" }, 403),
+    ]);
     const err = await client.deleteRunTree("r_1").catch((e: unknown) => e);
-    expect(err).toBeInstanceOf(LoomcycleError);
-    expect((err as LoomcycleError).status).toBe(403);
+    expect(err).toBeInstanceOf(InsufficientScopeError);
+    expect((err as InsufficientScopeError).status).toBe(403);
+    expect((err as InsufficientScopeError).requiredScope).toBe("runs:delete");
   });
 
   it("deleteSession sends DELETE /v1/sessions/{id}?cascade=children", async () => {

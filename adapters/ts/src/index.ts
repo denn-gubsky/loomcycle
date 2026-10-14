@@ -119,7 +119,8 @@
  *     LoomcycleError, AgentNotFoundError, SessionNotFoundError,
  *     SessionBusyError, AgentIDInUseError, BackpressureError,
  *     RateLimitedError (subclass of BackpressureError),
- *     PerUserQuotaExhaustedError, AuthError, UnavailableError,
+ *     PerUserQuotaExhaustedError, AuthError, InsufficientScopeError (a 403
+ *     naming the scope the token lacks), UnavailableError,
  *     InvalidArgumentError,
  *     PauseNotConfiguredError (subclass of UnavailableError),
  *     AlreadyPausingError, NotPausedError, SnapshotNotFoundError,
@@ -497,6 +498,7 @@ export {
   AuthError,
   BackpressureError,
   NotFoundError,
+  InsufficientScopeError,
   InvalidArgumentError,
   ChannelCursorRegressionError,
   LoomcycleError,

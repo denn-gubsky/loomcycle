@@ -17,6 +17,7 @@ import {
   AuthError,
   BackpressureError,
   ChannelCursorRegressionError,
+  InsufficientScopeError,
   InvalidArgumentError,
   LoomcycleError,
   NotFoundError,
@@ -231,6 +232,9 @@ export async function deleteJSON<T>(
  *
  *   400         → InvalidArgumentError
  *   401         → AuthError
+ *   403 + code "insufficient_scope" (or an older server's
+ *         WWW-Authenticate scope hint) → InsufficientScopeError
+ *   403 (other) → LoomcycleError (base)
  *   404 + "snapshot"   → SnapshotNotFoundError ────────┐
  *   404 + "session"    → SessionNotFoundError          │  All extend
  *   404 + "agent"      → AgentNotFoundError            │  callers can
@@ -290,6 +294,19 @@ export async function raiseFromResponse(resp: Response): Promise<never> {
       throw new InvalidArgumentError(msg, opts);
     case 401:
       throw new AuthError(msg, opts);
+    case 403: {
+      // A missing scope says so in its code. A server from before the JSON
+      // body sent "insufficient scope" as plain text; the scope hint in
+      // WWW-Authenticate, which no other 403 carries, still identifies it.
+      const hinted = scopeFromWWWAuthenticate(resp);
+      if (opts.code === "insufficient_scope" || (opts.code === undefined && hinted !== undefined)) {
+        throw new InsufficientScopeError(msg, {
+          ...opts,
+          requiredScope: stringField(bodyObject(bodyText)?.required_scope) ?? hinted,
+        });
+      }
+      throw new LoomcycleError(msg, opts);
+    }
     case 404:
       // Priority: most-specific keyword wins.
       // - "snapshot" → SnapshotNotFoundError
@@ -403,6 +420,14 @@ function retryAfterMs(resp: Response): number | undefined {
   if (!raw) return undefined;
   const ms = Number.parseInt(raw, 10) * 1000;
   return Number.isFinite(ms) ? ms : undefined;
+}
+
+/** scopeFromWWWAuthenticate reads the scope from the RFC 6750 hint the server
+ *  sends with a scope refusal (`Bearer scope="runs:create"`); undefined when
+ *  the header is absent or names no scope. */
+function scopeFromWWWAuthenticate(resp: Response): string | undefined {
+  const m = /\bscope="([^"]*)"/.exec(resp.headers.get("www-authenticate") ?? "");
+  return stringField(m?.[1]);
 }
 
 /** bodyCode returns the string `code` of a JSON error body, or undefined when
