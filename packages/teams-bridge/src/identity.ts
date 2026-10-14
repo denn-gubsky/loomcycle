@@ -32,10 +32,17 @@ export function subjectFor(aadObjectId: string): string | undefined {
 export function identify(activity: ActivityIdentityFields, allowedTenants: ReadonlySet<string>): Identified {
   const conversationId = activity.conversation?.id;
   if (!conversationId) return { ok: false, reason: "no_conversation" };
-  const tenantId = (activity.conversation?.tenantId ?? activity.channelData?.tenant?.id ?? "").toLowerCase();
-  if (!tenantId) return { ok: false, reason: "no_tenant" };
+  // Every tenant id the activity carries must be allowed, not just the first
+  // one found: in a cross-organisation (shared) channel the conversation's
+  // tenant can be the host's while the sender's is another. One allowed id
+  // must never vouch for a disallowed one.
+  const ids = [activity.conversation?.tenantId, activity.channelData?.tenant?.id]
+    .map((t) => t?.trim().toLowerCase())
+    .filter((t): t is string => !!t);
+  if (ids.length === 0) return { ok: false, reason: "no_tenant" };
   // The fence comes before anything else touches loomcycle.
-  if (!allowedTenants.has(tenantId)) return { ok: false, reason: "tenant_not_allowed" };
+  if (!ids.every((t) => allowedTenants.has(t))) return { ok: false, reason: "tenant_not_allowed" };
+  const tenantId = ids[0];
   const subject = subjectFor(activity.from?.aadObjectId ?? "");
   if (!subject) return { ok: false, reason: "no_user" };
   const t = activity.conversation?.conversationType;

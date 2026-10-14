@@ -29,6 +29,16 @@ describe("identity", () => {
     expect(fromChannelData).toMatchObject({ ok: true, tenantId: T, scope: "personal" });
   });
 
+  it("refuses an activity whose tenant ids disagree, even when one is allowed", () => {
+    const other = "22222222-2222-2222-2222-222222222222";
+    expect(
+      identify({ from: { aadObjectId: U }, conversation: { id: "c", tenantId: T }, channelData: { tenant: { id: other } } }, new Set([T])),
+    ).toEqual({ ok: false, reason: "tenant_not_allowed" });
+    expect(
+      identify({ from: { aadObjectId: U }, conversation: { id: "c", tenantId: other }, channelData: { tenant: { id: T } } }, new Set([T])),
+    ).toEqual({ ok: false, reason: "tenant_not_allowed" });
+  });
+
   it("refuses a missing user or a tenant outside the allowlist", () => {
     expect(identify({ conversation: { id: "c", tenantId: T } }, new Set([T]))).toEqual({ ok: false, reason: "no_user" });
     expect(identify({ from: { aadObjectId: U }, conversation: { id: "c", tenantId: "x" } }, new Set([T]))).toEqual({
