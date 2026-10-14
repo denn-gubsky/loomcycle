@@ -55,6 +55,21 @@ type Runner interface {
 	RunOnce(ctx context.Context, in RunInput, cb RunCallbacks) error
 }
 
+// The values of RunInput.Admission (wire field `admission`).
+const (
+	// AdmissionWait queues a run that cannot start at once. The default.
+	AdmissionWait = "wait"
+	// AdmissionReject refuses it instead: ErrPerUserQuotaExhausted over the
+	// user's cap, ErrBackpressure when no run slot is free.
+	AdmissionReject = "reject"
+)
+
+// ValidAdmission reports whether v is an accepted `admission` value ("" is
+// the default, wait).
+func ValidAdmission(v string) bool {
+	return v == "" || v == AdmissionWait || v == AdmissionReject
+}
+
 // Sentinel errors exported for wire-layer error-code mapping.
 var (
 	// ErrUnknownAgent — agent name not in the operator yaml.
@@ -266,6 +281,11 @@ type RunInput struct {
 	// detached run can carry.
 	MaxWallSeconds int
 
+	// Admission is what the run does when it cannot start at once (RFC EI
+	// P3): "" or AdmissionWait queues it (status "queued") until a slot frees;
+	// AdmissionReject refuses it at once, as before the queue existed.
+	Admission string
+
 	// DeliveryAltKey is an optional second durable dedup key, persisted to
 	// runs.delivery_alt_key with the same duplicate-refusal semantics as
 	// IdempotencyKey. Set by the webhook spawn path when a delivery has two
@@ -439,16 +459,23 @@ type RunInput struct {
 // OnRegistered fires exactly once after the cancel-registry entry
 // is in place but before the loop starts. Both the SSE
 // "session"/"agent" frames and the gRPC equivalent are emitted from
-// here.
+// here. A run that has to wait for a run slot (RFC EI P3) is registered
+// when it starts to wait, in status queued; its `queued` and `admitted`
+// events follow through OnEvent.
+//
+// OnQueued, when set, fires just before OnRegistered for a run that is
+// registered queued, so a caller that answers with a handle at
+// registration can report the run as queued rather than running.
 //
 // OnEvent fires once per provider event, post-store-write. Wire
 // surfaces forward to their stream/socket. Returning quickly is
 // expected — the loop blocks on this callback synchronously.
 //
-// Both callbacks may be nil; the runner tolerates that for any
+// Every callback may be nil; the runner tolerates that for any
 // fire-and-forget surface that doesn't need them.
 type RunCallbacks struct {
 	OnRegistered func(agentID, runID, sessionID, parentAgentID string)
+	OnQueued     func()
 	OnEvent      func(providers.Event)
 }
 

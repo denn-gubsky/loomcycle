@@ -245,6 +245,18 @@ export function formatLine(row: TranscriptEvent): FormattedLine {
       return { key, ts, kind, cls: "tl-user", payload: `❯ ${ev.text ?? ""}` };
     case "awaiting_input":
       return { key, ts, kind, cls: "tl-meta", payload: "idle — waiting for operator input" };
+    case "queued": {
+      // The run was accepted but waits for a run slot: its user's cap of runs
+      // is in use, or every slot of the runtime is taken.
+      const a = ev.admission;
+      const pos = a?.position ? `, position ${a.position}` : "";
+      const why = a?.reason === "user_cap" ? "queued — waiting on your run cap" : "queued — waiting for a run slot";
+      return { key, ts, kind, cls: "tl-meta", payload: `${why}${pos}` };
+    }
+    case "admitted": {
+      const ms = ev.admission?.wait_ms ?? 0;
+      return { key, ts, kind, cls: "tl-meta", payload: `admitted after ${(ms / 1000).toFixed(1)} s` };
+    }
     case "subagent_hold": {
       // A sub-agent this run started is held for a verdict: this run waits on
       // it, and the verdict goes to the child's run.

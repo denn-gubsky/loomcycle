@@ -211,6 +211,20 @@ async def test_max_wall_seconds_lands_on_the_run_request():
 
 
 @pytest.mark.asyncio
+async def test_admission_lands_on_the_run_request():
+    stub = _FakeStub()
+    client = _make_client_with_stub(stub)
+    async for _ in client.run_streaming(agent="judge", segments=[], admission="reject"):
+        pass
+    assert stub.last_run_req.admission == "reject"
+
+    from loomcycle.client import _run_request_from_dict
+
+    assert _run_request_from_dict({"agent": "judge", "admission": "wait"}).admission == "wait"
+    assert _run_request_from_dict({"agent": "judge"}).admission == ""
+
+
+@pytest.mark.asyncio
 async def test_retention_lands_on_the_run_request():
     stub = _FakeStub()
     client = _make_client_with_stub(stub)

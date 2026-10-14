@@ -82,3 +82,23 @@ describe("team_decision rows", () => {
     expect(l.full).toContain('"choice": "billing"');
   });
 });
+
+describe("admission rows", () => {
+  const adm = (type: string, admission: { reason?: string; position?: number; wait_ms?: number }) =>
+    formatLine({ seq: 1, run_id: "run-1", ts_ns: 0, type, event: { type, admission } });
+
+  it("says a run over its user's cap waits on that cap, with its place", () => {
+    expect(adm("queued", { reason: "user_cap", position: 2 }).payload)
+      .toBe("queued — waiting on your run cap, position 2");
+  });
+
+  it("says a run with every slot taken waits for a slot, with its place", () => {
+    const l = adm("queued", { reason: "global_cap", position: 5 });
+    expect(l.payload).toBe("queued — waiting for a run slot, position 5");
+    expect(l.cls).toBe("tl-meta");
+  });
+
+  it("says how long an admitted run waited", () => {
+    expect(adm("admitted", { wait_ms: 4200 }).payload).toBe("admitted after 4.2 s");
+  });
+});

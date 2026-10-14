@@ -1984,6 +1984,10 @@ class LoomcycleClient:
         idempotency_key: str = "",
         max_wall_seconds: int = 0,
         retention: str = "",
+        # What the run does when it cannot start at once: "wait" (the default,
+        # also "") is accepted as status "queued" — the stream yields a
+        # "queued" event, then "admitted" — and "reject" refuses it at once.
+        admission: str = "",
         user_credentials: Optional[Mapping[str, str]] = None,
         sampling: Optional[Mapping[str, Any]] = None,
         tool_choice: Optional[Mapping[str, Any]] = None,
@@ -2073,6 +2077,7 @@ class LoomcycleClient:
             idempotency_key=idempotency_key,
             max_wall_seconds=max_wall_seconds,
             retention=retention,
+            admission=admission,
             user_credentials=user_credentials,
             sampling=sampling,
             tool_choice=tool_choice,
@@ -2461,6 +2466,11 @@ def _agent_to_dict(a: pb.Agent) -> Mapping[str, Any]:
         # awaited_on names the channel or interruption kind.
         "awaited_state": a.awaited_state,
         "awaited_on": a.awaited_on,
+        # Where a "queued" run stands now: 1 is the next to start; the reason
+        # is "user_cap" or "global_cap". get_agent / get_run only, from the
+        # replica holding the run's wait; 0 / "" on every other run.
+        "queue_position": a.queue_position,
+        "queue_reason": a.queue_reason,
         "replica_id": a.replica_id,
         # The run's lineage, or None when it carried none (see
         # _parent_context_to_dict for why None rather than an empty dict).
@@ -2614,6 +2624,7 @@ def _build_run_request(
     idempotency_key: str = "",
     max_wall_seconds: int = 0,
     retention: str = "",
+    admission: str = "",
     user_credentials: Optional[Mapping[str, str]] = None,
     sampling: Optional[Mapping[str, Any]] = None,
     tool_choice: Optional[Mapping[str, Any]] = None,
@@ -2682,6 +2693,7 @@ def _build_run_request(
         idempotency_key=idempotency_key,
         max_wall_seconds=max_wall_seconds,
         retention=retention,
+        admission=admission,
         # Canonical JSON bytes: the value is map[string]any by definition, so
         # there is no typed message to map it onto.
         metadata=json.dumps(metadata).encode() if metadata is not None else b"",
@@ -2731,6 +2743,7 @@ def _run_request_from_dict(spawn: Mapping[str, Any]) -> "pb.RunRequest":
         idempotency_key=spawn.get("idempotency_key", ""),
         max_wall_seconds=spawn.get("max_wall_seconds", 0),
         retention=spawn.get("retention", ""),
+        admission=spawn.get("admission", ""),
         tools=spawn.get("tools"),
         allowed_hosts=spawn.get("allowed_hosts"),
         web_search_filter=spawn.get("web_search_filter", ""),

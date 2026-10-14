@@ -60,7 +60,11 @@ export class InteractiveSession {
       } else if (ev.type === "session" && ev.session_id) {
         this.sessionId = ev.session_id;
       }
-      this.awaitingInput = ev.type === "awaiting_input";
+      // A queued/admitted frame reports the run's admission, not activity in
+      // its conversation, so it leaves awaitingInput as it was.
+      if (ev.type !== "queued" && ev.type !== "admitted") {
+        this.awaitingInput = ev.type === "awaiting_input";
+      }
       yield ev;
     }
   }

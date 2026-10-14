@@ -199,7 +199,8 @@ export interface Agent {
   user_id: string;
   // "configured" = created but not started (a draft; see createConfiguredRun).
   // "rejected" = a reviewer turned the held answer down without feedback.
-  status: "configured" | "running" | "completed" | "failed" | "cancelled" | "rejected";
+  // "queued" = accepted, waiting for a run slot (queue_position / queue_reason).
+  status: "configured" | "queued" | "running" | "completed" | "failed" | "cancelled" | "rejected";
   started_at: string;
   completed_at: string | null;
   stop_reason: string | null;
@@ -234,6 +235,11 @@ export interface Agent {
   // ids (", "-separated, bounded with ", +N more").
   awaited_state?: "channel" | "interrupted" | "review" | "input" | "children" | "";
   awaited_on?: string;
+  // Where a "queued" run stands now: 1 is the next to start; the reason is
+  // its user's run cap ("user_cap") or every slot taken ("global_cap").
+  // Single-run read only, from the replica holding the run's wait.
+  queue_position?: number;
+  queue_reason?: "user_cap" | "global_cap";
   // draft is a CONFIGURED run's request as it will start, in the server's
   // snake_case wire keys — what updateConfiguredRun edits. Present only while
   // the run is configured; it never holds a secret.
@@ -309,6 +315,12 @@ export interface LimitEventInfo {
   message?: string;
 }
 
+export interface AdmissionEventInfo {
+  reason?: "user_cap" | "global_cap" | string; // on queued: the user's cap, or every slot taken
+  position?: number; // on queued: place when queued, 1 = next to start
+  wait_ms?: number; // on admitted: how long the run waited
+}
+
 // EventPayload mirrors providers.Event on the server side. Carried
 // inside `TranscriptEvent.event` (the wire shape from
 // /v1/sessions/{id}/transcript wraps each row with seq/run_id/ts_ns
@@ -370,6 +382,10 @@ export interface EventPayload {
   // "limit" sidecar (RFC AW) — a per-scope token-budget crossing. Present on
   // both the live SSE `limit` frame and the persisted `limit` transcript row.
   limit?: LimitEventInfo;
+  // "queued" / "admitted" sidecar — the run waits for a run slot (why, and its
+  // place when queued) / got one (how long it waited). Mirrors
+  // providers.AdmissionInfo.
+  admission?: AdmissionEventInfo;
   // "hook_decision" sidecar — what one hook did to a call, to the run, or to a
   // channel message.
   hook_decision?: HookDecisionEventInfo;

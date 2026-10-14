@@ -96,6 +96,20 @@ describe("InteractiveSession", () => {
     expect(fetchMock.mock.calls[1]![0]).toBe("http://test-loomcycle:8787/v1/runs/r_abc/input");
   });
 
+  it("leaves awaitingInput as it was on a queued or admitted frame", async () => {
+    const { client } = makeClient([
+      sseResponse([
+        'event: awaiting_input\ndata: {"type":"awaiting_input"}\n\n',
+        'event: queued\ndata: {"type":"queued","admission":{"reason":"global_cap","position":1}}\n\n',
+        'event: admitted\ndata: {"type":"admitted","admission":{"wait_ms":10}}\n\n',
+      ]),
+    ]);
+    const session = client.interactiveSession({ agent: "chat", segments: [] });
+    const seen: boolean[] = [];
+    for await (const _ of session.events()) seen.push(session.awaitingInput);
+    expect(seen).toEqual([true, true, true]);
+  });
+
   it("send() throws before the run_id is known", async () => {
     const { client } = makeClient([sseResponse([])]);
     const session = client.interactiveSession({ agent: "chat", segments: [] });

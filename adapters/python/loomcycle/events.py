@@ -184,6 +184,22 @@ class LimitInfo:
 
 
 @dataclass(frozen=True)
+class AdmissionInfo:
+    """Structured payload on ``queued`` and ``admitted`` events.
+
+    ``queued``: the run was accepted but waits for a run slot — ``reason`` says
+    why (``"user_cap"``: its user already has its cap of runs active;
+    ``"global_cap"``: every run slot is taken) and ``position`` its place when
+    queued, 1 being the next to start (for ``user_cap`` it counts only the same
+    user's waiting runs). ``admitted``: it got its slot; ``wait_ms`` is how long
+    it waited. Mirrors ``providers.AdmissionInfo`` on the Go side."""
+
+    reason: str = ""  # "user_cap" | "global_cap" (on queued)
+    position: int = 0  # place when queued, 1 = next to start (on queued)
+    wait_ms: int = 0  # how long the run waited (on admitted)
+
+
+@dataclass(frozen=True)
 class CapabilityInertInfo:
     """Structured payload on ``capability_inert`` events.
 
@@ -346,6 +362,7 @@ class AgentEvent:
     team_decision: Optional[TeamDecision] = None
     user_input: Optional[UserInput] = None
     limit: Optional[LimitInfo] = None
+    admission: Optional[AdmissionInfo] = None
     capability_inert: Optional[CapabilityInertInfo] = None
     override: Optional[OverrideInfo] = None
     error_info: Optional[ErrorInfo] = None
@@ -471,6 +488,13 @@ class AgentEvent:
                 limit=ev.limit.limit,
                 message=ev.limit.message,
             )
+        adm: Optional[AdmissionInfo] = None
+        if ev.HasField("admission"):
+            adm = AdmissionInfo(
+                reason=ev.admission.reason,
+                position=ev.admission.position,
+                wait_ms=ev.admission.wait_ms,
+            )
         ci: Optional[CapabilityInertInfo] = None
         if ev.HasField("capability_inert"):
             ci = CapabilityInertInfo(
@@ -505,6 +529,7 @@ class AgentEvent:
             team_decision=td,
             user_input=ui,
             limit=li,
+            admission=adm,
             capability_inert=ci,
             override=ov,
             error_info=ei,

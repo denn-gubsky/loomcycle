@@ -272,6 +272,33 @@ describe("runStreaming", () => {
     expect("max_wall_seconds" in JSON.parse(fetchMock.mock.calls[1]![1]!.body as string)).toBe(false);
   });
 
+  it("forwards admission when set and omits it otherwise", async () => {
+    const { client, fetchMock } = makeClient([
+      sseResponse(['event: done\ndata: {"type":"done"}\n\n']),
+      sseResponse(['event: done\ndata: {"type":"done"}\n\n']),
+    ]);
+    for await (const _ of client.runStreaming({ agent: "judge", segments: [], admission: "reject" })) {}
+    expect(JSON.parse(fetchMock.mock.calls[0]![1]!.body as string).admission).toBe("reject");
+    for await (const _ of client.runStreaming({ agent: "judge", segments: [] })) {}
+    expect("admission" in JSON.parse(fetchMock.mock.calls[1]![1]!.body as string)).toBe(false);
+  });
+
+  it("yields queued / admitted frames with their admission payload", async () => {
+    const { client } = makeClient([
+      sseResponse([
+        'event: queued\ndata: {"type":"queued","admission":{"reason":"user_cap","position":2}}\n\n',
+        'event: admitted\ndata: {"type":"admitted","admission":{"wait_ms":1500}}\n\n',
+        'event: done\ndata: {"type":"done"}\n\n',
+      ]),
+    ]);
+    const events = [];
+    for await (const ev of client.runStreaming({ agent: "judge", segments: [] })) events.push(ev);
+    expect(events[0]!.type).toBe("queued");
+    expect(events[0]!.admission).toEqual({ reason: "user_cap", position: 2 });
+    expect(events[1]!.type).toBe("admitted");
+    expect(events[1]!.admission?.wait_ms).toBe(1500);
+  });
+
   it("omits parent_context when undefined (back-compat)", async () => {
     const { client, fetchMock } = makeClient([
       sseResponse(['event: done\ndata: {"type":"done"}\n\n']),

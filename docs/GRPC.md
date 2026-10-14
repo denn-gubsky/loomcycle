@@ -127,6 +127,18 @@ the head of the stream rather than parsing JSON repeatedly.
 both frames in `_drive_stream` and surfaces them as a `RunHandle` to
 the caller's `on_handle` callback.
 
+A run that cannot start at once (its user already has its cap of runs
+active, or every run slot is taken) is accepted with status `queued`
+and, after the two registration frames, the stream carries a `queued`
+frame — `admission.reason` (`user_cap` | `global_cap`) and
+`admission.position` (1 = next to start) — then an `admitted` frame
+(`admission.wait_ms`) when it gets a slot. A run can report `queued`
+twice: waiting on its user's cap, then for a slot. `RunRequest.admission:
+"reject"` refuses such a run at once with `RESOURCE_EXHAUSTED` instead;
+any value other than `wait`, `reject` or empty is `INVALID_ARGUMENT`.
+`GetAgent` / `GetRun` report a queued run's current `queue_position` and
+`queue_reason`.
+
 Real provider events follow: `text`, `tool_use`, `tool_result`,
 `usage`, `retry`, `done`, `error`. Stream completion comes via either
 a `done` frame followed by a clean half-close, or a gRPC status error

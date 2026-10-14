@@ -80,6 +80,9 @@ func TestTranslateEvent_PerEventTypeMapping(t *testing.T) {
 		providers.EventUsage,
 		providers.EventDone,
 		providers.EventError,
+		// A queued run stays SUBMITTED until its EventStarted.
+		providers.EventQueued,
+		providers.EventAdmitted,
 	} {
 		t.Run(string(et)+" → no event", func(t *testing.T) {
 			if out := translateEvent(providers.Event{Type: et}, info); len(out) != 0 {

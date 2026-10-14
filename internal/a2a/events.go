@@ -59,6 +59,13 @@ func translateEvent(ev providers.Event, info a2asdk.TaskInfoProvider) []a2asdk.E
 		// later slice that threads a typed FilePart through the loop.
 		return nil
 
+	case providers.EventQueued, providers.EventAdmitted:
+		// A run waiting for a slot is still what A2A calls SUBMITTED, the
+		// state the task already has; the EventStarted that follows the
+		// admission is what moves it to WORKING. A status event here would
+		// claim WORKING for a run that has not started.
+		return nil
+
 	default:
 		// EventToolCall, EventUsage, EventDone, EventError and any
 		// future typed event have no standalone A2A artifact

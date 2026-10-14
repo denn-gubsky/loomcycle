@@ -268,6 +268,7 @@ function runBody(opts: RunOptions): Record<string, unknown> {
   if (opts.parentContext !== undefined) body.parent_context = opts.parentContext;
   if (opts.idempotencyKey !== undefined) body.idempotency_key = opts.idempotencyKey;
   if (opts.maxWallSeconds !== undefined) body.max_wall_seconds = opts.maxWallSeconds;
+  if (opts.admission !== undefined) body.admission = opts.admission;
   if (opts.retention !== undefined) body.retention = opts.retention;
   if (opts.metadata !== undefined) body.metadata = opts.metadata;
   if (opts.runTimeoutSeconds !== undefined) body.run_timeout_seconds = opts.runTimeoutSeconds;
