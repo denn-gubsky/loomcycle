@@ -317,9 +317,8 @@ func (e *Engine) find(ctx context.Context, tenantID, agentName, userID, name str
 			}
 			return store.CredentialDefRow{}, false, err
 		}
-		if e.expired(row) {
-			return row, true, fmt.Errorf("%w (%q in %s scope, expired %s); create it again with the same name to rotate it",
-				ErrExpired, name, row.Scope, row.ExpiresAt.UTC().Format(time.RFC3339))
+		if err := e.expiredErr(row, name); err != nil {
+			return row, true, err
 		}
 		return row, true, nil
 	}
@@ -331,6 +330,16 @@ func (e *Engine) find(ctx context.Context, tenantID, agentName, userID, name str
 // not handed out at that time.
 func (e *Engine) expired(row store.CredentialDefRow) bool {
 	return row.ExpiresAt != nil && !e.now().Before(*row.ExpiresAt)
+}
+
+// expiredErr is ErrExpired for an expired row, naming the credential, its
+// scope and when it expired (never its value); nil otherwise.
+func (e *Engine) expiredErr(row store.CredentialDefRow, name string) error {
+	if !e.expired(row) {
+		return nil
+	}
+	return fmt.Errorf("%w (%q in %s scope, expired %s); create it again with the same name to rotate it",
+		ErrExpired, name, row.Scope, row.ExpiresAt.UTC().Format(time.RFC3339))
 }
 
 // ResolveToCompare returns the tenant-level credential name of tenantID for a
@@ -356,6 +365,11 @@ func (e *Engine) ResolveToCompare(ctx context.Context, tenantID, name string) (s
 		}
 		return "", false, err
 	}
+	// An expired verification secret verifies nothing: a webhook whose
+	// secret lapsed refuses its deliveries rather than accepting them.
+	if err := e.expiredErr(row, name); err != nil {
+		return "", false, err
+	}
 	backend, err := e.backendFor(row.Backend)
 	if err != nil {
 		return "", false, err
@@ -374,11 +388,16 @@ func (e *Engine) HasToCompare(ctx context.Context, tenantID, name string) (bool,
 	if !e.CanResolve() {
 		return false, nil
 	}
-	if _, err := e.store.CredentialDefGet(ctx, tenantID, "tenant", "", name); err != nil {
+	row, err := e.store.CredentialDefGet(ctx, tenantID, "tenant", "", name)
+	if err != nil {
 		var nf *store.ErrNotFound
 		if errors.As(err, &nf) {
 			return false, nil
 		}
+		return false, err
+	}
+	// Held, but ResolveToCompare would refuse it.
+	if err := e.expiredErr(row, name); err != nil {
 		return false, err
 	}
 	return true, nil

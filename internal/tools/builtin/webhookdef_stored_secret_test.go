@@ -6,10 +6,12 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/denn-gubsky/loomcycle/internal/auth"
 	"github.com/denn-gubsky/loomcycle/internal/config"
 	"github.com/denn-gubsky/loomcycle/internal/credential"
+	"github.com/denn-gubsky/loomcycle/internal/credential/credentialtest"
 	"github.com/denn-gubsky/loomcycle/internal/lookup"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
 )
@@ -83,6 +85,25 @@ func TestWebhookDefTool_AStoredSecretIsTheAuthorsTenantsCredential(t *testing.T)
 	admin := auth.WithPrincipal(ctx, auth.Principal{TenantID: "acme", Subject: "op", Scopes: []string{auth.ScopeAdmin}})
 	if text, isErr := webhookCreate(t, tool, admin, "later", secretOverlay(`{"secret":"$cred:not-yet"}`)); isErr {
 		t.Errorf("an admin naming a credential not yet created: %s", text)
+	}
+}
+
+// A stored secret that has expired could verify nothing, so a definition
+// naming it is refused, and the refusal says it expired rather than that it
+// is missing.
+func TestWebhookDefTool_AnExpiredStoredSecretIsRefusedAsExpired(t *testing.T) {
+	tool, ctx, put := storedSecretFixture(t)
+	put("acme", "hook")
+	put("acme", "stale")
+	credentialtest.Expire(t, tool.Store, credential.Identity{TenantID: "acme", Scope: "tenant", Name: "stale"}, time.Now().Add(-time.Minute))
+	for _, auth := range []string{`{"secret":"$cred:stale"}`, `{"secret":"$cred:hook","previous_secret":"$cred:stale"}`} {
+		text, isErr := webhookCreate(t, tool, ctx, "w", secretOverlay(auth))
+		if !isErr || !strings.Contains(text, `"$cred:stale"`) || !strings.Contains(text, "expired") {
+			t.Errorf("%s: %s, want it refused as expired", auth, text)
+		}
+		if strings.Contains(text, "value-stale") {
+			t.Fatalf("the refusal carries the value: %s", text)
+		}
 	}
 }
 

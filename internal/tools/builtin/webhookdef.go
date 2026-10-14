@@ -928,6 +928,10 @@ func checkWebhookSecretAuthority(ctx context.Context, creds *credential.Engine, 
 			return fmt.Errorf("%s %q: this server stores no credentials", ref.field, ref.value)
 		}
 		found, err := creds.HasToCompare(ctx, tenantID, name)
+		if errors.Is(err, credential.ErrExpired) {
+			// The check worked; the answer is no, and the error says why.
+			return fmt.Errorf("%s %q: %v", ref.field, ref.value, err)
+		}
 		if err != nil {
 			return fmt.Errorf("%s %q: could not check the credential: %v", ref.field, ref.value, err)
 		}
