@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -143,28 +144,28 @@ func TestWebhookDefTool_ForkParentKeyDoesNotCountAsResupplied(t *testing.T) {
 	}
 }
 
-// V2c: an overlay can neither set nor clear the marker.
+// V2c: an overlay can neither set nor clear the marker. It used to be ignored
+// without a word; an overlay that names it is now refused, and the marker a
+// restore wrote stays as it was.
 func TestWebhookDefTool_OverlayCannotSetOrClearCaptureDisabled(t *testing.T) {
 	tool, ctx, cleanup := webhookDefFixture(t)
 	defer cleanup()
 
 	res, _ := tool.Execute(ctx, json.RawMessage(`{"op":"create","name":"fresh","overlay":{"enabled":true,"delivery":"spawn","agent":"a",
 		"auth":{"signing_secret_env":"LOOMCYCLE_S"},"capture_disabled":{"stripped_credentials":["x"]}}}`))
-	if res.IsError {
-		t.Fatalf("create: %s", res.Text)
-	}
-	if w := resolvedWebhook(t, tool, "fresh"); w.CaptureDisabled != nil || !w.Enabled {
-		t.Errorf("create with an overlay marker: marker=%+v enabled=%v, want the overlay's marker ignored", w.CaptureDisabled, w.Enabled)
+	if !res.IsError || !strings.Contains(res.Text, `"capture_disabled" cannot be set`) {
+		t.Fatalf("create with an overlay marker: %s, want it refused", res.Text)
 	}
 
 	plantCaptureDisabledWebhook(t, tool.Store, "restored", []string{"jobs"})
-	_, def := webhookForkResult(t, tool, ctx, `{"op":"fork","name":"restored","overlay":{"enabled":true,"capture_disabled":null}}`)
-	if def.CaptureDisabled == nil || def.Enabled {
-		t.Errorf("fork with capture_disabled:null: marker=%+v enabled=%v, want the marker kept and disabled", def.CaptureDisabled, def.Enabled)
+	for _, overlay := range []string{`{"enabled":true,"capture_disabled":null}`, `{"enabled":true,"capture_disabled":{"stripped_credentials":[]}}`} {
+		res, _ := tool.Execute(ctx, json.RawMessage(`{"op":"fork","name":"restored","overlay":`+overlay+`}`))
+		if !res.IsError || !strings.Contains(res.Text, `"capture_disabled" cannot be set`) {
+			t.Errorf("fork with %s: %s, want it refused", overlay, res.Text)
+		}
 	}
-	_, def = webhookForkResult(t, tool, ctx, `{"op":"fork","name":"restored","overlay":{"enabled":true,"capture_disabled":{"stripped_credentials":[]}}}`)
-	if def.CaptureDisabled == nil || def.Enabled {
-		t.Errorf("fork with an emptied marker: marker=%+v enabled=%v, want the marker kept and disabled", def.CaptureDisabled, def.Enabled)
+	if w := resolvedWebhook(t, tool, "restored"); w.CaptureDisabled == nil || w.Enabled {
+		t.Errorf("after the refused forks: marker=%+v enabled=%v, want the marker kept and disabled", w.CaptureDisabled, w.Enabled)
 	}
 }
 
