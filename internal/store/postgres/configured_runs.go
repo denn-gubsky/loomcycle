@@ -98,7 +98,7 @@ func (s *Store) startRun(ctx context.Context, runID string, identity store.RunId
 			isolated                = $9,
 			run_config              = $10::jsonb,
 			replica_id              = $11,
-			draft                   = NULL
+			draft                   = NULL, queued_input = NULL
 		WHERE id = $1 AND status = $12 AND ($13::jsonb IS NULL OR draft = $13::jsonb)`,
 		runID, string(store.RunRunning), now,
 		nullableText(identity.AgentDefID),

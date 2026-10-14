@@ -443,6 +443,14 @@ type RunInput struct {
 	// than silently dropped (ErrDraftChanged). Empty skips that check.
 	ConfiguredDraft json.RawMessage
 
+	// QueuedRunID, when set, starts the run a restart found queued (RFC EI P3)
+	// instead of a new one: the boot rebuilds RunInput from the request stored
+	// when the run queued and from its row, and RunOnce queues it again under
+	// that row — no second row, and the idempotency key it already holds. Its
+	// identity, isolation and operator-key bits are the row's. Set by the boot
+	// only; never from a request.
+	QueuedRunID string
+
 	// Detached runs the loop so that it outlives this call, as POST /v1/runs
 	// does for an interactive or review run: the caller's ctx ending (a
 	// client leaving) neither cancels it nor tears it down — only the cancel

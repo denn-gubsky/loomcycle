@@ -70,11 +70,8 @@ func overridesSetIn(req any) []string {
 // another model believe it got one; a refusal shows up in its logs.
 func (s *Server) admitPrincipalOverrides(ctx context.Context, set []string) error {
 	p, ok := auth.PrincipalFromContext(ctx)
-	if !ok || p.Restrictions.Overrides == nil {
-		return nil
-	}
 	for _, field := range set {
-		if !p.Restrictions.OverrideAllowed(field) {
+		if tokenLocksOverride(p, ok, field) {
 			log.Printf("auth: override_not_allowed field=%q subject=%q token_def=%q", field, p.Subject, p.TokenDefID)
 			return fmt.Errorf("%w for this token: %q", runner.ErrOverrideNotAllowed, field)
 		}
@@ -93,10 +90,26 @@ func (s *Server) admitPrincipalOverrides(ctx context.Context, set []string) erro
 //
 // Called at the same places as the caller's lock, once the agent is known.
 func admitAgentOverrides(name string, def config.AgentDef, set []string) error {
-	if def.AllowOverrides == nil || *def.AllowOverrides || len(set) == 0 {
+	if !agentLocksOverrides(def) || len(set) == 0 {
 		return nil
 	}
 	return fmt.Errorf("%w: %q (agent %q runs on its definition only: allow_overrides is false)", runner.ErrOverrideNotAllowed, set[0], name)
+}
+
+// tokenLocksOverride reports whether the caller's token refuses a run that
+// sets field. It is the per-field half of admitPrincipalOverrides, kept as its
+// own function so GET /v1/_agentdef/{name}/overridable asks the very question
+// the run path asks: a report computed by a second copy of the rule would be
+// free to disagree with the refusal a client then gets.
+func tokenLocksOverride(p auth.Principal, ok bool, field string) bool {
+	return ok && !p.Restrictions.OverrideAllowed(field)
+}
+
+// agentLocksOverrides reports whether the definition refuses every per-run
+// override (allow_overrides: false). Unset means allowed. Shared with the
+// overridable report for the same reason as tokenLocksOverride.
+func agentLocksOverrides(def config.AgentDef) bool {
+	return def.AllowOverrides != nil && !*def.AllowOverrides
 }
 
 // admitAgentOverridesByName is admitAgentOverrides for a caller that has the

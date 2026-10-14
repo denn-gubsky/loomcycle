@@ -220,12 +220,10 @@ func TestMcpPrincipalCtx_NonAdminPrincipal_DeniesOperatorPlane(t *testing.T) {
 	if len(tools.HistoryPolicy(tenant).Scopes) == 0 {
 		t.Errorf("non-admin principal should still get own-tenant History scopes; got none")
 	}
-	// Evaluation: admin gets the cross-agent verbs; tenant gets submit_self only.
-	for _, s := range tools.EvaluationPolicy(tenant).Scopes {
-		if s == "submit_any" || s == "read_any" || s == "submit_descendants" {
-			t.Errorf("non-admin Evaluation must be submit_self only; got %v", tools.EvaluationPolicy(tenant).Scopes)
-			break
-		}
+	// Evaluation is not part of the operator plane: a tenant operator gets
+	// every op, as on HTTP and gRPC, and the tool confines it to its tenant.
+	if !historyHasScope(tools.EvaluationPolicy(tenant).Scopes, "read_any") {
+		t.Errorf("a tenant operator's Evaluation grant must include read_any; got %v", tools.EvaluationPolicy(tenant).Scopes)
 	}
 
 	// Def families: both admin and tenant get "any" within their stamped

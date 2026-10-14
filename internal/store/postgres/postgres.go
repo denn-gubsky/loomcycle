@@ -530,7 +530,7 @@ func (s *Store) FinishRun(ctx context.Context, runID string, status store.RunSta
 			credential_source = $14,
 			credential_scope_id = $15,
 			result = $17::jsonb,
-			draft = NULL
+			draft = NULL, queued_input = NULL
 		 WHERE id = $1 AND status IN ($16, $18)`,
 		runID, string(status), completed, nullableText(stopReason),
 		usage.InputTokens, usage.OutputTokens,

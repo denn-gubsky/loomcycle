@@ -62,6 +62,7 @@ const (
 	SectionA2AServerCardDefActive = "a2a_server_card_def_active"
 	SectionEvaluations            = "evaluations"
 	SectionPausedRuns             = "paused_runs"
+	SectionQueuedRuns             = "queued_runs"
 	SectionInteractionHistory     = "interaction_history"
 	SectionSqlMem                 = "sqlmem"
 	SectionDirents                = "dirents"
@@ -148,6 +149,7 @@ var registry = map[string]map[string]Migrator{
 	SectionA2AServerCardDefActive: {"1.0": identityMigrator},
 	SectionEvaluations:            {"1.0": identityMigrator},
 	SectionPausedRuns:             {"1.0": identityMigrator},
+	SectionQueuedRuns:             {"1.0": identityMigrator},
 	SectionInteractionHistory:     {"1.0": identityMigrator},
 	SectionSqlMem:                 {"1.0": identityMigrator},
 	SectionDirents:                {"1.0": identityMigrator},

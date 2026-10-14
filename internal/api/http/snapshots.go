@@ -400,8 +400,9 @@ func (s *Server) snapshotRestoreOptions(ctx context.Context, includeHistory bool
 			// path, known scope and kind, a ref of that kind's shape.
 			migrations.SectionDirents: builtin.ValidateDirentEntry,
 		},
-		CredentialExists: s.credKeyable,
-		EnvSet:           func(name string) bool { return os.Getenv(name) != "" },
+		CredentialExists:    s.credKeyable,
+		CredentialToCompare: s.credToCompare,
+		EnvSet:              func(name string) bool { return os.Getenv(name) != "" },
 	}
 	// The dynamic root and static volume names the VolumeDef tool resolves
 	// against: a restored volume lands where a create here would put it, and
@@ -507,6 +508,11 @@ func (s *Server) finishRestore(ctx context.Context, result *snapshot.RestoreResu
 	result.PausedRunsResumed = r.Resumed
 	result.PausedRunsAlreadyLive = r.AlreadyLive
 	result.Warnings = append(result.Warnings, r.Warnings...)
+	// The restored queued runs wait for a slot like any other; a paused
+	// runtime starts none of them until it resumes.
+	n, warnings := s.requeueRestoredRuns(context.WithoutCancel(ctx), result.Refresh.QueuedRunIDs)
+	result.QueuedRunsRequeued = n
+	result.Warnings = append(result.Warnings, warnings...)
 }
 
 // postRestoreRefresh brings the in-process caches over restored tables in

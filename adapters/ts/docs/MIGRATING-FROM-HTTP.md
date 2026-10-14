@@ -267,7 +267,7 @@ try {
 }
 ```
 
-The error hierarchy is: `Error` → `LoomcycleError` → (concrete subclasses). `NotFoundError` is a base so you can catch any 404 with one `instanceof`; the specific subclasses (`AgentNotFoundError`, `SessionNotFoundError`, `HookNotFoundError`, `SnapshotNotFoundError`) also extend it.
+The error hierarchy is: `Error` → `LoomcycleError` → (concrete subclasses). `NotFoundError` is a base so you can catch any 404 with one `instanceof`; the specific subclasses (`AgentNotFoundError`, `SessionNotFoundError`, `SnapshotNotFoundError`) also extend it.
 
 ## Production patterns
 

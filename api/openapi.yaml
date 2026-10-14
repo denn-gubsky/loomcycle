@@ -485,19 +485,19 @@ paths:
         "401": { $ref: "#/components/responses/Unauthorized" }
         "403":
           description: |
-            `operator_key_restricted` (JSON body): the caller may not use the
-            operator's provider key and has none of its own for this provider.
-            A token without the `runs:create` scope is also refused with 403,
-            with the plain-text body `insufficient scope`.
+            `operator_key_restricted`: the caller may not use the operator's
+            provider key and has none of its own for this provider.
+            `insufficient_scope`: the token lacks the `runs:create` scope;
+            `required_scope` names it, as does the `WWW-Authenticate` header.
           content:
-            text/plain:
-              schema: { type: string }
+            application/json:
+              schema:
+                anyOf:
+                  - $ref: "#/components/schemas/DecisionError"
+                  - $ref: "#/components/schemas/ForbiddenError"
               examples:
                 insufficient_scope:
-                  value: insufficient scope
-            application/json:
-              schema: { $ref: "#/components/schemas/DecisionError" }
-              examples:
+                  value: { code: insufficient_scope, error: insufficient scope, required_scope: "runs:create" }
                 operator_key_restricted:
                   value:
                     code: operator_key_restricted
@@ -664,10 +664,17 @@ components:
         application/json:
           schema: { $ref: "#/components/schemas/Error" }
     Forbidden:
-      description: Authenticated but lacks the required scope (e.g. an isolated token on a tenant route).
+      description: |
+        Authenticated but not permitted. A token that lacks the route's scope
+        (e.g. an isolated token on a tenant route) gets code
+        `insufficient_scope`, the scope by name in `required_scope`, and the
+        same scope in `WWW-Authenticate: Bearer scope="..."`.
       content:
         application/json:
-          schema: { $ref: "#/components/schemas/Error" }
+          schema: { $ref: "#/components/schemas/ForbiddenError" }
+          examples:
+            insufficient_scope:
+              value: { code: insufficient_scope, error: insufficient scope, required_scope: "substrate:tenant" }
     NotFound:
       description: Not found.
       content:
@@ -706,6 +713,13 @@ components:
         code: { type: string }
         error: { type: string }
       required: [code, error]
+    ForbiddenError:
+      description: A 403. `required_scope` is present when `code` is `insufficient_scope`.
+      allOf:
+        - $ref: "#/components/schemas/Error"
+        - type: object
+          properties:
+            required_scope: { type: string, description: "The scope the token lacks." }
     MemoryEntry:
       type: object
       properties:

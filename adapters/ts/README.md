@@ -190,6 +190,44 @@ console.log(`restored memory rows: ${result.memory_restored}`);
 | `listMemoryEntries(scope, scopeID, opts?)` | `Promise<MemoryEntriesResponse>` | Optional `prefix` + `limit`. |
 | `getMemoryEntry(scope, scopeID, key)` | `Promise<MemoryEntryResponse>` | Single row read. |
 
+### Memory / document change feeds (RFC CD Part C)
+
+Live SSE tails of what changed in the caller's tenant's memory and documents — for a cache, an index, or a console that reacts to writes without polling.
+
+| Method | Returns | Notes |
+|---|---|---|
+| `streamMemoryChanges(opts?)` | `AsyncIterable<ChangeFeedFrame>` | `memory.set` / `memory.delete` / `memory.scope_deleted`. Mirrors `GET /v1/_memory/changes`. |
+| `streamDocumentChanges(opts?)` | `AsyncIterable<ChangeFeedFrame>` | `document.chunk.updated` / `document.chunk.deleted`, naming the `chunk_id`. Mirrors `GET /v1/_document/changes`. |
+
+Each change is a **value-free coordinate** (`seq`, `type`, `scope`, `scope_id`, `key` or `chunk_id`, `at`): it says *what* changed, and you pull the current value through the data API. The first item is always `{ kind: "feed", payload: { enabled, since, embedder? } }`, then one `{ kind: "change", payload: MemoryChange }` per change, oldest first.
+
+- **Off by default.** The server only records changes with `LOOMCYCLE_MEMORY_CHANGES_ENABLED`. Without it the stream opens and idles forever, so check `payload.enabled` on the feed frame rather than waiting.
+- **Tenant-scoped, operator-only.** You see your own tenant's changes, never another's. The routes need `substrate:tenant` (or admin); a tenant member's token gets a 403 (`LoomcycleError`, `status: 403`).
+- **Resumable.** Persist the last `seq` you processed and pass it back as `since` on reconnect; delivery is strictly after it. `since` must be a non-negative integer — the client throws otherwise, because the server would read a bad value as `0` and replay everything it retains.
+- **Read failures are reported, not fatal.** A `{ kind: "error", payload: { code, error } }` item (`code: "store_unavailable"`) means the server could not read its change log. Keep iterating: the server retries with backoff without advancing its cursor, so changes resume after recovery with nothing skipped. You get one item per failure streak.
+- **The embedder's health rides along.** An embedding failure does not fail the write, so a busy feed can sit over rows that are no longer searchable; `payload.embedder.state === "failing"` (with a `failures` count) is the signal to run `backfillEmbeddings`.
+
+```ts
+let since = await loadCursor(); // your own persistence
+const ac = new AbortController();
+
+for await (const item of client.streamMemoryChanges({ since, signal: ac.signal })) {
+  if (item.kind === "feed") {
+    if (!item.payload.enabled) throw new Error("change feed is off on this server");
+    continue;
+  }
+  if (item.kind === "error") {
+    console.warn(`change feed: ${item.payload.code}: ${item.payload.error}`); // stream continues
+    continue;
+  }
+  const ch = item.payload; // { seq, type, scope, scope_id, key?, at }
+  await invalidate(ch.scope, ch.scope_id, ch.key);
+  since = ch.seq;
+  await saveCursor(since);
+}
+// The loop ends when the server closes the stream (e.g. a restart): reconnect with `since`.
+```
+
 ### Interruption (v0.8.16)
 
 | Method | Returns | Notes |
@@ -351,6 +389,7 @@ Two op-discriminated methods that mirror the in-process `AgentDef` / `SkillDef` 
 |---|---|---|
 | `agentDef(input)` | `Promise<SubstrateToolResponse>` | Op-discriminated. Mirrors `POST /v1/_agentdef`. |
 | `skillDef(input)` | `Promise<SubstrateToolResponse>` | Op-discriminated. Mirrors `POST /v1/_skilldef`. |
+| `getAgentOverridable(name, { tenant? })` | `Promise<AgentOverridableResponse>` | Which per-run overrides a run of `name` may set, **for this caller**: one entry per override (`model`, `effort`, `max_tokens`, …) with `overridable`, and a `reason` (`token_locked` / `agent_locked`) when refused. Folds the agent's `allow_overrides` with your token's overrides policy, as a run would. An overridable field may carry `narrow_only`, `max`, or `values` (a closed set the definition declares). For building run forms. `substrate:tenant`; a token limited to certain agents may ask about those. Raises `AgentNotFoundError` for an unknown or another tenant's agent. Mirrors `GET /v1/_agentdef/{name}/overridable`. |
 
 The response type is intentionally `unknown` because the shape varies per op (`create`/`fork` return a row envelope; `list` returns `{name, versions: [...]}`; `verify` returns `AgentDefVerifyResult` / `SkillDefVerifyResult`). Cast / narrow as needed:
 
@@ -451,10 +490,10 @@ A refusal throws with the decision's own code on `e.code` (see [Errors](#errors)
 | 400 | `model_not_allowed` | Omit `model`, or use a name from `listDecisionModels()`. |
 | 403 | `operator_key_restricted` | The caller may not use the operator's provider key and has none of its own. Do not retry. |
 | 413 | `prompt_too_large` | The request does not fit the model's context and is never shortened for you: shorten `state` or ask fewer questions. |
-| 429 | `token_limit_exceeded` | The caller is at a hard token budget. Retrying does not help until the budget is raised or the month rolls over. |
-| 502 | `model_not_found` / `call_failed` | The provider does not serve that model (the same call fails again) / the call did not complete (try once more). |
+| 429 | `token_limit_exceeded` | The caller is at a hard token budget (`TokenLimitExceededError`, `retryable` false). Retrying does not help until the budget is raised or the month rolls over. |
+| 502 | `model_not_found` / `call_failed` | The provider does not serve that model (the same call fails again) / the call did not complete (try once more; `retryable` is true). |
 | 503 | `decision_not_configured` | This deployment declares no decision models. Do not retry. |
-| 504 | `timeout` | Send the same call again; if it repeats, make it smaller. |
+| 504 | `timeout` | Send the same call again (`retryable` is true); if it repeats, make it smaller. |
 
 ```ts
 try {
@@ -467,6 +506,64 @@ try {
 ```
 
 Two of these have a class of their own: a `prompt_too_large` throws `PromptTooLargeError` and a `token_limit_exceeded` throws `TokenLimitExceededError` (with the budget on `e.scope` / `e.used` / `e.limit`). For the rest, branch on `e.code`, not on the class: the class follows the HTTP status alone.
+
+### Credentials (RFC AR)
+
+The encrypted credential store an agent's `$cred:<name>` references resolve against. `scope` is `user` (your own subject's credentials) or `tenant` (shared across the tenant; needs `substrate:tenant`). Every read is metadata only — a stored value is never returned.
+
+| Method | Returns | Notes |
+|---|---|---|
+| `listCredentials(scope)` | `Promise<CredentialListResponse>` | Every credential's metadata in the scope. `{op: "list"}`. |
+| `getCredential({ scope, name })` | `Promise<CredentialMeta>` | One credential's metadata: `backend`, `created_at` / `updated_at`, and `expires_at` / `allowed_urls` / `username` when set. Raises `SubstrateToolRefusedError` for an absent name. `{op: "get"}`. |
+| `createCredential({ scope, name, value, allowed_urls?, username?, expires_at?, backend? })` | `Promise<CredentialMeta>` | Store or rotate. `value` is write-only. `expires_at` is RFC3339; `backend` is `"inline"`, the only one accepted. `{op: "create"}`. |
+| `deleteCredential({ scope, name })` | `Promise<{ name, scope, deleted }>` | Anything referencing `$cred:<name>` at that scope stops resolving. `{op: "delete"}`. |
+
+All four post to `POST /v1/_credentialdef`.
+
+```ts
+const meta = await client.getCredential({ scope: "user", name: "GIT_TOKEN" });
+console.log(meta.allowed_urls ?? "unrestricted");
+```
+
+### Evaluations
+
+Scores attached to runs: record a verdict on a run, read the scores back, and roll them up per definition version to compare versions. All of these post to `POST /v1/_evaluation`; `evaluation(input)` takes the op-discriminated input directly and its return type follows `op`.
+
+| Method | Returns | Notes |
+|---|---|---|
+| `submitEvaluation(runId, score, { dimensions?, judgement?, rationale? })` | `Promise<EvaluationSubmitResult>` | Additive: submitting again records another evaluation. `{op: "submit"}`. |
+| `getEvaluation(evalId)` | `Promise<EvaluationRecord>` | `{op: "get"}`. |
+| `listEvaluationsForRun(runId, { limit? })` | `Promise<EvaluationListForRunResult>` | `{op: "list_for_run"}`. |
+| `listEvaluationsForDef(defId, { limit? })` | `Promise<EvaluationListForDefResult>` | Your tenant's scores of that definition version. `{op: "list_for_def"}`. |
+| `aggregateEvaluations(defId, { includeLineage? })` | `Promise<EvaluationAggregate>` | Mean / median / min / max / latest, per dimension and per emitter role. `{op: "aggregate"}`. |
+
+What a token may do: `substrate:tenant` every op inside its own tenant; admin every op in every tenant; any other token (an isolated `substrate:user`, a tenant member) only `submit_self`, which a call from outside a run cannot use, so each op is refused with `SubstrateToolRefusedError`. A token without `runs:read` gets a 403. Another tenant's evaluation or run reads exactly like one that does not exist.
+
+```ts
+await client.submitEvaluation(runId, 0.8, { rationale: "correct, but slow" });
+const agg = await client.aggregateEvaluations(defId);
+console.log(agg.count, agg.score.mean);
+```
+
+### Team runs
+
+`runTeam(target)` walks a team's state graph. Its return type follows `target.mode`:
+
+| Call | Returns |
+|---|---|
+| `runTeam({ name, input, mode: "detach" })` | `Promise<TeamRunDetached>` — the `run_id` at once; the walk keeps running. |
+| `runTeam({ name, input })` | `Promise<TeamRunResult>` — waits for the walk; `steps` is the per-state trace. |
+| `runTeam(target: TeamRunTarget)` | `Promise<TeamRunResult \| TeamRunDetached>` — for a target whose `mode` is not known statically (built from a form or a node parameter). Narrow by the `mode` you sent. |
+
+A start with an `idempotencyKey` another start already holds is answered with that walk, marked `deduplicated: true`, and carries no `steps` — the trace is not stored on the run. Once that walk has ended it also has `final_output`, and `final_state` / `stop_reason` / `error` where they were recorded.
+
+```ts
+import type { TeamRunTarget } from "@loomcycle/client";
+
+const target: TeamRunTarget = { name: "triage", input, mode: detach ? "detach" : undefined };
+const res = await client.runTeam(target);
+console.log(res.run_id);
+```
 
 ### Channels + run-state stream (v0.9.x n8n Phase 0)
 
@@ -609,9 +706,10 @@ When the error body is JSON with a string `code` (`token_limit_exceeded`, `per_u
 |---|---|
 | 400 | `InvalidArgumentError` |
 | 401 | `AuthError` |
+| 403 + code `insufficient_scope` | `InsufficientScopeError` (not retryable; `e.requiredScope` names the scope the token lacks — from the body's `required_scope`, or from `WWW-Authenticate` on an older server that sent plain text) |
+| 403 (other) | `LoomcycleError` (base; e.g. `restricted_token`, `operator_key_restricted` on `e.code`) |
 | 404 + "snapshot" | `SnapshotNotFoundError` ⎫ |
 | 404 + "session" | `SessionNotFoundError` ⎬ all extend `NotFoundError` |
-| 404 + "hook" | `HookNotFoundError` ⎬ |
 | 404 + "agent" | `AgentNotFoundError` ⎬ |
 | 404 (other) | `NotFoundError` (base) ⎭ catch any 404 with one `instanceof` |
 | 409 + "already_pausing" / "already paused" | `AlreadyPausingError` |
@@ -623,39 +721,55 @@ When the error body is JSON with a string `code` (`token_limit_exceeded`, `per_u
 | 413 + code `prompt_too_large` | `PromptTooLargeError` ⎬ all are `instanceof SnapshotTooLargeError` (back-compat) |
 | 413 (other) | `RequestTooLargeError` ⎭ |
 | 422 | `SnapshotVersionError` |
-| 429 + code `per_user_quota_exhausted` | `PerUserQuotaExhaustedError` |
-| 429 + code `token_limit_exceeded` | `TokenLimitExceededError` (subclass of `BackpressureError` — back-compat) |
-| 429 (other) | `BackpressureError` |
+| 429 + code `per_user_quota_exhausted` | `PerUserQuotaExhaustedError` (retryable; `e.retryAfterMs` from `Retry-After`) |
+| 429 + code `token_limit_exceeded` | `TokenLimitExceededError` (NOT a `BackpressureError`; not retryable) |
+| 429 + code `rate_limited` | `RateLimitedError` (subclass of `BackpressureError`; retryable; `e.retryAfterMs` from `Retry-After`) |
+| 429 + code `configured_run_cap` | `BackpressureError` (NOT retryable: start or discard a configured run first) |
+| 429 (other) | `BackpressureError` (retryable) |
 | 503 + "pause manager not configured" | `PauseNotConfiguredError` (subclass of `UnavailableError` — back-compat) |
 | 503 (other) | `UnavailableError` |
 | 500 / other | `LoomcycleError` (base) |
 
-**429: a token budget is not backpressure.** A plain `BackpressureError` is transient: the server is busy, back off and retry. `TokenLimitExceededError` is not: the caller is at a hard token budget (run creation and `decide()` both refuse with it), and the same call is refused until the budget is raised or the calendar month rolls over. It extends `BackpressureError` only so that an existing `instanceof BackpressureError` keeps catching it, so test for it first. The client never retries on its own; this matters to your retry loop.
+**`e.retryable`: can the same call succeed later?** Every error carries a read-only `retryable`. It is `true` only for a refusal that clears on its own: a `BackpressureError` (the server or a provider queue is busy), a `RateLimitedError` (the caller is starting runs faster than its run-start rate allows), a `PerUserQuotaExhaustedError` (the caller's own in-flight runs are at their cap), a 503 `UnavailableError` with code `runtime_paused` (the operator has paused the runtime), and a `decide()` call that failed (502 `call_failed`) or timed out (504 `timeout`). It is `false` for everything else, a hard token budget included, and so is a `BackpressureError` with code `configured_run_cap`: the user already holds as many configured runs as allowed, and waiting never makes room — start or discard one first. A 503 is shared between a paused runtime and features the deployment does not have (`decision_not_configured`, `store_unavailable`, …), and many 503 bodies carry no code, so only `runtime_paused` counts; a code-less 503 from run creation can also be a model tier with no provider available, which you may retry on your own judgement. The default is `false` because a wrong `true` turns a refusal that never clears into an endless loop. The client never retries on its own, so bound your loop even when `retryable` is true, and prefer `e.retryAfterMs` where the class has it.
+
+**429: a token budget is not backpressure.** A `BackpressureError` is transient: back off and retry. `TokenLimitExceededError` is not: the caller is at a hard token budget (run creation and `decide()` both refuse with it), and the same call is refused until the budget is raised or the calendar month rolls over. **It is no longer a `BackpressureError`** (it was, through 1.112.x). It extended that class so that an older `instanceof BackpressureError` check kept catching it, but such a check is nearly always a retry loop, which then retried the refusal for the rest of the month; that relation was dropped on purpose. If your code caught the budget through `instanceof BackpressureError`, catch `TokenLimitExceededError` (or test `e.code === "token_limit_exceeded"`) instead.
 
 ```ts
-import { BackpressureError, TokenLimitExceededError } from "@loomcycle/client";
+import {
+  LoomcycleError,
+  PerUserQuotaExhaustedError,
+  RateLimitedError,
+  TokenLimitExceededError,
+} from "@loomcycle/client";
 
-try {
-  for await (const ev of client.runStreaming({ /* ... */ })) {}
-} catch (e) {
-  if (e instanceof TokenLimitExceededError) {
-    // Not retryable now. e.scope is "operator" | "tenant" | "user"; e.scopeId is
-    // the tenant or user (null for the operator-wide budget); e.used and e.limit
-    // are tokens; e.window is "month". Each is null if the server did not send it.
-    console.error(`token budget reached for ${e.scope}: ${e.used}/${e.limit} this ${e.window}`);
-  } else if (e instanceof BackpressureError) {
-    // Transient: back off and retry.
-  } else {
-    throw e;
+for (let attempt = 0; ; attempt++) {
+  try {
+    for await (const ev of client.runStreaming({ /* ... */ })) {}
+    break;
+  } catch (e) {
+    if (e instanceof TokenLimitExceededError) {
+      // Not retryable. e.scope is "operator" | "tenant" | "user"; e.scopeId is
+      // the tenant or user (null for the operator-wide budget); e.used and e.limit
+      // are tokens; e.window is "month". Each is null if the server did not send it.
+      console.error(`token budget reached for ${e.scope}: ${e.used}/${e.limit} this ${e.window}`);
+      throw e;
+    }
+    if (!(e instanceof LoomcycleError) || !e.retryable || attempt >= 5) throw e;
+    // These two carry the server's own hint; otherwise back off exponentially.
+    const hint =
+      e instanceof RateLimitedError || e instanceof PerUserQuotaExhaustedError
+        ? e.retryAfterMs
+        : null;
+    await new Promise((r) => setTimeout(r, hint ?? 1000 * 2 ** attempt));
   }
 }
 ```
 
 **413: three classes, one legacy base.** Every 413 used to throw `SnapshotTooLargeError`, whatever was too large. A 413 is now named for its cause: `PromptTooLargeError` for a `decide()` request that does not fit the model's context (shorten `state` or ask fewer questions), `RequestTooLargeError` for any other non-snapshot 413 (a request body over the server's limit, a memory value or quota, a channel payload — `e.code` says which), and `SnapshotTooLargeError` itself for a snapshot over its cap. `PromptTooLargeError` extends `RequestTooLargeError`, which extends `SnapshotTooLargeError`, so an existing `instanceof SnapshotTooLargeError` still matches every 413; that relation is for compatibility and says nothing about snapshots. To single out a snapshot that is too large, test `e.code === "snapshot_too_large"`.
 
-`e.name` (and the `meta_reason` of a `stream_close` frame) is the most specific class name, so it reads `TokenLimitExceededError`, `PromptTooLargeError` or `RequestTooLargeError` where it used to read `BackpressureError` or `SnapshotTooLargeError`. Match with `instanceof` or `e.code`, not on the name.
+`e.name` (and the `meta_reason` of a `stream_close` frame) is the most specific class name, so it reads `TokenLimitExceededError`, `RateLimitedError`, `PromptTooLargeError` or `RequestTooLargeError` where it used to read `BackpressureError` or `SnapshotTooLargeError`. Match with `instanceof` or `e.code`, not on the name.
 
-Priority within `404`: most-specific keyword wins (`snapshot` → `session` → `hook` → `agent` → base). The dispatch is keyword-matched on the response body lowercase; a hook with id `hook_agent_scan` still routes to `HookNotFoundError`, not `AgentNotFoundError`.
+Priority within `404`: most-specific keyword wins (`snapshot` → `session` → `agent` → base). The dispatch is keyword-matched on the response body lowercase, so a body that names none of them — a missing hook, memory row or interrupt — is a plain `NotFoundError`, while one that happens to contain "agent" (a hook id like `hook_agent_scan`) is an `AgentNotFoundError`. There is no hook-specific class; catch `NotFoundError` for any 404.
 
 ```ts
 import {
@@ -713,7 +827,7 @@ for await (const item of client.streamUserRunStates(userId, {
 A detached team walk returns a `run_id`, and that id **is** the walk id every run it spawns carries in `parent_context.walk_id`. Pass it back as `walkId` and the server filters the stream to that workflow — no second identifier, nothing to map:
 
 ```ts
-const { run_id } = await client.runTeam({ team: "triage", detach: true });
+const { run_id } = await client.runTeam({ name: "triage", mode: "detach" });
 
 for await (const item of client.streamUserRunStates(userId, { walkId: run_id })) {
   if (item.kind === "open") {

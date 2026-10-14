@@ -47,7 +47,9 @@ env-var NAME is authorized. The receiver authorizes a name when **any** of:
    (`signing_secret_env` / `bearer_token_env`), which is consumed by the
    receiver and never reaches the agent. This is why
    `signing_secret_env: "LOOMCYCLE_GITEA_WEBHOOK_SECRET"` Just Works with no
-   allowlist config;
+   allowlist config. loomcycle's own secrets (`LOOMCYCLE_AUTH_TOKEN`,
+   `LOOMCYCLE_PG_DSN`, `LOOMCYCLE_SECRET_KEY`, a principal's `token_env`, …)
+   are never a verification secret, whatever the allowlist says;
 2. it is declared by a **static** (operator-authored yaml) webhook — its own
    secret + `user_credentials_from_env` names are auto-trusted;
 3. it is listed in **`LOOMCYCLE_WEBHOOKS_ENV_ALLOWLIST`** (comma-separated) or
@@ -125,7 +127,10 @@ A shared front-half runs for every request, then forks on `delivery`:
 
 1. **Resolve** the active `WebhookDef` by the `{name}` in the URL (never
    from the body). Unknown or disabled → opaque `404`.
-2. **Read** the raw body under `body_size_limit_bytes` (default 1 MiB).
+2. **Read** the raw body under `body_size_limit_bytes` (default 1 MiB),
+   never past the server's request limit (`LOOMCYCLE_MAX_REQUEST_BYTES`).
+   A body nested more than 128 deep, or holding more than a million values,
+   is refused as malformed before it is decoded.
 3. **Verify the signature over the raw bytes, before any parsing.**
    HMAC-SHA256 with a constant-time compare. Three envelopes auto-detected
    from the header *value* (so a custom header name still parses):
@@ -251,7 +256,8 @@ POST /v1/_teams/{team}/webhooks/{name}              a team in the shared tenant
 
 - **Same receiver, same rules.** The `auth` block is a webhook definition's,
   checked by the same rules; the secret is an env-var name resolved under
-  the same allowlist; a delivery is verified before it is parsed, deduped,
+  the same allowlist, or `auth.secret`, a stored credential of the team's
+  tenant (see **The signing secret**); a delivery is verified before it is parsed, deduped,
   rate limited at the default rate (60 a minute, bursts of 10), and answered
   with the same codes. Dedup and rate are kept per team webhook, apart from
   any webhook definition of the same name.
@@ -276,15 +282,56 @@ POST /v1/_teams/{team}/webhooks/{name}              a team in the shared tenant
 
 ## The signing secret
 
-`signing_secret_env` (HMAC) / `bearer_token_env` (bearer) name an env var the
-receiver authorizes via the rules under **Enabling** above: a `LOOMCYCLE_*` (or
-known third-party) name is auto-allowed; a static webhook's declared name is
-auto-trusted; otherwise list it in `LOOMCYCLE_WEBHOOKS_ENV_ALLOWLIST` (or the
-scheduler's shared `LOOMCYCLE_SCHEDULER_ENV_ALLOWLIST`). The verification secret
-is consumed by the receiver for the constant-time MAC/bearer compare and never
-reaches the agent. A missing or unresolvable secret **fails loud**: `503
-secret_unresolvable`, naming the env var — never its value. Rotate by changing
-the env var and reloading; no plaintext secret ever lives in a Def.
+The verification secret — the HMAC key, or the token a bearer webhook
+compares — is named in one of two ways, never both. Neither puts the secret
+itself in the definition. It is consumed by the receiver for the
+constant-time MAC/bearer compare and never reaches the agent.
+
+**An env var.** `signing_secret_env` (HMAC) / `bearer_token_env` (bearer) name
+an env var the receiver authorizes via the rules under **Enabling** above: a
+`LOOMCYCLE_*` (or known third-party) name is auto-allowed; a static webhook's
+declared name is auto-trusted; otherwise list it in
+`LOOMCYCLE_WEBHOOKS_ENV_ALLOWLIST` (or the scheduler's shared
+`LOOMCYCLE_SCHEDULER_ENV_ALLOWLIST`). loomcycle's own secrets are refused, when
+the definition is written and when a delivery arrives. Rotate by changing the
+env var and restarting.
+
+**A stored credential.** `auth.secret: "$cred:<name>"` names a tenant-level
+credential of the definition's own tenant (the tenant that wrote it; for a
+team's own webhook, the team's). It is read on every delivery, so a new value
+takes effect at the next one, with no restart, and a secret per repository
+needs no new env var.
+
+```yaml
+auth:
+  kind: hmac
+  header: X-Hub-Signature-256
+  secret: "$cred:gh-hook-acme-app"
+  previous_secret: "$cred:gh-hook-acme-app-old"   # only while rotating
+```
+
+- **Store it so it can never be sent.** Create the credential with
+  `allowed_urls: []` (CredentialDef `op=create scope=tenant`). That refuses it
+  to every MCP header, hook and peer; the receiver only compares it, so it
+  still verifies.
+- **Only a reference.** A literal in `secret` or `previous_secret` is refused
+  when the definition is written: it would be stored in the definition.
+- **It must exist.** When the definition is written, the credential must be a
+  tenant-level credential of the author's tenant; another tenant's, or one
+  that does not exist, is refused. (An admin is not checked, so the
+  credential may come after the definition.)
+- **Rotating.** Store the new value under a new name, fork the definition with
+  `secret` naming it and `previous_secret` naming the old one: a delivery
+  signed with either is accepted, and both are always compared. Then fork
+  again with only `secret` (naming a new `secret` drops `previous_secret`
+  unless the fork names it too), or delete the old credential — a
+  `previous_secret` that no longer resolves is simply not used.
+- **Changing form.** A fork that names `secret` drops the env name it
+  inherited, and one that names `signing_secret_env` or `bearer_token_env`
+  drops `secret` and `previous_secret`.
+
+A missing or unresolvable secret **fails loud**: `503 secret_unresolvable`,
+naming the env var (`secret_env`) or the reference (`secret`) — never a value.
 
 ## MCP-tool bearer tokens for the spawned run (same as schedulers)
 
@@ -350,7 +397,15 @@ result lists them in `disabled_until_credentials_supplied`, and
 merges both credential maps key by key with the parent's, so re-supplying
 the stripped keys keeps every other credential; an empty value removes a
 key. A `create` on the same name writes a new version and follows the
-same rules. An overlay can neither set nor clear the marker.
+same rules. An overlay can neither set nor clear the marker: one that
+names `capture_disabled` is refused.
+
+**An overlay is read as written.** A key the definition does not have (a
+misspelling, or a field a newer server knows), a key written twice, a key
+that matches a field only by ignoring its case, and a key the server sets
+(`operator_key_restricted`, `isolated`, `capture_disabled`) are refused,
+where they used to be dropped without a word. An older server drops keys it
+does not know, so read a definition back after writing it.
 
 ## `tenant_id` — which tenant the spawned run executes as
 
@@ -379,7 +434,8 @@ from the wire.
 `user_tier` is pinned the same way: it comes from the def's `user_tier`,
 and a `payload_mapping` entry that targets it is ignored (config load warns
 about it). A sender must not be able to pick the plan its run is billed and
-routed under.
+routed under. A definition written through the WebhookDef tool can set
+`user_tier` too; it must name one of the server's `user_tiers`.
 
 **Through the WebhookDef tool, `tenant_id` may name only your own tenant
 unless you are an admin.** Omitted, it defaults to your tenant. A non-admin

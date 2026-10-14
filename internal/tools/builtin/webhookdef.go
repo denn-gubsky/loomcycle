@@ -10,8 +10,11 @@ import (
 	"strings"
 
 	"github.com/denn-gubsky/loomcycle/internal/config"
+	"github.com/denn-gubsky/loomcycle/internal/credential"
 	"github.com/denn-gubsky/loomcycle/internal/store"
+	"github.com/denn-gubsky/loomcycle/internal/teamgraph"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
+	"reflect"
 )
 
 // WebhookDef is the v1.x RFC H (Input Webhooks) built-in tool that lets
@@ -47,6 +50,10 @@ type WebhookDef struct {
 
 	// MaxDescriptionBytes caps the description field. 0 = no cap.
 	MaxDescriptionBytes int
+
+	// Credentials answers whether the author's tenant holds the credential an
+	// auth.secret names. nil: only an operator may name one.
+	Credentials *credential.Engine
 }
 
 const webhookDefDescription = `Author, fork, retire, and inspect inbound webhook definitions at runtime. ` +
@@ -73,7 +80,7 @@ const webhookDefInputSchema = `{
     "parent_def_id": {"type": "string", "description": "Fork parent (optional for fork — when absent, forks the active def of the name, or bootstraps from a yaml template)."},
     "overlay": {
       "type": "object",
-      "description": "Mutable subset of the webhook definition for create/fork. delivery is spawn (default — start a run of agent), channel (publish the body to channel) or team (start a detached walk of the team named in team, as TeamDef op=run mode=detach does, with the raw request body as the walk's input). For team, vars maps a variable the team declares to a JSONPath into the body ($, .key and [N] only), e.g. {\"delivery\":\"team\",\"team\":\"pr-review\",\"vars\":{\"repo\":\"$.repository.full_name\",\"pr\":\"$.pull_request.number\"}}; a path the body lacks leaves that variable at the team's default. delivery=team forbids agent, channel, credentials, metadata, on_complete, sync_response and every payload_mapping target except user_id; team and vars are refused on the other deliveries. The team is looked up in the webhook's tenant when a delivery arrives: a missing or retired team, a variable it does not declare, or a projected value it refuses (too long, or containing {{ or }}) starts no walk and answers 400 invalid_run. An accepted delivery answers 202 with the walk's run_id. tenant_id (where spawned runs execute) may name only your own tenant unless you are an admin; omit it to use yours. Server-set fields are silently ignored if supplied.",
+      "description": "Mutable subset of the webhook definition for create/fork. delivery is spawn (default — start a run of agent), channel (publish the body to channel) or team (start a detached walk of the team named in team, as TeamDef op=run mode=detach does, with the raw request body as the walk's input). For team, vars maps a variable the team declares to a JSONPath into the body ($, .key and [N] only), e.g. {\"delivery\":\"team\",\"team\":\"pr-review\",\"vars\":{\"repo\":\"$.repository.full_name\",\"pr\":\"$.pull_request.number\"}}; a path the body lacks leaves that variable at the team's default. delivery=team forbids agent, channel, credentials, metadata, on_complete, sync_response and every payload_mapping target except user_id; team and vars are refused on the other deliveries. The team is looked up in the webhook's tenant when a delivery arrives: a missing or retired team, a variable it does not declare, or a projected value it refuses (too long, or containing {{ or }}) starts no walk and answers 400 invalid_run. An accepted delivery answers 202 with the walk's run_id. tenant_id (where spawned runs execute) may name only your own tenant unless you are an admin; omit it to use yours. user_tier pins the tier a spawned run is routed and billed under; a delivery never chooses it, and it must be one of the server's tiers. body_size_limit_bytes may not exceed the server's request limit. The verification secret is named either by an env var (auth.signing_secret_env for hmac, auth.bearer_token_env for bearer; never one of loomcycle's own secrets) or by auth.secret, a stored credential written \"$cred:<name>\" that must be a tenant-level credential of your tenant, read on every delivery so a rotation needs no restart; a literal secret is refused. While rotating, auth.previous_secret names the old credential and a delivery signed with either is accepted; naming a new auth.secret in a fork drops the previous one unless the fork names it too, and naming one form of the secret drops the other. Store such a credential with allowed_urls: [] so it can be compared but never sent. Keys are read as written: a key the definition does not have, a key repeated, a key that matches a field only by ignoring case, and a server-set key (operator_key_restricted, isolated, capture_disabled) are refused.",
       "additionalProperties": true
     },
     "description":   {"type": "string", "description": "Free-text rationale for create/fork."},
@@ -155,6 +162,12 @@ func (s *WebhookDef) execCreate(ctx context.Context, policy tools.WebhookDefPoli
 		return errResult(fmt.Sprintf("create: %s", err)), nil
 	}
 	if err := validateWebhookDef(def); err != nil {
+		return errResult(fmt.Sprintf("create: %s", err)), nil
+	}
+	if err := s.checkServerLimits(def); err != nil {
+		return errResult(fmt.Sprintf("create: %s", err)), nil
+	}
+	if err := checkWebhookSecretAuthority(ctx, s.Credentials, def.Auth); err != nil {
 		return errResult(fmt.Sprintf("create: %s", err)), nil
 	}
 	warnLiteralUserCredentials(in.Name, def)
@@ -373,6 +386,12 @@ func (s *WebhookDef) execFork(ctx context.Context, policy tools.WebhookDefPolicy
 	if err := validateWebhookDef(def); err != nil {
 		return errResult(fmt.Sprintf("fork: %s", err)), nil
 	}
+	if err := s.checkServerLimits(def); err != nil {
+		return errResult(fmt.Sprintf("fork: %s", err)), nil
+	}
+	if err := checkWebhookSecretAuthority(ctx, s.Credentials, def.Auth); err != nil {
+		return errResult(fmt.Sprintf("fork: %s", err)), nil
+	}
 	warnLiteralUserCredentials(in.Name, def)
 	// Run-execution tenant (in the definition JSON) defaults to the forking
 	// principal's tenant unless the parent/overlay already carries one; a
@@ -549,9 +568,18 @@ func (s *WebhookDef) buildDefinition(name, parentJSON string, overlay json.RawMe
 	}
 
 	if len(overlay) > 0 {
+		if err := checkWebhookOverlayKeys(overlay); err != nil {
+			return mergedWebhookDef{}, err
+		}
 		var ov mergedWebhookDef
 		if err := json.Unmarshal(overlay, &ov); err != nil {
 			return mergedWebhookDef{}, fmt.Errorf("parse overlay: %w", err)
+		}
+		// Checked on the overlay as well as on the result, because naming
+		// one form of the secret drops the other from the parent: both in
+		// one overlay would otherwise lose one without a word.
+		if (ov.Auth.Secret != "" || ov.Auth.PreviousSecret != "") && (ov.Auth.SigningSecretEnv != "" || ov.Auth.BearerTokenEnv != "") {
+			return mergedWebhookDef{}, fmt.Errorf("auth.secret and auth.previous_secret replace auth.signing_secret_env and auth.bearer_token_env: set one of the two forms, not both")
 		}
 		base.applyOverlay(ov)
 	}
@@ -559,6 +587,62 @@ func (s *WebhookDef) buildDefinition(name, parentJSON string, overlay json.RawMe
 	// webhook's addressable name is the registry key (the `name` arg)
 	// only, exactly like A2AAgentDef. So no name stamp here.
 	return base, nil
+}
+
+// webhookServerKeys are keys of the stored shape that the server sets and an
+// overlay never does. applyOverlay ignores them; an overlay that names one is
+// refused, so an author is told the value they wrote was not taken.
+var webhookServerKeys = map[string]string{
+	"operator_key_restricted": "it is taken from the author's token",
+	"isolated":                "it is taken from the author's token",
+	"capture_disabled":        "only a snapshot restore sets it",
+}
+
+// checkWebhookOverlayKeys refuses an overlay that would not be read as
+// written: a key no field takes, a key repeated, a key matched only by
+// ignoring its case, or a key the server sets. Go's decoder drops an unknown
+// key without a word, so a misspelt or newer field (an "events" list sent to
+// a server that does not know it) became a webhook without it. Applied to
+// what an author sends, never to a stored definition, which a snapshot
+// restore re-validates.
+func checkWebhookOverlayKeys(overlay json.RawMessage) error {
+	var top map[string]json.RawMessage
+	if json.Unmarshal(overlay, &top) == nil {
+		keys := make([]string, 0, len(top))
+		for k := range top {
+			keys = append(keys, k)
+		}
+		sort.Strings(keys)
+		for _, k := range keys {
+			if why, ok := webhookServerKeys[k]; ok {
+				return fmt.Errorf("overlay key %q cannot be set: %s", k, why)
+			}
+		}
+	}
+	if issues := teamgraph.KeyIssuesOf(overlay, reflect.TypeOf(mergedWebhookDef{})); len(issues) > 0 {
+		return fmt.Errorf("overlay: %s", issues[0].Msg)
+	}
+	return nil
+}
+
+// checkServerLimits refuses what this server could not honour: a user_tier
+// it does not define (the receiver would refuse every delivery), and a body
+// size limit above its request limit (a delivery is never read past that).
+// Checked at create and fork, where the server's config is at hand; a stored
+// definition is not refused for it, and the receiver caps the limit anyway.
+func (s *WebhookDef) checkServerLimits(def mergedWebhookDef) error {
+	if s.Cfg == nil {
+		return nil
+	}
+	if def.UserTier != "" && len(s.Cfg.UserTiers) > 0 {
+		if _, ok := s.Cfg.UserTiers[def.UserTier]; !ok {
+			return fmt.Errorf("user_tier %q is not one of this server's user tiers", def.UserTier)
+		}
+	}
+	if limit := s.Cfg.Env.MaxRequestBytes; limit > 0 && int64(def.BodySizeLimitBytes) > limit {
+		return fmt.Errorf("body_size_limit_bytes %d is above this server's request limit of %d bytes", def.BodySizeLimitBytes, limit)
+	}
+	return nil
 }
 
 func (s *WebhookDef) bootstrapStatic(ctx context.Context, name string, static config.Webhook) (store.WebhookDefRow, error) {
@@ -681,6 +765,7 @@ func validateWebhookDef(def mergedWebhookDef) error {
 		if field := config.WebhookTeamDeliveryForbids(config.Webhook{
 			Agent:                  def.Agent,
 			Channel:                def.Channel,
+			UserTier:               def.UserTier,
 			UserCredentials:        def.UserCredentials,
 			UserCredentialsFromEnv: def.UserCredentialsFromEnv,
 			Metadata:               def.Metadata,
@@ -755,15 +840,23 @@ func validateWebhookDef(def mergedWebhookDef) error {
 
 // validateWebhookAuth checks a webhook's auth block: auth.kind ∈ {"", "hmac",
 // "bearer", "none"} ("" treated as hmac), the secret its kind needs named by a
-// well-formed env-var name, and nothing it does not use. A team's own webhooks
-// are checked by it too, so they are held to exactly a WebhookDef's rules.
+// well-formed env-var name or by a stored credential (auth.secret), and
+// nothing it does not use. A team's own webhooks are checked by it too, so
+// they are held to exactly a WebhookDef's rules.
+//
+// Shape only: whether a stored credential exists, and whether the author may
+// name what it names, is checkWebhookSecretAuthority's, at create and fork. A
+// snapshot restore re-runs this and must accept what it accepted before.
 func validateWebhookAuth(a mergedWebhookAuth) error {
+	if err := config.CheckWebhookSecretRefs(config.WebhookAuth(a)); err != nil {
+		return err
+	}
 	switch a.Kind {
 	case "", "hmac":
-		if a.SigningSecretEnv == "" {
-			return fmt.Errorf("auth.kind=hmac requires auth.signing_secret_env")
+		if a.SigningSecretEnv == "" && a.Secret == "" {
+			return fmt.Errorf("auth.kind=hmac requires auth.signing_secret_env or auth.secret")
 		}
-		if !envVarNameRe.MatchString(a.SigningSecretEnv) {
+		if a.SigningSecretEnv != "" && !envVarNameRe.MatchString(a.SigningSecretEnv) {
 			return fmt.Errorf("auth.signing_secret_env %q is not a valid env-var name (must match [A-Z][A-Z0-9_]*)", a.SigningSecretEnv)
 		}
 		// SHA-256 is the only digest the receiver implements (verifyHMAC
@@ -776,10 +869,10 @@ func validateWebhookAuth(a mergedWebhookAuth) error {
 			return fmt.Errorf("auth.algorithm %q unsupported (only sha256 is implemented)", a.Algorithm)
 		}
 	case "bearer":
-		if a.BearerTokenEnv == "" {
-			return fmt.Errorf("auth.kind=bearer requires auth.bearer_token_env")
+		if a.BearerTokenEnv == "" && a.Secret == "" {
+			return fmt.Errorf("auth.kind=bearer requires auth.bearer_token_env or auth.secret")
 		}
-		if !envVarNameRe.MatchString(a.BearerTokenEnv) {
+		if a.BearerTokenEnv != "" && !envVarNameRe.MatchString(a.BearerTokenEnv) {
 			return fmt.Errorf("auth.bearer_token_env %q is not a valid env-var name (must match [A-Z][A-Z0-9_]*)", a.BearerTokenEnv)
 		}
 	case "none":
@@ -789,11 +882,60 @@ func validateWebhookAuth(a mergedWebhookAuth) error {
 		// 503s "unauthenticated_mode_disabled". Forbid declaring a secret that
 		// would never be consumed — silent dead config is worse than a loud
 		// refusal (RFC H Decision 9, never-silently-degrade).
-		if a.SigningSecretEnv != "" || a.BearerTokenEnv != "" {
-			return fmt.Errorf("auth.kind=none forbids signing_secret_env / bearer_token_env (no verification is performed)")
+		if a.SigningSecretEnv != "" || a.BearerTokenEnv != "" || a.Secret != "" || a.PreviousSecret != "" {
+			return fmt.Errorf("auth.kind=none forbids signing_secret_env / bearer_token_env / secret / previous_secret (no verification is performed)")
 		}
 	default:
 		return fmt.Errorf("unknown auth.kind %q (must be one of: hmac, bearer, none)", a.Kind)
+	}
+	return nil
+}
+
+// checkWebhookSecretAuthority refuses, at create and fork, a verification
+// secret the author may not name. A fork is judged on what it writes, the
+// secret it carries over from its parent included.
+//
+//   - An env var that is one of loomcycle's own secrets (the operator bearer,
+//     the database DSN, the credential key, ...), for every author: the
+//     receiver refuses to read one, so the definition could never work.
+//   - A stored secret ("$cred:<name>") that is not a tenant-level credential
+//     of the author's tenant — the tenant the receiver reads it from. An
+//     author with no tenant would name the shared tenant's credentials, and is
+//     refused. An operator (substrate:admin, or open-mode / stdio) is not
+//     checked, so a credential may be created after its definition.
+//
+// Not part of validateWebhookAuth: a snapshot restore re-runs that, and an
+// author's tenant is not a restore's.
+func checkWebhookSecretAuthority(ctx context.Context, creds *credential.Engine, a mergedWebhookAuth) error {
+	for _, env := range []struct{ field, name string }{{"auth.signing_secret_env", a.SigningSecretEnv}, {"auth.bearer_token_env", a.BearerTokenEnv}} {
+		if env.name != "" && config.IsInfraSecretEnv(env.name) {
+			return fmt.Errorf("%s %q is one of loomcycle's own secrets and cannot verify a webhook", env.field, env.name)
+		}
+	}
+	if a.Secret == "" || callerHasOperatorAuthority(ctx) {
+		return nil
+	}
+	tenantID := tools.RunIdentity(ctx).TenantID
+	for _, ref := range []struct{ field, value string }{{"auth.secret", a.Secret}, {"auth.previous_secret", a.PreviousSecret}} {
+		if ref.value == "" {
+			continue
+		}
+		name, _ := credential.ParseRef(ref.value) // the shape check passed
+		if tenantID == "" {
+			return fmt.Errorf("%s %q may not be set by an author with no tenant: it would read the shared tenant's credentials", ref.field, ref.value)
+		}
+		if creds == nil {
+			return fmt.Errorf("%s %q: this server stores no credentials", ref.field, ref.value)
+		}
+		found, err := creds.HasToCompare(ctx, tenantID, name)
+		if err != nil {
+			return fmt.Errorf("%s %q: could not check the credential: %v", ref.field, ref.value, err)
+		}
+		if !found {
+			return fmt.Errorf("%s %q names no tenant-level credential in tenant %q. "+
+				"Create it first with CredentialDef (op=create, scope=tenant, name=%q); "+
+				"allowed_urls: [] keeps it from ever being sent anywhere", ref.field, ref.value, tenantID, name)
+		}
 	}
 	return nil
 }
@@ -831,20 +973,24 @@ func webhookRowResponseMap(row store.WebhookDefRow) map[string]any {
 // on_complete reuses config.ScheduledRunHook — the same hook shape
 // ScheduleDef uses — rather than a parallel type, per RFC H WH-2.
 type mergedWebhookDef struct {
-	Enabled                bool                      `json:"enabled,omitempty"`
-	Delivery               string                    `json:"delivery,omitempty"`
-	Agent                  string                    `json:"agent,omitempty"`
-	Channel                string                    `json:"channel,omitempty"`
-	Auth                   mergedWebhookAuth         `json:"auth,omitempty"`
-	RateLimit              mergedWebhookRateLimit    `json:"rate_limit,omitempty"`
-	BodySizeLimitBytes     int                       `json:"body_size_limit_bytes,omitempty"`
-	UserCredentialsFromEnv map[string]string         `json:"user_credentials_from_env,omitempty"`
-	UserCredentials        map[string]string         `json:"user_credentials,omitempty"` // RFC F fork-time explicit values (ScheduleDef parity)
-	Metadata               map[string]any            `json:"metadata,omitempty"`         // non-secret, trusted agent metadata
-	TenantID               string                    `json:"tenant_id,omitempty"`        // tenant the spawned run executes as (RFC N follow-up); def-authored, never from payload
-	PayloadMapping         map[string]string         `json:"payload_mapping,omitempty"`
-	SyncResponse           mergedWebhookSyncResp     `json:"sync_response,omitempty"`
-	OnComplete             []config.ScheduledRunHook `json:"on_complete,omitempty"`
+	Enabled                bool                   `json:"enabled,omitempty"`
+	Delivery               string                 `json:"delivery,omitempty"`
+	Agent                  string                 `json:"agent,omitempty"`
+	Channel                string                 `json:"channel,omitempty"`
+	Auth                   mergedWebhookAuth      `json:"auth,omitempty"`
+	RateLimit              mergedWebhookRateLimit `json:"rate_limit,omitempty"`
+	BodySizeLimitBytes     int                    `json:"body_size_limit_bytes,omitempty"`
+	UserCredentialsFromEnv map[string]string      `json:"user_credentials_from_env,omitempty"`
+	UserCredentials        map[string]string      `json:"user_credentials,omitempty"` // RFC F fork-time explicit values (ScheduleDef parity)
+	// UserTier pins the started run's user tier, as config.Webhook's does: a
+	// delivery never chooses it. It was missing from this shape, so a
+	// runtime-authored def that set it lost it without a word.
+	UserTier       string                    `json:"user_tier,omitempty"`
+	Metadata       map[string]any            `json:"metadata,omitempty"`  // non-secret, trusted agent metadata
+	TenantID       string                    `json:"tenant_id,omitempty"` // tenant the spawned run executes as (RFC N follow-up); def-authored, never from payload
+	PayloadMapping map[string]string         `json:"payload_mapping,omitempty"`
+	SyncResponse   mergedWebhookSyncResp     `json:"sync_response,omitempty"`
+	OnComplete     []config.ScheduledRunHook `json:"on_complete,omitempty"`
 	// OperatorKeyRestricted is the RFC AX bit CAPTURED from the authoring
 	// principal at create/fork (server authority, NOT payload/overlay-set); the
 	// webhook receiver copies it into RunInput so a fired run keeps its creator's
@@ -947,6 +1093,8 @@ type mergedWebhookAuth struct {
 	SigningSecretEnv string `json:"signing_secret_env,omitempty"`
 	DeliveryIDHeader string `json:"delivery_id_header,omitempty"`
 	BearerTokenEnv   string `json:"bearer_token_env,omitempty"`
+	Secret           string `json:"secret,omitempty"`
+	PreviousSecret   string `json:"previous_secret,omitempty"`
 }
 
 // mergedWebhookRateLimit mirrors config.WebhookRateLimit.
@@ -1031,6 +1179,20 @@ func (d *mergedWebhookDef) applyOverlay(ov mergedWebhookDef) {
 	if ov.Auth.BearerTokenEnv != "" {
 		d.Auth.BearerTokenEnv = ov.Auth.BearerTokenEnv
 	}
+	// The two forms of a secret replace each other: an overlay that names
+	// one drops the other its parent carried, so a fork moving to a stored
+	// secret is not refused for keeping the env name, nor the reverse. A
+	// previous secret belongs to the secret it preceded: naming a new secret
+	// drops it unless the overlay names one too.
+	switch {
+	case ov.Auth.Secret != "":
+		d.Auth.Secret, d.Auth.PreviousSecret = ov.Auth.Secret, ov.Auth.PreviousSecret
+		d.Auth.SigningSecretEnv, d.Auth.BearerTokenEnv = "", ""
+	case ov.Auth.SigningSecretEnv != "" || ov.Auth.BearerTokenEnv != "":
+		d.Auth.Secret, d.Auth.PreviousSecret = "", ""
+	case ov.Auth.PreviousSecret != "":
+		d.Auth.PreviousSecret = ov.Auth.PreviousSecret
+	}
 	if ov.RateLimit.RequestsPerMinute != 0 {
 		d.RateLimit.RequestsPerMinute = ov.RateLimit.RequestsPerMinute
 	}
@@ -1039,6 +1201,9 @@ func (d *mergedWebhookDef) applyOverlay(ov mergedWebhookDef) {
 	}
 	if ov.BodySizeLimitBytes != 0 {
 		d.BodySizeLimitBytes = ov.BodySizeLimitBytes
+	}
+	if ov.UserTier != "" {
+		d.UserTier = ov.UserTier
 	}
 	// Credentials maps merge key by key, as ScheduleDef's do: a fork that
 	// re-supplies the keys a snapshot stripped must not drop the parent's
@@ -1078,12 +1243,15 @@ func staticToMergedWebhookDef(w config.Webhook) mergedWebhookDef {
 			SigningSecretEnv: w.Auth.SigningSecretEnv,
 			DeliveryIDHeader: w.Auth.DeliveryIDHeader,
 			BearerTokenEnv:   w.Auth.BearerTokenEnv,
+			Secret:           w.Auth.Secret,
+			PreviousSecret:   w.Auth.PreviousSecret,
 		},
 		RateLimit: mergedWebhookRateLimit{
 			RequestsPerMinute: w.RateLimit.RequestsPerMinute,
 			Burst:             w.RateLimit.Burst,
 		},
 		BodySizeLimitBytes:     w.BodySizeLimitBytes,
+		UserTier:               w.UserTier,
 		UserCredentialsFromEnv: w.UserCredentialsFromEnv,
 		UserCredentials:        w.UserCredentials,
 		Metadata:               w.Metadata,

@@ -2,11 +2,13 @@ package builtin
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"strings"
 	"testing"
 
 	"github.com/denn-gubsky/loomcycle/internal/auth"
+	"github.com/denn-gubsky/loomcycle/internal/credential"
 	"github.com/denn-gubsky/loomcycle/internal/teamrun"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
 )
@@ -85,7 +87,7 @@ func TestTeamDefCreate_ValidatesALocalWebhookAsAWebhookDef(t *testing.T) {
 		`{"channel":"./events","auth":{"kind":"none","bearer_token_env":"X"}}`:                          "auth.kind=none forbids",
 		`{"channel":"./events","auth":{"kind":"mtls"}}`:                                                 `unknown auth.kind "mtls"`,
 		`{"channel":"./events","auth":{"signing_secret_env":"S","algorithm":"sha1"}}`:                   "only sha256",
-		`{"channel":"./events","auth":{"signing_secret_env":"S","secret":"x"}}`:                         `unknown field "secret"`,
+		`{"channel":"./events","auth":{"signing_secret_env":"S","token":"x"}}`:                          `unknown field "token"`,
 		`{"channel":"./ghost","auth":{"signing_secret_env":"S"}}`:                                       `"./ghost" names a channel the team does not declare`,
 		`{"channel":"events","auth":{"signing_secret_env":"S"}}`:                                        "must name one of the team's own channels",
 		`{"channel":"./inbox","auth":{"signing_secret_env":"S"}}`:                                       "scope=user",
@@ -241,5 +243,40 @@ func TestTeamDefInputSchema_DescribesLocalWebhooks(t *testing.T) {
 	desc := (&TeamDef{}).Description()
 	if !strings.Contains(desc, "webhooks of its own") || !strings.Contains(desc, "/v1/_teams/<tenant>/<team>/webhooks/<name>") {
 		t.Error("the TeamDef description does not describe a team's own webhooks and their route")
+	}
+}
+
+// A team's own webhook may name its secret as a stored credential, held to a
+// WebhookDef's rule: a tenant-level credential of the author's tenant, a
+// reference and never a literal; and its env form may not name one of
+// loomcycle's own secrets.
+func TestTeamDefCreate_ALocalWebhooksStoredSecretIsTheAuthorsTenants(t *testing.T) {
+	tool, base, done := teamDefFixture(t)
+	defer done()
+	sealer, err := credential.NewSealer(base64.StdEncoding.EncodeToString(make([]byte, 32)), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	tool.Credentials = credential.NewEngine(tool.Store, sealer)
+	for _, id := range []credential.Identity{
+		{TenantID: "acme", Scope: "tenant", Name: "gh-hook"},
+		{TenantID: "other", Scope: "tenant", Name: "foreign"},
+	} {
+		if _, err := tool.Credentials.PutInline(context.Background(), id, "value", nil, &[]string{}, nil); err != nil {
+			t.Fatal(err)
+		}
+	}
+	ctx := tools.WithRunIdentity(base, tools.RunIdentityValue{AgentID: "a_test", TenantID: "acme"})
+	ctx = webhookAuthor(auth.WithPrincipal(ctx, auth.Principal{TenantID: "acme", Subject: "dev", Scopes: []string{auth.ScopeTenant}}))
+
+	if res := teamOp(t, tool, ctx, "create", "hooked", withHook(`{"channel":"./events","auth":{"secret":"$cred:gh-hook"}}`)); res.IsError {
+		t.Fatalf("the author's own credential: %s", res.Text)
+	}
+	for body, want := range map[string]string{
+		`{"channel":"./events","auth":{"secret":"$cred:foreign"}}`:                    `names no tenant-level credential in tenant "acme"`,
+		`{"channel":"./events","auth":{"secret":"plain-literal"}}`:                    `auth.secret takes only a stored credential`,
+		`{"channel":"./events","auth":{"signing_secret_env":"LOOMCYCLE_AUTH_TOKEN"}}`: `one of loomcycle's own secrets`,
+	} {
+		wantRefused(t, teamOp(t, tool, ctx, "create", "other-team", withHook(body)), body, `local.webhooks["github"]`, want)
 	}
 }

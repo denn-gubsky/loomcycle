@@ -14,6 +14,9 @@ internal/api/grpc/server.go's ``mapRunnerErr``:
     Unavailable        → UnavailableError
     Internal / other   → LoomcycleError (with the original message)
 
+Every error has a read-only ``retryable``: True only for a refusal that
+clears on its own, judged from the class and ``reason``.
+
 The ``code`` and ``message`` attributes preserve the gRPC payload
 for log correlation when the typed class doesn't carry enough.
 The ``reason`` attribute names the condition when the server said which
@@ -41,6 +44,46 @@ class LoomcycleError(Exception):
         # message. ``None`` when the server attached none.
         self.reason: Optional[str] = None
 
+    @property
+    def retryable(self) -> bool:
+        """Whether the same call, sent again unchanged, can succeed once time
+        has passed: True only for a refusal that clears on its own (see
+        ``BackpressureError``, ``UnavailableError`` and ``_TRANSIENT_REASONS``),
+        False otherwise.
+
+        A read-only property rather than an attribute because it follows
+        ``reason``, which is filled in after the error is built. False is the
+        default because a wrong True turns a refusal that never clears into a
+        retry loop that never ends, while a wrong False only surfaces an error
+        the caller could have waited out. The client never retries on its
+        own; bound your retries even when this is True."""
+        return self.reason in _TRANSIENT_REASONS
+
+
+# Reasons that clear on their own although their gRPC code, which also covers
+# conditions that never do, maps to a class whose answer is otherwise False.
+# The server classifies each as transient:
+#   runtime_paused (UNAVAILABLE)      new runs refused until the operator resumes
+#   tier_unavailable, pin_unavailable no provider for the tier/pin is up right now
+#   call_failed (UNAVAILABLE)         a decision-model call did not complete
+#   timeout (DEADLINE_EXCEEDED)       a decision-model call did not answer in time
+_TRANSIENT_REASONS = frozenset(
+    {"runtime_paused", "tier_unavailable", "pin_unavailable", "call_failed", "timeout"}
+)
+
+# RESOURCE_EXHAUSTED reasons that do NOT clear by waiting: an operator or the
+# caller has to act first, so a retry loop on them never ends.
+#   token_limit_exceeded  a hard token budget (until raised or the month rolls)
+#   configured_run_cap    the user holds as many configured runs as allowed;
+#                         start or discard one first
+_CALLER_ACTION_RESOURCE_REASONS = frozenset({"token_limit_exceeded", "configured_run_cap"})
+
+# The server sends configured_run_cap over gRPC with no ErrorInfo (its
+# configured-run refusals map by HTTP status alone), so until it does, the
+# message is the only discriminator: the stable tail of the refusal's text in
+# internal/api/http/configured_runs.go.
+_CONFIGURED_RUN_CAP_MESSAGE = "start or discard one first"
+
 
 class AgentNotFoundError(LoomcycleError):
     """Raised by ``get_agent`` / ``cancel_agent`` when the agent_id
@@ -66,9 +109,28 @@ class AgentIDInUseError(LoomcycleError):
 
 
 class BackpressureError(LoomcycleError):
-    """Raised when the concurrency semaphore rejected the run. Wait
-    until in-flight runs drain, or raise the operator's
-    ``max_concurrent_runs``."""
+    """Raised for every gRPC ``RESOURCE_EXHAUSTED`` except a snapshot over
+    its size cap. ``reason`` says which condition it is:
+
+    * ``backpressure`` — the run queue is full; ``per_user_quota_exhausted``
+      — the caller's own in-flight runs are at their cap; ``rate_limited``
+      — the caller is starting runs too fast. These clear on their own:
+      ``retryable`` is True.
+    * ``token_limit_exceeded`` — a hard token budget. It does not clear
+      until an operator raises the budget or the month rolls over, so
+      ``retryable`` is False. Test ``retryable`` (or ``reason``) before
+      retrying a BackpressureError; ``except BackpressureError: retry()``
+      alone spins on the budget for the rest of the month.
+    * the configured-run cap — the user already holds as many configured
+      (not yet started) runs as allowed; only starting or discarding one
+      makes room, so ``retryable`` is False. The server sends no reason for
+      it over gRPC yet; it is recognised by its message."""
+
+    @property
+    def retryable(self) -> bool:
+        if self.reason in _CALLER_ACTION_RESOURCE_REASONS:
+            return False
+        return _CONFIGURED_RUN_CAP_MESSAGE not in (self.message or "")
 
 
 class AuthError(LoomcycleError):
@@ -77,9 +139,19 @@ class AuthError(LoomcycleError):
 
 
 class UnavailableError(LoomcycleError):
-    """Raised when the gRPC channel can't reach the server (network
-    error, server down, TLS handshake failure). Adapters should
-    retry with backoff."""
+    """Raised for gRPC ``UNAVAILABLE``: the channel can't reach the server
+    (network error, server down, TLS handshake failure), the runtime is
+    paused, no provider in the tier is up, or a feature the deployment does
+    not have (``decision_not_configured``, an unwired connector).
+
+    ``retryable`` (inherited) is True only where the server's ``reason``
+    names a condition that clears on its own: ``runtime_paused`` (until the
+    operator resumes), ``tier_unavailable`` and ``pin_unavailable`` (until a
+    provider recovers), ``call_failed`` (a decision-model call that did not
+    complete). A transport failure carries no reason and neither does an
+    unwired connector, so ``retryable`` cannot tell them apart and stays
+    False; retry a reason-less UnavailableError on your own judgement, with
+    backoff and a bound."""
 
 
 class InvalidArgumentError(LoomcycleError):
@@ -107,6 +179,10 @@ class PauseNotConfiguredError(UnavailableError):
     """Raised when the server has no pause Manager wired (no Store
     backend on the deployment). Operator config issue; not a transient
     failure. Server returns gRPC Unavailable for this case."""
+
+    @property
+    def retryable(self) -> bool:
+        return False
 
 
 class AlreadyPausingError(LoomcycleError):
