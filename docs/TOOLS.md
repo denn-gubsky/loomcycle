@@ -1083,35 +1083,46 @@ A tool's own hooks run before the agent-level ones, each in listed order; `post`
 
 ### Webhook payload
 
-**Pre** (`POST <callback_url>`):
+A webhook hook is a `POST` of JSON to its `url`, with the hook's configured `headers`. In a HookDef a header value may be a `$cred:` reference, resolved per call; a hook attached on a run request may not carry one. Every payload names the hook and the run it fires in; none carries the agent's prompt or message history. The Go types in `internal/hooks/types.go` are authoritative, and the `hooks` help topic (`Context op=help topic=hooks`, source `internal/help/builtin/hooks.md`) documents every phase and every answer.
+
+**`pre`**, before a tool runs:
 ```json
 {
-  "phase": "pre", "owner": "...", "hook_name": "...",
+  "phase": "pre", "owner": "agent:company-researcher", "hook_name": "gate",
   "agent": "company-researcher", "user_id": "...", "agent_id": "...",
+  "run_id": "...", "parent_run_id": "...", "iteration": 3,
   "tool_call": { "id": "...", "name": "WebFetch", "input": { "url": "..." } }
 }
-→ { "input": {...} }                                 // rewrite
-→ { "deny": { "is_error": false, "text": "..." } }   // short-circuit
+→ { "input": {...} }                                 // rewrite the input
+→ { "deny": { "is_error": false, "text": "..." } }   // do not run the tool; this is its result
+→ { "allow_hosts": ["careers.acme.com"] }            // widen hosts for this one call (opt-in, below)
 → {} or 204                                          // no change
 ```
 
-**Post** (`POST <callback_url>`):
+**`post`** after every tool call, and **`post_failure`** only after a failed one (it runs before the `post` chain). The payload adds the result; on a failure `tool_result.error` carries its classification:
 ```json
 {
-  "phase": "post", "owner": "...", "hook_name": "...",
+  "phase": "post", "owner": "agent:company-researcher", "hook_name": "wrap",
   "agent": "company-researcher", "user_id": "...", "agent_id": "...",
+  "run_id": "...", "parent_run_id": "...", "iteration": 3,
   "tool_call": { "id": "...", "name": "WebFetch", "input": {...} },
-  "tool_result": { "is_error": false, "text": "...page body..." }
+  "tool_result": { "is_error": false, "text": "...page body...",
+                   "error": { "category": "...", "retryable": false } }
 }
 → { "result": { "is_error": false, "text": "<untrusted>...</untrusted>" } }
+→ { "additional_context": "..." }                    // appended to the result's text
 → {} or 204                                          // no change
 ```
+
+**Run hooks** (`agent_start`, `agent_stop`, `subagent_start`, `subagent_stop`, `pre_compact`, `post_compact`, `run_end`) receive the same identity fields plus what the phase is about: `final_text` and `stop_reason` for `agent_stop`, `subagent` and `subagent_run_id` for the sub-agent phases, `status` and `error` for how a child or the run ended, and the token counts for a compaction. They answer with `{"decision": ..., "reason": ..., "additional_context": ...}`: `agent_start`, `subagent_start`, `subagent_stop` and `pre_compact` may `deny`; `agent_stop` may `block` (the reason goes back to the model) or `hold` (the answer waits for a person's review). `post_compact` and `run_end` only observe.
+
+**`channel_publish`** hooks belong to a channel, not an agent (`owner` is `channel:<name>`). They receive the message (`channel`, `scope`, `message_id`, `published_at`, `attempt`, `body`) and answer `release` (optionally with `updated_body`), `drop` or `hold`.
 
 ### Composition
 
-- **Pre chain**: registration order. The first non-nil `deny` short-circuits the rest of the Pre chain.
-- **Post chain**: reverse registration order (LIFO middleware). Each hook sees the result the prior (inner) hook produced.
-- Hooks within the chain run sequentially per-tool. The **parallel tool dispatcher** (v0.7.x) runs N tool calls in parallel; their hook chains fire in parallel too. The webhook server must handle concurrent calls.
+- **Order**: a tool's own hooks run before the agent-level ones, each in the order the definition lists them. The first `deny` ends the `pre` chain.
+- **Post chain**: reverse order (middleware nesting). Each hook sees the result the previous (inner) hook produced.
+- Hooks within the chain run sequentially per tool call. The **parallel tool dispatcher** runs N tool calls in parallel, and their hook chains fire in parallel too, so a webhook server must handle concurrent calls.
 
 ### Failure modes
 
