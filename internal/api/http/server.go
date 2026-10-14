@@ -3010,8 +3010,11 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 	}
 
 	// ---- Concurrency slot ----
+	// Keyed on the run's own tenant: a trigger run (scheduler, webhook, A2A)
+	// has no principal on ctx, so tenantFromCtx would count every tenant's
+	// trigger runs under the empty tenant.
 	acquireStart := time.Now()
-	release, err := s.sem.AcquireForUser(ctx, tenantFromCtx(ctx), effectiveUserID)
+	release, err := s.sem.AcquireForUser(ctx, effectiveTenantID, effectiveUserID)
 	queueWait := time.Since(acquireStart)
 	if err != nil {
 		if concurrency.IsPerUserQuotaExhausted(err) {

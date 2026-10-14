@@ -1,6 +1,7 @@
 package http
 
 import (
+	"context"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -12,6 +13,8 @@ import (
 	"time"
 
 	"github.com/denn-gubsky/loomcycle/internal/concurrency"
+	"github.com/denn-gubsky/loomcycle/internal/loop"
+	"github.com/denn-gubsky/loomcycle/internal/runner"
 	storesqlite "github.com/denn-gubsky/loomcycle/internal/store/sqlite"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
 )
@@ -161,6 +164,42 @@ func TestPerUserQuota_Disabled_NoBehaviorChange(t *testing.T) {
 	waitForActive(t, sem, 4, 2*time.Second)
 	close(prov.release)
 	wg.Wait()
+}
+
+// TestPerUserQuota_TriggerRunCountsUnderItsOwnTenant — a run started with no
+// principal on ctx (a scheduler fire, a webhook delivery, an A2A task) carries
+// its tenant in RunInput. Its run slot must count against that (tenant, user),
+// not against the empty tenant: otherwise the same user name in two tenants
+// shares one per-user cap and one turn in the run queue.
+func TestPerUserQuota_TriggerRunCountsUnderItsOwnTenant(t *testing.T) {
+	prov := &pausableProvider{release: make(chan struct{}), finalText: "ok"}
+	cfg := makeBaseConfig()
+	st, err := storesqlite.Open(filepath.Join(t.TempDir(), "trigger.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+	sem := concurrency.New(8, 8, time.Second).WithPerUserCap(2)
+	srv := New(cfg, &stubResolver{p: prov}, []tools.Tool{}, sem, st)
+
+	done := make(chan error, 1)
+	go func() {
+		done <- srv.RunOnce(context.Background(), runner.RunInput{
+			Agent:    "default",
+			TenantID: "acme",
+			UserID:   "u1",
+			Segments: []loop.PromptSegment{{Role: "user", Content: []loop.PromptContentBlock{{Type: "trusted-text", Text: "hi"}}}},
+		}, runner.RunCallbacks{})
+	}()
+	waitForActive(t, sem, 1, 2*time.Second)
+	perUser := sem.Stats().PerUser
+	close(prov.release)
+	if err := <-done; err != nil {
+		t.Fatalf("RunOnce: %v", err)
+	}
+	if perUser["acme/u1"] != 1 || perUser["u1"] != 0 {
+		t.Fatalf("per-user count = %v, want acme/u1 = 1 and no bare u1", perUser)
+	}
 }
 
 // waitForActive polls the semaphore until active reaches `want` or
