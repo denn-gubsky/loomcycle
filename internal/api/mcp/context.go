@@ -105,11 +105,10 @@ func operatorCtx(ctx context.Context) context.Context {
 // MCP-direct caller (identity must already be stamped). Def-family scopes are
 // "any" for BOTH admin and tenant — tenant confinement is the TenantID stamp +
 // the lookup's tenant filter, not a def-scope narrowing (RFC AG §3.1). The
-// OPERATOR PLANE (OperatorTokenDef mint, cross-agent Evaluation, cross-tenant
-// history) is granted ONLY when isAdmin; a non-admin (tenant) principal leaves
-// those zero (default-deny) — so even if such a tool were reached it refuses.
-// Evaluation is not decided by isAdmin: it takes tools.OffRunEvaluationPolicy,
-// as HTTP and gRPC do.
+// OPERATOR PLANE (OperatorTokenDef mint, cross-tenant history) is granted ONLY
+// when isAdmin; a non-admin (tenant) principal leaves those zero (default-deny)
+// — so even if such a tool were reached it refuses. Evaluation is not decided
+// by isAdmin: it takes tools.OffRunEvaluationPolicy, as HTTP and gRPC do.
 func grantOperatorPolicies(ctx context.Context, agentName string, isAdmin bool) context.Context {
 	// AgentTools wildcard ceiling (F11): without it, agentdef/skilldef create
 	// with a non-empty tools overlay refuses ("caller's effective
