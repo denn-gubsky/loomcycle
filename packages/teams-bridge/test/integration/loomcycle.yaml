@@ -1,0 +1,26 @@
+# Integration fixture for @loomcycle/teams-bridge: one interactive-capable
+# agent on the cost-free mock provider, and the bridge's own tenant-operator
+# principal (it only registers users and mints their tokens).
+provider_priority: [mock]
+tiers:
+  middle:
+    - { provider: mock, model: mock-generic }
+
+principals:
+  teams-bridge:
+    tenant: acme
+    subject: teams-bridge
+    scopes: [substrate:tenant]
+    token_env: LOOMCYCLE_TEAMS_BRIDGE_IT_TOKEN
+
+agents:
+  helper:
+    description: "Chat agent the Teams bridge drives."
+    tier: middle
+    system_prompt: "You are a helpful assistant."
+    tools: []
+  other:
+    description: "An agent the bridge's tokens must not be able to start."
+    tier: middle
+    system_prompt: "Not for Teams."
+    tools: []
