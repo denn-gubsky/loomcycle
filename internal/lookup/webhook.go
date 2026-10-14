@@ -148,6 +148,7 @@ type SubstrateWebhookDef struct {
 	Auth                   SubstrateWebhookAuth      `json:"auth,omitempty"`
 	RateLimit              SubstrateWebhookRateLimit `json:"rate_limit,omitempty"`
 	BodySizeLimitBytes     int                       `json:"body_size_limit_bytes,omitempty"`
+	UserTier               string                    `json:"user_tier,omitempty"`
 	UserCredentialsFromEnv map[string]string         `json:"user_credentials_from_env,omitempty"`
 	UserCredentials        map[string]string         `json:"user_credentials,omitempty"`
 	Metadata               map[string]any            `json:"metadata,omitempty"`
@@ -223,6 +224,7 @@ func (s SubstrateWebhookDef) ToConfigDef() config.Webhook {
 			Burst:             s.RateLimit.Burst,
 		},
 		BodySizeLimitBytes:     s.BodySizeLimitBytes,
+		UserTier:               s.UserTier,
 		UserCredentialsFromEnv: s.UserCredentialsFromEnv,
 		UserCredentials:        s.UserCredentials,
 		Metadata:               s.Metadata,

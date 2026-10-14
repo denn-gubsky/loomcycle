@@ -27,6 +27,24 @@ import (
 
 const defaultBodySizeLimitBytes = 1 << 20 // 1 MiB
 
+// bodyLimit is how many bytes of a delivery are read: the definition's
+// body_size_limit_bytes (1 MiB when unset), never above the server's request
+// limit (LOOMCYCLE_MAX_REQUEST_BYTES), which a definition used to be able to
+// exceed without bound. A stored definition with a larger value still loads;
+// it is capped here.
+func (rec *Receiver) bodyLimit(wd config.Webhook) int64 {
+	limit := int64(wd.BodySizeLimitBytes)
+	if limit <= 0 {
+		limit = defaultBodySizeLimitBytes
+	}
+	if rec.cfg != nil {
+		if max := rec.cfg.Env.MaxRequestBytes; max > 0 && limit > max {
+			limit = max
+		}
+	}
+	return limit
+}
+
 // Receiver is the RFC H inbound-webhook HTTP handler. It is the
 // security/trust boundary: it authenticates a raw external POST, guards
 // against replay + overload, projects the payload through the Def's
@@ -196,11 +214,7 @@ func (rec *Receiver) handle(w http.ResponseWriter, r *http.Request) {
 
 	// 2. Read the raw body under the Def's size limit. Raw bytes are what
 	//    the signature is verified against — we never re-serialize.
-	limit := wd.BodySizeLimitBytes
-	if limit <= 0 {
-		limit = defaultBodySizeLimitBytes
-	}
-	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, int64(limit)))
+	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, rec.bodyLimit(wd)))
 	if err != nil {
 		rec.finish(span, whKey, "", "rejected_body", "")
 		writeError(w, http.StatusBadRequest, "bad_body", "")

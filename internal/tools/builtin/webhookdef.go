@@ -11,7 +11,9 @@ import (
 
 	"github.com/denn-gubsky/loomcycle/internal/config"
 	"github.com/denn-gubsky/loomcycle/internal/store"
+	"github.com/denn-gubsky/loomcycle/internal/teamgraph"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
+	"reflect"
 )
 
 // WebhookDef is the v1.x RFC H (Input Webhooks) built-in tool that lets
@@ -73,7 +75,7 @@ const webhookDefInputSchema = `{
     "parent_def_id": {"type": "string", "description": "Fork parent (optional for fork — when absent, forks the active def of the name, or bootstraps from a yaml template)."},
     "overlay": {
       "type": "object",
-      "description": "Mutable subset of the webhook definition for create/fork. delivery is spawn (default — start a run of agent), channel (publish the body to channel) or team (start a detached walk of the team named in team, as TeamDef op=run mode=detach does, with the raw request body as the walk's input). For team, vars maps a variable the team declares to a JSONPath into the body ($, .key and [N] only), e.g. {\"delivery\":\"team\",\"team\":\"pr-review\",\"vars\":{\"repo\":\"$.repository.full_name\",\"pr\":\"$.pull_request.number\"}}; a path the body lacks leaves that variable at the team's default. delivery=team forbids agent, channel, credentials, metadata, on_complete, sync_response and every payload_mapping target except user_id; team and vars are refused on the other deliveries. The team is looked up in the webhook's tenant when a delivery arrives: a missing or retired team, a variable it does not declare, or a projected value it refuses (too long, or containing {{ or }}) starts no walk and answers 400 invalid_run. An accepted delivery answers 202 with the walk's run_id. tenant_id (where spawned runs execute) may name only your own tenant unless you are an admin; omit it to use yours. Server-set fields are silently ignored if supplied.",
+      "description": "Mutable subset of the webhook definition for create/fork. delivery is spawn (default — start a run of agent), channel (publish the body to channel) or team (start a detached walk of the team named in team, as TeamDef op=run mode=detach does, with the raw request body as the walk's input). For team, vars maps a variable the team declares to a JSONPath into the body ($, .key and [N] only), e.g. {\"delivery\":\"team\",\"team\":\"pr-review\",\"vars\":{\"repo\":\"$.repository.full_name\",\"pr\":\"$.pull_request.number\"}}; a path the body lacks leaves that variable at the team's default. delivery=team forbids agent, channel, credentials, metadata, on_complete, sync_response and every payload_mapping target except user_id; team and vars are refused on the other deliveries. The team is looked up in the webhook's tenant when a delivery arrives: a missing or retired team, a variable it does not declare, or a projected value it refuses (too long, or containing {{ or }}) starts no walk and answers 400 invalid_run. An accepted delivery answers 202 with the walk's run_id. tenant_id (where spawned runs execute) may name only your own tenant unless you are an admin; omit it to use yours. user_tier pins the tier a spawned run is routed and billed under; a delivery never chooses it, and it must be one of the server's tiers. body_size_limit_bytes may not exceed the server's request limit. Keys are read as written: a key the definition does not have, a key repeated, a key that matches a field only by ignoring case, and a server-set key (operator_key_restricted, isolated, capture_disabled) are refused.",
       "additionalProperties": true
     },
     "description":   {"type": "string", "description": "Free-text rationale for create/fork."},
@@ -155,6 +157,9 @@ func (s *WebhookDef) execCreate(ctx context.Context, policy tools.WebhookDefPoli
 		return errResult(fmt.Sprintf("create: %s", err)), nil
 	}
 	if err := validateWebhookDef(def); err != nil {
+		return errResult(fmt.Sprintf("create: %s", err)), nil
+	}
+	if err := s.checkServerLimits(def); err != nil {
 		return errResult(fmt.Sprintf("create: %s", err)), nil
 	}
 	warnLiteralUserCredentials(in.Name, def)
@@ -373,6 +378,9 @@ func (s *WebhookDef) execFork(ctx context.Context, policy tools.WebhookDefPolicy
 	if err := validateWebhookDef(def); err != nil {
 		return errResult(fmt.Sprintf("fork: %s", err)), nil
 	}
+	if err := s.checkServerLimits(def); err != nil {
+		return errResult(fmt.Sprintf("fork: %s", err)), nil
+	}
 	warnLiteralUserCredentials(in.Name, def)
 	// Run-execution tenant (in the definition JSON) defaults to the forking
 	// principal's tenant unless the parent/overlay already carries one; a
@@ -549,6 +557,9 @@ func (s *WebhookDef) buildDefinition(name, parentJSON string, overlay json.RawMe
 	}
 
 	if len(overlay) > 0 {
+		if err := checkWebhookOverlayKeys(overlay); err != nil {
+			return mergedWebhookDef{}, err
+		}
 		var ov mergedWebhookDef
 		if err := json.Unmarshal(overlay, &ov); err != nil {
 			return mergedWebhookDef{}, fmt.Errorf("parse overlay: %w", err)
@@ -559,6 +570,62 @@ func (s *WebhookDef) buildDefinition(name, parentJSON string, overlay json.RawMe
 	// webhook's addressable name is the registry key (the `name` arg)
 	// only, exactly like A2AAgentDef. So no name stamp here.
 	return base, nil
+}
+
+// webhookServerKeys are keys of the stored shape that the server sets and an
+// overlay never does. applyOverlay ignores them; an overlay that names one is
+// refused, so an author is told the value they wrote was not taken.
+var webhookServerKeys = map[string]string{
+	"operator_key_restricted": "it is taken from the author's token",
+	"isolated":                "it is taken from the author's token",
+	"capture_disabled":        "only a snapshot restore sets it",
+}
+
+// checkWebhookOverlayKeys refuses an overlay that would not be read as
+// written: a key no field takes, a key repeated, a key matched only by
+// ignoring its case, or a key the server sets. Go's decoder drops an unknown
+// key without a word, so a misspelt or newer field (an "events" list sent to
+// a server that does not know it) became a webhook without it. Applied to
+// what an author sends, never to a stored definition, which a snapshot
+// restore re-validates.
+func checkWebhookOverlayKeys(overlay json.RawMessage) error {
+	var top map[string]json.RawMessage
+	if json.Unmarshal(overlay, &top) == nil {
+		keys := make([]string, 0, len(top))
+		for k := range top {
+			keys = append(keys, k)
+		}
+		sort.Strings(keys)
+		for _, k := range keys {
+			if why, ok := webhookServerKeys[k]; ok {
+				return fmt.Errorf("overlay key %q cannot be set: %s", k, why)
+			}
+		}
+	}
+	if issues := teamgraph.KeyIssuesOf(overlay, reflect.TypeOf(mergedWebhookDef{})); len(issues) > 0 {
+		return fmt.Errorf("overlay: %s", issues[0].Msg)
+	}
+	return nil
+}
+
+// checkServerLimits refuses what this server could not honour: a user_tier
+// it does not define (the receiver would refuse every delivery), and a body
+// size limit above its request limit (a delivery is never read past that).
+// Checked at create and fork, where the server's config is at hand; a stored
+// definition is not refused for it, and the receiver caps the limit anyway.
+func (s *WebhookDef) checkServerLimits(def mergedWebhookDef) error {
+	if s.Cfg == nil {
+		return nil
+	}
+	if def.UserTier != "" && len(s.Cfg.UserTiers) > 0 {
+		if _, ok := s.Cfg.UserTiers[def.UserTier]; !ok {
+			return fmt.Errorf("user_tier %q is not one of this server's user tiers", def.UserTier)
+		}
+	}
+	if limit := s.Cfg.Env.MaxRequestBytes; limit > 0 && int64(def.BodySizeLimitBytes) > limit {
+		return fmt.Errorf("body_size_limit_bytes %d is above this server's request limit of %d bytes", def.BodySizeLimitBytes, limit)
+	}
+	return nil
 }
 
 func (s *WebhookDef) bootstrapStatic(ctx context.Context, name string, static config.Webhook) (store.WebhookDefRow, error) {
@@ -681,6 +748,7 @@ func validateWebhookDef(def mergedWebhookDef) error {
 		if field := config.WebhookTeamDeliveryForbids(config.Webhook{
 			Agent:                  def.Agent,
 			Channel:                def.Channel,
+			UserTier:               def.UserTier,
 			UserCredentials:        def.UserCredentials,
 			UserCredentialsFromEnv: def.UserCredentialsFromEnv,
 			Metadata:               def.Metadata,
@@ -831,20 +899,24 @@ func webhookRowResponseMap(row store.WebhookDefRow) map[string]any {
 // on_complete reuses config.ScheduledRunHook — the same hook shape
 // ScheduleDef uses — rather than a parallel type, per RFC H WH-2.
 type mergedWebhookDef struct {
-	Enabled                bool                      `json:"enabled,omitempty"`
-	Delivery               string                    `json:"delivery,omitempty"`
-	Agent                  string                    `json:"agent,omitempty"`
-	Channel                string                    `json:"channel,omitempty"`
-	Auth                   mergedWebhookAuth         `json:"auth,omitempty"`
-	RateLimit              mergedWebhookRateLimit    `json:"rate_limit,omitempty"`
-	BodySizeLimitBytes     int                       `json:"body_size_limit_bytes,omitempty"`
-	UserCredentialsFromEnv map[string]string         `json:"user_credentials_from_env,omitempty"`
-	UserCredentials        map[string]string         `json:"user_credentials,omitempty"` // RFC F fork-time explicit values (ScheduleDef parity)
-	Metadata               map[string]any            `json:"metadata,omitempty"`         // non-secret, trusted agent metadata
-	TenantID               string                    `json:"tenant_id,omitempty"`        // tenant the spawned run executes as (RFC N follow-up); def-authored, never from payload
-	PayloadMapping         map[string]string         `json:"payload_mapping,omitempty"`
-	SyncResponse           mergedWebhookSyncResp     `json:"sync_response,omitempty"`
-	OnComplete             []config.ScheduledRunHook `json:"on_complete,omitempty"`
+	Enabled                bool                   `json:"enabled,omitempty"`
+	Delivery               string                 `json:"delivery,omitempty"`
+	Agent                  string                 `json:"agent,omitempty"`
+	Channel                string                 `json:"channel,omitempty"`
+	Auth                   mergedWebhookAuth      `json:"auth,omitempty"`
+	RateLimit              mergedWebhookRateLimit `json:"rate_limit,omitempty"`
+	BodySizeLimitBytes     int                    `json:"body_size_limit_bytes,omitempty"`
+	UserCredentialsFromEnv map[string]string      `json:"user_credentials_from_env,omitempty"`
+	UserCredentials        map[string]string      `json:"user_credentials,omitempty"` // RFC F fork-time explicit values (ScheduleDef parity)
+	// UserTier pins the started run's user tier, as config.Webhook's does: a
+	// delivery never chooses it. It was missing from this shape, so a
+	// runtime-authored def that set it lost it without a word.
+	UserTier       string                    `json:"user_tier,omitempty"`
+	Metadata       map[string]any            `json:"metadata,omitempty"`  // non-secret, trusted agent metadata
+	TenantID       string                    `json:"tenant_id,omitempty"` // tenant the spawned run executes as (RFC N follow-up); def-authored, never from payload
+	PayloadMapping map[string]string         `json:"payload_mapping,omitempty"`
+	SyncResponse   mergedWebhookSyncResp     `json:"sync_response,omitempty"`
+	OnComplete     []config.ScheduledRunHook `json:"on_complete,omitempty"`
 	// OperatorKeyRestricted is the RFC AX bit CAPTURED from the authoring
 	// principal at create/fork (server authority, NOT payload/overlay-set); the
 	// webhook receiver copies it into RunInput so a fired run keeps its creator's
@@ -1040,6 +1112,9 @@ func (d *mergedWebhookDef) applyOverlay(ov mergedWebhookDef) {
 	if ov.BodySizeLimitBytes != 0 {
 		d.BodySizeLimitBytes = ov.BodySizeLimitBytes
 	}
+	if ov.UserTier != "" {
+		d.UserTier = ov.UserTier
+	}
 	// Credentials maps merge key by key, as ScheduleDef's do: a fork that
 	// re-supplies the keys a snapshot stripped must not drop the parent's
 	// other credentials by restating a smaller map.
@@ -1084,6 +1159,7 @@ func staticToMergedWebhookDef(w config.Webhook) mergedWebhookDef {
 			Burst:             w.RateLimit.Burst,
 		},
 		BodySizeLimitBytes:     w.BodySizeLimitBytes,
+		UserTier:               w.UserTier,
 		UserCredentialsFromEnv: w.UserCredentialsFromEnv,
 		UserCredentials:        w.UserCredentials,
 		Metadata:               w.Metadata,

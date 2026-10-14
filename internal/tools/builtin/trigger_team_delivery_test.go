@@ -190,6 +190,7 @@ func TestWebhookDefTool_TeamDeliveryRefusesRunShapedFieldsAndBadTargets(t *testi
 	}{
 		{"agent", base + `,"agent":"intake"`, "forbids `agent`"},
 		{"channel", base + `,"channel":"c"`, "forbids `channel`"},
+		{"user_tier", base + `,"user_tier":"pro"`, "forbids `user_tier`"},
 		{"user_credentials", base + `,"user_credentials":{"gh":"t"}`, "forbids credentials"},
 		{"user_credentials_from_env", base + `,"user_credentials_from_env":{"gh":"LOOMCYCLE_GH"}`, "forbids credentials"},
 		{"metadata", base + `,"metadata":{"k":"v"}`, "forbids `metadata`"},
