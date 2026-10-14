@@ -2793,6 +2793,9 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 	if msg, ok := connector.ValidateMaxWallSeconds(in.MaxWallSeconds); !ok {
 		return fmt.Errorf("%w: %s", runner.ErrInvalidArgument, msg)
 	}
+	if !runner.ValidAdmission(in.Admission) {
+		return fmt.Errorf("%w: admission must be %q or %q", runner.ErrInvalidArgument, runner.AdmissionWait, runner.AdmissionReject)
+	}
 	// The one seam gRPC Run / Continue, the spawn tools, a started draft and
 	// the triggers share: a block type nobody knows is the caller's mistake,
 	// reported as one, and never run as trusted text.
@@ -3010,30 +3013,152 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 		return err
 	}
 
-	// ---- Concurrency slot ----
+	// RFC AW token-budget admission, first before the run may queue: a run
+	// whose (tenant, user) is over a hard ceiling is refused, not queued.
+	if dec := s.limits.Check(effectiveTenantID, effectiveUserID); !dec.Allowed {
+		return fmt.Errorf("%w: %s", runner.ErrTokenLimitExceeded, dec.Refusal.Message)
+	}
+
+	// ---- agent_id: caller-supplied or generated ----
+	// Before admission: a run that has to wait is named in the queue by it.
+	agentID := in.AgentID
+	if agentID == "" {
+		agentID = newAgentID()
+	}
+
+	// ---- Run context ----
+	// A detached run outlives this call (RunInput.Detached): its ctx keeps the
+	// caller's values but not its cancellation, and startDetachedLoop runs the
+	// loop in a goroutine that takes over the teardown — the same goroutine
+	// POST /v1/runs uses for an interactive run. Until handOff, and always for
+	// a run that is not detached, the defers here own the teardown. runParent
+	// is ctx for a run that is not detached, so that path is unchanged.
+	// Built before admission so a cancel reaches a run while it is queued.
+	detached := in.Detached
+	runParent := ctx
+	if detached {
+		runParent = context.WithoutCancel(ctx)
+	}
+	handOff := false
+	runCtx, cancelFn := context.WithCancelCause(runParent)
+	defer func() {
+		if !handOff {
+			cancelFn(nil)
+		}
+	}()
+
+	// runRowErr maps a failure to create the run's row to what RunOnce
+	// returns; nil means "answered with an existing run" was not possible.
+	runRowErr := func(sessErr error) error {
+		var nf *store.ErrNotFound
+		if errors.As(sessErr, &nf) {
+			return fmt.Errorf("%w: %v", runner.ErrSessionNotFound, sessErr)
+		}
+		// RFC H Decision 10: a duplicate idempotency_key means an earlier
+		// run already claimed this key. CRITICAL: return BEFORE the cancel
+		// registry + agent loop so the run never double-executes. Wrap the
+		// sentinel verbatim (no ErrInternal masking) so the webhook
+		// receiver can errors.Is-detect it and resolve to the existing
+		// run. (CreateSession ran before the failed CreateRun, leaving an
+		// orphan session with no run — acceptable: it carries no events
+		// and is never returned to a caller.)
+		if errors.Is(sessErr, store.ErrDuplicateIdempotencyKey) {
+			if in.ClientIdempotencyKey != "" {
+				// Lost the race to another request with the same key, between
+				// the lookup above and CreateRun: answer with the winner.
+				if dup, err := s.runHoldingClientKey(ctx, in.IdempotencyKey, effectiveTenantID, effectiveUserID, true); err != nil || dup != nil {
+					if err != nil {
+						return err
+					}
+					return dup
+				}
+			}
+			return sessErr
+		}
+		return fmt.Errorf("%w: %v", runner.ErrInternal, sessErr)
+	}
+
+	// ---- Run slot (RFC EI P3) ----
 	// Keyed on the run's own tenant: a trigger run (scheduler, webhook, A2A)
 	// has no principal on ctx, so tenantFromCtx would count every tenant's
-	// trigger runs under the empty tenant.
+	// trigger runs under the empty tenant. A run that cannot start at once
+	// is queued: its row (status queued) and its registration exist before
+	// it waits, so it can be read, cancelled and re-attached meanwhile.
+	var rowErr error
+	registered := false
+	queuedIdentity := store.RunIdentity{AgentID: agentID, UserID: effectiveUserID, TenantID: effectiveTenantID, UserTier: in.UserTier, Model: model, ReplicaID: s.replicaID, ParentContext: in.ParentContext, IdempotencyKey: in.IdempotencyKey, DeliveryAltKey: in.DeliveryAltKey, Interactive: in.Interactive, OperatorKeyRestricted: operatorKeyRestricted, Isolated: isolated, Retention: retention}
 	acquireStart := time.Now()
-	release, err := s.sem.AcquireForUser(ctx, effectiveTenantID, effectiveUserID)
+	release, queued, err := s.admitRun(runCtx, admitArgs{
+		tenantID: effectiveTenantID,
+		userID:   effectiveUserID,
+		agentID:  agentID,
+		reject:   in.Admission == runner.AdmissionReject,
+		createRow: func() (string, string, error) {
+			if startingDraft {
+				if err := s.store.QueueConfiguredRun(ctx, in.ConfiguredRunID, in.ConfiguredDraft); err != nil {
+					rowErr = err
+					return "", "", err
+				}
+				r, err := s.store.GetRun(ctx, in.ConfiguredRunID)
+				if err != nil {
+					rowErr = err
+				}
+				return r.SessionID, r.ID, err
+			}
+			sid, rid, err := s.openOrCreateSessionAndQueuedRun(ctx, in.SessionID, effectiveAgentName, effectiveTenantID, effectiveUserID, queuedIdentity)
+			if err != nil {
+				rowErr = err
+			}
+			return sid, rid, err
+		},
+		announce: func(sessionID, runID string) error {
+			if err := s.cancelReg.Register(cancel.Entry{
+				AgentID: agentID, RunID: runID, SessionID: sessionID,
+				UserID: effectiveUserID, StartedAt: time.Now(),
+			}, cancelFn); err != nil {
+				return err
+			}
+			registered = true
+			if cb.OnQueued != nil {
+				cb.OnQueued()
+			}
+			if cb.OnRegistered != nil {
+				cb.OnRegistered(agentID, runID, sessionID, "")
+			}
+			return nil
+		},
+		forward: cb.OnEvent,
+	})
 	queueWait := time.Since(acquireStart)
-	if err != nil {
-		if concurrency.IsPerUserQuotaExhausted(err) {
-			return fmt.Errorf("%w: %v", runner.ErrPerUserQuotaExhausted, err)
-		}
-		if concurrency.IsBackpressure(err) {
-			return fmt.Errorf("%w: %v", runner.ErrBackpressure, err)
-		}
-		return fmt.Errorf("%w: %v", runner.ErrInternal, err)
+	if registered {
+		defer func() {
+			if !handOff {
+				s.cancelReg.Deregister(agentID)
+			}
+		}()
 	}
-	// RFC AW token-budget admission: refuse a NEW run whose (tenant, user) has a
-	// hard ceiling at/over its month-to-date cap (checked AFTER the slot so a
-	// refusal doesn't leave one held, but BEFORE `defer release()` so the manual
-	// release() here isn't double-fired). Soft crossings (limitDec.Soft) don't
-	// block — they're emitted as warning events once the run's emit exists.
+	if err != nil {
+		switch {
+		case rowErr != nil && startingDraft:
+			return draftStartErr(rowErr, in.ConfiguredRunID)
+		case rowErr != nil:
+			return runRowErr(rowErr)
+		case errors.Is(err, cancel.ErrInUse):
+			return fmt.Errorf("%w: agent_id %q is already mapped to an active run", runner.ErrAgentIDInUse, agentID)
+		}
+		return admissionError(err)
+	}
+	// RFC AW token-budget admission, again at start: a run that queued may
+	// have crossed its ceiling while it waited. Checked BEFORE `defer
+	// release()` so the manual release() here isn't double-fired. Soft
+	// crossings (limitDec.Soft) don't block — they're emitted as warning
+	// events once the run's emit exists.
 	limitDec := s.limits.Check(effectiveTenantID, effectiveUserID)
 	if !limitDec.Allowed {
 		release()
+		if queued != nil {
+			s.endQueuedRun(queued.runID, fmt.Errorf("%s", limitDec.Refusal.Message))
+		}
 		return fmt.Errorf("%w: %s", runner.ErrTokenLimitExceeded, limitDec.Refusal.Message)
 	}
 	defer release()
@@ -3089,12 +3214,6 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 		}}, segments...)
 	}
 
-	// ---- agent_id: caller-supplied or generated ----
-	agentID := in.AgentID
-	if agentID == "" {
-		agentID = newAgentID()
-	}
-
 	// The run's own resolved configuration, merged ONCE here — after agentDef
 	// has taken its final form — and used both by the loop below and by the
 	// durable run_config record, so the two cannot drift. A resumed run comes
@@ -3126,74 +3245,35 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 	// ---- Session+run creation ----
 	identity := store.RunIdentity{AgentID: agentID, UserID: effectiveUserID, TenantID: effectiveTenantID, UserTier: in.UserTier, Model: model, ReplicaID: s.replicaID, ParentContext: in.ParentContext, IdempotencyKey: in.IdempotencyKey, DeliveryAltKey: in.DeliveryAltKey, Interactive: in.Interactive, OperatorKeyRestricted: operatorKeyRestricted, Isolated: isolated, Retention: retention, RunConfig: runCfg.marshal()}
 	var sessionID, runID string
-	var sessErr error
-	if startingDraft {
+	switch {
+	case queued != nil:
+		// It waited: its row exists, queued, and only moves to running now. A
+		// cancel that ended it meanwhile wins.
+		if _, err := s.store.StartQueuedRun(ctx, queued.runID, identity); err != nil {
+			if errors.Is(err, store.ErrRunNotQueued) {
+				return fmt.Errorf("%w: run %s was cancelled while it was queued", runner.ErrInternal, queued.runID)
+			}
+			s.endQueuedRun(queued.runID, err)
+			return fmt.Errorf("%w: %v", runner.ErrInternal, err)
+		}
+		sessionID, runID = queued.sessionID, queued.runID
+	case startingDraft:
 		// RFC DI D5: after admission, so a refusal above leaves the draft as it
 		// was; before registration, so every failure path below finds a
 		// running row that FinishRun can end.
 		started, err := s.store.StartConfiguredRun(ctx, in.ConfiguredRunID, identity, in.ConfiguredDraft)
 		if err != nil {
-			var nf *store.ErrNotFound
-			if errors.Is(err, store.ErrRunNotConfigured) || errors.As(err, &nf) {
-				return fmt.Errorf("%w: %s", runner.ErrRunNotConfigured, in.ConfiguredRunID)
-			}
-			if errors.Is(err, store.ErrDraftChanged) {
-				return fmt.Errorf("%w: run %s was not started; start it again to run the edited draft", runner.ErrDraftChanged, in.ConfiguredRunID)
-			}
-			return fmt.Errorf("%w: %v", runner.ErrInternal, err)
+			return draftStartErr(err, in.ConfiguredRunID)
 		}
 		sessionID, runID = started.SessionID, started.ID
-	} else {
+	default:
+		var sessErr error
 		sessionID, runID, sessErr = s.openOrCreateSessionAndRun(ctx, in.SessionID, effectiveAgentName, effectiveTenantID, effectiveUserID, identity)
-	}
-	if sessErr != nil {
-		var nf *store.ErrNotFound
-		if errors.As(sessErr, &nf) {
-			return fmt.Errorf("%w: %v", runner.ErrSessionNotFound, sessErr)
+		if sessErr != nil {
+			return runRowErr(sessErr)
 		}
-		// RFC H Decision 10: a duplicate idempotency_key means an earlier
-		// run already claimed this key. CRITICAL: return BEFORE the cancel
-		// registry + agent loop so the run never double-executes. Wrap the
-		// sentinel verbatim (no ErrInternal masking) so the webhook
-		// receiver can errors.Is-detect it and resolve to the existing
-		// run. (CreateSession ran before the failed CreateRun, leaving an
-		// orphan session with no run — acceptable: it carries no events
-		// and is never returned to a caller.)
-		if errors.Is(sessErr, store.ErrDuplicateIdempotencyKey) {
-			if in.ClientIdempotencyKey != "" {
-				// Lost the race to another request with the same key, between
-				// the lookup above and CreateRun: answer with the winner.
-				if dup, err := s.runHoldingClientKey(ctx, in.IdempotencyKey, effectiveTenantID, effectiveUserID, true); err != nil || dup != nil {
-					if err != nil {
-						return err
-					}
-					return dup
-				}
-			}
-			return sessErr
-		}
-		return fmt.Errorf("%w: %v", runner.ErrInternal, sessErr)
 	}
 
-	// ---- Cancel registry ----
-	// A detached run outlives this call (RunInput.Detached): its ctx keeps the
-	// caller's values but not its cancellation, and startDetachedLoop runs the
-	// loop in a goroutine that takes over the teardown — the same goroutine
-	// POST /v1/runs uses for an interactive run. Until handOff, and always for
-	// a run that is not detached, the defers here own the teardown. runParent
-	// is ctx for a run that is not detached, so that path is unchanged.
-	detached := in.Detached
-	runParent := ctx
-	if detached {
-		runParent = context.WithoutCancel(ctx)
-	}
-	handOff := false
-	runCtx, cancelFn := context.WithCancelCause(runParent)
-	defer func() {
-		if !handOff {
-			cancelFn(nil)
-		}
-	}()
 	// v0.10.0 OTEL: top-level loomcycle.run span covers the entire
 	// run. Loop iterations + provider calls + tool dispatch nest
 	// under it via context propagation. Span name + attribute set
@@ -3214,13 +3294,17 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 	// means immediate acquire; a sustained non-zero distribution per
 	// user_id is the operator's signal that fairness is engaging.
 	lcotel.RecordQueueWait(runSpan, queueWait)
-	regErr := s.cancelReg.Register(cancel.Entry{
-		AgentID:   agentID,
-		RunID:     runID,
-		SessionID: sessionID,
-		UserID:    effectiveUserID,
-		StartedAt: time.Now(),
-	}, cancelFn)
+	// A run that queued was registered before it waited (admitRun's announce).
+	var regErr error
+	if !registered {
+		regErr = s.cancelReg.Register(cancel.Entry{
+			AgentID:   agentID,
+			RunID:     runID,
+			SessionID: sessionID,
+			UserID:    effectiveUserID,
+			StartedAt: time.Now(),
+		}, cancelFn)
+	}
 	// v0.9.x n8n RFC Phase 0: identity bundle for runstate.Bus
 	// publishes. Constructed once; passed to every finishRun* below
 	// AND used right now for the "running" transition.
@@ -3247,11 +3331,13 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 		s.finishRunFailedReason(runID, "registry register failed: "+regErr.Error(), meta)
 		return fmt.Errorf("%w: %v", runner.ErrInternal, regErr)
 	}
-	defer func() {
-		if !handOff {
-			s.cancelReg.Deregister(agentID)
-		}
-	}()
+	if !registered {
+		defer func() {
+			if !handOff {
+				s.cancelReg.Deregister(agentID)
+			}
+		}()
+	}
 	s.publishRunState(meta, "running", "", "")
 
 	// ---- Persist input segments ----
@@ -3265,7 +3351,8 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 	s.emitSystemPromptEvent(runParent, runID, agentDef.SystemPrompt, "", promptProv)
 
 	// ---- Caller registration callback ----
-	if cb.OnRegistered != nil {
+	// A run that queued told its caller before it waited.
+	if cb.OnRegistered != nil && queued == nil {
 		cb.OnRegistered(agentID, runID, sessionID, "")
 	}
 
@@ -4546,6 +4633,11 @@ type runRequest struct {
 	// an interactive run's time parked for input included; time the runtime
 	// is paused does not. For any agent, model-driven or code-js.
 	MaxWallSeconds int `json:"max_wall_seconds,omitempty"`
+
+	// Admission (RFC EI P3): "wait" (the default) queues a run that cannot
+	// start at once — status queued, a `queued` event on the stream — until a
+	// run slot frees; "reject" answers 429 instead, as before runs could queue.
+	Admission string `json:"admission,omitempty"`
 	// Metadata is the optional NON-SECRET structured blob passed to the
 	// agent (repo name, review policy, preferred skills, …) — symmetric with
 	// the WebHook/Schedule trigger paths. A first-party /v1/runs caller is
@@ -5001,23 +5093,191 @@ func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Acquire concurrency slot first so backpressure is reported as 429
-	// before we open the SSE stream.
-	acquireStart := time.Now()
-	release, err := s.sem.AcquireForUser(r.Context(), tenantFromCtx(r.Context()), req.UserID)
-	queueWait := time.Since(acquireStart)
-	if err != nil {
-		writeQuotaError(w, err)
+	if !runner.ValidAdmission(req.Admission) {
+		http.Error(w, fmt.Sprintf("admission must be %q or %q", runner.AdmissionWait, runner.AdmissionReject), http.StatusBadRequest)
 		return
 	}
-	// RFC AW token-budget admission: refuse with 429 when a hard ceiling for the
-	// run's (tenant, user) is at/over its month-to-date cap. Release the slot
-	// first so the refusal doesn't leak it; checked BEFORE `defer release()` so
-	// the manual release() isn't double-fired. Soft crossings are emitted as
-	// warning events once the run's emit exists (below).
+	// RFC AW token-budget admission, first before the run may queue: a run
+	// whose (tenant, user) is over a hard ceiling is refused, not queued.
+	if dec := s.limits.Check(req.TenantID, req.UserID); !dec.Allowed {
+		writeTokenLimitError(w, dec.Refusal)
+		return
+	}
+
+	// Resolve the run's agent_id: the caller's value when supplied,
+	// otherwise a fresh server-generated one. We need this BEFORE
+	// admission — a run that has to wait is named in the queue by it — and
+	// BEFORE session/run creation so we can write it to the row in one shot,
+	// AND BEFORE registering the cancel entry so a cancel arriving
+	// between Register and the loop's first ctx-check finds the entry.
+	agentID := req.AgentID
+	if agentID == "" {
+		agentID = newAgentID()
+	}
+
+	// Derive the loop ctx with a cancel-cause function. For a normal run the
+	// HTTP request ctx is the parent so client-disconnect tears the run down.
+	// For an INTERACTIVE run we detach with context.WithoutCancel: the run
+	// keeps the request's ctx VALUES (auth principal, tenant) but is NOT
+	// cancelled when the client navigates away — it parks and the operator
+	// re-attaches via GET /v1/runs/{run_id}/stream. cancelFn (registered under
+	// agent_id) is the only thing that stops it.
+	//
+	// A run armed for REVIEW detaches for the same reason: it is held for a
+	// human's verdict, which can take far longer than the caller keeps its
+	// connection, and a disconnect must not cancel the run being reviewed.
+	//
+	// Built before admission so a cancel reaches a run while it is queued.
+	detached := req.Interactive || req.Review
+	runParent := r.Context()
+	if detached {
+		runParent = context.WithoutCancel(r.Context())
+	}
+	runCtx, cancelFn := context.WithCancelCause(runParent)
+	// handOff flips true once an interactive run's background goroutine takes
+	// ownership of teardown (cancelFn / span / steer / cancel registry /
+	// finishRun). Until then — and always for non-interactive runs — the
+	// handler's defers own teardown. This prevents the handler returning on
+	// client-disconnect from tearing down a still-running detached run.
+	handOff := false
+	defer func() {
+		if !handOff {
+			cancelFn(nil) // ensure ctx leaks don't survive the handler
+		}
+	}()
+
+	// The SSE stream. A run that starts at once opens it after its row
+	// exists, as always; a run that has to wait opens it when it queues, so
+	// the caller sees its ids and its `queued` event while it waits.
+	var stream *sse
+	openStream := func(sessionID, runID string) bool {
+		st, ok := newSSE(w)
+		if !ok {
+			return false
+		}
+		st.start()
+		// Keep the underlying TCP/HTTP path warm during long quiet stretches
+		// (parent agent waiting on a fan-out of sub-agents, single sub-agent
+		// mid-WebFetch, a run waiting for its slot). Goroutine exits on client
+		// disconnect, or in the deferred end() before the handler returns.
+		// No-op if interval == 0.
+		st.startKeepalive(r.Context(), s.cfg().Env.SSEKeepaliveInterval)
+		stream = st
+		// Announce the (possibly newly-created) session/run IDs so the caller
+		// can address continuation requests at the same session.
+		if sessionID != "" {
+			st.send(providers.Event{
+				Type: "session", // not part of providers.EventType — just a side-channel
+				Text: sessionID,
+			})
+		}
+		// New v0.4 side-channel: announce the agent_id (and run_id) so the
+		// caller can address cancel/status without knowing the loomcycle-
+		// internal session/run IDs. parent_agent_id is null for top-level
+		// runs; sub-agents emit it via runSubAgent's own side-channel work.
+		st.sendRaw("agent", map[string]any{
+			"agent_id":        agentID,
+			"run_id":          runID,
+			"session_id":      sessionID,
+			"parent_agent_id": nil,
+			"parent_context":  req.ParentContext, // v0.12.x: opaque tracking lineage (nil when absent)
+		})
+		return true
+	}
+
+	// Run slot (RFC EI P3). Keyed on the run's own (tenant, user). A run that
+	// cannot start at once is queued: its row (status queued), its
+	// registration and its stream exist before it waits. A refusal before
+	// that is a plain 429, as before.
+	var rowErr error
+	registered := false
+	queuedIdentity := store.RunIdentity{AgentID: agentID, UserID: req.UserID, TenantID: req.TenantID, UserTier: req.UserTier, Model: model, ReplicaID: s.replicaID, ParentContext: req.ParentContext, IdempotencyKey: storedKey, Interactive: req.Interactive, OperatorKeyRestricted: operatorKeyRestricted, Isolated: isolated, Retention: retention}
+	acquireStart := time.Now()
+	release, queued, err := s.admitRun(runCtx, admitArgs{
+		tenantID: req.TenantID,
+		userID:   req.UserID,
+		agentID:  agentID,
+		reject:   req.Admission == runner.AdmissionReject,
+		createRow: func() (string, string, error) {
+			sid, rid, err := s.openOrCreateSessionAndQueuedRun(r.Context(), req.SessionID, req.Agent, req.TenantID, req.UserID, queuedIdentity)
+			if err != nil {
+				rowErr = err
+			}
+			return sid, rid, err
+		},
+		announce: func(sessionID, runID string) error {
+			if err := s.cancelReg.Register(cancel.Entry{
+				AgentID: agentID, RunID: runID, SessionID: sessionID,
+				UserID: req.UserID, StartedAt: time.Now(),
+			}, cancelFn); err != nil {
+				return err
+			}
+			registered = true
+			if !openStream(sessionID, runID) {
+				return errStreamingUnsupported
+			}
+			return nil
+		},
+		forward: func(ev providers.Event) {
+			if stream != nil {
+				stream.send(ev)
+			}
+		},
+	})
+	queueWait := time.Since(acquireStart)
+	if registered {
+		defer func() {
+			if !handOff {
+				s.cancelReg.Deregister(agentID)
+			}
+		}()
+	}
+	if stream != nil {
+		defer stream.end()
+	}
+	if err != nil {
+		switch {
+		case stream != nil:
+			// The caller already has the run's stream: end it with the reason.
+			stream.send(providers.Event{Type: providers.EventError, Error: "the run did not start: " + err.Error()})
+		case storedKey != "" && errors.Is(rowErr, store.ErrDuplicateIdempotencyKey):
+			// Lost the race to another request with the same key: answer with
+			// the winner's stream.
+			dup, derr := s.runHoldingClientKey(r.Context(), storedKey, req.TenantID, req.UserID, true)
+			if derr != nil {
+				writeRunKeyError(w, derr)
+				return
+			}
+			if dup != nil {
+				s.serveExistingRun(w, r, dup)
+				return
+			}
+			http.Error(w, rowErr.Error(), http.StatusInternalServerError)
+		case rowErr != nil:
+			writeRunRowError(w, rowErr)
+		case errors.Is(err, cancel.ErrInUse):
+			writeJSONError(w, http.StatusConflict, "agent_id_in_use",
+				fmt.Sprintf("agent_id %q is already mapped to an active run", agentID))
+		case errors.Is(err, errStreamingUnsupported):
+			http.Error(w, "server does not support streaming on this transport", http.StatusInternalServerError)
+		default:
+			writeQuotaError(w, err)
+		}
+		return
+	}
+	// RFC AW token-budget admission, again at start: a run that queued may
+	// have crossed its ceiling while it waited. Release the slot first so the
+	// refusal doesn't leak it; checked BEFORE `defer release()` so the manual
+	// release() isn't double-fired. Soft crossings are emitted as warning
+	// events once the run's emit exists (below).
 	limitDec := s.limits.Check(req.TenantID, req.UserID)
 	if !limitDec.Allowed {
 		release()
+		if queued != nil {
+			s.endQueuedRun(queued.runID, fmt.Errorf("%s", limitDec.Refusal.Message))
+			stream.send(providers.Event{Type: providers.EventError, Error: limitDec.Refusal.Message})
+			return
+		}
 		writeTokenLimitError(w, limitDec.Refusal)
 		return
 	}
@@ -5080,16 +5340,6 @@ func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {
 		}}, req.Segments...)
 	}
 
-	// Resolve the run's agent_id: the caller's value when supplied,
-	// otherwise a fresh server-generated one. We need this BEFORE
-	// session/run creation so we can write it to the row in one shot,
-	// AND BEFORE registering the cancel entry so a cancel arriving
-	// between Register and the loop's first ctx-check finds the entry.
-	agentID := req.AgentID
-	if agentID == "" {
-		agentID = newAgentID()
-	}
-
 	// The run's own resolved configuration — merged once, persisted with the
 	// run, and restored on resume (see runConfigRecord).
 	runCfg := runConfigRecord{
@@ -5119,7 +5369,22 @@ func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {
 	// s.store == nil the recording becomes a no-op so v0.2 callers see no
 	// behaviour change.
 	identity := store.RunIdentity{AgentID: agentID, UserID: req.UserID, TenantID: req.TenantID, UserTier: req.UserTier, Model: model, ReplicaID: s.replicaID, ParentContext: req.ParentContext, IdempotencyKey: storedKey, Interactive: req.Interactive, OperatorKeyRestricted: operatorKeyRestricted, Isolated: isolated, Retention: retention, RunConfig: runCfg.marshal()}
-	sessionID, runID, sessErr := s.openOrCreateSessionAndRun(r.Context(), req.SessionID, req.Agent, req.TenantID, req.UserID, identity)
+	var sessionID, runID string
+	var sessErr error
+	if queued != nil {
+		// It waited: its row exists, queued, and only moves to running now. A
+		// cancel that ended it meanwhile wins.
+		if _, err := s.store.StartQueuedRun(r.Context(), queued.runID, identity); err != nil {
+			if !errors.Is(err, store.ErrRunNotQueued) {
+				s.endQueuedRun(queued.runID, err)
+			}
+			stream.send(providers.Event{Type: providers.EventError, Error: "the run did not start: " + err.Error()})
+			return
+		}
+		sessionID, runID = queued.sessionID, queued.runID
+	} else {
+		sessionID, runID, sessErr = s.openOrCreateSessionAndRun(r.Context(), req.SessionID, req.Agent, req.TenantID, req.UserID, identity)
+	}
 	if storedKey != "" && errors.Is(sessErr, store.ErrDuplicateIdempotencyKey) {
 		// Lost the race to another request with the same key, between the
 		// lookup above and CreateRun: answer with the winner's stream. This
@@ -5149,34 +5414,6 @@ func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Derive the loop ctx with a cancel-cause function. For a normal run the
-	// HTTP request ctx is the parent so client-disconnect tears the run down.
-	// For an INTERACTIVE run we detach with context.WithoutCancel: the run
-	// keeps the request's ctx VALUES (auth principal, tenant) but is NOT
-	// cancelled when the client navigates away — it parks and the operator
-	// re-attaches via GET /v1/runs/{run_id}/stream. cancelFn (registered under
-	// agent_id) is the only thing that stops it.
-	//
-	// A run armed for REVIEW detaches for the same reason: it is held for a
-	// human's verdict, which can take far longer than the caller keeps its
-	// connection, and a disconnect must not cancel the run being reviewed.
-	detached := req.Interactive || req.Review
-	runParent := r.Context()
-	if detached {
-		runParent = context.WithoutCancel(r.Context())
-	}
-	runCtx, cancelFn := context.WithCancelCause(runParent)
-	// handOff flips true once an interactive run's background goroutine takes
-	// ownership of teardown (cancelFn / span / steer / cancel registry /
-	// finishRun). Until then — and always for non-interactive runs — the
-	// handler's defers own teardown. This prevents the handler returning on
-	// client-disconnect from tearing down a still-running detached run.
-	handOff := false
-	defer func() {
-		if !handOff {
-			cancelFn(nil) // ensure ctx leaks don't survive the handler
-		}
-	}()
 	// v0.10.0 OTEL: top-level loomcycle.run span covers the whole run.
 	runCtx, runSpan := lcotel.RecordRunStart(runCtx, lcotel.RunStartAttrs{
 		RunID:     runID,
@@ -5191,13 +5428,17 @@ func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {
 	}()
 	lcotel.RecordQueueWait(runSpan, queueWait)
 
-	regErr := s.cancelReg.Register(cancel.Entry{
-		AgentID:   agentID,
-		RunID:     runID,
-		SessionID: sessionID,
-		UserID:    req.UserID,
-		StartedAt: time.Now(),
-	}, cancelFn)
+	// A run that queued was registered before it waited.
+	var regErr error
+	if !registered {
+		regErr = s.cancelReg.Register(cancel.Entry{
+			AgentID:   agentID,
+			RunID:     runID,
+			SessionID: sessionID,
+			UserID:    req.UserID,
+			StartedAt: time.Now(),
+		}, cancelFn)
+	}
 	// v0.9.x: identity bundle threaded into finishRun* + the
 	// "running" transition publish below.
 	meta := runStateMeta{
@@ -5230,11 +5471,13 @@ func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, regErr.Error(), http.StatusInternalServerError)
 		return
 	}
-	defer func() {
-		if !handOff {
-			s.cancelReg.Deregister(agentID)
-		}
-	}()
+	if !registered {
+		defer func() {
+			if !handOff {
+				s.cancelReg.Deregister(agentID)
+			}
+		}()
+	}
 	s.publishRunState(meta, "running", "", "")
 
 	// If we're persisting, record the caller's input segments as the first
@@ -5249,41 +5492,16 @@ func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {
 	// emission in RunOnce + handleMessages + runSubAgent.
 	s.emitSystemPromptEvent(runCtx, runID, agentDef.SystemPrompt, "", promptProv)
 
-	stream, ok := newSSE(w)
-	if !ok {
-		// ResponseWriter doesn't implement http.Flusher — every frame would
-		// be buffered until handler return, defeating SSE. Refuse cleanly so
-		// the caller gets a useful error instead of silent buffering.
-		http.Error(w, "server does not support streaming on this transport", http.StatusInternalServerError)
-		return
+	if stream == nil {
+		if !openStream(sessionID, runID) {
+			// ResponseWriter doesn't implement http.Flusher — every frame would
+			// be buffered until handler return, defeating SSE. Refuse cleanly so
+			// the caller gets a useful error instead of silent buffering.
+			http.Error(w, "server does not support streaming on this transport", http.StatusInternalServerError)
+			return
+		}
+		defer stream.end()
 	}
-	stream.start()
-	// Keep the underlying TCP/HTTP path warm during long quiet stretches
-	// (parent agent waiting on a fan-out of sub-agents, single sub-agent
-	// mid-WebFetch, etc.). Goroutine exits on client disconnect, or in the
-	// deferred end() before the handler returns. No-op if interval == 0.
-	stream.startKeepalive(r.Context(), s.cfg().Env.SSEKeepaliveInterval)
-	defer stream.end()
-
-	// Announce the (possibly newly-created) session/run IDs so the caller
-	// can address continuation requests at the same session.
-	if sessionID != "" {
-		stream.send(providers.Event{
-			Type: "session", // not part of providers.EventType — just a side-channel
-			Text: sessionID,
-		})
-	}
-	// New v0.4 side-channel: announce the agent_id (and run_id) so the
-	// caller can address cancel/status without knowing the loomcycle-
-	// internal session/run IDs. parent_agent_id is null for top-level
-	// runs; sub-agents emit it via runSubAgent's own side-channel work.
-	stream.sendRaw("agent", map[string]any{
-		"agent_id":        agentID,
-		"run_id":          runID,
-		"session_id":      sessionID,
-		"parent_agent_id": nil,
-		"parent_context":  req.ParentContext, // v0.12.x: opaque tracking lineage (nil when absent)
-	})
 
 	// For an interactive (detached) run the loop runs in a background
 	// goroutine that OUTLIVES this handler — and net/http forbids writing to
@@ -5518,9 +5736,13 @@ func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {
 			},
 		})
 		// Tail the store to this client until they disconnect (r.Context()) or
-		// the run terminates. from_seq=0 → stream the whole run live. The SSE
-		// writer never errors, so the visitor always returns nil.
+		// the run terminates. from_seq=0 → stream the whole run live — but a
+		// run that queued sent its queued/admitted events live while it waited.
+		// The SSE writer never errors, so the visitor always returns nil.
 		_ = s.streamRunEvents(r.Context(), runID, 0, func(pe providers.Event) error {
+			if queued != nil && (pe.Type == providers.EventQueued || pe.Type == providers.EventAdmitted) {
+				return nil
+			}
 			stream.send(pe)
 			return nil
 		})
@@ -5881,7 +6103,9 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 	// is reported as 429. user_id comes from the session (set at original
 	// creation); continuations don't accept a new user_id.
 	acquireStart := time.Now()
-	release, err := s.sem.AcquireForUser(r.Context(), tenantFromCtx(r.Context()), sess.UserID)
+	// Keyed on the session's tenant, as the run row is. This route does not
+	// queue yet: past queue_timeout_ms it answers 429.
+	release, err := s.sem.AcquireForUser(r.Context(), sess.TenantID, sess.UserID)
 	queueWait := time.Since(acquireStart)
 	if err != nil {
 		writeQuotaError(w, err)
@@ -6633,6 +6857,21 @@ func (s *Server) openOrCreateSessionAndRun(ctx context.Context, requestedSession
 	if s.store == nil {
 		return "", "", nil
 	}
+	return s.openOrCreateSessionWith(ctx, requestedSessionID, agent, tenantID, userID, identity, s.store.CreateRun)
+}
+
+// openOrCreateSessionAndQueuedRun is openOrCreateSessionAndRun for a run that
+// has to wait for its slot: the run row is created in status queued (RFC EI
+// P3). StartQueuedRun later makes it running.
+func (s *Server) openOrCreateSessionAndQueuedRun(ctx context.Context, requestedSessionID, agent, tenantID, userID string, identity store.RunIdentity) (string, string, error) {
+	if s.store == nil {
+		return "", "", nil
+	}
+	return s.openOrCreateSessionWith(ctx, requestedSessionID, agent, tenantID, userID, identity, s.store.CreateQueuedRun)
+}
+
+func (s *Server) openOrCreateSessionWith(ctx context.Context, requestedSessionID, agent, tenantID, userID string, identity store.RunIdentity,
+	createRun func(context.Context, string, store.RunIdentity) (store.Run, error)) (string, string, error) {
 	var sess store.Session
 	var err error
 	if requestedSessionID != "" {
@@ -6664,7 +6903,7 @@ func (s *Server) openOrCreateSessionAndRun(ctx context.Context, requestedSession
 	if identity.UserID == "" {
 		identity.UserID = sess.UserID
 	}
-	run, err := s.store.CreateRun(ctx, sess.ID, identity)
+	run, err := createRun(ctx, sess.ID, identity)
 	if err != nil {
 		return "", "", err
 	}
@@ -8448,6 +8687,13 @@ type agentResponse struct {
 	//                  the background child run ids (state=children)
 	AwaitedState string `json:"awaited_state,omitempty"`
 	AwaitedOn    string `json:"awaited_on,omitempty"`
+	// QueuePosition / QueueReason: where a QUEUED run stands now (RFC EI
+	// P3) — 1 is the next to start — and why it waits: "user_cap" (its user
+	// has its cap of runs active; the position then counts only that user's
+	// waiting runs) or "global_cap" (every run slot is taken). Only on the
+	// single-run read, and only from the replica holding the run's wait.
+	QueuePosition int    `json:"queue_position,omitempty"`
+	QueueReason   string `json:"queue_reason,omitempty"`
 	// v0.12.x cluster-mode surface — which replica owns the run's live
 	// cancel handle. Empty (and omitted from JSON) in single-replica
 	// deployments so the UI stays uncluttered for the common case.
@@ -8671,6 +8917,11 @@ func (s *Server) singleRunResponse(ctx context.Context, run store.Run, live bool
 	if run.Status == store.RunConfigured {
 		if d, err := s.store.GetRunDraft(ctx, run.ID); err == nil {
 			resp.Draft = d
+		}
+	}
+	if run.Status == store.RunQueued {
+		if q, ok := s.queuePositionOf(run.AgentID); ok {
+			resp.QueuePosition, resp.QueueReason = q.Position, q.Reason
 		}
 	}
 	return resp

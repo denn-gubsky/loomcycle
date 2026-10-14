@@ -404,13 +404,11 @@ func TestRunsBatch_HTTPEndpointDetach(t *testing.T) {
 	}
 }
 
-// A caller that leaves while a detached child still waits for admission
-// withdraws that child: it never starts, so no run exists that nobody holds a
-// handle to. (A child that has started is not affected — see above.)
-func TestSpawnRunBatch_DetachCallerLeavingBeforeAdmissionStartsNothing(t *testing.T) {
+// A detached child that cannot start at once is accepted as a queued run: its
+// handle says "queued" with a run id, it outlives the caller, and it starts
+// when the slot frees — it is no longer withdrawn when the caller leaves.
+func TestSpawnRunBatch_DetachQueuedChildOutlivesTheCaller(t *testing.T) {
 	s, gate := newGatedBatchServer(t, 1)
-	// A queue wait far longer than the test: had the caller's leaving not
-	// withdrawn the waiter, the call could only end when that wait did.
 	s.sem = concurrency.New(1, 1, time.Minute)
 	first, err := s.SpawnRunBatch(context.Background(), connector.BatchSpawnRequest{
 		Mode:   "detach",
@@ -443,14 +441,21 @@ func TestSpawnRunBatch_DetachCallerLeavingBeforeAdmissionStartsNothing(t *testin
 		res = o.res
 	case <-time.After(10 * time.Second):
 		gate <- struct{}{} // let the held run end so the leaked call can too
-		t.Fatal("the call did not return after its caller left: the queued child was not withdrawn")
+		t.Fatal("the call did not return with the queued child's handle")
 	}
-	if r := res.Results[0]; r.Status != "cancelled" || r.RunID != "" {
-		t.Errorf("queued child = %+v, want cancelled with no run", r)
+	r := res.Results[0]
+	if r.Status != "queued" || r.RunID == "" {
+		t.Fatalf("queued child = %+v, want status queued with a run id", r)
 	}
-	if q := s.sem.Stats().Queued; q != 0 {
-		t.Errorf("admission queue = %d after the caller left, want 0 (the waiter withdrawn)", q)
+	if got, err := s.store.GetRun(context.Background(), r.RunID); err != nil || got.Status != store.RunQueued {
+		t.Fatalf("queued child's row = %q (%v), want queued", got.Status, err)
+	}
+	<-ctx.Done() // the caller has left
+	if q := s.sem.Stats().Queued; q != 1 {
+		t.Errorf("admission queue = %d after the caller left, want 1 (the queued child still waits)", q)
 	}
 	gate <- struct{}{}
 	waitRunStatus(t, s.store, first.Results[0].RunID, store.RunCompleted)
+	gate <- struct{}{}
+	waitRunStatus(t, s.store, r.RunID, store.RunCompleted)
 }

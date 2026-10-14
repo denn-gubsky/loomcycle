@@ -3540,16 +3540,31 @@ type MCPServer struct {
 // Concurrency caps for the runtime.
 type Concurrency struct {
 	MaxConcurrentRuns int `yaml:"max_concurrent_runs"`
-	MaxQueueDepth     int `yaml:"max_queue_depth"`
-	QueueTimeoutMS    int `yaml:"queue_timeout_ms"`
-	// MaxConcurrentRunsPerUser caps the in-flight (active+queued)
-	// runs per non-empty user_id, inside the global MaxConcurrentRuns
-	// cap. Default 0 = unlimited per user (back-compat; existing
-	// deployments see no behavior change on upgrade). When >0, a 5th
-	// run by a user at cap=4 returns HTTP 429 with
-	// `code: "per_user_quota_exhausted"` + `Retry-After: 5`.
+	// MaxQueueDepth bounds how many requests may wait at once: queued runs
+	// (waiting for a slot or on their user's cap) and direct requests waiting
+	// for a run slot. Past it a new run is refused with backpressure (429).
+	MaxQueueDepth int `yaml:"max_queue_depth"`
+	// QueueTimeoutMS bounds how long a request sent directly, outside any run
+	// (the LLM gateway), and a session continuation on POST
+	// /v1/sessions/{id}/messages wait for a run slot; <= 0 refuses at once. A
+	// run started any other way never times out in the queue: it waits until a
+	// slot frees or it is cancelled.
+	QueueTimeoutMS int `yaml:"queue_timeout_ms"`
+	// MaxConcurrentRunsPerUser caps the runs per non-empty (tenant, user)
+	// that hold a run slot or wait for one, inside the global
+	// MaxConcurrentRuns cap. Default 0 = unlimited per user. Over it a new run
+	// queues (status "queued") until one of the user's runs ends — up to
+	// MaxQueuedRunsPerUser of them — or, sent with `admission: "reject"`, is
+	// refused with HTTP 429 `code: "per_user_quota_exhausted"` +
+	// `Retry-After: 5`.
 	// Env: LOOMCYCLE_MAX_CONCURRENT_RUNS_PER_USER.
 	MaxConcurrentRunsPerUser int `yaml:"max_concurrent_runs_per_user"`
+	// MaxQueuedRunsPerUser is how many runs one (tenant, user) may have
+	// queued on its MaxConcurrentRunsPerUser cap. Default 16; 0 refuses a run
+	// over the cap at once, as before runs could queue. In cluster mode the
+	// bound is per replica.
+	// Env: LOOMCYCLE_MAX_QUEUED_RUNS_PER_USER.
+	MaxQueuedRunsPerUser int `yaml:"max_queued_runs_per_user"`
 	// ProviderQueueDepth is how many requests that hold NO run slot may wait
 	// for a capped provider (max_concurrent / lanes) at once. 0 (default) =
 	// inherit MaxQueueDepth.
@@ -4812,9 +4827,10 @@ func splitCommaTrim(s string) []string {
 func LoadLayers(layers ...Layer) (*Config, error) {
 	cfg := &Config{
 		Concurrency: Concurrency{
-			MaxConcurrentRuns: 8,
-			MaxQueueDepth:     16,
-			QueueTimeoutMS:    30000,
+			MaxConcurrentRuns:    8,
+			MaxQueueDepth:        16,
+			QueueTimeoutMS:       30000,
+			MaxQueuedRunsPerUser: 16,
 		},
 		Cache: CacheConfig{
 			ResponseKV: ResponseKVConfig{Backend: "memory", TTL: "5m"},
@@ -5509,6 +5525,14 @@ func LoadLayers(layers ...Layer) (*Config, error) {
 			} else {
 				cfg.Concurrency.MaxConcurrentRunsPerUser = n
 			}
+		}
+	}
+
+	// How many runs one (tenant, user) may have queued on its per-user cap.
+	// Negative values are ignored (keep the default).
+	if v := strings.TrimSpace(os.Getenv("LOOMCYCLE_MAX_QUEUED_RUNS_PER_USER")); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n >= 0 {
+			cfg.Concurrency.MaxQueuedRunsPerUser = n
 		}
 	}
 
@@ -7670,6 +7694,9 @@ func validate(c *Config) error {
 		if !knownContextPluginNames[p.Name] {
 			return fmt.Errorf("context_plugins[%d]: unknown plugin %q (want one of: redact)", i, p.Name)
 		}
+	}
+	if c.Concurrency.MaxQueuedRunsPerUser < 0 {
+		return fmt.Errorf("concurrency.max_queued_runs_per_user must be >= 0")
 	}
 	if c.Concurrency.MaxQueueDepth < 0 {
 		return fmt.Errorf("concurrency.max_queue_depth must be >= 0")
