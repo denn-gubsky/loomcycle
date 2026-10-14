@@ -1478,6 +1478,19 @@ func main() {
 			}
 		}
 	}
+	// A volume created from a git source (RFC EJ): off unless the operator
+	// lists the hosts. The credential a clone names is resolved for the run,
+	// and only when it is restricted to URLs covering the clone's.
+	gitSource, gerr := gitSourceConfigFromEnv(os.Getenv, cfg.Env.HTTPPrivateHostAllowlist)
+	if gerr != nil {
+		log.Fatalf("git source: %v", gerr)
+	}
+	if gitSource != nil {
+		gitSource.Credential = builtin.GitCredentialResolver(credEngine, ghAppMinter.TokenFromConfig, registerSecret)
+		volumeDefTool.Git = gitSource
+		log.Printf("git source: enabled for %s (max %d MiB fetched, %d MiB per object, %d at once)",
+			strings.Join(gitSource.Hosts, ", "), gitSource.MaxBytes>>20, gitSource.MaxObjectBytes>>20, cap(gitSource.Slots))
+	}
 	// A remote memory backend or document source may name its peer bearer as
 	// api_key_env "$cred:<name>": a tenant-level credential resolved, through
 	// this same engine, in the tenant the def was read in.

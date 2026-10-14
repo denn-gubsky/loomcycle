@@ -1065,6 +1065,48 @@ questions:
             schema:
               type: string
               default: ""
+          - variable: LOOMCYCLE_GIT_SOURCE_HOSTS
+            label: LOOMCYCLE_GIT_SOURCE_HOSTS
+            description: 'Off unless hosts are listed. `VolumeDef op=create ephemeral:true source:{git:…}` then fetches the commit inside the runtime, so no agent holds the token. The agent needs "source:git" in volume_def_scopes, and a credential it names must be restricted (allowed_urls) to a URL covering the repository. (example: github.com,gitea.example.com)'
+            schema:
+              type: string
+              default: ""
+          - variable: LOOMCYCLE_GIT_SOURCE_MAX_BYTES
+            label: LOOMCYCLE_GIT_SOURCE_MAX_BYTES
+            description: '(example: 268435456)'
+            schema:
+              type: string
+              default: ""
+          - variable: LOOMCYCLE_GIT_SOURCE_MAX_OBJECT_BYTES
+            label: LOOMCYCLE_GIT_SOURCE_MAX_OBJECT_BYTES
+            description: '(example: 67108864)'
+            schema:
+              type: string
+              default: ""
+          - variable: LOOMCYCLE_GIT_SOURCE_MAX_FILE_BYTES
+            label: LOOMCYCLE_GIT_SOURCE_MAX_FILE_BYTES
+            description: '(example: 5242880)'
+            schema:
+              type: string
+              default: ""
+          - variable: LOOMCYCLE_GIT_SOURCE_MAX_FILES
+            label: LOOMCYCLE_GIT_SOURCE_MAX_FILES
+            description: '(example: 100000)'
+            schema:
+              type: string
+              default: ""
+          - variable: LOOMCYCLE_GIT_SOURCE_TIMEOUT_SECONDS
+            label: LOOMCYCLE_GIT_SOURCE_TIMEOUT_SECONDS
+            description: '(example: 120)'
+            schema:
+              type: string
+              default: ""
+          - variable: LOOMCYCLE_GIT_SOURCE_MAX_CONCURRENT
+            label: LOOMCYCLE_GIT_SOURCE_MAX_CONCURRENT
+            description: '(example: 1)'
+            schema:
+              type: string
+              default: ""
           - variable: LOOMCYCLE_MAX_LIVE_CHILDREN_PER_RUN
             label: LOOMCYCLE_MAX_LIVE_CHILDREN_PER_RUN
             description: 'Children one run has alive at once, across every Agent op that starts one; a spawn past it is refused. Per run, not per tree: a child''s children count against the child. Default 32. (example: 32)'

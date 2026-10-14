@@ -57,6 +57,9 @@ type VolumeDef struct {
 	// MaxNameLen caps the volume name length. 0 → the regex's own 64-char
 	// ceiling applies.
 	MaxNameLen int
+	// Git is what the operator allows for a volume created from a git source
+	// (volumedef_gitsource.go). Nil means the feature is off.
+	Git *GitSourceConfig
 }
 
 const volumeDefDescription = `Provision, inspect, and remove CONFINED dynamic filesystem volumes at runtime (see Context op=help topic=volumedef). ` +
@@ -66,7 +69,8 @@ const volumeDefDescription = `Provision, inspect, and remove CONFINED dynamic fi
 	`delete removes the mapping but LEAVES files on disk; purge removes the mapping AND deletes the ` +
 	`directory tree (fenced: it can only ever delete a runtime-derived path strictly inside the dynamic root). ` +
 	`set_mode {name, mode: "ro"} makes one of this run's EPHEMERAL volumes read-only for every agent of the run, ` +
-	`yourself included, and cannot be undone.`
+	`yourself included, and cannot be undone. create with ephemeral: true and a source {git: {url, commit, credential}} ` +
+	`fills the new volume with one commit of a repository: the runtime fetches it, so the token never reaches an agent.`
 
 const volumeDefInputSchema = `{
   "type": "object",
@@ -74,7 +78,8 @@ const volumeDefInputSchema = `{
     "op":   {"type": "string", "enum": ["create","get","list","delete","purge","set_mode"]},
     "name": {"type": "string", "description": "Dynamic volume name (required for create/get/delete/purge/set_mode). Charset ^[a-z0-9][a-z0-9_-]{0,63}$ — no slashes or dots."},
     "mode": {"type": "string", "enum": ["rw","ro"], "description": "Access mode for create (default rw). rw allows Write/Edit/Bash; ro is read-only. For set_mode it must be ro: an ephemeral volume can be made read-only and never writable again."},
-    "ephemeral": {"type": "boolean", "description": "create only: make a RUN-SCOPED ephemeral volume instead of a persistent tenant volume. Resolvable by this run + its sub-agents; auto-purged when the top-level run completes. Requires an active run."}
+    "ephemeral": {"type": "boolean", "description": "create only: make a RUN-SCOPED ephemeral volume instead of a persistent tenant volume. Resolvable by this run + its sub-agents; auto-purged when the top-level run completes. Requires an active run."},
+    "source": {"type": "object", "description": "create with ephemeral: true only: fill the new volume with one commit of a git repository, fetched by the runtime so no agent holds the token. Shape: {\"git\": {\"url\": \"https://host/org/repo\", \"commit\": \"<40-digit sha>\", \"ref\": \"refs/heads/x\" (optional, where to find the commit), \"credential\": \"$cred:<name>\" or \"$ghapp:<name>\" (omit for a public repository), \"max_bytes\": <n> (optional, may only lower the limit)}}. The credential must be restricted to URLs covering this one. The answer gives counts, never file content; what was left out of the tree is listed in _meta/omitted.json. Needs \"source:git\" in volume_def_scopes and a host the operator allows."}
   },
   "required": ["op"]
 }`
@@ -87,6 +92,10 @@ type volumeDefInput struct {
 	// MountAt (RFC AL) is the Path-tree mount point for this volume; defaults
 	// to "/vol/<name>". Registers a volume_mount dirent in the tenant scope.
 	MountAt string `json:"mount_at,omitempty"`
+	// Source fills a new ephemeral volume from elsewhere; today, one commit
+	// of a git repository (volumedef_gitsource.go). Kept raw so it can be
+	// decoded strictly, apart from the tool's other arguments.
+	Source json.RawMessage `json:"source,omitempty"`
 }
 
 // Name implements tools.Tool.
@@ -181,6 +190,9 @@ func (v *VolumeDef) execCreate(ctx context.Context, in volumeDefInput) (tools.Re
 		return errResult(fmt.Sprintf("create: run is ending: %s", err)), nil
 	}
 
+	if len(in.Source) > 0 {
+		return v.execCreateFromGit(ctx, in, mode)
+	}
 	if in.Ephemeral {
 		return v.execCreateEphemeral(ctx, in, mode)
 	}
@@ -280,47 +292,8 @@ func (v *VolumeDef) execCreateEphemeral(ctx context.Context, in volumeDefInput, 
 	if set == nil {
 		return errResult("create: ephemeral volumes are unavailable for this run (no ephemeral set on context)"), nil
 	}
-	// Refuse a duplicate ephemeral name within THIS run tree. (A different
-	// run's identically-named ephemeral volume is fine — they're run-scoped.)
-	if set.Has(in.Name) {
-		return errResult(fmt.Sprintf("create: ephemeral volume %q already exists in this run", in.Name)), nil
-	}
-	// The set can lack a volume the run tree does have: a resumed run whose
-	// volumes could not be read back starts with an empty one. Creating over
-	// the stored volume would hand out its directory again under whatever
-	// mode this call asks for, a read-only volume included. So the rows
-	// decide: a recorded volume is taken into the set as it is recorded, and
-	// the create is refused like any other duplicate. A failed lookup is not
-	// evidence that there is none, so it refuses too.
-	recorded, err := v.Store.EphemeralVolumeListByRun(ctx, rootRunID)
-	if err != nil {
-		return errResult(fmt.Sprintf("create: could not check this run's ephemeral volumes: %s", err)), nil
-	}
-	for _, r := range recorded {
-		if r.Name != in.Name {
-			continue
-		}
-		var body dynvol.Body
-		if err := json.Unmarshal(r.Definition, &body); err == nil && body.Path != "" {
-			set.Add(in.Name, tools.EphemeralVolumeRef{Root: body.Path, ReadOnly: body.Mode == "ro"})
-		}
-		return errResult(fmt.Sprintf("create: ephemeral volume %q already exists in this run", in.Name)), nil
-	}
-	// Refuse a name that collides with a PERSISTENT dynamic volume (the static
-	// collision is already refused in execCreate above). effectiveRoot resolves
-	// ephemeral FIRST, so an ephemeral volume shadowing a durable same-named one
-	// would silently route the agent's writes into the run-scoped tree — which
-	// is purged at run completion (silent data loss). Names must be unambiguous.
-	// Only not-found clears the check: any other fault (a cancelled ctx among
-	// them) is not evidence there is no collision, so it refuses.
-	tenantID := tools.RunIdentity(ctx).TenantID
-	if res, refused := v.refuseEphemeralCollision(ctx, tenantID, in.Name, "an existing"); refused {
+	if res, refused := v.refuseEphemeralDuplicate(ctx, set, rootRunID, in.Name); refused {
 		return res, nil
-	}
-	if tenantID != "" {
-		if res, refused := v.refuseEphemeralCollision(ctx, "", in.Name, "a shared"); refused {
-			return res, nil
-		}
 	}
 
 	dynRoot, err := v.dynamicRoot()
@@ -332,42 +305,96 @@ func (v *VolumeDef) execCreateEphemeral(ctx context.Context, in volumeDefInput, 
 	if err != nil {
 		return errResult(fmt.Sprintf("create: %s", err)), nil
 	}
-
-	body, err := json.Marshal(dynvol.Body{Path: path, Mode: mode})
-	if err != nil {
-		undo()
-		return errResult(fmt.Sprintf("create: marshal: %s", err)), nil
-	}
-	row, err := v.Store.EphemeralVolumeCreate(ctx, store.EphemeralVolumeDefRow{
-		RootRunID:  rootRunID,
-		Name:       in.Name,
-		TenantID:   tools.RunIdentity(ctx).TenantID,
-		Definition: body,
-	})
+	resp, err := v.recordEphemeral(ctx, set, rootRunID, in.Name, path, mode)
 	if err != nil {
 		// The sweeper finds ephemeral directories by their rows, so one this
 		// call made but could not record would never be removed.
 		undo()
 		return errResult(fmt.Sprintf("create: %s", err)), nil
 	}
-	// Register in the run-scoped set ONLY after the row + dir are in place, so
-	// a failed persist never leaves a resolvable-but-unrecorded volume.
+	return okJSON(resp)
+}
+
+// refuseEphemeralDuplicate reports whether an ephemeral create of name must
+// be refused because the name is taken: by an ephemeral volume of this run
+// tree, or by a persistent volume the name would shadow.
+func (v *VolumeDef) refuseEphemeralDuplicate(ctx context.Context, set *tools.EphemeralVolumeSet, rootRunID, name string) (tools.Result, bool) {
+	// Refuse a duplicate ephemeral name within THIS run tree. (A different
+	// run's identically-named ephemeral volume is fine — they're run-scoped.)
+	if set.Has(name) {
+		return errResult(fmt.Sprintf("create: ephemeral volume %q already exists in this run", name)), true
+	}
+	// The set can lack a volume the run tree does have: a resumed run whose
+	// volumes could not be read back starts with an empty one. Creating over
+	// the stored volume would hand out its directory again under whatever
+	// mode this call asks for, a read-only volume included. So the rows
+	// decide: a recorded volume is taken into the set as it is recorded, and
+	// the create is refused like any other duplicate. A failed lookup is not
+	// evidence that there is none, so it refuses too.
+	recorded, err := v.Store.EphemeralVolumeListByRun(ctx, rootRunID)
+	if err != nil {
+		return errResult(fmt.Sprintf("create: could not check this run's ephemeral volumes: %s", err)), true
+	}
+	for _, r := range recorded {
+		if r.Name != name {
+			continue
+		}
+		var body dynvol.Body
+		if err := json.Unmarshal(r.Definition, &body); err == nil && body.Path != "" {
+			set.Add(name, tools.EphemeralVolumeRef{Root: body.Path, ReadOnly: body.Mode == "ro"})
+		}
+		return errResult(fmt.Sprintf("create: ephemeral volume %q already exists in this run", name)), true
+	}
+	// Refuse a name that collides with a PERSISTENT dynamic volume (the static
+	// collision is already refused in execCreate above). effectiveRoot resolves
+	// ephemeral FIRST, so an ephemeral volume shadowing a durable same-named one
+	// would silently route the agent's writes into the run-scoped tree — which
+	// is purged at run completion (silent data loss). Names must be unambiguous.
+	// Only not-found clears the check: any other fault (a cancelled ctx among
+	// them) is not evidence there is no collision, so it refuses.
+	tenantID := tools.RunIdentity(ctx).TenantID
+	if res, refused := v.refuseEphemeralCollision(ctx, tenantID, name, "an existing"); refused {
+		return res, true
+	}
+	if tenantID != "" {
+		if res, refused := v.refuseEphemeralCollision(ctx, "", name, "a shared"); refused {
+			return res, true
+		}
+	}
+	return tools.Result{}, false
+}
+
+// recordEphemeral records an ephemeral volume whose directory is in place:
+// the row first, then the run tree's set, so a failed persist never leaves a
+// volume that resolves and is not recorded. It returns the create's answer.
+func (v *VolumeDef) recordEphemeral(ctx context.Context, set *tools.EphemeralVolumeSet, rootRunID, name, path, mode string) (map[string]any, error) {
+	body, err := json.Marshal(dynvol.Body{Path: path, Mode: mode})
+	if err != nil {
+		return nil, fmt.Errorf("marshal: %w", err)
+	}
+	row, err := v.Store.EphemeralVolumeCreate(ctx, store.EphemeralVolumeDefRow{
+		RootRunID:  rootRunID,
+		Name:       name,
+		TenantID:   tools.RunIdentity(ctx).TenantID,
+		Definition: body,
+	})
+	if err != nil {
+		return nil, err
+	}
 	// The mode comes from the stored row, not from this call: two creates of
 	// one name can race past the checks above, and the row keeps read-only.
 	var stored dynvol.Body
 	if err := json.Unmarshal(row.Definition, &stored); err == nil && stored.Mode != "" {
 		mode = stored.Mode
 	}
-	set.Add(in.Name, tools.EphemeralVolumeRef{Root: path, ReadOnly: mode == "ro"})
-
-	resp := map[string]any{
+	set.Add(name, tools.EphemeralVolumeRef{Root: path, ReadOnly: mode == "ro"})
+	return map[string]any{
 		"name":       row.Name,
 		"path":       path,
 		"mode":       mode,
 		"ephemeral":  true,
 		"created_at": row.CreatedAt.UTC().Format("2006-01-02T15:04:05.000000000Z"),
-	}
-	return okJSON(resp)
+	}, nil
 }
 
 // ---- set_mode ----
