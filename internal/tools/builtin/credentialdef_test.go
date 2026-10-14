@@ -6,8 +6,10 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/denn-gubsky/loomcycle/internal/credential"
+	"github.com/denn-gubsky/loomcycle/internal/credential/credentialtest"
 	"github.com/denn-gubsky/loomcycle/internal/netguard"
 	"github.com/denn-gubsky/loomcycle/internal/store/sqlite"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
@@ -217,9 +219,19 @@ func TestCredentialDefTool_UsernameIsStoredShownKeptAndCleared(t *testing.T) {
 // without comparing times; one with a future expiry says expired:false, and
 // one with none carries neither field.
 func TestCredentialDefTool_GetAndListFlagAnExpiredCredential(t *testing.T) {
-	c, ctx := credFixture(t, "u1", testKEK())
+	st, err := sqlite.Open(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+	sealer, err := credential.NewSealer(testKEK(), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	c := &CredentialDef{Engine: credential.NewEngine(st, sealer)}
+	_, ctx := credFixture(t, "u1", testKEK())
 	for _, body := range []string{
-		`{"op":"create","name":"old","value":"v1","expires_at":"2020-01-01T00:00:00Z"}`,
+		`{"op":"create","name":"old","value":"v1","expires_at":"2200-01-01T00:00:00Z"}`,
 		`{"op":"create","name":"fresh","value":"v2","expires_at":"2200-01-01T00:00:00Z"}`,
 		`{"op":"create","name":"forever","value":"v3"}`,
 	} {
@@ -227,6 +239,8 @@ func TestCredentialDefTool_GetAndListFlagAnExpiredCredential(t *testing.T) {
 			t.Fatalf("create %s: %q", body, res.Text)
 		}
 	}
+	// It expires after it was created; create itself refuses a past time.
+	credentialtest.Expire(t, st, credential.Identity{TenantID: "tnt", Scope: "tenant", Name: "old"}, time.Now().Add(-time.Minute))
 
 	want := map[string]any{"old": true, "fresh": false, "forever": nil}
 	for name, w := range want {
@@ -253,5 +267,21 @@ func TestCredentialDefTool_GetAndListFlagAnExpiredCredential(t *testing.T) {
 		if got := m["expired"]; got != want[name] {
 			t.Errorf("list %s: expired = %v, want %v", name, got, want[name])
 		}
+	}
+}
+
+// A create whose expires_at is already past is refused with a reason, and
+// stores nothing: such a credential could never be used.
+func TestCredentialDefTool_CreateRefusesAnExpiryInThePast(t *testing.T) {
+	c, ctx := credFixture(t, "u1", testKEK())
+	_, res := credExec(t, c, ctx, `{"op":"create","name":"stale","value":"v-stale","expires_at":"2020-01-01T00:00:00Z"}`)
+	if !res.IsError || !strings.Contains(res.Text, "not in the future") {
+		t.Fatalf("create with a past expires_at: %q, want it refused", res.Text)
+	}
+	if strings.Contains(res.Text, "v-stale") {
+		t.Fatal("the refusal carries the value")
+	}
+	if _, res := credExec(t, c, ctx, `{"op":"get","name":"stale"}`); !res.IsError {
+		t.Errorf("the refused credential was stored: %s", res.Text)
 	}
 }

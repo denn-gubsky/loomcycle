@@ -14,6 +14,7 @@ import (
 
 	"github.com/denn-gubsky/loomcycle/internal/config"
 	"github.com/denn-gubsky/loomcycle/internal/credential"
+	"github.com/denn-gubsky/loomcycle/internal/credential/credentialtest"
 	"github.com/denn-gubsky/loomcycle/internal/memory/backends/remote"
 	"github.com/denn-gubsky/loomcycle/internal/netguard"
 	"github.com/denn-gubsky/loomcycle/internal/store"
@@ -53,8 +54,11 @@ func peerCredsOver(t *testing.T, s store.Store, creds ...storedCred) *PeerCreden
 				t.Fatal(err)
 			}
 		}
-		if _, err := eng.PutInline(context.Background(), credential.Identity{TenantID: c.tenant, Scope: c.scope, ScopeID: c.scopeID, Name: c.name}, c.value, c.expires, list, nil); err != nil {
+		if _, err := eng.PutInline(context.Background(), credential.Identity{TenantID: c.tenant, Scope: c.scope, ScopeID: c.scopeID, Name: c.name}, c.value, nil, list, nil); err != nil {
 			t.Fatalf("seed credential %s/%s: %v", c.tenant, c.name, err)
+		}
+		if c.expires != nil {
+			credentialtest.Expire(t, s, credential.Identity{TenantID: c.tenant, Scope: c.scope, ScopeID: c.scopeID, Name: c.name}, *c.expires)
 		}
 	}
 	return NewPeerCredentials(eng, nil)

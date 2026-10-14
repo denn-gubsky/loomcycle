@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/denn-gubsky/loomcycle/internal/credential"
+	"github.com/denn-gubsky/loomcycle/internal/credential/credentialtest"
 	"github.com/denn-gubsky/loomcycle/internal/store/sqlite"
 )
 
@@ -34,10 +35,11 @@ func TestWebhook_AnExpiredHeaderCredentialDeniesWithoutCalling(t *testing.T) {
 		t.Fatal(err)
 	}
 	engine := credential.NewEngine(st, sealer)
-	past := time.Now().Add(-time.Minute)
-	if _, err := engine.PutInline(context.Background(), credential.Identity{Scope: "tenant", Name: "hook_key"}, "stale-value", &past, nil, nil); err != nil {
+	id := credential.Identity{Scope: "tenant", Name: "hook_key"}
+	if _, err := engine.PutInline(context.Background(), id, "stale-value", nil, nil, nil); err != nil {
 		t.Fatal(err)
 	}
+	credentialtest.Expire(t, st, id, time.Now().Add(-time.Minute))
 
 	s := NewSet()
 	mustRegister(t, s, &Hook{Owner: "agent:w", Name: "gate", Phase: PhasePre, CallbackURL: callback.URL, FailMode: FailClosed,

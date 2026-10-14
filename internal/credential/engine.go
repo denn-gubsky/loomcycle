@@ -85,8 +85,8 @@ type Meta struct {
 // the value. nil keeps the one the credential has, so a rotation keeps it
 // too; a pointer to "" removes it.
 //
-// expiresAt (nil for none) must lie between 1678 and 2262, which every store
-// can hold. A new write replaces it, so a rotation without one clears it.
+// expiresAt (nil for none) must be in the future and before 2262, which every
+// store can hold. A new write replaces it, so a rotation without one clears it.
 func (e *Engine) PutInline(ctx context.Context, id Identity, plaintext string, expiresAt *time.Time, allowedURLs *[]string, username *string) (Meta, error) {
 	if !e.sealer.Enabled() {
 		return Meta{}, ErrNoKey
@@ -98,6 +98,13 @@ func (e *Engine) PutInline(ctx context.Context, id Identity, plaintext string, e
 	if expiresAt != nil && (expiresAt.Before(minExpiry) || expiresAt.After(maxExpiry)) {
 		return Meta{}, fmt.Errorf("expires_at %s is outside the range a credential can store (%s to %s); leave it unset for no expiry",
 			expiresAt.UTC().Format(time.RFC3339), minExpiry.Format(time.RFC3339), maxExpiry.Format(time.RFC3339))
+	}
+	// A credential created already expired could never be used: every lookup
+	// would refuse it. That is always a mistake (a typo'd year, a stale
+	// script), so say so at create rather than at the first failed send.
+	if expiresAt != nil && !e.now().Before(*expiresAt) {
+		return Meta{}, fmt.Errorf("expires_at %s is not in the future, so the credential could never be used; send a later time, or leave it unset for no expiry",
+			expiresAt.UTC().Format(time.RFC3339))
 	}
 	if allowedURLs == nil {
 		kept, err := e.existingRestriction(ctx, id)

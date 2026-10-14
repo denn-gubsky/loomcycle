@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/denn-gubsky/loomcycle/internal/credential"
+	"github.com/denn-gubsky/loomcycle/internal/credential/credentialtest"
 	"github.com/denn-gubsky/loomcycle/internal/store/sqlite"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
 	"github.com/denn-gubsky/loomcycle/internal/tools/mcp"
@@ -32,12 +33,13 @@ func TestExpiredCredential_MCPHeaderIsRefusedNotSent(t *testing.T) {
 		t.Fatal(err)
 	}
 	engine := credential.NewEngine(st, sealer)
-	past, future := time.Now().Add(-time.Minute), time.Now().Add(time.Hour)
-	for name, exp := range map[string]*time.Time{"stale": &past, "live": &future} {
-		if _, err := engine.PutInline(context.Background(), credential.Identity{TenantID: "t", Scope: "tenant", Name: name}, name+"-value", exp, nil, nil); err != nil {
+	future := time.Now().Add(time.Hour)
+	for _, name := range []string{"stale", "live"} {
+		if _, err := engine.PutInline(context.Background(), credential.Identity{TenantID: "t", Scope: "tenant", Name: name}, name+"-value", &future, nil, nil); err != nil {
 			t.Fatal(err)
 		}
 	}
+	credentialtest.Expire(t, st, credential.Identity{TenantID: "t", Scope: "tenant", Name: "stale"}, time.Now().Add(-time.Minute))
 
 	// As cmd/loomcycle wires it.
 	substitute := func(ctx context.Context, s, targetURL string) (string, []string, error) {

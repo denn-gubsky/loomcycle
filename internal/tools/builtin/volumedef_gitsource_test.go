@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/denn-gubsky/loomcycle/internal/credential"
+	"github.com/denn-gubsky/loomcycle/internal/credential/credentialtest"
 	"github.com/denn-gubsky/loomcycle/internal/gitsource/gitsourcetest"
 	"github.com/denn-gubsky/loomcycle/internal/store/sqlite"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
@@ -29,6 +30,7 @@ type gitSourceFixture struct {
 	set        *tools.EphemeralVolumeSet
 	repo       *gitsourcetest.Repo
 	engine     *credential.Engine
+	credStore  *sqlite.Store // the engine's store, to put a row in a state create refuses
 	root       string
 	registered []string // what the redactor was told to mask
 }
@@ -64,6 +66,7 @@ func newGitSourceFixtureFor(t *testing.T, user string) *gitSourceFixture {
 		t.Fatal(err)
 	}
 	f.engine = credential.NewEngine(st, sealer)
+	f.credStore = st
 
 	tool.Git = &GitSourceConfig{
 		Hosts:    []string{f.repo.Host},
@@ -391,15 +394,9 @@ func TestGitCredentialResolver_AppCredentialIsMintedAndAnOpenOneRefused(t *testi
 func TestGitCredentialResolver_AnExpiredCredentialIsUnresolvable(t *testing.T) {
 	f := newGitSourceFixture(t, false)
 	target := "https://github.com/acme/app"
-	past := time.Now().Add(-time.Minute)
 	for name, value := range map[string]string{"token": "glpat_stale", "app": `{"app_id":"1"}`} {
-		norm, err := credential.NormalizeAllowedURLs(&[]string{target})
-		if err != nil {
-			t.Fatal(err)
-		}
-		if _, err := f.engine.PutInline(context.Background(), credential.Identity{TenantID: "tnt", Scope: "tenant", Name: name}, value, &past, norm, nil); err != nil {
-			t.Fatal(err)
-		}
+		f.credential(t, name, value, &[]string{target})
+		credentialtest.Expire(t, f.credStore, credential.Identity{TenantID: "tnt", Scope: "tenant", Name: name}, time.Now().Add(-time.Minute))
 	}
 	minted := false
 	var registered []string

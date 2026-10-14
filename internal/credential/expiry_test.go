@@ -110,9 +110,12 @@ func TestEngine_ExpiredUserCredentialDoesNotFallThroughToTenant(t *testing.T) {
 	if _, err := e.PutInline(ctx, Identity{TenantID: "t", Scope: "tenant", Name: "slack"}, "team-token", nil, nil, nil); err != nil {
 		t.Fatal(err)
 	}
+	// Created while still valid, then the clock moves past it.
+	e.now = func() time.Time { return past.Add(-time.Minute) }
 	if _, err := e.PutInline(ctx, Identity{TenantID: "t", Scope: "user", ScopeID: "alice", Name: "slack"}, "alice-token", &past, nil, nil); err != nil {
 		t.Fatal(err)
 	}
+	e.now = time.Now
 	res, found, err := e.Resolve(ctx, "t", "", "alice", "slack")
 	if !errors.Is(err, ErrExpired) || found || res.Value != "" {
 		t.Fatalf("Resolve for alice = %q found=%v err=%v; want ErrExpired and no value", res.Value, found, err)
@@ -120,6 +123,29 @@ func TestEngine_ExpiredUserCredentialDoesNotFallThroughToTenant(t *testing.T) {
 	// Someone without a user credential still gets the tenant's.
 	if res, found, err := e.Resolve(ctx, "t", "", "bob", "slack"); err != nil || !found || res.Value != "team-token" {
 		t.Fatalf("Resolve for bob = %q found=%v err=%v; want the tenant token", res.Value, found, err)
+	}
+}
+
+// A credential created already expired could never be used, so create
+// refuses it — at the boundary too — and stores nothing.
+func TestEngine_PutInlineRefusesAnExpiryNotInTheFuture(t *testing.T) {
+	e := newEngine(t, testKey(1))
+	ctx := context.Background()
+	now := time.Date(2026, 10, 1, 12, 0, 0, 0, time.UTC)
+	e.now = func() time.Time { return now }
+	id := Identity{TenantID: "t", Scope: "tenant", Name: "stale"}
+	for _, at := range []time.Time{now.Add(-24 * time.Hour), now} {
+		_, err := e.PutInline(ctx, id, "v", &at, nil, nil)
+		if err == nil || !strings.Contains(err.Error(), "not in the future") {
+			t.Errorf("PutInline(expires_at %s) err = %v, want it refused", at.Format(time.RFC3339), err)
+		}
+	}
+	if _, found, _ := e.Resolve(ctx, "t", "", "", "stale"); found {
+		t.Fatal("a refused create stored the credential")
+	}
+	later := now.Add(time.Second)
+	if _, err := e.PutInline(ctx, id, "v", &later, nil, nil); err != nil {
+		t.Fatalf("PutInline one second ahead: %v", err)
 	}
 }
 
