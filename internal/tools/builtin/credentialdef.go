@@ -62,7 +62,7 @@ const credentialDefInputSchema = `{
     "scope":      {"type": "string", "enum": ["tenant","user","agent"], "description": "Which bucket (default tenant). user = the calling principal's own subject (per-user tokens); agent = the calling agent. scope_id is derived from your identity, never supplied."},
     "value":      {"type": "string", "description": "create only: the plaintext secret to encrypt (inline backend). Masked from the persisted transcript; never returned."},
     "backend":    {"type": "string", "enum": ["inline"], "description": "create only: storage backend (default inline; external backends are a future addition)."},
-    "expires_at": {"type": "string", "description": "create only: optional RFC3339 soft-expiry (advisory rotation reminder)."},
+    "expires_at": {"type": "string", "description": "create only: optional RFC3339 time the value stops being sent. From then on it is refused wherever it is referenced; get and list still show it, with expired: true. Rotate by creating it again with the same name (a create without expires_at clears it)."},
     "allowed_urls": {"type": "array", "items": {"type": "string"}, "description": "create only: the https URLs this value may be sent to, e.g. [\"https://github.com/acme/app\"]. An entry covers that URL and everything under it, by whole path segments. Omit for no restriction; pass [] for a value that is never sent anywhere. Omitting it when the credential already exists keeps the list it has, so rotating a value does not lift its restriction; to lift one, delete the credential and create it again. A restricted credential is used only where the destination is known and covered: an MCP server's header, a hook's webhook header, a remote memory or document peer's key, a git source. It is never a provider key or a Bash environment variable."},
     "username":   {"type": "string", "description": "create only: optional user name sent with the value where the destination takes one: HTTP basic auth for a git source (default by host: oauth2 for GitLab, x-access-token otherwise). No ':' and no control characters. Omitting it when the credential already exists keeps the one it has; pass \"\" to remove it."}
   },
@@ -239,6 +239,10 @@ func credentialMeta(row credential.Meta, note string) map[string]any {
 	}
 	if row.ExpiresAt != nil {
 		m["expires_at"] = *row.ExpiresAt
+		// An expired credential is kept so it can be seen and rotated, but
+		// it no longer resolves anywhere; say so rather than make a reader
+		// compare the time.
+		m["expired"] = row.Expired
 	}
 	// Present only for a restricted credential; [] means "sent nowhere".
 	if row.AllowedURLs != nil {

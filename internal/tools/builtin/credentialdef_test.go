@@ -212,3 +212,46 @@ func TestCredentialDefTool_UsernameIsStoredShownKeptAndCleared(t *testing.T) {
 		}
 	}
 }
+
+// get and list flag a credential past its expires_at, so a UI can show it
+// without comparing times; one with a future expiry says expired:false, and
+// one with none carries neither field.
+func TestCredentialDefTool_GetAndListFlagAnExpiredCredential(t *testing.T) {
+	c, ctx := credFixture(t, "u1", testKEK())
+	for _, body := range []string{
+		`{"op":"create","name":"old","value":"v1","expires_at":"2020-01-01T00:00:00Z"}`,
+		`{"op":"create","name":"fresh","value":"v2","expires_at":"2200-01-01T00:00:00Z"}`,
+		`{"op":"create","name":"forever","value":"v3"}`,
+	} {
+		if _, res := credExec(t, c, ctx, body); res.IsError {
+			t.Fatalf("create %s: %q", body, res.Text)
+		}
+	}
+
+	want := map[string]any{"old": true, "fresh": false, "forever": nil}
+	for name, w := range want {
+		out, res := credExec(t, c, ctx, `{"op":"get","name":"`+name+`"}`)
+		if res.IsError {
+			t.Fatalf("get %s: %q", name, res.Text)
+		}
+		if got, ok := out["expired"]; got != w || (w == nil && ok) {
+			t.Errorf("get %s: expired = %v (present %v), want %v", name, got, ok, w)
+		}
+	}
+
+	out, res := credExec(t, c, ctx, `{"op":"list"}`)
+	if res.IsError {
+		t.Fatalf("list: %q", res.Text)
+	}
+	creds, _ := out["credentials"].([]any)
+	if len(creds) != 3 {
+		t.Fatalf("list returned %d credentials, want all 3 (an expired one is kept): %s", len(creds), res.Text)
+	}
+	for _, raw := range creds {
+		m := raw.(map[string]any)
+		name, _ := m["name"].(string)
+		if got := m["expired"]; got != want[name] {
+			t.Errorf("list %s: expired = %v, want %v", name, got, want[name])
+		}
+	}
+}
