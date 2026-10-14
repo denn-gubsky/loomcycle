@@ -9,11 +9,13 @@
 # Dockerfile at the repo root (which does run go build).
 #
 # Both paths produce identical runtime images: distroless/static
-# :nonroot + the binary at /usr/local/bin/loomcycle.
+# :nonroot + the binary at /usr/local/bin/loomcycle, with LICENSE + NOTICE
+# at /usr/share/doc/loomcycle/.
 
 FROM gcr.io/distroless/static:nonroot
 WORKDIR /
 COPY loomcycle /usr/local/bin/loomcycle
+COPY LICENSE NOTICE /usr/share/doc/loomcycle/
 USER nonroot
 EXPOSE 8787
 ENTRYPOINT ["/usr/local/bin/loomcycle"]

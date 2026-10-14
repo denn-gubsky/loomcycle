@@ -92,6 +92,7 @@ ENV PATH="/usr/local/go/bin:/usr/local/cargo/bin:/home/nonroot/go/bin:${PATH}" \
     GOPATH="/home/nonroot/go"
 
 COPY loomcycle /usr/local/bin/loomcycle
+COPY LICENSE NOTICE /usr/share/doc/loomcycle/
 
 USER 65532:65532
 WORKDIR /home/nonroot

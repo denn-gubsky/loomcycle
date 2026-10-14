@@ -186,6 +186,9 @@ dockers:
       - "denngubsky/loomcycle:latest-amd64"
       - "ghcr.io/denn-gubsky/loomcycle:latest-amd64"
     dockerfile: Dockerfile.release
+    extra_files:
+      - LICENSE
+      - NOTICE
     use: buildx
     build_flag_templates:
       - "--platform=linux/amd64"
@@ -206,6 +209,9 @@ dockers:
       - "denngubsky/loomcycle:latest-arm64"
       - "ghcr.io/denn-gubsky/loomcycle:latest-arm64"
     dockerfile: Dockerfile.release
+    extra_files:
+      - LICENSE
+      - NOTICE
     use: buildx
     build_flag_templates:
       - "--platform=linux/arm64"
@@ -239,6 +245,9 @@ dockers:
       - "denngubsky/loomcycle-toolbox:latest-amd64"
       - "ghcr.io/denn-gubsky/loomcycle-toolbox:latest-amd64"
     dockerfile: Dockerfile.toolbox
+    extra_files:
+      - LICENSE
+      - NOTICE
     use: buildx
     build_flag_templates:
       - "--platform=linux/amd64"
@@ -259,6 +268,9 @@ dockers:
       - "denngubsky/loomcycle-toolbox:latest-arm64"
       - "ghcr.io/denn-gubsky/loomcycle-toolbox:latest-arm64"
     dockerfile: Dockerfile.toolbox
+    extra_files:
+      - LICENSE
+      - NOTICE
     use: buildx
     build_flag_templates:
       - "--platform=linux/arm64"
@@ -286,6 +298,9 @@ dockers:
       - "denngubsky/loomcycle-browser:latest-amd64"
       - "ghcr.io/denn-gubsky/loomcycle-browser:latest-amd64"
     dockerfile: Dockerfile.browser
+    extra_files:
+      - LICENSE
+      - NOTICE
     use: buildx
     build_flag_templates:
       - "--platform=linux/amd64"
@@ -306,6 +321,9 @@ dockers:
       - "denngubsky/loomcycle-browser:latest-arm64"
       - "ghcr.io/denn-gubsky/loomcycle-browser:latest-arm64"
     dockerfile: Dockerfile.browser
+    extra_files:
+      - LICENSE
+      - NOTICE
     use: buildx
     build_flag_templates:
       - "--platform=linux/arm64"
