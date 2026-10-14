@@ -491,7 +491,10 @@ func (s *Scheduler) fireSlot(ctx context.Context, row store.ScheduleDueRow, def 
 	// the reason the channel tick is: the fan-out check below reads `metadata`
 	// and the rest reads `agent`, neither of which a team tick has.
 	if def.Delivery == "team" {
-		s.fireTeamDelivery(ctx, row, def, key, now)
+		if s.fireTeamDelivery(ctx, row, def, key, now) {
+			s.releaseSlot(ctx, listed, plan, now)
+			return listed, false
+		}
 		return s.nextInBacklog(listed, plan, def, now)
 	}
 
@@ -511,8 +514,39 @@ func (s *Scheduler) fireSlot(ctx context.Context, row store.ScheduleDueRow, def 
 	if plan.catchUp() {
 		in.Metadata = catchUpMetadata(in.Metadata, plan.slot)
 	}
-	s.fireRun(ctx, row, def, in, now)
+	if s.fireRun(ctx, row, def, in, now) {
+		s.releaseSlot(ctx, listed, plan, now)
+		return listed, false
+	}
 	return s.nextInBacklog(listed, plan, def, now)
+}
+
+// releaseSlot gives back a slot whose run the run queue was too full to take:
+// next_run_at moves back from where the claim put it to the slot the tick
+// listed, so the next tick claims the same slot again under the same run key.
+// A queued run never times out, so a scheduled fire waits in the queue; only a
+// FULL queue refuses one, and the scheduler has no caller to retry it the way
+// a webhook sender retries a 503 — without this the fire was lost. The refusal
+// leaves no run row, so the key is still free. If anything moved next_run_at
+// in between (an operator's run-now, another replica), the release loses and
+// the slot stays taken, as before.
+func (s *Scheduler) releaseSlot(ctx context.Context, listed store.ScheduleDueRow, plan slotPlan, now time.Time) {
+	won, err := s.store.ScheduleRunStateClaim(ctx, store.ScheduleSlotClaim{
+		DefID:        listed.DefID,
+		Slot:         plan.next,
+		NextRunAt:    listed.NextRunAt,
+		ClaimedBy:    s.cfg.ReplicaID,
+		ClaimedAt:    now,
+		CatchUpUntil: listed.CatchUpUntil,
+	})
+	switch {
+	case err != nil:
+		s.logf("scheduler: schedule %q: giving back slot %s after a full run queue failed: %v — the slot is not run",
+			listed.Name, listed.NextRunAt.UTC().Format(time.RFC3339), err)
+	case !won:
+		s.logf("scheduler: schedule %q: next_run_at moved before slot %s could be given back — the slot is not run",
+			listed.Name, listed.NextRunAt.UTC().Format(time.RFC3339))
+	}
 }
 
 // nextInBacklog is the row of the backlog's next kept slot, when the def is
@@ -650,21 +684,26 @@ func TickPayload(scheduleName string, firedAt time.Time, payload any) (json.RawM
 // a value it refuses — is a mistake in the definition, not a fire: it is
 // logged, recorded as the schedule's last error, and does not use up
 // max_fires, as an agent that cannot be resolved does not. Every other outcome
-// is classified the way a run's is (classifyFire).
-func (s *Scheduler) fireTeamDelivery(ctx context.Context, row store.ScheduleDueRow, def scheduleDef, key string, now time.Time) {
+// is classified the way a run's is (classifyFire). retry reports a walk the
+// full run queue refused: the caller gives the slot back.
+func (s *Scheduler) fireTeamDelivery(ctx context.Context, row store.ScheduleDueRow, def scheduleDef, key string, now time.Time) (retry bool) {
 	out := fireOutcome{Status: "completed", CountAsFire: true}
 	runID, err := s.startTeamWalk(ctx, def, key)
 	if errors.Is(err, store.ErrDuplicateIdempotencyKey) {
 		// This slot already has its walk. Whoever started it records it.
 		s.logf("scheduler: schedule %q slot %s already has a walk — not starting it twice", row.Name, row.NextRunAt.UTC().Format(time.RFC3339Nano))
-		return
+		return false
 	}
 	if err == nil && s.trackRun(ctx, row, runID, now) {
-		return
+		return false
 	}
 	if err != nil {
 		class := classifyFire(err)
 		out.Status, out.Err, out.CountAsFire = class.status(), err.Error(), class.countsAsFire()
+		retry = class.retried() && ctx.Err() == nil
+		if retry {
+			out.Err += retriedNote
+		}
 		switch class {
 		case fireTeamNotStartable:
 			s.logf("scheduler: schedule %q could not start team %q in tenant %q — not counting toward max_fires; fix the schedule or the team: %v",
@@ -678,6 +717,7 @@ func (s *Scheduler) fireTeamDelivery(ctx context.Context, row store.ScheduleDueR
 	out.RunID = runID
 	_, done := s.recordFireOutcome(ctx, row, def, now, out)
 	done()
+	return retry
 }
 
 // startTeamWalk asks the wired starter for one detached walk of the def's

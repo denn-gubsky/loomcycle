@@ -55,7 +55,10 @@ type startedRun struct {
 // its admission slots when it returns, which here would be at once, leaving
 // the run outside the per-user gate. This way it holds its slots until it
 // ends, like a detached spawn batch's children (spawnDetached).
-func (s *Scheduler) fireRun(ctx context.Context, row store.ScheduleDueRow, def scheduleDef, in runner.RunInput, now time.Time) {
+//
+// retry reports a run the full run queue refused: the caller gives the slot
+// back so the next tick fires it again.
+func (s *Scheduler) fireRun(ctx context.Context, row store.ScheduleDueRow, def scheduleDef, in runner.RunInput, now time.Time) (retry bool) {
 	runCtx, abort := context.WithCancel(context.WithoutCancel(ctx))
 	var (
 		mu         sync.Mutex
@@ -97,10 +100,9 @@ func (s *Scheduler) fireRun(ctx context.Context, row store.ScheduleDueRow, def s
 	for {
 		select {
 		case <-admitted:
-			return
+			return false
 		case err := <-refused:
-			s.recordRefusal(ctx, row, def, now, err)
-			return
+			return s.recordRefusal(ctx, row, def, now, err)
 		case <-done:
 			// The scheduler is stopping. A run still waiting for admission is
 			// withdrawn: nobody would be there to see it start. One that has
@@ -149,18 +151,19 @@ func (s *Scheduler) trackRun(ctx context.Context, row store.ScheduleDueRow, runI
 
 // recordRefusal records a run that never started: the runner refused it at
 // setup (unknown agent, backpressure, paused, a spent budget, ...). It is
-// classified exactly as before, and nothing is tracked or dispatched.
-func (s *Scheduler) recordRefusal(ctx context.Context, row store.ScheduleDueRow, def scheduleDef, now time.Time, runErr error) {
+// classified exactly as before, and nothing is tracked or dispatched. retry
+// reports a refusal by the full run queue, whose slot the caller gives back.
+func (s *Scheduler) recordRefusal(ctx context.Context, row store.ScheduleDueRow, def scheduleDef, now time.Time, runErr error) (retry bool) {
 	if errors.Is(runErr, store.ErrDuplicateIdempotencyKey) {
 		// This slot already has its run. Whoever started it records it.
 		s.logf("scheduler: schedule %q slot %s already has a run — not firing it twice", row.Name, row.NextRunAt.UTC().Format(time.RFC3339Nano))
-		return
+		return false
 	}
 	if ctx.Err() != nil {
 		// Withdrawn while waiting for admission because the scheduler is
 		// stopping. Nothing ran, and the claimed slot is not retried.
 		s.logf("scheduler: schedule %q: the scheduler stopped before its run was admitted — slot %s not run", row.Name, row.NextRunAt.UTC().Format(time.RFC3339Nano))
-		return
+		return false
 	}
 	out := fireOutcome{Status: "failed", CountAsFire: true}
 	if runErr == nil {
@@ -169,16 +172,21 @@ func (s *Scheduler) recordRefusal(ctx context.Context, row store.ScheduleDueRow,
 	} else {
 		class := classifyFire(runErr)
 		out.Status, out.Err, out.CountAsFire = class.status(), runErr.Error(), class.countsAsFire()
+		retry = class.retried()
 		switch class {
 		case fireUnknownAgent:
 			s.logf("scheduler: schedule %q could not resolve agent %q in tenant %q — not counting toward max_fires; check the agent exists in this tenant (F38)",
 				row.Name, def.Agent, def.TenantID)
 		case firePaused:
 			s.logf("scheduler: schedule %q was refused because the runtime paused after this tick began — not counting toward max_fires", row.Name)
+		case fireBackpressure:
+			out.Err += retriedNote
+			s.logf("scheduler: schedule %q: the run queue is full — slot %s is fired again on the next tick", row.Name, row.NextRunAt.UTC().Format(time.RFC3339))
 		}
 	}
 	_, done := s.recordFireOutcome(ctx, row, def, now, out)
 	done()
+	return retry
 }
 
 // finishLocal finishes a run this replica ran, once RunOnce has returned.

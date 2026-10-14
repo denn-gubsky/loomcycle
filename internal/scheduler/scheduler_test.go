@@ -369,6 +369,45 @@ func TestScheduler_BackpressureRecordsAsSkipped(t *testing.T) {
 	}
 }
 
+// A run refused because the run queue is full has not run: its slot is given
+// back, the next tick fires the same slot under the same run key, and the
+// refusal does not use up a fire. Before, the claim had already moved
+// next_run_at on, so the slot was lost.
+func TestScheduler_AFullRunQueueGivesTheSlotBack(t *testing.T) {
+	enabled := true
+	def := scheduleDef{Agent: "researcher", Schedule: "0 * * * *", Enabled: &enabled}
+	sched, fr, _, defID, st := schedulerFixture(t, def, time.Now().Add(-1*time.Minute))
+	ctx := context.Background()
+	before, _ := st.ScheduleRunStateGet(ctx, defID)
+	fr.runErr = fmt.Errorf("%w: queue full", runner.ErrBackpressure)
+
+	fireT(t, sched)
+	got, _ := st.ScheduleRunStateGet(ctx, defID)
+	if !got.NextRunAt.Equal(before.NextRunAt) {
+		t.Fatalf("next_run_at = %v after a full queue, want the slot given back (%v)", got.NextRunAt, before.NextRunAt)
+	}
+	if got.FireCount != 0 {
+		t.Errorf("fire_count = %d after a full queue, want 0 (the slot has not run)", got.FireCount)
+	}
+	if got.LastStatus != "skipped" || !strings.Contains(got.LastError, "fired again on the next tick") {
+		t.Errorf("state = %q / %q, want skipped naming the retry", got.LastStatus, got.LastError)
+	}
+
+	fr.runErr = nil
+	fireT(t, sched)
+	calls := fr.Calls()
+	if len(calls) != 2 {
+		t.Fatalf("RunOnce calls = %d, want 2 (the refused slot fired again)", len(calls))
+	}
+	if calls[0].IdempotencyKey == "" || calls[1].IdempotencyKey != calls[0].IdempotencyKey {
+		t.Errorf("run keys %q then %q, want the same slot's key twice", calls[0].IdempotencyKey, calls[1].IdempotencyKey)
+	}
+	after, _ := st.ScheduleRunStateGet(ctx, defID)
+	if !after.NextRunAt.After(time.Now()) {
+		t.Errorf("next_run_at = %v after the slot ran, want it moved on", after.NextRunAt)
+	}
+}
+
 func TestScheduler_OnCompleteChannelPublish(t *testing.T) {
 	enabled := true
 	def := scheduleDef{
