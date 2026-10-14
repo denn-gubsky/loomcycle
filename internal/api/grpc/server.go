@@ -2513,6 +2513,10 @@ func configuredErrToStatus(err error) error {
 	switch hse.HTTPStatus() {
 	case nethttp.StatusBadRequest, nethttp.StatusUnprocessableEntity:
 		code = codes.InvalidArgument
+	case nethttp.StatusForbidden:
+		// agent_not_allowed / override_not_allowed. The refusal wraps no
+		// runner sentinel, so the mapRunnerErr fallback filed it as Internal.
+		code = codes.PermissionDenied
 	case nethttp.StatusNotFound:
 		code = codes.NotFound
 	case nethttp.StatusConflict:

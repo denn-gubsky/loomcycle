@@ -266,6 +266,21 @@ func TestRateLimited_RefusalCarriesTheLimitersWait(t *testing.T) {
 	check("RunOnce", mapRunnerErr(httpSrv.RunOnce(ctx, runner.RunInput{Agent: "agent"}, runner.RunCallbacks{})))
 }
 
+// A token limited to other agents is refused a draft the way Run refuses it:
+// PermissionDenied, as HTTP answers 403 — not Internal, which tells a caller
+// the server failed and invites a retry that cannot succeed.
+func TestConfiguredRunRPCs_AgentNotAllowedIsPermissionDenied(t *testing.T) {
+	_, adapter, _, _ := configuredServers(t, nil)
+	ctx := auth.WithPrincipal(context.Background(), auth.Principal{
+		TenantID: "acme", Subject: "alice", Scopes: []string{auth.ScopeRunsCreate},
+		Restrictions: auth.Restrictions{Agents: []string{"other"}},
+	})
+	_, err := adapter.CreateConfiguredRun(ctx, &loomcyclepb.RunRequest{Agent: "agent", Segments: userSegment("x")})
+	if v := viewOf(t, err); v.code != codes.PermissionDenied || v.reason != "agent_not_allowed" {
+		t.Errorf("draft of a disallowed agent = %v / %q (%v), want PermissionDenied / agent_not_allowed", v.code, v.reason, err)
+	}
+}
+
 // Every configured-run refusal reaches gRPC with the code its HTTP body
 // carries as the reason, not only the 429s.
 func TestConfiguredRunRPCs_RefusalsNameTheirHTTPCode(t *testing.T) {
