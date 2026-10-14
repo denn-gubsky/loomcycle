@@ -301,6 +301,8 @@ dockers:
     extra_files:
       - LICENSE
       - NOTICE
+      - third_party/pinchtab/LICENSE
+      - third_party/pinchtab/THIRD_PARTY_LICENSES.md
     use: buildx
     build_flag_templates:
       - "--platform=linux/amd64"
@@ -324,6 +326,8 @@ dockers:
     extra_files:
       - LICENSE
       - NOTICE
+      - third_party/pinchtab/LICENSE
+      - third_party/pinchtab/THIRD_PARTY_LICENSES.md
     use: buildx
     build_flag_templates:
       - "--platform=linux/arm64"

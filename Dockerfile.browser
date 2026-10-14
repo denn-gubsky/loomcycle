@@ -23,6 +23,9 @@ WORKDIR /
 COPY loomcycle /usr/local/bin/loomcycle
 COPY LICENSE NOTICE /usr/share/doc/loomcycle/
 COPY --from=pinchtab /usr/local/bin/pinchtab /usr/local/bin/pinchtab
+# pinchtab is MIT: its notices must travel with the binary (see
+# third_party/pinchtab/PROVENANCE.md; refresh them when the tag above moves).
+COPY third_party/pinchtab/LICENSE third_party/pinchtab/THIRD_PARTY_LICENSES.md /usr/share/doc/pinchtab/
 USER nonroot
 EXPOSE 8787
 ENTRYPOINT ["/usr/local/bin/loomcycle"]
