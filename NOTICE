@@ -1,0 +1,23 @@
+loomcycle
+Copyright 2026 The loomcycle Authors
+
+This product includes software developed by The loomcycle Authors
+(https://github.com/denn-gubsky/loomcycle).
+
+Licensed under the Apache License, Version 2.0. See LICENSE.
+
+--------------------------------------------------------------------------------
+Third-party notices
+
+This product bundles or links the following Apache-2.0 licensed works, whose
+NOTICE files require the attributions below.
+
+Swagger UI (swagger-ui-dist 5.17.14, vendored in internal/api/http/openapi_assets/)
+  swagger-ui
+  Copyright 2020-2021 SmartBear Software Inc.
+
+gRPC-Go (google.golang.org/grpc)
+  Copyright 2014 gRPC authors.
+
+yaml.v3 (gopkg.in/yaml.v3)
+  Copyright 2011-2016 Canonical Ltd.

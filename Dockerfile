@@ -61,6 +61,7 @@ RUN CGO_ENABLED=0 GOOS=linux go build \
 FROM gcr.io/distroless/static:nonroot
 WORKDIR /
 COPY --from=go-builder /out/loomcycle /usr/local/bin/loomcycle
+COPY LICENSE NOTICE /usr/share/doc/loomcycle/
 # Distroless runs as user "nonroot" (uid 65532) by default — operator
 # mounts should match that uid for write access to the config dir.
 USER nonroot
