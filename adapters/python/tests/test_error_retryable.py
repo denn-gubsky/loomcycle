@@ -90,11 +90,22 @@ _SERVED = {
         "0774696d656f757412096c6f6f6d6379636c651a140a0c69735f726574727961626c651204"
         "747275651a150a0863617465676f727912097472616e7369656e74"
     ),
+    # ResourceExhausted, ErrorInfo{reason: configured_run_cap} and no metadata
+    # or RetryInfo (internal/api/grpc configuredErrToStatus, CreateConfiguredRun
+    # over the per-user cap of 2).
+    "configured_run_cap": (
+        "0808125474686973207573657220616c726561647920686f6c6473203220636f6e666967"
+        "757265642072756e732028746865206361702069732032293b207374617274206f722064"
+        "697363617264206f6e652066697273741a4b0a28747970652e676f6f676c65617069732e"
+        "636f6d2f676f6f676c652e7270632e4572726f72496e666f121f0a12636f6e6669677572"
+        "65645f72756e5f63617012096c6f6f6d6379636c65"
+    ),
 }
 
-# What configuredErrToStatus sends for the per-user configured-run cap: a bare
-# ResourceExhausted status with no details, so no reason. The message is the
-# refusal's text in internal/api/http/configured_runs.go.
+# What an older server's configuredErrToStatus sent for the per-user
+# configured-run cap: a bare ResourceExhausted status with no details, so no
+# reason. The message is the refusal's text in
+# internal/api/http/configured_runs.go.
 _CONFIGURED_RUN_CAP_MSG = (
     "this user already holds 2 configured runs (the cap is 2); start or discard one first"
 )
@@ -148,6 +159,21 @@ def test_the_configured_run_cap_is_backpressure_but_not_retryable():
     e = _raised(_rpc_error(grpc.StatusCode.RESOURCE_EXHAUSTED, _CONFIGURED_RUN_CAP_MSG))
     assert isinstance(e, BackpressureError)
     assert e.reason is None
+    assert e.retryable is False
+
+
+def test_the_configured_run_cap_arrives_as_its_reason():
+    # The server names the cap in ErrorInfo, so the reason (not the message
+    # text) is what makes it not retryable.
+    e = _raised(
+        _rpc_error(
+            grpc.StatusCode.RESOURCE_EXHAUSTED,
+            _CONFIGURED_RUN_CAP_MSG,
+            _SERVED["configured_run_cap"],
+        )
+    )
+    assert isinstance(e, BackpressureError)
+    assert e.reason == "configured_run_cap"
     assert e.retryable is False
 
 

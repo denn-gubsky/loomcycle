@@ -47,7 +47,9 @@ scopes no route checks (a scope that enforces nothing is a false
 limitation). The default at create is `["substrate:admin"]`, so a first
 token keeps "single token, full power". Narrow app tokens
 (`["runs:create"]`) are the upgrade path; a route that needs a scope the
-token lacks returns **403** with `WWW-Authenticate: Bearer scope="…"`.
+token lacks returns **403** with the JSON body
+`{"code":"insufficient_scope","error":"insufficient scope","required_scope":"…"}`
+and the same scope in `WWW-Authenticate: Bearer scope="…"`.
 
 **`substrate:tenant`** is the middle ground between an admin token and a
 narrow `runs:*` app token: it grants FULL power WITHIN the token's own
@@ -159,7 +161,9 @@ agents as top-level runs.
   reading and controlling runs. It is refused everywhere else
   (`restricted_token`) whatever its scopes — definitions, team walks,
   schedules, the model gateways, a direct decision, channels, memory,
-  documents, the credential store, A2A.
+  documents, the credential store, A2A. It may still ask which per-run
+  settings a run of a listed agent may set
+  (`GET /v1/_agentdef/{name}/overridable`).
 - A sub-agent that a listed agent spawns is not limited; it follows the
   parent agent's definition.
 - The list is fixed at mint and carried over by `rotate`. An empty list
@@ -185,6 +189,11 @@ names the ones the token may still set.
 - The lock is fixed at mint and carried over by `rotate`.
 - To lock an agent for every caller instead, an operator included, set
   `allow_overrides: false` on the agent's definition.
+- To learn which settings a run of an agent may set before sending it,
+  `GET /v1/_agentdef/{name}/overridable` answers for the calling token:
+  one entry per setting, `overridable` true or false, and the lock that
+  refuses it (`token_locked`, or `agent_locked` for the agent's own
+  `allow_overrides: false`).
 
 ## Limiting how often a token starts runs
 

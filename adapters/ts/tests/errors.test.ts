@@ -32,6 +32,7 @@ import { jsonResponse, makeClient } from "./helpers.js";
 // exported cannot be named in a consumer's `instanceof`, and only an import
 // from here fails when the export is dropped.
 import {
+  InsufficientScopeError,
   PromptTooLargeError,
   RateLimitedError,
   RequestTooLargeError,
@@ -611,6 +612,93 @@ describe("the refusal classes reach a caller of the client", () => {
       .decide({ state: {}, questions: { q: { type: "noul", instructions: "q" } } })
       .then(() => undefined, (e: unknown) => e);
     expect(err).toBeInstanceOf(PromptTooLargeError);
+  });
+});
+
+/** A 403 as the server's scope gate writes it: the body as given, and the
+ *  scope in WWW-Authenticate when `hint` is set. */
+async function scopeRefusal(body: string, hint?: string): Promise<unknown> {
+  const headers: Record<string, string> = {};
+  if (hint !== undefined) headers["WWW-Authenticate"] = `Bearer scope="${hint}"`;
+  try {
+    await raiseFromResponse(new Response(body, { status: 403, headers }));
+  } catch (e) {
+    return e;
+  }
+  throw new Error("expected raiseFromResponse to throw");
+}
+
+describe("raiseFromResponse — a 403 for a missing scope names the scope", () => {
+  it("403 + code:insufficient_scope → InsufficientScopeError with requiredScope from the body", async () => {
+    const e = await scopeRefusal(
+      JSON.stringify({ code: "insufficient_scope", error: "insufficient scope", required_scope: "runs:create" }),
+      "runs:create",
+    );
+    expect(e).toBeInstanceOf(InsufficientScopeError);
+    expect(e).toBeInstanceOf(LoomcycleError);
+    const err = e as InsufficientScopeError;
+    expect(err.name).toBe("InsufficientScopeError");
+    expect(err.status).toBe(403);
+    expect(err.code).toBe("insufficient_scope");
+    expect(err.requiredScope).toBe("runs:create");
+    expect(err.message).toContain("insufficient scope");
+    // Waiting never grants a scope.
+    expect(err.retryable).toBe(false);
+  });
+
+  it("the body's scope wins over the header's", async () => {
+    // A browser reading a cross-origin response sees no WWW-Authenticate
+    // unless the server exposes it, so the body is the source and the header
+    // only the fallback.
+    const e = (await scopeRefusal(
+      JSON.stringify({ code: "insufficient_scope", error: "insufficient scope", required_scope: "channel:read" }),
+      "something-else",
+    )) as InsufficientScopeError;
+    expect(e.requiredScope).toBe("channel:read");
+  });
+
+  it("an older server's JSON refusal without required_scope reads the scope from WWW-Authenticate", async () => {
+    const e = await scopeRefusal(
+      JSON.stringify({ code: "insufficient_scope", error: "insufficient scope: a team's own channels require channel:read" }),
+      "channel:read",
+    );
+    expect(e).toBeInstanceOf(InsufficientScopeError);
+    expect((e as InsufficientScopeError).requiredScope).toBe("channel:read");
+  });
+
+  it("an older server's plain-text refusal is recognised by its WWW-Authenticate scope", async () => {
+    const e = await scopeRefusal("insufficient scope\n", "substrate:admin");
+    expect(e).toBeInstanceOf(InsufficientScopeError);
+    expect((e as InsufficientScopeError).requiredScope).toBe("substrate:admin");
+    // The body had no code, and none is invented.
+    expect((e as InsufficientScopeError).code).toBeUndefined();
+  });
+
+  it("a scope refusal that names no scope anywhere has requiredScope null", async () => {
+    const e = await scopeRefusal(JSON.stringify({ code: "insufficient_scope", error: "insufficient scope" }));
+    expect(e).toBeInstanceOf(InsufficientScopeError);
+    expect((e as InsufficientScopeError).requiredScope).toBeNull();
+  });
+
+  it("any other 403 stays a plain LoomcycleError", async () => {
+    for (const body of [
+      JSON.stringify({ code: "restricted_token", error: "this token is limited to starting and following runs of its allowed agents" }),
+      JSON.stringify({ code: "operator_key_restricted", error: "no key" }),
+      "forbidden",
+    ]) {
+      const e = await scopeRefusal(body);
+      expect(e).toBeInstanceOf(LoomcycleError);
+      expect(e).not.toBeInstanceOf(InsufficientScopeError);
+      expect((e as Error).name).toBe("LoomcycleError");
+    }
+  });
+
+  it("requiredScope is typed", () => {
+    // Checked by `npm run typecheck:tests`; vitest strips types.
+    const e = new InsufficientScopeError("x");
+    const scope: Exact<typeof e.requiredScope, string | null> = true;
+    const base: LoomcycleError = e;
+    expect([scope, base.retryable]).toEqual([true, false]);
   });
 });
 

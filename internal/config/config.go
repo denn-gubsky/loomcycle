@@ -22,6 +22,7 @@ import (
 
 	"github.com/denn-gubsky/loomcycle/internal/agents"
 	"github.com/denn-gubsky/loomcycle/internal/auth"
+	"github.com/denn-gubsky/loomcycle/internal/credential"
 	"github.com/denn-gubsky/loomcycle/internal/hooks"
 	meminject "github.com/denn-gubsky/loomcycle/internal/memory"
 	"github.com/denn-gubsky/loomcycle/internal/netguard"
@@ -3433,6 +3434,11 @@ type WebhookCaptureDisabled struct {
 // WebhookAuth declares how inbound webhook requests are authenticated.
 // Kind is "hmac" (default) or "bearer". For hmac, the signature header
 // carries an HMAC of the body keyed by the secret in SigningSecretEnv.
+//
+// Secret is the other way to name that secret: a "$cred:<name>" reference to
+// a tenant-level credential of the definition's own tenant, read on each
+// delivery, in place of SigningSecretEnv or BearerTokenEnv. PreviousSecret,
+// with it, is a second one accepted while a secret is rotated.
 type WebhookAuth struct {
 	Kind             string `json:"kind,omitempty" yaml:"kind"`
 	Algorithm        string `json:"algorithm,omitempty" yaml:"algorithm"`
@@ -3440,6 +3446,8 @@ type WebhookAuth struct {
 	SigningSecretEnv string `json:"signing_secret_env,omitempty" yaml:"signing_secret_env"`
 	DeliveryIDHeader string `json:"delivery_id_header,omitempty" yaml:"delivery_id_header"`
 	BearerTokenEnv   string `json:"bearer_token_env,omitempty" yaml:"bearer_token_env"`
+	Secret           string `json:"secret,omitempty" yaml:"secret"`
+	PreviousSecret   string `json:"previous_secret,omitempty" yaml:"previous_secret"`
 }
 
 // WebhookRateLimit bounds inbound request volume per webhook.
@@ -3562,7 +3570,9 @@ type Concurrency struct {
 	// MaxQueuedRunsPerUser is how many runs one (tenant, user) may have
 	// queued on its MaxConcurrentRunsPerUser cap. Default 16; 0 refuses a run
 	// over the cap at once, as before runs could queue. In cluster mode the
-	// bound is per replica.
+	// bound is per replica. With no per-user cap it bounds instead how many
+	// places one (tenant, user) holds in the queue for a run slot (runs
+	// naming no user share their tenant's), so one caller cannot fill it.
 	// Env: LOOMCYCLE_MAX_QUEUED_RUNS_PER_USER.
 	MaxQueuedRunsPerUser int `yaml:"max_queued_runs_per_user"`
 	// ProviderQueueDepth is how many requests that hold NO run slot may wait
@@ -6369,6 +6379,14 @@ func EnvNameCredentialSafe(name string) bool {
 	return ExpandEnvAllowed(name) && !expandDenyNames[name]
 }
 
+// IsInfraSecretEnv reports whether name is one of loomcycle's own
+// infrastructure secrets (expandDenyNames), which no definition may name as
+// the source of a secret — not even one only ever compared, such as a
+// webhook's verification secret.
+func IsInfraSecretEnv(name string) bool {
+	return expandDenyNames[name]
+}
+
 // expandDenyNames is the authoritative set of loomcycle's OWN infrastructure /
 // admin secrets that must NEVER be interpolated into a YAML/MCP field, even
 // though the LOOMCYCLE_ prefix (or a bare third-party name) would otherwise
@@ -7611,6 +7629,39 @@ func validateStaticWebhook(name string, w Webhook) error {
 	case "", "hmac", "bearer", "none":
 	default:
 		return fmt.Errorf("webhooks.%s: unknown auth.kind %q (want hmac, bearer, or none)", name, w.Auth.Kind)
+	}
+	if err := CheckWebhookSecretRefs(w.Auth); err != nil {
+		return fmt.Errorf("webhooks.%s: %w", name, err)
+	}
+	return nil
+}
+
+// CheckWebhookSecretRefs checks the stored-credential form of a webhook's
+// verification secret: auth.secret and auth.previous_secret each one whole
+// "$cred:<name>" reference, never a literal, which would be kept in the
+// definition and readable at rest; auth.secret in place of the env-var name,
+// not beside it; previous_secret only beside secret. The yaml load and the
+// WebhookDef tool both check through here. A webhook that sets neither field
+// is not affected.
+//
+// A refusal never quotes the value: a literal here is a secret.
+func CheckWebhookSecretRefs(a WebhookAuth) error {
+	if a.Secret == "" {
+		if a.PreviousSecret != "" {
+			return fmt.Errorf("auth.previous_secret is accepted beside auth.secret while it is rotated; set auth.secret with it")
+		}
+		return nil
+	}
+	for _, f := range []struct{ field, value string }{{"auth.secret", a.Secret}, {"auth.previous_secret", a.PreviousSecret}} {
+		if f.value == "" {
+			continue
+		}
+		if _, ok := credential.ParseRef(f.value); !ok {
+			return fmt.Errorf("%s takes only a stored credential, written \"$cred:<name>\": a literal secret would be kept in the definition, readable at rest", f.field)
+		}
+	}
+	if a.SigningSecretEnv != "" || a.BearerTokenEnv != "" {
+		return fmt.Errorf("auth.secret replaces auth.signing_secret_env and auth.bearer_token_env: set one of the two forms, not both")
 	}
 	return nil
 }
