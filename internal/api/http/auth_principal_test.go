@@ -2,6 +2,7 @@ package http
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -371,6 +372,57 @@ func TestAuthMiddleware_403InsufficientScope(t *testing.T) {
 	}
 	if wa := rec.Header().Get("WWW-Authenticate"); wa != `Bearer scope="runs:create"` {
 		t.Errorf("WWW-Authenticate = %q, want the runs:create hint", wa)
+	}
+}
+
+// Every scope refusal at the route gate answers with the API's JSON error
+// envelope and names the scope it lacks, so a client can branch on the code and
+// tell its operator which grant is missing without parsing WWW-Authenticate.
+// The header and the "insufficient scope" text stay: clients match on both.
+func TestAuthMiddleware_ScopeRefusalIsJSONNamingTheRequiredScope(t *testing.T) {
+	s, st := tokenAuthServer(t, "legacy")
+	seedToken(t, st, "lct_tenant", "acme", "op", []string{auth.ScopeTenant}, time.Time{})
+	seedToken(t, st, "lct_isolated", "acme", "iso", []string{auth.ScopeUser}, time.Time{})
+	seedToken(t, st, "lct_member", "acme", "mem", []string{auth.ScopeRunsCreate, auth.ScopeRunsRead}, time.Time{})
+
+	cases := []struct {
+		name, token, method, path, scope string
+	}{
+		{"tenant operator on the runtime admin plane", "lct_tenant", http.MethodPost, "/v1/_pause", auth.ScopeAdmin},
+		{"isolated user on the LLM gateway", "lct_isolated", http.MethodPost, "/v1/_llm/chat", auth.ScopeLLMGateway},
+		{"member writing a token budget", "lct_member", http.MethodPut, "/v1/_limits", auth.ScopeTenant},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			var reached bool
+			req := httptest.NewRequest(c.method, c.path, nil)
+			req.Header.Set("Authorization", "Bearer "+c.token)
+			rec := httptest.NewRecorder()
+			s.authMiddleware(passthroughHandler(&reached)).ServeHTTP(rec, req)
+
+			if rec.Code != http.StatusForbidden || reached {
+				t.Fatalf("status = %d (handler reached %v), want 403 at the gate", rec.Code, reached)
+			}
+			if ct := rec.Header().Get("Content-Type"); ct != "application/json" {
+				t.Errorf("Content-Type = %q, want application/json", ct)
+			}
+			if wa := rec.Header().Get("WWW-Authenticate"); wa != `Bearer scope="`+c.scope+`"` {
+				t.Errorf("WWW-Authenticate = %q, want the %s hint", wa, c.scope)
+			}
+			var body map[string]any
+			if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+				t.Fatalf("body is not JSON: %v: %q", err, rec.Body.String())
+			}
+			want := map[string]any{"code": "insufficient_scope", "error": "insufficient scope", "required_scope": c.scope}
+			if len(body) != len(want) {
+				t.Errorf("body = %v, want exactly %v", body, want)
+			}
+			for k, v := range want {
+				if body[k] != v {
+					t.Errorf("body[%q] = %v, want %q", k, body[k], v)
+				}
+			}
+		})
 	}
 }
 

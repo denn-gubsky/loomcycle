@@ -39,7 +39,8 @@ func isNotFound(err error) bool {
 //
 //   - open mode (no auth configured at all) → pass through (dev only)
 //   - unknown/expired/invalid bearer → 401 opaque (no oracle)
-//   - valid bearer but insufficient scope → 403 + RFC 6750 hint
+//   - valid bearer but insufficient scope → 403 insufficient_scope JSON naming
+//     the scope + the RFC 6750 hint
 func (s *Server) authMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if !s.authConfigured(r.Context()) {
@@ -91,9 +92,7 @@ func (s *Server) authMiddleware(next http.Handler) http.Handler {
 			// token minted before the scope existed.
 			gatewayMemberOK := required == auth.ScopeLLMGateway && !auth.IsIsolated(p, ok)
 			if !(memberOK || selfOK || gatewayMemberOK) {
-				// Scope names are public; token state is not.
-				w.Header().Set("WWW-Authenticate", `Bearer scope="`+required+`"`)
-				http.Error(w, "insufficient scope", http.StatusForbidden)
+				writeScopeError(w, required, "insufficient scope")
 				return
 			}
 		}
