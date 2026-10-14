@@ -142,6 +142,11 @@ func (d *Dispatcher) InvokeChannel(ctx context.Context, h *Hook, call ChannelHoo
 		h = &cp
 	}
 	call.Phase, call.Owner, call.HookName = h.Phase, h.Owner, h.Name
+	// Every attempt at this hook's decision on this message is one delivery:
+	// a receiver that saw the first and answered too late sees the retry as
+	// the same one. Each attempt is still signed afresh (a new t), and its body
+	// carries the attempt number.
+	ctx = withDeliveryID(ctx, channelDeliveryID(h.Owner, h.Name, call.MessageID))
 	var res ChannelHookResult
 	if err := d.invoke(ctx, h, &call, &res); err != nil {
 		return ChannelHookResult{}, err

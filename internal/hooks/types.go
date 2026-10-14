@@ -130,10 +130,14 @@ type Hook struct {
 	// Headers are sent with every call to CallbackURL. A value may name a
 	// credential ($cred:<name>), resolved for the run at call time, so a secret
 	// the callback needs lives in the credential store, not the definition.
-	Headers   map[string]string `json:"headers,omitempty"`
-	FailMode  FailMode          `json:"fail_mode"` // "open" (default) | "closed"
-	TimeoutMs int               `json:"timeout_ms"`
-	Timeout   time.Duration     `json:"-"` // resolved when added to a Set
+	Headers map[string]string `json:"headers,omitempty"`
+	// SigningSecret is the credential reference ($cred:<name>) that signs each
+	// call, from a HookDef's body.signing_secret; "" = unsigned. Only a HookDef
+	// carries one: an inline webhook has no such field.
+	SigningSecret string        `json:"signing_secret,omitempty"`
+	FailMode      FailMode      `json:"fail_mode"` // "open" (default) | "closed"
+	TimeoutMs     int           `json:"timeout_ms"`
+	Timeout       time.Duration `json:"-"` // resolved when added to a Set
 	// RegisteredAt is when the hook was added to its Set.
 	RegisteredAt time.Time `json:"registered_at"`
 	// DefID is the HookDef version the hook was resolved from; "" for an inline
