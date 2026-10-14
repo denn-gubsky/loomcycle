@@ -150,8 +150,13 @@ type ghAppConfig struct {
 // write access. A token that goes into a clone needs none of that, and is
 // held by the runtime while it reads text an outsider wrote. GitHub enforces
 // the narrowing: the token it returns cannot reach another repository or
-// write. A config that names its own list of repositories must include this
-// one; the narrowing never widens.
+// write.
+//
+// The narrowing never widens. A config that names its own repositories must
+// include this one. A config that names its own permissions must already
+// allow reading contents ("read" or "write"); one written without contents
+// access, to keep the App's token away from code, is refused rather than
+// asked for more than it allows.
 func (m *GitHubAppMinter) TokenForRepository(ctx context.Context, tenantID, cfgJSON, repository string) (string, error) {
 	cfg, err := parseGHAppConfig(cfgJSON)
 	if err != nil {
@@ -169,6 +174,11 @@ func (m *GitHubAppMinter) TokenForRepository(ctx context.Context, tenantID, cfgJ
 		}
 		if !covered {
 			return "", fmt.Errorf("github app: the stored config does not cover repository %q", repository)
+		}
+	}
+	if len(cfg.Permissions) > 0 {
+		if level := cfg.Permissions["contents"]; level != "read" && level != "write" {
+			return "", errors.New("github app: the stored config's permissions do not allow reading contents, which a clone needs")
 		}
 	}
 	cfg.Repositories = []string{repository}

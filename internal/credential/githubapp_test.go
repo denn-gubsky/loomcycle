@@ -365,4 +365,25 @@ func TestMinter_TokenForRepositoryAsksForOneRepositoryReadOnly(t *testing.T) {
 			t.Errorf("repository name %q accepted", bad)
 		}
 	}
+
+	// A config whose own permissions leave contents out was written to keep
+	// the App's token away from code. A clone must not ask for more than it
+	// allows: refused, without asking GitHub.
+	for _, perms := range []string{`{"issues":"write"}`, `{"metadata":"read"}`, `{"contents":"none"}`, `{"contents":""}`} {
+		noCode := fmt.Sprintf(`{"app_id":"1","installation_id":"2","private_key":%q,"base_url":%q,"permissions":%s}`, keyPEM, srv.URL, perms)
+		before := len(bodies)
+		if _, err := m.TokenForRepository(context.Background(), "t", noCode, "app"); err == nil {
+			t.Errorf("permissions %s: a clone token was given", perms)
+		}
+		if len(bodies) != before {
+			t.Errorf("permissions %s: GitHub was asked", perms)
+		}
+	}
+	// One that allows reading contents is narrowed to read.
+	readOnly := fmt.Sprintf(`{"app_id":"1","installation_id":"2","private_key":%q,"base_url":%q,"permissions":{"contents":"read","pull_requests":"write"}}`, keyPEM, srv.URL)
+	if _, err := m.TokenForRepository(context.Background(), "t", readOnly, "web"); err != nil {
+		t.Errorf("a config allowing contents: read: %v", err)
+	} else if last := bodies[len(bodies)-1]; !strings.Contains(last, `"contents":"read"`) || strings.Contains(last, "pull_requests") {
+		t.Errorf("asked GitHub for %s, want contents:read alone", last)
+	}
 }
