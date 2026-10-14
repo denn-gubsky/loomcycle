@@ -218,6 +218,48 @@ func (e *Engine) ResolveFor(ctx context.Context, tenantID, agentName, userID, na
 }
 
 func (e *Engine) resolve(ctx context.Context, tenantID, agentName, userID, name string, target *string) (Resolved, bool, error) {
+	row, found, err := e.find(ctx, tenantID, agentName, userID, name)
+	if err != nil || !found {
+		return Resolved{}, false, err
+	}
+	// The restriction is decided on the row that the name resolves to, and
+	// before the secret is opened. It does not fall through to a less
+	// specific scope: a restricted credential must not be bypassed by an
+	// unrestricted one of the same name further down.
+	allowed := restrictionOf(row.Definition)
+	if allowed != nil {
+		if target == nil {
+			return Resolved{}, false, fmt.Errorf("%w (%q)", ErrRestricted, name)
+		}
+		if !URLAllowed(allowed, *target) {
+			return Resolved{}, false, fmt.Errorf("%w (%q)", ErrURLNotAllowed, name)
+		}
+		if !netguard.Pin(ctx) {
+			return Resolved{}, false, fmt.Errorf("%w (%q)", ErrNotPinnable, name)
+		}
+	}
+	backend, err := e.backendFor(row.Backend)
+	if err != nil {
+		return Resolved{}, false, err
+	}
+	// Opening proves the list just checked is the one the secret was stored
+	// with: it is part of what the value was sealed with.
+	val, err := backend.Resolve(ctx, row.Definition, Identity{
+		TenantID: tenantID, Scope: row.Scope, ScopeID: row.ScopeID, Name: name,
+	})
+	if err != nil {
+		return Resolved{}, false, err
+	}
+	return Resolved{Value: val, Scope: row.Scope, ScopeID: row.ScopeID, Backend: row.Backend, AllowedURLs: allowed, Username: usernameOf(row.Definition)}, true, nil
+}
+
+// find returns the row a credential name resolves to for a run identity:
+// the most specific of agent > user > tenant that holds the name.
+// agentName / userID may be "" (that scope is skipped). found is false when
+// the name is in no visible scope; a store fault other than not-found is
+// returned. Every by-name lookup goes through here, so a rule about which
+// row a name may resolve to is decided once.
+func (e *Engine) find(ctx context.Context, tenantID, agentName, userID, name string) (row store.CredentialDefRow, found bool, err error) {
 	buckets := []struct{ scope, id string }{
 		{"agent", agentName},
 		{"user", userID},
@@ -233,39 +275,11 @@ func (e *Engine) resolve(ctx context.Context, tenantID, agentName, userID, name 
 			if errors.As(err, &nf) {
 				continue // not in this scope — try the next
 			}
-			return Resolved{}, false, err
+			return store.CredentialDefRow{}, false, err
 		}
-		// The restriction is decided on the row that the name resolves to,
-		// and before the secret is opened. It does not fall through to a
-		// less specific scope: a restricted credential must not be bypassed
-		// by an unrestricted one of the same name further down.
-		allowed := restrictionOf(row.Definition)
-		if allowed != nil {
-			if target == nil {
-				return Resolved{}, false, fmt.Errorf("%w (%q)", ErrRestricted, name)
-			}
-			if !URLAllowed(allowed, *target) {
-				return Resolved{}, false, fmt.Errorf("%w (%q)", ErrURLNotAllowed, name)
-			}
-			if !netguard.Pin(ctx) {
-				return Resolved{}, false, fmt.Errorf("%w (%q)", ErrNotPinnable, name)
-			}
-		}
-		backend, err := e.backendFor(row.Backend)
-		if err != nil {
-			return Resolved{}, false, err
-		}
-		// Opening proves the list just checked is the one the secret was
-		// stored with: it is part of what the value was sealed with.
-		val, err := backend.Resolve(ctx, row.Definition, Identity{
-			TenantID: tenantID, Scope: b.scope, ScopeID: b.id, Name: name,
-		})
-		if err != nil {
-			return Resolved{}, false, err
-		}
-		return Resolved{Value: val, Scope: b.scope, ScopeID: b.id, Backend: row.Backend, AllowedURLs: allowed, Username: usernameOf(row.Definition)}, true, nil
+		return row, true, nil
 	}
-	return Resolved{}, false, nil
+	return store.CredentialDefRow{}, false, nil
 }
 
 // HasKey reports whether a credential named `name` exists in ANY scope visible
@@ -281,29 +295,14 @@ func (e *Engine) HasKey(ctx context.Context, tenantID, agentName, userID, name s
 	if !e.CanResolve() {
 		return false, nil
 	}
-	buckets := []struct{ scope, id string }{
-		{"agent", agentName},
-		{"user", userID},
-		{"tenant", ""},
+	row, found, err := e.find(ctx, tenantID, agentName, userID, name)
+	if err != nil || !found {
+		return false, err
 	}
-	for _, b := range buckets {
-		if b.scope != "tenant" && b.id == "" {
-			continue // no identity for this scope on the run
-		}
-		row, err := e.store.CredentialDefGet(ctx, tenantID, b.scope, b.id, name)
-		if err != nil {
-			var nf *store.ErrNotFound
-			if errors.As(err, &nf) {
-				continue // not in this scope — try the next
-			}
-			return false, err
-		}
-		// A URL-restricted credential is not a key a provider can be given:
-		// Resolve refuses it, so reporting it here would promise a key the
-		// run then does not get.
-		return restrictionOf(row.Definition) == nil, nil // no decrypt needed
-	}
-	return false, nil
+	// A URL-restricted credential is not a key a provider can be given:
+	// Resolve refuses it, so reporting it here would promise a key the run
+	// then does not get.
+	return restrictionOf(row.Definition) == nil, nil // no decrypt needed
 }
 
 // HasKeyFor is HasKey for a credential about to be sent to targetURL: it
@@ -315,27 +314,12 @@ func (e *Engine) HasKeyFor(ctx context.Context, tenantID, agentName, userID, nam
 	if !e.CanResolve() {
 		return false, false, nil
 	}
-	buckets := []struct{ scope, id string }{
-		{"agent", agentName},
-		{"user", userID},
-		{"tenant", ""},
+	row, found, err := e.find(ctx, tenantID, agentName, userID, name)
+	if err != nil || !found {
+		return false, false, err
 	}
-	for _, b := range buckets {
-		if b.scope != "tenant" && b.id == "" {
-			continue
-		}
-		row, err := e.store.CredentialDefGet(ctx, tenantID, b.scope, b.id, name)
-		if err != nil {
-			var nf *store.ErrNotFound
-			if errors.As(err, &nf) {
-				continue
-			}
-			return false, false, err
-		}
-		allowed := restrictionOf(row.Definition)
-		return true, allowed == nil || URLAllowed(allowed, targetURL), nil
-	}
-	return false, false, nil
+	allowed := restrictionOf(row.Definition)
+	return true, allowed == nil || URLAllowed(allowed, targetURL), nil
 }
 
 func (e *Engine) backendFor(name string) (Backend, error) {
