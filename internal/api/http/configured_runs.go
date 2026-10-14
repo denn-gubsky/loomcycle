@@ -47,13 +47,25 @@ type draftErr struct {
 	code       string
 	msg        string
 	retryAfter int
+	// cause is the error the refusal stands for, when there is one, so the
+	// shared classifier sees through it — rate_limited is transient and names
+	// the limiter's own wait — on the transports that classify.
+	cause error
 }
 
 func (e *draftErr) Error() string { return e.msg }
 
+func (e *draftErr) Unwrap() error { return e.cause }
+
 // HTTPStatus lets gRPC and MCP map the refusal without importing this type
 // (the compactErr / replayErr pattern).
 func (e *draftErr) HTTPStatus() int { return e.status }
+
+// ErrorCode is the refusal's machine code — the `code` its HTTP body carries —
+// so gRPC can name the refusal in ErrorInfo.reason without importing this
+// type. The status alone cannot: 429 is both configured_run_cap, which only
+// starting or discarding a draft clears, and rate_limited, which waiting does.
+func (e *draftErr) ErrorCode() string { return e.code }
 
 func draftRefusal(status int, code, format string, args ...any) *draftErr {
 	return &draftErr{status: status, code: code, msg: fmt.Sprintf(format, args...)}
@@ -468,6 +480,7 @@ func (s *Server) CreateConfiguredRun(ctx context.Context, req connector.Configur
 		errors.As(err, &rl)
 		de := draftRefusal(http.StatusTooManyRequests, "rate_limited", "%s", err.Error())
 		de.retryAfter = retryAfterSeconds(rl.RetryAfter)
+		de.cause = err
 		return connector.ConfiguredRun{}, de
 	}
 	return s.createConfiguredRunCore(ctx, req)

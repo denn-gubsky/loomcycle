@@ -43,6 +43,7 @@ import {
   type ConnectClientToolsOptions,
 } from "./client-tools.js";
 import type {
+  ChangeFeedError,
   ChangeFeedFrame,
   ChangeFeedStatus,
   MemoryChange,
@@ -68,6 +69,7 @@ import type {
   ContinueOptions,
   RunOverrideOptions,
   EffectiveConfigResponse,
+  AgentOverridableResponse,
   RetuneRunResponse,
   RunConfigResponse,
   RunPromptResponse,
@@ -188,6 +190,17 @@ import type {
   DocumentToolResponse,
   HistoryToolInput,
   HistoryToolResponse,
+  EvaluationSubmitInput,
+  EvaluationGetInput,
+  EvaluationListForRunInput,
+  EvaluationListForDefInput,
+  EvaluationAggregateInput,
+  EvaluationInput,
+  EvaluationSubmitResult,
+  EvaluationRecord,
+  EvaluationListForRunResult,
+  EvaluationListForDefResult,
+  EvaluationAggregate,
   TranscriptResponse,
   WhoamiResponse,
   UsageDimension,
@@ -599,6 +612,35 @@ export class LoomcycleClient {
     return jsonFetch<EffectiveConfigResponse>(
       this.ctx,
       `/v1/runs/${encodeURIComponent(runId)}/effective-config`,
+      opts,
+    );
+  }
+
+  /** Which per-run overrides a run of `name` may set, for this caller — what a
+   *  run form needs before it sends anything. Mirrors
+   *  `GET /v1/_agentdef/{name}/overridable`.
+   *
+   *  Folds the agent's `allow_overrides` with the caller's token overrides
+   *  policy, through the same checks the run path refuses with; a refused field
+   *  names which (`reason`). Overridable fields carry what the run path then
+   *  accepts: `narrow_only`, `max`, and `values` for a closed set.
+   *
+   *  `substrate:tenant` (a non-isolated member too). A token limited to certain
+   *  agents may ask about those agents only. Raises {@link AgentNotFoundError}
+   *  (404) for an unknown or another tenant's agent, and a 403
+   *  `agent_not_allowed` for an agent outside the token's allowlist. */
+  async getAgentOverridable(
+    name: string,
+    opts?: {
+      /** Admin-only tenant focus (?tenant=); ignored for a tenant principal. */
+      tenant?: string;
+      signal?: AbortSignal;
+    },
+  ): Promise<AgentOverridableResponse> {
+    const q = opts?.tenant ? `?tenant=${encodeURIComponent(opts.tenant)}` : "";
+    return jsonFetch<AgentOverridableResponse>(
+      this.ctx,
+      `/v1/_agentdef/${encodeURIComponent(name)}/overridable${q}`,
       opts,
     );
   }
@@ -2558,6 +2600,124 @@ export class LoomcycleClient {
     return postJSON<HistoryToolResponse>(this.ctx, "/v1/_history", input, opts);
   }
 
+  /** Invoke the Evaluation tool outside a run (`POST /v1/_evaluation`):
+   *  record scores against runs and read them back. Op-discriminated
+   *  (`submit` / `get` / `list_for_run` / `list_for_def` / `aggregate`); the
+   *  return type follows the op. The `*Evaluation*` methods below are the same
+   *  call with positional arguments.
+   *
+   *  What a token may do: `substrate:tenant` every op, inside its own tenant;
+   *  admin every op, in every tenant; any other token (an isolated
+   *  `substrate:user`, a tenant member) `submit_self` only, which a call from
+   *  outside a run cannot use — it is not the run's agent — so each op is
+   *  refused. A token without `runs:read` gets a 403.
+   *
+   *  Another tenant's evaluation or run reads exactly like one that does not
+   *  exist. Raises {@link SubstrateToolRefusedError} on a tool refusal (an
+   *  unknown id, an op the token may not use); {@link InvalidArgumentError}
+   *  on 400; {@link AuthError} on 401. */
+  async evaluation(
+    input: EvaluationSubmitInput,
+    opts?: { signal?: AbortSignal },
+  ): Promise<EvaluationSubmitResult>;
+  async evaluation(
+    input: EvaluationGetInput,
+    opts?: { signal?: AbortSignal },
+  ): Promise<EvaluationRecord>;
+  async evaluation(
+    input: EvaluationListForRunInput,
+    opts?: { signal?: AbortSignal },
+  ): Promise<EvaluationListForRunResult>;
+  async evaluation(
+    input: EvaluationListForDefInput,
+    opts?: { signal?: AbortSignal },
+  ): Promise<EvaluationListForDefResult>;
+  async evaluation(
+    input: EvaluationAggregateInput,
+    opts?: { signal?: AbortSignal },
+  ): Promise<EvaluationAggregate>;
+  async evaluation(
+    input: EvaluationInput,
+    opts?: { signal?: AbortSignal },
+  ): Promise<
+    | EvaluationSubmitResult
+    | EvaluationRecord
+    | EvaluationListForRunResult
+    | EvaluationListForDefResult
+    | EvaluationAggregate
+  >;
+  async evaluation(
+    input: EvaluationInput,
+    opts?: { signal?: AbortSignal },
+  ): Promise<
+    | EvaluationSubmitResult
+    | EvaluationRecord
+    | EvaluationListForRunResult
+    | EvaluationListForDefResult
+    | EvaluationAggregate
+  > {
+    return postJSON(this.ctx, "/v1/_evaluation", input, opts);
+  }
+
+  /** Record a score against a run — `evaluation({op:"submit"})`. Scores are
+   *  additive: a second submit records another evaluation. */
+  async submitEvaluation(
+    runId: string,
+    score: number,
+    opts?: {
+      dimensions?: Record<string, number>;
+      judgement?: unknown;
+      rationale?: string;
+      signal?: AbortSignal;
+    },
+  ): Promise<EvaluationSubmitResult> {
+    const input: EvaluationSubmitInput = { op: "submit", run_id: runId, score };
+    if (opts?.dimensions !== undefined) input.dimensions = opts.dimensions;
+    if (opts?.judgement !== undefined) input.judgement = opts.judgement;
+    if (opts?.rationale !== undefined) input.rationale = opts.rationale;
+    return this.evaluation(input, { signal: opts?.signal });
+  }
+
+  /** One evaluation by id — `evaluation({op:"get"})`. */
+  async getEvaluation(
+    evalId: string,
+    opts?: { signal?: AbortSignal },
+  ): Promise<EvaluationRecord> {
+    return this.evaluation({ op: "get", eval_id: evalId }, opts);
+  }
+
+  /** Every evaluation of one run — `evaluation({op:"list_for_run"})`. */
+  async listEvaluationsForRun(
+    runId: string,
+    opts?: { limit?: number; signal?: AbortSignal },
+  ): Promise<EvaluationListForRunResult> {
+    const input: EvaluationListForRunInput = { op: "list_for_run", run_id: runId };
+    if (opts?.limit !== undefined) input.limit = opts.limit;
+    return this.evaluation(input, { signal: opts?.signal });
+  }
+
+  /** Every evaluation of one definition version, in your tenant —
+   *  `evaluation({op:"list_for_def"})`. */
+  async listEvaluationsForDef(
+    defId: string,
+    opts?: { limit?: number; signal?: AbortSignal },
+  ): Promise<EvaluationListForDefResult> {
+    const input: EvaluationListForDefInput = { op: "list_for_def", def_id: defId };
+    if (opts?.limit !== undefined) input.limit = opts.limit;
+    return this.evaluation(input, { signal: opts?.signal });
+  }
+
+  /** A definition's scores rolled up — `evaluation({op:"aggregate"})`.
+   *  `includeLineage` adds the ancestors' evaluations along parent_def_id. */
+  async aggregateEvaluations(
+    defId: string,
+    opts?: { includeLineage?: boolean; signal?: AbortSignal },
+  ): Promise<EvaluationAggregate> {
+    const input: EvaluationAggregateInput = { op: "aggregate", def_id: defId };
+    if (opts?.includeLineage !== undefined) input.include_lineage = opts.includeLineage;
+    return this.evaluation(input, { signal: opts?.signal });
+  }
+
   /** List the PERSISTENT volume universe for the caller's tenant — every
    *  static volume (the shared bind floor, `source: "static"`, read-only)
    *  plus the tenant's own dynamic VolumeDefs (`source: "dynamic"`). Host
@@ -3343,6 +3503,11 @@ export class LoomcycleClient {
    *    processed and pass it back as `since`. A cursor older than the
    *    server's change retention resumes past the pruned gap without saying
    *    so.
+   *  - A `{ kind: "error", payload: ChangeFeedError }` item means the server
+   *    could not read its change log. It is NOT fatal and iteration
+   *    continues: the server retries with backoff without advancing its
+   *    cursor, so changes resume after recovery with no gap. One item per
+   *    failure streak.
    *  - The stream has no end of its own: iteration ends when the server
    *    closes it (shutdown — reconnect with `since`) or throws an
    *    `AbortError` when `signal` aborts. */
@@ -3531,8 +3696,9 @@ async function* parseRunStateSSE(
  *  frame it does not recognise.
  *
  *  The frames arrive through parseSSE, which backfills `type` from the SSE
- *  event name ONLY when the payload has none. The `feed` frame deliberately
- *  carries no `type`, so it surfaces as `type: "feed"`; a `change` frame
+ *  event name ONLY when the payload has none. The `feed` and `error` frames
+ *  deliberately carry no `type`, so they surface as `type: "feed"` /
+ *  `type: "error"`; a `change` frame
  *  carries its own change type (`memory.set`, …), so it is recognised by its
  *  numeric `seq` instead. Anything else — an event name a newer server adds —
  *  is skipped, the adapter's usual ignore-what-you-don't-know posture. */
@@ -3545,6 +3711,14 @@ function toChangeFeedFrame(
     if (typeof raw.enabled !== "boolean") return null;
     const { type: _type, ...status } = raw;
     return { kind: "feed", payload: status as unknown as ChangeFeedStatus };
+  }
+  if (raw.type === "error") {
+    // Like `feed`, the error frame carries no `type` of its own, so this one
+    // was backfilled from the event name. Both fields are required: a
+    // half-read error is skipped rather than surfaced as a blank one.
+    if (typeof raw.code !== "string" || typeof raw.error !== "string") return null;
+    const { type: _type, ...failure } = raw;
+    return { kind: "error", payload: failure as unknown as ChangeFeedError };
   }
   if (typeof raw.seq === "number" && typeof raw.type === "string") {
     return { kind: "change", payload: raw as unknown as MemoryChange };

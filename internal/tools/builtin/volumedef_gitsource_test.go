@@ -340,6 +340,9 @@ func TestVolumeDefGitSource_WaitsForASlotUntilTheDeadline(t *testing.T) {
 	}
 	f.assertNothingLeft(t, "repo")
 	<-f.tool.Git.Slots
+	// A whole clone now, not a wait: the 150ms that bounded the wait above is
+	// shorter than a clone takes under the race detector.
+	f.tool.Git.Timeout = 30 * time.Second
 	if _, res := f.create(t, f.ctx, "repo", map[string]any{"url": f.repo.URL, "commit": f.repo.Head}, nil); res.IsError {
 		t.Errorf("once the slot is free: %s", res.Text)
 	}

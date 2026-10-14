@@ -544,6 +544,16 @@ service Loomcycle {
   // SubstrateRequest/Response body shape (is_error carries tool refusals).
   rpc History(SubstrateRequest) returns (SubstrateResponse);
 
+  // Evaluation dispatches to the Evaluation tool outside a run (submit / get /
+  // list_for_run / list_for_def / aggregate). Mirrors POST /v1/_evaluation.
+  // Gate runs:read; the ops a caller may use come from its token, the same
+  // grant HTTP and MCP use: substrate:tenant and admin get every op, confined
+  // to the caller's tenant by the tool (admin crosses tenants); anyone else
+  // (an isolated substrate:user, a tenant member) gets submit_self only.
+  // Op-discriminated input_json; same SubstrateRequest/Response body shape
+  // (is_error carries tool refusals, incl. an unknown or foreign id).
+  rpc Evaluation(SubstrateRequest) returns (SubstrateResponse);
+
   // Memory dispatches to the Memory tool (RFC CD Part D — Python/gRPC memory
   // parity; the TS adapter reaches memory over HTTP). Op-discriminated
   // input_json (key/value: get/set/delete/list/incr/merge/append_dedupe/

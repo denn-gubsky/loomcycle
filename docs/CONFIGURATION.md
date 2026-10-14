@@ -1214,7 +1214,7 @@ Config knobs (full reference: `loomcycle context help operator-tokens` or the `C
 | `LOOMCYCLE_OPERATOR_KEY_RESTRICTION` | **RFC AX** deployment gate (default OFF). When `1`, a run whose principal lacks `providers:operator-key` may not use the operator's host provider key — resolution routes it only to providers the tenant can key itself (an RFC AR CredentialDef) and refuses `403 operator_key_restricted` if none; the LLM-gateway + embeddings shims refuse a restricted principal outright. OFF ⇒ byte-identical for every existing token. |
 | `LOOMCYCLE_PUBLIC_CONFIG` | Deployment gate (default OFF). When `1`, `GET /v1/config` may be read with **no bearer**, returning a narrowed public view — for a hosted instance whose landing page shows which providers and models are live. OFF ⇒ the endpoint requires auth like every other `/v1` read, so upgrading changes nothing. A presented-but-**invalid** bearer still `401`s rather than downgrading to the public view. See [§ GET /v1/config](#get-v1config). |
 
-Routes enforce a scope from a closed catalog; an under-scoped token gets `403` + `WWW-Authenticate: Bearer scope="…"`. The legacy `LOOMCYCLE_AUTH_TOKEN` is disabled only once an admin-scoped token exists (the no-lockout gate). The catalog:
+Routes enforce a scope from a closed catalog; an under-scoped token gets `403` with the JSON body `{"code":"insufficient_scope","error":"insufficient scope","required_scope":"…"}` and the same scope in `WWW-Authenticate: Bearer scope="…"`. The legacy `LOOMCYCLE_AUTH_TOKEN` is disabled only once an admin-scoped token exists (the no-lockout gate). The catalog:
 
 | Scope | Grants |
 |---|---|
@@ -1404,6 +1404,28 @@ Rules worth knowing:
 - **It is not part of the definition's content hash**, so adding or removing it does not change `content_sha256`. A create that changes only the lock still writes a new version.
 - Unset or `true` leaves the overrides to the caller, as before.
 
+#### Asking which settings a run may set
+
+**Since v1.113.0.** A client that builds a run form needs to know which per-run settings it may offer before it sends anything. `GET /v1/_agentdef/{name}/overridable` answers it for the calling token (TypeScript: `getAgentOverridable(name)`):
+
+```json
+{
+  "agent": "judge",
+  "allow_overrides": false,
+  "restricted_by_token": false,
+  "fields": {
+    "model": {"overridable": false, "reason": "agent_locked"},
+    "effort": {"overridable": false, "reason": "agent_locked"}
+  }
+}
+```
+
+- **One entry per setting a token lock can name** (the table above), keyed by its run-request field name.
+- **The answer is the caller's.** It folds the agent's `allow_overrides` with the token's own `overrides` policy, through the same checks a run is refused with, so it cannot report a setting as open that a run is then refused. `reason` names the lock a run would cite: `token_locked` or `agent_locked` (the token is named when both apply). `restricted_by_token` says the token's policy took part; do not reuse the answer for another token.
+- **An open setting may say what the run accepts:** `narrow_only` (`max_concurrent_children`, `interruption` can only be lowered), `max` (the fan-out ceiling), and `values` where the check is against a closed set — the efforts, the configured tiers, and the `providers` and `models` the definition declares. No `values` means any value the deployment accepts (`GET /v1/_models`, `GET /v1/_routing`), not anything at all.
+- **It resolves the agent as a run does:** the server config, then the tenant's active `AgentDef` version (`def_id`, absent for an unversioned agent). An unknown agent and another tenant's are the same `404 agent_not_found`. An admin may name another tenant with `?tenant=`.
+- **Who may ask:** `substrate:tenant` and a tenant's non-isolated members. A token limited to certain agents may ask about those agents only; any other is `403 agent_not_allowed`, as for a run. An isolated user token may not.
+
 ### Limiting how often a token starts runs
 
 **Since v1.112.0.** A token can carry a rate for run starts. A concurrency cap bounds how many runs a caller has going at once; a rate bounds how often it starts one. One run at a time still allows thousands of short runs an hour, and each start costs the server an authentication, a session row and a run row even when the run then does nothing.
@@ -1560,7 +1582,7 @@ loomcycle is configured entirely through environment variables (the `loomcycle.y
 
 **Why split.** The two halves have different blast radii. `.env.insecure` is the part you want in code review, in a config-management repo, in a teammate's hands when they ask "what's your sandbox set to?" — none of it is dangerous to expose. `.env.local` is the part one accidental `cat` in a screen-share burns. Keeping them in one file forces the whole thing to the secret tier and makes the operational config needlessly hard to share. The split also matches the security rule in `CLAUDE.md` — agents (and Claude Code) must never open `.env.local`, but `.env.insecure` is freely readable.
 
-**The allowlist-name vs. secret-value seam.** A webhook's `signing_secret_env: LOOMCYCLE_GITEA_WEBHOOK_SECRET` names an env var. The **name** is non-secret and is authorized in `.env.insecure` (`LOOMCYCLE_WEBHOOKS_ENV_ALLOWLIST=…`, or auto-allowed when `LOOMCYCLE_*`-prefixed — see §9b / `Context.help input-webhooks`). The **value** — the actual HMAC secret — lives in `.env.local`. This is exactly why the two files are sourced together: the allowlist in one, the secret it authorizes in the other.
+**The allowlist-name vs. secret-value seam.** A webhook's `signing_secret_env: LOOMCYCLE_GITEA_WEBHOOK_SECRET` names an env var. The **name** is non-secret and is authorized in `.env.insecure` (`LOOMCYCLE_WEBHOOKS_ENV_ALLOWLIST=…`, or auto-allowed when `LOOMCYCLE_*`-prefixed — see §9b / `Context.help input-webhooks`). The **value** — the actual HMAC secret — lives in `.env.local`. This is exactly why the two files are sourced together: the allowlist in one, the secret it authorizes in the other. loomcycle's own secrets (`LOOMCYCLE_AUTH_TOKEN`, `LOOMCYCLE_PG_DSN`, `LOOMCYCLE_SECRET_KEY`, …) can never be a webhook's secret, whatever the allowlist says. A webhook can instead name a stored credential, `auth.secret: "$cred:<name>"`, which needs neither file and rotates without a restart (`docs/CREDENTIALS.md`).
 
 **Bootstrap.** Two committed templates carry the full annotated reference:
 
@@ -1573,7 +1595,7 @@ cp .env.insecure.example  .env.insecure   # then adjust paths/flags
 
 **Secrets at rest (F32).** Two mechanisms keep resolved credentials out of the on-disk state:
 
-- **Definition plane — store the reference, resolve at use-time.** A substrate def persists the `${ENV_NAME}` reference, never the expanded value. Webhook defs store `signing_secret_env` / `bearer_token_env` (env-var *names*), and a dynamic MCP server's `url` / `headers` keep their `${LOOMCYCLE_*}` placeholders in `mcp_server_defs.content` — the secret is resolved only when the pool dials the server (mirroring how a yaml `mcp_servers.*` entry is expanded at config load). `content_sha256` is computed over the reference, so it stays stable when the token rotates. Only an admin (or the open-mode / stdio operator) may store a `${NAME}` in a dynamic MCP server def: a `substrate:tenant` author or an agent uses `${run.credentials.<name>}` or `$cred:<name>`, and a stored version holding a `${NAME}` that an admin did not save (an *unattributed* one: written before this rule, restored from an older snapshot, or hand-edited) is listed in a boot `WARNING` and warned once per version when dialed. It still dials for now; `LOOMCYCLE_MCP_REFUSE_UNATTRIBUTED_ENV=1` refuses it now, and the next release refuses it by default.
+- **Definition plane — store the reference, resolve at use-time.** A substrate def persists the `${ENV_NAME}` reference, never the expanded value. Webhook defs store `signing_secret_env` / `bearer_token_env` (env-var *names*) or `auth.secret` / `auth.previous_secret` (`$cred:<name>` references, resolved on each delivery), and a dynamic MCP server's `url` / `headers` keep their `${LOOMCYCLE_*}` placeholders in `mcp_server_defs.content` — the secret is resolved only when the pool dials the server (mirroring how a yaml `mcp_servers.*` entry is expanded at config load). `content_sha256` is computed over the reference, so it stays stable when the token rotates. Only an admin (or the open-mode / stdio operator) may store a `${NAME}` in a dynamic MCP server def: a `substrate:tenant` author or an agent uses `${run.credentials.<name>}` or `$cred:<name>`, and a stored version holding a `${NAME}` that an admin did not save (an *unattributed* one: written before this rule, restored from an older snapshot, or hand-edited) is listed in a boot `WARNING` and warned once per version when dialed. It still dials for now; `LOOMCYCLE_MCP_REFUSE_UNATTRIBUTED_ENV=1` refuses it now, and the next release refuses it by default.
 - **Transcript plane — redact before persisting (`LOOMCYCLE_REDACT_SECRETS`, default ON).** Tool I/O (tool_call inputs + tool_result outputs) is scanned for secret-shaped substrings and masked before it reaches the events store (and thus snapshots + the `/v1/_events` audit API): the exact values of secret-named env vars (`*_KEY` / `*_TOKEN` / `*_SECRET` / `*_AUTH` / `*_PASSWORD` / `*_CREDENTIAL`) become `[redacted:NAME]`, plus conservative heuristics for `Authorization:` headers, `sk-`/`AKIA`/`xox` keys, GitHub tokens (`ghp_`, `gho_`, `ghu_`, `ghs_`, `ghr_`, `github_pat_`), GitLab tokens (`glpat-`), and `*_API_KEY=` assignments. The live SSE stream is **not** redacted (the caller already holds the secret). Set `LOOMCYCLE_REDACT_SECRETS=0` to disable. This is defense-in-depth — agents should still pass secrets out-of-band (env / stdin / credential helper), never inline on a cmdline.
 
 **Sub-agent limits.** Bounds on the children an agent starts with the `Agent` tool. Each is per run, not per tree (a child's own children count against the child); unset or `0` means the default.

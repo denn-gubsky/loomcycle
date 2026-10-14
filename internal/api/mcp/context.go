@@ -105,9 +105,10 @@ func operatorCtx(ctx context.Context) context.Context {
 // MCP-direct caller (identity must already be stamped). Def-family scopes are
 // "any" for BOTH admin and tenant — tenant confinement is the TenantID stamp +
 // the lookup's tenant filter, not a def-scope narrowing (RFC AG §3.1). The
-// OPERATOR PLANE (OperatorTokenDef mint, cross-agent Evaluation, cross-tenant
-// history) is granted ONLY when isAdmin; a non-admin (tenant) principal leaves
-// those zero (default-deny) — so even if such a tool were reached it refuses.
+// OPERATOR PLANE (OperatorTokenDef mint, cross-tenant history) is granted ONLY
+// when isAdmin; a non-admin (tenant) principal leaves those zero (default-deny)
+// — so even if such a tool were reached it refuses. Evaluation is not decided
+// by isAdmin: it takes tools.OffRunEvaluationPolicy, as HTTP and gRPC do.
 func grantOperatorPolicies(ctx context.Context, agentName string, isAdmin bool) context.Context {
 	// AgentTools wildcard ceiling (F11): without it, agentdef/skilldef create
 	// with a non-empty tools overlay refuses ("caller's effective
@@ -174,20 +175,21 @@ func grantOperatorPolicies(ctx context.Context, agentName string, isAdmin bool) 
 	ctx = tools.WithDocumentSourceDefPolicy(ctx, tools.DocumentSourceDefPolicyValue{Scopes: []string{"any"}, SelfName: agentName})
 	ctx = tools.WithVolumeDefPolicy(ctx, tools.VolumeDefPolicyValue{Scopes: []string{"any"}})
 
+	// Evaluation: the grant every off-run transport shares, decided from the
+	// token rather than isAdmin — a tenant operator gets every op here as it
+	// does on HTTP and gRPC, and the tool confines it to its own tenant.
+	p, hasPrincipal := auth.PrincipalFromContext(ctx)
+	ctx = tools.WithEvaluationPolicy(ctx, tools.OffRunEvaluationPolicy(p, hasPrincipal))
+
 	if isAdmin {
 		// Operator plane.
-		ctx = tools.WithEvaluationPolicy(ctx, tools.EvaluationPolicyValue{
-			Scopes: []string{"submit_self", "submit_descendants", "submit_any", "read_any"},
-		})
 		// RFC BE History: full owner-scope reach INCLUDING cross-tenant `global`.
 		ctx = tools.WithHistoryPolicy(ctx, tools.HistoryPolicyValue{Scopes: []string{"self", "user", "tenant", "global"}})
 		ctx = tools.WithOperatorTokenDefPolicy(ctx, tools.OperatorTokenDefPolicyValue{Admin: true})
 	} else {
-		// Tenant principal: own-only evaluation; the mint plane stays
-		// default-deny (zero). RFC BE History gets the own-tenant scopes but
-		// NOT `global` — the tenant stamp on ctx + the tool's fold confine every
-		// op to this tenant/subject.
-		ctx = tools.WithEvaluationPolicy(ctx, tools.EvaluationPolicyValue{Scopes: []string{"submit_self"}})
+		// Tenant principal: the mint plane stays default-deny (zero). RFC BE
+		// History gets the own-tenant scopes but NOT `global` — the tenant stamp
+		// on ctx + the tool's fold confine every op to this tenant/subject.
 		ctx = tools.WithHistoryPolicy(ctx, tools.HistoryPolicyValue{Scopes: []string{"self", "user", "tenant"}})
 	}
 	return ctx
