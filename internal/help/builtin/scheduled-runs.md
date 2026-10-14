@@ -150,11 +150,16 @@ A run counts when it starts, and the def is retired when that run
 finishes — not while it is still running; a slot that comes due while the
 last run is still going starts nothing.
 
-Fires of **any** status count (completed / failed / backpressure-skipped)
-so a wedged schedule still retires; catch-up fires after an outage count
-too — it's a hard lifetime cap regardless of cadence. The disabled-skip
-advance (`enabled: false`) does NOT count, so toggling a schedule off and
-on preserves its remaining budget. Retirement flips the def's `retired`
+Fires of **any** status count (completed / failed / skipped by a token
+budget) so a wedged schedule still retires; catch-up fires after an outage
+count too — it's a hard lifetime cap regardless of cadence. The
+disabled-skip advance (`enabled: false`) does NOT count, so toggling a
+schedule off and on preserves its remaining budget.
+
+A run that has to wait for a run slot waits in the run queue. Only a FULL
+queue refuses it; then the slot is given back and fired again on the next
+tick under the same run key, and that refusal does not count (`last_status:
+skipped`, `last_error` ending "the slot is fired again on the next tick"). Retirement flips the def's `retired`
 flag (lineage stays visible in `/ui/schedules`); the run-state row's
 `fire_count` is the counter. Set it on a substrate fork via the overlay:
 `{op:"fork", name:"…", overlay:{max_fires:3}}`.
