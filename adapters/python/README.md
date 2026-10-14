@@ -206,8 +206,8 @@ A refusal raises with the decision's code on `e.reason`:
 | `token_limit_exceeded` | `RESOURCE_EXHAUSTED` → `BackpressureError` (`retryable` False) | The caller is at a hard token budget. Retrying does not help until it is raised or the month rolls over. |
 | `model_not_found` | `FAILED_PRECONDITION` → `LoomcycleError` | The provider does not serve that model; the same call fails again. |
 | `decision_not_configured` | `FAILED_PRECONDITION` → `LoomcycleError` | This deployment declares no decision models. Do not retry. |
-| `timeout` | `DEADLINE_EXCEEDED` → `LoomcycleError` | Send the same call again; if it repeats, make it smaller. |
-| `call_failed` | `UNAVAILABLE` → `UnavailableError` | Try once more. |
+| `timeout` | `DEADLINE_EXCEEDED` → `LoomcycleError` | Send the same call again (`retryable` is True); if it repeats, make it smaller. |
+| `call_failed` | `UNAVAILABLE` → `UnavailableError` | Try once more (`retryable` is True). |
 
 ```python
 from loomcycle import LoomcycleError
@@ -234,7 +234,7 @@ Every method translates gRPC error codes to typed Python exceptions:
 | `FAILED_PRECONDITION` (other) | `LoomcycleError` |
 | `ALREADY_EXISTS` | `AgentIDInUseError` |
 | `RESOURCE_EXHAUSTED` (snapshot) | `SnapshotTooLargeError` (v0.8.18) |
-| `RESOURCE_EXHAUSTED` (other) | `BackpressureError` (`retryable` unless `.reason` is `token_limit_exceeded`) |
+| `RESOURCE_EXHAUSTED` (other) | `BackpressureError` (`retryable` unless `.reason` is `token_limit_exceeded` or it is the configured-run cap) |
 | `UNAUTHENTICATED` | `AuthError` |
 | `UNAVAILABLE` (pause not configured) | `PauseNotConfiguredError` (v0.8.18, subclass of UnavailableError) |
 | `UNAVAILABLE` (other) | `UnavailableError` |
@@ -263,10 +263,17 @@ for a refusal that clears on its own:
   caller's own run cap, starting runs too fast);
 - an `UnavailableError` whose `.reason` is `runtime_paused`,
   `tier_unavailable` or `pin_unavailable` (the operator paused the runtime;
-  no provider in the tier is up right now).
+  no provider in the tier is up right now);
+- a `decide()` refusal whose `.reason` is `call_failed` (`UnavailableError`:
+  the decision-model call did not complete) or `timeout` (`LoomcycleError`
+  from `DEADLINE_EXCEEDED`: it did not answer in time).
 
 It is `False` for everything else — in particular a `BackpressureError` with
-`.reason == "token_limit_exceeded"`. Every `RESOURCE_EXHAUSTED` raises
+`.reason == "token_limit_exceeded"`, and the configured-run cap (a
+`BackpressureError` whose message ends "start or discard one first": the user
+already holds as many configured runs as allowed, and only starting or
+discarding one makes room; the server sends no reason for it over gRPC, so it
+is recognised by that message). Every `RESOURCE_EXHAUSTED` raises
 `BackpressureError`, so `except BackpressureError: retry()` alone retries a
 hard token budget for the rest of the month; test `e.retryable` first. A
 `UnavailableError` with no reason may be a dropped connection (worth a retry)

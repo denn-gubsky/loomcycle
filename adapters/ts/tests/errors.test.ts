@@ -489,6 +489,19 @@ describe("raiseFromResponse — a 429 says whether retrying can help", () => {
     expect((e as PerUserQuotaExhaustedError).retryAfterMs).toBe(5000);
   });
 
+  it("configured_run_cap stays a BackpressureError but is not retryable", async () => {
+    // The body POST /v1/runs {start:false} writes at the per-user draft cap
+    // (internal/api/http configured_runs.go): only starting or discarding a
+    // configured run makes room, so waiting never does.
+    const e = await errorFor(429, {
+      code: "configured_run_cap",
+      error: "this user already holds 2 configured runs (the cap is 2); start or discard one first",
+    });
+    expect(e.constructor).toBe(BackpressureError);
+    expect(e.code).toBe("configured_run_cap");
+    expect(e.retryable).toBe(false);
+  });
+
   it("an unknown or absent 429 code is a plain, retryable BackpressureError", async () => {
     for (const code of ["backpressure", "provider_concurrency_exhausted", "something_new", undefined]) {
       const e = await errorFor(429, { code, error: "busy" });
@@ -520,6 +533,25 @@ describe("retryable on the other classes", () => {
       const e = (await expectErrorFor(status, body)) as LoomcycleError;
       expect(e).toBeInstanceOf(LoomcycleError);
       expect(`${status} ${e.name} ${e.retryable}`).toBe(`${status} ${e.name} false`);
+    }
+  });
+
+  it("is true for a decision call that failed (502 call_failed) or timed out (504 timeout)", async () => {
+    // decide()'s own codes; the server classifies both as transient and
+    // tells the caller to send the same call again.
+    for (const [status, code] of [[502, "call_failed"], [504, "timeout"]] as const) {
+      const e = await errorFor(status, { code, error: "Decision: " + code });
+      expect(e.constructor).toBe(LoomcycleError);
+      expect(`${status} ${code} ${e.retryable}`).toBe(`${status} ${code} true`);
+    }
+    // The same statuses with another code, or none, stay false.
+    for (const [status, body] of [
+      [502, JSON.stringify({ code: "model_not_found" })],
+      [502, "bad gateway"],
+      [504, "gateway timeout"],
+    ] as const) {
+      const e = (await expectErrorFor(status, body)) as LoomcycleError;
+      expect(`${status} ${e.retryable}`).toBe(`${status} false`);
     }
   });
 

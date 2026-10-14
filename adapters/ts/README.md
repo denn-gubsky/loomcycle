@@ -381,9 +381,9 @@ A refusal throws with the decision's own code on `e.code` (see [Errors](#errors)
 | 403 | `operator_key_restricted` | The caller may not use the operator's provider key and has none of its own. Do not retry. |
 | 413 | `prompt_too_large` | The request does not fit the model's context and is never shortened for you: shorten `state` or ask fewer questions. |
 | 429 | `token_limit_exceeded` | The caller is at a hard token budget (`TokenLimitExceededError`, `retryable` false). Retrying does not help until the budget is raised or the month rolls over. |
-| 502 | `model_not_found` / `call_failed` | The provider does not serve that model (the same call fails again) / the call did not complete (try once more). |
+| 502 | `model_not_found` / `call_failed` | The provider does not serve that model (the same call fails again) / the call did not complete (try once more; `retryable` is true). |
 | 503 | `decision_not_configured` | This deployment declares no decision models. Do not retry. |
-| 504 | `timeout` | Send the same call again; if it repeats, make it smaller. |
+| 504 | `timeout` | Send the same call again (`retryable` is true); if it repeats, make it smaller. |
 
 ```ts
 try {
@@ -555,12 +555,13 @@ When the error body is JSON with a string `code` (`token_limit_exceeded`, `per_u
 | 429 + code `per_user_quota_exhausted` | `PerUserQuotaExhaustedError` (retryable; `e.retryAfterMs` from `Retry-After`) |
 | 429 + code `token_limit_exceeded` | `TokenLimitExceededError` (NOT a `BackpressureError`; not retryable) |
 | 429 + code `rate_limited` | `RateLimitedError` (subclass of `BackpressureError`; retryable; `e.retryAfterMs` from `Retry-After`) |
+| 429 + code `configured_run_cap` | `BackpressureError` (NOT retryable: start or discard a configured run first) |
 | 429 (other) | `BackpressureError` (retryable) |
 | 503 + "pause manager not configured" | `PauseNotConfiguredError` (subclass of `UnavailableError` — back-compat) |
 | 503 (other) | `UnavailableError` |
 | 500 / other | `LoomcycleError` (base) |
 
-**`e.retryable`: can the same call succeed later?** Every error carries a read-only `retryable`. It is `true` only for a refusal that clears on its own: a `BackpressureError` (the server or a provider queue is busy), a `RateLimitedError` (the caller is starting runs faster than its run-start rate allows), a `PerUserQuotaExhaustedError` (the caller's own in-flight runs are at their cap), and a 503 `UnavailableError` with code `runtime_paused` (the operator has paused the runtime). It is `false` for everything else, a hard token budget included. A 503 is shared between a paused runtime and features the deployment does not have (`decision_not_configured`, `store_unavailable`, …), and many 503 bodies carry no code, so only `runtime_paused` counts; a code-less 503 from run creation can also be a model tier with no provider available, which you may retry on your own judgement. The default is `false` because a wrong `true` turns a refusal that never clears into an endless loop. The client never retries on its own, so bound your loop even when `retryable` is true, and prefer `e.retryAfterMs` where the class has it.
+**`e.retryable`: can the same call succeed later?** Every error carries a read-only `retryable`. It is `true` only for a refusal that clears on its own: a `BackpressureError` (the server or a provider queue is busy), a `RateLimitedError` (the caller is starting runs faster than its run-start rate allows), a `PerUserQuotaExhaustedError` (the caller's own in-flight runs are at their cap), a 503 `UnavailableError` with code `runtime_paused` (the operator has paused the runtime), and a `decide()` call that failed (502 `call_failed`) or timed out (504 `timeout`). It is `false` for everything else, a hard token budget included, and so is a `BackpressureError` with code `configured_run_cap`: the user already holds as many configured runs as allowed, and waiting never makes room — start or discard one first. A 503 is shared between a paused runtime and features the deployment does not have (`decision_not_configured`, `store_unavailable`, …), and many 503 bodies carry no code, so only `runtime_paused` counts; a code-less 503 from run creation can also be a model tier with no provider available, which you may retry on your own judgement. The default is `false` because a wrong `true` turns a refusal that never clears into an endless loop. The client never retries on its own, so bound your loop even when `retryable` is true, and prefer `e.retryAfterMs` where the class has it.
 
 **429: a token budget is not backpressure.** A `BackpressureError` is transient: back off and retry. `TokenLimitExceededError` is not: the caller is at a hard token budget (run creation and `decide()` both refuse with it), and the same call is refused until the budget is raised or the calendar month rolls over. **It is no longer a `BackpressureError`** (it was, through 1.112.x). It extended that class so that an older `instanceof BackpressureError` check kept catching it, but such a check is nearly always a retry loop, which then retried the refusal for the rest of the month; that relation was dropped on purpose. If your code caught the budget through `instanceof BackpressureError`, catch `TokenLimitExceededError` (or test `e.code === "token_limit_exceeded"`) instead.
 

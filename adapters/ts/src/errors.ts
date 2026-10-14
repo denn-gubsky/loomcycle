@@ -41,9 +41,11 @@ export class LoomcycleError extends Error {
 
   /** Whether the same call, sent again unchanged, can succeed once time has
    *  passed: true for a refusal that clears on its own (backpressure, a rate
-   *  limit, a per-user run quota, a paused runtime), false for everything
-   *  else, including a hard token budget, a bad request and a missing
-   *  resource. A retry loop can test this instead of a list of classes.
+   *  limit, a per-user run quota, a paused runtime, a decision-model call
+   *  that failed or timed out), false for everything else, including a hard
+   *  token budget, a cap the caller must make room under, a bad request and
+   *  a missing resource. A retry loop can test this instead of a list of
+   *  classes.
    *
    *  It is a getter rather than a constructor field so that a subclass states
    *  its answer by overriding it, without a constructor option any caller
@@ -52,9 +54,29 @@ export class LoomcycleError extends Error {
    *  only surfaces an error the caller could have waited out. The client
    *  itself never retries; bound your own retries even when this is true. */
   get retryable(): boolean {
-    return false;
+    return this.code !== undefined && TRANSIENT_CODES.has(this.code);
   }
 }
+
+/** Codes that clear on their own although the class their status maps to
+ *  does not: a 503 is mostly a feature the deployment lacks, and a 502 / 504
+ *  is any upstream failure, so the class alone says false. The server
+ *  classifies each of these as transient:
+ *  - `runtime_paused` (503): new runs are refused until the operator resumes.
+ *  - `call_failed` (502): a decision-model call did not complete.
+ *  - `timeout` (504): a decision-model call did not answer in time. */
+const TRANSIENT_CODES: ReadonlySet<string> = new Set([
+  "runtime_paused",
+  "call_failed",
+  "timeout",
+]);
+
+/** 429 codes that do NOT clear by waiting: the caller has to act first, so
+ *  a retry loop on them never ends. `configured_run_cap`: the user already
+ *  holds as many configured (not yet started) runs as the operator allows,
+ *  and only starting or discarding one makes room. (A hard token budget,
+ *  `token_limit_exceeded`, has a class of its own outside BackpressureError.) */
+const CALLER_ACTION_429_CODES: ReadonlySet<string> = new Set(["configured_run_cap"]);
 
 /** Base class for every HTTP 404 the client surfaces. Lets callers
  *  catch any not-found case with a single `instanceof NotFoundError`
@@ -101,6 +123,11 @@ export class AgentIDInUseError extends LoomcycleError {
  *  caller is starting runs too fast (`rate_limited`, raised as the
  *  RateLimitedError subclass). Back off and retry; `retryable` is true.
  *
+ *  One code under this class is the exception: `configured_run_cap` (the user
+ *  holds as many configured runs as allowed; start or discard one first)
+ *  needs the caller to act, so its `retryable` is false. It stays a
+ *  BackpressureError, the class every other 429 lands in.
+ *
  *  Two 429s are not this class: a per-user run quota
  *  (PerUserQuotaExhaustedError, also retryable) and a hard token budget
  *  (TokenLimitExceededError, not retryable). */
@@ -111,7 +138,7 @@ export class BackpressureError extends LoomcycleError {
   }
 
   override get retryable(): boolean {
-    return true;
+    return this.code === undefined || !CALLER_ACTION_429_CODES.has(this.code);
   }
 }
 
@@ -273,15 +300,12 @@ export class AuthError extends LoomcycleError {
  *  `retryable` is true only for `runtime_paused` (new runs are refused while
  *  the operator has the runtime paused) and false otherwise. A code-less 503
  *  from run creation can also be a model tier with no provider available
- *  right now; retry that one on your own judgement, with a bound. */
+ *  right now; retry that one on your own judgement, with a bound. (The
+ *  inherited `retryable` reads `runtime_paused` from TRANSIENT_CODES.) */
 export class UnavailableError extends LoomcycleError {
   constructor(message: string, opts?: { status?: number; bodyText?: string; code?: string }) {
     super(message, opts);
     this.name = "UnavailableError";
-  }
-
-  override get retryable(): boolean {
-    return this.code === "runtime_paused";
   }
 }
 

@@ -73,7 +73,31 @@ _SERVED = {
         "747970652e676f6f676c65617069732e636f6d2f676f6f676c652e7270632e526574727949"
         "6e666f12040a02080f"
     ),
+    # Unavailable, ErrorInfo{reason: call_failed, category: transient,
+    # is_retryable: true} (internal/api/grpc decideStatus).
+    "call_failed": (
+        "080e123c4465636973696f6e3a2063616c6c5f6661696c65643a207468652063616c6c2074"
+        "6f20746865206465636973696f6e206d6f64656c206661696c65641a710a28747970652e67"
+        "6f6f676c65617069732e636f6d2f676f6f676c652e7270632e4572726f72496e666f12450a"
+        "0b63616c6c5f6661696c656412096c6f6f6d6379636c651a150a0863617465676f72791209"
+        "7472616e7369656e741a140a0c69735f726574727961626c65120474727565"
+    ),
+    # DeadlineExceeded, ErrorInfo{reason: timeout, …} (decideStatus).
+    "timeout": (
+        "0804123c4465636973696f6e3a2074696d656f75743a20746865206465636973696f6e206d"
+        "6f64656c20646964206e6f7420616e7377657220696e2074696d651a6d0a28747970652e67"
+        "6f6f676c65617069732e636f6d2f676f6f676c652e7270632e4572726f72496e666f12410a"
+        "0774696d656f757412096c6f6f6d6379636c651a140a0c69735f726574727961626c651204"
+        "747275651a150a0863617465676f727912097472616e7369656e74"
+    ),
 }
+
+# What configuredErrToStatus sends for the per-user configured-run cap: a bare
+# ResourceExhausted status with no details, so no reason. The message is the
+# refusal's text in internal/api/http/configured_runs.go.
+_CONFIGURED_RUN_CAP_MSG = (
+    "this user already holds 2 configured runs (the cap is 2); start or discard one first"
+)
 
 
 def _rpc_error(code: grpc.StatusCode, details: str, status_details_hex: str = "") -> grpc.aio.AioRpcError:
@@ -114,6 +138,37 @@ def test_a_token_budget_refusal_is_not_retryable():
 def test_a_resource_exhausted_that_clears_on_its_own_is_retryable(reason):
     e = _raised(_rpc_error(grpc.StatusCode.RESOURCE_EXHAUSTED, reason, _SERVED[reason]))
     assert isinstance(e, BackpressureError)
+    assert e.reason == reason
+    assert e.retryable is True
+
+
+def test_the_configured_run_cap_is_backpressure_but_not_retryable():
+    # Only starting or discarding a configured run makes room; waiting never
+    # does, so a retry loop on it would not end.
+    e = _raised(_rpc_error(grpc.StatusCode.RESOURCE_EXHAUSTED, _CONFIGURED_RUN_CAP_MSG))
+    assert isinstance(e, BackpressureError)
+    assert e.reason is None
+    assert e.retryable is False
+
+
+def test_the_configured_run_cap_reason_is_not_retryable_either():
+    # The HTTP code, once the server attaches it as the gRPC reason too.
+    e = BackpressureError("configured run cap")
+    e.reason = "configured_run_cap"
+    assert e.retryable is False
+
+
+@pytest.mark.parametrize(
+    "code,reason,cls",
+    [
+        (grpc.StatusCode.UNAVAILABLE, "call_failed", UnavailableError),
+        (grpc.StatusCode.DEADLINE_EXCEEDED, "timeout", LoomcycleError),
+    ],
+)
+def test_a_decision_call_that_failed_or_timed_out_is_retryable(code, reason, cls):
+    # The server classifies both as transient and says to send the call again.
+    e = _raised(_rpc_error(code, "Decision: " + reason, _SERVED[reason]))
+    assert type(e) is cls
     assert e.reason == reason
     assert e.retryable is True
 
