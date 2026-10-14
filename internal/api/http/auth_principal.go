@@ -181,6 +181,13 @@ func runPlaneRoute(method, path string) bool {
 		return true
 	case path == "/v1/_runnable-agents", path == "/v1/_me", path == "/v1/config":
 		return method == http.MethodGet
+	// Which overrides a run of an agent may set. It is part of starting a run:
+	// a client-held token for one agent needs it to build the form it starts
+	// that agent with. It reveals nothing a run attempt would not — the
+	// override lock refuses before a run exists — and the handler applies the
+	// agent allowlist first, so the token learns nothing about other agents.
+	case isAgentOverridablePath(path):
+		return method == http.MethodGet
 	case path == "/v1/_mcp":
 		// The MCP transport itself; the per-tool gate inside it applies the
 		// same rule to each tool (the MCP package's runPlaneTools).
@@ -801,6 +808,14 @@ func requiredScopeFor(method, path string) string {
 	// meta-tools), so it no longer needs to be operator-only.
 	case isTenantConfinedDefPath(path):
 		return auth.ScopeTenant
+	// RFC EO §5.5: which per-run overrides a run of one agent may set. The
+	// def plane's posture — a tenant operator, and through the member path a
+	// non-isolated member, who could read the whole definition through
+	// POST /v1/_agentdef anyway. Listed explicitly because the def family
+	// above is exact-match, and the /v1/_* catch-all would pin it to admin.
+	// A token limited to certain agents reaches it too: see runPlaneRoute.
+	case isAgentOverridablePath(path):
+		return auth.ScopeTenant
 	// RFC AG Phase 2: the loomcycle-as-MCP-server HTTP transport. With Phase 0
 	// (mcpPrincipalCtx tenant/user stamp + the per-tool tools/call gate +
 	// tools/list filter) and Phase 1 (applyPrincipal on spawn) in place, the
@@ -1213,6 +1228,17 @@ func memberCarveOut(method, path string) bool {
 //
 // The def handlers confine a non-admin principal to its own tenant (write-stamp
 // + opaque-404), so opening these gates to ScopeTenant doesn't widen reach.
+// isAgentOverridablePath reports whether path is
+// /v1/_agentdef/{name}/overridable.
+func isAgentOverridablePath(path string) bool {
+	rest, ok := strings.CutPrefix(path, "/v1/_agentdef/")
+	if !ok {
+		return false
+	}
+	name, ok := strings.CutSuffix(rest, "/overridable")
+	return ok && name != "" && !strings.Contains(name, "/")
+}
+
 // memberReadable reports whether path is a USER-FACING READ surface (RFC BY): a
 // route any member of a tenant may read — an end-user (isolated OR tenant-mode),
 // a tenant operator, or admin — with the HANDLER doing the real per-principal
