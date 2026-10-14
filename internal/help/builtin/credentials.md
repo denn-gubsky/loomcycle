@@ -40,11 +40,14 @@ sent to.
 - **Left out**: no restriction, as before. **An empty list `[]`**: the value
   is sent nowhere. It can still be compared against, which is what a webhook
   signing secret needs.
-- **A restricted credential is given only to a caller that says where the
-  value is going**, and only when that destination is covered. It therefore
-  does **not** resolve in a `$cred:<name>` header, as a provider key, or in a
-  `Bash` / `Bashbox` environment: none of those name a destination. Use it
-  for the things that do.
+- **A restricted credential is given only where the destination is known
+  and covered:** an MCP server's header (the server's URL), a hook's webhook
+  header (the callback URL), a remote memory backend's or document source's
+  key (its `base_url`), and a git source (the repository URL). It does
+  **not** resolve as a provider key or in a `Bash` / `Bashbox` environment:
+  those name no destination.
+- A request carrying a restricted credential **follows no redirect**: the
+  redirect is refused and the call fails.
 - Creating the credential again without `allowed_urls` (a rotation) **keeps
   the list it has**. Sending a list replaces it. To remove a restriction,
   delete the credential and create it again.

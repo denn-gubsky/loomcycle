@@ -19,6 +19,7 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/denn-gubsky/loomcycle/internal/netguard"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
 )
 
@@ -97,6 +98,9 @@ func (c *Client) authHeader(ctx context.Context) (string, error) {
 }
 
 func (c *Client) request(ctx context.Context, payload map[string]any) (int, []byte, error) {
+	// Pinnable before the key resolves: a stored credential restricted by
+	// allowed_urls pins the request, and the client then follows no redirect.
+	ctx = netguard.WithPinnable(ctx)
 	buf, err := json.Marshal(payload)
 	if err != nil {
 		return 0, nil, fmt.Errorf("remote document source: encode request: %w", err)

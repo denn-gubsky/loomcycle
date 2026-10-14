@@ -1192,7 +1192,7 @@ func main() {
 	// Declared here so the pool's build callback (below) captures it by reference;
 	// assigned once the credential engine exists (after the store opens). Dials
 	// are post-boot, so it's non-nil by the time any header is substituted.
-	var credSubstitute func(ctx context.Context, s string) (string, []string, error)
+	var credSubstitute func(ctx context.Context, s, targetURL string) (string, []string, error)
 
 	// RFC N: the pool's build callback resolves through lookup.MCPServer
 	// with the run's tenant so a per-tenant dynamic registration dials its
@@ -1463,8 +1463,10 @@ func main() {
 	// repo-scoped token is substituted). Resolves the App config through the same
 	// scope-precedence credential lookup as $cred:.
 	ghAppMinter := credential.NewGitHubAppMinter(
-		func(ctx context.Context, tenantID, agentName, userID, name string) (string, bool, error) {
-			res, found, err := credEngine.Resolve(ctx, tenantID, agentName, userID, name)
+		// For the URL the minted token is about to be sent to: an App config
+		// restricted by allowed_urls mints only for a covered one.
+		func(ctx context.Context, tenantID, agentName, userID, name, targetURL string) (string, bool, error) {
+			res, found, err := credEngine.ResolveFor(ctx, tenantID, agentName, userID, name, targetURL)
 			if err != nil || !found {
 				return "", found, err
 			}
@@ -1514,7 +1516,7 @@ func main() {
 	// Wire the $cred: header resolver the MCP http pool captured by reference
 	// above. Identity comes from the per-request ctx (tenant + user + agent), so
 	// a pooled client binds each request's own user-scoped token.
-	credSubstitute = func(ctx context.Context, s string) (string, []string, error) {
+	credSubstitute = func(ctx context.Context, s, targetURL string) (string, []string, error) {
 		// Fast-path: when nothing can resolve (no KEK / no external backend) skip
 		// the store reads. Report any $cred: / $ghapp: refs as unresolved so the
 		// caller still drops them (never send a literal token downstream).
@@ -1525,11 +1527,11 @@ func main() {
 		// $ghapp: (mint an installation token) then $cred: (durable secret). The two
 		// syntaxes don't overlap; each drops its own header on an unresolved/failed
 		// ref, and a mint/resolve error aborts so no literal token is sent.
-		out, un1, err := ghAppMinter.Substitute(ctx, ri.TenantID, tools.AgentName(ctx), ri.UserID, s, registerSecret)
+		out, un1, err := ghAppMinter.Substitute(ctx, ri.TenantID, tools.AgentName(ctx), ri.UserID, s, targetURL, registerSecret)
 		if err != nil {
 			return "", nil, err
 		}
-		out, un2, err := credEngine.Substitute(ctx, ri.TenantID, tools.AgentName(ctx), ri.UserID, out, registerSecret)
+		out, un2, err := credEngine.Substitute(ctx, ri.TenantID, tools.AgentName(ctx), ri.UserID, out, targetURL, registerSecret)
 		if err != nil {
 			return "", nil, err
 		}
@@ -1902,8 +1904,8 @@ func main() {
 	// resolved per call from the run's identity, the value never stored in the
 	// definition that attaches the hook. Here, not beside credSubstitute: srv
 	// does not exist until lchttp.New below that.
-	srv.SetHookHeaderSubstitute(func(ctx context.Context, s string) (string, []string, error) {
-		return credSubstitute(ctx, s)
+	srv.SetHookHeaderSubstitute(func(ctx context.Context, s, targetURL string) (string, []string, error) {
+		return credSubstitute(ctx, s, targetURL)
 	})
 	// v1.x RFC G — wire the two A2A substrate tools. Same operator-admin-
 	// only posture as ScheduleDef; reached via Connector + the admin
@@ -4340,7 +4342,7 @@ func (v mcpLookupView) Get(tenantID, name string) (lookup.MCPServerSpec, bool) {
 // is read at dial, not here: main assigns it once the credential engine exists,
 // after the pool is built, and dials happen only after boot.
 func mcpPoolBuild(cfg *config.Config, mcpDynView mcpLookupView,
-	credSubstitute *func(ctx context.Context, s string) (string, []string, error),
+	credSubstitute *func(ctx context.Context, s, targetURL string) (string, []string, error),
 	logf func(format string, args ...any)) func(tenant, name string) (mcp.Caller, error) {
 	// One warning per stored version per process: the pool rebuilds a client
 	// on every evict and respawn, and a line per dial would bury the log.

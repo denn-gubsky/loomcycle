@@ -17,7 +17,7 @@ func TestEngine_Substitute(t *testing.T) {
 
 	// Resolves a $cred: ref for the run's user; registers the value.
 	var registered []string
-	out, unresolved, err := e.Substitute(ctx, "t", "", "uA", "Bearer $cred:telegram", func(v string) { registered = append(registered, v) })
+	out, unresolved, err := e.Substitute(ctx, "t", "", "uA", "Bearer $cred:telegram", "https://mcp.example/", func(v string) { registered = append(registered, v) })
 	if err != nil || len(unresolved) != 0 {
 		t.Fatalf("Substitute: unresolved=%v err=%v", unresolved, err)
 	}
@@ -29,23 +29,23 @@ func TestEngine_Substitute(t *testing.T) {
 	}
 
 	// A different user with no override falls back to the tenant credential.
-	if out, _, _ := e.Substitute(ctx, "t", "", "uB", "$cred:serper", nil); out != "SK-tenant" {
+	if out, _, _ := e.Substitute(ctx, "t", "", "uB", "$cred:serper", "https://mcp.example/", nil); out != "SK-tenant" {
 		t.Errorf("tenant fallback = %q, want SK-tenant", out)
 	}
 
 	// An unresolved ref is left literal and reported (caller drops the header).
-	out, unresolved, _ = e.Substitute(ctx, "t", "", "", "$cred:absent", nil)
+	out, unresolved, _ = e.Substitute(ctx, "t", "", "", "$cred:absent", "https://mcp.example/", nil)
 	if out != "$cred:absent" || len(unresolved) != 1 || unresolved[0] != "absent" {
 		t.Errorf("unresolved handling = (%q, %v)", out, unresolved)
 	}
 
 	// No ref → passthrough, no work.
-	if out, u, err := e.Substitute(ctx, "t", "", "", "plain text", nil); out != "plain text" || u != nil || err != nil {
+	if out, u, err := e.Substitute(ctx, "t", "", "", "plain text", "https://mcp.example/", nil); out != "plain text" || u != nil || err != nil {
 		t.Errorf("passthrough = (%q, %v, %v)", out, u, err)
 	}
 
 	// Multiple refs in one string.
-	if out, _, _ := e.Substitute(ctx, "t", "", "uA", "$cred:serper|$cred:telegram", nil); out != "SK-tenant|A-TOKEN" {
+	if out, _, _ := e.Substitute(ctx, "t", "", "uA", "$cred:serper|$cred:telegram", "https://mcp.example/", nil); out != "SK-tenant|A-TOKEN" {
 		t.Errorf("multi-ref = %q", out)
 	}
 }

@@ -28,6 +28,7 @@ import (
 	"time"
 
 	memory "github.com/denn-gubsky/loomcycle/internal/memory"
+	"github.com/denn-gubsky/loomcycle/internal/netguard"
 	"github.com/denn-gubsky/loomcycle/internal/store"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
 )
@@ -309,6 +310,9 @@ func escapeKeyPath(key string) string {
 // The Authorization header carries the bearer; the URL never does, so a logged
 // error (which includes method + url) is secret-free.
 func (b *Backend) request(ctx context.Context, method, u string, body any) (int, []byte, error) {
+	// Pinnable before the key resolves: a stored credential restricted by
+	// allowed_urls pins the request, and the client then follows no redirect.
+	ctx = netguard.WithPinnable(ctx)
 	var rdr io.Reader
 	if body != nil {
 		buf, err := json.Marshal(body)

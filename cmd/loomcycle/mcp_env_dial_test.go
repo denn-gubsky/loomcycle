@@ -74,7 +74,7 @@ func TestMCPPoolBuild_StrictModeRefusesNonOperatorDefWithEnvRef(t *testing.T) {
 		MCPRefuseUnattributedEnv: true,
 	}}
 	reg := mcp.NewDynamicRegistry()
-	var credSubstitute func(ctx context.Context, s string) (string, []string, error)
+	var credSubstitute func(ctx context.Context, s, targetURL string) (string, []string, error)
 	build := mcpPoolBuild(cfg, mcpLookupView{reg}, &credSubstitute, (&warnLog{}).logf)
 	keyHeader := map[string]string{"Authorization": "Bearer ${LOOMCYCLE_PEER_KEY_GLOBEX}"}
 
@@ -133,7 +133,7 @@ func TestMCPPoolBuild_DefaultDialsUnattributedEnvRefWithOneWarning(t *testing.T)
 	peer := newEnvPeer(t)
 	cfg := &config.Config{Env: config.Env{MCPAllowPrivateIPs: true}} // the switch left at its default
 	reg := mcp.NewDynamicRegistry()
-	var credSubstitute func(ctx context.Context, s string) (string, []string, error)
+	var credSubstitute func(ctx context.Context, s, targetURL string) (string, []string, error)
 	logs := &warnLog{}
 	build := mcpPoolBuild(cfg, mcpLookupView{reg}, &credSubstitute, logs.logf)
 	keyHeader := map[string]string{"Authorization": "Bearer ${LOOMCYCLE_PEER_KEY_GLOBEX}"}

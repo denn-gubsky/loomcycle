@@ -174,13 +174,18 @@ func requireAuthorBoundCredential(ctx context.Context, creds *PeerCredentials, d
 		if tenantID == "" {
 			return fmt.Errorf("config.api_key_env %q may not be set by an author with no tenant: the definition would be shared by every tenant", def.APIKeyEnv)
 		}
-		found, err := creds.Exists(ctx, tenantID, name)
+		// The question the dial will ask (PeerCredentials.Resolve for
+		// base_url), so a definition is saved only when it can be used.
+		found, usable, err := creds.ExistsFor(ctx, tenantID, name, def.BaseURL)
 		if err != nil {
 			return fmt.Errorf("config.api_key_env %q: could not check the credential: %v", def.APIKeyEnv, err)
 		}
 		if !found {
 			return fmt.Errorf("config.api_key_env %q names no tenant-level credential in tenant %q. "+
 				"Create it first with CredentialDef (op=create, scope=tenant, name=%q)", def.APIKeyEnv, tenantID, name)
+		}
+		if !usable {
+			return fmt.Errorf("config.api_key_env %q is restricted by allowed_urls to URLs that do not cover base_url %q", def.APIKeyEnv, def.BaseURL)
 		}
 	} else if def.APIKeyEnv != "" {
 		return fmt.Errorf("config.api_key_env %q may be set only by an admin: it names a credential this server holds, and the definition sends it to its own base_url. "+

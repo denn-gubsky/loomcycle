@@ -204,7 +204,7 @@ const remoteBackendTimeout = 30 * time.Second
 
 // newRemoteBackend builds a remote memory backend from a resolved def. The
 // SSRF-guarded HTTP client and the credential resolver are supplied here (the
-// remote package stays free of config/netguard/os coupling); the host floor
+// remote package stays free of config/os coupling); the host floor
 // and the private-host allowlist depend on who authored the def
 // (requireDialablePeerHost, remotePeerPrivateHosts), and a "$cred:" credential
 // resolves in the tenant the def was read in (peerKeyResolver).
@@ -219,7 +219,7 @@ func (m *Memory) newRemoteBackend(def config.MemoryBackend, prov lookup.Provenan
 		DefaultAPIKeyEnv: def.Config.APIKeyEnv,
 		TenancyKind:      def.TenancyStrategy.Kind,
 		EnvPattern:       def.TenancyStrategy.EnvPattern,
-		KeyResolver:      peerKeyResolver(m.PeerCredentials, prov.TenantID),
+		KeyResolver:      peerKeyResolver(m.PeerCredentials, prov.TenantID, def.Config.BaseURL),
 		HTTPClient:       client,
 	})
 }

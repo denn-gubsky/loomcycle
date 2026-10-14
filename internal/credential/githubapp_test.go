@@ -136,7 +136,7 @@ func TestMinter_Substitute(t *testing.T) {
 	defer srv.Close()
 
 	cfg := fmt.Sprintf(`{"app_id":"1","installation_id":"2","private_key":%q,"base_url":%q}`, keyPEM, srv.URL)
-	resolve := func(_ context.Context, _, _, _, name string) (string, bool, error) {
+	resolve := func(_ context.Context, _, _, _, name, _ string) (string, bool, error) {
 		if name == "myapp" {
 			return cfg, true, nil
 		}
@@ -145,7 +145,7 @@ func TestMinter_Substitute(t *testing.T) {
 	m := NewGitHubAppMinter(resolve, srv.Client())
 
 	var registered []string
-	out, unresolved, err := m.Substitute(context.Background(), "t", "a", "u", "$ghapp:myapp", func(s string) { registered = append(registered, s) })
+	out, unresolved, err := m.Substitute(context.Background(), "t", "a", "u", "$ghapp:myapp", "https://mcp.example/", func(s string) { registered = append(registered, s) })
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -160,7 +160,7 @@ func TestMinter_Substitute(t *testing.T) {
 	}
 
 	// Unresolved name → left literal, reported, no error.
-	out, unresolved, err = m.Substitute(context.Background(), "t", "a", "u", "$ghapp:missing", nil)
+	out, unresolved, err = m.Substitute(context.Background(), "t", "a", "u", "$ghapp:missing", "https://mcp.example/", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -207,7 +207,7 @@ func ghTenantFixture(t *testing.T, configs func(baseURL string) map[string]strin
 	}))
 	t.Cleanup(srv.Close)
 	byTenant := configs(srv.URL)
-	resolve := func(_ context.Context, tenantID, _, _, _ string) (string, bool, error) {
+	resolve := func(_ context.Context, tenantID, _, _, _, _ string) (string, bool, error) {
 		cfg, ok := byTenant[tenantID]
 		return cfg, ok, nil
 	}
@@ -226,11 +226,11 @@ func TestMinter_ForeignTenantWithoutTheKeyGetsNoCachedToken(t *testing.T) {
 		}
 	})
 
-	out, _, err := m.Substitute(context.Background(), "victim", "a", "u", "$ghapp:app", nil)
+	out, _, err := m.Substitute(context.Background(), "victim", "a", "u", "$ghapp:app", "https://mcp.example/", nil)
 	if err != nil || out != "ghs_minted_1" {
 		t.Fatalf("victim mint: out=%q err=%v", out, err)
 	}
-	out, _, err = m.Substitute(context.Background(), "attacker", "a", "u", "$ghapp:app", nil)
+	out, _, err = m.Substitute(context.Background(), "attacker", "a", "u", "$ghapp:app", "https://mcp.example/", nil)
 	if err == nil {
 		t.Fatalf("attacker got %q with a made-up key; want an error and no token", out)
 	}
@@ -254,7 +254,7 @@ func TestMinter_DifferentKeySameIDsMintsItsOwnToken(t *testing.T) {
 		}
 	})
 	for _, tenant := range []string{"a", "b"} {
-		if _, _, err := m.Substitute(context.Background(), tenant, "a", "u", "$ghapp:app", nil); err != nil {
+		if _, _, err := m.Substitute(context.Background(), tenant, "a", "u", "$ghapp:app", "https://mcp.example/", nil); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -271,7 +271,7 @@ func TestMinter_SameConfigInTwoTenantsIsCachedPerTenant(t *testing.T) {
 		return map[string]string{"a": cfg, "b": cfg}
 	})
 	for _, tenant := range []string{"a", "b", "a", "b"} {
-		if _, _, err := m.Substitute(context.Background(), tenant, "a", "u", "$ghapp:app", nil); err != nil {
+		if _, _, err := m.Substitute(context.Background(), tenant, "a", "u", "$ghapp:app", "https://mcp.example/", nil); err != nil {
 			t.Fatal(err)
 		}
 	}

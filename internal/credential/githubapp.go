@@ -49,9 +49,11 @@ func GHAppRefNames(s string) []string {
 }
 
 // ConfigResolver returns the stored App-config JSON for a credential name, using
-// the same scope precedence as Engine.Resolve (agent > user > tenant). main.go
-// wires it to Engine.Resolve; tests pass a fake.
-type ConfigResolver func(ctx context.Context, tenantID, agentName, userID, name string) (config string, found bool, err error)
+// the same scope precedence as Engine.Resolve (agent > user > tenant), for a
+// token about to be sent to targetURL. main.go wires it to Engine.ResolveFor,
+// so an App config restricted by allowed_urls mints only for a covered URL;
+// tests pass a fake.
+type ConfigResolver func(ctx context.Context, tenantID, agentName, userID, name, targetURL string) (config string, found bool, err error)
 
 // GitHubAppMinter resolves $ghapp:<name> tokens by minting a GitHub App
 // installation access token from the stored App config, cached until shortly
@@ -80,18 +82,19 @@ func NewGitHubAppMinter(resolve ConfigResolver, httpClient *http.Client) *GitHub
 }
 
 // Substitute replaces every $ghapp:<name> token in s with a freshly-minted (or
-// cached) installation access token for the run identity. Mirrors
-// Engine.Substitute: unresolved names are returned in `unresolved` (caller drops
-// the header); a hard error (bad config / mint failure) aborts and is returned so
-// the caller drops the header rather than sending a literal token.
-func (m *GitHubAppMinter) Substitute(ctx context.Context, tenantID, agentName, userID, s string, register func(string)) (out string, unresolved []string, err error) {
+// cached) installation access token for the run identity, for a request to
+// targetURL. Mirrors Engine.Substitute: unresolved names are returned in
+// `unresolved` (caller drops the header); a hard error (bad config / mint
+// failure) aborts and is returned so the caller drops the header rather than
+// sending a literal token.
+func (m *GitHubAppMinter) Substitute(ctx context.Context, tenantID, agentName, userID, s, targetURL string, register func(string)) (out string, unresolved []string, err error) {
 	if !ghAppTokenRe.MatchString(s) {
 		return s, nil, nil
 	}
 	var firstErr error
 	out = ghAppTokenRe.ReplaceAllStringFunc(s, func(tok string) string {
 		name := ghAppTokenRe.FindStringSubmatch(tok)[1]
-		cfgJSON, found, rerr := m.resolve(ctx, tenantID, agentName, userID, name)
+		cfgJSON, found, rerr := m.resolve(ctx, tenantID, agentName, userID, name, targetURL)
 		if rerr != nil {
 			if firstErr == nil {
 				firstErr = rerr

@@ -40,23 +40,28 @@ func NewPeerCredentials(engine *credential.Engine, register func(string)) *PeerC
 	return &PeerCredentials{engine: engine, register: register}
 }
 
-// Exists reports whether tenantID holds a tenant-level credential named name.
-// Metadata only: nothing is decrypted.
-func (p *PeerCredentials) Exists(ctx context.Context, tenantID, name string) (bool, error) {
+// ExistsFor reports whether tenantID holds a tenant-level credential named
+// name (found), and whether it may be sent to baseURL (usable): unrestricted,
+// or restricted by allowed_urls to a list covering baseURL, which is what
+// Resolve will check at dial. Metadata only: nothing is decrypted.
+func (p *PeerCredentials) ExistsFor(ctx context.Context, tenantID, name, baseURL string) (found, usable bool, err error) {
 	if p == nil || p.engine == nil {
-		return false, nil
+		return false, false, nil
 	}
-	return p.engine.HasKey(ctx, tenantID, "", "", name)
+	return p.engine.HasKeyFor(ctx, tenantID, "", "", name, baseURL)
 }
 
-// Resolve returns the value of the tenant-level credential name in tenantID.
-// Errors name the reference and the tenant, never a value.
-func (p *PeerCredentials) Resolve(ctx context.Context, tenantID, name string) (string, error) {
+// Resolve returns the value of the tenant-level credential name in tenantID,
+// for a request to targetURL (the peer's base_url): a credential restricted by
+// allowed_urls resolves only when it covers that URL, and then pins ctx, which
+// the peer client makes pinnable and sends the request with. Errors name the
+// reference and the tenant, never a value.
+func (p *PeerCredentials) Resolve(ctx context.Context, tenantID, name, targetURL string) (string, error) {
 	ref := "$cred:" + name
 	if p == nil || p.engine == nil || !p.engine.CanResolve() {
 		return "", fmt.Errorf("api_key_env %q: this server cannot resolve stored credentials (no credential key is configured)", ref)
 	}
-	res, found, err := p.engine.Resolve(ctx, tenantID, "", "", name)
+	res, found, err := p.engine.ResolveFor(ctx, tenantID, "", "", name, targetURL)
 	if err != nil {
 		return "", fmt.Errorf("api_key_env %q: %w", ref, err)
 	}
@@ -70,12 +75,13 @@ func (p *PeerCredentials) Resolve(ctx context.Context, tenantID, name string) (s
 }
 
 // peerKeyResolver is the KeyResolver for a remote peer client built from a def
-// read in ownerTenant: a "$cred:<name>" resolves there, through creds; any
-// other name is an env var, gated as before (resolveCredentialEnv).
-func peerKeyResolver(creds *PeerCredentials, ownerTenant string) func(context.Context, string) (string, error) {
+// read in ownerTenant and sending to baseURL: a "$cred:<name>" resolves there,
+// through creds, for baseURL; any other name is an env var, gated as before
+// (resolveCredentialEnv).
+func peerKeyResolver(creds *PeerCredentials, ownerTenant, baseURL string) func(context.Context, string) (string, error) {
 	return func(ctx context.Context, name string) (string, error) {
 		if ref, ok := credential.ParseRef(name); ok {
-			return creds.Resolve(ctx, ownerTenant, ref)
+			return creds.Resolve(ctx, ownerTenant, ref, baseURL)
 		}
 		return resolveCredentialEnv(name)
 	}
