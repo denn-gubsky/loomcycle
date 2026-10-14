@@ -343,8 +343,8 @@ func TestGitCredentialResolver_AppCredentialIsMintedAndAnOpenOneRefused(t *testi
 
 	var mintedFrom string
 	var registered []string
-	resolve := GitCredentialResolver(f.engine, func(_ context.Context, tenantID, cfgJSON string) (string, error) {
-		mintedFrom = tenantID + ":" + cfgJSON
+	resolve := GitCredentialResolver(f.engine, func(_ context.Context, tenantID, cfgJSON, repository string) (string, error) {
+		mintedFrom = tenantID + ":" + cfgJSON + ":" + repository
 		return "ghs_minted_installation_token", nil
 	}, func(v string) { registered = append(registered, v) })
 
@@ -352,8 +352,8 @@ func TestGitCredentialResolver_AppCredentialIsMintedAndAnOpenOneRefused(t *testi
 	if err != nil || user != "x-access-token" || token != "ghs_minted_installation_token" {
 		t.Fatalf("an App credential: user=%q token=%q err=%v", user, token, err)
 	}
-	if mintedFrom != `tnt:{"app_id":"1"}` {
-		t.Errorf("minted from %q, want the run's tenant and the stored config", mintedFrom)
+	if mintedFrom != `tnt:{"app_id":"1"}:app` {
+		t.Errorf("minted from %q, want the run's tenant, the stored config and the repository being cloned", mintedFrom)
 	}
 	// The minted token is what is masked, not the stored config.
 	if len(registered) != 1 || registered[0] != token {
@@ -372,6 +372,16 @@ func TestGitCredentialResolver_AppCredentialIsMintedAndAnOpenOneRefused(t *testi
 	}
 	if got := gitAuthUsername("notgitlab.example.com"); got != "x-access-token" {
 		t.Errorf("a host that only contains the word: user %q", got)
+	}
+}
+
+func TestRepositoryName(t *testing.T) {
+	for p, want := range map[string]string{
+		"/acme/app": "app", "/acme/app.git": "app", "/acme/app/": "app", "/group/sub/app.git": "app", "/app": "app",
+	} {
+		if got := repositoryName(p); got != want {
+			t.Errorf("repositoryName(%q) = %q, want %q", p, got, want)
+		}
 	}
 }
 

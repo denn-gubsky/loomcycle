@@ -44,6 +44,12 @@ func TestRedactor_Patterns(t *testing.T) {
 		{"aws-key", `id=AKIAIOSFODNN7EXAMPLE done`, "AKIAIOSFODNN7EXAMPLE", "done"},
 		{"slack", `token xoxb-123456789012-abcdefABCDEF here`, "xoxb-123456789012-abcdefABCDEF", "token"},
 		{"github-pat", `pat ghp_abcdefghijklmnopqrstuvwxyz0123456789 ok`, "ghp_abcdefghijklmnopqrstuvwxyz0123456789", "ok"},
+		{"github-app-installation", `x ghs_ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghij y`, "ghs_ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghij", "y"},
+		{"github-oauth", `x gho_ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghij y`, "gho_ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghij", "y"},
+		{"github-user-to-server", `x ghu_ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghij y`, "ghu_ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghij", "y"},
+		{"github-refresh", `x ghr_ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghij y`, "ghr_ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghij", "y"},
+		{"github-fine-grained", `x github_pat_11ABCDEFG0123456789_abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUV y`, "github_pat_11ABCDEFG0123456789_abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUV", "y"},
+		{"gitlab", `x glpat-abcdEFGH1234ijklMNOP5678 y`, "glpat-abcdEFGH1234ijklMNOP5678", "y"},
 		{"api_key-assign", `API_KEY=supersecretvalue123`, "supersecretvalue123", "API_KEY"},
 		{"password-assign", `password: "hunter2hunter2"`, "hunter2hunter2", "password"},
 	}
@@ -249,5 +255,22 @@ func TestMatchesPattern_AgreesWithPatternsOnlyRedactor(t *testing.T) {
 	}
 	if !MatchesPattern(`token=abcdef`) || MatchesPattern(`stdio`) {
 		t.Error("MatchesPattern lost its positive or negative case")
+	}
+}
+
+// The new token prefixes are matched as prefixes of a token, not inside
+// ordinary words, and a short tail is left alone.
+func TestRedactor_TokenPrefixesDoNotMaskOrdinaryText(t *testing.T) {
+	r := New(nil, true)
+	for _, in := range []string{
+		"the ghost_story file",
+		"ghs_tooShort1234",
+		"glpat-short",
+		"github_pat_tooShort",
+		"set ghostwriter_ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghij0123 aside", // a word that only starts like a prefix
+	} {
+		if got := r.String(in); got != in {
+			t.Errorf("masked ordinary text: %q -> %q", in, got)
+		}
 	}
 }

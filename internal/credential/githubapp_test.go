@@ -11,6 +11,7 @@ import (
 	"encoding/json"
 	"encoding/pem"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -298,5 +299,91 @@ func TestGHCacheKey_SeparatesServersKeysAndTenants(t *testing.T) {
 	}
 	if k != ghCacheKey("t", base) {
 		t.Error("the same tenant and config must share a cache key")
+	}
+}
+
+// A token for a clone is narrowed to the one repository with read access to
+// its contents, whatever the stored config allows; GitHub does the
+// enforcing, so what matters is what is asked for.
+func TestMinter_TokenForRepositoryAsksForOneRepositoryReadOnly(t *testing.T) {
+	_, keyPEM := testKeyPEM(t)
+	var bodies []string
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		bodies = append(bodies, string(b))
+		w.WriteHeader(http.StatusCreated)
+		fmt.Fprintf(w, `{"token":"ghs_minted_%d","expires_at":%q}`, len(bodies), time.Now().Add(time.Hour).UTC().Format(time.RFC3339))
+	}))
+	defer srv.Close()
+	m := NewGitHubAppMinter(nil, srv.Client())
+	// A config that allows every repository and write access.
+	wide := fmt.Sprintf(`{"app_id":"1","installation_id":"2","private_key":%q,"base_url":%q,"permissions":{"contents":"write","issues":"write"}}`, keyPEM, srv.URL)
+
+	tok, err := m.TokenForRepository(context.Background(), "t", wide, "app")
+	if err != nil || tok != "ghs_minted_1" {
+		t.Fatalf("tok=%q err=%v", tok, err)
+	}
+	var asked struct {
+		Repositories []string          `json:"repositories"`
+		Permissions  map[string]string `json:"permissions"`
+	}
+	if err := json.Unmarshal([]byte(bodies[0]), &asked); err != nil {
+		t.Fatalf("request body %q: %v", bodies[0], err)
+	}
+	if len(asked.Repositories) != 1 || asked.Repositories[0] != "app" ||
+		len(asked.Permissions) != 1 || asked.Permissions["contents"] != "read" {
+		t.Errorf("asked GitHub for %s, want repository app with contents:read and nothing else", bodies[0])
+	}
+
+	// The narrowed token is not handed to a header that resolves the same
+	// config with its own wider scope, nor the other way round.
+	if tok, _ := m.token(context.Background(), "t", wide); tok == "ghs_minted_1" {
+		t.Error("the config's own wide token was served from the narrowed one's cache entry")
+	}
+	if tok, _ := m.TokenForRepository(context.Background(), "t", wide, "app"); tok != "ghs_minted_1" {
+		t.Errorf("a second clone of the same repository re-minted: %q", tok)
+	}
+	if tok, _ := m.TokenForRepository(context.Background(), "t", wide, "other"); tok == "ghs_minted_1" {
+		t.Error("another repository got the first one's token")
+	}
+
+	// A config that lists its repositories must include this one: the
+	// narrowing never widens. Refused without asking GitHub.
+	listed := fmt.Sprintf(`{"app_id":"1","installation_id":"2","private_key":%q,"base_url":%q,"repositories":["web","api"]}`, keyPEM, srv.URL)
+	before := len(bodies)
+	if _, err := m.TokenForRepository(context.Background(), "t", listed, "app"); err == nil {
+		t.Error("a repository the config does not list was given a token")
+	}
+	if len(bodies) != before {
+		t.Error("GitHub was asked for a repository the config does not list")
+	}
+	if _, err := m.TokenForRepository(context.Background(), "t", listed, "API"); err != nil {
+		t.Errorf("a listed repository, in another letter case: %v", err)
+	}
+	for _, bad := range []string{"", "a/b", "a b", "../x"} {
+		if _, err := m.TokenForRepository(context.Background(), "t", wide, bad); err == nil {
+			t.Errorf("repository name %q accepted", bad)
+		}
+	}
+
+	// A config whose own permissions leave contents out was written to keep
+	// the App's token away from code. A clone must not ask for more than it
+	// allows: refused, without asking GitHub.
+	for _, perms := range []string{`{"issues":"write"}`, `{"metadata":"read"}`, `{"contents":"none"}`, `{"contents":""}`} {
+		noCode := fmt.Sprintf(`{"app_id":"1","installation_id":"2","private_key":%q,"base_url":%q,"permissions":%s}`, keyPEM, srv.URL, perms)
+		before := len(bodies)
+		if _, err := m.TokenForRepository(context.Background(), "t", noCode, "app"); err == nil {
+			t.Errorf("permissions %s: a clone token was given", perms)
+		}
+		if len(bodies) != before {
+			t.Errorf("permissions %s: GitHub was asked", perms)
+		}
+	}
+	// One that allows reading contents is narrowed to read.
+	readOnly := fmt.Sprintf(`{"app_id":"1","installation_id":"2","private_key":%q,"base_url":%q,"permissions":{"contents":"read","pull_requests":"write"}}`, keyPEM, srv.URL)
+	if _, err := m.TokenForRepository(context.Background(), "t", readOnly, "web"); err != nil {
+		t.Errorf("a config allowing contents: read: %v", err)
+	} else if last := bodies[len(bodies)-1]; !strings.Contains(last, `"contents":"read"`) || strings.Contains(last, "pull_requests") {
+		t.Errorf("asked GitHub for %s, want contents:read alone", last)
 	}
 }
