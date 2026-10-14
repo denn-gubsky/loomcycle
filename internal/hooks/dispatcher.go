@@ -441,6 +441,15 @@ func (d *Dispatcher) invoke(ctx context.Context, h *Hook, body, out any) error {
 	if err != nil {
 		return err
 	}
+	if sig != nil {
+		// The id goes in the body, under the signature: a header alone would
+		// let a replay within the tolerance pass as a new delivery.
+		p, ok := body.(deliveryStamped)
+		if !ok {
+			return callError("the hook's payload could not be signed", fmt.Errorf("hooks: payload %T carries no delivery_id", body))
+		}
+		p.stampDelivery(sig.delivery)
+	}
 	return d.client.post(hookCtx, d.client.clientFor(h), h.CallbackURL, headers, sig, body, out)
 }
 

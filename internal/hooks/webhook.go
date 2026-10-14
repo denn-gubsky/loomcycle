@@ -61,6 +61,11 @@ func (c *webhookClient) clientFor(h *Hook) *http.Client {
 
 // Headers a signed call carries. Authors cannot set them (validateHeaders),
 // and post sets them after the author's headers, so loomcycle's always win.
+//
+// Only the body is signed. X-Loomcycle-Hook and X-Loomcycle-Delivery are
+// unsigned convenience copies of the body's hook_name and delivery_id: a
+// replayer can change them without breaking the signature, so a receiver
+// identifies the hook and dedupes from the verified body, never from these.
 const (
 	sigHeaderSignature = sigv1.Header
 	sigHeaderHook      = "X-Loomcycle-Hook"
@@ -145,6 +150,17 @@ func (c *webhookClient) post(ctx context.Context, hc *http.Client, url string, h
 	}
 	return nil
 }
+
+// deliveryStamped is a hook payload that carries its delivery id in the body,
+// where the signature covers it. Every payload a webhook is sent implements
+// it; a signed call whose payload does not is refused rather than sent with
+// an id only in an unsigned header.
+type deliveryStamped interface{ stampDelivery(id string) }
+
+func (c *PreHookCall) stampDelivery(id string)       { c.DeliveryID = id }
+func (c *PostHookCall) stampDelivery(id string)      { c.DeliveryID = id }
+func (c *LifecycleHookCall) stampDelivery(id string) { c.DeliveryID = id }
+func (c *ChannelHookCall) stampDelivery(id string)   { c.DeliveryID = id }
 
 type deliveryIDKey struct{}
 
