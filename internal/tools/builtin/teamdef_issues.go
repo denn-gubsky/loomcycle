@@ -171,7 +171,7 @@ func (t *TeamDef) authoringIssues(ctx context.Context, op, team string, defJSON 
 	issues = append(issues, localChannelIssues(team, def)...)
 	issues = append(issues, teamChannelAuthorityIssues(ctx, def)...)
 	issues = append(issues, t.decisionAuthorityIssues(ctx, def)...)
-	issues = append(issues, localWebhookIssues(ctx, team, def)...)
+	issues = append(issues, localWebhookIssues(ctx, t.Credentials, team, def)...)
 	issues = append(issues, t.preflightChannelIssues(ctx, def)...)
 	issues = append(issues, t.localSkillIssues(ctx, op, team, def)...)
 	issues = append(issues, t.localAgentIssues(ctx, op, team, def, parent)...)

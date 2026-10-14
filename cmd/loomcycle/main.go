@@ -1459,6 +1459,8 @@ func main() {
 	}
 	credEngine := credential.NewEngine(storeIface, credSealer)
 	credentialDefTool.Engine = credEngine
+	// A team's own webhook may name a stored secret of the author's tenant.
+	teamDefTool.Credentials = credEngine
 	// $ghapp:<name> — mint a short-lived GitHub App installation token from a
 	// stored App config (the private key never leaves loomcycle; only the ~1h,
 	// repo-scoped token is substituted). Resolves the App config through the same
@@ -1760,6 +1762,11 @@ func main() {
 	// RFC AX: the keyability probe backs credential-aware routing for a
 	// restricted run (resolves only to providers the tenant can key itself).
 	srv.SetCredKeyable(credKeyable)
+	// The snapshot scan's check for a webhook's stored verification secret.
+	srv.SetCredToCompare(func(ctx context.Context, tenantID, name string) bool {
+		ok, err := credEngine.HasToCompare(ctx, tenantID, name)
+		return err == nil && ok
+	})
 	// RFC BE: the History tool's op=recap summarizer. Store was late-bound above
 	// (before srv existed); Recap needs server-side provider/model resolution, so
 	// it's the off-loop twin of the compaction summarizer (Server.RecapSession).
@@ -1937,6 +1944,7 @@ func main() {
 		Cfg:                 cfg,
 		MaxDefinitionBytes:  cfg.Env.AgentDefMaxDefinitionBytes,
 		MaxDescriptionBytes: cfg.Env.AgentDefMaxDescriptionBytes,
+		Credentials:         credEngine,
 	})
 	// RFC I MR-3a — wire the MemoryBackendDef substrate tool. Same
 	// operator-admin-only posture as WebhookDef; reached via
@@ -2339,6 +2347,7 @@ func main() {
 			Publisher:            sysPublisher,
 			RunStateBus:          runStateBus,
 			EnvAllowlist:         webhookAllowlist,
+			Credentials:          credEngine, // auth.secret: a stored verification secret
 			AllowUnauthenticated: cfg.Env.WebhooksAllowUnauthenticated,
 			Logf:                 log.Printf,
 		})

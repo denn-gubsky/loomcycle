@@ -87,6 +87,14 @@ When the change-data-capture feed is enabled (`LOOMCYCLE_MEMORY_CHANGES_ENABLED=
 
 **Subscribe (pull, SSE).** `GET /v1/_memory/changes?since=<seq>` and `GET /v1/_document/changes?since=<seq>` stream events as they happen; `seq` is a monotonic cursor to resume from. `substrate:tenant` scope; each stream is your own tenant's changes only (not member-accessible — the feed is operator observability).
 
+Each stream carries three SSE event names; ignore any other name a newer server adds:
+
+- `event: feed` — sent once, first: `{enabled, since, embedder}`. `enabled:false` means writes are not being captured (the stream would otherwise just idle); `since` is the cursor the server is actually using.
+- `event: change` — one per change, the coordinate above.
+- `event: error` — `{"code":"store_unavailable","error":"<short description>"}` when the server cannot read the change store. Sent once at the start of each failure streak, not on every retry; the stream stays open and keeps retrying with backoff (up to ~5 s between reads). The cursor does not move while reads fail, so nothing is skipped: when reads recover, `change` frames simply resume from where they stopped (there is no separate "recovered" frame, and `feed` is not re-sent). Without this frame a broken store would look exactly like a quiet one.
+
+The `feed` and `error` payloads carry no `type` field; the SSE event name is the discriminator.
+
 **Push (webhook).** Declare a `change_subscriptions:` entry in operator yaml and loomcycle POSTs signed batches to your callback:
 
 ```yaml

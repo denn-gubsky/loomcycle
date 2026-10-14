@@ -37,6 +37,12 @@ served first.
 `max_queued_runs_per_user: 0` refuses a run over the per-user cap at
 once, with no waiting. In cluster mode it is counted per replica.
 
+With no per-user cap, `max_queued_runs_per_user` also bounds how many
+places one (tenant, user) may hold in the queue for a run slot; runs that
+name no user share their tenant's places. Past it the run is refused with
+429 `backpressure`, so one caller cannot fill the queue and turn every
+other tenant away.
+
 ## admission: "wait" or "reject"
 
 Every way of starting a run (POST /v1/runs, the gRPC Run RPC, the MCP

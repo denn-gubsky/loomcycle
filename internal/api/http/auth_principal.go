@@ -39,7 +39,8 @@ func isNotFound(err error) bool {
 //
 //   - open mode (no auth configured at all) → pass through (dev only)
 //   - unknown/expired/invalid bearer → 401 opaque (no oracle)
-//   - valid bearer but insufficient scope → 403 + RFC 6750 hint
+//   - valid bearer but insufficient scope → 403 insufficient_scope JSON naming
+//     the scope + the RFC 6750 hint
 func (s *Server) authMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if !s.authConfigured(r.Context()) {
@@ -91,9 +92,7 @@ func (s *Server) authMiddleware(next http.Handler) http.Handler {
 			// token minted before the scope existed.
 			gatewayMemberOK := required == auth.ScopeLLMGateway && !auth.IsIsolated(p, ok)
 			if !(memberOK || selfOK || gatewayMemberOK) {
-				// Scope names are public; token state is not.
-				w.Header().Set("WWW-Authenticate", `Bearer scope="`+required+`"`)
-				http.Error(w, "insufficient scope", http.StatusForbidden)
+				writeScopeError(w, required, "insufficient scope")
 				return
 			}
 		}
@@ -180,6 +179,13 @@ func runPlaneRoute(method, path string) bool {
 	case strings.HasPrefix(path, "/v1/sessions/"):
 		return true
 	case path == "/v1/_runnable-agents", path == "/v1/_me", path == "/v1/config":
+		return method == http.MethodGet
+	// Which overrides a run of an agent may set. It is part of starting a run:
+	// a client-held token for one agent needs it to build the form it starts
+	// that agent with. It reveals nothing a run attempt would not — the
+	// override lock refuses before a run exists — and the handler applies the
+	// agent allowlist first, so the token learns nothing about other agents.
+	case isAgentOverridablePath(path):
 		return method == http.MethodGet
 	case path == "/v1/_mcp":
 		// The MCP transport itself; the per-tool gate inside it applies the
@@ -780,6 +786,14 @@ func requiredScopeFor(method, path string) string {
 	// on substrate:user would lock TENANT-MODE users out (they hold neither).
 	case memberReadable(path):
 		return auth.ScopeRunsRead
+	// Evaluation outside a run. runs:read is the floor every principal that may
+	// read a run holds — an isolated user included, which is why it is not
+	// substrate:tenant. The gate admits; it grants nothing: which ops the caller
+	// may use is tools.OffRunEvaluationPolicy (every op for a tenant operator or
+	// admin, submit_self for anyone else), the same grant as the Evaluation RPC
+	// and the MCP `evaluation` tool, which gate on runs:read too.
+	case path == "/v1/_evaluation":
+		return auth.ScopeRunsRead
 	// RFC BC: the client-tool host WebSocket. A client registers tools it runs on
 	// the user's own machine; the connection serves ONLY its own principal's runs
 	// (filed under (tenant, subject) from the bearer). Requires runs:create — you
@@ -800,6 +814,14 @@ func requiredScopeFor(method, path string) string {
 	// (mcpPrincipalCtx stamps the tenant + a per-tool gate withholds the admin
 	// meta-tools), so it no longer needs to be operator-only.
 	case isTenantConfinedDefPath(path):
+		return auth.ScopeTenant
+	// RFC EO §5.5: which per-run overrides a run of one agent may set. The
+	// def plane's posture — a tenant operator, and through the member path a
+	// non-isolated member, who could read the whole definition through
+	// POST /v1/_agentdef anyway. Listed explicitly because the def family
+	// above is exact-match, and the /v1/_* catch-all would pin it to admin.
+	// A token limited to certain agents reaches it too: see runPlaneRoute.
+	case isAgentOverridablePath(path):
 		return auth.ScopeTenant
 	// RFC AG Phase 2: the loomcycle-as-MCP-server HTTP transport. With Phase 0
 	// (mcpPrincipalCtx tenant/user stamp + the per-tool tools/call gate +
@@ -1229,6 +1251,17 @@ func memberReadable(path string) bool {
 		return true
 	}
 	return false
+}
+
+// isAgentOverridablePath reports whether path is
+// /v1/_agentdef/{name}/overridable.
+func isAgentOverridablePath(path string) bool {
+	rest, ok := strings.CutPrefix(path, "/v1/_agentdef/")
+	if !ok {
+		return false
+	}
+	name, ok := strings.CutSuffix(rest, "/overridable")
+	return ok && name != "" && !strings.Contains(name, "/")
 }
 
 // isTeamChannelsPath reports whether path is one of the team-channel routes:
