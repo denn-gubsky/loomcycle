@@ -60,36 +60,43 @@ func (w *warnLog) all() []string {
 	return append([]string(nil), w.lines...)
 }
 
-// TestMCPPoolBuild_StrictModeRefusesNonOperatorDefWithEnvRef pins the strict
-// dial (LOOMCYCLE_MCP_REFUSE_UNATTRIBUTED_ENV=1): a dynamic def stored without
-// the operator_authored bit (a row written before authoring refused it) is not
-// dialed when it holds a ${NAME}, so the operator's env value never reaches its
-// host. The operator's own def, and a non-operator def with no ${NAME}, still
-// dial.
-func TestMCPPoolBuild_StrictModeRefusesNonOperatorDefWithEnvRef(t *testing.T) {
+// TestMCPPoolBuild_DefaultRefusesNonOperatorDefWithEnvRef pins the default
+// dial (LOOMCYCLE_MCP_REFUSE_UNATTRIBUTED_ENV unset): a dynamic def stored
+// without the operator_authored bit (a row written before authoring refused
+// it) is not dialed when it holds a ${NAME}, so the operator's env value never
+// reaches its host. The refusal names the def, version, tenant and fields so an
+// operator can find it, never the value. The operator's own def, and a
+// non-operator def with no ${NAME}, still dial.
+func TestMCPPoolBuild_DefaultRefusesNonOperatorDefWithEnvRef(t *testing.T) {
 	t.Setenv("LOOMCYCLE_PEER_KEY_GLOBEX", "globex-secret-value")
 	peer := newEnvPeer(t)
-	cfg := &config.Config{Env: config.Env{
-		MCPAllowPrivateIPs:       true, // the httptest peer is on loopback
-		MCPRefuseUnattributedEnv: true,
-	}}
+	// The opt-out left at its zero value: the default posture.
+	cfg := &config.Config{Env: config.Env{MCPAllowPrivateIPs: true}} // the httptest peer is on loopback
 	reg := mcp.NewDynamicRegistry()
 	var credSubstitute func(ctx context.Context, s, targetURL string) (string, []string, error)
-	build := mcpPoolBuild(cfg, mcpLookupView{reg}, &credSubstitute, (&warnLog{}).logf)
+	logs := &warnLog{}
+	build := mcpPoolBuild(cfg, mcpLookupView{reg}, &credSubstitute, logs.logf)
 	keyHeader := map[string]string{"Authorization": "Bearer ${LOOMCYCLE_PEER_KEY_GLOBEX}"}
 
 	for name, hdr := range map[string]map[string]string{
 		"leaky-header": keyHeader,
 		"leaky-nested": {"Authorization": "Bearer ${run.credentials.x:-${LOOMCYCLE_PEER_KEY_GLOBEX}}"},
 	} {
-		reg.Set(mcp.DynamicMCPServerSpec{TenantID: "acme", Name: name, Transport: "http", URL: peer.srv.URL, Headers: hdr})
+		reg.Set(mcp.DynamicMCPServerSpec{TenantID: "acme", Name: name, Transport: "http", URL: peer.srv.URL, Headers: hdr,
+			DefID: "mdf_" + name, Version: 7})
 		c, err := build("acme", name)
 		if err == nil {
 			_, _ = c.Call(context.Background(), "initialize", map[string]any{})
-			t.Fatalf("%s: a non-operator def holding a ${NAME} was dialed", name)
+			t.Fatalf("%s: a non-operator def holding a ${NAME} was dialed by default", name)
 		}
-		if strings.Contains(err.Error(), "globex-secret-value") {
-			t.Fatalf("%s: refusal carries the env value: %v", name, err)
+		msg := err.Error()
+		if strings.Contains(msg, "globex-secret-value") || strings.Contains(msg, "Bearer") {
+			t.Fatalf("%s: refusal carries a value, not only a location: %v", name, err)
+		}
+		for _, want := range []string{name, "v7", "mdf_" + name, `tenant="acme"`, "headers.Authorization", "re-save", "LOOMCYCLE_MCP_REFUSE_UNATTRIBUTED_ENV=0"} {
+			if !strings.Contains(msg, want) {
+				t.Errorf("%s: refusal lacks %q: %s", name, want, msg)
+			}
 		}
 	}
 	reg.Set(mcp.DynamicMCPServerSpec{TenantID: "acme", Name: "leaky-stdio", Transport: "stdio",
@@ -102,6 +109,9 @@ func TestMCPPoolBuild_StrictModeRefusesNonOperatorDefWithEnvRef(t *testing.T) {
 	}
 	if got := peer.seen(); len(got) != 0 {
 		t.Fatalf("the peer received %d request(s) from refused defs: %q", len(got), got)
+	}
+	if lines := logs.all(); len(lines) != 0 {
+		t.Errorf("a refused def logged the dial-anyway warning: %q", lines)
 	}
 
 	// Controls: the same peer is reachable, and the operator's def sends its key.
@@ -122,16 +132,16 @@ func TestMCPPoolBuild_StrictModeRefusesNonOperatorDefWithEnvRef(t *testing.T) {
 	}
 }
 
-// TestMCPPoolBuild_DefaultDialsUnattributedEnvRefWithOneWarning pins this
-// release's default: an unattributed def holding a ${NAME} still dials and
-// sends the expanded value, as before the authoring rule, so an upgrade does
-// not cut off a server an admin wrote before authority was recorded. It logs
-// one WARNING per stored version, however many times the pool rebuilds it,
-// naming the def, version, tenant and fields but never the value.
-func TestMCPPoolBuild_DefaultDialsUnattributedEnvRefWithOneWarning(t *testing.T) {
+// TestMCPPoolBuild_OptOutDialsUnattributedEnvRefWithOneWarning pins the
+// upgrade escape hatch (LOOMCYCLE_MCP_REFUSE_UNATTRIBUTED_ENV=0): an
+// unattributed def holding a ${NAME} still dials and sends the expanded value,
+// as before the authoring rule, so an operator mid-upgrade is not cut off. It
+// logs one WARNING per stored version, however many times the pool rebuilds
+// it, naming the def, version, tenant and fields but never the value.
+func TestMCPPoolBuild_OptOutDialsUnattributedEnvRefWithOneWarning(t *testing.T) {
 	t.Setenv("LOOMCYCLE_PEER_KEY_GLOBEX", "globex-secret-value")
 	peer := newEnvPeer(t)
-	cfg := &config.Config{Env: config.Env{MCPAllowPrivateIPs: true}} // the switch left at its default
+	cfg := &config.Config{Env: config.Env{MCPAllowPrivateIPs: true, MCPDialUnattributedEnv: true}}
 	reg := mcp.NewDynamicRegistry()
 	var credSubstitute func(ctx context.Context, s, targetURL string) (string, []string, error)
 	logs := &warnLog{}
@@ -144,7 +154,7 @@ func TestMCPPoolBuild_DefaultDialsUnattributedEnvRefWithOneWarning(t *testing.T)
 	for i := 0; i < dials; i++ {
 		c, err := build("acme", "legacy")
 		if err != nil {
-			t.Fatalf("dial %d: an unattributed def was refused by default: %v", i, err)
+			t.Fatalf("dial %d: an unattributed def was refused under the opt-out: %v", i, err)
 		}
 		_, _ = c.Call(context.Background(), "initialize", map[string]any{})
 	}
@@ -154,7 +164,7 @@ func TestMCPPoolBuild_DefaultDialsUnattributedEnvRefWithOneWarning(t *testing.T)
 	}
 	for _, a := range got {
 		if a != "Bearer globex-secret-value" {
-			t.Fatal("the default dial did not send the expanded header")
+			t.Fatal("the opt-out dial did not send the expanded header")
 		}
 	}
 	lines := logs.all()
@@ -162,7 +172,7 @@ func TestMCPPoolBuild_DefaultDialsUnattributedEnvRefWithOneWarning(t *testing.T)
 		t.Fatalf("want exactly one warning for %d dials, got %d: %q", dials, len(lines), lines)
 	}
 	w := lines[0]
-	for _, want := range []string{"WARNING", `"legacy"`, "v3", "mdf_legacy", `tenant "acme"`, "headers.Authorization", "LOOMCYCLE_MCP_REFUSE_UNATTRIBUTED_ENV=1"} {
+	for _, want := range []string{"WARNING", `"legacy"`, "v3", "mdf_legacy", `tenant "acme"`, "headers.Authorization", "LOOMCYCLE_MCP_REFUSE_UNATTRIBUTED_ENV=0", "re-save"} {
 		if !strings.Contains(w, want) {
 			t.Errorf("warning lacks %q: %s", want, w)
 		}

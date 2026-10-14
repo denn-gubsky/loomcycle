@@ -11,11 +11,11 @@ import (
 
 // OperatorEnvWarnings audits every stored MCP server def version (all
 // tenants, read-only) for a ${NAME} reference in a version that is not
-// operator-authored. Before bindOperatorEnv any author could store one. This
-// release still dials such a version (with a warning) unless
-// LOOMCYCLE_MCP_REFUSE_UNATTRIBUTED_ENV=1, and the next release refuses it by
-// default, so each is a server an operator should have an admin re-save or
-// retire. Nothing is changed.
+// operator-authored. Before bindOperatorEnv any author could store one. The
+// pool refuses to dial such a version unless the operator opted out with
+// LOOMCYCLE_MCP_REFUSE_UNATTRIBUTED_ENV=0, so each is a server that is (or,
+// opted out, will be) cut off until an admin re-saves or retires it. Nothing
+// is changed.
 //
 // A line names the def and the fields holding the reference, never a value.
 func (m *MCPServerDef) OperatorEnvWarnings(ctx context.Context) ([]string, error) {
@@ -29,9 +29,10 @@ func (m *MCPServerDef) OperatorEnvWarnings(ctx context.Context) ([]string, error
 	for _, n := range names {
 		active[n.ActiveDefID] = true
 	}
-	consequence := "it still dials this release, but a future release will refuse it (LOOMCYCLE_MCP_REFUSE_UNATTRIBUTED_ENV=1 refuses it now)"
-	if m.Cfg != nil && m.Cfg.Env.MCPRefuseUnattributedEnv {
-		consequence = "it is not dialed (LOOMCYCLE_MCP_REFUSE_UNATTRIBUTED_ENV=1)"
+	// A nil Cfg reports the default (refuse), never the opt-out.
+	consequence := "it WILL NOT be dialed (set LOOMCYCLE_MCP_REFUSE_UNATTRIBUTED_ENV=0 to dial it temporarily)"
+	if m.Cfg != nil && m.Cfg.Env.MCPDialUnattributedEnv {
+		consequence = "it is still dialed only because LOOMCYCLE_MCP_REFUSE_UNATTRIBUTED_ENV=0"
 	}
 	for _, n := range names {
 		if seen[n.Name] {
@@ -58,7 +59,7 @@ func (m *MCPServerDef) OperatorEnvWarnings(ctx context.Context) ([]string, error
 			case active[v.DefID]:
 				state = "ACTIVE"
 			}
-			out = append(out, fmt.Sprintf("mcp server %q v%d (def_id %s, tenant %q, %s) reads the server environment in %s but was not saved by an admin; %s — have an admin acting in that tenant re-save it, else retire it",
+			out = append(out, fmt.Sprintf("mcp server %q v%d (def_id %s, tenant %q, %s) reads the server environment in %s but was not saved by an admin; %s — to fix, an admin acting in that tenant re-saves it (create with the same overlay mints an attributed version), else retire it",
 				v.Name, v.Version, v.DefID, v.TenantID, state, strings.Join(locs, ", "), consequence))
 		}
 	}

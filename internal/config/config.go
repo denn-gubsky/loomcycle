@@ -4363,14 +4363,21 @@ type Env struct {
 	// LOOMCYCLE_MCP_ALLOW_DYNAMIC_STDIO.
 	MCPAllowDynamicStdio bool
 
-	// MCPRefuseUnattributedEnv — when true, the MCP pool refuses to dial a
-	// runtime MCP server def that holds a ${NAME} env reference but was not
-	// saved with operator authority (no operator_authored bit: a row stored
-	// before authoring refused one, a restored older snapshot, a hand edit).
-	// Default false for this release: such a def still dials, expanding as
-	// before, with a WARNING once per def per process. The default flips to
-	// true in the next release. Env: LOOMCYCLE_MCP_REFUSE_UNATTRIBUTED_ENV=1.
-	MCPRefuseUnattributedEnv bool
+	// MCPDialUnattributedEnv — the opt-out from refusing unattributed defs.
+	// By default the MCP pool refuses to dial a runtime MCP server def that
+	// holds a ${NAME} env reference but was not saved with operator authority
+	// (no operator_authored bit: a row stored before authoring refused one, a
+	// restored older snapshot, a hand edit), because dialing it would expand
+	// this process's environment into a host nobody with authority chose.
+	// When true, such a def still dials as it did before the authoring rule,
+	// with a WARNING once per def version per process — an upgrade escape
+	// hatch while an admin re-saves the defs the boot audit lists.
+	//
+	// The field is named for the opt-out so its zero value is the safe one:
+	// a Config built without Load (tests, future construction paths) refuses.
+	// Env: LOOMCYCLE_MCP_REFUSE_UNATTRIBUTED_ENV=0 (or false/no/off) sets it;
+	// unset, 1, or an unrecognised value leaves it false (refuse).
+	MCPDialUnattributedEnv bool
 
 	// RedactSecrets — F32. When true (the DEFAULT), tool I/O is scanned for
 	// secret-shaped substrings and masked BEFORE it is persisted to the
@@ -5807,7 +5814,7 @@ func LoadLayers(layers ...Layer) (*Config, error) {
 	// v0.8.15 LoomCycle MCP: dynamic agent registration policy.
 	cfg.Env.MCPAllowPrivilegedTools = os.Getenv("LOOMCYCLE_MCP_ALLOW_PRIVILEGED_TOOLS") == "1"
 	cfg.Env.MCPAllowDynamicStdio = os.Getenv("LOOMCYCLE_MCP_ALLOW_DYNAMIC_STDIO") == "1"
-	cfg.Env.MCPRefuseUnattributedEnv = os.Getenv("LOOMCYCLE_MCP_REFUSE_UNATTRIBUTED_ENV") == "1"
+	cfg.Env.MCPDialUnattributedEnv = !getenvBool("LOOMCYCLE_MCP_REFUSE_UNATTRIBUTED_ENV", true)
 	// F32: default-ON. Only an explicit "0" disables redaction; an unset var
 	// keeps the secure posture (secrets masked before persistence).
 	cfg.Env.RedactSecrets = os.Getenv("LOOMCYCLE_REDACT_SECRETS") != "0"
