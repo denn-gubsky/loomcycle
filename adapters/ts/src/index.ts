@@ -57,6 +57,10 @@
  *     backfillEmbeddings(scope, scopeId, opts?): Promise<MemoryBackfillResponse>   // embeds rows that have none
  *     purgeStaleEmbeddings(scope, scopeId, opts?): Promise<MemoryPurgeResponse>    // DELETES; dry_run defaults true
  *
+ *     // Memory / document change feeds (RFC CD Part C; SSE; substrate:tenant)
+ *     streamMemoryChanges(opts?): AsyncIterable<ChangeFeedFrame>     // resume with opts.since = last seq
+ *     streamDocumentChanges(opts?): AsyncIterable<ChangeFeedFrame>
+ *
  *     // Interruption (v0.8.16; decline RFC BH)
  *     listUserInterrupts(userId, opts?): Promise<InterruptListResponse>
  *     listRunInterrupts(runId, opts?): Promise<InterruptListResponse>
@@ -314,6 +318,14 @@ export type {
   RunStateStreamItem,
   RunStateStreamOpen,
   StreamUserRunStatesOptions,
+  // Memory / document change feeds (RFC CD Part C)
+  ChangeFeedFrame,
+  ChangeFeedStatus,
+  EmbedderHealth,
+  MemoryChange,
+  MemoryChangeScope,
+  MemoryChangeType,
+  StreamChangesOptions,
   // Channel CRUD (v0.9.x)
   AckChannelOptions,
   ChannelAckResult,
