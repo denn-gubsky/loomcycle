@@ -728,10 +728,11 @@ func main() {
 		cfg.Concurrency.MaxConcurrentRuns,
 		cfg.Concurrency.MaxQueueDepth,
 		globalQueueTimeout(cfg.Concurrency),
-	).WithPerUserCap(cfg.Concurrency.MaxConcurrentRunsPerUser)
+	).WithPerUserCap(cfg.Concurrency.MaxConcurrentRunsPerUser).
+		WithQueuedPerUserCap(cfg.Concurrency.MaxQueuedRunsPerUser)
 	if cfg.Concurrency.MaxConcurrentRunsPerUser > 0 {
-		log.Printf("concurrency: per-user cap enabled — max_concurrent_runs_per_user=%d (global cap=%d)",
-			cfg.Concurrency.MaxConcurrentRunsPerUser, cfg.Concurrency.MaxConcurrentRuns)
+		log.Printf("concurrency: per-user cap enabled — max_concurrent_runs_per_user=%d, max_queued_runs_per_user=%d (global cap=%d)",
+			cfg.Concurrency.MaxConcurrentRunsPerUser, cfg.Concurrency.MaxQueuedRunsPerUser, cfg.Concurrency.MaxConcurrentRuns)
 	}
 	// All built-in tools are SANDBOXED: each refuses every call until the
 	// operator explicitly enables it via env. We register every tool and
@@ -3010,6 +3011,13 @@ func main() {
 		} else if n > 0 {
 			log.Printf("no-trace: failed %d run(s) lost in the last stop (not resumable); their idempotency keys are released", n)
 		}
+		// A run still queued for a slot when this process stopped lost its
+		// wait with it: nothing will start it. Same footing as above.
+		if n, err := srv.FailQueuedRunsLostInLastStop(bgCtx, processStartedAt); err != nil {
+			log.Printf("queue: could not fail the queued runs lost in the last stop: %v", err)
+		} else if n > 0 {
+			log.Printf("queue: failed %d run(s) still queued when loomcycle last stopped; their idempotency keys are released", n)
+		}
 		go func() {
 			resume := func(ctx context.Context) error {
 				n, warnings := srv.ResumePausedRuns(ctx)
@@ -3549,6 +3557,8 @@ func main() {
 			// GetRun's `live` must see a team walk, which only the HTTP
 			// server's walk table knows about.
 			RunLive: srv.RunLive,
+			// RFC EI P3: where a queued run waits, from this replica's queue.
+			QueuePosition: srv.QueuePosition,
 		})
 		grpcSrv = googlegrpc.NewServer(
 			googlegrpc.UnaryInterceptor(grpcAdapter.UnaryAuthInterceptor()),

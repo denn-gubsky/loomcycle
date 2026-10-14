@@ -1914,8 +1914,9 @@ func (s *Store) FinishRun(ctx context.Context, runID string, status store.RunSta
 			cost_currency         = ?,
 			credential_source     = ?,
 			credential_scope_id   = ?,
-			result                = ?
-		WHERE id = ? AND status = ?`,
+			result                = ?,
+			draft                 = NULL
+		WHERE id = ? AND status IN (?, ?)`,
 		string(status), now, stopReason,
 		usage.InputTokens, usage.OutputTokens,
 		usage.CacheCreationTokens, usage.CacheReadTokens,
@@ -1923,7 +1924,7 @@ func (s *Store) FinishRun(ctx context.Context, runID string, status store.RunSta
 		costArg, nilIfEmpty(usage.CostCurrency),
 		nilIfEmpty(usage.CredentialSource), nilIfEmpty(usage.CredentialScopeID),
 		nilIfEmptyRaw(usage.Result),
-		runID, string(store.RunRunning),
+		runID, string(store.RunRunning), string(store.RunQueued),
 	)
 	return err
 }

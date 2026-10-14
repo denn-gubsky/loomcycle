@@ -760,6 +760,18 @@ const (
 	// crossing), so the /run terminal + chat render a budget banner.
 	EventLimit EventType = "limit"
 
+	// EventQueued reports that a run was accepted but has to wait for a run
+	// slot (RFC EI P3): its user already has its cap of runs active, or every
+	// slot of the runtime is taken. The Admission field carries why and the
+	// place it was given. A run may report it twice: waiting on its user's cap,
+	// then for a slot. SERVER-generated at admission, before the loop starts.
+	EventQueued EventType = "queued"
+
+	// EventAdmitted reports that a queued run got its slot and is starting;
+	// Admission.WaitMs is how long it waited. Sent only for a run that sent
+	// EventQueued. SERVER-generated, like EventQueued.
+	EventAdmitted EventType = "admitted"
+
 	// EventCapabilityInert reports a tool the agent HOLDS but cannot use,
 	// because the capability gate that tool reads grants nothing.
 	//
@@ -982,6 +994,10 @@ type Event struct {
 	// Limit carries the structured payload on EventLimit (a per-scope
 	// token-budget crossing, RFC AW). Nil on all other event types.
 	Limit *LimitInfo `json:"limit,omitempty"`
+
+	// Admission carries the structured payload on EventQueued and
+	// EventAdmitted (RFC EI P3). Nil on all other event types.
+	Admission *AdmissionInfo `json:"admission,omitempty"`
 
 	// CapabilityInert carries the structured payload on EventCapabilityInert.
 	// Nil on all other event types.
@@ -1484,6 +1500,20 @@ type OverrideInfo struct {
 // month" without a follow-up fetch. No secrets: Scope/ScopeID are a
 // tenant/subject id (already non-secret, like user_id) and the counts are
 // integers. Wire-stable; field names are part of the RFC AW contract.
+
+// AdmissionInfo is the payload on EventQueued and EventAdmitted (RFC EI P3).
+type AdmissionInfo struct {
+	// Reason is why the run waits, on EventQueued: "user_cap" (its user
+	// already has its cap of runs active) or "global_cap" (every run slot of
+	// the runtime is taken).
+	Reason string `json:"reason,omitempty"`
+	// Position is the run's place when it was queued, 1 being the next to
+	// start. For "user_cap" it counts only the same user's waiting runs. It
+	// moves as other runs start and end; GET a run for its current place.
+	Position int `json:"position,omitempty"`
+	// WaitMs is, on EventAdmitted, how long the run waited for its slot.
+	WaitMs int64 `json:"wait_ms,omitempty"`
+}
 
 // TeamDecisionInfo is the payload on EventTeamDecision.
 type TeamDecisionInfo struct {

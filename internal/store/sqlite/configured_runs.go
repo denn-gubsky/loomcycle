@@ -68,6 +68,20 @@ func (s *Store) UpdateRunDraft(ctx context.Context, runID string, draft json.Raw
 }
 
 func (s *Store) StartConfiguredRun(ctx context.Context, runID string, identity store.RunIdentity, draft json.RawMessage) (store.Run, error) {
+	n, err := s.startRun(ctx, runID, identity, store.RunConfigured, draft)
+	if err != nil {
+		return store.Run{}, err
+	}
+	if n == 0 {
+		return store.Run{}, s.draftGuardErr(ctx, runID)
+	}
+	return s.GetRun(ctx, runID)
+}
+
+// startRun moves a run from status `from` to running and records what was
+// resolved at start; with a non-empty draft, only while the stored draft is
+// still that one. Returns how many rows moved (0 or 1).
+func (s *Store) startRun(ctx context.Context, runID string, identity store.RunIdentity, from store.RunStatus, draft json.RawMessage) (int64, error) {
 	now := time.Now().UnixNano()
 	// SQLite's runs table has no replica_id column: a single-file store is a
 	// single-replica deployment, so there is nothing to route cancel to.
@@ -93,15 +107,12 @@ func (s *Store) StartConfiguredRun(ctx context.Context, runID string, identity s
 		boolToInt(identity.OperatorKeyRestricted),
 		boolToInt(identity.Isolated),
 		nilIfEmptyRaw(identity.RunConfig),
-		runID, string(store.RunConfigured), nilIfEmptyRaw(draft), nilIfEmptyRaw(draft),
+		runID, string(from), nilIfEmptyRaw(draft), nilIfEmptyRaw(draft),
 	)
 	if err != nil {
-		return store.Run{}, err
+		return 0, err
 	}
-	if n, _ := res.RowsAffected(); n == 0 {
-		return store.Run{}, s.draftGuardErr(ctx, runID)
-	}
-	return s.GetRun(ctx, runID)
+	return res.RowsAffected()
 }
 
 func (s *Store) DeleteConfiguredRun(ctx context.Context, runID string) error {

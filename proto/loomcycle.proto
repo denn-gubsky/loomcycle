@@ -788,6 +788,13 @@ message RunRequest {
   // continued or retuned (FAILED_PRECONDITION / INVALID_ARGUMENT). Mirrors
   // POST /v1/runs `retention`.
   string retention = 40;
+
+  // What the run does when it cannot start at once: "wait" (the default, also
+  // empty) accepts it with status "queued" — the stream carries a type=queued
+  // frame, then type=admitted when it gets a slot — and "reject" refuses it at
+  // once with RESOURCE_EXHAUSTED, as before runs could wait. Any other value
+  // is INVALID_ARGUMENT. A fresh run only. Mirrors POST /v1/runs `admission`.
+  string admission = 41;
 }
 
 message ContinueRequest {
@@ -1403,7 +1410,7 @@ message PromptContentBlock {
 // "this event is just text" or "this event is a tool_use" or "this
 // event is a usage update" without per-type subclassing.
 message Event {
-  string type = 1;  // text | tool_use | tool_result | usage | retry | done | error | host_widened
+  string type = 1;  // text | tool_use | tool_result | usage | retry | done | error | host_widened | queued | admitted
   string text = 2;
   ToolUse tool_use = 3;
   Usage usage = 4;
@@ -1485,6 +1492,12 @@ message Event {
   // visit of a team walk to a decision state, on the walk's own run. Nil on
   // every other event type.
   TeamDecision team_decision = 21;
+
+  // admission carries the payload on type=queued frames (the run was accepted
+  // but waits for a run slot: why, and its place) and type=admitted frames (it
+  // got its slot: how long it waited). SERVER-generated before the run's loop
+  // starts. Nil on every other event type.
+  AdmissionInfo admission = 22;
 }
 
 // OverrideInfo is the type=override payload (RFC DC). Mirrors
@@ -1646,6 +1659,20 @@ message LimitInfo {
   string message = 7;    // human-readable banner (optional)
 }
 
+// AdmissionInfo is the payload on type=queued and type=admitted frames. Mirrors
+// providers.AdmissionInfo. No secrets: a reason word and two integers.
+message AdmissionInfo {
+  // On queued: "user_cap" (the run's user already has its cap of runs active)
+  // or "global_cap" (every run slot of the runtime is taken).
+  string reason = 1;
+  // On queued: the run's place when it was queued, 1 being the next to start.
+  // For user_cap it counts only the same user's waiting runs. It moves as
+  // other runs start and end; GetAgent / GetRun report the current place.
+  int32 position = 2;
+  // On admitted: how long the run waited for its slot, in milliseconds.
+  int64 wait_ms = 3;
+}
+
 // ErrorInfo is the machine-readable half of a terminal run failure, carried on
 // Event.error_info. It mirrors what the MCP surface puts in structuredContent
 // and what the gRPC status carries in google.rpc.ErrorInfo details, so one
@@ -1735,7 +1762,7 @@ message GetRunRequest {
   string run_id = 1;
 }
 
-// Agent mirrors HTTP's agentResponse. Status is a string (running |
+// Agent mirrors HTTP's agentResponse. Status is a string (queued | running |
 // completed | failed | cancelled) so the wire stays compatible with
 // future status additions without regen.
 message Agent {
@@ -1807,6 +1834,14 @@ message Agent {
   // "none" for a no-trace run: its transcript holds markers, not content, and
   // `error` is a class. Empty on every other run.
   string retention = 24;
+
+  // Where a QUEUED run stands now: queue_position 1 is the next to start, and
+  // queue_reason is why it waits ("user_cap" or "global_cap"; for user_cap the
+  // position counts only the same user's waiting runs). Set by the single-run
+  // reads (GetAgent, GetRun) on the replica that holds the run's wait; 0 / ""
+  // on every other run, in a listing, and on another replica.
+  int32 queue_position = 25;
+  string queue_reason = 26;
 }
 
 // AgentUsage mirrors agentResponseUsage.

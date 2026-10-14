@@ -529,8 +529,9 @@ func (s *Store) FinishRun(ctx context.Context, runID string, status store.RunSta
 			cost_currency = $13,
 			credential_source = $14,
 			credential_scope_id = $15,
-			result = $17::jsonb
-		 WHERE id = $1 AND status = $16`,
+			result = $17::jsonb,
+			draft = NULL
+		 WHERE id = $1 AND status IN ($16, $18)`,
 		runID, string(status), completed, nullableText(stopReason),
 		usage.InputTokens, usage.OutputTokens,
 		usage.CacheCreationTokens, usage.CacheReadTokens,
@@ -539,6 +540,7 @@ func (s *Store) FinishRun(ctx context.Context, runID string, status store.RunSta
 		nullableText(usage.CredentialSource), nullableText(usage.CredentialScopeID),
 		string(store.RunRunning),
 		nullableJSONArg(usage.Result),
+		string(store.RunQueued),
 	)
 	if err != nil {
 		return fmt.Errorf("finish run: %w", err)

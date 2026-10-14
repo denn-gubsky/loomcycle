@@ -163,7 +163,7 @@ defaults:
 
 concurrency:
   max_concurrent_runs: 8
-  max_queue_depth: 16
+  max_queue_depth: 32
   queue_timeout_ms: 30000
 ```
 

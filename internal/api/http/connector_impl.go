@@ -66,6 +66,7 @@ func spawnRequestToRunInput(req connector.SpawnRunRequest) runner.RunInput {
 		// The caller's key, as sent; RunOnce scopes and stores it.
 		ClientIdempotencyKey: req.IdempotencyKey,
 		MaxWallSeconds:       req.MaxWallSeconds,
+		Admission:            req.Admission, // RFC EI P3: wait (queue) or reject
 		Retention:            req.Retention,
 		Metadata:             req.Metadata,         // non-secret trusted agent metadata
 		Sampling:             req.Sampling,         // per-run LLM sampling override
@@ -473,6 +474,11 @@ func (s *Server) singleRunToConnector(ctx context.Context, r store.Run) connecto
 	}
 	if r.Status == store.RunRunning {
 		out.AwaitedState, out.AwaitedOn = awaited.ForRun(ctx, s.store, r.ID)
+	}
+	if r.Status == store.RunQueued {
+		if q, ok := s.queuePositionOf(r.AgentID); ok {
+			out.QueuePosition, out.QueueReason = q.Position, q.Reason
+		}
 	}
 	return out
 }

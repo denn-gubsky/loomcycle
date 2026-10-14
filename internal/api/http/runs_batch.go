@@ -69,28 +69,39 @@ func (s *Server) handleRunsBatch(w http.ResponseWriter, r *http.Request) {
 // batch's runs outside the per-user gate. This way each child holds its slots
 // until it ends, exactly as a join child does.
 //
-// Until the run is registered the caller can still withdraw it: a caller that
-// leaves while the child waits for admission cancels that wait, so no run
-// starts that nobody holds a handle to.
+// A child that cannot start at once is registered as a queued run (RFC EI
+// P3) and its handle says "queued": like a started child it outlives the call,
+// and starts when a run slot frees. Until the run is registered the caller can
+// still withdraw it, so no run starts that nobody holds a handle to.
 func (s *Server) spawnDetached(ctx context.Context, req connector.SpawnRunRequest) connector.SpawnRunResult {
 	req.ParentContext = connector.StripRuntimeParentContext(req.ParentContext)
 	runCtx, abort := context.WithCancel(context.WithoutCancel(ctx))
 	var (
 		mu         sync.Mutex
 		registered bool
+		queued     bool
 	)
 	handle := make(chan connector.SpawnRunResult, 1)
 	ended := make(chan error, 1)
 	cb := runner.RunCallbacks{
+		OnQueued: func() {
+			mu.Lock()
+			queued = true
+			mu.Unlock()
+		},
 		OnRegistered: func(agentID, runID, sessionID, _ string) {
 			mu.Lock()
 			registered = true
+			status := store.RunRunning
+			if queued {
+				status = store.RunQueued
+			}
 			mu.Unlock()
 			handle <- connector.SpawnRunResult{
 				AgentID:       agentID,
 				RunID:         runID,
 				SessionID:     sessionID,
-				Status:        string(store.RunRunning),
+				Status:        string(status),
 				ParentContext: req.ParentContext,
 			}
 		},

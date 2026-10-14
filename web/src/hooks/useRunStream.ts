@@ -180,8 +180,12 @@ export function useRunStream(): UseRunStream {
       });
     }
     // awaiting_input ⇒ a persistent interactive run parked (idle); any other
-    // event ⇒ the agent is active again, so clear the idle flag.
-    setAwaitingInput(ev.type === "awaiting_input");
+    // event ⇒ the agent is active again, so clear the idle flag. queued /
+    // admitted report the run's admission, not conversation activity, so they
+    // leave the flag as it was.
+    if (ev.type !== "queued" && ev.type !== "admitted") {
+      setAwaitingInput(ev.type === "awaiting_input");
+    }
     // Track the latest usage for the context gauge.
     if (ev.type === "usage" && ev.usage) setLastUsage(ev.usage);
     setEvents((prev) => [...prev, sseEventToTranscript(seqRef.current++, ev)]);

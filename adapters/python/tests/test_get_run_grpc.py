@@ -41,6 +41,21 @@ async def test_get_run_sends_the_run_id_and_decodes_the_agent():
     assert out["awaited_state"] == "review"
 
 
+@pytest.mark.asyncio
+async def test_get_run_decodes_a_queued_runs_place():
+    client = _make_client()
+
+    async def fake(req, metadata=None):
+        return pb.Agent(run_id="r_q", status="queued", queue_position=3, queue_reason="user_cap")
+
+    client._stub.GetRun = fake  # type: ignore[attr-defined]
+
+    out = await client.get_run("r_q")
+    assert out["status"] == "queued"
+    assert out["queue_position"] == 3
+    assert out["queue_reason"] == "user_cap"
+
+
 class _NotFound(grpc.aio.AioRpcError):
     def __init__(self) -> None:
         super().__init__(

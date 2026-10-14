@@ -397,6 +397,8 @@ export type {
   // RFC AW per-scope token budgets
   CapabilityInertInfo,
   LimitInfo,
+  // Run admission: the payload on event: queued / event: admitted
+  AdmissionInfo,
   // A failure's structure (event: error, a failed event: tool_result) and the
   // hook decision payload — both carried on AgentEvent, now importable.
   ErrorInfo,

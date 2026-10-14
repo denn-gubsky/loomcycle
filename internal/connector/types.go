@@ -115,6 +115,12 @@ type SpawnRunRequest struct {
 	// detached run takes where timeout_ms is refused.
 	MaxWallSeconds int `json:"max_wall_seconds,omitempty"`
 
+	// Admission is what the run does when it cannot start at once: "wait"
+	// (the default) queues it, status "queued", until a run slot frees;
+	// "reject" refuses it at once with per_user_quota_exhausted or
+	// backpressure.
+	Admission string `json:"admission,omitempty"`
+
 	// Retention: "none" makes this a no-trace run — its content is delivered
 	// to the caller and stored nowhere (events as markers, the result and
 	// error as a class). "default" or absent leaves it to the agent and the
@@ -402,7 +408,7 @@ type Run struct {
 	Agent         string     `json:"agent"`
 	ParentAgentID string     `json:"parent_agent_id,omitempty"`
 	ParentRunID   string     `json:"parent_run_id,omitempty"`
-	Status        string     `json:"status"` // "running" | "completed" | "failed" | "cancelled"
+	Status        string     `json:"status"` // "queued" | "running" | "completed" | "failed" | "cancelled"
 	StartedAt     time.Time  `json:"started_at"`
 	CompletedAt   *time.Time `json:"completed_at,omitempty"`
 	StopReason    string     `json:"stop_reason,omitempty"`
@@ -438,6 +444,12 @@ type Run struct {
 	// listing, as on HTTP and gRPC, since each costs a store read.
 	AwaitedState string `json:"awaited_state,omitempty"`
 	AwaitedOn    string `json:"awaited_on,omitempty"`
+	// QueuePosition / QueueReason: where a QUEUED run stands now — 1 is the
+	// next to start — and why it waits ("user_cap" or "global_cap"; for
+	// user_cap the position counts only the same user's waiting runs). Set by
+	// the single-run reads, on the replica that holds the run's wait.
+	QueuePosition int    `json:"queue_position,omitempty"`
+	QueueReason   string `json:"queue_reason,omitempty"`
 }
 
 // ListRunsFilter selects which runs ListRuns returns. Empty fields

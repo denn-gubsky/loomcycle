@@ -7,7 +7,7 @@ through ``AgentEvent._from_proto``.
 
 from __future__ import annotations
 
-from loomcycle.events import AgentEvent, ToolUse, Usage, Retry, LimitInfo
+from loomcycle.events import AgentEvent, ToolUse, Usage, Retry, LimitInfo, AdmissionInfo
 from loomcycle._generated import loomcycle_pb2 as pb
 
 
@@ -104,6 +104,22 @@ def test_limit_event_unwraps_budget_payload():
     assert ev.limit.used == 1200
     assert ev.limit.limit == 1000
     assert ev.limit.message == "tenant acme soft budget reached"
+
+
+def test_queued_and_admitted_events_unwrap_the_admission_payload():
+    # A `queued` frame says why the run waits and its place; `admitted` how
+    # long it waited. ev.admission stays None if the parser never learns it.
+    q = AgentEvent._from_proto(
+        pb.Event(type="queued", admission=pb.AdmissionInfo(reason="user_cap", position=2))
+    )
+    assert q.type == "queued"
+    assert q.admission == AdmissionInfo(reason="user_cap", position=2)
+
+    a = AgentEvent._from_proto(pb.Event(type="admitted", admission=pb.AdmissionInfo(wait_ms=4200)))
+    assert a.type == "admitted"
+    assert a.admission == AdmissionInfo(wait_ms=4200)
+
+    assert AgentEvent._from_proto(pb.Event(type="text", text="hi")).admission is None
 
 
 def test_agentevent_is_frozen():

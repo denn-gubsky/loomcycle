@@ -11,10 +11,11 @@ import type { RunSelection } from "../lib/runLineage";
 // clear logic. This component just renders.
 
 // "configured" = drafts: runs created but not started.
-export type StatusFilter = "all" | "configured" | "running" | "completed" | "failed" | "cancelled" | "rejected";
+// "queued" = runs accepted but waiting for a run slot.
+export type StatusFilter = "all" | "configured" | "queued" | "running" | "completed" | "failed" | "cancelled" | "rejected";
 
 export const STATUS_FILTERS: StatusFilter[] = [
-  "running", "configured", "completed", "failed", "cancelled", "rejected", "all",
+  "running", "queued", "configured", "completed", "failed", "cancelled", "rejected", "all",
 ];
 
 export interface AgentsTreePanelProps {

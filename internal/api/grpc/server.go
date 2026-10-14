@@ -80,6 +80,10 @@ type Server struct {
 	// run — see Config.RunLive. Nil → the cancel registry alone.
 	liveRun func(agentID, runID string) bool
 
+	// queuePosition reports where a queued run waits — see Config.QueuePosition.
+	// Nil → a queued run is read without a position.
+	queuePosition func(agentID string) (position int, reason string, ok bool)
+
 	// limits is the RFC AW token-budget tracker the TokenLimit RPC reads for
 	// live month-to-date usage + reloads after a CRUD change. Shared with the
 	// HTTP /v1/_limits handler (main.go wires it to srv.LimitsTracker()) so both
@@ -148,6 +152,12 @@ type Config struct {
 	// RunLive, which also sees team walks (they are not in the cancel
 	// registry). Used by GetRun. Nil → the cancel registry alone.
 	RunLive func(agentID, runID string) bool
+	// QueuePosition reports where a QUEUED run waits on this replica: its place
+	// (1 = next to start) and why ("user_cap" | "global_cap"); ok=false when
+	// this replica holds no wait for the run. The run semaphore's Position,
+	// keyed on the run's agent id — the source the HTTP run read uses. Used by
+	// the single-run reads (GetAgent, GetRun). Nil → no position is reported.
+	QueuePosition func(agentID string) (position int, reason string, ok bool)
 }
 
 // New constructs a Server. Caller registers it with a *grpc.Server
@@ -160,6 +170,7 @@ func New(cfg Config) *Server {
 		runner:            cfg.Runner,
 		limits:            cfg.Limits,
 		liveRun:           cfg.RunLive,
+		queuePosition:     cfg.QueuePosition,
 		authToken:         cfg.AuthToken,
 		principalResolver: cfg.PrincipalResolver,
 		authConfigured:    cfg.AuthConfigured,
@@ -303,6 +314,7 @@ func (s *Server) runLive(run store.Run) bool {
 func (s *Server) singleRunProto(ctx context.Context, run store.Run, live bool) *loomcyclepb.Agent {
 	out := runToProto(run, live)
 	s.fillAwaitedState(ctx, out)
+	s.fillQueuePosition(out)
 	out.Result = run.Result
 	out.Spec = run.RunConfig
 	if run.Status == store.RunConfigured {
@@ -688,6 +700,18 @@ func (s *Server) fillAwaitedState(ctx context.Context, a *loomcyclepb.Agent) {
 	a.AwaitedState, a.AwaitedOn = awaited.ForRun(ctx, s.store, a.GetRunId())
 }
 
+// fillQueuePosition sets where a queued run waits. Only a queued run asks: the
+// position lives in this replica's memory, not on the row, and a run that has
+// started has none.
+func (s *Server) fillQueuePosition(a *loomcyclepb.Agent) {
+	if s.queuePosition == nil || a.GetStatus() != string(store.RunQueued) {
+		return
+	}
+	if pos, reason, ok := s.queuePosition(a.GetAgentId()); ok {
+		a.QueuePosition, a.QueueReason = int32(pos), reason
+	}
+}
+
 // validIdent matches [A-Za-z0-9_-]{1,128} — same charset the HTTP
 // surface accepts for agent_id / user_id. Inlined here rather than
 // imported from internal/api/http to avoid a back-edge import (HTTP
@@ -1048,6 +1072,9 @@ func (s *Server) Run(req *loomcyclepb.RunRequest, stream loomcyclepb.Loomcycle_R
 	if errMsg, ok := connector.ValidateUserCredentialsMap(req.GetUserCredentials()); !ok {
 		return status.Error(codes.InvalidArgument, errMsg)
 	}
+	if err := validateAdmission(req.GetAdmission()); err != nil {
+		return err
+	}
 	added, err := hooksFromProto(req.GetHooksJson())
 	if err != nil {
 		return err
@@ -1080,6 +1107,7 @@ func (s *Server) Run(req *loomcyclepb.RunRequest, stream loomcyclepb.Loomcycle_R
 		IdempotencyKey:   req.GetIdempotencyKey(),
 		MaxWallSeconds:   int(req.GetMaxWallSeconds()),
 		Retention:        req.GetRetention(),
+		Admission:        req.GetAdmission(),
 		// RFC DC per-run overrides. One helper for all three call sites, so a
 		// typed gRPC caller and an HTTP one get the same answer from the same
 		// validation — and so adding a field means editing one place.
@@ -1177,6 +1205,9 @@ func (s *Server) SpawnRunBatch(ctx context.Context, req *loomcyclepb.BatchSpawnR
 	for _, sp := range req.GetSpawns() {
 		if errMsg, ok := connector.ValidateUserCredentialsMap(sp.GetUserCredentials()); !ok {
 			return nil, status.Error(codes.InvalidArgument, errMsg)
+		}
+		if err := validateAdmission(sp.GetAdmission()); err != nil {
+			return nil, err
 		}
 		spawn := spawnRequestFromProto(sp)
 		added, err := hooksFromProto(sp.GetHooksJson())
@@ -1351,6 +1382,17 @@ func hooksFromProto(b []byte) (hooks.Additions, error) {
 	return a, nil
 }
 
+// validateAdmission refuses an `admission` value the runner does not know.
+// Refused here rather than passed on: an unknown value read as the default
+// would queue a run whose caller asked never to wait.
+func validateAdmission(v string) error {
+	if !runner.ValidAdmission(v) {
+		return status.Errorf(codes.InvalidArgument, "admission must be %q or %q, got %q",
+			runner.AdmissionWait, runner.AdmissionReject, v)
+	}
+	return nil
+}
+
 func spawnRequestFromProto(req *loomcyclepb.RunRequest) connector.SpawnRunRequest {
 	r := connector.SpawnRunRequest{
 		Agent:            req.GetAgent(),
@@ -1372,6 +1414,7 @@ func spawnRequestFromProto(req *loomcyclepb.RunRequest) connector.SpawnRunReques
 		IdempotencyKey:   req.GetIdempotencyKey(),
 		MaxWallSeconds:   int(req.GetMaxWallSeconds()),
 		Retention:        req.GetRetention(),
+		Admission:        req.GetAdmission(),
 		// The same four Run maps: a configured run or a batch child built from
 		// this request must not silently lose them
 		// (TestSpawnRequestFromProto_MapsEveryFieldRunMaps guards the set).
@@ -1603,6 +1646,7 @@ type runInputProtoArgs struct {
 	IdempotencyKey   string                       // the caller's key, as sent (Run only)
 	MaxWallSeconds   int                          // the run's own lifetime limit (Run only)
 	Retention        string                       // "none" = a no-trace run
+	Admission        string                       // "wait" (default) queues a run that cannot start; "reject" refuses it
 
 	// RFC DC per-run overrides. Routing selects within what the definition
 	// declares; the budget knobs are raisable except MaxConcurrentChildren,
@@ -1666,6 +1710,7 @@ func runInputFromProto(a runInputProtoArgs) runner.RunInput {
 		ClientIdempotencyKey: a.IdempotencyKey,
 		MaxWallSeconds:       a.MaxWallSeconds,
 		Retention:            a.Retention,
+		Admission:            a.Admission,
 	}
 	if a.AllowedHosts != nil {
 		// Proto3 message-type field present → caller did supply a
@@ -1848,6 +1893,15 @@ func eventToProto(ev providers.Event) *loomcyclepb.Event {
 			FromModel: ev.Override.FromModel,
 			ToModel:   ev.Override.ToModel,
 			Fields:    ev.Override.Fields,
+		}
+	}
+	// The admission payload on type=queued / type=admitted frames: without it
+	// a typed client sees that a run waits but not why or for how long.
+	if ev.Admission != nil {
+		out.Admission = &loomcyclepb.AdmissionInfo{
+			Reason:   ev.Admission.Reason,
+			Position: int32(ev.Admission.Position),
+			WaitMs:   ev.Admission.WaitMs,
 		}
 	}
 	if ev.Limit != nil {
@@ -2380,6 +2434,9 @@ func parentContextFromProto(in *loomcyclepb.ParentContext) *store.ParentContext 
 func (s *Server) CreateConfiguredRun(ctx context.Context, req *loomcyclepb.RunRequest) (*loomcyclepb.ConfiguredRun, error) {
 	if s.connector == nil {
 		return nil, status.Error(codes.Unimplemented, "CreateConfiguredRun requires a connector; this Server was constructed without one")
+	}
+	if err := validateAdmission(req.GetAdmission()); err != nil {
+		return nil, err
 	}
 	spawn := spawnRequestFromProto(req)
 	added, err := hooksFromProto(req.GetHooksJson())

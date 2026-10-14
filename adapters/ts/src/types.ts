@@ -115,6 +115,12 @@ export type EventType =
   // The prompt a run's first model call received (RFC DI). A transcript
   // record read via getRunPrompt; never sent on the live stream.
   | "prompt_snapshot"
+  // Run admission: `queued` = the run was accepted but waits for a run slot
+  // (its user already has its cap of runs active, or every slot is taken);
+  // `admitted` = it got its slot and is starting. Server-generated before the
+  // run's loop starts; the payload rides `AgentEvent.admission`.
+  | "queued"
+  | "admitted"
   // v0.9.x — client-synthesized lifecycle events emitted ONLY when the
   // streaming caller passes `debug: true`. Never originate from the
   // server. The leading underscore signals "synthetic, not on the wire."
@@ -512,6 +518,21 @@ export interface CapabilityInertInfo {
   message?: string;
 }
 
+/** AdmissionInfo accompanies `event: queued` and `event: admitted` frames.
+ *  Mirrors providers.AdmissionInfo. */
+export interface AdmissionInfo {
+  /** On `queued`: why the run waits — `"user_cap"` (its user already has its
+   *  cap of runs active) or `"global_cap"` (every run slot is taken). */
+  reason?: "user_cap" | "global_cap";
+  /** On `queued`: the run's place when it was queued, 1 being the next to
+   *  start. For `user_cap` it counts only the same user's waiting runs. It
+   *  moves as other runs start and end; `getRun` reports the current place
+   *  (`Agent.queue_position`). */
+  position?: number;
+  /** On `admitted`: how long the run waited for its slot, in milliseconds. */
+  wait_ms?: number;
+}
+
 export interface LimitInfo {
   /** Which axis tripped: "operator" | "tenant" | "user". */
   scope: string;
@@ -743,6 +764,9 @@ export interface AgentEvent {
   /** Payload on `event: limit` (RFC AW) — a per-scope token-budget crossing.
    *  Nil on all other event types. */
   limit?: LimitInfo;
+  /** Payload on `event: queued` (why the run waits, and its place) and
+   *  `event: admitted` (how long it waited). Nil on all other event types. */
+  admission?: AdmissionInfo;
   /** Set on `capability_inert` events: a tool the agent holds and cannot use. */
   capability_inert?: CapabilityInertInfo;
   /** Payload on `event: hook_decision`. */
@@ -1006,6 +1030,11 @@ export interface RunOptions extends RunOverrideOptions {
    *  is the time bound for a `mode: "detach"` batch child, where `timeoutMs`
    *  is refused. Any agent, model-driven or code-js. */
   maxWallSeconds?: number;
+  /** What the run does when it cannot start at once: `"wait"` (the default)
+   *  accepts it with status `queued` — the stream yields a `queued` event,
+   *  then `admitted` when it gets a slot — and `"reject"` refuses it at once
+   *  (`per_user_quota_exhausted` or `backpressure`). A fresh run only. */
+  admission?: "wait" | "reject";
   /** `"none"` makes this a no-trace run: what it says is delivered on this
    *  stream and stored nowhere — the server keeps a marker for each event
    *  (its type and size) and a class for an error, never the text. Omit (or
@@ -1378,7 +1407,8 @@ export interface ClientOptions {
 
 /** `configured` is a run created but not yet started (RFC DI). */
 /** `rejected` is a run a reviewer turned down without feedback (RFC DJ). */
-export type AgentStatus = "configured" | "running" | "completed" | "failed" | "cancelled" | "rejected";
+/** `queued` is a run accepted but waiting for a run slot. */
+export type AgentStatus = "configured" | "queued" | "running" | "completed" | "failed" | "cancelled" | "rejected";
 
 /** What a running run is blocked on: an open Channel subscribe, an open
  *  Interruption ask, a hold for an operator's review verdict, an
@@ -1436,6 +1466,14 @@ export interface Agent {
    *  (`awaited_state: "review"`) or the child run ids, comma-separated and
    *  bounded (`awaited_state: "children"`) the run waits on. */
   awaited_on?: string;
+  /** Where a `queued` run stands now: 1 is the next to start. For
+   *  `queue_reason: "user_cap"` it counts only the same user's waiting runs.
+   *  {@link LoomcycleClient.getAgent} / getRun only, from the replica that
+   *  holds the run's wait; absent on every other run. */
+  queue_position?: number;
+  /** Why a `queued` run waits: its user already has its cap of runs active
+   *  (`user_cap`), or every run slot is taken (`global_cap`). */
+  queue_reason?: "user_cap" | "global_cap";
   /** The replica owning the run's live cancel handle. Absent in a
    *  single-replica deployment. */
   replica_id?: string;

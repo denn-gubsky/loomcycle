@@ -346,10 +346,11 @@ var runRowCreators = map[string]string{
 	// A walk's run: admitted by admitTeamRun before it is opened.
 	"openTeamWalkRun": "exempt: admitTeamRun refuses a restricted credential's direct walk before this is reached",
 	// Not intakes.
-	"openOrCreateSessionAndRun": "exempt: the shared helper the intakes call",
-	"prepareSubRunValues":       "exempt: a sub-run follows its parent agent's definition, not the token's list",
-	"Open":                      "exempt: a channel hook's run (channel_hooks.go), opened under the hook's own identity with no credential",
-	"CreateRun":                 "exempt: the no-trace store filter (no_trace.go) passing a creation through; every caller above reaches the store by it",
+	"openOrCreateSessionAndRun":       "exempt: the shared helper the intakes call",
+	"openOrCreateSessionAndQueuedRun": "exempt: the shared helper the intakes call for a run that waits for its slot",
+	"prepareSubRunValues":             "exempt: a sub-run follows its parent agent's definition, not the token's list",
+	"Open":                            "exempt: a channel hook's run (channel_hooks.go), opened under the hook's own identity with no credential",
+	"CreateRun":                       "exempt: the no-trace store filter (no_trace.go) passing a creation through; every caller above reaches the store by it",
 }
 
 func TestRunRowCreators_AllAdmitThePrincipal(t *testing.T) {
@@ -374,17 +375,16 @@ func TestRunRowCreators_AllAdmitThePrincipal(t *testing.T) {
 				continue
 			}
 			creates, admits := false, false
+			// Any reference counts, not only a call: the session helpers hand
+			// s.store.CreateRun / CreateQueuedRun on as a value.
 			ast.Inspect(fn.Body, func(n ast.Node) bool {
-				callExpr, ok := n.(*ast.CallExpr)
-				if !ok {
-					return true
-				}
-				sel, ok := callExpr.Fun.(*ast.SelectorExpr)
+				sel, ok := n.(*ast.SelectorExpr)
 				if !ok {
 					return true
 				}
 				switch sel.Sel.Name {
-				case "CreateRun", "CreateConfiguredRun", "openOrCreateSessionAndRun":
+				case "CreateRun", "CreateConfiguredRun", "CreateQueuedRun",
+					"openOrCreateSessionAndRun", "openOrCreateSessionAndQueuedRun":
 					creates = true
 				case "admitPrincipalAgent":
 					admits = true

@@ -958,24 +958,30 @@ mcp_servers: {}
 #   pg_automigrate: false        # production default; flip to true in dev
 
 # ─── Concurrency ──────────────────────────────────────────────────────
-# Caps total in-flight runs across all agents. Bursts above the cap
-# queue up to max_queue_depth for queue_timeout_ms before returning
-# HTTP 429 with code:"backpressure".
+# Caps total in-flight runs across all agents. A run above the cap is
+# accepted as a QUEUED run (status "queued", a `queued` event) and starts
+# when a slot frees; it never times out. Waiting runs are served
+# round-robin across (tenant, user). Past max_queue_depth waiting runs a
+# new one gets HTTP 429 with code:"backpressure". A caller that would
+# rather be refused than wait sends `admission: "reject"`.
 concurrency:
   max_concurrent_runs: 8       # ~1 GiB RSS per run on a typical Sonnet config
-  max_queue_depth: 16          # short burst absorption
-  queue_timeout_ms: 30000      # 30s — caller-side timeout should match
+  max_queue_depth: 32          # runs waiting at once, all reasons together
+  queue_timeout_ms: 30000      # the LLM gateway and session continuations only; a run never times out
 
-  # v0.10.1 per-tenant fairness. Caps active+queued runs per non-empty
-  # user_id, inside the global cap above. Default 0 = unlimited per
-  # user (back-compat; existing deployments see no behavior change).
-  # When >0, a user at cap gets HTTP 429 + Retry-After: 5 +
+  # Per-user fairness. Caps the runs per non-empty (tenant, user) that
+  # run or wait for a slot, inside the global cap above. Default 0 =
+  # unlimited per user. Over it a run queues until one of the user's runs
+  # ends — up to max_queued_runs_per_user of them — and past that, or
+  # with `admission: "reject"`, gets HTTP 429 + Retry-After: 5 +
   # `code: "per_user_quota_exhausted"`. Anonymous calls (no user_id)
   # bypass the check. Sub-agents share the parent's count.
-  # Env: LOOMCYCLE_MAX_CONCURRENT_RUNS_PER_USER overrides yaml.
+  # Env: LOOMCYCLE_MAX_CONCURRENT_RUNS_PER_USER /
+  # LOOMCYCLE_MAX_QUEUED_RUNS_PER_USER override yaml.
   # See `help fairness` for the JobEmber starvation case + retry
   # strategies + queue-fairness limits.
   # max_concurrent_runs_per_user: 4
+  # max_queued_runs_per_user: 16   # default; 0 refuses at once over the cap
 
 # ─── gRPC server (v0.5.5) ─────────────────────────────────────────────
 # Optional second wire surface alongside HTTP+SSE. Mirrors the

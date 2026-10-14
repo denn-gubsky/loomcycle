@@ -111,6 +111,16 @@ type Semaphore struct {
 	admitted []*semWaiter
 	queue    semQueue
 
+	// Admit's wait on the per-user cap (see admit.go). userWait is each
+	// user's FIFO of runs over its cap (single-replica mode); userPolling
+	// counts the runs polling the shared counter (cluster mode). Both count
+	// in queued. tickets finds a waiting run by name for Position.
+	maxQueuedPerUser int
+	userWait         map[userKey][]*semWaiter
+	userPolling      map[userKey]int
+	tickets          map[string]*semWaiter
+	userPoll         time.Duration // cluster-mode poll interval; 0 = 1s
+
 	// quotaStore is the v0.12.1 cluster-wide per-user counter. Nil in
 	// single-replica mode (LOOMCYCLE_REPLICA_ID unset); set by
 	// WithUserQuotaStore in cluster mode. When non-nil, AcquireForUser
@@ -572,6 +582,13 @@ func (s *Semaphore) decrementPerUser(key userKey) {
 	if s.perUser[key] <= 0 {
 		delete(s.perUser, key)
 	}
+	// One of the user's runs ended: a run of theirs waiting on the cap moves on.
+	s.wakeUserWaiter(key)
+}
+
+// wrapQuotaErr is how a failure of the cluster-wide per-user counter reads.
+func wrapQuotaErr(err error) error {
+	return fmt.Errorf("user_quotas acquire: %w", err)
 }
 
 // fairnessDisplayKey renders a (tenant, user) pair as the single string
