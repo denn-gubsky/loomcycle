@@ -70,6 +70,15 @@ It answers a question a secret store otherwise cannot. When the destination of a
 
 Nothing in this release sends a restricted credential anywhere yet: the first consumer that names a destination is the git source for ephemeral volumes. Until then the field is useful for `[]`, and for preparing credentials.
 
+### A user name — `username`
+
+`create` takes an optional `username`: the user name sent with the value where a destination takes one. Today that is HTTP basic auth for a git source, which sends `<username>:<value>`. Without one a git source uses a default by kind of host (`docs/CONFIGURATION.md` §9d.2.1); set it when a forge wants a particular name.
+
+- It may not contain `:` (it would split the basic-auth pair) or a control character; at most 256 bytes.
+- `get` and `list` show it. It is not a secret.
+- **Rotation keeps it.** Creating the credential again without `username` keeps the one it has; `"username": ""` removes it.
+- It is stored in the clear and is **not** sealed with the value, unlike `allowed_urls`: changing it cannot send the value anywhere it was not already allowed to go.
+
 ## Using a credential — `$cred:<name>`
 
 Reference a credential by name as `$cred:<name>` in an **http / streamable-http**

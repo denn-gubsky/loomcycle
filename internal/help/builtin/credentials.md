@@ -51,6 +51,14 @@ sent to.
 - The list is sealed together with the value. A row whose list was changed
   outside the tool no longer opens.
 
+### A user name — `username`
+
+`op=create` takes an optional `username`: the user name sent with the value
+where a destination takes one, today HTTP basic auth for a git source.
+Without it a git source uses a default for the kind of host. It may not
+contain `:` or a control character. A rotation without `username` keeps the
+stored one; `"username": ""` removes it. `get` and `list` show it.
+
 ## Consuming a credential — `$cred:<name>`
 
 Where a tool field accepts a `$cred:<name>` token, the runtime substitutes the
