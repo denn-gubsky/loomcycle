@@ -106,7 +106,7 @@ var pinnedEntryKeys = map[string][]string{
 		"memory_backend_defs", "memory_backend_def_active", "document_source_defs", "document_source_def_active",
 		"a2a_agent_defs", "a2a_agent_def_active", "a2a_server_card_defs", "a2a_server_card_def_active",
 		"memory", "memory_pending", "channels", "channel_defs", "webhook_defs", "webhook_def_active", "schedule_defs",
-		"schedule_def_active", "evaluations", "paused_runs", "interaction_history", "sqlmem", "dirents", "capture_findings"},
+		"schedule_def_active", "evaluations", "paused_runs", "queued_runs", "interaction_history", "sqlmem", "dirents", "capture_findings"},
 
 	"UsersSection":              {"version", "entries"},
 	"TokenLimitsSection":        {"version", "entries", "usage_mtd"},
@@ -125,6 +125,7 @@ var pinnedEntryKeys = map[string][]string{
 	"ChannelDefsSection":        {"version", "entries"},
 	"EvaluationsSection":        {"version", "entries"},
 	"PausedRunsSection":         {"version", "entries"},
+	"QueuedRunsSection":         {"version", "entries"},
 	"InteractionHistorySection": {"version", "since_ts", "events"},
 	"SqlMemSection":             {"version", "tier", "scopes", "skipped_scopes"},
 	"CaptureFindingsSection":    {"version", "entries"},
@@ -243,6 +244,13 @@ var pinnedEntryKeys = map[string][]string{
 		"session_id", "started_at", "model", "pause_state", "tenant_id", "parent_run_id", "interactive",
 		"operator_key_restricted", "isolated", "parent_context", "run_config", "idempotency_key",
 		"delivery_alt_key", "transcript_events", "transcript_error"},
+	// queued_input is the run's own request, as run_config is a paused run's
+	// own settings: the caller's per-run hooks travel in both. Its secrets do
+	// not: user_bearer / user_credentials are blanked when it is stored, and
+	// the sealed copy is removed at capture (StripQueuedSecrets).
+	"QueuedRunEntry": {"run_id", "agent_id", "user_id", "user_tier", "agent", "session_id", "started_at",
+		"tenant_id", "interactive", "operator_key_restricted", "isolated", "retention", "parent_context",
+		"idempotency_key", "delivery_alt_key", "queued_input", "secrets_dropped", "transcript_events"},
 	"TranscriptEvent": {"seq", "ts_ns", "type", "payload"},
 	"store.ParentContext": {"root_agent_run_id", "function_key", "tier_at_run", "board_scope", "board_chunk_id",
 		"board_document_id", "walk_id", "wave_id", "wave_index", "state", "state_visit"},

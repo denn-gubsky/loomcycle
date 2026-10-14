@@ -166,6 +166,10 @@ var adminOnlyTools = map[string]bool{
 // session's surface); the drift test asserts that.
 var userSelfServiceTools = map[string]bool{
 	"credentialdef": true, // RFC CN — a user's own scope=user credential store.
+	// evaluation: reachable by an isolated user on HTTP and gRPC, so here too.
+	// The grant, not this list, holds it to submit_self
+	// (tools.OffRunEvaluationPolicy), and the tool to its own runs.
+	"evaluation": true,
 }
 
 // toolRequiredScope is a scope a principal must hold to list + call a tool, ON
@@ -214,6 +218,8 @@ var toolRequiredScope = map[string]string{
 	// Asking a decision model outside a run spends tokens: the scope
 	// POST /v1/_decide and the Decide RPC require.
 	"decision": auth.ScopeRunsCreate,
+	// Evaluation: the floor POST /v1/_evaluation and the Evaluation RPC gate on.
+	"evaluation": auth.ScopeRunsRead,
 }
 
 // principalMayCallTool reports whether the principal on ctx may list/invoke

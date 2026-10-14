@@ -29,6 +29,10 @@ type RestoreRefresh struct {
 	TokenLimits []store.TokenLimitRow
 	// UsageCarried is how much each (tenant, user) carry GREW in this restore.
 	UsageCarried []CarriedUsage
+	// QueuedRunIDs are the queued runs this restore inserted, for the caller
+	// to queue again. Only these: a queued row already in the store has a live
+	// waiter, which a second start would race.
+	QueuedRunIDs []string
 }
 
 // CarriedUsage is growth in one (tenant, user) usage carry for Month.

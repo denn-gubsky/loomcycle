@@ -60,6 +60,10 @@
  *     backfillEmbeddings(scope, scopeId, opts?): Promise<MemoryBackfillResponse>   // embeds rows that have none
  *     purgeStaleEmbeddings(scope, scopeId, opts?): Promise<MemoryPurgeResponse>    // DELETES; dry_run defaults true
  *
+ *     // Memory / document change feeds (RFC CD Part C; SSE; substrate:tenant)
+ *     streamMemoryChanges(opts?): AsyncIterable<ChangeFeedFrame>     // feed | change | error (non-fatal); resume with opts.since = last seq
+ *     streamDocumentChanges(opts?): AsyncIterable<ChangeFeedFrame>
+ *
  *     // Interruption (v0.8.16; decline RFC BH)
  *     listUserInterrupts(userId, opts?): Promise<InterruptListResponse>
  *     listRunInterrupts(runId, opts?): Promise<InterruptListResponse>
@@ -115,6 +119,14 @@
  *     // History — browse/search/annotate past chats (RFC BE; tenant-confined)
  *     history(input): Promise<HistoryToolResponse>                // list/get/search/rename/annotate/pin/archive/recap/resume
  *
+ *     // Evaluation — score runs and read the scores back, outside a run
+ *     evaluation(input): Promise<…>                               // submit/get/list_for_run/list_for_def/aggregate
+ *     submitEvaluation(runId, score, opts?): Promise<EvaluationSubmitResult>
+ *     getEvaluation(evalId): Promise<EvaluationRecord>
+ *     listEvaluationsForRun(runId, opts?): Promise<EvaluationListForRunResult>
+ *     listEvaluationsForDef(defId, opts?): Promise<EvaluationListForDefResult>
+ *     aggregateEvaluations(defId, opts?): Promise<EvaluationAggregate>
+ *
  *     // Library v2 enumeration (v0.10.3 — yaml+substrate merged)
  *     listLibraryAgents(): Promise<LibraryListResponse<LibraryAgentDefinition>>
  *     listLibrarySkills(): Promise<LibraryListResponse<LibrarySkillDefinition>>
@@ -131,13 +143,18 @@
  *   full HTTP-status → typed-error mapping table):
  *     LoomcycleError, AgentNotFoundError, SessionNotFoundError,
  *     SessionBusyError, AgentIDInUseError, BackpressureError,
- *     AuthError, UnavailableError, InvalidArgumentError,
+ *     RateLimitedError (subclass of BackpressureError),
+ *     PerUserQuotaExhaustedError, AuthError, InsufficientScopeError (a 403
+ *     naming the scope the token lacks), UnavailableError,
+ *     InvalidArgumentError,
  *     PauseNotConfiguredError (subclass of UnavailableError),
  *     AlreadyPausingError, NotPausedError, SnapshotNotFoundError,
  *     SnapshotTooLargeError, RequestTooLargeError + PromptTooLargeError
  *     (both subclasses of SnapshotTooLargeError), TokenLimitExceededError
- *     (subclass of BackpressureError), SnapshotVersionError,
- *     SubstrateToolRefusedError (v0.8.22)
+ *     (NOT a BackpressureError: a hard budget, not retryable),
+ *     SnapshotVersionError, SubstrateToolRefusedError (v0.8.22).
+ *     Every one carries `retryable` (true only for a refusal that clears
+ *     on its own).
  *
  * Transport: HTTP+SSE. Auth: Bearer token via the Authorization
  * header. Designed for Node ≥18 (engines pinned); Bun/Deno likely
@@ -172,6 +189,7 @@ export type {
   PromptSegment,
   RetryInfo,
   RunOptions,
+  RunOverrideOptions,
   SamplingOptions,
   CompactionOptions,
   ContextOptions,
@@ -210,6 +228,7 @@ export type {
   ErasureTier,
   CancelTurnResult,
   ReviewRunResult,
+  ReplaySessionResult,
   // Transcript
   TranscriptEvent,
   TranscriptResponse,
@@ -331,6 +350,10 @@ export type {
   RoutingProvider,
   SearchRoutingProvider,
   ProviderModelsResponse,
+  TeamRunStep,
+  TeamDecisionHandler,
+  TeamDecisionQuestion,
+  TeamDecisionAnswer,
   // RFC AL Path VFS + RFC AK Document on the wire (v1.4.0)
   PathToolInput,
   PathToolResponse,
@@ -339,6 +362,20 @@ export type {
   // RFC BE History (browse/search/annotate past chats)
   HistoryToolInput,
   HistoryToolResponse,
+  // Evaluation outside a run (POST /v1/_evaluation)
+  EvaluationEmitterRole,
+  EvaluationSubmitInput,
+  EvaluationGetInput,
+  EvaluationListForRunInput,
+  EvaluationListForDefInput,
+  EvaluationAggregateInput,
+  EvaluationInput,
+  EvaluationSubmitResult,
+  EvaluationRecord,
+  EvaluationListForRunResult,
+  EvaluationListForDefResult,
+  EvaluationScoreStats,
+  EvaluationAggregate,
   // RFC AH dynamic volumes (v0.35.0)
   VolumeMode,
   PersistentVolumeEntry,
@@ -356,6 +393,15 @@ export type {
   RunStateStreamItem,
   RunStateStreamOpen,
   StreamUserRunStatesOptions,
+  // Memory / document change feeds (RFC CD Part C)
+  ChangeFeedError,
+  ChangeFeedFrame,
+  ChangeFeedStatus,
+  EmbedderHealth,
+  MemoryChange,
+  MemoryChangeScope,
+  MemoryChangeType,
+  StreamChangesOptions,
   // Channel CRUD (v0.9.x)
   AckChannelOptions,
   ChannelAckResult,
@@ -403,6 +449,15 @@ export type {
   MCPServerDefVerifyResult,
   // Inline code-js agent ingestion (v0.19.0, RFC J)
   AgentDefOverlay,
+  AgentChannelACL,
+  AgentInterruptionACL,
+  AgentDecision,
+  MemoryRerank,
+  AgentSampling,
+  AgentCompaction,
+  AgentContext,
+  TierCandidate,
+  CoreBlock,
   HookEvent,
   InlineWebhook,
   HookEntry,
@@ -448,9 +503,28 @@ export type {
   CallRef,
   HookDecisionInfo,
   TeamDecisionInfo,
+  // The remaining AgentEvent payloads — each types the field one event kind
+  // carries (`ev.fallback`, `ev.context_state`, …), so a consumer that
+  // narrows on `type` can name what it holds.
+  OverrideInfo,
+  FallbackInfo,
+  InterruptionEventInfo,
+  SpawnChildInfo,
+  TurnCancelledInfo,
+  ChannelEventInfo,
+  ContextCompactionInfo,
+  ContextRecapInfo,
+  ContextStateInfo,
+  ContextExhaustedInfo,
+  ContextTierVerdict,
+  ContextDistillDeclinedInfo,
   EffectiveConfigResponse,
   EffectiveConfigSource,
   EffectiveValue,
+  InertContextSetting,
+  AgentOverridableResponse,
+  OverridableField,
+  OverrideLockReason,
   RetuneRunResponse,
   RunConfigRecord,
   SubagentHoldInfo,
@@ -492,6 +566,7 @@ export {
   AuthError,
   BackpressureError,
   NotFoundError,
+  InsufficientScopeError,
   InvalidArgumentError,
   ChannelCursorRegressionError,
   LoomcycleError,
@@ -499,6 +574,7 @@ export {
   PauseNotConfiguredError,
   PerUserQuotaExhaustedError,
   PromptTooLargeError,
+  RateLimitedError,
   RequestTooLargeError,
   SessionBusyError,
   SessionNotFoundError,

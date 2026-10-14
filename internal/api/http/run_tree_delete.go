@@ -51,6 +51,8 @@ type runTreeErr struct {
 	msg    string
 	// runID is the live run a run_tree_live refusal names.
 	runID string
+	// scope is the scope an insufficient_scope refusal names.
+	scope string
 }
 
 func (e *runTreeErr) Error() string { return e.msg }
@@ -90,7 +92,9 @@ func (s *Server) DeleteRunTree(ctx context.Context, req connector.DeleteRunTreeR
 	// transport added later that forgot its gate would otherwise let a
 	// runs:read token delete. No principal is open mode, which is an admin.
 	if p, ok := auth.PrincipalFromContext(ctx); ok && !p.Legacy && !auth.HasScope(p.Scopes, auth.ScopeRunsDelete) {
-		return res, runTreeRefusal(http.StatusForbidden, "insufficient_scope", "deleting a run tree requires the %s scope", auth.ScopeRunsDelete)
+		refusal := runTreeRefusal(http.StatusForbidden, "insufficient_scope", "deleting a run tree requires the %s scope", auth.ScopeRunsDelete)
+		refusal.scope = auth.ScopeRunsDelete
+		return res, refusal
 	}
 
 	tenant, out, err := s.deleteRunTree(ctx, req)
@@ -442,11 +446,16 @@ func (s *Server) recordRunTreeDelete(ctx context.Context, req connector.DeleteRu
 }
 
 // writeRunTreeErr writes a run-tree delete's refusal as the JSON error body
-// the other run routes use; a run_tree_live refusal also names the run.
+// the other run routes use; a run_tree_live refusal also names the run, and an
+// insufficient_scope refusal the scope.
 func writeRunTreeErr(w http.ResponseWriter, err error) {
 	var rte *runTreeErr
 	if !errors.As(err, &rte) {
 		writeJSONError(w, http.StatusInternalServerError, "internal", err.Error())
+		return
+	}
+	if rte.scope != "" {
+		writeScopeError(w, rte.scope, rte.msg)
 		return
 	}
 	if rte.runID == "" {

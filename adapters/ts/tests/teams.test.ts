@@ -7,6 +7,7 @@ import { describe, expect, it } from "vitest";
 
 import { jsonResponse, makeClient, errorResponse } from "./helpers.js";
 import { AuthError, SubstrateToolRefusedError } from "../src/index.js";
+import type { TeamRunDetached, TeamRunResult, TeamRunStep, TeamRunTarget } from "../src/index.js";
 
 describe("listTeams", () => {
   it("GETs /v1/_teamdef/names and returns the summaries", async () => {
@@ -253,6 +254,48 @@ describe("runTeam", () => {
   it("raises AuthError on 401", async () => {
     const { client } = makeClient([errorResponse(401, "invalid token")]);
     await expect(client.runTeam({ name: "triage" })).rejects.toBeInstanceOf(AuthError);
+  });
+
+  // Type-level as much as runtime: typecheck:tests fails to compile this call
+  // without the TeamRunTarget overload, since a plain TeamRunTarget's
+  // `mode?: "detach"` matches neither the detach nor the synchronous one.
+  it("accepts a target whose mode is not known statically", async () => {
+    const { client, fetchMock } = makeClient([
+      jsonResponse({ name: "triage", def_id: "team_1", run_id: "r_1", status: "running" }),
+    ]);
+    const target: TeamRunTarget = { name: "triage", mode: "detach" };
+    const res: TeamRunResult | TeamRunDetached = await client.runTeam(target);
+    expect(res.run_id).toBe("r_1");
+    const body = JSON.parse((fetchMock.mock.calls[0]![1] as RequestInit).body as string);
+    expect(body.mode).toBe("detach");
+  });
+
+  it("types a deduplicated synchronous answer, which has no steps", async () => {
+    // The server's answer to a held idempotency_key, verbatim: no `steps`,
+    // and an ended walk's stop_reason / error.
+    const { client } = makeClient([
+      jsonResponse({
+        name: "triage",
+        def_id: "team_1",
+        run_id: "r_1",
+        status: "failed",
+        deduplicated: true,
+        final_output: "",
+        stop_reason: "error",
+        error: "agent worker failed",
+      }),
+    ]);
+    const res: TeamRunResult = await client.runTeam({ name: "triage", idempotencyKey: "press-1" });
+    const steps: TeamRunStep[] | undefined = res.steps;
+    expect(steps).toBeUndefined();
+    const stopReason: string | undefined = res.stop_reason;
+    const error: string | undefined = res.error;
+    expect(stopReason).toBe("error");
+    expect(error).toBe("agent worker failed");
+    // A consumer building or mocking the answer must be able to leave the
+    // trace out, as the server does.
+    const running: TeamRunResult = { name: "triage", def_id: "team_1", status: "running", deduplicated: true };
+    expect(running.steps).toBeUndefined();
   });
 });
 

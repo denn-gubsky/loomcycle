@@ -216,6 +216,7 @@ func TestWebhook_DriftDetection(t *testing.T) {
 		"auth":                      true,
 		"rate_limit":                true,
 		"body_size_limit_bytes":     true,
+		"user_tier":                 true, // pins the started run's tier; a delivery never chooses it
 		"user_credentials_from_env": true,
 		"user_credentials":          true, // RFC F fork-time parity (PR 2/2)
 		"metadata":                  true, // non-secret agent metadata (PR 2/2)

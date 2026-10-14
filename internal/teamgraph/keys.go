@@ -84,7 +84,7 @@ var (
 // def, when not nil, is raw as parsed; it supplies the state id for an issue
 // inside a state's handler.
 func KeyIssues(raw []byte, def *Definition, bodies LocalBodyKeys) []*Issue {
-	w := &keyWalker{bodies: bodies}
+	w := &keyWalker{bodies: bodies, topHints: notInADefinition}
 	dec := json.NewDecoder(bytes.NewReader(raw))
 	dec.UseNumber()
 	if err := w.value(dec, reflect.TypeOf(Definition{}), ""); err != nil {
@@ -103,6 +103,19 @@ func KeyIssues(raw []byte, def *Definition, bodies LocalBodyKeys) []*Issue {
 	return w.out
 }
 
+// KeyIssuesOf is KeyIssues for a body of another kind of definition, decoded
+// into t: the same reading of keys as written, with no `local` bodies and no
+// team-specific hints. Nil when there is none, or when raw is not JSON.
+func KeyIssuesOf(raw []byte, t reflect.Type) []*Issue {
+	w := &keyWalker{}
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	dec.UseNumber()
+	if err := w.value(dec, t, ""); err != nil {
+		return nil
+	}
+	return w.out
+}
+
 // notInADefinition explains, for a key an author is likely to write at the top
 // of a definition out of habit, where it belongs instead: other definitions
 // (an agent's, a hook's) do carry these in their bodies.
@@ -116,6 +129,9 @@ var handlerKeyRe = regexp.MustCompile(`^states\[(\d+)\]\.handler\.(.+)$`)
 type keyWalker struct {
 	out    issues
 	bodies LocalBodyKeys
+	// topHints explains, for an unknown key at the top of the definition,
+	// where it belongs instead (notInADefinition for a team).
+	topHints map[string]string
 	// unknownOK is set while inside a body whose own decoder refuses unknown
 	// keys (BodyKeys.UnknownRefusedElsewhere).
 	unknownOK bool
@@ -218,15 +234,32 @@ func fieldsOf(t reflect.Type) map[string]reflect.Type {
 	return out
 }
 
+// untaggedOf names the fields of struct t that have no json tag. Go reads
+// such a field from a key of any case, and nothing fixes one spelling as the
+// right one (a type with yaml tags only is written in its yaml spelling), so
+// reading one by ignoring case is not an issue.
+func untaggedOf(t reflect.Type) map[string]bool {
+	out := map[string]bool{}
+	for i := 0; i < t.NumField(); i++ {
+		f := t.Field(i)
+		if f.IsExported() && !f.Anonymous && f.Tag.Get("json") == "" {
+			out[f.Name] = true
+		}
+	}
+	return out
+}
+
 // object consumes the rest of an object whose '{' was read.
 func (w *keyWalker) object(dec *json.Decoder, t reflect.Type, path string) error {
 	t = resolve(t)
 	var fields map[string]reflect.Type // a struct's wire keys; nil otherwise
+	var untagged map[string]bool       // fields read from a key of any case
 	var valueType reflect.Type         // a map's value type
 	switch {
 	case t == nil:
 	case t.Kind() == reflect.Struct:
 		fields = fieldsOf(t)
+		untagged = untaggedOf(t)
 	case t.Kind() == reflect.Map:
 		valueType = t.Elem()
 	}
@@ -260,14 +293,14 @@ func (w *keyWalker) object(dec *json.Decoder, t reflect.Type, path string) error
 			case field == "" && w.unknownOK:
 			case field == "":
 				hint := didYouMean(fields, key)
-				if path == "" && notInADefinition[key] != "" {
-					hint = " — " + notInADefinition[key]
+				if path == "" && w.topHints[key] != "" {
+					hint = " — " + w.topHints[key]
 				}
 				w.add(keyPath, "%s: unknown key %q%s", inObject(path), key, hint)
 			case spelt[field] != "":
 				w.add(keyPath, "%s: keys %q and %q are both read as %q, and the second would replace the first without a word. Write it once, as %q.",
 					inObject(path), spelt[field], key, field, field)
-			case field != key:
+			case field != key && !untagged[field]:
 				w.add(keyPath, "%s: key %q is read as %q only by ignoring its case. Write %q.", inObject(path), key, field, field)
 			}
 			if field != "" {

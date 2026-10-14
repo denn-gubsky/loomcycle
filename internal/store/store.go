@@ -1699,13 +1699,21 @@ type Store interface {
 	// the run is no longer queued (a cancel won); ErrNotFound for none.
 	StartQueuedRun(ctx context.Context, runID string, identity RunIdentity) (Run, error)
 
-	// FailQueuedRuns fails every queued run whose waiter is gone: at boot, the
-	// queued rows of replicaID (or, when replicaID is empty, every queued row —
-	// a single-replica store) created before startedBefore, since a restart
-	// ends every wait. reason is the error recorded, stop_reason "restarted",
-	// and the idempotency key is released so a caller's retry runs the work.
-	// Returns how many it failed.
-	FailQueuedRuns(ctx context.Context, replicaID string, startedBefore time.Time, reason string) (int, error)
+	// SetQueuedInput records the request a queued run will start from, so a
+	// restart can start it (see QueuedRun). Only while the run is queued:
+	// ErrRunNotQueued otherwise (it started, or a cancel ended it, meanwhile).
+	// Cleared when the run starts or ends.
+	SetQueuedInput(ctx context.Context, runID string, input json.RawMessage) error
+	// ListQueuedRuns returns the runs whose waiter is gone: at boot, the queued
+	// rows of replicaID (or, when replicaID is empty, every queued row — a
+	// single-replica store) created before startedBefore, since a restart ends
+	// every wait. Oldest first, the order they queued in.
+	ListQueuedRuns(ctx context.Context, replicaID string, startedBefore time.Time) ([]QueuedRun, error)
+	// FailQueuedRun fails a queued run a restart cannot start again: reason is
+	// the error recorded, stop_reason "restarted", and its idempotency keys
+	// are released so a caller's retry runs the work. ErrRunNotQueued when the
+	// run is no longer queued.
+	FailQueuedRun(ctx context.Context, runID, reason string) error
 
 	// DeleteConfiguredRun discards a draft: its events, the run row, and its
 	// session when nothing else is in it. ErrRunNotConfigured for a run that is
@@ -6519,6 +6527,15 @@ var ErrRunNotConfigured = errors.New("run is not configured")
 // ErrRunNotQueued is returned by StartQueuedRun when the run is no longer
 // waiting for a slot: it was cancelled (or failed at a restart) meanwhile.
 var ErrRunNotQueued = errors.New("run is not queued")
+
+// QueuedRun is a queued row a restart found (ListQueuedRuns): the run and the
+// request it was queued with. Input is nil when none was recorded — the run
+// was queued by an older build, carried secrets with no key to seal them, or
+// was a no-trace run — and the run cannot be started again.
+type QueuedRun struct {
+	Run   Run
+	Input json.RawMessage
+}
 
 // ErrDraftChanged is returned by StartConfiguredRun when the run is still a
 // draft but its draft is no longer the one the start was built from — it was

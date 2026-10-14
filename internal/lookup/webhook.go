@@ -148,6 +148,7 @@ type SubstrateWebhookDef struct {
 	Auth                   SubstrateWebhookAuth      `json:"auth,omitempty"`
 	RateLimit              SubstrateWebhookRateLimit `json:"rate_limit,omitempty"`
 	BodySizeLimitBytes     int                       `json:"body_size_limit_bytes,omitempty"`
+	UserTier               string                    `json:"user_tier,omitempty"`
 	UserCredentialsFromEnv map[string]string         `json:"user_credentials_from_env,omitempty"`
 	UserCredentials        map[string]string         `json:"user_credentials,omitempty"`
 	Metadata               map[string]any            `json:"metadata,omitempty"`
@@ -184,6 +185,8 @@ type SubstrateWebhookAuth struct {
 	SigningSecretEnv string `json:"signing_secret_env,omitempty"`
 	DeliveryIDHeader string `json:"delivery_id_header,omitempty"`
 	BearerTokenEnv   string `json:"bearer_token_env,omitempty"`
+	Secret           string `json:"secret,omitempty"`
+	PreviousSecret   string `json:"previous_secret,omitempty"`
 }
 
 // SubstrateWebhookRateLimit mirrors config.WebhookRateLimit.
@@ -217,12 +220,15 @@ func (s SubstrateWebhookDef) ToConfigDef() config.Webhook {
 			SigningSecretEnv: s.Auth.SigningSecretEnv,
 			DeliveryIDHeader: s.Auth.DeliveryIDHeader,
 			BearerTokenEnv:   s.Auth.BearerTokenEnv,
+			Secret:           s.Auth.Secret,
+			PreviousSecret:   s.Auth.PreviousSecret,
 		},
 		RateLimit: config.WebhookRateLimit{
 			RequestsPerMinute: s.RateLimit.RequestsPerMinute,
 			Burst:             s.RateLimit.Burst,
 		},
 		BodySizeLimitBytes:     s.BodySizeLimitBytes,
+		UserTier:               s.UserTier,
 		UserCredentialsFromEnv: s.UserCredentialsFromEnv,
 		UserCredentials:        s.UserCredentials,
 		Metadata:               s.Metadata,

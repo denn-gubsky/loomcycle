@@ -37,6 +37,12 @@ served first.
 `max_queued_runs_per_user: 0` refuses a run over the per-user cap at
 once, with no waiting. In cluster mode it is counted per replica.
 
+With no per-user cap, `max_queued_runs_per_user` also bounds how many
+places one (tenant, user) may hold in the queue for a run slot; runs that
+name no user share their tenant's places. Past it the run is refused with
+429 `backpressure`, so one caller cannot fill the queue and turn every
+other tenant away.
+
 ## admission: "wait" or "reject"
 
 Every way of starting a run (POST /v1/runs, the gRPC Run RPC, the MCP
@@ -65,9 +71,23 @@ to the LLM gateway do not queue yet: they wait up to
   reports `status: "queued"`, `queue_position` and `queue_reason` while
   it waits. For `user_cap` the position counts only that user's waiting
   runs.
-- A run still queued when loomcycle stops never started; at the next
-  boot it is failed with stop reason `restarted`, and its idempotency
-  key is released so a retry runs the work.
+- A run still queued when loomcycle stops is queued again at the next
+  boot, under the same run id, in the order it first queued, and runs to
+  its end. Its caller's connection ended with the stop: read it, or
+  re-attach to its stream, by run id. A retry with the same
+  `idempotency_key` gets that run back; a retry without a key starts a
+  second one.
+- Its request is stored on its row while it waits, its `user_bearer` and
+  `user_credentials` sealed with `LOOMCYCLE_SECRET_KEY`. A queued run
+  that cannot come back is failed at the boot with stop reason
+  `restarted`, a reason saying why, and its idempotency key released: a
+  run with per-run secrets when no `LOOMCYCLE_SECRET_KEY` is set (they
+  are never stored in plaintext), a no-trace run (its prompt is stored
+  nowhere), or one whose sealed secrets the key at boot cannot open.
+- A paused runtime starts no queued run: one whose slot frees during
+  the pause keeps it, stays `queued`, and starts on the resume. A
+  snapshot carries the queued runs, without their per-run secrets; a
+  restore queues them again, and they run without those secrets.
 
 ## Anonymous calls bypass the per-user cap
 

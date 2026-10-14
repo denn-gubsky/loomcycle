@@ -1,0 +1,13 @@
+-- RFC EI P3: a queued run's request, so a restart can start it.
+--
+-- A run that cannot get a slot is a runs row in status 'queued' before it
+-- starts. Its waiter is a goroutine, gone with the process; this column holds
+-- what the boot needs to start the run again under the same row: the request
+-- as the run received it (prompt, overrides, metadata) and, sealed per tenant
+-- under LOOMCYCLE_SECRET_KEY, its per-run secrets. A run with secrets and no
+-- key to seal them stores none, and is failed at the restart instead. Never
+-- written for a no-trace run, whose prompt is not stored anywhere.
+--
+-- Opaque JSONB like draft. Additive and nullable: NULL on every row that is
+-- not queued; cleared when the run starts or ends.
+ALTER TABLE runs ADD COLUMN IF NOT EXISTS queued_input JSONB;

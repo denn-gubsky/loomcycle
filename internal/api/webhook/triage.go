@@ -127,7 +127,7 @@ func (rec *Receiver) handleTest(w http.ResponseWriter, r *http.Request) {
 
 	// The same def recent-deliveries lists, so an admin dry-runs a
 	// tenant-owned webhook with the same ?tenant= focus.
-	wd, _, ok := lookup.ResolveWebhook(r.Context(), rec.store, rec.cfg, triageTenant(r), name)
+	wd, owner, ok := lookup.ResolveWebhook(r.Context(), rec.store, rec.cfg, triageTenant(r), name)
 	if !ok || webhookInert(wd) {
 		// Same 404 posture as the receiver: an unknown or inert webhook is not
 		// addressable for a dry-run either, so the dry-run never reports
@@ -136,11 +136,7 @@ func (rec *Receiver) handleTest(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	limit := wd.BodySizeLimitBytes
-	if limit <= 0 {
-		limit = defaultBodySizeLimitBytes
-	}
-	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, int64(limit)))
+	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, rec.bodyLimit(wd)))
 	if err != nil {
 		writeError(w, http.StatusBadRequest, "bad_body", "")
 		return
@@ -160,7 +156,7 @@ func (rec *Receiver) handleTest(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		// none + opted in → fall through to projection (would accept).
-	} else if verr := verifySignature(wd.Auth, body, r.Header.Get, rec.envAllowlist, rec.getenv, rec.now); verr != nil {
+	} else if verr := rec.verify(r.Context(), wd.Auth, owner.TenantID, body, r.Header.Get); verr != nil {
 		verdict := verdictRejectedSig
 		var ae *authError
 		if errors.As(verr, &ae) && ae.verdict == verdictUnresolved {
