@@ -1699,11 +1699,13 @@ type Store interface {
 	// the run is no longer queued (a cancel won); ErrNotFound for none.
 	StartQueuedRun(ctx context.Context, runID string, identity RunIdentity) (Run, error)
 
-	// FailQueuedRuns fails every queued run whose waiter is gone: the queued
-	// rows of replicaID (or, when replicaID is empty, every queued row — a
-	// single-replica store) at boot, since a restart ends every wait. reason
-	// is the error recorded. Returns how many it failed.
-	FailQueuedRuns(ctx context.Context, replicaID, reason string) (int, error)
+	// FailQueuedRuns fails every queued run whose waiter is gone: at boot, the
+	// queued rows of replicaID (or, when replicaID is empty, every queued row —
+	// a single-replica store) created before startedBefore, since a restart
+	// ends every wait. reason is the error recorded, stop_reason "restarted",
+	// and the idempotency key is released so a caller's retry runs the work.
+	// Returns how many it failed.
+	FailQueuedRuns(ctx context.Context, replicaID string, startedBefore time.Time, reason string) (int, error)
 
 	// DeleteConfiguredRun discards a draft: its events, the run row, and its
 	// session when nothing else is in it. ErrRunNotConfigured for a run that is

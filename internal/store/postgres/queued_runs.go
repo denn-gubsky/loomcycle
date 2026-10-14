@@ -53,11 +53,12 @@ func (s *Store) StartQueuedRun(ctx context.Context, runID string, identity store
 	return s.GetRun(ctx, runID)
 }
 
-func (s *Store) FailQueuedRuns(ctx context.Context, replicaID, reason string) (int, error) {
+func (s *Store) FailQueuedRuns(ctx context.Context, replicaID string, startedBefore time.Time, reason string) (int, error) {
 	tag, err := s.pool.Exec(ctx,
-		`UPDATE runs SET status = $1, completed_at = $2, error = $3, draft = NULL
-		WHERE status = $4 AND ($5 = '' OR COALESCE(replica_id, '') = $5)`,
-		string(store.RunFailed), time.Now().UTC(), reason, string(store.RunQueued), replicaID,
+		`UPDATE runs SET status = $1, completed_at = $2, error = $3, stop_reason = 'restarted',
+			draft = NULL, idempotency_key = NULL
+		WHERE status = $4 AND started_at < $6 AND ($5 = '' OR COALESCE(replica_id, '') = $5)`,
+		string(store.RunFailed), time.Now().UTC(), reason, string(store.RunQueued), replicaID, startedBefore.UTC(),
 	)
 	if err != nil {
 		return 0, fmt.Errorf("fail queued runs: %w", err)

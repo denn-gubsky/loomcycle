@@ -117,7 +117,7 @@ func testQueuedRunFailedOnRestartNotSwept(t *testing.T, s store.Store) {
 	if _, err := s.StartQueuedRun(ctx, other.ID, store.RunIdentity{}); err != nil {
 		t.Fatal(err)
 	}
-	n, err := s.FailQueuedRuns(ctx, "", "queued when loomcycle restarted")
+	n, err := s.FailQueuedRuns(ctx, "", time.Now(), "queued when loomcycle restarted")
 	if err != nil {
 		t.Fatal(err)
 	}
