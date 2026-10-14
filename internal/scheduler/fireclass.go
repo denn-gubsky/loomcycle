@@ -35,7 +35,12 @@ const (
 	// declare or a value it refuses. No walk started and none will until the
 	// schedule or the team is changed, so it does not use up max_fires either.
 	fireTeamNotStartable
-	// fireBackpressure: transient load refused admission. Nothing broke.
+	// fireBackpressure: transient load refused admission. Nothing broke. A run
+	// that has to wait for a slot queues, so this is a FULL queue — the global
+	// one or the user's. A run or team fire gives its slot back and the next
+	// tick fires it again (releaseSlot), so it does not use up max_fires: the
+	// slot has not run yet. A consolidation sweep resumes from its watermarks
+	// on the next fire instead.
 	fireBackpressure
 	// fireDeferred: an admission rule refused the run — the scope's hard token
 	// budget is spent, or the run may not use the operator's provider key and
@@ -91,8 +96,16 @@ func (c fireClass) status() string {
 // countsAsFire reports whether a fire of this class uses up one of the
 // schedule's max_fires.
 func (c fireClass) countsAsFire() bool {
-	return c != fireUnknownAgent && c != fireTeamNotStartable && c != firePaused
+	return c != fireUnknownAgent && c != fireTeamNotStartable && c != firePaused && c != fireBackpressure
 }
+
+// retried reports whether a run or team fire of this class gives its slot
+// back to be fired again on the next tick.
+func (c fireClass) retried() bool { return c == fireBackpressure }
+
+// retriedNote ends a full-queue refusal's last_error, so the operator reads
+// that the slot was not lost.
+const retriedNote = " — the slot is fired again on the next tick"
 
 // isOperatorKeyErr reports whether err is the operator-key restriction. It has
 // two layers: routing finds no provider the tenant can key (resolve), or a
