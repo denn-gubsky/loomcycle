@@ -2351,6 +2351,15 @@ export class LoomcycleClient {
     target: TeamRunTarget & { mode?: undefined },
     opts?: { signal?: AbortSignal },
   ): Promise<TeamRunResult>;
+  // A target whose `mode` is not known statically — one built from a form, a
+  // config or a node parameter, typed plain TeamRunTarget — matches neither
+  // overload above, and an implementation signature is not callable. This one
+  // accepts it and answers the union, which the caller narrows by the `mode`
+  // it sent (a deduplicated synchronous answer has no `steps` either).
+  async runTeam(
+    target: TeamRunTarget,
+    opts?: { signal?: AbortSignal },
+  ): Promise<TeamRunResult | TeamRunDetached>;
   async runTeam(
     target: TeamRunTarget,
     opts?: { signal?: AbortSignal },
@@ -2367,7 +2376,7 @@ export class LoomcycleClient {
     if (target.review !== undefined) body.review = target.review;
     if (target.reviewTtlSeconds !== undefined) body.review_ttl_seconds = target.reviewTtlSeconds;
     if (target.idempotencyKey !== undefined) body.idempotency_key = target.idempotencyKey;
-    return postJSON<TeamRunResult>(this.ctx, "/v1/_teamdef", body, opts);
+    return postJSON<TeamRunResult | TeamRunDetached>(this.ctx, "/v1/_teamdef", body, opts);
   }
 
   /** Read the debug breakpoints armed on a live team walk

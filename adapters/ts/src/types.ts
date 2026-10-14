@@ -3055,12 +3055,20 @@ export interface TeamRunResult {
   capped_state?: string;
   max_iterations?: number;
   iteration_count?: number;
-  /** The per-state trace. Absent when `deduplicated` is set. */
-  steps: TeamRunStep[];
+  /** The per-state trace. Absent when `deduplicated` is set: the trace is
+   *  built by the request that walks and is not stored on the run, so a retry
+   *  answered from the key has none to return. */
+  steps?: TeamRunStep[];
   /** Set (true) when the request's `idempotencyKey` was already held: nothing
    *  was started, and this is the walk that holds it, as it is now — `status`
    *  may be "running", and there are no `steps`. */
   deduplicated?: boolean;
+  /** On a `deduplicated` answer for a walk that has ended: the stop reason
+   *  recorded on its run. Absent while it runs, and when none was recorded. */
+  stop_reason?: string;
+  /** On a `deduplicated` answer for a walk that has ended: why it failed, as
+   *  recorded on its run. Absent when it did not fail. */
+  error?: string;
   [extra: string]: unknown;
 }
 
