@@ -300,6 +300,14 @@ func (rec *Receiver) handle(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "bad_mapping", "")
 		return
 	}
+	// A projected credential naming a stored one is a bad mapping value, as
+	// a malformed body is: refused before anything is claimed or started.
+	if key, bad := payloadCredentialRef(proj.Fields); bad {
+		rec.finish(span, whKey, did, "rejected_mapping", "")
+		rec.logf("webhook %q: payload_mapping credential %q holds a stored-credential reference, which only the definition may name", name, key)
+		writeError(w, http.StatusBadRequest, "bad_mapping", "")
+		return
+	}
 	for _, mk := range proj.MissingKeys {
 		// Missing optional fields are a tracing note, not a failure.
 		rec.logf("webhook %q: payload_mapping target %q resolved to empty", name, mk)
