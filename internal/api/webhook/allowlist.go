@@ -23,6 +23,8 @@ func BuildEnvAllowlist(cfg *config.Config) map[string]bool {
 //   - a verify secret that will not resolve at request time (not allowlisted
 //     and not LOOMCYCLE_*-prefixed, or allowlisted-but-unset/empty);
 //   - auth.kind requires a secret but none is configured;
+//   - a metadata key "webhook" on a webhook that lists events (the receiver
+//     replaces it with the delivery's provider, event and id);
 //   - a payload_mapping path that does not parse (the yaml load accepts it,
 //     as it always has; the WebhookDef tool refuses it).
 //
@@ -43,6 +45,9 @@ func UnresolvableStaticSecrets(cfg *config.Config, allow map[string]bool, getenv
 		}
 		if err := config.CheckWebhookMappingPaths(w.PayloadMapping); err != nil {
 			warns = append(warns, fmt.Sprintf("webhook %q: %v — every delivery 400s bad_mapping", name, err))
+		}
+		if err := config.CheckWebhookMetadataKey(w); err != nil {
+			warns = append(warns, fmt.Sprintf("webhook %q: %v — a run gets the receiver's value, not this one", name, err))
 		}
 		kind := strings.ToLower(strings.TrimSpace(w.Auth.Kind))
 		if w.Auth.Secret != "" && kind != "none" {

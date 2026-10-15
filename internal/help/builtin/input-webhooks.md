@@ -282,6 +282,30 @@ webhooks:
 - The `/test` dry-run reports `ping`, `ignored`, `rejected_event` and
   `rejected_shape` as its verdict.
 
+### What the run receives — `metadata.webhook`
+
+A run started by a webhook that lists `events` finds the delivery in its
+trusted metadata, beside the definition's own keys:
+
+```json
+"webhook": {"provider": "github", "event": "push", "delivery_id": "72d3162e-cc78-11e3-81ab-4c9367dc0958"}
+```
+
+A code-js agent reads it at `input.metadata.webhook`.
+
+- **`event`** is the listed event the delivery was handled as. It is put
+  there only after the signed body was found to have that event's shape.
+- **`provider`** is the definition's `provider`, absent when it has none.
+- **`delivery_id` is a label, not proof.** The forge does not sign it, so
+  it says which delivery this was and nothing more. One that is not a short
+  token (letters, digits, `.` `_` `:` `-`, at most 128) is left out.
+- **The key is the receiver's.** A definition that lists events may not set
+  its own `metadata.webhook`: `WebhookDef` refuses it at create and fork. A
+  yaml webhook that sets it still loads, with a boot warning, and its runs
+  get the receiver's value.
+- A webhook without `events` gets nothing new: its metadata is what its
+  definition says.
+
 ## Filters — `filters`
 
 Conditions on the signed body that every delivery must meet before
@@ -720,12 +744,12 @@ scheduler). A hook failure is logged and never affects the run.
 
 ## Triage (admin-gated)
 
-Two endpoints help debug a webhook that's silently failing (the receiver
-POST itself is unauthed — it uses the per-Def secret). Both need an
+Three endpoints help debug a webhook that's silently failing (the receiver
+POST itself is unauthed — it uses the per-Def secret). Each needs an
 **admin** bearer (`substrate:admin` or the shared `LOOMCYCLE_AUTH_TOKEN`);
 a `substrate:tenant` token gets 403, even for its own tenant's webhook.
 
-Both act on the webhook that `POST /v1/_webhooks/{tenant}/{name}` resolves
+Each acts on the webhook that `POST /v1/_webhooks/{tenant}/{name}` resolves
 to, with `{tenant}` taken from `?tenant=`. Without it they use the
 bearer's own tenant, so to reach a tenant-owned webhook pass
 `?tenant=<that tenant>`.
@@ -741,6 +765,36 @@ bearer's own tenant, so to reach a tenant-owned webhook pass
   (credential **key names** only, never values). No run is created. A
   disabled webhook, or one restored from a snapshot without its
   credentials, is a 404 here just as it is to a real delivery.
+- `GET /v1/_webhooks/{name}/delivery-counts?tenant=acme` — how the
+  webhook's deliveries ended since it was first counted, summed over every
+  replica: `{"webhook_name": …, "deliveries": {accepted, duplicate, ping,
+  ignored, filtered, refused: {<reason>: n}, other: {timeout|client_gone: n},
+  last_at}}`. A refusal's reason is `signature`, `secret`, `event`, `shape`,
+  `body`, `mapping`, `rate`, `dedup_key`, `disabled`, … (the verdict without
+  its `rejected_` prefix).
+
+### Delivery counters
+
+`recent-deliveries` is this replica's last 50, gone on restart. The counters
+are the durable totals, and a **tenant operator** reads them too: `WebhookDef
+op=get` shows them under `status.deliveries` for its own definitions.
+
+- Every delivery to a webhook that resolves is counted once, under how it
+  ended, before the signature check as well as after. A request to a name
+  that resolves to no webhook is counted nowhere, and neither is a team's own
+  webhook.
+- Each replica counts in memory and adds what it counted to the store every
+  30 seconds, never once per delivery — the receiver answers requests no one
+  has authenticated yet, and a write per request would let anyone write to
+  the database at will. So the totals are **up to 30 seconds behind**, and a
+  replica that **crashes** loses what it counted since its last write. A
+  clean shutdown writes the last of them.
+- Counted per definition name in its tenant, across versions. A
+  shared-tenant `WebhookDef` whose name the operator's yaml also declares is
+  not served — the yaml webhook is — so `get` shows the yaml webhook's
+  counts.
+- No body text and no header value is counted or stored.
+- A snapshot does not carry them: a restored instance counts from zero.
 
 ## Provider recipes
 

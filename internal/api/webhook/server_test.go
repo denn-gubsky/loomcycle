@@ -716,6 +716,10 @@ func TestReceiver_Layer2Dedup_ExistingRunReturnedWithoutSpawn(t *testing.T) {
 	if got["deduped"] != "true" {
 		t.Errorf("deduped = %q, want true", got["deduped"])
 	}
+	// A re-send, and counted as one — not as a second accepted delivery.
+	if v := newestVerdict(t, rec, "gh"); v != verdictAcceptedReplay {
+		t.Errorf("recorded verdict = %q, want %q", v, verdictAcceptedReplay)
+	}
 }
 
 // TestReceiver_Layer2Dedup_ConcurrentRaceResolvesToWinner pins the
@@ -779,6 +783,10 @@ func TestReceiver_Layer2Dedup_ConcurrentRaceResolvesToWinner(t *testing.T) {
 	}
 	if got["deduped"] != "true" {
 		t.Errorf("deduped = %q, want true", got["deduped"])
+	}
+	// The racing request ran it: this one is a re-send, counted as one.
+	if v := newestVerdict(t, rec, "gh"); v != verdictAcceptedReplay {
+		t.Errorf("recorded verdict = %q, want %q", v, verdictAcceptedReplay)
 	}
 }
 

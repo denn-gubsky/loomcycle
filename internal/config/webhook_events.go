@@ -220,6 +220,28 @@ const (
 	maxWebhookShapePaths = 32
 )
 
+// WebhookMetadataKey is the key of the trusted metadata a run of a webhook
+// that lists events receives from the receiver: {provider, event,
+// delivery_id}. The event is put there only after the signed body was found
+// to have its shape.
+const WebhookMetadataKey = "webhook"
+
+// CheckWebhookMetadataKey refuses a definition that lists events and sets
+// its own metadata key "webhook": the receiver puts the delivery's provider,
+// event and id there, and a value the author wrote would read as one the
+// receiver vouched for. Checked when a WebhookDef is created or forked only:
+// a stored definition, a yaml one and a snapshot restore load as before (the
+// receiver's value replaces the author's, and the boot warning names it).
+func CheckWebhookMetadataKey(w Webhook) error {
+	if len(w.Events) == 0 {
+		return nil
+	}
+	if _, ok := w.Metadata[WebhookMetadataKey]; ok {
+		return fmt.Errorf("metadata key %q is set by the receiver for a webhook that lists events (its provider, event and delivery id); choose another key", WebhookMetadataKey)
+	}
+	return nil
+}
+
 // CheckWebhookEvents checks provider, event_header, events and event_shapes
 // when a definition is written (the yaml load and the WebhookDef tool both
 // call it). A definition that sets none of them is not affected.

@@ -628,6 +628,18 @@ func (s *Store) migrate(ctx context.Context) error {
 			expires_at   INTEGER NOT NULL
 		)`,
 		`CREATE INDEX IF NOT EXISTS webhook_deliveries_by_expires_at ON webhook_deliveries(expires_at)`,
+		// How a webhook definition's deliveries ended, by outcome, summed over
+		// every replica. last_at is unix nanos. Mirrors postgres migration 0105.
+		`CREATE TABLE IF NOT EXISTS webhook_delivery_counts (
+			tenant_id TEXT    NOT NULL,
+			name      TEXT    NOT NULL,
+			static    INTEGER NOT NULL,
+			outcome   TEXT    NOT NULL,
+			reason    TEXT    NOT NULL,
+			count     INTEGER NOT NULL,
+			last_at   INTEGER NOT NULL,
+			PRIMARY KEY(tenant_id, name, static, outcome, reason)
+		)`,
 		// HookDef substrate — mirror of teamdefs minus the two authority
 		// columns (bootstrapped_from_static, operator_authored) a HookDef
 		// has no use for. A fresh table born tenant-aware, so the
@@ -11747,6 +11759,56 @@ func (s *Store) WebhookDeliveryRelease(ctx context.Context, keys []string) error
 		return fmt.Errorf("webhook delivery release: %w", err)
 	}
 	return nil
+}
+
+// WebhookCountsAdd adds each row's count to its stored total, all or none.
+func (s *Store) WebhookCountsAdd(ctx context.Context, rows []store.WebhookCount) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("webhook counts add: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	for _, r := range rows {
+		if r.Count == 0 {
+			continue
+		}
+		if _, err := tx.ExecContext(ctx, `
+			INSERT INTO webhook_delivery_counts (tenant_id, name, static, outcome, reason, count, last_at)
+			VALUES (?, ?, ?, ?, ?, ?, ?)
+			ON CONFLICT(tenant_id, name, static, outcome, reason) DO UPDATE SET
+				count   = count + excluded.count,
+				last_at = MAX(last_at, excluded.last_at)`,
+			r.TenantID, r.Name, boolToInt(r.Static), r.Outcome, r.Reason, r.Count, r.LastAt.UnixNano()); err != nil {
+			return fmt.Errorf("webhook counts add: %w", err)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("webhook counts add: %w", err)
+	}
+	return nil
+}
+
+// WebhookCounts returns one webhook definition's counters.
+func (s *Store) WebhookCounts(ctx context.Context, tenantID, name string, static bool) ([]store.WebhookCount, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT outcome, reason, count, last_at FROM webhook_delivery_counts
+		WHERE tenant_id = ? AND name = ? AND static = ?
+		ORDER BY outcome, reason`, tenantID, name, boolToInt(static))
+	if err != nil {
+		return nil, fmt.Errorf("webhook counts: %w", err)
+	}
+	defer rows.Close()
+	var out []store.WebhookCount
+	for rows.Next() {
+		c := store.WebhookCount{TenantID: tenantID, Name: name, Static: static}
+		var last int64
+		if err := rows.Scan(&c.Outcome, &c.Reason, &c.Count, &last); err != nil {
+			return nil, fmt.Errorf("webhook counts: %w", err)
+		}
+		c.LastAt = time.Unix(0, last).UTC()
+		out = append(out, c)
+	}
+	return out, rows.Err()
 }
 
 // --- v0.8.15 dynamic_agents (LoomCycle MCP runtime registration) ---
