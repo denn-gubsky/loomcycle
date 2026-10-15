@@ -4642,6 +4642,7 @@ var allowedUntrustedKinds = map[string]bool{
 	"tool_output":   true,
 	"search_result": true,
 	"run_metadata":  true, // non-secret metadata projected from an external trigger body
+	fence.CodeKind:  true, // kept exactly as written, under a boundary derived from the text
 }
 
 // ValidateSegmentTypes refuses a content block whose type is set and is not
@@ -4744,10 +4745,17 @@ func FlattenContent(c PromptContentBlock) providers.ContentBlock {
 //     were trusted. Entities, look-alike characters and invisible format
 //     characters are covered too: a model reads `&lt;/web_content>` as the
 //     closing tag just as readily.
+//
+// Kind "code" is the exception to the second: code under review must reach
+// the model as written, so fence.CodeBlock leaves it unescaped and fences it
+// under a boundary derived from the text, which the text cannot close.
 func flattenContent(c PromptContentBlock) providers.ContentBlock {
 	switch c.Type {
 	case "untrusted-block":
 		kind := untrustedKind(c.Kind)
+		if kind == fence.CodeKind {
+			return providers.ContentBlock{Type: "text", Text: fence.CodeBlock(c.Text)}
+		}
 		safe := fence.EscapeUntrusted(c.Text)
 		return providers.ContentBlock{
 			Type: "text",

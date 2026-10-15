@@ -4,7 +4,11 @@
 package fence
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
+	"fmt"
 	"regexp"
+	"strconv"
 	"strings"
 	"unicode"
 )
@@ -54,4 +58,93 @@ func EscapeUntrusted(s string) string {
 		return r
 	}, s)
 	return ltSpellings.ReplaceAllLiteralString(s, lt)
+}
+
+// CodeKind is the untrusted kind whose text reaches the model exactly as
+// written, for code under review: escaping turns `Vec<T>` into `Vec‹T>`,
+// hides the difference between `&lt;` and `<`, and drops the bidi controls a
+// Trojan Source change is made of, so a reviewer could neither read the code
+// as it is nor quote it back.
+const CodeKind = "code"
+
+// codeTag is the tag a code block is fenced in. It is not CodeKind: a
+// caller-chosen kind must never name a tag whose closing form it can predict.
+const codeTag = "untrusted-code"
+
+// codeBoundaryHexLen is the length of a code block's boundary in hex
+// characters: 128 bits. A text that holds its own boundary is a fixed point of
+// the hash; at 128 bits nobody finds one, and CodeBlock checks for it anyway.
+const codeBoundaryHexLen = 32
+
+// codeBoundaryTries is how many salted boundaries CodeBlock tries before it
+// gives up on keeping the text intact and escapes it instead.
+const codeBoundaryTries = 8
+
+// CodeBlock fences untrusted code without changing a character of it:
+//
+//	<untrusted-code b="H">
+//	…the code…
+//	</untrusted-code b="H">
+//
+// H is derived from the text, so nothing inside needs escaping: the text
+// cannot hold the closing tag of its own boundary, and a closing tag with any
+// other boundary is just more text inside the block. The boundary depends only
+// on the text, so the block is byte-identical every time it is replayed and
+// the prompt cache holds.
+//
+// Invisible characters are shown rather than dropped, as ⟨U+202E⟩: a reviewer
+// has to see a bidi control to flag it, and none can hide inside the boundary.
+func CodeBlock(text string) string {
+	return codeBlock(text, sha256.Sum256)
+}
+
+// codeBlock is CodeBlock with the hash passed in, so a test can force the
+// case where the text holds its boundary.
+func codeBlock(text string, sum func([]byte) [sha256.Size]byte) string {
+	shown := ShowInvisible(text)
+	folded := strings.ToLower(shown)
+	for i := 0; i < codeBoundaryTries; i++ {
+		in := shown
+		if i > 0 {
+			in = strconv.Itoa(i) + "\n" + shown
+		}
+		h := sum([]byte(in))
+		b := hex.EncodeToString(h[:])[:codeBoundaryHexLen]
+		// The boundary must not appear in the text at all, in either case,
+		// not only inside a closing tag: then no spelling of the closing tag
+		// a model might accept can be written without knowing it.
+		if !strings.Contains(folded, b) {
+			return fmt.Sprintf("<%s b=%q>\n%s\n</%s b=%q>", codeTag, b, shown, codeTag, b)
+		}
+	}
+	return fmt.Sprintf("<untrusted>\n%s\n</untrusted>", EscapeUntrusted(text))
+}
+
+// ShowInvisible writes every character a reader cannot see as ⟨U+XXXX⟩: the
+// ones EscapeUntrusted drops (format characters such as bidi controls and
+// zero-width joiners, variation selectors, other default-ignorables), and
+// the control characters other than tab, line feed and carriage return.
+func ShowInvisible(s string) string {
+	if strings.IndexFunc(s, hidden) < 0 {
+		return s
+	}
+	var b strings.Builder
+	b.Grow(len(s) + 16)
+	for _, r := range s {
+		if hidden(r) {
+			fmt.Fprintf(&b, "⟨U+%04X⟩", r)
+			continue
+		}
+		b.WriteRune(r)
+	}
+	return b.String()
+}
+
+func hidden(r rune) bool {
+	switch r {
+	case '\t', '\n', '\r':
+		return false
+	}
+	return unicode.IsControl(r) ||
+		unicode.Is(unicode.Cf, r) || unicode.Is(unicode.Variation_Selector, r) || unicode.Is(unicode.Other_Default_Ignorable_Code_Point, r)
 }

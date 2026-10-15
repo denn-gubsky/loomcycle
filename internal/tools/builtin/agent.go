@@ -11,6 +11,7 @@ import (
 
 	runcancel "github.com/denn-gubsky/loomcycle/internal/cancel"
 	"github.com/denn-gubsky/loomcycle/internal/config"
+	"github.com/denn-gubsky/loomcycle/internal/fence"
 	"github.com/denn-gubsky/loomcycle/internal/providers"
 	"github.com/denn-gubsky/loomcycle/internal/teamrun"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
@@ -465,6 +466,7 @@ const (
 var spawnUntrustedKinds = map[string]bool{
 	"untrusted": true, "user_input": true, "web_content": true, "tool_output": true,
 	"search_result": true, "uploaded_cv": true, "qa_question": true,
+	fence.CodeKind: true,
 }
 
 // untrustedRefInput is the one reference an `untrusted` entry may make: the
