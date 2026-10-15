@@ -459,6 +459,7 @@ export type {
   MCPServerDefVerifyResult,
   // Inline code-js agent ingestion (v0.19.0, RFC J)
   AgentDefOverlay,
+  AgentRouting,
   AgentChannelACL,
   AgentInterruptionACL,
   AgentDecision,

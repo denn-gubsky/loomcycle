@@ -216,6 +216,13 @@ type OutputFormat struct {
 	Schema map[string]any `json:"schema,omitempty"`
 }
 
+// Routing mirrors config.AgentRouting locally (the agents package stays
+// config-free). json: tags are LOAD-BEARING for content_sha256.
+type Routing struct {
+	QueueAware    bool `json:"queue_aware,omitempty"`
+	SwitchAfterMS int  `json:"switch_after_ms,omitempty"`
+}
+
 // ToolChoice mirrors config.ToolChoice locally (the agents package stays
 // config-free). json: tags are LOAD-BEARING for content_sha256.
 type ToolChoice struct {

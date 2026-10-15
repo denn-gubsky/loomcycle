@@ -232,6 +232,11 @@ type AgentContent struct {
 	// distinct content_sha256). omitempty keeps pre-feature rows byte-stable;
 	// normalize() collapses an empty slice to nil.
 	SearchProviders []string `json:"search_providers,omitempty"`
+	// Routing (RFC EI P4) is content-identifying, like Sampling: a fork that
+	// only turns on queue-aware routing must mint a distinct content_sha256.
+	// Pointer + omitempty so an agent without one hashes byte-identical to
+	// pre-feature rows; normalize() collapses an empty block to nil.
+	Routing *Routing `json:"routing,omitempty"`
 	// Sampling is the per-agent LLM sampling block (mirrors config.Sampling;
 	// the agents package stays config-free, so it's a local type). Content-
 	// identifying: a fork that only changes temperature must mint a distinct
@@ -378,6 +383,10 @@ func normalize(c *AgentContent) {
 	}
 	if c.OutputFormat != nil && c.OutputFormat.Type == "" && len(c.OutputFormat.Schema) == 0 {
 		c.OutputFormat = nil
+	}
+	// An empty routing block changes nothing, so it hashes as absent.
+	if c.Routing != nil && !c.Routing.QueueAware && c.Routing.SwitchAfterMS == 0 {
+		c.Routing = nil
 	}
 	// An empty or auto tool_choice asks for nothing, so it hashes as absent.
 	if c.ToolChoice != nil && (c.ToolChoice.Mode == "" || c.ToolChoice.Mode == "auto") {

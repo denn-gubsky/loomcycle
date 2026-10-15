@@ -79,6 +79,13 @@ export const agentDefRegistry: DefRegistry = {
     { key: "search_providers", label: "Search providers", group: "Routing", type: "string-list",
       hint: "Ordered web-search backends the WebSearch tool tries before giving up.",
       unsetMeans: "the operator default order", advanced: true },
+    { key: "routing", label: "Queue-aware routing", group: "Routing", type: "object",
+      hint: "At run start, pass over a tier candidate whose provider is so busy that the first call would wait too long. Tier-routed agents only.",
+      unsetMeans: "the first available candidate, however busy", advanced: true,
+      fields: [
+        { key: "queue_aware", label: "Queue-aware", group: "Routing", type: "bool", hint: "Pass over a busy candidate for the next available one." },
+        { key: "switch_after_ms", label: "Switch after (ms)", group: "Routing", type: "int", min: 0, hint: "The estimated wait that passes a candidate over. Default 20000." },
+      ] },
 
     // ---- Tools & access ----
     { key: "tools", label: "Tools", group: "Tools & access", type: "string-list",

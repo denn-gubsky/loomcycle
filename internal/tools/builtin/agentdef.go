@@ -916,6 +916,11 @@ func (a *AgentDef) buildDefinition(ctx context.Context, name, parentJSON string,
 			return mergedDef{}, fmt.Errorf("AgentDef tool: a fork cannot set allow_overrides to true on %q, whose definition locks its per-run settings (allow_overrides: false); remove the lock in the server config, or create the agent anew", name)
 		}
 		base.applyOverlay(ov)
+		// A fork that turns on queue-aware routing over a parent that pins a
+		// model: the overlay alone is fine, the result is not.
+		if err := config.ValidateAgentRouting(base.Routing, base.Provider, base.Model); err != nil {
+			return mergedDef{}, fmt.Errorf("AgentDef tool: %w", err)
+		}
 	}
 	return base, nil
 }
@@ -964,6 +969,9 @@ func decodeAgentOverlay(overlay json.RawMessage) (mergedDef, error) {
 	// the one ambiguous request is naming both at once.
 	if err := config.ValidateRoutingMode(ov.Provider, ov.Model, ov.Tier); err != nil {
 		return mergedDef{}, err
+	}
+	if err := config.ValidateAgentRouting(ov.Routing, ov.Provider, ov.Model); err != nil {
+		return mergedDef{}, fmt.Errorf("AgentDef tool: %w", err)
 	}
 	return ov, nil
 }
@@ -1161,6 +1169,10 @@ type mergedDef struct {
 	// per-field merge could pair one layer's default with another's list).
 	// Content-identifying (hashed). Kept in sync with lookup.SubstrateAgentDef.
 	Decision *config.AgentDecision `json:"decision,omitempty"`
+	// Routing (RFC EI P4): queue-aware provider/model choice at run start.
+	// Content-identifying; an overlay REPLACES it whole. Kept in sync with
+	// lookup.SubstrateAgentDef.
+	Routing *config.AgentRouting `json:"routing,omitempty"`
 	// ToolChoice (RFC DI): whether and which tool the model must call.
 	// Content-identifying; an overlay REPLACES it whole (its fields constrain
 	// each other, so a per-field merge could mix two layers' intent).
@@ -1318,6 +1330,9 @@ func (d *mergedDef) applyOverlay(ov mergedDef) {
 	// author left them.
 	if ov.Provider != "" || ov.Model != "" {
 		d.Tier = ""
+		// Queue-aware routing chooses among a tier's candidates; a pin has
+		// one. The overlay's own routing block, if any, is applied below.
+		d.Routing = nil
 	}
 	if ov.Tier != "" {
 		d.Provider, d.Model = "", ""
@@ -1341,6 +1356,10 @@ func (d *mergedDef) applyOverlay(ov mergedDef) {
 	// parent's top_p (MergeSampling overlays non-nil fields onto the base).
 	if !ov.Sampling.IsZero() {
 		d.Sampling = config.MergeSampling(d.Sampling, ov.Sampling)
+	}
+	// Routing is replaced WHOLE when the overlay sets it.
+	if ov.Routing != nil {
+		d.Routing = ov.Routing.Clone()
 	}
 	// ToolChoice is replaced WHOLE when the overlay sets it (MergeToolChoice).
 	if ov.ToolChoice != nil {
@@ -1615,6 +1634,7 @@ func staticToMergedDef(s config.AgentDef) mergedDef {
 		Tier:                  s.Tier,
 		Effort:                s.Effort,
 		Sampling:              s.Sampling.Clone(),
+		Routing:               s.Routing.Clone(),
 		ToolChoice:            s.ToolChoice.Clone(),
 		OutputFormat:          s.OutputFormat.Clone(),
 		Compaction:            s.Compaction.Clone(),
@@ -1820,6 +1840,10 @@ func signFromMergedDef(name string, def mergedDef) string {
 	// Decision is content-identifying: it decides which model answers.
 	if dc := def.Decision; !dc.IsZero() {
 		c.Decision = &agents.Decision{Default: dc.Default, Models: dc.Models}
+	}
+	// Routing is content-identifying, same as Sampling.
+	if r := def.Routing; !r.IsZero() {
+		c.Routing = &agents.Routing{QueueAware: r.QueueAware, SwitchAfterMS: r.SwitchAfterMS}
 	}
 	// ToolChoice is content-identifying, same as Sampling.
 	if tc := def.ToolChoice; !tc.IsZero() {

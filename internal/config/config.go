@@ -1544,6 +1544,12 @@ type AgentDef struct {
 	// matrix series; PR 1 plumbs the field through unchanged.
 	Effort string `yaml:"effort"`
 
+	// Routing is how the agent's provider and model are chosen at run start
+	// (RFC EI P4): `queue_aware` passes over a candidate whose provider is busy
+	// enough that the first call would wait past `switch_after_ms`. nil =
+	// today's choice exactly. Content-identifying, like Sampling.
+	Routing *AgentRouting `yaml:"routing,omitempty"`
+
 	// Sampling tunes the per-agent LLM sampling parameters (temperature,
 	// top_p, …). nil = use the provider/model defaults. Per-run callers can
 	// override individual fields via the /v1/runs `sampling` block (per-run
@@ -7210,6 +7216,61 @@ func ValidateRoutingMode(provider, model, tier string) error {
 	return nil
 }
 
+// AgentRouting is the per-agent `routing:` block (RFC EI P4): how the agent's
+// provider and model are chosen when the run starts.
+type AgentRouting struct {
+	// QueueAware passes over a cascade candidate whose provider is so busy
+	// that the run's first call would wait longer than SwitchAfterMS, for the
+	// next available candidate. Tier-routed agents only.
+	QueueAware bool `json:"queue_aware,omitempty" yaml:"queue_aware,omitempty"`
+	// SwitchAfterMS is the estimated wait that makes a candidate be passed
+	// over. 0 = the default (DefaultSwitchAfterMS).
+	SwitchAfterMS int `json:"switch_after_ms,omitempty" yaml:"switch_after_ms,omitempty"`
+}
+
+// DefaultSwitchAfterMS is routing.switch_after_ms when queue_aware is set
+// without it.
+const DefaultSwitchAfterMS = 20000
+
+// SwitchAfter is the wait that passes a candidate over: switch_after_ms, or
+// the default.
+func (r *AgentRouting) SwitchAfter() time.Duration {
+	if r == nil || r.SwitchAfterMS <= 0 {
+		return DefaultSwitchAfterMS * time.Millisecond
+	}
+	return time.Duration(r.SwitchAfterMS) * time.Millisecond
+}
+
+// IsZero reports a block that sets nothing, which reads as no block.
+func (r *AgentRouting) IsZero() bool { return r == nil || (!r.QueueAware && r.SwitchAfterMS == 0) }
+
+// Clone returns a copy, nil for nil, so a merged definition never shares the
+// block with the layer it came from.
+func (r *AgentRouting) Clone() *AgentRouting {
+	if r == nil {
+		return nil
+	}
+	c := *r
+	return &c
+}
+
+// ValidateAgentRouting refuses a routing block that cannot do what it says.
+// Queue-aware routing chooses among a tier's candidates, so a pinned agent —
+// which has one place to go — cannot have it. Exported for the substrate
+// write path (AgentDef create and fork), which refuses the same thing.
+func ValidateAgentRouting(r *AgentRouting, provider, model string) error {
+	if r == nil {
+		return nil
+	}
+	if r.SwitchAfterMS < 0 {
+		return errors.New("routing.switch_after_ms must be >= 0")
+	}
+	if r.QueueAware && (provider != "" || model != "") {
+		return errors.New("routing.queue_aware chooses among a tier's candidates; a provider/model pin has only one")
+	}
+	return nil
+}
+
 // ValidateNamedScopePattern checks the pattern half of a `named:<pattern>`
 // capability grant — the segment-glob matcher lives in the AgentDef tool
 // (matchNamedScope), and this is the shape it will accept.
@@ -8103,6 +8164,9 @@ func validate(c *Config) error {
 		hasPin := agent.Provider != "" || agent.Model != ""
 		hasTier := agent.Tier != ""
 		if err := ValidateRoutingMode(agent.Provider, agent.Model, agent.Tier); err != nil {
+			return fmt.Errorf("agent %q: %w", name, err)
+		}
+		if err := ValidateAgentRouting(agent.Routing, agent.Provider, agent.Model); err != nil {
 			return fmt.Errorf("agent %q: %w", name, err)
 		}
 		if err := c.CheckModelKind(agent.Model, ModelKindChat); err != nil {

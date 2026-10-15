@@ -300,6 +300,26 @@ tools: [Read, WebFetch]
 
 The library `tiers.high` is ignored for this agent; the resolver walks the agent-declared list instead.
 
+### Per-agent `routing:` — skip a busy provider at run start
+
+The cascade takes the first *available* candidate, however busy its provider is. With a capped local model (`providers.<id>.max_concurrent`), a run can then wait minutes for a slot while a cloud candidate further down the tier sits idle. `routing.queue_aware` lets an agent go past it:
+
+```yaml
+agents:
+  triage:
+    tier: middle
+    routing:
+      queue_aware: true
+      switch_after_ms: 20000   # default 20000
+```
+
+When a run of this agent starts (a new run, a session continuation, a sub-agent), each available candidate's estimated wait is checked in cascade order, and one over `switch_after_ms` is passed over for the next. If every available candidate is over, the one with the shortest wait wins. The estimate is the provider's chat lane: nothing while a slot is free; otherwise the calls queued ahead, shared over the lane's slots, times the model's median call time (measured by `timeout_scaling`, which is on by default), plus one call when `max_models_in_flight` is reached without this model. A model with no measured call yet counts as no wait, so it is never passed over on a guess. A pass-over is logged (`queue-aware routing: agent "triage" runs on …, passing over …`).
+
+- It decides once, at the start: the run then stays where it landed. A resume, a retune or a compaction summary resolves the run where it is.
+- Tier-routed agents only. Setting it on an agent with a provider/model pin is refused (config load and AgentDef create/fork), and a fork that pins a model drops the block.
+- It is part of the agent's content hash, like `sampling`. It is set in yaml or through AgentDef create/fork; agent `.md` frontmatter does not carry it, and there is no per-run override yet.
+- Estimates are per replica, like the lanes they read.
+
 ### Why this pattern
 
 This is the most common production setup for operators with multiple provider keys. The library `provider_priority` does the cost-cascade work; per-agent overrides handle the exceptions (privacy, capability, cost-cap-on-sensitive-paths).

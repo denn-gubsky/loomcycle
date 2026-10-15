@@ -10,6 +10,7 @@ package concurrency
 
 import (
 	"context"
+	"strings"
 	"sync"
 	"time"
 )
@@ -137,6 +138,28 @@ func (g *ModelGate) enabled() bool {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	return g.max > 0
+}
+
+// blocksNew reports whether a NEW call to model would have to wait for its
+// model: the gate is at its cap and model is not among those in flight. model
+// may be a plain name whose identity in flight carries a context size
+// ("m@65536" for "m"), as a caller that has not built the request knows only
+// the name.
+func (g *ModelGate) blocksNew(model string) bool {
+	if g == nil || model == "" {
+		return false
+	}
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if g.max <= 0 {
+		return false
+	}
+	for id := range g.inFlight {
+		if id == model || strings.HasPrefix(id, model+"@") {
+			return false
+		}
+	}
+	return len(g.inFlight) >= g.max
 }
 
 // SetLimit changes the cap and the anti-starvation bound in place (config
