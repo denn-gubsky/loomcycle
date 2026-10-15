@@ -187,7 +187,22 @@ been primitives plus hardening: memory, documents, teams, sandboxing, retention
 and erasure. The agentic-memory subsystem and the document surfaces built on it
 remain the main direction.
 
-The most recent line (v1.112.0) is about handing a token to a machine you do not
+The most recent line (v1.114.0) is about sharing a busy local model host. Every
+run, session message and gateway request waits in one fair run queue, and a run
+whose model call waits for a busy provider lends its run slot to one bound
+elsewhere. An agent or a single run can skip a busy provider for an idle
+candidate of its tier, and a lane can hold a model that computes one request at a
+time to one call. Forge webhooks can filter on the signed body, start one run
+per event and carry a stored bearer. See "Per-provider concurrency" in
+[`docs/PROVIDERS.md`](docs/PROVIDERS.md) and
+[`docs/FORGE_WEBHOOKS.md`](docs/FORGE_WEBHOOKS.md).
+
+Before it, v1.113.0 queued a run that cannot start at once instead of refusing
+it, made a provider's `max_concurrent` count model calls in a lane per kind of
+model, and let an agent read a repository the runtime fetched itself, so the
+forge token never enters a shell.
+
+Earlier, v1.112.0 was about handing a token to a machine you do not
 control, and running agents on content you may not keep. A token can expire, be
 limited to certain agents, be locked out of per-run settings and be rate
 limited. A no-trace run (`retention: "none"`, set on a run, an agent or a
@@ -197,7 +212,7 @@ run tree can be deleted, token budgets can be enforced on runs in flight, and
 the raw model endpoints are now gated and metered. See "No-trace runs" and
 "Multi-tenant authentication" in [`docs/CONFIGURATION.md`](docs/CONFIGURATION.md).
 
-Before it, v1.111.0 made the runs a team walk's member starts part
+Earlier, v1.111.0 made the runs a team walk's member starts part
 of the walk. A sub-agent, at any depth, carries its member's walk, state and
 visit, so it is in the walk's listing and on the walk's stream; it is told from
 a member by its parent run. Any run can also be asked for its children: a paged
