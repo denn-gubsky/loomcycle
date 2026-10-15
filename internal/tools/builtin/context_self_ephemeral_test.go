@@ -49,3 +49,30 @@ func TestContextSelf_ListsEphemeralVolumesTheRecordHas(t *testing.T) {
 		t.Errorf("remote = %v, want no path and a note", v)
 	}
 }
+
+// A volume this process holds as writable, but which a run on another
+// replica made read-only, is reported read-only: the record wins, as it does
+// for a write. op=self used to read the record only for names the set lacked.
+func TestContextSelf_ReportsReadOnlyFromTheRecordForAVolumeTheSetHas(t *testing.T) {
+	set := tools.NewEphemeralVolumeSet()
+	set.Add("work", tools.EphemeralVolumeRef{Root: "/vol/work"})
+	ctx := tools.WithEphemeralVolumes(context.Background(), set)
+	ctx = tools.WithEphemeralRecords(ctx, func(context.Context) ([]tools.EphemeralRecord, error) {
+		return []tools.EphemeralRecord{{Name: "work", Root: "/vol/work", ReadOnly: true}}, nil
+	})
+	res, _ := (&Context{}).Execute(ctx, json.RawMessage(`{"op":"self"}`))
+	if res.IsError {
+		t.Fatalf("self: %s", res.Text)
+	}
+	var out struct {
+		Eph struct {
+			Volumes []map[string]any `json:"volumes"`
+		} `json:"ephemeral_volumes"`
+	}
+	if err := json.Unmarshal([]byte(res.Text), &out); err != nil {
+		t.Fatal(err)
+	}
+	if len(out.Eph.Volumes) != 1 || out.Eph.Volumes[0]["mode"] != "ro" {
+		t.Errorf("ephemeral volumes = %v, want work once, mode ro", out.Eph.Volumes)
+	}
+}
