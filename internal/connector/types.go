@@ -1063,6 +1063,11 @@ type RunOverrides struct {
 	// adopts them at its next operator turn. nil = leave what the run has.
 	ToolChoice   *config.ToolChoice   `json:"tool_choice,omitempty"`
 	OutputFormat *config.OutputFormat `json:"output_format,omitempty"`
+	// Routing REPLACES the run's own `routing:` block whole (queue_aware,
+	// switch_after_ms), as at run start; {} turns queue-aware routing off. It
+	// governs the move after a preempted lease from the next call boundary.
+	// nil = leave what the run has.
+	Routing *config.AgentRouting `json:"routing,omitempty"`
 }
 
 // IsZero reports whether the caller supplied no override at all. Transports
@@ -1079,7 +1084,7 @@ func (o RunOverrides) IsZero() bool {
 		o.MaxConcurrentChildren == 0 && o.RetryAttempts == nil &&
 		o.MemoryInjectMaxTokens == nil && o.MemoryIndexMaxBytes == nil &&
 		o.InjectToolGuide == nil && o.Interactive == nil && o.Interruption == nil &&
-		o.Review == nil && o.ToolChoice == nil && o.OutputFormat == nil
+		o.Review == nil && o.ToolChoice == nil && o.OutputFormat == nil && o.Routing == nil
 }
 
 // ConfiguredRunRequest is a run to create without starting it: a spawn request

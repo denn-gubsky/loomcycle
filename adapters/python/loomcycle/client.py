@@ -1616,6 +1616,7 @@ class LoomcycleClient:
         review: Optional[bool] = None,
         tool_choice: Optional[Mapping[str, Any]] = None,
         output_format: Optional[Mapping[str, Any]] = None,
+        routing: Optional[Mapping[str, Any]] = None,
     ) -> Mapping[str, Any]:
         """Push an operator steering message into a LIVE interactive run
         (RFC AI; mirror of ``POST /v1/runs/{run_id}/input``). The run must
@@ -1659,7 +1660,7 @@ class LoomcycleClient:
         )
         if interruption is not None:
             req.interruption.CopyFrom(_build_interruption(interruption))
-        _set_retuned_shape(req, tool_choice, output_format)
+        _set_retuned_shape(req, tool_choice, output_format, routing)
         try:
             resp = await self._stub.RunInput(req, metadata=self._auth_metadata())
         except grpc.aio.AioRpcError as e:
@@ -1687,6 +1688,7 @@ class LoomcycleClient:
         review: Optional[bool] = None,
         tool_choice: Optional[Mapping[str, Any]] = None,
         output_format: Optional[Mapping[str, Any]] = None,
+        routing: Optional[Mapping[str, Any]] = None,
     ) -> Mapping[str, Any]:
         """Change a run's settings WITHOUT sending it a turn (mirror of
         ``POST /v1/runs/{run_id}/retune``).
@@ -1725,7 +1727,7 @@ class LoomcycleClient:
         )
         if interruption is not None:
             req.interruption.CopyFrom(_build_interruption(interruption))
-        _set_retuned_shape(req, tool_choice, output_format)
+        _set_retuned_shape(req, tool_choice, output_format, routing)
         try:
             resp = await self._stub.RetuneRun(req, metadata=self._auth_metadata())
         except grpc.aio.AioRpcError as e:
@@ -2677,14 +2679,20 @@ def _set_retuned_shape(
     req: Any,
     tool_choice: Optional[Mapping[str, Any]],
     output_format: Optional[Mapping[str, Any]],
+    routing: Optional[Mapping[str, Any]] = None,
 ) -> None:
-    """Set tool_choice / output_format on a RetuneRun or RunInput request.
-    None leaves the field unset, which the server reads as "keep what the run
-    has"; a dict (even ``{"mode": "auto"}``) is sent and replaces it."""
+    """Set tool_choice / output_format / routing on a RetuneRun or RunInput
+    request. None leaves the field unset, which the server reads as "keep what
+    the run has"; a dict (even ``{"mode": "auto"}``, or ``{}`` for routing) is
+    sent and replaces it."""
     if tool_choice is not None:
         req.tool_choice.CopyFrom(_build_tool_choice(tool_choice))
     if output_format is not None:
         req.output_format.CopyFrom(_build_output_format(output_format))
+    if routing is not None:
+        # Sent even when empty: {} turns queue-aware routing off, which an
+        # unset field (keep what the run has) would not.
+        req.routing.CopyFrom(_build_routing(routing))
 
 
 def _build_sampling(d: Mapping[str, Any]) -> "pb.Sampling":

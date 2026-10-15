@@ -1016,6 +1016,15 @@ export interface RunOverrideOptions {
    *  agent's own whole. On a retune it replaces the run's own and takes
    *  effect from the run's next turn; a retune cannot remove it. */
   outputFormat?: OutputFormatOptions;
+  /** The run's own `routing:` block: how the agent's tier candidates are
+   *  walked — at the run's start, and when the run, having lost its lane
+   *  slot, would wait too long for its next call. REPLACES the agent's block
+   *  whole — `{}` turns queue-aware routing off. It chooses only among the
+   *  candidates the definition declares. `queue_aware` on an agent (or a run)
+   *  pinned to a provider or model is refused (400). On a retune it replaces
+   *  the run's own and is read at the run's next call boundary. A sub-agent
+   *  of the same definition inherits it. */
+  routing?: AgentRouting;
 
 }
 
@@ -1160,12 +1169,6 @@ export interface RunOptions extends RunOverrideOptions {
    *  defers to the provider/driver default). Distinct from a model's output
    *  cap; primarily for local inference (Ollama num_ctx). */
   maxContextTokens?: number;
-  /** The run's own `routing:` block: how the agent's tier candidates are
-   *  walked when the run starts. REPLACES the agent's block whole — `{}`
-   *  turns queue-aware routing off for this run. It chooses only among the
-   *  candidates the definition declares. `queue_aware` on an agent (or a run)
-   *  pinned to a provider or model is refused (400). Set at start only. */
-  routing?: AgentRouting;
 
   /** RFC AI — start a PERSISTENT interactive run that parks at end_turn
    *  awaiting operator steering instead of terminating. The stream emits an
@@ -1450,8 +1453,6 @@ export interface ContinueOptions extends RunOverrideOptions {
   /** Per-continuation context-WINDOW override in tokens — see
    *  {@link RunOptions.maxContextTokens}. */
   maxContextTokens?: number;
-  /** The continuation's own `routing:` block — see {@link RunOptions.routing}. */
-  routing?: AgentRouting;
   /** RFC AI — park this continuation at end_turn for operator steering. See
    *  {@link RunOptions.interactive}. */
   interactive?: boolean;

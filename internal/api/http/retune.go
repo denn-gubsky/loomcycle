@@ -67,6 +67,12 @@ type runOverridesWire struct {
 	// output_format, only to replace it.
 	ToolChoice   *config.ToolChoice   `json:"tool_choice,omitempty"`
 	OutputFormat *config.OutputFormat `json:"output_format,omitempty"`
+
+	// Routing REPLACES the run's own `routing:` block whole, as it does at
+	// start ({} turns queue-aware routing off): how the definition's tier
+	// candidates are walked when the run, having lost its lane slot, would
+	// wait too long. Read at the run's next call boundary.
+	Routing *config.AgentRouting `json:"routing,omitempty"`
 }
 
 // isZero reports whether the caller supplied nothing at all.
@@ -85,7 +91,7 @@ func (w *runOverridesWire) isZero() bool {
 		w.MaxConcurrentChildren == 0 && w.RetryAttempts == nil &&
 		w.MemoryInjectMaxTokens == nil && w.MemoryIndexMaxBytes == nil &&
 		w.InjectToolGuide == nil && w.Interactive == nil && w.Interruption == nil &&
-		w.Review == nil && w.ToolChoice == nil && w.OutputFormat == nil
+		w.Review == nil && w.ToolChoice == nil && w.OutputFormat == nil && w.Routing == nil
 }
 
 // split turns the wire object into the three records the run's configuration
@@ -313,10 +319,17 @@ func (s *Server) retuneRun(ctx context.Context, run store.Run, in *runOverridesW
 			}
 			merged.OutputFormat = in.OutputFormat.Clone()
 		}
+		if in.Routing != nil {
+			// Whole, as at start: an empty block is kept (not cleared) so it
+			// still replaces the definition's.
+			merged.QueueRouting = in.Routing.Clone()
+		}
 
-		// Refuse now, not next turn.
+		// Refuse now, not next turn — the routing block included: queue_aware
+		// on a run that resolves to a pin is refused as at start.
 		if _, err := s.effectiveDef(ctx, agentDef, runOverrides{
 			Routing: merged.Routing, Resources: merged.Resources, Tuning: merged.Tuning,
+			QueueRouting: merged.QueueRouting,
 		}); err != nil {
 			return err
 		}
@@ -671,6 +684,7 @@ func (w *runOverridesWire) setFields() []string {
 	add("interruption", w.Interruption != nil)
 	add("tool_choice", w.ToolChoice != nil)
 	add("output_format", w.OutputFormat != nil)
+	add("routing", w.Routing != nil)
 	return f
 }
 

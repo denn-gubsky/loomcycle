@@ -394,6 +394,7 @@ func (s *Server) RetuneRun(ctx context.Context, runID string, ov connector.RunOv
 		MemoryIndexMaxBytes: ov.MemoryIndexMaxBytes, InjectToolGuide: ov.InjectToolGuide,
 		Interactive: ov.Interactive, Interruption: ov.Interruption, Review: ov.Review,
 		ToolChoice: ov.ToolChoice, OutputFormat: ov.OutputFormat,
+		Routing: ov.Routing,
 	}
 	_, err = s.retuneRun(ctx, run, &wire)
 	return err

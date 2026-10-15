@@ -32,29 +32,42 @@ func isRunStart(ctx context.Context) bool {
 	return v
 }
 
-// queueMoveFn is the loop's MoveForQueue for a queue-aware, tier-routed run,
-// nil for any other. At a call boundary after the first, a run that holds no
-// slot of its provider's chat lane (its lease was preempted or expired, or the
-// lane keeps none) and whose next call there would wait past switch_after_ms
-// is resolved again as a run start is — the same cascade, the same estimate —
-// and moves if that picks somewhere else. Holding a lease, it never moves: the
-// lease is its warm prompt cache, and moving would throw it away.
+// queueMoveFn is the loop's MoveForQueue for a tier-routed run, nil for one
+// pinned to a provider or model. At a call boundary after the first, a run
+// that holds no slot of its provider's chat lane (its lease was preempted or
+// expired, or the lane keeps none) and whose next call there would wait past
+// switch_after_ms is resolved again as a run start is — the same cascade, the
+// same estimate — and moves if that picks somewhere else. Holding a lease, it
+// never moves: the lease is its warm prompt cache, and moving would throw it
+// away.
 //
-// def is the run's EFFECTIVE definition (a per-run `routing` already applied),
-// and the arguments are what the run's own start resolved with.
+// Whether it is queue-aware, and its switch_after_ms, are the run's routing
+// block as it is NOW: a retune can switch it on, off or change the threshold
+// mid-run (currentQueueRouting). It is read only once the cheap checks say a
+// move is in question — no lease held, some wait ahead — so a run whose lane
+// is not busy costs no store read.
+//
+// def is the run's EFFECTIVE definition at start (a per-run `routing` already
+// applied), and the arguments are what the run's own start resolved with.
 func (s *Server) queueMoveFn(def config.AgentDef, runID, tenantID, userID, agentName, userTier string, restricted bool) func(context.Context, providers.Provider, string) (providers.Provider, string, string, bool) {
-	if def.Routing == nil || !def.Routing.QueueAware || !routesByTier(def) || s.resolver == nil {
+	if !routesByTier(def) || s.resolver == nil {
 		return nil
 	}
-	switchAfter := def.Routing.SwitchAfter()
 	return func(ctx context.Context, current providers.Provider, model string) (providers.Provider, string, string, bool) {
 		if s.callSched.HoldsLease(current.ID(), config.ModelKindChat, runID) {
 			return nil, "", "", false
 		}
-		if s.estimatedQueueWait(current.ID(), model) <= switchAfter {
+		wait := s.estimatedQueueWait(current.ID(), model)
+		if wait <= 0 {
 			return nil, "", "", false
 		}
-		pid, m, effort, err := s.resolveAgentDef(withRunStart(ctx), def, tenantID, userID, agentName, userTier, restricted)
+		routing := s.currentQueueRouting(ctx, runID, def.Routing)
+		if routing == nil || !routing.QueueAware || wait <= routing.SwitchAfter() {
+			return nil, "", "", false
+		}
+		eff := def
+		eff.Routing = routing
+		pid, m, effort, err := s.resolveAgentDef(withRunStart(ctx), eff, tenantID, userID, agentName, userTier, restricted)
 		if err != nil || (pid == current.ID() && m == model) {
 			return nil, "", "", false
 		}
@@ -64,6 +77,23 @@ func (s *Server) queueMoveFn(def config.AgentDef, runID, tenantID, userID, agent
 		}
 		return p, m, effort, true
 	}
+}
+
+// currentQueueRouting is the run's routing block as last written to its record
+// — at start, or by a retune since — else fallback, the block its definition
+// started with.
+func (s *Server) currentQueueRouting(ctx context.Context, runID string, fallback *config.AgentRouting) *config.AgentRouting {
+	if s.store == nil || runID == "" {
+		return fallback
+	}
+	run, err := s.store.GetRun(ctx, runID)
+	if err != nil {
+		return fallback
+	}
+	if rec, ok := decodeRunConfig(run.RunConfig); ok && rec.QueueRouting != nil {
+		return rec.QueueRouting
+	}
+	return fallback
 }
 
 // estimatedQueueWait is how long a run's first call on (provider, model) would

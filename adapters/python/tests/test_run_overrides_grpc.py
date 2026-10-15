@@ -351,3 +351,34 @@ async def test_omitting_user_credentials_sends_an_empty_map_not_an_error():
     async for _ in client.run_streaming(agent="default", segments=[]):
         pass
     assert dict(stub.req.user_credentials) == {}
+
+
+@pytest.mark.asyncio
+async def test_retune_and_input_carry_the_routing_block():
+    """Both steer-side requests replace the run's routing block whole; an empty
+    dict is sent (it turns queue-aware routing off), and None leaves it unset —
+    "keep what the run has"."""
+    client = _make_client()
+    captured: list = []
+
+    async def fake_retune(req, metadata=None):
+        captured.append(req)
+        return pb.RetuneRunResponse(run_id="r_1", retuned=True)
+
+    async def fake_input(req, metadata=None):
+        captured.append(req)
+        return pb.RunInputResponse(run_id="r_1", delivered=True)
+
+    client._stub.RetuneRun = fake_retune  # type: ignore[attr-defined]
+    client._stub.RunInput = fake_input  # type: ignore[attr-defined]
+
+    await client.retune_run("r_1", routing={"queue_aware": True, "switch_after_ms": 15000})
+    assert captured[-1].HasField("routing")
+    assert captured[-1].routing.queue_aware is True and captured[-1].routing.switch_after_ms == 15000
+
+    await client.run_input("r_1", "go on", routing={})
+    assert captured[-1].HasField("routing"), "an empty routing block was dropped as if unset"
+    assert captured[-1].routing.queue_aware is False
+
+    await client.retune_run("r_1", model="m")
+    assert not captured[-1].HasField("routing")

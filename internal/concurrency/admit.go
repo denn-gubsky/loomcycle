@@ -36,6 +36,10 @@ type AdmitRequest struct {
 	// once per reason: a run over its user's cap that then finds every slot
 	// taken is reported twice. An error ends the wait and is returned.
 	OnQueued func(QueueInfo) error
+	// Slot, when set, is bound to the admitted run, so it can lend its global
+	// slot while a call of it waits for a lane (RunSlot). The release Admit
+	// returns then ends it.
+	Slot *RunSlot
 }
 
 // Admit takes a run slot for a NEW run. Unlike Acquire it never times out: a
@@ -105,7 +109,7 @@ func (s *Semaphore) admitUserLocal(ctx context.Context, key userKey, cap int, r 
 		s.mu.Unlock()
 		return &ErrPerUserQuotaExhausted{TenantID: key.tenant, UserID: key.user, Cap: cap}
 	}
-	if s.queued >= s.maxQueue {
+	if s.queued+s.lent >= s.maxQueue {
 		s.mu.Unlock()
 		return &BackpressureError{msg: "queue full"}
 	}
@@ -197,7 +201,7 @@ func (s *Semaphore) admitUserShared(ctx context.Context, qs userQuotaGate, key u
 		s.mu.Unlock()
 		return &ErrPerUserQuotaExhausted{TenantID: key.tenant, UserID: key.user, Cap: cap}
 	}
-	if s.queued >= s.maxQueue {
+	if s.queued+s.lent >= s.maxQueue {
 		s.mu.Unlock()
 		return &BackpressureError{msg: "queue full"}
 	}
@@ -258,9 +262,9 @@ func (s *Semaphore) admitGlobal(ctx context.Context, key, acct userKey, acctQS u
 	if s.active < s.maxConcurrent {
 		s.active++
 		s.mu.Unlock()
-		return s.releaseFn(acct, acctQS), nil
+		return s.runRelease(acct, acctQS, r.Slot), nil
 	}
-	if r.Reject || s.queued >= s.maxQueue {
+	if r.Reject || s.queued+s.lent >= s.maxQueue {
 		msg := "queue full"
 		if r.Reject {
 			msg = "no free slot"
@@ -296,7 +300,7 @@ func (s *Semaphore) admitGlobal(ctx context.Context, key, acct userKey, acctQS u
 	}
 	select {
 	case <-w.ch:
-		return s.releaseFn(acct, acctQS), nil
+		return s.runRelease(acct, acctQS, r.Slot), nil
 	case <-ctx.Done():
 		s.cancelWaiter(w, acct, acctQS)
 		return nil, ctx.Err()

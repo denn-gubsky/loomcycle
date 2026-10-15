@@ -48,6 +48,9 @@ type admitArgs struct {
 	// forward delivers a queued or admitted event to the caller. The event
 	// is already persisted.
 	forward func(providers.Event)
+	// slot is bound to the admitted run so its turn calls can lend its
+	// global slot while they wait for a provider lane. nil lends nothing.
+	slot *concurrency.RunSlot
 }
 
 // admitRun takes a run slot for a new run. A run that has to wait gets its
@@ -84,6 +87,7 @@ func (s *Server) admitRun(ctx context.Context, a admitArgs) (release func(), q *
 		Ticket:   a.agentID,
 		Reject:   a.reject,
 		OnQueued: onQueued,
+		Slot:     a.slot,
 	})
 	if err == nil && (q != nil || a.waitOutPause) {
 		// A paused runtime starts nothing: a run that got its slot during a

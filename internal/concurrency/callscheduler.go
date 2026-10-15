@@ -198,8 +198,10 @@ func (s *CallScheduler) acquire(ctx context.Context, providerID, kind string, c 
 // estimate for choosing where a run goes (queue-aware routing), not a promise.
 //
 //   - A free lane slot waits nothing; a full lane waits for the calls queued
-//     ahead and this one, shared across its slots: (queued+1)/max × callTime.
-//     A slot held for the run that last used it counts as taken.
+//     ahead and this one, shared across its slots: (ahead+1)/max × callTime.
+//     A slot held for the run that last used it counts as taken. A queued call
+//     held back by its own model's cap is not ahead: it cannot take a freed
+//     slot, so a busy capped model does not make every other model look slow.
 //   - A model at its own cap in the lane (LaneConfig.ModelCaps) waits for its
 //     own calls instead, whatever the lane's slots: the calls queued for that
 //     model ahead and this one, shared across the model's cap:
@@ -219,8 +221,8 @@ func (s *CallScheduler) EstimatedWait(providerID, kind, model string, callTime t
 	if lane != nil {
 		if atCap, capN, queued := lane.modelWait(model); atCap {
 			wait = time.Duration(queued+1) * callTime / time.Duration(capN)
-		} else if st := lane.Stats(); st.MaxConcurrent > 0 && st.Active+st.Reserved >= st.MaxConcurrent {
-			wait = time.Duration(st.Queued+1) * callTime / time.Duration(st.MaxConcurrent)
+		} else if full, maxC, ahead := lane.slotWait(); full {
+			wait = time.Duration(ahead+1) * callTime / time.Duration(maxC)
 		}
 	}
 	if gate.blocksNew(model) {

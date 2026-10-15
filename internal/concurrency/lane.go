@@ -525,6 +525,19 @@ func (l *Lane) Stats() LaneStats {
 // modelWait reports, for a NEW call to model, whether its model is at its cap,
 // with that cap and the calls queued for the same capped model. model may be a
 // plain name whose identities in flight carry a context size (see ModelCaps).
+// slotWait reports whether every slot of the lane is taken, with the lane's
+// cap and the queued calls that could take a freed slot before a new one: a
+// call held back by its own model's cap (ModelCaps) cannot, so it is not
+// counted as ahead.
+func (l *Lane) slotWait() (full bool, maxC, ahead int) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.cfg.MaxConcurrent <= 0 || l.active+l.reserved < l.cfg.MaxConcurrent {
+		return false, l.cfg.MaxConcurrent, 0
+	}
+	return true, l.cfg.MaxConcurrent, l.fg.count(l.eligible) + l.bg.count(l.eligible)
+}
+
 func (l *Lane) modelWait(model string) (atCap bool, capN, queued int) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
