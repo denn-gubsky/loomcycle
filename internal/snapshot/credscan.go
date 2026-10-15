@@ -321,7 +321,14 @@ func (c *credScan) run(ctx context.Context, opts RestoreOptions, result *Restore
 					uncheckedCred++
 					continue
 				}
-				if opts.CredentialExists(ctx, tenant, agent, b.UserID, r.name) {
+				// A tenant-only reference is asked at tenant level, where it
+				// resolves: an agent's or a user's credential of the name
+				// would not stand in for it.
+				askAgent, askUser := agent, b.UserID
+				if r.tenantOnly {
+					askAgent, askUser = "", ""
+				}
+				if opts.CredentialExists(ctx, tenant, askAgent, askUser, r.name) {
 					continue
 				}
 				if r.tenantOnly {
