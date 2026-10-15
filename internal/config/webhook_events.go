@@ -108,8 +108,8 @@ var webhookProviders = map[string]WebhookProvider{
 			// Not object_kind == "issue": the Issue Hook also carries work
 			// items, as object_kind work_item. A merge request's body holds
 			// every other path, and always its last commit.
-			"issue": {"$.object_kind", "$.object_attributes.iid", "$.project.id", "!$.object_attributes.last_commit"},
-			"pipeline":      {`$.object_kind == "pipeline"`, "$.object_attributes.id", "$.project.id"},
+			"issue":    {"$.object_kind", "$.object_attributes.iid", "$.project.id", "!$.object_attributes.last_commit"},
+			"pipeline": {`$.object_kind == "pipeline"`, "$.object_attributes.id", "$.project.id"},
 		},
 		// "Push Hook" → push, "Merge Request Hook" → merge_request.
 		canonical: func(v string) string {
