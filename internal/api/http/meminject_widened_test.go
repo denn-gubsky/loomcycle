@@ -228,7 +228,7 @@ func TestCallerSegments_RefuseTheWidenedFamilies(t *testing.T) {
 	// bodies for either widened family, so both render empty whatever the flag
 	// says. The refusal is the only signal that the GUARD is what stopped them,
 	// and it is the thing that would change if the flag were flipped.
-	var captured strings.Builder
+	var captured syncBuffer // the process-wide logger has concurrent writers
 	prev := log.Writer()
 	log.SetOutput(&captured)
 	t.Cleanup(func() { log.SetOutput(prev) })
@@ -294,7 +294,7 @@ func TestCallerSegments_OperatorAuthoredTeamResolvesTheWidenedFamilies(t *testin
 
 	// Same team, same template, a variable aiming at a host the operator never
 	// listed. Refused, named, and — the part that matters — NOT FETCHED.
-	var captured strings.Builder
+	var captured syncBuffer // the process-wide logger has concurrent writers
 	prev := log.Writer()
 	log.SetOutput(&captured)
 	t.Cleanup(func() { log.SetOutput(prev) })
@@ -359,7 +359,7 @@ func TestCallerSegments_ThreadedOutputCannotBorrowTheTeamsAuthority(t *testing.T
 	// Without it, flipping the expander's flag alone leaves every assertion
 	// green on the strength of the collection gate, and half the fix is
 	// untested.
-	var captured strings.Builder
+	var captured syncBuffer // the process-wide logger has concurrent writers
 	prev := log.Writer()
 	log.SetOutput(&captured)
 	t.Cleanup(func() { log.SetOutput(prev) })
