@@ -695,27 +695,42 @@ func TestFetch_AnObjectThatInflatesPastTheLimitFailsWithoutBeingInflated(t *test
 // declares, and its (compressed) body.
 func packOf(t *testing.T, objType byte, declared uint64, body []byte) []byte {
 	t.Helper()
+	return packOfN(t, 1, objType, declared, body)
+}
+
+// packOfN is packOf with n copies of the object.
+func packOfN(t *testing.T, n uint32, objType byte, declared uint64, body []byte) []byte {
+	t.Helper()
 	var b bytes.Buffer
 	b.WriteString("PACK")
 	_ = binary.Write(&b, binary.BigEndian, uint32(2))
-	_ = binary.Write(&b, binary.BigEndian, uint32(1))
-	// The object header: 3 bits of type and the length, 4 bits then 7 at a time.
-	first := objType<<4 | byte(declared&0x0f)
-	declared >>= 4
-	for declared > 0 {
-		b.WriteByte(first | 0x80)
-		first = byte(declared & 0x7f)
-		declared >>= 7
+	_ = binary.Write(&b, binary.BigEndian, n)
+	for i := uint32(0); i < n; i++ {
+		// The object header: 3 bits of type and the length, 4 bits then 7 at a time.
+		d := declared
+		first := objType<<4 | byte(d&0x0f)
+		d >>= 4
+		for d > 0 {
+			b.WriteByte(first | 0x80)
+			first = byte(d & 0x7f)
+			d >>= 7
+		}
+		b.WriteByte(first)
+		if objType == 7 { // a delta against an object named by its sha
+			b.Write(make([]byte, 20))
+		}
+		z := zlib.NewWriter(&b)
+		_, _ = z.Write(body)
+		_ = z.Close()
 	}
-	b.WriteByte(first)
-	if objType == 7 { // a delta against an object named by its sha
-		b.Write(make([]byte, 20))
-	}
-	z := zlib.NewWriter(&b)
-	_, _ = z.Write(body)
-	_ = z.Close()
 	b.Write(make([]byte, 20)) // the pack's checksum, not read by the check
 	return b.Bytes()
+}
+
+// unlimited is a total no test of one object's size comes near.
+func unlimited() *int64 {
+	n := int64(1) << 62
+	return &n
 }
 
 func varint(n uint64) []byte {
@@ -734,28 +749,101 @@ func varint(n uint64) []byte {
 // and a delta whose instructions build it.
 func TestCheckPack_RefusesAnObjectDeclaredOrBuiltPastTheLimit(t *testing.T) {
 	const limit = 1 << 20
+	ctx := context.Background()
 	small := packOf(t, 3, 5, []byte("hello")) // a blob of 5 bytes
-	if err := checkPack(bytes.NewReader(small), limit); err != nil {
+	if err := checkPack(ctx, bytes.NewReader(small), limit, unlimited()); err != nil {
 		t.Fatalf("a small object: %v", err)
 	}
 	declared := packOf(t, 3, 1<<40, []byte("hello")) // a blob that says it is a terabyte
-	if err := checkPack(bytes.NewReader(declared), limit); !errors.Is(err, errObjectTooLarge) {
+	if err := checkPack(ctx, bytes.NewReader(declared), limit, unlimited()); !errors.Is(err, errObjectTooLarge) {
 		t.Errorf("a header declaring a terabyte: %v, want the refusal", err)
 	}
 	// A delta of a dozen bytes whose own header says the result is a terabyte.
 	instr := append(append(varint(10), varint(1<<40)...), 0x01, 'x')
 	delta := packOf(t, 7, uint64(len(instr)), instr)
-	if err := checkPack(bytes.NewReader(delta), limit); !errors.Is(err, errObjectTooLarge) {
+	if err := checkPack(ctx, bytes.NewReader(delta), limit, unlimited()); !errors.Is(err, errObjectTooLarge) {
 		t.Errorf("a delta that builds a terabyte: %v, want the refusal", err)
 	}
 	// The same delta building something small passes.
 	fine := append(append(varint(10), varint(100)...), 0x01, 'x')
-	if err := checkPack(bytes.NewReader(packOf(t, 7, uint64(len(fine)), fine)), limit); err != nil {
+	if err := checkPack(ctx, bytes.NewReader(packOf(t, 7, uint64(len(fine)), fine)), limit, unlimited()); err != nil {
 		t.Errorf("a delta that builds 100 bytes: %v", err)
 	}
-	if err := checkPack(bytes.NewReader([]byte("not a pack")), limit); err == nil || errors.Is(err, errObjectTooLarge) {
+	if err := checkPack(ctx, bytes.NewReader([]byte("not a pack")), limit, unlimited()); err == nil || errors.Is(err, errObjectTooLarge) {
 		t.Errorf("garbage: %v, want an error that is not the size refusal", err)
 	}
+}
+
+// Each object under the limit is not enough: a few bytes per delta can each
+// build the largest object allowed, and a fetch's worth of them is millions.
+// What the objects build in all is bounded too, across the packs of a fetch.
+func TestCheckPack_RefusesObjectsThatTogetherBuildPastTheTotal(t *testing.T) {
+	const limit = 1 << 20
+	ctx := context.Background()
+	instr := append(append(varint(10), varint(limit)...), 0x01, 'x') // each builds 1 MiB
+	pack := packOfN(t, 4, 7, uint64(len(instr)), instr)
+
+	room := int64(4 * limit)
+	if err := checkPack(ctx, bytes.NewReader(pack), limit, &room); err != nil {
+		t.Fatalf("four deltas of 1 MiB with room for four: %v", err)
+	}
+	if room != 0 {
+		t.Errorf("room left = %d, want 0", room)
+	}
+	// The next pack of the same fetch has no room left.
+	if err := checkPack(ctx, bytes.NewReader(packOf(t, 3, 5, []byte("hello"))), limit, &room); !errors.Is(err, errObjectTooLarge) {
+		t.Errorf("an object past the total: %v, want the refusal", err)
+	}
+	short := int64(3 * limit)
+	if err := checkPack(ctx, bytes.NewReader(pack), limit, &short); !errors.Is(err, errObjectTooLarge) {
+		t.Errorf("four deltas of 1 MiB with room for three: %v, want the refusal", err)
+	}
+	// Blobs count as their headers declare.
+	blobs := packOfN(t, 3, 3, 5, []byte("hello"))
+	tight := int64(14)
+	if err := checkPack(ctx, bytes.NewReader(blobs), limit, &tight); !errors.Is(err, errObjectTooLarge) {
+		t.Errorf("three 5-byte blobs with room for 14 bytes: %v, want the refusal", err)
+	}
+}
+
+// The check of a pack stops at the fetch's deadline, between objects.
+func TestCheckPack_StopsWhenTheContextEnds(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	err := checkPack(ctx, bytes.NewReader(packOfN(t, 3, 3, 5, []byte("hello"))), 1<<20, unlimited())
+	if !errors.Is(err, context.Canceled) {
+		t.Errorf("err = %v, want the context's", err)
+	}
+}
+
+// End to end: objects each under the object limit, that together build more
+// than the fetch's total, fail the fetch and leave nothing.
+func TestFetch_ObjectsThatTogetherInflatePastTheTotalFail(t *testing.T) {
+	f := newFixture(t, false, true)
+	const each = 3 << 20
+	var head string
+	for i, c := range []byte("abc") {
+		head = f.commit(t, fmt.Sprintf("big%d.txt", i), bytes.Repeat([]byte{c}, each))
+	}
+	req := f.request(t, head)
+	req.MaxObjectBytes = 4 << 20
+	req.MaxFetchBytes = 256 << 10 // a total of 8 MiB: under the 9 MiB the three build
+	_, err := Fetch(context.Background(), req)
+	if !errors.Is(err, ErrTooLarge) {
+		t.Fatalf("err = %v (class %s), want source_too_large", err, Class(err))
+	}
+	if _, err := os.Stat(req.StoreDir); !os.IsNotExist(err) {
+		t.Error("the refused fetch left its object store behind")
+	}
+	// With room for them, the same commit is fetched: the pack was small.
+	roomy := f.request(t, head)
+	roomy.MaxObjectBytes = 4 << 20
+	roomy.MaxFetchBytes = 1 << 20
+	got, err := Fetch(context.Background(), roomy)
+	if err != nil {
+		t.Fatalf("with room: %v", err)
+	}
+	got.Close()
 }
 
 func TestDeltaResultSize(t *testing.T) {

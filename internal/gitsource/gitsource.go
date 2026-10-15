@@ -219,8 +219,10 @@ func Fetch(ctx context.Context, req Request) (_ *Fetched, err error) {
 	store := &guardedStorage{
 		Storage: filesystem.NewStorageWithOptions(osfs.New(req.StoreDir), cache.NewObjectLRUDefault(),
 			filesystem.Options{LargeObjectThreshold: 1 << 20}),
+		ctx:       ctx,
 		spoolDir:  spoolDirFor(req.StoreDir),
 		maxObject: req.MaxObjectBytes,
+		inflated:  inflatedBudget(req.MaxFetchBytes),
 	}
 	st.packRefused = &store.refused
 	repo, err := git.Init(store, nil)
@@ -329,7 +331,7 @@ func Fetch(ctx context.Context, req Request) (_ *Fetched, err error) {
 		return nil, fmt.Errorf("%w: the fetch passed %d bytes", ErrTooLarge, st.max)
 	}
 	if st.packRefused.Load() {
-		return nil, fmt.Errorf("%w: the pack holds an object over %d bytes", ErrTooLarge, req.MaxObjectBytes)
+		return nil, fmt.Errorf("%w: the pack holds an object over %d bytes, or objects that build more than %d in all", ErrTooLarge, req.MaxObjectBytes, inflatedBudget(req.MaxFetchBytes))
 	}
 	commit, err := repo.CommitObject(hash)
 	if err != nil {
