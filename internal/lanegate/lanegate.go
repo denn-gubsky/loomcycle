@@ -118,12 +118,18 @@ func (p *Provider) RunDone(runID string) {
 // A call that has to wait reports it on req.OnEvent, the hook the loop gives
 // every call for the driver's own retry reports: EventCallQueued before each
 // wait, EventCallAdmitted once it has its slot. It is called here, on the
-// caller's goroutine, before Call returns — as a driver's retry report is.
+// caller's goroutine, before Call returns — as a driver's retry report is. A
+// call made for a run without that hook (a summary, a listwise rerank a tool
+// asks for) reports on the run's event sink instead (runReporter).
 func (p *Provider) Call(ctx context.Context, req providers.Request) (<-chan providers.Event, error) {
 	if p.floor == nil && !p.sched.Gated(p.id, kind) {
 		return p.inner.Call(ctx, req)
 	}
-	release, err := acquire(ctx, p.sched, p.floor, p.id, kind, providers.ModelIdentity(p.inner, req), req.OnEvent)
+	report := req.OnEvent
+	if report == nil {
+		report = runReporter(ctx)
+	}
+	release, err := acquire(ctx, p.sched, p.floor, p.id, kind, providers.ModelIdentity(p.inner, req), report)
 	if err != nil {
 		return nil, err
 	}
@@ -303,6 +309,18 @@ func acquire(ctx context.Context, sched *concurrency.CallScheduler, floor *concu
 	}
 	// Both are idempotent, so the pair is too.
 	return func() { releaseSched(); releaseFloor() }, nil
+}
+
+// runReporter is where a model call made on a run's behalf off the loop's own
+// call path reports its wait: the run's event sink, which the run stamps on
+// every ctx its tools work under (providers.WithEventSink). Nil outside a run,
+// and nil for background work: a consolidation pass or an embedding fill
+// started from a run's ctx is not that run's work, and may outlive it.
+func runReporter(ctx context.Context) func(providers.Event) {
+	if IsBackground(ctx) {
+		return nil
+	}
+	return providers.EventSink(ctx)
 }
 
 // FloorCap is the built-in bound on a service's calls in flight when the
