@@ -3427,6 +3427,13 @@ type Webhook struct {
 	// start anything; one that misses is answered 202 filtered. See
 	// webhook_filters.go.
 	Filters []WebhookFilter `json:"filters,omitempty" yaml:"filters"`
+	// DedupKey lists the JSONPaths of the signed body whose values together
+	// name one event: a delivery with the same values is a duplicate,
+	// whatever its delivery id or bytes. See webhook_dedup.go.
+	DedupKey []string `json:"dedup_key,omitempty" yaml:"dedup_key"`
+	// DedupTTLSeconds is how long a dedup_key is held: 0 is 7 days, and the
+	// most is 90.
+	DedupTTLSeconds int `json:"dedup_ttl_seconds,omitempty" yaml:"dedup_ttl_seconds"`
 	// Team is the team whose walk a delivery=team webhook starts, detached,
 	// with the raw request body as its input. Looked up in TenantID only, when
 	// a delivery arrives (teams are runtime definitions).
@@ -7667,6 +7674,9 @@ func validateStaticWebhook(name string, w Webhook) error {
 		return fmt.Errorf("webhooks.%s: %w", name, err)
 	}
 	if err := CheckWebhookFilters(w); err != nil {
+		return fmt.Errorf("webhooks.%s: %w", name, err)
+	}
+	if err := CheckWebhookDedupKey(w); err != nil {
 		return fmt.Errorf("webhooks.%s: %w", name, err)
 	}
 	return nil

@@ -1395,6 +1395,9 @@ func (s *Store) migrate(ctx context.Context) error {
 		// Usage counted against a budget without a provider's report of it.
 		// Mirrors postgres migration 0100.
 		`ALTER TABLE usage_carry ADD COLUMN estimated INTEGER NOT NULL DEFAULT 0`,
+		// The run a held webhook delivery key started ('' for none yet).
+		// Mirrors postgres migration 0104; its index is in addIndexes.
+		`ALTER TABLE webhook_deliveries ADD COLUMN run_id TEXT NOT NULL DEFAULT ''`,
 	}
 	for _, q := range addColumns {
 		if _, err := s.db.ExecContext(ctx, q); err != nil {
@@ -1551,6 +1554,8 @@ func (s *Store) migrate(ctx context.Context) error {
 		// replicas racing on one delivery both miss the lookup, and the
 		// index lets only one CreateRun win.
 		`CREATE UNIQUE INDEX IF NOT EXISTS runs_delivery_alt_key ON runs(delivery_alt_key) WHERE delivery_alt_key IS NOT NULL`,
+		// A failed run's held delivery keys are dropped by run id.
+		`CREATE INDEX IF NOT EXISTS webhook_deliveries_by_run_id ON webhook_deliveries(run_id) WHERE run_id <> ''`,
 		// RFC N — ON CONFLICT(tenant_id, name) targets for the def plane.
 		// On a FRESH DB these are redundant with the composite PRIMARY KEY /
 		// UNIQUE declared in the CREATE TABLE block above (harmless). On an
@@ -11650,6 +11655,82 @@ func (s *Store) WebhookDeliveryClaim(ctx context.Context, keys []string, now, ex
 		return false, fmt.Errorf("webhook delivery claim commit: %w", err)
 	}
 	return true, nil
+}
+
+// WebhookDeliveryClaimRun claims every key or none for a delivery that starts
+// a run, first taking over the keys of a run that ended failed; see the
+// store.Store contract.
+func (s *Store) WebhookDeliveryClaimRun(ctx context.Context, keys []string, now, expiresAt time.Time) (bool, string, error) {
+	if len(keys) == 0 {
+		return false, "", fmt.Errorf("webhook delivery claim: no keys")
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return false, "", fmt.Errorf("webhook delivery claim begin: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	if _, err := tx.ExecContext(ctx, `DELETE FROM webhook_deliveries WHERE expires_at <= ?`, now.UnixNano()); err != nil {
+		return false, "", fmt.Errorf("webhook delivery claim sweep: %w", err)
+	}
+	args := make([]any, 0, len(keys)+len(store.WebhookRetakeRunStatuses))
+	for _, k := range keys {
+		args = append(args, k)
+	}
+	for _, st := range store.WebhookRetakeRunStatuses {
+		args = append(args, string(st))
+	}
+	failedHolders := `SELECT d.run_id FROM webhook_deliveries d JOIN runs r ON r.id = d.run_id
+			 WHERE d.delivery_key IN (` + sqlitePlaceholders(len(keys)) + `)
+			   AND d.run_id <> ''
+			   AND r.status IN (` + sqlitePlaceholders(len(store.WebhookRetakeRunStatuses)) + `)`
+	// The failed run gives up its own keys too, so the run that retakes the
+	// event can carry them.
+	if _, err := tx.ExecContext(ctx,
+		`UPDATE runs SET idempotency_key = NULL, delivery_alt_key = NULL WHERE id IN (`+failedHolders+`)`, args...); err != nil {
+		return false, "", fmt.Errorf("webhook delivery claim retake: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx,
+		`DELETE FROM webhook_deliveries WHERE run_id IN (`+failedHolders+`)`, args...); err != nil {
+		return false, "", fmt.Errorf("webhook delivery claim retake: %w", err)
+	}
+	for _, k := range keys {
+		res, err := tx.ExecContext(ctx,
+			`INSERT INTO webhook_deliveries (delivery_key, expires_at) VALUES (?, ?) ON CONFLICT(delivery_key) DO NOTHING`,
+			k, expiresAt.UnixNano())
+		if err != nil {
+			return false, "", fmt.Errorf("webhook delivery claim: %w", err)
+		}
+		if n, err := res.RowsAffected(); err != nil {
+			return false, "", fmt.Errorf("webhook delivery claim: %w", err)
+		} else if n == 0 {
+			var holder string
+			if err := tx.QueryRowContext(ctx, `SELECT run_id FROM webhook_deliveries WHERE delivery_key = ?`, k).Scan(&holder); err != nil {
+				return false, "", fmt.Errorf("webhook delivery claim holder: %w", err)
+			}
+			return false, holder, nil // the deferred rollback undoes this claim's other keys
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return false, "", fmt.Errorf("webhook delivery claim commit: %w", err)
+	}
+	return true, "", nil
+}
+
+// WebhookDeliverySetRun records the run a claim's keys started.
+func (s *Store) WebhookDeliverySetRun(ctx context.Context, keys []string, runID string) error {
+	if len(keys) == 0 {
+		return nil
+	}
+	args := make([]any, 0, len(keys)+1)
+	args = append(args, runID)
+	for _, k := range keys {
+		args = append(args, k)
+	}
+	if _, err := s.db.ExecContext(ctx,
+		`UPDATE webhook_deliveries SET run_id = ? WHERE delivery_key IN (`+sqlitePlaceholders(len(keys))+`)`, args...); err != nil {
+		return fmt.Errorf("webhook delivery set run: %w", err)
+	}
+	return nil
 }
 
 // WebhookDeliveryRelease drops keys a claim took.

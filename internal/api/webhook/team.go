@@ -89,14 +89,18 @@ func sortedKeys(m map[string]string) []string {
 // deduplicated and rate-limited. Nothing here widens that: a delivery that
 // starts no walk is not recorded as accepted, so the sender's retry is
 // processed rather than dropped.
-func (rec *Receiver) deliverTeam(ctx context.Context, w http.ResponseWriter, span trace.Span, name, whKey, did string, dk deliveryKeys, wd config.Webhook, proj projectResult, body []byte) {
+//
+// held is a dedup_key's claim, already taken, as for a spawned run.
+func (rec *Receiver) deliverTeam(ctx context.Context, w http.ResponseWriter, span trace.Span, name, whKey, did string, dk deliveryKeys, held *heldKeys, wd config.Webhook, proj projectResult, body []byte) {
 	if rec.teams == nil {
+		rec.releaseHeld(ctx, name, held)
 		rec.finish(span, whKey, did, "rejected_no_runner", "")
 		writeError(w, http.StatusServiceUnavailable, "runtime_unavailable", "")
 		return
 	}
 	in, err := buildTeamWalkInput(wd, proj, body)
 	if err != nil {
+		rec.releaseHeld(ctx, name, held)
 		if errors.Is(err, errTeamVarRefused) {
 			rec.finish(span, whKey, did, verdictRejectedTeamStart, "")
 			rec.logf("webhook %q: team delivery refused: %v", name, err)
@@ -114,6 +118,7 @@ func (rec *Receiver) deliverTeam(ctx context.Context, w http.ResponseWriter, spa
 	in.IdempotencyKey = dk.key
 	in.DeliveryAltKey = dk.alt
 	if existing, ok := rec.priorTeamWalk(ctx, dk, did); ok {
+		rec.setHeldRun(name, held, existing.ID)
 		rec.dedup.recordDuplicate(dk)
 		rec.finish(span, whKey, did, verdictAccepted, existing.ID)
 		writeJSON(w, http.StatusAccepted, map[string]string{
@@ -130,6 +135,7 @@ func (rec *Receiver) deliverTeam(ctx context.Context, w http.ResponseWriter, spa
 	// the walk's authority — that is all in `in`.
 	runID, err := rec.teams.StartTeamWalk(context.Background(), in)
 	if err == nil {
+		rec.setHeldRun(name, held, runID)
 		rec.dedup.recordAccepted(dk)
 		rec.finish(span, whKey, did, verdictAccepted, runID)
 		writeJSON(w, http.StatusAccepted, map[string]string{
@@ -148,10 +154,14 @@ func (rec *Receiver) deliverTeam(ctx context.Context, w http.ResponseWriter, spa
 			winner = existing.ID
 			resp["run_id"] = winner
 		}
+		rec.setHeldRun(name, held, winner)
 		rec.dedup.recordDuplicate(dk)
 		rec.finish(span, whKey, did, verdictAccepted, winner)
 		writeJSON(w, http.StatusAccepted, resp)
 		return
+	}
+	if startedNothing(err, "") {
+		rec.releaseHeld(ctx, name, held)
 	}
 	rec.finish(span, whKey, did, verdictRejectedTeamStart, "")
 	rec.logf("webhook %q: team walk did not start: %v", name, err)

@@ -567,6 +567,17 @@ func (f *fakeWebhookStore) WebhookDeliveryClaim(_ context.Context, keys []string
 	return true, nil
 }
 
+// WebhookDeliveryClaimRun takes no failed run's keys: a fake has no runs to
+// read. The dedup_key tests use a real store.
+func (f *fakeWebhookStore) WebhookDeliveryClaimRun(ctx context.Context, keys []string, now, expiresAt time.Time) (bool, string, error) {
+	ok, err := f.WebhookDeliveryClaim(ctx, keys, now, expiresAt)
+	return ok, "", err
+}
+
+func (f *fakeWebhookStore) WebhookDeliverySetRun(_ context.Context, _ []string, _ string) error {
+	return nil
+}
+
 func (f *fakeWebhookStore) WebhookDeliveryRelease(_ context.Context, keys []string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -817,6 +828,14 @@ func (s *raceStore) WebhookDeliveryClaim(_ context.Context, _ []string, _, _ tim
 }
 
 func (s *raceStore) WebhookDeliveryRelease(_ context.Context, _ []string) error {
+	return nil
+}
+
+func (s *raceStore) WebhookDeliveryClaimRun(_ context.Context, _ []string, _, _ time.Time) (bool, string, error) {
+	return true, "", nil
+}
+
+func (s *raceStore) WebhookDeliverySetRun(_ context.Context, _ []string, _ string) error {
 	return nil
 }
 

@@ -5208,6 +5208,16 @@ export interface WebhookDefOverlay {
    *  starts; one that misses answers 202 `filtered`. A fork replaces the
    *  whole list; `[]` removes it. */
   filters?: WebhookDefFilter[];
+  /** JSONPaths into the signed body whose values together name one event
+   *  (for a GitHub push: `$.repository.id`, `$.ref`, `$.after`). A delivery
+   *  with the same values is answered as a duplicate whatever its delivery id
+   *  or bytes, unless the run the first one started ended `failed`. A body
+   *  lacking one answers 400 `dedup_key_unresolvable`. 1 to 16 paths; a fork
+   *  replaces the list, `[]` removes it. */
+  dedup_key?: string[];
+  /** How long a `dedup_key` is held, in seconds: default 604800 (7 days),
+   *  at most 90 days. Only beside `dedup_key`. */
+  dedup_ttl_seconds?: number;
   /** Non-secret metadata the agent receives as trusted. */
   metadata?: Record<string, unknown>;
   /** The tenant spawned runs execute in — taken from the def, never from the

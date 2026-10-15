@@ -286,6 +286,13 @@ func RunStatusFilter(statuses []RunStatus) []string {
 	return out
 }
 
+// WebhookRetakeRunStatuses are the statuses of a run whose held webhook
+// delivery keys the next delivery of the same event takes over: the run did
+// not handle the event. A run that completed, was cancelled or was rejected
+// by its reviewer (work done and refused), or whose row is gone, keeps its
+// keys held.
+var WebhookRetakeRunStatuses = []RunStatus{RunFailed}
+
 // TerminalRunStatuses are the statuses a run ends in. Every reader that asks
 // "has this run finished?" — the retention and consolidation queries, the
 // ephemeral-volume sweep, the stream tail, the webhook and A2A maps — reads
@@ -3583,6 +3590,17 @@ type Store interface {
 	// WebhookDeliveryRelease drops keys a claim took for a delivery that was
 	// then not accepted, so the sender's retry is not a duplicate.
 	WebhookDeliveryRelease(ctx context.Context, keys []string) error
+	// WebhookDeliveryClaimRun is WebhookDeliveryClaim for a delivery that
+	// starts a run (a webhook with a dedup_key), whose keys then record that
+	// run (WebhookDeliverySetRun). A key held for a run whose status is one of
+	// WebhookRetakeRunStatuses is taken over: every key of that run is dropped
+	// first, and the run's own idempotency_key and delivery_alt_key cleared,
+	// in the same transaction, so the event is handled again. On a
+	// refusal holder is the run holding the key that refused it, "" when that
+	// claim's run has not registered yet.
+	WebhookDeliveryClaimRun(ctx context.Context, keys []string, now, expiresAt time.Time) (claimed bool, holder string, err error)
+	// WebhookDeliverySetRun records the run a claim's keys started.
+	WebhookDeliverySetRun(ctx context.Context, keys []string, runID string) error
 
 	// ---- HookDef substrate ----
 	//

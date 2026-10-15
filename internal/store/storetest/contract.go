@@ -226,6 +226,8 @@ func Run(t *testing.T, factory Factory) {
 		{"TeamWebhookArmPutRefusesAnIncompleteLease", testTeamWebhookArmPutRefusesAnIncompleteLease},
 		{"WebhookDeliveryClaimIsAllOrNoneUntilReleasedOrExpired", testWebhookDeliveryClaimIsAllOrNoneUntilReleasedOrExpired},
 		{"WebhookDeliveryClaimRaceGrantsOne", testWebhookDeliveryClaimRaceGrantsOne},
+		{"WebhookDeliveryClaimRunRetakesOnlyAFailedRunsKeys", testWebhookDeliveryClaimRunRetakesOnlyAFailedRunsKeys},
+		{"WebhookDeliveryClaimRunRetakeRaceGrantsOne", testWebhookDeliveryClaimRunRetakeRaceGrantsOne},
 		{"MemoryEmbedCascadesOnDelete", testMemoryEmbedCascadesOnDelete},
 		{"MemoryEmbedListMissing", testMemoryEmbedListMissing},
 		{"MemorySearchFilterExcludesPrefix", testMemorySearchFilterExcludesPrefix},
