@@ -77,6 +77,18 @@ func (s *Semaphore) Admit(ctx context.Context, r AdmitRequest) (release func(), 
 	return s.admitGlobal(ctx, key, acct, acctQS, r)
 }
 
+// AdmitSlot takes a run slot for a request sent directly, outside any run (the
+// LLM gateway, /v1/embeddings), which its caller has already counted against
+// its user with ReserveUser. It waits in the same round-robin queue as runs,
+// keyed by (tenant, user), and never times out: only ctx ends the wait. It
+// counts no user, so it is bounded like any run not counted against its user:
+// max_queue_depth in all, max_queued_runs_per_user per key; past either it is
+// refused with *BackpressureError.
+func (s *Semaphore) AdmitSlot(ctx context.Context, tenantID, userID string) (release func(), err error) {
+	key := userKey{tenant: tenantID, user: userID}
+	return s.admitGlobal(ctx, key, userKey{}, nil, AdmitRequest{TenantID: tenantID, UserID: userID})
+}
+
 // admitUserLocal counts the run against its user's cap, waiting in that user's
 // FIFO when the cap is reached. On return without error the run is counted.
 func (s *Semaphore) admitUserLocal(ctx context.Context, key userKey, cap int, r AdmitRequest) error {

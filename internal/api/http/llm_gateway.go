@@ -217,7 +217,10 @@ func (s *Server) prepareGatewayDispatch(w http.ResponseWriter, r *http.Request, 
 // and fill its bounded queue for everyone else.
 //
 // So: the per-user reservation, then a global slot, then the provider slot only
-// if one is free at once. If the provider is busy the global slot is given back
+// if one is free at once. The global slot is waited for in the run queue, taking
+// turns with runs and other users and with no timeout, as a run waits (RFC EI
+// P3); only the caller leaving ends that wait, and a full queue refuses it
+// (backpressure). If the provider is busy the global slot is given back
 // and the request queues for the provider — still counted against its user,
 // taking turns with other users, bounded by provider_queue_depth (past it:
 // provider_concurrency_exhausted). Once it has the provider slot it takes a
@@ -235,7 +238,7 @@ func (s *Server) acquireDirectSlots(ctx context.Context, wireUserID string, hold
 	if err != nil {
 		return nil, err
 	}
-	global, err := s.sem.Acquire(ctx)
+	global, err := s.sem.AdmitSlot(ctx, tenantID, userID)
 	if err != nil {
 		user()
 		return nil, err

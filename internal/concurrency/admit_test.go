@@ -404,3 +404,61 @@ func TestAdmit_OneUserCannotHoldTheWholeQueue(t *testing.T) {
 		t.Fatalf("queued = %d, want 5 (refusals must not count)", st.Queued)
 	}
 }
+
+// AdmitSlot is the run slot of a direct request its caller already counted
+// against its user: it waits in the run queue without a timeout (the
+// semaphore's own timeout here is 10ms), counts no user, and is bounded per
+// key like a run not counted against its user, so one caller's direct requests
+// cannot fill the queue.
+func TestAdmitSlot_WaitsInTheRunQueueCountingNoUser(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	s := New(1, 8, 10*time.Millisecond).WithPerUserCap(4).WithQueuedPerUserCap(1)
+	busy, err := s.Admit(ctx, AdmitRequest{TenantID: "a", UserID: "other"})
+	if err != nil {
+		t.Fatalf("holder: %v", err)
+	}
+
+	type result struct {
+		release func()
+		err     error
+	}
+	got := make(chan result, 1)
+	go func() {
+		rel, err := s.AdmitSlot(ctx, "a", "u")
+		got <- result{rel, err}
+	}()
+	deadline := time.Now().Add(3 * time.Second)
+	for s.Stats().Queued != 1 {
+		if time.Now().After(deadline) {
+			t.Fatalf("AdmitSlot never queued: %+v", s.Stats())
+		}
+		time.Sleep(time.Millisecond)
+	}
+	time.Sleep(50 * time.Millisecond) // five times the semaphore's timeout
+	select {
+	case r := <-got:
+		t.Fatalf("AdmitSlot returned %v while every slot was taken, want it still waiting", r.err)
+	default:
+	}
+	if n := s.Stats().PerUser["u"]; n != 0 {
+		t.Errorf("AdmitSlot counted its user %d time(s), want none (the caller reserved it)", n)
+	}
+
+	short, stop := context.WithTimeout(ctx, time.Second)
+	defer stop()
+	var bp *BackpressureError
+	if _, err := s.AdmitSlot(short, "a", "u"); !errors.As(err, &bp) {
+		t.Fatalf("a second waiting request of one key: err %v, want backpressure", err)
+	}
+
+	busy()
+	r := <-got
+	if r.err != nil {
+		t.Fatalf("AdmitSlot after the slot freed: %v", r.err)
+	}
+	r.release()
+	if st := s.Stats(); st.Active != 0 || st.Queued != 0 || len(st.PerUser) != 0 {
+		t.Errorf("at the end: %+v, want nothing held and nobody counted", st)
+	}
+}

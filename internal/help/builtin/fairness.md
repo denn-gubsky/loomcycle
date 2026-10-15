@@ -62,9 +62,10 @@ A session continuation on POST /v1/sessions/{id}/messages queues the same
 way: its stream opens with `session`, `agent` and `queued` while it waits,
 and it keeps the session until it has run, so another message to the same
 session meanwhile is answered 409 `session_busy`. It always waits;
-`admission` applies to a fresh run only. A request to the LLM gateway does
-not queue yet: it waits up to `concurrency.queue_timeout_ms` and then
-answers 429.
+`admission` applies to a fresh run only. A request to the LLM gateway (and
+POST /v1/embeddings) waits for a run slot in the same queue too, taking
+turns with runs, with no timeout; it is not a run, so it has no row and no
+`queued` event.
 
 ## Seeing a queued run
 
