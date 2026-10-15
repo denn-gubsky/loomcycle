@@ -15,6 +15,16 @@
 //   - Per-provider cost accounting keyed on (provider, model).
 //   - A home for llama.cpp quirks without contaminating the openai driver.
 //
+// Slot pinning (RFC EI P4c, opt-in with `options.pin_slots: true`): llama-server
+// keeps one prompt cache per slot (`--parallel N`). With pinning on, each call
+// is sent with `id_slot` = the number of the call-lane slot it was granted and
+// `cache_prompt: true`. A run's reservation (`lanes.chat.affinity_hold_ms`)
+// keeps it on the same lane slot between calls, so its next call returns to
+// the llama-server slot that still holds its prompt. The lane numbers slots
+// from 0 below its `max_concurrent`, so set that to llama-server's `--parallel`:
+// a number past the server's slots is refused by the server. A call no lane
+// granted (an uncapped provider) is sent unpinned.
+//
 // Context length nuance: llama-server fixes the context window at launch
 // (`-c` / `--ctx-size`), so there is no per-request num_ctx knob. Advertise
 // the served window with `providers.<id>.capabilities.max_context_tokens` so
@@ -66,6 +76,19 @@ func (d *Driver) ID() string { return d.id }
 // KeyEnvName reports the env-var name whose credential can key this provider
 // (RFC AX Layer-1 routing); delegates to the inner driver.
 func (d *Driver) KeyEnvName() string { return d.inner.KeyEnvName() }
+
+// PinSlots turns slot pinning on (see the package doc).
+func (d *Driver) PinSlots() { d.inner.SetBodyExtra(slotFields) }
+
+// slotFields is the pinning a call's lane slot asks for, nil for a call no
+// lane granted.
+func slotFields(ctx context.Context) map[string]any {
+	slot, ok := providers.LaneSlot(ctx)
+	if !ok {
+		return nil
+	}
+	return map[string]any{"id_slot": slot, "cache_prompt": true}
+}
 
 // SetKeyEnvName re-points the credential env-var name (RFC AR), delegating to
 // the inner openai driver.

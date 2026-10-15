@@ -21,6 +21,9 @@ func newFromOptions(o providers.DriverOptions) (providers.Provider, error) {
 		d.SetKeyEnvName(o.KeyEnvName)
 	}
 	d.capsPatch = o.Capabilities
-	providers.WarnUnknownOptions(o.Logf, "llamacpp", o.Options)
+	if pin, ok := providers.BoolOption(o.Options, "pin_slots"); ok && pin {
+		d.PinSlots()
+	}
+	providers.WarnUnknownOptions(o.Logf, "llamacpp", o.Options, "pin_slots")
 	return d, nil
 }

@@ -42,6 +42,14 @@ type CallInfo struct {
 	// just before it blocks, on the caller's goroutine and with no lock held.
 	// A call that gets its slot at once never calls it.
 	OnQueued func(CallQueueInfo)
+	// OnSlot, when set, is called once the call has its lane slot, with the
+	// slot's number: 0 up to the lane's max_concurrent, the lowest free one at
+	// the grant, and the SAME number for a run's next call on its reservation
+	// (affinity_hold_ms). A backend that can pin a request to one of its own
+	// slots (llama.cpp's id_slot) maps the number onto it, so the run returns
+	// to the slot that holds its prompt cache. Called on the caller's
+	// goroutine with no lock held; a call with no lane never calls it.
+	OnSlot func(slot int)
 }
 
 // Why a model call waits, as reported to CallInfo.OnQueued.
@@ -119,6 +127,8 @@ type lease struct {
 	// stopped just too late still runs its func once, after the slot was reused.
 	deadline time.Time
 	timer    *time.Timer
+	// slot is the slot number the lease holds, reserved or busy.
+	slot int
 }
 
 // laneWaiter is one queued Acquire.
@@ -130,6 +140,7 @@ type laneWaiter struct {
 	// "handed a slot while cancelling", so no token can be stranded in ch.
 	granted bool
 	lease   *lease
+	slot    int
 }
 
 // laneBucket is the FIFO of one (tenant, user)'s waiters in one class.
@@ -217,6 +228,9 @@ type Lane struct {
 	active   int // calls in flight
 	reserved int // idle leases; active+reserved is the slots in use
 	leases   map[string]*lease
+	// inUse marks the slot numbers taken, busy or reserved: one per call in
+	// flight and per reservation (see CallInfo.OnSlot).
+	inUse []bool
 
 	fg, bg laneQueue
 	// ownerQueued counts the queued waiters of each non-empty owner, so a
@@ -305,15 +319,17 @@ func (l *Lane) acquire(ctx context.Context, c CallInfo, maxQueued int) (release 
 			l.active++
 			l.grants++
 			l.mu.Unlock()
-			return l.releaseFn(ls), nil
+			reportSlot(c, ls.slot)
+			return l.releaseFn(ls, ls.slot), nil
 		}
 	}
 	// A free slot implies an empty queue (every change that frees a slot or
 	// adds one runs dispatch), so taking it here overtakes nobody.
 	if l.active+l.reserved < l.cfg.MaxConcurrent {
-		ls := l.grant(c)
+		ls, slot := l.grant(c)
 		l.mu.Unlock()
-		return l.releaseFn(ls), nil
+		reportSlot(c, slot)
+		return l.releaseFn(ls, slot), nil
 	}
 	// Checked under the lock that enqueues, so a burst cannot slip past it.
 	if maxQueued >= 0 && l.queued() >= maxQueued {
@@ -338,7 +354,8 @@ func (l *Lane) acquire(ctx context.Context, c CallInfo, maxQueued int) (release 
 
 	select {
 	case <-w.ch:
-		return l.releaseFn(w.lease), nil
+		reportSlot(c, w.slot)
+		return l.releaseFn(w.lease, w.slot), nil
 	case <-ctx.Done():
 		l.mu.Lock()
 		if w.granted {
@@ -346,7 +363,7 @@ func (l *Lane) acquire(ctx context.Context, c CallInfo, maxQueued int) (release 
 			// gave up. Hand the slot straight on; the call never ran, so it
 			// neither counts as a grant nor leaves a reservation behind.
 			l.grants--
-			l.finish(w.lease, true)
+			l.finish(w.lease, w.slot, true)
 		} else {
 			l.unqueue(w)
 		}
@@ -416,9 +433,9 @@ func (l *Lane) Stats() LaneStats {
 
 func (l *Lane) queued() int { return l.fg.n + l.bg.n }
 
-// releaseFn is the release of one granted call. ls is the lease the call runs
-// on, nil for a call that holds none.
-func (l *Lane) releaseFn(ls *lease) func() {
+// releaseFn is the release of one granted call on slot. ls is the lease the
+// call runs on, nil for a call that holds none.
+func (l *Lane) releaseFn(ls *lease, slot int) func() {
 	released := false
 	return func() {
 		l.mu.Lock()
@@ -427,31 +444,63 @@ func (l *Lane) releaseFn(ls *lease) func() {
 			return
 		}
 		released = true
-		l.finish(ls, false)
+		l.finish(ls, slot, false)
+	}
+}
+
+// reportSlot tells c which slot it was granted.
+func reportSlot(c CallInfo, slot int) {
+	if c.OnSlot != nil {
+		c.OnSlot(slot)
+	}
+}
+
+// takeSlot claims the lowest free slot number. While fewer than MaxConcurrent
+// slots are in use one below it is free, so a grant never gets a number past
+// the cap; only calls still draining after the lane shrank hold one. Caller
+// holds mu.
+func (l *Lane) takeSlot() int {
+	for i, used := range l.inUse {
+		if !used {
+			l.inUse[i] = true
+			return i
+		}
+	}
+	l.inUse = append(l.inUse, true)
+	return len(l.inUse) - 1
+}
+
+// freeSlot gives a slot number back. Caller holds mu.
+func (l *Lane) freeSlot(slot int) {
+	if slot >= 0 && slot < len(l.inUse) {
+		l.inUse[slot] = false
 	}
 }
 
 // grant puts c's call in flight on a slot the caller has established is free,
-// and starts a lease for it when c may hold one. Caller holds mu.
-func (l *Lane) grant(c CallInfo) *lease {
+// and starts a lease for it when c may hold one. It returns the lease (nil for
+// none) and the slot's number. Caller holds mu.
+func (l *Lane) grant(c CallInfo) (*lease, int) {
 	l.active++
 	l.grants++
+	slot := l.takeSlot()
 	// One reservation per owner per lane: an owner with a second call in
 	// flight at once (a compaction beside its turn) runs that one as a plain
 	// call, or it would hold two slots between calls.
 	if c.Owner == "" || l.cfg.AffinityHold <= 0 || l.leases[c.Owner] != nil {
-		return nil
+		return nil, slot
 	}
-	ls := &lease{owner: c.Owner, busy: true, used: 1}
+	ls := &lease{owner: c.Owner, busy: true, used: 1, slot: slot}
 	l.leases[c.Owner] = ls
-	return ls
+	return ls, slot
 }
 
-// finish ends the call that ran on ls (nil = no lease): the slot is either
-// kept reserved for its owner or handed on. abandoned is the cancelled-waiter
-// path, where the call never ran. Caller holds mu.
-func (l *Lane) finish(ls *lease, abandoned bool) {
+// finish ends the call that ran on slot under ls (nil = no lease): the slot is
+// either kept reserved for its owner, number and all, or handed on. abandoned
+// is the cancelled-waiter path, where the call never ran. Caller holds mu.
+func (l *Lane) finish(ls *lease, slot int, abandoned bool) {
 	l.active--
+	kept := false
 	// A lease the lane no longer maps to its owner was ended by Done while the
 	// call was in flight: the slot is simply free.
 	if ls != nil && l.leases[ls.owner] == ls {
@@ -471,7 +520,11 @@ func (l *Lane) finish(ls *lease, abandoned bool) {
 			l.preemptions++
 		default:
 			l.reserve(ls)
+			kept = true
 		}
+	}
+	if !kept {
+		l.freeSlot(slot)
 	}
 	l.dispatch()
 }
@@ -508,6 +561,7 @@ func (l *Lane) dropIdle(ls *lease) {
 	ls.timer.Stop()
 	delete(l.leases, ls.owner)
 	l.reserved--
+	l.freeSlot(ls.slot)
 }
 
 // dispatch hands free slots to waiters until one or the other runs out.
@@ -518,7 +572,7 @@ func (l *Lane) dispatch() {
 		if w.info.Owner != "" {
 			l.decOwnerQueued(w.info.Owner)
 		}
-		w.lease = l.grant(w.info)
+		w.lease, w.slot = l.grant(w.info)
 		w.granted = true
 		close(w.ch)
 	}

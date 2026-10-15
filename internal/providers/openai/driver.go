@@ -47,6 +47,10 @@ type Driver struct {
 	// capsPatch is an optional operator override applied inside Capabilities()
 	// (RFC BF). Nil = advertise the driver defaults.
 	capsPatch *providers.CapabilityPatch
+	// bodyExtra, when set by a wrapping driver, returns top-level fields to add
+	// to one call's request body (nil or empty for none) — a backend's own
+	// extension of the OpenAI shape, such as llama.cpp's id_slot.
+	bodyExtra func(context.Context) map[string]any
 }
 
 // New constructs a Driver. baseURL may be empty for the default endpoint, or
@@ -70,6 +74,28 @@ func New(apiKey, baseURL string, streamOpts streamhttp.Options, httpClient *http
 // the host key (RFC AR). Used by the DeepSeek wrapper, which reuses this driver
 // but must resolve DEEPSEEK_API_KEY, not OPENAI_API_KEY.
 func (d *Driver) SetKeyEnvName(name string) { d.keyEnvName = name }
+
+// SetBodyExtra installs fn, which returns top-level fields to add to each
+// call's request body (see bodyExtra). For a wrapping driver whose backend
+// extends the OpenAI shape.
+func (d *Driver) SetBodyExtra(fn func(context.Context) map[string]any) { d.bodyExtra = fn }
+
+// withExtraFields adds extra's fields at the top level of a request body,
+// replacing any of the same name.
+func withExtraFields(body []byte, extra map[string]any) ([]byte, error) {
+	var obj map[string]json.RawMessage
+	if err := json.Unmarshal(body, &obj); err != nil {
+		return nil, err
+	}
+	for k, v := range extra {
+		raw, err := json.Marshal(v)
+		if err != nil {
+			return nil, err
+		}
+		obj[k] = raw
+	}
+	return json.Marshal(obj)
+}
 
 // resolveKey returns the API key to authenticate an inference request AND which
 // credential scope it came from. A tenant/user credential named d.keyEnvName
@@ -131,6 +157,13 @@ func (d *Driver) Call(ctx context.Context, req providers.Request) (<-chan provid
 	body, err := buildRequestBody(req)
 	if err != nil {
 		return nil, fmt.Errorf("build request: %w", err)
+	}
+	if d.bodyExtra != nil {
+		if extra := d.bodyExtra(ctx); len(extra) > 0 {
+			if body, err = withExtraFields(body, extra); err != nil {
+				return nil, fmt.Errorf("build request: %w", err)
+			}
+		}
 	}
 
 	streamCtx, cancelStream := context.WithCancel(ctx)
