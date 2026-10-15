@@ -726,8 +726,14 @@ func TestResumePausedRuns_SaturatedGlobalSlotWaitsInsteadOfFailing(t *testing.T)
 
 	once.Do(other)
 	waitRunCompleted(t, srv, run.ID)
-	if st := srv.sem.Stats(); st.Active != 0 || st.Queued != 0 {
-		t.Errorf("final global: active=%d queued=%d, want 0/0", st.Active, st.Queued)
+	// The resumed run gives its slot back in a defer that runs after its row
+	// is marked completed, so the slot may still be held for a moment here.
+	end := time.Now().Add(2 * time.Second)
+	for st := srv.sem.Stats(); st.Active != 0 || st.Queued != 0; st = srv.sem.Stats() {
+		if time.Now().After(end) {
+			t.Fatalf("final global: active=%d queued=%d, want 0/0", st.Active, st.Queued)
+		}
+		time.Sleep(5 * time.Millisecond)
 	}
 }
 
