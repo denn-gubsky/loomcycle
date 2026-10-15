@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+
+	"github.com/denn-gubsky/loomcycle/internal/fence"
 )
 
 // TestRedactor_ExactEnvValue is the F32 core: the resolved value of a secret
@@ -272,5 +274,53 @@ func TestRedactor_TokenPrefixesDoNotMaskOrdinaryText(t *testing.T) {
 		if got := r.String(in); got != in {
 			t.Errorf("masked ordinary text: %q -> %q", in, got)
 		}
+	}
+}
+
+// TestRedactor_FenceTagsSurviveEveryPattern pins that redaction never deletes
+// the tags around an untrusted block. The loop sends untrusted text as
+// "<kind>\n<escaped body>\n</kind>" and the redact context plugin runs over
+// that text afterwards. A rule whose separator crossed the line break took the
+// closing tag as the "value" of a body ending "password=", leaving the block
+// open, so the trusted text after it read as part of the block — and likewise
+// took an opening tag after trusted text ending "token:".
+//
+// One case per pattern rule, in rule order, so a rule added later has to say
+// what it does at a line end. Each case's line is a true positive the rule
+// must still mask inside the fence; dangling is the rule's prefix left at the
+// end of the body.
+func TestRedactor_FenceTagsSurviveEveryPattern(t *testing.T) {
+	cases := []struct{ secret, line, dangling string }{
+		{"ghp_realtokenvalue1234567890", "Authorization: token ghp_realtokenvalue1234567890", "Authorization: Bearer"},
+		{"sk-proj-abcdefghij1234567890", "key sk-proj-abcdefghij1234567890", "sk-"},
+		{"AKIAIOSFODNN7EXAMPLE", "id AKIAIOSFODNN7EXAMPLE", "AKIA"},
+		{"xoxb-123456789012-abcdefABCDEF", "slack xoxb-123456789012-abcdefABCDEF", "xoxb-"},
+		{"ghs_ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghij", "app ghs_ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghij", "ghp_"},
+		{"github_pat_11ABCDEFG0123456789_abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUV", "pat github_pat_11ABCDEFG0123456789_abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUV", "github_pat_"},
+		{"glpat-abcdEFGH1234ijklMNOP5678", "lab glpat-abcdEFGH1234ijklMNOP5678", "glpat-"},
+		{"supersecretvalue123", "password=supersecretvalue123", "password="},
+	}
+	if len(cases) != len(patternRules) {
+		t.Fatalf("%d cases for %d pattern rules: add a case for the new rule", len(cases), len(patternRules))
+	}
+	r := New(nil, true)
+	for i, tc := range cases {
+		t.Run(tc.secret, func(t *testing.T) {
+			if !patternRules[i].re.MatchString(tc.line) {
+				t.Fatalf("case %d does not exercise rule %d (%s)", i, i, patternRules[i].re)
+			}
+			body := fence.EscapeUntrusted(tc.line + "\n" + tc.dangling)
+			prompt := "Summarise this token:\n<web_content>\n" + body + "\n</web_content>\nReply to the user only."
+			got := r.String(prompt)
+			if strings.Contains(got, tc.secret) {
+				t.Errorf("secret not masked inside the fence: %q", got)
+			}
+			if !strings.Contains(got, "token:\n<web_content>\n") {
+				t.Errorf("opening tag lost to redaction: %q", got)
+			}
+			if !strings.HasSuffix(got, "\n</web_content>\nReply to the user only.") {
+				t.Errorf("closing tag lost to redaction: %q", got)
+			}
+		})
 	}
 }
