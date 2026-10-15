@@ -1823,6 +1823,7 @@ func main() {
 		Cfg:                 cfg,
 		MaxDefinitionBytes:  cfg.Env.AgentDefMaxDefinitionBytes,
 		MaxDescriptionBytes: cfg.Env.AgentDefMaxDescriptionBytes,
+		Credentials:         credEngine, // user_bearer: a stored credential the author holds
 	})
 	// RFC AP Phase 2 — wire the TeamDef substrate tool (team-workflow graphs).
 	// Tenant-confined at the route (ScopeTenant), but the same dedicated-slot

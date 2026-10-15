@@ -87,6 +87,7 @@ type credScanBody struct {
 	TenantID               string            `json:"tenant_id"`
 	UserCredentials        map[string]string `json:"user_credentials"`
 	UserCredentialsFromEnv map[string]string `json:"user_credentials_from_env"`
+	UserBearer             string            `json:"user_bearer"`
 	Auth                   credScanAuth      `json:"auth"`
 	SignWithKeyEnv         string            `json:"sign_with_key_env"`
 }
@@ -251,6 +252,9 @@ func refsOf(b credScanBody) []credRef {
 		for _, m := range envRefRe.FindAllStringSubmatch(v, -1) {
 			out = append(out, credRef{field: "user_credentials." + k, env: m[1]})
 		}
+	}
+	for _, m := range credRefRe.FindAllStringSubmatch(b.UserBearer, -1) {
+		out = append(out, credRef{field: "user_bearer", cred: m[0], name: m[2]})
 	}
 	out = append(out, authRefs("", b.Auth)...)
 	if b.SignWithKeyEnv != "" {

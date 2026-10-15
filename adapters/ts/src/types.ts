@@ -5066,6 +5066,11 @@ export interface ScheduleDefOverlay {
   /** Credential key → env-var NAME the scheduler reads it from (the variable
    *  must be on LOOMCYCLE_SCHEDULER_ENV_ALLOWLIST). */
   user_credentials_from_env?: Record<string, string>;
+  /** The fired run's bearer — what `${run.user_bearer}` in an MCP server's
+   *  headers becomes. Only a stored credential, `"$cred:<name>"`: resolved
+   *  for each MCP request, for that server's URL, so a credential restricted
+   *  by `allowed_urls` works. Refused on delivery `channel` or `team`. */
+  user_bearer?: string;
   on_complete?: ScheduledRunHook[];
   /** Non-secret metadata the agent receives as trusted. */
   metadata?: Record<string, unknown>;
@@ -5200,6 +5205,11 @@ export interface WebhookDefOverlay {
   user_credentials_from_env?: Record<string, string>;
   /** Credential key → value, handed to the run. */
   user_credentials?: Record<string, string>;
+  /** The started run's bearer — what `${run.user_bearer}` in an MCP server's
+   *  headers becomes. Only a stored credential, `"$cred:<name>"`: resolved
+   *  for each MCP request, for that server's URL, so a credential restricted
+   *  by `allowed_urls` works. Refused on delivery `channel` or `team`. */
+  user_bearer?: string;
   /** Pins the started run's user tier; a delivery never chooses it. Must be
    *  one of the server's user tiers. */
   user_tier?: string;

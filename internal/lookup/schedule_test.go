@@ -202,6 +202,7 @@ func TestSchedule_DriftDetection(t *testing.T) {
 		"user_id":                   true,
 		"user_tier":                 true,
 		"user_credentials_from_env": true,
+		"user_bearer":               true, // the run's bearer, a $cred: reference
 		"on_complete":               true,
 		"metadata":                  true, // non-secret agent metadata (PR 2/2)
 		"tenant_id":                 true, // tenant the fired run executes as (RFC N follow-up)

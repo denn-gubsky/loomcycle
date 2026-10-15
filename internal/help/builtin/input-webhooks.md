@@ -571,11 +571,42 @@ mcp_servers:
       Authorization: "Bearer ${run.credentials.github}"
 ```
 
+### `user_bearer` — the run's bearer, from a stored credential
+
+`user_bearer` sets what `${run.user_bearer}` (and
+`${run.credentials.default}`) in an MCP server's headers becomes for the
+spawned run. It takes only a stored credential reference, so no token sits
+in the definition:
+
+```yaml
+user_bearer: "$cred:ccq-hook-token-acme-app"
+mcp_servers:            # operator config
+  forge:
+    transport: http
+    url: "https://forge.example.com/mcp"
+    headers:
+      Authorization: "Bearer ${run.user_bearer}"
+```
+
+- **Not opened when the delivery arrives.** The reference rides into the run
+  and is resolved for each MCP request, for that server's URL — as a `$cred:`
+  value in `user_credentials` is. So a credential restricted by
+  `allowed_urls` works, and is sent only where it is allowed to go.
+- **Resolved in the run's tenant,** for the definition's agent, then the
+  run's user, then the tenant: the most specific credential of that name
+  wins. It comes from the definition only — a delivery never sets it.
+- **A literal bearer is refused** when the definition is written. Written
+  with `WebhookDef`, the credential must already exist for the definition's
+  agent or the author's tenant; an author with no tenant may not set one. An
+  operator is not checked, so the credential may come later.
+- A snapshot keeps the reference, never a value.
+
 **Channel-delivery** webhooks carry **no** credentials — a channel publish
 has no run identity to attach per-user bearers to, and accepting them would
-leak a secret onto the message bus. `user_credentials_from_env` (and any
-`payload_mapping` `user_credentials.*` target) is **refused at create time**
-for `delivery: channel`.
+leak a secret onto the message bus. `user_credentials_from_env`,
+`user_bearer` (and any `payload_mapping` `user_credentials.*` target) are
+**refused at create time** for `delivery: channel`, and so are credentials
+on `delivery: team`.
 
 ### After a snapshot restore: `capture_disabled`
 

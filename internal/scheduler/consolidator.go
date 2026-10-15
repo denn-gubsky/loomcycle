@@ -333,7 +333,7 @@ func (s *Scheduler) dispatchConsolidationTargets(ctx context.Context, row store.
 		return
 	}
 
-	if len(def.UserCredentials)+len(def.UserCredentialsFromEnv) > 0 {
+	if len(def.UserCredentials)+len(def.UserCredentialsFromEnv) > 0 || def.UserBearer != "" {
 		for _, target := range targets {
 			if target.TenantID != def.TenantID {
 				s.logf("scheduler: consolidation fan-out %q: runs dispatched outside tenant %q carry none of this schedule's credentials — see runConsolidationTarget",
@@ -1252,7 +1252,9 @@ func (s *Scheduler) runConsolidationTarget(ctx context.Context, def scheduleDef,
 		// runs; anything else is refused (operator_key_restricted) until the
 		// tenant adds a key or an admin gives it its own schedule. Gate off:
 		// unchanged.
-		in.UserCredentials = nil
+		// The bearer too: its reference would resolve in the target tenant,
+		// against whatever credential of that name the tenant holds.
+		in.UserCredentials, in.UserBearer = nil, ""
 		if s.cfg.OperatorKeyRestriction {
 			in.OperatorKeyRestricted = true
 		}

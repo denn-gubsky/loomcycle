@@ -119,7 +119,8 @@ Through the tool:
   a one-shot schedule is still there once the team is fixed.
 - **Refused on a team tick**, when it is written: `agent`, `channel`,
   `prompt`, `on_complete`, credentials (`required_credentials`,
-  `user_credentials`, `user_credentials_from_env`) and `metadata`. Each
+  `user_credentials`, `user_credentials_from_env`, `user_bearer`) and
+  `metadata`. Each
   configures an agent run, and the walk's members resolve their own; put
   what should follow the walk in the team's own hooks. `team`, `vars` and
   `input` are refused on the other deliveries.
@@ -354,6 +355,33 @@ The only credential-related concept introduced by this RFC is the
 template-side `required_credentials:` list that forks must
 populate; the `fork` op (future) will refuse with
 `ErrCredentialsIncomplete` if any required key is missing.
+
+### `user_bearer` — the fired run's bearer, from a stored credential
+
+`user_bearer` sets what `${run.user_bearer}` (and
+`${run.credentials.default}`) in an MCP server's headers becomes for the
+fired run. It takes only a stored credential reference:
+
+```yaml
+user_bearer: "$cred:reports-mcp-token"
+```
+
+- **Not opened when the schedule fires.** The reference rides into the run
+  and is resolved for each MCP request, for that server's URL — as a
+  `$cred:` value in `user_credentials` is. So a credential restricted by
+  `allowed_urls` works, and is sent only where it is allowed to go.
+- **Resolved in the run's tenant,** for the schedule's `agent`, then its
+  `user_id`, then the tenant: the most specific credential of that name wins.
+- **A literal bearer is refused** when the schedule is written. Written with
+  `ScheduleDef`, the credential must already exist for the schedule's agent,
+  its `user_id` or the author's tenant; an author with no tenant may not set
+  one. An operator is not checked, so the credential may come later.
+- **Refused on `delivery: channel` and `delivery: team`**: it authorizes one
+  agent run.
+- A consolidation schedule that fans out into other tenants drops it for
+  those runs, as it drops `user_credentials`: the reference would resolve
+  against the other tenant's credential of that name.
+- A snapshot keeps the reference, never a value.
 
 ## Closed-set delivery hooks
 

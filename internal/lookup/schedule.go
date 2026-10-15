@@ -117,6 +117,7 @@ type SubstrateScheduleDef struct {
 	// side cron resolution on templates with user_tier_schedules.
 	UserTier               string                  `json:"user_tier,omitempty"`
 	UserCredentialsFromEnv map[string]string       `json:"user_credentials_from_env,omitempty"`
+	UserBearer             string                  `json:"user_bearer,omitempty"`
 	OnComplete             []SubstrateScheduleHook `json:"on_complete,omitempty"`
 	Metadata               map[string]any          `json:"metadata,omitempty"`
 	TenantID               string                  `json:"tenant_id,omitempty"`
@@ -211,6 +212,7 @@ func (s SubstrateScheduleDef) ToConfigDef() config.ScheduledRun {
 		ConcurrencyPolicy:      s.ConcurrencyPolicy,
 		UserID:                 s.UserID,
 		UserCredentialsFromEnv: s.UserCredentialsFromEnv,
+		UserBearer:             s.UserBearer,
 		Metadata:               s.Metadata,
 		TenantID:               s.TenantID,
 	}
