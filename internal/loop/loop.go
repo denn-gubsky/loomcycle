@@ -4645,6 +4645,37 @@ var allowedUntrustedKinds = map[string]bool{
 	fence.CodeKind:  true, // kept exactly as written, under a boundary derived from the text
 }
 
+// RuntimeOnlyKind is the untrusted kind only the runtime may write: it marks
+// what an external trigger's body sent (injectMetadataSegments). A caller's
+// block under it would tell the model the trigger sent text it did not.
+const RuntimeOnlyKind = "run_metadata"
+
+// DemoteRuntimeKinds returns segs with every untrusted-block a caller labelled
+// with a runtime-only kind relabelled "untrusted". Every intake applies it to
+// the segments a caller sent, before the runtime adds its own; segs is not
+// changed.
+func DemoteRuntimeKinds(segs []PromptSegment) []PromptSegment {
+	var out []PromptSegment
+	for i, s := range segs {
+		for j, c := range s.Content {
+			if c.Type != "untrusted-block" || c.Kind != RuntimeOnlyKind {
+				continue
+			}
+			if out == nil {
+				out = append([]PromptSegment(nil), segs...)
+			}
+			if &out[i].Content[0] == &segs[i].Content[0] {
+				out[i].Content = append([]PromptContentBlock(nil), s.Content...)
+			}
+			out[i].Content[j].Kind = "untrusted"
+		}
+	}
+	if out == nil {
+		return segs
+	}
+	return out
+}
+
 // ValidateSegmentTypes refuses a content block whose type is set and is not
 // one the loop knows. flattenContent reads anything it does not recognise as
 // trusted text, so without this a caller that misspells "untrusted-block"
