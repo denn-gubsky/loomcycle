@@ -553,3 +553,30 @@ func TestVolumeDefGitSource_TheCredentialsUsernameIsSent(t *testing.T) {
 		t.Errorf("the same token with the default user name: %s, want auth_failed", res.Text)
 	}
 }
+
+// A run that may not use its user's own scope — a webhook's, or a schedule's
+// whose author could not act as that user — does not clone with a credential
+// stored in that scope, as no other $cred: it resolves does.
+func TestGitCredentialResolver_ARunWithoutTheUserScopeDoesNotTakeTheUsersCredential(t *testing.T) {
+	f := newGitSourceFixture(t, false)
+	target := "https://github.com/acme/app"
+	norm, err := credential.NormalizeAllowedURLs(&[]string{target})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.engine.PutInline(context.Background(), credential.Identity{TenantID: "tnt", Scope: "user", ScopeID: "alice", Name: "personal"}, "glpat_alices_own", nil, norm, nil); err != nil {
+		t.Fatal(err)
+	}
+	resolve := GitCredentialResolver(f.engine, nil, nil)
+	asAlice := func(noUserScope bool) context.Context {
+		return tools.WithRunIdentity(f.ctx, tools.RunIdentityValue{AgentID: "a", RootRunID: "run-1", TenantID: "tnt", UserID: "alice", CredentialsNoUserScope: noUserScope})
+	}
+
+	if _, token, err := resolve(asAlice(false), "$cred:personal", target); err != nil || token != "glpat_alices_own" {
+		t.Fatalf("alice's own run: token=%q err=%v, want her credential", token, err)
+	}
+	_, token, err := resolve(asAlice(true), "$cred:personal", target)
+	if !errors.Is(err, ErrGitCredentialUnresolvable) || token != "" {
+		t.Errorf("a run without the user scope: token=%q err=%v, want it unresolvable", token, err)
+	}
+}

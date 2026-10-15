@@ -111,9 +111,16 @@ func GitCredentialResolver(
 		}
 		kind, name := m[1], m[2]
 		ri := tools.RunIdentity(ctx)
+		// A run a trigger started without the right to act as its user never
+		// takes that user's own credential, as no other $cred: it resolves
+		// does: a webhook's user can come from the delivery.
+		userID := ri.UserID
+		if ri.CredentialsNoUserScope {
+			userID = ""
+		}
 		// The fetch's own transport follows no redirect at all (gitsource), so
 		// the pin a restricted credential asks for is already kept.
-		res, found, err := engine.ResolveFor(netguard.WithPinnable(ctx), ri.TenantID, tools.AgentName(ctx), ri.UserID, name, targetURL)
+		res, found, err := engine.ResolveFor(netguard.WithPinnable(ctx), ri.TenantID, tools.AgentName(ctx), userID, name, targetURL)
 		switch {
 		case errors.Is(err, credential.ErrURLNotAllowed):
 			return "", "", ErrGitCredentialURLNotAllowed
