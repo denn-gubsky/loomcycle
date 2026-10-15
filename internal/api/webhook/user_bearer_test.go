@@ -21,3 +21,12 @@ func TestReceiver_TheRunCarriesTheDefinitionsBearer(t *testing.T) {
 		t.Errorf("the run's bearer is %q, want the definition's reference", got)
 	}
 }
+
+// A webhook's run never resolves $cred: in its user's own scope: that user
+// can come from the delivery.
+func TestBuildRunInput_AWebhookRunHasNoUserScope(t *testing.T) {
+	in := buildRunInput(config.Webhook{Agent: "x"}, projectResult{Fields: map[string]string{"user_id": "bob"}}, nil, nil, nil)
+	if !in.CredentialsNoUserScope || in.UserID != "bob" {
+		t.Errorf("CredentialsNoUserScope = %t user %q, want true for bob", in.CredentialsNoUserScope, in.UserID)
+	}
+}
