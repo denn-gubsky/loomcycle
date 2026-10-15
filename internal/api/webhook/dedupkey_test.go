@@ -292,6 +292,24 @@ func TestReceiver_DedupKey_OnAChannelPublishesOncePerEvent(t *testing.T) {
 	}
 }
 
+// A channel delivery's keys were held a day before dedup_key existed; a short
+// dedup_ttl_seconds does not shorten that.
+func TestReceiver_DedupKey_OnAChannelHoldsADayAtLeast(t *testing.T) {
+	st := openScopeStore(t)
+	pub := &countingPublisher{}
+	hook := channelHook(githubChannel)
+	hook.DedupKey = []string{"$.ref", "$.after"}
+	hook.DedupTTLSeconds = 60
+	hooks := map[string]config.Webhook{"gh": hook}
+	captured := []byte(headPush("bbb", "1"))
+	wantStatus(t, "the push", deliver(channelReplica(st, pub, channelT0, hooks), "gh", githubChannel, captured, "e1"), http.StatusAccepted)
+	later := channelReplica(st, pub, channelT0.Add(time.Hour), hooks)
+	wantStatus(t, "the same body an hour later", deliver(later, "gh", githubChannel, captured, "e2"), http.StatusOK)
+	if n := pub.count(); n != 1 {
+		t.Errorf("%d publishes, want 1", n)
+	}
+}
+
 // A team delivery holds the key, recording the walk it started.
 func TestReceiver_DedupKey_OnATeamStartsOneWalkPerEvent(t *testing.T) {
 	st := openScopeStore(t)
