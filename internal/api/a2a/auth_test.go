@@ -126,3 +126,34 @@ func TestFrontierAuthenticator_RefusesATokenWithAnAgentAllowlist(t *testing.T) {
 		t.Error("an unrestricted token was refused")
 	}
 }
+
+// A peer starts runs, so it needs the scope that starts runs, and a token whose
+// rate or retention this plane cannot enforce is refused as an allowlisted one
+// is: no principal reaches the run, so the rate would never be counted and a
+// no-trace token's task would be stored. An override lock holds trivially here
+// — a message carries no per-run overrides — so it is not refused.
+func TestFrontierAuthenticator_RefusesWhatThisPlaneCannotHold(t *testing.T) {
+	member := []string{auth.ScopeRunsCreate}
+	principals := map[string]auth.Principal{
+		"rated":     {TenantID: "acme", Subject: "dev", Scopes: member, Restrictions: auth.Restrictions{Rate: &auth.RateLimit{PerMinute: 1}}},
+		"quiet":     {TenantID: "acme", Subject: "dev", Scopes: member, Restrictions: auth.Restrictions{Retention: auth.RetentionNone}},
+		"readonly":  {TenantID: "acme", Subject: "dev", Scopes: []string{auth.ScopeRunsRead, auth.ScopeChannelPublish}},
+		"locked":    {TenantID: "acme", Subject: "dev", Scopes: member, Restrictions: auth.Restrictions{Overrides: &auth.OverridePolicy{}}},
+		"isolated":  {TenantID: "acme", Subject: "dev", Scopes: []string{auth.ScopeUser}},
+		"operator":  {TenantID: "acme", Subject: "op", Scopes: []string{auth.ScopeTenant}},
+		"unlimited": {TenantID: "acme", Subject: "dev", Scopes: member},
+	}
+	resolve := func(_ context.Context, bearer string) (auth.Principal, bool) {
+		p, ok := principals[bearer]
+		return p, ok
+	}
+	authn := FrontierAuthenticator(func(context.Context) bool { return true }, resolve, false)
+	for bearer, want := range map[string]bool{
+		"rated": false, "quiet": false, "readonly": false,
+		"locked": true, "isolated": true, "operator": true, "unlimited": true,
+	} {
+		if _, _, _, ok := authn(http.Header{"Authorization": []string{"Bearer " + bearer}}); ok != want {
+			t.Errorf("%s: accepted=%v, want %v", bearer, ok, want)
+		}
+	}
+}

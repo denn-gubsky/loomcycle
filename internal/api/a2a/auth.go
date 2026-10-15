@@ -64,6 +64,19 @@ func FrontierAuthenticator(
 		if p.Restrictions.RunPlaneOnly() {
 			return "", false, false, false
 		}
+		// The same holds for a rate or a retention mode: both are read off
+		// the run's principal, which this plane does not carry, so a rate
+		// would never be counted and a no-trace token's task would be
+		// stored. An override lock is not refused: a message carries no
+		// per-run overrides, so the lock holds here by construction.
+		if p.Restrictions.Rate != nil || p.Restrictions.Retention != "" {
+			return "", false, false, false
+		}
+		// Every peer call is part of starting or following a run this plane
+		// starts, so it needs the scope that starts runs.
+		if !auth.HasScope(p.Scopes, auth.ScopeRunsCreate) {
+			return "", false, false, false
+		}
 		// RFC AX: derive the operator-key restriction from the peer's OWN
 		// resolved scopes — the SAME auth.OperatorKeyRestricted used on the
 		// HTTP/gRPC planes, so there's one source of truth. A granular A2A peer
