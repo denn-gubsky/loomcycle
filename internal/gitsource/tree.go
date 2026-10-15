@@ -123,17 +123,39 @@ func (f *Fetched) WriteTree(ctx context.Context, dest string, lim TreeLimits) (T
 			res.Omitted = append(res.Omitted, Omitted{Path: p, Reason: reason, Size: size})
 		}
 	}
-	// Links created so far. A path UNDER one of them is refused: a tree has
-	// no business holding both "l" as a link and "l/file", and writing the
-	// second would follow the first. The keys are lower case: on a file
-	// system that ignores case, "q/a/l" is written through a link "q/A", and
-	// lands wherever that link leads, at another depth than its name says.
-	links := map[string]bool{}
+	// A path UNDER a link already written is refused: a tree has no business
+	// holding both "l" as a link and "l/file", and writing the second would
+	// follow the first. Which names are the same is the file system's to
+	// say, not this code's: on one that ignores case, or Unicode
+	// normalization, "q/a/l" is written through a link "q/A" (and a name
+	// with a combining accent through a link with the accented letter),
+	// and lands wherever that link leads, at another depth than its name
+	// says. So each parent is looked up on disk, shallowest first, and one
+	// that is a link refuses the path. A parent found to be a real directory
+	// stays one (nothing written later can replace it), so it is looked up
+	// once.
+	realDirs := map[string]bool{}
 	underLink := func(p string) bool {
-		for dir := path.Dir(p); dir != "." && dir != "/"; dir = path.Dir(dir) {
-			if links[strings.ToLower(dir)] {
+		var dirs []string
+		for dir := path.Dir(p); dir != "."; dir = path.Dir(dir) {
+			dirs = append(dirs, dir)
+		}
+		for i := len(dirs) - 1; i >= 0; i-- {
+			d := dirs[i]
+			if realDirs[d] {
+				continue
+			}
+			fi, err := root.Lstat(filepath.FromSlash(d))
+			if errors.Is(err, fs.ErrNotExist) {
+				return false // it and what is below it are made as real directories
+			}
+			if err != nil || fi.Mode()&fs.ModeSymlink != 0 {
 				return true
 			}
+			if !fi.IsDir() {
+				return false // a file in the way: the write fails on it
+			}
+			realDirs[d] = true
 		}
 		return false
 	}
@@ -201,7 +223,6 @@ func (f *Fetched) WriteTree(ctx context.Context, dest string, lim TreeLimits) (T
 				}
 				return res, fmt.Errorf("%w: %s: %v", ErrFetchFailed, name, err)
 			}
-			links[strings.ToLower(name)] = true
 			linkNames = append(linkNames, name)
 			res.Files++
 			continue

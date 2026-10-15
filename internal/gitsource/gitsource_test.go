@@ -928,6 +928,13 @@ func TestWriteTree_RefusesAStoreInsideTheDestination(t *testing.T) {
 // final check skipped dangling links, so it stayed: a later write to "l"
 // would create a file outside the volume. The path is refused under a link
 // whatever its case, and no link that leads out survives, dangling or not.
+//
+// Which names are one is the file system's to say: case folding alone would
+// miss a pair that differs in Unicode normalization (macOS treats the two
+// spellings of "é" as one name) or in a case rule of its own. So every pair
+// here is checked against the file system the test runs on: where it holds
+// the two names to be one, the path under the link must be refused; where
+// it does not, the path is an ordinary one and is written.
 func TestWriteTree_ALinkUnderALinkOfAnotherCaseIsRefused(t *testing.T) {
 	f := newFixture(t, false, true)
 	link := func(path, target string) {
@@ -937,11 +944,38 @@ func TestWriteTree_ALinkUnderALinkOfAnotherCaseIsRefused(t *testing.T) {
 			t.Fatal(err)
 		}
 		sha := run(t, f.work, "hash-object", "-w", blob)
-		run(t, f.work, "-c", "core.ignorecase=false", "update-index", "--add", "--cacheinfo", "120000,"+sha+","+path)
+		run(t, f.work, "-c", "core.ignorecase=false", "-c", "core.precomposeunicode=false",
+			"update-index", "--add", "--cacheinfo", "120000,"+sha+","+path)
 	}
-	link("q/A", "..")
-	link("q/a/l", "../../zz-nonexistent")
-	run(t, f.work, "commit", "-q", "-m", "links of two cases")
+	// sameName reports whether this file system takes a and b to be one name.
+	sameName := func(a, b string) bool {
+		scratch := t.TempDir()
+		if err := os.Mkdir(filepath.Join(scratch, a), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		_, err := os.Lstat(filepath.Join(scratch, b))
+		return err == nil
+	}
+	// Written as code points, so no editor or tool normalizes them. Each
+	// link's name sorts before the other spelling, so a tree walk writes
+	// the link first.
+	var (
+		eAcute  = string(rune(0x00e9))       // é as one code point
+		eAccent = "e" + string(rune(0x0301)) // é as e and a combining accent
+		bigE    = "E" + string(rune(0x0301)) // É as E and a combining accent
+		kelvin  = string(rune(0x212a))       // the Kelvin sign
+	)
+	pairs := []struct{ dir, linkName, otherName string }{
+		{"q", "A", "a"},        // case
+		{"n", eAccent, eAcute}, // normalization
+		{"k", "k", kelvin},     // a case rule beyond ASCII
+		{"s", bigE, eAcute},    // case and normalization at once
+	}
+	for _, p := range pairs {
+		link(p.dir+"/"+p.linkName, "..")
+		link(p.dir+"/"+p.otherName+"/l-"+p.dir, "../../zz-nonexistent")
+	}
+	run(t, f.work, "commit", "-q", "-m", "links of two spellings")
 	run(t, f.work, "push", "-q", f.bare, "HEAD:refs/heads/main")
 	got, err := Fetch(context.Background(), f.request(t, run(t, f.work, "rev-parse", "HEAD")))
 	if err != nil {
@@ -957,8 +991,15 @@ func TestWriteTree_ALinkUnderALinkOfAnotherCaseIsRefused(t *testing.T) {
 	for _, o := range res.Omitted {
 		reasons[o.Path] = o.Reason
 	}
-	if reasons["q/a/l"] != ReasonUnsafePath {
-		t.Errorf("q/a/l, under the link q/A in another case: omitted as %q, want %q (omitted: %v)", reasons["q/a/l"], ReasonUnsafePath, reasons)
+	for _, p := range pairs {
+		under := p.dir + "/" + p.otherName + "/l-" + p.dir
+		if sameName(p.linkName, p.otherName) {
+			if reasons[under] != ReasonUnsafePath {
+				t.Errorf("%q, under the link %q of another spelling: omitted as %q, want %q", under, p.dir+"/"+p.linkName, reasons[under], ReasonUnsafePath)
+			}
+		} else if reasons[under] != "" {
+			t.Errorf("%q, under a directory this file system tells apart from the link: omitted as %q, want written", under, reasons[under])
+		}
 	}
 	// Whatever was written, no link on disk leads out: each is judged by the
 	// directory it really sits in, not by its name.
