@@ -11679,12 +11679,18 @@ func (s *Store) WebhookDeliveryClaimRun(ctx context.Context, keys []string, now,
 	for _, st := range store.WebhookRetakeRunStatuses {
 		args = append(args, string(st))
 	}
-	if _, err := tx.ExecContext(ctx,
-		`DELETE FROM webhook_deliveries WHERE run_id IN (
-			SELECT d.run_id FROM webhook_deliveries d JOIN runs r ON r.id = d.run_id
-			 WHERE d.delivery_key IN (`+sqlitePlaceholders(len(keys))+`)
+	failedHolders := `SELECT d.run_id FROM webhook_deliveries d JOIN runs r ON r.id = d.run_id
+			 WHERE d.delivery_key IN (` + sqlitePlaceholders(len(keys)) + `)
 			   AND d.run_id <> ''
-			   AND r.status IN (`+sqlitePlaceholders(len(store.WebhookRetakeRunStatuses))+`))`, args...); err != nil {
+			   AND r.status IN (` + sqlitePlaceholders(len(store.WebhookRetakeRunStatuses)) + `)`
+	// The failed run gives up its own keys too, so the run that retakes the
+	// event can carry them.
+	if _, err := tx.ExecContext(ctx,
+		`UPDATE runs SET idempotency_key = NULL, delivery_alt_key = NULL WHERE id IN (`+failedHolders+`)`, args...); err != nil {
+		return false, "", fmt.Errorf("webhook delivery claim retake: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx,
+		`DELETE FROM webhook_deliveries WHERE run_id IN (`+failedHolders+`)`, args...); err != nil {
 		return false, "", fmt.Errorf("webhook delivery claim retake: %w", err)
 	}
 	for _, k := range keys {

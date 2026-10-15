@@ -3946,10 +3946,17 @@ func (s *Store) WebhookDeliveryClaimRun(ctx context.Context, keys []string, now,
 	// Two claims racing to take over one failed run: the second's DELETE
 	// waits on the first's row locks and then finds the rows gone, and its
 	// insert below meets the first's committed key.
+	const failedHolders = `SELECT d.run_id FROM webhook_deliveries d JOIN runs r ON r.id = d.run_id
+			 WHERE d.delivery_key = ANY($1) AND d.run_id <> '' AND r.status = ANY($2)`
+	// The failed run gives up its own keys too, so the run that retakes the
+	// event can carry them.
 	if _, err := tx.Exec(ctx,
-		`DELETE FROM webhook_deliveries WHERE run_id IN (
-			SELECT d.run_id FROM webhook_deliveries d JOIN runs r ON r.id = d.run_id
-			 WHERE d.delivery_key = ANY($1) AND d.run_id <> '' AND r.status = ANY($2))`,
+		`UPDATE runs SET idempotency_key = NULL, delivery_alt_key = NULL WHERE id IN (`+failedHolders+`)`,
+		keys, statuses); err != nil {
+		return false, "", fmt.Errorf("webhook delivery claim retake: %w", err)
+	}
+	if _, err := tx.Exec(ctx,
+		`DELETE FROM webhook_deliveries WHERE run_id IN (`+failedHolders+`)`,
 		keys, statuses); err != nil {
 		return false, "", fmt.Errorf("webhook delivery claim retake: %w", err)
 	}

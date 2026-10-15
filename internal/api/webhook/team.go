@@ -115,12 +115,9 @@ func (rec *Receiver) deliverTeam(ctx context.Context, w http.ResponseWriter, spa
 	// Durable dedup, as for a spawned run: the walk's run row carries the
 	// webhook-scoped delivery keys, so a redelivery that outlived the in-memory
 	// guard (or landed on another replica) finds the walk it already started.
-	// A dedup_key's keys are held in the store instead (see deliverSpawn).
-	if held == nil {
-		in.IdempotencyKey = dk.key
-		in.DeliveryAltKey = dk.alt
-	}
-	if existing, ok := rec.priorTeamWalk(ctx, dk, did); ok && (held == nil || !retakable(existing)) {
+	in.IdempotencyKey = dk.key
+	in.DeliveryAltKey = dk.alt
+	if existing, ok := rec.priorTeamWalk(ctx, dk, did); ok {
 		rec.setHeldRun(name, held, existing.ID)
 		rec.dedup.recordDuplicate(dk)
 		rec.finish(span, whKey, did, verdictAccepted, existing.ID)
@@ -157,12 +154,15 @@ func (rec *Receiver) deliverTeam(ctx context.Context, w http.ResponseWriter, spa
 			winner = existing.ID
 			resp["run_id"] = winner
 		}
+		rec.setHeldRun(name, held, winner)
 		rec.dedup.recordDuplicate(dk)
 		rec.finish(span, whKey, did, verdictAccepted, winner)
 		writeJSON(w, http.StatusAccepted, resp)
 		return
 	}
-	rec.releaseHeld(ctx, name, held)
+	if startedNothing(err, "") {
+		rec.releaseHeld(ctx, name, held)
+	}
 	rec.finish(span, whKey, did, verdictRejectedTeamStart, "")
 	rec.logf("webhook %q: team walk did not start: %v", name, err)
 	rec.teamStartErrorResponse(w, err)

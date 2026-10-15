@@ -496,13 +496,11 @@ func (rec *Receiver) deliverSpawn(ctx context.Context, w http.ResponseWriter, sp
 	// RFC H Decision 10 "Layer 2" durable dedup: stamp the run with the
 	// webhook-scoped delivery key so CreateRun persists it to
 	// runs.idempotency_key, and its second identity to delivery_alt_key.
-	// Never the bare did — those indexes are global. A dedup_key's keys are
-	// held in the store instead, so its run carries none: a key on the row
-	// would refuse the run that retakes it from a failed one.
-	if held == nil {
-		in.IdempotencyKey = dk.key
-		in.DeliveryAltKey = dk.alt
-	}
+	// Never the bare did — those indexes are global. With a dedup_key the
+	// run carries them too: they outlive its lifetime, so a captured body
+	// is still refused after it; retaking a failed run's claim clears them.
+	in.IdempotencyKey = dk.key
+	in.DeliveryAltKey = dk.alt
 
 	// Layer-2 BEFORE-spawn check: if a run already carries this delivery
 	// key (a redelivery that survived past the in-memory Layer-1 TTL, or
@@ -510,11 +508,8 @@ func (rec *Receiver) deliverSpawn(ctx context.Context, w http.ResponseWriter, sp
 	// without spawning a duplicate. The store is nil for yaml-only
 	// deployments; treat a lookup error as "not found" (fail open to the
 	// spawn path — the unique index is the real backstop).
-	//
-	// With a dedup_key this finds only a run started before the definition
-	// had one; a failed one is retaken as the store would.
 	if rec.store != nil && did != "" {
-		if existing, ok := rec.priorDeliveryRun(ctx, dk, did, wd); ok && (held == nil || !retakable(existing)) {
+		if existing, ok := rec.priorDeliveryRun(ctx, dk, did, wd); ok {
 			rec.setHeldRun(name, held, existing.ID)
 			rec.dedup.recordDuplicate(dk)
 			rec.finish(span, whKey, did, verdictAccepted, existing.ID)
@@ -599,7 +594,7 @@ func (rec *Receiver) spawnAsync(w http.ResponseWriter, span trace.Span, name, wh
 		}
 		// Here, not in the response's select: a setup that outlasts the
 		// response's wait may still start the run.
-		if err != nil && spawnedRunID == "" {
+		if startedNothing(err, spawnedRunID) {
 			rec.releaseHeld(context.Background(), name, held)
 		}
 		// Fire on_complete hooks AFTER the run returns. Only when the run was
@@ -658,6 +653,7 @@ func (rec *Receiver) spawnAsync(w http.ResponseWriter, span trace.Span, name, wh
 		if errors.Is(err, store.ErrDuplicateIdempotencyKey) {
 			if rec.store != nil && did != "" {
 				if existing, ok, lerr := rec.store.RunByDeliveryKeys(context.Background(), []string{dk.key, dk.alt}); lerr == nil && ok {
+					rec.setHeldRun(name, held, existing.ID)
 					rec.dedup.recordDuplicate(dk)
 					rec.finish(span, whKey, did, verdictAccepted, existing.ID)
 					writeJSON(w, http.StatusAccepted, map[string]string{
@@ -756,7 +752,7 @@ func (rec *Receiver) spawnSync(ctx context.Context, w http.ResponseWriter, span 
 		if err != nil {
 			rec.logf("webhook %q: sync run failed: %v", name, err)
 		}
-		if err != nil && spawnedRunID == "" {
+		if startedNothing(err, spawnedRunID) {
 			rec.releaseHeld(context.Background(), name, held)
 		}
 		// Fire on_complete hooks AFTER the run returns, same posture as the

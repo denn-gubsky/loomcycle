@@ -3594,7 +3594,8 @@ type Store interface {
 	// starts a run (a webhook with a dedup_key), whose keys then record that
 	// run (WebhookDeliverySetRun). A key held for a run whose status is one of
 	// WebhookRetakeRunStatuses is taken over: every key of that run is dropped
-	// first, in the same transaction, so the event is handled again. On a
+	// first, and the run's own idempotency_key and delivery_alt_key cleared,
+	// in the same transaction, so the event is handled again. On a
 	// refusal holder is the run holding the key that refused it, "" when that
 	// claim's run has not registered yet.
 	WebhookDeliveryClaimRun(ctx context.Context, keys []string, now, expiresAt time.Time) (claimed bool, holder string, err error)

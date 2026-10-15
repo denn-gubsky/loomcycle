@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"time"
@@ -18,13 +19,16 @@ import (
 )
 
 // A webhook with a dedup_key names each event by fields of its signed body,
-// and its keys live in the store (webhook_deliveries) for the definition's
-// dedup_ttl_seconds, not on the run row: a run row's keys would outlive both
-// that lifetime and the failed-run rule, and the store's claim already grants
-// one of two racing replicas. The claim holds the key, the body hash and the
-// delivery id the signature covers (durableDeliveryKeys), all or none, and
-// records the run it started. A duplicate is answered as one unless that run
-// ended failed (store.WebhookRetakeRunStatuses).
+// and holds that name in the store (webhook_deliveries) for the definition's
+// dedup_ttl_seconds, with the body hash and the delivery id the signature
+// covers (durableDeliveryKeys), all or none. The claim records the run it
+// started, and a duplicate is answered as one unless that run ended failed
+// (store.WebhookRetakeRunStatuses).
+//
+// The run still carries its delivery keys, as without a dedup_key: they last
+// as long as its row, past the event key's lifetime, so a byte-identical
+// capture is refused after that too. Retaking a failed run's claim clears its
+// keys in the same transaction.
 //
 // This replica's in-memory guard is not consulted for such a webhook: it
 // cannot tell that a run failed, and would hold back the forge's redelivery of
@@ -143,15 +147,11 @@ func (rec *Receiver) setHeldRun(name string, h *heldKeys, runID string) {
 	}
 }
 
-// retakable reports whether a run's keys go to the next delivery of its
-// event: it did not handle it.
-func retakable(r store.Run) bool {
-	for _, st := range store.WebhookRetakeRunStatuses {
-		if r.Status == st {
-			return true
-		}
-	}
-	return false
+// startedNothing reports whether a start that returned err, with runID the
+// run it registered ("" for none), left the event unhandled, so its held keys
+// go back. A duplicate's event was handled, by the run that holds its key.
+func startedNothing(err error, runID string) bool {
+	return err != nil && runID == "" && !errors.Is(err, store.ErrDuplicateIdempotencyKey)
 }
 
 // newHeldKeys builds the held keys of a delivery to wd, or answers it 400
