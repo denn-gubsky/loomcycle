@@ -10,6 +10,8 @@ import (
 	a2asdk "github.com/a2aproject/a2a-go/v2/a2a"
 
 	"github.com/denn-gubsky/loomcycle/internal/config"
+	"github.com/denn-gubsky/loomcycle/internal/credential"
+	"github.com/denn-gubsky/loomcycle/internal/netguard"
 	"github.com/denn-gubsky/loomcycle/internal/providers"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
 )
@@ -42,6 +44,22 @@ type Tool struct {
 	// signature failure). MUST NOT include the bearer value — CLAUDE.md
 	// rule 4. Nil is allowed (silent).
 	logf func(format string, args ...any)
+	// credSubstitute resolves a stored credential reference ("$cred:<name>")
+	// in the run's bearer for a peer URL, as an MCP server's header is
+	// resolved. Nil refuses a reference rather than sending it as written.
+	credSubstitute CredSubstitute
+}
+
+// CredSubstitute resolves $cred: references in s for a request to targetURL,
+// for the run identity on ctx; it reports the names it could not resolve.
+type CredSubstitute func(ctx context.Context, s, targetURL string) (string, []string, error)
+
+// Option configures the tools RegisterTools builds.
+type Option func(*Tool)
+
+// WithCredentialResolver lets a peer's bearer be a stored credential.
+func WithCredentialResolver(f CredSubstitute) Option {
+	return func(t *Tool) { t.credSubstitute = f }
 }
 
 var _ tools.Tool = (*Tool)(nil)
@@ -128,6 +146,18 @@ func (t *Tool) Execute(ctx context.Context, input json.RawMessage) (tools.Result
 		return res, nil
 	}
 
+	// A bearer that names a stored credential is opened now, for this peer.
+	// ctx is pinnable from here on, so a credential restricted to the
+	// peer's URL keeps the requests that carry it from being redirected.
+	ctx = netguard.WithPinnable(ctx)
+	if bearer, err = t.openStoredBearer(ctx, def, bearer); err != nil {
+		t.trace("a2a: peer=%q skill=%q stored credential did not resolve: %v", t.peer, t.skill, err)
+		t.emitToolEvent(ctx, true, "the run's credential for this peer is a stored one that could not be resolved")
+		return tools.Result{Text: fmt.Sprintf("a2a: peer %q requires a stored credential that could not be resolved for it", t.peer), IsError: true,
+			Error: &tools.ErrorInfo{Category: tools.CategoryBusiness, Retryable: false,
+				Description: "This run's credential for the peer is a stored one that could not be resolved for this peer, so the call was refused rather than sent unauthenticated. Retrying will not help — the run needs an operator to supply it."}}, nil
+	}
+
 	peer, err := t.newPeer(ctx, def, bearer)
 	if err != nil {
 		if ctx.Err() != nil {
@@ -156,6 +186,38 @@ func (t *Tool) Execute(ctx context.Context, input json.RawMessage) (tools.Result
 
 	text, isErr := resultText(result)
 	return tools.Result{Text: text, IsError: isErr}, nil
+}
+
+// openStoredBearer resolves a bearer that is, or holds, a stored credential
+// reference ("$cred:<name>", "$ghapp:<name>") — a webhook's or a schedule's
+// credentials carry them unopened — for this peer. The run identity on ctx
+// decides the scopes (the resolver drops the user's own scope for a trigger
+// that may not act as the run's user).
+//
+// A peer named by endpoint is resolved for that endpoint: a credential
+// restricted by allowed_urls goes only to an endpoint its list covers, and
+// pins the request against redirects. A peer found through its agent card is
+// called at the URLs the card advertises, unknown here, so it is resolved for
+// no URL: only an unrestricted credential is sent to it.
+func (t *Tool) openStoredBearer(ctx context.Context, def config.A2AAgent, bearer string) (string, error) {
+	if len(credential.RefNames(bearer)) == 0 && len(credential.GHAppRefNames(bearer)) == 0 {
+		return bearer, nil
+	}
+	if t.credSubstitute == nil {
+		return "", fmt.Errorf("no credential resolver on this server: %w", tools.ErrRunCredentialUnavailable)
+	}
+	target := ""
+	if def.AgentCardURL == "" {
+		target = def.Endpoint
+	}
+	v, unresolved, err := t.credSubstitute(ctx, bearer, target)
+	if err != nil {
+		return "", err
+	}
+	if len(unresolved) > 0 {
+		return "", fmt.Errorf("unresolved %v: %w", unresolved, tools.ErrRunCredentialUnavailable)
+	}
+	return v, nil
 }
 
 // resolveBearer resolves the def's auth into an Authorization bearer.

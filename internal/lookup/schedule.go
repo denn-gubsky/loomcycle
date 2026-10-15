@@ -133,6 +133,9 @@ type SubstrateScheduleDef struct {
 	// via a config projection — present here only to keep the JSON mirrors
 	// drift-parity-clean.
 	Isolated bool `json:"isolated,omitempty"`
+	// UserScopeCredentials mirrors mergedScheduleDef's captured bit, read by
+	// the scheduler's own decode; here for drift parity only.
+	UserScopeCredentials bool `json:"user_scope_credentials,omitempty"`
 	// CaptureDisabled mirrors mergedScheduleDef's marker for a def restored
 	// from a snapshot without its literal credentials, so the def round-trips
 	// losslessly. The def body's `enabled: false` is what keeps it from

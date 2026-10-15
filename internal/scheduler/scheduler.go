@@ -386,6 +386,7 @@ func (s *Scheduler) fireOne(ctx context.Context, row store.ScheduleDueRow, now t
 		}
 		return
 	}
+	def.staticRow = row.BootstrappedFromStatic
 	if rehomed, ok := rehomeToOwningTenant(row, def); ok {
 		s.logf("scheduler: schedule %q (def %s) names no tenant in its definition but is owned by tenant %q — executing in %q; re-save it to record the tenant",
 			row.Name, row.DefID, row.OwnerTenantID, row.OwnerTenantID)
@@ -508,6 +509,10 @@ func (s *Scheduler) fireSlot(ctx context.Context, row store.ScheduleDueRow, def 
 	}
 
 	in := buildRunInput(def, s.cfg.EnvAllowlist, s.logf)
+	if in.CredentialsNoUserScope && def.UserID != "" && namesStoredCredential(def.UserCredentials) {
+		s.logf("scheduler: schedule %q (def %s) runs as user %q, but was not written by an operator or by that user — its $cred: values resolve for its agent and tenant only, never in %q's own scope; re-save it as an operator or as %q to restore that",
+			row.Name, row.DefID, def.UserID, def.UserID, def.UserID)
+	}
 	// The claim's key on the run: a second run for the same claim is refused
 	// by the runs table before its loop starts, whatever went wrong with it.
 	in.IdempotencyKey = key

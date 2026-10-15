@@ -1528,14 +1528,20 @@ func main() {
 			return s, append(credential.RefNames(s), credential.GHAppRefNames(s)...), nil
 		}
 		ri := tools.RunIdentity(ctx)
+		// A trigger-started run whose definition's author could not act as its
+		// user never resolves in that user's own scope.
+		userID := ri.UserID
+		if ri.CredentialsNoUserScope {
+			userID = ""
+		}
 		// $ghapp: (mint an installation token) then $cred: (durable secret). The two
 		// syntaxes don't overlap; each drops its own header on an unresolved/failed
 		// ref, and a mint/resolve error aborts so no literal token is sent.
-		out, un1, err := ghAppMinter.Substitute(ctx, ri.TenantID, tools.AgentName(ctx), ri.UserID, s, targetURL, registerSecret)
+		out, un1, err := ghAppMinter.Substitute(ctx, ri.TenantID, tools.AgentName(ctx), userID, s, targetURL, registerSecret)
 		if err != nil {
 			return "", nil, err
 		}
-		out, un2, err := credEngine.Substitute(ctx, ri.TenantID, tools.AgentName(ctx), ri.UserID, out, targetURL, registerSecret)
+		out, un2, err := credEngine.Substitute(ctx, ri.TenantID, tools.AgentName(ctx), userID, out, targetURL, registerSecret)
 		if err != nil {
 			return "", nil, err
 		}
@@ -1630,7 +1636,7 @@ func main() {
 			// it with the live run identity.
 			return lookup.A2AAgent(ctx, storeIface, cfg, tools.RunIdentity(ctx).TenantID, name)
 		}
-		a2aTools := toolsa2a.RegisterTools(context.Background(), cfg, storeIface, a2aResolve, nil, log.Printf)
+		a2aTools := toolsa2a.RegisterTools(context.Background(), cfg, storeIface, a2aResolve, nil, log.Printf, toolsa2a.WithCredentialResolver(lateCredSubstitute(&credSubstitute)))
 		if len(a2aTools) > 0 {
 			allTools = append(allTools, a2aTools...)
 			log.Printf("a2a: registered %d outbound peer tool(s)", len(a2aTools))
@@ -2105,7 +2111,7 @@ func main() {
 				// per-run peer set under it rather than re-deriving from ctx.
 				return lookup.A2AAgent(ctx, storeIface, cfg, tenant, name)
 			}
-			out = append(out, toolsa2a.RegisterTools(ctx, cfg, storeIface, resolve, nil, log.Printf)...)
+			out = append(out, toolsa2a.RegisterTools(ctx, cfg, storeIface, resolve, nil, log.Printf, toolsa2a.WithCredentialResolver(lateCredSubstitute(&credSubstitute)))...)
 		}
 		return out
 	})

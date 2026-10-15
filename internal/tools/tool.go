@@ -725,6 +725,11 @@ type RunIdentityValue struct {
 	// it; enforcement (resolver routing + driver backstop) lands in stage 2.
 	OperatorKeyRestricted bool
 
+	// CredentialsNoUserScope: a $cred: reference this run resolves is looked
+	// up for its agent and tenant only, never in UserID's own scope (see
+	// runner.RunInput.CredentialsNoUserScope). Inherited by sub-agents.
+	CredentialsNoUserScope bool
+
 	// Isolated is the RFC BX P2b confinement bit: true = this run belongs to an
 	// ISOLATED MEMBER (a substrate:user principal — see auth.IsIsolated) and the
 	// data tools must refuse the tenant-shared / cross-tenant-global keyspace,

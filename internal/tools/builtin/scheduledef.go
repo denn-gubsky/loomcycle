@@ -215,6 +215,7 @@ func (s *ScheduleDef) execCreate(ctx context.Context, policy tools.ScheduleDefPo
 	// RFC BX P2b: capture the author's isolation status (server
 	// authority) so the scheduler stamps the fired run confined.
 	def.Isolated = tools.AuthorIsolated(ctx)
+	def.UserScopeCredentials = authorMayActAs(ctx, def.UserID)
 	stampOperatorLayer(ctx, &def, ident.TenantID)
 	if res, refused := refuseNonOperatorLayerFanout("create", def); refused {
 		return res, nil
@@ -462,6 +463,7 @@ func (s *ScheduleDef) execFork(ctx context.Context, policy tools.ScheduleDefPoli
 	// RFC BX P2b: capture the author's isolation status (server
 	// authority) so the scheduler stamps the fired run confined.
 	def.Isolated = tools.AuthorIsolated(ctx)
+	def.UserScopeCredentials = authorMayActAs(ctx, def.UserID)
 	stampOperatorLayer(ctx, &def, tenantID)
 	if res, refused := refuseNonOperatorLayerFanout("fork", def); refused {
 		return res, nil
@@ -774,6 +776,7 @@ func (s *ScheduleDef) persistForkFromHookEdit(ctx context.Context, parent store.
 	// not widen a confined author's schedule by editing a hook.
 	def.OperatorKeyRestricted = def.OperatorKeyRestricted || operatorKeyRestrictedFromCtx(ctx, s.Cfg)
 	def.Isolated = def.Isolated || tools.AuthorIsolated(ctx)
+	def.UserScopeCredentials = def.UserScopeCredentials && authorMayActAs(ctx, def.UserID)
 	stampOperatorLayer(ctx, &def, parent.TenantID)
 	if err := validateScheduleDef(def); err != nil {
 		return errResult(fmt.Sprintf("%s: %s", opLabel, err)), nil
@@ -833,6 +836,16 @@ func (s *ScheduleDef) persistForkFromHookEdit(ctx context.Context, parent store.
 }
 
 // ---- helpers ----
+
+// authorMayActAs reports whether the caller may have a schedule resolve $cred:
+// in userID's own scope: an operator (admin, or open-mode / stdio), or the
+// user themselves — the one who could have stored that user's credentials.
+func authorMayActAs(ctx context.Context, userID string) bool {
+	if userID == "" {
+		return false
+	}
+	return callerHasOperatorAuthority(ctx) || tools.RunIdentity(ctx).UserID == userID
+}
 
 // stampOperatorLayer sets def.OperatorLayer from who is writing it — server
 // authority, applied after the overlay on every write path. It is true only for
@@ -1485,6 +1498,14 @@ type mergedScheduleDef struct {
 	// bodies byte-identical. Drift-tested against scheduler.scheduleDef /
 	// SubstrateScheduleDef.
 	Isolated bool `json:"isolated,omitempty"`
+	// UserScopeCredentials is captured at create/fork (server authority, never
+	// overlay-set): the author is an operator, or user_id is the author's own.
+	// Only then does a fired run resolve $cred: in user_id's own scope — else
+	// whoever writes a schedule for bob would send bob's personal credentials.
+	// A hook edit keeps it only when its editor qualifies too. Omitted (false)
+	// on every def written before it existed: those resolve without the user's
+	// scope until re-saved.
+	UserScopeCredentials bool `json:"user_scope_credentials,omitempty"`
 	// CaptureDisabled is the marker a snapshot restore writes on a def whose
 	// literal user_credentials values were stripped from the snapshot (they
 	// never travel). Server authority: only restore sets it, and applyOverlay

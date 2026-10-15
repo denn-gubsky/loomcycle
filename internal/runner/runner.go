@@ -425,6 +425,15 @@ type RunInput struct {
 
 	OperatorKeyRestricted bool
 
+	// CredentialsNoUserScope: a $cred: reference this run resolves — in an
+	// MCP server's headers, its credentials, an A2A peer's bearer — is looked
+	// up for its agent and tenant only, never in its user's own scope. Set by
+	// a trigger whose definition's author was not shown able to act as the
+	// run's user: a webhook (its user can come from the delivery), a schedule
+	// written for someone else. Stored with a queued run's request, so a
+	// restart keeps it; inherited by sub-agents.
+	CredentialsNoUserScope bool
+
 	// Isolated is the RFC BX P2b confinement bit for the NON-principal trigger
 	// paths (scheduler / webhook / A2A). Those paths capture the creating
 	// principal's substrate:user status on the trigger def and pass it here so

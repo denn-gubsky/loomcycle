@@ -1231,6 +1231,10 @@ func (s *Scheduler) runConsolidationTarget(ctx context.Context, def scheduleDef,
 	// it spawns inherit.
 	ctx = lanegate.WithBackground(ctx)
 	in := buildRunInput(def, s.cfg.EnvAllowlist, s.logf)
+	// Each pass runs as its target's user, whom the schedule's author did not
+	// write it for: only an operator-written schedule resolves $cred: in that
+	// user's own scope.
+	in.CredentialsNoUserScope = !(def.OperatorLayer || def.staticRow)
 	in.UserID = target.UserID
 	in.TenantID = target.TenantID
 	// Only ever narrows: the def's captured bit (an isolated author) still
