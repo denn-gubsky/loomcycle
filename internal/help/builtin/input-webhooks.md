@@ -607,6 +607,11 @@ mcp_servers:            # operator config
   is not checked, so the credential may come later.
 - A snapshot keeps the reference, never a value.
 
+**No webhook-started run resolves a `$cred:` in its user's own scope** — in
+`user_credentials`, an MCP server's headers or an A2A peer's credential. Its
+user can come from the delivery, and the delivery's sender is not that user;
+it resolves for its agent, then the tenant.
+
 **Channel-delivery** webhooks carry **no** credentials — a channel publish
 has no run identity to attach per-user bearers to, and accepting them would
 leak a secret onto the message bus. `user_credentials_from_env`,

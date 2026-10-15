@@ -356,6 +356,28 @@ template-side `required_credentials:` list that forks must
 populate; the `fork` op (future) will refuse with
 `ErrCredentialsIncomplete` if any required key is missing.
 
+### Whose credentials a fired run may use
+
+A `$cred:` reference a fired run resolves — in its `user_credentials`, in an
+MCP server's headers, in an A2A peer's credential — is looked up for the
+run's agent, then its `user_id`, then the tenant, **but the `user_id` scope
+only when the schedule's author could act as that user**: an operator
+(admin, or open-mode / stdio), or the user themselves. Anyone else who
+writes a schedule for someone could otherwise have it send that person's own
+credentials.
+
+- It is recorded when the schedule is written (`create`, `fork`) as
+  `user_scope_credentials`, set by the server from who wrote it — an
+  overlay cannot set it. A hook edit keeps it only when the editor qualifies
+  too.
+- **Schedules written before this was recorded do not have it,** and resolve
+  for their agent and tenant until re-saved by an operator or their user.
+  Each fire of one whose `user_credentials` holds a `$cred:` says so in the
+  log, with the schedule's name and how to restore it.
+- A schedule in the operator's yaml is the operator's, and keeps it.
+- A consolidation schedule runs as each target's user: only an
+  operator-written one keeps the user scope.
+
 ### `user_bearer` — the fired run's bearer, from a stored credential
 
 `user_bearer` sets what `${run.user_bearer}` (and

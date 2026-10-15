@@ -234,6 +234,18 @@ the agent or the Def. A missing/empty ref at call time is an error, not
 a silent unauthenticated call. Sub-agents inherit the same credential
 map as their parent.
 
+The credential may be a stored one, `"$cred:<name>"` — a schedule's or a
+webhook's `user_credentials` carry them unopened. It is resolved for the
+peer, like an MCP server's header:
+
+- **A peer named by `endpoint`** gets it resolved for that endpoint: a
+  credential restricted by `allowed_urls` goes only to an endpoint its list
+  covers, and the request follows no redirect.
+- **A peer found through `agent_card_url`** is called at the URLs its card
+  advertises, unknown when the credential is resolved, so it is resolved
+  for no URL: only an unrestricted credential is sent to it.
+- One that does not resolve refuses the call; it is never sent as written.
+
 ## Worked example
 
 **Expose a loomcycle agent, then have an external client call it.**
