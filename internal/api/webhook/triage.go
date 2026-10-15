@@ -188,6 +188,20 @@ func (rec *Receiver) handleTest(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// 1c. A dedup_key the body cannot fill refuses the delivery. Whether the
+	//     event is already held is not asked: a dry-run claims nothing.
+	if len(wd.DedupKey) > 0 {
+		_, missing, derr := dedupFieldsID(wd.DedupKey, body)
+		if derr != nil || missing >= 0 {
+			verdict := verdictRejectedDedupKey
+			if derr != nil {
+				verdict = "rejected_mapping"
+			}
+			writeJSON(w, http.StatusOK, testResult{WouldAccept: false, Verdict: verdict, RunInputPreview: runInputPreview{}})
+			return
+		}
+	}
+
 	// 2. Project the payload (same allowlisted mapping the receive path uses).
 	proj, perr := projectDecoded(wd.PayloadMapping, dbody)
 	if perr != nil {

@@ -51,6 +51,14 @@ func (s *stubWebhookStore) WebhookDeliveryRelease(_ context.Context, _ []string)
 	return nil
 }
 
+func (s *stubWebhookStore) WebhookDeliveryClaimRun(_ context.Context, _ []string, _, _ time.Time) (bool, string, error) {
+	return true, "", nil
+}
+
+func (s *stubWebhookStore) WebhookDeliverySetRun(_ context.Context, _ []string, _ string) error {
+	return nil
+}
+
 // ChannelPublish + MemorySet satisfy lookup.WebhookStore (WH-5b
 // on_complete hooks). The resolver tests never fire hooks, so no-ops
 // suffice.
@@ -229,6 +237,8 @@ func TestWebhook_DriftDetection(t *testing.T) {
 		"events":                    true, // the only events that start anything
 		"event_shapes":              true, // the paths a listed event's signed body must hold
 		"filters":                   true, // conditions on the signed body every delivery must meet
+		"dedup_key":                 true, // signed fields that name one event
+		"dedup_ttl_seconds":         true, // how long that name is held
 		"team":                      true, // delivery=team: the team whose walk a delivery starts
 		"vars":                      true, // delivery=team: the walk's variables, as JSONPaths into the body
 		"operator_key_restricted":   true, // RFC AX: captured operator-key restriction (anti-bypass)

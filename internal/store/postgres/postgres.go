@@ -3924,6 +3924,67 @@ func (s *Store) WebhookDeliveryClaim(ctx context.Context, keys []string, now, ex
 	return true, nil
 }
 
+// WebhookDeliveryClaimRun claims every key or none for a delivery that starts
+// a run, first taking over the keys of a run that ended failed; see the
+// store.Store contract.
+func (s *Store) WebhookDeliveryClaimRun(ctx context.Context, keys []string, now, expiresAt time.Time) (bool, string, error) {
+	if len(keys) == 0 {
+		return false, "", fmt.Errorf("webhook delivery claim: no keys")
+	}
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return false, "", fmt.Errorf("webhook delivery claim begin: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	if _, err := tx.Exec(ctx, `DELETE FROM webhook_deliveries WHERE expires_at <= $1`, now.UTC()); err != nil {
+		return false, "", fmt.Errorf("webhook delivery claim sweep: %w", err)
+	}
+	statuses := make([]string, len(store.WebhookRetakeRunStatuses))
+	for i, st := range store.WebhookRetakeRunStatuses {
+		statuses[i] = string(st)
+	}
+	// Two claims racing to take over one failed run: the second's DELETE
+	// waits on the first's row locks and then finds the rows gone, and its
+	// insert below meets the first's committed key.
+	if _, err := tx.Exec(ctx,
+		`DELETE FROM webhook_deliveries WHERE run_id IN (
+			SELECT d.run_id FROM webhook_deliveries d JOIN runs r ON r.id = d.run_id
+			 WHERE d.delivery_key = ANY($1) AND d.run_id <> '' AND r.status = ANY($2))`,
+		keys, statuses); err != nil {
+		return false, "", fmt.Errorf("webhook delivery claim retake: %w", err)
+	}
+	for _, k := range keys {
+		tag, err := tx.Exec(ctx,
+			`INSERT INTO webhook_deliveries (delivery_key, expires_at) VALUES ($1, $2) ON CONFLICT (delivery_key) DO NOTHING`,
+			k, expiresAt.UTC())
+		if err != nil {
+			return false, "", fmt.Errorf("webhook delivery claim: %w", err)
+		}
+		if tag.RowsAffected() == 0 {
+			var holder string
+			if err := tx.QueryRow(ctx, `SELECT run_id FROM webhook_deliveries WHERE delivery_key = $1`, k).Scan(&holder); err != nil {
+				return false, "", fmt.Errorf("webhook delivery claim holder: %w", err)
+			}
+			return false, holder, nil // the deferred rollback undoes this claim's other keys
+		}
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return false, "", fmt.Errorf("webhook delivery claim commit: %w", err)
+	}
+	return true, "", nil
+}
+
+// WebhookDeliverySetRun records the run a claim's keys started.
+func (s *Store) WebhookDeliverySetRun(ctx context.Context, keys []string, runID string) error {
+	if len(keys) == 0 {
+		return nil
+	}
+	if _, err := s.pool.Exec(ctx, `UPDATE webhook_deliveries SET run_id = $1 WHERE delivery_key = ANY($2)`, runID, keys); err != nil {
+		return fmt.Errorf("webhook delivery set run: %w", err)
+	}
+	return nil
+}
+
 // WebhookDeliveryRelease drops keys a claim took.
 func (s *Store) WebhookDeliveryRelease(ctx context.Context, keys []string) error {
 	if len(keys) == 0 {

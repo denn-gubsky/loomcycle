@@ -264,7 +264,14 @@ func (rec *Receiver) handle(w http.ResponseWriter, r *http.Request) {
 	did := deliveryID(wd.Auth, body, r.Header.Get)
 	env := signedEnvelope(wd.Auth, r.Header.Get)
 	dk := newDeliveryKeys(whKey, did, body, env)
-	if rec.dedup.seenAny(dk) {
+	// A dedup_key names the event by signed fields; its keys are held in the
+	// store, which alone can tell that the run an event started failed
+	// (dedupkey.go). Nil for a webhook without one.
+	held, ok := rec.newHeldKeys(w, span, name, whKey, did, wd, body, durableDeliveryKeys(dk, env))
+	if !ok {
+		return
+	}
+	if held == nil && rec.dedup.seenAny(dk) {
 		rec.logf("webhook %q: replayed delivery (delivery_id seen within TTL) — idempotent ack", name)
 		rec.replayAck(ctx, w, span, name, whKey, did, dk, wd)
 		return
@@ -284,8 +291,15 @@ func (rec *Receiver) handle(w http.ResponseWriter, r *http.Request) {
 		rec.logf("webhook %q: payload_mapping target %q resolved to empty", name, mk)
 	}
 
+	// 5b. Claim a dedup_key's keys, before the rate limit so a duplicate
+	//     costs no token. Every refusal from here on releases them.
+	if held != nil && !rec.claimHeld(ctx, w, span, name, whKey, did, held) {
+		return
+	}
+
 	// 6. Rate limit (per-Def token bucket). Exceeded → 429 + Retry-After.
 	if okRate, retry := rec.limiter.allow(whKey, wd.RateLimit); !okRate {
+		rec.releaseHeld(ctx, name, held)
 		rec.finish(span, whKey, did, "rejected_rate", "")
 		writeRetryAfter(w, retry)
 		return
@@ -294,12 +308,13 @@ func (rec *Receiver) handle(w http.ResponseWriter, r *http.Request) {
 	// Accepted at the trust boundary — fork on delivery mode.
 	switch wd.Delivery {
 	case "channel":
-		rec.deliverChannel(ctx, w, span, name, whKey, did, dk, durableDeliveryKeys(dk, env), wd, body)
+		rec.deliverChannel(ctx, w, span, name, whKey, did, dk, durableDeliveryKeys(dk, env), held, wd, body)
 	case "team":
-		rec.deliverTeam(ctx, w, span, name, whKey, did, dk, wd, proj, body)
+		rec.deliverTeam(ctx, w, span, name, whKey, did, dk, held, wd, proj, body)
 	case "spawn", "":
-		rec.deliverSpawn(ctx, w, span, name, whKey, did, dk, wd, proj, r)
+		rec.deliverSpawn(ctx, w, span, name, whKey, did, dk, held, wd, proj, r)
 	default:
+		rec.releaseHeld(ctx, name, held)
 		rec.finish(span, whKey, did, "rejected_delivery", "")
 		rec.logf("webhook %q: unknown delivery mode %q", name, wd.Delivery)
 		writeError(w, http.StatusBadRequest, "bad_delivery", "")
@@ -382,8 +397,12 @@ func (rec *Receiver) replayAck(ctx context.Context, w http.ResponseWriter, span 
 // this replica's alone. keys (durableDeliveryKeys: only what the signature
 // covers) are claimed in the store just before the publish, so a delivery
 // already accepted on any replica, or before a restart, publishes nothing.
-func (rec *Receiver) deliverChannel(ctx context.Context, w http.ResponseWriter, span trace.Span, name, whKey, did string, dk deliveryKeys, keys []string, wd config.Webhook, body []byte) {
+//
+// held is a dedup_key's claim, already taken (keys then are held's): the
+// publish failing releases it like its own.
+func (rec *Receiver) deliverChannel(ctx context.Context, w http.ResponseWriter, span trace.Span, name, whKey, did string, dk deliveryKeys, keys []string, held *heldKeys, wd config.Webhook, body []byte) {
 	if rec.publisher == nil {
+		rec.releaseHeld(ctx, name, held)
 		rec.finish(span, whKey, did, "rejected_no_publisher", "")
 		writeError(w, http.StatusServiceUnavailable, "channel_unavailable", "")
 		return
@@ -393,7 +412,9 @@ func (rec *Receiver) deliverChannel(ctx context.Context, w http.ResponseWriter, 
 	// and it releases them. Of two replicas racing on one delivery the claim
 	// (the insert itself) grants exactly one.
 	claimed := false
-	if rec.store != nil && len(keys) > 0 {
+	if held != nil {
+		keys, claimed = held.keys, true
+	} else if rec.store != nil && len(keys) > 0 {
 		now := rec.now()
 		ok, err := rec.store.WebhookDeliveryClaim(ctx, keys, now, now.Add(durableDedupTTL))
 		if err != nil {
@@ -445,8 +466,12 @@ func (rec *Receiver) deliverChannel(ctx context.Context, w http.ResponseWriter, 
 // (202 with the run id captured via OnRegistered). When ?sync=true AND the
 // Def's sync_response is enabled, the request blocks on the run-state bus
 // until this run reaches a terminal state or sync_response.timeout_ms.
-func (rec *Receiver) deliverSpawn(ctx context.Context, w http.ResponseWriter, span trace.Span, name, whKey, did string, dk deliveryKeys, wd config.Webhook, proj projectResult, r *http.Request) {
+//
+// held is a dedup_key's claim, already taken: the run is recorded on it once
+// it registers, and a delivery that starts no run releases it.
+func (rec *Receiver) deliverSpawn(ctx context.Context, w http.ResponseWriter, span trace.Span, name, whKey, did string, dk deliveryKeys, held *heldKeys, wd config.Webhook, proj projectResult, r *http.Request) {
 	if rec.runner == nil {
+		rec.releaseHeld(ctx, name, held)
 		rec.finish(span, whKey, did, "rejected_no_runner", "")
 		writeError(w, http.StatusServiceUnavailable, "runtime_unavailable", "")
 		return
@@ -461,6 +486,7 @@ func (rec *Receiver) deliverSpawn(ctx context.Context, w http.ResponseWriter, sp
 	// contract.
 	if in.UserTier != "" && len(rec.cfg.UserTiers) > 0 {
 		if _, ok := rec.cfg.UserTiers[in.UserTier]; !ok {
+			rec.releaseHeld(ctx, name, held)
 			rec.finish(span, whKey, did, "rejected_unknown_user_tier", "")
 			writeError(w, http.StatusBadRequest, "unknown_user_tier", "")
 			return
@@ -470,9 +496,13 @@ func (rec *Receiver) deliverSpawn(ctx context.Context, w http.ResponseWriter, sp
 	// RFC H Decision 10 "Layer 2" durable dedup: stamp the run with the
 	// webhook-scoped delivery key so CreateRun persists it to
 	// runs.idempotency_key, and its second identity to delivery_alt_key.
-	// Never the bare did — those indexes are global.
-	in.IdempotencyKey = dk.key
-	in.DeliveryAltKey = dk.alt
+	// Never the bare did — those indexes are global. A dedup_key's keys are
+	// held in the store instead, so its run carries none: a key on the row
+	// would refuse the run that retakes it from a failed one.
+	if held == nil {
+		in.IdempotencyKey = dk.key
+		in.DeliveryAltKey = dk.alt
+	}
 
 	// Layer-2 BEFORE-spawn check: if a run already carries this delivery
 	// key (a redelivery that survived past the in-memory Layer-1 TTL, or
@@ -480,8 +510,12 @@ func (rec *Receiver) deliverSpawn(ctx context.Context, w http.ResponseWriter, sp
 	// without spawning a duplicate. The store is nil for yaml-only
 	// deployments; treat a lookup error as "not found" (fail open to the
 	// spawn path — the unique index is the real backstop).
+	//
+	// With a dedup_key this finds only a run started before the definition
+	// had one; a failed one is retaken as the store would.
 	if rec.store != nil && did != "" {
-		if existing, ok := rec.priorDeliveryRun(ctx, dk, did, wd); ok {
+		if existing, ok := rec.priorDeliveryRun(ctx, dk, did, wd); ok && (held == nil || !retakable(existing)) {
+			rec.setHeldRun(name, held, existing.ID)
 			rec.dedup.recordDuplicate(dk)
 			rec.finish(span, whKey, did, verdictAccepted, existing.ID)
 			writeJSON(w, http.StatusAccepted, map[string]string{
@@ -502,10 +536,10 @@ func (rec *Receiver) deliverSpawn(ctx context.Context, w http.ResponseWriter, sp
 	userID := proj.Fields["user_id"]
 
 	if !wantSync {
-		rec.spawnAsync(w, span, name, whKey, did, dk, wd, in, userID)
+		rec.spawnAsync(w, span, name, whKey, did, dk, held, wd, in, userID)
 		return
 	}
-	rec.spawnSync(ctx, w, span, name, whKey, did, dk, wd, in, userID)
+	rec.spawnSync(ctx, w, span, name, whKey, did, dk, held, wd, in, userID)
 }
 
 // priorDeliveryRun is the Layer-2 lookup: the run already started for this
@@ -544,13 +578,14 @@ func (rec *Receiver) priorDeliveryRun(ctx context.Context, dk deliveryKeys, did 
 // the loop starts, so on the happy path it always precedes any meaningful
 // work — the 202 carries a real id. The select also guards a (rare) hung
 // setup with a timeout that surfaces 503 rather than hanging the request.
-func (rec *Receiver) spawnAsync(w http.ResponseWriter, span trace.Span, name, whKey, did string, dk deliveryKeys, wd config.Webhook, in runner.RunInput, userID string) {
+func (rec *Receiver) spawnAsync(w http.ResponseWriter, span trace.Span, name, whKey, did string, dk deliveryKeys, held *heldKeys, wd config.Webhook, in runner.RunInput, userID string) {
 	registered := make(chan string, 1)
 	setupErr := make(chan error, 1)
 	var spawnedRunID, spawnedAgentID string
 	cb := runner.RunCallbacks{
 		OnRegistered: func(agentID, runID, _, _ string) {
 			spawnedRunID, spawnedAgentID = runID, agentID
+			rec.setHeldRun(name, held, runID)
 			select {
 			case registered <- runID:
 			default:
@@ -561,6 +596,11 @@ func (rec *Receiver) spawnAsync(w http.ResponseWriter, span trace.Span, name, wh
 		err := rec.runner.RunOnce(context.Background(), in, cb)
 		if err != nil {
 			rec.logf("webhook %q: async run failed: %v", name, err)
+		}
+		// Here, not in the response's select: a setup that outlasts the
+		// response's wait may still start the run.
+		if err != nil && spawnedRunID == "" {
+			rec.releaseHeld(context.Background(), name, held)
 		}
 		// Fire on_complete hooks AFTER the run returns. Only when the run was
 		// actually admitted (OnRegistered fired → spawnedRunID set) and the
@@ -675,8 +715,9 @@ func (rec *Receiver) spawnSetupErrorResponse(w http.ResponseWriter, err error) {
 
 // spawnSync subscribes to the run-state bus BEFORE starting the run, then
 // blocks until this run's agent reaches a terminal state or the timeout.
-func (rec *Receiver) spawnSync(ctx context.Context, w http.ResponseWriter, span trace.Span, name, whKey, did string, dk deliveryKeys, wd config.Webhook, in runner.RunInput, userID string) {
+func (rec *Receiver) spawnSync(ctx context.Context, w http.ResponseWriter, span trace.Span, name, whKey, did string, dk deliveryKeys, held *heldKeys, wd config.Webhook, in runner.RunInput, userID string) {
 	if rec.runStateBus == nil {
+		rec.releaseHeld(ctx, name, held)
 		// Def asked for sync but the runtime has no bus — fail closed (503)
 		// rather than silently degrade to async (Decision 9: never silently
 		// degrade).
@@ -700,6 +741,7 @@ func (rec *Receiver) spawnSync(ctx context.Context, w http.ResponseWriter, span 
 	cb := runner.RunCallbacks{
 		OnRegistered: func(agentID, runID, _, _ string) {
 			spawnedRunID, spawnedAgentID = runID, agentID
+			rec.setHeldRun(name, held, runID)
 			select {
 			case registered <- struct {
 				agentID string
@@ -713,6 +755,9 @@ func (rec *Receiver) spawnSync(ctx context.Context, w http.ResponseWriter, span 
 		err := rec.runner.RunOnce(context.Background(), in, cb)
 		if err != nil {
 			rec.logf("webhook %q: sync run failed: %v", name, err)
+		}
+		if err != nil && spawnedRunID == "" {
+			rec.releaseHeld(context.Background(), name, held)
 		}
 		// Fire on_complete hooks AFTER the run returns, same posture as the
 		// async path. OnRegistered runs before the loop, so spawnedRunID is

@@ -33,6 +33,8 @@ type WebhookStore interface {
 	// the two lookups above to find. Signatures match store.Store exactly.
 	WebhookDeliveryClaim(ctx context.Context, keys []string, now, expiresAt time.Time) (bool, error)
 	WebhookDeliveryRelease(ctx context.Context, keys []string) error
+	WebhookDeliveryClaimRun(ctx context.Context, keys []string, now, expiresAt time.Time) (bool, string, error)
+	WebhookDeliverySetRun(ctx context.Context, keys []string, runID string) error
 
 	// MemorySet backs the WH-5b on_complete memory.set hook (the receiver
 	// MIRRORS the scheduler's dispatch rather than importing it). Its
@@ -163,6 +165,9 @@ type SubstrateWebhookDef struct {
 	EventShapes map[string][]string `json:"event_shapes,omitempty"`
 	// Filters mirrors config.Webhook's.
 	Filters []config.WebhookFilter `json:"filters,omitempty"`
+	// DedupKey / DedupTTLSeconds mirror config.Webhook's.
+	DedupKey        []string `json:"dedup_key,omitempty"`
+	DedupTTLSeconds int      `json:"dedup_ttl_seconds,omitempty"`
 	// Team / Vars are the delivery=team target: the team whose walk a delivery
 	// starts, and its variables as JSONPaths into the body.
 	Team string            `json:"team,omitempty"`
@@ -251,6 +256,8 @@ func (s SubstrateWebhookDef) ToConfigDef() config.Webhook {
 		Events:                s.Events,
 		EventShapes:           s.EventShapes,
 		Filters:               s.Filters,
+		DedupKey:              s.DedupKey,
+		DedupTTLSeconds:       s.DedupTTLSeconds,
 		Team:                  s.Team,
 		Vars:                  s.Vars,
 		OperatorKeyRestricted: s.OperatorKeyRestricted,
