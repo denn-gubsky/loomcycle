@@ -101,8 +101,10 @@ that user.** A webhook's run never uses it: its user can come from the
 delivery, and the delivery's sender is not that user. A schedule's run uses it
 only when the schedule was written by an operator, or by its own `user_id` —
 otherwise whoever wrote a schedule for someone could have it send that person's
-credentials. Such a run resolves for its agent, then the tenant. A
-`user_bearer` always resolves at tenant level.
+credentials. Such a run resolves for its agent, then the tenant — for a
+`$cred:` reference, a provider key overridden by its env-var name, and a
+Bash/Bashbox host credential alike. A `user_bearer` always resolves at tenant
+level.
 
 A remote memory backend or document source can name its peer key as
 `api_key_env: "$cred:<name>"`. That one works differently: it resolves only a
