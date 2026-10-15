@@ -11,6 +11,7 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/api/grpc/loomcyclepb"
 	"github.com/denn-gubsky/loomcycle/internal/connector"
 	"github.com/denn-gubsky/loomcycle/internal/providers"
+	"github.com/denn-gubsky/loomcycle/internal/runner"
 	"github.com/denn-gubsky/loomcycle/internal/store"
 )
 
@@ -61,6 +62,9 @@ func (s *Server) RunInput(ctx context.Context, req *loomcyclepb.RunInputRequest)
 	}
 	delivered, err := s.connector.SteerRun(ctx, runID, req.GetText(), store.InterruptResolvedByAPI)
 	switch {
+	case errors.Is(err, runner.ErrRateLimited):
+		// A message that starts a parked run's next turn is a run start.
+		return nil, mapRunnerErr(err)
 	case errors.Is(err, connector.ErrRunNotInFlight):
 		return nil, status.Error(codes.NotFound, err.Error())
 	case errors.Is(err, connector.ErrSteerQueueFull):

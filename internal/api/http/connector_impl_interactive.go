@@ -50,14 +50,31 @@ func (s *Server) SteerRun(ctx context.Context, runID, text, source string) (bool
 	// become an existence oracle. Mirrors handleRunInput's gate exactly. A run
 	// this replica does not have is gated as retune gates it: live on the
 	// replica that owns it, where the push below routes.
+	startsTurn := true
 	if entry, ok := s.steerReg.Get(runID); ok {
 		if !s.liveRunOwnershipOK(ctx, entry) {
 			return false, connector.ErrRunNotInFlight
 		}
+		startsTurn = s.steerReg.IsParked(runID)
 	} else if s.store == nil {
 		return false, connector.ErrRunNotInFlight
 	} else if _, err := s.remoteRunForSteer(ctx, runID); err != nil {
 		return false, connector.ErrRunNotInFlight
+	}
+	// A message to a parked run starts its next turn, which is a run start
+	// as a continuation is, and is counted the same way: otherwise a token
+	// with a rate keeps one interactive run parked and drives it unbounded. A
+	// message to a run mid turn joins the turn already running and is not
+	// counted. A run another replica owns cannot be told apart from here, so
+	// it is counted: over-counting only errs toward the limit. After the
+	// ownership gate, so the refusal says nothing about a run the caller may
+	// not reach. A retune sent with the message (HTTP input, gRPC RunInput)
+	// has been stored by now; it is a merge of the same values, so the
+	// caller's retry after the wait applies it unchanged.
+	if startsTurn {
+		if err := s.admitPrincipalRate(ctx); err != nil {
+			return false, err
+		}
 	}
 	// A message to a run is stored as its input and, in a cluster, carried to
 	// the replica that owns the run in a notification. A no-trace run takes

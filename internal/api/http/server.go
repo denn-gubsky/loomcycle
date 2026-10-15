@@ -9569,6 +9569,9 @@ func (s *Server) handleRunInput(w http.ResponseWriter, r *http.Request) {
 	case errors.Is(err, runner.ErrRetentionUnsupported):
 		writeNoTraceRefusal(w, err)
 		return
+	case errors.Is(err, runner.ErrRateLimited):
+		writeRateLimited(w, err)
+		return
 	case errors.Is(err, connector.ErrSteerQueueFull):
 		w.Header().Set("Retry-After", "1")
 		http.Error(w, "run input queue full; retry shortly", http.StatusTooManyRequests)

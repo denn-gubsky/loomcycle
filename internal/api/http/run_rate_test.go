@@ -16,6 +16,7 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/auth"
 	"github.com/denn-gubsky/loomcycle/internal/loop"
 	"github.com/denn-gubsky/loomcycle/internal/runner"
+	"github.com/denn-gubsky/loomcycle/internal/steer"
 	"github.com/denn-gubsky/loomcycle/internal/store"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
 )
@@ -301,6 +302,8 @@ var rateCountedIntakes = map[string]string{
 	"CreateConfiguredRun": "count",
 	"Decision":            "count",
 	"admitTeamRun":        "count",
+	// Creates no row, but a message to a parked run starts its next turn.
+	"SteerRun": "count",
 }
 
 func TestRateLimit_EveryIntakeTakesFromTheCallersRate(t *testing.T) {
@@ -389,5 +392,38 @@ func TestRateLimitedToken_ADraftOverTheConnectorIsOneStart(t *testing.T) {
 	var de *draftErr
 	if !errors.As(err, &de) || de.status != http.StatusTooManyRequests || de.code != "rate_limited" || de.retryAfter < 1 {
 		t.Errorf("a third draft: err = %v (%+v), want 429 rate_limited with a wait", err, de)
+	}
+}
+
+// A message to a parked interactive run starts its next turn, so it is a run
+// start and is counted, as a continuation is; a message to a run that is mid
+// turn joins the turn already running and is not. Without this a rate-limited
+// token keeps one interactive run parked and drives it as fast as it likes.
+func TestRateLimitedToken_ASteerThatStartsATurnIsOneStart(t *testing.T) {
+	srv, do := rateFixture(t)
+	srv.SetSteerRegistry(steer.NewRegistry(0))
+	parked, toParked := seedLiveRun(t, srv, srv.store, "other", "a_parked", "")
+	srv.steerReg.SetParked(parked, true)
+	busy, toBusy := seedLiveRun(t, srv, srv.store, "other", "a_busy", "")
+
+	for i := 0; i < 2; i++ {
+		if code, body, _ := do("POST", "/v1/runs", runBody("other")); code != 200 {
+			t.Fatalf("burst start %d: status %d: %s", i+1, code, body)
+		}
+	}
+	code, body, hdr := do("POST", "/v1/runs/"+parked+"/input", `{"text":"next"}`)
+	if code != http.StatusTooManyRequests || !strings.Contains(body, "rate_limited") || hdr.Get("Retry-After") == "" {
+		t.Errorf("a message to a parked run past the burst: status %d, want 429 rate_limited with Retry-After: %s", code, body)
+	}
+	select {
+	case m := <-toParked:
+		t.Fatalf("a refused message reached the parked run: %+v", m)
+	default:
+	}
+	if code, body, _ := do("POST", "/v1/runs/"+busy+"/input", `{"text":"also"}`); code != 200 {
+		t.Errorf("a message to a run mid turn: status %d, want it delivered uncounted: %s", code, body)
+	}
+	if m := <-toBusy; m.Text != "also" {
+		t.Errorf("the run mid turn got %+v", m)
 	}
 }
