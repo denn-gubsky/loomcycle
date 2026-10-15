@@ -20,7 +20,7 @@ func TestWhoami_CapabilitiesReflectConfig(t *testing.T) {
 	newServer := func(stdio bool, allowlist []string) *Server {
 		cfg := &config.Config{
 			Defaults:    config.Defaults{Provider: "scripted", Model: "stub-model"},
-			Concurrency: config.Concurrency{MaxConcurrentRuns: 1, MaxQueueDepth: 1, QueueTimeoutMS: 1000},
+			Concurrency: config.Concurrency{MaxConcurrentRuns: 1, MaxQueueDepth: 1},
 		}
 		cfg.Env.AuthToken = "" // open mode → the no-principal whoami branch
 		cfg.Env.MCPAllowDynamicStdio = stdio

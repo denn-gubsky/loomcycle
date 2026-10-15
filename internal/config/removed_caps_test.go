@@ -56,6 +56,29 @@ func TestLoad_ARemovedConcurrencyKeyFailsNamingItsReplacement(t *testing.T) {
 	}
 }
 
+// TestLoad_TheRetiredQueueTimeoutStillLoads — concurrency.queue_timeout_ms is
+// gone too, but unlike the caps above a config that sets it must still LOAD.
+// Every copy of the example config carries it, and ignoring it takes nothing
+// away: it bounded the wait for a run slot, and nothing waits on a timeout any
+// more — a run, a session continuation and a direct request all wait in the
+// run queue until a slot frees or the caller leaves. Failing would break every
+// deployment for a key that no longer changes anything.
+func TestLoad_TheRetiredQueueTimeoutStillLoads(t *testing.T) {
+	cfg, err := LoadLayers(Layer{Name: "op", Data: []byte(`
+defaults: { provider: anthropic, model: x }
+concurrency:
+  max_concurrent_runs: 3
+  max_queue_depth: 7
+  queue_timeout_ms: 30000
+`)})
+	if err != nil {
+		t.Fatalf("a config setting the retired queue_timeout_ms failed to load: %v", err)
+	}
+	if cfg.Concurrency.MaxConcurrentRuns != 3 || cfg.Concurrency.MaxQueueDepth != 7 {
+		t.Errorf("concurrency = %+v, want the other keys read as written", cfg.Concurrency)
+	}
+}
+
 // TestLoadLayers_ARemovedConcurrencyKeyFailsInAnyLayer — a layered config
 // (presets → CONFIG_DIR → CONFIG_FILES → --config) is merged before it is
 // decoded, so the old key fails wherever it sits: in a base layer the

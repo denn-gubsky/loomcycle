@@ -67,7 +67,7 @@ func newWalkHarness(t *testing.T) *walkHarness {
 			"in":  {Scope: "tenant", Semantic: "queue", MaxMessages: 100},
 			"out": {Scope: "tenant", Semantic: "queue", MaxMessages: 100},
 		},
-		Concurrency: config.Concurrency{MaxConcurrentRuns: 4, MaxQueueDepth: 4, QueueTimeoutMS: 1000},
+		Concurrency: config.Concurrency{MaxConcurrentRuns: 4, MaxQueueDepth: 4},
 	}
 	st, err := storesqlite.Open(filepath.Join(t.TempDir(), "walk.db"))
 	if err != nil {

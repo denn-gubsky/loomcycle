@@ -135,11 +135,10 @@ under `work/loomcycle-src` is ever modified.
 
 ## The throttle (rate limits) — important
 10 concurrent sonnet reviewers each reading 10–15 files can **saturate a subscription (OAuth) account
-rate limit** (HTTP 429). So `loomcycle.yaml` sets `concurrency.max_concurrent_runs: 4` (+ a long
-`queue_timeout_ms`): the `spawn_runs` join still accepts all 10 — the other 6 **queue** and run as
-slots free. If you drive on a **paid API key** with more headroom, raise `max_concurrent_runs` for a
-faster wall-clock. (`queue_timeout_ms` must exceed a reviewer's runtime, or queued children are
-rejected instead of waiting.)
+rate limit** (HTTP 429). So `loomcycle.yaml` sets `concurrency.max_concurrent_runs: 4`: the
+`spawn_runs` join still accepts all 10 — the other 6 **queue** and run as slots free (a queued run
+never times out). If you drive on a **paid API key** with more headroom, raise `max_concurrent_runs`
+for a faster wall-clock.
 
 ## Provenance — how `code-reviewer` was imported
 `./claude-code-src/agents/code-reviewer.md` + `./claude-code-src/skills/code-review/SKILL.md` are the

@@ -121,7 +121,7 @@ func interruptionServer(t *testing.T) (*Server, *httptest.Server, *askingProvide
 			},
 			"plain": {Model: "stub-model", SystemPrompt: "work", Tools: []string{"Read"}},
 		},
-		Concurrency: config.Concurrency{MaxConcurrentRuns: 4, MaxQueueDepth: 4, QueueTimeoutMS: 1000},
+		Concurrency: config.Concurrency{MaxConcurrentRuns: 4, MaxQueueDepth: 4},
 	}
 	cfg.Env.AuthToken = ""
 	st, err := storesqlite.Open(filepath.Join(t.TempDir(), "interruption.db"))

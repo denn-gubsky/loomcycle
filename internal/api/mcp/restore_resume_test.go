@@ -86,7 +86,7 @@ func TestRestoreSnapshotTool_ResumesTheRestoredPausedRun(t *testing.T) {
 	cfg := &config.Config{
 		Defaults:    config.Defaults{Provider: "stub", Model: "stub-model"},
 		Agents:      map[string]config.AgentDef{"resumer": {Model: "stub-model", SystemPrompt: "you resume work"}},
-		Concurrency: config.Concurrency{MaxConcurrentRuns: 4, MaxQueueDepth: 4, QueueTimeoutMS: 1000},
+		Concurrency: config.Concurrency{MaxConcurrentRuns: 4, MaxQueueDepth: 4},
 	}
 	prov := &endTurnProvider{}
 	httpSrv := lchttp.New(cfg, singleProvider{prov}, []tools.Tool{}, concurrency.New(4, 4, time.Second), st)

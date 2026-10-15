@@ -24,7 +24,7 @@ func routingTestServer(t *testing.T) *Server {
 				{Provider: "anthropic", Model: "claude-sonnet-4-6"},
 			},
 		},
-		Concurrency: config.Concurrency{MaxConcurrentRuns: 1, MaxQueueDepth: 1, QueueTimeoutMS: 100},
+		Concurrency: config.Concurrency{MaxConcurrentRuns: 1, MaxQueueDepth: 1},
 	}
 	cfg.Env.AuthToken = ""
 	srv := New(cfg, &stubResolver{}, nil, concurrency.New(1, 1, time.Second), nil)
@@ -73,7 +73,7 @@ func TestRouting_EmptyCascadeSerializesAsArray(t *testing.T) {
 			// below has no "high" candidates, so its cascade resolves empty.
 			"high": {{Provider: "deepseek", Model: "deepseek-v4-pro"}},
 		},
-		Concurrency: config.Concurrency{MaxConcurrentRuns: 1, MaxQueueDepth: 1, QueueTimeoutMS: 100},
+		Concurrency: config.Concurrency{MaxConcurrentRuns: 1, MaxQueueDepth: 1},
 	}
 	cfg.Env.AuthToken = ""
 	srv := New(cfg, &stubResolver{}, nil, concurrency.New(1, 1, time.Second), nil)

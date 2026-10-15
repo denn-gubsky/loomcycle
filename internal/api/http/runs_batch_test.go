@@ -80,7 +80,7 @@ func newBatchTestServer(t *testing.T, p providers.Provider, maxRuns int) *Server
 	cfg := &config.Config{
 		Defaults:    config.Defaults{Provider: "stub", Model: "stub-model"},
 		Agents:      map[string]config.AgentDef{"r": {Model: "stub-model", SystemPrompt: "be brief"}},
-		Concurrency: config.Concurrency{MaxConcurrentRuns: maxRuns, MaxQueueDepth: maxRuns, QueueTimeoutMS: 2000},
+		Concurrency: config.Concurrency{MaxConcurrentRuns: maxRuns, MaxQueueDepth: maxRuns},
 	}
 	cfg.Env.AuthToken = "" // open mode
 	sem := concurrency.New(maxRuns, maxRuns, 2*time.Second)

@@ -727,7 +727,7 @@ func main() {
 	sem := concurrency.New(
 		cfg.Concurrency.MaxConcurrentRuns,
 		cfg.Concurrency.MaxQueueDepth,
-		globalQueueTimeout(cfg.Concurrency),
+		0, // no wait timeout: a run, and a direct request, waits until a slot frees
 	).WithPerUserCap(cfg.Concurrency.MaxConcurrentRunsPerUser).
 		WithQueuedPerUserCap(cfg.Concurrency.MaxQueuedRunsPerUser)
 	if cfg.Concurrency.MaxConcurrentRunsPerUser > 0 {
@@ -3848,19 +3848,6 @@ func providerEnabled(id string, pc config.ProviderConfig, cfg *config.Config) bo
 		// enables an operator-declared keyless provider.
 		return true
 	}
-}
-
-// globalQueueTimeout is the global semaphore's per-acquire wait. A
-// queue_timeout_ms <= 0 passes validation and has always meant "refuse at once
-// when every slot is busy" (the old wait armed a zero timer). Semaphore now
-// reads a timeout <= 0 as "no wait timeout", so a non-positive global knob
-// maps to the smallest positive wait,
-// which keeps its meaning instead of silently turning into an unbounded queue.
-func globalQueueTimeout(c config.Concurrency) time.Duration {
-	if d := c.QueueTimeout(); d > 0 {
-		return d
-	}
-	return time.Nanosecond
 }
 
 // newCallScheduler builds the providers' call lanes from cfg.Providers: one

@@ -48,7 +48,7 @@ func operatorKeyTierServer(t *testing.T, prov providers.Provider, gateOn bool, c
 		Agents: map[string]config.AgentDef{
 			"tiered": {Tier: "middle", SystemPrompt: "you are tiered"},
 		},
-		Concurrency: config.Concurrency{MaxConcurrentRuns: 4, MaxQueueDepth: 4, QueueTimeoutMS: 1000},
+		Concurrency: config.Concurrency{MaxConcurrentRuns: 4, MaxQueueDepth: 4},
 		Pricing: config.PricingConfig{
 			Currency: "USD",
 			Models:   map[string]config.ModelPrice{"keyed/km": {Input: 3, Output: 15}},
@@ -220,7 +220,7 @@ func TestOperatorKeyScope_SubAgentInheritsRestriction(t *testing.T) {
 			"parent": {Model: "stub-model", Tools: []string{"Agent"}, SystemPrompt: "parent"},
 			"child":  {Model: "stub-model", SystemPrompt: "child"},
 		},
-		Concurrency: config.Concurrency{MaxConcurrentRuns: 4, MaxQueueDepth: 4, QueueTimeoutMS: 1000},
+		Concurrency: config.Concurrency{MaxConcurrentRuns: 4, MaxQueueDepth: 4},
 	}
 	cfg.Env.AuthToken = ""
 	cfg.Env.OperatorKeyRestriction = true

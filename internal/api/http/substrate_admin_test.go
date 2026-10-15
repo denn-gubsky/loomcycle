@@ -38,7 +38,7 @@ func substrateAdminFixture(t *testing.T) *httptest.Server {
 	cfg := &config.Config{
 		// Leave cfg.Agents empty so AgentDef.create of a DB-only
 		// name is accepted (static-name guard wouldn't fire).
-		Concurrency: config.Concurrency{MaxConcurrentRuns: 1, MaxQueueDepth: 1, QueueTimeoutMS: 100},
+		Concurrency: config.Concurrency{MaxConcurrentRuns: 1, MaxQueueDepth: 1},
 	}
 	cfg.Env.AuthToken = "test-token"
 
@@ -472,7 +472,7 @@ func TestSubstrateAdmin_ScheduleDef_NotConfigured(t *testing.T) {
 		t.Fatalf("sqlite.Open: %v", err)
 	}
 	defer st.Close()
-	cfg := &config.Config{Concurrency: config.Concurrency{MaxConcurrentRuns: 1, MaxQueueDepth: 1, QueueTimeoutMS: 100}}
+	cfg := &config.Config{Concurrency: config.Concurrency{MaxConcurrentRuns: 1, MaxQueueDepth: 1}}
 	cfg.Env.AuthToken = "test-token"
 	srv := New(cfg, &stubResolver{}, nil, concurrency.New(1, 1, time.Second), st)
 	ts := httptest.NewServer(srv.Mux())
@@ -538,7 +538,7 @@ func TestSubstrateAdmin_AgentDef_StampsPrincipalTenant(t *testing.T) {
 		}
 		t.Cleanup(func() { _ = st.Close() })
 		cfg := &config.Config{
-			Concurrency: config.Concurrency{MaxConcurrentRuns: 1, MaxQueueDepth: 1, QueueTimeoutMS: 100},
+			Concurrency: config.Concurrency{MaxConcurrentRuns: 1, MaxQueueDepth: 1},
 		}
 		if withAuth {
 			cfg.Env.AuthToken = "base-token"
@@ -597,7 +597,7 @@ func substratePathDocFixture(t *testing.T) *httptest.Server {
 	}
 	t.Cleanup(func() { _ = mgr.Close() })
 
-	cfg := &config.Config{Concurrency: config.Concurrency{MaxConcurrentRuns: 1, MaxQueueDepth: 1, QueueTimeoutMS: 100}}
+	cfg := &config.Config{Concurrency: config.Concurrency{MaxConcurrentRuns: 1, MaxQueueDepth: 1}}
 	cfg.Env.AuthToken = "test-token"
 	pathTool := &builtin.Path{Store: st}
 	docTool := &builtin.Document{Store: st, SqlMem: mgr, Bus: channels.NewBus()}

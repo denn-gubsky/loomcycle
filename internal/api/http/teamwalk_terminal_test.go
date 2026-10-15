@@ -67,7 +67,7 @@ func newTerminalHarness(t *testing.T, reply string) *walkHarness {
 	cfg := &config.Config{
 		Defaults:    config.Defaults{Provider: "stub", Model: "stub-model"},
 		Agents:      map[string]config.AgentDef{"judge": {Model: "stub-model", SystemPrompt: "judge"}},
-		Concurrency: config.Concurrency{MaxConcurrentRuns: 4, MaxQueueDepth: 4, QueueTimeoutMS: 1000},
+		Concurrency: config.Concurrency{MaxConcurrentRuns: 4, MaxQueueDepth: 4},
 	}
 	st, err := storesqlite.Open(filepath.Join(t.TempDir(), "terminal.db"))
 	if err != nil {

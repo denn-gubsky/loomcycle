@@ -34,7 +34,7 @@ func confinedTriggerServer(t *testing.T) (*Server, *storesqlite.Store, *identity
 		Agents: map[string]config.AgentDef{
 			"target": {Provider: "scripted", Model: "stub-model", SystemPrompt: "you run when triggered", Tools: []string{}},
 		},
-		Concurrency: config.Concurrency{MaxConcurrentRuns: 4, MaxQueueDepth: 4, QueueTimeoutMS: 1000},
+		Concurrency: config.Concurrency{MaxConcurrentRuns: 4, MaxQueueDepth: 4},
 	}
 	cfg.Env.AuthToken = ""
 	st, err := storesqlite.Open(filepath.Join(t.TempDir(), "trigger_fire.db"))

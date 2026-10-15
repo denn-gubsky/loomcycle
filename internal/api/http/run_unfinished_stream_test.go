@@ -27,7 +27,7 @@ func newStubProviderServer(t *testing.T, p providers.Provider) (*Server, store.S
 	cfg := &config.Config{
 		Defaults:    config.Defaults{Provider: "stub", Model: "stub-model"},
 		Agents:      map[string]config.AgentDef{"default": {Model: "stub-model"}},
-		Concurrency: config.Concurrency{MaxConcurrentRuns: 4, MaxQueueDepth: 4, QueueTimeoutMS: 1000},
+		Concurrency: config.Concurrency{MaxConcurrentRuns: 4, MaxQueueDepth: 4},
 	}
 	st, err := storesqlite.Open(filepath.Join(t.TempDir(), "test.db"))
 	if err != nil {

@@ -93,7 +93,7 @@ func newSkillHarness(t *testing.T) *skillHarness {
 			"outsider": {Model: "stub-model", SystemPrompt: "GLOBAL outsider\nSKILL:" + `{"name":"./style"}`,
 				Tools: []string{"Skill"}, Skills: []string{"./style"}},
 		},
-		Concurrency: config.Concurrency{MaxConcurrentRuns: 8, MaxQueueDepth: 8, QueueTimeoutMS: 1000},
+		Concurrency: config.Concurrency{MaxConcurrentRuns: 8, MaxQueueDepth: 8},
 	}
 	st, err := storesqlite.Open(filepath.Join(t.TempDir(), "skills.db"))
 	if err != nil {

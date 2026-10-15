@@ -33,7 +33,7 @@ func TestHandleRuns_PerRunSamplingOverridesAgent(t *testing.T) {
 				Sampling:     &config.Sampling{Temperature: f64(0.2), TopP: f64(0.9)},
 			},
 		},
-		Concurrency: config.Concurrency{MaxConcurrentRuns: 4, MaxQueueDepth: 4, QueueTimeoutMS: 1000},
+		Concurrency: config.Concurrency{MaxConcurrentRuns: 4, MaxQueueDepth: 4},
 	}
 	cfg.Env.AuthToken = ""
 	prov := &recordingProvider{}
@@ -80,7 +80,7 @@ func TestHandleRuns_AgentSamplingWhenNoOverride(t *testing.T) {
 		Agents: map[string]config.AgentDef{
 			"agent": {Model: "stub-model", SystemPrompt: "hi", Sampling: &config.Sampling{Temperature: f64(0.1)}},
 		},
-		Concurrency: config.Concurrency{MaxConcurrentRuns: 4, MaxQueueDepth: 4, QueueTimeoutMS: 1000},
+		Concurrency: config.Concurrency{MaxConcurrentRuns: 4, MaxQueueDepth: 4},
 	}
 	cfg.Env.AuthToken = ""
 	prov := &recordingProvider{}

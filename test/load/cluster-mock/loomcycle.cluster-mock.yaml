@@ -44,7 +44,6 @@ user_tiers:
 concurrency:
   max_concurrent_runs: 2000
   max_queue_depth: 30000
-  queue_timeout_ms: 600000
   max_concurrent_runs_per_user: 0
 
 channels:

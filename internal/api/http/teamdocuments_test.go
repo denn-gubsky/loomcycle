@@ -63,7 +63,7 @@ func newDocWalkHarness(t *testing.T) *docWalkHarness {
 		Channels: map[string]config.Channel{
 			"out": {Scope: "tenant", Semantic: "queue", MaxMessages: 100},
 		},
-		Concurrency: config.Concurrency{MaxConcurrentRuns: 8, MaxQueueDepth: 8, QueueTimeoutMS: 2000},
+		Concurrency: config.Concurrency{MaxConcurrentRuns: 8, MaxQueueDepth: 8},
 	}
 	st, err := storesqlite.Open(filepath.Join(t.TempDir(), "docwalk.db"))
 	if err != nil {

@@ -967,7 +967,6 @@ mcp_servers: {}
 concurrency:
   max_concurrent_runs: 8       # ~1 GiB RSS per run on a typical Sonnet config
   max_queue_depth: 32          # runs waiting at once, all reasons together
-  queue_timeout_ms: 30000      # the LLM gateway and session continuations only; a run never times out
 
   # Per-user fairness. Caps the runs per non-empty (tenant, user) that
   # run or wait for a slot, inside the global cap above. Default 0 =

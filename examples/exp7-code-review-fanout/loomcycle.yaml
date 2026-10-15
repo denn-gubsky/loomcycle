@@ -148,9 +148,7 @@ agents:
 concurrency:
   # Throttle the fan-out: 10 concurrent heavy sonnet reviewers can saturate a subscription (OAuth)
   # account rate limit (HTTP 429). Run a few at a time; the `spawn_runs` join still accepts all 10 —
-  # the rest QUEUE and run as slots free. queue_timeout MUST exceed a reviewer's wall-clock so queued
-  # children wait for a slot instead of being rejected. (Raise max_concurrent_runs if your provider /
+  # the rest QUEUE and run as slots free (a queued run never times out). (Raise max_concurrent_runs if your provider /
   # plan has the headroom — e.g. a paid API key rather than a subscription.)
   max_concurrent_runs: 4
   max_queue_depth: 24
-  queue_timeout_ms: 1200000

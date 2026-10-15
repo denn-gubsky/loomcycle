@@ -96,7 +96,7 @@ func assertResumeCarriesRunClock(t *testing.T, park func(gate *pauseGate, ctx co
 		Agents: map[string]config.AgentDef{
 			"orch": {Provider: "clocked", Model: "stub-model", SystemPrompt: "orchestrate", Tools: []string{}},
 		},
-		Concurrency: config.Concurrency{MaxConcurrentRuns: 4, MaxQueueDepth: 4, QueueTimeoutMS: 1000},
+		Concurrency: config.Concurrency{MaxConcurrentRuns: 4, MaxQueueDepth: 4},
 	}
 	cfg.Env.AuthToken = ""
 

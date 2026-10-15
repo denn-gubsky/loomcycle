@@ -23,7 +23,7 @@ func replayFixture(t *testing.T) (*Server, *scriptedProvider) {
 			// so the compress path can summarize.
 			"chat/dst": {Provider: "scripted", Model: "stub-model", Tools: []string{}},
 		},
-		Concurrency: config.Concurrency{MaxConcurrentRuns: 8, MaxQueueDepth: 8, QueueTimeoutMS: 1000},
+		Concurrency: config.Concurrency{MaxConcurrentRuns: 8, MaxQueueDepth: 8},
 	}
 	cfg.Env.AuthToken = "" // open mode — no principal
 	prov := &scriptedProvider{defaultS: []providers.Event{

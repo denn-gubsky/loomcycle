@@ -138,7 +138,6 @@ func TestSchedulerBearerCompound(t *testing.T) {
 		Concurrency: config.Concurrency{
 			MaxConcurrentRuns: 64,
 			MaxQueueDepth:     scale * 2,
-			QueueTimeoutMS:    30_000,
 		},
 	}
 	cfg.Env.AuthToken = ""
@@ -198,7 +197,7 @@ func TestSchedulerBearerCompound(t *testing.T) {
 		t.Fatalf("expected 2 MCP tools registered (one per server); got %d", len(allTools))
 	}
 
-	sem := concurrency.New(cfg.Concurrency.MaxConcurrentRuns, cfg.Concurrency.MaxQueueDepth, cfg.Concurrency.QueueTimeout())
+	sem := concurrency.New(cfg.Concurrency.MaxConcurrentRuns, cfg.Concurrency.MaxQueueDepth, 0)
 	srv := New(cfg, &stubResolver{p: mockProv}, allTools, sem, st)
 	httpServer := httptest.NewServer(srv.Mux())
 	t.Cleanup(httpServer.Close)

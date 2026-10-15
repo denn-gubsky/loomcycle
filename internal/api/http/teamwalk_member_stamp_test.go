@@ -88,7 +88,7 @@ func newStampHarness(t *testing.T) *walkHarness {
 			"in":  {Scope: "tenant", Semantic: "queue", MaxMessages: 100},
 			"out": {Scope: "tenant", Semantic: "queue", MaxMessages: 100},
 		},
-		Concurrency: config.Concurrency{MaxConcurrentRuns: 8, MaxQueueDepth: 8, QueueTimeoutMS: 1000},
+		Concurrency: config.Concurrency{MaxConcurrentRuns: 8, MaxQueueDepth: 8},
 	}
 	st, err := storesqlite.Open(filepath.Join(t.TempDir(), "stamp.db"))
 	if err != nil {

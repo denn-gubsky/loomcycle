@@ -37,7 +37,7 @@ func resumeTreeConfig(provider, hookURL, volRoot string) *config.Config {
 	cfg := &config.Config{
 		Defaults:    config.Defaults{Provider: provider, Model: "stub-model"},
 		Agents:      map[string]config.AgentDef{"resumer": def},
-		Concurrency: config.Concurrency{MaxConcurrentRuns: 8, MaxQueueDepth: 8, QueueTimeoutMS: 1000},
+		Concurrency: config.Concurrency{MaxConcurrentRuns: 8, MaxQueueDepth: 8},
 	}
 	if volRoot != "" {
 		cfg.Volumes = map[string]config.Volume{"pool": {Path: volRoot, Mode: "rw", DynamicRoot: true}}

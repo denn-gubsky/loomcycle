@@ -61,8 +61,8 @@ func RunValidate(args []string, stdout, stderr io.Writer) int {
 	}
 	fmt.Fprintf(stdout, "Listen address   : %s\n", cfg.Env.ListenAddr)
 	fmt.Fprintf(stdout, "Auth token set   : %v\n", cfg.Env.AuthToken != "")
-	fmt.Fprintf(stdout, "Concurrency      : max=%d queue=%d timeout=%s\n",
-		cfg.Concurrency.MaxConcurrentRuns, cfg.Concurrency.MaxQueueDepth, cfg.Concurrency.QueueTimeout())
+	fmt.Fprintf(stdout, "Concurrency      : max=%d queue=%d\n",
+		cfg.Concurrency.MaxConcurrentRuns, cfg.Concurrency.MaxQueueDepth)
 	fmt.Fprintln(stdout)
 
 	// Agents. Sort by name for stable output (config map order is

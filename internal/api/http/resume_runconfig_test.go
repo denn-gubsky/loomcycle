@@ -137,7 +137,7 @@ func TestResumedRun_KeepsItsOwnSampling(t *testing.T) {
 				Sampling:     &config.Sampling{Temperature: f64(0.9)},
 			},
 		},
-		Concurrency: config.Concurrency{MaxConcurrentRuns: 4, MaxQueueDepth: 4, QueueTimeoutMS: 1000},
+		Concurrency: config.Concurrency{MaxConcurrentRuns: 4, MaxQueueDepth: 4},
 	}
 	cfg.Env.AuthToken = ""
 
@@ -213,7 +213,7 @@ func TestResumedRun_KeepsItsContextWindow(t *testing.T) {
 				MaxContextTokens: 8192,
 			},
 		},
-		Concurrency: config.Concurrency{MaxConcurrentRuns: 4, MaxQueueDepth: 4, QueueTimeoutMS: 1000},
+		Concurrency: config.Concurrency{MaxConcurrentRuns: 4, MaxQueueDepth: 4},
 	}
 	cfg.Env.AuthToken = ""
 

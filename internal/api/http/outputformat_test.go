@@ -45,7 +45,7 @@ func outputFormatServer(t *testing.T) (*Server, *httptest.Server, *jsonAnswerPro
 		Agents: map[string]config.AgentDef{
 			"agent": {Model: "stub-model", SystemPrompt: "hi"},
 		},
-		Concurrency: config.Concurrency{MaxConcurrentRuns: 4, MaxQueueDepth: 4, QueueTimeoutMS: 1000},
+		Concurrency: config.Concurrency{MaxConcurrentRuns: 4, MaxQueueDepth: 4},
 	}
 	cfg.Env.AuthToken = ""
 	prov := &jsonAnswerProvider{}

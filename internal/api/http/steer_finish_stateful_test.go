@@ -82,7 +82,7 @@ func TestRunOnce_AStatefulRunSentAMessageDuringItsFinalStepAnswersIt(t *testing.
 		Agents: map[string]config.AgentDef{
 			"writer": {Model: "stub-model", SystemPrompt: "write", Context: &config.Context{Mode: &mode}},
 		},
-		Concurrency: config.Concurrency{MaxConcurrentRuns: 4, MaxQueueDepth: 4, QueueTimeoutMS: 1000},
+		Concurrency: config.Concurrency{MaxConcurrentRuns: 4, MaxQueueDepth: 4},
 	}
 	st, err := storesqlite.Open(filepath.Join(t.TempDir(), "steer-finish-stateful.db"))
 	if err != nil {

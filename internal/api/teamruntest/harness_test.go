@@ -170,7 +170,7 @@ func newEnv(t *testing.T, open bool) *env {
 			// An agent granted the tool, for the test of a call made inside a run.
 			"lead": {Model: "stub-model", Tools: []string{"TeamDef"}, SystemPrompt: leadPrompt},
 		},
-		Concurrency: config.Concurrency{MaxConcurrentRuns: 4, MaxQueueDepth: 4, QueueTimeoutMS: 2000},
+		Concurrency: config.Concurrency{MaxConcurrentRuns: 4, MaxQueueDepth: 4},
 	}
 	cfg.Env.OperatorTokenPepper = pepper
 	if !open {

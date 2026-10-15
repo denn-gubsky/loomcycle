@@ -257,4 +257,3 @@ concurrency:
   # keep the gate modest. (Only ONE local model loaded: gemma4:max for the solvers; meta on cloud sonnet.)
   max_concurrent_runs: 6
   max_queue_depth: 16
-  queue_timeout_ms: 60000

@@ -26,7 +26,7 @@ import (
 func bindingFixture(t *testing.T) (*Server, *builtin.Document, context.Context) {
 	t.Helper()
 	cfg := &config.Config{
-		Concurrency: config.Concurrency{MaxConcurrentRuns: 4, MaxQueueDepth: 4, QueueTimeoutMS: 1000},
+		Concurrency: config.Concurrency{MaxConcurrentRuns: 4, MaxQueueDepth: 4},
 	}
 	st, err := storesqlite.Open(filepath.Join(t.TempDir(), "b.db"))
 	if err != nil {

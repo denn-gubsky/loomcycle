@@ -155,7 +155,7 @@ func newLocalHarness(t *testing.T) *localHarness {
 			"helper":   {Model: "stub-model", SystemPrompt: "GLOBAL helper"},
 			"scout":    {Model: "stub-model", SystemPrompt: "GLOBAL scout\nSPAWN:reviewer", Tools: []string{"Agent"}},
 		},
-		Concurrency: config.Concurrency{MaxConcurrentRuns: 8, MaxQueueDepth: 8, QueueTimeoutMS: 1000},
+		Concurrency: config.Concurrency{MaxConcurrentRuns: 8, MaxQueueDepth: 8},
 	}
 	st, err := storesqlite.Open(filepath.Join(t.TempDir(), "local.db"))
 	if err != nil {

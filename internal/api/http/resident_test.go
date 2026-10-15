@@ -32,7 +32,7 @@ func newResidentTestServer(t *testing.T) *Server {
 		Agents: map[string]config.AgentDef{
 			"child": {Model: "stub-model", SystemPrompt: "be brief"},
 		},
-		Concurrency: config.Concurrency{MaxConcurrentRuns: 8, MaxQueueDepth: 8, QueueTimeoutMS: 1000},
+		Concurrency: config.Concurrency{MaxConcurrentRuns: 8, MaxQueueDepth: 8},
 	}
 	cfg.Env.AuthToken = ""
 	provider := &stubProvider{events: []providers.Event{
@@ -476,7 +476,7 @@ func startParentWithResidentChild(t *testing.T) (*Server, string, chan struct{},
 			"lead":  {Model: "stub-model", SystemPrompt: "lead", Tools: []string{"Agent"}},
 			"child": {Model: "stub-model", SystemPrompt: "child"},
 		},
-		Concurrency: config.Concurrency{MaxConcurrentRuns: 8, MaxQueueDepth: 8, QueueTimeoutMS: 1000},
+		Concurrency: config.Concurrency{MaxConcurrentRuns: 8, MaxQueueDepth: 8},
 	}
 	cfg.Env.AuthToken = ""
 	done := func(text string) []providers.Event {
@@ -708,7 +708,7 @@ func newGatedResidentServer(t *testing.T) (*Server, chan struct{}) {
 	cfg := &config.Config{
 		Defaults:    config.Defaults{Provider: "stub", Model: "stub-model"},
 		Agents:      map[string]config.AgentDef{"child": {Model: "stub-model", SystemPrompt: "be brief"}},
-		Concurrency: config.Concurrency{MaxConcurrentRuns: 8, MaxQueueDepth: 8, QueueTimeoutMS: 1000},
+		Concurrency: config.Concurrency{MaxConcurrentRuns: 8, MaxQueueDepth: 8},
 	}
 	cfg.Env.AuthToken = ""
 	gate := make(chan struct{}, 4)

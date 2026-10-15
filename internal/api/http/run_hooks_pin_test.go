@@ -179,7 +179,7 @@ func TestResumePausedRuns_ARunWhoseHooksChangedDoesNotResume(t *testing.T) {
 	cfg := &config.Config{
 		Defaults:    config.Defaults{Provider: "scripted", Model: "stub-model"},
 		Agents:      map[string]config.AgentDef{"worker": now},
-		Concurrency: config.Concurrency{MaxConcurrentRuns: 8, MaxQueueDepth: 8, QueueTimeoutMS: 1000},
+		Concurrency: config.Concurrency{MaxConcurrentRuns: 8, MaxQueueDepth: 8},
 	}
 	cfg.Env.AuthToken = ""
 	prov := &scriptedProvider{defaultS: []providers.Event{

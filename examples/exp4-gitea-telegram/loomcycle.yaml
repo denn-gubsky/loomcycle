@@ -187,4 +187,3 @@ webhooks:
 concurrency:
   max_concurrent_runs: 8
   max_queue_depth: 16
-  queue_timeout_ms: 30000

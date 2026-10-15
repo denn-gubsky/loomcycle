@@ -33,7 +33,7 @@ func schedulesTenantFixture(t *testing.T) (srv *Server, acmeDef, globexDef strin
 		ScheduledRuns: map[string]config.ScheduledRun{
 			"yaml-sched": {Agent: "researcher", Schedule: "0 6 * * *", Enabled: true},
 		},
-		Concurrency: config.Concurrency{MaxConcurrentRuns: 1, MaxQueueDepth: 1, QueueTimeoutMS: 100},
+		Concurrency: config.Concurrency{MaxConcurrentRuns: 1, MaxQueueDepth: 1},
 	}
 	cfg.Env.AuthToken = "test-token"
 
@@ -142,7 +142,7 @@ func schedulesAdminFixture(t *testing.T) (*httptest.Server, store.Store, string)
 				Enabled:  true,
 			},
 		},
-		Concurrency: config.Concurrency{MaxConcurrentRuns: 1, MaxQueueDepth: 1, QueueTimeoutMS: 100},
+		Concurrency: config.Concurrency{MaxConcurrentRuns: 1, MaxQueueDepth: 1},
 	}
 	cfg.Env.AuthToken = "test-token"
 

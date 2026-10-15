@@ -212,4 +212,3 @@ concurrency:
   # provider/plan has the headroom (a paid API key vs. an OAuth subscription).
   max_concurrent_runs: 12
   max_queue_depth: 20
-  queue_timeout_ms: 600000

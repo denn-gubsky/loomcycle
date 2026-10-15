@@ -94,7 +94,7 @@ func newEnv(t *testing.T) *env {
 	t.Helper()
 	cfg := &config.Config{
 		Defaults:    config.Defaults{Provider: "none", Model: "none"},
-		Concurrency: config.Concurrency{MaxConcurrentRuns: 4, MaxQueueDepth: 4, QueueTimeoutMS: 2000},
+		Concurrency: config.Concurrency{MaxConcurrentRuns: 4, MaxQueueDepth: 4},
 	}
 	cfg.Env.OperatorTokenPepper = pepper
 	cfg.Env.AuthToken = legacyToken

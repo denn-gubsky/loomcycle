@@ -39,7 +39,7 @@ func TestResumePausedRuns_ResumesMidConversationToCompletion(t *testing.T) {
 		Agents: map[string]config.AgentDef{
 			"resumer": {Provider: "scripted", Model: "stub-model", SystemPrompt: "you resume work", Tools: []string{}},
 		},
-		Concurrency: config.Concurrency{MaxConcurrentRuns: 8, MaxQueueDepth: 8, QueueTimeoutMS: 1000},
+		Concurrency: config.Concurrency{MaxConcurrentRuns: 8, MaxQueueDepth: 8},
 	}
 	cfg.Env.AuthToken = ""
 	// On resume the loop makes one provider call; return end_turn so it finishes.
@@ -118,7 +118,7 @@ func TestResumePausedRuns_FlagsRunWithMissingAgent(t *testing.T) {
 	cfg := &config.Config{
 		Defaults:    config.Defaults{Provider: "scripted", Model: "stub-model"},
 		Agents:      map[string]config.AgentDef{}, // no agents — "ghost" won't resolve
-		Concurrency: config.Concurrency{MaxConcurrentRuns: 8, MaxQueueDepth: 8, QueueTimeoutMS: 1000},
+		Concurrency: config.Concurrency{MaxConcurrentRuns: 8, MaxQueueDepth: 8},
 	}
 	cfg.Env.AuthToken = ""
 	srv, _ := makeServer(t, &scriptedProvider{}, cfg)
@@ -281,7 +281,7 @@ func TestResumePausedRuns_ReconcilesFanoutParent(t *testing.T) {
 			"breeder": {Provider: "scripted", Model: "stub-model", SystemPrompt: "breed", Tools: []string{"Agent"}},
 			"solver":  {Provider: "scripted", Model: "stub-model", SystemPrompt: "solve", Tools: []string{}},
 		},
-		Concurrency: config.Concurrency{MaxConcurrentRuns: 8, MaxQueueDepth: 8, QueueTimeoutMS: 1000},
+		Concurrency: config.Concurrency{MaxConcurrentRuns: 8, MaxQueueDepth: 8},
 	}
 	cfg.Env.AuthToken = ""
 	cfg.Env.ResumeFanout = true // Phase-3 opt-in
@@ -391,7 +391,7 @@ func TestResumePausedRuns_FanoutFlagOff_NotReconciled(t *testing.T) {
 		Agents: map[string]config.AgentDef{
 			"breeder": {Provider: "scripted", Model: "stub-model", SystemPrompt: "breed", Tools: []string{"Agent"}},
 		},
-		Concurrency: config.Concurrency{MaxConcurrentRuns: 8, MaxQueueDepth: 8, QueueTimeoutMS: 1000},
+		Concurrency: config.Concurrency{MaxConcurrentRuns: 8, MaxQueueDepth: 8},
 	}
 	cfg.Env.AuthToken = ""
 	cfg.Env.ResumeFanout = false // dormant
@@ -458,7 +458,7 @@ func TestResumePausedRuns_AResumedChildGoesThroughTheParentsStopHook(t *testing.
 						Hooks: hooks.EventHooks{hooks.PhaseSubagentStop: {{Inline: &hooks.Inline{Name: "check", URL: hook.srv.URL}}}}},
 					"solver": {Provider: "scripted", Model: "stub-model", SystemPrompt: "solve", Tools: []string{}},
 				},
-				Concurrency: config.Concurrency{MaxConcurrentRuns: 8, MaxQueueDepth: 8, QueueTimeoutMS: 1000},
+				Concurrency: config.Concurrency{MaxConcurrentRuns: 8, MaxQueueDepth: 8},
 			}
 			cfg.Env.AuthToken = ""
 			cfg.Env.ResumeFanout = true

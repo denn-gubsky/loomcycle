@@ -77,7 +77,7 @@ func makeBaseConfig() *config.Config {
 		Agents: map[string]config.AgentDef{
 			"default": {Model: "stub-model", Tools: []string{}},
 		},
-		Concurrency: config.Concurrency{MaxConcurrentRuns: 8, MaxQueueDepth: 8, QueueTimeoutMS: 1000},
+		Concurrency: config.Concurrency{MaxConcurrentRuns: 8, MaxQueueDepth: 8},
 	}
 	cfg.Env.AuthToken = ""
 	return cfg

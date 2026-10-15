@@ -49,7 +49,7 @@ func newBareAnswerHarness(t *testing.T) (*walkHarness, *numberedProvider) {
 			"editor": {Model: "stub-model", SystemPrompt: "edit"},
 			"judge":  {Model: "stub-model", SystemPrompt: "judge"},
 		},
-		Concurrency: config.Concurrency{MaxConcurrentRuns: 4, MaxQueueDepth: 4, QueueTimeoutMS: 1000},
+		Concurrency: config.Concurrency{MaxConcurrentRuns: 4, MaxQueueDepth: 4},
 	}
 	st, err := storesqlite.Open(filepath.Join(t.TempDir(), "bare.db"))
 	if err != nil {

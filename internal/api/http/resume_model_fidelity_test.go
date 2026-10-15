@@ -23,7 +23,7 @@ func tierServerForResume(t *testing.T) *Server {
 		Agents: map[string]config.AgentDef{
 			"router": {Tier: "middle", SystemPrompt: "p", Tools: []string{}},
 		},
-		Concurrency: config.Concurrency{MaxConcurrentRuns: 4, MaxQueueDepth: 4, QueueTimeoutMS: 1000},
+		Concurrency: config.Concurrency{MaxConcurrentRuns: 4, MaxQueueDepth: 4},
 	}
 	srv, _ := makeServer(t, completingProvider(), cfg)
 	res := resolve.NewResolver([]string{"primary", "secondary"}, map[string][]resolve.Candidate{
@@ -146,7 +146,7 @@ func TestResumeRun_ActuallyUsesTheRestoredModel(t *testing.T) {
 		Agents: map[string]config.AgentDef{
 			"router": {Tier: "middle", SystemPrompt: "p", Tools: []string{}},
 		},
-		Concurrency: config.Concurrency{MaxConcurrentRuns: 4, MaxQueueDepth: 4, QueueTimeoutMS: 1000},
+		Concurrency: config.Concurrency{MaxConcurrentRuns: 4, MaxQueueDepth: 4},
 	}
 	cfg.Env.AuthToken = ""
 	srv, _ := makeServer(t, rec, cfg)

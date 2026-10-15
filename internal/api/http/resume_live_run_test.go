@@ -38,7 +38,7 @@ func pausedRunOnReplica(t *testing.T, agents map[string]config.AgentDef, replica
 	cfg := &config.Config{
 		Defaults:    config.Defaults{Provider: "scripted", Model: "stub-model"},
 		Agents:      agents,
-		Concurrency: config.Concurrency{MaxConcurrentRuns: 8, MaxQueueDepth: 8, QueueTimeoutMS: 1000},
+		Concurrency: config.Concurrency{MaxConcurrentRuns: 8, MaxQueueDepth: 8},
 	}
 	cfg.Env.AuthToken = ""
 	srv, _ := makeServer(t, &scriptedProvider{defaultS: []providers.Event{

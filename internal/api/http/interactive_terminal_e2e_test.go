@@ -43,7 +43,7 @@ func TestInteractiveTerminal_EndToEnd(t *testing.T) {
 			// count toward the 16-cap (a persistent terminal agent).
 			"termagent": {Model: "stub-model", SystemPrompt: "be brief", UnboundedIterations: true},
 		},
-		Concurrency: config.Concurrency{MaxConcurrentRuns: 4, MaxQueueDepth: 4, QueueTimeoutMS: 1000},
+		Concurrency: config.Concurrency{MaxConcurrentRuns: 4, MaxQueueDepth: 4},
 	}
 	cfg.Env.AuthToken = "" // open mode
 

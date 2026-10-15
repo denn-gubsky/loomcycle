@@ -23,7 +23,7 @@ func capCfg(limit int64) *config.Config {
 		Agents: map[string]config.AgentDef{
 			"a": {Model: "stub-model", SystemPrompt: "x"},
 		},
-		Concurrency: config.Concurrency{MaxConcurrentRuns: 4, MaxQueueDepth: 4, QueueTimeoutMS: 1000},
+		Concurrency: config.Concurrency{MaxConcurrentRuns: 4, MaxQueueDepth: 4},
 	}
 	cfg.Env.AuthToken = ""
 	cfg.Env.MaxRequestBytes = limit
