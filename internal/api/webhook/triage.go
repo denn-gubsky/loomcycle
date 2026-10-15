@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/denn-gubsky/loomcycle/internal/auth"
 	"github.com/denn-gubsky/loomcycle/internal/lookup"
@@ -25,6 +26,31 @@ func (rec *Receiver) MountAdmin(reg Registrar, adminAuth func(http.Handler) http
 		adminAuth(http.HandlerFunc(rec.handleRecentDeliveries)))
 	reg.Handle("POST /v1/_webhooks/{name}/test",
 		adminAuth(http.HandlerFunc(rec.handleTest)))
+	reg.Handle("GET /v1/_webhooks/{name}/counters",
+		adminAuth(http.HandlerFunc(rec.handleCounters)))
+}
+
+// handleCounters serves the webhook's delivery counters as stored: every
+// replica's counts, up to CounterFlushInterval behind. Resolved like
+// recent-deliveries, with the same ?tenant= focus.
+func (rec *Receiver) handleCounters(w http.ResponseWriter, r *http.Request) {
+	name := r.PathValue("name")
+	_, owner, ok := lookup.ResolveWebhook(r.Context(), rec.store, rec.cfg, triageTenant(r), name)
+	if !ok || rec.store == nil {
+		writeError(w, http.StatusNotFound, "unknown_webhook", "")
+		return
+	}
+	counts, updated, err := rec.store.WebhookCountersGet(r.Context(), webhookKey(owner, name))
+	if err != nil {
+		rec.logf("webhook %q: read the delivery counters: %v", name, err)
+		writeError(w, http.StatusServiceUnavailable, "counters_unavailable", "")
+		return
+	}
+	resp := map[string]any{"webhook_name": name, "counters": counts}
+	if !updated.IsZero() {
+		resp["updated_at"] = updated.UTC().Format(time.RFC3339)
+	}
+	writeJSON(w, http.StatusOK, resp)
 }
 
 // triageTenant is the tenant a triage request resolves its webhook under: the

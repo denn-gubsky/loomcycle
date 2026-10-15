@@ -59,6 +59,14 @@ func (s *stubWebhookStore) WebhookDeliverySetRun(_ context.Context, _ []string, 
 	return nil
 }
 
+func (s *stubWebhookStore) WebhookCountersAdd(_ context.Context, _ []store.WebhookCounterAdd, _ time.Time) error {
+	return nil
+}
+
+func (s *stubWebhookStore) WebhookCountersGet(_ context.Context, _ string) (map[string]int64, time.Time, error) {
+	return map[string]int64{}, time.Time{}, nil
+}
+
 // ChannelPublish + MemorySet satisfy lookup.WebhookStore (WH-5b
 // on_complete hooks). The resolver tests never fire hooks, so no-ops
 // suffice.

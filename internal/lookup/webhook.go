@@ -3,6 +3,7 @@ package lookup
 import (
 	"context"
 	"encoding/json"
+	"net/url"
 	"time"
 
 	"github.com/denn-gubsky/loomcycle/internal/config"
@@ -35,6 +36,9 @@ type WebhookStore interface {
 	WebhookDeliveryRelease(ctx context.Context, keys []string) error
 	WebhookDeliveryClaimRun(ctx context.Context, keys []string, now, expiresAt time.Time) (bool, string, error)
 	WebhookDeliverySetRun(ctx context.Context, keys []string, runID string) error
+	// WebhookCountersAdd flushes the receiver's delivery counters.
+	WebhookCountersAdd(ctx context.Context, adds []store.WebhookCounterAdd, at time.Time) error
+	WebhookCountersGet(ctx context.Context, webhookKey string) (map[string]int64, time.Time, error)
 
 	// MemorySet backs the WH-5b on_complete memory.set hook (the receiver
 	// MIRRORS the scheduler's dispatch rather than importing it). Its
@@ -76,6 +80,46 @@ func Webhook(ctx context.Context, s WebhookStore, cfg *config.Config, tenantID, 
 type WebhookOwner struct {
 	Static   bool
 	TenantID string // substrate tier's tenant ("" = shared); empty when Static
+}
+
+// WebhookStateKey names ONE webhook def by the owner it resolved from plus its
+// name. It keys every piece of per-webhook state: both dedup layers, the
+// rate-limit bucket and the delivery counters.
+//
+// It deliberately ignores the URL tenant. /v1/_webhooks/{tenant}/{name}
+// accepts any tenant segment and an unknown one falls through to the static
+// or shared def, so a URL-derived key let one captured signed delivery replay
+// once per made-up prefix — each a fresh key in both dedup layers, each a new
+// run — and let an unrelated tenant's traffic share a same-named webhook's
+// bucket.
+//
+// The tenant and name are query-escaped, so neither contains ":". The static
+// marker does, so no tenant name can produce it. The name is never empty (it
+// is a URL path segment).
+func WebhookStateKey(owner WebhookOwner, name string) string {
+	o := url.QueryEscape(owner.TenantID)
+	if owner.Static {
+		o = staticWebhookOwner
+	}
+	return o + ":" + url.QueryEscape(name)
+}
+
+// staticWebhookOwner marks a yaml cfg.Webhooks def in WebhookStateKey.
+const staticWebhookOwner = "static:"
+
+// WebhookOwnerOfRow is the owner a stored definition of name in tenantID is
+// resolved as by ResolveWebhook: its tenant; or, for a shared row, the yaml
+// definition of that name when there is one, since the yaml wins there.
+func WebhookOwnerOfRow(cfg *config.Config, tenantID, name string) WebhookOwner {
+	if tenantID != "" {
+		return WebhookOwner{TenantID: tenantID}
+	}
+	if cfg != nil {
+		if _, ok := cfg.Webhooks[name]; ok {
+			return WebhookOwner{Static: true}
+		}
+	}
+	return WebhookOwner{}
 }
 
 // ResolveWebhook is Webhook plus the owner of the def it returned.

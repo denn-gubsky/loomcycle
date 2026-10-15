@@ -120,7 +120,7 @@ func (rec *Receiver) deliverTeam(ctx context.Context, w http.ResponseWriter, spa
 	if existing, ok := rec.priorTeamWalk(ctx, dk, did); ok {
 		rec.setHeldRun(name, held, existing.ID)
 		rec.dedup.recordDuplicate(dk)
-		rec.finish(span, whKey, did, verdictAccepted, existing.ID)
+		rec.finish(span, whKey, did, verdictAcceptedReplay, existing.ID)
 		writeJSON(w, http.StatusAccepted, map[string]string{
 			"webhook_name": name,
 			"delivery_id":  did,
@@ -156,7 +156,7 @@ func (rec *Receiver) deliverTeam(ctx context.Context, w http.ResponseWriter, spa
 		}
 		rec.setHeldRun(name, held, winner)
 		rec.dedup.recordDuplicate(dk)
-		rec.finish(span, whKey, did, verdictAccepted, winner)
+		rec.finish(span, whKey, did, verdictAcceptedReplay, winner)
 		writeJSON(w, http.StatusAccepted, resp)
 		return
 	}

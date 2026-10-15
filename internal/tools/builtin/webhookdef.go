@@ -8,9 +8,11 @@ import (
 	"log"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/denn-gubsky/loomcycle/internal/config"
 	"github.com/denn-gubsky/loomcycle/internal/credential"
+	"github.com/denn-gubsky/loomcycle/internal/lookup"
 	"github.com/denn-gubsky/loomcycle/internal/store"
 	"github.com/denn-gubsky/loomcycle/internal/teamgraph"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
@@ -480,7 +482,27 @@ func (s *WebhookDef) execGet(ctx context.Context, policy tools.WebhookDefPolicyV
 	if err := s.checkScopeForName(policy, row.Name); err != nil {
 		return errResult(err.Error()), nil
 	}
-	return okJSON(webhookRowResponse(row, false))
+	resp := webhookRowResponse(row, false)
+	resp["status"] = s.webhookStatus(ctx, row)
+	return okJSON(resp)
+}
+
+// webhookStatus is how the webhook's deliveries were answered, by outcome:
+// every replica's counts, written every 30 seconds, so up to that far
+// behind. They belong to the webhook as the receiver resolves it — its name
+// in its tenant — not to one version. A read that fails says so instead of
+// failing the get.
+func (s *WebhookDef) webhookStatus(ctx context.Context, row store.WebhookDefRow) map[string]any {
+	key := lookup.WebhookStateKey(lookup.WebhookOwnerOfRow(s.Cfg, row.TenantID, row.Name), row.Name)
+	counts, updated, err := s.Store.WebhookCountersGet(ctx, key)
+	if err != nil {
+		return map[string]any{"counters_error": "the delivery counters could not be read"}
+	}
+	status := map[string]any{"counters": counts}
+	if !updated.IsZero() {
+		status["counters_updated_at"] = updated.UTC().Format(time.RFC3339)
+	}
+	return status
 }
 
 func (s *WebhookDef) execList(ctx context.Context, policy tools.WebhookDefPolicyValue, in webhookDefInput) (tools.Result, error) {

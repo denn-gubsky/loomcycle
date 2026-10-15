@@ -3,7 +3,6 @@ package webhook
 import (
 	"crypto/sha256"
 	"encoding/hex"
-	"net/url"
 	"sync"
 	"time"
 
@@ -47,30 +46,12 @@ func newDedupCache(now func() time.Time) *dedupCache {
 	return &dedupCache{now: now}
 }
 
-// webhookKey names ONE webhook def by the owner it resolved from (see
-// lookup.WebhookOwner) plus its name. It keys every piece of per-webhook
-// state: both dedup layers (via dedupKey) and the rate-limit bucket.
-//
-// It deliberately ignores the URL tenant. /v1/_webhooks/{tenant}/{name}
-// accepts any tenant segment and an unknown one falls through to the static
-// or shared def, so a URL-derived key let one captured signed delivery replay
-// once per made-up prefix — each a fresh key in both dedup layers, each a new
-// run — and let an unrelated tenant's traffic share a same-named webhook's
-// bucket.
-//
-// The tenant and name are query-escaped, so neither contains ":". The static
-// marker does, so no tenant name can produce it. The name is never empty (it
-// is a URL path segment).
+// webhookKey names ONE webhook def by the owner it resolved from; see
+// lookup.WebhookStateKey, which the WebhookDef tool shares to read the def's
+// counters.
 func webhookKey(owner lookup.WebhookOwner, name string) string {
-	o := url.QueryEscape(owner.TenantID)
-	if owner.Static {
-		o = staticWebhookOwner
-	}
-	return o + ":" + url.QueryEscape(name)
+	return lookup.WebhookStateKey(owner, name)
 }
-
-// staticWebhookOwner marks a yaml cfg.Webhooks def in webhookKey.
-const staticWebhookOwner = "static:"
 
 // dedupKey composes a key both dedup layers use: the Layer-1 cache key here
 // AND the durable runs.idempotency_key (Layer 2); newDeliveryKeys picks which

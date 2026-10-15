@@ -578,6 +578,14 @@ func (f *fakeWebhookStore) WebhookDeliverySetRun(_ context.Context, _ []string, 
 	return nil
 }
 
+func (f *fakeWebhookStore) WebhookCountersAdd(_ context.Context, _ []store.WebhookCounterAdd, _ time.Time) error {
+	return nil
+}
+
+func (f *fakeWebhookStore) WebhookCountersGet(_ context.Context, _ string) (map[string]int64, time.Time, error) {
+	return map[string]int64{}, time.Time{}, nil
+}
+
 func (f *fakeWebhookStore) WebhookDeliveryRelease(_ context.Context, keys []string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -837,6 +845,14 @@ func (s *raceStore) WebhookDeliveryClaimRun(_ context.Context, _ []string, _, _ 
 
 func (s *raceStore) WebhookDeliverySetRun(_ context.Context, _ []string, _ string) error {
 	return nil
+}
+
+func (s *raceStore) WebhookCountersAdd(_ context.Context, _ []store.WebhookCounterAdd, _ time.Time) error {
+	return nil
+}
+
+func (s *raceStore) WebhookCountersGet(_ context.Context, _ string) (map[string]int64, time.Time, error) {
+	return map[string]int64{}, time.Time{}, nil
 }
 
 // ChannelPublish + MemorySet satisfy lookup.WebhookStore (WH-5b). The race

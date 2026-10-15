@@ -628,6 +628,15 @@ func (s *Store) migrate(ctx context.Context) error {
 			expires_at   INTEGER NOT NULL
 		)`,
 		`CREATE INDEX IF NOT EXISTS webhook_deliveries_by_expires_at ON webhook_deliveries(expires_at)`,
+		// How a webhook's deliveries were answered, by outcome; each replica
+		// adds its counts every 30 seconds. Mirrors postgres migration 0105.
+		`CREATE TABLE IF NOT EXISTS webhook_counters (
+			webhook_key TEXT    NOT NULL,
+			outcome     TEXT    NOT NULL,
+			count       INTEGER NOT NULL,
+			updated_at  INTEGER NOT NULL,
+			PRIMARY KEY (webhook_key, outcome)
+		)`,
 		// HookDef substrate — mirror of teamdefs minus the two authority
 		// columns (bootstrapped_from_static, operator_authored) a HookDef
 		// has no use for. A fresh table born tenant-aware, so the
@@ -11731,6 +11740,59 @@ func (s *Store) WebhookDeliverySetRun(ctx context.Context, keys []string, runID 
 		return fmt.Errorf("webhook delivery set run: %w", err)
 	}
 	return nil
+}
+
+// WebhookCountersAdd adds the increments in one transaction.
+func (s *Store) WebhookCountersAdd(ctx context.Context, adds []store.WebhookCounterAdd, at time.Time) error {
+	if len(adds) == 0 {
+		return nil
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("webhook counters add begin: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	for _, a := range adds {
+		if _, err := tx.ExecContext(ctx,
+			`INSERT INTO webhook_counters (webhook_key, outcome, count, updated_at) VALUES (?, ?, ?, ?)
+			 ON CONFLICT(webhook_key, outcome) DO UPDATE SET count = count + excluded.count, updated_at = excluded.updated_at`,
+			a.WebhookKey, a.Outcome, a.N, at.UnixNano()); err != nil {
+			return fmt.Errorf("webhook counters add: %w", err)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("webhook counters add commit: %w", err)
+	}
+	return nil
+}
+
+// WebhookCountersGet returns one webhook's counts by outcome.
+func (s *Store) WebhookCountersGet(ctx context.Context, webhookKey string) (map[string]int64, time.Time, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT outcome, count, updated_at FROM webhook_counters WHERE webhook_key = ?`, webhookKey)
+	if err != nil {
+		return nil, time.Time{}, fmt.Errorf("webhook counters get: %w", err)
+	}
+	defer rows.Close()
+	out := map[string]int64{}
+	var latest int64
+	for rows.Next() {
+		var outcome string
+		var n, at int64
+		if err := rows.Scan(&outcome, &n, &at); err != nil {
+			return nil, time.Time{}, fmt.Errorf("webhook counters get: %w", err)
+		}
+		out[outcome] = n
+		if at > latest {
+			latest = at
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, time.Time{}, fmt.Errorf("webhook counters get: %w", err)
+	}
+	if latest == 0 {
+		return out, time.Time{}, nil
+	}
+	return out, time.Unix(0, latest).UTC(), nil
 }
 
 // WebhookDeliveryRelease drops keys a claim took.

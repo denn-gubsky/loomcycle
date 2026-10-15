@@ -242,6 +242,9 @@ func CheckWebhookEvents(w Webhook) error {
 		}
 		return nil
 	}
+	if _, own := w.Metadata["webhook"]; own {
+		return fmt.Errorf("metadata may not hold the key \"webhook\" when events is set: the receiver puts the provider, the event and the delivery id there")
+	}
 	eff := w.WithProviderDefaults()
 	if eff.EventHeader == "" {
 		return fmt.Errorf("events needs the header that names a delivery's event: set event_header, or a provider (%s)", strings.Join(WebhookProviderNames(), ", "))

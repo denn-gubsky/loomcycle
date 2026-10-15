@@ -3992,6 +3992,57 @@ func (s *Store) WebhookDeliverySetRun(ctx context.Context, keys []string, runID 
 	return nil
 }
 
+// WebhookCountersAdd adds the increments in one transaction.
+func (s *Store) WebhookCountersAdd(ctx context.Context, adds []store.WebhookCounterAdd, at time.Time) error {
+	if len(adds) == 0 {
+		return nil
+	}
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("webhook counters add begin: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	for _, a := range adds {
+		if _, err := tx.Exec(ctx,
+			`INSERT INTO webhook_counters (webhook_key, outcome, count, updated_at) VALUES ($1, $2, $3, $4)
+			 ON CONFLICT (webhook_key, outcome) DO UPDATE SET count = webhook_counters.count + EXCLUDED.count, updated_at = EXCLUDED.updated_at`,
+			a.WebhookKey, a.Outcome, a.N, at.UTC()); err != nil {
+			return fmt.Errorf("webhook counters add: %w", err)
+		}
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("webhook counters add commit: %w", err)
+	}
+	return nil
+}
+
+// WebhookCountersGet returns one webhook's counts by outcome.
+func (s *Store) WebhookCountersGet(ctx context.Context, webhookKey string) (map[string]int64, time.Time, error) {
+	rows, err := s.pool.Query(ctx, `SELECT outcome, count, updated_at FROM webhook_counters WHERE webhook_key = $1`, webhookKey)
+	if err != nil {
+		return nil, time.Time{}, fmt.Errorf("webhook counters get: %w", err)
+	}
+	defer rows.Close()
+	out := map[string]int64{}
+	var latest time.Time
+	for rows.Next() {
+		var outcome string
+		var n int64
+		var at time.Time
+		if err := rows.Scan(&outcome, &n, &at); err != nil {
+			return nil, time.Time{}, fmt.Errorf("webhook counters get: %w", err)
+		}
+		out[outcome] = n
+		if at.After(latest) {
+			latest = at
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, time.Time{}, fmt.Errorf("webhook counters get: %w", err)
+	}
+	return out, latest.UTC(), nil
+}
+
 // WebhookDeliveryRelease drops keys a claim took.
 func (s *Store) WebhookDeliveryRelease(ctx context.Context, keys []string) error {
 	if len(keys) == 0 {

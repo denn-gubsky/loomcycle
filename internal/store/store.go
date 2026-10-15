@@ -286,6 +286,13 @@ func RunStatusFilter(statuses []RunStatus) []string {
 	return out
 }
 
+// WebhookCounterAdd is one increment of a webhook's count for an outcome.
+type WebhookCounterAdd struct {
+	WebhookKey string
+	Outcome    string
+	N          int64
+}
+
 // WebhookRetakeRunStatuses are the statuses of a run whose held webhook
 // delivery keys the next delivery of the same event takes over: the run did
 // not handle the event. A run that completed, was cancelled or was rejected
@@ -3601,6 +3608,15 @@ type Store interface {
 	WebhookDeliveryClaimRun(ctx context.Context, keys []string, now, expiresAt time.Time) (claimed bool, holder string, err error)
 	// WebhookDeliverySetRun records the run a claim's keys started.
 	WebhookDeliverySetRun(ctx context.Context, keys []string, runID string) error
+
+	// WebhookCountersAdd adds each increment to its webhook's count for that
+	// outcome, creating the row at need, in one transaction; at is the
+	// rows' updated_at. Keys are the receiver's per-webhook state keys
+	// (lookup.WebhookStateKey). Every replica adds to the same rows.
+	WebhookCountersAdd(ctx context.Context, adds []WebhookCounterAdd, at time.Time) error
+	// WebhookCountersGet returns one webhook's counts by outcome, and the
+	// latest time any of them was added to (zero when it has none).
+	WebhookCountersGet(ctx context.Context, webhookKey string) (map[string]int64, time.Time, error)
 
 	// ---- HookDef substrate ----
 	//

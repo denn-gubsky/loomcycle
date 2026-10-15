@@ -2258,6 +2258,9 @@ func main() {
 	//
 	// Registered BEFORE srv.Mux() below — the SetWebhookMux hook fires
 	// inside Mux(), same ordering constraint as SetExtraMux for A2A.
+	// webhookReceiver is kept for its counter writer, started below once
+	// bgCtx exists.
+	var webhookReceiver *webhookapi.Receiver
 	if cfg.Env.WebhooksEnabled && storeIface != nil && srv != nil {
 		// The receiver's secret/credential allowlist is the union of the
 		// explicit operator knobs (LOOMCYCLE_SCHEDULER_ENV_ALLOWLIST +
@@ -2280,6 +2283,7 @@ func main() {
 			AllowUnauthenticated: cfg.Env.WebhooksAllowUnauthenticated,
 			Logf:                 log.Printf,
 		})
+		webhookReceiver = rec
 		srv.SetWebhookMux(func(reg lchttp.MuxRegistrar, adminAuth func(http.Handler) http.Handler) {
 			// Receiver POST: unauthed (per-WebhookDef secret). Triage
 			// endpoints (recent-deliveries / test): admin-bearer gated.
@@ -2352,6 +2356,11 @@ func main() {
 	// goroutines to exit promptly on ctx.Done(); both are documented
 	// to do so in their packages.
 	bgCtx, bgCancel := context.WithCancel(context.Background())
+	// The webhook delivery counters: written every 30 seconds, and once more
+	// when bgCtx ends.
+	if webhookReceiver != nil {
+		go webhookReceiver.RunCounters(bgCtx)
+	}
 	defer bgCancel()
 
 	// v0.8.6 heartbeat runner — start AFTER bgCtx is available so

@@ -83,6 +83,9 @@ type Receiver struct {
 	recentMu sync.Mutex
 	recent   map[string]*recentRing
 
+	// counts are this replica's delivery counters not yet written (counters.go).
+	counts deliveryCounters
+
 	// now + getenv are injected so the timestamp-window, dedup-TTL,
 	// rate-limit refill, and secret-resolution paths are deterministic in
 	// tests. Production wiring uses time.Now + os.Getenv.
@@ -243,8 +246,9 @@ func (rec *Receiver) handle(w http.ResponseWriter, r *http.Request) {
 	//     claimed or started. Then the filters: a body that misses one is
 	//     answered 202 filtered, also claiming nothing.
 	dbody := &deliveryBody{raw: body}
-	if o := screenDelivery(wd, r.Header, dbody); !o.proceed {
-		rec.answerEvent(w, span, whKey, name, deliveryID(wd.Auth, body, r.Header.Get), o)
+	screened := screenDelivery(wd, r.Header, dbody)
+	if !screened.proceed {
+		rec.answerEvent(w, span, whKey, name, deliveryID(wd.Auth, body, r.Header.Get), screened)
 		return
 	}
 
@@ -312,7 +316,7 @@ func (rec *Receiver) handle(w http.ResponseWriter, r *http.Request) {
 	case "team":
 		rec.deliverTeam(ctx, w, span, name, whKey, did, dk, held, wd, proj, body)
 	case "spawn", "":
-		rec.deliverSpawn(ctx, w, span, name, whKey, did, dk, held, wd, proj, r)
+		rec.deliverSpawn(ctx, w, span, name, whKey, did, screened.event, dk, held, wd, proj, r)
 	default:
 		rec.releaseHeld(ctx, name, held)
 		rec.finish(span, whKey, did, "rejected_delivery", "")
@@ -469,7 +473,7 @@ func (rec *Receiver) deliverChannel(ctx context.Context, w http.ResponseWriter, 
 //
 // held is a dedup_key's claim, already taken: the run is recorded on it once
 // it registers, and a delivery that starts no run releases it.
-func (rec *Receiver) deliverSpawn(ctx context.Context, w http.ResponseWriter, span trace.Span, name, whKey, did string, dk deliveryKeys, held *heldKeys, wd config.Webhook, proj projectResult, r *http.Request) {
+func (rec *Receiver) deliverSpawn(ctx context.Context, w http.ResponseWriter, span trace.Span, name, whKey, did, event string, dk deliveryKeys, held *heldKeys, wd config.Webhook, proj projectResult, r *http.Request) {
 	if rec.runner == nil {
 		rec.releaseHeld(ctx, name, held)
 		rec.finish(span, whKey, did, "rejected_no_runner", "")
@@ -477,6 +481,10 @@ func (rec *Receiver) deliverSpawn(ctx context.Context, w http.ResponseWriter, sp
 		return
 	}
 	in := buildRunInput(wd, proj, rec.envAllowlist, rec.getenv, rec.logf)
+	// metadata.webhook: the provider, the event the signed body was checked
+	// against, and the delivery id (a label, not signed). Trusted, as the
+	// definition's own metadata is: none of it is read from the body.
+	in.Metadata = webhookRunMetadata(wd, event, did)
 
 	// user_tier is PINNED from the def (buildRunInput sets it from w.UserTier,
 	// never the payload — a signed sender can't pick the cost tier). It still
@@ -512,7 +520,7 @@ func (rec *Receiver) deliverSpawn(ctx context.Context, w http.ResponseWriter, sp
 		if existing, ok := rec.priorDeliveryRun(ctx, dk, did, wd); ok {
 			rec.setHeldRun(name, held, existing.ID)
 			rec.dedup.recordDuplicate(dk)
-			rec.finish(span, whKey, did, verdictAccepted, existing.ID)
+			rec.finish(span, whKey, did, verdictAcceptedReplay, existing.ID)
 			writeJSON(w, http.StatusAccepted, map[string]string{
 				"webhook_name": name,
 				"delivery_id":  did,
@@ -655,7 +663,7 @@ func (rec *Receiver) spawnAsync(w http.ResponseWriter, span trace.Span, name, wh
 				if existing, ok, lerr := rec.store.RunByDeliveryKeys(context.Background(), []string{dk.key, dk.alt}); lerr == nil && ok {
 					rec.setHeldRun(name, held, existing.ID)
 					rec.dedup.recordDuplicate(dk)
-					rec.finish(span, whKey, did, verdictAccepted, existing.ID)
+					rec.finish(span, whKey, did, verdictAcceptedReplay, existing.ID)
 					writeJSON(w, http.StatusAccepted, map[string]string{
 						"webhook_name": name,
 						"delivery_id":  did,
@@ -669,7 +677,7 @@ func (rec *Receiver) spawnAsync(w http.ResponseWriter, span trace.Span, name, wh
 			// still accepted — the delivery was handled by the racing
 			// request. Record so a retry doesn't re-spawn.
 			rec.dedup.recordDuplicate(dk)
-			rec.finish(span, whKey, did, verdictAccepted, "")
+			rec.finish(span, whKey, did, verdictAcceptedReplay, "")
 			writeJSON(w, http.StatusAccepted, map[string]string{
 				"webhook_name": name,
 				"delivery_id":  did,
@@ -837,6 +845,9 @@ func (rec *Receiver) finish(s trace.Span, whKey, did, verdict, runID string) {
 		s.SetStatus(codes.Error, verdict)
 	}
 	rec.recordDelivery(whKey, did, verdict, runID)
+	if whKey != "" {
+		rec.counts.add(whKey, counterOutcome(verdict), 1)
+	}
 }
 
 // --- HTTP response helpers ---

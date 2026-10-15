@@ -5294,6 +5294,23 @@ export interface WebhookDefRowResponse {
   /** Same meaning as on {@link ScheduleDefRowResponse}. */
   disabled_until_credentials_supplied?: string[];
   unusable_credentials?: string[];
+  /** `get` only: how the webhook's deliveries were answered. */
+  status?: WebhookDefStatus;
+}
+
+/** How a webhook's deliveries were answered, on `webhookDef({op: "get"})`.
+ *  The counts belong to the webhook (its name in its tenant), not to one
+ *  version; every replica's are added every 30 seconds, so they are up to
+ *  that far behind. */
+export interface WebhookDefStatus {
+  /** Outcome → count: `accepted`, `ping`, `ignored`, `filtered`,
+   *  `duplicate`, and `refused.<reason>` (`signature`, `event`, `shape`,
+   *  `body`, `rate`, `other`). */
+  counters?: Record<string, number>;
+  /** When the counts were last added to (RFC 3339). */
+  counters_updated_at?: string;
+  /** Set when the counts could not be read; the get still succeeds. */
+  counters_error?: string;
 }
 
 /** Typed input for {@link LoomcycleClient.webhookDef}, one shape per op. */
