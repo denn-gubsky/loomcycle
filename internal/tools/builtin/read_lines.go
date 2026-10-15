@@ -16,6 +16,11 @@ import (
 // count its lines when Read.MaxScanBytes is unset.
 const defaultReadScanBytes = 64 << 20
 
+// defaultReadSeekBytes is how far a line-range read goes to reach its first
+// line when Read.MaxSeekBytes is unset. Without it an offset past the end of
+// a multi-gigabyte file read the whole file on every call.
+const defaultReadSeekBytes = 1 << 30
+
 // readBinarySniffBytes is the prefix checked for a NUL byte, the same test
 // Grep uses to skip a binary file.
 const readBinarySniffBytes = 8 * 1024
@@ -28,6 +33,7 @@ type lineWindow struct {
 	numbers  bool  // prefix each line with its number
 	maxBytes int64 // limit on the returned lines
 	maxScan  int64 // limit on bytes read to count lines; 0 = default
+	maxSeek  int64 // limit on bytes read to reach offset; 0 = default
 }
 
 // readLines returns the requested lines of r, whole lines only, followed by
@@ -37,11 +43,18 @@ type lineWindow struct {
 // The file is streamed, never held whole: the lines before the window are
 // counted and dropped, the window is kept up to maxBytes, and the rest is
 // counted so the status line can give the total. The scan limit stops only
-// that last count: it never stops the read before the window is reached.
+// that last count; the seek limit stops the way to the window, and by
+// default is far larger, so a range past the scan limit is still returned.
+// Both, and ctx, are checked inside a line as well as between lines, so one
+// long line with no newline cannot get past them.
 func readLines(ctx context.Context, r io.Reader, w lineWindow) tools.Result {
 	maxScan := w.maxScan
 	if maxScan <= 0 {
 		maxScan = defaultReadScanBytes
+	}
+	maxSeek := w.maxSeek
+	if maxSeek <= 0 {
+		maxSeek = defaultReadSeekBytes
 	}
 	br := bufio.NewReaderSize(r, 64*1024)
 	if head, _ := br.Peek(readBinarySniffBytes); bytes.IndexByte(head, 0) >= 0 {
@@ -57,6 +70,7 @@ func readLines(ctx context.Context, r io.Reader, w lineWindow) tools.Result {
 		next     int   // offset to continue from when cut; 0 = not cut
 		scanned  int64 // bytes read
 		scanCut  bool  // stopped counting at maxScan
+		seekCut  bool  // stopped short of the window at maxSeek
 		longNote string
 	)
 	// The window is compared as a distance from offset, never as
@@ -66,9 +80,6 @@ func readLines(ctx context.Context, r io.Reader, w lineWindow) tools.Result {
 	}
 
 	for {
-		if err := ctx.Err(); err != nil {
-			return tools.Result{Text: err.Error(), IsError: true}
-		}
 		// One line, possibly in several pieces when it is longer than the
 		// reader's buffer. Only a line inside the window is kept, and only up
 		// to the byte limit; its full length is still counted.
@@ -76,9 +87,25 @@ func readLines(ctx context.Context, r io.Reader, w lineWindow) tools.Result {
 			kept    []byte
 			lineLen int64
 			keep    = wanted(lineNo + 1)
+			before  = lineNo+1 < w.offset // still on the way to the window
 			eof     bool
+			stopped bool
 		)
+		// A line that is not kept is either before the window or after it
+		// (the window is done): the first is bounded by maxSeek, the second
+		// by maxScan.
+		stopAt := maxScan
+		if before {
+			stopAt = maxSeek
+		}
 		for {
+			if err := ctx.Err(); err != nil {
+				return tools.Result{Text: err.Error(), IsError: true}
+			}
+			if !keep && scanned >= stopAt {
+				stopped = true
+				break
+			}
 			piece, err := br.ReadSlice('\n')
 			lineLen += int64(len(piece))
 			scanned += int64(len(piece))
@@ -93,6 +120,15 @@ func readLines(ctx context.Context, r io.Reader, w lineWindow) tools.Result {
 					return tools.Result{Text: err.Error(), IsError: true}
 				}
 				eof = true
+			}
+			break
+		}
+		if stopped {
+			// The line in hand is not counted: it was not read to its end.
+			if before {
+				seekCut = true
+			} else {
+				scanCut = true
 			}
 			break
 		}
@@ -136,16 +172,14 @@ func readLines(ctx context.Context, r io.Reader, w lineWindow) tools.Result {
 		if eof {
 			break
 		}
-		windowDone := next != 0 || (w.limit != 0 && lineNo-w.offset >= w.limit-1)
-		if windowDone && scanned >= maxScan {
-			scanCut = true
-			break
-		}
 	}
 
 	total := fmt.Sprintf("%d", lineNo)
-	if scanCut {
+	if scanCut || seekCut {
 		total = fmt.Sprintf("more than %d", lineNo)
+	}
+	if seekCut {
+		return tools.Result{Text: fmt.Sprintf("[no lines: line %d is past the first %d bytes of the file, which is as far as Read goes to find a line; the file has %s lines]\n", w.offset, maxSeek, total)}
 	}
 	if first == 0 {
 		return tools.Result{Text: fmt.Sprintf("[no lines: the file has %s lines]\n", total)}
