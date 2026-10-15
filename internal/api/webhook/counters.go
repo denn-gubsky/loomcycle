@@ -105,9 +105,13 @@ func (rec *Receiver) flushCounters(ctx context.Context) {
 }
 
 // webhookDeliveryIDRe is what a delivery id may be to reach the run as
-// metadata.webhook.delivery_id: a short identifier. It is not signed — a label,
-// never proof of anything.
-var webhookDeliveryIDRe = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$`)
+// metadata.webhook.delivery_id: a UUID (GitHub, Gitea and GitLab send one), a
+// hex digest — the body-hash fallback is "sha256:<hex>" — or a number. It
+// comes from an unsigned header and the run reads its metadata as trusted, so
+// it is held to forms that cannot spell an instruction; anything else, a
+// "short identifier" of letters included, is left out. A label, never proof
+// of anything.
+var webhookDeliveryIDRe = regexp.MustCompile(`^(?:[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}|(?:sha256:)?[0-9a-fA-F]{1,64}|[0-9]{1,20})$`)
 
 // webhookRunMetadata returns the run's metadata with metadata.webhook added:
 // the provider, the event (only once the signed body had its shape), and the
