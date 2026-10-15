@@ -76,7 +76,9 @@ answers 429.
   models in flight) reports `call_queued` (`admission.reason` `lane` or
   `models_in_flight`, `admission.position`, `admission.provider`,
   `admission.kind`) and then `call_admitted` (`admission.wait_ms`), on
-  the stream and in the transcript.
+  the stream and in the transcript. That includes a decision or an
+  embedding one of its tools makes (`kind` `decision` / `embedder`);
+  background work started from the run does not report on it.
 - A single-run read (HTTP GET /v1/runs/{run_id} or /v1/agents/{agent_id}, gRPC GetRun, MCP `get_run`)
   reports `status: "queued"`, `queue_position` and `queue_reason` while
   it waits. For `user_cap` the position counts only that user's waiting

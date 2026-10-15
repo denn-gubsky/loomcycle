@@ -144,7 +144,9 @@ Once a run is running, a model call that has to wait for its provider
 puts a `call_queued` frame on the stream — `admission.reason` (`lane` |
 `models_in_flight`), `admission.position`, `admission.provider` and
 `admission.kind` — then `call_admitted` (`admission.wait_ms`, with the
-same provider and kind) when it gets its slot.
+same provider and kind) when it gets its slot. A decision or an embedding
+one of the run's tools makes reports the same way (`kind` `decision` /
+`embedder`).
 
 Real provider events follow: `text`, `tool_use`, `tool_result`,
 `usage`, `retry`, `done`, `error`. Stream completion comes via either
