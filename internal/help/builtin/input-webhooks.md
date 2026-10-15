@@ -592,13 +592,19 @@ mcp_servers:            # operator config
   and is resolved for each MCP request, for that server's URL — as a `$cred:`
   value in `user_credentials` is. So a credential restricted by
   `allowed_urls` works, and is sent only where it is allowed to go.
-- **Resolved in the run's tenant,** for the definition's agent, then the
-  run's user, then the tenant: the most specific credential of that name
-  wins. It comes from the definition only — a delivery never sets it.
+- **A tenant-level credential of the run's tenant,** never a user's or an
+  agent's. The run's user may come from the delivery, and neither it nor
+  the agent making the call wrote the definition: at their scope a
+  same-named personal credential would be sent instead. It comes from the
+  definition only — a delivery never sets it.
+- **Sent only where a header asks for it.** An MCP server whose headers do
+  not use `${run.user_bearer}` or `${run.credentials.default}` never
+  resolves it, so a credential restricted to one server does not refuse
+  calls to the others.
 - **A literal bearer is refused** when the definition is written. Written
-  with `WebhookDef`, the credential must already exist for the definition's
-  agent or the author's tenant; an author with no tenant may not set one. An
-  operator is not checked, so the credential may come later.
+  with `WebhookDef`, the credential must already exist at tenant level in
+  the author's tenant; an author with no tenant may not set one. An operator
+  is not checked, so the credential may come later.
 - A snapshot keeps the reference, never a value.
 
 **Channel-delivery** webhooks carry **no** credentials — a channel publish

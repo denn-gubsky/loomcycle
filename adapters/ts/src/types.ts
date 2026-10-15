@@ -5068,8 +5068,10 @@ export interface ScheduleDefOverlay {
   user_credentials_from_env?: Record<string, string>;
   /** The fired run's bearer — what `${run.user_bearer}` in an MCP server's
    *  headers becomes. Only a stored credential, `"$cred:<name>"`: resolved
-   *  for each MCP request, for that server's URL, so a credential restricted
-   *  by `allowed_urls` works. Refused on delivery `channel` or `team`. */
+   *  for each MCP request, for that server's URL, as a tenant-level
+   *  credential of the run's tenant (never a user's or an agent's), so a
+   *  credential restricted by `allowed_urls` works. Refused on delivery
+   *  `channel` or `team`. */
   user_bearer?: string;
   on_complete?: ScheduledRunHook[];
   /** Non-secret metadata the agent receives as trusted. */
@@ -5207,8 +5209,10 @@ export interface WebhookDefOverlay {
   user_credentials?: Record<string, string>;
   /** The started run's bearer — what `${run.user_bearer}` in an MCP server's
    *  headers becomes. Only a stored credential, `"$cred:<name>"`: resolved
-   *  for each MCP request, for that server's URL, so a credential restricted
-   *  by `allowed_urls` works. Refused on delivery `channel` or `team`. */
+   *  for each MCP request, for that server's URL, as a tenant-level
+   *  credential of the run's tenant (never a user's or an agent's), so a
+   *  credential restricted by `allowed_urls` works. Refused on delivery
+   *  `channel` or `team`. */
   user_bearer?: string;
   /** Pins the started run's user tier; a delivery never chooses it. Must be
    *  one of the server's user tiers. */

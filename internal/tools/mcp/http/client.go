@@ -25,6 +25,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/denn-gubsky/loomcycle/internal/credential"
 	"github.com/denn-gubsky/loomcycle/internal/netguard"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
 	"github.com/denn-gubsky/loomcycle/internal/tools/mcp"
@@ -282,13 +283,17 @@ func (c *Client) do(ctx context.Context, body []byte) (*http.Response, error) {
 	// refusal below is what actually protects the request that carries data.
 	runIdent := tools.RunIdentity(ctx)
 	refuseUnresolved := tools.HasRunIdentity(ctx)
+	bearer, runCreds, err := c.runBearer(ctx, runIdent)
+	if err != nil {
+		return nil, err
+	}
 	for k, v := range c.headers {
 		// Two-pass substitution: legacy ${run.user_bearer} first
 		// (v0.8.x single-bearer form), then RFC F ${run.credentials.<n>}.
 		// Both are no-ops when their token isn't present; ordering
 		// preserves v0.8.x behaviour bit-for-bit when only the legacy
 		// form is in play.
-		subV, drop := substituteRunVars(v, runIdent.UserBearer)
+		subV, drop := substituteRunVars(v, bearer)
 		if drop {
 			// The log carries the operator's triage detail (which server, which
 			// run); the returned error does not — that one is model-visible.
@@ -299,7 +304,7 @@ func (c *Client) do(ctx context.Context, body []byte) (*http.Response, error) {
 			}
 			continue
 		}
-		subV, credDrop, missingCreds := substituteCredentialRefs(subV, runIdent.UserCredentials)
+		subV, credDrop, missingCreds := substituteCredentialRefs(subV, runCreds)
 		if credDrop {
 			log.Printf("mcp http: ${run.credentials.<name>} unresolved for header %q on %q (agent_id=%s, missing=%v); %s",
 				k, c.url, runIdent.AgentID, missingCreds, unresolvedAction(refuseUnresolved))
@@ -350,6 +355,69 @@ func (c *Client) do(ctx context.Context, body []byte) (*http.Response, error) {
 		req.Header.Set(sessionHeader, sid)
 	}
 	return c.http.Do(req)
+}
+
+// runBearer returns the run's bearer as this request sends it, and its
+// credentials map with the bearer's "default" copy to match.
+//
+// A webhook's or a schedule's user_bearer is a stored credential reference,
+// "$cred:<name>", carried into the run unopened. It is resolved here, for
+// this server's URL, and at TENANT level only: the definition's author named
+// it, and the run's user and its calling agent are not the author — at the
+// run's user scope a same-named personal credential would shadow the
+// tenant's, so a schedule written with someone's user_id, or a webhook whose
+// user_id comes from the delivery, would send that person's token. It is
+// therefore resolved on its own, apart from any $cred: the operator wrote in
+// the header, which keeps resolving for the run's full identity.
+func (c *Client) runBearer(ctx context.Context, ident tools.RunIdentityValue) (string, map[string]string, error) {
+	bearer, creds := ident.UserBearer, ident.UserCredentials
+	if _, isRef := credential.ParseRef(bearer); !isRef || !c.headersUseBearer() {
+		// Not a reference, or no header sends it: a server the bearer is not
+		// for must not have its calls refused over the bearer's URL list.
+		return bearer, creds, nil
+	}
+	if c.credSubstitute == nil {
+		log.Printf("mcp http: the run's bearer is a stored credential and %q resolves none (agent_id=%s); refusing", c.url, ident.AgentID)
+		return "", nil, fmt.Errorf("this run's bearer is a stored credential, which this server cannot resolve: %w", tools.ErrRunCredentialUnavailable)
+	}
+	tenantOnly := ident
+	tenantOnly.UserID = ""
+	tctx := tools.WithAgentName(tools.WithRunIdentity(ctx, tenantOnly), "")
+	v, unresolved, err := c.credSubstitute(tctx, bearer, c.url)
+	if err != nil || len(unresolved) > 0 {
+		log.Printf("mcp http: the run's stored bearer did not resolve for %q (agent_id=%s): err=%v unresolved=%v", c.url, ident.AgentID, err, unresolved)
+		return "", nil, fmt.Errorf("this run's bearer is a stored credential that could not be resolved: %w", tools.ErrRunCredentialUnavailable)
+	}
+	// The header is resolved again for the operator's own $cred: tokens; a
+	// value that itself spelled one would be resolved for the run's user.
+	if len(credential.RefNames(v)) > 0 || len(credential.GHAppRefNames(v)) > 0 {
+		return "", nil, fmt.Errorf("this run's stored bearer holds a credential reference, which is refused: %w", tools.ErrRunCredentialUnavailable)
+	}
+	if creds["default"] == bearer {
+		out := make(map[string]string, len(creds))
+		for k, cv := range creds {
+			out[k] = cv
+		}
+		out["default"] = v
+		creds = out
+	}
+	return v, creds, nil
+}
+
+// headersUseBearer reports whether a header of this server sends the run's
+// bearer: ${run.user_bearer}, or ${run.credentials.default}, its copy.
+func (c *Client) headersUseBearer() bool {
+	for _, v := range c.headers {
+		if runBearerRe.MatchString(v) {
+			return true
+		}
+		for _, m := range runCredRe.FindAllStringSubmatch(v, -1) {
+			if m[1] == "default" {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func truncate(s string, n int) string {

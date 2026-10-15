@@ -370,12 +370,17 @@ user_bearer: "$cred:reports-mcp-token"
   and is resolved for each MCP request, for that server's URL — as a
   `$cred:` value in `user_credentials` is. So a credential restricted by
   `allowed_urls` works, and is sent only where it is allowed to go.
-- **Resolved in the run's tenant,** for the schedule's `agent`, then its
-  `user_id`, then the tenant: the most specific credential of that name wins.
+- **A tenant-level credential of the run's tenant,** never `user_id`'s or an
+  agent's: whoever wrote the schedule need not be its `user_id`, and at that
+  user's scope a same-named personal credential would be sent instead. (A
+  `$cred:` value in `user_credentials` still resolves for the run's user, as
+  before.)
+- **Sent only where a header asks for it**: an MCP server whose headers do
+  not use the bearer never resolves it.
 - **A literal bearer is refused** when the schedule is written. Written with
-  `ScheduleDef`, the credential must already exist for the schedule's agent,
-  its `user_id` or the author's tenant; an author with no tenant may not set
-  one. An operator is not checked, so the credential may come later.
+  `ScheduleDef`, the credential must already exist at tenant level in the
+  author's tenant; an author with no tenant may not set one. An operator is
+  not checked, so the credential may come later.
 - **Refused on `delivery: channel` and `delivery: team`**: it authorizes one
   agent run.
 - A consolidation schedule that fans out into other tenants drops it for
