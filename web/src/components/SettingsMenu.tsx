@@ -7,6 +7,7 @@ import {
   Gauge,
   HeartPulse,
   KeyRound,
+  Layers,
   LogOut,
   type LucideIcon,
   Network,
@@ -37,6 +38,7 @@ const SECTION_ICONS: Record<Section, LucideIcon> = {
   tokens: Ticket,
   presets: Package,
   runtime: Power,
+  lanes: Layers,
   maintenance: Wrench,
   health: HeartPulse,
 };

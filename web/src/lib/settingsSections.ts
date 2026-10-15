@@ -17,6 +17,7 @@ export type Section =
   | "tokens"
   | "presets"
   | "runtime"
+  | "lanes"
   | "maintenance"
   | "health";
 
@@ -49,12 +50,13 @@ export const SECTIONS: SectionDef[] = [
   { id: "retention", label: "Retention", vis: "tenant" },
   { id: "erasure", label: "Erasure", vis: "tenant" },
   // ScopeAdmin: token minting has no tenant axis and is deliberately excluded from
-  // the tenant-confined def set; presets/runtime/health fall through to the /v1/_*
-  // catch-all; and repair-tenant is explicitly admin because it rewrites rows across
-  // every scope in one statement.
+  // the tenant-confined def set; presets/runtime/lanes/health fall through to the
+  // /v1/_* catch-all; and repair-tenant is explicitly admin because it rewrites rows
+  // across every scope in one statement.
   { id: "tokens", label: "Tokens", vis: "admin" },
   { id: "presets", label: "Presets", vis: "admin" },
   { id: "runtime", label: "Runtime", vis: "admin" },
+  { id: "lanes", label: "Lanes", vis: "admin" },
   { id: "maintenance", label: "Maintenance", vis: "admin" },
   { id: "health", label: "Health", vis: "admin" },
 ];
