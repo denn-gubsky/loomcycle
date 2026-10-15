@@ -5,8 +5,6 @@ import (
 	"regexp"
 	"sort"
 	"strings"
-
-	"github.com/denn-gubsky/loomcycle/internal/jsonpath"
 )
 
 // A forge sends every kind of event to one webhook URL and signs the body,
@@ -41,20 +39,31 @@ type WebhookProvider struct {
 	canonical func(string) string
 }
 
-// A shape is a set of paths a body must hold, so it can tell an event apart
-// only from events whose bodies lack one of them: a body of ANY other event
-// — listed or not — that holds them all passes as this one. A preset
-// therefore gives a shape only to an event no other event's body is known to
-// hold. GitHub's issues is not among them (an issue_comment body holds every
-// path an issues body does), nor create and delete (the same paths), nor, on
-// Gitea, pull_request (its review events send the same body). Such an event
+// A shape (webhook_shapes.go) tells an event apart only from events whose
+// bodies break one of its rules: a body of ANY other event — listed or not —
+// that meets them all passes as this one. A preset therefore gives a shape
+// only to an event whose rules no other event's body is known to meet. Where
+// one event's body holds all of another's paths, a rule that the body must
+// NOT hold a path, or that a field has a value, keeps them apart:
+//
+//   - GitHub's issue_comment body holds every path of issues: issues needs
+//     !$.comment. A create body holds every path of delete: delete needs
+//     !$.master_branch.
+//   - Gitea sends a comment on a pull request as pull_request_comment and one
+//     on an issue as issue_comment, with one body that differs in is_pull.
+//   - GitLab names every event in object_kind, except that its Issue Hook
+//     carries work items too (object_kind work_item): issue is told from a
+//     merge request, whose body holds all its paths, by !last_commit.
+//
+// Still without a preset: Gitea's issues (issue_assign, issue_label and
+// issue_milestone send the same body, told apart only by action values) and
+// Gitea's pull_request (its review events send the same body). Such an event
 // can still be listed, with a shape of the author's own in event_shapes.
 //
-// Paths shared by GitHub and Gitea, whose payloads Gitea models on GitHub's.
+// Rules shared by GitHub and Gitea, whose payloads Gitea models on GitHub's.
 var githubLikeShapes = map[string][]string{
-	"push":          {"$.ref", "$.before", "$.after", "$.repository.id"},
-	"issue_comment": {"$.action", "$.issue.number", "$.comment.id", "$.repository.id"},
-	"release":       {"$.action", "$.release.id", "$.repository.id"},
+	"push":    {"$.ref", "$.before", "$.after", "$.repository.id"},
+	"release": {"$.action", "$.release.id", "$.repository.id"},
 }
 
 var webhookProviders = map[string]WebhookProvider{
@@ -63,6 +72,10 @@ var webhookProviders = map[string]WebhookProvider{
 		EventHeader: "X-GitHub-Event", DeliveryIDHeader: "X-GitHub-Delivery",
 		PingEvent: "ping",
 		Shapes: mergeShapes(githubLikeShapes, map[string][]string{
+			"issues":                      {"$.action", "$.issue.number", "$.repository.id", "!$.comment"},
+			"issue_comment":               {"$.action", "$.issue.number", "$.comment.id", "$.repository.id"},
+			"create":                      {"$.ref", "$.ref_type", "$.master_branch", "$.repository.id"},
+			"delete":                      {"$.ref", "$.ref_type", "$.pusher_type", "$.repository.id", "!$.master_branch"},
 			"pull_request":                {"$.action", "$.number", "$.pull_request.head.sha", "$.repository.id"},
 			"pull_request_review":         {"$.action", "$.review.id", "$.pull_request.number", "$.repository.id"},
 			"pull_request_review_comment": {"$.action", "$.comment.id", "$.pull_request.number", "$.repository.id"},
@@ -72,7 +85,14 @@ var webhookProviders = map[string]WebhookProvider{
 	"gitea": {
 		AuthKind: "hmac", SignatureHeader: "X-Gitea-Signature",
 		EventHeader: "X-Gitea-Event", DeliveryIDHeader: "X-Gitea-Delivery",
-		Shapes: githubLikeShapes,
+		Shapes: mergeShapes(githubLikeShapes, map[string][]string{
+			"issue_comment":        {"$.action", "$.issue.number", "$.comment.id", "$.repository.id", "$.is_pull == false"},
+			"pull_request_comment": {"$.action", "$.issue.number", "$.comment.id", "$.repository.id", "$.is_pull == true"},
+			// Gitea's create carries the new ref's sha and its delete the
+			// pusher_type; neither carries the other's.
+			"create": {"$.ref", "$.ref_type", "$.sha", "$.repository.id"},
+			"delete": {"$.ref", "$.ref_type", "$.pusher_type", "$.repository.id"},
+		}),
 	},
 	"gitlab": {
 		// A shared token sent in the clear inside TLS, not a signature: the
@@ -81,12 +101,15 @@ var webhookProviders = map[string]WebhookProvider{
 		AuthKind: "bearer", SignatureHeader: "X-Gitlab-Token",
 		EventHeader: "X-Gitlab-Event", DeliveryIDHeader: "X-Gitlab-Event-UUID",
 		Shapes: map[string][]string{
-			"push":          {"$.object_kind", "$.ref", "$.before", "$.after", "$.project.id"},
-			"tag_push":      {"$.object_kind", "$.ref", "$.before", "$.after", "$.project.id"},
-			"merge_request": {"$.object_kind", "$.object_attributes.iid", "$.object_attributes.last_commit.id", "$.project.id"},
-			"note":          {"$.object_kind", "$.object_attributes.id", "$.project.id"},
-			"issue":         {"$.object_kind", "$.object_attributes.iid", "$.project.id"},
-			"pipeline":      {"$.object_kind", "$.object_attributes.id", "$.project.id"},
+			"push":          {`$.object_kind == "push"`, "$.ref", "$.before", "$.after", "$.project.id"},
+			"tag_push":      {`$.object_kind == "tag_push"`, "$.ref", "$.before", "$.after", "$.project.id"},
+			"merge_request": {`$.object_kind == "merge_request"`, "$.object_attributes.iid", "$.object_attributes.last_commit.id", "$.project.id"},
+			"note":          {`$.object_kind == "note"`, "$.object_attributes.id", "$.project.id"},
+			// Not object_kind == "issue": the Issue Hook also carries work
+			// items, as object_kind work_item. A merge request's body holds
+			// every other path, and always its last commit.
+			"issue": {"$.object_kind", "$.object_attributes.iid", "$.project.id", "!$.object_attributes.last_commit"},
+			"pipeline":      {`$.object_kind == "pipeline"`, "$.object_attributes.id", "$.project.id"},
 		},
 		// "Push Hook" → push, "Merge Request Hook" → merge_request.
 		canonical: func(v string) string {
@@ -160,7 +183,7 @@ func (w Webhook) IsPingEvent(event string) bool {
 	return ok && p.PingEvent != "" && event == p.PingEvent
 }
 
-// EventShape returns the paths the body of event must hold: the
+// EventShape returns the rules the body of event must meet: the
 // definition's own event_shapes entry, else its provider's.
 func (w Webhook) EventShape(event string) ([]string, bool) {
 	if s, ok := w.EventShapes[event]; ok {
@@ -240,7 +263,7 @@ func CheckWebhookEvents(w Webhook) error {
 		}
 		if _, ok := w.EventShape(e); !ok {
 			return fmt.Errorf("events lists %q, which has no shape: the event header is not signed, so an event counts only when the signed body has its shape. "+
-				"Give it one in event_shapes (the JSONPaths its body always holds)", e)
+				"Give it one in event_shapes (the JSONPaths its body always holds; !path for one it never holds; path == value for a field's value)", e)
 		}
 	}
 	names := make([]string, 0, len(w.EventShapes))
@@ -252,18 +275,12 @@ func CheckWebhookEvents(w Webhook) error {
 		if !seen[e] {
 			return fmt.Errorf("event_shapes[%q] is not one of events", e)
 		}
-		paths := w.EventShapes[e]
-		if len(paths) == 0 || len(paths) > maxWebhookShapePaths {
-			return fmt.Errorf("event_shapes[%q] needs 1 to %d paths", e, maxWebhookShapePaths)
+		rules := w.EventShapes[e]
+		if len(rules) == 0 || len(rules) > maxWebhookShapePaths {
+			return fmt.Errorf("event_shapes[%q] needs 1 to %d rules", e, maxWebhookShapePaths)
 		}
-		for _, p := range paths {
-			segs, err := jsonpath.Parse(p)
-			if err != nil {
-				return fmt.Errorf("event_shapes[%q]: %q is not a supported JSONPath ($, .key and [N] only): %v", e, p, err)
-			}
-			if len(segs) == 0 {
-				return fmt.Errorf("event_shapes[%q]: %q names the whole body, which every delivery has", e, p)
-			}
+		if err := checkShape(rules); err != nil {
+			return fmt.Errorf("event_shapes[%q]: %w", e, err)
 		}
 	}
 	return nil

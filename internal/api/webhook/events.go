@@ -6,7 +6,6 @@ import (
 	"go.opentelemetry.io/otel/trace"
 
 	"github.com/denn-gubsky/loomcycle/internal/config"
-	"github.com/denn-gubsky/loomcycle/internal/jsonpath"
 )
 
 // Verdicts of the event check. ping and ignored are answers, not refusals:
@@ -85,14 +84,8 @@ func classifyEvent(wd config.Webhook, header http.Header, b *deliveryBody) event
 		// nothing on the unsigned header alone.
 		return eventOutcome{status: http.StatusBadRequest, verdict: verdictRejectedShape, code: "event_shape_mismatch", event: event}
 	}
-	for _, path := range shape {
-		segs, err := jsonpath.Parse(path)
-		if err != nil {
-			return eventOutcome{status: http.StatusBadRequest, verdict: verdictRejectedShape, code: "event_shape_mismatch", event: event}
-		}
-		if v, ok := jsonpath.Eval(doc, segs); !ok || v == nil {
-			return eventOutcome{status: http.StatusBadRequest, verdict: verdictRejectedShape, code: "event_shape_mismatch", event: event}
-		}
+	if !config.ShapeHolds(shape, doc) {
+		return eventOutcome{status: http.StatusBadRequest, verdict: verdictRejectedShape, code: "event_shape_mismatch", event: event}
 	}
 	return eventOutcome{proceed: true, event: event}
 }

@@ -217,7 +217,7 @@ webhooks:
 | no event header, two, or one that is not a short plain name | `400 bad_event` |
 | the provider's ping (GitHub `ping`) | `200 {"outcome":"ping"}`, no run |
 | an event not in `events` | `202 {"outcome":"ignored"}`, no run |
-| a listed event whose body lacks a path of its shape | `400 event_shape_mismatch` |
+| a listed event whose body breaks a rule of its shape | `400 event_shape_mismatch` |
 | a listed event whose body fits | handled as any delivery |
 
 - **`provider`** is a set of defaults, applied when a delivery arrives;
@@ -234,14 +234,26 @@ webhooks:
   `Push Hook` is listed as `push`, `Merge Request Hook` as `merge_request`.
 - **Shapes.** The event header is not signed: whoever holds one signed body
   can send it again under any event name. So a listed event counts only
-  when the signed body has that event's shape — the JSONPaths its body
-  always holds; a push body sent as `pull_request` is refused. `github` has
-  shapes for `push`, `pull_request`, `issue_comment`, `release`,
-  `pull_request_review`, `pull_request_review_comment` and `workflow_run`;
-  `gitea` for `push`, `issue_comment` and `release`; `gitlab` for `push`,
-  `tag_push`, `merge_request`, `note`, `issue` and `pipeline`. Any other
-  event needs its own, and every listed event must have one or the
-  definition is refused:
+  when the signed body has that event's shape; a push body sent as
+  `pull_request` is refused. A shape is a list of rules, each in one of
+  three forms:
+
+  | Rule | The body must |
+  |---|---|
+  | `$.comment.id` | hold the path, with a value that is not `null` |
+  | `!$.comment` | not hold it: missing, or `null` |
+  | `$.object_kind == "push"` | hold it, equal to a JSON string, number or boolean; typed, so `"3"` is not `3`, and a string is quoted |
+
+  At least one rule must say what the body holds: absences alone fit almost
+  any body. There is no other operator and no combining.
+
+  `github` has shapes for `push`, `pull_request`, `issues`,
+  `issue_comment`, `create`, `delete`, `release`, `pull_request_review`,
+  `pull_request_review_comment` and `workflow_run`; `gitea` for `push`,
+  `issue_comment`, `pull_request_comment`, `create`, `delete` and
+  `release`; `gitlab` for `push`, `tag_push`, `merge_request`, `note`,
+  `issue` and `pipeline`. Any other event needs its own, and every listed
+  event must have one or the definition is refused:
 
   ```yaml
   events: [push, star]
@@ -249,13 +261,17 @@ webhooks:
     star: ["$.action", "$.starred_at", "$.repository.id"]
   ```
 
-  **The limit.** A shape lets through any signed body that holds its paths,
-  whatever event it came from — listed or not. That is why the presets give
-  none to GitHub's `issues` (an `issue_comment` body holds every path an
-  `issues` body does) or to `create` and `delete` (the same paths), nor to
-  Gitea's `pull_request` (its review events send the same body). Before
-  you give one of your own, check that no other event's body holds all its
-  paths: a captured signed body of that event, re-sent under your event's
+  **The limit.** A shape lets through any signed body that meets its
+  rules, whatever event it came from — listed or not. Where one event's
+  body holds every path of another's, an absence or a value tells them
+  apart: GitHub's `issues` needs `!$.comment` (an `issue_comment` body
+  holds all its paths), its `delete` needs `!$.master_branch` (a `create`
+  body does), Gitea's comments differ only in `is_pull`, and GitLab names
+  each event in `object_kind`. The presets still give none to Gitea's
+  `issues` (`issue_label`, `issue_assign` and `issue_milestone` send the
+  same body) or its `pull_request` (its review events do). Before you give
+  a shape of your own, check that no other event's body meets all its
+  rules: a captured signed body of that event, re-sent under your event's
   name, would pass. For GitLab, which signs nothing, the token is the only
   check and a shape only confirms the body is what the header says.
 - **Without a provider**, set `event_header` and give every event a shape.

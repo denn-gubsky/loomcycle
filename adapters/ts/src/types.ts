@@ -5200,9 +5200,12 @@ export interface WebhookDefOverlay {
    *  `ignored`, the provider's ping 200, and a listed event counts only when
    *  the signed body has its shape. Unset: every delivery is handled. */
   events?: string[];
-  /** The JSONPaths the body of a listed event must hold, for an event the
-   *  provider has no shape for, or in place of its. A fork merges key by key;
-   *  an empty list removes that event's shape. */
+  /** The rules the body of a listed event must meet, for an event the
+   *  provider has no shape for, or in place of its. Each rule is a JSONPath
+   *  the body holds, `!path` for one it must not hold (missing or null), or
+   *  `path == <JSON string, number or boolean>` for a field's value, e.g.
+   *  `$.object_kind == "push"`. A fork merges key by key; an empty list
+   *  removes that event's shape. */
   event_shapes?: Record<string, string[]>;
   /** Conditions on the signed body every delivery must meet before anything
    *  starts; one that misses answers 202 `filtered`. A fork replaces the
