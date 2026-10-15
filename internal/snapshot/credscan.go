@@ -254,7 +254,8 @@ func refsOf(b credScanBody) []credRef {
 		}
 	}
 	for _, m := range credRefRe.FindAllStringSubmatch(b.UserBearer, -1) {
-		out = append(out, credRef{field: "user_bearer", cred: m[0], name: m[2]})
+		// Resolved at tenant level only, whatever the run's agent and user.
+		out = append(out, credRef{field: "user_bearer", cred: m[0], name: m[2], tenantOnly: true})
 	}
 	out = append(out, authRefs("", b.Auth)...)
 	if b.SignWithKeyEnv != "" {

@@ -40,12 +40,14 @@ func plantScanFixture(t *testing.T, s store.Store) {
 			"auth":                      map[string]any{"kind": "hmac", "signing_secret_env": "LOOMCYCLE_WH_SECRET"},
 			"user_credentials_from_env": map[string]string{"telegram": "LOOMCYCLE_TG"},
 			"user_credentials":          map[string]string{"jobs": "$cred:jobs-token"},
+			"user_bearer":               "$cred:hook-bearer",
 		}, true)
 	plantSchedules(t, s, plantedSchedule{
 		row: store.ScheduleDefRow{DefID: "sd_1", TenantID: "acme", Name: "digest", Version: 1, CreatedAt: schedBase()},
 		body: map[string]any{"agent": "digester", "user_id": "alice", "tenant_id": "acme", "schedule": "0 6 * * *",
 			"user_credentials_from_env": map[string]string{"slack": "LOOMCYCLE_SLACK"},
 			"user_credentials":          map[string]string{"gh": "Bearer $ghapp:gh-app", "api": "${LOOMCYCLE_API}"},
+			"user_bearer":               "$cred:digest-bearer",
 		},
 		active: true, next: schedBase(),
 	})
@@ -69,6 +71,8 @@ func TestCredentialScan_NamesEachMissingReferenceOnWebhooksSchedulesAndCards(t *
 		{"schedule_def acme/digest", "user_credentials_from_env.slack", "LOOMCYCLE_SLACK"},
 		{"schedule_def acme/digest", "user_credentials.gh", "$ghapp:gh-app"},
 		{"schedule_def acme/digest", "user_credentials.api", "LOOMCYCLE_API"},
+		{"webhook_def acme/gh", "user_bearer", "$cred:hook-bearer"},
+		{"schedule_def acme/digest", "user_bearer", "$cred:digest-bearer"},
 		{"a2a_server_card_def acme/card", "sign_with_key_env", "LOOMCYCLE_CARD_KEY"},
 	} {
 		if !hasWarning(res, append([]string{"missing credential:"}, want...)...) {
@@ -77,7 +81,8 @@ func TestCredentialScan_NamesEachMissingReferenceOnWebhooksSchedulesAndCards(t *
 	}
 	// The credential check is asked in the scope a run of the def resolves:
 	// the webhook's execution tenant and agent, the schedule's agent and user.
-	for _, key := range []string{"acme/intake//jobs-token", "acme/digester/alice/gh-app"} {
+	// A bearer is asked at tenant level: it resolves there only.
+	for _, key := range []string{"acme/intake//jobs-token", "acme/digester/alice/gh-app", "acme///hook-bearer", "acme///digest-bearer"} {
 		found := false
 		for _, a := range checks.asked {
 			if a == key {
@@ -100,7 +105,8 @@ func TestCredentialScan_SilentWhenEveryReferenceResolves(t *testing.T) {
 	checks := &fakeCredChecks{
 		env: map[string]bool{"LOOMCYCLE_WH_SECRET": true, "LOOMCYCLE_TG": true, "LOOMCYCLE_SLACK": true,
 			"LOOMCYCLE_API": true, "LOOMCYCLE_CARD_KEY": true},
-		creds: map[string]bool{"acme/intake//jobs-token": true, "acme/digester/alice/gh-app": true},
+		creds: map[string]bool{"acme/intake//jobs-token": true, "acme/digester/alice/gh-app": true,
+			"acme///hook-bearer": true, "acme///digest-bearer": true},
 	}
 	res := mustRestore(t, dst, mustCapture(t, src), checks.opts())
 	for _, w := range res.Warnings {
@@ -152,7 +158,7 @@ func TestCredentialScan_UnwiredChecksSayTheyDidNotCheck(t *testing.T) {
 	plantScanFixture(t, src)
 	res := mustRestore(t, dst, mustCapture(t, src), RestoreOptions{Validators: passValidators()})
 	if !hasWarning(res, "missing-credential scan: 5 env var reference(s)", "not checked") ||
-		!hasWarning(res, "missing-credential scan: 2 credential reference(s)", "not checked") {
+		!hasWarning(res, "missing-credential scan: 4 credential reference(s)", "not checked") {
 		t.Errorf("no not-checked warnings with the counts: %v", res.Warnings)
 	}
 	if hasWarning(res, "missing credential:") {
