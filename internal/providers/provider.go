@@ -1053,6 +1053,12 @@ type Event struct {
 	// thinking block with its seal on the next (tool-use continuation) request.
 	// Empty for non-Anthropic / non-thinking turns.
 	ReasoningSignature string `json:"reasoning_signature,omitempty"`
+
+	// ContentNotRetained is set on an EventToolResult whose text carries a
+	// no-trace run's content (a no-trace sub-agent's answer). The live stream
+	// gets the event as it is; the run's transcript stores a marker in its
+	// place. Never on the wire: it is an instruction to the recorder.
+	ContentNotRetained bool `json:"-"`
 }
 
 // RetryInfo accompanies an EventRetry. Each field is set every time.

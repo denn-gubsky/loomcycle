@@ -105,6 +105,9 @@ type ChildResult struct {
 	// Detail is a team walk's whole answer — the fields a synchronous TeamDef
 	// run returns — kept for TeamDef poll. nil for a sub-agent.
 	Detail map[string]any
+	// NotRetained is set for a no-trace child: a poll that hands its result
+	// back is stored as a marker (ContentMark).
+	NotRetained bool
 }
 
 // ChildView is a snapshot of one child.

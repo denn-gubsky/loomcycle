@@ -4411,6 +4411,9 @@ func executePendingTools(
 		idx int
 		tu  providers.ToolUse
 		res tools.Result
+		// notRetained: the result carries a no-trace run's content, so the
+		// transcript stores a marker for it (tools.ContentMark).
+		notRetained bool
 	}
 
 	resCh := make(chan result, len(pending))
@@ -4439,9 +4442,10 @@ func executePendingTools(
 			// callCtx, do. After the slot, so queueing for one is not work.
 			callCtx, endWork := providers.BeginWork(ctx)
 			defer endWork() // idempotent; also on a panic
+			callCtx, mark := tools.WithContentMark(callCtx)
 			r := dispatchOneTool(callCtx, dispatcher, tu, hookDispatcher, hookIdent, emit)
 			endWork()
-			resCh <- result{idx: i, tu: tu, res: r}
+			resCh <- result{idx: i, tu: tu, res: r, notRetained: mark.NotRetained()}
 		}(i, tu)
 	}
 	go func() {
@@ -4464,6 +4468,8 @@ func executePendingTools(
 			ToolUse: &providers.ToolUse{ID: r.tu.ID, Name: r.tu.Name, Input: r.tu.Input},
 			Text:    text,
 			IsError: r.res.IsError,
+
+			ContentNotRetained: r.notRetained,
 		}
 		// The failure's structure as a field too, so an SSE or gRPC consumer
 		// reads the category and the correct call format without parsing the

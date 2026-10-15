@@ -207,7 +207,11 @@ func (a *AgentTool) runBackgroundChild(cctx context.Context, bg *tools.Backgroun
 	defer release() // alive until it ends, queued time included
 	// The child's live-children slot is freed before its end is filed, so a
 	// parent woken by the end finds the slot free. release runs once.
+	// The child's own mark: set when its run is no-trace, so whichever later
+	// poll hands its result back stores a marker in place of that result.
+	var mark *tools.ContentMark
 	finish := func(state string, res tools.ChildResult) {
+		res.NotRetained = mark.NotRetained()
 		release()
 		bg.Finish(runID, state, res)
 	}
@@ -230,6 +234,7 @@ func (a *AgentTool) runBackgroundChild(cctx context.Context, bg *tools.Backgroun
 	defer func() { <-sem }()
 
 	childCtx := tools.WithSpawnUntrusted(tools.WithChildRunID(cctx, runID), e.untrusted)
+	childCtx, mark = tools.WithContentMark(childCtx)
 	if !e.compaction.IsZero() {
 		childCtx = tools.WithCompactionOverride(childCtx, e.compaction)
 	}
@@ -363,6 +368,9 @@ func (a *AgentTool) pollChildren(ctx context.Context, in agentInput) (tools.Resu
 			rows[i] = rowOf(v)
 			if v.Ended() {
 				read = append(read, v.RunID)
+				if v.Result.NotRetained {
+					tools.MarkContentNotRetained(ctx)
+				}
 			}
 		}
 		switch rows[i].State {

@@ -3,6 +3,7 @@ package http
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"net/http"
@@ -87,6 +88,32 @@ func (m *runModes) noTrace(ctx context.Context, st store.Store, runID string) bo
 	return none
 }
 
+// childNoTrace is noTrace for a run another run's event names, a child.
+//
+// A child with no row never ran — it was refused before it started — and
+// holds nothing of its own to keep out; its parent's record of the refusal
+// stays as written. Any other failure to read it fails closed, as noTrace does.
+func (m *runModes) childNoTrace(ctx context.Context, st store.Store, runID string) bool {
+	m.mu.RLock()
+	v, ok := m.known[runID]
+	m.mu.RUnlock()
+	if ok {
+		return v
+	}
+	run, err := st.GetRun(context.WithoutCancel(ctx), runID)
+	var notFound *store.ErrNotFound
+	if errors.As(err, &notFound) {
+		return false
+	}
+	if err != nil {
+		log.Printf("no-trace: could not read the retention mode of child run %s (%v); not storing its result", runID, err)
+		return true
+	}
+	none := run.Retention == store.RetentionNone
+	m.note(runID, none)
+	return none
+}
+
 // traceFilterStore is the Server's store handle. It is the store, with the
 // three writes that carry a run's content filtered for a no-trace run.
 type traceFilterStore struct {
@@ -133,12 +160,48 @@ func (t *traceFilterStore) CreateRun(ctx context.Context, sessionID string, iden
 	return run, err
 }
 
-// AppendEvent stores a no-trace run's event as a marker.
+// AppendEvent stores a no-trace run's event as a marker, and an ordinary
+// run's record of a no-trace child's result without that result.
 func (t *traceFilterStore) AppendEvent(ctx context.Context, runID string, eventType string, payload []byte) error {
 	if t.modes.noTrace(ctx, t.Store, runID) {
 		payload = eventMarker(eventType, payload)
+	} else if eventType == string(providers.EventSpawnChildResult) {
+		payload = t.withoutNoTraceChildResult(ctx, payload)
 	}
 	return t.Store.AppendEvent(ctx, runID, eventType, payload)
+}
+
+// notRetainedChildOutput is what a parent's record keeps of a no-trace
+// child's answer. A resumed parent reads it in the answer's place.
+const notRetainedChildOutput = "(not retained: this sub-agent's answer was delivered and not stored)"
+
+// withoutNoTraceChildResult reduces a spawn_child_result row — the copy of a
+// child's answer a parent keeps to be resumed with — when the child is a
+// no-trace run: the answer, the error's text and the structured result go,
+// how it ended stays.
+func (t *traceFilterStore) withoutNoTraceChildResult(ctx context.Context, payload []byte) []byte {
+	var ev providers.Event
+	if json.Unmarshal(payload, &ev) != nil {
+		// Every such row is written by json.Marshal; one that does not parse
+		// cannot be shown to be free of a no-trace child's answer.
+		return eventMarker(string(providers.EventSpawnChildResult), payload)
+	}
+	sc := ev.SpawnChild
+	if sc == nil || sc.RunID == "" || !t.modes.childNoTrace(ctx, t.Store, sc.RunID) {
+		return payload
+	}
+	reduced := *sc
+	if reduced.Output != "" {
+		reduced.Output = notRetainedChildOutput
+	}
+	reduced.Error = safeErrorText(reduced.Error)
+	reduced.State, reduced.Detail = nil, nil
+	ev.SpawnChild = &reduced
+	b, err := json.Marshal(ev)
+	if err != nil {
+		return eventMarker(string(providers.EventSpawnChildResult), payload)
+	}
+	return b
 }
 
 // FinishRun stores a no-trace run's end without its answer or its error text.
@@ -391,6 +454,9 @@ func admitNoTraceStart(mode string, interactive, review bool, sessionID string) 
 // errNoTraceSession refuses putting a no-trace run in a session that exists,
 // or any run in a no-trace session.
 var errNoTraceSession = &noTraceRefusal{Status: 409, Msg: "a no-trace run opens its own session, and that session cannot be continued, replayed or compacted"}
+
+// errNoTraceTeamMember refuses a team member whose agent is no-trace.
+var errNoTraceTeamMember = &noTraceRefusal{Status: 403, Msg: "a no-trace agent cannot be a team member: a walk records its members' answers"}
 
 // wrapStore is the Server's store handle for st: the filter, or nil when the
 // server has no store.

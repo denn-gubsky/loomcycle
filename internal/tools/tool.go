@@ -1706,6 +1706,34 @@ func ChildOutcomeSink(ctx context.Context) *ChildOutcome {
 	return out
 }
 
+// ContentMark records that one tool call handed its run content from a
+// no-trace run — a sub-agent's answer, read back as the call's result. The
+// calling run's model still reads that result; what the run STORES of the
+// call is a marker, as a no-trace run stores its own: the child's answer is
+// stored nowhere, its parent's transcript included.
+type ContentMark struct{ notRetained atomic.Bool }
+
+// NotRetained reports whether the call's result must not be stored. Nil-safe.
+func (m *ContentMark) NotRetained() bool { return m != nil && m.notRetained.Load() }
+
+type ctxKeyContentMark struct{}
+
+// WithContentMark gives one tool call its own mark. A run's tool calls each
+// take a new one, so a mark set inside a child's run lands on the child's own
+// call and never on its parent's.
+func WithContentMark(ctx context.Context) (context.Context, *ContentMark) {
+	m := &ContentMark{}
+	return context.WithValue(ctx, ctxKeyContentMark{}, m), m
+}
+
+// MarkContentNotRetained flags the tool call ctx belongs to: what it hands
+// back carries a no-trace run's content. A no-op off a tool call.
+func MarkContentNotRetained(ctx context.Context) {
+	if m, _ := ctx.Value(ctxKeyContentMark{}).(*ContentMark); m != nil {
+		m.notRetained.Store(true)
+	}
+}
+
 type ctxKeySpawnUntrusted struct{}
 
 // WithSpawnUntrusted carries a spawn's untrusted inputs from the Agent tool to

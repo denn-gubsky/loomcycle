@@ -1528,7 +1528,7 @@ The mode is called `retention`, and it has two values: `none`, and the default.
 | Model, provider, token counts, cost, timings; the usage ledger | The final answer, the error's text, a cancel reason somebody typed |
 | A marker for every event: its type, time, size, tool name, ids | The run's settings record, a title or summary, trace-index rows, banked turns |
 
-**What is still delivered:** a caller holding the connection gets the full stream and the full error text, and a parent gets its child's answer. A detached run returns its id and nothing readable afterwards, so its agent must deliver its own result (a tool call, a channel message).
+**What is still delivered:** a caller holding the connection gets the full stream and the full error text, and a parent gets its child's answer. An ordinary parent of a no-trace child stores a marker where its transcript would hold that answer (the tool result, and the copy kept to resume it); its model still reads the answer, and what the parent itself says afterwards is the parent's own content. A detached run returns its id and nothing readable afterwards, so its agent must deliver its own result (a tool call, a channel message).
 
 **What a no-trace run cannot do.** Each needs its content stored, so each is refused with `retention_none_unsupported` and not quietly degraded:
 
@@ -1537,6 +1537,7 @@ The mode is called `retention`, and it has two values: `none`, and the default.
 - be configured as a draft (409), sent a message or retuned (409);
 - ask a person through the `Interruption` tool, or be evaluated;
 - start a team walk (403) — also refused for any caller whose token is `none`.
+- be a member of a team walk (403): a walk records its members' answers.
 
 **A token whose runs are no-trace** is held to that on every route it can reach, not only where it starts a run: it cannot create or edit a draft, send a message into a run, answer an interrupt, or attach feedback to a review (each `retention_none_unsupported`), and a reason it types with a cancel is dropped while the cancel goes ahead.
 
