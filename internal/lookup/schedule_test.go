@@ -177,6 +177,22 @@ func TestSchedule_NormalizesTimezone(t *testing.T) {
 	}
 }
 
+// An untrusted block's kind survives the stored definition's conversion to
+// the config shape.
+func TestSchedule_KeepsTheUntrustedKind(t *testing.T) {
+	ss := &stubScheduleStore{defs: map[string]store.ScheduleDefRow{
+		"review": {DefID: "sd_review_v1", Name: "review", Definition: json.RawMessage(
+			`{"agent":"demo","schedule":"0 0 * * *","prompt":[{"role":"user","content":[{"type":"untrusted-block","kind":"code","text":"a<b"}]}]}`)},
+	}}
+	got, ok := lookup.Schedule(context.Background(), ss, &config.Config{}, "", "review")
+	if !ok {
+		t.Fatal("resolver returned !ok")
+	}
+	if c := got.Prompt[0].Content[0]; c.Kind != "code" {
+		t.Errorf("content = %+v, want kind code", c)
+	}
+}
+
 // TestSchedule_DriftDetection pins the SubstrateScheduleDef field set
 // against an explicit `want` enumeration. A field added to or removed
 // from SubstrateScheduleDef without updating this enumeration fails

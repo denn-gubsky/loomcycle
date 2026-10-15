@@ -5035,6 +5035,9 @@ export interface ScheduledRunPromptContent {
    *  input. */
   type?: "trusted-text" | "untrusted-block";
   text: string;
+  /** An untrusted-block's source label, as on a run's segments; `"code"`
+   *  keeps the text exactly as written. Default `"untrusted"`. */
+  kind?: string;
 }
 
 /** One segment of a scheduled run's prompt. */

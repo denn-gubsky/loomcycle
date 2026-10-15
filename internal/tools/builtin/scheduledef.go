@@ -1556,6 +1556,7 @@ type mergedSchedulePromptSeg struct {
 type mergedSchedulePromptSegContent struct {
 	Type string `json:"type,omitempty"`
 	Text string `json:"text,omitempty"`
+	Kind string `json:"kind,omitempty"`
 }
 
 // mergedScheduleHook mirrors config.ScheduledRunHook.
@@ -1699,7 +1700,7 @@ func staticToMergedScheduleDef(sr config.ScheduledRun) mergedScheduleDef {
 			if len(seg.Content) > 0 {
 				out.Prompt[i].Content = make([]mergedSchedulePromptSegContent, len(seg.Content))
 				for j, c := range seg.Content {
-					out.Prompt[i].Content[j] = mergedSchedulePromptSegContent{Type: c.Type, Text: c.Text}
+					out.Prompt[i].Content[j] = mergedSchedulePromptSegContent{Type: c.Type, Text: c.Text, Kind: c.Kind}
 				}
 			}
 		}
