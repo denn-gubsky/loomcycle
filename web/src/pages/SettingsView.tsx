@@ -34,6 +34,7 @@ import {
 } from "../api";
 import { usePrincipal, useUserId } from "../components/Layout";
 import { CredentialsPanel } from "../components/CredentialsPanel";
+import LanesView from "./LanesView";
 import LimitsView from "./LimitsView";
 import RoutingView from "./RoutingView";
 import TokenManager from "../components/TokenManager";
@@ -48,7 +49,7 @@ import TokenManager from "../components/TokenManager";
 //     the draft→confirmed gate). Their data is tenant-scoped server-side — a
 //     tenant operator sees only its own tenant.
 //   - admin-only: tokens (minting, RFC L), presets (RFC AQ), runtime
-//     (pause/resume), health.
+//     (pause/resume), lanes (live run queue + provider lanes), health.
 // The backend gates every surface too (defence in depth). Surfaces with their
 // own pages (snapshots, audit) are linked, not duplicated.
 export default function SettingsView() {
@@ -110,6 +111,7 @@ export default function SettingsView() {
         {active === "tokens" && <TokenManager />}
         {active === "presets" && <PresetsSection />}
         {active === "runtime" && <RuntimeSection />}
+        {active === "lanes" && <LanesView />}
         {active === "maintenance" && <MaintenanceSection />}
         {active === "health" && <HealthSection />}
       </div>

@@ -3295,6 +3295,49 @@ export function getRouting(): Promise<RoutingResponse> {
   return jsonFetch<RoutingResponse>("/v1/_routing");
 }
 
+// ---- Lanes view (GET /v1/_concurrency/stats) ----
+// Mirrors concurrencyStatsResponse in internal/api/http/concurrency_handlers.go.
+// Every omitempty field there is optional here: `providers` is absent when no
+// provider caps anything, `lanes` / `models_in_flight` when a provider caps only
+// the other one. Admin-only (the /v1/_* catch-all).
+export interface ConcurrencyStatsResponse {
+  active: number; // runs holding a run slot
+  queued: number; // runs waiting for one
+  per_user?: Record<string, number>; // only when the per-user cap is set
+  providers?: Record<string, ProviderGateStat>;
+}
+
+export interface ProviderGateStat {
+  active: number; // the CHAT lane's calls in flight
+  queued: number; // the CHAT lane's calls waiting
+  lanes?: Record<string, LaneStat>; // by model kind: chat / decision / embedder
+  // Calls admitted per model identity (an Ollama identity carries its context
+  // size, e.g. "qwen3.6:latest@65536"). The number of KEYS is the models
+  // computing; a value counts calls still queued in their lane too.
+  models_in_flight?: Record<string, number>;
+  model_waiters?: number; // calls waiting for their model to be admitted
+}
+
+export interface LaneStat {
+  max_concurrent: number;
+  active: number;
+  reserved: number; // idle slots held for the run that last used them
+  queued: number;
+  queued_background: number; // of `queued`, the maintenance work
+  grants: number; // calls admitted since the lane was built
+  preemptions: number; // held slots given up to a waiter
+}
+
+export type ConcurrencyStatsResult =
+  | { ok: true; data: ConcurrencyStatsResponse }
+  | { ok: false; status: number; body: any };
+
+// 403 (not an admin) and 503 (no semaphore wired) are expected answers the view
+// renders as states, so they come back as values rather than thrown errors.
+export function getConcurrencyStats(): Promise<ConcurrencyStatsResult> {
+  return jsonFetchAllowing<ConcurrencyStatsResponse>("/v1/_concurrency/stats", [403, 503]);
+}
+
 // ---- Tenant ontology (GET/POST /v1/_ontology) ----
 // The entity types the memory tier extracts against: a base seed every tenant
 // gets, optionally layered with types this tenant defines in a document. The

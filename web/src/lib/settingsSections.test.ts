@@ -23,6 +23,7 @@ describe("settingsMenuItems", () => {
       "Tokens",
       "Presets",
       "Runtime",
+      "Lanes",
       "Maintenance",
       "Health",
       "Users",
