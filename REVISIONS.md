@@ -8,6 +8,123 @@ Each entry is the release's tag annotation, so the tag and this file cannot disa
 
 For the **public roadmap**, see [`docs/PLAN.md`](docs/PLAN.md).
 
+## What's in v1.114.0
+
+*Every way a run starts now **waits in the run queue**, and so do a session's next message and the LLM gateway. While a run's model call waits for a busy local provider, the run **lends its run slot** to a run bound elsewhere. An agent, or one run, can **skip a busy provider** for an idle candidate of its tier, at its start and once more if it loses its place. A lane can cap **one model** inside it, for Ollama models that compute one request at a time. Forge **webhooks** can filter on the signed body, start **one run per event**, carry a stored **bearer**, tell the run which event it handles, and count their deliveries. A stored credential that cannot be opened **fails closed**.*
+
+A minor release: #1805 to #1830.
+- #1809, #1811, #1813 finish moving runs and direct requests onto the run queue;
+- #1805 retries a scheduled fire the full queue refused;
+- #1808, #1810, #1817, #1820 are call lanes: an exempt kind, a tool's waits reported, a Web UI tab, llama.cpp slot pinning;
+- #1818, #1823, #1830 are queue-aware routing, per-model caps and run-slot lending;
+- #1806, #1814, #1819, #1822, #1826, #1828, #1829 are forge webhooks;
+- #1824 and #1807 change whose credential a run uses, and what happens when one cannot be opened;
+- #1815 and #1816 fix the cloud deployment script;
+- #1812 and #1821 change tests only.
+- `@loomcycle/client` and the Python adapter are 1.114.0.
+
+### Every run and direct request waits in the run queue (#1809, #1811, #1813, #1805)
+
+v1.113.0 queued new runs, but a session's next message (`POST /v1/sessions/{id}/messages`) and the LLM gateway still waited `queue_timeout_ms` (30 s) and were then refused with 429.
+
+- **A session continuation queues** like `POST /v1/runs`: its row is `queued` in the session, it is cancellable while it waits, and its stream sends `session`, `agent` and `queued` before it waits. It keeps the session's lock while queued, so another message to the session is `409 session_busy`. A queued continuation survives a restart and continues the same session.
+- **The LLM gateway and `/v1/embeddings` wait for their run slot in the run queue**, round-robin with the runs and with no timeout. They are bounded as before by `max_queue_depth` and `max_queued_runs_per_user`, and they still never wait for a provider while holding a global slot.
+- **`concurrency.queue_timeout_ms` is removed.** Nothing reads it any more. A config that still sets it loads unchanged.
+- **A scheduled fire the full queue refuses is fired again on the next tick**, under the same run key, and does not count against `max_fires`. Before, the slot was lost.
+
+### A run waiting for a provider lends its run slot (#1830)
+
+A run whose model call waited for a saturated local provider held its global run slot (`max_concurrent_runs`) the whole time. A few such runs could keep a run bound for an idle cloud provider from starting at all.
+
+- **While a run's own turn call waits for its lane, its slot goes to the next run waiting to start.** Before the call computes, the run takes a slot back, ahead of every new run.
+- **It never waits for a global slot while holding a lane slot.** If no global slot is free when the lane grants the call, the run gives the lane slot back, waits for a global slot holding nothing, then queues for the lane again. Calls that do not lend (a tool's decision or embedding, a compaction summary, a sub-agent's call) wait holding the run's slot, and the two would otherwise wait on each other.
+- **Lent runs count against `max_queue_depth`** with the queued ones, so runs alive stay within `max_concurrent_runs + max_queue_depth`. At that bound a run waits holding its slot, as before.
+- **The cost.** A run taking its slot back waits for one to free. If every slot is held by runs that are not computing (a parked interactive run, a long tool call), that lasts until one ends.
+- `GET /v1/_concurrency/stats` reports `lent`.
+
+### Skip a busy provider: queue-aware routing (#1818, #1823, #1830)
+
+The tier cascade took the first available candidate, however long its queue. A run could wait minutes for a capped local model while a cloud candidate of the same tier sat idle.
+
+```yaml
+agents:
+  triage:
+    tier: middle
+    routing: { queue_aware: true, switch_after_ms: 20000 }   # default 20000
+```
+
+- **At a run's start** (a new run, a session continuation, a sub-agent), a candidate whose estimated wait is over `switch_after_ms` is passed over for the next available one. If all are over, the shortest wait wins. The estimate reads the chat lane and the model gate, times the model's median call time; a model with no measured call counts as no wait. A pass-over is logged.
+- **Once more, after it loses its place.** At a call boundary after its first turn, a run that no longer holds a slot of its lane (preempted by `quantum_calls`, or its `affinity_hold_ms` expired) and whose next call would wait past `switch_after_ms` is re-resolved, and moves if that picks another candidate. It moves like a fallback: an `EventProviderFallback` with reason `queue_wait`. A run still holding its slot never moves. No move under `pin_after_success` after a successful turn, nor to a text-only provider for a run that carries an image.
+- **Per run.** `routing` on `POST /v1/runs`, session messages, batch children and configured-run drafts, the MCP `spawn_run` / `spawn_runs` tools, gRPC `RunRequest.routing` / `ContinueRequest.routing` (a new `RunRouting` message), and both clients. It replaces the agent's block whole (`{}` turns it off), chooses only among the definition's candidates, and is lockable like any override.
+- **Inherited and retunable.** A sub-agent of the same definition inherits it. It can be changed mid-run: `routing` on `POST /v1/runs/{id}/retune` and in `overrides` on `/input`, gRPC `RetuneRunRequest.routing` / `RunInputRequest.routing`, the MCP `retune_run` tool, both clients. A retuned block governs the move from the next call boundary.
+- **Refused:** `queue_aware` on an agent or run pinned to a provider or model, and a negative `switch_after_ms`. Webhooks, A2A and schedules cannot set it.
+- **Fixed on the way:** a sub-agent resolved its provider and model before inheriting its parent's per-run overrides, so an inherited model, tier or effort was recorded on the child but not run on. It is now resolved after.
+
+### A lane can cap one model (#1823, #1808)
+
+On Ollama 0.40.3 some models compute one request at a time whatever `OLLAMA_NUM_PARALLEL` says (measured: `qwen3.6`, `ornith-1.5`, `qwen3.8`, `nimble`, `clef`), while others (`gpt-oss`, `gemma4`) run four. A lane of 4 sent four calls to a one-slot model, three of them waiting inside Ollama where loomcycle could not see them.
+
+```yaml
+providers:
+  ollama-local:
+    max_models_in_flight: 1
+    models_in_flight_exempt_kinds: [embedder]   # embeddings do not wait for the chat model
+    lanes:
+      chat:
+        max_concurrent: 4
+        model_caps: { qwen3.6:latest: 1, ornith-1.5:35b: 1 }
+      embedder: { max_concurrent: 2 }
+```
+
+- **`lanes.<kind>.model_caps`** holds a model to `n` calls in flight inside the lane, keyed by model name or a `models:` alias of the provider. A name covers the model at every context size. Calls to other models take the free slots. A freed slot goes to the first waiter in turn whose model is under its cap.
+- **`models_in_flight_exempt_kinds`** leaves a kind out of `max_models_in_flight`: its calls neither count as a model in flight nor wait for one, and its own lane still caps them. The lab host runs chat beside an embedding model without trouble, but not beside a second LLM.
+- **Watching it.** Lane stats and Prometheus gain `blocked_on_model` (`loomcycle_provider_lane_queue_depth_blocked_on_model`). The queue-aware estimate leaves calls held back by their own model's cap out of the queue ahead of other models.
+
+### Call lanes: the rest (#1810, #1817, #1820)
+
+- **A tool's own model calls report their wait.** A `Decision` call, or a Memory or Document search that embeds its query, now puts `call_queued` / `call_admitted` (`kind` `decision` / `embedder`) on the run's stream, as the run's own calls do. Background work reports nothing.
+- **Settings → Lanes** in the Web UI (admin only): the run queue, and each capped provider's lanes and models in flight, refreshed every 3 s.
+- **llama.cpp slot pinning.** With `options.pin_slots: true`, the `llamacpp` driver sends each call with `id_slot` set to its lane slot and `cache_prompt: true`, so a run's lease (`affinity_hold_ms`) lands on the server slot that holds its prompt cache. Set the lane's `max_concurrent` to `llama-server --parallel`. Not yet run against a real llama-server.
+
+See "Per-provider concurrency" in [`docs/PROVIDERS.md`](docs/PROVIDERS.md) and "Per-agent `routing:`" in [`docs/CONFIGURATION.md`](docs/CONFIGURATION.md).
+
+### Forge webhooks: filters, one run per event, a bearer, what the run receives (#1806, #1814, #1819, #1822, #1826, #1828, #1829)
+
+- **Filters on the signed body.** `filters` are conditions every delivery must meet before anything starts: `eq`, `ne`, `glob`, `in` on a JSON path, against a literal or the definition's own `metadata`. A miss is `202 {"outcome":"filtered","filter":<index>}`, before any replay key is claimed. Comparison is typed; a missing or `null` path is a miss for every op.
+
+  ```yaml
+  filters:
+    - { path: "$.ref",                  op: glob, value: "refs/heads/*" }
+    - { path: "$.deleted",              op: eq,   value: false }
+    - { path: "$.repository.full_name", op: eq,   value_from: metadata.repo }
+  ```
+- **One run per event.** `dedup_key` names the event by signed fields (e.g. `["$.repository.id", "$.ref", "$.after"]`). A redelivery with a new id or different bytes is `200 deduped` with the first run's id. The key is held in the database for `dedup_ttl_seconds` (default 7 days, at most 90), on every replica and across restarts. An event whose run **failed** is handled again. A body without one of the paths is `400 dedup_key_unresolvable`. Migration 0104.
+- **Event shapes can say what must be absent or equal.** A shape rule is now `$.path`, `!$.path` (missing or `null`) or `$.path == <value>`. The presets use them to tell apart events whose bodies overlap: GitHub `issues` / `issue_comment` and `create` / `delete`, Gitea `issue_comment` / `pull_request_comment` (a new preset), GitLab `push` / `tag_push` and `issue` / `merge_request`. A Gitea `issue_comment` and a GitLab `issue` preset accepted the other event's body before.
+- **A bearer for the run.** `user_bearer` on webhooks and schedules, as a stored credential reference only (`"$cred:<name>"`); a literal is refused when written. It reaches MCP servers through `${run.user_bearer}`, is resolved per request for that server's URL, and only at tenant level of the run's tenant.
+- **The run knows its delivery.** A run started by a webhook that lists `events` gets `metadata.webhook = {provider, event, delivery_id}`. `delivery_id` is unsigned and passes only as a UUID, a hex digest or a number. A definition that lists events cannot set `metadata.webhook` itself (create and fork refuse it; a yaml one gets a boot warning).
+- **Delivery counters.** Each delivery is counted under how it ended (accepted, duplicate, ping, ignored, filtered, refused by reason), in memory and written every 30 s, never per delivery. `WebhookDef op=get` shows them under `status.deliveries`, and `GET /v1/_webhooks/{name}/delivery-counts` is a new admin route. Migration 0105.
+- **The console** (Integrations → Webhooks) reads and writes all of it, including stored-credential secrets and team webhooks, which it could not fork before, and shows the counts.
+- **A new guide:** [`docs/FORGE_WEBHOOKS.md`](docs/FORGE_WEBHOOKS.md), GitHub, Gitea and GitLab end to end.
+
+### Whose credential a run uses (#1824, #1822, #1807)
+
+- **A trigger's run uses a user's own credentials only when its author could act as that user.** A webhook-started run never resolves `$cred:` in the run user's personal scope; its `user_id` can come from the delivery. A schedule does only when an operator wrote it, or the schedule's own user. This covers MCP header references, `user_credentials` values, A2A peer credentials, and a tenant's or user's own provider key and Bash host credential. **Existing runtime-written schedules fail closed** until an operator or their user saves them again; each fire of one that holds a `$cred:` logs how to restore it.
+- **A2A peers resolve `$cred:`.** A peer credential that is a stored reference was sent as written. It is now resolved for the peer's endpoint, and a request pinned to it follows no redirect. A peer found through its agent card gets only an unrestricted credential.
+- **A static MCP server resolves `$cred:` in its headers.** Its client was built before the resolver existed and sent the reference literally.
+- **A stored credential that cannot be opened fails closed.** A wrong, rotated or missing `LOOMCYCLE_SECRET_KEY`, a corrupt seal or an unreadable backend used to count as no credential, so a tenant's own provider key fell back to the operator's. The call now fails, the operator key is never used, and a Bash variable is unset with the host's same-named variable removed. No stored row still falls back as before, and a store read fault stays fail-soft.
+
+### Deployment (#1815, #1816)
+
+The cloud deployment script stops syncing `searxng/` (the container owns it), keeps synced files readable by the containers, restores the previous files when a sync fails, prunes backups to 10, and, when a failed start follows a migration, restores the runtime's database from the pre-deploy dump before starting the old version again. The database the failed version left is kept as `loomcycle_failed_<stamp>`.
+
+### Upgrade notes
+
+- `concurrency.queue_timeout_ms` is ignored; remove it at leisure.
+- Two migrations: 0104 (`webhook_deliveries.run_id`) and 0105 (`webhook_delivery_counts`).
+- A runtime-written schedule whose `user_credentials` reaches a user's own `$cred:` stops using it until it is saved again by an operator or its user.
+- A stored credential the server cannot decrypt now fails the call instead of falling back to the operator's key. Check `LOOMCYCLE_SECRET_KEY` before upgrading a deployment that rotated it.
+- A Gitea `issue_comment` or GitLab `issue` webhook now refuses the other event's body (`400 event_shape_mismatch`).
+
 ## What's in v1.113.0
 
 *A run that cannot start at once is now **queued**, not refused. It gets its row, its id and its events before it waits, it can be cancelled, and it comes back after a restart. A provider's `max_concurrent` now counts **model calls**, in a lane per kind of model, so a run holds no provider slot while it runs a tool or waits for a child. An agent can be given **a repository the runtime fetched itself**, so the forge token never enters a shell, and can **read it by line range** with the volume read-only. Forge **webhooks** can say which events start a run, hook deliveries can be **signed**, stored credentials **expire** and can be **limited to certain URLs**, and a **Microsoft Teams** bot can front an interactive agent.*
