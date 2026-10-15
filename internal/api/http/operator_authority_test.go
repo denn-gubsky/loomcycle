@@ -32,7 +32,7 @@ func TestSubstrateAdmin_OpenModeOperatorMayAuthorForeignExecTenant(t *testing.T)
 		t.Fatalf("sqlite.Open: %v", err)
 	}
 	t.Cleanup(func() { _ = st.Close() })
-	cfg := &config.Config{Concurrency: config.Concurrency{MaxConcurrentRuns: 1, MaxQueueDepth: 1, QueueTimeoutMS: 100}}
+	cfg := &config.Config{Concurrency: config.Concurrency{MaxConcurrentRuns: 1, MaxQueueDepth: 1}}
 	srv := New(cfg, &stubResolver{}, []tools.Tool{}, concurrency.New(1, 1, time.Second), st)
 	srv.SetScheduleDefTool(&builtin.ScheduleDef{Store: st, Cfg: cfg})
 	server := httptest.NewServer(srv.Mux())

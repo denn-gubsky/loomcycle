@@ -95,7 +95,7 @@ func TestResumeFanout_AWaitModeChildPastItsTimeoutIsCutAndAnsweredTimedOut(t *te
 	cfg := &config.Config{
 		Defaults:    config.Defaults{Provider: "scripted", Model: "stub-model"},
 		Agents:      map[string]config.AgentDef{"breeder": {Provider: "scripted", Model: "stub-model", Tools: []string{"Agent"}}},
-		Concurrency: config.Concurrency{MaxConcurrentRuns: 8, MaxQueueDepth: 8, QueueTimeoutMS: 1000},
+		Concurrency: config.Concurrency{MaxConcurrentRuns: 8, MaxQueueDepth: 8},
 	}
 	cfg.Env.AuthToken = ""
 	cfg.Env.ResumeFanout = true
@@ -156,7 +156,7 @@ func TestResumeFanout_AWaitModeChildIsNotCutWhileItIsPaused(t *testing.T) {
 	cfg := &config.Config{
 		Defaults:    config.Defaults{Provider: "scripted", Model: "stub-model"},
 		Agents:      map[string]config.AgentDef{"breeder": {Provider: "scripted", Model: "stub-model", Tools: []string{"Agent"}}},
-		Concurrency: config.Concurrency{MaxConcurrentRuns: 8, MaxQueueDepth: 8, QueueTimeoutMS: 1000},
+		Concurrency: config.Concurrency{MaxConcurrentRuns: 8, MaxQueueDepth: 8},
 	}
 	cfg.Env.AuthToken = ""
 	cfg.Env.ResumeFanout = true

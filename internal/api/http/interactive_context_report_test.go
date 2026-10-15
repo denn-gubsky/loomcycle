@@ -63,7 +63,7 @@ func TestInteractiveRun_NoContextReportBeforeTheFirstTurn(t *testing.T) {
 		Agents: map[string]config.AgentDef{
 			"termagent": {Model: "stub-model", SystemPrompt: big, UnboundedIterations: true},
 		},
-		Concurrency: config.Concurrency{MaxConcurrentRuns: 4, MaxQueueDepth: 4, QueueTimeoutMS: 1000},
+		Concurrency: config.Concurrency{MaxConcurrentRuns: 4, MaxQueueDepth: 4},
 	}
 	cfg.Env.AuthToken = "" // open mode
 

@@ -121,7 +121,7 @@ func newDecisionRunEnv(t *testing.T, configured bool, agents map[string]config.A
 	cfg := &config.Config{
 		Defaults:    config.Defaults{Provider: "scripted", Model: "stub-model"},
 		Agents:      agents,
-		Concurrency: config.Concurrency{MaxConcurrentRuns: 4, MaxQueueDepth: 4, QueueTimeoutMS: 2000},
+		Concurrency: config.Concurrency{MaxConcurrentRuns: 4, MaxQueueDepth: 4},
 	}
 	cfg.Env.AuthToken = ""
 	st, err := storesqlite.Open(filepath.Join(t.TempDir(), "decision.db"))

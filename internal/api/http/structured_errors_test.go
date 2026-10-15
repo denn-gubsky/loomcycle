@@ -32,7 +32,7 @@ func (quotaTool) Execute(context.Context, json.RawMessage) (tools.Result, error)
 // reads the same category and next step the transports give that error. The
 // classifier is injected by the server; this pins that it is.
 func TestNewDispatcher_ClassifiesAToolsTypedError(t *testing.T) {
-	srv := New(&config.Config{Concurrency: config.Concurrency{MaxConcurrentRuns: 1, MaxQueueDepth: 1, QueueTimeoutMS: 100}},
+	srv := New(&config.Config{Concurrency: config.Concurrency{MaxConcurrentRuns: 1, MaxQueueDepth: 1}},
 		&stubResolver{}, nil, concurrency.New(1, 1, time.Second), nil)
 	res := srv.newDispatcher([]tools.Tool{quotaTool{}}).Execute(context.Background(), "Memory", json.RawMessage(`{"op":"set"}`))
 	if !res.IsError || res.Error == nil || res.Error.Category != tools.CategoryBusiness || res.Error.Retryable {
@@ -50,7 +50,7 @@ func TestConnectorBuiltin_ARefusalCarriesItsStructureOverHTTP(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	cfg := &config.Config{Concurrency: config.Concurrency{MaxConcurrentRuns: 1, MaxQueueDepth: 1, QueueTimeoutMS: 100}}
+	cfg := &config.Config{Concurrency: config.Concurrency{MaxConcurrentRuns: 1, MaxQueueDepth: 1}}
 	cfg.Env.AuthToken = "test-token"
 	srv := New(cfg, &stubResolver{}, []tools.Tool{&builtin.Document{}, &builtin.Context{Help: set}},
 		concurrency.New(1, 1, time.Second), nil)
@@ -97,7 +97,7 @@ func TestRunDispatcher_AShapeFailureCarriesTheSkippedArticle(t *testing.T) {
 	if !ok {
 		t.Fatal("no Document/create_chunk article")
 	}
-	srv := New(&config.Config{Concurrency: config.Concurrency{MaxConcurrentRuns: 1, MaxQueueDepth: 1, QueueTimeoutMS: 100}},
+	srv := New(&config.Config{Concurrency: config.Concurrency{MaxConcurrentRuns: 1, MaxQueueDepth: 1}},
 		&stubResolver{}, nil, concurrency.New(1, 1, time.Second), nil)
 	d := srv.newDispatcher([]tools.Tool{&builtin.Document{}, &builtin.Context{Help: set}})
 	ctx := context.Background()

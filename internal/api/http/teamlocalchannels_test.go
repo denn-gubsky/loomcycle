@@ -109,7 +109,7 @@ func newChannelHarness(t *testing.T, agents map[string]config.AgentDef) *channel
 	cfg := &config.Config{
 		Defaults:    config.Defaults{Provider: "stub", Model: "stub-model"},
 		Agents:      all,
-		Concurrency: config.Concurrency{MaxConcurrentRuns: 8, MaxQueueDepth: 8, QueueTimeoutMS: 1000},
+		Concurrency: config.Concurrency{MaxConcurrentRuns: 8, MaxQueueDepth: 8},
 		Env:         config.Env{ChannelsMaxValueBytes: 64 * 1024, ChannelsLongPollCapMS: 200},
 	}
 	st, err := storesqlite.Open(filepath.Join(t.TempDir(), "lc.db"))

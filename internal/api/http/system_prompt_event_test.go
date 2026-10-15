@@ -41,7 +41,7 @@ func TestSystemPromptEvent_PersistedOnRunsWhenAgentHasPrompt(t *testing.T) {
 				SystemPrompt: "You are a careful researcher. Output JSON only.",
 			},
 		},
-		Concurrency: config.Concurrency{MaxConcurrentRuns: 4, MaxQueueDepth: 4, QueueTimeoutMS: 1000},
+		Concurrency: config.Concurrency{MaxConcurrentRuns: 4, MaxQueueDepth: 4},
 	}
 	provider := &stubProvider{events: []providers.Event{
 		{Type: providers.EventText, Text: "ok"},
@@ -123,7 +123,7 @@ func TestSystemPromptEvent_NotEmittedWhenAgentHasNoPrompt(t *testing.T) {
 			// SystemPrompt explicitly empty.
 			"default": {Model: "stub-model"},
 		},
-		Concurrency: config.Concurrency{MaxConcurrentRuns: 4, MaxQueueDepth: 4, QueueTimeoutMS: 1000},
+		Concurrency: config.Concurrency{MaxConcurrentRuns: 4, MaxQueueDepth: 4},
 	}
 	provider := &stubProvider{events: []providers.Event{
 		{Type: providers.EventText, Text: "ok"},

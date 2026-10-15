@@ -37,7 +37,7 @@ func newDetachedDraftHarness(t *testing.T) *detachedDraftHarness {
 		Defaults: config.Defaults{Provider: "stub", Model: "stub-model"},
 		// Named "agent" so createDraft can build the draft.
 		Agents:      map[string]config.AgentDef{"agent": {Model: "stub-model", SystemPrompt: "be brief", UnboundedIterations: true}},
-		Concurrency: config.Concurrency{MaxConcurrentRuns: 4, MaxQueueDepth: 4, QueueTimeoutMS: 1000},
+		Concurrency: config.Concurrency{MaxConcurrentRuns: 4, MaxQueueDepth: 4},
 	}
 	cfg.Env.AuthToken = ""
 	st, err := storesqlite.Open(filepath.Join(t.TempDir(), "detached-draft.db"))

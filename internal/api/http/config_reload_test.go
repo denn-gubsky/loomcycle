@@ -115,7 +115,7 @@ func TestReloadConfig_NonReloadableSectionRestartRequired(t *testing.T) {
 	// This minimal test injects ONLY a providers reloader, so a concurrency change
 	// has no owning reloader → restart_required. (The real server also wires a
 	// concurrency reloader; see TestConcurrencyReloader_* / the registry test.)
-	changed.Concurrency = config.Concurrency{MaxConcurrentRuns: 99, MaxQueueDepth: 8, QueueTimeoutMS: 1000}
+	changed.Concurrency = config.Concurrency{MaxConcurrentRuns: 99, MaxQueueDepth: 8}
 	s.SetConfigReloader(
 		func() (*config.Config, error) { return changed, nil },
 		SectionReloader{Sections: []string{"providers"}, Reload: func(*config.Config) error { applied++; return nil }},
@@ -172,7 +172,7 @@ func TestReloadConfig_LiveSectionAppliedViaHolder(t *testing.T) {
 // JSON-encode path, and the 422 rejection of an invalid candidate.
 func TestHandleConfigReload_EndToEnd(t *testing.T) {
 	cfg := &config.Config{
-		Concurrency: config.Concurrency{MaxConcurrentRuns: 4, MaxQueueDepth: 4, QueueTimeoutMS: 1000},
+		Concurrency: config.Concurrency{MaxConcurrentRuns: 4, MaxQueueDepth: 4},
 	}
 	cfg.Env.AuthToken = "" // open mode
 	cfg.Providers = map[string]config.ProviderConfig{"ollama-local": {Driver: "ollama", BaseURL: "http://a:11434"}}
@@ -259,7 +259,7 @@ func TestReloadConfig_RegistryDispatch(t *testing.T) {
 	s.SetConfigReloader(
 		func() (*config.Config, error) {
 			c := baselineCfg()
-			c.Concurrency = config.Concurrency{MaxConcurrentRuns: 99, MaxQueueDepth: 8, QueueTimeoutMS: 1000}
+			c.Concurrency = config.Concurrency{MaxConcurrentRuns: 99, MaxQueueDepth: 8}
 			return c, nil
 		},
 		SectionReloader{Sections: []string{"providers", "models", "tiers", "provider_priority"}, Reload: func(*config.Config) error { provFired++; return nil }},
@@ -291,7 +291,7 @@ func TestReloadConcurrency(t *testing.T) {
 	s.SetCallScheduler(sched)
 
 	s.ReloadConcurrency(&config.Config{
-		Concurrency: config.Concurrency{MaxConcurrentRuns: 3, MaxQueueDepth: 0, QueueTimeoutMS: 100},
+		Concurrency: config.Concurrency{MaxConcurrentRuns: 3, MaxQueueDepth: 0},
 		Providers: map[string]config.ProviderConfig{
 			"p": {MaxConcurrent: 2},
 			"q": {MaxModelsInFlight: 1, Lanes: map[string]config.ProviderLane{config.ModelKindDecision: {MaxConcurrent: 4}}},

@@ -28,7 +28,7 @@ func toolChoiceServer(t *testing.T) (*Server, *httptest.Server, *recordingProvid
 				ToolChoice: &config.ToolChoice{Mode: "none", Until: "always"},
 			},
 		},
-		Concurrency: config.Concurrency{MaxConcurrentRuns: 4, MaxQueueDepth: 4, QueueTimeoutMS: 1000},
+		Concurrency: config.Concurrency{MaxConcurrentRuns: 4, MaxQueueDepth: 4},
 	}
 	cfg.Env.AuthToken = ""
 	prov := &recordingProvider{}

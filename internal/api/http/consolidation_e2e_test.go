@@ -78,7 +78,7 @@ func newConsolidationEnv(t *testing.T, scripts [][]providers.Event, tune ...func
 	cfg := &config.Config{
 		Defaults:    config.Defaults{Provider: "scripted", Model: "stub-model"},
 		Agents:      map[string]config.AgentDef{"memory/consolidator": consolidatorAgentDef()},
-		Concurrency: config.Concurrency{MaxConcurrentRuns: 4, MaxQueueDepth: 4, QueueTimeoutMS: 2000},
+		Concurrency: config.Concurrency{MaxConcurrentRuns: 4, MaxQueueDepth: 4},
 	}
 	cfg.Env.AuthToken = ""
 

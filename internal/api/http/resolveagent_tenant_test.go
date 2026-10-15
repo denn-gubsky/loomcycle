@@ -34,7 +34,7 @@ func TestResolveAgent_TenantScopedDynamicAgentRunnable(t *testing.T) {
 	cfg := &config.Config{
 		Defaults:    config.Defaults{Provider: "scripted", Model: "stub-model"},
 		Agents:      map[string]config.AgentDef{}, // NO static "probe"
-		Concurrency: config.Concurrency{MaxConcurrentRuns: 4, MaxQueueDepth: 4, QueueTimeoutMS: 1000},
+		Concurrency: config.Concurrency{MaxConcurrentRuns: 4, MaxQueueDepth: 4},
 	}
 	cfg.Env.AuthToken = "" // open mode → wire tenant_id is authoritative
 

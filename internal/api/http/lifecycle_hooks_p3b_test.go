@@ -263,7 +263,7 @@ func TestSubagentHooks_TheAgentToolGoesThroughThem(t *testing.T) {
 			"parent": {Model: "stub-model", Tools: []string{"Agent"}, SystemPrompt: "you are the parent"},
 			"child":  {Model: "stub-model", Tools: []string{}, SystemPrompt: "you are the child"},
 		},
-		Concurrency: config.Concurrency{MaxConcurrentRuns: 4, MaxQueueDepth: 4, QueueTimeoutMS: 1000},
+		Concurrency: config.Concurrency{MaxConcurrentRuns: 4, MaxQueueDepth: 4},
 	}
 	cfg.Env.AuthToken = ""
 	prov := &scriptedProvider{scripts: [][]providers.Event{

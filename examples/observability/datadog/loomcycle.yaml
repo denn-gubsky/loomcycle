@@ -40,4 +40,3 @@ agents:
 concurrency:
   max_concurrent_runs: 16
   max_queue_depth: 64
-  queue_timeout_ms: 30000

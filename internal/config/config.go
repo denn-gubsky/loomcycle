@@ -3587,12 +3587,6 @@ type Concurrency struct {
 	// (waiting for a slot or on their user's cap) and direct requests waiting
 	// for a run slot. Past it a new run is refused with backpressure (429).
 	MaxQueueDepth int `yaml:"max_queue_depth"`
-	// QueueTimeoutMS was the wait for a run slot before a 429. Nothing waits
-	// on it any more: every run, a session continuation and a request sent
-	// directly (the LLM gateway, /v1/embeddings) waits in the run queue until
-	// a slot frees or its caller leaves. Only the semaphore's Acquire reads
-	// it, and no request path calls that.
-	QueueTimeoutMS int `yaml:"queue_timeout_ms"`
 	// MaxConcurrentRunsPerUser caps the runs per non-empty (tenant, user)
 	// that hold a run slot or wait for one, inside the global
 	// MaxConcurrentRuns cap. Default 0 = unlimited per user. Over it a new run
@@ -3620,14 +3614,9 @@ type Concurrency struct {
 	// run (today: the document image-describe route), has no such bound, so
 	// this is it — past the depth the request is refused with
 	// provider_concurrency_exhausted instead of queueing. A wait for a provider
-	// never times out: queue_timeout_ms is the global semaphore's knob only.
+	// never times out.
 	// Env: LOOMCYCLE_PROVIDER_QUEUE_DEPTH.
 	ProviderQueueDepth int `yaml:"provider_queue_depth"`
-}
-
-// QueueTimeout returns QueueTimeoutMS as a duration.
-func (c Concurrency) QueueTimeout() time.Duration {
-	return time.Duration(c.QueueTimeoutMS) * time.Millisecond
 }
 
 // ProviderQueueDepthOrDefault returns how many requests holding no run slot
@@ -4881,7 +4870,6 @@ func LoadLayers(layers ...Layer) (*Config, error) {
 		Concurrency: Concurrency{
 			MaxConcurrentRuns:    8,
 			MaxQueueDepth:        32,
-			QueueTimeoutMS:       30000,
 			MaxQueuedRunsPerUser: 16,
 		},
 		Cache: CacheConfig{

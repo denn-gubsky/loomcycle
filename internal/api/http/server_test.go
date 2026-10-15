@@ -67,7 +67,7 @@ func TestHandleRunsSSE(t *testing.T) {
 		Agents: map[string]config.AgentDef{
 			"default": {Model: "stub-model", Tools: []string{"Read"}, SystemPrompt: "be brief"},
 		},
-		Concurrency: config.Concurrency{MaxConcurrentRuns: 4, MaxQueueDepth: 4, QueueTimeoutMS: 1000},
+		Concurrency: config.Concurrency{MaxConcurrentRuns: 4, MaxQueueDepth: 4},
 	}
 	cfg.Env.AuthToken = "" // open mode for tests
 	provider := &stubProvider{events: []providers.Event{
@@ -119,7 +119,7 @@ func TestHandleRunsSSEEmitsRetryFrame(t *testing.T) {
 		Agents: map[string]config.AgentDef{
 			"default": {Model: "stub-model", Tools: []string{"Read"}},
 		},
-		Concurrency: config.Concurrency{MaxConcurrentRuns: 4, MaxQueueDepth: 4, QueueTimeoutMS: 1000},
+		Concurrency: config.Concurrency{MaxConcurrentRuns: 4, MaxQueueDepth: 4},
 	}
 	cfg.Env.AuthToken = ""
 	provider := &stubProvider{
@@ -191,7 +191,7 @@ func TestHandleRunsSSEEmitsRetryFrame(t *testing.T) {
 }
 
 func TestHealthz(t *testing.T) {
-	cfg := &config.Config{Concurrency: config.Concurrency{MaxConcurrentRuns: 1, MaxQueueDepth: 1, QueueTimeoutMS: 100}}
+	cfg := &config.Config{Concurrency: config.Concurrency{MaxConcurrentRuns: 1, MaxQueueDepth: 1}}
 	srv := New(cfg, &stubResolver{}, nil, concurrency.New(1, 1, time.Second), nil)
 	ts := httptest.NewServer(srv.Mux())
 	defer ts.Close()
@@ -228,7 +228,7 @@ func TestHealthz(t *testing.T) {
 // v0.11.x. The check is strict — any unexpected new key in the JSON
 // object means we've broken a wire contract.
 func TestHealthz_ClusterViewOmittedWhenCoordUnset(t *testing.T) {
-	cfg := &config.Config{Concurrency: config.Concurrency{MaxConcurrentRuns: 1, MaxQueueDepth: 1, QueueTimeoutMS: 100}}
+	cfg := &config.Config{Concurrency: config.Concurrency{MaxConcurrentRuns: 1, MaxQueueDepth: 1}}
 	srv := New(cfg, &stubResolver{}, nil, concurrency.New(1, 1, time.Second), nil)
 	ts := httptest.NewServer(srv.Mux())
 	defer ts.Close()
@@ -275,7 +275,7 @@ func (f *fakeReplicaLister) IsReplicaAlive(ctx context.Context, id string, thres
 }
 
 func TestHealthz_ClusterViewIncludedWhenCoordSet(t *testing.T) {
-	cfg := &config.Config{Concurrency: config.Concurrency{MaxConcurrentRuns: 1, MaxQueueDepth: 1, QueueTimeoutMS: 100}}
+	cfg := &config.Config{Concurrency: config.Concurrency{MaxConcurrentRuns: 1, MaxQueueDepth: 1}}
 	srv := New(cfg, &stubResolver{}, nil, concurrency.New(1, 1, time.Second), nil)
 	now := time.Now()
 	srv.SetCoord(nil, &fakeReplicaLister{rows: []coord.Replica{
@@ -310,7 +310,7 @@ func TestHealthz_ClusterViewIncludedWhenCoordSet(t *testing.T) {
 // monitoring keyed off it must not see intermittent identity loss);
 // only the replicas[] list is omitted on error.
 func TestHealthz_ListErrorDoesNotFailLivenessProbe(t *testing.T) {
-	cfg := &config.Config{Concurrency: config.Concurrency{MaxConcurrentRuns: 1, MaxQueueDepth: 1, QueueTimeoutMS: 100}}
+	cfg := &config.Config{Concurrency: config.Concurrency{MaxConcurrentRuns: 1, MaxQueueDepth: 1}}
 	srv := New(cfg, &stubResolver{}, nil, concurrency.New(1, 1, time.Second), nil)
 	srv.SetCoord(nil, &fakeReplicaLister{err: errors.New("db unreachable")}, "rep-a")
 	ts := httptest.NewServer(srv.Mux())
@@ -345,7 +345,7 @@ func TestHealthz_ListErrorDoesNotFailLivenessProbe(t *testing.T) {
 func TestAuthRequired(t *testing.T) {
 	cfg := &config.Config{
 		Agents:      map[string]config.AgentDef{"default": {Model: "x"}},
-		Concurrency: config.Concurrency{MaxConcurrentRuns: 1, MaxQueueDepth: 1, QueueTimeoutMS: 100},
+		Concurrency: config.Concurrency{MaxConcurrentRuns: 1, MaxQueueDepth: 1},
 	}
 	cfg.Env.AuthToken = "secret"
 	srv := New(cfg, &stubResolver{}, nil, concurrency.New(1, 1, time.Second), nil)
@@ -370,7 +370,7 @@ func TestRunsRejectsOversizedBody(t *testing.T) {
 		Agents: map[string]config.AgentDef{
 			"default": {Model: "stub-model"},
 		},
-		Concurrency: config.Concurrency{MaxConcurrentRuns: 1, MaxQueueDepth: 1, QueueTimeoutMS: 100},
+		Concurrency: config.Concurrency{MaxConcurrentRuns: 1, MaxQueueDepth: 1},
 	}
 	// Pin a small cap (the default is now 16 MiB, RFC AT) so the rejection is
 	// exercised without posting 16+ MiB.
@@ -406,7 +406,7 @@ func TestRunsRejectsOversizedBody(t *testing.T) {
 func TestRunsRejectsWrongContentType(t *testing.T) {
 	cfg := &config.Config{
 		Agents:      map[string]config.AgentDef{"default": {Model: "x"}},
-		Concurrency: config.Concurrency{MaxConcurrentRuns: 1, MaxQueueDepth: 1, QueueTimeoutMS: 100},
+		Concurrency: config.Concurrency{MaxConcurrentRuns: 1, MaxQueueDepth: 1},
 	}
 	srv := New(cfg, &stubResolver{}, nil, concurrency.New(1, 1, time.Second), nil)
 	ts := httptest.NewServer(srv.Mux())
@@ -426,7 +426,7 @@ func TestRunsRejectsWrongContentType(t *testing.T) {
 // terminate with the panic propagating through the test harness.
 func TestRecoveryMiddlewareCatchesPanic(t *testing.T) {
 	cfg := &config.Config{
-		Concurrency: config.Concurrency{MaxConcurrentRuns: 1, MaxQueueDepth: 1, QueueTimeoutMS: 100},
+		Concurrency: config.Concurrency{MaxConcurrentRuns: 1, MaxQueueDepth: 1},
 	}
 	srv := New(cfg, &stubResolver{}, nil, concurrency.New(1, 1, time.Second), nil)
 
@@ -479,7 +479,7 @@ func TestRunsRejectsNonFlushableWriter(t *testing.T) {
 		Agents: map[string]config.AgentDef{
 			"default": {Model: "stub-model"},
 		},
-		Concurrency: config.Concurrency{MaxConcurrentRuns: 1, MaxQueueDepth: 1, QueueTimeoutMS: 100},
+		Concurrency: config.Concurrency{MaxConcurrentRuns: 1, MaxQueueDepth: 1},
 	}
 	srv := New(cfg, &stubResolver{p: &stubProvider{}}, nil, concurrency.New(1, 1, time.Second), nil)
 
@@ -507,7 +507,7 @@ func TestRunsPersistsToStore(t *testing.T) {
 		Agents: map[string]config.AgentDef{
 			"default": {Model: "stub-model"},
 		},
-		Concurrency: config.Concurrency{MaxConcurrentRuns: 4, MaxQueueDepth: 4, QueueTimeoutMS: 1000},
+		Concurrency: config.Concurrency{MaxConcurrentRuns: 4, MaxQueueDepth: 4},
 	}
 	provider := &stubProvider{events: []providers.Event{
 		{Type: providers.EventText, Text: "hello"},
@@ -573,7 +573,7 @@ func TestTranscriptEndpointReturnsEvents(t *testing.T) {
 		Agents: map[string]config.AgentDef{
 			"default": {Model: "stub-model"},
 		},
-		Concurrency: config.Concurrency{MaxConcurrentRuns: 4, MaxQueueDepth: 4, QueueTimeoutMS: 1000},
+		Concurrency: config.Concurrency{MaxConcurrentRuns: 4, MaxQueueDepth: 4},
 	}
 	provider := &stubProvider{events: []providers.Event{
 		{Type: providers.EventText, Text: "hi"},
@@ -636,7 +636,7 @@ func TestTranscriptEndpointReturnsEvents(t *testing.T) {
 // Regression: GET on an unknown session returns 404, not 500.
 func TestTranscriptEndpoint404OnUnknownSession(t *testing.T) {
 	cfg := &config.Config{
-		Concurrency: config.Concurrency{MaxConcurrentRuns: 1, MaxQueueDepth: 1, QueueTimeoutMS: 100},
+		Concurrency: config.Concurrency{MaxConcurrentRuns: 1, MaxQueueDepth: 1},
 	}
 	st, _ := storesqlite.Open(filepath.Join(t.TempDir(), "test.db"))
 	defer st.Close()
@@ -658,7 +658,7 @@ func TestTranscriptEndpoint404OnUnknownSession(t *testing.T) {
 // Without one, return 404 with a clear message rather than panicking.
 func TestTranscriptEndpoint404WhenStoreNotConfigured(t *testing.T) {
 	cfg := &config.Config{
-		Concurrency: config.Concurrency{MaxConcurrentRuns: 1, MaxQueueDepth: 1, QueueTimeoutMS: 100},
+		Concurrency: config.Concurrency{MaxConcurrentRuns: 1, MaxQueueDepth: 1},
 	}
 	srv := New(cfg, &stubResolver{}, nil, concurrency.New(1, 1, time.Second), nil)
 	ts := httptest.NewServer(srv.Mux())
@@ -685,7 +685,7 @@ func TestMessagesEndpointReplaysAndContinues(t *testing.T) {
 		Agents: map[string]config.AgentDef{
 			"default": {Model: "stub-model"},
 		},
-		Concurrency: config.Concurrency{MaxConcurrentRuns: 4, MaxQueueDepth: 4, QueueTimeoutMS: 1000},
+		Concurrency: config.Concurrency{MaxConcurrentRuns: 4, MaxQueueDepth: 4},
 	}
 	// First call returns "first reply"; second call returns "second reply".
 	provider := &callableProvider{}
@@ -789,7 +789,7 @@ func TestPerSessionLockRejectsConcurrentMessages(t *testing.T) {
 		Agents: map[string]config.AgentDef{
 			"default": {Model: "stub-model"},
 		},
-		Concurrency: config.Concurrency{MaxConcurrentRuns: 4, MaxQueueDepth: 4, QueueTimeoutMS: 1000},
+		Concurrency: config.Concurrency{MaxConcurrentRuns: 4, MaxQueueDepth: 4},
 	}
 	// Provider is non-blocking by default; the test swaps in a blocking
 	// implementation after the seed call completes.
@@ -922,7 +922,7 @@ func TestPerSessionLockDoesNotAffectOtherSessions(t *testing.T) {
 		Agents: map[string]config.AgentDef{
 			"default": {Model: "stub-model"},
 		},
-		Concurrency: config.Concurrency{MaxConcurrentRuns: 4, MaxQueueDepth: 4, QueueTimeoutMS: 1000},
+		Concurrency: config.Concurrency{MaxConcurrentRuns: 4, MaxQueueDepth: 4},
 	}
 	provider := &callableProvider{}
 	provider.call = func(ctx context.Context, _ providers.Request) (<-chan providers.Event, error) {
@@ -994,7 +994,7 @@ func TestUnknownSessionIDDoesNotGrowLockTable(t *testing.T) {
 		Agents: map[string]config.AgentDef{
 			"default": {Model: "stub-model"},
 		},
-		Concurrency: config.Concurrency{MaxConcurrentRuns: 4, MaxQueueDepth: 4, QueueTimeoutMS: 1000},
+		Concurrency: config.Concurrency{MaxConcurrentRuns: 4, MaxQueueDepth: 4},
 	}
 	st, _ := storesqlite.Open(filepath.Join(t.TempDir(), "test.db"))
 	defer st.Close()
@@ -1047,7 +1047,7 @@ func TestPerSessionLockAppliesToRunsWithSessionID(t *testing.T) {
 		Agents: map[string]config.AgentDef{
 			"default": {Model: "stub-model"},
 		},
-		Concurrency: config.Concurrency{MaxConcurrentRuns: 4, MaxQueueDepth: 4, QueueTimeoutMS: 1000},
+		Concurrency: config.Concurrency{MaxConcurrentRuns: 4, MaxQueueDepth: 4},
 	}
 	// Gate which call blocks by inspecting the request itself rather than
 	// reading provider.requests' length racily. Calls whose user message
@@ -1160,7 +1160,7 @@ func TestAgentWithNoToolsSeesZeroTools(t *testing.T) {
 			// Tools omitted — default-deny.
 			"locked": {Model: "stub-model"},
 		},
-		Concurrency: config.Concurrency{MaxConcurrentRuns: 4, MaxQueueDepth: 4, QueueTimeoutMS: 1000},
+		Concurrency: config.Concurrency{MaxConcurrentRuns: 4, MaxQueueDepth: 4},
 	}
 	provider := &callableProvider{}
 	provider.call = func(ctx context.Context, _ providers.Request) (<-chan providers.Event, error) {
@@ -1211,7 +1211,7 @@ func TestAgentWithExplicitAllowSeeTool(t *testing.T) {
 		Agents: map[string]config.AgentDef{
 			"open": {Model: "stub-model", Tools: []string{"FakeTool"}},
 		},
-		Concurrency: config.Concurrency{MaxConcurrentRuns: 4, MaxQueueDepth: 4, QueueTimeoutMS: 1000},
+		Concurrency: config.Concurrency{MaxConcurrentRuns: 4, MaxQueueDepth: 4},
 	}
 	provider := &callableProvider{}
 	provider.call = func(ctx context.Context, _ providers.Request) (<-chan providers.Event, error) {
@@ -1255,7 +1255,7 @@ func TestPerRequestAllowedHostsEmptyDeniesNetworkCalls(t *testing.T) {
 		Agents: map[string]config.AgentDef{
 			"net": {Model: "stub-model", Tools: []string{"HTTP"}},
 		},
-		Concurrency: config.Concurrency{MaxConcurrentRuns: 4, MaxQueueDepth: 4, QueueTimeoutMS: 1000},
+		Concurrency: config.Concurrency{MaxConcurrentRuns: 4, MaxQueueDepth: 4},
 	}
 	provider := &callableProvider{}
 	provider.call = func(ctx context.Context, req providers.Request) (<-chan providers.Event, error) {
@@ -1338,7 +1338,7 @@ func TestPerRequestAllowedHostsNilLeavesOperatorListIntact(t *testing.T) {
 		Agents: map[string]config.AgentDef{
 			"net": {Model: "stub-model", Tools: []string{"HTTP"}},
 		},
-		Concurrency: config.Concurrency{MaxConcurrentRuns: 4, MaxQueueDepth: 4, QueueTimeoutMS: 1000},
+		Concurrency: config.Concurrency{MaxConcurrentRuns: 4, MaxQueueDepth: 4},
 	}
 	provider := &callableProvider{}
 	provider.call = func(ctx context.Context, req providers.Request) (<-chan providers.Event, error) {
@@ -1476,7 +1476,7 @@ func TestMessagesEndpointReplaysToolCallsCorrectly(t *testing.T) {
 		Agents: map[string]config.AgentDef{
 			"default": {Model: "stub-model", Tools: []string{"FakeTool"}},
 		},
-		Concurrency: config.Concurrency{MaxConcurrentRuns: 4, MaxQueueDepth: 4, QueueTimeoutMS: 1000},
+		Concurrency: config.Concurrency{MaxConcurrentRuns: 4, MaxQueueDepth: 4},
 	}
 	// Provider call sequence:
 	//   call 0: emit tool_call → done(stop=tool_use)   ← loop will execute the tool
@@ -1619,7 +1619,7 @@ func (fakeBuiltinTool) Execute(ctx context.Context, in json.RawMessage) (tools.R
 // Regression: continuation against an unknown session returns 404.
 func TestMessagesEndpoint404OnUnknownSession(t *testing.T) {
 	cfg := &config.Config{
-		Concurrency: config.Concurrency{MaxConcurrentRuns: 1, MaxQueueDepth: 1, QueueTimeoutMS: 100},
+		Concurrency: config.Concurrency{MaxConcurrentRuns: 1, MaxQueueDepth: 1},
 	}
 	st, _ := storesqlite.Open(filepath.Join(t.TempDir(), "test.db"))
 	defer st.Close()
@@ -1735,7 +1735,7 @@ func TestRunRequest_UserBearerValidation(t *testing.T) {
 		Agents: map[string]config.AgentDef{
 			"default": {Model: "stub-model", Tools: []string{"Read"}},
 		},
-		Concurrency: config.Concurrency{MaxConcurrentRuns: 4, MaxQueueDepth: 4, QueueTimeoutMS: 1000},
+		Concurrency: config.Concurrency{MaxConcurrentRuns: 4, MaxQueueDepth: 4},
 	}
 	cfg.Env.AuthToken = ""
 	provider := &stubProvider{events: []providers.Event{
@@ -1808,7 +1808,7 @@ func TestLookupAgent_FallsThroughToSubstrate(t *testing.T) {
 
 	cfg := &config.Config{
 		// Empty cfg.Agents — the substrate is the only registry.
-		Concurrency: config.Concurrency{MaxConcurrentRuns: 1, MaxQueueDepth: 1, QueueTimeoutMS: 100},
+		Concurrency: config.Concurrency{MaxConcurrentRuns: 1, MaxQueueDepth: 1},
 	}
 	srv := New(cfg, &stubResolver{}, nil, concurrency.New(1, 1, time.Second), st)
 	ctx := context.Background()
@@ -1862,7 +1862,7 @@ func TestLookupAgent_DynamicAgentsStillWins(t *testing.T) {
 	defer st.Close()
 
 	cfg := &config.Config{
-		Concurrency: config.Concurrency{MaxConcurrentRuns: 1, MaxQueueDepth: 1, QueueTimeoutMS: 100},
+		Concurrency: config.Concurrency{MaxConcurrentRuns: 1, MaxQueueDepth: 1},
 	}
 	srv := New(cfg, &stubResolver{}, nil, concurrency.New(1, 1, time.Second), st)
 	ctx := context.Background()
@@ -1923,7 +1923,7 @@ func TestLookupAgent_SystemPromptBaseSetFromSubstrate(t *testing.T) {
 	defer st.Close()
 
 	cfg := &config.Config{
-		Concurrency: config.Concurrency{MaxConcurrentRuns: 1, MaxQueueDepth: 1, QueueTimeoutMS: 100},
+		Concurrency: config.Concurrency{MaxConcurrentRuns: 1, MaxQueueDepth: 1},
 	}
 	srv := New(cfg, &stubResolver{}, nil, concurrency.New(1, 1, time.Second), st)
 	ctx := context.Background()
@@ -1976,7 +1976,7 @@ func TestLookupAgent_ResolvesExplicitTenantWithoutPrincipalOnCtx(t *testing.T) {
 	defer st.Close()
 
 	cfg := &config.Config{
-		Concurrency: config.Concurrency{MaxConcurrentRuns: 1, MaxQueueDepth: 1, QueueTimeoutMS: 100},
+		Concurrency: config.Concurrency{MaxConcurrentRuns: 1, MaxQueueDepth: 1},
 	}
 	srv := New(cfg, &stubResolver{}, nil, concurrency.New(1, 1, time.Second), st)
 	ctx := context.Background() // NO principal, NO RunIdentity (A2A/scheduler shape)
@@ -2024,7 +2024,7 @@ func TestLookupAgent_SystemPromptBaseSetFromDynamic(t *testing.T) {
 	defer st.Close()
 
 	cfg := &config.Config{
-		Concurrency: config.Concurrency{MaxConcurrentRuns: 1, MaxQueueDepth: 1, QueueTimeoutMS: 100},
+		Concurrency: config.Concurrency{MaxConcurrentRuns: 1, MaxQueueDepth: 1},
 	}
 	srv := New(cfg, &stubResolver{}, nil, concurrency.New(1, 1, time.Second), st)
 	ctx := context.Background()

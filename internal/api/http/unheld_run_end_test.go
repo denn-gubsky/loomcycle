@@ -37,7 +37,7 @@ func newOrphanEnds(t *testing.T) *orphanEnds {
 			"plain":   {Provider: "scripted", Model: "stub-model", SystemPrompt: "work"},
 			"audited": f.audited,
 		},
-		Concurrency: config.Concurrency{MaxConcurrentRuns: 8, MaxQueueDepth: 8, QueueTimeoutMS: 1000},
+		Concurrency: config.Concurrency{MaxConcurrentRuns: 8, MaxQueueDepth: 8},
 	}
 	cfg.Env.AuthToken = ""
 	cfg.Hooks.PrivateHostAllowlist = []string{"127.0.0.1"}

@@ -33,7 +33,7 @@ func configuredServer(t *testing.T, slots int) (*Server, *httptest.Server, *reco
 	cfg := &config.Config{
 		Defaults:    config.Defaults{Provider: "stub", Model: "stub-model"},
 		Agents:      map[string]config.AgentDef{"agent": {Model: "stub-model", SystemPrompt: "hi"}},
-		Concurrency: config.Concurrency{MaxConcurrentRuns: slots, MaxQueueDepth: 0, QueueTimeoutMS: 50},
+		Concurrency: config.Concurrency{MaxConcurrentRuns: slots, MaxQueueDepth: 0},
 	}
 	cfg.Env.AuthToken = ""
 	cfg.Env.MaxConfiguredRunsPerUser = 2

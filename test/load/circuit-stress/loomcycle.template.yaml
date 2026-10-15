@@ -44,13 +44,11 @@ user_tiers:
 #
 # Queue depth 1500 (75× active) so x1000 can fully queue without
 # the 1500th circuit refusing at the admission boundary.
-# Timeout 5 min — at 20 active and ~25s per circuit, the 1000th
-# circuit waits ~20 min in queue; bump queue_timeout_ms to 1800000
-# (30 min) for full-x1000 runs at this concurrency.
+# A queued run never times out: at 20 active and ~25s per circuit,
+# the 1000th circuit waits ~20 min in queue and then runs.
 concurrency:
   max_concurrent_runs: 20
   max_queue_depth: 1500
-  queue_timeout_ms: 300000
   max_concurrent_runs_per_user: 0
 
 # Storage — Postgres only. SQLite would serialise writes at this

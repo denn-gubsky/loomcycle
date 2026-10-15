@@ -67,7 +67,7 @@ func resumedTenantRunTools(t *testing.T, trigger func(t *testing.T, srv *Server,
 				AgentDefScopes: []string{"any"},
 			},
 		},
-		Concurrency: config.Concurrency{MaxConcurrentRuns: 8, MaxQueueDepth: 8, QueueTimeoutMS: 1000},
+		Concurrency: config.Concurrency{MaxConcurrentRuns: 8, MaxQueueDepth: 8},
 	}
 	cfg.Env.AuthToken = ""
 	ctx := context.Background()

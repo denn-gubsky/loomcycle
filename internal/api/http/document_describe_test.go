@@ -75,7 +75,7 @@ func describeFixture(t *testing.T, prov *visionProvider) (*Server, *builtin.Docu
 	cfg := &config.Config{
 		ProviderPriority: []string{"vis"},
 		Tiers:            map[string][]config.TierCandidate{"middle": {{Provider: "vis", Model: "vm"}}},
-		Concurrency:      config.Concurrency{MaxConcurrentRuns: 4, MaxQueueDepth: 4, QueueTimeoutMS: 1000},
+		Concurrency:      config.Concurrency{MaxConcurrentRuns: 4, MaxQueueDepth: 4},
 	}
 	cfg.Env.AuthToken = "" // open mode
 

@@ -156,7 +156,7 @@ func compactFixture(t *testing.T) (*Server, *scriptedProvider) {
 		Agents: map[string]config.AgentDef{
 			"compactor": {Provider: "scripted", Model: "stub-model", Tools: []string{}},
 		},
-		Concurrency: config.Concurrency{MaxConcurrentRuns: 8, MaxQueueDepth: 8, QueueTimeoutMS: 1000},
+		Concurrency: config.Concurrency{MaxConcurrentRuns: 8, MaxQueueDepth: 8},
 	}
 	cfg.Env.AuthToken = ""
 	prov := &scriptedProvider{defaultS: []providers.Event{

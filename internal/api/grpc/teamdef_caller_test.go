@@ -49,7 +49,7 @@ func TestGrpcTeamDef_RunWalksAsTheCaller(t *testing.T) {
 			"in":  {Scope: "tenant", Semantic: "queue", MaxMessages: 100},
 			"out": {Scope: "tenant", Semantic: "queue", MaxMessages: 100},
 		},
-		Concurrency: config.Concurrency{MaxConcurrentRuns: 4, MaxQueueDepth: 4, QueueTimeoutMS: 1000},
+		Concurrency: config.Concurrency{MaxConcurrentRuns: 4, MaxQueueDepth: 4},
 	}
 	httpSrv := lchttp.New(cfg, oneProvider{&answerProvider{}}, []tools.Tool{}, concurrency.New(4, 4, time.Second), st)
 	bus := runstate.NewBus()

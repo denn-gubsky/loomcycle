@@ -54,7 +54,7 @@ func newPromoterHarnessGate(t *testing.T, gateOn bool) *promoterHarness {
 			"in":  {Scope: "tenant", Semantic: "queue", MaxMessages: 100},
 			"out": {Scope: "tenant", Semantic: "queue", MaxMessages: 100},
 		},
-		Concurrency: config.Concurrency{MaxConcurrentRuns: 4, MaxQueueDepth: 4, QueueTimeoutMS: 1000},
+		Concurrency: config.Concurrency{MaxConcurrentRuns: 4, MaxQueueDepth: 4},
 	}
 	cfg.Env.AuthToken = ""
 	cfg.Env.OperatorKeyRestriction = gateOn

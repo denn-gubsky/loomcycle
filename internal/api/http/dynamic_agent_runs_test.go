@@ -35,7 +35,7 @@ func TestDynamicAgent_RegisteredThenRun(t *testing.T) {
 	cfg := &config.Config{
 		Defaults:    config.Defaults{Provider: "stub", Model: "stub-model"},
 		Agents:      map[string]config.AgentDef{},
-		Concurrency: config.Concurrency{MaxConcurrentRuns: 4, MaxQueueDepth: 4, QueueTimeoutMS: 1000},
+		Concurrency: config.Concurrency{MaxConcurrentRuns: 4, MaxQueueDepth: 4},
 	}
 	provider := &stubProvider{events: []providers.Event{
 		{Type: providers.EventText, Text: "hello-dynamic"},

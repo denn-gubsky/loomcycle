@@ -30,7 +30,7 @@ func TestUsageAttribution_RecordsPerCallLedgerAndRunSummary(t *testing.T) {
 		Agents: map[string]config.AgentDef{
 			"solo": {Model: "stub-model", SystemPrompt: "you are solo"},
 		},
-		Concurrency: config.Concurrency{MaxConcurrentRuns: 4, MaxQueueDepth: 4, QueueTimeoutMS: 1000},
+		Concurrency: config.Concurrency{MaxConcurrentRuns: 4, MaxQueueDepth: 4},
 		// loomcycle owns pricing (RFC AV O1): $3 / 1M input, $15 / 1M output.
 		Pricing: config.PricingConfig{
 			Currency: "USD",
@@ -148,7 +148,7 @@ func TestUsageAttribution_LedgerRowCarriesRunIdentity(t *testing.T) {
 		Agents: map[string]config.AgentDef{
 			"solo": {Model: "stub-model", SystemPrompt: "you are solo"},
 		},
-		Concurrency: config.Concurrency{MaxConcurrentRuns: 4, MaxQueueDepth: 4, QueueTimeoutMS: 1000},
+		Concurrency: config.Concurrency{MaxConcurrentRuns: 4, MaxQueueDepth: 4},
 		Pricing: config.PricingConfig{
 			Currency: "USD",
 			Models:   map[string]config.ModelPrice{"scripted/stub-model": {Input: 3, Output: 15}},
@@ -242,7 +242,7 @@ func TestUsageAttribution_RunCostIsSumOfLedgerNotFinalModel(t *testing.T) {
 		Agents: map[string]config.AgentDef{
 			"solo": {Model: "model-a", Tools: []string{"Noop"}, SystemPrompt: "you are solo"},
 		},
-		Concurrency: config.Concurrency{MaxConcurrentRuns: 4, MaxQueueDepth: 4, QueueTimeoutMS: 1000},
+		Concurrency: config.Concurrency{MaxConcurrentRuns: 4, MaxQueueDepth: 4},
 		// model-a is 100× the price of model-b, so summing per-call (ledger) vs
 		// pricing the final model over cumulative tokens give very different numbers.
 		Pricing: config.PricingConfig{

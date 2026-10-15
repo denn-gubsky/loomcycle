@@ -53,7 +53,7 @@ func strictLimitsConfig() *config.Config {
 			"parent": {Model: "stub-model", Tools: []string{"Agent"}, SystemPrompt: "you are the parent"},
 			"child":  {Model: "stub-model", Tools: []string{}, SystemPrompt: "you are the child"},
 		},
-		Concurrency: config.Concurrency{MaxConcurrentRuns: 8, MaxQueueDepth: 8, QueueTimeoutMS: 1000},
+		Concurrency: config.Concurrency{MaxConcurrentRuns: 8, MaxQueueDepth: 8},
 	}
 	cfg.Env.AuthToken = ""
 	return cfg

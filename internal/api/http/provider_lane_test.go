@@ -643,7 +643,7 @@ func resumerServer(t *testing.T, sched *concurrency.CallScheduler) (*Server, *sc
 		Agents: map[string]config.AgentDef{
 			"resumer": {Provider: "scripted", Model: "stub-model", SystemPrompt: "you resume work", Tools: []string{}},
 		},
-		Concurrency: config.Concurrency{MaxConcurrentRuns: 8, MaxQueueDepth: 8, QueueTimeoutMS: 1000},
+		Concurrency: config.Concurrency{MaxConcurrentRuns: 8, MaxQueueDepth: 8},
 	}
 	cfg.Env.AuthToken = ""
 	prov := &scriptedProvider{

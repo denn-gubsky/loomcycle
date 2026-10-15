@@ -33,7 +33,7 @@ func newMaxCtxTestServer(t *testing.T, agentMaxCtx int) (*httptest.Server, *reco
 				MaxContextTokens: agentMaxCtx,
 			},
 		},
-		Concurrency: config.Concurrency{MaxConcurrentRuns: 4, MaxQueueDepth: 4, QueueTimeoutMS: 1000},
+		Concurrency: config.Concurrency{MaxConcurrentRuns: 4, MaxQueueDepth: 4},
 	}
 	cfg.Env.AuthToken = ""
 	prov := &recordingProvider{}

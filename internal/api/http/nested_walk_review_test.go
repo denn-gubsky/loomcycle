@@ -74,7 +74,7 @@ func TestTeamMember_NestedWalkDoesNotInheritTheEnclosingReviewArming(t *testing.
 			"inner": {Model: "stub-model", SystemPrompt: "write"},
 			"judge": {Model: "stub-model", SystemPrompt: "judge"},
 		},
-		Concurrency: config.Concurrency{MaxConcurrentRuns: 4, MaxQueueDepth: 4, QueueTimeoutMS: 1000},
+		Concurrency: config.Concurrency{MaxConcurrentRuns: 4, MaxQueueDepth: 4},
 	}
 	text := func(s string) []providers.Event {
 		return []providers.Event{

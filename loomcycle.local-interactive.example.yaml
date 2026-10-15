@@ -118,7 +118,6 @@ agents:
 concurrency:
   max_concurrent_runs: 4
   max_queue_depth: 8
-  queue_timeout_ms: 30000
 
 # ─── Cache ────────────────────────────────────────────────────────────
 cache:

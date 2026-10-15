@@ -88,7 +88,7 @@ func TestSubAgentRoundTrip_ParentSeesChildOutput(t *testing.T) {
 				SystemPrompt: "you are the child",
 			},
 		},
-		Concurrency: config.Concurrency{MaxConcurrentRuns: 4, MaxQueueDepth: 4, QueueTimeoutMS: 1000},
+		Concurrency: config.Concurrency{MaxConcurrentRuns: 4, MaxQueueDepth: 4},
 	}
 	cfg.Env.AuthToken = ""
 
@@ -213,7 +213,7 @@ func TestSubAgent_ParentWithoutAgentToolCannotSpawn(t *testing.T) {
 				SystemPrompt: "you are the child",
 			},
 		},
-		Concurrency: config.Concurrency{MaxConcurrentRuns: 4, MaxQueueDepth: 4, QueueTimeoutMS: 1000},
+		Concurrency: config.Concurrency{MaxConcurrentRuns: 4, MaxQueueDepth: 4},
 	}
 	cfg.Env.AuthToken = ""
 
@@ -273,7 +273,7 @@ func TestSubAgent_UnknownChildName(t *testing.T) {
 				Tools: []string{"Agent"},
 			},
 		},
-		Concurrency: config.Concurrency{MaxConcurrentRuns: 4, MaxQueueDepth: 4, QueueTimeoutMS: 1000},
+		Concurrency: config.Concurrency{MaxConcurrentRuns: 4, MaxQueueDepth: 4},
 	}
 	cfg.Env.AuthToken = ""
 
@@ -347,7 +347,7 @@ func TestSubAgent_SpawnsDynamicallyRegisteredChild(t *testing.T) {
 			// dynamically below. The pre-fix runSubAgent would fail
 			// here at the s.cfg().Agents[name] read.
 		},
-		Concurrency: config.Concurrency{MaxConcurrentRuns: 4, MaxQueueDepth: 4, QueueTimeoutMS: 1000},
+		Concurrency: config.Concurrency{MaxConcurrentRuns: 4, MaxQueueDepth: 4},
 	}
 	cfg.Env.AuthToken = ""
 

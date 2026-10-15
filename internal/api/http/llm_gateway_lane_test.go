@@ -173,7 +173,7 @@ func TestLLMGateway_ProviderSlotIsGivenBackWhenNoGlobalSlotIsFree(t *testing.T) 
 
 // TestLLMGateway_WaitsForARunSlotInTheQueueWithoutTimingOut — with every run
 // slot taken, a gateway request waits in the run queue, as a run does: it does
-// not give up after queue_timeout_ms (here 50ms) and answer 429, and it gets
+// not give up after the semaphore's own timeout (here 50ms) and answer 429, and it gets
 // the first slot that frees.
 func TestLLMGateway_WaitsForARunSlotInTheQueueWithoutTimingOut(t *testing.T) {
 	cfg := makeBaseConfig()

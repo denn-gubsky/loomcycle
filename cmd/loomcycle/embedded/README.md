@@ -73,7 +73,7 @@ The bundled `loomcycle.yaml` walks every section in detail. Quick conceptual map
 - **`channels:`** — declared inter-agent pub/sub channels. ACL is operator-controlled here.
 - **`mcp_servers:`** — declared MCP servers (HTTP / Streamable HTTP / stdio). Tools become callable from any agent's `tools:`.
 - **`storage:`** — backend selection + connection settings. SQLite by default; Postgres opt-in.
-- **`concurrency:`** — `max_concurrent_runs`, `max_queue_depth`, `queue_timeout_ms`, optional `max_concurrent_runs_per_user`.
+- **`concurrency:`** — `max_concurrent_runs`, `max_queue_depth`, optional `max_concurrent_runs_per_user`.
 - **`memory:`** — Memory tool defaults, Vector Memory embedder selection.
 
 ## In-binary help topics

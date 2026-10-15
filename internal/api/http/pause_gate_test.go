@@ -111,7 +111,7 @@ func TestInteractiveRun_PanicRecovered_NoBarrierLeak(t *testing.T) {
 		Agents: map[string]config.AgentDef{
 			"agent": {Model: "stub-model", SystemPrompt: "hi", UnboundedIterations: true},
 		},
-		Concurrency: config.Concurrency{MaxConcurrentRuns: 4, MaxQueueDepth: 4, QueueTimeoutMS: 1000},
+		Concurrency: config.Concurrency{MaxConcurrentRuns: 4, MaxQueueDepth: 4},
 	}
 	cfg.Env.AuthToken = ""
 	sem := concurrency.New(4, 4, 100*time.Millisecond)
@@ -169,7 +169,7 @@ func TestHandleRuns_503WhilePaused(t *testing.T) {
 		Agents: map[string]config.AgentDef{
 			"agent": {Model: "stub-model", SystemPrompt: "hi"},
 		},
-		Concurrency: config.Concurrency{MaxConcurrentRuns: 4, MaxQueueDepth: 4, QueueTimeoutMS: 1000},
+		Concurrency: config.Concurrency{MaxConcurrentRuns: 4, MaxQueueDepth: 4},
 	}
 	cfg.Env.AuthToken = "" // open mode
 	provider := &stubProvider{events: []providers.Event{
@@ -227,7 +227,7 @@ func TestRunOnce_RuntimePausedRejected(t *testing.T) {
 		Agents: map[string]config.AgentDef{
 			"agent": {Model: "stub-model", SystemPrompt: "hi"},
 		},
-		Concurrency: config.Concurrency{MaxConcurrentRuns: 4, MaxQueueDepth: 4, QueueTimeoutMS: 1000},
+		Concurrency: config.Concurrency{MaxConcurrentRuns: 4, MaxQueueDepth: 4},
 	}
 	provider := &stubProvider{events: []providers.Event{
 		{Type: providers.EventDone, StopReason: "end_turn", Usage: &providers.Usage{}},

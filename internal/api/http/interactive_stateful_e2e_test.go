@@ -69,7 +69,7 @@ func TestInteractiveTerminal_AStatefulChatStaysLiveAndKeepsItsState(t *testing.T
 		Agents: map[string]config.AgentDef{
 			"statefulterm": {Model: "stub-model", SystemPrompt: "be brief", Context: &config.Context{Mode: &mode}},
 		},
-		Concurrency: config.Concurrency{MaxConcurrentRuns: 4, MaxQueueDepth: 4, QueueTimeoutMS: 1000},
+		Concurrency: config.Concurrency{MaxConcurrentRuns: 4, MaxQueueDepth: 4},
 	}
 	cfg.Env.AuthToken = ""
 	prov := &turnStateProvider{}

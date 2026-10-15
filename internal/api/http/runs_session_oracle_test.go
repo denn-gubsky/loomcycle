@@ -38,7 +38,7 @@ func TestHandleRuns_UnownedSessionReadsLikeMissingOne(t *testing.T) {
 		Agents: map[string]config.AgentDef{
 			"default": {Model: "stub-model"},
 		},
-		Concurrency: config.Concurrency{MaxConcurrentRuns: 4, MaxQueueDepth: 4, QueueTimeoutMS: 1000},
+		Concurrency: config.Concurrency{MaxConcurrentRuns: 4, MaxQueueDepth: 4},
 	}
 	st, err := storesqlite.Open(filepath.Join(t.TempDir(), "test.db"))
 	if err != nil {

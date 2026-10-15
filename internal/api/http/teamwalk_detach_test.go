@@ -82,7 +82,7 @@ func newDetachHarness(t *testing.T, gateOn bool) *detachHarness {
 	cfg := &config.Config{
 		Defaults:    config.Defaults{Provider: "stub", Model: "stub-model"},
 		Agents:      map[string]config.AgentDef{"worker": {Model: "stub-model", SystemPrompt: "work"}},
-		Concurrency: config.Concurrency{MaxConcurrentRuns: 4, MaxQueueDepth: 4, QueueTimeoutMS: 1000},
+		Concurrency: config.Concurrency{MaxConcurrentRuns: 4, MaxQueueDepth: 4},
 	}
 	cfg.Env.OperatorKeyRestriction = gateOn
 	st, err := storesqlite.Open(filepath.Join(t.TempDir(), "detach.db"))

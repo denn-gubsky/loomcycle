@@ -47,7 +47,7 @@ func postStream(t *testing.T, url, body string) *http.Response {
 // that cannot start at once opens its stream when it queues — session, agent
 // and queued frames while it waits, its row in status queued with its request
 // stored for a restart — then admitted once a slot frees, then the run, in the
-// same session. It used to wait queue_timeout_ms and answer 429.
+// same session. It used to wait 30 s (the old queue_timeout_ms) and answer 429.
 func TestHandleMessages_QueuedContinuationStreamsWhileItWaits(t *testing.T) {
 	s, gate := newGatedBatchServer(t, 1)
 	s.sem = concurrency.New(1, 8, 0)

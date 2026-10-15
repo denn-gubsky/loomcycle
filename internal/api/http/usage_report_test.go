@@ -40,7 +40,7 @@ func TestUsageReport_Endpoint(t *testing.T) {
 		}
 	}
 
-	cfg := &config.Config{Concurrency: config.Concurrency{MaxConcurrentRuns: 2, MaxQueueDepth: 2, QueueTimeoutMS: 500}}
+	cfg := &config.Config{Concurrency: config.Concurrency{MaxConcurrentRuns: 2, MaxQueueDepth: 2}}
 	cfg.Env.AuthToken = "" // open mode → admin, sees all tenants
 	srv := New(cfg, &stubResolver{p: &scriptedProvider{}}, []tools.Tool{}, concurrency.New(2, 2, time.Second), st)
 	ts := httptest.NewServer(srv.Mux())
@@ -102,7 +102,7 @@ func TestUsageReport_EmptyRowsIsArrayNotNull(t *testing.T) {
 	}
 	defer st.Close()
 
-	cfg := &config.Config{Concurrency: config.Concurrency{MaxConcurrentRuns: 2, MaxQueueDepth: 2, QueueTimeoutMS: 500}}
+	cfg := &config.Config{Concurrency: config.Concurrency{MaxConcurrentRuns: 2, MaxQueueDepth: 2}}
 	cfg.Env.AuthToken = "" // open mode → admin
 	srv := New(cfg, &stubResolver{p: &scriptedProvider{}}, []tools.Tool{}, concurrency.New(2, 2, time.Second), st)
 	ts := httptest.NewServer(srv.Mux())

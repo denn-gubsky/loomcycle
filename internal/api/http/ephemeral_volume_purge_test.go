@@ -31,7 +31,7 @@ func ephemeralPurgeServer(t *testing.T) (*Server, store.Store, string) {
 		Volumes: map[string]config.Volume{
 			"pool": {Path: root, Mode: "rw", DynamicRoot: true},
 		},
-		Concurrency: config.Concurrency{MaxConcurrentRuns: 4, MaxQueueDepth: 4, QueueTimeoutMS: 1000},
+		Concurrency: config.Concurrency{MaxConcurrentRuns: 4, MaxQueueDepth: 4},
 	}
 	cfg.Env.AuthToken = ""
 	st, err := storesqlite.Open(filepath.Join(t.TempDir(), "ephemeral_purge.db"))

@@ -375,8 +375,8 @@ References: `internal/store/store.go` (interface), `internal/store/sqlite/` + `i
 - `MaxConcurrentRuns` slots active simultaneously.
 - `MaxQueueDepth` waiters queue when slots are full.
 - Waiters are served round-robin across (tenant, user), FIFO within one, so one user's burst cannot hold every other user back. Work that was already admitted once (a resumed run) is served first.
-- Past the queue depth, `Acquire()` returns `BackpressureError` → HTTP 429 with `code:"backpressure"`.
-- `QueueTimeoutMS` per acquire.
+- A waiter never times out: a run, and a request sent directly (the LLM gateway, `/v1/embeddings`), waits until a slot frees or its caller leaves.
+- Past the queue depth, admission returns `BackpressureError` → HTTP 429 with `code:"backpressure"`.
 - `MaxConcurrentRunsPerUser` caps one (tenant, user)'s active plus queued runs.
 
 References: `internal/concurrency/semaphore.go`, YAML `concurrency:` block in `loomcycle.example.yaml`.

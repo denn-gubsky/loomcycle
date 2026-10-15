@@ -22,7 +22,7 @@ func TestListModels_ReturnsConfiguredAliases(t *testing.T) {
 			"local-medium": {Provider: "ollama-local", Model: "qwen3.6:latest"},
 			"deepseek-pro": {Provider: "deepseek", Model: "deepseek-v4-pro"},
 		},
-		Concurrency: config.Concurrency{MaxConcurrentRuns: 1, MaxQueueDepth: 1, QueueTimeoutMS: 100},
+		Concurrency: config.Concurrency{MaxConcurrentRuns: 1, MaxQueueDepth: 1},
 	}
 	cfg.Env.AuthToken = ""
 	srv := New(cfg, &stubResolver{}, nil, concurrency.New(1, 1, time.Second), nil)
@@ -59,7 +59,7 @@ func TestListModels_ReportsAnAliasKind(t *testing.T) {
 			"local-medium": {Provider: "ollama-local", Model: "qwen3.6:latest"},
 			"decide":       {Provider: "ollama-local", Model: "nimble", Kind: config.ModelKindDecision},
 		},
-		Concurrency: config.Concurrency{MaxConcurrentRuns: 1, MaxQueueDepth: 1, QueueTimeoutMS: 100},
+		Concurrency: config.Concurrency{MaxConcurrentRuns: 1, MaxQueueDepth: 1},
 	}
 	srv := New(cfg, &stubResolver{}, nil, concurrency.New(1, 1, time.Second), nil)
 	ts := httptest.NewServer(srv.Mux())

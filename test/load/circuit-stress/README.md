@@ -163,7 +163,7 @@ LOOMCYCLE_MOCK_500_RATE=0.01 \
   ./test/load/circuit-stress/run-mock.sh --scale 1000
 
 # Latency-induced queue backup. At what scale does max_queue_depth
-# saturate? Does queue_timeout_ms drain cleanly?
+# saturate? Does the queue drain cleanly?
 LOOMCYCLE_MOCK_LATENCY_MS=200 LOOMCYCLE_MOCK_LATENCY_JITTER_MS=100 \
   ./test/load/circuit-stress/run-mock.sh --scale 5000
 
