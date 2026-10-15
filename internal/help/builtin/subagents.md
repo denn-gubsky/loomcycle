@@ -41,6 +41,12 @@ tags that nothing in the text can close, so an instruction written inside it
 stays text. `spawn`, each `parallel_spawn` entry and `open` take it; `send`
 does not.
 
+To close the tags safely, every `<` in the text becomes `‹` and invisible
+characters are removed. For code, use `"kind": "code"`: the text reaches the
+child exactly as written, inside `<untrusted-code b="…">…</untrusted-code
+b="…">` tags whose `b` is derived from the text, and invisible characters
+(such as a bidi control) are shown as `⟨U+202E⟩` so the child can see them.
+
 ## Bounding a slow child: `timeout_ms`
 
 A sub-agent has no deadline of its own: `spawn` and `parallel_spawn` wait as

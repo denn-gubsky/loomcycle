@@ -448,9 +448,8 @@ edge (~1568px) before sending to keep them small and bound token cost.
 
 ### Caveats
 
-- The gRPC `PromptContentBlock` carries `media_type` + `data` (bytes) but still
-  omits `kind` (the untrusted-block source label) — gRPC callers can send images
-  and trusted/untrusted text, but not a custom untrusted `kind`.
+- The gRPC `PromptContentBlock` carries `media_type` + `data` (bytes); its
+  `kind` field (the untrusted-block source label) is the HTTP wire's `kind`.
 - **No image output** (generation), no audio/video.
 - A vision model can be influenced by text rendered *inside* an image
   (prompt-injection-via-image) — inherent to any vision system, not defended at
