@@ -192,6 +192,37 @@ func (s *CallScheduler) acquire(ctx context.Context, providerID, kind string, c 
 	}, nil
 }
 
+// EstimatedWait is how long a new call of kind to model on providerID would
+// wait before it computes, judged from the lane's and the model gate's state
+// right now and callTime, the typical time one call holds its slot. It is an
+// estimate for choosing where a run goes (queue-aware routing), not a promise.
+//
+//   - A free lane slot waits nothing; a full lane waits for the calls queued
+//     ahead and this one, shared across its slots: (queued+1)/max × callTime.
+//     A slot held for the run that last used it counts as taken.
+//   - A gate at its cap that does not have the model in flight adds one
+//     callTime: the call waits for a model to drain first.
+//
+// 0 when nothing caps the call, or callTime is unknown (0): with no measure of
+// how long a call takes, a queue's length says nothing about its wait.
+func (s *CallScheduler) EstimatedWait(providerID, kind, model string, callTime time.Duration) time.Duration {
+	if callTime <= 0 {
+		return 0
+	}
+	lane, gate := s.lane(providerID, kind)
+	var wait time.Duration
+	if lane != nil {
+		st := lane.Stats()
+		if st.MaxConcurrent > 0 && st.Active+st.Reserved >= st.MaxConcurrent {
+			wait = time.Duration(st.Queued+1) * callTime / time.Duration(st.MaxConcurrent)
+		}
+	}
+	if gate.blocksNew(model) {
+		wait += callTime
+	}
+	return wait
+}
+
 // Done tells every lane that owner's run has ended, dropping its reservations.
 func (s *CallScheduler) Done(owner string) {
 	if s == nil || owner == "" {

@@ -1789,9 +1789,18 @@ func (s *Server) resolveAgentDef(ctx context.Context, def config.AgentDef, tenan
 		if restricted {
 			req.KeyableProviders = s.keyableProvidersFor(ctx, req, tenantID, agentName, userID)
 		}
+		// RFC EI P4: only where a run starts (see queue_routing.go).
+		if def.Routing != nil && def.Routing.QueueAware && isRunStart(ctx) {
+			req.QueueWait = s.estimatedQueueWait
+			req.SwitchAfter = def.Routing.SwitchAfter()
+		}
 		dec, rerr := s.resolver.Resolve(req)
 		if rerr != nil {
 			return "", "", "", rerr
+		}
+		if len(dec.PassedOver) > 0 {
+			log.Printf("queue-aware routing: agent %q runs on %s/%s, passing over %s (switch_after %s)",
+				agentName, dec.Provider, dec.Model, strings.Join(dec.PassedOver, ", "), req.SwitchAfter)
 		}
 		return dec.Provider, dec.Model, dec.Effort, nil
 	}
@@ -3017,7 +3026,7 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 	if rerr != nil {
 		return rerr
 	}
-	providerID, model, effort, err := s.resolveAgentDef(ctx, agentDef, effectiveTenantID, effectiveUserID, effectiveAgentName, in.UserTier, operatorKeyRestricted)
+	providerID, model, effort, err := s.resolveAgentDef(withRunStart(ctx), agentDef, effectiveTenantID, effectiveUserID, effectiveAgentName, in.UserTier, operatorKeyRestricted)
 	if err != nil {
 		return err // already wrapped with runner.Err* sentinel
 	}
@@ -5105,7 +5114,7 @@ func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {
 		writeJSONError(w, http.StatusConflict, "agent_id_in_use", fmt.Sprintf(agentIDInUseMsg, req.AgentID))
 		return
 	}
-	providerID, model, effort, err := s.resolveAgentDef(r.Context(), agentDef, req.TenantID, req.UserID, req.Agent, req.UserTier, operatorKeyRestricted)
+	providerID, model, effort, err := s.resolveAgentDef(withRunStart(r.Context()), agentDef, req.TenantID, req.UserID, req.Agent, req.UserTier, operatorKeyRestricted)
 	if err != nil {
 		writeResolveError(w, err)
 		return
@@ -6150,7 +6159,7 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 		writeResolveError(w, oerr)
 		return
 	}
-	providerID, model, effort, err := s.resolveAgentDef(r.Context(), agentDef, sess.TenantID, sess.UserID, sess.Agent, body.UserTier, operatorKeyRestricted)
+	providerID, model, effort, err := s.resolveAgentDef(withRunStart(r.Context()), agentDef, sess.TenantID, sess.UserID, sess.Agent, body.UserTier, operatorKeyRestricted)
 	if err != nil {
 		writeResolveError(w, err)
 		return
@@ -8221,7 +8230,7 @@ func (s *Server) prepareSubRunValues(ctx context.Context, name string, src nameS
 	// would silently discard the fork's values. RFC AX: a child INHERITS the
 	// parent's operator-key restriction — it can't escape by spawning, so
 	// credential-aware routing applies to the sub-run too.
-	providerID, model, effort, err := s.resolveAgentDef(ctx, def, parentIdentity.TenantID, parentIdentity.UserID, name, parentTier, parentIdentity.OperatorKeyRestricted)
+	providerID, model, effort, err := s.resolveAgentDef(withRunStart(ctx), def, parentIdentity.TenantID, parentIdentity.UserID, name, parentTier, parentIdentity.OperatorKeyRestricted)
 	if err != nil {
 		return nil, fmt.Errorf("resolve sub-agent %q model: %w", name, err)
 	}

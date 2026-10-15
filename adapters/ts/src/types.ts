@@ -4586,6 +4586,16 @@ export interface CoreBlock {
  *  host filesystem bind — the symmetry that makes code agents work in
  *  containers / pure-cloud. Requires `LOOMCYCLE_CODE_AGENTS_ENABLED=1` on the
  *  sidecar; create/fork refuses a non-empty `code_body` otherwise. */
+/** An agent's `routing:` block (RFC EI P4). */
+export interface AgentRouting {
+  /** Pass over a cascade candidate whose provider is busy enough that the
+   *  run's first call would wait longer than `switch_after_ms`, for the next
+   *  available one. */
+  queue_aware?: boolean;
+  /** The estimated wait that passes a candidate over. Default 20000. */
+  switch_after_ms?: number;
+}
+
 export interface AgentDefOverlay {
   provider?: string;
   model?: string;
@@ -4595,6 +4605,9 @@ export interface AgentDefOverlay {
   code_body?: string;
   tier?: string;
   effort?: string;
+  /** How the provider and model are chosen when a run starts (RFC EI P4).
+   *  Tier-routed agents only. Replaced whole by a fork that sets it. */
+  routing?: AgentRouting;
   /** Whether and which tool the model must call (RFC DI). */
   tool_choice?: ToolChoiceOptions;
   /** The JSON schema the answer must follow (RFC DI). */

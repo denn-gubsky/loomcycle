@@ -170,6 +170,10 @@ type Stat struct {
 	// QueueMsP50 is the median recent unaccounted-for wait — contention on the
 	// box. Operator-facing only; 0 = none recorded.
 	QueueMsP50 int64 `json:"queue_ms_p50,omitempty"`
+	// CallMsP50 is the median recent call's service time: its duration less
+	// the time it queued. Queue-aware routing estimates a lane's wait from it.
+	// 0 = none recorded.
+	CallMsP50 int64 `json:"call_ms_p50,omitempty"`
 }
 
 // ewma is an exponentially-weighted mean that starts at its first value.
@@ -194,6 +198,9 @@ type modelState struct {
 
 	queue    []int64 // ring of recent queue times
 	queueIdx int
+
+	call    []int64 // ring of recent service times (duration less queue time)
+	callIdx int
 }
 
 type runWindowState struct {
@@ -341,6 +348,9 @@ func (e *Estimator) Observe(s Sample) bool {
 	if s.LoadMs > coldLoadMs {
 		st.coldLoadMs.add(float64(s.LoadMs))
 	}
+	if service := s.DurationMs - s.QueueMs; service > 0 {
+		st.call, st.callIdx = pushRing(st.call, st.callIdx, service)
+	}
 	if s.QueueMs > 0 {
 		if len(st.queue) < queueRing {
 			st.queue = append(st.queue, s.QueueMs)
@@ -390,6 +400,32 @@ func (e *Estimator) Stat(provider, model string) Stat {
 	return e.statLocked(k)
 }
 
+// MedianCallMs is the model's median recent call service time, 0 when none
+// is recorded (or the estimator is off). A `models:` alias finds the model it
+// names.
+func (e *Estimator) MedianCallMs(provider, model string) int64 {
+	if e == nil {
+		return 0
+	}
+	k := e.key(provider, model)
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if st := e.models[k]; st != nil {
+		return median(st.call)
+	}
+	return 0
+}
+
+// pushRing appends x to a ring of at most queueRing values, overwriting the
+// oldest once full.
+func pushRing(ring []int64, idx int, x int64) ([]int64, int) {
+	if len(ring) < queueRing {
+		return append(ring, x), idx
+	}
+	ring[idx] = x
+	return ring, (idx + 1) % queueRing
+}
+
 // All reports every model with at least one sample, sorted by provider, model.
 func (e *Estimator) All() []Stat {
 	if e == nil {
@@ -418,6 +454,7 @@ func (e *Estimator) statLocked(k Key) Stat {
 		s.DecodeTPS, s.PrefillTPS = st.decodeTPS.v, st.prefillTPS.v
 		s.TTFTMs, s.ColdLoadMs = st.ttftMs.v, st.coldLoadMs.v
 		s.QueueMsP50 = median(st.queue)
+		s.CallMsP50 = median(st.call)
 	}
 	s.Multiplier, s.Source = e.multiplierLocked(k)
 	s.MaxMultiplier = e.capFor(k)

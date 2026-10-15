@@ -193,4 +193,9 @@ var agentDefOverridability = map[string]overridability{
 	// operator's; an override selects WITHIN them and may not change them. ---
 	"Providers": notOverridable,
 	"Models":    notOverridable,
+	// How the cascade those declare is walked at run start (RFC EI P4b). A run
+	// could not reach a provider the definition does not list through it, but
+	// it would choose cost and data residency among them; there is no per-run
+	// `routing` yet, and adding one is a decision of its own.
+	"Routing": notOverridable,
 }

@@ -23,6 +23,7 @@ import (
 	"errors"
 	"fmt"
 	"path"
+	"strings"
 	"sync"
 	"time"
 
@@ -82,6 +83,11 @@ type Decision struct {
 	Provider string
 	Model    string
 	Effort   string
+	// PassedOver names the available candidates queue-aware routing passed
+	// over for this one, each with its estimated wait ("ollama-local/m ~45s"),
+	// in cascade order. Empty when the request is not queue-aware or the first
+	// available candidate was taken.
+	PassedOver []string
 }
 
 // AgentRequest is the resolver's input. Mirrors the relevant subset of
@@ -148,6 +154,16 @@ type AgentRequest struct {
 	// bypasses candidate selection, so its restricted-run guarantee lives in the
 	// driver backstop (providers.ErrOperatorKeyForbidden), not here.
 	KeyableProviders map[string]bool
+
+	// QueueWait, when set, estimates how long the run's first call on a
+	// (provider, model) would wait for its provider (RFC EI P4 queue-aware
+	// routing). The tier walk passes over an available candidate whose wait is
+	// above SwitchAfter for the next available one; when every available
+	// candidate is over, the one with the shortest wait wins, the earliest on a
+	// tie. nil = the first available candidate, as always. Called with the
+	// resolver's read lock held: it must not call back into the Resolver.
+	QueueWait   func(provider, model string) time.Duration
+	SwitchAfter time.Duration
 }
 
 // UserTierOverlay carries the per-request user-tier policy. Built by
@@ -470,6 +486,15 @@ func (r *Resolver) Resolve(req AgentRequest) (Decision, error) {
 	// tenant-keyable provider" (a policy refusal) from a plain availability
 	// outage below.
 	sawKeyable := false
+	// Queue-aware routing: the best candidate passed over so far, kept in case
+	// every available one is over SwitchAfter.
+	var (
+		best       Decision
+		bestCand   Candidate
+		bestWait   time.Duration
+		haveBest   bool
+		passedOver []string
+	)
 	for _, providerID := range priority {
 		for _, cand := range candidates {
 			if cand.Provider != providerID {
@@ -496,19 +521,35 @@ func (r *Resolver) Resolve(req AgentRequest) (Decision, error) {
 				model = m
 			}
 			if r.isAvailableLocked(cand.Provider, model) {
+				dec := Decision{Provider: cand.Provider, Model: model, Effort: req.Effort}
+				if req.QueueWait != nil {
+					wait := req.QueueWait(cand.Provider, model)
+					if wait > req.SwitchAfter {
+						if !haveBest || wait < bestWait {
+							best, bestCand, bestWait, haveBest = dec, cand, wait, true
+						}
+						passedOver = append(passedOver, fmt.Sprintf("%s/%s ~%s", cand.Provider, model, wait.Round(time.Second)))
+						continue
+					}
+				}
 				// Log a silent model bump only for the candidate we actually
 				// select (not merely one that matched) — so the WARN maps 1:1 to
 				// what runs.
 				if cand.ModelPattern != "" {
 					r.noteResolved(cand.Provider, cand.ModelPattern, model)
 				}
-				return Decision{
-					Provider: cand.Provider,
-					Model:    model,
-					Effort:   req.Effort,
-				}, nil
+				dec.PassedOver = passedOver
+				return dec, nil
 			}
 		}
+	}
+	if haveBest {
+		// Every available candidate was over SwitchAfter: the shortest wait.
+		if bestCand.ModelPattern != "" {
+			r.noteResolved(bestCand.Provider, bestCand.ModelPattern, best.Model)
+		}
+		best.PassedOver = removePassed(passedOver, best)
+		return best, nil
 	}
 	// RFC AX: a non-nil filter that removed EVERY candidate is a policy refusal
 	// (the tenant can key none of the tier's providers), not a transient outage.
@@ -518,6 +559,20 @@ func (r *Resolver) Resolve(req AgentRequest) (Decision, error) {
 	}
 	return Decision{}, fmt.Errorf("%w: agent %q tier %q (no reachable provider with a non-stalled model)",
 		ErrTierUnavailable, req.Name, req.Tier)
+}
+
+// removePassed drops chosen's own entry from the passed-over list: when every
+// candidate was over SwitchAfter, the one taken was passed over only on the
+// way, not in the end.
+func removePassed(passed []string, chosen Decision) []string {
+	prefix := chosen.Provider + "/" + chosen.Model + " ~"
+	out := passed[:0:0]
+	for _, p := range passed {
+		if !strings.HasPrefix(p, prefix) {
+			out = append(out, p)
+		}
+	}
+	return out
 }
 
 // keyable reports whether provider passes req's RFC AX Layer-1 filter: always

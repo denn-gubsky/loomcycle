@@ -322,6 +322,9 @@ type SubstrateAgentDef struct {
 	// mergedDef). Pointer so substrate JSON persists nil (provider default)
 	// vs an explicit temperature:0.0 (deterministic).
 	Sampling *config.Sampling `json:"sampling,omitempty"`
+	// Routing: how the provider and model are chosen at run start (mirrors
+	// config.AgentDef.Routing / mergedDef).
+	Routing *config.AgentRouting `json:"routing,omitempty"`
 	// MemoryRerank: the agent's opt-in to the listwise search rerank (mirrors
 	// config.AgentDef.MemoryRerank). Kept in sync with builtin.mergedDef.
 	MemoryRerank *config.MemoryRerank `json:"memory_rerank,omitempty"`
@@ -467,6 +470,7 @@ func SubstrateAgentDefFromConfig(def config.AgentDef) SubstrateAgentDef {
 		Tier:                   def.Tier,
 		Effort:                 def.Effort,
 		Sampling:               def.Sampling,
+		Routing:                def.Routing,
 		ToolChoice:             def.ToolChoice,
 		OutputFormat:           def.OutputFormat,
 		Compaction:             def.Compaction,
@@ -530,6 +534,7 @@ func (s SubstrateAgentDef) ToConfigDef() config.AgentDef {
 		Tier:                  s.Tier,
 		Effort:                s.Effort,
 		Sampling:              s.Sampling,
+		Routing:               s.Routing,
 		ToolChoice:            s.ToolChoice,
 		OutputFormat:          s.OutputFormat,
 		Compaction:            s.Compaction,

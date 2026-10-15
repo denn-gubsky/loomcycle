@@ -287,6 +287,7 @@ func TestAgent_DriftDetection(t *testing.T) {
 		"tier":                    true,
 		"effort":                  true,
 		"sampling":                true, // per-agent LLM sampling params (temperature, top_p, …)
+		"routing":                 true, // RFC EI P4: queue-aware provider/model choice at run start
 		"tool_choice":             true, // RFC DI: whether and which tool the model must call
 		"output_format":           true, // RFC DI: the JSON schema the answer must follow
 		"compaction":              true, // per-agent context-compaction settings
