@@ -15,8 +15,10 @@ import (
 // it only when its editor qualifies too.
 func TestScheduleDefTool_UserScopeIsCapturedFromTheAuthor(t *testing.T) {
 	tool, tenantAuthor := scheduleBearerFixture(t)
+	// A principal's run is its subject's: the token names the user.
 	asUser := func(user string) context.Context {
-		return tools.WithRunIdentity(tenantAuthor, tools.RunIdentityValue{AgentID: "a_test", TenantID: "acme", UserID: user})
+		ctx := tools.WithRunIdentity(tenantAuthor, tools.RunIdentityValue{AgentID: "a_test", TenantID: "acme", UserID: user})
+		return auth.WithPrincipal(ctx, auth.Principal{TenantID: "acme", Subject: user, Scopes: []string{auth.ScopeTenant}})
 	}
 	admin := auth.WithPrincipal(tenantAuthor, auth.Principal{TenantID: "acme", Subject: "ops", Scopes: []string{auth.ScopeAdmin}})
 	overlay := func(extra string) string {
@@ -58,5 +60,45 @@ func TestScheduleDefTool_UserScopeIsCapturedFromTheAuthor(t *testing.T) {
 	}
 	if activeScheduleDef(t, tool, "own").UserScopeCredentials {
 		t.Error("a hook edit by another user kept the user scope")
+	}
+}
+
+// "The user themselves" is who is authenticated, and a run that may not use
+// its own user's scope cannot hand that scope to a schedule it writes. Inside
+// a webhook's run the user came from the delivery, so a model there that
+// wrote a schedule for that user would launder the run's restriction into a
+// schedule whose runs take that user's credentials.
+func TestScheduleDefTool_UserScopeIsNotGrantedByARunThatLacksIt(t *testing.T) {
+	tool, tenantAuthor := scheduleBearerFixture(t)
+	// A trigger-fired run carries no principal: only its run identity.
+	triggered := func(noUserScope bool) context.Context {
+		ctx := tools.WithAgentName(context.Background(), "scheduler-orchestrator")
+		ctx = tools.WithScheduleDefPolicy(ctx, tools.ScheduleDefPolicyValue{Scopes: []string{"any"}, SelfName: "scheduler-orchestrator"})
+		return tools.WithRunIdentity(ctx, tools.RunIdentityValue{AgentID: "a_hook", TenantID: "acme", UserID: "alice", CredentialsNoUserScope: noUserScope})
+	}
+	asPrincipal := func(subject, runUser string) context.Context {
+		ctx := tools.WithRunIdentity(tenantAuthor, tools.RunIdentityValue{AgentID: "a_test", TenantID: "acme", UserID: runUser})
+		return auth.WithPrincipal(ctx, auth.Principal{TenantID: "acme", Subject: subject, Scopes: []string{auth.ScopeTenant}})
+	}
+	overlay := `{"agent":"digest","schedule":"0 6 * * *","user_id":"alice"}`
+	for _, tc := range []struct {
+		name string
+		ctx  context.Context
+		want bool
+	}{
+		{"a webhook's run for the user", triggered(true), false},
+		{"a run of a schedule the user's own author wrote", triggered(false), true},
+		{"another principal in the user's run", asPrincipal("bob", "alice"), false},
+		{"the user, off any run", asPrincipal("alice", "_substrate_admin"), true},
+	} {
+		if text, isErr := scheduleCreate(t, tool, tc.ctx, "s", overlay); isErr {
+			t.Fatalf("%s: %s", tc.name, text)
+		}
+		if got := activeScheduleDef(t, tool, "s").UserScopeCredentials; got != tc.want {
+			t.Errorf("%s: user_scope_credentials = %t, want %t", tc.name, got, tc.want)
+		}
+		if _, err := tool.Execute(tc.ctx, json.RawMessage(`{"op":"retire","name":"s"}`)); err != nil {
+			t.Fatal(err)
+		}
 	}
 }
