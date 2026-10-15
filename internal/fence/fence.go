@@ -11,6 +11,7 @@ import (
 	"strconv"
 	"strings"
 	"unicode"
+	"unicode/utf8"
 )
 
 // lt is the replacement for every spelling of "<". It is a look-alike itself,
@@ -35,9 +36,11 @@ const lt = "‹"
 // A list of spellings cannot be proved complete. What it does is remove the
 // ones a model demonstrably decodes; the allowlisted tag name and the fixed
 // block layout are the rest of the defence.
-var ltSpellings = regexp.MustCompile(`(?i)[<\x{FF1C}\x{FE64}\x{2039}\x{276C}\x{276E}\x{2770}\x{2329}\x{27E8}\x{29FC}\x{3008}\x{02C2}\x{1438}\x{16B2}\x{226E}]` +
+var ltSpellings = regexp.MustCompile(`(?i)` + ltPattern)
+
+const ltPattern = `[<\x{FF1C}\x{FE64}\x{2039}\x{276C}\x{276E}\x{2770}\x{2329}\x{27E8}\x{29FC}\x{3008}\x{02C2}\x{1438}\x{16B2}\x{226E}]` +
 	`|[&\x{FF06}\x{FE60}](?:lt|#0*60|#x0*3c);?` +
-	`|\\u\{?0*3c\}?|\\x0*3c|%3c`)
+	`|\\u\{?0*3c\}?|\\x0*3c|%3c`
 
 // EscapeUntrusted returns s with no way left to write a tag:
 //
@@ -101,7 +104,10 @@ func CodeBlock(text string) string {
 // codeBlock is CodeBlock with the hash passed in, so a test can force the
 // case where the text holds its boundary.
 func codeBlock(text string, sum func([]byte) [sha256.Size]byte) string {
-	shown := ShowInvisible(text)
+	shown := ownTag.ReplaceAllString(ShowInvisible(text), lt+"$1")
+	if len(shown)-len(text) > len(text)/4+codeMaxGrowth {
+		return escapedBlock(text)
+	}
 	folded := strings.ToLower(shown)
 	for i := 0; i < codeBoundaryTries; i++ {
 		in := shown
@@ -117,33 +123,67 @@ func codeBlock(text string, sum func([]byte) [sha256.Size]byte) string {
 			return fmt.Sprintf("<%s b=%q>\n%s\n</%s b=%q>", codeTag, b, shown, codeTag, b)
 		}
 	}
+	return escapedBlock(text)
+}
+
+// escapedBlock is how a code block is fenced when it cannot be kept as
+// written: as the "untrusted" kind is.
+func escapedBlock(text string) string {
 	return fmt.Sprintf("<untrusted>\n%s\n</untrusted>", EscapeUntrusted(text))
 }
 
+// ownTag matches the fence's own tag opened or closed inside the text, in any
+// spelling of "<". It is the one thing in code the fence rewrites ("<" becomes
+// "‹"), so the only `</untrusted-code` a model sees is the real one and it
+// never has to compare boundaries to find the end of the block. Code that
+// writes this tag name is code about loomcycle's own fence; nothing else does.
+var ownTag = regexp.MustCompile(`(?i)(?:` + ltPattern + `)(\s*/?\s*untrusted-code)`)
+
+// codeMaxGrowth bounds, beyond a quarter of the text, how much longer showing
+// invisible characters may make a code block (each one grows to up to 12
+// bytes). Past it the block is escaped instead: limits are counted on the
+// text as sent, and the block is resent on every turn.
+const codeMaxGrowth = 4096
+
 // ShowInvisible writes every character a reader cannot see as ⟨U+XXXX⟩: the
 // ones EscapeUntrusted drops (format characters such as bidi controls and
-// zero-width joiners, variation selectors, other default-ignorables), and
-// the control characters other than tab, line feed and carriage return.
+// zero-width joiners, variation selectors, other default-ignorables), the
+// control characters other than tab, line feed and carriage return, a
+// carriage return not followed by a line feed, the line and paragraph
+// separators, and the blank braille pattern. Each of these can make text a
+// language reads differently from how it looks (a lone CR or U+2028 ends a
+// comment line that a reader sees continue).
+//
+// A "⟨" that already starts "⟨U+" in the text is itself shown, as ⟨U+27E8⟩,
+// so a marker in the output always stands for a character that was there.
 func ShowInvisible(s string) string {
-	if strings.IndexFunc(s, hidden) < 0 {
+	if strings.IndexFunc(s, hidden) < 0 && !strings.Contains(s, "\r") && !strings.Contains(s, markerOpen) {
 		return s
 	}
 	var b strings.Builder
 	b.Grow(len(s) + 16)
-	for _, r := range s {
-		if hidden(r) {
+	for i, r := range s {
+		rest := s[i+utf8.RuneLen(r):]
+		switch {
+		case hidden(r),
+			r == '\r' && !strings.HasPrefix(rest, "\n"),
+			r == '⟨' && strings.HasPrefix(rest, "U+"):
 			fmt.Fprintf(&b, "⟨U+%04X⟩", r)
-			continue
+		default:
+			b.WriteRune(r)
 		}
-		b.WriteRune(r)
 	}
 	return b.String()
 }
+
+const markerOpen = "⟨U+"
 
 func hidden(r rune) bool {
 	switch r {
 	case '\t', '\n', '\r':
 		return false
+	case '\u2028', '\u2029', '\u2800':
+		return true
 	}
 	return unicode.IsControl(r) ||
 		unicode.Is(unicode.Cf, r) || unicode.Is(unicode.Variation_Selector, r) || unicode.Is(unicode.Other_Default_Ignorable_Code_Point, r)

@@ -46,6 +46,8 @@ characters are removed. For code, use `"kind": "code"`: the text reaches the
 child exactly as written, inside `<untrusted-code b="…">…</untrusted-code
 b="…">` tags whose `b` is derived from the text, and invisible characters
 (such as a bidi control) are shown as `⟨U+202E⟩` so the child can see them.
+The only change made to the text is to the tag name itself: an
+`untrusted-code` tag written inside it gets `‹` for its `<`.
 
 ## Bounding a slow child: `timeout_ms`
 

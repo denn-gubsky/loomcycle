@@ -4545,9 +4545,9 @@ type PromptContentBlock struct {
 	Data      []byte `protobuf:"bytes,5,opt,name=data,proto3" json:"data,omitempty"`
 	// The source label of an untrusted-block, as `kind` on the HTTP wire:
 	// untrusted (the default), web_content, uploaded_cv, qa_question,
-	// user_input, tool_output, search_result, run_metadata, or code (kept
-	// exactly as written under a boundary derived from the text). Any other
-	// value is fenced as untrusted.
+	// user_input, tool_output, search_result, or code (kept exactly as written
+	// under a boundary derived from the text). Any other value is fenced as
+	// untrusted.
 	Kind          string `protobuf:"bytes,6,opt,name=kind,proto3" json:"kind,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache

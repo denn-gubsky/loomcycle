@@ -23,8 +23,9 @@ conversation — so put all it needs in it.
   `code` has `<` rewritten as `‹` and invisible characters removed, so the
   text cannot close its tags. `code` reaches the child **exactly as written**
   inside `<untrusted-code b="…">…</untrusted-code b="…">`, where `b` is
-  derived from the text so the text cannot close it, and invisible characters
-  are shown as `⟨U+202E⟩`: use it for source code, diffs and anything else a
+  derived from the text; the one change is that the tag name
+  `untrusted-code` written inside the text gets `‹` for its `<`, so the text
+  cannot close the block. Invisible characters are shown as `⟨U+202E⟩`: use it for source code, diffs and anything else a
   child must read or quote character for character. Placeholders in it are
   not expanded. An entry may instead be `{"ref": "input"}`: it stands for the
   untrusted text **your own run was given**, in order and with its kinds, so
