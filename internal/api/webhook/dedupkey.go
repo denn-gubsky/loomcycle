@@ -42,8 +42,12 @@ const verdictRejectedDedupKey = "rejected_dedup_key"
 // resolves), and err a body that is not JSON.
 //
 // The body is decoded again with numbers kept as written: decoded to float64,
-// two ids past 2^53 could share a key.
+// two ids past 2^53 could share a key. It is scanned first, as every other
+// decode of a delivery's body is (decodeJSONBody): this one can come first.
 func dedupFieldsID(paths []string, body []byte) (id string, missing int, err error) {
+	if err := checkJSONShape(body, maxJSONDepth, maxJSONTokens); err != nil {
+		return "", -1, fmt.Errorf("malformed json body: %w", err)
+	}
 	dec := json.NewDecoder(bytes.NewReader(body))
 	dec.UseNumber()
 	var doc any

@@ -383,3 +383,18 @@ func TestReceiver_Test_ReportsAnUnresolvableDedupKey(t *testing.T) {
 		t.Fatal("the dry-run started a run")
 	}
 }
+
+// The body a dedup_key reads is held to the shape limits every other decode of
+// a delivery is: for a webhook with no events or filters it is the first
+// decode, ahead of the payload mapping's.
+func TestDedupFieldsID_RefusesABodyPastTheShapeLimits(t *testing.T) {
+	deep := func(n int) []byte {
+		return []byte(`{"n":1,"d":` + strings.Repeat(`[`, n) + strings.Repeat(`]`, n) + `}`)
+	}
+	if _, missing, err := dedupFieldsID([]string{"$.n"}, deep(maxJSONDepth-1)); err != nil || missing >= 0 {
+		t.Errorf("a body at the depth limit: missing %d, %v", missing, err)
+	}
+	if _, _, err := dedupFieldsID([]string{"$.n"}, deep(maxJSONDepth+1)); err == nil || !strings.Contains(err.Error(), "nested deeper") {
+		t.Errorf("a body past the depth limit: %v, want it refused before decoding", err)
+	}
+}
