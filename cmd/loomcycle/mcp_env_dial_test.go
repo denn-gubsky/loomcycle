@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/base64"
 	"fmt"
 	"io"
 	"net/http"
@@ -11,6 +12,9 @@ import (
 	"testing"
 
 	"github.com/denn-gubsky/loomcycle/internal/config"
+	"github.com/denn-gubsky/loomcycle/internal/credential"
+	storesqlite "github.com/denn-gubsky/loomcycle/internal/store/sqlite"
+	"github.com/denn-gubsky/loomcycle/internal/tools"
 	"github.com/denn-gubsky/loomcycle/internal/tools/mcp"
 )
 
@@ -225,5 +229,33 @@ func TestMCPPoolBuild_AClientBuiltBeforeTheResolverStillUsesIt(t *testing.T) {
 	got := peer.seen()
 	if len(got) == 0 || got[len(got)-1] != "Bearer resolved-value" {
 		t.Errorf("the client built before the resolver sent %v, want it resolved", got)
+	}
+}
+
+// A run whose trigger may not act as its user resolves $cred: for its agent
+// and tenant only: the user's own credential of the name, which wins for any
+// other run, is not used.
+func TestSubstituteForRun_NoUserScopeSkipsTheUsersOwnCredential(t *testing.T) {
+	st, err := storesqlite.Open(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+	sealer, err := credential.NewSealer(base64.StdEncoding.EncodeToString(make([]byte, 32)), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	engine := credential.NewEngine(st, sealer)
+	for scope, id := range map[string]string{"tenant": "", "user": "bob"} {
+		if _, err := engine.PutInline(context.Background(), credential.Identity{TenantID: "t", Scope: scope, ScopeID: id, Name: "slack"}, scope+"-value", nil, nil, nil); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for noUser, want := range map[bool]string{false: "Bearer user-value", true: "Bearer tenant-value"} {
+		ctx := tools.WithRunIdentity(context.Background(), tools.RunIdentityValue{TenantID: "t", UserID: "bob", CredentialsNoUserScope: noUser})
+		got, unresolved, err := substituteForRun(ctx, "Bearer $cred:slack", "https://slack.example.com", nil, engine)
+		if err != nil || len(unresolved) > 0 || got != want {
+			t.Errorf("CredentialsNoUserScope=%t: %q %v %v, want %q", noUser, got, unresolved, err, want)
+		}
 	}
 }

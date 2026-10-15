@@ -150,3 +150,32 @@ func TestCredentialBinding_ARestrictedKeyIsNeverReplaced(t *testing.T) {
 		t.Errorf("registered %d value(s) for a key that was not used", len(*registered))
 	}
 }
+
+// A run a trigger started without the right to act as its user does not
+// take that user's own provider key or host credential: the tenant's is used,
+// or none. Any other run takes the user's, as before.
+func TestCredentialBinding_ATriggerRunNeverTakesTheUsersOwnKey(t *testing.T) {
+	b, _ := bindingWith(t, nil)
+	for scope, id := range map[string]string{"tenant": "", "user": "bob"} {
+		if _, err := b.engine.PutInline(context.Background(), credential.Identity{TenantID: "t", Scope: scope, ScopeID: id, Name: "ANTHROPIC_API_KEY"}, scope+"-key", nil, nil, nil); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := b.engine.PutInline(context.Background(), credential.Identity{TenantID: "t", Scope: "user", ScopeID: "bob", Name: "GITHUB_TOKEN"}, "bobs-token", nil, nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	for noUser, want := range map[bool]string{false: "user-key", true: "tenant-key"} {
+		ctx := tools.WithRunIdentity(context.Background(), tools.RunIdentityValue{TenantID: "t", UserID: "bob", CredentialsNoUserScope: noUser})
+		res, found, err := b.providerKey(ctx, "ANTHROPIC_API_KEY")
+		if err != nil || !found || res.Value != want {
+			t.Errorf("CredentialsNoUserScope=%t: provider key %q found=%t err=%v, want %q", noUser, res.Value, found, err, want)
+		}
+		_, gotEnv, _ := b.envVar("bashbox")(ctx, "GITHUB_TOKEN")
+		if gotEnv == noUser {
+			t.Errorf("CredentialsNoUserScope=%t: bob's own GITHUB_TOKEN injected = %t", noUser, gotEnv)
+		}
+		if keyable := b.keyable(ctx, "t", "", "bob", "GITHUB_TOKEN"); keyable == noUser {
+			t.Errorf("CredentialsNoUserScope=%t: keyable on bob's own key = %t", noUser, keyable)
+		}
+	}
+}

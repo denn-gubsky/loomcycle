@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"strings"
 
 	"github.com/denn-gubsky/loomcycle/internal/loop"
 	"github.com/denn-gubsky/loomcycle/internal/runner"
@@ -51,6 +52,14 @@ type scheduleDef struct {
 	// Isolated is the RFC BX P2b confinement bit captured on the def at authoring;
 	// copied into RunInput so the fired run keeps the creator's confinement.
 	Isolated bool `json:"isolated,omitempty"`
+	// UserScopeCredentials is captured when the def is written: its author
+	// was an operator, or wrote it for themselves (user_id is theirs). Only
+	// then does a fired run's $cred: resolve in user_id's own scope.
+	UserScopeCredentials bool `json:"user_scope_credentials,omitempty"`
+	// staticRow marks a def bootstrapped from the operator's yaml: written
+	// by the operator, so it may act as any user. Set by fireOne, never read
+	// from the body.
+	staticRow bool
 	// CaptureDisabled marks a def restored from a snapshot without its
 	// literal credentials. fireOne treats it as disabled even if `enabled`
 	// says otherwise: a schedule must not fire without the credentials it was
@@ -96,6 +105,17 @@ type scheduleHook struct {
 	Key     string                 `json:"key,omitempty"`
 	Args    map[string]interface{} `json:"args,omitempty"`
 	Payload map[string]interface{} `json:"payload,omitempty"`
+}
+
+// namesStoredCredential reports whether a credentials map holds a $cred: or
+// $ghapp: reference, which resolves by scope.
+func namesStoredCredential(creds map[string]string) bool {
+	for _, v := range creds {
+		if strings.Contains(v, "$cred:") || strings.Contains(v, "$ghapp:") {
+			return true
+		}
+	}
+	return false
 }
 
 // unmarshalDef converts the store-side JSON body into the runtime
@@ -213,6 +233,8 @@ func buildRunInput(def scheduleDef, envAllowlist map[string]bool, logf func(form
 		// A "$cred:<name>" reference, never opened here: the MCP client
 		// resolves it for each request, for that server's URL.
 		UserBearer: def.UserBearer,
+		// Only a def whose author could act as user_id resolves in its scope.
+		CredentialsNoUserScope: !(def.UserScopeCredentials || def.staticRow),
 		// Non-secret, operator-authored → TRUSTED. The scheduler has no
 		// external inbound body, so there is no PayloadMetadata here.
 		Metadata: def.Metadata,

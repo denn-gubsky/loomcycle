@@ -3447,6 +3447,8 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 		OperatorKeyRestricted: operatorKeyRestricted,
 		Isolated:              isolated, // RFC BX P2b: confine data tools to own scope
 		Retention:             retention,
+		// A trigger's: $cred: resolves without the user's own scope.
+		CredentialsNoUserScope: in.CredentialsNoUserScope,
 	}
 	fwd := func(ev providers.Event) {
 		if cb.OnEvent != nil {
@@ -8663,6 +8665,8 @@ func (s *Server) prepareSubRunValues(ctx context.Context, name string, src nameS
 		// escape). The providers ctx value inherits automatically via
 		// subRunCtx←ctx (same as WithCredentialResolver), so no re-stamp needed.
 		OperatorKeyRestricted: parentIdentity.OperatorKeyRestricted,
+		// A child resolves $cred: no more widely than its parent.
+		CredentialsNoUserScope: parentIdentity.CredentialsNoUserScope,
 		// RFC BX P2b: inherit the parent's isolation confinement (a child cannot
 		// escape by spawning). Read from ctx RunIdentity by the data tools.
 		Isolated:  parentIdentity.Isolated,

@@ -403,3 +403,32 @@ func transcriptMentions(evs []store.Event, text string) bool {
 	}
 	return false
 }
+
+// A queued trigger run keeps CredentialsNoUserScope across a restart: the
+// restarted run must not resolve $cred: in its user's own scope where the
+// original would not have.
+func TestQueuedRun_KeepsCredentialsNoUserScope(t *testing.T) {
+	s, gate := newGatedBatchServer(t, 1)
+	defer close(gate)
+	s.sem = concurrency.New(1, 8, 0)
+	s.SetQueueSealer(testSealer(t, 1))
+	holder := startRunOnce(s, context.Background(), runner.RunInput{Agent: "r", Segments: oneUserSeg("holds the slot")})
+	holder.ids(t)
+
+	for _, creds := range []map[string]string{nil, {"github": "$cred:gh"}} {
+		queued := startRunOnce(s, context.Background(), runner.RunInput{
+			Agent: "r", TenantID: "acme", UserID: "bob", Segments: oneUserSeg("a webhook's run"),
+			UserCredentials: creds, CredentialsNoUserScope: true,
+		})
+		_, runID := queued.ids(t)
+		q := store.QueuedRun{Input: queuedRowInput(t, s, runID)}
+		q.Run, _ = s.store.GetRun(context.Background(), runID)
+		in, why := s.restartInput(q)
+		if why != "" {
+			t.Fatalf("restartInput: %s", why)
+		}
+		if !in.CredentialsNoUserScope {
+			t.Errorf("credentials %v: the restarted run lost CredentialsNoUserScope", creds)
+		}
+	}
+}

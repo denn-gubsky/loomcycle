@@ -1527,19 +1527,10 @@ func main() {
 		if !credEngine.CanResolve() {
 			return s, append(credential.RefNames(s), credential.GHAppRefNames(s)...), nil
 		}
-		ri := tools.RunIdentity(ctx)
 		// $ghapp: (mint an installation token) then $cred: (durable secret). The two
 		// syntaxes don't overlap; each drops its own header on an unresolved/failed
 		// ref, and a mint/resolve error aborts so no literal token is sent.
-		out, un1, err := ghAppMinter.Substitute(ctx, ri.TenantID, tools.AgentName(ctx), ri.UserID, s, targetURL, registerSecret)
-		if err != nil {
-			return "", nil, err
-		}
-		out, un2, err := credEngine.Substitute(ctx, ri.TenantID, tools.AgentName(ctx), ri.UserID, out, targetURL, registerSecret)
-		if err != nil {
-			return "", nil, err
-		}
-		return out, append(un1, un2...), nil
+		return substituteForRun(ctx, s, targetURL, registerSecret, ghAppMinter, credEngine)
 	}
 	// RFC AR: resolve a tenant/user credential by env-var NAME (ANTHROPIC_API_KEY,
 	// BRAVE_API_KEY, …) for the run's identity, so a tenant's own key overrides
@@ -1630,7 +1621,7 @@ func main() {
 			// it with the live run identity.
 			return lookup.A2AAgent(ctx, storeIface, cfg, tools.RunIdentity(ctx).TenantID, name)
 		}
-		a2aTools := toolsa2a.RegisterTools(context.Background(), cfg, storeIface, a2aResolve, nil, log.Printf)
+		a2aTools := toolsa2a.RegisterTools(context.Background(), cfg, storeIface, a2aResolve, nil, log.Printf, toolsa2a.WithCredentialResolver(lateCredSubstitute(&credSubstitute)))
 		if len(a2aTools) > 0 {
 			allTools = append(allTools, a2aTools...)
 			log.Printf("a2a: registered %d outbound peer tool(s)", len(a2aTools))
@@ -2105,7 +2096,7 @@ func main() {
 				// per-run peer set under it rather than re-deriving from ctx.
 				return lookup.A2AAgent(ctx, storeIface, cfg, tenant, name)
 			}
-			out = append(out, toolsa2a.RegisterTools(ctx, cfg, storeIface, resolve, nil, log.Printf)...)
+			out = append(out, toolsa2a.RegisterTools(ctx, cfg, storeIface, resolve, nil, log.Printf, toolsa2a.WithCredentialResolver(lateCredSubstitute(&credSubstitute)))...)
 		}
 		return out
 	})
@@ -4289,6 +4280,33 @@ func (v mcpLookupView) Get(tenantID, name string) (lookup.MCPServerSpec, bool) {
 		OperatorAuthored: s.OperatorAuthored,
 		DefID:            s.DefID, Version: s.Version,
 	}, true
+}
+
+// refSubstituter resolves the references of one syntax ($cred:, $ghapp:) in s
+// for an identity and a destination.
+type refSubstituter interface {
+	Substitute(ctx context.Context, tenantID, agentName, userID, s, targetURL string, register func(string)) (string, []string, error)
+}
+
+// substituteForRun resolves s's references with each substituter in turn, for
+// the run identity on ctx. A run that may not use its user's own scope (a
+// trigger whose definition's author could not act as that user) resolves for
+// its agent and tenant only.
+func substituteForRun(ctx context.Context, s, targetURL string, register func(string), subs ...refSubstituter) (string, []string, error) {
+	ri := tools.RunIdentity(ctx)
+	userID := ri.UserID
+	if ri.CredentialsNoUserScope {
+		userID = ""
+	}
+	var unresolved []string
+	for _, sub := range subs {
+		out, un, err := sub.Substitute(ctx, ri.TenantID, tools.AgentName(ctx), userID, s, targetURL, register)
+		if err != nil {
+			return "", nil, err
+		}
+		s, unresolved = out, append(unresolved, un...)
+	}
+	return s, unresolved, nil
 }
 
 // lateCredSubstitute returns a resolver that reads *ref when a request is
