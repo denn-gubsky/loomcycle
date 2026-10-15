@@ -241,6 +241,13 @@ type RunInput struct {
 	// auth). Never persisted; never logged; not emitted in OTEL spans.
 	UserCredentials map[string]string
 
+	// CredentialRefsAtTenant marks a run a webhook or a schedule started:
+	// its "$cred:" references in UserCredentials resolve at the tenant
+	// level of TenantID only, never for UserID (see
+	// tools.RunIdentityValue.CredentialRefsAtTenant). Set by the trigger,
+	// never from a wire field.
+	CredentialRefsAtTenant bool
+
 	// ParentContext is opaque caller-tracking lineage the runtime
 	// carries but never interprets: it is set once on the root run,
 	// inherited UNCHANGED by every descendant sub-agent (the Agent

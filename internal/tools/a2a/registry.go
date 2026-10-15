@@ -38,7 +38,7 @@ type peerLister interface {
 // (no credentials/secrets — CLAUDE.md rule 4). Boot-time enumeration
 // failures are logged and skipped, never fatal: a transient store error
 // must not block loomcycle start.
-func RegisterTools(ctx context.Context, cfg *config.Config, st peerLister, resolve DefResolver, newPeer peerClientFactory, logf func(string, ...any)) []tools.Tool {
+func RegisterTools(ctx context.Context, cfg *config.Config, st peerLister, resolve DefResolver, newPeer peerClientFactory, subst tools.CredentialSubstitute, logf func(string, ...any)) []tools.Tool {
 	if cfg == nil {
 		return nil
 	}
@@ -98,7 +98,7 @@ func RegisterTools(ctx context.Context, cfg *config.Config, st peerLister, resol
 				continue
 			}
 			desc := fmt.Sprintf("Call the %q skill on remote A2A peer %q.", skill.ID, peer)
-			out = append(out, NewTool(peer, skill.ID, desc, resolve, newPeer, logf))
+			out = append(out, NewTool(peer, skill.ID, desc, resolve, newPeer, subst, logf))
 		}
 	}
 	return out

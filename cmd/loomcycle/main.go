@@ -1630,7 +1630,7 @@ func main() {
 			// it with the live run identity.
 			return lookup.A2AAgent(ctx, storeIface, cfg, tools.RunIdentity(ctx).TenantID, name)
 		}
-		a2aTools := toolsa2a.RegisterTools(context.Background(), cfg, storeIface, a2aResolve, nil, log.Printf)
+		a2aTools := toolsa2a.RegisterTools(context.Background(), cfg, storeIface, a2aResolve, nil, lateCredSubstitute(&credSubstitute), log.Printf)
 		if len(a2aTools) > 0 {
 			allTools = append(allTools, a2aTools...)
 			log.Printf("a2a: registered %d outbound peer tool(s)", len(a2aTools))
@@ -2105,7 +2105,7 @@ func main() {
 				// per-run peer set under it rather than re-deriving from ctx.
 				return lookup.A2AAgent(ctx, storeIface, cfg, tenant, name)
 			}
-			out = append(out, toolsa2a.RegisterTools(ctx, cfg, storeIface, resolve, nil, log.Printf)...)
+			out = append(out, toolsa2a.RegisterTools(ctx, cfg, storeIface, resolve, nil, lateCredSubstitute(&credSubstitute), log.Printf)...)
 		}
 		return out
 	})

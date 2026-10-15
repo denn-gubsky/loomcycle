@@ -64,11 +64,18 @@ type peerClient interface {
 
 // peerClientFactory builds a peerClient for a resolved A2AAgentDef +
 // bearer. Injected into the Tool so tests substitute a fake; production
-// uses sdkPeerClientFactory. bearer is the already-resolved Authorization
-// credential ("" when the def declares no auth) — this factory never
-// reads credentials itself, keeping the secret-resolution seam in one
-// place (the Tool).
-type peerClientFactory func(ctx context.Context, def config.A2AAgent, bearer string) (peerClient, error)
+// uses sdkPeerClientFactory. bearer gives the Authorization credential for
+// a call (nil when the def declares no auth) — this factory never reads
+// credentials itself, keeping the secret-resolution seam in one place (the
+// Tool).
+type peerClientFactory func(ctx context.Context, def config.A2AAgent, bearer bearerFunc) (peerClient, error)
+
+// bearerFunc returns the bearer a call to baseURL carries. It is asked per
+// call, with the URL the SDK is about to send to: a credential reference is
+// resolved for that URL, so one restricted by allowed_urls is checked
+// against where it actually goes — for a card-discovered peer, the endpoint
+// the card names, not the card's own URL.
+type bearerFunc func(ctx context.Context, baseURL string) (string, error)
 
 // bindingToTransport maps an A2AAgentDef direct-endpoint `binding`
 // value (validated upstream to one of jsonrpc/grpc/rest) onto the SDK's
@@ -98,16 +105,24 @@ func bindingToTransport(binding string) (a2asdk.TransportProtocol, bool) {
 // call) and is never logged — CLAUDE.md rule 1/4.
 type bearerInterceptor struct {
 	a2aclient.PassthroughInterceptor
-	bearer string
+	bearer bearerFunc
 }
 
 // Before implements a2aclient.CallInterceptor. It sets the Authorization
 // header param when a bearer is present; absent bearer is a no-op (the
 // Tool decides whether a missing-but-required credential is an error
-// before ever constructing the client).
+// before ever constructing the client). A bearer that cannot be resolved
+// for req.BaseURL fails the call: it is never sent unauthenticated.
 func (b *bearerInterceptor) Before(ctx context.Context, req *a2aclient.Request) (context.Context, any, error) {
-	if b.bearer != "" {
-		req.ServiceParams["Authorization"] = []string{"Bearer " + b.bearer}
+	if b.bearer == nil {
+		return ctx, nil, nil
+	}
+	v, err := b.bearer(ctx, req.BaseURL)
+	if err != nil {
+		return ctx, nil, err
+	}
+	if v != "" {
+		req.ServiceParams["Authorization"] = []string{"Bearer " + v}
 	}
 	return ctx, nil, nil
 }
@@ -127,7 +142,7 @@ func (c *sdkPeerClient) Close() error { return c.cl.Destroy() }
 // is the operator's private-host allowlist, the only way a peer on a private
 // network (a tailnet, a sibling host) is reachable past the SSRF guard.
 func sdkPeerClientFactory(privateHosts []string) peerClientFactory {
-	return func(ctx context.Context, def config.A2AAgent, bearer string) (peerClient, error) {
+	return func(ctx context.Context, def config.A2AAgent, bearer bearerFunc) (peerClient, error) {
 		return newSDKPeerClient(ctx, def, bearer, privateHosts)
 	}
 }
@@ -141,7 +156,7 @@ func sdkPeerClientFactory(privateHosts []string) peerClientFactory {
 //     declared interface, skipping card discovery.
 //
 // The bearer is wired via bearerInterceptor so it rides every call.
-func newSDKPeerClient(ctx context.Context, def config.A2AAgent, bearer string, privateHosts []string) (peerClient, error) {
+func newSDKPeerClient(ctx context.Context, def config.A2AAgent, bearer bearerFunc, privateHosts []string) (peerClient, error) {
 	// Inject loomcycle's hardened http.Client into the JSON-RPC + REST
 	// transports so peer responses are body-capped (no OOM from a hostile
 	// peer's giant SendMessage response) and SSRF-blocked at the dial layer.

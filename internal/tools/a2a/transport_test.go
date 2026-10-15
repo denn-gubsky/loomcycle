@@ -73,11 +73,11 @@ func TestRegisterTools_PeerFactoryCarriesOperatorPrivateAllowlist(t *testing.T) 
 	newPeerErr := func(allow []string) error {
 		cfg := &config.Config{A2AAgents: map[string]config.A2AAgent{"sib": {}}}
 		cfg.Env.HTTPPrivateHostAllowlist = allow
-		got := RegisterTools(context.Background(), cfg, nil, staticResolver(def), nil, nil)
+		got := RegisterTools(context.Background(), cfg, nil, staticResolver(def), nil, nil, nil)
 		if len(got) != 1 {
 			t.Fatalf("registered %d tools, want 1", len(got))
 		}
-		peer, err := got[0].(*Tool).newPeer(context.Background(), def, "")
+		peer, err := got[0].(*Tool).newPeer(context.Background(), def, nil)
 		if err == nil {
 			_ = peer.Close()
 		}
@@ -163,7 +163,7 @@ func (s *stubRoundTripper) RoundTrip(*http.Request) (*http.Response, error) {
 // netguard.GuardedDialContext with the operator's private-host allowlist)
 // before shipping it, and replace this test with one that proves the refusal.
 func TestNewSDKPeerClient_GRPCBindingIsNeverDialed(t *testing.T) {
-	cl, err := newSDKPeerClient(context.Background(), config.A2AAgent{Endpoint: "169.254.169.254:443", Binding: "grpc"}, "", nil)
+	cl, err := newSDKPeerClient(context.Background(), config.A2AAgent{Endpoint: "169.254.169.254:443", Binding: "grpc"}, nil, nil)
 	if err == nil {
 		_ = cl.Close()
 		t.Fatal("a grpc binding built a peer client: a gRPC transport is wired, and it does not dial through the SSRF guard")

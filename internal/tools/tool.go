@@ -742,6 +742,17 @@ type RunIdentityValue struct {
 	// that would store what the run says (asking a person a question) reads
 	// it here to refuse.
 	Retention string
+
+	// CredentialRefsAtTenant is true for a run a webhook or a schedule
+	// started: its credential references ("$cred:<name>" values in
+	// UserCredentials) were written by the definition's author, not by the
+	// run's user, so they resolve at the tenant level of TenantID only — see
+	// ResolveRunCredential. UserID on such a run is not the author (a schedule
+	// may name anyone; a webhook may take it from the delivery), and at that
+	// user's scope a same-named personal credential would be sent instead.
+	// Sub-agents inherit it. false (the zero value) keeps a run's references
+	// resolving for its full identity, as for a run its user started.
+	CredentialRefsAtTenant bool
 }
 
 // WithRunIdentity attaches the current run's identity to ctx. The

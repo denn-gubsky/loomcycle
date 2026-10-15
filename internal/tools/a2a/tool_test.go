@@ -37,8 +37,14 @@ func (f *fakePeer) Close() error { f.closed = true; return nil }
 // records the bearer it was constructed with (so a test can assert the
 // resolved credential reached the transport seam).
 func factoryFor(fp *fakePeer) peerClientFactory {
-	return func(ctx context.Context, def config.A2AAgent, bearer string) (peerClient, error) {
-		fp.gotBearer = bearer
+	return func(ctx context.Context, def config.A2AAgent, bearer bearerFunc) (peerClient, error) {
+		if bearer != nil {
+			b, err := bearer(ctx, def.Endpoint)
+			if err != nil {
+				return nil, err
+			}
+			fp.gotBearer = b
+		}
 		return fp, nil
 	}
 }
@@ -54,7 +60,7 @@ func staticResolver(def config.A2AAgent) DefResolver {
 // TestTool_NameIsPeerSkillShape pins the synthetic tool name to the
 // `a2a__<peer>__<skill>` form, mirroring `mcp__<server>__<tool>`.
 func TestTool_NameIsPeerSkillShape(t *testing.T) {
-	tool := NewTool("acme-peer", "research", "", staticResolver(config.A2AAgent{}), factoryFor(&fakePeer{}), nil)
+	tool := NewTool("acme-peer", "research", "", staticResolver(config.A2AAgent{}), factoryFor(&fakePeer{}), nil, nil)
 	if got, want := tool.Name(), "a2a__acme-peer__research"; got != want {
 		t.Fatalf("Name() = %q, want %q", got, want)
 	}
@@ -71,7 +77,7 @@ func TestTool_ExecuteProxiesMessageAndResolvesCredential(t *testing.T) {
 		Binding:  "jsonrpc",
 		Auth:     config.A2AAgentAuth{Scheme: "http", BearerCredentialRef: "peer_tok"},
 	}
-	tool := NewTool("acme-peer", "research", "", staticResolver(def), factoryFor(fp), nil)
+	tool := NewTool("acme-peer", "research", "", staticResolver(def), factoryFor(fp), nil, nil)
 
 	ctx := tools.WithRunIdentity(context.Background(), tools.RunIdentityValue{
 		UserCredentials: map[string]string{"peer_tok": "s3cr3t-bearer"},
@@ -109,14 +115,14 @@ func TestTool_ExecuteProxiesMessageAndResolvesCredential(t *testing.T) {
 func TestTool_AbsentCredentialIsClearErrorNotEmptyBearer(t *testing.T) {
 	fp := &fakePeer{result: a2asdk.NewMessage(a2asdk.MessageRoleAgent, a2asdk.NewTextPart("should not happen"))}
 	called := false
-	factory := func(ctx context.Context, def config.A2AAgent, bearer string) (peerClient, error) {
+	factory := func(ctx context.Context, def config.A2AAgent, bearer bearerFunc) (peerClient, error) {
 		called = true
 		return fp, nil
 	}
 	def := config.A2AAgent{
 		Auth: config.A2AAgentAuth{Scheme: "http", BearerCredentialRef: "peer_tok"},
 	}
-	tool := NewTool("acme-peer", "research", "", staticResolver(def), factory, nil)
+	tool := NewTool("acme-peer", "research", "", staticResolver(def), factory, nil, nil)
 
 	// Run identity carries NO "peer_tok" credential.
 	ctx := tools.WithRunIdentity(context.Background(), tools.RunIdentityValue{})
@@ -153,7 +159,7 @@ func TestTool_AbsentCredentialIsClearErrorNotEmptyBearer(t *testing.T) {
 // valid.
 func TestTool_OpenPeerNeedsNoCredential(t *testing.T) {
 	fp := &fakePeer{result: a2asdk.NewMessage(a2asdk.MessageRoleAgent, a2asdk.NewTextPart("ok"))}
-	tool := NewTool("open-peer", "ping", "", staticResolver(config.A2AAgent{}), factoryFor(fp), nil)
+	tool := NewTool("open-peer", "ping", "", staticResolver(config.A2AAgent{}), factoryFor(fp), nil, nil)
 
 	res, err := tool.Execute(context.Background(), json.RawMessage(`{"message":"hi"}`))
 	if err != nil {
@@ -175,7 +181,7 @@ func TestTool_FailedPeerTaskSurfacesIsError(t *testing.T) {
 		ID:     "t1",
 		Status: a2asdk.TaskStatus{State: a2asdk.TaskStateFailed, Message: a2asdk.NewMessage(a2asdk.MessageRoleAgent, a2asdk.NewTextPart("peer failed"))},
 	}}
-	tool := NewTool("peer", "skill", "", staticResolver(config.A2AAgent{}), factoryFor(fp), nil)
+	tool := NewTool("peer", "skill", "", staticResolver(config.A2AAgent{}), factoryFor(fp), nil, nil)
 
 	res, err := tool.Execute(context.Background(), json.RawMessage(`{"message":"go"}`))
 	if err != nil {
@@ -189,7 +195,7 @@ func TestTool_FailedPeerTaskSurfacesIsError(t *testing.T) {
 // TestTool_EmptyMessageRejected asserts the input guard rejects an empty
 // message field before any peer call.
 func TestTool_EmptyMessageRejected(t *testing.T) {
-	tool := NewTool("peer", "skill", "", staticResolver(config.A2AAgent{}), factoryFor(&fakePeer{}), nil)
+	tool := NewTool("peer", "skill", "", staticResolver(config.A2AAgent{}), factoryFor(&fakePeer{}), nil, nil)
 	res, err := tool.Execute(context.Background(), json.RawMessage(`{"message":"   "}`))
 	if err != nil {
 		t.Fatalf("Execute: %v", err)

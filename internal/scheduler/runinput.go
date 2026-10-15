@@ -210,6 +210,9 @@ func buildRunInput(def scheduleDef, envAllowlist map[string]bool, logf func(form
 		UserID:          def.UserID,
 		UserTier:        def.UserTier,
 		UserCredentials: creds,
+		// The schedule's "$cred:" values were named by its author, who need
+		// not be UserID: they resolve at tenant level only, as UserBearer does.
+		CredentialRefsAtTenant: true,
 		// A "$cred:<name>" reference, never opened here: the MCP client
 		// resolves it for each request, for that server's URL.
 		UserBearer: def.UserBearer,

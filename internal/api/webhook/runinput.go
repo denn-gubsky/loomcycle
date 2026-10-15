@@ -6,6 +6,7 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/config"
 	"github.com/denn-gubsky/loomcycle/internal/loop"
 	"github.com/denn-gubsky/loomcycle/internal/runner"
+	"github.com/denn-gubsky/loomcycle/internal/tools"
 )
 
 // credentialsPrefix is the payload-mapping target namespace that overlays
@@ -114,6 +115,16 @@ func buildRunInput(w config.Webhook, proj projectResult, envAllowlist map[string
 	//    empty projected values, so an absent optional path does NOT clobber a
 	//    prior source (a missing optional field shouldn't blank the fallback).
 	for name, val := range collectPrefixed(proj.Fields, credentialsPrefix) {
+		// A stored-credential reference names which secret to send. From the
+		// body it would be the sender's choice — any credential of the tenant,
+		// sent to the server the header names — so it is never taken; the
+		// literal token a sender minted is what this overlay is for.
+		if tools.HasCredentialRef(val) {
+			if logf != nil {
+				logf("webhook: payload value for credential key %q is a stored-credential reference — refused, not used", name)
+			}
+			continue
+		}
 		if _, had := creds[name]; had && logf != nil {
 			logf("webhook: credential key %q has both a non-payload source + payload source — payload value wins", name)
 		}
@@ -164,6 +175,10 @@ func buildRunInput(w config.Webhook, proj projectResult, envAllowlist map[string
 		UserID:          proj.Fields["user_id"],
 		UserTier:        w.UserTier,
 		UserCredentials: creds,
+		// The def's "$cred:" values were named by its author, and UserID may
+		// come from the delivery: they resolve at tenant level only, as
+		// UserBearer does.
+		CredentialRefsAtTenant: true,
 		// A "$cred:<name>" reference from the def, never from the payload,
 		// and never opened here: the MCP client resolves it for each
 		// request, for that server's URL.

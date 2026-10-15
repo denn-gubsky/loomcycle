@@ -372,9 +372,11 @@ user_bearer: "$cred:reports-mcp-token"
   `allowed_urls` works, and is sent only where it is allowed to go.
 - **A tenant-level credential of the run's tenant,** never `user_id`'s or an
   agent's: whoever wrote the schedule need not be its `user_id`, and at that
-  user's scope a same-named personal credential would be sent instead. (A
-  `$cred:` value in `user_credentials` still resolves for the run's user, as
-  before.)
+  user's scope a same-named personal credential would be sent instead. A
+  `$cred:` value in the schedule's `user_credentials` resolves the same way,
+  at tenant level only. (It used to resolve for the run's user; a schedule
+  that relied on `user_id`'s own credential needs a tenant-level one of that
+  name now.)
 - **Sent only where a header asks for it**: an MCP server whose headers do
   not use the bearer never resolves it.
 - **A literal bearer is refused** when the schedule is written. Written with

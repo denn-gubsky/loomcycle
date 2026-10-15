@@ -10,6 +10,19 @@ func TestBuildRunInput_CarriesTheBearerReference(t *testing.T) {
 	}
 }
 
+// A schedule's "$cred:" values in user_credentials were named by whoever
+// wrote it, who need not be its user_id: the fired run says so, and the
+// references resolve at tenant level only, as its user_bearer does.
+func TestBuildRunInput_CredentialReferencesResolveAtTenantLevel(t *testing.T) {
+	in := buildRunInput(scheduleDef{Agent: "digest", UserID: "someone-else", UserCredentials: map[string]string{"gh": "$cred:tok"}}, map[string]bool{}, nil)
+	if !in.CredentialRefsAtTenant {
+		t.Error("a scheduled run does not say its credential references are its definition's")
+	}
+	if in.UserCredentials["gh"] != "$cred:tok" {
+		t.Errorf("gh = %q, want the reference, unopened", in.UserCredentials["gh"])
+	}
+}
+
 // A consolidation run in another tenant drops the bearer with the schedule's
 // credentials: its reference would resolve against that tenant's credential
 // of the same name. A run in the schedule's own tenant keeps it.

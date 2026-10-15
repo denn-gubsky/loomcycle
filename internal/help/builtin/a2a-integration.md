@@ -234,6 +234,15 @@ the agent or the Def. A missing/empty ref at call time is an error, not
 a silent unauthenticated call. Sub-agents inherit the same credential
 map as their parent.
 
+The value may be a stored credential, `$cred:<name>`. It is resolved for
+each call, for the URL the call goes to (for a card-discovered peer, the
+endpoint its card names), so a credential restricted by `allowed_urls` is
+checked against where it is actually sent, and the call then follows no
+redirect. For a run a webhook or a schedule started it resolves at tenant
+level only; for a run its user started, for the run's full identity (agent >
+user > tenant). One that does not resolve refuses the call — the reference
+is never sent as written.
+
 ## Worked example
 
 **Expose a loomcycle agent, then have an external client call it.**

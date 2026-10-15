@@ -66,7 +66,14 @@ func hardenedPeerClient(timeout time.Duration, privateHosts []string) *http.Clie
 		// per-hop dial still passes through the guarded dialer, so a redirect
 		// to a private IP is already refused at dial — this also caps the
 		// hop count defensively.
+		//
+		// A request whose bearer was a credential restricted to its URL is
+		// pinned (netguard.Pin, by the resolver) and follows no redirect: the
+		// credential was checked against this destination, not the next.
 		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			if netguard.Pinned(req.Context()) {
+				return netguard.ErrPinnedRedirect
+			}
 			if len(via) >= 5 {
 				return fmt.Errorf("a2a: stopped after %d redirects", len(via))
 			}

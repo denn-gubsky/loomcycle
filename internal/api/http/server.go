@@ -3447,6 +3447,8 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 		OperatorKeyRestricted: operatorKeyRestricted,
 		Isolated:              isolated, // RFC BX P2b: confine data tools to own scope
 		Retention:             retention,
+		// A trigger's credential references resolve at tenant level only.
+		CredentialRefsAtTenant: in.CredentialRefsAtTenant,
 	}
 	fwd := func(ev providers.Event) {
 		if cb.OnEvent != nil {
@@ -8667,6 +8669,9 @@ func (s *Server) prepareSubRunValues(ctx context.Context, name string, src nameS
 		// escape by spawning). Read from ctx RunIdentity by the data tools.
 		Isolated:  parentIdentity.Isolated,
 		Retention: subRetention,
+		// Inherited with the credentials it governs: a child of a trigger
+		// run sends the same references, resolved the same way.
+		CredentialRefsAtTenant: parentIdentity.CredentialRefsAtTenant,
 	}
 	// Sub-emit records to the sub's transcript only — the parent's SSE
 	// stream is fwd=no-op so sub events don't bleed into the parent's

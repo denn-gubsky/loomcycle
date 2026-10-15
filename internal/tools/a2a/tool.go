@@ -10,6 +10,7 @@ import (
 	a2asdk "github.com/a2aproject/a2a-go/v2/a2a"
 
 	"github.com/denn-gubsky/loomcycle/internal/config"
+	"github.com/denn-gubsky/loomcycle/internal/netguard"
 	"github.com/denn-gubsky/loomcycle/internal/providers"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
 )
@@ -38,6 +39,10 @@ type Tool struct {
 
 	resolve DefResolver
 	newPeer peerClientFactory
+	// subst opens a stored-credential reference the run carries as the
+	// peer's bearer ("$cred:<name>" in user_credentials). Nil: such a
+	// bearer is refused, never sent as written.
+	subst tools.CredentialSubstitute
 	// logf emits one triage line per notable event (missing credential,
 	// signature failure). MUST NOT include the bearer value — CLAUDE.md
 	// rule 4. Nil is allowed (silent).
@@ -52,7 +57,7 @@ var _ tools.Tool = (*Tool)(nil)
 // card skill description). newPeer defaults, when nil, to the production
 // SDK factory with NO private-host exemptions; RegisterTools passes one
 // carrying the operator's private-host allowlist.
-func NewTool(peer, skill, description string, resolve DefResolver, newPeer peerClientFactory, logf func(string, ...any)) *Tool {
+func NewTool(peer, skill, description string, resolve DefResolver, newPeer peerClientFactory, subst tools.CredentialSubstitute, logf func(string, ...any)) *Tool {
 	if newPeer == nil {
 		newPeer = sdkPeerClientFactory(nil)
 	}
@@ -62,6 +67,7 @@ func NewTool(peer, skill, description string, resolve DefResolver, newPeer peerC
 		description: description,
 		resolve:     resolve,
 		newPeer:     newPeer,
+		subst:       subst,
 		logf:        logf,
 	}
 }
@@ -110,22 +116,18 @@ func (t *Tool) Execute(ctx context.Context, input json.RawMessage) (tools.Result
 		return tools.Result{Text: fmt.Sprintf("a2a: peer %q is no longer registered", t.peer), IsError: true}, nil
 	}
 
+	// Pinnable before the bearer resolves: a stored credential restricted by
+	// allowed_urls pins the request it is resolved for, and the peer client
+	// then follows no redirect that would carry it elsewhere.
+	ctx = netguard.WithPinnable(ctx)
+
 	bearer, err := t.resolveBearer(ctx, def)
 	if err != nil {
 		// Absent-but-required credential: a clear tool error PLUS a
 		// tracing event, never a silent empty bearer (slice contract).
 		t.trace("a2a: peer=%q skill=%q credential resolution failed: %v", t.peer, t.skill, err)
 		t.emitToolEvent(ctx, true, err.Error())
-		res := tools.Result{Text: fmt.Sprintf("a2a: %s", err), IsError: true}
-		if errors.Is(err, tools.ErrRunCredentialUnavailable) {
-			res.Error = &tools.ErrorInfo{
-				Category:  tools.CategoryBusiness,
-				Retryable: false,
-				Description: "This run does not carry the credential this peer requires, so the call was refused rather than sent unauthenticated. " +
-					"Retrying will not help and neither will changing the arguments — the run needs an operator to supply it.",
-			}
-		}
-		return res, nil
+		return credentialRefusal(err), nil
 	}
 
 	peer, err := t.newPeer(ctx, def, bearer)
@@ -150,6 +152,13 @@ func (t *Tool) Execute(ctx context.Context, input json.RawMessage) (tools.Result
 		if ctx.Err() != nil {
 			return tools.Result{}, ctx.Err()
 		}
+		if errors.Is(err, tools.ErrRunCredentialUnavailable) {
+			// A stored bearer that did not resolve for the URL the call
+			// went to: refused before anything was sent.
+			t.trace("a2a: peer=%q skill=%q credential resolution failed: %v", t.peer, t.skill, err)
+			t.emitToolEvent(ctx, true, err.Error())
+			return credentialRefusal(err), nil
+		}
 		t.trace("a2a: peer=%q skill=%q send failed: %v", t.peer, t.skill, err)
 		return tools.Result{Text: fmt.Sprintf("a2a: call to peer %q skill %q failed: %s", t.peer, t.skill, err), IsError: true}, nil
 	}
@@ -168,13 +177,20 @@ func (t *Tool) Execute(ctx context.Context, input json.RawMessage) (tools.Result
 //     but whose run lacks the credential gets a clear failure.
 //   - Scheme declared without a ref → error: a misconfigured def that
 //     would otherwise send no Authorization despite claiming auth.
-func (t *Tool) resolveBearer(ctx context.Context, def config.A2AAgent) (string, error) {
+//   - The run's value is a stored-credential reference ("$cred:<name>") →
+//     it is resolved per call, for the URL the call goes to, as the MCP
+//     client resolves one: at tenant level only for a run a webhook or a
+//     schedule started, for the run's full identity otherwise. Never sent
+//     as written.
+//
+// A nil bearerFunc means no Authorization.
+func (t *Tool) resolveBearer(ctx context.Context, def config.A2AAgent) (bearerFunc, error) {
 	if def.Auth.Scheme == "" {
-		return "", nil
+		return nil, nil
 	}
 	ref := def.Auth.BearerCredentialRef
 	if ref == "" {
-		return "", fmt.Errorf("peer %q declares auth.scheme=%q but no bearer_credential_ref", t.peer, def.Auth.Scheme)
+		return nil, fmt.Errorf("peer %q declares auth.scheme=%q but no bearer_credential_ref", t.peer, def.Auth.Scheme)
 	}
 	ident := tools.RunIdentity(ctx)
 	v := ident.UserCredentials[ref]
@@ -183,9 +199,33 @@ func (t *Tool) resolveBearer(ctx context.Context, def config.A2AAgent) (string, 
 		// CATEGORY, so an agent could tell "this run has no credential" apart
 		// from "the peer is unreachable". Wraps the shared sentinel (RFC DD
 		// Gap 6) for the same reason the MCP client does.
-		return "", fmt.Errorf("peer %q requires credential %q, which this run does not carry: %w", t.peer, ref, tools.ErrRunCredentialUnavailable)
+		return nil, fmt.Errorf("peer %q requires credential %q, which this run does not carry: %w", t.peer, ref, tools.ErrRunCredentialUnavailable)
 	}
-	return v, nil
+	if !tools.HasCredentialRef(v) {
+		return func(context.Context, string) (string, error) { return v, nil }, nil
+	}
+	if t.subst == nil {
+		return nil, fmt.Errorf("peer %q requires credential %q, a stored reference this server cannot resolve: %w", t.peer, ref, tools.ErrRunCredentialUnavailable)
+	}
+	subst, tenantOnly := t.subst, ident.CredentialRefsAtTenant
+	return func(ctx context.Context, baseURL string) (string, error) {
+		return tools.ResolveRunCredential(ctx, subst, v, baseURL, tenantOnly)
+	}, nil
+}
+
+// credentialRefusal is the tool result for a call refused because the run
+// does not carry (or cannot open) the credential the peer requires.
+func credentialRefusal(err error) tools.Result {
+	res := tools.Result{Text: fmt.Sprintf("a2a: %s", err), IsError: true}
+	if errors.Is(err, tools.ErrRunCredentialUnavailable) {
+		res.Error = &tools.ErrorInfo{
+			Category:  tools.CategoryBusiness,
+			Retryable: false,
+			Description: "This run does not carry the credential this peer requires, so the call was refused rather than sent unauthenticated. " +
+				"Retrying will not help and neither will changing the arguments — the run needs an operator to supply it.",
+		}
+	}
+	return res
 }
 
 // emitToolEvent surfaces an A2A call outcome onto the run's event stream

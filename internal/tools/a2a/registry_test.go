@@ -52,7 +52,7 @@ func TestRegisterTools_OneToolPerYamlPeerSkill(t *testing.T) {
 		"alpha": cfg.A2AAgents["alpha"],
 		"beta":  cfg.A2AAgents["beta"],
 	})
-	got := RegisterTools(context.Background(), cfg, fakePeerLister{}, resolve, factoryFor(&fakePeer{}), nil)
+	got := RegisterTools(context.Background(), cfg, fakePeerLister{}, resolve, factoryFor(&fakePeer{}), nil, nil)
 
 	namers := make([]toolNamer, len(got))
 	for i, tl := range got {
@@ -80,7 +80,7 @@ func TestRegisterTools_IncludesActiveSubstratePeers(t *testing.T) {
 	lister := fakePeerLister{names: []store.A2AAgentDefNameSummary{
 		{Name: "gamma", ActiveDefID: "def-1"},
 	}}
-	got := RegisterTools(context.Background(), cfg, lister, resolverFor(peers), factoryFor(&fakePeer{}), nil)
+	got := RegisterTools(context.Background(), cfg, lister, resolverFor(peers), factoryFor(&fakePeer{}), nil, nil)
 	if len(got) != 1 || got[0].Name() != "a2a__gamma__classify" {
 		t.Fatalf("got %v, want one a2a__gamma__classify tool", got)
 	}
@@ -94,7 +94,7 @@ func TestRegisterTools_SkipsSubstrateNamesWithNoActiveVersion(t *testing.T) {
 	lister := fakePeerLister{names: []store.A2AAgentDefNameSummary{
 		{Name: "draftonly", ActiveDefID: ""},
 	}}
-	got := RegisterTools(context.Background(), cfg, lister, resolverFor(map[string]config.A2AAgent{}), factoryFor(&fakePeer{}), nil)
+	got := RegisterTools(context.Background(), cfg, lister, resolverFor(map[string]config.A2AAgent{}), factoryFor(&fakePeer{}), nil, nil)
 	if len(got) != 0 {
 		t.Fatalf("got %d tools, want 0 for a name with no active version", len(got))
 	}
@@ -107,7 +107,7 @@ func TestRegisterTools_SkipsPeerWithNoExpectedSkills(t *testing.T) {
 	cfg := &config.Config{A2AAgents: map[string]config.A2AAgent{
 		"noskills": {},
 	}}
-	got := RegisterTools(context.Background(), cfg, fakePeerLister{}, resolverFor(map[string]config.A2AAgent{"noskills": {}}), factoryFor(&fakePeer{}), nil)
+	got := RegisterTools(context.Background(), cfg, fakePeerLister{}, resolverFor(map[string]config.A2AAgent{"noskills": {}}), factoryFor(&fakePeer{}), nil, nil)
 	if len(got) != 0 {
 		t.Fatalf("got %d tools, want 0 for a peer with no expected_skills", len(got))
 	}
@@ -123,7 +123,7 @@ func TestRegisterTools_DedupsYamlAndSubstrateSameName(t *testing.T) {
 	lister := fakePeerLister{names: []store.A2AAgentDefNameSummary{
 		{Name: "dup", ActiveDefID: "def-1"},
 	}}
-	got := RegisterTools(context.Background(), cfg, lister, resolverFor(cfg.A2AAgents), factoryFor(&fakePeer{}), nil)
+	got := RegisterTools(context.Background(), cfg, lister, resolverFor(cfg.A2AAgents), factoryFor(&fakePeer{}), nil, nil)
 	if len(got) != 1 {
 		t.Fatalf("got %d tools, want 1 (deduped)", len(got))
 	}
@@ -137,7 +137,7 @@ func TestRegisterTools_SubstrateListErrorIsNonFatal(t *testing.T) {
 		"alpha": {ExpectedSkills: []config.A2AExpectedSkill{{ID: "research"}}},
 	}}
 	lister := fakePeerLister{err: errors.New("db down")}
-	got := RegisterTools(context.Background(), cfg, lister, resolverFor(cfg.A2AAgents), factoryFor(&fakePeer{}), nil)
+	got := RegisterTools(context.Background(), cfg, lister, resolverFor(cfg.A2AAgents), factoryFor(&fakePeer{}), nil, nil)
 	if len(got) != 1 || got[0].Name() != "a2a__alpha__research" {
 		t.Fatalf("got %v, want yaml peer still registered despite substrate list error", got)
 	}

@@ -560,6 +560,15 @@ runs do.
    payload_mapping:
      user_credentials.github: "$.installation.access_token.value"
    ```
+   A payload value that holds a stored-credential reference (`$cred:<name>`
+   or `$ghapp:<name>`) is **refused** and logged: it would let the sender
+   choose which of the tenant's secrets the run sends. Only a literal token
+   is taken from the body.
+
+A `$cred:<name>` value the definition itself puts in `user_credentials` is
+resolved for each MCP request, like `user_bearer` below, and **at tenant
+level only**: the run's `user_id` may come from the delivery, so a personal
+credential of the same name is never sent in its place.
 
 Then reference them in the MCP server config exactly as any other run does:
 ```yaml

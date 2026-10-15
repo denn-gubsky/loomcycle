@@ -369,39 +369,70 @@ func (c *Client) do(ctx context.Context, body []byte) (*http.Response, error) {
 // user_id comes from the delivery, would send that person's token. It is
 // therefore resolved on its own, apart from any $cred: the operator wrote in
 // the header, which keeps resolving for the run's full identity.
+//
+// A webhook's or a schedule's user_credentials values are the same kind of
+// thing, written by the definition's author (ident.CredentialRefsAtTenant):
+// each one this server's headers use is resolved here the same way. A run
+// its user started keeps resolving its own values in the header pass, for
+// its full identity.
 func (c *Client) runBearer(ctx context.Context, ident tools.RunIdentityValue) (string, map[string]string, error) {
 	bearer, creds := ident.UserBearer, ident.UserCredentials
-	if _, isRef := credential.ParseRef(bearer); !isRef || !c.headersUseBearer() {
-		// Not a reference, or no header sends it: a server the bearer is not
-		// for must not have its calls refused over the bearer's URL list.
-		return bearer, creds, nil
-	}
-	if c.credSubstitute == nil {
-		log.Printf("mcp http: the run's bearer is a stored credential and %q resolves none (agent_id=%s); refusing", c.url, ident.AgentID)
-		return "", nil, fmt.Errorf("this run's bearer is a stored credential, which this server cannot resolve: %w", tools.ErrRunCredentialUnavailable)
-	}
-	tenantOnly := ident
-	tenantOnly.UserID = ""
-	tctx := tools.WithAgentName(tools.WithRunIdentity(ctx, tenantOnly), "")
-	v, unresolved, err := c.credSubstitute(tctx, bearer, c.url)
-	if err != nil || len(unresolved) > 0 {
-		log.Printf("mcp http: the run's stored bearer did not resolve for %q (agent_id=%s): err=%v unresolved=%v", c.url, ident.AgentID, err, unresolved)
-		return "", nil, fmt.Errorf("this run's bearer is a stored credential that could not be resolved: %w", tools.ErrRunCredentialUnavailable)
-	}
-	// The header is resolved again for the operator's own $cred: tokens; a
-	// value that itself spelled one would be resolved for the run's user.
-	if len(credential.RefNames(v)) > 0 || len(credential.GHAppRefNames(v)) > 0 {
-		return "", nil, fmt.Errorf("this run's stored bearer holds a credential reference, which is refused: %w", tools.ErrRunCredentialUnavailable)
-	}
-	if creds["default"] == bearer {
-		out := make(map[string]string, len(creds))
-		for k, cv := range creds {
-			out[k] = cv
+	var out map[string]string // creds, copied on the first value resolved
+	set := func(k, v string) {
+		if out == nil {
+			out = make(map[string]string, len(creds))
+			for ck, cv := range creds {
+				out[ck] = cv
+			}
 		}
-		out["default"] = v
+		out[k] = v
+	}
+	if _, isRef := credential.ParseRef(bearer); isRef && c.headersUseBearer() {
+		// Only when a header sends it: a server the bearer is not for must not
+		// have its calls refused over the bearer's URL list.
+		v, err := tools.ResolveRunCredential(ctx, c.credSubstitute, bearer, c.url, true)
+		if err != nil {
+			log.Printf("mcp http: the run's stored bearer did not resolve for %q (agent_id=%s): %v", c.url, ident.AgentID, err)
+			return "", nil, err
+		}
+		if creds["default"] == bearer {
+			set("default", v)
+		}
+		bearer = v
+	}
+	if ident.CredentialRefsAtTenant {
+		for _, name := range c.headerCredentialNames() {
+			v := creds[name]
+			if out != nil {
+				v = out[name]
+			}
+			if !tools.HasCredentialRef(v) {
+				continue
+			}
+			rv, err := tools.ResolveRunCredential(ctx, c.credSubstitute, v, c.url, true)
+			if err != nil {
+				log.Printf("mcp http: the run's stored credential %q did not resolve for %q (agent_id=%s): %v", name, c.url, ident.AgentID, err)
+				return "", nil, err
+			}
+			set(name, rv)
+		}
+	}
+	if out != nil {
 		creds = out
 	}
-	return v, creds, nil
+	return bearer, creds, nil
+}
+
+// headerCredentialNames lists the run credentials this server's headers send
+// (${run.credentials.<name>}).
+func (c *Client) headerCredentialNames() []string {
+	var names []string
+	for _, v := range c.headers {
+		for _, m := range runCredRe.FindAllStringSubmatch(v, -1) {
+			names = append(names, m[1])
+		}
+	}
+	return names
 }
 
 // headersUseBearer reports whether a header of this server sends the run's
