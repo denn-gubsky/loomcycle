@@ -2,8 +2,8 @@ package concurrency
 
 import (
 	"context"
-	"errors"
 	"testing"
+	"time"
 )
 
 // TestSemaphore_AWaiterThatGivesUpAfterTheHandOffPassesTheSlotOn — a waiter
@@ -38,56 +38,64 @@ func TestSemaphore_AWaiterThatGivesUpAfterTheHandOffPassesTheSlotOn(t *testing.T
 	}
 }
 
-// TestAdmit_ARunMovedOnFromItsUserCapIsNeverRefusedAsQueueFull — a run that
-// waited on its user's cap keeps its place in the queue when it moves on to
-// wait for a slot. Before the fix it gave the place up first, so a run arriving
-// in between could fill the queue and the run that had already queued (and been
-// reported queued to its caller) was refused "queue full". The window is
-// between two goroutines, so the test repeats it.
-func TestAdmit_ARunMovedOnFromItsUserCapIsNeverRefusedAsQueueFull(t *testing.T) {
-	for i := 0; i < 200; i++ {
-		s := New(2, 1, 0).WithPerUserCap(1).WithQueuedPerUserCap(1)
-		other, err := s.Admit(context.Background(), AdmitRequest{TenantID: "t", UserID: "v"})
-		if err != nil {
-			t.Fatalf("iteration %d: other: %v", i, err)
-		}
-		first, err := s.Admit(context.Background(), AdmitRequest{TenantID: "t", UserID: "u"})
-		if err != nil {
-			t.Fatalf("iteration %d: first: %v", i, err)
-		}
-		out, infos := admitAsync(t, context.Background(), s, AdmitRequest{TenantID: "t", UserID: "u"})
-		recvInfo(t, infos)
+// TestAdmit_ARunMovedOnFromItsUserCapKeepsItsPlaceInTheQueue — a run that
+// waited on its user's cap keeps its place in the queue while it moves on to
+// wait for a slot. Before the fix it gave the place up first, so a run that
+// arrived in between could fill the queue and the run that had already queued
+// (and been reported queued to its caller) was refused "queue full". The two
+// stages are driven one at a time here, so the window between them is held open
+// instead of raced for.
+func TestAdmit_ARunMovedOnFromItsUserCapKeepsItsPlaceInTheQueue(t *testing.T) {
+	s := New(1, 1, 0).WithPerUserCap(1).WithQueuedPerUserCap(1)
+	key := userKey{tenant: "t", user: "u"}
+	first, err := s.Admit(context.Background(), AdmitRequest{TenantID: "t", UserID: "u"})
+	if err != nil {
+		t.Fatalf("first: %v", err)
+	}
+	queued := make(chan struct{}, 1)
+	type userResult struct {
+		waited bool
+		err    error
+	}
+	moved := make(chan userResult, 1)
+	go func() {
+		waited, err := s.admitUserLocal(context.Background(), key, 1, AdmitRequest{OnQueued: func(QueueInfo) error {
+			queued <- struct{}{}
+			return nil
+		}})
+		moved <- userResult{waited, err}
+	}()
+	<-queued
 
-		first() // the waiting run moves on; new runs race it for the slot and the queue
-		lateCtx, cancelLate := context.WithCancel(context.Background())
-		var late []chan error
-		for _, u := range []string{"w", "x"} {
-			c := make(chan error, 1)
-			go func(u string) {
-				rel, err := s.Admit(lateCtx, AdmitRequest{TenantID: "t", UserID: u})
-				if err == nil {
-					rel() // a short run: the waiting run gets its slot after it
-				}
-				c <- err
-			}(u)
-			late = append(late, c)
-		}
-		r := recvResult(t, out)
-		cancelLate()
-		if r.err != nil {
-			var bp *BackpressureError
-			if errors.As(r.err, &bp) {
-				t.Fatalf("iteration %d: the run that waited on its user's cap was refused: %v", i, r.err)
-			}
-			t.Fatalf("iteration %d: waiting run: %v", i, r.err)
-		}
-		r.release()
-		for _, c := range late {
-			<-c
-		}
-		other()
-		if st := s.Stats(); st.Active != 0 || st.Queued != 0 || len(st.PerUser) != 0 {
-			t.Fatalf("iteration %d: after all ended: %+v, want all zero", i, st)
-		}
+	first() // the waiting run is counted against its user and moves on ...
+	if r := <-moved; r.err != nil || !r.waited {
+		t.Fatalf("moving on from the user cap: waited=%v err=%v, want waited", r.waited, r.err)
+	}
+	// ... and before it asks for a slot, a new run takes the free one and
+	// another finds the queue full: the place is still the waiting run's.
+	other, err := s.Admit(context.Background(), AdmitRequest{UserID: "w"})
+	if err != nil {
+		t.Fatalf("new run taking the free slot: %v", err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	if _, err := s.Admit(ctx, AdmitRequest{UserID: "x"}); !IsBackpressure(err) {
+		t.Fatalf("a run arriving with the queue's one place taken: got %v, want queue full", err)
+	}
+
+	got := make(chan admitResult, 1)
+	go func() {
+		rel, err := s.admitGlobal(context.Background(), key, key, nil, AdmitRequest{}, true)
+		got <- admitResult{rel, err}
+	}()
+	assertWaiting(t, got)
+	other()
+	r := recvResult(t, got)
+	if r.err != nil {
+		t.Fatalf("the run that waited on its user's cap: %v", r.err)
+	}
+	r.release()
+	if st := s.Stats(); st.Active != 0 || st.Queued != 0 || len(st.PerUser) != 0 {
+		t.Fatalf("after all ended: %+v, want all zero", st)
 	}
 }
