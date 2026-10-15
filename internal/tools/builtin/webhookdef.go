@@ -175,6 +175,9 @@ func (s *WebhookDef) execCreate(ctx context.Context, policy tools.WebhookDefPoli
 	if err := config.CheckWebhookMetadataKey(config.Webhook{Events: def.Events, Metadata: def.Metadata}); err != nil {
 		return errResult(fmt.Sprintf("create: %s", err)), nil
 	}
+	if err := config.CheckWebhookAuthoring(config.Webhook{EventShapes: def.EventShapes, Filters: def.Filters, Metadata: def.Metadata, DedupKey: def.DedupKey}); err != nil {
+		return errResult(fmt.Sprintf("create: %s", err)), nil
+	}
 	if err := checkWebhookSecretAuthority(ctx, s.Credentials, def.Auth); err != nil {
 		return errResult(fmt.Sprintf("create: %s", err)), nil
 	}
@@ -404,6 +407,9 @@ func (s *WebhookDef) execFork(ctx context.Context, policy tools.WebhookDefPolicy
 		return errResult(fmt.Sprintf("fork: %s", err)), nil
 	}
 	if err := config.CheckWebhookMetadataKey(config.Webhook{Events: def.Events, Metadata: def.Metadata}); err != nil {
+		return errResult(fmt.Sprintf("fork: %s", err)), nil
+	}
+	if err := config.CheckWebhookAuthoring(config.Webhook{EventShapes: def.EventShapes, Filters: def.Filters, Metadata: def.Metadata, DedupKey: def.DedupKey}); err != nil {
 		return errResult(fmt.Sprintf("fork: %s", err)), nil
 	}
 	if err := checkWebhookSecretAuthority(ctx, s.Credentials, def.Auth); err != nil {

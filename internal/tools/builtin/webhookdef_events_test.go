@@ -110,3 +110,32 @@ func TestWebhookDefTool_AForkMergesEventShapes(t *testing.T) {
 		t.Errorf("removing a listed event's only shape: %s, want it refused", text)
 	}
 }
+
+// A shape rule read as a key no body has — `!path == value`, a key holding
+// whitespace, = or a quote — is refused at create and fork, while a stored
+// definition holding one still passes the checks a snapshot restore re-runs.
+func TestWebhookDefTool_ARuleReadAsAKeyNoBodyHasIsRefusedWhenWritten(t *testing.T) {
+	tool, ctx, cleanup := webhookDefFixture(t)
+	defer cleanup()
+	gh := `"provider":"github","auth":{"signing_secret_env":"LOOMCYCLE_S"}`
+	for _, tc := range []struct{ name, overlay, want string }{
+		{"! with ==", `{` + eventsBase + `,` + gh + `,"events":["star"],"event_shapes":{"star":["$.action","!$.deleted == true"]}}`, `do not combine`},
+		{"a spaced filter key", `{` + eventsBase + `,` + gh + `,"filters":[{"path":"$.re f","op":"eq","value":"x"}]}`, `holding whitespace, = or a quote`},
+		{"a quoted dedup key", `{` + eventsBase + `,` + gh + `,"dedup_key":["$.a\"b"]}`, `holding whitespace, = or a quote`},
+	} {
+		if text, isErr := webhookCreate(t, tool, ctx, "w", tc.overlay); !isErr || !strings.Contains(text, tc.want) {
+			t.Errorf("create, %s: %s, want a refusal mentioning %s", tc.name, text, tc.want)
+		}
+	}
+	if text, isErr := webhookCreate(t, tool, ctx, "w", `{`+eventsBase+`,`+gh+`,"events":["star"],"event_shapes":{"star":["$.action"]}}`); isErr {
+		t.Fatal(text)
+	}
+	res, _ := tool.Execute(ctx, json.RawMessage(`{"op":"fork","name":"w","overlay":{"event_shapes":{"star":["$.action","!$.deleted == true"]}}}`))
+	if !res.IsError || !strings.Contains(res.Text, "do not combine") {
+		t.Errorf("fork: %s, want a refusal", res.Text)
+	}
+	stored := json.RawMessage(`{` + eventsBase + `,` + gh + `,"events":["star"],"event_shapes":{"star":["$.action","!$.deleted == true"]}}`)
+	if err := ValidateWebhookDefBody(stored); err != nil {
+		t.Errorf("a stored definition holding the rule is refused on restore: %v", err)
+	}
+}
