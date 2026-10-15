@@ -94,8 +94,8 @@ func (f *failingCounterStore) WebhookCountersAdd(_ context.Context, adds []store
 	return nil
 }
 
-// A write that fails keeps its counts for the next one; RunCounters writes
-// once more when it is stopped.
+// A write that fails keeps its counts for the next one; FlushCounters, which
+// the process calls on its way out, writes them.
 func TestReceiver_AFailedCounterWriteIsKeptAndTheStopFlushes(t *testing.T) {
 	fs := &failingCounterStore{Store: openScopeStore(t), fail: true}
 	rec := New(Deps{Cfg: &config.Config{}, Store: fs, Now: fixedClock(time.Unix(1_700_000_000, 0))})
@@ -110,8 +110,12 @@ func TestReceiver_AFailedCounterWriteIsKeptAndTheStopFlushes(t *testing.T) {
 	go func() { rec.RunCounters(ctx); close(done) }()
 	cancel()
 	<-done
+	if len(fs.added) != 0 {
+		t.Fatalf("RunCounters wrote on its stop: %v; the last write is FlushCounters'", fs.added)
+	}
+	rec.FlushCounters(context.Background())
 	if len(fs.added) != 1 || fs.added[0].N != 3 {
-		t.Errorf("the stop flush wrote %v, want accepted 3 (the failed write's 2 and the new 1)", fs.added)
+		t.Errorf("the final flush wrote %v, want accepted 3 (the failed write's 2 and the new 1)", fs.added)
 	}
 }
 

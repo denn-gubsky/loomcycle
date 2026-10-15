@@ -2356,8 +2356,8 @@ func main() {
 	// goroutines to exit promptly on ctx.Done(); both are documented
 	// to do so in their packages.
 	bgCtx, bgCancel := context.WithCancel(context.Background())
-	// The webhook delivery counters: written every 30 seconds, and once more
-	// when bgCtx ends.
+	// The webhook delivery counters: written every 30 seconds; the shutdown
+	// below writes the last interval once the HTTP server has drained.
 	if webhookReceiver != nil {
 		go webhookReceiver.RunCounters(bgCtx)
 	}
@@ -3582,6 +3582,13 @@ func main() {
 	// store closer is deferred (runs after main returns), so the store is still
 	// open for this final write.
 	accessFlusher.Stop()
+	// The webhook delivery counters' last interval, for the same reason: the
+	// drain answers deliveries too, and the store is still open here.
+	if webhookReceiver != nil {
+		flushCtx, flushCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		webhookReceiver.FlushCounters(flushCtx)
+		flushCancel()
+	}
 	// Flush OTEL spans before exit. The OTLP exporter batches; without this,
 	// in-flight spans never reach the collector. Give it its OWN 5s budget —
 	// sharing the HTTP shutdown's ctx meant a slow in-flight request drain

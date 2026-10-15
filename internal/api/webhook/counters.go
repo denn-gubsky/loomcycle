@@ -74,22 +74,25 @@ func (c *deliveryCounters) take() []store.WebhookCounterAdd {
 }
 
 // RunCounters writes the delivery counts every CounterFlushInterval until ctx
-// ends, then once more. A write that fails keeps its counts for the next one.
+// ends. A write that fails keeps its counts for the next one. The last
+// interval is written by FlushCounters, which the process calls on its way
+// out once the HTTP server has drained — a write when ctx ends would miss the
+// deliveries answered during the drain, and race the store's close.
 func (rec *Receiver) RunCounters(ctx context.Context) {
 	t := time.NewTicker(CounterFlushInterval)
 	defer t.Stop()
 	for {
 		select {
 		case <-ctx.Done():
-			final, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
-			rec.flushCounters(final)
-			cancel()
 			return
 		case <-t.C:
 			rec.flushCounters(ctx)
 		}
 	}
 }
+
+// FlushCounters writes the delivery counts not yet written, now.
+func (rec *Receiver) FlushCounters(ctx context.Context) { rec.flushCounters(ctx) }
 
 func (rec *Receiver) flushCounters(ctx context.Context) {
 	adds := rec.counts.take()
