@@ -876,6 +876,104 @@ func TestWriteTree_RefusesAStoreInsideTheDestination(t *testing.T) {
 	}
 }
 
+// On a file system that ignores case (macOS by default), a link "q/A" to ".."
+// is the directory "q/a" too, so a link written as "q/a/l" lands at the root
+// of the tree, two levels up from where its name says, and its target of
+// "../../x" (two ups, allowed at that depth) leads out. It dangled, and the
+// final check skipped dangling links, so it stayed: a later write to "l"
+// would create a file outside the volume. The path is refused under a link
+// whatever its case, and no link that leads out survives, dangling or not.
+func TestWriteTree_ALinkUnderALinkOfAnotherCaseIsRefused(t *testing.T) {
+	f := newFixture(t, false, true)
+	link := func(path, target string) {
+		t.Helper()
+		blob := filepath.Join(t.TempDir(), "blob")
+		if err := os.WriteFile(blob, []byte(target), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		sha := run(t, f.work, "hash-object", "-w", blob)
+		run(t, f.work, "-c", "core.ignorecase=false", "update-index", "--add", "--cacheinfo", "120000,"+sha+","+path)
+	}
+	link("q/A", "..")
+	link("q/a/l", "../../zz-nonexistent")
+	run(t, f.work, "commit", "-q", "-m", "links of two cases")
+	run(t, f.work, "push", "-q", f.bare, "HEAD:refs/heads/main")
+	got, err := Fetch(context.Background(), f.request(t, run(t, f.work, "rev-parse", "HEAD")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer got.Close()
+	dest := t.TempDir()
+	res, err := got.WriteTree(context.Background(), dest, limits)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reasons := map[string]string{}
+	for _, o := range res.Omitted {
+		reasons[o.Path] = o.Reason
+	}
+	if reasons["q/a/l"] != ReasonUnsafePath {
+		t.Errorf("q/a/l, under the link q/A in another case: omitted as %q, want %q (omitted: %v)", reasons["q/a/l"], ReasonUnsafePath, reasons)
+	}
+	// Whatever was written, no link on disk leads out: each is judged by the
+	// directory it really sits in, not by its name.
+	realDest, err := filepath.EvalSymlinks(dest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = filepath.WalkDir(realDest, func(p string, d os.DirEntry, err error) error {
+		if err != nil || d.Type()&os.ModeSymlink == 0 {
+			return err
+		}
+		target, rerr := os.Readlink(p)
+		if rerr != nil {
+			t.Errorf("readlink %s: %v", p, rerr)
+			return nil
+		}
+		if lands := filepath.Join(filepath.Dir(p), target); !within(lands, realDest) {
+			t.Errorf("%s -> %s leads out of the tree", p, target)
+		}
+		return nil
+	})
+}
+
+// A link that dangles and leads out is removed: a write to its name would
+// create the target. One that dangles inside (its target omitted) is kept.
+func TestLinkLandsInside_JudgesADanglingLinkByWhereItSits(t *testing.T) {
+	root := t.TempDir()
+	realRoot, err := filepath.EvalSymlinks(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, target := range map[string]string{
+		"q/A":     "..",
+		"l":       "../../zz-nonexistent",
+		"missing": "not-there",
+		"sub/up":  "../not-there",
+		"abs":     "/tmp/zz-nonexistent",
+	} {
+		p := filepath.Join(realRoot, filepath.FromSlash(name))
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink(target, p); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for name, want := range map[string]bool{
+		"q/A":     true,  // the root itself
+		"missing": true,  // dangling, inside
+		"sub/up":  true,  // dangling, inside
+		"l":       false, // dangling, outside
+		"q/A/l":   false, // the same link reached through q/A: where it sits decides
+		"abs":     false,
+	} {
+		if got := linkLandsInside(realRoot, name); got != want {
+			t.Errorf("linkLandsInside(%s) = %v, want %v", name, got, want)
+		}
+	}
+}
+
 // A submodule entry makes a directory, so it counts toward the file limit.
 func TestWriteTree_SubmoduleDirectoriesCountTowardTheFileLimit(t *testing.T) {
 	f := newFixture(t, false, true)
