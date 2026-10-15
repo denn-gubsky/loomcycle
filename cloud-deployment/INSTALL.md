@@ -392,10 +392,20 @@ repository decides what runs here.
 3. writes the new versions, pulls, and runs `up -d --build` (the migration runs
    first, as on any `up`);
 4. waits up to three minutes for `/healthz` to report the new version. If it does
-   not, the compose file, the config and the versions are put back and the stack is
-   started again, and the job fails. **The databases are not restored
-   automatically**: a migration that already ran stays applied, and the dumps from
-   step 1 are there for a manual restore.
+   not, it rolls back and the job fails:
+   - the runtime is stopped;
+   - **if the database schema moved** (`schema_migrations` differs from what it was
+     at step 1 — the new version's migration ran), the runtime's database is
+     restored from the step-1 dump into a fresh database that then takes its name.
+     The database the failed version left is kept as `loomcycle_failed_<stamp>`
+     for a look at what went wrong; drop it when done. An old runtime cannot run
+     on a newer schema, so without this the rollback would leave the stack down.
+     Writes made between the dump and the failure are lost with it. The SQL
+     Memory database is not restored: no migration changes it;
+   - the compose file, the config and the versions are put back, the stack is
+     started again, and the job waits for the old version to report healthy.
+   If the database restore itself fails, the runtime is left stopped and the job
+   says so; restore by hand from the step-1 dump.
 
 A loomboard deploy rebuilds the `loomboard` image from the tag and restarts that one
 service, and puts the previous tag back if the new one does not answer.
