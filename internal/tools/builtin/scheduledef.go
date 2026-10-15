@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/denn-gubsky/loomcycle/internal/config"
+	"github.com/denn-gubsky/loomcycle/internal/credential"
 	"github.com/denn-gubsky/loomcycle/internal/store"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
 	"github.com/robfig/cron/v3"
@@ -69,6 +70,10 @@ type ScheduleDef struct {
 	// MaxDescriptionBytes caps the description field.
 	// 0 = no cap.
 	MaxDescriptionBytes int
+
+	// Credentials is the stored-credential engine: a user_bearer "$cred:"
+	// reference must name a credential the author holds. nil refuses one.
+	Credentials *credential.Engine
 }
 
 const scheduleDefDescription = `Author, fork, retire, and inspect schedule definitions at runtime. ` +
@@ -96,7 +101,7 @@ const scheduleDefInputSchema = `{
     "parent_def_id": {"type": "string", "description": "Fork parent (optional for fork — when absent, forks the active def of the name, or bootstraps from a yaml template)."},
     "overlay": {
       "type": "object",
-      "description": "Mutable subset of ScheduledRun for create/fork (delivery, channel, team, vars, input, agent, prompt, schedule/user_tier_schedules, timezone, enabled, catch_up_max, max_fires, concurrency_policy, user_id, user_tier, user_credentials, user_credentials_from_env, on_complete, metadata, tenant_id). delivery is run (default — invoke the agent), channel (publish a cadence tick to the named channel and start NO run; forbids agent/prompt/on_complete/credentials, and carries metadata as the message payload) or team (start a detached walk of the team named in team, as TeamDef op=run mode=detach does: vars is name → literal text for variables the team declares, input is the walk's optional input; forbids agent/channel/prompt/on_complete/credentials/metadata, e.g. {\"schedule\":\"0 6 * * 1\",\"delivery\":\"team\",\"team\":\"weekly-report\",\"vars\":{\"repo\":\"loomcycle\"}}). The team is looked up in the schedule's tenant when the tick fires: a missing or retired team, a variable it does not declare, or a value it refuses starts no walk, is recorded as the schedule's last error, and does not count toward max_fires. team, vars and input are refused on the other deliveries. max_fires N>0 auto-retires the def after its Nth fire (1 = one-shot; 0 = unbounded). catch_up_max N (0–1000) runs the newest N slots missed during an outage, in slot order, each carrying its slot as metadata slot_at; 0 (default) collapses them into one fire. concurrency_policy is what a slot does while the schedule's previous run or walk is still going: forbid (default — skip the slot, recorded as skipped_overlap and not counted toward max_fires), allow (start another alongside it) or replace (cancel the running one, then start); refused on delivery channel. tenant_id (where fired runs execute) may name only your own tenant unless you are an admin; omit it to use yours. Immutable / server-set fields are silently ignored if supplied.",
+      "description": "Mutable subset of ScheduledRun for create/fork (delivery, channel, team, vars, input, agent, prompt, schedule/user_tier_schedules, timezone, enabled, catch_up_max, max_fires, concurrency_policy, user_id, user_tier, user_credentials, user_credentials_from_env, user_bearer, on_complete, metadata, tenant_id). delivery is run (default — invoke the agent), channel (publish a cadence tick to the named channel and start NO run; forbids agent/prompt/on_complete/credentials, and carries metadata as the message payload) or team (start a detached walk of the team named in team, as TeamDef op=run mode=detach does: vars is name → literal text for variables the team declares, input is the walk's optional input; forbids agent/channel/prompt/on_complete/credentials/metadata, e.g. {\"schedule\":\"0 6 * * 1\",\"delivery\":\"team\",\"team\":\"weekly-report\",\"vars\":{\"repo\":\"loomcycle\"}}). The team is looked up in the schedule's tenant when the tick fires: a missing or retired team, a variable it does not declare, or a value it refuses starts no walk, is recorded as the schedule's last error, and does not count toward max_fires. team, vars and input are refused on the other deliveries. max_fires N>0 auto-retires the def after its Nth fire (1 = one-shot; 0 = unbounded). catch_up_max N (0–1000) runs the newest N slots missed during an outage, in slot order, each carrying its slot as metadata slot_at; 0 (default) collapses them into one fire. concurrency_policy is what a slot does while the schedule's previous run or walk is still going: forbid (default — skip the slot, recorded as skipped_overlap and not counted toward max_fires), allow (start another alongside it) or replace (cancel the running one, then start); refused on delivery channel. tenant_id (where fired runs execute) may name only your own tenant unless you are an admin; omit it to use yours. user_bearer sets the fired run's bearer (what ${run.user_bearer} in an MCP server's headers becomes) and takes only a stored credential written \"$cred:<name>\": it is resolved for each MCP request, for that server's URL, as a tenant-level credential of the run's tenant (never user_id's or an agent's), so a credential restricted by allowed_urls works. It must exist at tenant level in your tenant when written, and is refused on delivery channel or team. Immutable / server-set fields are silently ignored if supplied.",
       "additionalProperties": true
     },
     "description":   {"type": "string", "description": "Free-text rationale for create/fork."},
@@ -234,6 +239,9 @@ func (s *ScheduleDef) execCreate(ctx context.Context, policy tools.ScheduleDefPo
 		}
 	}
 	if err := validateScheduleDef(def); err != nil {
+		return errResult(fmt.Sprintf("create: %s", err)), nil
+	}
+	if err := checkUserBearerAuthority(ctx, s.Credentials, def.UserBearer); err != nil {
 		return errResult(fmt.Sprintf("create: %s", err)), nil
 	}
 	defJSON, err := json.Marshal(def)
@@ -473,6 +481,9 @@ func (s *ScheduleDef) execFork(ctx context.Context, policy tools.ScheduleDefPoli
 		}
 	}
 	if err := validateScheduleDef(def); err != nil {
+		return errResult(fmt.Sprintf("fork: %s", err)), nil
+	}
+	if err := checkUserBearerAuthority(ctx, s.Credentials, def.UserBearer); err != nil {
 		return errResult(fmt.Sprintf("fork: %s", err)), nil
 	}
 	// required_credentials check — the template's manifest must be
@@ -1122,6 +1133,9 @@ func computeInitialNextRunAt(def mergedScheduleDef, now time.Time) time.Time {
 // runtime-supplied overlays that would otherwise produce broken
 // schedule rows the sweeper can't fire.
 func validateScheduleDef(def mergedScheduleDef) error {
+	if err := config.CheckTriggerUserBearer(def.UserBearer); err != nil {
+		return err
+	}
 	// RFC CY delivery target. Same rule as the yaml validator
 	// (config.validateScheduleDelivery): the run-shaped fields are REFUSED on
 	// a channel tick rather than ignored, because a prompt that is never sent
@@ -1156,7 +1170,7 @@ func validateScheduleDef(def mergedScheduleDef) error {
 		if len(def.OnComplete) > 0 {
 			return fmt.Errorf("delivery=team forbids on_complete (a team schedule dispatches no hooks — put what follows the walk in the team's own hooks)")
 		}
-		if len(def.RequiredCredentials) > 0 || len(def.UserCredentials) > 0 || len(def.UserCredentialsFromEnv) > 0 {
+		if len(def.RequiredCredentials) > 0 || len(def.UserCredentials) > 0 || len(def.UserCredentialsFromEnv) > 0 || def.UserBearer != "" {
 			return fmt.Errorf("delivery=team forbids credentials (they are handed to one agent run, and a walk's members resolve their own)")
 		}
 		if len(def.Metadata) > 0 {
@@ -1178,7 +1192,7 @@ func validateScheduleDef(def mergedScheduleDef) error {
 		if len(def.OnComplete) > 0 {
 			return fmt.Errorf("delivery=channel forbids on_complete (there is no run to complete — the publish IS the delivery)")
 		}
-		if len(def.RequiredCredentials) > 0 || len(def.UserCredentials) > 0 || len(def.UserCredentialsFromEnv) > 0 {
+		if len(def.RequiredCredentials) > 0 || len(def.UserCredentials) > 0 || len(def.UserCredentialsFromEnv) > 0 || def.UserBearer != "" {
 			return fmt.Errorf("delivery=channel forbids credentials (they exist to authorize a run, and no run fires)")
 		}
 	default:
@@ -1444,10 +1458,13 @@ type mergedScheduleDef struct {
 	// at high/middle/low tier) requires this field to round-trip
 	// through the substrate — without it the sweeper can't resolve
 	// which cron to use and parks the def with "tier missing" errors.
-	UserTier               string               `json:"user_tier,omitempty"`
-	UserCredentials        map[string]string    `json:"user_credentials,omitempty"`
-	UserCredentialsFromEnv map[string]string    `json:"user_credentials_from_env,omitempty"`
-	OnComplete             []mergedScheduleHook `json:"on_complete,omitempty"`
+	UserTier               string            `json:"user_tier,omitempty"`
+	UserCredentials        map[string]string `json:"user_credentials,omitempty"`
+	UserCredentialsFromEnv map[string]string `json:"user_credentials_from_env,omitempty"`
+	// UserBearer is the fired run's bearer, a "$cred:<name>" reference
+	// resolved for each MCP request (config.CheckTriggerUserBearer).
+	UserBearer string               `json:"user_bearer,omitempty"`
+	OnComplete []mergedScheduleHook `json:"on_complete,omitempty"`
 	// Metadata is NON-SECRET structured metadata passed to the agent as
 	// TRUSTED (def-authored) via RunInput.Metadata. Per-fork (e.g. a repo
 	// per fork) falls out of the overlay. Not for secrets (UserCredentials*).
@@ -1587,6 +1604,9 @@ func (d *mergedScheduleDef) applyOverlay(ov mergedScheduleDef) {
 			d.UserCredentials[k] = v
 		}
 	}
+	if ov.UserBearer != "" {
+		d.UserBearer = ov.UserBearer
+	}
 	if len(ov.UserCredentialsFromEnv) > 0 {
 		if d.UserCredentialsFromEnv == nil {
 			d.UserCredentialsFromEnv = make(map[string]string, len(ov.UserCredentialsFromEnv))
@@ -1641,6 +1661,7 @@ func staticToMergedScheduleDef(sr config.ScheduledRun) mergedScheduleDef {
 		ConcurrencyPolicy:      sr.ConcurrencyPolicy,
 		UserID:                 sr.UserID,
 		UserCredentialsFromEnv: sr.UserCredentialsFromEnv,
+		UserBearer:             sr.UserBearer,
 		Metadata:               sr.Metadata,
 		TenantID:               sr.TenantID,
 	}

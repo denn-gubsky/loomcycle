@@ -153,6 +153,7 @@ type SubstrateWebhookDef struct {
 	UserTier               string                    `json:"user_tier,omitempty"`
 	UserCredentialsFromEnv map[string]string         `json:"user_credentials_from_env,omitempty"`
 	UserCredentials        map[string]string         `json:"user_credentials,omitempty"`
+	UserBearer             string                    `json:"user_bearer,omitempty"`
 	Metadata               map[string]any            `json:"metadata,omitempty"`
 	TenantID               string                    `json:"tenant_id,omitempty"`
 	PayloadMapping         map[string]string         `json:"payload_mapping,omitempty"`
@@ -243,6 +244,7 @@ func (s SubstrateWebhookDef) ToConfigDef() config.Webhook {
 		UserTier:               s.UserTier,
 		UserCredentialsFromEnv: s.UserCredentialsFromEnv,
 		UserCredentials:        s.UserCredentials,
+		UserBearer:             s.UserBearer,
 		Metadata:               s.Metadata,
 		TenantID:               s.TenantID,
 		PayloadMapping:         s.PayloadMapping,

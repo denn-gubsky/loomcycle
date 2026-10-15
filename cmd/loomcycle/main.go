@@ -1191,8 +1191,9 @@ func main() {
 	// RFC AR — resolves $cred:<name> tokens in an http MCP server's headers
 	// against the tenant credential store, per-request from the run identity.
 	// Declared here so the pool's build callback (below) captures it by reference;
-	// assigned once the credential engine exists (after the store opens). Dials
-	// are post-boot, so it's non-nil by the time any header is substituted.
+	// assigned once the credential engine exists (after the store opens). The
+	// static servers are dialed before that, so their clients read it at each
+	// request (lateCredSubstitute), never at build.
 	var credSubstitute func(ctx context.Context, s, targetURL string) (string, []string, error)
 
 	// RFC N: the pool's build callback resolves through lookup.MCPServer
@@ -1823,6 +1824,7 @@ func main() {
 		Cfg:                 cfg,
 		MaxDefinitionBytes:  cfg.Env.AgentDefMaxDefinitionBytes,
 		MaxDescriptionBytes: cfg.Env.AgentDefMaxDescriptionBytes,
+		Credentials:         credEngine, // user_bearer: a stored credential the author holds
 	})
 	// RFC AP Phase 2 — wire the TeamDef substrate tool (team-workflow graphs).
 	// Tenant-confined at the route (ScopeTenant), but the same dedicated-slot
@@ -4289,11 +4291,24 @@ func (v mcpLookupView) Get(tenantID, name string) (lookup.MCPServerSpec, bool) {
 	}, true
 }
 
+// lateCredSubstitute returns a resolver that reads *ref when a request is
+// built, so a client made before main assigns it still uses it. Until then it
+// reports every $cred: and $ghapp: reference unresolved — the client drops or
+// refuses the header — so a reference never goes out as written.
+func lateCredSubstitute(ref *func(ctx context.Context, s, targetURL string) (string, []string, error)) func(ctx context.Context, s, targetURL string) (string, []string, error) {
+	return func(ctx context.Context, s, targetURL string) (string, []string, error) {
+		if f := *ref; f != nil {
+			return f(ctx, s, targetURL)
+		}
+		return s, append(credential.RefNames(s), credential.GHAppRefNames(s)...), nil
+	}
+}
+
 // mcpPoolBuild returns the MCP pool's build callback: it resolves a server
 // NAME for a tenant (static stdio first, then lookup.MCPServer's tenant-dynamic
 // → static yaml → shared-dynamic order) and builds its client. credSubstitute
-// is read at dial, not here: main assigns it once the credential engine exists,
-// after the pool is built, and dials happen only after boot.
+// is read at each request (lateCredSubstitute): main assigns it once the
+// credential engine exists, after static servers were already dialed.
 func mcpPoolBuild(cfg *config.Config, mcpDynView mcpLookupView,
 	credSubstitute *func(ctx context.Context, s, targetURL string) (string, []string, error),
 	logf func(format string, args ...any)) func(tenant, name string) (mcp.Caller, error) {
@@ -4374,9 +4389,12 @@ func mcpPoolBuild(cfg *config.Config, mcpDynView mcpLookupView,
 				PrivateHostAllowlist: cfg.Env.HTTPPrivateHostAllowlist,
 				// RFC AR — resolve $cred:<name> header tokens per-request from
 				// the tenant credential store (per-user tokens bind correctly on
-				// this pooled client). credSubstitute is set below once the
-				// credential engine exists (captured by ref; dials are post-boot).
-				CredSubstitute: *credSubstitute,
+				// this pooled client). Read at each request, not here: a static
+				// server's client is built and dialed during boot, before main
+				// assigns credSubstitute, and the pool keeps it — reading it
+				// here left every static server without one, so a $cred: in
+				// its headers went out as written.
+				CredSubstitute: lateCredSubstitute(credSubstitute),
 			})
 		case "stdio":
 			// F31: a runtime-registered stdio server. The substrate only

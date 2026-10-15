@@ -3280,6 +3280,10 @@ type ScheduledRun struct {
 	// this env-indirection escape valve.
 	UserCredentialsFromEnv map[string]string `yaml:"user_credentials_from_env"`
 
+	// UserBearer is the fired run's bearer, "$cred:<name>" only: resolved
+	// for each MCP request, for that server's URL (trigger_bearer.go).
+	UserBearer string `yaml:"user_bearer"`
+
 	// OnComplete is the closed-set delivery hooks fired after a
 	// successful run. Kinds: channel.publish, mcp.call, memory.set.
 	// Operator-yaml authoring. Runtime hooks added via the admin HTTP
@@ -3477,6 +3481,9 @@ type Webhook struct {
 	// literal secret here is baked into the signed/content-hashed/snapshotted
 	// def — the weaker posture vs env/payload; prefer those.
 	UserCredentials map[string]string `json:"user_credentials,omitempty" yaml:"user_credentials"`
+	// UserBearer is the spawned run's bearer, "$cred:<name>" only: resolved
+	// for each MCP request, for that server's URL (trigger_bearer.go).
+	UserBearer string `json:"user_bearer,omitempty" yaml:"user_bearer"`
 	// Metadata is NON-SECRET structured metadata (repo, review policy,
 	// preferred skills, …) passed to the agent as TRUSTED (def-authored) via
 	// RunInput.Metadata. Not for secrets — those use UserCredentials*.
@@ -7694,6 +7701,9 @@ func sqlMemConfigWarnings(name string, a AgentDef, sqlMemEnabled bool) []string 
 // no run to complete — is a setting the operator believes they made, which is
 // the failure this codebase has paid for before.
 func validateScheduleDelivery(name string, sr ScheduledRun) error {
+	if err := CheckTriggerUserBearer(sr.UserBearer); err != nil {
+		return fmt.Errorf("scheduled_runs.%s: %w", name, err)
+	}
 	switch sr.Delivery {
 	case "", "run":
 		if sr.Agent == "" {
@@ -7723,7 +7733,7 @@ func validateScheduleDelivery(name string, sr ScheduledRun) error {
 		if len(sr.OnComplete) > 0 {
 			return fmt.Errorf("scheduled_runs.%s: delivery=team forbids `on_complete` (a team schedule dispatches no hooks — put what follows the walk in the team's own hooks)", name)
 		}
-		if len(sr.RequiredCredentials) > 0 || len(sr.UserCredentialsFromEnv) > 0 {
+		if len(sr.RequiredCredentials) > 0 || len(sr.UserCredentialsFromEnv) > 0 || sr.UserBearer != "" {
 			return fmt.Errorf("scheduled_runs.%s: delivery=team forbids credentials (they are handed to one agent run, and a walk's members resolve their own)", name)
 		}
 		if len(sr.Metadata) > 0 {
@@ -7745,7 +7755,7 @@ func validateScheduleDelivery(name string, sr ScheduledRun) error {
 		if len(sr.OnComplete) > 0 {
 			return fmt.Errorf("scheduled_runs.%s: delivery=channel forbids `on_complete` (there is no run to complete — the publish IS the delivery)", name)
 		}
-		if len(sr.RequiredCredentials) > 0 || len(sr.UserCredentialsFromEnv) > 0 {
+		if len(sr.RequiredCredentials) > 0 || len(sr.UserCredentialsFromEnv) > 0 || sr.UserBearer != "" {
 			return fmt.Errorf("scheduled_runs.%s: delivery=channel forbids credentials (they exist to authorize a run, and no run fires)", name)
 		}
 	default:
@@ -7789,6 +7799,9 @@ func validateStaticWebhook(name string, w Webhook) error {
 		if w.Team != "" || len(w.Vars) > 0 {
 			return fmt.Errorf("webhooks.%s: delivery=channel forbids `team` and `vars` (set delivery: team to start a team walk)", name)
 		}
+		if w.UserBearer != "" {
+			return fmt.Errorf("webhooks.%s: delivery=channel forbids `user_bearer` (it authorizes a run, and a channel delivery starts none)", name)
+		}
 	case "team":
 		if err := CheckWebhookTeamDelivery(w.Team, w.Vars); err != nil {
 			return fmt.Errorf("webhooks.%s: %w", name, err)
@@ -7805,6 +7818,9 @@ func validateStaticWebhook(name string, w Webhook) error {
 		return fmt.Errorf("webhooks.%s: unknown auth.kind %q (want hmac, bearer, or none)", name, w.Auth.Kind)
 	}
 	if err := CheckWebhookSecretRefs(w.Auth); err != nil {
+		return fmt.Errorf("webhooks.%s: %w", name, err)
+	}
+	if err := CheckTriggerUserBearer(w.UserBearer); err != nil {
 		return fmt.Errorf("webhooks.%s: %w", name, err)
 	}
 	if err := CheckWebhookEvents(w); err != nil {
@@ -7866,7 +7882,7 @@ func WebhookTeamDeliveryForbids(w Webhook) string {
 		return "`channel` (set delivery: channel to publish instead)"
 	case w.UserTier != "":
 		return "`user_tier` (it pins one agent run's tier, and a walk's members resolve their own)"
-	case len(w.UserCredentials) > 0 || len(w.UserCredentialsFromEnv) > 0:
+	case len(w.UserCredentials) > 0 || len(w.UserCredentialsFromEnv) > 0 || w.UserBearer != "":
 		return "credentials (they are handed to one agent run, and a walk's members resolve their own)"
 	case len(w.Metadata) > 0:
 		return "`metadata` (nothing reads it — pass values to the walk in `vars`)"

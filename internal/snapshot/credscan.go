@@ -87,6 +87,7 @@ type credScanBody struct {
 	TenantID               string            `json:"tenant_id"`
 	UserCredentials        map[string]string `json:"user_credentials"`
 	UserCredentialsFromEnv map[string]string `json:"user_credentials_from_env"`
+	UserBearer             string            `json:"user_bearer"`
 	Auth                   credScanAuth      `json:"auth"`
 	SignWithKeyEnv         string            `json:"sign_with_key_env"`
 }
@@ -252,6 +253,10 @@ func refsOf(b credScanBody) []credRef {
 			out = append(out, credRef{field: "user_credentials." + k, env: m[1]})
 		}
 	}
+	for _, m := range credRefRe.FindAllStringSubmatch(b.UserBearer, -1) {
+		// Resolved at tenant level only, whatever the run's agent and user.
+		out = append(out, credRef{field: "user_bearer", cred: m[0], name: m[2], tenantOnly: true})
+	}
 	out = append(out, authRefs("", b.Auth)...)
 	if b.SignWithKeyEnv != "" {
 		out = append(out, credRef{field: "sign_with_key_env", env: b.SignWithKeyEnv})
@@ -316,7 +321,14 @@ func (c *credScan) run(ctx context.Context, opts RestoreOptions, result *Restore
 					uncheckedCred++
 					continue
 				}
-				if opts.CredentialExists(ctx, tenant, agent, b.UserID, r.name) {
+				// A tenant-only reference is asked at tenant level, where it
+				// resolves: an agent's or a user's credential of the name
+				// would not stand in for it.
+				askAgent, askUser := agent, b.UserID
+				if r.tenantOnly {
+					askAgent, askUser = "", ""
+				}
+				if opts.CredentialExists(ctx, tenant, askAgent, askUser, r.name) {
 					continue
 				}
 				if r.tenantOnly {

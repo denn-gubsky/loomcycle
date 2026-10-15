@@ -164,6 +164,10 @@ func buildRunInput(w config.Webhook, proj projectResult, envAllowlist map[string
 		UserID:          proj.Fields["user_id"],
 		UserTier:        w.UserTier,
 		UserCredentials: creds,
+		// A "$cred:<name>" reference from the def, never from the payload,
+		// and never opened here: the MCP client resolves it for each
+		// request, for that server's URL.
+		UserBearer: w.UserBearer,
 		// Metadata is the static, operator-authored def blob → TRUSTED.
 		// PayloadMetadata is projected from the inbound body → UNTRUSTED.
 		Metadata:        w.Metadata,
