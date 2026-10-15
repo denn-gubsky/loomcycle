@@ -337,6 +337,10 @@ func TestReceiver_TeamDelivery_ARedeliveryStartsNoSecondWalk(t *testing.T) {
 		if n := len(teams.started()); n != 1 {
 			t.Errorf("walks started = %d, want 1", n)
 		}
+		// A re-send, counted as one.
+		if got := lastVerdict(t, other); got.Verdict != verdictAcceptedReplay {
+			t.Errorf("recorded verdict = %q, want %q", got.Verdict, verdictAcceptedReplay)
+		}
 	})
 
 	t.Run("two that race open one walk", func(t *testing.T) {
@@ -345,6 +349,9 @@ func TestReceiver_TeamDelivery_ARedeliveryStartsNoSecondWalk(t *testing.T) {
 		code, resp := signedTeamPost(rec, body, "d-1")
 		if code != http.StatusAccepted || resp["deduped"] != "true" {
 			t.Fatalf("the losing delivery = %d %v, want 202 deduped", code, resp)
+		}
+		if got := lastVerdict(t, rec); got.Verdict != verdictAcceptedReplay {
+			t.Errorf("recorded verdict = %q, want %q", got.Verdict, verdictAcceptedReplay)
 		}
 	})
 }

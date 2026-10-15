@@ -3602,6 +3602,24 @@ type Store interface {
 	// WebhookDeliverySetRun records the run a claim's keys started.
 	WebhookDeliverySetRun(ctx context.Context, keys []string, runID string) error
 
+	// ---- Webhook delivery counters ----
+	//
+	// How a webhook's deliveries ended, by outcome, summed over every replica
+	// and since the webhook was first counted. The receiver counts in memory
+	// and adds what it counted here every half minute, so an unauthenticated
+	// request never writes to the database (RFC EK §9).
+
+	// WebhookCountsAdd adds each row's Count to the stored total of its
+	// (TenantID, Name, Static, Outcome, Reason), creating the row at the first
+	// add, and moves its LastAt forward to the row's when later. A row with
+	// Count 0 is skipped. All or none: on an error nothing was added, so the
+	// caller may add the same rows again.
+	WebhookCountsAdd(ctx context.Context, rows []WebhookCount) error
+	// WebhookCounts returns the counters of one webhook definition: the
+	// tenant that owns it, its name, and whether it is the operator's static
+	// one (a yaml webhook and a shared-tenant WebhookDef may share a name).
+	WebhookCounts(ctx context.Context, tenantID, name string, static bool) ([]WebhookCount, error)
+
 	// ---- HookDef substrate ----
 	//
 	// Mirror of TeamDef* with the same invariants: a per-name lock keeps the
@@ -5478,6 +5496,83 @@ type TeamDefRow struct {
 	// authority, not content — which teamgraph.Sign gets for free by hashing
 	// the definition rather than the row.
 	OperatorAuthored bool `json:"operator_authored,omitempty"`
+}
+
+// WebhookCount is one counter of a webhook definition's deliveries (see
+// WebhookCountsAdd). It holds no body text and no header value: only which
+// definition, how its deliveries ended and how many.
+type WebhookCount struct {
+	TenantID string `json:"-"`
+	Name     string `json:"-"`
+	// Static marks the operator's yaml webhook of Name, as against a
+	// WebhookDef of the same name in the shared tenant.
+	Static bool `json:"-"`
+	// Outcome is accepted, ping, ignored, filtered, duplicate or refused.
+	Outcome string `json:"outcome"`
+	// Reason is why a refused delivery was refused (signature, event, shape,
+	// body, rate, …); "" for every other outcome.
+	Reason string `json:"reason,omitempty"`
+	Count  int64  `json:"count"`
+	// LastAt is when a delivery counted here was last written: up to one
+	// flush interval after the delivery itself.
+	LastAt time.Time `json:"last_at"`
+}
+
+// The outcomes a webhook delivery is counted under. A refusal carries its
+// reason; other covers a sync delivery that timed out or whose caller went
+// away (the reason says which).
+const (
+	WebhookOutcomeAccepted  = "accepted"
+	WebhookOutcomeDuplicate = "duplicate"
+	WebhookOutcomePing      = "ping"
+	WebhookOutcomeIgnored   = "ignored"
+	WebhookOutcomeFiltered  = "filtered"
+	WebhookOutcomeRefused   = "refused"
+	WebhookOutcomeOther     = "other"
+)
+
+// WebhookCountSummary is how a definition's counters are shown: a total per
+// outcome, the refusals by reason, and when a counted delivery was last
+// written. Totals cover every replica and lag by up to one flush.
+type WebhookCountSummary struct {
+	Accepted  int64            `json:"accepted"`
+	Duplicate int64            `json:"duplicate"`
+	Ping      int64            `json:"ping"`
+	Ignored   int64            `json:"ignored"`
+	Filtered  int64            `json:"filtered"`
+	Refused   map[string]int64 `json:"refused"`
+	Other     map[string]int64 `json:"other,omitempty"`
+	LastAt    *time.Time       `json:"last_at,omitempty"`
+}
+
+// SummarizeWebhookCounts folds one definition's counters into a summary.
+func SummarizeWebhookCounts(rows []WebhookCount) WebhookCountSummary {
+	s := WebhookCountSummary{Refused: map[string]int64{}}
+	for _, r := range rows {
+		switch r.Outcome {
+		case WebhookOutcomeAccepted:
+			s.Accepted += r.Count
+		case WebhookOutcomeDuplicate:
+			s.Duplicate += r.Count
+		case WebhookOutcomePing:
+			s.Ping += r.Count
+		case WebhookOutcomeIgnored:
+			s.Ignored += r.Count
+		case WebhookOutcomeFiltered:
+			s.Filtered += r.Count
+		case WebhookOutcomeRefused:
+			s.Refused[r.Reason] += r.Count
+		default:
+			if s.Other == nil {
+				s.Other = map[string]int64{}
+			}
+			s.Other[r.Reason] += r.Count
+		}
+		if at := r.LastAt; s.LastAt == nil || at.After(*s.LastAt) {
+			s.LastAt = &at
+		}
+	}
+	return s
 }
 
 // TeamWebhookArm is one of a team's own webhooks, armed by one running walk

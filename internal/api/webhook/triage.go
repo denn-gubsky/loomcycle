@@ -9,6 +9,7 @@ import (
 
 	"github.com/denn-gubsky/loomcycle/internal/auth"
 	"github.com/denn-gubsky/loomcycle/internal/lookup"
+	"github.com/denn-gubsky/loomcycle/internal/store"
 )
 
 // MountAdmin registers the WH-5b triage routes WRAPPED in adminAuth. Unlike
@@ -25,6 +26,37 @@ func (rec *Receiver) MountAdmin(reg Registrar, adminAuth func(http.Handler) http
 		adminAuth(http.HandlerFunc(rec.handleRecentDeliveries)))
 	reg.Handle("POST /v1/_webhooks/{name}/test",
 		adminAuth(http.HandlerFunc(rec.handleTest)))
+	reg.Handle("GET /v1/_webhooks/{name}/delivery-counts",
+		adminAuth(http.HandlerFunc(rec.handleDeliveryCounts)))
+}
+
+// handleDeliveryCounts returns how the deliveries to a webhook ended, by
+// outcome, summed over every replica and since it was first counted (RFC EK
+// §9) — the durable sibling of recent-deliveries, which is this replica's
+// last few only. The webhook is the one triageTenant resolves. Up to
+// CountFlushInterval behind. 404 for a webhook that does not resolve; a
+// resolved one never counted answers zeros.
+func (rec *Receiver) handleDeliveryCounts(w http.ResponseWriter, r *http.Request) {
+	name := r.PathValue("name")
+	_, owner, ok := lookup.ResolveWebhook(r.Context(), rec.store, rec.cfg, triageTenant(r), name)
+	if !ok {
+		writeError(w, http.StatusNotFound, "unknown_webhook", "")
+		return
+	}
+	if rec.counts == nil {
+		writeError(w, http.StatusServiceUnavailable, "counts_unavailable", "")
+		return
+	}
+	rows, err := rec.counts.WebhookCounts(r.Context(), owner.TenantID, name, owner.Static)
+	if err != nil {
+		rec.logf("webhook %q: reading delivery counts: %v", name, err)
+		writeError(w, http.StatusInternalServerError, "counts_unavailable", "")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"webhook_name": name,
+		"deliveries":   store.SummarizeWebhookCounts(rows),
+	})
 }
 
 // triageTenant is the tenant a triage request resolves its webhook under: the

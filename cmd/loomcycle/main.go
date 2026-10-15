@@ -2258,6 +2258,9 @@ func main() {
 	//
 	// Registered BEFORE srv.Mux() below — the SetWebhookMux hook fires
 	// inside Mux(), same ordering constraint as SetExtraMux for A2A.
+	// The receiver, when webhooks are on: its delivery counters are flushed
+	// by a goroutine started once bgCtx exists, below.
+	var webhookReceiver *webhookapi.Receiver
 	if cfg.Env.WebhooksEnabled && storeIface != nil && srv != nil {
 		// The receiver's secret/credential allowlist is the union of the
 		// explicit operator knobs (LOOMCYCLE_SCHEDULER_ENV_ALLOWLIST +
@@ -2279,7 +2282,9 @@ func main() {
 			Credentials:          credEngine, // auth.secret: a stored verification secret
 			AllowUnauthenticated: cfg.Env.WebhooksAllowUnauthenticated,
 			Logf:                 log.Printf,
+			Counts:               storeIface, // per-definition delivery counters (RFC EK §9)
 		})
+		webhookReceiver = rec
 		srv.SetWebhookMux(func(reg lchttp.MuxRegistrar, adminAuth func(http.Handler) http.Handler) {
 			// Receiver POST: unauthed (per-WebhookDef secret). Triage
 			// endpoints (recent-deliveries / test): admin-bearer gated.
@@ -2353,6 +2358,13 @@ func main() {
 	// to do so in their packages.
 	bgCtx, bgCancel := context.WithCancel(context.Background())
 	defer bgCancel()
+
+	// Webhook delivery counters: each replica adds what it counted every
+	// half minute (never per delivery — the receiver answers unauthenticated
+	// requests); the shutdown below flushes the last of them.
+	if webhookReceiver != nil {
+		go webhookReceiver.RunCountFlusher(bgCtx, webhookapi.CountFlushInterval)
+	}
 
 	// v0.8.6 heartbeat runner — start AFTER bgCtx is available so
 	// bgCancel() on SIGTERM (or a future pause hook) cancels the
@@ -3573,6 +3585,15 @@ func main() {
 	// store closer is deferred (runs after main returns), so the store is still
 	// open for this final write.
 	accessFlusher.Stop()
+	// The webhook delivery counters, for the same reason: the deliveries
+	// answered during the drain are counted too. The store is still open.
+	if webhookReceiver != nil {
+		fctx, fcancel := context.WithTimeout(context.Background(), 5*time.Second)
+		if err := webhookReceiver.FlushCounts(fctx); err != nil {
+			log.Printf("webhooks: storing the last delivery counts failed: %v", err)
+		}
+		fcancel()
+	}
 	// Flush OTEL spans before exit. The OTLP exporter batches; without this,
 	// in-flight spans never reach the collector. Give it its OWN 5s budget —
 	// sharing the HTTP shutdown's ctx meant a slow in-flight request drain

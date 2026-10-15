@@ -4003,6 +4003,55 @@ func (s *Store) WebhookDeliveryRelease(ctx context.Context, keys []string) error
 	return nil
 }
 
+// WebhookCountsAdd adds each row's count to its stored total, all or none.
+func (s *Store) WebhookCountsAdd(ctx context.Context, rows []store.WebhookCount) error {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("webhook counts add: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	for _, r := range rows {
+		if r.Count == 0 {
+			continue
+		}
+		if _, err := tx.Exec(ctx, `
+			INSERT INTO webhook_delivery_counts (tenant_id, name, static, outcome, reason, count, last_at)
+			VALUES ($1, $2, $3, $4, $5, $6, $7)
+			ON CONFLICT (tenant_id, name, static, outcome, reason) DO UPDATE SET
+				count   = webhook_delivery_counts.count + EXCLUDED.count,
+				last_at = GREATEST(webhook_delivery_counts.last_at, EXCLUDED.last_at)`,
+			r.TenantID, r.Name, r.Static, r.Outcome, r.Reason, r.Count, r.LastAt); err != nil {
+			return fmt.Errorf("webhook counts add: %w", err)
+		}
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("webhook counts add: %w", err)
+	}
+	return nil
+}
+
+// WebhookCounts returns one webhook definition's counters.
+func (s *Store) WebhookCounts(ctx context.Context, tenantID, name string, static bool) ([]store.WebhookCount, error) {
+	rows, err := s.pool.Query(ctx, `
+		SELECT outcome, reason, count, last_at FROM webhook_delivery_counts
+		WHERE tenant_id = $1 AND name = $2 AND static = $3
+		ORDER BY outcome, reason`, tenantID, name, static)
+	if err != nil {
+		return nil, fmt.Errorf("webhook counts: %w", err)
+	}
+	defer rows.Close()
+	var out []store.WebhookCount
+	for rows.Next() {
+		c := store.WebhookCount{TenantID: tenantID, Name: name, Static: static}
+		if err := rows.Scan(&c.Outcome, &c.Reason, &c.Count, &c.LastAt); err != nil {
+			return nil, fmt.Errorf("webhook counts: %w", err)
+		}
+		c.LastAt = c.LastAt.UTC()
+		out = append(out, c)
+	}
+	return out, rows.Err()
+}
+
 // --- v0.8.15 dynamic_agents (LoomCycle MCP runtime registration) ---
 
 func (s *Store) DynamicAgentUpsert(ctx context.Context, a store.DynamicAgent) error {

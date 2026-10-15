@@ -213,4 +213,6 @@ var tableCoverageMap = map[string]tableCoverage{
 		Reason: "live concurrency slots of the source cluster"},
 	"webhook_deliveries": {Kind: coverOmitted, Backends: onBoth,
 		Reason: "TTL-bound replay guard of the deliveries the source accepted, like the receiver's in-process one"},
+	"webhook_delivery_counts": {Kind: coverOmitted, Backends: onBoth,
+		Reason: "operational counts of the source's deliveries; a restored instance counts its own from zero"},
 }

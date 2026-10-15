@@ -1,6 +1,7 @@
 package webhook
 
 import (
+	"regexp"
 	"strings"
 
 	"github.com/denn-gubsky/loomcycle/internal/config"
@@ -42,6 +43,39 @@ func collectPrefixed(fields map[string]string, prefix string) map[string]string 
 		}
 		out[name] = val
 	}
+	return out
+}
+
+// deliveryLabelRe is the shape a delivery id must have to be passed to a run:
+// a short token (a forge's UUID, or the body-hash id). The id is the sender's
+// unsigned header, so anything else is left out rather than carried into the
+// run's trusted metadata.
+var deliveryLabelRe = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$`)
+
+// withWebhookMetadata returns meta (the definition's trusted metadata) with
+// config.WebhookMetadataKey set to what the receiver knows of the delivery:
+// {provider, event, delivery_id} (RFC EK §8). Only for a definition that
+// lists events — the event is put there after the signed body was found to
+// have its shape — so a definition without events keeps its metadata as it
+// was. meta is copied, never written: it is the definition's own map.
+//
+// delivery_id is a label, not proof of anything: the forge does not sign it.
+func withWebhookMetadata(meta map[string]any, wd config.Webhook, event, did string) map[string]any {
+	if len(wd.Events) == 0 || event == "" {
+		return meta
+	}
+	wh := map[string]any{"event": event}
+	if wd.Provider != "" {
+		wh["provider"] = wd.Provider
+	}
+	if deliveryLabelRe.MatchString(did) {
+		wh["delivery_id"] = did
+	}
+	out := make(map[string]any, len(meta)+1)
+	for k, v := range meta {
+		out[k] = v
+	}
+	out[config.WebhookMetadataKey] = wh
 	return out
 }
 

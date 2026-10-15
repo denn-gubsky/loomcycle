@@ -147,3 +147,21 @@ func TestWebhookProviders_ConfusablePairsAreToldApart(t *testing.T) {
 		}
 	}
 }
+
+// A webhook that lists events may not set the metadata key the receiver
+// fills in with the delivery; without events the key is the author's.
+func TestCheckWebhookMetadataKey_RefusesTheReceiversKeyOnlyWithEvents(t *testing.T) {
+	withKey := map[string]any{WebhookMetadataKey: "mine", "repo": "acme/app"}
+	if err := CheckWebhookMetadataKey(Webhook{Events: []string{"push"}, Metadata: withKey}); err == nil {
+		t.Error("events + metadata.webhook was accepted")
+	}
+	for _, w := range []Webhook{
+		{Metadata: withKey},
+		{Events: []string{"push"}, Metadata: map[string]any{"repo": "acme/app"}},
+		{Events: []string{"push"}},
+	} {
+		if err := CheckWebhookMetadataKey(w); err != nil {
+			t.Errorf("%+v: %v", w, err)
+		}
+	}
+}
