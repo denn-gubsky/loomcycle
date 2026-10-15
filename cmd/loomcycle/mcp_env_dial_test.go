@@ -195,3 +195,35 @@ func TestMCPPoolBuild_OptOutDialsUnattributedEnvRefWithOneWarning(t *testing.T) 
 		t.Fatalf("want one more warning, for v4 only, got %q", lines)
 	}
 }
+
+// A static server's client is built and dialed during boot, before main
+// assigns the credential resolver, and the pool keeps it. It must still
+// resolve a $cred: header once the resolver exists — it used to keep the nil
+// it was built with and send the reference as written.
+func TestMCPPoolBuild_AClientBuiltBeforeTheResolverStillUsesIt(t *testing.T) {
+	peer := newEnvPeer(t)
+	cfg := &config.Config{Env: config.Env{MCPAllowPrivateIPs: true}, MCPServers: map[string]config.MCPServer{
+		"forge": {Transport: "http", URL: peer.srv.URL, Headers: map[string]string{"Authorization": "Bearer $cred:forge-token"}},
+	}}
+	var credSubstitute func(ctx context.Context, s, targetURL string) (string, []string, error)
+	build := mcpPoolBuild(cfg, mcpLookupView{mcp.NewDynamicRegistry()}, &credSubstitute, (&warnLog{}).logf)
+	c, err := build("", "forge")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Boot: no resolver yet. The reference is not sent as written.
+	_, _ = c.Call(context.Background(), "initialize", map[string]any{})
+	for _, a := range peer.seen() {
+		if strings.Contains(a, "$cred:") {
+			t.Fatalf("a reference went out as written before the resolver existed: %q", a)
+		}
+	}
+	credSubstitute = func(_ context.Context, s, _ string) (string, []string, error) {
+		return strings.ReplaceAll(s, "$cred:forge-token", "resolved-value"), nil, nil
+	}
+	_, _ = c.Call(context.Background(), "initialize", map[string]any{})
+	got := peer.seen()
+	if len(got) == 0 || got[len(got)-1] != "Bearer resolved-value" {
+		t.Errorf("the client built before the resolver sent %v, want it resolved", got)
+	}
+}
