@@ -59,8 +59,10 @@ func readLines(ctx context.Context, r io.Reader, w lineWindow) tools.Result {
 		scanCut  bool  // stopped counting at maxScan
 		longNote string
 	)
+	// The window is compared as a distance from offset, never as
+	// offset+limit: a limit near the largest int wraps that sum negative.
 	wanted := func(n int) bool {
-		return next == 0 && n >= w.offset && (w.limit == 0 || n < w.offset+w.limit)
+		return next == 0 && n >= w.offset && (w.limit == 0 || n-w.offset < w.limit)
 	}
 
 	for {
@@ -134,7 +136,7 @@ func readLines(ctx context.Context, r io.Reader, w lineWindow) tools.Result {
 		if eof {
 			break
 		}
-		windowDone := next != 0 || (w.limit != 0 && lineNo >= w.offset+w.limit-1)
+		windowDone := next != 0 || (w.limit != 0 && lineNo-w.offset >= w.limit-1)
 		if windowDone && scanned >= maxScan {
 			scanCut = true
 			break

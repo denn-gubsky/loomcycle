@@ -3,6 +3,7 @@ package builtin
 import (
 	"encoding/json"
 	"fmt"
+	"math"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -197,5 +198,23 @@ func TestRead_UnknownArgumentIsRefused(t *testing.T) {
 	}
 	if res := read(map[string]any{"volume": "default", "offset": 10, "limit": 1, "line_numbers": true}); res.IsError {
 		t.Errorf("every declared argument together was refused: %s", res.Text)
+	}
+}
+
+// A limit near the largest integer means "to the end". offset+limit used to
+// wrap negative, so such a call answered "no lines" on a file that had them.
+func TestRead_LineRange_HugeLimitReadsToTheEnd(t *testing.T) {
+	read := readFixture(t, &Read{}, "a\nb\nc\nd\n")
+	for _, c := range []struct {
+		offset int
+		want   string
+	}{
+		{1, "a\nb\nc\nd\n[lines 1-4 of 4]\n"},
+		{2, "b\nc\nd\n[lines 2-4 of 4]\n"},
+	} {
+		res := read(map[string]any{"offset": c.offset, "limit": math.MaxInt})
+		if res.IsError || res.Text != c.want {
+			t.Errorf("offset %d, limit MaxInt: got %q (error=%v), want %q", c.offset, res.Text, res.IsError, c.want)
+		}
 	}
 }
