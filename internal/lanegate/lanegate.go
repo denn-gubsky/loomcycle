@@ -129,9 +129,15 @@ func (p *Provider) Call(ctx context.Context, req providers.Request) (<-chan prov
 	if report == nil {
 		report = runReporter(ctx)
 	}
-	release, err := acquire(ctx, p.sched, p.floor, p.id, kind, providers.ModelIdentity(p.inner, req), report)
+	slot := -1
+	release, err := acquire(ctx, p.sched, p.floor, p.id, kind, providers.ModelIdentity(p.inner, req), report, func(n int) { slot = n })
 	if err != nil {
 		return nil, err
+	}
+	// The lane slot this call runs on, for a driver that pins its backend's
+	// slot to it (providers.LaneSlot).
+	if slot >= 0 {
+		ctx = providers.WithLaneSlot(ctx, slot)
 	}
 	in, err := p.inner.Call(ctx, req)
 	if err != nil {
@@ -165,7 +171,7 @@ func Hold(ctx context.Context, p providers.Provider, req providers.Request) (pro
 	if !ok || !lp.sched.Gated(lp.id, kind) {
 		return p, func() {}, nil
 	}
-	release, err := acquire(ctx, lp.sched, nil, lp.id, kind, providers.ModelIdentity(lp.inner, req), nil)
+	release, err := acquire(ctx, lp.sched, nil, lp.id, kind, providers.ModelIdentity(lp.inner, req), nil, nil)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -190,7 +196,7 @@ func HoldLane(ctx context.Context, sched *concurrency.CallScheduler, id, kind, m
 	if !sched.Gated(id, kind) {
 		return ctx, func() {}, nil
 	}
-	release, err := acquire(ctx, sched, nil, id, kind, model, nil)
+	release, err := acquire(ctx, sched, nil, id, kind, model, nil, nil)
 	if err != nil {
 		return ctx, nil, err
 	}
@@ -220,7 +226,11 @@ func HoldLane(ctx context.Context, sched *concurrency.CallScheduler, id, kind, m
 // report, when set, is told of each wait (EventCallQueued) and of the slot
 // that ends it (EventCallAdmitted); a call that waits for nothing reports
 // nothing, and one whose wait ends with ctx reports no admission.
-func acquire(ctx context.Context, sched *concurrency.CallScheduler, floor *concurrency.Lane, id, kind, model string, report func(providers.Event)) (release func(), err error) {
+//
+// onSlot, when set, is told the number of the provider lane's slot the call
+// was granted (concurrency.CallInfo.OnSlot). The floor's slots are this
+// service's own, not the provider's, so they are never reported.
+func acquire(ctx context.Context, sched *concurrency.CallScheduler, floor *concurrency.Lane, id, kind, model string, report func(providers.Event), onSlot func(int)) (release func(), err error) {
 	if held, _ := ctx.Value(heldKey{id, kind}).(bool); held {
 		return func() {}, nil
 	}
@@ -292,10 +302,12 @@ func acquire(ctx context.Context, sched *concurrency.CallScheduler, floor *concu
 	// A local, not the named result: the closure below must not capture the
 	// variable it is itself returned through.
 	var releaseSched func()
+	schedInfo := info
+	schedInfo.OnSlot = onSlot
 	if bounded {
-		releaseSched, err = sched.AcquireBounded(ctx, id, kind, info, bound)
+		releaseSched, err = sched.AcquireBounded(ctx, id, kind, schedInfo, bound)
 	} else {
-		releaseSched, err = sched.Acquire(ctx, id, kind, info)
+		releaseSched, err = sched.Acquire(ctx, id, kind, schedInfo)
 	}
 	if err != nil {
 		releaseFloor()

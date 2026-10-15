@@ -35,7 +35,7 @@ The built-in providers in the table above ship as an **embedded default layer** 
 | `max_models_in_flight` | How many different models may compute on this provider at once, across all lanes. `0` / unset = unlimited. |
 | `models_in_flight_exempt_kinds` | Model kinds `max_models_in_flight` leaves out, e.g. `[embedder]`. Only with `max_models_in_flight`. |
 | `model_switch_max_wait_ms` | How long a waiting model can be held off by calls to the models in flight. Default `30000`; only with `max_models_in_flight`. |
-| `options` | Driver-specific tuning, passed opaquely: `ollama` `num_ctx` / `num_gpu`; `code-js` `code_root` / `deterministic` / `run_timeout_seconds`; `mock` `stable`. Unknown keys log a warning, never fatal. |
+| `options` | Driver-specific tuning, passed opaquely: `ollama` `num_ctx` / `num_gpu`; `llamacpp` `pin_slots` (see [Pinning llama.cpp slots](#pinning-llamacpp-slots)); `code-js` `code_root` / `deterministic` / `run_timeout_seconds`; `mock` `stable`. Unknown keys log a warning, never fatal. |
 | `capabilities` | Override the driver's advertised capabilities (`supports_thinking` / `supports_vision` / `supports_effort` / `native_prompt_cache` / `parallel_tool_calls` / `max_context_tokens`). Only the coarse flag is overridable; per-model heuristics stay in the driver. |
 
 ### Add a 3rd-party OpenAI-compatible provider
@@ -146,6 +146,25 @@ providers:
 - indexing the built-in help and seeding `memory.entries` at boot.
 
 Anything a live run asks for — an agent's Memory search, a `Decision` call, an ordinary scheduled run — is not background. A consolidation sweep still has its own time budget, so on a lane that live runs keep full give background work a share (`background_share: 0.25`) rather than leaving it at `0`.
+
+#### Pinning llama.cpp slots
+
+A lane's lease (`affinity_hold_ms`) keeps a slot for the run that last used it, so the run's next call can reuse its warm prompt cache. On Ollama loomcycle cannot choose which server slot a request lands on. llama.cpp can: `llama-server` keeps one prompt cache per slot (`--parallel N`) and takes `id_slot` on a request. With `pin_slots`, the `llamacpp` driver sends each call as `id_slot` = the number of the lane slot it was granted, with `cache_prompt: true`. A run's next call returns to the lane slot its reservation kept, and so to the server slot that still holds its prompt.
+
+```yaml
+providers:
+  llama-local:
+    driver: llamacpp
+    base_url: http://gpu-box:8080/v1
+    options:
+      pin_slots: true
+    lanes:
+      chat: { max_concurrent: 4, affinity_hold_ms: 5000 }   # max_concurrent = llama-server --parallel
+```
+
+- Lane slots are numbered from 0, the lowest free one at each grant, and stay below `max_concurrent`. Set it to the server's `--parallel`: a number past the server's slots is refused by the server.
+- Without `affinity_hold_ms` every call is still pinned to its lane slot, but a run is not kept on one between calls, so the prompt cache helps less.
+- A call to the provider with no lane granted (no chat lane configured) is sent unpinned.
 
 ### Capability overrides
 
