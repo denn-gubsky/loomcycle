@@ -69,11 +69,14 @@ write_versions() { # runtime sidecar loomboard
 }
 health() { compose exec -T tailscale wget -qO- http://127.0.0.1:8787/healthz 2>/dev/null || true; }
 # restore_files BACKUP: puts back the compose file, the versions and the config
-# a deploy saved before it changed anything.
+# a deploy saved before it changed anything. Readable by the containers again:
+# under this script's umask the copies would be the deploy account's only, and
+# the runtime could not read its own /config.
 restore_files() {
   cp "$1/docker-compose.yaml" docker-compose.yaml
   cp "$1/versions.env" versions.env
   rm -rf config && cp -r "$1/config" config
+  chmod -R go+rX docker-compose.yaml versions.env config
 }
 
 # The two deploys below run as the condition of an `if`, where `set -e` does not
@@ -109,9 +112,15 @@ deploy_loomcycle() { # have want sidecar
     # A sync that stops part-way has already replaced some files, the compose
     # file and the config among them, under a runtime that still runs the old
     # version: put them back, so a restart does not start $1 on $2's files.
-    if ! rsync -a --exclude .env.insecure --exclude .env.secure --exclude 'versions.env*' \
+    #
+    # --chmod: the checkout above is made under this script's umask 077, so its
+    # files are the deploy account's only, and rsync -a copies that mode. The
+    # containers read these files as other users — the runtime its /config,
+    # the landing its server.js — and v1.113.0's first deploy came up unable
+    # to read either.
+    if ! rsync -a --chmod=go+rX --exclude .env.insecure --exclude .env.secure --exclude 'versions.env*' \
          --exclude searxng/ "$src/cloud-deployment/" "$stack/" \
-       || ! rsync -a "$src/cloud-web/" "$stack/web/"; then
+       || ! rsync -a --chmod=go+rX "$src/cloud-web/" "$stack/web/"; then
       echo "FAILED: syncing the deployment files of v$2; restoring those of $1"
       restore_files "$bk"
       return 1
