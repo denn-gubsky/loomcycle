@@ -62,6 +62,9 @@ type laneStat struct {
 	// times a run gave its held slot up to a waiter (quantum_calls).
 	Grants      uint64 `json:"grants"`
 	Preemptions uint64 `json:"preemptions"`
+	// BlockedOnModel is the calls among Queued held back by their model's own
+	// cap in the lane (model_caps): they wait even while a slot is free.
+	BlockedOnModel int `json:"blocked_on_model"`
 }
 
 // handleConcurrencyStats serves a point-in-time snapshot of the
@@ -105,6 +108,7 @@ func (s *Server) handleConcurrencyStats(w http.ResponseWriter, r *http.Request) 
 						MaxConcurrent: l.MaxConcurrent, Active: l.Active, Reserved: l.Reserved,
 						Queued: l.Queued, QueuedBackground: l.QueuedBackground,
 						Grants: l.Grants, Preemptions: l.Preemptions,
+						BlockedOnModel: l.BlockedOnModel,
 					}
 				}
 			}

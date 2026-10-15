@@ -72,6 +72,7 @@ func spawnRequestToRunInput(req connector.SpawnRunRequest) runner.RunInput {
 		Sampling:             req.Sampling,         // per-run LLM sampling override
 		ToolChoice:           req.ToolChoice,       // per-run tool_choice (RFC DI)
 		OutputFormat:         req.OutputFormat,     // per-run answer schema (RFC DI)
+		Routing:              req.Routing,          // per-run routing: block (queue-aware start)
 		Compaction:           req.Compaction,       // per-run context-compaction override
 		Context:              req.Context,          // per-run layered-context override (RFC CR)
 		MaxContextTokens:     req.MaxContextTokens, // RFC CJ per-run context-window override

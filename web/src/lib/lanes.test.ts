@@ -106,6 +106,14 @@ describe("lane formatting", () => {
     expect(laneQueued(lane({ queued_background: 1 }))).toBe("3 (1 background)");
   });
 
+  it("names the calls held back by their model's cap only when there are some", () => {
+    expect(laneQueued(lane({ blocked_on_model: 0 }))).toBe("3");
+    expect(laneQueued(lane({ blocked_on_model: 2 }))).toBe("3 (2 on model cap)");
+    expect(laneQueued(lane({ queued_background: 1, blocked_on_model: 2 }))).toBe(
+      "3 (1 background, 2 on model cap)",
+    );
+  });
+
   it("summarises a lane on one line", () => {
     expect(laneSummary("chat", lane({ queued_background: 1 }))).toBe(
       "chat: 2 / 4 active, 1 reserved, 3 (1 background) queued; 10 grants, 2 preemptions",

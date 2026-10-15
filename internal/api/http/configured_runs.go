@@ -409,9 +409,10 @@ func (s *Server) validateDraft(ctx context.Context, tenant string, d runDraft) (
 		return fmt.Sprintf("unknown agent %q", d.Agent), false
 	}
 	if _, err := s.effectiveDef(ctx, agentDef, runOverrides{
-		Routing:   &routingOverride{Model: d.Model, Provider: d.Provider, Tier: d.Tier, Effort: d.Effort},
-		Resources: &resourceOverride{MaxTokens: d.MaxTokens, MaxIterations: d.MaxIterations, UnboundedIterations: d.UnboundedIterations, MaxConcurrentChildren: d.MaxConcurrentChildren},
-		Tuning:    &tuningOverride{RetryAttempts: d.RetryAttempts, MemoryInjectMaxTokens: d.MemoryInjectMaxTokens, MemoryIndexMaxBytes: d.MemoryIndexMaxBytes, InjectToolGuide: d.InjectToolGuide},
+		Routing:      &routingOverride{Model: d.Model, Provider: d.Provider, Tier: d.Tier, Effort: d.Effort},
+		Resources:    &resourceOverride{MaxTokens: d.MaxTokens, MaxIterations: d.MaxIterations, UnboundedIterations: d.UnboundedIterations, MaxConcurrentChildren: d.MaxConcurrentChildren},
+		Tuning:       &tuningOverride{RetryAttempts: d.RetryAttempts, MemoryInjectMaxTokens: d.MemoryInjectMaxTokens, MemoryIndexMaxBytes: d.MemoryIndexMaxBytes, InjectToolGuide: d.InjectToolGuide},
+		QueueRouting: d.Routing,
 	}); err != nil {
 		return err.Error(), false
 	}

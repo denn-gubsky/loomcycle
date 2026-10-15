@@ -154,6 +154,11 @@ type SpawnRunRequest struct {
 	// carried verbatim to runner.RunInput, which validates it.
 	OutputFormat *config.OutputFormat `json:"output_format,omitempty"`
 
+	// Routing is an optional per-RUN `routing:` block (queue_aware,
+	// switch_after_ms), REPLACING the agent's whole. Mirrors the HTTP /v1/runs
+	// `routing` field; carried verbatim to runner.RunInput, which validates it.
+	Routing *config.AgentRouting `json:"routing,omitempty"`
+
 	// Compaction is an optional per-RUN context-compaction override, merged PER
 	// FIELD over the agent's own compaction block (this wins; unset fields
 	// inherit). nil = inherit the agent's entirely. Mirrors the HTTP /v1/runs

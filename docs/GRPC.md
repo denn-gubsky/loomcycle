@@ -93,6 +93,18 @@ per-run overrides merged per-field over the agent's own (mirroring the HTTP
 `BatchSpawnRequest.spawns` reuses `RunRequest`, so a fan-out child sets these
 the same way.
 
+**Per-run `routing`.** `RunRequest.routing` and `ContinueRequest.routing` (a
+`RunRouting` message: `queue_aware`, `switch_after_ms`) are the run's own
+`routing:` block — how the agent's tier candidates are walked when the run
+starts (see CONFIGURATION.md, "Per-agent `routing:`"). Unset leaves the
+agent's block; a present message replaces it whole, so an empty one turns
+queue-aware routing off for the run. `queue_aware` where the run resolves to a
+provider/model pin — the agent's, or one the request makes with `model` — and a
+negative `switch_after_ms` are `INVALID_ARGUMENT`; an agent with
+`allow_overrides: false`, or a token whose overrides policy leaves `routing`
+out, refuses it with `PERMISSION_DENIED`. A batch child and a configured run
+carry it the same way.
+
 `HostAllowlist` is a wrapper message rather than a `repeated string`
 field directly so the proto can encode the three-state `*[]string`
 semantics from the HTTP API:

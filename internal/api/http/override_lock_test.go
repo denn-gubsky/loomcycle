@@ -15,7 +15,7 @@ import (
 // request carries it. A new lockable override needs a sample here, which is
 // what makes the per-field refusal test cover it.
 var overrideSamples = map[string]string{
-	"model": `"stub-model"`, "provider": `"scripted"`, "tier": `"middle"`, "effort": `"low"`,
+	"model": `"stub-model"`, "provider": `"scripted"`, "tier": `"middle"`, "effort": `"low"`, "routing": `{"queue_aware":false}`,
 	"user_tier":  `"default"`,
 	"max_tokens": `64`, "max_iterations": `3`, "unbounded_iterations": `true`, "max_concurrent_children": `1`,
 	"run_timeout_seconds": `30`,

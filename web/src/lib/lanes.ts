@@ -62,10 +62,15 @@ export function laneActive(l: LaneStat): string {
   return `${l.active} / ${l.max_concurrent}`;
 }
 
-// laneQueued renders the waiters, naming the background share only when there
-// is one: "3" or "3 (1 background)".
+// laneQueued renders the waiters, naming the background share and the calls
+// held back by their model's cap only when there are some: "3",
+// "3 (1 background)" or "3 (1 background, 2 on model cap)". The last is what
+// explains a queue beside a free slot.
 export function laneQueued(l: LaneStat): string {
-  return l.queued_background > 0 ? `${l.queued} (${l.queued_background} background)` : `${l.queued}`;
+  const parts: string[] = [];
+  if (l.queued_background > 0) parts.push(`${l.queued_background} background`);
+  if ((l.blocked_on_model ?? 0) > 0) parts.push(`${l.blocked_on_model} on model cap`);
+  return parts.length > 0 ? `${l.queued} (${parts.join(", ")})` : `${l.queued}`;
 }
 
 // laneSummary is one line for a lane, used as the row's hover text.

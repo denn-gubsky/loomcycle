@@ -232,6 +232,8 @@ var laneSeriesList = []laneSeries{
 		func(l concurrency.LaneStats) uint64 { return uint64(l.Queued) }},
 	{"loomcycle_provider_lane_queue_depth_background", "gauge", "Of the calls waiting in a provider's lane, those that are maintenance work.",
 		func(l concurrency.LaneStats) uint64 { return uint64(l.QueuedBackground) }},
+	{"loomcycle_provider_lane_queue_depth_blocked_on_model", "gauge", "Of the calls waiting in a provider's lane, those held back by their model's own cap (model_caps).",
+		func(l concurrency.LaneStats) uint64 { return uint64(l.BlockedOnModel) }},
 	{"loomcycle_provider_lane_grants_total", "counter", "Calls admitted to a provider's lane since it was built.",
 		func(l concurrency.LaneStats) uint64 { return l.Grants }},
 	{"loomcycle_provider_lane_preemptions_total", "counter", "Times a run gave its held slot up to a waiter (quantum_calls).",

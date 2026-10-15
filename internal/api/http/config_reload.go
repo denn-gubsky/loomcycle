@@ -175,7 +175,7 @@ func (s *Server) ReloadConcurrency(newCfg *config.Config) {
 		s.sem.SetCaps(newCfg.Concurrency.MaxConcurrentRuns, newCfg.Concurrency.MaxQueueDepth)
 		s.sem.WithPerUserCap(newCfg.Concurrency.MaxConcurrentRunsPerUser)
 	}
-	s.callSched.Reload(lanegate.SchedulerConfig(newCfg.Providers))
+	s.callSched.Reload(lanegate.SchedulerConfig(newCfg.Providers, newCfg.Models))
 }
 
 // intersectsChanged reports whether any of a reloader's owned sections changed.

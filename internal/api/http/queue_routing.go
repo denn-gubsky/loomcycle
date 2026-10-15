@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/denn-gubsky/loomcycle/internal/config"
+	"github.com/denn-gubsky/loomcycle/internal/providers"
 )
 
 // Queue-aware routing (RFC EI P4): an agent with `routing: {queue_aware: true}`
@@ -29,6 +30,40 @@ func withRunStart(ctx context.Context) context.Context {
 func isRunStart(ctx context.Context) bool {
 	v, _ := ctx.Value(runStartKey{}).(bool)
 	return v
+}
+
+// queueMoveFn is the loop's MoveForQueue for a queue-aware, tier-routed run,
+// nil for any other. At a call boundary after the first, a run that holds no
+// slot of its provider's chat lane (its lease was preempted or expired, or the
+// lane keeps none) and whose next call there would wait past switch_after_ms
+// is resolved again as a run start is — the same cascade, the same estimate —
+// and moves if that picks somewhere else. Holding a lease, it never moves: the
+// lease is its warm prompt cache, and moving would throw it away.
+//
+// def is the run's EFFECTIVE definition (a per-run `routing` already applied),
+// and the arguments are what the run's own start resolved with.
+func (s *Server) queueMoveFn(def config.AgentDef, runID, tenantID, userID, agentName, userTier string, restricted bool) func(context.Context, providers.Provider, string) (providers.Provider, string, string, bool) {
+	if def.Routing == nil || !def.Routing.QueueAware || !routesByTier(def) || s.resolver == nil {
+		return nil
+	}
+	switchAfter := def.Routing.SwitchAfter()
+	return func(ctx context.Context, current providers.Provider, model string) (providers.Provider, string, string, bool) {
+		if s.callSched.HoldsLease(current.ID(), config.ModelKindChat, runID) {
+			return nil, "", "", false
+		}
+		if s.estimatedQueueWait(current.ID(), model) <= switchAfter {
+			return nil, "", "", false
+		}
+		pid, m, effort, err := s.resolveAgentDef(withRunStart(ctx), def, tenantID, userID, agentName, userTier, restricted)
+		if err != nil || (pid == current.ID() && m == model) {
+			return nil, "", "", false
+		}
+		p, err := s.providers.Get(pid)
+		if err != nil {
+			return nil, "", "", false
+		}
+		return p, m, effort, true
+	}
 }
 
 // estimatedQueueWait is how long a run's first call on (provider, model) would

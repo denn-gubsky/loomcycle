@@ -99,7 +99,7 @@ func (r RateLimit) Validate() error {
 // classified as one or the other.
 var LockableOverrides = []string{
 	// routing: which model answers
-	"model", "provider", "tier", "effort", "user_tier",
+	"model", "provider", "tier", "effort", "user_tier", "routing",
 	// resources: how much it may spend
 	"max_tokens", "max_iterations", "unbounded_iterations", "max_concurrent_children",
 	"run_timeout_seconds",

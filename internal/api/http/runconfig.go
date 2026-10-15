@@ -63,6 +63,13 @@ type runConfigRecord struct {
 	// restore it instead of re-deriving from a definition that may have moved.
 	Routing *routingOverride `json:"routing,omitempty"`
 
+	// QueueRouting is the run's own `routing:` block (queue_aware,
+	// switch_after_ms), as the request gave it. It acts only where the run
+	// starts, so a resume does not read it back; it is kept so the run's spec
+	// and its effective-config report say the run chose it. Its own key,
+	// because "routing" above was taken first by the model choice.
+	QueueRouting *config.AgentRouting `json:"queue_routing,omitempty"`
+
 	// Resources is the run's own budget (RFC DC P2) — here for the same reason
 	// Routing is: it must survive a pause, and a resumed run must not quietly
 	// go back to the definition's limits.

@@ -323,6 +323,8 @@ function runBody(opts: RunOptions): Record<string, unknown> {
   if (opts.compaction !== undefined) body.compaction = compactionToWire(opts.compaction);
   if (opts.context !== undefined) body.context = contextToWire(opts.context);
   if (opts.maxContextTokens !== undefined) body.max_context_tokens = opts.maxContextTokens;
+  // Same keys on the wire as in the option (queue_aware / switch_after_ms).
+  if (opts.routing !== undefined) body.routing = opts.routing;
   if (opts.interactive !== undefined) body.interactive = opts.interactive;
   applyOverridesToWire(body, opts);
   return body;
@@ -441,6 +443,7 @@ export class LoomcycleClient {
     if (opts.compaction !== undefined) body.compaction = compactionToWire(opts.compaction);
     if (opts.context !== undefined) body.context = contextToWire(opts.context);
     if (opts.maxContextTokens !== undefined) body.max_context_tokens = opts.maxContextTokens;
+    if (opts.routing !== undefined) body.routing = opts.routing;
     if (opts.interactive !== undefined) body.interactive = opts.interactive;
     applyOverridesToWire(body, opts);
     yield* this.streamSSE(

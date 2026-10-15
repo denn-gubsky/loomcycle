@@ -3,6 +3,7 @@ package lanegate
 import (
 	"context"
 	"errors"
+	"reflect"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -628,7 +629,7 @@ func TestSchedulerConfig_FoldsTheShorthandIntoTheChatLane(t *testing.T) {
 				config.ModelKindDecision: {MaxConcurrent: 1},
 			},
 		},
-	})
+	}, nil)
 	if _, ok := got["plain"]; ok {
 		t.Error("a provider that caps nothing got a scheduler entry")
 	}
@@ -637,7 +638,7 @@ func TestSchedulerConfig_FoldsTheShorthandIntoTheChatLane(t *testing.T) {
 	}
 	laned := got["laned"]
 	want := concurrency.LaneConfig{MaxConcurrent: 3, QuantumCalls: 4, AffinityHold: 1500 * time.Millisecond, BackgroundShare: 0.25}
-	if laned.Lanes[config.ModelKindChat] != want {
+	if !reflect.DeepEqual(laned.Lanes[config.ModelKindChat], want) {
 		t.Errorf("chat lane = %+v, want %+v", laned.Lanes[config.ModelKindChat], want)
 	}
 	if laned.Lanes[config.ModelKindDecision].MaxConcurrent != 1 || laned.MaxModelsInFlight != 1 {
@@ -648,12 +649,56 @@ func TestSchedulerConfig_FoldsTheShorthandIntoTheChatLane(t *testing.T) {
 	}
 }
 
+// TestSchedulerConfig_ResolvesModelCapsToConcreteModels — a lane's model_caps
+// reach the scheduler keyed by the concrete model, an alias resolved through
+// models:, so the lane matches the identity a driver reports (ollama's
+// model@num_ctx starts with the concrete name, never the alias). The shorthand
+// chat lane keeps its caps, and a lane without caps carries none.
+func TestSchedulerConfig_ResolvesModelCapsToConcreteModels(t *testing.T) {
+	models := map[string]config.ModelRef{"ornith": {Provider: "ollama-local", Model: "ornith-1.5:35b"}}
+	got := SchedulerConfig(map[string]config.ProviderConfig{
+		"ollama-local": {
+			MaxConcurrent: 4,
+			Lanes: map[string]config.ProviderLane{
+				config.ModelKindChat:     {ModelCaps: map[string]int{"qwen3.6:latest": 1, "ornith": 1}},
+				config.ModelKindDecision: {MaxConcurrent: 2},
+			},
+		},
+	}, models)
+	lanes := got["ollama-local"].Lanes
+	want := map[string]int{"qwen3.6:latest": 1, "ornith-1.5:35b": 1}
+	if l := lanes[config.ModelKindChat]; l.MaxConcurrent != 4 || !reflect.DeepEqual(l.ModelCaps, want) {
+		t.Errorf("chat lane = %+v, want max_concurrent 4 and model caps %v", l, want)
+	}
+	if caps := lanes[config.ModelKindDecision].ModelCaps; caps != nil {
+		t.Errorf("decision lane model caps = %v, want none", caps)
+	}
+
+	// End to end through the scheduler: the alias's model at a context size
+	// is held at one call while another model takes a free slot.
+	s := concurrency.NewCallScheduler(got)
+	ctx := context.Background()
+	rel, err := s.Acquire(ctx, "ollama-local", config.ModelKindChat, concurrency.CallInfo{Model: "ornith-1.5:35b@65536"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rel()
+	if _, err := s.AcquireBounded(ctx, "ollama-local", config.ModelKindChat, concurrency.CallInfo{Model: "ornith-1.5:35b@65536"}, 0); !concurrency.IsQueueFull(err) {
+		t.Errorf("a second call to the alias's model = %v, want it held back (queue full at bound 0)", err)
+	}
+	other, err := s.AcquireBounded(ctx, "ollama-local", config.ModelKindChat, concurrency.CallInfo{Model: "gemma4:latest@65536"}, 0)
+	if err != nil {
+		t.Fatalf("a call to another model = %v, want a free slot", err)
+	}
+	other()
+}
+
 // The exempt kinds reach the scheduler, so an embedding call on a provider with
 // max_models_in_flight: 1 does not wait for the chat model.
 func TestSchedulerConfig_CarriesTheModelCapsExemptKinds(t *testing.T) {
 	got := SchedulerConfig(map[string]config.ProviderConfig{
 		"p": {MaxModelsInFlight: 1, ModelsInFlightExemptKinds: []string{config.ModelKindEmbedder}},
-	})
+	}, nil)
 	if ex := got["p"].ExemptKinds; len(ex) != 1 || ex[0] != config.ModelKindEmbedder {
 		t.Fatalf("exempt kinds = %v, want [embedder]", ex)
 	}

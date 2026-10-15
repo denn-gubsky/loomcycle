@@ -79,7 +79,7 @@ func TestDescribeCallCaps_NamesEveryCapInAStableOrder(t *testing.T) {
 			Lanes:             map[string]config.ProviderLane{config.ModelKindDecision: {MaxConcurrent: 1}},
 		},
 		"uncapped": {},
-	})
+	}, nil)
 	if got, want := describeCallCaps(caps), "ollama-local[chat=2 decision=1 models=1], openai[chat=8]"; got != want {
 		t.Errorf("describeCallCaps = %q, want %q", got, want)
 	}

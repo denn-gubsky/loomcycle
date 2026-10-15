@@ -40,6 +40,12 @@ var agentDefOverridability = map[string]overridability{
 	"Provider": runMayChoose,
 	"Tier":     runMayChoose,
 	"Effort":   runMayChoose,
+	// How that cascade is walked at run start (RFC EI P4b). It picks only among
+	// the candidates the definition declares — the same choice a per-run tier,
+	// provider or model makes above — and reaches nothing new: the operator's
+	// `providers:` / `models:` below still bound it. Replaced whole, and
+	// queue_aware is refused where the effective definition is a pin.
+	"Routing": runMayChoose,
 
 	// --- budget: what one run costs (RFC DC P2) ---
 	"MaxTokens":           runMayChoose,
@@ -193,9 +199,4 @@ var agentDefOverridability = map[string]overridability{
 	// operator's; an override selects WITHIN them and may not change them. ---
 	"Providers": notOverridable,
 	"Models":    notOverridable,
-	// How the cascade those declare is walked at run start (RFC EI P4b). A run
-	// could not reach a provider the definition does not list through it, but
-	// it would choose cost and data residency among them; there is no per-run
-	// `routing` yet, and adding one is a decision of its own.
-	"Routing": notOverridable,
 }
