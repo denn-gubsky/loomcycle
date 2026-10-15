@@ -19,6 +19,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 )
@@ -35,7 +36,8 @@ type CallInfo struct {
 	// after foreground work, with the share LaneConfig.BackgroundShare guarantees.
 	Background bool
 	// Model is the model identity as the host loads it. "" is not subject to
-	// the models-in-flight cap (see ModelGate). A Lane ignores it.
+	// the models-in-flight cap (see ModelGate) nor to a lane's per-model cap
+	// (LaneConfig.ModelCaps).
 	Model string
 	// OnQueued, when set, is called each time the call has to wait — for its
 	// model (CallQueueReasonModel) or for a lane slot (CallQueueReasonLane) —
@@ -57,7 +59,11 @@ const (
 	// CallQueueReasonModel: the provider already has its cap of models in
 	// flight (max_models_in_flight) and this call's model is not among them.
 	CallQueueReasonModel = "models_in_flight"
-	// CallQueueReasonLane: every slot of the call's lane is taken.
+	// CallQueueReasonLane: every slot of the call's lane is taken, or the
+	// call's model has its own cap of calls in flight in the lane
+	// (LaneConfig.ModelCaps). Both are a wait inside the lane; the second has
+	// no reason of its own so a consumer typing the reasons as a closed set
+	// keeps parsing it.
 	CallQueueReasonLane = "lane"
 )
 
@@ -84,6 +90,16 @@ type LaneConfig struct {
 	// work while BOTH classes wait, in [0,1). 0 = strict foreground priority.
 	// Out-of-range values are clamped to [0,1].
 	BackgroundShare float64
+	// ModelCaps caps the calls IN FLIGHT per model inside the lane, keyed by
+	// concrete model name. A key covers the identity it names and that name at
+	// any context size ("m" covers "m@65536", as ModelGate.blocksNew matches).
+	// A call whose model is at its cap waits even with a slot free, and does
+	// not hold back calls to other models queued behind it. For a host that
+	// runs some models one request at a time whatever its own parallelism
+	// setting says, beside others that really run several. NewLane and
+	// Reconfigure raise a value below 1 to 1 (a cap of 0 would park the
+	// model's calls forever) and drop an empty key.
+	ModelCaps map[string]int
 }
 
 // QueueFullError is why a bounded acquire (AcquireBounded) was refused: the
@@ -112,6 +128,9 @@ type LaneStats struct {
 	QueuedBackground int    // the background waiters among Queued
 	Grants           uint64 // calls admitted since the lane was built
 	Preemptions      uint64 // leases ended by the quantum while others waited
+	// BlockedOnModel is the waiters among Queued whose model is at its cap
+	// (LaneConfig.ModelCaps): they would wait even with a slot free.
+	BlockedOnModel int
 }
 
 // lease is an owner's hold on one slot. It is in Lane.leases from the grant
@@ -175,21 +194,57 @@ func (q *laneQueue) push(w *laneWaiter) {
 	q.n++
 }
 
-// pop takes the oldest waiter of the bucket whose turn it is and moves that
-// bucket to the back. Caller has checked n > 0.
-func (q *laneQueue) pop() *laneWaiter {
-	b := q.ring[0]
-	w := b.waiters[0]
-	b.waiters[0] = nil
-	b.waiters = b.waiters[1:]
-	q.ring = q.ring[1:]
-	if len(b.waiters) == 0 {
-		delete(q.buckets, b.key)
-	} else {
-		q.ring = append(q.ring, b)
+// pop takes the waiter to serve next among those eligible may grant: the
+// oldest eligible waiter of the first bucket in turn order that has one, and
+// moves that bucket to the back. A bucket with no eligible waiter keeps its
+// place, so it is first once its model frees up; a waiter skipped inside a
+// bucket keeps its place too. With every waiter eligible (no model caps) this
+// is the head of the bucket whose turn it is. Nil when none is eligible.
+func (q *laneQueue) pop(eligible func(*laneWaiter) bool) *laneWaiter {
+	for i, b := range q.ring {
+		for j, w := range b.waiters {
+			if !eligible(w) {
+				continue
+			}
+			copy(b.waiters[j:], b.waiters[j+1:])
+			b.waiters[len(b.waiters)-1] = nil
+			b.waiters = b.waiters[:len(b.waiters)-1]
+			q.ring = append(q.ring[:i], q.ring[i+1:]...)
+			if len(b.waiters) == 0 {
+				delete(q.buckets, b.key)
+			} else {
+				q.ring = append(q.ring, b)
+			}
+			q.n--
+			return w
+		}
 	}
-	q.n--
-	return w
+	return nil
+}
+
+// hasEligible reports whether pop would find a waiter.
+func (q *laneQueue) hasEligible(eligible func(*laneWaiter) bool) bool {
+	for _, b := range q.ring {
+		for _, w := range b.waiters {
+			if eligible(w) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// count is the waiters for which f holds.
+func (q *laneQueue) count(f func(*laneWaiter) bool) int {
+	n := 0
+	for _, b := range q.ring {
+		for _, w := range b.waiters {
+			if f(w) {
+				n++
+			}
+		}
+	}
+	return n
 }
 
 // remove drops a waiter that is still queued. It keeps the bucket's place in
@@ -227,7 +282,11 @@ type Lane struct {
 
 	active   int // calls in flight
 	reserved int // idle leases; active+reserved is the slots in use
-	leases   map[string]*lease
+	// modelActive counts the calls in flight per model identity (CallInfo.Model
+	// as given; "" is not counted). It is kept whatever the caps are, so a cap
+	// added by Reconfigure sees the calls already running.
+	modelActive map[string]int
+	leases      map[string]*lease
 	// inUse marks the slot numbers taken, busy or reserved: one per call in
 	// flight and per reservation (see CallInfo.OnSlot).
 	inUse []bool
@@ -248,6 +307,7 @@ type Lane struct {
 func NewLane(cfg LaneConfig) *Lane {
 	return &Lane{
 		cfg:         normalizeLaneConfig(cfg),
+		modelActive: map[string]int{},
 		leases:      map[string]*lease{},
 		ownerQueued: map[string]int{},
 	}
@@ -269,6 +329,19 @@ func normalizeLaneConfig(cfg LaneConfig) LaneConfig {
 	}
 	if cfg.BackgroundShare > 1 {
 		cfg.BackgroundShare = 1
+	}
+	// A copy: the caller's map is the config's, which the lane must not write.
+	if len(cfg.ModelCaps) > 0 {
+		caps := make(map[string]int, len(cfg.ModelCaps))
+		for m, n := range cfg.ModelCaps {
+			if m == "" {
+				continue
+			}
+			caps[m] = max(n, 1)
+		}
+		cfg.ModelCaps = caps
+	} else {
+		cfg.ModelCaps = nil
 	}
 	return cfg
 }
@@ -304,13 +377,22 @@ func (l *Lane) acquire(ctx context.Context, c CallInfo, maxQueued int) (release 
 
 	l.mu.Lock()
 	if ls := l.leases[c.Owner]; c.Owner != "" && ls != nil && !ls.busy {
-		if q := l.cfg.QuantumCalls; q > 0 && ls.used >= q && l.queued() > 0 {
+		switch q := l.cfg.QuantumCalls; {
+		case l.modelBlocked(c.Model):
+			// Its model is at its cap (ModelCaps), so the run cannot compute
+			// now. Its reservation goes and the call queues like any other,
+			// below: a slot held idle while it waits for its model would keep
+			// calls to other models out of the lane, and a kept reservation
+			// plus a grant on its model's turn would hold two slots.
+			l.dropIdle(ls)
+			l.dispatch()
+		case q > 0 && ls.used >= q && l.eligibleQueued():
 			// Its turn is over and someone waits: the slot goes to the next
 			// waiter and this owner queues behind, below.
 			l.dropIdle(ls)
 			l.preemptions++
 			l.dispatch()
-		} else {
+		default:
 			// Back inside its hold: its own slot, ahead of the queue.
 			ls.timer.Stop()
 			ls.busy = true
@@ -318,18 +400,23 @@ func (l *Lane) acquire(ctx context.Context, c CallInfo, maxQueued int) (release 
 			l.reserved--
 			l.active++
 			l.grants++
+			l.countModel(c.Model, 1)
 			l.mu.Unlock()
 			reportSlot(c, ls.slot)
-			return l.releaseFn(ls, ls.slot), nil
+			return l.releaseFn(ls, ls.slot, c.Model), nil
 		}
 	}
-	// A free slot implies an empty queue (every change that frees a slot or
-	// adds one runs dispatch), so taking it here overtakes nobody.
-	if l.active+l.reserved < l.cfg.MaxConcurrent {
+	// A free slot here means no waiter is ELIGIBLE: every change that frees a
+	// slot, adds one or ends a model's call runs dispatch, which grants until
+	// slots or eligible waiters run out. Waiters held back by their model's cap
+	// can sit beside a free slot; a call to another model takes it without
+	// overtaking anyone who could have used it, and a call to a model at its
+	// cap queues behind them.
+	if l.active+l.reserved < l.cfg.MaxConcurrent && !l.modelBlocked(c.Model) {
 		ls, slot := l.grant(c)
 		l.mu.Unlock()
 		reportSlot(c, slot)
-		return l.releaseFn(ls, slot), nil
+		return l.releaseFn(ls, slot, c.Model), nil
 	}
 	// Checked under the lock that enqueues, so a burst cannot slip past it.
 	if maxQueued >= 0 && l.queued() >= maxQueued {
@@ -355,7 +442,7 @@ func (l *Lane) acquire(ctx context.Context, c CallInfo, maxQueued int) (release 
 	select {
 	case <-w.ch:
 		reportSlot(c, w.slot)
-		return l.releaseFn(w.lease, w.slot), nil
+		return l.releaseFn(w.lease, w.slot, c.Model), nil
 	case <-ctx.Done():
 		l.mu.Lock()
 		if w.granted {
@@ -363,7 +450,7 @@ func (l *Lane) acquire(ctx context.Context, c CallInfo, maxQueued int) (release 
 			// gave up. Hand the slot straight on; the call never ran, so it
 			// neither counts as a grant nor leaves a reservation behind.
 			l.grants--
-			l.finish(w.lease, w.slot, true)
+			l.finish(w.lease, w.slot, c.Model, true)
 		} else {
 			l.unqueue(w)
 		}
@@ -398,7 +485,10 @@ func (l *Lane) Done(owner string) {
 // Reconfigure applies a new config in place (config reload). A larger
 // MaxConcurrent admits waiters at once. A smaller one never interrupts a call
 // in flight: idle reservations are given up first, then the excess drains as
-// calls end. The other fields apply to decisions made from now on; a
+// calls end. Model caps behave the same way: a raised or removed one admits
+// that model's waiters at once, a lowered or added one holds the model's new
+// calls until those in flight (counted even if they started uncapped) drain
+// below it. The other fields apply to decisions made from now on; a
 // reservation already running keeps the hold it was given, except that
 // AffinityHold 0 ends every reservation at once.
 func (l *Lane) Reconfigure(cfg LaneConfig) {
@@ -428,14 +518,92 @@ func (l *Lane) Stats() LaneStats {
 		QueuedBackground: l.bg.n,
 		Grants:           l.grants,
 		Preemptions:      l.preemptions,
+		BlockedOnModel:   l.fg.count(l.blockedWaiter) + l.bg.count(l.blockedWaiter),
 	}
+}
+
+// modelWait reports, for a NEW call to model, whether its model is at its cap,
+// with that cap and the calls queued for the same capped model. model may be a
+// plain name whose identities in flight carry a context size (see ModelCaps).
+func (l *Lane) modelWait(model string) (atCap bool, capN, queued int) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	key, n, ok := l.capFor(model)
+	if !ok || l.modelInFlight(key) < n {
+		return false, 0, 0
+	}
+	same := func(w *laneWaiter) bool {
+		k, _, ok := l.capFor(w.info.Model)
+		return ok && k == key
+	}
+	return true, n, l.fg.count(same) + l.bg.count(same)
 }
 
 func (l *Lane) queued() int { return l.fg.n + l.bg.n }
 
-// releaseFn is the release of one granted call on slot. ls is the lease the
-// call runs on, nil for a call that holds none.
-func (l *Lane) releaseFn(ls *lease, slot int) func() {
+// capFor names the cap that covers model: the key equal to it, else the
+// longest key it extends with "@<context size>". ok is false for a model no
+// cap covers, and for "". Caller holds mu.
+func (l *Lane) capFor(model string) (key string, n int, ok bool) {
+	if model == "" || len(l.cfg.ModelCaps) == 0 {
+		return "", 0, false
+	}
+	if n, ok := l.cfg.ModelCaps[model]; ok {
+		return model, n, true
+	}
+	for k, c := range l.cfg.ModelCaps {
+		if len(k) > len(key) && strings.HasPrefix(model, k+"@") {
+			key, n, ok = k, c, true
+		}
+	}
+	return key, n, ok
+}
+
+// modelInFlight is the calls in flight that the cap named key covers. Caller
+// holds mu.
+func (l *Lane) modelInFlight(key string) int {
+	total := 0
+	for id, n := range l.modelActive {
+		if k, _, ok := l.capFor(id); ok && k == key {
+			total += n
+		}
+	}
+	return total
+}
+
+// modelBlocked reports whether a call to model may not be granted now because
+// its model is at its cap. Caller holds mu.
+func (l *Lane) modelBlocked(model string) bool {
+	key, n, ok := l.capFor(model)
+	return ok && l.modelInFlight(key) >= n
+}
+
+// eligible and blockedWaiter sort the waiters by whether their model lets
+// them be granted now. Caller holds mu.
+func (l *Lane) eligible(w *laneWaiter) bool      { return !l.modelBlocked(w.info.Model) }
+func (l *Lane) blockedWaiter(w *laneWaiter) bool { return l.modelBlocked(w.info.Model) }
+
+// eligibleQueued reports whether a waiter could take a slot freed now. Caller
+// holds mu.
+func (l *Lane) eligibleQueued() bool {
+	return l.fg.hasEligible(l.eligible) || l.bg.hasEligible(l.eligible)
+}
+
+// countModel adds d to the calls in flight of model. Caller holds mu.
+func (l *Lane) countModel(model string, d int) {
+	if model == "" {
+		return
+	}
+	if n := l.modelActive[model] + d; n > 0 {
+		l.modelActive[model] = n
+	} else {
+		delete(l.modelActive, model)
+	}
+}
+
+// releaseFn is the release of one granted call to model on slot. ls is the
+// lease the call runs on, nil for a call that holds none.
+func (l *Lane) releaseFn(ls *lease, slot int, model string) func() {
 	released := false
 	return func() {
 		l.mu.Lock()
@@ -444,7 +612,7 @@ func (l *Lane) releaseFn(ls *lease, slot int) func() {
 			return
 		}
 		released = true
-		l.finish(ls, slot, false)
+		l.finish(ls, slot, model, false)
 	}
 }
 
@@ -483,6 +651,7 @@ func (l *Lane) freeSlot(slot int) {
 func (l *Lane) grant(c CallInfo) (*lease, int) {
 	l.active++
 	l.grants++
+	l.countModel(c.Model, 1)
 	slot := l.takeSlot()
 	// One reservation per owner per lane: an owner with a second call in
 	// flight at once (a compaction beside its turn) runs that one as a plain
@@ -495,17 +664,20 @@ func (l *Lane) grant(c CallInfo) (*lease, int) {
 	return ls, slot
 }
 
-// finish ends the call that ran on slot under ls (nil = no lease): the slot is
-// either kept reserved for its owner, number and all, or handed on. abandoned
-// is the cancelled-waiter path, where the call never ran. Caller holds mu.
-func (l *Lane) finish(ls *lease, slot int, abandoned bool) {
+// finish ends the call to model that ran on slot under ls (nil = no lease):
+// the slot is either kept reserved for its owner, number and all, or handed
+// on. abandoned is the cancelled-waiter path, where the call never ran. The
+// dispatch at the end also grants a waiter held back by its model's cap now
+// that this call no longer counts against it. Caller holds mu.
+func (l *Lane) finish(ls *lease, slot int, model string, abandoned bool) {
 	l.active--
+	l.countModel(model, -1)
 	kept := false
 	// A lease the lane no longer maps to its owner was ended by Done while the
 	// call was in flight: the slot is simply free.
 	if ls != nil && l.leases[ls.owner] == ls {
 		ls.busy = false
-		yield := l.cfg.QuantumCalls > 0 && ls.used >= l.cfg.QuantumCalls && l.queued() > 0
+		yield := l.cfg.QuantumCalls > 0 && ls.used >= l.cfg.QuantumCalls && l.eligibleQueued()
 		switch {
 		case abandoned,
 			l.cfg.AffinityHold <= 0,
@@ -564,11 +736,16 @@ func (l *Lane) dropIdle(ls *lease) {
 	l.freeSlot(ls.slot)
 }
 
-// dispatch hands free slots to waiters until one or the other runs out.
-// Caller holds mu. Every path that frees a slot or raises the cap ends here.
+// dispatch hands free slots to eligible waiters until one or the other runs
+// out; a waiter whose model is at its cap is passed over, not waited for.
+// Caller holds mu. Every path that frees a slot, ends a call or changes a cap
+// ends here.
 func (l *Lane) dispatch() {
 	for l.active+l.reserved < l.cfg.MaxConcurrent && l.queued() > 0 {
 		w := l.next()
+		if w == nil {
+			return // every waiter is held back by its model's cap
+		}
 		if w.info.Owner != "" {
 			l.decOwnerQueued(w.info.Owner)
 		}
@@ -578,29 +755,38 @@ func (l *Lane) dispatch() {
 	}
 }
 
-// next picks the waiter to serve: foreground first, except that while both
-// classes wait background earns BackgroundShare of a grant per grant and is
-// served whenever it has a whole one saved up. Caller has checked queued() > 0.
+// next picks the waiter to serve among the eligible ones (see laneQueue.pop):
+// foreground first, except that while both classes have an eligible waiter
+// background earns BackgroundShare of a grant per grant and is served
+// whenever it has a whole one saved up. Nil when no waiter is eligible.
+// Caller holds mu.
 func (l *Lane) next() *laneWaiter {
-	if l.fg.n == 0 {
-		return l.bg.pop()
-	}
-	if l.bg.n == 0 {
-		return l.fg.pop()
+	fg := l.fg.n > 0 && l.fg.hasEligible(l.eligible)
+	bg := l.bg.n > 0 && l.bg.hasEligible(l.eligible)
+	switch {
+	case !fg && !bg:
+		return nil
+	case !fg:
+		return l.bg.pop(l.eligible)
+	case !bg:
+		return l.fg.pop(l.eligible)
 	}
 	l.bgCredit += l.cfg.BackgroundShare
 	// The tolerance absorbs float drift in a sum like ten times 0.1.
 	if l.cfg.BackgroundShare > 0 && l.bgCredit >= 1-1e-9 {
 		l.bgCredit--
-		return l.bg.pop()
+		return l.bg.pop(l.eligible)
 	}
-	return l.fg.pop()
+	return l.fg.pop(l.eligible)
 }
 
 // position is w's place in the lane, 1 being the next served: the waiters of
 // its class served before it, round by round across buckets. A background
 // waiter is also counted behind every foreground one, though the background
-// share may let it in sooner. Caller holds mu and w is queued.
+// share may let it in sooner. With model caps it is approximate: a waiter
+// held back by its model's cap is passed over, so a call can be served before
+// its reported place, and one whose own model is at its cap after it. Caller
+// holds mu and w is queued.
 func (l *Lane) position(w *laneWaiter) int {
 	if w.info.Background {
 		return l.fg.n + l.bg.ahead(w) + 1

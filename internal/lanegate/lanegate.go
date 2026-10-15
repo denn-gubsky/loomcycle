@@ -386,8 +386,9 @@ func forward(ctx context.Context, in <-chan providers.Event, out chan<- provider
 // each provider's gated lanes (the max_concurrent shorthand folded into the
 // chat lane) and its cap on models in flight. The one translation, used at boot
 // and on every config reload, so the two cannot build different lanes from the
-// same config.
-func SchedulerConfig(provs map[string]config.ProviderConfig) map[string]concurrency.ProviderLanesConfig {
+// same config. models is the `models:` block: a lane's model_caps key may be an
+// alias, and the lane matches calls by the concrete model it names.
+func SchedulerConfig(provs map[string]config.ProviderConfig, models map[string]config.ModelRef) map[string]concurrency.ProviderLanesConfig {
 	out := make(map[string]concurrency.ProviderLanesConfig, len(provs))
 	for id, pc := range provs {
 		lanes := pc.EffectiveLanes()
@@ -406,6 +407,7 @@ func SchedulerConfig(provs map[string]config.ProviderConfig) map[string]concurre
 				QuantumCalls:    l.QuantumCalls,
 				AffinityHold:    time.Duration(l.AffinityHoldMS) * time.Millisecond,
 				BackgroundShare: l.BackgroundShare,
+				ModelCaps:       config.ResolveModelCaps(models, id, l.ModelCaps),
 			}
 		}
 		out[id] = plc

@@ -3443,8 +3443,9 @@ func main() {
 		{
 			// Concurrency: global semaphore caps + per-user cap + the providers'
 			// call lanes. Owns `providers` too because the lanes are built from
-			// providers[*].max_concurrent / lanes / max_models_in_flight.
-			Sections: []string{"concurrency", "providers"},
+			// providers[*].max_concurrent / lanes / max_models_in_flight, and
+			// `models` because a lane's model_caps key may be an alias.
+			Sections: []string{"concurrency", "providers", "models"},
 			Reload:   func(newCfg *config.Config) error { srv.ReloadConcurrency(newCfg); return nil },
 		},
 	}
@@ -3857,7 +3858,7 @@ func providerEnabled(id string, pc config.ProviderConfig, cfg *config.Config) bo
 // scheduler with nothing in it — an uncapped call then costs one map lookup —
 // when no provider sets a cap (the default deployment).
 func newCallScheduler(cfg *config.Config) *concurrency.CallScheduler {
-	caps := lanegate.SchedulerConfig(cfg.Providers)
+	caps := lanegate.SchedulerConfig(cfg.Providers, cfg.Models)
 	if len(caps) > 0 {
 		log.Printf("providers: per-provider call caps enabled — %s (queue_depth=%d for requests that hold no run slot; a run's calls wait without timing out)",
 			describeCallCaps(caps), cfg.Concurrency.ProviderQueueDepthOrDefault())

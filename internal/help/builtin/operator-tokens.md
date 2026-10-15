@@ -175,7 +175,7 @@ agents as top-level runs.
 `create` op, `{"overrides": "none"}` in the body of
 `POST /v1/_users/{subject}/tokens`, or `overrides: none` on a declared
 principal) locks the per-run overrides for runs the token starts: the
-model, provider, tier and effort, the limits, sampling, compaction,
+model, provider, tier and effort, the `routing` block, the limits, sampling, compaction,
 output format, hooks and the rest. A list (`--overrides effort,tier`)
 names the ones the token may still set.
 

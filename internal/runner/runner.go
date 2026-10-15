@@ -369,6 +369,13 @@ type RunInput struct {
 	// the agent's whole; validated by the server before the run starts.
 	OutputFormat *config.OutputFormat
 
+	// Routing is an optional per-RUN `routing:` block: how the agent's tier
+	// candidates are walked when the run starts (queue_aware,
+	// switch_after_ms). REPLACES the agent's whole; validated by the server
+	// against the run's effective definition. Trusted callers only, like the
+	// model / provider / tier fields below.
+	Routing *config.AgentRouting
+
 	// Compaction is an optional per-RUN context-compaction override, merged PER
 	// FIELD over the agent's own Compaction. nil = inherit the agent's entirely.
 	Compaction *config.Compaction

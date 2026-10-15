@@ -3022,6 +3022,7 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 	// pass, because both names held the same value.
 	agentDef, rerr := s.effectiveDef(ctx, agentDef, runOverrides{
 		Routing: runRouting, Resources: runResources, Tuning: runTuning,
+		QueueRouting: in.Routing,
 	})
 	if rerr != nil {
 		return rerr
@@ -3289,6 +3290,7 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 		RunTimeoutSeconds: pickRunTimeout(in.RunTimeoutSeconds, agentDef.RunTimeoutSeconds),
 		MaxWallSeconds:    in.MaxWallSeconds,
 		Routing:           persistedRouting(runRouting),
+		QueueRouting:      in.Routing.Clone(),
 		Resources:         persistedResources(runResources),
 		Tuning:            persistedTuning(runTuning),
 		Hosts:             hostRecordOf(hostPolicy),
@@ -3643,6 +3645,7 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 		UserTier:               in.UserTier,
 		FallbackPolicy:         fbPolicy,
 		ReResolve:              fbReResolve,
+		MoveForQueue:           s.queueMoveFn(agentDef, runID, effectiveTenantID, effectiveUserID, effectiveAgentName, in.UserTier, operatorKeyRestricted),
 		Hooks:                  s.hookDispatcher,
 		MaxSameProviderRetries: s.retryAttemptsForAgent(agentDef, in.UserTier),
 		// RFC DC P3: a parked run adopts a retune on its next operator turn.
@@ -4761,6 +4764,14 @@ type runRequest struct {
 	// agent's whole. Validated at intake.
 	OutputFormat *config.OutputFormat `json:"output_format,omitempty"`
 
+	// Routing is an optional per-RUN `routing:` block: how the agent's tier
+	// candidates are walked when this run starts (queue_aware,
+	// switch_after_ms). REPLACES the agent's whole — `{}` turns queue-aware
+	// routing off for this run. It chooses only among the candidates the
+	// definition declares, so it reaches nothing new; queue_aware on an agent,
+	// or a run, pinned to a provider or model is refused.
+	Routing *config.AgentRouting `json:"routing,omitempty"`
+
 	// Compaction is an optional per-RUN context-compaction override — merged PER
 	// FIELD over the agent's own compaction block (this wins; unset fields
 	// inherit). nil = inherit the agent's entirely.
@@ -5072,6 +5083,7 @@ func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {
 	// row to apply the same routing.
 	agentDef, oerr := s.effectiveDef(r.Context(), agentDef, runOverrides{
 		Routing: runRouting, Resources: runResources, Tuning: runTuning,
+		QueueRouting: req.Routing,
 	})
 	if oerr != nil {
 		writeResolveError(w, oerr)
@@ -5438,6 +5450,7 @@ func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {
 		RunTimeoutSeconds: pickRunTimeout(req.RunTimeoutSeconds, agentDef.RunTimeoutSeconds),
 		MaxWallSeconds:    req.MaxWallSeconds,
 		Routing:           persistedRouting(runRouting),
+		QueueRouting:      req.Routing.Clone(),
 		Resources:         persistedResources(runResources),
 		Tuning:            persistedTuning(runTuning),
 		Hosts:             hostRecordOf(hostPolicy),
@@ -5774,6 +5787,7 @@ func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {
 		UserTier:                req.UserTier,
 		FallbackPolicy:          fbPolicy,
 		ReResolve:               fbReResolve,
+		MoveForQueue:            s.queueMoveFn(agentDef, runID, req.TenantID, req.UserID, req.Agent, req.UserTier, operatorKeyRestricted),
 		Hooks:                   s.hookDispatcher,
 		MaxSameProviderRetries:  s.retryAttemptsForAgent(agentDef, req.UserTier),
 		ReResolveOnOperatorTurn: s.reResolveOnOperatorTurnFn(runID, req.TenantID, req.UserID, req.Agent, req.UserTier, operatorKeyRestricted, liveInterruption),
@@ -5917,6 +5931,10 @@ type messagesRequest struct {
 	// OutputFormat: per-RUN answer schema for this continuation. Same semantics
 	// as runRequest.OutputFormat.
 	OutputFormat *config.OutputFormat `json:"output_format,omitempty"`
+
+	// Routing: per-RUN `routing:` block for this continuation. Same semantics
+	// as runRequest.Routing.
+	Routing *config.AgentRouting `json:"routing,omitempty"`
 
 	// Compaction: per-RUN context-compaction override for this continuation,
 	// merged per field over the agent's. Same semantics as runRequest.Compaction.
@@ -6154,6 +6172,7 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 	}
 	agentDef, oerr := s.effectiveDef(r.Context(), agentDef, runOverrides{
 		Routing: runRouting, Resources: runResources, Tuning: runTuning,
+		QueueRouting: body.Routing,
 	})
 	if oerr != nil {
 		writeResolveError(w, oerr)
@@ -6404,6 +6423,7 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 		MaxContextTokens:  config.MergeMaxContextTokens(agentDef.MaxContextTokens, body.MaxContextTokens),
 		RunTimeoutSeconds: pickRunTimeout(body.RunTimeoutSeconds, agentDef.RunTimeoutSeconds),
 		Routing:           persistedRouting(runRouting),
+		QueueRouting:      body.Routing.Clone(),
 		Resources:         persistedResources(runResources),
 		Tuning:            persistedTuning(runTuning),
 		Hosts:             hostRecordOf(hostPolicy),
@@ -6685,6 +6705,7 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 		UserTier:                body.UserTier,
 		FallbackPolicy:          fbPolicy,
 		ReResolve:               fbReResolve,
+		MoveForQueue:            s.queueMoveFn(agentDef, run.ID, sess.TenantID, sess.UserID, sess.Agent, body.UserTier, operatorKeyRestricted),
 		Hooks:                   s.hookDispatcher,
 		MaxSameProviderRetries:  s.retryAttemptsForAgent(agentDef, body.UserTier),
 		ReResolveOnOperatorTurn: s.reResolveOnOperatorTurnFn(run.ID, sess.TenantID, sess.UserID, sess.Agent, body.UserTier, operatorKeyRestricted, liveInterruption),
@@ -8805,6 +8826,7 @@ func (s *Server) prepareSubRunValues(ctx context.Context, name string, src nameS
 		UserTier:               parentTier,
 		FallbackPolicy:         fbPolicy,
 		ReResolve:              fbReResolve,
+		MoveForQueue:           s.queueMoveFn(def, subRunID, tenantFromCtx(ctx), parentIdentity.UserID, name, parentTier, parentIdentity.OperatorKeyRestricted),
 		Hooks:                  s.hookDispatcher,
 		MaxSameProviderRetries: s.retryAttemptsForAgent(def, parentTier),
 	}

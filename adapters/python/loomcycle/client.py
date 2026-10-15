@@ -2093,6 +2093,11 @@ class LoomcycleClient:
         sampling: Optional[Mapping[str, Any]] = None,
         tool_choice: Optional[Mapping[str, Any]] = None,
         output_format: Optional[Mapping[str, Any]] = None,
+        # The run's own routing block: how the agent's tier candidates are
+        # walked when it starts ({"queue_aware": bool, "switch_after_ms": int}).
+        # Replaces the agent's whole; {} turns queue-aware routing off. None =
+        # the agent's. queue_aware on a pinned agent or run is refused.
+        routing: Optional[Mapping[str, Any]] = None,
         compaction: Optional[Mapping[str, Any]] = None,
         max_context_tokens: int = 0,
         interactive: bool = False,
@@ -2183,6 +2188,7 @@ class LoomcycleClient:
             sampling=sampling,
             tool_choice=tool_choice,
             output_format=output_format,
+            routing=routing,
             compaction=compaction,
             max_context_tokens=max_context_tokens,
             interactive=interactive,
@@ -2228,6 +2234,8 @@ class LoomcycleClient:
         sampling: Optional[Mapping[str, Any]] = None,
         tool_choice: Optional[Mapping[str, Any]] = None,
         output_format: Optional[Mapping[str, Any]] = None,
+        # The continuation's own routing block — see run_streaming.
+        routing: Optional[Mapping[str, Any]] = None,
         compaction: Optional[Mapping[str, Any]] = None,
         max_context_tokens: int = 0,
         interactive: bool = False,
@@ -2310,6 +2318,8 @@ class LoomcycleClient:
             req.tool_choice.CopyFrom(_build_tool_choice(tool_choice))
         if output_format is not None:
             req.output_format.CopyFrom(_build_output_format(output_format))
+        if routing is not None:
+            req.routing.CopyFrom(_build_routing(routing))
         if compaction is not None:
             req.compaction.CopyFrom(_build_compaction(compaction))
         if context is not None:
@@ -2649,6 +2659,20 @@ def _build_output_format(d: Mapping[str, Any]) -> "pb.OutputFormat":
     )
 
 
+def _build_routing(d: Mapping[str, Any]) -> "pb.RunRouting":
+    """Map a routing dict (``queue_aware``, ``switch_after_ms``) → pb.RunRouting.
+
+    How the agent's tier candidates are walked when the run starts; it replaces
+    the agent's own block whole, so an empty dict is sent as an empty message —
+    the run turning queue-aware routing off. The server validates it (queue_aware
+    on a pinned agent or run, or a negative switch_after_ms, is refused), so this
+    only maps."""
+    return pb.RunRouting(
+        queue_aware=bool(d.get("queue_aware", False)),
+        switch_after_ms=int(d.get("switch_after_ms", 0)),
+    )
+
+
 def _set_retuned_shape(
     req: Any,
     tool_choice: Optional[Mapping[str, Any]],
@@ -2730,6 +2754,9 @@ def _build_run_request(
     sampling: Optional[Mapping[str, Any]] = None,
     tool_choice: Optional[Mapping[str, Any]] = None,
     output_format: Optional[Mapping[str, Any]] = None,
+    # The run's own routing block ({"queue_aware": bool, "switch_after_ms":
+    # int}); None leaves the agent's, {} turns queue-aware routing off.
+    routing: Optional[Mapping[str, Any]] = None,
     compaction: Optional[Mapping[str, Any]] = None,
     max_context_tokens: int = 0,
     interactive: bool = False,
@@ -2827,6 +2854,8 @@ def _build_run_request(
         req.tool_choice.CopyFrom(_build_tool_choice(tool_choice))
     if output_format is not None:
         req.output_format.CopyFrom(_build_output_format(output_format))
+    if routing is not None:
+        req.routing.CopyFrom(_build_routing(routing))
     if compaction is not None:
         req.compaction.CopyFrom(_build_compaction(compaction))
     return req
@@ -2857,6 +2886,7 @@ def _run_request_from_dict(spawn: Mapping[str, Any]) -> "pb.RunRequest":
         sampling=spawn.get("sampling"),
         tool_choice=spawn.get("tool_choice"),
         output_format=spawn.get("output_format"),
+        routing=spawn.get("routing"),
         compaction=spawn.get("compaction"),
         max_context_tokens=spawn.get("max_context_tokens", 0),
         model=spawn.get("model", ""),

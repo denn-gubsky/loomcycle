@@ -805,6 +805,13 @@ message RunRequest {
   // once with RESOURCE_EXHAUSTED, as before runs could wait. Any other value
   // is INVALID_ARGUMENT. A fresh run only. Mirrors POST /v1/runs `admission`.
   string admission = 41;
+
+  // The run's own `routing:` block — how the agent's tier candidates are
+  // walked when the run starts. Replaces the agent's own whole; a present but
+  // empty message turns queue-aware routing off for this run. Unset = the
+  // agent's. queue_aware on an agent or run pinned to a provider or model is
+  // INVALID_ARGUMENT. Mirrors POST /v1/runs `routing`.
+  RunRouting routing = 42;
 }
 
 message ContinueRequest {
@@ -894,6 +901,17 @@ message ContinueRequest {
   int32 review_ttl_seconds = 33;
   // hooks_json — hooks this continuation's run adds, as on RunRequest.
   bytes hooks_json = 34;
+  // routing — the continuation's own `routing:` block, as on RunRequest.
+  RunRouting routing = 35;
+}
+
+// RunRouting mirrors config.AgentRouting — a run's own `routing:` block.
+// queue_aware passes over a tier candidate whose provider is busy enough that
+// the run's first call would wait longer than switch_after_ms (0 = 20000), for
+// the next available one. switch_after_ms must be >= 0.
+message RunRouting {
+  bool queue_aware = 1;
+  int32 switch_after_ms = 2;
 }
 
 // Sampling mirrors config.Sampling — the per-run LLM sampling override.

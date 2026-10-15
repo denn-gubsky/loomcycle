@@ -20,7 +20,7 @@ import (
 // them all. TestOverrideLock_EveryRequestFieldIsClassified holds this equal to
 // auth's list and makes each new request field be classified.
 var lockableOverrideFields = map[string]string{
-	"model": "Model", "provider": "Provider", "tier": "Tier", "effort": "Effort", "user_tier": "UserTier",
+	"model": "Model", "provider": "Provider", "tier": "Tier", "effort": "Effort", "user_tier": "UserTier", "routing": "Routing",
 	"max_tokens": "MaxTokens", "max_iterations": "MaxIterations",
 	"unbounded_iterations": "UnboundedIterations", "max_concurrent_children": "MaxConcurrentChildren",
 	"run_timeout_seconds": "RunTimeoutSeconds",

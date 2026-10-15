@@ -36,6 +36,8 @@ The request body is not compared: the same key with a different prompt still ret
 
 It is refused with `board_chunk_id` (a board-bound walk resumes its stored position, so starting it again is already safe).
 
+**Skipping a busy provider at start: `routing`.** `spawn_run` and each `spawn_runs` child take an optional `routing` object — the run's own `routing:` block (`queue_aware`, `switch_after_ms`), as on `POST /v1/runs` and the gRPC `Run` request. It replaces the agent's block whole for that run (`{}` turns queue-aware routing off) and chooses only among the candidates the agent's definition declares. `queue_aware` on an agent or a run pinned to a provider or model, or a negative `switch_after_ms`, is a tool error naming the field; an agent with `allow_overrides: false` refuses it like any other per-run override. See CONFIGURATION.md, "Per-agent `routing:`".
+
 **Bounding a run's lifetime: `max_wall_seconds`.** `spawn_run`, each `spawn_runs` child, each `POST /v1/runs:batch` child, `POST /v1/runs` and the gRPC `Run` and `SpawnRunBatch` requests take an optional `max_wall_seconds` (0 or absent = no bound; at most 30 days). It works for any agent, model-driven or code-js.
 
 - Past the limit the run is cancelled, with everything it started, and ends `cancelled` with `stop_reason: "wall_limit"`.

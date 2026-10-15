@@ -1021,6 +1021,37 @@ type ProviderLane struct {
 	// background work (consolidation, reindexing) while both it and live runs
 	// wait, in [0, 1). 0 = live runs always go first.
 	BackgroundShare float64 `json:"background_share,omitempty" yaml:"background_share,omitempty"`
+	// ModelCaps caps the calls in flight of one model inside the lane, keyed by
+	// model name or `models:` alias (read the concrete names through
+	// ResolveModelCaps). For a host that runs some models one request at a
+	// time whatever its own parallelism says (Ollama: qwen35moe / qwen35
+	// architectures) beside others that run several: a call to a model at its
+	// cap waits in loomcycle's queue, not inside the host, and calls to other
+	// models go past it. Each value is >= 1 and at most the lane's
+	// max_concurrent (a cap that high would do nothing).
+	ModelCaps map[string]int `json:"model_caps,omitempty" yaml:"model_caps,omitempty"`
+}
+
+// ResolveModelCaps returns a lane's model_caps keyed by the concrete model each
+// key names on provider: a `models:` alias of that provider becomes its model
+// (ConcreteModel), any other key is a model name already. Nil for none. Two
+// keys naming one model, and an alias that names no model of this provider,
+// are refused at load (validateLanes); were two to meet here anyway, the lower
+// cap wins, so the result never depends on map order.
+func ResolveModelCaps(models map[string]ModelRef, provider string, caps map[string]int) map[string]int {
+	if len(caps) == 0 {
+		return nil
+	}
+	c := &Config{Models: models}
+	out := make(map[string]int, len(caps))
+	for key, n := range caps {
+		model := c.ConcreteModel(provider, key)
+		if prev, ok := out[model]; ok && prev <= n {
+			continue
+		}
+		out[model] = n
+	}
+	return out
 }
 
 // defaultModelSwitchMaxWaitMS is the model-switch wait when
@@ -1065,8 +1096,9 @@ func (p ProviderConfig) ModelSwitchMaxWaitMSOrDefault() int {
 
 // validateLanes checks the per-kind lane block and the two model-switch keys of
 // providers.<id>. Lanes are walked in key order so the same config always
-// reports the same error.
-func (p ProviderConfig) validateLanes(id string) error {
+// reports the same error. models is the `models:` block, which a lane's
+// model_caps keys may name.
+func (p ProviderConfig) validateLanes(id string, models map[string]ModelRef) error {
 	if p.MaxModelsInFlight < 0 {
 		return fmt.Errorf("providers.%s: max_models_in_flight must be >= 0", id)
 	}
@@ -1123,12 +1155,56 @@ func (p ProviderConfig) validateLanes(id string) error {
 				{"quantum_calls", lane.QuantumCalls != 0},
 				{"affinity_hold_ms", lane.AffinityHoldMS != 0},
 				{"background_share", lane.BackgroundShare != 0},
+				{"model_caps", len(lane.ModelCaps) != 0},
 			} {
 				if f.set {
 					return fmt.Errorf("%s: %s is set but the lane has no max_concurrent, so the lane is ungated and %s would do nothing", place, f.key, f.key)
 				}
 			}
 		}
+		if err := validateModelCaps(place, id, capped, lane.ModelCaps, models); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// validateModelCaps checks one lane's model_caps against the lane's cap and
+// the `models:` aliases its keys may name. Keys are walked in order so the same
+// config always reports the same error.
+func validateModelCaps(place, provider string, laneCap int, caps map[string]int, models map[string]ModelRef) error {
+	keys := make([]string, 0, len(caps))
+	for k := range caps {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	named := make(map[string]string, len(keys)) // concrete model -> the key naming it
+	for _, key := range keys {
+		n := caps[key]
+		if strings.TrimSpace(key) == "" {
+			return fmt.Errorf("%s: model_caps: a key is empty; name a model or a models: alias", place)
+		}
+		if n < 1 {
+			return fmt.Errorf("%s: model_caps.%s must be >= 1", place, key)
+		}
+		if n > laneCap {
+			return fmt.Errorf("%s: model_caps.%s (%d) is above the lane's max_concurrent (%d), so it would do nothing", place, key, n, laneCap)
+		}
+		// An alias that names no single model of this provider would leave a
+		// cap no call is ever matched against: refuse it rather than ignore it.
+		if ref, ok := models[key]; ok {
+			if ref.ModelPattern != "" {
+				return fmt.Errorf("%s: model_caps.%s is a model_pattern alias, which names no single model; cap the model it resolves to", place, key)
+			}
+			if ref.Provider != "" && ref.Provider != provider {
+				return fmt.Errorf("%s: model_caps.%s is an alias of provider %q, not %q, so no call in this lane is to it", place, key, ref.Provider, provider)
+			}
+		}
+		model := (&Config{Models: models}).ConcreteModel(provider, key)
+		if other, ok := named[model]; ok {
+			return fmt.Errorf("%s: model_caps.%s and model_caps.%s both name model %q: set one of them", place, other, key, model)
+		}
+		named[model] = key
 	}
 	return nil
 }
@@ -7931,7 +8007,7 @@ func validate(c *Config) error {
 		if pc.MaxConcurrent < 0 {
 			return fmt.Errorf("providers.%s: max_concurrent must be >= 0", id)
 		}
-		if err := pc.validateLanes(id); err != nil {
+		if err := pc.validateLanes(id, c.Models); err != nil {
 			return err
 		}
 		dialects, ok := providers.DriverDialects(pc.Driver)

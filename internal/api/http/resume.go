@@ -1042,6 +1042,7 @@ func (s *Server) resumePausedRun(run store.Run) error {
 		UserTier:               run.UserTier,
 		FallbackPolicy:         fbPolicy,
 		ReResolve:              fbReResolve,
+		MoveForQueue:           s.queueMoveFn(agentDef, run.ID, run.TenantID, run.UserID, run.Agent, run.UserTier, run.OperatorKeyRestricted),
 		Hooks:                  s.hookDispatcher,
 		MaxSameProviderRetries: s.retryAttemptsForAgent(agentDef, run.UserTier),
 		// RFC DC P3: a RESTORED parked chat is the case this matters most for —

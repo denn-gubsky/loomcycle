@@ -236,3 +236,37 @@ async def test_retention_lands_on_the_run_request():
 
     assert _run_request_from_dict({"agent": "judge", "retention": "none"}).retention == "none"
     assert _run_request_from_dict({"agent": "judge"}).retention == ""
+
+
+@pytest.mark.asyncio
+async def test_routing_lands_on_the_run_and_continue_requests():
+    """The run's own routing block reaches both request messages. Presence is
+    the point: None leaves the field unset (the agent's block), while an empty
+    dict is SENT, as an empty message — the run turning queue-aware routing
+    off — and must not collapse into unset."""
+    stub = _FakeStub()
+    client = _make_client_with_stub(stub)
+    async for _ in client.run_streaming(
+        agent="judge", segments=[], routing={"queue_aware": True, "switch_after_ms": 15000}
+    ):
+        pass
+    req = stub.last_run_req
+    assert req.HasField("routing")
+    assert req.routing.queue_aware is True
+    assert req.routing.switch_after_ms == 15000
+
+    async for _ in client.continue_session(session_id="s_1", segments=[], routing={}):
+        pass
+    cont = stub.last_continue_req
+    assert cont.HasField("routing"), "an empty routing block was dropped as if unset"
+    assert cont.routing.queue_aware is False
+
+    async for _ in client.run_streaming(agent="judge", segments=[]):
+        pass
+    assert not stub.last_run_req.HasField("routing")
+
+    from loomcycle.client import _run_request_from_dict
+
+    child = _run_request_from_dict({"agent": "judge", "routing": {"queue_aware": True}})
+    assert child.HasField("routing") and child.routing.queue_aware is True
+    assert not _run_request_from_dict({"agent": "judge"}).HasField("routing")

@@ -3326,6 +3326,10 @@ export interface LaneStat {
   queued_background: number; // of `queued`, the maintenance work
   grants: number; // calls admitted since the lane was built
   preemptions: number; // held slots given up to a waiter
+  // Of `queued`, the calls held back by their model's own cap in the lane
+  // (model_caps): they wait even while a slot is free. Optional: a server
+  // older than model_caps does not send it.
+  blocked_on_model?: number;
 }
 
 export type ConcurrencyStatsResult =

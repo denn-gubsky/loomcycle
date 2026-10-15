@@ -176,6 +176,7 @@ func TestSpawnRuns_CarriesEveryAdvertisedFieldToTheConnector(t *testing.T) {
 		"sampling":                 map[string]any{"temperature": 0.25, "top_p": 0.9, "seed": float64(7), "stop": []any{"END"}},
 		"tool_choice":              map[string]any{"mode": "tool", "name": "WebSearch", "until": "until_called"},
 		"output_format":            map[string]any{"type": "json_schema", "name": "verdict", "schema": map[string]any{"type": "object"}},
+		"routing":                  map[string]any{"queue_aware": true, "switch_after_ms": float64(15000)},
 		"compaction":               map[string]any{"enabled": true, "keep_last_n": float64(2)},
 		"context":                  map[string]any{"mode": "recap", "keep_last_n": float64(3)},
 		"max_context_tokens":       float64(131072),
@@ -271,7 +272,8 @@ func TestSpawnRunStreaming_CarriesTheRequestIntoTheRunInput(t *testing.T) {
 	          "review":true,"review_ttl_seconds":60,
 	          "hooks":{"run_end":["audit"]},"tool_hooks":{"Read":{"pre":[{"name":"gate","url":"https://h.example"}]}},
 	          "tool_choice":{"mode":"tool","name":"WebSearch","until":"until_called"},
-	          "output_format":{"type":"json_schema","name":"verdict","schema":{"type":"object"}}}`
+	          "output_format":{"type":"json_schema","name":"verdict","schema":{"type":"object"}},
+	          "routing":{"queue_aware":true,"switch_after_ms":15000}}`
 	if _, err := handleSpawnRun(context.Background(), env, json.RawMessage(args)); err != nil {
 		t.Fatalf("handleSpawnRun: %v", err)
 	}
@@ -313,6 +315,9 @@ func TestSpawnRunStreaming_CarriesTheRequestIntoTheRunInput(t *testing.T) {
 	}
 	if in.OutputFormat == nil || in.OutputFormat.Name != "verdict" {
 		t.Errorf("OutputFormat = %+v, want verdict — dropped by the streaming path's hand-copy", in.OutputFormat)
+	}
+	if in.Routing == nil || !in.Routing.QueueAware || in.Routing.SwitchAfterMS != 15000 {
+		t.Errorf("Routing = %+v, want queue_aware with switch_after_ms 15000 — dropped by the streaming path's hand-copy", in.Routing)
 	}
 	if in.UserCredentials["github"] != "g" {
 		t.Errorf("UserCredentials = %v, want github=g", in.UserCredentials)

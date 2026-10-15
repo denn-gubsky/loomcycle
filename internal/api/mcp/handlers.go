@@ -443,6 +443,7 @@ func spawnRunStreaming(ctx context.Context, env *handlerEnv, req connector.Spawn
 		Sampling:             req.Sampling,         // per-run LLM sampling override (was dropped on this streaming path)
 		ToolChoice:           req.ToolChoice,       // per-run tool_choice
 		OutputFormat:         req.OutputFormat,     // per-run answer schema
+		Routing:              req.Routing,          // per-run routing: block
 		Compaction:           req.Compaction,       // per-run context-compaction override (was dropped on this streaming path)
 		Context:              req.Context,          // per-run layered-context override (RFC CR)
 		MaxContextTokens:     req.MaxContextTokens, // RFC CJ per-run context-window override

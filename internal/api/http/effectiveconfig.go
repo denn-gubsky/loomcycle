@@ -72,6 +72,12 @@ var runFieldReaders = map[string]func(runConfigRecord) (any, bool){
 	"Effort": func(r runConfigRecord) (any, bool) {
 		return pick(r.Routing != nil && r.Routing.Effort != "", func() any { return r.Routing.Effort })
 	},
+	// The run's own `routing:` block, stored apart from the model choice above
+	// (whose record key it would otherwise share). Present even when empty: `{}`
+	// is the run turning queue-aware routing off.
+	"Routing": func(r runConfigRecord) (any, bool) {
+		return pick(r.QueueRouting != nil, func() any { return r.QueueRouting })
+	},
 
 	"MaxTokens": func(r runConfigRecord) (any, bool) {
 		return pick(r.Resources != nil && r.Resources.MaxTokens != 0, func() any { return r.Resources.MaxTokens })

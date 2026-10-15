@@ -852,6 +852,8 @@ func runStateful(ctx context.Context, opts RunOptions, system []providers.Conten
 	var lastProposed map[string]any // the last schema the model proposed that differs from the active one
 
 	promptSnapshotted := false // RFC DI: the first request is recorded once
+	// movedForQueue: the run has made its one queue-aware move (see Run).
+	movedForQueue := false
 	for iter := 0; iter < maxIter; iter++ {
 		if err := ctx.Err(); err != nil {
 			return RunResult{StopReason: "cancelled", Iterations: iter, Usage: total, State: sigma}, err
@@ -893,6 +895,12 @@ func runStateful(ctx context.Context, opts RunOptions, system []providers.Conten
 			}
 		}
 		msgs := []providers.Message{statefulUserMessage(sigma, task, memo.render(helpTool, obs), obs)}
+		// Queue-aware routing after the start, as in Run: one move at a step
+		// boundary when the next call would wait too long where the run is.
+		if iter > 0 && !movedForQueue && opts.MoveForQueue != nil &&
+			!(opts.FallbackPolicy.PinAfterSuccess && rec.firstStepSucceeded) {
+			movedForQueue = moveForQueue(ctx, &opts, msgs, emit)
+		}
 		var es *emitStateOut
 		for attempt := 0; ; attempt++ {
 			// Asked here, on every pass, and not once per iteration: a

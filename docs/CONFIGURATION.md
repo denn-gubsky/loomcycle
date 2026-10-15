@@ -300,7 +300,7 @@ tools: [Read, WebFetch]
 
 The library `tiers.high` is ignored for this agent; the resolver walks the agent-declared list instead.
 
-### Per-agent `routing:` — skip a busy provider at run start
+### Per-agent `routing:` — skip a busy provider
 
 The cascade takes the first *available* candidate, however busy its provider is. With a capped local model (`providers.<id>.max_concurrent`), a run can then wait minutes for a slot while a cloud candidate further down the tier sits idle. `routing.queue_aware` lets an agent go past it:
 
@@ -313,12 +313,24 @@ agents:
       switch_after_ms: 20000   # default 20000
 ```
 
-When a run of this agent starts (a new run, a session continuation, a sub-agent), each available candidate's estimated wait is checked in cascade order, and one over `switch_after_ms` is passed over for the next. If every available candidate is over, the one with the shortest wait wins. The estimate is the provider's chat lane: nothing while a slot is free; otherwise the calls queued ahead, shared over the lane's slots, times the model's median call time (measured by `timeout_scaling`, which is on by default), plus one call when `max_models_in_flight` is reached without this model. A model with no measured call yet counts as no wait, so it is never passed over on a guess. A pass-over is logged (`queue-aware routing: agent "triage" runs on …, passing over …`).
+When a run of this agent starts (a new run, a session continuation, a sub-agent), each available candidate's estimated wait is checked in cascade order, and one over `switch_after_ms` is passed over for the next. If every available candidate is over, the one with the shortest wait wins. The estimate is the provider's chat lane: nothing while a slot is free; otherwise the calls queued ahead, shared over the lane's slots, times the model's median call time (measured by `timeout_scaling`, which is on by default) — or, for a model at its own `model_caps` cap, the calls queued for that model shared over its cap, slots free or not — plus one call when `max_models_in_flight` is reached without this model. A model with no measured call yet counts as no wait, so it is never passed over on a guess. A pass-over is logged (`queue-aware routing: agent "triage" runs on …, passing over …`).
 
-- It decides once, at the start: the run then stays where it landed. A resume, a retune or a compaction summary resolves the run where it is.
+- After the start, a run moves at most once more, and only when it has lost its place: at a call boundary after its first turn, if it holds no slot of its provider's chat lane (its `affinity_hold_ms` reservation was preempted by `quantum_calls` or expired, or the lane keeps none) and its next call there would wait past `switch_after_ms`, the cascade is resolved again as at a run start, and the run moves if that picks another candidate. A run that still holds its slot never moves — the slot is its warm prompt cache. The move is a provider switch like a fallback: an `EventProviderFallback` with reason `queue_wait`, the reasoning trace stripped from history, and the prompt cache lost on the new provider. It does not happen under `fallback.pin_after_success` once a turn has succeeded, nor to a provider without vision for a run that carries an image (an `EventFallbackSuppressed` instead).
+- A resume, a retune or a compaction summary resolves the run where it is.
 - Tier-routed agents only. Setting it on an agent with a provider/model pin is refused (config load and AgentDef create/fork), and a fork that pins a model drops the block.
-- It is part of the agent's content hash, like `sampling`. It is set in yaml or through AgentDef create/fork; agent `.md` frontmatter does not carry it, and there is no per-run override yet.
+- It is part of the agent's content hash, like `sampling`. It is set in yaml or through AgentDef create/fork; agent `.md` frontmatter does not carry it.
 - Estimates are per replica, like the lanes they read.
+
+**Per run.** A run may set its own block, on every run-start surface: `routing` on `POST /v1/runs`, `POST /v1/sessions/{id}/messages`, each `POST /v1/runs:batch` child and a configured run's draft; the `routing` argument of the MCP `spawn_run` / `spawn_runs` tools; `RunRequest.routing` / `ContinueRequest.routing` (a `RunRouting` message) over gRPC; `routing` in the TypeScript and Python clients. It works on an agent with no block of its own:
+
+```json
+{"agent": "triage", "prompt": "…", "routing": {"queue_aware": true, "switch_after_ms": 15000}}
+```
+
+- It replaces the agent's block whole, like `tool_choice`: fields it leaves out take their defaults, not the agent's values. `"routing": {}` turns queue-aware routing off for that run.
+- It chooses only among the candidates the definition declares, so it reaches nothing the agent could not. `queue_aware: true` on an agent pinned to a provider or model — or on a run that pins one itself with `model` (or `provider` on an agent without a tier) — is refused with 400 (gRPC `INVALID_ARGUMENT`, an MCP tool error) naming `routing.queue_aware`. A negative `switch_after_ms` is refused the same way.
+- It is a per-run override like the others: an agent with `allow_overrides: false`, or a token whose `overrides` policy does not list `routing`, refuses it (403 `override_not_allowed`). The run's spec records it as `queue_routing`, and `GET /v1/runs/{id}/effective-config` reports it under `routing` with source `run`.
+- Untrusted trigger surfaces (webhooks, A2A, schedules) cannot set it, as they cannot set the model.
 
 ### Why this pattern
 
@@ -867,6 +879,7 @@ providers:
 - **`affinity_hold_ms`** is the lease: a slot stays reserved that long for the **run** that just used it, so its next call lands on a warm prompt cache. The lease is the run's — it ends when the run does, or when the run stays away longer than the hold. `0` (default) = no reservation.
 - **`quantum_calls`** is how many consecutive calls a run may make on its reserved slot while others wait (`0` = unlimited).
 - **`background_share`** is the least share of a lane's turns given to background work while live runs also wait (`0` = live runs first).
+- **`model_caps`** caps the calls in flight of one model inside a lane — `model_caps: { qwen3.6:latest: 1, ornith-1.5:35b: 1 }` beside `max_concurrent: 4` — for a host that runs some models one request at a time whatever its own parallelism says (on Ollama 0.40.3: the qwen35moe / qwen35 models) next to models that run several. A call to a model at its cap waits in loomcycle's queue rather than inside the host, and calls to other models take the free slots. Keys are model names or `models:` aliases of the provider and cover every context size of the model; each cap is `>= 1` and at most the lane's `max_concurrent` ([details](PROVIDERS.md#lanes-a-queue-per-kind-of-model)).
 - **Every model call takes a lane**: a run's calls, the listwise reranker and the unit generator the `chat` lane; the `decision:` block and a `kind: decision` reranker the `decision` lane; the embedder the `embedder` lane. Consolidation passes and the operator-run sweeps (re-index, backfill, re-embed, derived units, image descriptions) queue as background work ([details](PROVIDERS.md#lanes-a-queue-per-kind-of-model)).
 - **`decision.max_concurrent` and `memory.reranker.max_concurrent` are removed.** A config that still sets either fails to load and names the lane that replaces it. Their built-in bound stays as a floor: while a provider has no lane for them, decisions to it and reranks are each held to 4 in flight. A lane you configure (`max_concurrent` / `lanes` on that provider) replaces the floor, higher or lower.
 - **`max_models_in_flight`** stops several models computing at once on a host that cannot take it. For Ollama a model at two different `num_ctx` sizes counts as two. **`models_in_flight_exempt_kinds: [embedder]`** leaves embeddings out of that count, so they do not wait for the chat model; their lane still caps them.

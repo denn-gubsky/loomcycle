@@ -1163,6 +1163,7 @@ func (s *Server) Run(req *loomcyclepb.RunRequest, stream loomcyclepb.Loomcycle_R
 		Sampling:         samplingFromProto(req.GetSampling()),
 		ToolChoice:       toolChoiceFromProto(req.GetToolChoice()),
 		OutputFormat:     outputFormatFromProto(req.GetOutputFormat()),
+		Routing:          routingFromProto(req.GetRouting()),
 		Compaction:       compactionFromProto(req.GetCompaction()),
 		Interactive:      req.GetInteractive(), // RFC AI
 		Review:           req.GetReview(),      // RFC DJ — hold for an operator's verdict
@@ -1229,6 +1230,7 @@ func (s *Server) Continue(req *loomcyclepb.ContinueRequest, stream loomcyclepb.L
 		Sampling:         samplingFromProto(req.GetSampling()),
 		ToolChoice:       toolChoiceFromProto(req.GetToolChoice()),
 		OutputFormat:     outputFormatFromProto(req.GetOutputFormat()),
+		Routing:          routingFromProto(req.GetRouting()),
 		Compaction:       compactionFromProto(req.GetCompaction()),
 		Interactive:      req.GetInteractive(), // RFC AI
 		Review:           req.GetReview(),      // RFC DJ — hold for an operator's verdict
@@ -1477,6 +1479,7 @@ func spawnRequestFromProto(req *loomcyclepb.RunRequest) connector.SpawnRunReques
 		Sampling:         samplingFromProto(req.GetSampling()),
 		ToolChoice:       toolChoiceFromProto(req.GetToolChoice()),
 		OutputFormat:     outputFormatFromProto(req.GetOutputFormat()),
+		Routing:          routingFromProto(req.GetRouting()),
 		Compaction:       compactionFromProto(req.GetCompaction()),
 		MaxContextTokens: int(req.GetMaxContextTokens()), // RFC CJ per-run context-window override
 		IdempotencyKey:   req.GetIdempotencyKey(),
@@ -1702,6 +1705,7 @@ type runInputProtoArgs struct {
 	Sampling         *config.Sampling             // v0.28.0 per-run sampling override
 	ToolChoice       *config.ToolChoice           // RFC DI per-run tool_choice
 	OutputFormat     *config.OutputFormat         // RFC DI per-run answer schema
+	Routing          *config.AgentRouting         // the run's own routing: block (queue-aware start)
 	Compaction       *config.Compaction           // v0.32.0 per-run compaction override
 	Interactive      bool                         // RFC AI — park at end_turn for steering
 	Review           bool                         // RFC DJ — hold for an operator's verdict when done
@@ -1765,6 +1769,7 @@ func runInputFromProto(a runInputProtoArgs) runner.RunInput {
 		Sampling:              a.Sampling,        // v0.28.0 per-run sampling override
 		ToolChoice:            a.ToolChoice,      // RFC DI per-run tool_choice
 		OutputFormat:          a.OutputFormat,    // RFC DI per-run answer schema
+		Routing:               a.Routing,         // the run's own routing: block
 		Compaction:            a.Compaction,      // v0.32.0 per-run compaction override
 		Interactive:           a.Interactive,     // RFC AI — park at end_turn for steering
 		Review:                a.Review,          // RFC DJ — hold for an operator's verdict when done
@@ -1801,6 +1806,17 @@ func toolChoiceFromProto(p *loomcyclepb.ToolChoice) *config.ToolChoice {
 		return nil
 	}
 	return &config.ToolChoice{Mode: p.GetMode(), Name: p.GetName(), Until: p.GetUntil()}
+}
+
+// routingFromProto maps the wire message to config.AgentRouting. nil stays nil
+// (the agent's block); a present, empty message is kept as an empty block,
+// which is the run turning queue-aware routing off. Validation happens in
+// RunOnce against the run's effective definition, like the HTTP path.
+func routingFromProto(p *loomcyclepb.RunRouting) *config.AgentRouting {
+	if p == nil {
+		return nil
+	}
+	return &config.AgentRouting{QueueAware: p.GetQueueAware(), SwitchAfterMS: int(p.GetSwitchAfterMs())}
 }
 
 // outputFormatFromProto maps the wire message to config.OutputFormat; nil stays

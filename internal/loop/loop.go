@@ -495,6 +495,14 @@ type RunOptions struct {
 	// when the operator's user_tier policy enables fallback.
 	ReResolve func(ctx context.Context, failedProvider, failedModel string, cause error) (provider providers.Provider, model string, effort string, err error)
 
+	// MoveForQueue, when set, is asked at each call boundary after the first
+	// whether the run should move off its current provider because the next
+	// call would wait there too long (queue-aware routing, RFC EI P4). It
+	// returns the provider, model and effort to move to, and moved=false to
+	// stay. The run moves at most once: after a move it stays where it went.
+	// Nil for a run that is not queue-aware.
+	MoveForQueue func(ctx context.Context, current providers.Provider, model string) (provider providers.Provider, newModel, effort string, moved bool)
+
 	// Hooks is the tool-use hook dispatcher. Optional; nil disables
 	// all hook invocation (the loop runs tool dispatch directly,
 	// preserving pre-v0.7.x behaviour). When non-nil, each
@@ -851,20 +859,28 @@ func tryProviderFallback(
 	}
 
 	*attempts++
-
-	emit(providers.Event{
-		Type: providers.EventProviderFallback,
-		Fallback: &providers.FallbackInfo{
-			FailedProvider: failedProvider,
-			FailedModel:    failedModel,
-			NewProvider:    newProvider.ID(),
-			NewModel:       newModel,
-			Attempt:        *attempts,
-			UserTier:       opts.FallbackPolicy.UserTierName,
-			Reason:         cls.String(),
-			CauseError:     truncateError(cause),
-		},
+	switchProvider(opts, newProvider, newModel, newEffort, messages, emit, providers.FallbackInfo{
+		FailedProvider: failedProvider,
+		FailedModel:    failedModel,
+		Attempt:        *attempts,
+		UserTier:       opts.FallbackPolicy.UserTierName,
+		Reason:         cls.String(),
+		CauseError:     truncateError(cause),
 	})
+	return fallbackOutcomeSwitched
+}
+
+// switchProvider moves the run onto newProvider / newModel / newEffort for
+// its remaining iterations: it announces the switch (EventProviderFallback,
+// from info with the new pair filled in), and makes the history safe for the
+// new provider — the reasoning strip and the thinking-model downgrade below.
+// Both a fallback after an error and a queue-aware move go through here, so a
+// move can never send a history the new provider would reject.
+func switchProvider(opts *RunOptions, newProvider providers.Provider, newModel, newEffort string, messages []providers.Message, emit func(providers.Event), info providers.FallbackInfo) {
+	failedProvider := opts.Provider.ID()
+	info.NewProvider = newProvider.ID()
+	info.NewModel = newModel
+	emit(providers.Event{Type: providers.EventProviderFallback, Fallback: &info})
 
 	// Cache-loss event when switching AWAY from a native-prompt-cache provider
 	// (Anthropic today) to one without it. The cache_control breakpoints in the
@@ -958,7 +974,40 @@ func tryProviderFallback(
 	opts.Provider = newProvider
 	opts.Model = newModel
 	opts.Effort = newEffort
-	return fallbackOutcomeSwitched
+}
+
+// fallbackReasonQueueWait is EventProviderFallback's Reason for a queue-aware
+// move: nothing failed, the next call would have waited too long.
+const fallbackReasonQueueWait = "queue_wait"
+
+// moveForQueue asks opts.MoveForQueue whether the run should leave its
+// provider for one where its next call would not wait so long, and moves it if
+// so. It reports whether the run moved. A move is refused, as a fallback is,
+// when the run carries an image the new provider cannot take.
+func moveForQueue(ctx context.Context, opts *RunOptions, messages []providers.Message, emit func(providers.Event)) bool {
+	newProvider, newModel, newEffort, moved := opts.MoveForQueue(ctx, opts.Provider, opts.Model)
+	if !moved || newProvider == nil {
+		return false
+	}
+	from, fromModel := opts.Provider.ID(), opts.Model
+	if newProvider.ID() == from && newModel == fromModel {
+		return false
+	}
+	if messagesHaveImage(messages) && !newProvider.Capabilities().SupportsVision {
+		emit(providers.Event{
+			Type: providers.EventFallbackSuppressed,
+			Text: fmt.Sprintf("queue-aware move from %s/%s to %s/%s suppressed: run carries an image but the target does not support vision", from, fromModel, newProvider.ID(), newModel),
+		})
+		return false
+	}
+	switchProvider(opts, newProvider, newModel, newEffort, messages, emit, providers.FallbackInfo{
+		FailedProvider: from,
+		FailedModel:    fromModel,
+		UserTier:       opts.FallbackPolicy.UserTierName,
+		Reason:         fallbackReasonQueueWait,
+		CauseError:     fmt.Sprintf("the next call would wait too long on %s/%s", from, fromModel),
+	})
+	return true
 }
 
 // hasReasoningLessAssistantTurn reports whether the history contains an
@@ -3006,6 +3055,8 @@ func runLoop(ctx context.Context, opts RunOptions) (RunResult, error) {
 	// transcript has provider-specific state, fallback to a
 	// different provider risks cross-family translation bugs.
 	var firstTurnSucceeded bool
+	// movedForQueue: the run has made its one queue-aware move (MoveForQueue).
+	var movedForQueue bool
 
 	// sameProviderRetries counts CONSECUTIVE retryable failures
 	// against the current (provider, model). Reset to 0 on any
@@ -3147,6 +3198,18 @@ outerLoop:
 		// disarmed there).
 		disarmTurn()
 		turnCancelFn(nil)
+
+		// Queue-aware routing after the start: the first call's provider was
+		// chosen when the run started; at each later call boundary, a run with
+		// no slot held for it (its lease was preempted or expired, or the lane
+		// keeps none) may move once to a provider where it would not wait so
+		// long. Never after the first success when the operator pinned runs to
+		// their provider (PinAfterSuccess) — the reason that pin exists applies
+		// to a move as much as to a fallback.
+		if iter > 0 && !movedForQueue && opts.MoveForQueue != nil &&
+			!(opts.FallbackPolicy.PinAfterSuccess && firstTurnSucceeded) {
+			movedForQueue = moveForQueue(ctx, &opts, messages, emit)
+		}
 
 		// Stamp the CURRENTLY-resolved provider/model onto the per-iteration
 		// ctx so the Context tool's op=self can report them to the agent

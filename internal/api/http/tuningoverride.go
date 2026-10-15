@@ -2,8 +2,10 @@ package http
 
 import (
 	"context"
+	"fmt"
 
 	"github.com/denn-gubsky/loomcycle/internal/config"
+	"github.com/denn-gubsky/loomcycle/internal/runner"
 )
 
 // tuningOverride is a run's own shaping: how hard the runtime retries a
@@ -78,6 +80,14 @@ type runOverrides struct {
 	// definition while the same response's `fields.context` answered from the
 	// run — one payload, two verdicts about one setting.
 	Context *config.Context
+
+	// QueueRouting is the run's own `routing:` block — HOW the definition's
+	// tier candidates are walked when the run starts — and it REPLACES the
+	// definition's block whole, like tool_choice: its two fields only mean
+	// something together. Named apart from Routing above, which is the run's
+	// choice of WHERE it runs; the wire calls this one `routing` because that
+	// is the definition's own name for it.
+	QueueRouting *config.AgentRouting
 }
 
 // effectiveDef returns the definition this run actually runs under: the stored
@@ -93,6 +103,17 @@ func (s *Server) effectiveDef(ctx context.Context, def config.AgentDef, ov runOv
 		return def, err
 	}
 	out = applyTuningOverride(out, ov.Tuning)
+	// After the routing override, so the check sees the pin a run may have
+	// made itself: queue_aware on a run that names its own model has one place
+	// to go, and is refused rather than silently doing nothing. Validated only
+	// when the run sets the block — a run that leaves it alone must not start
+	// failing because its own model pin meets the definition's block.
+	if ov.QueueRouting != nil {
+		out.Routing = ov.QueueRouting.Clone()
+		if err := config.ValidateAgentRouting(out.Routing, out.Provider, out.Model); err != nil {
+			return def, fmt.Errorf("%w: %v", runner.ErrInvalidArgument, err)
+		}
+	}
 	// Per-field merge, matching how the run path itself applies it — a run that
 	// sets only `mode` must not blank the agent's keep_last_n.
 	if ov.Context != nil {
