@@ -1434,6 +1434,12 @@ message PromptContentBlock {
   // deliberately no URL form (SSRF — RFC AT §6).
   string media_type = 4;
   bytes data = 5;
+  // The source label of an untrusted-block, as `kind` on the HTTP wire:
+  // untrusted (the default), web_content, uploaded_cv, qa_question,
+  // user_input, tool_output, search_result, run_metadata, or code (kept
+  // exactly as written under a boundary derived from the text). Any other
+  // value is fenced as untrusted.
+  string kind = 6;
 }
 
 // ========================

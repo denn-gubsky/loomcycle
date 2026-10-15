@@ -4541,8 +4541,14 @@ type PromptContentBlock struct {
 	// has no byte type), gRPC carries the bytes natively here — the server
 	// base64-encodes them into the loop's internal representation. There is
 	// deliberately no URL form (SSRF — RFC AT §6).
-	MediaType     string `protobuf:"bytes,4,opt,name=media_type,json=mediaType,proto3" json:"media_type,omitempty"`
-	Data          []byte `protobuf:"bytes,5,opt,name=data,proto3" json:"data,omitempty"`
+	MediaType string `protobuf:"bytes,4,opt,name=media_type,json=mediaType,proto3" json:"media_type,omitempty"`
+	Data      []byte `protobuf:"bytes,5,opt,name=data,proto3" json:"data,omitempty"`
+	// The source label of an untrusted-block, as `kind` on the HTTP wire:
+	// untrusted (the default), web_content, uploaded_cv, qa_question,
+	// user_input, tool_output, search_result, run_metadata, or code (kept
+	// exactly as written under a boundary derived from the text). Any other
+	// value is fenced as untrusted.
+	Kind          string `protobuf:"bytes,6,opt,name=kind,proto3" json:"kind,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -4610,6 +4616,13 @@ func (x *PromptContentBlock) GetData() []byte {
 		return x.Data
 	}
 	return nil
+}
+
+func (x *PromptContentBlock) GetKind() string {
+	if x != nil {
+		return x.Kind
+	}
+	return ""
 }
 
 // Event is one frame on the Run/Continue server stream. Mirrors
@@ -13138,14 +13151,15 @@ const file_loomcycle_proto_rawDesc = "" +
 	"\x04list\x18\x01 \x03(\tR\x04list\"_\n" +
 	"\rPromptSegment\x12\x12\n" +
 	"\x04role\x18\x01 \x01(\tR\x04role\x12:\n" +
-	"\acontent\x18\x02 \x03(\v2 .loomcycle.v1.PromptContentBlockR\acontent\"\x8d\x01\n" +
+	"\acontent\x18\x02 \x03(\v2 .loomcycle.v1.PromptContentBlockR\acontent\"\xa1\x01\n" +
 	"\x12PromptContentBlock\x12\x12\n" +
 	"\x04type\x18\x01 \x01(\tR\x04type\x12\x12\n" +
 	"\x04text\x18\x02 \x01(\tR\x04text\x12\x1c\n" +
 	"\tcacheable\x18\x03 \x01(\bR\tcacheable\x12\x1d\n" +
 	"\n" +
 	"media_type\x18\x04 \x01(\tR\tmediaType\x12\x12\n" +
-	"\x04data\x18\x05 \x01(\fR\x04data\"\x86\t\n" +
+	"\x04data\x18\x05 \x01(\fR\x04data\x12\x12\n" +
+	"\x04kind\x18\x06 \x01(\tR\x04kind\"\x86\t\n" +
 	"\x05Event\x12\x12\n" +
 	"\x04type\x18\x01 \x01(\tR\x04type\x12\x12\n" +
 	"\x04text\x18\x02 \x01(\tR\x04text\x120\n" +
