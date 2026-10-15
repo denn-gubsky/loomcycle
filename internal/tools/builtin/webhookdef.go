@@ -62,6 +62,9 @@ const webhookDefDescription = `Author, fork, retire, and inspect inbound webhook
 	`Static webhooks.<name>: yaml entries remain the operator's immutable ground truth; this tool ` +
 	`produces the DERIVED layer of orchestrator-authored forks. ` +
 	`Operations: create, fork, get, list, retire. ` +
+	`get also returns status.counters: how the webhook's deliveries were answered, by outcome (accepted, ping, ignored, ` +
+	`filtered, duplicate, refused.signature / event / shape / body / rate / other), every replica's counts added every ` +
+	`30 seconds, so up to that far behind; they belong to the webhook's name in its tenant, not to one version. ` +
 	`The definition's tenant_id is the tenant its spawned runs execute in: it defaults to your own tenant, ` +
 	`and only an admin may set it to another tenant (a fork that would inherit another tenant's is refused too). ` +
 	`A definition carrying capture_disabled was restored from a snapshot without its literal user_credentials: ` +

@@ -379,6 +379,47 @@ dedup_ttl_seconds: 604800                            # 7 days, the default
 - The `/test` dry-run reports `rejected_dedup_key` for a body that cannot
   name its event. It claims nothing, so it never reports a duplicate.
 
+## What the run receives — `metadata.webhook`
+
+A definition that sets `provider` or `events` gives the run it starts a
+`metadata.webhook` beside its own metadata:
+
+```json
+{"repo": "acme/app", "webhook": {"provider": "github", "event": "push", "delivery_id": "72d3162e-cc78-11e3-81ab-4c9367dc0958"}}
+```
+
+| Field | Trust |
+|---|---|
+| `provider` | the definition's own |
+| `event` | the event the signed body was checked against — always one the definition lists |
+| `delivery_id` | **not signed**: a label, never proof of anything. Present only when it is a UUID, a hex digest (`sha256:<hex>` when the sender sent none) or a number |
+
+The metadata is trusted, as the definition's own is: none of it is read
+from the body. A code-js agent reads it at `input.metadata.webhook`. With
+`events`, the definition's own metadata may not hold a `webhook` key; a
+definition that sets neither `provider` nor `events` gets nothing added,
+as before.
+
+## Counters — how deliveries were answered
+
+Each webhook counts its deliveries by outcome: `accepted`, `ping`,
+`ignored`, `filtered`, `duplicate`, and `refused.<reason>` — `signature`,
+`event`, `shape`, `body`, `rate`, or `other` (a secret that does not
+resolve, a run that could not start, …). No body text, no header value.
+
+- **Where:** `WebhookDef op=get` returns them as `status.counters`, with
+  `status.counters_updated_at`; an admin also has
+  `GET /v1/_webhooks/{name}/counters` (see **Triage**). A tenant's
+  operator sees its own definitions' through `op=get`.
+- **Whose:** the webhook's — its name in its tenant, as the receiver
+  resolves it — not one version's. Every replica's counts add up.
+- **How fresh:** each replica counts in memory and adds its counts to the
+  database every 30 seconds, and once more when it shuts down. A write per
+  delivery would let unauthenticated noise write to the database at will.
+  So the counts are up to 30 seconds behind, and a replica that crashes
+  loses its last interval.
+- A POST to a name that resolves to no webhook is not counted.
+
 ## `delivery: team` — a delivery that starts a team walk
 
 ```json
@@ -720,12 +761,12 @@ scheduler). A hook failure is logged and never affects the run.
 
 ## Triage (admin-gated)
 
-Two endpoints help debug a webhook that's silently failing (the receiver
-POST itself is unauthed — it uses the per-Def secret). Both need an
+Three endpoints help debug a webhook that's silently failing (the receiver
+POST itself is unauthed — it uses the per-Def secret). All need an
 **admin** bearer (`substrate:admin` or the shared `LOOMCYCLE_AUTH_TOKEN`);
 a `substrate:tenant` token gets 403, even for its own tenant's webhook.
 
-Both act on the webhook that `POST /v1/_webhooks/{tenant}/{name}` resolves
+All act on the webhook that `POST /v1/_webhooks/{tenant}/{name}` resolves
 to, with `{tenant}` taken from `?tenant=`. Without it they use the
 bearer's own tenant, so to reach a tenant-owned webhook pass
 `?tenant=<that tenant>`.
@@ -736,6 +777,9 @@ bearer's own tenant, so to reach a tenant-owned webhook pass
   `unresolvable_secret`/…), `received_at`, `run_id`. Two tenants'
   same-named webhooks have separate lists. A POST to a name that resolves
   to no webhook is not listed.
+- `GET /v1/_webhooks/{name}/counters?tenant=acme` — the webhook's
+  delivery counts by outcome (see **Counters**), every replica's, up to 30
+  seconds behind, with `updated_at`.
 - `POST /v1/_webhooks/{name}/test?tenant=acme` — dry-run: POST a sample
   body + signature and get back `{would_accept, verdict, run_input_preview}`
   (credential **key names** only, never values). No run is created. A
