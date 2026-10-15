@@ -319,6 +319,26 @@ func requestRunInput(req runRequest) (runner.RunInput, error) {
 	return in, nil
 }
 
+// messagesRunInput is the RunInput a POST /v1/sessions/{id}/messages request
+// starts as after a restart: a continuation of sessionID by the session's
+// agent, as its stored user. Through runRequest and JSON on purpose: every
+// messagesRequest field is a runRequest field of the same name and type
+// (TestMessagesRequest_EveryFieldIsARunRequestField), so the body is carried
+// through the conversion a queued POST /v1/runs uses, and a field added to
+// one but not the other fails that test instead of being dropped here.
+func messagesRunInput(sessionID string, sess store.Session, body messagesRequest) (runner.RunInput, error) {
+	b, err := json.Marshal(body)
+	if err != nil {
+		return runner.RunInput{}, err
+	}
+	var req runRequest
+	if err := json.Unmarshal(b, &req); err != nil {
+		return runner.RunInput{}, err
+	}
+	req.SessionID, req.Agent, req.TenantID, req.UserID = sessionID, sess.Agent, sess.TenantID, sess.UserID
+	return requestRunInput(req)
+}
+
 // restartInput rebuilds the RunInput that starts a queued run again, or says
 // why it cannot be.
 func (s *Server) restartInput(q store.QueuedRun) (runner.RunInput, string) {
