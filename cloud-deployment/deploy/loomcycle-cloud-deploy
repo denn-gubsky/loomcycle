@@ -79,6 +79,39 @@ restore_files() {
   chmod -R go+rX docker-compose.yaml versions.env config
 }
 
+# The runtime's database, inside the postgres container.
+pg() { compose exec -T postgres "$@"; }
+pg_admin() { pg psql -U loomcycle -d postgres -v ON_ERROR_STOP=1 -qtAc "$1"; }
+# schema_version: the migration state of the runtime's database, as
+# "version:dirty"; empty when it cannot be read.
+schema_version() {
+  pg psql -U loomcycle -d loomcycle -tAc "SELECT version || ':' || dirty FROM schema_migrations" 2>/dev/null || true
+}
+
+# restore_database BACKUP STAMP: puts the runtime's database back as it was
+# dumped before the deploy. Migrations change only this database (SQL Memory's
+# has none), so the SQL Memory database is left as it is.
+#
+# The dump is restored into a NEW database, which then takes the runtime's
+# database's name; the database the failed version left is kept, renamed
+# loomcycle_failed_STAMP, for a look at what went wrong (drop it by hand).
+# Restoring into a fresh database gives back exactly the old schema: a
+# restore over the migrated one would leave whatever the migration added and
+# the dump does not name. The runtime must be stopped first.
+restore_database() {
+  fresh=loomcycle_restore
+  failed="loomcycle_failed_$2"
+  pg_admin "DROP DATABASE IF EXISTS $fresh" || return 1
+  pg_admin "CREATE DATABASE $fresh OWNER loomcycle" || return 1
+  pg pg_restore -U loomcycle -d "$fresh" --exit-on-error < "$1/loomcycle.dump" || return 1
+  pg_admin "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = 'loomcycle' AND pid <> pg_backend_pid()" >/dev/null || return 1
+  pg_admin "ALTER DATABASE loomcycle RENAME TO $failed" || return 1
+  if ! pg_admin "ALTER DATABASE $fresh RENAME TO loomcycle"; then
+    pg_admin "ALTER DATABASE $failed RENAME TO loomcycle"
+    return 1
+  fi
+}
+
 # The two deploys below run as the condition of an `if`, where `set -e` does not
 # apply. Every step that must stop the deploy says so with `|| return 1`.
 
@@ -88,6 +121,9 @@ deploy_loomcycle() { # have want sidecar
   mkdir -p "$bk" || return 1
   compose exec -T postgres pg_dump -U loomcycle -Fc loomcycle > "$bk/loomcycle.dump" || return 1
   compose exec -T postgres pg_dump -U loomcycle -Fc loomcycle_sqlmem > "$bk/loomcycle_sqlmem.dump" || return 1
+  # What the dump holds, so a failed deploy knows whether a migration ran.
+  schema0="$(schema_version)"
+  echo "database schema before the deploy: ${schema0:-unknown}"
   cp docker-compose.yaml versions.env "$bk/" || return 1
   cp -r config "$bk/config" || return 1
   # Kept to the newest $keep_backups whether this deploy succeeds or not: a
@@ -142,11 +178,35 @@ deploy_loomcycle() { # have want sidecar
     done
   fi
   if [ "$ok" -ne 1 ]; then
-    echo "FAILED: the runtime did not report $2; restoring $1"
+    echo "FAILED: the runtime did not report $2; rolling back to $1"
+    # $2's migration may already have moved the database on, and $1 cannot run
+    # on a schema newer than its own: its migrate step stops at a version it
+    # does not know, and the runtime never starts. So the database goes back
+    # too, from the dump taken above, whenever its schema changed.
+    compose stop loomcycle
+    schema1="$(schema_version)"
+    if [ "$schema1" != "$schema0" ]; then
+      echo "the database schema moved from ${schema0:-unknown} to ${schema1:-unknown}: restoring the database from $bk"
+      stamp="$(date +%Y%m%d%H%M%S)"
+      if ! restore_database "$bk" "$stamp"; then
+        restore_files "$bk"
+        echo "FAILED: restoring the database. The runtime is left STOPPED: $1 cannot run on the schema $2 left."
+        echo "Restore it by hand from $bk/loomcycle.dump, then: docker compose ... up -d"
+        return 1
+      fi
+      echo "restored the database; the one $2 left is kept as loomcycle_failed_$stamp (drop it when done)"
+      echo "the SQL Memory database is not restored: no migration changes it"
+    else
+      echo "the database schema did not change (${schema0:-unknown}): the database is left as it is"
+    fi
     restore_files "$bk"
     compose up -d
-    echo "restored the compose file, the config and the versions of $1."
-    echo "The databases were NOT restored; the dumps taken before the deploy are in $bk"
+    i=0
+    while [ $i -lt 45 ]; do
+      case "$(health)" in *"\"version\":\"$1\""*) echo "rolled back: $1 is running again"; return 1;; esac
+      i=$((i + 1)); sleep 4
+    done
+    echo "FAILED: $1 did not come back after the rollback; see 'docker compose logs loomcycle loomcycle-migrate'"
     return 1
   fi
   compose ps --format '{{.Name}} {{.Image}} {{.Status}}'
