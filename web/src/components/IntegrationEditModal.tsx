@@ -43,17 +43,33 @@ type KV = { key: string; value: string };
 // ---- per-family form state shapes (UI-friendly: number fields as
 // strings so an empty input reads as "unset / inherit") ----
 
-interface WebhookFormState {
+export interface WebhookFormState {
   enabled: boolean;
-  delivery: "spawn" | "channel";
+  delivery: "spawn" | "channel" | "team";
   agent: string;
   channel: string;
-  authKind: "hmac" | "bearer" | "none";
+  team: string;
+  vars: KV[];
+  provider: "" | "github" | "gitea" | "gitlab";
+  events: string; // comma-separated
+  // "" leaves auth.kind out: the provider preset's (or hmac) applies.
+  authKind: "" | "hmac" | "bearer" | "none";
+  // "stored": auth.secret / previous_secret ("$cred:<name>"); "env": the
+  // signing_secret_env / bearer_token_env form.
+  secretSource: "stored" | "env";
+  secret: string;
+  previousSecret: string;
   algorithm: string;
   header: string;
   signingSecretEnv: string;
   deliveryIdHeader: string;
   bearerTokenEnv: string;
+  userBearer: string;
+  userTier: string;
+  dedupKey: string; // one JSONPath per line
+  dedupTTLSeconds: string;
+  filtersJSON: string;
+  eventShapesJSON: string;
   requestsPerMinute: string;
   burst: string;
   bodySizeLimitBytes: string;
@@ -354,6 +370,31 @@ export default function IntegrationEditModal({
 
 // ===================== Webhook =====================
 
+const CRED_REF_RE = /^\$cred:[A-Za-z0-9_-]{1,128}$/;
+const EVENT_RE = /^[A-Za-z0-9][A-Za-z0-9_ .:-]{0,63}$/;
+const MAX_DEDUP_TTL_SECONDS = 90 * 24 * 3600;
+
+// effectiveAuthKind is the auth.kind a delivery is checked with: the form's,
+// else the provider preset's (gitlab sends a shared token), else hmac.
+function effectiveAuthKind(s: WebhookFormState): "hmac" | "bearer" | "none" {
+  if (s.authKind) return s.authKind;
+  return s.provider === "gitlab" ? "bearer" : "hmac";
+}
+
+function splitEvents(s: string): string[] {
+  return s
+    .split(",")
+    .map((e) => e.trim())
+    .filter(Boolean);
+}
+
+function splitLines(s: string): string[] {
+  return s
+    .split("\n")
+    .map((l) => l.trim())
+    .filter(Boolean);
+}
+
 function WebhookFields(props: {
   state: WebhookFormState;
   set: (v: WebhookFormState) => void;
@@ -361,6 +402,7 @@ function WebhookFields(props: {
 }) {
   const { state: s, set, submitting } = props;
   const patch = (p: Partial<WebhookFormState>) => set({ ...s, ...p });
+  const kind = effectiveAuthKind(s);
   return (
     <>
       <div className="library-form-row library-form-row-checkbox">
@@ -383,30 +425,28 @@ function WebhookFields(props: {
       <div className="library-form-row">
         <label>delivery</label>
         <div className="library-radio-group">
-          <label>
-            <input
-              type="radio"
-              name="int-wh-delivery"
-              checked={s.delivery === "spawn"}
-              onChange={() => patch({ delivery: "spawn" })}
-              disabled={submitting}
-            />{" "}
-            spawn (run an agent)
-          </label>
-          <label>
-            <input
-              type="radio"
-              name="int-wh-delivery"
-              checked={s.delivery === "channel"}
-              onChange={() => patch({ delivery: "channel" })}
-              disabled={submitting}
-            />{" "}
-            channel (publish)
-          </label>
+          {(
+            [
+              ["spawn", "spawn (run an agent)"],
+              ["channel", "channel (publish)"],
+              ["team", "team (start a team walk)"],
+            ] as const
+          ).map(([d, text]) => (
+            <label key={d}>
+              <input
+                type="radio"
+                name="int-wh-delivery"
+                checked={s.delivery === d}
+                onChange={() => patch({ delivery: d })}
+                disabled={submitting}
+              />{" "}
+              {text}
+            </label>
+          ))}
         </div>
       </div>
 
-      {s.delivery === "spawn" ? (
+      {s.delivery === "spawn" && (
         <div className="library-form-row">
           <label htmlFor="int-wh-agent">agent</label>
           <input
@@ -418,7 +458,8 @@ function WebhookFields(props: {
             placeholder="agent name to spawn on delivery"
           />
         </div>
-      ) : (
+      )}
+      {s.delivery === "channel" && (
         <div className="library-form-row">
           <label htmlFor="int-wh-channel">channel</label>
           <input
@@ -431,12 +472,66 @@ function WebhookFields(props: {
           />
         </div>
       )}
+      {s.delivery === "team" && (
+        <>
+          <div className="library-form-row">
+            <label htmlFor="int-wh-team">team</label>
+            <input
+              id="int-wh-team"
+              type="text"
+              value={s.team}
+              onChange={(e) => patch({ team: e.target.value })}
+              disabled={submitting}
+              placeholder="team whose walk a delivery starts"
+            />
+          </div>
+          <KVRows
+            label="vars"
+            hint="team variable → JSONPath into the body"
+            rows={s.vars}
+            setRows={(rows) => patch({ vars: rows })}
+            keyPlaceholder="repo"
+            valuePlaceholder="$.repository.full_name"
+            submitting={submitting}
+          />
+        </>
+      )}
+
+      <div className="library-form-row library-form-row-quad">
+        <label htmlFor="int-wh-provider">
+          provider
+          <span className="library-modal-field-hint"> — a forge preset: headers, auth kind, event shapes</span>
+        </label>
+        <select
+          id="int-wh-provider"
+          value={s.provider}
+          onChange={(e) => patch({ provider: e.target.value as WebhookFormState["provider"] })}
+          disabled={submitting}
+        >
+          <option value="">(none)</option>
+          <option value="github">github</option>
+          <option value="gitea">gitea</option>
+          <option value="gitlab">gitlab</option>
+        </select>
+        <label htmlFor="int-wh-events">
+          events
+          <span className="library-modal-field-hint"> — comma-separated; empty = every delivery</span>
+        </label>
+        <input
+          id="int-wh-events"
+          type="text"
+          value={s.events}
+          onChange={(e) => patch({ events: e.target.value })}
+          disabled={submitting}
+          placeholder="push, pull_request"
+        />
+      </div>
 
       <div className="library-form-row">
         <label>auth.kind</label>
         <div className="library-radio-group">
-          {(["hmac", "bearer", "none"] as const).map((k) => (
-            <label key={k}>
+          {(["", "hmac", "bearer", "none"] as const).map((k) => (
+            <label key={k || "default"}>
               <input
                 type="radio"
                 name="int-wh-auth"
@@ -444,62 +539,94 @@ function WebhookFields(props: {
                 onChange={() => patch({ authKind: k })}
                 disabled={submitting}
               />{" "}
-              {k}
+              {k || "(provider default)"}
             </label>
           ))}
         </div>
       </div>
 
-      {s.authKind === "hmac" && (
-        <>
-          <div className="library-form-row">
-            <label htmlFor="int-wh-secret">
-              auth.signing_secret_env
-              <span className="library-modal-field-hint">
-                {" "}
-                — env var holding the HMAC secret (NAME only, e.g.
-                LOOMCYCLE_WH_SECRET)
-              </span>
+      {kind !== "none" && (
+        <div className="library-form-row">
+          <label>secret</label>
+          <div className="library-radio-group">
+            <label>
+              <input
+                type="radio"
+                name="int-wh-secret-source"
+                checked={s.secretSource === "stored"}
+                onChange={() => patch({ secretSource: "stored" })}
+                disabled={submitting}
+              />{" "}
+              stored credential (auth.secret)
             </label>
-            <input
-              id="int-wh-secret"
-              type="text"
-              value={s.signingSecretEnv}
-              onChange={(e) => patch({ signingSecretEnv: e.target.value })}
-              disabled={submitting}
-              placeholder="LOOMCYCLE_WEBHOOK_SECRET"
-            />
+            <label>
+              <input
+                type="radio"
+                name="int-wh-secret-source"
+                checked={s.secretSource === "env"}
+                onChange={() => patch({ secretSource: "env" })}
+                disabled={submitting}
+              />{" "}
+              env var
+            </label>
           </div>
-          <div className="library-form-row library-form-row-quad">
-            <label htmlFor="int-wh-algo">algorithm</label>
-            <input
-              id="int-wh-algo"
-              type="text"
-              value={s.algorithm}
-              onChange={(e) => patch({ algorithm: e.target.value })}
-              disabled={submitting}
-              placeholder="sha256 (only sha256 is implemented)"
-            />
-            <label htmlFor="int-wh-header">signature header</label>
-            <input
-              id="int-wh-header"
-              type="text"
-              value={s.header}
-              onChange={(e) => patch({ header: e.target.value })}
-              disabled={submitting}
-              placeholder="X-Hub-Signature-256"
-            />
-          </div>
-        </>
+        </div>
       )}
-      {s.authKind === "bearer" && (
+      {kind !== "none" && s.secretSource === "stored" && (
+        <div className="library-form-row library-form-row-quad">
+          <label htmlFor="int-wh-cred">
+            auth.secret
+            <span className="library-modal-field-hint">
+              {" "}
+              — a tenant credential, "$cred:&lt;name&gt;"; store it with allowed_urls: [] so it is never sent
+            </span>
+          </label>
+          <input
+            id="int-wh-cred"
+            type="text"
+            value={s.secret}
+            onChange={(e) => patch({ secret: e.target.value })}
+            disabled={submitting}
+            placeholder="$cred:hook-secret"
+          />
+          <label htmlFor="int-wh-prev">
+            auth.previous_secret
+            <span className="library-modal-field-hint"> — while rotating; either secret is accepted</span>
+          </label>
+          <input
+            id="int-wh-prev"
+            type="text"
+            value={s.previousSecret}
+            onChange={(e) => patch({ previousSecret: e.target.value })}
+            disabled={submitting}
+            placeholder="$cred:hook-secret-old"
+          />
+        </div>
+      )}
+      {kind === "hmac" && s.secretSource === "env" && (
+        <div className="library-form-row">
+          <label htmlFor="int-wh-secret">
+            auth.signing_secret_env
+            <span className="library-modal-field-hint">
+              {" "}
+              — env var holding the HMAC secret (NAME only, e.g. LOOMCYCLE_WH_SECRET)
+            </span>
+          </label>
+          <input
+            id="int-wh-secret"
+            type="text"
+            value={s.signingSecretEnv}
+            onChange={(e) => patch({ signingSecretEnv: e.target.value })}
+            disabled={submitting}
+            placeholder="LOOMCYCLE_WEBHOOK_SECRET"
+          />
+        </div>
+      )}
+      {kind === "bearer" && s.secretSource === "env" && (
         <div className="library-form-row">
           <label htmlFor="int-wh-bearer">
             auth.bearer_token_env
-            <span className="library-modal-field-hint">
-              {" "}
-              — env var NAME holding the expected bearer token
-            </span>
+            <span className="library-modal-field-hint"> — env var NAME holding the expected token</span>
           </label>
           <input
             id="int-wh-bearer"
@@ -511,6 +638,120 @@ function WebhookFields(props: {
           />
         </div>
       )}
+      {kind === "hmac" && (
+        <div className="library-form-row library-form-row-quad">
+          <label htmlFor="int-wh-algo">algorithm</label>
+          <input
+            id="int-wh-algo"
+            type="text"
+            value={s.algorithm}
+            onChange={(e) => patch({ algorithm: e.target.value })}
+            disabled={submitting}
+            placeholder="sha256 (only sha256 is implemented)"
+          />
+          <label htmlFor="int-wh-header">signature header</label>
+          <input
+            id="int-wh-header"
+            type="text"
+            value={s.header}
+            onChange={(e) => patch({ header: e.target.value })}
+            disabled={submitting}
+            placeholder={s.provider ? "(the provider's)" : "X-Hub-Signature-256"}
+          />
+        </div>
+      )}
+
+      {s.delivery === "spawn" && (
+        <div className="library-form-row library-form-row-quad">
+          <label htmlFor="int-wh-user-bearer">
+            user_bearer
+            <span className="library-modal-field-hint">
+              {" "}
+              — the run's ${"{"}run.user_bearer{"}"}: a tenant credential, "$cred:&lt;name&gt;"
+            </span>
+          </label>
+          <input
+            id="int-wh-user-bearer"
+            type="text"
+            value={s.userBearer}
+            onChange={(e) => patch({ userBearer: e.target.value })}
+            disabled={submitting}
+            placeholder="$cred:forge-token"
+          />
+          <label htmlFor="int-wh-tier">user_tier</label>
+          <input
+            id="int-wh-tier"
+            type="text"
+            value={s.userTier}
+            onChange={(e) => patch({ userTier: e.target.value })}
+            disabled={submitting}
+            placeholder="pins the run's tier"
+          />
+        </div>
+      )}
+
+      <div className="library-form-row library-form-row-quad">
+        <label htmlFor="int-wh-dedup">
+          dedup_key
+          <span className="library-modal-field-hint">
+            {" "}
+            — JSONPaths, one per line, whose values name one event
+          </span>
+        </label>
+        <textarea
+          id="int-wh-dedup"
+          rows={3}
+          value={s.dedupKey}
+          onChange={(e) => patch({ dedupKey: e.target.value })}
+          disabled={submitting}
+          placeholder={"$.repository.id\n$.ref\n$.after"}
+        />
+        <label htmlFor="int-wh-dedup-ttl">dedup_ttl_seconds</label>
+        <input
+          id="int-wh-dedup-ttl"
+          type="number"
+          min="0"
+          value={s.dedupTTLSeconds}
+          onChange={(e) => patch({ dedupTTLSeconds: e.target.value })}
+          disabled={submitting}
+          placeholder="604800 (7 days)"
+        />
+      </div>
+
+      <div className="library-form-row">
+        <label htmlFor="int-wh-filters">
+          filters (JSON)
+          <span className="library-modal-field-hint">
+            {" "}
+            — [{"{"}"path", "op": eq|ne|glob|in, "value" | "value_from"{"}"}]; a fork replaces the list
+          </span>
+        </label>
+        <textarea
+          id="int-wh-filters"
+          rows={3}
+          value={s.filtersJSON}
+          onChange={(e) => patch({ filtersJSON: e.target.value })}
+          disabled={submitting}
+          placeholder='[{"path": "$.ref", "op": "glob", "value": "refs/heads/*"}]'
+        />
+      </div>
+      <div className="library-form-row">
+        <label htmlFor="int-wh-shapes">
+          event_shapes (JSON)
+          <span className="library-modal-field-hint">
+            {" "}
+            — event → rules, for an event the provider has no shape for
+          </span>
+        </label>
+        <textarea
+          id="int-wh-shapes"
+          rows={2}
+          value={s.eventShapesJSON}
+          onChange={(e) => patch({ eventShapesJSON: e.target.value })}
+          disabled={submitting}
+          placeholder='{"star": ["$.action", "$.starred_at", "$.repository.id"]}'
+        />
+      </div>
 
       <div className="library-form-row library-form-row-quad">
         <label htmlFor="int-wh-rpm">rate_limit.requests_per_minute</label>
@@ -570,18 +811,20 @@ function WebhookFields(props: {
         submitting={submitting}
       />
 
-      <div className="library-form-row library-form-row-checkbox">
-        <label>
-          <input
-            type="checkbox"
-            checked={s.syncEnabled}
-            onChange={(e) => patch({ syncEnabled: e.target.checked })}
-            disabled={submitting}
-          />{" "}
-          sync_response.enabled
-        </label>
-      </div>
-      {s.syncEnabled && (
+      {s.delivery === "spawn" && (
+        <div className="library-form-row library-form-row-checkbox">
+          <label>
+            <input
+              type="checkbox"
+              checked={s.syncEnabled}
+              onChange={(e) => patch({ syncEnabled: e.target.checked })}
+              disabled={submitting}
+            />{" "}
+            sync_response.enabled
+          </label>
+        </div>
+      )}
+      {s.delivery === "spawn" && s.syncEnabled && (
         <div className="library-form-row">
           <label htmlFor="int-wh-sync-timeout">sync_response.timeout_ms</label>
           <input
@@ -600,28 +843,45 @@ function WebhookFields(props: {
   );
 }
 
-function initWebhook(def: unknown): WebhookFormState {
+function jsonText(v: unknown): string {
+  return v === undefined || v === null ? "" : JSON.stringify(v, null, 2);
+}
+
+export function initWebhook(def: unknown): WebhookFormState {
   const auth = pickObject(def, "auth");
   const rl = pickObject(def, "rate_limit");
   const sync = pickObject(def, "sync_response");
   const deliveryRaw = pickString(def, "delivery");
   const authKindRaw = pickString(auth, "kind");
+  const providerRaw = pickString(def, "provider");
+  const secret = pickString(auth, "secret");
+  const filters = (def as Record<string, unknown> | undefined)?.filters;
+  const shapes = (def as Record<string, unknown> | undefined)?.event_shapes;
   return {
     enabled: pickBool(def, "enabled"),
-    delivery: deliveryRaw === "channel" ? "channel" : "spawn",
+    delivery: deliveryRaw === "channel" ? "channel" : deliveryRaw === "team" ? "team" : "spawn",
     agent: pickString(def, "agent"),
     channel: pickString(def, "channel"),
-    authKind:
-      authKindRaw === "bearer"
-        ? "bearer"
-        : authKindRaw === "none"
-          ? "none"
-          : "hmac",
+    team: pickString(def, "team"),
+    vars: kvFromMap(def, "vars"),
+    provider:
+      providerRaw === "github" || providerRaw === "gitea" || providerRaw === "gitlab" ? providerRaw : "",
+    events: pickStringArray(def, "events").join(", "),
+    authKind: authKindRaw === "hmac" || authKindRaw === "bearer" || authKindRaw === "none" ? authKindRaw : "",
+    secretSource: secret ? "stored" : pickString(auth, "signing_secret_env") || pickString(auth, "bearer_token_env") ? "env" : "stored",
+    secret,
+    previousSecret: pickString(auth, "previous_secret"),
     algorithm: pickString(auth, "algorithm"),
     header: pickString(auth, "header"),
     signingSecretEnv: pickString(auth, "signing_secret_env"),
     deliveryIdHeader: pickString(auth, "delivery_id_header"),
     bearerTokenEnv: pickString(auth, "bearer_token_env"),
+    userBearer: pickString(def, "user_bearer"),
+    userTier: pickString(def, "user_tier"),
+    dedupKey: pickStringArray(def, "dedup_key").join("\n"),
+    dedupTTLSeconds: pickNumStr(def, "dedup_ttl_seconds"),
+    filtersJSON: Array.isArray(filters) && filters.length > 0 ? jsonText(filters) : "",
+    eventShapesJSON: shapes && typeof shapes === "object" && Object.keys(shapes).length > 0 ? jsonText(shapes) : "",
     requestsPerMinute: pickNumStr(rl, "requests_per_minute"),
     burst: pickNumStr(rl, "burst"),
     bodySizeLimitBytes: pickNumStr(def, "body_size_limit_bytes"),
@@ -632,33 +892,79 @@ function initWebhook(def: unknown): WebhookFormState {
   };
 }
 
-function validateWebhook(s: WebhookFormState): string | null {
+// parseJSONField parses an optional JSON text box: undefined when empty.
+function parseJSONField(text: string): { value?: unknown; error?: string } {
+  if (!text.trim()) return {};
+  try {
+    return { value: JSON.parse(text) };
+  } catch (e) {
+    return { error: (e as Error).message };
+  }
+}
+
+export function validateWebhook(s: WebhookFormState): string | null {
   if (s.delivery === "spawn") {
     if (!s.agent.trim()) return "delivery=spawn requires an agent.";
-  } else {
+  } else if (s.delivery === "channel") {
     if (!s.channel.trim()) return "delivery=channel requires a channel.";
     if (s.userCredentialsFromEnv.some((r) => r.key.trim()))
       return "delivery=channel forbids user_credentials_from_env (channel mode has no run identity).";
+  } else if (!s.team.trim()) {
+    return "delivery=team requires a team.";
   }
-  if (s.authKind === "hmac") {
-    if (!s.signingSecretEnv.trim())
-      return "auth.kind=hmac requires auth.signing_secret_env.";
-    if (!ENV_VAR_RE.test(s.signingSecretEnv.trim()))
-      return `signing_secret_env "${s.signingSecretEnv.trim()}" is not a valid env-var name ([A-Z][A-Z0-9_]*).`;
+  for (const e of splitEvents(s.events)) {
+    if (!EVENT_RE.test(e)) return `events: "${e}" is not an event name.`;
+  }
+  const kind = effectiveAuthKind(s);
+  if (kind !== "none") {
+    if (s.secretSource === "stored") {
+      if (!CRED_REF_RE.test(s.secret.trim()))
+        return 'auth.secret must be a stored credential written "$cred:<name>".';
+      if (s.previousSecret.trim() && !CRED_REF_RE.test(s.previousSecret.trim()))
+        return 'auth.previous_secret must be written "$cred:<name>".';
+    } else if (kind === "hmac") {
+      if (!s.signingSecretEnv.trim()) return "auth.kind=hmac requires auth.signing_secret_env (or a stored secret).";
+      if (!ENV_VAR_RE.test(s.signingSecretEnv.trim()))
+        return `signing_secret_env "${s.signingSecretEnv.trim()}" is not a valid env-var name ([A-Z][A-Z0-9_]*).`;
+    } else {
+      if (!s.bearerTokenEnv.trim()) return "auth.kind=bearer requires auth.bearer_token_env (or a stored secret).";
+      if (!ENV_VAR_RE.test(s.bearerTokenEnv.trim()))
+        return `bearer_token_env "${s.bearerTokenEnv.trim()}" is not a valid env-var name ([A-Z][A-Z0-9_]*).`;
+    }
+  }
+  if (kind === "hmac") {
     const a = s.algorithm.trim().toLowerCase();
-    if (a && a !== "sha256")
-      return `auth.algorithm "${s.algorithm.trim()}" unsupported (only sha256 is implemented).`;
-  } else if (s.authKind === "bearer") {
-    if (!s.bearerTokenEnv.trim())
-      return "auth.kind=bearer requires auth.bearer_token_env.";
-    if (!ENV_VAR_RE.test(s.bearerTokenEnv.trim()))
-      return `bearer_token_env "${s.bearerTokenEnv.trim()}" is not a valid env-var name ([A-Z][A-Z0-9_]*).`;
+    if (a && a !== "sha256") return `auth.algorithm "${s.algorithm.trim()}" unsupported (only sha256 is implemented).`;
+  }
+  if (s.userBearer.trim()) {
+    if (s.delivery !== "spawn") return "user_bearer authorizes a run: delivery channel and team refuse it.";
+    if (!CRED_REF_RE.test(s.userBearer.trim())) return 'user_bearer must be a stored credential written "$cred:<name>".';
+  }
+  const ttl = s.dedupTTLSeconds.trim();
+  if (ttl) {
+    const n = Number(ttl);
+    if (!Number.isInteger(n) || n < 0) return "dedup_ttl_seconds must be a whole number of seconds.";
+    if (n > MAX_DEDUP_TTL_SECONDS) return "dedup_ttl_seconds is at most 7776000 (90 days).";
+    if (n > 0 && splitLines(s.dedupKey).length === 0) return "dedup_ttl_seconds needs a dedup_key.";
+  }
+  const filters = parseJSONField(s.filtersJSON);
+  if (filters.error) return `filters is not JSON: ${filters.error}`;
+  if (filters.value !== undefined && !Array.isArray(filters.value)) return "filters must be a JSON list.";
+  const shapes = parseJSONField(s.eventShapesJSON);
+  if (shapes.error) return `event_shapes is not JSON: ${shapes.error}`;
+  if (shapes.value !== undefined) {
+    if (typeof shapes.value !== "object" || shapes.value === null || Array.isArray(shapes.value))
+      return "event_shapes must be a JSON object of event → list of rules.";
+    for (const [e, rules] of Object.entries(shapes.value as Record<string, unknown>)) {
+      if (!Array.isArray(rules) || rules.some((r) => typeof r !== "string"))
+        return `event_shapes["${e}"] must be a list of rule strings.`;
+    }
   }
   for (const r of s.userCredentialsFromEnv) {
     if (r.key.trim() && r.value.trim() && !ENV_VAR_RE.test(r.value.trim()))
       return `user_credentials_from_env["${r.key.trim()}"] = "${r.value.trim()}" is not a valid env-var name.`;
   }
-  if (s.syncEnabled) {
+  if (s.delivery === "spawn" && s.syncEnabled) {
     const t = Number(s.syncTimeoutMs);
     if (!Number.isFinite(t) || t <= 0 || t > 60000)
       return "sync_response.timeout_ms must be in (0, 60000] when sync_response.enabled.";
@@ -666,30 +972,58 @@ function validateWebhook(s: WebhookFormState): string | null {
   return null;
 }
 
-function buildWebhookOverlay(
-  s: WebhookFormState,
-  description: string,
-): Record<string, unknown> {
+export function buildWebhookOverlay(s: WebhookFormState, description: string): Record<string, unknown> {
   const ov: Record<string, unknown> = {};
   if (description.trim()) ov.description = description.trim();
   if (s.enabled) ov.enabled = true;
   ov.delivery = s.delivery;
   if (s.delivery === "spawn") {
     if (s.agent.trim()) ov.agent = s.agent.trim();
-  } else if (s.channel.trim()) ov.channel = s.channel.trim();
+  } else if (s.delivery === "channel") {
+    if (s.channel.trim()) ov.channel = s.channel.trim();
+  } else {
+    if (s.team.trim()) ov.team = s.team.trim();
+    const vars = mapFromKV(s.vars);
+    if (Object.keys(vars).length > 0) ov.vars = vars;
+  }
+  if (s.provider) ov.provider = s.provider;
+  const events = splitEvents(s.events);
+  if (events.length > 0) ov.events = events;
 
-  const auth: Record<string, unknown> = { kind: s.authKind };
-  if (s.authKind === "hmac") {
-    if (s.signingSecretEnv.trim())
-      auth.signing_secret_env = s.signingSecretEnv.trim();
+  // auth.kind is sent only when chosen: left out, the provider preset (or
+  // hmac) applies when a delivery arrives.
+  const auth: Record<string, unknown> = {};
+  if (s.authKind) auth.kind = s.authKind;
+  const kind = effectiveAuthKind(s);
+  if (kind !== "none") {
+    if (s.secretSource === "stored") {
+      if (s.secret.trim()) auth.secret = s.secret.trim();
+      if (s.previousSecret.trim()) auth.previous_secret = s.previousSecret.trim();
+    } else if (kind === "hmac") {
+      if (s.signingSecretEnv.trim()) auth.signing_secret_env = s.signingSecretEnv.trim();
+    } else if (s.bearerTokenEnv.trim()) {
+      auth.bearer_token_env = s.bearerTokenEnv.trim();
+    }
+  }
+  if (kind === "hmac") {
     if (s.algorithm.trim()) auth.algorithm = s.algorithm.trim();
     if (s.header.trim()) auth.header = s.header.trim();
-    if (s.deliveryIdHeader.trim())
-      auth.delivery_id_header = s.deliveryIdHeader.trim();
-  } else if (s.authKind === "bearer") {
-    if (s.bearerTokenEnv.trim()) auth.bearer_token_env = s.bearerTokenEnv.trim();
   }
+  if (s.deliveryIdHeader.trim()) auth.delivery_id_header = s.deliveryIdHeader.trim();
   ov.auth = auth;
+
+  if (s.delivery === "spawn") {
+    if (s.userBearer.trim()) ov.user_bearer = s.userBearer.trim();
+    if (s.userTier.trim()) ov.user_tier = s.userTier.trim();
+  }
+  const dedup = splitLines(s.dedupKey);
+  if (dedup.length > 0) ov.dedup_key = dedup;
+  const ttl = posInt(s.dedupTTLSeconds);
+  if (ttl !== null) ov.dedup_ttl_seconds = ttl;
+  const filters = parseJSONField(s.filtersJSON).value;
+  if (filters !== undefined) ov.filters = filters;
+  const shapes = parseJSONField(s.eventShapesJSON).value;
+  if (shapes !== undefined) ov.event_shapes = shapes;
 
   const rl: Record<string, unknown> = {};
   const rpm = posInt(s.requestsPerMinute);
@@ -708,7 +1042,7 @@ function buildWebhookOverlay(
   const mapping = mapFromKV(s.payloadMapping);
   if (Object.keys(mapping).length > 0) ov.payload_mapping = mapping;
 
-  if (s.syncEnabled) {
+  if (s.delivery === "spawn" && s.syncEnabled) {
     const t = posInt(s.syncTimeoutMs);
     ov.sync_response = { enabled: true, timeout_ms: t ?? 0 };
   }
