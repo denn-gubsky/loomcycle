@@ -71,3 +71,16 @@ func TestCheckWebhookEvents_RefusesAShapeRuleThatCannotBeRead(t *testing.T) {
 		}
 	}
 }
+
+// With events, the receiver puts the provider, event and delivery id in the
+// run's metadata.webhook: a definition may not hold its own.
+func TestCheckWebhookEvents_RefusesItsOwnMetadataWebhook(t *testing.T) {
+	w := Webhook{Provider: "github", Events: []string{"push"}, Metadata: map[string]any{"webhook": "mine"}}
+	if err := CheckWebhookEvents(w); err == nil || !strings.Contains(err.Error(), `"webhook"`) {
+		t.Errorf("%v, want a refusal naming metadata.webhook", err)
+	}
+	w.Events = nil
+	if err := CheckWebhookEvents(w); err != nil {
+		t.Errorf("without events it is the definition's own: %v", err)
+	}
+}

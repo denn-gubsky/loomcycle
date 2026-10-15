@@ -228,6 +228,7 @@ func Run(t *testing.T, factory Factory) {
 		{"WebhookDeliveryClaimRaceGrantsOne", testWebhookDeliveryClaimRaceGrantsOne},
 		{"WebhookDeliveryClaimRunRetakesOnlyAFailedRunsKeys", testWebhookDeliveryClaimRunRetakesOnlyAFailedRunsKeys},
 		{"WebhookDeliveryClaimRunRetakeRaceGrantsOne", testWebhookDeliveryClaimRunRetakeRaceGrantsOne},
+		{"WebhookCountersAddUpPerWebhook", testWebhookCountersAddUpPerWebhook},
 		{"MemoryEmbedCascadesOnDelete", testMemoryEmbedCascadesOnDelete},
 		{"MemoryEmbedListMissing", testMemoryEmbedListMissing},
 		{"MemorySearchFilterExcludesPrefix", testMemorySearchFilterExcludesPrefix},
