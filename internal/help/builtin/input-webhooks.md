@@ -177,6 +177,10 @@ A shared front-half runs for every request, then forks on `delivery`:
    plus body, for bearer and `none` their one key. A delivery refused
    before its publish holds nothing, and one whose channel write fails gives
    its keys back, so the sender's retry is published.
+
+   With a **`dedup_key`** (see **One event, one run**) the event is named
+   by signed fields instead, and held in the database for the definition's
+   lifetime; this instance's ten-minute memory is not consulted.
 5. **Project** the payload via the Def's `payload_mapping` (strict JSONPath
    subset: `$.a.b`, `$.a[0]` — no wildcards/filters/recursion). An absent
    path resolves to empty + a tracing note, never a failure. A path that
@@ -184,7 +188,8 @@ A shared front-half runs for every request, then forks on `delivery`:
    static yaml it is a boot warning, and every delivery answers
    `400 bad_mapping`.
 6. **Rate limit** (per-Def token bucket) → `429` + `Retry-After` when
-   exceeded. Each def has its own bucket (same-named webhooks in two tenants
+   exceeded. A `dedup_key` is claimed just before it, so a duplicate costs
+   no token, and a delivery the rate limit refuses gives its key back. Each def has its own bucket (same-named webhooks in two tenants
    never share one), and a `rate_limit` edit applies to the next delivery.
 7. **Deliver**: spawn → build a RunInput (the mapped `goal` enters as an
    **untrusted-block**, fenced in `<untrusted>` tags — a webhook payload is
@@ -312,6 +317,51 @@ webhooks:
   filter that missed.
 - This is a closed list. There is no expression language and no regular
   expression, so what a definition lets through can be read off it.
+
+## One event, one run — `dedup_key`
+
+A forge sends one event more than once: a redelivery gets a new delivery
+id, and two deliveries of one push can differ by a byte. Neither is a
+duplicate by the body hash or the id. `dedup_key` names the event by fields
+of the signed body instead:
+
+```yaml
+dedup_key: ["$.repository.id", "$.ref", "$.after"]   # one pushed head
+dedup_ttl_seconds: 604800                            # 7 days, the default
+```
+
+- **One event is one run.** A delivery whose values at these paths match an
+  earlier one is answered `200 {"deduped":"true","run_id":…}` and starts
+  nothing, whatever its delivery id or bytes — on every instance and after a
+  restart. The values are compared as signed: a number is its digits, an
+  object's key order does not matter.
+- **A failed run lets the event through again.** The key records the run it
+  started. If that run ended `failed` — lost in a restart, say — the next
+  delivery of the event starts a new run. A run that completed, was
+  cancelled or rejected, or whose row is gone, keeps the event held.
+- **A body without one of the fields**, or with `null` there, is refused
+  `400 dedup_key_unresolvable`, naming the path. A key built from part of
+  its fields would merge different events.
+- **How long.** `dedup_ttl_seconds`, default 7 days, at most 90. After it, a
+  delivery of the event starts a run again. The body hash and delivery id
+  stay on the run itself, as without a `dedup_key`, so a byte-identical
+  re-send is still answered as a duplicate after the lifetime. A
+  `delivery: channel` webhook holds its keys a day at the least.
+- **The key is claimed late.** After the signature, the events, the filters
+  and the mapping, and just before the rate limit. A delivery refused at
+  any of those holds nothing; one refused after it (rate limit, a run that
+  cannot start) gives its key back, so the sender's retry is handled.
+- **Paths** are the `payload_mapping` subset (`$`, `.key`, `[N]`), 1 to 16 of
+  them, checked when the definition is written. A fork replaces the list;
+  `dedup_key: []` removes it and its lifetime.
+- **What it does not close.** A body-only signature (GitHub, Gitea) carries
+  no time, so once the lifetime ends a captured delivery with altered,
+  unsigned headers is a new event. Check the event against your own state
+  when that matters, for example that a pushed head is still the branch's
+  newest. A GitLab token signs nothing: `dedup_key` there means one run per
+  event, not a defence against someone holding a captured request.
+- The `/test` dry-run reports `rejected_dedup_key` for a body that cannot
+  name its event. It claims nothing, so it never reports a duplicate.
 
 ## `delivery: team` — a delivery that starts a team walk
 
@@ -789,7 +839,8 @@ header).
 - **Single-replica v1.** The Layer-1 dedup cache + rate-limit buckets are
   per-replica; the durable layer is the cross-replica backstop — the run's
   `runs.idempotency_key` (Layer 2) for spawn and team mode, a day-long hold
-  of the delivery's signed keys for channel mode. Cluster-wide rate limiting
+  of the delivery's signed keys for channel mode, and a `dedup_key`'s hold
+  for its lifetime. Cluster-wide rate limiting
   is a later concern.
 - **Not a DDoS shield.** Signature verification is cheap and the body is
   size-capped, but front-line flood protection belongs at your ingress; the
