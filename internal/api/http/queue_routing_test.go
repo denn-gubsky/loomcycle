@@ -3,6 +3,7 @@ package http
 import (
 	"context"
 	"fmt"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -10,6 +11,8 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/config"
 	"github.com/denn-gubsky/loomcycle/internal/providers"
 	"github.com/denn-gubsky/loomcycle/internal/resolve"
+	"github.com/denn-gubsky/loomcycle/internal/store"
+	storesqlite "github.com/denn-gubsky/loomcycle/internal/store/sqlite"
 	"github.com/denn-gubsky/loomcycle/internal/throughput"
 )
 
@@ -143,9 +146,84 @@ func TestQueueMoveFn_MovesOnlyWithoutALeaseAndPastSwitchAfter(t *testing.T) {
 		t.Error("a wait under switch_after_ms moved the run")
 	}
 
-	// No hook for an agent that is not queue-aware, or is pinned.
-	if s.queueMoveFn(config.AgentDef{Tier: "low"}, "r", "", "", "w", "", false) != nil ||
-		s.queueMoveFn(config.AgentDef{Provider: "busy", Model: "m1", Routing: &config.AgentRouting{QueueAware: true}}, "r", "", "", "w", "", false) != nil {
-		t.Error("a move hook for an agent that is not queue-aware and tier-routed")
+	// A tier agent that is not queue-aware never moves, however long the wait
+	// (its hook is there for a retune to switch on); a pinned one has no hook.
+	if notAware := s.queueMoveFn(config.AgentDef{Tier: "low"}, "run-plain", "", "", "w", "", false); notAware == nil {
+		t.Error("no move hook for a tier agent: a retune could not switch queue-aware routing on")
+	} else if _, _, _, moved := notAware(ctx, idProvider{"busy"}, "m1"); moved {
+		t.Error("an agent that is not queue-aware moved")
+	}
+	if s.queueMoveFn(config.AgentDef{Provider: "busy", Model: "m1", Routing: &config.AgentRouting{QueueAware: true}}, "r", "", "", "w", "", false) != nil {
+		t.Error("a move hook for an agent pinned to a provider and model")
+	}
+}
+
+// A routing block retuned onto a running run takes effect at its next call
+// boundary: the hook reads the run's record, not the block it started with.
+// Switched on, the run moves; switched back off ({}), it stays.
+func TestQueueMoveFn_ARetunedRoutingBlockTakesEffect(t *testing.T) {
+	r := resolve.NewResolver([]string{"busy", "free"}, map[string][]resolve.Candidate{
+		"low": {{Provider: "busy", Model: "m1"}, {Provider: "free", Model: "m2"}},
+	})
+	r.SetReachable("busy", true, []string{"m1"}, "")
+	r.SetReachable("free", true, []string{"m2"}, "")
+	s := minimalServerWithResolver(t, r)
+	s.providers = &multiResolver{byID: map[string]providers.Provider{"busy": idProvider{"busy"}, "free": idProvider{"free"}}}
+	st, err := storesqlite.Open(filepath.Join(t.TempDir(), "retune-routing.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+	s.store = st
+	ctx := context.Background()
+	sess, err := st.CreateSession(ctx, "", "worker", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	run, err := st.CreateRun(ctx, sess.ID, store.RunIdentity{AgentID: "a_retuned"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.throughput = throughput.New(&config.Config{}, nil, nil)
+	for i := 0; i < 5; i++ {
+		s.throughput.Observe(throughput.Sample{RunID: fmt.Sprintf("s%d", i), At: time.Now(),
+			Key: throughput.Key{Provider: "busy", Model: "m1"}, Output: 100,
+			CallTiming: providers.CallTiming{DurationMs: 40000}})
+	}
+	sched := concurrency.NewCallScheduler(map[string]concurrency.ProviderLanesConfig{
+		"busy": {Lanes: map[string]concurrency.LaneConfig{config.ModelKindChat: {MaxConcurrent: 1}}},
+	})
+	s.SetCallScheduler(sched)
+	release, err := sched.Acquire(ctx, "busy", config.ModelKindChat, concurrency.CallInfo{Owner: "someone-else", Model: "m1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer release()
+
+	// Started with no routing block: not queue-aware.
+	move := s.queueMoveFn(config.AgentDef{Tier: "low"}, run.ID, "", "", "worker", "", false)
+	moved := func() bool {
+		_, _, _, ok := move(ctx, idProvider{"busy"}, "m1")
+		return ok
+	}
+	if moved() {
+		t.Fatal("moved before any retune")
+	}
+	setRouting := func(r *config.AgentRouting) {
+		t.Helper()
+		if _, err := s.updateRunConfig(ctx, run.ID, func(rec *runConfigRecord, _ bool) error {
+			rec.QueueRouting = r
+			return nil
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	setRouting(&config.AgentRouting{QueueAware: true, SwitchAfterMS: 15000})
+	if !moved() {
+		t.Error("a retune switched queue-aware routing on, and the run did not move")
+	}
+	setRouting(&config.AgentRouting{})
+	if moved() {
+		t.Error("a retune switched it off ({}), and the run still moved")
 	}
 }

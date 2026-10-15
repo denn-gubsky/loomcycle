@@ -129,8 +129,45 @@ func (p *Provider) Call(ctx context.Context, req providers.Request) (<-chan prov
 	if report == nil {
 		report = runReporter(ctx)
 	}
+	// The run's own turn call — the one its loop makes and blocks on, the only
+	// call that carries OnEvent — lends the run's global slot while it waits
+	// here and takes one back before it computes (concurrency.RunSlot). No
+	// other call of the run does: a tool's or a summary's call can run beside
+	// work that is computing.
+	var rs *concurrency.RunSlot
+	if req.OnEvent != nil {
+		rs = concurrency.RunSlotFrom(ctx)
+	}
+	var onWait func()
+	if rs != nil {
+		onWait = func() { rs.Lend() }
+	}
+	model := providers.ModelIdentity(p.inner, req)
 	slot := -1
-	release, err := acquire(ctx, p.sched, p.floor, p.id, kind, providers.ModelIdentity(p.inner, req), report, func(n int) { slot = n })
+	onSlot := func(n int) { slot = n }
+	release, err := acquire(ctx, p.sched, p.floor, p.id, kind, model, report, onSlot, onWait)
+	if rs.Lent() {
+		switch {
+		case err != nil:
+			// Not computing either way; back before the run does anything
+			// else. Holding no lane slot, it may wait.
+			_ = rs.Reclaim(ctx)
+		case !rs.TryReclaim():
+			// Never wait for a global slot holding a lane slot: a run that
+			// holds a global slot may be waiting for this lane with a call
+			// that does not lend (a tool's, a summary's, a sub-agent's), and
+			// the two would wait for each other. Give the lane slot back,
+			// take a global slot holding nothing, then queue for the lane
+			// again holding it — without lending, the order everything else
+			// uses.
+			release()
+			if rerr := rs.Reclaim(ctx); rerr != nil {
+				return nil, rerr
+			}
+			slot = -1
+			release, err = acquire(ctx, p.sched, p.floor, p.id, kind, model, report, onSlot, nil)
+		}
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -171,7 +208,7 @@ func Hold(ctx context.Context, p providers.Provider, req providers.Request) (pro
 	if !ok || !lp.sched.Gated(lp.id, kind) {
 		return p, func() {}, nil
 	}
-	release, err := acquire(ctx, lp.sched, nil, lp.id, kind, providers.ModelIdentity(lp.inner, req), nil, nil)
+	release, err := acquire(ctx, lp.sched, nil, lp.id, kind, providers.ModelIdentity(lp.inner, req), nil, nil, nil)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -196,7 +233,7 @@ func HoldLane(ctx context.Context, sched *concurrency.CallScheduler, id, kind, m
 	if !sched.Gated(id, kind) {
 		return ctx, func() {}, nil
 	}
-	release, err := acquire(ctx, sched, nil, id, kind, model, nil, nil)
+	release, err := acquire(ctx, sched, nil, id, kind, model, nil, nil, nil)
 	if err != nil {
 		return ctx, nil, err
 	}
@@ -230,7 +267,7 @@ func HoldLane(ctx context.Context, sched *concurrency.CallScheduler, id, kind, m
 // onSlot, when set, is told the number of the provider lane's slot the call
 // was granted (concurrency.CallInfo.OnSlot). The floor's slots are this
 // service's own, not the provider's, so they are never reported.
-func acquire(ctx context.Context, sched *concurrency.CallScheduler, floor *concurrency.Lane, id, kind, model string, report func(providers.Event), onSlot func(int)) (release func(), err error) {
+func acquire(ctx context.Context, sched *concurrency.CallScheduler, floor *concurrency.Lane, id, kind, model string, report func(providers.Event), onSlot func(int), onWait func()) (release func(), err error) {
 	if held, _ := ctx.Value(heldKey{id, kind}).(bool); held {
 		return func() {}, nil
 	}
@@ -250,16 +287,23 @@ func acquire(ctx context.Context, sched *concurrency.CallScheduler, floor *concu
 		Model:      model,
 	}
 	var queuedAt time.Time
-	if report != nil {
+	if report != nil || onWait != nil {
 		info.OnQueued = func(q concurrency.CallQueueInfo) {
 			if queuedAt.IsZero() {
 				queuedAt = time.Now()
+				if onWait != nil {
+					onWait()
+				}
 			}
-			report(providers.Event{
-				Type:      providers.EventCallQueued,
-				Admission: &providers.AdmissionInfo{Reason: q.Reason, Position: q.Position, Provider: id, Kind: kind},
-			})
+			if report != nil {
+				report(providers.Event{
+					Type:      providers.EventCallQueued,
+					Admission: &providers.AdmissionInfo{Reason: q.Reason, Position: q.Position, Provider: id, Kind: kind},
+				})
+			}
 		}
+	}
+	if report != nil {
 		defer func() {
 			if err == nil && !queuedAt.IsZero() {
 				report(providers.Event{

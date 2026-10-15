@@ -266,3 +266,52 @@ func TestCallScheduler_EstimatedWaitForACappedModelReadsItsOwnQueue(t *testing.T
 	rel()
 	mustGrant(t, q, "the queued call")()
 }
+
+// In a full lane, a call to another model waits only behind the queued calls
+// that could take a freed slot: calls held back by their own model's cap are
+// not ahead of it, however many there are.
+func TestCallScheduler_EstimatedWaitInAFullLaneSkipsCallsHeldByTheirModelCap(t *testing.T) {
+	const call = 10 * time.Second
+	s := NewCallScheduler(map[string]ProviderLanesConfig{"p": {
+		Lanes: map[string]LaneConfig{"chat": {MaxConcurrent: 2, ModelCaps: map[string]int{"m": 1}}},
+	}})
+	relM := schedNow(t, s, "p", "chat", CallInfo{Model: "m"})
+	relX := schedNow(t, s, "p", "chat", CallInfo{Model: "x"}) // the lane is full
+	var held []<-chan func()
+	for i := 0; i < 3; i++ {
+		held = append(held, schedAsync(t, s, "p", "chat", CallInfo{Model: "m"}))
+	}
+	eventually(t, "three calls held by m's cap", func() bool { return s.Stats()["p"].Lanes["chat"].BlockedOnModel == 3 })
+	if w := s.EstimatedWait("p", "chat", "other", call); w != call/2 {
+		t.Errorf("another model in a full lane, nothing it waits behind: wait %s, want %s — the calls held by m's cap were counted as ahead of it", w, call/2)
+	}
+	q := schedAsync(t, s, "p", "chat", CallInfo{Model: "y"})
+	eventually(t, "y queued", func() bool { return s.Stats()["p"].Lanes["chat"].Queued == 4 })
+	if w := s.EstimatedWait("p", "chat", "other", call); w != call {
+		t.Errorf("one eligible call ahead: wait %s, want %s", w, call)
+	}
+	relX()
+	mustGrant(t, q, "y")()
+	relM()
+	// m's cap lets one through at a time, in queue order — not slice order —
+	// so release whichever is granted.
+	for done := 0; done < len(held); done++ {
+		granted := false
+		for !granted {
+			for _, c := range held {
+				select {
+				case rel := <-c:
+					rel()
+					granted = true
+				default:
+				}
+				if granted {
+					break
+				}
+			}
+			if !granted {
+				time.Sleep(time.Millisecond)
+			}
+		}
+	}
+}

@@ -50,6 +50,7 @@ func (s *Server) RunInput(ctx context.Context, req *loomcyclepb.RunInputRequest)
 		Interactive: req.Interactive, Interruption: req.GetInterruption(),
 		Review:     req.Review,
 		ToolChoice: req.GetToolChoice(), OutputFormat: req.GetOutputFormat(),
+		Routing: req.GetRouting(),
 	}); !ov.IsZero() {
 		switch err := s.connector.RetuneRun(ctx, runID, ov); {
 		case errors.Is(err, connector.ErrRunNotInFlight):
@@ -223,6 +224,7 @@ type protoOverrideFields struct {
 	Interruption                                    *loomcyclepb.Interruption
 	ToolChoice                                      *loomcyclepb.ToolChoice
 	OutputFormat                                    *loomcyclepb.OutputFormat
+	Routing                                         *loomcyclepb.RunRouting
 }
 
 func overridesFromProto(f protoOverrideFields) connector.RunOverrides {
@@ -246,6 +248,7 @@ func overridesFromProto(f protoOverrideFields) connector.RunOverrides {
 		Review:       f.Review,
 		ToolChoice:   toolChoiceFromProto(f.ToolChoice),
 		OutputFormat: outputFormatFromProto(f.OutputFormat),
+		Routing:      routingFromProto(f.Routing),
 	}
 }
 
@@ -271,6 +274,7 @@ func (s *Server) RetuneRun(ctx context.Context, req *loomcyclepb.RetuneRunReques
 		Interactive: req.Interactive, Interruption: req.GetInterruption(),
 		Review:     req.Review,
 		ToolChoice: req.GetToolChoice(), OutputFormat: req.GetOutputFormat(),
+		Routing: req.GetRouting(),
 	})
 	if ov.IsZero() {
 		return nil, status.Error(codes.InvalidArgument, "at least one override is required")

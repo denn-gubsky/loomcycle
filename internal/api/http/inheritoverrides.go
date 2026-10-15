@@ -59,8 +59,8 @@ func (s *Server) inheritOverridesForChild(
 		log.Printf("spawn: %q does not inherit its parent's overrides — its definition no longer allows them", childName)
 		return def, childCfg
 	}
-	ov := runOverrides{Routing: rec.Routing, Resources: rec.Resources, Tuning: rec.Tuning}
-	if ov.Routing.isZero() && ov.Resources.isZero() && ov.Tuning.isZero() {
+	ov := runOverrides{Routing: rec.Routing, Resources: rec.Resources, Tuning: rec.Tuning, QueueRouting: rec.QueueRouting}
+	if ov.Routing.isZero() && ov.Resources.isZero() && ov.Tuning.isZero() && ov.QueueRouting == nil {
 		return def, childCfg
 	}
 
@@ -77,5 +77,6 @@ func (s *Server) inheritOverridesForChild(
 	childCfg.Routing = rec.Routing
 	childCfg.Resources = rec.Resources
 	childCfg.Tuning = rec.Tuning
+	childCfg.QueueRouting = rec.QueueRouting.Clone()
 	return inherited, childCfg
 }

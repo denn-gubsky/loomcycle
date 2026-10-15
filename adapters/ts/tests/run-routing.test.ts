@@ -55,4 +55,16 @@ describe("per-run routing", () => {
     await client.createConfiguredRun({ agent: "a", segments: [], routing: { switch_after_ms: 5000 } });
     expect(bodyOf(fetchMock, 1).routing).toEqual({ switch_after_ms: 5000 });
   });
+
+  it("a retune and a steered turn carry it, an empty block included", async () => {
+    const { client, fetchMock } = makeClient([
+      jsonResponse({ run_id: "r_1", retuned: true }),
+      jsonResponse({ run_id: "r_1", delivered: true }),
+    ]);
+    await client.retuneRun("r_1", { routing: { queue_aware: true, switch_after_ms: 15000 } });
+    expect(bodyOf(fetchMock, 0).routing).toEqual({ queue_aware: true, switch_after_ms: 15000 });
+
+    await client.sendRunInput("r_1", "go on", { overrides: { routing: {} } });
+    expect(bodyOf(fetchMock, 1).overrides.routing).toEqual({});
+  });
 });

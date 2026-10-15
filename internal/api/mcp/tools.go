@@ -66,7 +66,7 @@ var retuneProps = filterProps(spawnPerRunProps, []string{
 	"max_tokens", "max_iterations", "unbounded_iterations", "max_concurrent_children",
 	"retry_attempts", "memory_inject_max_tokens", "memory_index_max_bytes",
 	"inject_tool_guide", "interactive", "interruption", "review",
-	"tool_choice", "output_format",
+	"tool_choice", "output_format", "routing",
 })
 
 // filterProps keeps the named entries of a schema-property fragment, in the

@@ -1300,6 +1300,10 @@ message RunInputRequest {
   // tool_choice counts its `until` from there. mode "auto" removes forcing.
   ToolChoice tool_choice = 19;
   OutputFormat output_format = 20;
+  // Replace the run's own routing block whole (see RunRequest.routing); an
+  // empty message turns queue-aware routing off. Read at the run's next call
+  // boundary.
+  RunRouting routing = 21;
 }
 
 // RetuneRunRequest changes a run's settings and delivers no turn. The override
@@ -1331,6 +1335,10 @@ message RetuneRunRequest {
   // counts its `until` from there. mode "auto" removes forcing.
   ToolChoice tool_choice = 17;
   OutputFormat output_format = 18;
+  // Replace the run's own routing block whole (see RunRequest.routing); an
+  // empty message turns queue-aware routing off. Read at the run's next call
+  // boundary.
+  RunRouting routing = 19;
 }
 
 message RetuneRunResponse {

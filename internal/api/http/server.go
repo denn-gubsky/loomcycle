@@ -3135,7 +3135,9 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 	// waits, and StartQueuedRun writes it from the identity built at start.
 	queuedIdentity := store.RunIdentity{AgentID: agentID, UserID: effectiveUserID, TenantID: effectiveTenantID, UserTier: in.UserTier, Model: model, ReplicaID: s.replicaID, ParentContext: in.ParentContext, IdempotencyKey: in.IdempotencyKey, DeliveryAltKey: in.DeliveryAltKey, Interactive: in.Interactive, OperatorKeyRestricted: operatorKeyRestricted, Isolated: isolated, Retention: retention, RunConfig: nil}
 	acquireStart := time.Now()
+	runSlot := &concurrency.RunSlot{}
 	release, queued, err := s.admitRun(runCtx, admitArgs{
+		slot:         runSlot,
 		tenantID:     effectiveTenantID,
 		userID:       effectiveUserID,
 		agentID:      agentID,
@@ -3483,7 +3485,9 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 		}
 	}()
 
-	loopCtx := tools.WithAgentTools(runCtx, toolNames(allowedTools))
+	// The run's own turn calls lend its global slot while they wait for a
+	// provider lane (concurrency.RunSlot).
+	loopCtx := concurrency.WithRunSlot(tools.WithAgentTools(runCtx, toolNames(allowedTools)), runSlot)
 	// Raw (glob-preserving) patterns for the Skill tool's subset check — the
 	// resolved names above have the agent's globs already expanded.
 	loopCtx = tools.WithAgentToolPatterns(loopCtx, agentDef.Tools)
@@ -5286,7 +5290,9 @@ func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {
 	// waits, and StartQueuedRun writes it from the identity built at start.
 	queuedIdentity := store.RunIdentity{AgentID: agentID, UserID: req.UserID, TenantID: req.TenantID, UserTier: req.UserTier, Model: model, ReplicaID: s.replicaID, ParentContext: req.ParentContext, IdempotencyKey: storedKey, Interactive: req.Interactive, OperatorKeyRestricted: operatorKeyRestricted, Isolated: isolated, Retention: retention, RunConfig: nil}
 	acquireStart := time.Now()
+	runSlot := &concurrency.RunSlot{}
 	release, queued, err := s.admitRun(runCtx, admitArgs{
+		slot:     runSlot,
 		tenantID: req.TenantID,
 		userID:   req.UserID,
 		agentID:  agentID,
@@ -5663,7 +5669,9 @@ func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {
 	// that need a runtime view of "what this agent can use" (e.g. the
 	// Skill tool's subset check on each call) read it via ctx instead
 	// of being constructed per-run.
-	loopCtx := tools.WithAgentTools(runCtx, toolNames(allowedTools))
+	// The run's own turn calls lend its global slot while they wait for a
+	// provider lane (concurrency.RunSlot).
+	loopCtx := concurrency.WithRunSlot(tools.WithAgentTools(runCtx, toolNames(allowedTools)), runSlot)
 	loopCtx = tools.WithAgentToolPatterns(loopCtx, agentDef.Tools) // raw globs for the Skill subset check
 	// RFC AR: honor a tenant/user provider-key override (ANTHROPIC_API_KEY,
 	// BRAVE_API_KEY, …) for this run. Sub-agents inherit it via subRunCtx←ctx.
@@ -6291,7 +6299,9 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 		RunConfig: nil,
 	}
 	acquireStart := time.Now()
+	runSlot := &concurrency.RunSlot{}
 	release, queued, err := s.admitRun(runCtx, admitArgs{
+		slot:     runSlot,
 		tenantID: sess.TenantID,
 		userID:   sess.UserID,
 		agentID:  agentID,
@@ -6586,7 +6596,9 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 	defer deregSteer()
 	heartbeat := s.makeHeartbeat(run.ID)
 
-	loopCtx := tools.WithAgentTools(runCtx, toolNames(allowedTools))
+	// The run's own turn calls lend its global slot while they wait for a
+	// provider lane (concurrency.RunSlot).
+	loopCtx := concurrency.WithRunSlot(tools.WithAgentTools(runCtx, toolNames(allowedTools)), runSlot)
 	loopCtx = tools.WithAgentToolPatterns(loopCtx, agentDef.Tools) // raw globs for the Skill subset check
 	// RFC AR: honor a tenant/user provider-key override (ANTHROPIC_API_KEY,
 	// BRAVE_API_KEY, …) for this run. Sub-agents inherit it via subRunCtx←ctx.
@@ -8248,20 +8260,6 @@ func (s *Server) prepareSubRunValues(ctx context.Context, name string, src nameS
 		return nil, fmt.Errorf("sub-agent %q: %w", name, err)
 	}
 
-	// Route through resolveAgentDef so an overlay's Model/Tier/Provider/
-	// Effort actually take effect. resolveAgent re-reads cfg.Agents and
-	// would silently discard the fork's values. RFC AX: a child INHERITS the
-	// parent's operator-key restriction — it can't escape by spawning, so
-	// credential-aware routing applies to the sub-run too.
-	providerID, model, effort, err := s.resolveAgentDef(withRunStart(ctx), def, parentIdentity.TenantID, parentIdentity.UserID, name, parentTier, parentIdentity.OperatorKeyRestricted)
-	if err != nil {
-		return nil, fmt.Errorf("resolve sub-agent %q model: %w", name, err)
-	}
-	provider, err := s.providers.Get(providerID)
-	if err != nil {
-		return nil, fmt.Errorf("provider for sub-agent %q: %w", name, err)
-	}
-
 	// A sub-agent takes no provider slot here. Every model call it makes takes
 	// one in its provider's call lane, like its parent's: a fan-out parent and
 	// its same-provider children are all counted against max_concurrent, and a
@@ -8350,6 +8348,21 @@ func (s *Server) prepareSubRunValues(ctx context.Context, name string, src nameS
 	// Identity is the substrate def_id, falling back to the agent NAME for
 	// static (yaml) agents, which have no def row.
 	def, subRunCfg = s.inheritOverridesForChild(ctx, def, subRunCfg, defID, name)
+	// Route through resolveAgentDef so an overlay's Model/Tier/Provider/
+	// Effort actually take effect — resolved AFTER the inheritance above, so a
+	// model, tier or routing block the child inherits is the one it runs on. resolveAgent re-reads cfg.Agents and
+	// would silently discard the fork's values. RFC AX: a child INHERITS the
+	// parent's operator-key restriction — it can't escape by spawning, so
+	// credential-aware routing applies to the sub-run too.
+	providerID, model, effort, err := s.resolveAgentDef(withRunStart(ctx), def, parentIdentity.TenantID, parentIdentity.UserID, name, parentTier, parentIdentity.OperatorKeyRestricted)
+	if err != nil {
+		return nil, fmt.Errorf("resolve sub-agent %q model: %w", name, err)
+	}
+	provider, err := s.providers.Get(providerID)
+	if err != nil {
+		return nil, fmt.Errorf("provider for sub-agent %q: %w", name, err)
+	}
+
 	// Read off the definition as the parent's overrides left it.
 	subRunCfg.IterationLimit = s.startIterationLimit(def, provider, interactive)
 	// Only a resident child runs interactive; its resume must know it is one.
@@ -8689,6 +8702,9 @@ func (s *Server) prepareSubRunValues(ctx context.Context, name string, src nameS
 	subCtx := tools.WithAgentTools(subRunCtx, toolNames(subTools))
 	subCtx = tools.WithAgentToolPatterns(subCtx, def.Tools) // raw globs for the Skill subset check
 	subCtx = tools.WithRunIdentity(subCtx, subRID)
+	// The parent's global slot is not the child's to lend: a child takes no
+	// admission slot, and its calls wait while the parent holds its own.
+	subCtx = concurrency.WithRunSlot(subCtx, nil)
 	subCtx = tools.WithAgentName(subCtx, name)
 	// Sub-agents get THEIR OWN Memory policy from yaml — the parent's
 	// memory_scopes do NOT cascade. This matches the existing

@@ -17,8 +17,12 @@ import (
 // (common) case of "per-user cap disabled" returns the leaner
 // `{"active":N,"queued":M}` shape.
 type concurrencyStatsResponse struct {
-	Active  int            `json:"active"`
-	Queued  int            `json:"queued"`
+	Active int `json:"active"`
+	Queued int `json:"queued"`
+	// Lent is the runs whose model call waits for a provider lane and that
+	// gave their global slot back meanwhile (they count against
+	// max_queue_depth with Queued). Omitted when none.
+	Lent    int            `json:"lent,omitempty"`
 	PerUser map[string]int `json:"per_user,omitempty"`
 	// Providers is every provider that caps anything, keyed by provider id.
 	// omitempty so the (common) uncapped deployment returns the leaner shape
@@ -87,6 +91,7 @@ func (s *Server) handleConcurrencyStats(w http.ResponseWriter, r *http.Request) 
 	resp := concurrencyStatsResponse{
 		Active:  st.Active,
 		Queued:  st.Queued,
+		Lent:    st.Lent,
 		PerUser: st.PerUser,
 	}
 	// Fold in the per-provider breakdown when any provider caps anything. nil

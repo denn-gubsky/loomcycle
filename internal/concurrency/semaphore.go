@@ -93,6 +93,11 @@ type Semaphore struct {
 	mu     sync.Mutex
 	active int
 	queued int
+	// lent counts the admitted runs that lent their global slot (RunSlot) and
+	// are not yet taking it back. They hold no slot and wait in no queue here,
+	// so they count against maxQueue with queued: runs alive stay within
+	// maxConcurrent + maxQueue, as without lending.
+	lent int
 	// perUser tracks active+queued runs per non-empty user_id.
 	// Both Acquire (with empty userID) and AcquireForUser write to
 	// the same global active/queued counters; only AcquireForUser
@@ -133,8 +138,12 @@ type Semaphore struct {
 // Returned by Stats() so future fields can be added without churning
 // the call signature.
 type Stats struct {
-	Active  int
-	Queued  int
+	Active int
+	Queued int
+	// Lent is the admitted runs holding no global slot while a call of theirs
+	// waits for a provider lane (RunSlot). They count against the queue bound
+	// with Queued.
+	Lent    int
 	PerUser map[string]int
 }
 
@@ -281,7 +290,7 @@ func (s *Semaphore) AcquireForUser(ctx context.Context, tenantID, userID string)
 		s.mu.Unlock()
 		return s.releaseFn(key, qs), nil
 	}
-	if s.queued >= s.maxQueue {
+	if s.queued+s.lent >= s.maxQueue {
 		s.mu.Unlock()
 		// Cluster mode: compensate-Release the DB slot we just took.
 		if perUserActive && qs != nil {
@@ -452,7 +461,7 @@ func releaseInBackground(qs userQuotaGate, key userKey) {
 func (s *Semaphore) Stats() Stats {
 	s.mu.Lock()
 	qs := s.quotaStore
-	out := Stats{Active: s.active, Queued: s.queued}
+	out := Stats{Active: s.active, Queued: s.queued, Lent: s.lent}
 	// In-memory perUser is only authoritative in single-replica mode.
 	// Cluster mode reads from the DB below (after releasing s.mu so
 	// the round-trip doesn't block Acquire callers).
@@ -488,32 +497,46 @@ func (s *Semaphore) Stats() Stats {
 func (s *Semaphore) releaseFn(key userKey, qs userQuotaGate) func() {
 	var once sync.Once
 	return func() {
-		once.Do(func() {
-			s.mu.Lock()
-			s.active--
-			if qs == nil {
-				s.decrementPerUser(key)
-			}
-			// Wake the next waiter if any. NOTE: the woken waiter's
-			// perUser count (or DB slot) stays as-is — its increment
-			// happened at enqueue, its decrement happens when ITS
-			// release fires.
-			if w := s.nextWaiter(); w != nil {
-				s.queued--
-				s.active++
-				select {
-				case w.ch <- struct{}{}:
-				default:
-				}
-			}
-			s.mu.Unlock()
-			// Cluster mode: DB Release after the mutex is released so
-			// the network round-trip doesn't block other Acquire
-			// callers. Background goroutine with a 5s timeout for safety.
-			if qs != nil && key.user != "" {
-				go releaseInBackground(qs, key)
-			}
-		})
+		once.Do(func() { s.endRun(key, qs, true) })
+	}
+}
+
+// endRun gives back what an admitted holder holds: its global slot when
+// holdsGlobal (a run that lent its slot holds none — see RunSlot), and its
+// per-user count.
+func (s *Semaphore) endRun(key userKey, qs userQuotaGate, holdsGlobal bool) {
+	s.mu.Lock()
+	if holdsGlobal {
+		s.active--
+	}
+	if qs == nil {
+		s.decrementPerUser(key)
+	}
+	if holdsGlobal {
+		// NOTE: the woken waiter's perUser count (or DB slot) stays as-is —
+		// its increment happened at enqueue, its decrement happens when ITS
+		// release fires.
+		s.wakeNextLocked()
+	}
+	s.mu.Unlock()
+	// Cluster mode: DB Release after the mutex is released so the network
+	// round-trip doesn't block other Acquire callers. Background goroutine
+	// with a 5s timeout for safety.
+	if qs != nil && key.user != "" {
+		go releaseInBackground(qs, key)
+	}
+}
+
+// wakeNextLocked hands a freed global slot to the next waiter, if any.
+// Caller holds s.mu and has just freed the slot.
+func (s *Semaphore) wakeNextLocked() {
+	if w := s.nextWaiter(); w != nil {
+		s.queued--
+		s.active++
+		select {
+		case w.ch <- struct{}{}:
+		default:
+		}
 	}
 }
 
