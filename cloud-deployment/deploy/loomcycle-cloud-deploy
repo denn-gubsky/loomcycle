@@ -68,6 +68,16 @@ write_versions() { # runtime sidecar loomboard
   mv "$versions.new" "$versions"
 }
 health() { compose exec -T tailscale wget -qO- http://127.0.0.1:8787/healthz 2>/dev/null || true; }
+# restore_files BACKUP: puts back the compose file, the versions and the config
+# a deploy saved before it changed anything. Readable by the containers again:
+# under this script's umask the copies would be the deploy account's only, and
+# the runtime could not read its own /config.
+restore_files() {
+  cp "$1/docker-compose.yaml" docker-compose.yaml
+  cp "$1/versions.env" versions.env
+  rm -rf config && cp -r "$1/config" config
+  chmod -R go+rX docker-compose.yaml versions.env config
+}
 
 # The two deploys below run as the condition of an `if`, where `set -e` does not
 # apply. Every step that must stop the deploy says so with `|| return 1`.
@@ -80,18 +90,41 @@ deploy_loomcycle() { # have want sidecar
   compose exec -T postgres pg_dump -U loomcycle -Fc loomcycle_sqlmem > "$bk/loomcycle_sqlmem.dump" || return 1
   cp docker-compose.yaml versions.env "$bk/" || return 1
   cp -r config "$bk/config" || return 1
+  # Kept to the newest $keep_backups whether this deploy succeeds or not: a
+  # deploy that fails on every attempt (the cron retries it every 10 minutes)
+  # would otherwise leave a database dump behind each time.
+  ls -1d "$base"/backups/*/ 2>/dev/null | sort | head -n -"$keep_backups" | xargs -r rm -rf
 
   # The deployment's own files come from the release, when the release carries
   # this automation. The host keeps its env files, its data and anything the
   # repository does not hold.
+  #
+  # searxng/ is not synced: the searxng container takes ownership of the
+  # directory mounted as its config (/etc/searxng), so after the first start the
+  # deploy account can no longer write there, and an rsync into it failed every
+  # deploy from v1.110.0 on. Its settings.yml is installed with the stack
+  # (INSTALL.md); change it on the host.
   src="$base/repo"
   [ -d "$src/.git" ] || git init --quiet "$src" || return 1
   git -C "$src" fetch --quiet --depth 1 "$lc_repo" "refs/tags/v$2" || return 1
   git -C "$src" checkout --quiet --force --detach FETCH_HEAD || return 1
   if [ -f "$src/cloud-deployment/deploy/loomcycle-cloud-deploy" ]; then
-    rsync -a --exclude .env.insecure --exclude .env.secure --exclude 'versions.env*' \
-      "$src/cloud-deployment/" "$stack/" || return 1
-    rsync -a "$src/cloud-web/" "$stack/web/" || return 1
+    # A sync that stops part-way has already replaced some files, the compose
+    # file and the config among them, under a runtime that still runs the old
+    # version: put them back, so a restart does not start $1 on $2's files.
+    #
+    # --chmod: the checkout above is made under this script's umask 077, so its
+    # files are the deploy account's only, and rsync -a copies that mode. The
+    # containers read these files as other users — the runtime its /config,
+    # the landing its server.js — and v1.113.0's first deploy came up unable
+    # to read either.
+    if ! rsync -a --chmod=go+rX --exclude .env.insecure --exclude .env.secure --exclude 'versions.env*' \
+         --exclude searxng/ "$src/cloud-deployment/" "$stack/" \
+       || ! rsync -a --chmod=go+rX "$src/cloud-web/" "$stack/web/"; then
+      echo "FAILED: syncing the deployment files of v$2; restoring those of $1"
+      restore_files "$bk"
+      return 1
+    fi
     echo "synced the deployment files from v$2"
   else
     echo "v$2 predates the deploy automation: deployment files left as they are"
@@ -110,15 +143,12 @@ deploy_loomcycle() { # have want sidecar
   fi
   if [ "$ok" -ne 1 ]; then
     echo "FAILED: the runtime did not report $2; restoring $1"
-    cp "$bk/docker-compose.yaml" docker-compose.yaml
-    cp "$bk/versions.env" versions.env
-    rm -rf config && cp -r "$bk/config" config
+    restore_files "$bk"
     compose up -d
     echo "restored the compose file, the config and the versions of $1."
     echo "The databases were NOT restored; the dumps taken before the deploy are in $bk"
     return 1
   fi
-  ls -1d "$base"/backups/*/ 2>/dev/null | sort | head -n -"$keep_backups" | xargs -r rm -rf
   compose ps --format '{{.Name}} {{.Image}} {{.Status}}'
   echo "==> deployed loomcycle $2"
 }
