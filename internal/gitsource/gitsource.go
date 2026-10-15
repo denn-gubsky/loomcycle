@@ -184,7 +184,22 @@ func (r Request) validate() (host string, err error) {
 	if r.StoreDir == "" || r.Transport == nil || r.MaxFetchBytes <= 0 || r.MaxObjectBytes <= 0 {
 		return bad("a store directory, a transport, a fetch limit and an object limit are required")
 	}
-	return strings.ToLower(u.Host), nil
+	return hostKey(u), nil
+}
+
+// hostKey is a URL's host as the dispatcher compares it: lower case, and
+// without the port when it is https's own. The library drops ":443" from the
+// URLs it requests, so a repository named with it must be compared without
+// it, or every request of its fetch is refused.
+func hostKey(u *url.URL) string {
+	host := strings.ToLower(u.Hostname())
+	if strings.Contains(host, ":") {
+		host = "[" + host + "]" // an IPv6 address
+	}
+	if p := u.Port(); p != "" && p != "443" {
+		host += ":" + p
+	}
+	return host
 }
 
 // Fetch fetches Request.Commit into Request.StoreDir.

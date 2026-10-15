@@ -18,6 +18,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/go-git/go-git/v5/plumbing/transport"
 )
 
 // These tests fetch from a real git server: git's own http-backend, run as a
@@ -499,6 +501,49 @@ func TestDispatcher_RefusesAnotherHostAndARequestOutsideAFetch(t *testing.T) {
 	r, _ = http.NewRequestWithContext(withCall(context.Background(), st), http.MethodGet, "https://GIT.example/x", nil)
 	if _, err := (dispatcher{}).RoundTrip(r); !reached || err == nil || !strings.Contains(err.Error(), "stop here") {
 		t.Errorf("the fetch's own host did not reach its transport: reached=%v err=%v", reached, err)
+	}
+}
+
+// A repository named with https's own port is fetched: the library drops
+// ":443" from the URLs it requests, and the dispatcher compared the host as
+// written, so every request was refused. Another port still has to match.
+func TestDispatcher_AcceptsTheDefaultPortWrittenOrNot(t *testing.T) {
+	for _, repo := range []string{
+		"https://github.com:443/acme/app",
+		"https://GitHub.com/acme/app",
+		"https://[2001:db8::5]:443/acme/app",
+		"https://git.example:8443/acme/app",
+	} {
+		req := Request{URL: repo, Commit: strings.Repeat("a", 40), StoreDir: "/tmp/x", MaxFetchBytes: 1, MaxObjectBytes: 1, Transport: roundTripFunc(nil)}
+		host, err := req.validate()
+		if err != nil {
+			t.Fatalf("%s: %v", repo, err)
+		}
+		// The URL the library itself requests for this repository.
+		ep, err := transport.NewEndpoint(repo)
+		if err != nil {
+			t.Fatal(err)
+		}
+		reached := false
+		st := &call{host: host, max: 1 << 20, rt: roundTripFunc(func(*http.Request) (*http.Response, error) {
+			reached = true
+			return nil, errors.New("stop here")
+		})}
+		r, _ := http.NewRequestWithContext(withCall(context.Background(), st), http.MethodGet, ep.String()+"/info/refs", nil)
+		if _, err := (dispatcher{}).RoundTrip(r); !reached {
+			t.Errorf("%s: the library's request %s was refused: %v", repo, r.URL, err)
+		}
+		// The same host on another port is not the repository's.
+		other := *r.URL
+		other.Host = other.Hostname() + ":9999"
+		if strings.Contains(other.Hostname(), ":") {
+			other.Host = "[" + other.Hostname() + "]:9999"
+		}
+		reached = false
+		r2, _ := http.NewRequestWithContext(withCall(context.Background(), st), http.MethodGet, other.String(), nil)
+		if _, err := (dispatcher{}).RoundTrip(r2); err == nil || reached {
+			t.Errorf("%s: a request to %s went through", repo, other.Host)
+		}
 	}
 }
 
