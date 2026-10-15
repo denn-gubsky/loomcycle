@@ -11,6 +11,8 @@ import {
   listMemoryBackendDefNames,
   listWebhookDefNames,
   retireDef,
+  getWebhookDeliveries,
+  type WebhookDeliveries,
 } from "../api";
 import LineagePanel from "../components/LineagePanel";
 import CaptureDisabledBadge from "../components/CaptureDisabledBadge";
@@ -259,6 +261,10 @@ export function renderWebhook(row: DefRow) {
   const creds = strMap(d.user_credentials_from_env);
   const mapping = strMap(d.payload_mapping);
   const onComplete = Array.isArray(d.on_complete) ? d.on_complete.length : 0;
+  const events = Array.isArray(d.events) ? d.events.map(str).filter(Boolean) : [];
+  const dedupKey = Array.isArray(d.dedup_key) ? d.dedup_key.map(str).filter(Boolean) : [];
+  const filters = Array.isArray(d.filters) ? d.filters : [];
+  const shapes = Object.keys(obj(d.event_shapes));
   return (
     <div className="def-body">
       <CaptureDisabledBadge def={d} />
@@ -269,18 +275,75 @@ export function renderWebhook(row: DefRow) {
           ["delivery", str(d.delivery) || "spawn"],
           ["agent", str(d.agent)],
           ["channel", str(d.channel)],
-          ["auth.kind", str(auth.kind) || "hmac"],
+          ["team", str(d.team)],
+          ["provider", str(d.provider)],
+          ["auth.kind", str(auth.kind) || (str(d.provider) ? "(provider default)" : "hmac")],
+          ["auth.secret", str(auth.secret)],
+          ["auth.previous_secret", str(auth.previous_secret)],
           ["auth.signing_secret_env", str(auth.signing_secret_env)],
           ["auth.bearer_token_env", str(auth.bearer_token_env)],
+          ["user_bearer", str(d.user_bearer)],
+          ["user_tier", str(d.user_tier)],
+          ["dedup_ttl_seconds", numStr(d.dedup_ttl_seconds)],
           ["rate_limit.rpm", numStr(rl.requests_per_minute)],
           ["rate_limit.burst", numStr(rl.burst)],
           ["body_size_limit_bytes", numStr(d.body_size_limit_bytes)],
           ["on_complete hooks", onComplete > 0 ? String(onComplete) : ""],
         ]}
       />
+      {events.length > 0 && <Pills label="events" items={events} />}
+      {shapes.length > 0 && <Pills label="event_shapes (own)" items={shapes} />}
+      {filters.length > 0 && (
+        <Pills
+          label="filters"
+          items={filters.map((f) => {
+            const o = obj(f);
+            const rhs = o.value_from !== undefined ? str(o.value_from) : JSON.stringify(o.value);
+            return `${str(o.path)} ${str(o.op)} ${rhs}`;
+          })}
+        />
+      )}
+      {dedupKey.length > 0 && <Pills label="dedup_key" items={dedupKey} />}
       <KVField label="user_credentials_from_env" map={creds} />
       <KVField label="payload_mapping" map={mapping} />
+      <KVField label="vars" map={strMap(d.vars)} />
+      <WebhookDeliveriesField defID={row.def_id} />
     </div>
+  );
+}
+
+// WebhookDeliveriesField shows how the webhook's deliveries were answered.
+// The counts belong to the webhook's name, so every version shows the same.
+function WebhookDeliveriesField({ defID }: { defID: string }) {
+  const [counts, setCounts] = useState<WebhookDeliveries | null>(null);
+  const [failed, setFailed] = useState(false);
+  useEffect(() => {
+    let live = true;
+    getWebhookDeliveries(defID)
+      .then((c) => live && setCounts(c))
+      .catch(() => live && setFailed(true));
+    return () => {
+      live = false;
+    };
+  }, [defID]);
+  if (failed) return <Field label="deliveries" value="could not be read" />;
+  if (!counts) return null;
+  const refused = Object.entries(counts.refused ?? {});
+  const other = Object.entries(counts.other ?? {});
+  const items = [
+    `accepted ${counts.accepted}`,
+    `duplicate ${counts.duplicate}`,
+    `ping ${counts.ping}`,
+    `ignored ${counts.ignored}`,
+    `filtered ${counts.filtered}`,
+    ...refused.map(([why, n]) => `refused: ${why} ${n}`),
+    ...other.map(([why, n]) => `other: ${why} ${n}`),
+  ];
+  return (
+    <>
+      <Pills label="deliveries (all replicas, up to 30 s behind)" items={items} />
+      {counts.last_at && <Field label="deliveries last written" value={counts.last_at} />}
+    </>
   );
 }
 

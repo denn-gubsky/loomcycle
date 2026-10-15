@@ -501,6 +501,7 @@ export type {
   WebhookDefOverlay,
   WebhookDefRateLimit,
   WebhookDefRowResponse,
+  WebhookDefDeliveries,
   WebhookDefSyncResponse,
   // Library v2 enumeration (v0.10.3)
   LibraryAgentDefinition,

@@ -2362,6 +2362,30 @@ export function promoteDef(kind: SubstrateKind, defID: string): Promise<unknown>
   return substrateDispatch<unknown>(kind, { op: "promote", def_id: defID });
 }
 
+// WebhookDeliveries is a webhook's delivery counts, as WebhookDef op=get
+// returns them in status.deliveries: every replica's, written every 30
+// seconds. They belong to the webhook's name in its tenant, not one version.
+export interface WebhookDeliveries {
+  accepted: number;
+  duplicate: number;
+  ping: number;
+  ignored: number;
+  filtered: number;
+  refused: Record<string, number>;
+  other?: Record<string, number>;
+  last_at?: string;
+}
+
+// getWebhookDeliveries reads a webhook's delivery counts through its def_id;
+// null when the server reports none.
+export async function getWebhookDeliveries(defID: string): Promise<WebhookDeliveries | null> {
+  const res = await substrateDispatch<{ status?: { deliveries?: WebhookDeliveries } }>("webhookdef", {
+    op: "get",
+    def_id: defID,
+  });
+  return res.status?.deliveries ?? null;
+}
+
 export function retireDef(kind: SubstrateKind, defID: string): Promise<unknown> {
   return substrateDispatch<unknown>(kind, {
     op: "retire",

@@ -1,5 +1,8 @@
 import { describe, expect, it } from "vitest";
 import {
+  buildWebhookOverlay,
+  initWebhook,
+  validateWebhook,
   buildMemoryBackendOverlay,
   initMemoryBackend,
   validateMemoryBackend,
@@ -176,5 +179,80 @@ describe("validateDocumentSource", () => {
     expect(
       validateDocumentSource(docState({ tenancyKind: "key_per_tenant", envPattern: "K_{tenant_id}" })),
     ).toBeNull();
+  });
+});
+
+// RFC EK — the webhook form reads and writes the forge fields: provider,
+// events, a stored-credential secret, user_bearer, dedup_key, filters and
+// event_shapes, and delivery team.
+describe("webhook form", () => {
+  const forgeDef = {
+    enabled: true,
+    delivery: "spawn",
+    agent: "reviewer",
+    provider: "github",
+    events: ["push", "pull_request"],
+    auth: { secret: "$cred:hook", previous_secret: "$cred:hook-old" },
+    user_bearer: "$cred:forge-token",
+    user_tier: "high",
+    dedup_key: ["$.repository.id", "$.after"],
+    dedup_ttl_seconds: 86400,
+    filters: [{ path: "$.ref", op: "glob", value: "refs/heads/*" }],
+    event_shapes: { star: ["$.action", "$.starred_at"] },
+  };
+
+  it("reads a forge definition and builds the same overlay back", () => {
+    const s = initWebhook(forgeDef);
+    expect(s.provider).toBe("github");
+    expect(s.authKind).toBe("");
+    expect(s.secretSource).toBe("stored");
+    expect(validateWebhook(s)).toBeNull();
+    const ov = buildWebhookOverlay(s, "");
+    expect(ov.provider).toBe("github");
+    expect(ov.events).toEqual(["push", "pull_request"]);
+    expect(ov.auth).toEqual({ secret: "$cred:hook", previous_secret: "$cred:hook-old" });
+    expect(ov.user_bearer).toBe("$cred:forge-token");
+    expect(ov.user_tier).toBe("high");
+    expect(ov.dedup_key).toEqual(["$.repository.id", "$.after"]);
+    expect(ov.dedup_ttl_seconds).toBe(86400);
+    expect(ov.filters).toEqual(forgeDef.filters);
+    expect(ov.event_shapes).toEqual(forgeDef.event_shapes);
+  });
+
+  it("leaves auth.kind out when the provider decides it", () => {
+    const s = { ...initWebhook({ delivery: "spawn", agent: "a", provider: "gitlab" }), secretSource: "env" as const, bearerTokenEnv: "LOOMCYCLE_GL_TOKEN" };
+    expect(validateWebhook(s)).toBeNull();
+    expect(buildWebhookOverlay(s, "").auth).toEqual({ bearer_token_env: "LOOMCYCLE_GL_TOKEN" });
+  });
+
+  it("keeps a team webhook a team webhook", () => {
+    const s = initWebhook({ delivery: "team", team: "pr-review", vars: { repo: "$.repository.full_name" }, auth: { signing_secret_env: "LOOMCYCLE_S" } });
+    expect(s.delivery).toBe("team");
+    expect(validateWebhook(s)).toBeNull();
+    const ov = buildWebhookOverlay(s, "");
+    expect(ov.delivery).toBe("team");
+    expect(ov.team).toBe("pr-review");
+    expect(ov.vars).toEqual({ repo: "$.repository.full_name" });
+    expect(ov.agent).toBeUndefined();
+  });
+
+  it("refuses what the server would refuse", () => {
+    const ok = initWebhook(forgeDef);
+    for (const [bad, want] of [
+      [{ secret: "literal-secret" }, "auth.secret"],
+      [{ previousSecret: "old" }, "previous_secret"],
+      [{ userBearer: "ghp_literal" }, "user_bearer"],
+      [{ events: "push, bad event!" }, "events"],
+      [{ dedupTTLSeconds: "7776001" }, "90 days"],
+      [{ dedupKey: "", dedupTTLSeconds: "60" }, "needs a dedup_key"],
+      [{ filtersJSON: "{not json" }, "filters is not JSON"],
+      [{ filtersJSON: '{"path":"$.ref"}' }, "JSON list"],
+      [{ eventShapesJSON: '{"star": "$.action"}' }, "list of rule strings"],
+      [{ secretSource: "env" as const, signingSecretEnv: "" }, "signing_secret_env"],
+    ] as const) {
+      const msg = validateWebhook({ ...ok, ...bad });
+      expect(msg, JSON.stringify(bad)).toContain(want);
+    }
+    expect(validateWebhook({ ...ok, delivery: "channel", channel: "c" })).toContain("user_bearer");
   });
 });
