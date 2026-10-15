@@ -392,7 +392,7 @@ func (s *Server) CancelRun(ctx context.Context, agentID, reason string) (connect
 		if err != nil {
 			return connector.CancelRunResult{}, err
 		}
-		if !runOwnershipOK(ctx, run) {
+		if !runOwnershipOK(ctx, run) || !s.allowlistReachesRun(ctx, run.ID) {
 			return connector.CancelRunResult{}, &store.ErrNotFound{Kind: "run", ID: agentID}
 		}
 		// The cancel is broadcast to every replica with its reason.

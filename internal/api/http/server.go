@@ -9222,7 +9222,7 @@ func (s *Server) handleCancelAgent(w http.ResponseWriter, r *http.Request) {
 	}
 	if s.store != nil {
 		run, err := s.tenantStore(r.Context()).GetRunByAgentID(r.Context(), agentID)
-		if err == nil && !runOwnershipOK(r.Context(), run) {
+		if err == nil && (!runOwnershipOK(r.Context(), run) || !s.allowlistReachesRun(r.Context(), run.ID)) {
 			err = &store.ErrNotFound{Kind: "run", ID: agentID}
 		}
 		if err == nil && run.Retention == store.RetentionNone {
@@ -9740,7 +9740,7 @@ func (s *Server) compactRunWithSource(ctx context.Context, runID, source string)
 	// model call over the session's transcript and rewrites what the run's next
 	// turn sees, so another user's run gets the same 404 as a missing one.
 	run, err := s.tenantStore(ctx).GetRun(ctx, runID)
-	if err != nil || !runOwnershipOK(ctx, run) {
+	if err != nil || !runOwnershipOK(ctx, run) || !s.allowlistReachesRun(ctx, runID) {
 		return connector.CompactResult{}, &compactErr{status: http.StatusNotFound, msg: "no run for that run_id"}
 	}
 

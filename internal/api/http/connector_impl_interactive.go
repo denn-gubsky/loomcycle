@@ -97,10 +97,13 @@ func (s *Server) liveRunOwnershipOK(ctx context.Context, entry steer.Entry) bool
 	}
 	if entry.SessionID != "" {
 		sess, err := s.store.GetSession(ctx, entry.SessionID)
-		return err == nil && sessionOwnershipOK(ctx, sess)
+		if err != nil || !sessionOwnershipOK(ctx, sess) {
+			return false
+		}
+	} else if run, err := s.tenantStore(ctx).GetRun(ctx, entry.RunID); err != nil || !runOwnershipOK(ctx, run) {
+		return false
 	}
-	run, err := s.tenantStore(ctx).GetRun(ctx, entry.RunID)
-	return err == nil && runOwnershipOK(ctx, run)
+	return s.allowlistReachesRun(ctx, entry.RunID)
 }
 
 // StreamRunEvents implements connector.Connector — the transport-agnostic core
@@ -191,7 +194,7 @@ func (s *Server) CancelTurn(ctx context.Context, runID, reason string) (bool, bo
 	// The tenant fold alone would let an isolated member stop another user's
 	// turn on another replica; the local path confines it via liveRunOwnershipOK.
 	run, err := s.tenantStore(ctx).GetRun(ctx, runID)
-	if err != nil || !runOwnershipOK(ctx, run) {
+	if err != nil || !runOwnershipOK(ctx, run) || !s.allowlistReachesRun(ctx, runID) {
 		return false, false, connector.ErrRunNotInFlight
 	}
 	fired, err := s.turnCancelReg.Cancel(ctx, runID, reason)

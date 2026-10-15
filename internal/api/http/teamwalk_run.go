@@ -314,6 +314,9 @@ func (s *Server) cancelTeamWalk(ctx context.Context, runID, reason string) (stop
 			return false, true, connector.ErrRunNotInFlight
 		}
 	}
+	if !s.allowlistReachesRun(ctx, runID) {
+		return false, true, connector.ErrRunNotInFlight
+	}
 	e.cancel(cancel.CauseWithReason(strings.TrimSpace(reason)))
 	return true, true, nil
 }

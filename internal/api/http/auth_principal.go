@@ -569,6 +569,52 @@ func runOwnershipOK(ctx context.Context, run store.Run) bool {
 	return auth.OwnedRowVisible(p, ok, run.TenantID, run.UserID)
 }
 
+// maxAllowlistTreeHops bounds the walk from a run to the root of its spawn
+// tree. Parent pointers are rows, so a corrupt chain must not loop forever; a
+// tree deeper than this is refused rather than half-checked.
+const maxAllowlistTreeHops = 64
+
+// allowlistReachesRun reports whether the caller's agent allowlist reaches the
+// run: whether its spawn tree was started as a run of an allowed agent. A
+// token limited to certain agents may only START those, so steering,
+// reviewing, retuning, compacting, cancelling or answering a run of any other
+// agent in its tenant would hand it the control of runs it could never have
+// started. Every run-control gate applies this on top of its ownership rule
+// and folds a false into the same opaque not-found.
+//
+// The tree's ROOT decides, not the run's own agent: an agent the allowed one
+// spawns is part of the run the token started — its questions and its held
+// answers are that run's to settle — as the start gate already lets it be.
+//
+// True without a read when there is no principal or no allowlist. Fails
+// closed: a run or parent that cannot be read, a loop, or a chain past
+// maxAllowlistTreeHops is outside the list.
+func (s *Server) allowlistReachesRun(ctx context.Context, runID string) bool {
+	p, ok := auth.PrincipalFromContext(ctx)
+	if !ok || !p.Restrictions.RunPlaneOnly() {
+		return true
+	}
+	if s.store == nil {
+		return false
+	}
+	seen := map[string]bool{}
+	for hop := 0; hop <= maxAllowlistTreeHops; hop++ {
+		if seen[runID] {
+			return false
+		}
+		seen[runID] = true
+		run, err := s.store.GetRun(ctx, runID)
+		if err != nil {
+			return false
+		}
+		if run.ParentRunID == "" {
+			return p.Restrictions.AgentAllowed(run.Agent)
+		}
+		runID = run.ParentRunID
+	}
+	return false
+}
+
 // handleWhoami serves GET /v1/_me — the Web UI's role source (multi-tenant
 // UI authz). Returns the resolved principal so the SPA renders the
 // super-admin (all-tenants) vs tenant (own-workspace) experience. Any
