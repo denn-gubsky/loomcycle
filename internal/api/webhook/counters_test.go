@@ -146,7 +146,7 @@ func TestReceiver_TheRunGetsMetadataWebhook(t *testing.T) {
 
 	h := http.Header{}
 	h.Set("X-Hub-Signature-256", githubSig(scopeSecret, []byte(`{"a":1}`)))
-	h.Set("X-Delivery", "p1")
+	h.Set("X-Delivery", uuid)
 	answer(t, "a plain webhook", rec, "/v1/_webhooks/plain", `{"a":1}`, h, http.StatusAccepted)
 	if _, has := fr.input().Metadata["webhook"]; has {
 		t.Error("a definition without provider or events got metadata.webhook")
@@ -189,5 +189,28 @@ func TestWebhookDeliveryIDRe_TakesOnlyIdentifierForms(t *testing.T) {
 		if webhookDeliveryIDRe.MatchString(bad) {
 			t.Errorf("%q accepted", bad)
 		}
+	}
+}
+
+// A duplicate that only the runs table catches — the delivery reached a
+// receiver that had not seen it, after a restart — is counted as a
+// duplicate, not as accepted.
+func TestReceiver_ADuplicateTheRunTableCatchesIsCountedAsOne(t *testing.T) {
+	st := openScopeStore(t)
+	sr := &headRunner{st: st}
+	c := &testClock{t: time.Unix(1_700_000_000, 0)}
+	hooks := map[string]config.Webhook{"gh": githubPushHook()}
+	body := `{"ref":"refs/heads/main","before":"a","after":"b","repository":{"id":1}}`
+	first := newHeadReceiver(st, sr, c, hooks)
+	answer(t, "the push", first, "/v1/_webhooks/gh", body, githubDelivery(body, "d1", "push"), http.StatusAccepted)
+	restarted := newHeadReceiver(st, sr, c, hooks)
+	if got := answer(t, "again, after a restart", restarted, "/v1/_webhooks/gh", body, githubDelivery(body, "d1", "push"), http.StatusAccepted); got["deduped"] != "true" {
+		t.Fatalf("answered %v, want a duplicate", got)
+	}
+	first.flushCounters(context.Background())
+	restarted.flushCounters(context.Background())
+	got, _, _ := st.WebhookCountersGet(context.Background(), webhookKey(lookup.WebhookOwner{Static: true}, "gh"))
+	if want := map[string]int64{"accepted": 1, "duplicate": 1}; !reflect.DeepEqual(got, want) {
+		t.Errorf("counts = %v, want %v", got, want)
 	}
 }
