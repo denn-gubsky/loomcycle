@@ -49,16 +49,23 @@ func CheckWebhookDedupKey(w Webhook) error {
 		return fmt.Errorf("dedup_ttl_seconds is %d; it cannot be negative", w.DedupTTLSeconds)
 	case w.DedupTTLSeconds > 0 && len(w.DedupKey) == 0:
 		return fmt.Errorf("dedup_ttl_seconds is set without dedup_key, so nothing would be held for it")
-	case time.Duration(w.DedupTTLSeconds)*time.Second > MaxWebhookDedupTTL:
+	// Compared in seconds: converted to a Duration first, a value past
+	// ~292 years wraps negative and passes.
+	case w.DedupTTLSeconds > int(MaxWebhookDedupTTL/time.Second):
 		return fmt.Errorf("dedup_ttl_seconds is %d; at most %d (90 days)", w.DedupTTLSeconds, int(MaxWebhookDedupTTL/time.Second))
 	}
 	return nil
 }
 
-// DedupTTL is how long the definition's dedup_key is held.
+// DedupTTL is how long the definition's dedup_key is held. A stored value
+// above the maximum (written before the check compared it in seconds) is
+// held for the maximum, never a wrapped-around negative lifetime.
 func (w Webhook) DedupTTL() time.Duration {
 	if w.DedupTTLSeconds <= 0 {
 		return DefaultWebhookDedupTTL
+	}
+	if w.DedupTTLSeconds > int(MaxWebhookDedupTTL/time.Second) {
+		return MaxWebhookDedupTTL
 	}
 	return time.Duration(w.DedupTTLSeconds) * time.Second
 }
