@@ -52,6 +52,7 @@ func TestSchedule_EquivalenceYamlVsSubstrate(t *testing.T) {
 		Timezone:            "Europe/Berlin",
 		Enabled:             true,
 		CatchUpMax:          0,
+		UserBearer:          "$cred:reports-token",
 		OnComplete: []config.ScheduledRunHook{
 			{Kind: "channel.publish", Channel: "notifications/alice"},
 		},
@@ -67,6 +68,7 @@ func TestSchedule_EquivalenceYamlVsSubstrate(t *testing.T) {
 		Timezone:            yamlSchedule.Timezone,
 		Enabled:             &enabled,
 		CatchUpMax:          yamlSchedule.CatchUpMax,
+		UserBearer:          yamlSchedule.UserBearer,
 	}
 	substrateShape.Prompt = make([]lookup.SubstratePromptSegment, len(yamlSchedule.Prompt))
 	for i, seg := range yamlSchedule.Prompt {
@@ -112,6 +114,9 @@ func TestSchedule_EquivalenceYamlVsSubstrate(t *testing.T) {
 	}
 	if !reflect.DeepEqual(resolved.RequiredCredentials, yamlSchedule.RequiredCredentials) {
 		t.Errorf("RequiredCredentials mismatch:\n got %v\nwant %v", resolved.RequiredCredentials, yamlSchedule.RequiredCredentials)
+	}
+	if resolved.UserBearer != yamlSchedule.UserBearer {
+		t.Errorf("UserBearer: got %q want %q", resolved.UserBearer, yamlSchedule.UserBearer)
 	}
 	if resolved.Timezone != yamlSchedule.Timezone {
 		t.Errorf("Timezone: got %q want %q", resolved.Timezone, yamlSchedule.Timezone)

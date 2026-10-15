@@ -64,7 +64,7 @@ func TestWebhookDefTool_UserBearerIsACredentialTheAuthorHolds(t *testing.T) {
 
 	noTenant := tools.WithRunIdentity(ctx, tools.RunIdentityValue{AgentID: "a_test"})
 	noTenant = auth.WithPrincipal(noTenant, auth.Principal{Subject: "dev", Scopes: []string{auth.ScopeTenant}})
-	if text, isErr := webhookCreate(t, tool, noTenant, "w", bearerOverlay(`,"user_bearer":"$cred:tok"`)); !isErr || !strings.Contains(text, "no tenant") {
+	if text, isErr := webhookCreate(t, tool, noTenant, "w", bearerOverlay(`,"user_bearer":"$cred:tok"`)); !isErr || !strings.Contains(text, "may not be set by an author with no tenant") {
 		t.Errorf("an author with no tenant: %s", text)
 	}
 }

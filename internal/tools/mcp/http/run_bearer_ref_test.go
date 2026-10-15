@@ -141,7 +141,8 @@ func TestRunBearer_AUsersOrAgentsCredentialNeverStandsInForIt(t *testing.T) {
 
 // A server whose headers do not send the bearer never resolves it, so a
 // bearer restricted to another server does not refuse its calls. A stored
-// value that itself spells a credential reference is refused.
+// value that itself spells a credential reference is refused: the header's
+// own $cred: pass would resolve it for the run's user.
 func TestRunBearer_OnlyAServerThatSendsItResolvesIt(t *testing.T) {
 	seen := &keySeen{}
 	srv := mcpServer(t, seen)
@@ -154,14 +155,15 @@ func TestRunBearer_OnlyAServerThatSendsItResolvesIt(t *testing.T) {
 	if _, err := engine.PutInline(context.Background(), credential.Identity{TenantID: "t", Scope: "tenant", Name: "forge-only"}, "forge-value", nil, list, nil); err != nil {
 		t.Fatal(err)
 	}
-	putCred(t, engine, "tenant", "", "nested", "$cred:forge-only")
+	putCred(t, engine, "tenant", "", "nested", "$cred:personal")
+	putCred(t, engine, "user", "bob", "personal", "bobs-personal-value")
 
 	call := func(headers map[string]string, bearer string) error {
 		c, err := New(Config{URL: srv.URL, Headers: headers, HTTPClient: srv.Client(), CredSubstitute: substitute})
 		if err != nil {
 			t.Fatal(err)
 		}
-		ctx := tools.WithRunIdentity(context.Background(), tools.RunIdentityValue{TenantID: "t", AgentID: "a", UserBearer: bearer})
+		ctx := tools.WithRunIdentity(context.Background(), tools.RunIdentityValue{TenantID: "t", AgentID: "a", UserID: "bob", UserBearer: bearer})
 		_, err = mcp.Initialize(ctx, c, "t", "1")
 		return err
 	}
