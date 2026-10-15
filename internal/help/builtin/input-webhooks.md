@@ -297,8 +297,11 @@ A code-js agent reads it at `input.metadata.webhook`.
   there only after the signed body was found to have that event's shape.
 - **`provider`** is the definition's `provider`, absent when it has none.
 - **`delivery_id` is a label, not proof.** The forge does not sign it, so
-  it says which delivery this was and nothing more. One that is not a short
-  token (letters, digits, `.` `_` `:` `-`, at most 128) is left out.
+  it says which delivery this was and nothing more. Since the run reads its
+  metadata as trusted — an LLM agent as trusted prompt text — only an id
+  that cannot spell an instruction passes: a UUID (what GitHub, Gitea and
+  GitLab send), a hex digest (`sha256:<hex>` when the sender sent none) or a
+  number. Anything else is left out.
 - **The key is the receiver's.** A definition that lists events may not set
   its own `metadata.webhook`: `WebhookDef` refuses it at create and fork. A
   yaml webhook that sets it still loads, with a boot warning, and its runs

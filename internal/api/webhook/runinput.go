@@ -47,10 +47,12 @@ func collectPrefixed(fields map[string]string, prefix string) map[string]string 
 }
 
 // deliveryLabelRe is the shape a delivery id must have to be passed to a run:
-// a short token (a forge's UUID, or the body-hash id). The id is the sender's
-// unsigned header, so anything else is left out rather than carried into the
-// run's trusted metadata.
-var deliveryLabelRe = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$`)
+// a UUID (what GitHub, Gitea and GitLab send), a hex digest (the body-hash id
+// is "sha256:<hex>") or a number. The id is the sender's unsigned header, and
+// the run reads its metadata as trusted — an LLM agent as trusted prompt text
+// — so a token of letters, which can spell an instruction, is left out with
+// anything else.
+var deliveryLabelRe = regexp.MustCompile(`^(?:[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}|(?:sha256:)?[0-9a-fA-F]{1,64}|[0-9]{1,20})$`)
 
 // withWebhookMetadata returns meta (the definition's trusted metadata) with
 // config.WebhookMetadataKey set to what the receiver knows of the delivery:
