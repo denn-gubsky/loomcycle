@@ -122,6 +122,7 @@ func TestWebhookDefTool_ARuleReadAsAKeyNoBodyHasIsRefusedWhenWritten(t *testing.
 		{"! with ==", `{` + eventsBase + `,` + gh + `,"events":["star"],"event_shapes":{"star":["$.action","!$.deleted == true"]}}`, `do not combine`},
 		{"a spaced filter key", `{` + eventsBase + `,` + gh + `,"filters":[{"path":"$.re f","op":"eq","value":"x"}]}`, `holding whitespace, = or a quote`},
 		{"a quoted dedup key", `{` + eventsBase + `,` + gh + `,"dedup_key":["$.a\"b"]}`, `holding whitespace, = or a quote`},
+		{"a number past exact comparison", `{` + eventsBase + `,` + gh + `,"filters":[{"path":"$.id","op":"eq","value":9007199254740993}]}`, `past 9007199254740991`},
 	} {
 		if text, isErr := webhookCreate(t, tool, ctx, "w", tc.overlay); !isErr || !strings.Contains(text, tc.want) {
 			t.Errorf("create, %s: %s, want a refusal mentioning %s", tc.name, text, tc.want)

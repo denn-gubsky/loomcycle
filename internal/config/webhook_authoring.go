@@ -2,6 +2,7 @@ package config
 
 import (
 	"fmt"
+	"math"
 	"sort"
 	"strings"
 	"unicode"
@@ -20,6 +21,9 @@ import (
 // key, so a mistyped rule reads as a key no body has: `!$.x == 1` is "no key
 // named `x == 1`", which every body meets, and the event check it was meant to
 // be passes everything.
+//
+// A number a filter or a shape's == compares with is at most 2^53-1 in
+// magnitude (maxExactWebhookNumber).
 func CheckWebhookAuthoring(w Webhook) error {
 	events := make([]string, 0, len(w.EventShapes))
 	for e := range w.EventShapes {
@@ -35,6 +39,9 @@ func CheckWebhookAuthoring(w Webhook) error {
 	}
 	for i, f := range w.Filters {
 		if err := checkAuthoredPathKeys(f.Path); err != nil {
+			return fmt.Errorf("filters[%d]: %w", i, err)
+		}
+		if err := checkAuthoredFilterNumbers(w, f); err != nil {
 			return fmt.Errorf("filters[%d]: %w", i, err)
 		}
 	}
@@ -61,7 +68,52 @@ func checkAuthoredShapeRule(rule string) error {
 	if err := checkAuthoredPathKeys(path); err != nil {
 		return fmt.Errorf("%q: %w", rule, err)
 	}
+	if r, err := parseShapeRule(s); err == nil && r.equals {
+		if err := checkExactNumber(r.value); err != nil {
+			return fmt.Errorf("%q: %w", rule, err)
+		}
+	}
 	return nil
+}
+
+// maxExactWebhookNumber is the largest magnitude a number compared with a
+// body's is written as. A body's numbers are decoded to float64; at 2^53 and
+// above, distinct integers decode alike, so an id 2^53+1 would equal a literal
+// 2^53. Below it, an integer in a body equals the literal only when it is
+// that integer.
+const maxExactWebhookNumber = 1<<53 - 1
+
+// checkExactNumber refuses a number literal (filterScalar's float64) whose
+// magnitude is past maxExactWebhookNumber. Other values pass.
+func checkExactNumber(v any) error {
+	if f, ok := v.(float64); ok && math.Abs(f) > maxExactWebhookNumber {
+		return fmt.Errorf("the number %v is past %d in magnitude, beyond which two different numbers in a body compare equal", f, int64(maxExactWebhookNumber))
+	}
+	return nil
+}
+
+// checkAuthoredFilterNumbers applies checkExactNumber to a filter's value —
+// a literal, or the metadata entry value_from names — and each value of in.
+// A value of another type is left to CheckWebhookFilters.
+func checkAuthoredFilterNumbers(w Webhook, f WebhookFilter) error {
+	v := f.Value
+	if f.ValueFrom != "" {
+		key, _ := strings.CutPrefix(f.ValueFrom, webhookValueFromPrefix)
+		v = w.Metadata[key]
+	}
+	operand, err := filterOperand(f.Op, v)
+	if err != nil {
+		return nil
+	}
+	if list, ok := operand.([]any); ok {
+		for i, e := range list {
+			if err := checkExactNumber(e); err != nil {
+				return fmt.Errorf("in[%d]: %w", i, err)
+			}
+		}
+		return nil
+	}
+	return checkExactNumber(operand)
 }
 
 // checkAuthoredPathKeys refuses a path with a key holding whitespace, `=` or
