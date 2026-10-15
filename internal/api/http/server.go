@@ -3539,7 +3539,7 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 		Record: runCfg.marshal(),
 		// A top-level run pins no def_id (RunInput does not carry one), so
 		// identity here is the agent NAME. See SameDefinitionAs.
-		DefID: "", AgentName: effectiveAgentName,
+		DefID: "", AgentName: effectiveAgentName, RunID: runID,
 	})
 
 	// RFC CR: the resolved layered-context policy flows down the spawn tree the
@@ -3651,11 +3651,11 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 		UserTier:               in.UserTier,
 		FallbackPolicy:         fbPolicy,
 		ReResolve:              fbReResolve,
-		MoveForQueue:           s.queueMoveFn(agentDef, runID, effectiveTenantID, effectiveUserID, effectiveAgentName, in.UserTier, operatorKeyRestricted),
+		MoveForQueue:           s.queueMoveFn(agentDef, runCfg.Routing, runID, effectiveTenantID, effectiveUserID, effectiveAgentName, in.UserTier, operatorKeyRestricted),
 		Hooks:                  s.hookDispatcher,
 		MaxSameProviderRetries: s.retryAttemptsForAgent(agentDef, in.UserTier),
 		// RFC DC P3: a parked run adopts a retune on its next operator turn.
-		ReResolveOnOperatorTurn: s.reResolveOnOperatorTurnFn(runID, effectiveTenantID, effectiveUserID, effectiveAgentName, in.UserTier, operatorKeyRestricted, liveInterruption),
+		ReResolveOnOperatorTurn: s.reResolveOnOperatorTurnFn(runID, effectiveTenantID, effectiveUserID, effectiveAgentName, in.UserTier, operatorKeyRestricted, runCfg.Routing, liveInterruption),
 
 		// A parked run adopts a retuned tool_choice / output_format at the same
 		// boundary; the baseline is what the run starts with.
@@ -5710,7 +5710,7 @@ func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {
 	// SAME definition will take them (tools.RunOverridesValue.SameDefinitionAs).
 	loopCtx = tools.WithRunOverrides(loopCtx, tools.RunOverridesValue{
 		Record: runCfg.marshal(),
-		DefID:  "", AgentName: req.Agent,
+		DefID:  "", AgentName: req.Agent, RunID: runID,
 	})
 
 	mergedContext := runCfg.Context                           // per-run > per-agent (RFC CR); resolved once, above
@@ -5797,10 +5797,10 @@ func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {
 		UserTier:                req.UserTier,
 		FallbackPolicy:          fbPolicy,
 		ReResolve:               fbReResolve,
-		MoveForQueue:            s.queueMoveFn(agentDef, runID, req.TenantID, req.UserID, req.Agent, req.UserTier, operatorKeyRestricted),
+		MoveForQueue:            s.queueMoveFn(agentDef, runCfg.Routing, runID, req.TenantID, req.UserID, req.Agent, req.UserTier, operatorKeyRestricted),
 		Hooks:                   s.hookDispatcher,
 		MaxSameProviderRetries:  s.retryAttemptsForAgent(agentDef, req.UserTier),
-		ReResolveOnOperatorTurn: s.reResolveOnOperatorTurnFn(runID, req.TenantID, req.UserID, req.Agent, req.UserTier, operatorKeyRestricted, liveInterruption),
+		ReResolveOnOperatorTurn: s.reResolveOnOperatorTurnFn(runID, req.TenantID, req.UserID, req.Agent, req.UserTier, operatorKeyRestricted, runCfg.Routing, liveInterruption),
 
 		// A parked run adopts a retuned tool_choice / output_format at the same
 		// boundary; the baseline is what the run starts with.
@@ -6719,10 +6719,10 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 		UserTier:                body.UserTier,
 		FallbackPolicy:          fbPolicy,
 		ReResolve:               fbReResolve,
-		MoveForQueue:            s.queueMoveFn(agentDef, run.ID, sess.TenantID, sess.UserID, sess.Agent, body.UserTier, operatorKeyRestricted),
+		MoveForQueue:            s.queueMoveFn(agentDef, runCfg.Routing, run.ID, sess.TenantID, sess.UserID, sess.Agent, body.UserTier, operatorKeyRestricted),
 		Hooks:                   s.hookDispatcher,
 		MaxSameProviderRetries:  s.retryAttemptsForAgent(agentDef, body.UserTier),
-		ReResolveOnOperatorTurn: s.reResolveOnOperatorTurnFn(run.ID, sess.TenantID, sess.UserID, sess.Agent, body.UserTier, operatorKeyRestricted, liveInterruption),
+		ReResolveOnOperatorTurn: s.reResolveOnOperatorTurnFn(run.ID, sess.TenantID, sess.UserID, sess.Agent, body.UserTier, operatorKeyRestricted, runCfg.Routing, liveInterruption),
 
 		// A parked run adopts a retuned tool_choice / output_format at the same
 		// boundary; the baseline is what the run starts with.
@@ -8846,7 +8846,7 @@ func (s *Server) prepareSubRunValues(ctx context.Context, name string, src nameS
 		UserTier:               parentTier,
 		FallbackPolicy:         fbPolicy,
 		ReResolve:              fbReResolve,
-		MoveForQueue:           s.queueMoveFn(def, subRunID, tenantFromCtx(ctx), parentIdentity.UserID, name, parentTier, parentIdentity.OperatorKeyRestricted),
+		MoveForQueue:           s.queueMoveFn(def, subRunCfg.Routing, subRunID, tenantFromCtx(ctx), parentIdentity.UserID, name, parentTier, parentIdentity.OperatorKeyRestricted),
 		Hooks:                  s.hookDispatcher,
 		MaxSameProviderRetries: s.retryAttemptsForAgent(def, parentTier),
 	}

@@ -500,7 +500,9 @@ type RunOptions struct {
 	// call would wait there too long (queue-aware routing, RFC EI P4). It
 	// returns the provider, model and effort to move to, and moved=false to
 	// stay. The run moves at most once: after a move it stays where it went.
-	// Nil for a run that is not queue-aware.
+	// Nil never moves. The server sets it for every run and declines, when
+	// asked, a run that is pinned or not queue-aware at that moment, since a
+	// retune can change either mid-run.
 	MoveForQueue func(ctx context.Context, current providers.Provider, model string) (provider providers.Provider, newModel, effort string, moved bool)
 
 	// Hooks is the tool-use hook dispatcher. Optional; nil disables
