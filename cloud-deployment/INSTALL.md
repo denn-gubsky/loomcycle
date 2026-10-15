@@ -378,12 +378,17 @@ repository decides what runs here.
 **What a loomcycle deploy does:**
 
 1. dumps both databases and copies the compose file, the config and `versions.env`
-   to `~/work/loomcycle-cloud-deploy/backups/` (the last 10 are kept);
+   to `~/work/loomcycle-cloud-deploy/backups/` (the last 10 are kept, failed
+   attempts included);
 2. copies this directory and `cloud-web/` from the release over the stack's files,
    when the release carries this script. `.env.insecure`, `.env.secure`,
    `versions.env`, the data directories and files the repository does not hold are
    left alone. **`config/loomcycle.yaml` and `docker-compose.yaml` on the host are
-   overwritten**, so change them in the repository, not on the host;
+   overwritten**, so change them in the repository, not on the host.
+   `searxng/` is the exception: the SearXNG container owns that directory once it
+   has started, so the deploy leaves it alone — change `searxng/settings.yml` on
+   the host. If the copy fails part-way, the files from step 1 are put back and
+   the job fails;
 3. writes the new versions, pulls, and runs `up -d --build` (the migration runs
    first, as on any `up`);
 4. waits up to three minutes for `/healthz` to report the new version. If it does
