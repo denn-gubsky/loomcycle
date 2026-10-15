@@ -526,7 +526,8 @@ func TestRunDone_DropsTheRunsLease(t *testing.T) {
 	inner := &fakeProvider{next: make(chan providers.Event)}
 	p := Wrap("p", inner, sched)
 	ctx := providers.WithRunMeta(context.Background(), providers.RunMeta{RunID: "run-1"})
-	out, err := p.Call(ctx, providers.Request{Model: "m"})
+	// The run's turn call (it carries OnEvent): only those hold a reservation.
+	out, err := p.Call(ctx, providers.Request{Model: "m", OnEvent: func(providers.Event) {}})
 	if err != nil {
 		t.Fatalf("Call: %v", err)
 	}

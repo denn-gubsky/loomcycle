@@ -29,6 +29,12 @@ type CallInfo struct {
 	// Owner is the run id, the identity a lease is held under. "" is a
 	// one-shot request: it takes a slot for the call and never a reservation.
 	Owner string
+	// NoLease marks a call Owner makes beside its own turns (a tool's rerank, a
+	// summary): it neither starts a reservation nor runs on the one Owner holds.
+	// On that slot it would be pinned to the backend slot holding the run's
+	// prompt cache and overwrite it, and spend the run's QuantumCalls. Owner
+	// still counts it as the run's call while it waits (see finish).
+	NoLease bool
 	// TenantID and UserID are the fairness identity: waiters are served
 	// round-robin across (TenantID, UserID). Both empty is one anonymous bucket.
 	TenantID, UserID string
@@ -378,6 +384,15 @@ func (l *Lane) acquire(ctx context.Context, c CallInfo, maxQueued int) (release 
 	l.mu.Lock()
 	if ls := l.leases[c.Owner]; c.Owner != "" && ls != nil && !ls.busy {
 		switch q := l.cfg.QuantumCalls; {
+		case c.NoLease:
+			// Off the reservation: a free slot, if there is one, below. If it
+			// would have to wait, the reservation goes first: the run's next
+			// turn waits for this call, so its slot would sit idle while this
+			// call waited for it to lapse. Background work is not waited for.
+			if !c.Background && (l.active+l.reserved >= l.cfg.MaxConcurrent || l.modelBlocked(c.Model)) {
+				l.dropIdle(ls)
+				l.dispatch()
+			}
 		case l.modelBlocked(c.Model):
 			// Its model is at its cap (ModelCaps), so the run cannot compute
 			// now. Its reservation goes and the call queues like any other,
@@ -669,7 +684,7 @@ func (l *Lane) grant(c CallInfo) (*lease, int) {
 	// One reservation per owner per lane: an owner with a second call in
 	// flight at once (a compaction beside its turn) runs that one as a plain
 	// call, or it would hold two slots between calls.
-	if c.Owner == "" || l.cfg.AffinityHold <= 0 || l.leases[c.Owner] != nil {
+	if c.Owner == "" || c.NoLease || l.cfg.AffinityHold <= 0 || l.leases[c.Owner] != nil {
 		return nil, slot
 	}
 	ls := &lease{owner: c.Owner, busy: true, used: 1, slot: slot}

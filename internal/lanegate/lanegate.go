@@ -128,6 +128,8 @@ func (p *Provider) Call(ctx context.Context, req providers.Request) (<-chan prov
 	report := req.OnEvent
 	if report == nil {
 		report = runReporter(ctx)
+		// Not the run's turn call: no lease (concurrency.CallInfo.NoLease).
+		ctx = context.WithValue(ctx, sideCallKey{}, true)
 	}
 	// The run's own turn call — the one its loop makes and blocks on, the only
 	// call that carries OnEvent — lends the run's global slot while it waits
@@ -199,8 +201,11 @@ func (p *Provider) Call(ctx context.Context, req providers.Request) (<-chan prov
 // provider slot while it waited for a global slot held by a run that is waiting
 // for that provider slot.
 //
-// The provider returned is the driver itself: its Call takes no second slot.
-// The slot is held until release, not until the stream ends, so the caller
+// The provider returned calls the driver directly: its Call takes no second
+// slot, and it hands the driver the number of the slot held, as Provider.Call
+// does, so a backend that pins its own slots (providers.LaneSlot) serves the
+// call on that one rather than on a slot the lane keeps for another call. The
+// slot is held until release, not until the stream ends, so the caller
 // releases when its request is over. A provider that is not gated is returned
 // as is, with a release that does nothing.
 func Hold(ctx context.Context, p providers.Provider, req providers.Request) (providers.Provider, func(), error) {
@@ -208,16 +213,44 @@ func Hold(ctx context.Context, p providers.Provider, req providers.Request) (pro
 	if !ok || !lp.sched.Gated(lp.id, kind) {
 		return p, func() {}, nil
 	}
-	release, err := acquire(ctx, lp.sched, nil, lp.id, kind, providers.ModelIdentity(lp.inner, req), nil, nil, nil)
+	slot := -1
+	release, err := acquire(ctx, lp.sched, nil, lp.id, kind, providers.ModelIdentity(lp.inner, req), nil, func(n int) { slot = n }, nil)
 	if err != nil {
 		return nil, nil, err
 	}
-	return lp.inner, release, nil
+	if slot < 0 {
+		// Gated by its model cap alone (max_models_in_flight): no lane, so no
+		// slot to pin to.
+		return lp.inner, release, nil
+	}
+	return &heldSlot{Provider: lp.inner, slot: slot}, release, nil
 }
+
+// heldSlot is the driver a Hold returns, making its calls on the lane slot the
+// Hold took. The caller's ctx (an HTTP request's) carries no slot of its own.
+type heldSlot struct {
+	providers.Provider
+	slot int
+}
+
+func (h *heldSlot) Call(ctx context.Context, req providers.Request) (<-chan providers.Event, error) {
+	return h.Provider.Call(providers.WithLaneSlot(ctx, h.slot), req)
+}
+
+// Unwrap returns the driver (providers.Unwrapper): an embedded interface hides
+// whatever else the driver implements.
+func (h *heldSlot) Unwrap() providers.Provider { return h.Provider }
 
 // heldKey marks a ctx whose caller already holds the slot of one (provider,
 // kind): the value under it is true.
 type heldKey struct{ id, kind string }
+
+// sideCallKey marks the ctx of a Provider.Call that is not its run's turn call
+// — one without OnEvent, the same signal the lend path reads. The run's turn
+// calls are what a lease keeps a warm backend slot for; any other call of the
+// run would land on that slot and overwrite its prompt cache. It still queues
+// as the run, under the run's fairness identity.
+type sideCallKey struct{}
 
 // HoldLane is Hold for a call that is NOT a Provider.Call — an embedding or a
 // decision, made through this package's WrapEmbedder / WrapDecision. It takes
@@ -279,8 +312,10 @@ func acquire(ctx context.Context, sched *concurrency.CallScheduler, floor *concu
 		return func() {}, nil
 	}
 	meta, _ := providers.RunMetaFromContext(ctx)
+	sideCall, _ := ctx.Value(sideCallKey{}).(bool)
 	info := concurrency.CallInfo{
 		Owner:      meta.RunID,
+		NoLease:    sideCall,
 		TenantID:   meta.TenantID,
 		UserID:     meta.UserID,
 		Background: IsBackground(ctx),
