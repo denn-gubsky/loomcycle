@@ -8302,7 +8302,15 @@ func (s *Server) prepareSubRunValues(ctx context.Context, name string, src nameS
 	// inherits the same way, minus the per-spawn override knob (P4). Sampling and
 	// the timeout are the child's own — a breeder varies temperature by FORKING a
 	// def — and the host narrowing is the parent's, inherited through ctx.
-	subCompaction := config.MergeCompaction(def.Compaction, tools.CompactionPolicy(ctx))
+	//
+	// Not into a child that runs on its definition only: the parent's
+	// effective compaction and context carry its caller's per-run values,
+	// which such a child refuses from anyone, so it runs on its own.
+	parentCompaction, parentContext := tools.CompactionPolicy(ctx), tools.ContextPolicy(ctx)
+	if agentLocksOverrides(def) {
+		parentCompaction, parentContext = nil, nil
+	}
+	subCompaction := config.MergeCompaction(def.Compaction, parentCompaction)
 	// A parent's per-spawn override is an override like a caller's: a child
 	// that runs on its definition only refuses it.
 	subRetention := s.resolveRetention(ctx, tenant, name, def, "")
@@ -8322,7 +8330,7 @@ func (s *Server) prepareSubRunValues(ctx context.Context, name string, src nameS
 		return nil, fmt.Errorf("sub-agent %q: %w", name, err)
 	}
 	subCompaction = config.MergeCompaction(subCompaction, tools.CompactionOverride(ctx))
-	subContext := config.MergeContext(def.Context, tools.ContextPolicy(ctx))
+	subContext := config.MergeContext(def.Context, parentContext)
 	// A child that runs on its definition only takes its parent's host list
 	// as a narrowing, as a request naming it directly would; a list that
 	// already only narrows stays so down the tree. Decided here, before the
