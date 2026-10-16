@@ -5,7 +5,6 @@ import {
   EventPayload,
   SystemPromptPayload,
   TranscriptEvent,
-  UserInputPayload,
   cancelAgent,
   cancelResidentChildTurn,
   cancelRun,
@@ -17,6 +16,7 @@ import {
 import Breadcrumbs, { type BreadcrumbAncestor } from "./Breadcrumbs";
 import DraftPanel from "./DraftPanel";
 import { settledToolIds } from "../lib/toolSettlement";
+import { promptSegments } from "../lib/transcriptPayload";
 import {
   awaitedChildrenOf,
   isTeamWalkAgentId,
@@ -348,11 +348,6 @@ function AgentDetailPaneBody({ agentId, runId, ancestors, onSelect }: AgentDetai
             )}
             <RunClockFacts run={agent} />
           </div>
-          {agent.retention === "none" && (
-            <div className="agent-note">
-              content not retained — this is a no-trace run; its events are kept as markers only
-            </div>
-          )}
           {agent.error && <div className="agent-err">error: {agent.error}</div>}
           {agent.status === "configured" && (
             <DraftPanel
@@ -366,7 +361,15 @@ function AgentDetailPaneBody({ agentId, runId, ancestors, onSelect }: AgentDetai
         <div className="empty">loading…</div>
       )}
       <AgentTabStrip tab={tab} onChange={setActiveTab} hidden={hiddenTabs} />
-      {tab === "transcript" && (
+      {tab === "transcript" && agent?.retention === "none" && (
+        // A no-trace run keeps only markers ({type, bytes}) for its events:
+        // there is nothing to show as cards or terminal lines.
+        <div className="no-trace-transcript" role="status">
+          <strong>Run trace not saved.</strong> This is a no-trace run: its prompt, replies
+          and tool calls were not stored, so the trace is not available.
+        </div>
+      )}
+      {tab === "transcript" && agent?.retention !== "none" && (
         <>
           <ViewToggle mode={viewMode} onChange={setViewMode} />
           {viewMode === "panels" ? (
@@ -690,9 +693,7 @@ function textPayloadFor(ev: EventPayload, row?: TranscriptEvent): string {
       // paths prepend a system segment for provider wire-shape reasons
       // (see server.go runSubAgent), but the operator dashboard wants
       // the "user said" view.
-      const segs = ((row?.payload as UserInputPayload[] | undefined) ?? []).filter(
-        (s) => s.role === "user",
-      );
+      const segs = promptSegments(row?.payload).filter((s) => s.role === "user");
       return JSON.stringify(segs, null, 2);
     }
     case "system_prompt": {
@@ -761,7 +762,7 @@ function summaryFor(ev: EventPayload, row?: TranscriptEvent): string {
           }`
         : "";
     case "user_input": {
-      const segs = (row?.payload as UserInputPayload[] | undefined) ?? [];
+      const segs = promptSegments(row?.payload);
       // Surface the first user-role content text (the prompt the
       // caller sent). Skip system-role segments — those duplicate the
       // AgentDef prompt that the separate system_prompt card surfaces.
@@ -830,9 +831,7 @@ function detailFor(ev: EventPayload, row?: TranscriptEvent): ReactNode {
         </div>
       );
     case "user_input": {
-      const segs = ((row?.payload as UserInputPayload[] | undefined) ?? []).filter(
-        (s) => s.role === "user",
-      );
+      const segs = promptSegments(row?.payload).filter((s) => s.role === "user");
       return (
         <div className="user-input-detail">
           {segs.map((seg, i) => (
