@@ -1331,7 +1331,7 @@ func parkForOperatorTurn(ctx context.Context, opts *RunOptions, messages []provi
 		}
 		messages = append(messages, providers.Message{
 			Role:    "user",
-			Content: []providers.ContentBlock{{Type: "text", Text: m.Text}},
+			Content: []providers.ContentBlock{providers.DialogueText(m.Text)}, // an operator's turn: dialogue, like the prompt
 		})
 		if opts.OnSteer != nil {
 			opts.OnSteer(m)
@@ -2070,7 +2070,7 @@ func drainSteer(q <-chan steer.Message, messages []providers.Message, onSteer fu
 			}
 			messages = append(messages, providers.Message{
 				Role:    "user",
-				Content: []providers.ContentBlock{{Type: "text", Text: m.Text}},
+				Content: []providers.ContentBlock{providers.DialogueText(m.Text)}, // an operator's turn: dialogue, like the prompt
 			})
 			if onSteer != nil {
 				onSteer(m)
@@ -3794,7 +3794,7 @@ outerLoop:
 		// Prepend any text before tool_use blocks so the assistant turn is well-formed.
 		if iterText != "" {
 			assistantBlocks = append(
-				[]providers.ContentBlock{{Type: "text", Text: iterText}},
+				[]providers.ContentBlock{providers.DialogueText(iterText)},
 				assistantBlocks...,
 			)
 		}
@@ -4845,8 +4845,6 @@ func flattenContent(c PromptContentBlock) providers.ContentBlock {
 		return providers.ContentBlock{
 			Type: "text",
 			Text: fmt.Sprintf("<%s>\n%s\n</%s>", kind, safe, kind),
-			// Kept out of every memory write made on the user's behalf.
-			Untrusted: true,
 		}
 	case "image":
 		// Images are NOT tag-fenced: untrusted-block fencing defends against
@@ -4856,7 +4854,12 @@ func flattenContent(c PromptContentBlock) providers.ContentBlock {
 		// function has no error channel. See RFC AT §4.3/§6.
 		return providers.ContentBlock{Type: "image", MediaType: c.MediaType, Data: c.Data}
 	default: // "trusted-text"
-		return providers.ContentBlock{Type: "text", Text: c.Text, Cacheable: c.Cacheable}
+		// Only the two spellings intake accepts count as the caller's words. A
+		// stored block recorded before intake validated types replays here as
+		// plain text too, and a misspelled "untrusted-block" is exactly what
+		// must not be banked into memory as something the user said.
+		dialogue := c.Type == "" || c.Type == "trusted-text"
+		return providers.ContentBlock{Type: "text", Text: c.Text, Cacheable: c.Cacheable, Dialogue: dialogue}
 	}
 }
 

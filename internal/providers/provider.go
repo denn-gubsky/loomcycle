@@ -420,12 +420,22 @@ type ContentBlock struct {
 	// keeps — its transcript, a harvest into memory — holds it. Never sent.
 	NotRetained bool `json:"-"`
 
-	// Untrusted marks a text block the loop flattened from an untrusted-block
-	// (a fetched page, a webhook body): the model reads it inside its fence,
-	// and nothing written into memory on the user's behalf — a harvest of the
-	// evicted history — takes it. Set where the block is typed, so no reader
-	// has to recognise a fence by its text. Never sent.
-	Untrusted bool `json:"-"`
+	// Dialogue marks a text block that is something said in the conversation:
+	// the caller's trusted text, an operator's turn, or the model's reply. It
+	// is the ONLY text a harvest of evicted history banks into memory on the
+	// user's behalf. An allowlist on purpose: every other text block — an
+	// untrusted block (a fetched page, a webhook body), a tool observation, a
+	// compaction's summary and its copy of the pinned task, a recap, a runtime
+	// note, evicted state — is left unmarked, so a turn the loop composes later
+	// is kept out by default instead of having to be remembered. Set where the
+	// block is built; never sent.
+	Dialogue bool `json:"-"`
+}
+
+// DialogueText is a text block marked as something said in the conversation
+// (see ContentBlock.Dialogue).
+func DialogueText(text string) ContentBlock {
+	return ContentBlock{Type: "text", Text: text, Dialogue: true}
 }
 
 // RequestHasImage reports whether any message in the request carries an image

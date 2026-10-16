@@ -7001,7 +7001,9 @@ func replayTranscript(events []store.Event) []providers.Message {
 		}
 		var content []providers.ContentBlock
 		if asstText.Len() > 0 {
-			content = append(content, providers.ContentBlock{Type: "text", Text: asstText.String()})
+			// The model's own reply, as live: dialogue, so a resumed run's
+			// harvest banks it exactly as the run that wrote it would have.
+			content = append(content, providers.DialogueText(asstText.String()))
 		}
 		content = append(content, asstTools...)
 		messages = append(messages, providers.Message{
