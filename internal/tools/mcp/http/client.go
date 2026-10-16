@@ -281,8 +281,11 @@ func (c *Client) do(ctx context.Context, body []byte) (*http.Response, error) {
 	// whose headers use a per-run credential before any run exists. Those keep
 	// the old drop-and-warn: nothing is authenticated yet, and the per-call
 	// refusal below is what actually protects the request that carries data.
+	// The run-start discovery handshake (tools.WithMCPDiscovery) is the same
+	// kind of request: it carries the run's tenant to pick the server, but no
+	// credential of the run's, and it fetches only the tool list.
 	runIdent := tools.RunIdentity(ctx)
-	refuseUnresolved := tools.HasRunIdentity(ctx)
+	refuseUnresolved := tools.HasRunIdentity(ctx) && !tools.IsMCPDiscovery(ctx)
 	bearer, runCreds, err := c.runBearer(ctx, runIdent)
 	if err != nil {
 		return nil, err
@@ -298,7 +301,7 @@ func (c *Client) do(ctx context.Context, body []byte) (*http.Response, error) {
 			// The log carries the operator's triage detail (which server, which
 			// run); the returned error does not — that one is model-visible.
 			log.Printf("mcp http: ${run.user_bearer} unresolved for header %q on %q (agent_id=%s, bearer=%s); %s",
-				k, c.url, runIdent.AgentID, tokenPrefix(runIdent.UserBearer), unresolvedAction(refuseUnresolved))
+				k, c.url, runIdent.AgentID, tokenPrefix(runIdent.UserBearer), unresolvedAction(ctx))
 			if refuseUnresolved {
 				return nil, fmt.Errorf("header %q needs ${run.user_bearer}, which this run does not carry: %w", k, tools.ErrRunCredentialUnavailable)
 			}
@@ -307,7 +310,7 @@ func (c *Client) do(ctx context.Context, body []byte) (*http.Response, error) {
 		subV, credDrop, missingCreds := substituteCredentialRefs(subV, runCreds)
 		if credDrop {
 			log.Printf("mcp http: ${run.credentials.<name>} unresolved for header %q on %q (agent_id=%s, missing=%v); %s",
-				k, c.url, runIdent.AgentID, missingCreds, unresolvedAction(refuseUnresolved))
+				k, c.url, runIdent.AgentID, missingCreds, unresolvedAction(ctx))
 			if refuseUnresolved {
 				return nil, fmt.Errorf("header %q needs credential(s) %v, which this run does not carry: %w", k, missingCreds, tools.ErrRunCredentialUnavailable)
 			}
@@ -322,7 +325,7 @@ func (c *Client) do(ctx context.Context, body []byte) (*http.Response, error) {
 			resolvedV, unresolved, cerr := c.credSubstitute(ctx, subV, c.url)
 			if cerr != nil {
 				log.Printf("mcp http: $cred resolve failed for header %q on %q (agent_id=%s): %v; %s",
-					k, c.url, runIdent.AgentID, cerr, unresolvedAction(refuseUnresolved))
+					k, c.url, runIdent.AgentID, cerr, unresolvedAction(ctx))
 				if refuseUnresolved {
 					// The resolve error text is operator-side (it can name a
 					// store or a scope), so the model sees only that it did not
@@ -333,7 +336,7 @@ func (c *Client) do(ctx context.Context, body []byte) (*http.Response, error) {
 			}
 			if len(unresolved) > 0 {
 				log.Printf("mcp http: $cred:%v unresolved for header %q on %q (agent_id=%s); %s",
-					unresolved, k, c.url, runIdent.AgentID, unresolvedAction(refuseUnresolved))
+					unresolved, k, c.url, runIdent.AgentID, unresolvedAction(ctx))
 				if refuseUnresolved {
 					return nil, fmt.Errorf("header %q needs stored credential(s) %v, which are not available to this run: %w", k, unresolved, tools.ErrRunCredentialUnavailable)
 				}
@@ -466,9 +469,13 @@ func extractSSEData(body []byte) ([]byte, bool) {
 }
 
 // unresolvedAction names what happened for the operator log, so a run's refusal
-// and a run-less handshake's dropped header are never confused in triage.
-func unresolvedAction(refusing bool) string {
-	if refusing {
+// and a handshake's dropped header are never confused in triage. It follows
+// the same rule as do's refuseUnresolved.
+func unresolvedAction(ctx context.Context) string {
+	switch {
+	case tools.IsMCPDiscovery(ctx):
+		return "dropping header (run-start discovery handshake)"
+	case tools.HasRunIdentity(ctx):
 		return "refusing the call"
 	}
 	return "dropping header (no run on this request)"
