@@ -907,6 +907,10 @@ export interface AgentEvent {
 
 export type PromptContent =
   | { type: "trusted-text"; text: string; cacheable?: boolean }
+  // `kind` labels the source: untrusted, web_content, uploaded_cv,
+  // qa_question, user_input, tool_output, search_result, or code (kept exactly
+  // as written, fenced by a boundary derived from the text, instead of having
+  // `<` escaped); any other value is fenced as untrusted.
   | { type: "untrusted-block"; kind: string; text: string }
   // Image input (RFC AT), valid only in a user segment. `data` is the
   // base64-encoded image bytes with NO "data:" prefix; there is deliberately
@@ -5031,6 +5035,9 @@ export interface ScheduledRunPromptContent {
    *  input. */
   type?: "trusted-text" | "untrusted-block";
   text: string;
+  /** An untrusted-block's source label, as on a run's segments; `"code"`
+   *  keeps the text exactly as written. Default `"untrusted"`. */
+  kind?: string;
 }
 
 /** One segment of a scheduled run's prompt. */

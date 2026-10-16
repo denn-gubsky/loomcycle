@@ -2500,6 +2500,7 @@ def _segments_to_proto(segments: Iterable[PromptSegment]) -> List[pb.PromptSegme
                     type=b.get("type", "trusted-text"),
                     text=b.get("text", ""),
                     cacheable=bool(b.get("cacheable", False)),
+                    kind=b.get("kind", ""),
                     media_type=b.get("media_type", ""),
                     data=b.get("data", b""),
                 )

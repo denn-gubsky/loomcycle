@@ -170,6 +170,7 @@ type SubstratePromptSegment struct {
 type SubstratePromptSegmentContent struct {
 	Type string `json:"type,omitempty"`
 	Text string `json:"text,omitempty"`
+	Kind string `json:"kind,omitempty"`
 }
 
 // SubstrateScheduleHook mirrors config.ScheduledRunHook with JSON tags.
@@ -226,7 +227,7 @@ func (s SubstrateScheduleDef) ToConfigDef() config.ScheduledRun {
 			if len(seg.Content) > 0 {
 				out.Prompt[i].Content = make([]config.ScheduledRunSegmentContent, len(seg.Content))
 				for j, c := range seg.Content {
-					out.Prompt[i].Content[j] = config.ScheduledRunSegmentContent{Type: c.Type, Text: c.Text}
+					out.Prompt[i].Content[j] = config.ScheduledRunSegmentContent{Type: c.Type, Text: c.Text, Kind: c.Kind}
 				}
 			}
 		}

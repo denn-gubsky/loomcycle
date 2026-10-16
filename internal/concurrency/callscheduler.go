@@ -146,7 +146,8 @@ func (s *CallScheduler) LaneCap(providerID, kind string) int {
 // be admitted must not sit on a lane slot that a call to a model already in
 // flight could use. Neither wait times out; only ctx ends one, with ctx.Err().
 func (s *CallScheduler) Acquire(ctx context.Context, providerID, kind string, c CallInfo) (release func(), err error) {
-	return s.acquire(ctx, providerID, kind, c, -1)
+	release, _, err = s.acquire(ctx, providerID, kind, c, -1)
+	return release, err
 }
 
 // AcquireBounded is Acquire for a request that holds no admission slot — one a
@@ -158,38 +159,72 @@ func (s *CallScheduler) AcquireBounded(ctx context.Context, providerID, kind str
 	if maxQueued < 0 {
 		maxQueued = 0
 	}
+	release, _, err = s.acquire(ctx, providerID, kind, c, maxQueued)
+	return release, err
+}
+
+// AcquireWithGiveBack is Acquire, or AcquireBounded when maxQueued >= 0, that
+// also returns the call's give-back: the end of a call that was granted but is
+// not going to be made after all. The slot goes to the next waiter rather than
+// staying reserved for c.Owner, and the call is not counted as a grant (see
+// Lane.releaseFns). Call exactly one of the two; the other is then a no-op.
+func (s *CallScheduler) AcquireWithGiveBack(ctx context.Context, providerID, kind string, c CallInfo, maxQueued int) (release, giveBack func(), err error) {
 	return s.acquire(ctx, providerID, kind, c, maxQueued)
 }
 
-func (s *CallScheduler) acquire(ctx context.Context, providerID, kind string, c CallInfo, maxQueued int) (release func(), err error) {
+func (s *CallScheduler) acquire(ctx context.Context, providerID, kind string, c CallInfo, maxQueued int) (release, giveBack func(), err error) {
 	lane, gate := s.lane(providerID, kind)
 	if lane == nil && gate == nil {
-		return noopRelease, nil
+		return noopRelease, noopRelease, nil
 	}
-	leave, counted, err := gate.enter(ctx, c.Model, maxQueued, c.OnQueued)
+	onQueued := c.OnQueued
+	if c.Owner != "" && gate != nil {
+		// A call that waits for its model cannot compute, and neither can its
+		// run, which is blocked on it. A slot the run holds idle in any of the
+		// provider's lanes would keep out the calls to the model now in flight,
+		// which is what this call waits on to drain: the model then sits
+		// admitted with nothing computing until the reservation's hold runs out.
+		onQueued = func(q CallQueueInfo) {
+			s.yieldIdle(providerID, c.Owner)
+			if c.OnQueued != nil {
+				c.OnQueued(q)
+			}
+		}
+	}
+	leave, counted, err := gate.enter(ctx, c.Model, maxQueued, onQueued)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	if lane == nil {
 		// No lane for this kind: the call is bound only by the models-in-flight
 		// cap (leave is the shared noop when that is off or the call names no
 		// model).
-		return leave, nil
+		return leave, leave, nil
 	}
-	rel, err := lane.acquire(ctx, c, maxQueued)
+	rel, back, err := lane.acquire(ctx, c, maxQueued)
 	if err != nil {
 		leave()
-		return nil, err
+		return nil, nil, err
 	}
 	if !counted {
-		return rel, nil
+		return rel, back, nil
 	}
 	// Both halves are idempotent, so the pair is too. The lane goes first: the
 	// slot is what other callers queue for.
-	return func() {
-		rel()
-		leave()
-	}, nil
+	release = func() { rel(); leave() }
+	giveBack = func() { back(); leave() }
+	return release, giveBack, nil
+}
+
+// yieldIdle drops owner's idle reservations on every lane of providerID.
+func (s *CallScheduler) yieldIdle(providerID, owner string) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if p := s.byID[providerID]; p != nil {
+		for _, l := range p.lanes {
+			l.yieldIdle(owner)
+		}
+	}
 }
 
 // EstimatedWait is how long a new call of kind to model on providerID would
@@ -250,13 +285,23 @@ func (s *CallScheduler) Done(owner string) {
 // queue; so does a surviving provider's model gate. An added lane appears. A
 // removed lane is forgotten, not torn down: callers already in it hold their
 // own release and its queue still drains as they finish, while new calls go
-// ungated.
+// ungated. It keeps no reservation, though (Lane.retire): one would hold its
+// waiters back for the hold, and no run's end reaches it any more. A removed
+// provider's model gate is disabled, which admits its waiters at once.
 func (s *CallScheduler) Reload(cfgs map[string]ProviderLanesConfig) {
 	if s == nil {
 		return
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	for id, old := range s.byID {
+		if _, ok := cfgs[id]; !ok {
+			old.gate.SetLimit(0, 0)
+			for _, l := range old.lanes {
+				l.retire()
+			}
+		}
+	}
 	next := make(map[string]*providerLanes, len(cfgs))
 	for id, cfg := range cfgs {
 		old := s.byID[id]
@@ -271,6 +316,13 @@ func (s *CallScheduler) Reload(cfgs map[string]ProviderLanesConfig) {
 				continue
 			}
 			lanes[kind] = NewLane(lc)
+		}
+		if old != nil {
+			for kind, l := range old.lanes {
+				if lanes[kind] != l {
+					l.retire()
+				}
+			}
 		}
 		// A surviving gate takes the new limit even when the provider ends up
 		// with nothing capped: disabling it is what lets its waiters go.

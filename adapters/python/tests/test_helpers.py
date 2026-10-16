@@ -197,3 +197,18 @@ def test_agent_to_dict_carries_the_parent_run_id():
     a = pb.Agent(agent_id="ag-5", run_id="rn-5", status="completed", parent_run_id="rn-parent")
     assert _agent_to_dict(a)["parent_run_id"] == "rn-parent"
     assert _agent_to_dict(pb.Agent(agent_id="ag-6", status="completed"))["parent_run_id"] == ""
+
+
+def test_segments_to_proto_carries_the_untrusted_kind():
+    segs = _segments_to_proto([
+        {
+            "role": "user",
+            "content": [
+                {"type": "untrusted-block", "kind": "code", "text": "a<b"},
+                {"type": "untrusted-block", "text": "no kind"},
+            ],
+        }
+    ])
+    assert segs[0].content[0].kind == "code"
+    assert segs[0].content[0].text == "a<b"
+    assert segs[0].content[1].kind == ""

@@ -3315,6 +3315,9 @@ type ScheduledRunSegment struct {
 type ScheduledRunSegmentContent struct {
 	Type string `yaml:"type"`
 	Text string `yaml:"text"`
+	// Kind labels an untrusted-block's source, as `kind` on a run's segments
+	// (e.g. "code", kept exactly as written). Empty is "untrusted".
+	Kind string `yaml:"kind,omitempty"`
 }
 
 // ScheduledRunHook is one entry in OnComplete. Kind is enum-restricted

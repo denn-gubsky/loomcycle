@@ -42,3 +42,21 @@ func TestSegmentsFromProto_ImageBytesToBase64(t *testing.T) {
 		t.Errorf("Data = %q, want base64 %q", img.Data, want)
 	}
 }
+
+// An untrusted block's kind crosses gRPC as on the HTTP wire, so a gRPC
+// caller can send code to be fenced as written rather than escaped.
+func TestSegmentsFromProto_CarriesTheUntrustedKind(t *testing.T) {
+	out := segmentsFromProto([]*loomcyclepb.PromptSegment{{
+		Role: "user",
+		Content: []*loomcyclepb.PromptContentBlock{
+			{Type: "untrusted-block", Kind: "code", Text: "a<b"},
+			{Type: "untrusted-block", Text: "no kind"},
+		},
+	}})
+	if got := out[0].Content[0]; got.Kind != "code" || got.Text != "a<b" {
+		t.Errorf("first block = %+v, want kind code", got)
+	}
+	if got := out[0].Content[1].Kind; got != "" {
+		t.Errorf("second block kind = %q, want empty", got)
+	}
+}

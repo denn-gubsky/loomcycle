@@ -500,7 +500,9 @@ type RunOptions struct {
 	// call would wait there too long (queue-aware routing, RFC EI P4). It
 	// returns the provider, model and effort to move to, and moved=false to
 	// stay. The run moves at most once: after a move it stays where it went.
-	// Nil for a run that is not queue-aware.
+	// Nil never moves. The server sets it for every run and declines, when
+	// asked, a run that is pinned or not queue-aware at that moment, since a
+	// retune can change either mid-run.
 	MoveForQueue func(ctx context.Context, current providers.Provider, model string) (provider providers.Provider, newModel, effort string, moved bool)
 
 	// Hooks is the tool-use hook dispatcher. Optional; nil disables
@@ -4642,6 +4644,38 @@ var allowedUntrustedKinds = map[string]bool{
 	"tool_output":   true,
 	"search_result": true,
 	"run_metadata":  true, // non-secret metadata projected from an external trigger body
+	fence.CodeKind:  true, // kept exactly as written, under a boundary derived from the text
+}
+
+// RuntimeOnlyKind is the untrusted kind only the runtime may write: it marks
+// what an external trigger's body sent (injectMetadataSegments). A caller's
+// block under it would tell the model the trigger sent text it did not.
+const RuntimeOnlyKind = "run_metadata"
+
+// DemoteRuntimeKinds returns segs with every untrusted-block a caller labelled
+// with a runtime-only kind relabelled "untrusted". Every intake applies it to
+// the segments a caller sent, before the runtime adds its own; segs is not
+// changed.
+func DemoteRuntimeKinds(segs []PromptSegment) []PromptSegment {
+	var out []PromptSegment
+	for i, s := range segs {
+		for j, c := range s.Content {
+			if c.Type != "untrusted-block" || c.Kind != RuntimeOnlyKind {
+				continue
+			}
+			if out == nil {
+				out = append([]PromptSegment(nil), segs...)
+			}
+			if &out[i].Content[0] == &segs[i].Content[0] {
+				out[i].Content = append([]PromptContentBlock(nil), s.Content...)
+			}
+			out[i].Content[j].Kind = "untrusted"
+		}
+	}
+	if out == nil {
+		return segs
+	}
+	return out
 }
 
 // ValidateSegmentTypes refuses a content block whose type is set and is not
@@ -4744,10 +4778,17 @@ func FlattenContent(c PromptContentBlock) providers.ContentBlock {
 //     were trusted. Entities, look-alike characters and invisible format
 //     characters are covered too: a model reads `&lt;/web_content>` as the
 //     closing tag just as readily.
+//
+// Kind "code" is the exception to the second: code under review must reach
+// the model as written, so fence.CodeBlock leaves it unescaped and fences it
+// under a boundary derived from the text, which the text cannot close.
 func flattenContent(c PromptContentBlock) providers.ContentBlock {
 	switch c.Type {
 	case "untrusted-block":
 		kind := untrustedKind(c.Kind)
+		if kind == fence.CodeKind {
+			return providers.ContentBlock{Type: "text", Text: fence.CodeBlock(c.Text)}
+		}
 		safe := fence.EscapeUntrusted(c.Text)
 		return providers.ContentBlock{
 			Type: "text",
