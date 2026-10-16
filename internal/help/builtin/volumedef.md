@@ -112,7 +112,9 @@ the create fails instead of following it out of the dynamic root.
   you hand it to agents that must not change it. It is not for a persistent
   volume (re-create that with the mode you want), and it works only inside a
   run. Under `Bashbox` a write to a read-only volume appears to succeed
-  inside one command and is not kept.
+  inside one command and is not kept. `Bash`, and host commands that
+  `Bashbox` runs outside its sandbox, are not held to it: from a read-write
+  volume they can reach the volume's directory by its absolute path.
 - **get** `{name}` / **list** — inspect your tenant's dynamic volumes.
   A volume owned by another tenant is reported as not-found.
 - **delete** `{name}` — remove the mapping but **LEAVE the files on disk**.
