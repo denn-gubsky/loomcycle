@@ -4,9 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -120,8 +122,8 @@ func (f *gitSourceFixture) assertNothingLeft(t *testing.T, name string) {
 	if _, err := os.Lstat(f.volumeDir(name)); !os.IsNotExist(err) {
 		t.Errorf("the volume's directory is still there (err %v)", err)
 	}
-	if _, err := os.Lstat(filepath.Join(f.root, "_ephemeral", "run-1", ".gitstore-"+name)); !os.IsNotExist(err) {
-		t.Errorf("the object store is still there (err %v)", err)
+	if stores, _ := filepath.Glob(filepath.Join(f.root, "_ephemeral", "run-1", ".gitstore-"+name+"*")); len(stores) != 0 {
+		t.Errorf("the object store is still there: %v", stores)
 	}
 	if f.set.Has(name) {
 		t.Error("the run's set holds the volume")
@@ -311,6 +313,78 @@ func TestVolumeDefGitSource_AFailedCloneLeavesNothingAndTheNameIsFree(t *testing
 	// And the name is free: the right credential now succeeds under it.
 	if _, res := f.create(t, f.ctx, "repo", map[string]any{"url": f.repo.URL, "commit": f.repo.Head, "credential": right}, nil); res.IsError {
 		t.Errorf("after the failures the name should be free: %s", res.Text)
+	}
+}
+
+// Two creates of one name can both pass the duplicate check before either
+// records its volume. The second then found the first's directory already
+// made, used it, failed on it (it is not empty), and its cleanup removed the
+// whole directory: the first's volume, recorded or about to be. A directory
+// this call did not make is refused and left alone.
+func TestVolumeDefGitSource_ADirectoryAnotherCreateMadeIsLeftAlone(t *testing.T) {
+	f := newGitSourceFixture(t, false)
+	theirs := filepath.Join(f.volumeDir("repo"), "theirs.txt")
+	if err := os.MkdirAll(filepath.Dir(theirs), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(theirs, []byte("written by the other create"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	_, res := f.create(t, f.ctx, "repo", map[string]any{"url": f.repo.URL, "commit": f.repo.Head}, nil)
+	if !res.IsError || !strings.Contains(res.Text, "already exists") {
+		t.Errorf("a create over a directory another create made: %q, want it refused as a duplicate", res.Text)
+	}
+	if b, err := os.ReadFile(theirs); err != nil || string(b) != "written by the other create" {
+		t.Errorf("the other create's file: %q (err %v), want it untouched", b, err)
+	}
+	if n := f.repo.Requests.Load(); n != 0 {
+		t.Errorf("%d request(s) were made for a name that is taken", n)
+	}
+}
+
+// Two creates of one name at once, with room for both to run: at most one
+// gets the volume, and the one that does keeps it whole.
+func TestVolumeDefGitSource_TwoCreatesOfOneNameAtOnce(t *testing.T) {
+	f := newGitSourceFixture(t, false)
+	f.tool.Git.Slots = make(chan struct{}, 2)
+	for i := 0; i < 5; i++ {
+		name := fmt.Sprintf("repo%d", i)
+		var wg sync.WaitGroup
+		results := make([]tools.Result, 2)
+		for j := range results {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				body, _ := json.Marshal(map[string]any{"op": "create", "name": name, "ephemeral": true,
+					"source": map[string]any{"git": map[string]any{"url": f.repo.URL, "commit": f.repo.Head}}})
+				res, err := f.tool.Execute(f.ctx, json.RawMessage(body))
+				if err != nil {
+					res = tools.Result{IsError: true, Text: err.Error()}
+				}
+				results[j] = res
+			}()
+		}
+		wg.Wait()
+		ok := 0
+		for _, r := range results {
+			if !r.IsError {
+				ok++
+			}
+		}
+		if ok != 1 {
+			t.Errorf("%s: %d of two creates succeeded, want exactly one: %q / %q", name, ok, results[0].Text, results[1].Text)
+			continue
+		}
+		if !f.set.Has(name) {
+			t.Errorf("%s: the volume that was created is not in the run's set", name)
+		}
+		if _, err := os.Stat(filepath.Join(f.volumeDir(name), "_meta", "omitted.json")); err != nil {
+			t.Errorf("%s: the volume that was created is not whole: %v", name, err)
+		}
+		stores, _ := filepath.Glob(filepath.Join(f.root, "_ephemeral", "run-1", ".gitstore-"+name+"*"))
+		if len(stores) != 0 {
+			t.Errorf("%s: object stores left: %v", name, stores)
+		}
 	}
 }
 

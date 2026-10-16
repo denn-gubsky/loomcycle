@@ -175,14 +175,14 @@ func TestProvision_RefusesASymlinkBelowTheRoot(t *testing.T) {
 
 func TestProvisionEphemeral_DerivesUnderTheRunDir(t *testing.T) {
 	root := resolvedTempDir(t)
-	path, _, err := ProvisionEphemeral(root, "run-1", "scratch")
-	if err != nil {
-		t.Fatal(err)
+	path, created, _, err := ProvisionEphemeral(root, "run-1", "scratch")
+	if err != nil || !created {
+		t.Fatalf("created=%v err=%v, want a new directory", created, err)
 	}
 	if want := filepath.Join(EphemeralRunDir(root, "run-1"), "scratch"); path != want {
 		t.Errorf("path = %q, want %q", path, want)
 	}
-	if _, _, err := ProvisionEphemeral(root, "run-1", "../x"); err == nil {
+	if _, _, _, err := ProvisionEphemeral(root, "run-1", "../x"); err == nil {
 		t.Error("ProvisionEphemeral accepted a traversal name")
 	}
 }
@@ -194,7 +194,7 @@ func TestProvisionEphemeral_UndoRemovesOnlyWhatThisCallCreated(t *testing.T) {
 	root := resolvedTempDir(t)
 	runDir := EphemeralRunDir(root, "run-1")
 
-	path, undo, err := ProvisionEphemeral(root, "run-1", "first")
+	path, _, undo, err := ProvisionEphemeral(root, "run-1", "first")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -206,17 +206,17 @@ func TestProvisionEphemeral_UndoRemovesOnlyWhatThisCallCreated(t *testing.T) {
 		t.Errorf("undo left the run dir it created (err=%v)", err)
 	}
 
-	kept, _, err := ProvisionEphemeral(root, "run-1", "kept")
+	kept, _, _, err := ProvisionEphemeral(root, "run-1", "kept")
 	if err != nil {
 		t.Fatal(err)
 	}
-	other, undoOther, err := ProvisionEphemeral(root, "run-1", "other")
+	other, _, undoOther, err := ProvisionEphemeral(root, "run-1", "other")
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, undoAgain, err := ProvisionEphemeral(root, "run-1", "kept")
-	if err != nil {
-		t.Fatal(err)
+	_, again, undoAgain, err := ProvisionEphemeral(root, "run-1", "kept")
+	if err != nil || again {
+		t.Fatalf("re-provision of an existing leaf: created=%v err=%v, want false/nil", again, err)
 	}
 	undoOther()
 	undoAgain()
@@ -293,7 +293,7 @@ func TestProvision_ASymlinkedRootProvisionsUnderIt(t *testing.T) {
 	if _, again, err := Provision(link, "acme", "data"); err != nil || again {
 		t.Errorf("re-provision created=%v err=%v, want false/nil", again, err)
 	}
-	if _, _, err := ProvisionEphemeral(link, "run-1", "scratch"); err != nil {
+	if _, _, _, err := ProvisionEphemeral(link, "run-1", "scratch"); err != nil {
 		t.Errorf("ProvisionEphemeral under a symlinked root: %v", err)
 	}
 }

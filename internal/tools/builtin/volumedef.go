@@ -301,7 +301,7 @@ func (v *VolumeDef) execCreateEphemeral(ctx context.Context, in volumeDefInput, 
 		return errResult(fmt.Sprintf("create: %s", err)), nil
 	}
 	// Same fenced provisioning as the persistent path.
-	path, undo, err := dynvol.ProvisionEphemeral(dynRoot, rootRunID, in.Name)
+	path, _, undo, err := dynvol.ProvisionEphemeral(dynRoot, rootRunID, in.Name)
 	if err != nil {
 		return errResult(fmt.Sprintf("create: %s", err)), nil
 	}

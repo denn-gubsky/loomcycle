@@ -333,15 +333,26 @@ func (v *VolumeDef) execCreateFromGit(ctx context.Context, in volumeDefInput, mo
 	if err != nil {
 		return errResult(fmt.Sprintf("create: %s", err)), nil
 	}
-	path, undo, err := dynvol.ProvisionEphemeral(dynRoot, rootRunID, in.Name)
+	path, created, undo, err := dynvol.ProvisionEphemeral(dynRoot, rootRunID, in.Name)
 	if err != nil {
 		return errResult(fmt.Sprintf("create: %s", err)), nil
+	}
+	if !created {
+		// Another create of this name made the directory after the duplicate
+		// check above: it is that call's to fill, and to remove on failure.
+		// Writing into it, or removing it whole below, would take its volume.
+		undo()
+		return errResult(fmt.Sprintf("create: ephemeral volume %q already exists in this run", in.Name)), nil
 	}
 	// The object store is a sibling of the volume, under the run's own
 	// directory, so the run's purge removes it if this process dies here. Its
 	// name starts with a dot, which no volume name can, so no volume name
-	// resolves to it.
-	storeDir := filepath.Join(filepath.Dir(path), ".gitstore-"+in.Name)
+	// resolves to it. It is this call's own, never another's of the same name.
+	storeDir, err := os.MkdirTemp(filepath.Dir(path), ".gitstore-"+in.Name+"-")
+	if err != nil {
+		undo()
+		return errResult(fmt.Sprintf("create: object store: %s", err)), nil
+	}
 	cleanup := func() {
 		_ = os.RemoveAll(storeDir)
 		// The volume's directory, removed whole: it holds a partly written
