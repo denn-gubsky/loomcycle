@@ -80,6 +80,12 @@ func (s *Server) SteerRun(ctx context.Context, runID, text, source string) (bool
 	if s.runIsNoTrace(ctx, runID) {
 		return false, &noTraceRefusal{Status: 409, Msg: "a no-trace run cannot be sent a message: it would be stored and relayed"}
 	}
+	// A turn someone other than the run's user sends is acted on without the
+	// user's own credentials, from that turn on. Recorded before it is pushed,
+	// so the run (here or on another replica) finds it when it takes the turn.
+	if err := s.withholdForOtherSender(ctx, runID); err != nil {
+		return false, err
+	}
 	delivered, err := s.steerReg.Push(ctx, runID, steer.Message{
 		Text: text, Source: source, EnqueuedAt: time.Now(),
 	})

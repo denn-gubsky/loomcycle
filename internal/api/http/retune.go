@@ -274,6 +274,13 @@ func (s *Server) retuneRun(ctx context.Context, run store.Run, in *runOverridesW
 	if err := admitAgentOverrides(run.Agent, agentDef, in.setFields()); err != nil {
 		return runConfigRecord{}, err
 	}
+	// Retuned by someone other than its user, the run goes on without the
+	// user's own credentials: the retune lands at its next turn, and so does
+	// this (adoptWithheldUserScope), so another user cannot point the user's
+	// keys at a provider or model of their choosing.
+	if err := s.withholdForOtherSender(ctx, run.ID); err != nil {
+		return runConfigRecord{}, err
+	}
 
 	// Merged onto the record as it is when written, not as runForSteer read
 	// it: a writer that got in between keeps its field. See updateRunConfig.

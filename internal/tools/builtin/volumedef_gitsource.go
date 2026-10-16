@@ -119,7 +119,7 @@ func GitCredentialResolver(
 		// takes that user's own credential, as no other $cred: it resolves
 		// does: a webhook's user can come from the delivery.
 		userID := ri.UserID
-		if ri.CredentialsNoUserScope {
+		if ri.NoUserScope() {
 			userID = ""
 		}
 		// The fetch's own transport follows no redirect at all (gitsource), so

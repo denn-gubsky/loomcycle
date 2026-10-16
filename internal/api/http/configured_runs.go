@@ -466,6 +466,9 @@ func (s *Server) configuredRunInputCore(ctx context.Context, runID string, secre
 	in.AgentID, in.TenantID, in.UserID = run.AgentID, run.TenantID, run.UserID
 	in.ParentContext = run.ParentContext
 	in.Isolated, in.OperatorKeyRestricted = run.Isolated, run.OperatorKeyRestricted
+	// The run is its creator's, but a draft can be edited and started by any
+	// member: started by someone else, it does not get the creator's keys.
+	in.CredentialsNoUserScope = run.CredentialsNoUserScope || actingForAnother(ctx, run.TenantID, run.UserID)
 	in.UserBearer, in.UserCredentials = secrets.UserBearer, secrets.UserCredentials
 	return in, nil
 }

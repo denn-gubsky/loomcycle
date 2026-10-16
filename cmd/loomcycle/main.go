@@ -4337,7 +4337,7 @@ type refSubstituter interface {
 func substituteForRun(ctx context.Context, s, targetURL string, register func(string), subs ...refSubstituter) (string, []string, error) {
 	ri := tools.RunIdentity(ctx)
 	userID := ri.UserID
-	if ri.CredentialsNoUserScope {
+	if ri.NoUserScope() {
 		userID = ""
 	}
 	var unresolved []string

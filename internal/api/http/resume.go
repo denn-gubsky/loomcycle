@@ -829,6 +829,7 @@ func (s *Server) resumePausedRun(run store.Run) error {
 		// A trigger's run that may not use its user's own scope: the trigger
 		// is gone, so the row is the only authority, as for the two above.
 		CredentialsNoUserScope: run.CredentialsNoUserScope,
+		UserScopeWithheld:      s.userScopeLatch(run.ID), // set if another user sends it a turn
 		// Never "none" in practice — a no-trace run is not paused, so there is
 		// none to resume — but the row is the authority, as for the two above.
 		Retention: run.Retention,

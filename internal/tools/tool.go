@@ -745,6 +745,13 @@ type RunIdentityValue struct {
 	// up for its agent and tenant only, never in UserID's own scope (see
 	// runner.RunInput.CredentialsNoUserScope). Inherited by sub-agents.
 	CredentialsNoUserScope bool
+	// UserScopeWithheld is the same restriction arriving while the run is
+	// live: set (and never cleared) when someone other than the run's user
+	// sends it a turn, so every turn from then on — and every child spawned
+	// after — resolves for the agent and tenant only. Shared by every copy of
+	// this identity; nil on a run nobody can send turns to. Read both through
+	// NoUserScope, never this field or CredentialsNoUserScope alone.
+	UserScopeWithheld *atomic.Bool
 
 	// Isolated is the RFC BX P2b confinement bit: true = this run belongs to an
 	// ISOLATED MEMBER (a substrate:user principal — see auth.IsIsolated) and the
@@ -763,6 +770,12 @@ type RunIdentityValue struct {
 	// that would store what the run says (asking a person a question) reads
 	// it here to refuse.
 	Retention string
+}
+
+// NoUserScope reports whether a $cred: this run resolves must skip its user's
+// own scope: since it started, or since another user sent it a turn.
+func (v RunIdentityValue) NoUserScope() bool {
+	return v.CredentialsNoUserScope || (v.UserScopeWithheld != nil && v.UserScopeWithheld.Load())
 }
 
 // WithRunIdentity attaches the current run's identity to ctx. The

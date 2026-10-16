@@ -346,6 +346,10 @@ type Server struct {
 	// runHookSets keeps each live run's resolved Set by run id, for the hooks
 	// fired outside the loop (manual compaction, run_end).
 	runHookSets sync.Map
+
+	// userScopeLatches holds each live run's tools.RunIdentityValue
+	// UserScopeWithheld by run id (see userScopeLatch).
+	userScopeLatches sync.Map
 	// orphanEnds holds the id of each run cancelOrphanedRun is ending, so two
 	// cancellers of one row do not both report its end.
 	orphanEnds sync.Map
@@ -3014,7 +3018,10 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 		effectiveTenantID = sess.TenantID
 		effectiveUserID = sess.UserID
 		// As the session's user, so no more widely than its trigger's run.
-		in.CredentialsNoUserScope = in.CredentialsNoUserScope || s.sessionNoUserScope(ctx, in.SessionID)
+		// Nor more widely than its sender may: another user does not get the
+		// session user's keys by continuing (actingForAnother).
+		in.CredentialsNoUserScope = in.CredentialsNoUserScope || s.sessionNoUserScope(ctx, in.SessionID) ||
+			actingForAnother(ctx, sess.TenantID, sess.UserID)
 		// Continued inside the team it began in, if any — and refused if that
 		// team version has been retired (continuationTeamScopeCtx).
 		scopedCtx, scopeErr := s.continuationTeamScopeCtx(ctx, sess)
@@ -3551,6 +3558,7 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 		Retention:             retention,
 		// A trigger's: $cred: resolves without the user's own scope.
 		CredentialsNoUserScope: in.CredentialsNoUserScope,
+		UserScopeWithheld:      s.userScopeLatch(runID), // set if another user sends it a turn
 	}
 	fwd := func(ev providers.Event) {
 		if cb.OnEvent != nil {
@@ -5829,6 +5837,7 @@ func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {
 		OperatorKeyRestricted: operatorKeyRestricted,
 		Isolated:              isolated, // RFC BX P2b: confine data tools to own scope
 		Retention:             retention,
+		UserScopeWithheld:     s.userScopeLatch(runID), // set if another user sends it a turn
 	}
 	// Persist under runCtx so events survive a client disconnect on an
 	// interactive run (runCtx tracks the request for a normal run).
@@ -6362,7 +6371,7 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 	isolated := s.isolatedForCtx(r.Context())
 	// The run is the session's user's; unlike the two bits above it is not the
 	// presenting principal's to decide (sessionNoUserScope).
-	noUserScope := s.sessionNoUserScope(r.Context(), id)
+	noUserScope := s.sessionNoUserScope(r.Context(), id) || actingForAnother(r.Context(), sess.TenantID, sess.UserID)
 	runRouting := &routingOverride{Model: body.Model, Provider: body.Provider, Tier: body.Tier, Effort: body.Effort}
 	runResources := &resourceOverride{
 		MaxTokens: body.MaxTokens, MaxIterations: body.MaxIterations,
@@ -6800,6 +6809,7 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 		OperatorKeyRestricted:  operatorKeyRestricted,
 		Isolated:               isolated, // RFC BX P2b: confine data tools to own scope
 		CredentialsNoUserScope: noUserScope,
+		UserScopeWithheld:      s.userScopeLatch(run.ID), // set if another user sends it a turn
 	}
 	// Persist under runCtx so a detached continuation's events survive the
 	// client leaving (runCtx tracks the request otherwise).
@@ -7434,10 +7444,16 @@ func (s *Server) makeSteer(ctx context.Context, runID, agentID, sessionID, userI
 func (s *Server) makeSteerEntry(ctx context.Context, entry steer.Entry, emit func(providers.Event)) (<-chan steer.Message, func(steer.Message), func() bool, func()) {
 	runID, sessionID, userID := entry.RunID, entry.SessionID, entry.UserID
 	if s.steerReg == nil || runID == "" {
-		return nil, nil, nil, func() {}
+		// Nothing can send this run a turn; its identity may still have taken
+		// a latch (userScopeLatch), which goes when the run does.
+		return nil, nil, nil, func() { s.releaseUserScopeLatch(runID) }
 	}
-	q, dereg := s.steerReg.Register(entry)
+	q, deregQueue := s.steerReg.Register(entry)
+	latch := s.userScopeLatch(runID)
+	dereg := func() { deregQueue(); s.releaseUserScopeLatch(runID) }
 	onSteer := func(m steer.Message) {
+		// Before the turn is acted on: its sender may not have been the run's user.
+		s.adoptWithheldUserScope(ctx, runID, latch)
 		// A steer IS a user turn — a person typing mid-run — so it goes through the
 		// same writer as the other four, which is what puts it in the trace index too.
 		// It was nearly missed: a grep for the append found three sites and this was
@@ -8663,7 +8679,7 @@ func (s *Server) prepareSubRunValues(ctx context.Context, name string, src nameS
 		// cannot escape by spawning. Persisted so a resumed sub-run keeps it.
 		Isolated: parentIdentity.Isolated,
 		// Inherited (subRID below); persisted so a resumed sub-run keeps it.
-		CredentialsNoUserScope: parentIdentity.CredentialsNoUserScope,
+		CredentialsNoUserScope: parentIdentity.NoUserScope(),
 		// A child of a no-trace run is no-trace, whatever its own agent says:
 		// the parent's content reaches it as its prompt.
 		Retention: subRetention,
@@ -8927,6 +8943,12 @@ func (s *Server) prepareSubRunValues(ctx context.Context, name string, src nameS
 	// The sub-run's own identity — hoisted so its recording emit attributes
 	// usage to the SUB (tenant/user/agent/session), not the parent, and
 	// WithRunIdentity below stamps the identical value onto subCtx.
+	subLatch := s.userScopeLatch(subRunID)
+	defer func() {
+		if !prepOK {
+			s.releaseUserScopeLatch(subRunID)
+		}
+	}()
 	subRID := tools.RunIdentityValue{
 		UserID:          parentIdentity.UserID,
 		TenantID:        parentIdentity.TenantID, // RFC L: sub-agents inherit the parent's authoritative tenant (same isolation boundary)
@@ -8943,7 +8965,8 @@ func (s *Server) prepareSubRunValues(ctx context.Context, name string, src nameS
 		// subRunCtx←ctx (same as WithCredentialResolver), so no re-stamp needed.
 		OperatorKeyRestricted: parentIdentity.OperatorKeyRestricted,
 		// A child resolves $cred: no more widely than its parent.
-		CredentialsNoUserScope: parentIdentity.CredentialsNoUserScope,
+		CredentialsNoUserScope: parentIdentity.NoUserScope(),
+		UserScopeWithheld:      subLatch,
 		// RFC BX P2b: inherit the parent's isolation confinement (a child cannot
 		// escape by spawning). Read from ctx RunIdentity by the data tools.
 		Isolated:  parentIdentity.Isolated,
@@ -9119,6 +9142,7 @@ func (s *Server) prepareSubRunValues(ctx context.Context, name string, src nameS
 	// SAME order runSubAgent's original defers ran LIFO (deregSubGate →
 	// subRunSpan.End → cancelReg.Deregister when registered → subCancelFn).
 	cleanup := func() {
+		s.releaseUserScopeLatch(subRunID)
 		deregSubGate()
 		subRunSpan.End()
 		if registered {
@@ -10175,9 +10199,10 @@ func (s *Server) compactRunWithSource(ctx context.Context, runID, source string)
 	summCtx := providers.WithCredentialResolver(ctx, s.credResolver)
 	summCtx = providers.WithOperatorKeyAllowed(summCtx, !run.OperatorKeyRestricted)
 	// A key the summary resolves comes from no wider a scope than the run's
-	// own calls: a trigger's run may not take its user's own.
+	// own calls: a trigger's run may not take its user's own, nor may a
+	// compaction someone other than its user asked for.
 	summCtx = tools.WithRunIdentity(summCtx, tools.RunIdentityValue{TenantID: run.TenantID, UserID: run.UserID,
-		CredentialsNoUserScope: run.CredentialsNoUserScope})
+		CredentialsNoUserScope: run.CredentialsNoUserScope || actingForAnother(ctx, run.TenantID, run.UserID)})
 	summCtx = tools.WithAgentName(summCtx, run.Agent)
 	summCtx = providers.WithCallObserver(summCtx, s.callObserver(run.ID))
 	summary, serr := loop.Summarize(summCtx, provider, summaryModel, msgs[firstIdx:cut], targetPct)
@@ -10363,7 +10388,7 @@ func (s *Server) RecapSession(ctx context.Context, sessionID string) (string, er
 	summCtx := providers.WithCredentialResolver(ctx, s.credResolver)
 	summCtx = providers.WithOperatorKeyAllowed(summCtx, !restricted)
 	summCtx = tools.WithRunIdentity(summCtx, tools.RunIdentityValue{TenantID: sess.TenantID, UserID: userID,
-		CredentialsNoUserScope: noUserScope})
+		CredentialsNoUserScope: noUserScope || actingForAnother(ctx, sess.TenantID, sess.UserID)})
 	summCtx = tools.WithAgentName(summCtx, sess.Agent)
 	summCtx = providers.WithCallObserver(summCtx, s.callObserver(""))
 	summary, err := loop.Recap(summCtx, provider, summaryModel, msgs)
