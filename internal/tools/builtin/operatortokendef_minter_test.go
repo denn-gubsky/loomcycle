@@ -63,23 +63,38 @@ func TestOperatorTokenDef_AMintedTokenIsHeldToTheMintersRestrictions(t *testing.
 	stricter := mustOp(t, tool, restricted, `{"op":"create","name":"stricter","tenant_id":"acme","scopes":["runs:create"],"rate":{"per_minute":2,"burst":3},"overrides":"none"}`)
 	held("create asking for less", restrictionsOf(stricter), 2, 3, nil, []string{"effort", "model"})
 
-	// Rotating a token its holder is not held to hands the restricted caller
-	// a fresh secret for it: the new one is held to the rotator too.
+	// Rotating a token less restricted than the caller would hand the caller
+	// a fresh secret for it; narrowing it instead would take reach from its
+	// owner. So it is refused, and the token stays as it was.
 	open := mustOp(t, tool, free, `{"op":"create","name":"open","tenant_id":"acme","scopes":["runs:create"]}`)
 	if r := restrictionsOf(open); !r.IsZero() {
 		t.Fatalf("an unrestricted minter's token is restricted: %+v", r)
 	}
-	rotated := mustOp(t, tool, restricted, `{"op":"rotate","name":"open"}`)
-	held("rotate of an unrestricted token", restrictionsOf(rotated), 6, 10, []string{"effort", "model"}, []string{"tier"})
-	// An unrestricted rotator keeps a token's restrictions as they were.
+	res, err := tool.Execute(restricted, json.RawMessage(`{"op":"rotate","name":"open"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !res.IsError || !strings.Contains(res.Text, "less restricted than your own") {
+		t.Errorf("a restricted caller rotating an unrestricted token: %s, want it refused", res.Text)
+	}
+	if row, err := st.OperatorTokenDefGet(context.Background(), open["def_id"].(string)); err != nil || !row.RetiredAt.IsZero() || row.RestrictionsJSON != "" {
+		t.Errorf("after the refused rotate the token is %+v (err %v), want it live and unchanged", row, err)
+	}
+	// A caller as restricted as the token, or less, rotates it as before.
+	same := mustOp(t, tool, restricted, `{"op":"rotate","name":"plain"}`)
+	held("rotate by an equally restricted caller", restrictionsOf(same), 6, 10, []string{"effort", "model"}, []string{"tier"})
 	again := mustOp(t, tool, free, `{"op":"rotate","name":"plain"}`)
 	held("rotate by an unrestricted caller", restrictionsOf(again), 6, 10, []string{"effort", "model"}, []string{"tier"})
+	// Stricter than the caller in every field — its burst unset, which reads
+	// as its per-minute rate — is not less restricted: it rotates.
+	mustOp(t, tool, free, `{"op":"create","name":"paced","tenant_id":"acme","scopes":["runs:create"],"rate":{"per_minute":6},"retention":"none","overrides":["effort"]}`)
+	mustOp(t, tool, restricted, `{"op":"rotate","name":"paced"}`)
 
 	// Agents: the minter's list, intersected; nothing in common is refused.
 	// (A token with agents is confined to the run plane and cannot reach the
 	// mint itself; its record is checked here directly.)
 	scoped := auth.WithPrincipal(base, auth.Principal{Subject: "ops2", Scopes: []string{auth.ScopeAdmin}, Restrictions: auth.Restrictions{Agents: []string{"score"}}})
-	res, err := tool.Execute(scoped, json.RawMessage(`{"op":"create","name":"disjoint","tenant_id":"acme","scopes":["runs:create"],"agents":["judge"]}`))
+	res, err = tool.Execute(scoped, json.RawMessage(`{"op":"create","name":"disjoint","tenant_id":"acme","scopes":["runs:create"],"agents":["judge"]}`))
 	if err != nil {
 		t.Fatal(err)
 	}

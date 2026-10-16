@@ -145,8 +145,9 @@ control.
   or an operator token from `create`) carries the stricter of each
   restriction of the minting token and of the request — `retention: none`
   if either has it, the lower `rate`, only the `overrides` both allow, only
-  the `agents` both list. A `rotate` holds the new token to the rotating
-  token's restrictions too, since the caller gets its secret.
+  the `agents` both list. A `rotate` of a token less restricted than the
+  rotating token in any field is refused, since the caller would get its
+  secret; it never narrows the token.
 - `LOOMCYCLE_USER_TOKEN_MAX_TTL_SECONDS` caps a per-user token's
   lifetime; with it set, a mint that asks for none gets the cap.
 - An expired token's row is deleted

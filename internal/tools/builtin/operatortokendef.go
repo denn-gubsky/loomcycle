@@ -452,24 +452,16 @@ func (s *OperatorTokenDef) execRotate(ctx context.Context, in operatorTokenDefIn
 	if !prior.ExpiresAt.IsZero() && !time.Now().Before(prior.ExpiresAt) {
 		return errResult(fmt.Sprintf("rotate: token %q has expired — create a new one", prior.DefID)), nil
 	}
-	// The caller gets the new secret, so the new token is held to the
-	// caller's restrictions as well as the old one's.
+	// The caller gets the new secret, so a token less restricted than the
+	// caller would be a way out of the caller's restrictions. Refused, not
+	// narrowed: narrowing would quietly take reach from the token's owner,
+	// and let a restricted admin downgrade other principals' tokens.
 	prev, pErr := auth.ParseRestrictions(prior.RestrictionsJSON)
 	if pErr != nil {
 		return errResult(fmt.Sprintf("rotate: token %q: %s", prior.DefID, pErr)), nil
 	}
-	next, pErr := heldToMinter(ctx, prev)
-	if pErr != nil {
-		return errResult(fmt.Sprintf("rotate: %s", pErr)), nil
-	}
-	if next.RunPlaneOnly() && auth.HasScope(prior.AllowedScopes, auth.ScopeAdmin) {
-		return errResult("rotate: agents is not allowed on a token holding " + auth.ScopeAdmin), nil
-	}
-	restrictionsJSON := prior.RestrictionsJSON
-	if !next.IsZero() || !prev.IsZero() {
-		if restrictionsJSON, pErr = auth.MarshalRestrictions(next); pErr != nil {
-			return errResult(fmt.Sprintf("rotate: %s", pErr)), nil
-		}
+	if held, hErr := heldToMinter(ctx, prev); hErr != nil || !sameRestrictions(held, prev) {
+		return errResult("rotate: this token is less restricted than your own; only a caller at least as permissive may rotate it"), nil
 	}
 	plaintext, suffix, mErr := auth.MintToken()
 	if mErr != nil {
@@ -488,7 +480,7 @@ func (s *OperatorTokenDef) execRotate(ctx context.Context, in operatorTokenDefIn
 		// Copied, never recomputed: a rotation replaces the secret, it does
 		// not grant the token more time — or more reach.
 		ExpiresAt:        prior.ExpiresAt,
-		RestrictionsJSON: restrictionsJSON,
+		RestrictionsJSON: prior.RestrictionsJSON,
 	}
 	created, err := s.Store.OperatorTokenDefCreate(ctx, row)
 	if err != nil {
@@ -524,6 +516,38 @@ func heldToMinter(ctx context.Context, r auth.Restrictions) (auth.Restrictions, 
 		return r, nil
 	}
 	return r.Within(p.Restrictions)
+}
+
+// sameRestrictions reports whether a and b restrict the same things: the
+// same mode, the same rate (an unset burst reads as the per-minute rate), the
+// same overrides allowed and the same agents, in any order.
+func sameRestrictions(a, b auth.Restrictions) bool {
+	sameSet := func(x, y []string) bool {
+		if len(x) != len(y) {
+			return false
+		}
+		in := make(map[string]bool, len(x))
+		for _, v := range x {
+			in[v] = true
+		}
+		for _, v := range y {
+			if !in[v] {
+				return false
+			}
+		}
+		return true
+	}
+	if a.Retention != b.Retention || !sameSet(a.Agents, b.Agents) {
+		return false
+	}
+	if (a.Rate == nil) != (b.Rate == nil) || (a.Rate != nil &&
+		(a.Rate.PerMinute != b.Rate.PerMinute || a.Rate.EffectiveBurst() != b.Rate.EffectiveBurst())) {
+		return false
+	}
+	if (a.Overrides == nil) != (b.Overrides == nil) {
+		return false
+	}
+	return a.Overrides == nil || sameSet(a.Overrides.Allow, b.Overrides.Allow)
 }
 
 // ---- retire ----
