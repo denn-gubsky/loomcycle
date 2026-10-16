@@ -2,12 +2,15 @@ package a2a
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"iter"
+	"time"
 
 	a2asdk "github.com/a2aproject/a2a-go/v2/a2a"
 	"github.com/a2aproject/a2a-go/v2/a2asrv"
 
+	"github.com/denn-gubsky/loomcycle/internal/auth"
 	"github.com/denn-gubsky/loomcycle/internal/connector"
 	"github.com/denn-gubsky/loomcycle/internal/loop"
 	"github.com/denn-gubsky/loomcycle/internal/providers"
@@ -64,6 +67,51 @@ type Executor struct {
 	// parks tracks runs blocked on an interruption so a resume can
 	// re-attach to the same run's event stream. Always non-nil.
 	parks *parkRegistry
+
+	// admit takes a start from the caller's run rate before a fresh run
+	// starts. Installed via WithStartAdmission; nil = no limiter here.
+	admit func(ctx context.Context, p auth.Principal) error
+}
+
+// WithStartAdmission installs the run-rate check a fresh run passes before it
+// starts: the same limiter, token rate and server default every other
+// transport's run start takes from.
+func (e *Executor) WithStartAdmission(admit func(ctx context.Context, p auth.Principal) error) *Executor {
+	e.admit = admit
+	return e
+}
+
+// admitStart applies the caller's run rate to a fresh run. No credential
+// (open mode) is not limited, as on every other transport. With no limiter
+// installed, a credential that carries its own rate is refused rather than
+// let through uncounted: the rate is a promise made to whoever minted it.
+func (e *Executor) admitStart(ctx context.Context) error {
+	p, ok := PeerPrincipalFrom(ctx)
+	if !ok {
+		return nil
+	}
+	if e.admit == nil {
+		if p.Restrictions.Rate != nil {
+			return fmt.Errorf("%w: this server cannot hold this token's run rate on A2A", runner.ErrRateLimited)
+		}
+		return nil
+	}
+	return e.admit(ctx, p)
+}
+
+// rateRefusal is the A2A form of a run-rate refusal. The protocol has no
+// "too many requests": the nearest is PERMISSION_DENIED (REST 403, gRPC
+// PermissionDenied, JSON-RPC UNAUTHORIZED) — a refusal decided by the
+// caller's own credential, not a server fault, so a client does not treat it
+// as one and retry at once. The details say it is a rate limit and how long
+// to wait.
+func rateRefusal(err error) error {
+	details := map[string]any{"reason": runner.ErrRateLimited.Error()}
+	var d interface{ RetryDelay() time.Duration }
+	if errors.As(err, &d) {
+		details["retry_after_seconds"] = int(d.RetryDelay().Seconds())
+	}
+	return &a2asdk.Error{Err: a2asdk.ErrUnauthorized, Message: err.Error(), Details: details}
 }
 
 // NewExecutor builds an Executor for one loomcycle agent. Skill-based
@@ -122,6 +170,23 @@ func (e *Executor) Execute(ctx context.Context, execCtx *a2asrv.ExecutorContext)
 				e.resumeParkedRun(ctx, execCtx, parked, yield)
 				return
 			}
+		}
+
+		// A fresh run is a run start: it takes from the caller's run rate
+		// first, so a refusal costs nothing — no task, no row, no slot.
+		//
+		// A resume above is not counted. A run parks on this plane only on
+		// an Interruption question, and the resume resolves it: the answer
+		// is the tool's result inside the turn already running, not a new
+		// turn — an interrupt resolve, which no transport counts. (An HTTP
+		// steer is counted because a message can start a turn; nothing
+		// parks at end_turn here, so a message to an interactive run waiting
+		// for input finds no park and comes this way, counted.) Counting the
+		// answer would also leave a caller whose rate is spent unable to
+		// answer its own run's question.
+		if err := e.admitStart(ctx); err != nil {
+			yield(nil, rateRefusal(err))
+			return
 		}
 
 		in, err := e.buildRunInput(ctx, execCtx)

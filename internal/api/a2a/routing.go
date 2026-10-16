@@ -72,6 +72,11 @@ func (p *principalInterceptor) Before(ctx context.Context, callCtx *a2asrv.CallC
 	// buildRunInput → RunInput).
 	ctx = bridge.WithOperatorKeyRestricted(ctx, peer.Restricted)
 	ctx = bridge.WithIsolated(ctx, peer.Isolated)
+	// The credential itself, for the executor's run-start rate only (not as
+	// the run's principal: the run's identity is routing's).
+	if peer.Principal != nil {
+		ctx = bridge.WithPeerPrincipal(ctx, *peer.Principal)
+	}
 	return ctx, nil, nil
 }
 

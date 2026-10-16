@@ -159,7 +159,20 @@ func (s *Server) runRateFor(p auth.Principal) (auth.RateLimit, bool) {
 // business, not its starter's rate.
 func (s *Server) admitPrincipalRate(ctx context.Context) error {
 	p, ok := auth.PrincipalFromContext(ctx)
-	if !ok || s.runRate == nil || tools.RunID(ctx) != "" {
+	if !ok || tools.RunID(ctx) != "" {
+		return nil
+	}
+	return s.AdmitRunRate(ctx, p)
+}
+
+// AdmitRunRate takes one run start from p's rate — the token's own, or the
+// server's default for a caller that is not an operator — or refuses with a
+// *rateLimitedError. It is admitPrincipalRate for a surface that holds the
+// caller's principal but does not put it on the run's ctx: the A2A plane,
+// which takes the run's identity from its own routing, calls it before it
+// starts each run.
+func (s *Server) AdmitRunRate(_ context.Context, p auth.Principal) error {
+	if s.runRate == nil {
 		return nil
 	}
 	limit, limited := s.runRateFor(p)

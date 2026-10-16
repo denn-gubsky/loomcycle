@@ -63,12 +63,13 @@ func FrontierAuthenticator(
 		if p.Restrictions.RunPlaneOnly() {
 			return Peer{}, false
 		}
-		// The same holds for a rate or a retention mode: both are read off
-		// the run's principal, which this plane does not carry, so a rate
-		// would never be counted and a no-trace token's task would be
-		// stored. An override lock is not refused: a message carries no
-		// per-run overrides, so the lock holds here by construction.
-		if p.Restrictions.Rate != nil || p.Restrictions.Retention != "" {
+		// The same holds for a retention mode: it is read off the run's
+		// principal, which this plane does not put on the run, so a
+		// no-trace token's task would be stored. A rate is held here (the
+		// executor takes each fresh run from it, see Peer.Principal), and an
+		// override lock holds by construction: a message carries no per-run
+		// overrides.
+		if p.Restrictions.Retention != "" {
 			return Peer{}, false
 		}
 		// Every peer call is part of starting or following a run this plane
@@ -94,6 +95,7 @@ func FrontierAuthenticator(
 			Isolated:    isolated,
 			Tenant:      p.TenantID,
 			TenantBound: !p.Legacy && !auth.HasScope(p.Scopes, auth.ScopeAdmin),
+			Principal:   &p,
 		}
 		if p.Legacy || p.Subject == "" {
 			peer.Name = "a2a-peer"

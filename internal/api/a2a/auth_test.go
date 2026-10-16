@@ -128,10 +128,12 @@ func TestFrontierAuthenticator_RefusesATokenWithAnAgentAllowlist(t *testing.T) {
 }
 
 // A peer starts runs, so it needs the scope that starts runs, and a token whose
-// rate or retention this plane cannot enforce is refused as an allowlisted one
-// is: no principal reaches the run, so the rate would never be counted and a
-// no-trace token's task would be stored. An override lock holds trivially here
-// — a message carries no per-run overrides — so it is not refused.
+// retention this plane cannot enforce is refused as an allowlisted one is: no
+// principal reaches the run, so a no-trace token's task would be stored. A
+// rate is held here — the executor takes each fresh run from it — and an
+// override lock holds trivially (a message carries no per-run overrides), so
+// neither is refused, and the accepted peer carries its credential for the
+// rate.
 func TestFrontierAuthenticator_RefusesWhatThisPlaneCannotHold(t *testing.T) {
 	member := []string{auth.ScopeRunsCreate}
 	principals := map[string]auth.Principal{
@@ -149,11 +151,15 @@ func TestFrontierAuthenticator_RefusesWhatThisPlaneCannotHold(t *testing.T) {
 	}
 	authn := FrontierAuthenticator(func(context.Context) bool { return true }, resolve, false)
 	for bearer, want := range map[string]bool{
-		"rated": false, "quiet": false, "readonly": false,
-		"locked": true, "isolated": true, "operator": true, "unlimited": true,
+		"quiet": false, "readonly": false,
+		"rated": true, "locked": true, "isolated": true, "operator": true, "unlimited": true,
 	} {
-		if _, ok := authn(context.Background(), http.Header{"Authorization": []string{"Bearer " + bearer}}); ok != want {
+		peer, ok := authn(context.Background(), http.Header{"Authorization": []string{"Bearer " + bearer}})
+		if ok != want {
 			t.Errorf("%s: accepted=%v, want %v", bearer, ok, want)
+		}
+		if ok && (peer.Principal == nil || peer.Principal.Subject != principals[bearer].Subject) {
+			t.Errorf("%s: the accepted peer does not carry its credential for the run rate: %+v", bearer, peer.Principal)
 		}
 	}
 }
