@@ -10,6 +10,8 @@ import (
 	"sync"
 	"time"
 
+	"go.opentelemetry.io/otel/trace"
+
 	lcotel "github.com/denn-gubsky/loomcycle/internal/otel"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
 )
@@ -384,6 +386,16 @@ func NewTool(pool *Pool, server string, descriptor ToolDescriptor) tools.Tool {
 	}
 }
 
+// setMCPSpanError marks an MCP span failed. A server's error can quote the
+// call's arguments, so a no-trace run's span gets only what failed.
+func setMCPSpanError(ctx context.Context, span trace.Span, err error, what string) {
+	if tools.RunIsNoTrace(ctx) {
+		lcotel.SetSpanErrorMessage(span, what)
+		return
+	}
+	lcotel.SetSpanError(span, err)
+}
+
 func (t *mcpTool) Name() string {
 	return "mcp__" + sanitiseServerName(t.server) + "__" + t.toolName
 }
@@ -407,7 +419,7 @@ func (t *mcpTool) Execute(ctx context.Context, input json.RawMessage) (tools.Res
 
 	caller, _, err := t.pool.Get(ctx, t.server)
 	if err != nil {
-		lcotel.SetSpanError(span, err)
+		setMCPSpanError(ctx, span, err, "mcp server unavailable")
 		// Pool spawn / handshake failed. ctx cancellation goes through as
 		// a hard error; everything else as a recoverable IsError so the
 		// model can see "MCP server unavailable" and decide what to do.
@@ -418,7 +430,7 @@ func (t *mcpTool) Execute(ctx context.Context, input json.RawMessage) (tools.Res
 	}
 	res, err := CallTool(ctx, caller, t.toolName, input)
 	if err != nil {
-		lcotel.SetSpanError(span, err)
+		setMCPSpanError(ctx, span, err, "mcp call failed")
 		// Distinguish two failure modes:
 		//   1. ctx cancellation — the run is going away; the model should
 		//      not see a "tool failed, retry" message because the next

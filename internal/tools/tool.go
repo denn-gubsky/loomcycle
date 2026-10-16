@@ -2392,6 +2392,15 @@ func (d *Dispatcher) Call(ctx context.Context, name string, input json.RawMessag
 	defer span.End()
 	res, goErr := d.execute(ctx, name, input)
 	switch {
+	case (goErr != nil || res.IsError) && RunIsNoTrace(ctx):
+		// A tool's error quotes what the run said as readily as its result
+		// does, and a span is exported off the box: a no-trace run's span
+		// says only that the call failed, and how.
+		class := "tool call failed"
+		if res.Error != nil && res.Error.Category != "" {
+			class += ": " + string(res.Error.Category)
+		}
+		lcotel.SetSpanErrorMessage(span, class)
 	case goErr != nil:
 		// A Go error from the tool is recorded as the span's error event, not
 		// only its status message — tracing tells a tool that broke from one
@@ -2401,6 +2410,12 @@ func (d *Dispatcher) Call(ctx context.Context, name string, input json.RawMessag
 		lcotel.SetSpanErrorMessage(span, firstLineForSpan(res.Text))
 	}
 	return res, goErr
+}
+
+// RunIsNoTrace reports whether ctx belongs to a no-trace run: one whose
+// content is stored nowhere, and so written into no trace, log or span.
+func RunIsNoTrace(ctx context.Context) bool {
+	return RunIdentity(ctx).Retention == store.RetentionNone
 }
 
 // execute is Execute without the span: the call, the refusals ahead of it,

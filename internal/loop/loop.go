@@ -3549,7 +3549,13 @@ outerLoop:
 				continue outerLoop
 			}
 			emit(providers.Event{Type: providers.EventError, Error: err.Error()})
-			lcotel.SetSpanError(iterSpan, err)
+			if tools.RunIsNoTrace(ctx) {
+				// A provider's error can quote the prompt; a no-trace run's
+				// span is exported without it.
+				lcotel.SetSpanErrorMessage(iterSpan, "provider call failed")
+			} else {
+				lcotel.SetSpanError(iterSpan, err)
+			}
 			iterSpan.End()
 			turnCancelFn(nil) // RFC BH: release this turn's cancel ctx before terminating (no leak)
 			return RunResult{Iterations: iter}, err
@@ -3720,7 +3726,11 @@ outerLoop:
 				// terminal error path was the one branch that abandoned ch.
 				for range ch {
 				}
-				lcotel.SetSpanErrorMessage(iterSpan, ev.Error)
+				if tools.RunIsNoTrace(ctx) {
+					lcotel.SetSpanErrorMessage(iterSpan, "in-stream provider error")
+				} else {
+					lcotel.SetSpanErrorMessage(iterSpan, ev.Error)
+				}
 				iterSpan.End()
 				turnCancelFn(nil) // RFC BH: release this turn's cancel ctx before terminating (no leak)
 				return RunResult{Iterations: iter}, fmt.Errorf("provider error: %s", ev.Error)
