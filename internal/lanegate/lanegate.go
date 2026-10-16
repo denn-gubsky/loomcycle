@@ -125,6 +125,10 @@ func (p *Provider) Call(ctx context.Context, req providers.Request) (<-chan prov
 	if p.floor == nil && !p.sched.Gated(p.id, kind) {
 		return p.inner.Call(ctx, req)
 	}
+	// Everything from here to the driver's call is waiting: for the lane slot,
+	// and for the run slot taken back after it. It is measured once, around all
+	// of it, so the call's timing can count it as queue time (forward).
+	entered := time.Now()
 	report := req.OnEvent
 	if report == nil {
 		report = runReporter(ctx)
@@ -176,6 +180,7 @@ func (p *Provider) Call(ctx context.Context, req providers.Request) (<-chan prov
 	if slot >= 0 {
 		ctx = providers.WithLaneSlot(ctx, slot)
 	}
+	waitMs := time.Since(entered).Milliseconds()
 	in, err := p.inner.Call(ctx, req)
 	if err != nil {
 		release()
@@ -184,7 +189,7 @@ func (p *Provider) Call(ctx context.Context, req providers.Request) (<-chan prov
 	// Unbuffered: the consumer's pace reaches the driver exactly as it did
 	// without the wrapper.
 	out := make(chan providers.Event)
-	go forward(ctx, in, out, release)
+	go forward(ctx, in, out, release, waitMs)
 	return out, nil
 }
 
@@ -398,6 +403,12 @@ func newFloor() *concurrency.Lane {
 // forward relays the driver's events to the consumer and releases the slot when
 // the call is over. release is idempotent.
 //
+// waitMs is how long the call waited for its slot before the driver was called.
+// It rides the done event's usage (Usage.LaneWaitMs) so the caller's call timer
+// counts it as queue time: the caller started its clock before Provider.Call,
+// and without it the wait would read as the model's service time for any driver
+// that does not report its own phases.
+//
 // The slot goes back BEFORE the event that ends the call is handed on, not when
 // the channel closes: a consumer that stops reading after an error (several
 // do, and a driver may still send a trailing event) would otherwise pin the
@@ -409,12 +420,19 @@ func newFloor() *concurrency.Lane {
 // channel is drained until it closes (a driver closes on ctx cancel) and only
 // then is the slot released — the host is busy with the call until the driver
 // has let go of it.
-func forward(ctx context.Context, in <-chan providers.Event, out chan<- providers.Event, release func()) {
+func forward(ctx context.Context, in <-chan providers.Event, out chan<- providers.Event, release func(), waitMs int64) {
 	defer close(out)
 	defer release()
 	for ev := range in {
 		if ev.Type == providers.EventDone || ev.Type == providers.EventError {
 			release()
+		}
+		if ev.Type == providers.EventDone && ev.Usage != nil && waitMs > 0 {
+			// A copy: the driver's value is not ours to write, and a driver
+			// may hand the same *Usage to several calls.
+			u := *ev.Usage
+			u.LaneWaitMs = waitMs
+			ev.Usage = &u
 		}
 		select {
 		case out <- ev:
