@@ -272,6 +272,60 @@ func (r Restrictions) Validate(agentsWasSet bool) error {
 	return nil
 }
 
+// Within is r held to what a minting credential is itself held to: for each
+// field, the stricter of the two. A restricted credential mints nothing looser
+// than itself — otherwise minting would be the way out of every restriction.
+//
+// Agents is the intersection; an empty one is an error, because an empty list
+// in this record means "unrestricted", the opposite of what it would be.
+func (r Restrictions) Within(minter Restrictions) (Restrictions, error) {
+	out := r
+	if minter.Retention == RetentionNone {
+		out.Retention = RetentionNone
+	}
+	if m := minter.Rate; m != nil {
+		if out.Rate == nil {
+			rate := *m
+			out.Rate = &rate
+		} else {
+			out.Rate = &RateLimit{
+				PerMinute: min(out.Rate.PerMinute, m.PerMinute),
+				Burst:     min(out.Rate.EffectiveBurst(), m.EffectiveBurst()),
+			}
+		}
+	}
+	if m := minter.Overrides; m != nil {
+		if out.Overrides == nil {
+			out.Overrides = &OverridePolicy{Allow: append([]string(nil), m.Allow...)}
+		} else {
+			out.Overrides = &OverridePolicy{Allow: intersect(out.Overrides.Allow, m.Allow)}
+		}
+	}
+	if len(minter.Agents) > 0 {
+		if len(out.Agents) == 0 {
+			out.Agents = append([]string(nil), minter.Agents...)
+		} else if out.Agents = intersect(out.Agents, minter.Agents); len(out.Agents) == 0 {
+			return Restrictions{}, fmt.Errorf("agents: none of the listed agents is one the minting token may start")
+		}
+	}
+	return out, nil
+}
+
+// intersect is the members of a that are also in b, in a's order.
+func intersect(a, b []string) []string {
+	in := make(map[string]bool, len(b))
+	for _, s := range b {
+		in[s] = true
+	}
+	var out []string
+	for _, s := range a {
+		if in[s] {
+			out = append(out, s)
+		}
+	}
+	return out
+}
+
 // Describe renders the record for an error or a log line. Never secret.
 func (r Restrictions) Describe() string {
 	if r.IsZero() {
