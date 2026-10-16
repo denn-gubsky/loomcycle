@@ -108,10 +108,12 @@ level. A chat a trigger started keeps that rule when it is continued.
 
 **Work someone else sends into a user's run skips that user's `user` scope.**
 Any member of a tenant may continue another member's chat, send a message to
-their live run, retune it, compact or recap it, or start their configured run
-— the work still runs as the chat's user, but from then on without that user's
-own stored credentials: what the other person typed must not be acted on with
-the user's keys. An admin with another subject counts as someone else. The
+their live run, retune it, reject it with feedback, compact or recap it, or
+edit or start their configured run — the work still runs as the chat's user,
+but from then on without that user's own stored credentials: what the other
+person typed must not be acted on with the user's keys. Sub-agents the run
+starts afterwards, and resident sub-agents it sends to afterwards, are held to
+the same rule. An admin with another subject counts as someone else. The
 credentials the sender passes on their own request (`user_credentials`,
 `user_bearer`) still reach the run. Two callers are treated as the chat's
 user: a request with no token (open mode), and the legacy
