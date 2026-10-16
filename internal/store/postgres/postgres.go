@@ -3204,8 +3204,8 @@ func (s *Store) SnapshotRestoreRun(ctx context.Context, r store.Run) (bool, erro
 			model, provider, error,
 			agent_id, parent_agent_id, parent_run_id, user_id, last_heartbeat_at,
 			user_tier, agent_def_id, pause_state, parent_context, interactive, operator_key_restricted, isolated, run_config, walk_id, tenant_id,
-			idempotency_key, delivery_alt_key, retention, credentials_no_user_scope
-		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26::jsonb, $27, $28, $29, $30, $31, $32)
+			idempotency_key, delivery_alt_key, retention, replica_id, credentials_no_user_scope
+		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26::jsonb, $27, $28, $29, $30, $31, $32, $33)
 		 ON CONFLICT (id) DO NOTHING`,
 		r.ID, r.SessionID, status, startedAt, completedAt, nullIfEmpty(r.StopReason),
 		r.InputTokens, r.OutputTokens, r.CacheCreationTokens, r.CacheReadTokens,
@@ -3215,6 +3215,10 @@ func (s *Store) SnapshotRestoreRun(ctx context.Context, r store.Run) (bool, erro
 		nullIfEmpty(r.UserTier), nullIfEmpty(r.AgentDefID), pauseState, pcVal, r.Interactive, r.OperatorKeyRestricted, r.Isolated,
 		nullableJSONArg(r.RunConfig), nullIfEmpty(store.RunWalkID(r.ParentContext)),
 		nullIfEmpty(r.TenantID), nullIfEmpty(r.IdempotencyKey), nullIfEmpty(r.DeliveryAltKey), r.Retention,
+		// The restore names the replica that will hold a restored queued
+		// run's wait; a boot restarts only the queued rows stamped with its
+		// own id. Every other restored row passes none and stays NULL.
+		nullIfEmpty(r.ReplicaID),
 		r.CredentialsNoUserScope,
 	)
 	if err != nil {

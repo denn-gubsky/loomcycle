@@ -273,7 +273,8 @@ func TestSpawnRunStreaming_CarriesTheRequestIntoTheRunInput(t *testing.T) {
 	          "hooks":{"run_end":["audit"]},"tool_hooks":{"Read":{"pre":[{"name":"gate","url":"https://h.example"}]}},
 	          "tool_choice":{"mode":"tool","name":"WebSearch","until":"until_called"},
 	          "output_format":{"type":"json_schema","name":"verdict","schema":{"type":"object"}},
-	          "routing":{"queue_aware":true,"switch_after_ms":15000}}`
+	          "routing":{"queue_aware":true,"switch_after_ms":15000},
+	          "admission":"reject","interruption":{"enabled":true,"max_pending":2}}`
 	if _, err := handleSpawnRun(context.Background(), env, json.RawMessage(args)); err != nil {
 		t.Fatalf("handleSpawnRun: %v", err)
 	}
@@ -299,6 +300,9 @@ func TestSpawnRunStreaming_CarriesTheRequestIntoTheRunInput(t *testing.T) {
 		{"MaxConcurrentChildren", in.MaxConcurrentChildren, 2},
 		{"Review", in.Review, true},
 		{"ReviewTTLSeconds", in.ReviewTTLSeconds, 60},
+		// Dropped, a reject-on-busy spawn queued and blocked the caller instead
+		// of being refused at once.
+		{"Admission", in.Admission, "reject"},
 	} {
 		if tc.got != tc.want {
 			t.Errorf("%s = %v, want %v — dropped by the streaming path's hand-copy", tc.field, tc.got, tc.want)
@@ -318,6 +322,9 @@ func TestSpawnRunStreaming_CarriesTheRequestIntoTheRunInput(t *testing.T) {
 	}
 	if in.Routing == nil || !in.Routing.QueueAware || in.Routing.SwitchAfterMS != 15000 {
 		t.Errorf("Routing = %+v, want queue_aware with switch_after_ms 15000 — dropped by the streaming path's hand-copy", in.Routing)
+	}
+	if in.Interruption == nil || !in.Interruption.Enabled || in.Interruption.MaxPending != 2 {
+		t.Errorf("Interruption = %+v, want enabled with max_pending 2 — dropped by the streaming path", in.Interruption)
 	}
 	if in.UserCredentials["github"] != "g" {
 		t.Errorf("UserCredentials = %v, want github=g", in.UserCredentials)

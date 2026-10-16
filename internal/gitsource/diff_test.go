@@ -258,41 +258,84 @@ func TestRequestValidate_DiffBase(t *testing.T) {
 	}
 }
 
-// One file's diff runs inside the clone's deadline. The library allows each
-// file an hour, and a pair of files built to be hard to diff takes seconds
-// at a few hundred kilobytes (5.3s measured at 650 KB) and grows with the
-// square of their size.
-func TestWriteDiff_AHardDiffStopsAtTheDeadline(t *testing.T) {
-	f := newFixture(t, false, true)
-	var a, b strings.Builder
-	for i := 0; i < 60000; i++ {
-		fmt.Fprintf(&a, "line %d\n", i)
+// One file's diff stays inside the clone's deadline. The library allows each
+// file an hour, and its time limit does not cover the search it makes first:
+// two files built for that search (a repeated line between different first
+// and last lines) took 6.7s at 40,000 lines with a 100ms deadline. A change
+// with that many lines is listed without a body, at once, whatever its shape.
+func TestWriteDiff_AChangeTooLongToDiffIsListedWithoutABody(t *testing.T) {
+	const k = 40000
+	var alt, altOther strings.Builder
+	for i := 0; i < k; i++ {
+		fmt.Fprintf(&alt, "line %d\n", i)
 		if i%2 == 0 {
-			fmt.Fprintf(&b, "line %d\n", i)
+			fmt.Fprintf(&altOther, "line %d\n", i)
 		} else {
-			fmt.Fprintf(&b, "other %d\n", i)
+			fmt.Fprintf(&altOther, "other %d\n", i)
 		}
 	}
-	base := f.commit(t, "hard.txt", []byte(a.String()))
-	head := f.commit(t, "hard.txt", []byte(b.String()))
-	req := f.request(t, head)
-	req.DiffBase = base
-	got, err := Fetch(context.Background(), req)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer got.Close()
+	for name, sides := range map[string][2]string{
+		// The search for a common run of lines, which never looks at the
+		// clock.
+		"repeated": {"x\n" + strings.Repeat("a\n", k) + "y\n", "z\n" + strings.Repeat("a\n", 3*k/4) + "w\n"},
+		// The search the clock does stop.
+		"alternating": {alt.String(), altOther.String()},
+	} {
+		t.Run(name, func(t *testing.T) {
+			f := newFixture(t, false, true)
+			base := f.commit(t, "hard.txt", []byte(sides[0]))
+			head := f.commit(t, "hard.txt", []byte(sides[1]))
+			req := f.request(t, head)
+			req.DiffBase = base
+			got, err := Fetch(context.Background(), req)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer got.Close()
 
-	lim := DiffLimits{MaxBytes: 64 << 20, MaxFileBytes: 4 << 20, MaxFiles: 1000}
-	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
-	defer cancel()
-	start := time.Now()
-	_, err = got.WriteDiff(ctx, t.TempDir(), "d.patch", "n.json", lim)
-	if d := time.Since(start); d > 3*time.Second {
-		t.Errorf("a 300ms deadline was kept to within %s", d)
+			lim := DiffLimits{MaxBytes: 64 << 20, MaxFileBytes: 4 << 20, MaxFiles: 1000}
+			ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+			defer cancel()
+			dest := t.TempDir()
+			start := time.Now()
+			_, err = got.WriteDiff(ctx, dest, "d.patch", "n.json", lim)
+			if d := time.Since(start); d > 2*time.Second {
+				t.Errorf("a 100ms deadline was kept to within %s", d)
+			}
+			if err != nil {
+				t.Fatalf("WriteDiff: %v", err)
+			}
+			var sum struct{ Files []DiffFile }
+			raw, _ := os.ReadFile(filepath.Join(dest, "n.json"))
+			if err := json.Unmarshal(raw, &sum); err != nil {
+				t.Fatal(err)
+			}
+			if len(sum.Files) != 1 || sum.Files[0].Path != "hard.txt" || sum.Files[0].Skipped != ReasonTooLarge {
+				t.Errorf("files = %+v, want hard.txt skipped as %s", sum.Files, ReasonTooLarge)
+			}
+		})
 	}
-	if !errors.Is(err, ErrTimeout) {
-		t.Errorf("err = %v, want timeout", err)
+}
+
+func TestChangedLines_CountsOnlyWhatDiffersBetweenTheSharedStartAndEnd(t *testing.T) {
+	for _, c := range []struct {
+		a, b string
+		want int
+	}{
+		{"", "", 0},
+		{"a\nb\nc\n", "a\nb\nc\n", 0},
+		{"a\nb\nc\n", "a\nX\nc\n", 1},
+		{"a\nb\nc\n", "a\nc\n", 1},
+		{"a\nb", "a\nb\n", 1}, // a missing last newline is a different line
+		{"x\n" + strings.Repeat("a\n", 10) + "y\n", "z\n" + strings.Repeat("a\n", 5) + "w\n", 12},
+		// A side that is all shared start: the rest of the other is the change.
+		{"a\n", "a\nb\nc\n", 2},
+		// Shared lines are not counted twice when the start and end overlap.
+		{"a\na\n", "a\na\na\n", 1},
+	} {
+		if got := changedLines(c.a, c.b); got != c.want {
+			t.Errorf("changedLines(%q, %q) = %d, want %d", c.a, c.b, got, c.want)
+		}
 	}
 }
 

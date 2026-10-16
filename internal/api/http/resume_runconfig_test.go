@@ -384,6 +384,22 @@ func TestRunConfigRecord_EmptyCallerListIsNotNoList(t *testing.T) {
 	}
 }
 
+// A locked caller's list only narrows, and a resume must apply it the same
+// way: read back as an ordinary list, it would replace the operator's in
+// caller-authoritative mode, and an empty one would fall back to all of it.
+func TestRunConfigRecord_NarrowOnlySurvivesARoundTrip(t *testing.T) {
+	rec := runConfigRecord{Hosts: hostRecordOf(tools.HostPolicyValue{
+		AllowedHosts: []string{}, HasList: true, NarrowOnly: true,
+	})}
+	back, ok := decodeRunConfig(rec.marshal())
+	if !ok {
+		t.Fatal("record did not round-trip")
+	}
+	if p := back.hostPolicy(); !p.NarrowOnly || !p.HasList || p.AllowedHosts == nil {
+		t.Errorf("restored policy = %+v, want an empty narrow-only list", p)
+	}
+}
+
 // A run with no record resumes exactly the way every run did before the column
 // existed. Guards the legacy path, which is the one nothing else exercises.
 func TestDecodeRunConfig_AbsentAndCorruptBothFallBack(t *testing.T) {

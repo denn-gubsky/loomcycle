@@ -1793,6 +1793,9 @@ func (s *Server) resolveAgentDef(ctx context.Context, def config.AgentDef, tenan
 		if def.Routing != nil && def.Routing.QueueAware && isRunStart(ctx) {
 			req.QueueWait = s.estimatedQueueWait
 			req.SwitchAfter = def.Routing.SwitchAfter()
+			if carriesImage(ctx) {
+				req.Eligible = s.acceptsImages
+			}
 		}
 		dec, rerr := s.resolver.Resolve(req)
 		if rerr != nil {
@@ -1849,6 +1852,77 @@ func (s *Server) resolveAgentDef(ctx context.Context, def config.AgentDef, tenan
 // tiered?" uses this, so none of them disagrees with where the run went.
 func routesByTier(def config.AgentDef) bool {
 	return def.Tier != "" && def.Provider == "" && def.Model == ""
+}
+
+// imageInputKey marks the ctx of a run-start resolution whose run carries an
+// image.
+type imageInputKey struct{}
+
+// runStartCtx marks ctx as resolving a run that is about to start
+// (withRunStart) and, when the run's new input or the session history it
+// continues carries an image, as one that needs a provider able to take it.
+// The history counts because the loop replays it into every turn, and checks
+// it against the provider's vision capability before the first call.
+func runStartCtx(ctx context.Context, segs []loop.PromptSegment, prior []providers.Message) context.Context {
+	ctx = withRunStart(ctx)
+	for _, seg := range segs {
+		for _, c := range seg.Content {
+			if c.Type == "image" {
+				return context.WithValue(ctx, imageInputKey{}, true)
+			}
+		}
+	}
+	for _, m := range prior {
+		for _, c := range m.Content {
+			if c.Type == "image" {
+				return context.WithValue(ctx, imageInputKey{}, true)
+			}
+		}
+	}
+	return ctx
+}
+
+func carriesImage(ctx context.Context) bool {
+	v, _ := ctx.Value(imageInputKey{}).(bool)
+	return v
+}
+
+// acceptsImages reports whether provider can take image input, by the same
+// capability the loop's pre-call vision gate checks. Queue-aware routing must
+// not pass a run with an image over from a busy provider that can take it to
+// one that cannot: there it would only have waited, here the gate fails it.
+// The per-model refinements some drivers make inside Call (a legacy text-only
+// model behind a vision-capable provider) are not visible from here; such a
+// call still fails loudly in the driver.
+func (s *Server) acceptsImages(provider, _ string) bool {
+	p, err := s.providers.Get(provider)
+	return err == nil && p.Capabilities().SupportsVision
+}
+
+// resolveAfterQueue resolves a queue-aware run again once it has waited for
+// its run slot, and reports whether that gave it a provider. Its provider was
+// chosen from the lane estimates when it arrived; after a wait in the run
+// queue they can be quite different, and the run makes no move of its own
+// before its second call. Called only for a run that queued, before anything
+// of its start is recorded: the queued row's model is rewritten when the run
+// starts, and the queued and admitted events name no provider. A run that is
+// not queue-aware keeps its intake choice, and so does one whose new
+// resolution fails — that choice was valid a moment ago, and the loop's
+// fallback handles a provider that has gone since.
+func (s *Server) resolveAfterQueue(ctx context.Context, def config.AgentDef, tenantID, userID, agentName, userTier string, restricted bool) (providerID string, provider providers.Provider, model, effort string, ok bool) {
+	if def.Routing == nil || !def.Routing.QueueAware || !routesByTier(def) {
+		return "", nil, "", "", false
+	}
+	providerID, model, effort, err := s.resolveAgentDef(ctx, def, tenantID, userID, agentName, userTier, restricted)
+	if err != nil {
+		log.Printf("queue-aware routing: agent %q: resolving again after its wait in the run queue failed, keeping its first choice: %v", agentName, err)
+		return "", nil, "", "", false
+	}
+	provider, err = s.providers.Get(providerID)
+	if err != nil {
+		return "", nil, "", "", false
+	}
+	return providerID, provider, model, effort, true
 }
 
 // keyableProvidersFor builds the RFC AX Layer-1 credential-aware routing filter
@@ -2234,6 +2308,7 @@ func (s *Server) volumePolicyForAgent(ctx context.Context, agentDef config.Agent
 		}
 		return tools.VolumePolicyValue{Active: true, Bindings: []tools.VolumeBinding{{
 			Name: "default", Root: def.Path, ReadOnly: def.ReadOnly(), Default: true,
+			Fence: builtin.StaticVolumeFence(s.cfg(), def.Path),
 		}}}
 	}
 	tenantID := tools.RunIdentity(ctx).TenantID
@@ -2242,6 +2317,7 @@ func (s *Server) volumePolicyForAgent(ctx context.Context, agentDef config.Agent
 		if v, ok := s.cfg().Volumes[name]; ok {
 			bindings = append(bindings, tools.VolumeBinding{
 				Name: name, Root: v.Path, ReadOnly: v.ReadOnly(), Default: v.Default,
+				Fence: builtin.StaticVolumeFence(s.cfg(), v.Path),
 			})
 			continue
 		}
@@ -2295,6 +2371,7 @@ func narrowVolumes(parent, child tools.VolumePolicyValue) tools.VolumePolicyValu
 			Root:     pb.Root, // parent's resolved root is authoritative.
 			ReadOnly: cb.ReadOnly || pb.ReadOnly,
 			Default:  cb.Default,
+			Fence:    pb.Fence, // with the root it fences.
 		})
 	}
 	return tools.VolumePolicyValue{Active: true, Bindings: out}
@@ -2834,6 +2911,7 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 	if err := loop.ValidateSegmentTypes(in.Segments); err != nil {
 		return fmt.Errorf("%w: %v", runner.ErrInvalidArgument, err)
 	}
+	in.Segments = loop.DemoteRuntimeKinds(in.Segments)
 	startingDraft := in.ConfiguredRunID != ""
 	if startingDraft && s.store == nil {
 		return runner.ErrSessionRequired
@@ -3027,16 +3105,9 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 	if rerr != nil {
 		return rerr
 	}
-	providerID, model, effort, err := s.resolveAgentDef(withRunStart(ctx), agentDef, effectiveTenantID, effectiveUserID, effectiveAgentName, in.UserTier, operatorKeyRestricted)
-	if err != nil {
-		return err // already wrapped with runner.Err* sentinel
-	}
-	provider, err := s.providers.Get(providerID)
-	if err != nil {
-		return fmt.Errorf("%w: %v", runner.ErrUnknownProvider, err)
-	}
-
 	// ---- Transcript replay (continuation only) ----
+	// Before the provider is chosen: an image in the history needs a provider
+	// that can take it as much as one in the new input does (runStartCtx).
 	var sessionEvents []store.Event
 	if isContinuation {
 		transcript, err := s.store.GetTranscript(ctx, in.SessionID)
@@ -3045,6 +3116,16 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 		}
 		sessionEvents = transcript
 		priorMessages = replayTranscript(transcript)
+	}
+
+	startCtx := runStartCtx(ctx, in.Segments, priorMessages)
+	providerID, model, effort, err := s.resolveAgentDef(startCtx, agentDef, effectiveTenantID, effectiveUserID, effectiveAgentName, in.UserTier, operatorKeyRestricted)
+	if err != nil {
+		return err // already wrapped with runner.Err* sentinel
+	}
+	provider, err := s.providers.Get(providerID)
+	if err != nil {
+		return fmt.Errorf("%w: %v", runner.ErrUnknownProvider, err)
 	}
 
 	// Runtime-pause admission gate (RFC X / F41) — reject new runs while
@@ -3224,6 +3305,11 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 		return fmt.Errorf("%w: %s", runner.ErrTokenLimitExceeded, limitDec.Refusal.Message)
 	}
 	defer release()
+	if queued != nil {
+		if pid, p, m, e, ok := s.resolveAfterQueue(startCtx, agentDef, effectiveTenantID, effectiveUserID, effectiveAgentName, in.UserTier, operatorKeyRestricted); ok {
+			providerID, provider, model, effort = pid, p, m, e
+		}
+	}
 
 	// ---- Tool filtering + host narrowing ----
 	// RFC N FIX 2-mcp: advertise MCP tools at the run's authoritative
@@ -3240,11 +3326,14 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 		if in.AllowedHosts != nil {
 			caller = *in.AllowedHosts
 		}
-		allowedTools = builtin.NarrowHosts(allowedTools, caller, in.WebSearchFilter, s.cfg().Env.HTTPCallerAuthoritative)
+		// A locked caller's list only narrows, in every mode.
+		narrowOnly := in.AllowedHosts != nil && callerHostsNarrowOnly(ctx, agentDef)
+		allowedTools = builtin.NarrowHosts(allowedTools, caller, in.WebSearchFilter, s.cfg().Env.HTTPCallerAuthoritative && !narrowOnly)
 		hostPolicy = tools.HostPolicyValue{
 			AllowedHosts:    caller,
 			HasList:         in.AllowedHosts != nil,
 			WebSearchFilter: in.WebSearchFilter,
+			NarrowOnly:      narrowOnly,
 		}
 	}
 	dispatcher := s.newDispatcher(allowedTools)
@@ -3539,7 +3628,7 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 		Record: runCfg.marshal(),
 		// A top-level run pins no def_id (RunInput does not carry one), so
 		// identity here is the agent NAME. See SameDefinitionAs.
-		DefID: "", AgentName: effectiveAgentName,
+		DefID: "", AgentName: effectiveAgentName, RunID: runID,
 	})
 
 	// RFC CR: the resolved layered-context policy flows down the spawn tree the
@@ -3651,11 +3740,11 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 		UserTier:               in.UserTier,
 		FallbackPolicy:         fbPolicy,
 		ReResolve:              fbReResolve,
-		MoveForQueue:           s.queueMoveFn(agentDef, runID, effectiveTenantID, effectiveUserID, effectiveAgentName, in.UserTier, operatorKeyRestricted),
+		MoveForQueue:           s.queueMoveFn(agentDef, runCfg.Routing, runID, effectiveTenantID, effectiveUserID, effectiveAgentName, in.UserTier, operatorKeyRestricted),
 		Hooks:                  s.hookDispatcher,
 		MaxSameProviderRetries: s.retryAttemptsForAgent(agentDef, in.UserTier),
 		// RFC DC P3: a parked run adopts a retune on its next operator turn.
-		ReResolveOnOperatorTurn: s.reResolveOnOperatorTurnFn(runID, effectiveTenantID, effectiveUserID, effectiveAgentName, in.UserTier, operatorKeyRestricted, liveInterruption),
+		ReResolveOnOperatorTurn: s.reResolveOnOperatorTurnFn(runID, effectiveTenantID, effectiveUserID, effectiveAgentName, in.UserTier, operatorKeyRestricted, runCfg.Routing, liveInterruption),
 
 		// A parked run adopts a retuned tool_choice / output_format at the same
 		// boundary; the baseline is what the run starts with.
@@ -4978,6 +5067,7 @@ func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
+	req.Segments = loop.DemoteRuntimeKinds(req.Segments)
 	if _, err := store.ParseRetention(req.Retention); err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
@@ -5132,7 +5222,8 @@ func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {
 		writeJSONError(w, http.StatusConflict, "agent_id_in_use", fmt.Sprintf(agentIDInUseMsg, req.AgentID))
 		return
 	}
-	providerID, model, effort, err := s.resolveAgentDef(withRunStart(r.Context()), agentDef, req.TenantID, req.UserID, req.Agent, req.UserTier, operatorKeyRestricted)
+	startCtx := runStartCtx(r.Context(), req.Segments, nil)
+	providerID, model, effort, err := s.resolveAgentDef(startCtx, agentDef, req.TenantID, req.UserID, req.Agent, req.UserTier, operatorKeyRestricted)
 	if err != nil {
 		writeResolveError(w, err)
 		return
@@ -5387,6 +5478,11 @@ func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer release()
+	if queued != nil {
+		if pid, p, m, e, ok := s.resolveAfterQueue(startCtx, agentDef, req.TenantID, req.UserID, req.Agent, req.UserTier, operatorKeyRestricted); ok {
+			providerID, provider, model, effort = pid, p, m, e
+		}
+	}
 
 	// Filter tools by agent allowlist + caller request.
 	// RFC N: advertise at the run's authoritative tenant. Use req.TenantID
@@ -5413,11 +5509,14 @@ func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {
 		if req.AllowedHosts != nil {
 			caller = *req.AllowedHosts
 		}
-		allowedTools = builtin.NarrowHosts(allowedTools, caller, req.WebSearchFilter, s.cfg().Env.HTTPCallerAuthoritative)
+		// A locked caller's list only narrows, in every mode.
+		narrowOnly := req.AllowedHosts != nil && callerHostsNarrowOnly(r.Context(), agentDef)
+		allowedTools = builtin.NarrowHosts(allowedTools, caller, req.WebSearchFilter, s.cfg().Env.HTTPCallerAuthoritative && !narrowOnly)
 		hostPolicy = tools.HostPolicyValue{
 			AllowedHosts:    caller,
 			HasList:         req.AllowedHosts != nil,
 			WebSearchFilter: req.WebSearchFilter,
+			NarrowOnly:      narrowOnly,
 		}
 	}
 	dispatcher := s.newDispatcher(allowedTools)
@@ -5710,7 +5809,7 @@ func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {
 	// SAME definition will take them (tools.RunOverridesValue.SameDefinitionAs).
 	loopCtx = tools.WithRunOverrides(loopCtx, tools.RunOverridesValue{
 		Record: runCfg.marshal(),
-		DefID:  "", AgentName: req.Agent,
+		DefID:  "", AgentName: req.Agent, RunID: runID,
 	})
 
 	mergedContext := runCfg.Context                           // per-run > per-agent (RFC CR); resolved once, above
@@ -5797,10 +5896,10 @@ func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {
 		UserTier:                req.UserTier,
 		FallbackPolicy:          fbPolicy,
 		ReResolve:               fbReResolve,
-		MoveForQueue:            s.queueMoveFn(agentDef, runID, req.TenantID, req.UserID, req.Agent, req.UserTier, operatorKeyRestricted),
+		MoveForQueue:            s.queueMoveFn(agentDef, runCfg.Routing, runID, req.TenantID, req.UserID, req.Agent, req.UserTier, operatorKeyRestricted),
 		Hooks:                   s.hookDispatcher,
 		MaxSameProviderRetries:  s.retryAttemptsForAgent(agentDef, req.UserTier),
-		ReResolveOnOperatorTurn: s.reResolveOnOperatorTurnFn(runID, req.TenantID, req.UserID, req.Agent, req.UserTier, operatorKeyRestricted, liveInterruption),
+		ReResolveOnOperatorTurn: s.reResolveOnOperatorTurnFn(runID, req.TenantID, req.UserID, req.Agent, req.UserTier, operatorKeyRestricted, runCfg.Routing, liveInterruption),
 
 		// A parked run adopts a retuned tool_choice / output_format at the same
 		// boundary; the baseline is what the run starts with.
@@ -6060,6 +6159,7 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
+	body.Segments = loop.DemoteRuntimeKinds(body.Segments)
 
 	// Validate the session exists BEFORE taking the per-session lock.
 	// Otherwise an attacker can spam unknown IDs and each LoadOrStore
@@ -6188,7 +6288,18 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 		writeResolveError(w, oerr)
 		return
 	}
-	providerID, model, effort, err := s.resolveAgentDef(withRunStart(r.Context()), agentDef, sess.TenantID, sess.UserID, sess.Agent, body.UserTier, operatorKeyRestricted)
+	// Replay prior conversation history from the transcript — before the
+	// provider is chosen, since an image in it needs a provider that can take
+	// it (runStartCtx).
+	transcript, err := s.store.GetTranscript(r.Context(), id)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	priorMessages := replayTranscript(transcript)
+
+	startCtx := runStartCtx(r.Context(), body.Segments, priorMessages)
+	providerID, model, effort, err := s.resolveAgentDef(startCtx, agentDef, sess.TenantID, sess.UserID, sess.Agent, body.UserTier, operatorKeyRestricted)
 	if err != nil {
 		writeResolveError(w, err)
 		return
@@ -6198,14 +6309,6 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-
-	// Replay prior conversation history from the transcript.
-	transcript, err := s.store.GetTranscript(r.Context(), id)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-	priorMessages := replayTranscript(transcript)
 
 	// Runtime-pause admission gate (RFC X / F41): a continuation starts a new
 	// turn/run, so reject it with 503 while pausing/paused (before the slot).
@@ -6377,6 +6480,11 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer release()
+	if queued != nil {
+		if pid, p, m, e, ok := s.resolveAfterQueue(startCtx, agentDef, sess.TenantID, sess.UserID, sess.Agent, body.UserTier, operatorKeyRestricted); ok {
+			providerID, provider, model, effort = pid, p, m, e
+		}
+	}
 
 	// RFC N FIX 2-mcp: a continuation advertises at the SESSION's
 	// authoritative tenant (the same value the continuation run uses), not
@@ -6390,11 +6498,14 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 		if body.AllowedHosts != nil {
 			caller = *body.AllowedHosts
 		}
-		allowedTools = builtin.NarrowHosts(allowedTools, caller, body.WebSearchFilter, s.cfg().Env.HTTPCallerAuthoritative)
+		// A locked caller's list only narrows, in every mode.
+		narrowOnly := body.AllowedHosts != nil && callerHostsNarrowOnly(r.Context(), agentDef)
+		allowedTools = builtin.NarrowHosts(allowedTools, caller, body.WebSearchFilter, s.cfg().Env.HTTPCallerAuthoritative && !narrowOnly)
 		hostPolicy = tools.HostPolicyValue{
 			AllowedHosts:    caller,
 			HasList:         body.AllowedHosts != nil,
 			WebSearchFilter: body.WebSearchFilter,
+			NarrowOnly:      narrowOnly,
 		}
 	}
 	dispatcher := s.newDispatcher(allowedTools)
@@ -6719,10 +6830,10 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 		UserTier:                body.UserTier,
 		FallbackPolicy:          fbPolicy,
 		ReResolve:               fbReResolve,
-		MoveForQueue:            s.queueMoveFn(agentDef, run.ID, sess.TenantID, sess.UserID, sess.Agent, body.UserTier, operatorKeyRestricted),
+		MoveForQueue:            s.queueMoveFn(agentDef, runCfg.Routing, run.ID, sess.TenantID, sess.UserID, sess.Agent, body.UserTier, operatorKeyRestricted),
 		Hooks:                   s.hookDispatcher,
 		MaxSameProviderRetries:  s.retryAttemptsForAgent(agentDef, body.UserTier),
-		ReResolveOnOperatorTurn: s.reResolveOnOperatorTurnFn(run.ID, sess.TenantID, sess.UserID, sess.Agent, body.UserTier, operatorKeyRestricted, liveInterruption),
+		ReResolveOnOperatorTurn: s.reResolveOnOperatorTurnFn(run.ID, sess.TenantID, sess.UserID, sess.Agent, body.UserTier, operatorKeyRestricted, runCfg.Routing, liveInterruption),
 
 		// A parked run adopts a retuned tool_choice / output_format at the same
 		// boundary; the baseline is what the run starts with.
@@ -8293,7 +8404,15 @@ func (s *Server) prepareSubRunValues(ctx context.Context, name string, src nameS
 	// inherits the same way, minus the per-spawn override knob (P4). Sampling and
 	// the timeout are the child's own — a breeder varies temperature by FORKING a
 	// def — and the host narrowing is the parent's, inherited through ctx.
-	subCompaction := config.MergeCompaction(def.Compaction, tools.CompactionPolicy(ctx))
+	//
+	// Not into a child that runs on its definition only: the parent's
+	// effective compaction and context carry its caller's per-run values,
+	// which such a child refuses from anyone, so it runs on its own.
+	parentCompaction, parentContext := tools.CompactionPolicy(ctx), tools.ContextPolicy(ctx)
+	if agentLocksOverrides(def) {
+		parentCompaction, parentContext = nil, nil
+	}
+	subCompaction := config.MergeCompaction(def.Compaction, parentCompaction)
 	// A parent's per-spawn override is an override like a caller's: a child
 	// that runs on its definition only refuses it.
 	subRetention := s.resolveRetention(ctx, tenant, name, def, "")
@@ -8313,7 +8432,16 @@ func (s *Server) prepareSubRunValues(ctx context.Context, name string, src nameS
 		return nil, fmt.Errorf("sub-agent %q: %w", name, err)
 	}
 	subCompaction = config.MergeCompaction(subCompaction, tools.CompactionOverride(ctx))
-	subContext := config.MergeContext(def.Context, tools.ContextPolicy(ctx))
+	subContext := config.MergeContext(def.Context, parentContext)
+	// A child that runs on its definition only takes its parent's host list
+	// as a narrowing, as a request naming it directly would; a list that
+	// already only narrows stays so down the tree. Decided here, before the
+	// record is written, so the record and the child's tools agree and a
+	// resume applies the list the way the child ran with it.
+	subHostPolicy := tools.HostPolicy(ctx)
+	if subHostPolicy.HasList && callerHostsNarrowOnly(ctx, def) {
+		subHostPolicy.NarrowOnly = true
+	}
 	subRunCfg := runConfigRecord{
 		Hooks:             additionsRecord(hooks.AdditionsFrom(ctx)), // inherited from the parent run
 		SourcedHooks:      hooks.AdditionsFrom(ctx).Sourced,          // and a team state's, with their source
@@ -8324,7 +8452,7 @@ func (s *Server) prepareSubRunValues(ctx context.Context, name string, src nameS
 		Context:           subContext,
 		MaxContextTokens:  def.MaxContextTokens,
 		RunTimeoutSeconds: def.RunTimeoutSeconds,
-		Hosts:             hostRecordOf(tools.HostPolicy(ctx)),
+		Hosts:             hostRecordOf(subHostPolicy),
 		// The parent's volume confinement and inherited fan-out width, both read
 		// off ctx below and never re-derivable once the parent's ctx is gone.
 		Spawn: spawnRecordOf(tools.VolumePolicy(ctx), tools.FanoutCap(ctx)),
@@ -8634,9 +8762,9 @@ func (s *Server) prepareSubRunValues(ctx context.Context, name string, src nameS
 	// "host \"localhost\" not in allowlist", waste iterations
 	// guessing hostnames, get capped by max_iterations, never write
 	// the documents (2026-05-06).
-	parentHostPolicy := tools.HostPolicy(ctx)
-	if parentHostPolicy.HasList || s.cfg().Env.HTTPCallerAuthoritative {
-		subTools = builtin.NarrowHosts(subTools, parentHostPolicy.AllowedHosts, parentHostPolicy.WebSearchFilter, s.cfg().Env.HTTPCallerAuthoritative)
+	// subHostPolicy is the parent's, made narrow-only above for a locked child.
+	if subHostPolicy.HasList || s.cfg().Env.HTTPCallerAuthoritative {
+		subTools = builtin.NarrowHosts(subTools, subHostPolicy.AllowedHosts, subHostPolicy.WebSearchFilter, s.cfg().Env.HTTPCallerAuthoritative && !subHostPolicy.NarrowOnly)
 	}
 	subDispatcher := s.newDispatcher(subTools)
 
@@ -8848,7 +8976,7 @@ func (s *Server) prepareSubRunValues(ctx context.Context, name string, src nameS
 		UserTier:               parentTier,
 		FallbackPolicy:         fbPolicy,
 		ReResolve:              fbReResolve,
-		MoveForQueue:           s.queueMoveFn(def, subRunID, tenantFromCtx(ctx), parentIdentity.UserID, name, parentTier, parentIdentity.OperatorKeyRestricted),
+		MoveForQueue:           s.queueMoveFn(def, subRunCfg.Routing, subRunID, tenantFromCtx(ctx), parentIdentity.UserID, name, parentTier, parentIdentity.OperatorKeyRestricted),
 		Hooks:                  s.hookDispatcher,
 		MaxSameProviderRetries: s.retryAttemptsForAgent(def, parentTier),
 	}
@@ -9224,7 +9352,7 @@ func (s *Server) handleCancelAgent(w http.ResponseWriter, r *http.Request) {
 	}
 	if s.store != nil {
 		run, err := s.tenantStore(r.Context()).GetRunByAgentID(r.Context(), agentID)
-		if err == nil && !runOwnershipOK(r.Context(), run) {
+		if err == nil && (!runOwnershipOK(r.Context(), run) || !s.allowlistReachesRun(r.Context(), run.ID)) {
 			err = &store.ErrNotFound{Kind: "run", ID: agentID}
 		}
 		if err == nil && run.Retention == store.RetentionNone {
@@ -9571,6 +9699,9 @@ func (s *Server) handleRunInput(w http.ResponseWriter, r *http.Request) {
 	case errors.Is(err, runner.ErrRetentionUnsupported):
 		writeNoTraceRefusal(w, err)
 		return
+	case errors.Is(err, runner.ErrRateLimited):
+		writeRateLimited(w, err)
+		return
 	case errors.Is(err, connector.ErrSteerQueueFull):
 		w.Header().Set("Retry-After", "1")
 		http.Error(w, "run input queue full; retry shortly", http.StatusTooManyRequests)
@@ -9742,7 +9873,7 @@ func (s *Server) compactRunWithSource(ctx context.Context, runID, source string)
 	// model call over the session's transcript and rewrites what the run's next
 	// turn sees, so another user's run gets the same 404 as a missing one.
 	run, err := s.tenantStore(ctx).GetRun(ctx, runID)
-	if err != nil || !runOwnershipOK(ctx, run) {
+	if err != nil || !runOwnershipOK(ctx, run) || !s.allowlistReachesRun(ctx, runID) {
 		return connector.CompactResult{}, &compactErr{status: http.StatusNotFound, msg: "no run for that run_id"}
 	}
 

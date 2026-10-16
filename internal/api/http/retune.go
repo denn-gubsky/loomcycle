@@ -3,6 +3,7 @@ package http
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"net/http"
@@ -188,6 +189,9 @@ func (s *Server) remoteRunForSteer(ctx context.Context, runID string) (store.Run
 		}
 	} else if !runOwnershipOK(ctx, run) {
 		// No session to gate on: the run's own owner confines it instead.
+		return store.Run{}, connector.ErrRunNotInFlight
+	}
+	if !s.allowlistReachesRun(ctx, runID) {
 		return store.Run{}, connector.ErrRunNotInFlight
 	}
 	return run, nil
@@ -433,10 +437,18 @@ func mergeTuning(cur, next *tuningOverride) *tuningOverride {
 // The same read also moves the run's live interruption policy (when live is
 // non-nil), so a retuned `interruption` takes effect at the same boundary as a
 // retuned model — one rule for "when does a retune land", and no second read.
-func (s *Server) reResolveOnOperatorTurnFn(runID, tenantID, userID, agentName, userTier string, restricted bool, live *runInterruption) func(context.Context) (providers.Provider, string, string, bool, error) {
+//
+// The run is re-resolved only when its routing record changed since it last
+// resolved — startRouting is the record it started (or resumed) with. Resolving
+// at every turn and comparing with runs.model moved a run that queue-aware
+// routing had sent past a busy first candidate back onto it at its first turn,
+// because a resolution outside a run start never passes a candidate over, and
+// reported that as an operator's change nobody made.
+func (s *Server) reResolveOnOperatorTurnFn(runID, tenantID, userID, agentName, userTier string, restricted bool, startRouting *routingOverride, live *runInterruption) func(context.Context) (providers.Provider, string, string, bool, error) {
 	if s.store == nil {
 		return nil
 	}
+	lastRouting := shapeKey(startRouting)
 	return func(ctx context.Context) (providers.Provider, string, string, bool, error) {
 		run, err := s.store.GetRun(ctx, runID)
 		if err != nil {
@@ -451,6 +463,10 @@ func (s *Server) reResolveOnOperatorTurnFn(runID, tenantID, userID, agentName, u
 			return nil, "", "", false, fmt.Errorf("%w: %s", runner.ErrUnknownAgent, agentName)
 		}
 		s.adoptRunInterruption(live, agentDef, cfg.Interruption)
+		routingKey := shapeKey(cfg.Routing)
+		if routingKey == lastRouting {
+			return nil, "", "", false, nil
+		}
 		eff, err := s.effectiveDef(ctx, agentDef, runOverrides{
 			Routing: cfg.Routing, Resources: cfg.Resources, Tuning: cfg.Tuning,
 		})
@@ -466,12 +482,16 @@ func (s *Server) reResolveOnOperatorTurnFn(runID, tenantID, userID, agentName, u
 		// change that did not happen would put a misleading line in the
 		// transcript.
 		if model == run.Model {
+			lastRouting = routingKey
 			return nil, "", "", false, nil
 		}
 		provider, err := s.providers.Get(providerID)
 		if err != nil {
 			return nil, "", "", false, err
 		}
+		// Settled only once adopted, so a retune that could not be resolved or
+		// reached is tried again at the next turn rather than forgotten.
+		lastRouting = routingKey
 		if uerr := s.store.SetRunModel(ctx, runID, providerID, model); uerr != nil {
 			log.Printf("retune: run %s adopted %s/%s but the row still says %q: %v",
 				runID, providerID, model, run.Model, uerr)
@@ -579,6 +599,13 @@ func (s *Server) handleRetuneRun(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	merged, err := s.retuneRun(r.Context(), run, &req.runOverridesWire)
+	if errors.Is(err, runner.ErrRetentionUnsupported) {
+		// The refusal carries its own status (409: the run is fine, it just
+		// stores nothing to retune); the resolver mapping below would call it
+		// a malformed request.
+		writeNoTraceRefusal(w, err)
+		return
+	}
 	if err != nil {
 		writeResolveError(w, err)
 		return

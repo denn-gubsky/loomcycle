@@ -1,11 +1,14 @@
 package gitsource
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"os"
 	"path/filepath"
+	"sync"
 	"sync/atomic"
 
 	"github.com/go-git/go-git/v5/plumbing"
@@ -28,12 +31,38 @@ import (
 // errObjectTooLarge is the guard's refusal; Fetch reports it as ErrTooLarge.
 var errObjectTooLarge = errors.New("gitsource: the pack holds an object over the size limit")
 
+// inflatedPerFetchedByte bounds what the packs of one fetch may become, in
+// all, as a multiple of the bytes the fetch may read: every object's size as
+// declared, and every delta's as built. A limit on each object alone does not
+// do it: 256 MiB fetched is thousands of 64 MiB objects of zeros, or millions
+// of few-byte deltas each building 64 MiB, and each is inflated here and then
+// again by the library. Source code packs to a few times smaller than it is,
+// and a history deepened for a merge base counts every version of a file it
+// holds; 32 leaves room for both, and is still a bound.
+const inflatedPerFetchedByte = 32
+
+// inflatedBudget is the total a fetch limited to maxFetch bytes may inflate.
+func inflatedBudget(maxFetch int64) int64 {
+	if maxFetch > math.MaxInt64/inflatedPerFetchedByte {
+		return math.MaxInt64
+	}
+	return maxFetch * inflatedPerFetchedByte
+}
+
 // guardedStorage is the library's file-system store with one change: a pack
 // written to it is checked first.
 type guardedStorage struct {
 	*filesystem.Storage
+	// ctx is the fetch's: the check of a pack stops at its end. The
+	// library's writer interface takes no context, and the store lives for
+	// one fetch, so it is kept here.
+	ctx       context.Context
 	spoolDir  string
 	maxObject int64
+	// mu guards inflated: what the packs still to come may inflate to, in
+	// all (inflatedBudget less what the packs so far declared).
+	mu       sync.Mutex
+	inflated int64
 	// refused is set when a pack was turned away. Fetch reads it rather
 	// than rely on the library handing the writer's error back unchanged.
 	refused atomic.Bool
@@ -64,7 +93,10 @@ func (s *spooledPack) Close() (err error) {
 	if _, err := s.f.Seek(0, io.SeekStart); err != nil {
 		return err
 	}
-	if err := checkPack(s.f, s.g.maxObject); err != nil {
+	s.g.mu.Lock()
+	err = checkPack(s.g.ctx, s.f, s.g.maxObject, &s.g.inflated)
+	s.g.mu.Unlock()
+	if err != nil {
 		if errors.Is(err, errObjectTooLarge) {
 			s.g.refused.Store(true)
 		}
@@ -85,20 +117,25 @@ func (s *spooledPack) Close() (err error) {
 }
 
 // checkPack reads a pack and fails with errObjectTooLarge when any object in
-// it is, or would become, larger than maxObject.
+// it is, or would become, larger than maxObject, or when the objects together
+// would become more than *inflated, which it lowers by what each declares. It
+// stops at ctx's end, between objects.
 //
 // For an ordinary object the size is in its header, and the library refuses
 // to inflate past what a header declares, so the header is what is checked.
 // For a delta the header gives only the size of the instructions; the size
 // of the object they build is the second number inside them, read here from
 // the first bytes of the inflated instructions.
-func checkPack(r io.Reader, maxObject int64) error {
+func checkPack(ctx context.Context, r io.Reader, maxObject int64, inflated *int64) error {
 	s := packfile.NewScanner(r)
 	_, count, err := s.Header()
 	if err != nil {
 		return fmt.Errorf("read the pack header: %w", err)
 	}
 	for i := uint32(0); i < count; i++ {
+		if err := ctx.Err(); err != nil {
+			return fmt.Errorf("check the pack: %w", err)
+		}
 		h, err := s.NextObjectHeader()
 		if err != nil {
 			return fmt.Errorf("read an object header: %w", err)
@@ -110,6 +147,7 @@ func checkPack(r io.Reader, maxObject int64) error {
 		if _, _, err := s.NextObject(head); err != nil {
 			return fmt.Errorf("read an object: %w", err)
 		}
+		size := h.Length
 		if h.Type == plumbing.OFSDeltaObject || h.Type == plumbing.REFDeltaObject {
 			result, ok := deltaResultSize(head.b)
 			if !ok {
@@ -118,7 +156,12 @@ func checkPack(r io.Reader, maxObject int64) error {
 			if result > maxObject {
 				return fmt.Errorf("%w (a delta that builds %d bytes, limit %d)", errObjectTooLarge, result, maxObject)
 			}
+			size = result
 		}
+		if size > *inflated {
+			return fmt.Errorf("%w (the objects together build more than the fetch allows)", errObjectTooLarge)
+		}
+		*inflated -= size
 	}
 	return nil
 }

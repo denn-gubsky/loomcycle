@@ -36,7 +36,7 @@ func (p *principalInterceptor) Before(ctx context.Context, callCtx *a2asrv.CallC
 		callCtx.User = a2asrv.NewAuthenticatedUser("anonymous", nil)
 		return ctx, nil, nil
 	}
-	name, restricted, isolated, ok := p.auth(serviceParamsToHeader(callCtx.ServiceParams()))
+	peer, ok := p.auth(ctx, serviceParamsToHeader(callCtx.ServiceParams()))
 	if !ok {
 		// Auth is configured but the request carried no valid credential.
 		// REJECT at the frontier: returning a non-nil error from a
@@ -51,12 +51,27 @@ func (p *principalInterceptor) Before(ctx context.Context, callCtx *a2asrv.CallC
 		callCtx.User = &a2asrv.User{Authenticated: false}
 		return ctx, nil, a2asdk.ErrUnauthenticated
 	}
-	callCtx.User = a2asrv.NewAuthenticatedUser(name, nil)
+	// A credential bound to a tenant reaches only that tenant. In a routing
+	// mode the request's host or path names the tenant the run is made in,
+	// and the caller chose it: another tenant's is refused, as an unknown
+	// credential is (no oracle that the token is valid elsewhere). With no
+	// routing the token's tenant is the run's, never one the body names.
+	if peer.TenantBound {
+		if routed, authoritative := bridge.RoutedTenantFrom(ctx); authoritative {
+			if routed != peer.Tenant {
+				callCtx.User = &a2asrv.User{Authenticated: false}
+				return ctx, nil, a2asdk.ErrUnauthenticated
+			}
+		} else {
+			ctx = bridge.WithRoutedTenant(ctx, peer.Tenant)
+		}
+	}
+	callCtx.User = a2asrv.NewAuthenticatedUser(peer.Name, nil)
 	// RFC AX + RFC BX P2b: thread the peer-derived operator-key restriction AND
 	// isolation bit to the executor (the returned ctx propagates to the handler →
 	// buildRunInput → RunInput).
-	ctx = bridge.WithOperatorKeyRestricted(ctx, restricted)
-	ctx = bridge.WithIsolated(ctx, isolated)
+	ctx = bridge.WithOperatorKeyRestricted(ctx, peer.Restricted)
+	ctx = bridge.WithIsolated(ctx, peer.Isolated)
 	return ctx, nil, nil
 }
 

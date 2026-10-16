@@ -36,6 +36,13 @@ type RestoreOptions struct {
 	// warning. The call sites pass the runtime's *sqlmem.Manager.
 	SqlMem SqlMemSnapshotter
 
+	// ReplicaID is the restoring replica's id, stamped on each restored
+	// queued run: this replica queues it again and holds its wait, and if it
+	// restarts before the run starts, its boot restarts only the queued rows
+	// stamped with its own id. "" outside a cluster, where the store keeps no
+	// replica per run.
+	ReplicaID string
+
 	// Now is the target's clock, which decides whether carried month-to-date
 	// usage is still in the current budget window. nil = time.Now; tests set it.
 	Now func() time.Time
@@ -1205,7 +1212,7 @@ func Restore(ctx context.Context, s store.Store, raw []byte, opts RestoreOptions
 			return result, err
 		}
 		for _, e := range sec.Entries {
-			restoreQueuedRun(ctx, s, e, &result)
+			restoreQueuedRun(ctx, s, e, opts.ReplicaID, &result)
 		}
 	}
 
@@ -1356,8 +1363,9 @@ func decodeWithMigration(section string, raw json.RawMessage, dst any) error {
 // restoreQueuedRun inserts one captured queued run as queued, with the
 // request it was queued with and its events so far, and names it for the
 // caller to queue again (Refresh.QueuedRunIDs). A run already on the target
-// is left as it is: it has its own waiter there, or has moved on.
-func restoreQueuedRun(ctx context.Context, s store.Store, e QueuedRunEntry, result *RestoreResult) {
+// is left as it is: it has its own waiter there, or has moved on. The row is
+// stamped with replicaID, the replica that queues it again.
+func restoreQueuedRun(ctx context.Context, s store.Store, e QueuedRunEntry, replicaID string, result *RestoreResult) {
 	sessionID := e.SessionID
 	if sessionID == "" {
 		sessionID = "snap_sess_" + e.RunID
@@ -1379,6 +1387,7 @@ func restoreQueuedRun(ctx context.Context, s store.Store, e QueuedRunEntry, resu
 		CredentialsNoUserScope: e.CredentialsNoUserScope,
 		Retention:              e.Retention, ParentContext: e.ParentContext,
 		IdempotencyKey: e.IdempotencyKey, DeliveryAltKey: e.DeliveryAltKey,
+		ReplicaID: replicaID,
 	}
 	// As for a paused run: a key another run here already holds is dropped,
 	// and the run still comes back.

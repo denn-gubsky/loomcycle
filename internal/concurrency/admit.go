@@ -26,8 +26,9 @@ type QueueInfo struct {
 // AdmitRequest is one run asking for a run slot.
 type AdmitRequest struct {
 	TenantID, UserID string
-	// Ticket names the waiting run (its run id) so Position can find it.
-	// Empty: Position cannot report it.
+	// Ticket names the waiting run (its agent_id: the run id does not exist
+	// until it queues) so Position can find it. Empty: Position cannot report
+	// it. While one run waits under a ticket, another naming it is not indexed.
 	Ticket string
 	// Reject refuses at once instead of waiting: *ErrPerUserQuotaExhausted
 	// over the per-user cap, *BackpressureError when no slot is free.
@@ -62,11 +63,14 @@ func (s *Semaphore) Admit(ctx context.Context, r AdmitRequest) (release func(), 
 	s.mu.Unlock()
 	perUser := cap > 0 && key.user != ""
 
+	// waited: the run queued on its user's cap and still holds that place in
+	// the queue, which it takes into the wait for a slot.
+	waited := false
 	if perUser {
 		if qs != nil {
-			err = s.admitUserShared(ctx, qs, key, cap, r)
+			waited, err = s.admitUserShared(ctx, qs, key, cap, r)
 		} else {
-			err = s.admitUserLocal(ctx, key, cap, r)
+			waited, err = s.admitUserLocal(ctx, key, cap, r)
 		}
 		if err != nil {
 			return nil, err
@@ -78,7 +82,7 @@ func (s *Semaphore) Admit(ctx context.Context, r AdmitRequest) (release func(), 
 	if perUser {
 		acct, acctQS = key, qs
 	}
-	return s.admitGlobal(ctx, key, acct, acctQS, r)
+	return s.admitGlobal(ctx, key, acct, acctQS, r, waited)
 }
 
 // AdmitSlot takes a run slot for a request sent directly, outside any run (the
@@ -90,12 +94,14 @@ func (s *Semaphore) Admit(ctx context.Context, r AdmitRequest) (release func(), 
 // refused with *BackpressureError.
 func (s *Semaphore) AdmitSlot(ctx context.Context, tenantID, userID string) (release func(), err error) {
 	key := userKey{tenant: tenantID, user: userID}
-	return s.admitGlobal(ctx, key, userKey{}, nil, AdmitRequest{TenantID: tenantID, UserID: userID})
+	return s.admitGlobal(ctx, key, userKey{}, nil, AdmitRequest{TenantID: tenantID, UserID: userID}, false)
 }
 
 // admitUserLocal counts the run against its user's cap, waiting in that user's
-// FIFO when the cap is reached. On return without error the run is counted.
-func (s *Semaphore) admitUserLocal(ctx context.Context, key userKey, cap int, r AdmitRequest) error {
+// FIFO when the cap is reached. On return without error the run is counted, and
+// waited reports that it queued: it then still holds its place in the queue
+// (counted in queued), for admitGlobal to take over.
+func (s *Semaphore) admitUserLocal(ctx context.Context, key userKey, cap int, r AdmitRequest) (waited bool, err error) {
 	s.mu.Lock()
 	if s.perUser == nil {
 		s.perUser = map[userKey]int{}
@@ -103,15 +109,15 @@ func (s *Semaphore) admitUserLocal(ctx context.Context, key userKey, cap int, r 
 	if s.perUser[key] < cap {
 		s.perUser[key]++
 		s.mu.Unlock()
-		return nil
+		return false, nil
 	}
 	if r.Reject || len(s.userWait[key]) >= s.maxQueuedPerUser {
 		s.mu.Unlock()
-		return &ErrPerUserQuotaExhausted{TenantID: key.tenant, UserID: key.user, Cap: cap}
+		return false, &ErrPerUserQuotaExhausted{TenantID: key.tenant, UserID: key.user, Cap: cap}
 	}
 	if s.queued+s.lent >= s.maxQueue {
 		s.mu.Unlock()
-		return &BackpressureError{msg: "queue full"}
+		return false, &BackpressureError{msg: "queue full"}
 	}
 	w := &semWaiter{ch: make(chan struct{}, 1), key: key, ticket: r.Ticket, reason: QueueReasonUserCap}
 	if s.userWait == nil {
@@ -126,16 +132,16 @@ func (s *Semaphore) admitUserLocal(ctx context.Context, key userKey, cap int, r 
 	if r.OnQueued != nil {
 		if err := r.OnQueued(QueueInfo{Reason: QueueReasonUserCap, Position: pos}); err != nil {
 			s.cancelUserWaiter(w, key)
-			return err
+			return false, err
 		}
 	}
 	select {
 	case <-w.ch:
 		// wakeUserWaiter counted the run against its user and dequeued it.
-		return nil
+		return true, nil
 	case <-ctx.Done():
 		s.cancelUserWaiter(w, key)
-		return ctx.Err()
+		return false, ctx.Err()
 	}
 }
 
@@ -159,51 +165,57 @@ func (s *Semaphore) cancelUserWaiter(w *semWaiter, key userKey) {
 			return
 		}
 	}
-	<-w.ch // woken: the token is in the buffer (sent under s.mu)
+	<-w.ch     // woken: the token is in the buffer (sent under s.mu)
+	s.queued-- // the place it kept for the wait for a slot
 	s.decrementPerUser(key)
 }
 
-// wakeUserWaiter moves the user's oldest run waiting on its cap on, when the
-// user is now under the cap. Caller holds s.mu.
+// wakeUserWaiter moves the user's runs waiting on its cap on, oldest first,
+// while the user is under the cap. A cap of 0 is none (a reload turned it
+// off): every waiting run moves on. Caller holds s.mu.
 func (s *Semaphore) wakeUserWaiter(key userKey) {
-	q := s.userWait[key]
-	if len(q) == 0 || s.perUser[key] >= s.maxPerUser {
-		return
+	for {
+		q := s.userWait[key]
+		if len(q) == 0 || (s.maxPerUser > 0 && s.perUser[key] >= s.maxPerUser) {
+			return
+		}
+		w := q[0]
+		q[0] = nil
+		if q = q[1:]; len(q) == 0 {
+			delete(s.userWait, key)
+		} else {
+			s.userWait[key] = q
+		}
+		// queued is left as is: the run keeps its place for the wait for a
+		// slot, so a run that arrives meanwhile cannot fill the queue and have
+		// a run that already waited refused as "queue full".
+		s.perUser[key]++
+		s.untrack(w)
+		w.ch <- struct{}{}
 	}
-	w := q[0]
-	q[0] = nil
-	if q = q[1:]; len(q) == 0 {
-		delete(s.userWait, key)
-	} else {
-		s.userWait[key] = q
-	}
-	s.perUser[key]++
-	s.queued--
-	s.untrack(w)
-	w.ch <- struct{}{}
 }
 
 // admitUserShared is admitUserLocal against the cluster-wide counter. A run
 // over the cap polls it; the waiting-run bound is per replica.
-func (s *Semaphore) admitUserShared(ctx context.Context, qs userQuotaGate, key userKey, cap int, r AdmitRequest) error {
+func (s *Semaphore) admitUserShared(ctx context.Context, qs userQuotaGate, key userKey, cap int, r AdmitRequest) (waited bool, err error) {
 	ok, err := qs.TryAcquire(ctx, key.tenant, key.user, cap)
 	if err != nil {
-		return wrapQuotaErr(err)
+		return false, wrapQuotaErr(err)
 	}
 	if ok {
-		return nil
+		return false, nil
 	}
 	if r.Reject {
-		return &ErrPerUserQuotaExhausted{TenantID: key.tenant, UserID: key.user, Cap: cap}
+		return false, &ErrPerUserQuotaExhausted{TenantID: key.tenant, UserID: key.user, Cap: cap}
 	}
 	s.mu.Lock()
 	if s.userPolling[key] >= s.maxQueuedPerUser {
 		s.mu.Unlock()
-		return &ErrPerUserQuotaExhausted{TenantID: key.tenant, UserID: key.user, Cap: cap}
+		return false, &ErrPerUserQuotaExhausted{TenantID: key.tenant, UserID: key.user, Cap: cap}
 	}
 	if s.queued+s.lent >= s.maxQueue {
 		s.mu.Unlock()
-		return &BackpressureError{msg: "queue full"}
+		return false, &BackpressureError{msg: "queue full"}
 	}
 	if s.userPolling == nil {
 		s.userPolling = map[userKey]int{}
@@ -219,14 +231,17 @@ func (s *Semaphore) admitUserShared(ctx context.Context, qs userQuotaGate, key u
 		if s.userPolling[key]--; s.userPolling[key] <= 0 {
 			delete(s.userPolling, key)
 		}
-		s.queued--
+		// A run that got its count keeps its place for the wait for a slot.
+		if !waited {
+			s.queued--
+		}
 		s.untrack(w)
 		s.mu.Unlock()
 	}()
 
 	if r.OnQueued != nil {
 		if err := r.OnQueued(QueueInfo{Reason: QueueReasonUserCap, Position: pos}); err != nil {
-			return err
+			return false, err
 		}
 	}
 	t := time.NewTicker(s.userPollInterval())
@@ -235,7 +250,7 @@ func (s *Semaphore) admitUserShared(ctx context.Context, qs userQuotaGate, key u
 	for {
 		select {
 		case <-ctx.Done():
-			return ctx.Err()
+			return false, ctx.Err()
 		case <-t.C:
 		}
 		ok, err := qs.TryAcquire(ctx, key.tenant, key.user, cap)
@@ -249,7 +264,7 @@ func (s *Semaphore) admitUserShared(ctx context.Context, qs userQuotaGate, key u
 			continue
 		}
 		if ok {
-			return nil
+			return true, nil
 		}
 	}
 }
@@ -257,14 +272,20 @@ func (s *Semaphore) admitUserShared(ctx context.Context, qs userQuotaGate, key u
 // admitGlobal takes a run slot, waiting round-robin with the other users'
 // runs when none is free. acct/acctQS are what a release or a cancel gives
 // back for the user (none when the run was not counted against its user).
-func (s *Semaphore) admitGlobal(ctx context.Context, key, acct userKey, acctQS userQuotaGate, r AdmitRequest) (func(), error) {
+// holdsPlace is a run that already waited on its user's cap: it is counted in
+// queued already, and is never refused for a full queue — it was let into the
+// queue once.
+func (s *Semaphore) admitGlobal(ctx context.Context, key, acct userKey, acctQS userQuotaGate, r AdmitRequest, holdsPlace bool) (func(), error) {
 	s.mu.Lock()
 	if s.active < s.maxConcurrent {
 		s.active++
+		if holdsPlace {
+			s.queued--
+		}
 		s.mu.Unlock()
 		return s.runRelease(acct, acctQS, r.Slot), nil
 	}
-	if r.Reject || s.queued+s.lent >= s.maxQueue {
+	if !holdsPlace && (r.Reject || s.queued+s.lent >= s.maxQueue) {
 		msg := "queue full"
 		if r.Reject {
 			msg = "no free slot"
@@ -287,7 +308,9 @@ func (s *Semaphore) admitGlobal(ctx context.Context, key, acct userKey, acctQS u
 	}
 	w := &semWaiter{ch: make(chan struct{}, 1), key: key, ticket: r.Ticket, reason: QueueReasonGlobalCap}
 	s.queue.push(w)
-	s.queued++
+	if !holdsPlace {
+		s.queued++
+	}
 	s.track(w)
 	pos := s.positionLocked(w)
 	s.mu.Unlock()
@@ -385,6 +408,13 @@ func (s *Semaphore) track(w *semWaiter) {
 	}
 	if s.tickets == nil {
 		s.tickets = map[string]*semWaiter{}
+	}
+	// The first waiter keeps the name. A second run naming a ticket already
+	// waiting is a duplicate agent_id, refused by the caller only after it has
+	// queued; replacing the first waiter here, and then deleting the entry on
+	// the duplicate's untrack, left the run still waiting with no position.
+	if _, held := s.tickets[w.ticket]; held {
+		return
 	}
 	s.tickets[w.ticket] = w
 }

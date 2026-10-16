@@ -20,6 +20,7 @@ import (
 	"time"
 
 	runcancel "github.com/denn-gubsky/loomcycle/internal/cancel"
+	"github.com/denn-gubsky/loomcycle/internal/concurrency"
 	"github.com/denn-gubsky/loomcycle/internal/config"
 	"github.com/denn-gubsky/loomcycle/internal/contextplugin"
 	"github.com/denn-gubsky/loomcycle/internal/fence"
@@ -500,7 +501,9 @@ type RunOptions struct {
 	// call would wait there too long (queue-aware routing, RFC EI P4). It
 	// returns the provider, model and effort to move to, and moved=false to
 	// stay. The run moves at most once: after a move it stays where it went.
-	// Nil for a run that is not queue-aware.
+	// Nil never moves. The server sets it for every run and declines, when
+	// asked, a run that is pinned or not queue-aware at that moment, since a
+	// retune can change either mid-run.
 	MoveForQueue func(ctx context.Context, current providers.Provider, model string) (provider providers.Provider, newModel, effort string, moved bool)
 
 	// Hooks is the tool-use hook dispatcher. Optional; nil disables
@@ -3458,6 +3461,32 @@ outerLoop:
 		callTimer := providers.StartCallTimer(opts.Now)
 		ch, err := opts.Provider.Call(turnCtx, req)
 		if err != nil {
+			// The operator cancelled this turn while its call was still waiting
+			// (in a provider's call lane, or anywhere else Call blocks), so the
+			// call failed with the turn's cancellation. That is the same event as
+			// a cancel during generation and ends the same way: the run parks for
+			// the operator's next message. It is checked before everything below
+			// because it says nothing about the provider, so no retry, fallback
+			// or resolver feedback applies. Nothing was generated, so the history
+			// needs no repair.
+			if opts.ArmTurnCancel != nil && ctx.Err() == nil && errors.Is(context.Cause(turnCtx), ErrTurnCancelled) {
+				var resumed bool
+				messages, lastCtxTokens, resumed = finishTurnCancel(ctx, &opts, messages, iter, lastCtxTokens, preambleTokens, reasonFromCause(context.Cause(turnCtx)), emit, disarmTurn)
+				iterSpan.End()
+				if !resumed {
+					break
+				}
+				// A call waiting for its lane lends the run's global slot, and
+				// it could not take it back under the cancelled turn when none
+				// was free. Take it back under the run's own ctx before the run
+				// computes again: the next turn may be routed to a provider no
+				// lane gates, which would never take it back on its own. A
+				// no-op when the slot is not lent.
+				if concurrency.RunSlotFrom(ctx).Reclaim(ctx) != nil {
+					break
+				}
+				continue outerLoop
+			}
 			// v0.12.9 same-provider retry: when the operator opted
 			// into MaxSameProviderRetries > 0, retryable errors
 			// (429, 5xx, network) sleep with exponential backoff and
@@ -4642,6 +4671,38 @@ var allowedUntrustedKinds = map[string]bool{
 	"tool_output":   true,
 	"search_result": true,
 	"run_metadata":  true, // non-secret metadata projected from an external trigger body
+	fence.CodeKind:  true, // kept exactly as written, under a boundary derived from the text
+}
+
+// RuntimeOnlyKind is the untrusted kind only the runtime may write: it marks
+// what an external trigger's body sent (injectMetadataSegments). A caller's
+// block under it would tell the model the trigger sent text it did not.
+const RuntimeOnlyKind = "run_metadata"
+
+// DemoteRuntimeKinds returns segs with every untrusted-block a caller labelled
+// with a runtime-only kind relabelled "untrusted". Every intake applies it to
+// the segments a caller sent, before the runtime adds its own; segs is not
+// changed.
+func DemoteRuntimeKinds(segs []PromptSegment) []PromptSegment {
+	var out []PromptSegment
+	for i, s := range segs {
+		for j, c := range s.Content {
+			if c.Type != "untrusted-block" || c.Kind != RuntimeOnlyKind {
+				continue
+			}
+			if out == nil {
+				out = append([]PromptSegment(nil), segs...)
+			}
+			if &out[i].Content[0] == &segs[i].Content[0] {
+				out[i].Content = append([]PromptContentBlock(nil), s.Content...)
+			}
+			out[i].Content[j].Kind = "untrusted"
+		}
+	}
+	if out == nil {
+		return segs
+	}
+	return out
 }
 
 // ValidateSegmentTypes refuses a content block whose type is set and is not
@@ -4723,10 +4784,17 @@ func messagesHaveImage(messages []providers.Message) bool {
 
 // FlattenContent is the public version of flattenContent for callers that
 // need to apply the same trust-escaping rules during transcript replay
-// (continuation endpoint). External callers should not depend on this for
-// any other purpose; it's stable but narrow.
+// (continuation endpoint) or when rendering a stored transcript back to a
+// model (History's conversation form). External callers should not depend on
+// this for any other purpose; it's stable but narrow.
 func FlattenContent(c PromptContentBlock) providers.ContentBlock {
 	return flattenContent(c)
+}
+
+// UntrustedKind is the tag FlattenContent wraps an untrusted block of the
+// declared kind in, for a caller that has to name the block the same way.
+func UntrustedKind(kind string) string {
+	return untrustedKind(kind)
 }
 
 // flattenContent converts the caller's typed content union into a provider
@@ -4744,10 +4812,17 @@ func FlattenContent(c PromptContentBlock) providers.ContentBlock {
 //     were trusted. Entities, look-alike characters and invisible format
 //     characters are covered too: a model reads `&lt;/web_content>` as the
 //     closing tag just as readily.
+//
+// Kind "code" is the exception to the second: code under review must reach
+// the model as written, so fence.CodeBlock leaves it unescaped and fences it
+// under a boundary derived from the text, which the text cannot close.
 func flattenContent(c PromptContentBlock) providers.ContentBlock {
 	switch c.Type {
 	case "untrusted-block":
 		kind := untrustedKind(c.Kind)
+		if kind == fence.CodeKind {
+			return providers.ContentBlock{Type: "text", Text: fence.CodeBlock(c.Text)}
+		}
 		safe := fence.EscapeUntrusted(c.Text)
 		return providers.ContentBlock{
 			Type: "text",

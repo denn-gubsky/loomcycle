@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"strings"
 	"sync"
 	"sync/atomic"
 
@@ -25,10 +24,13 @@ type callKey struct{}
 // call is one fetch's state.
 type call struct {
 	rt   http.RoundTripper
-	host string // the only host this fetch may talk to, lower case
+	host string // the only host this fetch may talk to, as hostKey gives it
 	max  int64
 	read atomic.Int64
 	over atomic.Bool
+	// status is the last error status (400 and up) a response of the fetch
+	// had, for the detail of a refusal (refusalDetail).
+	status atomic.Int32
 	// packRefused points at the store's flag for a pack turned away over an
 	// object's size (packguard.go).
 	packRefused *atomic.Bool
@@ -62,12 +64,15 @@ func (dispatcher) RoundTrip(r *http.Request) (*http.Response, error) {
 	if st == nil {
 		return nil, errors.New("gitsource: request outside a fetch")
 	}
-	if r.URL.Scheme != "https" || !strings.EqualFold(r.URL.Host, st.host) {
+	if r.URL.Scheme != "https" || hostKey(r.URL) != st.host {
 		return nil, fmt.Errorf("gitsource: request to %q refused; this fetch talks to %q over https only", r.URL.Host, st.host)
 	}
 	resp, err := st.rt.RoundTrip(r)
 	if err != nil {
 		return nil, err
+	}
+	if resp.StatusCode >= 400 {
+		st.status.Store(int32(resp.StatusCode))
 	}
 	resp.Body = &countedBody{ReadCloser: resp.Body, st: st}
 	return resp, nil

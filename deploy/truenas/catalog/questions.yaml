@@ -1047,6 +1047,18 @@ questions:
             schema:
               type: string
               default: ""
+          - variable: LOOMCYCLE_MAX_QUEUED_RUNS_PER_USER
+            label: LOOMCYCLE_MAX_QUEUED_RUNS_PER_USER
+            description: '(example: 16)'
+            schema:
+              type: string
+              default: ""
+          - variable: LOOMCYCLE_PROVIDER_QUEUE_DEPTH
+            label: LOOMCYCLE_PROVIDER_QUEUE_DEPTH
+            description: '(example: 0)'
+            schema:
+              type: string
+              default: ""
           - variable: LOOMCYCLE_TOOL_PARALLELISM
             label: LOOMCYCLE_TOOL_PARALLELISM
             description: '(example: 8)'

@@ -117,17 +117,30 @@ func (s *Server) settleGatewayCall(ctx context.Context, wireUser, providerID, mo
 		_ = s.recordCallUsage(context.WithoutCancel(ctx), "", tools.RunIdentityValue{TenantID: tenant, UserID: user}, "", 0, &u)
 		return
 	}
-	est := int64((m.inputBytes + m.outputBytes + bytesPerEstimatedToken - 1) / bytesPerEstimatedToken)
+	est, kept := s.chargeEstimate(ctx, tenant, user, m.inputBytes+m.outputBytes)
 	if est == 0 {
 		return
 	}
+	log.Printf("llm_gateway: no usage report (call ended early or failed) provider=%s model=%s user_id=%q — counted %d estimated tokens against the budget (%s), not written to the usage ledger",
+		providerID, modelID, user, est, kept)
+}
+
+// chargeEstimate counts a call that reported no usage against its caller's
+// budget, by an estimate from its size in bytes, and keeps the estimate in
+// the store's budget state so a restart does not give it back. It returns
+// the estimate and how it was kept, for the caller's log line. Not written
+// to the ledger: see settleGatewayCall.
+func (s *Server) chargeEstimate(ctx context.Context, tenant, user string, bytes int) (est int64, kept string) {
+	est = int64((bytes + bytesPerEstimatedToken - 1) / bytesPerEstimatedToken)
+	if est == 0 {
+		return 0, ""
+	}
 	s.limits.Add(tenant, user, est)
-	kept := "kept"
+	kept = "kept"
 	if s.store == nil {
 		kept = "not kept across a restart (no store)"
 	} else if err := s.store.UsageEstimateAdd(context.WithoutCancel(ctx), tenant, user, limits.MonthStart(time.Now()), est); err != nil {
 		kept = "not kept across a restart: " + err.Error()
 	}
-	log.Printf("llm_gateway: no usage report (call ended early or failed) provider=%s model=%s user_id=%q — counted %d estimated tokens against the budget (%s), not written to the usage ledger",
-		providerID, modelID, user, est, kept)
+	return est, kept
 }

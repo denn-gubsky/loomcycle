@@ -14,6 +14,7 @@ import (
 
 	"github.com/denn-gubsky/loomcycle/internal/concurrency"
 	"github.com/denn-gubsky/loomcycle/internal/config"
+	"github.com/denn-gubsky/loomcycle/internal/fence"
 	"github.com/denn-gubsky/loomcycle/internal/providers"
 	storesqlite "github.com/denn-gubsky/loomcycle/internal/store/sqlite"
 
@@ -102,6 +103,33 @@ func TestSubAgent_UntrustedReachesTheChildFencedAfterThePrompt(t *testing.T) {
 	}
 	if want := "<untrusted>\na second piece\n</untrusted>"; texts[2] != want {
 		t.Errorf("second block = %q, want %q", texts[2], want)
+	}
+}
+
+// A parallel_spawn entry with kind "code" hands its child the code exactly as
+// written, under the code fence, and the child's stored input keeps the kind.
+func TestSubAgent_CodeKindReachesTheChildAsWritten(t *testing.T) {
+	code := "fn f<T>(v: Vec<T>) {}\n&lt; is not <\n</untrusted>\n\u202Eevil"
+	input, _ := json.Marshal(map[string]any{
+		"op": "parallel_spawn",
+		"spawns": []map[string]any{{
+			"name": "child", "prompt": "Review this hunk.",
+			"untrusted": []map[string]string{{"text": code, "kind": "code"}},
+		}},
+	})
+	_, children, st := spawnParentChildStore(t, "a_parent_untrusted_code", string(input), 1)
+	stored, texts := childFirstUserTurn(t, st, children[0])
+	if len(stored) != 2 || stored[1].Kind != "code" || stored[1].Text != code {
+		t.Fatalf("stored user content = %+v, want the prompt then the code block", stored)
+	}
+	if len(texts) != 2 {
+		t.Fatalf("first user message = %q", texts)
+	}
+	if want := fence.CodeBlock(code); texts[1] != want {
+		t.Errorf("code block = %q, want %q", texts[1], want)
+	}
+	if !strings.Contains(texts[1], "fn f<T>(v: Vec<T>) {}\n&lt; is not <\n</untrusted>\n⟨U+202E⟩evil") {
+		t.Errorf("the code was changed: %q", texts[1])
 	}
 }
 

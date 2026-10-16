@@ -28,8 +28,8 @@ type DiffLimits struct {
 	// (ErrTooLarge). Required.
 	MaxBytes int64
 	// MaxFileBytes is the largest file whose content is diffed; a change to
-	// a larger one is listed without a body. Required. It also bounds the
-	// time the diff takes, which grows with the size of the files compared.
+	// a larger one is listed without a body. Required. The diff's time is
+	// bounded by lines, not bytes: see maxDiffLines.
 	MaxFileBytes int64
 	// MaxFiles bounds how many changed paths are listed, skipped ones
 	// included. Required. The base tree is not bounded by WriteTree's file
@@ -44,6 +44,19 @@ type DiffLimits struct {
 // maxFileDiffTime is how long one file's diff may take when the context sets
 // no deadline. The diff library would otherwise allow it an hour.
 const maxFileDiffTime = 30 * time.Second
+
+// maxDiffLines is the most lines either side of one file's change may have,
+// once the lines the two sides share at the start and the end are set aside,
+// for the change to get a body. A larger one is listed as too_large.
+//
+// The time limit given to the diff library does not bound its time: before
+// the part that watches the clock, it looks for a long run of lines common
+// to both sides, and that search never looks at the clock and grows with the
+// cube of the line count. Measured: 10,000 lines of a repeated line between
+// two different first and last lines, about 0.9s; 40,000, 6.7s; a 5 MiB file
+// of them, hours, all of it while holding the clone's slot. At 5,000 lines
+// the worst shape measured is about a tenth of a second.
+const maxDiffLines = 5000
 
 // DiffFile is one changed path, as numstat.json lists it.
 type DiffFile struct {
@@ -140,6 +153,11 @@ func (f *Fetched) WriteDiff(ctx context.Context, dest, patchRel, numstatRel stri
 			continue
 		}
 		fp, err := f.filePatch(ctx, c)
+		if errors.Is(err, errDiffTooLarge) {
+			df.Skipped = ReasonTooLarge
+			files = append(files, df)
+			continue
+		}
 		if err != nil {
 			if errors.Is(err, ErrTimeout) || ctx.Err() != nil {
 				return res, fmt.Errorf("%w: diff %s: %v", ErrTimeout, df.Path, err)
@@ -282,6 +300,9 @@ func (f *Fetched) filePatch(ctx context.Context, c *object.Change) (*filePatch, 
 		fp.binary = true
 		return fp, nil
 	}
+	if changedLines(fromText, toText) > maxDiffLines {
+		return nil, errDiffTooLarge
+	}
 	budget := maxFileDiffTime
 	if deadline, ok := ctx.Deadline(); ok {
 		budget = time.Until(deadline)
@@ -301,6 +322,49 @@ func (f *Fetched) filePatch(ctx context.Context, c *object.Change) (*filePatch, 
 		fp.chunks = append(fp.chunks, chunk{d.Text, op})
 	}
 	return fp, nil
+}
+
+// errDiffTooLarge is filePatch's answer for a change over maxDiffLines.
+var errDiffTooLarge = errors.New("gitsource: the change has too many lines to diff")
+
+// changedLines is the line count of the longer side of a change, once the
+// whole lines both sides start with and end with are set aside: the part the
+// diff library actually searches. It allocates nothing, so it costs no more
+// than reading the two texts.
+func changedLines(a, b string) int {
+	for a != "" && b != "" {
+		la, lb := lineEnd(a), lineEnd(b)
+		if a[:la] != b[:lb] {
+			break
+		}
+		a, b = a[la:], b[lb:]
+	}
+	for a != "" && b != "" {
+		la := strings.LastIndexByte(a[:len(a)-1], '\n') + 1
+		lb := strings.LastIndexByte(b[:len(b)-1], '\n') + 1
+		if a[la:] != b[lb:] {
+			break
+		}
+		a, b = a[:la], b[:lb]
+	}
+	return max(countLines(a), countLines(b))
+}
+
+// lineEnd is the index just past the first line of s, its newline included.
+func lineEnd(s string) int {
+	if i := strings.IndexByte(s, '\n'); i >= 0 {
+		return i + 1
+	}
+	return len(s)
+}
+
+// countLines counts a last line with no newline as a line.
+func countLines(s string) int {
+	n := strings.Count(s, "\n")
+	if s != "" && !strings.HasSuffix(s, "\n") {
+		n++
+	}
+	return n
 }
 
 func fileText(f *object.File) (string, bool, error) {

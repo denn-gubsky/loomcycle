@@ -164,6 +164,17 @@ type AgentRequest struct {
 	// resolver's read lock held: it must not call back into the Resolver.
 	QueueWait   func(provider, model string) time.Duration
 	SwitchAfter time.Duration
+
+	// Eligible, when set, says whether the run can run at all on an available
+	// (provider, model) — a run carrying an image cannot run on a text-only
+	// one. The tier walk skips an available candidate it refuses; when it
+	// refuses every available one, the walk takes the first of them, where the
+	// run fails just as it would have without the filter. Queue-aware routing
+	// sets it so that passing a busy candidate over never sends the run
+	// somewhere it cannot run. nil = every candidate is eligible. Called
+	// with the resolver's read lock held: it must not call back into the
+	// Resolver.
+	Eligible func(provider, model string) bool
 }
 
 // UserTierOverlay carries the per-request user-tier policy. Built by
@@ -494,6 +505,11 @@ func (r *Resolver) Resolve(req AgentRequest) (Decision, error) {
 		bestWait   time.Duration
 		haveBest   bool
 		passedOver []string
+		// The first available candidate Eligible refused, taken only when no
+		// eligible one is available.
+		ineligible     Decision
+		ineligibleCand Candidate
+		haveIneligible bool
 	)
 	for _, providerID := range priority {
 		for _, cand := range candidates {
@@ -522,6 +538,12 @@ func (r *Resolver) Resolve(req AgentRequest) (Decision, error) {
 			}
 			if r.isAvailableLocked(cand.Provider, model) {
 				dec := Decision{Provider: cand.Provider, Model: model, Effort: req.Effort}
+				if req.Eligible != nil && !req.Eligible(cand.Provider, model) {
+					if !haveIneligible {
+						ineligible, ineligibleCand, haveIneligible = dec, cand, true
+					}
+					continue
+				}
 				if req.QueueWait != nil {
 					wait := req.QueueWait(cand.Provider, model)
 					if wait > req.SwitchAfter {
@@ -550,6 +572,14 @@ func (r *Resolver) Resolve(req AgentRequest) (Decision, error) {
 		}
 		best.PassedOver = removePassed(passedOver, best)
 		return best, nil
+	}
+	if haveIneligible {
+		// No available candidate is eligible: take the first available one,
+		// where the run fails just as it would have without the filter.
+		if ineligibleCand.ModelPattern != "" {
+			r.noteResolved(ineligibleCand.Provider, ineligibleCand.ModelPattern, ineligible.Model)
+		}
+		return ineligible, nil
 	}
 	// RFC AX: a non-nil filter that removed EVERY candidate is a policy refusal
 	// (the tenant can key none of the tier's providers), not a transient outage.

@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/denn-gubsky/loomcycle/internal/dynvol"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
 )
 
@@ -181,7 +182,7 @@ func TestContextTool_SelfListsEphemeralVolumesWithTheirMode(t *testing.T) {
 // again. The create is refused, and the volume is taken into the set with the
 // mode that is recorded.
 func TestVolumeDefTool_CreateOverARecordedReadOnlyVolumeIsRefusedAndStaysReadOnly(t *testing.T) {
-	tool, base, _, done := volumeDefFixture(t)
+	tool, base, root, done := volumeDefFixture(t)
 	defer done()
 	first, _ := ephemeralCtx(base, "run-1")
 	if _, res := vdExec(t, tool, first, `{"op":"create","name":"repo","ephemeral":true}`); res.IsError {
@@ -191,8 +192,21 @@ func TestVolumeDefTool_CreateOverARecordedReadOnlyVolumeIsRefusedAndStaysReadOnl
 		t.Fatal(res.Text)
 	}
 
-	// The same tree, an empty set.
+	// The same tree, an empty set. The server gives a run the tree's records,
+	// placed on this replica: the mode from the row, the path derived.
 	again, set := ephemeralCtx(base, "run-1")
+	again = tools.WithEphemeralRecords(again, func(ctx context.Context) ([]tools.EphemeralRecord, error) {
+		rows, err := tool.Store.EphemeralVolumeListByRun(ctx, "run-1")
+		if err != nil {
+			return nil, err
+		}
+		var out []tools.EphemeralRecord
+		for _, r := range rows {
+			out = append(out, tools.EphemeralRecord{Name: r.Name, ReadOnly: strings.Contains(string(r.Definition), `"mode":"ro"`),
+				Root: dynvol.DerivedEphemeralPath(root, "run-1", r.Name)})
+		}
+		return out, nil
+	})
 	if _, res := vdExec(t, tool, again, `{"op":"create","name":"repo","mode":"rw","ephemeral":true}`); !res.IsError || !strings.Contains(res.Text, "already exists") {
 		t.Fatalf("create over a recorded volume: error=%v %q", res.IsError, res.Text)
 	}

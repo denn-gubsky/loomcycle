@@ -27,7 +27,9 @@ type CallTiming struct {
 	// QueueMs is wall time not spent on the call's own work: DurationMs minus
 	// the load, prefill and decode phases when the driver reported them, else
 	// minus the server's total — waiting behind other calls on a one-model box
-	// (inside the server or before it), plus the network. Recorded so contention
+	// (inside the server or before it), plus the network — and never less than
+	// the call's wait for its lane slot (Usage.LaneWaitMs), which is the only
+	// part measured for a driver that reports neither. Recorded so contention
 	// is visible; a throughput estimate must not learn from it, because it
 	// measures load on the box, not the model's speed.
 	QueueMs int64 `json:"queue_ms,omitempty"`
@@ -109,6 +111,16 @@ func (t *CallTimer) Stamp(u *Usage) {
 		}
 	case tm.ServerTotalMs > 0 && tm.DurationMs > tm.ServerTotalMs:
 		tm.QueueMs = tm.DurationMs - tm.ServerTotalMs
+	}
+	// A wait for a lane slot happens inside Provider.Call, after this timer
+	// started and before the driver saw the call. The two measures above
+	// already include it, because both count everything the server did not
+	// spend on the call; a driver that reports neither would otherwise show
+	// the whole wait as the model's work. So the queue is never less than the
+	// lane wait, and never more than the call's duration (the wait is measured
+	// on the wall clock, the duration on this timer's).
+	if lw := min(u.LaneWaitMs, tm.DurationMs); lw > tm.QueueMs {
+		tm.QueueMs = lw
 	}
 	u.Timing = &tm
 }

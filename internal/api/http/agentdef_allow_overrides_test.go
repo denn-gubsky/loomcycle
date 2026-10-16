@@ -216,3 +216,37 @@ func TestFixedAgent_ALockedDefinitionInheritsNoOverrides(t *testing.T) {
 		t.Errorf("an open child no longer inherits: model = %q", open.Model)
 	}
 }
+
+// Compaction and context flow down the spawn tree, and the parent's per-run
+// values are a caller's overrides. A child that runs on its definition only
+// takes neither: it runs on its own compaction and context, as it would if a
+// caller had started it directly.
+func TestFixedAgent_ASpawnedChildRunsOnItsOwnCompactionAndContext(t *testing.T) {
+	ts, st := restrictedFixture(t, []providers.Event{
+		{Type: providers.EventToolCall, ToolUse: &providers.ToolUse{ID: "tu_1", Name: "Agent", Input: json.RawMessage(`{"name":"fixed","prompt":"go"}`)}},
+		{Type: providers.EventDone, StopReason: "tool_use", Usage: &providers.Usage{InputTokens: 1}},
+	})
+	body := `{"agent":"launcher","agent_id":"a_launch_tuned","compaction":{"keep_last_n":7},"context":{"mode":"append"},` +
+		`"segments":[{"role":"user","content":[{"type":"trusted-text","text":"go"}]}]}`
+	if code, out := bearerCall(t, ts, freeBearer, "POST", "/v1/runs", body); code != 200 {
+		t.Fatalf("status %d: %s", code, out)
+	}
+	parent, err := st.GetRunByAgentID(t.Context(), "a_launch_tuned")
+	if err != nil {
+		t.Fatal(err)
+	}
+	kids, err := st.ListRunsByParentRunID(t.Context(), parent.ID)
+	if err != nil || len(kids) != 1 || kids[0].Agent != "fixed" {
+		t.Fatalf("children = %+v (err %v), want one run of fixed", kids, err)
+	}
+	rec, ok := decodeRunConfig(kids[0].RunConfig)
+	if !ok {
+		t.Fatalf("the child has no readable record: %s", kids[0].RunConfig)
+	}
+	if rec.Compaction != nil {
+		t.Errorf("the locked child took its parent's compaction: %+v", rec.Compaction)
+	}
+	if rec.Context != nil {
+		t.Errorf("the locked child took its parent's context: %+v", rec.Context)
+	}
+}

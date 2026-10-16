@@ -1914,6 +1914,7 @@ func segmentsFromProto(segs []*loomcyclepb.PromptSegment) []loop.PromptSegment {
 				Type:      b.GetType(),
 				Text:      b.GetText(),
 				Cacheable: b.GetCacheable(),
+				Kind:      b.GetKind(),
 				MediaType: b.GetMediaType(),
 			}
 			// gRPC carries raw image bytes (RFC AT); the loop works in base64

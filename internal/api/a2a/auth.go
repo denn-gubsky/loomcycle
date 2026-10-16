@@ -37,32 +37,44 @@ func FrontierAuthenticator(
 	resolve func(context.Context, string) (auth.Principal, bool),
 	operatorKeyGateOn bool,
 ) Authenticator {
-	return func(h http.Header) (string, bool, bool, bool) {
-		ctx := context.Background()
+	return func(ctx context.Context, h http.Header) (Peer, bool) {
 		// Per-request open-mode check: no auth configured ⇒ anonymous, matching
 		// HTTP. Evaluated every call so a runtime-minted admin token flips A2A
 		// closed without a restart. Open mode is never restricted/isolated (fail-open).
 		if authConfigured == nil || !authConfigured(ctx) {
-			return "anonymous", false, false, true
+			return Peer{Name: "anonymous"}, true
 		}
 		got := h.Get("Authorization")
 		const pfx = "Bearer "
 		if len(got) <= len(pfx) || !strings.EqualFold(got[:len(pfx)], pfx) {
-			return "", false, false, false
+			return Peer{}, false
 		}
 		if resolve == nil {
-			return "", false, false, false
+			return Peer{}, false
 		}
 		p, ok := resolve(ctx, got[len(pfx):])
 		if !ok {
-			return "", false, false, false
+			return Peer{}, false
 		}
 		// A credential limited to certain agents is refused here outright.
 		// This plane starts whichever agent a card exposes and carries no
 		// principal to the run for an allowlist to be checked against, so the
 		// only safe answer for a restricted token is no.
 		if p.Restrictions.RunPlaneOnly() {
-			return "", false, false, false
+			return Peer{}, false
+		}
+		// The same holds for a rate or a retention mode: both are read off
+		// the run's principal, which this plane does not carry, so a rate
+		// would never be counted and a no-trace token's task would be
+		// stored. An override lock is not refused: a message carries no
+		// per-run overrides, so the lock holds here by construction.
+		if p.Restrictions.Rate != nil || p.Restrictions.Retention != "" {
+			return Peer{}, false
+		}
+		// Every peer call is part of starting or following a run this plane
+		// starts, so it needs the scope that starts runs.
+		if !auth.HasScope(p.Scopes, auth.ScopeRunsCreate) {
+			return Peer{}, false
 		}
 		// RFC AX: derive the operator-key restriction from the peer's OWN
 		// resolved scopes — the SAME auth.OperatorKeyRestricted used on the
@@ -76,9 +88,16 @@ func FrontierAuthenticator(
 		isolated := auth.IsIsolated(p, ok)
 		// Attribution name only. Preserve the legacy peer's historical
 		// "a2a-peer" name; attribute operator-token peers by their subject.
-		if p.Legacy || p.Subject == "" {
-			return "a2a-peer", restricted, isolated, true
+		peer := Peer{
+			Name:        p.Subject,
+			Restricted:  restricted,
+			Isolated:    isolated,
+			Tenant:      p.TenantID,
+			TenantBound: !p.Legacy && !auth.HasScope(p.Scopes, auth.ScopeAdmin),
 		}
-		return p.Subject, restricted, isolated, true
+		if p.Legacy || p.Subject == "" {
+			peer.Name = "a2a-peer"
+		}
+		return peer, true
 	}
 }

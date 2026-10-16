@@ -82,7 +82,7 @@ next call. You never see the replay — calls just look synchronous.
 
 | Field | What it is |
 |---|---|
-| `input.prompt` | The run's user turn as one string: the caller's trusted text, with each untrusted block appended inside `<kind>…</kind>` tags and escaped |
+| `input.prompt` | The run's user turn as one string: the caller's trusted text, with each untrusted block appended inside `<kind>…</kind>` tags and escaped (a `code` block inside `<untrusted-code b="…">` tags, unescaped) |
 | `input.metadata` | Trusted, operator- or caller-set values, plus `user_id` and `agent` |
 | `input.payload_metadata` | **Untrusted** values projected from an external trigger's body. Present only when there are any |
 | `input.untrusted` | The run's untrusted blocks as data: `[{ kind, text }, …]`, in order. Always an array, empty when the run was given none |

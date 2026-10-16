@@ -59,6 +59,21 @@ func (s *Server) SteerRun(ctx context.Context, runID, text, source string) (bool
 	} else if _, err := s.remoteRunForSteer(ctx, runID); err != nil {
 		return false, connector.ErrRunNotInFlight
 	}
+	// Every message is a run start, as a continuation is, and is counted the
+	// same way: otherwise a token with a rate drives one interactive run as
+	// fast as it likes. Not only a message to a parked run: one sent mid turn
+	// is still queued when the turn ends, and the run answers it in another
+	// turn instead of parking (finishSteer). Whether a message starts a turn
+	// is settled only then, after it was sent, so no check made here can
+	// tell, and a "parked?" test would be a free pass for a caller who times
+	// its messages. After the ownership gate, so the refusal says nothing
+	// about a run the caller may not reach. A retune sent with the message
+	// (HTTP input, gRPC RunInput) has been stored by now; it is a merge of
+	// the same values, so the caller's retry after the wait applies it
+	// unchanged.
+	if err := s.admitPrincipalRate(ctx); err != nil {
+		return false, err
+	}
 	// A message to a run is stored as its input and, in a cluster, carried to
 	// the replica that owns the run in a notification. A no-trace run takes
 	// what it was started with and nothing after.
@@ -97,10 +112,13 @@ func (s *Server) liveRunOwnershipOK(ctx context.Context, entry steer.Entry) bool
 	}
 	if entry.SessionID != "" {
 		sess, err := s.store.GetSession(ctx, entry.SessionID)
-		return err == nil && sessionOwnershipOK(ctx, sess)
+		if err != nil || !sessionOwnershipOK(ctx, sess) {
+			return false
+		}
+	} else if run, err := s.tenantStore(ctx).GetRun(ctx, entry.RunID); err != nil || !runOwnershipOK(ctx, run) {
+		return false
 	}
-	run, err := s.tenantStore(ctx).GetRun(ctx, entry.RunID)
-	return err == nil && runOwnershipOK(ctx, run)
+	return s.allowlistReachesRun(ctx, entry.RunID)
 }
 
 // StreamRunEvents implements connector.Connector — the transport-agnostic core
@@ -191,7 +209,7 @@ func (s *Server) CancelTurn(ctx context.Context, runID, reason string) (bool, bo
 	// The tenant fold alone would let an isolated member stop another user's
 	// turn on another replica; the local path confines it via liveRunOwnershipOK.
 	run, err := s.tenantStore(ctx).GetRun(ctx, runID)
-	if err != nil || !runOwnershipOK(ctx, run) {
+	if err != nil || !runOwnershipOK(ctx, run) || !s.allowlistReachesRun(ctx, runID) {
 		return false, false, connector.ErrRunNotInFlight
 	}
 	fired, err := s.turnCancelReg.Cancel(ctx, runID, reason)

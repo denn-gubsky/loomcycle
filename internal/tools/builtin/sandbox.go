@@ -3,6 +3,7 @@ package builtin
 import (
 	"context"
 	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 
@@ -45,7 +46,7 @@ import (
 //
 //   - volumeName != "" → that binding; the agent isn't bound to it → error
 //     listing the volumes it IS bound to.
-func resolveVolume(ctx context.Context, volumeName string) (root string, readOnly bool, name string, err error) {
+func resolveVolume(ctx context.Context, volumeName string) (root string, readOnly bool, name, fence string, err error) {
 	pol := tools.VolumePolicy(ctx)
 	if volumeName != "" {
 		ref, ok := tools.EphemeralVolumes(ctx).Get(volumeName)
@@ -55,14 +56,14 @@ func resolveVolume(ctx context.Context, volumeName string) (root string, readOnl
 			// Asked only for a name that is not one of the agent's own
 			// bindings, so using a bound volume costs no read.
 			if ref, ok, err = recordedEphemeral(ctx, volumeName); err != nil {
-				return "", false, "", err
+				return "", false, "", "", err
 			}
 		}
 		if ok {
 			// Read-only when the volume is, or when this run was given
 			// ephemeral volumes read-only by its own or an ancestor's
 			// definition. Either is enough; nothing here widens.
-			return ref.Root, ref.ReadOnly || tools.EphemeralReadOnly(ctx), volumeName, nil
+			return ref.Root, ref.ReadOnly || tools.EphemeralReadOnly(ctx), volumeName, "", nil
 		}
 	}
 
@@ -70,20 +71,20 @@ func resolveVolume(ctx context.Context, volumeName string) (root string, readOnl
 		// No volume confinement in force → DENY (RFC AH Phase 3:
 		// sandbox-by-default; the legacy fallback root is gone). An agent
 		// gets filesystem access only via a `volumes:` binding.
-		return "", false, "", fmt.Errorf("no filesystem volume available to this agent — bind one via the agent's `volumes:` list (Read/Write/etc. require a volume)")
+		return "", false, "", "", fmt.Errorf("no filesystem volume available to this agent — bind one via the agent's `volumes:` list (Read/Write/etc. require a volume)")
 	}
 	if len(pol.Bindings) == 0 {
 		// Active but confined to NOTHING (e.g. a sub-agent whose declared
 		// volumes share none of the parent's). Deny — identical posture to
 		// the inactive case above; spawn confinement must never leak a root.
-		return "", false, "", fmt.Errorf("no filesystem volume is available to this agent; refusing")
+		return "", false, "", "", fmt.Errorf("no filesystem volume is available to this agent; refusing")
 	}
 
 	var binding *tools.VolumeBinding
 	if volumeName == "" {
 		binding = defaultBinding(pol.Bindings)
 		if binding == nil {
-			return "", false, "", fmt.Errorf("no volume specified and no default binding; specify one of: %s", volumeNames(pol.Bindings))
+			return "", false, "", "", fmt.Errorf("no volume specified and no default binding; specify one of: %s", volumeNames(pol.Bindings))
 		}
 	} else {
 		for i := range pol.Bindings {
@@ -93,11 +94,11 @@ func resolveVolume(ctx context.Context, volumeName string) (root string, readOnl
 			}
 		}
 		if binding == nil {
-			return "", false, "", fmt.Errorf("not bound to volume %q; available: %s", volumeName, volumeNames(pol.Bindings))
+			return "", false, "", "", fmt.Errorf("not bound to volume %q; available: %s", volumeName, volumeNames(pol.Bindings))
 		}
 	}
 
-	return binding.Root, binding.ReadOnly, binding.Name, nil
+	return binding.Root, binding.ReadOnly, binding.Name, binding.Fence, nil
 }
 
 // effectiveRoot resolves which sandbox root a file/exec tool call targets
@@ -109,22 +110,40 @@ func resolveVolume(ctx context.Context, volumeName string) (root string, readOnl
 // needWrite && readOnly → refuse (Write/Edit/NotebookEdit and Bash require
 // rw; none can truly enforce ro, so they refuse rather than ship a false
 // guarantee — RFC §6). All resolution lives in resolveVolume.
-func effectiveRoot(ctx context.Context, volumeName string, needWrite bool) (string, error) {
-	root, readOnly, name, err := resolveVolume(ctx, volumeName)
+//
+// fence is the binding's Fence: a caller that resolves a path under root
+// must also refuse it with outsideFence. Bash cannot, and does not.
+func effectiveRoot(ctx context.Context, volumeName string, needWrite bool) (root, fence string, err error) {
+	root, readOnly, name, fence, err := resolveVolume(ctx, volumeName)
 	if err != nil {
-		return "", err
+		return "", "", err
 	}
 	if needWrite && !readOnly {
 		// The in-memory set says writable. For an ephemeral volume that is
 		// only what THIS process knows; ask the record before writing.
 		if readOnly, err = confirmEphemeralWritable(ctx, volumeName); err != nil {
-			return "", fmt.Errorf("volume %q: could not confirm it is still writable, so nothing was written: %w", name, err)
+			return "", "", fmt.Errorf("volume %q: could not confirm it is still writable, so nothing was written: %w", name, err)
 		}
 	}
 	if needWrite && readOnly {
-		return "", fmt.Errorf("volume %q is read-only; this operation requires a read-write volume", name)
+		return "", "", fmt.Errorf("volume %q is read-only; this operation requires a read-write volume", name)
 	}
-	return root, nil
+	return root, fence, nil
+}
+
+// outsideFence refuses a resolved path that is the fence or under it. The
+// fence is a real path (StaticVolumeFence) and resolved has had its symlinks
+// evaluated, so a symlink inside the volume that points into the fence is
+// refused as well. An empty fence refuses nothing.
+func outsideFence(fence, resolved string) error {
+	if fence == "" {
+		return nil
+	}
+	rel, err := filepath.Rel(fence, resolved)
+	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return nil
+	}
+	return fmt.Errorf("path %q is inside the directory that holds dynamic and ephemeral volumes; name that volume in the \"volume\" argument instead", resolved)
 }
 
 // boundTo reports whether the agent's volume policy binds name.
@@ -226,6 +245,18 @@ func confirmEphemeralWritable(ctx context.Context, volumeName string) (readOnly 
 		set.SetReadOnly(volumeName)
 	}
 	return readOnly, nil
+}
+
+// isFenceDir reports whether a directory met in a walk is the fence, so the
+// walk skips it: the dynamic root is not listed or searched through a static
+// binding. The walk's paths are real only when the volume root is, so the
+// directory is resolved before comparing, and only when its name matches.
+func isFenceDir(fence, path string, d os.DirEntry) bool {
+	if fence == "" || !d.IsDir() || d.Name() != filepath.Base(fence) {
+		return false
+	}
+	real, err := filepath.EvalSymlinks(path)
+	return err == nil && real == fence
 }
 
 // defaultBinding returns the binding a call with no explicit `volume`

@@ -421,54 +421,10 @@ func effectiveSpawnTimeoutMS(operatorMS, callerMS int) int {
 // Connector.SpawnRun, so the tool/call response matches across both
 // code paths.
 func spawnRunStreaming(ctx context.Context, env *handlerEnv, req connector.SpawnRunRequest) (connector.SpawnRunResult, error) {
-	in := runner.RunInput{
-		Agent:           req.Agent,
-		SessionID:       req.SessionID,
-		TenantID:        req.TenantID,
-		Segments:        req.Segments,
-		Tools:           req.Tools,
-		AllowedHosts:    req.AllowedHosts,
-		WebSearchFilter: req.WebSearchFilter,
-		UserID:          req.UserID,
-		AgentID:         req.AgentID,
-		UserTier:        req.UserTier,
-		UserBearer:      req.UserBearer,
-		UserCredentials: req.UserCredentials, // v1.x RFC F per-tool named credentials
-		ParentContext:   req.ParentContext,   // v0.12.x opaque tracking lineage
-		// The caller's key, as sent; RunOnce scopes and stores it.
-		ClientIdempotencyKey: req.IdempotencyKey,
-		MaxWallSeconds:       req.MaxWallSeconds,
-		Retention:            req.Retention,
-		Metadata:             req.Metadata,         // non-secret trusted agent metadata
-		Sampling:             req.Sampling,         // per-run LLM sampling override (was dropped on this streaming path)
-		ToolChoice:           req.ToolChoice,       // per-run tool_choice
-		OutputFormat:         req.OutputFormat,     // per-run answer schema
-		Routing:              req.Routing,          // per-run routing: block
-		Compaction:           req.Compaction,       // per-run context-compaction override (was dropped on this streaming path)
-		Context:              req.Context,          // per-run layered-context override (RFC CR)
-		MaxContextTokens:     req.MaxContextTokens, // RFC CJ per-run context-window override
-		// RFC DC P6: the MCP spawn surfaces carry the per-run overrides too, so
-		// an agent spawning a child can choose its model — and is refused by
-		// exactly the same validation an HTTP caller meets.
-		Model:                 req.Model,
-		Provider:              req.Provider,
-		Tier:                  req.Tier,
-		Effort:                req.Effort,
-		MaxTokens:             req.MaxTokens,
-		MaxIterations:         req.MaxIterations,
-		UnboundedIterations:   req.UnboundedIterations,
-		MaxConcurrentChildren: req.MaxConcurrentChildren,
-		RetryAttempts:         req.RetryAttempts,
-		MemoryInjectMaxTokens: req.MemoryInjectMaxTokens,
-		MemoryIndexMaxBytes:   req.MemoryIndexMaxBytes,
-		InjectToolGuide:       req.InjectToolGuide,
-		// A blocking spawn honours review, as the connector's does: the call
-		// returns once an operator approves the held answer or rejects it.
-		Review:           req.Review != nil && *req.Review,
-		ReviewTTLSeconds: req.ReviewTTLSeconds,
-		Hooks:            req.Hooks,
-		ToolHooks:        req.ToolHooks,
-	}
+	// The same mapping the blocking connector spawn uses, so a field the
+	// streaming branch forgets cannot exist: a hand copy here once dropped
+	// admission and interruption for every streaming caller.
+	in := connector.SpawnRequestToRunInput(req)
 
 	var (
 		regAgentID, regRunID, regSessionID string

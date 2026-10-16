@@ -108,7 +108,7 @@ func (s *Server) spawnDetached(ctx context.Context, req connector.SpawnRunReques
 	}
 	go func() {
 		defer abort() // releases runCtx once the run is over
-		ended <- s.RunOnce(runCtx, spawnRequestToRunInput(req), cb)
+		ended <- s.RunOnce(runCtx, connector.SpawnRequestToRunInput(req), cb)
 	}()
 
 	callerDone := ctx.Done()

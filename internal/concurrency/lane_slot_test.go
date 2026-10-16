@@ -102,3 +102,39 @@ func TestLane_AQueuedCallIsToldItsSlot(t *testing.T) {
 	}
 	(<-done)()
 }
+
+// A lane shrunk by a reload never hands out a slot number past its new cap: a
+// reservation on such a slot is dropped, whether it was idle at the reload or
+// its call was still in flight, and the owner's next call takes a slot inside
+// the cap. A backend pinned to the slot (llama.cpp's id_slot) would refuse it.
+func TestLane_AShrunkLaneKeepsNoReservationPastItsCap(t *testing.T) {
+	for name, inFlight := range map[string]bool{"idle at the reload": false, "in flight at the reload": true} {
+		t.Run(name, func(t *testing.T) {
+			cfg := LaneConfig{MaxConcurrent: 4, AffinityHold: time.Minute}
+			l := NewLane(cfg)
+			var rels []func()
+			for _, owner := range []string{"a", "b", "c", "d"} {
+				_, rel := slotOf(t, l, owner)
+				rels = append(rels, rel)
+			}
+			// a, b and c end their runs: only d holds a slot, number 3.
+			for i, owner := range []string{"a", "b", "c"} {
+				rels[i]()
+				l.Done(owner)
+			}
+			if !inFlight {
+				rels[3]() // d's slot 3 is now reserved for it
+			}
+			cfg.MaxConcurrent = 2
+			l.Reconfigure(cfg)
+			if inFlight {
+				rels[3]()
+			}
+			slot, rel := slotOf(t, l, "d")
+			defer rel()
+			if slot >= 2 {
+				t.Fatalf("d's next call = slot %d, want one below the new cap of 2", slot)
+			}
+		})
+	}
+}

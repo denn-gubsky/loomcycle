@@ -664,6 +664,7 @@ type runHostRecord struct {
 	AllowedHosts    []string `json:"allowed_hosts,omitempty"`
 	HasList         bool     `json:"has_list,omitempty"`
 	WebSearchFilter string   `json:"web_search_filter,omitempty"`
+	NarrowOnly      bool     `json:"narrow_only,omitempty"`
 }
 
 // hostRecordOf captures a run's host policy, or nil when the caller narrowed
@@ -677,6 +678,7 @@ func hostRecordOf(p tools.HostPolicyValue) *runHostRecord {
 		AllowedHosts:    p.AllowedHosts,
 		HasList:         p.HasList,
 		WebSearchFilter: p.WebSearchFilter,
+		NarrowOnly:      p.NarrowOnly,
 	}
 }
 
@@ -704,6 +706,7 @@ func (rc runConfigRecord) hostPolicy() tools.HostPolicyValue {
 		AllowedHosts:    rc.callerHosts(),
 		HasList:         rc.Hosts.HasList,
 		WebSearchFilter: rc.Hosts.WebSearchFilter,
+		NarrowOnly:      rc.Hosts.NarrowOnly,
 	}
 }
 

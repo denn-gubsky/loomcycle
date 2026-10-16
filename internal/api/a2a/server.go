@@ -20,10 +20,24 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/runner"
 )
 
+// Peer is who an inbound A2A request was authenticated as.
+type Peer struct {
+	Name       string
+	Restricted bool
+	Isolated   bool
+	// Tenant is the tenant the credential belongs to. TenantBound is false
+	// for a caller that may reach every tenant: an admin, a legacy token, or
+	// open mode. A bound peer reaches only its own tenant: host or path
+	// routing picks the tenant a run is made in, and the caller picks the
+	// host or path.
+	Tenant      string
+	TenantBound bool
+}
+
 // Authenticator authenticates an inbound A2A request from its headers and
 // returns the principal name to attach to the SDK CallContext, plus the RFC AX
 // operator-key restriction derived from the peer's OWN resolved scopes. It
-// returns ("", _, false) for an unauthenticated request — the default-deny
+// returns ok=false for an unauthenticated request — the default-deny
 // posture is the caller's (the bridge treats an unauthenticated User as
 // anonymous run ownership; it does NOT widen any allowlist).
 //
@@ -42,7 +56,7 @@ import (
 // This is the bearer-header check at the A2A frontier, reusing the same
 // constant-time comparison loomcycle's HTTP authMiddleware uses. It is
 // injected so tests can supply a deterministic fake.
-type Authenticator func(h http.Header) (name string, restricted bool, isolated bool, ok bool)
+type Authenticator func(ctx context.Context, h http.Header) (peer Peer, ok bool)
 
 // CardAndRunStore is the narrow store surface the A2A server needs: the
 // active-server-card resolver path (lookup), the run-table reader the
@@ -437,6 +451,6 @@ func (s *Server) adminAuthed(r *http.Request) bool {
 		// authorized, matching authMiddleware's open-mode behaviour.
 		return true
 	}
-	_, _, _, ok := s.deps.Auth(r.Header)
+	_, ok := s.deps.Auth(r.Context(), r.Header)
 	return ok
 }

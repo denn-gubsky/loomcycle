@@ -112,6 +112,20 @@ func agentLocksOverrides(def config.AgentDef) bool {
 	return def.AllowOverrides != nil && !*def.AllowOverrides
 }
 
+// callerHostsNarrowOnly reports whether a caller's allowed_hosts may only
+// narrow the operator's list for this run: the caller is held to its agent's
+// own settings, by its token's override lock or by the agent's
+// allow_overrides: false. allowed_hosts is not a lockable override because it
+// can only narrow — except in caller-authoritative mode, where a caller's
+// list REPLACES the operator's, and an empty list falls back to it. For a
+// locked caller the list is applied by intersection instead, in every mode:
+// what it keeps of the operator's list is all it reaches, and keeping nothing
+// reaches nothing (tools.HostPolicyValue.NarrowOnly).
+func callerHostsNarrowOnly(ctx context.Context, def config.AgentDef) bool {
+	p, ok := auth.PrincipalFromContext(ctx)
+	return agentLocksOverrides(def) || ok && p.Restrictions.Overrides != nil
+}
+
 // admitAgentOverridesByName is admitAgentOverrides for a caller that has the
 // agent's name and not its definition. An agent that does not resolve is not
 // refused here: saying so is the caller's own validation.
