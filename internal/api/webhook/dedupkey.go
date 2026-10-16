@@ -90,6 +90,12 @@ type heldKeys struct {
 	keys []string
 	ttl  time.Duration
 	runs bool
+	// runKey and runAltKey are the idempotency keys the delivery's run carries
+	// (deliveryKeys key and alt): recorded on the claim, they find a run that
+	// registered but was never linked to it.
+	runKey, runAltKey string
+	// claimID is the claim's fencing token, set once claimed (runs only).
+	claimID string
 }
 
 // claim takes keys in the store, before the rate limit, so a duplicate costs
@@ -116,7 +122,10 @@ func (rec *Receiver) claimHeld(ctx context.Context, w http.ResponseWriter, span 
 		err    error
 	)
 	if h.runs {
-		ok, holder, err = rec.store.WebhookDeliveryClaimRun(ctx, h.keys, now, now.Add(h.ttl))
+		var res store.WebhookRunClaimResult
+		res, err = rec.store.WebhookDeliveryClaimRun(ctx, store.WebhookRunClaim{
+			Keys: h.keys, Now: now, ExpiresAt: now.Add(h.ttl), RunKey: h.runKey, RunAltKey: h.runAltKey})
+		ok, holder, h.claimID = res.Claimed, res.Holder, res.ClaimID
 	} else {
 		// A channel delivery's keys were held a day before dedup_key existed;
 		// a shorter dedup_ttl_seconds must not shorten that.
@@ -175,20 +184,93 @@ func (rec *Receiver) releaseHeld(ctx context.Context, name string, h *heldKeys) 
 	if h == nil {
 		return
 	}
-	if err := rec.store.WebhookDeliveryRelease(context.WithoutCancel(ctx), h.keys); err != nil {
+	var err error
+	if h.runs {
+		// By claim id: a claim taken over meanwhile is another delivery's.
+		err = rec.store.WebhookDeliveryReleaseClaim(context.WithoutCancel(ctx), h.claimID)
+	} else {
+		err = rec.store.WebhookDeliveryRelease(context.WithoutCancel(ctx), h.keys)
+	}
+	if err != nil {
 		rec.logf("webhook %q: release the dedup keys of a delivery that started nothing: %v", name, err)
 	}
 }
 
-// setRun records the run a delivery's keys started. nil-safe. Not undone on
-// failure: the keys stay held for their lifetime with no run, which reads as a
-// run whose row is gone.
+// setHeldRun links the run a delivery handled to its claim, best-effort:
+// a run that already exists (a team walk, or the run a duplicate found).
+// nil-safe. A link that fails leaves the claim unlinked, and the event's next
+// delivery past the grace adopts the run by its keys. A spawned run links
+// through linkSpawnedRun instead, which refuses the run when it cannot.
 func (rec *Receiver) setHeldRun(name string, h *heldKeys, runID string) {
 	if h == nil || runID == "" {
 		return
 	}
-	if err := rec.store.WebhookDeliverySetRun(context.Background(), h.keys, runID); err != nil {
+	if _, err := rec.store.WebhookDeliveryLinkRun(context.Background(), h.claimID, runID); err != nil {
 		rec.logf("webhook %q: record run %s on its dedup keys: %v", name, runID, err)
+	}
+}
+
+// errClaimTakenOver is a spawned run's refusal when its delivery's claim was
+// taken over before the run linked to it: a later delivery of the event, past
+// the claim's grace, started the event's run.
+var errClaimTakenOver = errors.New("a later delivery of the same event took this delivery's dedup claim over")
+
+// Linking a run to its claim is retried a few times on a store error before
+// the run is refused.
+const (
+	linkAttempts   = 3
+	linkRetryDelay = 50 * time.Millisecond
+)
+
+// linkSpawnedRun links a spawned run to its delivery's claim as the run
+// registers, before its first model call; nil when there is no claim. The
+// run must not start otherwise:
+//   - the claim was taken over (errClaimTakenOver): the event's run is
+//     another delivery's;
+//   - the link could not be written: the run would run unlinked. A takeover
+//     past the grace would find it by its keys and adopt it, so it would not
+//     run twice — but its claim would read as unhandled until then, and a
+//     store that just refused a write is no ground to start work on. It
+//     fails closed instead, and the sender's retry is handled.
+func (rec *Receiver) linkSpawnedRun(name string, h *heldKeys, runID string) error {
+	if h == nil || !h.runs {
+		return nil
+	}
+	var err error
+	for attempt := 0; attempt < linkAttempts; attempt++ {
+		if attempt > 0 {
+			time.Sleep(time.Duration(attempt) * linkRetryDelay)
+		}
+		var ok bool
+		ok, err = rec.store.WebhookDeliveryLinkRun(context.Background(), h.claimID, runID)
+		if err == nil {
+			if !ok {
+				rec.logf("webhook %q: run %s refused: its dedup claim was taken over by a later delivery", name, runID)
+				return errClaimTakenOver
+			}
+			return nil
+		}
+	}
+	rec.logf("webhook %q: run %s refused: record it on its dedup claim: %v", name, runID, err)
+	return fmt.Errorf("record the run on its delivery's dedup claim: %w", err)
+}
+
+// afterSpawn tidies up once a spawned run's RunOnce returned err. A run its
+// claim refused (linkErr) ended failed before its first model call, and one
+// that started nothing never registered: either way the delivery is not
+// handled, so its claim goes back (fenced — a claim taken over is not
+// touched) and so do the delivery keys a failed run row carries, else the
+// sender's retry would be answered as a duplicate of a run that never ran.
+func (rec *Receiver) afterSpawn(name string, held *heldKeys, dk deliveryKeys, err, linkErr error, runID string) {
+	if linkErr == nil && !startedNothing(err, runID) {
+		return
+	}
+	rec.releaseHeld(context.Background(), name, held)
+	if rec.store == nil {
+		return
+	}
+	if rerr := rec.store.RunReleaseFailedDeliveryKeys(context.Background(), []string{dk.key, dk.alt}); rerr != nil {
+		rec.logf("webhook %q: give back the delivery keys of a run that never ran: %v", name, rerr)
 	}
 }
 
@@ -203,7 +285,7 @@ func startedNothing(err error, runID string) bool {
 // when its body does not name the event (nil, false). nil, true when wd has
 // no dedup_key or there is no store to hold one in (a receiver with no
 // store has only its in-memory guard).
-func (rec *Receiver) newHeldKeys(w http.ResponseWriter, span trace.Span, name, whKey, did string, wd config.Webhook, body []byte, durable []string) (*heldKeys, bool) {
+func (rec *Receiver) newHeldKeys(w http.ResponseWriter, span trace.Span, name, whKey, did string, wd config.Webhook, body []byte, dk deliveryKeys, durable []string) (*heldKeys, bool) {
 	if len(wd.DedupKey) == 0 || rec.store == nil {
 		return nil, true
 	}
@@ -222,5 +304,5 @@ func (rec *Receiver) newHeldKeys(w http.ResponseWriter, span trace.Span, name, w
 		return nil, false
 	}
 	keys := append([]string{eventKey(whKey, id)}, durable...)
-	return &heldKeys{keys: keys, ttl: wd.DedupTTL(), runs: wd.Delivery != "channel"}, true
+	return &heldKeys{keys: keys, ttl: wd.DedupTTL(), runs: wd.Delivery != "channel", runKey: dk.key, runAltKey: dk.alt}, true
 }

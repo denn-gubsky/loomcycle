@@ -3,6 +3,7 @@ package webhook
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"strings"
@@ -22,16 +23,42 @@ type headRunner struct {
 	mu   sync.Mutex
 	runs []string
 	err  error // returned before a run registers
+	// admitted are the runs that passed the caller's Admit and would have
+	// made their first model call.
+	admitted []string
+	// One-shot knobs for the next RunOnce:
+	//   gate               it waits on gate before creating its row (a slow
+	//                      setup);
+	//   crash              it creates its row and returns without registering
+	//                      (the process died there);
+	//   failBeforeRegister it creates its row, ends it failed and returns an
+	//                      error, never registering (as an agent_id collision).
+	gate               chan struct{}
+	atGate             chan struct{} // closed once it waits on gate
+	crash              bool
+	failBeforeRegister bool
 }
+
+var errSetupFailed = errors.New("setup failed before the run registered")
 
 func (r *headRunner) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunCallbacks) error {
 	r.mu.Lock()
 	err := r.err
-	n := len(r.runs)
+	gate, atGate, crash, failEarly := r.gate, r.atGate, r.crash, r.failBeforeRegister
+	r.gate, r.atGate, r.crash, r.failBeforeRegister = nil, nil, false, false
 	r.mu.Unlock()
 	if err != nil {
 		return err
 	}
+	if gate != nil {
+		if atGate != nil {
+			close(atGate)
+		}
+		<-gate
+	}
+	r.mu.Lock()
+	n := len(r.runs)
+	r.mu.Unlock()
 	sess, err := r.st.CreateSession(ctx, in.TenantID, in.Agent, "u")
 	if err != nil {
 		return err
@@ -46,10 +73,43 @@ func (r *headRunner) RunOnce(ctx context.Context, in runner.RunInput, cb runner.
 	r.mu.Lock()
 	r.runs = append(r.runs, run.ID)
 	r.mu.Unlock()
+	switch {
+	case crash:
+		return nil
+	case failEarly:
+		if err := r.st.FinishRun(ctx, run.ID, store.RunFailed, "", store.Usage{}, errSetupFailed.Error()); err != nil {
+			return err
+		}
+		return errSetupFailed
+	}
 	if cb.OnRegistered != nil {
 		cb.OnRegistered(fmt.Sprintf("ag_%d", n), run.ID, sess.ID, "")
 	}
+	// As the server does: a refusal fails the run before its first call.
+	if cb.Admit != nil {
+		if aerr := cb.Admit(run.ID); aerr != nil {
+			if err := r.st.FinishRun(ctx, run.ID, store.RunFailed, "", store.Usage{}, aerr.Error()); err != nil {
+				return err
+			}
+			return fmt.Errorf("run not admitted by its caller: %w", aerr)
+		}
+	}
+	r.mu.Lock()
+	r.admitted = append(r.admitted, run.ID)
+	r.mu.Unlock()
 	return nil
+}
+
+func (r *headRunner) runsCreated() []string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return append([]string(nil), r.runs...)
+}
+
+func (r *headRunner) admittedRuns() []string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return append([]string(nil), r.admitted...)
 }
 
 func (r *headRunner) started() int {
@@ -196,11 +256,11 @@ type runClaimCountingStore struct {
 	claims int
 }
 
-func (s *runClaimCountingStore) WebhookDeliveryClaimRun(ctx context.Context, keys []string, now, expiresAt time.Time) (bool, string, error) {
+func (s *runClaimCountingStore) WebhookDeliveryClaimRun(ctx context.Context, c store.WebhookRunClaim) (store.WebhookRunClaimResult, error) {
 	s.mu.Lock()
 	s.claims++
 	s.mu.Unlock()
-	return s.Store.WebhookDeliveryClaimRun(ctx, keys, now, expiresAt)
+	return s.Store.WebhookDeliveryClaimRun(ctx, c)
 }
 
 func (s *runClaimCountingStore) count() int {

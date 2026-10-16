@@ -293,6 +293,39 @@ func RunStatusFilter(statuses []RunStatus) []string {
 // keys held.
 var WebhookRetakeRunStatuses = []RunStatus{RunFailed}
 
+// WebhookUnregisteredClaimGrace is how long a dedup_key claim whose run has
+// not been linked to it (WebhookDeliveryLinkRun) is left to its delivery's
+// setup before the event's next delivery may look at it again
+// (WebhookDeliveryClaimRun). A run links itself as it registers — queued
+// runs included, at queue time — which takes seconds; the grace is far past
+// that. Past it the claim is adopted by the run that carries its linked keys,
+// if one does, and taken over otherwise.
+const WebhookUnregisteredClaimGrace = 15 * time.Minute
+
+// WebhookRunClaim is one delivery's claim of the store keys of a webhook event
+// (WebhookDeliveryClaimRun).
+type WebhookRunClaim struct {
+	// Keys are claimed all or none, the event's key first.
+	Keys []string
+	// Now is the claim's time; it is held until ExpiresAt.
+	Now, ExpiresAt time.Time
+	// RunKey and RunAltKey are the idempotency_key and delivery_alt_key the
+	// delivery's run will carry ("" for none): what links the claim to a run
+	// that registered but was never linked to it.
+	RunKey, RunAltKey string
+}
+
+// WebhookRunClaimResult is a claim's outcome.
+type WebhookRunClaimResult struct {
+	// Claimed: every key is this claim's, under ClaimID — the fencing token
+	// WebhookDeliveryLinkRun and WebhookDeliveryReleaseClaim take.
+	Claimed bool
+	ClaimID string
+	// Holder is, on a refusal, the run linked to the key that refused it,
+	// "" when that claim's run is not linked yet.
+	Holder string
+}
+
 // TerminalRunStatuses are the statuses a run ends in. Every reader that asks
 // "has this run finished?" — the retention and consolidation queries, the
 // ephemeral-volume sweep, the stream tail, the webhook and A2A maps — reads
@@ -3591,16 +3624,36 @@ type Store interface {
 	// then not accepted, so the sender's retry is not a duplicate.
 	WebhookDeliveryRelease(ctx context.Context, keys []string) error
 	// WebhookDeliveryClaimRun is WebhookDeliveryClaim for a delivery that
-	// starts a run (a webhook with a dedup_key), whose keys then record that
-	// run (WebhookDeliverySetRun). A key held for a run whose status is one of
-	// WebhookRetakeRunStatuses is taken over: every key of that run is dropped
-	// first, and the run's own idempotency_key and delivery_alt_key cleared,
-	// in the same transaction, so the event is handled again. On a
-	// refusal holder is the run holding the key that refused it, "" when that
-	// claim's run has not registered yet.
-	WebhookDeliveryClaimRun(ctx context.Context, keys []string, now, expiresAt time.Time) (claimed bool, holder string, err error)
-	// WebhookDeliverySetRun records the run a claim's keys started.
-	WebhookDeliverySetRun(ctx context.Context, keys []string, runID string) error
+	// starts a run (a webhook with a dedup_key). Every key of a claim is
+	// written under one new claim id, with the claim's time and the run keys
+	// that link it to its run; the claim then records that run
+	// (WebhookDeliveryLinkRun). In the same transaction, first:
+	//   - A key linked to a run whose status is one of
+	//     WebhookRetakeRunStatuses is taken over: every key of that run is
+	//     dropped and the run's own idempotency_key and delivery_alt_key
+	//     cleared, so the event is handled again.
+	//   - A key of a claim with no run linked, made more than
+	//     WebhookUnregisteredClaimGrace before c.Now, is looked at: when a run
+	//     carries that claim's run keys, the claim is linked to it (adopted)
+	//     — or, when that run failed, taken over as above; when none does,
+	//     every key of that claim is dropped, so its setup, should it still
+	//     link, finds its claim gone. A key written before claims had ids is
+	//     never looked at.
+	// Of claims racing on one key exactly one is granted.
+	WebhookDeliveryClaimRun(ctx context.Context, c WebhookRunClaim) (WebhookRunClaimResult, error)
+	// WebhookDeliveryLinkRun links the run a claim started to every key of
+	// that claim — when the claim is still current (not dropped or taken over)
+	// and has no other run linked. false, nothing written, otherwise. One
+	// statement, so a takeover and a link cannot interleave.
+	WebhookDeliveryLinkRun(ctx context.Context, claimID, runID string) (bool, error)
+	// WebhookDeliveryReleaseClaim drops every key of a claim whose delivery
+	// started nothing; a claim taken over meanwhile is not touched.
+	WebhookDeliveryReleaseClaim(ctx context.Context, claimID string) error
+	// RunReleaseFailedDeliveryKeys clears idempotency_key and delivery_alt_key
+	// of a FAILED run carrying any of keys in either — a run that failed
+	// before it registered, so the delivery's retry is not answered as a
+	// duplicate of a run that never ran. A run in any other status keeps them.
+	RunReleaseFailedDeliveryKeys(ctx context.Context, keys []string) error
 	// WebhookDeliveryHeldByLiveRun is a read: the run holding key when
 	// WebhookDeliveryClaimRun would refuse a claim of it for that run — the
 	// key held past now, by a run whose row exists and whose status is not one

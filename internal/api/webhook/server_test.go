@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -569,12 +570,24 @@ func (f *fakeWebhookStore) WebhookDeliveryClaim(_ context.Context, keys []string
 
 // WebhookDeliveryClaimRun takes no failed run's keys: a fake has no runs to
 // read. The dedup_key tests use a real store.
-func (f *fakeWebhookStore) WebhookDeliveryClaimRun(ctx context.Context, keys []string, now, expiresAt time.Time) (bool, string, error) {
-	ok, err := f.WebhookDeliveryClaim(ctx, keys, now, expiresAt)
-	return ok, "", err
+func (f *fakeWebhookStore) WebhookDeliveryClaimRun(ctx context.Context, c store.WebhookRunClaim) (store.WebhookRunClaimResult, error) {
+	ok, err := f.WebhookDeliveryClaim(ctx, c.Keys, c.Now, c.ExpiresAt)
+	if !ok {
+		return store.WebhookRunClaimResult{}, err
+	}
+	return store.WebhookRunClaimResult{Claimed: true, ClaimID: strings.Join(c.Keys, "\x00")}, err
 }
 
-func (f *fakeWebhookStore) WebhookDeliverySetRun(_ context.Context, _ []string, _ string) error {
+func (f *fakeWebhookStore) WebhookDeliveryLinkRun(_ context.Context, _, _ string) (bool, error) {
+	return true, nil
+}
+
+// WebhookDeliveryReleaseClaim releases the keys the fake's claim id names.
+func (f *fakeWebhookStore) WebhookDeliveryReleaseClaim(ctx context.Context, claimID string) error {
+	return f.WebhookDeliveryRelease(ctx, strings.Split(claimID, "\x00"))
+}
+
+func (f *fakeWebhookStore) RunReleaseFailedDeliveryKeys(_ context.Context, _ []string) error {
 	return nil
 }
 
@@ -839,11 +852,19 @@ func (s *raceStore) WebhookDeliveryRelease(_ context.Context, _ []string) error 
 	return nil
 }
 
-func (s *raceStore) WebhookDeliveryClaimRun(_ context.Context, _ []string, _, _ time.Time) (bool, string, error) {
-	return true, "", nil
+func (s *raceStore) WebhookDeliveryClaimRun(_ context.Context, _ store.WebhookRunClaim) (store.WebhookRunClaimResult, error) {
+	return store.WebhookRunClaimResult{Claimed: true, ClaimID: "c"}, nil
 }
 
-func (s *raceStore) WebhookDeliverySetRun(_ context.Context, _ []string, _ string) error {
+func (s *raceStore) WebhookDeliveryLinkRun(_ context.Context, _, _ string) (bool, error) {
+	return true, nil
+}
+
+func (s *raceStore) WebhookDeliveryReleaseClaim(_ context.Context, _ string) error {
+	return nil
+}
+
+func (s *raceStore) RunReleaseFailedDeliveryKeys(_ context.Context, _ []string) error {
 	return nil
 }
 

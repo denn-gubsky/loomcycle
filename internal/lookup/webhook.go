@@ -33,8 +33,10 @@ type WebhookStore interface {
 	// the two lookups above to find. Signatures match store.Store exactly.
 	WebhookDeliveryClaim(ctx context.Context, keys []string, now, expiresAt time.Time) (bool, error)
 	WebhookDeliveryRelease(ctx context.Context, keys []string) error
-	WebhookDeliveryClaimRun(ctx context.Context, keys []string, now, expiresAt time.Time) (bool, string, error)
-	WebhookDeliverySetRun(ctx context.Context, keys []string, runID string) error
+	WebhookDeliveryClaimRun(ctx context.Context, c store.WebhookRunClaim) (store.WebhookRunClaimResult, error)
+	WebhookDeliveryLinkRun(ctx context.Context, claimID, runID string) (bool, error)
+	WebhookDeliveryReleaseClaim(ctx context.Context, claimID string) error
+	RunReleaseFailedDeliveryKeys(ctx context.Context, keys []string) error
 
 	// MemorySet backs the WH-5b on_complete memory.set hook (the receiver
 	// MIRRORS the scheduler's dispatch rather than importing it). Its
