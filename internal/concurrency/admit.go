@@ -26,8 +26,9 @@ type QueueInfo struct {
 // AdmitRequest is one run asking for a run slot.
 type AdmitRequest struct {
 	TenantID, UserID string
-	// Ticket names the waiting run (its run id) so Position can find it.
-	// Empty: Position cannot report it.
+	// Ticket names the waiting run (its agent_id: the run id does not exist
+	// until it queues) so Position can find it. Empty: Position cannot report
+	// it. While one run waits under a ticket, another naming it is not indexed.
 	Ticket string
 	// Reject refuses at once instead of waiting: *ErrPerUserQuotaExhausted
 	// over the per-user cap, *BackpressureError when no slot is free.
@@ -385,6 +386,13 @@ func (s *Semaphore) track(w *semWaiter) {
 	}
 	if s.tickets == nil {
 		s.tickets = map[string]*semWaiter{}
+	}
+	// The first waiter keeps the name. A second run naming a ticket already
+	// waiting is a duplicate agent_id, refused by the caller only after it has
+	// queued; replacing the first waiter here, and then deleting the entry on
+	// the duplicate's untrack, left the run still waiting with no position.
+	if _, held := s.tickets[w.ticket]; held {
+		return
 	}
 	s.tickets[w.ticket] = w
 }

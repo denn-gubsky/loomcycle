@@ -1838,9 +1838,10 @@ export interface CancelAgentResult {
 export interface RunBatchOptions {
   spawns: RunOptions[];
   /** "join" (default) — block until all children settle, returning the
-   *  combined envelope. "detach" — resolve once every child has started:
-   *  each started child reports `status: "running"` with its `run_id`, keeps
-   *  running after the call, and is read with {@link LoomcycleClient.getRun}
+   *  combined envelope. "detach" — resolve once every child has started or
+   *  queued: each reports `status: "running"` (or `"queued"` while it waits
+   *  for a run slot, starting by itself when one frees) with its `run_id`,
+   *  goes on after the call, and is read with {@link LoomcycleClient.getRun}
    *  and stopped with {@link LoomcycleClient.cancelAgent}; a child that could
    *  not start is reported in its slot, as in join. */
   mode?: "join" | "detach";

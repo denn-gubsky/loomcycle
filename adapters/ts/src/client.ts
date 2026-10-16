@@ -741,8 +741,10 @@ export class LoomcycleClient {
    *
    * Blocking by default: resolves only when the slowest child finishes (or
    * `timeoutMs` elapses). With `mode: "detach"` it resolves once every child
-   * has started — each with `status: "running"` and its `run_id` — and the
-   * runs go on; read one with {@link LoomcycleClient.getRun}. Mirrors
+   * has started or queued — each with `status: "running"` (or `"queued"` while
+   * it waits for a run slot; it starts by itself when one frees) and its
+   * `run_id` — and the runs go on; read one with
+   * {@link LoomcycleClient.getRun}. Mirrors
    * POST /v1/runs:batch.
    */
   async spawnRunBatch(opts: RunBatchOptions): Promise<RunBatchResult> {

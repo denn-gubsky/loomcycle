@@ -167,7 +167,7 @@ func (s *TaskStore) Get(ctx context.Context, taskID a2asdk.TaskID) (*taskstore.S
 	task, ok := taskFromRun(run)
 	if !ok {
 		// Run exists but its status doesn't map to a known TaskState
-		// (would be a bug — the four RunStatus values are all mapped).
+		// (would be a bug — every store.RunStatuses value is mapped).
 		return nil, a2asdk.ErrTaskNotFound
 	}
 	// Version-missing: run-table-derived tasks aren't OCC-tracked

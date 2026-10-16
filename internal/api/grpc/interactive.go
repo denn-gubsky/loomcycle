@@ -52,11 +52,8 @@ func (s *Server) RunInput(ctx context.Context, req *loomcyclepb.RunInputRequest)
 		ToolChoice: req.GetToolChoice(), OutputFormat: req.GetOutputFormat(),
 		Routing: req.GetRouting(),
 	}); !ov.IsZero() {
-		switch err := s.connector.RetuneRun(ctx, runID, ov); {
-		case errors.Is(err, connector.ErrRunNotInFlight):
-			return nil, status.Error(codes.NotFound, err.Error())
-		case err != nil:
-			return nil, status.Error(codes.InvalidArgument, err.Error())
+		if err := s.connector.RetuneRun(ctx, runID, ov); err != nil {
+			return nil, retuneErrStatus(err)
 		}
 	}
 	delivered, err := s.connector.SteerRun(ctx, runID, req.GetText(), store.InterruptResolvedByAPI)
@@ -255,7 +252,9 @@ func overridesFromProto(f protoOverrideFields) connector.RunOverrides {
 // RetuneRun changes a run's per-run overrides without delivering a turn — the
 // gRPC twin of POST /v1/runs/{run_id}/retune. Error mapping mirrors the HTTP
 // codes: NotFound (no in-flight run, and equally a cross-tenant one),
-// InvalidArgument (no override supplied — the HTTP 422).
+// InvalidArgument (no override supplied — the HTTP 422 — or a malformed one),
+// PermissionDenied (the token is locked out of the override — the HTTP 403),
+// FailedPrecondition (a no-trace run, whose settings are not stored).
 func (s *Server) RetuneRun(ctx context.Context, req *loomcyclepb.RetuneRunRequest) (*loomcyclepb.RetuneRunResponse, error) {
 	if s.connector == nil {
 		return nil, status.Error(codes.Unavailable, "connector not wired")
@@ -279,13 +278,24 @@ func (s *Server) RetuneRun(ctx context.Context, req *loomcyclepb.RetuneRunReques
 	if ov.IsZero() {
 		return nil, status.Error(codes.InvalidArgument, "at least one override is required")
 	}
-	switch err := s.connector.RetuneRun(ctx, runID, ov); {
-	case errors.Is(err, connector.ErrRunNotInFlight):
-		return nil, status.Error(codes.NotFound, err.Error())
-	case err != nil:
-		// A refused override (outside what the definition allows) is the
-		// caller's mistake, not the server's.
-		return nil, status.Error(codes.InvalidArgument, err.Error())
+	if err := s.connector.RetuneRun(ctx, runID, ov); err != nil {
+		return nil, retuneErrStatus(err)
 	}
 	return &loomcyclepb.RetuneRunResponse{RunId: runID, Retuned: true}, nil
+}
+
+// retuneErrStatus maps a refused retune to the code its HTTP status maps to,
+// for both RPCs that retune. A typed refusal takes the code every other run
+// RPC gives it (a token locked out of the override is PermissionDenied, a
+// no-trace run FailedPrecondition), so a caller can tell "you may not" from
+// "you sent it wrong". An untyped refusal stays InvalidArgument: it is the
+// caller's mistake, as the HTTP 400 default has it, not a server fault.
+func retuneErrStatus(err error) error {
+	if errors.Is(err, connector.ErrRunNotInFlight) {
+		return status.Error(codes.NotFound, err.Error())
+	}
+	if status.Code(runnerErrStatus(err)) != codes.Internal {
+		return mapRunnerErr(err)
+	}
+	return status.Error(codes.InvalidArgument, err.Error())
 }
