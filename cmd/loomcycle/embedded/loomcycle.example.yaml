@@ -102,7 +102,26 @@ tiers:
     - gpt-max
     - opus
 
-# ─── User tiers (v0.8.2+) ─────────────────────────────────────────────
+# ─── Provider call caps (lanes) ───────────────────────────────────────
+# The built-in providers need no declaration, and a `providers:` entry
+# deep-merges over a built-in, so a local model on one GPU is capped here
+# without restating it. A cap counts model CALLS in flight, not runs: a call
+# over it waits in loomcycle's queue and never times out. `max_concurrent` is
+# shorthand for the chat lane; `lanes:` caps each kind of model separately;
+# `max_models_in_flight` stops several models computing at once on a host
+# that cannot take it. Leave cloud providers uncapped.
+# See docs/CONFIGURATION.md → "Config-driven providers".
+# providers:
+#   ollama-local:
+#     max_models_in_flight: 1        # different models computing at once (0 = unlimited)
+#     lanes:
+#       chat:     { max_concurrent: 2, affinity_hold_ms: 5000 }
+#       decision: { max_concurrent: 2 }
+#       embedder: { max_concurrent: 2, background_share: 0.25 }
+#   # Or the chat lane alone:
+#   # ollama-local: { max_concurrent: 2 }
+
+# ─── User tiers (v0.8.2+)─────────────────────────────────────────────
 # Operator-defined per-user-tier overlay on the resolver matrix above.
 # Each named tier scopes WHICH providers are eligible for runs belonging
 # to that user-class, AND whether retryable errors (429/5xx/network/

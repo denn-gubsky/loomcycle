@@ -3327,6 +3327,9 @@ export function getRouting(): Promise<RoutingResponse> {
 export interface ConcurrencyStatsResponse {
   active: number; // runs holding a run slot
   queued: number; // runs waiting for one
+  // Runs that gave their slot back while a model call waits in a provider
+  // lane; they count against the queue bound with `queued`. Absent when none.
+  lent?: number;
   per_user?: Record<string, number>; // only when the per-user cap is set
   providers?: Record<string, ProviderGateStat>;
 }
