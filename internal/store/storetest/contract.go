@@ -174,6 +174,7 @@ func Run(t *testing.T, factory Factory) {
 		{"SnapshotRestoreRunKeepsItsTenant", testSnapshotRestoreRunKeepsItsTenant},
 		{"SnapshotRestoreRunKeepsItsParentRun", testSnapshotRestoreRunKeepsItsParentRun},
 		{"SnapshotRestoreRunKeepsItsDedupKeys", testSnapshotRestoreRunKeepsItsDedupKeys},
+		{"SnapshotRestoreRunKeepsItsReplica", testSnapshotRestoreRunKeepsItsReplica},
 		{"SnapshotRestoreRunEventsSortAfterTheTargetsHistory", testSnapshotRestoreRunEventsSortAfterTheTargetsHistory},
 		{"SnapshotRestoreRunEventsWritesARunsTranscriptOnce", testSnapshotRestoreRunEventsWritesARunsTranscriptOnce},
 		{"SnapshotRestoreRunEventsKeepTheSequenceAheadOfThem", testSnapshotRestoreRunEventsKeepTheSequenceAheadOfThem},

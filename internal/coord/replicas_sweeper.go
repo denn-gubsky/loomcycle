@@ -25,7 +25,10 @@ import (
 //     incremented. GREATEST(0, ...) prevents underflow when the slot
 //     was already released by some other path.
 //
-//  3. DELETEs the replicas row so the next tick doesn't re-process.
+//  3. Fails every runs row with replica_id = <dead> AND status = 'queued',
+//     releasing its request and dedup keys: nothing else would start it.
+//
+//  4. DELETEs the replicas row so the next tick doesn't re-process.
 //
 // Runs only in cluster mode (started inside main.go's
 // `if cfg.Env.ReplicaID != ""` block). Single-replica deployments
@@ -176,7 +179,7 @@ func (s *ReplicasSweeper) sweepOnce(ctx context.Context) (int, error) {
 }
 
 // reapReplica processes one dead replica row: mark runs failed,
-// decrement user_quotas, delete the row.
+// decrement user_quotas, fail its queued runs, delete the row.
 func (s *ReplicasSweeper) reapReplica(ctx context.Context, replicaID string) error {
 	// Step 2a: mark owned runs failed. Phase 3 gap closure.
 	markRes, err := s.pool.Exec(ctx, `
@@ -210,6 +213,38 @@ func (s *ReplicasSweeper) reapReplica(ctx context.Context, replicaID string) err
 			// recoverable; failing the whole reap would leave the
 			// replica row in place to retry forever
 		}
+	}
+
+	// Fail the dead replica's queued runs. Their waiters died with it, and
+	// nothing else would ever start them: a booting replica restarts only the
+	// rows stamped with its own id. Left queued they would also keep their
+	// dedup keys, so a retry would be answered with a run that never moves.
+	// They are ended as a queued run a restart cannot start again is ended,
+	// with the request and the keys released so a retry runs the work.
+	// Adopting them onto a live replica is not attempted: this sweeper holds
+	// SQL only, not a queue to put them in. The error differs from the
+	// running rows' on purpose — a queued run never took a run slot, and the
+	// quota reap above counts the rows marked 'owner replica died'. This runs
+	// after the quota reap and before the replica row goes: a failure here
+	// keeps the row, so the next tick retries, without a second decrement.
+	queuedRes, err := s.pool.Exec(ctx, `
+		UPDATE runs
+		   SET status = 'failed',
+		       completed_at = now(),
+		       error = 'owner replica died before the queued run started',
+		       stop_reason = 'replica_died',
+		       draft = NULL,
+		       queued_input = NULL,
+		       idempotency_key = NULL,
+		       delivery_alt_key = NULL
+		 WHERE replica_id = $1
+		   AND status = 'queued'
+	`, replicaID)
+	if err != nil {
+		return fmt.Errorf("fail queued runs: %w", err)
+	}
+	if n := queuedRes.RowsAffected(); n > 0 {
+		s.logf("coord: replicas sweep: replica %s — failed %d queued run(s)", replicaID, n)
 	}
 
 	// Step 2c: delete the replica row.
