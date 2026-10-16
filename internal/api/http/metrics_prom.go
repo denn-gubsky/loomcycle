@@ -58,13 +58,20 @@ func (s *Server) handleMetricsProm(w http.ResponseWriter, _ *http.Request) {
 	// Concurrency gauges. When the semaphore is nil (early init / unit
 	// tests with a partial Server), emit zeros — keeps the metric series
 	// monotonic from the operator's POV rather than appearing/disappearing.
-	active, queued, perUserOpt := semaphoreSnapshot(s)
+	semStats := semaphoreSnapshot(s)
+	perUserOpt := semStats.PerUser
 	writeGauge(w, "loomcycle_concurrency_active",
 		"Runs currently holding a concurrency slot (semaphore active count).",
-		replicaLabels, float64(active))
+		replicaLabels, float64(semStats.Active))
 	writeGauge(w, "loomcycle_concurrency_queued",
 		"Runs waiting in the queue for a slot (semaphore queued count).",
-		replicaLabels, float64(queued))
+		replicaLabels, float64(semStats.Queued))
+	// A lent run holds no slot and is not queued, yet counts against the queue
+	// bound with the queued ones: without this series the queue looks to have
+	// room that admission refuses.
+	writeGauge(w, "loomcycle_concurrency_lent",
+		"Admitted runs that lent their slot while a model call waits for a provider lane; they count against the queue bound with the queued runs.",
+		replicaLabels, float64(semStats.Lent))
 
 	// TODO(RFC BL): per-scope memory footprint gauge (row count / bytes per
 	// scope). Deferred from PR6 — there is no cheap all-scopes footprint source:
@@ -203,12 +210,11 @@ func writeGauge(w io.Writer, name, help, labels string, value float64) {
 
 // semaphoreSnapshot is a nil-safe view of Server.sem state. Returns
 // zero values + nil PerUser when the semaphore is unwired.
-func semaphoreSnapshot(s *Server) (active, queued int, perUser map[string]int) {
+func semaphoreSnapshot(s *Server) concurrency.Stats {
 	if s == nil || s.sem == nil {
-		return 0, 0, nil
+		return concurrency.Stats{}
 	}
-	stats := s.sem.Stats()
-	return stats.Active, stats.Queued, stats.PerUser
+	return s.sem.Stats()
 }
 
 // laneSeries is one per-lane series: its name, type, help and the value it

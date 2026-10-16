@@ -132,7 +132,16 @@ func (s *Server) handleMemoryBackfillTraces(w http.ResponseWriter, r *http.Reque
 		if terr != nil {
 			continue
 		}
+		// sameSeq counts the turns already seen at the current seq: one user_input
+		// event yields the user's words and then one turn per untrusted block, all
+		// at that event's seq.
+		lastSeq, sameSeq := int64(-1), 0
 		for _, turn := range builtin.ConversationTurns(events) {
+			if turn.Seq == lastSeq {
+				sameSeq++
+			} else {
+				lastSeq, sameSeq = turn.Seq, 0
+			}
 			if turn.Speaker == "assistant" && !withAssistant {
 				continue
 			}
@@ -140,15 +149,18 @@ func (s *Server) handleMemoryBackfillTraces(w http.ResponseWriter, r *http.Reque
 			if strings.TrimSpace(text) == "" {
 				continue
 			}
-			if len(text) > traceTurnMaxBytes {
-				text = text[:traceTurnMaxBytes]
-			}
+			text = capTraceText(text, turn.Speaker)
 			rep.TurnsFound++
 			// DETERMINISTIC KEYS, so a re-run is idempotent rather than a second copy
 			// of the archive. The live user path cannot key this way — it has no seq
 			// in hand — which is exactly why a backfilled turn and a live one can
-			// coexist without either overwriting the other.
+			// coexist without either overwriting the other. A later turn at the same
+			// seq (an untrusted block after the user's words) takes a suffix, or the
+			// existence check below would skip it as already indexed.
 			key := store.TraceTurnKeyPrefix + sess.SessionID + ":b" + strconv.FormatInt(turn.Seq, 10)
+			if sameSeq > 0 {
+				key += "." + strconv.Itoa(sameSeq)
+			}
 			if _, gerr := s.store.MemoryGet(r.Context(), tenant, store.MemoryScopeUser, userID, key); gerr == nil {
 				rep.Skipped++
 				continue

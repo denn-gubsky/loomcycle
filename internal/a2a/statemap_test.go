@@ -38,6 +38,26 @@ func TestStatemap_EveryRunStatusMapsToExpectedTaskState(t *testing.T) {
 	}
 }
 
+// TestStatemap_EveryStoredRunStatusIsMapped derives the cases from the
+// store's own list, not a hand list: a status added there with no entry here
+// made the task store answer "task not found" for a live run of that status.
+// That is how a queued run (waiting for a slot) became invisible to an A2A
+// peer polling its task.
+func TestStatemap_EveryStoredRunStatusIsMapped(t *testing.T) {
+	for _, s := range store.RunStatuses {
+		if _, ok := TaskStateForRunStatus(s); !ok {
+			t.Errorf("RunStatus %q has no A2A TaskState — a task of that status reads as not found", s)
+		}
+	}
+	// Waiting for a slot, or created and not yet started, is not working:
+	// both are the A2A "accepted, not yet working" state.
+	for _, s := range []store.RunStatus{store.RunQueued, store.RunConfigured} {
+		if got, _ := TaskStateForRunStatus(s); got != a2asdk.TaskStateSubmitted {
+			t.Errorf("RunStatus %q → %q, want %q", s, got, a2asdk.TaskStateSubmitted)
+		}
+	}
+}
+
 // TestStatemap_UnknownRunStatusReportsUnmapped ensures the lookup
 // signals "unknown" rather than silently defaulting — an unmapped state
 // must surface as a bug, not as a spurious terminal state.

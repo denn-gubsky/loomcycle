@@ -111,6 +111,7 @@ func (p *laneWaitProvider) Call(ctx context.Context, _ providers.Request) (<-cha
 func TestRun_TurnCancelledWhileItsCallWaitsDoesNotMarkTheModelStalled(t *testing.T) {
 	prov := &laneWaitProvider{waiting: make(chan struct{})}
 	armCh := make(chan context.CancelCauseFunc, 4)
+	sink := newEventSink()
 	var mu sync.Mutex
 	var stalled, limited []string
 	opts := RunOptions{
@@ -119,6 +120,7 @@ func TestRun_TurnCancelledWhileItsCallWaitsDoesNotMarkTheModelStalled(t *testing
 		Segments:    steerSegs(),
 		SteerQueue:  make(chan steer.Message, 1),
 		Interactive: true,
+		OnEvent:     sink.emit,
 		ArmTurnCancel: func(tc context.CancelCauseFunc) func() {
 			armCh <- tc
 			return func() {}
@@ -142,10 +144,13 @@ func TestRun_TurnCancelledWhileItsCallWaitsDoesNotMarkTheModelStalled(t *testing
 	cancelTurn := <-armCh
 	<-prov.waiting
 	cancelTurn(ErrTurnCancelled)
+	// The run parks for its operator; end it so the feedback is final.
+	sink.waitFor(t, providers.EventAwaitingInput, 5*time.Second)
+	cancel()
 	select {
 	case <-finished:
 	case <-time.After(5 * time.Second):
-		t.Fatal("the run did not come back from a cancelled turn")
+		t.Fatal("the run did not end after a whole-run cancel")
 	}
 	mu.Lock()
 	defer mu.Unlock()

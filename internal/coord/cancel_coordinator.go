@@ -179,7 +179,7 @@ func (c *CancelCoordinator) CancelRemote(ctx context.Context, agentID, reason st
 		return cancel.CancelResult{}, false, fmt.Errorf("get run by agent_id: %w", err)
 	}
 	// Idempotent terminal case — no broadcast needed.
-	if run.Status != store.RunRunning && run.Status != store.RunStatus("") {
+	if !cancelRoutable(run.Status) {
 		return cancel.CancelResult{Cancelled: false, Reason: reason}, true, nil
 	}
 	// Single-replica row stamped before v0.12.2, or a stamp that
@@ -272,11 +272,20 @@ func (c *CancelCoordinator) CancelRemote(ctx context.Context, agentID, reason st
 		// short fresh context for the re-check.
 		recheckCtx, recheckCancel := context.WithTimeout(context.Background(), 2*time.Second)
 		defer recheckCancel()
-		if run2, err := c.store.GetRunByAgentID(recheckCtx, agentID); err == nil && run2.Status != "" && run2.Status != store.RunRunning {
+		if run2, err := c.store.GetRunByAgentID(recheckCtx, agentID); err == nil && !cancelRoutable(run2.Status) {
 			return cancel.CancelResult{Cancelled: false, Reason: string(run2.Status)}, true, nil
 		}
 		return cancel.CancelResult{Cancelled: false, Reason: ReasonOwnerUnreachable}, true, nil
 	}
+}
+
+// cancelRoutable reports whether a run in status may still be held by its
+// owner replica, so a cancel must be sent there. A queued run counts: it has
+// not started, but its owner holds its cancel registration and its wait for a
+// run slot, and if the cancel never reaches it the run later starts and
+// completes. An empty status is a row written before statuses were recorded.
+func cancelRoutable(status store.RunStatus) bool {
+	return status == store.RunRunning || status == store.RunQueued || status == ""
 }
 
 // RunCancelSubscriber is the owning-side listener. Started once per

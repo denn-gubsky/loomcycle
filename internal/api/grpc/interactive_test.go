@@ -3,6 +3,7 @@ package grpc
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"testing"
 
@@ -13,6 +14,7 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/api/grpc/loomcyclepb"
 	"github.com/denn-gubsky/loomcycle/internal/connector"
 	"github.com/denn-gubsky/loomcycle/internal/providers"
+	"github.com/denn-gubsky/loomcycle/internal/runner"
 )
 
 // interactiveMock is a programmable Connector for the RFC AI gRPC tests. Embeds
@@ -283,6 +285,40 @@ func TestGrpcRetuneRun_RefusesAnEmptyOverrideSet(t *testing.T) {
 	}
 	if mc.retuneCalls != 0 {
 		t.Error("the connector was called for a request carrying no override")
+	}
+}
+
+// A refused retune answers with the code its HTTP twin's status maps to: a
+// token locked out of the override is a 403 there, a no-trace run a 409. Every
+// refusal used to fold into InvalidArgument, so a gRPC caller could not tell
+// "you may not" from "you sent it wrong". Both RPCs that retune are covered.
+func TestGrpcRetune_RefusalsMapToTheHTTPCodes(t *testing.T) {
+	noTrace := fmt.Errorf("%w: a no-trace run cannot be retuned", runner.ErrRetentionUnsupported)
+	for _, tc := range []struct {
+		name string
+		err  error
+		want codes.Code
+	}{
+		{"locked override", fmt.Errorf("%w: model", runner.ErrOverrideNotAllowed), codes.PermissionDenied},
+		{"no-trace run", noTrace, codes.FailedPrecondition},
+		{"invalid block", fmt.Errorf("%w: bad tool_choice", runner.ErrInvalidArgument), codes.InvalidArgument},
+		// An untyped refusal stays the caller's mistake, as the HTTP 400 default has it.
+		{"untyped", errors.New("model not in this tier"), codes.InvalidArgument},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			mc := &interactiveMock{retuneErr: tc.err, steerDelivered: true}
+			client, cleanup := startTestServerWithConnector(t, mc)
+			defer cleanup()
+
+			_, err := client.RetuneRun(context.Background(), &loomcyclepb.RetuneRunRequest{RunId: "r_abc", Model: "model-b"})
+			if got := status.Code(err); got != tc.want {
+				t.Errorf("RetuneRun: %v, want %v", got, tc.want)
+			}
+			_, err = client.RunInput(context.Background(), &loomcyclepb.RunInputRequest{RunId: "r_abc", Text: "go", Model: "model-b"})
+			if got := status.Code(err); got != tc.want {
+				t.Errorf("RunInput's retune: %v, want %v", got, tc.want)
+			}
+		})
 	}
 }
 

@@ -52,6 +52,7 @@ func TestMetricsProm_EmitsExpectedSeries(t *testing.T) {
 		"loomcycle_process_goroutines",
 		"loomcycle_concurrency_active",
 		"loomcycle_concurrency_queued",
+		"loomcycle_concurrency_lent",
 		"loomcycle_build_info",
 	}
 	for _, name := range wantSeries {
@@ -107,6 +108,34 @@ func TestMetricsProm_NilSemReturnsZeros(t *testing.T) {
 	}
 	if !strings.Contains(body, "loomcycle_concurrency_queued 0") {
 		t.Errorf("expected queued=0 with nil sem; body:\n%s", body)
+	}
+	if !strings.Contains(body, "loomcycle_concurrency_lent 0") {
+		t.Errorf("expected lent=0 with nil sem; body:\n%s", body)
+	}
+}
+
+// A run that lent its slot while its model call waits for a provider lane holds
+// no slot and is not queued, yet it counts against the queue bound. Without its
+// own series, a scrape showed spare queue room that admission would refuse.
+func TestMetricsProm_LentSeriesCountsALentRun(t *testing.T) {
+	srv := newMetricsPromServer(t, false)
+	slot := &concurrency.RunSlot{}
+	rel, err := srv.sem.Admit(t.Context(), concurrency.AdmitRequest{Slot: slot})
+	if err != nil {
+		t.Fatalf("Admit: %v", err)
+	}
+	defer rel()
+	if !slot.Lend() {
+		t.Fatal("Lend refused with an empty queue")
+	}
+
+	rec := httptest.NewRecorder()
+	srv.handleMetricsProm(rec, httptest.NewRequest("GET", "/metrics", nil))
+	body := rec.Body.String()
+	for _, want := range []string{"loomcycle_concurrency_lent 1", "loomcycle_concurrency_active 0"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("missing %q; body:\n%s", want, body)
+		}
 	}
 }
 
