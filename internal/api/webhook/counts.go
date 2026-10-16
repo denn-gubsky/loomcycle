@@ -111,7 +111,13 @@ func (rec *Receiver) FlushCounts(ctx context.Context) error {
 // RunCountFlusher flushes the counts every interval until ctx ends. It does
 // not flush on the way out: a clean shutdown calls FlushCounts itself once
 // the HTTP server has drained, so a delivery answered during the drain is
-// kept too. Returns at once when the receiver counts nothing.
+// kept too — after waiting for this to return, so the two never run at once.
+// Returns at once when the receiver counts nothing.
+//
+// A flush writes under its own timeout, not ctx: cancelled mid-write at
+// shutdown, the write could commit and still report the cancel, and the
+// counts it re-queues would then be added twice; or it re-queues them after
+// the final flush already ran, and they are lost.
 func (rec *Receiver) RunCountFlusher(ctx context.Context, interval time.Duration) {
 	if rec.counts == nil {
 		return
@@ -121,7 +127,7 @@ func (rec *Receiver) RunCountFlusher(ctx context.Context, interval time.Duration
 	for {
 		select {
 		case <-t.C:
-			fctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+			fctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
 			if err := rec.FlushCounts(fctx); err != nil {
 				rec.logf("webhook: storing delivery counts failed (kept for the next try): %v", err)
 			}
