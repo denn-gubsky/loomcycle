@@ -3238,13 +3238,16 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 	if in.AllowedHosts != nil || s.cfg().Env.HTTPCallerAuthoritative {
 		var caller []string
 		if in.AllowedHosts != nil {
-			caller = s.floorLockedCallerHosts(ctx, agentDef, allowedTools, *in.AllowedHosts)
+			caller = *in.AllowedHosts
 		}
-		allowedTools = builtin.NarrowHosts(allowedTools, caller, in.WebSearchFilter, s.cfg().Env.HTTPCallerAuthoritative)
+		// A locked caller's list only narrows, in every mode.
+		narrowOnly := in.AllowedHosts != nil && callerHostsNarrowOnly(ctx, agentDef)
+		allowedTools = builtin.NarrowHosts(allowedTools, caller, in.WebSearchFilter, s.cfg().Env.HTTPCallerAuthoritative && !narrowOnly)
 		hostPolicy = tools.HostPolicyValue{
 			AllowedHosts:    caller,
 			HasList:         in.AllowedHosts != nil,
 			WebSearchFilter: in.WebSearchFilter,
+			NarrowOnly:      narrowOnly,
 		}
 	}
 	dispatcher := s.newDispatcher(allowedTools)
@@ -5411,13 +5414,16 @@ func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {
 	if req.AllowedHosts != nil || s.cfg().Env.HTTPCallerAuthoritative {
 		var caller []string
 		if req.AllowedHosts != nil {
-			caller = s.floorLockedCallerHosts(r.Context(), agentDef, allowedTools, *req.AllowedHosts)
+			caller = *req.AllowedHosts
 		}
-		allowedTools = builtin.NarrowHosts(allowedTools, caller, req.WebSearchFilter, s.cfg().Env.HTTPCallerAuthoritative)
+		// A locked caller's list only narrows, in every mode.
+		narrowOnly := req.AllowedHosts != nil && callerHostsNarrowOnly(r.Context(), agentDef)
+		allowedTools = builtin.NarrowHosts(allowedTools, caller, req.WebSearchFilter, s.cfg().Env.HTTPCallerAuthoritative && !narrowOnly)
 		hostPolicy = tools.HostPolicyValue{
 			AllowedHosts:    caller,
 			HasList:         req.AllowedHosts != nil,
 			WebSearchFilter: req.WebSearchFilter,
+			NarrowOnly:      narrowOnly,
 		}
 	}
 	dispatcher := s.newDispatcher(allowedTools)
@@ -6388,13 +6394,16 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 	if body.AllowedHosts != nil || s.cfg().Env.HTTPCallerAuthoritative {
 		var caller []string
 		if body.AllowedHosts != nil {
-			caller = s.floorLockedCallerHosts(r.Context(), agentDef, allowedTools, *body.AllowedHosts)
+			caller = *body.AllowedHosts
 		}
-		allowedTools = builtin.NarrowHosts(allowedTools, caller, body.WebSearchFilter, s.cfg().Env.HTTPCallerAuthoritative)
+		// A locked caller's list only narrows, in every mode.
+		narrowOnly := body.AllowedHosts != nil && callerHostsNarrowOnly(r.Context(), agentDef)
+		allowedTools = builtin.NarrowHosts(allowedTools, caller, body.WebSearchFilter, s.cfg().Env.HTTPCallerAuthoritative && !narrowOnly)
 		hostPolicy = tools.HostPolicyValue{
 			AllowedHosts:    caller,
 			HasList:         body.AllowedHosts != nil,
 			WebSearchFilter: body.WebSearchFilter,
+			NarrowOnly:      narrowOnly,
 		}
 	}
 	dispatcher := s.newDispatcher(allowedTools)
@@ -8315,12 +8324,13 @@ func (s *Server) prepareSubRunValues(ctx context.Context, name string, src nameS
 	subCompaction = config.MergeCompaction(subCompaction, tools.CompactionOverride(ctx))
 	subContext := config.MergeContext(def.Context, tools.ContextPolicy(ctx))
 	// A child that runs on its definition only takes its parent's host list
-	// as a narrowing, as a request naming it directly would. Clipped here,
-	// before the record is written, so the record and the child's tools
-	// agree and a resume re-applies the list the child ran with.
+	// as a narrowing, as a request naming it directly would; a list that
+	// already only narrows stays so down the tree. Decided here, before the
+	// record is written, so the record and the child's tools agree and a
+	// resume applies the list the way the child ran with it.
 	subHostPolicy := tools.HostPolicy(ctx)
-	if subHostPolicy.HasList {
-		subHostPolicy.AllowedHosts = s.floorLockedCallerHosts(ctx, def, s.tools, subHostPolicy.AllowedHosts)
+	if subHostPolicy.HasList && callerHostsNarrowOnly(ctx, def) {
+		subHostPolicy.NarrowOnly = true
 	}
 	subRunCfg := runConfigRecord{
 		Hooks:             additionsRecord(hooks.AdditionsFrom(ctx)), // inherited from the parent run
@@ -8642,7 +8652,7 @@ func (s *Server) prepareSubRunValues(ctx context.Context, name string, src nameS
 	// the documents (2026-05-06).
 	// subHostPolicy is the parent's, clipped above for a locked child.
 	if subHostPolicy.HasList || s.cfg().Env.HTTPCallerAuthoritative {
-		subTools = builtin.NarrowHosts(subTools, subHostPolicy.AllowedHosts, subHostPolicy.WebSearchFilter, s.cfg().Env.HTTPCallerAuthoritative)
+		subTools = builtin.NarrowHosts(subTools, subHostPolicy.AllowedHosts, subHostPolicy.WebSearchFilter, s.cfg().Env.HTTPCallerAuthoritative && !subHostPolicy.NarrowOnly)
 	}
 	subDispatcher := s.newDispatcher(subTools)
 

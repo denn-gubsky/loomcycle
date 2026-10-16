@@ -315,29 +315,6 @@ func intersectHosts(operator, caller []string) []string {
 	return out
 }
 
-// FloorCallerHosts clips a caller's host list to the operator's static list
-// (the HTTP tool's, or a WebFetch's backend's, in `in`), with the same
-// matcher INTERSECT mode uses. nil stays nil (no list sent). For a caller
-// that may only narrow even when LOOMCYCLE_HTTP_CALLER_AUTHORITATIVE lets a
-// caller's list replace the operator's: the clipped list replaces nothing
-// wider than the floor.
-func FloorCallerHosts(in []tools.Tool, caller []string) []string {
-	if caller == nil {
-		return nil
-	}
-	var floor []string
-	for _, t := range in {
-		if h, ok := t.(*HTTP); ok {
-			floor = h.HostAllowlist
-			break
-		}
-		if wf, ok := t.(*WebFetch); ok && wf.HTTP != nil && floor == nil {
-			floor = wf.HTTP.HostAllowlist
-		}
-	}
-	return intersectHosts(floor, caller)
-}
-
 // HostOnStaticAllowlist exposes the operator-floor host matcher to callers
 // outside this package.
 //

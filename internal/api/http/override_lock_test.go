@@ -149,7 +149,7 @@ func TestOverrideLock_EveryRequestFieldIsClassified(t *testing.T) {
 	// that can only narrow or bound the run.
 	exempt := map[string]string{
 		"Agent": "which agent — the allowlist's business", "Start": "draft or run", "Segments": "the content",
-		"Prompt": "the content", "Tools": "narrow-only", "AllowedHosts": "narrow-only (a locked caller's list is clipped to the operator's in caller-authoritative mode: floorLockedCallerHosts)",
+		"Prompt": "the content", "Tools": "narrow-only", "AllowedHosts": "narrow-only (a locked caller's list stays a narrowing in caller-authoritative mode: callerHostsNarrowOnly)",
 		"SessionID": "identity", "TenantID": "identity (the principal wins)", "UserID": "identity (the principal wins)",
 		"AgentID": "identity", "UserBearer": "the caller's own credential", "UserCredentials": "the caller's own credentials",
 		"ParentContext": "lineage labels", "IdempotencyKey": "delivery", "ClientIdempotencyKey": "delivery",

@@ -562,7 +562,9 @@ func (s *Server) resumePausedRun(run store.Run) error {
 	hostPolicy := runCfg.hostPolicy()
 	callerAuthoritative := s.cfg().Env.HTTPCallerAuthoritative
 	if hostPolicy.HasList || callerAuthoritative {
-		allowedTools = builtin.NarrowHosts(allowedTools, runCfg.callerHosts(), hostPolicy.WebSearchFilter, callerAuthoritative)
+		// A list the run recorded as narrow-only stays a narrowing whatever
+		// the mode is now: it was a locked caller's.
+		allowedTools = builtin.NarrowHosts(allowedTools, runCfg.callerHosts(), hostPolicy.WebSearchFilter, callerAuthoritative && !hostPolicy.NarrowOnly)
 	}
 	allowedTools = s.grantRecallTool(allowedTools, runCfg.Context) // RFC CT: keep Recall on a resumed recall run
 	dispatcher := s.newDispatcher(allowedTools)

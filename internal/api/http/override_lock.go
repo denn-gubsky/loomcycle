@@ -11,8 +11,6 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/auth"
 	"github.com/denn-gubsky/loomcycle/internal/config"
 	"github.com/denn-gubsky/loomcycle/internal/runner"
-	"github.com/denn-gubsky/loomcycle/internal/tools"
-	"github.com/denn-gubsky/loomcycle/internal/tools/builtin"
 )
 
 // lockableOverrideFields maps each per-run override a token can be locked out
@@ -114,23 +112,18 @@ func agentLocksOverrides(def config.AgentDef) bool {
 	return def.AllowOverrides != nil && !*def.AllowOverrides
 }
 
-// floorLockedCallerHosts clips a caller's allowed_hosts to the operator's
-// list when the caller is held to its agent's own settings — by its token's
-// override lock or by the agent's allow_overrides: false — and a caller's
-// list would otherwise REPLACE the operator's (caller-authoritative mode).
-// allowed_hosts is not a lockable override because it can only narrow; in
-// that mode it can widen, so for a locked caller it is made to narrow again
-// and the operator's list stays the floor. The clipped list is what the run
-// records, so a sub-agent and a resume re-apply the narrowed one.
-func (s *Server) floorLockedCallerHosts(ctx context.Context, def config.AgentDef, in []tools.Tool, caller []string) []string {
-	if caller == nil || !s.cfg().Env.HTTPCallerAuthoritative {
-		return caller
-	}
+// callerHostsNarrowOnly reports whether a caller's allowed_hosts may only
+// narrow the operator's list for this run: the caller is held to its agent's
+// own settings, by its token's override lock or by the agent's
+// allow_overrides: false. allowed_hosts is not a lockable override because it
+// can only narrow — except in caller-authoritative mode, where a caller's
+// list REPLACES the operator's, and an empty list falls back to it. For a
+// locked caller the list is applied by intersection instead, in every mode:
+// what it keeps of the operator's list is all it reaches, and keeping nothing
+// reaches nothing (tools.HostPolicyValue.NarrowOnly).
+func callerHostsNarrowOnly(ctx context.Context, def config.AgentDef) bool {
 	p, ok := auth.PrincipalFromContext(ctx)
-	if !agentLocksOverrides(def) && !(ok && p.Restrictions.Overrides != nil) {
-		return caller
-	}
-	return builtin.FloorCallerHosts(in, caller)
+	return agentLocksOverrides(def) || ok && p.Restrictions.Overrides != nil
 }
 
 // admitAgentOverridesByName is admitAgentOverrides for a caller that has the
