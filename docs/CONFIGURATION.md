@@ -1575,7 +1575,7 @@ Rules worth knowing:
 - **Who may set one:** an admin, for any tenant (`"tenant": "…"` in the body, `?tenant=` on the delete and the list) and for its own when it names none — which, with the single `LOOMCYCLE_AUTH_TOKEN`, is the tenant every run is in; a tenant operator, for its own tenant only. A tenant member, an isolated user and a token limited to certain agents may not set, clear or list them.
 - **It is audited.** Setting and clearing each write a record (`retention_override_set`, `retention_override_clear`) to `LOOMCYCLE_AUDIT_LOG_PATH` with who, the agent, the tenant and until when. With an audit log configured, an override whose record cannot be written is not set. Both are also written to the process log.
 - **Every transport has it.** HTTP as above; gRPC `RetentionOverride` (`op`: `list`, `set`, `clear`); the MCP tool `retention_override`; `listRetentionOverrides` / `setRetentionOverride` / `clearRetentionOverride` in the TypeScript client and `list_retention_overrides` / `set_retention_override` / `clear_retention_override` in the Python one. All of them call one implementation, so who may use it, what it lifts and what is audited are the same everywhere.
-- **The console shows a banner** for as long as one is in force, and `GET /v1/_retention` lists them as `no_trace_overrides`.
+- **The console shows a banner** for as long as one is in force, and `GET /v1/_retention` lists them as `no_trace_overrides` to those who may list them (an empty list for anyone else).
 - **It is not carried by a snapshot**, and it is checked when a run starts: a run already going keeps the mode it started with.
 
 ### Declared principals — static `(tenant, user)` logins (RFC AO)
