@@ -272,6 +272,10 @@ func (s *Server) subscriptionCtx(ctx context.Context, sub teamSubscription) cont
 		AgentID:               "team:" + sub.Name,
 		OperatorKeyRestricted: promoter.OperatorKeyRestricted,
 		Isolated:              promoter.Isolated,
+		// The system user is no person, so there is no user whose own
+		// credentials the walk may use: whatever the promoter could do, the
+		// walk's members resolve $cred: for their agent and tenant only.
+		CredentialsNoUserScope: true,
 	})
 }
 
