@@ -100,6 +100,39 @@ func TestWebhookDefTool_AForkKeepsOrReplacesTheBearer(t *testing.T) {
 	if text, isErr := fork(`{"user_bearer":"$cred:gone"}`); !isErr || !strings.Contains(text, "names no tenant-level credential") {
 		t.Errorf("a fork naming a missing credential: %s", text)
 	}
+	// An explicit "" removes it: a key omitted keeps the parent's, a key
+	// present and empty is the author emptying the field.
+	if text, isErr := fork(`{"user_bearer":""}`); isErr {
+		t.Fatal(text)
+	}
+	if got := acmeWebhook(t, tool, "w").UserBearer; got != "" {
+		t.Errorf("a fork with user_bearer \"\": %q, want it removed", got)
+	}
+}
+
+// A schedule's fork clears user_bearer the same way, and keeps it when the
+// overlay does not name it.
+func TestScheduleDefTool_AForkWithAnEmptyBearerRemovesIt(t *testing.T) {
+	tool, ctx := scheduleBearerFixture(t)
+	putCredential(t, tool.Credentials, "acme", "tenant", "", "tok", nil)
+	if text, isErr := scheduleCreate(t, tool, ctx, "s", `{"agent":"digest","schedule":"0 6 * * *","user_id":"alice","user_bearer":"$cred:tok"}`); isErr {
+		t.Fatal(text)
+	}
+	fork := func(overlay string) {
+		t.Helper()
+		res, err := tool.Execute(ctx, json.RawMessage(`{"op":"fork","name":"s","overlay":`+overlay+`}`))
+		if err != nil || res.IsError {
+			t.Fatalf("fork %s: %v %s", overlay, err, res.Text)
+		}
+	}
+	fork(`{"schedule":"0 7 * * *"}`)
+	if got := activeScheduleDef(t, tool, "s").UserBearer; got != "$cred:tok" {
+		t.Errorf("a fork without user_bearer: %q, want the parent's", got)
+	}
+	fork(`{"user_bearer":""}`)
+	if got := activeScheduleDef(t, tool, "s").UserBearer; got != "" {
+		t.Errorf("a fork with user_bearer \"\": %q, want it removed", got)
+	}
 }
 
 // A fork of a static webhook keeps its user_bearer, and is judged on it like

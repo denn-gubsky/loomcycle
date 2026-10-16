@@ -632,6 +632,9 @@ func (s *WebhookDef) buildDefinition(name, parentJSON string, overlay json.RawMe
 			return mergedWebhookDef{}, fmt.Errorf("auth.secret and auth.previous_secret replace auth.signing_secret_env and auth.bearer_token_env: set one of the two forms, not both")
 		}
 		base.applyOverlay(ov)
+		if overlayClearsUserBearer(overlay) {
+			base.UserBearer = ""
+		}
 	}
 	// Unlike A2AServerCardDef, config.Webhook carries no Name field — the
 	// webhook's addressable name is the registry key (the `name` arg)

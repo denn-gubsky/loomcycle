@@ -920,6 +920,9 @@ func (s *ScheduleDef) buildDefinition(name, parentJSON string, overlay json.RawM
 			return mergedScheduleDef{}, fmt.Errorf("parse overlay: %w", err)
 		}
 		base.applyOverlay(ov)
+		if overlayClearsUserBearer(overlay) {
+			base.UserBearer = ""
+		}
 	}
 	return base, nil
 }

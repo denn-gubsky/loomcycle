@@ -1012,8 +1012,10 @@ export function buildWebhookOverlay(s: WebhookFormState, description: string): R
   if (s.deliveryIdHeader.trim()) auth.delivery_id_header = s.deliveryIdHeader.trim();
   ov.auth = auth;
 
+  // An empty field is sent as "": left out, a fork keeps the parent's bearer,
+  // so emptying it (or leaving spawn, which alone takes one) removed nothing.
+  ov.user_bearer = s.delivery === "spawn" ? s.userBearer.trim() : "";
   if (s.delivery === "spawn") {
-    if (s.userBearer.trim()) ov.user_bearer = s.userBearer.trim();
     if (s.userTier.trim()) ov.user_tier = s.userTier.trim();
   }
   const dedup = splitLines(s.dedupKey);
