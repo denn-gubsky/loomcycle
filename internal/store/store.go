@@ -3601,6 +3601,13 @@ type Store interface {
 	WebhookDeliveryClaimRun(ctx context.Context, keys []string, now, expiresAt time.Time) (claimed bool, holder string, err error)
 	// WebhookDeliverySetRun records the run a claim's keys started.
 	WebhookDeliverySetRun(ctx context.Context, keys []string, runID string) error
+	// WebhookDeliveryHeldByLiveRun is a read: the run holding key when
+	// WebhookDeliveryClaimRun would refuse a claim of it for that run — the
+	// key held past now, by a run whose row exists and whose status is not one
+	// of WebhookRetakeRunStatuses. held is false otherwise (no such key, one
+	// whose run has not registered, a failed run, a run row that is gone). It
+	// lets the receiver answer a repeated duplicate without a write.
+	WebhookDeliveryHeldByLiveRun(ctx context.Context, key string, now time.Time) (runID string, held bool, err error)
 
 	// ---- Webhook delivery counters ----
 	//

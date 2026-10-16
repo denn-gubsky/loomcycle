@@ -135,6 +135,59 @@ func testWebhookDeliveryClaimRunRetakesOnlyAFailedRunsKeys(t *testing.T, s store
 	}
 }
 
+// The read that answers a repeated duplicate agrees with the claim: a key is
+// held by a live run exactly when the claim would refuse it naming that run.
+func testWebhookDeliveryHeldByLiveRunAgreesWithTheClaim(t *testing.T, s store.Store) {
+	d := newDeliveryRuns(t, s)
+	ctx := context.Background()
+	heldBy := func(now time.Time, k string) (string, bool) {
+		t.Helper()
+		id, held, err := s.WebhookDeliveryHeldByLiveRun(ctx, d.key(k), now)
+		if err != nil {
+			t.Fatalf("WebhookDeliveryHeldByLiveRun(%s): %v", k, err)
+		}
+		return id, held
+	}
+	if _, held := heldBy(armT0, "none"); held {
+		t.Error("a key never claimed reads as held")
+	}
+	if ok, _ := d.claim(armT0, "unregistered"); !ok {
+		t.Fatal("unregistered")
+	}
+	if _, held := heldBy(armT0, "unregistered"); held {
+		t.Error("a key whose run has not registered reads as held by a live run")
+	}
+	for _, st := range []store.RunStatus{store.RunRunning, store.RunCompleted, store.RunCancelled} {
+		k := "live-" + string(st)
+		id := d.run(st, "")
+		if ok, _ := d.claim(armT0, k); !ok {
+			t.Fatal(k)
+		}
+		d.setRun(id, k)
+		if got, held := heldBy(armT0, k); !held || got != id {
+			t.Errorf("a %s run's key: held %t by %q, want held by %s", st, held, got, id)
+		}
+		if _, held := heldBy(armT0.Add(time.Hour), k); held {
+			t.Errorf("a %s run's key past its expiry reads as held", st)
+		}
+	}
+	failed := d.run(store.RunFailed, "")
+	if ok, _ := d.claim(armT0, "failed"); !ok {
+		t.Fatal("failed")
+	}
+	d.setRun(failed, "failed")
+	if _, held := heldBy(armT0, "failed"); held {
+		t.Error("a failed run's key reads as held: the claim takes it over")
+	}
+	if ok, _ := d.claim(armT0, "gone"); !ok {
+		t.Fatal("gone")
+	}
+	d.setRun("run_never_existed_"+d.nonce, "gone")
+	if _, held := heldBy(armT0, "gone"); held {
+		t.Error("a key whose run row is gone reads as held by a live run")
+	}
+}
+
 // Of many concurrent claims taking over one failed run's key, exactly one is
 // granted.
 func testWebhookDeliveryClaimRunRetakeRaceGrantsOne(t *testing.T, s store.Store) {

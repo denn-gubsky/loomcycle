@@ -3981,6 +3981,28 @@ func (s *Store) WebhookDeliveryClaimRun(ctx context.Context, keys []string, now,
 	return true, "", nil
 }
 
+// WebhookDeliveryHeldByLiveRun reads the live run holding key; see the
+// store.Store contract.
+func (s *Store) WebhookDeliveryHeldByLiveRun(ctx context.Context, key string, now time.Time) (string, bool, error) {
+	statuses := make([]string, len(store.WebhookRetakeRunStatuses))
+	for i, st := range store.WebhookRetakeRunStatuses {
+		statuses[i] = string(st)
+	}
+	var runID string
+	err := s.pool.QueryRow(ctx,
+		`SELECT d.run_id FROM webhook_deliveries d JOIN runs r ON r.id = d.run_id
+		 WHERE d.delivery_key = $1 AND d.expires_at > $2 AND d.run_id <> ''
+		   AND NOT (r.status = ANY($3))`,
+		key, now.UTC(), statuses).Scan(&runID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", false, nil
+	}
+	if err != nil {
+		return "", false, fmt.Errorf("webhook delivery holder: %w", err)
+	}
+	return runID, true, nil
+}
+
 // WebhookDeliverySetRun records the run a claim's keys started.
 func (s *Store) WebhookDeliverySetRun(ctx context.Context, keys []string, runID string) error {
 	if len(keys) == 0 {
