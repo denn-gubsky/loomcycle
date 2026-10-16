@@ -155,7 +155,9 @@ func (s *ScheduleDef) Execute(ctx context.Context, raw json.RawMessage) (tools.R
 	}
 	policy := tools.ScheduleDefPolicy(ctx)
 
-	if in.Op == "create" || in.Op == "fork" {
+	// Every op that writes a version: a hook edit is a fork too.
+	switch in.Op {
+	case "create", "fork", "add_hook", "remove_hook":
 		if res, refused := refuseNoTraceTriggerAuthor(ctx, "schedule", in.Op); refused {
 			return res, nil
 		}
