@@ -90,7 +90,7 @@ func TestHookDef_ChangingOneANoTraceAgentRunsIsTheOperators(t *testing.T) {
 	admin := as("", auth.Principal{Subject: "root", Scopes: []string{auth.ScopeAdmin}})
 	mustHookDef(t, tool, admin, `{"op":"create","name":"shared/gate","overlay":`+httpHookOverlay+`}`)
 	sink.evs = nil
-	if _, text, isErr := runHookDef(t, tool, sharedMember, `{"op":"fork","name":"shared/gate","overlay":{"timeout_ms":900}}`); !isErr || !strings.Contains(text, "no-trace") {
+	if _, text, isErr := runHookDef(t, tool, sharedMember, `{"op":"fork","name":"shared/gate","overlay":{"timeout_ms":900}}`); !isErr || !strings.Contains(text, "operator") {
 		t.Errorf("a non-operator forking a shared HookDef a static no-trace agent names: %s, want it refused", text)
 	}
 
@@ -123,32 +123,49 @@ func TestHookDef_ChangingOneANoTraceAgentRunsIsTheOperators(t *testing.T) {
 	}
 }
 
-// What a caller is told about a HookDef write depends on its own tenant's
-// agents only: another tenant's no-trace agent neither shows in the answer
-// nor changes it, so the answer cannot be used to learn that the agent
-// exists. A shared-layer HookDef is the caller's own layer when it has no
-// tenant; another tenant falling back to it is that tenant's.
-func TestHookDef_TheGateSaysNothingOfAnotherTenant(t *testing.T) {
-	answer := func(withOtherTenantsAgent bool) (string, bool) {
+// A shared-layer HookDef is what every tenant's agents fall back to, so
+// changing one is the operator's, whatever names it: a tenantless
+// non-operator is refused every write, with an answer that depends on nothing
+// but the caller — the same whether or not some tenant's no-trace agent names
+// the hook, so it cannot be used to learn of that agent. An operator may.
+func TestHookDef_ASharedHookIsTheOperatorsWhateverNamesIt(t *testing.T) {
+	admin := auth.WithPrincipal(hookTenantCtx(""), auth.Principal{Subject: "root", Scopes: []string{auth.ScopeAdmin}})
+	tenantless := auth.WithPrincipal(hookTenantCtx(""), auth.Principal{Subject: "svc", Scopes: []string{auth.ScopeRunsCreate}})
+	answers := func(withOtherTenantsAgent bool) map[string]string {
 		t.Helper()
 		tool, st := hookDefFixture(t)
-		admin := auth.WithPrincipal(hookTenantCtx(""), auth.Principal{Subject: "root", Scopes: []string{auth.ScopeAdmin}})
-		mustHookDef(t, tool, admin, `{"op":"create","name":"shared/x","overlay":`+httpHookOverlay+`}`)
+		created := mustHookDef(t, tool, admin, `{"op":"create","name":"shared/x","overlay":`+httpHookOverlay+`}`)
+		id, _ := created["def_id"].(string)
 		if withOtherTenantsAgent {
 			seedAgentVersion(t, st, "acme", "acme-secret-agent", `{"retention":"none","hooks":{"pre":["shared/x"]}}`)
 		}
-		tenantless := auth.WithPrincipal(hookTenantCtx(""), auth.Principal{Subject: "svc", Scopes: []string{auth.ScopeRunsCreate}})
-		_, text, isErr := runHookDef(t, tool, tenantless, `{"op":"fork","name":"shared/x","overlay":{"timeout_ms":900}}`)
-		return text, isErr
+		out := map[string]string{}
+		for who, ctx := range map[string]context.Context{"tenantless": tenantless} {
+			for op, input := range map[string]string{
+				"create":  `{"op":"create","name":"shared/y","overlay":` + httpHookOverlay + `}`,
+				"fork":    `{"op":"fork","name":"shared/x","overlay":{"timeout_ms":900}}`,
+				"promote": `{"op":"promote","def_id":"` + id + `"}`,
+				"retire":  `{"op":"retire","def_id":"` + id + `","retired":true}`,
+				"delete":  `{"op":"delete","name":"shared/x"}`,
+			} {
+				_, text, isErr := runHookDef(t, tool, ctx, input)
+				if !isErr {
+					t.Errorf("%s, %s of a shared hook: allowed, want it refused", who, op)
+				}
+				out[who+" "+op] = strings.ReplaceAll(text, id, "<id>")
+			}
+		}
+		// An operator may.
+		mustHookDef(t, tool, admin, `{"op":"fork","name":"shared/x","overlay":{"timeout_ms":900}}`)
+		return out
 	}
-	_, refusedWithout := answer(false)
-	with, refusedWith := answer(true)
-	if refusedWith != refusedWithout {
-		t.Errorf("refused=%v with another tenant's no-trace agent naming it, %v without: the answer reveals that agent (%s)", refusedWith, refusedWithout, with)
-	}
-	for _, secret := range []string{"acme", "acme-secret-agent"} {
-		if strings.Contains(with, secret) {
-			t.Errorf("the answer names %q of another tenant: %s", secret, with)
+	without, with := answers(false), answers(true)
+	for k, w := range with {
+		if w != without[k] {
+			t.Errorf("%s: %q with another tenant's no-trace agent naming it, %q without", k, w, without[k])
+		}
+		if !strings.Contains(w, "only be changed by an operator") || strings.Contains(w, "acme") {
+			t.Errorf("%s: %q, want the generic refusal and nothing of another tenant", k, w)
 		}
 	}
 }

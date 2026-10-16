@@ -1082,7 +1082,7 @@ The canonical use case is **wrapping untrusted content** from `WebFetch` / `HTTP
 
 ### Ordering
 
-A tool's own hooks run before the agent-level ones, each in listed order; `post` chains run in reverse (middleware nesting). A HookDef reference resolves in the definition's tenant, then the shared tenant; one that cannot be resolved stops the run before any model call.
+A tool's own hooks run before the agent-level ones, each in listed order; `post` chains run in reverse (middleware nesting). A HookDef reference resolves in the definition's tenant, then the shared tenant; one that cannot be resolved stops the run before any model call. Only an operator may change a shared (no-tenant) HookDef.
 
 ### Webhook payload
 

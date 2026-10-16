@@ -182,7 +182,8 @@ func TestHookDef_ForkReplacesTopLevelFieldsAndLeavesThePointer(t *testing.T) {
 // tenant: the fork would copy a body that stays with the hook's author.
 func TestHookDef_ATenantCannotForkOrReadAnotherTenantsHook(t *testing.T) {
 	tool, _ := hookDefFixture(t)
-	shared := hookTenantCtx("")
+	// The shared layer is the operator's to write.
+	shared := tools.WithUnauthenticatedOperator(hookTenantCtx(""))
 	acme := hookTenantCtx("acme")
 	other := hookTenantCtx("other")
 	sv := mustHookDef(t, tool, shared, `{"op":"create","name":"gate","overlay":`+httpHookOverlay+`}`)
