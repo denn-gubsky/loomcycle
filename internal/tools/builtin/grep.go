@@ -126,7 +126,13 @@ func (g *Grep) Execute(ctx context.Context, input json.RawMessage) (tools.Result
 	// itself; non-empty = subpath of it (resolved + symlink-checked).
 	// Relative paths are joined with the root; absolute paths flow
 	// through and get the same escape check.
-	searchRoot := root
+	// The walk starts at a REAL path: WalkDir does not descend a root that is
+	// itself a symlink, so a volume whose root is one searched nothing.
+	// Results are relative to the walk root, so the output is unchanged.
+	searchRoot, err := filepath.EvalSymlinks(root)
+	if err != nil {
+		return errResult("sandbox root: " + err.Error()), nil
+	}
 	if args.Path != "" {
 		target := args.Path
 		if !filepath.IsAbs(target) {

@@ -94,7 +94,15 @@ func (g *Glob) Execute(ctx context.Context, input json.RawMessage) (tools.Result
 		}
 	}
 
-	searchRoot := root
+	// The walk starts at a REAL path: WalkDir does not descend a root that is
+	// itself a symlink, so a volume whose root is one listed nothing. Matches
+	// are relative to the walk root, so the output is unchanged; declared is
+	// the same directory as the caller names it, for an absolute pattern.
+	declared := root
+	searchRoot, err := filepath.EvalSymlinks(root)
+	if err != nil {
+		return errResult("sandbox root: " + err.Error()), nil
+	}
 	if args.Path != "" {
 		// Relative `path` is interpreted under the volume root; absolute
 		// paths flow through unchanged and get the same escape check.
@@ -111,7 +119,7 @@ func (g *Glob) Execute(ctx context.Context, input json.RawMessage) (tools.Result
 		if rerr != nil {
 			return errResult(rerr.Error()), nil
 		}
-		searchRoot = resolved
+		declared, searchRoot = target, resolved
 	}
 
 	// The matcher compares pattern segments against walk-root-RELATIVE file
@@ -123,6 +131,9 @@ func (g *Glob) Execute(ctx context.Context, input json.RawMessage) (tools.Result
 	pattern := args.Pattern
 	if filepath.IsAbs(pattern) {
 		rel, inRoot := relativizeToRoot(searchRoot, pattern)
+		if !inRoot {
+			rel, inRoot = relativizeToRoot(declared, pattern)
+		}
 		if !inRoot {
 			return emptyGlobResult(), nil
 		}
@@ -145,7 +156,7 @@ func (g *Glob) Execute(ctx context.Context, input json.RawMessage) (tools.Result
 	}
 	var matches []fileInfo
 
-	err := filepath.WalkDir(searchRoot, func(path string, d os.DirEntry, walkErr error) error {
+	err = filepath.WalkDir(searchRoot, func(path string, d os.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			return nil
 		}
