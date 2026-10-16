@@ -2834,6 +2834,7 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 	if err := loop.ValidateSegmentTypes(in.Segments); err != nil {
 		return fmt.Errorf("%w: %v", runner.ErrInvalidArgument, err)
 	}
+	in.Segments = loop.DemoteRuntimeKinds(in.Segments)
 	startingDraft := in.ConfiguredRunID != ""
 	if startingDraft && s.store == nil {
 		return runner.ErrSessionRequired
@@ -4978,6 +4979,7 @@ func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
+	req.Segments = loop.DemoteRuntimeKinds(req.Segments)
 	if _, err := store.ParseRetention(req.Retention); err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
@@ -6060,6 +6062,7 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
+	body.Segments = loop.DemoteRuntimeKinds(body.Segments)
 
 	// Validate the session exists BEFORE taking the per-session lock.
 	// Otherwise an attacker can spam unknown IDs and each LoadOrStore

@@ -1,6 +1,9 @@
 package scheduler
 
-import "testing"
+import (
+	"encoding/json"
+	"testing"
+)
 
 // A schedule's user_bearer reaches the fired run as the reference, unopened.
 func TestBuildRunInput_CarriesTheBearerReference(t *testing.T) {
@@ -39,5 +42,19 @@ func TestFanout_OperatorScheduleWithholdsItsBearerFromOtherTenants(t *testing.T)
 	}
 	if !logs.contains("carry none of this schedule's credentials") {
 		t.Errorf("withholding the bearer must be logged; logs:\n%s", logs.all())
+	}
+}
+
+// An untrusted block's kind on a stored schedule reaches the fired run, so a
+// "code" block is fenced as written rather than escaped.
+func TestBuildRunInput_CarriesTheUntrustedKind(t *testing.T) {
+	var def scheduleDef
+	body := `{"agent":"review","prompt":[{"role":"user","content":[{"type":"trusted-text","text":"Review this."},{"type":"untrusted-block","kind":"code","text":"a<b"}]}]}`
+	if err := json.Unmarshal([]byte(body), &def); err != nil {
+		t.Fatal(err)
+	}
+	in := buildRunInput(def, map[string]bool{}, nil)
+	if got := in.Segments[0].Content[1]; got.Kind != "code" || got.Text != "a<b" {
+		t.Errorf("block = %+v, want kind code", got)
 	}
 }
