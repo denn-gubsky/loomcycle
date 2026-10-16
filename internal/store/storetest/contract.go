@@ -503,6 +503,7 @@ func Run(t *testing.T, factory Factory) {
 		{"OperatorTokenDefListBySubject", testOperatorTokenDefListBySubject},
 		{"OperatorTokenDefExpiry", testOperatorTokenDefExpiry},
 		{"OperatorTokenDefDeleteExpired", testOperatorTokenDefDeleteExpired},
+		{"OperatorTokenDefDeleteExpiredKeepsEachTenant", testOperatorTokenDefDeleteExpiredKeepsEachTenant},
 		// v1.x RFC E ScheduleDef runtime — sweeper-side state.
 		{"ScheduleRunStateSeedAndGet", testScheduleRunStateSeedAndGet},
 		{"ScheduleRunStateListDueRespectsRetiredAndPaused", testScheduleRunStateListDueRespectsRetiredAndPaused},
@@ -13906,6 +13907,55 @@ func testOperatorTokenDefDeleteExpired(t *testing.T, s store.Store) {
 	}
 	if n, err := s.OperatorTokenDefDeleteExpired(ctx, now.Add(-7*24*time.Hour)); err != nil || n != 0 {
 		t.Errorf("a second sweep deleted %d (err=%v), want 0", n, err)
+	}
+}
+
+// testOperatorTokenDefDeleteExpiredKeepsEachTenant: the token rows are the
+// registry of tenant spellings a new tenant is checked against for a case-fold
+// collision, so the sweep never deletes the last row naming a tenant. A tenant
+// whose every token expired keeps one row — dead, it authenticates nothing —
+// and loses the rest; a tenant with a live row loses all of its expired ones.
+func testOperatorTokenDefDeleteExpiredKeepsEachTenant(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	now := time.Now()
+	gone := now.Add(-10 * 24 * time.Hour)
+	var rows []store.OperatorTokenDefRow
+	for i, tenant := range []string{"lonely", "lonely", "lonely", "busy", "busy"} {
+		r := mkOperatorTokenDef(fmt.Sprintf("ot-kt-%d", i), fmt.Sprintf("kt-%d", i), tenant, "a", fmt.Sprintf("h-kt-%d", i), []string{"runs:read"})
+		r.ExpiresAt = gone
+		rows = append(rows, r)
+	}
+	live := mkOperatorTokenDef("ot-kt-live", "kt-live", "busy", "a", "h-kt-live", []string{"runs:read"})
+	live.ExpiresAt = now.Add(time.Hour)
+	rows = append(rows, live)
+	for _, r := range rows {
+		if _, err := s.OperatorTokenDefCreate(ctx, r); err != nil {
+			t.Fatalf("create %s: %v", r.DefID, err)
+		}
+	}
+	n, err := s.OperatorTokenDefDeleteExpired(ctx, now.Add(-7*24*time.Hour))
+	if err != nil {
+		t.Fatalf("delete expired: %v", err)
+	}
+	if n != 4 {
+		t.Errorf("deleted %d row(s), want 4 (two of lonely's three, both of busy's expired)", n)
+	}
+	names, err := s.OperatorTokenDefListNames(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	perTenant := map[string]int{}
+	for _, nm := range names {
+		perTenant[nm.TenantID]++
+	}
+	if perTenant["lonely"] != 1 {
+		t.Errorf("tenant lonely has %d row(s) left, want 1: the sweep dropped it from the tenant registry", perTenant["lonely"])
+	}
+	if perTenant["busy"] != 1 {
+		t.Errorf("tenant busy has %d row(s) left, want only its live one", perTenant["busy"])
+	}
+	if n, err := s.OperatorTokenDefDeleteExpired(ctx, now.Add(-7*24*time.Hour)); err != nil || n != 0 {
+		t.Errorf("a second sweep deleted %d (err=%v), want 0: the kept row must stay kept", n, err)
 	}
 }
 
