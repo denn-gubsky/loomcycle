@@ -127,7 +127,7 @@ func TestOverrideLock_CallerHostsCannotWidenTheOperatorList(t *testing.T) {
 
 	run := func(bearer, agent string) string {
 		t.Helper()
-		body := `{"agent":"` + agent + `","allowed_hosts":["widen.invalid"],"segments":[{"role":"user","content":[{"type":"trusted-text","text":"go"}]}]}`
+		body := `{"agent":"` + agent + `","agent_id":"a_` + agent + `","allowed_hosts":["widen.invalid"],"segments":[{"role":"user","content":[{"type":"trusted-text","text":"go"}]}]}`
 		if code, out := bearerCall(t, ts, bearer, "POST", "/v1/runs", body); code != 200 {
 			t.Fatalf("%s as %s: status %d: %s", agent, bearer, code, out)
 		}
@@ -144,6 +144,25 @@ func TestOverrideLock_CallerHostsCannotWidenTheOperatorList(t *testing.T) {
 	}
 	if res := run(freeBearer, "launcher"); !refused(res) {
 		t.Errorf("a spawned allow_overrides:false agent widened the operator's list: %q", res)
+	}
+	// What the child records is what a resume re-applies: the clipped list,
+	// not its parent's.
+	parent, err := st.GetRunByAgentID(context.Background(), "a_launcher")
+	if err != nil {
+		t.Fatal(err)
+	}
+	kids, err := st.ListRunsByParentRunID(context.Background(), parent.ID)
+	if err != nil || len(kids) != 1 {
+		t.Fatalf("children of the launcher = %+v (err %v), want one", kids, err)
+	}
+	var rec runConfigRecord
+	if err := json.Unmarshal(kids[0].RunConfig, &rec); err != nil {
+		t.Fatal(err)
+	}
+	for _, h := range rec.callerHosts() {
+		if h == "widen.invalid" {
+			t.Errorf("the locked child recorded its parent's wider list %v: a resume would re-apply it", rec.callerHosts())
+		}
 	}
 	// The mode itself is unchanged for a caller nothing holds.
 	if res := run(freeBearer, "net"); refused(res) {

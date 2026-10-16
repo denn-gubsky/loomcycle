@@ -8314,6 +8314,14 @@ func (s *Server) prepareSubRunValues(ctx context.Context, name string, src nameS
 	}
 	subCompaction = config.MergeCompaction(subCompaction, tools.CompactionOverride(ctx))
 	subContext := config.MergeContext(def.Context, tools.ContextPolicy(ctx))
+	// A child that runs on its definition only takes its parent's host list
+	// as a narrowing, as a request naming it directly would. Clipped here,
+	// before the record is written, so the record and the child's tools
+	// agree and a resume re-applies the list the child ran with.
+	subHostPolicy := tools.HostPolicy(ctx)
+	if subHostPolicy.HasList {
+		subHostPolicy.AllowedHosts = s.floorLockedCallerHosts(ctx, def, s.tools, subHostPolicy.AllowedHosts)
+	}
 	subRunCfg := runConfigRecord{
 		Hooks:             additionsRecord(hooks.AdditionsFrom(ctx)), // inherited from the parent run
 		SourcedHooks:      hooks.AdditionsFrom(ctx).Sourced,          // and a team state's, with their source
@@ -8324,7 +8332,7 @@ func (s *Server) prepareSubRunValues(ctx context.Context, name string, src nameS
 		Context:           subContext,
 		MaxContextTokens:  def.MaxContextTokens,
 		RunTimeoutSeconds: def.RunTimeoutSeconds,
-		Hosts:             hostRecordOf(tools.HostPolicy(ctx)),
+		Hosts:             hostRecordOf(subHostPolicy),
 		// The parent's volume confinement and inherited fan-out width, both read
 		// off ctx below and never re-derivable once the parent's ctx is gone.
 		Spawn: spawnRecordOf(tools.VolumePolicy(ctx), tools.FanoutCap(ctx)),
@@ -8632,15 +8640,9 @@ func (s *Server) prepareSubRunValues(ctx context.Context, name string, src nameS
 	// "host \"localhost\" not in allowlist", waste iterations
 	// guessing hostnames, get capped by max_iterations, never write
 	// the documents (2026-05-06).
-	parentHostPolicy := tools.HostPolicy(ctx)
-	if parentHostPolicy.HasList || s.cfg().Env.HTTPCallerAuthoritative {
-		// A child that runs on its definition only takes the parent's list
-		// as a narrowing, as a request naming it directly would.
-		inherited := parentHostPolicy.AllowedHosts
-		if parentHostPolicy.HasList {
-			inherited = s.floorLockedCallerHosts(ctx, def, subTools, inherited)
-		}
-		subTools = builtin.NarrowHosts(subTools, inherited, parentHostPolicy.WebSearchFilter, s.cfg().Env.HTTPCallerAuthoritative)
+	// subHostPolicy is the parent's, clipped above for a locked child.
+	if subHostPolicy.HasList || s.cfg().Env.HTTPCallerAuthoritative {
+		subTools = builtin.NarrowHosts(subTools, subHostPolicy.AllowedHosts, subHostPolicy.WebSearchFilter, s.cfg().Env.HTTPCallerAuthoritative)
 	}
 	subDispatcher := s.newDispatcher(subTools)
 
