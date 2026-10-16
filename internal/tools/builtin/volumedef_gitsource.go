@@ -52,6 +52,9 @@ type GitCredentialFunc func(ctx context.Context, ref, targetURL string) (usernam
 var (
 	ErrGitCredentialURLNotAllowed = errors.New("credential_url_not_allowed")
 	ErrGitCredentialUnresolvable  = errors.New("credential_unresolvable")
+	// errGitCredentialIsAppConfig is an unresolvable credential whose fix
+	// the caller can be told: it names nothing secret.
+	errGitCredentialIsAppConfig = errors.New("the credential holds a GitHub App config; name it as $ghapp:<name>, not $cred:<name>")
 )
 
 // GitSourceConfig is what the operator allows. A nil config, or one with no
@@ -129,6 +132,11 @@ func GitCredentialResolver(
 		if perr != nil {
 			return "", "", fmt.Errorf("%w: %v", ErrGitCredentialUnresolvable, perr)
 		}
+		if kind == "cred" && isGitHubAppConfig(res.Value) {
+			// Sent as a token, the config would go to the forge whole, the
+			// App's private key as the Basic-auth password.
+			return "", "", fmt.Errorf("%w: %w", ErrGitCredentialUnresolvable, errGitCredentialIsAppConfig)
+		}
 		token := res.Value
 		// The user name stored with a $cred: credential, else the default
 		// for the kind of host. An App's installation token always goes
@@ -150,6 +158,20 @@ func GitCredentialResolver(
 		}
 		return user, token, nil
 	}
+}
+
+// isGitHubAppConfig reports whether a stored value is a GitHub App config: a
+// JSON object with an app_id and a private_key, whatever else it holds.
+func isGitHubAppConfig(v string) bool {
+	var cfg struct {
+		AppID      json.RawMessage `json:"app_id"`
+		PrivateKey string          `json:"private_key"`
+	}
+	if json.Unmarshal([]byte(v), &cfg) != nil {
+		return false
+	}
+	appID := strings.Trim(string(cfg.AppID), `"`)
+	return appID != "" && appID != "null" && cfg.PrivateKey != ""
 }
 
 // repositoryName is the repository's name in a forge URL's path: its last
@@ -283,6 +305,8 @@ func (v *VolumeDef) execCreateFromGit(ctx context.Context, in volumeDefInput, mo
 		switch {
 		case errors.Is(err, ErrGitCredentialURLNotAllowed):
 			return gitSourceRefusal("credential_url_not_allowed", ""), nil
+		case errors.Is(err, errGitCredentialIsAppConfig):
+			return gitSourceRefusal("credential_unresolvable", errGitCredentialIsAppConfig.Error()), nil
 		case err != nil:
 			log.Printf("volumedef: git source: credential for host %s could not be resolved: %v", u.Host, err)
 			return gitSourceRefusal("credential_unresolvable", ""), nil

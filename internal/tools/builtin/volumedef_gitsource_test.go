@@ -391,6 +391,49 @@ func TestGitCredentialResolver_AppCredentialIsMintedAndAnOpenOneRefused(t *testi
 	}
 }
 
+// A $cred: reference to a credential that holds a GitHub App config is
+// refused: sent as a token, the config (the App's private key with it) would
+// go to the forge as the Basic-auth password, and be registered as a secret
+// only after the fact. The same credential named as $ghapp: is minted.
+func TestGitCredentialResolver_AnAppConfigNamedAsCredIsRefused(t *testing.T) {
+	f := newGitSourceFixture(t, false)
+	target := "https://github.com/acme/app"
+	cfg := `{"app_id": 12, "installation_id": "34", "private_key": "-----BEGIN RSA PRIVATE KEY-----\nMIIE\n-----END RSA PRIVATE KEY-----\n"}`
+	f.credential(t, "app", cfg, &[]string{target})
+	minted := false
+	resolve := GitCredentialResolver(f.engine, func(context.Context, string, string, string) (string, error) {
+		minted = true
+		return "ghs_minted_installation_token", nil
+	}, nil)
+
+	_, token, err := resolve(f.ctx, "$cred:app", target)
+	if !errors.Is(err, ErrGitCredentialUnresolvable) || token != "" {
+		t.Errorf("$cred: naming an App config: token=%q err=%v, want it unresolvable", token, err)
+	}
+	if err != nil && (strings.Contains(err.Error(), "PRIVATE KEY") || strings.Contains(err.Error(), "MIIE")) {
+		t.Errorf("the refusal carries the stored config: %v", err)
+	}
+	if err != nil && !strings.Contains(err.Error(), "$ghapp:") {
+		t.Errorf("the refusal does not point to $ghapp: %v", err)
+	}
+	if _, token, err := resolve(f.ctx, "$ghapp:app", target); err != nil || !minted || token != "ghs_minted_installation_token" {
+		t.Errorf("$ghapp: of the same credential: token=%q err=%v minted=%v", token, err, minted)
+	}
+	// Through the tool, the caller is told the fix, and nothing of the config.
+	f.tool.Git.Credential = resolve
+	appRef := f.credential(t, "repo-app", cfg, &[]string{f.repo.URL})
+	_, res := f.create(t, f.ctx, "repo", map[string]any{"url": f.repo.URL, "commit": f.repo.Head, "credential": appRef}, nil)
+	if !res.IsError || !strings.Contains(res.Text, "credential_unresolvable") || !strings.Contains(res.Text, "$ghapp:") || strings.Contains(res.Text, "MIIE") {
+		t.Errorf("create with $cred: naming an App config: %q", res.Text)
+	}
+	f.assertNothingLeft(t, "repo")
+	// A token that merely looks like JSON is not an App config.
+	f.credential(t, "jsonish", `{"note":"not an app"}`, &[]string{target})
+	if _, token, err := resolve(f.ctx, "$cred:jsonish", target); err != nil || token != `{"note":"not an app"}` {
+		t.Errorf("a JSON value without app_id and private_key: token=%q err=%v", token, err)
+	}
+}
+
 // A clone credential past its expires_at is unresolvable: neither a $cred:
 // token nor a $ghapp: App config is handed out, and no App token is minted
 // from an expired config.
