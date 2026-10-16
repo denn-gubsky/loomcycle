@@ -200,6 +200,26 @@ func (s *Server) deleteRunTree(ctx context.Context, req connector.DeleteRunTreeR
 		Reason: "export files a retention or usage sweep already wrote for these sessions are files on " +
 			"disk, outside the store; remove them from the export directory",
 	})
+	// A sub-tree was started by a run outside it, whose transcript holds the
+	// call that started it (its prompt) and the result it handed back (its
+	// answer). That run is not part of this delete.
+	inTree := make(map[string]bool, len(ids))
+	for _, id := range ids {
+		inTree[id] = true
+	}
+	ancestors := 0
+	for _, r := range roots {
+		if r.ParentRunID != "" && !inTree[r.ParentRunID] {
+			ancestors++
+		}
+	}
+	if ancestors > 0 {
+		res.NotReached = append(res.NotReached, connector.NotReached{
+			Name: "ancestor_transcripts", Count: &ancestors,
+			Reason: "the run that started this tree keeps, in its own transcript, the prompt it sent and the " +
+				"answer it got back; delete the tree from that run to remove them",
+		})
+	}
 	derived := connector.NotReached{
 		Name: "derived_facts", CountIsFloor: factsFloor,
 		Reason: "facts that memory consolidation derived from these sessions are stored as memory, not as " +
