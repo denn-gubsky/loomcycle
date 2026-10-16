@@ -125,9 +125,15 @@ func (p *Provider) Call(ctx context.Context, req providers.Request) (<-chan prov
 	if p.floor == nil && !p.sched.Gated(p.id, kind) {
 		return p.inner.Call(ctx, req)
 	}
+	// Everything from here to the driver's call is waiting: for the lane slot,
+	// and for the run slot taken back after it. It is measured once, around all
+	// of it, so the call's timing can count it as queue time (forward).
+	entered := time.Now()
 	report := req.OnEvent
 	if report == nil {
 		report = runReporter(ctx)
+		// Not the run's turn call: no lease (concurrency.CallInfo.NoLease).
+		ctx = context.WithValue(ctx, sideCallKey{}, true)
 	}
 	// The run's own turn call — the one its loop makes and blocks on, the only
 	// call that carries OnEvent — lends the run's global slot while it waits
@@ -139,13 +145,19 @@ func (p *Provider) Call(ctx context.Context, req providers.Request) (<-chan prov
 		rs = concurrency.RunSlotFrom(ctx)
 	}
 	var onWait func()
+	var admission *callAdmission
 	if rs != nil {
 		onWait = func() { rs.Lend() }
+		// A lending call may have to give its slot back and wait again (below),
+		// so it is admitted only once it holds both slots, not when the lane
+		// grants it one.
+		admission = &callAdmission{report: report}
+		report = admission.on
 	}
 	model := providers.ModelIdentity(p.inner, req)
 	slot := -1
 	onSlot := func(n int) { slot = n }
-	release, err := acquire(ctx, p.sched, p.floor, p.id, kind, model, report, onSlot, onWait)
+	release, giveBack, err := acquire(ctx, p.sched, p.floor, p.id, kind, model, report, onSlot, onWait)
 	if rs.Lent() {
 		switch {
 		case err != nil:
@@ -159,23 +171,27 @@ func (p *Provider) Call(ctx context.Context, req providers.Request) (<-chan prov
 			// the two would wait for each other. Give the lane slot back,
 			// take a global slot holding nothing, then queue for the lane
 			// again holding it — without lending, the order everything else
-			// uses.
-			release()
+			// uses. The slot was never used, so it is given back, not
+			// released: kept reserved for this run it would hold out of the
+			// lane the very run whose global slot this one waits for.
+			giveBack()
 			if rerr := rs.Reclaim(ctx); rerr != nil {
 				return nil, rerr
 			}
 			slot = -1
-			release, err = acquire(ctx, p.sched, p.floor, p.id, kind, model, report, onSlot, nil)
+			release, _, err = acquire(ctx, p.sched, p.floor, p.id, kind, model, report, onSlot, nil)
 		}
 	}
 	if err != nil {
 		return nil, err
 	}
+	admission.admitted()
 	// The lane slot this call runs on, for a driver that pins its backend's
 	// slot to it (providers.LaneSlot).
 	if slot >= 0 {
 		ctx = providers.WithLaneSlot(ctx, slot)
 	}
+	waitMs := time.Since(entered).Milliseconds()
 	in, err := p.inner.Call(ctx, req)
 	if err != nil {
 		release()
@@ -184,8 +200,46 @@ func (p *Provider) Call(ctx context.Context, req providers.Request) (<-chan prov
 	// Unbuffered: the consumer's pace reaches the driver exactly as it did
 	// without the wrapper.
 	out := make(chan providers.Event)
-	go forward(ctx, in, out, release)
+	go forward(ctx, in, out, release, waitMs)
 	return out, nil
+}
+
+// callAdmission defers a lending call's call_admitted until the call holds both
+// its lane slot and its run's global slot. acquire reports admission when the
+// lane grants the slot, but a lending call granted one with no global slot to
+// take back gives it up and waits again (Provider.Call): reported then, the
+// call would read as admitted while it still waits. One admission is reported,
+// timed from the call's first wait. A nil *callAdmission reports nothing.
+type callAdmission struct {
+	report func(providers.Event)
+	// queued is the payload of the call's first wait, nil until it waits.
+	queued   *providers.AdmissionInfo
+	queuedAt time.Time
+}
+
+// on is the report handed to acquire: waits go through, admissions are left to
+// admitted.
+func (a *callAdmission) on(ev providers.Event) {
+	if a.report == nil || ev.Type == providers.EventCallAdmitted {
+		return
+	}
+	if ev.Type == providers.EventCallQueued && a.queued == nil {
+		a.queued, a.queuedAt = ev.Admission, time.Now()
+	}
+	a.report(ev)
+}
+
+// admitted reports the call's admission, now that it holds both slots: for a
+// call that waited at all, even if its last acquire did not.
+func (a *callAdmission) admitted() {
+	if a == nil || a.report == nil || a.queued == nil {
+		return
+	}
+	a.report(providers.Event{Type: providers.EventCallAdmitted, Admission: &providers.AdmissionInfo{
+		WaitMs:   time.Since(a.queuedAt).Milliseconds(),
+		Provider: a.queued.Provider,
+		Kind:     a.queued.Kind,
+	}})
 }
 
 // Hold takes p's lane slot for ONE call the caller is about to make itself, and
@@ -199,8 +253,11 @@ func (p *Provider) Call(ctx context.Context, req providers.Request) (<-chan prov
 // provider slot while it waited for a global slot held by a run that is waiting
 // for that provider slot.
 //
-// The provider returned is the driver itself: its Call takes no second slot.
-// The slot is held until release, not until the stream ends, so the caller
+// The provider returned calls the driver directly: its Call takes no second
+// slot, and it hands the driver the number of the slot held, as Provider.Call
+// does, so a backend that pins its own slots (providers.LaneSlot) serves the
+// call on that one rather than on a slot the lane keeps for another call. The
+// slot is held until release, not until the stream ends, so the caller
 // releases when its request is over. A provider that is not gated is returned
 // as is, with a release that does nothing.
 func Hold(ctx context.Context, p providers.Provider, req providers.Request) (providers.Provider, func(), error) {
@@ -208,16 +265,44 @@ func Hold(ctx context.Context, p providers.Provider, req providers.Request) (pro
 	if !ok || !lp.sched.Gated(lp.id, kind) {
 		return p, func() {}, nil
 	}
-	release, err := acquire(ctx, lp.sched, nil, lp.id, kind, providers.ModelIdentity(lp.inner, req), nil, nil, nil)
+	slot := -1
+	release, _, err := acquire(ctx, lp.sched, nil, lp.id, kind, providers.ModelIdentity(lp.inner, req), nil, func(n int) { slot = n }, nil)
 	if err != nil {
 		return nil, nil, err
 	}
-	return lp.inner, release, nil
+	if slot < 0 {
+		// Gated by its model cap alone (max_models_in_flight): no lane, so no
+		// slot to pin to.
+		return lp.inner, release, nil
+	}
+	return &heldSlot{Provider: lp.inner, slot: slot}, release, nil
 }
+
+// heldSlot is the driver a Hold returns, making its calls on the lane slot the
+// Hold took. The caller's ctx (an HTTP request's) carries no slot of its own.
+type heldSlot struct {
+	providers.Provider
+	slot int
+}
+
+func (h *heldSlot) Call(ctx context.Context, req providers.Request) (<-chan providers.Event, error) {
+	return h.Provider.Call(providers.WithLaneSlot(ctx, h.slot), req)
+}
+
+// Unwrap returns the driver (providers.Unwrapper): an embedded interface hides
+// whatever else the driver implements.
+func (h *heldSlot) Unwrap() providers.Provider { return h.Provider }
 
 // heldKey marks a ctx whose caller already holds the slot of one (provider,
 // kind): the value under it is true.
 type heldKey struct{ id, kind string }
+
+// sideCallKey marks the ctx of a Provider.Call that is not its run's turn call
+// — one without OnEvent, the same signal the lend path reads. The run's turn
+// calls are what a lease keeps a warm backend slot for; any other call of the
+// run would land on that slot and overwrite its prompt cache. It still queues
+// as the run, under the run's fairness identity.
+type sideCallKey struct{}
 
 // HoldLane is Hold for a call that is NOT a Provider.Call — an embedding or a
 // decision, made through this package's WrapEmbedder / WrapDecision. It takes
@@ -233,7 +318,7 @@ func HoldLane(ctx context.Context, sched *concurrency.CallScheduler, id, kind, m
 	if !sched.Gated(id, kind) {
 		return ctx, func() {}, nil
 	}
-	release, err := acquire(ctx, sched, nil, id, kind, model, nil, nil, nil)
+	release, _, err := acquire(ctx, sched, nil, id, kind, model, nil, nil, nil)
 	if err != nil {
 		return ctx, nil, err
 	}
@@ -267,20 +352,25 @@ func HoldLane(ctx context.Context, sched *concurrency.CallScheduler, id, kind, m
 // onSlot, when set, is told the number of the provider lane's slot the call
 // was granted (concurrency.CallInfo.OnSlot). The floor's slots are this
 // service's own, not the provider's, so they are never reported.
-func acquire(ctx context.Context, sched *concurrency.CallScheduler, floor *concurrency.Lane, id, kind, model string, report func(providers.Event), onSlot func(int), onWait func()) (release func(), err error) {
+//
+// giveBack ends the call instead of release when it is not going to be made
+// after all (concurrency.CallScheduler.AcquireWithGiveBack).
+func acquire(ctx context.Context, sched *concurrency.CallScheduler, floor *concurrency.Lane, id, kind, model string, report func(providers.Event), onSlot func(int), onWait func()) (release, giveBack func(), err error) {
 	if held, _ := ctx.Value(heldKey{id, kind}).(bool); held {
-		return func() {}, nil
+		return func() {}, func() {}, nil
 	}
 	gated := sched.Gated(id, kind)
 	if sched.LaneCap(id, kind) > 0 {
 		floor = nil
 	}
 	if !gated && floor == nil {
-		return func() {}, nil
+		return func() {}, func() {}, nil
 	}
 	meta, _ := providers.RunMetaFromContext(ctx)
+	sideCall, _ := ctx.Value(sideCallKey{}).(bool)
 	info := concurrency.CallInfo{
 		Owner:      meta.RunID,
+		NoLease:    sideCall,
 		TenantID:   meta.TenantID,
 		UserID:     meta.UserID,
 		Background: IsBackground(ctx),
@@ -334,37 +424,38 @@ func acquire(ctx context.Context, sched *concurrency.CallScheduler, floor *concu
 			releaseFloor, err = floor.Acquire(ctx, info)
 		}
 		if concurrency.IsQueueFull(err) {
-			return nil, &concurrency.ErrProviderConcurrencyExhausted{Provider: id, Cap: FloorCap}
+			return nil, nil, &concurrency.ErrProviderConcurrencyExhausted{Provider: id, Cap: FloorCap}
 		}
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 	}
 	if !gated {
-		return releaseFloor, nil
+		// The floor keeps no reservations, so its plain release gives a slot
+		// back as well as any.
+		return releaseFloor, releaseFloor, nil
 	}
-	// A local, not the named result: the closure below must not capture the
-	// variable it is itself returned through.
-	var releaseSched func()
+	// Locals, not the named results: the closures below must not capture the
+	// variables they are themselves returned through.
 	schedInfo := info
 	schedInfo.OnSlot = onSlot
+	maxQueued := -1
 	if bounded {
-		releaseSched, err = sched.AcquireBounded(ctx, id, kind, schedInfo, bound)
-	} else {
-		releaseSched, err = sched.Acquire(ctx, id, kind, schedInfo)
+		maxQueued = bound
 	}
+	releaseSched, giveBackSched, err := sched.AcquireWithGiveBack(ctx, id, kind, schedInfo, maxQueued)
 	if err != nil {
 		releaseFloor()
 		if concurrency.IsQueueFull(err) {
-			return nil, &concurrency.ErrProviderConcurrencyExhausted{Provider: id, Cap: sched.LaneCap(id, kind)}
+			return nil, nil, &concurrency.ErrProviderConcurrencyExhausted{Provider: id, Cap: sched.LaneCap(id, kind)}
 		}
-		return nil, err
+		return nil, nil, err
 	}
 	if floor == nil {
-		return releaseSched, nil
+		return releaseSched, giveBackSched, nil
 	}
 	// Both are idempotent, so the pair is too.
-	return func() { releaseSched(); releaseFloor() }, nil
+	return func() { releaseSched(); releaseFloor() }, func() { giveBackSched(); releaseFloor() }, nil
 }
 
 // runReporter is where a model call made on a run's behalf off the loop's own
@@ -398,6 +489,12 @@ func newFloor() *concurrency.Lane {
 // forward relays the driver's events to the consumer and releases the slot when
 // the call is over. release is idempotent.
 //
+// waitMs is how long the call waited for its slot before the driver was called.
+// It rides the done event's usage (Usage.LaneWaitMs) so the caller's call timer
+// counts it as queue time: the caller started its clock before Provider.Call,
+// and without it the wait would read as the model's service time for any driver
+// that does not report its own phases.
+//
 // The slot goes back BEFORE the event that ends the call is handed on, not when
 // the channel closes: a consumer that stops reading after an error (several
 // do, and a driver may still send a trailing event) would otherwise pin the
@@ -409,12 +506,19 @@ func newFloor() *concurrency.Lane {
 // channel is drained until it closes (a driver closes on ctx cancel) and only
 // then is the slot released — the host is busy with the call until the driver
 // has let go of it.
-func forward(ctx context.Context, in <-chan providers.Event, out chan<- providers.Event, release func()) {
+func forward(ctx context.Context, in <-chan providers.Event, out chan<- providers.Event, release func(), waitMs int64) {
 	defer close(out)
 	defer release()
 	for ev := range in {
 		if ev.Type == providers.EventDone || ev.Type == providers.EventError {
 			release()
+		}
+		if ev.Type == providers.EventDone && ev.Usage != nil && waitMs > 0 {
+			// A copy: the driver's value is not ours to write, and a driver
+			// may hand the same *Usage to several calls.
+			u := *ev.Usage
+			u.LaneWaitMs = waitMs
+			ev.Usage = &u
 		}
 		select {
 		case out <- ev:

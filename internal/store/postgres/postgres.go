@@ -395,8 +395,8 @@ func (s *Store) createRun(ctx context.Context, sessionID string, identity store.
 			)
 			INSERT INTO runs (
 				id, session_id, status, started_at,
-				agent_id, parent_agent_id, parent_run_id, user_id, tenant_id, user_tier, agent_def_id, model, replica_id, parent_context, idempotency_key, interactive, operator_key_restricted, isolated, run_config, draft, walk_id, delivery_alt_key, retention
-			) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19::jsonb, $20::jsonb, $21, $22, $23::text)`,
+				agent_id, parent_agent_id, parent_run_id, user_id, tenant_id, user_tier, agent_def_id, model, replica_id, parent_context, idempotency_key, interactive, operator_key_restricted, isolated, run_config, draft, walk_id, delivery_alt_key, retention, credentials_no_user_scope
+			) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19::jsonb, $20::jsonb, $21, $22, $23::text, $24)`,
 			id, sessionID, string(status), now,
 			nullableText(identity.AgentID),
 			nullableText(identity.ParentAgentID),
@@ -417,6 +417,7 @@ func (s *Store) createRun(ctx context.Context, sessionID string, identity store.
 			nullableText(store.RunWalkID(identity.ParentContext)),
 			nullableText(identity.DeliveryAltKey),
 			identity.Retention,
+			identity.CredentialsNoUserScope,
 		)
 		return err
 	}); err != nil {
@@ -440,27 +441,28 @@ func (s *Store) createRun(ctx context.Context, sessionID string, identity store.
 		return store.Run{}, fmt.Errorf("create run: %w", err)
 	}
 	return store.Run{
-		ID:                    id,
-		SessionID:             sessionID,
-		Status:                status,
-		StartedAt:             now,
-		AgentID:               identity.AgentID,
-		ParentAgentID:         identity.ParentAgentID,
-		ParentRunID:           identity.ParentRunID,
-		UserID:                identity.UserID,
-		TenantID:              identity.TenantID,
-		UserTier:              identity.UserTier,
-		AgentDefID:            identity.AgentDefID,
-		Model:                 identity.Model,
-		ReplicaID:             identity.ReplicaID,
-		ParentContext:         identity.ParentContext.Clone(),
-		IdempotencyKey:        identity.IdempotencyKey,
-		DeliveryAltKey:        identity.DeliveryAltKey,
-		Interactive:           identity.Interactive,
-		OperatorKeyRestricted: identity.OperatorKeyRestricted,
-		Isolated:              identity.Isolated,
-		Retention:             identity.Retention,
-		RunConfig:             identity.RunConfig,
+		ID:                     id,
+		SessionID:              sessionID,
+		Status:                 status,
+		StartedAt:              now,
+		AgentID:                identity.AgentID,
+		ParentAgentID:          identity.ParentAgentID,
+		ParentRunID:            identity.ParentRunID,
+		UserID:                 identity.UserID,
+		TenantID:               identity.TenantID,
+		UserTier:               identity.UserTier,
+		AgentDefID:             identity.AgentDefID,
+		Model:                  identity.Model,
+		ReplicaID:              identity.ReplicaID,
+		ParentContext:          identity.ParentContext.Clone(),
+		IdempotencyKey:         identity.IdempotencyKey,
+		DeliveryAltKey:         identity.DeliveryAltKey,
+		Interactive:            identity.Interactive,
+		OperatorKeyRestricted:  identity.OperatorKeyRestricted,
+		Isolated:               identity.Isolated,
+		CredentialsNoUserScope: identity.CredentialsNoUserScope,
+		Retention:              identity.Retention,
+		RunConfig:              identity.RunConfig,
 	}, nil
 }
 
@@ -1354,7 +1356,7 @@ func (s *Store) RunsForSession(ctx context.Context, sessionID string) ([]store.R
 		        r.input_tokens, r.output_tokens, r.cache_creation_tokens, r.cache_read_tokens,
 		        r.model, r.provider, r.error,
 		        r.agent_id, r.parent_agent_id, r.parent_run_id, r.user_id, r.last_heartbeat_at, r.user_tier,
-		        r.agent_def_id, r.pause_state, r.replica_id, r.parent_context, r.idempotency_key, r.delivery_alt_key, r.tenant_id, r.interactive, r.operator_key_restricted, r.isolated, r.retention,
+		        r.agent_def_id, r.pause_state, r.replica_id, r.parent_context, r.idempotency_key, r.delivery_alt_key, r.tenant_id, r.interactive, r.operator_key_restricted, r.isolated, r.credentials_no_user_scope, r.retention,
 		        r.cost, r.cost_currency, r.credential_source, r.credential_scope_id,
 		        r.run_config::text, r.result::text,
 		        s.agent
@@ -1864,7 +1866,7 @@ func (s *Store) GetRunByAgentID(ctx context.Context, agentID string) (store.Run,
 		        r.input_tokens, r.output_tokens, r.cache_creation_tokens, r.cache_read_tokens,
 		        r.model, r.provider, r.error,
 		        r.agent_id, r.parent_agent_id, r.parent_run_id, r.user_id, r.last_heartbeat_at, r.user_tier,
-		        r.agent_def_id, r.pause_state, r.replica_id, r.parent_context, r.idempotency_key, r.delivery_alt_key, r.tenant_id, r.interactive, r.operator_key_restricted, r.isolated, r.retention,
+		        r.agent_def_id, r.pause_state, r.replica_id, r.parent_context, r.idempotency_key, r.delivery_alt_key, r.tenant_id, r.interactive, r.operator_key_restricted, r.isolated, r.credentials_no_user_scope, r.retention,
 		        r.cost, r.cost_currency, r.credential_source, r.credential_scope_id,
 		        r.run_config::text, r.result::text,
 		        s.agent
@@ -1895,7 +1897,7 @@ func (s *Store) RunByIdempotencyKey(ctx context.Context, key string) (store.Run,
 		        r.input_tokens, r.output_tokens, r.cache_creation_tokens, r.cache_read_tokens,
 		        r.model, r.provider, r.error,
 		        r.agent_id, r.parent_agent_id, r.parent_run_id, r.user_id, r.last_heartbeat_at, r.user_tier,
-		        r.agent_def_id, r.pause_state, r.replica_id, r.parent_context, r.idempotency_key, r.delivery_alt_key, r.tenant_id, r.interactive, r.operator_key_restricted, r.isolated, r.retention,
+		        r.agent_def_id, r.pause_state, r.replica_id, r.parent_context, r.idempotency_key, r.delivery_alt_key, r.tenant_id, r.interactive, r.operator_key_restricted, r.isolated, r.credentials_no_user_scope, r.retention,
 		        r.cost, r.cost_currency, r.credential_source, r.credential_scope_id,
 		        r.run_config::text, r.result::text,
 		        s.agent
@@ -1930,7 +1932,7 @@ func (s *Store) RunByDeliveryKeys(ctx context.Context, keys []string) (store.Run
 		        r.input_tokens, r.output_tokens, r.cache_creation_tokens, r.cache_read_tokens,
 		        r.model, r.provider, r.error,
 		        r.agent_id, r.parent_agent_id, r.parent_run_id, r.user_id, r.last_heartbeat_at, r.user_tier,
-		        r.agent_def_id, r.pause_state, r.replica_id, r.parent_context, r.idempotency_key, r.delivery_alt_key, r.tenant_id, r.interactive, r.operator_key_restricted, r.isolated, r.retention,
+		        r.agent_def_id, r.pause_state, r.replica_id, r.parent_context, r.idempotency_key, r.delivery_alt_key, r.tenant_id, r.interactive, r.operator_key_restricted, r.isolated, r.credentials_no_user_scope, r.retention,
 		        r.cost, r.cost_currency, r.credential_source, r.credential_scope_id,
 		        r.run_config::text, r.result::text,
 		        s.agent
@@ -1958,7 +1960,7 @@ func (s *Store) GetRun(ctx context.Context, runID string) (store.Run, error) {
 		        r.input_tokens, r.output_tokens, r.cache_creation_tokens, r.cache_read_tokens,
 		        r.model, r.provider, r.error,
 		        r.agent_id, r.parent_agent_id, r.parent_run_id, r.user_id, r.last_heartbeat_at, r.user_tier,
-		        r.agent_def_id, r.pause_state, r.replica_id, r.parent_context, r.idempotency_key, r.delivery_alt_key, r.tenant_id, r.interactive, r.operator_key_restricted, r.isolated, r.retention,
+		        r.agent_def_id, r.pause_state, r.replica_id, r.parent_context, r.idempotency_key, r.delivery_alt_key, r.tenant_id, r.interactive, r.operator_key_restricted, r.isolated, r.credentials_no_user_scope, r.retention,
 		        r.cost, r.cost_currency, r.credential_source, r.credential_scope_id,
 		        r.run_config::text, r.result::text,
 		        s.agent
@@ -2058,7 +2060,7 @@ func (s *Store) ListRunsByUser(ctx context.Context, tenantID, userID string, sta
 		        r.input_tokens, r.output_tokens, r.cache_creation_tokens, r.cache_read_tokens,
 		        r.model, r.provider, r.error,
 		        r.agent_id, r.parent_agent_id, r.parent_run_id, r.user_id, r.last_heartbeat_at, r.user_tier,
-		        r.agent_def_id, r.pause_state, r.replica_id, r.parent_context, r.idempotency_key, r.delivery_alt_key, r.tenant_id, r.interactive, r.operator_key_restricted, r.isolated, r.retention,
+		        r.agent_def_id, r.pause_state, r.replica_id, r.parent_context, r.idempotency_key, r.delivery_alt_key, r.tenant_id, r.interactive, r.operator_key_restricted, r.isolated, r.credentials_no_user_scope, r.retention,
 		        r.cost, r.cost_currency, r.credential_source, r.credential_scope_id,
 		        r.run_config::text, r.result::text,
 		        s.agent
@@ -2117,7 +2119,7 @@ func (s *Store) ListRunsByWalk(ctx context.Context, tenantID, walkID string, lim
 		        r.input_tokens, r.output_tokens, r.cache_creation_tokens, r.cache_read_tokens,
 		        r.model, r.provider, r.error,
 		        r.agent_id, r.parent_agent_id, r.parent_run_id, r.user_id, r.last_heartbeat_at, r.user_tier,
-		        r.agent_def_id, r.pause_state, r.replica_id, r.parent_context, r.idempotency_key, r.delivery_alt_key, r.tenant_id, r.interactive, r.operator_key_restricted, r.isolated, r.retention,
+		        r.agent_def_id, r.pause_state, r.replica_id, r.parent_context, r.idempotency_key, r.delivery_alt_key, r.tenant_id, r.interactive, r.operator_key_restricted, r.isolated, r.credentials_no_user_scope, r.retention,
 		        r.cost, r.cost_currency, r.credential_source, r.credential_scope_id,
 		        r.run_config::text, r.result::text,
 		        s.agent
@@ -2174,7 +2176,7 @@ func (s *Store) ListChildRuns(ctx context.Context, tenantID, parentRunID string,
 		        r.input_tokens, r.output_tokens, r.cache_creation_tokens, r.cache_read_tokens,
 		        r.model, r.provider, r.error,
 		        r.agent_id, r.parent_agent_id, r.parent_run_id, r.user_id, r.last_heartbeat_at, r.user_tier,
-		        r.agent_def_id, r.pause_state, r.replica_id, r.parent_context, r.idempotency_key, r.delivery_alt_key, r.tenant_id, r.interactive, r.operator_key_restricted, r.isolated, r.retention,
+		        r.agent_def_id, r.pause_state, r.replica_id, r.parent_context, r.idempotency_key, r.delivery_alt_key, r.tenant_id, r.interactive, r.operator_key_restricted, r.isolated, r.credentials_no_user_scope, r.retention,
 		        r.cost, r.cost_currency, r.credential_source, r.credential_scope_id,
 		        r.run_config::text, r.result::text,
 		        s.agent
@@ -2210,7 +2212,7 @@ func (s *Store) ListRunsByParentAgentID(ctx context.Context, parentAgentID strin
 		        r.input_tokens, r.output_tokens, r.cache_creation_tokens, r.cache_read_tokens,
 		        r.model, r.provider, r.error,
 		        r.agent_id, r.parent_agent_id, r.parent_run_id, r.user_id, r.last_heartbeat_at, r.user_tier,
-		        r.agent_def_id, r.pause_state, r.replica_id, r.parent_context, r.idempotency_key, r.delivery_alt_key, r.tenant_id, r.interactive, r.operator_key_restricted, r.isolated, r.retention,
+		        r.agent_def_id, r.pause_state, r.replica_id, r.parent_context, r.idempotency_key, r.delivery_alt_key, r.tenant_id, r.interactive, r.operator_key_restricted, r.isolated, r.credentials_no_user_scope, r.retention,
 		        r.cost, r.cost_currency, r.credential_source, r.credential_scope_id,
 		        r.run_config::text, r.result::text,
 		        s.agent
@@ -2237,7 +2239,7 @@ func (s *Store) ListRunsByParentRunID(ctx context.Context, parentRunID string) (
 		        r.input_tokens, r.output_tokens, r.cache_creation_tokens, r.cache_read_tokens,
 		        r.model, r.provider, r.error,
 		        r.agent_id, r.parent_agent_id, r.parent_run_id, r.user_id, r.last_heartbeat_at, r.user_tier,
-		        r.agent_def_id, r.pause_state, r.replica_id, r.parent_context, r.idempotency_key, r.delivery_alt_key, r.tenant_id, r.interactive, r.operator_key_restricted, r.isolated, r.retention,
+		        r.agent_def_id, r.pause_state, r.replica_id, r.parent_context, r.idempotency_key, r.delivery_alt_key, r.tenant_id, r.interactive, r.operator_key_restricted, r.isolated, r.credentials_no_user_scope, r.retention,
 		        r.cost, r.cost_currency, r.credential_source, r.credential_scope_id,
 		        r.run_config::text, r.result::text,
 		        s.agent
@@ -2414,7 +2416,7 @@ func (s *Store) ListPausedRuns(ctx context.Context) ([]store.Run, error) {
 		        r.input_tokens, r.output_tokens, r.cache_creation_tokens, r.cache_read_tokens,
 		        r.model, r.provider, r.error,
 		        r.agent_id, r.parent_agent_id, r.parent_run_id, r.user_id, r.last_heartbeat_at, r.user_tier,
-		        r.agent_def_id, r.pause_state, r.replica_id, r.parent_context, r.idempotency_key, r.delivery_alt_key, r.tenant_id, r.interactive, r.operator_key_restricted, r.isolated, r.retention,
+		        r.agent_def_id, r.pause_state, r.replica_id, r.parent_context, r.idempotency_key, r.delivery_alt_key, r.tenant_id, r.interactive, r.operator_key_restricted, r.isolated, r.credentials_no_user_scope, r.retention,
 		        r.cost, r.cost_currency, r.credential_source, r.credential_scope_id,
 		        r.run_config::text, r.result::text,
 		        s.agent
@@ -3202,8 +3204,8 @@ func (s *Store) SnapshotRestoreRun(ctx context.Context, r store.Run) (bool, erro
 			model, provider, error,
 			agent_id, parent_agent_id, parent_run_id, user_id, last_heartbeat_at,
 			user_tier, agent_def_id, pause_state, parent_context, interactive, operator_key_restricted, isolated, run_config, walk_id, tenant_id,
-			idempotency_key, delivery_alt_key, retention
-		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26::jsonb, $27, $28, $29, $30, $31)
+			idempotency_key, delivery_alt_key, retention, replica_id, credentials_no_user_scope
+		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26::jsonb, $27, $28, $29, $30, $31, $32, $33)
 		 ON CONFLICT (id) DO NOTHING`,
 		r.ID, r.SessionID, status, startedAt, completedAt, nullIfEmpty(r.StopReason),
 		r.InputTokens, r.OutputTokens, r.CacheCreationTokens, r.CacheReadTokens,
@@ -3213,6 +3215,11 @@ func (s *Store) SnapshotRestoreRun(ctx context.Context, r store.Run) (bool, erro
 		nullIfEmpty(r.UserTier), nullIfEmpty(r.AgentDefID), pauseState, pcVal, r.Interactive, r.OperatorKeyRestricted, r.Isolated,
 		nullableJSONArg(r.RunConfig), nullIfEmpty(store.RunWalkID(r.ParentContext)),
 		nullIfEmpty(r.TenantID), nullIfEmpty(r.IdempotencyKey), nullIfEmpty(r.DeliveryAltKey), r.Retention,
+		// The restore names the replica that will hold a restored queued
+		// run's wait; a boot restarts only the queued rows stamped with its
+		// own id. Every other restored row passes none and stays NULL.
+		nullIfEmpty(r.ReplicaID),
+		r.CredentialsNoUserScope,
 	)
 	if err != nil {
 		return false, fmt.Errorf("snapshot restore run: %w", err)
@@ -3902,7 +3909,7 @@ func (s *Store) WebhookDeliveryClaim(ctx context.Context, keys []string, now, ex
 		return false, fmt.Errorf("webhook delivery claim begin: %w", err)
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
-	if _, err := tx.Exec(ctx, `DELETE FROM webhook_deliveries WHERE expires_at <= $1`, now.UTC()); err != nil {
+	if _, err := tx.Exec(ctx, pgWebhookDeliverySweep, now.UTC(), now.Add(-store.WebhookUnregisteredClaimGrace).UTC()); err != nil {
 		return false, fmt.Errorf("webhook delivery claim sweep: %w", err)
 	}
 	for _, k := range keys {
@@ -3924,20 +3931,29 @@ func (s *Store) WebhookDeliveryClaim(ctx context.Context, keys []string, now, ex
 	return true, nil
 }
 
+// pgWebhookDeliverySweep drops held keys past their expiry — except a dedup_key
+// claim still within its grace with no run linked: its setup may link yet, and
+// must find its claim (a definition's lifetime can be shorter than a setup).
+// Args: now, now - grace.
+const pgWebhookDeliverySweep = `DELETE FROM webhook_deliveries WHERE expires_at <= $1
+	AND NOT (claim_id <> '' AND run_id = '' AND claimed_at > $2)`
+
 // WebhookDeliveryClaimRun claims every key or none for a delivery that starts
-// a run, first taking over the keys of a run that ended failed; see the
-// store.Store contract.
-func (s *Store) WebhookDeliveryClaimRun(ctx context.Context, keys []string, now, expiresAt time.Time) (bool, string, error) {
-	if len(keys) == 0 {
-		return false, "", fmt.Errorf("webhook delivery claim: no keys")
+// a run, under a new claim id, first taking over the keys of a run that ended
+// failed and looking at claims whose run never linked; see the store.Store
+// contract.
+func (s *Store) WebhookDeliveryClaimRun(ctx context.Context, c store.WebhookRunClaim) (store.WebhookRunClaimResult, error) {
+	if len(c.Keys) == 0 {
+		return store.WebhookRunClaimResult{}, fmt.Errorf("webhook delivery claim: no keys")
 	}
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
-		return false, "", fmt.Errorf("webhook delivery claim begin: %w", err)
+		return store.WebhookRunClaimResult{}, fmt.Errorf("webhook delivery claim begin: %w", err)
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
-	if _, err := tx.Exec(ctx, `DELETE FROM webhook_deliveries WHERE expires_at <= $1`, now.UTC()); err != nil {
-		return false, "", fmt.Errorf("webhook delivery claim sweep: %w", err)
+	graceCutoff := c.Now.Add(-store.WebhookUnregisteredClaimGrace).UTC()
+	if _, err := tx.Exec(ctx, pgWebhookDeliverySweep, c.Now.UTC(), graceCutoff); err != nil {
+		return store.WebhookRunClaimResult{}, fmt.Errorf("webhook delivery claim sweep: %w", err)
 	}
 	statuses := make([]string, len(store.WebhookRetakeRunStatuses))
 	for i, st := range store.WebhookRetakeRunStatuses {
@@ -3952,42 +3968,189 @@ func (s *Store) WebhookDeliveryClaimRun(ctx context.Context, keys []string, now,
 	// event can carry them.
 	if _, err := tx.Exec(ctx,
 		`UPDATE runs SET idempotency_key = NULL, delivery_alt_key = NULL WHERE id IN (`+failedHolders+`)`,
-		keys, statuses); err != nil {
-		return false, "", fmt.Errorf("webhook delivery claim retake: %w", err)
+		c.Keys, statuses); err != nil {
+		return store.WebhookRunClaimResult{}, fmt.Errorf("webhook delivery claim retake: %w", err)
 	}
 	if _, err := tx.Exec(ctx,
 		`DELETE FROM webhook_deliveries WHERE run_id IN (`+failedHolders+`)`,
-		keys, statuses); err != nil {
-		return false, "", fmt.Errorf("webhook delivery claim retake: %w", err)
+		c.Keys, statuses); err != nil {
+		return store.WebhookRunClaimResult{}, fmt.Errorf("webhook delivery claim retake: %w", err)
 	}
-	for _, k := range keys {
+	if err := settleStaleWebhookClaimsPG(ctx, tx, c.Keys, statuses, graceCutoff); err != nil {
+		return store.WebhookRunClaimResult{}, err
+	}
+	claimID := newID("wdc")
+	for _, k := range c.Keys {
 		tag, err := tx.Exec(ctx,
-			`INSERT INTO webhook_deliveries (delivery_key, expires_at) VALUES ($1, $2) ON CONFLICT (delivery_key) DO NOTHING`,
-			k, expiresAt.UTC())
+			`INSERT INTO webhook_deliveries (delivery_key, expires_at, claim_id, claimed_at, run_key, run_alt_key)
+			 VALUES ($1, $2, $3, $4, $5, $6) ON CONFLICT (delivery_key) DO NOTHING`,
+			k, c.ExpiresAt.UTC(), claimID, c.Now.UTC(), c.RunKey, c.RunAltKey)
 		if err != nil {
-			return false, "", fmt.Errorf("webhook delivery claim: %w", err)
+			return store.WebhookRunClaimResult{}, fmt.Errorf("webhook delivery claim: %w", err)
 		}
 		if tag.RowsAffected() == 0 {
 			var holder string
 			if err := tx.QueryRow(ctx, `SELECT run_id FROM webhook_deliveries WHERE delivery_key = $1`, k).Scan(&holder); err != nil {
-				return false, "", fmt.Errorf("webhook delivery claim holder: %w", err)
+				return store.WebhookRunClaimResult{}, fmt.Errorf("webhook delivery claim holder: %w", err)
 			}
-			return false, holder, nil // the deferred rollback undoes this claim's other keys
+			// The deferred rollback undoes this claim's other keys, and
+			// anything settled above: the next claim settles it again.
+			return store.WebhookRunClaimResult{Holder: holder}, nil
 		}
 	}
 	if err := tx.Commit(ctx); err != nil {
-		return false, "", fmt.Errorf("webhook delivery claim commit: %w", err)
+		return store.WebhookRunClaimResult{}, fmt.Errorf("webhook delivery claim commit: %w", err)
 	}
-	return true, "", nil
+	return store.WebhookRunClaimResult{Claimed: true, ClaimID: claimID}, nil
 }
 
-// WebhookDeliverySetRun records the run a claim's keys started.
-func (s *Store) WebhookDeliverySetRun(ctx context.Context, keys []string, runID string) error {
-	if len(keys) == 0 {
+// settleStaleWebhookClaimsPG handles, inside a claim's transaction, every
+// claim holding one of keys that has no run linked and was made before
+// graceCutoff: linked to the run carrying its run keys when one does
+// (adopted), taken over when that run failed, dropped when none does.
+//
+// Every write is conditional on the claim having no run linked: under READ
+// COMMITTED a write that waited on a concurrent link re-reads the row and
+// skips it, so a link that commits first wins; one that waited on a
+// concurrent takeover finds the rows gone, and its own insert then meets the
+// winner's keys.
+func settleStaleWebhookClaimsPG(ctx context.Context, tx pgx.Tx, keys, retake []string, graceCutoff time.Time) error {
+	type stale struct{ id, runKey, runAltKey string }
+	rows, err := tx.Query(ctx,
+		`SELECT DISTINCT claim_id, run_key, run_alt_key FROM webhook_deliveries
+		 WHERE delivery_key = ANY($1) AND claim_id <> '' AND run_id = '' AND claimed_at < $2`,
+		keys, graceCutoff)
+	if err != nil {
+		return fmt.Errorf("webhook delivery claim stale: %w", err)
+	}
+	var found []stale
+	for rows.Next() {
+		var st stale
+		if err := rows.Scan(&st.id, &st.runKey, &st.runAltKey); err != nil {
+			rows.Close()
+			return fmt.Errorf("webhook delivery claim stale: %w", err)
+		}
+		found = append(found, st)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("webhook delivery claim stale: %w", err)
+	}
+	for _, st := range found {
+		var runKeys []string
+		for _, k := range []string{st.runKey, st.runAltKey} {
+			if k != "" {
+				runKeys = append(runKeys, k)
+			}
+		}
+		var runID, status string
+		ok := false
+		if len(runKeys) > 0 {
+			err := tx.QueryRow(ctx,
+				`SELECT id, status FROM runs WHERE idempotency_key = ANY($1) OR delivery_alt_key = ANY($1) LIMIT 1`,
+				runKeys).Scan(&runID, &status)
+			switch {
+			case err == nil:
+				ok = true
+			case !errors.Is(err, pgx.ErrNoRows):
+				return fmt.Errorf("webhook delivery claim run lookup: %w", err)
+			}
+		}
+		failed := false
+		for _, r := range retake {
+			failed = failed || status == r
+		}
+		if ok && !failed {
+			if _, err := tx.Exec(ctx,
+				`UPDATE webhook_deliveries SET run_id = $1 WHERE claim_id = $2 AND run_id = ''`, runID, st.id); err != nil {
+				return fmt.Errorf("webhook delivery claim adopt: %w", err)
+			}
+			continue
+		}
+		if ok {
+			if _, err := tx.Exec(ctx,
+				`UPDATE runs SET idempotency_key = NULL, delivery_alt_key = NULL WHERE id = $1`, runID); err != nil {
+				return fmt.Errorf("webhook delivery claim retake: %w", err)
+			}
+		}
+		if _, err := tx.Exec(ctx,
+			`DELETE FROM webhook_deliveries WHERE claim_id = $1 AND run_id = ''`, st.id); err != nil {
+			return fmt.Errorf("webhook delivery claim takeover: %w", err)
+		}
+	}
+	return nil
+}
+
+// WebhookDeliveryHeldByLiveRun reads the live run holding key; see the
+// store.Store contract.
+func (s *Store) WebhookDeliveryHeldByLiveRun(ctx context.Context, key string, now time.Time) (string, bool, error) {
+	statuses := make([]string, len(store.WebhookRetakeRunStatuses))
+	for i, st := range store.WebhookRetakeRunStatuses {
+		statuses[i] = string(st)
+	}
+	var runID string
+	err := s.pool.QueryRow(ctx,
+		`SELECT d.run_id FROM webhook_deliveries d JOIN runs r ON r.id = d.run_id
+		 WHERE d.delivery_key = $1 AND d.expires_at > $2 AND d.run_id <> ''
+		   AND NOT (r.status = ANY($3))`,
+		key, now.UTC(), statuses).Scan(&runID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", false, nil
+	}
+	if err != nil {
+		return "", false, fmt.Errorf("webhook delivery holder: %w", err)
+	}
+	return runID, true, nil
+}
+
+// WebhookDeliveryLinkRun links a claim's run while the claim is current; see
+// the store.Store contract.
+func (s *Store) WebhookDeliveryLinkRun(ctx context.Context, claimID, runID string) (bool, error) {
+	if claimID == "" || runID == "" {
+		return false, nil
+	}
+	tag, err := s.pool.Exec(ctx,
+		`UPDATE webhook_deliveries SET run_id = $1 WHERE claim_id = $2 AND (run_id = '' OR run_id = $1)`,
+		runID, claimID)
+	if err != nil {
+		return false, fmt.Errorf("webhook delivery link run: %w", err)
+	}
+	return tag.RowsAffected() > 0, nil
+}
+
+// WebhookDeliveryReleaseClaim drops the keys of a claim that started nothing.
+func (s *Store) WebhookDeliveryReleaseClaim(ctx context.Context, claimID string) error {
+	if claimID == "" {
 		return nil
 	}
-	if _, err := s.pool.Exec(ctx, `UPDATE webhook_deliveries SET run_id = $1 WHERE delivery_key = ANY($2)`, runID, keys); err != nil {
-		return fmt.Errorf("webhook delivery set run: %w", err)
+	if _, err := s.pool.Exec(ctx,
+		`DELETE FROM webhook_deliveries WHERE claim_id = $1 AND run_id = ''`, claimID); err != nil {
+		return fmt.Errorf("webhook delivery release claim: %w", err)
+	}
+	return nil
+}
+
+// RunReleaseFailedDeliveryKeys clears the delivery keys of a failed run that
+// carries one of keys; see the store.Store contract.
+func (s *Store) RunReleaseFailedDeliveryKeys(ctx context.Context, keys []string) error {
+	var ks []string
+	for _, k := range keys {
+		if k != "" {
+			ks = append(ks, k)
+		}
+	}
+	if len(ks) == 0 {
+		return nil
+	}
+	statuses := make([]string, len(store.WebhookRetakeRunStatuses))
+	for i, st := range store.WebhookRetakeRunStatuses {
+		statuses[i] = string(st)
+	}
+	if _, err := s.pool.Exec(ctx,
+		`UPDATE runs SET idempotency_key = NULL, delivery_alt_key = NULL
+		 WHERE status = ANY($1) AND (idempotency_key = ANY($2) OR delivery_alt_key = ANY($2))`,
+		statuses, ks); err != nil {
+		return fmt.Errorf("release failed run delivery keys: %w", err)
 	}
 	return nil
 }
@@ -10414,6 +10577,7 @@ func scanRun(r rowScanner) (store.Run, error) {
 		interactive           bool
 		operatorKeyRestricted bool
 		isolated              bool
+		noUserScope           bool
 		statusStr             string
 	)
 	if err := r.Scan(
@@ -10423,7 +10587,7 @@ func scanRun(r rowScanner) (store.Run, error) {
 		&agentID, &parentAgentID, &parentRunID, &userID, &lastHeartbeatAt,
 		&userTier,
 		&agentDefID, &pauseState, &replicaID, &parentContext, &idempotencyKey, &deliveryAltKey, &tenantID,
-		&interactive, &operatorKeyRestricted, &isolated, &out.Retention,
+		&interactive, &operatorKeyRestricted, &isolated, &noUserScope, &out.Retention,
 		&cost, &costCurrency, &credentialSource, &credentialScopeID,
 		&runConfig,
 		&result,
@@ -10494,6 +10658,7 @@ func scanRun(r rowScanner) (store.Run, error) {
 	out.Interactive = interactive
 	out.OperatorKeyRestricted = operatorKeyRestricted
 	out.Isolated = isolated
+	out.CredentialsNoUserScope = noUserScope
 	if cost != nil {
 		out.Cost = cost
 	}

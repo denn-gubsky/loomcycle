@@ -1,6 +1,7 @@
 package webhook
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"net/url"
@@ -153,6 +154,29 @@ func (c *dedupCache) sweep() {
 		}
 		return true
 	})
+}
+
+// SweepInterval is how often RunSweeper evicts expired in-memory state.
+const SweepInterval = time.Minute
+
+// RunSweeper evicts this receiver's expired in-memory state every interval
+// until ctx ends. Lazy expiry keeps the replay cache correct, but evicts an
+// entry only when its delivery comes again: without this every accepted
+// delivery's keys stayed in memory for the life of the process.
+func (rec *Receiver) RunSweeper(ctx context.Context, interval time.Duration) {
+	t := time.NewTicker(interval)
+	defer t.Stop()
+	for {
+		select {
+		case <-t.C:
+			rec.dedup.sweep()
+			if rec.secrets != nil {
+				rec.secrets.sweep()
+			}
+		case <-ctx.Done():
+			return
+		}
+	}
 }
 
 // deliveryID extracts the dedup delivery identity from the request. When the

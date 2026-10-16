@@ -354,11 +354,11 @@ type Server struct {
 	codeHooks hooks.CodeRunner
 
 	// sessionLockPG is the v0.12.5 Phase 6 cluster-mode session lock.
-	// When set, trySessionLock dispatches to it instead of sessionLocks
+	// When set, trySessionLock takes it as well as sessionLocks
 	// — providing cluster-wide per-session_id 409 ErrSessionBusy.
 	// Single-replica deployments leave this nil and the in-process
 	// SessionLockMap above stays the source of truth.
-	sessionLockPG *runner.PgSessionLocker
+	sessionLockPG clusterLocker
 
 	// mcpFallback is the optional Dispatcher fallback for lazy MCP
 	// server registration. When set, an agent's call to a tool name
@@ -1793,6 +1793,9 @@ func (s *Server) resolveAgentDef(ctx context.Context, def config.AgentDef, tenan
 		if def.Routing != nil && def.Routing.QueueAware && isRunStart(ctx) {
 			req.QueueWait = s.estimatedQueueWait
 			req.SwitchAfter = def.Routing.SwitchAfter()
+			if carriesImage(ctx) {
+				req.Eligible = s.acceptsImages
+			}
 		}
 		dec, rerr := s.resolver.Resolve(req)
 		if rerr != nil {
@@ -1849,6 +1852,77 @@ func (s *Server) resolveAgentDef(ctx context.Context, def config.AgentDef, tenan
 // tiered?" uses this, so none of them disagrees with where the run went.
 func routesByTier(def config.AgentDef) bool {
 	return def.Tier != "" && def.Provider == "" && def.Model == ""
+}
+
+// imageInputKey marks the ctx of a run-start resolution whose run carries an
+// image.
+type imageInputKey struct{}
+
+// runStartCtx marks ctx as resolving a run that is about to start
+// (withRunStart) and, when the run's new input or the session history it
+// continues carries an image, as one that needs a provider able to take it.
+// The history counts because the loop replays it into every turn, and checks
+// it against the provider's vision capability before the first call.
+func runStartCtx(ctx context.Context, segs []loop.PromptSegment, prior []providers.Message) context.Context {
+	ctx = withRunStart(ctx)
+	for _, seg := range segs {
+		for _, c := range seg.Content {
+			if c.Type == "image" {
+				return context.WithValue(ctx, imageInputKey{}, true)
+			}
+		}
+	}
+	for _, m := range prior {
+		for _, c := range m.Content {
+			if c.Type == "image" {
+				return context.WithValue(ctx, imageInputKey{}, true)
+			}
+		}
+	}
+	return ctx
+}
+
+func carriesImage(ctx context.Context) bool {
+	v, _ := ctx.Value(imageInputKey{}).(bool)
+	return v
+}
+
+// acceptsImages reports whether provider can take image input, by the same
+// capability the loop's pre-call vision gate checks. Queue-aware routing must
+// not pass a run with an image over from a busy provider that can take it to
+// one that cannot: there it would only have waited, here the gate fails it.
+// The per-model refinements some drivers make inside Call (a legacy text-only
+// model behind a vision-capable provider) are not visible from here; such a
+// call still fails loudly in the driver.
+func (s *Server) acceptsImages(provider, _ string) bool {
+	p, err := s.providers.Get(provider)
+	return err == nil && p.Capabilities().SupportsVision
+}
+
+// resolveAfterQueue resolves a queue-aware run again once it has waited for
+// its run slot, and reports whether that gave it a provider. Its provider was
+// chosen from the lane estimates when it arrived; after a wait in the run
+// queue they can be quite different, and the run makes no move of its own
+// before its second call. Called only for a run that queued, before anything
+// of its start is recorded: the queued row's model is rewritten when the run
+// starts, and the queued and admitted events name no provider. A run that is
+// not queue-aware keeps its intake choice, and so does one whose new
+// resolution fails — that choice was valid a moment ago, and the loop's
+// fallback handles a provider that has gone since.
+func (s *Server) resolveAfterQueue(ctx context.Context, def config.AgentDef, tenantID, userID, agentName, userTier string, restricted bool) (providerID string, provider providers.Provider, model, effort string, ok bool) {
+	if def.Routing == nil || !def.Routing.QueueAware || !routesByTier(def) {
+		return "", nil, "", "", false
+	}
+	providerID, model, effort, err := s.resolveAgentDef(ctx, def, tenantID, userID, agentName, userTier, restricted)
+	if err != nil {
+		log.Printf("queue-aware routing: agent %q: resolving again after its wait in the run queue failed, keeping its first choice: %v", agentName, err)
+		return "", nil, "", "", false
+	}
+	provider, err = s.providers.Get(providerID)
+	if err != nil {
+		return "", nil, "", "", false
+	}
+	return providerID, provider, model, effort, true
 }
 
 // keyableProvidersFor builds the RFC AX Layer-1 credential-aware routing filter
@@ -2234,6 +2308,7 @@ func (s *Server) volumePolicyForAgent(ctx context.Context, agentDef config.Agent
 		}
 		return tools.VolumePolicyValue{Active: true, Bindings: []tools.VolumeBinding{{
 			Name: "default", Root: def.Path, ReadOnly: def.ReadOnly(), Default: true,
+			Fence: builtin.StaticVolumeFence(s.cfg(), def.Path),
 		}}}
 	}
 	tenantID := tools.RunIdentity(ctx).TenantID
@@ -2242,6 +2317,7 @@ func (s *Server) volumePolicyForAgent(ctx context.Context, agentDef config.Agent
 		if v, ok := s.cfg().Volumes[name]; ok {
 			bindings = append(bindings, tools.VolumeBinding{
 				Name: name, Root: v.Path, ReadOnly: v.ReadOnly(), Default: v.Default,
+				Fence: builtin.StaticVolumeFence(s.cfg(), v.Path),
 			})
 			continue
 		}
@@ -2295,6 +2371,7 @@ func narrowVolumes(parent, child tools.VolumePolicyValue) tools.VolumePolicyValu
 			Root:     pb.Root, // parent's resolved root is authoritative.
 			ReadOnly: cb.ReadOnly || pb.ReadOnly,
 			Default:  cb.Default,
+			Fence:    pb.Fence, // with the root it fences.
 		})
 	}
 	return tools.VolumePolicyValue{Active: true, Bindings: out}
@@ -2834,6 +2911,7 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 	if err := loop.ValidateSegmentTypes(in.Segments); err != nil {
 		return fmt.Errorf("%w: %v", runner.ErrInvalidArgument, err)
 	}
+	in.Segments = loop.DemoteRuntimeKinds(in.Segments)
 	startingDraft := in.ConfiguredRunID != ""
 	if startingDraft && s.store == nil {
 		return runner.ErrSessionRequired
@@ -3027,16 +3105,9 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 	if rerr != nil {
 		return rerr
 	}
-	providerID, model, effort, err := s.resolveAgentDef(withRunStart(ctx), agentDef, effectiveTenantID, effectiveUserID, effectiveAgentName, in.UserTier, operatorKeyRestricted)
-	if err != nil {
-		return err // already wrapped with runner.Err* sentinel
-	}
-	provider, err := s.providers.Get(providerID)
-	if err != nil {
-		return fmt.Errorf("%w: %v", runner.ErrUnknownProvider, err)
-	}
-
 	// ---- Transcript replay (continuation only) ----
+	// Before the provider is chosen: an image in the history needs a provider
+	// that can take it as much as one in the new input does (runStartCtx).
 	var sessionEvents []store.Event
 	if isContinuation {
 		transcript, err := s.store.GetTranscript(ctx, in.SessionID)
@@ -3045,6 +3116,16 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 		}
 		sessionEvents = transcript
 		priorMessages = replayTranscript(transcript)
+	}
+
+	startCtx := runStartCtx(ctx, in.Segments, priorMessages)
+	providerID, model, effort, err := s.resolveAgentDef(startCtx, agentDef, effectiveTenantID, effectiveUserID, effectiveAgentName, in.UserTier, operatorKeyRestricted)
+	if err != nil {
+		return err // already wrapped with runner.Err* sentinel
+	}
+	provider, err := s.providers.Get(providerID)
+	if err != nil {
+		return fmt.Errorf("%w: %v", runner.ErrUnknownProvider, err)
 	}
 
 	// Runtime-pause admission gate (RFC X / F41) — reject new runs while
@@ -3133,7 +3214,7 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 	registered := false
 	// RunConfig is nil on purpose: the run's configuration is resolved after it
 	// waits, and StartQueuedRun writes it from the identity built at start.
-	queuedIdentity := store.RunIdentity{AgentID: agentID, UserID: effectiveUserID, TenantID: effectiveTenantID, UserTier: in.UserTier, Model: model, ReplicaID: s.replicaID, ParentContext: in.ParentContext, IdempotencyKey: in.IdempotencyKey, DeliveryAltKey: in.DeliveryAltKey, Interactive: in.Interactive, OperatorKeyRestricted: operatorKeyRestricted, Isolated: isolated, Retention: retention, RunConfig: nil}
+	queuedIdentity := store.RunIdentity{AgentID: agentID, UserID: effectiveUserID, TenantID: effectiveTenantID, UserTier: in.UserTier, Model: model, ReplicaID: s.replicaID, ParentContext: in.ParentContext, IdempotencyKey: in.IdempotencyKey, DeliveryAltKey: in.DeliveryAltKey, Interactive: in.Interactive, OperatorKeyRestricted: operatorKeyRestricted, Isolated: isolated, CredentialsNoUserScope: in.CredentialsNoUserScope, Retention: retention, RunConfig: nil}
 	acquireStart := time.Now()
 	runSlot := &concurrency.RunSlot{}
 	release, queued, err := s.admitRun(runCtx, admitArgs{
@@ -3224,6 +3305,11 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 		return fmt.Errorf("%w: %s", runner.ErrTokenLimitExceeded, limitDec.Refusal.Message)
 	}
 	defer release()
+	if queued != nil {
+		if pid, p, m, e, ok := s.resolveAfterQueue(startCtx, agentDef, effectiveTenantID, effectiveUserID, effectiveAgentName, in.UserTier, operatorKeyRestricted); ok {
+			providerID, provider, model, effort = pid, p, m, e
+		}
+	}
 
 	// ---- Tool filtering + host narrowing ----
 	// RFC N FIX 2-mcp: advertise MCP tools at the run's authoritative
@@ -3240,11 +3326,14 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 		if in.AllowedHosts != nil {
 			caller = *in.AllowedHosts
 		}
-		allowedTools = builtin.NarrowHosts(allowedTools, caller, in.WebSearchFilter, s.cfg().Env.HTTPCallerAuthoritative)
+		// A locked caller's list only narrows, in every mode.
+		narrowOnly := in.AllowedHosts != nil && callerHostsNarrowOnly(ctx, agentDef)
+		allowedTools = builtin.NarrowHosts(allowedTools, caller, in.WebSearchFilter, s.cfg().Env.HTTPCallerAuthoritative && !narrowOnly)
 		hostPolicy = tools.HostPolicyValue{
 			AllowedHosts:    caller,
 			HasList:         in.AllowedHosts != nil,
 			WebSearchFilter: in.WebSearchFilter,
+			NarrowOnly:      narrowOnly,
 		}
 	}
 	dispatcher := s.newDispatcher(allowedTools)
@@ -3306,7 +3395,7 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 	}
 
 	// ---- Session+run creation ----
-	identity := store.RunIdentity{AgentID: agentID, UserID: effectiveUserID, TenantID: effectiveTenantID, UserTier: in.UserTier, Model: model, ReplicaID: s.replicaID, ParentContext: in.ParentContext, IdempotencyKey: in.IdempotencyKey, DeliveryAltKey: in.DeliveryAltKey, Interactive: in.Interactive, OperatorKeyRestricted: operatorKeyRestricted, Isolated: isolated, Retention: retention, RunConfig: runCfg.marshal()}
+	identity := store.RunIdentity{AgentID: agentID, UserID: effectiveUserID, TenantID: effectiveTenantID, UserTier: in.UserTier, Model: model, ReplicaID: s.replicaID, ParentContext: in.ParentContext, IdempotencyKey: in.IdempotencyKey, DeliveryAltKey: in.DeliveryAltKey, Interactive: in.Interactive, OperatorKeyRestricted: operatorKeyRestricted, Isolated: isolated, CredentialsNoUserScope: in.CredentialsNoUserScope, Retention: retention, RunConfig: runCfg.marshal()}
 	var sessionID, runID string
 	switch {
 	case queued != nil || restarting:
@@ -3431,6 +3520,15 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 	if cb.OnRegistered != nil && queued == nil {
 		cb.OnRegistered(agentID, runID, sessionID, "")
 	}
+	// The caller's last word before the loop — a run that queued is asked
+	// now that it leaves the queue. A refusal fails the run before its first
+	// model call.
+	if cb.Admit != nil {
+		if aerr := cb.Admit(runID); aerr != nil {
+			s.finishRunFailedReason(runID, "not admitted by its caller: "+aerr.Error(), meta)
+			return fmt.Errorf("run not admitted by its caller: %w", aerr)
+		}
+	}
 
 	// ---- Build emit chain (record + forward to caller) ----
 	// Hoisted so the recording emit attributes usage under the run's true
@@ -3539,7 +3637,7 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 		Record: runCfg.marshal(),
 		// A top-level run pins no def_id (RunInput does not carry one), so
 		// identity here is the agent NAME. See SameDefinitionAs.
-		DefID: "", AgentName: effectiveAgentName,
+		DefID: "", AgentName: effectiveAgentName, RunID: runID,
 	})
 
 	// RFC CR: the resolved layered-context policy flows down the spawn tree the
@@ -3651,11 +3749,11 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 		UserTier:               in.UserTier,
 		FallbackPolicy:         fbPolicy,
 		ReResolve:              fbReResolve,
-		MoveForQueue:           s.queueMoveFn(agentDef, runID, effectiveTenantID, effectiveUserID, effectiveAgentName, in.UserTier, operatorKeyRestricted),
+		MoveForQueue:           s.queueMoveFn(agentDef, runCfg.Routing, runID, effectiveTenantID, effectiveUserID, effectiveAgentName, in.UserTier, operatorKeyRestricted),
 		Hooks:                  s.hookDispatcher,
 		MaxSameProviderRetries: s.retryAttemptsForAgent(agentDef, in.UserTier),
 		// RFC DC P3: a parked run adopts a retune on its next operator turn.
-		ReResolveOnOperatorTurn: s.reResolveOnOperatorTurnFn(runID, effectiveTenantID, effectiveUserID, effectiveAgentName, in.UserTier, operatorKeyRestricted, liveInterruption),
+		ReResolveOnOperatorTurn: s.reResolveOnOperatorTurnFn(runID, effectiveTenantID, effectiveUserID, effectiveAgentName, in.UserTier, operatorKeyRestricted, runCfg.Routing, liveInterruption),
 
 		// A parked run adopts a retuned tool_choice / output_format at the same
 		// boundary; the baseline is what the run starts with.
@@ -3711,8 +3809,8 @@ func (s *Server) SteerRegistry() *steer.Registry { return s.steerReg }
 // goroutines, RFC BH P3a). Always non-nil (constructed in NewServer).
 func (s *Server) TurnCancelRegistry() *turncancel.Registry { return s.turnCancelReg }
 
-// trySessionLock try-locks the session-scoped mutex for id. Returns
-// (release, true) on success and (nil, false) if another caller already
+// trySessionLock try-locks session id for a continuation. Returns
+// (hold, true) on success and (nil, false) if another caller already
 // holds it — in which case the caller should respond 409 / session_busy.
 // id must be non-empty; an empty id is a programmer error and panics.
 //
@@ -3721,19 +3819,72 @@ func (s *Server) TurnCancelRegistry() *turncancel.Registry { return s.turnCancel
 // idle ≥ maxIdle, but unknown-ID entries would still hang around for
 // at least one GC cycle and leak slowly. The DoS guard remains a
 // caller obligation.
-func (s *Server) trySessionLock(id string) (release func(), ok bool) {
+func (s *Server) trySessionLock(id string) (*sessionHold, bool) {
 	if id == "" {
 		panic("trySessionLock: empty session id")
 	}
-	// v0.12.5 Phase 6: cluster-mode dispatch. When sessionLockPG is
-	// wired (cluster mode), use the Postgres advisory lock so
-	// concurrent continuations on the same session_id ACROSS REPLICAS
-	// get the same 409 ErrSessionBusy semantics. Single-replica mode:
-	// sessionLockPG is nil, the in-process SessionLockMap path runs.
-	if s.sessionLockPG != nil {
-		return s.sessionLockPG.TryLock(context.Background(), id)
+	local, ok := s.sessionLocks.TryLock(id)
+	if !ok {
+		return nil, false
 	}
-	return s.sessionLocks.TryLock(id)
+	h := &sessionHold{cluster: s.sessionLockPG, id: id, local: local}
+	if !h.reacquire() {
+		local()
+		return nil, false
+	}
+	return h, true
+}
+
+// sessionHold is a continuation's lock on its session. It is the in-process
+// lock, held for as long as the request lasts, and in cluster mode also the
+// Postgres advisory lock, so that concurrent continuations on the same
+// session across replicas get the same 409. The advisory lock pins a pool
+// connection, so a continuation lets it go while it waits in the run queue
+// and takes it back once it has its slot: a queue of continuations, each
+// pinning a connection, could drain the pool that the running runs need to
+// record their events and finish, and the queue waits for exactly their
+// slots. The in-process lock still keeps the session from every other request
+// on this replica while it waits.
+//
+// A nil hold is a run on no existing session, and every method is a no-op on
+// it. A hold is used only by the goroutine of the request that took it.
+type sessionHold struct {
+	cluster clusterLocker // nil in single-replica mode
+	id      string
+	local   func()
+	remote  func() // the advisory lock's release; nil while it is not held
+}
+
+// reacquire takes the cluster lock, if it is not held. It reports false when
+// another replica holds the session.
+func (h *sessionHold) reacquire() bool {
+	if h == nil || h.cluster == nil || h.remote != nil {
+		return true
+	}
+	release, ok := h.cluster.TryLock(context.Background(), h.id)
+	if !ok {
+		return false
+	}
+	h.remote = release
+	return true
+}
+
+// releaseCluster lets the cluster lock go and keeps the in-process one.
+func (h *sessionHold) releaseCluster() {
+	if h == nil || h.remote == nil {
+		return
+	}
+	h.remote()
+	h.remote = nil
+}
+
+// release lets the session go.
+func (h *sessionHold) release() {
+	if h == nil {
+		return
+	}
+	h.releaseCluster()
+	h.local()
 }
 
 // SetHookRegistry installs the v0.12.5 Phase 6 DB-backed hook
@@ -3762,15 +3913,27 @@ func (s *Server) SetCodeHookRunner(r hooks.CodeRunner) {
 }
 
 // SetPgSessionLocker installs the v0.12.5 Phase 6 cluster-wide
-// session lock. When non-nil, trySessionLock dispatches to it
-// instead of the in-process SessionLockMap.
+// session lock. When non-nil, trySessionLock takes it as well as the
+// in-process SessionLockMap (see sessionHold).
 //
 // Invariant: call during boot wiring, BEFORE the server starts serving —
 // sessionLockPG is read unlocked in trySessionLock on the request path. Same
 // set-before-Serve contract as SetHookRegistry; not safe to call concurrently
 // with request handling.
 func (s *Server) SetPgSessionLocker(l *runner.PgSessionLocker) {
+	// A nil pointer stored in the interface field would read as non-nil
+	// and send every lock to it.
+	if l == nil {
+		s.sessionLockPG = nil
+		return
+	}
 	s.sessionLockPG = l
+}
+
+// clusterLocker is the cluster-wide try-lock behind sessionLockPG:
+// runner.PgSessionLocker in production, a fake in tests.
+type clusterLocker interface {
+	TryLock(ctx context.Context, id string) (release func(), ok bool)
 }
 
 // lockedSessionCount returns the number of entries in sessionLocks.
@@ -4978,6 +5141,7 @@ func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
+	req.Segments = loop.DemoteRuntimeKinds(req.Segments)
 	if _, err := store.ParseRetention(req.Retention); err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
@@ -5132,7 +5296,8 @@ func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {
 		writeJSONError(w, http.StatusConflict, "agent_id_in_use", fmt.Sprintf(agentIDInUseMsg, req.AgentID))
 		return
 	}
-	providerID, model, effort, err := s.resolveAgentDef(withRunStart(r.Context()), agentDef, req.TenantID, req.UserID, req.Agent, req.UserTier, operatorKeyRestricted)
+	startCtx := runStartCtx(r.Context(), req.Segments, nil)
+	providerID, model, effort, err := s.resolveAgentDef(startCtx, agentDef, req.TenantID, req.UserID, req.Agent, req.UserTier, operatorKeyRestricted)
 	if err != nil {
 		writeResolveError(w, err)
 		return
@@ -5158,6 +5323,7 @@ func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {
 	// the admission gates. A raw read let such a session through to the lock, so
 	// its owner's in-flight run answered 409 session_busy where an unknown id
 	// answered 404 — an existence oracle for other users' sessions.
+	var sessHold *sessionHold
 	if req.SessionID != "" {
 		if s.store == nil {
 			http.Error(w, "session_id requires persistence (Store not configured)", http.StatusBadRequest)
@@ -5172,13 +5338,14 @@ func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
-		releaseSess, ok := s.trySessionLock(req.SessionID)
+		hold, ok := s.trySessionLock(req.SessionID)
 		if !ok {
 			writeJSONError(w, http.StatusConflict, "session_busy",
 				fmt.Sprintf("another request is in flight on session %q", req.SessionID))
 			return
 		}
-		defer releaseSess()
+		sessHold = hold
+		defer sessHold.release()
 	}
 
 	// Runtime-pause admission gate (RFC X / F41): reject new runs with 503
@@ -5298,6 +5465,7 @@ func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {
 		agentID:  agentID,
 		reject:   req.Admission == runner.AdmissionReject,
 		createRow: func() (string, string, error) {
+			sessHold.releaseCluster() // see sessionHold; taken back once admitted
 			sid, rid, err := s.openOrCreateSessionAndQueuedRun(r.Context(), req.SessionID, req.Agent, req.TenantID, req.UserID, queuedIdentity)
 			if err != nil {
 				rowErr = err
@@ -5370,6 +5538,16 @@ func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {
 		}
 		return
 	}
+	// A run that waited let the cluster session lock go (see sessionHold), and
+	// another replica may have taken the session meanwhile: it starts only if
+	// it can take the lock back.
+	if queued != nil && !sessHold.reacquire() {
+		release()
+		busy := fmt.Errorf("another request is in flight on session %q", req.SessionID)
+		s.endQueuedRun(queued.runID, busy)
+		stream.send(providers.Event{Type: providers.EventError, Error: "the run did not start: " + busy.Error()})
+		return
+	}
 	// RFC AW token-budget admission, again at start: a run that queued may
 	// have crossed its ceiling while it waited. Release the slot first so the
 	// refusal doesn't leak it; checked BEFORE `defer release()` so the manual
@@ -5387,6 +5565,11 @@ func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer release()
+	if queued != nil {
+		if pid, p, m, e, ok := s.resolveAfterQueue(startCtx, agentDef, req.TenantID, req.UserID, req.Agent, req.UserTier, operatorKeyRestricted); ok {
+			providerID, provider, model, effort = pid, p, m, e
+		}
+	}
 
 	// Filter tools by agent allowlist + caller request.
 	// RFC N: advertise at the run's authoritative tenant. Use req.TenantID
@@ -5413,11 +5596,14 @@ func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {
 		if req.AllowedHosts != nil {
 			caller = *req.AllowedHosts
 		}
-		allowedTools = builtin.NarrowHosts(allowedTools, caller, req.WebSearchFilter, s.cfg().Env.HTTPCallerAuthoritative)
+		// A locked caller's list only narrows, in every mode.
+		narrowOnly := req.AllowedHosts != nil && callerHostsNarrowOnly(r.Context(), agentDef)
+		allowedTools = builtin.NarrowHosts(allowedTools, caller, req.WebSearchFilter, s.cfg().Env.HTTPCallerAuthoritative && !narrowOnly)
 		hostPolicy = tools.HostPolicyValue{
 			AllowedHosts:    caller,
 			HasList:         req.AllowedHosts != nil,
 			WebSearchFilter: req.WebSearchFilter,
+			NarrowOnly:      narrowOnly,
 		}
 	}
 	dispatcher := s.newDispatcher(allowedTools)
@@ -5710,7 +5896,7 @@ func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {
 	// SAME definition will take them (tools.RunOverridesValue.SameDefinitionAs).
 	loopCtx = tools.WithRunOverrides(loopCtx, tools.RunOverridesValue{
 		Record: runCfg.marshal(),
-		DefID:  "", AgentName: req.Agent,
+		DefID:  "", AgentName: req.Agent, RunID: runID,
 	})
 
 	mergedContext := runCfg.Context                           // per-run > per-agent (RFC CR); resolved once, above
@@ -5797,10 +5983,10 @@ func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {
 		UserTier:                req.UserTier,
 		FallbackPolicy:          fbPolicy,
 		ReResolve:               fbReResolve,
-		MoveForQueue:            s.queueMoveFn(agentDef, runID, req.TenantID, req.UserID, req.Agent, req.UserTier, operatorKeyRestricted),
+		MoveForQueue:            s.queueMoveFn(agentDef, runCfg.Routing, runID, req.TenantID, req.UserID, req.Agent, req.UserTier, operatorKeyRestricted),
 		Hooks:                   s.hookDispatcher,
 		MaxSameProviderRetries:  s.retryAttemptsForAgent(agentDef, req.UserTier),
-		ReResolveOnOperatorTurn: s.reResolveOnOperatorTurnFn(runID, req.TenantID, req.UserID, req.Agent, req.UserTier, operatorKeyRestricted, liveInterruption),
+		ReResolveOnOperatorTurn: s.reResolveOnOperatorTurnFn(runID, req.TenantID, req.UserID, req.Agent, req.UserTier, operatorKeyRestricted, runCfg.Routing, liveInterruption),
 
 		// A parked run adopts a retuned tool_choice / output_format at the same
 		// boundary; the baseline is what the run starts with.
@@ -6060,6 +6246,7 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
+	body.Segments = loop.DemoteRuntimeKinds(body.Segments)
 
 	// Validate the session exists BEFORE taking the per-session lock.
 	// Otherwise an attacker can spam unknown IDs and each LoadOrStore
@@ -6085,13 +6272,13 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 	// half-written history. Fast-fail with 409 since the alternative —
 	// blocking on an SSE handler — would hold an HTTP connection open
 	// for the full length of the in-flight run.
-	releaseSess, ok := s.trySessionLock(id)
+	sessHold, ok := s.trySessionLock(id)
 	if !ok {
 		writeJSONError(w, http.StatusConflict, "session_busy",
 			fmt.Sprintf("another request is in flight on session %q", id))
 		return
 	}
-	defer releaseSess()
+	defer sessHold.release()
 
 	// Resolve provider+model from the session's stored agent so the
 	// continuation runs against the same model as the original session.
@@ -6188,7 +6375,18 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 		writeResolveError(w, oerr)
 		return
 	}
-	providerID, model, effort, err := s.resolveAgentDef(withRunStart(r.Context()), agentDef, sess.TenantID, sess.UserID, sess.Agent, body.UserTier, operatorKeyRestricted)
+	// Replay prior conversation history from the transcript — before the
+	// provider is chosen, since an image in it needs a provider that can take
+	// it (runStartCtx).
+	transcript, err := s.store.GetTranscript(r.Context(), id)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	priorMessages := replayTranscript(transcript)
+
+	startCtx := runStartCtx(r.Context(), body.Segments, priorMessages)
+	providerID, model, effort, err := s.resolveAgentDef(startCtx, agentDef, sess.TenantID, sess.UserID, sess.Agent, body.UserTier, operatorKeyRestricted)
 	if err != nil {
 		writeResolveError(w, err)
 		return
@@ -6198,14 +6396,6 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-
-	// Replay prior conversation history from the transcript.
-	transcript, err := s.store.GetTranscript(r.Context(), id)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-	priorMessages := replayTranscript(transcript)
 
 	// Runtime-pause admission gate (RFC X / F41): a continuation starts a new
 	// turn/run, so reject it with 503 while pausing/paused (before the slot).
@@ -6284,7 +6474,8 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 	// cannot start at once is queued — its row (status queued), its
 	// registration and its stream exist before it waits — exactly as POST
 	// /v1/runs. It keeps the session lock while it waits, so the session
-	// takes no other turn meanwhile.
+	// takes no other turn on this replica meanwhile; the cluster lock it lets
+	// go (see sessionHold).
 	var (
 		run        store.Run
 		rowErr     error
@@ -6306,6 +6497,7 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 		userID:   sess.UserID,
 		agentID:  agentID,
 		createRow: func() (string, string, error) {
+			sessHold.releaseCluster() // taken back once admitted
 			queuedRun, err := s.store.CreateQueuedRun(r.Context(), id, queuedIdentity)
 			if err != nil {
 				rowErr = err
@@ -6361,6 +6553,26 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 		}
 		return
 	}
+	if queued != nil {
+		// It let the cluster session lock go while it waited (see
+		// sessionHold): it starts only if it can take the lock back, and then
+		// reads the session's history again, since another replica may have
+		// taken a turn on it meanwhile.
+		var startErr error
+		if !sessHold.reacquire() {
+			startErr = fmt.Errorf("another request is in flight on session %q", id)
+		} else if transcript, err := s.store.GetTranscript(r.Context(), id); err != nil {
+			startErr = err
+		} else {
+			priorMessages = replayTranscript(transcript)
+		}
+		if startErr != nil {
+			release()
+			s.endQueuedRun(queued.runID, startErr)
+			stream.send(providers.Event{Type: providers.EventError, Error: "the run did not start: " + startErr.Error()})
+			return
+		}
+	}
 	// RFC AW token-budget admission, again at start: a continuation that
 	// queued may have crossed its ceiling while it waited. Release the slot
 	// first; check BEFORE `defer release()` so the manual release() isn't
@@ -6377,6 +6589,11 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer release()
+	if queued != nil {
+		if pid, p, m, e, ok := s.resolveAfterQueue(startCtx, agentDef, sess.TenantID, sess.UserID, sess.Agent, body.UserTier, operatorKeyRestricted); ok {
+			providerID, provider, model, effort = pid, p, m, e
+		}
+	}
 
 	// RFC N FIX 2-mcp: a continuation advertises at the SESSION's
 	// authoritative tenant (the same value the continuation run uses), not
@@ -6390,11 +6607,14 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 		if body.AllowedHosts != nil {
 			caller = *body.AllowedHosts
 		}
-		allowedTools = builtin.NarrowHosts(allowedTools, caller, body.WebSearchFilter, s.cfg().Env.HTTPCallerAuthoritative)
+		// A locked caller's list only narrows, in every mode.
+		narrowOnly := body.AllowedHosts != nil && callerHostsNarrowOnly(r.Context(), agentDef)
+		allowedTools = builtin.NarrowHosts(allowedTools, caller, body.WebSearchFilter, s.cfg().Env.HTTPCallerAuthoritative && !narrowOnly)
 		hostPolicy = tools.HostPolicyValue{
 			AllowedHosts:    caller,
 			HasList:         body.AllowedHosts != nil,
 			WebSearchFilter: body.WebSearchFilter,
+			NarrowOnly:      narrowOnly,
 		}
 	}
 	dispatcher := s.newDispatcher(allowedTools)
@@ -6719,10 +6939,10 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 		UserTier:                body.UserTier,
 		FallbackPolicy:          fbPolicy,
 		ReResolve:               fbReResolve,
-		MoveForQueue:            s.queueMoveFn(agentDef, run.ID, sess.TenantID, sess.UserID, sess.Agent, body.UserTier, operatorKeyRestricted),
+		MoveForQueue:            s.queueMoveFn(agentDef, runCfg.Routing, run.ID, sess.TenantID, sess.UserID, sess.Agent, body.UserTier, operatorKeyRestricted),
 		Hooks:                   s.hookDispatcher,
 		MaxSameProviderRetries:  s.retryAttemptsForAgent(agentDef, body.UserTier),
-		ReResolveOnOperatorTurn: s.reResolveOnOperatorTurnFn(run.ID, sess.TenantID, sess.UserID, sess.Agent, body.UserTier, operatorKeyRestricted, liveInterruption),
+		ReResolveOnOperatorTurn: s.reResolveOnOperatorTurnFn(run.ID, sess.TenantID, sess.UserID, sess.Agent, body.UserTier, operatorKeyRestricted, runCfg.Routing, liveInterruption),
 
 		// A parked run adopts a retuned tool_choice / output_format at the same
 		// boundary; the baseline is what the run starts with.
@@ -8299,7 +8519,15 @@ func (s *Server) prepareSubRunValues(ctx context.Context, name string, src nameS
 	// inherits the same way, minus the per-spawn override knob (P4). Sampling and
 	// the timeout are the child's own — a breeder varies temperature by FORKING a
 	// def — and the host narrowing is the parent's, inherited through ctx.
-	subCompaction := config.MergeCompaction(def.Compaction, tools.CompactionPolicy(ctx))
+	//
+	// Not into a child that runs on its definition only: the parent's
+	// effective compaction and context carry its caller's per-run values,
+	// which such a child refuses from anyone, so it runs on its own.
+	parentCompaction, parentContext := tools.CompactionPolicy(ctx), tools.ContextPolicy(ctx)
+	if agentLocksOverrides(def) {
+		parentCompaction, parentContext = nil, nil
+	}
+	subCompaction := config.MergeCompaction(def.Compaction, parentCompaction)
 	// A parent's per-spawn override is an override like a caller's: a child
 	// that runs on its definition only refuses it.
 	subRetention := s.resolveRetention(ctx, tenant, name, def, "")
@@ -8330,7 +8558,16 @@ func (s *Server) prepareSubRunValues(ctx context.Context, name string, src nameS
 		return nil, fmt.Errorf("sub-agent %q: %w", name, err)
 	}
 	subCompaction = config.MergeCompaction(subCompaction, tools.CompactionOverride(ctx))
-	subContext := config.MergeContext(def.Context, tools.ContextPolicy(ctx))
+	subContext := config.MergeContext(def.Context, parentContext)
+	// A child that runs on its definition only takes its parent's host list
+	// as a narrowing, as a request naming it directly would; a list that
+	// already only narrows stays so down the tree. Decided here, before the
+	// record is written, so the record and the child's tools agree and a
+	// resume applies the list the way the child ran with it.
+	subHostPolicy := tools.HostPolicy(ctx)
+	if subHostPolicy.HasList && callerHostsNarrowOnly(ctx, def) {
+		subHostPolicy.NarrowOnly = true
+	}
 	subRunCfg := runConfigRecord{
 		Hooks:             additionsRecord(hooks.AdditionsFrom(ctx)), // inherited from the parent run
 		SourcedHooks:      hooks.AdditionsFrom(ctx).Sourced,          // and a team state's, with their source
@@ -8341,7 +8578,7 @@ func (s *Server) prepareSubRunValues(ctx context.Context, name string, src nameS
 		Context:           subContext,
 		MaxContextTokens:  def.MaxContextTokens,
 		RunTimeoutSeconds: def.RunTimeoutSeconds,
-		Hosts:             hostRecordOf(tools.HostPolicy(ctx)),
+		Hosts:             hostRecordOf(subHostPolicy),
 		// The parent's volume confinement and inherited fan-out width, both read
 		// off ctx below and never re-derivable once the parent's ctx is gone.
 		Spawn: spawnRecordOf(tools.VolumePolicy(ctx), tools.FanoutCap(ctx)),
@@ -8417,6 +8654,8 @@ func (s *Server) prepareSubRunValues(ctx context.Context, name string, src nameS
 		// RFC BX P2b: a child INHERITS the parent's isolation confinement — it
 		// cannot escape by spawning. Persisted so a resumed sub-run keeps it.
 		Isolated: parentIdentity.Isolated,
+		// Inherited (subRID below); persisted so a resumed sub-run keeps it.
+		CredentialsNoUserScope: parentIdentity.CredentialsNoUserScope,
 		// A child of a no-trace run is no-trace, whatever its own agent says:
 		// the parent's content reaches it as its prompt.
 		Retention: subRetention,
@@ -8649,9 +8888,9 @@ func (s *Server) prepareSubRunValues(ctx context.Context, name string, src nameS
 	// "host \"localhost\" not in allowlist", waste iterations
 	// guessing hostnames, get capped by max_iterations, never write
 	// the documents (2026-05-06).
-	parentHostPolicy := tools.HostPolicy(ctx)
-	if parentHostPolicy.HasList || s.cfg().Env.HTTPCallerAuthoritative {
-		subTools = builtin.NarrowHosts(subTools, parentHostPolicy.AllowedHosts, parentHostPolicy.WebSearchFilter, s.cfg().Env.HTTPCallerAuthoritative)
+	// subHostPolicy is the parent's, made narrow-only above for a locked child.
+	if subHostPolicy.HasList || s.cfg().Env.HTTPCallerAuthoritative {
+		subTools = builtin.NarrowHosts(subTools, subHostPolicy.AllowedHosts, subHostPolicy.WebSearchFilter, s.cfg().Env.HTTPCallerAuthoritative && !subHostPolicy.NarrowOnly)
 	}
 	subDispatcher := s.newDispatcher(subTools)
 
@@ -8863,7 +9102,7 @@ func (s *Server) prepareSubRunValues(ctx context.Context, name string, src nameS
 		UserTier:               parentTier,
 		FallbackPolicy:         fbPolicy,
 		ReResolve:              fbReResolve,
-		MoveForQueue:           s.queueMoveFn(def, subRunID, tenantFromCtx(ctx), parentIdentity.UserID, name, parentTier, parentIdentity.OperatorKeyRestricted),
+		MoveForQueue:           s.queueMoveFn(def, subRunCfg.Routing, subRunID, tenantFromCtx(ctx), parentIdentity.UserID, name, parentTier, parentIdentity.OperatorKeyRestricted),
 		Hooks:                  s.hookDispatcher,
 		MaxSameProviderRetries: s.retryAttemptsForAgent(def, parentTier),
 	}
@@ -9239,7 +9478,7 @@ func (s *Server) handleCancelAgent(w http.ResponseWriter, r *http.Request) {
 	}
 	if s.store != nil {
 		run, err := s.tenantStore(r.Context()).GetRunByAgentID(r.Context(), agentID)
-		if err == nil && !runOwnershipOK(r.Context(), run) {
+		if err == nil && (!runOwnershipOK(r.Context(), run) || !s.allowlistReachesRun(r.Context(), run.ID)) {
 			err = &store.ErrNotFound{Kind: "run", ID: agentID}
 		}
 		if err == nil && run.Retention == store.RetentionNone {
@@ -9586,6 +9825,9 @@ func (s *Server) handleRunInput(w http.ResponseWriter, r *http.Request) {
 	case errors.Is(err, runner.ErrRetentionUnsupported):
 		writeNoTraceRefusal(w, err)
 		return
+	case errors.Is(err, runner.ErrRateLimited):
+		writeRateLimited(w, err)
+		return
 	case errors.Is(err, connector.ErrSteerQueueFull):
 		w.Header().Set("Retry-After", "1")
 		http.Error(w, "run input queue full; retry shortly", http.StatusTooManyRequests)
@@ -9757,7 +9999,7 @@ func (s *Server) compactRunWithSource(ctx context.Context, runID, source string)
 	// model call over the session's transcript and rewrites what the run's next
 	// turn sees, so another user's run gets the same 404 as a missing one.
 	run, err := s.tenantStore(ctx).GetRun(ctx, runID)
-	if err != nil || !runOwnershipOK(ctx, run) {
+	if err != nil || !runOwnershipOK(ctx, run) || !s.allowlistReachesRun(ctx, runID) {
 		return connector.CompactResult{}, &compactErr{status: http.StatusNotFound, msg: "no run for that run_id"}
 	}
 
@@ -9924,7 +10166,10 @@ func (s *Server) compactRunWithSource(ctx context.Context, runID, source string)
 	// would be ignored (mis-attributed + wrongly refused).
 	summCtx := providers.WithCredentialResolver(ctx, s.credResolver)
 	summCtx = providers.WithOperatorKeyAllowed(summCtx, !run.OperatorKeyRestricted)
-	summCtx = tools.WithRunIdentity(summCtx, tools.RunIdentityValue{TenantID: run.TenantID, UserID: run.UserID})
+	// A key the summary resolves comes from no wider a scope than the run's
+	// own calls: a trigger's run may not take its user's own.
+	summCtx = tools.WithRunIdentity(summCtx, tools.RunIdentityValue{TenantID: run.TenantID, UserID: run.UserID,
+		CredentialsNoUserScope: run.CredentialsNoUserScope})
 	summCtx = tools.WithAgentName(summCtx, run.Agent)
 	summCtx = providers.WithCallObserver(summCtx, s.callObserver(run.ID))
 	summary, serr := loop.Summarize(summCtx, provider, summaryModel, msgs[firstIdx:cut], targetPct)
@@ -10070,11 +10315,13 @@ func (s *Server) RecapSession(ctx context.Context, sessionID string) (string, er
 	// tier overlay. No run yet ⇒ unrestricted, default tier — but a chat with no
 	// run has no transcript, so we already returned above.
 	restricted := false
+	noUserScope := false
 	userTier := ""
 	userID := sess.UserID
 	if runs, rerr := s.store.RunsForSession(ctx, sessionID); rerr == nil && len(runs) > 0 {
 		last := runs[len(runs)-1]
 		restricted = last.OperatorKeyRestricted
+		noUserScope = last.CredentialsNoUserScope
 		userTier = last.UserTier
 		if userID == "" {
 			userID = last.UserID
@@ -10107,7 +10354,8 @@ func (s *Server) RecapSession(ctx context.Context, sessionID string) (string, er
 	// tenant's OWN key correctly (mirrors compactRunWithSource / resume.go).
 	summCtx := providers.WithCredentialResolver(ctx, s.credResolver)
 	summCtx = providers.WithOperatorKeyAllowed(summCtx, !restricted)
-	summCtx = tools.WithRunIdentity(summCtx, tools.RunIdentityValue{TenantID: sess.TenantID, UserID: userID})
+	summCtx = tools.WithRunIdentity(summCtx, tools.RunIdentityValue{TenantID: sess.TenantID, UserID: userID,
+		CredentialsNoUserScope: noUserScope})
 	summCtx = tools.WithAgentName(summCtx, sess.Agent)
 	summCtx = providers.WithCallObserver(summCtx, s.callObserver(""))
 	summary, err := loop.Recap(summCtx, provider, summaryModel, msgs)
@@ -10878,6 +11126,18 @@ func (s *Server) withHookRun(ctx context.Context, ident hooks.Identity) context.
 	// a run_end hook would be stored like any other.
 	if s.runIsNoTrace(ctx, ident.RunID) {
 		rid.Retention = store.RetentionNone
+	}
+	// So do its webhook headers' $cred: references, which resolve no more
+	// widely than the run's own: a trigger's run may not take its user's own
+	// credential. The row is the only record of that here; a row that cannot
+	// be read withholds the user's scope rather than grant it.
+	if ident.UserID != "" {
+		rid.CredentialsNoUserScope = true
+		if s.store != nil {
+			if run, err := s.store.GetRun(ctx, ident.RunID); err == nil {
+				rid.CredentialsNoUserScope = run.CredentialsNoUserScope
+			}
+		}
 	}
 	ctx = tools.WithRunIdentity(ctx, rid)
 	ctx = tools.WithRunID(ctx, ident.RunID)

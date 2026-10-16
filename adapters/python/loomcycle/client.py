@@ -1176,10 +1176,12 @@ class LoomcycleClient:
         ``compaction``, …). ``mode="join"`` (default) blocks until every
         child settles; ``timeout_ms`` optionally caps the join (a child
         still running is cancelled + reported in-envelope).
-        ``mode="detach"`` returns once every child has started: each
-        started child reports ``status`` ``"running"`` with its ``run_id``
-        and keeps running after the call (read it with :meth:`get_run`); a
-        child that could not start is reported in its slot. ``timeout_ms``
+        ``mode="detach"`` returns once every child has started or queued:
+        each reports ``status`` ``"running"`` (or ``"queued"`` while it
+        waits for a run slot, starting by itself when one frees) with its
+        ``run_id`` and goes on after the call (read it with
+        :meth:`get_run`); a child that could not start is reported in its
+        slot. ``timeout_ms``
         is refused with ``"detach"``, which does not wait.
 
         Returns ``{"spawned": int, "results": [<spawn result>, …]}``
@@ -2500,6 +2502,7 @@ def _segments_to_proto(segments: Iterable[PromptSegment]) -> List[pb.PromptSegme
                     type=b.get("type", "trusted-text"),
                     text=b.get("text", ""),
                     cacheable=bool(b.get("cacheable", False)),
+                    kind=b.get("kind", ""),
                     media_type=b.get("media_type", ""),
                     data=b.get("data", b""),
                 )

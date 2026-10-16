@@ -245,7 +245,11 @@ webhooks:
   | `$.object_kind == "push"` | hold it, equal to a JSON string, number or boolean; typed, so `"3"` is not `3`, and a string is quoted |
 
   At least one rule must say what the body holds: absences alone fit almost
-  any body. There is no other operator and no combining.
+  any body. There is no other operator and no combining: `!$.x == 1` is
+  refused when the definition is written. So is a path whose key holds
+  whitespace, `=` or a quote (in a shape, a filter or `dedup_key`), and a
+  number compared with past 2^53-1 (9007199254740991) in magnitude, beyond
+  which two different numbers in a body compare equal.
 
   `github` has shapes for `push`, `pull_request`, `issues`,
   `issue_comment`, `create`, `delete`, `release`, `pull_request_review`,
@@ -382,6 +386,15 @@ dedup_ttl_seconds: 604800                            # 7 days, the default
   started. If that run ended `failed` — lost in a restart, say — the next
   delivery of the event starts a new run. A run that completed, was
   cancelled or rejected, or whose row is gone, keeps the event held.
+- **A run that never registered does not hold the event for days.** The
+  key records its run as the run registers. One that has recorded none
+  for 15 minutes (the instance died before its run started, say) is looked
+  at by the next delivery of the event: when a run carrying that
+  delivery's keys exists, the delivery is answered as its duplicate; when
+  none does, it starts the run. A setup that registers later finds its
+  claim gone and its run is refused before its first model call, so the
+  event never runs twice. A run that fails before registering never holds
+  its delivery: the sender's retry starts a run.
 - **A body without one of the fields**, or with `null` there, is refused
   `400 dedup_key_unresolvable`, naming the path. A key built from part of
   its fields would merge different events.
@@ -522,9 +535,10 @@ env var and restarting.
 
 **A stored credential.** `auth.secret: "$cred:<name>"` names a tenant-level
 credential of the definition's own tenant (the tenant that wrote it; for a
-team's own webhook, the team's). It is read on every delivery, so a new value
-takes effect at the next one, with no restart, and a secret per repository
-needs no new env var.
+team's own webhook, the team's). It is read when a delivery arrives and kept
+by each replica for 5 seconds, so a new value — or an expired or deleted
+credential — takes effect within 5 seconds, with no restart, and a secret per
+repository needs no new env var.
 
 ```yaml
 auth:
@@ -582,7 +596,9 @@ runs do.
    addition: a *per-event* token projected from the inbound (verified) body,
    e.g. a GitHub App installation token. The payload value **overlays** (and
    wins over) the env-resolved one for the same key; an absent path does not
-   clobber the env fallback.
+   clobber the env fallback. A projected value that is, or contains, a stored
+   credential reference (`$cred:<name>`, `$ghapp:<name>`) refuses the delivery
+   with `400 bad_mapping`: only the definition may name a stored credential.
    ```yaml
    payload_mapping:
      user_credentials.github: "$.installation.access_token.value"
@@ -633,6 +649,8 @@ mcp_servers:            # operator config
   the author's tenant; an author with no tenant may not set one. An operator
   is not checked, so the credential may come later.
 - A snapshot keeps the reference, never a value.
+- **A fork keeps the parent's** unless its overlay names `user_bearer`;
+  `"user_bearer": ""` removes it.
 
 **No webhook-started run resolves a `$cred:` in its user's own scope** — in
 `user_credentials`, an MCP server's headers or an A2A peer's credential. Its

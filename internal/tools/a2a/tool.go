@@ -210,7 +210,17 @@ func (t *Tool) openStoredBearer(ctx context.Context, def config.A2AAgent, bearer
 	if def.AgentCardURL == "" {
 		target = def.Endpoint
 	}
-	v, unresolved, err := t.credSubstitute(ctx, bearer, target)
+	// The run's user_bearer (a peer whose ref is "default" takes it) is a
+	// reference its trigger's author named. As the MCP client's runBearer, it
+	// resolves at tenant level only: the run's user and its calling agent are
+	// not that author, and a same-named credential in either scope would
+	// shadow the tenant's.
+	rctx := ctx
+	if ident := tools.RunIdentity(ctx); ident.UserBearer != "" && bearer == ident.UserBearer {
+		ident.UserID = ""
+		rctx = tools.WithAgentName(tools.WithRunIdentity(ctx, ident), "")
+	}
+	v, unresolved, err := t.credSubstitute(rctx, bearer, target)
 	if err != nil {
 		return "", err
 	}

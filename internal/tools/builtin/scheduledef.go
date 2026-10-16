@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/denn-gubsky/loomcycle/internal/auth"
 	"github.com/denn-gubsky/loomcycle/internal/config"
 	"github.com/denn-gubsky/loomcycle/internal/credential"
 	"github.com/denn-gubsky/loomcycle/internal/store"
@@ -101,7 +102,7 @@ const scheduleDefInputSchema = `{
     "parent_def_id": {"type": "string", "description": "Fork parent (optional for fork — when absent, forks the active def of the name, or bootstraps from a yaml template)."},
     "overlay": {
       "type": "object",
-      "description": "Mutable subset of ScheduledRun for create/fork (delivery, channel, team, vars, input, agent, prompt, schedule/user_tier_schedules, timezone, enabled, catch_up_max, max_fires, concurrency_policy, user_id, user_tier, user_credentials, user_credentials_from_env, user_bearer, on_complete, metadata, tenant_id). delivery is run (default — invoke the agent), channel (publish a cadence tick to the named channel and start NO run; forbids agent/prompt/on_complete/credentials, and carries metadata as the message payload) or team (start a detached walk of the team named in team, as TeamDef op=run mode=detach does: vars is name → literal text for variables the team declares, input is the walk's optional input; forbids agent/channel/prompt/on_complete/credentials/metadata, e.g. {\"schedule\":\"0 6 * * 1\",\"delivery\":\"team\",\"team\":\"weekly-report\",\"vars\":{\"repo\":\"loomcycle\"}}). The team is looked up in the schedule's tenant when the tick fires: a missing or retired team, a variable it does not declare, or a value it refuses starts no walk, is recorded as the schedule's last error, and does not count toward max_fires. team, vars and input are refused on the other deliveries. max_fires N>0 auto-retires the def after its Nth fire (1 = one-shot; 0 = unbounded). catch_up_max N (0–1000) runs the newest N slots missed during an outage, in slot order, each carrying its slot as metadata slot_at; 0 (default) collapses them into one fire. concurrency_policy is what a slot does while the schedule's previous run or walk is still going: forbid (default — skip the slot, recorded as skipped_overlap and not counted toward max_fires), allow (start another alongside it) or replace (cancel the running one, then start); refused on delivery channel. tenant_id (where fired runs execute) may name only your own tenant unless you are an admin; omit it to use yours. user_bearer sets the fired run's bearer (what ${run.user_bearer} in an MCP server's headers becomes) and takes only a stored credential written \"$cred:<name>\": it is resolved for each MCP request, for that server's URL, as a tenant-level credential of the run's tenant (never user_id's or an agent's), so a credential restricted by allowed_urls works. It must exist at tenant level in your tenant when written, and is refused on delivery channel or team. Immutable / server-set fields are silently ignored if supplied.",
+      "description": "Mutable subset of ScheduledRun for create/fork (delivery, channel, team, vars, input, agent, prompt, schedule/user_tier_schedules, timezone, enabled, catch_up_max, max_fires, concurrency_policy, user_id, user_tier, user_credentials, user_credentials_from_env, user_bearer, on_complete, metadata, tenant_id). delivery is run (default — invoke the agent), channel (publish a cadence tick to the named channel and start NO run; forbids agent/prompt/on_complete/credentials, and carries metadata as the message payload) or team (start a detached walk of the team named in team, as TeamDef op=run mode=detach does: vars is name → literal text for variables the team declares, input is the walk's optional input; forbids agent/channel/prompt/on_complete/credentials/metadata, e.g. {\"schedule\":\"0 6 * * 1\",\"delivery\":\"team\",\"team\":\"weekly-report\",\"vars\":{\"repo\":\"loomcycle\"}}). The team is looked up in the schedule's tenant when the tick fires: a missing or retired team, a variable it does not declare, or a value it refuses starts no walk, is recorded as the schedule's last error, and does not count toward max_fires. team, vars and input are refused on the other deliveries. max_fires N>0 auto-retires the def after its Nth fire (1 = one-shot; 0 = unbounded). catch_up_max N (0–1000) runs the newest N slots missed during an outage, in slot order, each carrying its slot as metadata slot_at; 0 (default) collapses them into one fire. concurrency_policy is what a slot does while the schedule's previous run or walk is still going: forbid (default — skip the slot, recorded as skipped_overlap and not counted toward max_fires), allow (start another alongside it) or replace (cancel the running one, then start); refused on delivery channel. tenant_id (where fired runs execute) may name only your own tenant unless you are an admin; omit it to use yours. user_bearer sets the fired run's bearer (what ${run.user_bearer} in an MCP server's headers becomes) and takes only a stored credential written \"$cred:<name>\": it is resolved for each MCP request, for that server's URL, as a tenant-level credential of the run's tenant (never user_id's or an agent's), so a credential restricted by allowed_urls works. It must exist at tenant level in your tenant when written, and is refused on delivery channel or team. A fork keeps the parent's user_bearer unless it names one; \"user_bearer\": \"\" removes it. Immutable / server-set fields are silently ignored if supplied.",
       "additionalProperties": true
     },
     "description":   {"type": "string", "description": "Free-text rationale for create/fork."},
@@ -154,6 +155,13 @@ func (s *ScheduleDef) Execute(ctx context.Context, raw json.RawMessage) (tools.R
 	}
 	policy := tools.ScheduleDefPolicy(ctx)
 
+	// Every op that writes a version: a hook edit is a fork too.
+	switch in.Op {
+	case "create", "fork", "add_hook", "remove_hook":
+		if res, refused := refuseNoTraceTriggerAuthor(ctx, "schedule", in.Op); refused {
+			return res, nil
+		}
+	}
 	switch in.Op {
 	case "create":
 		return s.execCreate(ctx, policy, in)
@@ -840,11 +848,26 @@ func (s *ScheduleDef) persistForkFromHookEdit(ctx context.Context, parent store.
 // authorMayActAs reports whether the caller may have a schedule resolve $cred:
 // in userID's own scope: an operator (admin, or open-mode / stdio), or the
 // user themselves — the one who could have stored that user's credentials.
+//
+// The user themselves is the authenticated principal's subject when there is
+// one: off a run the run identity names no user (the substrate routes stamp a
+// synthetic one), and in a run it can name someone else (a draft another user
+// created). With no principal — open mode, a run a trigger fired — it is the
+// run's user. A run that may not use its own user's scope (a webhook's, whose
+// user can come from the delivery) never passes that scope on: a schedule it
+// wrote would otherwise launder its restriction away.
 func authorMayActAs(ctx context.Context, userID string) bool {
-	if userID == "" {
+	ri := tools.RunIdentity(ctx)
+	if userID == "" || ri.CredentialsNoUserScope {
 		return false
 	}
-	return callerHasOperatorAuthority(ctx) || tools.RunIdentity(ctx).UserID == userID
+	if callerHasOperatorAuthority(ctx) {
+		return true
+	}
+	if p, ok := auth.PrincipalFromContext(ctx); ok {
+		return p.Subject == userID
+	}
+	return ri.UserID == userID
 }
 
 // stampOperatorLayer sets def.OperatorLayer from who is writing it — server
@@ -920,6 +943,9 @@ func (s *ScheduleDef) buildDefinition(name, parentJSON string, overlay json.RawM
 			return mergedScheduleDef{}, fmt.Errorf("parse overlay: %w", err)
 		}
 		base.applyOverlay(ov)
+		if overlayClearsUserBearer(overlay) {
+			base.UserBearer = ""
+		}
 	}
 	return base, nil
 }
@@ -1556,6 +1582,7 @@ type mergedSchedulePromptSeg struct {
 type mergedSchedulePromptSegContent struct {
 	Type string `json:"type,omitempty"`
 	Text string `json:"text,omitempty"`
+	Kind string `json:"kind,omitempty"`
 }
 
 // mergedScheduleHook mirrors config.ScheduledRunHook.
@@ -1699,7 +1726,7 @@ func staticToMergedScheduleDef(sr config.ScheduledRun) mergedScheduleDef {
 			if len(seg.Content) > 0 {
 				out.Prompt[i].Content = make([]mergedSchedulePromptSegContent, len(seg.Content))
 				for j, c := range seg.Content {
-					out.Prompt[i].Content[j] = mergedSchedulePromptSegContent{Type: c.Type, Text: c.Text}
+					out.Prompt[i].Content[j] = mergedSchedulePromptSegContent{Type: c.Type, Text: c.Text, Kind: c.Kind}
 				}
 			}
 		}

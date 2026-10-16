@@ -23,14 +23,13 @@ import (
 // runStatusToTaskState is the single source of truth for translating a
 // loomcycle run lifecycle state into the A2A TaskState vocabulary.
 //
-// loomcycle persists only four RunStatus values (running / completed /
-// failed / cancelled — see store.RunStatus). The A2A protocol has a
-// wider state set (submitted, input_required, rejected, auth_required).
-// The states loomcycle never persists are handled as follows:
+// Every value in store.RunStatuses has an entry (the statemap test derives
+// its cases from that list). The A2A protocol has states with no RunStatus
+// of their own, handled as follows:
 //
 //   - SUBMITTED is emitted by the executor BEFORE the run starts (the
-//     A2A "task accepted, not yet working" beat), not derived from a
-//     stored row — so it has no RunStatus to map from.
+//     A2A "task accepted, not yet working" beat). It is also what a
+//     queued or configured row reads as, since neither has started.
 //   - INPUT_REQUIRED is the A2A representation of a run parked on an
 //     interruption (the Interruption tool's human-in-the-loop wait).
 //     loomcycle models that as a still-"running" row plus a pending
@@ -49,10 +48,16 @@ import (
 // know — callers treat that as a bug (an unmapped state) rather than
 // silently defaulting to a terminal state.
 var runStatusToTaskState = map[store.RunStatus]a2asdk.TaskState{
-	store.RunRunning:   a2asdk.TaskStateWorking,
-	store.RunCompleted: a2asdk.TaskStateCompleted,
-	store.RunFailed:    a2asdk.TaskStateFailed,
-	store.RunCancelled: a2asdk.TaskStateCanceled,
+	// A run waiting for a slot, and a draft created but not yet started,
+	// are both accepted and not yet working: A2A's SUBMITTED. Neither has a
+	// loop, so WORKING would be false; leaving them out made the task store
+	// answer "task not found" for a live run.
+	store.RunQueued:     a2asdk.TaskStateSubmitted,
+	store.RunConfigured: a2asdk.TaskStateSubmitted,
+	store.RunRunning:    a2asdk.TaskStateWorking,
+	store.RunCompleted:  a2asdk.TaskStateCompleted,
+	store.RunFailed:     a2asdk.TaskStateFailed,
+	store.RunCancelled:  a2asdk.TaskStateCanceled,
 	// A reviewer refused the result (RFC DJ) — A2A's own "rejected".
 	store.RunRejected: a2asdk.TaskStateRejected,
 }

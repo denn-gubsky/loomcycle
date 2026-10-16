@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/denn-gubsky/loomcycle/internal/auth"
 	"github.com/denn-gubsky/loomcycle/internal/lanegate"
 )
 
@@ -78,7 +79,8 @@ func (s *Server) handleEmbeddings(w http.ResponseWriter, r *http.Request) {
 
 	// As the chat gateway: a caller at its hard token ceiling is refused here
 	// too. (An embedding call reports no token count, so it is not written to
-	// the usage ledger; the budget check is what it shares with a run.)
+	// the usage ledger; it is counted against the budget by an estimate once
+	// it is made, below.)
 	if !s.admitGatewayBudget(w, r, req.User) {
 		return
 	}
@@ -130,6 +132,19 @@ func (s *Server) handleEmbeddings(w http.ResponseWriter, r *http.Request) {
 
 	startedAt := time.Now()
 	vectors, err := s.embedder.Embed(embedCtx, texts)
+	// An embedder reports no token count, so the call is counted against the
+	// caller's budget by an estimate from what was sent, as an unreported
+	// chat call is: the budget check above is otherwise all it shares with a
+	// run, and a capped caller could embed without limit. Counted on a
+	// failure too — the texts were sent. Not written to the ledger, which
+	// holds only measured counts.
+	inBytes := 0
+	for _, t := range texts {
+		inBytes += len(t)
+	}
+	if est, kept := s.chargeEstimate(r.Context(), tenantFromCtx(r.Context()), auth.SubjectForFairness(r.Context(), req.User), inBytes); est > 0 {
+		log.Printf("embeddings: no usage report — counted %d estimated tokens against the budget (%s), not written to the usage ledger", est, kept)
+	}
 	if err != nil {
 		logEmbeddingsRequest(req.Model, s.embedder.Model(), req.User, len(texts), 0, time.Since(startedAt), err)
 		writeJSONError(w, http.StatusBadGateway, "embed_failed", err.Error())

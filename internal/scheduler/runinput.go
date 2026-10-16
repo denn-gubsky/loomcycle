@@ -90,6 +90,7 @@ type schedulePromptSeg struct {
 type schedulePromptContent struct {
 	Type string `json:"type,omitempty"`
 	Text string `json:"text,omitempty"`
+	Kind string `json:"kind,omitempty"`
 }
 
 // scheduleHook mirrors mergedScheduleHook on the substrate side. Three
@@ -172,6 +173,9 @@ func buildTeamWalkInput(def scheduleDef) runner.TeamWalkInput {
 		UserID:                def.UserID,
 		OperatorKeyRestricted: def.OperatorKeyRestricted,
 		Isolated:              def.Isolated,
+		// As buildRunInput: only a def whose author could act as user_id
+		// resolves in its scope.
+		CredentialsNoUserScope: !(def.UserScopeCredentials || def.staticRow),
 	}
 }
 
@@ -219,6 +223,7 @@ func buildRunInput(def scheduleDef, envAllowlist map[string]bool, logf func(form
 			out.Content = append(out.Content, loop.PromptContentBlock{
 				Type: c.Type,
 				Text: c.Text,
+				Kind: c.Kind,
 			})
 		}
 		segs = append(segs, out)

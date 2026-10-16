@@ -51,11 +51,19 @@ func (s *stubWebhookStore) WebhookDeliveryRelease(_ context.Context, _ []string)
 	return nil
 }
 
-func (s *stubWebhookStore) WebhookDeliveryClaimRun(_ context.Context, _ []string, _, _ time.Time) (bool, string, error) {
-	return true, "", nil
+func (s *stubWebhookStore) WebhookDeliveryClaimRun(_ context.Context, _ store.WebhookRunClaim) (store.WebhookRunClaimResult, error) {
+	return store.WebhookRunClaimResult{Claimed: true, ClaimID: "c"}, nil
 }
 
-func (s *stubWebhookStore) WebhookDeliverySetRun(_ context.Context, _ []string, _ string) error {
+func (s *stubWebhookStore) WebhookDeliveryLinkRun(_ context.Context, _, _ string) (bool, error) {
+	return true, nil
+}
+
+func (s *stubWebhookStore) WebhookDeliveryReleaseClaim(_ context.Context, _ string) error {
+	return nil
+}
+
+func (s *stubWebhookStore) RunReleaseFailedDeliveryKeys(_ context.Context, _ []string) error {
 	return nil
 }
 
@@ -254,8 +262,8 @@ func TestWebhook_DriftDetection(t *testing.T) {
 // wrote before create stamped the author's tenant into the body names no
 // tenant, and the receiver reads only the body — so tenant acme's webhook ran,
 // published and fired its hooks in the operator layer "". It executes in the
-// tenant that owns the row. A row bootstrapped from the yaml keeps its empty
-// tenant, and so does the shared layer's own row.
+// tenant that owns the row — a row bootstrapped from the yaml under a tenant
+// too, which a fork used to write. The shared layer's own row keeps "".
 //
 // Fails-before: the legacy row resolves with TenantID "".
 func TestResolveWebhook_LegacyEmptyBodyTenantRunsInOwningTenant(t *testing.T) {
@@ -267,7 +275,7 @@ func TestResolveWebhook_LegacyEmptyBodyTenantRunsInOwningTenant(t *testing.T) {
 	}}
 	for _, tc := range []struct{ tenant, name, want string }{
 		{"acme", "legacy", "acme"},
-		{"acme", "boot", ""},
+		{"acme", "boot", "acme"},
 		{"", "shared", ""},
 	} {
 		got, _, ok := lookup.ResolveWebhook(context.Background(), ss, nil, tc.tenant, tc.name)

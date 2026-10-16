@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/denn-gubsky/loomcycle/internal/concurrency"
+	"github.com/denn-gubsky/loomcycle/internal/connector"
 	"github.com/denn-gubsky/loomcycle/internal/credential"
 	"github.com/denn-gubsky/loomcycle/internal/providers"
 	"github.com/denn-gubsky/loomcycle/internal/runner"
@@ -317,7 +318,7 @@ func requestRunInput(req runRequest) (runner.RunInput, error) {
 	if err != nil {
 		return runner.RunInput{}, err
 	}
-	in := spawnRequestToRunInput(d.SpawnRunRequest)
+	in := connector.SpawnRequestToRunInput(d.SpawnRunRequest)
 	in.RunTimeoutSeconds = d.RunTimeoutSeconds
 	in.Interactive = req.Interactive
 	return in, nil
@@ -382,6 +383,8 @@ func (s *Server) restartInput(q store.QueuedRun) (runner.RunInput, string) {
 	in.ParentContext = r.ParentContext
 	in.Interactive = r.Interactive
 	in.OperatorKeyRestricted, in.Isolated = r.OperatorKeyRestricted, r.Isolated
+	// The request records it too; either record withholds the user's scope.
+	in.CredentialsNoUserScope = in.CredentialsNoUserScope || r.CredentialsNoUserScope
 	// The keys the row already holds; nothing is claimed a second time.
 	in.IdempotencyKey, in.DeliveryAltKey, in.ClientIdempotencyKey = r.IdempotencyKey, r.DeliveryAltKey, ""
 	// A started draft's row is queued now; it starts as a queued run.

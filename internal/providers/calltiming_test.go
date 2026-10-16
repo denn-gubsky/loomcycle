@@ -63,6 +63,35 @@ func TestCallTimer_QueueFromTheServerTotalWhenNoPhaseIsReported(t *testing.T) {
 	}
 }
 
+// A call that waited for its lane slot inside Provider.Call carries that wait as
+// queue time whatever its driver reports: with no phases and no server total it
+// is the only queue measured; a measure that already covers it is kept; and it
+// never exceeds the call's own duration, so the service time cannot go negative.
+func TestCallTimer_CountsTheLaneWaitAsQueue(t *testing.T) {
+	for _, c := range []struct {
+		name   string
+		timing *CallTiming
+		wait   int64
+		want   int64
+	}{
+		{"no phases reported", nil, 1500, 1500},
+		{"server total covers it", &CallTiming{ServerTotalMs: 200}, 1500, 1800},
+		{"phases cover it", &CallTiming{PrefillMs: 100, DecodeMs: 100}, 1500, 1800},
+		{"capped at the duration", nil, 5000, 2000},
+		{"no wait", nil, 0, 0},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			tm := StartCallTimer(stepClock(time.Unix(0, 0), 2*time.Second))
+			tm.Observe(Event{Type: EventDone})
+			u := &Usage{Timing: c.timing, LaneWaitMs: c.wait}
+			tm.Stamp(u)
+			if u.Timing.QueueMs != c.want {
+				t.Fatalf("queue_ms = %d, want %d", u.Timing.QueueMs, c.want)
+			}
+		})
+	}
+}
+
 func TestCallTimer_LeavesAFailedOrUnfinishedCallUnstamped(t *testing.T) {
 	failed := StartCallTimer(stepClock(time.Unix(0, 0), time.Second, time.Second))
 	failed.Observe(Event{Type: EventError})

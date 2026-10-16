@@ -145,6 +145,7 @@ func Run(t *testing.T, factory Factory) {
 		{"FailLostNoTraceRuns", testFailLostNoTraceRuns},
 		{"RetentionOverrides", testRetentionOverrides},
 		{"CreateRunIsolatedRoundTrip", testCreateRunIsolatedRoundTrip},
+		{"CreateRunCredentialsNoUserScopeRoundTrip", testCreateRunCredentialsNoUserScopeRoundTrip},
 		{"CreateRunConfigRoundTrip", testCreateRunConfigRoundTrip},
 		{"SetRunConfigCASRefusesAStalePrev", testSetRunConfigCASRefusesAStalePrev},
 		{"SetRunConfigCASConcurrentWritersAllSurvive", testSetRunConfigCASConcurrentWritersAllSurvive},
@@ -174,6 +175,7 @@ func Run(t *testing.T, factory Factory) {
 		{"SnapshotRestoreRunKeepsItsTenant", testSnapshotRestoreRunKeepsItsTenant},
 		{"SnapshotRestoreRunKeepsItsParentRun", testSnapshotRestoreRunKeepsItsParentRun},
 		{"SnapshotRestoreRunKeepsItsDedupKeys", testSnapshotRestoreRunKeepsItsDedupKeys},
+		{"SnapshotRestoreRunKeepsItsReplica", testSnapshotRestoreRunKeepsItsReplica},
 		{"SnapshotRestoreRunEventsSortAfterTheTargetsHistory", testSnapshotRestoreRunEventsSortAfterTheTargetsHistory},
 		{"SnapshotRestoreRunEventsWritesARunsTranscriptOnce", testSnapshotRestoreRunEventsWritesARunsTranscriptOnce},
 		{"SnapshotRestoreRunEventsKeepTheSequenceAheadOfThem", testSnapshotRestoreRunEventsKeepTheSequenceAheadOfThem},
@@ -228,6 +230,14 @@ func Run(t *testing.T, factory Factory) {
 		{"WebhookDeliveryClaimRaceGrantsOne", testWebhookDeliveryClaimRaceGrantsOne},
 		{"WebhookDeliveryClaimRunRetakesOnlyAFailedRunsKeys", testWebhookDeliveryClaimRunRetakesOnlyAFailedRunsKeys},
 		{"WebhookDeliveryClaimRunRetakeRaceGrantsOne", testWebhookDeliveryClaimRunRetakeRaceGrantsOne},
+		{"WebhookDeliveryHeldByLiveRunAgreesWithTheClaim", testWebhookDeliveryHeldByLiveRunAgreesWithTheClaim},
+		{"WebhookDeliveryClaimRunFencesOutASetupThatOutlivesTheGrace", testWebhookDeliveryClaimRunFencesOutASetupThatOutlivesTheGrace},
+		{"WebhookDeliveryClaimRunAdoptsTheRunItsClaimStarted", testWebhookDeliveryClaimRunAdoptsTheRunItsClaimStarted},
+		{"WebhookDeliveryClaimRunNeverTakesOverAKeyWithoutAClaimID", testWebhookDeliveryClaimRunNeverTakesOverAKeyWithoutAClaimID},
+		{"WebhookDeliveryClaimRunStaleTakeoverRaceGrantsOne", testWebhookDeliveryClaimRunStaleTakeoverRaceGrantsOne},
+		{"RunReleaseFailedDeliveryKeysClearsOnlyAFailedRuns", testRunReleaseFailedDeliveryKeysClearsOnlyAFailedRuns},
+		{"WebhookDeliveryClaimRunSparesASetupFromItsExpiry", testWebhookDeliveryClaimRunSparesASetupFromItsExpiry},
+		{"WebhookDeliveryClaimRunLinkAndTakeoverNeverBothWin", testWebhookDeliveryClaimRunLinkAndTakeoverNeverBothWin},
 		{"WebhookCountsAddSumsPerOutcome", testWebhookCountsAddSumsPerOutcome},
 		{"WebhookCountsAreKeptPerDefinition", testWebhookCountsAreKeptPerDefinition},
 		{"WebhookCountsConcurrentAddsLoseNothing", testWebhookCountsConcurrentAddsLoseNothing},
@@ -503,6 +513,7 @@ func Run(t *testing.T, factory Factory) {
 		{"OperatorTokenDefListBySubject", testOperatorTokenDefListBySubject},
 		{"OperatorTokenDefExpiry", testOperatorTokenDefExpiry},
 		{"OperatorTokenDefDeleteExpired", testOperatorTokenDefDeleteExpired},
+		{"OperatorTokenDefDeleteExpiredKeepsEachTenant", testOperatorTokenDefDeleteExpiredKeepsEachTenant},
 		// v1.x RFC E ScheduleDef runtime — sweeper-side state.
 		{"ScheduleRunStateSeedAndGet", testScheduleRunStateSeedAndGet},
 		{"ScheduleRunStateListDueRespectsRetiredAndPaused", testScheduleRunStateListDueRespectsRetiredAndPaused},
@@ -4734,6 +4745,48 @@ func testCreateRunIsolatedRoundTrip(t *testing.T, s store.Store) {
 	got, _ := s.GetRun(ctx, isolated.ID)
 	if !got.Isolated {
 		t.Errorf("isolated run Isolated=false on read-back (did not persist)")
+	}
+}
+
+// The no-user-scope bit round-trips on both backends, on a run and a queued
+// run, through every read a resume or a listing uses: false by default, true
+// when stamped. Resume has no trigger to re-derive it from, so a run that
+// lost it on its row came back resolving $cred: in its user's own scope.
+func testCreateRunCredentialsNoUserScopeRoundTrip(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	sess, _ := s.CreateSession(ctx, "t", "a", "u")
+
+	plain, err := s.CreateRun(ctx, sess.ID, store.RunIdentity{AgentID: "a_cnus_default"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := s.GetRun(ctx, plain.ID); plain.CredentialsNoUserScope || got.CredentialsNoUserScope {
+		t.Errorf("default CredentialsNoUserScope = %v / %v on read-back, want false", plain.CredentialsNoUserScope, got.CredentialsNoUserScope)
+	}
+
+	run, err := s.CreateRun(ctx, sess.ID, store.RunIdentity{AgentID: "a_cnus_set", CredentialsNoUserScope: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !run.CredentialsNoUserScope {
+		t.Error("CreateRun returned CredentialsNoUserScope=false for a run stamped with it")
+	}
+	if got, _ := s.GetRun(ctx, run.ID); !got.CredentialsNoUserScope {
+		t.Error("GetRun: CredentialsNoUserScope=false on read-back (did not persist)")
+	}
+	if got, _ := s.GetRunByAgentID(ctx, "a_cnus_set"); !got.CredentialsNoUserScope {
+		t.Error("GetRunByAgentID: CredentialsNoUserScope=false on read-back")
+	}
+	if runs, _ := s.RunsForSession(ctx, sess.ID); len(runs) != 2 || runs[0].CredentialsNoUserScope == runs[1].CredentialsNoUserScope {
+		t.Errorf("RunsForSession: %d runs, want one with the bit and one without", len(runs))
+	}
+
+	queued, err := s.CreateQueuedRun(ctx, sess.ID, store.RunIdentity{AgentID: "a_cnus_queued", CredentialsNoUserScope: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := s.GetRun(ctx, queued.ID); !got.CredentialsNoUserScope {
+		t.Error("a queued run: CredentialsNoUserScope=false on read-back")
 	}
 }
 
@@ -13906,6 +13959,55 @@ func testOperatorTokenDefDeleteExpired(t *testing.T, s store.Store) {
 	}
 	if n, err := s.OperatorTokenDefDeleteExpired(ctx, now.Add(-7*24*time.Hour)); err != nil || n != 0 {
 		t.Errorf("a second sweep deleted %d (err=%v), want 0", n, err)
+	}
+}
+
+// testOperatorTokenDefDeleteExpiredKeepsEachTenant: the token rows are the
+// registry of tenant spellings a new tenant is checked against for a case-fold
+// collision, so the sweep never deletes the last row naming a tenant. A tenant
+// whose every token expired keeps one row — dead, it authenticates nothing —
+// and loses the rest; a tenant with a live row loses all of its expired ones.
+func testOperatorTokenDefDeleteExpiredKeepsEachTenant(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	now := time.Now()
+	gone := now.Add(-10 * 24 * time.Hour)
+	var rows []store.OperatorTokenDefRow
+	for i, tenant := range []string{"lonely", "lonely", "lonely", "busy", "busy"} {
+		r := mkOperatorTokenDef(fmt.Sprintf("ot-kt-%d", i), fmt.Sprintf("kt-%d", i), tenant, "a", fmt.Sprintf("h-kt-%d", i), []string{"runs:read"})
+		r.ExpiresAt = gone
+		rows = append(rows, r)
+	}
+	live := mkOperatorTokenDef("ot-kt-live", "kt-live", "busy", "a", "h-kt-live", []string{"runs:read"})
+	live.ExpiresAt = now.Add(time.Hour)
+	rows = append(rows, live)
+	for _, r := range rows {
+		if _, err := s.OperatorTokenDefCreate(ctx, r); err != nil {
+			t.Fatalf("create %s: %v", r.DefID, err)
+		}
+	}
+	n, err := s.OperatorTokenDefDeleteExpired(ctx, now.Add(-7*24*time.Hour))
+	if err != nil {
+		t.Fatalf("delete expired: %v", err)
+	}
+	if n != 4 {
+		t.Errorf("deleted %d row(s), want 4 (two of lonely's three, both of busy's expired)", n)
+	}
+	names, err := s.OperatorTokenDefListNames(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	perTenant := map[string]int{}
+	for _, nm := range names {
+		perTenant[nm.TenantID]++
+	}
+	if perTenant["lonely"] != 1 {
+		t.Errorf("tenant lonely has %d row(s) left, want 1: the sweep dropped it from the tenant registry", perTenant["lonely"])
+	}
+	if perTenant["busy"] != 1 {
+		t.Errorf("tenant busy has %d row(s) left, want only its live one", perTenant["busy"])
+	}
+	if n, err := s.OperatorTokenDefDeleteExpired(ctx, now.Add(-7*24*time.Hour)); err != nil || n != 0 {
+		t.Errorf("a second sweep deleted %d (err=%v), want 0: the kept row must stay kept", n, err)
 	}
 }
 

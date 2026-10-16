@@ -98,7 +98,7 @@ func (n *NotebookEdit) Execute(ctx context.Context, input json.RawMessage) (tool
 	if err := json.Unmarshal(input, &args); err != nil {
 		return errResult("invalid input: " + err.Error()), nil
 	}
-	root, rootErr := effectiveRoot(ctx, args.Volume, true)
+	root, fence, rootErr := effectiveRoot(ctx, args.Volume, true)
 	if rootErr != nil {
 		return errResult(rootErr.Error()), nil
 	}
@@ -138,6 +138,9 @@ func (n *NotebookEdit) Execute(ctx context.Context, input json.RawMessage) (tool
 		target = filepath.Join(root, target)
 	}
 	resolved, rerr := resolveInsideRoot(root, target)
+	if rerr == nil {
+		rerr = outsideFence(fence, resolved)
+	}
 	if rerr != nil {
 		return errResult(rerr.Error()), nil
 	}

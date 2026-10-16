@@ -59,7 +59,7 @@ func (w *Write) Execute(ctx context.Context, input json.RawMessage) (tools.Resul
 	if args.Path == "" {
 		return tools.Result{Text: "path is required", IsError: true}, nil
 	}
-	root, err := effectiveRoot(ctx, args.Volume, true)
+	root, fence, err := effectiveRoot(ctx, args.Volume, true)
 	if err != nil {
 		return tools.Result{Text: err.Error(), IsError: true}, nil
 	}
@@ -73,6 +73,9 @@ func (w *Write) Execute(ctx context.Context, input json.RawMessage) (tools.Resul
 	}
 
 	target, err := resolveParentInsideRoot(root, args.Path)
+	if err == nil {
+		err = outsideFence(fence, target)
+	}
 	if err != nil {
 		return tools.Result{Text: err.Error(), IsError: true}, nil
 	}

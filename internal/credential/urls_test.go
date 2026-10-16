@@ -47,6 +47,34 @@ func TestURLAllowed_MatchesByHostAndWholePathSegments(t *testing.T) {
 	}
 }
 
+// An IPv6 host keeps its brackets in the compared form. Without them the
+// address 2001:db8::5:8080 and the address 2001:db8::5 on port 8080 were
+// written alike, so a credential for one was sent to the other.
+func TestURLAllowed_AnIPv6HostIsNotConfusedWithAPort(t *testing.T) {
+	for entry, targets := range map[string]map[string]bool{
+		"https://[2001:db8::5:8080]/repo": {
+			"https://[2001:db8::5:8080]/repo":     true,
+			"https://[2001:db8::5:8080]:443/repo": true,
+			"https://[2001:db8::5]:8080/repo":     false,
+		},
+		"https://[2001:db8::5]:8080/repo": {
+			"https://[2001:db8::5]:8080/repo": true,
+			"https://[2001:db8::5:8080]/repo": false,
+			"https://[2001:db8::5]/repo":      false,
+		},
+	} {
+		list, err := NormalizeAllowedURLs(urls(entry))
+		if err != nil {
+			t.Fatalf("%s: %v", entry, err)
+		}
+		for target, want := range targets {
+			if got := URLAllowed(list, target); got != want {
+				t.Errorf("entry %s: URLAllowed(%q) = %v, want %v", entry, target, got, want)
+			}
+		}
+	}
+}
+
 func TestURLAllowed_NoListAllowsAndAnEmptyListAllowsNothing(t *testing.T) {
 	if !URLAllowed(nil, "https://anything.example/x") {
 		t.Error("an unrestricted credential refused a URL")

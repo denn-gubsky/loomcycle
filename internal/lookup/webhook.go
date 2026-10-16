@@ -33,8 +33,10 @@ type WebhookStore interface {
 	// the two lookups above to find. Signatures match store.Store exactly.
 	WebhookDeliveryClaim(ctx context.Context, keys []string, now, expiresAt time.Time) (bool, error)
 	WebhookDeliveryRelease(ctx context.Context, keys []string) error
-	WebhookDeliveryClaimRun(ctx context.Context, keys []string, now, expiresAt time.Time) (bool, string, error)
-	WebhookDeliverySetRun(ctx context.Context, keys []string, runID string) error
+	WebhookDeliveryClaimRun(ctx context.Context, c store.WebhookRunClaim) (store.WebhookRunClaimResult, error)
+	WebhookDeliveryLinkRun(ctx context.Context, claimID, runID string) (bool, error)
+	WebhookDeliveryReleaseClaim(ctx context.Context, claimID string) error
+	RunReleaseFailedDeliveryKeys(ctx context.Context, keys []string) error
 
 	// MemorySet backs the WH-5b on_complete memory.set hook (the receiver
 	// MIRRORS the scheduler's dispatch rather than importing it). Its
@@ -123,9 +125,11 @@ func resolveWebhookSubstrate(ctx context.Context, s WebhookStore, tenantID, name
 	// A row a tenant wrote before create stamped the author's tenant into the
 	// body names no tenant, and the receiver reads only the body — so tenant X's
 	// webhook would run, publish and fire its hooks in the operator layer "".
-	// It executes in the tenant that owns it. A row bootstrapped from the yaml
-	// keeps its empty tenant: the yaml said "operator layer".
-	if wd.TenantID == "" && activeRow.TenantID != "" && !activeRow.BootstrappedFromStatic {
+	// It executes in the tenant that owns it. So does a row bootstrapped from
+	// the yaml under a tenant (a fork used to write one there): the yaml's
+	// "operator layer" holds for the shared base's copy alone, which is the
+	// only one a bootstrap writes now.
+	if wd.TenantID == "" && activeRow.TenantID != "" {
 		wd.TenantID = activeRow.TenantID
 	}
 	return wd.ToConfigDef(), true

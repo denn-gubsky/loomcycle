@@ -21,6 +21,9 @@ type Read struct {
 	// MaxScanBytes bounds how far a line-range read looks into a file to
 	// count its lines. Zero means 64 MiB.
 	MaxScanBytes int64
+	// MaxSeekBytes bounds how far a line-range read goes to reach its first
+	// line. Zero means 1 GiB.
+	MaxSeekBytes int64
 }
 
 func (r *Read) Name() string { return "Read" }
@@ -81,12 +84,15 @@ func (r *Read) Execute(ctx context.Context, input json.RawMessage) (tools.Result
 	if args.Limit != nil && *args.Limit < 1 {
 		return errValidation("Read: limit must be 1 or more", "Omit limit to read to the end of the file."), nil
 	}
-	root, err := effectiveRoot(ctx, args.Volume, false)
+	root, fence, err := effectiveRoot(ctx, args.Volume, false)
 	if err != nil {
 		return tools.Result{Text: err.Error(), IsError: true}, nil
 	}
 
 	resolved, err := resolveInsideRoot(root, args.Path)
+	if err == nil {
+		err = outsideFence(fence, resolved)
+	}
 	if err != nil {
 		return tools.Result{Text: err.Error(), IsError: true}, nil
 	}
@@ -105,7 +111,7 @@ func (r *Read) Execute(ctx context.Context, input json.RawMessage) (tools.Result
 	defer f.Close()
 
 	if lineMode {
-		w := lineWindow{offset: 1, numbers: args.LineNumbers, maxBytes: maxBytes, maxScan: r.MaxScanBytes}
+		w := lineWindow{offset: 1, numbers: args.LineNumbers, maxBytes: maxBytes, maxScan: r.MaxScanBytes, maxSeek: r.MaxSeekBytes}
 		if args.Offset != nil {
 			w.offset = *args.Offset
 		}

@@ -531,3 +531,63 @@ func TestCallScheduler_ReportsEachWaitBeforeItBlocks(t *testing.T) {
 		t.Fatalf("m2 reported %+v, want only its model wait", got)
 	}
 }
+
+// A run whose next call waits at the model gate cannot compute, so the slot it
+// holds idle in the lane is given up: the call to the model now in flight,
+// queued for that slot, takes it at once. Kept, it would leave nothing
+// computing until the hold ran out, on every switch of model.
+func TestCallScheduler_AGateWaitGivesUpTheRunsIdleReservation(t *testing.T) {
+	s := NewCallScheduler(oneLane(LaneConfig{MaxConcurrent: 1, AffinityHold: time.Minute}, 1))
+	schedNow(t, s, "p", "chat", CallInfo{Owner: "r1", Model: "x"})() // r1's slot is now reserved
+	y := schedAsync(t, s, "p", "chat", CallInfo{Owner: "r2", Model: "y"})
+	eventually(t, "r2 admitted at the gate and queued in the lane", func() bool {
+		st := s.Stats()["p"]
+		return st.Lanes["chat"].Queued == 1 && st.Models.InFlight["y"] == 1
+	})
+	x := schedAsync(t, s, "p", "chat", CallInfo{Owner: "r1", Model: "x"})
+	eventually(t, "r1's next call waiting at the gate", func() bool { return s.Stats()["p"].Models.Waiting == 1 })
+	relY := mustGrant(t, y, "r2's call while r1 waits for its model")
+	if st := s.Stats()["p"].Lanes["chat"]; st.Reserved != 0 {
+		t.Fatalf("lane stats = %+v, want no reservation left for r1", st)
+	}
+	// The same the other way round: y drains, x is admitted at the gate and
+	// queues behind r2's reservation, and r2's next call, waiting for y to be
+	// admitted again, gives that reservation up.
+	relY()
+	eventually(t, "r1 admitted at the gate and queued in the lane", func() bool {
+		st := s.Stats()["p"]
+		return st.Lanes["chat"].Queued == 1 && st.Models.InFlight["x"] == 1
+	})
+	schedAsync(t, s, "p", "chat", CallInfo{Owner: "r2", Model: "y"})
+	mustGrant(t, x, "r1's call while r2 waits for its model")()
+}
+
+// A provider removed from the config by a reload lets go of what it held: its
+// model gate's waiters are admitted at once instead of waiting for the models
+// in flight to drain, and its lanes' idle reservations are dropped so their
+// waiters are served. The same holds for a lane removed from a provider that
+// stays. New calls are ungated either way.
+func TestCallScheduler_ReloadReleasesARemovedProvidersWaiters(t *testing.T) {
+	t.Run("model gate", func(t *testing.T) {
+		s := NewCallScheduler(map[string]ProviderLanesConfig{"p": {MaxModelsInFlight: 1}})
+		relX := schedNow(t, s, "p", "chat", CallInfo{Model: "x"})
+		y := schedAsync(t, s, "p", "chat", CallInfo{Model: "y"})
+		eventually(t, "y waiting at the gate", func() bool { return s.Stats()["p"].Models.Waiting == 1 })
+		s.Reload(nil)
+		mustGrant(t, y, "the removed provider's gate waiter")()
+		relX()
+	})
+	for name, next := range map[string]map[string]ProviderLanesConfig{
+		"provider removed":   nil,
+		"only its lane gone": {"p": {MaxModelsInFlight: 2}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			s := NewCallScheduler(oneLane(LaneConfig{MaxConcurrent: 1, AffinityHold: time.Minute}, 0))
+			schedNow(t, s, "p", "chat", CallInfo{Owner: "r1"})() // reserved for r1
+			waiter := schedAsync(t, s, "p", "chat", CallInfo{Owner: "r2"})
+			eventually(t, "r2 queued behind r1's reservation", func() bool { return s.Stats()["p"].Lanes["chat"].Queued == 1 })
+			s.Reload(next)
+			mustGrant(t, waiter, "the removed lane's waiter")()
+		})
+	}
+}

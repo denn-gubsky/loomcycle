@@ -1854,4 +1854,10 @@ type Usage struct {
 	// phase durations it is told; the caller stamps the wall-clock fields with a
 	// CallTimer. nil = not measured (the run-final total never carries one).
 	Timing *CallTiming `json:"timing,omitempty"`
+	// LaneWaitMs is how long the call waited inside Provider.Call for its slot
+	// (a provider's call lane, and the run slot taken back after it) before
+	// the driver was called. The lane wrapper sets it on the done event's usage;
+	// it is only an input to CallTiming.QueueMs (CallTimer.Stamp), so the wait
+	// reads as queue time for every driver, and not part of the wire shape.
+	LaneWaitMs int64 `json:"-"`
 }

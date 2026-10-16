@@ -139,6 +139,8 @@ func triggerWalkCtx(ctx context.Context, in runner.TeamWalkInput, start *trigger
 		AgentID:               teamWalkAgentPrefix + in.Team,
 		OperatorKeyRestricted: in.OperatorKeyRestricted,
 		Isolated:              in.Isolated,
+		// Inherited by every member (runSubAgent), as the two bits are.
+		CredentialsNoUserScope: in.CredentialsNoUserScope,
 	})
 }
 

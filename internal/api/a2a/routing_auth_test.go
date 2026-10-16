@@ -27,7 +27,9 @@ func TestPrincipalInterceptor_RejectsUnauthenticated(t *testing.T) {
 
 	// Auth configured but the credential is rejected → ErrUnauthenticated,
 	// principal left unauthenticated.
-	denied := principalInterceptor{auth: func(http.Header) (string, bool, bool, bool) { return "", false, false, false }}
+	denied := principalInterceptor{auth: func(context.Context, http.Header) (Peer, bool) {
+		return Peer{Name: "", Restricted: false, Isolated: false}, false
+	}}
 	cc := newCtx()
 	if _, _, err := denied.Before(context.Background(), cc, &a2asrv.Request{}); !errors.Is(err, a2asdk.ErrUnauthenticated) {
 		t.Fatalf("Before err = %v, want ErrUnauthenticated", err)
@@ -38,7 +40,9 @@ func TestPrincipalInterceptor_RejectsUnauthenticated(t *testing.T) {
 
 	// Auth configured and the credential is accepted → no error, principal
 	// stamped with the resolved name.
-	ok := principalInterceptor{auth: func(http.Header) (string, bool, bool, bool) { return "alice", false, false, true }}
+	ok := principalInterceptor{auth: func(context.Context, http.Header) (Peer, bool) {
+		return Peer{Name: "alice", Restricted: false, Isolated: false}, true
+	}}
 	cc = newCtx()
 	newCtxOut, _, err := ok.Before(context.Background(), cc, &a2asrv.Request{})
 	if err != nil {
@@ -53,7 +57,9 @@ func TestPrincipalInterceptor_RejectsUnauthenticated(t *testing.T) {
 	}
 
 	// A RESTRICTED peer → the returned ctx carries the bit for the executor.
-	restricted := principalInterceptor{auth: func(http.Header) (string, bool, bool, bool) { return "bob", true, false, true }}
+	restricted := principalInterceptor{auth: func(context.Context, http.Header) (Peer, bool) {
+		return Peer{Name: "bob", Restricted: true, Isolated: false}, true
+	}}
 	cc = newCtx()
 	rctx, _, err := restricted.Before(context.Background(), cc, &a2asrv.Request{})
 	if err != nil {
@@ -69,7 +75,9 @@ func TestPrincipalInterceptor_RejectsUnauthenticated(t *testing.T) {
 
 	// RFC BX P2b: an ISOLATED peer (substrate:user) → the returned ctx carries the
 	// isolation bit for the executor's buildRunInput.
-	isolated := principalInterceptor{auth: func(http.Header) (string, bool, bool, bool) { return "carol", false, true, true }}
+	isolated := principalInterceptor{auth: func(context.Context, http.Header) (Peer, bool) {
+		return Peer{Name: "carol", Restricted: false, Isolated: true}, true
+	}}
 	cc = newCtx()
 	ictx, _, err := isolated.Before(context.Background(), cc, &a2asrv.Request{})
 	if err != nil {

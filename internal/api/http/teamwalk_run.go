@@ -85,6 +85,8 @@ func (s *Server) openTeamWalkRun(ctx context.Context, spec builtin.WalkRunSpec) 
 		TenantID:              ident.TenantID,
 		OperatorKeyRestricted: ident.OperatorKeyRestricted,
 		Isolated:              ident.Isolated,
+		// A triggered walk's: resume rebuilds the walk from this row.
+		CredentialsNoUserScope: ident.CredentialsNoUserScope,
 		// The replica running the walk, as every run row names its own: a
 		// cluster finds a run's owner by it.
 		ReplicaID: s.replicaID,
@@ -313,6 +315,9 @@ func (s *Server) cancelTeamWalk(ctx context.Context, runID, reason string) (stop
 		if gerr != nil || !sessionOwnershipOK(ctx, sess) {
 			return false, true, connector.ErrRunNotInFlight
 		}
+	}
+	if !s.allowlistReachesRun(ctx, runID) {
+		return false, true, connector.ErrRunNotInFlight
 	}
 	e.cancel(cancel.CauseWithReason(strings.TrimSpace(reason)))
 	return true, true, nil

@@ -70,6 +70,21 @@ func TestTaskStore_GetFallsThroughToRunTable(t *testing.T) {
 	}
 }
 
+// A run waiting for a slot is a live task: a peer that polls it must see it
+// SUBMITTED, not be told the task does not exist.
+func TestTaskStore_GetQueuedRunIsSubmitted(t *testing.T) {
+	ts := NewTaskStore(&fakeRuns{byAgentID: map[string]store.Run{
+		"agent-q": {ID: "run-q", AgentID: "agent-q", SessionID: "sess-q", Status: store.RunQueued},
+	}})
+	got, err := ts.Get(context.Background(), "agent-q")
+	if err != nil {
+		t.Fatalf("get queued run: %v", err)
+	}
+	if got.Task.Status.State != a2asdk.TaskStateSubmitted {
+		t.Errorf("state = %q, want SUBMITTED", got.Task.Status.State)
+	}
+}
+
 // TestTaskStore_GetUnknownReturnsTaskNotFound verifies a miss in both
 // the map and the run table surfaces a2a.ErrTaskNotFound (the SDK's
 // sentinel), not the loomcycle ErrNotFound.

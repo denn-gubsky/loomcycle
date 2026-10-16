@@ -85,6 +85,12 @@ export default function LanesView() {
                 <td>queued</td>
                 <td>{view.stats.queued}</td>
               </tr>
+              <tr>
+                <td title="Runs that gave their slot back while a model call waits in a provider lane. They count against the queue bound with the queued runs.">
+                  lent
+                </td>
+                <td>{view.stats.lent ?? 0}</td>
+              </tr>
             </tbody>
           </table>
           {view.stats.per_user && Object.keys(view.stats.per_user).length > 0 && (

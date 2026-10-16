@@ -184,7 +184,22 @@ func (r Request) validate() (host string, err error) {
 	if r.StoreDir == "" || r.Transport == nil || r.MaxFetchBytes <= 0 || r.MaxObjectBytes <= 0 {
 		return bad("a store directory, a transport, a fetch limit and an object limit are required")
 	}
-	return strings.ToLower(u.Host), nil
+	return hostKey(u), nil
+}
+
+// hostKey is a URL's host as the dispatcher compares it: lower case, and
+// without the port when it is https's own. The library drops ":443" from the
+// URLs it requests, so a repository named with it must be compared without
+// it, or every request of its fetch is refused.
+func hostKey(u *url.URL) string {
+	host := strings.ToLower(u.Hostname())
+	if strings.Contains(host, ":") {
+		host = "[" + host + "]" // an IPv6 address
+	}
+	if p := u.Port(); p != "" && p != "443" {
+		host += ":" + p
+	}
+	return host
 }
 
 // Fetch fetches Request.Commit into Request.StoreDir.
@@ -219,8 +234,10 @@ func Fetch(ctx context.Context, req Request) (_ *Fetched, err error) {
 	store := &guardedStorage{
 		Storage: filesystem.NewStorageWithOptions(osfs.New(req.StoreDir), cache.NewObjectLRUDefault(),
 			filesystem.Options{LargeObjectThreshold: 1 << 20}),
+		ctx:       ctx,
 		spoolDir:  spoolDirFor(req.StoreDir),
 		maxObject: req.MaxObjectBytes,
+		inflated:  inflatedBudget(req.MaxFetchBytes),
 	}
 	st.packRefused = &store.refused
 	repo, err := git.Init(store, nil)
@@ -329,7 +346,7 @@ func Fetch(ctx context.Context, req Request) (_ *Fetched, err error) {
 		return nil, fmt.Errorf("%w: the fetch passed %d bytes", ErrTooLarge, st.max)
 	}
 	if st.packRefused.Load() {
-		return nil, fmt.Errorf("%w: the pack holds an object over %d bytes", ErrTooLarge, req.MaxObjectBytes)
+		return nil, fmt.Errorf("%w: the pack holds an object over %d bytes, or objects that build more than %d in all", ErrTooLarge, req.MaxObjectBytes, inflatedBudget(req.MaxFetchBytes))
 	}
 	commit, err := repo.CommitObject(hash)
 	if err != nil {
@@ -504,9 +521,33 @@ func classify(ctx context.Context, st *call, err error) error {
 	case errors.Is(ctx.Err(), context.Canceled):
 		return fmt.Errorf("%w: cancelled: %v", ErrFetchFailed, err)
 	case errors.Is(err, transport.ErrAuthenticationRequired) || errors.Is(err, transport.ErrAuthorizationFailed):
-		return fmt.Errorf("%w: %v", ErrAuthFailed, err)
+		return fmt.Errorf("%w: %s", ErrAuthFailed, refusalDetail(st, err))
 	case errors.Is(err, transport.ErrRepositoryNotFound):
-		return fmt.Errorf("%w: %v", ErrNotFound, err)
+		return fmt.Errorf("%w: %s", ErrNotFound, refusalDetail(st, err))
 	}
 	return fmt.Errorf("%w: %v", ErrFetchFailed, err)
+}
+
+// maxRefusalSnippet bounds how much of a refusal's text is kept.
+const maxRefusalSnippet = 160
+
+// refusalDetail is what is kept of a server's refusal for the operator: the
+// HTTP status and the start of what it said. The library reads the whole
+// body of a 401, 403 or 404 into its error, and that body is the server's
+// own text: as large as the fetch allows, and able to echo the request.
+func refusalDetail(st *call, err error) string {
+	msg := err.Error()
+	if len(msg) > maxRefusalSnippet {
+		msg = strings.ToValidUTF8(msg[:maxRefusalSnippet], "") + "..."
+	}
+	msg = strings.Map(func(r rune) rune {
+		if r < 0x20 || r == 0x7f {
+			return ' '
+		}
+		return r
+	}, msg)
+	if status := st.status.Load(); status != 0 {
+		return fmt.Sprintf("HTTP %d: %s", status, msg)
+	}
+	return msg
 }

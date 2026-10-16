@@ -7,6 +7,7 @@ import (
 	a2asdk "github.com/a2aproject/a2a-go/v2/a2a"
 	"github.com/a2aproject/a2a-go/v2/a2asrv"
 
+	"github.com/denn-gubsky/loomcycle/internal/auth"
 	"github.com/denn-gubsky/loomcycle/internal/store"
 )
 
@@ -113,6 +114,34 @@ func WithIsolated(ctx context.Context, isolated bool) context.Context {
 func IsolatedFrom(ctx context.Context) bool {
 	v, _ := ctx.Value(isolatedKeyType{}).(bool)
 	return v
+}
+
+// peerPrincipalKeyType keys the credential the A2A frontier resolved for the
+// request. It is deliberately NOT auth.WithPrincipal: a live principal on a
+// run's ctx makes RunOnce take the run's tenant and subject from it, and this
+// plane takes the run's identity from its own routing. The executor reads it
+// for one thing only: to take a start from the caller's run rate.
+type peerPrincipalKeyType struct{}
+
+// WithPeerPrincipal stamps the resolved credential onto ctx. The interceptor
+// calls it for an authenticated peer; open mode stamps nothing.
+func WithPeerPrincipal(ctx context.Context, p auth.Principal) context.Context {
+	return context.WithValue(ctx, peerPrincipalKeyType{}, p)
+}
+
+// PeerPrincipalFrom returns the credential the interceptor stamped, and
+// whether there was one.
+func PeerPrincipalFrom(ctx context.Context) (auth.Principal, bool) {
+	p, ok := ctx.Value(peerPrincipalKeyType{}).(auth.Principal)
+	return p, ok
+}
+
+// StartAdmitter takes one run start from a caller's run rate, or refuses
+// with an error that is runner.ErrRateLimited. The loomcycle server
+// implements it with the same limiter every other transport's run start
+// uses; the A2A server installs it on the executor when its runner has it.
+type StartAdmitter interface {
+	AdmitRunRate(ctx context.Context, p auth.Principal) error
 }
 
 // principalFromContext extracts the authenticated principal from the

@@ -120,3 +120,21 @@ describe("call admission rows", () => {
     expect(l.cls).toBe("tl-meta");
   });
 });
+
+describe("no-trace rows", () => {
+  // A no-trace run stores each event as a marker: its user_input payload is
+  // {type, retained:false, bytes}, not the prompt segments. Reading it as an
+  // array threw and blanked the runs page.
+  it("formats a user_input marker as an empty line instead of throwing", () => {
+    const l = formatLine({
+      seq: 8,
+      run_id: "run-1",
+      ts_ns: 0,
+      type: "user_input",
+      event: { type: "user_input" },
+      payload: { type: "user_input", retained: false, bytes: 201 },
+    });
+    expect(l.kind.trim()).toBe("user_input");
+    expect(l.payload).toBe("");
+  });
+});

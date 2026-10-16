@@ -2,6 +2,7 @@ package builtin
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -52,6 +53,9 @@ type GitCredentialFunc func(ctx context.Context, ref, targetURL string) (usernam
 var (
 	ErrGitCredentialURLNotAllowed = errors.New("credential_url_not_allowed")
 	ErrGitCredentialUnresolvable  = errors.New("credential_unresolvable")
+	// errGitCredentialIsAppConfig is an unresolvable credential whose fix
+	// the caller can be told: it names nothing secret.
+	errGitCredentialIsAppConfig = errors.New("the credential holds a GitHub App config; name it as $ghapp:<name>, not $cred:<name>")
 )
 
 // GitSourceConfig is what the operator allows. A nil config, or one with no
@@ -111,9 +115,16 @@ func GitCredentialResolver(
 		}
 		kind, name := m[1], m[2]
 		ri := tools.RunIdentity(ctx)
+		// A run a trigger started without the right to act as its user never
+		// takes that user's own credential, as no other $cred: it resolves
+		// does: a webhook's user can come from the delivery.
+		userID := ri.UserID
+		if ri.CredentialsNoUserScope {
+			userID = ""
+		}
 		// The fetch's own transport follows no redirect at all (gitsource), so
 		// the pin a restricted credential asks for is already kept.
-		res, found, err := engine.ResolveFor(netguard.WithPinnable(ctx), ri.TenantID, tools.AgentName(ctx), ri.UserID, name, targetURL)
+		res, found, err := engine.ResolveFor(netguard.WithPinnable(ctx), ri.TenantID, tools.AgentName(ctx), userID, name, targetURL)
 		switch {
 		case errors.Is(err, credential.ErrURLNotAllowed):
 			return "", "", ErrGitCredentialURLNotAllowed
@@ -128,6 +139,11 @@ func GitCredentialResolver(
 		u, perr := url.Parse(targetURL)
 		if perr != nil {
 			return "", "", fmt.Errorf("%w: %v", ErrGitCredentialUnresolvable, perr)
+		}
+		if kind == "cred" && isGitHubAppConfig(res.Value) {
+			// Sent as a token, the config would go to the forge whole, the
+			// App's private key as the Basic-auth password.
+			return "", "", fmt.Errorf("%w: %w", ErrGitCredentialUnresolvable, errGitCredentialIsAppConfig)
 		}
 		token := res.Value
 		// The user name stored with a $cred: credential, else the default
@@ -150,6 +166,20 @@ func GitCredentialResolver(
 		}
 		return user, token, nil
 	}
+}
+
+// isGitHubAppConfig reports whether a stored value is a GitHub App config: a
+// JSON object with an app_id and a private_key, whatever else it holds.
+func isGitHubAppConfig(v string) bool {
+	var cfg struct {
+		AppID      json.RawMessage `json:"app_id"`
+		PrivateKey string          `json:"private_key"`
+	}
+	if json.Unmarshal([]byte(v), &cfg) != nil {
+		return false
+	}
+	appID := strings.Trim(string(cfg.AppID), `"`)
+	return appID != "" && appID != "null" && cfg.PrivateKey != ""
 }
 
 // repositoryName is the repository's name in a forge URL's path: its last
@@ -283,6 +313,8 @@ func (v *VolumeDef) execCreateFromGit(ctx context.Context, in volumeDefInput, mo
 		switch {
 		case errors.Is(err, ErrGitCredentialURLNotAllowed):
 			return gitSourceRefusal("credential_url_not_allowed", ""), nil
+		case errors.Is(err, errGitCredentialIsAppConfig):
+			return gitSourceRefusal("credential_unresolvable", errGitCredentialIsAppConfig.Error()), nil
 		case err != nil:
 			log.Printf("volumedef: git source: credential for host %s could not be resolved: %v", u.Host, err)
 			return gitSourceRefusal("credential_unresolvable", ""), nil
@@ -309,15 +341,26 @@ func (v *VolumeDef) execCreateFromGit(ctx context.Context, in volumeDefInput, mo
 	if err != nil {
 		return errResult(fmt.Sprintf("create: %s", err)), nil
 	}
-	path, undo, err := dynvol.ProvisionEphemeral(dynRoot, rootRunID, in.Name)
+	path, created, undo, err := dynvol.ProvisionEphemeral(dynRoot, rootRunID, in.Name)
 	if err != nil {
 		return errResult(fmt.Sprintf("create: %s", err)), nil
+	}
+	if !created {
+		// Another create of this name made the directory after the duplicate
+		// check above: it is that call's to fill, and to remove on failure.
+		// Writing into it, or removing it whole below, would take its volume.
+		undo()
+		return errResult(fmt.Sprintf("create: ephemeral volume %q already exists in this run", in.Name)), nil
 	}
 	// The object store is a sibling of the volume, under the run's own
 	// directory, so the run's purge removes it if this process dies here. Its
 	// name starts with a dot, which no volume name can, so no volume name
-	// resolves to it.
-	storeDir := filepath.Join(filepath.Dir(path), ".gitstore-"+in.Name)
+	// resolves to it. It is this call's own, never another's of the same name.
+	storeDir, err := os.MkdirTemp(filepath.Dir(path), ".gitstore-"+in.Name+"-")
+	if err != nil {
+		undo()
+		return errResult(fmt.Sprintf("create: object store: %s", err)), nil
+	}
 	cleanup := func() {
 		_ = os.RemoveAll(storeDir)
 		// The volume's directory, removed whole: it holds a partly written
@@ -334,7 +377,17 @@ func (v *VolumeDef) execCreateFromGit(ctx context.Context, in volumeDefInput, mo
 		// The remote's own words can echo the request, so the model gets the
 		// class and the operator the detail, with the repository's path cut
 		// out of it: a no-trace run's repository is not for the log either.
-		log.Printf("volumedef: git source: host=%s class=%s: %s", u.Host, class, strings.ReplaceAll(err.Error(), g.URL, "https://"+u.Host+"/<repository>"))
+		// A server may echo the request's credentials in its refusal (the
+		// detail keeps the start of what it said), so the token, and the
+		// header it was sent in, are masked too.
+		detail := strings.ReplaceAll(err.Error(), g.URL, "https://"+u.Host+"/<repository>")
+		if token != "" {
+			detail = strings.NewReplacer(
+				token, "[redacted]",
+				base64.StdEncoding.EncodeToString([]byte(username+":"+token)), "[redacted]",
+			).Replace(detail)
+		}
+		log.Printf("volumedef: git source: host=%s class=%s: %s", u.Host, class, detail)
 		return gitSourceRefusal(class, ""), nil
 	}
 

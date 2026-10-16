@@ -61,6 +61,9 @@ Each of these needs the content stored, so each is refused with
   the tools it should be able to write with.
 - Hooks you configured are sent what they were always sent.
 - A fork can add the mode to an agent and cannot remove it.
+- A no-trace run, or a caller whose token makes its runs no-trace, cannot
+  create or fork a schedule or a webhook, or edit a schedule's hooks: the
+  definition, and the runs it starts, are stored.
 - A pause does not park a no-trace run; the pause result counts it in
   `unpausable_runs_count`, and a snapshot leaves it out.
 - A restart loses it: at boot it is failed with stop reason

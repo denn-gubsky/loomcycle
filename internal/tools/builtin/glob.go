@@ -75,7 +75,7 @@ func (g *Glob) Execute(ctx context.Context, input json.RawMessage) (tools.Result
 	if args.Pattern == "" {
 		return errResult("pattern is required"), nil
 	}
-	root, rootErr := effectiveRoot(ctx, args.Volume, false)
+	root, fence, rootErr := effectiveRoot(ctx, args.Volume, false)
 	if rootErr != nil {
 		return errResult(rootErr.Error()), nil
 	}
@@ -105,6 +105,9 @@ func (g *Glob) Execute(ctx context.Context, input json.RawMessage) (tools.Result
 			target = filepath.Join(root, target)
 		}
 		resolved, rerr := resolveInsideRoot(root, target)
+		if rerr == nil {
+			rerr = outsideFence(fence, resolved)
+		}
 		if rerr != nil {
 			return errResult(rerr.Error()), nil
 		}
@@ -147,6 +150,9 @@ func (g *Glob) Execute(ctx context.Context, input json.RawMessage) (tools.Result
 			return nil
 		}
 		if d.IsDir() {
+			if isFenceDir(fence, path, d) {
+				return filepath.SkipDir
+			}
 			return nil
 		}
 		rel, err := filepath.Rel(searchRoot, path)

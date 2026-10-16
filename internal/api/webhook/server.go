@@ -65,8 +65,10 @@ type Receiver struct {
 	runStateBus  *runstate.Bus
 	envAllowlist map[string]bool
 	// creds reads a verification secret stored as a credential (auth.secret).
-	// nil: such a webhook refuses every delivery as unresolvable.
-	creds CredentialResolver
+	// nil: such a webhook refuses every delivery as unresolvable. Otherwise
+	// secrets, which keeps each read for storedSecretTTL.
+	creds   CredentialResolver
+	secrets *cachedCredentials
 	// allowUnauthenticated honors auth.kind="none" (skip verification). When
 	// false (default) a none-auth webhook 503s rather than silently accepting
 	// unsigned external POSTs. Set from LOOMCYCLE_WEBHOOKS_ALLOW_UNAUTHENTICATED.
@@ -141,6 +143,14 @@ func New(d Deps) *Receiver {
 	if logf == nil {
 		logf = func(string, ...any) {}
 	}
+	// The creds field stays a nil interface without an engine: storedSecret
+	// tells that apart from a credential that is missing.
+	var creds CredentialResolver
+	var secrets *cachedCredentials
+	if d.Credentials != nil {
+		secrets = newCachedCredentials(d.Credentials, now)
+		creds = secrets
+	}
 	return &Receiver{
 		store:                d.Store,
 		cfg:                  d.Cfg,
@@ -150,7 +160,8 @@ func New(d Deps) *Receiver {
 		publisher:            d.Publisher,
 		runStateBus:          d.RunStateBus,
 		envAllowlist:         d.EnvAllowlist,
-		creds:                d.Credentials,
+		creds:                creds,
+		secrets:              secrets,
 		allowUnauthenticated: d.AllowUnauthenticated,
 		logf:                 logf,
 		dedup:                newDedupCache(now),
@@ -281,7 +292,7 @@ func (rec *Receiver) handle(w http.ResponseWriter, r *http.Request) {
 	// A dedup_key names the event by signed fields; its keys are held in the
 	// store, which alone can tell that the run an event started failed
 	// (dedupkey.go). Nil for a webhook without one.
-	held, ok := rec.newHeldKeys(w, span, name, whKey, did, wd, body, durableDeliveryKeys(dk, env))
+	held, ok := rec.newHeldKeys(w, span, name, whKey, did, wd, body, dk, durableDeliveryKeys(dk, env))
 	if !ok {
 		return
 	}
@@ -297,6 +308,14 @@ func (rec *Receiver) handle(w http.ResponseWriter, r *http.Request) {
 	if perr != nil {
 		rec.finish(span, whKey, did, "rejected_mapping", "")
 		rec.logf("webhook %q: payload mapping failed: %v", name, perr)
+		writeError(w, http.StatusBadRequest, "bad_mapping", "")
+		return
+	}
+	// A projected credential naming a stored one is a bad mapping value, as
+	// a malformed body is: refused before anything is claimed or started.
+	if key, bad := payloadCredentialRef(proj.Fields); bad {
+		rec.finish(span, whKey, did, "rejected_mapping", "")
+		rec.logf("webhook %q: payload_mapping credential %q holds a stored-credential reference, which only the definition may name", name, key)
 		writeError(w, http.StatusBadRequest, "bad_mapping", "")
 		return
 	}
@@ -596,15 +615,22 @@ func (rec *Receiver) spawnAsync(w http.ResponseWriter, span trace.Span, name, wh
 	registered := make(chan string, 1)
 	setupErr := make(chan error, 1)
 	var spawnedRunID, spawnedAgentID string
+	// linkErr is the link of the run to its claim, made as it registers; the
+	// run is refused before its first model call when it failed. Written
+	// and read on RunOnce's goroutine.
+	var linkErr error
 	cb := runner.RunCallbacks{
 		OnRegistered: func(agentID, runID, _, _ string) {
 			spawnedRunID, spawnedAgentID = runID, agentID
-			rec.setHeldRun(name, held, runID)
+			if linkErr = rec.linkSpawnedRun(name, held, runID); linkErr != nil {
+				return // not accepted: Admit refuses it
+			}
 			select {
 			case registered <- runID:
 			default:
 			}
 		},
+		Admit: func(string) error { return linkErr },
 	}
 	go func() {
 		err := rec.runner.RunOnce(context.Background(), in, cb)
@@ -613,9 +639,7 @@ func (rec *Receiver) spawnAsync(w http.ResponseWriter, span trace.Span, name, wh
 		}
 		// Here, not in the response's select: a setup that outlasts the
 		// response's wait may still start the run.
-		if startedNothing(err, spawnedRunID) {
-			rec.releaseHeld(context.Background(), name, held)
-		}
+		rec.afterSpawn(name, held, dk, err, linkErr, spawnedRunID)
 		// Fire on_complete hooks AFTER the run returns. Only when the run was
 		// actually admitted (OnRegistered fired → spawnedRunID set) and the
 		// Def declares hooks. A setup-time rejection (err before OnRegistered)
@@ -696,6 +720,12 @@ func (rec *Receiver) spawnAsync(w http.ResponseWriter, span trace.Span, name, wh
 			})
 			return
 		}
+		// The event's run is a later delivery's, which took this one's claim
+		// over: this delivery is answered as the duplicate it now is.
+		if errors.Is(err, errClaimTakenOver) {
+			rec.answerHeldDuplicate(w, span, name, whKey, did, "")
+			return
+		}
 		// Setup-time rejection: the id was NOT recorded, so the sender's
 		// retry of this delivery is processed rather than dropped.
 		rec.finish(span, whKey, did, "rejected_spawn_setup", "")
@@ -753,10 +783,15 @@ func (rec *Receiver) spawnSync(ctx context.Context, w http.ResponseWriter, span 
 		runID   string
 	}, 1)
 	var spawnedRunID, spawnedAgentID string
+	// As spawnAsync's: a run whose claim refused it never registers here, and
+	// the request ends at its timeout.
+	var linkErr error
 	cb := runner.RunCallbacks{
 		OnRegistered: func(agentID, runID, _, _ string) {
 			spawnedRunID, spawnedAgentID = runID, agentID
-			rec.setHeldRun(name, held, runID)
+			if linkErr = rec.linkSpawnedRun(name, held, runID); linkErr != nil {
+				return
+			}
 			select {
 			case registered <- struct {
 				agentID string
@@ -765,15 +800,14 @@ func (rec *Receiver) spawnSync(ctx context.Context, w http.ResponseWriter, span 
 			default:
 			}
 		},
+		Admit: func(string) error { return linkErr },
 	}
 	go func() {
 		err := rec.runner.RunOnce(context.Background(), in, cb)
 		if err != nil {
 			rec.logf("webhook %q: sync run failed: %v", name, err)
 		}
-		if startedNothing(err, spawnedRunID) {
-			rec.releaseHeld(context.Background(), name, held)
-		}
+		rec.afterSpawn(name, held, dk, err, linkErr, spawnedRunID)
 		// Fire on_complete hooks AFTER the run returns, same posture as the
 		// async path. OnRegistered runs before the loop, so spawnedRunID is
 		// set by the time RunOnce returns nil. Detached ctx + best-effort.

@@ -284,6 +284,14 @@ type HostPolicyValue struct {
 	AllowedHosts    []string
 	HasList         bool
 	WebSearchFilter string
+	// NarrowOnly makes the list a narrowing of the operator's even in
+	// CALLER_AUTHORITATIVE mode: it is intersected with the operator's list,
+	// and an empty result reaches no host. Set for a caller held to its
+	// agent's own settings (a token's override lock, an agent's
+	// allow_overrides: false), whose list must never widen what the operator
+	// allows. Carried down the spawn tree and into the run's record, so a
+	// sub-agent and a resume apply the list the same way.
+	NarrowOnly bool
 }
 
 // WithHostPolicy attaches the caller's host narrowing policy to ctx.
@@ -361,6 +369,14 @@ type VolumeBinding struct {
 	Root     string
 	ReadOnly bool
 	Default  bool
+	// Fence is a directory at or under Root that the file tools refuse to
+	// reach through this binding: the operator's dynamic root, set when a
+	// static volume's root is that directory or above it. Dynamic and
+	// ephemeral volumes live under it, each with its own tenant and mode,
+	// so reaching one through a wider static binding would skip both. Empty
+	// for every other binding. Copied as Root is wherever a binding is
+	// rebuilt (spawn narrowing, resume).
+	Fence string
 }
 
 // VolumePolicyValue is the run's resolved volume policy.
@@ -844,6 +860,12 @@ type RunOverridesValue struct {
 	// definition" meaning "same row" for one class of agent and "same name" for
 	// another is the kind of asymmetry that surfaces as a bug report.
 	AgentName string
+
+	// RunID is the run Record belongs to. A spawn reads that run's record as
+	// it is then, so a child inherits what a retune set on its parent since
+	// the parent started; Record is what the parent started with, used when
+	// the stored record cannot be read.
+	RunID string
 }
 
 // SameDefinitionAs reports whether a child spawning as (defID, name) is the

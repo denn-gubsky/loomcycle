@@ -858,13 +858,12 @@ textarea::placeholder {
   border-bottom: 1px solid var(--border);
   font-size: var(--lc-text-sm);
 }
-.agent-note {
-  margin-top: 8px;
-  padding: 6px 10px;
+.no-trace-transcript {
+  margin: 12px 0;
+  padding: 10px 12px;
   background: var(--bg-soft);
   border-left: 3px solid var(--border);
   color: var(--fg-soft);
-  font-size: 12px;
 }
 .agent-err {
   margin-top: 8px;

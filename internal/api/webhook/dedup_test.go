@@ -1,6 +1,8 @@
 package webhook
 
 import (
+	"context"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -133,5 +135,41 @@ func TestDeliveryID_HeaderPreferred_BodyHashFallback(t *testing.T) {
 	// Same body → same fallback id (so replays of identical bodies dedup).
 	if again := deliveryID(a, body, func(string) string { return "" }); again != noHeader {
 		t.Errorf("body-hash fallback not stable: %q vs %q", noHeader, again)
+	}
+}
+
+// The in-memory replay cache is swept while the receiver runs: an entry is
+// otherwise evicted only when the same delivery comes again, so every
+// accepted delivery's keys stayed in memory for the life of the process.
+func TestRunSweeper_EvictsExpiredDedupEntries(t *testing.T) {
+	var clock atomic.Int64
+	clock.Store(time.Unix(1_700_000_000, 0).UnixNano())
+	rec := New(Deps{Now: func() time.Time { return time.Unix(0, clock.Load()) }})
+	rec.dedup.record(staticDedupKey("gh", "delivery-1"))
+	clock.Add(int64(dedupTTL + time.Minute))
+	rec.dedup.record(staticDedupKey("gh", "delivery-2")) // still live
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go rec.RunSweeper(ctx, time.Millisecond)
+
+	entries := func() (n int, live bool) {
+		rec.dedup.m.Range(func(k, _ any) bool {
+			n++
+			live = live || k == staticDedupKey("gh", "delivery-2")
+			return true
+		})
+		return n, live
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		n, live := entries()
+		if n == 1 && live {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("after sweeping: %d entries (live one kept: %t), want only the live one", n, live)
+		}
+		time.Sleep(5 * time.Millisecond)
 	}
 }

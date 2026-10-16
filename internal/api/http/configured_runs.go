@@ -290,7 +290,7 @@ func (s *Server) configuredRunCore(ctx context.Context, runID string) (store.Run
 	if err != nil {
 		return store.Run{}, draftStoreErr(err)
 	}
-	if sess, err := s.store.GetSession(ctx, run.SessionID); err != nil || !sessionOwnershipOK(ctx, sess) {
+	if sess, err := s.store.GetSession(ctx, run.SessionID); err != nil || !sessionOwnershipOK(ctx, sess) || !s.allowlistReachesRun(ctx, runID) {
 		return store.Run{}, draftRefusal(http.StatusNotFound, "unknown_run", "no run found for that run_id")
 	}
 	if run.Status != store.RunConfigured {
@@ -454,7 +454,7 @@ func (s *Server) configuredRunInputCore(ctx context.Context, runID string, secre
 	if err := json.Unmarshal(raw, &d); err != nil {
 		return runner.RunInput{}, draftRefusal(http.StatusInternalServerError, "internal", "stored draft is unreadable: %v", err)
 	}
-	in := spawnRequestToRunInput(d.SpawnRunRequest)
+	in := connector.SpawnRequestToRunInput(d.SpawnRunRequest)
 	in.RunTimeoutSeconds = d.RunTimeoutSeconds
 	in.Interactive = d.Interactive != nil && *d.Interactive
 	// Detached on the same condition POST /v1/runs detaches on: a run that

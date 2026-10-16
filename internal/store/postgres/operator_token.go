@@ -232,8 +232,16 @@ func (s *Store) OperatorTokenDefDeleteExpired(ctx context.Context, before time.T
 			SELECT def_id FROM operator_token_defs WHERE expires_at IS NOT NULL AND expires_at < $1)`, cutoff); err != nil {
 		return 0, err
 	}
-	tag, err := tx.Exec(ctx,
-		`DELETE FROM operator_token_defs WHERE expires_at IS NOT NULL AND expires_at < $1`, cutoff)
+	// See the SQLite twin: the last row naming a tenant is kept, so the tenant
+	// stays in the case-fold registry.
+	tag, err := tx.Exec(ctx, `
+		DELETE FROM operator_token_defs
+		WHERE expires_at IS NOT NULL AND expires_at < $1
+		  AND (EXISTS (SELECT 1 FROM operator_token_defs k
+		               WHERE k.tenant_id = operator_token_defs.tenant_id
+		                 AND (k.expires_at IS NULL OR k.expires_at >= $1))
+		       OR def_id <> (SELECT MAX(k.def_id) FROM operator_token_defs k
+		                     WHERE k.tenant_id = operator_token_defs.tenant_id))`, cutoff)
 	if err != nil {
 		return 0, err
 	}

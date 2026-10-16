@@ -77,6 +77,9 @@ func (s *Server) ReviewRun(ctx context.Context, runID, decision, feedback, sourc
 		// No session to gate on: the run's own owner confines it instead.
 		return false, connector.ErrRunNotInFlight
 	}
+	if !s.allowlistReachesRun(ctx, runID) {
+		return false, connector.ErrRunNotInFlight
+	}
 	if run.Status != store.RunRunning {
 		return false, connector.ErrRunNotInFlight
 	}

@@ -48,6 +48,11 @@ resolves inside that root. A `..` that climbs out of a volume is rejected
   `ro` volumes. A `ro` binding mounts under an in-RAM write overlay, so a
   script's writes succeed inside the run but never touch the host. Prefer
   Bashbox over Bash when you only have a `ro` volume. See the `bashbox` topic.
+- **Dynamic and ephemeral volumes are reached by their own name.** If one of
+  your volumes contains the directory that holds them, Read, Write, Edit,
+  NotebookEdit, Glob and Grep refuse paths inside it through that volume,
+  and Bashbox shows it as an empty directory. Name the volume itself in the
+  `volume` argument.
 
 ## Sub-agents
 

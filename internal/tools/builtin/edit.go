@@ -67,7 +67,7 @@ func (e *Edit) Execute(ctx context.Context, input json.RawMessage) (tools.Result
 	if args.OldString == args.NewString {
 		return tools.Result{Text: "old_string and new_string must differ", IsError: true}, nil
 	}
-	root, err := effectiveRoot(ctx, args.Volume, true)
+	root, fence, err := effectiveRoot(ctx, args.Volume, true)
 	if err != nil {
 		return tools.Result{Text: err.Error(), IsError: true}, nil
 	}
@@ -80,6 +80,9 @@ func (e *Edit) Execute(ctx context.Context, input json.RawMessage) (tools.Result
 	// Edit requires the file to exist, so we use resolveInsideRoot
 	// (Write would resolve the parent because the file may be new).
 	resolved, err := resolveInsideRoot(root, args.Path)
+	if err == nil {
+		err = outsideFence(fence, resolved)
+	}
 	if err != nil {
 		return tools.Result{Text: err.Error(), IsError: true}, nil
 	}

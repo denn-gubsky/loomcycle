@@ -301,7 +301,7 @@ func (v *VolumeDef) execCreateEphemeral(ctx context.Context, in volumeDefInput, 
 		return errResult(fmt.Sprintf("create: %s", err)), nil
 	}
 	// Same fenced provisioning as the persistent path.
-	path, undo, err := dynvol.ProvisionEphemeral(dynRoot, rootRunID, in.Name)
+	path, _, undo, err := dynvol.ProvisionEphemeral(dynRoot, rootRunID, in.Name)
 	if err != nil {
 		return errResult(fmt.Sprintf("create: %s", err)), nil
 	}
@@ -328,9 +328,11 @@ func (v *VolumeDef) refuseEphemeralDuplicate(ctx context.Context, set *tools.Eph
 	// volumes could not be read back starts with an empty one. Creating over
 	// the stored volume would hand out its directory again under whatever
 	// mode this call asks for, a read-only volume included. So the rows
-	// decide: a recorded volume is taken into the set as it is recorded, and
-	// the create is refused like any other duplicate. A failed lookup is not
-	// evidence that there is none, so it refuses too.
+	// decide: the create is refused like any other duplicate, and the volume
+	// is taken into the set where THIS replica places it (the records
+	// reader), never at the row's path, which is whatever the replica that
+	// wrote it had; one whose files are on another replica stays out. A
+	// failed lookup is not evidence that there is none, so it refuses too.
 	recorded, err := v.Store.EphemeralVolumeListByRun(ctx, rootRunID)
 	if err != nil {
 		return errResult(fmt.Sprintf("create: could not check this run's ephemeral volumes: %s", err)), true
@@ -339,9 +341,14 @@ func (v *VolumeDef) refuseEphemeralDuplicate(ctx context.Context, set *tools.Eph
 		if r.Name != name {
 			continue
 		}
-		var body dynvol.Body
-		if err := json.Unmarshal(r.Definition, &body); err == nil && body.Path != "" {
-			set.Add(name, tools.EphemeralVolumeRef{Root: body.Path, ReadOnly: body.Mode == "ro"})
+		if read := tools.EphemeralRecordsFrom(ctx); read != nil {
+			if recs, err := read(ctx); err == nil {
+				for _, rec := range recs {
+					if rec.Name == name && !rec.Elsewhere && rec.Root != "" {
+						set.Add(name, tools.EphemeralVolumeRef{Root: rec.Root, ReadOnly: rec.ReadOnly})
+					}
+				}
+			}
 		}
 		return errResult(fmt.Sprintf("create: ephemeral volume %q already exists in this run", name)), true
 	}
@@ -672,6 +679,33 @@ func DynamicVolumeRoot(cfg *config.Config) (string, bool) {
 		}
 	}
 	return "", false
+}
+
+// StaticVolumeFence returns the dynamic root when a static volume's root is
+// that directory or above it, else "". The result is the binding's Fence:
+// the file tools then refuse paths under it through that binding, so a
+// static volume cannot reach other tenants' dynamic volumes or write into a
+// read-only ephemeral one. The comparison is on real paths, so a symlinked
+// layout is caught too.
+func StaticVolumeFence(cfg *config.Config, root string) string {
+	dyn, ok := DynamicVolumeRoot(cfg)
+	if !ok || root == "" {
+		return ""
+	}
+	dynReal, rootReal := realOrClean(dyn), realOrClean(root)
+	rel, err := filepath.Rel(rootReal, dynReal)
+	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return ""
+	}
+	return dynReal
+}
+
+// realOrClean is p with symlinks evaluated, or cleaned when it cannot be.
+func realOrClean(p string) string {
+	if r, err := filepath.EvalSymlinks(p); err == nil {
+		return r
+	}
+	return filepath.Clean(p)
 }
 
 // checkScopeForName enforces the agent's volume_def_scopes against the

@@ -4,9 +4,9 @@ import type {
   HookDecisionEventInfo,
   SystemPromptPayload,
   TranscriptEvent,
-  UserInputPayload,
 } from "../api";
 import { toolResultId } from "../lib/toolSettlement";
+import { promptSegments } from "../lib/transcriptPayload";
 
 // TerminalTranscript renders the run's events as a chronological
 // flat stream of "[hh:mm:ss.SSS] event_type | payload" lines,
@@ -334,7 +334,7 @@ export function formatLine(row: TranscriptEvent): FormattedLine {
       // segments JSON). Show the first user-role segment's text as a
       // one-liner; system-role segments are skipped because the
       // dedicated system_prompt event already surfaces them.
-      const segs = (row.payload as UserInputPayload[] | undefined) ?? [];
+      const segs = promptSegments(row.payload);
       const userSeg = segs.find((s) => s.role === "user");
       const text = userSeg?.content?.[0]?.text ?? "";
       // Operator messages render in full (expanded), like agent text — only

@@ -219,6 +219,19 @@ describe("webhook form", () => {
     expect(ov.event_shapes).toEqual(forgeDef.event_shapes);
   });
 
+  it("sends an emptied user_bearer as \"\" so a fork removes it", () => {
+    // Left out, a fork keeps the parent's bearer: the field could never be
+    // removed from the console.
+    const s = { ...initWebhook(forgeDef), userBearer: "  " };
+    expect(validateWebhook(s)).toBeNull();
+    const ov = buildWebhookOverlay(s, "");
+    expect("user_bearer" in ov).toBe(true);
+    expect(ov.user_bearer).toBe("");
+    // A webhook moved off spawn sends it emptied too: channel and team refuse one.
+    const ch = { ...s, delivery: "channel" as const, channel: "c" };
+    expect(buildWebhookOverlay(ch, "").user_bearer).toBe("");
+  });
+
   it("leaves auth.kind out when the provider decides it", () => {
     const s = { ...initWebhook({ delivery: "spawn", agent: "a", provider: "gitlab" }), secretSource: "env" as const, bearerTokenEnv: "LOOMCYCLE_GL_TOKEN" };
     expect(validateWebhook(s)).toBeNull();

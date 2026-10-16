@@ -3,6 +3,7 @@ package webhook
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"strings"
@@ -22,16 +23,42 @@ type headRunner struct {
 	mu   sync.Mutex
 	runs []string
 	err  error // returned before a run registers
+	// admitted are the runs that passed the caller's Admit and would have
+	// made their first model call.
+	admitted []string
+	// One-shot knobs for the next RunOnce:
+	//   gate               it waits on gate before creating its row (a slow
+	//                      setup);
+	//   crash              it creates its row and returns without registering
+	//                      (the process died there);
+	//   failBeforeRegister it creates its row, ends it failed and returns an
+	//                      error, never registering (as an agent_id collision).
+	gate               chan struct{}
+	atGate             chan struct{} // closed once it waits on gate
+	crash              bool
+	failBeforeRegister bool
 }
+
+var errSetupFailed = errors.New("setup failed before the run registered")
 
 func (r *headRunner) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunCallbacks) error {
 	r.mu.Lock()
 	err := r.err
-	n := len(r.runs)
+	gate, atGate, crash, failEarly := r.gate, r.atGate, r.crash, r.failBeforeRegister
+	r.gate, r.atGate, r.crash, r.failBeforeRegister = nil, nil, false, false
 	r.mu.Unlock()
 	if err != nil {
 		return err
 	}
+	if gate != nil {
+		if atGate != nil {
+			close(atGate)
+		}
+		<-gate
+	}
+	r.mu.Lock()
+	n := len(r.runs)
+	r.mu.Unlock()
 	sess, err := r.st.CreateSession(ctx, in.TenantID, in.Agent, "u")
 	if err != nil {
 		return err
@@ -46,10 +73,43 @@ func (r *headRunner) RunOnce(ctx context.Context, in runner.RunInput, cb runner.
 	r.mu.Lock()
 	r.runs = append(r.runs, run.ID)
 	r.mu.Unlock()
+	switch {
+	case crash:
+		return nil
+	case failEarly:
+		if err := r.st.FinishRun(ctx, run.ID, store.RunFailed, "", store.Usage{}, errSetupFailed.Error()); err != nil {
+			return err
+		}
+		return errSetupFailed
+	}
 	if cb.OnRegistered != nil {
 		cb.OnRegistered(fmt.Sprintf("ag_%d", n), run.ID, sess.ID, "")
 	}
+	// As the server does: a refusal fails the run before its first call.
+	if cb.Admit != nil {
+		if aerr := cb.Admit(run.ID); aerr != nil {
+			if err := r.st.FinishRun(ctx, run.ID, store.RunFailed, "", store.Usage{}, aerr.Error()); err != nil {
+				return err
+			}
+			return fmt.Errorf("run not admitted by its caller: %w", aerr)
+		}
+	}
+	r.mu.Lock()
+	r.admitted = append(r.admitted, run.ID)
+	r.mu.Unlock()
 	return nil
+}
+
+func (r *headRunner) runsCreated() []string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return append([]string(nil), r.runs...)
+}
+
+func (r *headRunner) admittedRuns() []string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return append([]string(nil), r.admitted...)
 }
 
 func (r *headRunner) started() int {
@@ -185,6 +245,58 @@ func TestReceiver_DedupKey_AFailedRunsEventIsHandledAgain(t *testing.T) {
 
 	if n := sr.started(); n != 3 {
 		t.Errorf("%d runs started, want 3", n)
+	}
+}
+
+// runClaimCountingStore counts the dedup_key claims that reach the store, each
+// a write transaction.
+type runClaimCountingStore struct {
+	store.Store
+	mu     sync.Mutex
+	claims int
+}
+
+func (s *runClaimCountingStore) WebhookDeliveryClaimRun(ctx context.Context, c store.WebhookRunClaim) (store.WebhookRunClaimResult, error) {
+	s.mu.Lock()
+	s.claims++
+	s.mu.Unlock()
+	return s.Store.WebhookDeliveryClaimRun(ctx, c)
+}
+
+func (s *runClaimCountingStore) count() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.claims
+}
+
+// A duplicate of an event a live run holds was answered by a write
+// transaction in the store every time, before the rate limit — so a captured
+// signed body replayed in a loop was one write per request. A duplicate of an
+// event a live run holds is answered after a read instead; once that run has
+// failed, the next delivery goes to the claim and takes the event over.
+func TestReceiver_DedupKey_ARepeatedDuplicateDoesNotWriteToTheStore(t *testing.T) {
+	st := &runClaimCountingStore{Store: openScopeStore(t)}
+	sr := &headRunner{st: st.Store}
+	rec := newHeadReceiver(st, sr, &testClock{t: time.Unix(1_700_000_000, 0)}, map[string]config.Webhook{"gh": githubHeadHook()})
+
+	r1 := pushHead(t, "the push", rec, headPush("bbb", "0"), "d0", http.StatusAccepted)["run_id"]
+	for i := 1; i <= 10; i++ {
+		got := pushHead(t, "a duplicate", rec, headPush("bbb", fmt.Sprint(i)), fmt.Sprintf("d%d", i), http.StatusOK)
+		if got["deduped"] != "true" || got["run_id"] != r1 {
+			t.Fatalf("duplicate %d: %v, want a duplicate of %s", i, got, r1)
+		}
+	}
+	if n := st.count(); n != 1 {
+		t.Errorf("the push and 10 duplicates made %d claims in the store, want 1 (the push)", n)
+	}
+
+	finishRun(t, st.Store, r1, store.RunFailed)
+	r2 := pushHead(t, "a redelivery once the run failed", rec, headPush("bbb", "x"), "dx", http.StatusAccepted)["run_id"]
+	if r2 == "" || r2 == r1 {
+		t.Fatalf("the redelivery after a failed run started %q, want a new run", r2)
+	}
+	if n := sr.started(); n != 2 {
+		t.Errorf("%d runs started, want 2", n)
 	}
 }
 
@@ -381,5 +493,20 @@ func TestReceiver_Test_ReportsAnUnresolvableDedupKey(t *testing.T) {
 	}
 	if sr.started() != 0 {
 		t.Fatal("the dry-run started a run")
+	}
+}
+
+// The body a dedup_key reads is held to the shape limits every other decode of
+// a delivery is: for a webhook with no events or filters it is the first
+// decode, ahead of the payload mapping's.
+func TestDedupFieldsID_RefusesABodyPastTheShapeLimits(t *testing.T) {
+	deep := func(n int) []byte {
+		return []byte(`{"n":1,"d":` + strings.Repeat(`[`, n) + strings.Repeat(`]`, n) + `}`)
+	}
+	if _, missing, err := dedupFieldsID([]string{"$.n"}, deep(maxJSONDepth-1)); err != nil || missing >= 0 {
+		t.Errorf("a body at the depth limit: missing %d, %v", missing, err)
+	}
+	if _, _, err := dedupFieldsID([]string{"$.n"}, deep(maxJSONDepth+1)); err == nil || !strings.Contains(err.Error(), "nested deeper") {
+		t.Errorf("a body past the depth limit: %v, want it refused before decoding", err)
 	}
 }

@@ -562,7 +562,9 @@ func (s *Server) resumePausedRun(run store.Run) error {
 	hostPolicy := runCfg.hostPolicy()
 	callerAuthoritative := s.cfg().Env.HTTPCallerAuthoritative
 	if hostPolicy.HasList || callerAuthoritative {
-		allowedTools = builtin.NarrowHosts(allowedTools, runCfg.callerHosts(), hostPolicy.WebSearchFilter, callerAuthoritative)
+		// A list the run recorded as narrow-only stays a narrowing whatever
+		// the mode is now: it was a locked caller's.
+		allowedTools = builtin.NarrowHosts(allowedTools, runCfg.callerHosts(), hostPolicy.WebSearchFilter, callerAuthoritative && !hostPolicy.NarrowOnly)
 	}
 	allowedTools = s.grantRecallTool(allowedTools, runCfg.Context) // RFC CT: keep Recall on a resumed recall run
 	dispatcher := s.newDispatcher(allowedTools)
@@ -824,6 +826,9 @@ func (s *Server) resumePausedRun(run store.Run) error {
 		// durable bit is the authority. Without this a paused isolated run could
 		// escape its data-scope confinement on resume.
 		Isolated: run.Isolated,
+		// A trigger's run that may not use its user's own scope: the trigger
+		// is gone, so the row is the only authority, as for the two above.
+		CredentialsNoUserScope: run.CredentialsNoUserScope,
 		// Never "none" in practice — a no-trace run is not paused, so there is
 		// none to resume — but the row is the authority, as for the two above.
 		Retention: run.Retention,
@@ -915,7 +920,7 @@ func (s *Server) resumePausedRun(run store.Run) error {
 	// RFC DC P5: offer this run's overrides to its children. Only a child of the
 	// SAME definition will take them (tools.RunOverridesValue.SameDefinitionAs).
 	loopCtx = tools.WithRunOverrides(loopCtx, tools.RunOverridesValue{
-		Record: runCfg.marshal(), DefID: run.AgentDefID, AgentName: run.Agent,
+		Record: runCfg.marshal(), DefID: run.AgentDefID, AgentName: run.Agent, RunID: run.ID,
 	})
 
 	loopCtx = tools.WithContextPolicy(loopCtx, runCfg.Context)
@@ -1042,12 +1047,12 @@ func (s *Server) resumePausedRun(run store.Run) error {
 		UserTier:               run.UserTier,
 		FallbackPolicy:         fbPolicy,
 		ReResolve:              fbReResolve,
-		MoveForQueue:           s.queueMoveFn(agentDef, run.ID, run.TenantID, run.UserID, run.Agent, run.UserTier, run.OperatorKeyRestricted),
+		MoveForQueue:           s.queueMoveFn(agentDef, runCfg.Routing, run.ID, run.TenantID, run.UserID, run.Agent, run.UserTier, run.OperatorKeyRestricted),
 		Hooks:                  s.hookDispatcher,
 		MaxSameProviderRetries: s.retryAttemptsForAgent(agentDef, run.UserTier),
 		// RFC DC P3: a RESTORED parked chat is the case this matters most for —
 		// it is the one an operator comes back to and retunes.
-		ReResolveOnOperatorTurn: s.reResolveOnOperatorTurnFn(run.ID, run.TenantID, run.UserID, run.Agent, run.UserTier, run.OperatorKeyRestricted, liveInterruption),
+		ReResolveOnOperatorTurn: s.reResolveOnOperatorTurnFn(run.ID, run.TenantID, run.UserID, run.Agent, run.UserTier, run.OperatorKeyRestricted, runCfg.Routing, liveInterruption),
 		PauseGate:               gate,
 		BudgetGate:              s.budgetGate(run.TenantID, run.UserID),
 
@@ -1398,6 +1403,7 @@ func (s *Server) recordedParentVolumes(ctx context.Context, rec volumeCeilingRec
 		}
 		out.Bindings = append(out.Bindings, tools.VolumeBinding{
 			Name: b.Name, Root: cur.Root, ReadOnly: b.ReadOnly || cur.ReadOnly, Default: b.Default,
+			Fence: cur.Fence,
 		})
 	}
 	return out

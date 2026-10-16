@@ -164,7 +164,8 @@ func (s *Server) ReloadConfig(ctx context.Context, dryRun bool) (ReloadResult, e
 
 // ReloadConcurrency applies a changed `concurrency` (or `providers.max_concurrent`)
 // section in place (RFC CK): the global semaphore's concurrency + queue-depth caps
-// (SetCaps), the per-user cap (WithPerUserCap), and the providers' call lanes
+// (SetCaps), the per-user cap (WithPerUserCap) and how many runs a user may have
+// waiting (WithQueuedPerUserCap), and the providers' call lanes
 // (providers[*].max_concurrent / lanes / max_models_in_flight). The global queue
 // TIMEOUT stays boot-fixed (it is read unlocked on the wait path); a lane has
 // none. In-flight runs keep their global slot and calls in flight keep their
@@ -174,6 +175,7 @@ func (s *Server) ReloadConcurrency(newCfg *config.Config) {
 	if s.sem != nil {
 		s.sem.SetCaps(newCfg.Concurrency.MaxConcurrentRuns, newCfg.Concurrency.MaxQueueDepth)
 		s.sem.WithPerUserCap(newCfg.Concurrency.MaxConcurrentRunsPerUser)
+		s.sem.WithQueuedPerUserCap(newCfg.Concurrency.MaxQueuedRunsPerUser)
 	}
 	s.callSched.Reload(lanegate.SchedulerConfig(newCfg.Providers, newCfg.Models))
 }

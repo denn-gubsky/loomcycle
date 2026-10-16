@@ -780,8 +780,9 @@ func capturePausedRuns(ctx context.Context, s store.Store, out *PausedRunsSectio
 			DeliveryAltKey: r.DeliveryAltKey,
 
 			// Resume reads the confinement bits from the restored row.
-			OperatorKeyRestricted: r.OperatorKeyRestricted,
-			Isolated:              r.Isolated,
+			OperatorKeyRestricted:  r.OperatorKeyRestricted,
+			Isolated:               r.Isolated,
+			CredentialsNoUserScope: r.CredentialsNoUserScope,
 		}
 		// Read the session transcript and filter by run_id. Cost:
 		// O(events-in-session). For long-running sessions this is
@@ -834,7 +835,8 @@ func captureQueuedRuns(ctx context.Context, s store.Store, out *QueuedRunsSectio
 			RunID: r.ID, AgentID: r.AgentID, UserID: r.UserID, UserTier: r.UserTier,
 			Agent: r.Agent, SessionID: r.SessionID, StartedAt: r.StartedAt, TenantID: r.TenantID,
 			Interactive: r.Interactive, OperatorKeyRestricted: r.OperatorKeyRestricted, Isolated: r.Isolated,
-			Retention: r.Retention, ParentContext: r.ParentContext.Clone(),
+			CredentialsNoUserScope: r.CredentialsNoUserScope,
+			Retention:              r.Retention, ParentContext: r.ParentContext.Clone(),
 			IdempotencyKey: r.IdempotencyKey, DeliveryAltKey: r.DeliveryAltKey,
 			QueuedInput: input, SecretsDropped: dropped,
 			TranscriptEvents: []TranscriptEvent{},

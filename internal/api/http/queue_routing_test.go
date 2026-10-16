@@ -110,7 +110,7 @@ func TestQueueMoveFn_MovesOnlyWithoutALeaseAndPastSwitchAfter(t *testing.T) {
 	}
 
 	def := config.AgentDef{Tier: "low", Routing: &config.AgentRouting{QueueAware: true, SwitchAfterMS: 15000}}
-	move := s.queueMoveFn(def, "run-me", "", "", "worker", "", false)
+	move := s.queueMoveFn(def, nil, "run-me", "", "", "worker", "", false)
 	if move == nil {
 		t.Fatal("a queue-aware tier agent got no move hook")
 	}
@@ -140,21 +140,24 @@ func TestQueueMoveFn_MovesOnlyWithoutALeaseAndPastSwitchAfter(t *testing.T) {
 	}
 
 	// Under switch_after_ms it stays even without a lease.
-	patient := s.queueMoveFn(config.AgentDef{Tier: "low", Routing: &config.AgentRouting{QueueAware: true, SwitchAfterMS: 120000}},
+	patient := s.queueMoveFn(config.AgentDef{Tier: "low", Routing: &config.AgentRouting{QueueAware: true, SwitchAfterMS: 120000}}, nil,
 		"run-patient", "", "", "worker", "", false)
 	if _, _, _, moved := patient(ctx, idProvider{"busy"}, "m1"); moved {
 		t.Error("a wait under switch_after_ms moved the run")
 	}
 
 	// A tier agent that is not queue-aware never moves, however long the wait
-	// (its hook is there for a retune to switch on); a pinned one has no hook.
-	if notAware := s.queueMoveFn(config.AgentDef{Tier: "low"}, "run-plain", "", "", "w", "", false); notAware == nil {
+	// (its hook is there for a retune to switch on); nor does a pinned one,
+	// whose hook is there for a retune onto a tier.
+	if notAware := s.queueMoveFn(config.AgentDef{Tier: "low"}, nil, "run-plain", "", "", "w", "", false); notAware == nil {
 		t.Error("no move hook for a tier agent: a retune could not switch queue-aware routing on")
 	} else if _, _, _, moved := notAware(ctx, idProvider{"busy"}, "m1"); moved {
 		t.Error("an agent that is not queue-aware moved")
 	}
-	if s.queueMoveFn(config.AgentDef{Provider: "busy", Model: "m1", Routing: &config.AgentRouting{QueueAware: true}}, "r", "", "", "w", "", false) != nil {
-		t.Error("a move hook for an agent pinned to a provider and model")
+	if pinned := s.queueMoveFn(config.AgentDef{Provider: "busy", Model: "m1", Routing: &config.AgentRouting{QueueAware: true}}, nil, "r", "", "", "w", "", false); pinned == nil {
+		t.Error("no move hook for a pinned agent: a retune onto a tier could not make it move")
+	} else if _, _, _, moved := pinned(ctx, idProvider{"busy"}, "m1"); moved {
+		t.Error("an agent pinned to a provider and model moved")
 	}
 }
 
@@ -201,7 +204,7 @@ func TestQueueMoveFn_ARetunedRoutingBlockTakesEffect(t *testing.T) {
 	defer release()
 
 	// Started with no routing block: not queue-aware.
-	move := s.queueMoveFn(config.AgentDef{Tier: "low"}, run.ID, "", "", "worker", "", false)
+	move := s.queueMoveFn(config.AgentDef{Tier: "low"}, nil, run.ID, "", "", "worker", "", false)
 	moved := func() bool {
 		_, _, _, ok := move(ctx, idProvider{"busy"}, "m1")
 		return ok

@@ -2,9 +2,11 @@ package webhook
 
 import (
 	"regexp"
+	"sort"
 	"strings"
 
 	"github.com/denn-gubsky/loomcycle/internal/config"
+	"github.com/denn-gubsky/loomcycle/internal/credential"
 	"github.com/denn-gubsky/loomcycle/internal/loop"
 	"github.com/denn-gubsky/loomcycle/internal/runner"
 )
@@ -44,6 +46,27 @@ func collectPrefixed(fields map[string]string, prefix string) map[string]string 
 		out[name] = val
 	}
 	return out
+}
+
+// payloadCredentialRef returns the name of a user_credentials.<name> value
+// projected from the payload that is, or holds, a stored-credential
+// reference ($cred:<name>, $ghapp:<name>), and true; "" and false when there
+// is none. Only a definition's author may name a stored credential: the MCP
+// client and the A2A tool resolve a reference wherever it appears in a
+// credential, so a sender that put one in its body would choose which of the
+// tenant's secrets is sent.
+func payloadCredentialRef(fields map[string]string) (string, bool) {
+	var names []string
+	for name, val := range collectPrefixed(fields, credentialsPrefix) {
+		if len(credential.RefNames(val)) > 0 || len(credential.GHAppRefNames(val)) > 0 {
+			names = append(names, name)
+		}
+	}
+	if len(names) == 0 {
+		return "", false
+	}
+	sort.Strings(names) // one stable name for the log
+	return names[0], true
 }
 
 // deliveryLabelRe is the shape a delivery id must have to be passed to a run:

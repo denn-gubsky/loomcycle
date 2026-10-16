@@ -286,8 +286,18 @@ func (s *Store) OperatorTokenDefDeleteExpired(ctx context.Context, before time.T
 			SELECT def_id FROM operator_token_defs WHERE expires_at IS NOT NULL AND expires_at < ?)`, cutoff); err != nil {
 		return 0, err
 	}
-	res, err := tx.ExecContext(ctx,
-		`DELETE FROM operator_token_defs WHERE expires_at IS NOT NULL AND expires_at < ?`, cutoff)
+	// The token rows are also the registry of tenant spellings a new tenant
+	// is checked against for a case-fold collision (tokenTenants), so the
+	// last row naming a tenant is kept — expired, it authenticates nothing.
+	// A tenant with a row the sweep leaves loses every expired one.
+	res, err := tx.ExecContext(ctx, `
+		DELETE FROM operator_token_defs
+		WHERE expires_at IS NOT NULL AND expires_at < ?
+		  AND (EXISTS (SELECT 1 FROM operator_token_defs k
+		               WHERE k.tenant_id = operator_token_defs.tenant_id
+		                 AND (k.expires_at IS NULL OR k.expires_at >= ?))
+		       OR def_id <> (SELECT MAX(k.def_id) FROM operator_token_defs k
+		                     WHERE k.tenant_id = operator_token_defs.tenant_id))`, cutoff, cutoff)
 	if err != nil {
 		return 0, err
 	}

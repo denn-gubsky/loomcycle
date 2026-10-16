@@ -3,6 +3,7 @@ package credential
 import (
 	"errors"
 	"fmt"
+	"net"
 	"net/url"
 	"sort"
 	"strings"
@@ -124,8 +125,13 @@ func canonicalURL(raw string) (string, error) {
 	if host == "" {
 		return "", errors.New("the URL has no host")
 	}
+	// JoinHostPort, and brackets on an IPv6 host without a port: written
+	// bare, the address 2001:db8::5:8080 and 2001:db8::5 on port 8080 would
+	// compare equal.
 	if port := u.Port(); port != "" && port != "443" {
-		host += ":" + port
+		host = net.JoinHostPort(host, port)
+	} else if strings.Contains(host, ":") {
+		host = "[" + host + "]"
 	}
 	var segs []string
 	for _, seg := range strings.Split(u.Path, "/") {

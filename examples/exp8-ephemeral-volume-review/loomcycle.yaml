@@ -16,7 +16,7 @@
 #   → exp8 is the self-contained zero-cleanup pattern for on-demand code review.
 #
 # Topology:
-#   user POST /v1/runs → exp8-dispatcher (rw default + dynamic-root)
+#   user POST /v1/runs → exp8-dispatcher (rw default)
 #     ├─ VolumeDef op=create name="lc-src" mode=rw ephemeral=true  → <EPHEMERAL_PATH>
 #     ├─ Bash: git clone <repo> <EPHEMERAL_PATH>/loomcycle
 #     ├─ Agent op=parallel_spawn: 8 × exp8-reviewer (inherit ephemeral vol, ro tools)
@@ -63,6 +63,11 @@ defaults:
 # path: . is the cwd run.sh cd's into ($HERE/work) — RFC AH Phase 1.
 # dynamic-root provides the backing directory for ephemeral volumes (Phase 2b).
 # run.sh creates $HERE/work/dynamic/ before starting so the volume can mount.
+# No agent binds dynamic-root: VolumeDef finds it from this config, and an
+# ephemeral volume is reached by its own name. `default` contains ./dynamic,
+# but the file tools refuse paths under the dynamic root through it, so a
+# volume's own mode and run are what decide who reaches it. Bash is not
+# confined that way: it can reach any path by an absolute path.
 volumes:
   default:
     path: .
@@ -75,7 +80,7 @@ volumes:
 
 agents:
   # ──────────── DISPATCHER — creates ephemeral volume + orchestrates fan-out ────────────
-  # volume_def_scopes: [any] + volumes: [dynamic-root] are required to create VolumeDef volumes.
+  # volume_def_scopes: [any] is what lets it create VolumeDef volumes; it binds no extra volume.
   exp8-dispatcher:
     tier: middle
     max_iterations: 30
@@ -83,7 +88,7 @@ agents:
     tools: [Context, VolumeDef, Bash, Agent, Memory]
     volume_def_scopes: [any]
     memory_scopes: [user]
-    volumes: [default, dynamic-root]
+    volumes: [default]
     system_prompt: |
       You are the DISPATCHER for exp8: code review fan-out with an ephemeral volume.
       Use Context op=tools once at start; Context op=doc name=<Tool> for exact arg shapes;
@@ -125,8 +130,8 @@ agents:
       RULES: never read/print .env* or *_KEY/*_TOKEN/*_SECRET values. Non-empty tool output always.
 
   # ──────────── REVIEWER — read-only slice reviewer (spawned ×8 by dispatcher) ────────────
-  # volumes: intentionally omitted → inherits the dispatcher's full binding set
-  # (default + dynamic-root + ephemeral lc-src). Reviewers address files via volume="lc-src".
+  # volumes: intentionally omitted → inherits the dispatcher's binding set
+  # (default), and reaches the run's ephemeral lc-src by name. Reviewers address files via volume="lc-src".
   exp8-reviewer:
     tier: middle
     max_iterations: 40

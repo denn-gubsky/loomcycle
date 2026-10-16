@@ -14,16 +14,35 @@ import (
 	"google.golang.org/grpc"
 
 	bridge "github.com/denn-gubsky/loomcycle/internal/a2a"
+	"github.com/denn-gubsky/loomcycle/internal/auth"
 	"github.com/denn-gubsky/loomcycle/internal/config"
 	"github.com/denn-gubsky/loomcycle/internal/connector"
 	"github.com/denn-gubsky/loomcycle/internal/lookup"
 	"github.com/denn-gubsky/loomcycle/internal/runner"
 )
 
+// Peer is who an inbound A2A request was authenticated as.
+type Peer struct {
+	Name       string
+	Restricted bool
+	Isolated   bool
+	// Tenant is the tenant the credential belongs to. TenantBound is false
+	// for a caller that may reach every tenant: an admin, a legacy token, or
+	// open mode. A bound peer reaches only its own tenant: host or path
+	// routing picks the tenant a run is made in, and the caller picks the
+	// host or path.
+	Tenant      string
+	TenantBound bool
+	// Principal is the resolved credential, nil in open mode. It reaches the
+	// executor for the run-start rate only; the run's identity still comes
+	// from routing.
+	Principal *auth.Principal
+}
+
 // Authenticator authenticates an inbound A2A request from its headers and
 // returns the principal name to attach to the SDK CallContext, plus the RFC AX
 // operator-key restriction derived from the peer's OWN resolved scopes. It
-// returns ("", _, false) for an unauthenticated request — the default-deny
+// returns ok=false for an unauthenticated request — the default-deny
 // posture is the caller's (the bridge treats an unauthenticated User as
 // anonymous run ownership; it does NOT widen any allowlist).
 //
@@ -42,7 +61,7 @@ import (
 // This is the bearer-header check at the A2A frontier, reusing the same
 // constant-time comparison loomcycle's HTTP authMiddleware uses. It is
 // injected so tests can supply a deterministic fake.
-type Authenticator func(h http.Header) (name string, restricted bool, isolated bool, ok bool)
+type Authenticator func(ctx context.Context, h http.Header) (peer Peer, ok bool)
 
 // CardAndRunStore is the narrow store surface the A2A server needs: the
 // active-server-card resolver path (lookup), the run-table reader the
@@ -175,6 +194,14 @@ func New(ctx context.Context, deps Deps) (*Server, error) {
 	// NewInterruptResolver).
 	if deps.ChannelNotify != nil {
 		exec = exec.WithInterruptionBridge(bridge.NewInterruptResolver(deps.Store, deps.ChannelNotify))
+	}
+	// A fresh run takes a start from its caller's run rate, by the same
+	// limiter as every other transport. The loomcycle server is the runner
+	// in production and implements it; a runner that does not (a test
+	// double) leaves no limiter, and the executor then refuses a token that
+	// carries its own rate rather than let it through uncounted.
+	if a, ok := deps.Run.(bridge.StartAdmitter); ok {
+		exec = exec.WithStartAdmission(a.AdmitRunRate)
 	}
 
 	// The principal interceptor runs the frontier Authenticator and
@@ -437,6 +464,6 @@ func (s *Server) adminAuthed(r *http.Request) bool {
 		// authorized, matching authMiddleware's open-mode behaviour.
 		return true
 	}
-	_, _, _, ok := s.deps.Auth(r.Header)
+	_, ok := s.deps.Auth(r.Context(), r.Header)
 	return ok
 }
