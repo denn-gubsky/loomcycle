@@ -140,6 +140,46 @@ func TestEmbeddings_RefusesACallerAtItsHardTokenLimit(t *testing.T) {
 	}
 }
 
+// An embedding call spends tokens and reports no count, so it is counted
+// against the budget by an estimate from its size, as an unreported chat call
+// is — and, like one, it is not written to the ledger, and the estimate
+// survives a restart. It used to be checked against the ceiling and counted
+// as nothing, so a capped caller could embed without limit.
+func TestEmbeddings_ACallCountsAgainstTheBudget(t *testing.T) {
+	// 990 of 1000 used: one call fits, and a second does only if the first
+	// cost nothing.
+	ts, srv := gatewayBudgetServer(t, 1000, 990)
+	srv.SetEmbedder(&fakeEmbedder{provider: "openai", model: "text-embedding-3-small", dim: 4})
+	req := `{"model":"text-embedding-3-small","input":["` + strings.Repeat("embed this text ", 4) + `"]}`
+	ledger := func() int64 {
+		rows, err := srv.store.UsageReport(context.Background(), store.UsageQuery{TenantID: "acme"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		var n int64
+		for _, r := range rows {
+			n += r.InputTokens + r.OutputTokens + r.CacheCreationTokens + r.CacheReadTokens
+		}
+		return n
+	}
+	before := ledger()
+	if code, body := bearerCall(t, ts, "tok-alice", "POST", "/v1/embeddings", req); code != http.StatusOK {
+		t.Fatalf("the first call: status %d: %s", code, body)
+	}
+	if got := ledger() - before; got != 0 {
+		t.Errorf("%d estimated tokens written to the ledger; an estimate belongs to the budget only", got)
+	}
+	if code, body := bearerCall(t, ts, "tok-alice", "POST", "/v1/embeddings", req); code != http.StatusTooManyRequests {
+		t.Errorf("the next call: status %d, want 429 — the first cost the budget nothing: %s", code, body)
+	}
+	if err := srv.SeedLimits(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if code, body := bearerCall(t, ts, "tok-alice", "POST", "/v1/embeddings", req); code != http.StatusTooManyRequests {
+		t.Errorf("after a restart: status %d, want 429 — the estimate did not survive it: %s", code, body)
+	}
+}
+
 // A gateway call is written to the usage ledger and moves the caller's
 // budget. It used to be a log line and nothing else, so it appeared in no
 // usage report and the cheapest way to spend unaccounted tokens was to skip
