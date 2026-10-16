@@ -7315,6 +7315,12 @@ type AgentRouting struct {
 // without it.
 const DefaultSwitchAfterMS = 20000
 
+// MaxSwitchAfterMS is the largest routing.switch_after_ms accepted: a day. A
+// longer threshold passes nothing over, and a large enough one overflows the
+// duration SwitchAfter makes of it into a negative wait, under which every
+// candidate counts as over.
+const MaxSwitchAfterMS = 24 * 60 * 60 * 1000
+
 // SwitchAfter is the wait that passes a candidate over: switch_after_ms, or
 // the default.
 func (r *AgentRouting) SwitchAfter() time.Duration {
@@ -7347,6 +7353,9 @@ func ValidateAgentRouting(r *AgentRouting, provider, model string) error {
 	}
 	if r.SwitchAfterMS < 0 {
 		return errors.New("routing.switch_after_ms must be >= 0")
+	}
+	if r.SwitchAfterMS > MaxSwitchAfterMS {
+		return fmt.Errorf("routing.switch_after_ms must be <= %d (24h)", MaxSwitchAfterMS)
 	}
 	if r.QueueAware && (provider != "" || model != "") {
 		return errors.New("routing.queue_aware chooses among a tier's candidates; a provider/model pin has only one")

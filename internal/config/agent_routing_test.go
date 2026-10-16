@@ -31,6 +31,11 @@ func TestValidateAgentRouting(t *testing.T) {
 		{"pinned provider", &AgentRouting{QueueAware: true}, "anthropic", "", "a provider/model pin has only one"},
 		{"pinned model", &AgentRouting{QueueAware: true}, "", "local-medium", "a provider/model pin has only one"},
 		{"negative switch_after_ms", &AgentRouting{QueueAware: true, SwitchAfterMS: -1}, "", "", "switch_after_ms must be >= 0"},
+		{"switch_after_ms of a day", &AgentRouting{QueueAware: true, SwitchAfterMS: 24 * 60 * 60 * 1000}, "", "", ""},
+		{"switch_after_ms past a day", &AgentRouting{QueueAware: true, SwitchAfterMS: 24*60*60*1000 + 1}, "", "", "switch_after_ms must be <= 86400000"},
+		// Multiplied by time.Millisecond, 2^54 wraps to a negative duration,
+		// under which every candidate's wait counts as over.
+		{"switch_after_ms that overflows a duration", &AgentRouting{QueueAware: true, SwitchAfterMS: 1 << 54}, "", "", "switch_after_ms must be <= 86400000"},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
