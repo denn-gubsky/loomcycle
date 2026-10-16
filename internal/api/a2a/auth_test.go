@@ -24,19 +24,19 @@ func TestFrontierAuthenticator_OperatorTokenOnlyIsGated(t *testing.T) {
 	authn := FrontierAuthenticator(authConfigured, resolve, false)
 
 	// No credential → rejected (the interceptor turns this into ErrUnauthenticated).
-	if _, _, _, ok := authn(http.Header{}); ok {
+	if _, ok := authn(context.Background(), http.Header{}); ok {
 		t.Error("operator-token-only mode: missing bearer must be rejected, got ok=true (A2A open!)")
 	}
 	// Wrong credential → rejected.
 	bad := http.Header{"Authorization": []string{"Bearer nope"}}
-	if _, _, _, ok := authn(bad); ok {
+	if _, ok := authn(context.Background(), bad); ok {
 		t.Error("operator-token-only mode: invalid bearer must be rejected")
 	}
 	// Valid operator token → accepted, attributed by subject.
 	good := http.Header{"Authorization": []string{"Bearer lct_alice"}}
-	name, _, _, ok := authn(good)
-	if !ok || name != "alice" {
-		t.Errorf("valid operator token: name=%q ok=%v, want (\"alice\", true)", name, ok)
+	peer, ok := authn(context.Background(), good)
+	if !ok || peer.Name != "alice" {
+		t.Errorf("valid operator token: name=%q ok=%v, want (\"alice\", true)", peer.Name, ok)
 	}
 }
 
@@ -60,17 +60,17 @@ func TestFrontierAuthenticator_RestrictionDerivedFromScopes(t *testing.T) {
 
 	// Gate ON: granular peer is restricted; keyed peer is not.
 	on := FrontierAuthenticator(authConfigured, resolve, true)
-	if _, restricted, _, ok := on(hdr("granular")); !ok || !restricted {
-		t.Errorf("gate on, granular peer: (restricted=%v, ok=%v), want (true, true)", restricted, ok)
+	if peer, ok := on(context.Background(), hdr("granular")); !ok || !peer.Restricted {
+		t.Errorf("gate on, granular peer: (restricted=%v, ok=%v), want (true, true)", peer.Restricted, ok)
 	}
-	if _, restricted, _, ok := on(hdr("keyed")); !ok || restricted {
-		t.Errorf("gate on, keyed peer: (restricted=%v, ok=%v), want (false, true)", restricted, ok)
+	if peer, ok := on(context.Background(), hdr("keyed")); !ok || peer.Restricted {
+		t.Errorf("gate on, keyed peer: (restricted=%v, ok=%v), want (false, true)", peer.Restricted, ok)
 	}
 
 	// Gate OFF: nobody is restricted (byte-identical to pre-RFC-AX).
 	off := FrontierAuthenticator(authConfigured, resolve, false)
-	if _, restricted, _, ok := off(hdr("granular")); !ok || restricted {
-		t.Errorf("gate off, granular peer: (restricted=%v, ok=%v), want (false, true)", restricted, ok)
+	if peer, ok := off(context.Background(), hdr("granular")); !ok || peer.Restricted {
+		t.Errorf("gate off, granular peer: (restricted=%v, ok=%v), want (false, true)", peer.Restricted, ok)
 	}
 }
 
@@ -79,9 +79,9 @@ func TestFrontierAuthenticator_RestrictionDerivedFromScopes(t *testing.T) {
 // mirroring the HTTP authMiddleware.
 func TestFrontierAuthenticator_OpenModeAnonymous(t *testing.T) {
 	authn := FrontierAuthenticator(func(context.Context) bool { return false }, nil, true)
-	name, restricted, _, ok := authn(http.Header{})
-	if !ok || name != "anonymous" || restricted {
-		t.Errorf("open mode: name=%q restricted=%v ok=%v, want (\"anonymous\", false, true)", name, restricted, ok)
+	peer, ok := authn(context.Background(), http.Header{})
+	if !ok || peer.Name != "anonymous" || peer.Restricted {
+		t.Errorf("open mode: name=%q restricted=%v ok=%v, want (\"anonymous\", false, true)", peer.Name, peer.Restricted, ok)
 	}
 }
 
@@ -98,9 +98,9 @@ func TestFrontierAuthenticator_LegacyPeerKeepsName(t *testing.T) {
 	}
 	// Gate ON to also prove a legacy peer is never restricted (fail-open).
 	authn := FrontierAuthenticator(func(context.Context) bool { return true }, resolve, true)
-	name, restricted, _, ok := authn(http.Header{"Authorization": []string{"Bearer legacy-secret"}})
-	if !ok || name != "a2a-peer" || restricted {
-		t.Errorf("legacy peer: name=%q restricted=%v ok=%v, want (\"a2a-peer\", false, true)", name, restricted, ok)
+	peer, ok := authn(context.Background(), http.Header{"Authorization": []string{"Bearer legacy-secret"}})
+	if !ok || peer.Name != "a2a-peer" || peer.Restricted {
+		t.Errorf("legacy peer: name=%q restricted=%v ok=%v, want (\"a2a-peer\", false, true)", peer.Name, peer.Restricted, ok)
 	}
 }
 
@@ -119,10 +119,10 @@ func TestFrontierAuthenticator_RefusesATokenWithAnAgentAllowlist(t *testing.T) {
 		return auth.Principal{}, false
 	}
 	authn := FrontierAuthenticator(func(context.Context) bool { return true }, resolve, false)
-	if _, _, _, ok := authn(http.Header{"Authorization": []string{"Bearer restricted"}}); ok {
+	if _, ok := authn(context.Background(), http.Header{"Authorization": []string{"Bearer restricted"}}); ok {
 		t.Error("a restricted token was accepted as an A2A peer")
 	}
-	if _, _, _, ok := authn(http.Header{"Authorization": []string{"Bearer free"}}); !ok {
+	if _, ok := authn(context.Background(), http.Header{"Authorization": []string{"Bearer free"}}); !ok {
 		t.Error("an unrestricted token was refused")
 	}
 }
@@ -152,7 +152,7 @@ func TestFrontierAuthenticator_RefusesWhatThisPlaneCannotHold(t *testing.T) {
 		"rated": false, "quiet": false, "readonly": false,
 		"locked": true, "isolated": true, "operator": true, "unlimited": true,
 	} {
-		if _, _, _, ok := authn(http.Header{"Authorization": []string{"Bearer " + bearer}}); ok != want {
+		if _, ok := authn(context.Background(), http.Header{"Authorization": []string{"Bearer " + bearer}}); ok != want {
 			t.Errorf("%s: accepted=%v, want %v", bearer, ok, want)
 		}
 	}
