@@ -293,14 +293,6 @@ func RunStatusFilter(statuses []RunStatus) []string {
 // keys held.
 var WebhookRetakeRunStatuses = []RunStatus{RunFailed}
 
-// WebhookUnregisteredClaimGrace is how long a dedup_key claim that recorded
-// no run is left to its delivery before WebhookDeliveryClaimRun takes it
-// over. A run records itself on its claim as it registers, within seconds of
-// the claim; one that never does was lost (a crash between the two, or the
-// record failing), and without a retake its event stayed held for the whole
-// dedup_ttl_seconds.
-const WebhookUnregisteredClaimGrace = 10 * time.Minute
-
 // TerminalRunStatuses are the statuses a run ends in. Every reader that asks
 // "has this run finished?" — the retention and consolidation queries, the
 // ephemeral-volume sweep, the stream tail, the webhook and A2A maps — reads
@@ -3603,10 +3595,7 @@ type Store interface {
 	// run (WebhookDeliverySetRun). A key held for a run whose status is one of
 	// WebhookRetakeRunStatuses is taken over: every key of that run is dropped
 	// first, and the run's own idempotency_key and delivery_alt_key cleared,
-	// in the same transaction, so the event is handled again. So is a key of
-	// a claim that recorded no run and expires more than
-	// WebhookUnregisteredClaimGrace before expiresAt (made that long before
-	// now, a claim of one webhook being held as long as the next). On a
+	// in the same transaction, so the event is handled again. On a
 	// refusal holder is the run holding the key that refused it, "" when that
 	// claim's run has not registered yet.
 	WebhookDeliveryClaimRun(ctx context.Context, keys []string, now, expiresAt time.Time) (claimed bool, holder string, err error)
