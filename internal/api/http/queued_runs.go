@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/denn-gubsky/loomcycle/internal/concurrency"
+	"github.com/denn-gubsky/loomcycle/internal/connector"
 	"github.com/denn-gubsky/loomcycle/internal/credential"
 	"github.com/denn-gubsky/loomcycle/internal/providers"
 	"github.com/denn-gubsky/loomcycle/internal/runner"
@@ -317,7 +318,7 @@ func requestRunInput(req runRequest) (runner.RunInput, error) {
 	if err != nil {
 		return runner.RunInput{}, err
 	}
-	in := spawnRequestToRunInput(d.SpawnRunRequest)
+	in := connector.SpawnRequestToRunInput(d.SpawnRunRequest)
 	in.RunTimeoutSeconds = d.RunTimeoutSeconds
 	in.Interactive = req.Interactive
 	return in, nil

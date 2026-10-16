@@ -509,6 +509,26 @@ func TestNoTrace_ARunInFlightIsUnpausableAndTakesNoMessages(t *testing.T) {
 	// not onto the row.
 	ts := httptest.NewServer(srv.Mux())
 	defer ts.Close()
+
+	// Over the wire the retune refusal is the 409 the refusal names, with the
+	// code a client branches on — not the 400 the generic resolver mapping gave
+	// it, which read as a malformed request.
+	for _, path := range []string{"/retune", "/input"} {
+		body := `{"model":"stub-model"}`
+		if path == "/input" {
+			body = `{"text":"go","model":"stub-model"}`
+		}
+		rresp, err := http.Post(ts.URL+"/v1/runs/"+run.ID+path, "application/json", strings.NewReader(body))
+		if err != nil {
+			t.Fatal(err)
+		}
+		rbody, _ := io.ReadAll(rresp.Body)
+		rresp.Body.Close()
+		if rresp.StatusCode != http.StatusConflict || !strings.Contains(string(rbody), "retention_none_unsupported") {
+			t.Errorf("retune via %s of a no-trace run: status %d, body %s — want 409 retention_none_unsupported", path, rresp.StatusCode, rbody)
+		}
+	}
+
 	resp, err := http.Post(ts.URL+"/v1/agents/a_parent/cancel", "application/json", strings.NewReader(`{"reason":"because `+canary+`"}`))
 	if err != nil {
 		t.Fatal(err)

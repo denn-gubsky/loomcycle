@@ -454,7 +454,7 @@ func (s *Server) configuredRunInputCore(ctx context.Context, runID string, secre
 	if err := json.Unmarshal(raw, &d); err != nil {
 		return runner.RunInput{}, draftRefusal(http.StatusInternalServerError, "internal", "stored draft is unreadable: %v", err)
 	}
-	in := spawnRequestToRunInput(d.SpawnRunRequest)
+	in := connector.SpawnRequestToRunInput(d.SpawnRunRequest)
 	in.RunTimeoutSeconds = d.RunTimeoutSeconds
 	in.Interactive = d.Interactive != nil && *d.Interactive
 	// Detached on the same condition POST /v1/runs detaches on: a run that

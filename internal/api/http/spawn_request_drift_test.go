@@ -50,8 +50,8 @@ func fillNonZero(t *testing.T, v reflect.Value) {
 	}
 }
 
-// spawnRequestToRunInput is the one mapping from a spawn request to a run: MCP
-// spawn_run, the gRPC batch and the start of every configured run go through
+// connector.SpawnRequestToRunInput is the one mapping from a spawn request to a
+// run: MCP spawn_run (blocking and streaming), the gRPC batch and the start of every configured run go through
 // it. It dropped Interruption, so a draft's interruption override (and MCP
 // spawn_run's) was discarded at start.
 //
@@ -60,7 +60,7 @@ func fillNonZero(t *testing.T, v reflect.Value) {
 func TestSpawnRequestToRunInput_CarriesEverySpawnField(t *testing.T) {
 	var req connector.SpawnRunRequest
 	fillNonZero(t, reflect.ValueOf(&req).Elem())
-	got := reflect.ValueOf(spawnRequestToRunInput(req))
+	got := reflect.ValueOf(connector.SpawnRequestToRunInput(req))
 
 	notMapped := map[string]string{
 		"Interactive": "a blocking spawn cannot park; the configured-run start sets RunInput.Interactive itself",
@@ -69,7 +69,7 @@ func TestSpawnRequestToRunInput_CarriesEverySpawnField(t *testing.T) {
 		// a schedule's.
 		"IdempotencyKey": "carried as RunInput.ClientIdempotencyKey, checked below",
 	}
-	if in := spawnRequestToRunInput(req); in.ClientIdempotencyKey != req.IdempotencyKey || in.IdempotencyKey != "" {
+	if in := connector.SpawnRequestToRunInput(req); in.ClientIdempotencyKey != req.IdempotencyKey || in.IdempotencyKey != "" {
 		t.Errorf("idempotency_key: ClientIdempotencyKey = %q, IdempotencyKey = %q; want the caller's key in the first and nothing in the second",
 			in.ClientIdempotencyKey, in.IdempotencyKey)
 	}
@@ -85,7 +85,7 @@ func TestSpawnRequestToRunInput_CarriesEverySpawnField(t *testing.T) {
 			continue
 		}
 		if f.IsZero() {
-			t.Errorf("spawnRequestToRunInput drops SpawnRunRequest.%s", name)
+			t.Errorf("SpawnRequestToRunInput drops SpawnRunRequest.%s", name)
 		}
 	}
 }

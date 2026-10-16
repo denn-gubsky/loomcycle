@@ -3,6 +3,7 @@ package http
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"net/http"
@@ -595,6 +596,13 @@ func (s *Server) handleRetuneRun(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	merged, err := s.retuneRun(r.Context(), run, &req.runOverridesWire)
+	if errors.Is(err, runner.ErrRetentionUnsupported) {
+		// The refusal carries its own status (409: the run is fine, it just
+		// stores nothing to retune); the resolver mapping below would call it
+		// a malformed request.
+		writeNoTraceRefusal(w, err)
+		return
+	}
 	if err != nil {
 		writeResolveError(w, err)
 		return
