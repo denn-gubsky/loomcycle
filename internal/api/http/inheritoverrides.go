@@ -44,6 +44,18 @@ func (s *Server) inheritOverridesForChild(
 		return def, childCfg
 	}
 	rec, ok := decodeRunConfig(parent.Record)
+	// The parent's record as it is now, not as it started: a retune since then
+	// is what the parent holds. A live parent used to offer the record it
+	// started with and a resumed one the record it resumed with, so whether a
+	// child inherited a retune depended on whether its parent had paused. The
+	// start record stays the answer when the stored one cannot be read.
+	if parent.RunID != "" && s.store != nil {
+		if run, err := s.store.GetRun(ctx, parent.RunID); err == nil {
+			if cur, curOK := decodeRunConfig(run.RunConfig); curOK {
+				rec, ok = cur, true
+			}
+		}
+	}
 	if !ok {
 		return def, childCfg
 	}

@@ -915,7 +915,7 @@ func (s *Server) resumePausedRun(run store.Run) error {
 	// RFC DC P5: offer this run's overrides to its children. Only a child of the
 	// SAME definition will take them (tools.RunOverridesValue.SameDefinitionAs).
 	loopCtx = tools.WithRunOverrides(loopCtx, tools.RunOverridesValue{
-		Record: runCfg.marshal(), DefID: run.AgentDefID, AgentName: run.Agent,
+		Record: runCfg.marshal(), DefID: run.AgentDefID, AgentName: run.Agent, RunID: run.ID,
 	})
 
 	loopCtx = tools.WithContextPolicy(loopCtx, runCfg.Context)
@@ -1042,12 +1042,12 @@ func (s *Server) resumePausedRun(run store.Run) error {
 		UserTier:               run.UserTier,
 		FallbackPolicy:         fbPolicy,
 		ReResolve:              fbReResolve,
-		MoveForQueue:           s.queueMoveFn(agentDef, run.ID, run.TenantID, run.UserID, run.Agent, run.UserTier, run.OperatorKeyRestricted),
+		MoveForQueue:           s.queueMoveFn(agentDef, runCfg.Routing, run.ID, run.TenantID, run.UserID, run.Agent, run.UserTier, run.OperatorKeyRestricted),
 		Hooks:                  s.hookDispatcher,
 		MaxSameProviderRetries: s.retryAttemptsForAgent(agentDef, run.UserTier),
 		// RFC DC P3: a RESTORED parked chat is the case this matters most for —
 		// it is the one an operator comes back to and retunes.
-		ReResolveOnOperatorTurn: s.reResolveOnOperatorTurnFn(run.ID, run.TenantID, run.UserID, run.Agent, run.UserTier, run.OperatorKeyRestricted, liveInterruption),
+		ReResolveOnOperatorTurn: s.reResolveOnOperatorTurnFn(run.ID, run.TenantID, run.UserID, run.Agent, run.UserTier, run.OperatorKeyRestricted, runCfg.Routing, liveInterruption),
 		PauseGate:               gate,
 		BudgetGate:              s.budgetGate(run.TenantID, run.UserID),
 

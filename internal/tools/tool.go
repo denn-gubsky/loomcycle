@@ -844,6 +844,12 @@ type RunOverridesValue struct {
 	// definition" meaning "same row" for one class of agent and "same name" for
 	// another is the kind of asymmetry that surfaces as a bug report.
 	AgentName string
+
+	// RunID is the run Record belongs to. A spawn reads that run's record as
+	// it is then, so a child inherits what a retune set on its parent since
+	// the parent started; Record is what the parent started with, used when
+	// the stored record cannot be read.
+	RunID string
 }
 
 // SameDefinitionAs reports whether a child spawning as (defID, name) is the
