@@ -361,6 +361,14 @@ type VolumeBinding struct {
 	Root     string
 	ReadOnly bool
 	Default  bool
+	// Fence is a directory at or under Root that the file tools refuse to
+	// reach through this binding: the operator's dynamic root, set when a
+	// static volume's root is that directory or above it. Dynamic and
+	// ephemeral volumes live under it, each with its own tenant and mode,
+	// so reaching one through a wider static binding would skip both. Empty
+	// for every other binding. Copied as Root is wherever a binding is
+	// rebuilt (spawn narrowing, resume).
+	Fence string
 }
 
 // VolumePolicyValue is the run's resolved volume policy.

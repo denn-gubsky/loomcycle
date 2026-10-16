@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"os/exec"
+	"path"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -16,6 +17,7 @@ import (
 	"github.com/ewhauser/gbash/commands"
 	awkcmd "github.com/ewhauser/gbash/contrib/awk"
 	jqcmd "github.com/ewhauser/gbash/contrib/jq"
+	gbfs "github.com/ewhauser/gbash/fs"
 	"github.com/ewhauser/gbash/policy"
 )
 
@@ -266,7 +268,7 @@ func (b *Bashbox) Execute(ctx context.Context, input json.RawMessage) (tools.Res
 	// Bashbox HONORS read-only volumes (unlike Bash): a ro binding mounts
 	// under gbash's in-RAM write overlay, so resolve WITHOUT needWrite. The
 	// readOnly flag below selects the mount mode.
-	root, readOnly, _, rootErr := resolveVolume(ctx, args.Volume)
+	root, readOnly, name, fence, rootErr := resolveVolume(ctx, args.Volume)
 	if rootErr != nil {
 		return tools.Result{Text: rootErr.Error(), IsError: true}, nil
 	}
@@ -282,6 +284,23 @@ func (b *Bashbox) Execute(ctx context.Context, input json.RawMessage) (tools.Res
 	rootResolved, err := filepath.EvalSymlinks(root)
 	if err != nil {
 		return tools.Result{Text: "volume root: " + err.Error(), IsError: true}, nil
+	}
+	// The binding's fence (the dynamic root) is shadowed by an empty
+	// in-memory directory below, so the command neither reads other runs'
+	// and tenants' volumes nor writes into a read-only one. gbash cannot
+	// mount over its root, so a binding that IS the fence is refused.
+	shadow := ""
+	if fence != "" {
+		rel, relErr := filepath.Rel(rootResolved, fence)
+		switch {
+		case relErr != nil || rel == ".":
+			return tools.Result{Text: fmt.Sprintf("volume %q is the directory that holds dynamic and ephemeral volumes; name that volume in the \"volume\" argument instead", name), IsError: true}, nil
+		case rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)):
+			// Not under this root (StaticVolumeFence never sets one so):
+			// nothing to shadow.
+		default:
+			shadow = filepath.ToSlash(rel)
+		}
 	}
 
 	timeout := b.Timeout
@@ -303,12 +322,24 @@ func (b *Bashbox) Execute(ctx context.Context, input json.RawMessage) (tools.Res
 	//   ro → HostDirectoryFileSystem: host tree read-only + in-RAM write
 	//        overlay; writes are visible in-sandbox but DISCARDED at end.
 	//   rw → ReadWriteDirectoryFileSystem: writes persist to the host volume.
-	var fsOpt gbash.Option
+	var fsCfg gbash.FileSystemConfig
 	if readOnly {
-		fsOpt = gbash.WithFileSystem(gbash.HostDirectoryFileSystem(rootResolved, gbash.HostDirectoryOptions{}))
+		fsCfg = gbash.HostDirectoryFileSystem(rootResolved, gbash.HostDirectoryOptions{})
 	} else {
-		fsOpt = gbash.WithFileSystem(gbash.ReadWriteDirectoryFileSystem(rootResolved, gbash.ReadWriteDirectoryOptions{}))
+		fsCfg = gbash.ReadWriteDirectoryFileSystem(rootResolved, gbash.ReadWriteDirectoryOptions{})
 	}
+	if shadow != "" {
+		// Both configs start in the volume root's sandbox path.
+		fsCfg = gbash.MountableFileSystem(gbash.MountableFileSystemOptions{
+			Base: fsCfg.Factory,
+			Mounts: []gbfs.MountConfig{{
+				MountPoint: path.Join(fsCfg.WorkingDir, shadow),
+				Factory:    gbash.InMemoryFileSystem().Factory,
+			}},
+			WorkingDir: fsCfg.WorkingDir,
+		})
+	}
+	fsOpt := gbash.WithFileSystem(fsCfg)
 
 	rt, err := gbash.New(
 		fsOpt,

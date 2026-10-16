@@ -115,6 +115,7 @@ The status line is always the last line of a line-range result:
 | `[lines 1-2210 of 3044; cut at 256 KiB, continue with offset 2211]` | the size limit was reached at the end of a line; call again with that `offset` |
 | `[no lines: the file has 120 lines]` | `offset` is past the end. Not an error |
 | `… of more than 900000]` | the file is larger than the 64 MiB that is scanned to count lines |
+| `[no lines: line 90000000 is past the first 1073741824 bytes …]` | `offset` was not reached within the first 1 GiB, which is as far as `Read` goes to find a line |
 
 - A result never ends inside a line or inside a character. A single line longer than the size limit is returned cut between two characters, with its own note (`[line 3 cut at 262144 bytes of 1048576]`).
 - Line endings are returned as they are in the file.

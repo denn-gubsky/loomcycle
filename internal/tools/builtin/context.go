@@ -476,6 +476,19 @@ func (c *Context) execSelf(ctx context.Context) (tools.Result, error) {
 	// was told "no volume bound" above still learns what it can read, and
 	// with the mode it will actually get.
 	if eph := tools.EphemeralVolumes(ctx); eph != nil {
+		// The set is this process's; a run of the tree on another replica
+		// may have made more since this run started, or made one read-only.
+		// Best-effort: a failed read leaves the list as the set has it.
+		var recs []tools.EphemeralRecord
+		if read := tools.EphemeralRecordsFrom(ctx); read != nil {
+			if r, err := read(ctx); err == nil {
+				recs = r
+			}
+		}
+		recordedRO := map[string]bool{}
+		for _, r := range recs {
+			recordedRO[r.Name] = r.ReadOnly
+		}
 		names := eph.Names()
 		list := make([]map[string]any, 0, len(names))
 		for _, name := range names {
@@ -484,33 +497,28 @@ func (c *Context) execSelf(ctx context.Context) (tools.Result, error) {
 				continue
 			}
 			mode := "rw"
-			if ref.ReadOnly || tools.EphemeralReadOnly(ctx) {
+			// Read-only in the record wins, as it does for a write
+			// (confirmEphemeralWritable); the mode only ever narrows.
+			if ref.ReadOnly || recordedRO[name] || tools.EphemeralReadOnly(ctx) {
 				mode = "ro"
 			}
 			list = append(list, map[string]any{"name": name, "path": ref.Root, "mode": mode})
 		}
-		// The set is this process's; a run of the tree on another replica
-		// may have made more since this run started. Best-effort: a failed
-		// read leaves the list as the set has it.
-		if read := tools.EphemeralRecordsFrom(ctx); read != nil {
-			if recs, err := read(ctx); err == nil {
-				for _, r := range recs {
-					if eph.Has(r.Name) {
-						continue
-					}
-					mode := "rw"
-					if r.ReadOnly || tools.EphemeralReadOnly(ctx) {
-						mode = "ro"
-					}
-					entry := map[string]any{"name": r.Name, "mode": mode}
-					if r.Elsewhere {
-						entry["note"] = "created on another server; its files are not on this one"
-					} else {
-						entry["path"] = r.Root
-					}
-					list = append(list, entry)
-				}
+		for _, r := range recs {
+			if eph.Has(r.Name) {
+				continue
 			}
+			mode := "rw"
+			if r.ReadOnly || tools.EphemeralReadOnly(ctx) {
+				mode = "ro"
+			}
+			entry := map[string]any{"name": r.Name, "mode": mode}
+			if r.Elsewhere {
+				entry["note"] = "created on another server; its files are not on this one"
+			} else {
+				entry["path"] = r.Root
+			}
+			list = append(list, entry)
 		}
 		if len(list) > 0 {
 			out["ephemeral_volumes"] = map[string]any{

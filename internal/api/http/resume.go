@@ -1398,6 +1398,7 @@ func (s *Server) recordedParentVolumes(ctx context.Context, rec volumeCeilingRec
 		}
 		out.Bindings = append(out.Bindings, tools.VolumeBinding{
 			Name: b.Name, Root: cur.Root, ReadOnly: b.ReadOnly || cur.ReadOnly, Default: b.Default,
+			Fence: cur.Fence,
 		})
 	}
 	return out

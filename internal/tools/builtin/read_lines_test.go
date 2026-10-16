@@ -1,8 +1,11 @@
 package builtin
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
+	"io"
+	"math"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -197,5 +200,91 @@ func TestRead_UnknownArgumentIsRefused(t *testing.T) {
 	}
 	if res := read(map[string]any{"volume": "default", "offset": 10, "limit": 1, "line_numbers": true}); res.IsError {
 		t.Errorf("every declared argument together was refused: %s", res.Text)
+	}
+}
+
+// patternReader serves pattern over and over, max bytes in all, and calls
+// onServe with the running total after each read.
+type patternReader struct {
+	pattern     []byte
+	max, served int64
+	onServe     func(served int64)
+}
+
+func (p *patternReader) Read(b []byte) (int, error) {
+	if p.served >= p.max {
+		return 0, io.EOF
+	}
+	n := int64(len(b))
+	if rest := p.max - p.served; rest < n {
+		n = rest
+	}
+	for i := int64(0); i < n; i++ {
+		b[i] = p.pattern[(p.served+i)%int64(len(p.pattern))]
+	}
+	p.served += n
+	if p.onServe != nil {
+		p.onServe(p.served)
+	}
+	return int(n), nil
+}
+
+// A cancelled call stops inside a line, too. The check used to run once per
+// line, so one long line with no newline was read to its end regardless.
+func TestReadLines_CancelledInsideALongLineStops(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	r := &patternReader{pattern: []byte("a"), max: 32 << 20, onServe: func(n int64) {
+		if n >= 1<<20 {
+			cancel()
+		}
+	}}
+	res := readLines(ctx, r, lineWindow{offset: 2, maxBytes: 1024})
+	if !res.IsError || !strings.Contains(res.Text, "context canceled") {
+		t.Errorf("got %q (error=%v), want the cancellation", res.Text, res.IsError)
+	}
+	if r.served > 2<<20 {
+		t.Errorf("read %d bytes after the cancel at 1 MiB", r.served)
+	}
+}
+
+// The way to the first wanted line is bounded: an offset past the end of a
+// huge file, or past one huge line, stops at the seek limit and says so,
+// rather than reading the whole file on every call.
+func TestReadLines_ReachingTheWindowStopsAtTheSeekLimit(t *testing.T) {
+	const seek = 100_000
+	for _, c := range []struct {
+		name    string
+		pattern string
+	}{
+		{"many short lines", "123456789\n"},
+		{"one line with no newline", "a"},
+	} {
+		r := &patternReader{pattern: []byte(c.pattern), max: 32 << 20}
+		res := readLines(context.Background(), r, lineWindow{offset: 10_000_000, maxBytes: 1024, maxSeek: seek})
+		if res.IsError || !strings.HasPrefix(res.Text, "[no lines: line 10000000 is past the first 100000 bytes") {
+			t.Errorf("%s: got %q (error=%v)", c.name, res.Text, res.IsError)
+		}
+		if r.served > seek+256<<10 {
+			t.Errorf("%s: read %d bytes, past the seek limit of %d", c.name, r.served, seek)
+		}
+	}
+}
+
+// A limit near the largest integer means "to the end". offset+limit used to
+// wrap negative, so such a call answered "no lines" on a file that had them.
+func TestRead_LineRange_HugeLimitReadsToTheEnd(t *testing.T) {
+	read := readFixture(t, &Read{}, "a\nb\nc\nd\n")
+	for _, c := range []struct {
+		offset int
+		want   string
+	}{
+		{1, "a\nb\nc\nd\n[lines 1-4 of 4]\n"},
+		{2, "b\nc\nd\n[lines 2-4 of 4]\n"},
+	} {
+		res := read(map[string]any{"offset": c.offset, "limit": math.MaxInt})
+		if res.IsError || res.Text != c.want {
+			t.Errorf("offset %d, limit MaxInt: got %q (error=%v), want %q", c.offset, res.Text, res.IsError, c.want)
+		}
 	}
 }

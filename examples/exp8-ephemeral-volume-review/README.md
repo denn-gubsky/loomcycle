@@ -6,7 +6,7 @@ consolidator merges the findings and writes a report. The ephemeral volume **aut
 the dispatcher run ends — no `rm -rf` needed.
 
 ```
- POST /v1/runs → exp8-dispatcher (rw default + dynamic-root)
+ POST /v1/runs → exp8-dispatcher (rw default)
    ├─ VolumeDef op=create name="lc-src" mode=rw ephemeral=true  → <EPHEMERAL_PATH>
    ├─ Bash: git clone https://github.com/denn-gubsky/loomcycle <EPHEMERAL_PATH>/loomcycle
    ├─ Agent op=parallel_spawn: 8 × exp8-reviewer (inherit ephemeral vol, Read/Grep/Glob only)
