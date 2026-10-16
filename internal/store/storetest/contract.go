@@ -145,6 +145,7 @@ func Run(t *testing.T, factory Factory) {
 		{"FailLostNoTraceRuns", testFailLostNoTraceRuns},
 		{"RetentionOverrides", testRetentionOverrides},
 		{"CreateRunIsolatedRoundTrip", testCreateRunIsolatedRoundTrip},
+		{"CreateRunCredentialsNoUserScopeRoundTrip", testCreateRunCredentialsNoUserScopeRoundTrip},
 		{"CreateRunConfigRoundTrip", testCreateRunConfigRoundTrip},
 		{"SetRunConfigCASRefusesAStalePrev", testSetRunConfigCASRefusesAStalePrev},
 		{"SetRunConfigCASConcurrentWritersAllSurvive", testSetRunConfigCASConcurrentWritersAllSurvive},
@@ -4737,6 +4738,48 @@ func testCreateRunIsolatedRoundTrip(t *testing.T, s store.Store) {
 	got, _ := s.GetRun(ctx, isolated.ID)
 	if !got.Isolated {
 		t.Errorf("isolated run Isolated=false on read-back (did not persist)")
+	}
+}
+
+// The no-user-scope bit round-trips on both backends, on a run and a queued
+// run, through every read a resume or a listing uses: false by default, true
+// when stamped. Resume has no trigger to re-derive it from, so a run that
+// lost it on its row came back resolving $cred: in its user's own scope.
+func testCreateRunCredentialsNoUserScopeRoundTrip(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	sess, _ := s.CreateSession(ctx, "t", "a", "u")
+
+	plain, err := s.CreateRun(ctx, sess.ID, store.RunIdentity{AgentID: "a_cnus_default"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := s.GetRun(ctx, plain.ID); plain.CredentialsNoUserScope || got.CredentialsNoUserScope {
+		t.Errorf("default CredentialsNoUserScope = %v / %v on read-back, want false", plain.CredentialsNoUserScope, got.CredentialsNoUserScope)
+	}
+
+	run, err := s.CreateRun(ctx, sess.ID, store.RunIdentity{AgentID: "a_cnus_set", CredentialsNoUserScope: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !run.CredentialsNoUserScope {
+		t.Error("CreateRun returned CredentialsNoUserScope=false for a run stamped with it")
+	}
+	if got, _ := s.GetRun(ctx, run.ID); !got.CredentialsNoUserScope {
+		t.Error("GetRun: CredentialsNoUserScope=false on read-back (did not persist)")
+	}
+	if got, _ := s.GetRunByAgentID(ctx, "a_cnus_set"); !got.CredentialsNoUserScope {
+		t.Error("GetRunByAgentID: CredentialsNoUserScope=false on read-back")
+	}
+	if runs, _ := s.RunsForSession(ctx, sess.ID); len(runs) != 2 || runs[0].CredentialsNoUserScope == runs[1].CredentialsNoUserScope {
+		t.Errorf("RunsForSession: %d runs, want one with the bit and one without", len(runs))
+	}
+
+	queued, err := s.CreateQueuedRun(ctx, sess.ID, store.RunIdentity{AgentID: "a_cnus_queued", CredentialsNoUserScope: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := s.GetRun(ctx, queued.ID); !got.CredentialsNoUserScope {
+		t.Error("a queued run: CredentialsNoUserScope=false on read-back")
 	}
 }
 

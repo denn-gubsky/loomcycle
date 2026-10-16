@@ -584,6 +584,13 @@ type Run struct {
 	// unstamped path (fail-open).
 	Isolated bool `json:"isolated,omitempty"`
 
+	// CredentialsNoUserScope: a $cred: reference this run resolves is looked
+	// up for its agent and tenant only, never in UserID's own scope — a run a
+	// trigger started without the right to act as its user. Persisted to
+	// runs.credentials_no_user_scope and restored on resume, which has no
+	// trigger to re-derive it from. false on legacy rows.
+	CredentialsNoUserScope bool `json:"credentials_no_user_scope,omitempty"`
+
 	// Retention is the run's retention mode: "" (everything is stored) or
 	// RetentionNone (content is delivered and stored nowhere). Persisted to
 	// runs.retention at creation and never changed.
@@ -1049,6 +1056,9 @@ type RunIdentity struct {
 	// original substrate:user principal on ctx. Additive; false on legacy rows +
 	// every unstamped path (fail-open).
 	Isolated bool
+	// CredentialsNoUserScope is Run.CredentialsNoUserScope, captured at
+	// creation from the run identity that starts it.
+	CredentialsNoUserScope bool
 	// Retention is the run's retention mode, persisted to runs.retention: ""
 	// or RetentionNone. Decided before the row is written; nothing sets it
 	// afterwards. A run with a mode stamps it on its session in the same

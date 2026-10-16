@@ -826,6 +826,9 @@ func (s *Server) resumePausedRun(run store.Run) error {
 		// durable bit is the authority. Without this a paused isolated run could
 		// escape its data-scope confinement on resume.
 		Isolated: run.Isolated,
+		// A trigger's run that may not use its user's own scope: the trigger
+		// is gone, so the row is the only authority, as for the two above.
+		CredentialsNoUserScope: run.CredentialsNoUserScope,
 		// Never "none" in practice — a no-trace run is not paused, so there is
 		// none to resume — but the row is the authority, as for the two above.
 		Retention: run.Retention,

@@ -236,7 +236,7 @@ func (rec *Receiver) handleTest(w http.ResponseWriter, r *http.Request) {
 
 	// 2. Project the payload (same allowlisted mapping the receive path uses).
 	proj, perr := projectDecoded(wd.PayloadMapping, dbody)
-	if perr != nil {
+	if _, bad := payloadCredentialRef(proj.Fields); perr != nil || bad {
 		writeJSON(w, http.StatusOK, testResult{
 			WouldAccept:     false,
 			Verdict:         "rejected_mapping",

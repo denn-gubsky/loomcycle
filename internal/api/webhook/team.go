@@ -70,6 +70,8 @@ func buildTeamWalkInput(w config.Webhook, proj projectResult, body []byte) (runn
 		UserID:                proj.Fields["user_id"],
 		OperatorKeyRestricted: w.OperatorKeyRestricted,
 		Isolated:              w.Isolated,
+		// The user can come from the delivery, as for a spawned run.
+		CredentialsNoUserScope: true,
 	}, nil
 }
 

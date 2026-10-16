@@ -1025,6 +1025,10 @@ type PausedRunEntry struct {
 	// confinement. Omitted when false, and false for older snapshots.
 	OperatorKeyRestricted bool `json:"operator_key_restricted,omitempty"`
 	Isolated              bool `json:"isolated,omitempty"`
+	// CredentialsNoUserScope: the run resolves $cred: for its agent and
+	// tenant only (a trigger's run). Read by resume from the row like the two
+	// bits above. Omitted when false, and false for older snapshots.
+	CredentialsNoUserScope bool `json:"credentials_no_user_scope,omitempty"`
 	// ParentContext is the run's opaque caller-tracking lineage (v0.12.x),
 	// carried through the snapshot so a paused run's parent_context
 	// survives pause→snapshot→restore. Omitted when the run had none.
@@ -1077,21 +1081,22 @@ type QueuedRunsSection struct {
 // keys — the fields PausedRunEntry carries for the same reasons — and the
 // request it was queued with.
 type QueuedRunEntry struct {
-	RunID                 string               `json:"run_id"`
-	AgentID               string               `json:"agent_id,omitempty"`
-	UserID                string               `json:"user_id,omitempty"`
-	UserTier              string               `json:"user_tier,omitempty"`
-	Agent                 string               `json:"agent"`
-	SessionID             string               `json:"session_id"`
-	StartedAt             time.Time            `json:"started_at"`
-	TenantID              string               `json:"tenant_id,omitempty"`
-	Interactive           bool                 `json:"interactive,omitempty"`
-	OperatorKeyRestricted bool                 `json:"operator_key_restricted,omitempty"`
-	Isolated              bool                 `json:"isolated,omitempty"`
-	Retention             string               `json:"retention,omitempty"`
-	ParentContext         *store.ParentContext `json:"parent_context,omitempty"`
-	IdempotencyKey        string               `json:"idempotency_key,omitempty"`
-	DeliveryAltKey        string               `json:"delivery_alt_key,omitempty"`
+	RunID                  string               `json:"run_id"`
+	AgentID                string               `json:"agent_id,omitempty"`
+	UserID                 string               `json:"user_id,omitempty"`
+	UserTier               string               `json:"user_tier,omitempty"`
+	Agent                  string               `json:"agent"`
+	SessionID              string               `json:"session_id"`
+	StartedAt              time.Time            `json:"started_at"`
+	TenantID               string               `json:"tenant_id,omitempty"`
+	Interactive            bool                 `json:"interactive,omitempty"`
+	OperatorKeyRestricted  bool                 `json:"operator_key_restricted,omitempty"`
+	Isolated               bool                 `json:"isolated,omitempty"`
+	CredentialsNoUserScope bool                 `json:"credentials_no_user_scope,omitempty"`
+	Retention              string               `json:"retention,omitempty"`
+	ParentContext          *store.ParentContext `json:"parent_context,omitempty"`
+	IdempotencyKey         string               `json:"idempotency_key,omitempty"`
+	DeliveryAltKey         string               `json:"delivery_alt_key,omitempty"`
 	// QueuedInput is the request the run was queued with, opaque here as
 	// RunConfig is. Its sealed per-run secrets are removed at capture
 	// (StripQueuedSecrets): a snapshot carries no secret, sealed or not, and

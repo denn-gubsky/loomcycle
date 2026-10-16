@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/denn-gubsky/loomcycle/internal/auth"
 	"github.com/denn-gubsky/loomcycle/internal/config"
 	"github.com/denn-gubsky/loomcycle/internal/credential"
 	"github.com/denn-gubsky/loomcycle/internal/store"
@@ -154,6 +155,13 @@ func (s *ScheduleDef) Execute(ctx context.Context, raw json.RawMessage) (tools.R
 	}
 	policy := tools.ScheduleDefPolicy(ctx)
 
+	// Every op that writes a version: a hook edit is a fork too.
+	switch in.Op {
+	case "create", "fork", "add_hook", "remove_hook":
+		if res, refused := refuseNoTraceTriggerAuthor(ctx, "schedule", in.Op); refused {
+			return res, nil
+		}
+	}
 	switch in.Op {
 	case "create":
 		return s.execCreate(ctx, policy, in)
@@ -840,11 +848,26 @@ func (s *ScheduleDef) persistForkFromHookEdit(ctx context.Context, parent store.
 // authorMayActAs reports whether the caller may have a schedule resolve $cred:
 // in userID's own scope: an operator (admin, or open-mode / stdio), or the
 // user themselves — the one who could have stored that user's credentials.
+//
+// The user themselves is the authenticated principal's subject when there is
+// one: off a run the run identity names no user (the substrate routes stamp a
+// synthetic one), and in a run it can name someone else (a draft another user
+// created). With no principal — open mode, a run a trigger fired — it is the
+// run's user. A run that may not use its own user's scope (a webhook's, whose
+// user can come from the delivery) never passes that scope on: a schedule it
+// wrote would otherwise launder its restriction away.
 func authorMayActAs(ctx context.Context, userID string) bool {
-	if userID == "" {
+	ri := tools.RunIdentity(ctx)
+	if userID == "" || ri.CredentialsNoUserScope {
 		return false
 	}
-	return callerHasOperatorAuthority(ctx) || tools.RunIdentity(ctx).UserID == userID
+	if callerHasOperatorAuthority(ctx) {
+		return true
+	}
+	if p, ok := auth.PrincipalFromContext(ctx); ok {
+		return p.Subject == userID
+	}
+	return ri.UserID == userID
 }
 
 // stampOperatorLayer sets def.OperatorLayer from who is writing it — server

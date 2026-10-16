@@ -1150,8 +1150,9 @@ func Restore(ctx context.Context, s store.Store, raw []byte, opts RestoreOptions
 				RunConfig:     e.RunConfig,     // resume on the run's own settings, not the def's current ones
 
 				// Resume reads the confinement bits from this row.
-				OperatorKeyRestricted: e.OperatorKeyRestricted,
-				Isolated:              e.Isolated,
+				OperatorKeyRestricted:  e.OperatorKeyRestricted,
+				Isolated:               e.Isolated,
+				CredentialsNoUserScope: e.CredentialsNoUserScope,
 
 				IdempotencyKey: e.IdempotencyKey,
 				DeliveryAltKey: e.DeliveryAltKey,
@@ -1383,7 +1384,8 @@ func restoreQueuedRun(ctx context.Context, s store.Store, e QueuedRunEntry, repl
 		ID: e.RunID, SessionID: sessionID, TenantID: e.TenantID, Status: store.RunQueued,
 		StartedAt: e.StartedAt, AgentID: e.AgentID, UserID: e.UserID, UserTier: e.UserTier,
 		Interactive: e.Interactive, OperatorKeyRestricted: e.OperatorKeyRestricted, Isolated: e.Isolated,
-		Retention: e.Retention, ParentContext: e.ParentContext,
+		CredentialsNoUserScope: e.CredentialsNoUserScope,
+		Retention:              e.Retention, ParentContext: e.ParentContext,
 		IdempotencyKey: e.IdempotencyKey, DeliveryAltKey: e.DeliveryAltKey,
 		ReplicaID: replicaID,
 	}

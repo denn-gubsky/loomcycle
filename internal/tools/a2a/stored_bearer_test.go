@@ -113,3 +113,42 @@ func TestHardenedPeerClient_APinnedRequestFollowsNoRedirect(t *testing.T) {
 		t.Error("the unpinned control did not follow the redirect")
 	}
 }
+
+// A peer whose bearer_credential_ref is "default" takes the run's
+// user_bearer, which a webhook or a schedule carries as a stored reference
+// its author named. Like the MCP client's bearer, it resolves at tenant level
+// only: neither the run's user nor its calling agent is that author, and a
+// same-named credential in either scope would shadow the tenant's. A
+// credentials value the peer names resolves for the run's identity as before.
+func TestTool_TheRunsStoredUserBearerResolvesAtTenantLevelOnly(t *testing.T) {
+	type seen struct{ user, agent string }
+	var got []seen
+	resolver := func(ctx context.Context, s, _ string) (string, []string, error) {
+		got = append(got, seen{tools.RunIdentity(ctx).UserID, tools.AgentName(ctx)})
+		return "resolved-value", nil, nil
+	}
+	call := func(ref string, ident tools.RunIdentityValue) {
+		t.Helper()
+		def := config.A2AAgent{Endpoint: "https://peer.example/a2a", Binding: "jsonrpc", Auth: config.A2AAgentAuth{Scheme: "http", BearerCredentialRef: ref}}
+		fp := &fakePeer{result: a2asdk.NewMessage(a2asdk.MessageRoleAgent, a2asdk.NewTextPart("ok"))}
+		tool := NewTool("peer", "skill", "", staticResolver(def), factoryFor(fp), nil)
+		WithCredentialResolver(resolver)(tool)
+		ctx := tools.WithAgentName(tools.WithRunIdentity(context.Background(), ident), "caller")
+		res, err := tool.Execute(ctx, json.RawMessage(`{"message":"hi"}`))
+		if err != nil || res.IsError || fp.gotBearer != "resolved-value" {
+			t.Fatalf("ref %q: err=%v %q bearer %q", ref, err, res.Text, fp.gotBearer)
+		}
+	}
+
+	// user_bearer is promoted to credentials["default"] at run start.
+	call("default", tools.RunIdentityValue{UserID: "alice", UserBearer: "$cred:peer",
+		UserCredentials: map[string]string{"default": "$cred:peer"}})
+	// A credentials entry the definition named for this peer.
+	call("peer_tok", tools.RunIdentityValue{UserID: "alice", UserBearer: "$cred:other",
+		UserCredentials: map[string]string{"default": "$cred:other", "peer_tok": "$cred:peer"}})
+
+	want := []seen{{"", ""}, {"alice", "caller"}}
+	if len(got) != len(want) || got[0] != want[0] || got[1] != want[1] {
+		t.Errorf("resolved as %+v, want the user_bearer at tenant level (no user, no agent), then a credential for the run's identity", got)
+	}
+}
