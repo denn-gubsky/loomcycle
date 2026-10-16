@@ -266,7 +266,7 @@ func Hold(ctx context.Context, p providers.Provider, req providers.Request) (pro
 		return p, func() {}, nil
 	}
 	slot := -1
-	release, err := acquire(ctx, lp.sched, nil, lp.id, kind, providers.ModelIdentity(lp.inner, req), nil, func(n int) { slot = n }, nil)
+	release, _, err := acquire(ctx, lp.sched, nil, lp.id, kind, providers.ModelIdentity(lp.inner, req), nil, func(n int) { slot = n }, nil)
 	if err != nil {
 		return nil, nil, err
 	}
