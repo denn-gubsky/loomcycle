@@ -324,3 +324,18 @@ func TestRedactor_FenceTagsSurviveEveryPattern(t *testing.T) {
 		})
 	}
 }
+
+// A YAML value on the next, indented line is still a secret's value. Allowing
+// the match onto an INDENTED next line keeps masking it without letting a rule
+// reach a fence tag, which always starts its line.
+func TestRedactor_MasksAValueOnTheNextIndentedLine(t *testing.T) {
+	r := New(nil, true)
+	got := r.String("db:\n  password:\n    hunter2-secret-value\n")
+	if strings.Contains(got, "hunter2-secret-value") {
+		t.Errorf("an indented next-line value was not masked: %q", got)
+	}
+	fenced := r.String("<web_content>\npassword:\n</web_content>\nnext")
+	if fenced != "<web_content>\npassword:\n</web_content>\nnext" {
+		t.Errorf("a column-0 tag after a key was touched: %q", fenced)
+	}
+}
