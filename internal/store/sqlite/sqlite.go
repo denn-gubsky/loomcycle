@@ -1414,6 +1414,13 @@ func (s *Store) migrate(ctx context.Context) error {
 		// The run a held webhook delivery key started ('' for none yet).
 		// Mirrors postgres migration 0104; its index is in addIndexes.
 		`ALTER TABLE webhook_deliveries ADD COLUMN run_id TEXT NOT NULL DEFAULT ''`,
+		// A dedup_key claim's fencing token, its time (unix nanos, 0 for a row
+		// written before) and the run keys that find its run. Mirrors postgres
+		// migration 0107; its index is in addIndexes.
+		`ALTER TABLE webhook_deliveries ADD COLUMN claim_id TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE webhook_deliveries ADD COLUMN claimed_at INTEGER NOT NULL DEFAULT 0`,
+		`ALTER TABLE webhook_deliveries ADD COLUMN run_key TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE webhook_deliveries ADD COLUMN run_alt_key TEXT NOT NULL DEFAULT ''`,
 	}
 	for _, q := range addColumns {
 		if _, err := s.db.ExecContext(ctx, q); err != nil {
@@ -1572,6 +1579,8 @@ func (s *Store) migrate(ctx context.Context) error {
 		`CREATE UNIQUE INDEX IF NOT EXISTS runs_delivery_alt_key ON runs(delivery_alt_key) WHERE delivery_alt_key IS NOT NULL`,
 		// A failed run's held delivery keys are dropped by run id.
 		`CREATE INDEX IF NOT EXISTS webhook_deliveries_by_run_id ON webhook_deliveries(run_id) WHERE run_id <> ''`,
+		// A claim's keys are linked, released and taken over by claim id.
+		`CREATE INDEX IF NOT EXISTS webhook_deliveries_by_claim_id ON webhook_deliveries(claim_id) WHERE claim_id <> ''`,
 		// RFC N — ON CONFLICT(tenant_id, name) targets for the def plane.
 		// On a FRESH DB these are redundant with the composite PRIMARY KEY /
 		// UNIQUE declared in the CREATE TABLE block above (harmless). On an
@@ -11656,7 +11665,7 @@ func (s *Store) WebhookDeliveryClaim(ctx context.Context, keys []string, now, ex
 		return false, fmt.Errorf("webhook delivery claim begin: %w", err)
 	}
 	defer func() { _ = tx.Rollback() }()
-	if _, err := tx.ExecContext(ctx, `DELETE FROM webhook_deliveries WHERE expires_at <= ?`, now.UnixNano()); err != nil {
+	if _, err := tx.ExecContext(ctx, sqliteWebhookDeliverySweep, now.UnixNano(), now.Add(-store.WebhookUnregisteredClaimGrace).UnixNano()); err != nil {
 		return false, fmt.Errorf("webhook delivery claim sweep: %w", err)
 	}
 	for _, k := range keys {
@@ -11678,63 +11687,174 @@ func (s *Store) WebhookDeliveryClaim(ctx context.Context, keys []string, now, ex
 	return true, nil
 }
 
+// sqliteWebhookDeliverySweep drops held keys past their expiry — except a
+// dedup_key claim still within its grace with no run linked: its setup may
+// link yet, and must find its claim (a definition's lifetime can be shorter
+// than a setup). Args: now, now - grace.
+const sqliteWebhookDeliverySweep = `DELETE FROM webhook_deliveries WHERE expires_at <= ?
+	AND NOT (claim_id <> '' AND run_id = '' AND claimed_at > ?)`
+
 // WebhookDeliveryClaimRun claims every key or none for a delivery that starts
-// a run, first taking over the keys of a run that ended failed; see the
-// store.Store contract.
-func (s *Store) WebhookDeliveryClaimRun(ctx context.Context, keys []string, now, expiresAt time.Time) (bool, string, error) {
-	if len(keys) == 0 {
-		return false, "", fmt.Errorf("webhook delivery claim: no keys")
+// a run, under a new claim id, first taking over the keys of a run that ended
+// failed and looking at claims whose run never linked; see the store.Store
+// contract.
+func (s *Store) WebhookDeliveryClaimRun(ctx context.Context, c store.WebhookRunClaim) (store.WebhookRunClaimResult, error) {
+	if len(c.Keys) == 0 {
+		return store.WebhookRunClaimResult{}, fmt.Errorf("webhook delivery claim: no keys")
 	}
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
-		return false, "", fmt.Errorf("webhook delivery claim begin: %w", err)
+		return store.WebhookRunClaimResult{}, fmt.Errorf("webhook delivery claim begin: %w", err)
 	}
 	defer func() { _ = tx.Rollback() }()
-	if _, err := tx.ExecContext(ctx, `DELETE FROM webhook_deliveries WHERE expires_at <= ?`, now.UnixNano()); err != nil {
-		return false, "", fmt.Errorf("webhook delivery claim sweep: %w", err)
+	graceCutoff := c.Now.Add(-store.WebhookUnregisteredClaimGrace).UnixNano()
+	if _, err := tx.ExecContext(ctx, sqliteWebhookDeliverySweep, c.Now.UnixNano(), graceCutoff); err != nil {
+		return store.WebhookRunClaimResult{}, fmt.Errorf("webhook delivery claim sweep: %w", err)
 	}
-	args := make([]any, 0, len(keys)+len(store.WebhookRetakeRunStatuses))
-	for _, k := range keys {
-		args = append(args, k)
+	keyArgs := make([]any, len(c.Keys))
+	for i, k := range c.Keys {
+		keyArgs[i] = k
 	}
-	for _, st := range store.WebhookRetakeRunStatuses {
-		args = append(args, string(st))
+	retake := make([]any, len(store.WebhookRetakeRunStatuses))
+	for i, st := range store.WebhookRetakeRunStatuses {
+		retake[i] = string(st)
 	}
+	args := append(append([]any{}, keyArgs...), retake...)
 	failedHolders := `SELECT d.run_id FROM webhook_deliveries d JOIN runs r ON r.id = d.run_id
-			 WHERE d.delivery_key IN (` + sqlitePlaceholders(len(keys)) + `)
+			 WHERE d.delivery_key IN (` + sqlitePlaceholders(len(c.Keys)) + `)
 			   AND d.run_id <> ''
-			   AND r.status IN (` + sqlitePlaceholders(len(store.WebhookRetakeRunStatuses)) + `)`
+			   AND r.status IN (` + sqlitePlaceholders(len(retake)) + `)`
 	// The failed run gives up its own keys too, so the run that retakes the
 	// event can carry them.
 	if _, err := tx.ExecContext(ctx,
 		`UPDATE runs SET idempotency_key = NULL, delivery_alt_key = NULL WHERE id IN (`+failedHolders+`)`, args...); err != nil {
-		return false, "", fmt.Errorf("webhook delivery claim retake: %w", err)
+		return store.WebhookRunClaimResult{}, fmt.Errorf("webhook delivery claim retake: %w", err)
 	}
 	if _, err := tx.ExecContext(ctx,
 		`DELETE FROM webhook_deliveries WHERE run_id IN (`+failedHolders+`)`, args...); err != nil {
-		return false, "", fmt.Errorf("webhook delivery claim retake: %w", err)
+		return store.WebhookRunClaimResult{}, fmt.Errorf("webhook delivery claim retake: %w", err)
 	}
-	for _, k := range keys {
+	if err := s.settleStaleWebhookClaims(ctx, tx, keyArgs, retake, graceCutoff); err != nil {
+		return store.WebhookRunClaimResult{}, err
+	}
+	claimID := newID("wdc")
+	for _, k := range c.Keys {
 		res, err := tx.ExecContext(ctx,
-			`INSERT INTO webhook_deliveries (delivery_key, expires_at) VALUES (?, ?) ON CONFLICT(delivery_key) DO NOTHING`,
-			k, expiresAt.UnixNano())
+			`INSERT INTO webhook_deliveries (delivery_key, expires_at, claim_id, claimed_at, run_key, run_alt_key)
+			 VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(delivery_key) DO NOTHING`,
+			k, c.ExpiresAt.UnixNano(), claimID, c.Now.UnixNano(), c.RunKey, c.RunAltKey)
 		if err != nil {
-			return false, "", fmt.Errorf("webhook delivery claim: %w", err)
+			return store.WebhookRunClaimResult{}, fmt.Errorf("webhook delivery claim: %w", err)
 		}
 		if n, err := res.RowsAffected(); err != nil {
-			return false, "", fmt.Errorf("webhook delivery claim: %w", err)
+			return store.WebhookRunClaimResult{}, fmt.Errorf("webhook delivery claim: %w", err)
 		} else if n == 0 {
 			var holder string
 			if err := tx.QueryRowContext(ctx, `SELECT run_id FROM webhook_deliveries WHERE delivery_key = ?`, k).Scan(&holder); err != nil {
-				return false, "", fmt.Errorf("webhook delivery claim holder: %w", err)
+				return store.WebhookRunClaimResult{}, fmt.Errorf("webhook delivery claim holder: %w", err)
 			}
-			return false, holder, nil // the deferred rollback undoes this claim's other keys
+			// The deferred rollback undoes this claim's other keys, and
+			// anything settled above: the next claim settles it again.
+			return store.WebhookRunClaimResult{Holder: holder}, nil
 		}
 	}
 	if err := tx.Commit(); err != nil {
-		return false, "", fmt.Errorf("webhook delivery claim commit: %w", err)
+		return store.WebhookRunClaimResult{}, fmt.Errorf("webhook delivery claim commit: %w", err)
 	}
-	return true, "", nil
+	return store.WebhookRunClaimResult{Claimed: true, ClaimID: claimID}, nil
+}
+
+// settleStaleWebhookClaims handles, inside a claim's transaction, every claim
+// holding one of its keys that has no run linked and was made before
+// graceCutoff: linked to the run carrying its run keys when one does
+// (adopted), taken over when that run failed, dropped when none does. Each
+// write is conditional on the claim still having no run linked, so a link
+// that lands first wins.
+func (s *Store) settleStaleWebhookClaims(ctx context.Context, tx *sql.Tx, keyArgs, retake []any, graceCutoff int64) error {
+	type stale struct{ id, runKey, runAltKey string }
+	rows, err := tx.QueryContext(ctx,
+		`SELECT DISTINCT claim_id, run_key, run_alt_key FROM webhook_deliveries
+		 WHERE delivery_key IN (`+sqlitePlaceholders(len(keyArgs))+`)
+		   AND claim_id <> '' AND run_id = '' AND claimed_at < ?`,
+		append(append([]any{}, keyArgs...), graceCutoff)...)
+	if err != nil {
+		return fmt.Errorf("webhook delivery claim stale: %w", err)
+	}
+	var found []stale
+	for rows.Next() {
+		var st stale
+		if err := rows.Scan(&st.id, &st.runKey, &st.runAltKey); err != nil {
+			_ = rows.Close()
+			return fmt.Errorf("webhook delivery claim stale: %w", err)
+		}
+		found = append(found, st)
+	}
+	if err := rows.Close(); err != nil {
+		return fmt.Errorf("webhook delivery claim stale: %w", err)
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("webhook delivery claim stale: %w", err)
+	}
+	for _, st := range found {
+		runID, status, ok, err := sqliteRunCarryingKeys(ctx, tx, st.runKey, st.runAltKey)
+		if err != nil {
+			return err
+		}
+		if ok && !runStatusIn(status, retake) {
+			if _, err := tx.ExecContext(ctx,
+				`UPDATE webhook_deliveries SET run_id = ? WHERE claim_id = ? AND run_id = ''`, runID, st.id); err != nil {
+				return fmt.Errorf("webhook delivery claim adopt: %w", err)
+			}
+			continue
+		}
+		if ok {
+			if _, err := tx.ExecContext(ctx,
+				`UPDATE runs SET idempotency_key = NULL, delivery_alt_key = NULL WHERE id = ?`, runID); err != nil {
+				return fmt.Errorf("webhook delivery claim retake: %w", err)
+			}
+		}
+		if _, err := tx.ExecContext(ctx,
+			`DELETE FROM webhook_deliveries WHERE claim_id = ? AND run_id = ''`, st.id); err != nil {
+			return fmt.Errorf("webhook delivery claim takeover: %w", err)
+		}
+	}
+	return nil
+}
+
+// sqliteRunCarryingKeys finds the run whose idempotency_key or
+// delivery_alt_key is runKey or runAltKey (each unique across runs).
+func sqliteRunCarryingKeys(ctx context.Context, tx *sql.Tx, runKey, runAltKey string) (string, string, bool, error) {
+	var keys []any
+	for _, k := range []string{runKey, runAltKey} {
+		if k != "" {
+			keys = append(keys, k)
+		}
+	}
+	if len(keys) == 0 {
+		return "", "", false, nil
+	}
+	ph := sqlitePlaceholders(len(keys))
+	var id, status string
+	err := tx.QueryRowContext(ctx,
+		`SELECT id, status FROM runs WHERE idempotency_key IN (`+ph+`) OR delivery_alt_key IN (`+ph+`) LIMIT 1`,
+		append(append([]any{}, keys...), keys...)...).Scan(&id, &status)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", "", false, nil
+	}
+	if err != nil {
+		return "", "", false, fmt.Errorf("webhook delivery claim run lookup: %w", err)
+	}
+	return id, status, true, nil
+}
+
+// runStatusIn reports whether status is one of statuses (strings).
+func runStatusIn(status string, statuses []any) bool {
+	for _, s := range statuses {
+		if s == status {
+			return true
+		}
+	}
+	return false
 }
 
 // WebhookDeliveryHeldByLiveRun reads the live run holding key; see the
@@ -11759,19 +11879,60 @@ func (s *Store) WebhookDeliveryHeldByLiveRun(ctx context.Context, key string, no
 	return runID, true, nil
 }
 
-// WebhookDeliverySetRun records the run a claim's keys started.
-func (s *Store) WebhookDeliverySetRun(ctx context.Context, keys []string, runID string) error {
-	if len(keys) == 0 {
+// WebhookDeliveryLinkRun links a claim's run while the claim is current; see
+// the store.Store contract.
+func (s *Store) WebhookDeliveryLinkRun(ctx context.Context, claimID, runID string) (bool, error) {
+	if claimID == "" || runID == "" {
+		return false, nil
+	}
+	res, err := s.db.ExecContext(ctx,
+		`UPDATE webhook_deliveries SET run_id = ? WHERE claim_id = ? AND (run_id = '' OR run_id = ?)`,
+		runID, claimID, runID)
+	if err != nil {
+		return false, fmt.Errorf("webhook delivery link run: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return false, fmt.Errorf("webhook delivery link run: %w", err)
+	}
+	return n > 0, nil
+}
+
+// WebhookDeliveryReleaseClaim drops the keys of a claim that started nothing.
+func (s *Store) WebhookDeliveryReleaseClaim(ctx context.Context, claimID string) error {
+	if claimID == "" {
 		return nil
 	}
-	args := make([]any, 0, len(keys)+1)
-	args = append(args, runID)
-	for _, k := range keys {
-		args = append(args, k)
-	}
 	if _, err := s.db.ExecContext(ctx,
-		`UPDATE webhook_deliveries SET run_id = ? WHERE delivery_key IN (`+sqlitePlaceholders(len(keys))+`)`, args...); err != nil {
-		return fmt.Errorf("webhook delivery set run: %w", err)
+		`DELETE FROM webhook_deliveries WHERE claim_id = ? AND run_id = ''`, claimID); err != nil {
+		return fmt.Errorf("webhook delivery release claim: %w", err)
+	}
+	return nil
+}
+
+// RunReleaseFailedDeliveryKeys clears the delivery keys of a failed run that
+// carries one of keys; see the store.Store contract.
+func (s *Store) RunReleaseFailedDeliveryKeys(ctx context.Context, keys []string) error {
+	var ks []any
+	for _, k := range keys {
+		if k != "" {
+			ks = append(ks, k)
+		}
+	}
+	if len(ks) == 0 {
+		return nil
+	}
+	retake := make([]any, len(store.WebhookRetakeRunStatuses))
+	for i, st := range store.WebhookRetakeRunStatuses {
+		retake[i] = string(st)
+	}
+	ph := sqlitePlaceholders(len(ks))
+	args := append(append(append([]any{}, retake...), ks...), ks...)
+	if _, err := s.db.ExecContext(ctx,
+		`UPDATE runs SET idempotency_key = NULL, delivery_alt_key = NULL
+		 WHERE status IN (`+sqlitePlaceholders(len(retake))+`)
+		   AND (idempotency_key IN (`+ph+`) OR delivery_alt_key IN (`+ph+`))`, args...); err != nil {
+		return fmt.Errorf("release failed run delivery keys: %w", err)
 	}
 	return nil
 }

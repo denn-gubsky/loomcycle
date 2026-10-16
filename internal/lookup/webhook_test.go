@@ -51,11 +51,19 @@ func (s *stubWebhookStore) WebhookDeliveryRelease(_ context.Context, _ []string)
 	return nil
 }
 
-func (s *stubWebhookStore) WebhookDeliveryClaimRun(_ context.Context, _ []string, _, _ time.Time) (bool, string, error) {
-	return true, "", nil
+func (s *stubWebhookStore) WebhookDeliveryClaimRun(_ context.Context, _ store.WebhookRunClaim) (store.WebhookRunClaimResult, error) {
+	return store.WebhookRunClaimResult{Claimed: true, ClaimID: "c"}, nil
 }
 
-func (s *stubWebhookStore) WebhookDeliverySetRun(_ context.Context, _ []string, _ string) error {
+func (s *stubWebhookStore) WebhookDeliveryLinkRun(_ context.Context, _, _ string) (bool, error) {
+	return true, nil
+}
+
+func (s *stubWebhookStore) WebhookDeliveryReleaseClaim(_ context.Context, _ string) error {
+	return nil
+}
+
+func (s *stubWebhookStore) RunReleaseFailedDeliveryKeys(_ context.Context, _ []string) error {
 	return nil
 }
 

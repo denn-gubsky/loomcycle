@@ -386,6 +386,15 @@ dedup_ttl_seconds: 604800                            # 7 days, the default
   started. If that run ended `failed` — lost in a restart, say — the next
   delivery of the event starts a new run. A run that completed, was
   cancelled or rejected, or whose row is gone, keeps the event held.
+- **A run that never registered does not hold the event for days.** The
+  key records its run as the run registers. One that has recorded none
+  for 15 minutes (the instance died before its run started, say) is looked
+  at by the next delivery of the event: when a run carrying that
+  delivery's keys exists, the delivery is answered as its duplicate; when
+  none does, it starts the run. A setup that registers later finds its
+  claim gone and its run is refused before its first model call, so the
+  event never runs twice. A run that fails before registering never holds
+  its delivery: the sender's retry starts a run.
 - **A body without one of the fields**, or with `null` there, is refused
   `400 dedup_key_unresolvable`, naming the path. A key built from part of
   its fields would merge different events.

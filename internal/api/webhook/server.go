@@ -292,7 +292,7 @@ func (rec *Receiver) handle(w http.ResponseWriter, r *http.Request) {
 	// A dedup_key names the event by signed fields; its keys are held in the
 	// store, which alone can tell that the run an event started failed
 	// (dedupkey.go). Nil for a webhook without one.
-	held, ok := rec.newHeldKeys(w, span, name, whKey, did, wd, body, durableDeliveryKeys(dk, env))
+	held, ok := rec.newHeldKeys(w, span, name, whKey, did, wd, body, dk, durableDeliveryKeys(dk, env))
 	if !ok {
 		return
 	}
@@ -615,15 +615,22 @@ func (rec *Receiver) spawnAsync(w http.ResponseWriter, span trace.Span, name, wh
 	registered := make(chan string, 1)
 	setupErr := make(chan error, 1)
 	var spawnedRunID, spawnedAgentID string
+	// linkErr is the link of the run to its claim, made as it registers; the
+	// run is refused before its first model call when it failed. Written
+	// and read on RunOnce's goroutine.
+	var linkErr error
 	cb := runner.RunCallbacks{
 		OnRegistered: func(agentID, runID, _, _ string) {
 			spawnedRunID, spawnedAgentID = runID, agentID
-			rec.setHeldRun(name, held, runID)
+			if linkErr = rec.linkSpawnedRun(name, held, runID); linkErr != nil {
+				return // not accepted: Admit refuses it
+			}
 			select {
 			case registered <- runID:
 			default:
 			}
 		},
+		Admit: func(string) error { return linkErr },
 	}
 	go func() {
 		err := rec.runner.RunOnce(context.Background(), in, cb)
@@ -632,9 +639,7 @@ func (rec *Receiver) spawnAsync(w http.ResponseWriter, span trace.Span, name, wh
 		}
 		// Here, not in the response's select: a setup that outlasts the
 		// response's wait may still start the run.
-		if startedNothing(err, spawnedRunID) {
-			rec.releaseHeld(context.Background(), name, held)
-		}
+		rec.afterSpawn(name, held, dk, err, linkErr, spawnedRunID)
 		// Fire on_complete hooks AFTER the run returns. Only when the run was
 		// actually admitted (OnRegistered fired → spawnedRunID set) and the
 		// Def declares hooks. A setup-time rejection (err before OnRegistered)
@@ -715,6 +720,12 @@ func (rec *Receiver) spawnAsync(w http.ResponseWriter, span trace.Span, name, wh
 			})
 			return
 		}
+		// The event's run is a later delivery's, which took this one's claim
+		// over: this delivery is answered as the duplicate it now is.
+		if errors.Is(err, errClaimTakenOver) {
+			rec.answerHeldDuplicate(w, span, name, whKey, did, "")
+			return
+		}
 		// Setup-time rejection: the id was NOT recorded, so the sender's
 		// retry of this delivery is processed rather than dropped.
 		rec.finish(span, whKey, did, "rejected_spawn_setup", "")
@@ -772,10 +783,15 @@ func (rec *Receiver) spawnSync(ctx context.Context, w http.ResponseWriter, span 
 		runID   string
 	}, 1)
 	var spawnedRunID, spawnedAgentID string
+	// As spawnAsync's: a run whose claim refused it never registers here, and
+	// the request ends at its timeout.
+	var linkErr error
 	cb := runner.RunCallbacks{
 		OnRegistered: func(agentID, runID, _, _ string) {
 			spawnedRunID, spawnedAgentID = runID, agentID
-			rec.setHeldRun(name, held, runID)
+			if linkErr = rec.linkSpawnedRun(name, held, runID); linkErr != nil {
+				return
+			}
 			select {
 			case registered <- struct {
 				agentID string
@@ -784,15 +800,14 @@ func (rec *Receiver) spawnSync(ctx context.Context, w http.ResponseWriter, span 
 			default:
 			}
 		},
+		Admit: func(string) error { return linkErr },
 	}
 	go func() {
 		err := rec.runner.RunOnce(context.Background(), in, cb)
 		if err != nil {
 			rec.logf("webhook %q: sync run failed: %v", name, err)
 		}
-		if startedNothing(err, spawnedRunID) {
-			rec.releaseHeld(context.Background(), name, held)
-		}
+		rec.afterSpawn(name, held, dk, err, linkErr, spawnedRunID)
 		// Fire on_complete hooks AFTER the run returns, same posture as the
 		// async path. OnRegistered runs before the loop, so spawnedRunID is
 		// set by the time RunOnce returns nil. Detached ctx + best-effort.
