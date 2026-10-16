@@ -501,6 +501,13 @@ type RunCallbacks struct {
 	OnRegistered func(agentID, runID, sessionID, parentAgentID string)
 	OnQueued     func()
 	OnEvent      func(providers.Event)
+	// Admit, when set, is asked once after OnRegistered and before the loop
+	// starts (for a run that queued, when it leaves the queue): a non-nil
+	// error stops the run before its first model call. The run is failed with
+	// the error's text as its reason, and RunOnce returns an error wrapping
+	// it. A webhook delivery's run uses it to refuse to start once another
+	// delivery of its event has taken its claim over.
+	Admit func(runID string) error
 }
 
 // DuplicateRunError is what RunOnce returns when RunInput.ClientIdempotencyKey

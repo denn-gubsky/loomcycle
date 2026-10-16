@@ -3520,6 +3520,15 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 	if cb.OnRegistered != nil && queued == nil {
 		cb.OnRegistered(agentID, runID, sessionID, "")
 	}
+	// The caller's last word before the loop — a run that queued is asked
+	// now that it leaves the queue. A refusal fails the run before its first
+	// model call.
+	if cb.Admit != nil {
+		if aerr := cb.Admit(runID); aerr != nil {
+			s.finishRunFailedReason(runID, "not admitted by its caller: "+aerr.Error(), meta)
+			return fmt.Errorf("run not admitted by its caller: %w", aerr)
+		}
+	}
 
 	// ---- Build emit chain (record + forward to caller) ----
 	// Hoisted so the recording emit attributes usage under the run's true
