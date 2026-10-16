@@ -10,13 +10,21 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/tools"
 )
 
-// withTenant stamps tenant onto ctx as the RunIdentity tenant so the pool —
-// which keys its cache and its build callback off tools.RunIdentity(ctx) — dials
-// THIS run's tenant. The enumerator runs at run-creation time, BEFORE the entry
-// site stamps the full RunIdentity, so a bare ctx would otherwise carry tenant
-// "" and the handshake would dial the wrong (shared) server. Preserves any other
-// identity fields already present.
-func withTenant(ctx context.Context, tenant string) context.Context {
+// discoveryCtx is the ctx for a run-start discovery handshake. It stamps tenant
+// onto ctx as the RunIdentity tenant so the pool — which keys its cache and its
+// build callback off tools.RunIdentity(ctx) — dials THIS run's tenant. The
+// enumerator runs at run-creation time, BEFORE the entry site stamps the full
+// RunIdentity, so a bare ctx would otherwise carry tenant "" and the handshake
+// would dial the wrong (shared) server. Preserves any other identity fields
+// already present.
+//
+// It also marks the handshake as discovery. The stamped identity holds no
+// credential, and for a tenant other than "" it made the HTTP client refuse a
+// header naming the per-run bearer — so a server that came up after loomcycle
+// was never advertised again under a named tenant. Discovery goes without it,
+// as the boot handshake does; the tool call itself still needs it.
+func discoveryCtx(ctx context.Context, tenant string) context.Context {
+	ctx = tools.WithMCPDiscovery(ctx)
 	ident := tools.RunIdentity(ctx)
 	if ident.TenantID == tenant {
 		return ctx
@@ -104,7 +112,7 @@ func DynamicToolsForRun(
 		if !wantServers[sanitiseServerName(name)] {
 			continue
 		}
-		hsCtx, cancel := context.WithTimeout(withTenant(ctx, tenant), handshakeTimeout)
+		hsCtx, cancel := context.WithTimeout(discoveryCtx(ctx, tenant), handshakeTimeout)
 		_, descs, err := pool.Get(hsCtx, name)
 		cancel()
 		if err != nil {
@@ -187,7 +195,7 @@ func StaticToolsForRun(
 		}
 		// Empty cache → one bounded handshake under the run's tenant (so pool.Get
 		// dials the tenant's spec, mirroring DynamicToolsForRun).
-		hsCtx, cancel := context.WithTimeout(withTenant(ctx, tenant), handshakeTimeout)
+		hsCtx, cancel := context.WithTimeout(discoveryCtx(ctx, tenant), handshakeTimeout)
 		_, descs, err := pool.Get(hsCtx, name)
 		cancel()
 		if err != nil {

@@ -942,6 +942,25 @@ func HasRunIdentity(ctx context.Context) bool {
 	return ok
 }
 
+type ctxKeyMCPDiscovery struct{}
+
+// WithMCPDiscovery marks ctx as an MCP discovery handshake — initialize and
+// tools/list made at run start to advertise a server's tools. It carries the
+// run's tenant, so the pool dials the tenant's server, but it is not a request
+// the run makes and holds none of the run's credentials: like the boot-time
+// handshake, it goes without a per-run credential its headers name, instead
+// of being refused for it. A tool call is never made under this marker.
+func WithMCPDiscovery(ctx context.Context) context.Context {
+	return context.WithValue(ctx, ctxKeyMCPDiscovery{}, true)
+}
+
+// IsMCPDiscovery reports whether ctx is an MCP discovery handshake
+// (WithMCPDiscovery).
+func IsMCPDiscovery(ctx context.Context) bool {
+	v, _ := ctx.Value(ctxKeyMCPDiscovery{}).(bool)
+	return v
+}
+
 // ConfineIsolatedScope enforces the RFC BX P2b data-scope confinement for an
 // ISOLATED run (RunIdentity(ctx).Isolated — set from a substrate:user principal
 // at run-start, never from a wire/body/model field). An isolated member may
