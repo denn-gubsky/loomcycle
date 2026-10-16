@@ -8,7 +8,13 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
+	"sort"
+	"strings"
 
+	"github.com/denn-gubsky/loomcycle/internal/audit"
+	"github.com/denn-gubsky/loomcycle/internal/auth"
+	"github.com/denn-gubsky/loomcycle/internal/config"
 	"github.com/denn-gubsky/loomcycle/internal/credential"
 	"github.com/denn-gubsky/loomcycle/internal/hooks"
 	"github.com/denn-gubsky/loomcycle/internal/store"
@@ -55,6 +61,15 @@ type HookDef struct {
 	// names exists in the author's tenant (requireAuthorBoundSigningSecret).
 	// nil = no credential store: a non-admin's signing_secret is refused.
 	Credentials *PeerCredentials
+
+	// Cfg holds the operator's static agents, whose hook references resolve
+	// in the shared layer. Nil = none.
+	Cfg *config.Config
+
+	// Audit records an operator changing a HookDef that a no-trace agent
+	// runs (LOOMCYCLE_AUDIT_LOG_PATH). Nil = no audit log: the process log
+	// line is then the record.
+	Audit audit.Sink
 }
 
 const hookDefDescription = `Author, fork, promote, retire, delete and inspect hook definitions. ` +
@@ -230,6 +245,9 @@ func (h *HookDef) write(ctx context.Context, op string, in hookDefInput, parentD
 		return errResult(fmt.Sprintf("%s: marshal: %s", op, err)), nil
 	}
 	ident := tools.RunIdentity(ctx)
+	if err := h.admitNoTraceHookDefChange(ctx, op, ident.TenantID, in.Name); err != nil {
+		return errResult(err.Error()), nil
+	}
 	created, err := h.Store.HookDefCreate(ctx, store.HookDefRow{
 		DefID:            mintHookDefID(),
 		Name:             in.Name,
@@ -412,6 +430,9 @@ func (h *HookDef) execPromote(ctx context.Context, in hookDefInput) (tools.Resul
 	// Promote within the def's own tenant: an admin promoting another tenant's
 	// def moves that tenant's pointer, never its own.
 	ident := tools.RunIdentity(ctx)
+	if err := h.admitNoTraceHookDefChange(ctx, "promote", row.TenantID, row.Name); err != nil {
+		return errResult(err.Error()), nil
+	}
 	if err := h.Store.HookDefSetActive(ctx, row.TenantID, row.Name, row.DefID, ident.AgentID); err != nil {
 		return errResult(fmt.Sprintf("promote: %s", err)), nil
 	}
@@ -422,8 +443,14 @@ func (h *HookDef) execRetire(ctx context.Context, in hookDefInput) (tools.Result
 	if in.Retired == nil {
 		return errResult("retire: missing required field: retired (true|false)"), nil
 	}
-	if _, refused := h.ownRow(ctx, "retire", in.DefID); refused != nil {
+	row, refused := h.ownRow(ctx, "retire", in.DefID)
+	if refused != nil {
 		return *refused, nil
+	}
+	// Retiring the active version, or bringing one back, changes what a
+	// reference without a version resolves to.
+	if err := h.admitNoTraceHookDefChange(ctx, "retire", row.TenantID, row.Name); err != nil {
+		return errResult(err.Error()), nil
 	}
 	if err := h.Store.HookDefSetRetired(ctx, in.DefID, *in.Retired); err != nil {
 		return errResult(fmt.Sprintf("retire: %s", err)), nil
@@ -460,6 +487,9 @@ func (h *HookDef) execDelete(ctx context.Context, in hookDefInput) (tools.Result
 	if in.Name == "" {
 		return errResult("delete: missing required field: name"), nil
 	}
+	if err := h.admitNoTraceHookDefChange(ctx, "delete", tools.RunIdentity(ctx).TenantID, in.Name); err != nil {
+		return errResult(err.Error()), nil
+	}
 	deleted, err := h.Store.HookDefDelete(ctx, tools.RunIdentity(ctx).TenantID, in.Name)
 	if err != nil {
 		return errResult(fmt.Sprintf("delete: %s", err)), nil
@@ -468,6 +498,118 @@ func (h *HookDef) execDelete(ctx context.Context, in hookDefInput) (tools.Result
 		return errResult(fmt.Sprintf("delete: hook %q not found", in.Name)), nil
 	}
 	return okJSON(map[string]any{"name": in.Name, "deleted": true})
+}
+
+// admitNoTraceHookDefChange refuses a change to which version of HookDef
+// name, in tenant, a reference without a version resolves to — when a no-trace
+// agent runs it that way — unless the caller is an operator (the AgentDef
+// gate's rule, callerMayLiftNoTrace). A hook is sent what a run says; changing
+// the one a no-trace agent runs is changing that agent's hooks. An operator's
+// change is recorded, and refused when the record cannot be written.
+func (h *HookDef) admitNoTraceHookDefChange(ctx context.Context, op, tenant, name string) error {
+	agents, err := h.noTraceAgentsNaming(ctx, tenant, name)
+	if err != nil {
+		return fmt.Errorf("%s: checking which agents run hook %q: %w", op, name, err)
+	}
+	if len(agents) == 0 {
+		return nil
+	}
+	if !callerMayLiftNoTrace(ctx) {
+		return fmt.Errorf("%s: hook %q is run by no-trace agent(s) %s, which name it without a version; only an operator may change which version they run", op, name, strings.Join(agents, ", "))
+	}
+	subject := ""
+	if p, ok := auth.PrincipalFromContext(ctx); ok {
+		subject = p.Subject
+	}
+	if h.Audit != nil {
+		if err := h.Audit.Record(audit.Event{
+			Action: "retention_none_hookdef_changed", TargetTenant: tenant, TargetName: name,
+			ActorTenant: tools.RunIdentity(ctx).TenantID, ActorSubject: subject,
+		}); err != nil {
+			return fmt.Errorf("%s: hook %q was not changed: its audit record could not be written: %w", op, name, err)
+		}
+	}
+	log.Printf("hookdef: %s by %q of hook %q in tenant %q, run by no-trace agent(s) %s", op, subject, name, tenant, strings.Join(agents, ", "))
+	return nil
+}
+
+// noTraceAgentsNaming lists the no-trace agents — active or newest version
+// "retention: none", or a mode the operator's config sets for the name — whose
+// hooks name HookDef name without a version and resolve it through tenant: an
+// agent resolves a reference in its own tenant first, then in the shared
+// layer (""), so a shared HookDef reaches every tenant's agents and the
+// operator's static ones. Over-inclusive on purpose: an agent whose own tenant
+// shadows a shared name is still listed for the shared one.
+func (h *HookDef) noTraceAgentsNaming(ctx context.Context, tenant, name string) ([]string, error) {
+	var out []string
+	staticNone := func(agent string) bool {
+		if h.Cfg == nil {
+			return false
+		}
+		a, ok := h.Cfg.Agents[agent]
+		return ok && a.Retention == store.RetentionNone
+	}
+	if tenant == "" && h.Cfg != nil {
+		for agent, def := range h.Cfg.Agents {
+			if def.Retention == store.RetentionNone && namesUnpinned(def.Hooks, def.ToolHooks, name) {
+				out = append(out, agent)
+			}
+		}
+	}
+	names, err := h.Store.AgentDefListNames(ctx)
+	if err != nil {
+		return nil, err
+	}
+	for _, n := range names {
+		if tenant != "" && n.TenantID != tenant {
+			continue
+		}
+		noTrace, current, err := noTraceLineage(ctx, h.Store, n.TenantID, n.Name)
+		if err != nil {
+			return nil, err
+		}
+		if (!noTrace && !staticNone(n.Name)) || current == nil {
+			continue
+		}
+		var d struct {
+			Hooks     hooks.EventHooks `json:"hooks"`
+			ToolHooks hooks.ToolHooks  `json:"tool_hooks"`
+		}
+		// A definition whose hooks cannot be read cannot be shown not to
+		// name this one.
+		if json.Unmarshal(current, &d) != nil || namesUnpinned(d.Hooks, d.ToolHooks, name) {
+			out = append(out, n.TenantID+"/"+n.Name)
+		}
+	}
+	sort.Strings(out)
+	return out, nil
+}
+
+// namesUnpinned reports whether agent or tool hooks reference HookDef name
+// without a version.
+func namesUnpinned(agent hooks.EventHooks, tool hooks.ToolHooks, name string) bool {
+	in := func(e hooks.EventHooks) bool {
+		for _, entries := range e {
+			for _, entry := range entries {
+				if entry.Inline != nil || entry.Ref == "" {
+					continue
+				}
+				if n, v, err := hooks.ParseRef(entry.Ref); err == nil && n == name && v == 0 {
+					return true
+				}
+			}
+		}
+		return false
+	}
+	if in(agent) {
+		return true
+	}
+	for _, e := range tool {
+		if in(e) {
+			return true
+		}
+	}
+	return false
 }
 
 func hookDefRowResponse(row store.HookDefRow, promoted bool) map[string]any {

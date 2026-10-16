@@ -227,7 +227,7 @@ func callerMayLiftNoTrace(ctx context.Context) bool {
 // pointer, and the newest is what a member's next version follows) — and the
 // definition whose hooks the agent runs with now: the active version's, or
 // the newest's when none is active. current is nil for a new name.
-func (a *AgentDef) noTraceLineage(ctx context.Context, tenant, name string) (noTrace bool, current json.RawMessage, err error) {
+func noTraceLineage(ctx context.Context, st store.Store, tenant, name string) (noTrace bool, current json.RawMessage, err error) {
 	isNone := func(def json.RawMessage) bool {
 		var d struct {
 			Retention string `json:"retention"`
@@ -236,7 +236,7 @@ func (a *AgentDef) noTraceLineage(ctx context.Context, tenant, name string) (noT
 		return json.Unmarshal(def, &d) != nil || d.Retention == store.RetentionNone
 	}
 	var nf *store.ErrNotFound
-	active, err := a.Store.AgentDefGetActive(ctx, tenant, name)
+	active, err := st.AgentDefGetActive(ctx, tenant, name)
 	switch {
 	case err == nil:
 		current = active.Definition
@@ -244,7 +244,7 @@ func (a *AgentDef) noTraceLineage(ctx context.Context, tenant, name string) (noT
 	case !errors.As(err, &nf):
 		return false, nil, err
 	}
-	rows, err := a.Store.AgentDefListByName(ctx, name) // newest first
+	rows, err := st.AgentDefListByName(ctx, name) // newest first
 	if err != nil {
 		return false, nil, err
 	}
@@ -268,7 +268,7 @@ func (a *AgentDef) noTraceLineage(ctx context.Context, tenant, name string) (noT
 // refused when the record cannot be written. def is the version being
 // created, forked or promoted.
 func (a *AgentDef) admitNoTraceChange(ctx context.Context, op, tenant, name string, def mergedDef) error {
-	noTrace, current, err := a.noTraceLineage(ctx, tenant, name)
+	noTrace, current, err := noTraceLineage(ctx, a.Store, tenant, name)
 	if err != nil {
 		return fmt.Errorf("%s: reading the retention mode of %q: %w", op, name, err)
 	}

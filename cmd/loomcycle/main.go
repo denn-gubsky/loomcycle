@@ -1831,6 +1831,7 @@ func main() {
 	// The HookDef substrate compiles a code-js body when it is saved, with the
 	// same runner that will run it; without code hooks a code body is refused.
 	hookDefTool := &builtin.HookDef{
+		Cfg:                 cfg, // the static agents, for the no-trace gate
 		Credentials:         peerCreds,
 		Store:               storeIface,
 		MaxDescriptionBytes: cfg.Env.AgentDefMaxDescriptionBytes,
@@ -1932,9 +1933,11 @@ func main() {
 	// server knows nothing durable was written.
 	if cfg.Env.AuditLogPath != "" {
 		srv.SetRunDeleteAudit(tokenAudit)
-		// An operator taking an agent's no-trace mode off. Nil with no file,
-		// as above: the process log line is the record then.
+		// An operator changing a no-trace agent's mode, its hooks, or a
+		// HookDef it runs. Nil with no file, as above: the process log line
+		// is the record then.
 		agentDefTool.Audit = tokenAudit
+		hookDefTool.Audit = tokenAudit
 	}
 	graceSecs := 0
 	if v := os.Getenv("LOOMCYCLE_OPERATOR_TOKEN_ROTATION_GRACE_SECONDS"); v != "" {
