@@ -160,3 +160,38 @@ func TestNoTrace_ANoTraceAgentIsRefusedAsATeamMember(t *testing.T) {
 		t.Errorf("a no-trace team member: err = %v, want ErrRetentionUnsupported", err)
 	}
 }
+
+// A parent's record of a child it cannot show to be ordinary keeps nothing
+// of the child's answer: a child whose row cannot be found (deleted, never
+// replicated here, a lookup that missed) or a record naming no child at all.
+// Failing open there would store exactly what a no-trace child's mode exists
+// to keep out.
+func TestNoTrace_AChildResultWhoseChildCannotBeReadIsStoredReduced(t *testing.T) {
+	srv, _ := makeServer(t, &childRouter{}, noTraceConfig())
+	ctx := context.Background()
+	sess, err := srv.store.CreateSession(ctx, "", "parent", "alice")
+	if err != nil {
+		t.Fatal(err)
+	}
+	parent, err := srv.store.CreateRun(ctx, sess.ID, store.RunIdentity{AgentID: "a_p", UserID: "alice"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, runID := range map[string]string{"a child with no row": "r_gone", "no child named": ""} {
+		ev := providers.Event{Type: providers.EventSpawnChildResult, SpawnChild: &providers.SpawnChildEventInfo{
+			RunID: runID, Agent: "child", Ok: true, Output: "verdict " + childCanary,
+			State: map[string]any{"v": childCanary},
+		}}
+		payload, _ := json.Marshal(ev)
+		if err := srv.store.AppendEvent(ctx, parent.ID, string(ev.Type), payload); err != nil {
+			t.Fatal(err)
+		}
+		last, err := srv.store.GetLastEventForRun(ctx, parent.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if bytes.Contains(last.Payload, []byte(childCanary)) {
+			t.Errorf("%s: the parent's record kept the answer: %s", name, last.Payload)
+		}
+	}
+}

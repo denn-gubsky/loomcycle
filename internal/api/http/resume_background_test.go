@@ -180,6 +180,25 @@ func workerRun(t *testing.T, srv *Server, parent store.Run, agentID, prompt stri
 	return run
 }
 
+// endedChildRow files the (ordinary, completed) run row of a child that ended
+// before the pause. Every child has one: a parent's record of a child whose
+// row cannot be read is stored without the child's answer, as for a no-trace
+// child.
+func endedChildRow(t *testing.T, srv *Server, parent store.Run, id string) {
+	t.Helper()
+	ctx := context.Background()
+	sess, err := srv.store.CreateSession(ctx, "", "worker", "alice")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := srv.store.CreateRun(ctx, sess.ID, store.RunIdentity{ID: id, AgentID: "a_" + id, UserID: "alice", Model: "stub-model", ParentRunID: parent.ID, ParentAgentID: parent.AgentID}); err != nil {
+		t.Fatal(err)
+	}
+	if err := srv.store.FinishRun(ctx, id, store.RunCompleted, "end_turn", store.Usage{}, ""); err != nil {
+		t.Fatal(err)
+	}
+}
+
 // spawnedInPoll records the lead's parallel_spawn in poll mode of the given
 // children, as the live run records it: the call, a started row per child,
 // and the handles it answered with.
@@ -294,8 +313,8 @@ func TestResumePausedRuns_AParentWaitingForItsChildrenWaitsForThemAgain(t *testi
 // child it read, the wake note skips the child it was told of. The child that
 // ends after the resume reaches the parent through its subagent_stop hook
 // once — and its result row is recorded, so a later resume does not run the
-// hook again. Children that ended before the pause need no run row: their
-// result is on the parent's ledger.
+// hook again. Children that ended before the pause are not read from their
+// run rows: their result is on the parent's ledger.
 func TestResumePausedRuns_ReadAndNotedChildrenAreNotHandedOverAgain(t *testing.T) {
 	hook := newRecordingHook(t, `{"additional_context":"(checked by ops)"}`)
 	prov := newBGFamily(agentCall("tu_2", `{"op":"poll"}`), agentCall("tu_3", `{"op":"poll"}`), answer("done"))
@@ -306,6 +325,7 @@ func TestResumePausedRuns_ReadAndNotedChildrenAreNotHandedOverAgain(t *testing.T
 	c3 := workerRun(t, srv, lead, "a_c3", "hold three", true)
 	spawnedInPoll(t, srv, lead, []string{"r_fast", "r_noted", c3.ID})
 	for _, id := range []string{"r_fast", "r_noted"} {
+		endedChildRow(t, srv, lead, id)
 		appendResumeEvent(t, srv, lead.ID, string(providers.EventSpawnChildResult), providers.Event{Type: providers.EventSpawnChildResult,
 			SpawnChild: &providers.SpawnChildEventInfo{RunID: id, Agent: "worker", Mode: "poll", BatchID: "fan_1",
 				Ok: true, Ended: "completed", Output: "answer of " + id}})
@@ -384,6 +404,7 @@ func TestResumePausedRuns_AParentPausedMidTurnPollsItsChildren(t *testing.T) {
 	srv.providers = &stubResolver{p: prov}
 	settle(t, srv, prov)
 	spawnedInPoll(t, srv, lead, []string{"r_done", remote.ID})
+	endedChildRow(t, srv, lead, "r_done")
 	appendResumeEvent(t, srv, lead.ID, string(providers.EventSpawnChildResult), providers.Event{Type: providers.EventSpawnChildResult,
 		SpawnChild: &providers.SpawnChildEventInfo{RunID: "r_done", Agent: "worker", Mode: "poll", BatchID: "fan_1", Ok: true, Ended: "completed", Output: "answer of r_done"}})
 	markPaused(t, srv, lead)
