@@ -205,6 +205,11 @@ var traceTurnSeq atomic.Uint64
 // was said: filed as "user" it was a forged standing instruction from the user,
 // and filed under its own kind it was still untrusted text read back out of the
 // user's memory.
+//
+// AN ALLOWLIST OF TYPES: only the two spellings intake accepts for the caller's
+// own words are indexed. A block stored with a misspelled type before intake
+// validated types is not one, and an untrusted kind added later stays out without
+// anyone remembering to list it here.
 func userTurnText(segments []loop.PromptSegment) string {
 	var b strings.Builder
 	for _, seg := range segments {
@@ -212,7 +217,7 @@ func userTurnText(segments []loop.PromptSegment) string {
 			continue
 		}
 		for _, blk := range seg.Content {
-			if blk.Type == "image" || blk.Type == "untrusted-block" || strings.TrimSpace(blk.Text) == "" {
+			if (blk.Type != "" && blk.Type != "trusted-text") || strings.TrimSpace(blk.Text) == "" {
 				continue
 			}
 			if b.Len() > 0 {

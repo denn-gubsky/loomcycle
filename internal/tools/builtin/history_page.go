@@ -54,6 +54,11 @@ func selectHistoryPage(ctx context.Context, events []store.Event, in historyInpu
 	}
 
 	p := historyPage{turns: conversationTurns(events)}
+	if in.OmitUntrusted && in.Format == conversationFormat {
+		// Paged over the turns the caller will see, so offsets and has_more
+		// count those and nothing else.
+		p.turns = ownConversationTurns(events)
+	}
 	if tools.RunID(ctx) != "" {
 		p.budget = historyInRunBudget(ctx)
 	}

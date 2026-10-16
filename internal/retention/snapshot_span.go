@@ -164,7 +164,9 @@ func renderTranscriptSpan(events []store.Event) string {
 // fact's evidence, and a webhook body or a fetched page is not something the
 // user said: quoted here, fenced or not, it would reach a later run as the
 // reason the store believes a fact about the user. Nothing is lost by it — the
-// consolidator never extracts from such a block, so no fact rests on one.
+// consolidator never extracts from such a block, so no fact rests on one. An
+// allowlist of types: only the two spellings intake accepts for the caller's own
+// words are quoted, so a block stored with a misspelled type stays out too.
 func firstUserText(payload []byte) string {
 	var segs []struct {
 		Role    string `json:"role"`
@@ -182,7 +184,7 @@ func firstUserText(payload []byte) string {
 			continue
 		}
 		for _, c := range seg.Content {
-			if c.Type == "image" || c.Type == "untrusted-block" || strings.TrimSpace(c.Text) == "" {
+			if (c.Type != "" && c.Type != "trusted-text") || strings.TrimSpace(c.Text) == "" {
 				continue
 			}
 			parts = append(parts, c.Text)

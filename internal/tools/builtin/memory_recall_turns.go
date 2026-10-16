@@ -97,7 +97,7 @@ func (m *Memory) attachSourceTurns(ctx context.Context, scope store.MemoryScope,
 				sess.TenantID == ident.TenantID &&
 				(scope != store.MemoryScopeUser || sess.UserID == ident.UserID) {
 				if events, terr := m.Store.GetTranscript(ctx, sess.ID); terr == nil {
-					got = loaded{turns: ownTurns(conversationTurns(events)), ok: true}
+					got = loaded{turns: ownConversationTurns(events), ok: true}
 				}
 			}
 			cache[sp.SessionID] = got
@@ -129,22 +129,6 @@ func (m *Memory) attachSourceTurns(ctx context.Context, scope store.MemoryScope,
 		attached++
 	}
 	return attached, dropped
-}
-
-// ownTurns keeps the user's turns and the assistant's. History also renders each
-// untrusted block a message carried (a fetched page, a webhook body) as a turn of
-// its own, headed by its kind; that is nobody's words in the chat, and attached to
-// a recalled fact it would reach the run as part of the user's memory — a fact
-// written before the consolidator stopped reading such turns can still carry a
-// span quoted from one.
-func ownTurns(turns []conversationTurn) []conversationTurn {
-	out := turns[:0:0]
-	for _, t := range turns {
-		if t.Speaker == "user" || t.Speaker == "assistant" {
-			out = append(out, t)
-		}
-	}
-	return out
 }
 
 // trimTurnText is separate so the cap is testable without a store.
