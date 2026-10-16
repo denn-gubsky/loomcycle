@@ -101,3 +101,40 @@ func TestResolve_QueueAwareOnlyChoosesAvailableCandidates(t *testing.T) {
 		t.Errorf("a request without QueueWait = %+v, want deepseek as always", plain)
 	}
 }
+
+// A busy candidate is passed over only for one the run can run on: a candidate
+// Eligible refuses is skipped, however short its wait; when every available
+// candidate is refused, the first one is taken, as without the filter.
+func TestResolve_QueueAwareSkipsIneligibleCandidates(t *testing.T) {
+	priority, tiers := fixtureLibrary()
+	r := NewResolver(priority, tiers)
+	seedAll(t, r, tiers)
+
+	req := queueAwareRequest(map[string]time.Duration{"deepseek": 45 * time.Second})
+	req.Eligible = func(provider, _ string) bool { return provider != "ollama-local" }
+	dec, err := r.Resolve(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if dec.Provider != "openai" {
+		t.Fatalf("decision = %s/%s, want openai (ollama-local is free but refused)", dec.Provider, dec.Model)
+	}
+
+	// The only eligible candidate is the busy one: the run stays there and
+	// waits, rather than moving where it cannot run.
+	req.Eligible = func(provider, _ string) bool { return provider == "deepseek" }
+	if dec, err = r.Resolve(req); err != nil {
+		t.Fatal(err)
+	}
+	if dec.Provider != "deepseek" {
+		t.Fatalf("decision = %s, want the busy but eligible deepseek", dec.Provider)
+	}
+
+	req.Eligible = func(string, string) bool { return false }
+	if dec, err = r.Resolve(req); err != nil {
+		t.Fatalf("every candidate refused: %v, want the first available one", err)
+	}
+	if dec.Provider != "deepseek" || dec.Model != "deepseek-v4-pro" {
+		t.Fatalf("every candidate refused: decision = %s/%s, want deepseek/deepseek-v4-pro", dec.Provider, dec.Model)
+	}
+}

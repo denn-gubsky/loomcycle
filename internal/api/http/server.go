@@ -1793,6 +1793,9 @@ func (s *Server) resolveAgentDef(ctx context.Context, def config.AgentDef, tenan
 		if def.Routing != nil && def.Routing.QueueAware && isRunStart(ctx) {
 			req.QueueWait = s.estimatedQueueWait
 			req.SwitchAfter = def.Routing.SwitchAfter()
+			if carriesImage(ctx) {
+				req.Eligible = s.acceptsImages
+			}
 		}
 		dec, rerr := s.resolver.Resolve(req)
 		if rerr != nil {
@@ -1849,6 +1852,77 @@ func (s *Server) resolveAgentDef(ctx context.Context, def config.AgentDef, tenan
 // tiered?" uses this, so none of them disagrees with where the run went.
 func routesByTier(def config.AgentDef) bool {
 	return def.Tier != "" && def.Provider == "" && def.Model == ""
+}
+
+// imageInputKey marks the ctx of a run-start resolution whose run carries an
+// image.
+type imageInputKey struct{}
+
+// runStartCtx marks ctx as resolving a run that is about to start
+// (withRunStart) and, when the run's new input or the session history it
+// continues carries an image, as one that needs a provider able to take it.
+// The history counts because the loop replays it into every turn, and checks
+// it against the provider's vision capability before the first call.
+func runStartCtx(ctx context.Context, segs []loop.PromptSegment, prior []providers.Message) context.Context {
+	ctx = withRunStart(ctx)
+	for _, seg := range segs {
+		for _, c := range seg.Content {
+			if c.Type == "image" {
+				return context.WithValue(ctx, imageInputKey{}, true)
+			}
+		}
+	}
+	for _, m := range prior {
+		for _, c := range m.Content {
+			if c.Type == "image" {
+				return context.WithValue(ctx, imageInputKey{}, true)
+			}
+		}
+	}
+	return ctx
+}
+
+func carriesImage(ctx context.Context) bool {
+	v, _ := ctx.Value(imageInputKey{}).(bool)
+	return v
+}
+
+// acceptsImages reports whether provider can take image input, by the same
+// capability the loop's pre-call vision gate checks. Queue-aware routing must
+// not pass a run with an image over from a busy provider that can take it to
+// one that cannot: there it would only have waited, here the gate fails it.
+// The per-model refinements some drivers make inside Call (a legacy text-only
+// model behind a vision-capable provider) are not visible from here; such a
+// call still fails loudly in the driver.
+func (s *Server) acceptsImages(provider, _ string) bool {
+	p, err := s.providers.Get(provider)
+	return err == nil && p.Capabilities().SupportsVision
+}
+
+// resolveAfterQueue resolves a queue-aware run again once it has waited for
+// its run slot, and reports whether that gave it a provider. Its provider was
+// chosen from the lane estimates when it arrived; after a wait in the run
+// queue they can be quite different, and the run makes no move of its own
+// before its second call. Called only for a run that queued, before anything
+// of its start is recorded: the queued row's model is rewritten when the run
+// starts, and the queued and admitted events name no provider. A run that is
+// not queue-aware keeps its intake choice, and so does one whose new
+// resolution fails — that choice was valid a moment ago, and the loop's
+// fallback handles a provider that has gone since.
+func (s *Server) resolveAfterQueue(ctx context.Context, def config.AgentDef, tenantID, userID, agentName, userTier string, restricted bool) (providerID string, provider providers.Provider, model, effort string, ok bool) {
+	if def.Routing == nil || !def.Routing.QueueAware || !routesByTier(def) {
+		return "", nil, "", "", false
+	}
+	providerID, model, effort, err := s.resolveAgentDef(ctx, def, tenantID, userID, agentName, userTier, restricted)
+	if err != nil {
+		log.Printf("queue-aware routing: agent %q: resolving again after its wait in the run queue failed, keeping its first choice: %v", agentName, err)
+		return "", nil, "", "", false
+	}
+	provider, err = s.providers.Get(providerID)
+	if err != nil {
+		return "", nil, "", "", false
+	}
+	return providerID, provider, model, effort, true
 }
 
 // keyableProvidersFor builds the RFC AX Layer-1 credential-aware routing filter
@@ -3028,16 +3102,9 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 	if rerr != nil {
 		return rerr
 	}
-	providerID, model, effort, err := s.resolveAgentDef(withRunStart(ctx), agentDef, effectiveTenantID, effectiveUserID, effectiveAgentName, in.UserTier, operatorKeyRestricted)
-	if err != nil {
-		return err // already wrapped with runner.Err* sentinel
-	}
-	provider, err := s.providers.Get(providerID)
-	if err != nil {
-		return fmt.Errorf("%w: %v", runner.ErrUnknownProvider, err)
-	}
-
 	// ---- Transcript replay (continuation only) ----
+	// Before the provider is chosen: an image in the history needs a provider
+	// that can take it as much as one in the new input does (runStartCtx).
 	var sessionEvents []store.Event
 	if isContinuation {
 		transcript, err := s.store.GetTranscript(ctx, in.SessionID)
@@ -3046,6 +3113,16 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 		}
 		sessionEvents = transcript
 		priorMessages = replayTranscript(transcript)
+	}
+
+	startCtx := runStartCtx(ctx, in.Segments, priorMessages)
+	providerID, model, effort, err := s.resolveAgentDef(startCtx, agentDef, effectiveTenantID, effectiveUserID, effectiveAgentName, in.UserTier, operatorKeyRestricted)
+	if err != nil {
+		return err // already wrapped with runner.Err* sentinel
+	}
+	provider, err := s.providers.Get(providerID)
+	if err != nil {
+		return fmt.Errorf("%w: %v", runner.ErrUnknownProvider, err)
 	}
 
 	// Runtime-pause admission gate (RFC X / F41) — reject new runs while
@@ -3225,6 +3302,11 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 		return fmt.Errorf("%w: %s", runner.ErrTokenLimitExceeded, limitDec.Refusal.Message)
 	}
 	defer release()
+	if queued != nil {
+		if pid, p, m, e, ok := s.resolveAfterQueue(startCtx, agentDef, effectiveTenantID, effectiveUserID, effectiveAgentName, in.UserTier, operatorKeyRestricted); ok {
+			providerID, provider, model, effort = pid, p, m, e
+		}
+	}
 
 	// ---- Tool filtering + host narrowing ----
 	// RFC N FIX 2-mcp: advertise MCP tools at the run's authoritative
@@ -5134,7 +5216,8 @@ func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {
 		writeJSONError(w, http.StatusConflict, "agent_id_in_use", fmt.Sprintf(agentIDInUseMsg, req.AgentID))
 		return
 	}
-	providerID, model, effort, err := s.resolveAgentDef(withRunStart(r.Context()), agentDef, req.TenantID, req.UserID, req.Agent, req.UserTier, operatorKeyRestricted)
+	startCtx := runStartCtx(r.Context(), req.Segments, nil)
+	providerID, model, effort, err := s.resolveAgentDef(startCtx, agentDef, req.TenantID, req.UserID, req.Agent, req.UserTier, operatorKeyRestricted)
 	if err != nil {
 		writeResolveError(w, err)
 		return
@@ -5389,6 +5472,11 @@ func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer release()
+	if queued != nil {
+		if pid, p, m, e, ok := s.resolveAfterQueue(startCtx, agentDef, req.TenantID, req.UserID, req.Agent, req.UserTier, operatorKeyRestricted); ok {
+			providerID, provider, model, effort = pid, p, m, e
+		}
+	}
 
 	// Filter tools by agent allowlist + caller request.
 	// RFC N: advertise at the run's authoritative tenant. Use req.TenantID
@@ -6191,7 +6279,18 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 		writeResolveError(w, oerr)
 		return
 	}
-	providerID, model, effort, err := s.resolveAgentDef(withRunStart(r.Context()), agentDef, sess.TenantID, sess.UserID, sess.Agent, body.UserTier, operatorKeyRestricted)
+	// Replay prior conversation history from the transcript — before the
+	// provider is chosen, since an image in it needs a provider that can take
+	// it (runStartCtx).
+	transcript, err := s.store.GetTranscript(r.Context(), id)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	priorMessages := replayTranscript(transcript)
+
+	startCtx := runStartCtx(r.Context(), body.Segments, priorMessages)
+	providerID, model, effort, err := s.resolveAgentDef(startCtx, agentDef, sess.TenantID, sess.UserID, sess.Agent, body.UserTier, operatorKeyRestricted)
 	if err != nil {
 		writeResolveError(w, err)
 		return
@@ -6201,14 +6300,6 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-
-	// Replay prior conversation history from the transcript.
-	transcript, err := s.store.GetTranscript(r.Context(), id)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-	priorMessages := replayTranscript(transcript)
 
 	// Runtime-pause admission gate (RFC X / F41): a continuation starts a new
 	// turn/run, so reject it with 503 while pausing/paused (before the slot).
@@ -6380,6 +6471,11 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer release()
+	if queued != nil {
+		if pid, p, m, e, ok := s.resolveAfterQueue(startCtx, agentDef, sess.TenantID, sess.UserID, sess.Agent, body.UserTier, operatorKeyRestricted); ok {
+			providerID, provider, model, effort = pid, p, m, e
+		}
+	}
 
 	// RFC N FIX 2-mcp: a continuation advertises at the SESSION's
 	// authoritative tenant (the same value the continuation run uses), not
