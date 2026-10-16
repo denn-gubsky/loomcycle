@@ -354,11 +354,11 @@ type Server struct {
 	codeHooks hooks.CodeRunner
 
 	// sessionLockPG is the v0.12.5 Phase 6 cluster-mode session lock.
-	// When set, trySessionLock dispatches to it instead of sessionLocks
+	// When set, trySessionLock takes it as well as sessionLocks
 	// — providing cluster-wide per-session_id 409 ErrSessionBusy.
 	// Single-replica deployments leave this nil and the in-process
 	// SessionLockMap above stays the source of truth.
-	sessionLockPG *runner.PgSessionLocker
+	sessionLockPG clusterLocker
 
 	// mcpFallback is the optional Dispatcher fallback for lazy MCP
 	// server registration. When set, an agent's call to a tool name
@@ -3800,8 +3800,8 @@ func (s *Server) SteerRegistry() *steer.Registry { return s.steerReg }
 // goroutines, RFC BH P3a). Always non-nil (constructed in NewServer).
 func (s *Server) TurnCancelRegistry() *turncancel.Registry { return s.turnCancelReg }
 
-// trySessionLock try-locks the session-scoped mutex for id. Returns
-// (release, true) on success and (nil, false) if another caller already
+// trySessionLock try-locks session id for a continuation. Returns
+// (hold, true) on success and (nil, false) if another caller already
 // holds it — in which case the caller should respond 409 / session_busy.
 // id must be non-empty; an empty id is a programmer error and panics.
 //
@@ -3810,19 +3810,72 @@ func (s *Server) TurnCancelRegistry() *turncancel.Registry { return s.turnCancel
 // idle ≥ maxIdle, but unknown-ID entries would still hang around for
 // at least one GC cycle and leak slowly. The DoS guard remains a
 // caller obligation.
-func (s *Server) trySessionLock(id string) (release func(), ok bool) {
+func (s *Server) trySessionLock(id string) (*sessionHold, bool) {
 	if id == "" {
 		panic("trySessionLock: empty session id")
 	}
-	// v0.12.5 Phase 6: cluster-mode dispatch. When sessionLockPG is
-	// wired (cluster mode), use the Postgres advisory lock so
-	// concurrent continuations on the same session_id ACROSS REPLICAS
-	// get the same 409 ErrSessionBusy semantics. Single-replica mode:
-	// sessionLockPG is nil, the in-process SessionLockMap path runs.
-	if s.sessionLockPG != nil {
-		return s.sessionLockPG.TryLock(context.Background(), id)
+	local, ok := s.sessionLocks.TryLock(id)
+	if !ok {
+		return nil, false
 	}
-	return s.sessionLocks.TryLock(id)
+	h := &sessionHold{cluster: s.sessionLockPG, id: id, local: local}
+	if !h.reacquire() {
+		local()
+		return nil, false
+	}
+	return h, true
+}
+
+// sessionHold is a continuation's lock on its session. It is the in-process
+// lock, held for as long as the request lasts, and in cluster mode also the
+// Postgres advisory lock, so that concurrent continuations on the same
+// session across replicas get the same 409. The advisory lock pins a pool
+// connection, so a continuation lets it go while it waits in the run queue
+// and takes it back once it has its slot: a queue of continuations, each
+// pinning a connection, could drain the pool that the running runs need to
+// record their events and finish, and the queue waits for exactly their
+// slots. The in-process lock still keeps the session from every other request
+// on this replica while it waits.
+//
+// A nil hold is a run on no existing session, and every method is a no-op on
+// it. A hold is used only by the goroutine of the request that took it.
+type sessionHold struct {
+	cluster clusterLocker // nil in single-replica mode
+	id      string
+	local   func()
+	remote  func() // the advisory lock's release; nil while it is not held
+}
+
+// reacquire takes the cluster lock, if it is not held. It reports false when
+// another replica holds the session.
+func (h *sessionHold) reacquire() bool {
+	if h == nil || h.cluster == nil || h.remote != nil {
+		return true
+	}
+	release, ok := h.cluster.TryLock(context.Background(), h.id)
+	if !ok {
+		return false
+	}
+	h.remote = release
+	return true
+}
+
+// releaseCluster lets the cluster lock go and keeps the in-process one.
+func (h *sessionHold) releaseCluster() {
+	if h == nil || h.remote == nil {
+		return
+	}
+	h.remote()
+	h.remote = nil
+}
+
+// release lets the session go.
+func (h *sessionHold) release() {
+	if h == nil {
+		return
+	}
+	h.releaseCluster()
+	h.local()
 }
 
 // SetHookRegistry installs the v0.12.5 Phase 6 DB-backed hook
@@ -3851,15 +3904,27 @@ func (s *Server) SetCodeHookRunner(r hooks.CodeRunner) {
 }
 
 // SetPgSessionLocker installs the v0.12.5 Phase 6 cluster-wide
-// session lock. When non-nil, trySessionLock dispatches to it
-// instead of the in-process SessionLockMap.
+// session lock. When non-nil, trySessionLock takes it as well as the
+// in-process SessionLockMap (see sessionHold).
 //
 // Invariant: call during boot wiring, BEFORE the server starts serving —
 // sessionLockPG is read unlocked in trySessionLock on the request path. Same
 // set-before-Serve contract as SetHookRegistry; not safe to call concurrently
 // with request handling.
 func (s *Server) SetPgSessionLocker(l *runner.PgSessionLocker) {
+	// A nil pointer stored in the interface field would read as non-nil
+	// and send every lock to it.
+	if l == nil {
+		s.sessionLockPG = nil
+		return
+	}
 	s.sessionLockPG = l
+}
+
+// clusterLocker is the cluster-wide try-lock behind sessionLockPG:
+// runner.PgSessionLocker in production, a fake in tests.
+type clusterLocker interface {
+	TryLock(ctx context.Context, id string) (release func(), ok bool)
 }
 
 // lockedSessionCount returns the number of entries in sessionLocks.
@@ -5249,6 +5314,7 @@ func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {
 	// the admission gates. A raw read let such a session through to the lock, so
 	// its owner's in-flight run answered 409 session_busy where an unknown id
 	// answered 404 — an existence oracle for other users' sessions.
+	var sessHold *sessionHold
 	if req.SessionID != "" {
 		if s.store == nil {
 			http.Error(w, "session_id requires persistence (Store not configured)", http.StatusBadRequest)
@@ -5263,13 +5329,14 @@ func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
-		releaseSess, ok := s.trySessionLock(req.SessionID)
+		hold, ok := s.trySessionLock(req.SessionID)
 		if !ok {
 			writeJSONError(w, http.StatusConflict, "session_busy",
 				fmt.Sprintf("another request is in flight on session %q", req.SessionID))
 			return
 		}
-		defer releaseSess()
+		sessHold = hold
+		defer sessHold.release()
 	}
 
 	// Runtime-pause admission gate (RFC X / F41): reject new runs with 503
@@ -5389,6 +5456,7 @@ func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {
 		agentID:  agentID,
 		reject:   req.Admission == runner.AdmissionReject,
 		createRow: func() (string, string, error) {
+			sessHold.releaseCluster() // see sessionHold; taken back once admitted
 			sid, rid, err := s.openOrCreateSessionAndQueuedRun(r.Context(), req.SessionID, req.Agent, req.TenantID, req.UserID, queuedIdentity)
 			if err != nil {
 				rowErr = err
@@ -5459,6 +5527,16 @@ func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {
 		default:
 			writeQuotaError(w, err)
 		}
+		return
+	}
+	// A run that waited let the cluster session lock go (see sessionHold), and
+	// another replica may have taken the session meanwhile: it starts only if
+	// it can take the lock back.
+	if queued != nil && !sessHold.reacquire() {
+		release()
+		busy := fmt.Errorf("another request is in flight on session %q", req.SessionID)
+		s.endQueuedRun(queued.runID, busy)
+		stream.send(providers.Event{Type: providers.EventError, Error: "the run did not start: " + busy.Error()})
 		return
 	}
 	// RFC AW token-budget admission, again at start: a run that queued may
@@ -6185,13 +6263,13 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 	// half-written history. Fast-fail with 409 since the alternative —
 	// blocking on an SSE handler — would hold an HTTP connection open
 	// for the full length of the in-flight run.
-	releaseSess, ok := s.trySessionLock(id)
+	sessHold, ok := s.trySessionLock(id)
 	if !ok {
 		writeJSONError(w, http.StatusConflict, "session_busy",
 			fmt.Sprintf("another request is in flight on session %q", id))
 		return
 	}
-	defer releaseSess()
+	defer sessHold.release()
 
 	// Resolve provider+model from the session's stored agent so the
 	// continuation runs against the same model as the original session.
@@ -6387,7 +6465,8 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 	// cannot start at once is queued — its row (status queued), its
 	// registration and its stream exist before it waits — exactly as POST
 	// /v1/runs. It keeps the session lock while it waits, so the session
-	// takes no other turn meanwhile.
+	// takes no other turn on this replica meanwhile; the cluster lock it lets
+	// go (see sessionHold).
 	var (
 		run        store.Run
 		rowErr     error
@@ -6409,6 +6488,7 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 		userID:   sess.UserID,
 		agentID:  agentID,
 		createRow: func() (string, string, error) {
+			sessHold.releaseCluster() // taken back once admitted
 			queuedRun, err := s.store.CreateQueuedRun(r.Context(), id, queuedIdentity)
 			if err != nil {
 				rowErr = err
@@ -6463,6 +6543,26 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 			writeQuotaError(w, err)
 		}
 		return
+	}
+	if queued != nil {
+		// It let the cluster session lock go while it waited (see
+		// sessionHold): it starts only if it can take the lock back, and then
+		// reads the session's history again, since another replica may have
+		// taken a turn on it meanwhile.
+		var startErr error
+		if !sessHold.reacquire() {
+			startErr = fmt.Errorf("another request is in flight on session %q", id)
+		} else if transcript, err := s.store.GetTranscript(r.Context(), id); err != nil {
+			startErr = err
+		} else {
+			priorMessages = replayTranscript(transcript)
+		}
+		if startErr != nil {
+			release()
+			s.endQueuedRun(queued.runID, startErr)
+			stream.send(providers.Event{Type: providers.EventError, Error: "the run did not start: " + startErr.Error()})
+			return
+		}
 	}
 	// RFC AW token-budget admission, again at start: a continuation that
 	// queued may have crossed its ceiling while it waited. Release the slot
