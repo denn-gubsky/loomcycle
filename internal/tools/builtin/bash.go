@@ -115,7 +115,9 @@ func (b *Bash) Execute(ctx context.Context, input json.RawMessage) (tools.Result
 	// read-only (a shell can write via absolute paths / redirection — see
 	// the "not a true sandbox" doc above + RFC AH §6). Rather than ship a
 	// false ro guarantee, effectiveRoot refuses a read-only volume here.
-	cwdRoot, rootErr := effectiveRoot(ctx, args.Volume, true)
+	// For the same reason the binding's fence is not applied: a shell
+	// reaches the dynamic root by an absolute path or `cd`.
+	cwdRoot, _, rootErr := effectiveRoot(ctx, args.Volume, true)
 	if rootErr != nil {
 		return tools.Result{Text: rootErr.Error(), IsError: true}, nil
 	}

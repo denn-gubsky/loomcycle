@@ -601,11 +601,12 @@ func createCeilingRun(t *testing.T, srv *Server, agent string, ident store.RunId
 }
 
 // Every field of a volume binding is either carried by the record or, for the
-// root, deliberately re-resolved on resume. A field added to VolumeBinding
-// without a decision here would be silently dropped across a pause — and a
-// dropped restriction is a widening.
+// root and its fence, deliberately re-resolved on resume. A field added to
+// VolumeBinding without a decision here would be silently dropped across a
+// pause — and a dropped restriction is a widening. (The fence's re-resolution
+// is asserted by TestStaticVolume_DoesNotReachTheDynamicRoot.)
 func TestSpawnRecord_AccountsForEveryVolumeField(t *testing.T) {
-	handled := map[string]bool{"Name": true, "ReadOnly": true, "Default": true, "Root": true}
+	handled := map[string]bool{"Name": true, "ReadOnly": true, "Default": true, "Root": true, "Fence": true}
 	bt := reflect.TypeOf(tools.VolumeBinding{})
 	for i := 0; i < bt.NumField(); i++ {
 		if f := bt.Field(i).Name; !handled[f] {

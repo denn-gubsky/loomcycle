@@ -84,12 +84,15 @@ func (r *Read) Execute(ctx context.Context, input json.RawMessage) (tools.Result
 	if args.Limit != nil && *args.Limit < 1 {
 		return errValidation("Read: limit must be 1 or more", "Omit limit to read to the end of the file."), nil
 	}
-	root, err := effectiveRoot(ctx, args.Volume, false)
+	root, fence, err := effectiveRoot(ctx, args.Volume, false)
 	if err != nil {
 		return tools.Result{Text: err.Error(), IsError: true}, nil
 	}
 
 	resolved, err := resolveInsideRoot(root, args.Path)
+	if err == nil {
+		err = outsideFence(fence, resolved)
+	}
 	if err != nil {
 		return tools.Result{Text: err.Error(), IsError: true}, nil
 	}

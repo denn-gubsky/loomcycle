@@ -2234,6 +2234,7 @@ func (s *Server) volumePolicyForAgent(ctx context.Context, agentDef config.Agent
 		}
 		return tools.VolumePolicyValue{Active: true, Bindings: []tools.VolumeBinding{{
 			Name: "default", Root: def.Path, ReadOnly: def.ReadOnly(), Default: true,
+			Fence: builtin.StaticVolumeFence(s.cfg(), def.Path),
 		}}}
 	}
 	tenantID := tools.RunIdentity(ctx).TenantID
@@ -2242,6 +2243,7 @@ func (s *Server) volumePolicyForAgent(ctx context.Context, agentDef config.Agent
 		if v, ok := s.cfg().Volumes[name]; ok {
 			bindings = append(bindings, tools.VolumeBinding{
 				Name: name, Root: v.Path, ReadOnly: v.ReadOnly(), Default: v.Default,
+				Fence: builtin.StaticVolumeFence(s.cfg(), v.Path),
 			})
 			continue
 		}
@@ -2295,6 +2297,7 @@ func narrowVolumes(parent, child tools.VolumePolicyValue) tools.VolumePolicyValu
 			Root:     pb.Root, // parent's resolved root is authoritative.
 			ReadOnly: cb.ReadOnly || pb.ReadOnly,
 			Default:  cb.Default,
+			Fence:    pb.Fence, // with the root it fences.
 		})
 	}
 	return tools.VolumePolicyValue{Active: true, Bindings: out}

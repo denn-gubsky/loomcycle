@@ -90,7 +90,7 @@ func (g *Grep) Execute(ctx context.Context, input json.RawMessage) (tools.Result
 	if args.Pattern == "" {
 		return errResult("pattern is required"), nil
 	}
-	root, rootErr := effectiveRoot(ctx, args.Volume, false)
+	root, fence, rootErr := effectiveRoot(ctx, args.Volume, false)
 	if rootErr != nil {
 		return errResult(rootErr.Error()), nil
 	}
@@ -133,6 +133,9 @@ func (g *Grep) Execute(ctx context.Context, input json.RawMessage) (tools.Result
 			target = filepath.Join(root, target)
 		}
 		resolved, rerr := resolveInsideRoot(root, target)
+		if rerr == nil {
+			rerr = outsideFence(fence, resolved)
+		}
 		if rerr != nil {
 			return errResult(rerr.Error()), nil
 		}
@@ -165,7 +168,7 @@ func (g *Grep) Execute(ctx context.Context, input json.RawMessage) (tools.Result
 		before, after = args.Context, args.Context
 	}
 
-	res, n, err := grepWalk(root, searchRoot, re, args.Glob, mode, headLimit, maxBytes, before, after)
+	res, n, err := grepWalk(root, fence, searchRoot, re, args.Glob, mode, headLimit, maxBytes, before, after)
 	if err != nil {
 		return errResult(err.Error()), nil
 	}
@@ -184,7 +187,7 @@ func (g *Grep) Execute(ctx context.Context, input json.RawMessage) (tools.Result
 // whatever unit the mode counts in: files for files_with_matches and count,
 // matching lines for content. The caller surfaces it so a reader never has to
 // infer "zero" by noticing the absence of output.
-func grepWalk(root, searchRoot string, re *regexp.Regexp, glob, mode string, headLimit, maxBytes, before, after int) (string, int, error) {
+func grepWalk(root, fence, searchRoot string, re *regexp.Regexp, glob, mode string, headLimit, maxBytes, before, after int) (string, int, error) {
 	// Resolve the sandbox root ONCE; each walked file is checked against it
 	// below. A root that can't be resolved is a misconfiguration, not a
 	// per-file skip, so fail the walk.
@@ -214,6 +217,9 @@ func grepWalk(root, searchRoot string, re *regexp.Regexp, glob, mode string, hea
 			return nil
 		}
 		if d.IsDir() {
+			if isFenceDir(fence, path, d) {
+				return filepath.SkipDir
+			}
 			return nil
 		}
 		if glob != "" {
@@ -237,6 +243,9 @@ func grepWalk(root, searchRoot string, re *regexp.Regexp, glob, mode string, hea
 		}
 		if relInsideRoot(rootResolved, path, resolved) != nil {
 			return nil // escapes the volume → skip, never open
+		}
+		if outsideFence(fence, resolved) != nil {
+			return nil // a symlink into the dynamic root → skip, never open
 		}
 		matches, perr := grepFile(resolved, re, mode == "content", before, after)
 		if perr != nil || len(matches) == 0 {
