@@ -112,3 +112,79 @@ func TestAgentDefTool_OnlyAnOperatorMayDropANoTraceAgentsMode(t *testing.T) {
 		t.Errorf("audit records = %+v, want one naming quiet, acme and ops", sink.evs)
 	}
 }
+
+// A hook is sent what a run says, so on a no-trace agent it is a way to
+// store — elsewhere — what the agent promised to store nowhere. Adding or
+// changing one is the operator's, as dropping the mode is, and audited.
+func TestAgentDefTool_OnlyAnOperatorMayChangeANoTraceAgentsHooks(t *testing.T) {
+	tool, base, cleanup := agentDefFixture(t)
+	defer cleanup()
+	sink := &noTraceAuditSink{}
+	tool.Audit = sink
+	as := func(p auth.Principal) context.Context {
+		ctx := auth.WithPrincipal(base, p)
+		return tools.WithRunIdentity(ctx, tools.RunIdentityValue{AgentID: "a_http-admin", TenantID: "acme"})
+	}
+	operator := as(auth.Principal{TenantID: "acme", Subject: "ops", Scopes: []string{auth.ScopeTenant}})
+	member := as(auth.Principal{TenantID: "acme", Subject: "bob", Scopes: []string{auth.ScopeRunsCreate, auth.ScopeRunsRead}})
+	exec := func(ctx context.Context, input string) tools.Result {
+		t.Helper()
+		res, _ := tool.Execute(ctx, json.RawMessage(input))
+		return res
+	}
+	hooksOf := func() string {
+		t.Helper()
+		def, ok := lookup.Agent(context.Background(), tool.Store, tool.Cfg, "acme", "quiet")
+		if !ok {
+			t.Fatal("quiet did not resolve")
+		}
+		b, _ := json.Marshal(def.Hooks)
+		return string(b)
+	}
+	const hookA = `"hooks":{"agent_stop":[{"name":"check","url":"https://app.example/a"}]}`
+	const hookB = `"hooks":{"agent_stop":[{"name":"check","url":"https://collector.example/b"}]}`
+
+	if res := exec(operator, `{"op":"create","name":"quiet","overlay":{"system_prompt":"v1","retention":"none",`+hookA+`}}`); res.IsError {
+		t.Fatalf("create: %s", res.Text)
+	}
+	staged := exec(operator, `{"op":"create","name":"quiet","promote":false,"overlay":{"system_prompt":"v2","retention":"none",`+hookB+`}}`)
+	if staged.IsError {
+		t.Fatalf("staged version: %s", staged.Text)
+	}
+	sink.evs = nil
+	var out map[string]any
+	_ = json.Unmarshal([]byte(staged.Text), &out)
+	stagedID, _ := out["def_id"].(string)
+	before := hooksOf()
+
+	for what, input := range map[string]string{
+		"create with another hook":       `{"op":"create","name":"quiet","overlay":{"system_prompt":"v3","retention":"none",` + hookB + `}}`,
+		"create with the hook gone":      `{"op":"create","name":"quiet","overlay":{"system_prompt":"v3","retention":"none"}}`,
+		"fork with another hook":         `{"op":"fork","name":"quiet","promote":true,"overlay":{` + hookB + `}}`,
+		"promote another hook's version": `{"op":"promote","def_id":"` + stagedID + `"}`,
+	} {
+		if res := exec(member, input); !res.IsError || !strings.Contains(res.Text, "no-trace") {
+			t.Errorf("a member, %s: %s, want it refused", what, res.Text)
+		}
+		if got := hooksOf(); got != before {
+			t.Fatalf("a member, %s: the agent's hooks are now %s", what, got)
+		}
+	}
+	// The same hooks, another prompt: nothing to decide.
+	if res := exec(member, `{"op":"fork","name":"quiet","promote":true,"overlay":{"system_prompt":"v4"}}`); res.IsError {
+		t.Errorf("a member's fork that keeps the hooks: %s", res.Text)
+	}
+	if len(sink.evs) != 0 {
+		t.Errorf("audit records for refused or unchanged hooks: %+v", sink.evs)
+	}
+	// An operator may, recorded.
+	if res := exec(operator, `{"op":"promote","def_id":"`+stagedID+`"}`); res.IsError {
+		t.Fatalf("an operator's promote: %s", res.Text)
+	}
+	if got := hooksOf(); !strings.Contains(got, "collector.example") {
+		t.Errorf("after the operator's promote: hooks %s", got)
+	}
+	if len(sink.evs) != 1 || sink.evs[0].Action != "retention_none_hooks_changed" || sink.evs[0].TargetName != "quiet" || sink.evs[0].ActorSubject != "ops" {
+		t.Errorf("audit records = %+v, want one retention_none_hooks_changed naming quiet and ops", sink.evs)
+	}
+}
