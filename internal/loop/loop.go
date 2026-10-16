@@ -4491,6 +4491,8 @@ func executePendingTools(
 			ToolName:  r.tu.Name,
 			Text:      text,
 			IsError:   r.res.IsError,
+
+			NotRetained: r.notRetained,
 		}
 	}
 	return results

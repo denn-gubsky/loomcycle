@@ -414,6 +414,11 @@ type ContentBlock struct {
 	// non-image block.
 	MediaType string `json:"media_type,omitempty"`
 	Data      string `json:"data,omitempty"`
+
+	// NotRetained marks a tool_result whose text is a no-trace run's content
+	// (Event.ContentNotRetained): the model reads it, and nothing the run
+	// keeps — its transcript, a harvest into memory — holds it. Never sent.
+	NotRetained bool `json:"-"`
 }
 
 // RequestHasImage reports whether any message in the request carries an image
