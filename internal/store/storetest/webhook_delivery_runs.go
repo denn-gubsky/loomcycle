@@ -135,6 +135,36 @@ func testWebhookDeliveryClaimRunRetakesOnlyAFailedRunsKeys(t *testing.T, s store
 	}
 }
 
+// A claim that recorded no run is its delivery's while the run registers;
+// past store.WebhookUnregisteredClaimGrace it was lost, and the next claim of
+// the event takes it over — with all that claim's keys. A claim that recorded
+// a run is not taken over for its age.
+func testWebhookDeliveryClaimRunRetakesAClaimThatNeverRegistered(t *testing.T, s store.Store) {
+	d := newDeliveryRuns(t, s)
+	grace := store.WebhookUnregisteredClaimGrace
+	if ok, _ := d.claim(armT0, "event", "body"); !ok {
+		t.Fatal("the first claim was refused")
+	}
+	if ok, holder := d.claim(armT0.Add(grace-time.Second), "event"); ok || holder != "" {
+		t.Fatalf("a claim inside the grace: granted %t, holder %q; want refused, no holder", ok, holder)
+	}
+	if ok, holder := d.claim(armT0.Add(grace+time.Second), "event"); !ok {
+		t.Fatalf("a claim past the grace whose run never registered was not taken over (holder %q)", holder)
+	}
+	if ok, _ := d.claim(armT0.Add(grace+time.Second), "body"); !ok {
+		t.Error("the lost claim's other key stayed held")
+	}
+
+	running := d.run(store.RunRunning, "")
+	if ok, _ := d.claim(armT0, "registered"); !ok {
+		t.Fatal("registered")
+	}
+	d.setRun(running, "registered")
+	if ok, holder := d.claim(armT0.Add(grace+time.Second), "registered"); ok || holder != running {
+		t.Errorf("a registered run's claim past the grace: granted %t, holder %q; want held by %s", ok, holder, running)
+	}
+}
+
 // Of many concurrent claims taking over one failed run's key, exactly one is
 // granted.
 func testWebhookDeliveryClaimRunRetakeRaceGrantsOne(t *testing.T, s store.Store) {

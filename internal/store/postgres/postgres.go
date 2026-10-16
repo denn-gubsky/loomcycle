@@ -3960,6 +3960,15 @@ func (s *Store) WebhookDeliveryClaimRun(ctx context.Context, keys []string, now,
 		keys, statuses); err != nil {
 		return false, "", fmt.Errorf("webhook delivery claim retake: %w", err)
 	}
+	// A claim whose run never registered, made more than the grace ago. Its
+	// age is read off its expiry: a claim of this webhook is held as long as
+	// this one will be, so it was made before now-grace when it expires
+	// before expiresAt-grace. Racing retakes resolve as the failed-run one's.
+	if _, err := tx.Exec(ctx,
+		`DELETE FROM webhook_deliveries WHERE delivery_key = ANY($1) AND run_id = '' AND expires_at < $2`,
+		keys, expiresAt.Add(-store.WebhookUnregisteredClaimGrace).UTC()); err != nil {
+		return false, "", fmt.Errorf("webhook delivery claim retake: %w", err)
+	}
 	for _, k := range keys {
 		tag, err := tx.Exec(ctx,
 			`INSERT INTO webhook_deliveries (delivery_key, expires_at) VALUES ($1, $2) ON CONFLICT (delivery_key) DO NOTHING`,

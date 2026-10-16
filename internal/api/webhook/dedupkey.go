@@ -140,8 +140,9 @@ func (rec *Receiver) releaseHeld(ctx context.Context, name string, h *heldKeys) 
 }
 
 // setRun records the run a delivery's keys started. nil-safe. Not undone on
-// failure: the keys stay held for their lifetime with no run, which reads as a
-// run whose row is gone.
+// failure: the keys stay held with no run, as a claim whose run never
+// registered, which the event's next delivery takes over once
+// store.WebhookUnregisteredClaimGrace has passed.
 func (rec *Receiver) setHeldRun(name string, h *heldKeys, runID string) {
 	if h == nil || runID == "" {
 		return
