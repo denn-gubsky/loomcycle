@@ -8,6 +8,132 @@ Each entry is the release's tag annotation, so the tag and this file cannot disa
 
 For the **public roadmap**, see [`docs/PLAN.md`](docs/PLAN.md).
 
+## What's in v1.115.0
+
+*An untrusted block can carry **code kept exactly as written**, in a fence the code cannot close. Otherwise this release is **fixes from a code review** of the last two lines of work: the run queue and provider lanes, and the content-safety features (no-trace runs, restricted tokens, trigger credentials, forge webhooks, git sources, read-only volumes). A no-trace child's answer is no longer stored in its parent, a token limited to some agents can no longer control other agents' runs, and an A2A token reaches only its own tenant. A YAML-declared MCP server that **starts after loomcycle** is now picked up by the next run under any tenant.*
+
+A minor release: #1832 to #1859.
+- #1833 adds the `code` kind of untrusted block;
+- #1832, #1834 to #1837, #1839 to #1842, #1844 and #1846 fix and finish the run queue, call lanes and queue-aware routing;
+- #1848, #1853 and #1854 fix no-trace runs;
+- #1847, #1851 and #1855 fix restricted tokens and A2A;
+- #1849 and #1858 fix whose credential a trigger's run uses;
+- #1850 and #1852 fix forge webhooks;
+- #1838 and #1856 keep untrusted text fenced after the loop;
+- #1843, #1845 and #1859 fix git sources, volumes and `Read`;
+- #1857 recovers an MCP server that starts after loomcycle.
+- `@loomcycle/client` and the Python adapter are 1.115.0.
+
+### Code kept exactly as written (#1833)
+
+Every untrusted block is escaped: every spelling of `<` becomes `‹`, and invisible characters are dropped. Code under review then reaches the model changed: `Vec<T>` loses its `<`, a bug that turns on `&lt;` versus `<` cannot be seen, and a bidi control (Trojan Source) is removed before anyone can flag it.
+
+```json
+{"type": "untrusted-block", "kind": "code", "text": "if a<b && s == \"&lt;\" { … }"}
+```
+
+- **The fence** is `<untrusted-code b="H">…</untrusted-code b="H">`, where `H` is the first 128 bits of the text's SHA-256. It depends only on the text, so a replay is byte-identical and the prompt cache holds. If the text contains `H`, a salted boundary is tried, and after eight tries the block is escaped as before.
+- **One rewrite inside the text:** the fence's own tag name gets `‹` for its `<`, so the only `</untrusted-code` the model sees is the real one.
+- **Invisible characters are shown, not dropped,** as `⟨U+202E⟩`: bidi and zero-width characters, variation selectors, controls other than tab/LF/CR, a lone CR, U+2028/2029.
+- **A size bound:** a block that would grow by more than a quarter plus 4 KiB is escaped instead.
+- **Where:** run segments on HTTP, MCP and gRPC (`PromptContentBlock.kind`, field 6, new), the `Agent` tool's spawn / parallel_spawn / open `untrusted` entries, code-js input forwarding, and schedule prompts, which dropped `kind` before. Both clients send it.
+- **Fixed on the way:** a caller could label its own text `run_metadata`, which marks what an external trigger sent, on `POST /v1/runs`, continuations, MCP and gRPC. It is now relabelled at every intake.
+
+### The run queue, lanes and queue-aware routing: fixes (#1832, #1834–#1837, #1839–#1842, #1844, #1846)
+
+- **Reloaded run-queue caps apply at once** (#1832):
+  - raising `max_concurrent_runs` left queued runs waiting, and lowering it did nothing while runs were queued;
+  - turning the per-user cap off stranded the runs queued on it;
+  - a reloaded `max_queued_runs_per_user` was never applied.
+
+  Also, a slot handed to a waiter just as it gave up sat idle, and a run that had waited on its user's cap could then be refused "queue full".
+- **Lane reservations are freed** (#1834). A slot a lending run gave back, or one held while its run waited at `max_models_in_flight`, stayed reserved until `affinity_hold_ms` ran out. A shrunk lane kept reservations past its new cap, and reloading a provider's caps away never released its waiters.
+- **Queue-aware choices survive operator turns and retunes** (#1835). An operator turn moved a run back onto the busy candidate it had skipped, and a move after preemption ignored a retune. A sub-agent now inherits its parent's current run settings, not the ones it started with.
+- **llama.cpp slot pinning holds** (#1836). LLM gateway requests are sent with their held slot. A run's side calls (a tool's rerank, a summary) no longer use the run's reserved slot, so they don't overwrite its prompt cache.
+- **Streaming `spawn_run` carries `admission` and `interruption`** (#1837); before, a spawn with `admission: "reject"` queued instead of being refused. A2A reports a queued or configured run as `SUBMITTED` (it answered "task not found"). Retune refusals have the same codes on gRPC as on HTTP, and `/retune` answers 409 for a no-trace run, as `/input` does.
+- **An interactive run whose turn is cancelled while its model call waits in a lane parks for steering** (#1840), instead of ending with "context canceled". It takes its lent run slot back before computing again.
+- **Lane wait counts as queue time, not service time** (#1841). On providers whose driver reports no phase timings (llama.cpp, OpenAI-compatible, cloud), a busy lane made the model look slower, and queue-aware routing moved runs off it more than it should. The ledger's `queue_ms` now shows lane waits for every provider.
+- **Cancels reach queued runs on another replica** (#1842), and a dead replica's queued runs are failed by the sweeper instead of waiting forever. A restored snapshot keeps each run's replica.
+- **Queue-aware starts honour vision and the queue wait** (#1844). A run carrying an image, or continuing a session that had one, is never moved to a text-only provider. A run that waited in the run queue chooses its provider again when it starts. `switch_after_ms` is capped at 24 h.
+- **The cluster session lock is let go while a turn is queued** (#1846). Each queued continuation held a Postgres connection for its whole wait, so enough of them drained the pool and the running runs could never finish. If another replica takes the session meanwhile, the queued turn ends failed.
+- **Lent runs are visible** (#1839). Lent runs count against `max_queue_depth` but showed only in `/v1/_concurrency/stats`, so `/metrics` and the Lanes tab read "queued 0" while runs were refused "queue full". There is now a `loomcycle_concurrency_lent` gauge, and `lent` appears in the Lanes view.
+- **Config:** the example config gains a `providers:` lanes block. `LOOMCYCLE_MAX_QUEUED_RUNS_PER_USER` and `LOOMCYCLE_PROVIDER_QUEUE_DEPTH` are in both env templates and the TrueNAS install wizard.
+
+### No-trace runs: what was still stored (#1848, #1854, #1853)
+
+- **A no-trace child's answer was stored three times in an ordinary parent's events:** in the tool result, in the spawn ledger and in the poll-mode result. The parent's model and stream still get it; storage keeps a marker. A parent's record of a child it cannot show to be ordinary (a row that cannot be found) is reduced the same way.
+- **A queued no-trace run stored its run config and its request.** Its record is now only its mode.
+- **A no-trace agent is refused as a team member** (403), because a walk records its members' answers.
+- **Only an operator can take an agent's no-trace mode off, or change its hooks** (`hooks` / `tool_hooks` on create, fork and promote), and only an operator can change a HookDef that a no-trace agent runs unpinned. Each is audited.
+- **Telemetry spans no longer carry a no-trace run's error text** (tool, iteration and MCP spans).
+- `GET /v1/_retention` lists active no-trace overrides only to an operator, and deleting a sub-tree names `ancestor_transcripts` in `not_reached`.
+- **A minted user token inherits the minter's restrictions.**
+- **The Web UI shows a no-trace run** with "Run trace not saved" instead of blanking the runs page.
+
+### Restricted tokens and A2A (#1847, #1851, #1855)
+
+- **A token limited to some agents can no longer control other agents' runs.** Before, it could steer, review, retune, compact, cancel and answer interrupts on any run in its tenant, over HTTP, gRPC and MCP. A run is judged by the agent at the root of its spawn tree, so the allowed agent's own sub-agents stay reachable.
+- **Every steer counts as a run start** against the caller's rate.
+- **An A2A token reaches only its own tenant.** A tenant's token sent to another tenant's host, or with another `tenant` in the body, started runs there and could read and cancel its tasks.
+- **An A2A start takes from the caller's run rate**, the token's own or the default `LOOMCYCLE_RUN_RATE_PER_MINUTE`. Answering a parked run's question is not a start. A2A refuses a token whose retention restriction it cannot apply, and requires `runs:create`.
+- **A locked caller's `allowed_hosts` can only narrow the operator list.** With `LOOMCYCLE_HTTP_CALLER_AUTHORITATIVE=1`, it replaced it.
+- **A token minted through `OperatorTokenDef` is held to the minter's restrictions,** and `rotate` refuses a token less restricted than the caller.
+- `/v1/embeddings` counts against the token budget, and the expired-token purge keeps a tenant's newest row.
+
+### Whose credential a trigger's run uses: the rest (#1849, #1858)
+
+A trigger's run withholds a user's own `$cred:` credentials unless its author could act as that user (v1.114.0). Paths that dropped that:
+- a team walk started by a webhook or schedule, and its members;
+- a resumed or restarted run (a new `runs.credentials_no_user_scope` column, carried in snapshots), and the compaction, recap and hook calls made for it;
+- a git-source clone;
+- a continuation of a trigger's session;
+- team subscription walks and channel hook runs, which run as user `_system`; a credential stored under `_system` never resolves.
+
+Also: a run without the user scope cannot grant it to a schedule it writes, a webhook payload cannot name a stored credential in `user_credentials` (`400 bad_mapping`), and a no-trace caller cannot write a schedule or webhook.
+
+### Forge webhooks (#1850, #1852)
+
+- **A claimed event whose run never started is no longer held for the whole dedup lifetime.** Each claim is fenced: after 15 minutes a claim with no linked run is adopted (a run carries its keys) or taken over, and a taken-over claim's run is refused before its first model call. An event's run never runs twice. A run that failed before registering no longer blocks the retry, with or without a `dedup_key`.
+- **A fork of a static webhook bootstraps the shared row only**, never one in the caller's tenant.
+- **A duplicate a live run holds is answered by a read**, not a write; the `dedup_key` decode is bounded; a huge `dedup_ttl_seconds` no longer overflows into a disabled key.
+- **Authoring checks** refuse a shape rule that always holds (`!$.x == true`), a path key with whitespace, `=` or a quote, and a compared number past 2^53−1, on create and fork and at yaml load.
+- **A stored verification secret is cached 5 s** per tenant and name, instead of a database read and decrypt on every unauthenticated post.
+- `"user_bearer": ""` in a fork overlay clears the bearer.
+
+### Untrusted text stays fenced after the loop (#1838, #1856)
+
+- **The `redact` plugin could delete a fence's closing tag:** a line ending `password=` took the next line as its value. Its rules no longer cross a line onto a tag.
+- **History and the trace index filed untrusted blocks as the user's own words.** A webhook body saying "I'm the admin" came back as something the user said, to later runs, the memory extractor and recall. Each block is now its own turn, under its kind and fenced.
+- **The memory consolidator** no longer splits a conversation at a `### ` heading inside a fence, and keeps a cut message's heading and opening tag.
+- **The retention sweeper's evidence quote** keeps untrusted blocks fenced.
+
+### Git sources, volumes and Read (#1843, #1845, #1859)
+
+- **Git sources:** a diff bounded in lines (a change over 5,000 differing lines is listed `too_large` with no body), pack processing bounded in total and stopped by its context, one create per name at a time, links checked on disk on case-insensitive file systems, no token in errors or logs, IPv6 and `:443` URLs matched correctly, and a GitHub App credential named as `$cred:` refused (use `$ghapp:`).
+- **A static volume at or above the dynamic root can no longer reach it**, so a read-only ephemeral volume is read-only through every binding (Read, Write, Edit, Glob, Grep and Bashbox). Bash and Bashbox's host-command fallback are not held to read-only, and the docs now say so.
+- **`Read` by line range:** a huge `limit` no longer overflows, the way to `offset` is bounded (`MaxSeekBytes`, 1 GiB), and a long line honours cancellation.
+- **A root that is a symlink is walked** by Glob, Grep, the skills loader and SQL Memory. SQL Memory skipped every scope under such a root, so a snapshot or an erasure silently missed it.
+
+### MCP: a server that starts after loomcycle (#1857)
+
+A YAML-declared MCP server that was down at boot is re-probed by the next run that names its tools. If its headers name the per-run bearer (`Bearer ${run.user_bearer}`) and the run's tenant is not `""`, that re-probe was refused before it was sent, so the server's tools were never advertised until a restart. The re-probe now goes without the bearer, as the boot handshake does; a tool call still needs it. The log line is `dropping header (run-start discovery handshake)`.
+
+### Upgrade notes
+
+- Two Postgres migrations: 0106 (`runs.credentials_no_user_scope`) and 0107 (the webhook dedup claim fence). SQLite adds the columns itself.
+- **Behaviour changes:**
+  - A no-trace agent cannot be a team member (403).
+  - Only an operator can remove an agent's no-trace mode, change a no-trace agent's hooks, or change a HookDef a no-trace agent runs unpinned.
+  - Every steer counts against a rate-limited caller's run rate.
+  - A2A now applies the default per-user run rate.
+  - A locked caller's `allowed_hosts` only narrows the operator list.
+  - A token minted through `OperatorTokenDef` inherits the minter's restrictions, and a restricted caller cannot rotate a looser token.
+  - Continuing a trigger's session withholds the session user's own credentials.
+- **Webhooks:** the yaml boot refuses a mistyped shape rule or an oversized compared number. A rotated or deleted verification secret can still verify for up to 5 s per replica.
+- **Git sources:** a credential saved with an IPv6 `allowed_urls` entry stops matching until it is saved again. A diff over 5,000 changed lines of one file has no body.
+- **History:** a History page can hold several turns at one seq (a user's words, then each untrusted block). Trace rows written before this release keep their old form until their TTL.
+- **Replay:** a block stored with `kind: "code"` before this release replays as a code block, so its session's first replayed turn misses the prompt cache once.
+
 ## What's in v1.114.0
 
 *Every way a run starts now **waits in the run queue**, and so do a session's next message and the LLM gateway. While a run's model call waits for a busy local provider, the run **lends its run slot** to a run bound elsewhere. An agent, or one run, can **skip a busy provider** for an idle candidate of its tier, at its start and once more if it loses its place. A lane can cap **one model** inside it, for Ollama models that compute one request at a time. Forge **webhooks** can filter on the signed body, start **one run per event**, carry a stored **bearer**, tell the run which event it handles, and count their deliveries. A stored credential that cannot be opened **fails closed**.*
