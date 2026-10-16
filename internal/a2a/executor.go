@@ -173,9 +173,17 @@ func (e *Executor) Execute(ctx context.Context, execCtx *a2asrv.ExecutorContext)
 		}
 
 		// A fresh run is a run start: it takes from the caller's run rate
-		// first, so a refusal costs nothing — no task, no row, no slot. A
-		// resume above is an answer to a run already started, and is not
-		// counted, as resolving an interrupt on the other transports is not.
+		// first, so a refusal costs nothing — no task, no row, no slot.
+		//
+		// A resume above is not counted. A run parks on this plane only on
+		// an Interruption question, and the resume resolves it: the answer
+		// is the tool's result inside the turn already running, not a new
+		// turn — an interrupt resolve, which no transport counts. (An HTTP
+		// steer is counted because a message can start a turn; nothing
+		// parks at end_turn here, so a message to an interactive run waiting
+		// for input finds no park and comes this way, counted.) Counting the
+		// answer would also leave a caller whose rate is spent unable to
+		// answer its own run's question.
 		if err := e.admitStart(ctx); err != nil {
 			yield(nil, rateRefusal(err))
 			return
