@@ -155,6 +155,11 @@ func (s *ScheduleDef) Execute(ctx context.Context, raw json.RawMessage) (tools.R
 	}
 	policy := tools.ScheduleDefPolicy(ctx)
 
+	if in.Op == "create" || in.Op == "fork" {
+		if res, refused := refuseNoTraceTriggerAuthor(ctx, "schedule", in.Op); refused {
+			return res, nil
+		}
+	}
 	switch in.Op {
 	case "create":
 		return s.execCreate(ctx, policy, in)

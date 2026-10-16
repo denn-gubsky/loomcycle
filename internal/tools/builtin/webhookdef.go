@@ -128,6 +128,11 @@ func (s *WebhookDef) Execute(ctx context.Context, raw json.RawMessage) (tools.Re
 	}
 	policy := tools.WebhookDefPolicy(ctx)
 
+	if in.Op == "create" || in.Op == "fork" {
+		if res, refused := refuseNoTraceTriggerAuthor(ctx, "webhook", in.Op); refused {
+			return res, nil
+		}
+	}
 	switch in.Op {
 	case "create":
 		return s.execCreate(ctx, policy, in)
