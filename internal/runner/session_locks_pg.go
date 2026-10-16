@@ -10,7 +10,7 @@ import (
 )
 
 // PgSessionLocker is the v0.12.5 Phase 6 cluster-wide session-lock
-// implementation. Replaces SessionLockMap's in-process mutex with a
+// implementation. Adds to SessionLockMap's in-process mutex a
 // Postgres session-scoped advisory lock keyed by hash(session_id),
 // so concurrent continuations on the same session_id across replicas
 // fail with the same ErrSessionBusy 409 semantics.
@@ -29,7 +29,12 @@ import (
 // from the pgxpool. Operators sizing their pool should ensure
 // MaxConcurrentRuns + headroom < pool.MaxConns (default 32). The
 // global concurrency Semaphore caps MaxConcurrentRuns to ~32 by
-// default, so the budget fits comfortably.
+// default, so the budget fits comfortably. The budget holds only because
+// a continuation waiting in the run queue does not hold its lock: the
+// HTTP handlers let it go while the run is queued and take it back once
+// it has its slot (sessionHold in internal/api/http). Held across the
+// wait, each queued continuation pinned a connection, and a long enough
+// queue starved the running runs of the connections they need to finish.
 //
 // Crash safety: if the loomcycle process crashes, the TCP connection
 // closes and Postgres auto-releases the lock. No stuck-lock scenarios

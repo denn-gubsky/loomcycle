@@ -74,11 +74,11 @@ func TestHandleRuns_UnownedSessionReadsLikeMissingOne(t *testing.T) {
 			}
 			t.Run(name, func(t *testing.T) {
 				if ownerBusy {
-					release, ok := srv.trySessionLock(sess.ID)
+					hold, ok := srv.trySessionLock(sess.ID)
 					if !ok {
 						t.Fatal("could not take the owner's session lock")
 					}
-					defer release()
+					defer hold.release()
 				}
 				unowned := runsWithSession(srv, pr.p, sess.ID)
 				missing := runsWithSession(srv, pr.p, missingID)
