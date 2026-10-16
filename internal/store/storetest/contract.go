@@ -147,6 +147,7 @@ func Run(t *testing.T, factory Factory) {
 		{"CreateRunIsolatedRoundTrip", testCreateRunIsolatedRoundTrip},
 		{"CreateRunCredentialsNoUserScopeRoundTrip", testCreateRunCredentialsNoUserScopeRoundTrip},
 		{"WithholdRunUserScope", testWithholdRunUserScope},
+		{"StartRunCarriesTheNoUserScopeOneWay", testStartRunCarriesTheNoUserScopeOneWay},
 		{"CreateRunConfigRoundTrip", testCreateRunConfigRoundTrip},
 		{"SetRunConfigCASRefusesAStalePrev", testSetRunConfigCASRefusesAStalePrev},
 		{"SetRunConfigCASConcurrentWritersAllSurvive", testSetRunConfigCASConcurrentWritersAllSurvive},
@@ -4780,6 +4781,31 @@ func testWithholdRunUserScope(t *testing.T, s store.Store) {
 	var nf *store.ErrNotFound
 	if err := s.WithholdRunUserScope(ctx, "r_no_such_run"); !errors.As(err, &nf) {
 		t.Errorf("an unknown run: %v, want *ErrNotFound", err)
+	}
+}
+
+// Starting a draft or a queued run writes the no-user-scope bit its start
+// decided — a draft another user starts is withheld though its row was
+// written without — and never clears one the row already holds.
+func testStartRunCarriesTheNoUserScopeOneWay(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	draft := newDraft(t, s, "t", "alice", "a_cnus_draft")
+	if _, err := s.StartConfiguredRun(ctx, draft.ID, store.RunIdentity{CredentialsNoUserScope: true}, nil); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := s.GetRun(ctx, draft.ID); !got.CredentialsNoUserScope {
+		t.Error("a draft started with the bit reads credentials_no_user_scope=false")
+	}
+	sess, _ := s.CreateSession(ctx, "t", "a", "u")
+	queued, err := s.CreateQueuedRun(ctx, sess.ID, store.RunIdentity{AgentID: "a_cnus_q", CredentialsNoUserScope: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.StartQueuedRun(ctx, queued.ID, store.RunIdentity{}); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := s.GetRun(ctx, queued.ID); !got.CredentialsNoUserScope {
+		t.Error("starting a queued run cleared the bit it was queued with")
 	}
 }
 
