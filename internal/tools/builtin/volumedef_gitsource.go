@@ -2,6 +2,7 @@ package builtin
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -369,7 +370,17 @@ func (v *VolumeDef) execCreateFromGit(ctx context.Context, in volumeDefInput, mo
 		// The remote's own words can echo the request, so the model gets the
 		// class and the operator the detail, with the repository's path cut
 		// out of it: a no-trace run's repository is not for the log either.
-		log.Printf("volumedef: git source: host=%s class=%s: %s", u.Host, class, strings.ReplaceAll(err.Error(), g.URL, "https://"+u.Host+"/<repository>"))
+		// A server may echo the request's credentials in its refusal (the
+		// detail keeps the start of what it said), so the token, and the
+		// header it was sent in, are masked too.
+		detail := strings.ReplaceAll(err.Error(), g.URL, "https://"+u.Host+"/<repository>")
+		if token != "" {
+			detail = strings.NewReplacer(
+				token, "[redacted]",
+				base64.StdEncoding.EncodeToString([]byte(username+":"+token)), "[redacted]",
+			).Replace(detail)
+		}
+		log.Printf("volumedef: git source: host=%s class=%s: %s", u.Host, class, detail)
 		return gitSourceRefusal(class, ""), nil
 	}
 

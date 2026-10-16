@@ -28,6 +28,9 @@ type call struct {
 	max  int64
 	read atomic.Int64
 	over atomic.Bool
+	// status is the last error status (400 and up) a response of the fetch
+	// had, for the detail of a refusal (refusalDetail).
+	status atomic.Int32
 	// packRefused points at the store's flag for a pack turned away over an
 	// object's size (packguard.go).
 	packRefused *atomic.Bool
@@ -67,6 +70,9 @@ func (dispatcher) RoundTrip(r *http.Request) (*http.Response, error) {
 	resp, err := st.rt.RoundTrip(r)
 	if err != nil {
 		return nil, err
+	}
+	if resp.StatusCode >= 400 {
+		st.status.Store(int32(resp.StatusCode))
 	}
 	resp.Body = &countedBody{ReadCloser: resp.Body, st: st}
 	return resp, nil

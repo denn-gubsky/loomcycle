@@ -7,6 +7,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/cgi"
 	"net/http/httptest"
@@ -387,6 +388,32 @@ func TestFetch_ARepositoryThatIsNotThere(t *testing.T) {
 	req.URL = strings.Replace(req.URL, "/acme/app.git", "/acme/nothing.git", 1)
 	if _, err := Fetch(context.Background(), req); !errors.Is(err, ErrNotFound) {
 		t.Errorf("err = %v (class %s), want not_found", err, Class(err))
+	}
+}
+
+// A 401, 403 or 404 body is the server's own text, read whole by the library
+// into its error; it can be large, and can echo the request. The detail kept
+// for the operator's log is the class, the status and a short snippet.
+func TestFetch_ARefusalsBodyIsNotCarriedWhole(t *testing.T) {
+	for status, class := range map[int]error{401: ErrAuthFailed, 403: ErrAuthFailed, 404: ErrNotFound} {
+		body := "denied " + strings.Repeat("x", 64<<10) + " TAIL-OF-THE-BODY"
+		req := Request{
+			URL: "https://git.example/acme/app", Commit: strings.Repeat("a", 40),
+			StoreDir: filepath.Join(t.TempDir(), "store"), MaxFetchBytes: 1 << 20, MaxObjectBytes: 1 << 20,
+			Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+				return &http.Response{StatusCode: status, Header: http.Header{}, Body: io.NopCloser(strings.NewReader(body)), Request: r}, nil
+			}),
+		}
+		_, err := Fetch(context.Background(), req)
+		if !errors.Is(err, class) {
+			t.Errorf("%d: err class %s, want %v", status, Class(err), class)
+			continue
+		}
+		if msg := err.Error(); len(msg) > 512 || strings.Contains(msg, "TAIL-OF-THE-BODY") {
+			t.Errorf("%d: the error carries %d bytes of the body: %.200q…", status, len(msg), msg)
+		} else if !strings.Contains(msg, fmt.Sprint(status)) || !strings.Contains(msg, "denied") {
+			t.Errorf("%d: the error %q names neither the status nor the start of the body", status, msg)
+		}
 	}
 }
 

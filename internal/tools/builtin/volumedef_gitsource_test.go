@@ -1,10 +1,15 @@
 package builtin
 
 import (
+	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
+	"log"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
@@ -386,6 +391,46 @@ func TestVolumeDefGitSource_TwoCreatesOfOneNameAtOnce(t *testing.T) {
 			t.Errorf("%s: object stores left: %v", name, stores)
 		}
 	}
+}
+
+// gitEchoingRefusal answers every request with a 401 whose body echoes the
+// request's credentials, as a careless or hostile server may.
+type gitEchoingRefusal struct{}
+
+func (gitEchoingRefusal) RoundTrip(r *http.Request) (*http.Response, error) {
+	user, pass, _ := r.BasicAuth()
+	body := "denied for " + user + ":" + pass + " (" + r.Header.Get("Authorization") + ")"
+	return &http.Response{StatusCode: http.StatusUnauthorized, Header: http.Header{},
+		Body: io.NopCloser(strings.NewReader(body)), Request: r}, nil
+}
+
+// The operator's log gets the class, the status and the start of what the
+// server said, never the token: a server that echoes the request's
+// credentials in its refusal does not put them in the log.
+func TestVolumeDefGitSource_ARefusalEchoingTheTokenIsLoggedWithoutIt(t *testing.T) {
+	f := newGitSourceFixture(t, true)
+	f.tool.Git.Transport = gitEchoingRefusal{}
+	ref := f.credential(t, "repo", gitTestToken, &[]string{f.repo.URL})
+
+	var buf bytes.Buffer
+	old := log.Writer()
+	log.SetOutput(&buf)
+	defer log.SetOutput(old)
+	_, res := f.create(t, f.ctx, "repo", map[string]any{"url": f.repo.URL, "commit": f.repo.Head, "credential": ref}, nil)
+	log.SetOutput(old)
+
+	if !res.IsError || !strings.Contains(res.Text, "auth_failed") {
+		t.Fatalf("create: %q, want auth_failed", res.Text)
+	}
+	logged := buf.String()
+	basic := base64.StdEncoding.EncodeToString([]byte(gitTestUser + ":" + gitTestToken))
+	if strings.Contains(logged, gitTestToken) || strings.Contains(logged, basic) {
+		t.Errorf("the log carries the token: %s", logged)
+	}
+	if !strings.Contains(logged, "class=auth_failed") || !strings.Contains(logged, "401") {
+		t.Errorf("the log does not say what happened: %s", logged)
+	}
+	f.assertNothingLeft(t, "repo")
 }
 
 // A request may lower the operator's byte limit and can never raise it.
