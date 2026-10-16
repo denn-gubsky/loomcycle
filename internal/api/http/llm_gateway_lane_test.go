@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -40,6 +41,53 @@ func (p *heldProvider) Call(ctx context.Context, _ providers.Request) (<-chan pr
 			Usage: &providers.Usage{InputTokens: 1, OutputTokens: 1}}
 	}()
 	return ch, nil
+}
+
+// slotRecordingProvider answers at once and records the lane slot each call's
+// ctx carries (-1 for none) — what a pinning driver (llama.cpp's id_slot) sends.
+type slotRecordingProvider struct {
+	heldProvider
+	mu    sync.Mutex
+	slots []int
+}
+
+func (p *slotRecordingProvider) Call(ctx context.Context, req providers.Request) (<-chan providers.Event, error) {
+	slot, ok := providers.LaneSlot(ctx)
+	if !ok {
+		slot = -1
+	}
+	p.mu.Lock()
+	p.slots = append(p.slots, slot)
+	p.mu.Unlock()
+	return p.heldProvider.Call(ctx, req)
+}
+
+// TestLLMGateway_CallIsPinnedToItsHeldLaneSlot — a gateway request holds a slot
+// of its provider's lane, and its call must reach the driver under that slot's
+// number, as a run's call does. Sent unpinned, a pinning backend picks a slot
+// itself, possibly the one another call (here, slot 0's holder) is pinned to.
+func TestLLMGateway_CallIsPinnedToItsHeldLaneSlot(t *testing.T) {
+	cfg := makeBaseConfig()
+	gate := make(chan struct{})
+	close(gate)
+	prov := &slotRecordingProvider{heldProvider: heldProvider{gate: gate}}
+	srv, sched := lanedServer(t, cfg, map[string]int{"P": 2}, map[string]providers.Provider{"P": prov})
+	ts := httptest.NewServer(srv.Mux())
+	defer ts.Close()
+
+	relP, err := sched.Acquire(context.Background(), "P", "chat", concurrency.CallInfo{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer relP()
+	if r := <-postGateway(ts, gatewayBodyP); r.status != http.StatusOK {
+		t.Fatalf("status=%d body=%s, want 200", r.status, r.body)
+	}
+	prov.mu.Lock()
+	defer prov.mu.Unlock()
+	if len(prov.slots) != 1 || prov.slots[0] != 1 {
+		t.Fatalf("driver saw lane slots %v, want [1] (the slot the request held)", prov.slots)
+	}
 }
 
 // gatewayResult is one gateway response.
