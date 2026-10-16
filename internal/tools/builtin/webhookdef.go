@@ -82,7 +82,7 @@ const webhookDefInputSchema = `{
     "parent_def_id": {"type": "string", "description": "Fork parent (optional for fork — when absent, forks the active def of the name, or bootstraps from a yaml template)."},
     "overlay": {
       "type": "object",
-      "description": "Mutable subset of the webhook definition for create/fork. delivery is spawn (default — start a run of agent), channel (publish the body to channel) or team (start a detached walk of the team named in team, as TeamDef op=run mode=detach does, with the raw request body as the walk's input). For team, vars maps a variable the team declares to a JSONPath into the body ($, .key and [N] only), e.g. {\"delivery\":\"team\",\"team\":\"pr-review\",\"vars\":{\"repo\":\"$.repository.full_name\",\"pr\":\"$.pull_request.number\"}}; a path the body lacks leaves that variable at the team's default. delivery=team forbids agent, channel, credentials, metadata, on_complete, sync_response and every payload_mapping target except user_id; team and vars are refused on the other deliveries. The team is looked up in the webhook's tenant when a delivery arrives: a missing or retired team, a variable it does not declare, or a projected value it refuses (too long, or containing {{ or }}) starts no walk and answers 400 invalid_run. An accepted delivery answers 202 with the walk's run_id. tenant_id (where spawned runs execute) may name only your own tenant unless you are an admin; omit it to use yours. user_tier pins the tier a spawned run is routed and billed under; a delivery never chooses it, and it must be one of the server's tiers. body_size_limit_bytes may not exceed the server's request limit. The verification secret is named either by an env var (auth.signing_secret_env for hmac, auth.bearer_token_env for bearer; never one of loomcycle's own secrets) or by auth.secret, a stored credential written \"$cred:<name>\" that must be a tenant-level credential of your tenant, read on every delivery so a rotation needs no restart; a literal secret is refused. While rotating, auth.previous_secret names the old credential and a delivery signed with either is accepted; naming a new auth.secret in a fork drops the previous one unless the fork names it too, and naming one form of the secret drops the other. Store such a credential with allowed_urls: [] so it can be compared but never sent. provider (github, gitea or gitlab) supplies defaults for auth.kind, auth.header, auth.delivery_id_header and event_header, applied when a delivery arrives; a field you set overrides it. events lists the only events that start anything, by the name the event header carries (gitlab's Push Hook is listed as push, Merge Request Hook as merge_request): with events set, a delivery whose event header is missing, repeated or malformed answers 400 bad_event, the provider's ping (github) answers 200 and starts nothing, an event not listed answers 202 ignored, and a listed event whose signed body lacks one of its shape's paths answers 400 event_shape_mismatch — the header is not signed, so the body must look like the event. Every listed event needs a shape: a list of rules its signed body must meet, each a JSONPath the body holds, !path for one it must not hold (missing or null), or path == value for a field equal to a JSON string, number or boolean (typed; a string is quoted, e.g. $.object_kind == \"push\"); at least one rule must not be an absence. A shape lets through any signed body that meets its rules, whatever event it came from: github has shapes for push, pull_request, issues, issue_comment, create, delete, release, pull_request_review, pull_request_review_comment and workflow_run, gitea for push, issue_comment, pull_request_comment, create, delete and release, gitlab (which signs nothing) for push, tag_push, merge_request, note, issue and pipeline; gitea's issues and pull_request have none because other events send the same body; event_shapes, a map from an event to its rules, gives one for any other event or replaces the provider's, and a fork merges it key by key ([] removes one). Without events every delivery is handled as before. filters is a list of conditions on the signed body that every delivery must meet before anything starts, each {path, op, value} or {path, op, value_from}: op is eq, ne, glob (a string pattern in which * matches any run of characters, / included, and ? exactly one; nothing else is special) or in (value is a list); a value is a string, number or boolean, and value_from metadata.<key> reads that key of the definition's own metadata instead. Comparison is typed, so a string never equals a number, and a path that is missing, null or of another type than the value misses for every op, ne included. A delivery that misses a filter answers 202 filtered and starts nothing; filters runs after the event check, and a fork replaces the whole list ([] removes it). dedup_key is a list of 1 to 16 JSONPaths into the signed body whose values together name one event (for a github push: $.repository.id, $.ref, $.after): a delivery with the same values is answered as a duplicate (200, deduped, with the run it started) whatever its delivery id or bytes, on every replica and across restarts, for dedup_ttl_seconds (default 604800, 7 days; at most 90 days). A delivery whose body lacks one of the paths, or holds null there, answers 400 dedup_key_unresolvable. The key records the run it started, and is taken again by the next delivery only when that run ended failed; a run that completed or was cancelled, or whose row is gone, keeps it held. A fork replaces the whole list ([] removes it and its lifetime). user_bearer sets the spawned run's bearer (what ${run.user_bearer} in an MCP server's headers becomes) and takes only a stored credential written \"$cred:<name>\": it is not opened when the delivery arrives but resolved for each MCP request, for that server's URL, as a tenant-level credential of the run's tenant (never a user's or an agent's), so a credential restricted by allowed_urls works. It must exist at tenant level in your tenant when written, and is refused on delivery channel or team. A run of a webhook that lists events gets {provider, event, delivery_id} under its trusted metadata key webhook (delivery_id is the sender's unsigned label: a UUID, a hex digest or a number, else absent); such a definition may not set metadata.webhook itself. Every payload_mapping path must parse ($, .key and [N] only). Keys are read as written: a key the definition does not have, a key repeated, a key that matches a field only by ignoring case, and a server-set key (operator_key_restricted, isolated, capture_disabled) are refused.",
+      "description": "Mutable subset of the webhook definition for create/fork. delivery is spawn (default — start a run of agent), channel (publish the body to channel) or team (start a detached walk of the team named in team, as TeamDef op=run mode=detach does, with the raw request body as the walk's input). For team, vars maps a variable the team declares to a JSONPath into the body ($, .key and [N] only), e.g. {\"delivery\":\"team\",\"team\":\"pr-review\",\"vars\":{\"repo\":\"$.repository.full_name\",\"pr\":\"$.pull_request.number\"}}; a path the body lacks leaves that variable at the team's default. delivery=team forbids agent, channel, credentials, metadata, on_complete, sync_response and every payload_mapping target except user_id; team and vars are refused on the other deliveries. The team is looked up in the webhook's tenant when a delivery arrives: a missing or retired team, a variable it does not declare, or a projected value it refuses (too long, or containing {{ or }}) starts no walk and answers 400 invalid_run. An accepted delivery answers 202 with the walk's run_id. tenant_id (where spawned runs execute) may name only your own tenant unless you are an admin; omit it to use yours. user_tier pins the tier a spawned run is routed and billed under; a delivery never chooses it, and it must be one of the server's tiers. body_size_limit_bytes may not exceed the server's request limit. The verification secret is named either by an env var (auth.signing_secret_env for hmac, auth.bearer_token_env for bearer; never one of loomcycle's own secrets) or by auth.secret, a stored credential written \"$cred:<name>\" that must be a tenant-level credential of your tenant, read when a delivery arrives and kept for 5 seconds, so a rotation needs no restart and takes effect within 5 seconds; a literal secret is refused. While rotating, auth.previous_secret names the old credential and a delivery signed with either is accepted; naming a new auth.secret in a fork drops the previous one unless the fork names it too, and naming one form of the secret drops the other. Store such a credential with allowed_urls: [] so it can be compared but never sent. provider (github, gitea or gitlab) supplies defaults for auth.kind, auth.header, auth.delivery_id_header and event_header, applied when a delivery arrives; a field you set overrides it. events lists the only events that start anything, by the name the event header carries (gitlab's Push Hook is listed as push, Merge Request Hook as merge_request): with events set, a delivery whose event header is missing, repeated or malformed answers 400 bad_event, the provider's ping (github) answers 200 and starts nothing, an event not listed answers 202 ignored, and a listed event whose signed body lacks one of its shape's paths answers 400 event_shape_mismatch — the header is not signed, so the body must look like the event. Every listed event needs a shape: a list of rules its signed body must meet, each a JSONPath the body holds, !path for one it must not hold (missing or null), or path == value for a field equal to a JSON string, number or boolean (typed; a string is quoted, e.g. $.object_kind == \"push\"); at least one rule must not be an absence, and ! and == do not combine. A shape lets through any signed body that meets its rules, whatever event it came from: github has shapes for push, pull_request, issues, issue_comment, create, delete, release, pull_request_review, pull_request_review_comment and workflow_run, gitea for push, issue_comment, pull_request_comment, create, delete and release, gitlab (which signs nothing) for push, tag_push, merge_request, note, issue and pipeline; gitea's issues and pull_request have none because other events send the same body; event_shapes, a map from an event to its rules, gives one for any other event or replaces the provider's, and a fork merges it key by key ([] removes one). Without events every delivery is handled as before. filters is a list of conditions on the signed body that every delivery must meet before anything starts, each {path, op, value} or {path, op, value_from}: op is eq, ne, glob (a string pattern in which * matches any run of characters, / included, and ? exactly one; nothing else is special) or in (value is a list); a value is a string, number or boolean, and value_from metadata.<key> reads that key of the definition's own metadata instead. Comparison is typed, so a string never equals a number, and a path that is missing, null or of another type than the value misses for every op, ne included. A delivery that misses a filter answers 202 filtered and starts nothing; filters runs after the event check, and a fork replaces the whole list ([] removes it). dedup_key is a list of 1 to 16 JSONPaths into the signed body whose values together name one event (for a github push: $.repository.id, $.ref, $.after): a delivery with the same values is answered as a duplicate (200, deduped, with the run it started) whatever its delivery id or bytes, on every replica and across restarts, for dedup_ttl_seconds (default 604800, 7 days; at most 90 days). A delivery whose body lacks one of the paths, or holds null there, answers 400 dedup_key_unresolvable. The key records the run it started, and is taken again by the next delivery only when that run ended failed; a run that completed or was cancelled, or whose row is gone, keeps it held. A fork replaces the whole list ([] removes it and its lifetime). user_bearer sets the spawned run's bearer (what ${run.user_bearer} in an MCP server's headers becomes) and takes only a stored credential written \"$cred:<name>\": it is not opened when the delivery arrives but resolved for each MCP request, for that server's URL, as a tenant-level credential of the run's tenant (never a user's or an agent's), so a credential restricted by allowed_urls works. It must exist at tenant level in your tenant when written, and is refused on delivery channel or team. A fork keeps the parent's user_bearer unless it names one; \"user_bearer\": \"\" removes it. A run of a webhook that lists events gets {provider, event, delivery_id} under its trusted metadata key webhook (delivery_id is the sender's unsigned label: a UUID, a hex digest or a number, else absent); such a definition may not set metadata.webhook itself. Every payload_mapping path must parse ($, .key and [N] only); a shape, filter or dedup_key path whose key holds whitespace, = or a quote is refused, as is a number compared with past 9007199254740991 in magnitude. Keys are read as written: a key the definition does not have, a key repeated, a key that matches a field only by ignoring case, and a server-set key (operator_key_restricted, isolated, capture_disabled) are refused.",
       "additionalProperties": true
     },
     "description":   {"type": "string", "description": "Free-text rationale for create/fork."},
@@ -173,6 +173,9 @@ func (s *WebhookDef) execCreate(ctx context.Context, policy tools.WebhookDefPoli
 		return errResult(fmt.Sprintf("create: %s", err)), nil
 	}
 	if err := config.CheckWebhookMetadataKey(config.Webhook{Events: def.Events, Metadata: def.Metadata}); err != nil {
+		return errResult(fmt.Sprintf("create: %s", err)), nil
+	}
+	if err := config.CheckWebhookAuthoring(config.Webhook{EventShapes: def.EventShapes, Filters: def.Filters, Metadata: def.Metadata, DedupKey: def.DedupKey}); err != nil {
 		return errResult(fmt.Sprintf("create: %s", err)), nil
 	}
 	if err := checkWebhookSecretAuthority(ctx, s.Credentials, def.Auth); err != nil {
@@ -299,6 +302,10 @@ func (s *WebhookDef) execFork(ctx context.Context, policy tools.WebhookDefPolicy
 	if in.Name == "" {
 		return errResult("fork: missing required field: name"), nil
 	}
+	// Before the parent is resolved: resolving it can bootstrap one.
+	if err := s.checkScopeForName(policy, in.Name); err != nil {
+		return errResult(err.Error()), nil
+	}
 
 	// RFC N: fork resolves the parent within the caller's own tenant first
 	// (then the shared "" base); the new version's def-ROW owning tenant is
@@ -352,7 +359,9 @@ func (s *WebhookDef) execFork(ctx context.Context, policy tools.WebhookDefPolicy
 					return errResult(fmt.Sprintf("fork: %s", serr)), nil
 				}
 			}
-			// Still no parent → bootstrap from yaml, else refuse.
+			// Still no parent → bootstrap from yaml, else refuse. The
+			// bootstrap is the shared tenant's, as the boot's is, whoever
+			// forks: the fork below is what lands in the caller's tenant.
 			if parentDefID == "" {
 				static, ok := s.Cfg.Webhooks[in.Name]
 				if !ok {
@@ -361,8 +370,8 @@ func (s *WebhookDef) execFork(ctx context.Context, policy tools.WebhookDefPolicy
 				bootstrap, berr := s.bootstrapStatic(ctx, in.Name, static)
 				if berr != nil {
 					// Concurrent first-fork may have already bootstrapped v1;
-					// re-read own-tenant active pointer before propagating.
-					if row2, gerr := s.Store.WebhookDefGetActive(ctx, tenantID, in.Name); gerr == nil {
+					// re-read the shared active pointer before propagating.
+					if row2, gerr := s.Store.WebhookDefGetActive(ctx, "", in.Name); gerr == nil {
 						parent = row2
 						parentDefID = row2.DefID
 					} else {
@@ -374,10 +383,6 @@ func (s *WebhookDef) execFork(ctx context.Context, policy tools.WebhookDefPolicy
 				}
 			}
 		}
-	}
-
-	if err := s.checkScopeForName(policy, in.Name); err != nil {
-		return errResult(err.Error()), nil
 	}
 
 	def, err := s.buildDefinition(in.Name, string(parent.Definition), in.Overlay)
@@ -404,6 +409,9 @@ func (s *WebhookDef) execFork(ctx context.Context, policy tools.WebhookDefPolicy
 		return errResult(fmt.Sprintf("fork: %s", err)), nil
 	}
 	if err := config.CheckWebhookMetadataKey(config.Webhook{Events: def.Events, Metadata: def.Metadata}); err != nil {
+		return errResult(fmt.Sprintf("fork: %s", err)), nil
+	}
+	if err := config.CheckWebhookAuthoring(config.Webhook{EventShapes: def.EventShapes, Filters: def.Filters, Metadata: def.Metadata, DedupKey: def.DedupKey}); err != nil {
 		return errResult(fmt.Sprintf("fork: %s", err)), nil
 	}
 	if err := checkWebhookSecretAuthority(ctx, s.Credentials, def.Auth); err != nil {
@@ -624,6 +632,9 @@ func (s *WebhookDef) buildDefinition(name, parentJSON string, overlay json.RawMe
 			return mergedWebhookDef{}, fmt.Errorf("auth.secret and auth.previous_secret replace auth.signing_secret_env and auth.bearer_token_env: set one of the two forms, not both")
 		}
 		base.applyOverlay(ov)
+		if overlayClearsUserBearer(overlay) {
+			base.UserBearer = ""
+		}
 	}
 	// Unlike A2AServerCardDef, config.Webhook carries no Name field — the
 	// webhook's addressable name is the registry key (the `name` arg)
@@ -701,15 +712,17 @@ func (s *WebhookDef) bootstrapStatic(ctx context.Context, name string, static co
 		Description:            "bootstrapped from static cfg.Webhooks",
 		CreatedByAgentID:       ident.AgentID,
 		BootstrappedFromStatic: true,
-		// RFC N: bootstrap lands in the caller's tenant ("" for the boot
-		// webhook-bootstrap identity → the shared base).
-		TenantID: ident.TenantID,
+		// Always the shared base, whoever triggers it: the yaml is the
+		// operator's, and a copy of it under a tenant would execute that
+		// tenant's deliveries as the yaml says (tenant_id "" = the operator
+		// layer) with its `$cred:` secret read from that tenant.
+		TenantID: "",
 	}
 	created, err := s.Store.WebhookDefCreate(ctx, row)
 	if err != nil {
 		return store.WebhookDefRow{}, err
 	}
-	if err := s.Store.WebhookDefSetActive(ctx, ident.TenantID, name, created.DefID, ident.AgentID); err != nil {
+	if err := s.Store.WebhookDefSetActive(ctx, "", name, created.DefID, ident.AgentID); err != nil {
 		// Bootstrap succeeded but couldn't promote — return the row;
 		// the next fork iteration finds it via the active-pointer retry.
 		return created, fmt.Errorf("promote bootstrap: %w", err)
@@ -733,12 +746,10 @@ func (s *WebhookDef) BootstrapStaticWebhooks(ctx context.Context) (int, error) {
 		names = append(names, name)
 	}
 	sort.Strings(names) // deterministic order for logs + tests
-	// RFC N: boot bootstrap operates on the caller's tenant — the
-	// webhook-bootstrap identity carries "" (the shared base).
-	tenantID := tools.RunIdentity(ctx).TenantID
+	// The shared base, where bootstrapStatic writes.
 	seeded := 0
 	for _, name := range names {
-		_, err := s.Store.WebhookDefGetActive(ctx, tenantID, name)
+		_, err := s.Store.WebhookDefGetActive(ctx, "", name)
 		if err == nil {
 			continue // already has an active version — leave it
 		}

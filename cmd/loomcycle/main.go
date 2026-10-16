@@ -2362,8 +2362,17 @@ func main() {
 	// Webhook delivery counters: each replica adds what it counted every
 	// half minute (never per delivery — the receiver answers unauthenticated
 	// requests); the shutdown below flushes the last of them.
+	// countFlusherDone closes when the flusher has returned; the final flush
+	// below waits for it, so the two never run at once.
+	countFlusherDone := make(chan struct{})
 	if webhookReceiver != nil {
-		go webhookReceiver.RunCountFlusher(bgCtx, webhookapi.CountFlushInterval)
+		go webhookReceiver.RunSweeper(bgCtx, webhookapi.SweepInterval)
+		go func() {
+			defer close(countFlusherDone)
+			webhookReceiver.RunCountFlusher(bgCtx, webhookapi.CountFlushInterval)
+		}()
+	} else {
+		close(countFlusherDone)
 	}
 
 	// v0.8.6 heartbeat runner — start AFTER bgCtx is available so
@@ -3590,6 +3599,9 @@ func main() {
 	accessFlusher.Stop()
 	// The webhook delivery counters, for the same reason: the deliveries
 	// answered during the drain are counted too. The store is still open.
+	// bgCancel above stopped the periodic flusher; a flush it had in flight
+	// finishes first (at most its own 10s timeout).
+	<-countFlusherDone
 	if webhookReceiver != nil {
 		fctx, fcancel := context.WithTimeout(context.Background(), 5*time.Second)
 		if err := webhookReceiver.FlushCounts(fctx); err != nil {

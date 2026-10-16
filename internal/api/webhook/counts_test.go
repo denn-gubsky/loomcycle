@@ -11,6 +11,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/denn-gubsky/loomcycle/internal/config"
 	"github.com/denn-gubsky/loomcycle/internal/lookup"
@@ -178,6 +179,69 @@ func TestFlushCounts_KeepsTheCountsWhenTheStoreRefuses(t *testing.T) {
 	}
 	if len(fc.added) != 1 || fc.added[0].Count != 3 || fc.added[0].TenantID != "acme" || fc.added[0].Name != "hook" || fc.added[0].Static {
 		t.Errorf("added = %+v, want one row of 3 for acme/hook", fc.added)
+	}
+}
+
+// blockingCounts holds each add until release is closed, then stores it
+// unless the add's context was cancelled by then — as a real write is lost
+// when its context is.
+type blockingCounts struct {
+	entered chan struct{}
+	release chan struct{}
+	mu      sync.Mutex
+	added   []store.WebhookCount
+}
+
+func (b *blockingCounts) WebhookCountsAdd(ctx context.Context, rows []store.WebhookCount) error {
+	b.entered <- struct{}{}
+	<-b.release
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.added = append(b.added, rows...)
+	return nil
+}
+
+func (b *blockingCounts) WebhookCounts(context.Context, string, string, bool) ([]store.WebhookCount, error) {
+	return nil, nil
+}
+
+// Shutdown cancels the flusher's context while a flush may be writing. That
+// flush finishes — its write is not cancelled with the loop — and the
+// flusher returns only once it has, so the final flush that follows sees
+// every count: none lost to a write cut short, none re-added after the
+// final flush already ran.
+func TestRunCountFlusher_AFlushInFlightAtShutdownFinishes(t *testing.T) {
+	bc := &blockingCounts{entered: make(chan struct{}, 1), release: make(chan struct{})}
+	rec := newScopeReceiver(openScopeStore(t), &fakeRunner{runID: "r"}, map[string]config.Webhook{"gh": githubPushHook()})
+	rec.counts = bc
+	rec.countDelivery(webhookKey(lookup.WebhookOwner{TenantID: "acme"}, "hook"), verdictAccepted)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		rec.RunCountFlusher(ctx, time.Millisecond)
+	}()
+	<-bc.entered // a flush is writing
+	cancel()
+	select {
+	case <-done:
+		t.Fatal("the flusher returned while its flush was still writing")
+	case <-time.After(50 * time.Millisecond):
+	}
+	close(bc.release)
+	select {
+	case <-done:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the flusher did not return after its flush")
+	}
+	bc.mu.Lock()
+	defer bc.mu.Unlock()
+	if len(bc.added) != 1 || bc.added[0].Count != 1 {
+		t.Errorf("added = %+v, want the one count written by the flush in flight", bc.added)
 	}
 }
 

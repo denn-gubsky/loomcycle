@@ -229,6 +229,7 @@ func Run(t *testing.T, factory Factory) {
 		{"WebhookDeliveryClaimRaceGrantsOne", testWebhookDeliveryClaimRaceGrantsOne},
 		{"WebhookDeliveryClaimRunRetakesOnlyAFailedRunsKeys", testWebhookDeliveryClaimRunRetakesOnlyAFailedRunsKeys},
 		{"WebhookDeliveryClaimRunRetakeRaceGrantsOne", testWebhookDeliveryClaimRunRetakeRaceGrantsOne},
+		{"WebhookDeliveryHeldByLiveRunAgreesWithTheClaim", testWebhookDeliveryHeldByLiveRunAgreesWithTheClaim},
 		{"WebhookCountsAddSumsPerOutcome", testWebhookCountsAddSumsPerOutcome},
 		{"WebhookCountsAreKeptPerDefinition", testWebhookCountsAreKeptPerDefinition},
 		{"WebhookCountsConcurrentAddsLoseNothing", testWebhookCountsConcurrentAddsLoseNothing},

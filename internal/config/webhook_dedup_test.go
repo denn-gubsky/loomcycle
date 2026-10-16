@@ -37,6 +37,8 @@ func TestCheckWebhookDedupKey_RefusesWhatCannotNameAnEvent(t *testing.T) {
 		{Webhook{DedupKey: []string{"$.ref", "$.ref"}}, "listed twice"},
 		{Webhook{DedupKey: []string{"$.ref"}, DedupTTLSeconds: -1}, "cannot be negative"},
 		{Webhook{DedupKey: []string{"$.ref"}, DedupTTLSeconds: 90*24*3600 + 1}, "90 days"},
+		// Past ~292 years in nanoseconds: a Duration of it wraps negative.
+		{Webhook{DedupKey: []string{"$.ref"}, DedupTTLSeconds: 9223372037}, "90 days"},
 		{Webhook{DedupTTLSeconds: 60}, "without dedup_key"},
 	} {
 		if err := CheckWebhookDedupKey(tc.w); err == nil || !strings.Contains(err.Error(), tc.want) {
@@ -51,6 +53,10 @@ func TestWebhookDedupTTL_DefaultsToSevenDays(t *testing.T) {
 	}
 	if got := (Webhook{DedupKey: []string{"$.ref"}, DedupTTLSeconds: 3600}).DedupTTL(); got != time.Hour {
 		t.Errorf("%v, want 1h", got)
+	}
+	// A stored value the check let through before it compared seconds.
+	if got := (Webhook{DedupKey: []string{"$.ref"}, DedupTTLSeconds: 9223372037}).DedupTTL(); got != MaxWebhookDedupTTL {
+		t.Errorf("an overflowing lifetime is held %v, want the 90-day maximum", got)
 	}
 }
 

@@ -42,8 +42,12 @@ const verdictRejectedDedupKey = "rejected_dedup_key"
 // resolves), and err a body that is not JSON.
 //
 // The body is decoded again with numbers kept as written: decoded to float64,
-// two ids past 2^53 could share a key.
+// two ids past 2^53 could share a key. It is scanned first, as every other
+// decode of a delivery's body is (decodeJSONBody): this one can come first.
 func dedupFieldsID(paths []string, body []byte) (id string, missing int, err error) {
+	if err := checkJSONShape(body, maxJSONDepth, maxJSONTokens); err != nil {
+		return "", -1, fmt.Errorf("malformed json body: %w", err)
+	}
 	dec := json.NewDecoder(bytes.NewReader(body))
 	dec.UseNumber()
 	var doc any
@@ -91,8 +95,21 @@ type heldKeys struct {
 // claim takes keys in the store, before the rate limit, so a duplicate costs
 // no token. false means the request is answered: a duplicate, or a store that
 // could not be read.
+//
+// A refused claim is a write transaction, so a captured delivery replayed in a
+// loop would be one write per request. A delivery of an event a live run
+// holds is answered after a READ instead (heldByLiveRun): the answer the
+// claim would give. Anything else — no holder, one not registered, one that
+// failed (which the claim takes the event over from), a read error — goes to
+// the claim.
 func (rec *Receiver) claimHeld(ctx context.Context, w http.ResponseWriter, span trace.Span, name, whKey, did string, h *heldKeys) bool {
 	now := rec.now()
+	if h.runs {
+		if holder, ok := rec.heldByLiveRun(ctx, h.keys[0], now); ok {
+			rec.answerHeldDuplicate(w, span, name, whKey, did, holder)
+			return false
+		}
+	}
 	var (
 		ok     bool
 		holder string
@@ -114,6 +131,13 @@ func (rec *Receiver) claimHeld(ctx context.Context, w http.ResponseWriter, span 
 	if ok {
 		return true
 	}
+	rec.answerHeldDuplicate(w, span, name, whKey, did, holder)
+	return false
+}
+
+// answerHeldDuplicate answers a delivery of an event already handled, by the
+// run holder ("" when that claim's run has not registered).
+func (rec *Receiver) answerHeldDuplicate(w http.ResponseWriter, span trace.Span, name, whKey, did, holder string) {
 	rec.logf("webhook %q: an event already handled (its dedup_key is held) — idempotent ack", name)
 	rec.finish(span, whKey, did, verdictAcceptedReplay, holder)
 	resp := map[string]string{"webhook_name": name, "delivery_id": did, "deduped": "true"}
@@ -121,7 +145,28 @@ func (rec *Receiver) claimHeld(ctx context.Context, w http.ResponseWriter, span 
 		resp["run_id"] = holder
 	}
 	writeJSON(w, http.StatusOK, resp)
-	return false
+}
+
+// heldByLiveRunReader is the store read heldByLiveRun makes; a store.Store is
+// one. A store without it (a test fake) sends every duplicate to the claim.
+type heldByLiveRunReader interface {
+	WebhookDeliveryHeldByLiveRun(ctx context.Context, key string, now time.Time) (string, bool, error)
+}
+
+// heldByLiveRun reports the run holding an event's key when the claim would
+// refuse a delivery of it for that run: held past now by a run whose row
+// exists and has not ended in a status the claim takes the event over from.
+// false on anything else, a read error included: the claim then decides.
+func (rec *Receiver) heldByLiveRun(ctx context.Context, eventKey string, now time.Time) (string, bool) {
+	r, ok := rec.store.(heldByLiveRunReader)
+	if !ok {
+		return "", false
+	}
+	holder, held, err := r.WebhookDeliveryHeldByLiveRun(ctx, eventKey, now)
+	if err != nil || !held {
+		return "", false
+	}
+	return holder, true
 }
 
 // release drops the keys of a delivery that started nothing, so the sender's

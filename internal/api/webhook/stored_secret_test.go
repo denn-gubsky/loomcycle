@@ -47,17 +47,19 @@ func postWith(rec *Receiver, path, secret string, body []byte) (int, string) {
 	return w.Code, w.Body.String()
 }
 
-// A webhook whose secret is a stored credential verifies against it, read on
-// each delivery: a rotation takes effect at the next delivery, and while one
-// is under way a delivery signed with either secret is accepted. The
-// credential is restricted to no URL, which refuses it to every sender; a
-// comparison sends it nowhere, so it resolves here.
+// A webhook whose secret is a stored credential verifies against it, read
+// again once the receiver's copy lapses (storedSecretTTL): a rotation takes
+// effect within that, and while one is under way a delivery signed with
+// either secret is accepted. The credential is restricted to no URL, which
+// refuses it to every sender; a comparison sends it nowhere, so it resolves
+// here.
 func TestReceiver_StoredSecretVerifiesAndRotatesWithoutARestart(t *testing.T) {
 	st, engine, put := credentialStore(t)
 	put("acme", "hook", "first-secret")
 	putWebhookDef(t, st, "acme", "gh", storedSecretDef(map[string]any{
 		"kind": "hmac", "header": "X-Hub-Signature-256", "secret": "$cred:hook"}))
-	rec := New(Deps{Cfg: &config.Config{}, Store: st, Runner: &fakeRunner{runID: "r"}, Credentials: engine})
+	clk := newTestClock()
+	rec := New(Deps{Cfg: &config.Config{}, Store: st, Runner: &fakeRunner{runID: "r"}, Credentials: engine, Now: clk.now})
 	n := 0
 	deliver := func(secret string) int {
 		n++
@@ -78,6 +80,7 @@ func TestReceiver_StoredSecretVerifiesAndRotatesWithoutARestart(t *testing.T) {
 	put("acme", "hook", "second-secret")
 	putWebhookDef(t, st, "acme", "gh", storedSecretDef(map[string]any{
 		"kind": "hmac", "header": "X-Hub-Signature-256", "secret": "$cred:hook", "previous_secret": "$cred:hook-old"}))
+	clk.pastSecretTTL()
 	for _, secret := range []string{"second-secret", "first-secret"} {
 		if code := deliver(secret); code != http.StatusAccepted {
 			t.Errorf("during the rotation, signed with %s: %d, want 202", secret, code)
@@ -92,6 +95,7 @@ func TestReceiver_StoredSecretVerifiesAndRotatesWithoutARestart(t *testing.T) {
 	if _, err := engine.Delete(context.Background(), credential.Identity{TenantID: "acme", Scope: "tenant", Name: "hook-old"}); err != nil {
 		t.Fatal(err)
 	}
+	clk.pastSecretTTL()
 	if code := deliver("first-secret"); code != http.StatusUnauthorized {
 		t.Errorf("after the old credential is deleted, signed with it: %d, want 401", code)
 	}

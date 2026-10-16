@@ -188,6 +188,58 @@ func TestReceiver_DedupKey_AFailedRunsEventIsHandledAgain(t *testing.T) {
 	}
 }
 
+// runClaimCountingStore counts the dedup_key claims that reach the store, each
+// a write transaction.
+type runClaimCountingStore struct {
+	store.Store
+	mu     sync.Mutex
+	claims int
+}
+
+func (s *runClaimCountingStore) WebhookDeliveryClaimRun(ctx context.Context, keys []string, now, expiresAt time.Time) (bool, string, error) {
+	s.mu.Lock()
+	s.claims++
+	s.mu.Unlock()
+	return s.Store.WebhookDeliveryClaimRun(ctx, keys, now, expiresAt)
+}
+
+func (s *runClaimCountingStore) count() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.claims
+}
+
+// A duplicate of an event a live run holds was answered by a write
+// transaction in the store every time, before the rate limit — so a captured
+// signed body replayed in a loop was one write per request. A duplicate of an
+// event a live run holds is answered after a read instead; once that run has
+// failed, the next delivery goes to the claim and takes the event over.
+func TestReceiver_DedupKey_ARepeatedDuplicateDoesNotWriteToTheStore(t *testing.T) {
+	st := &runClaimCountingStore{Store: openScopeStore(t)}
+	sr := &headRunner{st: st.Store}
+	rec := newHeadReceiver(st, sr, &testClock{t: time.Unix(1_700_000_000, 0)}, map[string]config.Webhook{"gh": githubHeadHook()})
+
+	r1 := pushHead(t, "the push", rec, headPush("bbb", "0"), "d0", http.StatusAccepted)["run_id"]
+	for i := 1; i <= 10; i++ {
+		got := pushHead(t, "a duplicate", rec, headPush("bbb", fmt.Sprint(i)), fmt.Sprintf("d%d", i), http.StatusOK)
+		if got["deduped"] != "true" || got["run_id"] != r1 {
+			t.Fatalf("duplicate %d: %v, want a duplicate of %s", i, got, r1)
+		}
+	}
+	if n := st.count(); n != 1 {
+		t.Errorf("the push and 10 duplicates made %d claims in the store, want 1 (the push)", n)
+	}
+
+	finishRun(t, st.Store, r1, store.RunFailed)
+	r2 := pushHead(t, "a redelivery once the run failed", rec, headPush("bbb", "x"), "dx", http.StatusAccepted)["run_id"]
+	if r2 == "" || r2 == r1 {
+		t.Fatalf("the redelivery after a failed run started %q, want a new run", r2)
+	}
+	if n := sr.started(); n != 2 {
+		t.Errorf("%d runs started, want 2", n)
+	}
+}
+
 // headCommitHook names the event by a field the push shape does not require,
 // so a body without it gets past the shape and must be refused here.
 func headCommitHook() config.Webhook {
@@ -381,5 +433,20 @@ func TestReceiver_Test_ReportsAnUnresolvableDedupKey(t *testing.T) {
 	}
 	if sr.started() != 0 {
 		t.Fatal("the dry-run started a run")
+	}
+}
+
+// The body a dedup_key reads is held to the shape limits every other decode of
+// a delivery is: for a webhook with no events or filters it is the first
+// decode, ahead of the payload mapping's.
+func TestDedupFieldsID_RefusesABodyPastTheShapeLimits(t *testing.T) {
+	deep := func(n int) []byte {
+		return []byte(`{"n":1,"d":` + strings.Repeat(`[`, n) + strings.Repeat(`]`, n) + `}`)
+	}
+	if _, missing, err := dedupFieldsID([]string{"$.n"}, deep(maxJSONDepth-1)); err != nil || missing >= 0 {
+		t.Errorf("a body at the depth limit: missing %d, %v", missing, err)
+	}
+	if _, _, err := dedupFieldsID([]string{"$.n"}, deep(maxJSONDepth+1)); err == nil || !strings.Contains(err.Error(), "nested deeper") {
+		t.Errorf("a body past the depth limit: %v, want it refused before decoding", err)
 	}
 }

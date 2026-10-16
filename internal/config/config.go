@@ -7844,6 +7844,9 @@ func validateStaticWebhook(name string, w Webhook) error {
 	if err := CheckWebhookDedupKey(w); err != nil {
 		return fmt.Errorf("webhooks.%s: %w", name, err)
 	}
+	if err := CheckWebhookAuthoring(w); err != nil {
+		return fmt.Errorf("webhooks.%s: %w", name, err)
+	}
 	return nil
 }
 

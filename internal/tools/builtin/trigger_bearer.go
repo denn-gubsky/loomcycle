@@ -2,6 +2,7 @@ package builtin
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 
@@ -48,4 +49,21 @@ func checkUserBearerAuthority(ctx context.Context, creds *credential.Engine, ref
 			"Create it first with CredentialDef (op=create, scope=tenant, name=%q)", ref, tenantID, name)
 	}
 	return nil
+}
+
+// overlayClearsUserBearer reports whether a create/fork overlay names
+// user_bearer with an empty value (or null). The merged field is a string
+// whose "" means "keep the parent's" in applyOverlay, so a fork could never
+// remove a bearer; a key present and empty is the author emptying the field.
+func overlayClearsUserBearer(overlay json.RawMessage) bool {
+	var top map[string]json.RawMessage
+	if json.Unmarshal(overlay, &top) != nil {
+		return false
+	}
+	raw, ok := top["user_bearer"]
+	if !ok {
+		return false
+	}
+	var v *string
+	return json.Unmarshal(raw, &v) == nil && (v == nil || *v == "")
 }

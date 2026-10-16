@@ -112,6 +112,11 @@ func resolveSecret(envName string, allowlist map[string]bool, getenv func(string
 	return v, nil
 }
 
+// storedSecretTTL is how long a verification secret read from a credential is
+// kept in memory: how long a rotated, expired or deleted secret can still be
+// compared after the change, on each replica.
+const storedSecretTTL = 5 * time.Second
+
 // CredentialResolver reads a verification secret stored as a credential:
 // the tenant-level credential name of tenantID, for an in-process comparison
 // only. *credential.Engine satisfies it (ResolveToCompare).
