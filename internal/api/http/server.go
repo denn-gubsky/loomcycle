@@ -3013,6 +3013,8 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 		effectiveAgentName = sess.Agent
 		effectiveTenantID = sess.TenantID
 		effectiveUserID = sess.UserID
+		// As the session's user, so no more widely than its trigger's run.
+		in.CredentialsNoUserScope = in.CredentialsNoUserScope || s.sessionNoUserScope(ctx, in.SessionID)
 		// Continued inside the team it began in, if any — and refused if that
 		// team version has been retired (continuationTeamScopeCtx).
 		scopedCtx, scopeErr := s.continuationTeamScopeCtx(ctx, sess)
@@ -6358,6 +6360,9 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 	// RFC BX P2b: recompute isolation from the PRESENTING principal (the current
 	// token is authority on a continuation, mirroring operatorKeyRestricted).
 	isolated := s.isolatedForCtx(r.Context())
+	// The run is the session's user's; unlike the two bits above it is not the
+	// presenting principal's to decide (sessionNoUserScope).
+	noUserScope := s.sessionNoUserScope(r.Context(), id)
 	runRouting := &routingOverride{Model: body.Model, Provider: body.Provider, Tier: body.Tier, Effort: body.Effort}
 	runResources := &resourceOverride{
 		MaxTokens: body.MaxTokens, MaxIterations: body.MaxIterations,
@@ -6485,6 +6490,7 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 		AgentID: agentID, UserID: sess.UserID, TenantID: sess.TenantID, UserTier: body.UserTier,
 		Model: model, ReplicaID: s.replicaID, ParentContext: body.ParentContext,
 		Interactive: body.Interactive, OperatorKeyRestricted: operatorKeyRestricted, Isolated: isolated,
+		CredentialsNoUserScope: noUserScope,
 		// Nil on purpose, as on POST /v1/runs: the configuration is resolved
 		// after the wait, and StartQueuedRun writes it from `identity` below.
 		RunConfig: nil,
@@ -6684,10 +6690,11 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 		// F42: an interactive continuation PARKS at end_turn, and resume reads
 		// this column to decide park-vs-complete. Without it a restored
 		// interactive conversation comes back as a batch run.
-		Interactive:           body.Interactive,
-		OperatorKeyRestricted: operatorKeyRestricted,
-		Isolated:              isolated, // RFC BX P2b: confine data tools to own scope
-		RunConfig:             runCfg.marshal(),
+		Interactive:            body.Interactive,
+		OperatorKeyRestricted:  operatorKeyRestricted,
+		Isolated:               isolated, // RFC BX P2b: confine data tools to own scope
+		CredentialsNoUserScope: noUserScope,
+		RunConfig:              runCfg.marshal(),
 	}
 	if queued != nil {
 		// It waited: its row exists, queued, and only moves to running now. A
@@ -6781,17 +6788,18 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 	// Hoisted above the recording emit so usage is attributed under the run's
 	// true identity (see makeRecordingEmit) and WithRunIdentity below reuses it.
 	rid := tools.RunIdentityValue{
-		UserID:                sess.UserID,
-		TenantID:              sess.TenantID, // RFC L: tenant from the session (authoritative at creation)
-		AgentID:               agentID,
-		RootRunID:             run.ID, // RFC AH Phase 2b: continuation roots its own spawn tree
-		SessionID:             id,     // the chat a run-time write records itself against
-		UserTier:              body.UserTier,
-		UserBearer:            body.UserBearer,      // v0.8.x: per-run MCP bearer
-		UserCredentials:       body.UserCredentials, // v1.x RFC F: per-tool named credentials
-		ParentContext:         body.ParentContext,   // v0.12.x: opaque tracking lineage, inherited by sub-agents
-		OperatorKeyRestricted: operatorKeyRestricted,
-		Isolated:              isolated, // RFC BX P2b: confine data tools to own scope
+		UserID:                 sess.UserID,
+		TenantID:               sess.TenantID, // RFC L: tenant from the session (authoritative at creation)
+		AgentID:                agentID,
+		RootRunID:              run.ID, // RFC AH Phase 2b: continuation roots its own spawn tree
+		SessionID:              id,     // the chat a run-time write records itself against
+		UserTier:               body.UserTier,
+		UserBearer:             body.UserBearer,      // v0.8.x: per-run MCP bearer
+		UserCredentials:        body.UserCredentials, // v1.x RFC F: per-tool named credentials
+		ParentContext:          body.ParentContext,   // v0.12.x: opaque tracking lineage, inherited by sub-agents
+		OperatorKeyRestricted:  operatorKeyRestricted,
+		Isolated:               isolated, // RFC BX P2b: confine data tools to own scope
+		CredentialsNoUserScope: noUserScope,
 	}
 	// Persist under runCtx so a detached continuation's events survive the
 	// client leaving (runCtx tracks the request otherwise).
