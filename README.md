@@ -187,7 +187,16 @@ been primitives plus hardening: memory, documents, teams, sandboxing, retention
 and erasure. The agentic-memory subsystem and the document surfaces built on it
 remain the main direction.
 
-The most recent line (v1.114.0) is about sharing a busy local model host. Every
+The most recent line (v1.115.0) lets an untrusted block carry code exactly as
+written, in a fence the code cannot close, and is otherwise fixes from a code
+review of the two lines before it: the run queue and provider lanes, and the
+content-safety features. A no-trace child's answer is no longer stored in its
+parent, a token limited to some agents can no longer control other agents'
+runs, a trigger's run keeps away from its user's own credentials on every path,
+and a YAML-declared MCP server that starts after loomcycle is picked up by the
+next run under any tenant. See [`REVISIONS.md`](REVISIONS.md).
+
+Before it, v1.114.0 was about sharing a busy local model host. Every
 run, session message and gateway request waits in one fair run queue, and a run
 whose model call waits for a busy provider lends its run slot to one bound
 elsewhere. An agent or a single run can skip a busy provider for an idle
