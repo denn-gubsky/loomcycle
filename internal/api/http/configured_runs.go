@@ -290,7 +290,7 @@ func (s *Server) configuredRunCore(ctx context.Context, runID string) (store.Run
 	if err != nil {
 		return store.Run{}, draftStoreErr(err)
 	}
-	if sess, err := s.store.GetSession(ctx, run.SessionID); err != nil || !sessionOwnershipOK(ctx, sess) {
+	if sess, err := s.store.GetSession(ctx, run.SessionID); err != nil || !sessionOwnershipOK(ctx, sess) || !s.allowlistReachesRun(ctx, runID) {
 		return store.Run{}, draftRefusal(http.StatusNotFound, "unknown_run", "no run found for that run_id")
 	}
 	if run.Status != store.RunConfigured {

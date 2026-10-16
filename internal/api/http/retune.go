@@ -191,6 +191,9 @@ func (s *Server) remoteRunForSteer(ctx context.Context, runID string) (store.Run
 		// No session to gate on: the run's own owner confines it instead.
 		return store.Run{}, connector.ErrRunNotInFlight
 	}
+	if !s.allowlistReachesRun(ctx, runID) {
+		return store.Run{}, connector.ErrRunNotInFlight
+	}
 	return run, nil
 }
 

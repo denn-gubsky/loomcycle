@@ -3326,11 +3326,14 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 		if in.AllowedHosts != nil {
 			caller = *in.AllowedHosts
 		}
-		allowedTools = builtin.NarrowHosts(allowedTools, caller, in.WebSearchFilter, s.cfg().Env.HTTPCallerAuthoritative)
+		// A locked caller's list only narrows, in every mode.
+		narrowOnly := in.AllowedHosts != nil && callerHostsNarrowOnly(ctx, agentDef)
+		allowedTools = builtin.NarrowHosts(allowedTools, caller, in.WebSearchFilter, s.cfg().Env.HTTPCallerAuthoritative && !narrowOnly)
 		hostPolicy = tools.HostPolicyValue{
 			AllowedHosts:    caller,
 			HasList:         in.AllowedHosts != nil,
 			WebSearchFilter: in.WebSearchFilter,
+			NarrowOnly:      narrowOnly,
 		}
 	}
 	dispatcher := s.newDispatcher(allowedTools)
@@ -5506,11 +5509,14 @@ func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {
 		if req.AllowedHosts != nil {
 			caller = *req.AllowedHosts
 		}
-		allowedTools = builtin.NarrowHosts(allowedTools, caller, req.WebSearchFilter, s.cfg().Env.HTTPCallerAuthoritative)
+		// A locked caller's list only narrows, in every mode.
+		narrowOnly := req.AllowedHosts != nil && callerHostsNarrowOnly(r.Context(), agentDef)
+		allowedTools = builtin.NarrowHosts(allowedTools, caller, req.WebSearchFilter, s.cfg().Env.HTTPCallerAuthoritative && !narrowOnly)
 		hostPolicy = tools.HostPolicyValue{
 			AllowedHosts:    caller,
 			HasList:         req.AllowedHosts != nil,
 			WebSearchFilter: req.WebSearchFilter,
+			NarrowOnly:      narrowOnly,
 		}
 	}
 	dispatcher := s.newDispatcher(allowedTools)
@@ -6492,11 +6498,14 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 		if body.AllowedHosts != nil {
 			caller = *body.AllowedHosts
 		}
-		allowedTools = builtin.NarrowHosts(allowedTools, caller, body.WebSearchFilter, s.cfg().Env.HTTPCallerAuthoritative)
+		// A locked caller's list only narrows, in every mode.
+		narrowOnly := body.AllowedHosts != nil && callerHostsNarrowOnly(r.Context(), agentDef)
+		allowedTools = builtin.NarrowHosts(allowedTools, caller, body.WebSearchFilter, s.cfg().Env.HTTPCallerAuthoritative && !narrowOnly)
 		hostPolicy = tools.HostPolicyValue{
 			AllowedHosts:    caller,
 			HasList:         body.AllowedHosts != nil,
 			WebSearchFilter: body.WebSearchFilter,
+			NarrowOnly:      narrowOnly,
 		}
 	}
 	dispatcher := s.newDispatcher(allowedTools)
@@ -8395,7 +8404,15 @@ func (s *Server) prepareSubRunValues(ctx context.Context, name string, src nameS
 	// inherits the same way, minus the per-spawn override knob (P4). Sampling and
 	// the timeout are the child's own — a breeder varies temperature by FORKING a
 	// def — and the host narrowing is the parent's, inherited through ctx.
-	subCompaction := config.MergeCompaction(def.Compaction, tools.CompactionPolicy(ctx))
+	//
+	// Not into a child that runs on its definition only: the parent's
+	// effective compaction and context carry its caller's per-run values,
+	// which such a child refuses from anyone, so it runs on its own.
+	parentCompaction, parentContext := tools.CompactionPolicy(ctx), tools.ContextPolicy(ctx)
+	if agentLocksOverrides(def) {
+		parentCompaction, parentContext = nil, nil
+	}
+	subCompaction := config.MergeCompaction(def.Compaction, parentCompaction)
 	// A parent's per-spawn override is an override like a caller's: a child
 	// that runs on its definition only refuses it.
 	subRetention := s.resolveRetention(ctx, tenant, name, def, "")
@@ -8415,7 +8432,16 @@ func (s *Server) prepareSubRunValues(ctx context.Context, name string, src nameS
 		return nil, fmt.Errorf("sub-agent %q: %w", name, err)
 	}
 	subCompaction = config.MergeCompaction(subCompaction, tools.CompactionOverride(ctx))
-	subContext := config.MergeContext(def.Context, tools.ContextPolicy(ctx))
+	subContext := config.MergeContext(def.Context, parentContext)
+	// A child that runs on its definition only takes its parent's host list
+	// as a narrowing, as a request naming it directly would; a list that
+	// already only narrows stays so down the tree. Decided here, before the
+	// record is written, so the record and the child's tools agree and a
+	// resume applies the list the way the child ran with it.
+	subHostPolicy := tools.HostPolicy(ctx)
+	if subHostPolicy.HasList && callerHostsNarrowOnly(ctx, def) {
+		subHostPolicy.NarrowOnly = true
+	}
 	subRunCfg := runConfigRecord{
 		Hooks:             additionsRecord(hooks.AdditionsFrom(ctx)), // inherited from the parent run
 		SourcedHooks:      hooks.AdditionsFrom(ctx).Sourced,          // and a team state's, with their source
@@ -8426,7 +8452,7 @@ func (s *Server) prepareSubRunValues(ctx context.Context, name string, src nameS
 		Context:           subContext,
 		MaxContextTokens:  def.MaxContextTokens,
 		RunTimeoutSeconds: def.RunTimeoutSeconds,
-		Hosts:             hostRecordOf(tools.HostPolicy(ctx)),
+		Hosts:             hostRecordOf(subHostPolicy),
 		// The parent's volume confinement and inherited fan-out width, both read
 		// off ctx below and never re-derivable once the parent's ctx is gone.
 		Spawn: spawnRecordOf(tools.VolumePolicy(ctx), tools.FanoutCap(ctx)),
@@ -8734,9 +8760,9 @@ func (s *Server) prepareSubRunValues(ctx context.Context, name string, src nameS
 	// "host \"localhost\" not in allowlist", waste iterations
 	// guessing hostnames, get capped by max_iterations, never write
 	// the documents (2026-05-06).
-	parentHostPolicy := tools.HostPolicy(ctx)
-	if parentHostPolicy.HasList || s.cfg().Env.HTTPCallerAuthoritative {
-		subTools = builtin.NarrowHosts(subTools, parentHostPolicy.AllowedHosts, parentHostPolicy.WebSearchFilter, s.cfg().Env.HTTPCallerAuthoritative)
+	// subHostPolicy is the parent's, made narrow-only above for a locked child.
+	if subHostPolicy.HasList || s.cfg().Env.HTTPCallerAuthoritative {
+		subTools = builtin.NarrowHosts(subTools, subHostPolicy.AllowedHosts, subHostPolicy.WebSearchFilter, s.cfg().Env.HTTPCallerAuthoritative && !subHostPolicy.NarrowOnly)
 	}
 	subDispatcher := s.newDispatcher(subTools)
 
@@ -9324,7 +9350,7 @@ func (s *Server) handleCancelAgent(w http.ResponseWriter, r *http.Request) {
 	}
 	if s.store != nil {
 		run, err := s.tenantStore(r.Context()).GetRunByAgentID(r.Context(), agentID)
-		if err == nil && !runOwnershipOK(r.Context(), run) {
+		if err == nil && (!runOwnershipOK(r.Context(), run) || !s.allowlistReachesRun(r.Context(), run.ID)) {
 			err = &store.ErrNotFound{Kind: "run", ID: agentID}
 		}
 		if err == nil && run.Retention == store.RetentionNone {
@@ -9671,6 +9697,9 @@ func (s *Server) handleRunInput(w http.ResponseWriter, r *http.Request) {
 	case errors.Is(err, runner.ErrRetentionUnsupported):
 		writeNoTraceRefusal(w, err)
 		return
+	case errors.Is(err, runner.ErrRateLimited):
+		writeRateLimited(w, err)
+		return
 	case errors.Is(err, connector.ErrSteerQueueFull):
 		w.Header().Set("Retry-After", "1")
 		http.Error(w, "run input queue full; retry shortly", http.StatusTooManyRequests)
@@ -9842,7 +9871,7 @@ func (s *Server) compactRunWithSource(ctx context.Context, runID, source string)
 	// model call over the session's transcript and rewrites what the run's next
 	// turn sees, so another user's run gets the same 404 as a missing one.
 	run, err := s.tenantStore(ctx).GetRun(ctx, runID)
-	if err != nil || !runOwnershipOK(ctx, run) {
+	if err != nil || !runOwnershipOK(ctx, run) || !s.allowlistReachesRun(ctx, runID) {
 		return connector.CompactResult{}, &compactErr{status: http.StatusNotFound, msg: "no run for that run_id"}
 	}
 

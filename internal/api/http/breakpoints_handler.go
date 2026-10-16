@@ -215,6 +215,10 @@ func (s *Server) liveBreakpointSet(w http.ResponseWriter, r *http.Request) (*bre
 		writeJSONError(w, http.StatusNotFound, "no_live_walk", "no live team walk for that run_id")
 		return nil, "", false
 	}
+	if !s.allowlistReachesRun(r.Context(), runID) {
+		writeJSONError(w, http.StatusNotFound, "no_live_walk", "no live team walk for that run_id")
+		return nil, "", false
+	}
 	set, ok := s.breakpointReg.Get(runID)
 	if !ok {
 		// Single-process today: a walk on ANOTHER replica is not reachable from

@@ -4065,7 +4065,9 @@ type Store interface {
 	OperatorTokenDefCountActiveAdmin(ctx context.Context) (int, error)
 	// OperatorTokenDefDeleteExpired removes rows whose expires_at is before
 	// `before`, and returns how many went. A row that never had an expiry is
-	// never touched, however long ago it was retired.
+	// never touched, however long ago it was retired, and the last row naming
+	// a tenant is kept: the rows are the registry of tenant spellings a new
+	// tenant is checked against for a case-fold collision.
 	OperatorTokenDefDeleteExpired(ctx context.Context, before time.Time) (int, error)
 
 	// ScheduleRunStatePause sets paused_until = until (or NULL if

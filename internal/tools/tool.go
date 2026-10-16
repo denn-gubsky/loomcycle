@@ -284,6 +284,14 @@ type HostPolicyValue struct {
 	AllowedHosts    []string
 	HasList         bool
 	WebSearchFilter string
+	// NarrowOnly makes the list a narrowing of the operator's even in
+	// CALLER_AUTHORITATIVE mode: it is intersected with the operator's list,
+	// and an empty result reaches no host. Set for a caller held to its
+	// agent's own settings (a token's override lock, an agent's
+	// allow_overrides: false), whose list must never widen what the operator
+	// allows. Carried down the spawn tree and into the run's record, so a
+	// sub-agent and a resume apply the list the same way.
+	NarrowOnly bool
 }
 
 // WithHostPolicy attaches the caller's host narrowing policy to ctx.
