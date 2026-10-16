@@ -8658,7 +8658,7 @@ func (s *Server) prepareSubRunValues(ctx context.Context, name string, src nameS
 	// "host \"localhost\" not in allowlist", waste iterations
 	// guessing hostnames, get capped by max_iterations, never write
 	// the documents (2026-05-06).
-	// subHostPolicy is the parent's, clipped above for a locked child.
+	// subHostPolicy is the parent's, made narrow-only above for a locked child.
 	if subHostPolicy.HasList || s.cfg().Env.HTTPCallerAuthoritative {
 		subTools = builtin.NarrowHosts(subTools, subHostPolicy.AllowedHosts, subHostPolicy.WebSearchFilter, s.cfg().Env.HTTPCallerAuthoritative && !subHostPolicy.NarrowOnly)
 	}
