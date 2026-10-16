@@ -351,6 +351,7 @@ var runRowCreators = map[string]string{
 	"prepareSubRunValues":             "exempt: a sub-run follows its parent agent's definition, not the token's list",
 	"Open":                            "exempt: a channel hook's run (channel_hooks.go), opened under the hook's own identity with no credential",
 	"CreateRun":                       "exempt: the no-trace store filter (no_trace.go) passing a creation through; every caller above reaches the store by it",
+	"CreateQueuedRun":                 "exempt: the no-trace store filter (no_trace.go) passing a queued creation through; every caller above reaches the store by it",
 }
 
 func TestRunRowCreators_AllAdmitThePrincipal(t *testing.T) {

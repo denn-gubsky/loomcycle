@@ -3,7 +3,6 @@ package http
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"log"
 	"net/http"
@@ -88,32 +87,6 @@ func (m *runModes) noTrace(ctx context.Context, st store.Store, runID string) bo
 	return none
 }
 
-// childNoTrace is noTrace for a run another run's event names, a child.
-//
-// A child with no row never ran — it was refused before it started — and
-// holds nothing of its own to keep out; its parent's record of the refusal
-// stays as written. Any other failure to read it fails closed, as noTrace does.
-func (m *runModes) childNoTrace(ctx context.Context, st store.Store, runID string) bool {
-	m.mu.RLock()
-	v, ok := m.known[runID]
-	m.mu.RUnlock()
-	if ok {
-		return v
-	}
-	run, err := st.GetRun(context.WithoutCancel(ctx), runID)
-	var notFound *store.ErrNotFound
-	if errors.As(err, &notFound) {
-		return false
-	}
-	if err != nil {
-		log.Printf("no-trace: could not read the retention mode of child run %s (%v); not storing its result", runID, err)
-		return true
-	}
-	none := run.Retention == store.RetentionNone
-	m.note(runID, none)
-	return none
-}
-
 // traceFilterStore is the Server's store handle. It is the store, with the
 // three writes that carry a run's content filtered for a no-trace run.
 type traceFilterStore struct {
@@ -160,6 +133,44 @@ func (t *traceFilterStore) CreateRun(ctx context.Context, sessionID string, iden
 	return run, err
 }
 
+// CreateQueuedRun is CreateRun for a run that waits for its slot.
+func (t *traceFilterStore) CreateQueuedRun(ctx context.Context, sessionID string, identity store.RunIdentity) (store.Run, error) {
+	if identity.Retention == store.RetentionNone {
+		identity.RunConfig = noTraceRunConfig
+	}
+	run, err := t.Store.CreateQueuedRun(ctx, sessionID, identity)
+	if err == nil {
+		t.modes.note(run.ID, identity.Retention == store.RetentionNone)
+	}
+	return run, err
+}
+
+// StartQueuedRun writes the settings a queued run resolved after its wait;
+// a no-trace run's record stays its mode. The row's mode counts as well as
+// the identity's: it was fixed when the run was queued.
+func (t *traceFilterStore) StartQueuedRun(ctx context.Context, runID string, identity store.RunIdentity) (store.Run, error) {
+	if identity.Retention == store.RetentionNone || t.modes.noTrace(ctx, t.Store, runID) {
+		identity.RunConfig = noTraceRunConfig
+	}
+	return t.Store.StartQueuedRun(ctx, runID, identity)
+}
+
+// noTraceQueuedInput is a no-trace queued run's stored request: none, and
+// why a restart cannot start it again.
+var noTraceQueuedInput = func() json.RawMessage {
+	b, _ := json.Marshal(queuedRecord{Lost: lostNoTrace})
+	return b
+}()
+
+// SetQueuedInput stores what a restart needs to start a queued run again. A
+// no-trace run's request — its prompt — is not stored.
+func (t *traceFilterStore) SetQueuedInput(ctx context.Context, runID string, input json.RawMessage) error {
+	if t.modes.noTrace(ctx, t.Store, runID) {
+		input = noTraceQueuedInput
+	}
+	return t.Store.SetQueuedInput(ctx, runID, input)
+}
+
 // AppendEvent stores a no-trace run's event as a marker, and an ordinary
 // run's record of a no-trace child's result without that result.
 func (t *traceFilterStore) AppendEvent(ctx context.Context, runID string, eventType string, payload []byte) error {
@@ -187,7 +198,14 @@ func (t *traceFilterStore) withoutNoTraceChildResult(ctx context.Context, payloa
 		return eventMarker(string(providers.EventSpawnChildResult), payload)
 	}
 	sc := ev.SpawnChild
-	if sc == nil || sc.RunID == "" || !t.modes.childNoTrace(ctx, t.Store, sc.RunID) {
+	if sc == nil {
+		return eventMarker(string(providers.EventSpawnChildResult), payload)
+	}
+	// A child that cannot be shown to be ordinary — no run named, a row that
+	// cannot be read or found — is treated as no-trace (runModes.noTrace
+	// fails closed). The cost is a refused child's error text, which its
+	// parent's model already read.
+	if sc.RunID != "" && !t.modes.noTrace(ctx, t.Store, sc.RunID) {
 		return payload
 	}
 	reduced := *sc
