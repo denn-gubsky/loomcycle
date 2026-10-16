@@ -12,6 +12,12 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/store"
 )
 
+// systemUserID is channels.SystemPublisherUserID, the user the runs the
+// runtime starts on nobody's behalf are attributed to. Not imported: the
+// channels package pulls in the coordination layer. The engine's test pins
+// the two together.
+const systemUserID = "_system"
+
 // Engine is the domain layer over the credential store + crypto — the single
 // entry point the credentialdef tool and the runtime-side $cred: resolver share.
 // Its metadata-returning ops (Get/List/PutInline) strip the sealed definition;
@@ -310,6 +316,12 @@ func (e *Engine) resolve(ctx context.Context, tenantID, agentName, userID, name 
 // restricted one does not: a user whose own token expired must be told so,
 // not quietly sent under the tenant's token of the same name.
 func (e *Engine) find(ctx context.Context, tenantID, agentName, userID, name string) (row store.CredentialDefRow, found bool, err error) {
+	// The system user is no person: the runs the runtime starts on nobody's
+	// behalf are attributed to it. Whoever stored a credential in its "user"
+	// scope would have every such run send that in place of the tenant's.
+	if userID == systemUserID {
+		userID = ""
+	}
 	buckets := []struct{ scope, id string }{
 		{"agent", agentName},
 		{"user", userID},

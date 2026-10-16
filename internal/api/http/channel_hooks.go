@@ -68,14 +68,16 @@ func (r channelHookRuns) Open(ctx context.Context, tenant, agent, runID string) 
 		}
 	}
 	if runID == "" {
-		_, id, err := s.openOrCreateSessionAndRun(ctx, "", agent, tenant, hookRunUser, store.RunIdentity{AgentID: agent, UserID: hookRunUser, TenantID: tenant})
+		// No person, so no user scope: its hooks' $cred: resolve for the tenant.
+		_, id, err := s.openOrCreateSessionAndRun(ctx, "", agent, tenant, hookRunUser,
+			store.RunIdentity{AgentID: agent, UserID: hookRunUser, TenantID: tenant, CredentialsNoUserScope: true})
 		if err != nil {
 			return nil, "", fmt.Errorf("open hook run: %w", err)
 		}
 		runID = id
 	}
 	rctx := tools.WithRunID(ctx, runID)
-	rctx = tools.WithRunIdentity(rctx, tools.RunIdentityValue{TenantID: tenant, UserID: hookRunUser, AgentID: agent})
+	rctx = tools.WithRunIdentity(rctx, tools.RunIdentityValue{TenantID: tenant, UserID: hookRunUser, AgentID: agent, CredentialsNoUserScope: true})
 	// What happens under the run is its transcript: the pending ask, its
 	// answer, and the decisions the hooks made.
 	id := runID
