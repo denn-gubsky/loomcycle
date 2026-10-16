@@ -28,7 +28,7 @@ func seedConversation(t *testing.T, s store.Store, turns ...string) string {
 	for i, text := range turns {
 		tj, _ := json.Marshal(text)
 		if i%2 == 0 {
-			// A user turn is a []PromptSegment, which is what userTurnText parses.
+			// A user turn is a []PromptSegment, which is what userTurns parses.
 			seg := fmt.Sprintf(`[{"role":"user","content":[{"type":"text","text":%s}]}]`, string(tj))
 			_ = s.AppendEvent(bg, run.ID, "user_input", []byte(seg))
 			continue
