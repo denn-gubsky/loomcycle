@@ -202,6 +202,26 @@ wants. The pass asks for `format:conversation` instead, and **blocks loudly** if
 the runtime answers without it rather than reading an empty chat and advancing
 the watermark past every conversation in silence.
 
+### Outside material never reaches memory
+
+A message can carry material from outside the conversation — a fetched page, a
+webhook body, run metadata from a trigger. The model reads it inside its
+`<kind>…</kind>` tags; History shows it as a turn of its own, headed by its kind.
+None of it is something the user said, and memory holds only what the user and
+the assistant said, so nothing written automatically on the user's behalf ever
+takes it:
+
+- the pass leaves those turns out before anything reaches the extractor, so no
+  fact and no fact's evidence quote can come from one;
+- a compaction or recap that saves the history it evicts leaves them out;
+- the evidence copied onto a fact when its chat is archived leaves them out;
+- the turn index behind trace search never indexes them, and a recalled fact
+  never comes back with one attached as its source turn.
+
+What this does not cover is a deliberate write: an agent that calls
+`Memory op=add` or `op=set` with text it read is choosing what to store, and
+that text is stored as given.
+
 ### The pass does not consolidate itself — or its children
 
 A pass reads chats, and a pass *is* a chat: every run records a session, and a
