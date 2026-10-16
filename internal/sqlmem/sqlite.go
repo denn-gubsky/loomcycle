@@ -67,6 +67,16 @@ func newSQLiteBackend(cfg Config) (*sqliteBackend, error) {
 	if err := os.MkdirAll(cfg.Root, 0o700); err != nil {
 		return nil, fmt.Errorf("sqlmem: mkdir root %q: %w", cfg.Root, err)
 	}
+	// Hold the root as its real path. WalkDir does not descend a root that
+	// is itself a symlink, so the scope listing (and the snapshot, retention
+	// and erasure built on it) and the sweeps saw nothing. Resolving here,
+	// once, keeps every path in one form: the walks, keyPath, the open-handle
+	// keys the sweeps check for in-use scopes, and the removal fences.
+	real, err := filepath.EvalSymlinks(cfg.Root)
+	if err != nil {
+		return nil, fmt.Errorf("sqlmem: resolve root %q: %w", cfg.Root, err)
+	}
+	cfg.Root = real
 	return &sqliteBackend{
 		cfg:  cfg,
 		open: make(map[string]*openHandle),

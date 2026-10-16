@@ -132,7 +132,15 @@ func LoadSet(root string) (*Set, error) {
 	if !st.IsDir() {
 		return nil, fmt.Errorf("skills root %s: not a directory", root)
 	}
-	walkErr := filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
+	// Walk the root's real path: WalkDir does not descend a root that is
+	// itself a symlink, so such a root loaded no skill. Names come from paths
+	// relative to the walk root, and each Path is mapped back under root as
+	// configured, so both read as before.
+	walkRoot, err := filepath.EvalSymlinks(root)
+	if err != nil {
+		return nil, fmt.Errorf("skills root %s: %w", root, err)
+	}
+	walkErr := filepath.WalkDir(walkRoot, func(path string, d os.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
@@ -140,7 +148,7 @@ func LoadSet(root string) (*Set, error) {
 			return nil
 		}
 		// name = the SKILL.md's parent directory relative to root, `/`-joined.
-		rel, rerr := filepath.Rel(root, filepath.Dir(path))
+		rel, rerr := filepath.Rel(walkRoot, filepath.Dir(path))
 		if rerr != nil {
 			return fmt.Errorf("skills root %s: relativize %s: %w", root, path, rerr)
 		}
@@ -148,6 +156,7 @@ func LoadSet(root string) (*Set, error) {
 			// A SKILL.md directly at root has no name — skip.
 			return nil
 		}
+		path = filepath.Join(root, rel, "SKILL.md") // under root as configured
 		name := filepath.ToSlash(rel)
 		// Escape-prevention + `/`-grammar. rel from a real path under root
 		// can't traverse out, but validate anyway so a hand-crafted symlink
