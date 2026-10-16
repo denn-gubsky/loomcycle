@@ -419,6 +419,13 @@ type ContentBlock struct {
 	// (Event.ContentNotRetained): the model reads it, and nothing the run
 	// keeps — its transcript, a harvest into memory — holds it. Never sent.
 	NotRetained bool `json:"-"`
+
+	// Untrusted marks a text block the loop flattened from an untrusted-block
+	// (a fetched page, a webhook body): the model reads it inside its fence,
+	// and nothing written into memory on the user's behalf — a harvest of the
+	// evicted history — takes it. Set where the block is typed, so no reader
+	// has to recognise a fence by its text. Never sent.
+	Untrusted bool `json:"-"`
 }
 
 // RequestHasImage reports whether any message in the request carries an image

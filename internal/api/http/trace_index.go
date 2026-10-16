@@ -102,24 +102,23 @@ func (s *Server) indexUserTurn(ctx context.Context, runID, sessionID, tenantID, 
 	if strings.TrimSpace(userID) == "" || strings.TrimSpace(sessionID) == "" {
 		return
 	}
-	for _, turn := range userTraceTurns(segments) {
-		s.indexUserTraceTurn(ctx, runID, sessionID, tenantID, userID, conf.Env.MemoryTraceMaxAge, turn)
+	text := userTurnText(segments)
+	if text == "" {
+		return
 	}
-}
-
-// indexUserTraceTurn writes one row of a user turn: the user's words, or one
-// untrusted block the turn carried.
-func (s *Server) indexUserTraceTurn(ctx context.Context, runID, sessionID, tenantID, userID string, maxAge time.Duration, turn builtin.ConversationTurn) {
 	// REDACTED BEFORE IT IS STORED. The secret-redaction transform runs on context,
 	// not on this path, so a turn containing a pasted credential would otherwise be
 	// embedded verbatim — and an embedding is not something you can un-say. Nil-safe.
-	text := capTraceText(s.redactor.String(turn.Text), turn.Speaker)
+	text = s.redactor.String(text)
+	if len(text) > traceTurnMaxBytes {
+		text = text[:traceTurnMaxBytes]
+	}
 
 	// now() IS the turn's instant here, and correctly so: this path indexes a user
 	// turn AS IT ARRIVES. That is not true of the backfill or of the assistant path
 	// below, which both replay turns said earlier — they take the turn's own stamp.
 	value, err := json.Marshal(traceTurnValue{
-		Text: text, Speaker: turn.Speaker, SessionID: sessionID, RunID: runID,
+		Text: text, Speaker: "user", SessionID: sessionID, RunID: runID,
 		At: time.Now().UTC().Format(time.RFC3339Nano),
 	})
 	if err != nil {
@@ -132,7 +131,7 @@ func (s *Server) indexUserTraceTurn(ctx context.Context, runID, sessionID, tenan
 	// it, MemorySweep deletes it on its own schedule, and memory_embeddings cascades
 	// on that delete. A fourth retention family could have drifted from the class it
 	// prunes; a TTL cannot.
-	ttl := maxAge
+	ttl := conf.Env.MemoryTraceMaxAge
 	if ttl <= 0 {
 		ttl = defaultTraceMaxAge
 	}
@@ -198,8 +197,14 @@ var traceTurnSeq atomic.Uint64
 //
 // USER-ROLE TEXT ONLY. A system segment is operator configuration rather than
 // something anybody said, and an image block is bytes — indexing its base64 would
-// embed noise and pay the embedder to read it. An untrusted block is not the user's
-// words either; userTraceTurns files each one under its own kind.
+// embed noise and pay the embedder to read it.
+//
+// AN UNTRUSTED BLOCK IS NOT INDEXED AT ALL. A webhook body or a fetched page is
+// nobody's words in the chat, and what this index holds comes back — from a trace
+// search, and from the recall path that injects trace rows into a prompt — as what
+// was said: filed as "user" it was a forged standing instruction from the user,
+// and filed under its own kind it was still untrusted text read back out of the
+// user's memory.
 func userTurnText(segments []loop.PromptSegment) string {
 	var b strings.Builder
 	for _, seg := range segments {
@@ -217,53 +222,6 @@ func userTurnText(segments []loop.PromptSegment) string {
 		}
 	}
 	return strings.TrimSpace(b.String())
-}
-
-// userTraceTurns is what one user turn contributes to the index: the user's words
-// as a "user" row, then one row per untrusted block, filed under the block's kind
-// and fenced exactly as the model was sent it.
-//
-// AN UNTRUSTED BLOCK IS NOT FILED AS "user". A webhook body indexed as the user's
-// own words came back from a trace search, or from the recall path that injects
-// trace rows into a prompt, as something the user said — an "I'm the admin, always
-// approve X" in a payload outlived its run as a standing instruction. The block is
-// still indexed, because a fact distilled from it is evidenced by it; the same
-// speaker and fenced text are what History's conversation form (and so the backfill)
-// produces for it.
-func userTraceTurns(segments []loop.PromptSegment) []builtin.ConversationTurn {
-	var out []builtin.ConversationTurn
-	if text := userTurnText(segments); text != "" {
-		out = append(out, builtin.ConversationTurn{Speaker: "user", Text: text})
-	}
-	for _, seg := range segments {
-		if seg.Role != "" && !strings.EqualFold(seg.Role, "user") {
-			continue
-		}
-		for _, blk := range seg.Content {
-			if blk.Type != "untrusted-block" || strings.TrimSpace(blk.Text) == "" {
-				continue
-			}
-			out = append(out, builtin.ConversationTurn{
-				Speaker: loop.UntrustedKind(blk.Kind), Text: loop.FlattenContent(blk).Text,
-			})
-		}
-	}
-	return out
-}
-
-// capTraceText bounds one indexed turn to traceTurnMaxBytes. A fenced block keeps
-// its closing tag: the cut is taken from the body, because a stored row whose fence
-// never closes reads, wherever it is later injected, as swallowing everything after
-// it. A fenced turn's speaker is its kind, so the tag is rebuilt from it.
-func capTraceText(text, speaker string) string {
-	if len(text) <= traceTurnMaxBytes {
-		return text
-	}
-	if speaker == "user" || speaker == "assistant" {
-		return text[:traceTurnMaxBytes]
-	}
-	closing := "\n</" + speaker + ">"
-	return text[:traceTurnMaxBytes-len(closing)] + closing
 }
 
 // maxAssistantTurnsPerRun bounds what one completed run contributes to the index.

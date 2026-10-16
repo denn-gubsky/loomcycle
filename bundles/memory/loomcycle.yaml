@@ -998,8 +998,10 @@ agents:
       // gets a fragment with no speaker and no close — and the live pass's
       // smallest empty reply came from exactly that, a scraped page whose text
       // began mid-word.
+      //
+      // OUTSIDE MATERIAL IS LEFT OUT before anything is packed: see ownTurns.
       function chatParts(st, text, sid) {
-        var parts = packParts(st, splitTurns(text), sid);
+        var parts = packParts(st, ownTurns(splitTurns(text)), sid);
         // NO PER-CHAT CAP. Every part of a chat that this pass starts is
         // extracted; the pass's budget is spent by not STARTING further chats
         // (see hasPartBudget), which loses nothing because an unread chat leaves
@@ -1076,6 +1078,29 @@ agents:
       // "<tag>" line opens nothing.
       function fenceClose(speaker, line) {
         return line === "<" + speaker + ">" ? "</" + speaker + ">" : "";
+      }
+
+      // ownTurns drops the turns that are outside material — a fetched page, a
+      // webhook body, anything History renders as a "### <kind>" turn whose body
+      // opens with its "<kind>" fence. None of it is the user's, and memory is the
+      // user's: a fact distilled from it, or a sentence of it kept as a fact's
+      // evidence, would come back in a later run as something the user said. The
+      // fence-aware split keeps such a turn whole, so a "### user" line inside it
+      // goes with it.
+      function ownTurns(turns) {
+        var out = [];
+        for (var i = 0; i < turns.length; i++) {
+          if (!isOutsideMaterial(turns[i])) { out.push(turns[i]); }
+        }
+        return out;
+      }
+
+      function isOutsideMaterial(turn) {
+        var lines = turn.split("\n");
+        if (!isTurnStart(lines[0])) { return false; }
+        var n = 1;
+        while (n < lines.length && lines[n] === "") { n++; }
+        return n < lines.length && fenceClose(lines[0].slice(4), lines[n]) !== "";
       }
 
       // turnHead is the part of a turn that says whose it is: its "### " line,

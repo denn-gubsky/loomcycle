@@ -129,8 +129,10 @@ func ConversationFromMessages(msgs []providers.Message) []LayerMessage {
 		var b strings.Builder
 		for _, c := range m.Content {
 			// "text" only. tool_use / tool_result / thinking are the run's
-			// mechanics, not what was said.
-			if c.Type == "text" && c.Text != "" {
+			// mechanics, not what was said. An untrusted block (a fetched page, a
+			// webhook body) is text the model read but nobody here said: banked,
+			// it would come back as facts about the user.
+			if c.Type == "text" && c.Text != "" && !c.Untrusted {
 				if b.Len() > 0 {
 					b.WriteString("\n\n")
 				}

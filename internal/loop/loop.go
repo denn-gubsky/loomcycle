@@ -4845,6 +4845,8 @@ func flattenContent(c PromptContentBlock) providers.ContentBlock {
 		return providers.ContentBlock{
 			Type: "text",
 			Text: fmt.Sprintf("<%s>\n%s\n</%s>", kind, safe, kind),
+			// Kept out of every memory write made on the user's behalf.
+			Untrusted: true,
 		}
 	case "image":
 		// Images are NOT tag-fenced: untrusted-block fencing defends against
