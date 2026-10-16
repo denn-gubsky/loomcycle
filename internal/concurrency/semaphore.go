@@ -170,9 +170,15 @@ func New(maxConcurrent, maxQueue int, timeout time.Duration) *Semaphore {
 // calls. In-flight counts are NOT retroactively trimmed (a user at 6
 // in-flight when the cap drops to 4 stays at 6 until releases unwind
 // the count below the new cap).
+//
+// A raised or removed cap moves the runs waiting on it on at once, as far as
+// the new cap allows: nothing else would, until one of their user's runs ended.
 func (s *Semaphore) WithPerUserCap(n int) *Semaphore {
 	s.mu.Lock()
 	s.maxPerUser = n
+	for key := range s.userWait {
+		s.wakeUserWaiter(key)
+	}
 	s.mu.Unlock()
 	return s
 }
@@ -196,15 +202,17 @@ func (s *Semaphore) WithUserQuotaStore(qs userQuotaGate) *Semaphore {
 
 // SetCaps updates the global concurrency + queue-depth caps at runtime (RFC CK
 // config reload). Both maxConcurrent and maxQueue are read under s.mu on the
-// acquire path, so this is race-safe and applies to subsequent acquires. In-flight
-// runs are NOT retroactively trimmed — shrinking a cap lets the excess drain as
-// releases unwind, matching WithPerUserCap. The queue TIMEOUT is deliberately not
+// acquire path, so this is race-safe. A raised cap admits runs already waiting
+// at once, oldest first, ahead of any new run. In-flight runs are NOT
+// retroactively trimmed — shrinking a cap lets the excess drain as releases
+// unwind, matching WithPerUserCap. The queue TIMEOUT is deliberately not
 // changed here: it is read unlocked on the wait path, so it stays boot-fixed (a
 // restart changes it).
 func (s *Semaphore) SetCaps(maxConcurrent, maxQueue int) {
 	s.mu.Lock()
 	s.maxConcurrent = maxConcurrent
 	s.maxQueue = maxQueue
+	s.wakeNextLocked()
 	s.mu.Unlock()
 }
 
@@ -527,10 +535,17 @@ func (s *Semaphore) endRun(key userKey, qs userQuotaGate, holdsGlobal bool) {
 	}
 }
 
-// wakeNextLocked hands a freed global slot to the next waiter, if any.
-// Caller holds s.mu and has just freed the slot.
+// wakeNextLocked hands free global slots to waiters, oldest first, until the
+// slots or the waiters run out. Caller holds s.mu. Checking the cap here, not
+// in the callers, is what makes a reload hold: a lowered cap leaves a freed
+// slot unfilled while more than the cap still run, and a raised one fills
+// every new slot at once (SetCaps).
 func (s *Semaphore) wakeNextLocked() {
-	if w := s.nextWaiter(); w != nil {
+	for s.active < s.maxConcurrent {
+		w := s.nextWaiter()
+		if w == nil {
+			return
+		}
 		s.queued--
 		s.active++
 		select {
@@ -577,6 +592,9 @@ func (s *Semaphore) cancelWaiter(target *semWaiter, key userKey, qs userQuotaGat
 	select {
 	case <-target.ch:
 		s.active--
+		// The slot this waiter was handed and never used goes to the next one;
+		// left idle it would wait for the next release or new run.
+		s.wakeNextLocked()
 		if qs == nil {
 			s.decrementPerUser(key)
 		} else {
