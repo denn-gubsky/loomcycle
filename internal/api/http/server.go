@@ -3431,6 +3431,8 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 			return fmt.Errorf("%w: %v", runner.ErrInternal, err)
 		}
 		sessionID, runID = started.SessionID, started.ID
+		// As for a draft below: the row the start left decides, never wider.
+		in.CredentialsNoUserScope = in.CredentialsNoUserScope || started.CredentialsNoUserScope
 	case startingDraft:
 		// RFC DI D5: after admission, so a refusal above leaves the draft as it
 		// was; before registration, so every failure path below finds a
@@ -3440,6 +3442,11 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 			return draftStartErr(err, in.ConfiguredRunID)
 		}
 		sessionID, runID = started.SessionID, started.ID
+		// The row as the start left it decides, not the read the input was
+		// built from: an edit by another user that landed in between marked the
+		// row before writing the draft this start just matched. The bit only
+		// ever narrows, so a later read can be no wider than the start.
+		in.CredentialsNoUserScope = in.CredentialsNoUserScope || started.CredentialsNoUserScope
 	default:
 		var sessErr error
 		sessionID, runID, sessErr = s.openOrCreateSessionAndRun(ctx, in.SessionID, effectiveAgentName, effectiveTenantID, effectiveUserID, identity)
