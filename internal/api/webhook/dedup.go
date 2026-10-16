@@ -170,6 +170,9 @@ func (rec *Receiver) RunSweeper(ctx context.Context, interval time.Duration) {
 		select {
 		case <-t.C:
 			rec.dedup.sweep()
+			if rec.secrets != nil {
+				rec.secrets.sweep()
+			}
 		case <-ctx.Done():
 			return
 		}

@@ -23,7 +23,8 @@ func TestReceiver_AnExpiredStoredSecretRefusesTheDelivery(t *testing.T) {
 	put("acme", "hook-old", "old-secret")
 	putWebhookDef(t, st, "acme", "gh", storedSecretDef(map[string]any{
 		"kind": "hmac", "header": "X-Hub-Signature-256", "secret": "$cred:hook", "previous_secret": "$cred:hook-old"}))
-	rec := New(Deps{Cfg: &config.Config{}, Store: st, Runner: &fakeRunner{runID: "r"}, Credentials: engine})
+	clk := newTestClock()
+	rec := New(Deps{Cfg: &config.Config{}, Store: st, Runner: &fakeRunner{runID: "r"}, Credentials: engine, Now: clk.now})
 	n := 0
 	deliver := func(secret string) (int, string) {
 		n++
@@ -33,8 +34,10 @@ func TestReceiver_AnExpiredStoredSecretRefusesTheDelivery(t *testing.T) {
 		t.Fatalf("before any expiry, signed with the previous secret: %d, want 202", code)
 	}
 
-	// The previous secret lapses: it no longer verifies; the current does.
+	// The previous secret lapses: it no longer verifies; the current does —
+	// once the receiver's copy of the secrets has (storedSecretTTL).
 	credentialtest.Expire(t, st, credential.Identity{TenantID: "acme", Scope: "tenant", Name: "hook-old"}, time.Now().Add(-time.Minute))
+	clk.pastSecretTTL()
 	if code, _ := deliver("old-secret"); code != http.StatusUnauthorized {
 		t.Errorf("signed with an expired previous secret: %d, want 401", code)
 	}
@@ -44,6 +47,7 @@ func TestReceiver_AnExpiredStoredSecretRefusesTheDelivery(t *testing.T) {
 
 	// The current secret lapses: nothing is accepted, signed or not.
 	credentialtest.Expire(t, st, credential.Identity{TenantID: "acme", Scope: "tenant", Name: "hook"}, time.Now().Add(-time.Minute))
+	clk.pastSecretTTL()
 	code, body := deliver("current-secret")
 	if code == http.StatusAccepted {
 		t.Fatalf("a delivery signed with an expired secret was accepted: %s", body)

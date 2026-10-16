@@ -65,8 +65,10 @@ type Receiver struct {
 	runStateBus  *runstate.Bus
 	envAllowlist map[string]bool
 	// creds reads a verification secret stored as a credential (auth.secret).
-	// nil: such a webhook refuses every delivery as unresolvable.
-	creds CredentialResolver
+	// nil: such a webhook refuses every delivery as unresolvable. Otherwise
+	// secrets, which keeps each read for storedSecretTTL.
+	creds   CredentialResolver
+	secrets *cachedCredentials
 	// allowUnauthenticated honors auth.kind="none" (skip verification). When
 	// false (default) a none-auth webhook 503s rather than silently accepting
 	// unsigned external POSTs. Set from LOOMCYCLE_WEBHOOKS_ALLOW_UNAUTHENTICATED.
@@ -141,6 +143,14 @@ func New(d Deps) *Receiver {
 	if logf == nil {
 		logf = func(string, ...any) {}
 	}
+	// The creds field stays a nil interface without an engine: storedSecret
+	// tells that apart from a credential that is missing.
+	var creds CredentialResolver
+	var secrets *cachedCredentials
+	if d.Credentials != nil {
+		secrets = newCachedCredentials(d.Credentials, now)
+		creds = secrets
+	}
 	return &Receiver{
 		store:                d.Store,
 		cfg:                  d.Cfg,
@@ -150,7 +160,8 @@ func New(d Deps) *Receiver {
 		publisher:            d.Publisher,
 		runStateBus:          d.RunStateBus,
 		envAllowlist:         d.EnvAllowlist,
-		creds:                d.Credentials,
+		creds:                creds,
+		secrets:              secrets,
 		allowUnauthenticated: d.AllowUnauthenticated,
 		logf:                 logf,
 		dedup:                newDedupCache(now),
