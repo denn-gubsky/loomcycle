@@ -14,6 +14,7 @@ import (
 	"google.golang.org/grpc"
 
 	bridge "github.com/denn-gubsky/loomcycle/internal/a2a"
+	"github.com/denn-gubsky/loomcycle/internal/auth"
 	"github.com/denn-gubsky/loomcycle/internal/config"
 	"github.com/denn-gubsky/loomcycle/internal/connector"
 	"github.com/denn-gubsky/loomcycle/internal/lookup"
@@ -32,6 +33,10 @@ type Peer struct {
 	// host or path.
 	Tenant      string
 	TenantBound bool
+	// Principal is the resolved credential, nil in open mode. It reaches the
+	// executor for the run-start rate only; the run's identity still comes
+	// from routing.
+	Principal *auth.Principal
 }
 
 // Authenticator authenticates an inbound A2A request from its headers and
@@ -189,6 +194,14 @@ func New(ctx context.Context, deps Deps) (*Server, error) {
 	// NewInterruptResolver).
 	if deps.ChannelNotify != nil {
 		exec = exec.WithInterruptionBridge(bridge.NewInterruptResolver(deps.Store, deps.ChannelNotify))
+	}
+	// A fresh run takes a start from its caller's run rate, by the same
+	// limiter as every other transport. The loomcycle server is the runner
+	// in production and implements it; a runner that does not (a test
+	// double) leaves no limiter, and the executor then refuses a token that
+	// carries its own rate rather than let it through uncounted.
+	if a, ok := deps.Run.(bridge.StartAdmitter); ok {
+		exec = exec.WithStartAdmission(a.AdmitRunRate)
 	}
 
 	// The principal interceptor runs the frontier Authenticator and
