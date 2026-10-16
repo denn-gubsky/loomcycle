@@ -8,9 +8,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"strings"
 
 	"github.com/denn-gubsky/loomcycle/internal/agents"
+	"github.com/denn-gubsky/loomcycle/internal/audit"
 	"github.com/denn-gubsky/loomcycle/internal/auth"
 	"github.com/denn-gubsky/loomcycle/internal/config"
 	"github.com/denn-gubsky/loomcycle/internal/hooks"
@@ -70,6 +72,11 @@ type AgentDef struct {
 	// a clearer error and a tighter default for executable source.
 	// 0 = no cap.
 	MaxCodeBytes int
+
+	// Audit records an operator taking an agent's no-trace mode off
+	// (LOOMCYCLE_AUDIT_LOG_PATH). Nil = no audit log: the process log line
+	// is then the record.
+	Audit audit.Sink
 }
 
 const agentDefDescription = `Author, fork, promote, retire, and inspect agent definitions at runtime. ` +
@@ -195,6 +202,91 @@ func callerHasOperatorAuthority(ctx context.Context) bool {
 	}
 	_, hasPrincipal := auth.PrincipalFromContext(ctx)
 	return !hasPrincipal && tools.IsUnauthenticatedOperator(ctx)
+}
+
+// callerMayLiftNoTrace reports whether the caller may take an agent's
+// no-trace mode off: an operator — a principal with substrate:tenant (or
+// admin) not confined to the run plane, the same rule as the timed override
+// (retentionOverrideOperator), or the operator of an unauthenticated
+// deployment — calling from outside a run. A member could otherwise switch
+// storage back on and read what its colleagues' runs of the agent say; an
+// agent inside a run is never the operator, whoever started the run.
+func callerMayLiftNoTrace(ctx context.Context) bool {
+	if tools.RunID(ctx) != "" {
+		return false
+	}
+	p, ok := auth.PrincipalFromContext(ctx)
+	if !ok {
+		return tools.IsUnauthenticatedOperator(ctx)
+	}
+	return auth.HasScope(p.Scopes, auth.ScopeTenant) && !p.Restrictions.RunPlaneOnly()
+}
+
+// lineageIsNoTrace reports whether name, in tenant, is a no-trace agent: its
+// active version says so, or its newest does (a retire clears the active
+// pointer, and the newest is what a member's next version follows).
+func (a *AgentDef) lineageIsNoTrace(ctx context.Context, tenant, name string) (bool, error) {
+	isNone := func(def json.RawMessage) bool {
+		var d struct {
+			Retention string `json:"retention"`
+		}
+		// A definition that does not parse cannot be shown to be ordinary.
+		return json.Unmarshal(def, &d) != nil || d.Retention == store.RetentionNone
+	}
+	var nf *store.ErrNotFound
+	active, err := a.Store.AgentDefGetActive(ctx, tenant, name)
+	switch {
+	case err == nil:
+		if isNone(active.Definition) {
+			return true, nil
+		}
+	case !errors.As(err, &nf):
+		return false, err
+	}
+	rows, err := a.Store.AgentDefListByName(ctx, name) // newest first
+	if err != nil {
+		return false, err
+	}
+	for _, r := range rows {
+		if r.TenantID == tenant {
+			return isNone(r.Definition), nil
+		}
+	}
+	return false, nil
+}
+
+// admitNoTraceDrop refuses a version that would take name's no-trace mode
+// off, unless the caller is an operator; an operator's is recorded, and
+// refused when the record cannot be written. newRetention is the mode the
+// version being created, forked or promoted carries.
+func (a *AgentDef) admitNoTraceDrop(ctx context.Context, op, tenant, name, newRetention string) error {
+	if newRetention == store.RetentionNone {
+		return nil
+	}
+	noTrace, err := a.lineageIsNoTrace(ctx, tenant, name)
+	if err != nil {
+		return fmt.Errorf("%s: reading the retention mode of %q: %w", op, name, err)
+	}
+	if !noTrace {
+		return nil
+	}
+	if !callerMayLiftNoTrace(ctx) {
+		return fmt.Errorf("%s: %q is a no-trace agent (retention: none), and only an operator may take that off; keep \"retention\": \"none\" in this version", op, name)
+	}
+	subject := ""
+	if p, ok := auth.PrincipalFromContext(ctx); ok {
+		subject = p.Subject
+	}
+	if a.Audit != nil {
+		if err := a.Audit.Record(audit.Event{
+			Action: "retention_none_removed", TargetTenant: tenant, TargetName: name,
+			ActorTenant: tenant, ActorSubject: subject,
+		}); err != nil {
+			return fmt.Errorf("%s: the no-trace mode of %q was not removed: its audit record could not be written: %w", op, name, err)
+		}
+	}
+	log.Printf("agentdef: %s by %q takes the no-trace mode off agent %q in tenant %q: its runs are stored from now on", op, subject, name, tenant)
+	return nil
 }
 
 // forkParentVisible reports whether a caller in callerTenant may fork a
@@ -347,6 +439,11 @@ func (a *AgentDef) execCreate(ctx context.Context, policy tools.AgentDefPolicyVa
 		resp := rowResponse(active, true)
 		resp["deduplicated"] = true
 		return okJSON(resp)
+	}
+	// "Create the agent anew" is how its no-trace mode comes off, and only
+	// an operator may do that.
+	if err := a.admitNoTraceDrop(ctx, "create", tenantID, in.Name, def.Retention); err != nil {
+		return errResult(err.Error()), nil
 	}
 
 	row := store.AgentDefRow{
@@ -546,6 +643,11 @@ func (a *AgentDef) execFork(ctx context.Context, policy tools.AgentDefPolicyValu
 	if a.MaxDescriptionBytes > 0 && len(in.Description) > a.MaxDescriptionBytes {
 		return errResult(fmt.Sprintf("fork: description (%d bytes) exceeds max %d", len(in.Description), a.MaxDescriptionBytes)), nil
 	}
+	// A fork keeps its parent's mode, so this catches a fork of a version
+	// from before the agent was made no-trace.
+	if err := a.admitNoTraceDrop(ctx, "fork", tenantID, in.Name, def.Retention); err != nil {
+		return errResult(err.Error()), nil
+	}
 
 	row := store.AgentDefRow{
 		DefID:            mintDefID(),
@@ -696,6 +798,15 @@ func (a *AgentDef) execPromote(ctx context.Context, policy tools.AgentDefPolicyV
 	// cleared), so it is held to what create is.
 	if err := TeamLocalAgentCollision(ctx, a.Store, ident.TenantID, row.Name); err != nil {
 		return errResult(fmt.Sprintf("promote: %s", err)), nil
+	}
+	var target struct {
+		Retention string `json:"retention"`
+	}
+	if err := json.Unmarshal(row.Definition, &target); err != nil {
+		return errResult(fmt.Sprintf("promote: parse definition: %s", err)), nil
+	}
+	if err := a.admitNoTraceDrop(ctx, "promote", ident.TenantID, row.Name, target.Retention); err != nil {
+		return errResult(err.Error()), nil
 	}
 	// RFC N: promote within the agent's own tenant. AgentDefSetActive
 	// refuses when ident.TenantID ≠ row.TenantID, so a caller in tenant T
@@ -907,7 +1018,7 @@ func (a *AgentDef) buildDefinition(ctx context.Context, name, parentJSON string,
 			noTraceBase = true
 		}
 		if noTraceBase && ov.Retention == "default" {
-			return mergedDef{}, fmt.Errorf("AgentDef tool: a fork cannot set retention to %q on %q, whose runs are no-trace (retention: none); change it in the server config, or create the agent anew", ov.Retention, name)
+			return mergedDef{}, fmt.Errorf("AgentDef tool: a fork cannot set retention to %q on %q, whose runs are no-trace (retention: none); change it in the server config, or have an operator create the agent anew", ov.Retention, name)
 		}
 		if ov.Retention == "default" {
 			ov.Retention = ""

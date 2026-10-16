@@ -1932,6 +1932,9 @@ func main() {
 	// server knows nothing durable was written.
 	if cfg.Env.AuditLogPath != "" {
 		srv.SetRunDeleteAudit(tokenAudit)
+		// An operator taking an agent's no-trace mode off. Nil with no file,
+		// as above: the process log line is the record then.
+		agentDefTool.Audit = tokenAudit
 	}
 	graceSecs := 0
 	if v := os.Getenv("LOOMCYCLE_OPERATOR_TOKEN_ROTATION_GRACE_SECONDS"); v != "" {
