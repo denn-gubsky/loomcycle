@@ -796,3 +796,59 @@ func TestHandleMintUserToken_RateIsStoredOnTheToken(t *testing.T) {
 		}
 	}
 }
+
+// A restricted token cannot mint its way out of its restrictions: what it
+// mints carries the stricter of each of its own and what the body asks for.
+// A no-trace operator mints no-trace tokens, a rate-limited one tokens no
+// faster, one with locked overrides tokens no looser.
+func TestHandleMintUserToken_InheritsTheMintersRestrictions(t *testing.T) {
+	s, st := tokenAuthServer(t, "legacy")
+	ctx := context.Background()
+	seedUser(t, st, "acme", "alice", "isolated", "active")
+	minter := auth.Principal{TenantID: "acme", Subject: "ops", Scopes: []string{auth.ScopeTenant}, Restrictions: auth.Restrictions{
+		Retention: auth.RetentionNone,
+		Rate:      &auth.RateLimit{PerMinute: 6, Burst: 10},
+		Overrides: &auth.OverridePolicy{Allow: []string{"effort", "model"}},
+	}}
+
+	cases := map[string]struct {
+		body      string
+		perMinute int
+		burst     int
+		allowed   []string
+		refused   []string
+	}{
+		"no body":            {body: "", perMinute: 6, burst: 10, allowed: []string{"effort", "model"}, refused: []string{"tier"}},
+		"a looser body":      {body: `{"rate":{"per_minute":600,"burst":1000},"overrides":["effort","tier"]}`, perMinute: 6, burst: 10, allowed: []string{"effort"}, refused: []string{"model", "tier"}},
+		"a stricter body":    {body: `{"rate":{"per_minute":2,"burst":3},"overrides":"none"}`, perMinute: 2, burst: 3, refused: []string{"effort", "model"}},
+		"default retention":  {body: `{"retention":"default"}`, perMinute: 6, burst: 10, allowed: []string{"effort", "model"}},
+		"disjoint overrides": {body: `{"overrides":["tier"]}`, perMinute: 6, burst: 10, refused: []string{"effort", "model", "tier"}},
+	}
+	for name, c := range cases {
+		resp := mintFor(t, s, minter, "alice", c.body)
+		p, ok := s.resolvePrincipal(ctx, resp.Token)
+		if !ok {
+			t.Fatalf("%s: the minted token does not resolve", name)
+		}
+		r := p.Restrictions
+		if r.Retention != auth.RetentionNone {
+			t.Errorf("%s: retention = %q, want none: a no-trace token minted one whose runs are stored", name, r.Retention)
+		}
+		if r.Rate == nil || r.Rate.PerMinute != c.perMinute || r.Rate.EffectiveBurst() != c.burst {
+			t.Errorf("%s: rate = %+v, want %d/min burst %d", name, r.Rate, c.perMinute, c.burst)
+		}
+		if r.Overrides == nil {
+			t.Errorf("%s: overrides unlocked, want them locked", name)
+		}
+		for _, f := range c.allowed {
+			if !r.OverrideAllowed(f) {
+				t.Errorf("%s: override %q refused, want allowed", name, f)
+			}
+		}
+		for _, f := range c.refused {
+			if r.OverrideAllowed(f) {
+				t.Errorf("%s: override %q allowed, want refused", name, f)
+			}
+		}
+	}
+}

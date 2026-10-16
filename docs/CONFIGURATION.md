@@ -1286,7 +1286,7 @@ On the **loomcycle-as-MCP-server transport** (`/v1/_mcp`, RFC AG) a `substrate:t
 - **Who may call it.** The caller needs the `runs:delete` scope and must be able to read the run. An admin and a tenant operator have the scope. A member token and an isolated user do not, unless it was granted when the token was minted. A token limited to certain agents cannot delete at all.
 - **A live tree is refused.** If any run in the tree is still running, awaiting input or paused, the answer is `409` with code `run_tree_live` and the id of that run, and nothing is deleted. Cancel it first.
 - **Unknown is not an error.** A run that does not exist, was already deleted, or is not the caller's to read answers `200` with every count at zero. So a repeated call is safe, and the answer does not reveal whether a run exists.
-- **The answer says what it could not reach.** `not_reached` names where a copy may remain: stored snapshots taken while a run was paused, export files a sweep already wrote, and facts that memory consolidation derived from the sessions. Each has a count where one is cheap to compute.
+- **The answer says what it could not reach.** `not_reached` names where a copy may remain: stored snapshots taken while a run was paused, export files a sweep already wrote, facts that memory consolidation derived from the sessions, and — when the tree was started by another run — that run's transcript, which holds the prompt it sent and the answer it got back (`ancestor_transcripts`; delete from that run to remove them). Each has a count where one is cheap to compute.
 - **One call deletes at most 10,000 runs.** A larger tree is refused with `run_tree_too_large`; delete its sub-trees first.
 - **Each call is recorded** in the audit log when `LOOMCYCLE_AUDIT_LOG_PATH` is set: who called, which root, and the row counts. Never content. Without an audit path the delete still runs and is written to the process log.
 
@@ -1338,6 +1338,7 @@ Rules worth knowing:
 
 - **A rotation does not extend a lifetime.** The replacement token expires when the original would have. A token that has already expired cannot be rotated; mint a new one.
 - **A token cannot mint one that outlives it.** When the token doing the mint has a lifetime of its own, a longer `ttl_seconds` is refused, and a mint that asks for none ends when the minting token does.
+- **Nor one less restricted than itself.** A per-user token carries the stricter of each restriction of the minting token and of the body: `retention: none` if either has it, the lower `rate`, only the `overrides` both allow, only the `agents` both list (none in common is refused).
 - **A token holding `substrate:admin` cannot have a lifetime.** One admin token turns the legacy `LOOMCYCLE_AUTH_TOKEN` login off, so an admin token that expires would lock the deployment out on a date.
 - **An unknown field in the mint body is refused** (`400`). A misspelled `ttl_seconds` that was silently dropped would hand back a token that never expires. Before v1.112.0 the body was ignored entirely.
 - **Expiry holds through the resolution cache.** A token stops at its own end, not up to `LOOMCYCLE_AUTH_CACHE_TTL_SECONDS` later. The same now applies to a rotated-out token at the end of its grace window.
@@ -1528,7 +1529,7 @@ The mode is called `retention`, and it has two values: `none`, and the default.
 | Model, provider, token counts, cost, timings; the usage ledger | The final answer, the error's text, a cancel reason somebody typed |
 | A marker for every event: its type, time, size, tool name, ids | The run's settings record, a title or summary, trace-index rows, banked turns |
 
-**What is still delivered:** a caller holding the connection gets the full stream and the full error text, and a parent gets its child's answer. A detached run returns its id and nothing readable afterwards, so its agent must deliver its own result (a tool call, a channel message).
+**What is still delivered:** a caller holding the connection gets the full stream and the full error text, and a parent gets its child's answer. An ordinary parent of a no-trace child stores a marker where its transcript would hold that answer (the tool result, and the copy kept to resume it); its model still reads the answer, and what the parent itself says afterwards is the parent's own content. A detached run returns its id and nothing readable afterwards, so its agent must deliver its own result (a tool call, a channel message).
 
 **What a no-trace run cannot do.** Each needs its content stored, so each is refused with `retention_none_unsupported` and not quietly degraded:
 
@@ -1537,14 +1538,15 @@ The mode is called `retention`, and it has two values: `none`, and the default.
 - be configured as a draft (409), sent a message or retuned (409);
 - ask a person through the `Interruption` tool, or be evaluated;
 - start a team walk (403) — also refused for any caller whose token is `none`.
+- be a member of a team walk (403): a walk records its members' answers.
 
 **A token whose runs are no-trace** is held to that on every route it can reach, not only where it starts a run: it cannot create or edit a draft, send a message into a run, answer an interrupt, or attach feedback to a review (each `retention_none_unsupported`), and a reason it types with a cancel is dropped while the cancel goes ahead.
 
 Rules worth knowing:
 
 - **Tools that write on purpose are unchanged.** `Memory`, `Channel`, `Document`, `Write` and MCP tools store what the agent tells them to. Give a no-trace agent only the tools it should be able to write with.
-- **Hooks are unchanged.** A hook you configured is sent what it was always sent, including the final answer on `run_end`. That is your endpoint and your choice.
-- **A fork can add the mode to an agent and cannot remove it.** A mode written in the server config holds over a tenant's own version of the agent.
+- **Hooks are unchanged.** A hook you configured is sent what it was always sent, including the final answer on `run_end`. That is your endpoint and your choice, which is why only an operator may add or change the `hooks` or `tool_hooks` of a runtime-defined no-trace agent (create, fork or promote; the same rule and audit as taking the mode off, recorded as `retention_none_hooks_changed`). The same holds for a HookDef such an agent names without a version (`name`, not `name@3`): creating, forking, promoting, retiring or deleting it changes the hook the agent runs, so it is an operator's, recorded as `retention_none_hookdef_changed`. Only agents of the HookDef's own tenant count (for a HookDef in the shared layer, also the server config's agents); a tenant's agent that falls back to a shared HookDef is protected by pinning the version or by a HookDef in its own tenant.
+- **A fork can add the mode to an agent and cannot remove it.** A mode written in the server config holds over a tenant's own version of the agent. Only an operator (an admin, or a tenant operator, calling from outside a run) may take the mode off a runtime-defined agent — by creating it anew, forking a version from before it was set, or promoting one; a tenant member or an agent inside a run is refused. Each such removal is written to the audit log (`retention_none_removed`, with who, the agent and the tenant) when one is configured, and is refused if that record cannot be written.
 - **A pause does not park a no-trace run.** It keeps running, a snapshot leaves it out, and the pause result counts it in `unpausable_runs_count`.
 - **A restart loses it.** At boot the no-trace runs that were in flight are failed with stop reason `not_resumable`, and their idempotency keys are released so a retry with the same key starts a new run. A run whose replica never comes back is failed as `heartbeat_timeout` and keeps its key; vary the key per attempt if that matters.
 - **Its chat is deleted at its age and never exported** by the retention sweeper.
@@ -1574,7 +1576,7 @@ Rules worth knowing:
 - **Who may set one:** an admin, for any tenant (`"tenant": "…"` in the body, `?tenant=` on the delete and the list) and for its own when it names none — which, with the single `LOOMCYCLE_AUTH_TOKEN`, is the tenant every run is in; a tenant operator, for its own tenant only. A tenant member, an isolated user and a token limited to certain agents may not set, clear or list them.
 - **It is audited.** Setting and clearing each write a record (`retention_override_set`, `retention_override_clear`) to `LOOMCYCLE_AUDIT_LOG_PATH` with who, the agent, the tenant and until when. With an audit log configured, an override whose record cannot be written is not set. Both are also written to the process log.
 - **Every transport has it.** HTTP as above; gRPC `RetentionOverride` (`op`: `list`, `set`, `clear`); the MCP tool `retention_override`; `listRetentionOverrides` / `setRetentionOverride` / `clearRetentionOverride` in the TypeScript client and `list_retention_overrides` / `set_retention_override` / `clear_retention_override` in the Python one. All of them call one implementation, so who may use it, what it lifts and what is audited are the same everywhere.
-- **The console shows a banner** for as long as one is in force, and `GET /v1/_retention` lists them as `no_trace_overrides`.
+- **The console shows a banner** for as long as one is in force, and `GET /v1/_retention` lists them as `no_trace_overrides` to those who may list them (an empty list for anyone else).
 - **It is not carried by a snapshot**, and it is checked when a run starts: a run already going keeps the mode it started with.
 
 ### Declared principals — static `(tenant, user)` logins (RFC AO)

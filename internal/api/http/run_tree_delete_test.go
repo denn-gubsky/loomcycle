@@ -672,3 +672,38 @@ func TestDeleteRunTree_RefusesAMalformedID(t *testing.T) {
 		}
 	}
 }
+
+// A sub-tree's prompt and answer are also in its parent's transcript — the
+// Agent call that started it and the result it handed back — which the delete
+// does not touch. The answer says so; a tree deleted from its root does not
+// have that copy and says nothing of it.
+func TestDeleteRunTree_ASubTreeNamesItsAncestorsTranscripts(t *testing.T) {
+	srv, mux := treeDeleteServer(t)
+	st := srv.store
+	parent := seedTreeRun(t, st, "acme", "alice", "lead", "", true)
+	child := seedTreeRun(t, st, "acme", "alice", "worker", parent.ID, true)
+	other := seedTreeRun(t, st, "acme", "alice", "elsewhere", "", true)
+
+	named := func(path string) bool {
+		t.Helper()
+		code, body, raw := doDelete(t, mux, tokOperator, path)
+		if code != http.StatusOK || body.DeletedRuns == 0 {
+			t.Fatalf("DELETE %s = %d: %s", path, code, raw)
+		}
+		for _, nr := range body.NotReached {
+			if nr.Name == "ancestor_transcripts" {
+				if nr.Reason == "" {
+					t.Errorf("not_reached ancestor_transcripts gives no reason")
+				}
+				return true
+			}
+		}
+		return false
+	}
+	if !named("/v1/runs/" + child.ID + "/tree") {
+		t.Error("deleting a sub-tree does not say its parent's transcript still holds its prompt and answer")
+	}
+	if named("/v1/runs/" + other.ID + "/tree") {
+		t.Error("deleting a root names ancestor transcripts it does not have")
+	}
+}

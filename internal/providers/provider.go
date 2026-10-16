@@ -414,6 +414,11 @@ type ContentBlock struct {
 	// non-image block.
 	MediaType string `json:"media_type,omitempty"`
 	Data      string `json:"data,omitempty"`
+
+	// NotRetained marks a tool_result whose text is a no-trace run's content
+	// (Event.ContentNotRetained): the model reads it, and nothing the run
+	// keeps — its transcript, a harvest into memory — holds it. Never sent.
+	NotRetained bool `json:"-"`
 }
 
 // RequestHasImage reports whether any message in the request carries an image
@@ -1053,6 +1058,12 @@ type Event struct {
 	// thinking block with its seal on the next (tool-use continuation) request.
 	// Empty for non-Anthropic / non-thinking turns.
 	ReasoningSignature string `json:"reasoning_signature,omitempty"`
+
+	// ContentNotRetained is set on an EventToolResult whose text carries a
+	// no-trace run's content (a no-trace sub-agent's answer). The live stream
+	// gets the event as it is; the run's transcript stores a marker in its
+	// place. Never on the wire: it is an instruction to the recorder.
+	ContentNotRetained bool `json:"-"`
 }
 
 // RetryInfo accompanies an EventRetry. Each field is set every time.

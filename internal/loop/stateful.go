@@ -832,6 +832,10 @@ func runStateful(ctx context.Context, opts RunOptions, system []providers.Conten
 	if opts.InitialObservation != "" {
 		obs = opts.InitialObservation
 	}
+	// notRetainedObs is the last action's output when that output is a
+	// no-trace run's content: the model is shown it, and the harvest below
+	// banks the step without it.
+	notRetainedObs := ""
 	// task is shown on every step (see statefulUserMessage). An operator's
 	// turn in an interactive run replaces it: that turn is the request now.
 	task := ""
@@ -1203,9 +1207,13 @@ func runStateful(ctx context.Context, opts RunOptions, system []providers.Conten
 		// latest observation are fed, so each step's reasoning + observation are
 		// otherwise discarded. Embed them into the run-scoped index so a later
 		// Recall(query) can fetch the original detail back. nil-safe when recall off.
+		bankedObs := obs
+		if notRetainedObs != "" && obs == notRetainedObs {
+			bankedObs = ""
+		}
 		stepSpan := []providers.Message{
 			{Role: "assistant", Reasoning: es.Reasoning,
-				Content: []providers.ContentBlock{{Type: "text", Text: obs}}},
+				Content: []providers.ContentBlock{{Type: "text", Text: bankedObs}}},
 		}
 		opts.RecallIndex.Harvest(ctx, stepSpan)
 		// Persistent-memory harvest (RFC CT P2): bank the same evicted step for the
@@ -1332,6 +1340,10 @@ func runStateful(ctx context.Context, opts RunOptions, system []providers.Conten
 			blocks := executePendingTools(actCtx, opts.Dispatcher, []providers.ToolUse{tu}, 1, opts.Hooks, hookIdent, emit)
 			// A failure is already the structured error object, isError and all.
 			obs = blocks[0].Text
+			notRetainedObs = ""
+			if blocks[0].NotRetained {
+				notRetainedObs = obs
+			}
 			switch {
 			case helpTool != "" && tu.Name == helpTool:
 				if !blocks[0].IsError {

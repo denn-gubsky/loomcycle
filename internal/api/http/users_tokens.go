@@ -446,6 +446,15 @@ func (s *Server) handleMintUserToken(w http.ResponseWriter, r *http.Request) {
 		writeJSONError(w, http.StatusBadRequest, "invalid_restrictions", err.Error())
 		return
 	}
+	// Held to the minting token's own restrictions, the stricter of each, as
+	// its lifetime is held to the minter's (boundByMinter): a no-trace or
+	// rate-limited operator token must not mint itself a way out.
+	if p, ok := auth.PrincipalFromContext(r.Context()); ok {
+		if restrictions, err = restrictions.Within(p.Restrictions); err != nil {
+			writeJSONError(w, http.StatusBadRequest, "invalid_restrictions", err.Error())
+			return
+		}
+	}
 	restrictionsJSON, err := auth.MarshalRestrictions(restrictions)
 	if err != nil {
 		writeJSONError(w, http.StatusInternalServerError, "mint_failed", err.Error())

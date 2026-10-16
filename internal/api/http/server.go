@@ -7630,6 +7630,12 @@ func (s *Server) makeRecordingEmit(ctx context.Context, runID string, rid tools.
 			toStore.ContextState = &cs
 		}
 		payload, err := json.Marshal(toStore)
+		// A result that hands this run a no-trace sub-agent's answer is
+		// stored as a no-trace run's own event is: a marker. The model has it
+		// already, and the live stream gets it below.
+		if err == nil && ev.ContentNotRetained {
+			payload = eventMarker(string(ev.Type), payload)
+		}
 		if err == nil {
 			if err := s.store.AppendEvent(ctx, runID, string(ev.Type), payload); err != nil {
 				log.Printf("store: AppendEvent failed (run=%s type=%s): %v", runID, ev.Type, err)
@@ -8527,6 +8533,17 @@ func (s *Server) prepareSubRunValues(ctx context.Context, name string, src nameS
 	subRetention := s.resolveRetention(ctx, tenant, name, def, "")
 	if err := admitNoTraceStart(subRetention, interactive, false, ""); err != nil {
 		return nil, fmt.Errorf("sub-agent %q: %w", name, err)
+	}
+	if subRetention == store.RetentionNone {
+		// A walk records each member's answer for the states after it, so a
+		// no-trace member would be stored through the walk (as a no-trace run
+		// cannot start one, admitTeamRun).
+		if src == nameFromDefinition {
+			return nil, fmt.Errorf("sub-agent %q: %w", name, errNoTraceTeamMember)
+		}
+		// The child's answer comes back as the result of the calling tool
+		// call: that call's stored copy is a marker (makeRecordingEmit).
+		tools.MarkContentNotRetained(ctx)
 	}
 	// Checked on the definition the child will run — after a def_id pin, so
 	// the pinned version's own lock is the one that decides.

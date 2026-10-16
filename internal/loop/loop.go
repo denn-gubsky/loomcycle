@@ -3578,7 +3578,13 @@ outerLoop:
 				continue outerLoop
 			}
 			emit(providers.Event{Type: providers.EventError, Error: err.Error()})
-			lcotel.SetSpanError(iterSpan, err)
+			if tools.RunIsNoTrace(ctx) {
+				// A provider's error can quote the prompt; a no-trace run's
+				// span is exported without it.
+				lcotel.SetSpanErrorMessage(iterSpan, "provider call failed")
+			} else {
+				lcotel.SetSpanError(iterSpan, err)
+			}
 			iterSpan.End()
 			turnCancelFn(nil) // RFC BH: release this turn's cancel ctx before terminating (no leak)
 			return RunResult{Iterations: iter}, err
@@ -3749,7 +3755,11 @@ outerLoop:
 				// terminal error path was the one branch that abandoned ch.
 				for range ch {
 				}
-				lcotel.SetSpanErrorMessage(iterSpan, ev.Error)
+				if tools.RunIsNoTrace(ctx) {
+					lcotel.SetSpanErrorMessage(iterSpan, "in-stream provider error")
+				} else {
+					lcotel.SetSpanErrorMessage(iterSpan, ev.Error)
+				}
 				iterSpan.End()
 				turnCancelFn(nil) // RFC BH: release this turn's cancel ctx before terminating (no leak)
 				return RunResult{Iterations: iter}, fmt.Errorf("provider error: %s", ev.Error)
@@ -4440,6 +4450,9 @@ func executePendingTools(
 		idx int
 		tu  providers.ToolUse
 		res tools.Result
+		// notRetained: the result carries a no-trace run's content, so the
+		// transcript stores a marker for it (tools.ContentMark).
+		notRetained bool
 	}
 
 	resCh := make(chan result, len(pending))
@@ -4468,9 +4481,10 @@ func executePendingTools(
 			// callCtx, do. After the slot, so queueing for one is not work.
 			callCtx, endWork := providers.BeginWork(ctx)
 			defer endWork() // idempotent; also on a panic
+			callCtx, mark := tools.WithContentMark(callCtx)
 			r := dispatchOneTool(callCtx, dispatcher, tu, hookDispatcher, hookIdent, emit)
 			endWork()
-			resCh <- result{idx: i, tu: tu, res: r}
+			resCh <- result{idx: i, tu: tu, res: r, notRetained: mark.NotRetained()}
 		}(i, tu)
 	}
 	go func() {
@@ -4493,6 +4507,8 @@ func executePendingTools(
 			ToolUse: &providers.ToolUse{ID: r.tu.ID, Name: r.tu.Name, Input: r.tu.Input},
 			Text:    text,
 			IsError: r.res.IsError,
+
+			ContentNotRetained: r.notRetained,
 		}
 		// The failure's structure as a field too, so an SSE or gRPC consumer
 		// reads the category and the correct call format without parsing the
@@ -4514,6 +4530,8 @@ func executePendingTools(
 			ToolName:  r.tu.Name,
 			Text:      text,
 			IsError:   r.res.IsError,
+
+			NotRetained: r.notRetained,
 		}
 	}
 	return results

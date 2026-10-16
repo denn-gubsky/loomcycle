@@ -382,3 +382,22 @@ func TestRetentionOverride_TheConnectorChecksTheCallerItself(t *testing.T) {
 		t.Error("a refused request set an override")
 	}
 }
+
+// The retention report names the overrides in force only to those who may
+// list them: a member, or a token limited to certain agents, reads the report
+// without them, as it is refused GET /v1/_retention/overrides.
+func TestRetentionReport_ListsOverridesOnlyToAnOperator(t *testing.T) {
+	_, ts, _ := overrideFixture(t)
+	if code, body := bearerCall(t, ts, opsBearer, "PUT", "/v1/_retention/overrides", overrideBody("other", time.Hour, "")); code != 200 {
+		t.Fatalf("set: %d %s", code, body)
+	}
+	if code, body := bearerCall(t, ts, opsBearer, "GET", "/v1/_retention", ""); code != 200 || !strings.Contains(body, `"agent":"other"`) {
+		t.Fatalf("the operator's report: %d %s, want the override", code, body)
+	}
+	for _, bearer := range []string{freeBearer, restrictedBearer} {
+		code, body := bearerCall(t, ts, bearer, "GET", "/v1/_retention", "")
+		if code == 200 && (strings.Contains(body, `"agent":"other"`) || !strings.Contains(body, `"no_trace_overrides":[]`)) {
+			t.Errorf("the report read by %s names what is being debugged: %s", bearer, body)
+		}
+	}
+}

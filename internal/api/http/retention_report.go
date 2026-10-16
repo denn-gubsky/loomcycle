@@ -146,7 +146,12 @@ func (s *Server) handleRetentionReport(w http.ResponseWriter, r *http.Request) {
 		EmptyDossierMaxAgeMS:  s.cfg().Env.RetentionEmptyDossierMaxAge.Milliseconds(),
 	}
 
-	if list, err := s.activeRetentionOverrides(r.Context(), r.URL.Query().Get("tenant")); err != nil {
+	// Named only to whoever may list them (GET /v1/_retention/overrides): a
+	// member could otherwise learn which agent is being debugged, and so whose
+	// runs are being stored right now.
+	if !retentionOverrideOperator(r.Context()) {
+		resp.NoTraceOverrides = []retentionOverrideResponse{}
+	} else if list, err := s.activeRetentionOverrides(r.Context(), r.URL.Query().Get("tenant")); err != nil {
 		log.Printf("retention report: listing no-trace overrides: %v", err)
 		resp.NoTraceOverrides = []retentionOverrideResponse{}
 	} else {

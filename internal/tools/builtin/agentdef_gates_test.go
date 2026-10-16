@@ -11,8 +11,11 @@ import (
 // gateNewDef: a missing name, gateNewDef's own verdict, the description cap
 // (a property of the row, not of the definition), the clash with a team's own
 // agent of the same full name (which that agent, passing gateNewDef under
-// this name, must not trip over itself), and the two store writes.
-const execCreateRefusals = 6
+// this name, must not trip over itself), the two store writes, and taking a
+// no-trace agent's mode off (admitNoTraceDrop): that is about the name's
+// stored version history, which a team's local agent does not have — a team
+// version is not a lineage of the agent, and a walk refuses a no-trace member.
+const execCreateRefusals = 7
 
 // A team's local agents pass gateNewDef and nothing else of AgentDef create.
 // So a gate added to execCreate directly is one a local agent does not pass —

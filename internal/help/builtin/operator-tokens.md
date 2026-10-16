@@ -141,6 +141,10 @@ control.
 - A token cannot mint one that outlives it: when the minting token has a
   lifetime, a longer `ttl_seconds` is refused and a mint that asks for
   none ends when the minting token does.
+- Nor one less restricted than itself: a per-user token carries the
+  stricter of each restriction of the minting token and of the body —
+  `retention: none` if either has it, the lower `rate`, only the
+  `overrides` both allow, only the `agents` both list.
 - `LOOMCYCLE_USER_TOKEN_MAX_TTL_SECONDS` caps a per-user token's
   lifetime; with it set, a mint that asks for none gets the cap.
 - An expired token's row is deleted
