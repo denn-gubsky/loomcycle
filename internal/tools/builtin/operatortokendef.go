@@ -275,6 +275,10 @@ func (s *OperatorTokenDef) execCreate(ctx context.Context, in operatorTokenDefIn
 	if err := restrictions.Validate(in.Agents != nil); err != nil {
 		return errResult(fmt.Sprintf("create: %s", err)), nil
 	}
+	restrictions, rerr = heldToMinter(ctx, restrictions)
+	if rerr != nil {
+		return errResult(fmt.Sprintf("create: %s", rerr)), nil
+	}
 	// A token confined to the run plane cannot mint, rotate or retire, so an
 	// admin token carrying an allowlist would be an admin token that cannot
 	// administer — and one that still switches the legacy login off.
@@ -448,6 +452,17 @@ func (s *OperatorTokenDef) execRotate(ctx context.Context, in operatorTokenDefIn
 	if !prior.ExpiresAt.IsZero() && !time.Now().Before(prior.ExpiresAt) {
 		return errResult(fmt.Sprintf("rotate: token %q has expired — create a new one", prior.DefID)), nil
 	}
+	// The caller gets the new secret, so a token less restricted than the
+	// caller would be a way out of the caller's restrictions. Refused, not
+	// narrowed: narrowing would quietly take reach from the token's owner,
+	// and let a restricted admin downgrade other principals' tokens.
+	prev, pErr := auth.ParseRestrictions(prior.RestrictionsJSON)
+	if pErr != nil {
+		return errResult(fmt.Sprintf("rotate: token %q: %s", prior.DefID, pErr)), nil
+	}
+	if held, hErr := heldToMinter(ctx, prev); hErr != nil || !sameRestrictions(held, prev) {
+		return errResult("rotate: this token is less restricted than your own; only a caller at least as permissive may rotate it"), nil
+	}
 	plaintext, suffix, mErr := auth.MintToken()
 	if mErr != nil {
 		return errResult(fmt.Sprintf("rotate: %s", mErr)), nil
@@ -488,6 +503,51 @@ func (s *OperatorTokenDef) execRotate(ctx context.Context, in operatorTokenDefIn
 	resp["rotated_from"] = prior.DefID
 	resp["prior_retires_at"] = retireOldAt.Format(time.RFC3339Nano)
 	return okJSON(resp)
+}
+
+// heldToMinter is r held to the restrictions of the credential minting it,
+// the stricter of each (auth.Restrictions.Within): an admin token restricted
+// to no-trace runs, a rate or locked overrides must not be able to mint
+// itself a token without them. A caller with no principal — the stdio MCP,
+// an open-mode deployment — is the unrestricted operator.
+func heldToMinter(ctx context.Context, r auth.Restrictions) (auth.Restrictions, error) {
+	p, ok := auth.PrincipalFromContext(ctx)
+	if !ok {
+		return r, nil
+	}
+	return r.Within(p.Restrictions)
+}
+
+// sameRestrictions reports whether a and b restrict the same things: the
+// same mode, the same rate (an unset burst reads as the per-minute rate), the
+// same overrides allowed and the same agents, in any order.
+func sameRestrictions(a, b auth.Restrictions) bool {
+	sameSet := func(x, y []string) bool {
+		if len(x) != len(y) {
+			return false
+		}
+		in := make(map[string]bool, len(x))
+		for _, v := range x {
+			in[v] = true
+		}
+		for _, v := range y {
+			if !in[v] {
+				return false
+			}
+		}
+		return true
+	}
+	if a.Retention != b.Retention || !sameSet(a.Agents, b.Agents) {
+		return false
+	}
+	if (a.Rate == nil) != (b.Rate == nil) || (a.Rate != nil &&
+		(a.Rate.PerMinute != b.Rate.PerMinute || a.Rate.EffectiveBurst() != b.Rate.EffectiveBurst())) {
+		return false
+	}
+	if (a.Overrides == nil) != (b.Overrides == nil) {
+		return false
+	}
+	return a.Overrides == nil || sameSet(a.Overrides.Allow, b.Overrides.Allow)
 }
 
 // ---- retire ----
