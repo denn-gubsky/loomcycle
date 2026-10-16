@@ -20,6 +20,7 @@ import (
 	"time"
 
 	runcancel "github.com/denn-gubsky/loomcycle/internal/cancel"
+	"github.com/denn-gubsky/loomcycle/internal/concurrency"
 	"github.com/denn-gubsky/loomcycle/internal/config"
 	"github.com/denn-gubsky/loomcycle/internal/contextplugin"
 	"github.com/denn-gubsky/loomcycle/internal/fence"
@@ -3460,6 +3461,32 @@ outerLoop:
 		callTimer := providers.StartCallTimer(opts.Now)
 		ch, err := opts.Provider.Call(turnCtx, req)
 		if err != nil {
+			// The operator cancelled this turn while its call was still waiting
+			// (in a provider's call lane, or anywhere else Call blocks), so the
+			// call failed with the turn's cancellation. That is the same event as
+			// a cancel during generation and ends the same way: the run parks for
+			// the operator's next message. It is checked before everything below
+			// because it says nothing about the provider, so no retry, fallback
+			// or resolver feedback applies. Nothing was generated, so the history
+			// needs no repair.
+			if opts.ArmTurnCancel != nil && ctx.Err() == nil && errors.Is(context.Cause(turnCtx), ErrTurnCancelled) {
+				var resumed bool
+				messages, lastCtxTokens, resumed = finishTurnCancel(ctx, &opts, messages, iter, lastCtxTokens, preambleTokens, reasonFromCause(context.Cause(turnCtx)), emit, disarmTurn)
+				iterSpan.End()
+				if !resumed {
+					break
+				}
+				// A call waiting for its lane lends the run's global slot, and
+				// it could not take it back under the cancelled turn when none
+				// was free. Take it back under the run's own ctx before the run
+				// computes again: the next turn may be routed to a provider no
+				// lane gates, which would never take it back on its own. A
+				// no-op when the slot is not lent.
+				if concurrency.RunSlotFrom(ctx).Reclaim(ctx) != nil {
+					break
+				}
+				continue outerLoop
+			}
 			// v0.12.9 same-provider retry: when the operator opted
 			// into MaxSameProviderRetries > 0, retryable errors
 			// (429, 5xx, network) sleep with exponential backoff and
