@@ -507,6 +507,13 @@ func (h *HookDef) execDelete(ctx context.Context, in hookDefInput) (tools.Result
 // the one a no-trace agent runs is changing that agent's hooks. An operator's
 // change is recorded, and refused when the record cannot be written.
 func (h *HookDef) admitNoTraceHookDefChange(ctx context.Context, op, tenant, name string) error {
+	// The shared layer is what every tenant's agents fall back to: changing
+	// it is the operator's, whatever names it. Decided before anything is
+	// read, so the answer depends on the caller alone and says nothing of any
+	// tenant's agents.
+	if tenant == "" && !callerMayLiftNoTrace(ctx) {
+		return fmt.Errorf("%s: a shared hook %q may only be changed by an operator", op, name)
+	}
 	agents, err := h.noTraceAgentsNaming(ctx, tenant, name)
 	if err != nil {
 		return fmt.Errorf("%s: checking which agents run hook %q: %w", op, name, err)
@@ -546,10 +553,8 @@ func (h *HookDef) admitNoTraceHookDefChange(ctx context.Context, op, tenant, nam
 //
 // Only the HookDef's own tenant: the answer reaches the caller (refused or
 // not, and the names in the refusal), so an agent of another tenant must not
-// change it. A tenant's agent that falls back to a shared HookDef of the same
-// name is therefore not protected from a tenantless author of that shared
-// one; pinning the version (name@N), or a HookDef in the agent's own tenant,
-// is.
+// change it. A tenant's agent that falls back to a shared HookDef is covered
+// by the shared layer being the operator's to change at all.
 func (h *HookDef) noTraceAgentsNaming(ctx context.Context, tenant, name string) ([]string, error) {
 	var out []string
 	staticNone := func(agent string) bool {
