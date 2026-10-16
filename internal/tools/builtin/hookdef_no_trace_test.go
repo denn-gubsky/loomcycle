@@ -122,3 +122,33 @@ func TestHookDef_ChangingOneANoTraceAgentRunsIsTheOperators(t *testing.T) {
 		t.Errorf("audit records = %+v, want one retention_none_hookdef_changed naming gate, acme and ops", sink.evs)
 	}
 }
+
+// What a caller is told about a HookDef write depends on its own tenant's
+// agents only: another tenant's no-trace agent neither shows in the answer
+// nor changes it, so the answer cannot be used to learn that the agent
+// exists. A shared-layer HookDef is the caller's own layer when it has no
+// tenant; another tenant falling back to it is that tenant's.
+func TestHookDef_TheGateSaysNothingOfAnotherTenant(t *testing.T) {
+	answer := func(withOtherTenantsAgent bool) (string, bool) {
+		t.Helper()
+		tool, st := hookDefFixture(t)
+		admin := auth.WithPrincipal(hookTenantCtx(""), auth.Principal{Subject: "root", Scopes: []string{auth.ScopeAdmin}})
+		mustHookDef(t, tool, admin, `{"op":"create","name":"shared/x","overlay":`+httpHookOverlay+`}`)
+		if withOtherTenantsAgent {
+			seedAgentVersion(t, st, "acme", "acme-secret-agent", `{"retention":"none","hooks":{"pre":["shared/x"]}}`)
+		}
+		tenantless := auth.WithPrincipal(hookTenantCtx(""), auth.Principal{Subject: "svc", Scopes: []string{auth.ScopeRunsCreate}})
+		_, text, isErr := runHookDef(t, tool, tenantless, `{"op":"fork","name":"shared/x","overlay":{"timeout_ms":900}}`)
+		return text, isErr
+	}
+	_, refusedWithout := answer(false)
+	with, refusedWith := answer(true)
+	if refusedWith != refusedWithout {
+		t.Errorf("refused=%v with another tenant's no-trace agent naming it, %v without: the answer reveals that agent (%s)", refusedWith, refusedWithout, with)
+	}
+	for _, secret := range []string{"acme", "acme-secret-agent"} {
+		if strings.Contains(with, secret) {
+			t.Errorf("the answer names %q of another tenant: %s", secret, with)
+		}
+	}
+}

@@ -515,6 +515,12 @@ func (h *HookDef) admitNoTraceHookDefChange(ctx context.Context, op, tenant, nam
 		return nil
 	}
 	if !callerMayLiftNoTrace(ctx) {
+		// The agents are named only to a caller in their own tenant. A
+		// non-operator only ever writes its own tenant's HookDefs (ownRow
+		// hides another tenant's), so this is belt and braces.
+		if tenant != tools.RunIdentity(ctx).TenantID {
+			return fmt.Errorf("%s: hook %q is run by a no-trace agent, which names it without a version; only an operator may change it", op, name)
+		}
 		return fmt.Errorf("%s: hook %q is run by no-trace agent(s) %s, which name it without a version; only an operator may change which version they run", op, name, strings.Join(agents, ", "))
 	}
 	subject := ""
@@ -533,13 +539,17 @@ func (h *HookDef) admitNoTraceHookDefChange(ctx context.Context, op, tenant, nam
 	return nil
 }
 
-// noTraceAgentsNaming lists the no-trace agents — active or newest version
-// "retention: none", or a mode the operator's config sets for the name — whose
-// hooks name HookDef name without a version and resolve it through tenant: an
-// agent resolves a reference in its own tenant first, then in the shared
-// layer (""), so a shared HookDef reaches every tenant's agents and the
-// operator's static ones. Over-inclusive on purpose: an agent whose own tenant
-// shadows a shared name is still listed for the shared one.
+// noTraceAgentsNaming lists the no-trace agents of tenant — active or newest
+// version "retention: none", or a mode the operator's config sets for the
+// name — whose hooks name HookDef name without a version; for the shared
+// layer (""), the operator's static agents too, which resolve there.
+//
+// Only the HookDef's own tenant: the answer reaches the caller (refused or
+// not, and the names in the refusal), so an agent of another tenant must not
+// change it. A tenant's agent that falls back to a shared HookDef of the same
+// name is therefore not protected from a tenantless author of that shared
+// one; pinning the version (name@N), or a HookDef in the agent's own tenant,
+// is.
 func (h *HookDef) noTraceAgentsNaming(ctx context.Context, tenant, name string) ([]string, error) {
 	var out []string
 	staticNone := func(agent string) bool {
@@ -561,7 +571,7 @@ func (h *HookDef) noTraceAgentsNaming(ctx context.Context, tenant, name string) 
 		return nil, err
 	}
 	for _, n := range names {
-		if tenant != "" && n.TenantID != tenant {
+		if n.TenantID != tenant {
 			continue
 		}
 		noTrace, current, err := noTraceLineage(ctx, h.Store, n.TenantID, n.Name)
@@ -578,7 +588,7 @@ func (h *HookDef) noTraceAgentsNaming(ctx context.Context, tenant, name string) 
 		// A definition whose hooks cannot be read cannot be shown not to
 		// name this one.
 		if json.Unmarshal(current, &d) != nil || namesUnpinned(d.Hooks, d.ToolHooks, name) {
-			out = append(out, n.TenantID+"/"+n.Name)
+			out = append(out, n.Name)
 		}
 	}
 	sort.Strings(out)
