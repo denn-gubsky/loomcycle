@@ -3133,7 +3133,7 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 	registered := false
 	// RunConfig is nil on purpose: the run's configuration is resolved after it
 	// waits, and StartQueuedRun writes it from the identity built at start.
-	queuedIdentity := store.RunIdentity{AgentID: agentID, UserID: effectiveUserID, TenantID: effectiveTenantID, UserTier: in.UserTier, Model: model, ReplicaID: s.replicaID, ParentContext: in.ParentContext, IdempotencyKey: in.IdempotencyKey, DeliveryAltKey: in.DeliveryAltKey, Interactive: in.Interactive, OperatorKeyRestricted: operatorKeyRestricted, Isolated: isolated, Retention: retention, RunConfig: nil}
+	queuedIdentity := store.RunIdentity{AgentID: agentID, UserID: effectiveUserID, TenantID: effectiveTenantID, UserTier: in.UserTier, Model: model, ReplicaID: s.replicaID, ParentContext: in.ParentContext, IdempotencyKey: in.IdempotencyKey, DeliveryAltKey: in.DeliveryAltKey, Interactive: in.Interactive, OperatorKeyRestricted: operatorKeyRestricted, Isolated: isolated, CredentialsNoUserScope: in.CredentialsNoUserScope, Retention: retention, RunConfig: nil}
 	acquireStart := time.Now()
 	runSlot := &concurrency.RunSlot{}
 	release, queued, err := s.admitRun(runCtx, admitArgs{
@@ -3306,7 +3306,7 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 	}
 
 	// ---- Session+run creation ----
-	identity := store.RunIdentity{AgentID: agentID, UserID: effectiveUserID, TenantID: effectiveTenantID, UserTier: in.UserTier, Model: model, ReplicaID: s.replicaID, ParentContext: in.ParentContext, IdempotencyKey: in.IdempotencyKey, DeliveryAltKey: in.DeliveryAltKey, Interactive: in.Interactive, OperatorKeyRestricted: operatorKeyRestricted, Isolated: isolated, Retention: retention, RunConfig: runCfg.marshal()}
+	identity := store.RunIdentity{AgentID: agentID, UserID: effectiveUserID, TenantID: effectiveTenantID, UserTier: in.UserTier, Model: model, ReplicaID: s.replicaID, ParentContext: in.ParentContext, IdempotencyKey: in.IdempotencyKey, DeliveryAltKey: in.DeliveryAltKey, Interactive: in.Interactive, OperatorKeyRestricted: operatorKeyRestricted, Isolated: isolated, CredentialsNoUserScope: in.CredentialsNoUserScope, Retention: retention, RunConfig: runCfg.marshal()}
 	var sessionID, runID string
 	switch {
 	case queued != nil || restarting:
@@ -8400,6 +8400,8 @@ func (s *Server) prepareSubRunValues(ctx context.Context, name string, src nameS
 		// RFC BX P2b: a child INHERITS the parent's isolation confinement — it
 		// cannot escape by spawning. Persisted so a resumed sub-run keeps it.
 		Isolated: parentIdentity.Isolated,
+		// Inherited (subRID below); persisted so a resumed sub-run keeps it.
+		CredentialsNoUserScope: parentIdentity.CredentialsNoUserScope,
 		// A child of a no-trace run is no-trace, whatever its own agent says:
 		// the parent's content reaches it as its prompt.
 		Retention: subRetention,
@@ -9907,7 +9909,10 @@ func (s *Server) compactRunWithSource(ctx context.Context, runID, source string)
 	// would be ignored (mis-attributed + wrongly refused).
 	summCtx := providers.WithCredentialResolver(ctx, s.credResolver)
 	summCtx = providers.WithOperatorKeyAllowed(summCtx, !run.OperatorKeyRestricted)
-	summCtx = tools.WithRunIdentity(summCtx, tools.RunIdentityValue{TenantID: run.TenantID, UserID: run.UserID})
+	// A key the summary resolves comes from no wider a scope than the run's
+	// own calls: a trigger's run may not take its user's own.
+	summCtx = tools.WithRunIdentity(summCtx, tools.RunIdentityValue{TenantID: run.TenantID, UserID: run.UserID,
+		CredentialsNoUserScope: run.CredentialsNoUserScope})
 	summCtx = tools.WithAgentName(summCtx, run.Agent)
 	summCtx = providers.WithCallObserver(summCtx, s.callObserver(run.ID))
 	summary, serr := loop.Summarize(summCtx, provider, summaryModel, msgs[firstIdx:cut], targetPct)
@@ -10053,11 +10058,13 @@ func (s *Server) RecapSession(ctx context.Context, sessionID string) (string, er
 	// tier overlay. No run yet ⇒ unrestricted, default tier — but a chat with no
 	// run has no transcript, so we already returned above.
 	restricted := false
+	noUserScope := false
 	userTier := ""
 	userID := sess.UserID
 	if runs, rerr := s.store.RunsForSession(ctx, sessionID); rerr == nil && len(runs) > 0 {
 		last := runs[len(runs)-1]
 		restricted = last.OperatorKeyRestricted
+		noUserScope = last.CredentialsNoUserScope
 		userTier = last.UserTier
 		if userID == "" {
 			userID = last.UserID
@@ -10090,7 +10097,8 @@ func (s *Server) RecapSession(ctx context.Context, sessionID string) (string, er
 	// tenant's OWN key correctly (mirrors compactRunWithSource / resume.go).
 	summCtx := providers.WithCredentialResolver(ctx, s.credResolver)
 	summCtx = providers.WithOperatorKeyAllowed(summCtx, !restricted)
-	summCtx = tools.WithRunIdentity(summCtx, tools.RunIdentityValue{TenantID: sess.TenantID, UserID: userID})
+	summCtx = tools.WithRunIdentity(summCtx, tools.RunIdentityValue{TenantID: sess.TenantID, UserID: userID,
+		CredentialsNoUserScope: noUserScope})
 	summCtx = tools.WithAgentName(summCtx, sess.Agent)
 	summCtx = providers.WithCallObserver(summCtx, s.callObserver(""))
 	summary, err := loop.Recap(summCtx, provider, summaryModel, msgs)
@@ -10861,6 +10869,18 @@ func (s *Server) withHookRun(ctx context.Context, ident hooks.Identity) context.
 	// a run_end hook would be stored like any other.
 	if s.runIsNoTrace(ctx, ident.RunID) {
 		rid.Retention = store.RetentionNone
+	}
+	// So do its webhook headers' $cred: references, which resolve no more
+	// widely than the run's own: a trigger's run may not take its user's own
+	// credential. The row is the only record of that here; a row that cannot
+	// be read withholds the user's scope rather than grant it.
+	if ident.UserID != "" {
+		rid.CredentialsNoUserScope = true
+		if s.store != nil {
+			if run, err := s.store.GetRun(ctx, ident.RunID); err == nil {
+				rid.CredentialsNoUserScope = run.CredentialsNoUserScope
+			}
+		}
 	}
 	ctx = tools.WithRunIdentity(ctx, rid)
 	ctx = tools.WithRunID(ctx, ident.RunID)

@@ -85,6 +85,8 @@ func (s *Server) openTeamWalkRun(ctx context.Context, spec builtin.WalkRunSpec) 
 		TenantID:              ident.TenantID,
 		OperatorKeyRestricted: ident.OperatorKeyRestricted,
 		Isolated:              ident.Isolated,
+		// A triggered walk's: resume rebuilds the walk from this row.
+		CredentialsNoUserScope: ident.CredentialsNoUserScope,
 		// The replica running the walk, as every run row names its own: a
 		// cluster finds a run's owner by it.
 		ReplicaID: s.replicaID,

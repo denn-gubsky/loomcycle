@@ -382,6 +382,8 @@ func (s *Server) restartInput(q store.QueuedRun) (runner.RunInput, string) {
 	in.ParentContext = r.ParentContext
 	in.Interactive = r.Interactive
 	in.OperatorKeyRestricted, in.Isolated = r.OperatorKeyRestricted, r.Isolated
+	// The request records it too; either record withholds the user's scope.
+	in.CredentialsNoUserScope = in.CredentialsNoUserScope || r.CredentialsNoUserScope
 	// The keys the row already holds; nothing is claimed a second time.
 	in.IdempotencyKey, in.DeliveryAltKey, in.ClientIdempotencyKey = r.IdempotencyKey, r.DeliveryAltKey, ""
 	// A started draft's row is queued now; it starts as a queued run.
