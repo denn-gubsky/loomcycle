@@ -86,6 +86,13 @@ func (s *Server) ReviewRun(ctx context.Context, runID, decision, feedback, sourc
 	if !s.isHeld(ctx, runID) {
 		return false, connector.ErrRunNotHeld
 	}
+	// Feedback is a turn the reviewer wrote, which the run revises on: from
+	// someone other than its user, the user's own credentials stay out of it.
+	if feedback != "" {
+		if err := s.withholdForOtherSender(ctx, runID); err != nil {
+			return false, err
+		}
+	}
 
 	return s.pushVerdict(ctx, runID, steer.Message{
 		Kind: kind, Text: feedback, Source: source, EnqueuedAt: time.Now(),

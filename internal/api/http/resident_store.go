@@ -320,6 +320,10 @@ func (s *Server) sendUnheldResident(ctx context.Context, childRunID, prompt stri
 	if s.steerReg == nil {
 		return "", "", residentUnreachableErr(childRunID, "send to it")
 	}
+	// What a withheld parent sends may carry another user's instruction.
+	if err := s.withholdFromWithheldSender(ctx, childRunID); err != nil {
+		return "", "", err
+	}
 	if _, err := s.steerReg.Push(ctx, childRunID, steer.Message{Text: prompt, Source: "agent", EnqueuedAt: time.Now()}); err != nil {
 		if errors.Is(err, steer.ErrRunNotFound) {
 			return "", "", residentUnreachableErr(childRunID, "send to it")

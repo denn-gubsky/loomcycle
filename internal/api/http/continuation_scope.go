@@ -8,6 +8,7 @@ import (
 
 	"github.com/denn-gubsky/loomcycle/internal/auth"
 	"github.com/denn-gubsky/loomcycle/internal/runner"
+	"github.com/denn-gubsky/loomcycle/internal/tools"
 )
 
 // sessionNoUserScope reports whether a continuation of sessionID must resolve
@@ -89,6 +90,23 @@ func (s *Server) withholdForOtherSender(ctx context.Context, runID string) error
 	if !actingForAnother(ctx, run.TenantID, run.UserID) || run.CredentialsNoUserScope {
 		return nil
 	}
+	return s.withholdRunUserScope(ctx, runID)
+}
+
+// withholdFromWithheldSender is withholdForOtherSender for a turn one run
+// sends another (a parent's send to its resident child): a sender that may
+// not use its user's scope passes that on with what it sends, since the turn
+// may carry the instruction of whoever withheld it.
+func (s *Server) withholdFromWithheldSender(ctx context.Context, runID string) error {
+	if !tools.RunIdentity(ctx).NoUserScope() || s.store == nil {
+		return nil
+	}
+	return s.withholdRunUserScope(ctx, runID)
+}
+
+// withholdRunUserScope records on runID's row, and on its latch when it is
+// live here, that it resolves no stored credential in its user's own scope.
+func (s *Server) withholdRunUserScope(ctx context.Context, runID string) error {
 	if err := s.store.WithholdRunUserScope(ctx, runID); err != nil {
 		return fmt.Errorf("%w: record run %s's credential scope: %v", runner.ErrInternal, runID, err)
 	}

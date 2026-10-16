@@ -371,6 +371,14 @@ func (s *Server) updateConfiguredRunCore(ctx context.Context, runID string, patc
 		return connector.ConfiguredRun{}, draftRefusal(http.StatusBadRequest, "invalid_draft", "%s", msg)
 	}
 	body, _ = json.Marshal(d)
+	// Edited by someone other than its creator, the draft may now say what
+	// that person wrote: whoever starts it, it runs without the creator's own
+	// credentials. Recorded first, so an edit that cannot be marked is refused.
+	if actingForAnother(ctx, run.TenantID, run.UserID) && !run.CredentialsNoUserScope {
+		if err := s.store.WithholdRunUserScope(ctx, run.ID); err != nil {
+			return connector.ConfiguredRun{}, draftStoreErr(err)
+		}
+	}
 	if err := s.store.UpdateRunDraft(ctx, run.ID, body); err != nil {
 		return connector.ConfiguredRun{}, draftStoreErr(err)
 	}
