@@ -509,6 +509,43 @@ func TestVolumeDefTool_CreateEphemeralRefusesDuplicateInRun(t *testing.T) {
 	}
 }
 
+// A duplicate found only in the record (the run's set lacks it) is refused,
+// and the record is not trusted for where the volume is: a row's path is
+// whatever the replica that wrote it had, and a path is derived on this
+// replica. The set takes the volume as this replica places it, and not at
+// all when its files are on another replica.
+func TestVolumeDefTool_ARecordedDuplicateIsPlacedOnThisReplica(t *testing.T) {
+	tool, base, root, cleanup := volumeDefFixture(t)
+	defer cleanup()
+	for _, name := range []string{"far", "near"} {
+		if _, err := tool.Store.EphemeralVolumeCreate(context.Background(), store.EphemeralVolumeDefRow{
+			RootRunID: "run-1", Name: name,
+			Definition: json.RawMessage(`{"path":"/srv/other-replica/_ephemeral/run-1/` + name + `","mode":"ro"}`),
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	nearRoot := filepath.Join(root, "_ephemeral", "run-1", "near")
+	ctx, set := ephemeralCtx(base, "run-1")
+	ctx = tools.WithEphemeralRecords(ctx, func(context.Context) ([]tools.EphemeralRecord, error) {
+		return []tools.EphemeralRecord{
+			{Name: "far", ReadOnly: true, Elsewhere: true},
+			{Name: "near", ReadOnly: true, Root: nearRoot},
+		}, nil
+	})
+	for _, name := range []string{"far", "near"} {
+		if _, res := vdExec(t, tool, ctx, `{"op":"create","name":"`+name+`","ephemeral":true}`); !res.IsError || !strings.Contains(res.Text, "already exists") {
+			t.Errorf("%s: a recorded duplicate: %q, want it refused", name, res.Text)
+		}
+	}
+	if ref, ok := set.Get("far"); ok {
+		t.Errorf("a volume whose files are on another replica was put in the set at %q", ref.Root)
+	}
+	if ref, ok := set.Get("near"); !ok || ref.Root != nearRoot || !ref.ReadOnly {
+		t.Errorf("near = %+v (in set %v), want it at %s, read-only", ref, ok, nearRoot)
+	}
+}
+
 // create ephemeral refuses a name colliding with a static volume (static is
 // ground truth — an ephemeral volume must never shadow it).
 func TestVolumeDefTool_CreateEphemeralRefusesStaticCollision(t *testing.T) {
