@@ -12611,3 +12611,17 @@ func nsOrNil(t time.Time) any {
 	}
 	return t.UnixNano()
 }
+
+// WithholdRunUserScope implements store.Store.
+func (s *Store) WithholdRunUserScope(ctx context.Context, runID string) error {
+	res, err := s.db.ExecContext(ctx, `UPDATE runs SET credentials_no_user_scope = 1 WHERE id = ?`, runID)
+	if err != nil {
+		return fmt.Errorf("withhold run user scope: %w", err)
+	}
+	// SQLite counts a matched row as affected even when the value is
+	// unchanged, so a second call on a run already withheld still reads 1.
+	if n, err := res.RowsAffected(); err == nil && n == 0 {
+		return &store.ErrNotFound{Kind: "run", ID: runID}
+	}
+	return nil
+}

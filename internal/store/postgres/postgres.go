@@ -10791,3 +10791,15 @@ func nullTime(t time.Time) any {
 	}
 	return t
 }
+
+// WithholdRunUserScope implements store.Store.
+func (s *Store) WithholdRunUserScope(ctx context.Context, runID string) error {
+	tag, err := s.pool.Exec(ctx, `UPDATE runs SET credentials_no_user_scope = TRUE WHERE id = $1`, runID)
+	if err != nil {
+		return fmt.Errorf("withhold run user scope: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return &store.ErrNotFound{Kind: "run", ID: runID}
+	}
+	return nil
+}
