@@ -4757,10 +4757,17 @@ func messagesHaveImage(messages []providers.Message) bool {
 
 // FlattenContent is the public version of flattenContent for callers that
 // need to apply the same trust-escaping rules during transcript replay
-// (continuation endpoint). External callers should not depend on this for
-// any other purpose; it's stable but narrow.
+// (continuation endpoint) or when rendering a stored transcript back to a
+// model (History's conversation form). External callers should not depend on
+// this for any other purpose; it's stable but narrow.
 func FlattenContent(c PromptContentBlock) providers.ContentBlock {
 	return flattenContent(c)
+}
+
+// UntrustedKind is the tag FlattenContent wraps an untrusted block of the
+// declared kind in, for a caller that has to name the block the same way.
+func UntrustedKind(kind string) string {
+	return untrustedKind(kind)
 }
 
 // flattenContent converts the caller's typed content union into a provider

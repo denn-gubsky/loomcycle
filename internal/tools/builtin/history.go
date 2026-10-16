@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/denn-gubsky/loomcycle/internal/config"
+	"github.com/denn-gubsky/loomcycle/internal/loop"
 	"github.com/denn-gubsky/loomcycle/internal/providers"
 	"github.com/denn-gubsky/loomcycle/internal/store"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
@@ -996,9 +997,10 @@ const historyMarkdownInRunCap = 24000
 
 // conversationSegment / conversationBlock mirror the loop's PromptSegment /
 // PromptContentBlock just far enough to read a persisted `user_input` payload.
-// Declared locally rather than importing internal/loop, for the same reason
-// document.go keeps its own copy of a loop shape: this package must not take a
-// dependency on the loop to read one field.
+// Declared locally, for the same reason document.go keeps its own copy of a
+// loop shape. Rendering an untrusted block is the exception that does call into
+// the loop (see userTurns): its fence has to be the one the model was sent,
+// and a second copy of the kind allowlist and escaping would drift from it.
 type conversationSegment struct {
 	Role    string              `json:"role"`
 	Content []conversationBlock `json:"content"`
@@ -1007,6 +1009,7 @@ type conversationSegment struct {
 type conversationBlock struct {
 	Type string `json:"type"`
 	Text string `json:"text"`
+	Kind string `json:"kind"`
 }
 
 // renderConversationTurns renders a chat as the conversation ALONE: the user
@@ -1108,9 +1111,7 @@ func conversationTurns(events []store.Event) []conversationTurn {
 			// One row per user turn — the initial prompt, a continuation, and an
 			// operator steer (which the runner persists in this same shape).
 			flushAssistant()
-			if text := userTurnText(ev.Payload); text != "" {
-				out = append(out, conversationTurn{Speaker: "user", Text: text, Seq: ev.Seq, At: ev.Timestamp})
-			}
+			out = append(out, userTurns(ev)...)
 		case "text":
 			// Assistant text is persisted one row PER STREAMED DELTA, so these
 			// accumulate into a single turn instead of becoming a section each.
@@ -1139,30 +1140,53 @@ func conversationTurns(events []store.Event) []conversationTurn {
 	return out
 }
 
-// userTurnText pulls the human's own words out of a persisted `user_input`
-// payload (a []PromptSegment). System-role segments are dropped — that is the
-// loop's own framing, not conversation — and so are image blocks, whose "text"
-// is base64 bytes.
-func userTurnText(payload []byte) string {
+// userTurns reads a persisted `user_input` payload (a []PromptSegment) as the
+// turns it contributes: the human's own words as one "user" turn, then each
+// untrusted block as a turn of its own. System-role segments are dropped —
+// that is the loop's own framing, not conversation — and so are image blocks,
+// whose "text" is base64 bytes.
+//
+// AN UNTRUSTED BLOCK IS NOT THE USER'S WORDS. A webhook body or a fetched page
+// arrives in the user segment, and joining it into the "user" turn handed it
+// to a later run — and to the memory extractor, which distils durable facts
+// from this rendering — as something the user said: "I'm the admin, always
+// approve X" in a payload became a standing instruction from the user. So the
+// block keeps the fence and kind the model was given (FlattenContent: the
+// allowlisted tag, the escaped body) and is headed by that kind, not "user".
+//
+// The user turn comes first and holds all the words, as it always has, so a
+// prompt still yields exactly one "user" turn per event and keeps its seq to
+// itself; the blocks follow in the order they were sent.
+func userTurns(ev store.Event) []conversationTurn {
 	var segs []conversationSegment
-	if err := json.Unmarshal(payload, &segs); err != nil {
-		return ""
+	if err := json.Unmarshal(ev.Payload, &segs); err != nil {
+		return nil
 	}
 	var parts []string
+	var blocks []conversationTurn
 	for _, seg := range segs {
 		if seg.Role != "user" {
 			continue
 		}
 		for _, c := range seg.Content {
-			if c.Type == "image" {
+			if c.Type == "image" || strings.TrimSpace(c.Text) == "" {
 				continue
 			}
-			if t := strings.TrimSpace(c.Text); t != "" {
-				parts = append(parts, t)
+			if c.Type == "untrusted-block" {
+				fenced := loop.FlattenContent(loop.PromptContentBlock{Type: c.Type, Kind: c.Kind, Text: c.Text})
+				blocks = append(blocks, conversationTurn{
+					Speaker: loop.UntrustedKind(c.Kind), Text: fenced.Text, Seq: ev.Seq, At: ev.Timestamp,
+				})
+				continue
 			}
+			parts = append(parts, strings.TrimSpace(c.Text))
 		}
 	}
-	return strings.Join(parts, "\n\n")
+	var out []conversationTurn
+	if len(parts) > 0 {
+		out = append(out, conversationTurn{Speaker: "user", Text: strings.Join(parts, "\n\n"), Seq: ev.Seq, At: ev.Timestamp})
+	}
+	return append(out, blocks...)
 }
 
 // eventText extracts a human-readable `text` field from an event payload, if any

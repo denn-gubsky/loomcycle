@@ -74,10 +74,17 @@ type patternRule struct {
 // token guarantees we never corrupt surrounding structure. The classes also
 // exclude [ and ] so a Tier-A [redacted:NAME] marker (Tier A runs first) is
 // inert to Tier B — the tiers compose instead of clobbering each other's output.
+//
+// The whitespace a rule allows between a key and its value is [ \t], never \s:
+// no rule may match across a line break onto a line that starts at column 0. Untrusted text reaches the model as
+// "<kind>\n…\n</kind>" and the redact context plugin runs over it after that
+// fence is built; a separator that crossed the newline turned a body ending
+// "password=" into "password=\n[redacted]" — the closing tag consumed as the
+// value, leaving the block open over everything after it.
 var patternRules = []patternRule{
 	// HTTP auth header — the F32 repro shape (token/bearer inlined on a curl
 	// cmdline). Keep the scheme, drop the credential.
-	{regexp.MustCompile(`(?i)(Authorization\s*:\s*(?:token|Bearer)\s+)[^\s"',}\[\]\\]+`), "${1}[redacted]"},
+	{regexp.MustCompile(`(?i)(Authorization[ \t]*:[ \t]*(?:token|Bearer)[ \t]+)[^\s"',}\[\]\\]+`), "${1}[redacted]"},
 	// OpenAI-style keys: sk- (incl. project keys sk-proj-…) + >=16 of base62/-/_.
 	// Distinctive prefix → low FP.
 	{regexp.MustCompile(`\bsk-[A-Za-z0-9][A-Za-z0-9_-]{15,}\b`), "[redacted-key]"},
@@ -99,7 +106,10 @@ var patternRules = []patternRule{
 	// key=value / key: "value" assignments for secret-named keys (the *_API_KEY=…
 	// family). Masks only the value; the key + delimiter are preserved so the
 	// structure stays legible.
-	{regexp.MustCompile(`(?i)\b(api[_-]?key|secret|token|password)\b(\s*["']?\s*[:=]\s*["']?)[^\s"',}\[\]\\]+`), "${1}${2}[redacted]"},
+	// The value may sit on the next line when that line is indented (YAML's
+	// `password:\n  value`): a fence tag always starts its line, so an
+	// indented continuation can never be one.
+	{regexp.MustCompile(`(?i)\b(api[_-]?key|secret|token|password)\b([ \t]*["']?[ \t]*[:=](?:[ \t]*\r?\n[ \t]+|[ \t]*)["']?)[^\s"',}\[\]\\]+`), "${1}${2}[redacted]"},
 }
 
 // MatchesPattern reports whether any Tier-B heuristic matches s. It is the
