@@ -123,18 +123,43 @@ func (f *Fetched) WriteTree(ctx context.Context, dest string, lim TreeLimits) (T
 			res.Omitted = append(res.Omitted, Omitted{Path: p, Reason: reason, Size: size})
 		}
 	}
-	// Links created so far. A path UNDER one of them is refused: a tree has
-	// no business holding both "l" as a link and "l/file", and writing the
-	// second would follow the first.
-	links := map[string]bool{}
+	// A path UNDER a link already written is refused: a tree has no business
+	// holding both "l" as a link and "l/file", and writing the second would
+	// follow the first. Which names are the same is the file system's to
+	// say, not this code's: on one that ignores case, or Unicode
+	// normalization, "q/a/l" is written through a link "q/A" (and a name
+	// with a combining accent through a link with the accented letter),
+	// and lands wherever that link leads, at another depth than its name
+	// says. So each parent is looked up on disk, shallowest first, and one
+	// that is a link refuses the path. A parent found to be a real directory
+	// stays one (nothing written later can replace it), so it is looked up
+	// once.
+	realDirs := map[string]bool{}
 	underLink := func(p string) bool {
-		for dir := path.Dir(p); dir != "." && dir != "/"; dir = path.Dir(dir) {
-			if links[dir] {
+		var dirs []string
+		for dir := path.Dir(p); dir != "."; dir = path.Dir(dir) {
+			dirs = append(dirs, dir)
+		}
+		for i := len(dirs) - 1; i >= 0; i-- {
+			d := dirs[i]
+			if realDirs[d] {
+				continue
+			}
+			fi, err := root.Lstat(filepath.FromSlash(d))
+			if errors.Is(err, fs.ErrNotExist) {
+				return false // it and what is below it are made as real directories
+			}
+			if err != nil || fi.Mode()&fs.ModeSymlink != 0 {
 				return true
 			}
+			if !fi.IsDir() {
+				return false // a file in the way: the write fails on it
+			}
+			realDirs[d] = true
 		}
 		return false
 	}
+	var linkNames []string // as written, for the check at the end
 
 	w := object.NewTreeWalker(tree, true, nil)
 	defer w.Close()
@@ -198,7 +223,7 @@ func (f *Fetched) WriteTree(ctx context.Context, dest string, lim TreeLimits) (T
 				}
 				return res, fmt.Errorf("%w: %s: %v", ErrFetchFailed, name, err)
 			}
-			links[name] = true
+			linkNames = append(linkNames, name)
 			res.Files++
 			continue
 		}
@@ -235,19 +260,42 @@ func (f *Fetched) WriteTree(ctx context.Context, dest string, lim TreeLimits) (T
 	if err != nil {
 		return res, fmt.Errorf("%w: destination: %v", ErrFetchFailed, err)
 	}
-	for name := range links {
-		full := filepath.Join(realRoot, filepath.FromSlash(name))
-		resolved, err := filepath.EvalSymlinks(full)
-		if err != nil {
-			continue // dangling (its target was omitted): it leads nowhere
+	for _, name := range linkNames {
+		if linkLandsInside(realRoot, name) {
+			continue
 		}
-		if !within(resolved, realRoot) {
-			_ = root.Remove(filepath.FromSlash(name))
-			res.Files--
-			omit(name, ReasonSymlink, 0)
+		// A link that leads out and stays would be followed by the next
+		// write to its name, so failing to remove it fails the tree.
+		if err := root.Remove(filepath.FromSlash(name)); err != nil && !errors.Is(err, fs.ErrNotExist) {
+			return res, fmt.Errorf("%w: remove the link %s, which leads outside: %v", ErrFetchFailed, name, err)
 		}
+		res.Files--
+		omit(name, ReasonSymlink, 0)
 	}
 	return res, nil
+}
+
+// linkLandsInside reports whether the link written as name leads inside
+// realRoot. A link that resolves is judged by where it resolves to. One that
+// does not (its target was omitted, or is simply not there) is judged by
+// where it would land: its target joined to the directory the link really
+// sits in, which is not always the one its name says, since a parent can be
+// a link too. A dangling link is not harmless: a write to its name creates
+// the target. Anything that cannot be told counts as leading out.
+func linkLandsInside(realRoot, name string) bool {
+	full := filepath.Join(realRoot, filepath.FromSlash(name))
+	if resolved, err := filepath.EvalSymlinks(full); err == nil {
+		return within(resolved, realRoot)
+	}
+	dir, err := filepath.EvalSymlinks(filepath.Dir(full))
+	if err != nil {
+		return false
+	}
+	target, err := os.Readlink(filepath.Join(dir, filepath.Base(full)))
+	if err != nil || filepath.IsAbs(target) {
+		return false
+	}
+	return within(filepath.Join(dir, target), realRoot)
 }
 
 // Limits on one path. A file brings its directories with it, so a path of a

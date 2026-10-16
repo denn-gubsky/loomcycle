@@ -221,19 +221,25 @@ func Provision(dynRoot, tenantID, name string) (path string, created bool, err e
 // ProvisionEphemeral derives a run-scoped ephemeral volume's path, fences it
 // inside the dynamic root and creates the directory, as Provision does.
 //
+// created says whether this call made the leaf, or found it already there.
+// The file system decides it, so of two concurrent creates of one name only
+// one sees created=true; a caller that fills the directory and removes it
+// whole on failure must refuse when it is false, or it fills and removes the
+// other's.
+//
 // undo removes the directories THIS call created (the leaf, then the per-run
 // dir), for a caller whose row insert failed: ephemeral directories are swept
 // by their rows, so one left without a row is never removed. It removes only
 // what this call created and only while empty (os.Remove, not RemoveAll), so
 // it can never take a concurrent create's directory or any content.
-func ProvisionEphemeral(dynRoot, rootRunID, name string) (path string, undo func(), err error) {
+func ProvisionEphemeral(dynRoot, rootRunID, name string) (path string, created bool, undo func(), err error) {
 	if err := ValidName(name); err != nil {
-		return "", nil, err
+		return "", false, nil, err
 	}
 	runDir := EphemeralRunDir(dynRoot, rootRunID)
 	runDirCreated, err := mkdirFenced(dynRoot, runDir)
 	if err != nil {
-		return "", nil, err
+		return "", false, nil, err
 	}
 	path = DerivedEphemeralPath(dynRoot, rootRunID, name)
 	leafCreated, err := mkdirFenced(dynRoot, path)
@@ -241,9 +247,9 @@ func ProvisionEphemeral(dynRoot, rootRunID, name string) (path string, undo func
 		if runDirCreated {
 			RemoveEmptyFenced(dynRoot, runDir)
 		}
-		return "", nil, err
+		return "", false, nil, err
 	}
-	return path, func() {
+	return path, leafCreated, func() {
 		if leafCreated {
 			RemoveEmptyFenced(dynRoot, path)
 		}

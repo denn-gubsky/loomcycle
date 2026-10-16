@@ -1,12 +1,19 @@
 package builtin
 
 import (
+	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"io"
+	"log"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -120,8 +127,8 @@ func (f *gitSourceFixture) assertNothingLeft(t *testing.T, name string) {
 	if _, err := os.Lstat(f.volumeDir(name)); !os.IsNotExist(err) {
 		t.Errorf("the volume's directory is still there (err %v)", err)
 	}
-	if _, err := os.Lstat(filepath.Join(f.root, "_ephemeral", "run-1", ".gitstore-"+name)); !os.IsNotExist(err) {
-		t.Errorf("the object store is still there (err %v)", err)
+	if stores, _ := filepath.Glob(filepath.Join(f.root, "_ephemeral", "run-1", ".gitstore-"+name+"*")); len(stores) != 0 {
+		t.Errorf("the object store is still there: %v", stores)
 	}
 	if f.set.Has(name) {
 		t.Error("the run's set holds the volume")
@@ -314,6 +321,118 @@ func TestVolumeDefGitSource_AFailedCloneLeavesNothingAndTheNameIsFree(t *testing
 	}
 }
 
+// Two creates of one name can both pass the duplicate check before either
+// records its volume. The second then found the first's directory already
+// made, used it, failed on it (it is not empty), and its cleanup removed the
+// whole directory: the first's volume, recorded or about to be. A directory
+// this call did not make is refused and left alone.
+func TestVolumeDefGitSource_ADirectoryAnotherCreateMadeIsLeftAlone(t *testing.T) {
+	f := newGitSourceFixture(t, false)
+	theirs := filepath.Join(f.volumeDir("repo"), "theirs.txt")
+	if err := os.MkdirAll(filepath.Dir(theirs), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(theirs, []byte("written by the other create"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	_, res := f.create(t, f.ctx, "repo", map[string]any{"url": f.repo.URL, "commit": f.repo.Head}, nil)
+	if !res.IsError || !strings.Contains(res.Text, "already exists") {
+		t.Errorf("a create over a directory another create made: %q, want it refused as a duplicate", res.Text)
+	}
+	if b, err := os.ReadFile(theirs); err != nil || string(b) != "written by the other create" {
+		t.Errorf("the other create's file: %q (err %v), want it untouched", b, err)
+	}
+	if n := f.repo.Requests.Load(); n != 0 {
+		t.Errorf("%d request(s) were made for a name that is taken", n)
+	}
+}
+
+// Two creates of one name at once, with room for both to run: at most one
+// gets the volume, and the one that does keeps it whole.
+func TestVolumeDefGitSource_TwoCreatesOfOneNameAtOnce(t *testing.T) {
+	f := newGitSourceFixture(t, false)
+	f.tool.Git.Slots = make(chan struct{}, 2)
+	for i := 0; i < 5; i++ {
+		name := fmt.Sprintf("repo%d", i)
+		var wg sync.WaitGroup
+		results := make([]tools.Result, 2)
+		for j := range results {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				body, _ := json.Marshal(map[string]any{"op": "create", "name": name, "ephemeral": true,
+					"source": map[string]any{"git": map[string]any{"url": f.repo.URL, "commit": f.repo.Head}}})
+				res, err := f.tool.Execute(f.ctx, json.RawMessage(body))
+				if err != nil {
+					res = tools.Result{IsError: true, Text: err.Error()}
+				}
+				results[j] = res
+			}()
+		}
+		wg.Wait()
+		ok := 0
+		for _, r := range results {
+			if !r.IsError {
+				ok++
+			}
+		}
+		if ok != 1 {
+			t.Errorf("%s: %d of two creates succeeded, want exactly one: %q / %q", name, ok, results[0].Text, results[1].Text)
+			continue
+		}
+		if !f.set.Has(name) {
+			t.Errorf("%s: the volume that was created is not in the run's set", name)
+		}
+		if _, err := os.Stat(filepath.Join(f.volumeDir(name), "_meta", "omitted.json")); err != nil {
+			t.Errorf("%s: the volume that was created is not whole: %v", name, err)
+		}
+		stores, _ := filepath.Glob(filepath.Join(f.root, "_ephemeral", "run-1", ".gitstore-"+name+"*"))
+		if len(stores) != 0 {
+			t.Errorf("%s: object stores left: %v", name, stores)
+		}
+	}
+}
+
+// gitEchoingRefusal answers every request with a 401 whose body echoes the
+// request's credentials, as a careless or hostile server may.
+type gitEchoingRefusal struct{}
+
+func (gitEchoingRefusal) RoundTrip(r *http.Request) (*http.Response, error) {
+	user, pass, _ := r.BasicAuth()
+	body := "denied for " + user + ":" + pass + " (" + r.Header.Get("Authorization") + ")"
+	return &http.Response{StatusCode: http.StatusUnauthorized, Header: http.Header{},
+		Body: io.NopCloser(strings.NewReader(body)), Request: r}, nil
+}
+
+// The operator's log gets the class, the status and the start of what the
+// server said, never the token: a server that echoes the request's
+// credentials in its refusal does not put them in the log.
+func TestVolumeDefGitSource_ARefusalEchoingTheTokenIsLoggedWithoutIt(t *testing.T) {
+	f := newGitSourceFixture(t, true)
+	f.tool.Git.Transport = gitEchoingRefusal{}
+	ref := f.credential(t, "repo", gitTestToken, &[]string{f.repo.URL})
+
+	var buf bytes.Buffer
+	old := log.Writer()
+	log.SetOutput(&buf)
+	defer log.SetOutput(old)
+	_, res := f.create(t, f.ctx, "repo", map[string]any{"url": f.repo.URL, "commit": f.repo.Head, "credential": ref}, nil)
+	log.SetOutput(old)
+
+	if !res.IsError || !strings.Contains(res.Text, "auth_failed") {
+		t.Fatalf("create: %q, want auth_failed", res.Text)
+	}
+	logged := buf.String()
+	basic := base64.StdEncoding.EncodeToString([]byte(gitTestUser + ":" + gitTestToken))
+	if strings.Contains(logged, gitTestToken) || strings.Contains(logged, basic) {
+		t.Errorf("the log carries the token: %s", logged)
+	}
+	if !strings.Contains(logged, "class=auth_failed") || !strings.Contains(logged, "401") {
+		t.Errorf("the log does not say what happened: %s", logged)
+	}
+	f.assertNothingLeft(t, "repo")
+}
+
 // A request may lower the operator's byte limit and can never raise it.
 func TestVolumeDefGitSource_MaxBytesOnlyLowers(t *testing.T) {
 	f := newGitSourceFixture(t, false)
@@ -388,6 +507,49 @@ func TestGitCredentialResolver_AppCredentialIsMintedAndAnOpenOneRefused(t *testi
 	}
 	if got := gitAuthUsername("notgitlab.example.com"); got != "x-access-token" {
 		t.Errorf("a host that only contains the word: user %q", got)
+	}
+}
+
+// A $cred: reference to a credential that holds a GitHub App config is
+// refused: sent as a token, the config (the App's private key with it) would
+// go to the forge as the Basic-auth password, and be registered as a secret
+// only after the fact. The same credential named as $ghapp: is minted.
+func TestGitCredentialResolver_AnAppConfigNamedAsCredIsRefused(t *testing.T) {
+	f := newGitSourceFixture(t, false)
+	target := "https://github.com/acme/app"
+	cfg := `{"app_id": 12, "installation_id": "34", "private_key": "-----BEGIN RSA PRIVATE KEY-----\nMIIE\n-----END RSA PRIVATE KEY-----\n"}`
+	f.credential(t, "app", cfg, &[]string{target})
+	minted := false
+	resolve := GitCredentialResolver(f.engine, func(context.Context, string, string, string) (string, error) {
+		minted = true
+		return "ghs_minted_installation_token", nil
+	}, nil)
+
+	_, token, err := resolve(f.ctx, "$cred:app", target)
+	if !errors.Is(err, ErrGitCredentialUnresolvable) || token != "" {
+		t.Errorf("$cred: naming an App config: token=%q err=%v, want it unresolvable", token, err)
+	}
+	if err != nil && (strings.Contains(err.Error(), "PRIVATE KEY") || strings.Contains(err.Error(), "MIIE")) {
+		t.Errorf("the refusal carries the stored config: %v", err)
+	}
+	if err != nil && !strings.Contains(err.Error(), "$ghapp:") {
+		t.Errorf("the refusal does not point to $ghapp: %v", err)
+	}
+	if _, token, err := resolve(f.ctx, "$ghapp:app", target); err != nil || !minted || token != "ghs_minted_installation_token" {
+		t.Errorf("$ghapp: of the same credential: token=%q err=%v minted=%v", token, err, minted)
+	}
+	// Through the tool, the caller is told the fix, and nothing of the config.
+	f.tool.Git.Credential = resolve
+	appRef := f.credential(t, "repo-app", cfg, &[]string{f.repo.URL})
+	_, res := f.create(t, f.ctx, "repo", map[string]any{"url": f.repo.URL, "commit": f.repo.Head, "credential": appRef}, nil)
+	if !res.IsError || !strings.Contains(res.Text, "credential_unresolvable") || !strings.Contains(res.Text, "$ghapp:") || strings.Contains(res.Text, "MIIE") {
+		t.Errorf("create with $cred: naming an App config: %q", res.Text)
+	}
+	f.assertNothingLeft(t, "repo")
+	// A token that merely looks like JSON is not an App config.
+	f.credential(t, "jsonish", `{"note":"not an app"}`, &[]string{target})
+	if _, token, err := resolve(f.ctx, "$cred:jsonish", target); err != nil || token != `{"note":"not an app"}` {
+		t.Errorf("a JSON value without app_id and private_key: token=%q err=%v", token, err)
 	}
 }
 

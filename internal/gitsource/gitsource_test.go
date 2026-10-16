@@ -7,6 +7,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/cgi"
 	"net/http/httptest"
@@ -18,6 +19,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/go-git/go-git/v5/plumbing/transport"
 )
 
 // These tests fetch from a real git server: git's own http-backend, run as a
@@ -388,6 +391,32 @@ func TestFetch_ARepositoryThatIsNotThere(t *testing.T) {
 	}
 }
 
+// A 401, 403 or 404 body is the server's own text, read whole by the library
+// into its error; it can be large, and can echo the request. The detail kept
+// for the operator's log is the class, the status and a short snippet.
+func TestFetch_ARefusalsBodyIsNotCarriedWhole(t *testing.T) {
+	for status, class := range map[int]error{401: ErrAuthFailed, 403: ErrAuthFailed, 404: ErrNotFound} {
+		body := "denied " + strings.Repeat("x", 64<<10) + " TAIL-OF-THE-BODY"
+		req := Request{
+			URL: "https://git.example/acme/app", Commit: strings.Repeat("a", 40),
+			StoreDir: filepath.Join(t.TempDir(), "store"), MaxFetchBytes: 1 << 20, MaxObjectBytes: 1 << 20,
+			Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+				return &http.Response{StatusCode: status, Header: http.Header{}, Body: io.NopCloser(strings.NewReader(body)), Request: r}, nil
+			}),
+		}
+		_, err := Fetch(context.Background(), req)
+		if !errors.Is(err, class) {
+			t.Errorf("%d: err class %s, want %v", status, Class(err), class)
+			continue
+		}
+		if msg := err.Error(); len(msg) > 512 || strings.Contains(msg, "TAIL-OF-THE-BODY") {
+			t.Errorf("%d: the error carries %d bytes of the body: %.200q…", status, len(msg), msg)
+		} else if !strings.Contains(msg, fmt.Sprint(status)) || !strings.Contains(msg, "denied") {
+			t.Errorf("%d: the error %q names neither the status nor the start of the body", status, msg)
+		}
+	}
+}
+
 func TestFetch_StopsAtTheByteLimitAndLeavesNothing(t *testing.T) {
 	f := newFixture(t, false, true)
 	req := f.request(t, f.head)
@@ -499,6 +528,49 @@ func TestDispatcher_RefusesAnotherHostAndARequestOutsideAFetch(t *testing.T) {
 	r, _ = http.NewRequestWithContext(withCall(context.Background(), st), http.MethodGet, "https://GIT.example/x", nil)
 	if _, err := (dispatcher{}).RoundTrip(r); !reached || err == nil || !strings.Contains(err.Error(), "stop here") {
 		t.Errorf("the fetch's own host did not reach its transport: reached=%v err=%v", reached, err)
+	}
+}
+
+// A repository named with https's own port is fetched: the library drops
+// ":443" from the URLs it requests, and the dispatcher compared the host as
+// written, so every request was refused. Another port still has to match.
+func TestDispatcher_AcceptsTheDefaultPortWrittenOrNot(t *testing.T) {
+	for _, repo := range []string{
+		"https://github.com:443/acme/app",
+		"https://GitHub.com/acme/app",
+		"https://[2001:db8::5]:443/acme/app",
+		"https://git.example:8443/acme/app",
+	} {
+		req := Request{URL: repo, Commit: strings.Repeat("a", 40), StoreDir: "/tmp/x", MaxFetchBytes: 1, MaxObjectBytes: 1, Transport: roundTripFunc(nil)}
+		host, err := req.validate()
+		if err != nil {
+			t.Fatalf("%s: %v", repo, err)
+		}
+		// The URL the library itself requests for this repository.
+		ep, err := transport.NewEndpoint(repo)
+		if err != nil {
+			t.Fatal(err)
+		}
+		reached := false
+		st := &call{host: host, max: 1 << 20, rt: roundTripFunc(func(*http.Request) (*http.Response, error) {
+			reached = true
+			return nil, errors.New("stop here")
+		})}
+		r, _ := http.NewRequestWithContext(withCall(context.Background(), st), http.MethodGet, ep.String()+"/info/refs", nil)
+		if _, err := (dispatcher{}).RoundTrip(r); !reached {
+			t.Errorf("%s: the library's request %s was refused: %v", repo, r.URL, err)
+		}
+		// The same host on another port is not the repository's.
+		other := *r.URL
+		other.Host = other.Hostname() + ":9999"
+		if strings.Contains(other.Hostname(), ":") {
+			other.Host = "[" + other.Hostname() + "]:9999"
+		}
+		reached = false
+		r2, _ := http.NewRequestWithContext(withCall(context.Background(), st), http.MethodGet, other.String(), nil)
+		if _, err := (dispatcher{}).RoundTrip(r2); err == nil || reached {
+			t.Errorf("%s: a request to %s went through", repo, other.Host)
+		}
 	}
 }
 
@@ -695,27 +767,42 @@ func TestFetch_AnObjectThatInflatesPastTheLimitFailsWithoutBeingInflated(t *test
 // declares, and its (compressed) body.
 func packOf(t *testing.T, objType byte, declared uint64, body []byte) []byte {
 	t.Helper()
+	return packOfN(t, 1, objType, declared, body)
+}
+
+// packOfN is packOf with n copies of the object.
+func packOfN(t *testing.T, n uint32, objType byte, declared uint64, body []byte) []byte {
+	t.Helper()
 	var b bytes.Buffer
 	b.WriteString("PACK")
 	_ = binary.Write(&b, binary.BigEndian, uint32(2))
-	_ = binary.Write(&b, binary.BigEndian, uint32(1))
-	// The object header: 3 bits of type and the length, 4 bits then 7 at a time.
-	first := objType<<4 | byte(declared&0x0f)
-	declared >>= 4
-	for declared > 0 {
-		b.WriteByte(first | 0x80)
-		first = byte(declared & 0x7f)
-		declared >>= 7
+	_ = binary.Write(&b, binary.BigEndian, n)
+	for i := uint32(0); i < n; i++ {
+		// The object header: 3 bits of type and the length, 4 bits then 7 at a time.
+		d := declared
+		first := objType<<4 | byte(d&0x0f)
+		d >>= 4
+		for d > 0 {
+			b.WriteByte(first | 0x80)
+			first = byte(d & 0x7f)
+			d >>= 7
+		}
+		b.WriteByte(first)
+		if objType == 7 { // a delta against an object named by its sha
+			b.Write(make([]byte, 20))
+		}
+		z := zlib.NewWriter(&b)
+		_, _ = z.Write(body)
+		_ = z.Close()
 	}
-	b.WriteByte(first)
-	if objType == 7 { // a delta against an object named by its sha
-		b.Write(make([]byte, 20))
-	}
-	z := zlib.NewWriter(&b)
-	_, _ = z.Write(body)
-	_ = z.Close()
 	b.Write(make([]byte, 20)) // the pack's checksum, not read by the check
 	return b.Bytes()
+}
+
+// unlimited is a total no test of one object's size comes near.
+func unlimited() *int64 {
+	n := int64(1) << 62
+	return &n
 }
 
 func varint(n uint64) []byte {
@@ -734,28 +821,101 @@ func varint(n uint64) []byte {
 // and a delta whose instructions build it.
 func TestCheckPack_RefusesAnObjectDeclaredOrBuiltPastTheLimit(t *testing.T) {
 	const limit = 1 << 20
+	ctx := context.Background()
 	small := packOf(t, 3, 5, []byte("hello")) // a blob of 5 bytes
-	if err := checkPack(bytes.NewReader(small), limit); err != nil {
+	if err := checkPack(ctx, bytes.NewReader(small), limit, unlimited()); err != nil {
 		t.Fatalf("a small object: %v", err)
 	}
 	declared := packOf(t, 3, 1<<40, []byte("hello")) // a blob that says it is a terabyte
-	if err := checkPack(bytes.NewReader(declared), limit); !errors.Is(err, errObjectTooLarge) {
+	if err := checkPack(ctx, bytes.NewReader(declared), limit, unlimited()); !errors.Is(err, errObjectTooLarge) {
 		t.Errorf("a header declaring a terabyte: %v, want the refusal", err)
 	}
 	// A delta of a dozen bytes whose own header says the result is a terabyte.
 	instr := append(append(varint(10), varint(1<<40)...), 0x01, 'x')
 	delta := packOf(t, 7, uint64(len(instr)), instr)
-	if err := checkPack(bytes.NewReader(delta), limit); !errors.Is(err, errObjectTooLarge) {
+	if err := checkPack(ctx, bytes.NewReader(delta), limit, unlimited()); !errors.Is(err, errObjectTooLarge) {
 		t.Errorf("a delta that builds a terabyte: %v, want the refusal", err)
 	}
 	// The same delta building something small passes.
 	fine := append(append(varint(10), varint(100)...), 0x01, 'x')
-	if err := checkPack(bytes.NewReader(packOf(t, 7, uint64(len(fine)), fine)), limit); err != nil {
+	if err := checkPack(ctx, bytes.NewReader(packOf(t, 7, uint64(len(fine)), fine)), limit, unlimited()); err != nil {
 		t.Errorf("a delta that builds 100 bytes: %v", err)
 	}
-	if err := checkPack(bytes.NewReader([]byte("not a pack")), limit); err == nil || errors.Is(err, errObjectTooLarge) {
+	if err := checkPack(ctx, bytes.NewReader([]byte("not a pack")), limit, unlimited()); err == nil || errors.Is(err, errObjectTooLarge) {
 		t.Errorf("garbage: %v, want an error that is not the size refusal", err)
 	}
+}
+
+// Each object under the limit is not enough: a few bytes per delta can each
+// build the largest object allowed, and a fetch's worth of them is millions.
+// What the objects build in all is bounded too, across the packs of a fetch.
+func TestCheckPack_RefusesObjectsThatTogetherBuildPastTheTotal(t *testing.T) {
+	const limit = 1 << 20
+	ctx := context.Background()
+	instr := append(append(varint(10), varint(limit)...), 0x01, 'x') // each builds 1 MiB
+	pack := packOfN(t, 4, 7, uint64(len(instr)), instr)
+
+	room := int64(4 * limit)
+	if err := checkPack(ctx, bytes.NewReader(pack), limit, &room); err != nil {
+		t.Fatalf("four deltas of 1 MiB with room for four: %v", err)
+	}
+	if room != 0 {
+		t.Errorf("room left = %d, want 0", room)
+	}
+	// The next pack of the same fetch has no room left.
+	if err := checkPack(ctx, bytes.NewReader(packOf(t, 3, 5, []byte("hello"))), limit, &room); !errors.Is(err, errObjectTooLarge) {
+		t.Errorf("an object past the total: %v, want the refusal", err)
+	}
+	short := int64(3 * limit)
+	if err := checkPack(ctx, bytes.NewReader(pack), limit, &short); !errors.Is(err, errObjectTooLarge) {
+		t.Errorf("four deltas of 1 MiB with room for three: %v, want the refusal", err)
+	}
+	// Blobs count as their headers declare.
+	blobs := packOfN(t, 3, 3, 5, []byte("hello"))
+	tight := int64(14)
+	if err := checkPack(ctx, bytes.NewReader(blobs), limit, &tight); !errors.Is(err, errObjectTooLarge) {
+		t.Errorf("three 5-byte blobs with room for 14 bytes: %v, want the refusal", err)
+	}
+}
+
+// The check of a pack stops at the fetch's deadline, between objects.
+func TestCheckPack_StopsWhenTheContextEnds(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	err := checkPack(ctx, bytes.NewReader(packOfN(t, 3, 3, 5, []byte("hello"))), 1<<20, unlimited())
+	if !errors.Is(err, context.Canceled) {
+		t.Errorf("err = %v, want the context's", err)
+	}
+}
+
+// End to end: objects each under the object limit, that together build more
+// than the fetch's total, fail the fetch and leave nothing.
+func TestFetch_ObjectsThatTogetherInflatePastTheTotalFail(t *testing.T) {
+	f := newFixture(t, false, true)
+	const each = 3 << 20
+	var head string
+	for i, c := range []byte("abc") {
+		head = f.commit(t, fmt.Sprintf("big%d.txt", i), bytes.Repeat([]byte{c}, each))
+	}
+	req := f.request(t, head)
+	req.MaxObjectBytes = 4 << 20
+	req.MaxFetchBytes = 256 << 10 // a total of 8 MiB: under the 9 MiB the three build
+	_, err := Fetch(context.Background(), req)
+	if !errors.Is(err, ErrTooLarge) {
+		t.Fatalf("err = %v (class %s), want source_too_large", err, Class(err))
+	}
+	if _, err := os.Stat(req.StoreDir); !os.IsNotExist(err) {
+		t.Error("the refused fetch left its object store behind")
+	}
+	// With room for them, the same commit is fetched: the pack was small.
+	roomy := f.request(t, head)
+	roomy.MaxObjectBytes = 4 << 20
+	roomy.MaxFetchBytes = 1 << 20
+	got, err := Fetch(context.Background(), roomy)
+	if err != nil {
+		t.Fatalf("with room: %v", err)
+	}
+	got.Close()
 }
 
 func TestDeltaResultSize(t *testing.T) {
@@ -785,6 +945,145 @@ func TestWriteTree_RefusesAStoreInsideTheDestination(t *testing.T) {
 	defer got.Close()
 	if _, err := got.WriteTree(context.Background(), dest, limits); !errors.Is(err, ErrInvalidRequest) {
 		t.Errorf("err = %v, want invalid_request", err)
+	}
+}
+
+// On a file system that ignores case (macOS by default), a link "q/A" to ".."
+// is the directory "q/a" too, so a link written as "q/a/l" lands at the root
+// of the tree, two levels up from where its name says, and its target of
+// "../../x" (two ups, allowed at that depth) leads out. It dangled, and the
+// final check skipped dangling links, so it stayed: a later write to "l"
+// would create a file outside the volume. The path is refused under a link
+// whatever its case, and no link that leads out survives, dangling or not.
+//
+// Which names are one is the file system's to say: case folding alone would
+// miss a pair that differs in Unicode normalization (macOS treats the two
+// spellings of "é" as one name) or in a case rule of its own. So every pair
+// here is checked against the file system the test runs on: where it holds
+// the two names to be one, the path under the link must be refused; where
+// it does not, the path is an ordinary one and is written.
+func TestWriteTree_ALinkUnderALinkOfAnotherCaseIsRefused(t *testing.T) {
+	f := newFixture(t, false, true)
+	link := func(path, target string) {
+		t.Helper()
+		blob := filepath.Join(t.TempDir(), "blob")
+		if err := os.WriteFile(blob, []byte(target), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		sha := run(t, f.work, "hash-object", "-w", blob)
+		run(t, f.work, "-c", "core.ignorecase=false", "-c", "core.precomposeunicode=false",
+			"update-index", "--add", "--cacheinfo", "120000,"+sha+","+path)
+	}
+	// sameName reports whether this file system takes a and b to be one name.
+	sameName := func(a, b string) bool {
+		scratch := t.TempDir()
+		if err := os.Mkdir(filepath.Join(scratch, a), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		_, err := os.Lstat(filepath.Join(scratch, b))
+		return err == nil
+	}
+	// Written as code points, so no editor or tool normalizes them. Each
+	// link's name sorts before the other spelling, so a tree walk writes
+	// the link first.
+	var (
+		eAcute  = string(rune(0x00e9))       // é as one code point
+		eAccent = "e" + string(rune(0x0301)) // é as e and a combining accent
+		bigE    = "E" + string(rune(0x0301)) // É as E and a combining accent
+		kelvin  = string(rune(0x212a))       // the Kelvin sign
+	)
+	pairs := []struct{ dir, linkName, otherName string }{
+		{"q", "A", "a"},        // case
+		{"n", eAccent, eAcute}, // normalization
+		{"k", "k", kelvin},     // a case rule beyond ASCII
+		{"s", bigE, eAcute},    // case and normalization at once
+	}
+	for _, p := range pairs {
+		link(p.dir+"/"+p.linkName, "..")
+		link(p.dir+"/"+p.otherName+"/l-"+p.dir, "../../zz-nonexistent")
+	}
+	run(t, f.work, "commit", "-q", "-m", "links of two spellings")
+	run(t, f.work, "push", "-q", f.bare, "HEAD:refs/heads/main")
+	got, err := Fetch(context.Background(), f.request(t, run(t, f.work, "rev-parse", "HEAD")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer got.Close()
+	dest := t.TempDir()
+	res, err := got.WriteTree(context.Background(), dest, limits)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reasons := map[string]string{}
+	for _, o := range res.Omitted {
+		reasons[o.Path] = o.Reason
+	}
+	for _, p := range pairs {
+		under := p.dir + "/" + p.otherName + "/l-" + p.dir
+		if sameName(p.linkName, p.otherName) {
+			if reasons[under] != ReasonUnsafePath {
+				t.Errorf("%q, under the link %q of another spelling: omitted as %q, want %q", under, p.dir+"/"+p.linkName, reasons[under], ReasonUnsafePath)
+			}
+		} else if reasons[under] != "" {
+			t.Errorf("%q, under a directory this file system tells apart from the link: omitted as %q, want written", under, reasons[under])
+		}
+	}
+	// Whatever was written, no link on disk leads out: each is judged by the
+	// directory it really sits in, not by its name.
+	realDest, err := filepath.EvalSymlinks(dest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = filepath.WalkDir(realDest, func(p string, d os.DirEntry, err error) error {
+		if err != nil || d.Type()&os.ModeSymlink == 0 {
+			return err
+		}
+		target, rerr := os.Readlink(p)
+		if rerr != nil {
+			t.Errorf("readlink %s: %v", p, rerr)
+			return nil
+		}
+		if lands := filepath.Join(filepath.Dir(p), target); !within(lands, realDest) {
+			t.Errorf("%s -> %s leads out of the tree", p, target)
+		}
+		return nil
+	})
+}
+
+// A link that dangles and leads out is removed: a write to its name would
+// create the target. One that dangles inside (its target omitted) is kept.
+func TestLinkLandsInside_JudgesADanglingLinkByWhereItSits(t *testing.T) {
+	root := t.TempDir()
+	realRoot, err := filepath.EvalSymlinks(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, target := range map[string]string{
+		"q/A":     "..",
+		"l":       "../../zz-nonexistent",
+		"missing": "not-there",
+		"sub/up":  "../not-there",
+		"abs":     "/tmp/zz-nonexistent",
+	} {
+		p := filepath.Join(realRoot, filepath.FromSlash(name))
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink(target, p); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for name, want := range map[string]bool{
+		"q/A":     true,  // the root itself
+		"missing": true,  // dangling, inside
+		"sub/up":  true,  // dangling, inside
+		"l":       false, // dangling, outside
+		"q/A/l":   false, // the same link reached through q/A: where it sits decides
+		"abs":     false,
+	} {
+		if got := linkLandsInside(realRoot, name); got != want {
+			t.Errorf("linkLandsInside(%s) = %v, want %v", name, got, want)
+		}
 	}
 }
 
