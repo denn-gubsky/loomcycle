@@ -374,6 +374,9 @@ func (s *Server) snapshotRestoreOptions(ctx context.Context, includeHistory bool
 	}
 	opts := snapshot.RestoreOptions{
 		IncludeHistory: includeHistory,
+		// This replica queues the restored queued runs again (finishRestore),
+		// so their rows name it, as a run queued here does.
+		ReplicaID: s.replicaID,
 		Validators: map[string]func(json.RawMessage) error{
 			// The def sections snapshots carried first. Agent, skill and team
 			// bodies are checked for what they carry themselves — the inline
