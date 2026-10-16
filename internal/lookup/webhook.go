@@ -123,9 +123,11 @@ func resolveWebhookSubstrate(ctx context.Context, s WebhookStore, tenantID, name
 	// A row a tenant wrote before create stamped the author's tenant into the
 	// body names no tenant, and the receiver reads only the body — so tenant X's
 	// webhook would run, publish and fire its hooks in the operator layer "".
-	// It executes in the tenant that owns it. A row bootstrapped from the yaml
-	// keeps its empty tenant: the yaml said "operator layer".
-	if wd.TenantID == "" && activeRow.TenantID != "" && !activeRow.BootstrappedFromStatic {
+	// It executes in the tenant that owns it. So does a row bootstrapped from
+	// the yaml under a tenant (a fork used to write one there): the yaml's
+	// "operator layer" holds for the shared base's copy alone, which is the
+	// only one a bootstrap writes now.
+	if wd.TenantID == "" && activeRow.TenantID != "" {
 		wd.TenantID = activeRow.TenantID
 	}
 	return wd.ToConfigDef(), true

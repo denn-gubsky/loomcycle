@@ -302,6 +302,10 @@ func (s *WebhookDef) execFork(ctx context.Context, policy tools.WebhookDefPolicy
 	if in.Name == "" {
 		return errResult("fork: missing required field: name"), nil
 	}
+	// Before the parent is resolved: resolving it can bootstrap one.
+	if err := s.checkScopeForName(policy, in.Name); err != nil {
+		return errResult(err.Error()), nil
+	}
 
 	// RFC N: fork resolves the parent within the caller's own tenant first
 	// (then the shared "" base); the new version's def-ROW owning tenant is
@@ -355,7 +359,9 @@ func (s *WebhookDef) execFork(ctx context.Context, policy tools.WebhookDefPolicy
 					return errResult(fmt.Sprintf("fork: %s", serr)), nil
 				}
 			}
-			// Still no parent → bootstrap from yaml, else refuse.
+			// Still no parent → bootstrap from yaml, else refuse. The
+			// bootstrap is the shared tenant's, as the boot's is, whoever
+			// forks: the fork below is what lands in the caller's tenant.
 			if parentDefID == "" {
 				static, ok := s.Cfg.Webhooks[in.Name]
 				if !ok {
@@ -364,8 +370,8 @@ func (s *WebhookDef) execFork(ctx context.Context, policy tools.WebhookDefPolicy
 				bootstrap, berr := s.bootstrapStatic(ctx, in.Name, static)
 				if berr != nil {
 					// Concurrent first-fork may have already bootstrapped v1;
-					// re-read own-tenant active pointer before propagating.
-					if row2, gerr := s.Store.WebhookDefGetActive(ctx, tenantID, in.Name); gerr == nil {
+					// re-read the shared active pointer before propagating.
+					if row2, gerr := s.Store.WebhookDefGetActive(ctx, "", in.Name); gerr == nil {
 						parent = row2
 						parentDefID = row2.DefID
 					} else {
@@ -377,10 +383,6 @@ func (s *WebhookDef) execFork(ctx context.Context, policy tools.WebhookDefPolicy
 				}
 			}
 		}
-	}
-
-	if err := s.checkScopeForName(policy, in.Name); err != nil {
-		return errResult(err.Error()), nil
 	}
 
 	def, err := s.buildDefinition(in.Name, string(parent.Definition), in.Overlay)
@@ -707,15 +709,17 @@ func (s *WebhookDef) bootstrapStatic(ctx context.Context, name string, static co
 		Description:            "bootstrapped from static cfg.Webhooks",
 		CreatedByAgentID:       ident.AgentID,
 		BootstrappedFromStatic: true,
-		// RFC N: bootstrap lands in the caller's tenant ("" for the boot
-		// webhook-bootstrap identity → the shared base).
-		TenantID: ident.TenantID,
+		// Always the shared base, whoever triggers it: the yaml is the
+		// operator's, and a copy of it under a tenant would execute that
+		// tenant's deliveries as the yaml says (tenant_id "" = the operator
+		// layer) with its `$cred:` secret read from that tenant.
+		TenantID: "",
 	}
 	created, err := s.Store.WebhookDefCreate(ctx, row)
 	if err != nil {
 		return store.WebhookDefRow{}, err
 	}
-	if err := s.Store.WebhookDefSetActive(ctx, ident.TenantID, name, created.DefID, ident.AgentID); err != nil {
+	if err := s.Store.WebhookDefSetActive(ctx, "", name, created.DefID, ident.AgentID); err != nil {
 		// Bootstrap succeeded but couldn't promote — return the row;
 		// the next fork iteration finds it via the active-pointer retry.
 		return created, fmt.Errorf("promote bootstrap: %w", err)
@@ -739,12 +743,10 @@ func (s *WebhookDef) BootstrapStaticWebhooks(ctx context.Context) (int, error) {
 		names = append(names, name)
 	}
 	sort.Strings(names) // deterministic order for logs + tests
-	// RFC N: boot bootstrap operates on the caller's tenant — the
-	// webhook-bootstrap identity carries "" (the shared base).
-	tenantID := tools.RunIdentity(ctx).TenantID
+	// The shared base, where bootstrapStatic writes.
 	seeded := 0
 	for _, name := range names {
-		_, err := s.Store.WebhookDefGetActive(ctx, tenantID, name)
+		_, err := s.Store.WebhookDefGetActive(ctx, "", name)
 		if err == nil {
 			continue // already has an active version — leave it
 		}
