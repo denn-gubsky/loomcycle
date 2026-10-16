@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"os"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -395,35 +396,75 @@ func TestRateLimitedToken_ADraftOverTheConnectorIsOneStart(t *testing.T) {
 	}
 }
 
-// A message to a parked interactive run starts its next turn, so it is a run
-// start and is counted, as a continuation is; a message to a run that is mid
-// turn joins the turn already running and is not. Without this a rate-limited
-// token keeps one interactive run parked and drives it as fast as it likes.
-func TestRateLimitedToken_ASteerThatStartsATurnIsOneStart(t *testing.T) {
+// A message to an interactive run is a run start, as a continuation is: one
+// to a parked run starts its next turn, and one sent mid turn is still
+// waiting when the turn ends, so the run answers it in another turn instead
+// of parking. Whether a message starts a turn is settled only when the turn
+// ends, after it was sent, so every message is counted. Without this a
+// rate-limited token drives one interactive run as fast as it likes.
+func TestRateLimitedToken_EveryMessageToARunIsOneStart(t *testing.T) {
+	for name, park := range map[string]bool{"parked": true, "mid turn": false} {
+		t.Run(name, func(t *testing.T) {
+			srv, do := rateFixture(t)
+			srv.SetSteerRegistry(steer.NewRegistry(0))
+			runID, queued := seedLiveRun(t, srv, srv.store, "other", "a_live", "")
+			srv.steerReg.SetParked(runID, park)
+			for i := 0; i < 2; i++ {
+				if code, body, _ := do("POST", "/v1/runs", runBody("other")); code != 200 {
+					t.Fatalf("burst start %d: status %d: %s", i+1, code, body)
+				}
+			}
+			code, body, hdr := do("POST", "/v1/runs/"+runID+"/input", `{"text":"next"}`)
+			if code != http.StatusTooManyRequests || !strings.Contains(body, "rate_limited") || hdr.Get("Retry-After") == "" {
+				t.Errorf("a message past the burst: status %d, want 429 rate_limited with Retry-After: %s", code, body)
+			}
+			select {
+			case m := <-queued:
+				t.Fatalf("a refused message reached the run: %+v", m)
+			default:
+			}
+		})
+	}
+}
+
+// Messages sent at once take one start each: with one start left, exactly one
+// of a burst of concurrent messages is delivered, whatever state the run is
+// in when each is decided.
+func TestRateLimitedToken_ConcurrentMessagesShareTheBucket(t *testing.T) {
 	srv, do := rateFixture(t)
 	srv.SetSteerRegistry(steer.NewRegistry(0))
-	parked, toParked := seedLiveRun(t, srv, srv.store, "other", "a_parked", "")
-	srv.steerReg.SetParked(parked, true)
-	busy, toBusy := seedLiveRun(t, srv, srv.store, "other", "a_busy", "")
-
-	for i := 0; i < 2; i++ {
-		if code, body, _ := do("POST", "/v1/runs", runBody("other")); code != 200 {
-			t.Fatalf("burst start %d: status %d: %s", i+1, code, body)
+	runID, queued := seedLiveRun(t, srv, srv.store, "other", "a_live", "")
+	if code, body, _ := do("POST", "/v1/runs", runBody("other")); code != 200 {
+		t.Fatalf("start: status %d: %s", code, body)
+	}
+	const n = 8
+	codes := make(chan int, n)
+	var wg sync.WaitGroup
+	for i := 0; i < n; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			code, _, _ := do("POST", "/v1/runs/"+runID+"/input", `{"text":"go"}`)
+			codes <- code
+		}()
+	}
+	wg.Wait()
+	close(codes)
+	delivered, refused := 0, 0
+	for c := range codes {
+		switch c {
+		case 200:
+			delivered++
+		case http.StatusTooManyRequests:
+			refused++
+		default:
+			t.Errorf("status %d, want 200 or 429", c)
 		}
 	}
-	code, body, hdr := do("POST", "/v1/runs/"+parked+"/input", `{"text":"next"}`)
-	if code != http.StatusTooManyRequests || !strings.Contains(body, "rate_limited") || hdr.Get("Retry-After") == "" {
-		t.Errorf("a message to a parked run past the burst: status %d, want 429 rate_limited with Retry-After: %s", code, body)
+	if delivered != 1 || refused != n-1 {
+		t.Errorf("%d delivered, %d refused, want 1 and %d", delivered, refused, n-1)
 	}
-	select {
-	case m := <-toParked:
-		t.Fatalf("a refused message reached the parked run: %+v", m)
-	default:
-	}
-	if code, body, _ := do("POST", "/v1/runs/"+busy+"/input", `{"text":"also"}`); code != 200 {
-		t.Errorf("a message to a run mid turn: status %d, want it delivered uncounted: %s", code, body)
-	}
-	if m := <-toBusy; m.Text != "also" {
-		t.Errorf("the run mid turn got %+v", m)
+	if got := len(queued); got != delivered {
+		t.Errorf("%d messages reached the run, want %d", got, delivered)
 	}
 }
