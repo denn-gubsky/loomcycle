@@ -55,6 +55,12 @@ type TeamWalkInput struct {
 	// them for an agent-run delivery.
 	OperatorKeyRestricted bool
 	Isolated              bool
+	// CredentialsNoUserScope is RunInput.CredentialsNoUserScope for the walk:
+	// every member it spawns resolves $cred: for its agent and tenant only,
+	// never in UserID's own scope. A webhook sets it always (its user can
+	// come from the delivery); a schedule unless its author could act as its
+	// user.
+	CredentialsNoUserScope bool
 
 	// IdempotencyKey and DeliveryAltKey are the durable dedup identities of
 	// the delivery that asked for this walk (see RunInput.IdempotencyKey).

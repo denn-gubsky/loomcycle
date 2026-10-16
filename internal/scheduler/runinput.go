@@ -172,6 +172,9 @@ func buildTeamWalkInput(def scheduleDef) runner.TeamWalkInput {
 		UserID:                def.UserID,
 		OperatorKeyRestricted: def.OperatorKeyRestricted,
 		Isolated:              def.Isolated,
+		// As buildRunInput: only a def whose author could act as user_id
+		// resolves in its scope.
+		CredentialsNoUserScope: !(def.UserScopeCredentials || def.staticRow),
 	}
 }
 
