@@ -3238,7 +3238,7 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 	if in.AllowedHosts != nil || s.cfg().Env.HTTPCallerAuthoritative {
 		var caller []string
 		if in.AllowedHosts != nil {
-			caller = *in.AllowedHosts
+			caller = s.floorLockedCallerHosts(ctx, agentDef, allowedTools, *in.AllowedHosts)
 		}
 		allowedTools = builtin.NarrowHosts(allowedTools, caller, in.WebSearchFilter, s.cfg().Env.HTTPCallerAuthoritative)
 		hostPolicy = tools.HostPolicyValue{
@@ -5411,7 +5411,7 @@ func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {
 	if req.AllowedHosts != nil || s.cfg().Env.HTTPCallerAuthoritative {
 		var caller []string
 		if req.AllowedHosts != nil {
-			caller = *req.AllowedHosts
+			caller = s.floorLockedCallerHosts(r.Context(), agentDef, allowedTools, *req.AllowedHosts)
 		}
 		allowedTools = builtin.NarrowHosts(allowedTools, caller, req.WebSearchFilter, s.cfg().Env.HTTPCallerAuthoritative)
 		hostPolicy = tools.HostPolicyValue{
@@ -6388,7 +6388,7 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 	if body.AllowedHosts != nil || s.cfg().Env.HTTPCallerAuthoritative {
 		var caller []string
 		if body.AllowedHosts != nil {
-			caller = *body.AllowedHosts
+			caller = s.floorLockedCallerHosts(r.Context(), agentDef, allowedTools, *body.AllowedHosts)
 		}
 		allowedTools = builtin.NarrowHosts(allowedTools, caller, body.WebSearchFilter, s.cfg().Env.HTTPCallerAuthoritative)
 		hostPolicy = tools.HostPolicyValue{
@@ -8634,7 +8634,13 @@ func (s *Server) prepareSubRunValues(ctx context.Context, name string, src nameS
 	// the documents (2026-05-06).
 	parentHostPolicy := tools.HostPolicy(ctx)
 	if parentHostPolicy.HasList || s.cfg().Env.HTTPCallerAuthoritative {
-		subTools = builtin.NarrowHosts(subTools, parentHostPolicy.AllowedHosts, parentHostPolicy.WebSearchFilter, s.cfg().Env.HTTPCallerAuthoritative)
+		// A child that runs on its definition only takes the parent's list
+		// as a narrowing, as a request naming it directly would.
+		inherited := parentHostPolicy.AllowedHosts
+		if parentHostPolicy.HasList {
+			inherited = s.floorLockedCallerHosts(ctx, def, subTools, inherited)
+		}
+		subTools = builtin.NarrowHosts(subTools, inherited, parentHostPolicy.WebSearchFilter, s.cfg().Env.HTTPCallerAuthoritative)
 	}
 	subDispatcher := s.newDispatcher(subTools)
 
