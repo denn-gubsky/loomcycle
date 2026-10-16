@@ -2366,6 +2366,7 @@ func main() {
 	// below waits for it, so the two never run at once.
 	countFlusherDone := make(chan struct{})
 	if webhookReceiver != nil {
+		go webhookReceiver.RunSweeper(bgCtx, webhookapi.SweepInterval)
 		go func() {
 			defer close(countFlusherDone)
 			webhookReceiver.RunCountFlusher(bgCtx, webhookapi.CountFlushInterval)
