@@ -28,6 +28,27 @@ func waitRun(t *testing.T, st store.Store, runID string, cond func(store.Run) bo
 	}
 }
 
+// waitAdmitted polls until runID has passed the runner's Admit and returns
+// every run that has. The receiver answers a delivery once its run registers,
+// and Admit runs after that, so a run can be answered for and not yet
+// admitted.
+func waitAdmitted(t *testing.T, sr *headRunner, runID string) []string {
+	t.Helper()
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		adm := sr.admittedRuns()
+		for _, id := range adm {
+			if id == runID {
+				return adm
+			}
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("run %s never passed Admit (admitted: %v)", runID, adm)
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}
+
 // A delivery whose run setup outlives the claim's grace loses its event to
 // the event's next delivery, which starts the one run. The slow setup, when it
 // finally registers, finds its claim taken over and is refused before its
@@ -68,7 +89,7 @@ func TestReceiver_DedupKey_ASetupThatOutlivesItsClaimNeverRuns(t *testing.T) {
 	if got.IdempotencyKey != "" || got.DeliveryAltKey != "" {
 		t.Errorf("the refused run kept its delivery keys (%q, %q)", got.IdempotencyKey, got.DeliveryAltKey)
 	}
-	if adm := sr.admittedRuns(); len(adm) != 1 || adm[0] != winner {
+	if adm := waitAdmitted(t, sr, winner); len(adm) != 1 || adm[0] != winner {
 		t.Errorf("runs past Admit = %v, want only %s", adm, winner)
 	}
 	if again := pushHead(t, "the slow delivery's bytes again", rec, slowBody, "d1", http.StatusOK); again["run_id"] != winner {
@@ -129,10 +150,11 @@ func TestReceiver_DedupKey_ARunThatCannotLinkFailsClosed(t *testing.T) {
 	waitRun(t, real, created[0], func(r store.Run) bool { return r.Status == store.RunFailed })
 
 	rec := newHeadReceiver(real, sr, c, hooks)
-	if got := pushHead(t, "the sender's retry", rec, body, "d1", http.StatusAccepted); got["run_id"] == "" || got["deduped"] != "" {
-		t.Errorf("the retry: %v, want a new run", got)
+	got := pushHead(t, "the sender's retry", rec, body, "d1", http.StatusAccepted)
+	if got["run_id"] == "" || got["deduped"] != "" {
+		t.Fatalf("the retry: %v, want a new run", got)
 	}
-	if adm := sr.admittedRuns(); len(adm) != 1 {
+	if adm := waitAdmitted(t, sr, got["run_id"]); len(adm) != 1 {
 		t.Errorf("runs past Admit = %v, want the retry's", adm)
 	}
 }
