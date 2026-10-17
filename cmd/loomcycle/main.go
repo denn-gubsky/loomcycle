@@ -999,6 +999,15 @@ func main() {
 	credentialDefTool := &builtin.CredentialDef{}
 	allTools = append(allTools, credentialDefTool)
 
+	// RFC EP — the Crypto tool: encrypt / sign / MAC / TOTP with keys the
+	// runtime holds. Engine late-bound with CredentialDef's; an agent uses keys
+	// only from the scopes its crypto_scopes grants (tools.CryptoPolicy).
+	cryptoTool := &builtin.Crypto{
+		MaxBytes:     cfg.Env.CryptoMaxBytes,
+		MaxOpsPerRun: cfg.Env.CryptoMaxOpsPerRun,
+	}
+	allTools = append(allTools, cryptoTool)
+
 	// RFC AL — the Path tool (Unix-like VFS over the dirents substrate). Store
 	// late-bound below alongside the other substrate tools.
 	pathTool := &builtin.Path{}
@@ -1460,6 +1469,7 @@ func main() {
 	}
 	credEngine := credential.NewEngine(storeIface, credSealer)
 	credentialDefTool.Engine = credEngine
+	cryptoTool.Engine = credEngine
 	// A team's own webhook may name a stored secret of the author's tenant.
 	teamDefTool.Credentials = credEngine
 	// $ghapp:<name> — mint a short-lived GitHub App installation token from a
@@ -1915,6 +1925,9 @@ func main() {
 		}
 		tokenAudit = fs
 		log.Printf("audit: OperatorTokenDef mutations → %s", cfg.Env.AuditLogPath)
+		// RFC EP: every keyed Crypto op and every crypto-key change.
+		cryptoTool.Audit = tokenAudit
+		credentialDefTool.Audit = tokenAudit
 	}
 	// Subject erasure shares the same sink — but NOT the same posture: with no audit
 	// path configured, erasure REFUSES rather than proceeding unrecorded. It is the one
@@ -2044,6 +2057,7 @@ func main() {
 	// surface alongside substrate-side discovered_tools. The closure
 	// marshals into the substrate-mirror shape ({name, description,
 	// input_schema}) so the wire stays uniform across static + dynamic.
+	srv.SetCryptoStats(cryptoTool.Stats) // RFC EP: loomcycle_crypto_ops_total
 	srv.SetMCPPoolInspector(func(name string) json.RawMessage {
 		// Static yaml MCP servers live at the shared "" tenant in the
 		// (tenant, name)-keyed pool. The Library introspection endpoint

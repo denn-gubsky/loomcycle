@@ -8,6 +8,7 @@ import (
 	"regexp"
 	"time"
 
+	"github.com/denn-gubsky/loomcycle/internal/audit"
 	"github.com/denn-gubsky/loomcycle/internal/credential"
 	"github.com/denn-gubsky/loomcycle/internal/store"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
@@ -31,6 +32,8 @@ import (
 type CredentialDef struct {
 	// Engine is the credential domain layer (store + crypto). Required.
 	Engine *credential.Engine
+	// Audit records every crypto-key change (RFC EP). Nil: not recorded.
+	Audit audit.Sink
 }
 
 // CredentialToolName is the in-band tool name (tools:[CredentialDef]).
@@ -51,13 +54,22 @@ func (c *CredentialDef) Description() string {
 		"bot token); tenant scope is shared across the tenant. Ops: create (store/rotate a value), get + list (metadata " +
 		"only, never the secret), delete. allowed_urls on create restricts where the value may be sent: a restricted " +
 		"credential is given only to a caller that names a matching destination, and an empty list means it is sent nowhere. " +
-		"Requires LOOMCYCLE_SECRET_KEY for the inline backend."
+		"Requires LOOMCYCLE_SECRET_KEY for the inline backend. It also holds crypto keys for the Crypto tool (usage crypto): " +
+		"generate makes one nobody ever sees, rotate adds a version, set_min_version retires old ones. Inside a run, crypto " +
+		"keys are made and changed in agent scope only."
 }
 
 const credentialDefInputSchema = `{
   "type": "object",
   "properties": {
-    "op":         {"type": "string", "enum": ["create","get","list","delete"], "description": "The operation."},
+    "op":         {"type": "string", "enum": ["create","get","list","delete","generate","rotate","set_min_version","delete_version","export_key","import_key"], "description": "The operation. generate, rotate, set_min_version, delete_version, export_key and import_key are for crypto keys (usage crypto), used by the Crypto tool."},
+    "usage":      {"type": "string", "enum": ["secret","crypto"], "description": "create only: secret (default) stores a value other config sends as $cred:<name>; crypto stores a key for the Crypto tool, never sent anywhere. A crypto key needs key_type."},
+    "key_type":   {"type": "string", "enum": ["aes-256-gcm","xchacha20-poly1305","hmac-sha256","hmac-sha512","ed25519","ecdsa-p256","totp"], "description": "create (usage crypto) and generate: what kind of key. Fixed for the key's life."},
+    "key_encoding": {"type": "string", "enum": ["raw","base64","hex","base32","pem"], "description": "create (usage crypto) and rotate with a value: how value is written (default by key_type: base64 for AEAD and HMAC, base32 for totp, pem for ed25519 and ecdsa-p256)."},
+    "min_version": {"type": "integer", "description": "set_min_version: the lowest version still used. Versions below it are retired: nothing decrypts or verifies with them, and only they can be deleted. It can only go up."},
+    "version":    {"type": "integer", "description": "delete_version: the retired version to delete."},
+    "passphrase": {"type": "string", "description": "export_key and import_key: at least 16 characters; the exported key is encrypted with it. Operators only, outside a run. Masked from the persisted transcript."},
+    "blob":       {"type": "string", "description": "import_key: what export_key returned on the deployment the key comes from."},
     "name":       {"type": "string", "description": "Credential name (charset ^[A-Za-z0-9_-]{1,128}$). Referenced elsewhere as $cred:<name>. Required for create/get/delete."},
     "scope":      {"type": "string", "enum": ["tenant","user","agent"], "description": "Which bucket (default tenant). user = the calling principal's own subject (per-user tokens); agent = the calling agent. scope_id is derived from your identity, never supplied."},
     "value":      {"type": "string", "description": "create only: the plaintext secret to encrypt (inline backend). Masked from the persisted transcript; never returned."},
@@ -86,6 +98,15 @@ type credentialDefInput struct {
 	// A pointer, so an absent user name (keep the stored one) and an empty
 	// one (remove it) stay different.
 	Username *string `json:"username"`
+
+	// Crypto keys (RFC EP).
+	Usage       string `json:"usage"`
+	KeyType     string `json:"key_type"`
+	KeyEncoding string `json:"key_encoding"`
+	MinVersion  int    `json:"min_version"`
+	Version     int    `json:"version"`
+	Passphrase  string `json:"passphrase"`
+	Blob        string `json:"blob"`
 }
 
 var credNameRe = regexp.MustCompile(`^[A-Za-z0-9_-]{1,128}$`)
@@ -104,6 +125,12 @@ func (c *CredentialDef) Execute(ctx context.Context, raw json.RawMessage) (tools
 	}
 	switch in.Op {
 	case "create":
+		if in.Usage == credential.UsageCrypto {
+			return c.execCreateKey(ctx, tenantID, scope, scopeID, in)
+		}
+		if in.Usage != "" && in.Usage != "secret" {
+			return errResult(fmt.Sprintf("create: unknown usage %q (secret | crypto)", in.Usage)), nil
+		}
 		return c.execCreate(ctx, tenantID, scope, scopeID, in)
 	case "get":
 		return c.execGet(ctx, tenantID, scope, scopeID, in)
@@ -111,10 +138,12 @@ func (c *CredentialDef) Execute(ctx context.Context, raw json.RawMessage) (tools
 		return c.execList(ctx, tenantID, scope, scopeID)
 	case "delete":
 		return c.execDelete(ctx, tenantID, scope, scopeID, in)
+	case "generate", "rotate", "set_min_version", "delete_version", "export_key", "import_key":
+		return c.execKeyOp(ctx, tenantID, scope, scopeID, in)
 	case "":
 		return errResult("missing required field: op"), nil
 	default:
-		return errResult(fmt.Sprintf("unknown op %q (must be one of: create, get, list, delete)", in.Op)), nil
+		return errResult(fmt.Sprintf("unknown op %q (must be one of: create, get, list, delete, generate, rotate, set_min_version, delete_version, export_key, import_key)", in.Op)), nil
 	}
 }
 
@@ -250,6 +279,18 @@ func credentialMeta(row credential.Meta, note string) map[string]any {
 	}
 	if row.Username != "" {
 		m["username"] = row.Username
+	}
+	// A crypto key (RFC EP): its type and versions, never its material.
+	if row.Usage == credential.UsageCrypto {
+		m["usage"] = row.Usage
+		m["key_type"] = row.KeyType
+		m["current_version"] = row.CurrentVersion
+		m["min_version"] = row.MinVersion
+		versions := make([]map[string]any, 0, len(row.Versions))
+		for _, v := range row.Versions {
+			versions = append(versions, map[string]any{"version": v.Version, "created_at": v.CreatedAt, "retired": v.Retired})
+		}
+		m["versions"] = versions
 	}
 	if note != "" {
 		m["status"] = note

@@ -81,6 +81,24 @@ type Event struct {
 	// none. The agent travels in TargetName, its tenant in TargetTenant.
 	// RetentionUntil is when the override stops applying (set only).
 	RetentionUntil string `json:"retention_until,omitempty"`
+
+	// --- Crypto (Action = "crypto_op" | "crypto_key_generate" |
+	// "crypto_key_create" | "crypto_key_rotate" | "crypto_key_min_version" |
+	// "crypto_key_delete_version" | "crypto_key_delete" | "crypto_key_export" |
+	// "crypto_key_import") ---
+	//
+	// Who used or changed which key, and how much passed through: never data,
+	// never key material. The key's name travels in TargetName, its tenant in
+	// TargetTenant, and the acting user in ActorSubject.
+	CryptoOp      string `json:"crypto_op,omitempty"`     // encrypt, decrypt, sign, ...
+	CryptoSource  string `json:"crypto_source,omitempty"` // key | cred | run
+	CryptoScope   string `json:"crypto_scope,omitempty"`  // agent | user | tenant | run
+	CryptoKeyType string `json:"crypto_key_type,omitempty"`
+	CryptoVersion int    `json:"crypto_version,omitempty"`
+	CryptoBytesIn int    `json:"crypto_bytes_in,omitempty"`
+	CryptoOutcome string `json:"crypto_outcome,omitempty"` // ok | refused | failed
+	CryptoRunID   string `json:"crypto_run_id,omitempty"`
+	CryptoAgent   string `json:"crypto_agent,omitempty"`
 }
 
 // Sink records audit events. Record must be safe for concurrent use and
