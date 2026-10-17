@@ -219,22 +219,56 @@ func (c *Crypto) Execute(ctx context.Context, raw json.RawMessage) (tools.Result
 	default:
 		res = errValidation(fmt.Sprintf("unknown op %q", in.Op), "Use one of: encrypt, decrypt, rewrap, mac, verify_mac, sign, verify, public_key, totp, hash, random.")
 	}
-	c.stats.count(in.Op, res.IsError)
+	// The op label is the model's input: count an unknown one under one name,
+	// so the metric's series stay bounded by the op list.
+	label := in.Op
+	if !cryptoOps[label] {
+		label = "unknown"
+	}
+	c.stats.count(label, res.IsError)
 	if ev != nil {
 		c.record(ctx, ev, res.IsError)
 	}
 	return res, nil
 }
 
-// checkSizes refuses a data argument past the cap before anything is decoded.
+// cryptoOps is the op set, for the metric label.
+var cryptoOps = map[string]bool{
+	"encrypt": true, "decrypt": true, "rewrap": true, "mac": true, "verify_mac": true, "sign": true,
+	"verify": true, "public_key": true, "totp": true, "hash": true, "random": true,
+}
+
+// Caps on the small arguments, independent of the data cap.
+const (
+	cryptoMaxContextBytes   = 4096
+	cryptoMaxMACBytes       = 1024
+	cryptoMaxPublicKeyBytes = 16384
+)
+
+// checkSizes refuses an argument past its cap before anything is decoded.
+// Every string argument has one: the data arguments the operator's cap (with
+// room for their base64 or envelope text), the rest a fixed one.
 func (c *Crypto) checkSizes(in cryptoInput) (tools.Result, bool) {
 	limit := c.MaxBytes
 	if limit <= 0 {
 		limit = defaultCryptoMaxBytes
 	}
-	for name, v := range map[string]string{"plaintext": in.Plaintext, "ciphertext": in.Ciphertext, "data": in.Data, "signature": in.Signature} {
-		if len(v) > limit*2 { // base64 / envelope text of a value at the cap
-			return errValidation(fmt.Sprintf("%s is %d bytes, over the %d-byte limit", name, len(v), limit),
+	dataCap := limit/3*4 + 1024 // base64 of a value at the cap, plus an envelope header
+	for _, f := range []struct {
+		name string
+		v    string
+		max  int
+	}{
+		{"plaintext", in.Plaintext, dataCap},
+		{"ciphertext", in.Ciphertext, dataCap},
+		{"data", in.Data, dataCap},
+		{"signature", in.Signature, dataCap},
+		{"context", in.Context, cryptoMaxContextBytes},
+		{"mac", in.MAC, cryptoMaxMACBytes},
+		{"public_key", in.PublicKey, cryptoMaxPublicKeyBytes},
+	} {
+		if len(f.v) > f.max {
+			return errValidation(fmt.Sprintf("%s is %d bytes, over its %d-byte limit", f.name, len(f.v), f.max),
 				"Split the data, or ask the operator to raise LOOMCYCLE_CRYPTO_MAX_BYTES."), false
 		}
 	}
@@ -248,8 +282,13 @@ func (c *Crypto) spend(ctx context.Context) (tools.Result, bool) {
 		limit = defaultCryptoMaxOpsPerRun
 	}
 	runID := tools.RunID(ctx)
+	if runID == "" && tools.HasRunIdentity(ctx) {
+		// A run's call that carries no run id still spends from a budget: its
+		// agent's, so the cap is never skipped for a run.
+		runID = "agent:" + tools.RunIdentity(ctx).AgentID
+	}
 	if runID == "" {
-		return tools.Result{}, true
+		return tools.Result{}, true // not a run's call (tests, the operator API)
 	}
 	if !c.budget.take(runID, limit) {
 		return errBusiness(fmt.Sprintf("this run has used its %d Crypto operations", limit),
@@ -559,6 +598,9 @@ func keyLookupFailure(name string, err error) tools.Result {
 		return errValidation(fmt.Sprintf("%q is a crypto key", name), "Name it with key: \""+name+"\".")
 	case errors.Is(err, credential.ErrNotCryptoKey):
 		return errValidation(fmt.Sprintf("%q is an ordinary credential, not a crypto key", name), "Use it as key material: cred: \""+name+"\" with its key_type.")
+	case errors.Is(err, credential.ErrAmbiguousKey):
+		return errBusiness(fmt.Sprintf("key %q is held in more than one scope this run may use keys from, so it is not used", name),
+			"Ask the key's owner to rename one of them; a key in a narrower scope never stands in for a wider one's.")
 	case errors.Is(err, credential.ErrRestricted):
 		return errBusiness(fmt.Sprintf("%q is restricted to where it may be sent, so it cannot be used as a key", name), "Use a crypto key, or a credential without allowed_urls.")
 	case errors.Is(err, credential.ErrExpired):

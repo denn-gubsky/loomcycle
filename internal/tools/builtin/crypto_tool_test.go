@@ -344,6 +344,66 @@ func TestCrypto_TheRunBudgetIsEnforced(t *testing.T) {
 	}
 }
 
+// An op name is the model's input: an unknown one is counted under one label,
+// so the metric's series stay bounded.
+func TestCrypto_AnUnknownOpIsCountedUnderOneLabel(t *testing.T) {
+	c := &Crypto{}
+	for _, op := range []string{"nope-1", "nope-2", "nope-3"} {
+		cryptoExec(t, c, context.Background(), `{"op":"`+op+`"}`)
+	}
+	st := c.Stats()
+	if len(st) != 1 || st["unknown|error"] != 3 {
+		t.Errorf("stats = %v, want only unknown|error = 3", st)
+	}
+}
+
+// Every string argument has a cap, the small ones included.
+func TestCrypto_EveryArgumentIsCapped(t *testing.T) {
+	c := &Crypto{MaxBytes: 64}
+	for name, body := range map[string]string{
+		"context":    `{"op":"hash","data":"x","context":"` + strings.Repeat("a", cryptoMaxContextBytes+1) + `"}`,
+		"mac":        `{"op":"hash","data":"x","mac":"` + strings.Repeat("a", cryptoMaxMACBytes+1) + `"}`,
+		"public_key": `{"op":"hash","data":"x","public_key":"` + strings.Repeat("a", cryptoMaxPublicKeyBytes+1) + `"}`,
+		"data":       `{"op":"hash","data":"` + strings.Repeat("a", 64/3*4+1025) + `"}`,
+	} {
+		if _, res := cryptoExec(t, c, context.Background(), body); !res.IsError || !strings.Contains(res.Text, name) {
+			t.Errorf("%s past its cap: %q, want a refusal naming it", name, res.Text)
+		}
+	}
+}
+
+// A key an agent stores under the tenant key's name never stands in for it:
+// the tool refuses the name, and CredentialDef refuses to create it.
+func TestCrypto_ANarrowerKeyNeverStandsInForTheTenantKey(t *testing.T) {
+	c, cd, ctx := cryptoFixture(t, "agent", "tenant")
+	_, res := credExec(t, cd, ctx, `{"op":"generate","scope":"tenant","name":"signing","key_type":"ed25519"}`)
+	mustOK(t, "generate tenant", res)
+	if _, res := credExec(t, cd, ctx, `{"op":"generate","scope":"agent","name":"signing","key_type":"ed25519"}`); !res.IsError {
+		t.Fatal("an agent-scope key under the tenant key's name was created")
+	}
+	// Planted past the tool, as a key made before the check would be.
+	if _, err := cd.Engine.PutCryptoKey(ctx, credential.Identity{TenantID: "tnt", Scope: "agent", ScopeID: "agent-1", Name: "signing"},
+		"ed25519", make([]byte, 32), nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, res := cryptoExec(t, c, ctx, `{"op":"sign","key":"signing","data":"x"}`); !res.IsError || !strings.Contains(res.Text, "more than one scope") {
+		t.Errorf("sign with a name held twice = %q, want the ambiguity refusal", res.Text)
+	}
+}
+
+func TestCrypto_ARunCallWithoutARunIDStillSpendsABudget(t *testing.T) {
+	c := &Crypto{MaxOpsPerRun: 2}
+	ctx := tools.WithRunIdentity(context.Background(), tools.RunIdentityValue{AgentID: "a_1"})
+	for i := 0; i < 2; i++ {
+		if _, res := cryptoExec(t, c, ctx, `{"op":"random"}`); res.IsError {
+			t.Fatalf("op %d: %s", i+1, res.Text)
+		}
+	}
+	if _, res := cryptoExec(t, c, ctx, `{"op":"random"}`); !res.IsError {
+		t.Error("a run's call without a run id skipped the budget")
+	}
+}
+
 // No result of any op carries the key material, in any encoding.
 func TestCrypto_KeyMaterialNeverAppearsInAResult(t *testing.T) {
 	c, cd, ctx := cryptoFixture(t, "tenant")

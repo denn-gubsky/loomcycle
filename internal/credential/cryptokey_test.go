@@ -255,6 +255,8 @@ func TestResolveCryptoKey_SkipsScopesNotAllowed(t *testing.T) {
 	mustPutKey(t, e, Identity{TenantID: "t", Scope: "user", ScopeID: "alice", Name: "both"}, "ed25519", "user-material")
 	mustPutKey(t, e, tenantKey("both"), "ed25519", "tenant-material")
 
+	// A name held in more than one allowed scope is refused, never resolved by
+	// precedence: a key in a narrower scope must not stand in for a wider one's.
 	for _, tc := range []struct {
 		name      string
 		key       string
@@ -262,17 +264,25 @@ func TestResolveCryptoKey_SkipsScopesNotAllowed(t *testing.T) {
 		wantFound bool
 		want      string
 		wantScope string
+		ambiguous bool
 	}{
-		{"only in a skipped agent scope", "only-agent", Scopes{User: true, Tenant: true}, false, "", ""},
-		{"agent allowed", "only-agent", Scopes{Agent: true}, true, "agent-only", "agent"},
-		{"agent skipped, user wins", "both", Scopes{User: true, Tenant: true}, true, "user-material", "user"},
-		{"agent and user skipped, tenant's", "both", Scopes{Tenant: true}, true, "tenant-material", "tenant"},
-		{"tenant skipped", "both", Scopes{Agent: true}, true, "agent-material", "agent"},
-		{"all allowed, agent wins", "both", allScopes, true, "agent-material", "agent"},
-		{"none allowed", "both", Scopes{}, false, "", ""},
+		{"only in a skipped agent scope", "only-agent", Scopes{User: true, Tenant: true}, false, "", "", false},
+		{"agent allowed", "only-agent", Scopes{Agent: true}, true, "agent-only", "agent", false},
+		{"agent skipped, user and tenant both hold it", "both", Scopes{User: true, Tenant: true}, false, "", "", true},
+		{"agent and user skipped, tenant's", "both", Scopes{Tenant: true}, true, "tenant-material", "tenant", false},
+		{"tenant skipped, agent and user both hold it", "both", Scopes{Agent: true, User: true}, false, "", "", true},
+		{"only agent allowed", "both", Scopes{Agent: true}, true, "agent-material", "agent", false},
+		{"all allowed, every scope holds it", "both", allScopes, false, "", "", true},
+		{"none allowed", "both", Scopes{}, false, "", "", false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			k, found, err := e.ResolveCryptoKey(ctx, "t", "bot", "alice", tc.key, tc.allowed)
+			if tc.ambiguous {
+				if found || !errors.Is(err, ErrAmbiguousKey) {
+					t.Fatalf("found=%v err=%v; want ErrAmbiguousKey", found, err)
+				}
+				return
+			}
 			if err != nil || found != tc.wantFound {
 				t.Fatalf("found=%v err=%v; want found=%v", found, err, tc.wantFound)
 			}
@@ -341,7 +351,14 @@ func TestResolveCryptoKey_RefusesWithoutFallingThrough(t *testing.T) {
 			name := fmt.Sprintf("k%d", i)
 			mustPutKey(t, e, tenantKey(name), "ed25519", "tenant-fallback")
 			tc.setup(t, e, Identity{TenantID: "t", Scope: "user", ScopeID: "alice", Name: name})
-			k, found, err := e.ResolveCryptoKey(ctx, "t", "", "alice", name, allScopes)
+			// With every scope allowed the tenant key of the same name never
+			// stands in: the name is refused (the user's row's own reason, or
+			// the ambiguity of a name held twice).
+			if k, found, err := e.ResolveCryptoKey(ctx, "t", "", "alice", name, allScopes); err == nil || found || k.Versions != nil {
+				t.Fatalf("all scopes: found %v key %+v err %v; want a refusal and no key", found, k, err)
+			}
+			// The user's row alone gives its own reason.
+			k, found, err := e.ResolveCryptoKey(ctx, "t", "", "alice", name, Scopes{User: true})
 			if !errors.Is(err, tc.want) || found || k.Versions != nil {
 				t.Fatalf("ResolveCryptoKey = found %v key %+v err %v; want %v and no key", found, k, err, tc.want)
 			}
@@ -491,8 +508,13 @@ func TestResolveKeyMaterial(t *testing.T) {
 	if err != nil || !found || res.Value != "JBSWY3DPEHPK3PXP" || res.Scope != "tenant" {
 		t.Fatalf("ordinary = %+v, %v, %v", res, found, err)
 	}
-	if res, found, err := e.ResolveKeyMaterial(ctx, "t", "", "alice", "dup", allScopes); !errors.Is(err, ErrUseKeyName) || found || res.Value != "" {
-		t.Errorf("crypto key as material = %q, %v, %v; want ErrUseKeyName without falling through", res.Value, found, err)
+	// "dup" is held in user and tenant scope: with both allowed it is
+	// ambiguous and refused, never the tenant's value by fall-through.
+	if res, found, err := e.ResolveKeyMaterial(ctx, "t", "", "alice", "dup", allScopes); !errors.Is(err, ErrAmbiguousKey) || found || res.Value != "" {
+		t.Errorf("a name held twice = %q, %v, %v; want ErrAmbiguousKey without falling through", res.Value, found, err)
+	}
+	if res, found, err := e.ResolveKeyMaterial(ctx, "t", "", "alice", "dup", Scopes{User: true}); !errors.Is(err, ErrUseKeyName) || found || res.Value != "" {
+		t.Errorf("crypto key as material = %q, %v, %v; want ErrUseKeyName", res.Value, found, err)
 	}
 	if _, found, err := e.ResolveKeyMaterial(ctx, "t", "", "alice", "scoped", allScopes); !errors.Is(err, ErrRestricted) || found {
 		t.Errorf("restricted = %v, %v; want ErrRestricted", found, err)
@@ -765,5 +787,51 @@ func TestCryptoBound_DiffersFromURLBinding(t *testing.T) {
 	}
 	if bytes.Equal(cryptoBound(UsageCrypto, "ed25519", 1), cryptoBound(UsageCrypto, "ed25519", 11)) {
 		t.Error("versions 1 and 11 bind the same")
+	}
+}
+
+// A user, or an agent in a run, who stores a key under the tenant key's name
+// must not have it used in the tenant key's place: a verify or decrypt on that
+// user's behalf would accept what they forged with their own key. The name is
+// refused while it is held twice; a run that holds no key of that name of its
+// own still gets the tenant's.
+func TestResolveCryptoKey_ANarrowerScopeCannotStandInForTheTenantKey(t *testing.T) {
+	ctx := context.Background()
+	e := newEngine(t, testKey(1))
+	mustPutKey(t, e, tenantKey("signing"), "ed25519", "tenant-signing-key")
+	mustPutKey(t, e, Identity{TenantID: "t", Scope: "user", ScopeID: "mallory", Name: "signing"}, "ed25519", "mallorys-own-key")
+	mustPutKey(t, e, Identity{TenantID: "t", Scope: "agent", ScopeID: "bot", Name: "signing"}, "ed25519", "agents-own-key")
+
+	for _, who := range []struct{ agent, user string }{{"", "mallory"}, {"bot", ""}, {"bot", "mallory"}} {
+		k, found, err := e.ResolveCryptoKey(ctx, "t", who.agent, who.user, "signing", allScopes)
+		if found || !errors.Is(err, ErrAmbiguousKey) || k.Versions != nil {
+			t.Errorf("agent=%q user=%q: found %v err %v; want ErrAmbiguousKey and no key", who.agent, who.user, found, err)
+		}
+		if !HeldButUnusable(err) {
+			t.Errorf("agent=%q user=%q: %v is not held-but-unusable", who.agent, who.user, err)
+		}
+	}
+	k, found, err := e.ResolveCryptoKey(ctx, "t", "", "alice", "signing", allScopes)
+	if err != nil || !found || string(k.Versions[1]) != "tenant-signing-key" {
+		t.Fatalf("alice: %+v %v %v; want the tenant key", k, found, err)
+	}
+}
+
+func TestRotateCryptoKey_CapsUsableVersions(t *testing.T) {
+	ctx := context.Background()
+	e := newEngine(t, testKey(1))
+	id := tenantKey("busy")
+	mustPutKey(t, e, id, "aes-256-gcm", "v1")
+	for i := 2; i <= MaxUsableKeyVersions; i++ {
+		mustRotate(t, e, id, fmt.Sprintf("v%d", i))
+	}
+	if _, err := e.RotateCryptoKey(ctx, id, []byte("one-too-many")); !errors.Is(err, ErrBadVersion) {
+		t.Fatalf("rotation past %d usable versions: %v, want ErrBadVersion", MaxUsableKeyVersions, err)
+	}
+	if _, err := e.SetCryptoMinVersion(ctx, id, 2); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := e.RotateCryptoKey(ctx, id, []byte("after-retiring-one")); err != nil {
+		t.Errorf("rotation after retiring a version: %v", err)
 	}
 }

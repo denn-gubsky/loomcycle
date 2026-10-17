@@ -67,6 +67,17 @@ var (
 	// ErrUseKeyName: a crypto key was asked for as $cred: key material. It is
 	// named directly, by its own name.
 	ErrUseKeyName = errors.New("credential: a crypto key is named directly, not as $cred: key material")
+	// ErrAmbiguousKey: a key name held in more than one scope the caller may
+	// use keys from. Refused rather than resolved by precedence, so a key
+	// stored in a narrower scope cannot stand in for a wider one's.
+	ErrAmbiguousKey = errors.New("credential: the key name is held in more than one scope")
+)
+
+// MaxUsableKeyVersions caps a crypto key's unretired versions: each use opens
+// them all, and verify tries each.
+const MaxUsableKeyVersions = 32
+
+var (
 	// ErrKeyTransfer is the deliberately opaque failure to open a key
 	// transfer: a wrong passphrase and a tampered blob look the same.
 	ErrKeyTransfer = errors.New("credential: the key transfer did not open (wrong passphrase or damaged data)")
@@ -331,6 +342,18 @@ func (e *Engine) RotateCryptoKey(ctx context.Context, id Identity, material []by
 	if _, err := e.openVersion(id, d, newest); err != nil {
 		return Meta{}, unopenable(id.Name, id.Scope, err)
 	}
+	// Every use opens each usable version, and verify tries each in turn, so
+	// their number bounds what one call costs.
+	usable := 0
+	for _, v := range d.Versions {
+		if v.Version >= d.MinVersion {
+			usable++
+		}
+	}
+	if usable >= MaxUsableKeyVersions {
+		return Meta{}, fmt.Errorf("%w: %q already has %d usable versions; retire older ones (raise min_version) before rotating again",
+			ErrBadVersion, id.Name, usable)
+	}
 	next := d.Current + 1
 	v, err := e.sealVersion(id, d.KeyType, next, e.now(), material)
 	if err != nil {
@@ -415,7 +438,49 @@ func (e *Engine) findIn(ctx context.Context, tenantID, agentName, userID, name s
 	if !allowed.User {
 		userID = ""
 	}
-	return e.findScopes(ctx, tenantID, agentName, userID, name, allowed.Tenant)
+	row, found, err := e.findScopes(ctx, tenantID, agentName, userID, name, allowed.Tenant)
+	if err != nil || !found {
+		return row, found, err
+	}
+	// A key is not chosen by precedence. For a $cred: secret a narrower scope
+	// shadowing a wider one is the point (a user's own token over the
+	// tenant's default); for a key it is a substitution: a user, or an agent
+	// in a run, who stores a key under the tenant key's name would have every
+	// run on their behalf sign, MAC or encrypt with a key they chose, and
+	// verify or decrypt what they forged as if the tenant's key had made it.
+	// So a name held in more than one of the allowed scopes is refused.
+	n, err := e.holdersIn(ctx, tenantID, agentName, userID, name, allowed.Tenant)
+	if err != nil {
+		return store.CredentialDefRow{}, false, err
+	}
+	if n > 1 {
+		return store.CredentialDefRow{}, false, fmt.Errorf("%w (%q is held in more than one scope this run may use keys from)", ErrAmbiguousKey, name)
+	}
+	return row, true, nil
+}
+
+// holdersIn counts the scopes, among those findScopes would look in, that
+// hold a credential named name (any usage, expired ones too).
+func (e *Engine) holdersIn(ctx context.Context, tenantID, agentName, userID, name string, withTenant bool) (int, error) {
+	if userID == systemUserID {
+		userID = ""
+	}
+	buckets := []struct{ scope, id string }{{"agent", agentName}, {"user", userID}, {"tenant", ""}}
+	n := 0
+	for _, b := range buckets {
+		if (b.scope != "tenant" && b.id == "") || (b.scope == "tenant" && !withTenant) {
+			continue
+		}
+		if _, err := e.store.CredentialDefGet(ctx, tenantID, b.scope, b.id, name); err != nil {
+			var nf *store.ErrNotFound
+			if errors.As(err, &nf) {
+				continue
+			}
+			return 0, err
+		}
+		n++
+	}
+	return n, nil
 }
 
 // ResolveCryptoKey finds a crypto key by name, agent > user > tenant, using

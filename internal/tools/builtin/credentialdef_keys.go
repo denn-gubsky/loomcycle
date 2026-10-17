@@ -185,12 +185,40 @@ func (c *CredentialDef) putKey(ctx context.Context, action string, id credential
 	if !c.Engine.InlineEnabled() {
 		return errResult("crypto keys need the inline credential store — the operator must set LOOMCYCLE_SECRET_KEY"), nil
 	}
+	if res, ok := c.refuseShadow(ctx, action, id); !ok {
+		return res, nil
+	}
 	m, err := c.Engine.PutCryptoKey(ctx, id, string(kt), material, expires)
 	c.recordKey(ctx, action, id, string(kt), 1, err)
 	if err != nil {
 		return keyOpFailure(action, id.Name, id.Scope, err), nil
 	}
 	return jsonResult(credentialMeta(m, "stored"))
+}
+
+// refuseShadow refuses a crypto key in agent or user scope under a name a
+// wider scope the same runs read already holds. Resolution refuses such a
+// name anyway (the engine never lets a narrower key stand in for a wider
+// one's); refusing it here says so to the one creating it, instead of every
+// later run that would use the name.
+func (c *CredentialDef) refuseShadow(ctx context.Context, action string, id credential.Identity) (tools.Result, bool) {
+	wider := []credential.Identity{}
+	switch id.Scope {
+	case "agent":
+		if uid := tools.RunIdentity(ctx).UserID; uid != "" {
+			wider = append(wider, credential.Identity{TenantID: id.TenantID, Scope: "user", ScopeID: uid, Name: id.Name})
+		}
+		wider = append(wider, credential.Identity{TenantID: id.TenantID, Scope: "tenant", Name: id.Name})
+	case "user":
+		wider = append(wider, credential.Identity{TenantID: id.TenantID, Scope: "tenant", Name: id.Name})
+	}
+	for _, w := range wider {
+		if _, err := c.Engine.Get(ctx, w); err == nil {
+			return errBusiness(fmt.Sprintf("%s: %q already names a credential in %s scope", action, id.Name, w.Scope),
+				"Choose another name: a key in a narrower scope never stands in for a wider one's, so a run could use neither."), false
+		}
+	}
+	return tools.Result{}, true
 }
 
 func parseExpiry(op, s string) (*time.Time, tools.Result, bool) {
