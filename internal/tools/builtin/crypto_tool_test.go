@@ -197,6 +197,48 @@ func TestCrypto_OrdinaryCredentialAsKeyMaterial(t *testing.T) {
 	}
 }
 
+// A user who stores an ordinary credential under the tenant's shared secret's
+// name never has it used in its place: verify_mac on that user's behalf would
+// accept a MAC they forged with their own value. The name is refused until
+// key_scope names the scope, and a ciphertext made with the tenant's secret
+// records its scope, so it still decrypts with it.
+func TestCrypto_ASameNamedCredentialInAnotherScopeNeverStandsIn(t *testing.T) {
+	c, cd, ctx := cryptoFixture(t, "user", "tenant")
+	const shared = "0123456789abcdef0123456789abcdef-shared"
+	_, res := credExec(t, cd, ctx, `{"op":"create","scope":"tenant","name":"partner","value":"`+shared+`"}`)
+	mustOK(t, "create tenant", res)
+	out, res := cryptoExec(t, c, ctx, `{"op":"encrypt","cred":"partner","key_type":"aes-256-gcm","derive":true,"plaintext":"order 7"}`)
+	mustOK(t, "encrypt", res)
+	ct := out["ciphertext"].(string)
+	if !strings.HasPrefix(ct, "lcx1:ct:partner:0:") {
+		t.Fatalf("ciphertext %q does not record the tenant scope", ct)
+	}
+
+	_, res = credExec(t, cd, ctx, `{"op":"create","scope":"user","name":"partner","value":"users-own-forging-value-0123456789"}`)
+	mustOK(t, "create user", res)
+	h := hmac.New(sha256.New, []byte("users-own-forging-value-0123456789"))
+	h.Write([]byte("body"))
+	forged := hex.EncodeToString(h.Sum(nil))
+	out, res = cryptoExec(t, c, ctx, `{"op":"verify_mac","cred":"partner","key_type":"hmac-sha256","key_encoding":"raw","data":"body","mac":"`+forged+`"}`)
+	if !res.IsError || !strings.Contains(res.Text, "more than one scope") {
+		t.Fatalf("unpinned verify_mac with two holders = %v %q, want the more-than-one-scope refusal", out, res.Text)
+	}
+	out, res = cryptoExec(t, c, ctx, `{"op":"verify_mac","cred":"partner","key_scope":"tenant","key_type":"hmac-sha256","key_encoding":"raw","data":"body","mac":"`+forged+`"}`)
+	mustOK(t, "pinned verify_mac", res)
+	if out["valid"] != false {
+		t.Error("a MAC forged with the user's value verified against the tenant's secret")
+	}
+	out, res = cryptoExec(t, c, ctx, `{"op":"decrypt","cred":"partner","key_type":"aes-256-gcm","derive":true,"ciphertext":"`+ct+`"}`)
+	mustOK(t, "decrypt after a same-named user credential appeared", res)
+	if out["plaintext"] != "order 7" {
+		t.Errorf("decrypt = %v", out["plaintext"])
+	}
+	edited := strings.Replace(ct, "lcx1:ct:", "lcx1:cu:", 1)
+	if _, res := cryptoExec(t, c, ctx, `{"op":"decrypt","cred":"partner","key_type":"aes-256-gcm","derive":true,"ciphertext":"`+edited+`"}`); !res.IsError || !strings.Contains(res.Text, "did not decrypt") {
+		t.Errorf("header edited to the user scope: %q, want the opaque did-not-decrypt", res.Text)
+	}
+}
+
 // One way only: a crypto key is never an ordinary $cred: secret, and an
 // ordinary credential is never a crypto key by name.
 func TestCrypto_KeysAndSecretsDoNotCross(t *testing.T) {
@@ -410,7 +452,7 @@ func TestCrypto_ASameNamedKeyInAnotherScopeNeverStandsIn(t *testing.T) {
 	}
 	for _, body := range []string{
 		`{"op":"sign","key":"signing","key_scope":"run","data":"x"}`,
-		`{"op":"encrypt","cred":"signing","key_scope":"tenant","key_type":"aes-256-gcm","plaintext":"x"}`,
+		`{"op":"encrypt","run":"signing","key_scope":"tenant","key_type":"aes-256-gcm","plaintext":"x"}`,
 	} {
 		if _, res := cryptoExec(t, c, ctx, body); !res.IsError || res.Error.Category != tools.CategoryValidation {
 			t.Errorf("%s = %+v, want a validation refusal", body, res)

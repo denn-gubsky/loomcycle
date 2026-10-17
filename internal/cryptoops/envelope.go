@@ -9,40 +9,50 @@ import (
 )
 
 // Envelope sources: which kind of credential holds the key that sealed a value,
-// and for a crypto key which scope holds it. The scope is part of the source
+// and for a stored one which scope holds it. The scope is part of the source
 // (and so of the AAD) so a decrypt opens the key of the scope that sealed,
 // never a same-named key another scope holds.
 const (
 	SourceKeyTenant  = "kt" // a crypto-key credential in tenant scope (versioned)
 	SourceKeyUser    = "ku" // a crypto-key credential in user scope
 	SourceKeyAgent   = "ka" // a crypto-key credential in agent scope
-	SourceCredential = "c"  // an ordinary credential, key derived from its value
-	SourceRun        = "r"  // a per-run credential, key derived from its value
+	SourceCredTenant = "ct" // an ordinary credential in tenant scope, used as key material
+	SourceCredUser   = "cu" // an ordinary credential in user scope
+	SourceCredAgent  = "ca" // an ordinary credential in agent scope
+	SourceRun        = "r"  // a per-run credential, used as key material
 )
 
 // KeySource is the envelope source of a crypto key held in scope ("tenant",
 // "user" or "agent"); "" for any other scope.
-func KeySource(scope string) string {
+func KeySource(scope string) string { return scopedSource("k", scope) }
+
+// CredSource is the envelope source of an ordinary credential held in scope;
+// "" for any other scope.
+func CredSource(scope string) string { return scopedSource("c", scope) }
+
+// KeyScope is the scope a crypto-key source names; "" for any other source.
+func KeyScope(source string) string { return sourceScope("k", source) }
+
+// CredScope is the scope an ordinary-credential source names; "" for any
+// other source.
+func CredScope(source string) string { return sourceScope("c", source) }
+
+func scopedSource(kind, scope string) string {
 	switch scope {
-	case "tenant":
-		return SourceKeyTenant
-	case "user":
-		return SourceKeyUser
-	case "agent":
-		return SourceKeyAgent
+	case "tenant", "user", "agent":
+		return kind + scope[:1]
 	}
 	return ""
 }
 
-// KeyScope is the scope a crypto-key source names; "" for a non-key source.
-func KeyScope(source string) string {
-	switch source {
-	case SourceKeyTenant:
-		return "tenant"
-	case SourceKeyUser:
-		return "user"
-	case SourceKeyAgent:
-		return "agent"
+func sourceScope(kind, source string) string {
+	if len(source) != 2 || source[:1] != kind {
+		return ""
+	}
+	for _, s := range []string{"tenant", "user", "agent"} {
+		if source[1] == s[0] {
+			return s
+		}
 	}
 	return ""
 }
@@ -90,8 +100,8 @@ func ParseEnvelope(s string) (Envelope, error) {
 		return Envelope{}, errors.New("cryptoops: not an lcx1 envelope")
 	}
 	src := parts[1]
-	if KeyScope(src) == "" && src != SourceCredential && src != SourceRun {
-		return Envelope{}, errors.New("cryptoops: envelope source must be kt, ku, ka, c or r")
+	if KeyScope(src) == "" && CredScope(src) == "" && src != SourceRun {
+		return Envelope{}, errors.New("cryptoops: envelope source must be kt, ku, ka, ct, cu, ca or r")
 	}
 	name := parts[2]
 	if !envelopeNameRE.MatchString(name) {

@@ -81,7 +81,7 @@ const cryptoInputSchema = `{
     "key":        {"type": "string", "description": "A crypto key stored with CredentialDef, by name. Its type and versions are stored with it. Give exactly one of key, cred, run (decrypt and rewrap of an envelope may omit all three)."},
     "cred":       {"type": "string", "description": "An ordinary stored credential, by name, used as key material. Needs key_type."},
     "run":        {"type": "string", "description": "A credential your run's caller passed with the run, by name, used as key material. Needs key_type."},
-    "key_scope":  {"type": "string", "enum": ["agent","user","tenant"], "description": "key only: which scope's crypto key to use. Needed only when more than one scope your run may use holds a key of that name; an envelope already records it."},
+    "key_scope":  {"type": "string", "enum": ["agent","user","tenant"], "description": "key and cred only: which scope's key to use. Needed only when more than one scope your run may use holds one of that name; an envelope already records it."},
     "key_type":   {"type": "string", "enum": ["aes-256-gcm","xchacha20-poly1305","hmac-sha256","hmac-sha512","ed25519","ecdsa-p256","totp"], "description": "cred and run only: what kind of key the value is."},
     "key_encoding": {"type": "string", "enum": ["raw","base64","hex","base32","pem"], "description": "cred and run only: how the value is written (default by key_type: base64 for AEAD and HMAC, base32 for totp, pem for ed25519 and ecdsa-p256)."},
     "derive":     {"type": "boolean", "description": "cred and run only: true derives an AEAD or HMAC key from any secret instead of reading the value as a key."},
@@ -142,7 +142,7 @@ type keyRef struct {
 	Name     string
 	Cred     string
 	Run      string
-	Scope    string // Name only: the scope pinned by key_scope or the envelope
+	Scope    string // Name or Cred: the scope pinned by key_scope or the envelope
 	Version  int
 	KeyType  string
 	Encoding string
@@ -151,22 +151,20 @@ type keyRef struct {
 
 var cryptoKeyNameRe = regexp.MustCompile(`^[A-Za-z0-9_-]{1,128}$`)
 
-// Key sources, as the envelope and the AAD write them. A crypto key's source
-// names its scope (cryptoops.KeySource), so a ciphertext is bound to the
-// scope whose key sealed it.
-const (
-	srcCred = cryptoops.SourceCredential
-	srcRun  = cryptoops.SourceRun
-)
+// Key sources, as the envelope and the AAD write them. A stored key's source
+// names its kind and scope (cryptoops.KeySource / CredSource), so a
+// ciphertext is bound to the scope whose key sealed it.
+const srcRun = cryptoops.SourceRun
 
-// isKeySource reports whether src is a crypto key's (any scope).
+// isKeySource reports whether src is a crypto key's (any scope): the only
+// kind with versions.
 func isKeySource(src string) bool { return cryptoops.KeyScope(src) != "" }
 
 func sourceWord(src string) string {
-	switch src {
-	case srcCred:
+	switch {
+	case cryptoops.CredScope(src) != "":
 		return "cred"
-	case srcRun:
+	case src == srcRun:
 		return "run"
 	}
 	return "key"
@@ -174,7 +172,7 @@ func sourceWord(src string) string {
 
 // cryptoKey is a resolved key: its material by version, and where it came from.
 type cryptoKey struct {
-	source   string // a key source (kt/ku/ka) | srcCred | srcRun
+	source   string // kt/ku/ka (crypto key) | ct/cu/ca (cred) | srcRun
 	name     string
 	scope    string // agent | user | tenant | run
 	keyType  cryptoops.KeyType
@@ -460,8 +458,8 @@ func parseKeyRef(ref keyRef, env *cryptoops.Envelope) (keyRef, tools.Result, boo
 		return ref, errValidation("a crypto key's type is stored with it; key_type, key_encoding and derive apply only to cred and run", "Pass the key by name only."), false
 	}
 	if ref.Scope != "" {
-		if ref.Name == "" {
-			return ref, errValidation("key_scope applies only to key", "Drop key_scope: a cred resolves like a credential, a run key has no scope."), false
+		if ref.Run != "" {
+			return ref, errValidation("key_scope applies only to key and cred", "Drop key_scope: a run key has no scope."), false
 		}
 		if cryptoops.KeySource(ref.Scope) == "" {
 			return ref, errValidation(fmt.Sprintf("key_scope %q", ref.Scope), "Use agent, user or tenant."), false
@@ -471,10 +469,15 @@ func parseKeyRef(ref keyRef, env *cryptoops.Envelope) (keyRef, tools.Result, boo
 		return ref, errValidation("key name must match ^[A-Za-z0-9_-]{1,128}$", ""), false
 	}
 	if env != nil {
-		// An envelope names its key, and for a crypto key its scope: the call
-		// opens that scope's key and no other.
-		if isKeySource(env.Source) && ref.Name != "" && ref.Scope == "" {
-			ref.Scope = cryptoops.KeyScope(env.Source)
+		// An envelope names its key and, for a stored one, its scope: the
+		// call opens that scope's key and no other.
+		if ref.Scope == "" {
+			switch {
+			case ref.Name != "":
+				ref.Scope = cryptoops.KeyScope(env.Source)
+			case ref.Cred != "":
+				ref.Scope = cryptoops.CredScope(env.Source)
+			}
 		}
 		if refSource(ref) != env.Source || refName(ref) != env.Name {
 			// The same opaque answer a wrong key gets.
@@ -497,16 +500,29 @@ func refName(r keyRef) string {
 	return r.Name
 }
 
-// refSource is the source the ref names; for a crypto key not pinned to a
+// refSource is the source the ref names; for a stored key not pinned to a
 // scope, "" (its scope is known once it resolves).
 func refSource(r keyRef) string {
 	switch {
 	case r.Cred != "":
-		return srcCred
+		return cryptoops.CredSource(r.Scope)
 	case r.Run != "":
 		return srcRun
 	}
 	return cryptoops.KeySource(r.Scope)
+}
+
+// pinScopes narrows scopes to the one a ref pins (key_scope, or the
+// envelope's), refusing a pin the run may not use. Unpinned: scopes as is.
+func pinScopes(ref keyRef, scopes credential.Scopes) (credential.Scopes, bool) {
+	if ref.Scope == "" {
+		return scopes, true
+	}
+	pinned := credential.Scopes{Agent: ref.Scope == "agent", User: ref.Scope == "user", Tenant: ref.Scope == "tenant"}
+	if (pinned.Agent && !scopes.Agent) || (pinned.User && !scopes.User) || (pinned.Tenant && !scopes.Tenant) {
+		return credential.Scopes{}, false
+	}
+	return pinned, true
 }
 
 // resolveKey opens the key for this run, within its crypto scopes.
@@ -530,8 +546,7 @@ func (c *Crypto) resolveKey(ctx context.Context, ref keyRef, env *cryptoops.Enve
 		return errNotFound(fmt.Sprintf("no key %q this run may use", name), "Check the name with CredentialDef op=list, and the run's crypto scopes with Context op=self.")
 	}
 
-	switch {
-	case ref.Run != "":
+	if ref.Run != "" {
 		if !policy.Allows("run") {
 			return nil, noScope("run"), false
 		}
@@ -540,11 +555,21 @@ func (c *Crypto) resolveKey(ctx context.Context, ref keyRef, env *cryptoops.Enve
 			return nil, notFound(ref.Run), false
 		}
 		return keyFromSecret(srcRun, ref, "run", []byte(val))
+	}
 
-	case ref.Cred != "":
-		if !scopes.Agent && !scopes.User && !scopes.Tenant {
-			return nil, noScope("stored"), false
+	// A stored key: a crypto key (key) or an ordinary credential (cred).
+	scopes, ok := pinScopes(ref, scopes)
+	if !ok {
+		if env != nil {
+			return nil, didNotDecrypt(), false
 		}
+		return nil, noScope(ref.Scope), false
+	}
+	if !scopes.Agent && !scopes.User && !scopes.Tenant {
+		return nil, noScope("stored"), false
+	}
+
+	if ref.Cred != "" {
 		if c.Engine == nil {
 			return nil, errBusiness("no credential store is configured", "Use a run credential, or ask the operator to configure LOOMCYCLE_SECRET_KEY."), false
 		}
@@ -555,46 +580,31 @@ func (c *Crypto) resolveKey(ctx context.Context, ref keyRef, env *cryptoops.Enve
 		if !found {
 			return nil, notFound(ref.Cred), false
 		}
-		return keyFromSecret(srcCred, ref, r.Scope, []byte(r.Value))
-
-	default: // a crypto-key credential
-		if ref.Scope != "" {
-			// Pinned (key_scope, or the envelope's): only that scope, and only
-			// if the run may use it.
-			pinned := credential.Scopes{Agent: ref.Scope == "agent", User: ref.Scope == "user", Tenant: ref.Scope == "tenant"}
-			if (pinned.Agent && !scopes.Agent) || (pinned.User && !scopes.User) || (pinned.Tenant && !scopes.Tenant) {
-				if env != nil {
-					return nil, didNotDecrypt(), false
-				}
-				return nil, noScope(ref.Scope), false
-			}
-			scopes = pinned
-		}
-		if !scopes.Agent && !scopes.User && !scopes.Tenant {
-			return nil, noScope("stored"), false
-		}
-		if c.Engine == nil {
-			return nil, errBusiness("no credential store is configured", "Ask the operator to configure LOOMCYCLE_SECRET_KEY."), false
-		}
-		k, found, err := c.Engine.ResolveCryptoKey(ctx, ident.TenantID, agentName, userID, ref.Name, scopes)
-		if err != nil {
-			if env != nil {
-				return nil, didNotDecrypt(), false
-			}
-			return nil, keyLookupFailure(ref.Name, err), false
-		}
-		if !found {
-			if env != nil {
-				return nil, didNotDecrypt(), false
-			}
-			return nil, notFound(ref.Name), false
-		}
-		kt, err := cryptoops.ParseKeyType(k.KeyType)
-		if err != nil {
-			return nil, errBusiness(fmt.Sprintf("key %q has a type this build does not know", ref.Name), ""), false
-		}
-		return &cryptoKey{source: cryptoops.KeySource(k.Scope), name: ref.Name, scope: k.Scope, keyType: kt, current: k.Current, min: k.MinVersion, versions: k.Versions}, tools.Result{}, true
+		return keyFromSecret(cryptoops.CredSource(r.Scope), ref, r.Scope, []byte(r.Value))
 	}
+
+	// A crypto-key credential.
+	if c.Engine == nil {
+		return nil, errBusiness("no credential store is configured", "Ask the operator to configure LOOMCYCLE_SECRET_KEY."), false
+	}
+	k, found, err := c.Engine.ResolveCryptoKey(ctx, ident.TenantID, agentName, userID, ref.Name, scopes)
+	if err != nil {
+		if env != nil {
+			return nil, didNotDecrypt(), false
+		}
+		return nil, keyLookupFailure(ref.Name, err), false
+	}
+	if !found {
+		if env != nil {
+			return nil, didNotDecrypt(), false
+		}
+		return nil, notFound(ref.Name), false
+	}
+	kt, err := cryptoops.ParseKeyType(k.KeyType)
+	if err != nil {
+		return nil, errBusiness(fmt.Sprintf("key %q has a type this build does not know", ref.Name), ""), false
+	}
+	return &cryptoKey{source: cryptoops.KeySource(k.Scope), name: ref.Name, scope: k.Scope, keyType: kt, current: k.Current, min: k.MinVersion, versions: k.Versions}, tools.Result{}, true
 }
 
 // keyFromSecret turns a cred or run secret into key material of the type the
@@ -631,8 +641,8 @@ func keyLookupFailure(name string, err error) tools.Result {
 	case errors.Is(err, credential.ErrCryptoKey), errors.Is(err, credential.ErrUseKeyName):
 		return errValidation(fmt.Sprintf("%q is a crypto key", name), "Name it with key: \""+name+"\".")
 	case errors.Is(err, credential.ErrAmbiguousKey):
-		return errValidation(fmt.Sprintf("more than one scope you may use holds a crypto key %q", name),
-			"Name the one you mean with key_scope: agent, user or tenant (CredentialDef op=list shows each key's scope).")
+		return errValidation(fmt.Sprintf("more than one scope you may use holds %q", name),
+			"Name the one you mean with key_scope: agent, user or tenant (CredentialDef op=list shows each one's scope).")
 	case errors.Is(err, credential.ErrNotCryptoKey):
 		return errValidation(fmt.Sprintf("%q is an ordinary credential, not a crypto key", name), "Use it as key material: cred: \""+name+"\" with its key_type.")
 	case errors.Is(err, credential.ErrRestricted):

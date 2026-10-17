@@ -517,11 +517,30 @@ func TestResolveKeyMaterial(t *testing.T) {
 	if err != nil || !found || res.Value != "JBSWY3DPEHPK3PXP" || res.Scope != "tenant" {
 		t.Fatalf("ordinary = %+v, %v, %v", res, found, err)
 	}
-	// Key material resolves as $cred: does (the narrowest scope first): the
-	// user's crypto key "dup" is found, refused, and never falls through to
-	// the tenant's ordinary value.
-	if res, found, err := e.ResolveKeyMaterial(ctx, "t", "", "alice", "dup", allScopes); !errors.Is(err, ErrUseKeyName) || found || res.Value != "" {
-		t.Errorf("crypto key as material = %q, %v, %v; want ErrUseKeyName without falling through", res.Value, found, err)
+	// Only ordinary credentials count as material: the user's crypto key
+	// "dup" is never used as material, nor makes the tenant's value ambiguous.
+	if res, found, err := e.ResolveKeyMaterial(ctx, "t", "", "alice", "dup", allScopes); err != nil || !found || res.Value != "tenant-value" {
+		t.Errorf("dup = %q, %v, %v; want the tenant's ordinary value", res.Value, found, err)
+	}
+	// A name only a crypto key holds is refused, pointing at the key.
+	mustPutKey(t, e, Identity{TenantID: "t", Scope: "user", ScopeID: "alice", Name: "keyonly"}, "hmac-sha256", "key-material")
+	if res, found, err := e.ResolveKeyMaterial(ctx, "t", "", "alice", "keyonly", allScopes); !errors.Is(err, ErrUseKeyName) || found || res.Value != "" {
+		t.Errorf("crypto key as material = %q, %v, %v; want ErrUseKeyName", res.Value, found, err)
+	}
+	// No precedence, unlike $cred:: a user's ordinary credential under the
+	// tenant's name never stands in for it (nor the reverse) — the name is
+	// refused until the scope is named.
+	if _, err := e.PutInline(ctx, Identity{TenantID: "t", Scope: "user", ScopeID: "alice", Name: "seed"}, "alices-forged-seed", nil, nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	if res, found, err := e.ResolveKeyMaterial(ctx, "t", "", "alice", "seed", allScopes); !errors.Is(err, ErrAmbiguousKey) || found || res.Value != "" {
+		t.Errorf("seed in user and tenant = %q, %v, %v; want ErrAmbiguousKey and no value", res.Value, found, err)
+	}
+	if res, _, err := e.ResolveKeyMaterial(ctx, "t", "", "alice", "seed", Scopes{Tenant: true}); err != nil || res.Value != "JBSWY3DPEHPK3PXP" {
+		t.Errorf("seed pinned to tenant = %q, %v", res.Value, err)
+	}
+	if res, found, err := e.ResolveKeyMaterial(ctx, "t", "", "bob", "seed", allScopes); err != nil || !found || res.Value != "JBSWY3DPEHPK3PXP" {
+		t.Errorf("seed for bob = %q, %v, %v; want the tenant's", res.Value, found, err)
 	}
 	if _, found, err := e.ResolveKeyMaterial(ctx, "t", "", "alice", "scoped", allScopes); !errors.Is(err, ErrRestricted) || found {
 		t.Errorf("restricted = %v, %v; want ErrRestricted", found, err)

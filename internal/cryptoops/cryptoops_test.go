@@ -336,7 +336,7 @@ func TestAAD_LayoutIsStableAndFieldSensitive(t *testing.T) {
 func TestEnvelope_RoundTrip(t *testing.T) {
 	cases := []Envelope{
 		{Source: "kt", Name: "orders-key_1", Version: 7, Body: []byte{0xfb, 0xff, 0x00, 0x01}},
-		{Source: "c", Name: "x", Version: 0, Body: bytes.Repeat([]byte{0xab}, 40)},
+		{Source: "cu", Name: "x", Version: 0, Body: bytes.Repeat([]byte{0xab}, 40)},
 		{Source: "r", Name: strings.Repeat("a", 128), Version: 123456789, Body: []byte{1}},
 	}
 	for _, e := range cases {
@@ -861,23 +861,31 @@ func TestRandom_LengthsBoundsAndUUIDFormat(t *testing.T) {
 	}
 }
 
-// A crypto key's envelope names its scope, so a decrypt opens the key of the
-// scope that sealed. Each scope has one source, and a bare "k" is not one.
+// A stored key's envelope names its kind and scope, so a decrypt opens the
+// key of the scope that sealed. Each (kind, scope) has one source, the two
+// kinds never share one, and a bare "k" or "c" is not one.
 func TestKeySource_NamesTheScope(t *testing.T) {
 	for _, scope := range []string{"tenant", "user", "agent"} {
-		src := KeySource(scope)
-		if src == "" || KeyScope(src) != scope {
-			t.Errorf("scope %q -> source %q -> scope %q", scope, src, KeyScope(src))
+		k, c := KeySource(scope), CredSource(scope)
+		if k == "" || KeyScope(k) != scope || CredScope(k) != "" {
+			t.Errorf("key: scope %q -> source %q -> scope %q / cred scope %q", scope, k, KeyScope(k), CredScope(k))
 		}
-		env := Envelope{Source: src, Name: "k1", Version: 1, Body: []byte{1, 2, 3}}
-		if got, err := ParseEnvelope(env.String()); err != nil || got.Source != src {
-			t.Errorf("%s envelope round trip: %+v %v", scope, got, err)
+		if c == "" || CredScope(c) != scope || KeyScope(c) != "" {
+			t.Errorf("cred: scope %q -> source %q -> scope %q / key scope %q", scope, c, CredScope(c), KeyScope(c))
+		}
+		for _, src := range []string{k, c} {
+			env := Envelope{Source: src, Name: "k1", Version: 1, Body: []byte{1, 2, 3}}
+			if got, err := ParseEnvelope(env.String()); err != nil || got.Source != src {
+				t.Errorf("%s envelope round trip: %+v %v", src, got, err)
+			}
 		}
 	}
-	if KeySource("run") != "" || KeyScope(SourceCredential) != "" {
-		t.Error("a non-key scope or source mapped to a key")
+	if KeySource("run") != "" || CredSource("run") != "" || KeyScope(SourceRun) != "" || CredScope(SourceRun) != "" {
+		t.Error("the run source or scope mapped to a stored one")
 	}
-	if _, err := ParseEnvelope("lcx1:k:k1:1:AQID"); err == nil {
-		t.Error("an envelope with the bare source k parsed")
+	for _, s := range []string{"lcx1:k:k1:1:AQID", "lcx1:c:k1:1:AQID", "lcx1:kx:k1:1:AQID"} {
+		if _, err := ParseEnvelope(s); err == nil {
+			t.Errorf("%q parsed", s)
+		}
 	}
 }

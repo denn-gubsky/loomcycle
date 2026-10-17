@@ -68,9 +68,10 @@ var (
 	// named directly, by its own name.
 	ErrUseKeyName = errors.New("credential: a crypto key is named directly, not as $cred: key material")
 	// ErrAmbiguousKey: a name that more than one allowed scope holds as a
-	// crypto key, asked for without naming the scope. Refused rather than
-	// resolved by any precedence (see findCryptoKey).
-	ErrAmbiguousKey = errors.New("credential: the name is a crypto key in more than one scope")
+	// crypto key (or, asked for as key material, as an ordinary credential),
+	// without the scope named. Refused rather than resolved by any
+	// precedence (see findOne).
+	ErrAmbiguousKey = errors.New("credential: the name is held in more than one scope")
 )
 
 // MaxUsableKeyVersions caps a crypto key's unretired versions: each use opens
@@ -430,20 +431,9 @@ func cryptoDeleteRefusal(row store.CredentialDefRow) error {
 	return nil
 }
 
-// findIn is find restricted to the scopes in allowed.
-func (e *Engine) findIn(ctx context.Context, tenantID, agentName, userID, name string, allowed Scopes) (store.CredentialDefRow, bool, error) {
-	if !allowed.Agent {
-		agentName = ""
-	}
-	if !allowed.User {
-		userID = ""
-	}
-	return e.findScopes(ctx, tenantID, agentName, userID, name, allowed.Tenant)
-}
-
-// findCryptoKey finds the crypto key a name means: the one crypto key of that
-// name among the allowed scopes. A name that two allowed scopes hold as a
-// crypto key is refused (ErrAmbiguousKey) unless the caller narrows allowed
+// findOne finds the one row of a kind (crypto keys, or ordinary credentials)
+// a name means among the allowed scopes. A name that two allowed scopes hold
+// as that kind is refused (ErrAmbiguousKey) unless the caller narrows allowed
 // to one scope.
 //
 // No precedence, in either direction. For a $cred: secret a narrower scope
@@ -452,13 +442,15 @@ func (e *Engine) findIn(ctx context.Context, tenantID, agentName, userID, name s
 // user, or an agent in a run, stand their own key in for the tenant's;
 // wide-first lets a user's key stand in for the agent's own (shared) key in
 // that user's runs. Either way someone signs, MACs or encrypts with a key
-// they chose, and verifies or decrypts their forgery as genuine.
+// they chose, and verifies or decrypts their forgery as genuine. That holds
+// as much for an ordinary credential used as key material (a partner's
+// webhook secret) as for a crypto key.
 //
-// Only crypto rows count: an ordinary credential of the same name is
-// skipped, so writing one (an agent in a run can write tenant-scope ones)
-// cannot make a key ambiguous or take it from anyone. The decision is made
-// from one read of each scope, with no second look.
-func (e *Engine) findCryptoKey(ctx context.Context, tenantID, agentName, userID, name string, allowed Scopes) (row store.CredentialDefRow, found, sawOrdinary bool, err error) {
+// Only rows of the asked kind count: one of the other kind is skipped (and
+// reported in sawOther), so writing an ordinary credential cannot make a
+// crypto key ambiguous, nor the reverse. The decision is made from one read
+// of each scope, with no second look.
+func (e *Engine) findOne(ctx context.Context, tenantID, agentName, userID, name string, allowed Scopes, crypto bool) (row store.CredentialDefRow, found, sawOther bool, err error) {
 	if userID == systemUserID {
 		userID = ""
 	}
@@ -481,37 +473,41 @@ func (e *Engine) findCryptoKey(ctx context.Context, tenantID, agentName, userID,
 			if errors.As(gerr, &nf) {
 				continue
 			}
-			return store.CredentialDefRow{}, false, sawOrdinary, gerr
+			return store.CredentialDefRow{}, false, sawOther, gerr
 		}
-		if !isCryptoDef(r.Definition) {
-			sawOrdinary = true
+		if isCryptoDef(r.Definition) != crypto {
+			sawOther = true
 			continue
 		}
 		hits = append(hits, r)
 	}
 	switch len(hits) {
 	case 0:
-		return store.CredentialDefRow{}, false, sawOrdinary, nil
+		return store.CredentialDefRow{}, false, sawOther, nil
 	case 1:
 		if xerr := e.expiredErr(hits[0], name); xerr != nil {
-			return hits[0], true, sawOrdinary, xerr
+			return hits[0], true, sawOther, xerr
 		}
-		return hits[0], true, sawOrdinary, nil
+		return hits[0], true, sawOther, nil
 	}
-	return store.CredentialDefRow{}, false, sawOrdinary,
-		fmt.Errorf("%w (%q is a crypto key in more than one scope; name the scope)", ErrAmbiguousKey, name)
+	kind := "a credential"
+	if crypto {
+		kind = "a crypto key"
+	}
+	return store.CredentialDefRow{}, false, sawOther,
+		fmt.Errorf("%w (%q is %s in more than one scope; name the scope)", ErrAmbiguousKey, name, kind)
 }
 
-// ResolveCryptoKey finds a crypto key by name, agent > user > tenant, using
-// only the scopes in allowed, and opens every version >= min_version. The
-// winning row decides: expired → ErrExpired; an ordinary credential →
-// ErrNotCryptoKey; not openable (no key, tampered usage/key_type/version, a
-// corrupt seal) → ErrUnopenable. None of them falls through to a less
-// specific scope. (_, false, nil) when the name is in no allowed scope. A key
+// ResolveCryptoKey finds the one crypto key of a name among the scopes in
+// allowed (findOne: more than one → ErrAmbiguousKey) and opens every version
+// >= min_version. Expired → ErrExpired; only an ordinary credential of the
+// name → ErrNotCryptoKey; not openable (no key, tampered usage/key_type/
+// version, a corrupt seal) → ErrUnopenable. None of them falls through to
+// another scope. (_, false, nil) when the name is in no allowed scope. A key
 // whose versions are all retired resolves (found, no error) with an empty
 // Versions map: the caller refuses any operation on it.
 func (e *Engine) ResolveCryptoKey(ctx context.Context, tenantID, agentName, userID, name string, allowed Scopes) (CryptoKey, bool, error) {
-	row, found, sawOrdinary, err := e.findCryptoKey(ctx, tenantID, agentName, userID, name, allowed)
+	row, found, sawOrdinary, err := e.findOne(ctx, tenantID, agentName, userID, name, allowed, true)
 	if err != nil {
 		return CryptoKey{}, false, err
 	}
@@ -545,17 +541,22 @@ func (e *Engine) ResolveCryptoKey(ctx context.Context, tenantID, agentName, user
 }
 
 // ResolveKeyMaterial resolves an ORDINARY credential's value for use as key
-// material, agent > user > tenant within allowed. A crypto key is refused
-// with ErrUseKeyName (it is named directly), a URL-restricted credential with
-// ErrRestricted (its owner restricted where it goes, not agreed to its use as
-// a key), an expired one with ErrExpired; none falls through.
+// material: the one allowed scope holding an ordinary credential of the name
+// (findOne: more than one → ErrAmbiguousKey; unlike $cred:, no precedence).
+// A name only a crypto key holds is refused with ErrUseKeyName (it is named
+// directly), a URL-restricted credential with ErrRestricted (its owner
+// restricted where it goes, not agreed to its use as a key), an expired one
+// with ErrExpired.
 func (e *Engine) ResolveKeyMaterial(ctx context.Context, tenantID, agentName, userID, name string, allowed Scopes) (Resolved, bool, error) {
-	row, found, err := e.findIn(ctx, tenantID, agentName, userID, name, allowed)
-	if found && isCryptoDef(row.Definition) {
-		return Resolved{}, false, fmt.Errorf("%w (%q in %s scope)", ErrUseKeyName, name, row.Scope)
-	}
-	if err != nil || !found {
+	row, found, sawKey, err := e.findOne(ctx, tenantID, agentName, userID, name, allowed, false)
+	if err != nil {
 		return Resolved{}, false, err
+	}
+	if !found {
+		if sawKey {
+			return Resolved{}, false, fmt.Errorf("%w (%q)", ErrUseKeyName, name)
+		}
+		return Resolved{}, false, nil
 	}
 	if restrictionOf(row.Definition) != nil {
 		return Resolved{}, false, fmt.Errorf("%w (%q)", ErrRestricted, name)

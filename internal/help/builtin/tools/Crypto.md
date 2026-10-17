@@ -35,6 +35,7 @@ Which of these your run may use is its **crypto scope**: `agent`, `user`,
 lists them. With no scope you can still use `hash` and `random`.
 
 A `key` name is used when exactly one of your scopes holds a crypto key of
+that name, and a `cred` name when exactly one holds an ordinary credential of
 that name. If more than one does, the call is refused until you name the one
 you mean with `key_scope` (`agent`, `user` or `tenant`); a key in one scope
 never stands in for another's. An envelope records its key's scope, so a
@@ -51,8 +52,9 @@ Each key type does certain operations:
 ## Formats and context
 
 `encrypt` returns an **envelope** by default: `lcx1:<source>:<name>:<version>:…`.
-It names its key (and a crypto key's scope: `kt` tenant, `ku` user, `ka`
-agent), so `decrypt` needs only the ciphertext. Ask for
+It names its key and that key's scope, so `decrypt` of a crypto key's
+envelope needs only the ciphertext (for a `cred` or `run` key, name it again
+with its `key_type`). Ask for
 `format: "raw"` (base64 of nonce, ciphertext and tag) only for a system that
 reads that form.
 
