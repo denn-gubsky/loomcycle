@@ -2364,6 +2364,12 @@ type Store interface {
 
 	SetRunPauseState(ctx context.Context, runID, state string) error
 
+	// WithholdRunUserScope sets the run's credentials_no_user_scope: from now
+	// on — and when it is resumed — the run resolves no stored credential in
+	// its user's own scope. One way; nothing clears it. *ErrNotFound for an
+	// unknown run.
+	WithholdRunUserScope(ctx context.Context, runID string) error
+
 	// SetRunReplica records the replica that now owns a run's live state. A
 	// run is stamped at CreateRun; one RESUMED on another replica (a restart
 	// under a new replica id, a snapshot restored elsewhere) is re-stamped, or

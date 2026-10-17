@@ -858,7 +858,7 @@ func (s *ScheduleDef) persistForkFromHookEdit(ctx context.Context, parent store.
 // wrote would otherwise launder its restriction away.
 func authorMayActAs(ctx context.Context, userID string) bool {
 	ri := tools.RunIdentity(ctx)
-	if userID == "" || ri.CredentialsNoUserScope {
+	if userID == "" || ri.NoUserScope() {
 		return false
 	}
 	if callerHasOperatorAuthority(ctx) {

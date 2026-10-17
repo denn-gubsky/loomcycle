@@ -46,7 +46,7 @@ func (b credentialBinding) resolve(ctx context.Context, what, name string) (cred
 	// takes that user's own key — a webhook's user can come from the delivery
 	// (substituteForRun applies the same rule to $cred: references).
 	userID := ri.UserID
-	if ri.CredentialsNoUserScope {
+	if ri.NoUserScope() {
 		userID = ""
 	}
 	res, found, err := b.engine.Resolve(ctx, ri.TenantID, tools.AgentName(ctx), userID, name)
@@ -110,7 +110,7 @@ func (b credentialBinding) envVar(what string) func(ctx context.Context, name st
 // not use. That is a normal answer, not logged; only a fault is.
 func (b credentialBinding) keyable(ctx context.Context, tenantID, agentName, userID, name string) bool {
 	// As resolve: a key resolve would not hand this run is not one to route on.
-	if tools.RunIdentity(ctx).CredentialsNoUserScope {
+	if tools.RunIdentity(ctx).NoUserScope() {
 		userID = ""
 	}
 	ok, err := b.engine.HasKey(ctx, tenantID, agentName, userID, name)

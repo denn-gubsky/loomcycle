@@ -730,6 +730,11 @@ func (s *Server) sendResidentChild(ctx context.Context, childRunID, prompt strin
 	if _, running := rc.currentTurnDone(); running {
 		return "", "", residentStillRunningErr(childRunID)
 	}
+	// What a withheld parent sends may carry another user's instruction:
+	// recorded before the turn begins, so a refusal leaves the child as it was.
+	if err := s.withholdFromWithheldSender(ctx, childRunID); err != nil {
+		return "", "", err
+	}
 	turnDone := rc.beginTurn(time.Now())
 	if _, err := s.steerReg.Push(ctx, childRunID, steer.Message{Text: prompt, Source: "agent", EnqueuedAt: time.Now()}); err != nil {
 		return "", "", fmt.Errorf("steer resident sub-agent %q: %w", childRunID, err)

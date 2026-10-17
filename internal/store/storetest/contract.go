@@ -146,6 +146,8 @@ func Run(t *testing.T, factory Factory) {
 		{"RetentionOverrides", testRetentionOverrides},
 		{"CreateRunIsolatedRoundTrip", testCreateRunIsolatedRoundTrip},
 		{"CreateRunCredentialsNoUserScopeRoundTrip", testCreateRunCredentialsNoUserScopeRoundTrip},
+		{"WithholdRunUserScope", testWithholdRunUserScope},
+		{"StartRunCarriesTheNoUserScopeOneWay", testStartRunCarriesTheNoUserScopeOneWay},
 		{"CreateRunConfigRoundTrip", testCreateRunConfigRoundTrip},
 		{"SetRunConfigCASRefusesAStalePrev", testSetRunConfigCASRefusesAStalePrev},
 		{"SetRunConfigCASConcurrentWritersAllSurvive", testSetRunConfigCASConcurrentWritersAllSurvive},
@@ -4752,6 +4754,61 @@ func testCreateRunIsolatedRoundTrip(t *testing.T, s store.Store) {
 // run, through every read a resume or a listing uses: false by default, true
 // when stamped. Resume has no trigger to re-derive it from, so a run that
 // lost it on its row came back resolving $cred: in its user's own scope.
+// Withholding a live run's user scope persists on its row — the only record a
+// resume has — leaves every other run alone, and refuses an unknown run.
+func testWithholdRunUserScope(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	sess, _ := s.CreateSession(ctx, "t", "a", "u")
+	run, err := s.CreateRun(ctx, sess.ID, store.RunIdentity{AgentID: "a_withhold"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	other, err := s.CreateRun(ctx, sess.ID, store.RunIdentity{AgentID: "a_withhold_other"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 2; i++ { // twice: setting a set bit is no error
+		if err := s.WithholdRunUserScope(ctx, run.ID); err != nil {
+			t.Fatalf("WithholdRunUserScope #%d: %v", i+1, err)
+		}
+	}
+	if got, _ := s.GetRun(ctx, run.ID); !got.CredentialsNoUserScope {
+		t.Error("the withheld run reads credentials_no_user_scope=false")
+	}
+	if got, _ := s.GetRun(ctx, other.ID); got.CredentialsNoUserScope {
+		t.Error("another run of the session was withheld too")
+	}
+	var nf *store.ErrNotFound
+	if err := s.WithholdRunUserScope(ctx, "r_no_such_run"); !errors.As(err, &nf) {
+		t.Errorf("an unknown run: %v, want *ErrNotFound", err)
+	}
+}
+
+// Starting a draft or a queued run writes the no-user-scope bit its start
+// decided — a draft another user starts is withheld though its row was
+// written without — and never clears one the row already holds.
+func testStartRunCarriesTheNoUserScopeOneWay(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	draft := newDraft(t, s, "t", "alice", "a_cnus_draft")
+	if _, err := s.StartConfiguredRun(ctx, draft.ID, store.RunIdentity{CredentialsNoUserScope: true}, nil); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := s.GetRun(ctx, draft.ID); !got.CredentialsNoUserScope {
+		t.Error("a draft started with the bit reads credentials_no_user_scope=false")
+	}
+	sess, _ := s.CreateSession(ctx, "t", "a", "u")
+	queued, err := s.CreateQueuedRun(ctx, sess.ID, store.RunIdentity{AgentID: "a_cnus_q", CredentialsNoUserScope: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.StartQueuedRun(ctx, queued.ID, store.RunIdentity{}); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := s.GetRun(ctx, queued.ID); !got.CredentialsNoUserScope {
+		t.Error("starting a queued run cleared the bit it was queued with")
+	}
+}
+
 func testCreateRunCredentialsNoUserScopeRoundTrip(t *testing.T, s store.Store) {
 	ctx := context.Background()
 	sess, _ := s.CreateSession(ctx, "t", "a", "u")

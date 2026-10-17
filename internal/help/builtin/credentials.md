@@ -104,7 +104,21 @@ otherwise whoever wrote a schedule for someone could have it send that person's
 credentials. Such a run resolves for its agent, then the tenant — for a
 `$cred:` reference, a provider key overridden by its env-var name, and a
 Bash/Bashbox host credential alike. A `user_bearer` always resolves at tenant
-level.
+level. A chat a trigger started keeps that rule when it is continued.
+
+**Work someone else sends into a user's run skips that user's `user` scope.**
+Any member of a tenant may continue another member's chat, send a message to
+their live run, retune it, reject it with feedback, compact or recap it, or
+edit or start their configured run — the work still runs as the chat's user,
+but from then on without that user's own stored credentials: what the other
+person typed must not be acted on with the user's keys. Sub-agents the run
+starts afterwards, and resident sub-agents it sends to afterwards, are held to
+the same rule. An admin with another subject counts as someone else. The
+credentials the sender passes on their own request (`user_credentials`,
+`user_bearer`) still reach the run. Two callers are treated as the chat's
+user: a request with no token (open mode), and the legacy
+`LOOMCYCLE_AUTH_TOKEN`, which is how an integration serving its own users
+speaks for them, naming the user on each request.
 
 A remote memory backend or document source can name its peer key as
 `api_key_env: "$cred:<name>"`. That one works differently: it resolves only a
