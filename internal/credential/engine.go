@@ -585,8 +585,7 @@ func HeldButUnusable(err error) bool {
 	return errors.Is(err, ErrExpired) || errors.Is(err, ErrRestricted) ||
 		errors.Is(err, ErrURLNotAllowed) || errors.Is(err, ErrNotPinnable) ||
 		errors.Is(err, ErrUnopenable) || errors.Is(err, ErrCryptoKey) ||
-		errors.Is(err, ErrNotCryptoKey) || errors.Is(err, ErrUseKeyName) ||
-		errors.Is(err, ErrAmbiguousKey)
+		errors.Is(err, ErrNotCryptoKey) || errors.Is(err, ErrUseKeyName)
 }
 
 // HasKeyFor is HasKey for a credential about to be sent to targetURL: it

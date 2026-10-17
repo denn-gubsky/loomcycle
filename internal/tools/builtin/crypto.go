@@ -598,9 +598,6 @@ func keyLookupFailure(name string, err error) tools.Result {
 		return errValidation(fmt.Sprintf("%q is a crypto key", name), "Name it with key: \""+name+"\".")
 	case errors.Is(err, credential.ErrNotCryptoKey):
 		return errValidation(fmt.Sprintf("%q is an ordinary credential, not a crypto key", name), "Use it as key material: cred: \""+name+"\" with its key_type.")
-	case errors.Is(err, credential.ErrAmbiguousKey):
-		return errBusiness(fmt.Sprintf("key %q is held in more than one scope this run may use keys from, so it is not used", name),
-			"Ask the key's owner to rename one of them; a key in a narrower scope never stands in for a wider one's.")
 	case errors.Is(err, credential.ErrRestricted):
 		return errBusiness(fmt.Sprintf("%q is restricted to where it may be sent, so it cannot be used as a key", name), "Use a crypto key, or a credential without allowed_urls.")
 	case errors.Is(err, credential.ErrExpired):

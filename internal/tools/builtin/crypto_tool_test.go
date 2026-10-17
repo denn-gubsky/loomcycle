@@ -373,21 +373,30 @@ func TestCrypto_EveryArgumentIsCapped(t *testing.T) {
 }
 
 // A key an agent stores under the tenant key's name never stands in for it:
-// the tool refuses the name, and CredentialDef refuses to create it.
+// CredentialDef refuses to create it, and one planted anyway is never used —
+// the tenant's key signs.
 func TestCrypto_ANarrowerKeyNeverStandsInForTheTenantKey(t *testing.T) {
 	c, cd, ctx := cryptoFixture(t, "agent", "tenant")
 	_, res := credExec(t, cd, ctx, `{"op":"generate","scope":"tenant","name":"signing","key_type":"ed25519"}`)
 	mustOK(t, "generate tenant", res)
+	tenantPub, res := cryptoExec(t, c, tools.WithCryptoPolicy(ctx, tools.CryptoPolicyValue{Scopes: []string{"tenant"}}),
+		`{"op":"public_key","key":"signing"}`)
+	mustOK(t, "tenant public key", res)
 	if _, res := credExec(t, cd, ctx, `{"op":"generate","scope":"agent","name":"signing","key_type":"ed25519"}`); !res.IsError {
 		t.Fatal("an agent-scope key under the tenant key's name was created")
 	}
-	// Planted past the tool, as a key made before the check would be.
+	// Planted past the tool, as a key made before the tenant's would be.
 	if _, err := cd.Engine.PutCryptoKey(ctx, credential.Identity{TenantID: "tnt", Scope: "agent", ScopeID: "agent-1", Name: "signing"},
 		"ed25519", make([]byte, 32), nil); err != nil {
 		t.Fatal(err)
 	}
-	if _, res := cryptoExec(t, c, ctx, `{"op":"sign","key":"signing","data":"x"}`); !res.IsError || !strings.Contains(res.Text, "more than one scope") {
-		t.Errorf("sign with a name held twice = %q, want the ambiguity refusal", res.Text)
+	out, res := cryptoExec(t, c, ctx, `{"op":"sign","key":"signing","data":"x"}`)
+	mustOK(t, "sign", res)
+	pem, _ := json.Marshal(tenantPub["pem"])
+	out, res = cryptoExec(t, c, ctx, `{"op":"verify","public_key":`+string(pem)+`,"data":"x","signature":"`+out["signature"].(string)+`"}`)
+	mustOK(t, "verify", res)
+	if out["valid"] != true {
+		t.Error("the signature was not made with the tenant's key: the agent's key stood in for it")
 	}
 }
 

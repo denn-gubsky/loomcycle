@@ -197,10 +197,10 @@ func (c *CredentialDef) putKey(ctx context.Context, action string, id credential
 }
 
 // refuseShadow refuses a crypto key in agent or user scope under a name a
-// wider scope the same runs read already holds. Resolution refuses such a
-// name anyway (the engine never lets a narrower key stand in for a wider
-// one's); refusing it here says so to the one creating it, instead of every
-// later run that would use the name.
+// wider scope the same runs read already holds as a crypto key. A key name
+// resolves to the widest scope's key, so the new one would never be used;
+// say so to the one creating it. (An ordinary credential of the name does not
+// count: resolution skips it.)
 func (c *CredentialDef) refuseShadow(ctx context.Context, action string, id credential.Identity) (tools.Result, bool) {
 	wider := []credential.Identity{}
 	switch id.Scope {
@@ -213,9 +213,9 @@ func (c *CredentialDef) refuseShadow(ctx context.Context, action string, id cred
 		wider = append(wider, credential.Identity{TenantID: id.TenantID, Scope: "tenant", Name: id.Name})
 	}
 	for _, w := range wider {
-		if _, err := c.Engine.Get(ctx, w); err == nil {
-			return errBusiness(fmt.Sprintf("%s: %q already names a credential in %s scope", action, id.Name, w.Scope),
-				"Choose another name: a key in a narrower scope never stands in for a wider one's, so a run could use neither."), false
+		if m, err := c.Engine.Get(ctx, w); err == nil && m.Usage == credential.UsageCrypto {
+			return errBusiness(fmt.Sprintf("%s: %q already names a crypto key in %s scope", action, id.Name, w.Scope),
+				"Choose another name: a key name resolves to the widest scope's key, so this one would never be used."), false
 		}
 	}
 	return tools.Result{}, true

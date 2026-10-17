@@ -67,10 +67,6 @@ var (
 	// ErrUseKeyName: a crypto key was asked for as $cred: key material. It is
 	// named directly, by its own name.
 	ErrUseKeyName = errors.New("credential: a crypto key is named directly, not as $cred: key material")
-	// ErrAmbiguousKey: a key name held in more than one scope the caller may
-	// use keys from. Refused rather than resolved by precedence, so a key
-	// stored in a narrower scope cannot stand in for a wider one's.
-	ErrAmbiguousKey = errors.New("credential: the key name is held in more than one scope")
 )
 
 // MaxUsableKeyVersions caps a crypto key's unretired versions: each use opens
@@ -438,49 +434,60 @@ func (e *Engine) findIn(ctx context.Context, tenantID, agentName, userID, name s
 	if !allowed.User {
 		userID = ""
 	}
-	row, found, err := e.findScopes(ctx, tenantID, agentName, userID, name, allowed.Tenant)
-	if err != nil || !found {
-		return row, found, err
-	}
-	// A key is not chosen by precedence. For a $cred: secret a narrower scope
-	// shadowing a wider one is the point (a user's own token over the
-	// tenant's default); for a key it is a substitution: a user, or an agent
-	// in a run, who stores a key under the tenant key's name would have every
-	// run on their behalf sign, MAC or encrypt with a key they chose, and
-	// verify or decrypt what they forged as if the tenant's key had made it.
-	// So a name held in more than one of the allowed scopes is refused.
-	n, err := e.holdersIn(ctx, tenantID, agentName, userID, name, allowed.Tenant)
-	if err != nil {
-		return store.CredentialDefRow{}, false, err
-	}
-	if n > 1 {
-		return store.CredentialDefRow{}, false, fmt.Errorf("%w (%q is held in more than one scope this run may use keys from)", ErrAmbiguousKey, name)
-	}
-	return row, true, nil
+	return e.findScopes(ctx, tenantID, agentName, userID, name, allowed.Tenant)
 }
 
-// holdersIn counts the scopes, among those findScopes would look in, that
-// hold a credential named name (any usage, expired ones too).
-func (e *Engine) holdersIn(ctx context.Context, tenantID, agentName, userID, name string, withTenant bool) (int, error) {
+// findCryptoKey finds the crypto key a name resolves to: the WIDEST allowed
+// scope that holds a crypto key of that name — tenant, then user, then agent.
+//
+// The reverse of a $cred: secret's precedence, on purpose. For a secret a
+// narrower scope shadowing a wider one is the point (a user's own token over
+// the tenant's default). For a key it would be a substitution: a user, or an
+// agent in a run (which may make agent-scope keys), who stored a key under
+// the tenant key's name would have every run on their behalf sign, MAC or
+// encrypt with a key they chose, and verify or decrypt what they forged as if
+// the tenant's key had made it. A wider scope is written by someone with
+// authority over the narrower one, so it wins.
+//
+// Only crypto rows count: an ordinary credential of the same name in a wider
+// scope is skipped, so writing one cannot take a key away from anyone. A
+// wider crypto key that cannot be used (expired, unopenable) is refused and
+// never falls through to a narrower key. One ordered pass, no count: nothing
+// to race between deciding and using.
+func (e *Engine) findCryptoKey(ctx context.Context, tenantID, agentName, userID, name string, allowed Scopes) (row store.CredentialDefRow, found, sawOrdinary bool, err error) {
 	if userID == systemUserID {
 		userID = ""
 	}
-	buckets := []struct{ scope, id string }{{"agent", agentName}, {"user", userID}, {"tenant", ""}}
-	n := 0
+	buckets := []struct {
+		scope, id string
+		ok        bool
+	}{
+		{"tenant", "", allowed.Tenant},
+		{"user", userID, allowed.User && userID != ""},
+		{"agent", agentName, allowed.Agent && agentName != ""},
+	}
 	for _, b := range buckets {
-		if (b.scope != "tenant" && b.id == "") || (b.scope == "tenant" && !withTenant) {
+		if !b.ok {
 			continue
 		}
-		if _, err := e.store.CredentialDefGet(ctx, tenantID, b.scope, b.id, name); err != nil {
+		r, gerr := e.store.CredentialDefGet(ctx, tenantID, b.scope, b.id, name)
+		if gerr != nil {
 			var nf *store.ErrNotFound
-			if errors.As(err, &nf) {
+			if errors.As(gerr, &nf) {
 				continue
 			}
-			return 0, err
+			return store.CredentialDefRow{}, false, sawOrdinary, gerr
 		}
-		n++
+		if !isCryptoDef(r.Definition) {
+			sawOrdinary = true
+			continue
+		}
+		if xerr := e.expiredErr(r, name); xerr != nil {
+			return r, true, sawOrdinary, xerr
+		}
+		return r, true, sawOrdinary, nil
 	}
-	return n, nil
+	return store.CredentialDefRow{}, false, sawOrdinary, nil
 }
 
 // ResolveCryptoKey finds a crypto key by name, agent > user > tenant, using
@@ -492,12 +499,16 @@ func (e *Engine) holdersIn(ctx context.Context, tenantID, agentName, userID, nam
 // whose versions are all retired resolves (found, no error) with an empty
 // Versions map: the caller refuses any operation on it.
 func (e *Engine) ResolveCryptoKey(ctx context.Context, tenantID, agentName, userID, name string, allowed Scopes) (CryptoKey, bool, error) {
-	row, found, err := e.findIn(ctx, tenantID, agentName, userID, name, allowed)
-	if err != nil || !found {
+	row, found, sawOrdinary, err := e.findCryptoKey(ctx, tenantID, agentName, userID, name, allowed)
+	if err != nil {
 		return CryptoKey{}, false, err
 	}
-	if !isCryptoDef(row.Definition) {
-		return CryptoKey{}, false, fmt.Errorf("%w (%q in %s scope)", ErrNotCryptoKey, name, row.Scope)
+	if !found {
+		if sawOrdinary {
+			// Say so: the name is a credential, just not a key.
+			return CryptoKey{}, false, fmt.Errorf("%w (%q)", ErrNotCryptoKey, name)
+		}
+		return CryptoKey{}, false, nil
 	}
 	d, err := parseCryptoDef(row.Definition)
 	if err != nil {
