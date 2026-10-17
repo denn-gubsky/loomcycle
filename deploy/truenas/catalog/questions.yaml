@@ -431,6 +431,18 @@ questions:
             schema:
               type: string
               default: ""
+          - variable: LOOMCYCLE_CRYPTO_MAX_BYTES
+            label: LOOMCYCLE_CRYPTO_MAX_BYTES
+            description: 'The Crypto tool encrypts, signs, MACs and makes one-time codes with keys the runtime holds (crypto keys stored with CredentialDef, which need LOOMCYCLE_SECRET_KEY). An agent uses keys only from the scopes its crypto_scopes grants. These cap each data argument (bytes) and the calls one run may make. Defaults: 1048576 and 100. (example: 1048576)'
+            schema:
+              type: string
+              default: ""
+          - variable: LOOMCYCLE_CRYPTO_MAX_OPS_PER_RUN
+            label: LOOMCYCLE_CRYPTO_MAX_OPS_PER_RUN
+            description: '(example: 100)'
+            schema:
+              type: string
+              default: ""
           - variable: LOOMCYCLE_SKILLS_ROOT
             label: LOOMCYCLE_SKILLS_ROOT
             description: 'Skill bodies count as operator-authored content and are trusted — they''re loaded with the same trust as inline `system_prompt:`. Do not point this at a directory writable by untrusted users. (example: /srv/loomcycle/skills)'
