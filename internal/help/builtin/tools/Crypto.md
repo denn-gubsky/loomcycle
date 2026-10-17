@@ -31,8 +31,10 @@ Name a key in exactly one of three ways:
   `key_type` too.
 
 Which of these your run may use is its **crypto scope**: `agent`, `user`,
-`tenant` (where stored keys are looked up) and `run`. `Context op=self` lists
-them. With no scope you can still use `hash` and `random`.
+`tenant` (where stored keys are looked up) and `run`. `Context op=permissions`
+lists them. With no scope you can still use `hash` and `random`. A key name
+held in more than one of your scopes is refused: a key is never picked by
+scope, so ask its owner to rename one.
 
 Each key type does certain operations:
 
