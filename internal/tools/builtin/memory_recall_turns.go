@@ -97,7 +97,7 @@ func (m *Memory) attachSourceTurns(ctx context.Context, scope store.MemoryScope,
 				sess.TenantID == ident.TenantID &&
 				(scope != store.MemoryScopeUser || sess.UserID == ident.UserID) {
 				if events, terr := m.Store.GetTranscript(ctx, sess.ID); terr == nil {
-					got = loaded{turns: conversationTurns(events), ok: true}
+					got = loaded{turns: ownConversationTurns(events), ok: true}
 				}
 			}
 			cache[sp.SessionID] = got

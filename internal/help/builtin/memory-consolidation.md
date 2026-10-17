@@ -202,6 +202,38 @@ wants. The pass asks for `format:conversation` instead, and **blocks loudly** if
 the runtime answers without it rather than reading an empty chat and advancing
 the watermark past every conversation in silence.
 
+### Outside material never reaches memory
+
+A message can carry material from outside the conversation — a fetched page, a
+webhook body, run metadata from a trigger, code under review. The model reads it
+inside its fence; History shows it as a turn of its own, headed by its kind. Tool
+results are outside material too. None of it is something the user said, and
+memory holds only what the user and the assistant said, so nothing written
+automatically on the user's behalf ever takes it:
+
+- the pass reads each chat with `History get format:conversation
+  omit_untrusted:true`, so the runtime leaves those turns out — by the stored
+  block types, not by reading the text — before anything reaches the extractor,
+  and no fact and no fact's evidence quote can come from one. A runtime that
+  does not echo the flag makes the pass block rather than extract;
+- a compaction, recap or stateful step that saves what it evicts banks only the
+  user's words and the assistant's replies — not tool results, not the
+  summaries, recaps and evicted state the runtime composes, which can carry
+  outside material copied from earlier turns;
+- the evidence copied onto a fact when its chat is archived leaves them out;
+- the turn index behind trace search never indexes them, and a recalled fact
+  never comes back with one attached as its source turn.
+
+The user's words are only the blocks sent as trusted text; a block stored with
+any other type — including one recorded with a misspelled type before types
+were checked — is not one. The assistant's reply is kept as written, even where
+it quotes something it read: that is the model speaking, and it is what the
+conversation shows.
+
+What this does not cover is a deliberate write: an agent that calls
+`Memory op=add` or `op=set` with text it read is choosing what to store, and
+that text is stored as given.
+
 ### The pass does not consolidate itself — or its children
 
 A pass reads chats, and a pass *is* a chat: every run records a session, and a

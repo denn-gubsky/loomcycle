@@ -120,6 +120,7 @@ const historyInputSchema = `{
 		"limit":           {"type": "integer", "description": "list/search: max chats per page (default 10 inside a run, 50 otherwise; cap 500); the result says has_more and next_offset. related: max similar chats to return (default 10, cap 500). get: max conversation turns to return (default: all that fit — inside a run, a page is capped to fit your context)."},
 		"offset":          {"type": "integer", "description": "list/search: pagination offset. get: the turn to start at (0 = the first); pass the previous page's next_offset to read on."},
 		"format":          {"type": "string", "description": "get: \"markdown\" renders the full transcript as Markdown (metadata header + every event) instead of a structured event array; \"conversation\" renders ONLY the user and assistant turns, with no header, no tool traffic and no runtime event payloads — use it when feeding a chat to a model."},
+		"omit_untrusted":  {"type": "boolean", "description": "get with format=conversation: leave out outside material the user's messages carried (fetched pages, webhook bodies, code under review), so only what the user and the assistant said remains. Echoed back when honoured."},
 		"title":           {"type": "string", "description": "rename: the new title."},
 		"description":     {"type": "string", "description": "annotate: the new description."},
 		"tags":            {"type": "array", "items": {"type": "string"}, "description": "annotate: the new tag set (replaces the existing set)."},
@@ -152,6 +153,7 @@ type historyInput struct {
 	Limit           int    `json:"limit"`
 	Offset          int    `json:"offset"`
 	Format          string `json:"format"`
+	OmitUntrusted   bool   `json:"omit_untrusted"`
 	// Mutation fields — pointers so "absent" (nil) maps directly to
 	// SessionMetaPatch's "leave unchanged" and an explicit empty string /
 	// empty slice is a legitimate "clear it" value.
@@ -460,6 +462,12 @@ func (h *History) get(ctx context.Context, scope string, in historyInput) (tools
 			md = renderTranscriptMarkdown(sess, chat, page.events)
 		}
 		out["format"] = in.Format
+		if in.OmitUntrusted && in.Format == conversationFormat {
+			// Echoed like `format`: a runtime that did not know the flag would
+			// render the outside material, and the echo is how a caller that
+			// must not see it tells the difference.
+			out["omit_untrusted"] = true
+		}
 		// A single turn larger than the whole budget is the one case a turn
 		// boundary cannot fit: cut it, and say so.
 		if page.budget > 0 && len(md) > page.budget {
@@ -1088,11 +1096,29 @@ type conversationTurn struct {
 // The accumulate-and-flush rule matters more than it looks: assistant text is
 // persisted ONE ROW PER STREAMED DELTA, so anything reading raw event rows sees
 // fragments rather than turns.
+//
+// It returns the conversation's OWN turns (see ownConversationTurns): its only
+// callers feed the memory layer, which never takes outside material.
 func ConversationTurns(events []store.Event) []ConversationTurn {
-	return conversationTurns(events)
+	return ownConversationTurns(events)
 }
 
 func conversationTurns(events []store.Event) []conversationTurn {
+	return conversationTurnsOf(events, false)
+}
+
+// ownConversationTurns is conversationTurns for the memory layer: only what the
+// user and the assistant said. Each untrusted block (a fetched page, a webhook
+// body, a code block under review) is left out instead of becoming a turn of its
+// own, and the user's words are only the blocks stored as one of the two types
+// intake accepts for them — a block recorded with a misspelled type before intake
+// validated types is not one. Decided on the stored block TYPES, never on the
+// rendered text, so no fence form the loop writes has to be recognised.
+func ownConversationTurns(events []store.Event) []conversationTurn {
+	return conversationTurnsOf(events, true)
+}
+
+func conversationTurnsOf(events []store.Event, own bool) []conversationTurn {
 	var out []conversationTurn
 	var asst strings.Builder
 	asstSeq := int64(0)
@@ -1111,7 +1137,7 @@ func conversationTurns(events []store.Event) []conversationTurn {
 			// One row per user turn — the initial prompt, a continuation, and an
 			// operator steer (which the runner persists in this same shape).
 			flushAssistant()
-			out = append(out, userTurns(ev)...)
+			out = append(out, userTurns(ev, own)...)
 		case "text":
 			// Assistant text is persisted one row PER STREAMED DELTA, so these
 			// accumulate into a single turn instead of becoming a section each.
@@ -1157,7 +1183,10 @@ func conversationTurns(events []store.Event) []conversationTurn {
 // The user turn comes first and holds all the words, as it always has, so a
 // prompt still yields exactly one "user" turn per event and keeps its seq to
 // itself; the blocks follow in the order they were sent.
-func userTurns(ev store.Event) []conversationTurn {
+//
+// own (see ownConversationTurns) keeps the user's words only: no block turns,
+// and only the types intake accepts for the caller's own text.
+func userTurns(ev store.Event, own bool) []conversationTurn {
 	var segs []conversationSegment
 	if err := json.Unmarshal(ev.Payload, &segs); err != nil {
 		return nil
@@ -1170,6 +1199,12 @@ func userTurns(ev store.Event) []conversationTurn {
 		}
 		for _, c := range seg.Content {
 			if c.Type == "image" || strings.TrimSpace(c.Text) == "" {
+				continue
+			}
+			if own {
+				if c.Type == "" || c.Type == "trusted-text" {
+					parts = append(parts, strings.TrimSpace(c.Text))
+				}
 				continue
 			}
 			if c.Type == "untrusted-block" {

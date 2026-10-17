@@ -128,9 +128,14 @@ func ConversationFromMessages(msgs []providers.Message) []LayerMessage {
 	for _, m := range msgs {
 		var b strings.Builder
 		for _, c := range m.Content {
-			// "text" only. tool_use / tool_result / thinking are the run's
-			// mechanics, not what was said.
-			if c.Type == "text" && c.Text != "" {
+			// Dialogue only: the caller's words, an operator's turn, the model's
+			// reply. tool_use / tool_result / thinking are the run's mechanics,
+			// and every other text block — an untrusted block (a fetched page, a
+			// webhook body), a compaction's summary and its copy of the task, a
+			// recap, a runtime note, evicted state — is text nobody said here:
+			// banked, it would come back as facts about the user. An allowlist,
+			// so a turn the loop starts composing later stays out by default.
+			if c.Type == "text" && c.Text != "" && c.Dialogue {
 				if b.Len() > 0 {
 					b.WriteString("\n\n")
 				}

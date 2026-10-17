@@ -11,7 +11,7 @@ import (
 )
 
 func textMsg(role, text string) providers.Message {
-	return providers.Message{Role: role, Content: []providers.ContentBlock{{Type: "text", Text: text}}}
+	return providers.Message{Role: role, Content: []providers.ContentBlock{providers.DialogueText(text)}}
 }
 
 // TestConversationFromMessages_DropsToolTraffic is the v1.36.5 lesson enforced one
@@ -24,7 +24,7 @@ func TestConversationFromMessages_DropsToolTraffic(t *testing.T) {
 	msgs := []providers.Message{
 		textMsg("user", "I run ROCm on an AMD card"),
 		{Role: "assistant", Content: []providers.ContentBlock{
-			{Type: "text", Text: "Noted."},
+			providers.DialogueText("Noted."),
 			{Type: "tool_use", ToolName: "Bash", ToolInput: json.RawMessage(`{"cmd":"rocminfo"}`)},
 		}},
 		// A pure tool_result turn: no dialogue at all → dropped entirely.

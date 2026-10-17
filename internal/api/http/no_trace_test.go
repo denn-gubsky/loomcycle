@@ -595,7 +595,7 @@ func TestNoTrace_ADistillationBanksNothing(t *testing.T) {
 	srv, dbPath := makeServer(t, completingProvider(), noTraceConfig())
 	on := true
 	def := config.AgentDef{MemoryScopes: []string{"user"}, Compaction: &config.Compaction{MemoryFlush: &on}}
-	dropped := []providers.Message{{Role: "user", Content: []providers.ContentBlock{{Type: "text", Text: "an old turn " + canary}}}}
+	dropped := []providers.Message{{Role: "user", Content: []providers.ContentBlock{providers.DialogueText("an old turn " + canary)}}}
 	bank := func(retention string) string {
 		t.Helper()
 		sess, err := srv.store.CreateSession(context.Background(), "", "parent", "alice")

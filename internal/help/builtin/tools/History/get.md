@@ -24,6 +24,10 @@ need the part a remembered fact came from, use `History/window` instead.
   - `"markdown"` — a human export: a metadata header, the summary, then every
     event, with events that have no text shown as JSON.
   Any other value is treated as omitted.
+- `omit_untrusted` — with `format: "conversation"`: leave out the outside
+  material the user's messages carried (fetched pages, webhook bodies, code
+  under review), so only what the user and the assistant said remains. The
+  result echoes `omit_untrusted: true` when it was honoured.
 - `offset` — the turn to start at, counting from 0. Pass the previous page's
   `next_offset` to read on.
 - `limit` — at most this many turns. Omitted: all that fit (inside a run, a

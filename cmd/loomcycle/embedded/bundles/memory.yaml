@@ -913,7 +913,13 @@ agents:
           // `scope` is load-bearing and is a LITERAL. History defaults to "self";
           // this agent is granted history_scope:[user] only, so omitting it is a
           // guaranteed default-deny.
-          raw = History({ op: "get", scope: CONFIG.scope, session_id: sid, format: "conversation" });
+          //
+          // `omit_untrusted` keeps outside material OUT of what the extractor
+          // reads: a fetched page, a webhook body, code under review — none of
+          // it is something the user said, and memory holds only what was. The
+          // runtime decides which turns those are from the stored block TYPES,
+          // so nothing here has to recognise a fence in the rendered text.
+          raw = History({ op: "get", scope: CONFIG.scope, session_id: sid, format: "conversation", omit_untrusted: true });
         } catch (e) {
           block(st, "History get failed for " + sid + ": " + errText(e));
           return null;
@@ -927,6 +933,14 @@ agents:
         if (doc && doc.format !== "conversation") {
           block(st, "History get for " + sid + " did not return the conversation rendering (format=" +
             String(doc.format) + ") — this runtime is older than this bundle");
+          return null;
+        }
+        // The same guard for the flag: a runtime that does not know it renders
+        // the outside material, and extracting from that would distil facts
+        // from a page. Its echo is the only proof it was honoured.
+        if (doc && doc.omit_untrusted !== true) {
+          block(st, "History get for " + sid + " did not leave out outside material (omit_untrusted not echoed) — " +
+            "this runtime is older than this bundle");
           return null;
         }
         // Returned WHOLE. Fitting it to the extractor is chatParts' job, and it
@@ -1028,14 +1042,11 @@ agents:
       // other shape has none, and there every LINE is a boundary instead — still
       // never mid-line, and one-line-per-turn renderings stay turn-aligned.
       //
-      // ⚠️ NO BOUNDARY INSIDE A FENCE. Outside material a message carried — a
-      // fetched page, a webhook body — is rendered as its own "### <kind>" turn
-      // whose body sits inside "<kind>" … "</kind>". The body is escaped so it
-      // can never write that closing tag, but it CAN hold a line starting
-      // "### user". Splitting there let a part open with "### user" and the
-      // page's own words, no fence in sight: outside text handed to the
-      // extractor as something the user said. So from a fence's opening tag to
-      // its closing tag nothing is a boundary.
+      // NO FENCES REACH IT. Outside material (a fetched page, a webhook body,
+      // code under review) is left out by the runtime before rendering — see
+      // readTranscript's omit_untrusted — so every turn here is the user's or
+      // the assistant's, and no boundary has to be told apart from a forged
+      // heading inside a block.
       function splitTurns(text) {
         var lines = String(text).split("\n");
         var marked = false;
@@ -1043,21 +1054,10 @@ agents:
           if (isTurnStart(lines[i])) { marked = true; break; }
         }
         var turns = [], cur = [];
-        var speaker = "", closing = "";
         for (var j = 0; j < lines.length; j++) {
-          if (closing) {
-            if (lines[j] === closing) { closing = ""; }
-          } else if (cur.length && (!marked || isTurnStart(lines[j]))) {
+          if (cur.length && (!marked || isTurnStart(lines[j]))) {
             turns.push(cur.join("\n"));
             cur = [];
-          }
-          if (!closing) {
-            if (isTurnStart(lines[j])) {
-              speaker = lines[j].slice(4);
-            } else if (speaker && lines[j] !== "") {
-              closing = fenceClose(speaker, lines[j]);
-              speaker = "";
-            }
           }
           cur.push(lines[j]);
         }
@@ -1069,24 +1069,13 @@ agents:
         return String(line).indexOf("### ") === 0;
       }
 
-      // fenceClose returns the closing tag when `line`, the first line of a
-      // "### <speaker>" turn's body, opens that turn's fence — "<speaker>", the
-      // exact shape History renders a block in — and "" otherwise. Keyed on the
-      // turn's own speaker so a user's message that merely begins with some
-      // "<tag>" line opens nothing.
-      function fenceClose(speaker, line) {
-        return line === "<" + speaker + ">" ? "</" + speaker + ">" : "";
-      }
-
-      // turnHead is the part of a turn that says whose it is: its "### " line,
-      // the blank lines after it and, for a fenced block, the opening tag. Empty
-      // when the turn has no heading.
+      // turnHead is the part of a turn that says whose it is: its "### " line
+      // and the blank lines after it. Empty when the turn has no heading.
       function turnHead(turn) {
         var lines = turn.split("\n");
         if (!isTurnStart(lines[0])) { return ""; }
         var n = 1;
         while (n < lines.length && lines[n] === "") { n++; }
-        if (n < lines.length && fenceClose(lines[0].slice(4), lines[n])) { n++; }
         return lines.slice(0, n).join("\n") + "\n";
       }
 
@@ -1131,10 +1120,8 @@ agents:
           if (turn.length > budget) {
             if (cur) { parts.push(cur); cur = ""; curTurns = 0; }
             // THE TAIL KEEPS ITS HEAD. A bare tail says nothing of whose words
-            // it holds, and for a fenced block it would be outside material
-            // with its "### <kind>" heading and opening tag cut away — read by
-            // the extractor as nobody's, or the user's. The fence's closing tag
-            // is the turn's own last lines, so the tail already carries it.
+            // it holds, so the extractor would read it as nobody's — or as the
+            // user's.
             var head = turnHead(turn);
             if (head.length >= budget) { head = ""; }
             parts.push(head + turn.slice(turn.length - (budget - head.length)));

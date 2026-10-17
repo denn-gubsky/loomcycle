@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/denn-gubsky/loomcycle/internal/loop"
 	"github.com/denn-gubsky/loomcycle/internal/sqlmem"
 	"github.com/denn-gubsky/loomcycle/internal/store"
 )
@@ -161,21 +160,19 @@ func renderTranscriptSpan(events []store.Event) string {
 // firstUserText pulls the human words out of a persisted user_input payload
 // (a []PromptSegment), dropping system framing and image bytes.
 //
-// AN UNTRUSTED BLOCK KEEPS ITS FENCE. Recall hands this span back verbatim as a
-// fact's evidence, so a webhook body or a fetched page quoted raw reached a
-// later run as plain text with nothing to say where it came from. It is
-// rendered exactly as the model was first sent it (loop.FlattenContent: the
-// allowlisted tag, the escaped body), which is also how History renders it to
-// the extractor. It is kept rather than dropped because a fact distilled from
-// the block is evidenced by it; renderTranscriptSpan never cuts a piece, so the
-// fence cannot be left open.
+// AN UNTRUSTED BLOCK IS LEFT OUT. Recall hands this span back verbatim as a
+// fact's evidence, and a webhook body or a fetched page is not something the
+// user said: quoted here, fenced or not, it would reach a later run as the
+// reason the store believes a fact about the user. Nothing is lost by it — the
+// consolidator never extracts from such a block, so no fact rests on one. An
+// allowlist of types: only the two spellings intake accepts for the caller's own
+// words are quoted, so a block stored with a misspelled type stays out too.
 func firstUserText(payload []byte) string {
 	var segs []struct {
 		Role    string `json:"role"`
 		Content []struct {
 			Type string `json:"type"`
 			Text string `json:"text"`
-			Kind string `json:"kind"`
 		} `json:"content"`
 	}
 	if json.Unmarshal(payload, &segs) != nil {
@@ -187,11 +184,7 @@ func firstUserText(payload []byte) string {
 			continue
 		}
 		for _, c := range seg.Content {
-			if c.Type == "image" || strings.TrimSpace(c.Text) == "" {
-				continue
-			}
-			if c.Type == "untrusted-block" {
-				parts = append(parts, loop.FlattenContent(loop.PromptContentBlock{Type: c.Type, Kind: c.Kind, Text: c.Text}).Text)
+			if (c.Type != "" && c.Type != "trusted-text") || strings.TrimSpace(c.Text) == "" {
 				continue
 			}
 			parts = append(parts, c.Text)
