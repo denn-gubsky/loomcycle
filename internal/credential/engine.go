@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"sync"
 	"time"
 
 	"github.com/denn-gubsky/loomcycle/internal/netguard"
@@ -30,6 +31,11 @@ type Engine struct {
 	inline inlineBackend
 	// now is the clock expires_at is judged against; time.Now outside tests.
 	now func() time.Time
+	// cryptoMu serialises the read-modify-write of a credential row by the
+	// crypto-key operations, Delete and PutInline within this process, so a
+	// rotation is not lost to a concurrent one and a create-only check holds.
+	// The store has no create-only write, so two replicas can still race.
+	cryptoMu sync.Mutex
 }
 
 // ErrUnopenable is returned when the credential a name resolves to is stored
@@ -88,6 +94,15 @@ type Meta struct {
 	// Expired reports that ExpiresAt has passed: the credential no longer
 	// resolves, and is kept only so it can be seen and rotated.
 	Expired bool
+
+	// The crypto-key fields (RFC EP), read from the row without opening
+	// anything; all zero for an ordinary credential. Usage is UsageCrypto for
+	// a crypto key.
+	Usage          string
+	KeyType        string
+	Versions       []KeyVersion
+	CurrentVersion int
+	MinVersion     int
 }
 
 // PutInline seals plaintext and upserts the row (create / update / rotate —
@@ -111,20 +126,15 @@ func (e *Engine) PutInline(ctx context.Context, id Identity, plaintext string, e
 	if !e.sealer.Enabled() {
 		return Meta{}, ErrNoKey
 	}
-	// The SQLite store keeps the time as int64 nanoseconds, which wraps
-	// outside this range: a "never, really" expiry of 2999 would read back
-	// as a time long past and the credential would be refused from the day
-	// it was stored.
-	if expiresAt != nil && (expiresAt.Before(minExpiry) || expiresAt.After(maxExpiry)) {
-		return Meta{}, fmt.Errorf("expires_at %s is outside the range a credential can store (%s to %s); leave it unset for no expiry",
-			expiresAt.UTC().Format(time.RFC3339), minExpiry.Format(time.RFC3339), maxExpiry.Format(time.RFC3339))
+	if err := e.checkExpiresAt(expiresAt); err != nil {
+		return Meta{}, err
 	}
-	// A credential created already expired could never be used: every lookup
-	// would refuse it. That is always a mistake (a typo'd year, a stale
-	// script), so say so at create rather than at the first failed send.
-	if expiresAt != nil && !e.now().Before(*expiresAt) {
-		return Meta{}, fmt.Errorf("expires_at %s is not in the future, so the credential could never be used; send a later time, or leave it unset for no expiry",
-			expiresAt.UTC().Format(time.RFC3339))
+	e.cryptoMu.Lock()
+	defer e.cryptoMu.Unlock()
+	// The upsert would replace a crypto key's every version with one secret,
+	// destroying material that may still protect data.
+	if row, err := e.store.CredentialDefGet(ctx, id.TenantID, id.Scope, id.ScopeID, id.Name); err == nil && isCryptoDef(row.Definition) {
+		return Meta{}, fmt.Errorf("%w (%q in %s scope is a crypto key; rotate it instead)", ErrKeyExists, id.Name, id.Scope)
 	}
 	if allowedURLs == nil {
 		kept, err := e.existingRestriction(ctx, id)
@@ -155,6 +165,26 @@ func (e *Engine) PutInline(ctx context.Context, id Identity, plaintext string, e
 		return Meta{}, err
 	}
 	return e.metaOf(row), nil
+}
+
+// checkExpiresAt refuses an expires_at a credential cannot be created with.
+func (e *Engine) checkExpiresAt(expiresAt *time.Time) error {
+	// The SQLite store keeps the time as int64 nanoseconds, which wraps
+	// outside this range: a "never, really" expiry of 2999 would read back
+	// as a time long past and the credential would be refused from the day
+	// it was stored.
+	if expiresAt != nil && (expiresAt.Before(minExpiry) || expiresAt.After(maxExpiry)) {
+		return fmt.Errorf("expires_at %s is outside the range a credential can store (%s to %s); leave it unset for no expiry",
+			expiresAt.UTC().Format(time.RFC3339), minExpiry.Format(time.RFC3339), maxExpiry.Format(time.RFC3339))
+	}
+	// A credential created already expired could never be used: every lookup
+	// would refuse it. That is always a mistake (a typo'd year, a stale
+	// script), so say so at create rather than at the first failed send.
+	if expiresAt != nil && !e.now().Before(*expiresAt) {
+		return fmt.Errorf("expires_at %s is not in the future, so the credential could never be used; send a later time, or leave it unset for no expiry",
+			expiresAt.UTC().Format(time.RFC3339))
+	}
+	return nil
 }
 
 // existingUsername returns the user name of the credential stored under id,
@@ -220,8 +250,24 @@ func (e *Engine) List(ctx context.Context, tenantID, scope, scopeID string) ([]M
 	return out, nil
 }
 
-// Delete removes a credential row. Returns (found, error).
+// Delete removes a credential row. Returns (found, error). A crypto key is
+// refused with ErrKeyInUse while any of its versions is at or above
+// min_version: deleting it would destroy material that may still protect
+// data.
 func (e *Engine) Delete(ctx context.Context, id Identity) (bool, error) {
+	e.cryptoMu.Lock()
+	defer e.cryptoMu.Unlock()
+	row, err := e.store.CredentialDefGet(ctx, id.TenantID, id.Scope, id.ScopeID, id.Name)
+	if err == nil && isCryptoDef(row.Definition) {
+		if err := cryptoDeleteRefusal(row); err != nil {
+			return true, err
+		}
+	} else if err != nil {
+		var nf *store.ErrNotFound
+		if !errors.As(err, &nf) {
+			return false, err
+		}
+	}
 	return e.store.CredentialDefDelete(ctx, id.TenantID, id.Scope, id.ScopeID, id.Name)
 }
 
@@ -274,6 +320,11 @@ func (e *Engine) ResolveFor(ctx context.Context, tenantID, agentName, userID, na
 
 func (e *Engine) resolve(ctx context.Context, tenantID, agentName, userID, name string, target *string) (Resolved, bool, error) {
 	row, found, err := e.find(ctx, tenantID, agentName, userID, name)
+	// A crypto key is never handed out as a secret, and the refusal does not
+	// fall through to a same-named credential further down.
+	if found && isCryptoDef(row.Definition) {
+		return Resolved{}, false, cryptoKeyErr(name, row.Scope)
+	}
 	if err != nil || !found {
 		return Resolved{}, false, err
 	}
@@ -316,6 +367,12 @@ func (e *Engine) resolve(ctx context.Context, tenantID, agentName, userID, name 
 // restricted one does not: a user whose own token expired must be told so,
 // not quietly sent under the tenant's token of the same name.
 func (e *Engine) find(ctx context.Context, tenantID, agentName, userID, name string) (row store.CredentialDefRow, found bool, err error) {
+	return e.findScopes(ctx, tenantID, agentName, userID, name, true)
+}
+
+// findScopes is find with the tenant scope optional (withTenant); the agent
+// and user scopes are skipped by passing "" for them.
+func (e *Engine) findScopes(ctx context.Context, tenantID, agentName, userID, name string, withTenant bool) (row store.CredentialDefRow, found bool, err error) {
 	// The system user is no person: the runs the runtime starts on nobody's
 	// behalf are attributed to it. Whoever stored a credential in its "user"
 	// scope would have every such run send that in place of the tenant's.
@@ -330,6 +387,9 @@ func (e *Engine) find(ctx context.Context, tenantID, agentName, userID, name str
 	for _, b := range buckets {
 		if b.scope != "tenant" && b.id == "" {
 			continue // no identity for this scope on the run
+		}
+		if b.scope == "tenant" && !withTenant {
+			continue
 		}
 		row, err := e.store.CredentialDefGet(ctx, tenantID, b.scope, b.id, name)
 		if err != nil {
@@ -436,6 +496,9 @@ func (e *Engine) ResolveToCompare(ctx context.Context, tenantID, name string) (s
 		}
 		return "", false, err
 	}
+	if isCryptoDef(row.Definition) {
+		return "", false, cryptoKeyErr(name, row.Scope)
+	}
 	// An expired verification secret verifies nothing: a webhook whose
 	// secret lapsed refuses its deliveries rather than accepting them.
 	if err := e.expiredErr(row, name); err != nil {
@@ -461,6 +524,9 @@ func (e *Engine) HasToCompare(ctx context.Context, tenantID, name string) (bool,
 		return false, err
 	}
 	// Held, but ResolveToCompare would refuse it.
+	if isCryptoDef(row.Definition) {
+		return false, cryptoKeyErr(name, row.Scope)
+	}
 	if err := e.expiredErr(row, name); err != nil {
 		return false, err
 	}
@@ -487,6 +553,9 @@ func (e *Engine) HasToCompare(ctx context.Context, tenantID, name string) (bool,
 // "use the operator's key instead" must not do so for it.
 func (e *Engine) HasKey(ctx context.Context, tenantID, agentName, userID, name string) (bool, error) {
 	row, found, err := e.find(ctx, tenantID, agentName, userID, name)
+	if found && isCryptoDef(row.Definition) {
+		return false, cryptoKeyErr(name, row.Scope)
+	}
 	if err != nil || !found {
 		return false, err
 	}
@@ -505,15 +574,18 @@ func (e *Engine) HasKey(ctx context.Context, tenantID, agentName, userID, name s
 // HeldButUnusable reports whether err, from a by-name lookup, means the run
 // HOLDS a credential of that name that may not be used here: expired,
 // restricted to URLs this use does not name or cover, or stored but not
-// openable (no key, a wrong key, a corrupt seal). That is not a miss. A
-// caller that falls back to some other value when the run has no credential
+// openable (no key, a wrong key, a corrupt seal), or of the wrong kind for
+// the use (a crypto key on a secret path, an ordinary credential where a
+// crypto key is named, a crypto key asked for as key material). That is not
+// a miss. A caller that falls back to some other value when the run has no credential
 // (the operator's provider key, an operator-allowlisted host variable) must
 // not do so for it: the tenant's credential would be quietly replaced by the
 // operator's, and the tenant never told.
 func HeldButUnusable(err error) bool {
 	return errors.Is(err, ErrExpired) || errors.Is(err, ErrRestricted) ||
 		errors.Is(err, ErrURLNotAllowed) || errors.Is(err, ErrNotPinnable) ||
-		errors.Is(err, ErrUnopenable)
+		errors.Is(err, ErrUnopenable) || errors.Is(err, ErrCryptoKey) ||
+		errors.Is(err, ErrNotCryptoKey) || errors.Is(err, ErrUseKeyName)
 }
 
 // HasKeyFor is HasKey for a credential about to be sent to targetURL: it
@@ -525,6 +597,9 @@ func HeldButUnusable(err error) bool {
 // can say why rather than blame its URL list.
 func (e *Engine) HasKeyFor(ctx context.Context, tenantID, agentName, userID, name, targetURL string) (found, usable bool, err error) {
 	row, found, err := e.find(ctx, tenantID, agentName, userID, name)
+	if found && isCryptoDef(row.Definition) {
+		return true, false, cryptoKeyErr(name, row.Scope)
+	}
 	if err != nil || !found {
 		return found, false, err
 	}
@@ -550,6 +625,7 @@ func (e *Engine) backendFor(name string) (Backend, error) {
 // — the only shape that ever leaves the engine toward a caller or a log.
 func (e *Engine) metaOf(row store.CredentialDefRow) Meta {
 	m := Meta{AllowedURLs: restrictionOf(row.Definition), Username: usernameOf(row.Definition), Expired: e.expired(row)}
+	cryptoMeta(&m, row.Definition)
 	row.Definition = nil
 	m.CredentialDefRow = row
 	return m
