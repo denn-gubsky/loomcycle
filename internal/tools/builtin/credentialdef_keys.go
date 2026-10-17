@@ -196,26 +196,31 @@ func (c *CredentialDef) putKey(ctx context.Context, action string, id credential
 	return jsonResult(credentialMeta(m, "stored"))
 }
 
-// refuseShadow refuses a crypto key in agent or user scope under a name a
-// wider scope the same runs read already holds as a crypto key. A key name
-// resolves to the widest scope's key, so the new one would never be used;
-// say so to the one creating it. (An ordinary credential of the name does not
-// count: resolution skips it.)
+// refuseShadow refuses a crypto key under a name another scope this caller
+// sees (its agent, its user, its tenant) already holds as a crypto key. Two
+// holders make the bare name ambiguous for every run that sees both, so say
+// so to the one creating the second. It is a courtesy, not the guard: other
+// callers see other scopes, and resolution refuses an ambiguous name anyway.
+// (An ordinary credential of the name does not count: resolution skips it.)
 func (c *CredentialDef) refuseShadow(ctx context.Context, action string, id credential.Identity) (tools.Result, bool) {
-	wider := []credential.Identity{}
-	switch id.Scope {
-	case "agent":
-		if uid := tools.RunIdentity(ctx).UserID; uid != "" {
-			wider = append(wider, credential.Identity{TenantID: id.TenantID, Scope: "user", ScopeID: uid, Name: id.Name})
+	var others []credential.Identity
+	if id.Scope != "agent" {
+		if name := tools.AgentName(ctx); name != "" {
+			others = append(others, credential.Identity{TenantID: id.TenantID, Scope: "agent", ScopeID: name, Name: id.Name})
 		}
-		wider = append(wider, credential.Identity{TenantID: id.TenantID, Scope: "tenant", Name: id.Name})
-	case "user":
-		wider = append(wider, credential.Identity{TenantID: id.TenantID, Scope: "tenant", Name: id.Name})
 	}
-	for _, w := range wider {
-		if m, err := c.Engine.Get(ctx, w); err == nil && m.Usage == credential.UsageCrypto {
-			return errBusiness(fmt.Sprintf("%s: %q already names a crypto key in %s scope", action, id.Name, w.Scope),
-				"Choose another name: a key name resolves to the widest scope's key, so this one would never be used."), false
+	if id.Scope != "user" {
+		if uid := tools.RunIdentity(ctx).UserID; uid != "" {
+			others = append(others, credential.Identity{TenantID: id.TenantID, Scope: "user", ScopeID: uid, Name: id.Name})
+		}
+	}
+	if id.Scope != "tenant" {
+		others = append(others, credential.Identity{TenantID: id.TenantID, Scope: "tenant", Name: id.Name})
+	}
+	for _, o := range others {
+		if m, err := c.Engine.Get(ctx, o); err == nil && m.Usage == credential.UsageCrypto {
+			return errBusiness(fmt.Sprintf("%s: %q already names a crypto key in %s scope", action, id.Name, o.Scope),
+				"Choose another name: with two keys of one name, every call that sees both must name the scope (key_scope)."), false
 		}
 	}
 	return tools.Result{}, true

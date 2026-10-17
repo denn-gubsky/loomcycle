@@ -58,7 +58,7 @@ func TestMaskCredentialCreateValue_CryptoInputs(t *testing.T) {
 			t.Errorf("%s: masking dropped the other fields: %s", tool, out)
 		}
 	}
-	decrypt := json.RawMessage(`{"op":"decrypt","ciphertext":"lcx1:k:k:1:AAAA"}`)
+	decrypt := json.RawMessage(`{"op":"decrypt","ciphertext":"lcx1:kt:k:1:AAAA"}`)
 	if got := maskCredentialCreateValue("Crypto", decrypt); string(got) != string(decrypt) {
 		t.Errorf("a Crypto call without plaintext was changed: %s", got)
 	}

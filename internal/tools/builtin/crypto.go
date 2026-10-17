@@ -81,6 +81,7 @@ const cryptoInputSchema = `{
     "key":        {"type": "string", "description": "A crypto key stored with CredentialDef, by name. Its type and versions are stored with it. Give exactly one of key, cred, run (decrypt and rewrap of an envelope may omit all three)."},
     "cred":       {"type": "string", "description": "An ordinary stored credential, by name, used as key material. Needs key_type."},
     "run":        {"type": "string", "description": "A credential your run's caller passed with the run, by name, used as key material. Needs key_type."},
+    "key_scope":  {"type": "string", "enum": ["agent","user","tenant"], "description": "key only: which scope's crypto key to use. Needed only when more than one scope your run may use holds a key of that name; an envelope already records it."},
     "key_type":   {"type": "string", "enum": ["aes-256-gcm","xchacha20-poly1305","hmac-sha256","hmac-sha512","ed25519","ecdsa-p256","totp"], "description": "cred and run only: what kind of key the value is."},
     "key_encoding": {"type": "string", "enum": ["raw","base64","hex","base32","pem"], "description": "cred and run only: how the value is written (default by key_type: base64 for AEAD and HMAC, base32 for totp, pem for ed25519 and ecdsa-p256)."},
     "derive":     {"type": "boolean", "description": "cred and run only: true derives an AEAD or HMAC key from any secret instead of reading the value as a key."},
@@ -112,6 +113,7 @@ type cryptoInput struct {
 	Key            string `json:"key"`
 	Cred           string `json:"cred"`
 	Run            string `json:"run"`
+	KeyScope       string `json:"key_scope"`
 	KeyType        string `json:"key_type"`
 	KeyEncoding    string `json:"key_encoding"`
 	Derive         bool   `json:"derive"`
@@ -140,6 +142,7 @@ type keyRef struct {
 	Name     string
 	Cred     string
 	Run      string
+	Scope    string // Name only: the scope pinned by key_scope or the envelope
 	Version  int
 	KeyType  string
 	Encoding string
@@ -148,12 +151,16 @@ type keyRef struct {
 
 var cryptoKeyNameRe = regexp.MustCompile(`^[A-Za-z0-9_-]{1,128}$`)
 
-// Key sources, as the envelope and the AAD write them.
+// Key sources, as the envelope and the AAD write them. A crypto key's source
+// names its scope (cryptoops.KeySource), so a ciphertext is bound to the
+// scope whose key sealed it.
 const (
-	srcKey  = "k"
-	srcCred = "c"
-	srcRun  = "r"
+	srcCred = cryptoops.SourceCredential
+	srcRun  = cryptoops.SourceRun
 )
+
+// isKeySource reports whether src is a crypto key's (any scope).
+func isKeySource(src string) bool { return cryptoops.KeyScope(src) != "" }
 
 func sourceWord(src string) string {
 	switch src {
@@ -167,7 +174,7 @@ func sourceWord(src string) string {
 
 // cryptoKey is a resolved key: its material by version, and where it came from.
 type cryptoKey struct {
-	source   string // srcKey | srcCred | srcRun
+	source   string // a key source (kt/ku/ka) | srcCred | srcRun
 	name     string
 	scope    string // agent | user | tenant | run
 	keyType  cryptoops.KeyType
@@ -386,7 +393,7 @@ func (c *Crypto) execKeyed(ctx context.Context, in cryptoInput) (tools.Result, *
 	}
 
 	ref, res, ok := parseKeyRef(keyRef{
-		Name: in.Key, Cred: in.Cred, Run: in.Run, Version: in.Version,
+		Name: in.Key, Cred: in.Cred, Run: in.Run, Scope: in.KeyScope, Version: in.Version,
 		KeyType: in.KeyType, Encoding: in.KeyEncoding, Derive: in.Derive,
 	}, env)
 	if !ok {
@@ -440,7 +447,7 @@ func parseKeyRef(ref keyRef, env *cryptoops.Envelope) (keyRef, tools.Result, boo
 		}
 	}
 	if n == 0 && env != nil {
-		if env.Source != srcKey {
+		if !isKeySource(env.Source) {
 			return ref, errValidation("this ciphertext was made with a "+sourceWord(env.Source)+" key; name it again",
 				"Pass "+sourceWord(env.Source)+": \""+env.Name+"\" with its key_type."), false
 		}
@@ -452,15 +459,28 @@ func parseKeyRef(ref keyRef, env *cryptoops.Envelope) (keyRef, tools.Result, boo
 	if ref.Name != "" && (ref.KeyType != "" || ref.Encoding != "" || ref.Derive) {
 		return ref, errValidation("a crypto key's type is stored with it; key_type, key_encoding and derive apply only to cred and run", "Pass the key by name only."), false
 	}
+	if ref.Scope != "" {
+		if ref.Name == "" {
+			return ref, errValidation("key_scope applies only to key", "Drop key_scope: a cred resolves like a credential, a run key has no scope."), false
+		}
+		if cryptoops.KeySource(ref.Scope) == "" {
+			return ref, errValidation(fmt.Sprintf("key_scope %q", ref.Scope), "Use agent, user or tenant."), false
+		}
+	}
 	if !cryptoKeyNameRe.MatchString(refName(ref)) {
 		return ref, errValidation("key name must match ^[A-Za-z0-9_-]{1,128}$", ""), false
 	}
 	if env != nil {
+		// An envelope names its key, and for a crypto key its scope: the call
+		// opens that scope's key and no other.
+		if isKeySource(env.Source) && ref.Name != "" && ref.Scope == "" {
+			ref.Scope = cryptoops.KeyScope(env.Source)
+		}
 		if refSource(ref) != env.Source || refName(ref) != env.Name {
-			// The same opaque answer a wrong key gets: an envelope names its key.
+			// The same opaque answer a wrong key gets.
 			return ref, didNotDecrypt(), false
 		}
-		if env.Source == srcKey {
+		if isKeySource(env.Source) {
 			ref.Version = env.Version
 		}
 	}
@@ -477,6 +497,8 @@ func refName(r keyRef) string {
 	return r.Name
 }
 
+// refSource is the source the ref names; for a crypto key not pinned to a
+// scope, "" (its scope is known once it resolves).
 func refSource(r keyRef) string {
 	switch {
 	case r.Cred != "":
@@ -484,7 +506,7 @@ func refSource(r keyRef) string {
 	case r.Run != "":
 		return srcRun
 	}
-	return srcKey
+	return cryptoops.KeySource(r.Scope)
 }
 
 // resolveKey opens the key for this run, within its crypto scopes.
@@ -508,8 +530,8 @@ func (c *Crypto) resolveKey(ctx context.Context, ref keyRef, env *cryptoops.Enve
 		return errNotFound(fmt.Sprintf("no key %q this run may use", name), "Check the name with CredentialDef op=list, and the run's crypto scopes with Context op=self.")
 	}
 
-	switch refSource(ref) {
-	case srcRun:
+	switch {
+	case ref.Run != "":
 		if !policy.Allows("run") {
 			return nil, noScope("run"), false
 		}
@@ -519,7 +541,7 @@ func (c *Crypto) resolveKey(ctx context.Context, ref keyRef, env *cryptoops.Enve
 		}
 		return keyFromSecret(srcRun, ref, "run", []byte(val))
 
-	case srcCred:
+	case ref.Cred != "":
 		if !scopes.Agent && !scopes.User && !scopes.Tenant {
 			return nil, noScope("stored"), false
 		}
@@ -536,6 +558,18 @@ func (c *Crypto) resolveKey(ctx context.Context, ref keyRef, env *cryptoops.Enve
 		return keyFromSecret(srcCred, ref, r.Scope, []byte(r.Value))
 
 	default: // a crypto-key credential
+		if ref.Scope != "" {
+			// Pinned (key_scope, or the envelope's): only that scope, and only
+			// if the run may use it.
+			pinned := credential.Scopes{Agent: ref.Scope == "agent", User: ref.Scope == "user", Tenant: ref.Scope == "tenant"}
+			if (pinned.Agent && !scopes.Agent) || (pinned.User && !scopes.User) || (pinned.Tenant && !scopes.Tenant) {
+				if env != nil {
+					return nil, didNotDecrypt(), false
+				}
+				return nil, noScope(ref.Scope), false
+			}
+			scopes = pinned
+		}
 		if !scopes.Agent && !scopes.User && !scopes.Tenant {
 			return nil, noScope("stored"), false
 		}
@@ -559,7 +593,7 @@ func (c *Crypto) resolveKey(ctx context.Context, ref keyRef, env *cryptoops.Enve
 		if err != nil {
 			return nil, errBusiness(fmt.Sprintf("key %q has a type this build does not know", ref.Name), ""), false
 		}
-		return &cryptoKey{source: srcKey, name: ref.Name, scope: k.Scope, keyType: kt, current: k.Current, min: k.MinVersion, versions: k.Versions}, tools.Result{}, true
+		return &cryptoKey{source: cryptoops.KeySource(k.Scope), name: ref.Name, scope: k.Scope, keyType: kt, current: k.Current, min: k.MinVersion, versions: k.Versions}, tools.Result{}, true
 	}
 }
 
@@ -596,6 +630,9 @@ func keyLookupFailure(name string, err error) tools.Result {
 	switch {
 	case errors.Is(err, credential.ErrCryptoKey), errors.Is(err, credential.ErrUseKeyName):
 		return errValidation(fmt.Sprintf("%q is a crypto key", name), "Name it with key: \""+name+"\".")
+	case errors.Is(err, credential.ErrAmbiguousKey):
+		return errValidation(fmt.Sprintf("more than one scope you may use holds a crypto key %q", name),
+			"Name the one you mean with key_scope: agent, user or tenant (CredentialDef op=list shows each key's scope).")
 	case errors.Is(err, credential.ErrNotCryptoKey):
 		return errValidation(fmt.Sprintf("%q is an ordinary credential, not a crypto key", name), "Use it as key material: cred: \""+name+"\" with its key_type.")
 	case errors.Is(err, credential.ErrRestricted):
@@ -653,7 +690,7 @@ func (c *Crypto) open(k *cryptoKey, tenant string, in cryptoInput, env *cryptoop
 			return nil, 0, false
 		}
 		body = b
-		if ref.Version != 0 || k.source != srcKey {
+		if ref.Version != 0 || !isKeySource(k.source) {
 			versions = []int{ref.Version}
 		} else {
 			versions = k.sortedVersions() // raw: try each usable version, newest first
@@ -702,7 +739,7 @@ func (c *Crypto) decrypt(ctx context.Context, k *cryptoKey, tenant string, in cr
 }
 
 func (c *Crypto) rewrap(k *cryptoKey, tenant string, in cryptoInput, env *cryptoops.Envelope, ref keyRef, ev *audit.Event) tools.Result {
-	if k.source != srcKey {
+	if !isKeySource(k.source) {
 		return errValidation("rewrap works on a crypto key's ciphertext", "A cred or run key has no versions to move between.")
 	}
 	pt, from, ok := c.open(k, tenant, in, env, ref)
@@ -797,7 +834,7 @@ func (c *Crypto) sign(k *cryptoKey, in cryptoInput) tools.Result {
 // kidOf names a key version in a JWS header: "<name>.v<version>" for a
 // crypto key, the bare name for an unversioned one.
 func kidOf(k *cryptoKey, v int) string {
-	if k.source == srcKey {
+	if isKeySource(k.source) {
 		return fmt.Sprintf("%s.v%d", k.name, v)
 	}
 	return k.name

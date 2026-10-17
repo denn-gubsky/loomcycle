@@ -255,8 +255,9 @@ func TestResolveCryptoKey_SkipsScopesNotAllowed(t *testing.T) {
 	mustPutKey(t, e, Identity{TenantID: "t", Scope: "user", ScopeID: "alice", Name: "both"}, "ed25519", "user-material")
 	mustPutKey(t, e, tenantKey("both"), "ed25519", "tenant-material")
 
-	// A key name resolves to the WIDEST allowed scope that holds a crypto key
-	// of that name: a key in a narrower scope never stands in for a wider one's.
+	// A name resolves only to the one allowed scope holding a crypto key of it;
+	// held as a key in more than one, it is refused unless the caller narrows
+	// to one scope. No precedence: a key never stands in for another scope's.
 	for _, tc := range []struct {
 		name      string
 		key       string
@@ -264,18 +265,26 @@ func TestResolveCryptoKey_SkipsScopesNotAllowed(t *testing.T) {
 		wantFound bool
 		want      string
 		wantScope string
+		ambiguous bool
 	}{
-		{"only in a skipped agent scope", "only-agent", Scopes{User: true, Tenant: true}, false, "", ""},
-		{"agent allowed", "only-agent", Scopes{Agent: true}, true, "agent-only", "agent"},
-		{"user and tenant allowed, tenant wins", "both", Scopes{User: true, Tenant: true}, true, "tenant-material", "tenant"},
-		{"tenant only", "both", Scopes{Tenant: true}, true, "tenant-material", "tenant"},
-		{"agent and user allowed, user wins", "both", Scopes{Agent: true, User: true}, true, "user-material", "user"},
-		{"only agent allowed", "both", Scopes{Agent: true}, true, "agent-material", "agent"},
-		{"all allowed, tenant wins", "both", allScopes, true, "tenant-material", "tenant"},
-		{"none allowed", "both", Scopes{}, false, "", ""},
+		{"only in a skipped agent scope", "only-agent", Scopes{User: true, Tenant: true}, false, "", "", false},
+		{"agent allowed", "only-agent", Scopes{Agent: true}, true, "agent-only", "agent", false},
+		{"user and tenant both hold it", "both", Scopes{User: true, Tenant: true}, false, "", "", true},
+		{"pinned to tenant", "both", Scopes{Tenant: true}, true, "tenant-material", "tenant", false},
+		{"agent and user both hold it", "both", Scopes{Agent: true, User: true}, false, "", "", true},
+		{"pinned to agent", "both", Scopes{Agent: true}, true, "agent-material", "agent", false},
+		{"pinned to user", "both", Scopes{User: true}, true, "user-material", "user", false},
+		{"all allowed, every scope holds it", "both", allScopes, false, "", "", true},
+		{"none allowed", "both", Scopes{}, false, "", "", false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			k, found, err := e.ResolveCryptoKey(ctx, "t", "bot", "alice", tc.key, tc.allowed)
+			if tc.ambiguous {
+				if found || !errors.Is(err, ErrAmbiguousKey) || k.Versions != nil {
+					t.Fatalf("found=%v err=%v; want ErrAmbiguousKey and no key", found, err)
+				}
+				return
+			}
 			if err != nil || found != tc.wantFound {
 				t.Fatalf("found=%v err=%v; want found=%v", found, err, tc.wantFound)
 			}
@@ -353,8 +362,14 @@ func TestResolveCryptoKey_RefusesWithoutFallingThrough(t *testing.T) {
 				}
 				return
 			}
+			// Both scopes hold it as a key: refused, never the user's.
+			if !errors.Is(err, ErrAmbiguousKey) || found || k.Versions != nil {
+				t.Fatalf("all scopes: found %v key %+v err %v; want ErrAmbiguousKey and no key", found, k, err)
+			}
+			// Pinned to tenant: the tenant row's own reason, never the user's key.
+			k, found, err = e.ResolveCryptoKey(ctx, "t", "", "alice", name, Scopes{Tenant: true})
 			if !errors.Is(err, tc.want) || found || k.Versions != nil {
-				t.Fatalf("ResolveCryptoKey = found %v key %+v err %v; want %v and no key (never the user's)", found, k, err, tc.want)
+				t.Fatalf("tenant: found %v key %+v err %v; want %v and no key", found, k, err, tc.want)
 			}
 			if !HeldButUnusable(err) {
 				t.Errorf("err %v is not held-but-unusable", err)
@@ -782,24 +797,40 @@ func TestCryptoBound_DiffersFromURLBinding(t *testing.T) {
 	}
 }
 
-// A user, or an agent in a run, who stores a key under the tenant key's name
-// must not have it used in the tenant key's place: a verify or decrypt on that
-// user's behalf would accept what they forged with their own key. The name
-// resolves to the widest scope's key, for every principal; and an ordinary
-// credential written under the name takes no key away from anyone.
-func TestResolveCryptoKey_ANarrowerScopeCannotStandInForTheTenantKey(t *testing.T) {
+// No scope's key stands in for another's under the same name. A user who
+// stores a key under the tenant's name, or under the agent's own (shared)
+// key's name, has it used neither in that key's place nor at all while both
+// exist: the name is refused unless the caller names the scope. Pinned, the
+// caller gets exactly the scope it named. An ordinary credential written
+// under the name takes no key from anyone.
+func TestResolveCryptoKey_NoScopesKeyStandsInForAnothers(t *testing.T) {
 	ctx := context.Background()
 	e := newEngine(t, testKey(1))
 	mustPutKey(t, e, tenantKey("signing"), "ed25519", "tenant-signing-key")
 	mustPutKey(t, e, Identity{TenantID: "t", Scope: "user", ScopeID: "mallory", Name: "signing"}, "ed25519", "mallorys-own-key")
-	mustPutKey(t, e, Identity{TenantID: "t", Scope: "agent", ScopeID: "bot", Name: "signing"}, "ed25519", "agents-own-key")
+	mustPutKey(t, e, Identity{TenantID: "t", Scope: "agent", ScopeID: "bot", Name: "approvals"}, "ed25519", "agents-own-key")
+	mustPutKey(t, e, Identity{TenantID: "t", Scope: "user", ScopeID: "mallory", Name: "approvals"}, "ed25519", "mallorys-approvals")
 
-	for _, who := range []struct{ agent, user string }{{"", "mallory"}, {"bot", ""}, {"bot", "mallory"}, {"", "alice"}} {
-		k, found, err := e.ResolveCryptoKey(ctx, "t", who.agent, who.user, "signing", allScopes)
-		if err != nil || !found || string(k.Versions[1]) != "tenant-signing-key" || k.Scope != "tenant" {
-			t.Errorf("agent=%q user=%q: %q from %s (found %v err %v); want the tenant key",
-				who.agent, who.user, k.Versions[1], k.Scope, found, err)
+	for _, c := range []struct{ agent, user, name string }{
+		{"", "mallory", "signing"},      // a user's key under the tenant key's name
+		{"bot", "mallory", "approvals"}, // a user's key under the agent's own key's name
+	} {
+		k, found, err := e.ResolveCryptoKey(ctx, "t", c.agent, c.user, c.name, allScopes)
+		if found || !errors.Is(err, ErrAmbiguousKey) || k.Versions != nil {
+			t.Errorf("%s for agent=%q user=%q: %q (found %v err %v); want ErrAmbiguousKey and no key",
+				c.name, c.agent, c.user, k.Versions[1], found, err)
 		}
+	}
+	// Pinned: exactly the named scope.
+	if k, _, err := e.ResolveCryptoKey(ctx, "t", "", "mallory", "signing", Scopes{Tenant: true}); err != nil || string(k.Versions[1]) != "tenant-signing-key" {
+		t.Errorf("pinned to tenant: %q %v", k.Versions[1], err)
+	}
+	if k, _, err := e.ResolveCryptoKey(ctx, "t", "bot", "mallory", "approvals", Scopes{Agent: true}); err != nil || string(k.Versions[1]) != "agents-own-key" {
+		t.Errorf("pinned to agent: %q %v", k.Versions[1], err)
+	}
+	// Someone who holds no key of the name gets the one key there is.
+	if k, found, err := e.ResolveCryptoKey(ctx, "t", "", "alice", "signing", allScopes); err != nil || !found || string(k.Versions[1]) != "tenant-signing-key" {
+		t.Errorf("alice: %+v %v %v; want the tenant key", k, found, err)
 	}
 
 	// A user's own key with no tenant key of the name is theirs; an ordinary

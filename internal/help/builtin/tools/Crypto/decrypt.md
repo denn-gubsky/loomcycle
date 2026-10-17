@@ -28,5 +28,5 @@ retired key version and a changed byte all look the same.
 ## Examples
 
 ```json
-{"op": "decrypt", "ciphertext": "lcx1:k:customer-fields:2:Qk9HVVMtRVhBTVBMRS1PTkxZ", "context": "customer:42/card", "sensitive": true}
+{"op": "decrypt", "ciphertext": "lcx1:kt:customer-fields:2:Qk9HVVMtRVhBTVBMRS1PTkxZ", "context": "customer:42/card", "sensitive": true}
 ```

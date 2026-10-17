@@ -8,12 +8,44 @@ import (
 	"strings"
 )
 
-// Envelope sources: which kind of credential holds the key that sealed a value.
+// Envelope sources: which kind of credential holds the key that sealed a value,
+// and for a crypto key which scope holds it. The scope is part of the source
+// (and so of the AAD) so a decrypt opens the key of the scope that sealed,
+// never a same-named key another scope holds.
 const (
-	SourceCryptoKey  = "k" // a crypto-key credential (versioned)
-	SourceCredential = "c" // an ordinary credential, key derived from its value
-	SourceRun        = "r" // a per-run credential, key derived from its value
+	SourceKeyTenant  = "kt" // a crypto-key credential in tenant scope (versioned)
+	SourceKeyUser    = "ku" // a crypto-key credential in user scope
+	SourceKeyAgent   = "ka" // a crypto-key credential in agent scope
+	SourceCredential = "c"  // an ordinary credential, key derived from its value
+	SourceRun        = "r"  // a per-run credential, key derived from its value
 )
+
+// KeySource is the envelope source of a crypto key held in scope ("tenant",
+// "user" or "agent"); "" for any other scope.
+func KeySource(scope string) string {
+	switch scope {
+	case "tenant":
+		return SourceKeyTenant
+	case "user":
+		return SourceKeyUser
+	case "agent":
+		return SourceKeyAgent
+	}
+	return ""
+}
+
+// KeyScope is the scope a crypto-key source names; "" for a non-key source.
+func KeyScope(source string) string {
+	switch source {
+	case SourceKeyTenant:
+		return "tenant"
+	case SourceKeyUser:
+		return "user"
+	case SourceKeyAgent:
+		return "agent"
+	}
+	return ""
+}
 
 const envelopePrefix = "lcx1"
 
@@ -58,8 +90,8 @@ func ParseEnvelope(s string) (Envelope, error) {
 		return Envelope{}, errors.New("cryptoops: not an lcx1 envelope")
 	}
 	src := parts[1]
-	if src != SourceCryptoKey && src != SourceCredential && src != SourceRun {
-		return Envelope{}, errors.New("cryptoops: envelope source must be k, c or r")
+	if KeyScope(src) == "" && src != SourceCredential && src != SourceRun {
+		return Envelope{}, errors.New("cryptoops: envelope source must be kt, ku, ka, c or r")
 	}
 	name := parts[2]
 	if !envelopeNameRE.MatchString(name) {

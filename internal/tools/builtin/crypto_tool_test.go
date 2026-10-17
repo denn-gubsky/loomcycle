@@ -79,7 +79,7 @@ func TestCrypto_EncryptDecryptRoundTripAndOpaqueFailures(t *testing.T) {
 	out, res := cryptoExec(t, c, ctx, `{"op":"encrypt","key":"fields","plaintext":"card 4111","context":"customer:42"}`)
 	mustOK(t, "encrypt", res)
 	ct := out["ciphertext"].(string)
-	if !strings.HasPrefix(ct, "lcx1:k:fields:1:") {
+	if !strings.HasPrefix(ct, "lcx1:kt:fields:1:") {
 		t.Fatalf("ciphertext %q is not a v1 envelope for fields", ct)
 	}
 	out, res = cryptoExec(t, c, ctx, `{"op":"decrypt","ciphertext":"`+ct+`","context":"customer:42"}`)
@@ -152,7 +152,7 @@ func TestCrypto_RotationRewrapAndRetirement(t *testing.T) {
 	out, res = cryptoExec(t, c, ctx, `{"op":"rewrap","ciphertext":"`+v1+`"}`)
 	mustOK(t, "rewrap", res)
 	v2 := out["ciphertext"].(string)
-	if !strings.HasPrefix(v2, "lcx1:k:r:2:") {
+	if !strings.HasPrefix(v2, "lcx1:kt:r:2:") {
 		t.Fatalf("rewrap = %q, want a v2 envelope", v2)
 	}
 
@@ -375,12 +375,14 @@ func TestCrypto_EveryArgumentIsCapped(t *testing.T) {
 // A key an agent stores under the tenant key's name never stands in for it:
 // CredentialDef refuses to create it, and one planted anyway is never used —
 // the tenant's key signs.
-func TestCrypto_ANarrowerKeyNeverStandsInForTheTenantKey(t *testing.T) {
+// No scope's key stands in for another's under the same name. While two
+// scopes the run may use hold a crypto key of the name, an unpinned call is
+// refused; key_scope picks exactly the named scope's key.
+func TestCrypto_ASameNamedKeyInAnotherScopeNeverStandsIn(t *testing.T) {
 	c, cd, ctx := cryptoFixture(t, "agent", "tenant")
 	_, res := credExec(t, cd, ctx, `{"op":"generate","scope":"tenant","name":"signing","key_type":"ed25519"}`)
 	mustOK(t, "generate tenant", res)
-	tenantPub, res := cryptoExec(t, c, tools.WithCryptoPolicy(ctx, tools.CryptoPolicyValue{Scopes: []string{"tenant"}}),
-		`{"op":"public_key","key":"signing"}`)
+	tenantPub, res := cryptoExec(t, c, ctx, `{"op":"public_key","key":"signing"}`)
 	mustOK(t, "tenant public key", res)
 	if _, res := credExec(t, cd, ctx, `{"op":"generate","scope":"agent","name":"signing","key_type":"ed25519"}`); !res.IsError {
 		t.Fatal("an agent-scope key under the tenant key's name was created")
@@ -390,13 +392,58 @@ func TestCrypto_ANarrowerKeyNeverStandsInForTheTenantKey(t *testing.T) {
 		"ed25519", make([]byte, 32), nil); err != nil {
 		t.Fatal(err)
 	}
-	out, res := cryptoExec(t, c, ctx, `{"op":"sign","key":"signing","data":"x"}`)
-	mustOK(t, "sign", res)
+	if _, res := cryptoExec(t, c, ctx, `{"op":"sign","key":"signing","data":"x"}`); !res.IsError || !strings.Contains(res.Text, "more than one scope") {
+		t.Fatalf("unpinned sign with two holders = %q, want the more-than-one-scope refusal", res.Text)
+	}
+	out, res := cryptoExec(t, c, ctx, `{"op":"sign","key":"signing","key_scope":"tenant","data":"x"}`)
+	mustOK(t, "pinned sign", res)
 	pem, _ := json.Marshal(tenantPub["pem"])
 	out, res = cryptoExec(t, c, ctx, `{"op":"verify","public_key":`+string(pem)+`,"data":"x","signature":"`+out["signature"].(string)+`"}`)
 	mustOK(t, "verify", res)
 	if out["valid"] != true {
-		t.Error("the signature was not made with the tenant's key: the agent's key stood in for it")
+		t.Error("the pinned signature was not made with the tenant's key")
+	}
+	// A scope the run may not use cannot be pinned.
+	ctxT := tools.WithCryptoPolicy(ctx, tools.CryptoPolicyValue{Scopes: []string{"tenant"}})
+	if _, res := cryptoExec(t, c, ctxT, `{"op":"sign","key":"signing","key_scope":"agent","data":"x"}`); !res.IsError || res.Error.Category != tools.CategoryPermission {
+		t.Errorf("pinning an ungranted scope = %+v, want a permission refusal", res)
+	}
+	for _, body := range []string{
+		`{"op":"sign","key":"signing","key_scope":"run","data":"x"}`,
+		`{"op":"encrypt","cred":"signing","key_scope":"tenant","key_type":"aes-256-gcm","plaintext":"x"}`,
+	} {
+		if _, res := cryptoExec(t, c, ctx, body); !res.IsError || res.Error.Category != tools.CategoryValidation {
+			t.Errorf("%s = %+v, want a validation refusal", body, res)
+		}
+	}
+}
+
+// A ciphertext records its key's scope: a same-named key appearing later in
+// another scope neither opens it nor stops it opening, and a header edited
+// to name another scope does not decrypt.
+func TestCrypto_AnEnvelopeOpensOnlyWithTheScopeThatSealedIt(t *testing.T) {
+	c, cd, ctx := cryptoFixture(t, "agent", "tenant")
+	_, res := credExec(t, cd, ctx, `{"op":"generate","scope":"tenant","name":"fields","key_type":"aes-256-gcm"}`)
+	mustOK(t, "generate tenant", res)
+	out, res := cryptoExec(t, c, ctx, `{"op":"encrypt","key":"fields","plaintext":"secret"}`)
+	mustOK(t, "encrypt", res)
+	ct := out["ciphertext"].(string)
+	if _, err := cd.Engine.PutCryptoKey(ctx, credential.Identity{TenantID: "tnt", Scope: "agent", ScopeID: "agent-1", Name: "fields"},
+		"aes-256-gcm", make([]byte, 32), nil); err != nil {
+		t.Fatal(err)
+	}
+	out, res = cryptoExec(t, c, ctx, `{"op":"decrypt","ciphertext":"`+ct+`"}`)
+	mustOK(t, "decrypt after a same-named agent key appeared", res)
+	if out["plaintext"] != "secret" {
+		t.Fatalf("decrypt = %v", out["plaintext"])
+	}
+	for name, body := range map[string]string{
+		"header names agent":  `{"op":"decrypt","ciphertext":"` + strings.Replace(ct, "lcx1:kt:", "lcx1:ka:", 1) + `"}`,
+		"key_scope disagrees": `{"op":"decrypt","key":"fields","key_scope":"agent","ciphertext":"` + ct + `"}`,
+	} {
+		if _, res := cryptoExec(t, c, ctx, body); !res.IsError || !strings.Contains(res.Text, "did not decrypt") {
+			t.Errorf("%s: %q, want the opaque did-not-decrypt", name, res.Text)
+		}
 	}
 }
 

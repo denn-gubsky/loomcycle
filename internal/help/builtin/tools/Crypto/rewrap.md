@@ -22,5 +22,5 @@ of the old one.
 ## Examples
 
 ```json
-{"op": "rewrap", "ciphertext": "lcx1:k:customer-fields:1:Qk9HVVMtRVhBTVBMRS1PTkxZ", "context": "customer:42/card"}
+{"op": "rewrap", "ciphertext": "lcx1:kt:customer-fields:1:Qk9HVVMtRVhBTVBMRS1PTkxZ", "context": "customer:42/card"}
 ```

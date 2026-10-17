@@ -335,7 +335,7 @@ func TestAAD_LayoutIsStableAndFieldSensitive(t *testing.T) {
 
 func TestEnvelope_RoundTrip(t *testing.T) {
 	cases := []Envelope{
-		{Source: "k", Name: "orders-key_1", Version: 7, Body: []byte{0xfb, 0xff, 0x00, 0x01}},
+		{Source: "kt", Name: "orders-key_1", Version: 7, Body: []byte{0xfb, 0xff, 0x00, 0x01}},
 		{Source: "c", Name: "x", Version: 0, Body: bytes.Repeat([]byte{0xab}, 40)},
 		{Source: "r", Name: strings.Repeat("a", 128), Version: 123456789, Body: []byte{1}},
 	}
@@ -361,22 +361,22 @@ func TestParseEnvelope_RejectsMalformed(t *testing.T) {
 		"upper prefix":     "LCX1:k:name:1:" + body,
 		"bad source":       "lcx1:x:name:1:" + body,
 		"empty source":     "lcx1::name:1:" + body,
-		"bad name chars":   "lcx1:k:na.me:1:" + body,
-		"empty name":       "lcx1:k::1:" + body,
-		"long name":        "lcx1:k:" + strings.Repeat("a", 129) + ":1:" + body,
-		"negative version": "lcx1:k:name:-1:" + body,
-		"plus version":     "lcx1:k:name:+1:" + body,
-		"alpha version":    "lcx1:k:name:v1:" + body,
-		"leading zero":     "lcx1:k:name:01:" + body,
-		"empty version":    "lcx1:k:name::" + body,
-		"huge version":     "lcx1:k:name:9999999999:" + body,
-		"padded body":      "lcx1:k:name:1:" + base64.URLEncoding.EncodeToString([]byte("ab")),
-		"std alphabet":     "lcx1:k:name:1:" + base64.RawStdEncoding.EncodeToString([]byte{0xfb, 0xff}),
-		"bad base64":       "lcx1:k:name:1:!!!!",
-		"empty body":       "lcx1:k:name:1:",
-		"extra field":      "lcx1:k:name:1:" + body + ":x",
-		"missing field":    "lcx1:k:name:" + body,
-		"whitespace":       " lcx1:k:name:1:" + body,
+		"bad name chars":   "lcx1:kt:na.me:1:" + body,
+		"empty name":       "lcx1:kt::1:" + body,
+		"long name":        "lcx1:kt:" + strings.Repeat("a", 129) + ":1:" + body,
+		"negative version": "lcx1:kt:name:-1:" + body,
+		"plus version":     "lcx1:kt:name:+1:" + body,
+		"alpha version":    "lcx1:kt:name:v1:" + body,
+		"leading zero":     "lcx1:kt:name:01:" + body,
+		"empty version":    "lcx1:kt:name::" + body,
+		"huge version":     "lcx1:kt:name:9999999999:" + body,
+		"padded body":      "lcx1:kt:name:1:" + base64.URLEncoding.EncodeToString([]byte("ab")),
+		"std alphabet":     "lcx1:kt:name:1:" + base64.RawStdEncoding.EncodeToString([]byte{0xfb, 0xff}),
+		"bad base64":       "lcx1:kt:name:1:!!!!",
+		"empty body":       "lcx1:kt:name:1:",
+		"extra field":      "lcx1:kt:name:1:" + body + ":x",
+		"missing field":    "lcx1:kt:name:" + body,
+		"whitespace":       " lcx1:kt:name:1:" + body,
 		"empty":            "",
 	}
 	for name, s := range bad {
@@ -858,5 +858,26 @@ func TestRandom_LengthsBoundsAndUUIDFormat(t *testing.T) {
 			t.Fatalf("duplicate UUID %s", u)
 		}
 		seen[u] = true
+	}
+}
+
+// A crypto key's envelope names its scope, so a decrypt opens the key of the
+// scope that sealed. Each scope has one source, and a bare "k" is not one.
+func TestKeySource_NamesTheScope(t *testing.T) {
+	for _, scope := range []string{"tenant", "user", "agent"} {
+		src := KeySource(scope)
+		if src == "" || KeyScope(src) != scope {
+			t.Errorf("scope %q -> source %q -> scope %q", scope, src, KeyScope(src))
+		}
+		env := Envelope{Source: src, Name: "k1", Version: 1, Body: []byte{1, 2, 3}}
+		if got, err := ParseEnvelope(env.String()); err != nil || got.Source != src {
+			t.Errorf("%s envelope round trip: %+v %v", scope, got, err)
+		}
+	}
+	if KeySource("run") != "" || KeyScope(SourceCredential) != "" {
+		t.Error("a non-key scope or source mapped to a key")
+	}
+	if _, err := ParseEnvelope("lcx1:k:k1:1:AQID"); err == nil {
+		t.Error("an envelope with the bare source k parsed")
 	}
 }

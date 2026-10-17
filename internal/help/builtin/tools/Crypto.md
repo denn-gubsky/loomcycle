@@ -32,9 +32,13 @@ Name a key in exactly one of three ways:
 
 Which of these your run may use is its **crypto scope**: `agent`, `user`,
 `tenant` (where stored keys are looked up) and `run`. `Context op=permissions`
-lists them. With no scope you can still use `hash` and `random`. A key name
-held in more than one of your scopes means the widest scope's key (tenant,
-then user, then agent): a key in a narrower scope never stands in for it.
+lists them. With no scope you can still use `hash` and `random`.
+
+A `key` name is used when exactly one of your scopes holds a crypto key of
+that name. If more than one does, the call is refused until you name the one
+you mean with `key_scope` (`agent`, `user` or `tenant`); a key in one scope
+never stands in for another's. An envelope records its key's scope, so a
+`decrypt` or `rewrap` of an envelope needs no `key_scope`.
 
 Each key type does certain operations:
 
@@ -47,7 +51,8 @@ Each key type does certain operations:
 ## Formats and context
 
 `encrypt` returns an **envelope** by default: `lcx1:<source>:<name>:<version>:…`.
-It names its key, so `decrypt` needs only the ciphertext. Ask for
+It names its key (and a crypto key's scope: `kt` tenant, `ku` user, `ka`
+agent), so `decrypt` needs only the ciphertext. Ask for
 `format: "raw"` (base64 of nonce, ciphertext and tag) only for a system that
 reads that form.
 

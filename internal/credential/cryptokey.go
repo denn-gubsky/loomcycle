@@ -67,6 +67,10 @@ var (
 	// ErrUseKeyName: a crypto key was asked for as $cred: key material. It is
 	// named directly, by its own name.
 	ErrUseKeyName = errors.New("credential: a crypto key is named directly, not as $cred: key material")
+	// ErrAmbiguousKey: a name that more than one allowed scope holds as a
+	// crypto key, asked for without naming the scope. Refused rather than
+	// resolved by any precedence (see findCryptoKey).
+	ErrAmbiguousKey = errors.New("credential: the name is a crypto key in more than one scope")
 )
 
 // MaxUsableKeyVersions caps a crypto key's unretired versions: each use opens
@@ -437,23 +441,23 @@ func (e *Engine) findIn(ctx context.Context, tenantID, agentName, userID, name s
 	return e.findScopes(ctx, tenantID, agentName, userID, name, allowed.Tenant)
 }
 
-// findCryptoKey finds the crypto key a name resolves to: the WIDEST allowed
-// scope that holds a crypto key of that name — tenant, then user, then agent.
+// findCryptoKey finds the crypto key a name means: the one crypto key of that
+// name among the allowed scopes. A name that two allowed scopes hold as a
+// crypto key is refused (ErrAmbiguousKey) unless the caller narrows allowed
+// to one scope.
 //
-// The reverse of a $cred: secret's precedence, on purpose. For a secret a
-// narrower scope shadowing a wider one is the point (a user's own token over
-// the tenant's default). For a key it would be a substitution: a user, or an
-// agent in a run (which may make agent-scope keys), who stored a key under
-// the tenant key's name would have every run on their behalf sign, MAC or
-// encrypt with a key they chose, and verify or decrypt what they forged as if
-// the tenant's key had made it. A wider scope is written by someone with
-// authority over the narrower one, so it wins.
+// No precedence, in either direction. For a $cred: secret a narrower scope
+// shadowing a wider one is the point (a user's own token over the tenant's
+// default). For a key, either order is a substitution: narrow-first lets a
+// user, or an agent in a run, stand their own key in for the tenant's;
+// wide-first lets a user's key stand in for the agent's own (shared) key in
+// that user's runs. Either way someone signs, MACs or encrypts with a key
+// they chose, and verifies or decrypts their forgery as genuine.
 //
-// Only crypto rows count: an ordinary credential of the same name in a wider
-// scope is skipped, so writing one cannot take a key away from anyone. A
-// wider crypto key that cannot be used (expired, unopenable) is refused and
-// never falls through to a narrower key. One ordered pass, no count: nothing
-// to race between deciding and using.
+// Only crypto rows count: an ordinary credential of the same name is
+// skipped, so writing one (an agent in a run can write tenant-scope ones)
+// cannot make a key ambiguous or take it from anyone. The decision is made
+// from one read of each scope, with no second look.
 func (e *Engine) findCryptoKey(ctx context.Context, tenantID, agentName, userID, name string, allowed Scopes) (row store.CredentialDefRow, found, sawOrdinary bool, err error) {
 	if userID == systemUserID {
 		userID = ""
@@ -466,6 +470,7 @@ func (e *Engine) findCryptoKey(ctx context.Context, tenantID, agentName, userID,
 		{"user", userID, allowed.User && userID != ""},
 		{"agent", agentName, allowed.Agent && agentName != ""},
 	}
+	var hits []store.CredentialDefRow
 	for _, b := range buckets {
 		if !b.ok {
 			continue
@@ -482,12 +487,19 @@ func (e *Engine) findCryptoKey(ctx context.Context, tenantID, agentName, userID,
 			sawOrdinary = true
 			continue
 		}
-		if xerr := e.expiredErr(r, name); xerr != nil {
-			return r, true, sawOrdinary, xerr
-		}
-		return r, true, sawOrdinary, nil
+		hits = append(hits, r)
 	}
-	return store.CredentialDefRow{}, false, sawOrdinary, nil
+	switch len(hits) {
+	case 0:
+		return store.CredentialDefRow{}, false, sawOrdinary, nil
+	case 1:
+		if xerr := e.expiredErr(hits[0], name); xerr != nil {
+			return hits[0], true, sawOrdinary, xerr
+		}
+		return hits[0], true, sawOrdinary, nil
+	}
+	return store.CredentialDefRow{}, false, sawOrdinary,
+		fmt.Errorf("%w (%q is a crypto key in more than one scope; name the scope)", ErrAmbiguousKey, name)
 }
 
 // ResolveCryptoKey finds a crypto key by name, agent > user > tenant, using
