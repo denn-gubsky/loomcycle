@@ -151,6 +151,11 @@ func ceilingCases() []ceilingCase {
 			},
 			// submit_any covers every submit; it does not cover reading.
 			wider: `{"evaluation_scopes":["submit_self","read_any"]}`, within: `{"evaluation_scopes":["submit_self","submit_descendants"]}`},
+		{field: "crypto_scopes",
+			policy: func(ctx context.Context) context.Context {
+				return tools.WithCryptoPolicy(ctx, tools.CryptoPolicyValue{Scopes: []string{"agent", "user"}})
+			},
+			wider: `{"crypto_scopes":["user","tenant"]}`, within: `{"crypto_scopes":["user"]}`},
 		{field: "agent_def_scopes",
 			policy: func(ctx context.Context) context.Context { return ctx }, // the fixture's [named:sdlc/**]
 			// "self" is the new agent's own name, sdlc/new, inside sdlc/**.

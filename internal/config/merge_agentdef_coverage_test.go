@@ -116,6 +116,7 @@ func nonZeroAgentDef() AgentDef {
 		SkillDefScopes:         []string{"any"},
 		VolumeDefScopes:        []string{"any"},
 		EvaluationScopes:       []string{"read_any"},
+		CryptoScopes:           []string{"user"},
 		HistoryScope:           []string{"user"},
 		DisableContext:         true,
 		Interruption:           AgentInterruptionACL{Enabled: true, Kinds: []string{"question"}, MaxPending: 2},

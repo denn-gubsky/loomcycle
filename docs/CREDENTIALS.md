@@ -248,6 +248,42 @@ credentialdef  op=create  scope=tenant  name=ANTHROPIC_API_KEY  value=sk-ant-…
 > is an operator concern), and `ollama-local` is unauthenticated so it never takes
 > an override.
 
+## Crypto keys and the `Crypto` tool
+
+A credential can also be a **crypto key** (`usage: crypto`): a key the `Crypto` tool uses to encrypt, decrypt, sign, verify, MAC or make one-time codes. Its material is never shown — not when it is generated, not to the agent that uses it, not in `get` or `list`. A crypto key is never sent anywhere either: `$cred:<name>` refuses it on every path (MCP headers, provider keys, Bash variables), and does not fall back to a same-named credential in a wider scope.
+
+```yaml
+agents:
+  invoice-bot:
+    tools: [Crypto]
+    crypto_scopes: [tenant, run]   # which keys the agent may use: agent, user, tenant, run
+```
+
+**Making and managing keys** (CredentialDef ops):
+
+| op | What it does |
+|---|---|
+| `generate` | makes a new key of `key_type` from the runtime's random source; nobody ever sees it |
+| `create` with `usage: crypto` | imports existing key material (`value`, with `key_encoding` raw / base64 / hex / base32 / pem) |
+| `rotate` | adds a new current version (generated, or from `value`) |
+| `set_min_version` | retires every version below it; it only goes up, at most to current+1 (every version retired) |
+| `delete_version` | deletes a retired version |
+| `delete` | refused while any version is unretired: retire them all first |
+| `export_key` / `import_key` | moves a key to another deployment, encrypted under a passphrase of at least 16 characters; an operator only, outside any run |
+
+`key_type` is one of `aes-256-gcm`, `xchacha20-poly1305` (encrypt / decrypt), `hmac-sha256`, `hmac-sha512` (MAC, JWS), `ed25519`, `ecdsa-p256` (sign / verify, public key), `totp` (one-time codes). It is fixed for the key's life and sealed into every version, so it cannot be changed behind the engine's back.
+
+Inside a run, an agent creates and changes crypto keys **only in its own agent scope**; tenant and user keys are made by an operator or the user, outside a run. Snapshots never carry credentials, crypto keys included: move a key with `export_key` / `import_key`.
+
+**Using keys.** The `Crypto` tool takes a crypto key by name (`key`), an ordinary credential as key material (`cred`, with its `key_type`; one restricted by `allowed_urls` is refused), or a credential the run's caller passed (`run`). An agent may use only the scopes its `crypto_scopes` grants; with none it can still `hash` and make `random` values. Unlike a `$cred:` secret, where a narrower scope wins, a key name has **no precedence**: a `key` is used only when exactly one of the run's scopes holds a crypto key of that name, and a `cred` only when exactly one holds an ordinary credential of that name (the other kind is ignored either way). When more than one does, the call is refused until it names the scope with `key_scope` (`agent`, `user` or `tenant`), so a key or secret someone stores under another's name can never stand in for it (a user's own value under the tenant's webhook-secret name would otherwise verify MACs they forged). CredentialDef also refuses to create a crypto key under a name another scope the caller sees already holds as one. An envelope records its key's kind and scope (`lcx1:kt:` crypto key in tenant scope, `ku` user, `ka` agent; `ct` / `cu` / `ca` for an ordinary credential; `r` for a run credential), and that is part of the associated data, so a ciphertext decrypts only with the key of the scope that sealed it; a same-named key that appears later can neither open it nor block it. Decrypt and verify failures never say why. `decrypt` with `sensitive: true` keeps the plaintext out of the stored transcript, and the plaintext an agent encrypts is never stored. Every keyed op and every key change is written to the audit log (`LOOMCYCLE_AUDIT_LOG_PATH`), never with data or key material.
+
+| Env var | Default | Meaning |
+|---|---|---|
+| `LOOMCYCLE_CRYPTO_MAX_BYTES` | 1048576 | cap on each data argument of a Crypto call |
+| `LOOMCYCLE_CRYPTO_MAX_OPS_PER_RUN` | 100 | Crypto calls one run may make |
+
+`/metrics` reports `loomcycle_crypto_ops_total{op, outcome}`. The tool's own help (`Context op=help topic=Crypto`) documents each operation.
+
 ## Limitations / roadmap
 
 - Tenants can't set host env, so a `$cred:` value must be provisioned as a

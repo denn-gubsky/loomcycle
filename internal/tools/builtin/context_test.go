@@ -649,6 +649,7 @@ func TestContextTool_PermissionsBundle(t *testing.T) {
 	ctx = tools.WithEvaluationPolicy(ctx, tools.EvaluationPolicyValue{
 		Scopes: []string{"submit_self", "read_any"},
 	})
+	ctx = tools.WithCryptoPolicy(ctx, tools.CryptoPolicyValue{Scopes: []string{"user"}})
 
 	res, _ := tool.Execute(ctx, json.RawMessage(`{"op":"permissions"}`))
 	if res.IsError {
@@ -672,6 +673,9 @@ func TestContextTool_PermissionsBundle(t *testing.T) {
 	}
 	if skills := out["skills"].([]any); skills[0] != "doc/*" {
 		t.Errorf("skills[0] = %v, want doc/* (RFC BA allowlist)", skills[0])
+	}
+	if cs, _ := out["crypto_scopes"].([]any); len(cs) != 1 || cs[0] != "user" {
+		t.Errorf("crypto_scopes = %v, want [user]", out["crypto_scopes"])
 	}
 }
 

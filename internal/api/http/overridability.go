@@ -102,6 +102,11 @@ var agentDefOverridability = map[string]overridability{
 	"SqlScopes":        notOverridable,
 	"HistoryScope":     notOverridable,
 	"EvaluationScopes": notOverridable,
+	// Key scopes: which tenant/user/agent/run keys the Crypto tool may use.
+	// Reach over secret material, so a run cannot set it — not even to narrow,
+	// following evaluation_scopes; a sub-agent's narrowing is the spawn
+	// invariant, not an override.
+	"CryptoScopes":     notOverridable,
 	"Channels":         notOverridable,
 	"MemoryRoots":      notOverridable,
 	"MemoryQuotaBytes": notOverridable,

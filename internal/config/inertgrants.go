@@ -17,10 +17,12 @@ type InertToolGrant struct {
 // so an unset one is not inert — reporting it would put a warning on every run
 // of most agents, which is how a signal becomes noise and then becomes ignored.
 //
-// It is also not every tool with a gate: Context's history_scope and Memory's
-// sql_scopes are per-OP gates inside multi-op tools, so the tool works without
-// them for its other ops and a bare tool-presence check would false-positive.
-// agentGateWarnings documents the same exclusions for the same reason.
+// It is also not every tool with a gate: Context's history_scope, Memory's
+// sql_scopes and Crypto's crypto_scopes are per-OP gates inside multi-op tools,
+// so the tool works without them for its other ops and a bare tool-presence
+// check would false-positive. agentGateWarnings documents the same exclusions
+// for the same reason; cryptoGateWarnings says at boot what an unset
+// crypto_scopes does leave out.
 var inertGateForTool = []struct {
 	tool, gate, fix string
 }{
@@ -80,4 +82,32 @@ func InertToolGrants(a AgentDef) []InertToolGrant {
 		})
 	}
 	return out
+}
+
+// CryptoToolName is the name the Crypto tool registers under. Declared here
+// because the boot advisories below key off it and config imports no tool
+// package; tools.CryptoToolName is this constant.
+const CryptoToolName = "Crypto"
+
+// cryptoGateWarnings returns the boot advisories for the Crypto grant, in both
+// directions, because each half of it is useless without the other:
+//
+//   - the tool listed with no crypto_scopes: NOT inert — the keyless ops
+//     (hashing, random bytes) work — but every key-backed op refuses, which is
+//     the part an operator listing the tool most likely wanted;
+//   - crypto_scopes set with the tool not listed: the grant reaches nothing,
+//     since no tool reads it.
+//
+// It is a boot advisory and not an InertToolGrants entry for the first reason:
+// a run-start "capability inert" event would claim every Crypto call refuses,
+// which is false.
+func cryptoGateWarnings(name string, a AgentDef, hasTool bool) []string {
+	granted := len(a.CryptoScopes) > 0 && !(len(a.CryptoScopes) == 1 && a.CryptoScopes[0] == cryptoDenyAll)
+	switch {
+	case hasTool && len(a.CryptoScopes) == 0:
+		return []string{fmt.Sprintf("agent %q: tools includes %s but crypto_scopes is empty — only the keyless %s ops will work and every key-backed op will default-deny; set crypto_scopes (e.g. [agent] or [user]), or [\"-*\"] to say keyless-only is intended", name, CryptoToolName, CryptoToolName)}
+	case !hasTool && granted:
+		return []string{fmt.Sprintf("agent %q: crypto_scopes is set but %s is not in tools — the grant reaches nothing; add %s to tools, or drop crypto_scopes", name, CryptoToolName, CryptoToolName)}
+	}
+	return nil
 }

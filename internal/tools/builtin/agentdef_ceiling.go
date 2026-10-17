@@ -16,7 +16,7 @@ import (
 //
 // The tools ceiling alone left a hole: a definition's other fields are
 // authority too. A run builds a spawned child's memory, SQL, history, channel,
-// interruption, evaluation, skill, volume and def-authoring policies from the
+// interruption, evaluation, crypto, skill, volume and def-authoring policies from the
 // CHILD's own definition, so an agent able to create an agent with fields it
 // does not itself hold could mint authority and then spawn it. Every capability
 // field is therefore held to the same rule as tools: within what the author
@@ -103,6 +103,7 @@ func (a *AgentDef) checkCapabilityCeiling(ctx context.Context, name string, def 
 		func() error { return ceilChannels(ctx, def, base, held) },
 		func() error { return ceilInterruption(ctx, def, base, held) },
 		func() error { return ceilEvaluation(ctx, def, base, held) },
+		func() error { return ceilCrypto(ctx, def, base, held) },
 		func() error { return ceilSkills(ctx, def, base, held) },
 		func() error { return ceilDefScopes(ctx, name, def, base, held) },
 	}
@@ -414,6 +415,26 @@ func ceilEvaluation(ctx context.Context, def mergedDef, base *mergedDef, held st
 		return refuseCapability("evaluation_scopes", v, false, held, ceiling)
 	}
 	return nil
+}
+
+// ---- crypto ----
+
+// ceilCrypto holds crypto_scopes to the author's own key scopes. There is no
+// default to wave through — unset grants no key scope — so an unset or deny-all
+// list is within every ceiling, and any scope named must be one the author's
+// run holds (or the forked version already had).
+func ceilCrypto(ctx context.Context, def mergedDef, base *mergedDef, held string) error {
+	eff := tools.EffectiveCryptoScopes(def.CryptoScopes)
+	if len(eff) == 0 {
+		return nil
+	}
+	// The run's policy is already effective (and, for a sub-agent, already
+	// narrowed by its parent's).
+	ceiling := tools.CryptoPolicy(ctx).Scopes
+	if base != nil {
+		ceiling = scopeUnion(ceiling, tools.EffectiveCryptoScopes(base.CryptoScopes))
+	}
+	return subsetCeiling("crypto_scopes", eff, false, held, ceiling)
 }
 
 // ---- skills ----

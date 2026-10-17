@@ -346,6 +346,27 @@ func TestFromYAMLAgent_ToolCapabilityScopesStillIgnored(t *testing.T) {
 	}
 }
 
+// crypto_scopes is authority over keys, not authored behaviour: two agents
+// differing only in it hash identically, on the yaml path and the overlay path.
+func TestSign_CryptoScopesExcludedFromHash(t *testing.T) {
+	bare := FromYAMLAgent(&Agent{Name: "x", SystemPrompt: "p"})
+	withCrypto := FromYAMLAgent(&Agent{Name: "x", SystemPrompt: "p", CryptoScopes: []string{"user", "tenant"}})
+	if Sign(bare) != Sign(withCrypto) {
+		t.Error("crypto_scopes leaked into the yaml-path hash")
+	}
+	a, err := FromOverlay([]byte(`{"system_prompt":"p"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, err := FromOverlay([]byte(`{"system_prompt":"p","crypto_scopes":["user"]}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if Sign(a) != Sign(b) {
+		t.Error("crypto_scopes leaked into the overlay-path hash")
+	}
+}
+
 // RFC BA: `skills:` is a pattern ALLOWLIST (authority, not content) and is
 // EXCLUDED from the content hash — two agents differing ONLY in their skills:
 // allowlist must hash identically. Reverting the AgentContent.Skills removal

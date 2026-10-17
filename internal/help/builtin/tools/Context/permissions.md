@@ -1,6 +1,6 @@
 ---
 name: Context/permissions
-description: "Context op=permissions — the raw policy gates on this run: tool list, web host allowlist, memory, history, channel, agent-def, skill and evaluation grants."
+description: "Context op=permissions — the raw policy gates on this run: tool list, web host allowlist, memory, history, channel, agent-def, skill, evaluation and crypto grants."
 ---
 `permissions` returns the policy settings that decide what your calls may do,
 as they are configured on your agent. Compare an intended action against them
@@ -24,6 +24,9 @@ None besides `op`.
   and a document's tenant scope.
 - `history_scopes`, `agent_def_scopes`, `evaluation_scopes` — the scopes
   those tools may use.
+- `crypto_scopes` — the key scopes (`agent`, `user`, `tenant`, `run`) your
+  Crypto signing, encryption and decryption may use. Empty means keyless
+  Crypto operations only.
 - `channels` — `{publish, subscribe}` allowlist patterns.
 - `skills` — the patterns of skills you may load (empty = all).
 
@@ -47,5 +50,5 @@ See every gate on this run:
  "host_policy": {"has_list": true, "allowed_hosts": ["api.github.com"], "web_search_filter": ""},
  "memory": {"allowed_scopes": ["agent", "user"], "quota_bytes": 0, "sql_scopes": null},
  "history_scopes": null, "channels": {"publish": ["findings/*"], "subscribe": ["jobs/cv-requests"]},
- "agent_def_scopes": null, "skills": null, "evaluation_scopes": null}
+ "agent_def_scopes": null, "skills": null, "evaluation_scopes": null, "crypto_scopes": null}
 ```

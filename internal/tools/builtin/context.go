@@ -862,6 +862,9 @@ func (c *Context) execPermissions(ctx context.Context) (tools.Result, error) {
 		"agent_def_scopes":  adPol.Scopes,
 		"skills":            sdPol.Patterns,
 		"evaluation_scopes": evPol.Scopes,
+		// The key scopes the Crypto tool's key-backed ops may use; empty
+		// means keyless ops only.
+		"crypto_scopes": tools.CryptoPolicy(ctx).Scopes,
 	}
 	return okJSON(out)
 }
