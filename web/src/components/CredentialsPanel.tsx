@@ -4,8 +4,27 @@ import {
   CredentialScope,
   createCredential,
   deleteCredential,
+  deleteCryptoKeyVersion,
+  generateCryptoKey,
+  importCryptoKey,
   listCredentials,
+  rotateCryptoKey,
+  setCryptoKeyMinVersion,
 } from "../api";
+import {
+  CRYPTO_KEY_ENCODINGS,
+  CRYPTO_KEY_TYPES,
+  CryptoKeyType,
+  cryptoKeyActions,
+  expiryToRFC3339,
+  isCryptoKey,
+  minVersionBounds,
+  parseMinVersion,
+  refusalText,
+  retireWarning,
+  versionChips,
+  versionSummary,
+} from "../lib/cryptoKeys";
 
 // CredentialsPanel is the shared RFC AR credential UI, used in two places:
 //   - the operator Settings hub (full: tenant + user scopes, a scope selector);
@@ -27,6 +46,10 @@ function isCredStoreDisabled(msg: string): boolean {
 
 // CredentialRow is a metadata row tagged with the scope it was listed under.
 type CredentialRow = CredentialMeta & { _scope: CredentialScope };
+
+function rowKey(r: CredentialRow): string {
+  return `${r._scope}/${r.name}`;
+}
 
 // well-known provider/tool key env-var names (mirror docs/CREDENTIALS.md);
 // free-form custom names (e.g. $cred: labels) are still allowed.
@@ -61,6 +84,25 @@ export function CredentialsPanel({ userOnly = false }: { userOnly?: boolean }) {
     userOnly ? "user" : "tenant",
   );
   const [busy, setBusy] = useState(false);
+  // Crypto-key form (RFC EP). Generate is the default: the server makes a key
+  // nobody ever sees. Import (existing material) is the secondary path; its
+  // `keyValue` is write-only exactly like `value` above.
+  const [keyName, setKeyName] = useState("");
+  const [keyType, setKeyType] = useState<CryptoKeyType>("aes-256-gcm");
+  const [keyExpiry, setKeyExpiry] = useState("");
+  const [keyScope, setKeyScope] = useState<CredentialScope>(
+    userOnly ? "user" : "tenant",
+  );
+  const [keyImport, setKeyImport] = useState(false);
+  const [keyValue, setKeyValue] = useState("");
+  const [keyEncoding, setKeyEncoding] = useState("");
+  const [keyBusy, setKeyBusy] = useState(false);
+  // The crypto-key row whose version controls are open, and the typed
+  // "retire versions below" number for it.
+  const [openKey, setOpenKey] = useState<string | null>(null);
+  const [minText, setMinText] = useState("");
+  // The row a key action is running on (disables that row's buttons).
+  const [rowBusy, setRowBusy] = useState<string | null>(null);
 
   const refresh = useCallback(async () => {
     setErr(null);
@@ -136,19 +178,205 @@ export function CredentialsPanel({ userOnly = false }: { userOnly?: boolean }) {
   };
 
   const onDelete = async (r: CredentialRow) => {
+    const question = isCryptoKey(r)
+      ? `Delete the ${r._scope} crypto key "${r.name}"? Its material is destroyed — anything still encrypted or signed with it can never be decrypted or verified again. (The server refuses while any version is unretired.)`
+      : `Delete the ${r._scope} credential "${r.name}"? Anything referencing $cred:${r.name} will stop resolving.`;
+    if (!confirm(question)) {
+      return;
+    }
+    setErr(null);
+    setFlash(null);
+    try {
+      await deleteCredential({ scope: r._scope, name: r.name });
+      if (openKey === rowKey(r)) setOpenKey(null);
+      await refresh();
+    } catch (e) {
+      // A refused crypto-key delete explains itself (which version is still
+      // unretired); show the server's own text.
+      setErr(refusalText(e instanceof Error ? e.message : String(e)));
+    }
+  };
+
+  const onCreateKey = async (e: FormEvent) => {
+    e.preventDefault();
+    if (keyBusy || !keyName.trim() || (keyImport && !keyValue)) return;
+    const expires = expiryToRFC3339(keyExpiry);
+    if (expires === null) {
+      setKeyValue(""); // never retained, even on a refusal
+      setErr("expiry is not a valid date and time");
+      return;
+    }
+    setKeyBusy(true);
+    setErr(null);
+    setFlash(null);
+    const created = keyName.trim();
+    const useScope: CredentialScope = userOnly ? "user" : keyScope;
+    const base = {
+      scope: useScope,
+      name: created,
+      key_type: keyType,
+      ...(expires ? { expires_at: expires } : {}),
+    };
+    try {
+      if (keyImport) {
+        await importCryptoKey({
+          ...base,
+          value: keyValue,
+          ...(keyEncoding ? { key_encoding: keyEncoding } : {}),
+        });
+      } else {
+        await generateCryptoKey(base);
+      }
+      setKeyValue(""); // clear the key material immediately
+      setKeyName("");
+      setKeyExpiry("");
+      setFlash(
+        `${keyImport ? "imported" : "generated"} ${useScope} ${keyType} crypto key "${created}"`,
+      );
+      setDisabled(false);
+      await refresh();
+    } catch (e2) {
+      setKeyValue(""); // clear the key material even on failure — never retained
+      const msg = e2 instanceof Error ? e2.message : String(e2);
+      if (isCredStoreDisabled(msg)) setDisabled(true);
+      else setErr(refusalText(msg));
+    } finally {
+      setKeyBusy(false);
+    }
+  };
+
+  // runKeyOp runs one crypto-key change on a row, then reloads the table.
+  const runKeyOp = async (
+    r: CredentialRow,
+    done: string,
+    op: () => Promise<unknown>,
+  ) => {
+    setRowBusy(rowKey(r));
+    setErr(null);
+    setFlash(null);
+    try {
+      await op();
+      setFlash(done);
+      await refresh();
+    } catch (e) {
+      setErr(refusalText(e instanceof Error ? e.message : String(e)));
+    } finally {
+      setRowBusy(null);
+    }
+  };
+
+  const onRotate = (r: CredentialRow) =>
+    runKeyOp(r, `rotated "${r.name}" — a new current version`, () =>
+      rotateCryptoKey({ scope: r._scope, name: r.name }),
+    );
+
+  const onRetire = (r: CredentialRow) => {
+    const n = parseMinVersion(r, minText);
+    if (n === null) return;
+    if (!confirm(retireWarning(r, n))) return;
+    void runKeyOp(r, `"${r.name}": versions below v${n} retired`, async () => {
+      await setCryptoKeyMinVersion({ scope: r._scope, name: r.name, min_version: n });
+      setMinText("");
+    });
+  };
+
+  const onDeleteVersion = (r: CredentialRow, version: number) => {
     if (
       !confirm(
-        `Delete the ${r._scope} credential "${r.name}"? Anything referencing $cred:${r.name} will stop resolving.`,
+        `Delete version ${version} of the crypto key "${r.name}"? Its material is destroyed — anything still encrypted or signed with it can never be decrypted or verified again.`,
       )
     ) {
       return;
     }
-    try {
-      await deleteCredential({ scope: r._scope, name: r.name });
-      await refresh();
-    } catch (e) {
-      setErr(e instanceof Error ? e.message : String(e));
+    void runKeyOp(r, `"${r.name}": version ${version} deleted`, () =>
+      deleteCryptoKeyVersion({ scope: r._scope, name: r.name, version }),
+    );
+  };
+
+  const toggleOpen = (r: CredentialRow) => {
+    const k = rowKey(r);
+    if (openKey === k) {
+      setOpenKey(null);
+      return;
     }
+    setOpenKey(k);
+    const b = minVersionBounds(r);
+    setMinText(b ? String(b.lo) : "");
+  };
+
+  const cols = userOnly ? 3 : 4;
+
+  // renderVersions is a crypto key's expanded row: retire versions below…, and
+  // delete for each retired version.
+  const renderVersions = (r: CredentialRow, rb: boolean, k: string) => {
+    const acts = cryptoKeyActions(r);
+    const bounds = minVersionBounds(r);
+    const newMin = parseMinVersion(r, minText);
+    return (
+      <tr key={`${k}#versions`}>
+        <td colSpan={cols}>
+          <h4 className="settings-subhead">Retire versions below…</h4>
+          {acts.retire && bounds ? (
+            <form
+              className="cred-create"
+              onSubmit={(e) => {
+                e.preventDefault();
+                onRetire(r);
+              }}
+            >
+              <input
+                type="number"
+                min={bounds.lo}
+                max={bounds.hi}
+                step={1}
+                value={minText}
+                onChange={(e) => setMinText(e.target.value)}
+                aria-label={`new min_version (${bounds.lo}–${bounds.hi})`}
+                title={`new min_version, ${bounds.lo}–${bounds.hi}: every version below it is retired`}
+              />
+              <button
+                type="submit"
+                className="ghost-btn danger"
+                disabled={rb || newMin === null}
+              >
+                retire
+              </button>
+            </form>
+          ) : (
+            <p className="settings-muted">
+              Nothing to retire: only the current version is in use. Rotate first
+              to add a newer version.
+            </p>
+          )}
+          <p className="settings-help">
+            <strong>Warning:</strong>{" "}
+            {newMin !== null
+              ? retireWarning(r, newMin)
+              : "Anything encrypted or signed with a retired version stops decrypting or verifying unless it is rewrapped to a newer version first. min_version can only be raised."}
+          </p>
+          <h4 className="settings-subhead">Retired versions</h4>
+          {acts.deletableVersions.length === 0 ? (
+            <p className="settings-muted">no retired versions.</p>
+          ) : (
+            <div>
+              {acts.deletableVersions.map((v) => (
+                <span key={v}>
+                  <button
+                    type="button"
+                    className="ghost-btn danger"
+                    onClick={() => onDeleteVersion(r, v)}
+                    disabled={rb}
+                    title="destroy this retired version's material"
+                  >
+                    delete v{v}
+                  </button>{" "}
+                </span>
+              ))}
+            </div>
+          )}
+        </td>
+      </tr>
+    );
   };
 
   return (
@@ -258,6 +486,100 @@ export function CredentialsPanel({ userOnly = false }: { userOnly?: boolean }) {
         </button>
       </form>
 
+      <h3 className="settings-subhead">Crypto keys</h3>
+      <p className="settings-help">
+        A crypto key is used by agents through the Crypto tool to encrypt, sign or
+        make one-time codes — it is never sent anywhere and its material is never
+        shown, not even once. <strong>Generate</strong> makes a key on the server
+        that nobody ever sees; import existing material only when you must match a
+        key that already exists elsewhere.
+      </p>
+      <form className="cred-create" onSubmit={onCreateKey}>
+        <input
+          type="text"
+          placeholder="key name (e.g. invoice-signing)"
+          value={keyName}
+          onChange={(e) => setKeyName(e.target.value)}
+          autoComplete="off"
+          spellCheck={false}
+        />
+        <select
+          value={keyType}
+          onChange={(e) => setKeyType(e.target.value as CryptoKeyType)}
+          title="key type — fixed for the key's lifetime"
+        >
+          {CRYPTO_KEY_TYPES.map((t) => (
+            <option key={t} value={t}>
+              {t}
+            </option>
+          ))}
+        </select>
+        <input
+          type="datetime-local"
+          value={keyExpiry}
+          onChange={(e) => setKeyExpiry(e.target.value)}
+          title="expiry (optional) — left empty: the key does not expire"
+          aria-label="expiry (optional)"
+        />
+        {keyImport && (
+          <>
+            <input
+              type="password"
+              placeholder="key material (secret — write-only)"
+              value={keyValue}
+              onChange={(e) => setKeyValue(e.target.value)}
+              autoComplete="new-password"
+            />
+            <select
+              value={keyEncoding}
+              onChange={(e) => setKeyEncoding(e.target.value)}
+              title="how the material is written; default: base64 for symmetric keys, base32 for totp, pem for ed25519 / ecdsa-p256"
+            >
+              <option value="">encoding: default</option>
+              {CRYPTO_KEY_ENCODINGS.map((enc) => (
+                <option key={enc} value={enc}>
+                  {enc}
+                </option>
+              ))}
+            </select>
+          </>
+        )}
+        {!userOnly && (
+          <select
+            value={keyScope}
+            onChange={(e) => setKeyScope(e.target.value as CredentialScope)}
+            title="tenant = shared; user = your own subject"
+          >
+            <option value="tenant">tenant</option>
+            <option value="user">user</option>
+          </select>
+        )}
+        <button
+          type="submit"
+          className="primary-btn"
+          disabled={keyBusy || !keyName.trim() || (keyImport && !keyValue)}
+        >
+          {keyBusy
+            ? keyImport
+              ? "importing…"
+              : "generating…"
+            : keyImport
+              ? "import key"
+              : "generate crypto key"}
+        </button>
+        <button
+          type="button"
+          className="ghost-btn"
+          onClick={() => {
+            setKeyImport(!keyImport);
+            setKeyValue(""); // switching away never keeps typed material
+          }}
+          disabled={keyBusy}
+        >
+          {keyImport ? "generate instead" : "import existing key…"}
+        </button>
+      </form>
+
       <table className="settings-table cred-table">
         <thead>
           <tr>
@@ -270,45 +592,116 @@ export function CredentialsPanel({ userOnly = false }: { userOnly?: boolean }) {
         <tbody>
           {rows.length === 0 ? (
             <tr>
-              <td colSpan={userOnly ? 3 : 4} className="settings-muted">
+              <td colSpan={cols} className="settings-muted">
                 no credentials stored.
               </td>
             </tr>
           ) : (
-            rows.map((r) => (
-              <tr key={`${r._scope}/${r.name}`}>
-                <td>
-                  <code>{r.name}</code>
-                  {r.allowed_urls && (
-                    <div className="settings-muted">
-                      {r.allowed_urls.length === 0
-                        ? "sent nowhere"
-                        : `only to ${r.allowed_urls.join(", ")}`}
-                    </div>
-                  )}
-                  {r.username && (
-                    <div className="settings-muted">user {r.username}</div>
-                  )}
-                </td>
-                {!userOnly && <td>{r._scope}</td>}
-                <td>
-                  {r.updated_at ? new Date(r.updated_at).toLocaleString() : "—"}
-                </td>
-                <td>
-                  <button
-                    type="button"
-                    className="ghost-btn danger"
-                    onClick={() => void onDelete(r)}
-                  >
-                    delete
-                  </button>
-                </td>
-              </tr>
-            ))
+            rows.flatMap((r) => {
+              const crypto = isCryptoKey(r);
+              const k = rowKey(r);
+              const open = crypto && openKey === k;
+              const rb = rowBusy === k;
+              const main = (
+                <tr key={k}>
+                  <td>
+                    <code>{r.name}</code>
+                    {crypto && <CryptoKeyDetails r={r} />}
+                    {r.allowed_urls && (
+                      <div className="settings-muted">
+                        {r.allowed_urls.length === 0
+                          ? "sent nowhere"
+                          : `only to ${r.allowed_urls.join(", ")}`}
+                      </div>
+                    )}
+                    {r.username && (
+                      <div className="settings-muted">user {r.username}</div>
+                    )}
+                  </td>
+                  {!userOnly && <td>{r._scope}</td>}
+                  <td>
+                    {r.updated_at ? new Date(r.updated_at).toLocaleString() : "—"}
+                  </td>
+                  <td>
+                    {crypto && (
+                      <>
+                        <button
+                          type="button"
+                          className="ghost-btn"
+                          onClick={() => void onRotate(r)}
+                          disabled={rb}
+                          title="add a new current version, generated on the server; older versions keep decrypting until retired"
+                        >
+                          rotate
+                        </button>{" "}
+                        <button
+                          type="button"
+                          className="ghost-btn"
+                          onClick={() => toggleOpen(r)}
+                          aria-expanded={open}
+                        >
+                          {open ? "hide versions" : "versions…"}
+                        </button>{" "}
+                      </>
+                    )}
+                    <button
+                      type="button"
+                      className="ghost-btn danger"
+                      onClick={() => void onDelete(r)}
+                      disabled={rb}
+                    >
+                      delete
+                    </button>
+                  </td>
+                </tr>
+              );
+              if (!open) return [main];
+              return [main, renderVersions(r, rb, k)];
+            })
           )}
         </tbody>
       </table>
     </div>
+  );
+}
+
+// CryptoKeyDetails is a crypto key's name-cell detail: the badge with its type,
+// current/min version, expiry, and the compact version list (retired marked).
+function CryptoKeyDetails({ r }: { r: CredentialMeta }) {
+  return (
+    <>
+      {" "}
+      <span
+        className="status-pill status-ok"
+        title="crypto key — its material is never shown"
+      >
+        crypto key · {r.key_type ?? "?"}
+      </span>
+      <div className="settings-muted">
+        {versionSummary(r)}
+        {r.expires_at &&
+          ` · ${r.expired ? "expired" : "expires"} ${new Date(r.expires_at).toLocaleString()}`}
+      </div>
+      <div className="settings-muted">
+        {versionChips(r).map((c) => (
+          <span key={c.label}>
+            <span
+              className={`status-pill${c.retired ? " status-retired" : c.current ? " status-ok" : ""}`}
+              title={
+                c.retired
+                  ? "retired — no longer decrypts or verifies"
+                  : c.current
+                    ? "current — used for new data"
+                    : "still decrypts and verifies"
+              }
+            >
+              {c.label}
+              {c.retired ? " retired" : c.current ? " current" : ""}
+            </span>{" "}
+          </span>
+        ))}
+      </div>
+    </>
   );
 }
 
