@@ -33,7 +33,12 @@
 // Also excluded — the *tool-capability* ACLs that gate which substrate
 // tools an agent may CALL but are NOT part of its authored definition:
 //
-//	agent_def_scopes (and the other *_def_scopes gates)
+//	agent_def_scopes (and the other *_def_scopes gates), crypto_scopes
+//
+// crypto_scopes (the Crypto tool's key-scope grant) round-trips through
+// `AgentDef set` and the MD loader like evaluation_scopes, but it is classed
+// with the *_def_scopes gates: authority over keys, not authored behaviour, and
+// a fork that only changes it must not look like new content.
 //
 // These are operator-yaml-only declarations resolved at boot; the in-DB
 // agent_defs row never stores them, so hashing them would make a

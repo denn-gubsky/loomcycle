@@ -41,3 +41,25 @@ func TestMaskCredentialCreateValue(t *testing.T) {
 		t.Errorf("malformed credential input not defensively blanked: %s", got)
 	}
 }
+
+// The Crypto tool's plaintext and CredentialDef's key-transfer passphrase and
+// blob are masked the same way: each tool call is stored before it runs.
+func TestMaskCredentialCreateValue_CryptoInputs(t *testing.T) {
+	cases := map[string]string{
+		"Crypto":        `{"op":"encrypt","key":"k","plaintext":"card 4111 1111"}`,
+		"CredentialDef": `{"op":"export_key","name":"k","passphrase":"card 4111 1111"}`,
+	}
+	for tool, in := range cases {
+		out := maskCredentialCreateValue(tool, json.RawMessage(in))
+		if strings.Contains(string(out), "4111") {
+			t.Errorf("%s: secret survived masking: %s", tool, out)
+		}
+		if !strings.Contains(string(out), `"key"`) && !strings.Contains(string(out), `"name"`) {
+			t.Errorf("%s: masking dropped the other fields: %s", tool, out)
+		}
+	}
+	decrypt := json.RawMessage(`{"op":"decrypt","ciphertext":"lcx1:k:k:1:AAAA"}`)
+	if got := maskCredentialCreateValue("Crypto", decrypt); string(got) != string(decrypt) {
+		t.Errorf("a Crypto call without plaintext was changed: %s", got)
+	}
+}

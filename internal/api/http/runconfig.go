@@ -611,6 +611,11 @@ type spawnRecord struct {
 	// (residentAddressedSince). Written at most once per
 	// residentAddressedEvery.
 	AddressedAt int64 `json:"addressed_at,omitempty"`
+	// CryptoScopes is the parent run's effective Crypto key scopes at spawn —
+	// the ceiling the child's own crypto_scopes were narrowed to. A resume
+	// narrows again against it (resumedCryptoPolicy); absent means the parent
+	// held none, so a sub-run recorded before this field resumes with none.
+	CryptoScopes []string `json:"crypto_scopes,omitempty"`
 }
 
 // volumeCeilingRecord mirrors tools.VolumePolicyValue minus each binding's

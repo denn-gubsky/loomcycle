@@ -143,6 +143,10 @@ type Agent struct {
 	// "submit_descendants" / "submit_any" / "read_any". Empty =
 	// default-deny.
 	EvaluationScopes []string
+	// CryptoScopes is the Crypto-tool key-scope gate (see
+	// config.AgentDef.CryptoScopes). Authority, not content: like
+	// AgentDefScopes it round-trips but is NOT part of content_sha256.
+	CryptoScopes []string
 	// Interruption is the v0.8.16 Interruption-tool ACL (enabled / kinds /
 	// max_pending). Mirrors config.AgentDef.Interruption. Carried here (F14)
 	// so an MD-declared `interruption:` block round-trips to config at boot
@@ -434,6 +438,7 @@ type frontmatter struct {
 	EphemeralVolumes      string                     `yaml:"ephemeral_volumes"`
 	Retention             string                     `yaml:"retention"`
 	EvaluationScopes      []string                   `yaml:"evaluation_scopes"`
+	CryptoScopes          []string                   `yaml:"crypto_scopes"`
 	Interruption          AgentInterruptionACL       `yaml:"interruption"` // F14: round-trips like channels
 	SystemPromptFile      string                     `yaml:"system_prompt_file"`
 	// SystemPrompt as an inline frontmatter field is intentionally
@@ -520,6 +525,7 @@ func parseAgent(raw []byte) (*Agent, error) {
 	a.EphemeralVolumes = fm.EphemeralVolumes
 	a.Retention = fm.Retention
 	a.EvaluationScopes = fm.EvaluationScopes
+	a.CryptoScopes = fm.CryptoScopes
 	a.Interruption = fm.Interruption
 	a.SystemPromptFile = fm.SystemPromptFile
 	a.SystemPrompt = body

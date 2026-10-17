@@ -497,6 +497,9 @@ type RegisterAgentRequest struct {
 	Channels         config.AgentChannelACL      `json:"channels,omitempty"`
 	EvaluationScopes []string                    `json:"evaluation_scopes,omitempty"`
 	Interruption     config.AgentInterruptionACL `json:"interruption,omitempty"`
+	// CryptoScopes is the Crypto tool's key-scope grant (config.AgentDef.
+	// CryptoScopes): agent / user / tenant / run, or ["-*"]. Unset = none.
+	CryptoScopes []string `json:"crypto_scopes,omitempty"`
 
 	// TTLSeconds is how long this dynamic agent should live. When
 	// 0, falls back to LOOMCYCLE_DYNAMIC_AGENT_DEFAULT_TTL_SECONDS

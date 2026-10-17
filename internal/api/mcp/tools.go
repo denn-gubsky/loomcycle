@@ -372,6 +372,7 @@ func toolDescriptors() []loommcp.ToolDescriptor {
 					"max_tokens":    {"type": "integer", "minimum": 1},
 					"memory_scopes": {"type": "array", "items": {"type": "string"}, "description": "Memory tool scope gate: [agent] and/or [user]. Required for the Memory tool to work."},
 					"evaluation_scopes": {"type": "array", "items": {"type": "string"}, "description": "Evaluation tool scope gate, e.g. [submit_self, read_any]."},
+					"crypto_scopes": {"type": "array", "items": {"type": "string", "enum": ["agent", "user", "tenant", "run", "-*"]}, "description": "Crypto tool key scopes the agent's key-backed ops may use. Unset grants none (keyless ops only)."},
 					"max_iterations": {"type": "integer", "minimum": 1, "description": "Cap on provider calls per run. 0 = loop default (16)."},
 					"channels": {"type": "object", "description": "Channel tool ACL.", "properties": {"publish": {"type": "array", "items": {"type": "string"}}, "subscribe": {"type": "array", "items": {"type": "string"}}}},
 					"interruption": {"type": "object", "description": "Interruption tool gate. enabled MUST be true for the tool to work.", "properties": {"enabled": {"type": "boolean"}, "kinds": {"type": "array", "items": {"type": "string"}}, "max_pending": {"type": "integer"}}},
