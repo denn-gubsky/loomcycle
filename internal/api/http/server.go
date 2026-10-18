@@ -7887,7 +7887,7 @@ func maskCredentialCreateValue(toolName string, input json.RawMessage) json.RawM
 	case "CredentialDef", "credentialdef":
 		fields = []string{"value", "passphrase", "blob"}
 	case "Crypto", "crypto":
-		fields = []string{"plaintext"}
+		fields = []string{builtin.CryptoPlaintextField, builtin.CryptoPasswordField}
 	default:
 		return input
 	}

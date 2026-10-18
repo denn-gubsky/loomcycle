@@ -13,6 +13,8 @@ system expects on a webhook you send it.
 - `data` (required) — the exact bytes to MAC. Text, or base64 with
   `input_encoding: "base64"`. A single changed byte, such as a re-serialized
   JSON body, gives a different MAC.
+- `from` — read the data from a store instead: `volume:<path>`,
+  `memory:<scope>/<key>` or `document:<scope>/<chunk_id>`.
 - `output_encoding` — `hex` (default) or `base64`.
 
 ## Returns

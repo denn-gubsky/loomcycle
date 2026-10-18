@@ -45,11 +45,13 @@ func TestMaskCredentialCreateValue(t *testing.T) {
 // The Crypto tool's plaintext and CredentialDef's key-transfer passphrase and
 // blob are masked the same way: each tool call is stored before it runs.
 func TestMaskCredentialCreateValue_CryptoInputs(t *testing.T) {
-	cases := map[string]string{
-		"Crypto":        `{"op":"encrypt","key":"k","plaintext":"card 4111 1111"}`,
-		"CredentialDef": `{"op":"export_key","name":"k","passphrase":"card 4111 1111"}`,
+	cases := []struct{ tool, in string }{
+		{"Crypto", `{"op":"encrypt","key":"k","plaintext":"card 4111 1111"}`},
+		{"Crypto", `{"op":"hash_password","key":"k","password":"card 4111 1111"}`},
+		{"CredentialDef", `{"op":"export_key","name":"k","passphrase":"card 4111 1111"}`},
 	}
-	for tool, in := range cases {
+	for _, c := range cases {
+		tool, in := c.tool, c.in
 		out := maskCredentialCreateValue(tool, json.RawMessage(in))
 		if strings.Contains(string(out), "4111") {
 			t.Errorf("%s: secret survived masking: %s", tool, out)

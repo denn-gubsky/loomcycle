@@ -8,6 +8,8 @@ description: "Crypto op=hash — SHA-256, SHA-512, SHA3-256 or SHA3-512 digest o
 
 - `data` (required) — what to hash. Text, or base64 with
   `input_encoding: "base64"`.
+- `from` — read the data from a store instead: `volume:<path>`,
+  `memory:<scope>/<key>` or `document:<scope>/<chunk_id>`.
 - `algorithm` — `sha256` (default), `sha512`, `sha3-256` or `sha3-512`.
 - `output_encoding` — `hex` (default) or `base64`.
 
