@@ -99,6 +99,12 @@ var tenantConfinableTools = map[string]bool{
 	"documentsourcedef":    true, // RFC CE — tenant-confined remote-document-source substrate
 	"volumedef":            true,
 	"credentialdef":        true, // RFC AR — tenant/user-confined secure credential store
+	// crypto (RFC EP P1b): the connector takes the tenant and the subject
+	// whose user keys it may use from the PRINCIPAL; the only wire field that
+	// names a tenant is the admin-only top-level "tenant", which it refuses
+	// for anyone else. It also needs substrate:tenant by name
+	// (toolRequiredScope): it uses the tenant's keys.
+	"crypto": true,
 
 	// Per-(scope, scope_id, tenant) data tools.
 	"memory":     true,
@@ -188,6 +194,10 @@ var toolRequiredScope = map[string]string{
 	// An operator's control, not member data: a member who could set one could
 	// read what its colleagues' no-trace runs said.
 	"retention_override": auth.ScopeTenant,
+	// The tenant's keys, which POST /v1/_crypto keeps from a tenant's
+	// members: a member who could decrypt with them could read whatever the
+	// tenant sealed.
+	"crypto": auth.ScopeTenant,
 	// Starting a run, and every write on a run's state.
 	"spawn_run":            auth.ScopeRunsCreate,
 	"spawn_runs":           auth.ScopeRunsCreate,
