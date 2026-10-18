@@ -1,11 +1,12 @@
 openapi: 3.1.0
 info:
-  title: loomcycle data API (memory, documents, decision models)
+  title: loomcycle data API (memory, documents, decision models, crypto)
   version: "1.0.0"
   description: |
     The external HTTP data API for loomcycle's **memory** and **document/path**
     storage, plus the **decision-model** routes (typed questions about state the
-    caller supplies). Every route here already existed — this contract publishes
+    caller supplies) and the **crypto** route (encrypt, sign and verify with keys
+    the runtime holds). Every route here already existed — this contract publishes
     them so any language can generate a client (e.g. `openapi-generator`) instead
     of hand-rolling requests, and so a peer instance or a second application can
     consume the store directly. It is not the whole HTTP API: the run, usage,
@@ -21,7 +22,9 @@ info:
     browse WITHIN the caller's authorized tenant (admin may cross tenants).
     The decision routes require the `runs:create` scope instead: a decision is
     what a caller would otherwise start a run to get, and it spends the same
-    token budget.
+    token budget. The **crypto** route (`/v1/_crypto`) requires
+    `substrate:tenant` and is NOT open to a tenant's members: decrypting with
+    the tenant's keys would let a member read whatever the tenant sealed.
 
     The spec document itself (`/v1/openapi.yaml`, `/v1/openapi.json`) and the
     docs console (`/v1/docs`) are served unauthenticated — the contract is
@@ -38,6 +41,8 @@ tags:
     description: Chunked-graph documents and the Path VFS (op-dispatch).
   - name: decision
     description: Decision models — typed questions about supplied state, answered with probabilities.
+  - name: crypto
+    description: Encrypt, decrypt, sign, verify, MAC and one-time codes with keys the runtime holds.
 paths:
   /v1/_memory/scopes:
     get:
@@ -327,6 +332,54 @@ paths:
         "422": { $ref: "#/components/responses/ToolRefused" }
         "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { $ref: "#/components/responses/Forbidden" }
+  /v1/_crypto:
+    post:
+      tags: [crypto]
+      summary: Crypto tool op-dispatch outside a run (encrypt/decrypt/rewrap/mac/verify_mac/sign/verify/public_key/totp/hash/random).
+      description: |
+        The `Crypto` tool's operations for an operator or a service outside any
+        run, such as a backend that encrypts a field before writing it to its
+        own database. The request body is the tool's input, discriminated on
+        `op`; the response is the tool's own JSON result (shape varies by `op`).
+        Key material is never returned.
+
+        **Who and which keys.** Requires `substrate:tenant` (or
+        `substrate:admin`); a tenant's members and run-plane tokens are refused.
+        A call uses its tenant's keys and its own subject's user keys, never an
+        agent's, and there are no run credentials outside a run. An admin may
+        name another tenant with `tenant`, and then uses that tenant's keys only.
+
+        **Interop.** The ciphertext envelope and its associated data are the
+        in-run tool's own, so a value this route encrypts decrypts in the
+        tenant's runs, and the reverse. Decrypt and verify failures are opaque.
+
+        **Limits.** Each call takes one from the token's run rate, when the
+        token has one (`429` with `Retry-After`). Each data argument is capped
+        (`LOOMCYCLE_CRYPTO_MAX_BYTES`).
+      operationId: cryptoOp
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/CryptoToolInput" }
+      responses:
+        "200":
+          description: The tool's JSON result (op-dependent).
+          content:
+            application/json:
+              schema: { type: object, additionalProperties: true }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "422": { $ref: "#/components/responses/ToolRefused" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "429":
+          description: "`rate_limited`: the token's rate is spent. Retry after `Retry-After` seconds."
+          headers:
+            Retry-After:
+              schema: { type: integer }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
   /v1/_document/asset/{chunk_id}:
     get:
       tags: [documents]
@@ -917,6 +970,44 @@ components:
         recursive: { type: boolean }
         kind_filter: { type: string, description: "ls: document/volume_mount/memory_entry/directory." }
         resource_too: { type: boolean }
+    # CryptoToolInput mirrors the Crypto tool's InputSchema() plus the operator
+    # API's `tenant`; its properties and enums are drift-tested against the
+    # live tool schema (internal/api/http/openapi_test.go).
+    CryptoToolInput:
+      type: object
+      required: [op]
+      properties:
+        op:
+          type: string
+          enum: [encrypt, decrypt, rewrap, mac, verify_mac, sign, verify, public_key, totp, hash, random]
+        tenant: { type: string, description: "Admin only: the tenant whose keys to use. Default: the token's own." }
+        key: { type: string, description: "A crypto key stored with CredentialDef, by name." }
+        cred: { type: string, description: "An ordinary stored credential, by name, used as key material. Needs key_type." }
+        run: { type: string, description: "A run credential. There are none outside a run, so this is always refused here." }
+        key_scope: { type: string, enum: [agent, user, tenant], description: "key and cred: which scope's key, when more than one holds the name. agent is refused here." }
+        key_type:
+          type: string
+          enum: [aes-256-gcm, xchacha20-poly1305, hmac-sha256, hmac-sha512, ed25519, ecdsa-p256, totp]
+          description: "cred only: what kind of key the value is."
+        key_encoding: { type: string, enum: [raw, base64, hex, base32, pem] }
+        derive: { type: boolean, description: "cred only: derive an AEAD or HMAC key from any secret." }
+        version: { type: integer, description: "key only: a version, for public_key or a raw ciphertext." }
+        plaintext: { type: string, description: "encrypt: text, or base64 with input_encoding base64." }
+        ciphertext: { type: string, description: "decrypt, rewrap: what encrypt returned." }
+        data: { type: string, description: "mac, verify_mac, sign, verify, hash." }
+        input_encoding: { type: string, enum: [text, base64] }
+        output_encoding: { type: string, enum: [hex, base64, text] }
+        context: { type: string, description: "encrypt, decrypt, rewrap: associated data; a ciphertext decrypts only with the same context." }
+        format: { type: string, enum: [envelope, raw, jws] }
+        sensitive: { type: boolean }
+        mac: { type: string, description: "verify_mac: hex or base64." }
+        signature: { type: string, description: "verify: a raw signature (base64) or a JWS token." }
+        public_key: { type: string, description: "verify: a PEM or JWK public key, in place of key." }
+        digits: { type: integer }
+        period: { type: integer }
+        algorithm: { type: string, enum: [sha256, sha512, sha3-256, sha3-512] }
+        kind: { type: string, enum: [bytes, token, uuid] }
+        length: { type: integer }
     # DecisionRequest mirrors the Decision tool's InputSchema(); its top-level
     # properties, the question properties and the question types are
     # drift-tested against the live tool schema, and every failure code against
