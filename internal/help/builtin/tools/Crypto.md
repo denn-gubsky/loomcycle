@@ -59,6 +59,16 @@ Each key type does certain operations:
 
 An RSA key either signs (`rsa-pss-*`) or decrypts (`rsa-oaep-*`), never both.
 
+### Keys held in an external KMS
+
+A crypto key may be held in **Vault Transit, AWS KMS or Google Cloud KMS**
+instead of by the runtime (`CredentialDef op=list` shows `key_backend`). You
+use it the same way, by name; each operation is then a call to that KMS, so it
+can fail as `transient` when the KMS is unreachable or `permission` when it
+refuses. Its versions are the KMS's: `key_version` is the KMS's own version
+(0 for AWS, which has none). It cannot make an `aes-256-gcm` JWE. Its owner
+rotates and retires it in the KMS, not with CredentialDef.
+
 ## Formats and context
 
 `encrypt` with a symmetric key returns an **envelope** by default:

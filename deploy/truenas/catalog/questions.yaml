@@ -443,6 +443,12 @@ questions:
             schema:
               type: string
               default: ""
+          - variable: LOOMCYCLE_KMS_VAULT_ALLOW_HTTP
+            label: LOOMCYCLE_KMS_VAULT_ALLOW_HTTP
+            description: 'A crypto key can instead be held in Vault Transit, AWS KMS or Google Cloud KMS (CredentialDef create with backend + external). A Vault address must be on LOOMCYCLE_HTTP_HOST_ALLOWLIST or LOOMCYCLE_HTTP_PRIVATE_HOST_ALLOWLIST, and https unless this is set (a dev Vault on plain http; the Vault token travels in a header). (example: 1)'
+            schema:
+              type: string
+              default: ""
           - variable: LOOMCYCLE_SKILLS_ROOT
             label: LOOMCYCLE_SKILLS_ROOT
             description: 'Skill bodies count as operator-authored content and are trusted — they''re loaded with the same trust as inline `system_prompt:`. Do not point this at a directory writable by untrusted users. (example: /srv/loomcycle/skills)'

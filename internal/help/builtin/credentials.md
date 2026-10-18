@@ -132,6 +132,31 @@ A stored credential named for a provider env var (e.g. `ANTHROPIC_API_KEY`,
 `BRAVE_API_KEY`) overrides the operator's host key for that run, so a tenant can
 bring its own key and be billed for its own spend.
 
+## Crypto keys held in an external KMS
+
+A crypto key (usage `crypto`, for the Crypto tool) can reference a key held in
+**Vault Transit, AWS KMS or Google Cloud KMS** instead of material stored here:
+`create` with `usage: "crypto"`, `key_type`, `backend` (`vault`, `aws_kms` or
+`gcp_kms`) and an `external` object. Only the reference is stored; every Crypto
+operation on the key is a call to the KMS.
+
+- `vault`: `address` (an https URL whose host is on the operator's host
+  allowlist), `key` (the Transit key name), optional `mount` (default
+  `transit`) and `namespace`, and `token`.
+- `aws_kms`: `region`, `key_id` (a key id, key ARN, `alias/<name>` or alias
+  ARN), `access_key_id`, `secret_access_key`, optional `session_token`.
+- `gcp_kms`: `key` (`projects/<p>/locations/<l>/keyRings/<r>/cryptoKeys/<k>`,
+  optionally `/cryptoKeyVersions/<n>` for a signing or RSA key) and
+  `service_account` (a service-account key JSON).
+
+Each credential field is `$cred:<name>`: an ordinary credential stored in the
+**same scope as the key** (a user key reads the user's, a tenant key the
+tenant's), without `allowed_urls`. The KMS is asked at `create` that the key
+exists, is enabled and is of `key_type` (ed25519 is Vault only). Such a key is
+added outside a run. Its versions live in the KMS: `rotate`,
+`set_min_version`, `delete_version` and `export_key` refuse it, and `delete`
+removes only the reference.
+
 ## vs. per-run credentials
 
 `CredentialDef` is the **durable** store. A trigger (schedule / webhook / A2A)
