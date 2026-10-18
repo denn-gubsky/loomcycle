@@ -192,8 +192,7 @@ export class Conversation<TRef> {
         await this.say(HELP_TEXT);
         return;
       case "stop":
-        if (this.live?.runId) await this.cancelTurn("stopped by /stop");
-        else await this.say("Nothing is running.");
+        if (!this.live?.runId || !(await this.cancelTurn("stopped by /stop"))) await this.say("Nothing is running.");
         return;
       case "new":
         await this.endRun("new conversation");
@@ -557,17 +556,20 @@ export class Conversation<TRef> {
     }
   }
 
-  private async cancelTurn(reason: string): Promise<void> {
+  /** cancelTurn stops the turn in progress. It reports false when there was
+   *  none: the run was parked, waiting for the next message. */
+  private async cancelTurn(reason: string): Promise<boolean> {
     const runId = this.live?.runId;
-    if (!runId) return;
+    if (!runId) return false;
     try {
       const client = await this.runClient();
       await client.cancelTurn(runId, { reason });
+      return true;
     } catch (err) {
       // 409: the run was not mid-turn. Nothing to stop.
-      if (statusOf(err) !== 409) {
-        this.deps.log.warn("cancel turn failed", { conversation: this.rec.conversationId, run: runId, status: statusOf(err) });
-      }
+      if (statusOf(err) === 409) return false;
+      this.deps.log.warn("cancel turn failed", { conversation: this.rec.conversationId, run: runId, status: statusOf(err) });
+      return true;
     }
   }
 
