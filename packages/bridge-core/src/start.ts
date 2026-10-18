@@ -137,8 +137,8 @@ export function createBridge<TRef>(cfg: SharedConfig, adapter: BridgeAdapter<TRe
 /** runCli runs a bridge until SIGINT or SIGTERM. `build` reads the
  *  configuration and returns the bridge; a ConfigError is reported as a list
  *  of problems and exit code 2. */
-export async function runCli(name: string, build: () => Bridge<unknown>): Promise<void> {
-  let bridge: Bridge<unknown>;
+export async function runCli<TRef>(name: string, build: () => Bridge<TRef>): Promise<void> {
+  let bridge: Bridge<TRef>;
   try {
     bridge = build();
   } catch (err) {
