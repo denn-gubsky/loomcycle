@@ -266,20 +266,22 @@ func TestDecryptJWE_RefusesTamperingAndSteering(t *testing.T) {
 		key []byte
 		tok string
 	}{
-		"wrong key":      {X25519, other, tok},
-		"key type swap":  {AES256GCM, aesKey, tok},
-		"alg dir":        {X25519, x, reheader(func(h map[string]any) { h["alg"] = "dir" })},
-		"enc A128GCM":    {X25519, x, reheader(func(h map[string]any) { h["enc"] = "A128GCM" })},
-		"zip":            {X25519, x, reheader(func(h map[string]any) { h["zip"] = "DEF" })},
-		"crit":           {X25519, x, reheader(func(h map[string]any) { h["crit"] = []string{"exp"} })},
-		"kid changed":    {X25519, x, reheader(func(h map[string]any) { h["kid"] = "k.v2" })},
-		"encrypted key":  {X25519, x, flip(1)},
-		"iv":             {X25519, x, flip(2)},
-		"ciphertext":     {X25519, x, flip(3)},
-		"tag":            {X25519, x, flip(4)},
-		"four parts":     {X25519, x, strings.Join(parts[:4], ".")},
-		"padded base64":  {X25519, x, parts[0] + "=." + strings.Join(parts[1:], ".")},
-		"low-order epk":  {X25519, x, reheader(func(h map[string]any) { h["epk"].(map[string]any)["x"] = base64.RawURLEncoding.EncodeToString(make([]byte, 32)) })},
+		"wrong key":     {X25519, other, tok},
+		"key type swap": {AES256GCM, aesKey, tok},
+		"alg dir":       {X25519, x, reheader(func(h map[string]any) { h["alg"] = "dir" })},
+		"enc A128GCM":   {X25519, x, reheader(func(h map[string]any) { h["enc"] = "A128GCM" })},
+		"zip":           {X25519, x, reheader(func(h map[string]any) { h["zip"] = "DEF" })},
+		"crit":          {X25519, x, reheader(func(h map[string]any) { h["crit"] = []string{"exp"} })},
+		"kid changed":   {X25519, x, reheader(func(h map[string]any) { h["kid"] = "k.v2" })},
+		"encrypted key": {X25519, x, flip(1)},
+		"iv":            {X25519, x, flip(2)},
+		"ciphertext":    {X25519, x, flip(3)},
+		"tag":           {X25519, x, flip(4)},
+		"four parts":    {X25519, x, strings.Join(parts[:4], ".")},
+		"padded base64": {X25519, x, parts[0] + "=." + strings.Join(parts[1:], ".")},
+		"low-order epk": {X25519, x, reheader(func(h map[string]any) {
+			h["epk"].(map[string]any)["x"] = base64.RawURLEncoding.EncodeToString(make([]byte, 32))
+		})},
 		"epk wrong kind": {X25519, x, reheader(func(h map[string]any) { h["epk"].(map[string]any)["crv"] = "Ed25519" })},
 	}
 	for name, c := range cases {
