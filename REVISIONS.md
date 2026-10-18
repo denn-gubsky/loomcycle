@@ -8,6 +8,107 @@ Each entry is the release's tag annotation, so the tag and this file cannot disa
 
 For the **public roadmap**, see [`docs/PLAN.md`](docs/PLAN.md).
 
+## What's in v1.116.0
+
+*A **`Crypto` tool whose keys the model never sees.** An agent names a key; the runtime encrypts, decrypts, signs, verifies, MACs or makes a one-time code, and only the result comes back. Keys live in loomcycle (sealed under `LOOMCYCLE_SECRET_KEY`) or in **Vault Transit, AWS KMS or Google Cloud KMS**, where the material never leaves the KMS. The same operations are on the operator API (`POST /v1/_crypto`, gRPC, MCP, both clients), with JWE public-key encryption, RSA-PSS, Argon2id passwords, and data read from and written to a volume, memory or a document by reference, so the model never reads it. Also: **untrusted text never reaches memory**, and **another user who continues a session never gets the session user's credentials**.*
+
+A minor release: #1861 to #1868.
+- #1865, #1866, #1867 and #1868 add the `Crypto` tool, its operator API, JWE / X25519 / RSA / passwords / references, and keys held in an external KMS;
+- #1862 and #1863 keep untrusted text out of memory;
+- #1864 withholds a session user's credentials from another user's work in that session;
+- #1861 fixes a flaky webhook test.
+- `@loomcycle/client` and the Python adapter are 1.116.0.
+
+### The Crypto tool: keys the model never sees (#1865)
+
+An agent that had to protect a value or sign a request was handed the key in its prompt, where it landed in the transcript, provider logs and snapshots, or shelled out through Bash with the key in its environment. Now:
+
+```json
+{"op": "encrypt", "key": "orders", "plaintext": "4111…", "context": "order:7"}
+→ {"ciphertext": "lcx1:kt:orders:3:…", "key_version": 3}
+```
+
+- **Ops:** `encrypt`, `decrypt`, `rewrap`, `mac`, `verify_mac`, `sign`, `verify`, `public_key`, `totp`, `hash`, `random`.
+- **Algorithms:** AES-256-GCM, XChaCha20-Poly1305, HMAC-SHA256/512, Ed25519, ECDSA P-256 (PEM / JWK public keys, JWS), RFC 6238 TOTP, SHA-2/3. The algorithm is fixed by the key's type, never by the call. Nonces come only from the runtime.
+- **The envelope** is `lcx1:<source>:<name>:<version>:<body>`. The source names the key's kind and scope (`kt`/`ku`/`ka` a crypto key in tenant/user/agent scope, `ct`/`cu`/`ca` an ordinary credential, `r` a run credential). The associated data binds tenant, source, name, version and the caller's `context`, so a value moved to another key, scope or context does not open.
+- **Crypto keys** are CredentialDef rows with `usage: crypto`, a fixed `key_type`, numbered versions and `min_version`. New CredentialDef ops: `generate`, `rotate`, `set_min_version`, `delete_version`, `export_key`, `import_key` (export/import under a passphrase, admin-only, outside a run). Inside a run, an agent manages keys only in its own agent scope. At most 32 usable versions per key.
+- **One way only:** no `$cred:` path resolves a crypto key. An ordinary credential may serve as key material (`cred`), unless it carries `allowed_urls`.
+- **A key name has no scope precedence:** it resolves only when exactly one allowed scope holds it; otherwise the call names `key_scope`. An envelope records its scope, so a same-named key that appears later can neither open old data nor block it. (Precedence would let a user plant a key under the tenant key's name and verify their own forgeries.)
+- **`crypto_scopes`** on the AgentDef (`agent` / `user` / `tenant` / `run`) is default-deny: with none, only `hash` and `random` work. Sub-agents narrow to their parent's scopes; it is not per-run overridable and not part of `content_sha256`.
+- **Failures are opaque:** a wrong key, context or tampered body is "did not decrypt" / `valid: false`.
+- **`sensitive: true`** on a decrypt stores a marker instead of the result. `plaintext` (and CredentialDef's `passphrase` / `blob`) are masked in the stored tool call.
+- **Limits:** 1 MiB per argument and 100 ops per run (`LOOMCYCLE_CRYPTO_MAX_BYTES`, `LOOMCYCLE_CRYPTO_MAX_OPS_PER_RUN`).
+- **Audit and metrics:** every keyed op and key change is audited, with no data or key material; `/metrics` gains `loomcycle_crypto_ops_total{op,outcome}`.
+- **Web UI:** the credentials panel lists crypto keys with their versions, and generates, imports, rotates, retires and deletes them.
+
+### The operator API on every transport (#1866)
+
+A service outside any run (a backend sealing a field before writing it, or checking a partner's webhook signature) can now use the tenant's keys without holding them.
+- **HTTP** `POST /v1/_crypto`, **gRPC** `rpc Crypto`, the **MCP** `crypto` meta-tool, **TS** `crypto(input)` plus typed key helpers (`generateCryptoKey`, `rotateCryptoKey`, `exportCryptoKey`, …), **Python** `crypto(input)`; OpenAPI `CryptoToolInput`, drift-tested against the tool's schema.
+- **Keys come from the principal:** its tenant's keys and its own subject's user keys. Agent keys and run credentials are not reachable. An admin may name another tenant, and then gets only that tenant's keys.
+- **Requires `substrate:tenant`**, and is carved out of member access: a member who could decrypt with the tenant's keys could read whatever the tenant sealed.
+- **Limits:** each call takes one from the token's run rate (`429` with `Retry-After`, gRPC `ResourceExhausted`, an MCP tool error with `retryAfterSeconds`). The per-run budget does not apply.
+- **Interop:** the input, envelope and errors are the tool's own, so a value the API seals opens in the tenant's runs, and the reverse.
+- The audit actor is the caller, not the tenant whose keys were used.
+
+### JWE, X25519 / RSA, passwords and data by reference (#1867)
+
+- **New key types:** `x25519`, `rsa-oaep-2048|3072|4096` (encrypt to the public half, decrypt) and `rsa-pss-2048|3072|4096` (sign / verify, JWS `PS256`). Purpose is part of the type, so one RSA key never both signs and decrypts.
+- **JWE** (compact): `dir` for `aes-256-gcm` (`format: jwe`), `ECDH-ES` for X25519, `RSA-OAEP-256`; `enc` is always `A256GCM`. A token naming another alg or enc, or carrying `zip` / `crit`, is refused, and an RSA unwrap failure continues with a random key, so failures stay opaque. The `kid` picks the version; rewrap keeps a JWE a JWE.
+- **Encrypt to someone else:** `encrypt` with `public_key` seals to an X25519 / RSA key the runtime does not hold; like `verify` with `public_key`, it needs no crypto scope.
+- **Passwords:** `hash_password` / `verify_password`, Argon2id PHC strings (m=19 MiB, t=2, p=1). Verify bounds the parameters a stored hash may name, so a supplied hash cannot exhaust the host. `password` is masked in the stored call.
+- **`from` / `to` by reference:** read an op's input from, and write encrypt / decrypt / rewrap output to, `volume:[<name>:]<path>`, `memory:<scope>/<key>` or `document:<scope>/<chunk_id>`. With `to`, the result is `{to, bytes, …}`, never the content.
+  - Each store is reached through its own checks (the volume fence and atomic writes, Memory's scope and write checks, the Document tool's scope, ontology and revision).
+  - The run must hold the matching tool (`Read`, `Write`, `Memory`, `Document`) in its **effective** tool list, and that tool's **pre-hooks** judge the call.
+  - Memory and chunks hold text, so binary output is refused there. References are refused on the operator API.
+
+### Keys held in Vault, AWS KMS or Google Cloud KMS (#1868)
+
+Many teams must keep keys in a KMS they already run and audit. A crypto key can now be a **reference** to such a key: the agent, the scopes and the API stay the same, and every op on the key is a KMS call.
+
+```json
+{"op": "create", "usage": "crypto", "scope": "tenant", "name": "orders",
+ "key_type": "aes-256-gcm", "backend": "vault",
+ "external": {"address": "https://vault.internal:8200", "key": "orders", "token": "$cred:vault-token"}}
+```
+
+- **Backends:** `vault` (Transit; `address`, `key`, `mount`, `namespace`, `token`), `aws_kms` (`region`, `key_id`, `access_key_id`, `secret_access_key`, `session_token`; SigV4), `gcp_kms` (`key`, `service_account`).
+- **Created outside a run only**, in tenant or user scope. Before storing, loomcycle asks the KMS that the key exists, is enabled and is of `key_type`.
+- **KMS credentials** (`$cred:`) resolve only in the key's own scope: a user's key runs on that user's KMS credentials, a tenant's on the tenant's. A credential carrying `allowed_urls` cannot back one.
+- **The reference is sealed** with its usage, key type and backend, so a database edit leaves the key unopenable, never pointed at another KMS. Lists show `key_backend`, not the address.
+- **Versions belong to the KMS:** `rotate`, `set_min_version`, `delete_version` and `export_key` are refused; `delete` removes only the reference. The envelope carries the KMS's version (0 for AWS), and the associated data still binds the key's name and `context`, so a value moved under another name does not open even when one KMS key backs both.
+- **rsa-oaep** keys encrypt as a JWE to the KMS's public key, and the KMS unwraps it. JWS signing goes through the KMS. An `aes-256-gcm` KMS key has no JWE form.
+- **Vault's host** must be on `LOOMCYCLE_HTTP_HOST_ALLOWLIST` or `LOOMCYCLE_HTTP_PRIVATE_HOST_ALLOWLIST`, checked at create and at every use, and is dialled through the SSRF guard with redirects off. `LOOMCYCLE_KMS_VAULT_ALLOW_HTTP=1` admits a plain-http dev Vault.
+- **Failures:** a KMS that is down is `transient`, refused credentials `permission`, a missing key not found, a decrypt failure the usual opaque answer. An error never carries a KMS response body or token.
+- **TS** `createKmsCryptoKey`; the **Web UI** names the KMS and offers only delete for such a key.
+
+### Untrusted text never reaches memory (#1862, #1863)
+
+v1.115.0 kept untrusted blocks fenced on the memory paths. They still reached the extractor, the archive-time evidence quote and the trace index. Now nothing from them does.
+- **An allowlist of dialogue:** only the conversation's own text (the caller's trusted text, the model's replies, operator steers) is marked `Dialogue`, and every memory path banks only that: consolidation, compaction, recap, stateful harvest, the archive-time evidence span, the trace index (user and assistant turns only) and recalled source turns. Tool output (WebFetch, HTTP, MCP results) counts as untrusted.
+- **History `get` gains `omit_untrusted`** (with `format: "conversation"`), which drops untrusted blocks by their stored type. The consolidator always asks for it.
+- **The extractor's prompt** says text inside a `<kind>…</kind>` fence is outside material, never the user's own words (#1863). Its extraction baseline is re-measured and scores the same as the previous prompts, with no violations.
+- An agent that deliberately writes what it read with `Memory add` / `set` is out of scope, and the docs say so.
+
+### Another user's work in a session (#1864)
+
+Any non-isolated principal could continue another member's session, and the run ran as that member, so bob continuing alice's chat used alice's stored credentials. Work sent by another user (a different tenant or subject, admins included) now runs as the session's user **without that user's stored credentials**:
+- continuations on every transport, `POST /v1/sessions/{id}/messages`, a configured run started or edited by another user, steers, retunes, review feedback, turns sent to resident children, and the compaction and recap made for them;
+- every credential reader asks one `NoUserScope()`; the bit is written to the run's row first, so it holds across replicas and on resume;
+- the caller's own per-run `user_credentials` / `user_bearer` still reach the run.
+
+Open mode and the legacy `LOOMCYCLE_AUTH_TOKEN` (an integration speaking for its own users) are unchanged. Not yet covered: an interruption answer.
+
+### Upgrade notes
+
+- No schema migrations.
+- **Behaviour changes:**
+  - Continuing another user's session, or steering, retuning or reviewing their run, withholds that user's stored credentials.
+  - A stateful run's `harvest_to_memory` banks nothing (its spans were tool observations and evicted state), and recap or summary text is no longer re-banked.
+  - Stored blocks typed other than `""` / `trusted-text` (such as a legacy `"text"`) no longer count as the user's words on memory paths. Trace rows indexed under a kind age out with the index TTL.
+- **Crypto keys need `LOOMCYCLE_SECRET_KEY`**, also for a KMS key, whose reference is sealed. A Vault address must be on an HTTP host allowlist.
+- New env knobs: `LOOMCYCLE_CRYPTO_MAX_BYTES`, `LOOMCYCLE_CRYPTO_MAX_OPS_PER_RUN`, `LOOMCYCLE_KMS_VAULT_ALLOW_HTTP`.
+
 ## What's in v1.115.0
 
 *An untrusted block can carry **code kept exactly as written**, in a fence the code cannot close. Otherwise this release is **fixes from a code review** of the last two lines of work: the run queue and provider lanes, and the content-safety features (no-trace runs, restricted tokens, trigger credentials, forge webhooks, git sources, read-only volumes). A no-trace child's answer is no longer stored in its parent, a token limited to some agents can no longer control other agents' runs, and an A2A token reaches only its own tenant. A YAML-declared MCP server that **starts after loomcycle** is now picked up by the next run under any tenant.*

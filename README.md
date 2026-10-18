@@ -43,7 +43,7 @@ release-by-release view see [`REVISIONS.md`](REVISIONS.md) and the
 | Capability | What you get |
 |---|---|
 | **Providers** | Anthropic, OpenAI, DeepSeek, Gemini, Ollama (cloud + local) over native HTTP with no vendor SDK, behind one `Provider` interface. Config-driven `providers:` map, per-tier/effort routing, user-tier fallback cascade, `PinAfterSuccess`, model aliases and `model_pattern` globs. Plus a synthetic **`code-js`** provider (deterministic, zero token cost) and a **mock** provider for load tests. Model aliases now carry **`kind: chat \| decision \| embedder`**; a wrong-slot wire fails config load with a named error. |
-| **Built-in tools** | Read / Write / Edit / Grep / Glob / NotebookEdit / HTTP / WebFetch / WebSearch / Bash / Agent / Skill / Memory / Recall / Channel / History / Path / Document / AgentDef / SkillDef / TeamDef / **Decision** / Evaluation / Interruption / Context. |
+| **Built-in tools** | Read / Write / Edit / Grep / Glob / NotebookEdit / HTTP / WebFetch / WebSearch / Bash / Agent / Skill / Memory / Recall / Channel / History / Path / Document / AgentDef / SkillDef / TeamDef / **Decision** / **Crypto** (keys the model never sees: held by loomcycle or in Vault / AWS KMS / Google Cloud KMS) / Evaluation / Interruption / Context. |
 | **Memory** | Four facets on one tool: key-value, **vector** (sqlite-vec / pgvector), **SQL** (a per-scope database, sqlite + postgres tiers), and the agentic **bi-temporal entity graph** with **subject-document identity** — the subject IS its own Document in the Path tree at `/entities/<type>/<name>`, placement is one decision, both halves of a fact land together. Rows carry `observed_at` (when a thing was said) and `valid_at`/`invalid_at` (when it was true), so an `as_of` query reads the timeline at any past instant and a correction never destroys the record. Every row carries a provenance envelope: tenant, session, run, agent, model, compaction generation, server-stamped `origin`, source-quote span. An optional `recall_attach_traces` runtime grant reattaches source turns to a facts recall — **LoCoMo paired-benchmark retrieval final 0.74**. |
 | **Documents & paths** | Chunked-graph **Documents** (chunk bodies in Memory, structure in SQL Memory) with **per-piece derived search units** — a chunk with a heading, prose, code block and transclusion generates one embedding per piece, so a query for the code block does not compete with the heading for the same vector. **Documents retrieval final 0.966.** Inline `[[name]]` links become graph edges, `![[…]]` embeds transclude, plus backlinks / related / unlinked-mentions discovery, a per-chunk body-history with diff, queryable tags and type/status, images and Mermaid diagrams, and Markdown + JSON Canvas import/export — all addressed through a Unix-like **Path** VFS. |
 | **Substrate** | Content-addressed (SHA-256), runtime-mutable, tenant-scoped defs pushed at boot: Agent / Skill / **Team** / MCPServer / Schedule / Webhook / MemoryBackend / A2A / Volume / Credential / OperatorToken / **HookDef**. Authored over every transport; verify-or-fork across deployments. |
@@ -187,7 +187,18 @@ been primitives plus hardening: memory, documents, teams, sandboxing, retention
 and erasure. The agentic-memory subsystem and the document surfaces built on it
 remain the main direction.
 
-The most recent line (v1.115.0) lets an untrusted block carry code exactly as
+The most recent line (v1.116.0) adds a `Crypto` tool whose keys the model never
+sees: an agent names a key and the runtime encrypts, decrypts, signs, verifies,
+MACs or makes a one-time code, returning only the result. Keys are held by
+loomcycle or in Vault Transit, AWS KMS or Google Cloud KMS, and the same
+operations are on the operator API on every transport, with JWE public-key
+encryption, RSA-PSS, Argon2id passwords, and data read from and written to a
+volume, memory or a document by reference. Untrusted text now never reaches
+memory, and another user who continues a session never gets the session user's
+credentials. See "Crypto keys and the `Crypto` tool" in
+[`docs/CREDENTIALS.md`](docs/CREDENTIALS.md).
+
+Before it, v1.115.0 let an untrusted block carry code exactly as
 written, in a fence the code cannot close, and is otherwise fixes from a code
 review of the two lines before it: the run queue and provider lanes, and the
 content-safety features. A no-trace child's answer is no longer stored in its

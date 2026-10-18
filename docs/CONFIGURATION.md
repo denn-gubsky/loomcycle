@@ -815,12 +815,13 @@ agents:
       harvest_to_memory: true # off by default
 ```
 
-It **generalizes `compaction.memory_flush`** (which banks only on L0 compaction) to every distillation mode — `recap` and `stateful` evict spans that `memory_flush` never saw, and a long-lived session that never terminates is one the background consolidator's session scan would otherwise skip entirely; banking its evicted spans gets them consolidated regardless.
+It **generalizes `compaction.memory_flush`** (which banks only on L0 compaction) to the other distillation modes — `recap` evicts spans that `memory_flush` never saw, and a long-lived session that never terminates is one the background consolidator's session scan would otherwise skip entirely; banking its evicted spans gets them consolidated regardless.
 
 Why banking (deferred) rather than extracting inline at each boundary: a measurement (the fact-harvest-quality probe) showed that extracting facts from each distillation span *in isolation* loses the coreference-dependent ones — a fact whose subject was named two spans earlier ("my project *Streaky*" … later "*it* hit 500 users") can't be named from the later span alone, so a per-span extractor drops it while the consolidator's whole-transcript extraction keeps it. Banking hands the consolidator that broader context, so no facts are lost to fragmentation, and it adds no model call to the run's own hot path.
 
 Notes:
 - **Needs `user` in `memory_scopes` and a `user_id` on the run** — same prerequisite as `memory_flush` (the consolidator only drains user scopes). A misconfigured agent surfaces a non-fatal error rather than silently never harvesting.
+- **Only the conversation is banked.** A span's trusted caller text, the model's replies and operator steers reach the consolidator. Untrusted blocks, tool output (WebFetch, HTTP, MCP results) and the recap or summary text the runtime composed do not. In `stateful` mode an evicted span is tool observations and evicted state, so nothing is banked.
 - **Deferred, not immediate.** Facts appear after the consolidator's next pass, not mid-run — which is what cross-run harvest wants (within-run immediacy is `recall`'s job).
 - **Off is byte-identical**; a resumed run does not re-bank (it replays its past distillations).
 - Available per-agent and as a per-run `context.harvest_to_memory` override.
