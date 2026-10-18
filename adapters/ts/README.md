@@ -596,6 +596,32 @@ const meta = await client.getCredential({ scope: "user", name: "GIT_TOKEN" });
 console.log(meta.allowed_urls ?? "unrestricted");
 ```
 
+### Crypto keys + the Crypto tool (RFC EP)
+
+A **crypto key** is a credential with `usage: "crypto"`: a `key_type` fixed for its life, numbered versions, and a `min_version` below which versions are retired. No call ever returns key material. `getCredential` / `listCredentials` report a crypto key's `usage`, `key_type`, `current_version`, `min_version` and `versions` (`{version, created_at, retired}`).
+
+| Method | Returns | Notes |
+|---|---|---|
+| `generateCryptoKey({ scope, name, key_type, expires_at? })` | `Promise<CredentialMeta>` | The server makes the material; nobody sees it. `{op: "generate"}`. |
+| `createCryptoKey({ scope, name, key_type, value, key_encoding?, expires_at? })` | `Promise<CredentialMeta>` | Bring material you already have; `value` is write-only. `{op: "create", usage: "crypto"}`. |
+| `rotateCryptoKey({ scope, name, value?, key_encoding? })` | `Promise<CredentialMeta>` | Adds a version and makes it current (generated unless `value` is given). `{op: "rotate"}`. |
+| `setCryptoKeyMinVersion({ scope, name, min_version })` | `Promise<CredentialMeta>` | Retires every version below it. Only goes up, at most to current+1. `{op: "set_min_version"}`. |
+| `deleteCryptoKeyVersion({ scope, name, version })` | `Promise<CredentialMeta>` | Deletes one **retired** version. `{op: "delete_version"}`. |
+| `exportCryptoKey({ scope, name, passphrase })` | `Promise<CryptoKeyExport>` | `{name, scope, blob}`: every version, encrypted under the passphrase (≥ 16 chars). Admin only, outside any run. `{op: "export_key"}`. |
+| `importCryptoKey({ scope, name, blob, passphrase })` | `Promise<CredentialMeta>` | The other side of `exportCryptoKey`, under the same `name`. Admin only, outside any run. `{op: "import_key"}`. |
+
+All post to `POST /v1/_credentialdef`. To delete a crypto key, retire every version (`min_version` = current+1), then `deleteCredential`.
+
+`crypto(input)` runs one Crypto-tool operation outside any run (`POST /v1/_crypto`): `encrypt` / `decrypt` / `rewrap` / `mac` / `verify_mac` / `sign` / `verify` / `public_key` / `totp` with a held key (`key`, or `cred` + `key_type`), and `hash` / `random` with none. The input is a `CryptoRequest` discriminated by `op`, and the return type follows it (`CryptoResultByOp`). The reachable keys are the token's tenant's and its own subject's user keys; an admin may add `tenant` to use another tenant's keys. Needs `substrate:tenant` (a tenant member's token gets a 403). A refusal — including a failed decrypt, which never says why — raises `SubstrateToolRefusedError`; each call counts against the token's run-start rate, and a spent rate raises `RateLimitedError` (`retryAfterMs`).
+
+```ts
+await client.generateCryptoKey({ scope: "tenant", name: "customer-fields", key_type: "aes-256-gcm" });
+const { ciphertext } = await client.crypto({
+  op: "encrypt", key: "customer-fields", plaintext: card, context: "customer:42/card",
+});
+const { plaintext } = await client.crypto({ op: "decrypt", ciphertext, context: "customer:42/card" });
+```
+
 ### Evaluations
 
 Scores attached to runs: record a verdict on a run, read the scores back, and roll them up per definition version to compare versions. All of these post to `POST /v1/_evaluation`; `evaluation(input)` takes the op-discriminated input directly and its return type follows `op`.

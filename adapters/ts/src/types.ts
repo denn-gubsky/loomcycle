@@ -5845,6 +5845,30 @@ export interface CredentialMeta {
   /** The user name sent with the value where a destination takes one (HTTP
    *  basic auth for a git source). Absent when none is stored. */
   username?: string;
+  /** Present with `expires_at`: true once that time has passed. An expired
+   *  credential is kept so it can be seen and rotated, but resolves nowhere. */
+  expired?: boolean;
+  /** `"crypto"` for a key the Crypto tool uses (RFC EP); absent for an
+   *  ordinary secret. The fields below are present only for a crypto key. */
+  usage?: "crypto";
+  /** The crypto key's type, fixed for its life. */
+  key_type?: CryptoKeyType;
+  /** The version new encryptions and signatures use. */
+  current_version?: number;
+  /** The lowest version still used; every version below it is retired. */
+  min_version?: number;
+  /** Every stored version, never its material. */
+  versions?: CryptoKeyVersion[];
+}
+
+/** One version of a crypto key: when it was made and whether it is retired
+ *  (below `min_version` — nothing decrypts or verifies with it, and only a
+ *  retired version can be deleted). */
+export interface CryptoKeyVersion {
+  version: number;
+  /** RFC3339. */
+  created_at: string;
+  retired: boolean;
 }
 
 /** CredentialListResponse is the {op:list} result: metadata for the given scope. */
@@ -5852,6 +5876,290 @@ export interface CredentialListResponse {
   scope: string;
   credentials: CredentialMeta[];
 }
+
+/** What {@link LoomcycleClient.exportCryptoKey} returns: the key, every
+ *  version of it, encrypted under the passphrase. Hand `blob` and the
+ *  passphrase to {@link LoomcycleClient.importCryptoKey} on the other
+ *  deployment. Anyone holding both holds the key. */
+export interface CryptoKeyExport {
+  name: string;
+  scope: string;
+  blob: string;
+}
+
+// ─── RFC EP Crypto tool (POST /v1/_crypto) ───────────────────────────────────
+
+/** A crypto key's type. AEAD (`aes-256-gcm`, `xchacha20-poly1305`):
+ *  encrypt / decrypt / rewrap. HMAC (`hmac-sha256`, `hmac-sha512`): mac /
+ *  verify_mac, and sign / verify as a JWS. Signing (`ed25519`, `ecdsa-p256`):
+ *  sign / verify / public_key. `totp`: totp. */
+export type CryptoKeyType =
+  | "aes-256-gcm"
+  | "xchacha20-poly1305"
+  | "hmac-sha256"
+  | "hmac-sha512"
+  | "ed25519"
+  | "ecdsa-p256"
+  | "totp";
+
+/** How key material handed in as a string is written. Default by key type:
+ *  base64 for AEAD and HMAC, base32 for totp, pem for ed25519 and ecdsa-p256. */
+export type CryptoKeyEncoding = "raw" | "base64" | "hex" | "base32" | "pem";
+
+/** The Crypto tool's operations. */
+export type CryptoOp =
+  | "encrypt"
+  | "decrypt"
+  | "rewrap"
+  | "mac"
+  | "verify_mac"
+  | "sign"
+  | "verify"
+  | "public_key"
+  | "totp"
+  | "hash"
+  | "random";
+
+/** The fields every {@link CryptoRequest} may carry. */
+export interface CryptoRequestBase {
+  /** Admin only (or the legacy token, or open mode): run the op with another
+   *  tenant's keys. It then reaches that tenant's keys and no user keys. A
+   *  non-admin naming a tenant other than its own is refused. */
+  tenant?: string;
+}
+
+/** Which key an op uses: exactly one of `key` (a crypto key stored with
+ *  CredentialDef — type and versions come with it), `cred` (an ordinary
+ *  stored credential used as key material — needs `key_type`) or `run` (a
+ *  credential a run's caller passed; there is none outside a run, so the
+ *  operator API refuses it). Outside a run the reachable stored keys are the
+ *  token's tenant's and its own subject's user keys. */
+export interface CryptoKeyRef {
+  key?: string;
+  cred?: string;
+  run?: string;
+  /** `key` and `cred`: which scope's key, when more than one reachable scope
+   *  holds that name. An envelope already records it. */
+  key_scope?: "agent" | "user" | "tenant";
+  /** `cred` and `run`: what kind of key the value is. */
+  key_type?: CryptoKeyType;
+  /** `cred` and `run`: how the value is written. */
+  key_encoding?: CryptoKeyEncoding;
+  /** `cred` and `run`: derive an AEAD or HMAC key from any secret instead of
+   *  reading the value as a key. */
+  derive?: boolean;
+  /** `key` only: a version, for public_key or a raw ciphertext. Default: the
+   *  current one (decrypt of a raw ciphertext tries every usable version). */
+  version?: number;
+}
+
+export interface CryptoEncryptRequest extends CryptoRequestBase, CryptoKeyRef {
+  op: "encrypt";
+  /** Text, or base64 bytes with `input_encoding: "base64"`. */
+  plaintext: string;
+  input_encoding?: "text" | "base64";
+  /** Associated data: the ciphertext decrypts only with the same context. */
+  context?: string;
+  /** `envelope` (default, names its key) or `raw` (base64 nonce+ct+tag). */
+  format?: "envelope" | "raw";
+}
+
+export interface CryptoDecryptRequest extends CryptoRequestBase, CryptoKeyRef {
+  op: "decrypt";
+  /** Exactly as encrypt returned it. An envelope from a crypto key names its
+   *  key, so `key` / `cred` / `run` may be left out. */
+  ciphertext: string;
+  context?: string;
+  /** Keeps the plaintext out of a run's stored transcript. */
+  sensitive?: boolean;
+  /** `text` (default when the plaintext is UTF-8) or `base64`. */
+  output_encoding?: "text" | "base64";
+}
+
+export interface CryptoRewrapRequest extends CryptoRequestBase, CryptoKeyRef {
+  op: "rewrap";
+  /** A crypto key's ciphertext; `key` is needed only for a raw one. */
+  ciphertext: string;
+  context?: string;
+}
+
+export interface CryptoMacRequest extends CryptoRequestBase, CryptoKeyRef {
+  op: "mac";
+  data: string;
+  input_encoding?: "text" | "base64";
+  /** `hex` (default) or `base64`. */
+  output_encoding?: "hex" | "base64";
+}
+
+export interface CryptoVerifyMacRequest extends CryptoRequestBase, CryptoKeyRef {
+  op: "verify_mac";
+  data: string;
+  /** The MAC to check, hex or base64, with any `sha256=` prefix stripped. */
+  mac: string;
+  input_encoding?: "text" | "base64";
+}
+
+export interface CryptoSignRequest extends CryptoRequestBase, CryptoKeyRef {
+  op: "sign";
+  /** What to sign; for a JWS, the token's payload. */
+  data: string;
+  input_encoding?: "text" | "base64";
+  /** `raw` (default for signing keys) or `jws` (the only form for a MAC key). */
+  format?: "raw" | "jws";
+}
+
+export interface CryptoVerifyRequest extends CryptoRequestBase, CryptoKeyRef {
+  op: "verify";
+  /** A raw base64 signature, or a JWS token (then leave `data` out). */
+  signature: string;
+  data?: string;
+  input_encoding?: "text" | "base64";
+  /** A PEM or JWK Ed25519 / P-256 public key, in place of a held key. */
+  public_key?: string;
+}
+
+export interface CryptoPublicKeyRequest extends CryptoRequestBase, CryptoKeyRef {
+  op: "public_key";
+}
+
+export interface CryptoTotpRequest extends CryptoRequestBase, CryptoKeyRef {
+  op: "totp";
+  /** Code length, 6 to 8 (default 6). */
+  digits?: number;
+  /** Seconds per code (default 30). */
+  period?: number;
+}
+
+/** A digest; needs no key. Never a password store. */
+export interface CryptoHashRequest extends CryptoRequestBase {
+  op: "hash";
+  data: string;
+  input_encoding?: "text" | "base64";
+  /** Default `sha256`. */
+  algorithm?: "sha256" | "sha512" | "sha3-256" | "sha3-512";
+  /** `hex` (default) or `base64`. */
+  output_encoding?: "hex" | "base64";
+}
+
+/** Secure random values; needs no key. */
+export interface CryptoRandomRequest extends CryptoRequestBase {
+  op: "random";
+  /** `token` (default, URL-safe base64 without padding), `bytes` or `uuid`. */
+  kind?: "token" | "bytes" | "uuid";
+  /** Random bytes for `token` and `bytes`, 1 to 4096 (default 32). */
+  length?: number;
+  /** `bytes` only: `hex` (default) or `base64`. */
+  output_encoding?: "hex" | "base64";
+}
+
+/** The body of {@link LoomcycleClient.crypto}, discriminated by `op`. */
+export type CryptoRequest =
+  | CryptoEncryptRequest
+  | CryptoDecryptRequest
+  | CryptoRewrapRequest
+  | CryptoMacRequest
+  | CryptoVerifyMacRequest
+  | CryptoSignRequest
+  | CryptoVerifyRequest
+  | CryptoPublicKeyRequest
+  | CryptoTotpRequest
+  | CryptoHashRequest
+  | CryptoRandomRequest;
+
+/** `key_version` on a result is the crypto key version used; 0 for a `cred`
+ *  or `run` key, which has no versions. */
+export interface CryptoEncryptResult {
+  /** An envelope (`lcx1:…`) or, with `format: "raw"`, base64. */
+  ciphertext: string;
+  key_version: number;
+}
+
+export interface CryptoDecryptResult {
+  plaintext: string;
+  /** How `plaintext` is written. */
+  encoding: "text" | "base64";
+  key_version: number;
+}
+
+export interface CryptoRewrapResult {
+  /** Store it in place of the old ciphertext. */
+  ciphertext: string;
+  from_version: number;
+  key_version: number;
+}
+
+export interface CryptoMacResult {
+  mac: string;
+  key_version: number;
+}
+
+/** verify_mac and verify. `valid: false` never says why and carries no
+ *  `key_version`. */
+export interface CryptoVerifyResult {
+  valid: boolean;
+  /** The held key's version that verified. */
+  key_version?: number;
+  /** verify of a JWS token: its `kid` header. */
+  kid?: string;
+  /** verify of a JWS token: its payload. */
+  payload?: string;
+}
+
+export interface CryptoSignResult {
+  signature: string;
+  format: "raw" | "jws";
+  key_version: number;
+}
+
+/** A public key as a JWK: `OKP`/`Ed25519` (x) or `EC`/`P-256` (x, y). The
+ *  `kid` matches the `kid` in tokens the key signs. */
+export interface CryptoPublicJWK {
+  kty: "OKP" | "EC";
+  crv: "Ed25519" | "P-256";
+  x: string;
+  y?: string;
+  kid?: string;
+}
+
+export interface CryptoPublicKeyResult {
+  pem: string;
+  jwk: CryptoPublicJWK;
+  key_version: number;
+}
+
+export interface CryptoTotpResult {
+  code: string;
+  /** RFC3339. */
+  valid_until: string;
+}
+
+export interface CryptoHashResult {
+  algorithm: string;
+  digest: string;
+}
+
+export interface CryptoRandomResult {
+  kind: "token" | "bytes" | "uuid";
+  value: string;
+}
+
+/** The result type of each Crypto op. */
+export interface CryptoResultByOp {
+  encrypt: CryptoEncryptResult;
+  decrypt: CryptoDecryptResult;
+  rewrap: CryptoRewrapResult;
+  mac: CryptoMacResult;
+  verify_mac: CryptoVerifyResult;
+  sign: CryptoSignResult;
+  verify: CryptoVerifyResult;
+  public_key: CryptoPublicKeyResult;
+  totp: CryptoTotpResult;
+  hash: CryptoHashResult;
+  random: CryptoRandomResult;
+}
+
+/** Any Crypto op's result. */
+export type CryptoResult = CryptoResultByOp[CryptoOp];
 
 // ─── Decision models ─────────────────────────────────────────────────────────
 
