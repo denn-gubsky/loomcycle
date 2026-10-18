@@ -95,14 +95,18 @@ function promptOf(run: StartedRun): unknown {
   return (run.opts as { segments: Array<{ content: unknown[] }> }).segments[0].content[0];
 }
 
-function press(value: string, blockId: string, opts: { user?: string; channel?: string; ts?: string; thread_ts?: string } = {}): RawRequest {
+function press(
+  value: string,
+  blockId: string,
+  opts: { user?: string; channel?: string; ts?: string; thread_ts?: string; responseUrl?: string } = {},
+): RawRequest {
   const payload = {
     type: "block_actions",
     team: { id: "T1" },
     user: { id: opts.user ?? "UALICE", team_id: "T1" },
     channel: { id: opts.channel ?? "D1" },
     message: { ts: opts.ts ?? "200.1", ...(opts.thread_ts ? { thread_ts: opts.thread_ts } : {}) },
-    response_url: "https://hooks.slack.com/actions/T1/1/abc",
+    response_url: opts.responseUrl ?? "https://hooks.slack.com/actions/T1/1/abc",
     actions: [{ type: "button", action_id: `lc.${value}`, block_id: blockId, value }],
   };
   return { ...signed(`payload=${encodeURIComponent(JSON.stringify(payload))}`), path: "/slack/actions" };
@@ -261,6 +265,25 @@ describe("slack bridge, end to end", () => {
     const r = await rig();
     const req = press("abc", "lc.card.im");
     expect(await r.actions({ ...req, headers: { ...req.headers, "x-slack-signature": "v0=00" } })).toEqual({ status: 401 });
+  });
+
+  it("posts a card's result only to Slack's own response_url, even unauthenticated in dev mode", async () => {
+    const r = await rig({ BRIDGE_DEV: "1" });
+    const body = eventBody(dm("book a room"));
+    await send(r, body, { ...signed(body), headers: {} });
+    expect(r.lc.runs).toHaveLength(1);
+    r.lc.runs[0].events.push({
+      type: "interruption_pending",
+      interruption: { interrupt_id: "q1", kind: "question", question: "Which floor?", options: ["2"], priority: "normal" },
+    });
+    await waitFor(() => r.slack.to("chat.postMessage").length === 1, "card");
+    const card = r.slack.to("chat.postMessage")[0].body as { blocks: Array<{ type: string; block_id?: string; elements?: Array<{ value: string }> }> };
+    const actions = card.blocks.find((b) => b.type === "actions")!;
+    const req = press(actions.elements![0].value, actions.block_id!, { responseUrl: "https://evil.example/collect" });
+    expect(await r.actions({ ...req, headers: {} })).toEqual({ status: 200 });
+    await waitFor(() => r.lc.callsTo("resolveInterrupt").length === 1, "answered");
+    await settle();
+    expect(r.slack.calls.filter((c) => c.url.startsWith("https://evil.example"))).toHaveLength(0);
   });
 
   it("takes a free-text answer from the owner's reply", async () => {
