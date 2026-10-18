@@ -22,6 +22,8 @@ func jwsAlg(k KeyType) (string, error) {
 		return "EdDSA", nil
 	case ECDSAP256:
 		return "ES256", nil
+	case RSAPSS2048, RSAPSS3072, RSAPSS4096:
+		return "PS256", nil
 	}
 	return "", fmt.Errorf("cryptoops: %s cannot sign a JWS", k)
 }

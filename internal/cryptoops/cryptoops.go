@@ -35,11 +35,28 @@ const (
 	Ed25519           KeyType = "ed25519"
 	ECDSAP256         KeyType = "ecdsa-p256"
 	TOTP              KeyType = "totp"
+
+	// Asymmetric encryption ("recipient") types: anyone holding the public key
+	// can encrypt to them, only the private key decrypts.
+	X25519      KeyType = "x25519"
+	RSAOAEP2048 KeyType = "rsa-oaep-2048"
+	RSAOAEP3072 KeyType = "rsa-oaep-3072"
+	RSAOAEP4096 KeyType = "rsa-oaep-4096"
+
+	// RSA signature types. The purpose is part of the type: one RSA key either
+	// signs (PSS) or decrypts (OAEP), never both, so a decryption oracle can
+	// never be turned into a signing oracle or the reverse.
+	RSAPSS2048 KeyType = "rsa-pss-2048"
+	RSAPSS3072 KeyType = "rsa-pss-3072"
+	RSAPSS4096 KeyType = "rsa-pss-4096"
 )
 
 // allKeyTypes is the valid set in a stable order, used for error messages so
 // an operator who typos a type sees every accepted spelling.
-var allKeyTypes = []KeyType{AES256GCM, XChaCha20Poly1305, HMACSHA256, HMACSHA512, Ed25519, ECDSAP256, TOTP}
+var allKeyTypes = []KeyType{
+	AES256GCM, XChaCha20Poly1305, HMACSHA256, HMACSHA512, Ed25519, ECDSAP256, TOTP,
+	X25519, RSAOAEP2048, RSAOAEP3072, RSAOAEP4096, RSAPSS2048, RSAPSS3072, RSAPSS4096,
+}
 
 // ParseKeyType maps a user-supplied name to a KeyType. Surrounding space and
 // case are forgiven (they carry no meaning); anything else unknown is an error
@@ -81,6 +98,8 @@ func (k KeyType) Ops() []string {
 		return []string{OpMAC, OpVerifyMAC, OpSign, OpVerify}
 	case k.IsSigning():
 		return []string{OpSign, OpVerify, OpPublicKey}
+	case k.IsRecipient():
+		return []string{OpEncrypt, OpDecrypt, OpPublicKey}
 	case k == TOTP:
 		return []string{OpTOTP}
 	}
@@ -98,5 +117,39 @@ func (k KeyType) IsAEAD() bool { return k == AES256GCM || k == XChaCha20Poly1305
 // IsMAC reports whether k is an HMAC type.
 func (k KeyType) IsMAC() bool { return k == HMACSHA256 || k == HMACSHA512 }
 
-// IsSigning reports whether k is an asymmetric signature type.
-func (k KeyType) IsSigning() bool { return k == Ed25519 || k == ECDSAP256 }
+// IsSigning reports whether k is an asymmetric signature type: Ed25519, ECDSA
+// P-256 or RSA-PSS. Its material is not always a 32-byte seed — an RSA-PSS key
+// is PKCS#8 DER — so callers must not assume a shape from this predicate.
+func (k KeyType) IsSigning() bool { return k == Ed25519 || k == ECDSAP256 || k.isRSAPSS() }
+
+// IsRecipient reports whether k is an asymmetric encryption type (X25519 or
+// RSA-OAEP): it encrypts to its public key and decrypts with its private key,
+// always as a compact JWE — never through Seal/Open, which are AEAD-only.
+func (k KeyType) IsRecipient() bool { return k == X25519 || k.isRSAOAEP() }
+
+func (k KeyType) isRSAOAEP() bool { return k == RSAOAEP2048 || k == RSAOAEP3072 || k == RSAOAEP4096 }
+
+func (k KeyType) isRSAPSS() bool { return k == RSAPSS2048 || k == RSAPSS3072 || k == RSAPSS4096 }
+
+// rsaBits is the exact modulus size an RSA type fixes, or 0 for any other type.
+func (k KeyType) rsaBits() int {
+	switch k {
+	case RSAOAEP2048, RSAPSS2048:
+		return 2048
+	case RSAOAEP3072, RSAPSS3072:
+		return 3072
+	case RSAOAEP4096, RSAPSS4096:
+		return 4096
+	}
+	return 0
+}
+
+// rsaPSSType and rsaOAEPType name the RSA type of a modulus size, or "" for a
+// size this package does not accept.
+func rsaPSSType(bits int) KeyType {
+	return map[int]KeyType{2048: RSAPSS2048, 3072: RSAPSS3072, 4096: RSAPSS4096}[bits]
+}
+
+func rsaOAEPType(bits int) KeyType {
+	return map[int]KeyType{2048: RSAOAEP2048, 3072: RSAOAEP3072, 4096: RSAOAEP4096}[bits]
+}
