@@ -15,6 +15,7 @@ import { appKey, FakeDiscord, signedHeaders } from "./discord.js";
 import { silentLogger } from "./fakes.js";
 
 const APP = "100000000000000001";
+const SUPPRESS_EMBEDS = 1 << 2;
 const GUILD = "200000000000000002";
 const OTHER_GUILD = "200000000000000003";
 const CHANNEL = "300000000000000003";
@@ -225,7 +226,29 @@ describe("cards", () => {
   it("asks a free-text question to be answered with /ask, keeping only Decline", () => {
     const body = renderCard(question([]));
     expect(body.components!.flatMap((r) => r.components.map((b) => b.label))).toEqual(["Decline"]);
-    expect(body.embeds![0].description).toContain(FREE_TEXT_HINT);
+    expect(body.content).toContain(FREE_TEXT_HINT);
+  });
+
+  it("puts a card's agent-written text in the content, with no embed, no ping and no link preview", () => {
+    const hostile = "@everyone <@&700000000000000007> https://evil.example/?leak=1";
+    const cards: CanonicalCard[] = [
+      { ...question([hostile, "no"]), question: hostile, context: hostile } as CanonicalCard,
+      { kind: "review", runId: "r1", round: 1, buttons: [btn("a", "Approve", VERB.approve)] },
+      { kind: "result", message: hostile },
+    ];
+    for (const c of cards) {
+      const body = renderCard(c);
+      expect((body as { embeds?: unknown[] }).embeds ?? []).toEqual([]);
+      expect(body.allowed_mentions).toEqual({ parse: [] });
+      expect((body.flags ?? 0) & SUPPRESS_EMBEDS).toBe(SUPPRESS_EMBEDS);
+      expect(body.content!.length).toBeLessThanOrEqual(2000);
+    }
+    expect(renderCard(cards[0]).content).toContain(hostile);
+  });
+
+  it("keeps a card within Discord's 2,000 characters", () => {
+    const body = renderCard({ ...question(["a"]), question: "q".repeat(5000) } as CanonicalCard);
+    expect(body.content!.length).toBeLessThanOrEqual(2000);
   });
 
   it("renders a review as Approve and Send back, and a result with no buttons", () => {
@@ -234,12 +257,12 @@ describe("cards", () => {
       ["Approve", 3],
       ["Send back", 4],
     ]);
-    expect(review.embeds![0].footer).toEqual({ text: "Round 2" });
+    expect(review.content).toContain("Round 2");
     expect(renderCard({ kind: "result", message: "Answered: 3" })).toEqual({
       content: "Answered: 3",
-      embeds: [],
       components: [],
       allowed_mentions: { parse: [] },
+      flags: SUPPRESS_EMBEDS,
     });
   });
 
@@ -256,9 +279,9 @@ describe("api", () => {
   it("authorises channel calls with the bot token and interaction calls with none", async () => {
     const d = new FakeDiscord();
     const { api } = make(d);
-    await api.createMessage(CHANNEL, { content: "hi", allowed_mentions: { parse: [] } });
-    await api.editOriginal("itok", { content: "hi", allowed_mentions: { parse: [] } });
-    await api.followUp("itok", { content: "hi", allowed_mentions: { parse: [] } });
+    await api.createMessage(CHANNEL, { content: "hi", allowed_mentions: { parse: [] }, flags: 0 });
+    await api.editOriginal("itok", { content: "hi", allowed_mentions: { parse: [] }, flags: 0 });
+    await api.followUp("itok", { content: "hi", allowed_mentions: { parse: [] }, flags: 0 });
     expect(d.calls.map((c) => [c.method, c.path, c.authorization])).toEqual([
       ["POST", `/channels/${CHANNEL}/messages`, "Bot secret-bot"],
       ["PATCH", `/webhooks/${APP}/itok/messages/@original`, undefined],
@@ -281,7 +304,7 @@ describe("api", () => {
     const d = new FakeDiscord();
     d.on(/@original/, { status: 429, body: { retry_after: 3600 } });
     const { api, sleep } = make(d);
-    const err = await api.editOriginal("secret-interaction-token", { content: "x", allowed_mentions: { parse: [] } }).catch((e: unknown) => e);
+    const err = await api.editOriginal("secret-interaction-token", { content: "x", allowed_mentions: { parse: [] }, flags: 0 }).catch((e: unknown) => e);
     expect(err).toBeInstanceOf(DiscordApiError);
     expect((err as DiscordApiError).status).toBe(429);
     expect(String((err as Error).message)).not.toContain("secret");
@@ -330,6 +353,7 @@ describe("port", () => {
       [`/webhooks/${APP}/tok2/messages/@original`, "the answer"],
       [`/webhooks/${APP}/tok1/messages/@original`, CONTINUED],
     ]);
+    for (const c of d.calls) expect(c.body).toMatchObject({ allowed_mentions: { parse: [] }, flags: SUPPRESS_EMBEDS });
     port.stop();
   });
 
@@ -339,6 +363,7 @@ describe("port", () => {
     now += TOKEN_LIFETIME_MS;
     await port.send(ref, { type: "message", text: "late" });
     expect(d.calls.map((c) => [c.method, c.path, c.authorization])).toEqual([["POST", `/channels/${CHANNEL}/messages`, "Bot bot"]]);
+    expect(d.calls[0].body).toEqual({ content: "late", allowed_mentions: { parse: [] }, flags: SUPPRESS_EMBEDS });
     port.stop();
   });
 
@@ -378,6 +403,7 @@ describe("port", () => {
     port.track("i1", "tok1", CHANNEL, { fallback: "Stop requested.", fallbackAfterMs: 10_000 });
     await vi.advanceTimersByTimeAsync(10_000);
     expect(d.contents()).toEqual(["Stop requested."]);
+    expect(d.calls[0].body).toMatchObject({ allowed_mentions: { parse: [] }, flags: SUPPRESS_EMBEDS });
     // Settled: the next message is a follow-up, not another edit.
     await port.send(ref, { type: "message", text: "later" });
     expect(d.calls[1]).toMatchObject({ method: "POST", path: `/webhooks/${APP}/tok1` });

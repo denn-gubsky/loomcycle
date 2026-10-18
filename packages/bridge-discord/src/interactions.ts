@@ -5,7 +5,7 @@ import { header, type CardResult, type ConversationRouter, type Logger, type Raw
 import type { KeyObject } from "node:crypto";
 
 import type { DiscordApi } from "./api.js";
-import { renderCard, textMessage, NO_MENTIONS, parseCustomId } from "./cards.js";
+import { NO_MENTIONS, parseCustomId, renderCard, SUPPRESS_EMBEDS, textMessage } from "./cards.js";
 import { HELP_TEXT, MAX_PROMPT_CHARS } from "./commands.js";
 import { isSnowflake, type DiscordConfig } from "./config.js";
 import { identify, NOT_HERE, placeOf } from "./identity.js";
@@ -64,7 +64,7 @@ function json(body: object): RawResponse {
 }
 
 function ephemeral(text: string): RawResponse {
-  return json({ type: CallbackType.CHANNEL_MESSAGE_WITH_SOURCE, data: { content: text, flags: EPHEMERAL, allowed_mentions: NO_MENTIONS } });
+  return json({ type: CallbackType.CHANNEL_MESSAGE_WITH_SOURCE, data: { content: text, flags: EPHEMERAL | SUPPRESS_EMBEDS, allowed_mentions: NO_MENTIONS } });
 }
 
 function promptOf(ix: Interaction): string {
@@ -98,7 +98,7 @@ export function interactionRoute(deps: InteractionDeps): Route {
         log.error("message failed", { conversation: id.conversationId, error: (err as Error)?.name });
       });
     });
-    return json({ type: CallbackType.DEFERRED_CHANNEL_MESSAGE_WITH_SOURCE });
+    return json({ type: CallbackType.DEFERRED_CHANNEL_MESSAGE_WITH_SOURCE, data: { flags: SUPPRESS_EMBEDS, allowed_mentions: NO_MENTIONS } });
   };
 
   const answerCard = (r: CardResult | undefined): RawResponse => {
@@ -132,7 +132,7 @@ export function interactionRoute(deps: InteractionDeps): Route {
     void work
       .then(async (r) => {
         if (r && "card" in r) await deps.api.editOriginal(ix.token, renderCard(r.card));
-        else await deps.api.followUp(ix.token, { ...textMessage(r?.message ?? NO_LONGER_ACTIVE), flags: EPHEMERAL });
+        else await deps.api.followUp(ix.token, { ...textMessage(r?.message ?? NO_LONGER_ACTIVE), flags: EPHEMERAL | SUPPRESS_EMBEDS });
       })
       .catch((err: unknown) => log.error("card action failed", { conversation: id.conversationId, status: (err as { status?: number })?.status }));
     return json({ type: CallbackType.DEFERRED_UPDATE_MESSAGE });

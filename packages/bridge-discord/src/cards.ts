@@ -1,16 +1,22 @@
-// The core's question and review cards as Discord messages: an embed with the
-// text, and rows of buttons whose custom_id is the core's short button id.
-// Discord keeps a button's custom_id to 100 characters, and the core looks the
-// action up by id, so the id is all a button carries.
+// The core's question and review cards as Discord messages: the text, and
+// rows of buttons whose custom_id is the core's short button id. Discord keeps
+// a button's custom_id to 100 characters, and the core looks the action up by
+// id, so the id is all a button carries.
+//
+// Every message the bridge posts carries agent-written text, which an
+// untrusted speaker can steer. So none of them pings anyone (allowed_mentions
+// parses nothing) and none shows a link preview: Discord fetches a link to
+// build its preview without anyone clicking, which would send the URL's query
+// string to whoever runs the server. SUPPRESS_EMBEDS also hides embeds the
+// bridge would build, so cards are plain content.
 
 import { VERB, type CanonicalCard, type CardButton } from "@loomcycle/bridge-core";
 
 export interface MessageBody {
   content?: string;
-  embeds?: Array<{ title?: string; description?: string; footer?: { text: string } }>;
   components?: Array<{ type: 1; components: Button[] }>;
   allowed_mentions: { parse: string[] };
-  flags?: number;
+  flags: number;
 }
 
 interface Button {
@@ -23,12 +29,12 @@ interface Button {
 export const CUSTOM_ID_PREFIX = "lc:";
 export const MAX_CUSTOM_ID = 100;
 const MAX_LABEL = 80;
-const MAX_DESCRIPTION = 4096;
+const MAX_CONTENT = 2000;
 const BUTTONS_PER_ROW = 5;
 const Style = { PRIMARY: 1, SECONDARY: 2, SUCCESS: 3, DANGER: 4 } as const;
 
-/** Agent text may name @everyone or a role: nothing the bridge posts pings. */
 export const NO_MENTIONS = { parse: [] as string[] };
+export const SUPPRESS_EMBEDS = 1 << 2;
 
 export const FREE_TEXT_HINT = "Answer with `/ask` and your answer, or decline.";
 
@@ -61,14 +67,14 @@ function button(b: CardButton, style: number): Button {
 }
 
 export function textMessage(text: string): MessageBody {
-  return { content: text, allowed_mentions: NO_MENTIONS };
+  return { content: text, allowed_mentions: NO_MENTIONS, flags: SUPPRESS_EMBEDS };
 }
 
 export function renderCard(card: CanonicalCard): MessageBody {
   switch (card.kind) {
     case "result":
       // Replaces a used card: the buttons go, so it cannot be answered twice.
-      return { content: card.message, embeds: [], components: [], allowed_mentions: NO_MENTIONS };
+      return { content: clip(card.message, MAX_CONTENT), components: [], allowed_mentions: NO_MENTIONS, flags: SUPPRESS_EMBEDS };
     case "question": {
       // A Discord message has no text field, so a free-text question is
       // answered with the owner's next /ask; the core's "Send" button would
@@ -77,25 +83,22 @@ export function renderCard(card: CanonicalCard): MessageBody {
       const buttons = card.buttons
         .filter((b) => !(freeText && b.action.verb === VERB.answer))
         .map((b) => button(b, b.action.verb === VERB.decline ? Style.SECONDARY : Style.PRIMARY));
-      const description = [card.question, card.context, freeText ? FREE_TEXT_HINT : undefined].filter(Boolean).join("\n\n");
+      const hint = freeText ? `\n\n${FREE_TEXT_HINT}` : "";
+      const text = [card.question || "The agent has a question.", card.context].filter(Boolean).join("\n\n");
       return {
-        embeds: [{ title: "Question", description: clip(description || "The agent has a question.", MAX_DESCRIPTION) }],
+        content: `**Question**\n${clip(text, MAX_CONTENT - hint.length - 13)}${hint}`,
         components: rows(buttons),
         allowed_mentions: NO_MENTIONS,
+        flags: SUPPRESS_EMBEDS,
       };
     }
     case "review": {
       const buttons = card.buttons.map((b) => button(b, b.action.verb === VERB.approve ? Style.SUCCESS : Style.DANGER));
       return {
-        embeds: [
-          {
-            title: "Review",
-            description: "The agent's answer is waiting for your review.",
-            ...(card.round ? { footer: { text: `Round ${card.round}` } } : {}),
-          },
-        ],
+        content: `**Review**\nThe agent's answer is waiting for your review.${card.round ? ` Round ${card.round}.` : ""}`,
         components: rows(buttons),
         allowed_mentions: NO_MENTIONS,
+        flags: SUPPRESS_EMBEDS,
       };
     }
   }
