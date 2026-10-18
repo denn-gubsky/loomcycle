@@ -67,6 +67,25 @@ describe("Markdown text is inert by construction", () => {
     expect(neutralise(out)).toBe(out);
   });
 
+  it.each([
+    ["[https://your-bank.example](https://evil.example/login)", "https://evil.example/login"],
+    ["[Your bank](https://evil.example/login?d=secret)", "https://evil.example/login?d=secret"],
+    ['[https://your-bank.example](https://evil.example "https://your-bank.example")', "https://evil.example"],
+    ["[https://your-bank.example](<https://evil.example>)", "https://evil.example"],
+    ["[https://your-bank.example][r]\n\n[r]: https://evil.example", "https://evil.example"],
+    ["![https://your-bank.example](https://evil.example/p.png)", "https://evil.example/p.png"],
+    ["[click me](javascript:alert(1))", "javascript:alert(1)"],
+    ["<https://evil.example|https://your-bank.example>", "https://evil.example"],
+  ])("never lets a label hide a link's target: %j", (input, target) => {
+    for (const out of [neutralise(input), renderCard({ kind: "result", message: input }, "im").blocks[0].text as string]) {
+      // No link can form: no Markdown link, reference or image, and no Slack
+      // <url|label> token, so Slack shows the text as written...
+      expect(out).not.toMatch(/\](?=[(\[:])|<(?!\u2060)/);
+      // ...and the text as written names the real target, where the reader sees it.
+      expect(out.replaceAll(WJ, "")).toContain(target);
+    }
+  });
+
   it("keeps a fenced code block copyable, and still forms no link in it", () => {
     const input = "```js\nif (a < b && c[0][1]) { x = y <T>; }\nconst m = d[k]; // <!here> @channel\n[good](https://evil.example)\n```\nafter [a](https://evil.example)";
     const out = neutralise(input);
