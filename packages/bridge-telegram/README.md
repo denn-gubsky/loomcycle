@@ -126,7 +126,7 @@ List a group as trusted only if you would let every member of it instruct the ag
 - **Loops:** messages from bots, this one included, are dropped before anything else.
 - **Least privilege:** the bridge's own token never runs agents. A user's token is limited to one agent, every per-run override except `interactive` is locked, it is rate-limited, and it expires.
 - **No link previews.** Every message and edit turns link previews off. To build a preview Telegram fetches the link, so a URL an attacker steered the agent into writing would leak to the attacker's server without a click.
-- **Output:** the agent's Markdown becomes Telegram HTML; every other `<`, `>` and `&` is escaped, so agent text cannot add markup of its own. Links are `http` and `https` only: no `tg://` link, so agent text cannot mention a user or open a chat. Tool inputs and outputs are never sent; while the agent works, a streamed chat sees the tool's name only.
+- **Output:** the agent's Markdown becomes Telegram HTML; every other `<`, `>` and `&` is escaped, so agent text cannot add markup of its own. No link is ever hidden behind a label: `[label](url)` is shown as `label (url)`, the URL as plain text that Telegram makes clickable, so agent text cannot show one address while pointing at another. Only `http` and `https` addresses count: no `tg://` link, so agent text cannot mention a user or open a chat. Tool inputs and outputs are never sent; while the agent works, a streamed chat sees the tool's name only.
 - **Secrets stay out of logs:** the bot token is in every Bot API URL, so the bridge never logs a URL and its errors name the API method only. Logs carry chat and run ids, never tokens, the secret or message text.
 
 ## Limits
