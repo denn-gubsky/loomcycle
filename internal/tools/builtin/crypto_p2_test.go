@@ -282,6 +282,61 @@ func TestCrypto_ReferencesAreRefusedOutsideTheAgentsAuthority(t *testing.T) {
 	}
 }
 
+// The grant is the run's effective tool list, not the agent definition's
+// patterns: a run whose caller narrowed it to [Crypto] does not write files
+// because the definition grants Write.
+func TestCrypto_ANarrowedRunCannotReachAToolItWasNarrowedOutOf(t *testing.T) {
+	c, cd, ctx := cryptoFixture(t, "tenant")
+	_, res := credExec(t, cd, ctx, `{"op":"generate","scope":"tenant","name":"files","key_type":"aes-256-gcm"}`)
+	mustOK(t, "generate", res)
+	dir := t.TempDir()
+	narrowed := refCtx(ctx, dir) // effective tools: [Crypto]
+	narrowed = tools.WithAgentToolPatterns(narrowed, []string{"Crypto", "Read", "Write"})
+	if _, res := cryptoExec(t, c, narrowed, `{"op":"encrypt","key":"files","plaintext":"x","to":"volume:out.txt"}`); !res.IsError || res.Error.Category != tools.CategoryPermission {
+		t.Errorf("narrowed run = %+v, want a permission refusal", res)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "out.txt")); err == nil {
+		t.Error("the narrowed run wrote the file")
+	}
+}
+
+// A reference is judged by the referenced tool's pre-hooks: a deny or a
+// rewrite refuses it before anything is read or written, and the hook is told
+// where, never the data.
+func TestCrypto_AReferenceIsRefusedByTheReferencedToolsHooks(t *testing.T) {
+	c, cd, ctx := cryptoFixture(t, "tenant")
+	_, res := credExec(t, cd, ctx, `{"op":"generate","scope":"tenant","name":"files","key_type":"aes-256-gcm"}`)
+	mustOK(t, "generate", res)
+	dir := t.TempDir()
+	base := refCtx(ctx, dir, "Read", "Write")
+	var asked []string
+	deny := tools.WithHookPreCheck(base, func(_ context.Context, name string, input json.RawMessage) (tools.Result, bool) {
+		asked = append(asked, name+" "+string(input))
+		if name == "Write" {
+			return tools.Result{Text: "writes are off today", IsError: true}, false
+		}
+		return tools.Result{}, true
+	})
+	_, res = cryptoExec(t, c, deny, `{"op":"encrypt","key":"files","plaintext":"TOP-SECRET","to":"volume:out.txt"}`)
+	if !res.IsError || res.Error.Category != tools.CategoryPermission || !strings.Contains(res.Text, "writes are off today") {
+		t.Fatalf("denied write = %+v", res)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "out.txt")); err == nil {
+		t.Error("a hook-denied write happened")
+	}
+	if len(asked) != 1 || !strings.Contains(asked[0], `"path":"out.txt"`) || !strings.Contains(asked[0], `"via":"Crypto"`) || strings.Contains(asked[0], "TOP-SECRET") {
+		t.Errorf("the hook was asked %v", asked)
+	}
+	// A read is asked of Read, and allowed here.
+	if err := os.WriteFile(filepath.Join(dir, "in.txt"), []byte("data"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	asked = nil
+	if _, res := cryptoExec(t, c, deny, `{"op":"hash","from":"volume:in.txt"}`); res.IsError || len(asked) != 1 || !strings.HasPrefix(asked[0], "Read ") {
+		t.Errorf("allowed read = %+v, asked %v", res, asked)
+	}
+}
+
 // A file over the cap is refused, never truncated.
 func TestCrypto_FromRefusesAFileOverTheCap(t *testing.T) {
 	c, _, ctx := cryptoFixture(t)

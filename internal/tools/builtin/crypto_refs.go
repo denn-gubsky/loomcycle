@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 	"unicode/utf8"
 
@@ -114,19 +115,57 @@ func (r dataRef) refTool(write bool) string {
 }
 
 // checkRefAllowed refuses a reference the caller may not use: on the operator
-// API (no agent, so no stores of an agent's), or when the agent does not hold
-// the matching tool.
+// API (no agent, so no stores of an agent's); when this run does not hold the
+// matching tool; or when that tool's pre-hooks deny (or would rewrite) the
+// equivalent call.
+//
+// The tool must be in the run's EFFECTIVE tool list — what this run may call,
+// after any narrowing the run's caller applied — never the agent definition's
+// raw patterns, which can be wider: a run narrowed to tools [Crypto] must not
+// write files because its definition grants Write.
 func checkRefAllowed(ctx context.Context, r dataRef, write bool) (tools.Result, bool) {
 	if tools.IsSubstrateOperator(ctx) && tools.RunID(ctx) == "" {
 		return errPermission("from and to are not available outside a run", "Pass the data inline."), false
 	}
-	agentTools, patterns := tools.AgentTools(ctx), tools.AgentToolPatterns(ctx)
 	need := r.refTool(write)
-	if (len(agentTools) == 0 && len(patterns) == 0) || len(skillToolsExceedingAgent([]string{need}, agentTools, patterns)) > 0 {
-		return errPermission(fmt.Sprintf("%s needs the %s tool, which this agent does not have", r.raw, need),
+	if !slices.Contains(tools.AgentTools(ctx), need) {
+		return errPermission(fmt.Sprintf("%s needs the %s tool, which this run does not have", r.raw, need),
 			"Pass the data inline, or ask an operator to grant the tool."), false
 	}
+	if res, ok := tools.HookPreCheck(ctx, need, r.hookInput(write)); !ok {
+		return classified(fmt.Sprintf("%s: refused by a %s hook: %s", r.raw, need, res.Text), tools.CategoryPermission, false,
+			"Pass the data inline, or ask the operator about the hook."), false
+	}
 	return tools.Result{}, true
+}
+
+// hookInput is the call the reference stands for, in the referenced tool's
+// own input shape, for its hooks to judge. The data itself is not in it: a
+// hook sees where, not what. "via" says which tool is asking.
+func (r dataRef) hookInput(write bool) json.RawMessage {
+	var in map[string]any
+	switch r.kind {
+	case refVolume:
+		in = map[string]any{"path": r.path}
+		if r.volume != "" {
+			in["volume"] = r.volume
+		}
+	case refMemory:
+		op := "get"
+		if write {
+			op = "set"
+		}
+		in = map[string]any{"op": op, "scope": r.scope, "key": r.key}
+	default:
+		op := "get_chunk"
+		if write {
+			op = "update_chunk"
+		}
+		in = map[string]any{"op": op, "scope": r.scope, "id": r.chunkID}
+	}
+	in["via"] = CryptoToolName
+	b, _ := json.Marshal(in)
+	return b
 }
 
 // readRef reads at most max bytes from r; more than max is refused, never
