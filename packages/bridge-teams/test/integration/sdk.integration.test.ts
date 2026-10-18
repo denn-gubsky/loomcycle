@@ -7,9 +7,10 @@ import type { AddressInfo } from "node:net";
 
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
-import { createTeamsBridge, type TeamsBridge } from "../../src/bridge.js";
+import { MemoryStore } from "@loomcycle/bridge-core";
+
+import { createTeamsBridge, type ConversationRef, type TeamsBridge } from "../../src/bridge.js";
 import { loadConfig } from "../../src/config.js";
-import { MemoryStore } from "../../src/store.js";
 import { silentLogger } from "../fakes.js";
 
 const BASE = process.env.TEAMS_BRIDGE_IT_BASE_URL;
@@ -46,12 +47,12 @@ describe.skipIf(!BASE || !TOKEN)("teams bridge through the Teams SDK", () => {
     const cfg = loadConfig({
       LOOMCYCLE_BASE_URL: BASE,
       LOOMCYCLE_TOKEN: TOKEN,
-      TEAMS_BRIDGE_AGENT: "helper",
+      BRIDGE_AGENT: "helper",
       TEAMS_BRIDGE_ALLOWED_TENANTS: TENANT,
-      TEAMS_BRIDGE_DEV: "1",
+      BRIDGE_DEV: "1",
       PORT: String(PORT),
     });
-    bridge = createTeamsBridge(cfg, { store: new MemoryStore(), logger: silentLogger });
+    bridge = createTeamsBridge(cfg, { store: new MemoryStore<ConversationRef>(), logger: silentLogger });
     await bridge.start();
   });
 

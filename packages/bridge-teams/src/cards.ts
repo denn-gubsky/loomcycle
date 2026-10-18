@@ -2,26 +2,13 @@
 // a question (Interruption) and a held answer (review). Buttons use
 // Action.Execute, so Teams sends an invoke the bridge answers with a
 // replacement card, and a used card cannot be clicked twice.
+//
+// A Teams button carries the whole action in its data (Teams merges the
+// card's inputs into it), so the core's short button ids are not needed here.
+
+import { isVerb, VERB, type CanonicalCard, type CardAction } from "@loomcycle/bridge-core";
 
 export type Card = Record<string, unknown>;
-
-export const VERB = {
-  answer: "lc.answer",
-  decline: "lc.decline",
-  approve: "lc.approve",
-  reject: "lc.reject",
-} as const;
-
-export type Verb = (typeof VERB)[keyof typeof VERB];
-
-/** What a card button sends back. Inputs (answer, feedback) are merged in by Teams. */
-export interface CardAction {
-  verb: Verb;
-  runId: string;
-  interruptId?: string;
-  answer?: string;
-  feedback?: string;
-}
 
 function card(body: unknown[], actions: unknown[] = []): Card {
   return {
@@ -34,24 +21,6 @@ function card(body: unknown[], actions: unknown[] = []): Card {
 }
 
 const text = (t: string, extra: Record<string, unknown> = {}) => ({ type: "TextBlock", text: t, wrap: true, ...extra });
-
-/** optionLabels reads an Interruption's options, which loomcycle carries as an
- *  untyped value: a list of strings, or of {label|value} objects. */
-export function optionLabels(options: unknown): string[] {
-  if (!Array.isArray(options)) return [];
-  return options
-    .map((o) => {
-      if (typeof o === "string") return o;
-      if (o && typeof o === "object") {
-        const r = o as Record<string, unknown>;
-        const v = r.value ?? r.label;
-        return typeof v === "string" ? v : undefined;
-      }
-      return undefined;
-    })
-    .filter((o): o is string => !!o && o.length <= 200)
-    .slice(0, 6);
-}
 
 export function questionCard(opts: {
   runId: string;
@@ -96,18 +65,30 @@ export function resultCard(message: string): Card {
   return card([text(message, { isSubtle: true })]);
 }
 
+/** renderCard turns the core's card into the Adaptive Card Teams shows. */
+export function renderCard(c: CanonicalCard): Card {
+  switch (c.kind) {
+    case "question":
+      return questionCard({ runId: c.runId, interruptId: c.interruptId, question: c.question, context: c.context, options: c.options });
+    case "review":
+      return reviewCard({ runId: c.runId, round: c.round });
+    case "result":
+      return resultCard(c.message);
+  }
+}
+
 /** parseCardAction reads an Action.Execute invoke's action. Returns undefined
  *  for anything this bridge did not issue. */
 export function parseCardAction(value: unknown): CardAction | undefined {
   const action = (value as { action?: { verb?: unknown; data?: unknown } } | null)?.action;
   const verb = action?.verb;
-  if (typeof verb !== "string" || !Object.values(VERB).includes(verb as Verb)) return undefined;
+  if (!isVerb(verb)) return undefined;
   const data = (action?.data ?? {}) as Record<string, unknown>;
   const str = (k: string) => (typeof data[k] === "string" ? (data[k] as string) : undefined);
   const runId = str("runId");
   if (!runId) return undefined;
   return {
-    verb: verb as Verb,
+    verb,
     runId,
     interruptId: str("interruptId"),
     answer: str("answer")?.trim() || undefined,

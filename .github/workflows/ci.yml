@@ -376,12 +376,13 @@ jobs:
       - run: npm run typecheck:tests
       - run: npm test
 
-  teams-bridge:
-    name: Teams bridge
+  # The Teams bridge's unit tests run in the Bridges job below. This job adds
+  # what that one cannot: a loomcycle built from this commit (mock provider,
+  # no keys) with real per-user tokens and real interactive runs, and the Teams
+  # SDK app answering a posted activity through a fake Bot Connector.
+  bridge-teams-integration:
+    name: Teams bridge integration
     runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: packages/teams-bridge
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-go@v5
@@ -392,16 +393,17 @@ jobs:
         with:
           node-version: "20"
           cache: npm
-          cache-dependency-path: packages/teams-bridge/package-lock.json
-      - run: npm ci
-      - run: npm run typecheck
-      - run: npm test
-      - run: npm run build
-      # Against a loomcycle built from this commit (mock provider, no keys):
-      # real per-user tokens, real interactive runs, and the Teams SDK app
-      # answering a posted activity through a fake Bot Connector.
+          cache-dependency-path: packages/bridge-*/package-lock.json
+      - name: bridge-core
+        working-directory: packages/bridge-core
+        run: |
+          npm ci
+          npm run build
       - name: Integration (real loomcycle)
-        run: ./test/integration/run.sh
+        working-directory: packages/bridge-teams
+        run: |
+          npm ci
+          ./test/integration/run.sh
 
   # The bridges (RFC EQ): bridge-core, then every platform bridge beside it.
   # One job for all of them, so adding a bridge needs no CI change. A platform

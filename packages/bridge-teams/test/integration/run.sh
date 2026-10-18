@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Boots a real loomcycle (mock provider, sqlite, no keys) and runs the bridge's
 # integration test against it: real per-user tokens, real interactive runs,
-# a fake Teams side. Usage: packages/teams-bridge/test/integration/run.sh
+# a fake Teams side. Usage: packages/bridge-teams/test/integration/run.sh
 set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PKG="$(cd "$HERE/../.." && pwd)"

@@ -1,4 +1,4 @@
-# @loomcycle/teams-bridge
+# @loomcycle/bridge-teams
 
 A Microsoft Teams bot for a [loomcycle](https://github.com/denn-gubsky/loomcycle) interactive agent. People chat with the agent in Teams. In a 1:1 chat each person is their own loomcycle user, with their own runs, memory, history, budget and rate limit; a group chat or channel is a loomcycle user of its own.
 
@@ -8,7 +8,7 @@ A Microsoft Teams bot for a [loomcycle](https://github.com/denn-gubsky/loomcycle
 - **Commands:** `/new` (start over), `/stop` (stop the current answer), `/help`.
 - **Restarts lose nothing:** the next message continues the conversation, with the agent's full history.
 
-Design and decisions: RFC EN in the loomcycle document store (`/loomcycle/rfcs/rfc-en-teams-bridge`).
+Built on [`@loomcycle/bridge-core`](../bridge-core), the core every loomcycle bridge shares (Slack, Telegram, Discord). Design and decisions: RFC EN (`/loomcycle/rfcs/rfc-en-teams-bridge`) and RFC EQ (`/loomcycle/rfcs/bridges`) in the loomcycle document store.
 
 ## Why a bridge, and not Copilot Studio or A2A
 
@@ -47,7 +47,7 @@ Run loomcycle with authentication on and a persistent store. Then:
 ### 3. Run the bridge
 
 ```bash
-npx @loomcycle/teams-bridge
+npx @loomcycle/bridge-teams
 ```
 
 Configuration is by environment:
@@ -58,16 +58,16 @@ Configuration is by environment:
 | `PORT` | Listen port | `3978` |
 | `LOOMCYCLE_BASE_URL` | loomcycle's private URL | required |
 | `LOOMCYCLE_TOKEN` | The bridge's `substrate:tenant` token | required |
-| `TEAMS_BRIDGE_AGENT` | The loomcycle agent every conversation runs | required |
+| `BRIDGE_AGENT` | The loomcycle agent every conversation runs | required |
 | `TEAMS_BRIDGE_ALLOWED_TENANTS` | Comma list of Entra tenant ids allowed to use the bot | required |
-| `TEAMS_BRIDGE_TOKEN_TTL_SECONDS` | Lifetime of a user's token | `43200` |
-| `TEAMS_BRIDGE_RATE_PER_MINUTE`, `TEAMS_BRIDGE_RATE_BURST` | Runs a user may start per minute, and the burst | `6`, `10` |
-| `TEAMS_BRIDGE_USER_ACCESS_MODE` | `isolated` (a user sees only their own data) or `tenant` | `isolated` |
-| `TEAMS_BRIDGE_IDLE_MINUTES` | End a conversation's run after this long without a message; the next message continues it | `1440` |
-| `TEAMS_BRIDGE_STORE` | `memory`, or `file:<path>` to survive restarts on one instance | `memory` |
-| `TEAMS_BRIDGE_DEV` | `1` accepts unauthenticated requests, for local testing only | unset |
+| `BRIDGE_TOKEN_TTL_SECONDS` | Lifetime of a user's token | `43200` |
+| `BRIDGE_RATE_PER_MINUTE`, `BRIDGE_RATE_BURST` | Runs a user may start per minute, and the burst | `6`, `10` |
+| `BRIDGE_USER_ACCESS_MODE` | `isolated` (a user sees only their own data) or `tenant` | `isolated` |
+| `BRIDGE_IDLE_MINUTES` | End a conversation's run after this long without a message; the next message continues it | `1440` |
+| `BRIDGE_STORE` | `memory`, or `file:<path>` to survive restarts on one instance | `memory` |
+| `BRIDGE_DEV` | `1` accepts unauthenticated requests, for local testing only | unset |
 
-With `TEAMS_BRIDGE_STORE=memory`, a restart forgets which loomcycle session each Teams conversation was in, and the next message starts a fresh one. Use `file:<path>` (one instance) or your own `ConversationStore` (several).
+With `BRIDGE_STORE=memory`, a restart forgets which loomcycle session each Teams conversation was in, and the next message starts a fresh one. Use `file:<path>` (one instance) or your own `ConversationStore` (several).
 
 ### 4. The Teams app
 
@@ -84,7 +84,7 @@ With `TEAMS_BRIDGE_STORE=memory`, a restart forgets which loomcycle session each
 
 ## Security
 
-- **Inbound:** the Teams SDK validates the Bot Connector's signature on every request. The bridge always sets the SDK's unauthenticated mode explicitly from `TEAMS_BRIDGE_DEV`, so a stray `DANGEROUSLY_ALLOW_UNAUTHENTICATED_REQUESTS` cannot turn validation off.
+- **Inbound:** the Teams SDK validates the Bot Connector's signature on every request. The bridge always sets the SDK's unauthenticated mode explicitly from `BRIDGE_DEV`, so a stray `DANGEROUSLY_ALLOW_UNAUTHENTICATED_REQUESTS` cannot turn validation off.
 - **Tenant fence:** activities from Entra tenants not in `TEAMS_BRIDGE_ALLOWED_TENANTS` get one refusal and never reach loomcycle.
 - **Least privilege:** the bridge's own token never runs agents. A user's token is limited to one agent, every per-run override except `interactive` is locked, it is rate-limited, and it expires.
 - **Nothing at rest:** tokens are kept in memory. Logs carry conversation and run ids, never tokens, message text or agent output.
@@ -93,17 +93,20 @@ With `TEAMS_BRIDGE_STORE=memory`, a restart forgets which loomcycle session each
 ## As a library
 
 ```ts
-import { createTeamsBridge, loadConfig } from "@loomcycle/teams-bridge";
+import { createTeamsBridge, loadConfig } from "@loomcycle/bridge-teams";
 
 const bridge = createTeamsBridge(loadConfig(), { store: myRedisStore });
 await bridge.start();
 ```
 
-`ConversationStore` is four methods (`get`, `put`, `delete`, `list`); implement it over Redis or Postgres to run several instances.
+`ConversationStore` (from `@loomcycle/bridge-core`) is four methods (`get`, `put`, `delete`, `list`); implement it over Redis or Postgres to run several instances.
+
+Unlike the webhook bridges, the Teams bridge serves no `GET /healthz`: the Teams SDK's server registers POST routes only.
 
 ## Development
 
 ```bash
+(cd ../bridge-core && npm ci && npm run build)   # the core, depended on by path while unpublished
 npm ci
 npm run typecheck
 npm test                          # unit tests
