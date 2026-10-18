@@ -53,6 +53,15 @@ func keyScopeAllowed(ctx context.Context, op, scope string) (tools.Result, bool)
 }
 
 func (c *CredentialDef) execCreateKey(ctx context.Context, tenantID, scope, scopeID string, in credentialDefInput) (tools.Result, error) {
+	if kmsKind(in.Backend) {
+		return c.execCreateExternal(ctx, credential.Identity{TenantID: tenantID, Scope: scope, ScopeID: scopeID, Name: in.Name}, in)
+	}
+	if in.Backend != "" && in.Backend != credential.BackendInline {
+		return errValidation(fmt.Sprintf("create: backend %q is not one a crypto key can use", in.Backend), "Use inline (the default), vault, aws_kms or gcp_kms."), nil
+	}
+	if len(in.External) > 0 {
+		return errValidation("create: external applies only to backend vault, aws_kms or gcp_kms", "Name the backend."), nil
+	}
 	if res, ok := keyScopeAllowed(ctx, "create", scope); !ok {
 		return res, nil
 	}
@@ -93,6 +102,9 @@ func (c *CredentialDef) execKeyOp(ctx context.Context, tenantID, scope, scopeID 
 		return errResult(in.Op + ": crypto keys need the inline credential store — the operator must set LOOMCYCLE_SECRET_KEY"), nil
 	}
 	id := credential.Identity{TenantID: tenantID, Scope: scope, ScopeID: scopeID, Name: in.Name}
+	if kmsKind(in.Backend) || len(in.External) > 0 {
+		return errValidation(in.Op+": backend and external apply only to create", "To use a key an external KMS holds, create it with backend and external."), nil
+	}
 	switch in.Op {
 	case "generate":
 		kt, err := cryptoops.ParseKeyType(in.KeyType)
@@ -116,6 +128,9 @@ func (c *CredentialDef) execKeyOp(ctx context.Context, tenantID, scope, scopeID 
 		}
 		if meta.Usage != credential.UsageCrypto {
 			return errValidation(fmt.Sprintf("rotate: %q is not a crypto key", in.Name), "Rotate an ordinary credential by creating it again."), nil
+		}
+		if meta.KeyBackend != "" {
+			return keyOpFailure("rotate", in.Name, scope, credential.ErrExternalKey), nil
 		}
 		kt, err := cryptoops.ParseKeyType(meta.KeyType)
 		if err != nil {
@@ -252,6 +267,9 @@ func keyOpFailure(op, name, scope string, err error) tools.Result {
 		return errValidation(op+": "+err.Error(), "")
 	case errors.Is(err, credential.ErrNotCryptoKey):
 		return errValidation(fmt.Sprintf("%s: %q is not a crypto key", op, name), "")
+	case errors.Is(err, credential.ErrExternalKey):
+		return errBusiness(fmt.Sprintf("%s: %q is held in an external KMS", op, name),
+			"Rotate and retire its versions in the KMS; delete removes only the reference.")
 	case errors.Is(err, credential.ErrNoKey):
 		return errBusiness(op+": inline credential storage is disabled", "The operator must set LOOMCYCLE_SECRET_KEY.")
 	}

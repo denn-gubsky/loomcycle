@@ -34,6 +34,9 @@ type CredentialDef struct {
 	Engine *credential.Engine
 	// Audit records every crypto-key change (RFC EP). Nil: not recorded.
 	Audit audit.Sink
+	// KMS reaches external KMSs, for a crypto key held in one (shared with
+	// the Crypto tool). Nil: such keys cannot be created.
+	KMS *KMSAccess
 }
 
 // CredentialToolName is the in-band tool name (tools:[CredentialDef]).
@@ -55,7 +58,8 @@ func (c *CredentialDef) Description() string {
 		"only, never the secret), delete. allowed_urls on create restricts where the value may be sent: a restricted " +
 		"credential is given only to a caller that names a matching destination, and an empty list means it is sent nowhere. " +
 		"Requires LOOMCYCLE_SECRET_KEY for the inline backend. It also holds crypto keys for the Crypto tool (usage crypto): " +
-		"generate makes one nobody ever sees, rotate adds a version, set_min_version retires old ones. Inside a run, crypto " +
+		"generate makes one nobody ever sees, rotate adds a version, set_min_version retires old ones. A crypto key can also " +
+		"reference a key held in Vault, AWS KMS or Google Cloud KMS (create with backend and external). Inside a run, crypto " +
 		"keys are made and changed in agent scope only."
 }
 
@@ -73,7 +77,8 @@ const credentialDefInputSchema = `{
     "name":       {"type": "string", "description": "Credential name (charset ^[A-Za-z0-9_-]{1,128}$). Referenced elsewhere as $cred:<name>. Required for create/get/delete."},
     "scope":      {"type": "string", "enum": ["tenant","user","agent"], "description": "Which bucket (default tenant). user = the calling principal's own subject (per-user tokens); agent = the calling agent. scope_id is derived from your identity, never supplied."},
     "value":      {"type": "string", "description": "create only: the plaintext secret to encrypt (inline backend). Masked from the persisted transcript; never returned."},
-    "backend":    {"type": "string", "enum": ["inline"], "description": "create only: storage backend (default inline; external backends are a future addition)."},
+    "backend":    {"type": "string", "enum": ["inline","vault","aws_kms","gcp_kms"], "description": "create only: where it is held. inline (default) stores it here, encrypted. vault, aws_kms and gcp_kms are for a crypto key held in that external KMS (usage crypto, with external): only a reference is stored, every Crypto op is a call to the KMS, and the key is rotated and retired there. Such a key is added outside a run."},
+    "external":   {"type": "object", "description": "create with backend vault, aws_kms or gcp_kms: the key in the KMS. vault: address (https URL; its host must be on the operator's host allowlist), mount (default transit), key (the Transit key name), namespace (optional), token. aws_kms: region, key_id (key id, ARN or alias/<name>), access_key_id, secret_access_key, session_token (optional). gcp_kms: key (projects/<p>/locations/<l>/keyRings/<r>/cryptoKeys/<k>, optionally /cryptoKeyVersions/<n>), service_account (a service-account key JSON). Each credential field (token, access_key_id, secret_access_key, session_token, service_account) is $cred:<name>, an ordinary credential in the same scope as the key.", "properties": {"address": {"type": "string"}, "mount": {"type": "string"}, "key": {"type": "string"}, "namespace": {"type": "string"}, "token": {"type": "string"}, "region": {"type": "string"}, "key_id": {"type": "string"}, "access_key_id": {"type": "string"}, "secret_access_key": {"type": "string"}, "session_token": {"type": "string"}, "service_account": {"type": "string"}}, "additionalProperties": false},
     "expires_at": {"type": "string", "description": "create only: optional RFC3339 time, in the future, when the value stops being sent. From then on it is refused wherever it is referenced, and nothing stands in for it (not the operator's provider key, not a host env var); get and list still show it, with expired: true. Rotate by creating it again with the same name (a create without expires_at clears it)."},
     "allowed_urls": {"type": "array", "items": {"type": "string"}, "description": "create only: the https URLs this value may be sent to, e.g. [\"https://github.com/acme/app\"]. An entry covers that URL and everything under it, by whole path segments. Omit for no restriction; pass [] for a value that is never sent anywhere. Omitting it when the credential already exists keeps the list it has, so rotating a value does not lift its restriction; to lift one, delete the credential and create it again. A restricted credential is used only where the destination is known and covered: an MCP server's header, a hook's webhook header, a remote memory or document peer's key, a git source. It is never a provider key or a Bash environment variable, and nothing stands in for it there: the provider call fails, and the variable is left unset."},
     "username":   {"type": "string", "description": "create only: optional user name sent with the value where the destination takes one: HTTP basic auth for a git source (default by host: oauth2 for GitLab, x-access-token otherwise). No ':' and no control characters. Omitting it when the credential already exists keeps the one it has; pass \"\" to remove it."}
@@ -107,6 +112,9 @@ type credentialDefInput struct {
 	Version     int    `json:"version"`
 	Passphrase  string `json:"passphrase"`
 	Blob        string `json:"blob"`
+	// External names a key held in an external KMS (backend vault, aws_kms
+	// or gcp_kms); its fields depend on the backend.
+	External json.RawMessage `json:"external"`
 }
 
 var credNameRe = regexp.MustCompile(`^[A-Za-z0-9_-]{1,128}$`)
@@ -284,6 +292,10 @@ func credentialMeta(row credential.Meta, note string) map[string]any {
 	if row.Usage == credential.UsageCrypto {
 		m["usage"] = row.Usage
 		m["key_type"] = row.KeyType
+		if row.KeyBackend != "" {
+			// Held in an external KMS: its versions are the KMS's, not listed here.
+			m["key_backend"] = row.KeyBackend
+		}
 		m["current_version"] = row.CurrentVersion
 		m["min_version"] = row.MinVersion
 		versions := make([]map[string]any, 0, len(row.Versions))

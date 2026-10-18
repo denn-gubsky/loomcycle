@@ -21,6 +21,7 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/auth"
 	"github.com/denn-gubsky/loomcycle/internal/credential"
 	"github.com/denn-gubsky/loomcycle/internal/cryptoops"
+	"github.com/denn-gubsky/loomcycle/internal/kms"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
 )
 
@@ -53,6 +54,9 @@ type Crypto struct {
 	// tools' own stores are bound after construction.
 	Memory *Memory
 	Docs   *Document
+	// KMS reaches keys held in an external KMS (shared with CredentialDef).
+	// Nil: such a key is refused.
+	KMS *KMSAccess
 
 	budget runBudget
 	stats  cryptoStats
@@ -201,6 +205,9 @@ type cryptoKey struct {
 	current  int            // 0 for an unversioned (cred / run) key
 	min      int            // lowest usable version
 	versions map[int][]byte // version → material (only usable versions)
+	// ext is set for a key an external KMS holds: versions is then empty and
+	// every op is a call to it.
+	ext kms.Client
 }
 
 func (k *cryptoKey) material(v int) ([]byte, bool) {
@@ -505,6 +512,9 @@ func (c *Crypto) execKeyed(ctx context.Context, in cryptoInput) (tools.Result, *
 			"Use a key of a type that does this operation."), ev
 	}
 	tenant := ident.TenantID
+	if key.ext != nil {
+		return c.execExternal(ctx, key, tenant, in, env, ref, ev), ev
+	}
 	switch in.Op {
 	case "encrypt":
 		return c.encrypt(key, tenant, in, ev), ev
@@ -704,6 +714,17 @@ func (c *Crypto) resolveKey(ctx context.Context, ref keyRef, env *cryptoops.Enve
 	kt, err := cryptoops.ParseKeyType(k.KeyType)
 	if err != nil {
 		return nil, errBusiness(fmt.Sprintf("key %q has a type this build does not know", ref.Name), ""), false
+	}
+	if k.External != nil {
+		if c.KMS == nil {
+			return nil, errBusiness(fmt.Sprintf("key %q is held in an external KMS, which this deployment does not reach", ref.Name), ""), false
+		}
+		cl, err := c.KMS.client(c.Engine, ident.TenantID, k)
+		if err != nil {
+			return nil, kmsFailure("key "+ref.Name, err), false
+		}
+		return &cryptoKey{source: cryptoops.KeySource(k.Scope), name: ref.Name, scope: k.Scope, keyType: kt,
+			current: k.Current, min: k.MinVersion, versions: k.Versions, ext: cl}, tools.Result{}, true
 	}
 	return &cryptoKey{source: cryptoops.KeySource(k.Scope), name: ref.Name, scope: k.Scope, keyType: kt, current: k.Current, min: k.MinVersion, versions: k.Versions}, tools.Result{}, true
 }
@@ -937,6 +958,11 @@ func (c *Crypto) decrypt(ctx context.Context, k *cryptoKey, tenant string, in cr
 		return didNotDecrypt()
 	}
 	ev.CryptoVersion = v
+	return decryptOutput(ctx, in, pt, v)
+}
+
+// decryptOutput is decrypt's result: the plaintext in the encoding asked for.
+func decryptOutput(ctx context.Context, in cryptoInput, pt []byte, v int) tools.Result {
 	if in.Sensitive {
 		tools.MarkContentNotRetained(ctx)
 	}
@@ -1146,11 +1172,16 @@ func (c *Crypto) publicKey(k *cryptoKey, ref keyRef) tools.Result {
 	if err != nil {
 		return errTransient("public_key failed", "")
 	}
+	return publicKeyResult(k, pub, v, kidOf(k, v))
+}
+
+// publicKeyResult is public_key's result: the key as PEM and as a JWK.
+func publicKeyResult(k *cryptoKey, pub crypto.PublicKey, v int, kid string) tools.Result {
 	pemStr, err := cryptoops.PublicKeyPEM(pub)
 	if err != nil {
 		return errTransient("public_key failed", "")
 	}
-	jwk, err := cryptoops.PublicKeyJWK(pub, kidOf(k, v))
+	jwk, err := cryptoops.PublicKeyJWK(pub, kid)
 	if err != nil {
 		return errTransient("public_key failed", "")
 	}
