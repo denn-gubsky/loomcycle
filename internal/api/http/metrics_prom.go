@@ -158,6 +158,25 @@ func (s *Server) handleMetricsProm(w http.ResponseWriter, _ *http.Request) {
 		fmt.Fprintln(w)
 	}
 
+	// Crypto tool ops (RFC EP), by op and outcome. Never a key name: the
+	// series set stays bounded by the op list.
+	if s.cryptoStats != nil {
+		st := s.cryptoStats()
+		keys := make([]string, 0, len(st))
+		for k := range st {
+			keys = append(keys, k)
+		}
+		sort.Strings(keys)
+		fmt.Fprintln(w, "# HELP loomcycle_crypto_ops_total Crypto tool operations on this replica, by op and outcome (ok, error).")
+		fmt.Fprintln(w, "# TYPE loomcycle_crypto_ops_total counter")
+		for _, k := range keys {
+			op, outcome, _ := strings.Cut(k, "|")
+			labels := mergeLabels(replicaLabels, map[string]string{"op": op, "outcome": outcome})
+			fmt.Fprintf(w, "loomcycle_crypto_ops_total%s %d\n", labels, st[k])
+		}
+		fmt.Fprintln(w)
+	}
+
 	// Build info as a single-series gauge=1 with version metadata as
 	// labels. Standard Prometheus convention — operators alert on
 	// version churn or filter by version in a multi-replica cluster.

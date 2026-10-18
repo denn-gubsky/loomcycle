@@ -409,6 +409,9 @@ type Server struct {
 	// channelHookStats reads the channel-hook worker's counters for
 	// /metrics; nil when the worker does not run.
 	channelHookStats func() channelhooks.Stats
+	// cryptoStats reads the Crypto tool's op counters ("<op>|<outcome>" →
+	// count) for /metrics; nil when not wired.
+	cryptoStats func() map[string]uint64
 
 	// metricsSampler is the v0.8.x process-resource sampler.
 	// Nil = the /v1/_metrics/* endpoints return 503. Set via
@@ -1019,6 +1022,10 @@ func (s *Server) SetSystemPublisher(p channels.SystemPublisher) {
 // SetChannelHookStats wires the channel-hook worker's counters into /metrics.
 // Boot wiring only.
 func (s *Server) SetChannelHookStats(f func() channelhooks.Stats) { s.channelHookStats = f }
+
+// SetCryptoStats wires the Crypto tool's op counters into /metrics. Boot
+// wiring only.
+func (s *Server) SetCryptoStats(f func() map[string]uint64) { s.cryptoStats = f }
 
 // SetInterruptionBus wires the v0.8.16 in-process notification bus
 // used by the Interruption-resolve HTTP handler to wake the blocked
@@ -2083,6 +2090,18 @@ func (s *Server) substratePoliciesForAgent(agentDef config.AgentDef, selfName st
 		tools.EvaluationPolicyValue{
 			Scopes: tools.EffectiveEvaluationScopes(agentDef.EvaluationScopes),
 		}
+}
+
+// cryptoPolicyForAgent is the Crypto grant of a run with no parent: its agent's
+// own crypto_scopes, resolved (no default — unset grants no key scope).
+func cryptoPolicyForAgent(def config.AgentDef) tools.CryptoPolicyValue {
+	return tools.CryptoPolicyValue{Scopes: tools.EffectiveCryptoScopes(def.CryptoScopes)}
+}
+
+// subAgentCryptoPolicy is a spawned child's Crypto grant: its own definition's
+// scopes narrowed to those its parent's run holds. Never wider than either.
+func subAgentCryptoPolicy(parent tools.CryptoPolicyValue, def config.AgentDef) tools.CryptoPolicyValue {
+	return tools.CryptoPolicyValue{Scopes: tools.NarrowCryptoScopes(parent.Scopes, def.CryptoScopes)}
 }
 
 // skillPolicyForAgent returns the RFC BA skill-access policy for one agent —
@@ -3687,6 +3706,7 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 	loopCtx = tools.WithSearchProviders(loopCtx, agentDef.SearchProviders)
 	loopCtx = tools.WithVolumeDefPolicy(loopCtx, s.volumeDefPolicyForAgent(agentDef))
 	loopCtx = tools.WithEvaluationPolicy(loopCtx, evPolicy)
+	loopCtx = tools.WithCryptoPolicy(loopCtx, cryptoPolicyForAgent(agentDef))
 	loopCtx = tools.WithHistoryPolicy(loopCtx, s.historyPolicyForAgent(loopCtx, agentDef))
 	loopCtx, liveInterruption := s.startRunInterruption(loopCtx, agentDef, in.Interruption)
 	loopCtx = tools.WithRunID(loopCtx, runID)
@@ -5942,6 +5962,7 @@ func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {
 	loopCtx = tools.WithSearchProviders(loopCtx, agentDef.SearchProviders)
 	loopCtx = tools.WithVolumeDefPolicy(loopCtx, s.volumeDefPolicyForAgent(agentDef))
 	loopCtx = tools.WithEvaluationPolicy(loopCtx, evPolicy)
+	loopCtx = tools.WithCryptoPolicy(loopCtx, cryptoPolicyForAgent(agentDef))
 	loopCtx = tools.WithHistoryPolicy(loopCtx, s.historyPolicyForAgent(loopCtx, agentDef))
 	loopCtx, liveInterruption := s.startRunInterruption(loopCtx, agentDef, req.Interruption)
 	loopCtx = tools.WithRunID(loopCtx, runID)
@@ -6903,6 +6924,7 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 	loopCtx = tools.WithSearchProviders(loopCtx, agentDef.SearchProviders)
 	loopCtx = tools.WithVolumeDefPolicy(loopCtx, s.volumeDefPolicyForAgent(agentDef))
 	loopCtx = tools.WithEvaluationPolicy(loopCtx, evPolicy)
+	loopCtx = tools.WithCryptoPolicy(loopCtx, cryptoPolicyForAgent(agentDef))
 	loopCtx = tools.WithHistoryPolicy(loopCtx, s.historyPolicyForAgent(loopCtx, agentDef))
 	loopCtx, liveInterruption := s.startRunInterruption(loopCtx, agentDef, body.Interruption)
 	loopCtx = tools.WithRunID(loopCtx, run.ID)
@@ -7852,18 +7874,34 @@ func (s *Server) priceCall(provider, model string, u *providers.Usage) (float64,
 // — not post-hoc value registration — is the timing-safe fix. Non-credential
 // tools pass through unchanged; get/list/delete carry no secret; a credential
 // input that won't parse is blanked defensively.
+//
+// The same mask covers every secret-bearing input field of the credential and
+// crypto tools (RFC EP): CredentialDef's key-transfer passphrase and blob, and
+// the plaintext the Crypto tool encrypts.
 func maskCredentialCreateValue(toolName string, input json.RawMessage) json.RawMessage {
-	if toolName != "CredentialDef" && toolName != "credentialdef" {
+	var fields []string
+	switch toolName {
+	case "CredentialDef", "credentialdef":
+		fields = []string{"value", "passphrase", "blob"}
+	case "Crypto", "crypto":
+		fields = []string{"plaintext"}
+	default:
 		return input
 	}
 	var m map[string]json.RawMessage
 	if err := json.Unmarshal(input, &m); err != nil {
 		return json.RawMessage(`{"_redacted":"credential input"}`)
 	}
-	if _, ok := m["value"]; !ok {
+	masked := false
+	for _, f := range fields {
+		if _, ok := m[f]; ok {
+			m[f] = json.RawMessage(`"[redacted]"`)
+			masked = true
+		}
+	}
+	if !masked {
 		return input
 	}
-	m["value"] = json.RawMessage(`"[redacted]"`)
 	out, err := json.Marshal(m)
 	if err != nil {
 		return json.RawMessage(`{"_redacted":"credential input"}`)
@@ -8626,6 +8664,9 @@ func (s *Server) prepareSubRunValues(ctx context.Context, name string, src nameS
 		// walk and wave stamps): a resume reads the team's own agents from it.
 		TeamScope: teamScopeRecordOf(ctx),
 	}
+	// The parent's key scopes, which narrow the child's below and which a
+	// resume cannot re-derive once the parent's ctx is gone.
+	subRunCfg.Spawn.CryptoScopes = tools.CryptoPolicy(ctx).Scopes
 
 	// RFC DC P5 / D9: a child inherits the parent's overrides only when it is
 	// the SAME DEFINITION. Across definitions the parent's model may not even be
@@ -9074,6 +9115,11 @@ func (s *Server) prepareSubRunValues(ctx context.Context, name string, src nameS
 	subCtx = tools.WithSearchProviders(subCtx, def.SearchProviders)
 	subCtx = tools.WithVolumeDefPolicy(subCtx, s.volumeDefPolicyForAgent(def))
 	subCtx = tools.WithEvaluationPolicy(subCtx, subEvPolicy)
+	// Unlike the per-yaml policies above, a child's key scopes are NARROWED by
+	// its parent's: it holds only what both its own definition and the parent
+	// run hold, so spawning a helper with a wider definition reaches no key the
+	// parent could not.
+	subCtx = tools.WithCryptoPolicy(subCtx, subAgentCryptoPolicy(tools.CryptoPolicy(ctx), def))
 	subCtx = tools.WithHistoryPolicy(subCtx, s.historyPolicyForAgent(subCtx, def))
 	subCtx, _ = s.startRunInterruption(subCtx, def, subRunCfg.Interruption)
 	// subCtx still carries the PARENT's run id here, which is exactly the

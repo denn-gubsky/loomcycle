@@ -513,6 +513,7 @@ interface AgentDefBody {
   sql_scopes?: string[];
   history_scope?: string[];
   evaluation_scopes?: string[];
+  crypto_scopes?: string[];
   volumes?: string[];
   agent_def_scopes?: string[];
   schedule_def_scopes?: string[];
@@ -602,6 +603,7 @@ function AgentGrants({ body }: { body: AgentDefBody }) {
     ["sql_scopes", body.sql_scopes],
     ["history_scope", body.history_scope],
     ["evaluation_scopes", body.evaluation_scopes],
+    ["crypto_scopes", body.crypto_scopes],
     ["volumes", body.volumes],
     ["agent_def_scopes", body.agent_def_scopes],
     ["schedule_def_scopes", body.schedule_def_scopes],

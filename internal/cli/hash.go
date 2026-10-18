@@ -239,6 +239,8 @@ func runHashAgentByName(name, cfgPath string, stdout, stderr io.Writer) int {
 		Channels:         agents.AgentChannelACL{Publish: def.Channels.Publish, Subscribe: def.Channels.Subscribe},
 		EvaluationScopes: def.EvaluationScopes,
 		Interruption:     agents.AgentInterruptionACL{Enabled: def.Interruption.Enabled, Kinds: def.Interruption.Kinds, MaxPending: def.Interruption.MaxPending},
+		// crypto_scopes and the *_def_scopes gates are deliberately not copied:
+		// authority, not content, so agents.AgentContent excludes them.
 	}
 	fmt.Fprintln(stdout, agents.Sign(agents.FromYAMLAgent(a)))
 	return 0

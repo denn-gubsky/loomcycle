@@ -84,7 +84,7 @@ const agentDefDescription = `Author, fork, promote, retire, and inspect agent de
 	`produces the DERIVED layer of agent-authored versions. Tools may be NARROWED ` +
 	`on forks but never WIDENED — operator-blessed root is the permanent capability ceiling. ` +
 	`Every other grant is held to what you hold yourself: memory_scopes, sql_scopes, history_scope, ` +
-	`core_blocks, volumes, channels, interruption, evaluation_scopes, skills and the *_def_scopes must be within ` +
+	`core_blocks, volumes, channels, interruption, evaluation_scopes, crypto_scopes, skills and the *_def_scopes must be within ` +
 	`your own (a fork may also keep what the forked version has). An unset memory_scopes or sql_scopes takes the ` +
 	`ordinary memory default; any other unset field is judged at its default (the operator's default volume, ` +
 	`the user's history, the question interruption kind, every skill), so set it explicitly when yours is narrower. ` +
@@ -99,7 +99,7 @@ const agentDefInputSchema = `{
     "parent_def_id": {"type": "string", "description": "Fork parent (optional for fork — when absent, forks the active def of the name)."},
     "overlay": {
       "type": "object",
-      "description": "Mutable subset of AgentDef for create/fork (snake_case keys). Common fields: provider, model, tier, effort, system_prompt, code_body, tools, skills, providers, models, max_tokens, max_iterations, max_concurrent_children, run_timeout_seconds, memory_scopes, memory_quota_bytes, memory_backend, retry_attempts, max_context_tokens (the INPUT window — on a local model it becomes that agent's own num_ctx; distinct from max_tokens, which caps OUTPUT), internal (marks the agent as maintenance plumbing and keeps its sessions out of the chat surfaces; ONE-WAY — a fork can set it true and cannot clear it). Routing is ONE choice: provider/model pin the agent to a model, tier lets the runtime pick one; in a fork, setting provider or model clears the parent's tier and setting tier clears its provider and model, and an overlay that sets both a pin and a tier is refused. Interactive / multi-agent config also round-trips and is content-identifying: channels ({publish:[...],subscribe:[...]}), evaluation_scopes ([...]), interruption ({enabled,kinds:[...],max_pending}). Immutable / server-set fields (def_id, version, parent_def_id, created_*, bootstrapped_from_static) are silently ignored if supplied.",
+      "description": "Mutable subset of AgentDef for create/fork (snake_case keys). Common fields: provider, model, tier, effort, system_prompt, code_body, tools, skills, providers, models, max_tokens, max_iterations, max_concurrent_children, run_timeout_seconds, memory_scopes, memory_quota_bytes, memory_backend, retry_attempts, max_context_tokens (the INPUT window — on a local model it becomes that agent's own num_ctx; distinct from max_tokens, which caps OUTPUT), internal (marks the agent as maintenance plumbing and keeps its sessions out of the chat surfaces; ONE-WAY — a fork can set it true and cannot clear it). Routing is ONE choice: provider/model pin the agent to a model, tier lets the runtime pick one; in a fork, setting provider or model clears the parent's tier and setting tier clears its provider and model, and an overlay that sets both a pin and a tier is refused. Interactive / multi-agent config also round-trips and is content-identifying: channels ({publish:[...],subscribe:[...]}), evaluation_scopes ([...]), interruption ({enabled,kinds:[...],max_pending}). crypto_scopes ([agent|user|tenant|run]; unset = none) also round-trips but is authority, not content. Immutable / server-set fields (def_id, version, parent_def_id, created_*, bootstrapped_from_static) are silently ignored if supplied.",
       "additionalProperties": true
     },
     "description":   {"type": "string", "description": "Free-text rationale for create/fork."},
@@ -1067,6 +1067,11 @@ func decodeAgentOverlay(overlay json.RawMessage) (mergedDef, error) {
 	if err := validateOverlayNamedScopes(ov.AgentDefScopes); err != nil {
 		return mergedDef{}, err
 	}
+	// The closed set operator yaml is held to: an unknown key scope is refused
+	// here rather than stored to grant nothing at run time.
+	if err := config.ValidateCryptoScopes(ov.CryptoScopes); err != nil {
+		return mergedDef{}, fmt.Errorf("AgentDef tool: %w", err)
+	}
 	// Left as written ("none" or "default") so a fork can tell "say nothing"
 	// from "ask for the default"; buildDefinition turns it into the stored
 	// form.
@@ -1407,6 +1412,12 @@ type mergedDef struct {
 	Channels         config.AgentChannelACL      `json:"channels,omitempty"`
 	EvaluationScopes []string                    `json:"evaluation_scopes,omitempty"`
 	Interruption     config.AgentInterruptionACL `json:"interruption,omitempty"`
+	// CryptoScopes is the Crypto tool's key-scope grant
+	// (config.AgentDef.CryptoScopes). Authority, not content: excluded from
+	// content_sha256 like the *_def_scopes gates below, held to the author's
+	// own grant by ceilCrypto, and a fork that does not send it keeps its
+	// parent's.
+	CryptoScopes []string `json:"crypto_scopes,omitempty"`
 	// The *_def_scopes capability gates (F40) — the substrate-def slice of the
 	// F14 closure. Without these a runtime-authored meta-agent (one that
 	// forks/promotes/schedules other agents) comes back default-deny and can't
@@ -1627,6 +1638,9 @@ func (d *mergedDef) applyOverlay(ov mergedDef) {
 	if ov.EvaluationScopes != nil {
 		d.EvaluationScopes = ov.EvaluationScopes
 	}
+	if ov.CryptoScopes != nil {
+		d.CryptoScopes = ov.CryptoScopes
+	}
 	// Interruption: any non-zero field signals the operator set the block
 	// (Enabled true, or kinds/max_pending supplied). A fork that wants to
 	// DISABLE an inherited interruption block is an edge the create path
@@ -1703,6 +1717,7 @@ func (d *mergedDef) normalize() {
 // a future unhashed field cannot silently reopen the collision.
 var unhashedCapabilityTags = []string{
 	"allow_overrides",
+	"crypto_scopes",
 	"ephemeral_volumes",
 	"retention",
 	"a2a_agent_def_scopes",
@@ -1810,6 +1825,7 @@ func staticToMergedDef(s config.AgentDef) mergedDef {
 		Channels:         s.Channels,
 		EvaluationScopes: s.EvaluationScopes,
 		Interruption:     s.Interruption,
+		CryptoScopes:     s.CryptoScopes,
 		// F40: a static meta-agent bootstrapped into the substrate keeps its
 		// capability gates, so a fork of it inherits them.
 		AgentDefScopes:         s.AgentDefScopes,

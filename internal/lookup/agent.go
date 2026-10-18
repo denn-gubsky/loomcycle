@@ -412,6 +412,10 @@ type SubstrateAgentDef struct {
 	Channels         config.AgentChannelACL      `json:"channels,omitempty"`
 	EvaluationScopes []string                    `json:"evaluation_scopes,omitempty"`
 	Interruption     config.AgentInterruptionACL `json:"interruption,omitempty"`
+	// CryptoScopes mirrors config.AgentDef.CryptoScopes. Kept in sync with
+	// builtin.mergedDef: a key-scope grant that did not survive the read would
+	// come back default-deny. Not part of content_sha256 (authority).
+	CryptoScopes []string `json:"crypto_scopes,omitempty"`
 	// F40: the *_def_scopes capability gates — the substrate-def slice of the
 	// F14 closure, so a runtime-authored meta-agent's fork/schedule/etc.
 	// authority survives the round-trip instead of defaulting to deny. The
@@ -512,6 +516,7 @@ func SubstrateAgentDefFromConfig(def config.AgentDef) SubstrateAgentDef {
 		RetryAttempts:          def.RetryAttempts,
 		Channels:               def.Channels,
 		EvaluationScopes:       def.EvaluationScopes,
+		CryptoScopes:           def.CryptoScopes,
 		Interruption:           def.Interruption,
 		AgentDefScopes:         def.AgentDefScopes,
 		ScheduleDefScopes:      def.ScheduleDefScopes,
@@ -579,6 +584,7 @@ func (s SubstrateAgentDef) ToConfigDef() config.AgentDef {
 		RetryAttempts:         s.RetryAttempts,
 		Channels:              s.Channels,
 		EvaluationScopes:      s.EvaluationScopes,
+		CryptoScopes:          s.CryptoScopes,
 		Interruption:          s.Interruption,
 		// F40: surface the capability gates to the policy layer so a
 		// runtime-authored meta-agent's AgentDef/Schedule/etc. scopes apply.

@@ -963,6 +963,7 @@ func (s *Server) resumePausedRun(run store.Run) error {
 	loopCtx = tools.WithSearchProviders(loopCtx, agentDef.SearchProviders)
 	loopCtx = tools.WithVolumeDefPolicy(loopCtx, s.volumeDefPolicyForAgent(agentDef))
 	loopCtx = tools.WithEvaluationPolicy(loopCtx, evPolicy)
+	loopCtx = tools.WithCryptoPolicy(loopCtx, resumedCryptoPolicy(run, runCfg.Spawn, agentDef))
 	loopCtx = tools.WithHistoryPolicy(loopCtx, s.historyPolicyForAgent(loopCtx, agentDef))
 	// From the run's record, which a retune may have changed since it started —
 	// an autonomous run that never parked adopts a retune here.
@@ -1372,6 +1373,23 @@ func (s *Server) resumedVolumePolicy(ctx context.Context, run store.Run, rec *sp
 		return tools.VolumePolicyValue{Active: true}
 	}
 	return s.childVolumePolicy(ctx, s.recordedParentVolumes(ctx, rec.Volumes), def)
+}
+
+// resumedCryptoPolicy is the Crypto grant a resumed run gets back: its
+// agent's own for a top-level run, and for a sub-run the same narrowing against
+// its parent's key scopes it had live, read from the spawn record.
+//
+// A sub-run with no record fails CLOSED with no key scope: its parent's grant
+// is unknown, and its own definition's is exactly the widening the narrowing
+// exists to prevent.
+func resumedCryptoPolicy(run store.Run, rec *spawnRecord, def config.AgentDef) tools.CryptoPolicyValue {
+	if !isSubRun(run) {
+		return cryptoPolicyForAgent(def)
+	}
+	if rec == nil {
+		return tools.CryptoPolicyValue{}
+	}
+	return subAgentCryptoPolicy(tools.CryptoPolicyValue{Scopes: rec.CryptoScopes}, def)
 }
 
 // recordedParentVolumes rebuilds the parent's volume policy a sub-run was

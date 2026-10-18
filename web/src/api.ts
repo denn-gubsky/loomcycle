@@ -3503,6 +3503,24 @@ export interface CredentialMeta {
   allowed_urls?: string[];
   // The user name sent with the value (basic auth for a git source).
   username?: string;
+  // Present (true/false) only when expires_at is set: an expired credential is
+  // kept for rotation but resolves nowhere.
+  expired?: boolean;
+  // RFC EP crypto keys: usage "crypto" plus the key's type and versions. Absent
+  // on an ordinary credential. The key material itself is never returned.
+  usage?: "crypto";
+  key_type?: string;
+  current_version?: number;
+  min_version?: number;
+  versions?: CryptoKeyVersion[];
+}
+
+// CryptoKeyVersion is one version of a crypto key (metadata only). retired =
+// below min_version: it no longer decrypts/verifies, and may be deleted.
+export interface CryptoKeyVersion {
+  version: number;
+  created_at?: string;
+  retired: boolean;
 }
 
 export interface CredentialListResponse {
@@ -3549,6 +3567,72 @@ export function deleteCredential(input: {
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ op: "delete", ...input }),
   });
+}
+
+// --- RFC EP: crypto keys (credentials with usage "crypto") ---
+// Same route and envelope as the calls above. A crypto key's material is never
+// returned by any of them; each returns the key's metadata.
+
+function credentialDefOp<T>(body: Record<string, unknown>): Promise<T> {
+  return jsonFetch<T>("/v1/_credentialdef", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+}
+
+// generateCryptoKey makes a new key server-side — nobody ever sees its material.
+// The preferred way to create one. expires_at is RFC3339; omitted = no expiry.
+export function generateCryptoKey(input: {
+  scope: CredentialScope;
+  name: string;
+  key_type: string;
+  expires_at?: string;
+}): Promise<CredentialMeta> {
+  return credentialDefOp<CredentialMeta>({ op: "generate", ...input });
+}
+
+// importCryptoKey stores existing key material as a crypto key (version 1). The
+// `value` is write-only like createCredential's; key_encoding omitted lets the
+// server pick the type's default.
+export function importCryptoKey(input: {
+  scope: CredentialScope;
+  name: string;
+  key_type: string;
+  key_encoding?: string;
+  value: string;
+  expires_at?: string;
+}): Promise<CredentialMeta> {
+  return credentialDefOp<CredentialMeta>({ op: "create", usage: "crypto", ...input });
+}
+
+// rotateCryptoKey adds a new current version, generated server-side (no value
+// is sent). Older versions stay usable until min_version is raised past them.
+export function rotateCryptoKey(input: {
+  scope: CredentialScope;
+  name: string;
+}): Promise<CredentialMeta> {
+  return credentialDefOp<CredentialMeta>({ op: "rotate", ...input });
+}
+
+// setCryptoKeyMinVersion retires every version below min_version. It only goes
+// up, and never past the current version.
+export function setCryptoKeyMinVersion(input: {
+  scope: CredentialScope;
+  name: string;
+  min_version: number;
+}): Promise<CredentialMeta> {
+  return credentialDefOp<CredentialMeta>({ op: "set_min_version", ...input });
+}
+
+// deleteCryptoKeyVersion destroys one RETIRED version's material (the server
+// refuses an unretired one).
+export function deleteCryptoKeyVersion(input: {
+  scope: CredentialScope;
+  name: string;
+  version: number;
+}): Promise<CredentialMeta> {
+  return credentialDefOp<CredentialMeta>({ op: "delete_version", ...input });
 }
 
 // --- RFC AV: token-usage & cost report (GET /v1/_usage) ---

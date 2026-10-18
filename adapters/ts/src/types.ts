@@ -1676,6 +1676,10 @@ export interface RunSpec {
      *  replica that does not hold it; its own replica reads it before it
      *  reaps the child as idle. */
     addressed_at?: number;
+    /** The parent run's Crypto key scopes at spawn — the ceiling the child's
+     *  own `crypto_scopes` were narrowed to, and are narrowed to again on
+     *  resume. Absent: the parent held none. */
+    crypto_scopes?: string[];
   };
   /** The iteration limit the run started with. Absent for a run with none
    *  (unbounded, or an interactive run with no `max_iterations` of its own)
@@ -4698,6 +4702,11 @@ export interface AgentDefOverlay {
   /** Evaluation tool scope gate, e.g. `["submit_self", "read_any"]`. The
    *  Evaluation tool default-denies until granted. */
   evaluation_scopes?: string[];
+  /** Crypto tool key scopes the agent's key-backed ops may use: `agent` |
+   *  `user` | `tenant` | `run`. Unset (or `["-*"]`) grants none — keyless ops
+   *  only. Held to the author's own grant; a sub-agent holds only what its
+   *  parent run also holds. */
+  crypto_scopes?: string[];
   /** Channel tool ACL (default-deny until set). */
   channels?: AgentChannelACL;
   /** Interruption tool gate — `enabled: true` REQUIRED for the tool to work. */

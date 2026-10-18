@@ -592,6 +592,9 @@ func (s *Server) RegisterAgent(ctx context.Context, req connector.RegisterAgentR
 	if err := config.ValidateRoutingMode(req.Provider, req.Model, req.Tier); err != nil {
 		return connector.AgentDescriptor{}, err
 	}
+	if err := config.ValidateCryptoScopes(req.CryptoScopes); err != nil {
+		return connector.AgentDescriptor{}, err
+	}
 	if _, collides := s.cfg().Agents[req.Name]; collides {
 		return connector.AgentDescriptor{}, errRegisterNameUnavailable(req.Name)
 	}
@@ -624,6 +627,7 @@ func (s *Server) RegisterAgent(ctx context.Context, req connector.RegisterAgentR
 		Channels:         req.Channels,
 		EvaluationScopes: req.EvaluationScopes,
 		Interruption:     req.Interruption,
+		CryptoScopes:     req.CryptoScopes,
 	}
 	defJSON, err := json.Marshal(def)
 	if err != nil {

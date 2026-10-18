@@ -2022,6 +2022,25 @@ type AgentDef struct {
 	// `evaluation_scopes: ["-*"]`.
 	EvaluationScopes []string `yaml:"evaluation_scopes"`
 
+	// CryptoScopes gates the key-backed operations of the Crypto tool: which
+	// key scopes the agent's signing, encryption and decryption may use.
+	// Multi-select, closed set:
+	//
+	//   - "agent"  → keys owned by this agent
+	//   - "user"   → keys owned by the run's end-user
+	//   - "tenant" → keys shared across the caller's tenant
+	//   - "run"    → keys that live only as long as the run tree
+	//
+	// DEFAULT-DENY, and unlike memory_scopes or evaluation_scopes there is no
+	// default: unset grants no key scope, so the agent may use only the
+	// keyless operations (hashing, random bytes and the like). `["-*"]` is
+	// accepted and means the same. An unknown value is refused at load.
+	//
+	// A sub-agent holds only the scopes both it and its parent run hold. Not
+	// per-run overridable. Authority, not content: like the *_def_scopes gates
+	// it is not part of content_sha256.
+	CryptoScopes []string `yaml:"crypto_scopes"`
+
 	// HistoryScope gates the RFC BE History tool (browse/search/annotate
 	// past chats). Owner-scope vocabulary:
 	//
@@ -3836,6 +3855,12 @@ type Env struct {
 	// operators tune it down to shrink the per-request memory ceiling.
 	// LOOMCYCLE_MAX_REQUEST_BYTES (bytes; <=0 ignored, default kept).
 	MaxRequestBytes int64
+	// CryptoMaxBytes caps each data argument of a Crypto tool call (RFC EP).
+	// Default 1 MiB. LOOMCYCLE_CRYPTO_MAX_BYTES (bytes; <=0 ignored).
+	CryptoMaxBytes int
+	// CryptoMaxOpsPerRun caps the Crypto tool calls one run may make (RFC EP).
+	// Default 100. LOOMCYCLE_CRYPTO_MAX_OPS_PER_RUN (<=0 ignored).
+	CryptoMaxOpsPerRun int
 	// MaxDocumentAssetBytes caps BOTH the POST /v1/_document request body (so a
 	// set_asset base64 image payload fits) and the decoded image size the
 	// Document tool stores (RFC BO). Default 8 MiB. A base64 payload is ~1.33× the
@@ -5708,6 +5733,20 @@ func LoadLayers(layers ...Layer) (*Config, error) {
 			cfg.Env.MaxRequestBytes = n
 		}
 	}
+	// Crypto tool limits (RFC EP): a positive override tunes each; a
+	// non-positive or malformed value keeps the default.
+	cfg.Env.CryptoMaxBytes = 1 << 20
+	if v := os.Getenv("LOOMCYCLE_CRYPTO_MAX_BYTES"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			cfg.Env.CryptoMaxBytes = n
+		}
+	}
+	cfg.Env.CryptoMaxOpsPerRun = 100
+	if v := os.Getenv("LOOMCYCLE_CRYPTO_MAX_OPS_PER_RUN"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			cfg.Env.CryptoMaxOpsPerRun = n
+		}
+	}
 	cfg.Env.MaxDocumentAssetBytes = 8 << 20 // RFC BO
 	if v := os.Getenv("LOOMCYCLE_MAX_DOCUMENT_ASSET_BYTES"); v != "" {
 		if n, err := strconv.ParseInt(v, 10, 64); err == nil && n > 0 {
@@ -6697,6 +6736,7 @@ func agentFromDiscovered(d *agents.Agent) AgentDef {
 		EphemeralVolumes: d.EphemeralVolumes,
 		Retention:        d.Retention,
 		EvaluationScopes: d.EvaluationScopes,
+		CryptoScopes:     d.CryptoScopes,
 		// F14: an MD-declared `interruption:` block now flows to config
 		// (parity with channels) so it takes effect at runtime AND the
 		// content hash matches the substrate.
@@ -6912,6 +6952,9 @@ func mergeAgentDef(base, override AgentDef) AgentDef {
 	}
 	if override.EvaluationScopes != nil {
 		out.EvaluationScopes = override.EvaluationScopes
+	}
+	if override.CryptoScopes != nil {
+		out.CryptoScopes = override.CryptoScopes
 	}
 	if override.HistoryScope != nil {
 		out.HistoryScope = override.HistoryScope
@@ -7163,7 +7206,7 @@ func looksLikeAnOverrideOnly(a AgentDef) bool {
 		return false
 	}
 	return len(a.MemoryScopes) > 0 || len(a.SqlScopes) > 0 || len(a.HistoryScope) > 0 ||
-		len(a.Volumes) > 0 || len(a.EvaluationScopes) > 0
+		len(a.Volumes) > 0 || len(a.EvaluationScopes) > 0 || len(a.CryptoScopes) > 0
 }
 
 // sqlScopeNames renders validSqlScopes for an error message. Derived from the
@@ -7273,6 +7316,47 @@ var validEvaluationScopes = map[string]bool{
 	"submit_descendants": true,
 	"submit_any":         true,
 	"read_any":           true,
+}
+
+// validCryptoScopes is the closed set of Crypto-tool key scopes. See
+// AgentDef.CryptoScopes for the meaning of each. tools.EffectiveCryptoScopes
+// reads it through IsCryptoScope, so the load-time check and the run-time
+// policy cannot disagree about what a value means.
+var validCryptoScopes = map[string]bool{
+	"agent":  true,
+	"user":   true,
+	"tenant": true,
+	"run":    true,
+}
+
+// cryptoDenyAll is the explicit "grant nothing" spelling. It mirrors
+// tools.DenyAllScopes, which config cannot import.
+const cryptoDenyAll = "-*"
+
+// IsCryptoScope reports whether s is a known crypto_scopes value. The deny-all
+// marker is not a scope.
+func IsCryptoScope(s string) bool { return validCryptoScopes[s] }
+
+// ValidateCryptoScopes refuses a crypto_scopes list holding an unknown value,
+// or the deny-all marker beside a scope (a list that both grants and denies
+// says two things; refusing it is cheaper than guessing which was meant).
+//
+// One function for every place a definition is authored — operator yaml, the
+// AgentDef substrate overlay, register_agent — so a value refused at boot is
+// not quietly kept by a runtime write.
+func ValidateCryptoScopes(scopes []string) error {
+	for i, sc := range scopes {
+		if sc == cryptoDenyAll {
+			if len(scopes) > 1 {
+				return fmt.Errorf("crypto_scopes[%d]: %q must be the only entry (it grants no scope)", i, sc)
+			}
+			continue
+		}
+		if !validCryptoScopes[sc] {
+			return fmt.Errorf("crypto_scopes[%d]: unknown scope %q (want one of: %s, or [\"-*\"] for none)", i, sc, scopeNames(validCryptoScopes))
+		}
+	}
+	return nil
 }
 
 // validHistoryScopes is the closed set of History-tool (RFC BE) owner-scope
@@ -7536,6 +7620,7 @@ func agentGateWarnings(name string, a AgentDef) []string {
 	if has("Channel") && len(a.Channels.Publish) == 0 && len(a.Channels.Subscribe) == 0 {
 		w = append(w, fmt.Sprintf("agent %q: tools includes Channel but channels.publish and channels.subscribe are both empty — every Channel op will default-deny", name))
 	}
+	w = append(w, cryptoGateWarnings(name, a, has(CryptoToolName))...)
 	// The def-authoring tools are each gated by a per-agent `*_def_scopes`
 	// capability list; an empty list default-denies EVERY op (checkScopeForName
 	// gates reads too, not just mutations), so a tool listed without its scope
@@ -8560,6 +8645,12 @@ func validate(c *Config) error {
 			if !validEvaluationScopes[sc] {
 				return fmt.Errorf("agent %q: evaluation_scopes[%d]: unknown scope %q (want one of: submit_self, submit_siblings, submit_descendants, submit_any, read_any)", name, i, sc)
 			}
+		}
+		// Crypto tool: crypto_scopes is a closed set, and an unknown value is
+		// refused here rather than dropped at run time, where it would grant
+		// nothing while the operator believed it granted something.
+		if err := ValidateCryptoScopes(agent.CryptoScopes); err != nil {
+			return fmt.Errorf("agent %q: %w", name, err)
 		}
 		// History tool (RFC BE): validate history_scope entries against the
 		// owner-scope vocabulary. "any" is accepted (legacy alias for
