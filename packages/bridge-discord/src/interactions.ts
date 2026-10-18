@@ -89,7 +89,7 @@ export function interactionRoute(deps: InteractionDeps): Route {
     if (text === undefined) return ephemeral("Unknown command. Try /help.");
     if (!text) return ephemeral("Write something after /ask.");
     const place = placeOf(ix)!;
-    const ref: DiscordRef = { channelId: place.channelId, ...(place.guildId ? { guildId: place.guildId } : {}), interactionId: ix.id };
+    const ref: DiscordRef = { channelId: place.channelId };
     port.track(ix.id, ix.token, place.channelId, FALLBACK[name]);
     // After this response is written: the core's first reply edits the
     // deferred message, which must exist by then.
@@ -116,7 +116,7 @@ export function interactionRoute(deps: InteractionDeps): Route {
       return ephemeral(id.notice ?? NOT_HERE);
     }
     const place = placeOf(ix)!;
-    const ref: DiscordRef = { channelId: place.channelId, ...(place.guildId ? { guildId: place.guildId } : {}), interactionId: ix.id };
+    const ref: DiscordRef = { channelId: place.channelId };
     // Its token also carries the agent's next messages in this channel.
     port.track(ix.id, ix.token, place.channelId);
     const work = deps.router.onCardAction(id, ref, input).catch((err: unknown): CardResult => {

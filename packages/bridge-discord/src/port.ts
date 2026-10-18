@@ -17,11 +17,10 @@ import { DiscordApiError, type DiscordApi } from "./api.js";
 import { MAX_CONTENT, neutraliseLinks, renderCard, textMessage, type MessageBody } from "./cards.js";
 
 /** Where a reply goes, as the conversation store keeps it: plain JSON with no
- *  credential in it. The interaction's token is held by the port. */
+ *  credential in it. The channel is enough: a reply goes through the newest
+ *  interaction the port holds for it (see deliver), else the bot token. */
 export interface DiscordRef {
   channelId: string;
-  guildId?: string;
-  interactionId: string;
 }
 
 export const TOKEN_LIFETIME_MS = 15 * 60_000;
@@ -81,13 +80,6 @@ export class DiscordPort implements BridgePort<DiscordRef> {
       t.timer.unref?.();
     }
     this.tracked.set(interactionId, t);
-  }
-
-  /** tokenOf returns a usable token for an interaction, for the bridge's own
-   *  reply to a card press after a deferred update. */
-  tokenOf(interactionId: string): string | undefined {
-    const t = this.tracked.get(interactionId);
-    return t && this.usable(t) ? t.token : undefined;
   }
 
   async send(ref: DiscordRef, activity: OutboundActivity): Promise<void> {

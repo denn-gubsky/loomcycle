@@ -351,7 +351,7 @@ describe("api", () => {
 });
 
 describe("port", () => {
-  const ref = { channelId: CHANNEL, guildId: GUILD, interactionId: "i1" };
+  const ref = { channelId: CHANNEL };
   let now = 1_000_000;
   const setup = () => {
     const d = new FakeDiscord();
@@ -409,7 +409,7 @@ describe("port", () => {
   it("logs a failed delivery instead of throwing it into the turn", async () => {
     const { d, port, errors } = setup();
     d.on(/messages$/, { status: 403, body: { code: 50001, message: "Missing Access" } });
-    await expect(port.send({ ...ref, channelId: DM, guildId: undefined }, { type: "message", text: "x" })).resolves.toBeUndefined();
+    await expect(port.send({ channelId: DM }, { type: "message", text: "x" })).resolves.toBeUndefined();
     expect(errors).toEqual([{ channel: DM, status: 403, route: "POST channels/messages" }]);
   });
 
@@ -430,7 +430,7 @@ describe("port", () => {
     port.stop();
 
     d.on(/typing/, { status: 403, body: { code: 50001 } });
-    const dmRef = { channelId: DM, interactionId: "i9" };
+    const dmRef = { channelId: DM };
     await port.send(dmRef, { type: "typing" });
     await port.send(dmRef, { type: "typing" });
     expect(d.to(/typing/)).toHaveLength(1);
