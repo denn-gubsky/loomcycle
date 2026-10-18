@@ -11,10 +11,10 @@
 // store: they are credentials. A restart forgets them, and a message after it
 // goes by the bot token until someone uses a command again.
 
-import type { BridgePort, Logger, OutboundActivity } from "@loomcycle/bridge-core";
+import { splitMessage, type BridgePort, type Logger, type OutboundActivity } from "@loomcycle/bridge-core";
 
 import { DiscordApiError, type DiscordApi } from "./api.js";
-import { renderCard, textMessage, type MessageBody } from "./cards.js";
+import { MAX_CONTENT, neutraliseLinks, renderCard, textMessage, type MessageBody } from "./cards.js";
 
 /** Where a reply goes, as the conversation store keeps it: plain JSON with no
  *  credential in it. The interaction's token is held by the port. */
@@ -92,12 +92,16 @@ export class DiscordPort implements BridgePort<DiscordRef> {
 
   async send(ref: DiscordRef, activity: OutboundActivity): Promise<void> {
     if (activity.type === "typing") return this.typing(ref.channelId);
-    const body = "card" in activity ? renderCard(activity.card) : textMessage(activity.text);
-    // A failed delivery is logged, never thrown: the core would take a throw
-    // from inside a turn as the run's stream failing, and end the run.
-    await this.deliver(ref, body).catch((err: unknown) => {
+    // The core cut the text to Discord's size, but rewriting its links can
+    // lengthen it, so it is cut again after.
+    const bodies = "card" in activity ? [renderCard(activity.card)] : splitMessage(neutraliseLinks(activity.text), MAX_CONTENT).map(textMessage);
+    try {
+      for (const body of bodies) await this.deliver(ref, body);
+    } catch (err) {
+      // A failed delivery is logged, never thrown: the core would take a throw
+      // from inside a turn as the run's stream failing, and end the run.
       this.log.error("could not send to Discord", { channel: ref.channelId, status: (err as DiscordApiError)?.status, route: (err as DiscordApiError)?.route });
-    });
+    }
   }
 
   private async deliver(ref: DiscordRef, body: MessageBody): Promise<void> {

@@ -8,7 +8,9 @@
 // parses nothing) and none shows a link preview: Discord fetches a link to
 // build its preview without anyone clicking, which would send the URL's query
 // string to whoever runs the server. SUPPRESS_EMBEDS also hides embeds the
-// bridge would build, so cards are plain content.
+// bridge would build, so cards are plain content. And no masked link
+// (`[label](url)`) survives: Discord renders one in a bot's message, so the
+// agent could show one address and open another.
 
 import { VERB, type CanonicalCard, type CardButton } from "@loomcycle/bridge-core";
 
@@ -29,7 +31,7 @@ interface Button {
 export const CUSTOM_ID_PREFIX = "lc:";
 export const MAX_CUSTOM_ID = 100;
 const MAX_LABEL = 80;
-const MAX_CONTENT = 2000;
+export const MAX_CONTENT = 2000;
 const BUTTONS_PER_ROW = 5;
 const Style = { PRIMARY: 1, SECONDARY: 2, SUCCESS: 3, DANGER: 4 } as const;
 
@@ -66,15 +68,27 @@ function button(b: CardButton, style: number): Button {
   return { type: 2, style, label: clip(b.label || "…", MAX_LABEL), custom_id: customIdOf(b.id) };
 }
 
+const MASKED_LINK = /\[([^[\]\n]*)\]\(\s*<?([^\s()<>]+)>?(?:\s+"[^"\n]*")?\s*\)/g;
+
+/** neutraliseLinks rewrites each masked link as `label (<url>)`, so the shown
+ *  text holds the real target (the angle brackets also keep it from
+ *  unfurling). A `](` it cannot parse (a URL with parentheses, nested
+ *  brackets) gets a zero-width space, which breaks the link and shows it raw. */
+export function neutraliseLinks(text: string): string {
+  return text.replace(MASKED_LINK, (_, label: string, url: string) => `${label} (<${url}>)`).replace(/\]\(/g, "]\u200b(");
+}
+
+/** textMessage is one short message: a line from the bridge, or a piece of
+ *  a turn already cut to size (neutralising may lengthen it, hence the clip). */
 export function textMessage(text: string): MessageBody {
-  return { content: text, allowed_mentions: NO_MENTIONS, flags: SUPPRESS_EMBEDS };
+  return { content: clip(neutraliseLinks(text), MAX_CONTENT), allowed_mentions: NO_MENTIONS, flags: SUPPRESS_EMBEDS };
 }
 
 export function renderCard(card: CanonicalCard): MessageBody {
   switch (card.kind) {
     case "result":
       // Replaces a used card: the buttons go, so it cannot be answered twice.
-      return { content: clip(card.message, MAX_CONTENT), components: [], allowed_mentions: NO_MENTIONS, flags: SUPPRESS_EMBEDS };
+      return { ...textMessage(card.message), components: [] };
     case "question": {
       // A Discord message has no text field, so a free-text question is
       // answered with the owner's next /ask; the core's "Send" button would
@@ -84,7 +98,7 @@ export function renderCard(card: CanonicalCard): MessageBody {
         .filter((b) => !(freeText && b.action.verb === VERB.answer))
         .map((b) => button(b, b.action.verb === VERB.decline ? Style.SECONDARY : Style.PRIMARY));
       const hint = freeText ? `\n\n${FREE_TEXT_HINT}` : "";
-      const text = [card.question || "The agent has a question.", card.context].filter(Boolean).join("\n\n");
+      const text = neutraliseLinks([card.question || "The agent has a question.", card.context].filter(Boolean).join("\n\n"));
       return {
         content: `**Question**\n${clip(text, MAX_CONTENT - hint.length - 13)}${hint}`,
         components: rows(buttons),

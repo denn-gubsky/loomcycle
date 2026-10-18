@@ -4,7 +4,7 @@ import { ConfigError, sharedSubject, VERB, type CanonicalCard, type Logger } fro
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { DiscordApi, DiscordApiError, USER_AGENT } from "../src/api.js";
-import { customIdOf, FREE_TEXT_HINT, MAX_CUSTOM_ID, parseCustomId, renderCard } from "../src/cards.js";
+import { customIdOf, FREE_TEXT_HINT, MAX_CUSTOM_ID, neutraliseLinks, parseCustomId, renderCard } from "../src/cards.js";
 import { commandSpecs, registerCommands } from "../src/commands.js";
 import { loadConfig } from "../src/config.js";
 import { identify, NOT_HERE, NOT_IN_DMS, NOT_IN_SERVER, type Fences } from "../src/identity.js";
@@ -272,6 +272,40 @@ describe("cards", () => {
   });
 });
 
+describe("masked links", () => {
+  it("shows the real target of every masked link", () => {
+    expect(neutraliseLinks("see [https://your-bank.example](https://evil.example/x?a=1) now")).toBe(
+      "see https://your-bank.example (<https://evil.example/x?a=1>) now",
+    );
+    expect(neutraliseLinks('[a](<https://e.example/1> "title") and [b]( https://e.example/2 )')).toBe(
+      "a (<https://e.example/1>) and b (<https://e.example/2>)",
+    );
+  });
+
+  it("breaks a masked link it cannot rewrite, and is idempotent", () => {
+    for (const odd of ["[x](https://en.wikipedia.org/wiki/A_(b))", "[[nested]](https://e.example)", "[a]([b](https://e.example))"]) {
+      const out = neutraliseLinks(odd);
+      expect(out).not.toMatch(/\]\(/);
+      expect(neutraliseLinks(out)).toBe(out);
+    }
+    expect(neutraliseLinks("plain [brackets] and (parens)")).toBe("plain [brackets] and (parens)");
+  });
+
+  it("rewrites the links in a card's question and a result", () => {
+    const q = renderCard({
+      kind: "question",
+      runId: "r",
+      interruptId: "q",
+      question: "[ok](https://evil.example)",
+      context: "[ctx](https://evil.example/c)",
+      options: [],
+      buttons: [],
+    });
+    expect(q.content).not.toMatch(/\]\(/);
+    expect(renderCard({ kind: "result", message: "Answered: [y](https://evil.example)" }).content).toBe("Answered: y (<https://evil.example>)");
+  });
+});
+
 describe("api", () => {
   const make = (d: FakeDiscord, sleep = vi.fn(async () => {})) =>
     ({ api: new DiscordApi({ baseUrl: d.base, applicationId: APP, botToken: "secret-bot", log: silentLogger, fetch: d.fetch, sleep }), sleep });
@@ -362,7 +396,12 @@ describe("port", () => {
     port.track("i1", "tok1", CHANNEL, { fallback: "Done." });
     now += TOKEN_LIFETIME_MS;
     await port.send(ref, { type: "message", text: "late" });
-    expect(d.calls.map((c) => [c.method, c.path, c.authorization])).toEqual([["POST", `/channels/${CHANNEL}/messages`, "Bot bot"]]);
+    await port.send(ref, { type: "message", text: "[bank](https://evil.example)" });
+    expect(d.calls.map((c) => [c.method, c.path, c.authorization])).toEqual([
+      ["POST", `/channels/${CHANNEL}/messages`, "Bot bot"],
+      ["POST", `/channels/${CHANNEL}/messages`, "Bot bot"],
+    ]);
+    expect(d.contents()[1]).toBe("bank (<https://evil.example>)");
     expect(d.calls[0].body).toEqual({ content: "late", allowed_mentions: { parse: [] }, flags: SUPPRESS_EMBEDS });
     port.stop();
   });

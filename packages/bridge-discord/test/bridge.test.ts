@@ -32,6 +32,12 @@ function expectSafe(body: unknown): void {
   expect(b.allowed_mentions).toEqual({ parse: [] });
   expect((b.flags ?? 0) & SUPPRESS_EMBEDS).toBe(SUPPRESS_EMBEDS);
   expect(b.embeds ?? []).toEqual([]);
+  // A masked link shows one address and opens another.
+  const content = (body as { content?: unknown }).content;
+  if (typeof content === "string") {
+    expect(content).not.toMatch(/\]\(/);
+    expect(content.length).toBeLessThanOrEqual(2000);
+  }
 }
 
 function freePort(): Promise<number> {
@@ -345,23 +351,26 @@ describe("discord bridge over HTTP", () => {
   });
 
   it("posts hostile agent text on every path without a ping or a preview", async () => {
-    const hostile = "@everyone @here <@500000000000000006> <@&700000000000000007> see https://evil.example/x?leak=secret";
+    const hostile =
+      "@everyone @here <@500000000000000006> <@&700000000000000007> see https://evil.example/x?leak=secret [https://your-bank.example](https://evil.example/login)";
     const ix = dmCommand("ask", "go");
     await ask(ix);
     const run = lc.runs[0];
     // The deferred response, then a follow-up.
     run.events.push({ type: "text", text: `${hostile}\n${"a".repeat(2100)}` });
     run.events.push({ type: "awaiting_input" });
-    await waitFor(() => discord.calls.length === 2, "the edit and the follow-up");
+    // Rewriting the link lengthens the first piece past 2,000, so it is cut again.
+    await waitFor(() => discord.calls.length === 3, "the edit and the follow-ups");
     // A card whose question carries the same.
     await ask(dmCommand("ask", "ask me"));
     run.events.push({
       type: "interruption_pending",
-      interruption: { interrupt_id: "q1", kind: "question", question: hostile, options: [hostile.slice(0, 40), "no"], priority: "normal" },
+      interruption: { interrupt_id: "q1", kind: "question", question: hostile, options: ["[safe](https://evil.example/o)", "no"], priority: "normal" },
     });
-    await waitFor(() => discord.calls.length === 3, "the card");
-    const card = discord.calls[2].body as { content: string; components: Array<{ components: Array<{ custom_id: string }> }> };
+    await waitFor(() => discord.calls.length === 4, "the card");
+    const card = discord.calls[3].body as { content: string; components: Array<{ components: Array<{ custom_id: string }> }> };
     expect(card.content).toContain("@everyone");
+    expect(card.content).toContain("https://your-bank.example (<https://evil.example/login>)");
     const pressed = await post(press(card.components[0].components[0].custom_id));
     expect(pressed.json.type).toBe(7);
     // Past the token's lifetime: a bot-token channel message.
@@ -369,6 +378,10 @@ describe("discord bridge over HTTP", () => {
     run.events.push({ type: "text", text: hostile });
     run.events.push({ type: "awaiting_input" });
     await waitFor(() => discord.to(/channels\/\d+\/messages$/).length === 1, "the channel message");
+    // Every link, rewritten, still fits Discord's 2,000 characters a message.
+    run.events.push({ type: "text", text: "[a](https://evil.example/l) ".repeat(70) });
+    run.events.push({ type: "awaiting_input" });
+    await waitFor(() => discord.to(/channels\/\d+\/messages$/).length >= 2, "the link-heavy message");
     // The afterEach check covers each of these calls and responses.
     expect(discord.calls.length).toBeGreaterThanOrEqual(4);
   });

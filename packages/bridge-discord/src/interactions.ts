@@ -64,7 +64,7 @@ function json(body: object): RawResponse {
 }
 
 function ephemeral(text: string): RawResponse {
-  return json({ type: CallbackType.CHANNEL_MESSAGE_WITH_SOURCE, data: { content: text, flags: EPHEMERAL | SUPPRESS_EMBEDS, allowed_mentions: NO_MENTIONS } });
+  return json({ type: CallbackType.CHANNEL_MESSAGE_WITH_SOURCE, data: { ...textMessage(text), flags: EPHEMERAL | SUPPRESS_EMBEDS } });
 }
 
 function promptOf(ix: Interaction): string {
