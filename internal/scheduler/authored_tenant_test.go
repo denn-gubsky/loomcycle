@@ -48,6 +48,10 @@ func TestScheduler_NonAdminAuthoredScheduleFiresInTheAuthorsTenant(t *testing.T)
 
 	fr := &fakeRunner{}
 	sched := New(Config{TickInterval: 10 * time.Millisecond}, st, fr, nil, &fakeMCP{}, t.Logf)
+	// A fired run is finished on its own goroutine after fireOne returns.
+	// Wait for it before the store closes (cleanups run last-in first-out),
+	// or it logs a closed-store error after the test has ended.
+	t.Cleanup(sched.runs.Wait)
 	names, err := st.ScheduleDefListNames(context.Background())
 	if err != nil {
 		t.Fatalf("list names: %v", err)
