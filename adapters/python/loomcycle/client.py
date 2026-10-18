@@ -993,6 +993,32 @@ class LoomcycleClient:
         :meth:`document`."""
         return await self._dispatch_substrate("CredentialDef", input)
 
+    async def crypto(self, input: Mapping[str, Any]) -> Mapping[str, Any]:
+        """Invoke the Crypto tool outside a run — cryptography with keys the
+        runtime holds, so the caller never sees key material. Op-discriminated:
+        ``encrypt`` / ``decrypt`` / ``rewrap`` / ``mac`` / ``verify_mac`` /
+        ``sign`` / ``verify`` / ``public_key`` / ``totp`` / ``hash`` /
+        ``random``. A value encrypted here decrypts in your tenant's runs, and
+        the reverse.
+
+        Keys: your tenant's keys and your own user keys, resolved server-side
+        from the authenticated principal, never the wire. An agent's keys are
+        not reachable, and there are no run credentials outside a run.
+        ``tenant`` (top-level, admin only) names another tenant whose keys to
+        use; you then get that tenant's keys and no user keys. A non-admin
+        naming a tenant other than its own raises
+        :class:`SubstrateToolRefusedError`.
+
+        A failed ``decrypt`` or ``verify`` is deliberately opaque: it does not
+        say whether the key, the ciphertext or the associated data was wrong.
+        Tool refusals (a bad op, an unknown key, a failed decrypt) raise
+        :class:`SubstrateToolRefusedError`. Each call takes one from the
+        token's run rate; when it is spent the server answers gRPC
+        ``RESOURCE_EXHAUSTED`` and this raises :class:`BackpressureError` with
+        ``reason == "rate_limited"`` and ``retryable`` True. The RPC requires
+        ``substrate:tenant``. Mirror of :meth:`credential_def`."""
+        return await self._dispatch_substrate("Crypto", input)
+
     async def history(self, input: Mapping[str, Any]) -> Mapping[str, Any]:
         """Invoke the History tool — browse/search/annotate PAST CHATS, where a
         chat is a session (RFC BE). Op-discriminated: list / get / search /

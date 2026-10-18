@@ -343,6 +343,11 @@ class LoomcycleStub:
                 request_serializer=loomcycle__pb2.SubstrateRequest.SerializeToString,
                 response_deserializer=loomcycle__pb2.SubstrateResponse.FromString,
                 _registered_method=True)
+        self.Crypto = channel.unary_unary(
+                '/loomcycle.v1.Loomcycle/Crypto',
+                request_serializer=loomcycle__pb2.SubstrateRequest.SerializeToString,
+                response_deserializer=loomcycle__pb2.SubstrateResponse.FromString,
+                _registered_method=True)
         self.History = channel.unary_unary(
                 '/loomcycle.v1.Loomcycle/History',
                 request_serializer=loomcycle__pb2.SubstrateRequest.SerializeToString,
@@ -1176,6 +1181,22 @@ class LoomcycleServicer:
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
 
+    def Crypto(self, request, context):
+        """Crypto dispatches to the Crypto tool outside a run (RFC EP): encrypt /
+        decrypt / rewrap / mac / verify_mac / sign / verify / public_key / totp /
+        hash / random with runtime-held keys. Mirrors POST /v1/_crypto. Gate
+        ScopeTenant. The keys are the caller's tenant's and its own subject's
+        user keys, resolved from the principal, NEVER the wire; agent keys are not
+        reachable. An admin may name another tenant with a top-level "tenant" in
+        input_json (and then gets that tenant's keys, no user keys). Each call
+        takes one from the token's run rate: an exhausted rate is
+        ResourceExhausted with RetryInfo. Op-discriminated input_json; same
+        SubstrateRequest/Response body shape (is_error carries tool refusals).
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
     def History(self, request, context):
         """History dispatches to the RFC BE History tool (browse/search/annotate
         past chats; a chat = a session). Mirrors POST /v1/_history. TENANT-CONFINED
@@ -1628,6 +1649,11 @@ def add_LoomcycleServicer_to_server(servicer, server):
             ),
             'CredentialDef': grpc.unary_unary_rpc_method_handler(
                     servicer.CredentialDef,
+                    request_deserializer=loomcycle__pb2.SubstrateRequest.FromString,
+                    response_serializer=loomcycle__pb2.SubstrateResponse.SerializeToString,
+            ),
+            'Crypto': grpc.unary_unary_rpc_method_handler(
+                    servicer.Crypto,
                     request_deserializer=loomcycle__pb2.SubstrateRequest.FromString,
                     response_serializer=loomcycle__pb2.SubstrateResponse.SerializeToString,
             ),
@@ -3351,6 +3377,33 @@ class Loomcycle:
             request,
             target,
             '/loomcycle.v1.Loomcycle/CredentialDef',
+            loomcycle__pb2.SubstrateRequest.SerializeToString,
+            loomcycle__pb2.SubstrateResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def Crypto(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/loomcycle.v1.Loomcycle/Crypto',
             loomcycle__pb2.SubstrateRequest.SerializeToString,
             loomcycle__pb2.SubstrateResponse.FromString,
             options,
