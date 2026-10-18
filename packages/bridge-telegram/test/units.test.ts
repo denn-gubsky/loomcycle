@@ -288,7 +288,7 @@ describe("markdown to Telegram HTML", () => {
   it("converts the common forms", () => {
     expect(markdownToHtml("**bold** and *it* and _it2_ and ~~gone~~")).toBe("<b>bold</b> and <i>it</i> and <i>it2</i> and <s>gone</s>");
     expect(markdownToHtml("run `ls -la` now")).toBe("run <code>ls -la</code> now");
-    expect(markdownToHtml("see [the docs](https://example.com/a?b=1&c=2)")).toBe('see <a href="https://example.com/a?b=1&amp;c=2">the docs</a>');
+    expect(markdownToHtml("see [the docs](https://example.com/a?b=1&c=2)")).toBe("see the docs (https://example.com/a?b=1&amp;c=2)");
     expect(markdownToHtml("```js\nif (a < b && c) {}\n```")).toBe('<pre><code class="language-js">if (a &lt; b &amp;&amp; c) {}</code></pre>');
     expect(markdownToHtml("## Title\nbody")).toBe("<b>Title</b>\nbody");
   });
@@ -304,9 +304,9 @@ describe("markdown to Telegram HTML", () => {
     expect(markdownToHtml("2 * 3 = 6 and **unclosed")).toBe("2 * 3 = 6 and **unclosed");
   });
 
-  it("links only http and https, and quotes the href", () => {
+  it("shows a link's target as text, quote and all", () => {
     expect(markdownToHtml("[x](javascript:alert(1))")).toBe("[x](javascript:alert(1))");
-    expect(markdownToHtml('[x](https://e.com/"onmouseover=1)')).toBe('<a href="https://e.com/&quot;onmouseover=1">x</a>');
+    expect(markdownToHtml('[x](https://e.com/"onmouseover=1)')).toBe('x (https://e.com/"onmouseover=1)');
   });
 
   it("runs an unclosed fence to the end, so a streamed answer stays valid", () => {
@@ -316,7 +316,7 @@ describe("markdown to Telegram HTML", () => {
   it("never puts code inside another entity, which Telegram forbids", () => {
     const html = markdownToHtml("**see `x` here** and [a `b`](https://e.com)");
     expect(html).not.toMatch(/<b>[^<]*<code>/);
-    expect(html).toContain('<a href="https://e.com">a b</a>');
+    expect(html).toContain("a b (https://e.com)");
     expect(wellFormed(html)).toBe(true);
   });
 

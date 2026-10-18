@@ -1,7 +1,12 @@
 // Markdown, as an agent writes it, to the HTML subset Telegram accepts
-// (parse_mode "HTML"): bold, italic, strikethrough, inline code, code blocks
-// and links. Everything else is text, with <, > and & escaped, so an agent's
+// (parse_mode "HTML"): bold, italic, strikethrough, inline code and code
+// blocks. Everything else is text, with <, > and & escaped, so an agent's
 // output can never inject a tag.
+//
+// No <a href> is ever made. A link whose label hides its target lets agent
+// text (steered by an injected message) show "your-bank.example" while
+// pointing elsewhere, so [label](url) is shown as "label (url)", the URL as
+// plain text, which Telegram makes clickable itself. Previews are off (port).
 //
 // Telegram rejects a whole message whose HTML it cannot parse, so the output
 // must always be well formed, even for half-written Markdown mid-stream:
@@ -11,7 +16,7 @@
 //   - code is never inside another entity, which Telegram forbids.
 // If Telegram refuses it anyway, the port resends the message as plain text.
 
-// Placeholders for code spans and links while the rest is escaped. Stripped
+// Placeholders for code spans and URLs while the rest is escaped. Stripped
 // from the input first, so the input cannot forge one.
 const CODE = "\u0001";
 const LINK = "\u0002";
@@ -61,8 +66,10 @@ export function markdownToHtml(md: string): string {
 const CODE_SPAN = /```([^`]+?)```|``([^`]+?)``|`([^`\n]+?)`/g;
 // http and https only. Not tg://: a tg://user?id= link mentions a Telegram
 // user, and other tg:// links join chats or open bots, none of which agent
-// text should do. Anything else stays text.
+// text should do. Anything else stays text, as written.
 const LINK_SPAN = /\[([^[\]\n]+)\]\(\s*(https?:\/\/[^\s()<>]+)\s*\)/g;
+// A bare URL, kept out of emphasis so it is shown exactly as written.
+const BARE_URL = /https?:\/\/[^\s<>]+/g;
 
 function inline(text: string): string {
   const codes: string[] = [];
@@ -71,12 +78,18 @@ function inline(text: string): string {
     codes.push((a ?? b ?? c)!);
     return `${CODE}${codes.length - 1}${CODE}`;
   });
+  const keepUrl = (url: string) => {
+    links.push(escapeHtml(url));
+    return `${LINK}${links.length - 1}${LINK}`;
+  };
   s = s.replace(LINK_SPAN, (_m, label: string, url: string) => {
-    // A link may hold emphasis but not code: its code spans become plain text.
+    // A label may hold emphasis but not code: its code spans become plain text.
     const plain = label.replace(/\u0001(\d+)\u0001/g, (_c, n: string) => codes[Number(n)]!);
-    links.push(`<a href="${escapeAttr(url)}">${emphasis(escapeHtml(plain))}</a>`);
+    if (plain.trim() === url) return keepUrl(url);
+    links.push(`${emphasis(escapeHtml(plain))} (${escapeHtml(url)})`);
     return `${LINK}${links.length - 1}${LINK}`;
   });
+  s = s.replace(BARE_URL, keepUrl);
   s = emphasis(escapeHtml(s));
   return s
     .replace(/\u0002(\d+)\u0002/g, (_m, n: string) => links[Number(n)]!)

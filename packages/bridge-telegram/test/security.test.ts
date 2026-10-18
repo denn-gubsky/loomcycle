@@ -84,11 +84,51 @@ describe("no markup from agent text", () => {
     expect(card.html).not.toContain("<a ");
   });
 
-  it("links only http and https", () => {
-    expect(markdownToHtml("[x](https://e.com/a)")).toBe('<a href="https://e.com/a">x</a>');
-    expect(markdownToHtml("[x](http://e.com/a)")).toBe('<a href="http://e.com/a">x</a>');
+  it("treats only http and https as links", () => {
+    expect(markdownToHtml("[x](https://e.com/a)")).toBe("x (https://e.com/a)");
+    expect(markdownToHtml("[x](http://e.com/a)")).toBe("x (http://e.com/a)");
     for (const md of ["[x](mailto:a@b.c)", "[x](javascript:alert(1))", "[x](data:text/html,hi)", "[x](file:///etc/passwd)"]) {
       expect(markdownToHtml(md)).not.toContain("<a ");
+    }
+  });
+});
+
+/** shown is what a reader sees: the text with tags removed and entities read. */
+const shown = (html: string) =>
+  html.replace(/<[^>]+>/g, "").replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&quot;/g, '"').replace(/&amp;/g, "&");
+
+describe("no link spoofing", () => {
+  it("never lets a label hide a link's target: the target is always shown", () => {
+    const cases: Array<[string, string]> = [
+      ["https://your-bank.example/login", "https://attacker.example/phish?u=1"],
+      ["your bank", "https://attacker.example/a_b_c/_x_"],
+      ["**Click** here", "http://attacker.example/?a=1&b=2"],
+      ["https://attacker.example/same", "https://attacker.example/same"],
+    ];
+    for (const [label, target] of cases) {
+      const html = markdownToHtml(`see [${label}](${target}) now`);
+      expect(html).not.toMatch(/<a[\s>]/);
+      expect(shown(html)).toContain(target);
+    }
+  });
+
+  it("renders a link as its label and its URL, or the URL alone when they match", () => {
+    expect(markdownToHtml("[docs](https://e.com/a?b=1&c=2)")).toBe("docs (https://e.com/a?b=1&amp;c=2)");
+    expect(markdownToHtml("[https://e.com/x](https://e.com/x)")).toBe("https://e.com/x");
+  });
+
+  it("shows a bare URL exactly as written, untouched by emphasis", () => {
+    const url = "https://e.com/_x_/**y**";
+    expect(shown(markdownToHtml(`go to ${url} now`))).toContain(url);
+  });
+
+  it("makes no link from any mix of markers", () => {
+    const parts = ["[label]", "(https://e.com/x)", "[", "](", ")", "**", "_", "`", " ", '<a href="x">', "\n"];
+    let seed = 11;
+    const rand = () => (seed = (seed * 1103515245 + 12345) % 2 ** 31) / 2 ** 31;
+    for (let n = 0; n < 2000; n++) {
+      const s = Array.from({ length: 1 + Math.floor(rand() * 12) }, () => parts[Math.floor(rand() * parts.length)]).join("");
+      expect(markdownToHtml(s)).not.toMatch(/<a[\s>]/);
     }
   });
 });
