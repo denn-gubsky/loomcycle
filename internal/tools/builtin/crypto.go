@@ -17,6 +17,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/denn-gubsky/loomcycle/internal/audit"
+	"github.com/denn-gubsky/loomcycle/internal/auth"
 	"github.com/denn-gubsky/loomcycle/internal/credential"
 	"github.com/denn-gubsky/loomcycle/internal/cryptoops"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
@@ -374,6 +375,12 @@ func (c *Crypto) execKeyed(ctx context.Context, in cryptoInput) (tools.Result, *
 		CryptoRunID:   tools.RunID(ctx),
 		CryptoAgent:   tools.AgentName(ctx),
 		CryptoBytesIn: len(in.Plaintext) + len(in.Ciphertext) + len(in.Data) + len(in.Signature),
+	}
+	// The actor is who asked, the target the tenant whose key was used. They
+	// differ on the operator API, where an admin may use another tenant's keys,
+	// so the actor comes from the authenticated principal when there is one.
+	if p, ok := auth.PrincipalFromContext(ctx); ok {
+		ev.ActorTenant, ev.ActorSubject, ev.ActorTokenSuffix = p.TenantID, p.Subject, p.TokenSuffix
 	}
 
 	// decrypt and rewrap read the key from an envelope when one is given.

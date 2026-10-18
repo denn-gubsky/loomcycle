@@ -157,6 +157,31 @@ func TestCryptoAPI_TenantFieldIsAdminOnly(t *testing.T) {
 	}
 }
 
+// The audit record names who asked, not the tenant whose key was used: an
+// admin using another tenant's key is recorded as the admin, with that tenant
+// as the target.
+func TestCryptoAPI_AuditRecordsTheCallerAsTheActor(t *testing.T) {
+	h, s, st, e := cryptoAPIServer(t, 0)
+	sink := &recordingSink{}
+	s.tools[0].(*builtin.Crypto).Audit = sink
+	seedToken(t, st, "lct_admin_audit", "ops", "root", []string{auth.ScopeAdmin}, time.Time{})
+	putCryptoKey(t, e, "globex", "tenant", "", "fields", 9)
+
+	if code, out := postCrypto(t, h, "lct_admin_audit", `{"op":"encrypt","key":"fields","plaintext":"x","tenant":"globex"}`); code != http.StatusOK {
+		t.Fatalf("encrypt = %d %v", code, out)
+	}
+	if len(sink.events) != 1 {
+		t.Fatalf("audit records = %d, want 1", len(sink.events))
+	}
+	ev := sink.events[0]
+	if ev.ActorTenant != "ops" || ev.ActorSubject != "root" {
+		t.Errorf("actor = %q/%q, want the admin ops/root", ev.ActorTenant, ev.ActorSubject)
+	}
+	if ev.TargetTenant != "globex" || ev.TargetName != "fields" || ev.CryptoOutcome != "ok" {
+		t.Errorf("target = %q/%q outcome %q, want globex/fields ok", ev.TargetTenant, ev.TargetName, ev.CryptoOutcome)
+	}
+}
+
 // No run, so no run's op budget; a rate on the token bounds the calls instead.
 func TestCryptoAPI_TokenRateNotRunBudget(t *testing.T) {
 	h, _, st, _ := cryptoAPIServer(t, 2)
