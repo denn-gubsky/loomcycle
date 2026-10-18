@@ -37,6 +37,7 @@ type substrateMock struct {
 	gotHistoryInput       json.RawMessage
 	gotMemoryInput        json.RawMessage
 	gotCredentialDefInput json.RawMessage
+	gotCryptoInput        json.RawMessage
 
 	agentDefResult      connector.ToolResult
 	skillDefResult      connector.ToolResult
@@ -49,6 +50,7 @@ type substrateMock struct {
 	historyResult       connector.ToolResult
 	memoryResult        connector.ToolResult
 	credentialDefResult connector.ToolResult
+	cryptoResult        connector.ToolResult
 
 	agentDefErr      error
 	skillDefErr      error
@@ -60,11 +62,17 @@ type substrateMock struct {
 	historyErr       error
 	memoryErr        error
 	credentialDefErr error
+	cryptoErr        error
 }
 
 func (m *substrateMock) CredentialDef(_ context.Context, in json.RawMessage) (connector.ToolResult, error) {
 	m.gotCredentialDefInput = in
 	return m.credentialDefResult, m.credentialDefErr
+}
+
+func (m *substrateMock) Crypto(_ context.Context, in json.RawMessage) (connector.ToolResult, error) {
+	m.gotCryptoInput = in
+	return m.cryptoResult, m.cryptoErr
 }
 
 func (m *substrateMock) Path(_ context.Context, in json.RawMessage) (connector.ToolResult, error) {

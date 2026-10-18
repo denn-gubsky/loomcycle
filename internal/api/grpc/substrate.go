@@ -3,6 +3,7 @@ package grpc
 import (
 	"context"
 	"encoding/json"
+	"errors"
 
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -11,6 +12,7 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/auth"
 	"github.com/denn-gubsky/loomcycle/internal/connector"
 	"github.com/denn-gubsky/loomcycle/internal/credential"
+	"github.com/denn-gubsky/loomcycle/internal/runner"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
 )
 
@@ -448,6 +450,20 @@ func (s *Server) CredentialDef(ctx context.Context, req *loomcyclepb.SubstrateRe
 	})
 }
 
+// Crypto serves the Crypto gRPC RPC (RFC EP): the Crypto tool outside a run.
+// Mirrors POST /v1/_crypto through the one connector seam (Connector.Crypto),
+// which takes the keys from the principal on ctx: the tenant's, and the
+// caller's own user keys, never an agent's and never from the wire. An admin
+// may name another tenant with a top-level "tenant" in input_json; anyone else
+// doing so gets a tool refusal (is_error). Each call takes one from the
+// token's run rate; a spent rate comes back as ResourceExhausted with the
+// limiter's RetryInfo (dispatchSubstrateRPCCtx maps runner.ErrRateLimited).
+func (s *Server) Crypto(ctx context.Context, req *loomcyclepb.SubstrateRequest) (*loomcyclepb.SubstrateResponse, error) {
+	return s.dispatchSubstrateRPCCtx(ctx, "Crypto", req, substrateGRPCUserCtx, func(ctx context.Context, in json.RawMessage) (connector.ToolResult, error) {
+		return s.connector.Crypto(ctx, in)
+	})
+}
+
 // History serves the RFC BE History gRPC RPC — browse/search/annotate past
 // chats (a chat = a session). Mirrors POST /v1/_history. Op-discriminated
 // input_json (list / get / search / rename / annotate / pin / archive / recap
@@ -527,6 +543,13 @@ func (s *Server) dispatchSubstrateRPCCtx(
 	ctx = ctxFn(ctx)
 	res, err := callerFn(ctx, json.RawMessage(in))
 	if err != nil {
+		if errors.Is(err, runner.ErrRateLimited) {
+			// A refusal, not a fault: the token's rate is spent (Crypto takes one
+			// per call). The code, reason and RetryInfo run admission gives, as
+			// Decide does, so a caller waits the limiter's own delay instead of
+			// reading it as a server error.
+			return nil, mapRunnerErr(err)
+		}
 		return nil, status.Errorf(codes.Internal, "%s: %v", toolName, err)
 	}
 	resp := &loomcyclepb.SubstrateResponse{

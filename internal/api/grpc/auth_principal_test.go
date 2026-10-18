@@ -150,7 +150,7 @@ func TestEnforceScope_RestrictedTokenIsHeldToTheRunPlane(t *testing.T) {
 			t.Errorf("%s is on the run plane but was refused: %v", rpc, err)
 		}
 	}
-	for _, rpc := range []string{"AgentDef", "TeamDef", "ScheduleDef", "CredentialDef", "Decide", "ListDecisionModels", "Document", "PublishChannel", "UsageReport", "SomeRPCAddedLater"} {
+	for _, rpc := range []string{"AgentDef", "TeamDef", "ScheduleDef", "CredentialDef", "Crypto", "Decide", "ListDecisionModels", "Document", "PublishChannel", "UsageReport", "SomeRPCAddedLater"} {
 		if err := enforceScope(restricted, grpcMethodPrefix+rpc); status.Code(err) != codes.PermissionDenied {
 			t.Errorf("%s: err = %v, want PermissionDenied for a restricted token", rpc, err)
 		}
