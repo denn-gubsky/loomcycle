@@ -5891,8 +5891,10 @@ export interface CryptoKeyExport {
 
 /** A crypto key's type. AEAD (`aes-256-gcm`, `xchacha20-poly1305`):
  *  encrypt / decrypt / rewrap. HMAC (`hmac-sha256`, `hmac-sha512`): mac /
- *  verify_mac, and sign / verify as a JWS. Signing (`ed25519`, `ecdsa-p256`):
- *  sign / verify / public_key. `totp`: totp. */
+ *  verify_mac, and sign / verify as a JWS. Signing (`ed25519`, `ecdsa-p256`,
+ *  `rsa-pss-*`): sign / verify / public_key. Recipient (`x25519`,
+ *  `rsa-oaep-*`): encrypt (a JWE to its public half) / decrypt / public_key.
+ *  `totp`: totp. An RSA key either signs or decrypts, never both. */
 export type CryptoKeyType =
   | "aes-256-gcm"
   | "xchacha20-poly1305"
@@ -5900,10 +5902,17 @@ export type CryptoKeyType =
   | "hmac-sha512"
   | "ed25519"
   | "ecdsa-p256"
-  | "totp";
+  | "totp"
+  | "x25519"
+  | "rsa-oaep-2048"
+  | "rsa-oaep-3072"
+  | "rsa-oaep-4096"
+  | "rsa-pss-2048"
+  | "rsa-pss-3072"
+  | "rsa-pss-4096";
 
 /** How key material handed in as a string is written. Default by key type:
- *  base64 for AEAD and HMAC, base32 for totp, pem for ed25519 and ecdsa-p256. */
+ *  base64 for AEAD and HMAC, base32 for totp, pem for the asymmetric types. */
 export type CryptoKeyEncoding = "raw" | "base64" | "hex" | "base32" | "pem";
 
 /** The Crypto tool's operations. */
@@ -5918,7 +5927,9 @@ export type CryptoOp =
   | "public_key"
   | "totp"
   | "hash"
-  | "random";
+  | "random"
+  | "hash_password"
+  | "verify_password";
 
 /** The fields every {@link CryptoRequest} may carry. */
 export interface CryptoRequestBase {
@@ -5958,16 +5969,23 @@ export interface CryptoEncryptRequest extends CryptoRequestBase, CryptoKeyRef {
   /** Text, or base64 bytes with `input_encoding: "base64"`. */
   plaintext: string;
   input_encoding?: "text" | "base64";
-  /** Associated data: the ciphertext decrypts only with the same context. */
+  /** Associated data: the ciphertext decrypts only with the same context.
+   *  Not with a JWE, which carries none. */
   context?: string;
-  /** `envelope` (default, names its key) or `raw` (base64 nonce+ct+tag). */
-  format?: "envelope" | "raw";
+  /** `envelope` (default for symmetric keys, names its key), `raw` (base64
+   *  nonce+ct+tag) or `jwe` (aes-256-gcm; the only form for an x25519 or
+   *  rsa-oaep key and for `public_key`). */
+  format?: "envelope" | "raw" | "jwe";
+  /** A PEM or JWK X25519 or RSA public key to encrypt to, in place of a held
+   *  key: the result is a JWE only that key's holder can open. */
+  public_key?: string;
 }
 
 export interface CryptoDecryptRequest extends CryptoRequestBase, CryptoKeyRef {
   op: "decrypt";
-  /** Exactly as encrypt returned it. An envelope from a crypto key names its
-   *  key, so `key` / `cred` / `run` may be left out. */
+  /** Exactly as encrypt returned it: an envelope, raw base64 or a JWE. An
+   *  envelope from a crypto key names its key, so `key` / `cred` / `run` may
+   *  be left out. */
   ciphertext: string;
   context?: string;
   /** Keeps the plaintext out of a run's stored transcript. */
@@ -6014,7 +6032,8 @@ export interface CryptoVerifyRequest extends CryptoRequestBase, CryptoKeyRef {
   signature: string;
   data?: string;
   input_encoding?: "text" | "base64";
-  /** A PEM or JWK Ed25519 / P-256 public key, in place of a held key. */
+  /** A PEM or JWK Ed25519, P-256 or RSA (PS256) public key, in place of a
+   *  held key. */
   public_key?: string;
 }
 
@@ -6052,6 +6071,21 @@ export interface CryptoRandomRequest extends CryptoRequestBase {
   output_encoding?: "hex" | "base64";
 }
 
+/** An Argon2id hash of a password to store; needs no key. */
+export interface CryptoHashPasswordRequest extends CryptoRequestBase {
+  op: "hash_password";
+  /** Up to 1024 bytes. */
+  password: string;
+}
+
+/** Checks a password against a hash from hash_password; needs no key. */
+export interface CryptoVerifyPasswordRequest extends CryptoRequestBase {
+  op: "verify_password";
+  password: string;
+  /** Exactly as hash_password returned it. */
+  password_hash: string;
+}
+
 /** The body of {@link LoomcycleClient.crypto}, discriminated by `op`. */
 export type CryptoRequest =
   | CryptoEncryptRequest
@@ -6064,14 +6098,19 @@ export type CryptoRequest =
   | CryptoPublicKeyRequest
   | CryptoTotpRequest
   | CryptoHashRequest
-  | CryptoRandomRequest;
+  | CryptoRandomRequest
+  | CryptoHashPasswordRequest
+  | CryptoVerifyPasswordRequest;
 
 /** `key_version` on a result is the crypto key version used; 0 for a `cred`
  *  or `run` key, which has no versions. */
 export interface CryptoEncryptResult {
-  /** An envelope (`lcx1:…`) or, with `format: "raw"`, base64. */
+  /** An envelope (`lcx1:…`), base64 with `format: "raw"`, or a compact JWE. */
   ciphertext: string;
-  key_version: number;
+  /** `"jwe"` when the ciphertext is a JWE. */
+  format?: "jwe";
+  /** Absent when encrypting to a `public_key`. */
+  key_version?: number;
 }
 
 export interface CryptoDecryptResult {
@@ -6082,8 +6121,9 @@ export interface CryptoDecryptResult {
 }
 
 export interface CryptoRewrapResult {
-  /** Store it in place of the old ciphertext. */
+  /** Store it in place of the old ciphertext. A JWE stays a JWE. */
   ciphertext: string;
+  format?: "jwe";
   from_version: number;
   key_version: number;
 }
@@ -6111,13 +6151,18 @@ export interface CryptoSignResult {
   key_version: number;
 }
 
-/** A public key as a JWK: `OKP`/`Ed25519` (x) or `EC`/`P-256` (x, y). The
- *  `kid` matches the `kid` in tokens the key signs. */
+/** A public key as a JWK: `OKP`/`Ed25519` or `OKP`/`X25519` (x), `EC`/`P-256`
+ *  (x, y) or `RSA` (n, e). The `kid` matches the `kid` in tokens the key signs
+ *  or JWEs made to it; an RSA or X25519 key also names its `use` and `alg`. */
 export interface CryptoPublicJWK {
-  kty: "OKP" | "EC";
-  crv: "Ed25519" | "P-256";
-  x: string;
+  kty: "OKP" | "EC" | "RSA";
+  crv?: "Ed25519" | "X25519" | "P-256";
+  x?: string;
   y?: string;
+  n?: string;
+  e?: string;
+  use?: "sig" | "enc";
+  alg?: "PS256" | "RSA-OAEP-256" | "ECDH-ES";
   kid?: string;
 }
 
@@ -6143,6 +6188,16 @@ export interface CryptoRandomResult {
   value: string;
 }
 
+export interface CryptoHashPasswordResult {
+  /** A PHC string (`$argon2id$v=19$m=…,t=…,p=…$salt$hash`), safe to store. */
+  password_hash: string;
+  algorithm: "argon2id";
+}
+
+export interface CryptoVerifyPasswordResult {
+  valid: boolean;
+}
+
 /** The result type of each Crypto op. */
 export interface CryptoResultByOp {
   encrypt: CryptoEncryptResult;
@@ -6156,6 +6211,8 @@ export interface CryptoResultByOp {
   totp: CryptoTotpResult;
   hash: CryptoHashResult;
   random: CryptoRandomResult;
+  hash_password: CryptoHashPasswordResult;
+  verify_password: CryptoVerifyPasswordResult;
 }
 
 /** Any Crypto op's result. */
