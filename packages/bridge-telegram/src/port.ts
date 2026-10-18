@@ -63,7 +63,10 @@ export class TelegramPort {
       const sent = await this.opts.api.call<{ message_id?: number }>("sendMessage", { ...base, text: m.html, parse_mode: "HTML" }, o);
       return sent?.message_id;
     } catch (err) {
-      if (!isParseError(err)) throw this.logged(err, ref);
+      if (!isParseError(err)) {
+        this.noteMigration(err, ref);
+        throw err;
+      }
       this.opts.log.warn("telegram refused the HTML, resending as plain text", { chat: ref.chatId });
       const sent = await this.opts.api.call<{ message_id?: number }>("sendMessage", { ...base, text: m.plain }, o);
       return sent?.message_id;
@@ -103,12 +106,12 @@ export class TelegramPort {
     });
   }
 
-  private logged(err: unknown, ref: TelegramRef): unknown {
+  private noteMigration(err: unknown, ref: TelegramRef): void {
     if (err instanceof TelegramError && err.migrateToChatId !== undefined) {
-      // The group became a supergroup with a new id: the allow-list and the
-      // conversation follow the new id, which the operator must allow.
+      // The group became a supergroup, which has a new id. Its messages now
+      // arrive under that id, which the operator must allow, and it is a new
+      // conversation with a new memory.
       this.opts.log.warn("telegram group moved to a new chat id", { chat: ref.chatId, new_chat: err.migrateToChatId });
     }
-    return err;
   }
 }

@@ -304,7 +304,7 @@ describe("markdown to Telegram HTML", () => {
     expect(markdownToHtml("2 * 3 = 6 and **unclosed")).toBe("2 * 3 = 6 and **unclosed");
   });
 
-  it("links only schemes Telegram opens, and quotes the href", () => {
+  it("links only http and https, and quotes the href", () => {
     expect(markdownToHtml("[x](javascript:alert(1))")).toBe("[x](javascript:alert(1))");
     expect(markdownToHtml('[x](https://e.com/"onmouseover=1)')).toBe('<a href="https://e.com/&quot;onmouseover=1">x</a>');
   });
