@@ -316,6 +316,28 @@ describe("slack bridge, end to end", () => {
     expect(r.lc.callsTo("resolveInterrupt")).toHaveLength(0);
   });
 
+  it("names a refused presser's owner with no live mention", async () => {
+    const r = await rig();
+    // A display name is whatever the person typed into their profile.
+    r.slack.reply("users.info", { json: { ok: true, user: { profile: { display_name: "@channel <!here>" } } } });
+    await send(r, eventBody(mention("book a room", "300.1")));
+    r.lc.runs[0].events.push({
+      type: "interruption_pending",
+      interruption: { interrupt_id: "q1", kind: "question", question: "Which floor?", options: ["2"], priority: "normal" },
+    });
+    await waitFor(() => r.slack.to("chat.postMessage").length === 1, "card");
+    const card = r.slack.to("chat.postMessage")[0].body as { blocks: Array<{ type: string; block_id?: string; elements?: Array<{ value: string }> }> };
+    expect(JSON.stringify(card)).not.toMatch(LIVE_MENTION);
+    const actions = card.blocks.find((b) => b.type === "actions")!;
+    r.slack.reply("users.info", { json: { ok: true, user: { profile: { display_name: "Bob" } } } });
+    await r.actions(press(actions.elements![0].value, actions.block_id!, { user: "UBOB", channel: "C1", ts: "300.2", thread_ts: "300.1" }));
+    await waitFor(() => r.slack.to("response_url").length === 1, "ephemeral");
+    const body = r.slack.to("response_url")[0].body;
+    expect(body).toMatchObject({ response_type: "ephemeral" });
+    expect(String(body.text)).toContain("can answer this.");
+    expect(JSON.stringify(body)).not.toMatch(LIVE_MENTION);
+  });
+
   it("refuses an unsigned button press", async () => {
     const r = await rig();
     const req = press("abc", "lc.card.im");
