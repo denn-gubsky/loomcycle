@@ -3510,6 +3510,9 @@ export interface CredentialMeta {
   // on an ordinary credential. The key material itself is never returned.
   usage?: "crypto";
   key_type?: string;
+  // The external KMS holding the key (vault, aws_kms, gcp_kms); absent for a
+  // key held here. Its versions are the KMS's, rotated and retired there.
+  key_backend?: string;
   current_version?: number;
   min_version?: number;
   versions?: CryptoKeyVersion[];

@@ -5853,6 +5853,9 @@ export interface CredentialMeta {
   usage?: "crypto";
   /** The crypto key's type, fixed for its life. */
   key_type?: CryptoKeyType;
+  /** The external KMS holding the key; absent for a key held by loomcycle.
+   *  Such a key's versions are the KMS's, rotated and retired there. */
+  key_backend?: CryptoKeyBackend;
   /** The version new encryptions and signatures use. */
   current_version?: number;
   /** The lowest version still used; every version below it is retired. */
@@ -5910,6 +5913,45 @@ export type CryptoKeyType =
   | "rsa-pss-2048"
   | "rsa-pss-3072"
   | "rsa-pss-4096";
+
+/** An external KMS that can hold a crypto key. */
+export type CryptoKeyBackend = "vault" | "aws_kms" | "gcp_kms";
+
+/** Where a key held in an external KMS lives, for
+ *  {@link LoomcycleClient.createKmsCryptoKey}. Each credential field is a
+ *  `$cred:<name>` reference to an ordinary credential in the same scope as
+ *  the key; loomcycle stores only the reference. */
+export type CryptoKeyExternal =
+  | {
+      /** Vault Transit. The address's host must be on the operator's host
+       *  allowlist. */
+      backend: "vault";
+      address: string;
+      /** The Transit mount (default `transit`). */
+      mount?: string;
+      /** The Transit key name. */
+      key: string;
+      namespace?: string;
+      /** `$cred:<name>` holding a Vault token. */
+      token: string;
+    }
+  | {
+      backend: "aws_kms";
+      region: string;
+      /** A key id, key ARN, `alias/<name>` or alias ARN. */
+      key_id: string;
+      access_key_id: string;
+      secret_access_key: string;
+      session_token?: string;
+    }
+  | {
+      backend: "gcp_kms";
+      /** `projects/<p>/locations/<l>/keyRings/<r>/cryptoKeys/<k>`, optionally
+       *  `/cryptoKeyVersions/<n>` (signing and RSA keys only). */
+      key: string;
+      /** `$cred:<name>` holding a service-account key JSON. */
+      service_account: string;
+    };
 
 /** How key material handed in as a string is written. Default by key type:
  *  base64 for AEAD and HMAC, base32 for totp, pem for the asymmetric types. */

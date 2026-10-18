@@ -34,6 +34,23 @@ export function isCryptoKey(m: Pick<CredentialMeta, "usage">): boolean {
   return m.usage === "crypto";
 }
 
+// isExternalKey: a crypto key an external KMS holds. Only a reference is
+// stored; its versions live in the KMS and are rotated and retired there.
+export function isExternalKey(m: Pick<CredentialMeta, "key_backend">): boolean {
+  return !!m.key_backend;
+}
+
+const BACKEND_LABELS: Record<string, string> = {
+  vault: "Vault Transit",
+  aws_kms: "AWS KMS",
+  gcp_kms: "Google Cloud KMS",
+};
+
+// keyBackendLabel names the KMS for display; an unknown one as the server sent it.
+export function keyBackendLabel(backend: string): string {
+  return BACKEND_LABELS[backend] ?? backend;
+}
+
 // current/min with the server's floor: a key always has version 1 at least, and
 // min_version starts at 1. Absent fields (an older server) read as that floor.
 function versionsOf(m: CredentialMeta): { current: number; min: number } {
@@ -103,6 +120,11 @@ export interface CryptoKeyActions {
 }
 
 export function cryptoKeyActions(m: CredentialMeta): CryptoKeyActions {
+  if (isExternalKey(m)) {
+    // The server refuses every version action on it; delete removes only the
+    // reference.
+    return { rotate: false, retire: false, deletableVersions: [], delete: true };
+  }
   return {
     rotate: true,
     retire: minVersionBounds(m) !== null,
@@ -162,6 +184,9 @@ export function versionChips(m: CredentialMeta): VersionChip[] {
 
 // versionSummary is the one-line "current v3 · min v2" shown under the name.
 export function versionSummary(m: CredentialMeta): string {
+  if (m.key_backend) {
+    return `held in ${keyBackendLabel(m.key_backend)} · versions managed there`;
+  }
   const { current, min } = versionsOf(m);
   return `current v${current} · min v${min}`;
 }

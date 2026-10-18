@@ -77,6 +77,30 @@ describe("crypto keys (CredentialDef)", () => {
     });
   });
 
+  it("createKmsCryptoKey posts the backend and the external reference", async () => {
+    const { client, fetchMock } = makeClient([jsonResponse({ ...keyMeta, key_backend: "vault", status: "stored" })]);
+
+    const meta = await client.createKmsCryptoKey({
+      scope: "tenant",
+      name: "orders",
+      key_type: "aes-256-gcm",
+      external: { backend: "vault", address: "https://vault.example:8200", key: "orders", token: "$cred:vault-token" },
+    });
+    expect(meta.key_backend).toBe("vault");
+
+    const s = sent(fetchMock);
+    expect(s.url).toBe(CREDDEF);
+    expect(s.body).toEqual({
+      op: "create",
+      usage: "crypto",
+      scope: "tenant",
+      name: "orders",
+      key_type: "aes-256-gcm",
+      backend: "vault",
+      external: { address: "https://vault.example:8200", key: "orders", token: "$cred:vault-token" },
+    });
+  });
+
   it("rotateCryptoKey posts op=rotate and returns the versions metadata", async () => {
     const { client, fetchMock } = makeClient([jsonResponse(keyMeta)]);
 

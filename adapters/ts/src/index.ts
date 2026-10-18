@@ -586,6 +586,8 @@ export type {
   CryptoKeyExport,
   CryptoKeyType,
   CryptoKeyEncoding,
+  CryptoKeyBackend,
+  CryptoKeyExternal,
   CryptoOp,
   CryptoRequestBase,
   CryptoKeyRef,

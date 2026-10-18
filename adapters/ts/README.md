@@ -604,6 +604,7 @@ A **crypto key** is a credential with `usage: "crypto"`: a `key_type` fixed for 
 |---|---|---|
 | `generateCryptoKey({ scope, name, key_type, expires_at? })` | `Promise<CredentialMeta>` | The server makes the material; nobody sees it. `{op: "generate"}`. |
 | `createCryptoKey({ scope, name, key_type, value, key_encoding?, expires_at? })` | `Promise<CredentialMeta>` | Bring material you already have; `value` is write-only. `{op: "create", usage: "crypto"}`. |
+| `createKmsCryptoKey({ scope, name, key_type, external, expires_at? })` | `Promise<CredentialMeta>` | Reference a key held in Vault Transit, AWS KMS or Google Cloud KMS (`external.backend`); only the reference is stored and every op is a KMS call. Credential fields are `$cred:<name>` in the key's scope. Rotate and retire it in the KMS. `{op: "create", usage: "crypto", backend, external}`. |
 | `rotateCryptoKey({ scope, name, value?, key_encoding? })` | `Promise<CredentialMeta>` | Adds a version and makes it current (generated unless `value` is given). `{op: "rotate"}`. |
 | `setCryptoKeyMinVersion({ scope, name, min_version })` | `Promise<CredentialMeta>` | Retires every version below it. Only goes up, at most to current+1. `{op: "set_min_version"}`. |
 | `deleteCryptoKeyVersion({ scope, name, version })` | `Promise<CredentialMeta>` | Deletes one **retired** version. `{op: "delete_version"}`. |

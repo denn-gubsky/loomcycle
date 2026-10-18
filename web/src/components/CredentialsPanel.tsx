@@ -623,7 +623,7 @@ export function CredentialsPanel({ userOnly = false }: { userOnly?: boolean }) {
                     {r.updated_at ? new Date(r.updated_at).toLocaleString() : "—"}
                   </td>
                   <td>
-                    {crypto && (
+                    {crypto && cryptoKeyActions(r).rotate && (
                       <>
                         <button
                           type="button"
