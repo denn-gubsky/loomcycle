@@ -1,0 +1,26 @@
+# Smoke-test fixture for @loomcycle/bridge-slack: one interactive-capable
+# agent on the cost-free mock provider, and the bridge's own tenant-operator
+# principal (it only registers users and mints their tokens).
+provider_priority: [mock]
+tiers:
+  middle:
+    - { provider: mock, model: mock-generic }
+
+principals:
+  slack-bridge:
+    tenant: acme
+    subject: slack-bridge
+    scopes: [substrate:tenant]
+    token_env: LOOMCYCLE_SLACK_BRIDGE_IT_TOKEN
+
+agents:
+  helper:
+    description: "Chat agent the Slack bridge drives."
+    tier: middle
+    system_prompt: "You are a helpful assistant."
+    tools: []
+  other:
+    description: "An agent the bridge's tokens must not be able to start."
+    tier: middle
+    system_prompt: "Not for Slack."
+    tools: []
