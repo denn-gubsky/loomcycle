@@ -109,6 +109,12 @@ describe("telegram bridge", () => {
       expect(res.status).toBe(401);
       expect(await res.text()).toBe("");
     }
+    // The secret twice: Node joins the two into one value, which never matches.
+    const twice = new Headers({ "content-type": "application/json" });
+    twice.append("x-telegram-bot-api-secret-token", SECRET);
+    twice.append("x-telegram-bot-api-secret-token", SECRET);
+    const res = await fetch(`${base}/telegram/webhook`, { method: "POST", headers: twice, body: JSON.stringify(message("hello")) });
+    expect(res.status).toBe(401);
     await settle();
     expect(lc.calls).toHaveLength(0);
     expect(tg.calls.map((c) => c.method)).toEqual(["getMe"]);

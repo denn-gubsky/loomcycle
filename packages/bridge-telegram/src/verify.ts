@@ -9,7 +9,7 @@ import { header, safeEqual, type RawRequest } from "@loomcycle/bridge-core";
 export const SECRET_HEADER = "x-telegram-bot-api-secret-token";
 
 /** verifySecret reports whether the request carries the webhook's secret. A
- *  repeated header reads as missing (core `header`), so it fails. */
+ *  repeated header arrives joined ("a, b"), so it never matches. */
 export function verifySecret(req: RawRequest, secret: string): boolean {
   if (!secret) return false;
   return safeEqual(header(req, SECRET_HEADER), secret);
