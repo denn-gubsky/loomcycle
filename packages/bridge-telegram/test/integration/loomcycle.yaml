@@ -1,0 +1,21 @@
+# Smoke-test fixture for @loomcycle/bridge-telegram: one interactive-capable
+# agent on the cost-free mock provider, and the bridge's own tenant-operator
+# principal (it only registers users and mints their tokens).
+provider_priority: [mock]
+tiers:
+  middle:
+    - { provider: mock, model: mock-generic }
+
+principals:
+  telegram-bridge:
+    tenant: acme
+    subject: telegram-bridge
+    scopes: [substrate:tenant]
+    token_env: LOOMCYCLE_TELEGRAM_BRIDGE_IT_TOKEN
+
+agents:
+  helper:
+    description: "Chat agent the Telegram bridge drives."
+    tier: middle
+    system_prompt: "You are a helpful assistant."
+    tools: []
