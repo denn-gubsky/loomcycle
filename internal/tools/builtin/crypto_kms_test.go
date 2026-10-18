@@ -470,6 +470,76 @@ func TestCryptoKMS_ExternalKeysAreNotMadeInsideARun(t *testing.T) {
 	}
 }
 
+// An AWS key: three credential references, each resolved in the key's scope,
+// and the context carried as the encryption context.
+func TestCryptoKMS_AnAWSKeyEncryptsWithItsCredentialsAndContext(t *testing.T) {
+	c, cd, ctx, _, _ := kmsFixture(t, "tenant")
+	var mu sync.Mutex
+	var seen []string // Authorization headers
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		seen = append(seen, r.Header.Get("Authorization")+" token="+r.Header.Get("X-Amz-Security-Token"))
+		mu.Unlock()
+		var in map[string]any
+		_ = json.NewDecoder(r.Body).Decode(&in)
+		reply := func(v any) { _ = json.NewEncoder(w).Encode(v) }
+		switch strings.TrimPrefix(r.Header.Get("X-Amz-Target"), "TrentService.") {
+		case "DescribeKey":
+			reply(map[string]any{"KeyMetadata": map[string]any{"KeySpec": "SYMMETRIC_DEFAULT", "KeyUsage": "ENCRYPT_DECRYPT", "KeyState": "Enabled", "Enabled": true}})
+		case "Encrypt":
+			sealed, _ := json.Marshal(map[string]any{"pt": in["Plaintext"], "ctx": in["EncryptionContext"]})
+			reply(map[string]string{"CiphertextBlob": base64.StdEncoding.EncodeToString(sealed)})
+		case "Decrypt":
+			raw, _ := base64.StdEncoding.DecodeString(in["CiphertextBlob"].(string))
+			var sealed map[string]any
+			_ = json.Unmarshal(raw, &sealed)
+			a, _ := json.Marshal(sealed["ctx"])
+			b, _ := json.Marshal(in["EncryptionContext"])
+			if string(a) != string(b) {
+				w.WriteHeader(http.StatusBadRequest)
+				_, _ = w.Write([]byte(`{"__type":"InvalidCiphertextException"}`))
+				return
+			}
+			reply(map[string]any{"Plaintext": sealed["pt"]})
+		default:
+			w.WriteHeader(http.StatusBadRequest)
+		}
+	}))
+	t.Cleanup(srv.Close)
+	c.KMS.AWSEndpoint = srv.URL
+	for name, v := range map[string]string{"akid": "AKIATESTKEY", "secret": "aws-secret-value", "sess": "aws-session"} {
+		mustOK(t, "store "+name, second(credExec(t, cd, ctx, `{"op":"create","scope":"tenant","name":"`+name+`","value":"`+v+`"}`)))
+	}
+	mustOK(t, "create", second(credExec(t, cd, ctx, `{"op":"create","usage":"crypto","scope":"tenant","name":"pay","key_type":"aes-256-gcm","backend":"aws_kms",`+
+		`"external":{"region":"us-east-1","key_id":"alias/pay","access_key_id":"$cred:akid","secret_access_key":"$cred:secret","session_token":"$cred:sess"}}`)))
+
+	out, res := cryptoExec(t, c, ctx, `{"op":"encrypt","key":"pay","plaintext":"iban","context":"acct:9"}`)
+	mustOK(t, "encrypt", res)
+	ct := out["ciphertext"].(string)
+	if !strings.HasPrefix(ct, "lcx1:kt:pay:0:") {
+		t.Errorf("ciphertext = %q, want an envelope with version 0 (AWS has none)", ct)
+	}
+	out, res = cryptoExec(t, c, ctx, `{"op":"decrypt","ciphertext":"`+ct+`","context":"acct:9"}`)
+	mustOK(t, "decrypt", res)
+	if out["plaintext"] != "iban" {
+		t.Errorf("plaintext = %v", out["plaintext"])
+	}
+	_, res = cryptoExec(t, c, ctx, `{"op":"decrypt","ciphertext":"`+ct+`","context":"acct:10"}`)
+	if !res.IsError || !strings.Contains(res.Text, "did not decrypt") {
+		t.Errorf("decrypt with another context = %+v", res)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(seen) < 4 { // describe, encrypt, decrypt, decrypt
+		t.Fatalf("the fake saw %d requests", len(seen))
+	}
+	for _, h := range seen {
+		if !strings.HasPrefix(h, "AWS4-HMAC-SHA256 Credential=AKIATESTKEY/") || !strings.HasSuffix(h, "token=aws-session") {
+			t.Errorf("request signed as %q, want the stored access key and session token", h)
+		}
+	}
+}
+
 func TestCryptoKMS_KMSFailuresNeverCarryTheResponseBody(t *testing.T) {
 	c, cd, ctx, f, addr := kmsFixture(t, "tenant")
 	mustOK(t, "create", second(credExec(t, cd, ctx, vaultKeyBody("orders", "aes-256-gcm", addr, "orders"))))
