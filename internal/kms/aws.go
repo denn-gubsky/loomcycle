@@ -219,6 +219,14 @@ func (c *awsClient) Rewrap(ctx context.Context, body, aad []byte) ([]byte, int, 
 	return nb, 0, nil
 }
 
+// DecryptOAEP: an AWS asymmetric key has one version, so version is ignored.
+func (c *awsClient) DecryptOAEP(ctx context.Context, ct []byte, _ int) ([]byte, int, error) {
+	if err := c.need("decrypt", isRSAOAEP(c.keyType)); err != nil {
+		return nil, 0, err
+	}
+	return c.Decrypt(ctx, ct, nil)
+}
+
 func (c *awsClient) macAlg() string {
 	if c.keyType == HMACSHA512 {
 		return "HMAC_SHA_512"

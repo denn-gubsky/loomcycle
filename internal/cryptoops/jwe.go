@@ -205,6 +205,49 @@ func DecryptJWE(k KeyType, key []byte, token string) (plaintext []byte, kid stri
 	return pt, h.Kid, true
 }
 
+// DecryptJWEUnwrap opens an RSA-OAEP-256 compact JWE whose private key is held
+// elsewhere (an external KMS): unwrap decrypts the encrypted content key.
+// k must be an rsa-oaep type. unwrap returns the content key, or nil when it
+// did not decrypt (then decryption carries on with a random key, as
+// DecryptJWE does, so a padding failure looks like any other), or an error
+// for a failure that is not the input's (the KMS down, credentials refused),
+// which is returned as is. A token that does not open is ok == false.
+func DecryptJWEUnwrap(k KeyType, token string, unwrap func(encryptedKey []byte) ([]byte, error)) (plaintext []byte, kid string, ok bool, err error) {
+	if !k.isRSAOAEP() {
+		return nil, "", false, nil
+	}
+	h, parts, ok := jweParseHeader(token)
+	if !ok || h.Alg != jweAlgRSA || h.Enc != jweEnc {
+		return nil, "", false, nil
+	}
+	dec := base64.RawURLEncoding.Strict().DecodeString
+	ek, err1 := dec(parts[1])
+	iv, err2 := dec(parts[2])
+	ct, err3 := dec(parts[3])
+	tag, err4 := dec(parts[4])
+	if err1 != nil || err2 != nil || err3 != nil || err4 != nil || len(iv) != jweIVSize || len(tag) != jweTagSize ||
+		len(ek) != k.rsaBits()/8 {
+		return nil, "", false, nil
+	}
+	cek, err := unwrap(ek)
+	if err != nil {
+		return nil, "", false, err
+	}
+	if len(cek) != jweCEKSize {
+		cek = make([]byte, jweCEKSize)
+		_, _ = rand.Read(cek)
+	}
+	gcm, err := newJWEGCM(cek)
+	if err != nil {
+		return nil, "", false, nil
+	}
+	pt, err := gcm.Open(nil, iv, append(ct, tag...), []byte(parts[0]))
+	if err != nil {
+		return nil, "", false, nil
+	}
+	return pt, h.Kid, true, nil
+}
+
 // jweParseHeader splits a compact JWE and reads its protected header, refusing
 // a header with zip or crit and any non-canonical encoding.
 func jweParseHeader(token string) (jweHeader, []string, bool) {

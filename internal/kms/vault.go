@@ -192,6 +192,21 @@ func (c *vaultClient) Rewrap(ctx context.Context, body, aad []byte) ([]byte, int
 	return []byte(out.Ciphertext), v, nil
 }
 
+func (c *vaultClient) DecryptOAEP(ctx context.Context, ct []byte, version int) ([]byte, int, error) {
+	const op = "decrypt"
+	if err := c.need(op, isRSAOAEP(c.keyType)); err != nil {
+		return nil, 0, err
+	}
+	if version == 0 {
+		k, err := c.readKey(ctx, op)
+		if err != nil {
+			return nil, 0, err
+		}
+		version = k.LatestVersion
+	}
+	return c.Decrypt(ctx, []byte("vault:v"+strconv.Itoa(version)+":"+b64(ct)), nil)
+}
+
 func (c *vaultClient) MAC(ctx context.Context, data []byte) ([]byte, int, error) {
 	const op = "mac"
 	if err := c.need(op, isMAC(c.keyType)); err != nil {

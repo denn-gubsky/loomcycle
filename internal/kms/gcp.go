@@ -330,6 +330,22 @@ func (c *gcpClient) Rewrap(ctx context.Context, body, aad []byte) ([]byte, int, 
 	return c.Encrypt(ctx, pt, aad)
 }
 
+func (c *gcpClient) DecryptOAEP(ctx context.Context, ct []byte, version int) ([]byte, int, error) {
+	const op = "decrypt"
+	if err := c.need(op, isRSAOAEP(c.keyType)); err != nil {
+		return nil, 0, err
+	}
+	if version == 0 {
+		v, err := c.currentVersion(ctx, op)
+		if err != nil {
+			return nil, 0, err
+		}
+		version = v
+	}
+	// Decrypt enforces a pin: a version other than the pinned one is refused.
+	return c.Decrypt(ctx, append([]byte("v"+strconv.Itoa(version)+":"), ct...), nil)
+}
+
 func (c *gcpClient) MAC(ctx context.Context, data []byte) ([]byte, int, error) {
 	const op = "mac"
 	if err := c.need(op, isMAC(c.keyType)); err != nil {

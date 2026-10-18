@@ -147,6 +147,10 @@ type Client interface {
 	Encrypt(ctx context.Context, plaintext, aad []byte) (body []byte, version int, err error)
 	Decrypt(ctx context.Context, body, aad []byte) (plaintext []byte, version int, err error)
 	Rewrap(ctx context.Context, body, aad []byte) (newBody []byte, version int, err error)
+	// DecryptOAEP decrypts a bare RSA-OAEP ciphertext (no KMS framing, as a
+	// JWE's encrypted key carries it) with key version version, 0 meaning the
+	// current one. RSA-OAEP keys only.
+	DecryptOAEP(ctx context.Context, ct []byte, version int) (plaintext []byte, usedVersion int, err error)
 	MAC(ctx context.Context, data []byte) (mac []byte, version int, err error)
 	VerifyMAC(ctx context.Context, data, mac []byte, version int) (valid bool, usedVersion int, err error)
 	Sign(ctx context.Context, data []byte) (sig []byte, version int, err error)
