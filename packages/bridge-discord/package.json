@@ -1,0 +1,42 @@
+{
+  "name": "@loomcycle/bridge-discord",
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Discord bridge for loomcycle interactive agents (RFC EQ): people talk to a loomcycle agent with slash commands, each as their own loomcycle user, with question and review cards as buttons. Interactions over HTTP; no Gateway.",
+  "license": "Apache-2.0",
+  "author": "Dennis Gubsky",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/denn-gubsky/loomcycle.git",
+    "directory": "packages/bridge-discord"
+  },
+  "keywords": ["loomcycle", "bridge", "discord", "bot", "agent", "ai"],
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "types": "./dist/index.d.ts",
+  "bin": {
+    "loomcycle-bridge-discord": "./dist/cli.js"
+  },
+  "files": ["dist", "README.md"],
+  "publishConfig": { "access": "public" },
+  "engines": { "node": ">=20" },
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "prepack": "npm run build",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "dependencies": {
+    "@loomcycle/bridge-core": "file:../bridge-core"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "typescript": "^5.6.0",
+    "vitest": "^3.0.0"
+  }
+}
