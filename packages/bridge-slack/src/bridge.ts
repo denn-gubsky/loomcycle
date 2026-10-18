@@ -27,7 +27,7 @@ import { cleanName, identify, refOf, teamsAllowed, type InboundFields, type Slac
 import { readAction, readEvent, type BlockActionsPayload, type EventEnvelope, type SelfIds } from "./inbound.js";
 import { SeenSet } from "./seen.js";
 import { SlackStream } from "./stream.js";
-import { MAX_MESSAGE_CHARS, neutralise } from "./text.js";
+import { escapeMrkdwn, MAX_MESSAGE_CHARS, neutralise } from "./text.js";
 import { verifySlackRequest } from "./verify.js";
 
 export interface SlackBridgeOptions extends BridgeOptions<SlackRef> {
@@ -51,6 +51,12 @@ const SEEN_TTL_MS = 60 * 60_000;
 const NAME_TTL_MS = 60 * 60_000;
 const MAX_NAMES = 5000;
 
+/** A link the agent writes is never unfurled: an unfurl fetches the URL from
+ *  Slack's side, which a prompt-injected agent could use to send data out
+ *  with no click. Every message the bridge posts carries this; Slack's
+ *  streaming methods take no such flag, and do not unfurl. */
+const NO_UNFURL = { unfurl_links: false, unfurl_media: false } as const;
+
 const ok: RawResponse = { status: 200 };
 const unauthorized: RawResponse = { status: 401 };
 const badRequest: RawResponse = { status: 400 };
@@ -72,17 +78,13 @@ export function createSlackAdapter(cfg: SlackConfig, opts: SlackBridgeOptions = 
       // assistant thread; the turn's own message is the signal.
       if (activity.type === "typing") return;
       const where = { channel: ref.channel, ...(ref.threadTs ? { thread_ts: ref.threadTs } : {}) };
-      // A link the agent writes is not unfurled: an unfurl fetches the URL
-      // from Slack's side, which a prompt-injected agent could use to send
-      // data out without anyone clicking.
-      const noUnfurl = { unfurl_links: false, unfurl_media: false };
       if ("card" in activity) {
         const c = renderCard(activity.card, ref.channelType);
-        await api.call("chat.postMessage", { ...where, text: c.text, blocks: c.blocks, ...noUnfurl });
+        await api.call("chat.postMessage", { ...where, text: c.text, blocks: c.blocks, ...NO_UNFURL });
         return;
       }
       for (const part of splitMessage(activity.text, MAX_MESSAGE_CHARS)) {
-        await api.call("chat.postMessage", { ...where, markdown_text: neutralise(part), ...noUnfurl });
+        await api.call("chat.postMessage", { ...where, markdown_text: neutralise(part), ...NO_UNFURL });
       }
     },
     createStream(ref) {
@@ -168,9 +170,9 @@ export function createSlackAdapter(cfg: SlackConfig, opts: SlackBridgeOptions = 
       }
       if ("card" in result) {
         const c = renderCard(result.card, a.fields.channelType);
-        await api.respond(url, { replace_original: true, text: c.text, blocks: c.blocks });
+        await api.respond(url, { replace_original: true, text: c.text, blocks: c.blocks, ...NO_UNFURL });
       } else {
-        await api.respond(url, { response_type: "ephemeral", replace_original: false, text: neutralise(result.message) });
+        await api.respond(url, { response_type: "ephemeral", replace_original: false, text: escapeMrkdwn(result.message), ...NO_UNFURL });
       }
     }
 

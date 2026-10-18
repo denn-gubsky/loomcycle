@@ -6,11 +6,29 @@
  *  JavaScript (UTF-16 units) and for the core's notices appended to a turn. */
 export const MAX_MESSAGE_CHARS = 10_000;
 
-/** neutralise defuses Slack's special mentions (`<!channel>`, `<!here>`,
- *  `<!everyone>`, `<!subteam^…>`) in text the agent wrote. A shared chat's
- *  speakers can steer what the agent writes, and must not get it to page a
- *  whole channel. A word joiner after the `<` stops Slack parsing it and does
- *  not show. Idempotent. */
+/** A word joiner: invisible, and it splits a token Slack would parse. */
+const WJ = "\u2060";
+
+function defuseBare(text: string): string {
+  return text.replace(/@(here|channel|everyone)\b/gi, `@${WJ}$1`);
+}
+
+/** neutralise defuses every mention in text sent as standard Markdown
+ *  (`markdown_text`, a `markdown` block): `<!channel>`, `<!here>`,
+ *  `<!everyone>`, `<!subteam^…>`, `<@U…>`, and a bare `@here`, `@channel` or
+ *  `@everyone`. The agent's text, a question's options and a display name are
+ *  not ours: a shared chat's speakers can steer what the agent writes, and
+ *  must not get it to page a channel or a workspace. Slack's docs do not say
+ *  whether Markdown fields parse these, so they are broken either way: a word
+ *  joiner after the `<` or `@` stops the parse and does not show. Idempotent. */
 export function neutralise(text: string): string {
-  return text.replace(/<!/g, "<\u2060!");
+  return defuseBare(text.replace(/<([!@])/g, `<${WJ}$1`));
+}
+
+/** escapeMrkdwn makes text safe for a field Slack parses as mrkdwn (a
+ *  message's `text`): `&`, `<` and `>` become entities, as Slack's formatting
+ *  rules ask, so `<!channel>` arrives as literal text; bare mentions are
+ *  broken as in neutralise. The bridge never sets `link_names`. */
+export function escapeMrkdwn(text: string): string {
+  return defuseBare(text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;"));
 }

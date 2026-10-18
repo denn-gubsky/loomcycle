@@ -7,7 +7,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { createSlackAdapter } from "../src/bridge.js";
 import { loadConfig } from "../src/config.js";
 import { slackSignature } from "../src/verify.js";
-import { FakeLoomcycle, FakeSlack, settle, silentLogger, waitFor, type StartedRun } from "./fakes.js";
+import { FakeLoomcycle, FakeSlack, LIVE_MENTION, MENTION_FORMS, settle, silentLogger, waitFor, type StartedRun } from "./fakes.js";
 
 const SECRET = "test-signing-secret";
 
@@ -21,7 +21,19 @@ interface Rig {
 
 const rigs: Rig[] = [];
 afterEach(async () => {
-  for (const r of rigs.splice(0)) await r.stop();
+  for (const r of rigs.splice(0)) {
+    await r.stop();
+    // Every test, whatever it sends: an unfurl fetches a link from Slack's
+    // side with no click, so no message may allow one, and nothing may be an
+    // image or attachment built from a URL.
+    for (const c of r.slack.calls) {
+      if (c.method === "chat.postMessage" || c.method === "response_url") {
+        expect(c.body, c.method).toMatchObject({ unfurl_links: false, unfurl_media: false });
+      }
+      expect(c.body, c.method).not.toHaveProperty("attachments");
+      expect(JSON.stringify(c.body), c.method).not.toMatch(/"type":"image"|image_url/);
+    }
+  }
 });
 
 async function rig(env: Record<string, string> = {}): Promise<Rig> {
@@ -158,6 +170,49 @@ describe("slack bridge, end to end", () => {
     expect(body).toMatchObject({ channel: "D1", markdown_text: "Hi **there**", unfurl_links: false, unfurl_media: false });
     expect(body).not.toHaveProperty("thread_ts");
     expect(r.slack.to("chat.startStream")).toHaveLength(0);
+  });
+
+  it("sends the agent's text with no live mention, batched or streamed", async () => {
+    const said = `Hello ${MENTION_FORMS.join(" and ")}!`;
+    for (const streaming of ["0", "1"]) {
+      const r = await rig({ SLACK_BRIDGE_STREAMING: streaming });
+      await send(r, eventBody(dm("hello")));
+      r.lc.runs[0].events.push({ type: "text", text: said.slice(0, 20) });
+      r.lc.runs[0].events.push({ type: "text", text: said.slice(20) });
+      r.lc.runs[0].events.push({ type: "awaiting_input" });
+      const done = streaming === "1" ? () => r.slack.to("chat.stopStream").length === 1 : () => r.slack.to("chat.postMessage").length === 1;
+      await waitFor(done, "reply");
+      const out = r.slack.calls.filter((c) => c.method !== "auth.test" && c.method !== "users.info");
+      expect(out.length).toBeGreaterThan(0);
+      for (const c of out) expect(JSON.stringify(c.body), c.method).not.toMatch(LIVE_MENTION);
+      const text = out.map((c) => String(c.body.markdown_text ?? "")).join("").replace(/\u2060/g, "");
+      expect(text).toBe(said);
+    }
+  });
+
+  it("sends a card, and its result, with no live mention", async () => {
+    const r = await rig();
+    await send(r, eventBody(mention("book a room", "300.1")));
+    const option = "Floor 3 <!channel> @here";
+    r.lc.runs[0].events.push({
+      type: "interruption_pending",
+      interruption: {
+        interrupt_id: "q1",
+        kind: "question",
+        question: `Which floor? <!everyone> <@U0123ABC> @channel`,
+        context: "<!subteam^S0123> please answer",
+        options: [option],
+        priority: "normal",
+      },
+    });
+    await waitFor(() => r.slack.to("chat.postMessage").length === 1, "card");
+    const card = r.slack.to("chat.postMessage")[0].body as { blocks: Array<{ type: string; block_id?: string; elements?: Array<{ value: string }> }> };
+    expect(JSON.stringify(card)).not.toMatch(LIVE_MENTION);
+    const actions = card.blocks.find((b) => b.type === "actions")!;
+    await r.actions(press(actions.elements![0].value, actions.block_id!, { channel: "C1", ts: "300.2", thread_ts: "300.1" }));
+    await waitFor(() => r.slack.to("response_url").length === 1, "card replaced");
+    expect(r.lc.callsTo("resolveInterrupt")[0].args[2]).toMatchObject({ answer: option });
+    expect(JSON.stringify(r.slack.to("response_url")[0].body)).not.toMatch(LIVE_MENTION);
   });
 
   it("falls back to a message when Slack refuses the stream", async () => {

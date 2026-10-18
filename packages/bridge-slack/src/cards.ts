@@ -7,12 +7,12 @@ import { VERB, type CanonicalCard, type CardButton } from "@loomcycle/bridge-cor
 
 import { CARD_BLOCK_ID, ACTION_ID_PREFIX } from "./inbound.js";
 import type { ChannelType } from "./identity.js";
-import { neutralise } from "./text.js";
+import { escapeMrkdwn, neutralise } from "./text.js";
 
 export type Block = Record<string, unknown>;
 
 export interface RenderedCard {
-  /** The notification and accessibility fallback. */
+  /** The notification and accessibility fallback, as mrkdwn. */
   text: string;
   blocks: Block[];
 }
@@ -38,7 +38,7 @@ function button(b: CardButton): Block {
     type: "button",
     action_id: `${ACTION_ID_PREFIX}${b.id}`,
     value: b.id,
-    text: { type: "plain_text", text: clip(b.label, MAX_BUTTON_LABEL), emoji: false },
+    text: { type: "plain_text", text: neutralise(clip(b.label, MAX_BUTTON_LABEL)), emoji: false },
     ...style,
   };
 }
@@ -52,7 +52,7 @@ function isSendButton(b: CardButton): boolean {
 
 export function renderCard(card: CanonicalCard, channelType: ChannelType): RenderedCard {
   if (card.kind === "result") {
-    return { text: clip(card.message, 300), blocks: [md(card.message)] };
+    return { text: escapeMrkdwn(clip(card.message, 300)), blocks: [md(card.message)] };
   }
   const actions = (buttons: CardButton[]): Block => ({
     type: "actions",
@@ -79,5 +79,5 @@ export function renderCard(card: CanonicalCard, channelType: ChannelType): Rende
     blocks.push(md(`_${where}, or decline._`));
   }
   blocks.push(actions(buttons));
-  return { text: clip(question, 300), blocks };
+  return { text: escapeMrkdwn(clip(question, 300)), blocks };
 }

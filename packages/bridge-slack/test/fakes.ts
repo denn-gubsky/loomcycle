@@ -200,3 +200,10 @@ export class FakeSlack {
     }
   }
 }
+
+/** Every form of Slack mention that pings people, as an agent (or a prompt
+ *  injection through it) might write them. */
+export const MENTION_FORMS = ["<!channel>", "<!here>", "<!everyone>", "<!subteam^S0123>", "<@U0123ABC>", "@channel", "@here", "@everyone", "@Here"];
+
+/** A mention Slack would turn into a notification. */
+export const LIVE_MENTION = /<[!@]|@(here|channel|everyone)\b/i;

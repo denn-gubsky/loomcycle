@@ -8,9 +8,9 @@ import { conversationIdOf, identify, NOT_ALLOWED_NOTICE, refOf, type InboundFiel
 import { CARD_BLOCK_ID, cleanInbound, readAction, readEvent, type EventEnvelope } from "../src/inbound.js";
 import { SeenSet } from "../src/seen.js";
 import { SlackStream } from "../src/stream.js";
-import { neutralise } from "../src/text.js";
+import { escapeMrkdwn, neutralise } from "../src/text.js";
 import { slackSignature, verifySlackRequest } from "../src/verify.js";
-import { FakeSlack, silentLogger, waitFor } from "./fakes.js";
+import { FakeSlack, LIVE_MENTION, MENTION_FORMS, silentLogger, waitFor } from "./fakes.js";
 
 function req(body: string, headers: Record<string, string | string[]>): RawRequest {
   return { method: "POST", path: "/slack/events", query: new URLSearchParams(), headers, body: Buffer.from(body) };
@@ -333,6 +333,42 @@ describe("cards", () => {
     expect(JSON.stringify(c.blocks)).not.toContain("<!");
     expect(neutralise(neutralise("<!here>"))).toBe(neutralise("<!here>"));
   });
+
+  it("carries no live mention from a question, its context or its options", () => {
+    const all = MENTION_FORMS.join(" ");
+    for (const form of MENTION_FORMS) {
+      const card: CanonicalCard = {
+        kind: "question",
+        runId: "r1",
+        interruptId: "q1",
+        question: `Ping ${form}?`,
+        context: `context ${form}`,
+        options: [`yes ${form}`, all],
+        buttons: [
+          { id: "b0", label: `yes ${form}`, action: { verb: VERB.answer, runId: "r1", interruptId: "q1", answer: `yes ${form}` } },
+          { id: "b1", label: all, action: { verb: VERB.answer, runId: "r1", interruptId: "q1", answer: all } },
+        ],
+      };
+      expect(JSON.stringify(renderCard(card, "channel"))).not.toMatch(LIVE_MENTION);
+      expect(JSON.stringify(renderCard({ kind: "result", message: `Answered: ${form}` }, "channel"))).not.toMatch(LIVE_MENTION);
+    }
+  });
+});
+
+describe("outbound text", () => {
+  it("defuses every mention form in Markdown, and stays readable", () => {
+    for (const form of MENTION_FORMS) {
+      const out = neutralise(`x ${form} y`);
+      expect(out).not.toMatch(LIVE_MENTION);
+      expect(out.replace(/\u2060/g, "")).toBe(`x ${form} y`);
+      expect(neutralise(out)).toBe(out);
+    }
+  });
+
+  it("escapes mrkdwn's control characters and defuses bare mentions", () => {
+    expect(escapeMrkdwn("a & <b> <!here> @channel")).toBe("a &amp; &lt;b&gt; &lt;!here&gt; @\u2060channel");
+    for (const form of MENTION_FORMS) expect(escapeMrkdwn(form)).not.toMatch(LIVE_MENTION);
+  });
 });
 
 describe("web api", () => {
@@ -489,5 +525,17 @@ describe("stream", () => {
     const sent = [...slack.to("chat.startStream"), ...slack.to("chat.appendStream")].map((c) => c.body.markdown_text).join("");
     expect(sent).not.toContain("<!");
     expect(sent.replace(/\u2060/g, "")).toBe("ping <!channel> now");
+  });
+
+  it("defuses a bare mention split across two deltas", async () => {
+    const slack = new FakeSlack();
+    const { s } = make(slack);
+    s.emit("hey @he");
+    await waitFor(() => slack.to("chat.startStream").length === 1, "start");
+    s.emit("re and <@U0123ABC>");
+    await s.close();
+    const sent = [...slack.to("chat.startStream"), ...slack.to("chat.appendStream")].map((c) => c.body.markdown_text).join("");
+    expect(sent).not.toMatch(LIVE_MENTION);
+    expect(sent.replace(/\u2060/g, "")).toBe("hey @here and <@U0123ABC>");
   });
 });

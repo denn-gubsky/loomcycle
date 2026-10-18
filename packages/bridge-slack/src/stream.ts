@@ -55,8 +55,8 @@ export class SlackStream implements StreamLike {
 
   emit(text: string): void {
     if (!text || this.canceled) return;
-    // Neutralised over the whole buffer, so a mention split across two
-    // deltas is still caught.
+    // Neutralised over the whole unsent buffer, so a mention split across
+    // two deltas is still caught.
     this.pending = neutralise(this.pending + text);
     if (!this.failed) this.schedule();
   }
@@ -97,9 +97,9 @@ export class SlackStream implements StreamLike {
     while (!this.failed && !this.canceled && this.pending) {
       if (this.ts && this.inMessage >= this.opts.maxChars) await this.stopMessage();
       let piece = this.pending.slice(0, this.opts.maxChars - this.inMessage);
-      // Hold back a trailing "<" until the next delta shows whether it opens
-      // a special mention.
-      if (!final && piece === this.pending && piece.endsWith("<")) piece = piece.slice(0, -1);
+      // Hold back what may be the start of a mention ("<", "@he") until the
+      // next delta shows whether it is one.
+      if (!final && piece === this.pending) piece = piece.replace(/(<|@[A-Za-z]{0,8})$/, "");
       if (!piece) return;
       const method = this.ts ? "chat.appendStream" : "chat.startStream";
       try {
