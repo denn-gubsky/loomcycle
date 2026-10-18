@@ -12,5 +12,5 @@ export const MAX_MESSAGE_CHARS = 10_000;
  *  whole channel. A word joiner after the `<` stops Slack parsing it and does
  *  not show. Idempotent. */
 export function neutralise(text: string): string {
-  return text.replace(/<!/g, "<⁠!");
+  return text.replace(/<!/g, "<\u2060!");
 }

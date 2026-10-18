@@ -488,6 +488,6 @@ describe("stream", () => {
     await s.close();
     const sent = [...slack.to("chat.startStream"), ...slack.to("chat.appendStream")].map((c) => c.body.markdown_text).join("");
     expect(sent).not.toContain("<!");
-    expect(sent.replace(/⁠/g, "")).toBe("ping <!channel> now");
+    expect(sent.replace(/\u2060/g, "")).toBe("ping <!channel> now");
   });
 });
