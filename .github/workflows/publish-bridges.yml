@@ -1,0 +1,108 @@
+name: Publish a loomcycle bridge to npm
+
+# The bridges (RFC EQ) — @loomcycle/bridge-core and one @loomcycle/bridge-<platform>
+# package per chat platform — are versioned INDEPENDENTLY of the Go binary and
+# of each other, at 0.x. Each publishes on its OWN tag, `bridge-<name>-v<x.y.z>`
+# (e.g. `bridge-core-v0.1.0`, `bridge-slack-v0.1.0`), from `packages/bridge-<name>`.
+# One workflow serves them all: the tag names the package.
+#
+# Order: a platform bridge depends on @loomcycle/bridge-core by its PUBLISHED
+# version. Publish bridge-core first; a bridge that still depends on the core
+# by a `file:` path (as it does while the two are reviewed together) is
+# refused here, since its tarball would point at a path no installer has.
+#
+# Safety: the workflow HARD-FAILS when the tag is not `bridge-<name>-v<semver>`,
+# when the package directory does not exist, or when package.json's name or
+# version does not match the tag. npm is untouched in each case.
+#
+# Auth: the NPM_TOKEN repo secret, as the other first publishes of a scoped
+# package use (OIDC Trusted Publishing cannot bootstrap a package that does not
+# exist yet). setup-node writes it into ~/.npmrc via NODE_AUTH_TOKEN below.
+#
+# Inputs reaching `run` steps are limited to GITHUB_REF_NAME (a git tag — git
+# rejects metacharacters in ref names, and the tag is matched against a strict
+# pattern before use) and constants; the tag is routed through `env:` per the
+# GitHub workflow-injection guidance.
+on:
+  push:
+    tags:
+      - "bridge-*-v*"
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+
+permissions:
+  contents: read
+
+jobs:
+  publish:
+    name: Publish ${{ github.ref_name }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Resolve the package from the tag
+        id: pkg
+        env:
+          TAG_REF: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          if [[ ! "$TAG_REF" =~ ^(bridge-[a-z]+)-v([0-9]+\.[0-9]+\.[0-9]+)$ ]]; then
+            echo "::error::tag $TAG_REF is not bridge-<name>-v<x.y.z>"
+            exit 1
+          fi
+          NAME="${BASH_REMATCH[1]}"
+          VER="${BASH_REMATCH[2]}"
+          DIR="packages/$NAME"
+          if [ ! -f "$DIR/package.json" ]; then
+            echo "::error::no package at $DIR"
+            exit 1
+          fi
+          echo "dir=$DIR" >> "$GITHUB_OUTPUT"
+          echo "name=$NAME" >> "$GITHUB_OUTPUT"
+          echo "version=$VER" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: "20"
+          registry-url: "https://registry.npmjs.org"
+          cache: npm
+          cache-dependency-path: ${{ steps.pkg.outputs.dir }}/package-lock.json
+
+      - name: Verify the package matches the tag, and depends on nothing by path
+        working-directory: ${{ steps.pkg.outputs.dir }}
+        env:
+          WANT_NAME: "@loomcycle/${{ steps.pkg.outputs.name }}"
+          WANT_VER: ${{ steps.pkg.outputs.version }}
+        run: |
+          set -euo pipefail
+          node -e '
+            const p = require("./package.json");
+            const fail = (m) => { console.log("::error::" + m); process.exit(1); };
+            if (p.name !== process.env.WANT_NAME) fail(`package.json name ${p.name} does not match the tag (${process.env.WANT_NAME})`);
+            if (p.version !== process.env.WANT_VER) fail(`package.json version ${p.version} does not match the tag (${process.env.WANT_VER}). Bump package.json and re-tag, or fix the tag.`);
+            for (const [k, v] of Object.entries({ ...p.dependencies, ...p.peerDependencies })) {
+              if (/^(file|link|workspace):/.test(String(v))) fail(`${k} is a ${v} dependency: publish it first and depend on its version`);
+            }
+            console.log(`::notice::Publishing ${p.name}@${p.version}`);
+          '
+
+      - name: Install
+        working-directory: ${{ steps.pkg.outputs.dir }}
+        run: npm ci
+
+      - name: Build
+        working-directory: ${{ steps.pkg.outputs.dir }}
+        run: npm run build
+
+      - name: Test
+        working-directory: ${{ steps.pkg.outputs.dir }}
+        run: npm test
+
+      - name: Publish
+        working-directory: ${{ steps.pkg.outputs.dir }}
+        # --access public for the scoped package. prepack rebuilds dist from a
+        # clean tree. (--provenance is omitted: it requires OIDC, not token auth.)
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: npm publish --access public
