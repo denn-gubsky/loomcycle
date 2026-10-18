@@ -287,6 +287,10 @@ func (c *Crypto) spend(ctx context.Context) (tools.Result, bool) {
 		limit = defaultCryptoMaxOpsPerRun
 	}
 	runID := tools.RunID(ctx)
+	if runID == "" && tools.IsSubstrateOperator(ctx) {
+		// The operator API: no run, so no run's budget. The token's rate bounds it.
+		return tools.Result{}, true
+	}
 	if runID == "" && tools.HasRunIdentity(ctx) {
 		// A run's call that carries no run id still spends from a budget: its
 		// agent's, so the cap is never skipped for a run.

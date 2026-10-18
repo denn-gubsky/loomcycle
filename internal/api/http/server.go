@@ -4252,6 +4252,9 @@ func (s *Server) Mux() http.Handler {
 	// same user-scope id an agent run for this principal uses. Same dispatch shape
 	// as the Path/Document endpoints.
 	mux.Handle("POST /v1/_credentialdef", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleSubstrateCredentialDef))))
+	// RFC EP P1b — the Crypto tool's operations outside a run. substrate:tenant,
+	// closed to members; keys and tenant come from the principal (s.Crypto).
+	mux.Handle("POST /v1/_crypto", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleSubstrateCrypto))))
 	// RFC AH Phase 4 (Web UI) — two ADDITIVE read-only views of the volume
 	// universe. Tenant-confined (ScopeTenant via isTenantConfinedDefPath):
 	// statics are shown to all (the shared bind floor), dynamic + ephemeral

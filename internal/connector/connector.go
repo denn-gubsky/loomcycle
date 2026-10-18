@@ -394,6 +394,17 @@ type Connector interface {
 	// (tools:[CredentialDef]); dispatches through this single method.
 	CredentialDef(ctx context.Context, input json.RawMessage) (ToolResult, error)
 
+	// Crypto runs one Crypto-tool operation for an operator or service outside
+	// any run (encrypt, decrypt, sign, verify, MAC, TOTP, hash, random), with
+	// the same input, envelope and errors as the in-run tool. The caller's
+	// principal decides everything: its tenant's keys and its own subject's
+	// user keys, never an agent's; an admin may name another tenant with a
+	// top-level "tenant". Each call takes one from the token's rate, not a
+	// run's op budget. A refused rate is an error matching
+	// runner.ErrRateLimited. Reachable via POST /v1/_crypto, the gRPC Crypto
+	// RPC and the MCP meta-tool `crypto`.
+	Crypto(ctx context.Context, input json.RawMessage) (ToolResult, error)
+
 	// --- Pause/Resume/Snapshot (real in v0.8.18) ---
 	//
 	// Wire shapes finalised v0.8.15. Real implementations landed in
