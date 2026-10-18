@@ -50,6 +50,9 @@ const PROSE = [
   '<a href="https://evil.example">good</a>',
   "<https://evil.example>",
   "~~~\n[good](https://evil.example)\n~~~",
+  // Not fences the bridge recognises, so prose: the HTML in them is broken.
+  '~~~\n<a href="https://evil.example">good</a>\n~~~',
+  '   ```\n<a href="https://evil.example">good</a>\n   ```',
   "    [good](https://evil.example)",
   "> [good](https://evil.example) @here",
   "`[good](https://evil.example)` and `<!here>`",
@@ -149,5 +152,12 @@ describe("a stream forms no markup across deltas", () => {
     const out = await stream(deltas);
     expect(linkInCode(out)).toBeUndefined();
     expect(out.replaceAll(WJ, "")).toBe(deltas.join(""));
+  });
+
+  it("knows a fence split across deltas, so code stays copyable and what follows is prose", async () => {
+    const out = await stream(["``", "`js\nif (a < b && c[i][j]) {}\n``", '`\n<a href="https://evil.example">good</a>']);
+    expect(out).toContain("if (a < b && c[i][j]) {}");
+    const after = out.slice(out.lastIndexOf("```") + 3);
+    expect(liveInProse(after)).toBeUndefined();
   });
 });
