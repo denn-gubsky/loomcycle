@@ -519,7 +519,8 @@ describe("stream", () => {
     const { s } = make(slack);
     s.emit("ping <");
     await waitFor(() => slack.to("chat.startStream").length === 1, "start");
-    expect(slack.to("chat.startStream")[0].body.markdown_text).toBe("ping ");
+    // A "<" is broken whatever follows it, so it need not wait for the next delta.
+    expect(slack.to("chat.startStream")[0].body.markdown_text).toBe("ping <\u2060");
     s.emit("!channel> now");
     await s.close();
     const sent = [...slack.to("chat.startStream"), ...slack.to("chat.appendStream")].map((c) => c.body.markdown_text).join("");

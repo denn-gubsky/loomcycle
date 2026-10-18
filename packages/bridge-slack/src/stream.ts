@@ -10,7 +10,7 @@
 import type { Logger, StreamLike } from "@loomcycle/bridge-core";
 
 import { slackErrorCode, type SlackApi } from "./api.js";
-import { neutralise } from "./text.js";
+import { MarkdownDefuser } from "./text.js";
 
 export interface SlackStreamOptions {
   channel: string;
@@ -32,7 +32,9 @@ export const DEFAULT_STREAM_INTERVAL_MS = 1000;
 export class SlackStream implements StreamLike {
   /** True once the person stopped the stream in Slack. */
   canceled = false;
+  /** Safe text not yet sent. */
   private pending = "";
+  private readonly defuser = new MarkdownDefuser();
   private ts?: string;
   private inMessage = 0;
   private failed = false;
@@ -55,9 +57,9 @@ export class SlackStream implements StreamLike {
 
   emit(text: string): void {
     if (!text || this.canceled) return;
-    // Neutralised over the whole unsent buffer, so a mention split across
-    // two deltas is still caught.
-    this.pending = neutralise(this.pending + text);
+    // The defuser holds back a tail that the next delta could turn into
+    // markup ("[good]" before "(https://…)"), so what is sent is final.
+    this.pending += this.defuser.push(text);
     if (!this.failed) this.schedule();
   }
 
@@ -65,7 +67,8 @@ export class SlackStream implements StreamLike {
     if (this.timer) clearTimeout(this.timer);
     this.timer = undefined;
     this.enqueue(async () => {
-      await this.flush(true);
+      if (!this.canceled) this.pending += this.defuser.push("", true);
+      await this.flush();
       await this.stopMessage();
       if (this.pending && !this.canceled) {
         const rest = this.pending;
@@ -81,7 +84,7 @@ export class SlackStream implements StreamLike {
     const wait = Math.max(0, this.lastFlush + this.intervalMs - this.now());
     this.timer = setTimeout(() => {
       this.timer = undefined;
-      this.enqueue(() => this.flush(false));
+      this.enqueue(() => this.flush());
     }, wait);
     this.timer.unref?.();
   }
@@ -92,15 +95,11 @@ export class SlackStream implements StreamLike {
     });
   }
 
-  private async flush(final: boolean): Promise<void> {
+  private async flush(): Promise<void> {
     this.lastFlush = this.now();
     while (!this.failed && !this.canceled && this.pending) {
       if (this.ts && this.inMessage >= this.opts.maxChars) await this.stopMessage();
-      let piece = this.pending.slice(0, this.opts.maxChars - this.inMessage);
-      // Hold back what may be the start of a mention ("<", "@he") until the
-      // next delta shows whether it is one.
-      if (!final && piece === this.pending) piece = piece.replace(/(<|@[A-Za-z]{0,8})$/, "");
-      if (!piece) return;
+      const piece = this.pending.slice(0, this.opts.maxChars - this.inMessage);
       const method = this.ts ? "chat.appendStream" : "chat.startStream";
       try {
         if (!this.ts) {

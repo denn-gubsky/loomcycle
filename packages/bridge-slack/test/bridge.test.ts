@@ -190,6 +190,23 @@ describe("slack bridge, end to end", () => {
     }
   });
 
+  it("sends no link whose shown text hides its target, batched or streamed", async () => {
+    const said = "Docs: [https://good.example](https://evil.example/?d=secret) and <https://evil.example|https://good.example>";
+    for (const streaming of ["0", "1"]) {
+      const r = await rig({ SLACK_BRIDGE_STREAMING: streaming });
+      await send(r, eventBody(dm("hello")));
+      r.lc.runs[0].events.push({ type: "text", text: said.slice(0, 28) });
+      await settle();
+      r.lc.runs[0].events.push({ type: "text", text: said.slice(28) });
+      r.lc.runs[0].events.push({ type: "awaiting_input" });
+      const done = streaming === "1" ? () => r.slack.to("chat.stopStream").length === 1 : () => r.slack.to("chat.postMessage").length === 1;
+      await waitFor(done, "reply");
+      const text = r.slack.calls.map((c) => String(c.body.markdown_text ?? "")).join("");
+      expect(text).not.toMatch(/\]\(|<(?!\u2060)/);
+      expect(text.replace(/\u2060/g, "")).toBe(said);
+    }
+  });
+
   it("sends a card, and its result, with no live mention", async () => {
     const r = await rig();
     await send(r, eventBody(mention("book a room", "300.1")));

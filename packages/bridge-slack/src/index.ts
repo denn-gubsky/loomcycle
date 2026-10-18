@@ -11,5 +11,5 @@ export type { ChannelType, InboundFields, SlackRef, TrustPolicy } from "./identi
 export { cleanInbound, readAction, readEvent } from "./inbound.js";
 export type { BlockActionsPayload, EventEnvelope, SelfIds } from "./inbound.js";
 export { SlackStream } from "./stream.js";
-export { MAX_MESSAGE_CHARS, neutralise } from "./text.js";
+export { escapeMrkdwn, MarkdownDefuser, MAX_MESSAGE_CHARS, neutralise } from "./text.js";
 export { slackSignature, verifySlackRequest } from "./verify.js";
