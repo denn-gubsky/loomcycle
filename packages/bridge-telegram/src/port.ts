@@ -16,6 +16,12 @@ import { TelegramStream, type StreamTiming } from "./stream.js";
  *  Multilingual Plane (one or two) is not documented. */
 export const MAX_MESSAGE_CHARS = 4000;
 
+/** Set on every message and edit. To build a preview Telegram fetches the
+ *  link, so a URL the agent was steered into writing (a prompt injection in
+ *  a group, a fetched page) would reach its server, query string and all,
+ *  without anyone clicking. */
+export const NO_LINK_PREVIEW = { link_preview_options: { is_disabled: true } } as const;
+
 function threadParams(ref: TelegramRef): Record<string, unknown> {
   return ref.threadId === undefined ? { chat_id: ref.chatId } : { chat_id: ref.chatId, message_thread_id: ref.threadId };
 }
@@ -52,7 +58,7 @@ export class TelegramPort {
 
   /** sendMessage sends HTML, and the plain text if Telegram refuses the HTML. */
   async sendMessage(ref: TelegramRef, m: RenderedMessage, o: { retry?: boolean } = {}): Promise<number | undefined> {
-    const base = { ...threadParams(ref), ...(m.replyMarkup ? { reply_markup: m.replyMarkup } : {}) };
+    const base = { ...threadParams(ref), ...NO_LINK_PREVIEW, ...(m.replyMarkup ? { reply_markup: m.replyMarkup } : {}) };
     try {
       const sent = await this.opts.api.call<{ message_id?: number }>("sendMessage", { ...base, text: m.html, parse_mode: "HTML" }, o);
       return sent?.message_id;
@@ -71,7 +77,7 @@ export class TelegramPort {
     m: { html: string; plain: string; replyMarkup?: InlineKeyboardMarkup },
     o: { retry?: boolean } = {},
   ): Promise<void> {
-    const base = { chat_id: chatId, message_id: messageId, ...(m.replyMarkup ? { reply_markup: m.replyMarkup } : {}) };
+    const base = { chat_id: chatId, message_id: messageId, ...NO_LINK_PREVIEW, ...(m.replyMarkup ? { reply_markup: m.replyMarkup } : {}) };
     try {
       try {
         await this.opts.api.call("editMessageText", { ...base, text: m.html, parse_mode: "HTML" }, o);

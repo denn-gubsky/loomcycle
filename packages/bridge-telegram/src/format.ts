@@ -59,8 +59,10 @@ export function markdownToHtml(md: string): string {
 }
 
 const CODE_SPAN = /```([^`]+?)```|``([^`]+?)``|`([^`\n]+?)`/g;
-// Only schemes Telegram opens; anything else stays text.
-const LINK_SPAN = /\[([^[\]\n]+)\]\(\s*((?:https?:\/\/|tg:\/\/|mailto:)[^\s()<>]+)\s*\)/g;
+// http and https only. Not tg://: a tg://user?id= link mentions a Telegram
+// user, and other tg:// links join chats or open bots, none of which agent
+// text should do. Anything else stays text.
+const LINK_SPAN = /\[([^[\]\n]+)\]\(\s*(https?:\/\/[^\s()<>]+)\s*\)/g;
 
 function inline(text: string): string {
   const codes: string[] = [];

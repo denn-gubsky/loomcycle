@@ -126,7 +126,7 @@ describe("telegram bridge", () => {
     run.events.push({ type: "text", text: "Hi **Alice**" });
     run.events.push({ type: "awaiting_input" });
     await waitFor(() => tg.callsTo("sendMessage").length === 1, "reply");
-    expect(tg.callsTo("sendMessage")[0]!.params).toEqual({ chat_id: 42, text: "Hi <b>Alice</b>", parse_mode: "HTML" });
+    expect(tg.callsTo("sendMessage")[0]!.params).toEqual({ chat_id: 42, link_preview_options: { is_disabled: true }, text: "Hi <b>Alice</b>", parse_mode: "HTML" });
     expect(tg.callsTo("sendChatAction")[0]!.params).toEqual({ chat_id: 42, action: "typing" });
   });
 
@@ -215,7 +215,7 @@ describe("telegram bridge", () => {
 
     expect(lc.callsTo("resolveInterrupt").map((c) => c.args)).toEqual([["run-1", "int-1", { answer: "b.txt", resolvedBy: "telegram-42" }]]);
     const edits = tg.callsTo("editMessageText").map((c) => c.params);
-    expect(edits).toContainEqual({ chat_id: 42, message_id: 100, text: "Answered: b.txt", parse_mode: "HTML" });
+    expect(edits).toContainEqual({ chat_id: 42, message_id: 100, link_preview_options: { is_disabled: true }, text: "Answered: b.txt", parse_mode: "HTML" });
     for (const e of edits) expect(e.reply_markup).toBeUndefined();
   });
 

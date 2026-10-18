@@ -17,7 +17,7 @@ describe("port", () => {
   it("sends a message as HTML into the conversation's topic", async () => {
     const tg = new FakeTelegram();
     await port(tg).send(topic, { type: "message", text: "**hi** <there>" });
-    expect(tg.callsTo("sendMessage")[0]!.params).toEqual({ chat_id: -100500, message_thread_id: 7, text: "<b>hi</b> &lt;there&gt;", parse_mode: "HTML" });
+    expect(tg.callsTo("sendMessage")[0]!.params).toEqual({ chat_id: -100500, message_thread_id: 7, link_preview_options: { is_disabled: true }, text: "<b>hi</b> &lt;there&gt;", parse_mode: "HTML" });
   });
 
   it("resends as plain text when Telegram refuses the HTML", async () => {
@@ -25,8 +25,8 @@ describe("port", () => {
     tg.reply.sendMessage = (p) => (p.parse_mode ? tgError(400, "Bad Request: can't parse entities: unclosed tag") : undefined);
     await port(tg).send({ chatId: 42 }, { type: "message", text: "**hi**" });
     expect(tg.callsTo("sendMessage").map((c) => c.params)).toEqual([
-      { chat_id: 42, text: "<b>hi</b>", parse_mode: "HTML" },
-      { chat_id: 42, text: "**hi**" },
+      { chat_id: 42, link_preview_options: { is_disabled: true }, text: "<b>hi</b>", parse_mode: "HTML" },
+      { chat_id: 42, link_preview_options: { is_disabled: true }, text: "**hi**" },
     ]);
   });
 
