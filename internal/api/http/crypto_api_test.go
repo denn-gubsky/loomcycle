@@ -116,8 +116,9 @@ func TestCryptoAPI_KeysAreTheTenantsAndTheCallersOwn(t *testing.T) {
 	if code, out := postCrypto(t, h, "lct_bob", `{"op":"encrypt","key":"mine","plaintext":"x"}`); code != http.StatusUnprocessableEntity || !strings.Contains(out["error"].(string), "no key") {
 		t.Errorf("bob with alice's key name = %d %v, want not found", code, out)
 	}
-	if code, out := postCrypto(t, h, "lct_alice", `{"op":"encrypt","key":"botkey","key_scope":"agent","plaintext":"x"}`); code != http.StatusUnprocessableEntity || out["errorCategory"] != "permission" {
-		t.Errorf("an agent's key pinned = %d %v, want a permission refusal", code, out)
+	if code, out := postCrypto(t, h, "lct_alice", `{"op":"encrypt","key":"botkey","key_scope":"agent","plaintext":"x"}`); code != http.StatusUnprocessableEntity || out["errorCategory"] != "permission" ||
+		!strings.Contains(out["error"].(string), "outside a run") {
+		t.Errorf("an agent's key pinned = %d %v, want a permission refusal that speaks of outside a run", code, out)
 	}
 	if code, out := postCrypto(t, h, "lct_alice", `{"op":"encrypt","key":"botkey","plaintext":"x"}`); code != http.StatusUnprocessableEntity || !strings.Contains(out["error"].(string), "no key") {
 		t.Errorf("an agent's key = %d %v, want not found", code, out)

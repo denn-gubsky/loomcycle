@@ -550,7 +550,14 @@ func (c *Crypto) resolveKey(ctx context.Context, ref keyRef, env *cryptoops.Enve
 		userID = ""
 	}
 	agentName := tools.AgentName(ctx)
+	offRun := tools.IsSubstrateOperator(ctx) && tools.RunID(ctx) == ""
 	noScope := func(which string) tools.Result {
+		if offRun {
+			// The operator API: there is no agent and no run whose keys these
+			// would be, and no crypto_scopes to grant.
+			return errPermission(which+" keys are not reachable outside a run",
+				"Outside a run you use your tenant's keys and your own user keys (key_scope tenant or user).")
+		}
 		return errPermission("this run may not use "+which+" keys", "An operator grants key scopes with the agent's crypto_scopes (agent, user, tenant, run).")
 	}
 	notFound := func(name string) tools.Result {
