@@ -82,7 +82,20 @@ var (
 	// ErrKeyTransfer is the deliberately opaque failure to open a key
 	// transfer: a wrong passphrase and a tampered blob look the same.
 	ErrKeyTransfer = errors.New("credential: the key transfer did not open (wrong passphrase or damaged data)")
+	// ErrExternalKey: a material operation (rotate, retire or delete a
+	// version, export) named a key held in an external KMS. Its versions live
+	// in the KMS, and are managed there.
+	ErrExternalKey = errors.New("credential: this crypto key is held in an external KMS; rotate and retire its versions there")
 )
+
+// ExternalKey is where a crypto key held in an external KMS lives: the KMS
+// kind (vault, aws_kms, gcp_kms) and its reference, as the Crypto tool wrote
+// it. Opaque here, like key material. The reference names the KMS and the
+// credentials that reach it (by $cred: name), never a secret.
+type ExternalKey struct {
+	Kind string
+	Ref  []byte
+}
 
 // KeyVersion describes one version of a crypto key (metadata only).
 type KeyVersion struct {
@@ -106,20 +119,31 @@ type CryptoKey struct {
 	Name, Scope, ScopeID, KeyType string
 	Current, MinVersion           int
 	Versions                      map[int][]byte
+	// External is set for a key held in an external KMS: Versions is then
+	// empty, and Current and MinVersion are 1.
+	External *ExternalKey
 }
 
 var (
 	keyTypeRe  = regexp.MustCompile(`^[a-z0-9-]{1,32}$`)
 	cryptoName = regexp.MustCompile(`^[A-Za-z0-9_-]{1,128}$`)
+	kmsKindRe  = regexp.MustCompile(`^[a-z0-9_]{1,32}$`)
 )
 
-// cryptoDefinition is the stored definition of a crypto-key credential.
+// cryptoDefinition is the stored definition of a crypto-key credential. A key
+// held in an external KMS has Backend and External (its reference, sealed
+// with usage, key_type and backend) and no versions:
+//
+//	{"usage":"crypto","key_type":"aes-256-gcm","current":1,"min_version":1,
+//	 "backend":"vault","external":{key_id,nonce,ciphertext}}
 type cryptoDefinition struct {
 	Usage      string          `json:"usage"`
 	KeyType    string          `json:"key_type"`
 	Current    int             `json:"current"`
 	MinVersion int             `json:"min_version"`
 	Versions   []cryptoVersion `json:"versions"`
+	Backend    string          `json:"backend,omitempty"`
+	External   *Sealed         `json:"external,omitempty"`
 }
 
 type cryptoVersion struct {
@@ -136,6 +160,7 @@ type cryptoHeader struct {
 	Usage    string          `json:"usage"`
 	KeyType  string          `json:"key_type"`
 	Versions json.RawMessage `json:"versions"`
+	External json.RawMessage `json:"external"`
 }
 
 // isCryptoDef reports whether a stored definition is a crypto key's.
@@ -144,7 +169,7 @@ func isCryptoDef(def json.RawMessage) bool {
 	if err := json.Unmarshal(def, &h); err != nil {
 		return false
 	}
-	return h.Usage != "" || h.KeyType != "" || len(h.Versions) > 0
+	return h.Usage != "" || h.KeyType != "" || len(h.Versions) > 0 || len(h.External) > 0
 }
 
 // cryptoBound is what each version is sealed together with. Its prefix
@@ -152,6 +177,13 @@ func isCryptoDef(def json.RawMessage) bool {
 // usage and key_type without the separator, so the encoding is unambiguous.
 func cryptoBound(usage, keyType string, version int) []byte {
 	return fmt.Appendf(nil, "crypto\x1e%s\x1e%s\x1e%d", usage, keyType, version)
+}
+
+// externalBound is what an external key's reference is sealed together with,
+// so a row whose usage, key_type or backend was edited no longer opens. Its
+// prefix differs from cryptoBound's.
+func externalBound(usage, keyType, backend string) []byte {
+	return fmt.Appendf(nil, "crypto-external\x1e%s\x1e%s\x1e%s", usage, keyType, backend)
 }
 
 // parseCryptoDef reads and checks a crypto definition. Any inconsistency is
@@ -166,6 +198,13 @@ func parseCryptoDef(def json.RawMessage) (cryptoDefinition, error) {
 	}
 	if !keyTypeRe.MatchString(d.KeyType) {
 		return d, errors.New("invalid key_type")
+	}
+	if d.External != nil || d.Backend != "" {
+		// An external key: a reference, never versions of material.
+		if d.External == nil || !kmsKindRe.MatchString(d.Backend) || d.Current != 1 || d.MinVersion != 1 || len(d.Versions) != 0 {
+			return d, errors.New("invalid external key")
+		}
+		return d, nil
 	}
 	// min_version may be current+1: every version retired ("retire all").
 	if d.Current < 1 || d.MinVersion < 1 || d.MinVersion > d.Current+1 {
@@ -302,6 +341,56 @@ func (e *Engine) PutCryptoKey(ctx context.Context, id Identity, keyType string, 
 	}, cryptoDefinition{Usage: UsageCrypto, KeyType: keyType, Current: 1, MinVersion: 1, Versions: []cryptoVersion{v}})
 }
 
+// PutExternalCryptoKey creates a crypto key under id that an external KMS
+// holds: ext.Kind names the KMS, ext.Ref the key there (opaque here; the
+// caller has checked it). The reference is sealed with usage, key_type and
+// kind, so editing any of them in the database leaves the key unopenable,
+// and a reference pointed at another KMS does not open either. Refused like
+// PutCryptoKey: ErrKeyExists, ErrNoKey.
+func (e *Engine) PutExternalCryptoKey(ctx context.Context, id Identity, keyType string, ext ExternalKey, expiresAt *time.Time) (Meta, error) {
+	if !e.sealer.Enabled() {
+		return Meta{}, ErrNoKey
+	}
+	if err := validCryptoIdentity(id); err != nil {
+		return Meta{}, err
+	}
+	if err := validKeyType(keyType); err != nil {
+		return Meta{}, err
+	}
+	if !kmsKindRe.MatchString(ext.Kind) {
+		return Meta{}, fmt.Errorf("credential: invalid KMS kind %q", ext.Kind)
+	}
+	if len(ext.Ref) == 0 {
+		return Meta{}, errors.New("credential: the external key reference is empty")
+	}
+	if err := e.checkExpiresAt(expiresAt); err != nil {
+		return Meta{}, err
+	}
+	e.cryptoMu.Lock()
+	defer e.cryptoMu.Unlock()
+	if err := e.absent(ctx, id); err != nil {
+		return Meta{}, err
+	}
+	sid := id
+	sid.Bound = externalBound(UsageCrypto, keyType, ext.Kind)
+	sealed, err := e.sealer.Seal(ext.Ref, sid)
+	if err != nil {
+		return Meta{}, err
+	}
+	return e.putCryptoRow(ctx, store.CredentialDefRow{
+		TenantID: id.TenantID, Scope: id.Scope, ScopeID: id.ScopeID, Name: id.Name, ExpiresAt: expiresAt,
+	}, cryptoDefinition{Usage: UsageCrypto, KeyType: keyType, Current: 1, MinVersion: 1, Backend: ext.Kind, External: &sealed})
+}
+
+// externalErr is ErrExternalKey naming the key, for a material operation on
+// a key an external KMS holds.
+func externalErr(d cryptoDefinition, name string) error {
+	if d.External == nil {
+		return nil
+	}
+	return fmt.Errorf("%w (%q in %s)", ErrExternalKey, name, d.Backend)
+}
+
 // absent returns ErrKeyExists when a row is stored under id, nil when none is.
 func (e *Engine) absent(ctx context.Context, id Identity) error {
 	_, err := e.store.CredentialDefGet(ctx, id.TenantID, id.Scope, id.ScopeID, id.Name)
@@ -334,6 +423,9 @@ func (e *Engine) RotateCryptoKey(ctx context.Context, id Identity, material []by
 	defer e.cryptoMu.Unlock()
 	row, d, err := e.getCryptoRow(ctx, id)
 	if err != nil {
+		return Meta{}, err
+	}
+	if err := externalErr(d, id.Name); err != nil {
 		return Meta{}, err
 	}
 	if len(d.Versions) == 0 {
@@ -376,6 +468,9 @@ func (e *Engine) SetCryptoMinVersion(ctx context.Context, id Identity, minVersio
 	if err != nil {
 		return Meta{}, err
 	}
+	if err := externalErr(d, id.Name); err != nil {
+		return Meta{}, err
+	}
 	switch {
 	case minVersion < d.MinVersion:
 		return Meta{}, fmt.Errorf("%w: min_version can only be raised (it is %d)", ErrBadVersion, d.MinVersion)
@@ -398,6 +493,9 @@ func (e *Engine) DeleteCryptoKeyVersion(ctx context.Context, id Identity, versio
 	if err != nil {
 		return Meta{}, err
 	}
+	if err := externalErr(d, id.Name); err != nil {
+		return Meta{}, err
+	}
 	i := slices.IndexFunc(d.Versions, func(v cryptoVersion) bool { return v.Version == version })
 	if i < 0 {
 		return Meta{}, fmt.Errorf("%w: %q has no version %d", ErrBadVersion, id.Name, version)
@@ -417,6 +515,11 @@ func cryptoDeleteRefusal(row store.CredentialDefRow) error {
 	var d cryptoDefinition
 	if err := json.Unmarshal(row.Definition, &d); err != nil {
 		return fmt.Errorf("%w (%q): its stored definition cannot be read", ErrKeyInUse, row.Name)
+	}
+	// An external key's row is only a reference: deleting it destroys no
+	// material (the key stays in the KMS, and a new reference reaches it).
+	if d.External != nil {
+		return nil
 	}
 	if d.MinVersion <= d.Current {
 		return fmt.Errorf("%w (%q current version %d, min_version %d); retire every version (min_version %d) before deleting the key",
@@ -523,6 +626,18 @@ func (e *Engine) ResolveCryptoKey(ctx context.Context, tenantID, agentName, user
 		return CryptoKey{}, false, unopenable(name, row.Scope, err)
 	}
 	id := Identity{TenantID: tenantID, Scope: row.Scope, ScopeID: row.ScopeID, Name: name}
+	if d.External != nil {
+		id.Bound = externalBound(d.Usage, d.KeyType, d.Backend)
+		ref, err := e.sealer.Open(*d.External, id)
+		if err != nil {
+			return CryptoKey{}, false, unopenable(name, row.Scope, err)
+		}
+		return CryptoKey{
+			Name: name, Scope: row.Scope, ScopeID: row.ScopeID, KeyType: d.KeyType,
+			Current: d.Current, MinVersion: d.MinVersion, Versions: map[int][]byte{},
+			External: &ExternalKey{Kind: d.Backend, Ref: ref},
+		}, true, nil
+	}
 	versions := map[int][]byte{}
 	for _, v := range d.Versions {
 		if v.Version < d.MinVersion {
@@ -538,6 +653,39 @@ func (e *Engine) ResolveCryptoKey(ctx context.Context, tenantID, agentName, user
 		Name: name, Scope: row.Scope, ScopeID: row.ScopeID, KeyType: d.KeyType,
 		Current: d.Current, MinVersion: d.MinVersion, Versions: versions,
 	}, true, nil
+}
+
+// ResolveKMSSecret resolves the ordinary credential an external key's
+// reference names (a Vault token, AWS access keys, a Google service account),
+// in exactly the key's own bucket (id: tenant, scope, scope_id, the
+// credential's name). No other scope is read: a user's key must not run on the
+// tenant's KMS credentials, nor a tenant's on a user's. A crypto key of the
+// name is ErrCryptoKey, an expired credential ErrExpired, and a URL-restricted
+// one ErrRestricted (its owner said where it may be sent, and the KMS's own
+// endpoints were not asked about). (_, false, nil) when absent.
+func (e *Engine) ResolveKMSSecret(ctx context.Context, id Identity) (string, bool, error) {
+	row, err := e.store.CredentialDefGet(ctx, id.TenantID, id.Scope, id.ScopeID, id.Name)
+	if err != nil {
+		var nf *store.ErrNotFound
+		if errors.As(err, &nf) {
+			return "", false, nil
+		}
+		return "", false, err
+	}
+	if isCryptoDef(row.Definition) {
+		return "", false, cryptoKeyErr(id.Name, row.Scope)
+	}
+	if err := e.expiredErr(row, id.Name); err != nil {
+		return "", false, err
+	}
+	if restrictionOf(row.Definition) != nil {
+		return "", false, fmt.Errorf("%w (%q)", ErrRestricted, id.Name)
+	}
+	val, err := e.open(ctx, row, Identity{TenantID: id.TenantID, Scope: row.Scope, ScopeID: row.ScopeID, Name: id.Name})
+	if err != nil {
+		return "", false, err
+	}
+	return val, true, nil
 }
 
 // ResolveKeyMaterial resolves an ORDINARY credential's value for use as key
@@ -636,6 +784,10 @@ func (e *Engine) ExportCryptoKey(ctx context.Context, id Identity, passphrase st
 	}
 	row, d, err := e.getCryptoRow(ctx, id)
 	if err != nil {
+		return "", err
+	}
+	// An external key's material is in the KMS; there is nothing here to move.
+	if err := externalErr(d, id.Name); err != nil {
 		return "", err
 	}
 	p := transferPayload{Current: d.Current, MinVersion: d.MinVersion, ExpiresAt: row.ExpiresAt}
@@ -795,6 +947,7 @@ func cryptoMeta(m *Meta, def json.RawMessage) {
 		m.Usage = UsageCrypto
 	}
 	m.KeyType = d.KeyType
+	m.KeyBackend = d.Backend
 	m.CurrentVersion = d.Current
 	m.MinVersion = d.MinVersion
 	m.Versions = make([]KeyVersion, 0, len(d.Versions))

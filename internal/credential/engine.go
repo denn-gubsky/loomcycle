@@ -98,8 +98,11 @@ type Meta struct {
 	// The crypto-key fields (RFC EP), read from the row without opening
 	// anything; all zero for an ordinary credential. Usage is UsageCrypto for
 	// a crypto key.
-	Usage          string
-	KeyType        string
+	Usage   string
+	KeyType string
+	// KeyBackend names the external KMS holding a crypto key (vault,
+	// aws_kms, gcp_kms); "" for a key held here.
+	KeyBackend     string
 	Versions       []KeyVersion
 	CurrentVersion int
 	MinVersion     int
