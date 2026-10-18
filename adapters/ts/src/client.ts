@@ -52,6 +52,7 @@ import type {
   CredentialMeta,
   CryptoKeyEncoding,
   CryptoKeyExport,
+  CryptoKeyExternal,
   CryptoKeyType,
   CryptoRequest,
   CryptoResultByOp,
@@ -4093,6 +4094,31 @@ export class LoomcycleClient {
       this.ctx,
       "/v1/_credentialdef",
       { op: "create", usage: "crypto", ...input },
+      opts,
+    );
+  }
+
+  /** Reference a key held in an external KMS (Vault Transit, AWS KMS or
+   *  Google Cloud KMS) as a crypto key: loomcycle stores only where the key
+   *  is, and every Crypto op on it is a call to the KMS. The server asks the
+   *  KMS that the key exists, is enabled and is of `key_type` before storing
+   *  it. Rotate and retire such a key in the KMS; deleting it removes only
+   *  the reference. Mirrors `{op:create, usage:"crypto", backend, external}`. */
+  async createKmsCryptoKey(
+    input: {
+      scope: CredentialScope;
+      name: string;
+      key_type: CryptoKeyType;
+      external: CryptoKeyExternal;
+      expires_at?: string;
+    },
+    opts?: { signal?: AbortSignal },
+  ): Promise<CredentialMeta> {
+    const { backend, ...external } = input.external;
+    return postJSON<CredentialMeta>(
+      this.ctx,
+      "/v1/_credentialdef",
+      { op: "create", usage: "crypto", ...input, backend, external },
       opts,
     );
   }

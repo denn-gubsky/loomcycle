@@ -3861,6 +3861,10 @@ type Env struct {
 	// CryptoMaxOpsPerRun caps the Crypto tool calls one run may make (RFC EP).
 	// Default 100. LOOMCYCLE_CRYPTO_MAX_OPS_PER_RUN (<=0 ignored).
 	CryptoMaxOpsPerRun int
+	// KMSVaultAllowHTTP admits a plain http:// Vault address for a crypto
+	// key held in Vault Transit (a dev server). Off by default: the Vault
+	// token travels in a header. LOOMCYCLE_KMS_VAULT_ALLOW_HTTP=1.
+	KMSVaultAllowHTTP bool
 	// MaxDocumentAssetBytes caps BOTH the POST /v1/_document request body (so a
 	// set_asset base64 image payload fits) and the decoded image size the
 	// Document tool stores (RFC BO). Default 8 MiB. A base64 payload is ~1.33× the
@@ -5747,6 +5751,7 @@ func LoadLayers(layers ...Layer) (*Config, error) {
 			cfg.Env.CryptoMaxOpsPerRun = n
 		}
 	}
+	cfg.Env.KMSVaultAllowHTTP = os.Getenv("LOOMCYCLE_KMS_VAULT_ALLOW_HTTP") == "1"
 	cfg.Env.MaxDocumentAssetBytes = 8 << 20 // RFC BO
 	if v := os.Getenv("LOOMCYCLE_MAX_DOCUMENT_ASSET_BYTES"); v != "" {
 		if n, err := strconv.ParseInt(v, 10, 64); err == nil && n > 0 {

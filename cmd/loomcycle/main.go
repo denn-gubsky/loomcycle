@@ -1474,6 +1474,16 @@ func main() {
 	credEngine := credential.NewEngine(storeIface, credSealer)
 	credentialDefTool.Engine = credEngine
 	cryptoTool.Engine = credEngine
+	// RFC EP P3 — crypto keys held in an external KMS. A Vault address is the
+	// key author's, so it is dialled through the SSRF guard (and must be on
+	// the operator's host allowlist); AWS and Google endpoints are fixed.
+	kmsAccess := &builtin.KMSAccess{
+		Cfg:       cfg,
+		HTTP:      netguard.NewGuardedClient(30*time.Second, cfg.Env.HTTPPrivateHostAllowlist),
+		AllowHTTP: cfg.Env.KMSVaultAllowHTTP,
+	}
+	credentialDefTool.KMS = kmsAccess
+	cryptoTool.KMS = kmsAccess
 	// A team's own webhook may name a stored secret of the author's tenant.
 	teamDefTool.Credentials = credEngine
 	// $ghapp:<name> — mint a short-lived GitHub App installation token from a

@@ -227,3 +227,27 @@ describe("refusalText", () => {
     );
   });
 });
+
+describe("a key held in an external KMS", () => {
+  const ext: CredentialMeta = {
+    name: "orders",
+    scope: "tenant",
+    usage: "crypto",
+    key_type: "aes-256-gcm",
+    key_backend: "vault",
+    current_version: 1,
+    min_version: 1,
+    versions: [],
+  };
+
+  it("offers only delete: its versions are managed in the KMS", () => {
+    expect(cryptoKeyActions(ext)).toEqual({ rotate: false, retire: false, deletableVersions: [], delete: true });
+    expect(minVersionBounds(ext)).not.toBeNull(); // the bounds alone would offer retire
+  });
+
+  it("names the KMS instead of a version summary", () => {
+    expect(versionSummary(ext)).toBe("held in Vault Transit · versions managed there");
+    expect(versionSummary({ ...ext, key_backend: "aws_kms" })).toContain("AWS KMS");
+    expect(versionChips(ext)).toEqual([]);
+  });
+});
