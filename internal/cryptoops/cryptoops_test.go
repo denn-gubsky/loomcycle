@@ -673,7 +673,8 @@ func TestPublicKey_PEMAndJWKRoundTrip(t *testing.T) {
 }
 
 func TestParsePublicKey_RejectsUnsupported(t *testing.T) {
-	rsaPriv, _ := rsa.GenerateKey(rand.Reader, 2048)
+	// RSA is supported at 2048/3072/4096 bits only.
+	rsaPriv, _ := rsa.GenerateKey(rand.Reader, 1024)
 	rsaPub, _ := x509.MarshalPKIXPublicKey(&rsaPriv.PublicKey)
 	p384, _ := ecdsa.GenerateKey(elliptic.P384(), rand.Reader)
 	p384Pub, _ := x509.MarshalPKIXPublicKey(&p384.PublicKey)
@@ -681,7 +682,7 @@ func TestParsePublicKey_RejectsUnsupported(t *testing.T) {
 	edDER, _ := x509.MarshalPKCS8PrivateKey(edPriv)
 	x := base64.RawURLEncoding.EncodeToString(edPriv.Public().(ed25519.PublicKey))
 	bad := map[string]string{
-		"rsa pem":         pemOf(t, "PUBLIC KEY", rsaPub),
+		"rsa 1024 pem":    pemOf(t, "PUBLIC KEY", rsaPub),
 		"p384 pem":        pemOf(t, "PUBLIC KEY", p384Pub),
 		"private pem":     pemOf(t, "PRIVATE KEY", edDER),
 		"garbage":         "not a key",
@@ -691,7 +692,7 @@ func TestParsePublicKey_RejectsUnsupported(t *testing.T) {
 		"jwk p384":        `{"kty":"EC","crv":"P-384","x":"` + x + `","y":"` + x + `"}`,
 		"jwk off curve":   `{"kty":"EC","crv":"P-256","x":"` + x + `","y":"` + x + `"}`,
 		"jwk bad json":    `{"kty":`,
-		"jwk wrong crv":   `{"kty":"OKP","crv":"X25519","x":"` + x + `"}`,
+		"jwk x25519":      `{"kty":"OKP","crv":"X25519","x":"` + x + `"}`, // encrypts, cannot verify
 		"pem trailing":    pemOf(t, "PUBLIC KEY", p384Pub) + "junk",
 		"jwk padded b64x": `{"kty":"OKP","crv":"Ed25519","x":"` + x + `="}`,
 	}
@@ -701,7 +702,7 @@ func TestParsePublicKey_RejectsUnsupported(t *testing.T) {
 		}
 	}
 	if _, err := PublicKeyPEM(&rsaPriv.PublicKey); err == nil {
-		t.Error("PublicKeyPEM(RSA) should fail")
+		t.Error("PublicKeyPEM(RSA 1024) should fail")
 	}
 	if _, err := PublicKeyJWK(&p384.PublicKey, ""); err == nil {
 		t.Error("PublicKeyJWK(P-384) should fail")

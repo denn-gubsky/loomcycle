@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -46,6 +47,12 @@ type Crypto struct {
 	MaxBytes int
 	// MaxOpsPerRun caps the ops one run may make (default 100).
 	MaxOpsPerRun int
+	// Memory and Docs are the stores a `from` / `to` reference reads and
+	// writes (memory: and document:), through their own scope checks. Nil:
+	// such a reference is refused. Pointers, read at call time, because the
+	// tools' own stores are bound after construction.
+	Memory *Memory
+	Docs   *Document
 
 	budget runBudget
 	stats  cryptoStats
@@ -54,10 +61,14 @@ type Crypto struct {
 // CryptoToolName is the in-band tool name (tools:[Crypto]).
 const CryptoToolName = "Crypto"
 
-// CryptoPlaintextField is encrypt's input carrying the plaintext. It is masked
-// out of the persisted tool call: the event is stored before the tool runs,
-// so the mask, not a later registration, is what keeps it out.
-const CryptoPlaintextField = "plaintext"
+// CryptoPlaintextField is encrypt's input carrying the plaintext, and
+// CryptoPasswordField the password ops' password. Both are masked out of the
+// persisted tool call: the event is stored before the tool runs, so the mask,
+// not a later registration, is what keeps them out.
+const (
+	CryptoPlaintextField = "plaintext"
+	CryptoPasswordField  = "password"
+)
 
 const (
 	defaultCryptoMaxBytes     = 1 << 20
@@ -70,21 +81,23 @@ func (c *Crypto) Description() string {
 	return "Encrypt, decrypt, sign, verify, MAC, one-time codes, hashing and random values, with keys the runtime holds " +
 		"(see Context op=help topic=Crypto). You name a key; its material is never shown to you. A key is a crypto key " +
 		"stored with CredentialDef (key), an ordinary stored credential used as key material (cred), or a credential your " +
-		"run's caller passed (run); which of those your run may use is its crypto scope. Ops: " +
-		"encrypt, decrypt, rewrap, mac, verify_mac, sign, verify, public_key, totp, hash, random. Read the op's help " +
-		"(Context op=help topic=Crypto.<op>) before your first call."
+		"run's caller passed (run); which of those your run may use is its crypto scope. You can also encrypt to someone " +
+		"else's public key, and read input from or write output to a file, memory key or document chunk (from / to) so " +
+		"the data never passes through you. Ops: encrypt, decrypt, rewrap, mac, verify_mac, sign, verify, public_key, " +
+		"totp, hash, random, hash_password, verify_password. Read the op's help (Context op=help topic=Crypto.<op>) " +
+		"before your first call."
 }
 
 const cryptoInputSchema = `{
   "type": "object",
   "properties": {
-    "op":         {"type": "string", "enum": ["encrypt","decrypt","rewrap","mac","verify_mac","sign","verify","public_key","totp","hash","random"], "description": "The operation."},
+    "op":         {"type": "string", "enum": ["encrypt","decrypt","rewrap","mac","verify_mac","sign","verify","public_key","totp","hash","random","hash_password","verify_password"], "description": "The operation."},
     "key":        {"type": "string", "description": "A crypto key stored with CredentialDef, by name. Its type and versions are stored with it. Give exactly one of key, cred, run (decrypt and rewrap of an envelope may omit all three)."},
     "cred":       {"type": "string", "description": "An ordinary stored credential, by name, used as key material. Needs key_type."},
     "run":        {"type": "string", "description": "A credential your run's caller passed with the run, by name, used as key material. Needs key_type."},
     "key_scope":  {"type": "string", "enum": ["agent","user","tenant"], "description": "key and cred only: which scope's key to use. Needed only when more than one scope your run may use holds one of that name; an envelope already records it."},
-    "key_type":   {"type": "string", "enum": ["aes-256-gcm","xchacha20-poly1305","hmac-sha256","hmac-sha512","ed25519","ecdsa-p256","totp"], "description": "cred and run only: what kind of key the value is."},
-    "key_encoding": {"type": "string", "enum": ["raw","base64","hex","base32","pem"], "description": "cred and run only: how the value is written (default by key_type: base64 for AEAD and HMAC, base32 for totp, pem for ed25519 and ecdsa-p256)."},
+    "key_type":   {"type": "string", "enum": ["aes-256-gcm","xchacha20-poly1305","hmac-sha256","hmac-sha512","ed25519","ecdsa-p256","totp","x25519","rsa-oaep-2048","rsa-oaep-3072","rsa-oaep-4096","rsa-pss-2048","rsa-pss-3072","rsa-pss-4096"], "description": "cred and run only: what kind of key the value is."},
+    "key_encoding": {"type": "string", "enum": ["raw","base64","hex","base32","pem"], "description": "cred and run only: how the value is written (default by key_type: base64 for AEAD and HMAC, base32 for totp, pem for the asymmetric types)."},
     "derive":     {"type": "boolean", "description": "cred and run only: true derives an AEAD or HMAC key from any secret instead of reading the value as a key."},
     "version":    {"type": "integer", "description": "key only: a version of the crypto key, for public_key or a raw ciphertext. Default: the current version (decrypt of raw ciphertext tries every usable version)."},
     "plaintext":  {"type": "string", "description": "encrypt: what to encrypt. Text, or base64 bytes with input_encoding base64. Masked from the stored transcript."},
@@ -92,12 +105,16 @@ const cryptoInputSchema = `{
     "data":       {"type": "string", "description": "mac, verify_mac, sign, verify, hash: the data. Text, or base64 bytes with input_encoding base64."},
     "input_encoding":  {"type": "string", "enum": ["text","base64"], "description": "How plaintext / data is written (default text)."},
     "output_encoding": {"type": "string", "enum": ["hex","base64","text"], "description": "decrypt: text (default when the result is valid UTF-8) or base64. mac, hash, random bytes: hex (default) or base64."},
-    "context":    {"type": "string", "description": "encrypt, decrypt, rewrap: optional associated data. A ciphertext made with a context decrypts only with the same context. Use it to tie a value to the record or field it belongs to."},
-    "format":     {"type": "string", "enum": ["envelope","raw","jws"], "description": "encrypt: envelope (default, self-describing) or raw (base64 of nonce, ciphertext and tag). sign: raw (default for signing keys) or jws (the only form for a MAC key)."},
+    "context":    {"type": "string", "description": "encrypt, decrypt, rewrap: optional associated data. A ciphertext made with a context decrypts only with the same context. Use it to tie a value to the record or field it belongs to. Not with format jwe."},
+    "format":     {"type": "string", "enum": ["envelope","raw","jws","jwe"], "description": "encrypt: envelope (default for symmetric keys, self-describing), raw (base64 of nonce, ciphertext and tag) or jwe (aes-256-gcm; the only form for x25519, rsa-oaep and public_key). sign: raw (default for signing keys) or jws (the only form for a MAC key)."},
     "sensitive":  {"type": "boolean", "description": "decrypt: true keeps the plaintext out of the stored transcript. You still read it in this turn."},
     "mac":        {"type": "string", "description": "verify_mac: the MAC to check, hex or base64."},
     "signature":  {"type": "string", "description": "verify: a raw signature (base64) or a JWS token (pass the token here and leave data empty)."},
-    "public_key": {"type": "string", "description": "verify: a PEM or JWK public key, in place of key, for a signer whose key this deployment does not hold."},
+    "public_key": {"type": "string", "description": "verify: a PEM or JWK public key, in place of key, for a signer whose key this deployment does not hold. encrypt: a PEM or JWK X25519 or RSA public key to encrypt to (the result is a JWE only that key's holder can open)."},
+    "from":       {"type": "string", "description": "Read the op's input from a store instead of plaintext, ciphertext or data: volume:<path> (or volume:<name>:<path>), memory:<scope>/<key>, document:<scope>/<chunk_id>. Needs the matching tool (Read, Memory, Document)."},
+    "to":         {"type": "string", "description": "encrypt, decrypt, rewrap: write the result there instead of returning it, so it never passes through you. Same forms as from; a volume needs Write."},
+    "password":   {"type": "string", "description": "hash_password, verify_password: the password. Masked from the stored transcript."},
+    "password_hash": {"type": "string", "description": "verify_password: the stored hash, as hash_password returned it."},
     "digits":     {"type": "integer", "description": "totp: code length, 6 to 8 (default 6)."},
     "period":     {"type": "integer", "description": "totp: seconds per code (default 30)."},
     "algorithm":  {"type": "string", "enum": ["sha256","sha512","sha3-256","sha3-512"], "description": "hash: the algorithm (default sha256)."},
@@ -130,6 +147,10 @@ type cryptoInput struct {
 	MAC            string `json:"mac"`
 	Signature      string `json:"signature"`
 	PublicKey      string `json:"public_key"`
+	From           string `json:"from"`
+	To             string `json:"to"`
+	Password       string `json:"password"`
+	PasswordHash   string `json:"password_hash"`
 	Digits         int    `json:"digits"`
 	Period         int    `json:"period"`
 	Algorithm      string `json:"algorithm"`
@@ -215,33 +236,55 @@ func (c *Crypto) Execute(ctx context.Context, raw json.RawMessage) (tools.Result
 		res tools.Result
 		ev  *audit.Event
 	)
+	in, res, ok := c.readFrom(ctx, in)
+	if !ok {
+		c.stats.count(opLabel(in.Op), true)
+		return res, nil
+	}
+	if in.To != "" {
+		// The output goes to a store, so ask the op for the exact bytes.
+		if in.Op == "decrypt" {
+			in.OutputEncoding = "base64"
+		}
+	}
 	switch in.Op {
 	case "hash":
 		res = c.execHash(in)
 	case "random":
 		res = c.execRandom(in)
+	case "hash_password":
+		res = c.execHashPassword(in)
+	case "verify_password":
+		res = c.execVerifyPassword(in)
 	case "encrypt", "decrypt", "rewrap", "mac", "verify_mac", "sign", "verify", "public_key", "totp":
 		res, ev = c.execKeyed(ctx, in)
 	default:
-		res = errValidation(fmt.Sprintf("unknown op %q", in.Op), "Use one of: encrypt, decrypt, rewrap, mac, verify_mac, sign, verify, public_key, totp, hash, random.")
+		res = errValidation(fmt.Sprintf("unknown op %q", in.Op), "Use one of: encrypt, decrypt, rewrap, mac, verify_mac, sign, verify, public_key, totp, hash, random, hash_password, verify_password.")
 	}
-	// The op label is the model's input: count an unknown one under one name,
-	// so the metric's series stay bounded by the op list.
-	label := in.Op
-	if !cryptoOps[label] {
-		label = "unknown"
+	if in.To != "" && !res.IsError {
+		res = c.writeTo(ctx, in, res)
 	}
-	c.stats.count(label, res.IsError)
+	c.stats.count(opLabel(in.Op), res.IsError)
 	if ev != nil {
 		c.record(ctx, ev, res.IsError)
 	}
 	return res, nil
 }
 
+// opLabel is the metric label for an op. The op is the model's input: an
+// unknown one is counted under one name, so the series stay bounded.
+func opLabel(op string) string {
+	if cryptoOps[op] {
+		return op
+	}
+	return "unknown"
+}
+
 // cryptoOps is the op set, for the metric label.
 var cryptoOps = map[string]bool{
 	"encrypt": true, "decrypt": true, "rewrap": true, "mac": true, "verify_mac": true, "sign": true,
 	"verify": true, "public_key": true, "totp": true, "hash": true, "random": true,
+	"hash_password": true, "verify_password": true,
 }
 
 // Caps on the small arguments, independent of the data cap.
@@ -249,6 +292,10 @@ const (
 	cryptoMaxContextBytes   = 4096
 	cryptoMaxMACBytes       = 1024
 	cryptoMaxPublicKeyBytes = 16384
+	// A PHC string with the largest parameters and salt/hash verify accepts
+	// is well under this.
+	cryptoMaxPasswordHashBytes = 512
+	cryptoMaxRefBytes          = 1024
 )
 
 // checkSizes refuses an argument past its cap before anything is decoded.
@@ -272,6 +319,10 @@ func (c *Crypto) checkSizes(in cryptoInput) (tools.Result, bool) {
 		{"context", in.Context, cryptoMaxContextBytes},
 		{"mac", in.MAC, cryptoMaxMACBytes},
 		{"public_key", in.PublicKey, cryptoMaxPublicKeyBytes},
+		{"password", in.Password, cryptoops.MaxPasswordBytes},
+		{"password_hash", in.PasswordHash, cryptoMaxPasswordHashBytes},
+		{"from", in.From, cryptoMaxRefBytes},
+		{"to", in.To, cryptoMaxRefBytes},
 	} {
 		if len(f.v) > f.max {
 			return errValidation(fmt.Sprintf("%s is %d bytes, over its %d-byte limit", f.name, len(f.v), f.max),
@@ -362,6 +413,34 @@ func (c *Crypto) execRandom(in cryptoInput) tools.Result {
 	}
 }
 
+// execHashPassword returns an Argon2id hash of a password to store. The
+// password is masked out of the stored tool call (CryptoPasswordField); the
+// hash is safe to keep and show.
+func (c *Crypto) execHashPassword(in cryptoInput) tools.Result {
+	if in.Password == "" {
+		return errValidation("hash_password: password is required", "")
+	}
+	h, err := cryptoops.HashPassword([]byte(in.Password))
+	if err != nil {
+		return errValidation("hash_password: "+err.Error(), "")
+	}
+	return cryptoJSON(map[string]any{"password_hash": h, "algorithm": "argon2id"})
+}
+
+// execVerifyPassword checks a password against a stored hash. A hash that is
+// malformed, or names parameters outside the accepted bounds, is refused
+// rather than answered false: something is wrong with what was stored.
+func (c *Crypto) execVerifyPassword(in cryptoInput) tools.Result {
+	if in.Password == "" || in.PasswordHash == "" {
+		return errValidation("verify_password: password and password_hash are required", "")
+	}
+	ok, err := cryptoops.VerifyPassword([]byte(in.Password), in.PasswordHash)
+	if err != nil {
+		return errValidation("verify_password: "+err.Error(), "Pass the hash exactly as hash_password returned it.")
+	}
+	return cryptoJSON(map[string]any{"valid": ok})
+}
+
 // ---- keyed ops -------------------------------------------------------------
 
 func (c *Crypto) execKeyed(ctx context.Context, in cryptoInput) (tools.Result, *audit.Event) {
@@ -393,10 +472,14 @@ func (c *Crypto) execKeyed(ctx context.Context, in cryptoInput) (tools.Result, *
 		env = &e
 	}
 
-	// verify against a public key the caller supplies needs no stored key.
-	if in.Op == "verify" && in.PublicKey != "" {
+	// verify against, or encrypt to, a public key the caller supplies needs no
+	// stored key, and so no crypto scope.
+	if (in.Op == "verify" || in.Op == "encrypt") && in.PublicKey != "" {
 		if in.Key != "" || in.Cred != "" || in.Run != "" {
-			return errValidation("verify: give a key or public_key, not both", "Drop one of them."), ev
+			return errValidation(in.Op+": give a key or public_key, not both", "Drop one of them."), ev
+		}
+		if in.Op == "encrypt" {
+			return c.encryptToPublicKey(in, ev), ev
 		}
 		return c.verifyWithPublicKey(in), ev
 	}
@@ -687,11 +770,14 @@ func (c *Crypto) encrypt(k *cryptoKey, tenant string, in cryptoInput, ev *audit.
 	if !ok {
 		return errBusiness("the key's current version is not usable", "")
 	}
+	ev.CryptoVersion = v
+	if k.keyType.IsRecipient() || in.Format == "jwe" {
+		return c.encryptJWE(k, m, v, pt, in)
+	}
 	body, err := cryptoops.Seal(k.keyType, m, pt, cryptoops.AAD(tenant, k.source, k.name, v, in.Context))
 	if err != nil {
 		return errTransient("encrypt failed", "Try again.")
 	}
-	ev.CryptoVersion = v
 	switch in.Format {
 	case "", "envelope":
 		env := cryptoops.Envelope{Source: k.source, Name: k.name, Version: v, Body: body}
@@ -699,12 +785,74 @@ func (c *Crypto) encrypt(k *cryptoKey, tenant string, in cryptoInput, ev *audit.
 	case "raw":
 		return cryptoJSON(map[string]any{"ciphertext": base64.StdEncoding.EncodeToString(body), "key_version": v})
 	default:
-		return errValidation(fmt.Sprintf("encrypt: format %q", in.Format), "Use envelope or raw.")
+		return errValidation(fmt.Sprintf("encrypt: format %q", in.Format), "Use envelope, raw or jwe.")
 	}
 }
 
-// open decrypts a ciphertext (envelope or raw) and reports the version used.
+// encryptJWE seals as a compact JWE: to a recipient key's own public half
+// (x25519, rsa-oaep-*), or under an aes-256-gcm key with alg dir. A JWE has
+// no associated data, so a context is refused rather than silently dropped.
+func (c *Crypto) encryptJWE(k *cryptoKey, m []byte, v int, pt []byte, in cryptoInput) tools.Result {
+	if in.Format != "" && in.Format != "jwe" {
+		return errValidation(fmt.Sprintf("encrypt: a %s key encrypts only as jwe", k.keyType), "Drop format, or use format jwe.")
+	}
+	if in.Context != "" {
+		return errValidation("encrypt: a JWE carries no context", "Drop context, or use an aes-256-gcm key with the default envelope to bind the value to a record.")
+	}
+	var (
+		tok string
+		err error
+	)
+	switch {
+	case k.keyType.IsRecipient():
+		pub, perr := cryptoops.PublicKeyOf(k.keyType, m)
+		if perr != nil {
+			return errTransient("encrypt failed", "Try again.")
+		}
+		tok, err = cryptoops.EncryptJWETo(k.keyType, pub, pt, kidOf(k, v))
+	case k.keyType == cryptoops.AES256GCM:
+		tok, err = cryptoops.EncryptJWEDirect(m, pt, kidOf(k, v))
+	default:
+		return errValidation(fmt.Sprintf("encrypt: a %s key has no JWE form", k.keyType), "Use an aes-256-gcm key for jwe, or the default envelope.")
+	}
+	if err != nil {
+		return errTransient("encrypt failed", "Try again.")
+	}
+	return cryptoJSON(map[string]any{"ciphertext": tok, "format": "jwe", "key_version": v})
+}
+
+// encryptToPublicKey seals plaintext to someone else's public key (X25519 or
+// RSA, PEM or JWK) as a JWE only that key's holder can open. It holds no key,
+// so it needs no crypto scope.
+func (c *Crypto) encryptToPublicKey(in cryptoInput, ev *audit.Event) tools.Result {
+	if in.Format != "" && in.Format != "jwe" {
+		return errValidation("encrypt: encrypting to a public key gives only jwe", "Drop format.")
+	}
+	if in.Context != "" {
+		return errValidation("encrypt: a JWE carries no context", "Drop context.")
+	}
+	kt, pub, err := cryptoops.ParseRecipientKey(in.PublicKey)
+	if err != nil {
+		return errValidation("encrypt: public_key is not a PEM or JWK X25519 or RSA (2048, 3072 or 4096-bit) public key", "")
+	}
+	pt, res, ok := decodeInput(in.Plaintext, in.InputEncoding, "plaintext")
+	if !ok {
+		return res
+	}
+	ev.CryptoSource, ev.CryptoKeyType = "public_key", string(kt)
+	tok, err := cryptoops.EncryptJWETo(kt, pub, pt, "")
+	if err != nil {
+		return errTransient("encrypt failed", "Try again.")
+	}
+	return cryptoJSON(map[string]any{"ciphertext": tok, "format": "jwe"})
+}
+
+// open decrypts a ciphertext (envelope, raw or JWE) and reports the version
+// used.
 func (c *Crypto) open(k *cryptoKey, tenant string, in cryptoInput, env *cryptoops.Envelope, ref keyRef) ([]byte, int, bool) {
+	if tok := strings.TrimSpace(in.Ciphertext); env == nil && cryptoops.IsJWE(tok) {
+		return openJWE(k, tok, ref)
+	}
 	var (
 		body     []byte
 		versions []int
@@ -736,9 +884,53 @@ func (c *Crypto) open(k *cryptoKey, tenant string, in cryptoInput, env *cryptoop
 	return nil, 0, false
 }
 
+// openJWE opens a compact JWE with a held key. The kid names a version when it
+// is "<this key>.v<n>": that version only, and only if it is usable; otherwise
+// (no kid, or a kid of another shape) every usable version, newest first.
+// The kid is read before decryption, but the header it sits in is covered by
+// the AEAD tag, so a changed kid can only make the token fail, never open it
+// under a key it was not made with.
+func openJWE(k *cryptoKey, tok string, ref keyRef) ([]byte, int, bool) {
+	versions := k.sortedVersions()
+	switch {
+	case ref.Version != 0:
+		versions = []int{ref.Version}
+	case isKeySource(k.source):
+		if n, ok := kidVersion(k.name, cryptoops.JWEKid(tok)); ok {
+			versions = []int{n}
+		}
+	}
+	for _, v := range versions {
+		m, ok := k.material(v)
+		if !ok {
+			continue
+		}
+		if pt, _, ok := cryptoops.DecryptJWE(k.keyType, m, tok); ok {
+			return pt, v, true
+		}
+	}
+	return nil, 0, false
+}
+
+// kidVersion reads the version from a kid of the form "<name>.v<n>".
+func kidVersion(name, kid string) (int, bool) {
+	rest, ok := strings.CutPrefix(kid, name+".v")
+	if !ok || rest == "" || (len(rest) > 1 && rest[0] == '0') {
+		return 0, false
+	}
+	n, err := strconv.Atoi(rest)
+	if err != nil || n <= 0 {
+		return 0, false
+	}
+	return n, true
+}
+
 func (c *Crypto) decrypt(ctx context.Context, k *cryptoKey, tenant string, in cryptoInput, env *cryptoops.Envelope, ref keyRef, ev *audit.Event) tools.Result {
 	if in.Ciphertext == "" {
 		return errValidation("decrypt: ciphertext is required", "")
+	}
+	if in.Context != "" && cryptoops.IsJWE(strings.TrimSpace(in.Ciphertext)) {
+		return errValidation("decrypt: a JWE carries no context", "Drop context.")
 	}
 	pt, v, ok := c.open(k, tenant, in, env, ref)
 	if !ok {
@@ -770,6 +962,10 @@ func (c *Crypto) rewrap(k *cryptoKey, tenant string, in cryptoInput, env *crypto
 	if !isKeySource(k.source) {
 		return errValidation("rewrap works on a crypto key's ciphertext", "A cred or run key has no versions to move between.")
 	}
+	isJWE := cryptoops.IsJWE(strings.TrimSpace(in.Ciphertext))
+	if isJWE && in.Context != "" {
+		return errValidation("rewrap: a JWE carries no context", "Drop context.")
+	}
 	pt, from, ok := c.open(k, tenant, in, env, ref)
 	if !ok {
 		return didNotDecrypt()
@@ -777,6 +973,15 @@ func (c *Crypto) rewrap(k *cryptoKey, tenant string, in cryptoInput, env *crypto
 	m, ok := k.material(k.current)
 	if !ok {
 		return errBusiness("the key's current version is not usable", "")
+	}
+	if isJWE {
+		// A JWE stays a JWE, under the current version.
+		tok, err := cryptoops.EncryptJWEDirect(m, pt, kidOf(k, k.current))
+		if err != nil {
+			return errTransient("rewrap failed", "Try again.")
+		}
+		ev.CryptoVersion = k.current
+		return cryptoJSON(map[string]any{"ciphertext": tok, "format": "jwe", "from_version": from, "key_version": k.current})
 	}
 	body, err := cryptoops.Seal(k.keyType, m, pt, cryptoops.AAD(tenant, k.source, k.name, k.current, in.Context))
 	if err != nil {
@@ -911,7 +1116,7 @@ func (c *Crypto) verify(k *cryptoKey, in cryptoInput) tools.Result {
 func (c *Crypto) verifyWithPublicKey(in cryptoInput) tools.Result {
 	kt, pub, err := cryptoops.ParsePublicKey(in.PublicKey)
 	if err != nil {
-		return errValidation("verify: public_key is not a PEM or JWK Ed25519 / P-256 public key", "")
+		return errValidation("verify: public_key is not a PEM or JWK Ed25519, P-256 or RSA (2048, 3072 or 4096-bit) public key", "")
 	}
 	if strings.Count(in.Signature, ".") == 2 && in.Data == "" {
 		payload, kid, ok := cryptoops.VerifyJWS(kt, nil, pub, in.Signature)
@@ -948,6 +1153,16 @@ func (c *Crypto) publicKey(k *cryptoKey, ref keyRef) tools.Result {
 	jwk, err := cryptoops.PublicKeyJWK(pub, kidOf(k, v))
 	if err != nil {
 		return errTransient("public_key failed", "")
+	}
+	// The key type says what the key is for, which an RSA key alone cannot:
+	// say it in the JWK, so a JOSE library uses it only that way.
+	switch {
+	case k.keyType == cryptoops.X25519:
+		jwk["use"], jwk["alg"] = "enc", "ECDH-ES"
+	case k.keyType.IsRecipient():
+		jwk["use"], jwk["alg"] = "enc", "RSA-OAEP-256"
+	case strings.HasPrefix(string(k.keyType), "rsa-pss-"):
+		jwk["use"], jwk["alg"] = "sig", "PS256"
 	}
 	return cryptoJSON(map[string]any{"pem": pemStr, "jwk": jwk, "key_version": v})
 }

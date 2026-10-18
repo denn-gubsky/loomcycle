@@ -1479,6 +1479,34 @@ func WithHookedExecute(ctx context.Context, fn HookedExecuteFunc) context.Contex
 	return context.WithValue(ctx, ctxKeyHookedExecute{}, fn)
 }
 
+type ctxKeyHookPreCheck struct{}
+
+// HookPreCheckFunc asks the run's pre-hooks about a call another tool makes
+// on the model's behalf WITHOUT running the named tool: ok is false, with the
+// refusal, when a hook denied the call or rewrote its input (which the caller,
+// not being that tool, cannot honour).
+type HookPreCheckFunc func(ctx context.Context, name string, input json.RawMessage) (Result, bool)
+
+// WithHookPreCheck attaches the run's pre-hook check. The loop sets it beside
+// the hooked executor for every tool call it dispatches.
+func WithHookPreCheck(ctx context.Context, fn HookPreCheckFunc) context.Context {
+	if fn == nil {
+		return ctx
+	}
+	return context.WithValue(ctx, ctxKeyHookPreCheck{}, fn)
+}
+
+// HookPreCheck runs the run's pre-hooks for a call to name with input, for a
+// tool that reaches that tool's effect itself (the Crypto tool reading or
+// writing a file, a memory key or a chunk): a path no hook could otherwise
+// see. With no check on ctx (no hooks wired) the call is allowed.
+func HookPreCheck(ctx context.Context, name string, input json.RawMessage) (Result, bool) {
+	if fn, ok := ctx.Value(ctxKeyHookPreCheck{}).(HookPreCheckFunc); ok && fn != nil {
+		return fn(ctx, name, input)
+	}
+	return Result{}, true
+}
+
 // WithoutHookedExecute clears the run's hooked executor: ExecuteHooked on the
 // returned ctx is the plain dispatch. A hook's own tool calls use it. A call a
 // hook makes never goes back through the hooks — through them it would reach

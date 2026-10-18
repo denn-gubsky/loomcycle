@@ -54,6 +54,13 @@ describe("key type and encoding lists", () => {
       "ed25519",
       "ecdsa-p256",
       "totp",
+      "x25519",
+      "rsa-oaep-2048",
+      "rsa-oaep-3072",
+      "rsa-oaep-4096",
+      "rsa-pss-2048",
+      "rsa-pss-3072",
+      "rsa-pss-4096",
     ]);
     expect([...CRYPTO_KEY_ENCODINGS]).toEqual(["raw", "base64", "hex", "base32", "pem"]);
   });

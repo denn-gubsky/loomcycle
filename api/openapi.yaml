@@ -979,7 +979,7 @@ components:
       properties:
         op:
           type: string
-          enum: [encrypt, decrypt, rewrap, mac, verify_mac, sign, verify, public_key, totp, hash, random]
+          enum: [encrypt, decrypt, rewrap, mac, verify_mac, sign, verify, public_key, totp, hash, random, hash_password, verify_password]
         tenant: { type: string, description: "Admin only: the tenant whose keys to use. Default: the token's own." }
         key: { type: string, description: "A crypto key stored with CredentialDef, by name." }
         cred: { type: string, description: "An ordinary stored credential, by name, used as key material. Needs key_type." }
@@ -987,7 +987,7 @@ components:
         key_scope: { type: string, enum: [agent, user, tenant], description: "key and cred: which scope's key, when more than one holds the name. agent is refused here." }
         key_type:
           type: string
-          enum: [aes-256-gcm, xchacha20-poly1305, hmac-sha256, hmac-sha512, ed25519, ecdsa-p256, totp]
+          enum: [aes-256-gcm, xchacha20-poly1305, hmac-sha256, hmac-sha512, ed25519, ecdsa-p256, totp, x25519, rsa-oaep-2048, rsa-oaep-3072, rsa-oaep-4096, rsa-pss-2048, rsa-pss-3072, rsa-pss-4096]
           description: "cred only: what kind of key the value is."
         key_encoding: { type: string, enum: [raw, base64, hex, base32, pem] }
         derive: { type: boolean, description: "cred only: derive an AEAD or HMAC key from any secret." }
@@ -998,11 +998,15 @@ components:
         input_encoding: { type: string, enum: [text, base64] }
         output_encoding: { type: string, enum: [hex, base64, text] }
         context: { type: string, description: "encrypt, decrypt, rewrap: associated data; a ciphertext decrypts only with the same context." }
-        format: { type: string, enum: [envelope, raw, jws] }
+        format: { type: string, enum: [envelope, raw, jws, jwe] }
         sensitive: { type: boolean }
         mac: { type: string, description: "verify_mac: hex or base64." }
         signature: { type: string, description: "verify: a raw signature (base64) or a JWS token." }
-        public_key: { type: string, description: "verify: a PEM or JWK public key, in place of key." }
+        public_key: { type: string, description: "verify: a PEM or JWK public key, in place of key. encrypt: an X25519 or RSA public key to encrypt to (a JWE)." }
+        from: { type: string, description: "A store to read the input from (volume:, memory:, document:). Refused outside a run, so always refused here." }
+        to: { type: string, description: "A store to write the output to. Refused outside a run, so always refused here." }
+        password: { type: string, description: "hash_password, verify_password: the password." }
+        password_hash: { type: string, description: "verify_password: the stored hash, as hash_password returned it." }
         digits: { type: integer }
         period: { type: integer }
         algorithm: { type: string, enum: [sha256, sha512, sha3-256, sha3-512] }

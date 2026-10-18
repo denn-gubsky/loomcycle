@@ -2,11 +2,13 @@ package cryptoops
 
 import (
 	"crypto"
+	"crypto/ecdh"
 	"crypto/ecdsa"
 	"crypto/ed25519"
 	"crypto/elliptic"
 	"crypto/hmac"
 	"crypto/rand"
+	"crypto/rsa"
 	"crypto/sha256"
 	"crypto/sha512"
 	"crypto/x509"
@@ -79,6 +81,14 @@ func Sign(k KeyType, key, data []byte) ([]byte, error) {
 	if k == Ed25519 {
 		return ed25519.Sign(ed25519.NewKeyFromSeed(key), data), nil
 	}
+	if k.isRSAPSS() {
+		priv, err := parseRSAPrivate(k, key)
+		if err != nil {
+			return nil, err
+		}
+		digest := sha256.Sum256(data)
+		return rsa.SignPSS(rand.Reader, priv, crypto.SHA256, digest[:], pssOptions())
+	}
 	priv, err := ecdsa.ParseRawPrivateKey(elliptic.P256(), key)
 	if err != nil {
 		return nil, err
@@ -115,41 +125,54 @@ func Verify(k KeyType, pub crypto.PublicKey, data, sig []byte) bool {
 		s := new(big.Int).SetBytes(sig[32:])
 		return ecdsa.Verify(pk, digest[:], r, s)
 	}
+	if k.isRSAPSS() {
+		pk, ok := pub.(*rsa.PublicKey)
+		if !ok || !publicMatches(k, pk) || len(sig) != pk.Size() {
+			return false
+		}
+		digest := sha256.Sum256(data)
+		return rsa.VerifyPSS(pk, crypto.SHA256, digest[:], sig, pssOptions()) == nil
+	}
 	return false
 }
 
-// PublicKeyOf returns the public half of a signing key: ed25519.PublicKey or
-// *ecdsa.PublicKey. This is the only key-derived value safe to show a model.
+// pssOptions fixes RSASSA-PSS to what JWS PS256 (RFC 7518 §3.5) specifies: a
+// salt as long as the SHA-256 hash, and verification demands exactly that.
+func pssOptions() *rsa.PSSOptions {
+	return &rsa.PSSOptions{SaltLength: rsa.PSSSaltLengthEqualsHash, Hash: crypto.SHA256}
+}
+
+// PublicKeyOf returns the public half of an asymmetric key: ed25519.PublicKey,
+// *ecdsa.PublicKey, *ecdh.PublicKey (X25519) or *rsa.PublicKey. This is the
+// only key-derived value safe to show a model.
 func PublicKeyOf(k KeyType, key []byte) (crypto.PublicKey, error) {
-	if !k.IsSigning() {
+	if !k.IsSigning() && !k.IsRecipient() {
 		return nil, fmt.Errorf("cryptoops: %s has no public key", k)
 	}
 	if err := ValidateMaterial(k, key); err != nil {
 		return nil, err
 	}
-	if k == Ed25519 {
+	switch {
+	case k == Ed25519:
 		return ed25519.NewKeyFromSeed(key).Public(), nil
+	case k == ECDSAP256:
+		priv, err := ecdsa.ParseRawPrivateKey(elliptic.P256(), key)
+		if err != nil {
+			return nil, err
+		}
+		return &priv.PublicKey, nil
+	case k == X25519:
+		priv, err := ecdh.X25519().NewPrivateKey(key)
+		if err != nil {
+			return nil, err
+		}
+		return priv.PublicKey(), nil
 	}
-	priv, err := ecdsa.ParseRawPrivateKey(elliptic.P256(), key)
+	priv, err := parseRSAPrivate(k, key)
 	if err != nil {
 		return nil, err
 	}
 	return &priv.PublicKey, nil
-}
-
-// checkPublic narrows pub to a supported kind and reports its KeyType.
-func checkPublic(pub crypto.PublicKey) (KeyType, error) {
-	switch pk := pub.(type) {
-	case ed25519.PublicKey:
-		if len(pk) == ed25519.PublicKeySize {
-			return Ed25519, nil
-		}
-	case *ecdsa.PublicKey:
-		if pk != nil && pk.Curve == elliptic.P256() {
-			return ECDSAP256, nil
-		}
-	}
-	return "", fmt.Errorf("cryptoops: unsupported public key %T (want Ed25519 or ECDSA P-256)", pub)
 }
 
 // PublicKeyPEM encodes pub as a PKIX "PUBLIC KEY" PEM block.
@@ -164,8 +187,10 @@ func PublicKeyPEM(pub crypto.PublicKey) (string, error) {
 	return string(pem.EncodeToMemory(&pem.Block{Type: "PUBLIC KEY", Bytes: der})), nil
 }
 
-// PublicKeyJWK encodes pub as a JWK (RFC 7517): OKP/Ed25519 (RFC 8037) or
-// EC/P-256. kid is included only when non-empty.
+// PublicKeyJWK encodes pub as a JWK (RFC 7517): OKP/Ed25519 or OKP/X25519
+// (RFC 8037), EC/P-256, or RSA. kid is included only when non-empty. An RSA
+// key's purpose is not in the key, so its JWK carries no "alg"; the caller
+// that knows the type may add one.
 func PublicKeyJWK(pub crypto.PublicKey, kid string) (map[string]any, error) {
 	kt, err := checkPublic(pub)
 	if err != nil {
@@ -173,9 +198,15 @@ func PublicKeyJWK(pub crypto.PublicKey, kid string) (map[string]any, error) {
 	}
 	b64 := base64.RawURLEncoding.EncodeToString
 	var jwk map[string]any
-	if kt == Ed25519 {
+	switch kt {
+	case Ed25519:
 		jwk = map[string]any{"kty": "OKP", "crv": "Ed25519", "x": b64(pub.(ed25519.PublicKey))}
-	} else {
+	case X25519:
+		jwk = map[string]any{"kty": "OKP", "crv": "X25519", "x": b64(pub.(*ecdh.PublicKey).Bytes())}
+	case rsaFamily:
+		pk := pub.(*rsa.PublicKey)
+		jwk = map[string]any{"kty": "RSA", "n": b64(pk.N.Bytes()), "e": b64(big.NewInt(int64(pk.E)).Bytes())}
+	default:
 		raw, err := pub.(*ecdsa.PublicKey).Bytes() // 0x04 || X(32) || Y(32)
 		if err != nil {
 			return nil, err
@@ -188,10 +219,44 @@ func PublicKeyJWK(pub crypto.PublicKey, kid string) (map[string]any, error) {
 	return jwk, nil
 }
 
-// ParsePublicKey reads a PKIX "PUBLIC KEY" PEM or a JWK JSON object and
-// returns the key type it implies. Only Ed25519 and P-256 are accepted; a JWK
-// "alg" or "use" member is ignored, since the type comes from kty/crv.
+// ParsePublicKey reads a PKIX "PUBLIC KEY" PEM or a JWK JSON object holding a
+// key that VERIFIES signatures, and returns the signing type it implies: an
+// Ed25519 or P-256 key, or an RSA key as rsa-pss-<bits>. An X25519 key is
+// refused (it cannot verify). A JWK "alg" or "use" member is ignored, since
+// the type comes from kty/crv and the size.
 func ParsePublicKey(s string) (KeyType, crypto.PublicKey, error) {
+	kt, pub, err := parsePublicAny(s)
+	if err != nil {
+		return "", nil, err
+	}
+	switch kt {
+	case X25519:
+		return "", nil, errors.New("cryptoops: an X25519 key encrypts, it cannot verify a signature")
+	case rsaFamily:
+		return rsaPSSType(rsaPublicBits(pub.(*rsa.PublicKey))), pub, nil
+	}
+	return kt, pub, nil
+}
+
+// ParseRecipientKey reads a PEM or JWK public key to ENCRYPT to, and returns
+// the recipient type it implies: x25519, or an RSA key as rsa-oaep-<bits>. A
+// signature key (Ed25519, P-256) is refused.
+func ParseRecipientKey(s string) (KeyType, crypto.PublicKey, error) {
+	kt, pub, err := parsePublicAny(s)
+	if err != nil {
+		return "", nil, err
+	}
+	switch kt {
+	case X25519:
+		return X25519, pub, nil
+	case rsaFamily:
+		return rsaOAEPType(rsaPublicBits(pub.(*rsa.PublicKey))), pub, nil
+	}
+	return "", nil, fmt.Errorf("cryptoops: a %s key verifies signatures, it cannot be encrypted to (want X25519 or RSA)", kt)
+}
+
+// parsePublicAny reads any supported public key, RSA as rsaFamily.
+func parsePublicAny(s string) (KeyType, crypto.PublicKey, error) {
 	s = strings.TrimSpace(s)
 	if strings.HasPrefix(s, "{") {
 		return parseJWK(s)
@@ -217,6 +282,8 @@ func parseJWK(s string) (KeyType, crypto.PublicKey, error) {
 		Crv string `json:"crv"`
 		X   string `json:"x"`
 		Y   string `json:"y"`
+		N   string `json:"n"`
+		E   string `json:"e"`
 		D   string `json:"d"`
 	}
 	if err := json.Unmarshal([]byte(s), &j); err != nil {
@@ -235,6 +302,16 @@ func parseJWK(s string) (KeyType, crypto.PublicKey, error) {
 			return "", nil, errors.New("cryptoops: Ed25519 JWK \"x\" must be 32 bytes of base64url")
 		}
 		return Ed25519, ed25519.PublicKey(x), nil
+	case j.Kty == "OKP" && j.Crv == "X25519":
+		x, err := dec(j.X)
+		if err != nil || len(x) != x25519KeySize {
+			return "", nil, errors.New("cryptoops: X25519 JWK \"x\" must be 32 bytes of base64url")
+		}
+		pub, err := ecdh.X25519().NewPublicKey(x)
+		if err != nil {
+			return "", nil, errors.New("cryptoops: X25519 JWK \"x\" is not a valid public key")
+		}
+		return X25519, pub, nil
 	case j.Kty == "EC" && j.Crv == "P-256":
 		x, errX := dec(j.X)
 		y, errY := dec(j.Y)
@@ -247,6 +324,17 @@ func parseJWK(s string) (KeyType, crypto.PublicKey, error) {
 			return "", nil, errors.New("cryptoops: P-256 JWK point is not on the curve")
 		}
 		return ECDSAP256, pub, nil
+	case j.Kty == "RSA":
+		n, errN := dec(j.N)
+		e, errE := dec(j.E)
+		if errN != nil || errE != nil || len(n) == 0 || len(e) == 0 || len(e) > 4 || n[0] == 0 {
+			return "", nil, errors.New("cryptoops: RSA JWK \"n\" and \"e\" must be canonical base64url integers")
+		}
+		pub := &rsa.PublicKey{N: new(big.Int).SetBytes(n), E: int(new(big.Int).SetBytes(e).Int64())}
+		if rsaPublicBits(pub) == 0 {
+			return "", nil, errors.New("cryptoops: RSA JWK must be a 2048, 3072 or 4096-bit key with e=65537")
+		}
+		return rsaFamily, pub, nil
 	}
-	return "", nil, fmt.Errorf("cryptoops: unsupported JWK kty=%q crv=%q (want OKP/Ed25519 or EC/P-256)", j.Kty, j.Crv)
+	return "", nil, fmt.Errorf("cryptoops: unsupported JWK kty=%q crv=%q (want OKP/Ed25519, OKP/X25519, EC/P-256 or RSA)", j.Kty, j.Crv)
 }

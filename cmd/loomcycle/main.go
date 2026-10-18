@@ -1028,6 +1028,10 @@ func main() {
 		Cfg:           cfg, // RFC CE: resolve document_sources: for set_remote / sync
 	}
 	allTools = append(allTools, documentTool)
+	// RFC EP P2 — a Crypto `from` / `to` reference reads and writes Memory and
+	// Document through these tools' own scope checks.
+	cryptoTool.Memory = memoryTool
+	cryptoTool.Docs = documentTool
 
 	// RFC BE — the History tool (browse/search/annotate past chats). Store
 	// late-bound below; the per-agent history_scope policy gates every op.

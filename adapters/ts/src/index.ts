@@ -600,6 +600,8 @@ export type {
   CryptoTotpRequest,
   CryptoHashRequest,
   CryptoRandomRequest,
+  CryptoHashPasswordRequest,
+  CryptoVerifyPasswordRequest,
   CryptoRequest,
   CryptoEncryptResult,
   CryptoDecryptResult,
@@ -612,6 +614,8 @@ export type {
   CryptoTotpResult,
   CryptoHashResult,
   CryptoRandomResult,
+  CryptoHashPasswordResult,
+  CryptoVerifyPasswordResult,
   CryptoResultByOp,
   CryptoResult,
   // Decision models

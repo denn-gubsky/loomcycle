@@ -171,6 +171,59 @@ func TestLoop_ANestedToolCallGoesThroughTheHooks(t *testing.T) {
 	}
 }
 
+// precheckTool reaches another tool's effect itself, asking that tool's
+// pre-hooks first, as the Crypto tool does before writing a file.
+type precheckTool struct {
+	allowed bool
+	refusal string
+}
+
+func (*precheckTool) Name() string                 { return "Precheck" }
+func (*precheckTool) Description() string          { return "" }
+func (*precheckTool) InputSchema() json.RawMessage { return json.RawMessage(`{"type":"object"}`) }
+func (p *precheckTool) Execute(ctx context.Context, _ json.RawMessage) (tools.Result, error) {
+	res, ok := tools.HookPreCheck(ctx, "Write", json.RawMessage(`{"path":"out.txt","via":"Precheck"}`))
+	p.allowed, p.refusal = ok, res.Text
+	return tools.Result{Text: "done"}, nil
+}
+
+// A tool that writes a file itself is judged by Write's pre-hooks: a deny
+// there refuses it, and a hook on another tool does not.
+func TestLoop_AHookPreCheckIsJudgedByTheNamedToolsHooks(t *testing.T) {
+	deny := newHookServer(t, `{"deny":{"text":"no writes here","is_error":true}}`)
+	reg := hooks.NewSet()
+	_, _ = reg.Register(&hooks.Hook{Owner: "sec", Name: "no-writes", Phase: hooks.PhasePre, CallbackURL: deny.srv.URL, Tools: []string{"Write"}})
+	tool := &precheckTool{}
+	_, events := runWithHooks(t, context.Background(), reg,
+		providers.ToolUse{ID: "c1", Name: "Precheck", Input: json.RawMessage(`{}`)}, tool, tools.NewDispatcher([]tools.Tool{tool}))
+	if tool.allowed || !strings.Contains(tool.refusal, "no writes here") {
+		t.Errorf("pre-check = allowed %v %q, want the Write hook's deny", tool.allowed, tool.refusal)
+	}
+	if ds := hookDecisions(events); len(ds) != 1 || ds[0].ToolUseID != "c1/Write" || ds[0].Decision != "deny" {
+		t.Errorf("decisions = %+v, want the Write deny named after the outer call", ds)
+	}
+
+	rewrite := newHookServer(t, `{"input":{"path":"elsewhere.txt"}}`)
+	reg2 := hooks.NewSet()
+	_, _ = reg2.Register(&hooks.Hook{Owner: "sec", Name: "move", Phase: hooks.PhasePre, CallbackURL: rewrite.srv.URL, Tools: []string{"Write"}})
+	tool2 := &precheckTool{}
+	runWithHooks(t, context.Background(), reg2,
+		providers.ToolUse{ID: "c1", Name: "Precheck", Input: json.RawMessage(`{}`)}, tool2, tools.NewDispatcher([]tools.Tool{tool2}))
+	if tool2.allowed {
+		t.Error("a hook's rewrite of the Write call was let through")
+	}
+
+	other := newHookServer(t, `{"deny":{"text":"no fetches","is_error":true}}`)
+	reg3 := hooks.NewSet()
+	_, _ = reg3.Register(&hooks.Hook{Owner: "sec", Name: "no-fetch", Phase: hooks.PhasePre, CallbackURL: other.srv.URL, Tools: []string{"WebFetch"}})
+	tool3 := &precheckTool{}
+	runWithHooks(t, context.Background(), reg3,
+		providers.ToolUse{ID: "c1", Name: "Precheck", Input: json.RawMessage(`{}`)}, tool3, tools.NewDispatcher([]tools.Tool{tool3}))
+	if !tool3.allowed {
+		t.Errorf("a WebFetch hook refused a Write pre-check: %q", tool3.refusal)
+	}
+}
+
 // A post hook sees the input the tool ran with — a pre hook's rewrite — not
 // the model's original. It used to get the original, so it judged the result
 // of one call against the input of another.

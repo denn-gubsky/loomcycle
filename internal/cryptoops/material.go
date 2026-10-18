@@ -2,11 +2,13 @@ package cryptoops
 
 import (
 	"bytes"
+	"crypto/ecdh"
 	"crypto/ecdsa"
 	"crypto/ed25519"
 	"crypto/elliptic"
 	"crypto/hkdf"
 	"crypto/rand"
+	"crypto/rsa"
 	"crypto/sha256"
 	"crypto/x509"
 	"encoding/base32"
@@ -48,6 +50,20 @@ func Generate(k KeyType) ([]byte, error) {
 			return nil, fmt.Errorf("cryptoops: generate %s: %w", k, err)
 		}
 		return priv.Bytes()
+	case X25519:
+		priv, err := ecdh.X25519().GenerateKey(rand.Reader)
+		if err != nil {
+			return nil, fmt.Errorf("cryptoops: generate %s: %w", k, err)
+		}
+		return priv.Bytes(), nil
+	}
+	if bits := k.rsaBits(); bits != 0 {
+		// Exactly bits long (GenerateKey sets the top bits) with e = 65537.
+		priv, err := rsa.GenerateKey(rand.Reader, bits)
+		if err != nil {
+			return nil, fmt.Errorf("cryptoops: generate %s: %w", k, err)
+		}
+		return marshalRSA(k, priv)
 	}
 	return nil, unknownType(k)
 }
@@ -80,8 +96,20 @@ func ValidateMaterial(k KeyType, m []byte) error {
 		if len(m) < totpMinSeed {
 			return fmt.Errorf("cryptoops: %s seed must be at least %d bytes, got %d", k, totpMinSeed, len(m))
 		}
+	case X25519:
+		if len(m) != x25519KeySize {
+			return fmt.Errorf("cryptoops: %s key must be the %d-byte private scalar, got %d bytes", k, x25519KeySize, len(m))
+		}
+		if _, err := ecdh.X25519().NewPrivateKey(m); err != nil {
+			return fmt.Errorf("cryptoops: %s key is not a valid X25519 private key", k)
+		}
 	default:
-		return unknownType(k)
+		if k.rsaBits() == 0 {
+			return unknownType(k)
+		}
+		if _, err := parseRSAPrivate(k, m); err != nil {
+			return err
+		}
 	}
 	return nil
 }
@@ -90,11 +118,16 @@ func ValidateMaterial(k KeyType, m []byte) error {
 // material for k, then validates its shape.
 //
 // encoding is one of "" (auto: base64 for AEAD/HMAC, base32 for TOTP, PEM for
-// Ed25519/ECDSA — the form each kind is usually handed around in), "raw",
-// "base64", "hex", "base32" or "pem". Non-raw values are trimmed of
+// the asymmetric types — the form each kind is usually handed around in),
+// "raw", "base64", "hex", "base32" or "pem". Non-raw values are trimmed of
 // surrounding whitespace, which copy-paste routinely adds.
+//
+// Canonical material is the 32-byte scalar for X25519 (from raw/base64/hex, or
+// a PKCS#8 PEM) and PKCS#8 DER for RSA. An RSA key may arrive as a PKCS#8
+// "PRIVATE KEY" or PKCS#1 "RSA PRIVATE KEY" PEM, or as base64/hex of either
+// DER form; all are normalised to PKCS#8 DER.
 func ParseMaterial(k KeyType, value string, encoding string) ([]byte, error) {
-	if !k.IsAEAD() && !k.IsMAC() && !k.IsSigning() && k != TOTP {
+	if k.Ops() == nil {
 		return nil, unknownType(k)
 	}
 	if encoding == "" {
@@ -127,6 +160,9 @@ func ParseMaterial(k KeyType, value string, encoding string) ([]byte, error) {
 		m, err = parsePrivatePEM(k, value)
 	default:
 		return nil, fmt.Errorf("cryptoops: unknown encoding %q (valid: raw, base64, hex, base32, pem)", encoding)
+	}
+	if err == nil && encoding != "pem" && k.rsaBits() != 0 {
+		m, err = normalizeRSADER(k, m)
 	}
 	if err != nil {
 		// Never echo the value: it is secret material.
@@ -163,10 +199,11 @@ func decodeBase32Lenient(s string) ([]byte, error) {
 
 // parsePrivatePEM extracts canonical material from exactly one PEM private key
 // block. Only the algorithm k implies is accepted, so an RSA or P-384 key can
-// never be stored under an ecdsa-p256 name.
+// never be stored under an ecdsa-p256 name, nor a 2048-bit RSA key under a
+// 3072-bit one.
 func parsePrivatePEM(k KeyType, s string) ([]byte, error) {
-	if !k.IsSigning() {
-		return nil, fmt.Errorf("PEM is only accepted for %s and %s keys", Ed25519, ECDSAP256)
+	if !k.IsSigning() && !k.IsRecipient() {
+		return nil, errors.New("PEM is only accepted for asymmetric key types")
 	}
 	block, rest := pem.Decode([]byte(s))
 	if block == nil {
@@ -182,11 +219,16 @@ func parsePrivatePEM(k KeyType, s string) ([]byte, error) {
 		key, err = x509.ParsePKCS8PrivateKey(block.Bytes)
 	case "EC PRIVATE KEY":
 		if k != ECDSAP256 {
-			return nil, errors.New("an EC PRIVATE KEY block is not an Ed25519 key")
+			return nil, fmt.Errorf("an EC PRIVATE KEY block is not a %s key", k)
 		}
 		key, err = x509.ParseECPrivateKey(block.Bytes)
+	case "RSA PRIVATE KEY":
+		if k.rsaBits() == 0 {
+			return nil, fmt.Errorf("an RSA PRIVATE KEY block is not a %s key", k)
+		}
+		key, err = x509.ParsePKCS1PrivateKey(block.Bytes)
 	default:
-		return nil, fmt.Errorf("unsupported PEM block type %q (want PRIVATE KEY or EC PRIVATE KEY)", block.Type)
+		return nil, fmt.Errorf("unsupported PEM block type %q (want PRIVATE KEY, EC PRIVATE KEY or RSA PRIVATE KEY)", block.Type)
 	}
 	if err != nil {
 		return nil, errors.New("PEM does not hold a parseable private key")
@@ -207,8 +249,18 @@ func parsePrivatePEM(k KeyType, s string) ([]byte, error) {
 			return nil, fmt.Errorf("PEM holds an ECDSA key on %s, not P-256", priv.Curve.Params().Name)
 		}
 		return priv.Bytes()
+	case X25519:
+		priv, ok := key.(*ecdh.PrivateKey)
+		if !ok || priv.Curve() != ecdh.X25519() {
+			return nil, fmt.Errorf("PEM holds a %T, not an X25519 key", key)
+		}
+		return priv.Bytes(), nil
 	}
-	return nil, unknownType(k)
+	priv, ok := key.(*rsa.PrivateKey)
+	if !ok {
+		return nil, fmt.Errorf("PEM holds a %T, not an RSA key", key)
+	}
+	return marshalRSA(k, priv)
 }
 
 // deriveSalt is a fixed, public domain-separation salt. The secret input is the

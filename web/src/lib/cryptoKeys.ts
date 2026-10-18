@@ -17,6 +17,13 @@ export const CRYPTO_KEY_TYPES = [
   "ed25519",
   "ecdsa-p256",
   "totp",
+  "x25519",
+  "rsa-oaep-2048",
+  "rsa-oaep-3072",
+  "rsa-oaep-4096",
+  "rsa-pss-2048",
+  "rsa-pss-3072",
+  "rsa-pss-4096",
 ] as const;
 export type CryptoKeyType = (typeof CRYPTO_KEY_TYPES)[number];
 

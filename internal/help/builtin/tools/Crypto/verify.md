@@ -9,11 +9,14 @@ description: "Crypto op=verify — check a signature or a JWS token with a key t
 - `signature` (required) — a raw base64 signature, or a JWS token. For a token
   leave `data` empty: the payload is inside it and is returned.
 - `data` — the signed data, for a raw signature.
+- `from` — read the data from a store instead: `volume:<path>`,
+  `memory:<scope>/<key>` or `document:<scope>/<chunk_id>`.
 - One of:
   - `key`, `cred` or `run` — a key the runtime holds. For a signing key its
     public half is used; every usable version of a crypto key is tried.
-  - `public_key` — a PEM or JWK Ed25519 / P-256 public key, for a signer
-    whose key this deployment does not hold.
+  - `public_key` — a PEM or JWK Ed25519, P-256 or RSA public key (an RSA key
+    verifies RSA-PSS / PS256), for a signer whose key this deployment does not
+    hold.
 
 ## Returns
 

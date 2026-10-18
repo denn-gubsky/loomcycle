@@ -4264,6 +4264,22 @@ func dispatchOneTool(
 	ctx = tools.WithHookedExecute(ctx, func(c context.Context, name string, input json.RawMessage) tools.Result {
 		return dispatchOneTool(c, dispatcher, providers.ToolUse{ID: tu.ID + "/" + name, Name: name, Input: input}, hookDispatcher, ident, emit)
 	})
+	// A tool that reaches another tool's effect without running it (the Crypto
+	// tool reading or writing a file) asks that tool's pre-hooks first. A deny
+	// is a refusal, and so is a rewrite: the caller cannot do what a rewritten
+	// call would.
+	ctx = tools.WithHookPreCheck(ctx, func(c context.Context, name string, input json.RawMessage) (tools.Result, bool) {
+		sub := providers.ToolUse{ID: tu.ID + "/" + name, Name: name, Input: input}
+		p := hookDispatcher.RunPre(c, ident, hooks.ToolCall{ID: sub.ID, Name: name, Input: input})
+		EmitHookDecisions(emit, sub, p.Decisions)
+		if p.Deny != nil {
+			return tools.Result{Text: p.Deny.Text, IsError: true}, false
+		}
+		if p.Input != nil && !bytes.Equal(p.Input, input) {
+			return tools.Result{Text: "a hook changed this " + name + " call, which this tool cannot carry out as changed", IsError: true}, false
+		}
+		return tools.Result{}, true
+	})
 	var r tools.Result
 	if pre.Deny != nil {
 		// A Pre-hook short-circuited; do NOT run the real tool. The
