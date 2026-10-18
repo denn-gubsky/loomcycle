@@ -114,9 +114,10 @@ func TestRefValidate_Shapes(t *testing.T) {
 // ---- Vault -----------------------------------------------------------------
 
 type fakeVault struct {
-	t      *testing.T
-	ec     *ecdsa.PrivateKey
-	status int // when non-zero, every call answers this with a body holding a secret
+	t          *testing.T
+	ec         *ecdsa.PrivateKey
+	status     int // when non-zero, every call answers this with a body holding a secret
+	minVersion int // min_decryption_version the key reports (default 1)
 }
 
 func (f *fakeVault) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -150,8 +151,13 @@ func (f *fakeVault) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		d := sha256.Sum256(data)
 		reply(map[string]string{"signature": "vault:v1:" + base64.StdEncoding.EncodeToString(ecdsaDERSign(f.t, f.ec, d[:]))})
 	case r.URL.Path == "/v1/transit/keys/orders" && r.Method == http.MethodGet:
-		reply(map[string]any{"type": "ecdsa-p256", "latest_version": 1, "min_decryption_version": 1,
-			"keys": map[string]any{"1": map[string]string{"public_key": pubPEM(f.t, &f.ec.PublicKey)}}})
+		// v1 is the key the fake signs with; v2 is another key.
+		other, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+		reply(map[string]any{"type": "ecdsa-p256", "latest_version": 2, "min_decryption_version": max(f.minVersion, 1),
+			"keys": map[string]any{
+				"1": map[string]string{"public_key": pubPEM(f.t, &f.ec.PublicKey)},
+				"2": map[string]string{"public_key": pubPEM(f.t, &other.PublicKey)},
+			}})
 	default:
 		w.WriteHeader(http.StatusNotFound)
 	}
@@ -524,10 +530,73 @@ func TestNew_DisablesRedirects(t *testing.T) {
 		http.Redirect(w, r, target.URL, http.StatusTemporaryRedirect)
 	}))
 	t.Cleanup(redirector.Close)
-	c, _ := New(Ref{Kind: KindVault, Address: redirector.URL, Key: "k", TokenCred: "$cred:t"}, AES256GCM,
-		Options{AllowHTTP: true, Secrets: secretsOf(map[string]string{"$cred:t": "s.token"})})
-	_, _, err := c.Encrypt(context.Background(), []byte("x"), nil)
+	c, err := New(Ref{Kind: KindVault, Address: redirector.URL, Key: "k", TokenCred: "$cred:t"}, AES256GCM,
+		Options{AllowHTTP: true, HTTPClient: &http.Client{}, Secrets: secretsOf(map[string]string{"$cred:t": "s.token"})})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _, err = c.Encrypt(context.Background(), []byte("x"), nil)
 	if !errors.Is(err, ErrUnavailable) || hits.Load() != 0 {
 		t.Errorf("redirect = %v, target hit %d times; want refused and never followed", err, hits.Load())
+	}
+}
+
+// A Vault address is the Ref author's: without the caller's (SSRF-guarded)
+// client there is no client at all, never a default one.
+func TestNew_VaultNeedsTheCallersClient(t *testing.T) {
+	_, err := New(Ref{Kind: KindVault, Address: "https://vault.example", Key: "k", TokenCred: "$cred:t"}, AES256GCM,
+		Options{Secrets: secretsOf(nil)})
+	if err == nil {
+		t.Error("a Vault client was built without the caller's HTTP client")
+	}
+}
+
+// A retired Vault version (below min_decryption_version) no longer verifies,
+// even when named, and its public key is not handed out.
+func TestVault_ARetiredVersionDoesNotVerify(t *testing.T) {
+	ec, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	f := &fakeVault{t: t, ec: ec}
+	c := vaultFor(t, f, ECDSAP256)
+	ctx := context.Background()
+	sig, v, err := c.Sign(ctx, []byte("report")) // the fake signs as v1
+	if err != nil || v != 1 {
+		t.Fatalf("sign = v%d %v", v, err)
+	}
+	f.minVersion = 2
+	for _, ver := range []int{0, 1} {
+		if ok, _, err := c.Verify(ctx, []byte("report"), sig, ver); ok || err != nil {
+			t.Errorf("verify with version %d after v1 was retired = %v %v, want false", ver, ok, err)
+		}
+	}
+	if _, _, err := c.PublicKey(ctx, 1); !errors.Is(err, ErrNotFound) {
+		t.Errorf("public key of a retired version = %v, want ErrNotFound", err)
+	}
+}
+
+// A Google Ref pinned to a version uses that version only: an RSA body naming
+// another does not decrypt, a verify naming another does not verify, and a pin
+// on a symmetric key is refused.
+func TestGCP_APinnedVersionHolds(t *testing.T) {
+	rk, _ := rsa.GenerateKey(rand.Reader, 2048)
+	f := &fakeGCP{t: t, rsaKey: rk}
+	c := gcpFor(t, f, RSAOAEP2048, nil)
+	c.(*gcpClient).pinned = 1
+	ctx := context.Background()
+	ct, _ := rsa.EncryptOAEP(sha256.New(), rand.Reader, &rk.PublicKey, []byte("x"), nil)
+	if _, _, err := c.Decrypt(ctx, append([]byte("v2:"), ct...), nil); !errors.Is(err, ErrDecrypt) {
+		t.Errorf("a body naming v2 under a v1 pin = %v, want ErrDecrypt", err)
+	}
+	ec, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	s := gcpFor(t, &fakeGCP{t: t, ec: ec}, ECDSAP256, nil)
+	sig, _, err := s.Sign(ctx, []byte("report")) // v2, the newest enabled
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ok, _, _ := s.Verify(ctx, []byte("report"), sig, 7); ok {
+		t.Error("a version that is not enabled verified")
+	}
+	if _, err := New(Ref{Kind: KindGCP, Resource: gcpKey + "/cryptoKeyVersions/2", ServiceAccountCred: "$cred:sa"}, AES256GCM,
+		Options{Secrets: secretsOf(nil)}); !errors.Is(err, ErrUnsupported) {
+		t.Errorf("a pinned symmetric key = %v, want ErrUnsupported", err)
 	}
 }

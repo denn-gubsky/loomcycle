@@ -268,7 +268,9 @@ func (c *gcpClient) Decrypt(ctx context.Context, body, aad []byte) ([]byte, int,
 			return nil, 0, err
 		}
 		v, ct, ok := splitVersioned(body)
-		if !ok {
+		// A pinned Ref decrypts with its version only: the body cannot name
+		// another.
+		if !ok || (c.pinned != 0 && v != c.pinned) {
 			return nil, 0, errf(c.kind, op, ErrDecrypt, 0, "")
 		}
 		var out struct {
@@ -355,13 +357,9 @@ func (c *gcpClient) VerifyMAC(ctx context.Context, data, mac []byte, version int
 	if err := c.need(op, isMAC(c.keyType)); err != nil {
 		return false, 0, err
 	}
-	versions := []int{version}
-	if version == 0 {
-		vs, err := c.candidateVersions(ctx, op)
-		if err != nil {
-			return false, 0, err
-		}
-		versions = vs
+	versions, err := c.verifyVersions(ctx, op, version)
+	if err != nil {
+		return false, 0, err
 	}
 	for _, v := range versions {
 		var out struct {
@@ -387,6 +385,23 @@ func (c *gcpClient) candidateVersions(ctx context.Context, op string) ([]int, er
 		return []int{c.pinned}, nil
 	}
 	return c.enabledVersions(ctx, op)
+}
+
+// verifyVersions are the versions a verify may use: the candidates, or a named
+// version only when it is one of them. A version the caller names is checked
+// against what is enabled NOW, so one disabled since (whose public key may be
+// cached) no longer verifies, and a pinned Ref never verifies with another.
+func (c *gcpClient) verifyVersions(ctx context.Context, op string, version int) ([]int, error) {
+	vs, err := c.candidateVersions(ctx, op)
+	if err != nil || version == 0 {
+		return vs, err
+	}
+	for _, v := range vs {
+		if v == version {
+			return []int{version}, nil
+		}
+	}
+	return nil, nil
 }
 
 func (c *gcpClient) Sign(ctx context.Context, data []byte) ([]byte, int, error) {
@@ -424,13 +439,9 @@ func (c *gcpClient) Verify(ctx context.Context, data, sig []byte, version int) (
 	if err := c.need(op, isSigning(c.keyType)); err != nil {
 		return false, 0, err
 	}
-	versions := []int{version}
-	if version == 0 {
-		vs, err := c.candidateVersions(ctx, op)
-		if err != nil {
-			return false, 0, err
-		}
-		versions = vs
+	versions, err := c.verifyVersions(ctx, op, version)
+	if err != nil {
+		return false, 0, err
 	}
 	for _, v := range versions {
 		pub, _, err := c.PublicKey(ctx, v)

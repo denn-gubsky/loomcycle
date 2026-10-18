@@ -218,13 +218,16 @@ func (c *vaultClient) VerifyMAC(ctx context.Context, data, mac []byte, version i
 	if err := c.need(op, isMAC(c.keyType)); err != nil {
 		return false, 0, err
 	}
-	versions := []int{version}
-	if version == 0 {
-		k, err := c.readKey(ctx, op)
-		if err != nil {
-			return false, 0, err
+	k, err := c.readKey(ctx, op)
+	if err != nil {
+		return false, 0, err
+	}
+	versions := k.usableVersions()
+	if version != 0 {
+		if !k.usable(version) {
+			return false, 0, nil
 		}
-		versions = k.usableVersions()
+		versions = []int{version}
 	}
 	for _, v := range versions {
 		in := map[string]string{"input": b64(data), "hmac": "vault:v" + strconv.Itoa(v) + ":" + b64(mac)}
@@ -291,9 +294,15 @@ func (c *vaultClient) Verify(ctx context.Context, data, sig []byte, version int)
 	if err != nil {
 		return false, 0, err
 	}
-	versions := []int{version}
-	if version == 0 {
-		versions = k.usableVersions()
+	versions := k.usableVersions()
+	if version != 0 {
+		// A named version verifies only if Vault still allows it: one below
+		// min_decryption_version is retired, and a local check must not
+		// accept what Vault itself would refuse.
+		if !k.usable(version) {
+			return false, 0, nil
+		}
+		versions = []int{version}
 	}
 	for _, v := range versions {
 		pub, err := k.publicKey(v)
@@ -318,6 +327,9 @@ func (c *vaultClient) PublicKey(ctx context.Context, version int) (crypto.Public
 	}
 	if version == 0 {
 		version = k.LatestVersion
+	}
+	if !k.usable(version) {
+		return nil, 0, errf(c.kind, op, ErrNotFound, 0, "version "+strconv.Itoa(version)+" is not usable")
 	}
 	pub, err := k.publicKey(version)
 	if err != nil {
@@ -387,6 +399,12 @@ func (c *vaultClient) readKey(ctx context.Context, op string) (*vaultKey, error)
 		return nil, errf(c.kind, op, ErrUnavailable, 0, "malformed key metadata")
 	}
 	return &k, nil
+}
+
+// usable reports whether v is a version Vault still uses: between
+// min_decryption_version and the latest.
+func (k *vaultKey) usable(v int) bool {
+	return v >= max(k.MinDecryptionVersion, 1) && v <= k.LatestVersion
 }
 
 // usableVersions lists latest down to min_decryption_version, newest first,

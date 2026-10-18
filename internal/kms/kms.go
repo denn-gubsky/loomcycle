@@ -20,6 +20,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"strings"
 	"time"
 )
 
@@ -97,9 +98,11 @@ type Secrets func(ctx context.Context, credRef string) (string, error)
 // Options configures New. Only HTTPClient and Secrets are meant for production
 // callers; the endpoint overrides exist for tests.
 type Options struct {
-	// HTTPClient sends every request. nil means a client with a 30s timeout.
-	// New copies it and disables redirects (a redirect would carry the auth
-	// header to wherever it points), so pass an SSRF-guarded client freely.
+	// HTTPClient sends every request. Required for Vault, whose address is
+	// the Ref author's: pass an SSRF-guarded client. For AWS and Google (fixed
+	// public endpoints) nil means a client with a 30s timeout. New copies it
+	// and disables redirects (a redirect would carry the auth header to
+	// wherever it points).
 	HTTPClient *http.Client
 	// Secrets resolves the Ref's credential references. Required.
 	Secrets Secrets
@@ -177,6 +180,17 @@ func New(ref Ref, keyType string, opts Options) (Client, error) {
 	}
 	if opts.Secrets == nil {
 		return nil, errors.New("kms: Options.Secrets is required")
+	}
+	// A Vault address is the Ref author's, so it is dialled only through the
+	// caller's client, which carries the SSRF guard. There is no default for
+	// it: a default client would reach any address the name resolves to.
+	if ref.Kind == KindVault && opts.HTTPClient == nil {
+		return nil, errors.New("kms: a Vault key needs Options.HTTPClient (an SSRF-guarded client)")
+	}
+	// Cloud KMS encrypts only with a symmetric key's primary version, so a
+	// pin could not be honoured: refuse it rather than ignore it.
+	if ref.Kind == KindGCP && isAEAD(keyType) && strings.Contains(ref.Resource, "/cryptoKeyVersions/") {
+		return nil, fmt.Errorf("kms: a %s key cannot be pinned to a version (Cloud KMS encrypts with the primary): %w", keyType, ErrUnsupported)
 	}
 	b := base{kind: ref.Kind, keyType: keyType, secrets: opts.Secrets, now: opts.Now, http: noRedirect(opts.HTTPClient)}
 	if b.now == nil {
