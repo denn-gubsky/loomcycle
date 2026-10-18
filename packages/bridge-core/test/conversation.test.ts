@@ -196,6 +196,15 @@ describe("bridge conversation", () => {
     expect(lc.callsTo("cancelAgent")).toHaveLength(0);
   });
 
+  it("/stop says so when the run is parked and there is nothing to stop", async () => {
+    await say("hello");
+    lc.runs[0].events.push({ type: "awaiting_input" });
+    await settle();
+    lc.failNext.cancelTurn = httpError(409);
+    await say("/stop");
+    expect(platform.messages().at(-1)).toBe("Nothing is running.");
+  });
+
   it("maps the platform's Stop button to cancelling the turn", async () => {
     await say("write an essay");
     lc.runs[0].events.push({ type: "text", text: "Once upon" });
