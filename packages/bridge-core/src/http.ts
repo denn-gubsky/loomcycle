@@ -39,8 +39,9 @@ export interface ServerOptions {
 
 export const DEFAULT_MAX_BODY_BYTES = 1 << 20;
 
-/** header reads one header value; a repeated header is refused (undefined),
- *  so a check never picks one of two values. */
+/** header reads one header value. Node joins a repeated header into one
+ *  "a, b" string (and gives set-cookie as a list, read here as undefined), so
+ *  a repeated signature or secret header never matches a single expected value. */
 export function header(req: RawRequest, name: string): string | undefined {
   const v = req.headers[name.toLowerCase()];
   return typeof v === "string" ? v : undefined;
