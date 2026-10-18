@@ -99,6 +99,7 @@ const (
 	Loomcycle_Path_FullMethodName                = "/loomcycle.v1.Loomcycle/Path"
 	Loomcycle_Document_FullMethodName            = "/loomcycle.v1.Loomcycle/Document"
 	Loomcycle_CredentialDef_FullMethodName       = "/loomcycle.v1.Loomcycle/CredentialDef"
+	Loomcycle_Crypto_FullMethodName              = "/loomcycle.v1.Loomcycle/Crypto"
 	Loomcycle_History_FullMethodName             = "/loomcycle.v1.Loomcycle/History"
 	Loomcycle_Evaluation_FullMethodName          = "/loomcycle.v1.Loomcycle/Evaluation"
 	Loomcycle_Memory_FullMethodName              = "/loomcycle.v1.Loomcycle/Memory"
@@ -541,6 +542,17 @@ type LoomcycleClient interface {
 	// substrate:user caller is admitted for its OWN scope=user tokens and confined
 	// to scope=user by the handler. Same SubstrateRequest/Response body shape.
 	CredentialDef(ctx context.Context, in *SubstrateRequest, opts ...grpc.CallOption) (*SubstrateResponse, error)
+	// Crypto dispatches to the Crypto tool outside a run (RFC EP): encrypt /
+	// decrypt / rewrap / mac / verify_mac / sign / verify / public_key / totp /
+	// hash / random with runtime-held keys. Mirrors POST /v1/_crypto. Gate
+	// ScopeTenant. The keys are the caller's tenant's and its own subject's
+	// user keys, resolved from the principal, NEVER the wire; agent keys are not
+	// reachable. An admin may name another tenant with a top-level "tenant" in
+	// input_json (and then gets that tenant's keys, no user keys). Each call
+	// takes one from the token's run rate: an exhausted rate is
+	// ResourceExhausted with RetryInfo. Op-discriminated input_json; same
+	// SubstrateRequest/Response body shape (is_error carries tool refusals).
+	Crypto(ctx context.Context, in *SubstrateRequest, opts ...grpc.CallOption) (*SubstrateResponse, error)
 	// History dispatches to the RFC BE History tool (browse/search/annotate
 	// past chats; a chat = a session). Mirrors POST /v1/_history. TENANT-CONFINED
 	// (ScopeTenant): the owner is resolved from the operator-trust ctx +
@@ -1275,6 +1287,16 @@ func (c *loomcycleClient) CredentialDef(ctx context.Context, in *SubstrateReques
 	return out, nil
 }
 
+func (c *loomcycleClient) Crypto(ctx context.Context, in *SubstrateRequest, opts ...grpc.CallOption) (*SubstrateResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(SubstrateResponse)
+	err := c.cc.Invoke(ctx, Loomcycle_Crypto_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (c *loomcycleClient) History(ctx context.Context, in *SubstrateRequest, opts ...grpc.CallOption) (*SubstrateResponse, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(SubstrateResponse)
@@ -1850,6 +1872,17 @@ type LoomcycleServer interface {
 	// substrate:user caller is admitted for its OWN scope=user tokens and confined
 	// to scope=user by the handler. Same SubstrateRequest/Response body shape.
 	CredentialDef(context.Context, *SubstrateRequest) (*SubstrateResponse, error)
+	// Crypto dispatches to the Crypto tool outside a run (RFC EP): encrypt /
+	// decrypt / rewrap / mac / verify_mac / sign / verify / public_key / totp /
+	// hash / random with runtime-held keys. Mirrors POST /v1/_crypto. Gate
+	// ScopeTenant. The keys are the caller's tenant's and its own subject's
+	// user keys, resolved from the principal, NEVER the wire; agent keys are not
+	// reachable. An admin may name another tenant with a top-level "tenant" in
+	// input_json (and then gets that tenant's keys, no user keys). Each call
+	// takes one from the token's run rate: an exhausted rate is
+	// ResourceExhausted with RetryInfo. Op-discriminated input_json; same
+	// SubstrateRequest/Response body shape (is_error carries tool refusals).
+	Crypto(context.Context, *SubstrateRequest) (*SubstrateResponse, error)
 	// History dispatches to the RFC BE History tool (browse/search/annotate
 	// past chats; a chat = a session). Mirrors POST /v1/_history. TENANT-CONFINED
 	// (ScopeTenant): the owner is resolved from the operator-trust ctx +
@@ -2120,6 +2153,9 @@ func (UnimplementedLoomcycleServer) Document(context.Context, *SubstrateRequest)
 }
 func (UnimplementedLoomcycleServer) CredentialDef(context.Context, *SubstrateRequest) (*SubstrateResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method CredentialDef not implemented")
+}
+func (UnimplementedLoomcycleServer) Crypto(context.Context, *SubstrateRequest) (*SubstrateResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method Crypto not implemented")
 }
 func (UnimplementedLoomcycleServer) History(context.Context, *SubstrateRequest) (*SubstrateResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method History not implemented")
@@ -3254,6 +3290,24 @@ func _Loomcycle_CredentialDef_Handler(srv interface{}, ctx context.Context, dec 
 	return interceptor(ctx, in, info, handler)
 }
 
+func _Loomcycle_Crypto_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(SubstrateRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(LoomcycleServer).Crypto(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: Loomcycle_Crypto_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(LoomcycleServer).Crypto(ctx, req.(*SubstrateRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 func _Loomcycle_History_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(SubstrateRequest)
 	if err := dec(in); err != nil {
@@ -3733,6 +3787,10 @@ var Loomcycle_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "CredentialDef",
 			Handler:    _Loomcycle_CredentialDef_Handler,
+		},
+		{
+			MethodName: "Crypto",
+			Handler:    _Loomcycle_Crypto_Handler,
 		},
 		{
 			MethodName: "History",

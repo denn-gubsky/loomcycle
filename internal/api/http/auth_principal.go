@@ -1257,6 +1257,10 @@ func memberCarveOut(method, path string) bool {
 	// refused.
 	case path == "/v1/_memory/changes" || path == "/v1/_document/changes":
 		return true
+	// Crypto with the tenant's keys: a member who could decrypt with them could
+	// read whatever the tenant sealed, and sign as the tenant. Operators only.
+	case path == "/v1/_crypto":
+		return true
 	}
 	return false
 }
@@ -1376,6 +1380,10 @@ func isTenantConfinedDefPath(path string) bool {
 		// LOOMCYCLE_SECRET_KEY). Same posture as _path/_document: ScopeTenant,
 		// no /names route.
 		"/v1/_credentialdef",
+		// RFC EP P1b — Crypto operations outside a run, with the caller's tenant
+		// and own-subject keys (s.Crypto stamps them from the principal).
+		// Carved out of member access (memberCarveOut).
+		"/v1/_crypto",
 	} {
 		if path == fam || path == fam+"/names" {
 			return true

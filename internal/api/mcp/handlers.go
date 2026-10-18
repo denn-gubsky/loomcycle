@@ -157,6 +157,10 @@ var handlersByName = map[string]toolHandler{
 	// only. ops: create/get/list/delete. RFC CN confines an isolated substrate:user
 	// session to scope=user — see handleCredentialDef.
 	"credentialdef": handleCredentialDef,
+	// RFC EP P1b — the Crypto tool outside a run, with the caller's tenant
+	// keys and own user keys (never an agent's). Identity from the principal
+	// ctx, never the wire; see handleCrypto.
+	"crypto": handleCrypto,
 	"evaluation": wrapBuiltin("evaluation", func(c connector.Connector, ctx context.Context, in json.RawMessage) (connector.ToolResult, error) {
 		return c.Evaluation(ctx, in)
 	}),

@@ -27,6 +27,7 @@ func TestToolSurface_DescriptionsListEveryOp(t *testing.T) {
 	}{
 		{"document", "../../tools/builtin/document.go", 20},
 		{"memory", "../../tools/builtin/memory.go", 20},
+		{"crypto", "../../tools/builtin/crypto.go", 11},
 	} {
 		t.Run(tc.tool, func(t *testing.T) {
 			src, err := os.ReadFile(tc.src)

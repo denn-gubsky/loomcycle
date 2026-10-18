@@ -509,7 +509,7 @@ func TestTenantMemberAccessible(t *testing.T) {
 	closed := []struct{ method, path string }{
 		{"POST", "/v1/_users"}, {"PATCH", "/v1/_users/alice"}, {"DELETE", "/v1/_users/alice"},
 		{"POST", "/v1/_users/alice/tokens"}, {"POST", "/v1/_erasure"}, {"GET", "/v1/_erasure"},
-		{"PUT", "/v1/_limits"}, {"DELETE", "/v1/_limits"},
+		{"PUT", "/v1/_limits"}, {"DELETE", "/v1/_limits"}, {"POST", "/v1/_crypto"},
 		{"POST", "/v1/_operatortokendef"}, {"GET", "/v1/_tenants"}, {"POST", "/v1/_pause"},
 		{"POST", "/v1/_memory/repair-tenant"}, {"POST", "/v1/runs"}, {"GET", "/v1/_me"},
 	}
@@ -549,7 +549,7 @@ func TestAuthMiddleware_RFCCBMember(t *testing.T) {
 		{"POST", "/v1/_users"}, {"PATCH", "/v1/_users/alice"}, {"POST", "/v1/_users/alice/tokens"},
 		{"POST", "/v1/_erasure"}, {"PUT", "/v1/_limits"}, {"DELETE", "/v1/_limits"},
 		{"POST", "/v1/_operatortokendef"}, {"POST", "/v1/_pause"},
-		{"GET", "/v1/_tenants"},
+		{"GET", "/v1/_tenants"}, {"POST", "/v1/_crypto"},
 	}
 	for _, c := range refused {
 		reached, code := runMW(t, s, c.method, c.path, "lct_member")

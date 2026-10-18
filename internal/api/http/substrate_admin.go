@@ -3,6 +3,7 @@ package http
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"strconv"
@@ -12,6 +13,7 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/auth"
 	"github.com/denn-gubsky/loomcycle/internal/connector"
 	"github.com/denn-gubsky/loomcycle/internal/credential"
+	"github.com/denn-gubsky/loomcycle/internal/runner"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
 	"github.com/denn-gubsky/loomcycle/internal/tools/builtin"
 )
@@ -371,6 +373,10 @@ func (s *Server) dispatchSubstrateCtxGuarded(
 	}
 	result, err := connectorFn(ctx, body)
 	if err != nil {
+		if errors.Is(err, runner.ErrRateLimited) {
+			writeRateLimited(w, err)
+			return
+		}
 		writeJSONError(w, http.StatusInternalServerError, "internal", err.Error())
 		return
 	}

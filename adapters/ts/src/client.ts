@@ -50,6 +50,11 @@ import type {
   StreamChangesOptions,
   CredentialListResponse,
   CredentialMeta,
+  CryptoKeyEncoding,
+  CryptoKeyExport,
+  CryptoKeyType,
+  CryptoRequest,
+  CryptoResultByOp,
   DecideRequest,
   DecideResponse,
   DecisionModelsResponse,
@@ -4038,6 +4043,166 @@ export class LoomcycleClient {
       { op: "delete", ...input },
       opts,
     );
+  }
+
+  // ── Crypto keys (RFC EP) ─────────────────────────────────────────────────
+  //
+  // A crypto key is a credential with usage "crypto": a key type fixed at
+  // creation, numbered versions, and a min_version below which versions are
+  // retired. Its material is never returned by any of these calls; the Crypto
+  // tool (`crypto()` here, or an agent's Crypto tool) uses it by name. Each
+  // returns the key's metadata (`CredentialMeta` with `usage`, `key_type`,
+  // `versions`, `current_version`, `min_version`). Delete a key with
+  // `deleteCredential` once every version is retired (min_version raised to
+  // current+1). All post to `POST /v1/_credentialdef`.
+
+  /** Make a new crypto key nobody ever sees: the server generates the
+   *  material. Version 1 is current. Mirrors `{op:generate}`. A name another
+   *  reachable scope already uses for a crypto key is refused
+   *  ({@link SubstrateToolRefusedError}), since a bare name would then be
+   *  ambiguous. */
+  async generateCryptoKey(
+    input: { scope: CredentialScope; name: string; key_type: CryptoKeyType; expires_at?: string },
+    opts?: { signal?: AbortSignal },
+  ): Promise<CredentialMeta> {
+    return postJSON<CredentialMeta>(
+      this.ctx,
+      "/v1/_credentialdef",
+      { op: "generate", ...input },
+      opts,
+    );
+  }
+
+  /** Store key material you already have as a crypto key (version 1). `value`
+   *  is write-only: masked from the transcript, never returned. Use this to
+   *  bring in an existing key; to move a key from another loomcycle
+   *  deployment use {@link importCryptoKey}. Mirrors
+   *  `{op:create, usage:"crypto"}`. */
+  async createCryptoKey(
+    input: {
+      scope: CredentialScope;
+      name: string;
+      key_type: CryptoKeyType;
+      value: string;
+      key_encoding?: CryptoKeyEncoding;
+      expires_at?: string;
+    },
+    opts?: { signal?: AbortSignal },
+  ): Promise<CredentialMeta> {
+    return postJSON<CredentialMeta>(
+      this.ctx,
+      "/v1/_credentialdef",
+      { op: "create", usage: "crypto", ...input },
+      opts,
+    );
+  }
+
+  /** Add a new version and make it current. Without `value` the server
+   *  generates it; with one, it is the new version's material (write-only).
+   *  Older versions keep decrypting and verifying until `min_version` passes
+   *  them; `rewrap` moves ciphertexts to the new version. Mirrors
+   *  `{op:rotate}`. */
+  async rotateCryptoKey(
+    input: { scope: CredentialScope; name: string; value?: string; key_encoding?: CryptoKeyEncoding },
+    opts?: { signal?: AbortSignal },
+  ): Promise<CredentialMeta> {
+    return postJSON<CredentialMeta>(
+      this.ctx,
+      "/v1/_credentialdef",
+      { op: "rotate", ...input },
+      opts,
+    );
+  }
+
+  /** Retire every version below `min_version`: nothing decrypts or verifies
+   *  with them any more, and only they can be deleted. It only goes up, and
+   *  at most to current+1 (which retires every version — the step before
+   *  deleting the key). A lower value, or one past current+1, is refused
+   *  ({@link SubstrateToolRefusedError}). Mirrors `{op:set_min_version}`. */
+  async setCryptoKeyMinVersion(
+    input: { scope: CredentialScope; name: string; min_version: number },
+    opts?: { signal?: AbortSignal },
+  ): Promise<CredentialMeta> {
+    return postJSON<CredentialMeta>(
+      this.ctx,
+      "/v1/_credentialdef",
+      { op: "set_min_version", ...input },
+      opts,
+    );
+  }
+
+  /** Delete one retired version (below `min_version`) and its material. A
+   *  version still in use is refused ({@link SubstrateToolRefusedError}).
+   *  Mirrors `{op:delete_version}`. */
+  async deleteCryptoKeyVersion(
+    input: { scope: CredentialScope; name: string; version: number },
+    opts?: { signal?: AbortSignal },
+  ): Promise<CredentialMeta> {
+    return postJSON<CredentialMeta>(
+      this.ctx,
+      "/v1/_credentialdef",
+      { op: "delete_version", ...input },
+      opts,
+    );
+  }
+
+  /** Export a crypto key, every version of it, encrypted under `passphrase`
+   *  (at least 16 characters), to move it to another deployment with
+   *  {@link importCryptoKey}. The blob plus the passphrase IS the key: keep
+   *  them apart. Admin only (the legacy token, `substrate:admin`, or open
+   *  mode) and only outside a run; anyone else is refused
+   *  ({@link SubstrateToolRefusedError}). Mirrors `{op:export_key}`. */
+  async exportCryptoKey(
+    input: { scope: CredentialScope; name: string; passphrase: string },
+    opts?: { signal?: AbortSignal },
+  ): Promise<CryptoKeyExport> {
+    return postJSON<CryptoKeyExport>(
+      this.ctx,
+      "/v1/_credentialdef",
+      { op: "export_key", ...input },
+      opts,
+    );
+  }
+
+  /** Import what {@link exportCryptoKey} returned on another deployment, with
+   *  the passphrase it was exported with, into `scope`. `name` must be the
+   *  name it was exported under (the blob is bound to it); the server
+   *  refuses another. Versions and `min_version` come with it. Admin only
+   *  and outside a run, like export. Mirrors `{op:import_key}`. */
+  async importCryptoKey(
+    input: { scope: CredentialScope; name: string; blob: string; passphrase: string },
+    opts?: { signal?: AbortSignal },
+  ): Promise<CredentialMeta> {
+    return postJSON<CredentialMeta>(
+      this.ctx,
+      "/v1/_credentialdef",
+      { op: "import_key", ...input },
+      opts,
+    );
+  }
+
+  /** Run one Crypto-tool operation outside any run (`POST /v1/_crypto`, RFC
+   *  EP): encrypt / decrypt / rewrap / mac / verify_mac / sign / verify /
+   *  public_key / totp with a key the runtime holds, or hash / random with
+   *  none. The return type follows `op`. Key material never leaves the
+   *  server.
+   *
+   *  Keys reachable: the token's tenant's and its own subject's user keys
+   *  (agent keys belong to their agent's runs, and there are no `run`
+   *  credentials outside a run). An admin may pass `tenant` to use another
+   *  tenant's keys (and then no user keys). A ciphertext sealed here
+   *  decrypts in that tenant's runs, and the reverse.
+   *
+   *  Needs `substrate:tenant`; a tenant member's or run token gets a 403. A
+   *  refusal (a wrong key name, a key type that does not do the op, a failed
+   *  decrypt — which never says why) raises {@link SubstrateToolRefusedError};
+   *  each call takes one from the token's run-start rate, and a spent rate
+   *  raises {@link RateLimitedError} with the server's `retryAfterMs`. */
+  async crypto<R extends CryptoRequest>(
+    input: R,
+    opts?: { signal?: AbortSignal },
+  ): Promise<CryptoResultByOp[R["op"]]> {
+    return postJSON<CryptoResultByOp[R["op"]]>(this.ctx, "/v1/_crypto", input, opts);
   }
 }
 

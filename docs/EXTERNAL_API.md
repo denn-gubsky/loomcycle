@@ -6,9 +6,9 @@
 # loomcycle data API — external HTTP access
 
 loomcycle publishes a machine-readable **OpenAPI 3.1** contract for its memory
-and document/path storage and its decision-model routes, so any application or
-language can generate a client instead of hand-rolling requests. This guide is the entry point; the contract
-itself is authoritative.
+and document/path storage, its decision-model routes and its crypto route, so
+any application or language can generate a client instead of hand-rolling
+requests. This guide is the entry point; the contract itself is authoritative.
 
 ## Where the contract lives
 
@@ -65,6 +65,12 @@ generated client covers the whole surface below.
   about state you supply, and `GET /v1/_decide/models` lists the models a call
   may name with their limits. Both need the `runs:create` scope, not
   `substrate:tenant`. See [DECISION-MODELS.md](DECISION-MODELS.md).
+- **Crypto (op-dispatch):** `POST /v1/_crypto` encrypts, decrypts, signs,
+  verifies, MACs and makes one-time codes with keys the runtime holds; the body
+  is the `Crypto` tool's input (plus an admin-only `tenant`), and key material is
+  never returned. It needs `substrate:tenant` and, unlike the data routes, is
+  **not** open to a tenant's members. Each call takes one from the token's run
+  rate (`429` past it). See [CREDENTIALS.md](CREDENTIALS.md).
 
 The contract does not describe the rest of the HTTP API (runs, usage, limits,
 definitions).
@@ -72,14 +78,15 @@ definitions).
 ## Notes for consumers
 
 - The op-dispatch endpoints are intentionally not idiomatic REST — one path,
-  many ops selected by `op`. A generated client exposes them as two operations
-  (`documentOp`, `pathOp`) taking the discriminated body.
+  many ops selected by `op`. A generated client exposes them as operations
+  (`documentOp`, `pathOp`, `cryptoOp`) taking the discriminated body.
 - `/v1/_memory/search` and the document/path endpoints require SQL Memory /
   vector support for some ops; unsupported requests return a `503` or a `400`
   with a diagnostic `code`.
 - The spec is kept honest by drift tests that fail if a `Document` / `Path`
-  tool op is added or removed without updating the contract, or if the
-  decision request or a decision failure code changes without it.
+  tool op is added or removed without updating the contract, if the `Crypto`
+  tool's fields or their values change without it, or if the decision request
+  or a decision failure code changes without it.
 
 ## Change feed — react to changes instead of polling
 

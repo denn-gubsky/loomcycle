@@ -534,6 +534,18 @@ service Loomcycle {
   // to scope=user by the handler. Same SubstrateRequest/Response body shape.
   rpc CredentialDef(SubstrateRequest) returns (SubstrateResponse);
 
+  // Crypto dispatches to the Crypto tool outside a run (RFC EP): encrypt /
+  // decrypt / rewrap / mac / verify_mac / sign / verify / public_key / totp /
+  // hash / random with runtime-held keys. Mirrors POST /v1/_crypto. Gate
+  // ScopeTenant. The keys are the caller's tenant's and its own subject's
+  // user keys, resolved from the principal, NEVER the wire; agent keys are not
+  // reachable. An admin may name another tenant with a top-level "tenant" in
+  // input_json (and then gets that tenant's keys, no user keys). Each call
+  // takes one from the token's run rate: an exhausted rate is
+  // ResourceExhausted with RetryInfo. Op-discriminated input_json; same
+  // SubstrateRequest/Response body shape (is_error carries tool refusals).
+  rpc Crypto(SubstrateRequest) returns (SubstrateResponse);
+
   // History dispatches to the RFC BE History tool (browse/search/annotate
   // past chats; a chat = a session). Mirrors POST /v1/_history. TENANT-CONFINED
   // (ScopeTenant): the owner is resolved from the operator-trust ctx +

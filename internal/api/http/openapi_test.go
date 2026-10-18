@@ -63,6 +63,41 @@ func TestOpenAPISpec_PathOpsMatchTool(t *testing.T) {
 	assertSameOpSet(t, "Path", tool, spec)
 }
 
+// TestOpenAPISpec_CryptoInputMatchesTool guards drift between POST /v1/_crypto
+// in the spec and the Crypto tool's input, which the route forwards the body
+// to: the same fields (plus the operator API's own `tenant`), and the same
+// values for every field the tool enumerates.
+func TestOpenAPISpec_CryptoInputMatchesTool(t *testing.T) {
+	var tool struct {
+		Properties map[string]struct {
+			Enum []string `json:"enum"`
+		} `json:"properties"`
+		Required []string `json:"required"`
+	}
+	if err := json.Unmarshal((&builtin.Crypto{}).InputSchema(), &tool); err != nil {
+		t.Fatalf("parse the Crypto tool's InputSchema: %v", err)
+	}
+	spec := specSchemas(t)["CryptoToolInput"]
+	props := specMap(spec["properties"])
+	specFields := []string{}
+	for _, k := range specKeys(props) {
+		if k != cryptoTenantField {
+			specFields = append(specFields, k)
+		}
+	}
+	if _, ok := props[cryptoTenantField]; !ok {
+		t.Errorf("CryptoToolInput has no %q, the operator API's own field", cryptoTenantField)
+	}
+	assertSameSet(t, "CryptoToolInput properties", specKeys(tool.Properties), specFields)
+	assertSameSet(t, "CryptoToolInput required", tool.Required, specStrings(spec["required"]))
+	for name, p := range tool.Properties {
+		if len(p.Enum) == 0 {
+			continue
+		}
+		assertSameSet(t, "CryptoToolInput."+name+" enum", p.Enum, specStrings(specMap(props[name])["enum"]))
+	}
+}
+
 // TestOpenAPIHandlers_Serve exercises the HTTP serve path (the handlers read
 // only the embedded spec, not Server state, so a zero-value Server suffices).
 func TestOpenAPIHandlers_Serve(t *testing.T) {

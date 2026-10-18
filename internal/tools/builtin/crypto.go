@@ -17,6 +17,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/denn-gubsky/loomcycle/internal/audit"
+	"github.com/denn-gubsky/loomcycle/internal/auth"
 	"github.com/denn-gubsky/loomcycle/internal/credential"
 	"github.com/denn-gubsky/loomcycle/internal/cryptoops"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
@@ -287,6 +288,10 @@ func (c *Crypto) spend(ctx context.Context) (tools.Result, bool) {
 		limit = defaultCryptoMaxOpsPerRun
 	}
 	runID := tools.RunID(ctx)
+	if runID == "" && tools.IsSubstrateOperator(ctx) {
+		// The operator API: no run, so no run's budget. The token's rate bounds it.
+		return tools.Result{}, true
+	}
 	if runID == "" && tools.HasRunIdentity(ctx) {
 		// A run's call that carries no run id still spends from a budget: its
 		// agent's, so the cap is never skipped for a run.
@@ -370,6 +375,12 @@ func (c *Crypto) execKeyed(ctx context.Context, in cryptoInput) (tools.Result, *
 		CryptoRunID:   tools.RunID(ctx),
 		CryptoAgent:   tools.AgentName(ctx),
 		CryptoBytesIn: len(in.Plaintext) + len(in.Ciphertext) + len(in.Data) + len(in.Signature),
+	}
+	// The actor is who asked, the target the tenant whose key was used. They
+	// differ on the operator API, where an admin may use another tenant's keys,
+	// so the actor comes from the authenticated principal when there is one.
+	if p, ok := auth.PrincipalFromContext(ctx); ok {
+		ev.ActorTenant, ev.ActorSubject, ev.ActorTokenSuffix = p.TenantID, p.Subject, p.TokenSuffix
 	}
 
 	// decrypt and rewrap read the key from an envelope when one is given.
@@ -539,7 +550,14 @@ func (c *Crypto) resolveKey(ctx context.Context, ref keyRef, env *cryptoops.Enve
 		userID = ""
 	}
 	agentName := tools.AgentName(ctx)
+	offRun := tools.IsSubstrateOperator(ctx) && tools.RunID(ctx) == ""
 	noScope := func(which string) tools.Result {
+		if offRun {
+			// The operator API: there is no agent and no run whose keys these
+			// would be, and no crypto_scopes to grant.
+			return errPermission(which+" keys are not reachable outside a run",
+				"Outside a run you use your tenant's keys and your own user keys (key_scope tenant or user).")
+		}
 		return errPermission("this run may not use "+which+" keys", "An operator grants key scopes with the agent's crypto_scopes (agent, user, tenant, run).")
 	}
 	notFound := func(name string) tools.Result {

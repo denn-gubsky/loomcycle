@@ -202,7 +202,7 @@ func TestPrincipalMayCallTool_RestrictedTokenIsHeldToTheRunPlane(t *testing.T) {
 				t.Errorf("scopes %v: %s is a run tool but was refused", scopes, name)
 			}
 		}
-		for _, name := range []string{"agentdef", "teamdef", "scheduledef", "credentialdef", "decision", "memory", "document", "channel", "publish_channel", "operatortokendef", "a_tool_added_later"} {
+		for _, name := range []string{"agentdef", "teamdef", "scheduledef", "credentialdef", "crypto", "decision", "memory", "document", "channel", "publish_channel", "operatortokendef", "a_tool_added_later"} {
 			if principalMayCallTool(restricted, name) {
 				t.Errorf("scopes %v: %s was allowed to a restricted token", scopes, name)
 			}

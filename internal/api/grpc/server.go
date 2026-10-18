@@ -1001,6 +1001,11 @@ var grpcConsumerScopes = map[string]string{
 	// RFC CN additionally admits an isolated substrate:user caller via the
 	// enforceScope self-service carve-out, confined to scope=user by the handler.
 	"CredentialDef": auth.ScopeTenant,
+	// RFC EP Crypto outside a run, mirroring POST /v1/_crypto. ScopeTenant
+	// alone gates it: gRPC has no member bypass, and it is deliberately NOT in
+	// the credential self-service carve-out (a caller who can decrypt with the
+	// tenant's keys reads whatever the tenant sealed) nor on the run plane.
+	"Crypto": auth.ScopeTenant,
 	// RFC BE History — scope-aware chat browse/annotate. ScopeTenant route
 	// floor (a tenant operator may call it); the cross-tenant `global` scope is
 	// admin-gated inside the tool. Same posture as the HTTP /v1/_history route.

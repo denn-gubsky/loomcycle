@@ -964,6 +964,9 @@ func (m *mockConnector) VolumeDef(context.Context, json.RawMessage) (connector.T
 func (m *mockConnector) CredentialDef(context.Context, json.RawMessage) (connector.ToolResult, error) {
 	return connector.ToolResult{}, nil
 }
+func (m *mockConnector) Crypto(context.Context, json.RawMessage) (connector.ToolResult, error) {
+	return connector.ToolResult{}, nil
+}
 func (m *mockConnector) Path(context.Context, json.RawMessage) (connector.ToolResult, error) {
 	return connector.ToolResult{}, nil
 }

@@ -277,10 +277,18 @@ Inside a run, an agent creates and changes crypto keys **only in its own agent s
 
 **Using keys.** The `Crypto` tool takes a crypto key by name (`key`), an ordinary credential as key material (`cred`, with its `key_type`; one restricted by `allowed_urls` is refused), or a credential the run's caller passed (`run`). An agent may use only the scopes its `crypto_scopes` grants; with none it can still `hash` and make `random` values. Unlike a `$cred:` secret, where a narrower scope wins, a key name has **no precedence**: a `key` is used only when exactly one of the run's scopes holds a crypto key of that name, and a `cred` only when exactly one holds an ordinary credential of that name (the other kind is ignored either way). When more than one does, the call is refused until it names the scope with `key_scope` (`agent`, `user` or `tenant`), so a key or secret someone stores under another's name can never stand in for it (a user's own value under the tenant's webhook-secret name would otherwise verify MACs they forged). CredentialDef also refuses to create a crypto key under a name another scope the caller sees already holds as one. An envelope records its key's kind and scope (`lcx1:kt:` crypto key in tenant scope, `ku` user, `ka` agent; `ct` / `cu` / `ca` for an ordinary credential; `r` for a run credential), and that is part of the associated data, so a ciphertext decrypts only with the key of the scope that sealed it; a same-named key that appears later can neither open it nor block it. Decrypt and verify failures never say why. `decrypt` with `sensitive: true` keeps the plaintext out of the stored transcript, and the plaintext an agent encrypts is never stored. Every keyed op and every key change is written to the audit log (`LOOMCYCLE_AUDIT_LOG_PATH`), never with data or key material.
 
+**Outside a run.** `POST /v1/_crypto` runs the same operations for an operator or a service: a backend that encrypts a field before writing it to its own database, or checks a partner's webhook signature. The body is the `Crypto` tool's input and the answer is its result, with the same envelope and associated data, so a value one side encrypts the other decrypts. It needs `substrate:tenant`; a tenant's members are refused, because decrypting with the tenant's keys would let them read whatever the tenant sealed. A call uses its token's tenant keys and its own subject's user keys, never an agent's, and there are no run credentials outside a run. An admin may name another tenant with a top-level `tenant`, and then uses that tenant's keys only. Each call takes one from the token's run rate when the token has one (`429` with `Retry-After` past it); the per-run op budget does not apply. The audit record names the caller as the actor and the key's tenant as the target. The same operation is the gRPC `Crypto` RPC, the MCP `crypto` tool and `crypto()` in the TS and Python clients, and the route is in the OpenAPI contract (`/v1/openapi.yaml`).
+
+```bash
+curl -s -X POST "$LOOMCYCLE/v1/_crypto" -H "Authorization: Bearer $TOKEN" \
+  -d '{"op":"encrypt","key":"invoice-fields","plaintext":"4111 1111 1111 1111","context":"invoice:1234"}'
+# → {"ciphertext":"lcx1:kt:invoice-fields:3:…","key_version":3}
+```
+
 | Env var | Default | Meaning |
 |---|---|---|
 | `LOOMCYCLE_CRYPTO_MAX_BYTES` | 1048576 | cap on each data argument of a Crypto call |
-| `LOOMCYCLE_CRYPTO_MAX_OPS_PER_RUN` | 100 | Crypto calls one run may make |
+| `LOOMCYCLE_CRYPTO_MAX_OPS_PER_RUN` | 100 | Crypto calls one run may make (not the operator API) |
 
 `/metrics` reports `loomcycle_crypto_ops_total{op, outcome}`. The tool's own help (`Context op=help topic=Crypto`) documents each operation.
 
