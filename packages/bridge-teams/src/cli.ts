@@ -6,4 +6,4 @@ import { runCli } from "@loomcycle/bridge-core";
 import { createTeamsBridge } from "./bridge.js";
 import { loadConfig } from "./config.js";
 
-void runCli("teams-bridge", () => createTeamsBridge(loadConfig()) as never);
+void runCli("teams-bridge", () => createTeamsBridge(loadConfig()));
