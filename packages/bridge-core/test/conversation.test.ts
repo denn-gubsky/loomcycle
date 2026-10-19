@@ -505,6 +505,47 @@ describe("bridge conversation", () => {
     });
   });
 
+  describe("a guest from outside the platform's fence", () => {
+    const guest = (): Identified => {
+      const id = group("gus", "Gus", "untrusted");
+      if (!id.ok) throw new Error("refused");
+      return { ...id, speaker: { ...id.speaker, guest: true } };
+    };
+    const ask = async (options: string[]) => {
+      lc.runs[0].events.push({
+        type: "interruption_pending",
+        interruption: { interrupt_id: "q1", kind: "question", question: "Proceed?", options, priority: "normal" },
+      });
+      await waitFor(() => platform.cards().length === 1, "question card");
+      return platform.cards()[0];
+    };
+
+    it("never owns the conversation it opened: the first member who speaks does", async () => {
+      await say("do the thing", guest());
+      await say("/stop", guest());
+      expect(platform.messages().at(-1)).toBe("Only a member, not a guest, can do that.");
+
+      await say("carry on", group("alice", "Alice"));
+      const card = await ask(["Proceed", "Cancel"]);
+      if (card.kind !== "question") throw new Error("not a question");
+      expect(card.context).toBe("Only Alice can answer.");
+      expect(await click(card, "Proceed", guest())).toEqual({ message: "Only Alice can answer this." });
+      expect(await click(card, "Cancel", group("alice", "Alice"))).toEqual({ card: { kind: "result", message: "Answered: Cancel" } });
+      expect(lc.callsTo("resolveInterrupt").map((c) => c.args[2])).toEqual([{ answer: "Cancel", resolvedBy: "test-alice" }]);
+    });
+
+    it("cannot answer a card while no member owns the conversation; a member's press claims it", async () => {
+      await say("do the thing", guest());
+      const card = await ask(["Proceed"]);
+      if (card.kind !== "question") throw new Error("not a question");
+      expect(card.context).toBe("Only a member, not a guest, can answer.");
+      expect(await click(card, "Proceed", guest())).toEqual({ message: "Only a member, not a guest, can answer this." });
+      expect(lc.callsTo("resolveInterrupt")).toHaveLength(0);
+      expect(await click(card, "Proceed", group("alice", "Alice"))).toEqual({ card: { kind: "result", message: "Answered: Proceed" } });
+      expect((await store.get("conv-g"))?.ownerSubject).toBe("test-alice");
+    });
+  });
+
   it("sends batched messages on a platform that cannot stream, split at its limit", async () => {
     const batch = new FakeBatchPlatform();
     router = makeRouter({ capabilities: { streaming: "never", maxMessageChars: 10 }, port: batch });

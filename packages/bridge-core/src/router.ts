@@ -108,8 +108,10 @@ export class ConversationRouter<TRef> {
         conversationId: id.conversationId,
         scope: id.scope,
         ref,
-        ownerSubject: id.speaker.subject,
-        ownerName: id.speaker.name,
+        // A guest opens a conversation without owning it; the first member
+        // who speaks or presses a button there claims it.
+        ownerSubject: id.speaker.guest ? "" : id.speaker.subject,
+        ownerName: id.speaker.guest ? "" : id.speaker.name,
         runSubject: id.runAs.subject,
         runName: id.runAs.name,
         lastActivityAt: (this.deps.now ?? Date.now)(),

@@ -20,6 +20,10 @@ export interface Speaker {
   /** Display name, for messages that need to say who spoke. */
   name: string;
   trust: Trust;
+  /** From outside the platform's fence (a Slack Connect guest): admitted as
+   *  untrusted, but never the owner of a conversation, so never the one who
+   *  answers its cards or stops it. */
+  guest?: boolean;
 }
 
 /** Who a conversation's runs act as: the person in a 1:1 chat, the
