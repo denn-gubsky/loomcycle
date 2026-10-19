@@ -105,7 +105,7 @@ Discord's:
 
 - A question with options shows one button per option (up to six) and **Decline**.
 - A question without options asks to be answered with `/ask <your answer>`: a Discord message has no text field. The conversation owner's next `/ask` is taken as the answer.
-- A review shows **Approve** and **Send back**. To send it back with notes, press **Send back**, then `/ask` the notes.
+- A review shows **Approve** and **Send back**. To send it back with notes, press **Send back**, then `/ask` the notes. A feedback form on **Send back** is planned for v1.1.
 - A pressed card is replaced by its result, so it cannot be answered twice. A card from before a restart says it is no longer open.
 
 ## Limits
@@ -132,7 +132,7 @@ const bridge = createDiscordBridge(loadConfig(), { store: myRedisStore });
 await bridge.start();
 ```
 
-`ConversationStore` is four methods (`get`, `put`, `delete`, `list`); implement it over Redis or Postgres to run several instances. Interaction tokens are per process, so with several instances a reply goes by the bot token unless the instance that took the command sends it.
+`ConversationStore` is four methods (`get`, `put`, `delete`, `list`); implement it over Redis or Postgres to run several instances. Interaction tokens are per process, so with several instances a reply sent by an instance other than the one that took the command goes by the bot token: it arrives as a new channel message rather than an edit of the "thinking…" reply. v1 is meant to run as one instance per bot.
 
 ## Development
 
