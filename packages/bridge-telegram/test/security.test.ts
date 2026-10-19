@@ -43,7 +43,8 @@ describe("no link previews", () => {
       },
     });
     await p.editMessage(42, 7, { html: markdownToHtml(LEAK), plain: LEAK });
-    expect(textCalls(tg).length).toBe(5);
+    // The free-text card is two messages: the card, then its reply prompt.
+    expect(textCalls(tg).length).toBe(6);
     for (const c of textCalls(tg)) expect(c.params.link_preview_options).toEqual(NO_PREVIEW);
   });
 

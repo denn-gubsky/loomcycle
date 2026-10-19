@@ -1,15 +1,32 @@
-import { VERB } from "@loomcycle/bridge-core";
+import { VERB, type CanonicalCard } from "@loomcycle/bridge-core";
 import { describe, expect, it } from "vitest";
 
 import { TelegramApi } from "../src/api.js";
-import { TelegramPort } from "../src/port.js";
+import { TelegramPort, type TelegramPortOptions } from "../src/port.js";
 import type { TelegramStream } from "../src/stream.js";
 import { FakeTelegram, silentLogger, tgError, waitFor } from "./fakes.js";
 
-function port(tg: FakeTelegram, streaming = false, allowedChats: ReadonlySet<string> = new Set()) {
+function port(
+  tg: FakeTelegram,
+  streaming = false,
+  allowedChats: ReadonlySet<string> = new Set(),
+  more: Partial<TelegramPortOptions> = {},
+) {
   const api = new TelegramApi({ token: "1:x", baseUrl: "https://api.telegram.org", fetch: tg.fetch, sleep: async () => {} });
-  return new TelegramPort({ api, log: silentLogger, streaming, trustedChats: new Set(), allowedChats, timing: { minIntervalMs: 20 } });
+  return new TelegramPort({ api, log: silentLogger, streaming, trustedChats: new Set(), allowedChats, timing: { minIntervalMs: 20 }, ...more });
 }
+
+const freeText = (): CanonicalCard => ({
+  kind: "question",
+  runId: "r",
+  interruptId: "i",
+  question: "Your name?",
+  options: [],
+  buttons: [
+    { id: "sendAAAA", label: "Send", action: { verb: VERB.answer, runId: "r", interruptId: "i" } },
+    { id: "declAAAA", label: "Decline", action: { verb: VERB.decline, runId: "r", interruptId: "i" } },
+  ],
+});
 
 const topic = { chatId: -100500, threadId: 7 };
 
@@ -92,6 +109,43 @@ describe("port", () => {
       },
     });
     expect(tg.callsTo("sendMessage")[0]!.params.reply_markup).toEqual({ inline_keyboard: [[{ text: "Approve", callback_data: "apprAAAA" }]] });
+  });
+
+  it("sends a free-text question as the card, then a prompt that opens the reply box", async () => {
+    const tg = new FakeTelegram();
+    await port(tg).send({ chatId: 42 }, { type: "message", card: freeText() });
+    expect(tg.callsTo("sendMessage").map((c) => c.params)).toEqual([
+      {
+        chat_id: 42,
+        link_preview_options: { is_disabled: true },
+        reply_markup: { inline_keyboard: [[{ text: "Decline", callback_data: "declAAAA" }]] },
+        text: "Your name?",
+        parse_mode: "HTML",
+      },
+      {
+        chat_id: 42,
+        link_preview_options: { is_disabled: true },
+        reply_markup: { force_reply: true },
+        text: "Reply to this message with your answer.",
+        parse_mode: "HTML",
+      },
+    ]);
+  });
+
+  it("in a group, aims the reply box at the owner by replying to their message", async () => {
+    const tg = new FakeTelegram();
+    const trusted = new Set(["-100500"]);
+    const p = port(tg, false, new Set(), { trustedChats: trusted, replyTarget: (ref) => (ref.chatId === -100500 ? 555 : undefined) });
+    await p.send(topic, { type: "message", card: freeText() });
+    expect(tg.callsTo("sendMessage")[1]!.params).toEqual({
+      chat_id: -100500,
+      message_thread_id: 7,
+      link_preview_options: { is_disabled: true },
+      reply_markup: { force_reply: true, selective: true },
+      reply_parameters: { message_id: 555, allow_sending_without_reply: true },
+      text: "Reply to this message with your answer.",
+      parse_mode: "HTML",
+    });
   });
 
   it("offers the core a stream only when streaming is on", () => {

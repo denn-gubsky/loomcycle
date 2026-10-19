@@ -399,11 +399,13 @@ describe("cards", () => {
     });
   });
 
-  it("asks for a reply to a free-text question, with Decline and the reply box", () => {
+  it("draws a free-text question with Decline only, and asks for the reply in a prompt of its own", () => {
     const r = renderCard(question([]));
-    expect(r.html).toContain(FREE_TEXT_HINT);
-    expect(r.plain).toBe(`Which **file**?\n\nOnly Alice can answer.\n\n${FREE_TEXT_HINT}`);
-    expect(r.replyMarkup).toEqual({ inline_keyboard: [[{ text: "Decline", callback_data: "declAAAA" }]], force_reply: true });
+    expect(r.plain).toBe("Which **file**?\n\nOnly Alice can answer.");
+    // A reply_markup is one kind of markup: the reply box cannot ride on the keyboard.
+    expect(r.replyMarkup).toEqual({ inline_keyboard: [[{ text: "Decline", callback_data: "declAAAA" }]] });
+    expect(r.replyPrompt).toBe(FREE_TEXT_HINT);
+    expect(renderCard(question(["a.txt"])).replyPrompt).toBeUndefined();
   });
 
   it("in an untrusted chat, a free-text question says only the buttons answer, with Decline and no reply box", () => {
@@ -411,6 +413,7 @@ describe("cards", () => {
     expect(r.plain).toBe("Which **file**?\n\nOnly Alice can answer.\n\nOnly the buttons can answer here.");
     expect(r.html).toBe("Which <b>file</b>?\n\nOnly Alice can answer.\n\n<i>Only the buttons can answer here.</i>");
     expect(r.replyMarkup).toEqual({ inline_keyboard: [[{ text: "Decline", callback_data: "declAAAA" }]] });
+    expect(r.replyPrompt).toBeUndefined();
     // A question with options reads the same in any chat.
     expect(renderCard(question(["a.txt"]), { untrusted: true })).toEqual(renderCard(question(["a.txt"])));
   });

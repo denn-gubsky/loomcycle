@@ -17,8 +17,13 @@ export interface InlineKeyboardButton {
 
 export interface InlineKeyboardMarkup {
   inline_keyboard: InlineKeyboardButton[][];
-  /** Opens the reply box, so a free-text answer is one tap away. */
-  force_reply?: boolean;
+}
+
+/** Opens the reply box. selective limits it to the user the message replies
+ *  to (or mentions). */
+export interface ForceReply {
+  force_reply: true;
+  selective?: boolean;
 }
 
 /** A message ready to send: HTML, the plain text to fall back on if Telegram
@@ -27,6 +32,10 @@ export interface RenderedMessage {
   html: string;
   plain: string;
   replyMarkup?: InlineKeyboardMarkup;
+  /** A second message to send after this one, opening the reply box. A
+   *  reply_markup is one kind of markup, so the box cannot share the card's
+   *  message with its keyboard. */
+  replyPrompt?: string;
 }
 
 export const FREE_TEXT_HINT = "Reply to this message with your answer.";
@@ -55,23 +64,21 @@ export function renderCard(card: CanonicalCard, opts: RenderOptions = {}): Rende
     case "question": {
       // Telegram has no text field on a card. A free-text question is answered
       // by replying, which the core takes as the owner's answer, so its "send"
-      // button is not drawn.
+      // button is not drawn and a prompt that opens the reply box follows.
       const freeText = card.options.length === 0;
       const buttons = card.buttons.filter((b) => !(freeText && b.action.verb === VERB.answer));
       const parts = [card.question, card.context].filter((p): p is string => !!p);
-      // A reply cannot answer in an untrusted chat, so the reply box would
+      // A reply cannot answer in an untrusted chat, so a reply box would
       // invite a typed answer the core is bound to refuse.
       const replyable = freeText && !opts.untrusted;
-      const hint = freeText ? (replyable ? FREE_TEXT_HINT : BUTTONS_ONLY_HINT) : undefined;
+      const hint = freeText && !replyable ? BUTTONS_ONLY_HINT : undefined;
       const html = [...parts.map(markdownToHtml), ...(hint ? [`<i>${escapeHtml(hint)}</i>`] : [])].join("\n\n");
       const plain = [...parts, ...(hint ? [hint] : [])].join("\n\n");
       return {
         html,
         plain,
-        replyMarkup: {
-          inline_keyboard: buttons.map((b) => [button(b.label, b.id)]),
-          ...(replyable ? { force_reply: true } : {}),
-        },
+        replyMarkup: { inline_keyboard: buttons.map((b) => [button(b.label, b.id)]) },
+        ...(replyable ? { replyPrompt: FREE_TEXT_HINT } : {}),
       };
     }
     case "review": {

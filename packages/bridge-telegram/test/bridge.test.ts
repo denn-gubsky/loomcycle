@@ -299,17 +299,17 @@ describe("telegram bridge", () => {
     await start();
     const run = await sayAndStart(message("ask me"));
     run.events.push({ type: "interruption_pending", interruption: { interrupt_id: "int-2", kind: "question", priority: "normal", question: "Your name?" } });
-    await waitFor(() => tg.callsTo("sendMessage").length === 1, "card");
-    const markup = tg.callsTo("sendMessage")[0]!.params.reply_markup as { inline_keyboard: unknown[][]; force_reply?: boolean };
-    expect(markup.inline_keyboard).toHaveLength(1);
-    expect(markup.force_reply).toBe(true);
+    await waitFor(() => tg.callsTo("sendMessage").length === 2, "card and prompt");
+    const [card, prompt] = tg.callsTo("sendMessage").map((c) => c.params.reply_markup);
+    expect(card).toEqual({ inline_keyboard: [[{ text: "Decline", callback_data: expect.any(String) }]] });
+    expect(prompt).toEqual({ force_reply: true });
 
     await post(message("Alice Smith"));
     await waitFor(() => lc.callsTo("resolveInterrupt").length === 1, "answer");
     expect(lc.callsTo("resolveInterrupt")[0]!.args).toEqual(["run-1", "int-2", { answer: "Alice Smith", resolvedBy: "telegram-42" }]);
   });
 
-  it("in an untrusted group, a free-text question offers only Decline and no reply box; a trusted group's is unchanged", async () => {
+  it("in an untrusted group, a free-text question offers only Decline and no reply prompt", async () => {
     const mention = { entities: [{ type: "mention", offset: 0, length: 8 }] };
     const ask = { interrupt_id: "int-3", kind: "question", priority: "normal", question: "Your name?" };
     type Markup = { inline_keyboard: Array<Array<{ text: string }>>; force_reply?: boolean };
@@ -322,17 +322,46 @@ describe("telegram bridge", () => {
     expect(String(card.text)).toContain("Only the buttons can answer here.");
     expect((card.reply_markup as Markup).force_reply).toBeUndefined();
     expect((card.reply_markup as Markup).inline_keyboard.map((r) => r[0]!.text)).toEqual(["Decline"]);
-    await bridge.stop();
+    await settle();
+    expect(tg.callsTo("sendMessage")).toHaveLength(1);
+  });
 
-    lc = new FakeLoomcycle();
-    tg = new FakeTelegram();
+  it("in a trusted group, a free-text question prompts its owner for a reply, and a reply to the card or the prompt answers", async () => {
     await start({ TELEGRAM_BRIDGE_TRUSTED_CHATS: "-100500" });
-    run = await sayAndStart(message("@LoomBot ask me", alice, group, mention));
-    run.events.push({ type: "interruption_pending", interruption: ask });
-    await waitFor(() => tg.callsTo("sendMessage").length === 1, "trusted card");
-    card = tg.callsTo("sendMessage")[0]!.params;
-    expect(String(card.text)).not.toContain("Only the buttons can answer here.");
-    expect((card.reply_markup as Markup).force_reply).toBe(true);
+    const mention = { entities: [{ type: "mention", offset: 0, length: 8 }] };
+    const ask = (id: string) => ({ interrupt_id: id, kind: "question", priority: "normal", question: "Your name?" });
+    const first = message("@LoomBot ask me", alice, group, mention);
+    const run = await sayAndStart(first);
+    // Someone else speaks after the owner: the prompt still aims at the owner.
+    await post(message("@LoomBot me too", bob, group, mention));
+    await waitFor(() => lc.callsTo("sendRunInput").length === 1, "bob's input");
+
+    run.events.push({ type: "interruption_pending", interruption: ask("int-4") });
+    await waitFor(() => tg.callsTo("sendMessage").length === 2, "card and prompt");
+    const [card, prompt] = tg.callsTo("sendMessage").map((c) => c.params);
+    expect(String(card!.text)).not.toContain("Only the buttons can answer here.");
+    expect(card!.reply_markup).toEqual({ inline_keyboard: [[{ text: "Decline", callback_data: expect.any(String) }]] });
+    expect(prompt).toEqual({
+      chat_id: -100500,
+      link_preview_options: { is_disabled: true },
+      reply_markup: { force_reply: true, selective: true },
+      reply_parameters: { message_id: first.message!.message_id, allow_sending_without_reply: true },
+      text: "Reply to this message with your answer.",
+      parse_mode: "HTML",
+    });
+
+    // A reply to the prompt (the bot's message) answers.
+    const toBot = { reply_to_message: { from: tg.bot } };
+    await post(message("Alice Smith", alice, group, toBot));
+    await waitFor(() => lc.callsTo("resolveInterrupt").length === 1, "answer via the prompt");
+    expect(lc.callsTo("resolveInterrupt")[0]!.args).toEqual(["run-1", "int-4", { answer: "Alice Smith", resolvedBy: "telegram-42" }]);
+
+    // So does a reply to the card, which is the bot's message too.
+    run.events.push({ type: "interruption_pending", interruption: ask("int-5") });
+    await waitFor(() => tg.callsTo("sendMessage").length === 4, "second card and prompt");
+    await post(message("Smith", alice, group, toBot));
+    await waitFor(() => lc.callsTo("resolveInterrupt").length === 2, "answer via the card");
+    expect(lc.callsTo("resolveInterrupt")[1]!.args).toEqual(["run-1", "int-5", { answer: "Smith", resolvedBy: "telegram-42" }]);
   });
 
   it("a press by someone other than the card's owner is refused in the callback answer", async () => {

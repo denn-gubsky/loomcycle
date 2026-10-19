@@ -8,6 +8,7 @@ import { parseCallbackData, renderCard } from "./cards.js";
 import { WEBHOOK_PATH, type TelegramConfig } from "./config.js";
 import {
   addressedText,
+  conversationIdOf,
   hasNonTextContent,
   identify,
   refFor,
@@ -33,6 +34,9 @@ export interface TelegramBridgeOptions extends BridgeOptions<TelegramRef> {
 
 /** answerCallbackQuery's text limit. */
 const MAX_CALLBACK_TEXT = 200;
+/** Group speakers whose latest message id is remembered. Forgetting one only
+ *  makes a reply prompt open for the whole chat. */
+const MAX_LAST_MESSAGES = 10_000;
 
 export function createTelegramBridge(cfg: TelegramConfig, opts: TelegramBridgeOptions = {}): Bridge<TelegramRef> {
   const api = new TelegramApi({ token: cfg.botToken, baseUrl: cfg.apiBaseUrl, fetch: opts.fetch, sleep: opts.sleep });
@@ -51,6 +55,8 @@ class TelegramAdapter implements BridgeAdapter<TelegramRef> {
   private readonly tgPort: TelegramPort;
   private readonly policy: AccessPolicy;
   private readonly seen = new SeenSet();
+  /** "<conversation id>|<subject>" → that speaker's latest message id there. */
+  private readonly lastMessages = new Map<string, number>();
   private bot?: BotInfo;
   private ctx?: BridgeContext<TelegramRef>;
   private readonly log: Logger;
@@ -63,7 +69,16 @@ class TelegramAdapter implements BridgeAdapter<TelegramRef> {
     // The core logs with the same logger (its default is consoleLogger too).
     this.log = opts.logger ?? consoleLogger;
     this.capabilities = { streaming: cfg.streaming ? ("personal-only" as const) : ("never" as const), maxMessageChars: MAX_MESSAGE_CHARS };
-    this.tgPort = new TelegramPort({ api, log: this.log, streaming: cfg.streaming, trustedChats: cfg.trustedChats, allowedChats: cfg.allowedChats, timing: opts.timing, now: opts.now });
+    this.tgPort = new TelegramPort({
+      api,
+      log: this.log,
+      streaming: cfg.streaming,
+      trustedChats: cfg.trustedChats,
+      allowedChats: cfg.allowedChats,
+      replyTarget: (ref) => this.ownerMessage(ref),
+      timing: opts.timing,
+      now: opts.now,
+    });
     this.port = this.tgPort.asBridgePort();
     this.policy = {
       allowedUsers: cfg.allowedUsers,
@@ -149,7 +164,22 @@ class TelegramAdapter implements BridgeAdapter<TelegramRef> {
       else await this.tgPort.send(ref, { type: "message", text: TEXT_ONLY_NOTICE });
       return;
     }
+    if (id.ok && id.scope === "group") this.rememberMessage(`${id.conversationId}|${id.speaker.subject}`, msg.message_id);
     await ctx.router.onMessage(id, ref, text);
+  }
+
+  private rememberMessage(key: string, messageId: number): void {
+    this.lastMessages.delete(key);
+    this.lastMessages.set(key, messageId);
+    if (this.lastMessages.size > MAX_LAST_MESSAGES) this.lastMessages.delete(this.lastMessages.keys().next().value!);
+  }
+
+  /** ownerMessage is the latest message of the conversation's owner, the one
+   *  person who may answer its cards. */
+  private ownerMessage(ref: TelegramRef): number | undefined {
+    const cid = conversationIdOf(ref.chatId, ref.threadId);
+    const owner = this.ctx?.router.get(cid)?.record.ownerSubject;
+    return owner === undefined ? undefined : this.lastMessages.get(`${cid}|${owner}`);
   }
 
   private async onCallback(cq: TgCallbackQuery): Promise<void> {

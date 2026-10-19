@@ -80,6 +80,11 @@ export function topicOf(msg: Pick<TgMessage, "is_topic_message" | "message_threa
   return msg.is_topic_message && typeof msg.message_thread_id === "number" ? msg.message_thread_id : undefined;
 }
 
+/** conversationIdOf names the session: a chat, or a forum topic in it. */
+export function conversationIdOf(chatId: number, threadId: number | undefined): string {
+  return threadId === undefined ? `tg:${chatId}` : `tg:${chatId}:${threadId}`;
+}
+
 export function refFor(chat: TgChat, threadId: number | undefined): TelegramRef {
   return threadId === undefined ? { chatId: chat.id } : { chatId: chat.id, threadId };
 }
@@ -101,7 +106,7 @@ export function identify(chat: TgChat, from: TgUser | undefined, threadId: numbe
   if (!Number.isSafeInteger(from.id) || !Number.isSafeInteger(chat.id)) return { ok: false, reason: "bad_id" };
 
   const chatKey = String(chat.id);
-  const conversationId = threadId === undefined ? `tg:${chatKey}` : `tg:${chatKey}:${threadId}`;
+  const conversationId = conversationIdOf(chat.id, threadId);
   const subject = `telegram-${from.id}`;
   const name = displayName(from);
 

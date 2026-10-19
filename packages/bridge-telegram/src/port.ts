@@ -4,7 +4,7 @@
 import type { BridgePort, Logger, OutboundActivity, StreamLike } from "@loomcycle/bridge-core";
 
 import { isNotModified, isParseError, TelegramError, type TelegramApi } from "./api.js";
-import { renderCard, type InlineKeyboardMarkup, type RenderedMessage } from "./cards.js";
+import { renderCard, type ForceReply, type InlineKeyboardMarkup, type RenderedMessage } from "./cards.js";
 import { escapeHtml, markdownToHtml } from "./format.js";
 import { chatIsUntrusted, type TelegramRef } from "./identity.js";
 import { TelegramStream, type StreamTiming } from "./stream.js";
@@ -26,6 +26,16 @@ function threadParams(ref: TelegramRef): Record<string, unknown> {
   return ref.threadId === undefined ? { chat_id: ref.chatId } : { chat_id: ref.chatId, message_thread_id: ref.threadId };
 }
 
+/** What sendMessage sends: a rendered message, or the reply prompt, whose
+ *  markup is a ForceReply and which may reply to a message in the same chat
+ *  and topic. */
+export interface OutgoingMessage {
+  html: string;
+  plain: string;
+  replyMarkup?: InlineKeyboardMarkup | ForceReply;
+  replyTo?: number;
+}
+
 export interface TelegramPortOptions {
   api: TelegramApi;
   log: Logger;
@@ -34,6 +44,9 @@ export interface TelegramPortOptions {
   trustedChats: ReadonlySet<string>;
   /** Group ids the bot answers in (TELEGRAM_BRIDGE_ALLOWED_CHATS). */
   allowedChats: ReadonlySet<string>;
+  /** The card owner's latest message in a group conversation, if known: the
+   *  reply prompt replies to it so its reply box opens for the owner alone. */
+  replyTarget?: (ref: TelegramRef) => number | undefined;
   timing?: Partial<StreamTiming>;
   now?: () => number;
 }
@@ -63,11 +76,35 @@ export class TelegramPort {
         ? renderCard(activity.card, { untrusted: chatIsUntrusted(ref.chatId, this.opts.trustedChats) })
         : { html: markdownToHtml(activity.text), plain: activity.text };
     await this.sendMessage(ref, rendered);
+    if (rendered.replyPrompt) await this.sendReplyPrompt(ref, rendered.replyPrompt);
+  }
+
+  /** sendReplyPrompt opens the reply box for a free-text question. In a group
+   *  it is selective, aimed by replying to the owner's message (selective
+   *  targets the sender of the message replied to, or users @mentioned).
+   *  With no such message (a private chat, or the bridge restarted since the
+   *  owner spoke) the box opens for everyone in the chat; a reply from anyone
+   *  but the owner then reaches the agent as an ordinary message. A failure
+   *  is logged, not thrown: the card is out, and a reply to it answers too. */
+  private async sendReplyPrompt(ref: TelegramRef, text: string): Promise<void> {
+    const target = ref.chatId < 0 ? this.opts.replyTarget?.(ref) : undefined;
+    const replyMarkup: ForceReply = target === undefined ? { force_reply: true } : { force_reply: true, selective: true };
+    try {
+      await this.sendMessage(ref, { html: escapeHtml(text), plain: text, replyMarkup, ...(target === undefined ? {} : { replyTo: target }) });
+    } catch (err) {
+      this.opts.log.warn("could not send the reply prompt", { chat: ref.chatId, ...(err instanceof TelegramError ? { code: err.code } : {}) });
+    }
   }
 
   /** sendMessage sends HTML, and the plain text if Telegram refuses the HTML. */
-  async sendMessage(ref: TelegramRef, m: RenderedMessage, o: { retry?: boolean } = {}): Promise<number | undefined> {
-    const base = { ...threadParams(ref), ...NO_LINK_PREVIEW, ...(m.replyMarkup ? { reply_markup: m.replyMarkup } : {}) };
+  async sendMessage(ref: TelegramRef, m: OutgoingMessage, o: { retry?: boolean } = {}): Promise<number | undefined> {
+    const base = {
+      ...threadParams(ref),
+      ...NO_LINK_PREVIEW,
+      ...(m.replyMarkup ? { reply_markup: m.replyMarkup } : {}),
+      // Sent anyway if the owner deleted the message it replies to.
+      ...(m.replyTo === undefined ? {} : { reply_parameters: { message_id: m.replyTo, allow_sending_without_reply: true } }),
+    };
     try {
       const sent = await this.opts.api.call<{ message_id?: number }>("sendMessage", { ...base, text: m.html, parse_mode: "HTML" }, o);
       return sent?.message_id;
