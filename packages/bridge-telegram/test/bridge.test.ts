@@ -188,6 +188,26 @@ describe("telegram bridge", () => {
     expect(lc.calls).toHaveLength(0);
   });
 
+  it("on the upgrade service message, tells an allowed group its new id once, and never reaches loomcycle", async () => {
+    await start({ TELEGRAM_BRIDGE_ALLOWED_CHATS: "-500,-100500" });
+    const upgraded = (chatId: number, newId: number): TgUpdate =>
+      ({ update_id: nextUpdate++, message: { message_id: nextUpdate, chat: { id: chatId, type: "group" }, from: alice, migrate_to_chat_id: newId } }) as TgUpdate;
+    await post(upgraded(-500, -1009999));
+    await waitFor(() => tg.callsTo("sendMessage").length === 1, "upgrade notice");
+    expect(tg.callsTo("sendMessage")[0]!.params).toEqual({
+      chat_id: -1009999,
+      link_preview_options: { is_disabled: true },
+      text: "This group was upgraded, so its id changed to -1009999. Ask the operator to allow it.",
+      parse_mode: "HTML",
+    });
+    // Again for the same group, and for a group nobody allowed: nothing.
+    await post(upgraded(-500, -1009999));
+    await post(upgraded(-777, -1008888));
+    await settle();
+    expect(tg.callsTo("sendMessage")).toHaveLength(1);
+    expect(lc.calls).toHaveLength(0);
+  });
+
   it("tells a user outside the allow-list once, and never reaches loomcycle", async () => {
     await start();
     const stranger = { id: 66, is_bot: false, first_name: "Stranger" };

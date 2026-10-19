@@ -36,6 +36,8 @@ export interface TgMessage {
   message_thread_id?: number;
   is_topic_message?: boolean;
   reply_to_message?: { from?: TgUser };
+  /** Telegram's service message in a group that became a supergroup. */
+  migrate_to_chat_id?: number;
 }
 
 export interface TgCallbackQuery {

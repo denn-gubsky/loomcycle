@@ -56,6 +56,17 @@ describe("port", () => {
     expect(tg.callsTo("sendMessage").map((c) => c.params.chat_id)).toEqual([-500, -1009999, -500]);
   });
 
+  it("the service message and a failed send share one notice per old id", async () => {
+    const tg = new FakeTelegram();
+    tg.reply.sendMessage = (p) =>
+      p.chat_id === -500 ? tgError(400, "Bad Request: group chat was upgraded to a supergroup chat", { migrate_to_chat_id: -1009999 }) : undefined;
+    const p = port(tg, false, new Set(["-500"]));
+    await p.tellMigrated(-500, -1009999);
+    await expect(p.send({ chatId: -500 }, { type: "message", text: "x" })).rejects.toMatchObject({ code: 400 });
+    await new Promise((r) => setTimeout(r, 30));
+    expect(tg.callsTo("sendMessage").map((c) => c.params.chat_id)).toEqual([-1009999, -500]);
+  });
+
   it("never writes into a new chat id because of a group that was not allowed", async () => {
     const tg = new FakeTelegram();
     tg.reply.sendMessage = () => tgError(400, "Bad Request: group chat was upgraded to a supergroup chat", { migrate_to_chat_id: -1009999 });

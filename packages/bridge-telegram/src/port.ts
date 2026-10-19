@@ -121,20 +121,25 @@ export class TelegramPort {
       // arrive under that id, which the operator must allow, and it is a new
       // conversation with a new memory.
       this.opts.log.warn("telegram group moved to a new chat id", { chat: ref.chatId, new_chat: err.migrateToChatId });
-      // Tell the group why the bot went quiet. Only for a chat the operator
-      // allowed: a group nobody allowed must never make the bot write into
-      // another chat. The new id is not allowed here; that is the operator's
-      // call.
-      const allowed = this.opts.allowedChats.has(String(ref.chatId));
-      if (!allowed || this.toldMigrated.has(ref.chatId) || !Number.isSafeInteger(err.migrateToChatId)) return;
-      this.toldMigrated.add(ref.chatId);
-      const text = `This group was upgraded, so its id changed to ${err.migrateToChatId}. Ask the operator to allow it.`;
-      void this.sendMessage({ chatId: err.migrateToChatId }, { html: escapeHtml(text), plain: text }).catch((e: unknown) => {
-        this.opts.log.warn("could not tell a group its new chat id", {
-          new_chat: err.migrateToChatId,
-          ...(e instanceof TelegramError ? { code: e.code } : {}),
-        });
-      });
+      void this.tellMigrated(ref.chatId, err.migrateToChatId);
+    }
+  }
+
+  /** tellMigrated tells a group that became a supergroup its new id, once per
+   *  old id, whether the bridge learnt it from Telegram's service message or
+   *  from a send that failed. Never throws. */
+  async tellMigrated(oldChatId: number, newChatId: number): Promise<void> {
+    // Only for a chat the operator allowed: a group nobody allowed must never
+    // make the bot write into another chat. The new id is not allowed here;
+    // that is the operator's call.
+    const allowed = this.opts.allowedChats.has(String(oldChatId));
+    if (!allowed || this.toldMigrated.has(oldChatId) || !Number.isSafeInteger(newChatId)) return;
+    this.toldMigrated.add(oldChatId);
+    const text = `This group was upgraded, so its id changed to ${newChatId}. Ask the operator to allow it.`;
+    try {
+      await this.sendMessage({ chatId: newChatId }, { html: escapeHtml(text), plain: text });
+    } catch (e) {
+      this.opts.log.warn("could not tell a group its new chat id", { new_chat: newChatId, ...(e instanceof TelegramError ? { code: e.code } : {}) });
     }
   }
 }

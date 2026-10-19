@@ -126,6 +126,13 @@ class TelegramAdapter implements BridgeAdapter<TelegramRef> {
     const bot = this.bot;
     const ctx = this.ctx;
     if (!bot || !ctx || !msg.chat) return;
+    // Telegram's own notice, in the old chat, that the group became a
+    // supergroup: not a person's message, so it never reaches the router.
+    if (typeof msg.migrate_to_chat_id === "number") {
+      this.log.warn("telegram group moved to a new chat id", { chat: msg.chat.id, new_chat: msg.migrate_to_chat_id });
+      await this.tgPort.tellMigrated(msg.chat.id, msg.migrate_to_chat_id);
+      return;
+    }
     // The bot's own messages and every other bot's are dropped before
     // anything else: a bridge that answers a bot loops on the model keys.
     if (!msg.from || msg.from.is_bot) return;
