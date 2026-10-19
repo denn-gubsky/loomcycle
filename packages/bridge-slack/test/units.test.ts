@@ -177,9 +177,27 @@ describe("identity", () => {
     });
   });
 
-  it("refuses a speaker from another organisation in an allowed workspace", () => {
+  it("refuses a speaker from another organisation in a DM", () => {
     expect(identify(fields({ otherTeams: ["T9"] }), policy, "A")).toMatchObject({ ok: false, reason: "team_not_allowed" });
     expect(identify(fields({ otherTeams: ["T1", "T9"] }), policy, "A")).toMatchObject({ ok: false, reason: "team_not_allowed" });
+  });
+
+  it("admits a Slack Connect guest in a shared conversation as untrusted, under the conversation's identity", () => {
+    for (const channelType of ["channel", "mpim"] as const) {
+      for (const otherTeams of [["T9"], ["T1", "T9"], ["T9", "T1"]]) {
+        const r = identify(fields({ channel: "C1", channelType, otherTeams }), policy, "Guest");
+        expect(r).toMatchObject({
+          ok: true,
+          speaker: { subject: `slack-${otherTeams[0].toLowerCase()}-ualice`, trust: "untrusted" },
+          runAs: { subject: sharedSubject("slack", "t1", "c1") },
+        });
+      }
+    }
+    // A guest never makes the workspace itself allowed.
+    expect(identify(fields({ team: "T2", otherTeams: ["T9"], channel: "C1", channelType: "channel" }), policy, "A")).toMatchObject({
+      ok: false,
+      reason: "team_not_allowed",
+    });
   });
 
   it("replies in the thread in a channel, and where the person wrote in a DM", () => {

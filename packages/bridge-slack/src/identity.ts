@@ -69,10 +69,10 @@ export function subjectFor(team: string, user: string): string {
   return `slack-${team}-${user}`.toLowerCase();
 }
 
-/** teamsAllowed is the fence. Every team id the request carries must be
- *  allowed: in a channel shared between organisations (Slack Connect) the
- *  workspace may be ours while the speaker's is another, and one allowed id
- *  must never vouch for a disallowed one. */
+/** teamsAllowed says whether every team id the request carries is allowed.
+ *  In a channel shared between organisations (Slack Connect) the workspace
+ *  may be ours while the speaker's is another: one allowed id must never
+ *  vouch for a disallowed one, so such a speaker is a guest. */
 export function teamsAllowed(f: InboundFields, allowed: ReadonlySet<string>): boolean {
   return [f.team, ...f.otherTeams].every((t) => allowed.has(t.toUpperCase()));
 }
@@ -86,15 +86,20 @@ export function cleanName(name: string | undefined, fallback: string): string {
 
 export function identify(f: InboundFields, policy: TrustPolicy, displayName: string): Identified {
   const conversationId = conversationIdOf(f);
-  if (!teamsAllowed(f, policy.allowedTeams)) {
-    return { ok: false, reason: "team_not_allowed", notice: NOT_ALLOWED_NOTICE, conversationId };
-  }
+  const scope: Scope = f.channelType === "im" ? "personal" : f.channelType === "mpim" ? "group" : "channel";
+  const refused = { ok: false, reason: "team_not_allowed", notice: NOT_ALLOWED_NOTICE, conversationId } as const;
+  if (!policy.allowedTeams.has(f.team.toUpperCase())) return refused;
+  // A guest from another organisation (Slack Connect) is admitted only where
+  // the conversation's own identity runs, and only as untrusted: their text is
+  // data, never part of the prompt. In a DM they would run as themselves, so
+  // there they are refused.
+  const guest = !teamsAllowed(f, policy.allowedTeams);
+  if (guest && scope === "personal") return refused;
   if (!SLACK_ID.test(f.user.toUpperCase())) return { ok: false, reason: "no_user" };
   // The speaker's own team names them, so a Slack Connect guest keeps one
   // identity whichever workspace they write in.
   const subject = subjectFor(f.otherTeams[0] ?? f.team, f.user);
-  const scope: Scope = f.channelType === "im" ? "personal" : f.channelType === "mpim" ? "group" : "channel";
-  const trust: Trust = scope === "personal" ? "trusted" : policy.sharedTrust;
+  const trust: Trust = guest ? "untrusted" : scope === "personal" ? "trusted" : policy.sharedTrust;
   const speaker = { subject, name: displayName, trust };
   if (scope === "personal") return { ok: true, speaker, scope, conversationId, runAs: { subject, name: displayName } };
   return {
