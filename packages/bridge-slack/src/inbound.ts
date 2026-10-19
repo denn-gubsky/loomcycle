@@ -64,14 +64,14 @@ export function readEvent(env: EventEnvelope, self: SelfIds): ReadEvent {
   const channel = str(ev.channel);
   const ts = str(ev.ts);
   if (!team || !channel || !ts) return { kind: "ignore" };
-  // The speaker's team comes first: identify names the person by it.
-  const speakerTeam = str(ev.user_team) ?? str(ev.team) ?? team;
-  const otherTeams = [speakerTeam, str(ev.source_team)].filter((t): t is string => !!t);
   return {
     kind: "message",
     fields: {
       team,
-      otherTeams,
+      // Never the delivered-for workspace as a fallback: identify must not
+      // take a speaker whose team is unknown for a member of it.
+      speakerTeam: str(ev.user_team) ?? str(ev.team),
+      otherTeams: [str(ev.source_team)].filter((t): t is string => !!t),
       user,
       channel,
       channelType: isDm ? "im" : channelTypeOf(ev.channel_type),
@@ -139,7 +139,8 @@ export function readAction(p: BlockActionsPayload): ReadAction | undefined {
   return {
     fields: {
       team,
-      otherTeams: [str(p.user?.team_id) ?? team],
+      speakerTeam: str(p.user?.team_id),
+      otherTeams: [],
       user,
       channel,
       channelType,

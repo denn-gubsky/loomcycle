@@ -4,7 +4,7 @@ import { describe, expect, it } from "vitest";
 import { retryAfterMs, SlackApi, SlackApiError } from "../src/api.js";
 import { renderCard, MAX_BUTTON_LABEL } from "../src/cards.js";
 import { loadConfig } from "../src/config.js";
-import { conversationIdOf, identify, NOT_ALLOWED_NOTICE, refOf, type InboundFields, type TrustPolicy } from "../src/identity.js";
+import { conversationIdOf, identify, NOT_ALLOWED_NOTICE, refOf, teamsAllowed, type InboundFields, type TrustPolicy } from "../src/identity.js";
 import { CARD_BLOCK_ID, cleanInbound, readAction, readEvent, type EventEnvelope } from "../src/inbound.js";
 import { SeenSet } from "../src/seen.js";
 import { SlackStream } from "../src/stream.js";
@@ -123,7 +123,9 @@ describe("config", () => {
 const policy: TrustPolicy = { allowedTeams: new Set(["T1"]), sharedTrust: "trusted" };
 
 function fields(over: Partial<InboundFields> = {}): InboundFields {
-  return { team: "T1", otherTeams: ["T1"], user: "UALICE", channel: "D1", channelType: "im", ts: "100.1", ...over };
+  const base = { team: "T1", otherTeams: [], user: "UALICE", channel: "D1", channelType: "im" as const, ts: "100.1", ...over };
+  // An explicit `speakerTeam: undefined` is the case under test, not a default.
+  return { ...base, speakerTeam: "speakerTeam" in over ? over.speakerTeam : "T1" };
 }
 
 describe("identity", () => {
@@ -169,7 +171,7 @@ describe("identity", () => {
   });
 
   it("refuses a workspace not in the allow-list, with a notice", () => {
-    expect(identify(fields({ team: "T2", otherTeams: ["T2"] }), policy, "A")).toEqual({
+    expect(identify(fields({ team: "T2", speakerTeam: "T2" }), policy, "A")).toEqual({
       ok: false,
       reason: "team_not_allowed",
       notice: NOT_ALLOWED_NOTICE,
@@ -178,17 +180,17 @@ describe("identity", () => {
   });
 
   it("refuses a speaker from another organisation in a DM", () => {
+    expect(identify(fields({ speakerTeam: "T9" }), policy, "A")).toMatchObject({ ok: false, reason: "team_not_allowed" });
     expect(identify(fields({ otherTeams: ["T9"] }), policy, "A")).toMatchObject({ ok: false, reason: "team_not_allowed" });
-    expect(identify(fields({ otherTeams: ["T1", "T9"] }), policy, "A")).toMatchObject({ ok: false, reason: "team_not_allowed" });
   });
 
   it("admits a Slack Connect guest in a shared conversation as untrusted, under the conversation's identity", () => {
     for (const channelType of ["channel", "mpim"] as const) {
-      for (const otherTeams of [["T9"], ["T1", "T9"], ["T9", "T1"]]) {
-        const r = identify(fields({ channel: "C1", channelType, otherTeams }), policy, "Guest");
+      for (const [speakerTeam, otherTeams] of [["T9", []], ["T1", ["T9"]], ["T9", ["T1"]]] as const) {
+        const r = identify(fields({ channel: "C1", channelType, speakerTeam, otherTeams: [...otherTeams] }), policy, "Guest");
         expect(r).toMatchObject({
           ok: true,
-          speaker: { subject: `slack-${otherTeams[0].toLowerCase()}-ualice`, trust: "untrusted", guest: true },
+          speaker: { subject: `slack-${speakerTeam.toLowerCase()}-ualice`, trust: "untrusted", guest: true },
           runAs: { subject: sharedSubject("slack", "t1", "c1") },
         });
       }
@@ -196,15 +198,26 @@ describe("identity", () => {
     // A member is never marked a guest.
     expect(identify(fields({ channel: "C1", channelType: "channel" }), policy, "A")).not.toHaveProperty("speaker.guest");
     // A mention carries no channel_type: a DM's id still refuses a guest.
-    expect(identify(fields({ channel: "D1", channelType: "channel", otherTeams: ["T9"] }), policy, "A")).toMatchObject({
+    expect(identify(fields({ channel: "D1", channelType: "channel", speakerTeam: "T9" }), policy, "A")).toMatchObject({
       ok: false,
       reason: "team_not_allowed",
     });
     // A guest never makes the workspace itself allowed.
-    expect(identify(fields({ team: "T2", otherTeams: ["T9"], channel: "C1", channelType: "channel" }), policy, "A")).toMatchObject({
+    expect(identify(fields({ team: "T2", speakerTeam: "T9", channel: "C1", channelType: "channel" }), policy, "A")).toMatchObject({
       ok: false,
       reason: "team_not_allowed",
     });
+  });
+
+  it("never takes a speaker whose team is unknown for a member", () => {
+    const unknown = { speakerTeam: undefined };
+    for (const f of [fields(unknown), fields({ ...unknown, channel: "D1", channelType: "channel" })]) {
+      expect(identify(f, policy, "A")).toMatchObject({ ok: false, reason: "team_not_allowed", notice: NOT_ALLOWED_NOTICE });
+    }
+    for (const channelType of ["channel", "mpim"] as const) {
+      expect(identify(fields({ ...unknown, channel: "C1", channelType }), policy, "A")).toEqual({ ok: false, reason: "no_user" });
+    }
+    expect(teamsAllowed(fields(unknown), policy.allowedTeams)).toBe(false);
   });
 
   it("replies in the thread in a channel, and where the person wrote in a DM", () => {
@@ -221,7 +234,7 @@ describe("events", () => {
 
   it("takes a DM", () => {
     const r = readEvent(env({ type: "message", channel_type: "im", user: "UALICE", text: "hi &amp; bye", ts: "1.1", channel: "D1", team: "T1" }), self);
-    expect(r).toMatchObject({ kind: "message", text: "hi & bye", fields: { channelType: "im", user: "UALICE", otherTeams: ["T1"] } });
+    expect(r).toMatchObject({ kind: "message", text: "hi & bye", fields: { channelType: "im", user: "UALICE", speakerTeam: "T1", otherTeams: [] } });
   });
 
   it("takes a channel mention, without the mention", () => {
@@ -251,7 +264,18 @@ describe("events", () => {
 
   it("carries a Slack Connect speaker's own team for the fence", () => {
     const r = readEvent(env({ type: "app_mention", user: "UX", user_team: "T9", text: "hi", ts: "1", channel: "C1" }), self);
-    expect(r).toMatchObject({ fields: { team: "T1", otherTeams: ["T9"] } });
+    expect(r).toMatchObject({ fields: { team: "T1", speakerTeam: "T9" } });
+  });
+
+  it("leaves the speaker's team unknown when the event names none, never the workspace's", () => {
+    for (const e of [
+      { type: "app_mention", user: "UALICE", text: "hi", ts: "1", channel: "C1" },
+      { type: "message", channel_type: "im", user: "UALICE", text: "hi", ts: "1", channel: "D1" },
+    ]) {
+      const r = readEvent(env(e), self);
+      expect(r).toMatchObject({ kind: "message", fields: { team: "T1" } });
+      if (r.kind === "message") expect(r.fields.speakerTeam).toBeUndefined();
+    }
   });
 
   it("unwraps links and decodes entities", () => {
@@ -351,6 +375,20 @@ describe("cards", () => {
     expect(readAction({ ...p, actions: [{ ...p.actions[0], block_id: "theirs" }] })).toBeUndefined();
     expect(readAction({ ...p, actions: [{ ...p.actions[0], value: "x".repeat(33) }] })).toBeUndefined();
     expect(readAction({ ...p, type: "view_submission" })).toBeUndefined();
+  });
+
+  it("leaves the presser's team unknown when the press names none, never the workspace's", () => {
+    const p = {
+      type: "block_actions",
+      team: { id: "T1" },
+      user: { id: "UALICE" },
+      channel: { id: "C1" },
+      message: { ts: "1" },
+      actions: [{ type: "button", action_id: "lc.x", block_id: CARD_BLOCK_ID.channel, value: "x" }],
+    };
+    expect(readAction(p)?.fields).toMatchObject({ team: "T1", user: "UALICE" });
+    expect(readAction(p)?.fields.speakerTeam).toBeUndefined();
+    expect(readAction({ ...p, user: { id: "UALICE", team_id: "T1" } })?.fields.speakerTeam).toBe("T1");
   });
 
   it("defuses a broadcast mention in the agent's text", () => {
