@@ -16,7 +16,7 @@ const TEXT_METHODS = new Set(["sendMessage", "editMessageText"]);
 
 function port(tg: FakeTelegram, streaming = false) {
   const api = new TelegramApi({ token: "1:x", baseUrl: "https://api.telegram.org", fetch: tg.fetch, sleep: async () => {} });
-  return new TelegramPort({ api, log: silentLogger, streaming, timing: { minIntervalMs: 5 } });
+  return new TelegramPort({ api, log: silentLogger, streaming, trustedChats: new Set(), timing: { minIntervalMs: 5 } });
 }
 
 /** textCalls are every call that puts text in a chat. */

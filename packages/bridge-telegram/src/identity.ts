@@ -128,6 +128,16 @@ export function identify(chat: TgChat, from: TgUser | undefined, threadId: numbe
   return { ok: false, reason: "unsupported_chat" };
 }
 
+/** chatIsUntrusted reports, from a reply reference's chat id alone, whether
+ *  the chat's speakers are untrusted, matching identify. Telegram gives users
+ *  positive ids and groups negative ones, and a private chat's id is its
+ *  user's (identify refuses one that is not), so a positive id is a private,
+ *  trusted chat. Read from config, not stored in the ref, so a change to
+ *  TELEGRAM_BRIDGE_TRUSTED_CHATS applies to conversations already stored. */
+export function chatIsUntrusted(chatId: number, trustedChats: ReadonlySet<string>): boolean {
+  return chatId < 0 && !trustedChats.has(String(chatId));
+}
+
 const COMMAND = /^\/([A-Za-z0-9_]{1,32})(?:@([A-Za-z0-9_]{1,64}))?(?=\s|$)/;
 /** The bridge's own commands, plus /start, which Telegram sends first. */
 const OWN_COMMANDS = new Set(["new", "stop", "help", "start"]);

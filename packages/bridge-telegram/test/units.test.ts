@@ -370,6 +370,15 @@ describe("cards", () => {
     expect(r.replyMarkup).toEqual({ inline_keyboard: [[{ text: "Decline", callback_data: "declAAAA" }]], force_reply: true });
   });
 
+  it("in an untrusted chat, a free-text question says only the buttons answer, with Decline and no reply box", () => {
+    const r = renderCard(question([]), { untrusted: true });
+    expect(r.plain).toBe("Which **file**?\n\nOnly Alice can answer.\n\nOnly the buttons can answer here.");
+    expect(r.html).toBe("Which <b>file</b>?\n\nOnly Alice can answer.\n\n<i>Only the buttons can answer here.</i>");
+    expect(r.replyMarkup).toEqual({ inline_keyboard: [[{ text: "Decline", callback_data: "declAAAA" }]] });
+    // A question with options reads the same in any chat.
+    expect(renderCard(question(["a.txt"]), { untrusted: true })).toEqual(renderCard(question(["a.txt"])));
+  });
+
   it("renders a review with approve and send back on one row", () => {
     const r = renderCard({
       kind: "review",

@@ -8,7 +8,7 @@ import { FakeTelegram, silentLogger, tgError, waitFor } from "./fakes.js";
 
 function port(tg: FakeTelegram, streaming = false) {
   const api = new TelegramApi({ token: "1:x", baseUrl: "https://api.telegram.org", fetch: tg.fetch, sleep: async () => {} });
-  return new TelegramPort({ api, log: silentLogger, streaming, timing: { minIntervalMs: 20 } });
+  return new TelegramPort({ api, log: silentLogger, streaming, trustedChats: new Set(), timing: { minIntervalMs: 20 } });
 }
 
 const topic = { chatId: -100500, threadId: 7 };

@@ -6,7 +6,7 @@ import type { BridgePort, Logger, OutboundActivity, StreamLike } from "@loomcycl
 import { isNotModified, isParseError, TelegramError, type TelegramApi } from "./api.js";
 import { renderCard, type InlineKeyboardMarkup, type RenderedMessage } from "./cards.js";
 import { markdownToHtml } from "./format.js";
-import type { TelegramRef } from "./identity.js";
+import { chatIsUntrusted, type TelegramRef } from "./identity.js";
 import { TelegramStream, type StreamTiming } from "./stream.js";
 
 /** Telegram takes 4,096 characters, counted after the HTML is parsed, so tags
@@ -30,6 +30,8 @@ export interface TelegramPortOptions {
   api: TelegramApi;
   log: Logger;
   streaming: boolean;
+  /** Group ids whose speakers are trusted (TELEGRAM_BRIDGE_TRUSTED_CHATS). */
+  trustedChats: ReadonlySet<string>;
   timing?: Partial<StreamTiming>;
   now?: () => number;
 }
@@ -52,7 +54,9 @@ export class TelegramPort {
       return;
     }
     const rendered: RenderedMessage =
-      "card" in activity ? renderCard(activity.card) : { html: markdownToHtml(activity.text), plain: activity.text };
+      "card" in activity
+        ? renderCard(activity.card, { untrusted: chatIsUntrusted(ref.chatId, this.opts.trustedChats) })
+        : { html: markdownToHtml(activity.text), plain: activity.text };
     await this.sendMessage(ref, rendered);
   }
 

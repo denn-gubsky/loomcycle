@@ -2,8 +2,8 @@ export { isNotModified, isParseError, MAX_RETRY_AFTER_SECONDS, TelegramApi, Tele
 export type { CallOptions, TelegramApiOptions } from "./api.js";
 export { createTelegramBridge } from "./bridge.js";
 export type { TelegramBridgeOptions } from "./bridge.js";
-export { FREE_TEXT_HINT, MAX_CALLBACK_DATA_BYTES, parseCallbackData, renderCard, REVIEW_TEXT } from "./cards.js";
-export type { InlineKeyboardButton, InlineKeyboardMarkup, RenderedMessage } from "./cards.js";
+export { BUTTONS_ONLY_HINT, FREE_TEXT_HINT, MAX_CALLBACK_DATA_BYTES, parseCallbackData, renderCard, REVIEW_TEXT } from "./cards.js";
+export type { InlineKeyboardButton, InlineKeyboardMarkup, RenderedMessage, RenderOptions } from "./cards.js";
 export { DEFAULT_API_BASE_URL, DEFAULT_PORT, loadConfig, WEBHOOK_PATH } from "./config.js";
 export type { TelegramConfig } from "./config.js";
 export { escapeHtml, markdownToHtml } from "./format.js";

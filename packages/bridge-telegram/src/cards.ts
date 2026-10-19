@@ -30,6 +30,9 @@ export interface RenderedMessage {
 }
 
 export const FREE_TEXT_HINT = "Reply to this message with your answer.";
+/** A free-text question in an untrusted chat: the core refuses a typed answer
+ *  from an untrusted speaker, so it can only be declined there. */
+export const BUTTONS_ONLY_HINT = "Only the buttons can answer here.";
 export const REVIEW_TEXT = "The agent's answer is waiting for your review.";
 
 function button(label: string, id: string): InlineKeyboardButton {
@@ -42,7 +45,12 @@ function button(label: string, id: string): InlineKeyboardButton {
   return { text: label, callback_data: id };
 }
 
-export function renderCard(card: CanonicalCard): RenderedMessage {
+export interface RenderOptions {
+  /** The card is drawn into a chat whose speakers are untrusted. */
+  untrusted?: boolean;
+}
+
+export function renderCard(card: CanonicalCard, opts: RenderOptions = {}): RenderedMessage {
   switch (card.kind) {
     case "question": {
       // Telegram has no text field on a card. A free-text question is answered
@@ -51,14 +59,18 @@ export function renderCard(card: CanonicalCard): RenderedMessage {
       const freeText = card.options.length === 0;
       const buttons = card.buttons.filter((b) => !(freeText && b.action.verb === VERB.answer));
       const parts = [card.question, card.context].filter((p): p is string => !!p);
-      const html = [...parts.map(markdownToHtml), ...(freeText ? [`<i>${escapeHtml(FREE_TEXT_HINT)}</i>`] : [])].join("\n\n");
-      const plain = [...parts, ...(freeText ? [FREE_TEXT_HINT] : [])].join("\n\n");
+      // A reply cannot answer in an untrusted chat, so the reply box would
+      // invite a typed answer the core is bound to refuse.
+      const replyable = freeText && !opts.untrusted;
+      const hint = freeText ? (replyable ? FREE_TEXT_HINT : BUTTONS_ONLY_HINT) : undefined;
+      const html = [...parts.map(markdownToHtml), ...(hint ? [`<i>${escapeHtml(hint)}</i>`] : [])].join("\n\n");
+      const plain = [...parts, ...(hint ? [hint] : [])].join("\n\n");
       return {
         html,
         plain,
         replyMarkup: {
           inline_keyboard: buttons.map((b) => [button(b.label, b.id)]),
-          ...(freeText ? { force_reply: true } : {}),
+          ...(replyable ? { force_reply: true } : {}),
         },
       };
     }

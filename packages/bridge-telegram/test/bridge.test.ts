@@ -239,6 +239,32 @@ describe("telegram bridge", () => {
     expect(lc.callsTo("resolveInterrupt")[0]!.args).toEqual(["run-1", "int-2", { answer: "Alice Smith", resolvedBy: "telegram-42" }]);
   });
 
+  it("in an untrusted group, a free-text question offers only Decline and no reply box; a trusted group's is unchanged", async () => {
+    const mention = { entities: [{ type: "mention", offset: 0, length: 8 }] };
+    const ask = { interrupt_id: "int-3", kind: "question", priority: "normal", question: "Your name?" };
+    type Markup = { inline_keyboard: Array<Array<{ text: string }>>; force_reply?: boolean };
+
+    await start();
+    let run = await sayAndStart(message("@LoomBot ask me", alice, group, mention));
+    run.events.push({ type: "interruption_pending", interruption: ask });
+    await waitFor(() => tg.callsTo("sendMessage").length === 1, "untrusted card");
+    let card = tg.callsTo("sendMessage")[0]!.params;
+    expect(String(card.text)).toContain("Only the buttons can answer here.");
+    expect((card.reply_markup as Markup).force_reply).toBeUndefined();
+    expect((card.reply_markup as Markup).inline_keyboard.map((r) => r[0]!.text)).toEqual(["Decline"]);
+    await bridge.stop();
+
+    lc = new FakeLoomcycle();
+    tg = new FakeTelegram();
+    await start({ TELEGRAM_BRIDGE_TRUSTED_CHATS: "-100500" });
+    run = await sayAndStart(message("@LoomBot ask me", alice, group, mention));
+    run.events.push({ type: "interruption_pending", interruption: ask });
+    await waitFor(() => tg.callsTo("sendMessage").length === 1, "trusted card");
+    card = tg.callsTo("sendMessage")[0]!.params;
+    expect(String(card.text)).not.toContain("Only the buttons can answer here.");
+    expect((card.reply_markup as Markup).force_reply).toBe(true);
+  });
+
   it("a press by someone other than the card's owner is refused in the callback answer", async () => {
     await start({ TELEGRAM_BRIDGE_TRUSTED_CHATS: "-100500" });
     const mention = { entities: [{ type: "mention", offset: 0, length: 8 }] };
