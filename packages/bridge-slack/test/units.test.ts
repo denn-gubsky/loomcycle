@@ -267,14 +267,23 @@ describe("events", () => {
     expect(r).toMatchObject({ fields: { team: "T1", speakerTeam: "T9" } });
   });
 
-  it("leaves the speaker's team unknown when the event names none, never the workspace's", () => {
+  it("leaves the speaker's team unknown when an externally shared channel's event names none", () => {
     for (const e of [
       { type: "app_mention", user: "UALICE", text: "hi", ts: "1", channel: "C1" },
       { type: "message", channel_type: "im", user: "UALICE", text: "hi", ts: "1", channel: "D1" },
     ]) {
-      const r = readEvent(env(e), self);
-      expect(r).toMatchObject({ kind: "message", fields: { team: "T1" } });
-      if (r.kind === "message") expect(r.fields.speakerTeam).toBeUndefined();
+      const shared = readEvent({ ...env(e), is_ext_shared_channel: true }, self);
+      expect(shared).toMatchObject({ kind: "message", fields: { team: "T1" } });
+      if (shared.kind === "message") expect(shared.fields.speakerTeam).toBeUndefined();
+      // Elsewhere, absent or false, the speaker is of the workspace the event was delivered for.
+      expect(readEvent(env(e), self)).toMatchObject({ fields: { speakerTeam: "T1" } });
+      expect(readEvent({ ...env(e), is_ext_shared_channel: false }, self)).toMatchObject({ fields: { speakerTeam: "T1" } });
+      // A value that is neither absent nor false is not taken for "not shared".
+      const odd = readEvent({ ...env(e), is_ext_shared_channel: "true" as unknown as boolean }, self);
+      if (odd.kind === "message") expect(odd.fields.speakerTeam).toBeUndefined();
+      expect(odd.kind).toBe("message");
+      // A team the event names wins either way.
+      expect(readEvent({ ...env({ ...e, team: "T9" }), is_ext_shared_channel: true }, self)).toMatchObject({ fields: { speakerTeam: "T9" } });
     }
   });
 

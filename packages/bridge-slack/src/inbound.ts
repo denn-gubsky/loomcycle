@@ -22,6 +22,8 @@ export interface EventEnvelope {
   type?: string;
   team_id?: string;
   event_id?: string;
+  /** Slack: "whether the event occurred in an externally shared channel". */
+  is_ext_shared_channel?: boolean;
   challenge?: string;
   event?: SlackMessageEvent;
 }
@@ -68,9 +70,7 @@ export function readEvent(env: EventEnvelope, self: SelfIds): ReadEvent {
     kind: "message",
     fields: {
       team,
-      // Never the delivered-for workspace as a fallback: identify must not
-      // take a speaker whose team is unknown for a member of it.
-      speakerTeam: str(ev.user_team) ?? str(ev.team),
+      speakerTeam: speakerTeamOf(env, ev, team),
       otherTeams: [str(ev.source_team)].filter((t): t is string => !!t),
       user,
       channel,
@@ -80,6 +80,17 @@ export function readEvent(env: EventEnvelope, self: SelfIds): ReadEvent {
     },
     text: cleanInbound(str(ev.text) ?? "", self.userId),
   };
+}
+
+/** speakerTeamOf is the speaker's own team. Slack's reference examples show
+ *  neither `user_team` nor `team` on these events, so one that names none is
+ *  taken for the delivered-for workspace's, except in a channel shared with
+ *  another organisation: there the speaker may be the other one's, and is
+ *  left unknown, which identify never takes for a member. */
+function speakerTeamOf(env: EventEnvelope, ev: SlackMessageEvent, team: string): string | undefined {
+  // Absent (or null) is not shared; any other value but false fails closed.
+  const extShared = env.is_ext_shared_channel != null && env.is_ext_shared_channel !== false;
+  return str(ev.user_team) ?? str(ev.team) ?? (extShared ? undefined : team);
 }
 
 /** cleanInbound turns Slack's message markup into plain text for the agent:

@@ -27,9 +27,9 @@ export interface SlackRef {
 export interface InboundFields {
   /** The workspace the request was delivered for. */
   team: string;
-  /** The speaker's own team, as the request names it; undefined when it
-   *  names none. Slack's documented payload examples omit it, so it is never
-   *  assumed to be the workspace's: such a speaker is not a member. */
+  /** The speaker's own team; undefined when it is unknown (a button press
+   *  that names none, an externally shared channel's event that names none).
+   *  Such a speaker is never taken for a member. */
   speakerTeam: string | undefined;
   /** Any other team id the request carries (a shared channel's source). Each
    *  must be allowed too. */
