@@ -88,13 +88,14 @@ Telegram's own:
 | `TELEGRAM_BRIDGE_ALLOWED_USERS` | Comma list of user ids who may use the bot in a private chat | |
 | `TELEGRAM_BRIDGE_ALLOWED_CHATS` | Comma list of group ids where the bot answers | |
 | `TELEGRAM_BRIDGE_ALLOW_ANYONE` | `1` lets anyone on Telegram use the bot, in any chat | unset |
+| `TELEGRAM_BRIDGE_GROUP_REQUIRE_USERS` | `1`: in a group, only people in `TELEGRAM_BRIDGE_ALLOWED_USERS` may use the bot, even with `ALLOW_ANYONE`. Needs that list | unset |
 | `TELEGRAM_BRIDGE_TRUSTED_CHATS` | Comma list of group ids whose members are trusted (see Trust) | |
 | `TELEGRAM_BRIDGE_STREAMING` | `1` streams answers in private chats | `0` |
 | `TELEGRAM_BRIDGE_PUBLIC_URL` | The bridge's public `https://` base URL; the webhook is `<url>/telegram/webhook` | |
 | `TELEGRAM_BRIDGE_SET_WEBHOOK` | `1` calls `setWebhook` at start, with the secret and the two update types the bridge handles | unset |
 | `TELEGRAM_BRIDGE_API_BASE_URL` | The Bot API server, for a [local Bot API server](https://github.com/tdlib/telegram-bot-api). `http://` is accepted only to localhost | `https://api.telegram.org` |
 
-**The bot is closed by default.** With no allow-list and no `TELEGRAM_BRIDGE_ALLOW_ANYONE=1`, the bridge refuses to start: a bot anyone can find must not run on your model keys unless you say so. A private chat passes when its user is in `TELEGRAM_BRIDGE_ALLOWED_USERS`; a group passes when the group is in `TELEGRAM_BRIDGE_ALLOWED_CHATS`, for anyone in it. A refused chat hears why, once.
+**The bot is closed by default.** With no allow-list and no `TELEGRAM_BRIDGE_ALLOW_ANYONE=1`, the bridge refuses to start: a bot anyone can find must not run on your model keys unless you say so. A private chat passes when its user is in `TELEGRAM_BRIDGE_ALLOWED_USERS`; a group passes when the group is in `TELEGRAM_BRIDGE_ALLOWED_CHATS`, for anyone in it, or with `TELEGRAM_BRIDGE_GROUP_REQUIRE_USERS=1` only for its members who are in `TELEGRAM_BRIDGE_ALLOWED_USERS`. A refused chat hears why, once.
 
 With `BRIDGE_STORE=memory`, a restart forgets which loomcycle session each chat was in, and the next message starts a fresh one. Use `file:<path>` (one instance) or your own `ConversationStore` (several).
 
@@ -103,19 +104,19 @@ With `BRIDGE_STORE=memory`, a restart forgets which loomcycle session each chat 
 - **A group runs as itself, never as one of its members.** It is its own loomcycle user (`telegram-conv-<hash>`), with its own memory and history. A forum topic is its own conversation inside the group's memory.
 - Every message reaches the agent labelled with the speaker's name.
 - The person who started the conversation answers the agent's question and review buttons, and only they can `/new` or `/stop`.
-- A group that becomes a supergroup gets a new id. Allow the new id; the group then starts a new conversation and memory.
+- A group that becomes a supergroup gets a new id. If the old id was allowed, the bot says so once in the new chat, with the new id: "This group was upgraded, so its id changed to … Ask the operator to allow it." The new id is never allowed for you. Once you allow it, the group starts a fresh conversation and a fresh memory: the old group's memory stays under the old id.
 - Anonymous group admins, and channels, cannot use the bot.
 
 ## Trust
 
 - **Private chats are trusted:** what the person writes is part of the agent's prompt.
-- **Groups are untrusted** unless listed in `TELEGRAM_BRIDGE_TRUSTED_CHATS`. Anyone a group's admins let in can write there, so their text reaches the agent as an untrusted block: the agent reads it as data, never as instructions, and it never reaches memory. In an untrusted group a speaker can press an option the agent offered, decline, approve or send back, but cannot type an answer.
+- **Groups are untrusted** unless listed in `TELEGRAM_BRIDGE_TRUSTED_CHATS`. Anyone a group's admins let in can write there, so their text reaches the agent as an untrusted block: the agent reads it as data, never as instructions, and it never reaches memory. In an untrusted group a speaker can press an option the agent offered, decline, approve or send back, but cannot type an answer: a question that wants free text says "Only the buttons can answer here." and can only be declined.
 
 List a group as trusted only if you would let every member of it instruct the agent.
 
 ## Questions, reviews and streaming
 
-- A question with options shows one button per option, then **Decline**. A question that wants free text opens Telegram's reply box: reply to it with the answer.
+- A question with options shows one button per option, then **Decline**. A question that wants free text opens Telegram's reply box: reply to it with the answer. In an untrusted group it has no reply box, only **Decline** (see Trust).
 - A review shows **Approve** and **Send back**. Telegram buttons carry no text, so a send-back has no written feedback.
 - A pressed card is replaced by its result, so it cannot be answered twice.
 - With `TELEGRAM_BRIDGE_STREAMING=1`, a private chat's answer appears as soon as it starts and is edited as it grows, at most once a second. Groups always get one message per turn. Telegram's own draft streaming (`sendMessageDraft`) is not used: it has no option to turn link previews off (see Security).
@@ -132,7 +133,7 @@ List a group as trusted only if you would let every member of it instruct the ag
 ## Limits
 
 - Messages are split at 4,000 characters (Telegram's limit is 4,096).
-- Text messages only: photos, files, voice and stickers are ignored.
+- Text messages only. In a private chat a photo, file, voice note, sticker or other non-text message is answered with "I can only read text for now."; in a group it is ignored.
 - Telegram limits how fast a bot may send. On a `429` the bridge waits the `retry_after` Telegram asks for, up to 30 seconds.
 
 ## As a library
