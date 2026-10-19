@@ -188,11 +188,18 @@ describe("identity", () => {
         const r = identify(fields({ channel: "C1", channelType, otherTeams }), policy, "Guest");
         expect(r).toMatchObject({
           ok: true,
-          speaker: { subject: `slack-${otherTeams[0].toLowerCase()}-ualice`, trust: "untrusted" },
+          speaker: { subject: `slack-${otherTeams[0].toLowerCase()}-ualice`, trust: "untrusted", guest: true },
           runAs: { subject: sharedSubject("slack", "t1", "c1") },
         });
       }
     }
+    // A member is never marked a guest.
+    expect(identify(fields({ channel: "C1", channelType: "channel" }), policy, "A")).not.toHaveProperty("speaker.guest");
+    // A mention carries no channel_type: a DM's id still refuses a guest.
+    expect(identify(fields({ channel: "D1", channelType: "channel", otherTeams: ["T9"] }), policy, "A")).toMatchObject({
+      ok: false,
+      reason: "team_not_allowed",
+    });
     // A guest never makes the workspace itself allowed.
     expect(identify(fields({ team: "T2", otherTeams: ["T9"], channel: "C1", channelType: "channel" }), policy, "A")).toMatchObject({
       ok: false,

@@ -91,16 +91,17 @@ export function identify(f: InboundFields, policy: TrustPolicy, displayName: str
   if (!policy.allowedTeams.has(f.team.toUpperCase())) return refused;
   // A guest from another organisation (Slack Connect) is admitted only where
   // the conversation's own identity runs, and only as untrusted: their text is
-  // data, never part of the prompt. In a DM they would run as themselves, so
-  // there they are refused.
+  // data, never part of the prompt, and they never own the conversation. In a
+  // DM they would run as themselves, so there they are refused. A mention
+  // carries no channel_type, so a DM is also known by its id.
   const guest = !teamsAllowed(f, policy.allowedTeams);
-  if (guest && scope === "personal") return refused;
+  if (guest && (scope === "personal" || f.channel.toUpperCase().startsWith("D"))) return refused;
   if (!SLACK_ID.test(f.user.toUpperCase())) return { ok: false, reason: "no_user" };
   // The speaker's own team names them, so a Slack Connect guest keeps one
   // identity whichever workspace they write in.
   const subject = subjectFor(f.otherTeams[0] ?? f.team, f.user);
   const trust: Trust = guest ? "untrusted" : scope === "personal" ? "trusted" : policy.sharedTrust;
-  const speaker = { subject, name: displayName, trust };
+  const speaker = { subject, name: displayName, trust, ...(guest ? { guest: true } : {}) };
   if (scope === "personal") return { ok: true, speaker, scope, conversationId, runAs: { subject, name: displayName } };
   return {
     ok: true,

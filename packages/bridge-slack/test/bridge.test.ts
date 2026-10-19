@@ -276,6 +276,14 @@ describe("slack bridge, end to end", () => {
     expect(r.lc.runs).toHaveLength(1);
   });
 
+  it("never lets a guest own a thread it opened", async () => {
+    const r = await rig();
+    await send(r, eventBody({ ...mention("start", "300.1", "UGUS"), user_team: "T9" }));
+    await send(r, eventBody({ ...mention("/stop", "300.2", "UGUS", "300.1"), user_team: "T9" }));
+    await waitFor(() => r.slack.to("chat.postMessage").some((c) => /only a member/i.test(String(c.body.markdown_text ?? c.body.text))), "refusal");
+    expect(r.lc.callsTo("cancelAgent")).toHaveLength(0);
+  });
+
   it("takes a retried event once", async () => {
     const r = await rig();
     const body = eventBody(dm("hello"));
