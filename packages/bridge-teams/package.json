@@ -48,7 +48,7 @@
     "test:watch": "vitest"
   },
   "dependencies": {
-    "@loomcycle/bridge-core": "file:../bridge-core",
+    "@loomcycle/bridge-core": "^0.1.0",
     "@microsoft/teams.api": "~2.1.0",
     "@microsoft/teams.apps": "~2.1.0"
   },
