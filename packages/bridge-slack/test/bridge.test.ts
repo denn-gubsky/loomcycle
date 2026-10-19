@@ -282,7 +282,7 @@ describe("slack bridge, end to end", () => {
     await send(r, eventBody({ ...mention("start", "300.1", "UGUS"), user_team: "T9" }));
     await send(r, eventBody({ ...mention("/stop", "300.2", "UGUS", "300.1"), user_team: "T9" }));
     await waitFor(() => r.slack.to("chat.postMessage").some((c) => /only a member/i.test(String(c.body.markdown_text ?? c.body.text))), "refusal");
-    expect(r.lc.callsTo("cancelAgent")).toHaveLength(0);
+    expect(r.lc.callsTo("cancelTurn")).toHaveLength(0);
   });
 
   it("refuses a channel mention that names no team, so it never speaks or owns a thread", async () => {
