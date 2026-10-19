@@ -19,7 +19,7 @@ This package is for writing one more.
 - **Conversations.** One conversation drives one interactive run at a time. A second message steers the live run. After a restart, the next message continues the stored session in a new run, so nothing is replayed.
 - **Turns.** Where the platform can stream, the answer shows as it is written. Elsewhere the bridge shows a typing indicator, then sends one message per turn, split at the platform's size limit.
 - **Cards.** A question the agent asks, and an answer held for review, are sent as platform-neutral cards: a question with up to six options, or a review with approve and send-back. The platform package renders them. Each button has a short id, so a platform with a small button payload sends only the id.
-- **Commands.** `/new`, `/stop`, `/help`, as the whole message. In a shared chat only the person who started the conversation may `/new`, `/stop` or answer a card.
+- **Commands.** `/new`, `/stop`, `/help`, as the whole message. In a shared chat only the person who started the conversation may `/new`, `/stop` or answer a card. A platform package may give `/help` its own text.
 - **Idle sweep.** A run nobody has written to for `BRIDGE_IDLE_MINUTES` is ended; its session is kept.
 - **`GET /healthz`.** When the bridge last heard from the platform, sent to it, and called loomcycle. Times only.
 
@@ -78,6 +78,11 @@ const adapter: BridgeAdapter<MyRef> = {
 - **Verify before parsing.** Routes get the raw body. Compare secrets with `safeEqual`.
 - **Drop the bot's own messages and other bots'** before calling the router. A bridge that answers itself loops on the operator's model keys.
 - **Apply the allow-list in `identify`,** before anything touches loomcycle.
+- **Help.** Set `platform.helpText` for a `/help` that lists your platform's own commands or setup. Build it on the exported `HELP_TEXT`, so the core's commands stay in the list:
+  ```ts
+  platform: { name: "myplatform", label: "MyPlatform", helpText: HELP_TEXT + "\n- **/link**: connect your account" },
+  ```
+  The core handles only `/new`, `/stop` and `/help`. Your route handles your own commands before calling the router. Unset, `/help` answers with `HELP_TEXT`.
 - **Names.** A personal subject is `<platform>-<stable id>`. A shared conversation runs as `sharedSubject(platform, ...parts)`. Its parts name the memory: a channel's threads pass the channel alone.
 
 Design: RFC EQ (Bridges), generalising RFC EN (the Teams bridge).

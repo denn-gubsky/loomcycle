@@ -3,9 +3,10 @@ import { beforeEach, describe, expect, it } from "vitest";
 import { isButtonInput, VERB, type CanonicalCard, type CardInput } from "../src/cards.js";
 import { UNTRUSTED_KIND, UNTRUSTED_TYPED_ANSWER_TEXT } from "../src/conversation.js";
 import { sharedSubject, type Identified, type Scope, type Trust } from "../src/identity.js";
-import type { PlatformCapabilities } from "../src/platform.js";
+import type { PlatformCapabilities, PlatformInfo } from "../src/platform.js";
 import { ConversationRouter } from "../src/router.js";
 import { MemoryStore } from "../src/store.js";
+import { HELP_TEXT } from "../src/text.js";
 import { TokenBroker } from "../src/tokens.js";
 import { FakeBatchPlatform, FakeLoomcycle, FakePlatform, httpError, settle, silentLogger, waitFor, type FakeRef, type StartedRun } from "./fakes.js";
 
@@ -35,7 +36,9 @@ describe("bridge conversation", () => {
   let now: number;
   let router: ConversationRouter<FakeRef>;
 
-  function makeRouter(opts: { rolloverMs?: number; capabilities?: PlatformCapabilities; port?: FakePlatform | FakeBatchPlatform } = {}) {
+  function makeRouter(
+    opts: { rolloverMs?: number; capabilities?: PlatformCapabilities; port?: FakePlatform | FakeBatchPlatform; platform?: PlatformInfo } = {},
+  ) {
     const broker = new TokenBroker(lc.client(ADMIN_TOKEN), {
       agent: "helper",
       tokenName: "test-bridge",
@@ -48,7 +51,7 @@ describe("bridge conversation", () => {
     return new ConversationRouter<FakeRef>(
       { idleMinutes: 60 },
       {
-        platform: { name: "test", label: "Test" },
+        platform: opts.platform ?? { name: "test", label: "Test" },
         capabilities: opts.capabilities ?? STREAMING,
         agent: "helper",
         store,
@@ -203,6 +206,20 @@ describe("bridge conversation", () => {
     lc.failNext.cancelTurn = httpError(409);
     await say("/stop");
     expect(platform.messages().at(-1)).toBe("Nothing is running.");
+  });
+
+  it("/help answers with the core's command list when the platform sets no help text", async () => {
+    await say("/help");
+    expect(platform.messages()).toEqual([HELP_TEXT]);
+    expect(lc.runs).toHaveLength(0);
+  });
+
+  it("/help answers with the platform's own help text when it sets one", async () => {
+    const helpText = `${HELP_TEXT}\n- **/link**: connect your Test account`;
+    router = makeRouter({ platform: { name: "test", label: "Test", helpText } });
+    await say("/help");
+    expect(platform.messages()).toEqual([helpText]);
+    expect(lc.runs).toHaveLength(0);
   });
 
   it("maps the platform's Stop button to cancelling the turn", async () => {

@@ -5,6 +5,10 @@ export interface PlatformInfo {
   name: string;
   /** How people call the platform, in messages: "Teams". */
   label: string;
+  /** What /help answers with, for a platform with commands or setup of its
+   *  own. Unset or empty, /help answers with the core's HELP_TEXT. To add to
+   *  that list rather than copy it, build on the exported HELP_TEXT. */
+  helpText?: string;
 }
 
 export interface PlatformCapabilities {
