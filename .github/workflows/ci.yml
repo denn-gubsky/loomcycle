@@ -403,6 +403,37 @@ jobs:
       - name: Integration (real loomcycle)
         run: ./test/integration/run.sh
 
+  # The bridges (RFC EQ): bridge-core, then every platform bridge beside it.
+  # One job for all of them, so adding a bridge needs no CI change. A platform
+  # bridge under review depends on the core by `file:../bridge-core`, so the
+  # core is built first; the publish workflow refuses that dependency.
+  bridges:
+    name: Bridges
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: packages/bridge-*/package-lock.json
+      - name: bridge-core
+        working-directory: packages/bridge-core
+        run: |
+          npm ci
+          npm run typecheck
+          npm test
+          npm run build
+      - name: Platform bridges
+        run: |
+          set -euo pipefail
+          for dir in packages/bridge-*/; do
+            [ "$dir" = "packages/bridge-core/" ] && continue
+            echo "::group::$dir"
+            (cd "$dir" && npm ci && npm run typecheck && npm test && npm run build)
+            echo "::endgroup::"
+          done
+
   web-ui:
     name: Web UI build
     runs-on: ubuntu-latest

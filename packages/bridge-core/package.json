@@ -1,0 +1,39 @@
+{
+  "name": "@loomcycle/bridge-core",
+  "version": "0.1.0",
+  "type": "module",
+  "description": "The shared core of the loomcycle bridges (RFC EQ): each person on a chat platform talks to a loomcycle interactive agent as their own loomcycle user, with per-user tokens, conversations, streamed replies, question and review cards, and an idle sweep. A bridge package adds one platform.",
+  "license": "Apache-2.0",
+  "author": "Dennis Gubsky",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/denn-gubsky/loomcycle.git",
+    "directory": "packages/bridge-core"
+  },
+  "keywords": ["loomcycle", "bridge", "chat", "bot", "agent", "ai"],
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "types": "./dist/index.d.ts",
+  "files": ["dist", "README.md"],
+  "publishConfig": { "access": "public" },
+  "engines": { "node": ">=20" },
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "prepack": "npm run build",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "dependencies": {
+    "@loomcycle/client": "^1.112.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "typescript": "^5.6.0",
+    "vitest": "^3.0.0"
+  }
+}
