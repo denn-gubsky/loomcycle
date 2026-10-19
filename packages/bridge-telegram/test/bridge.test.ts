@@ -8,7 +8,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import { createTelegramBridge } from "../src/bridge.js";
 import { loadConfig } from "../src/config.js";
-import type { TelegramRef, TgUpdate } from "../src/identity.js";
+import { NOT_ALLOWED_NOTICE, type TelegramRef, type TgUpdate } from "../src/identity.js";
 import { FakeLoomcycle, FakeTelegram, settle, silentLogger, waitFor, type StartedRun } from "./fakes.js";
 
 const SECRET = "hook_secret-1";
@@ -154,6 +154,38 @@ describe("telegram bridge", () => {
     await settle();
     expect(lc.calls).toHaveLength(0);
     expect(tg.callsTo("sendMessage")).toHaveLength(0);
+  });
+
+  it("answers a non-text message in a private chat once per message, and stays silent in a group", async () => {
+    await start();
+    const media = (from: object, chat: object, content: object): TgUpdate =>
+      ({ update_id: nextUpdate++, message: { message_id: nextUpdate, chat, from, ...content } }) as TgUpdate;
+    await post(media(alice, privateChat(), { photo: [{ file_id: "p1", width: 1, height: 1 }], caption: "look" }));
+    await post(media(alice, privateChat(), { voice: { file_id: "v1", duration: 1 } }));
+    await post(media(alice, privateChat(), { sticker: { file_id: "s1" } }));
+    await waitFor(() => tg.callsTo("sendMessage").length === 3, "three replies");
+    for (const c of tg.callsTo("sendMessage")) {
+      expect(c.params).toEqual({ chat_id: 42, link_preview_options: { is_disabled: true }, text: "I can only read text for now.", parse_mode: "HTML" });
+    }
+    // A group, even mentioning the bot in a caption, and a bot: nothing.
+    await post(media(alice, group, { document: { file_id: "d1" }, caption: "@LoomBot", caption_entities: [{ type: "mention", offset: 0, length: 8 }] }));
+    await post(media({ id: 77, is_bot: true, first_name: "OtherBot" }, privateChat({ id: 77, is_bot: true, first_name: "OtherBot" }), { video: { file_id: "x" } }));
+    await settle();
+    expect(tg.callsTo("sendMessage")).toHaveLength(3);
+    expect(lc.calls).toHaveLength(0);
+  });
+
+  it("a stranger's non-text message gets only the usual refusal, once", async () => {
+    await start();
+    const stranger = { id: 66, is_bot: false, first_name: "Stranger" };
+    const photo = (): TgUpdate =>
+      ({ update_id: nextUpdate++, message: { message_id: nextUpdate, chat: privateChat(stranger), from: stranger, photo: [{ file_id: "p" }] } }) as TgUpdate;
+    await post(photo());
+    await post(photo());
+    await waitFor(() => tg.callsTo("sendMessage").length === 1, "notice");
+    await settle();
+    expect(tg.texts()).toEqual([NOT_ALLOWED_NOTICE]);
+    expect(lc.calls).toHaveLength(0);
   });
 
   it("tells a user outside the allow-list once, and never reaches loomcycle", async () => {

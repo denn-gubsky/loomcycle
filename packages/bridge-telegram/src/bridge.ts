@@ -8,8 +8,10 @@ import { parseCallbackData, renderCard } from "./cards.js";
 import { WEBHOOK_PATH, type TelegramConfig } from "./config.js";
 import {
   addressedText,
+  hasNonTextContent,
   identify,
   refFor,
+  TEXT_ONLY_NOTICE,
   topicOf,
   type AccessPolicy,
   type BotInfo,
@@ -127,10 +129,20 @@ class TelegramAdapter implements BridgeAdapter<TelegramRef> {
     // The bot's own messages and every other bot's are dropped before
     // anything else: a bridge that answers a bot loops on the model keys.
     if (!msg.from || msg.from.is_bot) return;
-    const text = addressedText(msg, bot);
-    if (text === undefined) return;
     const thread = topicOf(msg);
-    await ctx.router.onMessage(identify(msg.chat, msg.from, thread, this.policy), refFor(msg.chat, thread), text);
+    const id = identify(msg.chat, msg.from, thread, this.policy);
+    const ref = refFor(msg.chat, thread);
+    const text = addressedText(msg, bot);
+    if (text === undefined) {
+      // A private chat is told why a photo went unanswered. A group stays
+      // silent: its media is mostly not for the bot. A stranger hears only
+      // the refusal, which the router gives once.
+      if (msg.chat.type !== "private" || !hasNonTextContent(msg)) return;
+      if (!id.ok) await ctx.router.onMessage(id, ref, "");
+      else await this.tgPort.send(ref, { type: "message", text: TEXT_ONLY_NOTICE });
+      return;
+    }
+    await ctx.router.onMessage(id, ref, text);
   }
 
   private async onCallback(cq: TgCallbackQuery): Promise<void> {

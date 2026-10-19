@@ -146,6 +146,39 @@ export function chatIsUntrusted(chatId: number, trustedChats: ReadonlySet<string
   return chatId < 0 && !trustedChats.has(String(chatId));
 }
 
+/** What a private chat hears for a photo, a voice note, a sticker, a file. */
+export const TEXT_ONLY_NOTICE = "I can only read text for now.";
+
+/** The Message fields that carry content other than text. Service messages
+ *  (a pin, a member joining) carry none of them and stay unanswered. */
+const NON_TEXT_CONTENT = [
+  "animation",
+  "audio",
+  "checklist",
+  "contact",
+  "dice",
+  "document",
+  "game",
+  "location",
+  "paid_media",
+  "photo",
+  "poll",
+  "sticker",
+  "story",
+  "venue",
+  "video",
+  "video_note",
+  "voice",
+] as const;
+
+/** hasNonTextContent reports a message the bridge cannot read: no text, but
+ *  media or another kind of content. */
+export function hasNonTextContent(msg: TgMessage): boolean {
+  if (msg.text !== undefined) return false;
+  const fields = msg as unknown as Record<string, unknown>;
+  return NON_TEXT_CONTENT.some((k) => fields[k] !== undefined && fields[k] !== null);
+}
+
 const COMMAND = /^\/([A-Za-z0-9_]{1,32})(?:@([A-Za-z0-9_]{1,64}))?(?=\s|$)/;
 /** The bridge's own commands, plus /start, which Telegram sends first. */
 const OWN_COMMANDS = new Set(["new", "stop", "help", "start"]);

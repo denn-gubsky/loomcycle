@@ -5,7 +5,7 @@ import { MAX_RETRY_AFTER_SECONDS, TelegramApi, TelegramError, isParseError } fro
 import { FREE_TEXT_HINT, parseCallbackData, renderCard } from "../src/cards.js";
 import { loadConfig } from "../src/config.js";
 import { markdownToHtml } from "../src/format.js";
-import { addressedText, displayName, identify, NOT_ALLOWED_NOTICE, topicOf, USER_NOT_ALLOWED_NOTICE, type AccessPolicy, type TgChat, type TgMessage } from "../src/identity.js";
+import { addressedText, displayName, hasNonTextContent, identify, NOT_ALLOWED_NOTICE, topicOf, USER_NOT_ALLOWED_NOTICE, type AccessPolicy, type TgChat, type TgMessage } from "../src/identity.js";
 import { SeenSet, verifySecret } from "../src/verify.js";
 import { FakeTelegram, tgError } from "./fakes.js";
 
@@ -289,6 +289,15 @@ describe("addressed text", () => {
     expect(addressedText(msg("@Alice hi", group, { entities: [{ type: "mention", offset: 0, length: 6 }] }), bot)).toBeUndefined();
     expect(addressedText(msg("yes please", group, { reply_to_message: { from: { id: 999, is_bot: true } } }), bot)).toBe("yes please");
     expect(addressedText(msg("yes please", group, { reply_to_message: { from: { id: 5 } } }), bot)).toBeUndefined();
+  });
+
+  it("tells non-text content from text and from a service message", () => {
+    const m = (extra: object) => ({ message_id: 1, chat: privateChat, from: alice, ...extra }) as TgMessage;
+    expect(hasNonTextContent(m({ photo: [{ file_id: "p" }], caption: "hi" }))).toBe(true);
+    expect(hasNonTextContent(m({ voice: { file_id: "v" } }))).toBe(true);
+    expect(hasNonTextContent(m({ text: "hello" }))).toBe(false);
+    expect(hasNonTextContent(m({ pinned_message: { message_id: 2 } }))).toBe(false);
+    expect(hasNonTextContent(m({ new_chat_members: [alice] }))).toBe(false);
   });
 
   it("ignores a message with no text", () => {
