@@ -116,7 +116,7 @@ List a group as trusted only if you would let every member of it instruct the ag
 
 ## Questions, reviews and streaming
 
-- A question with options shows one button per option, then **Decline**. A question that wants free text opens Telegram's reply box: reply to it with the answer. In an untrusted group it has no reply box, only **Decline** (see Trust).
+- A question with options shows one button per option, then **Decline**. A question that wants free text shows **Decline**, then a second message, "Reply to this message with your answer.", that opens Telegram's reply box: reply to either message with the answer. In a group the box opens only for the person who started the conversation, by replying to their latest message; if the bridge restarted since they last wrote, it opens for everyone, and a reply from anyone else reaches the agent as an ordinary message. In an untrusted group there is no reply prompt, only **Decline** (see Trust).
 - A review shows **Approve** and **Send back**. Telegram buttons carry no text, so a send-back has no written feedback.
 - A pressed card is replaced by its result, so it cannot be answered twice.
 - With `TELEGRAM_BRIDGE_STREAMING=1`, a private chat's answer appears as soon as it starts and is edited as it grows, at most once a second. Groups always get one message per turn. Telegram's own draft streaming (`sendMessageDraft`) is not used: it has no option to turn link previews off (see Security).
