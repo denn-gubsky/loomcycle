@@ -52,6 +52,9 @@ export const UNTRUSTED_TYPED_ANSWER_TEXT =
 /** At most this many untrusted messages wait for a turn to finish. */
 export const MAX_DEFERRED = 20;
 
+/** Who may act in a conversation a guest opened, until a member claims it. */
+const NO_OWNER = "a member, not a guest,";
+
 interface Live {
   abort: AbortController;
   runId?: string;
@@ -166,6 +169,19 @@ export class Conversation<TRef> {
     return this.deps.clients(token);
   }
 
+  /** claimOwner gives a conversation a guest opened to the first member who
+   *  acts in it. A guest never claims one. */
+  private async claimOwner(speaker: Speaker): Promise<void> {
+    if (this.rec.ownerSubject || speaker.guest) return;
+    this.rec.ownerSubject = speaker.subject;
+    this.rec.ownerName = speaker.name;
+    await this.save();
+  }
+
+  private ownerLabel(): string {
+    return this.rec.ownerSubject ? this.rec.ownerName : NO_OWNER;
+  }
+
   private async save(): Promise<void> {
     await this.deps.store.put(this.rec);
   }
@@ -178,13 +194,14 @@ export class Conversation<TRef> {
     const text = raw.trim();
     if (!text) return;
     this.rec.lastActivityAt = this.now();
+    await this.claimOwner(speaker);
     const isOwner = speaker.subject === this.rec.ownerSubject;
 
     const command = parseCommand(text);
     // In a shared chat the run is the owner's: another member may talk to
     // the agent, but not stop it or throw the conversation away.
     if ((command === "new" || command === "stop") && !isOwner) {
-      await this.say(`Only ${this.rec.ownerName}, who started this conversation, can do that.`);
+      await this.say(`Only ${this.rec.ownerSubject ? `${this.rec.ownerName}, who started this conversation,` : NO_OWNER} can do that.`);
       return;
     }
     switch (command) {
@@ -440,7 +457,7 @@ export class Conversation<TRef> {
           interruptId,
           question: intr.question ?? "",
           context:
-            this.rec.scope === "personal" ? intr.context : [intr.context, `Only ${this.rec.ownerName} can answer.`].filter(Boolean).join("\n\n"),
+            this.rec.scope === "personal" ? intr.context : [intr.context, `Only ${this.ownerLabel()} can answer.`].filter(Boolean).join("\n\n"),
           options,
           buttons,
         };
@@ -500,8 +517,9 @@ export class Conversation<TRef> {
   }
 
   private async handleCardAction(speaker: Speaker, input: CardInput): Promise<CardResult> {
+    await this.claimOwner(speaker);
     if (speaker.subject !== this.rec.ownerSubject) {
-      return { message: `Only ${this.rec.ownerName} can answer this.` };
+      return { message: `Only ${this.ownerLabel()} can answer this.` };
     }
     const action = this.actionOf(input, speaker);
     if (!action || !this.live?.runId || action.runId !== this.live.runId) {
