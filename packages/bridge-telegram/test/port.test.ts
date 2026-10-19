@@ -6,9 +6,9 @@ import { TelegramPort } from "../src/port.js";
 import type { TelegramStream } from "../src/stream.js";
 import { FakeTelegram, silentLogger, tgError, waitFor } from "./fakes.js";
 
-function port(tg: FakeTelegram, streaming = false) {
+function port(tg: FakeTelegram, streaming = false, allowedChats: ReadonlySet<string> = new Set()) {
   const api = new TelegramApi({ token: "1:x", baseUrl: "https://api.telegram.org", fetch: tg.fetch, sleep: async () => {} });
-  return new TelegramPort({ api, log: silentLogger, streaming, trustedChats: new Set(), timing: { minIntervalMs: 20 } });
+  return new TelegramPort({ api, log: silentLogger, streaming, trustedChats: new Set(), allowedChats, timing: { minIntervalMs: 20 } });
 }
 
 const topic = { chatId: -100500, threadId: 7 };
@@ -34,6 +34,33 @@ describe("port", () => {
     const tg = new FakeTelegram();
     tg.reply.sendMessage = () => tgError(403, "Forbidden: bot was blocked by the user");
     await expect(port(tg).send({ chatId: 42 }, { type: "message", text: "x" })).rejects.toMatchObject({ code: 403 });
+    expect(tg.callsTo("sendMessage")).toHaveLength(1);
+  });
+
+  it("tells an allowed group that became a supergroup its new id, once, and never allows it", async () => {
+    const tg = new FakeTelegram();
+    const upgraded = () => tgError(400, "Bad Request: group chat was upgraded to a supergroup chat", { migrate_to_chat_id: -1009999 });
+    tg.reply.sendMessage = (p) => (p.chat_id === -500 ? upgraded() : undefined);
+    const p = port(tg, false, new Set(["-500"]));
+    await expect(p.send({ chatId: -500 }, { type: "message", text: "x" })).rejects.toMatchObject({ migrateToChatId: -1009999 });
+    await waitFor(() => tg.callsTo("sendMessage").length === 2, "upgrade notice");
+    expect(tg.callsTo("sendMessage")[1]!.params).toEqual({
+      chat_id: -1009999,
+      link_preview_options: { is_disabled: true },
+      text: "This group was upgraded, so its id changed to -1009999. Ask the operator to allow it.",
+      parse_mode: "HTML",
+    });
+    // A second send into the old id: the error again, no second notice.
+    await expect(p.send({ chatId: -500 }, { type: "message", text: "y" })).rejects.toMatchObject({ code: 400 });
+    await new Promise((r) => setTimeout(r, 30));
+    expect(tg.callsTo("sendMessage").map((c) => c.params.chat_id)).toEqual([-500, -1009999, -500]);
+  });
+
+  it("never writes into a new chat id because of a group that was not allowed", async () => {
+    const tg = new FakeTelegram();
+    tg.reply.sendMessage = () => tgError(400, "Bad Request: group chat was upgraded to a supergroup chat", { migrate_to_chat_id: -1009999 });
+    await expect(port(tg, false, new Set(["-777"])).send({ chatId: -500 }, { type: "message", text: "x" })).rejects.toMatchObject({ code: 400 });
+    await new Promise((r) => setTimeout(r, 30));
     expect(tg.callsTo("sendMessage")).toHaveLength(1);
   });
 

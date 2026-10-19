@@ -61,7 +61,7 @@ class TelegramAdapter implements BridgeAdapter<TelegramRef> {
     // The core logs with the same logger (its default is consoleLogger too).
     this.log = opts.logger ?? consoleLogger;
     this.capabilities = { streaming: cfg.streaming ? ("personal-only" as const) : ("never" as const), maxMessageChars: MAX_MESSAGE_CHARS };
-    this.tgPort = new TelegramPort({ api, log: this.log, streaming: cfg.streaming, trustedChats: cfg.trustedChats, timing: opts.timing, now: opts.now });
+    this.tgPort = new TelegramPort({ api, log: this.log, streaming: cfg.streaming, trustedChats: cfg.trustedChats, allowedChats: cfg.allowedChats, timing: opts.timing, now: opts.now });
     this.port = this.tgPort.asBridgePort();
     this.policy = {
       allowedUsers: cfg.allowedUsers,
