@@ -168,6 +168,24 @@ describe("telegram bridge", () => {
     expect(lc.calls).toHaveLength(0);
   });
 
+  it("with GROUP_REQUIRE_USERS, a group member off the user allow-list is refused, for messages and buttons", async () => {
+    await start({ TELEGRAM_BRIDGE_GROUP_REQUIRE_USERS: "1" });
+    const stranger = { id: 66, is_bot: false, first_name: "Stranger" };
+    const mention = { entities: [{ type: "mention", offset: 0, length: 8 }] };
+    await post(message("@LoomBot hi", stranger, group, mention));
+    await post(message("@LoomBot hi again", stranger, group, mention));
+    await waitFor(() => tg.callsTo("sendMessage").length === 1, "notice");
+    await post({ update_id: nextUpdate++, callback_query: { id: "cq-s", from: stranger, message: { message_id: 100, chat: group }, data: "anything" } });
+    await waitFor(() => tg.callsTo("answerCallbackQuery").length === 1, "press answered");
+    await settle();
+    expect(tg.callsTo("sendMessage")).toHaveLength(1);
+    expect(tg.callsTo("sendMessage")[0]!.params.chat_id).toBe(-100500);
+    expect(tg.callsTo("answerCallbackQuery")[0]!.params.text).toBe(tg.callsTo("sendMessage")[0]!.params.text);
+    expect(lc.calls).toHaveLength(0);
+    // A listed user in the same group still reaches the agent.
+    await sayAndStart(message("@LoomBot hello", alice, group, mention));
+  });
+
   it("in a group, runs as the group and sends the speaker's words as untrusted", async () => {
     await start();
     const mention = { entities: [{ type: "mention", offset: 0, length: 8 }] };

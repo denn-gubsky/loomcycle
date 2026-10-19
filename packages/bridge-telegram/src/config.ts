@@ -10,6 +10,8 @@ export interface TelegramConfig extends SharedConfig {
   allowedUsers: Set<string>;
   allowedChats: Set<string>;
   allowAnyone: boolean;
+  /** A group member must also be in allowedUsers. */
+  groupRequireUsers: boolean;
   /** Group chats whose speakers are trusted. Every other group is untrusted. */
   trustedChats: Set<string>;
   /** The bridge's public base URL; the webhook is <publicUrl>/telegram/webhook. */
@@ -87,6 +89,12 @@ export function loadConfig(env: Env = process.env): TelegramConfig {
   const allowedChats = ids(reader, "TELEGRAM_BRIDGE_ALLOWED_CHATS");
   const trustedChats = ids(reader, "TELEGRAM_BRIDGE_TRUSTED_CHATS");
   const allowAnyone = reader.flag("TELEGRAM_BRIDGE_ALLOW_ANYONE");
+  const groupRequireUsers = reader.flag("TELEGRAM_BRIDGE_GROUP_REQUIRE_USERS");
+  // On with no users listed, every group message would be refused: a
+  // misconfiguration, not a policy.
+  if (groupRequireUsers && allowedUsers.size === 0) {
+    reader.problems.push("TELEGRAM_BRIDGE_GROUP_REQUIRE_USERS=1 needs TELEGRAM_BRIDGE_ALLOWED_USERS");
+  }
   // Closed by default: a bot anyone on Telegram can find must not run on the
   // operator's model keys unless the operator says so.
   if (!allowAnyone && allowedUsers.size === 0 && allowedChats.size === 0) {
@@ -113,6 +121,7 @@ export function loadConfig(env: Env = process.env): TelegramConfig {
     allowedUsers,
     allowedChats,
     allowAnyone,
+    groupRequireUsers,
     trustedChats,
     publicUrl,
     setWebhook,

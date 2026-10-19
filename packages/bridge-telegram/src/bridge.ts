@@ -68,6 +68,7 @@ class TelegramAdapter implements BridgeAdapter<TelegramRef> {
       allowedChats: cfg.allowedChats,
       allowAnyone: cfg.allowAnyone,
       trustedChats: cfg.trustedChats,
+      groupRequireUsers: cfg.groupRequireUsers,
     };
   }
 

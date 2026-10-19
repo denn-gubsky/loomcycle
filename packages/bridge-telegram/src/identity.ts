@@ -63,9 +63,14 @@ export interface AccessPolicy {
   allowedChats: ReadonlySet<string>;
   allowAnyone: boolean;
   trustedChats: ReadonlySet<string>;
+  /** A group member must also be in allowedUsers, even with allowAnyone. */
+  groupRequireUsers: boolean;
 }
 
 export const NOT_ALLOWED_NOTICE = "Sorry, this bot isn't available here. Ask its operator to allow this chat.";
+/** For a member of an allowed group who is not on the user allow-list: the
+ *  chat is allowed, so "allow this chat" would send them the wrong way. */
+export const USER_NOT_ALLOWED_NOTICE = "Sorry, this bot isn't available to you. Ask its operator to allow you.";
 
 /** topicOf is a message's forum topic. In a plain supergroup
  *  message_thread_id names a reply thread, which is not a conversation. */
@@ -110,6 +115,9 @@ export function identify(chat: TgChat, from: TgUser | undefined, threadId: numbe
   if (chat.type === "group" || chat.type === "supergroup") {
     if (!policy.allowAnyone && !policy.allowedChats.has(chatKey)) {
       return { ok: false, reason: "chat_not_allowed", notice: NOT_ALLOWED_NOTICE, conversationId };
+    }
+    if (policy.groupRequireUsers && !policy.allowedUsers.has(String(from.id))) {
+      return { ok: false, reason: "user_not_allowed", notice: USER_NOT_ALLOWED_NOTICE, conversationId };
     }
     // A Telegram group is open to whoever its admins let in: its speakers
     // are untrusted unless the operator vouches for the chat.

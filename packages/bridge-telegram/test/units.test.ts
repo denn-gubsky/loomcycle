@@ -5,7 +5,7 @@ import { MAX_RETRY_AFTER_SECONDS, TelegramApi, TelegramError, isParseError } fro
 import { FREE_TEXT_HINT, parseCallbackData, renderCard } from "../src/cards.js";
 import { loadConfig } from "../src/config.js";
 import { markdownToHtml } from "../src/format.js";
-import { addressedText, displayName, identify, NOT_ALLOWED_NOTICE, topicOf, type AccessPolicy, type TgChat, type TgMessage } from "../src/identity.js";
+import { addressedText, displayName, identify, NOT_ALLOWED_NOTICE, topicOf, USER_NOT_ALLOWED_NOTICE, type AccessPolicy, type TgChat, type TgMessage } from "../src/identity.js";
 import { SeenSet, verifySecret } from "../src/verify.js";
 import { FakeTelegram, tgError } from "./fakes.js";
 
@@ -96,6 +96,17 @@ describe("config", () => {
     expect(problems({ ...baseEnv, TELEGRAM_BRIDGE_STREAMING: "yes" })).toContain("TELEGRAM_BRIDGE_STREAMING must be 1 or 0");
   });
 
+  it("reads GROUP_REQUIRE_USERS, off by default, and refuses it with no user allow-list", () => {
+    expect(loadConfig(baseEnv).groupRequireUsers).toBe(false);
+    expect(loadConfig({ ...baseEnv, TELEGRAM_BRIDGE_GROUP_REQUIRE_USERS: "1" }).groupRequireUsers).toBe(true);
+    expect(problems({ ...baseEnv, TELEGRAM_BRIDGE_GROUP_REQUIRE_USERS: "yes" })).toContain("TELEGRAM_BRIDGE_GROUP_REQUIRE_USERS must be 1 or 0");
+    const noUsers = { ...baseEnv, TELEGRAM_BRIDGE_ALLOWED_USERS: undefined, TELEGRAM_BRIDGE_ALLOWED_CHATS: "-100500" };
+    expect(problems(noUsers)).toEqual([]);
+    expect(problems({ ...noUsers, TELEGRAM_BRIDGE_GROUP_REQUIRE_USERS: "1" })).toContain(
+      "TELEGRAM_BRIDGE_GROUP_REQUIRE_USERS=1 needs TELEGRAM_BRIDGE_ALLOWED_USERS",
+    );
+  });
+
   it("never echoes the bot token in a problem", () => {
     const p = problems({ ...baseEnv, TELEGRAM_BOT_TOKEN: "not a token value" });
     expect(p).toContain("TELEGRAM_BOT_TOKEN does not look like a bot token (<id>:<secret>)");
@@ -149,6 +160,7 @@ const policy = (p: Partial<AccessPolicy> = {}): AccessPolicy => ({
   allowedChats: new Set(["-100500"]),
   allowAnyone: false,
   trustedChats: new Set(),
+  groupRequireUsers: false,
   ...p,
 });
 
@@ -207,6 +219,21 @@ describe("identity", () => {
     expect(identify({ id: -1009, type: "group" }, alice, undefined, policy())).toMatchObject({ ok: false, reason: "chat_not_allowed" });
     // An allowed user in a group that is not allowed is still refused.
     expect(identify({ id: -1009, type: "supergroup" }, alice, undefined, policy()).ok).toBe(false);
+  });
+
+  it("with GROUP_REQUIRE_USERS, a group member not on the user allow-list is refused like a stranger", () => {
+    const strict = policy({ groupRequireUsers: true });
+    expect(identify(group, mallory, undefined, strict)).toEqual({
+      ok: false,
+      reason: "user_not_allowed",
+      notice: USER_NOT_ALLOWED_NOTICE,
+      conversationId: "tg:-100500",
+    });
+    expect(identify(group, alice, undefined, strict).ok).toBe(true);
+    // ALLOW_ANYONE opens every group, but the flag still asks for a listed user.
+    expect(identify(group, mallory, undefined, { ...strict, allowAnyone: true }).ok).toBe(false);
+    // Off, as before: anyone in an allowed group.
+    expect(identify(group, mallory, undefined, policy()).ok).toBe(true);
   });
 
   it("ALLOW_ANYONE opens private chats and groups", () => {

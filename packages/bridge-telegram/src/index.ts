@@ -7,7 +7,7 @@ export type { InlineKeyboardButton, InlineKeyboardMarkup, RenderedMessage, Rende
 export { DEFAULT_API_BASE_URL, DEFAULT_PORT, loadConfig, WEBHOOK_PATH } from "./config.js";
 export type { TelegramConfig } from "./config.js";
 export { escapeHtml, markdownToHtml } from "./format.js";
-export { addressedText, displayName, identify, NOT_ALLOWED_NOTICE, refFor, topicOf } from "./identity.js";
+export { addressedText, displayName, identify, NOT_ALLOWED_NOTICE, refFor, topicOf, USER_NOT_ALLOWED_NOTICE } from "./identity.js";
 export type { AccessPolicy, BotInfo, TelegramRef, TgCallbackQuery, TgChat, TgEntity, TgMessage, TgUpdate, TgUser } from "./identity.js";
 export { MAX_MESSAGE_CHARS, TelegramPort } from "./port.js";
 export type { TelegramPortOptions } from "./port.js";
