@@ -86,6 +86,7 @@ const mention = (text: string, ts: string, user = "UALICE", thread_ts?: string) 
   user,
   text: `<@UBOT> ${text}`,
   ts,
+  team: "T1",
   ...(thread_ts ? { thread_ts } : {}),
 });
 

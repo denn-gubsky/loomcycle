@@ -225,7 +225,7 @@ describe("events", () => {
   });
 
   it("takes a channel mention, without the mention", () => {
-    const r = readEvent(env({ type: "app_mention", user: "UALICE", text: "<@UBOT> what time is it?", ts: "1.1", channel: "C1" }), self);
+    const r = readEvent(env({ type: "app_mention", user: "UALICE", text: "<@UBOT> what time is it?", ts: "1.1", channel: "C1", team: "T1" }), self);
     expect(r).toMatchObject({ kind: "message", text: "what time is it?", fields: { channelType: "channel", channel: "C1" } });
   });
 
@@ -341,7 +341,7 @@ describe("cards", () => {
     const p = {
       type: "block_actions",
       team: { id: "T1" },
-      user: { id: "U1" },
+      user: { id: "U1", team_id: "T1" },
       channel: { id: "C1" },
       message: { ts: "1" },
       actions: [{ type: "button", action_id: "lc.x", block_id: CARD_BLOCK_ID.channel, value: "x" }],

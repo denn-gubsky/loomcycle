@@ -122,7 +122,7 @@ try {
   check("retry not answered twice", to("chat.startStream").length === runsBefore + 1, `${to("chat.startStream").length} streams`);
 
   // A channel mention: one message in the thread.
-  await post("/slack/events", event({ type: "app_mention", channel: "C1", user: "UALICE", text: "<@UBOT> status?", ts: "1700000200.000100" }));
+  await post("/slack/events", event({ type: "app_mention", channel: "C1", user: "UALICE", text: "<@UBOT> status?", ts: "1700000200.000100", team: "T1" }));
   check("channel answer posted", await until(() => to("chat.postMessage").some((c) => c.body.channel === "C1")));
   const ch = to("chat.postMessage").find((c) => c.body.channel === "C1");
   check("in the thread, unfurling off", ch?.body.thread_ts === "1700000200.000100" && ch?.body.unfurl_links === false && ch?.body.unfurl_media === false);
