@@ -33,8 +33,10 @@ func newBuf(t *testing.T, opts Options) (*slog.Logger, *bytes.Buffer, *bytes.Buf
 func installForTest(t *testing.T, opts Options) *bytes.Buffer {
 	t.Helper()
 	prevSlog, prevOut, prevFlags := slog.Default(), log.Writer(), log.Flags()
+	prevBridge := slog.SetLogLoggerLevel(slog.LevelInfo)
 	t.Cleanup(func() {
 		slog.SetDefault(prevSlog)
+		slog.SetLogLoggerLevel(prevBridge)
 		log.SetOutput(prevOut)
 		log.SetFlags(prevFlags)
 	})
@@ -146,12 +148,35 @@ func TestSetup_BridgesStdlibLogIntoJSONAtInfo(t *testing.T) {
 	}
 }
 
-func TestSetup_BridgedLinesRespectTheLevel(t *testing.T) {
-	out := installForTest(t, Options{Level: "warn"})
-	log.Printf("an info-level legacy line")
-	slog.Warn("kept")
-	if strings.Contains(out.String(), "legacy") || !strings.Contains(out.String(), "WARN kept") {
-		t.Errorf("at warn the bridged INFO line must drop and the warn stay: %q", out.String())
+// A not-yet-converted line has no known severity — it may be the reason a
+// log.Fatalf is about to exit — so no level setting may hide it.
+func TestSetup_BridgedLinesShowAtEveryLevel(t *testing.T) {
+	for _, level := range []string{"warn", "error"} {
+		out := installForTest(t, Options{Level: level})
+		log.Print("config: parse loomcycle.yaml: bad indentation") // what log.Fatal prints before exiting
+		slog.Info("dropped")
+		got := out.String()
+		if !strings.Contains(got, "config: parse loomcycle.yaml: bad indentation") {
+			t.Errorf("level %s: the bridged line was hidden: %q", level, got)
+		}
+		if strings.Contains(got, "dropped") {
+			t.Errorf("level %s: a converted INFO line must still be filtered: %q", level, got)
+		}
+	}
+}
+
+func TestSetup_BridgedLinesStayUntaggedInfoAtInfoLevel(t *testing.T) {
+	out := installForTest(t, Options{})
+	log.Print("legacy line")
+	if got := stdlibPrefix.ReplaceAllString(strings.TrimSuffix(out.String(), "\n"), ""); got != "legacy line" {
+		t.Errorf("text mode at info: got %q, want the untagged stdlib line", got)
+	}
+
+	jsonOut := installForTest(t, Options{Format: "json"})
+	log.Print("legacy line")
+	var rec map[string]any
+	if err := json.Unmarshal(jsonOut.Bytes(), &rec); err != nil || rec["level"] != "INFO" {
+		t.Errorf("json mode at info: record %v (err %v), want level INFO", rec, err)
 	}
 }
 

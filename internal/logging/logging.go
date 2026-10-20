@@ -81,16 +81,26 @@ func (Secret) LogValue() slog.Value { return slog.StringValue(redactedMarker) }
 func (Secret) String() string { return redactedMarker }
 
 // Setup builds the logger described by opts, installs it as the slog default
-// (which also redirects the stdlib log package into it, at INFO), and
-// returns it.
+// (which also redirects the stdlib log package into it), and returns it.
 func Setup(opts Options) *slog.Logger {
-	l := New(opts)
+	l, level := build(opts)
 	slog.SetDefault(l)
+	// A line from code not yet converted to slog has no known severity: it
+	// may be a log.Fatal's reason, printed just before os.Exit. So it is
+	// recorded at the configured level (never below INFO) and always passes
+	// the filter; at warn it reads as WARN, at error as ERROR. Hiding it
+	// would turn a failed start into an exit with an empty stderr.
+	slog.SetLogLoggerLevel(max(level, slog.LevelInfo))
 	return l
 }
 
 // New builds the logger described by opts without installing it.
 func New(opts Options) *slog.Logger {
+	l, _ := build(opts)
+	return l
+}
+
+func build(opts Options) (*slog.Logger, slog.Level) {
 	out := opts.Out
 	if out == nil {
 		out = os.Stderr
@@ -120,7 +130,7 @@ func New(opts Options) *slog.Logger {
 	} else {
 		h = newTextHandler(out, level, scrub)
 	}
-	return slog.New(&ctxHandler{inner: h, identity: opts.Identity})
+	return slog.New(&ctxHandler{inner: h, identity: opts.Identity}), level
 }
 
 func parseFormat(s string) (string, bool) {
@@ -243,6 +253,8 @@ func newTextHandler(out io.Writer, level slog.Leveler, scrub func(slog.Attr) slo
 	inner := slog.NewTextHandler(buf, &slog.HandlerOptions{
 		Level: slog.LevelDebug, // the outer handler gates the level
 		ReplaceAttr: func(groups []string, a slog.Attr) slog.Attr {
+			// This also drops a caller's own top-level attr named time, level
+			// or msg: the built-ins and such an attr are indistinguishable here.
 			if len(groups) == 0 {
 				switch a.Key {
 				case slog.TimeKey, slog.LevelKey, slog.MessageKey:

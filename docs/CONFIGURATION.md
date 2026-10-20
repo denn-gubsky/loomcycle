@@ -1651,7 +1651,7 @@ cp .env.insecure.example  .env.insecure   # then adjust paths/flags
 | Env var | Default | Values |
 |---|---|---|
 | `LOOMCYCLE_LOG_FORMAT` | `text` | `text`: the familiar `2006/01/02 15:04:05 message` line, with `WARN`/`ERROR`/`DEBUG` before the message and structured fields appended as `key=value`. `json`: one JSON object per line (`time`, `level`, `msg`, fields), plus `run_id`/`tenant`/`agent`/`user` and `trace_id`/`span_id` where the line belongs to a run. An unknown value warns and uses `text`. |
-| `LOOMCYCLE_LOG_LEVEL` | `info` | `debug`, `info`, `warn` or `error`; lines below it are dropped. Lines not yet carrying a level are logged at `info`, so `warn` or `error` hides them. An unknown value warns and uses `info`. |
+| `LOOMCYCLE_LOG_LEVEL` | `info` | `debug`, `info`, `warn` or `error`; lines below it are dropped. Lines from code not yet converted to levelled logging are never hidden by the level (they are recorded at the configured level, `info` at minimum), so fatal and startup errors always show. An unknown value warns and uses `info`. |
 
 ---
 
