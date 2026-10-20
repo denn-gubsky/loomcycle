@@ -35,7 +35,7 @@
     "@loomcycle/bridge-core": "^0.1.0"
   },
   "devDependencies": {
-    "@types/node": "^22.0.0",
+    "@types/node": "^26.6.5",
     "typescript": "^5.6.0",
     "vitest": "^3.0.0"
   }
