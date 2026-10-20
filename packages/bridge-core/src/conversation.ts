@@ -206,7 +206,7 @@ export class Conversation<TRef> {
     }
     switch (command) {
       case "help":
-        await this.say(HELP_TEXT);
+        await this.say(this.deps.platform.helpText || HELP_TEXT);
         return;
       case "stop":
         if (!this.live?.runId || !(await this.cancelTurn("stopped by /stop"))) await this.say("Nothing is running.");
