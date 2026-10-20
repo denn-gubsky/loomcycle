@@ -179,12 +179,17 @@ func isCIDREntry(entry string) bool { return strings.Contains(entry, "/") }
 
 // ValidatePrivateHostAllowlist checks the CIDR entries of a private-host
 // allowlist, so a typo fails at config load instead of silently never matching
-// (the dial guard skips a malformed range: fail-closed, but invisible). Host-name
-// entries are not checked; any string is a valid suffix to match.
+// (the dial guard skips a malformed range: fail-closed, but invisible). A
+// host-name entry may be any string (a suffix to match), except an IP literal
+// in link-local or metadata space: a host entry never admits one, so it would
+// silently do nothing, and the error names the CIDR form that does.
 func ValidatePrivateHostAllowlist(entries []string) error {
 	for _, e := range entries {
 		e = strings.TrimSpace(e)
 		if !isCIDREntry(e) {
+			if a, ok := ipLiteral(e); ok && isLinkLocalOrMetadata(a) {
+				return fmt.Errorf("entry %q is a link-local or cloud metadata address, which a host entry never admits; list it as a CIDR range (%s) if this host must reach it", e, SingleAddressCIDR(a))
+			}
 			continue
 		}
 		if _, err := netip.ParsePrefix(e); err != nil {
@@ -192,6 +197,35 @@ func ValidatePrivateHostAllowlist(entries []string) error {
 		}
 	}
 	return nil
+}
+
+// ipLiteral parses host as an IP address, in brackets or with a zone or not,
+// unmapped to IPv4 where it is one.
+func ipLiteral(host string) (netip.Addr, bool) {
+	a, err := netip.ParseAddr(strings.Trim(host, "[]"))
+	if err != nil {
+		return netip.Addr{}, false
+	}
+	return a.WithZone("").Unmap(), true
+}
+
+// SingleAddressCIDR is the allowlist entry that admits exactly a: a.b.c.d/32
+// or an IPv6 /128.
+func SingleAddressCIDR(a netip.Addr) string {
+	a = a.WithZone("").Unmap()
+	return netip.PrefixFrom(a, a.BitLen()).String()
+}
+
+// VouchEntryForHost is the private-host allowlist entry that vouches for the
+// host of a URL an operator configured: the host name itself, or, for an IP
+// literal, that exact address as a CIDR entry. The operator named the address,
+// not a name whose DNS someone else controls, so even a link-local or
+// metadata address stays reachable.
+func VouchEntryForHost(host string) string {
+	if a, ok := ipLiteral(host); ok {
+		return SingleAddressCIDR(a)
+	}
+	return host
 }
 
 // splitAllowlist separates an operator vouch list into host-name entries

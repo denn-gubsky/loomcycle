@@ -391,3 +391,23 @@ func TestGuardedDial_VouchedNameReachesEmbeddedPrivateIPv4(t *testing.T) {
 		t.Errorf("a CIDR entry covering local-use NAT64 should re-allow it: %v", err)
 	}
 }
+
+// TestValidatePrivateHostAllowlist_RefusesLinkLocalHostEntry: an IP literal
+// listed as a host entry never admits a link-local or metadata address, so the
+// entry would silently do nothing; startup says so and names the CIDR form.
+func TestValidatePrivateHostAllowlist_RefusesLinkLocalHostEntry(t *testing.T) {
+	for entry, cidr := range map[string]string{
+		"169.254.169.254": "169.254.169.254/32",
+		"100.100.100.200": "100.100.100.200/32",
+		"fd00:ec2::254":   "fd00:ec2::254/128",
+		"[fe80::1]":       "fe80::1/128",
+	} {
+		err := ValidatePrivateHostAllowlist([]string{"localhost", entry})
+		if err == nil || !strings.Contains(err.Error(), cidr) {
+			t.Errorf("entry %q: err = %v, want a refusal naming %s", entry, err, cidr)
+		}
+	}
+	if err := ValidatePrivateHostAllowlist([]string{"10.0.0.5", "100.101.102.103", "169.254.0.0/16"}); err != nil {
+		t.Errorf("valid entries refused: %v", err)
+	}
+}
