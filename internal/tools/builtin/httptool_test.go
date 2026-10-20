@@ -719,6 +719,15 @@ func TestHTTPTool_RedactsCredentialBearingResponseHeaders(t *testing.T) {
 		h.Set("X-Client-Secret", secret)
 		h.Set("X-Credential", secret)
 		h.Set("X-Password-Hint", secret)
+		h.Set("X-Upstream-Session", secret)
+		h.Set("x-ms-continuationtoken", "ct-1")
+		h.Set("Next-Page-Token", "np-1")
+		h.Set("X-Next-Page-Token", "np-2")
+		h.Set("X-Page-Cursor", "cur-1")
+		h.Set("X-OAuth-Scopes", "repo, user")
+		h.Set("X-Accepted-OAuth-Scopes", "repo")
+		h.Set("Access-Control-Allow-Credentials", "true")
+		h.Set("X-Author", "octocat")
 		h.Set("X-RateLimit-Remaining", "42")
 		h.Set("Link", `<https://api.example/items?page=2>; rel="next"`)
 		h.Set("WWW-Authenticate", `Bearer realm="api"`)
@@ -743,7 +752,8 @@ func TestHTTPTool_RedactsCredentialBearingResponseHeaders(t *testing.T) {
 		t.Errorf("a credential-bearing header value reached the tool result:\n%s", res.Text)
 	}
 	for _, name := range []string{"Set-Cookie", "Set-Cookie2", "Authorization", "Proxy-Authorization",
-		"X-Auth-Token", "X-Api-Key", "X-Api_key", "X-Session-Id", "X-Client-Secret", "X-Credential", "X-Password-Hint"} {
+		"X-Auth-Token", "X-Api-Key", "X-Api_key", "X-Session-Id", "X-Client-Secret", "X-Credential", "X-Password-Hint",
+		"X-Upstream-Session"} {
 		if !strings.Contains(res.Text, "\n"+name+": [redacted]\n") {
 			t.Errorf("header %s: want its name kept with a [redacted] value; got:\n%s", name, res.Text)
 		}
@@ -755,6 +765,16 @@ func TestHTTPTool_RedactsCredentialBearingResponseHeaders(t *testing.T) {
 		`Proxy-Authenticate: Basic realm="proxy"`,
 		`Etag: "v1"`,
 		"X-Request-Id: req-7",
+		// Pagination cursors and scope listings name a token or auth but
+		// are what an agent paging an API needs.
+		"X-Ms-Continuationtoken: ct-1",
+		"Next-Page-Token: np-1",
+		"X-Next-Page-Token: np-2",
+		"X-Page-Cursor: cur-1",
+		"X-Oauth-Scopes: repo, user",
+		"X-Accepted-Oauth-Scopes: repo",
+		"Access-Control-Allow-Credentials: true",
+		"X-Author: octocat",
 	} {
 		if !strings.Contains(res.Text, "\n"+line+"\n") {
 			t.Errorf("want readable header line %q; got:\n%s", line, res.Text)

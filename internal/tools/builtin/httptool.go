@@ -252,22 +252,30 @@ func (h *HTTP) do(ctx context.Context, method, rawURL string, headers map[string
 }
 
 // credentialHeaderName matches response header names that may carry a
-// credential: a minted token, an API key, a session id, and (through "cookie"
-// and "auth") Set-Cookie, Set-Cookie2, Authorization and Proxy-Authorization.
-// Their values are kept from the model, which could repeat them into a
-// transcript, a memory or a request to another host; the name stays so the
-// model still sees the header was set.
-var credentialHeaderName = regexp.MustCompile(`(?i)(token|secret|api[-_]?key|session|cookie|credential|password|auth)`)
+// credential: a minted token, an API key, a session id. "auth" counts only as
+// a whole dash- or underscore-separated part (X-Auth-Token), so X-Author and
+// X-OAuth-Scopes do not match. Their values are kept from the model, which
+// could repeat them into a transcript, a memory or a request to another host;
+// the name stays so the model still sees the header was set.
+var credentialHeaderName = regexp.MustCompile(`(?i)(token|secret|api[-_]?key|session|cookie|credential|password|(^|[-_])auth([-_]|$))`)
+
+// readableHeaderName matches headers that name a token or a credential but
+// carry none: pagination cursors (a continuation or next-page token), the
+// OAuth scope listings, and CORS (Access-Control-Allow-Credentials). An agent
+// paging an API needs them.
+var readableHeaderName = regexp.MustCompile(`(?i)(continuation|page|cursor|oauth-scopes$|^access-control-)`)
 
 // credentialHeader reports whether a response header's value is redacted.
-// The authentication challenges match the pattern but carry no secret, and an
-// agent calling an API needs them to learn the auth scheme.
 func credentialHeader(name string) bool {
 	switch http.CanonicalHeaderKey(name) {
+	case "Set-Cookie", "Set-Cookie2", "Authorization", "Proxy-Authorization":
+		return true
 	case "Www-Authenticate", "Proxy-Authenticate":
+		// Challenges carry no secret, and an agent needs them to learn the
+		// auth scheme.
 		return false
 	}
-	return credentialHeaderName.MatchString(name)
+	return credentialHeaderName.MatchString(name) && !readableHeaderName.MatchString(name)
 }
 
 // responseTruncatedMarker is the line do appends when it cut the response body.
