@@ -17,11 +17,15 @@ import (
 // attributes. Paths are relative to the repo root; subdirectories are
 // separate packages and must be listed on their own.
 var convertedPackages = []string{
+	"internal/api/a2a",
+	"internal/api/grpc",
+	"internal/api/mcp",
 	"internal/awaited",
 	"internal/channelhooks",
 	"internal/channels",
 	"internal/concurrency",
 	"internal/coord",
+	"internal/decision",
 	"internal/help",
 	"internal/hooks",
 	"internal/lookup",
@@ -30,11 +34,18 @@ var convertedPackages = []string{
 	"internal/memory/embedders",
 	"internal/metrics",
 	"internal/pause",
+	"internal/providerbuild",
+	"internal/providers/anthropic",
+	"internal/providers/deepseek",
+	"internal/providers/ollama",
+	"internal/providers/ratelimit",
 	"internal/recipes",
 	"internal/runner",
 	"internal/runstate",
 	"internal/snapshot",
 	"internal/sqlmem",
+	"internal/teamrun",
+	"internal/tools/mcp/http",
 }
 
 // stdlibLogCalls returns the positions of log.Printf/Print/Println calls in f,
