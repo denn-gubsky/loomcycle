@@ -6,9 +6,9 @@ require (
 	github.com/a2aproject/a2a-go/v2 v2.3.1
 	github.com/coder/websocket v1.8.15
 	github.com/dop251/goja v0.0.0-20260311135729-065cd970411c
-	github.com/ewhauser/gbash v0.0.38
-	github.com/ewhauser/gbash/contrib/awk v0.0.38
-	github.com/ewhauser/gbash/contrib/jq v0.0.38
+	github.com/ewhauser/gbash v0.0.40
+	github.com/ewhauser/gbash/contrib/awk v0.0.40
+	github.com/ewhauser/gbash/contrib/jq v0.0.40
 	github.com/go-git/go-billy/v5 v5.9.2
 	github.com/go-git/go-git/v5 v5.19.3
 	github.com/golang-migrate/migrate/v4 v4.19.1
@@ -51,7 +51,6 @@ require (
 	github.com/google/pprof v0.0.0-20250317173921-a4b03ec1a45e // indirect
 	github.com/google/uuid v1.6.0 // indirect
 	github.com/grpc-ecosystem/grpc-gateway/v2 v2.28.0 // indirect
-	github.com/itchyny/gojq v0.12.18 // indirect
 	github.com/itchyny/timefmt-go v0.1.7 // indirect
 	github.com/jackc/pgerrcode v0.0.0-20220416144525-469b46aa5efa // indirect
 	github.com/jackc/pgpassfile v1.0.0 // indirect

@@ -365,6 +365,26 @@ func TestBashbox_ContribCommandsRegistered(t *testing.T) {
 	}
 }
 
+// Bashbox runs gbash inside the loomcycle process, so a script that makes gbash
+// hit a fatal Go runtime error (unrecoverable: no defer or recover sees it)
+// takes down every run on the replica. gbash v0.0.38 had two such scripts: a
+// deeply nested jq value overflowed the goroutine stack, and a huge dd block
+// size ran the allocator out of memory. Both must come back as an ordinary
+// failed command. On v0.0.38 this test kills the test binary.
+func TestBashbox_HostileScriptDoesNotCrashTheProcess(t *testing.T) {
+	root, _ := filepath.EvalSymlinks(t.TempDir())
+	b := &Bashbox{Enabled: true}
+	for _, script := range []string{
+		`jq -c -n 'reduce range(3000000) as $i (0;[.])' >/dev/null`,
+		`echo a | dd bs=200000000000000 of=/dev/null`,
+	} {
+		res := runBashbox(t, b, bashCtx(root), script)
+		if !res.IsError {
+			t.Errorf("%s: expected a failed command; got %q", script, res.Text)
+		}
+	}
+}
+
 // Non-zero exit is reported as IsError but the output is preserved (parity
 // with the Bash tool) so the model can self-correct.
 func TestBashbox_NonZeroExitSurfacesAsError(t *testing.T) {
