@@ -1,0 +1,21 @@
+# Integration fixture for @loomcycle/bridge-discord: one interactive-capable
+# agent on the cost-free mock provider, and the bridge's own tenant-operator
+# principal (it only registers users and mints their tokens).
+provider_priority: [mock]
+tiers:
+  middle:
+    - { provider: mock, model: mock-generic }
+
+principals:
+  discord-bridge:
+    tenant: acme
+    subject: discord-bridge
+    scopes: [substrate:tenant]
+    token_env: LOOMCYCLE_DISCORD_BRIDGE_IT_TOKEN
+
+agents:
+  helper:
+    description: "Chat agent the Discord bridge drives."
+    tier: middle
+    system_prompt: "You are a helpful assistant."
+    tools: []
