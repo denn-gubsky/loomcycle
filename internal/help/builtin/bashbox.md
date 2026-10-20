@@ -27,7 +27,7 @@ That changes what the runtime can honestly promise:
   (64 MiB unless the operator changed it); past it a write fails with
   `no space left on device`, so keep scratch files on a read-only volume small.
   Changing a file of the volume (chmod, touch, mv, ln, appending) copies it
-  into that memory too, at its full size.
+  into that memory too, at its full size; reading it unchanged does not.
 
 ## When to use it
 
