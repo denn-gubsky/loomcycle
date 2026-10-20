@@ -369,12 +369,20 @@ func blockedFor(allowPrivate, hostExempt bool, exemptCIDRs []netip.Prefix) func(
 
 // socketControl is the net.Dialer Control hook: it re-checks the address the
 // socket is actually connecting to, with the same verdict as the pre-dial
-// filter.
+// filter. A zoned IPv6 address (fe80::1%en0) is judged by its address; one
+// that does not parse is refused, never let through.
 func socketControl(blocked func(net.IP) bool) func(network, address string, c syscall.RawConn) error {
 	return func(_, address string, _ syscall.RawConn) error {
-		ip, _, _ := net.SplitHostPort(address)
-		if parsed := net.ParseIP(ip); parsed != nil && blocked(parsed) {
-			return fmt.Errorf("blocked: socket-level address %s is private", ip)
+		host, _, err := net.SplitHostPort(address)
+		if err != nil {
+			return fmt.Errorf("blocked: socket-level address %q is not host:port", address)
+		}
+		a, ok := ipLiteral(host)
+		if !ok {
+			return fmt.Errorf("blocked: socket-level address %q is not an IP address", host)
+		}
+		if blocked(net.IP(a.AsSlice())) {
+			return fmt.Errorf("blocked: socket-level address %s is private", host)
 		}
 		return nil
 	}

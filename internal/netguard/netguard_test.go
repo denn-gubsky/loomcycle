@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"net/netip"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -409,5 +410,24 @@ func TestValidatePrivateHostAllowlist_RefusesLinkLocalHostEntry(t *testing.T) {
 	}
 	if err := ValidatePrivateHostAllowlist([]string{"10.0.0.5", "100.101.102.103", "169.254.0.0/16"}); err != nil {
 		t.Errorf("valid entries refused: %v", err)
+	}
+}
+
+// TestSocketControl_RefusesZonedAndUnparsableAddresses: the socket-level
+// re-check judges a zoned IPv6 address (fe80::1%en0) by its address, and
+// refuses an address it cannot parse rather than letting it through.
+func TestSocketControl_RefusesZonedAndUnparsableAddresses(t *testing.T) {
+	for name, control := range map[string]func(string, string, syscall.RawConn) error{
+		"unlisted": socketControl(blockedFor(false, false, nil)),
+		"vouched":  socketControl(blockedFor(false, true, nil)),
+	} {
+		for _, addr := range []string{"[fe80::1%en0]:80", "[fe80::1%25en0]:80", "not-an-address:80", "no-port"} {
+			if err := control("tcp6", addr, nil); err == nil {
+				t.Errorf("%s: Control admitted %q", name, addr)
+			}
+		}
+	}
+	if err := socketControl(blockedFor(false, false, nil))("tcp4", "8.8.8.8:443", nil); err != nil {
+		t.Errorf("Control refused a public address: %v", err)
 	}
 }
