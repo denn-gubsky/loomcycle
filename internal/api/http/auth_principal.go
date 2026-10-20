@@ -284,7 +284,12 @@ func extractBearer(r *http.Request) (string, bool) {
 	// WebSocket clients (browsers can't set an Authorization header on a
 	// WebSocket) carry the bearer as a Sec-WebSocket-Protocol entry of the form
 	// "bearer.<token>" (RFC BC). The app subprotocol is negotiated separately in
-	// the /v1/client-tools handler; this entry is never echoed back.
+	// the /v1/client-tools handler; this entry is never echoed back. Read only on
+	// a WebSocket upgrade to that route (RFC ES #5): elsewhere the header would be
+	// a second credential channel that proxies and logs do not treat as one.
+	if !isClientToolsUpgrade(r) {
+		return "", false
+	}
 	if protos := r.Header.Get("Sec-WebSocket-Protocol"); protos != "" {
 		for _, p := range strings.Split(protos, ",") {
 			if tok, ok := strings.CutPrefix(strings.TrimSpace(p), "bearer."); ok && tok != "" {
@@ -293,6 +298,23 @@ func extractBearer(r *http.Request) (string, bool) {
 		}
 	}
 	return "", false
+}
+
+// isClientToolsUpgrade reports whether r is a WebSocket upgrade request to
+// /v1/client-tools, the only WebSocket route. Connection is a comma-separated
+// token list and both headers compare case-insensitively (RFC 6455 §4.2.1).
+func isClientToolsUpgrade(r *http.Request) bool {
+	if r.URL.Path != "/v1/client-tools" || !strings.EqualFold(r.Header.Get("Upgrade"), "websocket") {
+		return false
+	}
+	for _, v := range r.Header.Values("Connection") {
+		for _, tok := range strings.Split(v, ",") {
+			if strings.EqualFold(strings.TrimSpace(tok), "upgrade") {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // authConfigured reports whether authentication is active. True when a
