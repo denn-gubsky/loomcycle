@@ -12,6 +12,12 @@ on:
     - cron: "23 5 * * 1"
   workflow_dispatch:
 
+# A newer push to the same PR supersedes the running scan. Runs on main and
+# the weekly schedule are never cancelled, so every main commit gets a result.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 # Same Node-24 opt-in as ci.yml; see the comment there.
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
@@ -19,10 +25,24 @@ env:
 permissions:
   contents: read
 
+# Both jobs cover every Go module that ships: the runtime at the repo root and
+# deploy/builder, a separate module published as the loomcycle-builder image,
+# which `./...` from the root does not reach.
 jobs:
   govulncheck:
-    name: govulncheck
+    name: govulncheck (${{ matrix.module }})
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - module: root
+            dir: .
+          - module: builder
+            dir: deploy/builder
+    defaults:
+      run:
+        working-directory: ${{ matrix.dir }}
     steps:
       - uses: actions/checkout@v5
 
@@ -35,9 +55,10 @@ jobs:
           cache: true
 
       # PINNED. Bumping the scanner is a deliberate change, not something a
-      # moving tag does to an unrelated PR.
+      # moving tag does to an unrelated PR. dependabot does not update a
+      # `go install ...@version` pin; bump it by hand.
       - name: Install govulncheck
-        run: go install golang.org/x/vuln/cmd/govulncheck@v1.1.4
+        run: go install golang.org/x/vuln/cmd/govulncheck@v1.9.0
 
       # A gate: govulncheck exits non-zero only for a vulnerability the call
       # graph actually reaches. Unreachable ones in imported packages or
@@ -48,11 +69,24 @@ jobs:
           govulncheck ./...
 
   gosec:
-    name: gosec (report)
+    name: gosec report (${{ matrix.module }})
     runs-on: ubuntu-latest
     permissions:
       contents: read
       security-events: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - module: root
+            dir: .
+            prefix: ""
+          - module: builder
+            dir: deploy/builder
+            prefix: deploy/builder/
+    defaults:
+      run:
+        working-directory: ${{ matrix.dir }}
     steps:
       - uses: actions/checkout@v5
 
@@ -61,14 +95,16 @@ jobs:
           go-version: "1.26.x"
           cache: true
 
+      # PINNED; dependabot does not update it either.
       - name: Install gosec
         run: go install github.com/securego/gosec/v2/cmd/gosec@v2.29.0
 
       # A REPORT, not a gate: -no-fail keeps the exit code zero whatever is
-      # found. Findings go to code scanning (category "gosec") and a per-rule
-      # count goes to the job summary. Limited to high-confidence findings of
-      # medium severity or worse; test files are excluded by default, and the
-      # generated gRPC stubs by -exclude-generated.
+      # found. Findings go to the job summary on every run and to code
+      # scanning from main and the schedule (see the upload step). Limited
+      # to high-confidence findings of medium severity or worse; test files
+      # are excluded by default, and the generated gRPC stubs by
+      # -exclude-generated.
       - name: gosec
         run: |
           export PATH="$(go env GOPATH)/bin:$PATH"
@@ -82,7 +118,7 @@ jobs:
       - name: Summarize findings by rule
         run: |
           {
-            echo "### gosec (high confidence, severity >= medium)"
+            echo "### gosec ${{ matrix.module }} (high confidence, severity >= medium)"
             echo
             echo "Total: $(jq '[.runs[].results // [] | .[]] | length' gosec.sarif)"
             echo
@@ -91,11 +127,35 @@ jobs:
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
 
-      # A pull request from a fork gets a read-only token, so the upload
-      # would fail there; the summary above still reports the findings.
+      # gosec marks every finding "error" and reports paths relative to the
+      # directory it ran in. Map severity to level (HIGH -> error, else
+      # warning; LOW is not reported) and root the paths at the repo, so the
+      # Security tab ranks findings and links them to the right files.
+      - name: Prepare SARIF for code scanning
+        if: github.event_name != 'pull_request'
+        env:
+          PREFIX: ${{ matrix.prefix }}
+        run: |
+          jq --arg prefix "$PREFIX" '
+            .runs |= map(
+              ([(.tool.driver.rules // [])[]
+                | {key: .id,
+                   value: (if any((.properties.tags // [])[]; . == "HIGH")
+                           then "error" else "warning" end)}]
+               | from_entries) as $level
+              | .tool.driver.rules |= ((. // []) | map(.defaultConfiguration.level = $level[.id]))
+              | .results |= ((. // []) | map(
+                  .level = ($level[.ruleId] // "warning")
+                  | .locations |= ((. // []) | map(
+                      .physicalLocation.artifactLocation.uri |= ($prefix + .))))))
+          ' gosec.sarif > gosec-upload.sarif
+
+      # Not on pull requests: code scanning turns new findings in a PR's
+      # changed lines into a failing "gosec" check, which would make this
+      # report a gate. PRs get the job-summary count above instead.
       - name: Upload to code scanning
-        if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+        if: github.event_name != 'pull_request'
         uses: github/codeql-action/upload-sarif@v4
         with:
-          sarif_file: gosec.sarif
-          category: gosec
+          sarif_file: ${{ matrix.dir }}/gosec-upload.sarif
+          category: gosec-${{ matrix.module }}

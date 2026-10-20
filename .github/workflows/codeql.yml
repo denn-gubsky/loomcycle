@@ -9,6 +9,12 @@ on:
     - cron: "41 5 * * 1"
   workflow_dispatch:
 
+# A newer push to the same PR supersedes the running analysis. Runs on main
+# and the weekly schedule are never cancelled.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 # Same Node-24 opt-in as ci.yml; see the comment there.
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
@@ -27,9 +33,9 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # The module is pure Go (releases build with CGO_ENABLED=0), so a
-          # plain `go build ./...` is the whole build. Manual mode makes that
-          # the build CodeQL traces, rather than whatever the autobuilder
+          # Both Go modules are pure Go (releases build with CGO_ENABLED=0),
+          # so `go build ./...` in each is the whole build. Manual mode makes
+          # that the build CodeQL traces, rather than whatever the autobuilder
           # infers from the repo (the Makefile's build-all also runs npm).
           - language: go
             build-mode: manual
@@ -61,8 +67,14 @@ jobs:
 
       - if: matrix.build-mode == 'manual'
         name: Build
-        run: go build ./...
+        # deploy/builder is its own module (the loomcycle-builder image);
+        # `./...` from the root does not reach it.
+        run: |
+          go build ./...
+          (cd deploy/builder && go build ./...)
 
+      # No fork guard: code scanning accepts uploads from a run triggered by
+      # pull_request even when a fork's token is read-only.
       - uses: github/codeql-action/analyze@v4
         with:
           category: "/language:${{ matrix.language }}"
