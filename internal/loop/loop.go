@@ -3722,52 +3722,13 @@ outerLoop:
 			break
 		}
 
-		// Execute pending tools concurrently, bounded by
-		// opts.ToolParallelism, and append a single user turn with
-		// all results in tool_call order.
-		//
-		// Two ordering rules cohabit here. The MESSAGE we hand the
-		// model on the next turn lists tool_results in the same order
-		// the model emitted the tool_calls — Anthropic correlates by
-		// tool_use_id but staying stable on the wire avoids subtle
-		// surprises in cache reuse and transcript reads. The EVENTS
-		// we emit on the SSE stream go out in COMPLETION order — fast
-		// tools' results stream out first, slow ones last — because
-		// callers rendering live progress want "company 1 done" the
-		// moment company 1 is done, not after company 3 finishes too.
-		hookIdent := HookIdentity(ctx, opts.AgentName, iter)
-		// The effective window is stamped HERE, not at the top of the iteration
-		// with the rest: lastWindow has just been refreshed from THIS turn's
-		// call, so the first tool of a run sees the window the driver reported
-		// (Ollama's actually-loaded context) rather than the static seed, and a
-		// mid-turn fallback's window rather than the replaced provider's.
-		toolCtx := tools.WithEffectiveContextWindow(turnCtx, s.lastWindow)
-		toolResults := executePendingTools(toolCtx, opts.Dispatcher, t.pendingTools, opts.ToolParallelism, opts.Hooks, hookIdent, emit)
-		s.messages = append(s.messages, providers.Message{Role: "user", Content: toolResults})
-		if why, stop := opts.Dispatcher.RepeatedFailure(); stop {
-			msg := "run stopped: " + why + " after being told it cannot succeed as sent"
-			emit(providers.Event{Type: providers.EventError, Error: msg})
-			s.disarmTurn()
-			s.turnCancelFn(nil) // release this turn's cancel ctx before terminating (no leak)
-			iterSpan.End()
-			return RunResult{StopReason: StopReasonRepeatedFailedCall, Iterations: iter + 1, Usage: s.totalUsage}, errors.New(msg)
-		}
-
-		// RFC BH turn-cancel (mid-tool-dispatch): the operator stopped this turn
-		// while its tools ran. executePendingTools returns one result per pending
-		// tool (a ctx-cancelled tool is reported error-shaped), so the
-		// assistant(tool_use)/user(tool_result) pairing above is already VALID — no
-		// synthesis needed. The completed model call was billed above; the
-		// interrupted tools just carry an error result. Park instead of looping into
-		// another model turn. Run-cancel is checked first (ctx.Err()==nil).
-		if opts.ArmTurnCancel != nil && ctx.Err() == nil && errors.Is(context.Cause(turnCtx), ErrTurnCancelled) {
-			var resumed bool
-			s.messages, s.lastCtxTokens, resumed = finishTurnCancel(ctx, &opts, s.messages, iter, s.lastCtxTokens, s.preambleTokens, reasonFromCause(context.Cause(turnCtx)), emit, s.disarmTurn)
-			iterSpan.End()
-			if !resumed {
-				break
-			}
+		switch ex := s.dispatchTools(ctx, turnCtx, iterSpan, iter, t.pendingTools); ex.ctl {
+		case loopNext:
 			continue outerLoop
+		case loopEnd:
+			break outerLoop
+		case loopReturn:
+			return ex.res, ex.err
 		}
 
 		// Normal fall-through to next iteration. Disarm the turn-cancel token at
@@ -4374,6 +4335,61 @@ func (s *runState) readTurn(ctx, turnCtx context.Context, iterSpan trace.Span, i
 		turnCancelledMidGen:    turnCancelledMidGen,
 		callTimer:              callTimer,
 	}, loopExit{}
+}
+
+// dispatchTools runs the tools the model called this turn and appends their
+// results as one user turn. It leaves the iteration when the dispatcher
+// stops the run on a repeated failure or the operator cancelled the turn
+// while the tools ran.
+func (s *runState) dispatchTools(ctx, turnCtx context.Context, iterSpan trace.Span, iter int, pendingTools []providers.ToolUse) loopExit {
+	// Execute pending tools concurrently, bounded by
+	// opts.ToolParallelism, and append a single user turn with
+	// all results in tool_call order.
+	//
+	// Two ordering rules cohabit here. The MESSAGE we hand the
+	// model on the next turn lists tool_results in the same order
+	// the model emitted the tool_calls — Anthropic correlates by
+	// tool_use_id but staying stable on the wire avoids subtle
+	// surprises in cache reuse and transcript reads. The EVENTS
+	// we emit on the SSE stream go out in COMPLETION order — fast
+	// tools' results stream out first, slow ones last — because
+	// callers rendering live progress want "company 1 done" the
+	// moment company 1 is done, not after company 3 finishes too.
+	hookIdent := HookIdentity(ctx, s.opts.AgentName, iter)
+	// The effective window is stamped HERE, not at the top of the iteration
+	// with the rest: lastWindow has just been refreshed from THIS turn's
+	// call, so the first tool of a run sees the window the driver reported
+	// (Ollama's actually-loaded context) rather than the static seed, and a
+	// mid-turn fallback's window rather than the replaced provider's.
+	toolCtx := tools.WithEffectiveContextWindow(turnCtx, s.lastWindow)
+	toolResults := executePendingTools(toolCtx, s.opts.Dispatcher, pendingTools, s.opts.ToolParallelism, s.opts.Hooks, hookIdent, s.emit)
+	s.messages = append(s.messages, providers.Message{Role: "user", Content: toolResults})
+	if why, stop := s.opts.Dispatcher.RepeatedFailure(); stop {
+		msg := "run stopped: " + why + " after being told it cannot succeed as sent"
+		s.emit(providers.Event{Type: providers.EventError, Error: msg})
+		s.disarmTurn()
+		s.turnCancelFn(nil) // release this turn's cancel ctx before terminating (no leak)
+		iterSpan.End()
+		return exitReturn(RunResult{StopReason: StopReasonRepeatedFailedCall, Iterations: iter + 1, Usage: s.totalUsage}, errors.New(msg))
+	}
+
+	// RFC BH turn-cancel (mid-tool-dispatch): the operator stopped this turn
+	// while its tools ran. executePendingTools returns one result per pending
+	// tool (a ctx-cancelled tool is reported error-shaped), so the
+	// assistant(tool_use)/user(tool_result) pairing above is already VALID — no
+	// synthesis needed. The completed model call was billed above; the
+	// interrupted tools just carry an error result. Park instead of looping into
+	// another model turn. Run-cancel is checked first (ctx.Err()==nil).
+	if s.opts.ArmTurnCancel != nil && ctx.Err() == nil && errors.Is(context.Cause(turnCtx), ErrTurnCancelled) {
+		var resumed bool
+		s.messages, s.lastCtxTokens, resumed = finishTurnCancel(ctx, s.opts, s.messages, iter, s.lastCtxTokens, s.preambleTokens, reasonFromCause(context.Cause(turnCtx)), s.emit, s.disarmTurn)
+		iterSpan.End()
+		if !resumed {
+			return loopExit{ctl: loopEnd}
+		}
+		return loopExit{ctl: loopNext}
+	}
+	return loopExit{}
 }
 
 // publishAnswerShape publishes, not stamps: see tools.AnswerShape.
