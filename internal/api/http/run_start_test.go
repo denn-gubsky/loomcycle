@@ -2,15 +2,18 @@ package http
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/denn-gubsky/loomcycle/internal/auth"
 	"github.com/denn-gubsky/loomcycle/internal/concurrency"
 	"github.com/denn-gubsky/loomcycle/internal/providers"
 	"github.com/denn-gubsky/loomcycle/internal/runner"
+	"github.com/denn-gubsky/loomcycle/internal/store"
 )
 
 // A start the caller already counted against its rate is not counted again:
@@ -105,5 +108,39 @@ func TestWriteRunStartError_AnswersAsTheRoutesDid(t *testing.T) {
 		if w.Code != c.status || w.Body.String() != c.body {
 			t.Errorf("%s: %d %q, want %d %q", c.name, w.Code, w.Body.String(), c.status, c.body)
 		}
+	}
+}
+
+// A continuation that waited for its slot reads its session's history again
+// once admitted: it let the cluster session lock go while it waited, so
+// another replica may have taken a turn meanwhile, and the model must see it.
+func TestHandleMessages_QueuedContinuationSeesATurnTakenWhileItWaited(t *testing.T) {
+	g := newGoldenServer(t, goldenOpts{maxRuns: 1})
+	sid := g.completedSession("plain")
+	holder := g.holdSlot()
+	r := g.post("/v1/sessions/"+sid+"/messages", goldenMsgBody("queued turn", ""))
+	r.until(t, "queued", 1)
+
+	// Another replica's turn on the session, written while this one waits.
+	ctx := context.Background()
+	other, err := g.st.CreateRun(ctx, sid, store.RunIdentity{AgentID: "a_other_replica"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	seg, _ := json.Marshal(oneUserSeg("INJECTED turn from another replica"))
+	if err := g.st.AppendEvent(ctx, other.ID, "user_input", seg); err != nil {
+		t.Fatal(err)
+	}
+
+	g.gate <- struct{}{}
+	holder.drain(t)
+	r.until(t, "done", 1)
+	r.drain(t)
+	msgs, ok := g.prov.sawCall("queued turn")
+	if !ok {
+		t.Fatal("the queued continuation never reached the model")
+	}
+	if !strings.Contains(msgs, "INJECTED turn") {
+		t.Errorf("the queued continuation's model call does not carry the turn taken while it waited:\n%s", msgs)
 	}
 }

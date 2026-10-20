@@ -54,6 +54,22 @@ var updateGoldens = flag.Bool("update", false, "rewrite the golden SSE transcrip
 //	anything else         → "hello", end_turn
 type goldenProvider struct {
 	gate chan struct{}
+
+	mu    sync.Mutex
+	calls []string // each call's messages, as JSON
+}
+
+// sawCall returns the messages of the first call whose newest message
+// contains marker.
+func (p *goldenProvider) sawCall(marker string) (string, bool) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	for _, c := range p.calls {
+		if strings.Contains(c, marker) {
+			return c, true
+		}
+	}
+	return "", false
 }
 
 func (p *goldenProvider) ID() string                    { return "stub" }
@@ -71,6 +87,10 @@ func (p *goldenProvider) Call(ctx context.Context, req providers.Request) (<-cha
 		b, _ := json.Marshal(req.Messages[n-1])
 		last = string(b)
 	}
+	all, _ := json.Marshal(req.Messages)
+	p.mu.Lock()
+	p.calls = append(p.calls, string(all))
+	p.mu.Unlock()
 	done := func(stop string) providers.Event {
 		return providers.Event{Type: providers.EventDone, StopReason: stop, Usage: &providers.Usage{InputTokens: 3, OutputTokens: 2}}
 	}
@@ -118,6 +138,7 @@ type goldenServer struct {
 	ts   *httptest.Server
 	st   store.Store
 	gate chan struct{}
+	prov *goldenProvider
 	// bearer is sent on every request unless a call names another.
 	bearer string
 }
@@ -175,11 +196,12 @@ func newGoldenServer(t *testing.T, o goldenOpts) *goldenServer {
 	}
 	gate := make(chan struct{}, 8)
 	sem := concurrency.New(o.maxRuns, 8, 0)
-	srv := New(cfg, &stubResolver{p: &goldenProvider{gate: gate}}, []tools.Tool{}, sem, st)
+	prov := &goldenProvider{gate: gate}
+	srv := New(cfg, &stubResolver{p: prov}, []tools.Tool{}, sem, st)
 	srv.SetSteerRegistry(steer.NewRegistry(0))
 	ts := httptest.NewServer(srv.Mux())
 	t.Cleanup(ts.Close)
-	g := &goldenServer{t: t, srv: srv, ts: ts, st: st, gate: gate}
+	g := &goldenServer{t: t, srv: srv, ts: ts, st: st, gate: gate, prov: prov}
 	if o.authed {
 		g.bearer = goldenAdminBearer
 	}
