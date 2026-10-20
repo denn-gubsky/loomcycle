@@ -101,3 +101,49 @@ func TestServiceDriverOptions_OwnEndpointOrKeyDropsAWSAuth(t *testing.T) {
 		}
 	}
 }
+
+// Both ways a server builds a provider (the provider set, and a service block
+// such as the reranker) hand the AWS secrets they obtain to cfg.SecretSink,
+// so the redactor masks them whichever path made the call.
+func TestEveryConstructionPath_RegistersAWSSecrets(t *testing.T) {
+	awsEnv(t)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		fmt.Fprint(w, "event: message_start\ndata: {}\n\nevent: message_stop\ndata: {}\n\n")
+	}))
+	defer srv.Close()
+	build := map[string]func(cfg *config.Config) (providers.Provider, error){
+		"provider set": func(cfg *config.Config) (providers.Provider, error) { return Provider(cfg, "bedrock-claude") },
+		"service block": func(cfg *config.Config) (providers.Provider, error) {
+			p, _, _, err := ServiceProvider(cfg, "memory.reranker", ServiceEndpoint{Provider: "bedrock-claude", Model: "m"}, "OWN")
+			return p, err
+		},
+	}
+	for name, mk := range build {
+		t.Run(name, func(t *testing.T) {
+			var got []string
+			cfg := &config.Config{
+				Providers:  map[string]config.ProviderConfig{"bedrock-claude": authProvider(srv.URL)},
+				SecretSink: func(v string) { got = append(got, v) },
+			}
+			p, err := mk(cfg)
+			if err != nil {
+				t.Fatal(err)
+			}
+			ch, err := p.Call(context.Background(), providers.Request{Model: "m",
+				Messages: []providers.Message{{Role: "user", Content: []providers.ContentBlock{{Type: "text", Text: "hi"}}}}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			for range ch {
+			}
+			found := false
+			for _, v := range got {
+				found = found || v == "providerbuild-secret-0123456789"
+			}
+			if !found {
+				t.Errorf("the secret access key never reached the sink (%d values did)", len(got))
+			}
+		})
+	}
+}

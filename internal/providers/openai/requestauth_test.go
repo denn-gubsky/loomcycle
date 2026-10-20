@@ -32,8 +32,8 @@ func (f *fakeAuth) Apply(_ context.Context, r *http.Request, body []byte, _ func
 	return nil
 }
 func (f *fakeAuth) Invalidate() { f.invalidated.Add(1) }
-func (f *fakeAuth) IsExpired(_ int, b []byte) bool {
-	return strings.Contains(string(b), "ExpiredToken")
+func (f *fakeAuth) Classify(_ int, b []byte) (bool, string) {
+	return strings.Contains(string(b), "ExpiredToken"), ""
 }
 func (f *fakeAuth) ListModels(context.Context) ([]string, error) { return f.models, nil }
 
@@ -178,7 +178,7 @@ func TestCall_NoCredentialsFailsTheCall(t *testing.T) {
 	srv, seen := bedrockServer(t, nil, nil)
 	a := &fakeAuth{err: errors.New("aws credentials unavailable: no EC2 IMDS role found")}
 	err := callAndDrain(t, authDriver(srv.URL, a), context.Background())
-	if err == nil || !strings.Contains(err.Error(), "aws credentials unavailable") || len(*seen) != 0 {
+	if !errors.Is(err, providers.ErrAuthUnavailable) || !strings.Contains(err.Error(), "aws credentials unavailable") || len(*seen) != 0 {
 		t.Errorf("err = %v, sends = %d", err, len(*seen))
 	}
 }

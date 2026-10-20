@@ -135,10 +135,16 @@ func (a *Auth) Invalidate() {
 	a.mu.Unlock()
 }
 
-// IsExpired reports whether an error answer says the credentials or key sent
-// had expired (see IsExpiredCredentialAnswer).
-func (a *Auth) IsExpired(status int, body []byte) bool {
-	return IsExpiredCredentialAnswer(status, body)
+// Classify reads an error answer: whether it says the credentials or key had
+// expired (IsExpiredCredentialAnswer), and a hint for a signature failure.
+func (a *Auth) Classify(status int, body []byte) (expired bool, hint string) {
+	if IsExpiredCredentialAnswer(status, body) {
+		return true, ""
+	}
+	if IsSignatureFailure(status, body) {
+		return false, "SigV4 signature refused: check this server's clock and that auth.region " + a.region + " matches the base_url"
+	}
+	return false, ""
 }
 
 // ListModels lists the model ids the provider's Bedrock host serves.

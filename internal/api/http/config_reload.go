@@ -120,6 +120,11 @@ func (s *Server) ReloadConfig(ctx context.Context, dryRun bool) (ReloadResult, e
 		return ReloadResult{}, fmt.Errorf("%w: %v", config.ErrReloadInvalid, err)
 	}
 
+	// The candidate was loaded from disk; the runtime-wired fields of the
+	// running config carry over (an auth provider rebuilt below must still
+	// hand its secrets to the redactor).
+	candidate.SecretSink = s.cfg().SecretSink
+
 	// (2) Diff against the running config (the holder's current value) and classify
 	// each changed section into applied vs restart-required.
 	changed, err := config.ChangedSections(s.cfg(), candidate)

@@ -98,6 +98,23 @@ func IsExpiredCredentialAnswer(status int, body []byte) bool {
 		(strings.Contains(b, "expired") && (strings.Contains(b, "token") || strings.Contains(b, "api key")))
 }
 
+// IsSignatureFailure reports whether an error answer says AWS rejected the
+// signature itself, which comes from a skewed clock or a region or service
+// that does not match the endpoint, never from missing permissions.
+func IsSignatureFailure(status int, body []byte) bool {
+	if status != http.StatusBadRequest && status != http.StatusUnauthorized && status != http.StatusForbidden {
+		return false
+	}
+	b := string(body)
+	for _, marker := range []string{"SignatureDoesNotMatch", "InvalidSignatureException", "RequestTimeTooSkewed",
+		"Signature expired", "request signature we calculated does not match", "Credential should be scoped to a valid region"} {
+		if strings.Contains(b, marker) {
+			return true
+		}
+	}
+	return false
+}
+
 // listModels lists the model ids a Bedrock host serves, for the routing probe
 // (a model must be listed to be routed to). Bedrock does not serve /v1/models
 // on its Anthropic route, so:

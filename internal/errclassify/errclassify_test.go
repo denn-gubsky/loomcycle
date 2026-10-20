@@ -52,6 +52,7 @@ func TestCategoryOf_ClassifiesEveryKnownSentinel(t *testing.T) {
 		{"stored credential expired", credential.ErrExpired, tools.CategoryBusiness, false, nil},
 		{"stored credential unopenable", credential.ErrUnopenable, tools.CategoryBusiness, false, nil},
 		{"own provider key unusable", providers.ErrCredentialUnusable, tools.CategoryBusiness, false, nil},
+		{"provider auth unavailable", providers.ErrAuthUnavailable, tools.CategoryBusiness, false, nil},
 
 		{"operator key restricted", resolve.ErrOperatorKeyRestricted, tools.CategoryPermission, false, nil},
 		{"operator key forbidden", providers.ErrOperatorKeyForbidden, tools.CategoryPermission, false, nil},

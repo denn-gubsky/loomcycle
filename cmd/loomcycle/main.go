@@ -720,6 +720,11 @@ func main() {
 		log.Printf("otel: disabled (set LOOMCYCLE_OTEL_EXPORTER_OTLP_ENDPOINT to enable)")
 	}
 
+	// Everything built from cfg that obtains secrets at run time (an AWS
+	// auth provider's credentials) registers them here; the holder points at
+	// the server's redactor once that exists.
+	secrets := &secretSink{}
+	cfg.SecretSink = secrets.register
 	pr, err := newProviderResolver(cfg)
 	if err != nil {
 		log.Fatalf("provider resolver: %v", err)
@@ -1523,7 +1528,7 @@ func main() {
 			}
 		}
 	}
-	pr.secrets.set(registerSecret)
+	secrets.set(registerSecret)
 	// A volume created from a git source (RFC EJ): off unless the operator
 	// lists the hosts. The credential a clone names is resolved for the run,
 	// and only when it is restricted to URLs covering the clone's.
@@ -3779,14 +3784,11 @@ type providerResolver struct {
 	// image-describe route — cannot make a call the provider's max_concurrent
 	// does not count. The Server reports and reloads this same instance.
 	sched *concurrency.CallScheduler
-	// secrets receives every secret a provider's AWS authentication obtains
-	// (RFC EM), so the server's redactor masks it. Providers are built before
-	// the server exists, so main points it at the redactor later.
-	secrets *secretSink
 }
 
-// secretSink forwards secret values to a function set after the providers
-// holding the sink were built. It is read at each use, never captured.
+// secretSink forwards secret values to a function set after the components
+// holding the sink were built: providers are built before the server and its
+// redactor exist (RFC EM). It is read at each use, never captured.
 type secretSink struct{ f atomic.Pointer[func(string)] }
 
 func (s *secretSink) set(f func(string)) { s.f.Store(&f) }
@@ -3807,17 +3809,13 @@ func (s *secretSink) register(v string) {
 // Every provider is returned wrapped in its call lane, capped or not: the
 // wrapper looks the cap up per call, so one a later reload adds applies to a
 // provider built before it, and an uncapped call costs one map lookup.
-func buildProviderMap(cfg *config.Config, sched *concurrency.CallScheduler, secrets *secretSink) (map[string]providers.Provider, error) {
+func buildProviderMap(cfg *config.Config, sched *concurrency.CallScheduler) (map[string]providers.Provider, error) {
 	byID := map[string]providers.Provider{}
 	for id, pc := range cfg.Providers {
 		if !providerEnabled(id, pc, cfg) {
 			continue
 		}
-		opts := providerbuild.DriverOptions(id, pc, cfg)
-		if s, ok := opts.RequestAuth.(interface{ SetSecretSink(func(string)) }); ok {
-			s.SetSecretSink(secrets.register)
-		}
-		p, err := providers.NewDriver(pc.Driver, opts)
+		p, err := providers.NewDriver(pc.Driver, providerbuild.DriverOptions(id, pc, cfg))
 		if err != nil {
 			return nil, fmt.Errorf("provider %q: %w", id, err)
 		}
@@ -3834,12 +3832,11 @@ func buildProviderMap(cfg *config.Config, sched *concurrency.CallScheduler, secr
 // unconstructable provider (bad driver/dialect/base_url) is a boot error.
 func newProviderResolver(cfg *config.Config) (*providerResolver, error) {
 	sched := newCallScheduler(cfg)
-	secrets := &secretSink{}
-	byID, err := buildProviderMap(cfg, sched, secrets)
+	byID, err := buildProviderMap(cfg, sched)
 	if err != nil {
 		return nil, err
 	}
-	pr := &providerResolver{byID: byID, cfg: cfg, sched: sched, secrets: secrets}
+	pr := &providerResolver{byID: byID, cfg: cfg, sched: sched}
 
 	// Residual per-provider boot diagnostics (operator-facing knob echoes, NOT
 	// resolution logic) — kept id-keyed so the boot log is unchanged from pre-P2a
@@ -4135,7 +4132,7 @@ func (p *providerResolver) currentCfg() *config.Config {
 }
 
 func (p *providerResolver) Reload(cfg *config.Config) error {
-	next, err := buildProviderMap(cfg, p.sched, p.secrets)
+	next, err := buildProviderMap(cfg, p.sched)
 	if err != nil {
 		return err
 	}

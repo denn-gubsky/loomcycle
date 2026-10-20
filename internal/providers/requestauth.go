@@ -2,9 +2,16 @@ package providers
 
 import (
 	"bytes"
+	"errors"
+	"fmt"
 	"io"
 	"net/http"
 )
+
+// ErrAuthUnavailable wraps a failure to authenticate a call at all (no AWS
+// credentials could be obtained). It is operator configuration, like a 401,
+// not an outage another attempt would ride out.
+var ErrAuthUnavailable = errors.New("provider authentication unavailable")
 
 // maxAuthErrorPeek bounds how much of an auth error body is read to decide
 // whether it says the credentials had expired.
@@ -22,7 +29,7 @@ func DoWithAuth(client *http.Client, auth RequestAuth, body []byte, build func()
 			return nil, err
 		}
 		if err := auth.Apply(req.Context(), req, body, setKey); err != nil {
-			return nil, err
+			return nil, fmt.Errorf("%w: %v", ErrAuthUnavailable, err)
 		}
 		resp, err := client.Do(req)
 		if err != nil || try > 0 || !isAuthFailureStatus(resp.StatusCode) {
@@ -30,7 +37,11 @@ func DoWithAuth(client *http.Client, auth RequestAuth, body []byte, build func()
 		}
 		peek, _ := io.ReadAll(io.LimitReader(resp.Body, maxAuthErrorPeek))
 		_ = resp.Body.Close()
-		if !auth.IsExpired(resp.StatusCode, peek) {
+		expired, hint := auth.Classify(resp.StatusCode, peek)
+		if !expired {
+			if hint != "" {
+				peek = append(peek, []byte(" ("+hint+")")...)
+			}
 			resp.Body = io.NopCloser(bytes.NewReader(peek))
 			return resp, nil
 		}

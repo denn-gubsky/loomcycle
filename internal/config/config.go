@@ -35,6 +35,12 @@ import (
 
 // Config is the top-level YAML structure plus env-derived fields.
 type Config struct {
+	// SecretSink receives secret values a component obtains at run time (the
+	// AWS credentials and minted keys of an auth provider, RFC EM), so the
+	// server's redactor masks them wherever they might be echoed. Wired by
+	// the server, never from YAML, and carried over on a config reload.
+	SecretSink func(string) `yaml:"-" json:"-"`
+
 	Defaults Defaults            `yaml:"defaults"`
 	Models   map[string]ModelRef `yaml:"models"`
 	Agents   map[string]AgentDef `yaml:"agents"`

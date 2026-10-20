@@ -115,9 +115,10 @@ type RequestAuth interface {
 	// Invalidate drops cached credentials after the provider answered that
 	// they had expired, so the retry fetches fresh ones.
 	Invalidate()
-	// IsExpired reports whether an error answer says the credentials or key
-	// sent had expired: the one auth failure worth one retry.
-	IsExpired(status int, body []byte) bool
+	// Classify reads an error answer: expired says the credentials or key
+	// sent had expired (the one auth failure worth one retry); hint is a
+	// sentence for the operator to add to the error, or "".
+	Classify(status int, body []byte) (expired bool, hint string)
 	// ListModels lists the models the endpoint serves, for providers whose
 	// endpoint has no listing of its own the driver could call.
 	ListModels(ctx context.Context) ([]string, error)

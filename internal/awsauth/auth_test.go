@@ -447,3 +447,27 @@ func TestChain_AssumeRole(t *testing.T) {
 		t.Errorf("STS form = %v", form)
 	}
 }
+
+// A signature failure comes from the clock or the region, never from missing
+// permissions, so the error says where to look; a denial and an expiry do not
+// get that hint.
+func TestClassify_SignatureFailuresGetAHint(t *testing.T) {
+	a := NewWithSource(Config{Mode: ModeSigV4, Region: "eu-central-1"}, &fakeSource{c: testCreds})
+	for _, body := range []string{
+		`{"message":"Signature expired: 20261020T080000Z is now earlier than 20261020T090000Z"}`,
+		`{"__type":"InvalidSignatureException","message":"The request signature we calculated does not match the signature you provided."}`,
+		`<Code>RequestTimeTooSkewed</Code>`,
+		`{"message":"Credential should be scoped to a valid region."}`,
+	} {
+		expired, hint := a.Classify(403, []byte(body))
+		if expired || !strings.Contains(hint, "clock") || !strings.Contains(hint, "eu-central-1") {
+			t.Errorf("%s: expired=%v hint=%q", body, expired, hint)
+		}
+	}
+	if _, hint := a.Classify(403, []byte(`{"message":"not authorized to perform: bedrock:InvokeModel"}`)); hint != "" {
+		t.Errorf("a denial got a hint: %q", hint)
+	}
+	if expired, hint := a.Classify(403, []byte(`ExpiredTokenException`)); !expired || hint != "" {
+		t.Errorf("an expiry: expired=%v hint=%q", expired, hint)
+	}
+}

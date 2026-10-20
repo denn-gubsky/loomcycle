@@ -27,6 +27,9 @@ func TestClassifyError_Table(t *testing.T) {
 		{"deepseek 403", fmt.Errorf("deepseek 403: forbidden"), ErrorClassPermanent},
 		{"gemini 422", fmt.Errorf("gemini 422: unprocessable entity"), ErrorClassPermanent},
 		{"openai 404", fmt.Errorf("openai 404: model not found"), ErrorClassPermanent},
+		// No AWS credentials for the call (RFC EM): the driver wraps it as a
+		// transport error ("http: ..."), which must not make it retryable.
+		{"aws auth unavailable", fmt.Errorf("http: %w", fmt.Errorf("%w: aws credentials unavailable: no EC2 IMDS role found", ErrAuthUnavailable)), ErrorClassPermanent},
 		// Deprecated — distinct from generic 404. Body contains a
 		// retirement marker. The real exemplar from 2026-05-15 when
 		// gemini-2.0-flash was retired:

@@ -139,7 +139,7 @@ func DriverOptions(id string, pc config.ProviderConfig, cfg *config.Config) prov
 		Logf:         log.Printf,
 	}
 	if pc.Auth != nil {
-		do.RequestAuth = awsRequestAuth(id, pc, baseURL)
+		do.RequestAuth = awsRequestAuth(id, pc, baseURL, cfg.SecretSink)
 		// A tenant's own key overrides the operator's AWS credentials only
 		// under the Bedrock key's own name. The driver's default name
 		// (ANTHROPIC_API_KEY, OPENAI_API_KEY) would send a tenant's key for
@@ -155,10 +155,11 @@ func DriverOptions(id string, pc config.ProviderConfig, cfg *config.Config) prov
 const BedrockKeyEnvName = "AWS_BEARER_TOKEN_BEDROCK"
 
 // awsRequestAuth builds the AWS authentication for an auth provider (RFC EM).
+// sink (cfg.SecretSink) receives every secret it obtains.
 // Nothing is fetched here: the credential chain reads its sources on the first
 // call. A chain that cannot even be configured (a malformed ~/.aws/config)
 // fails each call with its reason instead of failing the build.
-func awsRequestAuth(id string, pc config.ProviderConfig, baseURL string) providers.RequestAuth {
+func awsRequestAuth(id string, pc config.ProviderConfig, baseURL string, sink func(string)) providers.RequestAuth {
 	a := pc.Auth
 	ext := ""
 	if a.ExternalIDEnv != "" {
@@ -172,6 +173,10 @@ func awsRequestAuth(id string, pc config.ProviderConfig, baseURL string) provide
 		log.Printf("provider %s: aws auth: %v", id, err)
 		return unavailableAuth{err: err}
 	}
+	// Every construction path (the provider set, service blocks such as the
+	// reranker, the decision model) goes through here, so none can build an
+	// auth whose secrets escape the redactor.
+	ra.SetSecretSink(sink)
 	return ra
 }
 
@@ -183,7 +188,7 @@ func (u unavailableAuth) Apply(context.Context, *http.Request, []byte, func(*htt
 	return u.err
 }
 func (u unavailableAuth) Invalidate()                                  {}
-func (u unavailableAuth) IsExpired(int, []byte) bool                   { return false }
+func (u unavailableAuth) Classify(int, []byte) (bool, string)          { return false, "" }
 func (u unavailableAuth) ListModels(context.Context) ([]string, error) { return nil, u.err }
 
 // optionMillis coerces an `options:` value expressed in milliseconds (a YAML/JSON

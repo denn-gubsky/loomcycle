@@ -130,6 +130,12 @@ func ClassifyError(err error) ErrorClass {
 	if errors.Is(err, ErrCredentialUnusable) {
 		return ErrorClassPermanent
 	}
+	// No AWS credentials could be obtained for the call (RFC EM): operator
+	// configuration, as a 401 is. Ahead of the "http: " transport branch
+	// below, which the driver's wrapping would otherwise match.
+	if errors.Is(err, ErrAuthUnavailable) {
+		return ErrorClassPermanent
+	}
 	// Stream-idle deadline (v0.8.1 per-byte idle wrap) surfaces as
 	// "stream read: context deadline exceeded ...". errors.Is on the
 	// outer err DOES report DeadlineExceeded (the wrap chain), but
