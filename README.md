@@ -4,7 +4,7 @@
 
 <p align="center">
   <strong>An agent-system kernel you self-host.</strong><br/>
-  <em>~80 MB Go binary that owns the agent loop and ships with memory, documents, teams, a Decision tool, a Crypto tool whose keys the model never sees, no-trace runs, ephemeral git-source volumes, a visual canvas, bundled dev toolchain and headless Chromium. A deployment-shape snapshot that carries the whole deployment in one archive. Multi-replica HA on Postgres. Apache-2.0 — v1.117.0.</em>
+  <em>~80 MB Go binary that owns the agent loop and ships with memory, documents, teams, a Decision tool, a Crypto tool whose keys the model never sees, no-trace runs, ephemeral git-source volumes, a visual canvas, bundled dev toolchain and headless Chromium. A deployment-shape snapshot that carries the whole deployment in one archive. Multi-replica HA on Postgres. Apache-2.0 — v1.117.1.</em>
 </p>
 
 <p align="center">
@@ -199,11 +199,17 @@ been primitives plus hardening: memory, documents, teams, sandboxing, retention
 and erasure. The agentic-memory subsystem and the document surfaces built on it
 remain the main direction.
 
-The most recent line (v1.117.0) upgrades gbash, the Bashbox sandbox, to
+The most recent release, v1.117.1, is a patch. A queued run that never starts
+now releases its idempotency key and publishes its end, and a restart during a
+pause no longer holds the boot or a snapshot restore until the resume. An agent
+told it hit the configured-run cap no longer retries forever, and only an
+operator may change a shared HookDef. See [`REVISIONS.md`](REVISIONS.md).
+
+Before it, v1.117.0 upgraded gbash, the Bashbox sandbox, to
 v0.0.40, so a script can no longer crash the loomcycle process: a deeply nested
 jq value or a huge `dd` block size used to end every run on the replica, and
 now fails as an ordinary command. Its symlink, size and time limits are
-hardened too. Beside it ship chat bridges for Slack, Telegram and Discord,
+hardened too. Beside it shipped chat bridges for Slack, Telegram and Discord,
 alongside Teams, on a shared `@loomcycle/bridge-core`, each published to npm on
 its own version line. See [`REVISIONS.md`](REVISIONS.md).
 
