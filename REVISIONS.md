@@ -8,6 +8,57 @@ Each entry is the release's tag annotation, so the tag and this file cannot disa
 
 For the **public roadmap**, see [`docs/PLAN.md`](docs/PLAN.md).
 
+## What's in v1.118.0
+
+*A queued run that never starts now ends cleanly: its idempotency key is released, so a retry runs the work, and its end is published, so a client waiting on it is not left hanging. A restart during a pause no longer holds the boot or a snapshot restore until the resume. Also: an agent told it hit the configured-run cap no longer retries forever, and only an operator may change a shared HookDef.*
+
+A minor release of fixes: #1881 to #1887.
+- #1885 is the queued-run fix;
+- #1883 classifies configured-run refusals by their code;
+- #1884 makes a shared HookDef the operator's;
+- #1882 lets the bridge image workflow build a tag older than its Dockerfile;
+- #1881 and #1886 are documentation, and #1887 is these notes.
+- `@loomcycle/client` and the Python adapter are 1.118.0, with no API change. The Python adapter's comments now say the server names `configured_run_cap`.
+
+### A queued run that never starts ends cleanly (#1885)
+
+A run that waited in the run queue and ended without starting (its wait was cancelled, or it was refused at its start) was closed like a run that had finished. Three things were wrong:
+
+- **Its idempotency keys stayed bound.** A caller's retry with the same key was answered with the dead run instead of running the work.
+- **Its stored request was kept.**
+- **Its end was never published** on the run-state stream. A client holding the run id from its queued answer waited for a terminal frame that never came.
+
+The store gains `EndQueuedRun`: it ends a run that is still queued with the given status, releases its idempotency keys and clears the stored request, as already happened for a run a restart cannot start. Every path that ends a queued run now publishes the end, the restart path included.
+
+**A restart during a pause.** A run that a restart queues again, and that finds its slot free, can still have to wait out a pause. It was not announced until the pause ended, so it could not be cancelled, and the restarter waits for each run to be placed. That held the boot, or the snapshot restore that restarted it, until the resume. Such a run is now announced before it waits, as a queued run is.
+
+### An agent told it hit the configured-run cap stops retrying (#1883)
+
+The `configured_run` MCP tool classified a refusal by its HTTP status:
+
+| Refusal | Before | Now |
+|---|---|---|
+| `configured_run_cap` (429) | transient, retryable: the agent retried forever, though only starting or discarding a draft clears it | business, not retryable, telling the agent to start or discard a draft |
+| `rate_limited` (429) | retryable, no wait | retryable, with `retryAfterSeconds` |
+| `no_store` (503) | transient | business, not retryable: the deployment has no store, so start the run at once |
+| `agent_not_allowed`, `override_not_allowed` (403) | unclassified | permission |
+
+The classification now lives in one table keyed by the code each refusal names, read by both MCP and gRPC, so the two cannot disagree. gRPC configured-run refusals gain the same `category` and `is_retryable` metadata. A test fails when a new refusal code is neither classified nor recorded as deliberately unclassified.
+
+### Only an operator may change a shared HookDef (#1884)
+
+A shared HookDef (written with no tenant) is what every tenant's agents fall back to when they name a hook their own tenant does not define. v1.115.0 kept another tenant's agents out of the no-trace gate's answer. That left a tenant's no-trace agent falling back to a shared hook open to a change by a tenantless non-operator.
+
+Now every create, fork, promote, retire or delete of a shared HookDef by a non-operator is refused, with one message. The decision is made before anything is read, so the answer depends on the caller alone and says nothing about any tenant's agents. An operator's change is audited, as before, when a no-trace agent names the hook. Changes to a tenant's own HookDefs keep the per-tenant gate.
+
+### Upgrade notes
+
+- **No migration and no config change.**
+- **Behaviour changes:**
+  - A tenantless caller that is not an operator can no longer write a shared HookDef.
+  - An MCP agent receives `configured_run_cap` and `no_store` as not retryable.
+- **Images:** every image is rebuilt at 1.118.0, for amd64 and arm64: `loomcycle`, `loomcycle-toolbox`, `loomcycle-browser` and the sandbox images.
+
 ## What's in v1.117.0
 
 *The **Bashbox sandbox can no longer be crashed by the script it runs**: gbash moves to v0.0.40, which turns two one-line scripts that killed the whole loomcycle process into ordinary failed commands, and hardens its symlink, size and time limits. Also: **chat bridges for Slack, Telegram and Discord**, beside Teams, on one shared core, each published to npm on its own version line.*
