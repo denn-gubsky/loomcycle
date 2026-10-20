@@ -5245,6 +5245,9 @@ func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, msg, http.StatusBadRequest)
 		return
 	}
+	// A runtime-only block kind from a caller is demoted here as well as in
+	// RunOnce: a draft (below) stores its segments as they are now.
+	req.Segments = loop.DemoteRuntimeKinds(req.Segments)
 	// RFC DI D5: start:false stores the run as a draft — validated, not
 	// admitted; which provider serves it, and every slot and budget check, is
 	// decided at its start.

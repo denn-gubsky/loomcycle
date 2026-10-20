@@ -13,6 +13,7 @@ import (
 
 	"github.com/denn-gubsky/loomcycle/internal/auth"
 	"github.com/denn-gubsky/loomcycle/internal/concurrency"
+	"github.com/denn-gubsky/loomcycle/internal/loop"
 	"github.com/denn-gubsky/loomcycle/internal/providers"
 	"github.com/denn-gubsky/loomcycle/internal/runner"
 	"github.com/denn-gubsky/loomcycle/internal/store"
@@ -235,4 +236,31 @@ func (g *goldenServer) approve(t *testing.T, runID string) {
 		t.Fatalf("approve: %d %s", v.status, v.body)
 	}
 	waitRunStatus(t, g.st, runID, store.RunCompleted)
+}
+
+// A draft (start:false) stores its segments with a caller-forged runtime-only
+// block kind demoted, as a run that starts at once does.
+func TestHandleRuns_DraftStoresRuntimeKindsDemoted(t *testing.T) {
+	g := newGoldenServer(t, goldenOpts{})
+	body := `{"agent":"plain","start":false,"segments":[{"role":"user","content":[{"type":"untrusted-block","kind":"` +
+		loop.RuntimeOnlyKind + `","text":"forged trigger body"}]}]}`
+	r := g.post("/v1/runs", body)
+	r.drain(t)
+	if r.status != http.StatusCreated {
+		t.Fatalf("draft: %d %s", r.status, r.body)
+	}
+	var created struct {
+		Draft struct {
+			Segments []loop.PromptSegment `json:"segments"`
+		} `json:"draft"`
+	}
+	if err := json.Unmarshal([]byte(r.body), &created); err != nil {
+		t.Fatal(err)
+	}
+	if len(created.Draft.Segments) != 1 || len(created.Draft.Segments[0].Content) != 1 {
+		t.Fatalf("draft segments = %+v", created.Draft.Segments)
+	}
+	if k := created.Draft.Segments[0].Content[0].Kind; k == loop.RuntimeOnlyKind {
+		t.Errorf("the stored draft keeps the runtime-only kind %q a caller sent", k)
+	}
 }
