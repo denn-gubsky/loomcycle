@@ -3,18 +3,16 @@ package kms
 import (
 	"context"
 	"crypto"
-	"crypto/hmac"
 	"crypto/sha256"
 	"crypto/x509"
 	"encoding/base64"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"net/http"
-	"sort"
 	"strings"
 	"sync"
-	"time"
+
+	"github.com/denn-gubsky/loomcycle/internal/awsauth"
 )
 
 // awsClient talks to AWS KMS's JSON 1.1 API, signing each request with SigV4.
@@ -69,7 +67,7 @@ func (c *awsClient) call(ctx context.Context, op, action string, in, out any, de
 		return err
 	}
 	req.Header.Set("X-Amz-Target", "TrentService."+action)
-	signV4(req, body, akid, secret, token, c.region, "kms", c.now().UTC())
+	awsauth.SignRequest(req, body, awsauth.Credentials{AccessKeyID: akid, SecretAccessKey: secret, SessionToken: token}, c.region, "kms", c.now())
 	status, resp, err := c.send(ctx, op, req)
 	if err != nil {
 		return err
@@ -386,69 +384,4 @@ func awsKeyType(spec, usage string) string {
 		return "rsa-oaep-" + bits
 	}
 	return ""
-}
-
-// signV4 signs req with AWS Signature Version 4 (header form), for one
-// region and service. payload is the exact request body. Host, X-Amz-Date and
-// (when token is set) X-Amz-Security-Token are added and signed with every
-// other header already on req.
-func signV4(req *http.Request, payload []byte, akid, secret, token, region, service string, now time.Time) {
-	amzDate := now.Format("20060102T150405Z")
-	day := now.Format("20060102")
-	req.Header.Set("X-Amz-Date", amzDate)
-	if token != "" {
-		req.Header.Set("X-Amz-Security-Token", token)
-	}
-	host := req.Host
-	if host == "" {
-		host = req.URL.Host
-	}
-
-	headers := map[string]string{"host": host}
-	for k, vs := range req.Header {
-		headers[strings.ToLower(k)] = strings.Join(trimAll(vs), ",")
-	}
-	names := make([]string, 0, len(headers))
-	for k := range headers {
-		names = append(names, k)
-	}
-	sort.Strings(names)
-	var canonHeaders strings.Builder
-	for _, k := range names {
-		canonHeaders.WriteString(k + ":" + headers[k] + "\n")
-	}
-	signed := strings.Join(names, ";")
-
-	path := req.URL.EscapedPath()
-	if path == "" {
-		path = "/"
-	}
-	sum := sha256.Sum256(payload)
-	canonical := strings.Join([]string{req.Method, path, req.URL.RawQuery, canonHeaders.String(), signed, hex.EncodeToString(sum[:])}, "\n")
-	scope := day + "/" + region + "/" + service + "/aws4_request"
-	creq := sha256.Sum256([]byte(canonical))
-	toSign := "AWS4-HMAC-SHA256\n" + amzDate + "\n" + scope + "\n" + hex.EncodeToString(creq[:])
-
-	k := hmacSHA256([]byte("AWS4"+secret), day)
-	k = hmacSHA256(k, region)
-	k = hmacSHA256(k, service)
-	k = hmacSHA256(k, "aws4_request")
-	sig := hex.EncodeToString(hmacSHA256(k, toSign))
-	req.Header.Set("Authorization", "AWS4-HMAC-SHA256 Credential="+akid+"/"+scope+", SignedHeaders="+signed+", Signature="+sig)
-}
-
-func hmacSHA256(key []byte, data string) []byte {
-	m := hmac.New(sha256.New, key)
-	m.Write([]byte(data))
-	return m.Sum(nil)
-}
-
-// trimAll trims each header value and collapses inner runs of spaces, as the
-// canonical form requires.
-func trimAll(vs []string) []string {
-	out := make([]string, len(vs))
-	for i, v := range vs {
-		out[i] = strings.Join(strings.Fields(v), " ")
-	}
-	return out
 }
