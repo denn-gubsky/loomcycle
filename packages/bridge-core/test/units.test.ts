@@ -10,11 +10,12 @@ import { ConfigError, EnvReader, loadSharedConfig } from "../src/config.js";
 import { Health } from "../src/health.js";
 import { close, createBridgeServer, listen } from "../src/http.js";
 import { sharedSubject } from "../src/identity.js";
+import { MessageSink, StreamSink } from "../src/renderer.js";
 import { FileStore } from "../src/store.js";
 import { parseCommand, splitMessage } from "../src/text.js";
 import { TokenBroker } from "../src/tokens.js";
 import { safeEqual } from "../src/verify.js";
-import { FakeLoomcycle, silentLogger } from "./fakes.js";
+import { FakeBatchPlatform, FakeLoomcycle, FakePlatform, silentLogger } from "./fakes.js";
 
 describe("token broker", () => {
   const opts = { agent: "helper", tokenName: "test-bridge", ttlSeconds: 43200, ratePerMinute: 6, rateBurst: 10, accessMode: "isolated" as const };
@@ -141,6 +142,46 @@ describe("text", () => {
     const parts = splitMessage("aaaa\nbbbb\ncccc", 10);
     expect(parts).toEqual(["aaaa\nbbbb", "cccc"]);
     expect(splitMessage("x".repeat(25), 10)).toEqual(["x".repeat(10), "x".repeat(10), "x".repeat(5)]);
+  });
+});
+
+// An agent writes a line, calls a tool, then writes on. Each run of text is its
+// own paragraph; appended as they come, "searching.Good results." ran together.
+describe("text around a tool call", () => {
+  const ref = { conversation: "c1" };
+
+  async function drive(sink: StreamSink<typeof ref> | MessageSink<typeof ref>, steps: Array<string | { tool: string }>) {
+    for (const s of steps) {
+      if (typeof s === "string") await sink.text(s);
+      else sink.tool(s.tool);
+    }
+    await sink.finish();
+  }
+
+  const steps = [{ tool: "Memory" }, "Let me search.", { tool: "WebSearch" }, "Good ", "results.", { tool: "WebFetch" }, "Here's the digest:\n\n", { tool: "Read" }, "Done."];
+  const want = "Let me search.\n\nGood results.\n\nHere's the digest:\n\nDone.";
+
+  it("starts a new paragraph after a tool in a streamed answer", async () => {
+    const platform = new FakePlatform();
+    await drive(new StreamSink(() => platform.createStream(), platform, ref, { stopPollMs: 60_000 }), steps);
+    expect(platform.streams).toHaveLength(1);
+    expect(platform.streams[0].text).toBe(want);
+  });
+
+  it("starts a new paragraph after a tool in a sent answer", async () => {
+    const platform = new FakeBatchPlatform();
+    await drive(new MessageSink(platform, ref, { typingEveryMs: 60_000 }), steps);
+    expect(platform.messages()).toEqual([want]);
+  });
+
+  it("adds no second break before a notice, which brings its own", async () => {
+    const platform = new FakeBatchPlatform();
+    const sink = new MessageSink(platform, ref, { typingEveryMs: 60_000 });
+    await sink.text("Searching.");
+    sink.tool();
+    await sink.notice("Close to the budget.");
+    await sink.finish();
+    expect(platform.messages()).toEqual(["Searching.\n\n_Close to the budget._"]);
   });
 });
 
