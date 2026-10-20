@@ -7,9 +7,12 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"net"
 	"net/http"
 	"net/url"
+	"regexp"
+	"slices"
 	"strings"
 	"time"
 
@@ -75,7 +78,8 @@ func (h *HTTP) Name() string { return "HTTP" }
 func (h *HTTP) Description() string {
 	return "Make ONE outbound HTTP request with any method, to a host on the operator's allowlist. " +
 		"Takes `method` (GET/POST/PUT/PATCH/DELETE/HEAD), `url` (absolute http(s)), optional `headers` and `body`. " +
-		"Returns the status line, response headers and body as text, truncated at 256 KiB, with a 30s timeout. " +
+		"Returns the status line, response headers and body as text, truncated at 256 KiB, with a 30s timeout; " +
+		"the values of credential-bearing response headers (cookies, tokens, API keys) read [redacted]. " +
 		"Use this to CALL an API — post a payload, authenticate, PATCH a record. " +
 		"Do NOT use it merely to read a web page: WebFetch does the same GET and strips HTML to readable text. " +
 		"The host allowlist is enforced on every redirect hop, so a redirect off-list is refused mid-chain; " +
@@ -232,8 +236,12 @@ func (h *HTTP) do(ctx context.Context, method, rawURL string, headers map[string
 
 	var b bytes.Buffer
 	fmt.Fprintf(&b, "HTTP %s %s -> %d\n", method, rawURL, resp.StatusCode)
-	for k, v := range resp.Header {
-		fmt.Fprintf(&b, "%s: %s\n", k, strings.Join(v, ", "))
+	for _, k := range slices.Sorted(maps.Keys(resp.Header)) {
+		v := strings.Join(resp.Header[k], ", ")
+		if credentialHeader(k) {
+			v = "[redacted]"
+		}
+		fmt.Fprintf(&b, "%s: %s\n", k, v)
 	}
 	b.WriteString("\n")
 	b.Write(respBody)
@@ -241,6 +249,26 @@ func (h *HTTP) do(ctx context.Context, method, rawURL string, headers map[string
 		b.WriteString(responseTruncatedMarker(maxResp))
 	}
 	return tools.Result{Text: b.String()}, nil
+}
+
+// credentialHeaderName matches response header names that may carry a
+// credential: a minted token, an API key, a session id. Their values are kept
+// from the model, which could repeat them into a transcript, a memory or a
+// request to another host; the name stays so the model still sees the header
+// was set.
+var credentialHeaderName = regexp.MustCompile(`(?i)(token|secret|api[-_]?key|session|cookie|credential|password|auth)`)
+
+// credentialHeader reports whether a response header's value is redacted.
+// The authentication challenges match the pattern but carry no secret, and an
+// agent calling an API needs them to learn the auth scheme.
+func credentialHeader(name string) bool {
+	switch http.CanonicalHeaderKey(name) {
+	case "Www-Authenticate", "Proxy-Authenticate":
+		return false
+	case "Set-Cookie", "Set-Cookie2", "Authorization", "Proxy-Authorization":
+		return true
+	}
+	return credentialHeaderName.MatchString(name)
 }
 
 // responseTruncatedMarker is the line do appends when it cut the response body.
