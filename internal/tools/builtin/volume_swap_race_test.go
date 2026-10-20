@@ -214,3 +214,40 @@ func TestRead_SymlinkSwapIntoFenceNeverReadsIt(t *testing.T) {
 		t.Errorf("no Read succeeded in %d calls; the race never let the tool run", swapRaceIterations)
 	}
 }
+
+// The Grep and Glob walks hold under the same race: a directory listed as a
+// real directory and swapped for a symlink before it is descended must not be
+// listed or searched from outside the volume.
+func TestGrepGlob_SymlinkSwapRaceNeverWalksOutside(t *testing.T) {
+	s := newSwapRace(t, "needle inside the volume", swapSentinel)
+	if err := os.WriteFile(filepath.Join(s.outside, "outside-only.txt"), []byte(swapSentinel), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	listed, leakedNames, found, leakedContent := 0, 0, 0, 0
+	for range swapRaceIterations {
+		res := swapCall(t, &Glob{}, s.root, map[string]any{"pattern": "**/*.txt"})
+		if strings.Contains(res.Text, "outside-only.txt") {
+			leakedNames++
+		}
+		if strings.Contains(res.Text, "d/secret.txt") {
+			listed++
+		}
+		res = swapCall(t, &Grep{}, s.root, map[string]any{"pattern": "needle|SENTINEL", "output_mode": "content"})
+		if strings.Contains(res.Text, swapSentinel) {
+			leakedContent++
+		}
+		if strings.Contains(res.Text, "needle inside") {
+			found++
+		}
+	}
+	s.stop()
+	if leakedNames > 0 {
+		t.Errorf("Glob listed a file outside the volume %d times in %d calls", leakedNames, swapRaceIterations)
+	}
+	if leakedContent > 0 {
+		t.Errorf("Grep returned content from outside the volume %d times in %d calls", leakedContent, swapRaceIterations)
+	}
+	if listed == 0 || found == 0 {
+		t.Errorf("Glob listed the inside file %d times and Grep found it %d times in %d calls; the race never let the tools run", listed, found, swapRaceIterations)
+	}
+}
