@@ -329,6 +329,7 @@ Verify end-to-end: spawn `dev/exec` with `{"expose":"devsrv","commands":["nohup 
 | Symptom | Cause / fix |
 |---|---|
 | `no config found` at boot | Image predates RFC AQ — pin `denngubsky/loomcycle:1.6.0` or newer. |
+| Crash-loop ending `auth: refusing to start in open mode on LOOMCYCLE_LISTEN_ADDR=0.0.0.0:8787` | No `LOOMCYCLE_AUTH_TOKEN` reached the container, so the server would serve every route unauthenticated on the LAN, and it refuses to. The `env_file` didn't load or lacks the token (Phase 4) — fix that; don't set `LOOMCYCLE_ALLOW_OPEN_MODE`. |
 | (browser) pinchtab crash-loops `mkdir: can't create directory '/data/.config': Permission denied` | `pinchtab-data` dataset not owned by 1000 — `chown -R 1000:1000 /mnt/APPS2/loomcycle/pinchtab-data`. |
 | (browser) `dev/exec` expose → `network loom-dev not found` | The sidecar image predates 1.43.0 (no expose seam), or nothing created `loom-dev` — use `docker-compose.browser.yaml` (declares the network + a multi-arch sidecar). |
 | (browser) browser step → `navigation blocked by IDPI: Domain not in allowlist` | Add the alias to PinchTab's allowlist (step 5 above) and restart the sidecar. |

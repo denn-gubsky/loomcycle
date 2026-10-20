@@ -41,7 +41,9 @@ publish task → exp4-tasks → CODER (writes code, pushes a branch, opens a PR 
    message the bot, then `https://api.telegram.org/bot<token>/getUpdates`).
 6. **Ingress** — Gitea must reach loomcycle's `/v1/_webhooks/*`. If Gitea isn't on this
    host, set `LOOMCYCLE_LISTEN_ADDR` to a reachable IP (LAN/VPN/tailnet) and point the
-   Gitea hook URLs there. (No public relay needed on a private network.)
+   Gitea hook URLs there. (No public relay needed on a private network.) A reachable
+   address needs `LOOMCYCLE_AUTH_TOKEN` in `.env.local`: with no auth configured the
+   server refuses to start on anything but loopback.
 
 ## Setup
 
