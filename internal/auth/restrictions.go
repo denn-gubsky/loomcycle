@@ -188,8 +188,9 @@ const MaxRestrictedAgents = 64
 
 // restrictedAgentNameRe is what an allowlisted name may look like. It is
 // deliberately as wide as any agent name the runtime accepts and no wider than
-// a name can be: a listed name that cannot exist simply admits nothing.
-var restrictedAgentNameRe = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9_.:-]{0,127}$`)
+// a name can be: a listed name that cannot exist simply admits nothing. That
+// includes `/`: agents are named in groups (chat/medium).
+var restrictedAgentNameRe = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9_.:/-]{0,127}$`)
 
 // IsZero reports whether nothing is restricted.
 func (r Restrictions) IsZero() bool {

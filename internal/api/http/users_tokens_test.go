@@ -745,6 +745,21 @@ func TestHandleMintUserToken_AgentsRestrictsTheToken(t *testing.T) {
 	}
 }
 
+// A bridge mints each of its users a token limited to one grouped agent
+// (chat/medium, its default). That mint must succeed and the token must start
+// that agent and no other.
+func TestHandleMintUserToken_AgentsTakesAGroupedName(t *testing.T) {
+	s, st := tokenAuthServer(t, "legacy")
+	acme := auth.Principal{TenantID: "acme", Subject: "ops", Scopes: []string{auth.ScopeTenant}}
+	seedUser(t, st, "acme", "telegram-1", "isolated", "active")
+
+	resp := mintFor(t, s, acme, "telegram-1", `{"agents":["chat/medium"],"overrides":["interactive"],"max_active":2}`)
+	p, ok := s.resolvePrincipal(context.Background(), resp.Token)
+	if !ok || !p.Restrictions.AgentAllowed("chat/medium") || p.Restrictions.AgentAllowed("chat/local") {
+		t.Errorf("resolved principal restrictions = %+v (ok=%v), want the list [chat/medium]", p.Restrictions, ok)
+	}
+}
+
 // overrides in the mint body locks the token's per-run settings and takes
 // effect at login.
 func TestHandleMintUserToken_OverridesLocksTheToken(t *testing.T) {
