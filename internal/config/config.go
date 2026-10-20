@@ -22,6 +22,7 @@ import (
 
 	"github.com/denn-gubsky/loomcycle/internal/agents"
 	"github.com/denn-gubsky/loomcycle/internal/auth"
+	"github.com/denn-gubsky/loomcycle/internal/awsauth"
 	"github.com/denn-gubsky/loomcycle/internal/credential"
 	"github.com/denn-gubsky/loomcycle/internal/hooks"
 	meminject "github.com/denn-gubsky/loomcycle/internal/memory"
@@ -1000,6 +1001,98 @@ type ProviderConfig struct {
 	// Capabilities (a model behind an OpenAI-compatible base URL that DOES
 	// support vision, say). Nil = advertise the driver defaults.
 	Capabilities *CapabilityOverride `json:"capabilities,omitempty" yaml:"capabilities,omitempty"`
+	// Auth authenticates the provider with AWS credentials instead of a key
+	// (RFC EM): SigV4 request signing, or a short-term Bedrock key minted
+	// from the credentials. Nil = today's api_key_env path. A provider has one
+	// operator credential, so auth and api_key_env are exclusive.
+	Auth *ProviderAuth `json:"auth,omitempty" yaml:"auth,omitempty"`
+}
+
+// ProviderAuth is a provider's `auth:` block. Credentials come from the
+// standard AWS chain (env keys, web identity, profile, container endpoint,
+// EC2 instance role); none is ever written in config.
+type ProviderAuth struct {
+	// Type is aws_sigv4 (sign every request; the default choice) or
+	// aws_bedrock_token (mint a short-term Bedrock key and send it as the
+	// driver's key, for a path that only forwards a key header).
+	Type string `json:"type" yaml:"type"`
+	// Region is the signing region. Required, and base_url's host must name
+	// the same region: a mismatch is the most common SigV4 failure, and AWS's
+	// answer to it does not say which side is wrong.
+	Region string `json:"region" yaml:"region"`
+	// Service is the SigV4 service name. Empty = from the Bedrock host
+	// (bedrock-runtime -> bedrock, bedrock-mantle -> bedrock-mantle);
+	// required for any other host.
+	Service string `json:"service,omitempty" yaml:"service,omitempty"`
+	// RoleARN, when set, is assumed on top of the chain's credentials (a
+	// role in another account).
+	RoleARN string `json:"role_arn,omitempty" yaml:"role_arn,omitempty"`
+	// ExternalIDEnv names the env var holding the ExternalId for RoleARN.
+	ExternalIDEnv string `json:"external_id_env,omitempty" yaml:"external_id_env,omitempty"`
+	// SessionName is the role session name CloudTrail records. Default
+	// "loomcycle".
+	SessionName string `json:"session_name,omitempty" yaml:"session_name,omitempty"`
+}
+
+// Provider auth types (ProviderAuth.Type).
+const (
+	ProviderAuthSigV4        = "aws_sigv4"
+	ProviderAuthBedrockToken = "aws_bedrock_token"
+)
+
+// awsSecretEnvNames are the env vars that carry loomcycle's own AWS secrets.
+// While a provider authenticates with AWS credentials, no operator allowlist
+// may hand them to a command an agent runs.
+var awsSecretEnvNames = []string{"AWS_SECRET_ACCESS_KEY", "AWS_SESSION_TOKEN", "AWS_CONTAINER_AUTHORIZATION_TOKEN", "AWS_BEARER_TOKEN_BEDROCK"}
+
+var (
+	roleARNPattern     = regexp.MustCompile(`^arn:aws(-cn|-us-gov|-iso|-iso-b)?:iam::[0-9]{12}:role/[\w+=,.@/-]{1,512}$`)
+	sessionNamePattern = regexp.MustCompile(`^[\w+=,.@-]{2,64}$`)
+)
+
+// validateAuth checks a provider's auth block (RFC EM §3).
+func (p ProviderConfig) validateAuth(id string) error {
+	a := p.Auth
+	if a == nil {
+		return nil
+	}
+	field := "providers." + id + ".auth"
+	switch a.Type {
+	case ProviderAuthSigV4, ProviderAuthBedrockToken:
+	case "":
+		return fmt.Errorf("%s.type is required (%s or %s)", field, ProviderAuthSigV4, ProviderAuthBedrockToken)
+	default:
+		return fmt.Errorf("%s.type %q is not %s or %s", field, a.Type, ProviderAuthSigV4, ProviderAuthBedrockToken)
+	}
+	if p.APIKeyEnv != "" {
+		return fmt.Errorf("providers.%s: auth and api_key_env cannot both be set (a provider has one operator credential)", id)
+	}
+	if p.Driver != "anthropic" && p.Driver != "openai" {
+		return fmt.Errorf("%s is supported on the anthropic and openai drivers only, not %q", field, p.Driver)
+	}
+	u, err := url.Parse(p.BaseURL)
+	if p.BaseURL == "" || err != nil || u.Scheme != "https" || u.Host == "" {
+		return fmt.Errorf("providers.%s: auth needs an https base_url (the Bedrock endpoint)", id)
+	}
+	if a.Region == "" {
+		return fmt.Errorf("%s.region is required", field)
+	}
+	if !awsauth.HostHasRegion(p.BaseURL, a.Region) {
+		return fmt.Errorf("%s.region %q does not match base_url host %q", field, a.Region, u.Hostname())
+	}
+	if a.Service == "" && awsauth.DefaultService(p.BaseURL) == "" {
+		return fmt.Errorf("%s.service is required: %q is not a Bedrock host", field, u.Hostname())
+	}
+	if a.RoleARN != "" && !roleARNPattern.MatchString(a.RoleARN) {
+		return fmt.Errorf("%s.role_arn %q is not an IAM role ARN", field, a.RoleARN)
+	}
+	if a.ExternalIDEnv != "" && a.RoleARN == "" {
+		return fmt.Errorf("%s.external_id_env needs role_arn", field)
+	}
+	if a.SessionName != "" && !sessionNamePattern.MatchString(a.SessionName) {
+		return fmt.Errorf("%s.session_name %q must be 2-64 characters of letters, digits and +=,.@_-", field, a.SessionName)
+	}
+	return nil
 }
 
 // ProviderLane is one model kind's queue on a provider: how many calls of that
@@ -8131,6 +8224,9 @@ func validate(c *Config) error {
 		if err := pc.validateLanes(id, c.Models); err != nil {
 			return err
 		}
+		if err := pc.validateAuth(id); err != nil {
+			return err
+		}
 		dialects, ok := providers.DriverDialects(pc.Driver)
 		if !ok {
 			return fmt.Errorf("providers.%s: unknown driver %q (compiled-in: %v)", id, pc.Driver, providers.RegisteredDrivers())
@@ -8147,6 +8243,9 @@ func validate(c *Config) error {
 				return fmt.Errorf("providers.%s: driver %q does not speak dialect %q (supported: %v)", id, pc.Driver, pc.Dialect, dialects)
 			}
 		}
+	}
+	if err := validateAWSSecretAllowlists(c); err != nil {
+		return err
 	}
 	// Model aliases (top-level models:) — a non-empty provider on an alias must be a
 	// known provider (RFC BF P2a; an empty provider defers to the pin/candidate that
@@ -9087,4 +9186,38 @@ func ValidateEphemeralVolumes(v string) error {
 		return nil
 	}
 	return fmt.Errorf("ephemeral_volumes: unknown value %q (the only value is %q; leave it unset for a volume's own mode)", v, EphemeralVolumesReadOnly)
+}
+
+// validateAWSSecretAllowlists refuses, while any provider authenticates with
+// AWS credentials, an operator env allowlist that would pass loomcycle's own
+// AWS secrets to something an agent or a trigger runs (RFC EM §9.3). Without
+// an auth provider those names may carry other AWS credentials an operator
+// meant to share, so they are left alone.
+func validateAWSSecretAllowlists(c *Config) error {
+	usesAWS := false
+	for _, pc := range c.Providers {
+		if pc.Auth != nil {
+			usesAWS = true
+			break
+		}
+	}
+	if !usesAWS {
+		return nil
+	}
+	lists := []struct {
+		env   string
+		names []string
+	}{
+		{"LOOMCYCLE_BASHBOX_FALLBACK_ALLOWED_ENV", c.Env.BashboxFallbackAllowedEnv},
+		{"LOOMCYCLE_SCHEDULER_ENV_ALLOWLIST", c.Env.SchedulerEnvAllowlist},
+		{"LOOMCYCLE_WEBHOOKS_ENV_ALLOWLIST", c.Env.WebhooksEnvAllowlist},
+	}
+	for _, l := range lists {
+		for _, n := range l.names {
+			if slices.Contains(awsSecretEnvNames, strings.TrimSpace(n)) {
+				return fmt.Errorf("%s names %s, which carries loomcycle's own AWS credentials while a provider uses auth: remove it", l.env, n)
+			}
+		}
+	}
+	return nil
 }
