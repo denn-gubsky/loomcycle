@@ -3275,91 +3275,12 @@ outerLoop:
 		s.disarmTurn()
 		s.turnCancelFn(nil)
 
-		// Queue-aware routing after the start: the first call's provider was
-		// chosen when the run started; at each later call boundary, a run with
-		// no slot held for it (its lease was preempted or expired, or the lane
-		// keeps none) may move once to a provider where it would not wait so
-		// long. Never after the first success when the operator pinned runs to
-		// their provider (PinAfterSuccess) — the reason that pin exists applies
-		// to a move as much as to a fallback.
-		if iter > 0 && !s.movedForQueue && opts.MoveForQueue != nil &&
-			!(opts.FallbackPolicy.PinAfterSuccess && s.firstTurnSucceeded) {
-			s.movedForQueue = moveForQueue(ctx, &opts, s.messages, emit)
+		iterCtx, ex := s.beginIteration(ctx, iterCtx, iterSpan, iter)
+		if ex.ctl == loopReturn {
+			return ex.res, ex.err
 		}
 
-		// Stamp the CURRENTLY-resolved provider/model onto the per-iteration
-		// ctx so the Context tool's op=self can report them to the agent
-		// (non-secret introspection). Per-iteration, not once at Run start,
-		// because tryProviderFallback swaps opts.Provider/opts.Model in place
-		// — this keeps op=self truthful about what the agent is actually
-		// running on after a fallback. Tools dispatched this iteration receive
-		// iterCtx, so the value reaches them without per-tool wiring.
-		iterCtx = tools.WithResolvedProvider(iterCtx, opts.Provider.ID())
-		iterCtx = tools.WithResolvedModel(iterCtx, opts.Model)
-		iterCtx = tools.WithResolvedSampling(iterCtx, opts.Sampling)
-		iterCtx = withIteration(iterCtx, iter)
-		iterCtx = tools.WithIterationBudget(iterCtx, iter+1, iterCap, unboundedIters) // op=self: iterations used / left
-		iterCtx = tools.WithMaxContextTokens(iterCtx, opts.MaxContextTokens)          // RFC CJ — configured cap for op=self
-		// NB: the context-footprint stamp (tools.WithContextUsage) is applied
-		// LOWER — after drainSteer + auto/self compaction — so a same-turn
-		// op=self never reports a stale pre-compaction footprint.
-
-		// Heartbeat fires at the top of each iteration. Cheap path —
-		// implementations are expected to be ~one UPDATE. Failures
-		// should NOT propagate (a sweeper in the future is the
-		// authoritative path; a missed heartbeat just means we have
-		// to wait for the sweeper to catch up).
-		if opts.OnHeartbeat != nil {
-			opts.OnHeartbeat()
-		}
-
-		// Cooperative pause/quiesce (RFC X / F41): if a runtime pause is in
-		// effect, park HERE — a clean iteration boundary, never mid-turn /
-		// between a tool_use and its tool_results. Park persists
-		// pause_state='paused', blocks until resume, then restores 'running'.
-		// On ctx cancel while parked it returns an error and we exit the run.
-		if opts.PauseGate != nil && opts.PauseGate.PauseRequested() {
-			if err := opts.PauseGate.Park(iterCtx); err != nil {
-				iterSpan.End()
-				return RunResult{StopReason: "cancelled", Usage: s.totalUsage}, ctx.Err()
-			}
-		}
-		// After the park, so a run resumed into a spent budget stops here too.
-		if opts.BudgetGate != nil {
-			if err := opts.BudgetGate(); err != nil {
-				iterSpan.End()
-				// Emitted as well as returned: the event is what the transcript
-				// keeps and what a stream that is not HTTP's ends on.
-				emit(providers.Event{Type: providers.EventError, Error: err.Error()})
-				return RunResult{StopReason: StopReasonTokenLimit, Iterations: iter, Usage: s.totalUsage}, err
-			}
-		}
-
-		// Mid-turn steering (internal/steer): drain any operator-injected
-		// instructions and append each as a user turn BEFORE this iteration's
-		// provider call. Drained ONLY here, at the top of the iteration —
-		// never between a tool_use assistant turn and its tool_results user
-		// turn (which would orphan the tool_use and 400 the provider). After
-		// a tool round the messages end [...assistant(tool_use),
-		// user(tool_results)]; appending a user(steer) turn yields consecutive
-		// user turns, which every provider accepts (replay already emits them).
-		if opts.SteerQueue != nil {
-			var steerCompacted bool
-			s.messages, steerCompacted = drainSteer(opts.SteerQueue, s.messages, opts.OnSteer, emit)
-			if steerCompacted {
-				// A steer-delivered compaction shrank the running history; refresh
-				// the footprint so the auto-compact check + op=self below reflect
-				// the compacted size, not the stale pre-compaction value.
-				s.lastCtxTokens = estimatePromptTokens(s.preambleTokens, s.messages)
-				s.pendingTokens = 0 // the estimate covers the whole history
-			}
-		}
-		// Background children that ended since the last call are named in one
-		// note, here — after the last tool results, never between a tool_use
-		// and its result — the boundary operator messages use.
-		if note, noted := bg.TakeNotes(); note != "" {
-			s.messages = appendChildrenNote(s.messages, note, noted, emit)
-		}
+		s.takeBoundaryInput()
 
 		// Auto / self-requested context distillation — also a clean boundary
 		// (drainSteer ran; no tool cycle is mid-flight). Fires when the agent asked
@@ -3497,6 +3418,104 @@ outerLoop:
 		Usage:      s.totalUsage,
 		Structured: structured,
 	}, nil
+}
+
+// beginIteration is an iteration's boundary work before it takes any input:
+// a queue-aware move, the per-iteration ctx stamps (returned), the heartbeat,
+// and the pause and budget gates, either of which can end the run here.
+func (s *runState) beginIteration(ctx, iterCtx context.Context, iterSpan trace.Span, iter int) (context.Context, loopExit) {
+	// Queue-aware routing after the start: the first call's provider was
+	// chosen when the run started; at each later call boundary, a run with
+	// no slot held for it (its lease was preempted or expired, or the lane
+	// keeps none) may move once to a provider where it would not wait so
+	// long. Never after the first success when the operator pinned runs to
+	// their provider (PinAfterSuccess) — the reason that pin exists applies
+	// to a move as much as to a fallback.
+	if iter > 0 && !s.movedForQueue && s.opts.MoveForQueue != nil &&
+		!(s.opts.FallbackPolicy.PinAfterSuccess && s.firstTurnSucceeded) {
+		s.movedForQueue = moveForQueue(ctx, s.opts, s.messages, s.emit)
+	}
+
+	// Stamp the CURRENTLY-resolved provider/model onto the per-iteration
+	// ctx so the Context tool's op=self can report them to the agent
+	// (non-secret introspection). Per-iteration, not once at Run start,
+	// because tryProviderFallback swaps opts.Provider/opts.Model in place
+	// — this keeps op=self truthful about what the agent is actually
+	// running on after a fallback. Tools dispatched this iteration receive
+	// iterCtx, so the value reaches them without per-tool wiring.
+	iterCtx = tools.WithResolvedProvider(iterCtx, s.opts.Provider.ID())
+	iterCtx = tools.WithResolvedModel(iterCtx, s.opts.Model)
+	iterCtx = tools.WithResolvedSampling(iterCtx, s.opts.Sampling)
+	iterCtx = withIteration(iterCtx, iter)
+	iterCtx = tools.WithIterationBudget(iterCtx, iter+1, s.iterCap, s.unboundedIters) // op=self: iterations used / left
+	iterCtx = tools.WithMaxContextTokens(iterCtx, s.opts.MaxContextTokens)            // RFC CJ — configured cap for op=self
+	// NB: the context-footprint stamp (tools.WithContextUsage) is applied
+	// LOWER — after drainSteer + auto/self compaction — so a same-turn
+	// op=self never reports a stale pre-compaction footprint.
+
+	// Heartbeat fires at the top of each iteration. Cheap path —
+	// implementations are expected to be ~one UPDATE. Failures
+	// should NOT propagate (a sweeper in the future is the
+	// authoritative path; a missed heartbeat just means we have
+	// to wait for the sweeper to catch up).
+	if s.opts.OnHeartbeat != nil {
+		s.opts.OnHeartbeat()
+	}
+
+	// Cooperative pause/quiesce (RFC X / F41): if a runtime pause is in
+	// effect, park HERE — a clean iteration boundary, never mid-turn /
+	// between a tool_use and its tool_results. Park persists
+	// pause_state='paused', blocks until resume, then restores 'running'.
+	// On ctx cancel while parked it returns an error and we exit the run.
+	if s.opts.PauseGate != nil && s.opts.PauseGate.PauseRequested() {
+		if err := s.opts.PauseGate.Park(iterCtx); err != nil {
+			iterSpan.End()
+			return iterCtx, exitReturn(RunResult{StopReason: "cancelled", Usage: s.totalUsage}, ctx.Err())
+		}
+	}
+	// After the park, so a run resumed into a spent budget stops here too.
+	if s.opts.BudgetGate != nil {
+		if err := s.opts.BudgetGate(); err != nil {
+			iterSpan.End()
+			// Emitted as well as returned: the event is what the transcript
+			// keeps and what a stream that is not HTTP's ends on.
+			s.emit(providers.Event{Type: providers.EventError, Error: err.Error()})
+			return iterCtx, exitReturn(RunResult{StopReason: StopReasonTokenLimit, Iterations: iter, Usage: s.totalUsage}, err)
+		}
+	}
+
+	return iterCtx, loopExit{}
+}
+
+// takeBoundaryInput appends what arrived for the run between turns: operator
+// steer messages, then a note on background children that ended.
+func (s *runState) takeBoundaryInput() {
+	// Mid-turn steering (internal/steer): drain any operator-injected
+	// instructions and append each as a user turn BEFORE this iteration's
+	// provider call. Drained ONLY here, at the top of the iteration —
+	// never between a tool_use assistant turn and its tool_results user
+	// turn (which would orphan the tool_use and 400 the provider). After
+	// a tool round the messages end [...assistant(tool_use),
+	// user(tool_results)]; appending a user(steer) turn yields consecutive
+	// user turns, which every provider accepts (replay already emits them).
+	if s.opts.SteerQueue != nil {
+		var steerCompacted bool
+		s.messages, steerCompacted = drainSteer(s.opts.SteerQueue, s.messages, s.opts.OnSteer, s.emit)
+		if steerCompacted {
+			// A steer-delivered compaction shrank the running history; refresh
+			// the footprint so the auto-compact check + op=self below reflect
+			// the compacted size, not the stale pre-compaction value.
+			s.lastCtxTokens = estimatePromptTokens(s.preambleTokens, s.messages)
+			s.pendingTokens = 0 // the estimate covers the whole history
+		}
+	}
+	// Background children that ended since the last call are named in one
+	// note, here — after the last tool results, never between a tool_use
+	// and its result — the boundary operator messages use.
+	if note, noted := s.bg.TakeNotes(); note != "" {
+		s.messages = appendChildrenNote(s.messages, note, noted, s.emit)
+	}
+
 }
 
 // distillAtBoundary is an iteration's distillation gate: recap, compaction as
