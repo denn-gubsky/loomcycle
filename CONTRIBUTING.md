@@ -19,8 +19,9 @@ We welcome these contributions right now:
   corruption, wire-shape regressions against the documented contract,
   security issues. File an issue with a minimal reproduction; we triage
   these actively.
-- **Security disclosures** — please send privately via the email in the
-  project's repository profile rather than filing a public issue.
+- **Security disclosures** — please report privately through GitHub
+  Security Advisories rather than filing a public issue; see
+  [`SECURITY.md`](SECURITY.md).
 - **Downstream consumers** — building against the wire surface
   (`/v1/*` HTTP, gRPC, the embedded Web UI) is exactly what we want.
   Production integrations inform v1.0 design. Open an issue describing
