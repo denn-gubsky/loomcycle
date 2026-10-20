@@ -26,6 +26,8 @@ That changes what the runtime can honestly promise:
   guarantee is real. Those writes are held in memory, up to a per-call limit
   (64 MiB unless the operator changed it); past it a write fails with
   `no space left on device`, so keep scratch files on a read-only volume small.
+  Changing a file of the volume (chmod, touch, mv, ln, appending) copies it
+  into that memory too, at its full size.
 
 ## When to use it
 
