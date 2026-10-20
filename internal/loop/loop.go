@@ -3414,92 +3414,7 @@ outerLoop:
 			return ex.res, ex.err
 		}
 
-		// Prepend any text before tool_use blocks so the assistant turn is well-formed.
-		if t.iterText != "" {
-			t.assistantBlocks = append(
-				[]providers.ContentBlock{providers.DialogueText(t.iterText)},
-				t.assistantBlocks...,
-			)
-		}
-		s.messages = append(s.messages, providers.Message{
-			Role:               "assistant",
-			Content:            t.assistantBlocks,
-			Reasoning:          t.iterReasoning,
-			ReasoningSignature: t.iterReasoningSignature,
-		})
-		// Mark the run "past turn one." Any subsequent retryable
-		// error that would have triggered cross-provider fallback
-		// is suppressed when PinAfterSuccess is set — the
-		// transcript now has provider-specific state.
-		s.firstTurnSucceeded = true
-
-		// Clear any stale per-model stall flag in the resolver
-		// matrix: this iteration just succeeded against
-		// (provider, model), which is the most direct possible
-		// evidence the pair is healthy. Without this, a stall
-		// from an earlier transient failure could outlive a
-		// proven recovery and collapse a tier's cascade between
-		// probes. Idempotent at the resolver layer.
-		if opts.ClearStall != nil {
-			opts.ClearStall(opts.Provider.ID(), opts.Model)
-		}
-
-		if t.iterUsage != nil {
-			s.totalUsage.InputTokens += t.iterUsage.InputTokens
-			s.totalUsage.OutputTokens += t.iterUsage.OutputTokens
-			s.totalUsage.CacheCreationTokens += t.iterUsage.CacheCreationTokens
-			s.totalUsage.CacheReadTokens += t.iterUsage.CacheReadTokens
-			s.totalUsage.Model = t.iterUsage.Model
-			// Capture the ACTUAL provider that served this iteration.
-			// opts.Provider is mutated in place by tryProviderFallback
-			// when a runtime fallback engages, so reading ID() here
-			// reflects the post-fallback identity. Used by downstream
-			// analysis to quantify primary-vs-fallback routing.
-			s.totalUsage.Provider = opts.Provider.ID()
-			// RFC AV: carry the per-call credential source (which key paid,
-			// stamped by the driver) onto the run-level summary. The last
-			// successful iteration's source becomes runs.credential_source —
-			// best-effort for the summary; the exact per-call split is in the
-			// token_usage ledger (one row per EventUsage below).
-			s.totalUsage.CredentialSource = t.iterUsage.CredentialSource
-			s.totalUsage.CredentialScopeID = t.iterUsage.CredentialScopeID
-			// Stamp the serving model's context-window ceiling onto the
-			// per-iteration usage event so the UI can render a "context
-			// used / max" gauge. Set on iterUsage (discarded after this
-			// iteration) NOT totalUsage, so the run-final accounting stays
-			// byte-stable; 0 when the provider reports an unknown window.
-			// A driver may already report a per-CALL window (e.g. Ollama
-			// reads the model's actual loaded context from /api/ps) — prefer
-			// that and only fall back to the static capability default.
-			// RFC CJ: a per-agent context budget caps the EFFECTIVE window used
-			// by the distillation threshold + the gauge. See effectiveWindow —
-			// shared with the run-start seed so the two cannot disagree.
-			t.iterUsage.MaxContextTokens = effectiveWindow(t.iterUsage.MaxContextTokens, opts)
-			// RFC AV: stamp the serving provider onto the per-call usage event
-			// too (not just totalUsage) so the token_usage row records which
-			// provider actually served this call — exact across mid-run fallback.
-			t.iterUsage.Provider = opts.Provider.ID()
-			// How long the call took, for the throughput estimate and the ledger.
-			t.callTimer.Stamp(t.iterUsage)
-			emit(providers.Event{Type: providers.EventUsage, Usage: t.iterUsage})
-			// Retain this turn's CURRENT context footprint (input + cache, i.e.
-			// what the request actually sent — NOT cumulative totalUsage, which
-			// only grows) + the window ceiling, so the NEXT iteration's
-			// top-of-loop auto-compact check sees the live utilization. After a
-			// compaction the next request shrinks, so this self-debounces.
-			s.lastCtxTokens = t.iterUsage.InputTokens + t.iterUsage.CacheReadTokens + t.iterUsage.CacheCreationTokens
-			s.lastWindow = t.iterUsage.MaxContextTokens
-			// Set BESIDE the values it qualifies, not derived from a separate
-			// flag: the question the reports ask is "did a provider report
-			// this footprint", and the only honest answer is at the assignment
-			// that made it so.
-			s.footprintMeasured = true
-		}
-
-		s.stopReason = t.iterStop
-		s.finalText = t.iterText
-		s.toolChoice.observe(t.pendingTools) // a COMPLETED turn advances the tool_choice
-		s.publishAnswerShape()
+		s.recordTurn(t)
 
 		switch ex := s.endTurn(ctx, turnCtx, iterSpan, iter, t); ex.ctl {
 		case loopNext:
@@ -4178,6 +4093,99 @@ func (s *runState) dispatchTools(ctx, turnCtx context.Context, iterSpan trace.Sp
 		return loopExit{ctl: loopNext}
 	}
 	return loopExit{}
+}
+
+// recordTurn appends the model's turn to the conversation and accounts for
+// it: the resolver hears the pair is healthy, the run's usage and context
+// footprint take the call's numbers, and the answer so far is this turn's.
+func (s *runState) recordTurn(t turnOutput) {
+	// Prepend any text before tool_use blocks so the assistant turn is well-formed.
+	if t.iterText != "" {
+		t.assistantBlocks = append(
+			[]providers.ContentBlock{providers.DialogueText(t.iterText)},
+			t.assistantBlocks...,
+		)
+	}
+	s.messages = append(s.messages, providers.Message{
+		Role:               "assistant",
+		Content:            t.assistantBlocks,
+		Reasoning:          t.iterReasoning,
+		ReasoningSignature: t.iterReasoningSignature,
+	})
+	// Mark the run "past turn one." Any subsequent retryable
+	// error that would have triggered cross-provider fallback
+	// is suppressed when PinAfterSuccess is set — the
+	// transcript now has provider-specific state.
+	s.firstTurnSucceeded = true
+
+	// Clear any stale per-model stall flag in the resolver
+	// matrix: this iteration just succeeded against
+	// (provider, model), which is the most direct possible
+	// evidence the pair is healthy. Without this, a stall
+	// from an earlier transient failure could outlive a
+	// proven recovery and collapse a tier's cascade between
+	// probes. Idempotent at the resolver layer.
+	if s.opts.ClearStall != nil {
+		s.opts.ClearStall(s.opts.Provider.ID(), s.opts.Model)
+	}
+
+	if t.iterUsage != nil {
+		s.totalUsage.InputTokens += t.iterUsage.InputTokens
+		s.totalUsage.OutputTokens += t.iterUsage.OutputTokens
+		s.totalUsage.CacheCreationTokens += t.iterUsage.CacheCreationTokens
+		s.totalUsage.CacheReadTokens += t.iterUsage.CacheReadTokens
+		s.totalUsage.Model = t.iterUsage.Model
+		// Capture the ACTUAL provider that served this iteration.
+		// opts.Provider is mutated in place by tryProviderFallback
+		// when a runtime fallback engages, so reading ID() here
+		// reflects the post-fallback identity. Used by downstream
+		// analysis to quantify primary-vs-fallback routing.
+		s.totalUsage.Provider = s.opts.Provider.ID()
+		// RFC AV: carry the per-call credential source (which key paid,
+		// stamped by the driver) onto the run-level summary. The last
+		// successful iteration's source becomes runs.credential_source —
+		// best-effort for the summary; the exact per-call split is in the
+		// token_usage ledger (one row per EventUsage below).
+		s.totalUsage.CredentialSource = t.iterUsage.CredentialSource
+		s.totalUsage.CredentialScopeID = t.iterUsage.CredentialScopeID
+		// Stamp the serving model's context-window ceiling onto the
+		// per-iteration usage event so the UI can render a "context
+		// used / max" gauge. Set on iterUsage (discarded after this
+		// iteration) NOT totalUsage, so the run-final accounting stays
+		// byte-stable; 0 when the provider reports an unknown window.
+		// A driver may already report a per-CALL window (e.g. Ollama
+		// reads the model's actual loaded context from /api/ps) — prefer
+		// that and only fall back to the static capability default.
+		// RFC CJ: a per-agent context budget caps the EFFECTIVE window used
+		// by the distillation threshold + the gauge. See effectiveWindow —
+		// shared with the run-start seed so the two cannot disagree.
+		t.iterUsage.MaxContextTokens = effectiveWindow(t.iterUsage.MaxContextTokens, *s.opts)
+		// RFC AV: stamp the serving provider onto the per-call usage event
+		// too (not just totalUsage) so the token_usage row records which
+		// provider actually served this call — exact across mid-run fallback.
+		t.iterUsage.Provider = s.opts.Provider.ID()
+		// How long the call took, for the throughput estimate and the ledger.
+		t.callTimer.Stamp(t.iterUsage)
+		s.emit(providers.Event{Type: providers.EventUsage, Usage: t.iterUsage})
+		// Retain this turn's CURRENT context footprint (input + cache, i.e.
+		// what the request actually sent — NOT cumulative totalUsage, which
+		// only grows) + the window ceiling, so the NEXT iteration's
+		// top-of-loop auto-compact check sees the live utilization. After a
+		// compaction the next request shrinks, so this self-debounces.
+		s.lastCtxTokens = t.iterUsage.InputTokens + t.iterUsage.CacheReadTokens + t.iterUsage.CacheCreationTokens
+		s.lastWindow = t.iterUsage.MaxContextTokens
+		// Set BESIDE the values it qualifies, not derived from a separate
+		// flag: the question the reports ask is "did a provider report
+		// this footprint", and the only honest answer is at the assignment
+		// that made it so.
+		s.footprintMeasured = true
+	}
+
+	s.stopReason = t.iterStop
+	s.finalText = t.iterText
+	s.toolChoice.observe(t.pendingTools) // a COMPLETED turn advances the tool_choice
+	s.publishAnswerShape()
+
 }
 
 // endTurn decides what follows the model's turn: a park when the operator
