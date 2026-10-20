@@ -20,7 +20,7 @@ PG_PASSWORD  ?= loomcycle
 
 PG_DSN := postgres://$(PG_USER):$(PG_PASSWORD)@127.0.0.1:$(PG_PORT)/$(PG_DATABASE)?sslmode=disable
 
-.PHONY: help build build-ui build-all test test-pg pg-up pg-down pg-logs proto proto-deps python-proto python-test memory-eval-mock memory-eval-live
+.PHONY: help build build-ui build-all test test-pg pg-up pg-down pg-logs proto proto-deps python-proto python-test memory-eval-mock memory-eval-live bashbox-escape
 
 help:
 	@echo "loomcycle dev targets:"
@@ -31,6 +31,7 @@ help:
 	@echo "  test-pg     — go test ./... with LOOMCYCLE_TEST_PG_DSN set against the local fixture"
 	@echo "  memory-eval-mock — the memory consolidation + retrieval eval gate (offline, no key)"
 	@echo "  memory-eval-live — the memory extraction eval against a REAL model (needs a provider; MEMEVAL_MODEL=…)"
+	@echo "  bashbox-escape — the Bashbox sandbox escape suite (run it on every gbash bump; CI runs it on every PR)"
 	@echo "  pg-up       — start an ephemeral Postgres container for the test fixture"
 	@echo "  pg-down     — stop + remove the test fixture container"
 	@echo "  pg-logs     — tail the test fixture container's logs"
@@ -113,6 +114,29 @@ memory-eval-mock:
 	echo "=== memory eval: consolidation telemetry ==="; \
 	go test ./internal/scheduler/ -run 'TestConsolidationTelemetry' -count=1; \
 	echo "=== memory-eval-mock PASSED ==="
+
+# bashbox-escape: the Bashbox escape suite — every TestBashbox* test in
+# internal/tools/builtin: no host file outside the volume (absolute path, `..`,
+# symlinks, including one the sandbox made and a host file tool then follows),
+# no /proc, only virtual /dev entries, no network, read-only volumes never
+# written, the host-command fallback held to its allowlist and per-command
+# credentials, runaway scripts stopped by gbash's limits. Bashbox's isolation
+# is delegated to gbash, which is pre-1.0, so a PR that bumps gbash must pass
+# it (RFC ES #10); CI runs it as its own step on every PR, which also covers a
+# bump the go.mod diff does not show plainly. Prefix a new case
+# TestBashboxEscape_ and it joins without editing this target.
+#
+# A skipped test fails the target: several cases need a host binary (git,
+# curl, env, printenv), and a skip passes without checking anything. On a
+# machine that lacks one, BASHBOX_ESCAPE_ALLOW_SKIP=1 lets the rest run.
+bashbox-escape:
+	@out=$$(mktemp); trap 'rm -f "$$out"' EXIT; \
+	go test -count=1 -v -run '^TestBashbox' ./internal/tools/builtin/ >"$$out" 2>&1; status=$$?; \
+	if [ $$status -ne 0 ]; then cat "$$out"; echo "=== bashbox-escape FAILED ==="; exit 1; fi; \
+	if ! grep -q -- '^--- PASS: TestBashboxEscape_' "$$out"; then cat "$$out"; echo "bashbox-escape: no escape test ran"; exit 1; fi; \
+	if grep -q -- '--- SKIP' "$$out" && [ -z "$(BASHBOX_ESCAPE_ALLOW_SKIP)" ]; then \
+	  grep -A1 -- '--- SKIP' "$$out"; echo "bashbox-escape: a test was skipped (BASHBOX_ESCAPE_ALLOW_SKIP=1 to allow)"; exit 1; fi; \
+	echo "=== bashbox-escape PASSED: $$(grep -c -- '^--- PASS' "$$out") tests ==="
 
 # memory-eval-live: the memory extraction eval against a REAL model — the other
 # half of the gate. memory-eval-mock proves the consolidation PIPELINE with a

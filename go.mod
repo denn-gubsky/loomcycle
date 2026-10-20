@@ -11,6 +11,9 @@ require (
 	github.com/aws/aws-sdk-go-v2/service/sts v1.51.4
 	github.com/coder/websocket v1.8.15
 	github.com/dop251/goja v0.0.0-20260311135729-065cd970411c
+	// gbash is Bashbox's sandbox and pre-1.0. A PR that bumps it runs
+	// `make bashbox-escape` and quotes the upstream changes to path resolution,
+	// the filesystem layer and command dispatch (docs/TOOLS.md, Bashbox).
 	github.com/ewhauser/gbash v0.0.40
 	github.com/ewhauser/gbash/contrib/awk v0.0.40
 	github.com/ewhauser/gbash/contrib/jq v0.0.40

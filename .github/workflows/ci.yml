@@ -43,6 +43,17 @@ jobs:
       - name: Build
         run: go build -o bin/loomcycle ./cmd/loomcycle
 
+      - name: Bashbox escape suite
+        # Bashbox's isolation is gbash's, and gbash is pre-1.0, so its escape
+        # suite is a named gate (RFC ES #10). It runs on every PR rather than
+        # only when go.mod's gbash line changes: it takes well under a minute,
+        # a path filter would miss a bump that arrives another way, and a
+        # change to bashbox.go can weaken containment just as well. The
+        # target fails if any case is skipped, so a runner missing git, curl,
+        # env or printenv cannot pass it vacuously. The race step below runs
+        # the same tests again under -race.
+        run: make bashbox-escape
+
       - name: Test (race detector)
         # Per-package timeout. `-race` instrumentation runs several-fold slower,
         # and `go test ./...` runs package binaries concurrently, so on a
