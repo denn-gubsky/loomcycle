@@ -389,7 +389,7 @@ func (d *Dispatcher) RunPost(ctx context.Context, ident Identity, tu ToolCall, o
 			out.Decisions = append(out.Decisions, Decision{Owner: h.Owner, Name: h.Name, Phase: h.Phase,
 				Kind: "unavailable", FailMode: failModeOf(h), Reason: DecisionReason(err)})
 			if h.FailMode == FailClosed {
-				slog.WarnContext(ctx, "hooks: hook failed (fail_mode=closed)", "phase", string(h.Phase), "hook", h.Owner+"/"+h.Name, "err", err)
+				slog.WarnContext(ctx, "hooks: "+string(h.Phase)+" hook failed (fail_mode=closed)", "hook", h.Owner+"/"+h.Name, "err", err)
 				out.Result = ToolResult{
 					IsError: true,
 					Text:    "tool_result discarded: hook " + h.Owner + "/" + h.Name + " unavailable",
@@ -397,7 +397,7 @@ func (d *Dispatcher) RunPost(ctx context.Context, ident Identity, tu ToolCall, o
 				out.AdditionalContext = nil
 				return out
 			}
-			slog.WarnContext(ctx, "hooks: hook failed (fail_mode=open, passing through)", "phase", string(h.Phase), "hook", h.Owner+"/"+h.Name, "err", err)
+			slog.WarnContext(ctx, "hooks: "+string(h.Phase)+" hook failed (fail_mode=open, passing through)", "hook", h.Owner+"/"+h.Name, "err", err)
 			continue
 		}
 		if res.Result != nil {
@@ -589,12 +589,12 @@ func (d *Dispatcher) RunGate(ctx context.Context, ident Identity, phase Phase, i
 			out.Decisions = append(out.Decisions, Decision{Owner: h.Owner, Name: h.Name, Phase: h.Phase,
 				Kind: "unavailable", FailMode: failModeOf(h), Reason: DecisionReason(err)})
 			if h.FailMode == FailClosed || ctx.Err() != nil {
-				slog.WarnContext(ctx, "hooks: gate hook failed", "phase", string(phase), "hook", h.Owner+"/"+h.Name, "fail_mode", string(failModeOf(h)), "err", err)
+				slog.WarnContext(ctx, "hooks: "+string(phase)+" hook failed", "hook", h.Owner+"/"+h.Name, "fail_mode", string(failModeOf(h)), "err", err)
 				out.Denied, out.Reason = true, "hook "+h.Owner+"/"+h.Name+" is unavailable"
 				out.AdditionalContext = nil
 				return out
 			}
-			slog.WarnContext(ctx, "hooks: hook failed (fail_mode=open, passing through)", "phase", string(phase), "hook", h.Owner+"/"+h.Name, "err", err)
+			slog.WarnContext(ctx, "hooks: "+string(phase)+" hook failed (fail_mode=open, passing through)", "hook", h.Owner+"/"+h.Name, "err", err)
 			continue
 		}
 		if res.Decision == "deny" {
@@ -639,7 +639,7 @@ func (d *Dispatcher) Observe(ctx context.Context, ident Identity, phase Phase, i
 		defer cancel()
 		for _, h := range matched {
 			if _, err := d.invokeLifecycle(octx, h, ident, info); err != nil {
-				slog.WarnContext(octx, "hooks: hook failed (observe only, ignored)", "phase", string(phase), "hook", h.Owner+"/"+h.Name, "err", err)
+				slog.WarnContext(octx, "hooks: "+string(phase)+" hook failed (observe only, ignored)", "hook", h.Owner+"/"+h.Name, "err", err)
 			}
 		}
 	}()
