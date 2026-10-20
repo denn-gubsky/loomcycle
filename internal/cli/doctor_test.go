@@ -2,6 +2,7 @@ package cli
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"fmt"
 	"net"
@@ -9,6 +10,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/denn-gubsky/loomcycle/internal/config"
 )
 
 // stubConfig implements configForDoctor with whatever fields the test
@@ -23,7 +26,12 @@ type stubConfig struct {
 	dataDir        string
 	listen         string
 	configWarnings []string
+	awsProviders   map[string]AWSAuthProvider
+	hostShell      bool
 }
+
+func (s *stubConfig) AWSAuthProviders() map[string]AWSAuthProvider { return s.awsProviders }
+func (s *stubConfig) HostShellEnabled() bool                       { return s.hostShell }
 
 func (s *stubConfig) ProviderPriorityList() []string  { return s.providers }
 func (s *stubConfig) ConfigWarnings() []string        { return s.configWarnings }
@@ -407,4 +415,56 @@ func TestDoctor_PostgresBackendWithDSN_PASS(t *testing.T) {
 	}
 	// Demonstrate the unused fmt import isn't really unused — silence linter
 	_ = fmt.Sprintf("")
+}
+
+// An AWS-authenticated provider is checked by whose credentials it would use,
+// not as a key-less "local provider"; a provider whose chain finds nothing is
+// a WARN with the reason, and a host shell beside AWS credentials is a WARN.
+func TestDoctor_AWSProvidersReportTheirIdentity(t *testing.T) {
+	tmp := t.TempDir()
+	withTempHome(t)
+	auth := config.ProviderAuth{Type: config.ProviderAuthSigV4, Region: "eu-central-1"}
+	withStubLoader(t, &stubConfig{
+		agentProviders: []string{"bedrock-claude"},
+		backend:        "sqlite",
+		dataDir:        tmp,
+		listen:         freePort(t),
+		awsProviders: map[string]AWSAuthProvider{
+			"bedrock-claude": {BaseURL: "https://bedrock-runtime.eu-central-1.amazonaws.com/anthropic", Auth: auth},
+			"bedrock-mantle": {BaseURL: "https://bedrock-mantle.eu-central-1.api.aws/v1", Auth: auth},
+		},
+		hostShell: true,
+	})
+	orig := awsIdentityForDoctor
+	t.Cleanup(func() { awsIdentityForDoctor = orig })
+	awsIdentityForDoctor = func(_ context.Context, p AWSAuthProvider) (string, string, string, error) {
+		if strings.Contains(p.BaseURL, "mantle") {
+			return "", "", "", errors.New("aws credentials unavailable: no EC2 IMDS role found")
+		}
+		return "123456789012", "arn:aws:sts::123456789012:assumed-role/loomcycle-bedrock/i-0abc", "EC2RoleProvider", nil
+	}
+	withEnv(t, "LOOMCYCLE_AUTH_TOKEN", "x")
+	configDir := filepath.Join(os.Getenv("HOME"), ".config", "loomcycle")
+	_ = os.MkdirAll(configDir, 0o755)
+	_ = os.WriteFile(filepath.Join(configDir, "loomcycle.yaml"), []byte("p"), 0o644)
+
+	var stdout, stderr bytes.Buffer
+	if code := RunDoctor(nil, &stdout, &stderr); code != 0 {
+		t.Errorf("exit=%d; an AWS warning must not fail doctor:\n%s", code, stdout.String())
+	}
+	out := stdout.String()
+	for _, want := range []string{
+		"[PASS]  Provider bedrock-claude",
+		"assumed-role/loomcycle-bedrock/i-0abc in account 123456789012, from EC2RoleProvider",
+		"[WARN]  Provider bedrock-mantle",
+		"no usable AWS credentials",
+		"[WARN]  AWS credentials and host shell",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("missing %q in:\n%s", want, out)
+		}
+	}
+	if strings.Contains(out, "local provider") {
+		t.Errorf("an AWS provider was reported as a key-less local provider:\n%s", out)
+	}
 }

@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"context"
 	"errors"
 	"flag"
 	"fmt"
@@ -12,6 +13,9 @@ import (
 	"strings"
 	"syscall"
 	"time"
+
+	"github.com/denn-gubsky/loomcycle/internal/awsauth"
+	"github.com/denn-gubsky/loomcycle/internal/config"
 )
 
 // RunDoctor runs a sequence of health checks against the operator's
@@ -95,7 +99,11 @@ func RunDoctor(args []string, stdout, stderr io.Writer) int {
 	if len(providers) == 0 {
 		r.warn("Providers", "none configured in provider_priority or per-agent providers")
 	}
+	awsProviders := cfg.AWSAuthProviders()
 	for _, p := range providers {
+		if _, ok := awsProviders[p]; ok {
+			continue // checked below, by its AWS identity
+		}
 		// RFC BF — prefer the config-declared api_key_env for this id (so a
 		// 3rd-party `providers:` entry's key var is checked). loadLayeredConfig
 		// prepends the embedded default-providers layer (unless
@@ -117,6 +125,8 @@ func RunDoctor(args []string, stdout, stderr io.Writer) int {
 			r.pass(fmt.Sprintf("Provider %s", p), fmt.Sprintf("%s set", envVar))
 		}
 	}
+
+	checkAWSProviders(r, cfg)
 
 	storageDetail, storageOK := checkStorageBackend(cfg)
 	if storageOK {
@@ -305,6 +315,66 @@ type configForDoctor interface {
 	// common "why is my agent not doing that" went unmentioned by the command
 	// people run precisely to be told what is wrong.
 	ConfigWarnings() []string
+	// AWSAuthProviders returns the declared providers that authenticate with
+	// AWS credentials (an `auth:` block, RFC EM), by id.
+	AWSAuthProviders() map[string]AWSAuthProvider
+	// HostShellEnabled reports whether an agent can run commands on the host
+	// (Bash, or the Bashbox host-command fallback), which on EC2 can reach
+	// the instance metadata service.
+	HostShellEnabled() bool
+}
+
+// AWSAuthProvider is one provider's AWS authentication, as doctor checks it.
+type AWSAuthProvider struct {
+	BaseURL string
+	Auth    config.ProviderAuth
+}
+
+// awsIdentityForDoctor resolves a provider's AWS credentials and asks STS whom
+// they belong to. A seam so tests need no AWS.
+var awsIdentityForDoctor = func(ctx context.Context, p AWSAuthProvider) (account, arn, source string, err error) {
+	ext := ""
+	if p.Auth.ExternalIDEnv != "" {
+		ext = os.Getenv(p.Auth.ExternalIDEnv)
+	}
+	a, err := awsauth.New(ctx, awsauth.Config{
+		Mode: p.Auth.Type, Region: p.Auth.Region, Service: p.Auth.Service, BaseURL: p.BaseURL,
+		Chain: awsauth.ChainOptions{RoleARN: p.Auth.RoleARN, ExternalID: ext, SessionName: p.Auth.SessionName},
+	})
+	if err != nil {
+		return "", "", "", err
+	}
+	return a.CallerIdentity(ctx)
+}
+
+// checkAWSProviders reports, for each provider that authenticates with AWS
+// credentials, whose credentials it would use (never the credentials), and
+// warns when an agent could reach the instance metadata service through a
+// host shell.
+func checkAWSProviders(r *doctorRun, cfg configForDoctor) {
+	aws := cfg.AWSAuthProviders()
+	ids := make([]string, 0, len(aws))
+	for id := range aws {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	for _, id := range ids {
+		p := aws[id]
+		label := fmt.Sprintf("Provider %s", id)
+		ctx, cancel := timeoutContext(10 * time.Second)
+		account, arn, source, err := awsIdentityForDoctor(ctx, p)
+		cancel()
+		if err != nil {
+			r.warn(label, fmt.Sprintf("%s (%s): no usable AWS credentials: %v", p.Auth.Type, p.Auth.Region, err))
+			continue
+		}
+		r.pass(label, fmt.Sprintf("%s (%s) as %s in account %s, from %s", p.Auth.Type, p.Auth.Region, arn, account, source))
+	}
+	if len(aws) > 0 && cfg.HostShellEnabled() {
+		r.warn("AWS credentials and host shell",
+			"Bash or the Bashbox host fallback is enabled, and a host command can read the instance role's credentials from the metadata service on EC2. "+
+				"When loomcycle runs in a container set the IMDS hop limit to 1, and do not enable host commands where the role can reach sensitive data.")
+	}
 }
 
 // providerListFromConfig collects every provider name referenced
