@@ -10,6 +10,7 @@ import (
 	"time"
 
 	lchttp "github.com/denn-gubsky/loomcycle/internal/api/http"
+	"github.com/denn-gubsky/loomcycle/internal/auth"
 	"github.com/denn-gubsky/loomcycle/internal/concurrency"
 	"github.com/denn-gubsky/loomcycle/internal/config"
 	"github.com/denn-gubsky/loomcycle/internal/connector"
@@ -48,6 +49,13 @@ type singleProvider struct{ p providers.Provider }
 func (r singleProvider) Get(string) (providers.Provider, error) { return r.p, nil }
 
 func configuredMCP(t *testing.T) (*Server, *draftAnswerProvider, store.Store) {
+	srv, _, prov, st := configuredMCPWith(t, nil)
+	return srv, prov, st
+}
+
+// configuredMCPWith is configuredMCP with the config edited before the server
+// is built, also returning the HTTP server that is its connector.
+func configuredMCPWith(t *testing.T, edit func(*config.Config)) (*Server, *lchttp.Server, *draftAnswerProvider, store.Store) {
 	t.Helper()
 	st, err := storesqlite.Open(filepath.Join(t.TempDir(), "mcp-configured.db"))
 	if err != nil {
@@ -59,9 +67,12 @@ func configuredMCP(t *testing.T) (*Server, *draftAnswerProvider, store.Store) {
 		Agents:      map[string]config.AgentDef{"agent": {Model: "stub-model", SystemPrompt: "hi"}},
 		Concurrency: config.Concurrency{MaxConcurrentRuns: 4, MaxQueueDepth: 4},
 	}
+	if edit != nil {
+		edit(cfg)
+	}
 	prov := &draftAnswerProvider{}
 	httpSrv := lchttp.New(cfg, singleProvider{prov}, []tools.Tool{}, concurrency.New(4, 4, time.Second), st)
-	return New(Config{Connector: httpSrv, Logf: func(string, ...any) {}}), prov, st
+	return New(Config{Connector: httpSrv, Logf: func(string, ...any) {}}), httpSrv, prov, st
 }
 
 // callTool runs one tools/call and returns the decoded result.
@@ -164,6 +175,70 @@ func TestConfiguredRunTool_RefusalsAreClassified(t *testing.T) {
 	res = callTool(t, srv, "configured_run", map[string]any{"op": "update", "run_id": created.RunID, "patch": map[string]any{"agent": "other"}})
 	if !res.IsError || !strings.Contains(string(res.StructuredContent), `"validation"`) {
 		t.Errorf("identity patch = isError %v %s, want a validation refusal", res.IsError, res.StructuredContent)
+	}
+}
+
+// structuredErr decodes a tool error's machine-readable half.
+func structuredErr(t *testing.T, res *loommcp.CallToolResult) loommcp.StructuredError {
+	t.Helper()
+	if res == nil || !res.IsError {
+		t.Fatalf("want an error-shaped result, got %+v", res)
+	}
+	var se loommcp.StructuredError
+	if err := json.Unmarshal(res.StructuredContent, &se); err != nil {
+		t.Fatalf("structured content %q: %v", res.StructuredContent, err)
+	}
+	return se
+}
+
+// The draft cap and the rate limit are both 429, and only the rate limit
+// clears by waiting: the cap needs the caller to start or discard a draft. A
+// refusal reported retryable that is not turns into a retry loop that never
+// ends, so each must be classified by what it is, as gRPC classifies it.
+func TestConfiguredRunTool_CapIsNotRetryableAndRateLimitIs(t *testing.T) {
+	srv, _, _, _ := configuredMCPWith(t, func(c *config.Config) { c.Env.MaxConfiguredRunsPerUser = 1 })
+	create := map[string]any{"op": "create", "agent": "agent", "user_id": "u1", "segments": segment("x")}
+	if res := callTool(t, srv, "configured_run", create); res.IsError {
+		t.Fatalf("first draft refused: %s", res.Content[0].Text)
+	}
+	res := callTool(t, srv, "configured_run", create)
+	if se := structuredErr(t, &res); se.ErrorCategory != "business" || se.IsRetryable || se.RetryAfterSeconds != nil {
+		t.Errorf("over the cap = %+v, want business, not retryable, no wait", se)
+	}
+
+	_, httpSrv, _, _ := configuredMCPWith(t, nil)
+	httpSrv.SetDefaultRunRate(auth.RateLimit{PerMinute: 1, Burst: 1})
+	ctx := auth.WithPrincipal(context.Background(), auth.Principal{
+		TenantID: "acme", Subject: "alice", Scopes: []string{auth.ScopeRunsCreate},
+	})
+	env := &handlerEnv{connector: httpSrv}
+	args, _ := json.Marshal(map[string]any{"op": "create", "agent": "agent", "segments": segment("x")})
+	_, _ = handleConfiguredRun(ctx, env, args) // takes the bucket's only token
+	limited, err := handleConfiguredRun(ctx, env, args)
+	if err != nil {
+		t.Fatal(err)
+	}
+	se := structuredErr(t, limited)
+	if se.ErrorCategory != "transient" || !se.IsRetryable || se.RetryAfterSeconds == nil || *se.RetryAfterSeconds <= 0 {
+		t.Errorf("rate limited = %+v, want transient, retryable, with the limiter's wait", se)
+	}
+}
+
+// A token limited to other agents is a permission refusal, not an unlabelled
+// string: retrying cannot help, and the agent should be told so.
+func TestConfiguredRunTool_AgentNotAllowedIsAPermissionRefusal(t *testing.T) {
+	_, httpSrv, _, _ := configuredMCPWith(t, nil)
+	ctx := auth.WithPrincipal(context.Background(), auth.Principal{
+		TenantID: "acme", Subject: "alice", Scopes: []string{auth.ScopeRunsCreate},
+		Restrictions: auth.Restrictions{Agents: []string{"other"}},
+	})
+	args, _ := json.Marshal(map[string]any{"op": "create", "agent": "agent", "segments": segment("x")})
+	res, err := handleConfiguredRun(ctx, &handlerEnv{connector: httpSrv}, args)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if se := structuredErr(t, res); se.ErrorCategory != "permission" || se.IsRetryable {
+		t.Errorf("draft of a disallowed agent = %+v, want permission, not retryable", se)
 	}
 }
 

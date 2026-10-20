@@ -53,6 +53,92 @@ const pausedBackoff = 15 * time.Second
 // a cancelled ctx can be wrapped underneath a domain error and the caller's
 // tear-down should never be reported as a retryable outage.
 func CategoryOf(err error) (tools.ErrorInfo, bool) {
+	info, ok := categoryOf(err)
+	if ok && info.Retryable {
+		// A refusal that names its own wait beats the class's default: the
+		// rate limiter knows when this caller's bucket refills, while the
+		// rate_limited class has no default to give. Only on a retryable
+		// class — a wait on a refusal that never clears is a false promise.
+		var rd retryDelayer
+		if errors.As(err, &rd) && rd.RetryDelay() > 0 {
+			info.RetryAfter = ptr(rd.RetryDelay())
+		}
+	}
+	return info, ok
+}
+
+// retryDelayer is a refusal that names how long to wait before retrying: the
+// wait the HTTP surface sends as Retry-After.
+type retryDelayer interface{ RetryDelay() time.Duration }
+
+// codedRefusal is a typed refusal that names its own machine code, the `code`
+// its HTTP body carries. The HTTP package's configured-run refusal is one; the
+// other transports see it only through this interface (the HTTPStatus()
+// pattern), because the type is unexported.
+type codedRefusal interface{ ErrorCode() string }
+
+// RefusalCode returns the code a typed refusal names, or "". gRPC sends it as
+// ErrorInfo.reason; CategoryOf classifies by it.
+func RefusalCode(err error) string {
+	var cr codedRefusal
+	if errors.As(err, &cr) {
+		return cr.ErrorCode()
+	}
+	return ""
+}
+
+// byRefusalCode classifies a coded refusal by its code.
+//
+// WHY BY CODE: these refusals mostly wrap no sentinel, so the switch in
+// categoryOf cannot see them, and their HTTP status is too coarse to classify
+// by — 429 is both configured_run_cap, which only the caller's own action
+// clears, and rate_limited, which waiting does. A transport that classified
+// by status called the cap retryable, which turns it into a retry loop that
+// never ends.
+//
+// A code that names an existing sentinel's condition reuses that sentinel's
+// classification, so the two spellings of one refusal cannot disagree. A code
+// absent here (internal) stays unclassified, as an unknown error does.
+func byRefusalCode(code string) (tools.ErrorInfo, bool) {
+	switch code {
+	case "":
+		return tools.ErrorInfo{}, false
+	case "rate_limited":
+		return categoryOf(runner.ErrRateLimited)
+	case "agent_not_allowed":
+		return categoryOf(runner.ErrAgentNotAllowed)
+	case "override_not_allowed":
+		return categoryOf(runner.ErrOverrideNotAllowed)
+	case "retention_none_unsupported":
+		return categoryOf(runner.ErrRetentionUnsupported)
+	case "run_not_configured":
+		return categoryOf(runner.ErrRunNotConfigured)
+	case "configured_run_cap":
+		return business(
+			"This user already holds as many configured runs as allowed. Retrying will not help; start or discard one of them first.",
+		), true
+	case "agent_id_in_use":
+		return business(
+			"That agent_id is already held by a configured or running run. Retrying will not help; choose another agent_id, or omit it and one is generated.",
+		), true
+	case "no_store":
+		return business(
+			"This deployment has no persistence, so it cannot hold configured runs. Retrying will not help; start the run at once instead, or ask an operator to configure a store.",
+		), true
+	case "unknown_run":
+		return validation(
+			"No configured run with that run_id is visible to you. Check the run_id, or create a configured run first.",
+		), true
+	case "invalid_draft", "invalid_run_id", "invalid_secrets", "empty_patch":
+		return validation(
+			"The request is malformed. Correct the named field and call again.",
+		), true
+	}
+	return tools.ErrorInfo{}, false
+}
+
+// categoryOf is CategoryOf before a refusal's own wait is applied.
+func categoryOf(err error) (tools.ErrorInfo, bool) {
 	if err == nil {
 		return tools.ErrorInfo{}, false
 	}
@@ -62,6 +148,13 @@ func CategoryOf(err error) (tools.ErrorInfo, bool) {
 	// labelling it would put a misleading error in the transcript.
 	if errors.Is(err, context.Canceled) {
 		return tools.ErrorInfo{}, false
+	}
+
+	// A refusal that names its code is classified by it first: the code is
+	// the refusal's own statement of what it is, and it may wrap a sentinel
+	// whose class is less specific (or none at all).
+	if info, ok := byRefusalCode(RefusalCode(err)); ok {
+		return info, true
 	}
 
 	switch {

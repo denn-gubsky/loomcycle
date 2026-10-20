@@ -78,10 +78,11 @@ _TRANSIENT_REASONS = frozenset(
 #                         start or discard one first
 _CALLER_ACTION_RESOURCE_REASONS = frozenset({"token_limit_exceeded", "configured_run_cap"})
 
-# The server sends configured_run_cap over gRPC with no ErrorInfo (its
-# configured-run refusals map by HTTP status alone), so until it does, the
-# message is the only discriminator: the stable tail of the refusal's text in
-# internal/api/http/configured_runs.go.
+# A server that names the configured-run cap in ErrorInfo (reason
+# configured_run_cap) is read by reason above. An older one sent the cap with
+# no ErrorInfo — its configured-run refusals mapped by HTTP status alone — so
+# for it the message is the only discriminator: the stable tail of the
+# refusal's text in internal/api/http/configured_runs.go.
 _CONFIGURED_RUN_CAP_MESSAGE = "start or discard one first"
 
 
@@ -123,8 +124,9 @@ class BackpressureError(LoomcycleError):
       alone spins on the budget for the rest of the month.
     * the configured-run cap — the user already holds as many configured
       (not yet started) runs as allowed; only starting or discarding one
-      makes room, so ``retryable`` is False. The server sends no reason for
-      it over gRPC yet; it is recognised by its message."""
+      makes room, so ``retryable`` is False. ``reason`` is
+      ``configured_run_cap``; from an older server that sent no reason it is
+      recognised by its message."""
 
     @property
     def retryable(self) -> bool:
