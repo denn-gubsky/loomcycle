@@ -21,6 +21,14 @@ func bindProcessGroup(cmd *exec.Cmd) {
 		// With Setpgid the group id is the child's pid. ESRCH means the whole
 		// group is gone already; report it as done so a command that exited
 		// cleanly just before the deadline keeps its success status.
+		//
+		// Cancel can run just after exec reaps the child, when the context
+		// ends between the reap and Wait taking the watcher's result. While
+		// any member lives the id still names this group: the kernel does
+		// not reuse a pid while a group of that id exists. Signalling a
+		// stranger needs the group to have emptied and the pid to be
+		// reused as a new group's id inside that microsecond window; the
+		// usual outcome is ESRCH.
 		err := syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
 		if errors.Is(err, syscall.ESRCH) {
 			return os.ErrProcessDone

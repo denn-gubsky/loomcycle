@@ -133,3 +133,44 @@ func TestBashbox_FallbackHangBounded(t *testing.T) {
 		t.Errorf("background child %d survived the timeout; the process group was not killed", pid)
 	}
 }
+
+// A command that exits 0 while a background child still holds stdout, and
+// whose timeout then fires inside the output-drain window, succeeded: the
+// context was not consulted after the exit, so nothing was killed. It must
+// not be reported as a timeout kill.
+func TestBash_ExitZeroThenTimeoutDuringOutputDrainIsSuccess(t *testing.T) {
+	cwd, _ := filepath.EvalSymlinks(t.TempDir())
+	b := &Bash{Enabled: true, Timeout: time.Second}
+	body, _ := json.Marshal(map[string]any{"command": "sleep 60 & echo bg=$!; sleep 0.3"})
+
+	res, err := b.Execute(bashCtx(cwd), body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pid := bgPID(t, res.Text)
+	if res.IsError || strings.Contains(res.Text, "[killed:") {
+		t.Errorf("an exit-0 command was reported as killed: IsError=%v %q", res.IsError, res.Text)
+	}
+	if !strings.Contains(res.Text, "[output closed") {
+		t.Errorf("want the output-closed note, got %q", res.Text)
+	}
+	if err := syscall.Kill(pid, 0); err != nil {
+		t.Errorf("background child %d was killed although the command exited on its own: %v", pid, err)
+	}
+}
+
+// The fallback tells the model why output stopped, as Bash does, when a
+// background process kept it open after the command exited.
+func TestBashbox_FallbackNormalExitWithBackgroundChildNotesClosedOutput(t *testing.T) {
+	skipIfNoHostCmd(t, "sh")
+	root, _ := filepath.EvalSymlinks(t.TempDir())
+	b := &Bashbox{Enabled: true, FallbackCommands: []string{"sh"}}
+	res := runBashbox(t, b, bashCtx(root), `sh -c 'sleep 60 & echo bg=$!'`)
+	bgPID(t, res.Text)
+	if res.IsError {
+		t.Errorf("an exit-0 fallback command should succeed; got %q", res.Text)
+	}
+	if !strings.Contains(res.Text, "[output closed") {
+		t.Errorf("want the output-closed note, got %q", res.Text)
+	}
+}

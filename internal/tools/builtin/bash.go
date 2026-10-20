@@ -191,7 +191,11 @@ func (b *Bash) Execute(ctx context.Context, input json.RawMessage) (tools.Result
 	if waitDelayed {
 		fmt.Fprintf(&b2, "\n[output closed %v after exit: a background process still holds it]", hostChildWaitDelay)
 	}
-	if ctxErr := runCtx.Err(); ctxErr != nil {
+	// A command that already exited 0 was not killed, even if the timeout
+	// fired while its output was still draining: exec stops watching the
+	// context once the child exits, so only a timeout before the exit kills.
+	exitedOK := cmd.ProcessState != nil && cmd.ProcessState.Success()
+	if ctxErr := runCtx.Err(); ctxErr != nil && !exitedOK {
 		fmt.Fprintf(&b2, "\n[killed: %v]", ctxErr)
 		return tools.Result{Text: b2.String(), IsError: true}, nil
 	}

@@ -213,8 +213,13 @@ func (b *Bashbox) fallbackProxy(name, hostRoot string, readOnly bool) commands.C
 		cmd.Stderr = inv.Stderr
 		runErr := cmd.Run()
 		// ErrWaitDelay: the command succeeded, but a background process it
-		// started held the output until hostChildWaitDelay closed it.
-		if runErr == nil || errors.Is(runErr, exec.ErrWaitDelay) {
+		// started held the output until hostChildWaitDelay closed it. Say
+		// so, as Bash does, so the model knows later output was not captured.
+		if errors.Is(runErr, exec.ErrWaitDelay) {
+			fmt.Fprintf(inv.Stderr, "[output closed %v after exit: a background process still holds it]\n", hostChildWaitDelay)
+			return nil
+		}
+		if runErr == nil {
 			return nil
 		}
 		var exitErr *exec.ExitError
