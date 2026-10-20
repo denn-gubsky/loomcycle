@@ -18,11 +18,8 @@ import (
 	"errors"
 	"fmt"
 	"log"
-	"net"
-	"net/http"
 	"net/url"
 	"os"
-	"os/signal"
 	"path/filepath"
 	"regexp"
 	"runtime"
@@ -32,11 +29,9 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
-	"syscall"
 	"time"
 
 	"github.com/denn-gubsky/loomcycle/internal/agents"
-	lchttp "github.com/denn-gubsky/loomcycle/internal/api/http"
 	"github.com/denn-gubsky/loomcycle/internal/concurrency"
 	"github.com/denn-gubsky/loomcycle/internal/config"
 	"github.com/denn-gubsky/loomcycle/internal/coord"
@@ -75,13 +70,7 @@ import (
 	storepostgres "github.com/denn-gubsky/loomcycle/internal/store/postgres"
 	storesqlite "github.com/denn-gubsky/loomcycle/internal/store/sqlite"
 
-	googlegrpc "google.golang.org/grpc"
-
-	loomgrpc "github.com/denn-gubsky/loomcycle/internal/api/grpc"
-	"github.com/denn-gubsky/loomcycle/internal/api/grpc/loomcyclepb"
-	lcmcp "github.com/denn-gubsky/loomcycle/internal/api/mcp"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
-	"github.com/denn-gubsky/loomcycle/internal/tools/builtin"
 	"github.com/denn-gubsky/loomcycle/internal/tools/mcp"
 	mcphttp "github.com/denn-gubsky/loomcycle/internal/tools/mcp/http"
 	mcpstdio "github.com/denn-gubsky/loomcycle/internal/tools/mcp/stdio"
@@ -424,27 +413,28 @@ func main() {
 		return
 	}
 
-	b.loadConfig()
-	b.initTelemetry()
-	cfg := b.cfg
-	otelShutdown := b.otelShutdown
+	// The boot phases, in the order their side effects must happen: each
+	// phase's log lines, goroutines and listeners come after the previous
+	// phase's. See boot.go for what they hand one another.
+	b.loadConfig()    // 1. config
+	b.initTelemetry() //    and tracing
 
-	b.buildProviders()
-	b.buildTools()
+	b.buildProviders() // 2. providers
+	b.buildTools()     // 3. built-in tools
 	b.addLocalAPITools()
 	b.logToolPosture()
-	b.buildMCP()
-	b.openAndMigrateStore()
+	b.buildMCP()            // 4. MCP client pool
+	b.openAndMigrateStore() // 5. store
 	// Boot-time checks that need the store belong here: after it is open and
 	// migrated, before any subsystem is wired to it.
 
-	b.wireMemory()
+	b.wireMemory() // 6. the store and credentials, into the tools
 	b.wireCredentials()
 	b.bindStoreToTools()
 	b.loadMCPRegistry()
 	b.addA2ATools()
 
-	b.buildServer()
+	b.buildServer() // 7. the HTTP server and its wiring
 	b.openSQLMemory()
 	b.wireSubstrateTools()
 	b.wireAuth()
@@ -455,7 +445,7 @@ func main() {
 	b.mountWebhooks()
 	b.buildHTTPServer()
 
-	b.startBackground()
+	b.startBackground() // 8. background work and triggers
 	b.startCluster()
 	b.startRunSweepers()
 	b.seedServerState()
@@ -469,315 +459,13 @@ func main() {
 	b.startSessionGC()
 	b.startVolumeAndAgentSweepers()
 
-	pr := b.pr
-	storeIface := b.storeIface
-	accessFlusher := b.accessFlusher
-	srv := b.srv
-	heartbeatRunner := b.heartbeatRunner
-	resolver := b.resolver
-	a2aServer := b.a2aServer
-	webhookReceiver := b.webhookReceiver
-	httpServer := b.httpServer
-	bgCtx := b.bgCtx
-	bgCancel := b.bgCancel
-	countFlusherDone := b.countFlusherDone
-	sessionGCInterval := b.sessionGCInterval
-	sessionGCMaxIdle := b.sessionGCMaxIdle
-	// Optional operator default for the spawn_run transport timeout
-	// (RFC P). 0/unset → disabled (defer to the run's own budget).
-	// Read outside the mcpMode block: the HTTP MCP transport below is
-	// always wired (both server and mcp modes) and the RFC R thin client
-	// (`mcp --upstream`) proxies to it, so it needs the same bound.
-	mcpSpawnRunTimeoutMS := 0
-	if v := os.Getenv("LOOMCYCLE_MCP_SPAWN_RUN_TIMEOUT_MS"); v != "" {
-		if n, perr := strconv.Atoi(v); perr == nil && n > 0 {
-			mcpSpawnRunTimeoutMS = n
-		}
-	}
-	if mcpMode {
-		// Optional operator override for the stdio dispatch concurrency
-		// cap (RFC O). 0/unset → the package default (16).
-		mcpMaxConcurrentCalls := 0
-		if v := os.Getenv("LOOMCYCLE_MCP_MAX_CONCURRENT_CALLS"); v != "" {
-			if n, perr := strconv.Atoi(v); perr == nil && n > 0 {
-				mcpMaxConcurrentCalls = n
-			}
-		}
-		mcpSrv := lcmcp.New(lcmcp.Config{
-			Connector:          srv, // *http.Server satisfies connector.Connector
-			Runner:             srv, // *http.Server satisfies runner.Runner (streaming)
-			Store:              storeIface,
-			Logf:               log.Printf, // log goes to stderr; never stdout (stdout is the JSON-RPC wire)
-			ServerName:         "loomcycle",
-			ServerVersion:      buildVersion,
-			MaxConcurrentCalls: mcpMaxConcurrentCalls,
-			SpawnRunTimeoutMS:  mcpSpawnRunTimeoutMS,
-		})
-		// Run the MCP stdio loop in a goroutine. When stdin closes
-		// (Claude Code disconnects), Serve returns; we log and let
-		// the HTTP listener keep serving until the process is sent
-		// a signal. Operators who want MCP-disconnect = process-exit
-		// can wrap loomcycle in a supervisor that watches for the
-		// log line.
-		go func() {
-			// Sourced from the registry (lcmcp.MetaToolCount) so the count
-			// can't drift — the hardcoded "20" went stale once the registry
-			// grew past 40. Same rationale as the CLI help count.
-			log.Printf("mcp: stdio server starting (%d tools registered)", lcmcp.MetaToolCount())
-			if err := mcpSrv.Serve(bgCtx, os.Stdin, os.Stdout); err != nil {
-				log.Printf("mcp: serve ended: %v", err)
-			} else {
-				log.Printf("mcp: stdio closed; HTTP listener continues")
-			}
-		}()
-	}
+	b.startMCPSurfaces() // 9. MCP surfaces, resolver probe, config reload
+	b.logSessionLockGC()
+	b.startResolveProbe()
+	b.wireConfigReload()
 
-	// v0.8.15.3: HTTP MCP transport. Always wired (both server and
-	// mcp modes), per RFC decision C-open-question rationale:
-	// service-to-service consumers don't use the stdio wrapper and
-	// need a network endpoint. Security posture is identical to all
-	// other /v1/* endpoints — bearer-authed via s.authMiddleware in
-	// the server's Mux(). This /v1/_mcp endpoint is what the RFC R
-	// thin client (`loomcycle mcp --upstream`) proxies to.
-	mcpHTTPHandler := lcmcp.NewHTTPHandler(lcmcp.Config{
-		Connector:     srv, // same *http.Server instance used by stdio MCP
-		Runner:        srv,
-		Store:         storeIface,
-		Logf:          log.Printf,
-		ServerName:    "loomcycle",
-		ServerVersion: buildVersion,
-		// RFC P spawn_run timeout must apply to the HTTP transport too —
-		// the RFC R thin client (`mcp --upstream`) proxies to /v1/_mcp, so
-		// without this the now-recommended topology would have no spawn_run
-		// bound (the exp3 wedge class, one layer up). MaxConcurrentCalls is
-		// intentionally NOT passed: it builds the stdio Serve loop's
-		// semaphore and is meaningless here — the HTTP transport is already
-		// per-request concurrent at the http.Server level, and run
-		// concurrency is bounded downstream by the runtime semaphore +
-		// per-tenant fairness.
-		SpawnRunTimeoutMS: mcpSpawnRunTimeoutMS,
-	})
-	srv.SetMCPHTTPHandler(mcpHTTPHandler)
-	// Background session sweeper. Reuses the dynamic-agent sweeper
-	// pattern: bound to bgCtx, exits on shutdown, idempotent under
-	// concurrent invocations. 5-minute cadence is well under the
-	// 30-min session inactivity TTL — leaves at least ~25 min between
-	// a session's last access and its earliest possible reaping.
-	lcmcp.RunHTTPSessionSweeper(bgCtx, mcpHTTPHandler.Sessions(), 5*time.Minute, log.Printf)
-	log.Printf("mcp: HTTP transport enabled at POST /v1/_mcp (session sweeper interval=5m, TTL=30m)")
-
-	log.Printf("session-lock GC: interval=%s max_idle=%s", sessionGCInterval, sessionGCMaxIdle)
-
-	// Periodic probe loop: re-runs the resolver's reachability +
-	// model-list probe on the configured cadence so a provider
-	// recovering from an outage shows up in the matrix without a
-	// loomcycle restart. Default 15 minutes; clamped to [60s, 1h] in
-	// the config loader. The first probe already ran inside
-	// buildResolver above (synchronously, before traffic begins) —
-	// this goroutine handles all subsequent rounds.
-	probeInterval := cfg.Env.ResolveProbeInterval
-	if probeInterval <= 0 {
-		probeInterval = 15 * time.Minute
-	}
-	// v0.8.17: register the force-probe callback. The snapshot restore
-	// handler (POST /v1/_snapshots/{id}/restore) calls
-	// resolver.ForceProbe(ctx) to refresh the matrix before the
-	// operator can call Resume — the pause-resume-snapshot RFC says
-	// the resolver state is excluded from snapshots, so a fresh probe
-	// closes the gap.
-	resolver.SetForceProbeCallback(func(ctx context.Context) {
-		runResolveProbeOnce(ctx, resolver, pr, cfg)
-	})
-	go runResolveProbeLoop(bgCtx, resolver, pr, cfg, probeInterval)
-	log.Printf("resolve probe: interval=%s", probeInterval)
-
-	// RFC CK — wire the runtime config-reload registry now that the resolver,
-	// provider set, and background ctx exist. Each SectionReloader rebuilds its
-	// subsystem IN PLACE from a validated candidate (the Server's handle pointers
-	// never change, so the probe loop + all readers keep working). load re-runs
-	// LoadLayers over the SAME captured layer stack (disk files re-read fresh).
-	// POST /v1/_config/reload drives it.
-	reloaders := []lchttp.SectionReloader{
-		{
-			// Provider set + resolver policy.
-			Sections: []string{"providers", "models", "tiers", "provider_priority"},
-			Reload: func(newCfg *config.Config) error {
-				if err := pr.Reload(newCfg); err != nil {
-					return err
-				}
-				resolver.ReloadPolicy(newCfg.ProviderPriority, convertTiers(newCfg.Tiers, newCfg.Models))
-				// runResolveProbeOnce reads pr.currentCfg() (now the reloaded config),
-				// so this immediately probes the possibly-changed provider set.
-				runResolveProbeOnce(bgCtx, resolver, pr, newCfg)
-				return nil
-			},
-		},
-	}
-	if cfg.Env.SchedulerEnabled {
-		// Static scheduled_runs: re-materialize into the substrate (idempotent
-		// add/change; a yaml-REMOVED schedule keeps its row by design — see
-		// BootstrapStaticSchedules). The sweeper polls the store, so re-bootstrap
-		// alone suffices; the scheduler's own tick/allowlist knobs stay boot-fixed.
-		reloaders = append(reloaders, lchttp.SectionReloader{
-			Sections: []string{"scheduled_runs"},
-			Reload: func(newCfg *config.Config) error {
-				bs := &builtin.ScheduleDef{Store: storeIface, Cfg: newCfg}
-				_, err := bs.BootstrapStaticSchedules(bgCtx)
-				return err
-			},
-		})
-	}
-	// Concurrency: global semaphore caps + per-user caps + the providers' call
-	// lanes. Owns `providers` too because the lanes are built from
-	// providers[*].max_concurrent / lanes / max_models_in_flight, and `models`
-	// because a lane's model_caps key may be an alias. LAST, because it cannot
-	// fail: a reloader that fails after it would leave its new caps live while
-	// the config holder keeps the old ones, and a later reload back to the old
-	// values would then see no change to apply.
-	reloaders = append(reloaders, lchttp.SectionReloader{
-		Sections: []string{"concurrency", "providers", "models"},
-		Reload:   func(newCfg *config.Config) error { srv.ReloadConcurrency(newCfg); return nil },
-	})
-	// The reload LOADER re-runs the full boot assembly (re-glob siblings, re-read
-	// CONFIG_DIR/CONFIG_FILES) rather than replaying the captured boot `layers`, so
-	// a config or section file added/removed since boot takes effect on reload
-	// without a restart. verbose=false: don't re-log the layering on every reload.
-	srv.SetConfigReloader(func() (*config.Config, error) {
-		reloadLayers, err := assembleConfigLayers(b.presetFlags, b.cfgPaths, false)
-		if err != nil {
-			return nil, err
-		}
-		return config.LoadLayers(reloadLayers...)
-	}, reloaders...)
-
-	go func() {
-		log.Printf("loomcycle listening on %s", cfg.Env.ListenAddr)
-		if err := httpServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			log.Fatalf("listen: %v", err)
-		}
-	}()
-
-	// gRPC server. Optional; opt-in via LOOMCYCLE_GRPC_ADDR. Reuses
-	// the same Store + cancel registry as the HTTP server so both
-	// surfaces give identical answers. PR 1 of v0.5.5 implements
-	// metadata RPCs only (Run/Continue stub to Unimplemented); PR 2
-	// wires the streaming surface.
-	var grpcSrv *googlegrpc.Server
-	if cfg.Env.GrpcAddr != "" {
-		grpcAdapter := loomgrpc.New(loomgrpc.Config{
-			Store:     storeIface,
-			CancelReg: srv.CancelRegistry(),
-			Connector: srv, // v0.8.15: *http.Server satisfies connector.Connector
-			Runner:    srv, // *http.Server satisfies runner.Runner (streaming)
-			// RFC AW: share the HTTP server's token-budget tracker so the gRPC
-			// TokenLimit RPC reads the identical live counters + reloads the same
-			// cache the /v1/_limits handler uses.
-			Limits:    srv.LimitsTracker(),
-			AuthToken: cfg.Env.AuthToken,
-			// RFC L: reuse the HTTP server's token resolution so gRPC
-			// stamps the same authoritative principal (gRPC runs flow
-			// authoritatively through RunOnce) and shares the open-mode
-			// decision.
-			PrincipalResolver: srv.ResolvePrincipal,
-			AuthConfigured:    srv.AuthConfigured,
-			BuildCommit:       buildCommit,
-			BuildTime:         buildTime,
-			// GetRun's `live` must see a team walk, which only the HTTP
-			// server's walk table knows about.
-			RunLive: srv.RunLive,
-			// RFC EI P3: where a queued run waits, from this replica's queue.
-			QueuePosition: srv.QueuePosition,
-		})
-		grpcSrv = googlegrpc.NewServer(
-			googlegrpc.UnaryInterceptor(grpcAdapter.UnaryAuthInterceptor()),
-			googlegrpc.StreamInterceptor(grpcAdapter.StreamAuthInterceptor()),
-		)
-		loomcyclepb.RegisterLoomcycleServer(grpcSrv, grpcAdapter)
-		// v1.x RFC G — register the A2A gRPC binding on the same server.
-		// gRPC is not a path-mounted http.Handler (it needs the HTTP/2
-		// server), so the /a2a/grpc binding rides loomcycle's existing
-		// grpc.Server; the AgentCard advertises the gRPC port.
-		//
-		// Call-site nil-guard mirrors the other two a2aServer uses above
-		// (SetExtraMux at ~1426, PathTenantWrapper at ~1497): a2aServer is
-		// nil whenever A2AServerEnabled is off. RegisterGRPC is itself
-		// nil-receiver-safe, so this is defensive consistency rather than a
-		// live-crash fix — it stops the gRPC path depending on the callee's
-		// internal guard (exp7 C3).
-		if a2aServer != nil {
-			a2aServer.RegisterGRPC(grpcSrv)
-		}
-		grpcLis, err := net.Listen("tcp", cfg.Env.GrpcAddr)
-		if err != nil {
-			log.Fatalf("grpc listen %s: %v", cfg.Env.GrpcAddr, err)
-		}
-		grpcAdapter.MustLogStartupBanner(cfg.Env.GrpcAddr)
-		go func() {
-			// GracefulStop returns ErrServerStopped on the
-			// normal shutdown path — don't log it as a serve
-			// failure (would pollute operator logs and trip alert
-			// rules watching for "error" tokens).
-			if err := grpcSrv.Serve(grpcLis); err != nil && !errors.Is(err, googlegrpc.ErrServerStopped) {
-				log.Printf("grpc serve: %v", err)
-			}
-		}()
-	}
-
-	// Graceful shutdown.
-	sig := make(chan os.Signal, 1)
-	signal.Notify(sig, os.Interrupt, syscall.SIGTERM)
-	<-sig
-	log.Println("shutting down…")
-	bgCancel() // tear down sweeper + GC goroutines first
-	if heartbeatRunner != nil {
-		heartbeatRunner.Stop()
-	}
-	// v0.11.9 — stop the OAuth-dev refresher's background goroutine
-	// before the process exits so an in-flight refresh HTTP call
-	// either completes + persists OR cleanly aborts. Without this,
-	// the OS hard-kills the goroutine and a partially-rotated token
-	// could be lost (the on-disk token is atomic write, but the
-	// fresh access token might never make it to the persist step).
-	if pr.anthropicOAuthRefresher != nil {
-		pr.anthropicOAuthRefresher.Stop()
-	}
-	if grpcSrv != nil {
-		grpcSrv.GracefulStop()
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	_ = httpServer.Shutdown(ctx)
-	// RFC BL: stop the access-count flusher and flush the final window AFTER the
-	// HTTP+gRPC servers have finished draining. In-flight Search requests
-	// Record() access bumps right up to the end of that drain window, so the
-	// flusher's final flush must run last to capture them — stopping it earlier
-	// would leave those late bumps with no goroutine left to flush them. The
-	// store closer is deferred (runs after main returns), so the store is still
-	// open for this final write.
-	accessFlusher.Stop()
-	// The webhook delivery counters, for the same reason: the deliveries
-	// answered during the drain are counted too. The store is still open.
-	// bgCancel above stopped the periodic flusher; a flush it had in flight
-	// finishes first (at most its own 10s timeout).
-	<-countFlusherDone
-	if webhookReceiver != nil {
-		fctx, fcancel := context.WithTimeout(context.Background(), 5*time.Second)
-		if err := webhookReceiver.FlushCounts(fctx); err != nil {
-			log.Printf("webhooks: storing the last delivery counts failed: %v", err)
-		}
-		fcancel()
-	}
-	// Flush OTEL spans before exit. The OTLP exporter batches; without this,
-	// in-flight spans never reach the collector. Give it its OWN 5s budget —
-	// sharing the HTTP shutdown's ctx meant a slow in-flight request drain
-	// could exhaust the deadline first, silently dropping the final spans.
-	if otelShutdown != nil {
-		otelCtx, otelCancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer otelCancel()
-		if err := otelShutdown(otelCtx); err != nil {
-			log.Printf("otel: shutdown failed: %v", err)
-		}
-	}
+	b.startListeners()  // 10. listeners
+	b.waitAndShutdown() // 11. block until a signal, then shut down
 }
 
 // openStore resolves the operator's storage choice (sqlite default;

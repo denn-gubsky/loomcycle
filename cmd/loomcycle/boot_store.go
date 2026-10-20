@@ -9,9 +9,10 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/store/cdc"
 )
 
-// openAndMigrateStore is boot phase 5: open the store (openStore migrates
-// it), wrap it for the change feed when that is on, backfill legacy rows
-// and seed the yaml memory entries.
+// openAndMigrateStore is boot phase 5: open the store (opening it migrates
+// the schema; on Postgres, when automigrate is on), wrap it for the change
+// feed when that is on, backfill legacy rows and seed the yaml memory
+// entries.
 func (b *boot) openAndMigrateStore() {
 	cfg := b.cfg
 	embedder := b.embedder

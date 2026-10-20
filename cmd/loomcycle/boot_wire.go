@@ -196,7 +196,7 @@ func (b *boot) wireCredentials() {
 	memoryTool.PeerCredentials = peerCreds
 	documentTool.PeerCredentials = peerCreds
 	// Wire the $cred: header resolver the MCP http pool captured by reference
-	// above. Identity comes from the per-request ctx (tenant + user + agent), so
+	// in buildMCP. Identity comes from the per-request ctx (tenant + user + agent), so
 	// a pooled client binds each request's own user-scoped token.
 	b.credSubstitute = func(ctx context.Context, s, targetURL string) (string, []string, error) {
 		// Fast-path: when nothing can resolve (no KEK / no external backend) skip

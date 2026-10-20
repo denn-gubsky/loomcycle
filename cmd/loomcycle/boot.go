@@ -28,6 +28,8 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/tools"
 	"github.com/denn-gubsky/loomcycle/internal/tools/builtin"
 	"github.com/denn-gubsky/loomcycle/internal/tools/mcp"
+
+	googlegrpc "google.golang.org/grpc"
 )
 
 // boot carries what the server's boot phases hand to one another. main runs
@@ -134,6 +136,9 @@ type boot struct {
 	pauseMgrRef       *pause.Manager
 	sessionGCInterval time.Duration
 	sessionGCMaxIdle  time.Duration
+
+	// startListeners
+	grpcSrv *googlegrpc.Server // nil unless LOOMCYCLE_GRPC_ADDR is set
 
 	// cleanups replace the defers main once held; see runCleanups.
 	cleanups []func()
