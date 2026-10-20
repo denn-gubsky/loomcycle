@@ -4041,7 +4041,9 @@ type Env struct {
 	// operator-run on localhost / a private network — incl. loomcycle's own
 	// jobs-search-agent /api/mcp consumer). Set LOOMCYCLE_MCP_ALLOW_PRIVATE_IPS=0
 	// to enable a dial-time DNS-rebinding block; HTTPPrivateHostAllowlist then
-	// exempts specific internal MCP hosts.
+	// exempts specific internal MCP hosts. It covers the operator's own
+	// servers only (yaml, or a version saved with operator authority): a
+	// server a tenant registered at runtime always dials through the block.
 	MCPAllowPrivateIPs bool
 	// HTTPCallerAuthoritative flips the per-request allowed_hosts
 	// trust model: when true, caller's list is the sole policy

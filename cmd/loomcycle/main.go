@@ -4489,11 +4489,16 @@ func mcpPoolBuild(cfg *config.Config, mcpDynView mcpLookupView,
 			return mcphttp.New(mcphttp.Config{
 				URL:     config.ExpandEnv(spec.URL),
 				Headers: hdrs,
-				// DNS-rebinding guard: OFF by default (MCP servers are commonly
-				// on localhost/private-net), opt in via
-				// LOOMCYCLE_MCP_ALLOW_PRIVATE_IPS=0. HTTPPrivateHostAllowlist
-				// exempts specific internal MCP hosts when the block is on.
-				BlockPrivateIPs:      !cfg.Env.MCPAllowPrivateIPs,
+				// Egress guard: OFF by default for the operator's own servers
+				// (static yaml, or a version saved with operator authority),
+				// which are commonly on localhost or a private network; opt in
+				// via LOOMCYCLE_MCP_ALLOW_PRIVATE_IPS=0. A server a tenant
+				// registered at runtime ALWAYS dials through it: the opt-out
+				// trusts the operator's network, not a URL a tenant chose
+				// (RFC ES follow-up). HTTPPrivateHostAllowlist exempts the
+				// private hosts the operator vouched for, under netguard's
+				// rules (a vouched name never reaches link-local or metadata).
+				BlockPrivateIPs:      !cfg.Env.MCPAllowPrivateIPs || !mcpOperatorTrusted(spec),
 				PrivateHostAllowlist: cfg.Env.HTTPPrivateHostAllowlist,
 				// RFC AR — resolve $cred:<name> header tokens per-request from
 				// the tenant credential store (per-user tokens bind correctly on
@@ -4515,6 +4520,15 @@ func mcpPoolBuild(cfg *config.Config, mcpDynView mcpLookupView,
 			return nil, fmt.Errorf("mcp_servers.%s: invalid transport %q (data corruption?)", name, spec.Transport)
 		}
 	}
+}
+
+// mcpOperatorTrusted reports whether an MCP server is the operator's own: a
+// static yaml entry, or a dynamic version saved with operator authority. The
+// same trust that lets a definition expand ${NAME} from the server
+// environment lets it skip the egress guard under
+// LOOMCYCLE_MCP_ALLOW_PRIVATE_IPS.
+func mcpOperatorTrusted(spec lookup.MCPServerSpec) bool {
+	return spec.Source == "static" || spec.OperatorAuthored
 }
 
 func spawnStdioMCP(name string, srv config.MCPServer) (mcp.Caller, error) {
