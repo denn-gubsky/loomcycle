@@ -2593,6 +2593,28 @@ func maybeRecap(ctx context.Context, opts RunOptions, messages []providers.Messa
 	return out, true
 }
 
+// loopControl is where an iteration phase sends the loop next. Each value
+// stands for the statement the phase's code used before it was a method.
+type loopControl int
+
+const (
+	loopProceed loopControl = iota // go on to the iteration's next phase
+	loopNext                       // `continue outerLoop`: start the next iteration
+	loopEnd                        // `break outerLoop`: leave the loop for the run's finish
+	loopReturn                     // `return`: runLoop returns res and err as they are
+)
+
+// loopExit is how a phase left the iteration. The zero value proceeds.
+type loopExit struct {
+	ctl loopControl
+	res RunResult // only with loopReturn
+	err error     // only with loopReturn
+}
+
+func exitReturn(res RunResult, err error) loopExit {
+	return loopExit{ctl: loopReturn, res: res, err: err}
+}
+
 // runState is what runLoop carries from one iteration to the next: one is
 // allocated per run, and the phases of an iteration are its methods. A field
 // is read where it is used, never copied out for later — a park, a fallback
@@ -2611,6 +2633,8 @@ type runState struct {
 	bg             *tools.Background
 	toolChoice     *toolChoicePolicy
 	outputFormat   *outputFormatPolicy
+	// answerShape is what Context op=self reports about the two policies.
+	answerShape *atomic.Pointer[tools.AnswerShape]
 
 	// messages is the canonical conversation. Phases append to it and parks
 	// and distillation replace it; the request is built from it each turn.
@@ -3042,20 +3066,13 @@ func runLoop(ctx context.Context, opts RunOptions) (RunResult, error) {
 		messages:       messages,
 		toolChoice:     newToolChoicePolicy(opts.ToolChoice),
 		outputFormat:   newOutputFormatPolicy(opts.OutputFormat),
+		answerShape:    &answerShape,
 	}
 	if err := s.toolChoice.checkTool(toolSpecs); err != nil {
 		emit(providers.Event{Type: providers.EventError, Error: err.Error()})
 		return RunResult{}, err
 	}
-	// Published, not stamped: see tools.AnswerShape. Re-published wherever the
-	// answer can move — the policies, the target, or a spent `until`.
-	publishAnswerShape := func() {
-		answerShape.Store(&tools.AnswerShape{
-			ToolChoice:   s.toolChoice.report(opts.Provider, opts.Model, opts.Effort),
-			OutputFormat: s.outputFormat.report(opts.Provider, opts.Model, len(toolSpecs) > 0),
-		})
-	}
-	publishAnswerShape()
+	s.publishAnswerShape()
 
 	// Context compaction (v2): a self-request flag the Context op=compact tool
 	// sets (checked at the next iteration boundary), plus the previous iteration's
@@ -3370,14 +3387,9 @@ outerLoop:
 		// untouched. Skipped for the synthetic code-js provider (local replay,
 		// no external leak; redacting its bytes would trip replay divergence).
 		// No caching in this version — the chain re-runs over the copy each turn.
-		reqSystem, reqMessages := system, s.messages
-		if len(opts.ContextPlugins) > 0 && opts.Provider.ID() != codeJSProviderID {
-			cs, cm, perr := contextplugin.Apply(iterCtx, opts.ContextPlugins, system, s.messages)
-			if perr != nil {
-				emit(providers.Event{Type: providers.EventError, Error: "context transform: " + perr.Error()})
-				return RunResult{Iterations: iter}, perr
-			}
-			reqSystem, reqMessages = cs, cm
+		reqSystem, reqMessages, ex := s.outboundContext(iterCtx, iter)
+		if ex.ctl == loopReturn {
+			return ex.res, ex.err
 		}
 
 		// RFC BH: arm the per-turn cancel token covering THIS turn's model call +
@@ -3387,63 +3399,9 @@ outerLoop:
 		// alive) and is caught below. When ArmTurnCancel is nil the token is never
 		// fired, so turnCtx behaves exactly like iterCtx — the loop stays
 		// byte-identical.
-		var turnCtx context.Context
-		turnCtx, s.turnCancelFn = context.WithCancelCause(iterCtx)
-		s.disarmTurn = func() {}
-		if opts.ArmTurnCancel != nil {
-			s.disarmTurn = opts.ArmTurnCancel(s.turnCancelFn)
-		}
+		turnCtx := s.armTurn(iterCtx)
 
-		// A retune adopted at the last operator turn replaced the source a policy
-		// was built from; rebuild it so this call, not a later one, carries it.
-		s.toolChoice = s.toolChoice.adopt(opts.ToolChoice, toolSpecs, emit)
-		s.outputFormat = s.outputFormat.adopt(opts.OutputFormat)
-		publishAnswerShape()
-		// RFC DI: re-checked per request so a fallback onto a target that cannot
-		// enforce the choice is reported too; a no-op while the target is unchanged.
-		s.toolChoice.reportIfUnenforced(opts.Provider, opts.Model, opts.Effort, emit)
-		// RFC DI: a target that does not show the model the schema gets it in
-		// the system prompt. Appended to a copy, per call, so a fallback onto a
-		// native target drops it again and the canonical system stays untouched.
-		if note, ok := s.outputFormat.promptNote(opts.Provider, opts.Model, len(toolSpecs) > 0); ok {
-			reqSystem = append(reqSystem[:len(reqSystem):len(reqSystem)], note)
-		}
-		req := providers.Request{
-			Model:            opts.Model,
-			System:           reqSystem,
-			Messages:         reqMessages,
-			Tools:            toolSpecs,
-			ToolChoice:       s.toolChoice.forCall(),
-			OutputFormat:     s.outputFormat.forCall(opts.Provider, opts.Model, len(toolSpecs) > 0, emit),
-			MaxTokens:        opts.MaxTokens,        // 0 → driver default
-			MaxContextTokens: opts.MaxContextTokens, // 0 → driver/provider default (RFC CJ)
-			Effort:           opts.Effort,           // "" → driver default; PR 3 wires per-driver translation
-			// OnEvent lets the driver fire pre-channel events (currently
-			// EventRetry during a 429 sleep) directly to the same caller
-			// hook the loop uses for response events. Without this hop
-			// the retry would be invisible to SSE consumers.
-			OnEvent: emit,
-		}
-		// Map the resolved per-agent sampling params onto the flat Request
-		// fields (each driver applies the subset its provider supports).
-		if s := opts.Sampling; s != nil {
-			req.Temperature = s.Temperature
-			req.TopP = s.TopP
-			req.TopK = s.TopK
-			req.FrequencyPenalty = s.FrequencyPenalty
-			req.PresencePenalty = s.PresencePenalty
-			req.Seed = s.Seed
-			req.Stop = s.Stop
-		}
-		if s.closingTurn {
-			closingTurnRequest(&req, opts)
-		}
-		if !s.promptSnapshotted {
-			// RFC DI: what the model was first asked, exactly as sent. Once
-			// per loop entry; a resumed run records the prompt it resumed with.
-			s.promptSnapshotted = true
-			emit(providers.Event{Type: providers.EventPromptSnapshot, PromptSnapshot: providers.NewPromptSnapshot(req.System, req.Messages)})
-		}
+		req := s.buildRequest(reqSystem, reqMessages)
 		callTimer := providers.StartCallTimer(opts.Now)
 		ch, err := opts.Provider.Call(turnCtx, req)
 		if err != nil {
@@ -3862,7 +3820,7 @@ outerLoop:
 		s.stopReason = iterStop
 		s.finalText = iterText
 		s.toolChoice.observe(pendingTools) // a COMPLETED turn advances the tool_choice
-		publishAnswerShape()
+		s.publishAnswerShape()
 
 		// RFC BH turn-cancel (mid-generation): the operator stopped this turn while
 		// the model was streaming. Keep the partial assistant output (appended
@@ -4273,6 +4231,99 @@ func (s *runState) distillAtBoundary(iterCtx context.Context, iter int) {
 		}
 	}
 
+}
+
+// outboundContext is the system prompt and conversation this turn sends:
+// the canonical ones, or a copy the context-transform plugins rewrote.
+func (s *runState) outboundContext(iterCtx context.Context, iter int) ([]providers.ContentBlock, []providers.Message, loopExit) {
+	reqSystem, reqMessages := s.system, s.messages
+	if len(s.opts.ContextPlugins) > 0 && s.opts.Provider.ID() != codeJSProviderID {
+		cs, cm, perr := contextplugin.Apply(iterCtx, s.opts.ContextPlugins, s.system, s.messages)
+		if perr != nil {
+			s.emit(providers.Event{Type: providers.EventError, Error: "context transform: " + perr.Error()})
+			return nil, nil, exitReturn(RunResult{Iterations: iter}, perr)
+		}
+		reqSystem, reqMessages = cs, cm
+	}
+	return reqSystem, reqMessages, loopExit{}
+}
+
+// armTurn arms the cancel of the turn about to start and returns its ctx.
+func (s *runState) armTurn(iterCtx context.Context) context.Context {
+	var turnCtx context.Context
+	turnCtx, s.turnCancelFn = context.WithCancelCause(iterCtx)
+	s.disarmTurn = func() {}
+	if s.opts.ArmTurnCancel != nil {
+		s.disarmTurn = s.opts.ArmTurnCancel(s.turnCancelFn)
+	}
+	return turnCtx
+}
+
+// buildRequest assembles this turn's request from the outbound context and
+// the run's current target, policies and sampling. It also records the
+// run's first prompt.
+func (s *runState) buildRequest(reqSystem []providers.ContentBlock, reqMessages []providers.Message) providers.Request {
+	// A retune adopted at the last operator turn replaced the source a policy
+	// was built from; rebuild it so this call, not a later one, carries it.
+	s.toolChoice = s.toolChoice.adopt(s.opts.ToolChoice, s.toolSpecs, s.emit)
+	s.outputFormat = s.outputFormat.adopt(s.opts.OutputFormat)
+	s.publishAnswerShape()
+	// RFC DI: re-checked per request so a fallback onto a target that cannot
+	// enforce the choice is reported too; a no-op while the target is unchanged.
+	s.toolChoice.reportIfUnenforced(s.opts.Provider, s.opts.Model, s.opts.Effort, s.emit)
+	// RFC DI: a target that does not show the model the schema gets it in
+	// the system prompt. Appended to a copy, per call, so a fallback onto a
+	// native target drops it again and the canonical system stays untouched.
+	if note, ok := s.outputFormat.promptNote(s.opts.Provider, s.opts.Model, len(s.toolSpecs) > 0); ok {
+		reqSystem = append(reqSystem[:len(reqSystem):len(reqSystem)], note)
+	}
+	req := providers.Request{
+		Model:            s.opts.Model,
+		System:           reqSystem,
+		Messages:         reqMessages,
+		Tools:            s.toolSpecs,
+		ToolChoice:       s.toolChoice.forCall(),
+		OutputFormat:     s.outputFormat.forCall(s.opts.Provider, s.opts.Model, len(s.toolSpecs) > 0, s.emit),
+		MaxTokens:        s.opts.MaxTokens,        // 0 → driver default
+		MaxContextTokens: s.opts.MaxContextTokens, // 0 → driver/provider default (RFC CJ)
+		Effort:           s.opts.Effort,           // "" → driver default; PR 3 wires per-driver translation
+		// OnEvent lets the driver fire pre-channel events (currently
+		// EventRetry during a 429 sleep) directly to the same caller
+		// hook the loop uses for response events. Without this hop
+		// the retry would be invisible to SSE consumers.
+		OnEvent: s.emit,
+	}
+	// Map the resolved per-agent sampling params onto the flat Request
+	// fields (each driver applies the subset its provider supports).
+	if sm := s.opts.Sampling; sm != nil {
+		req.Temperature = sm.Temperature
+		req.TopP = sm.TopP
+		req.TopK = sm.TopK
+		req.FrequencyPenalty = sm.FrequencyPenalty
+		req.PresencePenalty = sm.PresencePenalty
+		req.Seed = sm.Seed
+		req.Stop = sm.Stop
+	}
+	if s.closingTurn {
+		closingTurnRequest(&req, *s.opts)
+	}
+	if !s.promptSnapshotted {
+		// RFC DI: what the model was first asked, exactly as sent. Once
+		// per loop entry; a resumed run records the prompt it resumed with.
+		s.promptSnapshotted = true
+		s.emit(providers.Event{Type: providers.EventPromptSnapshot, PromptSnapshot: providers.NewPromptSnapshot(req.System, req.Messages)})
+	}
+	return req
+}
+
+// publishAnswerShape publishes, not stamps: see tools.AnswerShape.
+// Re-published wherever the answer can move — the policies, the target, or a
+// spent `until`.
+func (s *runState) publishAnswerShape() {
+	s.answerShape.Store(&tools.AnswerShape{
+		ToolChoice:   s.toolChoice.report(s.opts.Provider, s.opts.Model, s.opts.Effort),
+		OutputFormat: s.outputFormat.report(s.opts.Provider, s.opts.Model, len(s.toolSpecs) > 0),
+	})
 }
 
 // executeTool runs one tool through the dispatcher; returns a marker error
