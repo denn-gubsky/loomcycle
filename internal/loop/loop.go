@@ -3169,6 +3169,29 @@ func runLoop(ctx context.Context, opts RunOptions) (RunResult, error) {
 		s.turnCancelFn(nil)
 	}()
 
+	parkAbandoned, ex := s.resumeParked(ctx)
+	if ex.ctl == loopReturn {
+		return ex.res, ex.err
+	}
+
+	for iter := 0; !parkAbandoned && (iter < iterCap || s.closingTurn); iter++ {
+		ex := s.iteration(ctx, iter)
+		if ex.ctl == loopReturn {
+			return ex.res, ex.err
+		}
+		if ex.ctl == loopEnd {
+			break
+		}
+	}
+	return s.finish()
+}
+
+// resumeParked puts a resumed run back where it paused, before its first
+// model call: parked for its operator, held for review, or waiting for its
+// background children. It reports whether the run's loop is to be skipped
+// (it ends on the turn it had already finished); a cancelled wait ends the
+// run instead.
+func (s *runState) resumeParked(ctx context.Context) (bool, loopExit) {
 	// A resumed run that was parked when it paused waits HERE, before the first
 	// model call, rather than being handed a conversation with nothing to answer.
 	// When the operator's turn arrives the loop proceeds normally with it
@@ -3176,9 +3199,9 @@ func runLoop(ctx context.Context, opts RunOptions) (RunResult, error) {
 	// parked run that is cancelled ends — on the end_turn it had already
 	// reached before the pause.
 	parkAbandoned := false
-	if opts.StartParked && opts.Interactive && opts.SteerQueue != nil {
+	if s.opts.StartParked && s.opts.Interactive && s.opts.SteerQueue != nil {
 		var resumedWithInput bool
-		s.messages, s.lastCtxTokens, resumedWithInput = parkForOperatorTurn(ctx, &opts, s.messages, 0, s.lastCtxTokens, s.preambleTokens, emit)
+		s.messages, s.lastCtxTokens, resumedWithInput = parkForOperatorTurn(ctx, s.opts, s.messages, 0, s.lastCtxTokens, s.preambleTokens, s.emit)
 		if !resumedWithInput {
 			// Cancelled while waiting. The run ends on the end_turn it had
 			// already reached before the pause; skipping the loop entirely lets
@@ -3193,18 +3216,18 @@ func runLoop(ctx context.Context, opts RunOptions) (RunResult, error) {
 	// it was holding. Approve ends it on that answer (an interactive run then
 	// waits for its next message, as it would have); feedback continues the
 	// loop with the feedback appended; reject ends it rejected.
-	if h := opts.ResumeHeld; h != nil && !parkAbandoned && opts.SteerQueue != nil {
+	if h := s.opts.ResumeHeld; h != nil && !parkAbandoned && s.opts.SteerQueue != nil {
 		s.reviewRound = h.Round
 		s.finalText = lastAssistantText(s.messages)
 		outcome := reviewApproved
 		// A hook's hold is restored whether or not review is armed: arming
 		// never took it, so disarming cannot have released it.
-		if h.HeldBy != "" || opts.reviewAtBoundary(ctx) {
+		if h.HeldBy != "" || s.opts.reviewAtBoundary(ctx) {
 			heldSince := h.HeldAt
 			if heldSince.IsZero() {
 				heldSince = time.Now()
 			}
-			s.messages, s.lastCtxTokens, outcome = parkForReview(ctx, &opts, s.messages, h.SinceTurn, h.Round, s.lastCtxTokens, s.preambleTokens, time.Time{}, heldSince, h.HeldBy, emit)
+			s.messages, s.lastCtxTokens, outcome = parkForReview(ctx, s.opts, s.messages, h.SinceTurn, h.Round, s.lastCtxTokens, s.preambleTokens, time.Time{}, heldSince, h.HeldBy, s.emit)
 		}
 		switch outcome {
 		case reviewExpired:
@@ -3215,22 +3238,22 @@ func runLoop(ctx context.Context, opts RunOptions) (RunResult, error) {
 			if err == nil {
 				err = errReviewAbandoned
 			}
-			return RunResult{StopReason: "cancelled", FinalText: s.finalText, Usage: s.totalUsage}, err
+			return false, exitReturn(RunResult{StopReason: "cancelled", FinalText: s.finalText, Usage: s.totalUsage}, err)
 		case reviewRejected:
 			s.stopReason = StopReasonRejected
 			parkAbandoned = true
 		case reviewApproved:
 			s.stopReason = "end_turn"
 			parkAbandoned = true
-			if opts.interactiveAtBoundary(ctx) {
+			if s.opts.interactiveAtBoundary(ctx) {
 				var resumedWithInput bool
-				s.messages, s.lastCtxTokens, resumedWithInput = parkForOperatorTurn(ctx, &opts, s.messages, h.SinceTurn, s.lastCtxTokens, s.preambleTokens, emit)
+				s.messages, s.lastCtxTokens, resumedWithInput = parkForOperatorTurn(ctx, s.opts, s.messages, h.SinceTurn, s.lastCtxTokens, s.preambleTokens, s.emit)
 				parkAbandoned = !resumedWithInput
 			} else {
 				// Finishing on the approved answer, as the loop's own end of
 				// turn does: a message waiting is answered first.
 				var compacted, took bool
-				s.messages, compacted, took = finishSteer(&opts, s.messages, iterCap > 0, emit)
+				s.messages, compacted, took = finishSteer(s.opts, s.messages, s.iterCap > 0, s.emit)
 				if compacted {
 					s.lastCtxTokens = estimatePromptTokens(s.preambleTokens, s.messages)
 				}
@@ -3243,76 +3266,19 @@ func runLoop(ctx context.Context, opts RunOptions) (RunResult, error) {
 	// paused waits for them again here. The wake is the one it would have had:
 	// a note naming how each ended — those that ended while it was paused
 	// included — then its next turn.
-	if opts.ResumeAwaitingChildren && opts.RestoreBackground != nil && !parkAbandoned {
-		note, noted, ok := parkForChildren(ctx, &opts, bg, 0, emit)
+	if s.opts.ResumeAwaitingChildren && s.opts.RestoreBackground != nil && !parkAbandoned {
+		note, noted, ok := parkForChildren(ctx, s.opts, s.bg, 0, s.emit)
 		if !ok {
 			err := ctx.Err()
 			if err == nil {
 				err = context.Canceled
 			}
-			return RunResult{StopReason: "cancelled", FinalText: lastAssistantText(s.messages), Usage: s.totalUsage}, err
+			return false, exitReturn(RunResult{StopReason: "cancelled", FinalText: lastAssistantText(s.messages), Usage: s.totalUsage}, err)
 		}
-		s.messages = appendChildrenNote(s.messages, note, noted, emit)
+		s.messages = appendChildrenNote(s.messages, note, noted, s.emit)
 	}
 
-	for iter := 0; !parkAbandoned && (iter < iterCap || s.closingTurn); iter++ {
-		ex := s.iteration(ctx, iter)
-		if ex.ctl == loopReturn {
-			return ex.res, ex.err
-		}
-		if ex.ctl == loopEnd {
-			break
-		}
-	}
-	// RFC BH: release the last turn's cancel ctx once the loop has exited (break or
-	// MaxIterations exhaustion). The run-exit defer would catch it too, but calling
-	// it here keeps the context lifecycle explicit + go-vet clean.
-	s.turnCancelFn(nil)
-
-	// If the for loop exited by exhausting MaxIterations while the model was
-	// still mid-tool-use, the stop_reason will be stuck at "tool_use" but no
-	// tools ran on this final iteration. Surface that distinctly to the
-	// caller — they can decide whether to bump MaxIterations and retry, or
-	// surface a different error to the user.
-	// The same exhaustion after a turn the model never answered: an operator
-	// turn, a review's feedback or a hook's block appended on the last
-	// iteration, then `continue` found no iteration left. The stop reason is
-	// still the previous answer's end_turn, which would record the run as
-	// finished on an answer that was sent back, with the turn unanswered.
-	if s.stopReason == "end_turn" && len(s.messages) > 0 && s.messages[len(s.messages)-1].Role == "user" {
-		s.stopReason = "max_iterations"
-	}
-	if s.stopReason == "tool_use" {
-		s.stopReason = "max_iterations"
-		// An unbounded-iterations provider (code-js) is exempt from the
-		// MaxIterations cap and bounded by its run-level timeout instead, so
-		// reaching iterCap here means the runaway hard ceiling — run() kept
-		// requesting tool calls without returning AND the timeout never fired.
-		// That's a non-terminating tool-call loop (a code-agent bug), not a too-
-		// small cap; name it accordingly. (Capability-driven, not ID-coupled.)
-		if unboundedIters {
-			log.Printf("code agent %q hit the %d-call runaway ceiling without returning — a code-agent is bounded by its run timeout (LOOMCYCLE_CODE_AGENTS_RUN_TIMEOUT_SECONDS), not by iteration count; this indicates a tool-call loop that never terminates.", opts.AgentName, iterCap)
-		}
-	}
-
-	// Parsed before EventDone so an unparseable answer's report precedes it.
-	// A rejected answer is parsed too: it is still the answer, and what reads
-	// it — a team's sink message, the run row — decides what the rejection
-	// means. An answer that does not parse only leaves Structured empty; the
-	// run stays rejected.
-	var structured map[string]any
-	if s.stopReason == "end_turn" || EndsRejected(s.stopReason) {
-		structured = s.outputFormat.structured(s.finalText, emit)
-	}
-	emit(providers.Event{Type: providers.EventDone, StopReason: s.stopReason, Usage: &s.totalUsage})
-
-	return RunResult{
-		StopReason: s.stopReason,
-		FinalText:  s.finalText,
-		Iterations: iterationCount(s.messages),
-		Usage:      s.totalUsage,
-		Structured: structured,
-	}, nil
+	return parkAbandoned, loopExit{}
 }
 
 // iteration runs one turn of the loop: the boundary work, the model call,
@@ -3418,6 +3384,60 @@ func (s *runState) iteration(ctx context.Context, iter int) loopExit {
 		s.closingTurn = true
 	}
 	return loopExit{ctl: loopNext}
+}
+
+// finish ends the run after its loop: it names how the loop ran out, parses
+// a structured answer, and emits the run's EventDone.
+func (s *runState) finish() (RunResult, error) {
+	// RFC BH: release the last turn's cancel ctx once the loop has exited (break or
+	// MaxIterations exhaustion). The run-exit defer would catch it too, but calling
+	// it here keeps the context lifecycle explicit + go-vet clean.
+	s.turnCancelFn(nil)
+
+	// If the for loop exited by exhausting MaxIterations while the model was
+	// still mid-tool-use, the stop_reason will be stuck at "tool_use" but no
+	// tools ran on this final iteration. Surface that distinctly to the
+	// caller — they can decide whether to bump MaxIterations and retry, or
+	// surface a different error to the user.
+	// The same exhaustion after a turn the model never answered: an operator
+	// turn, a review's feedback or a hook's block appended on the last
+	// iteration, then `continue` found no iteration left. The stop reason is
+	// still the previous answer's end_turn, which would record the run as
+	// finished on an answer that was sent back, with the turn unanswered.
+	if s.stopReason == "end_turn" && len(s.messages) > 0 && s.messages[len(s.messages)-1].Role == "user" {
+		s.stopReason = "max_iterations"
+	}
+	if s.stopReason == "tool_use" {
+		s.stopReason = "max_iterations"
+		// An unbounded-iterations provider (code-js) is exempt from the
+		// MaxIterations cap and bounded by its run-level timeout instead, so
+		// reaching iterCap here means the runaway hard ceiling — run() kept
+		// requesting tool calls without returning AND the timeout never fired.
+		// That's a non-terminating tool-call loop (a code-agent bug), not a too-
+		// small cap; name it accordingly. (Capability-driven, not ID-coupled.)
+		if s.unboundedIters {
+			log.Printf("code agent %q hit the %d-call runaway ceiling without returning — a code-agent is bounded by its run timeout (LOOMCYCLE_CODE_AGENTS_RUN_TIMEOUT_SECONDS), not by iteration count; this indicates a tool-call loop that never terminates.", s.opts.AgentName, s.iterCap)
+		}
+	}
+
+	// Parsed before EventDone so an unparseable answer's report precedes it.
+	// A rejected answer is parsed too: it is still the answer, and what reads
+	// it — a team's sink message, the run row — decides what the rejection
+	// means. An answer that does not parse only leaves Structured empty; the
+	// run stays rejected.
+	var structured map[string]any
+	if s.stopReason == "end_turn" || EndsRejected(s.stopReason) {
+		structured = s.outputFormat.structured(s.finalText, s.emit)
+	}
+	s.emit(providers.Event{Type: providers.EventDone, StopReason: s.stopReason, Usage: &s.totalUsage})
+
+	return RunResult{
+		StopReason: s.stopReason,
+		FinalText:  s.finalText,
+		Iterations: iterationCount(s.messages),
+		Usage:      s.totalUsage,
+		Structured: structured,
+	}, nil
 }
 
 // beginIteration is an iteration's boundary work before it takes any input:
