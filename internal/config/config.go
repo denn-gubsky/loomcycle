@@ -9221,8 +9221,15 @@ func ParseBashboxFallbackCred(entry string) (command, name string, err error) {
 }
 
 // validateBashboxFallbackCreds refuses an entry that could never be injected:
-// a malformed one, or one bound to a command that has no fallback proxy.
+// a malformed one, or one bound to a command that has no fallback proxy. The
+// host-variable list has no per-command form, so a "cmd:NAME" there named no
+// variable and was dropped without a word; it is refused too.
 func validateBashboxFallbackCreds(c *Config) error {
+	for _, e := range c.Env.BashboxFallbackAllowedEnv {
+		if strings.Contains(e, ":") {
+			return fmt.Errorf("LOOMCYCLE_BASHBOX_FALLBACK_ALLOWED_ENV: %q is not a variable name; binding to one command (cmd:NAME) is only for stored credentials in LOOMCYCLE_BASHBOX_FALLBACK_ALLOWED_CREDS", e)
+		}
+	}
 	for _, e := range c.Env.BashboxFallbackAllowedCreds {
 		cmd, _, err := ParseBashboxFallbackCred(e)
 		if err != nil {

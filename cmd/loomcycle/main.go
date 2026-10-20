@@ -1185,7 +1185,11 @@ func main() {
 			// RFC ES #9: the variables reach only the host child, but that
 			// child does what the model tells it, including printing them.
 			if len(cfg.Env.BashboxFallbackAllowedEnv) > 0 || len(cfg.Env.BashboxFallbackAllowedCreds) > 0 {
-				log.Printf("WARNING: the model can read every variable and credential given to Bashbox host commands (LOOMCYCLE_BASHBOX_FALLBACK_ALLOWED_ENV=%s, LOOMCYCLE_BASHBOX_FALLBACK_ALLOWED_CREDS=%s): an allowlisted command can be told to print its environment (e.g. git -c alias.x='!env' x). Bind each credential to the one command that needs it (cmd:NAME) and pass only credentials you would hand the model.", strings.Join(cfg.Env.BashboxFallbackAllowedEnv, ","), strings.Join(cfg.Env.BashboxFallbackAllowedCreds, ","))
+				advice := "pass only values you would hand the model."
+				if len(cfg.Env.BashboxFallbackAllowedCreds) > 0 {
+					advice = "pass only credentials you would hand the model, and bind each stored credential to the one command that needs it (cmd:NAME in LOOMCYCLE_BASHBOX_FALLBACK_ALLOWED_CREDS)."
+				}
+				log.Printf("WARNING: the model can read every variable and credential given to Bashbox host commands (LOOMCYCLE_BASHBOX_FALLBACK_ALLOWED_ENV=%s, LOOMCYCLE_BASHBOX_FALLBACK_ALLOWED_CREDS=%s): an allowlisted command can be told to print its environment (e.g. git -c alias.x='!env' x). So %s", strings.Join(cfg.Env.BashboxFallbackAllowedEnv, ","), strings.Join(cfg.Env.BashboxFallbackAllowedCreds, ","), advice)
 			}
 		}
 	} else {

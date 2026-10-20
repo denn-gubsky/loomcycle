@@ -51,3 +51,24 @@ func TestParseBashboxFallbackCred_SplitsBindingFromBareName(t *testing.T) {
 		}
 	}
 }
+
+// LOOMCYCLE_BASHBOX_FALLBACK_ALLOWED_ENV has no per-command form: a
+// "git:GH_TOKEN" entry named no variable and was silently dropped. It now
+// refuses the boot and points at ALLOWED_CREDS, which has that form.
+func TestBashboxFallbackEnv_RefusesACommandBinding(t *testing.T) {
+	t.Setenv("LOOMCYCLE_BASHBOX_FALLBACK_COMMANDS", "git")
+	t.Setenv("LOOMCYCLE_BASHBOX_FALLBACK_ALLOWED_ENV", "HOME,git:GH_TOKEN")
+	_, err := loadYAMLString(t, "providers: {}\n")
+	if err == nil {
+		t.Fatal("a cmd:NAME entry in ALLOWED_ENV was accepted")
+	}
+	for _, want := range []string{"LOOMCYCLE_BASHBOX_FALLBACK_ALLOWED_ENV", `"git:GH_TOKEN"`, "LOOMCYCLE_BASHBOX_FALLBACK_ALLOWED_CREDS"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("err = %v; want it to mention %s", err, want)
+		}
+	}
+	t.Setenv("LOOMCYCLE_BASHBOX_FALLBACK_ALLOWED_ENV", "HOME,GH_TOKEN")
+	if _, err := loadYAMLString(t, "providers: {}\n"); err != nil {
+		t.Errorf("plain variable names were refused: %v", err)
+	}
+}
