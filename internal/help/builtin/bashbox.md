@@ -90,8 +90,8 @@ These variables are injected only into the host command, so the sandbox's own
 command can print its environment (`git -c alias.x='!env' x`), and anything it
 starts (a git alias, hook or credential helper) inherits them. Treat any
 credential a host command is given as one you can read, and never print or
-store it — the runtime masks a stored credential in the saved transcript, but
-the tool result you see carries it.
+store it — the saved transcript may mask it, but the tool result you see, and
+everything you send on from it, carries it.
 
 Fallback commands **require a read-write volume** (a real host process can't
 honor the read-only overlay), run with their working directory set to the host

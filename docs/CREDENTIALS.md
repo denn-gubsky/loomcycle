@@ -259,7 +259,9 @@ override above.
 **Unlike every other use on this page, the model can read these.** A `Bash`
 command prints them with `env`; an allowlisted host command can be told to
 (`git -c alias.x='!env' x` runs a host shell that does). The value is masked
-in the stored transcript, but the live tool result carries it. Give a shell
+in the stored transcript (unless `LOOMCYCLE_REDACT_SECRETS=0`), but the live
+tool result carries it, and so does the conversation sent to the LLM provider
+on the next call. Give a shell
 only credentials you would hand the model, and prefer the ones that keep the
 token out of reach: a git-source volume (`VolumeDef create source:{git:…}`)
 for a clone, an MCP server with a `$cred:` header for an API.
