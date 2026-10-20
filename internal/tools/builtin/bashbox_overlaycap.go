@@ -4,12 +4,11 @@ import (
 	"context"
 	stdfs "io/fs"
 	"os"
-	"path"
-	"sync"
 	"sync/atomic"
 	"syscall"
 	"time"
 
+	"github.com/ewhauser/gbash"
 	gbfs "github.com/ewhauser/gbash/fs"
 )
 
@@ -62,185 +61,83 @@ func (f cappedFactory) New(ctx context.Context) (gbfs.FileSystem, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &cappedFS{FileSystem: fsys, budget: f.budget, held: map[string]struct{}{}}, nil
+	return &cappedFS{FileSystem: fsys, budget: f.budget}, nil
 }
 
-// cappedFS charges whatever makes the in-memory layer hold more:
-//
-//   - data written through an open file;
-//   - the names of new files, directories and links (a symlink's target is a
-//     string as long as a shell variable allows);
-//   - a copy-up: on a read-only volume, chmod, chown, touch, mv, ln or opening
-//     a file to append copies a file of the volume into memory. gbash defers
-//     reading its content until the copy is next opened, and keeps it from
-//     then on, so the copy is charged at its full size when it is made (a
-//     directory moved with mv, at the size of every file under it).
-//
-// gbash builds the in-memory layer inside its overlay with no way to wrap it,
-// so this wraps the merged view and charges by path. held records the paths
-// already accounted for — made here, or charged at a copy — so a second chmod
-// costs nothing. It errs high, never low: a path moved by mv is charged again
-// if it is copied again under its new name.
-//
-// Mkfifo and Lchtimes are optional filesystem methods gbash looks for, so
-// they are forwarded explicitly.
+// cappedReadOnlyVolume is gbash.HostDirectoryFileSystem built from gbash's
+// public parts, with the host (lower) layer wrapped so the bytes its copy-ups
+// read into memory are charged. gbash.HostDirectoryFileSystem is exactly
+// gbfs.Overlay(gbfs.Host(root at the workspace mount point)); building it here
+// is what gives the lower layer a seam, since the overlay's in-memory upper
+// layer is created inside gbfs.NewOverlay and cannot be wrapped.
+func cappedReadOnlyVolume(root string, budget *writeBudget) gbash.FileSystemConfig {
+	host := gbfs.Host(gbfs.HostOptions{Root: root, VirtualRoot: gbash.DefaultWorkspaceMountPoint})
+	return gbash.FileSystemConfig{
+		Factory: cappedFactory{
+			inner:  gbfs.Overlay(copyUpChargedFactory{inner: host, budget: budget}),
+			budget: budget,
+		},
+		WorkingDir: gbash.DefaultWorkspaceMountPoint,
+	}
+}
+
+// cappedFS charges what a script writes into the in-memory layer: data
+// written through an open file, and the names of new files, directories and
+// links (a symlink's target is a string as long as a shell variable allows).
+// Content copied up from a read-only volume is charged where it is read, by
+// copyUpChargedFS. Mkfifo and Lchtimes are optional filesystem methods gbash
+// looks for, so they are forwarded explicitly.
 type cappedFS struct {
 	gbfs.FileSystem
 	budget *writeBudget
-
-	mu   sync.Mutex
-	held map[string]struct{}
 }
 
-func (c *cappedFS) charge(op, name string, n int64) error {
-	if n <= 0 {
-		return nil
-	}
-	if c.budget.take(n) < n {
+func (c *cappedFS) charge(op, name string, n int) error {
+	if c.budget.take(int64(n)) < int64(n) {
 		return errNoSpace(op, name)
 	}
 	return nil
 }
 
-func (c *cappedFS) abs(name string) string { return gbfs.Resolve(c.FileSystem.Getwd(), name) }
-
-func (c *cappedFS) hold(abs string) {
-	c.mu.Lock()
-	c.held[abs] = struct{}{}
-	c.mu.Unlock()
-}
-
-// chargeCopy charges, once per path, the content an operation on name is
-// about to copy into memory: a regular file's size, or for a directory the
-// sizes of the files under it. follow says whether the operation acts on a
-// symlink's target. A path that does not exist is not charged; the operation
-// itself reports that.
-func (c *cappedFS) chargeCopy(ctx context.Context, op, name string, follow bool) error {
-	abs := c.abs(name)
-	if follow {
-		if real, err := c.FileSystem.Realpath(ctx, abs); err == nil {
-			abs = real
-		}
-	}
-	c.mu.Lock()
-	_, done := c.held[abs]
-	c.mu.Unlock()
-	if done {
-		return nil
-	}
-	info, err := c.FileSystem.Lstat(ctx, abs)
-	if err != nil {
-		return nil
-	}
-	switch {
-	case info.Mode().IsRegular():
-		if err := c.charge(op, name, info.Size()); err != nil {
-			return err
-		}
-	case info.IsDir():
-		entries, err := c.FileSystem.ReadDir(ctx, abs)
-		if err != nil {
-			return nil
-		}
-		for _, e := range entries {
-			if err := c.chargeCopy(ctx, op, path.Join(abs, e.Name()), false); err != nil {
-				return err
-			}
-		}
-	}
-	c.hold(abs)
-	return nil
-}
-
 func (c *cappedFS) OpenFile(ctx context.Context, name string, flag int, perm stdfs.FileMode) (gbfs.File, error) {
-	write := flag&(os.O_WRONLY|os.O_RDWR|os.O_APPEND|os.O_TRUNC|os.O_CREATE) != 0
-	if !write {
-		return c.FileSystem.OpenFile(ctx, name, flag, perm)
-	}
-	// Truncating drops the content, so nothing of the old file is copied.
-	if flag&os.O_TRUNC == 0 {
-		if err := c.chargeCopy(ctx, "open", name, true); err != nil {
-			return nil, err
-		}
-	}
 	if flag&os.O_CREATE != 0 {
-		if err := c.charge("open", name, int64(len(name))); err != nil {
+		if err := c.charge("open", name, len(name)); err != nil {
 			return nil, err
 		}
 	}
 	f, err := c.FileSystem.OpenFile(ctx, name, flag, perm)
-	if err != nil {
-		return nil, err
+	if err != nil || flag&(os.O_WRONLY|os.O_RDWR|os.O_APPEND|os.O_TRUNC) == 0 {
+		return f, err
 	}
-	c.hold(c.abs(name))
 	return &cappedFile{File: f, name: name, budget: c.budget}, nil
 }
 
 func (c *cappedFS) MkdirAll(ctx context.Context, name string, perm stdfs.FileMode) error {
-	if err := c.charge("mkdir", name, int64(len(name))); err != nil {
+	if err := c.charge("mkdir", name, len(name)); err != nil {
 		return err
 	}
 	return c.FileSystem.MkdirAll(ctx, name, perm)
 }
 
 func (c *cappedFS) Symlink(ctx context.Context, target, linkName string) error {
-	if err := c.charge("symlink", linkName, int64(len(target)+len(linkName))); err != nil {
+	if err := c.charge("symlink", linkName, len(target)+len(linkName)); err != nil {
 		return err
 	}
-	if err := c.FileSystem.Symlink(ctx, target, linkName); err != nil {
-		return err
-	}
-	c.hold(c.abs(linkName))
-	return nil
+	return c.FileSystem.Symlink(ctx, target, linkName)
 }
 
 func (c *cappedFS) Link(ctx context.Context, oldName, newName string) error {
-	if err := c.chargeCopy(ctx, "link", oldName, false); err != nil {
+	if err := c.charge("link", newName, len(newName)); err != nil {
 		return err
 	}
-	if err := c.charge("link", newName, int64(len(newName))); err != nil {
-		return err
-	}
-	if err := c.FileSystem.Link(ctx, oldName, newName); err != nil {
-		return err
-	}
-	c.hold(c.abs(newName))
-	return nil
+	return c.FileSystem.Link(ctx, oldName, newName)
 }
 
 func (c *cappedFS) Rename(ctx context.Context, oldName, newName string) error {
-	if err := c.chargeCopy(ctx, "rename", oldName, false); err != nil {
+	if err := c.charge("rename", newName, len(newName)); err != nil {
 		return err
 	}
-	if err := c.charge("rename", newName, int64(len(newName))); err != nil {
-		return err
-	}
-	if err := c.FileSystem.Rename(ctx, oldName, newName); err != nil {
-		return err
-	}
-	c.hold(c.abs(newName))
-	return nil
-}
-
-func (c *cappedFS) Chmod(ctx context.Context, name string, mode stdfs.FileMode) error {
-	if err := c.chargeCopy(ctx, "chmod", name, true); err != nil {
-		return err
-	}
-	return c.FileSystem.Chmod(ctx, name, mode)
-}
-
-func (c *cappedFS) Chown(ctx context.Context, name string, uid, gid uint32, follow bool) error {
-	if err := c.chargeCopy(ctx, "chown", name, follow); err != nil {
-		return err
-	}
-	return c.FileSystem.Chown(ctx, name, uid, gid, follow)
-}
-
-func (c *cappedFS) Chtimes(ctx context.Context, name string, atime, mtime time.Time) error {
-	if err := c.chargeCopy(ctx, "chtimes", name, true); err != nil {
-		return err
-	}
-	return c.FileSystem.Chtimes(ctx, name, atime, mtime)
+	return c.FileSystem.Rename(ctx, oldName, newName)
 }
 
 func (c *cappedFS) Mkfifo(ctx context.Context, name string, perm stdfs.FileMode) error {
@@ -249,22 +146,78 @@ func (c *cappedFS) Mkfifo(ctx context.Context, name string, perm stdfs.FileMode)
 		// What gbash answers for a filesystem without named pipes.
 		return &os.PathError{Op: "mkfifo", Path: name, Err: stdfs.ErrPermission}
 	}
-	if err := c.charge("mkfifo", name, int64(len(name))); err != nil {
+	if err := c.charge("mkfifo", name, len(name)); err != nil {
 		return err
 	}
 	return fifo.Mkfifo(ctx, name, perm)
 }
 
 func (c *cappedFS) Lchtimes(ctx context.Context, name string, atime, mtime time.Time) error {
-	if err := c.chargeCopy(ctx, "chtimes", name, false); err != nil {
-		return err
-	}
 	if l, ok := c.FileSystem.(interface {
 		Lchtimes(context.Context, string, time.Time, time.Time) error
 	}); ok {
 		return l.Lchtimes(ctx, name, atime, mtime)
 	}
 	return c.FileSystem.Chtimes(ctx, name, atime, mtime)
+}
+
+// copyUpChargedFactory wraps an overlay's lower (host) layer.
+type copyUpChargedFactory struct {
+	inner  gbfs.Factory
+	budget *writeBudget
+}
+
+func (f copyUpChargedFactory) New(ctx context.Context) (gbfs.FileSystem, error) {
+	fsys, err := f.inner.New(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return &copyUpChargedFS{FileSystem: fsys, budget: f.budget}, nil
+}
+
+// copyUpChargedFS charges every byte read through Open. On a read-only
+// volume, chmod, chown, touch, mv, ln or an append copies the volume's file
+// into the overlay's in-memory layer; gbash reads its content the first time
+// the copy is opened, through the lower layer's Open, and keeps all of it.
+// Charging the bytes as they are read counts what is actually stored, however
+// many names reach the file, whatever was removed before, and however much
+// the file grew after the copy was made. A read past the budget fails, so the
+// copy fails with "no space left on device" instead of being kept.
+//
+// Ordinary reads of the volume go through OpenFile, stream from disk, keep
+// nothing in memory, and are not charged. That split is gbash's (v0.0.40
+// overlay.go copyUpLowerEntry uses Open; every other lower read uses
+// OpenFile). If a gbash bump changed it, ordinary reads would start to be
+// charged — refused early, never an uncounted copy — and
+// TestBashbox_RoReadsOfTheVolumeAreNotCharged would fail.
+type copyUpChargedFS struct {
+	gbfs.FileSystem
+	budget *writeBudget
+}
+
+func (l *copyUpChargedFS) Open(ctx context.Context, name string) (gbfs.File, error) {
+	f, err := l.FileSystem.Open(ctx, name)
+	if err != nil {
+		return nil, err
+	}
+	return &copyUpChargedFile{File: f, name: name, budget: l.budget}, nil
+}
+
+// copyUpChargedFile charges each read, failing once the budget is spent.
+type copyUpChargedFile struct {
+	gbfs.File
+	name   string
+	budget *writeBudget
+}
+
+func (f *copyUpChargedFile) Read(p []byte) (int, error) {
+	n, err := f.File.Read(p)
+	if n > 0 {
+		if fit := f.budget.take(int64(n)); fit < int64(n) {
+			return int(fit), errNoSpace("read", f.name)
+		}
+	}
+	return n, err
 }
 
 // cappedFile charges each write. gbash's in-memory files implement only Read,

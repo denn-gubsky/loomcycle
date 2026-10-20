@@ -154,17 +154,16 @@ func peakHeapDuring(fn func()) int64 {
 	return int64(peak.Load()) - int64(base.HeapInuse)
 }
 
-// A metadata change on a file of the read-only volume (chmod, touch, mv, ln)
-// copies it into the overlay. gbash defers reading the content until the
-// copy is next read or written, but from then on the whole file sits in
-// memory, without a byte having been written. The copy is charged at its
-// full size when it is made, so a file bigger than the cap is refused.
+// A change to a file of the read-only volume (chmod, touch, mv, ln, an
+// append) copies it into the in-memory layer, and gbash reads the copy's
+// content in the first time it is opened. Those bytes are charged as they are
+// read, so a copy bigger than the cap is refused instead of held in memory.
 func TestBashboxEscape_RoCopyUpOfALargeFileIsCharged(t *testing.T) {
 	for _, script := range []string{
-		"chmod 600 big",
-		"touch big",
-		"mv big moved",
-		"ln big hard",
+		"chmod 600 big; cat big > /dev/null",
+		"touch big; cat big > /dev/null",
+		"mv big moved; cat moved > /dev/null",
+		"ln big hard; cat hard > /dev/null",
 		"echo x >> big",
 	} {
 		t.Run(script, func(t *testing.T) {
@@ -202,5 +201,73 @@ func TestBashboxEscape_RoCopyUpThenReadKeepsTheHeapBounded(t *testing.T) {
 	}
 	if grew > 32<<20 {
 		t.Errorf("heap grew %d MiB while copying 64 MiB of files into a 1 MiB overlay", grew>>20)
+	}
+}
+
+// The charge is for the bytes a copy actually reads, not the size the file
+// had when it was copied: gbash defers the read, and the volume's file may
+// grow in between (another run writing to the same directory). Here it is
+// 1 byte at the chmod and 4 MiB by the read.
+func TestBashboxEscape_RoCopyUpChargesTheBytesActuallyRead(t *testing.T) {
+	root := realDir(t)
+	f := filepath.Join(root, "grows")
+	if err := os.WriteFile(f, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	grown := make(chan error, 1)
+	go func() {
+		time.Sleep(300 * time.Millisecond)
+		grown <- os.WriteFile(f, make([]byte, 4<<20), 0o644)
+	}()
+	b := &Bashbox{Enabled: true, OverlayMaxBytes: 1 << 20}
+	res := runBashbox(t, b, roCtx(root), "chmod 600 grows; sleep 1; cat grows > /dev/null")
+	if err := <-grown; err != nil {
+		t.Fatal(err)
+	}
+	if !res.IsError || !strings.Contains(res.Text, "write limit reached") {
+		t.Errorf("a copy that grew to 4 MiB after it was charged was not refused: %.300q", res.Text)
+	}
+}
+
+// Every copy is charged, whatever name reaches it: two hard links to one
+// file of the volume become two copies in memory, and a file copied, removed
+// and copied again under the same name is charged again. 3 MiB files, 5 MiB
+// cap: either script holds 6 MiB.
+func TestBashboxEscape_RoCopyUpThroughAliasesIsChargedPerCopy(t *testing.T) {
+	for _, script := range []string{
+		"chmod 600 a; chmod 600 b; cat a b > /dev/null",
+		"chmod 600 a; cat a > /dev/null; mv a kept; mv b a; chmod 600 a; cat a > /dev/null",
+	} {
+		t.Run(script, func(t *testing.T) {
+			root := realDir(t)
+			a := filepath.Join(root, "a")
+			if err := os.WriteFile(a, make([]byte, 3<<20), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Link(a, filepath.Join(root, "b")); err != nil {
+				t.Fatal(err)
+			}
+			b := &Bashbox{Enabled: true, OverlayMaxBytes: 5 << 20}
+			res := runBashbox(t, b, roCtx(root), script)
+			if !res.IsError || !strings.Contains(res.Text, "write limit reached") {
+				t.Errorf("6 MiB of copies into a 5 MiB overlay was not refused: %.300q", res.Text)
+			}
+		})
+	}
+}
+
+// Reading the read-only volume streams from disk and is never charged: only
+// what is kept in memory counts. 64 MiB read under a 1 MiB cap succeeds.
+func TestBashbox_RoReadsOfTheVolumeAreNotCharged(t *testing.T) {
+	root := realDir(t)
+	for i := 0; i < 16; i++ {
+		if err := os.WriteFile(filepath.Join(root, "f"+strconv.Itoa(i)), make([]byte, 4<<20), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	b := &Bashbox{Enabled: true, OverlayMaxBytes: 1 << 20}
+	res := runBashbox(t, b, roCtx(root), "for f in f*; do cat $f > /dev/null; done; echo read")
+	if res.IsError || !strings.Contains(res.Text, "read") {
+		t.Errorf("reading the volume was charged: %.300q", res.Text)
 	}
 }

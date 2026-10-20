@@ -326,8 +326,10 @@ func (b *Bashbox) Execute(ctx context.Context, input json.RawMessage) (tools.Res
 	}
 
 	// Mount mode is the load-bearing trust decision:
-	//   ro → HostDirectoryFileSystem: host tree read-only + in-RAM write
-	//        overlay; writes are visible in-sandbox but DISCARDED at end.
+	//   ro → the overlay gbash.HostDirectoryFileSystem builds (assembled by
+	//        cappedReadOnlyVolume so it can be charged): host tree read-only +
+	//        in-RAM write overlay; writes are visible in-sandbox but DISCARDED
+	//        at end.
 	//   rw → ReadWriteDirectoryFileSystem: writes persist to the host volume.
 	// One budget per call, shared by every in-memory layer below.
 	overlayMax := b.OverlayMaxBytes
@@ -337,8 +339,7 @@ func (b *Bashbox) Execute(ctx context.Context, input json.RawMessage) (tools.Res
 	budget := &writeBudget{max: overlayMax}
 	var fsCfg gbash.FileSystemConfig
 	if readOnly {
-		fsCfg = gbash.HostDirectoryFileSystem(rootResolved, gbash.HostDirectoryOptions{})
-		fsCfg.Factory = cappedFactory{inner: fsCfg.Factory, budget: budget}
+		fsCfg = cappedReadOnlyVolume(rootResolved, budget)
 	} else {
 		fsCfg = gbash.ReadWriteDirectoryFileSystem(rootResolved, gbash.ReadWriteDirectoryOptions{})
 	}
