@@ -50,7 +50,7 @@ func answer(t *testing.T, label string, rec *Receiver, path, body string, hdr ht
 // RFC verification, GitHub: a ping is answered and starts nothing, an event
 // not listed is ignored, a listed event whose signed body has its shape
 // starts one run, and the same body sent under another listed event's name
-// is refused. All of it after the signature: an unsigned ping gets 401.
+// is refused. All of it after the signature: an unsigned ping gets the unknown-name 404.
 func TestReceiver_GitHubEventsAreAnsweredBeforeARunStarts(t *testing.T) {
 	fr := &fakeRunner{runID: "r"}
 	rec := newScopeReceiver(openScopeStore(t), fr, map[string]config.Webhook{"gh": githubPushHook("push", "pull_request")})
@@ -60,7 +60,7 @@ func TestReceiver_GitHubEventsAreAnsweredBeforeARunStarts(t *testing.T) {
 		t.Errorf("ping answered %v", got)
 	}
 	unsigned := http.Header{"X-Github-Event": {"ping"}}
-	answer(t, "an unsigned ping", rec, "/v1/_webhooks/gh", ping, unsigned, http.StatusUnauthorized)
+	answer(t, "an unsigned ping", rec, "/v1/_webhooks/gh", ping, unsigned, http.StatusNotFound)
 
 	issue := `{"action":"opened","issue":{"number":1},"repository":{"id":42}}`
 	if got := answer(t, "issues", rec, "/v1/_webhooks/gh", issue, githubDelivery(issue, "d2", "issues"), http.StatusAccepted); got["outcome"] != "ignored" {
@@ -151,7 +151,7 @@ func TestReceiver_GiteaAndGitLabPresets(t *testing.T) {
 	if got := answer(t, "gitlab Merge Request Hook", rec, "/v1/_webhooks/gitlab", glPush, gl(scopeSecret, "Merge Request Hook"), http.StatusAccepted); got["outcome"] != "ignored" || got["event"] != "merge_request" {
 		t.Errorf("an unlisted GitLab event answered %v", got)
 	}
-	answer(t, "gitlab wrong token", rec, "/v1/_webhooks/gitlab", glPush, gl("not-the-token", "Push Hook"), http.StatusUnauthorized)
+	answer(t, "gitlab wrong token", rec, "/v1/_webhooks/gitlab", glPush, gl("not-the-token", "Push Hook"), http.StatusNotFound)
 	if fr.wasCalled() {
 		t.Fatal("an ignored or unauthenticated GitLab delivery started a run")
 	}

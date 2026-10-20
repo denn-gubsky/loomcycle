@@ -184,7 +184,7 @@ func TestTeamWebhook_BadSignatureIsAnsweredAsAWebhookDefs(t *testing.T) {
 	for what, hdr := range map[string]http.Header{"unsigned": {}, "wrong secret": badSig, "tampered": tampered} {
 		want := post(rec, "/v1/_webhooks/gh", body, hdr)
 		got := post(rec, "/v1/_teams/triage/webhooks/github", body, hdr)
-		if got.Code != http.StatusUnauthorized || got.Code != want.Code || got.Body.String() != want.Body.String() {
+		if got.Code != http.StatusNotFound || got.Code != want.Code || got.Body.String() != want.Body.String() {
 			t.Errorf("%s: team %d %q, WebhookDef %d %q", what, got.Code, got.Body.String(), want.Code, want.Body.String())
 		}
 	}
@@ -194,7 +194,7 @@ func TestTeamWebhook_BadSignatureIsAnsweredAsAWebhookDefs(t *testing.T) {
 }
 
 // A secret the receiver will not resolve (not allowlisted, not LOOMCYCLE_*) is
-// the operator's 503 naming the env var, as for a runtime WebhookDef; none
+// the opaque 503 a runtime WebhookDef gets (the env var is in the log); none
 // auth is refused unless the operator allows unauthenticated webhooks.
 func TestTeamWebhook_SecretAndNoneFollowTheReceiversRules(t *testing.T) {
 	unlisted := ghHook()
@@ -203,7 +203,7 @@ func TestTeamWebhook_SecretAndNoneFollowTheReceiversRules(t *testing.T) {
 	rec, th, _ := newLocalHookReceiver(t, map[string]runner.TeamWebhook{"/t/unlisted": unlisted, "/t/open": none}, nil)
 	body := []byte(`{}`)
 	w := post(rec, "/v1/_teams/t/webhooks/unlisted", body, signed(body, ""))
-	if w.Code != http.StatusServiceUnavailable || w.Body.String() != "{\"error\":\"secret_unresolvable\",\"secret_env\":\"GITHUB_HOOK_SECRET\"}\n" {
+	if w.Code != http.StatusServiceUnavailable || w.Body.String() != "{\"error\":\"unavailable\"}\n" {
 		t.Errorf("an unallowlisted secret: %d %s", w.Code, w.Body.String())
 	}
 	if w := post(rec, "/v1/_teams/t/webhooks/open", body, nil); w.Code != http.StatusServiceUnavailable {

@@ -229,7 +229,7 @@ func (rec *Receiver) handle(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		// No def, no ring: see recordDelivery.
 		rec.finish(span, "", "", "rejected_unknown", "")
-		writeError(w, http.StatusNotFound, "unknown_webhook", "")
+		writeUnknownWebhook(w)
 		return
 	}
 	whKey := webhookKey(owner, name)
@@ -238,7 +238,7 @@ func (rec *Receiver) handle(w http.ResponseWriter, r *http.Request) {
 		// disabled webhook is indistinguishable from a never-registered one
 		// to an external caller — no enumeration signal.
 		rec.finish(span, whKey, "", "rejected_disabled", "")
-		writeError(w, http.StatusNotFound, "unknown_webhook", "")
+		writeUnknownWebhook(w)
 		return
 	}
 	// A provider preset fills the headers and auth kind the definition
@@ -371,7 +371,7 @@ func (rec *Receiver) authenticate(w http.ResponseWriter, r *http.Request, span t
 		if !rec.allowUnauthenticated {
 			rec.finish(span, whKey, "", verdictUnresolved, "")
 			rec.logf("webhook %q: auth.kind=none but LOOMCYCLE_WEBHOOKS_ALLOW_UNAUTHENTICATED is not set — refusing", name)
-			writeError(w, http.StatusServiceUnavailable, "unauthenticated_mode_disabled", "set LOOMCYCLE_WEBHOOKS_ALLOW_UNAUTHENTICATED=1 to enable auth.kind=none")
+			writeUnavailable(w)
 			return false
 		}
 		rec.logf("webhook %q: accepted UNAUTHENTICATED delivery (auth.kind=none)", name)
@@ -379,18 +379,21 @@ func (rec *Receiver) authenticate(w http.ResponseWriter, r *http.Request, span t
 		var ae *authError
 		if errors.As(verr, &ae) && ae.verdict == verdictUnresolved {
 			// Config-side failure (secret not allowlisted / unset / no such
-			// credential). 503 names the env var or the reference (a NAME,
-			// not a value) so the operator can fix it.
+			// credential). 503 so a sender retries once the operator fixes
+			// it; the env var or reference goes to the log and the ring
+			// only, never to the unauthenticated caller (RFC ES #4).
 			rec.finish(span, whKey, "", verdictUnresolved, "")
 			rec.logf("webhook %q: secret unresolvable: %s", name, ae.msg)
-			writeSecretUnresolvable(w, ae)
+			writeUnavailable(w)
 			return false
 		}
 		// Signature mismatch / replay-window / bad header / wrong bearer:
-		// one opaque 401, NO body detail (no timing/oracle leak).
+		// the same 404 as an unknown or disabled name, so the answer does
+		// not tell a caller that the name exists (RFC ES #4). The ring and
+		// the log keep the real verdict for the operator.
 		rec.finish(span, whKey, "", verdictRejectedSig, "")
 		rec.logf("webhook %q: signature rejected", name)
-		writeError(w, http.StatusUnauthorized, "unauthorized", "")
+		writeUnknownWebhook(w)
 		return false
 	}
 	return true
@@ -912,16 +915,18 @@ func writeError(w http.ResponseWriter, status int, code, detail string) {
 	writeJSON(w, status, body)
 }
 
-// writeSecretUnresolvable emits the 503 with the env-var NAME, or the
-// "$cred:<name>" reference of a stored secret — never a value.
-func writeSecretUnresolvable(w http.ResponseWriter, ae *authError) {
-	body := map[string]string{"error": "secret_unresolvable"}
-	if ae.secretRef != "" {
-		body["secret"] = ae.secretRef
-	} else {
-		body["secret_env"] = ae.secretEnv
-	}
-	writeJSON(w, http.StatusServiceUnavailable, body)
+// writeUnknownWebhook is the one answer for every delivery an unauthenticated
+// caller must not learn more from: no such name, a disabled def, and a failed
+// authentication all write these exact bytes.
+func writeUnknownWebhook(w http.ResponseWriter) {
+	writeError(w, http.StatusNotFound, "unknown_webhook", "")
+}
+
+// writeUnavailable answers a config-side failure on a def (its secret cannot
+// be resolved, or it asks for no auth the operator has not enabled). 503 so a
+// sender retries; nothing in the body names the cause.
+func writeUnavailable(w http.ResponseWriter) {
+	writeError(w, http.StatusServiceUnavailable, "unavailable", "")
 }
 
 // writeRetryAfter emits 429 + Retry-After (whole seconds, min 1).

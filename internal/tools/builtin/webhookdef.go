@@ -946,7 +946,7 @@ func validateWebhookAuth(a mergedWebhookAuth) error {
 		// SHA-256 is the only digest the receiver implements (verifyHMAC
 		// hardcodes sha256.New). The Algorithm field is carried through
 		// every Def site, so an unsupported value would be silently dropped
-		// and the sender's valid signatures rejected with an opaque 401 —
+		// and the sender's valid signatures rejected with an opaque 404 —
 		// the never-silently-degrade contract (RFC H Decision 9) demands a
 		// loud refusal here instead. "" defaults to sha256.
 		if alg := strings.ToLower(strings.TrimSpace(a.Algorithm)); alg != "" && alg != "sha256" {
@@ -963,7 +963,7 @@ func validateWebhookAuth(a mergedWebhookAuth) error {
 		// Trusted-network escape hatch: the receiver performs NO verification.
 		// It is honored only when the operator sets
 		// LOOMCYCLE_WEBHOOKS_ALLOW_UNAUTHENTICATED=1; otherwise every delivery
-		// 503s "unauthenticated_mode_disabled". Forbid declaring a secret that
+		// 503s (the log says why). Forbid declaring a secret that
 		// would never be consumed — silent dead config is worse than a loud
 		// refusal (RFC H Decision 9, never-silently-degrade).
 		if a.SigningSecretEnv != "" || a.BearerTokenEnv != "" || a.Secret != "" || a.PreviousSecret != "" {
