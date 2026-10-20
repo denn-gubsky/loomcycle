@@ -471,3 +471,35 @@ func TestClassify_SignatureFailuresGetAHint(t *testing.T) {
 		t.Errorf("an expiry: expired=%v hint=%q", expired, hint)
 	}
 }
+
+// doctor's identity check: an STS GetCallerIdentity signed as sts for the
+// configured region, answered with the account and ARN.
+func TestCallerIdentity_AsksSTSSigned(t *testing.T) {
+	var scope string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = r.ParseForm()
+		scope = r.Header.Get("Authorization")
+		if r.PostForm.Get("Action") != "GetCallerIdentity" {
+			http.Error(w, "bad action", 400)
+			return
+		}
+		fmt.Fprint(w, `<GetCallerIdentityResponse xmlns="https://sts.amazonaws.com/doc/2011-06-15/"><GetCallerIdentityResult>`+
+			`<Arn>arn:aws:sts::123456789012:assumed-role/loomcycle-bedrock/i-0abc</Arn><UserId>AROA:i-0abc</UserId>`+
+			`<Account>123456789012</Account></GetCallerIdentityResult></GetCallerIdentityResponse>`)
+	}))
+	defer srv.Close()
+	c := withToken(testCreds)
+	c.Source = "EC2RoleProvider"
+	a := NewWithSource(Config{Mode: ModeSigV4, Region: "eu-central-1"}, &fakeSource{c: c})
+	a.stsURL = srv.URL + "/"
+	account, arn, source, err := a.CallerIdentity(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if account != "123456789012" || !strings.HasSuffix(arn, "loomcycle-bedrock/i-0abc") || source != "EC2RoleProvider" {
+		t.Errorf("got %q %q %q", account, arn, source)
+	}
+	if !strings.Contains(scope, "/eu-central-1/sts/aws4_request") {
+		t.Errorf("Authorization = %q", scope)
+	}
+}

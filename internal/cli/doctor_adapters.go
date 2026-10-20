@@ -43,6 +43,20 @@ func (r *realConfig) UserTierProviderHints() []string {
 func (r *realConfig) ProviderAPIKeyEnv(id string) string {
 	return r.cfg.Providers[id].APIKeyEnv
 }
+func (r *realConfig) AWSAuthProviders() map[string]AWSAuthProvider {
+	out := map[string]AWSAuthProvider{}
+	for id, pc := range r.cfg.Providers {
+		if pc.Auth != nil {
+			out[id] = AWSAuthProvider{BaseURL: pc.BaseURL, Auth: *pc.Auth}
+		}
+	}
+	return out
+}
+
+func (r *realConfig) HostShellEnabled() bool {
+	return r.cfg.Env.BashEnabled || len(r.cfg.Env.BashboxFallbackCommands) > 0
+}
+
 func (r *realConfig) StorageBackend() string  { return r.cfg.Storage.Backend }
 func (r *realConfig) StoragePgDSN() string    { return r.cfg.Storage.PgDSN }
 func (r *realConfig) StorageDataDir() string  { return r.cfg.Env.DataDir }

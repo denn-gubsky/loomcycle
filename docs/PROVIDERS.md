@@ -30,6 +30,7 @@ The built-in providers in the table above ship as an **embedded default layer** 
 | `dialect` | Wire dialect when a driver speaks more than one; omit for the driver's default (today each has one: `anthropic-messages`, `openai-chat`, `gemini-v1beta`, `ollama-chat`). |
 | `base_url` | Override the driver's default endpoint (a self-hosted mirror, Vertex Gemini, a LAN Ollama). Empty = driver default. |
 | `api_key_env` | The **env-var NAME** (never the value) whose credential authenticates this provider — resolved server-side, and overridable per-tenant/user (a tenant's own key shadows the operator's — see [CREDENTIALS.md](CREDENTIALS.md)). **Omit for a keyless endpoint.** |
+| `auth` | Authenticate with **AWS credentials** instead of a key: SigV4 signing or a minted short-term Bedrock key, for Amazon Bedrock. Exclusive with `api_key_env`. See [Amazon Bedrock with AWS credentials](#amazon-bedrock-with-aws-credentials-auth). |
 | `max_concurrent` | Cap the model **calls** in flight to this provider (see below) — shorthand for `lanes.chat.max_concurrent`. `0` / unset = unbounded. |
 | `lanes` | A queue per kind of model (`chat` / `decision` / `embedder`): its own `max_concurrent`, plus `affinity_hold_ms`, `quantum_calls` and `background_share` (see below). |
 | `max_models_in_flight` | How many different models may compute on this provider at once, across all lanes. `0` / unset = unlimited. |
@@ -199,6 +200,138 @@ providers:
 ```
 
 Only the flag you set changes; the rest keep the driver's defaults. `deepseek` gates vision off by default (its text models 400 on an image); an operator running a multimodal DeepSeek mirror behind `base_url` can re-enable it here.
+
+## Amazon Bedrock with AWS credentials (`auth:`)
+
+Bedrock serves Claude through the Anthropic Messages API and other models (gpt-oss, OpenAI's GPT models) through OpenAI Chat Completions, so the `anthropic` and `openai` drivers reach it as they are. What differs is authentication. A Bedrock API key in `api_key_env` works, but it is the wrong way in for the reason people choose Bedrock, which is running sensitive data inside their own AWS account:
+
+- **Long-term keys:** AWS says they are for exploration only.
+- **Short-term keys** expire within 12 hours.
+- **Security-minded accounts** deny API keys outright in an SCP.
+
+On EC2, ECS, EKS or Lambda the platform already gives the process short-lived, rotating IAM credentials. An `auth:` block lets a provider use them: no secret in any config, and every call attributed to the role in CloudTrail.
+
+### Configuring a provider
+
+```yaml
+providers:
+  bedrock-claude:
+    driver: anthropic
+    base_url: https://bedrock-runtime.eu-central-1.amazonaws.com/anthropic
+    auth:
+      type: aws_sigv4
+      region: eu-central-1
+  bedrock-openai:
+    driver: openai
+    base_url: https://bedrock-runtime.eu-central-1.amazonaws.com/openai/v1
+    auth:
+      type: aws_sigv4
+      region: eu-central-1
+
+agents:
+  analyst:
+    provider: bedrock-claude
+    model: eu.anthropic.claude-sonnet-5-5
+```
+
+Or select the embedded preset, which declares these two providers for `LOOMCYCLE_BEDROCK_REGION` and changes no routing: `LOOMCYCLE_PRESETS=base,bedrock`.
+
+| Field | Meaning |
+|---|---|
+| `type` | `aws_sigv4`: sign every request (the recommended mode). `aws_bedrock_token`: mint a short-term Bedrock API key from the credentials and send it as the driver's key. |
+| `region` | **Required.** The signing region. `base_url`'s host must name the same region, or the config is refused. |
+| `service` | The SigV4 service. Defaults from the host: `bedrock-runtime…` → `bedrock`, `bedrock-mantle…` → `bedrock-mantle`. Required for any other host. |
+| `role_arn` | Assume this role on top of the credentials found (a role in another account). |
+| `external_id_env` | The env var holding the `ExternalId` for `role_arn`. |
+| `session_name` | The role session name CloudTrail records. Default `loomcycle`. |
+
+`auth` is accepted on the `anthropic` and `openai` drivers only, needs an `https` `base_url`, and cannot be combined with `api_key_env`.
+
+**Two hosts.** Bedrock serves the same routes on two hosts. Either works.
+
+| Host | `base_url` (Anthropic / OpenAI) | Model ids |
+|---|---|---|
+| runtime (AWS's recommended one) | `https://bedrock-runtime.<region>.amazonaws.com/anthropic` · `/openai/v1` | Claude by inference profile: `eu.anthropic.claude-sonnet-5-5`, `us.…`, `global.…`; gpt-oss as `openai.gpt-oss-120b-1:0` |
+| mantle | `https://bedrock-mantle.<region>.api.aws/anthropic` · `/v1` | bare ids: `anthropic.claude-haiku-4-5`, `openai.gpt-oss-20b` |
+
+Claude is served only on the Anthropic route; the Chat Completions route refuses a Claude id.
+
+### Where the credentials come from
+
+The AWS SDK's standard chain, first match wins:
+
+1. `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` (+ `AWS_SESSION_TOKEN`).
+2. Web identity (EKS IRSA): `AWS_WEB_IDENTITY_TOKEN_FILE` + `AWS_ROLE_ARN`.
+3. The shared files `~/.aws/config` and `~/.aws/credentials`, profile from `AWS_PROFILE`. SSO and `credential_process` profiles work too.
+4. The container endpoint: the ECS task role, or EKS Pod Identity.
+5. The EC2 instance role, through **IMDSv2 only**. loomcycle never falls back to IMDSv1.
+
+Temporary credentials are refreshed five minutes before they expire. If AWS answers that they expired anyway, the call is retried once with fresh ones. Nothing is fetched at boot: the routing probe's first model listing is the first use.
+
+### IAM policy
+
+The role (or user) needs to invoke the models it uses, and to **list** models. The routing probe lists them, and a model that is not listed is never routed to. For the runtime host:
+
+```json
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "InvokeTheModelsLoomcycleUses",
+      "Effect": "Allow",
+      "Action": ["bedrock:InvokeModel", "bedrock:InvokeModelWithResponseStream"],
+      "Resource": [
+        "arn:aws:bedrock:eu-central-1:123456789012:inference-profile/eu.anthropic.claude-sonnet-5-5",
+        "arn:aws:bedrock:*::foundation-model/anthropic.claude-sonnet-5-5"
+      ]
+    },
+    {
+      "Sid": "ListModelsForRouting",
+      "Effect": "Allow",
+      "Action": ["bedrock:ListInferenceProfiles", "bedrock:ListFoundationModels"],
+      "Resource": "*"
+    },
+    {
+      "Sid": "NoBedrockApiKeys",
+      "Effect": "Deny",
+      "Action": ["bedrock:CallWithBearerToken", "bedrock-mantle:CallWithBearerToken"],
+      "Resource": "*"
+    }
+  ]
+}
+```
+
+- **Inference profiles:** an inference profile is invoked in every region it routes to, so the foundation-model statement names the model in all of them.
+- **mantle:** inference is `bedrock-mantle:CreateInference` on `arn:aws:bedrock-mantle:<region>:<account>:project/default`.
+- **Key minting:** the `Deny` keeps every Bedrock API key out of the account, which is right for `aws_sigv4`. With `aws_bedrock_token`, allow `bedrock:CallWithBearerToken` instead (on mantle, `bedrock-mantle:CallWithBearerToken`).
+
+### Model ids and data residency
+
+- **Geographic profiles stay in their geography:** `us.`, `eu.`, `apac.`, `jp.` and `au.` keep processing within it.
+- **`global.` profiles go anywhere:** they may process data in any commercial AWS region, and need `aws:RequestedRegion = "unspecified"` allowed if an SCP restricts regions.
+
+For sensitive data, name the geography you need; the `bedrock` preset never picks one for you. Some models require a data-retention mode to be set on the account before their first use. Bedrock's own error says so.
+
+### What loomcycle does with the credentials
+
+- **Never stored.** No secret key, session token or minted key is written to the database, a snapshot, a transcript, an event or a log. Each one is registered with the redactor, so a tool that ever printed one would have it masked in the transcript.
+- **Restricted runs.** A run that may not use the operator's provider credentials (`providers:operator-key`) is refused before anything is signed. The AWS credentials are the operator's, as a host key is.
+- **A tenant's own key** overrides the operator's AWS credentials when it is stored as a credential named `AWS_BEARER_TOKEN_BEDROCK` (a Bedrock API key), and is billed to that tenant. A tenant's `ANTHROPIC_API_KEY` or `OPENAI_API_KEY` is never sent to Bedrock.
+- **Service blocks.** A `memory.reranker`, `memory.unit_generator` or `decision:` block that points at another `base_url`, or names its own key, does not carry the provider's AWS auth there.
+- **Agents cannot fetch the credentials.** The HTTP and WebFetch tools refuse the instance metadata service and the ECS / EKS credential endpoints. While any provider uses `auth`, the bashbox-fallback, scheduler and webhook env allowlists may not name `AWS_SECRET_ACCESS_KEY`, `AWS_SESSION_TOKEN`, `AWS_CONTAINER_AUTHORIZATION_TOKEN` or `AWS_BEARER_TOKEN_BEDROCK`.
+- **Host commands can.** Bash and the Bashbox host fallback are not network-sandboxed, so on EC2 a host command can read the instance role's credentials. When loomcycle runs in a container, set the instance's IMDS hop limit to 1, and do not enable host commands where the role can reach sensitive data. `loomcycle doctor` warns about this combination.
+
+### Checking it
+
+- **`loomcycle doctor`** resolves each `auth` provider's credentials and asks STS whose they are. It prints the ARN, the account and the chain source, never the credentials.
+- **The routing view** (`GET /v1/_routing`, Web UI → routing) labels the provider `aws_sigv4 (<region>)` for an admin. The provider is reachable once its model listing succeeds.
+
+| Symptom | Cause |
+|---|---|
+| Provider unreachable, `bedrock model listing: … status 403` | The role lacks the list permissions above. |
+| `provider authentication unavailable: aws credentials unavailable: …` | The chain found no credentials; the message says why. Permanent: no fallback cascade, no retry. |
+| `… 403 … not authorized to perform: bedrock:InvokeModel` (`401` on runtime's OpenAI route) | The role may not invoke that model or profile. Permanent. |
+| `(SigV4 signature refused: check this server's clock and that auth.region …)` | Clock skew, or a `region` / `service` that does not match the host. |
 
 ## `anthropic-oauth-dev` — Anthropic subscription billing (research/dev only)
 

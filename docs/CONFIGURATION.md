@@ -1924,7 +1924,10 @@ base — and built-in agents — **without a source checkout**. Two kinds:
   half of `loomcycle.example.yaml`); `oauth` and `local` are one-provider-per-file
   overlays that `!prepend` their provider onto `base` (§9e) — `oauth` puts
   Anthropic OAuth-dev on top, `local` puts Ollama on top, each keeping base's
-  matrix as fallback.
+  matrix as fallback. `bedrock` adds two Amazon Bedrock providers that
+  authenticate with AWS credentials for `LOOMCYCLE_BEDROCK_REGION`, and routes
+  nothing to them on its own (see "Amazon Bedrock with AWS credentials" in
+  [PROVIDERS.md](PROVIDERS.md)).
 - **Bundles** — a preset that *also* defines an agent and its skills **inline**
   (the top-level `skills:` map, §7). `document-agent` ships the `doc/manager`
   Document Assistant agent + its four skills — no skills directory, no

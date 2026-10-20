@@ -377,6 +377,12 @@ questions:
             schema:
               type: string
               default: ""
+          - variable: LOOMCYCLE_BEDROCK_REGION
+            label: LOOMCYCLE_BEDROCK_REGION
+            description: 'The region the `bedrock` preset''s providers sign for and call (bedrock-runtime.<region>.amazonaws.com). Required when the preset is selected (LOOMCYCLE_PRESETS=base,bedrock). Credentials are NOT set here: they come from the standard AWS chain — the instance / task / pod role on AWS, or AWS_PROFILE / AWS_ACCESS_KEY_ID elsewhere (keys go in .env.local). (example: eu-central-1)'
+            schema:
+              type: string
+              default: ""
           - variable: LOOMCYCLE_PUBLIC_URL
             label: LOOMCYCLE_PUBLIC_URL
             description: 'The externally-reachable base URL for THIS instance (e.g. behind a tunnel/ proxy). Advertised to agents via `Context op=self` (server.url) so an agent — especially one over the MCP transport — can identify the server it''s talking to. Optional; unset → self reports only the bind address. (example: https://loomcycle.example.com)'

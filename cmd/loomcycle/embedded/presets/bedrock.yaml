@@ -1,0 +1,55 @@
+# RFC EM embedded preset: bedrock
+#
+# Amazon Bedrock, authenticated with AWS credentials instead of an API key. It
+# adds two providers and changes no routing, so it composes onto `base`:
+#   LOOMCYCLE_PRESETS=base,bedrock
+# An agent reaches Bedrock by naming one of them (`provider: bedrock-claude`),
+# or through tiers you write yourself (examples at the end).
+#
+# REGION. Set LOOMCYCLE_BEDROCK_REGION (e.g. eu-central-1). Requests are signed
+# for it and sent to it; unset, the providers are refused at load.
+#
+# CREDENTIALS. None here, and none in any config. They come from the standard
+# AWS chain, in this order: AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY,
+# web identity (EKS IRSA), AWS_PROFILE and ~/.aws, the ECS task / EKS Pod
+# Identity endpoint, then the EC2 instance role (IMDSv2 only). On AWS, give the
+# instance, task or pod a role and set nothing else.
+#
+# IAM. The role needs bedrock:InvokeModel and bedrock:InvokeModelWithResponseStream
+# on the models it calls, and bedrock:ListInferenceProfiles +
+# bedrock:ListFoundationModels so loomcycle can list them (a model that is not
+# listed is never routed to). docs/PROVIDERS.md has the full policy.
+#
+# A tenant may use its own Bedrock key instead, stored as a credential named
+# AWS_BEARER_TOKEN_BEDROCK; it is sent in place of the operator's credentials.
+
+providers:
+  # Claude, through Bedrock's Anthropic Messages endpoint. Model ids on this
+  # host are inference profiles: us.anthropic.*, eu.anthropic.*, … (a
+  # geography) or global.anthropic.* (any commercial region).
+  bedrock-claude:
+    driver: anthropic
+    base_url: https://bedrock-runtime.${LOOMCYCLE_BEDROCK_REGION}.amazonaws.com/anthropic
+    auth:
+      type: aws_sigv4
+      region: ${LOOMCYCLE_BEDROCK_REGION}
+  # OpenAI-compatible models (gpt-oss, and OpenAI's GPT models by profile id),
+  # through Bedrock's Chat Completions endpoint. Claude is not served here.
+  bedrock-openai:
+    driver: openai
+    base_url: https://bedrock-runtime.${LOOMCYCLE_BEDROCK_REGION}.amazonaws.com/openai/v1
+    auth:
+      type: aws_sigv4
+      region: ${LOOMCYCLE_BEDROCK_REGION}
+
+# ROUTING (examples to copy into your loomcycle.yaml, kept commented so this
+# preset never moves traffic on its own). Pick the profile geography that
+# matches your data-residency needs; prefer it over global.*.
+#
+# models:
+#   bedrock-sonnet: { provider: bedrock-claude, model: eu.anthropic.claude-sonnet-5-5 }
+#   bedrock-haiku:  { provider: bedrock-claude, model: eu.anthropic.claude-haiku-5-5 }
+#   bedrock-oss:    { provider: bedrock-openai, model: openai.gpt-oss-120b-1:0 }
+# tiers:
+#   middle: !prepend [bedrock-sonnet]
+#   low:    !prepend [bedrock-haiku]

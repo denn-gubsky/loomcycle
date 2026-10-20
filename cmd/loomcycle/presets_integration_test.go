@@ -36,8 +36,17 @@ func bootStackFor(t *testing.T, names ...string) []config.Layer {
 // had only comments under it, which is a null, and the null replaced the whole
 // built-in map — LOOMCYCLE_PRESETS=base,local booted with no provider at all,
 // ollama-local included.
+// setPresetEnv sets what the opt-in presets need to load when a test stacks
+// every embedded unit. Each is required by its preset on purpose (unset, the
+// preset is refused at load, which TestEmbedded_BedrockPreset checks).
+func setPresetEnv(t *testing.T) {
+	t.Helper()
+	t.Setenv("LOOMCYCLE_BEDROCK_REGION", "eu-central-1")
+}
+
 func TestEmbedded_NoUnitDropsABuiltInProvider(t *testing.T) {
 	t.Setenv("LOOMCYCLE_SKILLS_ROOT", "")
+	setPresetEnv(t)
 	builtIn := loadDefaultProvidersOnly(t).Providers
 	if len(builtIn) < 5 {
 		t.Fatalf("built-in providers = %d; the layer this test compares against is not the shipped one", len(builtIn))
@@ -141,6 +150,7 @@ func TestEmbedded_LocalPresetProvidersExampleLoads(t *testing.T) {
 // a provider that serves no decision models. Both of those load here.
 func TestEmbedded_LocalNamesADecisionModelAndAsksNothingOfIt(t *testing.T) {
 	t.Setenv("LOOMCYCLE_SKILLS_ROOT", "")
+	setPresetEnv(t)
 	vllmOnly := config.Layer{Name: "operator", Data: []byte(`
 providers:
   vllm-local: { driver: vllm, base_url: "http://127.0.0.1:9/v1" }
@@ -326,6 +336,7 @@ func TestEmbedded_DefaultStackValidates(t *testing.T) {
 // operator's boot log names only aliases of their own.
 func TestEmbedded_NoShippedAliasIsUsedUntagged(t *testing.T) {
 	t.Setenv("LOOMCYCLE_SKILLS_ROOT", "")
+	setPresetEnv(t)
 	// base first: it is the layer every other unit is written to sit on.
 	names := []string{"base"}
 	for _, u := range embedded.Units() {
@@ -633,4 +644,42 @@ func slicesContains(hay []string, needle string) bool {
 		}
 	}
 	return false
+}
+
+// TestEmbedded_BedrockPreset: on base, the bedrock preset adds its two AWS-
+// authenticated providers for the configured region and moves no routing;
+// without a region it is refused at load rather than signing for none.
+func TestEmbedded_BedrockPreset(t *testing.T) {
+	t.Setenv("LOOMCYCLE_SKILLS_ROOT", "")
+	base, err := config.LoadLayers(bootStackFor(t, "base")...)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("LOOMCYCLE_BEDROCK_REGION", "eu-central-1")
+	cfg, err := config.LoadLayers(bootStackFor(t, "base", "bedrock")...)
+	if err != nil {
+		t.Fatalf("base,bedrock: %v", err)
+	}
+	for id, want := range map[string]string{
+		"bedrock-claude": "https://bedrock-runtime.eu-central-1.amazonaws.com/anthropic",
+		"bedrock-openai": "https://bedrock-runtime.eu-central-1.amazonaws.com/openai/v1",
+	} {
+		pc := cfg.Providers[id]
+		if pc.BaseURL != want || pc.Auth == nil || pc.Auth.Type != config.ProviderAuthSigV4 || pc.Auth.Region != "eu-central-1" || pc.APIKeyEnv != "" {
+			t.Errorf("%s = %+v auth=%+v", id, pc, pc.Auth)
+		}
+	}
+	if strings.Join(cfg.ProviderPriority, ",") != strings.Join(base.ProviderPriority, ",") {
+		t.Errorf("provider_priority changed: %v, base has %v", cfg.ProviderPriority, base.ProviderPriority)
+	}
+	for tier, cands := range cfg.Tiers {
+		if len(cands) != len(base.Tiers[tier]) {
+			t.Errorf("tier %s changed: %d candidates, base has %d", tier, len(cands), len(base.Tiers[tier]))
+		}
+	}
+
+	t.Setenv("LOOMCYCLE_BEDROCK_REGION", "")
+	if _, err := config.LoadLayers(bootStackFor(t, "base", "bedrock")...); err == nil || !strings.Contains(err.Error(), "auth.region is required") {
+		t.Errorf("without a region: err = %v", err)
+	}
 }

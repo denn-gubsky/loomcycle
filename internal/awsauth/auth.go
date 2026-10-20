@@ -1,9 +1,13 @@
 package awsauth
 
 import (
+	"bytes"
 	"context"
+	"encoding/xml"
 	"fmt"
+	"io"
 	"net/http"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -41,8 +45,9 @@ type Auth struct {
 	http *http.Client
 	now  func() time.Time
 	sink atomic.Pointer[func(string)]
-	// controlURL overrides the Bedrock control plane in tests.
-	controlURL string
+	// controlURL and stsURL override the Bedrock control plane and STS in
+	// tests.
+	controlURL, stsURL string
 
 	mu          sync.Mutex // guards the minted key
 	token       string
@@ -161,6 +166,46 @@ func (a *Auth) Check(ctx context.Context) (source string, err error) {
 		return "", err
 	}
 	return c.Source, nil
+}
+
+// CallerIdentity asks STS whom the credentials belong to, as `loomcycle
+// doctor` reports it: the account and ARN (neither is secret) and the chain
+// source they came from. It needs no IAM permission.
+func (a *Auth) CallerIdentity(ctx context.Context) (account, arn, source string, err error) {
+	c, err := a.credentials(ctx)
+	if err != nil {
+		return "", "", "", err
+	}
+	endpoint := a.stsURL
+	if endpoint == "" {
+		endpoint = "https://sts." + a.region + ".amazonaws.com/"
+	}
+	body := []byte("Action=GetCallerIdentity&Version=2011-06-15")
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
+	if err != nil {
+		return "", "", "", err
+	}
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded; charset=utf-8")
+	SignRequest(req, body, c, a.region, "sts", a.now())
+	resp, err := a.http.Do(req)
+	if err != nil {
+		return "", "", "", fmt.Errorf("sts GetCallerIdentity: %w", err)
+	}
+	defer resp.Body.Close()
+	raw, _ := io.ReadAll(io.LimitReader(resp.Body, 64<<10))
+	if resp.StatusCode != http.StatusOK {
+		return "", "", "", fmt.Errorf("sts GetCallerIdentity: status %d (%s)", resp.StatusCode, strings.TrimSpace(string(raw)))
+	}
+	var doc struct {
+		Result struct {
+			Arn     string `xml:"Arn"`
+			Account string `xml:"Account"`
+		} `xml:"GetCallerIdentityResult"`
+	}
+	if err := xml.Unmarshal(raw, &doc); err != nil {
+		return "", "", "", fmt.Errorf("sts GetCallerIdentity: %w", err)
+	}
+	return doc.Result.Account, doc.Result.Arn, c.Source, nil
 }
 
 func (a *Auth) credentials(ctx context.Context) (Credentials, error) {
