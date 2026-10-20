@@ -3501,225 +3501,13 @@ outerLoop:
 		s.toolChoice.observe(t.pendingTools) // a COMPLETED turn advances the tool_choice
 		s.publishAnswerShape()
 
-		// RFC BH turn-cancel (mid-generation): the operator stopped this turn while
-		// the model was streaming. Keep the partial assistant output (appended
-		// above; a completed call's usage was billed above too), but leave the
-		// history VALID before parking:
-		//   - drop a content-less assistant turn (cancel before anything streamed) —
-		//     an empty assistant message 400s the next call;
-		//   - synthesize a "cancelled by operator" tool_result for every tool_use the
-		//     model started but we never dispatched — a dangling tool_use 400s too.
-		// Then route into the interactive park (not the terminate/break path).
-		if t.turnCancelledMidGen {
-			if n := len(s.messages); n > 0 && s.messages[n-1].Role == "assistant" && len(s.messages[n-1].Content) == 0 {
-				s.messages = s.messages[:n-1]
-			}
-			if len(t.pendingTools) > 0 {
-				s.messages = append(s.messages, providers.Message{Role: "user", Content: cancelledToolResults(t.pendingTools)})
-			}
-			var resumed bool
-			s.messages, s.lastCtxTokens, resumed = finishTurnCancel(ctx, &opts, s.messages, iter, s.lastCtxTokens, s.preambleTokens, reasonFromCause(context.Cause(turnCtx)), emit, s.disarmTurn)
-			iterSpan.End()
-			if !resumed {
-				break
-			}
+		switch ex := s.endTurn(ctx, turnCtx, iterSpan, iter, t); ex.ctl {
+		case loopNext:
 			continue outerLoop
-		}
-
-		// The closing turn's text is the run's answer, whatever it ended on, and
-		// the run stops at its cap. A finished answer goes through the end of a
-		// turn below like any answer on the last iteration — agent_stop hooks
-		// and review decide on it with no iteration left, the children it can
-		// no longer read are cancelled and named — but it is not offered to an
-		// interactive park, and a run that ends on it is recorded as stopped
-		// at its cap.
-		if s.closingTurn && len(t.pendingTools) > 0 {
-			// A model that called tools anyway (a provider that cannot be
-			// held to "none"): they are never run. Answer them so the
-			// history a continuation replays stays valid. Its text is what a
-			// run ending at the cap mid-tool-use leaves: no answer to decide on.
-			s.messages = append(s.messages, providers.Message{Role: "user", Content: notRunToolResults(t.pendingTools)})
-			bg.EndTurn(runcancel.CauseWithReason("its parent ended its turn (on_parent_end: cancel)"))
-			cancelUnreadChildren(bg, emit)
-			s.stopReason = "max_iterations"
-			iterSpan.End()
-			break
-		}
-
-		// Terminal: model is done.
-		if t.iterStop != "tool_use" || len(t.pendingTools) == 0 {
-			// agent_stop hooks decide first: an automated check that blocks the
-			// answer spares a person reviewing one that will change anyway.
-			heldBy := ""
-			if opts.Hooks != nil {
-				out := opts.Hooks.RunAgentStop(ctx, HookIdentity(ctx, opts.AgentName, iter),
-					hooks.LifecycleInfo{FinalText: s.finalText, StopReason: t.iterStop, StopBlocks: s.stopBlocks})
-				decisions := out.Decisions
-				if out.Kind == hooks.StopBlock && (s.stopBlocks >= MaxStopBlocks || iter+1 >= iterCap) {
-					// The block fails the run below and sends no turn back. A
-					// persisted block is what a transcript replay rebuilds that
-					// turn from, so recording it would give a continuation a
-					// message the model never had; the run's error names the
-					// hook and its reason instead.
-					decisions = withoutBlocks(decisions)
-				}
-				EmitHookDecisions(emit, providers.ToolUse{}, decisions)
-				switch out.Kind {
-				case hooks.StopBlock:
-					if s.stopBlocks >= MaxStopBlocks {
-						iterSpan.End()
-						s.turnCancelFn(nil)
-						return RunResult{StopReason: StopReasonStopBlocked, FinalText: s.finalText, Usage: s.totalUsage},
-							fmt.Errorf("hook %s blocked the answer %d times in a row; the last reason: %s", out.By, s.stopBlocks+1, out.Reason)
-					}
-					if iter+1 >= iterCap {
-						// No iteration is left to answer the block. Leaving the
-						// loop would end the run end_turn on the very answer
-						// the hook refused, so it fails the way the cap does.
-						iterSpan.End()
-						s.turnCancelFn(nil)
-						return RunResult{StopReason: StopReasonStopBlocked, FinalText: s.finalText, Usage: s.totalUsage},
-							fmt.Errorf("hook %s blocked the answer, and the run has no iteration left to answer it; the reason: %s", out.By, out.Reason)
-					}
-					s.stopBlocks++
-					// The reason goes back as a user turn and the model answers
-					// again. The persisted hook_decision is what a transcript
-					// replay rebuilds this turn from.
-					s.messages = append(s.messages, blockTurn(out.Reason))
-					iterSpan.End()
-					continue outerLoop
-				case hooks.StopHold:
-					heldBy = out.By
-				case hooks.StopCancelled:
-					// Returned as an error, like an abandoned review hold, so the
-					// run is recorded cancelled: leaving the loop cleanly would
-					// record an answer no hook approved as a completion.
-					iterSpan.End()
-					s.turnCancelFn(nil)
-					err := ctx.Err()
-					if err == nil {
-						err = context.Canceled
-					}
-					return RunResult{StopReason: "cancelled", FinalText: s.finalText, Usage: s.totalUsage}, err
-				}
-			}
-			s.stopBlocks = 0
-			if heldBy != "" && opts.SteerQueue == nil {
-				// Nothing can deliver a verdict to this run (a sub-agent the
-				// Agent tool spawned has no steer queue). It ends rejected, so
-				// the answer the hook would not let through is never accepted.
-				emit(providers.Event{Type: providers.EventError, Error: fmt.Sprintf("hook %s held the answer, but this run cannot be held for review; it ends rejected", heldBy)})
-				s.stopReason = StopReasonRejected
-				iterSpan.End()
-				break outerLoop
-			}
-			// Held for review: the answer is done but not accepted. Checked
-			// BEFORE the interactive park, because an approved answer still
-			// parks an interactive run for its next message afterwards.
-			if opts.SteerQueue != nil && (heldBy != "" || opts.reviewAtBoundary(ctx)) {
-				s.disarmTurn()
-				s.reviewRound++
-				var outcome reviewOutcome
-				now := time.Now()
-				s.messages, s.lastCtxTokens, outcome = parkForReview(ctx, &opts, s.messages, iter, s.reviewRound, s.lastCtxTokens, s.preambleTokens, now, now, heldBy, emit)
-				switch outcome {
-				case reviewExpired:
-					s.stopReason = StopReasonReviewExpired
-					iterSpan.End()
-					break outerLoop
-				case reviewRevise:
-					iterSpan.End()
-					if iter+1 >= iterCap {
-						// No iteration is left to answer the feedback. Leaving
-						// the loop would end the run end_turn on the answer the
-						// reviewer sent back; it was never approved.
-						emit(providers.Event{Type: providers.EventError, Error: "the reviewer sent the answer back, but the run has no iteration left to revise it; it ends rejected"})
-						s.stopReason = StopReasonRejected
-						break outerLoop
-					}
-					continue outerLoop
-				case reviewRejected:
-					s.stopReason = StopReasonRejected
-					iterSpan.End()
-					break outerLoop
-				case reviewAborted:
-					iterSpan.End()
-					// Returned as an error, like the pause park's cancel, so the
-					// run is recorded cancelled: leaving the loop cleanly would
-					// record an answer nobody approved as a completion.
-					s.turnCancelFn(nil)
-					err := ctx.Err()
-					if err == nil {
-						err = errReviewAbandoned
-					}
-					return RunResult{StopReason: "cancelled", FinalText: s.finalText, Usage: s.totalUsage}, err
-				}
-			}
-			// The turn has ended: children started to stop with it do now.
-			bg.EndTurn(runcancel.CauseWithReason("its parent ended its turn (on_parent_end: cancel)"))
-			// Persistent interactive run: park instead of terminating. Wait
-			// for the operator's next instruction (or Cancel). The run holds
-			// its concurrency slot while idle — the documented fairness
-			// trade-off of an always-on terminal agent (bounded by the
-			// existing per-user / global run caps).
-			if opts.interactiveAtBoundary(ctx) && opts.SteerQueue != nil && !s.closingTurn {
-				// RFC BH: the turn ended and the run is about to park — no longer
-				// mid-turn, so disarm the turn-cancel token (a cancel while parked
-				// finds nothing armed → the handler 409s it).
-				s.disarmTurn()
-				var resumedWithInput bool
-				s.messages, s.lastCtxTokens, resumedWithInput = parkForOperatorTurn(ctx, &opts, s.messages, iter, s.lastCtxTokens, s.preambleTokens, emit)
-				iterSpan.End()
-				if !resumedWithInput {
-					break
-				}
-				continue outerLoop
-			}
-			// The run would finish, but background children it started are
-			// still running: it waits for all of them, then takes another turn
-			// with a note on how each ended. With no iteration left for that
-			// turn nothing could read them, so they are cancelled instead —
-			// a parent never ends leaving children behind.
-			if waiting, _ := bg.Outstanding(); len(waiting) > 0 {
-				if iter+1 >= iterCap {
-					cancelUnreadChildren(bg, emit)
-				} else {
-					s.disarmTurn()
-					note, noted, ok := parkForChildren(ctx, &opts, bg, iter, emit)
-					iterSpan.End()
-					if !ok {
-						s.turnCancelFn(nil)
-						err := ctx.Err()
-						if err == nil {
-							err = context.Canceled
-						}
-						return RunResult{StopReason: "cancelled", FinalText: s.finalText, Usage: s.totalUsage}, err
-					}
-					s.messages = appendChildrenNote(s.messages, note, noted, emit)
-					continue outerLoop
-				}
-			}
-			// The run is finishing. A message sent while this answer was being
-			// written was acknowledged, so it is answered — one more turn,
-			// whose answer becomes the run's — and the queue closes only once
-			// a final answer ends with nothing waiting.
-			if opts.SteerQueue != nil {
-				var compacted, took bool
-				s.messages, compacted, took = finishSteer(&opts, s.messages, iter+1 < iterCap, emit)
-				if compacted {
-					s.lastCtxTokens = estimatePromptTokens(s.preambleTokens, s.messages)
-				}
-				if took {
-					s.disarmTurn()
-					iterSpan.End()
-					continue outerLoop
-				}
-			}
-			if s.closingTurn {
-				s.stopReason = "max_iterations"
-			}
-			iterSpan.End()
-			break
+		case loopEnd:
+			break outerLoop
+		case loopReturn:
+			return ex.res, ex.err
 		}
 
 		switch ex := s.dispatchTools(ctx, turnCtx, iterSpan, iter, t.pendingTools); ex.ctl {
@@ -4390,6 +4178,254 @@ func (s *runState) dispatchTools(ctx, turnCtx context.Context, iterSpan trace.Sp
 		return loopExit{ctl: loopNext}
 	}
 	return loopExit{}
+}
+
+// endTurn decides what follows the model's turn: a park when the operator
+// cancelled it mid-generation, the end of the run when the closing turn
+// called tools anyway, and finishAnswer when the model answered. It proceeds
+// only when the turn's tool calls are to be dispatched.
+func (s *runState) endTurn(ctx, turnCtx context.Context, iterSpan trace.Span, iter int, t turnOutput) loopExit {
+	// RFC BH turn-cancel (mid-generation): the operator stopped this turn while
+	// the model was streaming. Keep the partial assistant output (appended
+	// above; a completed call's usage was billed above too), but leave the
+	// history VALID before parking:
+	//   - drop a content-less assistant turn (cancel before anything streamed) —
+	//     an empty assistant message 400s the next call;
+	//   - synthesize a "cancelled by operator" tool_result for every tool_use the
+	//     model started but we never dispatched — a dangling tool_use 400s too.
+	// Then route into the interactive park (not the terminate/break path).
+	if t.turnCancelledMidGen {
+		if n := len(s.messages); n > 0 && s.messages[n-1].Role == "assistant" && len(s.messages[n-1].Content) == 0 {
+			s.messages = s.messages[:n-1]
+		}
+		if len(t.pendingTools) > 0 {
+			s.messages = append(s.messages, providers.Message{Role: "user", Content: cancelledToolResults(t.pendingTools)})
+		}
+		var resumed bool
+		s.messages, s.lastCtxTokens, resumed = finishTurnCancel(ctx, s.opts, s.messages, iter, s.lastCtxTokens, s.preambleTokens, reasonFromCause(context.Cause(turnCtx)), s.emit, s.disarmTurn)
+		iterSpan.End()
+		if !resumed {
+			return loopExit{ctl: loopEnd}
+		}
+		return loopExit{ctl: loopNext}
+	}
+
+	// The closing turn's text is the run's answer, whatever it ended on, and
+	// the run stops at its cap. A finished answer goes through the end of a
+	// turn below like any answer on the last iteration — agent_stop hooks
+	// and review decide on it with no iteration left, the children it can
+	// no longer read are cancelled and named — but it is not offered to an
+	// interactive park, and a run that ends on it is recorded as stopped
+	// at its cap.
+	if s.closingTurn && len(t.pendingTools) > 0 {
+		// A model that called tools anyway (a provider that cannot be
+		// held to "none"): they are never run. Answer them so the
+		// history a continuation replays stays valid. Its text is what a
+		// run ending at the cap mid-tool-use leaves: no answer to decide on.
+		s.messages = append(s.messages, providers.Message{Role: "user", Content: notRunToolResults(t.pendingTools)})
+		s.bg.EndTurn(runcancel.CauseWithReason("its parent ended its turn (on_parent_end: cancel)"))
+		cancelUnreadChildren(s.bg, s.emit)
+		s.stopReason = "max_iterations"
+		iterSpan.End()
+		return loopExit{ctl: loopEnd}
+	}
+
+	// Terminal: model is done.
+	if t.iterStop != "tool_use" || len(t.pendingTools) == 0 {
+		return s.finishAnswer(ctx, iterSpan, iter, t.iterStop)
+	}
+	return loopExit{}
+}
+
+// agentStop runs the agent_stop hooks on a finished answer. It returns who
+// holds the answer for review, if a hook did; a block or a cancel leaves the
+// iteration instead.
+func (s *runState) agentStop(ctx context.Context, iterSpan trace.Span, iter int, iterStop string) (string, loopExit) {
+	heldBy := ""
+	if s.opts.Hooks != nil {
+		out := s.opts.Hooks.RunAgentStop(ctx, HookIdentity(ctx, s.opts.AgentName, iter),
+			hooks.LifecycleInfo{FinalText: s.finalText, StopReason: iterStop, StopBlocks: s.stopBlocks})
+		decisions := out.Decisions
+		if out.Kind == hooks.StopBlock && (s.stopBlocks >= MaxStopBlocks || iter+1 >= s.iterCap) {
+			// The block fails the run below and sends no turn back. A
+			// persisted block is what a transcript replay rebuilds that
+			// turn from, so recording it would give a continuation a
+			// message the model never had; the run's error names the
+			// hook and its reason instead.
+			decisions = withoutBlocks(decisions)
+		}
+		EmitHookDecisions(s.emit, providers.ToolUse{}, decisions)
+		switch out.Kind {
+		case hooks.StopBlock:
+			if s.stopBlocks >= MaxStopBlocks {
+				iterSpan.End()
+				s.turnCancelFn(nil)
+				return "", exitReturn(RunResult{StopReason: StopReasonStopBlocked, FinalText: s.finalText, Usage: s.totalUsage},
+					fmt.Errorf("hook %s blocked the answer %d times in a row; the last reason: %s", out.By, s.stopBlocks+1, out.Reason))
+			}
+			if iter+1 >= s.iterCap {
+				// No iteration is left to answer the block. Leaving the
+				// loop would end the run end_turn on the very answer
+				// the hook refused, so it fails the way the cap does.
+				iterSpan.End()
+				s.turnCancelFn(nil)
+				return "", exitReturn(RunResult{StopReason: StopReasonStopBlocked, FinalText: s.finalText, Usage: s.totalUsage},
+					fmt.Errorf("hook %s blocked the answer, and the run has no iteration left to answer it; the reason: %s", out.By, out.Reason))
+			}
+			s.stopBlocks++
+			// The reason goes back as a user turn and the model answers
+			// again. The persisted hook_decision is what a transcript
+			// replay rebuilds this turn from.
+			s.messages = append(s.messages, blockTurn(out.Reason))
+			iterSpan.End()
+			return "", loopExit{ctl: loopNext}
+		case hooks.StopHold:
+			heldBy = out.By
+		case hooks.StopCancelled:
+			// Returned as an error, like an abandoned review hold, so the
+			// run is recorded cancelled: leaving the loop cleanly would
+			// record an answer no hook approved as a completion.
+			iterSpan.End()
+			s.turnCancelFn(nil)
+			err := ctx.Err()
+			if err == nil {
+				err = context.Canceled
+			}
+			return "", exitReturn(RunResult{StopReason: "cancelled", FinalText: s.finalText, Usage: s.totalUsage}, err)
+		}
+	}
+	return heldBy, loopExit{}
+}
+
+// finishAnswer is the end of a turn on which the model answered rather than
+// called tools: agent_stop hooks, a review hold, the interactive park, the
+// wait for background children and a last steer message each get their say
+// before the run ends on the answer. It never proceeds: it either ends the
+// run or starts the turn one of them asked for.
+func (s *runState) finishAnswer(ctx context.Context, iterSpan trace.Span, iter int, iterStop string) loopExit {
+	// agent_stop hooks decide first: an automated check that blocks the
+	// answer spares a person reviewing one that will change anyway.
+	heldBy, ex := s.agentStop(ctx, iterSpan, iter, iterStop)
+	if ex.ctl != loopProceed {
+		return ex
+	}
+	s.stopBlocks = 0
+	if heldBy != "" && s.opts.SteerQueue == nil {
+		// Nothing can deliver a verdict to this run (a sub-agent the
+		// Agent tool spawned has no steer queue). It ends rejected, so
+		// the answer the hook would not let through is never accepted.
+		s.emit(providers.Event{Type: providers.EventError, Error: fmt.Sprintf("hook %s held the answer, but this run cannot be held for review; it ends rejected", heldBy)})
+		s.stopReason = StopReasonRejected
+		iterSpan.End()
+		return loopExit{ctl: loopEnd}
+	}
+	// Held for review: the answer is done but not accepted. Checked
+	// BEFORE the interactive park, because an approved answer still
+	// parks an interactive run for its next message afterwards.
+	if s.opts.SteerQueue != nil && (heldBy != "" || s.opts.reviewAtBoundary(ctx)) {
+		s.disarmTurn()
+		s.reviewRound++
+		var outcome reviewOutcome
+		now := time.Now()
+		s.messages, s.lastCtxTokens, outcome = parkForReview(ctx, s.opts, s.messages, iter, s.reviewRound, s.lastCtxTokens, s.preambleTokens, now, now, heldBy, s.emit)
+		switch outcome {
+		case reviewExpired:
+			s.stopReason = StopReasonReviewExpired
+			iterSpan.End()
+			return loopExit{ctl: loopEnd}
+		case reviewRevise:
+			iterSpan.End()
+			if iter+1 >= s.iterCap {
+				// No iteration is left to answer the feedback. Leaving
+				// the loop would end the run end_turn on the answer the
+				// reviewer sent back; it was never approved.
+				s.emit(providers.Event{Type: providers.EventError, Error: "the reviewer sent the answer back, but the run has no iteration left to revise it; it ends rejected"})
+				s.stopReason = StopReasonRejected
+				return loopExit{ctl: loopEnd}
+			}
+			return loopExit{ctl: loopNext}
+		case reviewRejected:
+			s.stopReason = StopReasonRejected
+			iterSpan.End()
+			return loopExit{ctl: loopEnd}
+		case reviewAborted:
+			iterSpan.End()
+			// Returned as an error, like the pause park's cancel, so the
+			// run is recorded cancelled: leaving the loop cleanly would
+			// record an answer nobody approved as a completion.
+			s.turnCancelFn(nil)
+			err := ctx.Err()
+			if err == nil {
+				err = errReviewAbandoned
+			}
+			return exitReturn(RunResult{StopReason: "cancelled", FinalText: s.finalText, Usage: s.totalUsage}, err)
+		}
+	}
+	// The turn has ended: children started to stop with it do now.
+	s.bg.EndTurn(runcancel.CauseWithReason("its parent ended its turn (on_parent_end: cancel)"))
+	// Persistent interactive run: park instead of terminating. Wait
+	// for the operator's next instruction (or Cancel). The run holds
+	// its concurrency slot while idle — the documented fairness
+	// trade-off of an always-on terminal agent (bounded by the
+	// existing per-user / global run caps).
+	if s.opts.interactiveAtBoundary(ctx) && s.opts.SteerQueue != nil && !s.closingTurn {
+		// RFC BH: the turn ended and the run is about to park — no longer
+		// mid-turn, so disarm the turn-cancel token (a cancel while parked
+		// finds nothing armed → the handler 409s it).
+		s.disarmTurn()
+		var resumedWithInput bool
+		s.messages, s.lastCtxTokens, resumedWithInput = parkForOperatorTurn(ctx, s.opts, s.messages, iter, s.lastCtxTokens, s.preambleTokens, s.emit)
+		iterSpan.End()
+		if !resumedWithInput {
+			return loopExit{ctl: loopEnd}
+		}
+		return loopExit{ctl: loopNext}
+	}
+	// The run would finish, but background children it started are
+	// still running: it waits for all of them, then takes another turn
+	// with a note on how each ended. With no iteration left for that
+	// turn nothing could read them, so they are cancelled instead —
+	// a parent never ends leaving children behind.
+	if waiting, _ := s.bg.Outstanding(); len(waiting) > 0 {
+		if iter+1 >= s.iterCap {
+			cancelUnreadChildren(s.bg, s.emit)
+		} else {
+			s.disarmTurn()
+			note, noted, ok := parkForChildren(ctx, s.opts, s.bg, iter, s.emit)
+			iterSpan.End()
+			if !ok {
+				s.turnCancelFn(nil)
+				err := ctx.Err()
+				if err == nil {
+					err = context.Canceled
+				}
+				return exitReturn(RunResult{StopReason: "cancelled", FinalText: s.finalText, Usage: s.totalUsage}, err)
+			}
+			s.messages = appendChildrenNote(s.messages, note, noted, s.emit)
+			return loopExit{ctl: loopNext}
+		}
+	}
+	// The run is finishing. A message sent while this answer was being
+	// written was acknowledged, so it is answered — one more turn,
+	// whose answer becomes the run's — and the queue closes only once
+	// a final answer ends with nothing waiting.
+	if s.opts.SteerQueue != nil {
+		var compacted, took bool
+		s.messages, compacted, took = finishSteer(s.opts, s.messages, iter+1 < s.iterCap, s.emit)
+		if compacted {
+			s.lastCtxTokens = estimatePromptTokens(s.preambleTokens, s.messages)
+		}
+		if took {
+			s.disarmTurn()
+			iterSpan.End()
+			return loopExit{ctl: loopNext}
+		}
+	}
+	if s.closingTurn {
+		s.stopReason = "max_iterations"
+	}
+	iterSpan.End()
+	return loopExit{ctl: loopEnd}
 }
 
 // publishAnswerShape publishes, not stamps: see tools.AnswerShape.
