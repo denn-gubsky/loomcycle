@@ -8,17 +8,17 @@ Each entry is the release's tag annotation, so the tag and this file cannot disa
 
 For the **public roadmap**, see [`docs/PLAN.md`](docs/PLAN.md).
 
-## What's in v1.117.1
+## What's in v1.118.0
 
 *A queued run that never starts now ends cleanly: its idempotency key is released, so a retry runs the work, and its end is published, so a client waiting on it is not left hanging. A restart during a pause no longer holds the boot or a snapshot restore until the resume. Also: an agent told it hit the configured-run cap no longer retries forever, and only an operator may change a shared HookDef.*
 
-A patch on the v1.117 line: #1881 to #1887.
+A minor release of fixes: #1881 to #1887.
 - #1885 is the queued-run fix;
 - #1883 classifies configured-run refusals by their code;
 - #1884 makes a shared HookDef the operator's;
 - #1882 lets the bridge image workflow build a tag older than its Dockerfile;
 - #1881 and #1886 are documentation, and #1887 is these notes.
-- `@loomcycle/client` and the Python adapter stay at 1.117.0, with no API change. The Python adapter's comments now say the server names `configured_run_cap`.
+- `@loomcycle/client` and the Python adapter are 1.118.0, with no API change. The Python adapter's comments now say the server names `configured_run_cap`.
 
 ### A queued run that never starts ends cleanly (#1885)
 
@@ -57,7 +57,7 @@ Now every create, fork, promote, retire or delete of a shared HookDef by a non-o
 - **Behaviour changes:**
   - A tenantless caller that is not an operator can no longer write a shared HookDef.
   - An MCP agent receives `configured_run_cap` and `no_store` as not retryable.
-- **Images:** a patch tag rebuilds only `denngubsky/loomcycle-browser` (linux/amd64). The plain `loomcycle`, toolbox and sandbox images stay at 1.117.0.
+- **Images:** every image is rebuilt at 1.118.0, for amd64 and arm64: `loomcycle`, `loomcycle-toolbox`, `loomcycle-browser` and the sandbox images.
 
 ## What's in v1.117.0
 
