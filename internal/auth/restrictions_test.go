@@ -62,6 +62,18 @@ func TestRestrictions_ValidateRefusesWhatAMintMustNotGuess(t *testing.T) {
 	}
 }
 
+// A `/`-grouped name is an ordinary agent name (chat/medium, doc/manager), so a
+// token may be confined to one. Every bridge mints exactly such a token.
+func TestRestrictions_ValidateAcceptsGroupedAgentNames(t *testing.T) {
+	r := Restrictions{Agents: []string{"chat/medium", "doc/manager", "team/sub/agent"}}
+	if err := r.Validate(true); err != nil {
+		t.Errorf("grouped agent names refused: %v", err)
+	}
+	if !r.AgentAllowed("chat/medium") || r.AgentAllowed("chat") || r.AgentAllowed("medium") {
+		t.Error("a grouped name must match itself exactly, not its group or its last segment")
+	}
+}
+
 // A stored record round-trips, an unrestricted one stores as nothing, and a
 // record that cannot be read is an error — never the zero value.
 func TestRestrictions_StoredFormFailsClosed(t *testing.T) {
