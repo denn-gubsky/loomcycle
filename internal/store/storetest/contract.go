@@ -167,6 +167,7 @@ func Run(t *testing.T, factory Factory) {
 		{"QueuedRunCancelledBeforeStart", testQueuedRunCancelledBeforeStart},
 		{"ConfiguredRunQueuesThenStarts", testConfiguredRunQueuesThenStarts},
 		{"QueuedRunFailedOnRestartNotSwept", testQueuedRunFailedOnRestartNotSwept},
+		{"QueuedRunEndedBeforeStart", testQueuedRunEndedBeforeStart},
 		{"QueuedRunsListedWithTheirInput", testQueuedRunsListedWithTheirInput},
 		{"SetRunPauseStateRoundTrip", testSetRunPauseStateRoundTrip},
 		{"SetRunPauseStateUnknownStateRefused", testSetRunPauseStateUnknownStateRefused},

@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"time"
 
 	"github.com/denn-gubsky/loomcycle/internal/store"
@@ -109,11 +110,18 @@ func (s *Store) ListQueuedRuns(ctx context.Context, _ string, startedBefore time
 }
 
 func (s *Store) FailQueuedRun(ctx context.Context, runID, reason string) error {
+	return s.EndQueuedRun(ctx, runID, store.RunFailed, "restarted", reason)
+}
+
+func (s *Store) EndQueuedRun(ctx context.Context, runID string, status store.RunStatus, stopReason, errMsg string) error {
+	if status != store.RunCancelled && status != store.RunFailed {
+		return fmt.Errorf("end queued run: %q is not an end a queued run can have", status)
+	}
 	res, err := s.db.ExecContext(ctx,
-		`UPDATE runs SET status = ?, completed_at = ?, error = ?, stop_reason = 'restarted',
+		`UPDATE runs SET status = ?, completed_at = ?, error = ?, stop_reason = ?,
 			draft = NULL, queued_input = NULL, idempotency_key = NULL, delivery_alt_key = NULL
 		WHERE id = ? AND status = ?`,
-		string(store.RunFailed), time.Now().UnixNano(), reason, runID, string(store.RunQueued),
+		string(status), time.Now().UnixNano(), errMsg, stopReason, runID, string(store.RunQueued),
 	)
 	if err != nil {
 		return err

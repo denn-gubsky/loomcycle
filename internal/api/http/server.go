@@ -3551,8 +3551,10 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 	s.emitSystemPromptEvent(runParent, runID, agentDef.SystemPrompt, "", promptProv)
 
 	// ---- Caller registration callback ----
-	// A run that queued told its caller before it waited.
-	if cb.OnRegistered != nil && queued == nil {
+	// A run that queued told its caller before it waited, and so did a
+	// restarted run that had to be ready to wait out a pause (admitRun
+	// announced both).
+	if cb.OnRegistered != nil && !registered {
 		cb.OnRegistered(agentID, runID, sessionID, "")
 	}
 	// The caller's last word before the loop — a run that queued is asked
