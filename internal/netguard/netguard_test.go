@@ -239,3 +239,15 @@ func TestIPLiteralAllowed_MatchesOnlyIPLiteralsInCIDREntries(t *testing.T) {
 		}
 	}
 }
+
+// RFC EM §9: loomcycle may hold AWS credentials from the instance or task it
+// runs on, so no agent request may reach the endpoints that hand them out:
+// EC2 instance metadata (IPv4 and IPv6), the ECS task endpoint and the EKS Pod
+// Identity agent (IPv4 and IPv6).
+func TestIsPrivateIP_CoversAWSCredentialEndpoints(t *testing.T) {
+	for _, s := range []string{"169.254.169.254", "fd00:ec2::254", "169.254.170.2", "169.254.170.23", "fd00:ec2::23"} {
+		if !IsPrivateIP(net.ParseIP(s)) {
+			t.Errorf("%s is reachable by an agent request", s)
+		}
+	}
+}
