@@ -215,44 +215,38 @@ func hostAllowed(host string, allowlist []string) bool {
 // resolved addresses inside the range, so a vouched range cannot be used to
 // reach a private address outside it.
 func GuardedDialContext(allowPrivate bool, privateHostAllowlist []string) func(ctx context.Context, network, addr string) (net.Conn, error) {
+	return guardedDialContext(net.DefaultResolver, allowPrivate, privateHostAllowlist)
+}
+
+// ipResolver is the slice of *net.Resolver the guard uses; tests stub it to
+// make a name resolve wherever the case needs.
+type ipResolver interface {
+	LookupIPAddr(ctx context.Context, host string) ([]net.IPAddr, error)
+}
+
+func guardedDialContext(resolver ipResolver, allowPrivate bool, privateHostAllowlist []string) func(ctx context.Context, network, addr string) (net.Conn, error) {
 	exemptHosts, exemptCIDRs := splitAllowlist(privateHostAllowlist)
-	blocked := func(ip net.IP) bool { return IsPrivateIP(ip) && !ipAllowed(ip, exemptCIDRs) }
 	return func(ctx context.Context, network, addr string) (net.Conn, error) {
 		host, port, err := net.SplitHostPort(addr)
 		if err != nil {
 			return nil, err
 		}
-		hostExempt := hostAllowed(host, exemptHosts)
+		blocked := blockedFor(allowPrivate, hostAllowed(host, exemptHosts), exemptCIDRs)
 
-		ips, err := net.DefaultResolver.LookupIPAddr(ctx, host)
+		ips, err := resolver.LookupIPAddr(ctx, host)
 		if err != nil {
 			return nil, err
 		}
-		candidates := ips
-		if !allowPrivate && !hostExempt {
-			candidates = candidates[:0]
-			for _, ip := range ips {
-				if !blocked(ip.IP) {
-					candidates = append(candidates, ip)
-				}
-			}
-			if len(candidates) == 0 {
-				return nil, fmt.Errorf("blocked: %s has no public addresses (got %d private)", host, len(ips))
+		var candidates []net.IPAddr
+		for _, ip := range ips {
+			if !blocked(ip.IP) {
+				candidates = append(candidates, ip)
 			}
 		}
-		d := net.Dialer{
-			Timeout: 10 * time.Second,
-			Control: func(_, address string, _ syscall.RawConn) error {
-				if allowPrivate || hostExempt {
-					return nil
-				}
-				ip, _, _ := net.SplitHostPort(address)
-				if parsed := net.ParseIP(ip); parsed != nil && blocked(parsed) {
-					return fmt.Errorf("blocked: socket-level address %s is private", ip)
-				}
-				return nil
-			},
+		if len(candidates) == 0 {
+			return nil, fmt.Errorf("blocked: %s has no public addresses (got %d private)", host, len(ips))
 		}
+		d := net.Dialer{Timeout: 10 * time.Second, Control: socketControl(blocked)}
 		var lastErr error
 		for _, ip := range candidates {
 			conn, derr := d.DialContext(ctx, network, net.JoinHostPort(ip.String(), port))
@@ -262,6 +256,33 @@ func GuardedDialContext(allowPrivate bool, privateHostAllowlist []string) func(c
 			lastErr = derr
 		}
 		return nil, lastErr
+	}
+}
+
+// blockedFor returns the verdict for one dial: whether the guard refuses a
+// resolved address. hostExempt is whether the dialed host matched a host-name
+// entry of the operator's vouch list.
+func blockedFor(allowPrivate, hostExempt bool, exemptCIDRs []netip.Prefix) func(net.IP) bool {
+	return func(ip net.IP) bool {
+		switch {
+		case allowPrivate, hostExempt, ipAllowed(ip, exemptCIDRs):
+			return false
+		default:
+			return IsPrivateIP(ip)
+		}
+	}
+}
+
+// socketControl is the net.Dialer Control hook: it re-checks the address the
+// socket is actually connecting to, with the same verdict as the pre-dial
+// filter.
+func socketControl(blocked func(net.IP) bool) func(network, address string, c syscall.RawConn) error {
+	return func(_, address string, _ syscall.RawConn) error {
+		ip, _, _ := net.SplitHostPort(address)
+		if parsed := net.ParseIP(ip); parsed != nil && blocked(parsed) {
+			return fmt.Errorf("blocked: socket-level address %s is private", ip)
+		}
+		return nil
 	}
 }
 
