@@ -1377,6 +1377,13 @@ func WithSubstrateOperator(ctx context.Context) context.Context {
 	return context.WithValue(ctx, ctxKeySubstrateOperator{}, true)
 }
 
+// WithoutSubstrateOperator takes the marker off ctx, whatever an ancestor
+// stamped. A run started from an operator plane's ctx (a TeamDef op=run walk)
+// derives its children from it, and they are agents, not the operator.
+func WithoutSubstrateOperator(ctx context.Context) context.Context {
+	return context.WithValue(ctx, ctxKeySubstrateOperator{}, false)
+}
+
 // IsSubstrateOperator reports whether ctx is an operator's own off-run call.
 func IsSubstrateOperator(ctx context.Context) bool {
 	v, _ := ctx.Value(ctxKeySubstrateOperator{}).(bool)
@@ -1400,6 +1407,12 @@ type ctxKeyUnauthenticatedOperator struct{}
 // call grants nothing.
 func WithUnauthenticatedOperator(ctx context.Context) context.Context {
 	return context.WithValue(ctx, ctxKeyUnauthenticatedOperator{}, true)
+}
+
+// WithoutUnauthenticatedOperator takes the marker off ctx, for the same reason
+// as WithoutSubstrateOperator.
+func WithoutUnauthenticatedOperator(ctx context.Context) context.Context {
+	return context.WithValue(ctx, ctxKeyUnauthenticatedOperator{}, false)
 }
 
 // IsUnauthenticatedOperator reports whether ctx carries the marker above.
