@@ -4,6 +4,7 @@ import (
 	"context"
 	"time"
 
+	"github.com/denn-gubsky/loomcycle/internal/auth"
 	"github.com/denn-gubsky/loomcycle/internal/config"
 )
 
@@ -52,6 +53,8 @@ func (r *realConfig) AWSAuthProviders() map[string]AWSAuthProvider {
 	}
 	return out
 }
+
+func (r *realConfig) TokenHasher() (auth.TokenHasher, error) { return r.cfg.Env.TokenHasher() }
 
 func (r *realConfig) HostShellEnabled() bool {
 	return r.cfg.Env.BashEnabled || len(r.cfg.Env.BashboxFallbackCommands) > 0

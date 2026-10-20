@@ -11,6 +11,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/denn-gubsky/loomcycle/internal/auth"
 	"github.com/denn-gubsky/loomcycle/internal/config"
 )
 
@@ -28,7 +29,10 @@ type stubConfig struct {
 	configWarnings []string
 	awsProviders   map[string]AWSAuthProvider
 	hostShell      bool
+	tokenEnv       config.Env
 }
+
+func (s *stubConfig) TokenHasher() (auth.TokenHasher, error) { return s.tokenEnv.TokenHasher() }
 
 func (s *stubConfig) AWSAuthProviders() map[string]AWSAuthProvider { return s.awsProviders }
 func (s *stubConfig) HostShellEnabled() bool                       { return s.hostShell }
@@ -124,6 +128,8 @@ func TestDoctor_AllPass(t *testing.T) {
 		backend:   "sqlite",
 		dataDir:   tmp,
 		listen:    freePort(t),
+		// With auth on, an all-pass setup has a token pepper.
+		tokenEnv: config.Env{OperatorTokenPepper: "pep"},
 	})
 	withEnv(t, "LOOMCYCLE_AUTH_TOKEN", "secret-token-value")
 	withEnv(t, "ANTHROPIC_API_KEY", "sk-ant-test")
@@ -466,5 +472,29 @@ func TestDoctor_AWSProvidersReportTheirIdentity(t *testing.T) {
 	}
 	if strings.Contains(out, "local provider") {
 		t.Errorf("an AWS provider was reported as a key-less local provider:\n%s", out)
+	}
+}
+
+func TestCheckTokenPepper_ReportsTheSourceAndWarnsOnNoneWithAuth(t *testing.T) {
+	key := "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE=" // 32 bytes of 0x01
+	for _, tc := range []struct {
+		name     string
+		env      config.Env
+		authSet  bool
+		wantLine string
+	}{
+		{"explicit", config.Env{OperatorTokenPepper: "p"}, true, "PASS"},
+		{"derived", config.Env{SecretKey: key}, true, "move to it at their next login"},
+		{"derived, fallback off", config.Env{SecretKey: key, TokenLegacyHashOff: true}, true, "legacy token hashes refused"},
+		{"none with auth", config.Env{}, true, "WARN"},
+		{"none without auth", config.Env{}, false, "no auth configured"},
+		{"malformed key", config.Env{SecretKey: "short"}, true, "FAIL"},
+	} {
+		var out bytes.Buffer
+		r := &doctorRun{stdout: &out}
+		checkTokenPepper(r, &stubConfig{tokenEnv: tc.env}, tc.authSet)
+		if !strings.Contains(out.String(), tc.wantLine) {
+			t.Errorf("%s: output %q lacks %q", tc.name, out.String(), tc.wantLine)
+		}
 	}
 }

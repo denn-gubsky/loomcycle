@@ -14,6 +14,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/denn-gubsky/loomcycle/internal/auth"
 	"github.com/denn-gubsky/loomcycle/internal/awsauth"
 	"github.com/denn-gubsky/loomcycle/internal/config"
 )
@@ -27,7 +28,8 @@ import (
 //  1. Config file discoverable (./loomcycle.yaml → XDG → ~/.config)
 //  2. Config parses cleanly
 //  3. LOOMCYCLE_AUTH_TOKEN set (WARN when empty — the server boots
-//     but every /v1/* request is allowed unauthenticated)
+//     but every /v1/* request is allowed unauthenticated), and where the
+//     operator-token pepper comes from
 //  4. Per-configured provider: API-key env var set
 //  5. Storage backend reachable (sqlite path writable; postgres DSN
 //     non-empty)
@@ -94,6 +96,8 @@ func RunDoctor(args []string, stdout, stderr io.Writer) int {
 	} else {
 		r.pass("LOOMCYCLE_AUTH_TOKEN set", "")
 	}
+
+	checkTokenPepper(r, cfg, os.Getenv("LOOMCYCLE_AUTH_TOKEN") != "")
 
 	providers := providerListFromConfig(cfg)
 	if len(providers) == 0 {
@@ -318,6 +322,9 @@ type configForDoctor interface {
 	// AWSAuthProviders returns the declared providers that authenticate with
 	// AWS credentials (an `auth:` block, RFC EM), by id.
 	AWSAuthProviders() map[string]AWSAuthProvider
+	// TokenHasher is the operator-token hasher the server would build from
+	// this environment (explicit pepper, derived from the secret key, or none).
+	TokenHasher() (auth.TokenHasher, error)
 	// HostShellEnabled reports whether an agent can run commands on the host
 	// (Bash, or the Bashbox host-command fallback), which on EC2 can reach
 	// the instance metadata service.
@@ -400,6 +407,35 @@ func providerListFromConfig(cfg configForDoctor) []string {
 	}
 	sort.Strings(out)
 	return out
+}
+
+// checkTokenPepper reports where the operator-token pepper comes from (RFC ES
+// D2). Doctor does not open the database, so it cannot count the token rows
+// still on a legacy hash; the server logs that count at every boot, which is
+// where an operator learns when LOOMCYCLE_TOKEN_LEGACY_HASH=off is safe.
+func checkTokenPepper(r *doctorRun, cfg configForDoctor, authTokenSet bool) {
+	const label = "Token pepper"
+	h, err := cfg.TokenHasher()
+	if err != nil {
+		r.fail(label, err.Error())
+		return
+	}
+	switch h.Source() {
+	case auth.PepperExplicit:
+		r.pass(label, "LOOMCYCLE_OPERATOR_TOKEN_PEPPER set")
+	case auth.PepperDerived:
+		if h.LegacyFallback() {
+			r.pass(label, "derived from LOOMCYCLE_SECRET_KEY; tokens minted before it move to it at their next login. The server logs at boot how many remain — set LOOMCYCLE_TOKEN_LEGACY_HASH=off once it reports none")
+		} else {
+			r.pass(label, "derived from LOOMCYCLE_SECRET_KEY; legacy token hashes refused (LOOMCYCLE_TOKEN_LEGACY_HASH=off)")
+		}
+	default:
+		if authTokenSet {
+			r.warn(label, "none — anyone who can write the database can mint a working token; set LOOMCYCLE_SECRET_KEY (a pepper is derived from it) or LOOMCYCLE_OPERATOR_TOKEN_PEPPER")
+		} else {
+			r.pass(label, "none (no auth configured)")
+		}
+	}
 }
 
 // checkStorageBackend reports whether the configured backend is
