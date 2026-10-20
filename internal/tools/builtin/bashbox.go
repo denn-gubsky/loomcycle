@@ -194,12 +194,15 @@ func (b *Bashbox) fallbackProxy(name, hostRoot string, readOnly bool) commands.C
 			return &commands.ExitError{Code: 1}
 		}
 		// inv.Args excludes argv[0] (the command name) — see find.go:86.
-		// ctx is the timeout-bound run context, so CommandContext SIGKILLs the
-		// direct child on timeout/cancel. As with the Bash tool, descendants the
-		// child spawns (a git credential helper, hook, pager) may survive — this
-		// is not a container; run loomcycle in one for hard isolation.
+		// ctx is the timeout-bound run context; on timeout/cancel
+		// bindProcessGroup SIGKILLs the child's whole process group, so the
+		// descendants it spawns (a git credential helper, hook, pager) die
+		// with it. As with the Bash tool, a descendant that calls setsid()
+		// escapes the group — this is not a container; run loomcycle in one
+		// for hard isolation.
 		cmd := exec.CommandContext(ctx, name, inv.Args...)
 		cmd.Dir = hostCwd
+		bindProcessGroup(cmd)
 		env, envNotes := b.fallbackEnv(ctx)
 		for _, n := range envNotes {
 			fmt.Fprintf(inv.Stderr, "%s: %s\n", name, n)
@@ -209,7 +212,9 @@ func (b *Bashbox) fallbackProxy(name, hostRoot string, readOnly bool) commands.C
 		cmd.Stdout = inv.Stdout
 		cmd.Stderr = inv.Stderr
 		runErr := cmd.Run()
-		if runErr == nil {
+		// ErrWaitDelay: the command succeeded, but a background process it
+		// started held the output until hostChildWaitDelay closed it.
+		if runErr == nil || errors.Is(runErr, exec.ErrWaitDelay) {
 			return nil
 		}
 		var exitErr *exec.ExitError

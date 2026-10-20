@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -19,11 +20,12 @@ import (
 //
 // **This is NOT a true sandbox.** It restricts cwd, scrubs the env, bounds
 // output, and times out — but it cannot prevent the spawned process from
-// reaching arbitrary files via absolute paths, opening sockets, spawning
-// long-running daemons that survive the timeout (we kill the process group
-// to mitigate), or escalating via setuid binaries on PATH. Operators who
-// expose Bash to untrusted prompts MUST run loomcycle inside a container,
-// VM, or other OS-level isolation.
+// reaching arbitrary files via absolute paths, opening sockets, or escalating
+// via setuid binaries on PATH. The command runs in its own process group,
+// which a timeout or cancel SIGKILLs as a whole; a descendant that calls
+// setsid() leaves that group and survives as a daemon. Operators who expose
+// Bash to untrusted prompts MUST run loomcycle inside a container, VM, or
+// other OS-level isolation.
 //
 // Why ship it at all if it's weak? Because the alternative is forcing every
 // operator to write their own MCP server for shell execution, and the
@@ -148,6 +150,7 @@ func (b *Bash) Execute(ctx context.Context, input json.RawMessage) (tools.Result
 
 	cmd := exec.CommandContext(runCtx, "/bin/sh", "-c", args.Command)
 	cmd.Dir = cwd
+	bindProcessGroup(cmd)
 	// Pass the original Execute ctx (carries the run identity) rather than the
 	// timeout-bound runCtx — see buildEnv.
 	env, envNotes := b.buildEnv(ctx)
@@ -163,11 +166,18 @@ func (b *Bash) Execute(ctx context.Context, input json.RawMessage) (tools.Result
 	if startErr != nil {
 		return tools.Result{Text: "start: " + startErr.Error(), IsError: true}, nil
 	}
-	// CommandContext sends SIGKILL on ctx cancel, so an in-flight Wait()
-	// returns with an exit error. Fork-bomb children of the immediate
-	// child may survive — consistent with "Bash is not a true sandbox".
-	// Run inside a container if that matters.
+	// On ctx cancel bindProcessGroup SIGKILLs the command's process group,
+	// so an in-flight Wait() returns with an exit error. A descendant that
+	// left the group with setsid() survives — consistent with "Bash is not a
+	// true sandbox". Run inside a container if that matters.
 	waitErr := cmd.Wait()
+	// ErrWaitDelay: the command exited successfully but a background process
+	// it started still held the output, so the pipe was closed after
+	// hostChildWaitDelay. That is a success; later output is not captured.
+	waitDelayed := errors.Is(waitErr, exec.ErrWaitDelay)
+	if waitDelayed {
+		waitErr = nil
+	}
 
 	out := bw.bytes()
 	var b2 bytes.Buffer
@@ -177,6 +187,9 @@ func (b *Bash) Execute(ctx context.Context, input json.RawMessage) (tools.Result
 	}
 	if bw.truncated {
 		fmt.Fprintf(&b2, "\n[output truncated at %d bytes]", maxOut)
+	}
+	if waitDelayed {
+		fmt.Fprintf(&b2, "\n[output closed %v after exit: a background process still holds it]", hostChildWaitDelay)
 	}
 	if ctxErr := runCtx.Err(); ctxErr != nil {
 		fmt.Fprintf(&b2, "\n[killed: %v]", ctxErr)
