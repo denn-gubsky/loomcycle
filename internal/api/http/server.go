@@ -3285,6 +3285,7 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 	// it waits, so it can be read, cancelled and re-attached meanwhile.
 	var rowErr error
 	registered := false
+	clusterReleased := false // createRow let the cluster session lock go
 	// RunConfig is nil on purpose: the run's configuration is resolved after it
 	// waits, and StartQueuedRun writes it from the identity built at start.
 	queuedIdentity := store.RunIdentity{AgentID: agentID, UserID: effectiveUserID, TenantID: effectiveTenantID, UserTier: in.UserTier, Model: model, ReplicaID: s.replicaID, ParentContext: in.ParentContext, IdempotencyKey: in.IdempotencyKey, DeliveryAltKey: in.DeliveryAltKey, Interactive: in.Interactive, OperatorKeyRestricted: operatorKeyRestricted, Isolated: isolated, CredentialsNoUserScope: in.CredentialsNoUserScope, Retention: retention, RunConfig: nil}
@@ -3299,8 +3300,11 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 		waitOutPause: restarting,
 		createRow: func() (string, string, error) {
 			// The cluster half of the session lock is let go while the run
-			// waits (see sessionHold), and taken back once it is admitted.
+			// waits (see sessionHold), and taken back once it is admitted —
+			// whenever it was let go, which is whenever the row is made here
+			// (a run that queues, or a restarted one placed into a free slot).
 			sessHold.releaseCluster()
+			clusterReleased = true
 			if restarting {
 				// Queued already, with its request stored.
 				r, err := s.store.GetRun(ctx, in.QueuedRunID)
@@ -3367,7 +3371,7 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 		}
 		return admissionError(err)
 	}
-	if queued != nil {
+	if clusterReleased {
 		// It let the cluster session lock go while it waited, and another
 		// replica may have taken the session meanwhile: it starts only if it
 		// can take the lock back, and then reads the session's history again.
@@ -3384,7 +3388,11 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 		}
 		if startErr != nil {
 			release()
-			s.endQueuedRun(queued.runID, startErr)
+			rowID := in.QueuedRunID
+			if queued != nil {
+				rowID = queued.runID
+			}
+			s.endQueuedRun(rowID, startErr)
 			return startErr
 		}
 	}

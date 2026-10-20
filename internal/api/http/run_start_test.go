@@ -264,3 +264,34 @@ func TestHandleRuns_DraftStoresRuntimeKindsDemoted(t *testing.T) {
 		t.Errorf("the stored draft keeps the runtime-only kind %q a caller sent", k)
 	}
 }
+
+// A queued continuation that a restart starts into a free slot runs holding
+// its session's cluster lock: the lock it lets go of to wait (sessionHold) is
+// taken back before it runs, whether or not it had to wait this time.
+func TestRestartQueuedRuns_ContinuationRunsHoldingTheClusterLock(t *testing.T) {
+	s, gate := newGatedBatchServer(t, 1)
+	locker := newFakeClusterLocker()
+	s.sessionLockPG = locker
+	ctx := context.Background()
+	sess, err := s.store.CreateSession(ctx, "acme", "r", "alice")
+	if err != nil {
+		t.Fatal(err)
+	}
+	run, err := s.store.CreateQueuedRun(ctx, sess.ID, store.RunIdentity{AgentID: "a_qcont", TenantID: "acme", UserID: "alice"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.recordQueuedInput(ctx, run.ID, "acme", "", runner.RunInput{
+		SessionID: sess.ID, Segments: oneUserSeg("continued before the restart"), SessionLockAcrossReplicas: true,
+	})
+
+	if restarted, failed, err := s.RestartQueuedRuns(ctx, time.Now().Add(time.Second)); err != nil || restarted != 1 || failed != 0 {
+		t.Fatalf("RestartQueuedRuns = %d/%d (%v), want 1/0", restarted, failed, err)
+	}
+	waitRunStatus(t, s.store, run.ID, store.RunRunning)
+	if n := locker.holding(); n != 1 {
+		t.Errorf("while the restarted continuation runs, %d cluster session locks are held, want 1", n)
+	}
+	gate <- struct{}{}
+	waitRunStatus(t, s.store, run.ID, store.RunCompleted)
+}
