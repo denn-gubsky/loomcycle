@@ -267,6 +267,12 @@ func (s *Server) AuthConfigured(ctx context.Context) bool {
 	return s.authConfigured(ctx)
 }
 
+// AuthConfiguredErr is the same decision with the store error returned rather
+// than read as "configured", for the boot check, which must not guess.
+func (s *Server) AuthConfiguredErr(ctx context.Context) (bool, error) {
+	return s.authConfiguredErr(ctx)
+}
+
 // extractBearer returns the raw token (sans "Bearer ") from the
 // Authorization header, or the Web-UI session cookie value as a
 // fallback. A present-but-malformed Authorization header is a miss.

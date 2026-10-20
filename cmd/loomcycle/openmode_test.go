@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"sync"
@@ -27,7 +28,7 @@ func TestOpenModeRefusal_OnlyOpenModeOnAPublicListenerWithoutOptIn(t *testing.T)
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			err := openModeRefusal(tc.authConfigured, &tc.env)
+			err := openModeRefusal(tc.authConfigured, nil, &tc.env)
 			if (err != nil) != tc.wantRefused {
 				t.Fatalf("openModeRefusal = %v, want refused=%v", err, tc.wantRefused)
 			}
@@ -35,6 +36,16 @@ func TestOpenModeRefusal_OnlyOpenModeOnAPublicListenerWithoutOptIn(t *testing.T)
 				t.Errorf("refusal should name the opt-in: %v", err)
 			}
 		})
+	}
+}
+
+// A store that cannot be read at boot leaves the answer unknown; the boot is
+// refused rather than guessed in either direction, on loopback too.
+func TestOpenModeRefusal_StoreErrorRefuses(t *testing.T) {
+	env := config.Env{ListenAddr: "127.0.0.1:8787"}
+	err := openModeRefusal(false, errors.New("store unavailable"), &env)
+	if err == nil || !strings.Contains(err.Error(), "cannot tell whether auth is configured") {
+		t.Fatalf("openModeRefusal with a store error = %v, want a refusal saying why", err)
 	}
 }
 
@@ -49,7 +60,11 @@ func (r *logRecorder) logf(format string, args ...any) {
 	r.mu.Lock()
 	r.lines = append(r.lines, fmt.Sprintf(format, args...))
 	r.mu.Unlock()
-	r.ch <- struct{}{}
+	// Never block the loop under test: a full channel only drops a wake-up.
+	select {
+	case r.ch <- struct{}{}:
+	default:
+	}
 }
 
 func waitForLine(t *testing.T, r *logRecorder) {
@@ -67,7 +82,7 @@ func TestWarnOpenMode_RepeatsUntilAuthConfigured(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		warnOpenMode(context.Background(), 5*time.Millisecond,
-			func(context.Context) bool { return configured.Load() }, rec.logf)
+			func(context.Context) (bool, error) { return configured.Load(), nil }, rec.logf)
 		close(done)
 	}()
 	waitForLine(t, rec) // at once
@@ -88,7 +103,7 @@ func TestWarnOpenMode_ReturnsOnContextDone(t *testing.T) {
 	rec := &logRecorder{ch: make(chan struct{}, 8)}
 	done := make(chan struct{})
 	go func() {
-		warnOpenMode(ctx, time.Hour, func(context.Context) bool { return false }, rec.logf)
+		warnOpenMode(ctx, time.Hour, func(context.Context) (bool, error) { return false, nil }, rec.logf)
 		close(done)
 	}()
 	waitForLine(t, rec)
@@ -102,8 +117,33 @@ func TestWarnOpenMode_ReturnsOnContextDone(t *testing.T) {
 
 func TestWarnOpenMode_SilentWhenAuthConfigured(t *testing.T) {
 	rec := &logRecorder{ch: make(chan struct{}, 8)}
-	warnOpenMode(context.Background(), time.Millisecond, func(context.Context) bool { return true }, rec.logf)
+	warnOpenMode(context.Background(), time.Millisecond, func(context.Context) (bool, error) { return true, nil }, rec.logf)
 	if len(rec.lines) != 0 {
 		t.Errorf("logged %v with auth configured", rec.lines)
+	}
+}
+
+// A tick whose store read fails says nothing — it does not know the server is
+// open — and does not stop the loop, which warns again once the read works.
+func TestWarnOpenMode_StoreErrorTickNeitherWarnsNorStops(t *testing.T) {
+	var calls atomic.Int64
+	rec := &logRecorder{ch: make(chan struct{}, 8)}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan struct{})
+	go func() {
+		warnOpenMode(ctx, 5*time.Millisecond, func(context.Context) (bool, error) {
+			if calls.Add(1) <= 3 {
+				return false, errors.New("store unavailable")
+			}
+			return false, nil
+		}, rec.logf)
+		close(done)
+	}()
+	waitForLine(t, rec)
+	cancel()
+	<-done
+	if n := calls.Load(); n < 4 {
+		t.Errorf("warned after %d reads, want the first warning only after the 3 failed reads", n)
 	}
 }

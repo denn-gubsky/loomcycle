@@ -1687,8 +1687,8 @@ func main() {
 	// RFC ES #8: open mode on a listener beyond loopback serves every route to
 	// the network. Decided here — the store is open, so an admin token counts —
 	// with the server's own predicate, before the listeners start.
-	bootAuthConfigured := srv.AuthConfigured(context.Background())
-	if err := openModeRefusal(bootAuthConfigured, &cfg.Env); err != nil {
+	bootAuthConfigured, bootAuthErr := srv.AuthConfiguredErr(context.Background())
+	if err := openModeRefusal(bootAuthConfigured, bootAuthErr, &cfg.Env); err != nil {
 		log.Fatalf("auth: %v", err)
 	}
 	// The providers' call lanes (providers.<id>.max_concurrent / lanes). The
@@ -2403,7 +2403,7 @@ func main() {
 	bgCtx, bgCancel := context.WithCancel(context.Background())
 	defer bgCancel()
 	if !bootAuthConfigured {
-		go warnOpenMode(bgCtx, openModeWarnInterval, srv.AuthConfigured, log.Printf)
+		go warnOpenMode(bgCtx, openModeWarnInterval, srv.AuthConfiguredErr, log.Printf)
 	}
 
 	// Webhook delivery counters: each replica adds what it counted every
