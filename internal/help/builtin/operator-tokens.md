@@ -259,11 +259,15 @@ re-displayed). Now distribute per-principal tokens at your own pace.
   neither, tokens are hashed with no pepper and the server warns at boot.
   Changing an explicit pepper invalidates every token (env-allowlisted,
   never logged).
-- `LOOMCYCLE_TOKEN_LEGACY_HASH` — `off` refuses tokens still on a hash from
-  before the derived pepper. By default such a token (unpeppered, or under
-  the pepper `LOOMCYCLE_SECRET_KEY_PREVIOUS` derives) still logs in if its
-  row existed when the server started, and is rehashed onto the current
-  pepper. The boot log reports how many remain; set `off` once it is none.
+- `LOOMCYCLE_TOKEN_LEGACY_HASH` — `off` refuses tokens still on the
+  unpeppered hash from before the derived pepper. By default such a token
+  still logs in if its row existed when the server started, and is
+  rehashed onto the current pepper. A token under the pepper
+  `LOOMCYCLE_SECRET_KEY_PREVIOUS` derives keeps logging in (and is
+  rehashed) whenever that key is set, either way. Every boot logs how many
+  remain, with their def_ids; set `off` once it reports none. Upgrade every
+  replica together: an older release cannot read a rehashed token, and
+  rolling back means re-minting tokens.
 - `LOOMCYCLE_AUTH_CACHE_TTL_SECONDS` — per-replica resolution cache TTL
   (default 30; `0` disables it for immediate revocation). A token
   mutation flushes the cache locally and, in a cluster, broadcasts a
