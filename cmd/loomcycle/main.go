@@ -1684,6 +1684,13 @@ func main() {
 	// server's tool set, which isn't in allTools here (F45). New re-points any
 	// Context tool to the COMPLETE post-append catalog, so don't set it here.
 	srv = lchttp.New(cfg, pr, allTools, sem, storeIface)
+	// RFC ES #8: open mode on a listener beyond loopback serves every route to
+	// the network. Decided here — the store is open, so an admin token counts —
+	// with the server's own predicate, before the listeners start.
+	bootAuthConfigured := srv.AuthConfigured(context.Background())
+	if err := openModeRefusal(bootAuthConfigured, &cfg.Env); err != nil {
+		log.Fatalf("auth: %v", err)
+	}
 	// The providers' call lanes (providers.<id>.max_concurrent / lanes). The
 	// registry already gates every provider with this scheduler; the server
 	// gets the same instance to report it and to reload it.
@@ -2388,10 +2395,6 @@ func main() {
 		IdleTimeout: 120 * time.Second,
 	}
 
-	if cfg.Env.AuthToken == "" {
-		log.Printf("WARNING: LOOMCYCLE_AUTH_TOKEN is not set; /v1 routes are unauthenticated (dev mode)")
-	}
-
 	// Background goroutines (heartbeat sweeper + session-lock map GC)
 	// share a single ctx tied to the signal handler below — graceful
 	// shutdown cancels them alongside the HTTP server. We rely on the
@@ -2399,6 +2402,9 @@ func main() {
 	// to do so in their packages.
 	bgCtx, bgCancel := context.WithCancel(context.Background())
 	defer bgCancel()
+	if !bootAuthConfigured {
+		go warnOpenMode(bgCtx, openModeWarnInterval, srv.AuthConfigured, log.Printf)
+	}
 
 	// Webhook delivery counters: each replica adds what it counted every
 	// half minute (never per delivery — the receiver answers unauthenticated

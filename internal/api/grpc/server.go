@@ -1122,7 +1122,13 @@ const healthFullMethod = "/loomcycle.v1.Loomcycle/Health"
 // gRPC server starts listening. Symmetric with the HTTP banner in
 // main.go.
 func (s *Server) MustLogStartupBanner(addr string) {
-	log.Printf("loomcycle gRPC listening on %s (auth=%v)", addr, s.authToken != "")
+	// The same open-mode decision authenticate makes: an admin operator token
+	// turns auth on with no legacy secret, so the secret alone misreports it.
+	authOn := s.authToken != ""
+	if s.authConfigured != nil {
+		authOn = s.authConfigured(context.Background())
+	}
+	log.Printf("loomcycle gRPC listening on %s (auth=%v)", addr, authOn)
 }
 
 // ========================
