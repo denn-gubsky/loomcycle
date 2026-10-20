@@ -109,6 +109,9 @@ export default function RoutingView() {
                   aria-hidden="true"
                 />
                 {p.provider}
+                {p.auth && (
+                  <span className="routing-provider-auth"> · {p.auth}</span>
+                )}
               </span>
             );
           })}

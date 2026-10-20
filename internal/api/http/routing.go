@@ -67,6 +67,10 @@ type routingProvider struct {
 	// LastError is the raw provider probe error — admin-only (redacted to "" for
 	// a tenant, since it can leak operator infra detail).
 	LastError string `json:"last_error,omitempty"`
+	// Auth says how the provider authenticates when it is not a key (RFC EM),
+	// e.g. "aws_sigv4 (eu-central-1)". Admin-only, as it describes the
+	// operator's deployment.
+	Auth string `json:"auth,omitempty"`
 }
 
 type routingUserTier struct {
@@ -267,6 +271,9 @@ func (s *Server) handleRouting(w http.ResponseWriter, r *http.Request) {
 		rp := routingProvider{Provider: p, Reachable: a.Reachable, Excluded: a.Excluded}
 		if admin {
 			rp.LastError = a.LastError
+			if pa := s.cfg().Providers[p].Auth; pa != nil {
+				rp.Auth = pa.Type + " (" + pa.Region + ")"
+			}
 		}
 		resp.Providers = append(resp.Providers, rp)
 	}

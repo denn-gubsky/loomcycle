@@ -290,3 +290,28 @@ func TestRouting_TenantSeesAvailabilityWithRedactedError(t *testing.T) {
 		}
 	}
 }
+
+// An AWS-authenticated provider (RFC EM) is labelled with its auth mode and
+// region for an admin; a tenant sees no label, since it describes the
+// operator's deployment.
+func TestRouting_AdminSeesAWSAuthLabelTenantDoesNot(t *testing.T) {
+	srv := routingTestServer(t)
+	cfg := srv.cfg()
+	cfg.Providers = map[string]config.ProviderConfig{
+		"anthropic": {Driver: "anthropic", BaseURL: "https://bedrock-runtime.eu-central-1.amazonaws.com/anthropic",
+			Auth: &config.ProviderAuth{Type: config.ProviderAuthSigV4, Region: "eu-central-1"}},
+	}
+	labels := func(scopes []string) map[string]string {
+		out := map[string]string{}
+		for _, p := range routingFor(t, srv, scopes).Providers {
+			out[p.Provider] = p.Auth
+		}
+		return out
+	}
+	if got := labels([]string{auth.ScopeAdmin}); got["anthropic"] != "aws_sigv4 (eu-central-1)" || got["deepseek"] != "" {
+		t.Errorf("admin labels = %v", got)
+	}
+	if got := labels([]string{auth.ScopeTenant}); got["anthropic"] != "" {
+		t.Errorf("tenant saw the auth label: %v", got)
+	}
+}

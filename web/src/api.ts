@@ -3281,6 +3281,9 @@ export interface RoutingProvider {
   reachable: boolean;
   excluded: boolean;
   last_error?: string;
+  // How the provider authenticates when it is not a key, e.g.
+  // "aws_sigv4 (eu-central-1)". Admin only.
+  auth?: string;
 }
 
 export interface RoutingResponse {
