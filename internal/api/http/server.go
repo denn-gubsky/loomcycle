@@ -2902,9 +2902,12 @@ func (s *Server) grantRecallTool(allowed []tools.Tool, cx *config.Context) []too
 
 func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunCallbacks) error {
 	// The caller's rate, before anything else: every run a transport asks for
-	// through here (each child of a batch included) is one start.
-	if err := s.admitPrincipalRate(ctx); err != nil {
-		return err
+	// through here (each child of a batch included) is one start — counted
+	// once, so not here when the caller already counted it.
+	if !in.RateAdmitted {
+		if err := s.admitPrincipalRate(ctx); err != nil {
+			return err
+		}
 	}
 	// ---- Validation phase ----
 	if in.UserID != "" && !validIdent(in.UserID) {
@@ -3010,6 +3013,8 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 		}
 	}
 	var priorMessages []providers.Message
+	// The session lock a continuation holds; nil for a run in a new session.
+	var sessHold *sessionHold
 
 	// A fresh top-level run is outside every team, whatever its caller's ctx
 	// carried: a team's own agents are reachable only from a walk of the team.
@@ -3033,6 +3038,12 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 		if !sessionOwnershipOK(ctx, sess) {
 			return fmt.Errorf("%w: %s", runner.ErrSessionNotFound, in.SessionID)
 		}
+		// A no-trace session has no transcript to continue from. Refused here,
+		// before any slot or lock, with its own answer; it used to reach the row
+		// creation and come back as an internal error.
+		if sess.Retention == store.RetentionNone {
+			return errNoTraceSession
+		}
 		effectiveAgentName = sess.Agent
 		effectiveTenantID = sess.TenantID
 		effectiveUserID = sess.UserID
@@ -3045,18 +3056,21 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 		// team version has been retired (continuationTeamScopeCtx).
 		scopedCtx, scopeErr := s.continuationTeamScopeCtx(ctx, sess)
 		if errors.Is(scopeErr, errContinuationRefused) {
-			return fmt.Errorf("%w: %s: %v", runner.ErrUnknownAgent, sess.Agent, scopeErr)
+			// Both wrapped: the text is unchanged, and an HTTP caller still
+			// answers with why the session cannot be continued.
+			return fmt.Errorf("%w: %s: %w", runner.ErrUnknownAgent, sess.Agent, scopeErr)
 		}
 		if scopeErr != nil {
 			return fmt.Errorf("%w: %v", runner.ErrInternal, scopeErr)
 		}
 		ctx = scopedCtx
 
-		releaseLock, ok := s.sessionLocks.TryLock(in.SessionID)
+		hold, ok := s.holdSession(in.SessionID, in.SessionLockAcrossReplicas)
 		if !ok {
 			return fmt.Errorf("%w: another request is in flight on session %q", runner.ErrSessionBusy, in.SessionID)
 		}
-		defer releaseLock()
+		sessHold = hold
+		defer sessHold.release()
 	}
 
 	// RFC AX: use the live principal when one is on ctx (gRPC/MCP/connector);
@@ -3093,7 +3107,7 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 	}
 	agentDef, ok := s.lookupAgent(ctx, effectiveTenantID, effectiveAgentName)
 	if !ok {
-		return fmt.Errorf("%w: %s", runner.ErrUnknownAgent, effectiveAgentName)
+		return &unknownAgentError{agent: effectiveAgentName}
 	}
 	if err := admitAgentOverrides(effectiveAgentName, agentDef, overridesSetIn(&in)); err != nil {
 		return err
@@ -3170,7 +3184,7 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 	// RFC AW token-budget admission, first before the run may queue: a run
 	// whose (tenant, user) is over a hard ceiling is refused, not queued.
 	if dec := s.limits.Check(effectiveTenantID, effectiveUserID); !dec.Allowed {
-		return fmt.Errorf("%w: %s", runner.ErrTokenLimitExceeded, dec.Refusal.Message)
+		return &tokenLimitError{info: dec.Refusal}
 	}
 
 	// ---- agent_id: caller-supplied or generated ----
@@ -3253,6 +3267,9 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 		reject:       in.Admission == runner.AdmissionReject,
 		waitOutPause: restarting,
 		createRow: func() (string, string, error) {
+			// The cluster half of the session lock is let go while the run
+			// waits (see sessionHold), and taken back once it is admitted.
+			sessHold.releaseCluster()
 			if restarting {
 				// Queued already, with its request stored.
 				r, err := s.store.GetRun(ctx, in.QueuedRunID)
@@ -3271,7 +3288,7 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 					rowErr = err
 					return "", "", err
 				}
-				s.recordQueuedInput(ctx, r.ID, effectiveTenantID, retention, in)
+				s.recordQueuedInput(ctx, r.ID, effectiveTenantID, retention, queuedRecordOf(in, effectiveAgentName, effectiveTenantID, effectiveUserID))
 				return r.SessionID, r.ID, nil
 			}
 			sid, rid, err := s.openOrCreateSessionAndQueuedRun(ctx, in.SessionID, effectiveAgentName, effectiveTenantID, effectiveUserID, queuedIdentity)
@@ -3279,7 +3296,7 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 				rowErr = err
 				return sid, rid, err
 			}
-			s.recordQueuedInput(ctx, rid, effectiveTenantID, retention, in)
+			s.recordQueuedInput(ctx, rid, effectiveTenantID, retention, queuedRecordOf(in, effectiveAgentName, effectiveTenantID, effectiveUserID))
 			return sid, rid, nil
 		},
 		announce: func(sessionID, runID string) error {
@@ -3319,6 +3336,27 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 		}
 		return admissionError(err)
 	}
+	if queued != nil {
+		// It let the cluster session lock go while it waited, and another
+		// replica may have taken the session meanwhile: it starts only if it
+		// can take the lock back, and then reads the session's history again.
+		var startErr error
+		if !sessHold.reacquire() {
+			startErr = fmt.Errorf("%w: another request is in flight on session %q", runner.ErrSessionBusy, in.SessionID)
+		} else if isContinuation && in.SessionLockAcrossReplicas {
+			if transcript, terr := s.store.GetTranscript(ctx, in.SessionID); terr != nil {
+				startErr = fmt.Errorf("%w: %v", runner.ErrInternal, terr)
+			} else {
+				sessionEvents = transcript
+				priorMessages = replayTranscript(transcript)
+			}
+		}
+		if startErr != nil {
+			release()
+			s.endQueuedRun(queued.runID, startErr)
+			return startErr
+		}
+	}
 	// RFC AW token-budget admission, again at start: a run that queued may
 	// have crossed its ceiling while it waited. Checked BEFORE `defer
 	// release()` so the manual release() here isn't double-fired. Soft
@@ -3330,7 +3368,7 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 		if queued != nil {
 			s.endQueuedRun(queued.runID, fmt.Errorf("%s", limitDec.Refusal.Message))
 		}
-		return fmt.Errorf("%w: %s", runner.ErrTokenLimitExceeded, limitDec.Refusal.Message)
+		return &tokenLimitError{info: limitDec.Refusal}
 	}
 	defer release()
 	if queued != nil {
@@ -3783,7 +3821,7 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 		RecallIndex: s.recallIndexForRun(mergedContext),
 		// RFC BL P3 + RFC CT P2: installed when compaction.memory_flush OR
 		// context.harvest_to_memory is set, else nil (unopted path byte-identical).
-		BankCompactedSpan:      s.bankCompactedSpanFn(agentDef, config.HarvestToMemoryEnabled(mergedContext), rid.TenantID, effectiveUserID, in.Agent, runID, sessionID),
+		BankCompactedSpan:      s.bankCompactedSpanFn(agentDef, config.HarvestToMemoryEnabled(mergedContext), rid.TenantID, effectiveUserID, effectiveAgentName, runID, sessionID),
 		ContextPlugins:         s.contextPlugins, // RFC Z runtime-wide chain (code-js exempt in the loop)
 		UserTier:               in.UserTier,
 		FallbackPolicy:         fbPolicy,
@@ -3820,6 +3858,9 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 		return nil
 	}
 	res, runErr := loop.Run(loopCtx, runOpts)
+	if runErr != nil && cb.OnRunError != nil {
+		cb.OnRunError(runErr)
+	}
 	s.finishRunWithCancel(ctx, runCtx, runID, res, runErr, meta)
 	return nil
 }
@@ -6249,7 +6290,8 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "session continuation requires persistence (Store not configured)", http.StatusNotFound)
 		return
 	}
-	// A continuation is a run start, and is counted as one.
+	// A continuation is a run start, and is counted as one — before its body
+	// is read, so a caller over its rate costs nothing to refuse.
 	if err := s.admitPrincipalRate(r.Context()); err != nil {
 		writeRateLimited(w, err)
 		return
@@ -6278,733 +6320,69 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "bad json: "+err.Error(), http.StatusBadRequest)
 		return
 	}
-	if err := body.ToolChoice.Validate(); err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+	// The request's own shape, with this route's 400 bodies. Everything that
+	// needs the session, the agent or a slot is RunOnce's.
+	if msg, ok := s.messagesShapeError(body); !ok {
+		http.Error(w, msg, http.StatusBadRequest)
 		return
+	}
+	in, err := messagesRunInput(id, store.Session{}, body)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	in.RateAdmitted = true
+	in.SessionLockAcrossReplicas = true
+	// A continuation held for review outlives a caller that leaves: a verdict
+	// can take far longer than a client keeps its stream.
+	// ET-P1 decision: D4 — an INTERACTIVE continuation is not detached: the
+	// client leaving still cancels it (POST /v1/runs interactive survives it).
+	in.Detached = body.Review
+
+	rs := &runStartStream{s: s, w: w, r: r, parent: connector.StripRuntimeParentContext(body.ParentContext)}
+	rs.run(in, func(err error) { s.writeRunStartError(w, r, err, true) })
+}
+
+// messagesShapeError checks what a continuation request can be refused for
+// on its own, before anything is looked up.
+func (s *Server) messagesShapeError(body messagesRequest) (string, bool) {
+	if err := body.ToolChoice.Validate(); err != nil {
+		return err.Error(), false
 	}
 	if err := body.OutputFormat.Validate(); err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
-		return
+		return err.Error(), false
 	}
 	if err := loop.ValidateSegmentTypes(body.Segments); err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
-		return
+		return err.Error(), false
 	}
-	body.Segments = loop.DemoteRuntimeKinds(body.Segments)
-
-	// Validate the session exists BEFORE taking the per-session lock.
-	// Otherwise an attacker can spam unknown IDs and each LoadOrStore
-	// grows sessionLocks permanently (entries are never GC'd at v0.3.2).
-	//
-	// RFC L: a continuation runs under the session's stored tenant+subject, so
-	// the caller must OWN the session (the tenant boundary). The tenant-scoped
-	// accessor folds a cross-tenant session into the same *store.ErrNotFound a
-	// missing one returns → identical opaque 404, no existence oracle.
-	sess, err := s.tenantStore(r.Context()).GetSession(r.Context(), id)
-	if err != nil {
-		var nf *store.ErrNotFound
-		if errors.As(err, &nf) {
-			http.Error(w, err.Error(), http.StatusNotFound)
-			return
-		}
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
+	if msg, ok := s.runIdentityShapeError(body.UserTier, body.UserBearer, body.UserCredentials, body.ParentContext); !ok {
+		return msg, false
 	}
-
-	// Per-session continuation lock: take the lock before transcript
-	// replay so two concurrent POSTs to the same session can't read
-	// half-written history. Fast-fail with 409 since the alternative —
-	// blocking on an SSE handler — would hold an HTTP connection open
-	// for the full length of the in-flight run.
-	sessHold, ok := s.trySessionLock(id)
-	if !ok {
-		writeJSONError(w, http.StatusConflict, "session_busy",
-			fmt.Sprintf("another request is in flight on session %q", id))
-		return
-	}
-	defer sessHold.release()
-
-	// Resolve provider+model from the session's stored agent so the
-	// continuation runs against the same model as the original session.
-	// RFC N: resolve at the SESSION's authoritative tenant (the same value
-	// RunOnce uses for a continuation), not tenantFromCtx — the ownership
-	// gate above already proved the caller is entitled to this session.
-	//
-	// A no-trace session has no transcript to continue from.
-	if sess.Retention == store.RetentionNone {
-		writeNoTraceRefusal(w, errNoTraceSession)
-		return
-	}
-	// A session that began inside a team is continued inside it: the request
-	// carries that team scope from here on, so the session's agent — and any
-	// agent this continuation spawns — resolves in the team version the
-	// session started under — unless that version has been retired since, when
-	// it cannot be continued at all. See continuationTeamScopeCtx.
-	scopedCtx, scopeErr := s.continuationTeamScopeCtx(r.Context(), sess)
-	if errors.Is(scopeErr, errContinuationRefused) {
-		http.Error(w, fmt.Sprintf("session cannot be continued: %v", scopeErr), http.StatusBadRequest)
-		return
-	}
-	if scopeErr != nil {
-		http.Error(w, scopeErr.Error(), http.StatusInternalServerError)
-		return
-	}
-	r = r.WithContext(scopedCtx)
-	// A continuation is a new top-level run of the session's agent.
-	if err := s.admitPrincipalAgent(r.Context(), sess.Agent); err != nil {
-		writeAgentNotAllowed(w, err)
-		return
-	}
-	if err := s.admitPrincipalOverrides(r.Context(), overridesSetIn(&body)); err != nil {
-		writeOverrideNotAllowed(w, err)
-		return
-	}
-	agentDef, ok := s.lookupAgent(r.Context(), sess.TenantID, sess.Agent)
-	if !ok {
-		http.Error(w, fmt.Sprintf("session refers to unknown agent %q", sess.Agent), http.StatusBadRequest)
-		return
-	}
-	if err := admitAgentOverrides(sess.Agent, agentDef, overridesSetIn(&body)); err != nil {
-		writeOverrideNotAllowed(w, err)
-		return
-	}
-	// A run that would be no-trace now — its agent's mode, or the caller's
-	// token's — opens its own session; it cannot continue this one.
-	if s.resolveRetention(r.Context(), sess.TenantID, sess.Agent, agentDef, "") == store.RetentionNone {
-		writeNoTraceRefusal(w, errNoTraceSession)
-		return
-	}
-	// v0.8.2: validate user_tier early (same shape as handleRuns).
-	if body.UserTier != "" && len(s.cfg().UserTiers) > 0 {
-		if _, ok := s.cfg().UserTiers[body.UserTier]; !ok {
-			http.Error(w, fmt.Sprintf("unknown user_tier %q", body.UserTier), http.StatusBadRequest)
-			return
-		}
-	}
-	if body.UserBearer != "" && !validUserBearer(body.UserBearer) {
-		http.Error(w, `user_bearer must match [A-Za-z0-9._\-+/=]{16,512}`, http.StatusBadRequest)
-		return
-	}
-	if errMsg, ok := connector.ValidateUserCredentialsMap(body.UserCredentials); !ok {
-		http.Error(w, errMsg, http.StatusBadRequest)
-		return
-	}
-	if errMsg, ok := validateParentContext(body.ParentContext); !ok {
-		http.Error(w, errMsg, http.StatusBadRequest)
-		return
-	}
-	body.ParentContext = connector.StripRuntimeParentContext(body.ParentContext)
-	// RFC AX: recompute the operator-key restriction from the PRESENTING
-	// principal (the current token is authority on a continuation — a documented
-	// decision, not the original run's bit). Computed here so credential-aware
-	// routing (resolveAgent) and the fallback cascade both honor it.
-	operatorKeyRestricted := s.operatorKeyRestrictedForCtx(r.Context())
-	// RFC BX P2b: recompute isolation from the PRESENTING principal (the current
-	// token is authority on a continuation, mirroring operatorKeyRestricted).
-	isolated := s.isolatedForCtx(r.Context())
-	// The run is the session's user's; unlike the two bits above it is not the
-	// presenting principal's to decide (sessionNoUserScope).
-	noUserScope := s.sessionNoUserScope(r.Context(), id) || actingForAnother(r.Context(), sess.TenantID, sess.UserID)
-	runRouting := &routingOverride{Model: body.Model, Provider: body.Provider, Tier: body.Tier, Effort: body.Effort}
-	runResources := &resourceOverride{
-		MaxTokens: body.MaxTokens, MaxIterations: body.MaxIterations,
-		UnboundedIterations: body.UnboundedIterations, MaxConcurrentChildren: body.MaxConcurrentChildren,
-	}
-	runTuning := &tuningOverride{
-		RetryAttempts: body.RetryAttempts, MemoryInjectMaxTokens: body.MemoryInjectMaxTokens,
-		MemoryIndexMaxBytes: body.MemoryIndexMaxBytes, InjectToolGuide: body.InjectToolGuide,
-	}
-	agentDef, oerr := s.effectiveDef(r.Context(), agentDef, runOverrides{
-		Routing: runRouting, Resources: runResources, Tuning: runTuning,
-		QueueRouting: body.Routing,
-	})
-	if oerr != nil {
-		writeResolveError(w, oerr)
-		return
-	}
-	// Replay prior conversation history from the transcript — before the
-	// provider is chosen, since an image in it needs a provider that can take
-	// it (runStartCtx).
-	transcript, err := s.store.GetTranscript(r.Context(), id)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-	priorMessages := replayTranscript(transcript)
-
-	startCtx := runStartCtx(r.Context(), body.Segments, priorMessages)
-	providerID, model, effort, err := s.resolveAgentDef(startCtx, agentDef, sess.TenantID, sess.UserID, sess.Agent, body.UserTier, operatorKeyRestricted)
-	if err != nil {
-		writeResolveError(w, err)
-		return
-	}
-	provider, err := s.providers.Get(providerID)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
-		return
-	}
-
-	// Runtime-pause admission gate (RFC X / F41): a continuation starts a new
-	// turn/run, so reject it with 503 while pausing/paused (before the slot).
-	if s.rejectIfPausedHTTP(w) {
-		return
-	}
-	// RFC AW token-budget admission, first before the run may queue: a
-	// continuation whose (tenant, user) is over a hard ceiling is refused, not
-	// queued.
-	if dec := s.limits.Check(sess.TenantID, sess.UserID); !dec.Allowed {
-		writeTokenLimitError(w, dec.Refusal)
-		return
-	}
-
-	// Validate any caller-supplied agent_id and reserve one for the new
-	// run (sub-fresh per continuation; never inherited from the prior
-	// run since "the run" is what agent_id addresses). Before admission: a
-	// run that has to wait is named in the queue by it.
 	if body.AgentID != "" && !validIdent(body.AgentID) {
-		http.Error(w, `agent_id must match [A-Za-z0-9_-]{1,128}`, http.StatusBadRequest)
-		return
+		return `agent_id must match [A-Za-z0-9_-]{1,128}`, false
 	}
-	if held, err := s.agentIDHeldByDraft(r.Context(), body.AgentID); err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	} else if held {
-		writeJSONError(w, http.StatusConflict, "agent_id_in_use", fmt.Sprintf(agentIDInUseMsg, body.AgentID))
-		return
-	}
-	agentID := body.AgentID
-	if agentID == "" {
-		agentID = newAgentID()
-	}
+	return "", true
+}
 
-	// The run's ctx, with a cancel-cause registered in the cancel registry.
-	// Same shape as handleRuns, including its detach for review: a
-	// continuation held for a verdict must not be cancelled by the caller
-	// leaving, since a review can take far longer than a client keeps its
-	// stream. It keeps the request's ctx values; the cancel registry still
-	// stops it. The loop still runs in this handler, so nothing else changes
-	// hands; the stream just has no reader once the client is gone. Built
-	// before admission so a cancel reaches a continuation while it is queued.
-	runParent := r.Context()
-	if body.Review {
-		runParent = context.WithoutCancel(r.Context())
-	}
-	runCtx, cancelFn := context.WithCancelCause(runParent)
-	defer cancelFn(nil)
-
-	// The SSE stream. A continuation that starts at once opens it after its
-	// row exists; one that has to wait opens it when it queues, so the caller
-	// sees its ids and its `queued` event while it waits.
-	var stream *sse
-	openStream := func(runID string) bool {
-		st, ok := newSSE(w)
-		if !ok {
-			return false
-		}
-		st.start()
-		// See handleRuns for the keepalive rationale.
-		st.startKeepalive(r.Context(), s.cfg().Env.SSEKeepaliveInterval)
-		stream = st
-		st.send(providers.Event{Type: "session", Text: id})
-		st.sendRaw("agent", map[string]any{
-			"agent_id":        agentID,
-			"run_id":          runID,
-			"session_id":      id,
-			"parent_agent_id": nil,
-			"parent_context":  body.ParentContext, // v0.12.x: opaque tracking lineage (nil when absent)
-		})
-		return true
-	}
-
-	// Run slot (RFC EI P3), keyed on the session's (tenant, user) as the run
-	// row is; continuations don't accept a new user_id. A continuation that
-	// cannot start at once is queued — its row (status queued), its
-	// registration and its stream exist before it waits — exactly as POST
-	// /v1/runs. It keeps the session lock while it waits, so the session
-	// takes no other turn on this replica meanwhile; the cluster lock it lets
-	// go (see sessionHold).
-	var (
-		run        store.Run
-		rowErr     error
-		registered bool
-	)
-	queuedIdentity := store.RunIdentity{
-		AgentID: agentID, UserID: sess.UserID, TenantID: sess.TenantID, UserTier: body.UserTier,
-		Model: model, ReplicaID: s.replicaID, ParentContext: body.ParentContext,
-		Interactive: body.Interactive, OperatorKeyRestricted: operatorKeyRestricted, Isolated: isolated,
-		CredentialsNoUserScope: noUserScope,
-		// Nil on purpose, as on POST /v1/runs: the configuration is resolved
-		// after the wait, and StartQueuedRun writes it from `identity` below.
-		RunConfig: nil,
-	}
-	acquireStart := time.Now()
-	runSlot := &concurrency.RunSlot{}
-	release, queued, err := s.admitRun(runCtx, admitArgs{
-		slot:     runSlot,
-		tenantID: sess.TenantID,
-		userID:   sess.UserID,
-		agentID:  agentID,
-		createRow: func() (string, string, error) {
-			sessHold.releaseCluster() // taken back once admitted
-			queuedRun, err := s.store.CreateQueuedRun(r.Context(), id, queuedIdentity)
-			if err != nil {
-				rowErr = err
-				return "", "", err
-			}
-			if in, err := messagesRunInput(id, sess, body); err != nil {
-				log.Printf("queue: run %s: could not convert its request for a restart: %v", queuedRun.ID, err)
-			} else {
-				s.recordQueuedInput(r.Context(), queuedRun.ID, sess.TenantID, sess.Retention, in)
-			}
-			return id, queuedRun.ID, nil
-		},
-		announce: func(sessionID, runID string) error {
-			if err := s.cancelReg.Register(cancel.Entry{
-				AgentID: agentID, RunID: runID, SessionID: sessionID,
-				UserID: sess.UserID, StartedAt: time.Now(),
-			}, cancelFn); err != nil {
-				return err
-			}
-			registered = true
-			if !openStream(runID) {
-				return errStreamingUnsupported
-			}
-			return nil
-		},
-		forward: func(ev providers.Event) {
-			if stream != nil {
-				stream.send(ev)
-			}
-		},
-	})
-	queueWait := time.Since(acquireStart)
-	if registered {
-		defer s.cancelReg.Deregister(agentID)
-	}
-	if stream != nil {
-		defer stream.end()
-	}
-	if err != nil {
-		switch {
-		case stream != nil:
-			// The caller already has the run's stream: end it with the reason.
-			stream.send(providers.Event{Type: providers.EventError, Error: "the run did not start: " + err.Error()})
-		case rowErr != nil:
-			writeRunRowError(w, rowErr)
-		case errors.Is(err, cancel.ErrInUse):
-			writeJSONError(w, http.StatusConflict, "agent_id_in_use",
-				fmt.Sprintf("agent_id %q is already mapped to an active run", agentID))
-		case errors.Is(err, errStreamingUnsupported):
-			http.Error(w, "server does not support streaming on this transport", http.StatusInternalServerError)
-		default:
-			writeQuotaError(w, err)
-		}
-		return
-	}
-	if queued != nil {
-		// It let the cluster session lock go while it waited (see
-		// sessionHold): it starts only if it can take the lock back, and then
-		// reads the session's history again, since another replica may have
-		// taken a turn on it meanwhile.
-		var startErr error
-		if !sessHold.reacquire() {
-			startErr = fmt.Errorf("another request is in flight on session %q", id)
-		} else if transcript, err := s.store.GetTranscript(r.Context(), id); err != nil {
-			startErr = err
-		} else {
-			priorMessages = replayTranscript(transcript)
-		}
-		if startErr != nil {
-			release()
-			s.endQueuedRun(queued.runID, startErr)
-			stream.send(providers.Event{Type: providers.EventError, Error: "the run did not start: " + startErr.Error()})
-			return
+// runIdentityShapeError checks the fields both run-start routes take for who
+// the run acts as: its user tier, its per-run bearer and credentials, and the
+// caller's tracking context.
+func (s *Server) runIdentityShapeError(userTier, bearer string, creds map[string]string, pc *store.ParentContext) (string, bool) {
+	if userTier != "" && len(s.cfg().UserTiers) > 0 {
+		if _, ok := s.cfg().UserTiers[userTier]; !ok {
+			return fmt.Sprintf("unknown user_tier %q", userTier), false
 		}
 	}
-	// RFC AW token-budget admission, again at start: a continuation that
-	// queued may have crossed its ceiling while it waited. Release the slot
-	// first; check BEFORE `defer release()` so the manual release() isn't
-	// double-fired.
-	limitDec := s.limits.Check(sess.TenantID, sess.UserID)
-	if !limitDec.Allowed {
-		release()
-		if queued != nil {
-			s.endQueuedRun(queued.runID, fmt.Errorf("%s", limitDec.Refusal.Message))
-			stream.send(providers.Event{Type: providers.EventError, Error: limitDec.Refusal.Message})
-			return
-		}
-		writeTokenLimitError(w, limitDec.Refusal)
-		return
+	if bearer != "" && !validUserBearer(bearer) {
+		return `user_bearer must match [A-Za-z0-9._\-+/=]{16,512}`, false
 	}
-	defer release()
-	if queued != nil {
-		if pid, p, m, e, ok := s.resolveAfterQueue(startCtx, agentDef, sess.TenantID, sess.UserID, sess.Agent, body.UserTier, operatorKeyRestricted); ok {
-			providerID, provider, model, effort = pid, p, m, e
-		}
+	if msg, ok := connector.ValidateUserCredentialsMap(creds); !ok {
+		return msg, false
 	}
-
-	// RFC N FIX 2-mcp: a continuation advertises at the SESSION's
-	// authoritative tenant (the same value the continuation run uses), not
-	// the ctx tenant — the ownership gate above already proved the caller
-	// is entitled to this session.
-	allowedTools := filterTools(s.candidateTools(r.Context(), sess.TenantID, agentDef.Tools), agentDef.Tools, body.Tools)
-	allowedTools = s.grantRecallTool(allowedTools, config.MergeContext(agentDef.Context, body.Context)) // RFC CT
-	var hostPolicy tools.HostPolicyValue
-	if body.AllowedHosts != nil || s.cfg().Env.HTTPCallerAuthoritative {
-		var caller []string
-		if body.AllowedHosts != nil {
-			caller = *body.AllowedHosts
-		}
-		// A locked caller's list only narrows, in every mode.
-		narrowOnly := body.AllowedHosts != nil && callerHostsNarrowOnly(r.Context(), agentDef)
-		allowedTools = builtin.NarrowHosts(allowedTools, caller, body.WebSearchFilter, s.cfg().Env.HTTPCallerAuthoritative && !narrowOnly)
-		hostPolicy = tools.HostPolicyValue{
-			AllowedHosts:    caller,
-			HasList:         body.AllowedHosts != nil,
-			WebSearchFilter: body.WebSearchFilter,
-			NarrowOnly:      narrowOnly,
-		}
+	if msg, ok := validateParentContext(pc); !ok {
+		return msg, false
 	}
-	dispatcher := s.newDispatcher(allowedTools)
-
-	// Re-prepend the agent's system prompt — it isn't in the transcript
-	// (it's per-call configuration, not conversation content).
-	segments := body.Segments
-	// v0.8.22: rebuild SystemPrompt from per-run SkillDef bodies
-	// when any of the agent's skills has a DB-active row. No-op
-	// fast path when none do.
-	// RFC N: resolve at the SESSION's authoritative tenant (the same value
-	// RunOnce uses for a continuation), not tenantFromCtx — the ownership
-	// gate above already proved the caller is entitled to this session.
-	agentDef, promptProv := s.resolveSkillBodiesForRun(r.Context(), sess.TenantID, agentDef)
-	// RFC BL P1: memory injection + effective core-block set (see RunOnce).
-	agentDef, coreBlocks := s.applyMemoryInjection(r.Context(), agentDef, memInject{
-		Tenant: sess.TenantID, UserID: sess.UserID, AgentName: sess.Agent,
-		InitialInput: firstUserText(body.Segments), Tools: allowedTools,
-	})
-	if agentDef.SystemPrompt != "" {
-		segments = append([]loop.PromptSegment{{
-			Role: "system",
-			Content: []loop.PromptContentBlock{{
-				Type: "trusted-text", Text: agentDef.SystemPrompt, Cacheable: true,
-			}},
-		}}, segments...)
-	}
-
-	// The continuation's own resolved configuration — merged once, persisted
-	// with the run, and restored on resume (see runConfigRecord).
-	runCfg := runConfigRecord{
-		Sampling:          config.MergeSampling(agentDef.Sampling, body.Sampling), // per-run wins per field
-		EphemeralReadOnly: agentDef.EphemeralVolumes == config.EphemeralVolumesReadOnly,
-		ToolChoice:        config.MergeToolChoice(agentDef.ToolChoice, body.ToolChoice), // per-run replaces whole
-		OutputFormat:      config.MergeOutputFormat(agentDef.OutputFormat, body.OutputFormat),
-		Compaction:        config.MergeCompaction(agentDef.Compaction, body.Compaction), // per-run wins per field
-		Context:           config.MergeContext(agentDef.Context, body.Context),          // per-run wins per field
-		MaxContextTokens:  config.MergeMaxContextTokens(agentDef.MaxContextTokens, body.MaxContextTokens),
-		RunTimeoutSeconds: pickRunTimeout(body.RunTimeoutSeconds, agentDef.RunTimeoutSeconds),
-		Routing:           persistedRouting(runRouting),
-		QueueRouting:      body.Routing.Clone(),
-		Resources:         persistedResources(runResources),
-		Tuning:            persistedTuning(runTuning),
-		Hosts:             hostRecordOf(hostPolicy),
-		Review:            reviewRecord(body.Review),
-		ReviewTTLSeconds:  positiveOrZero(body.ReviewTTLSeconds),
-		Hooks:             additionsRecord(hooks.Additions{Hooks: body.Hooks, ToolHooks: body.ToolHooks}),
-		Interruption:      body.Interruption,        // the run's own block, so a resume re-narrows from it
-		AgentVersion:      agentVersionOf(agentDef), // the version it resumes on
-		TeamScope:         teamScopeRecordOf(r.Context()),
-		IterationLimit:    s.startIterationLimit(agentDef, provider, body.Interactive),
-	}
-
-	// Create a new run inside the existing session. user_id is
-	// inherited from the session (set at original creation). user_tier
-	// is per-request (v0.8.2) — a user upgrading mid-session sees
-	// the new tier applied immediately on this continuation.
-	// operatorKeyRestricted was computed above from the presenting principal.
-	identity := store.RunIdentity{
-		AgentID:       agentID,
-		UserID:        sess.UserID,
-		TenantID:      sess.TenantID, // RFC L: continuation inherits the session's authoritative tenant
-		UserTier:      body.UserTier,
-		Model:         model,
-		ReplicaID:     s.replicaID,
-		ParentContext: body.ParentContext, // v0.12.x: tracking lineage for this continuation + its sub-agents
-		// F42: an interactive continuation PARKS at end_turn, and resume reads
-		// this column to decide park-vs-complete. Without it a restored
-		// interactive conversation comes back as a batch run.
-		Interactive:            body.Interactive,
-		OperatorKeyRestricted:  operatorKeyRestricted,
-		Isolated:               isolated, // RFC BX P2b: confine data tools to own scope
-		CredentialsNoUserScope: noUserScope,
-		RunConfig:              runCfg.marshal(),
-	}
-	if queued != nil {
-		// It waited: its row exists, queued, and only moves to running now. A
-		// cancel that ended it meanwhile wins.
-		run, err = s.store.StartQueuedRun(r.Context(), queued.runID, identity)
-		if err != nil {
-			if !errors.Is(err, store.ErrRunNotQueued) {
-				s.endQueuedRun(queued.runID, err)
-			}
-			stream.send(providers.Event{Type: providers.EventError, Error: "the run did not start: " + err.Error()})
-			return
-		}
-	} else {
-		run, err = s.store.CreateRun(r.Context(), id, identity)
-		if err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-			return
-		}
-	}
-
-	// v0.10.0 OTEL: top-level loomcycle.run span for session
-	// continuations. Each /v1/messages turn = one span.
-	runCtx, runSpan := lcotel.RecordRunStart(runCtx, lcotel.RunStartAttrs{
-		RunID:     run.ID,
-		AgentID:   agentID,
-		AgentName: sess.Agent,
-		UserID:    sess.UserID,
-	})
-	defer runSpan.End()
-	lcotel.RecordQueueWait(runSpan, queueWait)
-
-	// A continuation that queued was registered before it waited.
-	var regErr error
-	if !registered {
-		regErr = s.cancelReg.Register(cancel.Entry{
-			AgentID:   agentID,
-			RunID:     run.ID,
-			SessionID: id,
-			UserID:    sess.UserID,
-			StartedAt: time.Now(),
-		}, cancelFn)
-	}
-	// v0.9.x: per-run meta for runstate.Bus.
-	meta := runStateMeta{
-		RunID:         run.ID,
-		AgentID:       agentID,
-		Agent:         sess.Agent,
-		UserID:        sess.UserID,
-		TenantID:      sess.TenantID,
-		otelSpan:      runSpan,
-		ParentContext: body.ParentContext,
-		// RFC AH Phase 2b: a continuation is a top-level run; it owns the
-		// ephemeral tree purge for THIS run id.
-		IsTopLevel: true,
-		RootRunID:  run.ID,
-	}
-	if errors.Is(regErr, cancel.ErrInUse) {
-		// Same orphan-row mitigation as handleRuns — the run was
-		// already inserted at status=running.
-		s.finishRunFailedReason(run.ID, "agent_id collision; run never started", meta)
-		writeJSONError(w, http.StatusConflict, "agent_id_in_use",
-			fmt.Sprintf("agent_id %q is already mapped to an active run", agentID))
-		return
-	}
-	if regErr != nil {
-		s.finishRunFailedReason(run.ID, "registry register failed: "+regErr.Error(), meta)
-		http.Error(w, regErr.Error(), http.StatusInternalServerError)
-		return
-	}
-	if !registered {
-		defer s.cancelReg.Deregister(agentID)
-	}
-	s.publishRunState(meta, "running", "", "")
-
-	// Persist the new user input segments so a future replay sees them.
-	s.persistUserInput(r.Context(), run.ID, sess.ID, sess.TenantID, sess.UserID, body.Segments)
-	// v0.9.x: also persist the resolved system prompt + provenance.
-	// On a continuation run, AgentDef could have been promoted to a
-	// new version between turns — emit on EVERY run so each cycle
-	// records the instructions the agent saw at THAT moment.
-	s.emitSystemPromptEvent(r.Context(), run.ID, agentDef.SystemPrompt, "", promptProv)
-
-	if stream == nil {
-		if !openStream(run.ID) {
-			http.Error(w, "server does not support streaming on this transport", http.StatusInternalServerError)
-			return
-		}
-		defer stream.end()
-	}
-
-	// Hoisted above the recording emit so usage is attributed under the run's
-	// true identity (see makeRecordingEmit) and WithRunIdentity below reuses it.
-	rid := tools.RunIdentityValue{
-		UserID:                 sess.UserID,
-		TenantID:               sess.TenantID, // RFC L: tenant from the session (authoritative at creation)
-		AgentID:                agentID,
-		RootRunID:              run.ID, // RFC AH Phase 2b: continuation roots its own spawn tree
-		SessionID:              id,     // the chat a run-time write records itself against
-		UserTier:               body.UserTier,
-		UserBearer:             body.UserBearer,      // v0.8.x: per-run MCP bearer
-		UserCredentials:        body.UserCredentials, // v1.x RFC F: per-tool named credentials
-		ParentContext:          body.ParentContext,   // v0.12.x: opaque tracking lineage, inherited by sub-agents
-		OperatorKeyRestricted:  operatorKeyRestricted,
-		Isolated:               isolated, // RFC BX P2b: confine data tools to own scope
-		CredentialsNoUserScope: noUserScope,
-		UserScopeWithheld:      s.userScopeLatch(run.ID), // set if another user sends it a turn
-	}
-	// Persist under runCtx so a detached continuation's events survive the
-	// client leaving (runCtx tracks the request otherwise).
-	// Forwarding stops before the handler returns (see handleRuns): a
-	// background child may still emit through this run's emit after it ends.
-	streamFwd, streamGone := forwardWhileAttached(stream.send)
-	defer streamGone()
-	emit := s.makeRecordingEmit(runCtx, run.ID, rid, id, meta, streamFwd)
-	// RFC AW: emit any soft budget crossings found at admission so the warning
-	// lands at run start (dedup'd once-per-run by makeRecordingEmit).
-	for _, info := range limitDec.Soft {
-		emit(providers.Event{Type: providers.EventLimit, Limit: &info})
-	}
-
-	// A tool the agent holds and cannot use, said once here rather than
-	// discovered by the model being refused mid-task.
-	emitInertCapabilityWarnings(agentDef, emit)
-	emitInertInterruption(holdsInterruptionTool(allowedTools), body.Interruption, emit)
-
-	// PR 2: operator steering queue for this continuation run.
-	steerQ, onSteer, closeSteer, deregSteer := s.makeSteer(runCtx, run.ID, agentID, id, sess.UserID, emit)
-	defer deregSteer()
-	heartbeat := s.makeHeartbeat(run.ID)
-
-	// The run's own turn calls lend its global slot while they wait for a
-	// provider lane (concurrency.RunSlot).
-	loopCtx := concurrency.WithRunSlot(tools.WithAgentTools(runCtx, toolNames(allowedTools)), runSlot)
-	loopCtx = tools.WithAgentToolPatterns(loopCtx, agentDef.Tools) // raw globs for the Skill subset check
-	// RFC AR: honor a tenant/user provider-key override (ANTHROPIC_API_KEY,
-	// BRAVE_API_KEY, …) for this run. Sub-agents inherit it via subRunCtx←ctx.
-	loopCtx = providers.WithCredentialResolver(loopCtx, s.credResolver)
-	// RFC AX: mirror the negative permission bit onto ctx for the stage-2
-	// driver backstop (drivers import providers, not auth/tools).
-	loopCtx = providers.WithOperatorKeyAllowed(loopCtx, !operatorKeyRestricted)
-	loopCtx = tools.WithRunIdentity(loopCtx, rid)
-	// Sub-agents spawned by this continuation must inherit the
-	// caller-authoritative host narrowing, same as runRequest +
-	// handleRuns. Without this, a sub-agent runs against the
-	// operator's static allowlist instead of the caller's narrowed
-	// list — the production failure mode 9677b85 fixed for top-level
-	// runs and this continuation path was missing the same fix.
-	loopCtx = tools.WithHostPolicy(loopCtx, hostPolicy)
-	loopCtx = tools.WithAgentName(loopCtx, sess.Agent)
-	loopCtx = tools.WithMemoryPolicy(loopCtx, tools.MemoryPolicyValue{
-		AllowedScopes:      tools.EffectiveMemoryScopes(loopCtx, agentDef.MemoryScopes),
-		QuotaBytes:         agentDef.MemoryQuotaBytes,
-		Backend:            agentDef.MemoryBackend,
-		Consolidation:      agentDef.MemoryConsolidation,
-		RecallIncludeTurns: agentDef.RecallIncludeTurns,
-		RecallAttachTraces: agentDef.RecallAttachTraces,
-		Rerank:             agentDef.MemoryRerank,
-		Units:              agentDef.MemoryUnits,
-	})
-	loopCtx = tools.WithDecisionPolicy(loopCtx, agentDef.Decision)
-	// RFC BL P1: run's resolved core blocks (Memory-tool enforcement + inherit).
-	loopCtx = tools.WithCoreBlocksPolicy(loopCtx, tools.CoreBlocksPolicyValue{Blocks: coreBlocks})
-	// RFC AA: the agent's SQL Memory ACL. Empty sql_scopes → default-deny.
-	loopCtx = tools.WithSqlMemPolicy(loopCtx, tools.SqlMemPolicyValue{
-		AllowedScopes: tools.EffectiveSqlScopes(loopCtx, agentDef.SqlScopes),
-		QuotaBytes:    agentDef.SqlQuotaBytes,
-	})
-	loopCtx = tools.WithCompactionPolicy(loopCtx, config.MergeCompaction(agentDef.Compaction, body.Compaction))
-	loopCtx = tools.WithContextPolicy(loopCtx, config.MergeContext(agentDef.Context, body.Context)) // RFC CR
-	// RFC AH: the run's filesystem-volume bindings. Unbound agents get an
-	// empty policy (the file tools fall back to the legacy jail Root);
-	// sub-agents inherit + narrow this via runSubAgent.
-	loopCtx = tools.WithVolumePolicy(loopCtx, s.volumePolicyForAgent(loopCtx, agentDef))
-	loopCtx = ephemeralReadOnlyFor(loopCtx, agentDef)
-	// RFC AH Phase 2b: fresh run-scoped ephemeral volume set (inherited by
-	// sub-agents via ctx; never shared across top-level runs).
-	// Registered under the tree's root, so a run of this tree that resume
-	// starts again joins this set and not a copy of it. Dropped with the
-	// tree's purge.
-	treeSet, _ := s.treeSets.acquire(run.ID)
-	loopCtx = tools.WithEphemeralVolumes(loopCtx, treeSet)
-	loopCtx = s.withEphemeralRecord(loopCtx, run.ID)
-	loopCtx = tools.WithChannelPolicy(loopCtx, s.channelPolicyForAgent(loopCtx, agentDef))
-	loopCtx = tools.WithOperatorAuthored(loopCtx, agentDef.OperatorAuthored)
-	loopCtx = tools.WithEventEmitter(loopCtx, emit)
-	adPolicy, evPolicy := s.substratePoliciesForAgent(agentDef, sess.Agent)
-	loopCtx = tools.WithAgentDefPolicy(loopCtx, adPolicy)
-	loopCtx = tools.WithSkillPolicy(loopCtx, s.skillPolicyForAgent(agentDef))
-	// RFC BB: per-agent web-search fallback list (empty = global search_priority).
-	loopCtx = tools.WithSearchProviders(loopCtx, agentDef.SearchProviders)
-	loopCtx = tools.WithVolumeDefPolicy(loopCtx, s.volumeDefPolicyForAgent(agentDef))
-	loopCtx = tools.WithEvaluationPolicy(loopCtx, evPolicy)
-	loopCtx = tools.WithCryptoPolicy(loopCtx, cryptoPolicyForAgent(agentDef))
-	loopCtx = tools.WithHistoryPolicy(loopCtx, s.historyPolicyForAgent(loopCtx, agentDef))
-	loopCtx, liveInterruption := s.startRunInterruption(loopCtx, agentDef, body.Interruption)
-	loopCtx = tools.WithRunID(loopCtx, run.ID)
-	loopCtx = s.withRunHooks(loopCtx, run.ID, sess.Agent, agentDef, hooks.Additions{Hooks: body.Hooks, ToolHooks: body.ToolHooks})
-	loopCtx = tools.WithDispatcher(loopCtx, dispatcher)
-	// Cooperative pause quiesce (RFC X / F41) — synchronous handler, defer-deregister.
-	// A continuation is never a no-trace run: it is refused above.
-	gate, deregGate := s.newPauseGate(run.ID, false)
-	defer deregGate()
-	// RFC X Phase 3: expose the gate to the Agent tool (parallel_spawn parent park).
-	loopCtx = tools.WithPauseGate(loopCtx, gate)
-	fbPolicy, fbReResolve := s.fallbackForRun(sess.TenantID, sess.UserID, sess.Agent, body.UserTier, operatorKeyRestricted, runRouting)
-	seed, seeded := statefulContinuationSeed(transcript, runCfg.Context, provider.Capabilities().Local, body.Interactive, segments)
-	if seeded {
-		priorMessages = nil
-	}
-	loopRes, runErr := loop.Run(loopCtx, loop.RunOptions{
-		Provider:                provider,
-		Model:                   model,
-		Tools:                   allowedTools,
-		Dispatcher:              dispatcher,
-		Segments:                injectMetadataSegments(segments, provider.Capabilities().MetadataViaInput, body.Metadata, nil),
-		PriorMessages:           priorMessages,
-		InitialState:            seed.Sigma,
-		InitialObservation:      seed.Observation,
-		PauseGate:               gate,
-		BudgetGate:              s.budgetGate(sess.TenantID, sess.UserID),
-		OnEvent:                 emit,
-		OnHeartbeat:             heartbeat,
-		MaxTokens:               agentDef.MaxTokens,      // 0 → driver default
-		MaxContextTokens:        runCfg.MaxContextTokens, // RFC CJ; per-run wins, 0 → provider/driver default
-		MaxIterations:           agentDef.MaxIterations,  // 0 → loop default (16)
-		UnboundedIterations:     agentDef.UnboundedIterations,
-		SteerQueue:              steerQ,
-		OnSteer:                 onSteer,
-		CloseSteerIfEmpty:       closeSteer,
-		Effort:                  effort,
-		MarkStalled:             s.markStalledFn(providerID, model),
-		ObserveCall:             s.callObserver(run.ID),
-		MarkRateLimited:         s.markRateLimitedFn(body.UserTier),
-		ClearStall:              s.clearStallFn(providerID, model),
-		ToolParallelism:         s.cfg().Env.ToolParallelism,
-		AgentName:               sess.Agent,
-		CodeBody:                agentDef.Code, // inline code-js body (RFC J); "" → FS fallback
-		Metadata:                body.Metadata,
-		RunTimeoutSeconds:       runCfg.RunTimeoutSeconds,
-		Interactive:             body.Interactive,
-		InteractiveNow:          s.interactiveNowFn(run.ID, body.Interactive),
-		Review:                  body.Review,
-		ReviewNow:               s.reviewNowFn(run.ID, body.Review),
-		ReviewTTL:               runCfg.reviewTTL(),
-		ArmTurnCancel:           s.armTurnCancelIf(body.Interactive, run.ID), // RFC BH: turn-cancellable when interactive
-		Sampling:                runCfg.Sampling,                             // merged once, above
-		ToolChoice:              runCfg.ToolChoice,                           // merged once, above
-		OutputFormat:            runCfg.OutputFormat,
-		Compaction:              runCfg.Compaction, // merged once, above
-		Context:                 runCfg.Context,    // merged once, above (RFC CR)
-		ContextPlugins:          s.contextPlugins,  // RFC Z runtime-wide chain (code-js exempt in the loop)
-		UserTier:                body.UserTier,
-		FallbackPolicy:          fbPolicy,
-		ReResolve:               fbReResolve,
-		MoveForQueue:            s.queueMoveFn(agentDef, runCfg.Routing, run.ID, sess.TenantID, sess.UserID, sess.Agent, body.UserTier, operatorKeyRestricted),
-		Hooks:                   s.hookDispatcher,
-		MaxSameProviderRetries:  s.retryAttemptsForAgent(agentDef, body.UserTier),
-		ReResolveOnOperatorTurn: s.reResolveOnOperatorTurnFn(run.ID, sess.TenantID, sess.UserID, sess.Agent, body.UserTier, operatorKeyRestricted, runCfg.Routing, liveInterruption),
-
-		// A parked run adopts a retuned tool_choice / output_format at the same
-		// boundary; the baseline is what the run starts with.
-		ReReadShapeOnOperatorTurn: s.reReadShapeOnOperatorTurnFn(run.ID, runCfg.ToolChoice, runCfg.OutputFormat),
-	})
-	if runErr != nil {
-		stream.send(runErrorEvent(runErr))
-	}
-
-	s.finishRunWithCancel(runParent, runCtx, run.ID, loopRes, runErr, meta)
+	return "", true
 }
 
 // replayTranscript walks the persisted events of a session and reconstructs

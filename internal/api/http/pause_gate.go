@@ -256,9 +256,15 @@ func (s *Server) rejectIfPausedHTTP(w http.ResponseWriter) bool {
 	if !s.runtimePaused() {
 		return false
 	}
+	writeRuntimePaused(w)
+	return true
+}
+
+// writeRuntimePaused is the HTTP answer to a run start while the runtime is
+// paused.
+func writeRuntimePaused(w http.ResponseWriter) {
 	writeJSONError(w, http.StatusServiceUnavailable, "runtime_paused",
 		"runtime is paused (snapshot quiesce); retry after resume")
-	return true
 }
 
 // pausedRunErr returns runner.ErrRuntimePaused when the runtime is paused, for

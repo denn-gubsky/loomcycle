@@ -339,7 +339,6 @@ func TestResolvePrincipal_UnreadableRestrictionsRefuseTheToken(t *testing.T) {
 var runRowCreators = map[string]string{
 	// Top-level intakes a credential reaches: each must admit the principal.
 	"handleRuns":              "admit",
-	"handleMessages":          "admit",
 	"RunOnce":                 "admit",
 	"ReplaySession":           "admit",
 	"createConfiguredRunCore": "admit",
