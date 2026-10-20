@@ -351,8 +351,9 @@ func (s *Server) resolvePrincipal(ctx context.Context, bearer string) (auth.Prin
 
 // resolvePrincipalUncached is the resolution itself: token substrate
 // first (indexed peppered-hash lookup, honoring the rotation grace
-// window; on a miss, the legacy-hash candidates of lookupLegacyToken), then the legacy LOOMCYCLE_AUTH_TOKEN fallback (disabled once
-// an admin-scoped token exists — the no-lockout migration gate). Returns
+// window; on a miss, the legacy hashes of lookupLegacyToken), then the
+// legacy LOOMCYCLE_AUTH_TOKEN fallback (disabled once an admin-scoped
+// token exists — the no-lockout migration gate). Returns
 // (_, false) for unknown/expired/invalid — the caller maps that to an
 // opaque 401. NEVER fails open to the legacy token on a substrate error.
 //
