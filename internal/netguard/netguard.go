@@ -144,12 +144,25 @@ func reachableOnlyByCIDR(ip net.IP) bool {
 	return isLinkLocalOrMetadata(addr.Unmap())
 }
 
+// opaqueEmbeddingV6 are IPv6 ranges that may carry an IPv4 address to a
+// gateway at a position this guard cannot read (see nonPublicV6): local-use
+// NAT64 (operator-chosen prefix length) and Teredo (obfuscated client
+// address). A vouched name never reaches them, since the carried address could
+// be link-local; a CIDR entry covering one does.
+var opaqueEmbeddingV6 = []netip.Prefix{
+	netip.MustParsePrefix("64:ff9b:1::/48"),
+	netip.MustParsePrefix("2001::/32"),
+}
+
 func isLinkLocalOrMetadata(a netip.Addr) bool {
 	if a.IsLinkLocalUnicast() || slices.Contains(metadataAddrs, a) {
 		return true
 	}
 	if a.Is4() {
 		return false
+	}
+	if inAnyPrefix(a, opaqueEmbeddingV6) {
+		return true
 	}
 	b := a.As16()
 	for _, e := range embeddingV6 {

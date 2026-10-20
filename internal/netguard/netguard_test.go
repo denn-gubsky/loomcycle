@@ -355,3 +355,39 @@ func TestSocketControl_VouchedNameRefusesLinkLocal(t *testing.T) {
 		t.Errorf("Control refused a link-local address a CIDR entry covers: %v", err)
 	}
 }
+
+// TestGuardedDial_VouchedNameRefusesUnwrappableIPv4Embeddings: an IPv6 form
+// whose embedded IPv4 cannot be located reliably (local-use NAT64, whose prefix
+// length the operator chooses; Teredo, whose client address is obfuscated) may
+// carry a link-local address to a gateway, so a vouched name never reaches one.
+func TestGuardedDial_VouchedNameRefusesUnwrappableIPv4Embeddings(t *testing.T) {
+	allow := []string{"vouched.test"}
+	for _, addr := range []string{
+		"64:ff9b:1::a9fe:a9fe",                 // local-use NAT64, 169.254.169.254 at a /96 offset
+		"64:ff9b:1:a9fe:a9fe::",                // local-use NAT64, 169.254.169.254 at a /48 offset
+		"2001:0:4136:e378:8000:63bf:3fff:fdd2", // Teredo
+	} {
+		if err := vouchedDialErr(t, addr, "9", allow); !isGuardRefusal(err) {
+			t.Errorf("vouched name resolving to %s: err = %v, want a guard refusal", addr, err)
+		}
+	}
+	vouched := socketControl(blockedFor(false, true, nil))
+	if err := vouched("tcp6", "[64:ff9b:1::a9fe:a9fe]:80", nil); err == nil {
+		t.Error("Control admitted 64:ff9b:1::a9fe:a9fe for a vouched name")
+	}
+}
+
+// TestGuardedDial_VouchedNameReachesEmbeddedPrivateIPv4: where the embedded
+// IPv4 can be read (well-known NAT64, 6to4, IPv4-mapped), a vouched name still
+// reaches an RFC 1918 address carried that way, as it does the IPv4 itself.
+func TestGuardedDial_VouchedNameReachesEmbeddedPrivateIPv4(t *testing.T) {
+	allow := []string{"vouched.test"}
+	for _, addr := range []string{"64:ff9b::a00:5", "2002:a00:5::1", "::ffff:10.0.0.5"} {
+		if err := vouchedDialErr(t, addr, "9", allow); isGuardRefusal(err) {
+			t.Errorf("vouched name resolving to %s refused by the guard: %v", addr, err)
+		}
+	}
+	if err := vouchedDialErr(t, "64:ff9b:1::a9fe:a9fe", "9", []string{"vouched.test", "64:ff9b:1::/48"}); isGuardRefusal(err) {
+		t.Errorf("a CIDR entry covering local-use NAT64 should re-allow it: %v", err)
+	}
+}
