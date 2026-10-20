@@ -23,6 +23,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"math"
 	"slices"
 	"strconv"
@@ -1710,7 +1711,58 @@ type TenantSummary struct {
 //
 // All methods take ctx. Implementations must honour ctx cancellation for
 // long-running queries (transcript replay especially).
+//
+// Store is the union of the domain interfaces below; each method belongs to
+// exactly one of them (TestStore_IsDisjointUnionOfDomainInterfaces). A
+// consumer that needs one domain should take that interface, not Store. A new
+// method goes into its domain interface, never into this list directly.
+//
+// Close (io.Closer) releases backend resources. Idempotent.
 type Store interface {
+	SessionStore
+	RunStore
+	PendingRunStore
+	EventStore
+	UsageStore
+	TokenLimitStore
+	RetentionStore
+	UserStore
+	SnapshotStore
+	SnapshotReadStore
+	SnapshotRestoreStore
+	MemoryStore
+	MemoryChangeStore
+	MemoryConsolidationStore
+	MemoryVectorStore
+	ChannelStore
+	AgentDefStore
+	SkillDefStore
+	TeamDefStore
+	WebhookDeliveryStore
+	HookDefStore
+	MCPServerDefStore
+	VolumeDefStore
+	CredentialDefStore
+	DirentStore
+	EphemeralVolumeStore
+	ScheduleDefStore
+	ScheduleRunStateStore
+	A2ADefStore
+	WebhookDefStore
+	MemoryBackendDefStore
+	DocumentSourceDefStore
+	OperatorTokenStore
+	EvaluationStore
+	MetricsStore
+	DynamicAgentStore
+	InterruptStore
+	ChannelDefStore
+	io.Closer
+}
+
+// SessionStore persists sessions — the conversations runs belong to — their
+// metadata, and the per-chat embedding index.
+type SessionStore interface {
 	// CreateSession creates a new session with a generated ID. userID
 	// may be empty for v0.3 back-compat callers.
 	CreateSession(ctx context.Context, tenantID, agent, userID string) (Session, error)
@@ -1820,7 +1872,12 @@ type Store interface {
 	// embedding are candidates (INNER JOIN). Ranking is in Go over the folded
 	// candidate set; limit caps the returned rows.
 	SessionEmbedSearch(ctx context.Context, filter SessionFilter, query []float32, limit int) ([]SessionSimilar, error)
+}
 
+// RunStore persists started runs: creation, reads and listings, liveness
+// (heartbeat, stale sweep), and the mutable run columns (model, config, pause
+// state, replica).
+type RunStore interface {
 	// CreateRun starts a new run within an existing session, in
 	// status "running". Returns ErrNotFound if sessionID doesn't exist.
 	// identity carries the v0.4 tracking fields; pass a zero value to
@@ -2027,7 +2084,11 @@ type Store interface {
 	// pauses first (lower risk of stale state being overwritten by
 	// fresher runs that paused later in the same window).
 	ListPausedRuns(ctx context.Context) ([]Run, error)
+}
 
+// PendingRunStore persists runs that exist but have not started:
+// configured-run drafts and runs queued for a slot.
+type PendingRunStore interface {
 	// CreateConfiguredRun inserts a DRAFT (RFC DI D5): a run in status
 	// "configured" that holds no slot and runs nothing until StartConfiguredRun.
 	// draft is the raw request that will start it, minus secrets — opaque to
@@ -2118,7 +2179,10 @@ type Store interface {
 	// would pin its session forever: retention prunes only sessions whose runs
 	// are all terminal.
 	SweepExpiredConfiguredRuns(ctx context.Context, cutoff time.Time) (int, error)
+}
 
+// EventStore persists the run event log: appends, transcripts and event reads.
+type EventStore interface {
 	// AppendEvent persists one event for a run. Implementations should be
 	// safe to call from the loop's goroutine on the hot path; bulk-insert
 	// is not required (a run typically emits 10–100 events).
@@ -2166,7 +2230,10 @@ type Store interface {
 	// run read uses it to find where the latest turn's tool calls begin (see
 	// awaited.ForRun). Returns *ErrNotFound{Kind:"event"} when there is none.
 	GetLastEventOfTypesBefore(ctx context.Context, runID string, types []string, beforeSeq int64) (Event, error)
+}
 
+// UsageStore persists the per-call token-usage ledger and its archive rollup.
+type UsageStore interface {
 	// RecordCallUsage appends one per-call usage row (RFC AV). Append-only; the
 	// caller supplies a fully-formed row (identity + tokens + priced cost). It
 	// is the granular ledger beneath the FinishRun per-run summary.
@@ -2211,7 +2278,11 @@ type Store interface {
 	// folds via the archive PK (ON CONFLICT adds). Returns the count of raw rows
 	// pruned. The rollup-and-prune sweeper calls this on a timer (RFC AV Phase 2b).
 	RollupAndPruneUsage(ctx context.Context, olderThan time.Time) (pruned int, err error)
+}
 
+// TokenLimitStore persists per-scope token budgets and the month-to-date
+// usage they count beyond the ledger (restored carry, unmeasured estimates).
+type TokenLimitStore interface {
 	// TokenLimitPut upserts one per-scope token budget on its
 	// (tenant_id, scope, scope_id) primary key (RFC AW). A nil SoftLimit/
 	// HardLimit stores NULL for that tier (unset). Idempotent.
@@ -2250,7 +2321,12 @@ type Store interface {
 	// subject's carry rows across every month, for subject erasure.
 	UsageCarryCountSubject(ctx context.Context, tenantID, userID string) (int, error)
 	UsageCarryDeleteSubject(ctx context.Context, tenantID, userID string) (int, error)
+}
 
+// RetentionStore holds the retention and deletion surface: timed retention
+// overrides, aged-session discovery, cascade and run-tree deletes, and the
+// retired-def purge.
+type RetentionStore interface {
 	// RetentionOverridePut sets the timed override for (TenantID, Agent),
 	// replacing any there, and removes rows that expired before now.
 	RetentionOverridePut(ctx context.Context, row RetentionOverrideRow, now time.Time) error
@@ -2336,7 +2412,11 @@ type Store interface {
 	// interpolated raw). The caller (the retention sweeper) supplies only ids
 	// that ListPurgeableRetiredDefVersions returned.
 	DeleteDefVersions(ctx context.Context, defType string, defIDs []string) (int, error)
+}
 
+// UserStore persists first-class user identities and the derived user and
+// tenant activity listings.
+type UserStore interface {
 	// ListUsers returns the distinct user_ids that have runs in the
 	// store, with summary stats per user (run counts by status, last
 	// activity). Drives the v0.7.3 Web UI's user picker so operators
@@ -2395,7 +2475,10 @@ type Store interface {
 	// tenant-confined principal must not learn, which is why every other
 	// cross-tenant read here is an opaque not-found rather than a filtered list.
 	ListTenants(ctx context.Context) ([]TenantSummary, error)
+}
 
+// SnapshotStore persists snapshot rows themselves.
+type SnapshotStore interface {
 	// ---- v0.8.17 Pause/Resume/Snapshot — Snapshot storage (PR 2) ----
 
 	// SnapshotCreate inserts one row into the snapshots table.
@@ -2423,7 +2506,10 @@ type Store interface {
 	// returns an error for the "doesn't exist" case — idempotent
 	// delete is the operator-friendly default.
 	SnapshotDelete(ctx context.Context, id string) (bool, error)
+}
 
+// SnapshotReadStore holds the bulk readers a snapshot capture uses.
+type SnapshotReadStore interface {
 	// ---- v0.8.17 Snapshot capture — bulk readers (PR 2.3a) ----
 	//
 	// The methods below return ALL rows in their tables. They power
@@ -2555,7 +2641,11 @@ type Store interface {
 	// preserves submission order so post-restore Evaluation.aggregate
 	// queries see the same time series.
 	SnapshotReadEvaluations(ctx context.Context) ([]EvaluationRow, error)
+}
 
+// SnapshotRestoreStore holds the idempotent raw inserts a snapshot restore
+// uses.
+type SnapshotRestoreStore interface {
 	// ---- v0.8.17 Snapshot restore — idempotent raw inserts (PR 3.2a) ----
 	//
 	// The methods below INSERT rows with caller-supplied IDs +
@@ -2744,7 +2834,10 @@ type Store interface {
 	// never rolls back a newer target budget; `inserted` is true only on the
 	// first write.
 	SnapshotRestoreTokenLimit(ctx context.Context, row TokenLimitRow) (bool, error)
+}
 
+// MemoryStore persists key/value Memory rows and their provenance.
+type MemoryStore interface {
 	// tenantID is the leading isolation axis on every Memory* method
 	// below (RFC BL). It is server-supplied (from RunIdentity / the def
 	// row / the authenticated principal) — NEVER model- or wire-derived
@@ -2999,7 +3092,11 @@ type Store interface {
 	// only rows WITHOUT an embedding. Only key, value and the create/update times are
 	// populated.
 	MemoryListAfter(ctx context.Context, tenantID string, scope MemoryScope, scopeID, keyPrefix, afterKey string, limit int) ([]MemoryEntry, error)
+}
 
+// MemoryChangeStore persists the memory change-data-capture feed and its
+// subscription cursors.
+type MemoryChangeStore interface {
 	// AppendMemoryChange records one change-data-capture row (RFC CD Part C),
 	// emitted by the CDC store decorator after a successful memory/document
 	// write when LOOMCYCLE_MEMORY_CHANGES_ENABLED. Best-effort: a failure must
@@ -3034,7 +3131,11 @@ type Store interface {
 	// SetChangeSubscriptionCursor upserts the last delivered seq for a
 	// change-subscription.
 	SetChangeSubscriptionCursor(ctx context.Context, name string, seq int64) error
+}
 
+// MemoryConsolidationStore persists the background-consolidation queue and the
+// per-target consolidation cursors and leases.
+type MemoryConsolidationStore interface {
 	// MemoryPendingEnqueue appends one durable consolidation-queue row. The
 	// consolidator drains these oldest-first (MemoryPendingDrain) and acks them
 	// after a successful consolidation (MemoryPendingAck). Row.ID is generated
@@ -3152,7 +3253,11 @@ type Store interface {
 	//
 	// Idempotent, and 0 is the ordinary answer: almost no run holds a lease.
 	MemoryCursorReleaseByOwner(ctx context.Context, owner string) (int, error)
+}
 
+// MemoryVectorStore persists memory embeddings and serves vector and full-text
+// search, where the backend supports them.
+type MemoryVectorStore interface {
 	// SupportsVectors reports whether this backend instance can serve
 	// the MemoryEmbed* family. Backends without a vector index loaded
 	// return false; the Memory tool's `search` op + `embed: true`
@@ -3285,7 +3390,11 @@ type Store interface {
 	// PR 4 admin endpoint `/v1/_memory/embed_stats`. ErrVectorUnsupported
 	// on backends without vector ops.
 	MemoryEmbedStats(ctx context.Context, tenantID string, scope MemoryScope) (MemoryEmbedStats, error)
+}
 
+// ChannelStore persists channel messages, subscriber cursors and hook-held
+// deliveries.
+type ChannelStore interface {
 	// ChannelPublish appends one message to a channel. The message's
 	// ID is assigned by the store (ULID — sortable by publish time);
 	// the returned id is the cursor agents pass back on subsequent
@@ -3427,7 +3536,10 @@ type Store interface {
 	// non-empty scope narrows the purge to that scope's messages (one
 	// tenant's layer of a global channel, not its same-named channels).
 	ChannelPurge(ctx context.Context, tenantID, name string, scope MemoryScope) (int, error)
+}
 
+// AgentDefStore persists the AgentDef substrate.
+type AgentDefStore interface {
 	// ---- v0.8.5 Self-Evolution Substrate ----
 	//
 	// `AgentDef` is the agent-authored agent-definition versioning
@@ -3546,7 +3658,10 @@ type Store interface {
 	// rather than aborting the backfill — a single hand-edited row
 	// shouldn't block the rest.
 	BackfillAgentDefSystemPromptBase(ctx context.Context) (int, error)
+}
 
+// SkillDefStore persists the SkillDef substrate.
+type SkillDefStore interface {
 	// ---- v0.8.22 SkillDef substrate ----
 	//
 	// Mirror of AgentDef* with the same invariants. Concurrency
@@ -3576,7 +3691,10 @@ type Store interface {
 
 	// BackfillSkillDefContentSHA256 — mirror of the AgentDef backfill.
 	BackfillSkillDefContentSHA256(ctx context.Context, signFn func(name string, def []byte) (string, error)) (int, error)
+}
 
+// TeamDefStore persists the TeamDef substrate.
+type TeamDefStore interface {
 	// ---- TeamDef substrate ----
 	//
 	// Mirror of SkillDef* with the same invariants. Concurrency
@@ -3613,7 +3731,11 @@ type Store interface {
 	// progress in tenantID (every channel under TeamChannelName(name, "")), so a
 	// team later created under the name starts with none of them.
 	TeamDefDelete(ctx context.Context, tenantID, name string) (bool, error)
+}
 
+// WebhookDeliveryStore persists webhook runtime state: a team's armed
+// webhooks, durable delivery dedup, and delivery counters.
+type WebhookDeliveryStore interface {
 	// ---- A team's own webhooks, armed by running walks ----
 	//
 	// One row per webhook a running walk of a team armed: the durable record
@@ -3713,7 +3835,10 @@ type Store interface {
 	// tenant that owns it, its name, and whether it is the operator's static
 	// one (a yaml webhook and a shared-tenant WebhookDef may share a name).
 	WebhookCounts(ctx context.Context, tenantID, name string, static bool) ([]WebhookCount, error)
+}
 
+// HookDefStore persists the HookDef substrate.
+type HookDefStore interface {
 	// ---- HookDef substrate ----
 	//
 	// Mirror of TeamDef* with the same invariants: a per-name lock keeps the
@@ -3737,7 +3862,10 @@ type Store interface {
 	// HookDefDelete hard-deletes every version of name in tenantID plus its
 	// active pointer. Returns whether anything was deleted.
 	HookDefDelete(ctx context.Context, tenantID, name string) (bool, error)
+}
 
+// MCPServerDefStore persists the MCPServerDef substrate.
+type MCPServerDefStore interface {
 	// ---- v0.9.x MCPServerDef substrate ----
 	//
 	// Third substrate primitive after AgentDef + SkillDef. Same shape
@@ -3777,7 +3905,10 @@ type Store interface {
 	// SkillDef backfills. Walks NULL/empty content_sha256 rows + calls
 	// the injected signFn. Idempotent; boot-time-only.
 	BackfillMCPServerDefContentSHA256(ctx context.Context, signFn func(name string, def []byte) (string, error)) (int, error)
+}
 
+// VolumeDefStore persists filesystem VolumeDefs.
+type VolumeDefStore interface {
 	// ---- RFC AH Phase 2a VolumeDef substrate ----
 	//
 	// Deliberately NOT the content-addressed versioning lifecycle the
@@ -3801,7 +3932,10 @@ type Store interface {
 	// It NEVER touches the on-disk directory — that is the tool's `purge`
 	// op, which deletes the row AND the files behind a four-way fence.
 	VolumeDefDelete(ctx context.Context, tenantID, name string) (bool, error)
+}
 
+// CredentialDefStore persists encrypted per-tenant CredentialDefs.
+type CredentialDefStore interface {
 	// ---- RFC AR CredentialDef — secure per-tenant credential store ----
 	//
 	// A flat (tenant_id, scope, scope_id, name) table. The `definition` holds
@@ -3819,7 +3953,10 @@ type Store interface {
 	CredentialDefGet(ctx context.Context, tenantID, scope, scopeID, name string) (CredentialDefRow, error)
 	CredentialDefList(ctx context.Context, tenantID, scope, scopeID string) ([]CredentialDefRow, error)
 	CredentialDefDelete(ctx context.Context, tenantID, scope, scopeID, name string) (bool, error)
+}
 
+// DirentStore persists the Path VFS naming layer.
+type DirentStore interface {
 	// ---- RFC AL Path primitive — the dirent (path tree) substrate ----
 	//
 	// A dirent maps a (tenant_id, scope, scope_id, parent_path, name)
@@ -3845,7 +3982,10 @@ type Store interface {
 	DirentDelete(ctx context.Context, tenantID, scope, scopeID, parentPath, name string) (bool, error)
 	DirentDeleteUnder(ctx context.Context, tenantID, scope, scopeID, prefix string) (int, error)
 	DirentMove(ctx context.Context, tenantID, scope, scopeID, fromParent, fromName, toParent, toName string) (bool, error)
+}
 
+// EphemeralVolumeStore persists run-scoped ephemeral volumes.
+type EphemeralVolumeStore interface {
 	// ---- RFC AH Phase 2b ephemeral (run-tree-scoped) volumes ----
 	//
 	// A SEPARATE table from volume_defs: an ephemeral volume is scoped to
@@ -3893,7 +4033,10 @@ type Store interface {
 	// filter mirrors SweepStaleRuns exactly (a paused run is parked, not
 	// crashed: its ephemeral volumes must survive to be reused on resume).
 	EphemeralVolumeSweepCandidates(ctx context.Context) ([]EphemeralVolumeSweepRow, error)
+}
 
+// ScheduleDefStore persists the ScheduleDef substrate.
+type ScheduleDefStore interface {
 	// ---- v1.x RFC E ScheduleDef substrate ----
 	//
 	// Fourth substrate primitive after AgentDef + SkillDef + MCPServerDef.
@@ -3923,7 +4066,11 @@ type Store interface {
 	// *ErrNotFound when no pointer exists. RFC N: tenantID "" = shared.
 	ScheduleDefGetActive(ctx context.Context, tenantID, name string) (ScheduleDefRow, error)
 	ScheduleDefSetRetired(ctx context.Context, defID string, retired bool) error
+}
 
+// ScheduleRunStateStore persists the scheduler's per-def runtime state and its
+// active-run ledger.
+type ScheduleRunStateStore interface {
 	// ---- v1.x RFC E ScheduleDef runtime (sweeper-side) ----
 	//
 	// schedule_run_state tracks per-def runtime state (last_run_id,
@@ -4007,7 +4154,10 @@ type Store interface {
 	// ScheduleRunStatePause sets paused_until = until (or NULL if
 	// until.IsZero()). Resume = call with zero time.
 	ScheduleRunStatePause(ctx context.Context, defID string, until time.Time) error
+}
 
+// A2ADefStore persists the A2A substrate: server cards and remote agents.
+type A2ADefStore interface {
 	// ---- v1.x RFC G A2A substrate (server + client sides) ----
 	//
 	// Two content-addressed Defs added for A2A protocol integration.
@@ -4053,7 +4203,10 @@ type Store interface {
 	// *ErrNotFound when no pointer exists. RFC N: tenantID "" = shared.
 	A2AAgentDefGetActive(ctx context.Context, tenantID, name string) (A2AAgentDefRow, error)
 	A2AAgentDefSetRetired(ctx context.Context, defID string, retired bool) error
+}
 
+// WebhookDefStore persists the WebhookDef substrate.
+type WebhookDefStore interface {
 	// WebhookDef is the v1.x RFC H Input Webhooks substrate — same
 	// content-addressed identity + lineage + promotion shape as
 	// A2AAgentDef, minus the sweeper run_state table. A WebhookDef
@@ -4076,7 +4229,10 @@ type Store interface {
 	// *ErrNotFound when no pointer exists. RFC N: tenantID "" = shared.
 	WebhookDefGetActive(ctx context.Context, tenantID, name string) (WebhookDefRow, error)
 	WebhookDefSetRetired(ctx context.Context, defID string, retired bool) error
+}
 
+// MemoryBackendDefStore persists the MemoryBackendDef substrate.
+type MemoryBackendDefStore interface {
 	// MemoryBackendDef is the v1.x RFC I MR-3a substrate — a faithful
 	// mirror of WebhookDef (same content-addressed identity + lineage +
 	// promotion shape, no sweeper run_state table). A MemoryBackendDef
@@ -4101,7 +4257,10 @@ type Store interface {
 	// "" = the shared/operator/legacy tenant.
 	MemoryBackendDefGetActive(ctx context.Context, tenantID, name string) (MemoryBackendDefRow, error)
 	MemoryBackendDefSetRetired(ctx context.Context, defID string, retired bool) error
+}
 
+// DocumentSourceDefStore persists the DocumentSourceDef substrate.
+type DocumentSourceDefStore interface {
 	// DocumentSourceDef is a faithful structural mirror of MemoryBackendDef
 	// (same content-addressed identity + lineage + promotion shape, no
 	// sweeper run_state table). A DocumentSourceDef declares a named
@@ -4124,7 +4283,10 @@ type Store interface {
 	// "" = the shared/operator/legacy tenant.
 	DocumentSourceDefGetActive(ctx context.Context, tenantID, name string) (DocumentSourceDefRow, error)
 	DocumentSourceDefSetRetired(ctx context.Context, defID string, retired bool) error
+}
 
+// OperatorTokenStore persists operator bearer-token rows.
+type OperatorTokenStore interface {
 	// ---- OperatorTokenDef (RFC L OSS multi-tenant authorization) ----
 	//
 	// Bearer tokens bound to an authoritative principal (tenant_id +
@@ -4167,7 +4329,10 @@ type Store interface {
 	// a tenant is kept: the rows are the registry of tenant spellings a new
 	// tenant is checked against for a case-fold collision.
 	OperatorTokenDefDeleteExpired(ctx context.Context, before time.Time) (int, error)
+}
 
+// EvaluationStore persists evaluation scores.
+type EvaluationStore interface {
 	// ---- Evaluation ----
 	//
 	// `Evaluation` is the score-attached-to-(run, def) primitive.
@@ -4199,7 +4364,10 @@ type Store interface {
 	// retired ancestors included). The returned LineageIncluded flag
 	// echoes the option for caller-side assertion.
 	EvaluationAggregate(ctx context.Context, defID string, opts AggregateOpts) (AggregateResult, error)
+}
 
+// MetricsStore persists process metric samples.
+type MetricsStore interface {
 	// ---- Metrics sampler (v0.8.x) -------------------------------------
 
 	// MetricsWriteSample persists one process_samples row. The caller
@@ -4228,7 +4396,10 @@ type Store interface {
 	// MetricsSweep deletes samples whose sampled_at < cutoff. Returns
 	// the count deleted. Idempotent under concurrent sweepers.
 	MetricsSweep(ctx context.Context, cutoff time.Time) (int, error)
+}
 
+// DynamicAgentStore persists dynamic (runtime-registered) agents.
+type DynamicAgentStore interface {
 	// DynamicAgentUpsert writes a dynamic agent row. RFC N: the
 	// (tenant_id, name) tuple is the primary key — re-upserting the
 	// same (tenant, name) overwrites the definition and resets
@@ -4262,7 +4433,10 @@ type Store interface {
 	// run from a periodic goroutine; idempotent under concurrent
 	// sweepers (single atomic DELETE).
 	DynamicAgentSweep(ctx context.Context) (int, error)
+}
 
+// InterruptStore persists interruptions.
+type InterruptStore interface {
 	// ---- Interruption (v0.8.16) -------------------------------------
 	//
 	// Durable row that survives process restart + drives the listing
@@ -4344,7 +4518,10 @@ type Store interface {
 	// transitioned. Safe to run from a periodic goroutine;
 	// idempotent under concurrent sweepers (single atomic UPDATE).
 	InterruptSweepExpired(ctx context.Context) (int, error)
+}
 
+// ChannelDefStore persists runtime-declared channels.
+type ChannelDefStore interface {
 	// ---- v0.11.5 runtime channel CRUD ----
 	//
 	// Runtime-declared channels live in the `channels` table; yaml-
@@ -4385,9 +4562,6 @@ type Store interface {
 	// of its persisted messages + cursors. Returns ErrNotFound when
 	// the name isn't in the runtime table.
 	ChannelsDelete(ctx context.Context, tenantID, name string) error
-
-	// Close releases backend resources. Idempotent.
-	Close() error
 }
 
 // ChannelRow is one runtime-declared channel persisted in the store.
