@@ -23,7 +23,9 @@ That changes what the runtime can honestly promise:
   Bashbox mounts a `ro` volume under an **in-RAM write overlay**: writes
   succeed *inside the run* (so a script can use scratch files) but **never
   touch the host tree** — they are discarded when the call returns. The ro
-  guarantee is real.
+  guarantee is real. Those writes are held in memory, up to a per-call limit
+  (64 MiB unless the operator changed it); past it a write fails with
+  `no space left on device`, so keep scratch files on a read-only volume small.
 
 ## When to use it
 

@@ -1804,6 +1804,12 @@ The embedded Web UI (`/ui`) has a dedicated **Volumes** tab (admin-gated, alongs
 - **Purge is type-to-confirm** — the operator must type the volume's name to enable the confirm button, distinct from the one-click Delete. The server-side `RemoveAll` fence (§6 of the RFC: re-derive, EvalSymlinks, strictly-inside, expected-prefix) remains the real guard.
 - **Backed by two read-only endpoints** — `GET /v1/_volumes` (merged static + tenant dynamic) and `GET /v1/_volumes/ephemeral` (the tenant's live ephemeral volumes). Both are tenant-scoped from the authoritative principal (gated at `substrate:tenant`; admin satisfies). CRUD reuses `POST /v1/_volumedef`.
 
+### 9d.4 Bashbox memory: `LOOMCYCLE_BASHBOX_OVERLAY_MAX_BYTES`
+
+`Bashbox` honors a read-only volume by sending the command's writes to an in-memory overlay that is thrown away when the call ends; the empty directory that hides a `dynamic_root` inside a read-write volume is in memory too. That memory is loomcycle's own heap, shared with every run on the replica, so one call may write at most **`LOOMCYCLE_BASHBOX_OVERLAY_MAX_BYTES`** bytes into it (default **64 MiB**; a value under 1 MiB is raised to 1 MiB, and a non-positive or malformed one keeps the default). A write past the limit fails with `no space left on device`, the result says the limit was reached, and the call fails. Every byte written and every new file, directory and link name counts; deleting a file does not give the bytes back. Writes to a read-write volume go to disk and are not counted.
+
+What it does not bound: several calls at once each get their own limit (concurrent calls × the cap, plus gbash's in-memory files costing about 2–2.6× the bytes written), and the read side has its own gbash limits (8 MiB per file read, 32 MiB per shell variable, 256 MiB across variables, 1 MiB per output stream). For mutually hostile tenants on one process, also set a memory limit on loomcycle's container.
+
 ---
 
 ## 9e. Config layering — stacking multiple config files (RFC AN)
