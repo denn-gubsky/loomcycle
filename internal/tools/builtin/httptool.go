@@ -252,10 +252,11 @@ func (h *HTTP) do(ctx context.Context, method, rawURL string, headers map[string
 }
 
 // credentialHeaderName matches response header names that may carry a
-// credential: a minted token, an API key, a session id. Their values are kept
-// from the model, which could repeat them into a transcript, a memory or a
-// request to another host; the name stays so the model still sees the header
-// was set.
+// credential: a minted token, an API key, a session id, and (through "cookie"
+// and "auth") Set-Cookie, Set-Cookie2, Authorization and Proxy-Authorization.
+// Their values are kept from the model, which could repeat them into a
+// transcript, a memory or a request to another host; the name stays so the
+// model still sees the header was set.
 var credentialHeaderName = regexp.MustCompile(`(?i)(token|secret|api[-_]?key|session|cookie|credential|password|auth)`)
 
 // credentialHeader reports whether a response header's value is redacted.
@@ -265,8 +266,6 @@ func credentialHeader(name string) bool {
 	switch http.CanonicalHeaderKey(name) {
 	case "Www-Authenticate", "Proxy-Authenticate":
 		return false
-	case "Set-Cookie", "Set-Cookie2", "Authorization", "Proxy-Authorization":
-		return true
 	}
 	return credentialHeaderName.MatchString(name)
 }
