@@ -3878,10 +3878,15 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 				cancelFn(nil)
 			},
 		})
-		if cb.Attach != nil {
+		switch {
+		case cb.Attach != nil:
 			// The caller streams the run its own way.
 			cb.Attach(runID)
-		} else {
+		case in.HoldUntilEnd:
+			// Wait for the end even if the caller leaves: the session lock and
+			// the slot this call holds are the run's until then.
+			<-done
+		default:
 			// Forward to the caller until the run ends or the caller leaves;
 			// the run is not stopped by the latter.
 			select {
@@ -5536,10 +5541,13 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 	in.RateAdmitted = true
 	in.SessionLockAcrossReplicas = true
 	// A continuation held for review outlives a caller that leaves: a verdict
-	// can take far longer than a client keeps its stream.
+	// can take far longer than a client keeps its stream. It keeps its
+	// session and its run slot until then too: this request holds both, so it
+	// waits for the run's end, client gone or not.
 	// ET-P1 decision: D4 — an INTERACTIVE continuation is not detached: the
 	// client leaving still cancels it (POST /v1/runs interactive survives it).
 	in.Detached = body.Review
+	in.HoldUntilEnd = body.Review
 
 	rs := &runStartStream{s: s, w: w, r: r, parent: connector.StripRuntimeParentContext(body.ParentContext)}
 	rs.run(in, func(err error) { s.writeRunStartError(w, r, err, true) })

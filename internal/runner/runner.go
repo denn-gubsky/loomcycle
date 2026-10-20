@@ -499,6 +499,14 @@ type RunInput struct {
 	// the run like a continuation's. A run that is not a draft or a
 	// continuation, with no idempotency key.
 	AppendToSessionID string
+
+	// HoldUntilEnd keeps a Detached run's caller waiting for the run's end
+	// even after the caller has left: RunOnce returns only when the run ends,
+	// so what it holds for the run — the session lock, the run slot — is held
+	// for the run's whole life. A session continuation held for review uses
+	// it: its session must take no other turn until the verdict, and the
+	// held run keeps the slot it runs in.
+	HoldUntilEnd bool
 }
 
 // RunCallbacks is how the wire surfaces observe the run.

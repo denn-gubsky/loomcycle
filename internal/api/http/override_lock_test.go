@@ -164,6 +164,7 @@ func TestOverrideLock_EveryRequestFieldIsClassified(t *testing.T) {
 		"RateAdmitted":              "server-set: the HTTP route already counted the start; never a wire field",
 		"SessionLockAcrossReplicas": "server-set: how the session lock is taken; never a wire field",
 		"AppendToSessionID":         "identity: which session the run joins (POST /v1/runs session_id)",
+		"HoldUntilEnd":              "server-set: how long the call holds the run's session and slot; never a wire field",
 	}
 	lockable := map[string]string{} // Go field → wire name
 	for wire, field := range lockableOverrideFields {

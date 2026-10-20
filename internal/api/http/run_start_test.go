@@ -5,9 +5,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/denn-gubsky/loomcycle/internal/auth"
 	"github.com/denn-gubsky/loomcycle/internal/concurrency"
@@ -174,4 +176,63 @@ func TestHandleRuns_SessionIDAppendsAFreshRunWithoutReplay(t *testing.T) {
 			t.Errorf("the appended run ran with system prompt %s, want agent other's", e.Payload)
 		}
 	}
+}
+
+// A continuation held for review keeps its session for as long as it is held,
+// even after its client leaves: another turn on the session is refused as busy
+// until the verdict, or the two turns would interleave the transcript. (The
+// run outlives the client; so must its hold on the session.)
+func TestHandleMessages_HeldContinuationKeepsItsSessionAfterTheClientLeaves(t *testing.T) {
+	g := newGoldenServer(t, goldenOpts{})
+	sid := g.completedSession("plain")
+	_, runID := g.heldContinuationClientGone(t, sid)
+
+	second := g.post("/v1/sessions/"+sid+"/messages", goldenMsgBody("me too", ""))
+	second.drain(t)
+	if second.status != http.StatusConflict || !strings.Contains(second.body, "session_busy") {
+		t.Errorf("a second turn while the first is held: %d %s, want 409 session_busy", second.status, second.body)
+	}
+	g.approve(t, runID)
+}
+
+// ...and keeps its run slot: with one slot, a run that refuses to wait is
+// refused while the continuation is held, client gone or not.
+func TestHandleMessages_HeldContinuationKeepsItsRunSlotAfterTheClientLeaves(t *testing.T) {
+	g := newGoldenServer(t, goldenOpts{maxRuns: 1})
+	sid := g.completedSession("plain")
+	_, runID := g.heldContinuationClientGone(t, sid)
+
+	r := g.post("/v1/runs", goldenRunBody("plain", "no room", `"admission":"reject"`))
+	r.drain(t)
+	if r.status != http.StatusTooManyRequests {
+		t.Errorf("a reject-admission run while the continuation is held: %d %s, want 429", r.status, r.body)
+	}
+	g.approve(t, runID)
+}
+
+// heldContinuationClientGone starts a review continuation of sid, waits until
+// it is held for a verdict, then drops the client's connection and gives the
+// server time to notice.
+func (g *goldenServer) heldContinuationClientGone(t *testing.T, sid string) (*goldenResp, string) {
+	t.Helper()
+	r := g.post("/v1/sessions/"+sid+"/messages", goldenMsgBody("revise it", `"review":true`))
+	_, runID, _ := r.ids(t)
+	r.until(t, "awaiting_review", 1)
+	r.cancel()
+	r.drain(t)
+	// The handler learns of the disconnect asynchronously; a regression that
+	// lets go of the session or the slot on it does so within this.
+	time.Sleep(300 * time.Millisecond)
+	return r, runID
+}
+
+// approve delivers the verdict that ends a held run, and waits for its end.
+func (g *goldenServer) approve(t *testing.T, runID string) {
+	t.Helper()
+	v := g.post("/v1/runs/"+runID+"/review", `{"decision":"approve"}`)
+	v.drain(t)
+	if v.status != http.StatusOK {
+		t.Fatalf("approve: %d %s", v.status, v.body)
+	}
+	waitRunStatus(t, g.st, runID, store.RunCompleted)
 }
