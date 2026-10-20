@@ -260,9 +260,9 @@ func (s *Server) ResolvePrincipal(ctx context.Context, bearer string) (auth.Prin
 	return s.resolvePrincipal(ctx, bearer)
 }
 
-// AuthConfigured is the exported wrapper for the gRPC adapter's
-// open-mode decision (RFC L) — true when a legacy secret is set or an
-// admin token exists.
+// AuthConfigured is the exported wrapper for the gRPC adapter's and the A2A
+// frontier's open-mode decision (RFC L) — true when a legacy secret is set or
+// an admin token exists, and true when the store cannot say (fails closed).
 func (s *Server) AuthConfigured(ctx context.Context) bool {
 	return s.authConfigured(ctx)
 }
@@ -300,22 +300,43 @@ func extractBearer(r *http.Request) (string, bool) {
 	return "", false
 }
 
-// authConfigured reports whether authentication is active. True when a
-// legacy shared secret is set, or any admin-scoped OperatorTokenDef
-// exists. When neither holds, the server is in dev open-mode.
+// authConfiguredErr reports whether authentication is active: true when a
+// legacy shared secret is set, or any admin-scoped OperatorTokenDef exists.
+// When neither holds, the server is in dev open-mode. The error is set when
+// the store could not be asked, and the answer is then unknown.
 //
 // (A deployment with ONLY narrow tokens and no legacy secret + no admin
 // token can't be bootstrapped — the admin endpoints that create tokens
 // require auth — so the admin-count check is sufficient in practice.)
-func (s *Server) authConfigured(ctx context.Context) bool {
+func (s *Server) authConfiguredErr(ctx context.Context) (bool, error) {
 	if s.cfg().Env.AuthToken != "" {
-		return true
+		return true, nil
 	}
 	if s.store == nil {
-		return false
+		return false, nil
 	}
 	n, err := s.store.OperatorTokenDefCountActiveAdmin(ctx)
-	return err == nil && n > 0
+	if err != nil {
+		return false, err
+	}
+	return n > 0, nil
+}
+
+// authConfigured is the request-path form of authConfiguredErr, and it fails
+// CLOSED: when the store cannot answer, auth is treated as on, so the request
+// needs a valid bearer. Reading an error as "no admin token" would be open
+// mode — every route served with no principal — on a database blip, or on a
+// request whose context a client cancelled (a half-closed socket does it).
+// Not logged by default: a client can cause the error at will.
+func (s *Server) authConfigured(ctx context.Context) bool {
+	on, err := s.authConfiguredErr(ctx)
+	if err != nil {
+		if s.authVerbose() {
+			log.Printf("auth: admin-token count failed (%v); treating auth as configured", err)
+		}
+		return true
+	}
+	return on
 }
 
 func (s *Server) authVerbose() bool {
