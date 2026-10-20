@@ -54,6 +54,12 @@ Run loomcycle with authentication on and a persistent store. Then:
 npx @loomcycle/bridge-discord
 ```
 
+Or run the container image, `denngubsky/loomcycle-bridge-discord` (also `ghcr.io/denn-gubsky/loomcycle-bridge-discord`), tagged with the package version. It takes the same environment variables. Mount a volume at `/data` and set `BRIDGE_STORE=file:/data/discord.json` to keep each conversation's session across restarts:
+
+```bash
+docker run --env-file discord-bridge.env -p 8080:8080 -v discord-bridge-data:/data denngubsky/loomcycle-bridge-discord:<version>
+```
+
 With `DISCORD_BRIDGE_REGISTER_COMMANDS=1` the bridge registers its four commands when it starts:
 
 - **in each allowed server, as that server's commands.** They take effect at once and show only where the bot answers.

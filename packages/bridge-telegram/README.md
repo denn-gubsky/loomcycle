@@ -51,6 +51,12 @@ Run loomcycle with authentication on and a persistent store. Then:
 npx @loomcycle/bridge-telegram
 ```
 
+Or run the container image, `denngubsky/loomcycle-bridge-telegram` (also `ghcr.io/denn-gubsky/loomcycle-bridge-telegram`), tagged with the package version. It takes the same environment variables. Mount a volume at `/data` and set `BRIDGE_STORE=file:/data/telegram.json` to keep each conversation's session across restarts:
+
+```bash
+docker run --env-file telegram-bridge.env -p 8443:8443 -v telegram-bridge-data:/data denngubsky/loomcycle-bridge-telegram:<version>
+```
+
 It must be reachable from Telegram over HTTPS. Telegram sends webhooks only to ports 443, 80, 88 and 8443, so either listen on 8443 (the default) with TLS in front, or put it behind a reverse proxy on 443.
 
 Then point Telegram at it. Either let the bridge do it at start (`TELEGRAM_BRIDGE_SET_WEBHOOK=1` with `TELEGRAM_BRIDGE_PUBLIC_URL`), or once by hand:

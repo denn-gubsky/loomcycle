@@ -50,6 +50,12 @@ Run loomcycle with authentication on and a persistent store. Then:
 npx @loomcycle/bridge-teams
 ```
 
+Or run the container image, `denngubsky/loomcycle-bridge-teams` (also `ghcr.io/denn-gubsky/loomcycle-bridge-teams`), tagged with the package version. It takes the same environment variables. Mount a volume at `/data` and set `BRIDGE_STORE=file:/data/teams.json` to keep each conversation's session across restarts:
+
+```bash
+docker run --env-file teams-bridge.env -p 3978:3978 -v teams-bridge-data:/data denngubsky/loomcycle-bridge-teams:<version>
+```
+
 Configuration is by environment:
 
 | Variable | Meaning | Default |
