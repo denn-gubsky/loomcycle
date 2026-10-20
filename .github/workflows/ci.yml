@@ -431,6 +431,31 @@ jobs:
             echo "::endgroup::"
           done
 
+  # The bridge images (publish-bridge-images.yml) build from one shared
+  # Dockerfile at tag time. Build each here, amd64 only and without pushing, so
+  # a change that breaks an image fails its PR rather than its release.
+  bridge-images:
+    name: Bridge images
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: docker/setup-buildx-action@v3
+      - name: Build every platform bridge image
+        run: |
+          set -euo pipefail
+          for dir in packages/bridge-*/; do
+            [ "$dir" = "packages/bridge-core/" ] && continue
+            # A bridge under review may still depend on the core by path, which
+            # no image can resolve; the Bridges job above covers it.
+            if grep -q '"@loomcycle/bridge-core": "file:' "$dir/package.json"; then
+              echo "::notice::$dir depends on bridge-core by path: image skipped"
+              continue
+            fi
+            echo "::group::$dir"
+            docker buildx build --load -f deploy/bridges/Dockerfile -t "ci-$(basename "$dir")" "$dir"
+            echo "::endgroup::"
+          done
+
   web-ui:
     name: Web UI build
     runs-on: ubuntu-latest

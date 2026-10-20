@@ -52,6 +52,12 @@ Your workspace's team id (`T…`) goes in `SLACK_BRIDGE_ALLOWED_TEAMS`. The brid
 npx @loomcycle/bridge-slack
 ```
 
+Or run the container image, `denngubsky/loomcycle-bridge-slack` (also `ghcr.io/denn-gubsky/loomcycle-bridge-slack`), tagged with the package version. It takes the same environment variables. Mount a volume at `/data` and set `BRIDGE_STORE=file:/data/slack.json` to keep each conversation's session across restarts:
+
+```bash
+docker run --env-file slack-bridge.env -p 3000:3000 -v slack-bridge-data:/data denngubsky/loomcycle-bridge-slack:<version>
+```
+
 Configuration is by environment. The shared variables (every bridge reads them):
 
 | Variable | Meaning | Default |

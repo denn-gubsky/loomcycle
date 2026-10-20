@@ -1,0 +1,141 @@
+name: Publish a loomcycle bridge image
+
+# Builds the container image of one platform bridge (RFC EQ) on the same tag
+# that publishes it to npm (`bridge-<name>-v<x.y.z>`, see publish-bridges.yml):
+#   - denngubsky/loomcycle-bridge-<name>:<x.y.z> and :latest
+#   - ghcr.io/denn-gubsky/loomcycle-bridge-<name>:<x.y.z> and :latest
+#
+# bridge-core is a library, not a program, so its tags build no image: the job
+# is skipped cleanly. Every other bridge-* package gets one, so adding a bridge
+# needs no change here.
+#
+# The image is built from the package source at the tag with the one shared
+# Dockerfile (deploy/bridges/Dockerfile), which runs the package's tests first.
+# It does not install from npm: the npm publish runs in parallel, and a new npm
+# version can take minutes to become installable.
+#
+# Gate + credentials: the same as the other image workflows. The job runs only
+# when the repo variable DOCKER_PUBLISH_ENABLED is 'true', and logs in with the
+# DOCKER_USERNAME / DOCKER_PASSWORD secrets; GHCR uses the built-in GITHUB_TOKEN.
+# A new GHCR package is created PRIVATE: make it public once in the UI after its
+# first publish, or anonymous pulls get 401.
+#
+# workflow_dispatch builds the image for a tag that already exists, for example
+# one pushed before this workflow did, or after a failed run.
+
+on:
+  push:
+    tags:
+      - "bridge-*-v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "An existing bridge tag, e.g. bridge-telegram-v0.1.0"
+        required: true
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+
+permissions:
+  contents: read
+
+jobs:
+  resolve:
+    name: Resolve the bridge
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.pkg.outputs.tag }}
+      name: ${{ steps.pkg.outputs.name }}
+      version: ${{ steps.pkg.outputs.version }}
+      image: ${{ steps.pkg.outputs.image }}
+    steps:
+      # The tag (a pushed ref, or the dispatch input) reaches the shell only
+      # through env and is matched against a strict pattern before any use.
+      - id: pkg
+        env:
+          TAG_REF: ${{ github.event.inputs.tag || github.ref_name }}
+        run: |
+          set -euo pipefail
+          if [[ ! "$TAG_REF" =~ ^bridge-([a-z]+)-v([0-9]+\.[0-9]+\.[0-9]+)$ ]]; then
+            echo "::error::tag $TAG_REF is not bridge-<name>-v<x.y.z>"
+            exit 1
+          fi
+          NAME="${BASH_REMATCH[1]}"
+          if [ "$NAME" = "core" ]; then
+            echo "::notice::bridge-core is a library: no image"
+            NAME=""
+          fi
+          {
+            echo "tag=$TAG_REF"
+            echo "name=$NAME"
+            echo "version=${BASH_REMATCH[2]}"
+            echo "image=loomcycle-bridge-$NAME"
+          } >> "$GITHUB_OUTPUT"
+
+  publish:
+    name: Build + push ${{ needs.resolve.outputs.image }}
+    needs: resolve
+    if: vars.DOCKER_PUBLISH_ENABLED == 'true' && needs.resolve.outputs.name != ''
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write  # the GHCR mirror, with the built-in GITHUB_TOKEN
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: refs/tags/${{ needs.resolve.outputs.tag }}
+
+      - name: Verify the package matches the tag
+        id: pkg
+        env:
+          DIR: packages/bridge-${{ needs.resolve.outputs.name }}
+          WANT_NAME: "@loomcycle/bridge-${{ needs.resolve.outputs.name }}"
+          WANT_VER: ${{ needs.resolve.outputs.version }}
+        run: |
+          set -euo pipefail
+          if [ ! -f "$DIR/package.json" ]; then
+            echo "::error::no package at $DIR"
+            exit 1
+          fi
+          (cd "$DIR" && node -e '
+            const p = require("./package.json");
+            const fail = (m) => { console.log("::error::" + m); process.exit(1); };
+            if (p.name !== process.env.WANT_NAME) fail(`package.json name ${p.name} does not match the tag (${process.env.WANT_NAME})`);
+            if (p.version !== process.env.WANT_VER) fail(`package.json version ${p.version} does not match the tag (${process.env.WANT_VER})`);
+          ')
+          # The bridge's default port, for the image's EXPOSE.
+          PORT="$(sed -nE 's/^export const DEFAULT_PORT = ([0-9]+);.*/\1/p' "$DIR/src/config.ts" | head -1)"
+          echo "port=${PORT:-8080}" >> "$GITHUB_OUTPUT"
+          echo "dir=$DIR" >> "$GITHUB_OUTPUT"
+
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKER_USERNAME }}
+          password: ${{ secrets.DOCKER_PASSWORD }}
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build + push
+        uses: docker/build-push-action@v6
+        with:
+          context: ${{ steps.pkg.outputs.dir }}
+          file: deploy/bridges/Dockerfile
+          platforms: linux/amd64,linux/arm64
+          push: true
+          build-args: |
+            PORT=${{ steps.pkg.outputs.port }}
+          labels: |
+            org.opencontainers.image.source=https://github.com/denn-gubsky/loomcycle
+            org.opencontainers.image.version=${{ needs.resolve.outputs.version }}
+          tags: |
+            denngubsky/${{ needs.resolve.outputs.image }}:${{ needs.resolve.outputs.version }}
+            denngubsky/${{ needs.resolve.outputs.image }}:latest
+            ghcr.io/denn-gubsky/${{ needs.resolve.outputs.image }}:${{ needs.resolve.outputs.version }}
+            ghcr.io/denn-gubsky/${{ needs.resolve.outputs.image }}:latest
