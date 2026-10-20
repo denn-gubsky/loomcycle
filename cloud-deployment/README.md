@@ -14,8 +14,8 @@ server** (static site + self-serve token minting), and a Cloudflare tunnel — o
 
 ```
 Internet ─▶ Cloudflare edge ─▶ cloudflared ─┬─ app.loomcycle.cloud ─▶ tailscale:8787  (loomcycle UI/API)
-              (+ Access on         │         └─ loomcycle.cloud      ─▶ landing:8080    (Node → cloud-web/ + /api/mint)
-               loomcycle.cloud/api)│
+              (+ Access on         │         ├─ loomcycle.cloud      ─▶ landing:8080    (Node → cloud-web/ + /api/mint)
+               loomcycle.cloud/api)│         └─ telegram.loomcycle.cloud/telegram/webhook ─▶ telegram-bridge:8443 (optional)
 compose network `loomnet`:
   postgres(pg18+pgvector)   loomcycle-migrate(one-shot)   builder-sidecar(:9000)
   searxng(:8080)            landing(node:8080)            cloudflared
@@ -34,6 +34,7 @@ compose network `loomnet`:
 | `searxng` | `searxng/searxng` | Keyless search backend (wired via `config/loomcycle.yaml`). |
 | `landing` | Node (`./landing`, built) | Serves `cloud-web/`, proxies the public reads `/healthz` + `/v1/config` (inner links), and mints `substrate:tenant` tokens behind Cloudflare Access. |
 | `cloudflared` | `cloudflare/cloudflared` | Outbound tunnel; routes managed in the Cloudflare dashboard (token method). |
+| `telegram-bridge` | `denngubsky/loomcycle-bridge-telegram:${BRIDGE_TELEGRAM_VERSION}` | **Optional** (compose profile `telegram`): a Telegram bot for one agent, its webhook at `telegram.loomcycle.cloud/telegram/webhook`. See INSTALL.md → "Telegram bridge". |
 
 ### The landing server + self-serve minting
 
