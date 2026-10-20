@@ -720,6 +720,12 @@ func TestHTTPTool_RedactsCredentialBearingResponseHeaders(t *testing.T) {
 		h.Set("X-Credential", secret)
 		h.Set("X-Password-Hint", secret)
 		h.Set("X-Upstream-Session", secret)
+		h.Set("X-Authorization", secret)
+		h.Set("X-AuthToken", secret)
+		h.Set("X-Authentication-Info", secret)
+		h.Set("X-Session-Page", secret)
+		h.Set("Page-Api-Key", secret)
+		h.Set("Cursor-Secret", secret)
 		h.Set("x-ms-continuationtoken", "ct-1")
 		h.Set("Next-Page-Token", "np-1")
 		h.Set("X-Next-Page-Token", "np-2")
@@ -753,7 +759,9 @@ func TestHTTPTool_RedactsCredentialBearingResponseHeaders(t *testing.T) {
 	}
 	for _, name := range []string{"Set-Cookie", "Set-Cookie2", "Authorization", "Proxy-Authorization",
 		"X-Auth-Token", "X-Api-Key", "X-Api_key", "X-Session-Id", "X-Client-Secret", "X-Credential", "X-Password-Hint",
-		"X-Upstream-Session"} {
+		"X-Upstream-Session", "X-Authorization", "X-Authtoken", "X-Authentication-Info",
+		// A pagination word does not lift a credential word beside it.
+		"X-Session-Page", "Page-Api-Key", "Cursor-Secret"} {
 		if !strings.Contains(res.Text, "\n"+name+": [redacted]\n") {
 			t.Errorf("header %s: want its name kept with a [redacted] value; got:\n%s", name, res.Text)
 		}

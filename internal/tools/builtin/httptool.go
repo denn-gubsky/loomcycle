@@ -251,31 +251,44 @@ func (h *HTTP) do(ctx context.Context, method, rawURL string, headers map[string
 	return tools.Result{Text: b.String()}, nil
 }
 
-// credentialHeaderName matches response header names that may carry a
-// credential: a minted token, an API key, a session id. "auth" counts only as
-// a whole dash- or underscore-separated part (X-Auth-Token), so X-Author and
-// X-OAuth-Scopes do not match. Their values are kept from the model, which
-// could repeat them into a transcript, a memory or a request to another host;
-// the name stays so the model still sees the header was set.
-var credentialHeaderName = regexp.MustCompile(`(?i)(token|secret|api[-_]?key|session|cookie|credential|password|(^|[-_])auth([-_]|$))`)
+// credentialWords are the parts of a response header name that mark a value
+// that may be a credential, besides "token": a minted secret, an API key, a
+// session id, a cookie, an Authorization-style value (matched anywhere in the
+// name, so X-Authorization and X-AuthToken count).
+const credentialWords = `secret|api[-_]?key|session|cookie|credential|password|auth`
 
-// readableHeaderName matches headers that name a token or a credential but
-// carry none: pagination cursors (a continuation or next-page token), the
-// OAuth scope listings, and CORS (Access-Control-Allow-Credentials). An agent
-// paging an API needs them.
-var readableHeaderName = regexp.MustCompile(`(?i)(continuation|page|cursor|oauth-scopes$|^access-control-)`)
+var (
+	// credentialHeaderName matches a name whose value is redacted, unless an
+	// exception below applies. Its values are kept from the model, which
+	// could repeat them into a transcript, a memory or a request to another
+	// host; the name stays so the model still sees the header was set.
+	credentialHeaderName = regexp.MustCompile(`(?i)(token|` + credentialWords + `)`)
+	// otherCredentialWord is credentialHeaderName without "token": a
+	// pagination name is readable only when "token" is its sole match.
+	otherCredentialWord = regexp.MustCompile(`(?i)(` + credentialWords + `)`)
+	// paginationTokenName is a cursor an agent paging an API needs:
+	// x-ms-continuationtoken, Next-Page-Token, X-Page-Cursor.
+	paginationTokenName = regexp.MustCompile(`(?i)(next[-_]?page[-_]?token|continuation[-_]?token|page[-_]?token|cursor)$`)
+)
+
+// readableHeaders match the pattern but carry no credential, by exact
+// (canonical) name: the authentication challenges an agent needs to learn the
+// auth scheme, the OAuth scope listings, CORS, and an author.
+var readableHeaders = map[string]bool{
+	"Www-Authenticate":                 true,
+	"Proxy-Authenticate":               true,
+	"X-Oauth-Scopes":                   true,
+	"X-Accepted-Oauth-Scopes":          true,
+	"Access-Control-Allow-Credentials": true,
+	"X-Author":                         true,
+}
 
 // credentialHeader reports whether a response header's value is redacted.
 func credentialHeader(name string) bool {
-	switch http.CanonicalHeaderKey(name) {
-	case "Set-Cookie", "Set-Cookie2", "Authorization", "Proxy-Authorization":
-		return true
-	case "Www-Authenticate", "Proxy-Authenticate":
-		// Challenges carry no secret, and an agent needs them to learn the
-		// auth scheme.
+	if readableHeaders[http.CanonicalHeaderKey(name)] || !credentialHeaderName.MatchString(name) {
 		return false
 	}
-	return credentialHeaderName.MatchString(name) && !readableHeaderName.MatchString(name)
+	return !paginationTokenName.MatchString(name) || otherCredentialWord.MatchString(name)
 }
 
 // responseTruncatedMarker is the line do appends when it cut the response body.
