@@ -159,6 +159,9 @@ tools it matches, its body, its fail mode and timeout.
   `@` or `:`.
 - A HookDef belongs to its tenant: another tenant's reads back as not found,
   and a fork's parent must be your own tenant's.
+- A shared HookDef — one written with no tenant, which every tenant's
+  definitions fall back to — may only be created, forked, promoted, retired
+  or deleted by an operator.
 
 Surfaces: `POST /v1/_hookdef` (and `GET /v1/_hookdef/names`), the MCP tool
 `hookdef`, the gRPC `HookDef` RPC, and the TS / Python adapters (`hookDef` /
