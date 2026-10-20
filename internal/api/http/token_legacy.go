@@ -101,17 +101,19 @@ func (s *Server) SnapshotLegacyTokenRows(ctx context.Context) (LegacyTokenSnapsh
 			if h.IsCurrent(r.TokenHash) {
 				continue
 			}
-			ids[r.DefID] = struct{}{}
 			snap.IDs = append(snap.IDs, r.DefID)
 			if !auth.IsTagged(r.TokenHash) {
 				snap.Untagged++
+				// With the unpeppered form off such a row can never match;
+				// keeping it would hold the miss path open for nothing.
+				if !h.AcceptsUnpeppered() {
+					continue
+				}
 			}
+			ids[r.DefID] = struct{}{}
 		}
 	}
 	sort.Strings(snap.IDs)
-	if !h.HasLegacyCandidates() {
-		ids = nil
-	}
 	s.legacyTokens.replace(ids)
 	return snap, nil
 }

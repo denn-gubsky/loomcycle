@@ -347,3 +347,19 @@ func TestTokenLookup_NegativeAfterLegacyLookupIsNotCached(t *testing.T) {
 		t.Error("a refusal that went through the legacy lookups was cached")
 	}
 }
+
+// With the unpeppered form off, an unpeppered row is reported at boot but
+// kept out of the set: it can never match, and an entry would keep the
+// legacy lookups (and uncached refusals) running for every unknown bearer.
+func TestSnapshotLegacyTokenRows_UnpepperedOffReportsButDoesNotTrackUntaggedRows(t *testing.T) {
+	env := config.Env{SecretKey: pepperKey(2), SecretKeyPrevious: pepperKey(1), TokenLegacyHashOff: true}
+	s, st := derivedPepperServer(t, env)
+	seedTokenHash(t, st, "def_bare", auth.HashToken("", "lct_bare"))
+	snap, err := s.SnapshotLegacyTokenRows(context.Background())
+	if err != nil || len(snap.IDs) != 1 || snap.Untagged != 1 {
+		t.Fatalf("snapshot = (%+v, %v), want the one unpeppered row reported", snap, err)
+	}
+	if !s.legacyTokens.empty() {
+		t.Error("an unpeppered row was tracked with the unpeppered form off")
+	}
+}
