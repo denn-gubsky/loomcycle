@@ -27,22 +27,41 @@ import (
 
 const defaultBodySizeLimitBytes = 1 << 20 // 1 MiB
 
-// bodyLimit is how many bytes of a delivery are read: the definition's
+// defaultRequestCapBytes is the server's request limit when
+// LOOMCYCLE_MAX_REQUEST_BYTES is unset; the HTTP server uses the same default.
+const defaultRequestCapBytes = 16 << 20
+
+// requestCap is the one limit a delivery is read under before its webhook is
+// looked up: the server's request limit (LOOMCYCLE_MAX_REQUEST_BYTES). It is
+// the same for every name, so how the body is read (the interim 100 Continue
+// of an Expect: 100-continue request, or a refusal of an over-size body)
+// does not tell an unauthenticated caller whether the name exists.
+func (rec *Receiver) requestCap() int64 {
+	if rec.cfg != nil && rec.cfg.Env.MaxRequestBytes > 0 {
+		return rec.cfg.Env.MaxRequestBytes
+	}
+	return defaultRequestCapBytes
+}
+
+// bodyLimit is how many bytes of a delivery a definition accepts: its
 // body_size_limit_bytes (1 MiB when unset), never above the server's request
-// limit (LOOMCYCLE_MAX_REQUEST_BYTES), which a definition used to be able to
-// exceed without bound. A stored definition with a larger value still loads;
-// it is capped here.
+// limit, which a definition used to be able to exceed without bound. A stored
+// definition with a larger value still loads; it is capped here.
 func (rec *Receiver) bodyLimit(wd config.Webhook) int64 {
 	limit := int64(wd.BodySizeLimitBytes)
 	if limit <= 0 {
 		limit = defaultBodySizeLimitBytes
 	}
-	if rec.cfg != nil {
-		if max := rec.cfg.Env.MaxRequestBytes; max > 0 && limit > max {
-			limit = max
-		}
+	if max := rec.requestCap(); limit > max {
+		limit = max
 	}
 	return limit
+}
+
+// readDelivery reads the raw body under requestCap, before the webhook is
+// resolved. The error is the caller's to answer once it knows the name.
+func (rec *Receiver) readDelivery(w http.ResponseWriter, r *http.Request) ([]byte, error) {
+	return io.ReadAll(http.MaxBytesReader(w, r.Body, rec.requestCap()))
 }
 
 // Receiver is the RFC H inbound-webhook HTTP handler. It is the
@@ -223,7 +242,14 @@ func (rec *Receiver) handle(w http.ResponseWriter, r *http.Request) {
 	defer span.End()
 	span.SetAttributes(attribute.String("webhook.name", name), attribute.String("webhook.tenant", tenant))
 
-	// 1. Resolve the active Def. Unknown name → 404. owner, not the URL
+	// 1. Read the raw body, under the one limit every name shares, before
+	//    the name is resolved: a body read only for a live def would answer
+	//    an Expect: 100-continue probe, or an over-size body, differently for
+	//    a name that exists (RFC ES #4). Raw bytes are what the signature is
+	//    verified against — we never re-serialize.
+	body, bodyErr := rec.readDelivery(w, r)
+
+	// 2. Resolve the active Def. Unknown name → 404. owner, not the URL
 	//    tenant, names the def for the per-webhook state below (webhookKey).
 	wd, owner, ok := lookup.ResolveWebhook(ctx, rec.store, rec.cfg, tenant, name)
 	if !ok {
@@ -246,12 +272,12 @@ func (rec *Receiver) handle(w http.ResponseWriter, r *http.Request) {
 	// definition keeps what its author wrote.
 	wd = wd.WithProviderDefaults()
 
-	// 2. Read the raw body under the Def's size limit. Raw bytes are what
-	//    the signature is verified against — we never re-serialize.
-	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, rec.bodyLimit(wd)))
-	if err != nil {
+	// The Def's own size limit. A body it refuses is answered as an unknown
+	// name, unauthenticated as it is; the ring keeps rejected_body.
+	if bodyErr != nil || int64(len(body)) > rec.bodyLimit(wd) {
 		rec.finish(span, whKey, "", "rejected_body", "")
-		writeError(w, http.StatusBadRequest, "bad_body", "")
+		rec.logf("webhook %q: body unreadable or over its %d-byte limit", name, rec.bodyLimit(wd))
+		writeUnknownWebhook(w)
 		return
 	}
 
