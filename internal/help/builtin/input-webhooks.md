@@ -59,14 +59,14 @@ The agent-reachable `user_credentials_from_env` path does **not** get rule 1's
 namespace auto-allow for *runtime*-authored (`webhookdef`-tool) defs — name a
 non-static credential env explicitly in `LOOMCYCLE_WEBHOOKS_ENV_ALLOWLIST` so a
 less-trusted authoring path can't inject an arbitrary env var into a run. A name
-that resolves by none of the rules → `503 secret_unresolvable` (naming the env
-var, never its value). The boot log prints the live allowlist count and a
+that resolves by none of the rules → `503 {"error":"unavailable"}`; the env var
+is named in the server log and the delivery log only, never to the sender. The boot log prints the live allowlist count and a
 `WARNING:` line per static webhook whose secret won't resolve.
 
 **Trusted-network (no-auth) ingress.** For a receiver only reachable over an
 already-authenticated transport (WireGuard/tailnet, mTLS mesh) where HMAC is
-redundant, set `auth.kind: none`. It is refused (`503
-unauthenticated_mode_disabled`) unless the operator opts in with
+redundant, set `auth.kind: none`. It is refused (`503 unavailable`, the
+reason in the server log) unless the operator opts in with
 `LOOMCYCLE_WEBHOOKS_ALLOW_UNAUTHENTICATED=1` — the default never silently
 accepts unsigned external POSTs.
 
@@ -568,8 +568,10 @@ auth:
   inherited, and one that names `signing_secret_env` or `bearer_token_env`
   drops `secret` and `previous_secret`.
 
-A missing or unresolvable secret **fails loud**: `503 secret_unresolvable`,
-naming the env var (`secret_env`) or the reference (`secret`) — never a value.
+A missing or unresolvable secret **fails loud** to the operator and opaque to
+the sender: `503 {"error":"unavailable"}` (so the sender retries once it is
+fixed), with the env var or the `$cred:` reference named only in the server
+log and the delivery log (`unresolvable_secret`).
 
 ## MCP-tool bearer tokens for the spawned run (same as schedulers)
 
@@ -739,13 +741,20 @@ mode — follow the walk by that id.
 
 ## Never silently degrade
 
-Every outcome is loud and distinct: `404` unknown/disabled (opaque, no
-enumeration), `401` signature/auth failure (no body detail — no oracle),
-`503 secret_unresolvable`, `400` malformed body/mapping, `400 invalid_run`
+Every outcome is loud and distinct to the operator: `404 unknown_webhook`
+for an unknown or disabled name **and** for a signature/auth failure (the
+same bytes, so a sender cannot learn that a name exists), `503 unavailable`
+for a secret that does not resolve, `400` malformed body/mapping, `400 invalid_run`
 for a delivery that names an agent or a team walk that cannot start, `429`
 rate limit, `503` runtime unavailable. A rate-limited or rejected delivery does **not**
 burn its `delivery_id`, so the sender's retry is processed rather than
 dropped as a replay.
+
+**A `404` from a webhook you created means a wrong secret or signature.** The
+sender sees the same answer as for a name that does not exist; the delivery log
+shows why (`GET /v1/_webhooks/{name}/recent-deliveries` lists the verdict, e.g.
+`rejected_sig`, and `WebhookDef op=get` counts refusals by reason), and so does
+the server log.
 
 A **replayed valid delivery** (a re-send of an already-accepted
 `delivery_id`, within the dedup window) is **not** an error — it is only
@@ -754,7 +763,7 @@ re-delivery, not an attacker. The receiver acks it **`200`** with
 `{deduped: true}` and the original `run_id` (when the spawn path recorded
 one), matching the GitHub/Stripe redelivery contract, and does **not** spawn
 a second run. (A sender that retries on non-2xx therefore stops, rather than
-rotating its secret on a misread `401`.)
+rotating its secret on a misread refusal.)
 
 ## on_complete
 

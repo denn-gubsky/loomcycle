@@ -79,6 +79,7 @@ It is trusted, as the definition's metadata is: none of it is read from the body
 
 - **How deliveries were answered:** `WebhookDef op=get` returns `status.deliveries` — accepted, duplicate, ping, ignored, filtered, and refused by reason (signature, event, shape, body, rate, …) — every replica's counts, up to 30 seconds behind. An admin also has `GET /v1/_webhooks/{name}/delivery-counts`.
 - **The last few deliveries** on one replica, with their verdicts and run ids: `GET /v1/_webhooks/{name}/recent-deliveries`.
+- **A `404` from a webhook you created means a wrong secret or signature.** A failed signature gets the same answer as a name that does not exist, so a sender cannot probe for names; the delivery counts (refused: signature), the recent deliveries (`rejected_sig`) and the server log say why. A secret that does not resolve answers `503 {"error":"unavailable"}`, and only the log and the delivery log name it.
 - **Rotating the secret:** set `auth.previous_secret` to the old credential and `auth.secret` to the new one in a fork; a delivery signed with either is accepted. Fork again without `previous_secret` when the forge has the new one.
 - **The console** (Integrations → Webhooks) edits every field above and shows the delivery counts.
 
