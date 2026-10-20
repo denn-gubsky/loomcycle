@@ -51,25 +51,23 @@ func (rec *Receiver) handleTeam(w http.ResponseWriter, r *http.Request) {
 	defer span.End()
 	span.SetAttributes(attribute.String("webhook.name", display), attribute.String("webhook.tenant", tenant))
 
-	// 1. The raw body, read under the limit every name shares before the
-	//    name is resolved, as a WebhookDef's is (handle).
-	body, bodyErr := rec.readDelivery(w, r)
-
-	// 2. Resolve. No such team, no such webhook, no walk of the team running,
+	// 1. Resolve. No such team, no such webhook, no walk of the team running,
 	//    a retired version: one answer for all, byte-identical to a
 	//    WebhookDef that does not exist — so the route tells an
 	//    unauthenticated caller nothing a WebhookDef's would not.
 	hook, ok := rec.teamHooks.ResolveTeamWebhook(ctx, tenant, team, name)
 	if !ok {
+		rec.readDelivery(w, r, 0) // read as a live hook's would be
 		rec.finish(span, "", "", "rejected_unknown", "")
 		writeUnknownWebhook(w)
 		return
 	}
 	whKey := teamWebhookKey(tenant, team, name)
 
-	// A team webhook takes the receiver's default limit; a body over it is
-	// answered as an unknown name, unauthenticated as it is.
-	if bodyErr != nil || int64(len(body)) > min(int64(defaultBodySizeLimitBytes), rec.requestCap()) {
+	// 2. The raw body, under the receiver's default limit; a body over it is
+	//    answered as an unknown name, unauthenticated as it is.
+	body, bodyOK := rec.readDelivery(w, r, min(int64(defaultBodySizeLimitBytes), rec.requestCap()))
+	if !bodyOK {
 		rec.finish(span, "", "", "rejected_body", "")
 		writeUnknownWebhook(w)
 		return

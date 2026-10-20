@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"reflect"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -228,5 +229,32 @@ func TestTeamWebhook_OversizeBodyIsIndistinguishableFromUnknownName(t *testing.T
 	}
 	if len(th.publishes()) != 0 {
 		t.Error("an over-size delivery published")
+	}
+}
+
+// TestWebhook_UnknownNameDoesNotBufferTheBody: reading every body the same
+// way must not mean buffering it. A large body to a name that does not exist
+// is read and discarded, never held in memory, so an unauthenticated sender
+// cannot make the server allocate request-limit-sized buffers.
+func TestWebhook_UnknownNameDoesNotBufferTheBody(t *testing.T) {
+	rec := newTestReceiver(t, map[string]config.Webhook{}, &fakeRunner{}, nil, nil, nil, time.Unix(1_700_000_000, 0))
+	const size = 8 << 20 // under the 16 MiB default request limit
+	body := bytes.Repeat([]byte("a"), size)
+	mux := http.NewServeMux()
+	rec.Mount(mux)
+
+	var before, after runtime.MemStats
+	runtime.GC()
+	runtime.ReadMemStats(&before)
+	req := httptest.NewRequest(http.MethodPost, "/v1/_webhooks/nope", bytes.NewReader(body))
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, req)
+	runtime.ReadMemStats(&after)
+
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404", w.Code)
+	}
+	if got := after.TotalAlloc - before.TotalAlloc; got > size/4 {
+		t.Errorf("an unknown name allocated %d bytes for an %d-byte body; want it discarded, not buffered", got, size)
 	}
 }

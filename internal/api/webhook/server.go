@@ -31,11 +31,8 @@ const defaultBodySizeLimitBytes = 1 << 20 // 1 MiB
 // LOOMCYCLE_MAX_REQUEST_BYTES is unset; the HTTP server uses the same default.
 const defaultRequestCapBytes = 16 << 20
 
-// requestCap is the one limit a delivery is read under before its webhook is
-// looked up: the server's request limit (LOOMCYCLE_MAX_REQUEST_BYTES). It is
-// the same for every name, so how the body is read (the interim 100 Continue
-// of an Expect: 100-continue request, or a refusal of an over-size body)
-// does not tell an unauthenticated caller whether the name exists.
+// requestCap is the server's request limit (LOOMCYCLE_MAX_REQUEST_BYTES): the
+// most of a delivery that is ever read, whatever the name.
 func (rec *Receiver) requestCap() int64 {
 	if rec.cfg != nil && rec.cfg.Env.MaxRequestBytes > 0 {
 		return rec.cfg.Env.MaxRequestBytes
@@ -58,10 +55,25 @@ func (rec *Receiver) bodyLimit(wd config.Webhook) int64 {
 	return limit
 }
 
-// readDelivery reads the raw body under requestCap, before the webhook is
-// resolved. The error is the caller's to answer once it knows the name.
-func (rec *Receiver) readDelivery(w http.ResponseWriter, r *http.Request) ([]byte, error) {
-	return io.ReadAll(http.MaxBytesReader(w, r.Body, rec.requestCap()))
+// readDelivery reads a delivery's body the same way for every name, so how it
+// is read (the interim 100 Continue of an Expect: 100-continue request, the
+// connection closing on a body over the request limit) does not tell an
+// unauthenticated caller whether the name exists (RFC ES #4). keep is how
+// much the resolved webhook accepts; 0 for a name that is unknown or inert.
+// At most keep bytes are buffered: the rest of the body, or all of it when
+// nothing is kept, is read into io.Discard, bounded by requestCap, so a large
+// body to an unknown name costs no memory. ok is false when the body was not
+// kept: unknown, unreadable, or over keep.
+func (rec *Receiver) readDelivery(w http.ResponseWriter, r *http.Request, keep int64) (body []byte, ok bool) {
+	rd := http.MaxBytesReader(w, r.Body, rec.requestCap())
+	if keep > 0 {
+		b, err := io.ReadAll(io.LimitReader(rd, keep+1))
+		if err == nil && int64(len(b)) <= keep {
+			return b, true
+		}
+	}
+	_, _ = io.Copy(io.Discard, rd)
+	return nil, false
 }
 
 // Receiver is the RFC H inbound-webhook HTTP handler. It is the
@@ -242,17 +254,13 @@ func (rec *Receiver) handle(w http.ResponseWriter, r *http.Request) {
 	defer span.End()
 	span.SetAttributes(attribute.String("webhook.name", name), attribute.String("webhook.tenant", tenant))
 
-	// 1. Read the raw body, under the one limit every name shares, before
-	//    the name is resolved: a body read only for a live def would answer
-	//    an Expect: 100-continue probe, or an over-size body, differently for
-	//    a name that exists (RFC ES #4). Raw bytes are what the signature is
-	//    verified against — we never re-serialize.
-	body, bodyErr := rec.readDelivery(w, r)
-
-	// 2. Resolve the active Def. Unknown name → 404. owner, not the URL
-	//    tenant, names the def for the per-webhook state below (webhookKey).
+	// 1. Resolve the active Def. Unknown name → 404, after the body is
+	//    read (and discarded) as a live def's would be (readDelivery). owner,
+	//    not the URL tenant, names the def for the per-webhook state below
+	//    (webhookKey).
 	wd, owner, ok := lookup.ResolveWebhook(ctx, rec.store, rec.cfg, tenant, name)
 	if !ok {
+		rec.readDelivery(w, r, 0)
 		// No def, no ring: see recordDelivery.
 		rec.finish(span, "", "", "rejected_unknown", "")
 		writeUnknownWebhook(w)
@@ -263,6 +271,7 @@ func (rec *Receiver) handle(w http.ResponseWriter, r *http.Request) {
 		// A disabled Def is addressable but inert. 404 (not 403) so a
 		// disabled webhook is indistinguishable from a never-registered one
 		// to an external caller — no enumeration signal.
+		rec.readDelivery(w, r, 0)
 		rec.finish(span, whKey, "", "rejected_disabled", "")
 		writeUnknownWebhook(w)
 		return
@@ -272,9 +281,12 @@ func (rec *Receiver) handle(w http.ResponseWriter, r *http.Request) {
 	// definition keeps what its author wrote.
 	wd = wd.WithProviderDefaults()
 
-	// The Def's own size limit. A body it refuses is answered as an unknown
-	// name, unauthenticated as it is; the ring keeps rejected_body.
-	if bodyErr != nil || int64(len(body)) > rec.bodyLimit(wd) {
+	// 2. Read the raw body under the Def's own size limit. Raw bytes are what
+	//    the signature is verified against — we never re-serialize. A body it
+	//    refuses is answered as an unknown name, unauthenticated as it is;
+	//    the ring keeps rejected_body.
+	body, bodyOK := rec.readDelivery(w, r, rec.bodyLimit(wd))
+	if !bodyOK {
 		rec.finish(span, whKey, "", "rejected_body", "")
 		rec.logf("webhook %q: body unreadable or over its %d-byte limit", name, rec.bodyLimit(wd))
 		writeUnknownWebhook(w)
