@@ -3,7 +3,10 @@ package main
 import (
 	"context"
 	"encoding/base64"
+	"encoding/json"
 	"errors"
+	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -11,8 +14,10 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/credential"
 	"github.com/denn-gubsky/loomcycle/internal/credential/credentialtest"
 	"github.com/denn-gubsky/loomcycle/internal/providers"
+	"github.com/denn-gubsky/loomcycle/internal/redact"
 	"github.com/denn-gubsky/loomcycle/internal/store/sqlite"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
+	"github.com/denn-gubsky/loomcycle/internal/tools/builtin"
 )
 
 // bindingWith stores credentials in tenant "t" (name → expires_at; nil for
@@ -177,5 +182,57 @@ func TestCredentialBinding_ATriggerRunNeverTakesTheUsersOwnKey(t *testing.T) {
 		if keyable := b.keyable(ctx, "t", "", "bob", "GITHUB_TOKEN"); keyable == noUser {
 			t.Errorf("CredentialsNoUserScope=%t: keyable on bob's own key = %t", noUser, keyable)
 		}
+	}
+}
+
+// A credential injected into a Bash child, or into a Bashbox host command,
+// is registered with the redactor as it is resolved, so a command that prints
+// its environment does not put the value into the stored transcript (the
+// server masks tool results with this redactor before persisting them). The
+// live result still carries it: the model can read any credential it is
+// given, and the redactor only keeps it out of what is stored.
+func TestBash_ResolvedCredValueRedactedFromOutput(t *testing.T) {
+	if _, err := exec.LookPath("env"); err != nil {
+		t.Skip("host env not available")
+	}
+	const value = "GITHUB_TOKEN-value"
+	root, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := tools.WithVolumePolicy(runCtx(), tools.VolumePolicyValue{Active: true, Bindings: []tools.VolumeBinding{{Name: "default", Root: root, Default: true}}})
+	cmd, _ := json.Marshal(map[string]any{"command": "env"})
+
+	for _, tc := range []struct {
+		name string
+		tool func(b credentialBinding) tools.Tool
+	}{
+		{"Bash", func(b credentialBinding) tools.Tool {
+			return &builtin.Bash{Enabled: true, AllowedCreds: []string{"GITHUB_TOKEN"}, CredResolve: b.envVar("bash")}
+		}},
+		{"BashboxFallback", func(b credentialBinding) tools.Tool {
+			return &builtin.Bashbox{Enabled: true, FallbackCommands: []string{"env"}, FallbackAllowedCreds: []string{"env:GITHUB_TOKEN"}, CredResolve: b.envVar("bashbox")}
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			b, _ := bindingWith(t, map[string]*time.Time{"GITHUB_TOKEN": nil})
+			rd := redact.New(nil, true)
+			b.register = rd.Register
+			res, err := tc.tool(b).Execute(ctx, cmd)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !strings.Contains(res.Text, "GITHUB_TOKEN="+value) {
+				t.Fatalf("the credential was not injected, so nothing is tested: %q", res.Text)
+			}
+			// The value is not secret-shaped: the patterns alone leave it, so
+			// masking below can only come from the registration.
+			if !strings.Contains(redact.New(nil, true).String(res.Text), value) {
+				t.Fatal("a pattern masks the test value; the registration is not what is tested")
+			}
+			if stored := rd.String(res.Text); strings.Contains(stored, value) {
+				t.Errorf("the resolved value survives redaction: %q", stored)
+			}
+		})
 	}
 }
