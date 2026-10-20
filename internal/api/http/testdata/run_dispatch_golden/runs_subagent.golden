@@ -11,7 +11,7 @@ event: text {"text":"parent done","type":"text"}
 event: usage {"type":"usage","usage":{"input_tokens":3,"output_tokens":2,"provider":"stub","timing":{}}}
 event: done {"stop_reason":"end_turn","type":"done","usage":{"input_tokens":6,"output_tokens":4,"provider":"stub"}}
 stored row: {"agent":"parent","agent_id":"<id:2>","credential_source":"operator","id":"<id:3>","input_tokens":6,"output_tokens":4,"pause_state":"running","provider":"stub","result":{"final_text":"parent done"},"run_config":{"agent_version":{"static":true},"iteration_limit":16},"session_id":"<id:1>","status":"completed","stop_reason":"end_turn"}
-stored event: user_input [{"content":[{"cacheable":true,"text":"you are the parent","type":"trusted-text"}],"role":"system"},{"content":[{"text":"SPAWN a child","type":"trusted-text"}],"role":"user"}]
+stored event: user_input [{"content":[{"text":"SPAWN a child","type":"trusted-text"}],"role":"user"}]
 stored event: system_prompt {"system_prompt":"you are the parent"}
 stored event: started {"type":"started"}
 stored event: prompt_snapshot {"prompt_snapshot":{"input":[{"text":"SPAWN a child","type":"text"}],"system":[{"text":"you are the parent","type":"text"}]},"type":"prompt_snapshot"}

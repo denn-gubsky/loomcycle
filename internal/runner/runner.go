@@ -491,6 +491,14 @@ type RunInput struct {
 	// since another replica may have taken a turn meanwhile. Set by the HTTP
 	// routes; without a cluster lock configured it changes nothing.
 	SessionLockAcrossReplicas bool
+
+	// AppendToSessionID puts a FRESH run in an existing session: its rows
+	// join that session, nothing of the session is replayed to it, and its
+	// agent and identity are this input's, not the session's (a continuation
+	// is SessionID). POST /v1/runs with session_id; the session is held for
+	// the run like a continuation's. A run that is not a draft or a
+	// continuation, with no idempotency key.
+	AppendToSessionID string
 }
 
 // RunCallbacks is how the wire surfaces observe the run.
@@ -527,6 +535,12 @@ type RunCallbacks struct {
 	// a run that is not detached, before the run is recorded finished. The
 	// error is not recorded; an SSE caller sends it as its stream's last frame.
 	OnRunError func(error)
+	// Attach, when set, streams a Detached run to its caller in the caller's
+	// own way once it is running: RunOnce calls it in place of forwarding
+	// the run's events until it ends, and returns when Attach does. Events
+	// still reach OnEvent (the caller filters them). POST /v1/runs tails the
+	// run's stored events.
+	Attach func(runID string)
 }
 
 // DuplicateRunError is what RunOnce returns when RunInput.ClientIdempotencyKey

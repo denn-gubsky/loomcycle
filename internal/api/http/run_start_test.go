@@ -144,3 +144,34 @@ func TestHandleMessages_QueuedContinuationSeesATurnTakenWhileItWaited(t *testing
 		t.Errorf("the queued continuation's model call does not carry the turn taken while it waited:\n%s", msgs)
 	}
 }
+
+// POST /v1/runs with session_id puts a FRESH run in the session: nothing of the
+// session is replayed to it, and it runs the agent the request names, not the
+// session's. (A continuation is POST /v1/sessions/{id}/messages.)
+func TestHandleRuns_SessionIDAppendsAFreshRunWithoutReplay(t *testing.T) {
+	g := newGoldenServer(t, goldenOpts{})
+	sid := g.completedSession("plain")
+	r := g.post("/v1/runs", goldenRunBody("other", "APPENDED turn", `"session_id":"`+sid+`"`))
+	_, runID, gotSession := r.ids(t)
+	r.drain(t)
+	if gotSession != sid {
+		t.Fatalf("the run went into session %q, want %q", gotSession, sid)
+	}
+	waitRunStatus(t, g.st, runID, store.RunCompleted)
+	msgs, ok := g.prov.sawCall("APPENDED turn")
+	if !ok {
+		t.Fatal("the appended run never reached the model")
+	}
+	if strings.Contains(msgs, "first turn") {
+		t.Errorf("the appended run was given the session's history:\n%s", msgs)
+	}
+	ev, err := g.st.GetRunEventsSince(context.Background(), runID, 0, 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, e := range ev {
+		if e.Type == "system_prompt" && !strings.Contains(string(e.Payload), `"other"`) {
+			t.Errorf("the appended run ran with system prompt %s, want agent other's", e.Payload)
+		}
+	}
+}

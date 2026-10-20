@@ -63,6 +63,8 @@ type runStartStream struct {
 	// detached), so only the queue's own events — sent while it waits, before
 	// it runs — go out live; the tail carries the rest.
 	liveQueueOnly bool
+	// attach, when set, is how a detached run is streamed (RunCallbacks.Attach).
+	attach func(runID string)
 }
 
 // run starts in through RunOnce and answers the request: with the run's
@@ -114,6 +116,9 @@ func (rs *runStartStream) run(in runner.RunInput, refuse func(error)) {
 				rs.stream.send(runErrorEvent(err))
 			}
 		},
+	}
+	if rs.attach != nil {
+		cb.Attach = rs.attach
 	}
 	err := rs.s.RunOnce(rs.r.Context(), in, cb)
 	switch {

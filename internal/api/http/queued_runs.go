@@ -20,9 +20,8 @@ import (
 
 // RFC EI P3: a run that cannot start at once is accepted as a queued run —
 // a row in status "queued", a `queued` event — and starts when a run slot
-// frees. Three paths admit a new run (RunOnce, handleRuns, handleMessages);
-// they share admitRun for the wait and differ in how they create the row
-// and tell their caller.
+// frees. Every new run is admitted by RunOnce, through admitRun; its caller
+// learns of the wait through RunCallbacks.
 
 // queuedRow is the row of a run that had to wait for its slot.
 type queuedRow struct {

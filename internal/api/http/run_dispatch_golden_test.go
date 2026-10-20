@@ -659,7 +659,8 @@ func TestRunDispatchGolden(t *testing.T) {
 			in := g.post("/v1/runs/"+runID+"/input", `{"text":"keep going"}`)
 			r.until(t, "awaiting_input", 2)
 			cancel := g.post("/v1/agents/"+agentID+"/cancel", "")
-			tr.add(t, "run", r)
+			// A store tail: what follows the last park races the run's end.
+			tr.addCut(t, "run", r, "awaiting_input")
 			tr.add(t, "input", in)
 			tr.add(t, "cancel", cancel)
 		},
