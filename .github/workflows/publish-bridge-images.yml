@@ -21,7 +21,9 @@ name: Publish a loomcycle bridge image
 # first publish, or anonymous pulls get 401.
 #
 # workflow_dispatch builds the image for a tag that already exists, for example
-# one pushed before this workflow did, or after a failed run.
+# one pushed before this workflow did, or after a failed run. The Dockerfile is
+# therefore taken from the workflow's own commit and only the package source
+# from the tag: a tag older than deploy/bridges/ has no Dockerfile of its own.
 
 on:
   push:
@@ -81,14 +83,21 @@ jobs:
       contents: read
       packages: write  # the GHCR mirror, with the built-in GITHUB_TOKEN
     steps:
+      # The build recipe (deploy/bridges/) from the commit this workflow runs
+      # at; the package source from the tag. On a tag push the two are the
+      # same commit.
+      - uses: actions/checkout@v5
+        with:
+          path: recipe
       - uses: actions/checkout@v5
         with:
           ref: refs/tags/${{ needs.resolve.outputs.tag }}
+          path: src
 
       - name: Verify the package matches the tag
         id: pkg
         env:
-          DIR: packages/bridge-${{ needs.resolve.outputs.name }}
+          DIR: src/packages/bridge-${{ needs.resolve.outputs.name }}
           WANT_NAME: "@loomcycle/bridge-${{ needs.resolve.outputs.name }}"
           WANT_VER: ${{ needs.resolve.outputs.version }}
         run: |
@@ -126,7 +135,7 @@ jobs:
         uses: docker/build-push-action@v6
         with:
           context: ${{ steps.pkg.outputs.dir }}
-          file: deploy/bridges/Dockerfile
+          file: recipe/deploy/bridges/Dockerfile
           platforms: linux/amd64,linux/arm64
           push: true
           build-args: |
