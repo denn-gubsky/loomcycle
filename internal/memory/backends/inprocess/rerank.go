@@ -3,7 +3,7 @@ package inprocess
 import (
 	"context"
 	"encoding/json"
-	"log"
+	"log/slog"
 
 	memory "github.com/denn-gubsky/loomcycle/internal/memory"
 	"github.com/denn-gubsky/loomcycle/internal/store"
@@ -40,7 +40,7 @@ func (b *Backend) rerankPool(ctx context.Context, tenant string, scope store.Mem
 	}
 	order, rep := b.reranker.Rank(ctx, q.QueryText, texts, q.Rerank.EffectiveMaxChars())
 	if !rep.Applied {
-		log.Printf("memory.search: rerank kept search order (reason=%s, candidates=%d)", rep.Reason, rep.Candidates)
+		slog.InfoContext(ctx, "memory.search: rerank kept search order", "reason", rep.Reason, "candidates", rep.Candidates)
 		return pool, rep
 	}
 	out := make([]store.MemorySearchEntry, 0, len(pool))
