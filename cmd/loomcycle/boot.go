@@ -2,14 +2,26 @@ package main
 
 import (
 	"context"
+	"net/http"
+	"time"
 
+	a2aapi "github.com/denn-gubsky/loomcycle/internal/api/a2a"
+	lchttp "github.com/denn-gubsky/loomcycle/internal/api/http"
+	webhookapi "github.com/denn-gubsky/loomcycle/internal/api/webhook"
 	"github.com/denn-gubsky/loomcycle/internal/channels"
 	"github.com/denn-gubsky/loomcycle/internal/concurrency"
 	"github.com/denn-gubsky/loomcycle/internal/config"
+	"github.com/denn-gubsky/loomcycle/internal/credential"
 	"github.com/denn-gubsky/loomcycle/internal/help"
+	"github.com/denn-gubsky/loomcycle/internal/memory"
+	"github.com/denn-gubsky/loomcycle/internal/memory/backends/inprocess"
+	"github.com/denn-gubsky/loomcycle/internal/memory/reranker"
 	"github.com/denn-gubsky/loomcycle/internal/providers"
+	"github.com/denn-gubsky/loomcycle/internal/resolve"
+	"github.com/denn-gubsky/loomcycle/internal/runstate"
 	"github.com/denn-gubsky/loomcycle/internal/search"
 	"github.com/denn-gubsky/loomcycle/internal/skills"
+	"github.com/denn-gubsky/loomcycle/internal/sqlmem"
 	"github.com/denn-gubsky/loomcycle/internal/store"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
 	"github.com/denn-gubsky/loomcycle/internal/tools/builtin"
@@ -81,6 +93,34 @@ type boot struct {
 
 	// openAndMigrateStore
 	storeIface store.Store
+
+	// wireMemory, wireCredentials
+	inProcBackend *inprocess.Backend
+	accessFlusher *memory.AccessFlusher
+	rerankModel   reranker.Reranker
+	credSealer    *credential.Sealer
+	credEngine    *credential.Engine
+	peerCreds     *builtin.PeerCredentials
+	credResolver  providers.CredentialResolver
+	credKeyable   func(ctx context.Context, tenantID, agentName, userID, name string) bool
+
+	// srv is the HTTP server every transport routes through. It is nil until
+	// buildServer; closures built before then (registerSecret) read it here
+	// at call time.
+	srv *lchttp.Server
+
+	// The rest of the server build.
+	hookDefTool           *builtin.HookDef
+	expiredTokenRetention time.Duration
+	sqlMemMgr             *sqlmem.Manager // nil when SQL Memory is off
+	sysPublisher          *channels.StorePublisher
+	runStateBus           *runstate.Bus
+	heartbeatSpecs        []channels.HeartbeatSpec
+	heartbeatRunner       *channels.HeartbeatRunner // nil when no heartbeat channel is declared
+	resolver              *resolve.Resolver
+	a2aServer             *a2aapi.Server       // nil when A2A is off
+	webhookReceiver       *webhookapi.Receiver // nil when webhooks are off
+	httpServer            *http.Server
 
 	// cleanups replace the defers main once held; see runCleanups.
 	cleanups []func()
