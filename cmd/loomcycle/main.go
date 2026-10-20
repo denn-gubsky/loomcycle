@@ -4820,6 +4820,6 @@ func logLegacyTokenSnapshot(snap lchttp.LegacyTokenSnapshot, acceptsUnpeppered b
 	if !acceptsUnpeppered {
 		unpeppered = "will NOT authenticate (LOOMCYCLE_TOKEN_LEGACY_HASH=off)"
 	}
-	log.Printf("auth: %d legacy token(s) on a legacy hash: %d without a pepper (%s), %d under a previous LOOMCYCLE_SECRET_KEY (move at their next login); def_ids: %s%s",
+	log.Printf("auth: %d token(s) on a legacy hash: %d without a pepper (%s), %d under a previous LOOMCYCLE_SECRET_KEY (move at their next login); def_ids: %s%s",
 		n, snap.Untagged, unpeppered, n-snap.Untagged, strings.Join(ids, ", "), more)
 }
