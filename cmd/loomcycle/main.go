@@ -423,6 +423,7 @@ func selectPresetNames(flags []string, env string) []string {
 var processStartedAt = time.Now()
 
 func main() {
+	setupLogging()
 	// Resolve build identifiers FIRST so subcommands (validate / agents
 	// / health / migrate) and --version see the same auto-resolved
 	// values. ldflags overrides win — release scripts that explicitly
