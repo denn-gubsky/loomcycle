@@ -3,8 +3,8 @@
 </p>
 
 <p align="center">
-  <strong>A complete agentic system you self-host.</strong><br/>
-  <em>~80 MB Go binary that ships with memory, documents, teams, a Decision tool, a visual canvas, bundled dev toolchain and headless Chromium. Multi-replica HA on Postgres. Apache-2.0.</em>
+  <strong>An agent-system kernel you self-host.</strong><br/>
+  <em>~80 MB Go binary that owns the agent loop and ships with memory, documents, teams, a Decision tool, a Crypto tool whose keys the model never sees, no-trace runs, ephemeral git-source volumes, a visual canvas, bundled dev toolchain and headless Chromium. A deployment-shape snapshot that carries the whole deployment in one archive. Multi-replica HA on Postgres. Apache-2.0 — v1.117.0.</em>
 </p>
 
 <p align="center">
@@ -22,17 +22,29 @@
 
 ---
 
-> 🌳 **Stable and in production.** loomcycle is past v1.0 (currently v1.111) — feature-complete, hardened, and distribution-ready (Homebrew, multi-arch Docker, a Claude Code plugin, TS + Python adapters, a TrueNAS app). **Validated by two months of continuous production operation at JobEmber.ai** under real user load, with multi-replica HA on Postgres. Development since v1.0 has been new primitives plus hardening — see [`REVISIONS.md`](REVISIONS.md) for recent releases and [the releases page](https://github.com/denn-gubsky/loomcycle/releases) for the full history. Apache-2.0. We welcome bug reports, security disclosures, feature contributions, downstream consumers, and forks. See [`CONTRIBUTING.md`](CONTRIBUTING.md).
+> 🌳 **Stable and in production.** loomcycle is past v1.0 (currently v1.117) — feature-complete, hardened, and distribution-ready (Homebrew, multi-arch Docker, a Claude Code plugin, TS + Python adapters, a TrueNAS app). **Validated by two months of continuous production operation at JobEmber.ai** under real user load, with multi-replica HA on Postgres. Development since v1.0 has been new primitives plus hardening — see [`REVISIONS.md`](REVISIONS.md) for recent releases and [the releases page](https://github.com/denn-gubsky/loomcycle/releases) for the full history. Apache-2.0. We welcome bug reports, security disclosures, feature contributions, downstream consumers, and forks. See [`CONTRIBUTING.md`](CONTRIBUTING.md).
 
 ---
 
 ## What it is
 
-**A complete agentic system you self-host.** loomcycle is one Go binary, ~80 MB. It ships with everything an agent needs to be useful at scale: agentic memory with bi-temporal validity and subject-document identity, a document store with per-piece derived search units, per-scope SQL memory, a Decision tool for typed probability outputs, a Teams primitive for multi-agent state-machine workflows, three context-retention modes with a Recall tool over evicted spans, a tool-usage harness that lets small local models call tools at measured 10/10 success, a bundled development toolchain (Python, Go, Rust, Node, git, gh, curl, jq, sqlite3) and a headless Chromium with ephemeral per-run volumes, a visual canvas (LoomBoard) for building and debugging workflows, multi-replica HA on Postgres, OpenTelemetry, and a snapshot that carries the whole deployment in one archive.
+**An agent-system kernel you self-host.** loomcycle is one Go binary, ~80 MB. It owns the agent loop and ships with everything an agent needs to be useful at scale: agentic memory with bi-temporal validity and subject-document identity, a document store with per-piece derived search units, per-scope SQL memory, a Decision tool for typed probability outputs, a Teams primitive for multi-agent state-machine workflows, a **Crypto tool** whose keys the model never sees (loomcycle-sealed or in Vault / AWS KMS / Google Cloud KMS), **no-trace runs** that deliver what they say and store none of it, **ephemeral git-source volumes** that fetch a repo so a forge token never enters a shell, three context-retention modes with a Recall tool over evicted spans, a tool-usage harness that lets small local models call tools at measured 10/10 success, a bundled development toolchain (Python, Go, Rust, Node, git, gh, curl, jq, sqlite3) and a headless Chromium, a visual canvas (LoomBoard) for building and debugging workflows, multi-replica HA on Postgres, OpenTelemetry, and a **deployment-shape snapshot** that carries the whole deployment in one archive.
 
 **Integrates however your stack already works.** Your app calls loomcycle over HTTP, gRPC, MCP, the TypeScript adapter, or the Python adapter. The agent loop, multi-provider routing, memory and document subsystems, Decision tool, Teams, MCP server identity, OpenTelemetry traces, and multi-replica coordination all live in the binary. Your application stays in whatever language you wrote it in.
 
-**What makes it different.** Most agent platforms are a library you embed, a hosted service you rent, or a gateway that does not run the loop. loomcycle is a self-hostable runtime that owns the loop *and* ships with the data substrate, teams primitive, decision model, canvas, dev toolchain and headless browser already assembled.
+**What makes it different.** Most agent platforms are a library you embed, a hosted service you rent, or a gateway that does not run the loop. loomcycle is a self-hostable **agent-system kernel** that owns the loop *and* ships with the data substrate, teams primitive, decision model, Crypto tool, canvas, dev toolchain and headless browser already assembled.
+
+## Last week delivered: v1.112 → v1.116 (Oct 13–19, 2026)
+
+Five minor releases this week; longer writeups follow on [the blog](https://loomcycle.dev/blog/).
+
+- **The Crypto tool (v1.116).** An agent names a key; the runtime encrypts, decrypts, signs, verifies, MACs, generates a TOTP or hashes — only the result comes back. Keys live in loomcycle (sealed under `LOOMCYCLE_SECRET_KEY`) or in **Vault Transit, AWS KMS or Google Cloud KMS** — in that case the key material never leaves the KMS. JWE, JWS, X25519, RSA-OAEP/PSS, Argon2id passwords, data by reference. Same ops on the operator API (`POST /v1/_crypto`, gRPC, MCP, TS and Python).
+- **No-trace runs (v1.112).** A run that delivers what it says to its caller and stores none of it. Siblings: restricted tokens (lifetime, agent list, override lock, run-rate), strict budget enforcement on runs in flight, metered `llm:gateway`, one-call run-tree delete.
+- **Git-in-the-core, ephemeral volumes (v1.113).** An agent can be given a repository the runtime fetched itself — an ephemeral read-only volume cloned from a `git` source. The forge token never enters a shell. Diff-size and inflated-pack-size bounded. Sibling features: forge webhooks (GitHub, Gitea, GitLab) that can start runs, signed hook deliveries, and the Microsoft Teams bridge.
+- **Queued runs + call lanes + run-slot lending (v1.113 → v1.114).** A run that cannot start at once is **queued**, not refused: it gets its row, id and events before it waits, is cancellable, and survives a restart. A provider's `max_concurrent` now counts model calls in a **lane** per model kind. A run whose model call waits for a saturated local provider **lends its run slot** to a run bound elsewhere.
+- **Bridges on a shared core (v1.113+).** The Microsoft Teams bridge refactored onto `@loomcycle/bridge-core`; three siblings followed — Telegram, Slack (every message inert by construction, no live mentions, every link's real target shown), and Discord over HTTP interactions.
+
+See [`REVISIONS.md`](REVISIONS.md) for the per-release detail.
 
 ## What's shipped
 
