@@ -1237,7 +1237,8 @@ Config knobs (full reference: `loomcycle context help operator-tokens` or the `C
 
 | Env var | Purpose |
 |---|---|
-| `LOOMCYCLE_OPERATOR_TOKEN_PEPPER` | Mixed into the token hash; a stolen DB dump without it yields no usable lookup. Set it for multi-tenant deployments. |
+| `LOOMCYCLE_OPERATOR_TOKEN_PEPPER` | Mixed into the token hash, so someone who can write the database cannot insert a row for a token of their choosing. Optional: unset, a pepper is derived from `LOOMCYCLE_SECRET_KEY` (HKDF-SHA256). With neither, tokens are hashed with no pepper and the server warns at boot when auth is on. Changing an explicit pepper invalidates every token. See [Token pepper](#token-pepper). |
+| `LOOMCYCLE_TOKEN_LEGACY_HASH` | `off` stops tokens minted before the derived pepper (with no pepper, or under the pepper `LOOMCYCLE_SECRET_KEY_PREVIOUS` derives) from logging in. Default: they still log in and are rehashed onto the current pepper at that login. Set `off` once the boot log stops reporting tokens on a legacy hash. |
 | `LOOMCYCLE_AUTH_CACHE_TTL_SECONDS` | Per-replica resolution-cache TTL (default 30; `0` = direct lookup, immediate revocation). Worst-case revocation lag if a cross-replica invalidation is dropped. |
 | `LOOMCYCLE_OPERATOR_TOKEN_ROTATION_GRACE_SECONDS` | Default rotation grace window (default 24h). |
 | `LOOMCYCLE_USER_TOKEN_MAX_TTL_SECONDS` | The longest lifetime a per-user token may be minted with. Unset = no cap. When set, a mint asking for more is refused, and a mint asking for no lifetime gets this one. See [Token lifetime](#token-lifetime). |
@@ -1264,6 +1265,18 @@ Routes enforce a scope from a closed catalog; an under-scoped token gets `403` w
 `substrate:tenant` satisfies the within-tenant scopes (`runs:*`, `channel:*`, and the def/hook gate) but never `substrate:admin` — so a tenant operator passes the def + hook routes yet is refused minting/runtime-admin. Mint one with `--scopes substrate:tenant`. Confinement is automatic: a non-admin principal's def writes are stamped with its authoritative tenant, cross-tenant reads return an opaque `404`, and a tenant-registered hook fires only on that tenant's runs.
 
 On the **loomcycle-as-MCP-server transport** (`/v1/_mcp`, RFC AG) a `substrate:tenant` bearer may now OPEN a session — but the route scope decides only that. Inside the session a per-tool gate still withholds the admin-only meta-tools (token minting, runtime admin, snapshot capture/restore, cross-scope channel listing): they are hidden from the tenant's `tools/list` and refused on `tools/call`. The tools a tenant *can* call (def authoring, run lifecycle, memory/channel/path/document, hooks) are tenant-confined exactly like their HTTP twins. `substrate:admin` sees + may call the full meta-tool set. The thin client (`loomcycle mcp --upstream`) forwards the caller's bearer verbatim, so a tenant bearer there drives a tenant-confined session — see `docs/MCP_SERVER.md`.
+
+### Token pepper
+
+A token row stores `SHA-256(pepper ‖ token)`, never the token. The pepper is what stops someone with write access to the database — but not to the server's environment — from inserting a row for a token they chose. The effective pepper is, in order:
+
+1. `LOOMCYCLE_OPERATOR_TOKEN_PEPPER`, if set — hashes exactly as before;
+2. else one derived from `LOOMCYCLE_SECRET_KEY` (`HKDF-SHA256(key, info="loomcycle/operator-token-pepper/v1")`). Its hashes are stored as `p1:<pepper fingerprint>:<hash>`, so a row still on an older hash can be told apart;
+3. else none, with a boot warning when auth is configured. `loomcycle doctor` reports which one applies.
+
+**Upgrading needs no token reissue.** When a deployment that had no pepper sets `LOOMCYCLE_SECRET_KEY`, every existing token still logs in: on a miss the lookup also tries the token's unpeppered hash, and on a hit rewrites the row to the derived hash. The same covers a key rotation — with the old key in `LOOMCYCLE_SECRET_KEY_PREVIOUS`, a token hashed under the pepper it derived logs in and is moved onto the new one. Only rows that were already on such a legacy hash when the server started qualify, so a row inserted later with an unpeppered hash is refused (and logged). The server logs at boot how many tokens are still on a legacy hash; once it reports none, set `LOOMCYCLE_TOKEN_LEGACY_HASH=off`. Until then, someone who can edit one of those rows before its owner next logs in — or edit any row and wait for a restart — can still swap in an unpeppered hash; turning the fallback off ends that.
+
+**What still invalidates tokens:** changing or removing an explicit pepper; setting an explicit pepper on a deployment that used a derived one; removing `LOOMCYCLE_SECRET_KEY` when the pepper is derived from it; and dropping `LOOMCYCLE_SECRET_KEY_PREVIOUS` before every token has logged in once under the new key.
 
 ### Deleting a run tree
 

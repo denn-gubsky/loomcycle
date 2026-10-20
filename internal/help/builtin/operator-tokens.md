@@ -253,9 +253,17 @@ re-displayed). Now distribute per-principal tokens at your own pace.
 
 ## Configuration
 
-- `LOOMCYCLE_OPERATOR_TOKEN_PEPPER` — mixed into the token hash; a stolen
-  DB dump without it yields no usable lookup. Set it in multi-tenant
-  deployments (env-allowlisted, never logged).
+- `LOOMCYCLE_OPERATOR_TOKEN_PEPPER` — mixed into the token hash, so a
+  database writer cannot insert a row for a token of their choosing.
+  Optional: unset, a pepper is derived from `LOOMCYCLE_SECRET_KEY`; with
+  neither, tokens are hashed with no pepper and the server warns at boot.
+  Changing an explicit pepper invalidates every token (env-allowlisted,
+  never logged).
+- `LOOMCYCLE_TOKEN_LEGACY_HASH` — `off` refuses tokens still on a hash from
+  before the derived pepper. By default such a token (unpeppered, or under
+  the pepper `LOOMCYCLE_SECRET_KEY_PREVIOUS` derives) still logs in if its
+  row existed when the server started, and is rehashed onto the current
+  pepper. The boot log reports how many remain; set `off` once it is none.
 - `LOOMCYCLE_AUTH_CACHE_TTL_SECONDS` — per-replica resolution cache TTL
   (default 30; `0` disables it for immediate revocation). A token
   mutation flushes the cache locally and, in a cluster, broadcasts a
