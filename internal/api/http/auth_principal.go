@@ -300,23 +300,6 @@ func extractBearer(r *http.Request) (string, bool) {
 	return "", false
 }
 
-// isClientToolsUpgrade reports whether r is a WebSocket upgrade request to
-// /v1/client-tools, the only WebSocket route. Connection is a comma-separated
-// token list and both headers compare case-insensitively (RFC 6455 §4.2.1).
-func isClientToolsUpgrade(r *http.Request) bool {
-	if r.URL.Path != "/v1/client-tools" || !strings.EqualFold(r.Header.Get("Upgrade"), "websocket") {
-		return false
-	}
-	for _, v := range r.Header.Values("Connection") {
-		for _, tok := range strings.Split(v, ",") {
-			if strings.EqualFold(strings.TrimSpace(tok), "upgrade") {
-				return true
-			}
-		}
-	}
-	return false
-}
-
 // authConfigured reports whether authentication is active. True when a
 // legacy shared secret is set, or any admin-scoped OperatorTokenDef
 // exists. When neither holds, the server is in dev open-mode.
