@@ -12,11 +12,13 @@ For the **public roadmap**, see [`docs/PLAN.md`](docs/PLAN.md).
 
 *The **Bashbox sandbox can no longer be crashed by the script it runs**: gbash moves to v0.0.40, which turns two one-line scripts that killed the whole loomcycle process into ordinary failed commands, and hardens its symlink, size and time limits. Also: **chat bridges for Slack, Telegram and Discord**, beside Teams, on one shared core, each published to npm on its own version line.*
 
-A minor release: #1871 to #1877.
+A minor release: #1871 to #1880.
 - #1877 upgrades gbash, the Bashbox sandbox, from v0.0.38 to v0.0.40;
 - #1871 adds `@loomcycle/bridge-core`, the shared core of the chat bridges, and #1876 gives it per-platform `/help` text;
 - #1872 moves the Teams bridge onto it as `@loomcycle/bridge-teams`;
-- #1873, #1874 and #1875 add `@loomcycle/bridge-telegram`, `@loomcycle/bridge-slack` and `@loomcycle/bridge-discord`.
+- #1873, #1874 and #1875 add `@loomcycle/bridge-telegram`, `@loomcycle/bridge-slack` and `@loomcycle/bridge-discord`;
+- #1878 publishes a container image for each platform bridge on its tag, and #1879 adds an optional Telegram bridge to the loomcycle.cloud stack;
+- #1880 is these notes.
 - `@loomcycle/client` and the Python adapter are 1.117.0, with no change in either.
 
 ### A script can no longer crash loomcycle through Bashbox (#1877)
@@ -37,7 +39,7 @@ gbash v0.0.39 and v0.0.40 are almost entirely security hardening:
 
 Behaviour changes, all toward GNU bash: `find` no longer follows symlinks without `-L`, creating a file under a missing directory fails, and `GBASH_COMPAT_ROOT` in the script environment is ignored. No loomcycle setting changes.
 
-### Chat bridges for Slack, Telegram and Discord (#1871 to #1876)
+### Chat bridges for Slack, Telegram and Discord (#1871 to #1879)
 
 A bridge connects a chat platform to a loomcycle agent: each person who writes to the bot gets their own conversation with the agent, under their own token, with the agent's questions, review holds and results drawn as the platform's cards or buttons. Until now only Teams had one. The platform-free part of it is now **`@loomcycle/bridge-core`**, and four bridges are built on it:
 
@@ -53,6 +55,8 @@ A bridge connects a chat platform to a loomcycle agent: each person who writes t
 - **Each platform's safety rules:** no broadcast mentions, no link previews or unfurls, no link label that hides its target, the bot's own and other bots' messages dropped, platform retries de-duplicated.
 - **Configuration** is `BRIDGE_*` for the shared settings plus each platform's own keys. The Teams bridge's `TEAMS_BRIDGE_*` settings become `BRIDGE_*`, except `TEAMS_BRIDGE_ALLOWED_TENANTS`; `BRIDGE_DEV` must now be `1` or `0`.
 - **Releases:** each package has its own `bridge-<name>-v*` tag and 0.x version, published by `publish-bridges.yml`, which refuses a package that depends on a sibling by path. Published: `bridge-core` 0.2.0 and the four bridges at 0.1.0. The bridges are on core 0.1.0 and adopt the per-platform `/help` text of 0.2.0 in a later minor.
+- **Container images (#1878):** each platform bridge tag also publishes `denngubsky/loomcycle-bridge-<name>` (and the `ghcr.io/denn-gubsky/` mirror) for amd64 and arm64, built from the package source at the tag: `node:22-alpine`, running as `node`, with a writable `/data` for `BRIDGE_STORE=file:`.
+- **loomcycle.cloud (#1879):** the cloud stack's compose file has an optional `telegram-bridge` service, off unless `COMPOSE_PROFILES=telegram`, reached by Telegram through the stack's Cloudflare tunnel; its `INSTALL.md` has the steps.
 
 ## What's in v1.116.0
 
