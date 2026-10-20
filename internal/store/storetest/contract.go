@@ -514,6 +514,7 @@ func Run(t *testing.T, factory Factory) {
 		{"OperatorTokenDefRetireAndCountAdmin", testOperatorTokenDefRetireAndCountAdmin},
 		{"OperatorTokenDefListNames", testOperatorTokenDefListNames},
 		{"OperatorTokenDefListBySubject", testOperatorTokenDefListBySubject},
+		{"OperatorTokenRehashIsACompareAndSet", testOperatorTokenRehashIsACompareAndSet},
 		{"OperatorTokenDefExpiry", testOperatorTokenDefExpiry},
 		{"OperatorTokenDefDeleteExpired", testOperatorTokenDefDeleteExpired},
 		{"OperatorTokenDefDeleteExpiredKeepsEachTenant", testOperatorTokenDefDeleteExpiredKeepsEachTenant},
@@ -13856,6 +13857,54 @@ func testOperatorTokenDefCreateAndLookup(t *testing.T, s store.Store) {
 	var nf *store.ErrNotFound
 	if !errors.As(err, &nf) {
 		t.Errorf("missing hash should be ErrNotFound, got %v", err)
+	}
+}
+
+// OperatorTokenRehash moves a row to a new hash only while it still carries
+// the old one, and touches nothing else on the row (RFC ES D2: a legacy row is
+// rehashed at its first login; a second replica doing the same must lose the
+// race harmlessly, not overwrite).
+func testOperatorTokenRehashIsACompareAndSet(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	row := mkOperatorTokenDef("ot-rh", "rh", "acme", "rh", "hash-old", []string{"runs:create"})
+	row.RestrictionsJSON = `{"agents":["a"]}`
+	if _, err := s.OperatorTokenDefCreate(ctx, row); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if _, err := s.OperatorTokenDefCreate(ctx, mkOperatorTokenDef("ot-rh-other", "rh2", "acme", "rh2", "hash-other", nil)); err != nil {
+		t.Fatalf("create other: %v", err)
+	}
+
+	// Wrong old hash → no change.
+	if ok, err := s.OperatorTokenRehash(ctx, "ot-rh", "hash-stale", "hash-new"); err != nil || ok {
+		t.Fatalf("rehash with a stale old hash = (%v, %v), want (false, nil)", ok, err)
+	}
+	// Unknown row → no change, no error.
+	if ok, err := s.OperatorTokenRehash(ctx, "ot-none", "hash-old", "hash-new"); err != nil || ok {
+		t.Fatalf("rehash of an unknown row = (%v, %v), want (false, nil)", ok, err)
+	}
+	// Right old hash → changed; the row is found under the new hash only.
+	if ok, err := s.OperatorTokenRehash(ctx, "ot-rh", "hash-old", "hash-new"); err != nil || !ok {
+		t.Fatalf("rehash = (%v, %v), want (true, nil)", ok, err)
+	}
+	got, err := s.OperatorTokenDefGetByTokenHash(ctx, "hash-new")
+	if err != nil {
+		t.Fatalf("get by new hash: %v", err)
+	}
+	if got.DefID != "ot-rh" || got.TenantID != "acme" || len(got.AllowedScopes) != 1 || !strings.Contains(got.RestrictionsJSON, `"agents"`) {
+		t.Errorf("rehash changed more than the hash: %+v", got)
+	}
+	var nf *store.ErrNotFound
+	if _, err := s.OperatorTokenDefGetByTokenHash(ctx, "hash-old"); !errors.As(err, &nf) {
+		t.Errorf("old hash still resolves after rehash: %v", err)
+	}
+	// A second rehash from the same old hash loses the race.
+	if ok, err := s.OperatorTokenRehash(ctx, "ot-rh", "hash-old", "hash-newer"); err != nil || ok {
+		t.Errorf("second rehash = (%v, %v), want (false, nil)", ok, err)
+	}
+	// The other row is untouched.
+	if other, err := s.OperatorTokenDefGetByTokenHash(ctx, "hash-other"); err != nil || other.DefID != "ot-rh-other" {
+		t.Errorf("unrelated row disturbed: %+v %v", other, err)
 	}
 }
 
