@@ -37,7 +37,7 @@ func TestBashbox_FallbackEnv_InjectsTenantCreds(t *testing.T) {
 	}
 	envMap := func(ctx context.Context) map[string]string {
 		m := map[string]string{}
-		for _, kv := range envOnly(b.fallbackEnv(ctx)) {
+		for _, kv := range envOnly(b.fallbackEnv(ctx, "git")) {
 			if i := strings.IndexByte(kv, '='); i > 0 {
 				m[kv[:i]] = kv[i+1:]
 			}
@@ -70,7 +70,7 @@ func TestBashbox_FallbackEnv_InjectsTenantCreds(t *testing.T) {
 // pre-feature behavior.
 func TestBashbox_FallbackEnv_NoResolverIsHostOnly(t *testing.T) {
 	b := &Bashbox{FallbackAllowedCreds: []string{"GITHUB_TOKEN"}} // CredResolve nil
-	for _, kv := range envOnly(b.fallbackEnv(context.Background())) {
+	for _, kv := range envOnly(b.fallbackEnv(context.Background(), "git")) {
 		if strings.HasPrefix(kv, "GITHUB_TOKEN=") {
 			t.Errorf("no CredResolve → creds must not resolve, got %q", kv)
 		}
@@ -89,7 +89,7 @@ func TestBashbox_FallbackEnv_AnUnusableCredRemovesTheHostVar(t *testing.T) {
 			return "", false, errors.New("expired")
 		},
 	}
-	env, notes := b.fallbackEnv(context.Background())
+	env, notes := b.fallbackEnv(context.Background(), "git")
 	for _, kv := range env {
 		if strings.HasPrefix(kv, "LOOMCYCLE_TEST_SHARED=") {
 			t.Errorf("the host var stood in for an unusable credential: %q", kv)
@@ -563,5 +563,55 @@ func TestBashbox_FallbackHostCwdTranslated(t *testing.T) {
 	want := filepath.Join(root, "sub")
 	if !strings.Contains(res.Text, want) {
 		t.Errorf("fallback git did not run in the translated host cwd %q; got %q", want, res.Text)
+	}
+}
+
+// A credential bound to one fallback command ("env:NAME") reaches that
+// command's host child and no other; a bare NAME still reaches every
+// allowlisted command. The bound command is the allowlisted name the proxy
+// execs — `env` and `printenv` here are two host proxies, each printing the
+// environment it was given.
+func TestBashboxFallback_PerCommandCredReachesOnlyItsCommand(t *testing.T) {
+	skipIfNoHostCmd(t, "env")
+	skipIfNoHostCmd(t, "printenv")
+	root, _ := filepath.EvalSymlinks(t.TempDir())
+	b := &Bashbox{
+		Enabled:              true,
+		FallbackCommands:     []string{"env", "printenv"},
+		FallbackAllowedCreds: []string{"env:LOOMCYCLE_TEST_FOR_ENV", "printenv:LOOMCYCLE_TEST_FOR_PRINTENV", "LOOMCYCLE_TEST_FOR_ALL"},
+		CredResolve: func(_ context.Context, name string) (string, bool, error) {
+			if strings.HasPrefix(name, "LOOMCYCLE_TEST_FOR_") {
+				return "value-of-" + name, true, nil
+			}
+			return "", false, nil
+		},
+	}
+
+	envOut := runBashbox(t, b, bashCtx(root), "env")
+	if envOut.IsError {
+		t.Fatalf("host env should run: %q", envOut.Text)
+	}
+	if !strings.Contains(envOut.Text, "LOOMCYCLE_TEST_FOR_ENV=value-of-LOOMCYCLE_TEST_FOR_ENV") {
+		t.Errorf("a credential bound to env did not reach env: %q", envOut.Text)
+	}
+	if strings.Contains(envOut.Text, "value-of-LOOMCYCLE_TEST_FOR_PRINTENV") {
+		t.Errorf("a credential bound to printenv reached env: %q", envOut.Text)
+	}
+	if !strings.Contains(envOut.Text, "LOOMCYCLE_TEST_FOR_ALL=value-of-LOOMCYCLE_TEST_FOR_ALL") {
+		t.Errorf("an unbound credential did not reach env: %q", envOut.Text)
+	}
+
+	printOut := runBashbox(t, b, bashCtx(root), "printenv")
+	if printOut.IsError {
+		t.Fatalf("host printenv should run: %q", printOut.Text)
+	}
+	if !strings.Contains(printOut.Text, "LOOMCYCLE_TEST_FOR_PRINTENV=value-of-LOOMCYCLE_TEST_FOR_PRINTENV") {
+		t.Errorf("a credential bound to printenv did not reach printenv: %q", printOut.Text)
+	}
+	if strings.Contains(printOut.Text, "value-of-LOOMCYCLE_TEST_FOR_ENV") {
+		t.Errorf("a credential bound to env reached printenv: %q", printOut.Text)
+	}
+	if !strings.Contains(printOut.Text, "LOOMCYCLE_TEST_FOR_ALL=value-of-LOOMCYCLE_TEST_FOR_ALL") {
+		t.Errorf("an unbound credential did not reach printenv: %q", printOut.Text)
 	}
 }
