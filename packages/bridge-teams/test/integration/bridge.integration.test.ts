@@ -1,13 +1,12 @@
 // Runs only under test/integration/run.sh, which boots a real loomcycle on
 // the mock provider and exports its URL and the bridge's tenant token.
 
+import { ConversationRouter, MemoryStore, TokenBroker } from "@loomcycle/bridge-core";
 import { LoomcycleClient } from "@loomcycle/client";
 import { describe, expect, it } from "vitest";
 
-import type { ConversationRef } from "../../src/ports.js";
-import { ConversationRouter } from "../../src/router.js";
-import { MemoryStore } from "../../src/store.js";
-import { TokenBroker } from "../../src/tokens.js";
+import type { ConversationRef } from "../../src/bridge.js";
+import { identify } from "../../src/identity.js";
 import { FakeTeams, silentLogger } from "../fakes.js";
 
 const BASE = process.env.TEAMS_BRIDGE_IT_BASE_URL;
@@ -27,34 +26,46 @@ async function until(cond: () => boolean, what: string, ms = 20_000): Promise<vo
 
 describe.skipIf(!BASE || !TOKEN)("teams bridge against a real loomcycle", () => {
   const clients = (token: string) => new LoomcycleClient({ baseUrl: BASE!, authToken: token });
-  const store = new MemoryStore();
+  const store = new MemoryStore<ConversationRef>();
   const teams = new FakeTeams();
   const broker = new TokenBroker(clients(TOKEN!), {
     agent: "helper",
+    tokenName: "teams-bridge",
     ttlSeconds: 3600,
     ratePerMinute: 30,
     rateBurst: 30,
     accessMode: "isolated",
   });
   const makeRouter = () =>
-    new ConversationRouter(
-      { allowedTenants: new Set([TENANT]), idleMinutes: 60 },
-      { agent: "helper", store, broker, clients, port: teams, log: silentLogger, stream: { stopPollMs: 50 } },
+    new ConversationRouter<ConversationRef>(
+      { idleMinutes: 60 },
+      {
+        platform: { name: "teams", label: "Teams" },
+        capabilities: { streaming: "personal-only", maxMessageChars: 20000 },
+        agent: "helper",
+        store,
+        broker,
+        clients,
+        port: teams,
+        log: silentLogger,
+        stream: { stopPollMs: 50 },
+      },
     );
+  const id = () => identify(activity, new Set([TENANT]));
   const activity = { from: { aadObjectId: USER, name: "Carol" }, conversation: { id: "it-conv", tenantId: TENANT, conversationType: "personal" } };
   const ref: ConversationRef = { conversation: { id: "it-conv", conversationType: "personal" }, serviceUrl: "https://smba.example/" };
 
   it("runs an interactive conversation as the Teams user, turn by turn and across a restart", async () => {
     let router = makeRouter();
 
-    await router.onMessage(activity, ref, "Hello from Teams");
+    await router.onMessage(id(), ref, "Hello from Teams");
     await until(() => teams.streams.length === 1 && teams.streams[0].closed, "first turn");
     expect(teams.streams[0].text.length).toBeGreaterThan(0);
     const first = await store.get("it-conv");
     expect(first?.runId).toBeTruthy();
     expect(first?.sessionId).toBeTruthy();
 
-    await router.onMessage(activity, ref, "And a follow-up");
+    await router.onMessage(id(), ref, "And a follow-up");
     await until(() => teams.streams.length === 2 && teams.streams[1].closed, "second turn");
     expect((await store.get("it-conv"))?.runId).toBe(first?.runId);
 
@@ -62,7 +73,7 @@ describe.skipIf(!BASE || !TOKEN)("teams bridge against a real loomcycle", () => 
     // the session in a new run and the old run is ended.
     await router.stop();
     router = makeRouter();
-    await router.onMessage(activity, ref, "Still there?");
+    await router.onMessage(id(), ref, "Still there?");
     await until(() => teams.streams.length === 3 && teams.streams[2].closed, "turn after restart");
     const after = await store.get("it-conv");
     expect(after?.sessionId).toBe(first?.sessionId);

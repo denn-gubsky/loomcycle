@@ -2,7 +2,10 @@
 
 import type { AgentEvent, ContinueOptions, MintedUserToken, RunOptions } from "@loomcycle/client";
 
-import type { AdminClient, ConversationRef, Logger, OutboundActivity, RunClient, StreamLike, TeamsPort } from "../src/ports.js";
+import type { AdminClient, BridgePort, Logger, OutboundActivity, RunClient, StreamLike } from "@loomcycle/bridge-core";
+
+import type { ConversationRef } from "../src/bridge.js";
+import { renderCard } from "../src/cards.js";
 
 /** A push-driven async iterable: the test feeds the events a run would stream. */
 export class EventChannel<T> implements AsyncIterable<T> {
@@ -145,7 +148,7 @@ export class FakeStream implements StreamLike {
   }
 }
 
-export class FakeTeams implements TeamsPort {
+export class FakeTeams implements BridgePort<ConversationRef> {
   readonly sent: Array<{ ref: ConversationRef; activity: OutboundActivity }> = [];
   readonly streams: FakeStream[] = [];
   async send(ref: ConversationRef, activity: OutboundActivity): Promise<void> {
@@ -159,8 +162,9 @@ export class FakeTeams implements TeamsPort {
   messages(): string[] {
     return this.sent.flatMap((s) => (s.activity.type === "message" && "text" in s.activity ? [s.activity.text] : []));
   }
+  /** The Adaptive Cards Teams would show. */
   cards(): Array<Record<string, unknown>> {
-    return this.sent.flatMap((s) => (s.activity.type === "message" && "card" in s.activity ? [s.activity.card] : []));
+    return this.sent.flatMap((s) => (s.activity.type === "message" && "card" in s.activity ? [renderCard(s.activity.card)] : []));
   }
 }
 

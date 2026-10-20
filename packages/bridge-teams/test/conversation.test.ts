@@ -1,11 +1,10 @@
 import { beforeEach, describe, expect, it } from "vitest";
 
-import { VERB } from "../src/cards.js";
-import { conversationSubject } from "../src/identity.js";
-import type { ConversationRef } from "../src/ports.js";
-import { ConversationRouter, NOT_AVAILABLE_TEXT } from "../src/router.js";
-import { MemoryStore } from "../src/store.js";
-import { TokenBroker } from "../src/tokens.js";
+import { ConversationRouter, MemoryStore, TokenBroker, VERB } from "@loomcycle/bridge-core";
+
+import type { ConversationRef } from "../src/bridge.js";
+import { parseCardAction, renderCard } from "../src/cards.js";
+import { conversationSubject, identify, NOT_AVAILABLE_TEXT, type ActivityIdentityFields } from "../src/identity.js";
 import { FakeLoomcycle, FakeTeams, httpError, settle, silentLogger, waitFor, type StartedRun } from "./fakes.js";
 
 const TENANT = "11111111-1111-1111-1111-111111111111";
@@ -29,22 +28,33 @@ function refFor(conv = "conv-1", type: ConvType = "personal"): ConversationRef {
 describe("teams bridge conversation", () => {
   let lc: FakeLoomcycle;
   let teams: FakeTeams;
-  let store: MemoryStore;
+  let store: MemoryStore<ConversationRef>;
   let now: number;
-  let router: ConversationRouter;
+  let router: ConversationRouter<ConversationRef>;
+  const TENANTS = new Set([TENANT]);
+
+  /** What bridge.ts does with an inbound activity: identify, then route. */
+  const inbound = {
+    onMessage: (a: ActivityIdentityFields, ref: ConversationRef, text: string) => router.onMessage(identify(a, TENANTS), ref, text),
+    onCardAction: (a: ActivityIdentityFields & { value?: unknown }, ref: ConversationRef) =>
+      router.onCardAction(identify(a, TENANTS), ref, parseCardAction(a.value)),
+  };
 
   function makeRouter(rolloverMs = 100_000) {
     const broker = new TokenBroker(lc.client(ADMIN_TOKEN), {
       agent: "helper",
+      tokenName: "teams-bridge",
       ttlSeconds: 43200,
       ratePerMinute: 6,
       rateBurst: 10,
       accessMode: "isolated",
       now: () => now,
     });
-    return new ConversationRouter(
-      { allowedTenants: new Set([TENANT]), idleMinutes: 60 },
+    return new ConversationRouter<ConversationRef>(
+      { idleMinutes: 60 },
       {
+        platform: { name: "teams", label: "Teams" },
+        capabilities: { streaming: "personal-only", maxMessageChars: 20000 },
         agent: "helper",
         store,
         broker,
@@ -71,7 +81,7 @@ describe("teams bridge conversation", () => {
    *  loomcycle does, so the router's onMessage can settle. */
   async function say(text: string, user = ALICE, name = "Alice", conv = "conv-1", type: ConvType = "personal") {
     const before = lc.runs.length;
-    await router.onMessage(activity(user, name, conv, type), refFor(conv, type), text);
+    await inbound.onMessage(activity(user, name, conv, type), refFor(conv, type), text);
     await settle();
     if (lc.runs.length > before) announce(lc.runs[lc.runs.length - 1], `run-${lc.runs.length}`);
     await settle();
@@ -214,7 +224,7 @@ describe("teams bridge conversation", () => {
     await waitFor(() => teams.cards().length === 1, "question card");
 
     const click = (user: string, name: string, answer: string) =>
-      router.onCardAction(
+      inbound.onCardAction(
         { ...activity(user, name, "conv-g", "groupChat"), value: { action: { verb: VERB.answer, data: { runId: "run-1", interruptId: "q1", answer } } } },
         refFor("conv-g", "groupChat"),
       );
@@ -223,7 +233,7 @@ describe("teams bridge conversation", () => {
     expect(lc.callsTo("resolveInterrupt")).toHaveLength(0);
 
     const res = await click(ALICE, "Alice", "3");
-    expect(res).toMatchObject({ card: { type: "AdaptiveCard" } });
+    expect(res && "card" in res && renderCard(res.card)).toMatchObject({ type: "AdaptiveCard" });
     expect(lc.callsTo("resolveInterrupt").map((c) => c.args)).toEqual([["run-1", "q1", { answer: "3", resolvedBy: `teams-${ALICE}` }]]);
   });
 
@@ -244,7 +254,7 @@ describe("teams bridge conversation", () => {
     await say("draft the memo");
     lc.runs[0].events.push({ type: "awaiting_review", awaiting_review: { round: 1 } });
     await waitFor(() => teams.cards().length === 1, "review card");
-    const res = await router.onCardAction(
+    const res = await inbound.onCardAction(
       { ...activity(ALICE, "Alice"), value: { action: { verb: VERB.approve, data: { runId: "run-1" } } } },
       refFor(),
     );
@@ -297,8 +307,8 @@ describe("teams bridge conversation", () => {
 
   it("refuses a tenant outside the allowlist once, without calling loomcycle", async () => {
     const other = "22222222-2222-2222-2222-222222222222";
-    await router.onMessage(activity(ALICE, "Alice", "conv-x", "personal", other), refFor("conv-x"), "hi");
-    await router.onMessage(activity(ALICE, "Alice", "conv-x", "personal", other), refFor("conv-x"), "hello?");
+    await inbound.onMessage(activity(ALICE, "Alice", "conv-x", "personal", other), refFor("conv-x"), "hi");
+    await inbound.onMessage(activity(ALICE, "Alice", "conv-x", "personal", other), refFor("conv-x"), "hello?");
     await settle();
 
     expect(lc.calls).toHaveLength(0);
@@ -307,7 +317,7 @@ describe("teams bridge conversation", () => {
 
   it("tells the user plainly when loomcycle rate-limits a run start", async () => {
     lc.startError = httpError(429);
-    await router.onMessage(activity(ALICE, "Alice"), refFor(), "hi");
+    await inbound.onMessage(activity(ALICE, "Alice"), refFor(), "hi");
     await waitFor(() => teams.messages().length === 1, "error message");
     expect(teams.messages()[0]).toContain("faster than the agent accepts");
   });

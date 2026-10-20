@@ -1,4 +1,4 @@
-# Integration fixture for @loomcycle/teams-bridge: one interactive-capable
+# Integration fixture for @loomcycle/bridge-teams: one interactive-capable
 # agent on the cost-free mock provider, and the bridge's own tenant-operator
 # principal (it only registers users and mints their tokens).
 provider_priority: [mock]
