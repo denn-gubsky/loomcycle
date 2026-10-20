@@ -32,6 +32,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -719,6 +720,11 @@ func main() {
 		log.Printf("otel: disabled (set LOOMCYCLE_OTEL_EXPORTER_OTLP_ENDPOINT to enable)")
 	}
 
+	// Everything built from cfg that obtains secrets at run time (an AWS
+	// auth provider's credentials) registers them here; the holder points at
+	// the server's redactor once that exists.
+	secrets := &secretSink{}
+	cfg.SecretSink = secrets.register
 	pr, err := newProviderResolver(cfg)
 	if err != nil {
 		log.Fatalf("provider resolver: %v", err)
@@ -1522,6 +1528,7 @@ func main() {
 			}
 		}
 	}
+	secrets.set(registerSecret)
 	// A volume created from a git source (RFC EJ): off unless the operator
 	// lists the hosts. The credential a clone names is resolved for the run,
 	// and only when it is restricted to URLs covering the clone's.
@@ -3777,6 +3784,19 @@ type providerResolver struct {
 	// image-describe route — cannot make a call the provider's max_concurrent
 	// does not count. The Server reports and reloads this same instance.
 	sched *concurrency.CallScheduler
+}
+
+// secretSink forwards secret values to a function set after the components
+// holding the sink were built: providers are built before the server and its
+// redactor exist (RFC EM). It is read at each use, never captured.
+type secretSink struct{ f atomic.Pointer[func(string)] }
+
+func (s *secretSink) set(f func(string)) { s.f.Store(&f) }
+
+func (s *secretSink) register(v string) {
+	if f := s.f.Load(); f != nil {
+		(*f)(v)
+	}
 }
 
 // buildProviderMap constructs every ENABLED provider from cfg.Providers via the

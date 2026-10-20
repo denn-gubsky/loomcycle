@@ -21,12 +21,15 @@
 package providerbuild
 
 import (
+	"context"
 	"fmt"
 	"log"
+	"net/http"
 	"os"
 	"sort"
 	"time"
 
+	"github.com/denn-gubsky/loomcycle/internal/awsauth"
 	"github.com/denn-gubsky/loomcycle/internal/config"
 	"github.com/denn-gubsky/loomcycle/internal/providers"
 	"github.com/denn-gubsky/loomcycle/internal/providers/streamhttp"
@@ -124,7 +127,7 @@ func DriverOptions(id string, pc config.ProviderConfig, cfg *config.Config) prov
 		stream.IdleTimeout = ms
 		delete(opts, "idle_timeout_ms")
 	}
-	return providers.DriverOptions{
+	do := providers.DriverOptions{
 		ID:           id,
 		Dialect:      pc.Dialect,
 		BaseURL:      baseURL,
@@ -135,7 +138,58 @@ func DriverOptions(id string, pc config.ProviderConfig, cfg *config.Config) prov
 		Capabilities: CapabilityPatch(pc.Capabilities),
 		Logf:         log.Printf,
 	}
+	if pc.Auth != nil {
+		do.RequestAuth = awsRequestAuth(id, pc, baseURL, cfg.SecretSink)
+		// A tenant's own key overrides the operator's AWS credentials only
+		// under the Bedrock key's own name. The driver's default name
+		// (ANTHROPIC_API_KEY, OPENAI_API_KEY) would send a tenant's key for
+		// the vendor's API to AWS.
+		do.APIKey, do.KeyEnvName = "", BedrockKeyEnvName
+	}
+	return do
 }
+
+// BedrockKeyEnvName is the credential name a tenant or user stores a Bedrock
+// API key under to override an auth provider's AWS credentials: the name AWS's
+// own SDKs read a Bedrock key from.
+const BedrockKeyEnvName = "AWS_BEARER_TOKEN_BEDROCK"
+
+// awsRequestAuth builds the AWS authentication for an auth provider (RFC EM).
+// sink (cfg.SecretSink) receives every secret it obtains.
+// Nothing is fetched here: the credential chain reads its sources on the first
+// call. A chain that cannot even be configured (a malformed ~/.aws/config)
+// fails each call with its reason instead of failing the build.
+func awsRequestAuth(id string, pc config.ProviderConfig, baseURL string, sink func(string)) providers.RequestAuth {
+	a := pc.Auth
+	ext := ""
+	if a.ExternalIDEnv != "" {
+		ext = os.Getenv(a.ExternalIDEnv)
+	}
+	ra, err := awsauth.New(context.Background(), awsauth.Config{
+		Mode: a.Type, Region: a.Region, Service: a.Service, BaseURL: baseURL,
+		Chain: awsauth.ChainOptions{RoleARN: a.RoleARN, ExternalID: ext, SessionName: a.SessionName},
+	})
+	if err != nil {
+		log.Printf("provider %s: aws auth: %v", id, err)
+		return unavailableAuth{err: err}
+	}
+	// Every construction path (the provider set, service blocks such as the
+	// reranker, the decision model) goes through here, so none can build an
+	// auth whose secrets escape the redactor.
+	ra.SetSecretSink(sink)
+	return ra
+}
+
+// unavailableAuth is the auth of a provider whose credential chain could not
+// be configured: every call fails with the reason.
+type unavailableAuth struct{ err error }
+
+func (u unavailableAuth) Apply(context.Context, *http.Request, []byte, func(*http.Request, string)) error {
+	return u.err
+}
+func (u unavailableAuth) Invalidate()                                  {}
+func (u unavailableAuth) Classify(int, []byte) (bool, string)          { return false, "" }
+func (u unavailableAuth) ListModels(context.Context) ([]string, error) { return nil, u.err }
 
 // optionMillis coerces an `options:` value expressed in milliseconds (a YAML/JSON
 // number, which round-trips through config layering as int / int64 / float64) into
@@ -289,10 +343,15 @@ func ServiceDriverOptions(cfg *config.Config, field string, ep ServiceEndpoint, 
 	opts = DriverOptions(provider, pc, cfg)
 	if ep.BaseURL != "" {
 		opts.BaseURL = ep.BaseURL
+		// The provider's AWS credentials are for the provider's own endpoint.
+		// A session token travels in the signed headers and a minted key is a
+		// bearer credential, so neither may go to another one.
+		opts.RequestAuth = nil
 	}
 	if ep.APIKeyEnv != "" {
 		opts.APIKey = os.Getenv(ep.APIKeyEnv)
 		opts.KeyEnvName = ep.APIKeyEnv
+		opts.RequestAuth = nil // the block named its own key; it is the one sent
 		if opts.APIKey == "" {
 			log.Printf("%s: api_key_env=%s is set but empty — it will call %s unauthenticated", field, ep.APIKeyEnv, provider)
 		}

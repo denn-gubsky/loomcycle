@@ -51,7 +51,14 @@ type Driver struct {
 	// to one call's request body (nil or empty for none) — a backend's own
 	// extension of the OpenAI shape, such as llama.cpp's id_slot.
 	bodyExtra func(context.Context) map[string]any
+	// auth authenticates the operator's calls instead of apiKey (RFC EM). Nil
+	// = apiKey.
+	auth providers.RequestAuth
 }
+
+// setBearer sends k as a bearer token, which is also how Bedrock's OpenAI
+// routes take a Bedrock key.
+func setBearer(r *http.Request, k string) { r.Header.Set("Authorization", "Bearer "+k) }
 
 // New constructs a Driver. baseURL may be empty for the default endpoint, or
 // set to any OpenAI-compatible base (e.g. "http://localhost:8000/v1" for vLLM).
@@ -193,17 +200,31 @@ func (d *Driver) Call(ctx context.Context, req providers.Request) (<-chan provid
 			Effort:   req.Effort,
 		})
 		defer span.End()
-		httpReq, err := http.NewRequestWithContext(spanCtx, "POST", d.baseURL+"/chat/completions", bytes.NewReader(body))
-		if err != nil {
-			lcotel.SetSpanError(span, err)
-			return nil, err
+		build := func() (*http.Request, error) {
+			r, err := http.NewRequestWithContext(spanCtx, "POST", d.baseURL+"/chat/completions", bytes.NewReader(body))
+			if err != nil {
+				return nil, err
+			}
+			r.Header.Set("Content-Type", "application/json")
+			r.Header.Set("Accept", "text/event-stream")
+			return r, nil
 		}
-		httpReq.Header.Set("Content-Type", "application/json")
-		httpReq.Header.Set("Accept", "text/event-stream")
-		if apiKey != "" {
-			httpReq.Header.Set("Authorization", "Bearer "+apiKey)
+		var resp *http.Response
+		var err error
+		if d.auth != nil && credSource == "operator" {
+			// RFC EM: the operator's own call authenticates with AWS
+			// credentials. A tenant's stored key (credSource is its scope)
+			// is still sent as a key, below.
+			resp, err = providers.DoWithAuth(d.http, d.auth, body, build, setBearer)
+		} else {
+			var httpReq *http.Request
+			if httpReq, err = build(); err == nil {
+				if apiKey != "" {
+					setBearer(httpReq, apiKey)
+				}
+				resp, err = d.http.Do(httpReq)
+			}
 		}
-		resp, err := d.http.Do(httpReq)
 		if err != nil {
 			lcotel.SetSpanError(span, err)
 		} else if resp != nil && resp.StatusCode >= 400 {
@@ -983,6 +1004,10 @@ func (d *Driver) ListModels(ctx context.Context) ([]string, error) {
 // We surface only the IDs. OpenAI's response is small enough (a few
 // dozen models for a typical org) that one page suffices.
 func (d *Driver) fetchModels(ctx context.Context) ([]string, error) {
+	if d.auth != nil {
+		// Bedrock lists models outside the Chat Completions route.
+		return d.auth.ListModels(ctx)
+	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, d.baseURL+"/models", nil)
 	if err != nil {
 		return nil, err

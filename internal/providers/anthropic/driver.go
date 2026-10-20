@@ -45,7 +45,14 @@ type Driver struct {
 	// capsPatch is an optional operator override applied inside Capabilities()
 	// (RFC BF). Nil = advertise the driver defaults.
 	capsPatch *providers.CapabilityPatch
+	// auth authenticates the operator's calls instead of apiKey (RFC EM). Nil
+	// = apiKey.
+	auth providers.RequestAuth
 }
+
+// setAPIKey sends k the way the Messages API takes a key; Bedrock's
+// /anthropic route takes a Bedrock key the same way.
+func setAPIKey(r *http.Request, k string) { r.Header.Set("x-api-key", k) }
 
 // New constructs a Driver. baseURL may be empty for the default endpoint.
 // streamOpts controls the per-stream timeouts; zero values resolve to
@@ -151,16 +158,30 @@ func (d *Driver) Call(ctx context.Context, req providers.Request) (<-chan provid
 		defer span.End()
 		// Build a fresh request each attempt — http.Request.Body is
 		// consumed by Do, so a single Reader can't be reused.
-		httpReq, err := http.NewRequestWithContext(spanCtx, "POST", d.baseURL+"/v1/messages", bytes.NewReader(body))
-		if err != nil {
-			lcotel.SetSpanError(span, err)
-			return nil, err
+		build := func() (*http.Request, error) {
+			r, err := http.NewRequestWithContext(spanCtx, "POST", d.baseURL+"/v1/messages", bytes.NewReader(body))
+			if err != nil {
+				return nil, err
+			}
+			r.Header.Set("Content-Type", "application/json")
+			r.Header.Set("Accept", "text/event-stream")
+			r.Header.Set("anthropic-version", apiVersion)
+			return r, nil
 		}
-		httpReq.Header.Set("Content-Type", "application/json")
-		httpReq.Header.Set("Accept", "text/event-stream")
-		httpReq.Header.Set("x-api-key", apiKey)
-		httpReq.Header.Set("anthropic-version", apiVersion)
-		resp, err := d.http.Do(httpReq)
+		var resp *http.Response
+		var err error
+		if d.auth != nil && credSource == "operator" {
+			// RFC EM: the operator's own call authenticates with AWS
+			// credentials. A tenant's stored key (credSource is its scope)
+			// is still sent as a key, below.
+			resp, err = providers.DoWithAuth(d.http, d.auth, body, build, setAPIKey)
+		} else {
+			var httpReq *http.Request
+			if httpReq, err = build(); err == nil {
+				setAPIKey(httpReq, apiKey)
+				resp, err = d.http.Do(httpReq)
+			}
+		}
 		if err != nil {
 			lcotel.SetSpanError(span, err)
 		} else if resp != nil && resp.StatusCode >= 400 {
@@ -932,6 +953,10 @@ func anthropicEffortBudget(effort, model string) int {
 // small enough (handful of models) that one page is enough for the
 // resolver's purposes.
 func (d *Driver) fetchModels(ctx context.Context) ([]string, error) {
+	if d.auth != nil {
+		// Bedrock serves no /v1/models on its Anthropic route.
+		return d.auth.ListModels(ctx)
+	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, d.baseURL+"/v1/models", nil)
 	if err != nil {
 		return nil, err

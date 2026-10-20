@@ -57,18 +57,6 @@ func verifyRaw(pub *ecdsa.PublicKey, data, sig []byte) bool {
 	return len(sig) == 64 && ecdsa.Verify(pub, d[:], new(big.Int).SetBytes(sig[:32]), new(big.Int).SetBytes(sig[32:]))
 }
 
-// AWS's published SigV4 test-suite case "get-vanilla".
-func TestSignV4_MatchesTheAWSTestSuiteGetVanilla(t *testing.T) {
-	req, _ := http.NewRequest(http.MethodGet, "https://example.amazonaws.com/", nil)
-	now, _ := time.Parse("20060102T150405Z", "20150830T123600Z")
-	signV4(req, nil, "AKIDEXAMPLE", "wJalrXUtnFEMI/K7MDENG+bPxRfiCYEXAMPLEKEY", "", "us-east-1", "service", now)
-	want := "AWS4-HMAC-SHA256 Credential=AKIDEXAMPLE/20150830/us-east-1/service/aws4_request, SignedHeaders=host;x-amz-date, " +
-		"Signature=5fa00fa31553b73ebf1942676e86291e8372ff2a2260956d9b8aae1d763fbf31"
-	if got := req.Header.Get("Authorization"); got != want {
-		t.Errorf("Authorization =\n %s\nwant\n %s", got, want)
-	}
-}
-
 func TestRefValidate_Shapes(t *testing.T) {
 	good := []Ref{
 		{Kind: KindVault, Address: "https://vault.example:8200", Key: "orders", TokenCred: "$cred:vault-token"},

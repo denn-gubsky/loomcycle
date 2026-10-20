@@ -56,6 +56,8 @@ var ifaceKinds = map[string]ifaceKind{
 	"ModelStructuredOutputEnforcer": optional,
 	"ModelIdentifier":               optional,
 	"RunEnder":                      optional,
+	// RequestAuth rides in DriverOptions to the driver that uses it.
+	"RequestAuth": notOnProvider,
 }
 
 // asFile is the one file allowed to assert on a provider value.

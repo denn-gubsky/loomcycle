@@ -252,6 +252,13 @@ func categoryOf(err error) (tools.ErrorInfo, bool) {
 			"The run's own stored credential for this provider key cannot be used here (it is restricted to specific URLs), and the operator's key is not used in its place. Retrying will not help; store the key without allowed_urls, or remove it to use the operator's key.",
 		), true
 
+	// The provider authenticates with the server's AWS credentials (RFC EM)
+	// and none could be obtained. Nothing the caller sends changes that.
+	case errors.Is(err, providers.ErrAuthUnavailable):
+		return business(
+			"The model provider authenticates with this server's AWS credentials, and none could be obtained. Retrying will not help; an operator must configure AWS credentials for this server.",
+		), true
+
 	// --- permission: caller lacks authority it could be granted ---
 
 	// NOTE: nothing here is about another tenant's rows. A cross-tenant miss

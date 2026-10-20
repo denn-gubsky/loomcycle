@@ -26,6 +26,7 @@ func newFromOptions(o providers.DriverOptions) (providers.Provider, error) {
 		d.SetKeyEnvName(o.KeyEnvName)
 	}
 	d.capsPatch = o.Capabilities
+	d.auth = o.RequestAuth
 	providers.WarnUnknownOptions(o.Logf, "anthropic", o.Options)
 	return d, nil
 }

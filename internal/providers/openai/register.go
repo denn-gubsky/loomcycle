@@ -25,6 +25,7 @@ func newFromOptions(o providers.DriverOptions) (providers.Provider, error) {
 		d.SetKeyEnvName(o.KeyEnvName)
 	}
 	d.capsPatch = o.Capabilities
+	d.auth = o.RequestAuth
 	// The openai driver has no driver-specific options today; surface any that
 	// were configured as an advisory warning rather than silently dropping them.
 	providers.WarnUnknownOptions(o.Logf, "openai", o.Options)

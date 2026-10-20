@@ -21,3 +21,12 @@ gRPC-Go (google.golang.org/grpc)
 
 yaml.v3 (gopkg.in/yaml.v3)
   Copyright 2011-2016 Canonical Ltd.
+
+AWS SDK for Go v2 (github.com/aws/aws-sdk-go-v2 and its config, credentials,
+feature/ec2/imds and service/sts modules)
+  AWS SDK for Go
+  Copyright 2015 Amazon.com, Inc. or its affiliates. All Rights Reserved.
+  Copyright 2014-2015 Stripe, Inc.
+
+Smithy Go (github.com/aws/smithy-go)
+  Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.

@@ -1,7 +1,9 @@
 package providers
 
 import (
+	"context"
 	"fmt"
+	"net/http"
 	"sort"
 	"sync"
 
@@ -95,6 +97,31 @@ type DriverOptions struct {
 	// Logf is the boot-time logger for advisory warnings (unknown option keys).
 	// Nil is tolerated (warnings are dropped).
 	Logf func(string, ...any)
+	// RequestAuth, when set, authenticates the operator's calls instead of
+	// APIKey (RFC EM: AWS SigV4 or a minted Bedrock key). A tenant/user key
+	// override still wins over it, and a restricted run is still refused
+	// before it is consulted. Nil = APIKey, as before.
+	RequestAuth RequestAuth
+}
+
+// RequestAuth authenticates an outgoing provider request with something other
+// than a static key. Implementations are shared by every call of a provider
+// and must be safe for concurrent use.
+type RequestAuth interface {
+	// Apply authenticates req, whose complete body is body, for one attempt.
+	// setKey is the driver's own way to send a key (x-api-key, Bearer), for
+	// modes that produce one. It runs after the driver has set its headers.
+	Apply(ctx context.Context, req *http.Request, body []byte, setKey func(*http.Request, string)) error
+	// Invalidate drops cached credentials after the provider answered that
+	// they had expired, so the retry fetches fresh ones.
+	Invalidate()
+	// Classify reads an error answer: expired says the credentials or key
+	// sent had expired (the one auth failure worth one retry); hint is a
+	// sentence for the operator to add to the error, or "".
+	Classify(status int, body []byte) (expired bool, hint string)
+	// ListModels lists the models the endpoint serves, for providers whose
+	// endpoint has no listing of its own the driver could call.
+	ListModels(ctx context.Context) ([]string, error)
 }
 
 // DriverFactory builds one Provider instance from DriverOptions. Errors are
