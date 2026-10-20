@@ -105,3 +105,25 @@ func TestAuthMiddleware_HalfClosedRequestFailsClosed(t *testing.T) {
 		t.Errorf("%d of %d half-closed no-bearer requests reached the handler", n, attempts)
 	}
 }
+
+// TestResolvePrincipal_RetiredLegacySecretRefusedWhenCountFails: once an admin
+// token exists, the legacy LOOMCYCLE_AUTH_TOKEN is retired. Whether it is
+// retired is decided by the same admin-token count; when that count cannot be
+// read, the legacy secret must stay refused — and the refusal must not leave a
+// cached admin principal behind for when the store recovers.
+func TestResolvePrincipal_RetiredLegacySecretRefusedWhenCountFails(t *testing.T) {
+	s, st := tokenAuthServer(t, "legacy-secret")
+	seedToken(t, st, "lct_admin", "default", "root", []string{auth.ScopeAdmin}, time.Time{})
+	s.EnableTokenCache(time.Minute)
+	ctx := context.Background()
+
+	s.store = countErrStore{Store: st}
+	if p, ok := s.ResolvePrincipal(ctx, "legacy-secret"); ok {
+		t.Errorf("retired legacy secret during a count error resolved to %+v, want refused", p)
+	}
+
+	s.store = st
+	if p, ok := s.ResolvePrincipal(ctx, "legacy-secret"); ok {
+		t.Errorf("retired legacy secret after the store recovered resolved to %+v (cached?), want refused", p)
+	}
+}

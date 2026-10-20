@@ -333,16 +333,22 @@ func (s *Server) authConfiguredErr(ctx context.Context) (bool, error) {
 // needs a valid bearer. Reading an error as "no admin token" would be open
 // mode — every route served with no principal — on a database blip, or on a
 // request whose context a client cancelled (a half-closed socket does it).
-// Not logged by default: a client can cause the error at will.
 func (s *Server) authConfigured(ctx context.Context) bool {
 	on, err := s.authConfiguredErr(ctx)
 	if err != nil {
-		if s.authVerbose() {
-			log.Printf("auth: admin-token count failed (%v); treating auth as configured", err)
-		}
+		s.logAdminCountErr(ctx, err)
 		return true
 	}
 	return on
+}
+
+// logAdminCountErr logs a failed admin-token count that the caller is failing
+// closed on. A store fault is logged; a cancelled request is not (outside
+// LOOMCYCLE_AUTH_VERBOSE), because a client can cancel its own request at will.
+func (s *Server) logAdminCountErr(ctx context.Context, err error) {
+	if ctx.Err() == nil || s.authVerbose() {
+		log.Printf("auth: admin-token count failed (%v); failing closed", err)
+	}
 }
 
 func (s *Server) authVerbose() bool {
@@ -437,7 +443,14 @@ func (s *Server) resolvePrincipalUncached(ctx context.Context, bearer, hash stri
 	}
 	// Legacy shared-secret fallback.
 	if s.cfg().Env.AuthToken != "" && auth.CompareBearer(bearer, s.cfg().Env.AuthToken) {
-		if s.legacyFallbackDisabled(ctx) {
+		disabled, err := s.legacyFallbackDisabled(ctx)
+		if err != nil {
+			// Unknown whether the secret is retired: refuse, and do not cache
+			// the refusal, so the next request asks the store again.
+			s.logAdminCountErr(ctx, err)
+			return auth.Principal{}, false, false, never
+		}
+		if disabled {
 			return auth.Principal{}, false, true, never
 		}
 		return auth.Principal{
@@ -452,15 +465,20 @@ func (s *Server) resolvePrincipalUncached(ctx context.Context, bearer, hash stri
 
 // legacyFallbackDisabled reports whether the LOOMCYCLE_AUTH_TOKEN path is
 // retired — true once at least one admin-scoped OperatorTokenDef exists
-// (Decision 10/12). On a store error we keep the legacy path ENABLED
-// (return false): the alternative would strand the operator on a
-// transient DB blip.
-func (s *Server) legacyFallbackDisabled(ctx context.Context) bool {
+// (Decision 10/12). The error is set when the count could not be read; the
+// caller then refuses the legacy secret (fails closed). Keeping it enabled on
+// an error would revive a retired admin credential, and does not spare the
+// operator a DB blip: a real outage already fails closed at the token lookup
+// before this runs, so the error that reaches here is a cancelled request.
+func (s *Server) legacyFallbackDisabled(ctx context.Context) (bool, error) {
 	if s.store == nil {
-		return false
+		return false, nil
 	}
 	n, err := s.store.OperatorTokenDefCountActiveAdmin(ctx)
-	return err == nil && n > 0
+	if err != nil {
+		return false, err
+	}
+	return n > 0, nil
 }
 
 // applyPrincipal makes the authenticated principal authoritative over
