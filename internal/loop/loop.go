@@ -3355,12 +3355,16 @@ func (s *runState) iteration(ctx context.Context, iter int) loopExit {
 	turnCtx := s.armTurn(iterCtx)
 
 	req := s.buildRequest(reqSystem, reqMessages)
-	t, ex := s.callModel(ctx, turnCtx, iterSpan, iter, req)
+	// The timer is started here and handed down rather than returned with
+	// the turn: a pointer that leaves callModel would be a heap allocation on
+	// every model call.
+	callTimer := providers.StartCallTimer(s.opts.Now)
+	t, ex := s.callModel(ctx, turnCtx, iterSpan, iter, req, callTimer)
 	if ex.ctl != loopProceed {
 		return ex
 	}
 
-	s.recordTurn(t)
+	s.recordTurn(t, callTimer)
 
 	if ex := s.endTurn(ctx, turnCtx, iterSpan, iter, t); ex.ctl != loopProceed {
 		return ex
@@ -3702,8 +3706,7 @@ func (s *runState) buildRequest(reqSystem []providers.ContentBlock, reqMessages 
 // that fails leaves the iteration: a cancelled turn parks, a retryable error
 // retries the same provider or falls back to another, and anything else ends
 // the run.
-func (s *runState) callModel(ctx, turnCtx context.Context, iterSpan trace.Span, iter int, req providers.Request) (turnOutput, loopExit) {
-	callTimer := providers.StartCallTimer(s.opts.Now)
+func (s *runState) callModel(ctx, turnCtx context.Context, iterSpan trace.Span, iter int, req providers.Request, callTimer *providers.CallTimer) (turnOutput, loopExit) {
 	ch, err := s.opts.Provider.Call(turnCtx, req)
 	if err != nil {
 		return turnOutput{}, s.callFailed(ctx, turnCtx, iterSpan, iter, err)
@@ -3863,7 +3866,6 @@ type turnOutput struct {
 	// turnCancelledMidGen: the operator cancelled this turn while the model
 	// was generating, read once, right after the stream ended.
 	turnCancelledMidGen bool
-	callTimer           *providers.CallTimer
 }
 
 // readTurn consumes the model's response stream for one turn. A stream error
@@ -4075,7 +4077,6 @@ func (s *runState) readTurn(ctx, turnCtx context.Context, iterSpan trace.Span, i
 		iterReasoning:          iterReasoning,
 		iterReasoningSignature: iterReasoningSignature,
 		turnCancelledMidGen:    turnCancelledMidGen,
-		callTimer:              callTimer,
 	}, loopExit{}
 }
 
@@ -4137,7 +4138,7 @@ func (s *runState) dispatchTools(ctx, turnCtx context.Context, iterSpan trace.Sp
 // recordTurn appends the model's turn to the conversation and accounts for
 // it: the resolver hears the pair is healthy, the run's usage and context
 // footprint take the call's numbers, and the answer so far is this turn's.
-func (s *runState) recordTurn(t turnOutput) {
+func (s *runState) recordTurn(t turnOutput, callTimer *providers.CallTimer) {
 	// Prepend any text before tool_use blocks so the assistant turn is well-formed.
 	if t.iterText != "" {
 		t.assistantBlocks = append(
@@ -4204,7 +4205,7 @@ func (s *runState) recordTurn(t turnOutput) {
 		// provider actually served this call — exact across mid-run fallback.
 		t.iterUsage.Provider = s.opts.Provider.ID()
 		// How long the call took, for the throughput estimate and the ledger.
-		t.callTimer.Stamp(t.iterUsage)
+		callTimer.Stamp(t.iterUsage)
 		s.emit(providers.Event{Type: providers.EventUsage, Usage: t.iterUsage})
 		// Retain this turn's CURRENT context footprint (input + cache, i.e.
 		// what the request actually sent — NOT cumulative totalUsage, which
