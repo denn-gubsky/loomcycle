@@ -2,8 +2,10 @@ package builtin
 
 import (
 	"encoding/json"
+	"os"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -120,5 +122,85 @@ func TestBashboxEscape_ShadowMountWriteStopsAtTheCap(t *testing.T) {
 	res = runBashbox(t, overlayCapped(), ctx, "head -c 6000000 /dev/zero > ondisk; wc -c < ondisk")
 	if res.IsError || !strings.Contains(res.Text, "6000000") {
 		t.Errorf("a write to the read-write volume itself was charged: %.300q", res.Text)
+	}
+}
+
+// peakHeapDuring runs fn and reports how far the heap rose above where it
+// started while fn ran.
+func peakHeapDuring(fn func()) int64 {
+	runtime.GC()
+	var base runtime.MemStats
+	runtime.ReadMemStats(&base)
+	var peak atomic.Uint64
+	stop, done := make(chan struct{}), make(chan struct{})
+	go func() {
+		defer close(done)
+		var m runtime.MemStats
+		for {
+			runtime.ReadMemStats(&m)
+			if m.HeapInuse > peak.Load() {
+				peak.Store(m.HeapInuse)
+			}
+			select {
+			case <-stop:
+				return
+			case <-time.After(5 * time.Millisecond):
+			}
+		}
+	}()
+	fn()
+	close(stop)
+	<-done
+	return int64(peak.Load()) - int64(base.HeapInuse)
+}
+
+// A metadata change on a file of the read-only volume (chmod, touch, mv, ln)
+// copies it into the overlay. gbash defers reading the content until the
+// copy is next read or written, but from then on the whole file sits in
+// memory, without a byte having been written. The copy is charged at its
+// full size when it is made, so a file bigger than the cap is refused.
+func TestBashboxEscape_RoCopyUpOfALargeFileIsCharged(t *testing.T) {
+	for _, script := range []string{
+		"chmod 600 big",
+		"touch big",
+		"mv big moved",
+		"ln big hard",
+		"echo x >> big",
+	} {
+		t.Run(script, func(t *testing.T) {
+			root := realDir(t)
+			if err := os.WriteFile(filepath.Join(root, "big"), make([]byte, 4<<20), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			b := &Bashbox{Enabled: true, OverlayMaxBytes: 1 << 20}
+			res := runBashbox(t, b, roCtx(root), script)
+			if !res.IsError || !strings.Contains(res.Text, "write limit reached") {
+				t.Errorf("copying a 4 MiB file into a 1 MiB overlay was not refused: %.300q", res.Text)
+			}
+		})
+	}
+}
+
+// The attack the copy-up charge stops: touch each large file on the
+// read-only volume, then read it, so every one is held in memory. Sixteen
+// 4 MiB files are 64 MiB of heap uncapped; with a 1 MiB cap the first copy
+// is refused and the heap stays small.
+func TestBashboxEscape_RoCopyUpThenReadKeepsTheHeapBounded(t *testing.T) {
+	root := realDir(t)
+	for i := 0; i < 16; i++ {
+		if err := os.WriteFile(filepath.Join(root, "f"+strconv.Itoa(i)), make([]byte, 4<<20), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	b := &Bashbox{Enabled: true, OverlayMaxBytes: 1 << 20}
+	var res tools.Result
+	grew := peakHeapDuring(func() {
+		res = runBashbox(t, b, roCtx(root), "for f in f*; do chmod 600 $f; cat $f > /dev/null; done")
+	})
+	if !strings.Contains(res.Text, "write limit reached") {
+		t.Errorf("the copies were not charged: %.300q", res.Text)
+	}
+	if grew > 32<<20 {
+		t.Errorf("heap grew %d MiB while copying 64 MiB of files into a 1 MiB overlay", grew>>20)
 	}
 }
