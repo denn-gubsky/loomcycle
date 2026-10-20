@@ -2601,8 +2601,8 @@ type loopControl int
 
 const (
 	loopProceed loopControl = iota // go on to the iteration's next phase
-	loopNext                       // `continue outerLoop`: start the next iteration
-	loopEnd                        // `break outerLoop`: leave the loop for the run's finish
+	loopNext                       // `continue`: start the next iteration
+	loopEnd                        // `break`: leave the loop for the run's finish
 	loopReturn                     // `return`: runLoop returns res and err as they are
 )
 
@@ -3255,118 +3255,13 @@ func runLoop(ctx context.Context, opts RunOptions) (RunResult, error) {
 		s.messages = appendChildrenNote(s.messages, note, noted, emit)
 	}
 
-outerLoop:
 	for iter := 0; !parkAbandoned && (iter < iterCap || s.closingTurn); iter++ {
-		// v0.10.0 OTEL: one loomcycle.iteration span per turn. Nested
-		// under the caller-opened loomcycle.run span (api/http opens
-		// the run span at each of the 4 run-creation sites). The
-		// iteration body has multiple exit paths (fallback continue,
-		// unrecoverable return, terminal break, normal fall-through),
-		// so End() is called explicitly at each — Go's `defer` runs
-		// at function-scope only, not loop-iteration-scope.
-		iterCtx, iterSpan := lcotel.RecordIteration(ctx, iter)
-
-		// RFC BH: release the PREVIOUS turn's cancel ctx + registry token at the top
-		// of each iteration — before any early-return path below (pause-gate,
-		// context-transform) — so nothing leaks and a cancel racing the inter-turn
-		// boundary finds no armed token (409). This turn re-arms lower, right before
-		// the model call. No-ops on the first iteration and after a park (already
-		// disarmed there).
-		s.disarmTurn()
-		s.turnCancelFn(nil)
-
-		iterCtx, ex := s.beginIteration(ctx, iterCtx, iterSpan, iter)
+		ex := s.iteration(ctx, iter)
 		if ex.ctl == loopReturn {
 			return ex.res, ex.err
 		}
-
-		s.takeBoundaryInput()
-
-		// Auto / self-requested context distillation — also a clean boundary
-		// (drainSteer ran; no tool cycle is mid-flight). Fires when the agent asked
-		// (Context op=compact) OR the PREVIOUS iteration's footprint crossed the
-		// configured threshold. In recap mode (RFC CR L1) the loop recaps inline;
-		// otherwise it compacts (L0). The two are mutually exclusive per run —
-		// choosing recap bypasses the compaction auto-trigger. The smaller next
-		// request self-debounces. Applies to ALL runs (interactive + autonomous).
-		s.distillAtBoundary(iterCtx, iter)
-
-		// Context footprint (input+cache of the last completed turn, or the
-		// post-compaction estimate when a compaction just ran above) so Context
-		// op=self can show the agent how full its window is — the signal it needs
-		// to decide whether to self-compact (op=compact). Stamped HERE, below
-		// drainSteer + auto/self compaction, so a same-turn op=self never reports
-		// the stale pre-compaction footprint. 0 on the first iteration.
-		iterCtx = tools.WithContextUsage(iterCtx, s.lastCtxTokens, s.lastWindow)
-		// Stamped HERE, beside the footprint, so the two cannot describe
-		// different iterations. The footprint alone is a trap: an agent told it
-		// is at 99% calls op=compact, and if distillation is declining
-		// structurally that call reaches the same decline and teaches nothing.
-		iterCtx = tools.WithLastDistill(iterCtx, s.lastDistill)
-
-		// Context-transform plugins (RFC Z / F43): run the configured chain on a
-		// COPY of the outbound context — the loop's canonical system/messages
-		// (and so the persisted transcript + code-js replay input) stay
-		// untouched. Skipped for the synthetic code-js provider (local replay,
-		// no external leak; redacting its bytes would trip replay divergence).
-		// No caching in this version — the chain re-runs over the copy each turn.
-		reqSystem, reqMessages, ex := s.outboundContext(iterCtx, iter)
-		if ex.ctl == loopReturn {
-			return ex.res, ex.err
-		}
-
-		// RFC BH: arm the per-turn cancel token covering THIS turn's model call +
-		// tool dispatch (the previous turn was released at the top of the loop).
-		// turnCtx is a child of the RUN ctx, so a whole-run cancel STILL cascades to
-		// the turn; a turn-cancel fires only turnCtx (cause ErrTurnCancelled, run ctx
-		// alive) and is caught below. When ArmTurnCancel is nil the token is never
-		// fired, so turnCtx behaves exactly like iterCtx — the loop stays
-		// byte-identical.
-		turnCtx := s.armTurn(iterCtx)
-
-		req := s.buildRequest(reqSystem, reqMessages)
-		t, ex := s.callModel(ctx, turnCtx, iterSpan, iter, req)
-		switch ex.ctl {
-		case loopNext:
-			continue outerLoop
-		case loopEnd:
-			break outerLoop
-		case loopReturn:
-			return ex.res, ex.err
-		}
-
-		s.recordTurn(t)
-
-		switch ex := s.endTurn(ctx, turnCtx, iterSpan, iter, t); ex.ctl {
-		case loopNext:
-			continue outerLoop
-		case loopEnd:
-			break outerLoop
-		case loopReturn:
-			return ex.res, ex.err
-		}
-
-		switch ex := s.dispatchTools(ctx, turnCtx, iterSpan, iter, t.pendingTools); ex.ctl {
-		case loopNext:
-			continue outerLoop
-		case loopEnd:
-			break outerLoop
-		case loopReturn:
-			return ex.res, ex.err
-		}
-
-		// Normal fall-through to next iteration. Disarm the turn-cancel token at
-		// this turn boundary so a cancel racing the inter-turn gap finds nothing
-		// armed (409) rather than firing a spent token (RFC BH §9.4); the next turn
-		// re-arms. End the iteration span here — the for loop's continue opens a
-		// fresh one.
-		s.disarmTurn()
-		iterSpan.End()
-		// The next request carries this turn's answer and its tool results on
-		// top of what the call just measured.
-		s.pendingTokens = estimateMessageTokens(s.messages[len(s.messages)-2:])
-		if grantsClosingTurn(iter, iterCap, unboundedIters) {
-			s.closingTurn = true
+		if ex.ctl == loopEnd {
+			break
 		}
 	}
 	// RFC BH: release the last turn's cancel ctx once the loop has exited (break or
@@ -3418,6 +3313,111 @@ outerLoop:
 		Usage:      s.totalUsage,
 		Structured: structured,
 	}, nil
+}
+
+// iteration runs one turn of the loop: the boundary work, the model call,
+// what follows the turn, and the turn's tool calls. It returns where the loop
+// goes next; a turn that ran its tools starts the next iteration.
+func (s *runState) iteration(ctx context.Context, iter int) loopExit {
+	// v0.10.0 OTEL: one loomcycle.iteration span per turn. Nested
+	// under the caller-opened loomcycle.run span (api/http opens
+	// the run span at each of the 4 run-creation sites). The
+	// iteration body has multiple exit paths (fallback continue,
+	// unrecoverable return, terminal break, normal fall-through),
+	// so End() is called explicitly at each. It stayed explicit when
+	// the body became this method: some exits do work after End
+	// (reclaiming the run slot, releasing the turn), and a deferred End
+	// would move the span's end past it.
+	iterCtx, iterSpan := lcotel.RecordIteration(ctx, iter)
+
+	// RFC BH: release the PREVIOUS turn's cancel ctx + registry token at the top
+	// of each iteration — before any early-return path below (pause-gate,
+	// context-transform) — so nothing leaks and a cancel racing the inter-turn
+	// boundary finds no armed token (409). This turn re-arms lower, right before
+	// the model call. No-ops on the first iteration and after a park (already
+	// disarmed there).
+	s.disarmTurn()
+	s.turnCancelFn(nil)
+
+	iterCtx, ex := s.beginIteration(ctx, iterCtx, iterSpan, iter)
+	if ex.ctl != loopProceed {
+		return ex
+	}
+
+	s.takeBoundaryInput()
+
+	// Auto / self-requested context distillation — also a clean boundary
+	// (drainSteer ran; no tool cycle is mid-flight). Fires when the agent asked
+	// (Context op=compact) OR the PREVIOUS iteration's footprint crossed the
+	// configured threshold. In recap mode (RFC CR L1) the loop recaps inline;
+	// otherwise it compacts (L0). The two are mutually exclusive per run —
+	// choosing recap bypasses the compaction auto-trigger. The smaller next
+	// request self-debounces. Applies to ALL runs (interactive + autonomous).
+	s.distillAtBoundary(iterCtx, iter)
+
+	// Context footprint (input+cache of the last completed turn, or the
+	// post-compaction estimate when a compaction just ran above) so Context
+	// op=self can show the agent how full its window is — the signal it needs
+	// to decide whether to self-compact (op=compact). Stamped HERE, below
+	// drainSteer + auto/self compaction, so a same-turn op=self never reports
+	// the stale pre-compaction footprint. 0 on the first iteration.
+	iterCtx = tools.WithContextUsage(iterCtx, s.lastCtxTokens, s.lastWindow)
+	// Stamped HERE, beside the footprint, so the two cannot describe
+	// different iterations. The footprint alone is a trap: an agent told it
+	// is at 99% calls op=compact, and if distillation is declining
+	// structurally that call reaches the same decline and teaches nothing.
+	iterCtx = tools.WithLastDistill(iterCtx, s.lastDistill)
+
+	// Context-transform plugins (RFC Z / F43): run the configured chain on a
+	// COPY of the outbound context — the loop's canonical system/messages
+	// (and so the persisted transcript + code-js replay input) stay
+	// untouched. Skipped for the synthetic code-js provider (local replay,
+	// no external leak; redacting its bytes would trip replay divergence).
+	// No caching in this version — the chain re-runs over the copy each turn.
+	reqSystem, reqMessages, ex := s.outboundContext(iterCtx, iter)
+	if ex.ctl != loopProceed {
+		return ex
+	}
+
+	// RFC BH: arm the per-turn cancel token covering THIS turn's model call +
+	// tool dispatch (the previous turn was released at the top of the loop).
+	// turnCtx is a child of the RUN ctx, so a whole-run cancel STILL cascades to
+	// the turn; a turn-cancel fires only turnCtx (cause ErrTurnCancelled, run ctx
+	// alive) and is caught below. When ArmTurnCancel is nil the token is never
+	// fired, so turnCtx behaves exactly like iterCtx — the loop stays
+	// byte-identical.
+	turnCtx := s.armTurn(iterCtx)
+
+	req := s.buildRequest(reqSystem, reqMessages)
+	t, ex := s.callModel(ctx, turnCtx, iterSpan, iter, req)
+	if ex.ctl != loopProceed {
+		return ex
+	}
+
+	s.recordTurn(t)
+
+	if ex := s.endTurn(ctx, turnCtx, iterSpan, iter, t); ex.ctl != loopProceed {
+		return ex
+	}
+
+	if ex := s.dispatchTools(ctx, turnCtx, iterSpan, iter, t.pendingTools); ex.ctl != loopProceed {
+		return ex
+	}
+
+	// Normal fall-through to next iteration. Disarm the turn-cancel token at
+	// this turn boundary so a cancel racing the inter-turn gap finds nothing
+	// armed (409) rather than firing a spent token (RFC BH §9.4); the next turn
+	// re-arms. End the iteration span here — the for loop's continue opens a
+	// fresh one.
+	s.disarmTurn()
+	iterSpan.End()
+	// The next request carries this turn's answer and its tool results on
+	// top of what the call just measured.
+	s.pendingTokens = estimateMessageTokens(s.messages[len(s.messages)-2:])
+	if grantsClosingTurn(iter, s.iterCap, s.unboundedIters) {
+		s.closingTurn = true
+	}
+	return loopExit{ctl: loopNext}
 }
 
 // beginIteration is an iteration's boundary work before it takes any input:
