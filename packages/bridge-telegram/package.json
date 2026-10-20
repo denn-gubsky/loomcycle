@@ -1,0 +1,40 @@
+{
+  "name": "@loomcycle/bridge-telegram",
+  "version": "0.1.0",
+  "type": "module",
+  "description": "A Telegram bot for a loomcycle interactive agent: each person who messages the bot is their own loomcycle user, a group is a loomcycle user of its own, with streamed replies in private chats and inline-keyboard question and review cards.",
+  "license": "Apache-2.0",
+  "author": "Dennis Gubsky",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/denn-gubsky/loomcycle.git",
+    "directory": "packages/bridge-telegram"
+  },
+  "keywords": ["loomcycle", "bridge", "telegram", "bot", "agent", "ai"],
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "types": "./dist/index.d.ts",
+  "bin": { "loomcycle-bridge-telegram": "./dist/cli.js" },
+  "files": ["dist", "README.md"],
+  "publishConfig": { "access": "public" },
+  "engines": { "node": ">=20" },
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "prepack": "npm run build",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "dependencies": {
+    "@loomcycle/bridge-core": "^0.1.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "typescript": "^5.6.0",
+    "vitest": "^3.0.0"
+  }
+}

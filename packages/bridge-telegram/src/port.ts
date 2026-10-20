@@ -1,0 +1,182 @@
+// The core's outbound side on Telegram: messages, typing, cards, and (opt-in)
+// streamed answers in private chats.
+
+import type { BridgePort, Logger, OutboundActivity, StreamLike } from "@loomcycle/bridge-core";
+
+import { isNotModified, isParseError, TelegramError, type TelegramApi } from "./api.js";
+import { renderCard, type ForceReply, type InlineKeyboardMarkup, type RenderedMessage } from "./cards.js";
+import { escapeHtml, markdownToHtml } from "./format.js";
+import { chatIsUntrusted, type TelegramRef } from "./identity.js";
+import { TelegramStream, type StreamTiming } from "./stream.js";
+
+/** Telegram takes 4,096 characters, counted after the HTML is parsed, so tags
+ *  do not count and Markdown markers only shrink the text. The core splits at
+ *  this lower figure all the same: the plain-text fallback resends the
+ *  Markdown as written, and how Telegram counts characters outside the Basic
+ *  Multilingual Plane (one or two) is not documented. */
+export const MAX_MESSAGE_CHARS = 4000;
+
+/** Set on every message and edit. To build a preview Telegram fetches the
+ *  link, so a URL the agent was steered into writing (a prompt injection in
+ *  a group, a fetched page) would reach its server, query string and all,
+ *  without anyone clicking. */
+export const NO_LINK_PREVIEW = { link_preview_options: { is_disabled: true } } as const;
+
+function threadParams(ref: TelegramRef): Record<string, unknown> {
+  return ref.threadId === undefined ? { chat_id: ref.chatId } : { chat_id: ref.chatId, message_thread_id: ref.threadId };
+}
+
+/** What sendMessage sends: a rendered message, or the reply prompt, whose
+ *  markup is a ForceReply and which may reply to a message in the same chat
+ *  and topic. */
+export interface OutgoingMessage {
+  html: string;
+  plain: string;
+  replyMarkup?: InlineKeyboardMarkup | ForceReply;
+  replyTo?: number;
+}
+
+export interface TelegramPortOptions {
+  api: TelegramApi;
+  log: Logger;
+  streaming: boolean;
+  /** Group ids whose speakers are trusted (TELEGRAM_BRIDGE_TRUSTED_CHATS). */
+  trustedChats: ReadonlySet<string>;
+  /** Group ids the bot answers in (TELEGRAM_BRIDGE_ALLOWED_CHATS). */
+  allowedChats: ReadonlySet<string>;
+  /** The card owner's latest message in a group conversation, if known: the
+   *  reply prompt replies to it so its reply box opens for the owner alone. */
+  replyTarget?: (ref: TelegramRef) => number | undefined;
+  timing?: Partial<StreamTiming>;
+  now?: () => number;
+}
+
+export class TelegramPort {
+  /** Allowed groups already told of their new id. Bounded by the allow-list. */
+  private readonly toldMigrated = new Set<number>();
+
+  constructor(private readonly opts: TelegramPortOptions) {}
+
+  /** asBridgePort is the core's view: createStream only when streaming is on,
+   *  since its presence is what makes the core stream. */
+  asBridgePort(): BridgePort<TelegramRef> {
+    const send = (ref: TelegramRef, a: OutboundActivity) => this.send(ref, a);
+    if (!this.opts.streaming) return { send };
+    return { send, createStream: (ref) => this.createStream(ref) };
+  }
+
+  async send(ref: TelegramRef, activity: OutboundActivity): Promise<void> {
+    if (activity.type === "typing") {
+      // Cosmetic: never wait out a flood limit for it.
+      await this.opts.api.call("sendChatAction", { ...threadParams(ref), action: "typing" }, { retry: false });
+      return;
+    }
+    const rendered: RenderedMessage =
+      "card" in activity
+        ? renderCard(activity.card, { untrusted: chatIsUntrusted(ref.chatId, this.opts.trustedChats) })
+        : { html: markdownToHtml(activity.text), plain: activity.text };
+    await this.sendMessage(ref, rendered);
+    if (rendered.replyPrompt) await this.sendReplyPrompt(ref, rendered.replyPrompt);
+  }
+
+  /** sendReplyPrompt opens the reply box for a free-text question. In a group
+   *  it is selective, aimed by replying to the owner's message (selective
+   *  targets the sender of the message replied to, or users @mentioned).
+   *  With no such message (a private chat, or the bridge restarted since the
+   *  owner spoke) the box opens for everyone in the chat; a reply from anyone
+   *  but the owner then reaches the agent as an ordinary message. A failure
+   *  is logged, not thrown: the card is out, and a reply to it answers too. */
+  private async sendReplyPrompt(ref: TelegramRef, text: string): Promise<void> {
+    const target = ref.chatId < 0 ? this.opts.replyTarget?.(ref) : undefined;
+    const replyMarkup: ForceReply = target === undefined ? { force_reply: true } : { force_reply: true, selective: true };
+    try {
+      await this.sendMessage(ref, { html: escapeHtml(text), plain: text, replyMarkup, ...(target === undefined ? {} : { replyTo: target }) });
+    } catch (err) {
+      this.opts.log.warn("could not send the reply prompt", { chat: ref.chatId, ...(err instanceof TelegramError ? { code: err.code } : {}) });
+    }
+  }
+
+  /** sendMessage sends HTML, and the plain text if Telegram refuses the HTML. */
+  async sendMessage(ref: TelegramRef, m: OutgoingMessage, o: { retry?: boolean } = {}): Promise<number | undefined> {
+    const base = {
+      ...threadParams(ref),
+      ...NO_LINK_PREVIEW,
+      ...(m.replyMarkup ? { reply_markup: m.replyMarkup } : {}),
+      // Sent anyway if the owner deleted the message it replies to.
+      ...(m.replyTo === undefined ? {} : { reply_parameters: { message_id: m.replyTo, allow_sending_without_reply: true } }),
+    };
+    try {
+      const sent = await this.opts.api.call<{ message_id?: number }>("sendMessage", { ...base, text: m.html, parse_mode: "HTML" }, o);
+      return sent?.message_id;
+    } catch (err) {
+      if (!isParseError(err)) {
+        this.noteMigration(err, ref);
+        throw err;
+      }
+      this.opts.log.warn("telegram refused the HTML, resending as plain text", { chat: ref.chatId });
+      const sent = await this.opts.api.call<{ message_id?: number }>("sendMessage", { ...base, text: m.plain }, o);
+      return sent?.message_id;
+    }
+  }
+
+  /** editMessage replaces a message's text; a keyboard not passed is removed. */
+  async editMessage(
+    chatId: number,
+    messageId: number,
+    m: { html: string; plain: string; replyMarkup?: InlineKeyboardMarkup },
+    o: { retry?: boolean } = {},
+  ): Promise<void> {
+    const base = { chat_id: chatId, message_id: messageId, ...NO_LINK_PREVIEW, ...(m.replyMarkup ? { reply_markup: m.replyMarkup } : {}) };
+    try {
+      try {
+        await this.opts.api.call("editMessageText", { ...base, text: m.html, parse_mode: "HTML" }, o);
+      } catch (err) {
+        if (!isParseError(err)) throw err;
+        await this.opts.api.call("editMessageText", { ...base, text: m.plain }, o);
+      }
+    } catch (err) {
+      if (isNotModified(err)) return;
+      throw err;
+    }
+  }
+
+  private createStream(ref: TelegramRef): StreamLike {
+    return new TelegramStream({
+      port: this,
+      api: this.opts.api,
+      log: this.opts.log,
+      ref,
+      maxChars: MAX_MESSAGE_CHARS,
+      timing: this.opts.timing,
+      now: this.opts.now,
+    });
+  }
+
+  private noteMigration(err: unknown, ref: TelegramRef): void {
+    if (err instanceof TelegramError && err.migrateToChatId !== undefined) {
+      // The group became a supergroup, which has a new id. Its messages now
+      // arrive under that id, which the operator must allow, and it is a new
+      // conversation with a new memory.
+      this.opts.log.warn("telegram group moved to a new chat id", { chat: ref.chatId, new_chat: err.migrateToChatId });
+      void this.tellMigrated(ref.chatId, err.migrateToChatId);
+    }
+  }
+
+  /** tellMigrated tells a group that became a supergroup its new id, once per
+   *  old id, whether the bridge learnt it from Telegram's service message or
+   *  from a send that failed. Never throws. */
+  async tellMigrated(oldChatId: number, newChatId: number): Promise<void> {
+    // Only for a chat the operator allowed: a group nobody allowed must never
+    // make the bot write into another chat. The new id is not allowed here;
+    // that is the operator's call.
+    const allowed = this.opts.allowedChats.has(String(oldChatId));
+    if (!allowed || this.toldMigrated.has(oldChatId) || !Number.isSafeInteger(newChatId)) return;
+    this.toldMigrated.add(oldChatId);
+    const text = `This group was upgraded, so its id changed to ${newChatId}. Ask the operator to allow it.`;
+    try {
+      await this.sendMessage({ chatId: newChatId }, { html: escapeHtml(text), plain: text });
+    } catch (e) {
+      this.opts.log.warn("could not tell a group its new chat id", { new_chat: newChatId, ...(e instanceof TelegramError ? { code: e.code } : {}) });
+    }
+  }
+}
