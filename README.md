@@ -187,7 +187,15 @@ been primitives plus hardening: memory, documents, teams, sandboxing, retention
 and erasure. The agentic-memory subsystem and the document surfaces built on it
 remain the main direction.
 
-The most recent line (v1.116.0) adds a `Crypto` tool whose keys the model never
+The most recent line (v1.117.0) upgrades gbash, the Bashbox sandbox, to
+v0.0.40, so a script can no longer crash the loomcycle process: a deeply nested
+jq value or a huge `dd` block size used to end every run on the replica, and
+now fails as an ordinary command. Its symlink, size and time limits are
+hardened too. Beside it ship chat bridges for Slack, Telegram and Discord,
+alongside Teams, on a shared `@loomcycle/bridge-core`, each published to npm on
+its own version line. See [`REVISIONS.md`](REVISIONS.md).
+
+Before it, v1.116.0 added a `Crypto` tool whose keys the model never
 sees: an agent names a key and the runtime encrypts, decrypts, signs, verifies,
 MACs or makes a one-time code, returning only the result. Keys are held by
 loomcycle or in Vault Transit, AWS KMS or Google Cloud KMS, and the same
