@@ -2678,6 +2678,9 @@ type runState struct {
 	// band, for the same reason declines dedup: a condition that is true every
 	// iteration would otherwise bury itself.
 	seenExhausted map[int]bool
+	// compactRequested is set by Context op=compact and taken at the next
+	// iteration's distillation gate.
+	compactRequested atomic.Bool
 	// distillEmit is emit for the distillers: it records and dedups declines.
 	distillEmit func(providers.Event)
 
@@ -3058,8 +3061,7 @@ func runLoop(ctx context.Context, opts RunOptions) (RunResult, error) {
 	// sets (checked at the next iteration boundary), plus the previous iteration's
 	// context footprint + window ceiling that drive the auto-compact threshold.
 	// lastCompactIter debounces back-to-back auto-compactions.
-	var compactRequested atomic.Bool
-	ctx = tools.WithCompactRequest(ctx, &compactRequested)
+	ctx = tools.WithCompactRequest(ctx, &s.compactRequested)
 	// ⚠️ SEEDED, not zero. These used to start at 0 and stay there until the
 	// first provider call RETURNED, while the distillation gate runs at the TOP
 	// of an iteration — so a run whose very first request was already near the
@@ -3347,75 +3349,7 @@ outerLoop:
 		// otherwise it compacts (L0). The two are mutually exclusive per run —
 		// choosing recap bypasses the compaction auto-trigger. The smaller next
 		// request self-debounces. Applies to ALL runs (interactive + autonomous).
-		selfReq := compactRequested.Swap(false)
-		used := s.lastCtxTokens + s.pendingTokens
-		s.pendingTokens = 0
-		// The gate opens on EITHER threshold. A mode whose primary sits above
-		// the backstop — or whose primary cannot fire at all — must still reach
-		// compaction, or the window fills with nothing consulted.
-		var primaryDue bool
-		if s.recapMode {
-			primaryDue = shouldAutoRecap(opts.Context, used, s.lastWindow, iter, s.lastCompactIter)
-		} else {
-			primaryDue = shouldAutoCompact(opts.Compaction, used, s.lastWindow, iter, s.lastCompactIter)
-		}
-		backstopDue := iter > s.lastCompactIter+1 &&
-			backstopAvailable(opts.Compaction) &&
-			aboveBackstop(opts.Compaction, used, s.lastWindow)
-		distill := selfReq || primaryDue || backstopDue
-		if distill {
-			trigger := "auto"
-			if selfReq {
-				trigger = "self"
-			}
-			// The debounce advances on every ATTEMPT, not only on success.
-			// It used to sit inside the `if did` blocks below, so a decline
-			// left it untouched, the gate re-fired on the very next iteration,
-			// and a summarize call was burned every iteration for the rest of
-			// the run — against a condition that could not change.
-			s.lastCompactIter = iter
-			s.iterVerdicts = nil
-			reclaimed := false
-			if s.recapMode {
-				if newMsgs, did := maybeRecap(iterCtx, opts, s.messages, used, s.lastWindow, s.distillEmit, trigger); did {
-					s.messages = newMsgs
-					s.lastCtxTokens = estimatePromptTokens(s.preambleTokens, s.messages)
-					reclaimed = true
-				}
-			}
-			// ⚠️ THE SECOND TIER. Compaction is reachable from EVERY mode, not
-			// only append — which is the whole point: a recap that declines used
-			// to leave nothing else to try, and the run climbed to the limit.
-			//
-			// It is the right last resort precisely because it fails
-			// DIFFERENTLY: empty_summary is a property of the recap budget and
-			// the recap prompt, and a compaction summary runs on neither. A
-			// second tier that failed for the same reasons would be theatre.
-			//
-			// Reached when the mode's own distiller did not reclaim AND the
-			// footprint is at the backstop. In append mode compaction IS the
-			// primary, so this is its only invocation there.
-			if !reclaimed && (backstopDue || selfReq || !s.recapMode) &&
-				backstopAvailable(opts.Compaction) {
-				if newMsgs, did := maybeAutoCompact(iterCtx, opts, s.messages, used, s.lastWindow, s.distillEmit, trigger); did {
-					s.messages = newMsgs
-					// Compaction shrank the history; refresh the footprint so
-					// op=self below reflects the compacted size, not the
-					// pre-compaction value (the next turn's usage overwrites it).
-					s.lastCtxTokens = estimatePromptTokens(s.preambleTokens, s.messages)
-					reclaimed = true
-				}
-			}
-			// Nothing reclaimed the window, and the footprint is at the point
-			// where something should have. Say so — this is the run heading for
-			// the provider's limit, and it is the one condition an operator must
-			// never have to infer from an absence of events.
-			if !reclaimed && s.footprintMeasured &&
-				aboveBackstop(opts.Compaction, s.lastCtxTokens, s.lastWindow) {
-				reportExhausted(s.distillEmit, s.seenExhausted, opts.Compaction,
-					s.lastCtxTokens, s.lastWindow, s.iterVerdicts)
-			}
-		}
+		s.distillAtBoundary(iterCtx, iter)
 
 		// Context footprint (input+cache of the last completed turn, or the
 		// post-compaction estimate when a compaction just ran above) so Context
@@ -4262,6 +4196,83 @@ outerLoop:
 		Usage:      s.totalUsage,
 		Structured: structured,
 	}, nil
+}
+
+// distillAtBoundary is an iteration's distillation gate: recap, compaction as
+// the second tier, and the exhaustion report when neither reclaimed the
+// window. It runs at the top of an iteration, after operator input is drained
+// and before the request is built, and only ever replaces s.messages.
+func (s *runState) distillAtBoundary(iterCtx context.Context, iter int) {
+	selfReq := s.compactRequested.Swap(false)
+	used := s.lastCtxTokens + s.pendingTokens
+	s.pendingTokens = 0
+	// The gate opens on EITHER threshold. A mode whose primary sits above
+	// the backstop — or whose primary cannot fire at all — must still reach
+	// compaction, or the window fills with nothing consulted.
+	var primaryDue bool
+	if s.recapMode {
+		primaryDue = shouldAutoRecap(s.opts.Context, used, s.lastWindow, iter, s.lastCompactIter)
+	} else {
+		primaryDue = shouldAutoCompact(s.opts.Compaction, used, s.lastWindow, iter, s.lastCompactIter)
+	}
+	backstopDue := iter > s.lastCompactIter+1 &&
+		backstopAvailable(s.opts.Compaction) &&
+		aboveBackstop(s.opts.Compaction, used, s.lastWindow)
+	distill := selfReq || primaryDue || backstopDue
+	if distill {
+		trigger := "auto"
+		if selfReq {
+			trigger = "self"
+		}
+		// The debounce advances on every ATTEMPT, not only on success.
+		// It used to sit inside the `if did` blocks below, so a decline
+		// left it untouched, the gate re-fired on the very next iteration,
+		// and a summarize call was burned every iteration for the rest of
+		// the run — against a condition that could not change.
+		s.lastCompactIter = iter
+		s.iterVerdicts = nil
+		reclaimed := false
+		if s.recapMode {
+			if newMsgs, did := maybeRecap(iterCtx, *s.opts, s.messages, used, s.lastWindow, s.distillEmit, trigger); did {
+				s.messages = newMsgs
+				s.lastCtxTokens = estimatePromptTokens(s.preambleTokens, s.messages)
+				reclaimed = true
+			}
+		}
+		// ⚠️ THE SECOND TIER. Compaction is reachable from EVERY mode, not
+		// only append — which is the whole point: a recap that declines used
+		// to leave nothing else to try, and the run climbed to the limit.
+		//
+		// It is the right last resort precisely because it fails
+		// DIFFERENTLY: empty_summary is a property of the recap budget and
+		// the recap prompt, and a compaction summary runs on neither. A
+		// second tier that failed for the same reasons would be theatre.
+		//
+		// Reached when the mode's own distiller did not reclaim AND the
+		// footprint is at the backstop. In append mode compaction IS the
+		// primary, so this is its only invocation there.
+		if !reclaimed && (backstopDue || selfReq || !s.recapMode) &&
+			backstopAvailable(s.opts.Compaction) {
+			if newMsgs, did := maybeAutoCompact(iterCtx, *s.opts, s.messages, used, s.lastWindow, s.distillEmit, trigger); did {
+				s.messages = newMsgs
+				// Compaction shrank the history; refresh the footprint so
+				// op=self below reflects the compacted size, not the
+				// pre-compaction value (the next turn's usage overwrites it).
+				s.lastCtxTokens = estimatePromptTokens(s.preambleTokens, s.messages)
+				reclaimed = true
+			}
+		}
+		// Nothing reclaimed the window, and the footprint is at the point
+		// where something should have. Say so — this is the run heading for
+		// the provider's limit, and it is the one condition an operator must
+		// never have to infer from an absence of events.
+		if !reclaimed && s.footprintMeasured &&
+			aboveBackstop(s.opts.Compaction, s.lastCtxTokens, s.lastWindow) {
+			reportExhausted(s.distillEmit, s.seenExhausted, s.opts.Compaction,
+				s.lastCtxTokens, s.lastWindow, s.iterVerdicts)
+		}
+	}
+
 }
 
 // executeTool runs one tool through the dispatcher; returns a marker error
