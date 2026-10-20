@@ -125,12 +125,15 @@ webhooks:
 
 A shared front-half runs for every request, then forks on `delivery`:
 
-1. **Resolve** the active `WebhookDef` by the `{name}` in the URL (never
-   from the body). Unknown or disabled → opaque `404`.
-2. **Read** the raw body under `body_size_limit_bytes` (default 1 MiB),
-   never past the server's request limit (`LOOMCYCLE_MAX_REQUEST_BYTES`).
-   A body nested more than 128 deep, or holding more than a million values,
-   is refused as malformed before it is decoded.
+1. **Read** the raw body under the server's request limit
+   (`LOOMCYCLE_MAX_REQUEST_BYTES`, default 16 MiB), before the name is looked
+   up, so how the body is read never depends on whether the name exists.
+2. **Resolve** the active `WebhookDef` by the `{name}` in the URL (never
+   from the body). Unknown or disabled → opaque `404`. A body over the
+   definition's `body_size_limit_bytes` (default 1 MiB, never above the
+   request limit) gets the same `404`. A body nested more than 128 deep, or
+   holding more than a million values, is refused as malformed before it is
+   decoded.
 3. **Verify the signature over the raw bytes, before any parsing.**
    HMAC-SHA256 with a constant-time compare. Three envelopes auto-detected
    from the header *value* (so a custom header name still parses):
@@ -742,19 +745,28 @@ mode — follow the walk by that id.
 ## Never silently degrade
 
 Every outcome is loud and distinct to the operator: `404 unknown_webhook`
-for an unknown or disabled name **and** for a signature/auth failure (the
-same bytes, so a sender cannot learn that a name exists), `503 unavailable`
+for an unknown or disabled name, **and** for a body over the definition's
+size limit or a signature/auth failure (the same bytes, so an unauthenticated
+sender cannot learn that a name exists), `503 unavailable`
 for a secret that does not resolve, `400` malformed body/mapping, `400 invalid_run`
 for a delivery that names an agent or a team walk that cannot start, `429`
 rate limit, `503` runtime unavailable. A rate-limited or rejected delivery does **not**
 burn its `delivery_id`, so the sender's retry is processed rather than
 dropped as a replay.
 
-**A `404` from a webhook you created means a wrong secret or signature.** The
-sender sees the same answer as for a name that does not exist; the delivery log
-shows why (`GET /v1/_webhooks/{name}/recent-deliveries` lists the verdict, e.g.
-`rejected_sig`, and `WebhookDef op=get` counts refusals by reason), and so does
-the server log.
+**A `404` from a webhook you created means a wrong secret or signature** (or a
+body over its size limit). The sender sees the same answer as for a name that
+does not exist; the delivery log shows why (`GET
+/v1/_webhooks/{name}/recent-deliveries` lists the verdict, e.g. `rejected_sig`
+or `rejected_body`, and `WebhookDef op=get` counts refusals by reason), and so
+does the server log.
+
+What an unauthenticated sender can still tell: a `503 unavailable` comes only
+from a definition that exists but whose secret does not resolve (or that asks
+for no auth the operator has not enabled) — it stays `503` so the sender
+retries once that is fixed; and a live definition verifies the signature
+before it answers, so its `404` can take measurably longer than an unknown
+name's.
 
 A **replayed valid delivery** (a re-send of an already-accepted
 `delivery_id`, within the dedup window) is **not** an error — it is only
