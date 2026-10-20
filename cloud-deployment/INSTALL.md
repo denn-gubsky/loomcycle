@@ -242,6 +242,71 @@ make ps          # all services `running`/`healthy`; loomcycle-migrate `exited (
 
 ---
 
+## Telegram bridge (optional)
+
+The `telegram-bridge` service is a Telegram bot for one loomcycle agent
+(`denngubsky/loomcycle-bridge-telegram`, the `@loomcycle/bridge-telegram`
+package). Each person who messages the bot is their own loomcycle user in one
+tenant; a group is a user of its own. Telegram posts each message to the bridge
+through the tunnel; the bridge talks to the runtime inside `loomnet`. The full
+behaviour (groups, trust, buttons, limits) is in
+[`packages/bridge-telegram/README.md`](../packages/bridge-telegram/README.md).
+
+It is **off by default** (a compose profile), so a release deploy never starts
+it half-configured.
+
+1. **The bot.** In Telegram, open @BotFather, send `/newbot` and keep the token
+   it gives you. Leave privacy mode on and do not make the bot a group admin.
+   Optionally `/setcommands` with `new`, `stop` and `help`.
+2. **Your Telegram id.** Message @userinfobot (or any id bot) for your numeric
+   user id, for the allow-list. A refused chat is also logged by the bridge as
+   `tg:<chat id>`.
+3. **The bridge's loomcycle token.** Sign in to `https://app.loomcycle.cloud/ui`
+   as the admin, open **Settings → Tokens** and generate a token named
+   `telegram-bridge` with scope `substrate:tenant` in the tenant the Telegram
+   users will live in (for example `telegram`). It is shown once. The bridge uses it only to register
+   each Telegram user and mint them a short-lived token limited to the one agent.
+   Make sure that tenant's user tier reaches a provider this stack runs (here the
+   local Ollama).
+4. **Tunnel route.** On the tunnel from Phase 4, add a Public Hostname:
+
+   | Hostname | Path | Service |
+   |---|---|---|
+   | `telegram.loomcycle.cloud` | `^/telegram/webhook$` | `http://telegram-bridge:8443` |
+
+   Do **not** put Cloudflare Access on it: Telegram cannot sign in, and every
+   call is authenticated by the webhook secret instead (a wrong one gets `401`).
+   If Bot Fight Mode or a WAF rule challenges Telegram's calls, add a skip rule
+   for Telegram's webhook ranges `149.154.160.0/20` and `91.108.4.0/22`.
+5. **Secrets** — append to `.env.secure`:
+
+   ```bash
+   TELEGRAM_BOT_TOKEN=REPLACE_ME                 # from @BotFather
+   TELEGRAM_BRIDGE_WEBHOOK_SECRET=REPLACE_ME     # openssl rand -hex 32
+   TELEGRAM_BRIDGE_LOOMCYCLE_TOKEN=REPLACE_ME    # the token from step 3
+   ```
+
+6. **Settings** — in `.env.insecure` (see the Telegram block of
+   `.env.insecure.example`): `COMPOSE_PROFILES=telegram`,
+   `TELEGRAM_BRIDGE_ALLOWED_USERS=<your id>`, and `TELEGRAM_BRIDGE_AGENT` if not
+   `chat/medium`. The image version is `BRIDGE_TELEGRAM_VERSION` (default in the
+   compose file); release deploys do not change it.
+7. **Start and verify.**
+
+   ```bash
+   make up                       # or: docker compose … up -d telegram-bridge
+   make logs S=telegram-bridge   # expect "telegram webhook set" then "telegram-bridge listening"
+   ```
+
+   The bridge calls Telegram's `setWebhook` at every start with
+   `TELEGRAM_BRIDGE_PUBLIC_URL/telegram/webhook` and the secret. Then message the
+   bot in Telegram: the reply streams in as the agent writes it.
+
+The bridge keeps which loomcycle session each chat is in under the
+`telegram-bridge-data` volume, so a restart continues every conversation.
+
+---
+
 ## Upgrading an existing deployment to 1.108.0
 
 The steps below take a stack on an older release to 1.108.0. The numbered list is

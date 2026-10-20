@@ -40,6 +40,9 @@ networks:
     name: loom-dev
     driver: bridge
 
+volumes:
+  telegram-bridge-data:
+
 services:
   # ── Postgres 18 + pgvector — main store (loomcycle) + SQL-Memory aux (loomcycle_sqlmem) ──
   postgres:
@@ -289,6 +292,50 @@ services:
     networks: [loomnet]
     depends_on:
       tailscale:
+        condition: service_healthy
+
+  # ── Telegram bridge — a Telegram bot for one loomcycle agent (opt-in) ──
+  #    OFF unless COMPOSE_PROFILES in .env.insecure lists `telegram`: the release
+  #    auto-deploy runs `up -d` over every service, and without its secrets this
+  #    one refuses to start. Tunnel route: telegram.loomcycle.cloud, path
+  #    ^/telegram/webhook$ → http://telegram-bridge:8443 (no Cloudflare Access on
+  #    it: Telegram cannot sign in; the webhook secret authenticates each call).
+  #    Its secrets are scoped here; it never sees the runtime's. INSTALL.md →
+  #    "Telegram bridge".
+  telegram-bridge:
+    image: denngubsky/loomcycle-bridge-telegram:${BRIDGE_TELEGRAM_VERSION:-0.1.0}
+    profiles: [telegram]
+    restart: unless-stopped
+    networks: [loomnet]
+    environment:
+      LOOMCYCLE_BASE_URL: http://tailscale:8787   # loomcycle lives in the tailscale netns
+      LOOMCYCLE_TOKEN: ${TELEGRAM_BRIDGE_LOOMCYCLE_TOKEN:-}   # secret — a substrate:tenant token
+      BRIDGE_AGENT: ${TELEGRAM_BRIDGE_AGENT:-chat/medium}
+      BRIDGE_STORE: file:/data/telegram.json      # a restart keeps each chat's session
+      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-}                          # secret — @BotFather
+      TELEGRAM_BRIDGE_WEBHOOK_SECRET: ${TELEGRAM_BRIDGE_WEBHOOK_SECRET:-}  # secret — openssl rand -hex 32
+      TELEGRAM_BRIDGE_ALLOWED_USERS: ${TELEGRAM_BRIDGE_ALLOWED_USERS:-}
+      TELEGRAM_BRIDGE_ALLOWED_CHATS: ${TELEGRAM_BRIDGE_ALLOWED_CHATS:-}
+      TELEGRAM_BRIDGE_TRUSTED_CHATS: ${TELEGRAM_BRIDGE_TRUSTED_CHATS:-}
+      TELEGRAM_BRIDGE_ALLOW_ANYONE: ${TELEGRAM_BRIDGE_ALLOW_ANYONE:-}
+      TELEGRAM_BRIDGE_GROUP_REQUIRE_USERS: ${TELEGRAM_BRIDGE_GROUP_REQUIRE_USERS:-}
+      TELEGRAM_BRIDGE_STREAMING: ${TELEGRAM_BRIDGE_STREAMING:-1}
+      # setWebhook at every start, so the URL and secret Telegram holds always
+      # match this deployment's.
+      TELEGRAM_BRIDGE_PUBLIC_URL: ${TELEGRAM_BRIDGE_PUBLIC_URL:-https://telegram.loomcycle.cloud}
+      TELEGRAM_BRIDGE_SET_WEBHOOK: "1"
+    volumes:
+      # A named volume, not a bind mount: it starts owned by the image's
+      # unprivileged user (a fresh bind mount is root-owned, as pinchtab's was).
+      - telegram-bridge-data:/data
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8443/healthz >/dev/null 2>&1 || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+    depends_on:
+      loomcycle:
         condition: service_healthy
 
   # ── Cloudflare tunnel (token method) — app + loomcycle + board.loomcycle.cloud ──
