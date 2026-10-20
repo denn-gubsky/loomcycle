@@ -29,6 +29,7 @@ require (
 	go.opentelemetry.io/otel/trace v1.44.0
 	golang.org/x/crypto v0.56.0
 	golang.org/x/sync v0.22.0
+	golang.org/x/sys v0.47.0
 	golang.org/x/term v0.45.0
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20260526163538-3dc84a4a5aaa
 	google.golang.org/grpc v1.83.2
@@ -83,7 +84,6 @@ require (
 	go.opentelemetry.io/proto/otlp v1.10.0 // indirect
 	golang.org/x/mod v0.38.0 // indirect
 	golang.org/x/net v0.58.0 // indirect
-	golang.org/x/sys v0.47.0 // indirect
 	golang.org/x/text v0.41.0 // indirect
 	google.golang.org/genproto/googleapis/api v0.0.0-20260526163538-3dc84a4a5aaa // indirect
 	gopkg.in/warnings.v0 v0.1.2 // indirect
