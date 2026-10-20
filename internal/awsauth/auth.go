@@ -135,6 +135,12 @@ func (a *Auth) Invalidate() {
 	a.mu.Unlock()
 }
 
+// IsExpired reports whether an error answer says the credentials or key sent
+// had expired (see IsExpiredCredentialAnswer).
+func (a *Auth) IsExpired(status int, body []byte) bool {
+	return IsExpiredCredentialAnswer(status, body)
+}
+
 // ListModels lists the model ids the provider's Bedrock host serves.
 func (a *Auth) ListModels(ctx context.Context) ([]string, error) {
 	return a.listModels(ctx)
