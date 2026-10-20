@@ -1793,6 +1793,12 @@ type Store interface {
 	// are released so a caller's retry runs the work. ErrRunNotQueued when the
 	// run is no longer queued.
 	FailQueuedRun(ctx context.Context, runID, reason string) error
+	// EndQueuedRun ends a queued run that never started — its wait was
+	// cancelled, or it was refused at its start — with status (RunCancelled
+	// or RunFailed), stopReason and errMsg. Like FailQueuedRun it releases the
+	// idempotency keys, since the work was never done, and clears the stored
+	// request. ErrRunNotQueued when the run is no longer queued.
+	EndQueuedRun(ctx context.Context, runID string, status RunStatus, stopReason, errMsg string) error
 
 	// DeleteConfiguredRun discards a draft: its events, the run row, and its
 	// session when nothing else is in it. ErrRunNotConfigured for a run that is

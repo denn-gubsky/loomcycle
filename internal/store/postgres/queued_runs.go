@@ -110,14 +110,21 @@ func (s *Store) ListQueuedRuns(ctx context.Context, replicaID string, startedBef
 }
 
 func (s *Store) FailQueuedRun(ctx context.Context, runID, reason string) error {
+	return s.EndQueuedRun(ctx, runID, store.RunFailed, "restarted", reason)
+}
+
+func (s *Store) EndQueuedRun(ctx context.Context, runID string, status store.RunStatus, stopReason, errMsg string) error {
+	if status != store.RunCancelled && status != store.RunFailed {
+		return fmt.Errorf("end queued run: %q is not an end a queued run can have", status)
+	}
 	tag, err := s.pool.Exec(ctx,
-		`UPDATE runs SET status = $2, completed_at = $3, error = $4, stop_reason = 'restarted',
+		`UPDATE runs SET status = $2, completed_at = $3, error = $4, stop_reason = $5,
 			draft = NULL, queued_input = NULL, idempotency_key = NULL, delivery_alt_key = NULL
-		WHERE id = $1 AND status = $5`,
-		runID, string(store.RunFailed), time.Now().UTC(), reason, string(store.RunQueued),
+		WHERE id = $1 AND status = $6`,
+		runID, string(status), time.Now().UTC(), errMsg, stopReason, string(store.RunQueued),
 	)
 	if err != nil {
-		return fmt.Errorf("fail queued run: %w", err)
+		return fmt.Errorf("end queued run: %w", err)
 	}
 	if tag.RowsAffected() == 0 {
 		return store.ErrRunNotQueued

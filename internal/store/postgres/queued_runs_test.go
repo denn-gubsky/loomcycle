@@ -9,7 +9,8 @@ import (
 
 // A queued run's recorded request — which may hold sealed secrets — does not
 // outlive its wait: the start clears it, and so do the end of a run cancelled
-// while queued and the failure of one a restart could not start.
+// while queued, the end of one that never started, and the failure of one a
+// restart could not start.
 func TestQueuedInput_ClearedWhenTheRunStartsOrEnds(t *testing.T) {
 	fx := freshSchema(t, pgDSNFromEnv(t))
 	defer fx.cleanup()
@@ -29,6 +30,9 @@ func TestQueuedInput_ClearedWhenTheRunStartsOrEnds(t *testing.T) {
 		},
 		"fail at restart": func(id string) error {
 			return s.FailQueuedRun(ctx, id, "restarted")
+		},
+		"end before start": func(id string) error {
+			return s.EndQueuedRun(ctx, id, store.RunCancelled, "", "")
 		},
 	}
 	for name, end := range ends {

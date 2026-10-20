@@ -149,6 +149,54 @@ func testQueuedRunFailedOnRestartNotSwept(t *testing.T, s store.Store) {
 	}
 }
 
+// A queued run that ends without starting — its wait cancelled, or refused at
+// its start — ends with the status and reason given and releases its
+// idempotency keys, as FailQueuedRun does: the work was never done, so a
+// retry with the same key must run it. Only a queued run ends this way.
+func testQueuedRunEndedBeforeStart(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	sess, err := s.CreateSession(ctx, "tq", "default", "fay")
+	if err != nil {
+		t.Fatal(err)
+	}
+	keys := store.RunIdentity{AgentID: "a_qend", UserID: "fay", TenantID: "tq",
+		IdempotencyKey: "qkey-end", DeliveryAltKey: "qalt-end"}
+	queued, err := s.CreateQueuedRun(ctx, sess.ID, keys)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.EndQueuedRun(ctx, queued.ID, store.RunCompleted, "", ""); err == nil {
+		t.Error("EndQueuedRun as completed succeeded, want refused: a run that never started did not complete")
+	}
+	if err := s.EndQueuedRun(ctx, queued.ID, store.RunCancelled, "client disconnected", ""); err != nil {
+		t.Fatalf("EndQueuedRun: %v", err)
+	}
+	got, _ := s.GetRun(ctx, queued.ID)
+	if got.Status != store.RunCancelled || got.StopReason != "client disconnected" || got.CompletedAt.IsZero() {
+		t.Errorf("ended run = %q %q completed_at %v, want cancelled, the reason, a completion time", got.Status, got.StopReason, got.CompletedAt)
+	}
+	if err := s.EndQueuedRun(ctx, queued.ID, store.RunFailed, "", "again"); !errors.Is(err, store.ErrRunNotQueued) {
+		t.Errorf("a second EndQueuedRun = %v, want ErrRunNotQueued", err)
+	}
+	if got, _ := s.GetRun(ctx, queued.ID); got.Status != store.RunCancelled {
+		t.Errorf("a second EndQueuedRun changed the run to %q", got.Status)
+	}
+	running := newQueuedRun(t, s, "tq", "fay", "a_qend_run")
+	if _, err := s.StartQueuedRun(ctx, running.ID, store.RunIdentity{}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.EndQueuedRun(ctx, running.ID, store.RunCancelled, "", ""); !errors.Is(err, store.ErrRunNotQueued) {
+		t.Errorf("EndQueuedRun of a running run = %v, want ErrRunNotQueued", err)
+	}
+	if got, _ := s.GetRun(ctx, running.ID); got.Status != store.RunRunning {
+		t.Errorf("EndQueuedRun changed a running run to %q", got.Status)
+	}
+	keys.AgentID = "a_qend_retry"
+	if _, err := s.CreateQueuedRun(ctx, sess.ID, keys); err != nil {
+		t.Errorf("a retry with the ended run's keys = %v, want accepted", err)
+	}
+}
+
 // The request a queued run will start from is recorded while it is queued,
 // listed for a restart oldest first with it, and cleared when the run starts
 // or ends. A run queued after the restart's boot is not listed.

@@ -38,7 +38,7 @@ type admitArgs struct {
 	reject  bool
 	// waitOutPause makes a run that did not queue wait out a pause too: a run
 	// a restart is queuing again is not a new run, so the pause does not
-	// refuse it.
+	// refuse it. Such a run is announced before it waits, as a queued one is.
 	waitOutPause bool
 	// createRow creates the run's row in status queued (and its session).
 	// Called at most once, when the run first has to wait.
@@ -90,6 +90,25 @@ func (s *Server) admitRun(ctx context.Context, a admitArgs) (release func(), q *
 		OnQueued: onQueued,
 		Slot:     a.slot,
 	})
+	// unqueuedRunID is the row of a run announced without having queued.
+	var unqueuedRunID string
+	if err == nil && q == nil && a.waitOutPause {
+		// A run a restart queues again that found its slot free may still have
+		// to wait out a pause below. It holds its place already, so it is
+		// announced first: until then it is in no cancel registry, and its
+		// restarter — which waits for each run to be placed, to keep the queue
+		// order — would be held until the resume, and with it the boot or the
+		// snapshot restore that restarted it.
+		sessionID, runID, cerr := a.createRow()
+		if cerr == nil {
+			unqueuedRunID = runID
+			cerr = a.announce(sessionID, runID)
+		}
+		if cerr != nil {
+			release()
+			release, err = nil, cerr
+		}
+	}
 	if err == nil && (q != nil || a.waitOutPause) {
 		// A paused runtime starts nothing: a run that got its slot during a
 		// pause keeps the slot, stays queued, and starts on the resume.
@@ -101,8 +120,11 @@ func (s *Server) admitRun(ctx context.Context, a admitArgs) (release func(), q *
 	mu.Lock()
 	defer mu.Unlock()
 	if err != nil {
-		if q != nil {
+		switch {
+		case q != nil:
 			s.endQueuedRun(q.runID, err)
+		case unqueuedRunID != "":
+			s.endQueuedRun(unqueuedRunID, err)
 		}
 		return nil, q, err
 	}
@@ -131,7 +153,10 @@ func (s *Server) waitOutPause(ctx context.Context) error {
 	}
 }
 
-// endQueuedRun ends a queued run whose wait ended without a slot.
+// endQueuedRun ends a queued run whose wait ended without a slot, or that
+// was refused at its start. It never started, so the work was never done:
+// its idempotency keys are released, as for a run a restart cannot start, so
+// a caller's retry runs the work rather than being answered with this run.
 func (s *Server) endQueuedRun(runID string, cause error) {
 	if s.store == nil || runID == "" {
 		return
@@ -142,9 +167,44 @@ func (s *Server) endQueuedRun(runID string, cause error) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	if err := s.store.FinishRun(ctx, runID, status, "", store.Usage{}, msg); err != nil {
-		log.Printf("queue: could not end queued run %s: %v", runID, err)
+	if err := s.store.EndQueuedRun(ctx, runID, status, "", msg); err != nil {
+		// Not queued any more: whoever ended or started it reports that.
+		if !errors.Is(err, store.ErrRunNotQueued) {
+			log.Printf("queue: could not end queued run %s: %v", runID, err)
+		}
+		return
 	}
+	s.publishQueuedRunEnd(ctx, runID, status, "", msg)
+}
+
+// failQueuedRun fails a queued run a restart cannot start again, with the
+// reason, and reports that end. ErrRunNotQueued when it is no longer queued.
+func (s *Server) failQueuedRun(ctx context.Context, runID, reason string) error {
+	if err := s.store.FailQueuedRun(ctx, runID, reason); err != nil {
+		return err
+	}
+	s.publishQueuedRunEnd(ctx, runID, store.RunFailed, "restarted", reason)
+	return nil
+}
+
+// publishQueuedRunEnd reports on the run-state stream the end of a queued run
+// that never started. No loop will report it, and a consumer holding the
+// run's id from its queued answer waits for a terminal frame. The run's
+// identity is read back from its row: the paths that end a queued run do not
+// all have it.
+func (s *Server) publishQueuedRunEnd(ctx context.Context, runID string, status store.RunStatus, stopReason, errMsg string) {
+	if s.runStateBus == nil {
+		return
+	}
+	run, err := s.store.GetRun(ctx, runID)
+	if err != nil {
+		log.Printf("queue: could not report the end of queued run %s: %v", runID, err)
+		return
+	}
+	s.publishRunState(runStateMeta{
+		RunID: run.ID, AgentID: run.AgentID, Agent: run.Agent, UserID: run.UserID, TenantID: run.TenantID,
+		ParentAgentID: run.ParentAgentID, ParentRunID: run.ParentRunID, ParentContext: run.ParentContext,
+	}, string(status), stopReason, errMsg)
 }
 
 // emitAdmissionEvent persists a queued/admitted event on the run's
@@ -445,7 +505,7 @@ func (s *Server) queueAgain(ctx context.Context, rows []store.QueuedRun) (starte
 	for _, q := range rows {
 		in, why := s.restartInput(q)
 		if why != "" {
-			if ferr := s.store.FailQueuedRun(ctx, q.Run.ID, why); ferr != nil && !errors.Is(ferr, store.ErrRunNotQueued) {
+			if ferr := s.failQueuedRun(ctx, q.Run.ID, why); ferr != nil && !errors.Is(ferr, store.ErrRunNotQueued) {
 				log.Printf("queue: restart: could not fail run %s: %v", q.Run.ID, ferr)
 			}
 			failed = append(failed, [2]string{q.Run.ID, why})
@@ -477,7 +537,7 @@ func (s *Server) startQueuedAgain(in runner.RunInput) {
 		}
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
-		if ferr := s.store.FailQueuedRun(ctx, in.QueuedRunID, "loomcycle restarted and the run could not be queued again: "+err.Error()); ferr != nil && !errors.Is(ferr, store.ErrRunNotQueued) {
+		if ferr := s.failQueuedRun(ctx, in.QueuedRunID, "loomcycle restarted and the run could not be queued again: "+err.Error()); ferr != nil && !errors.Is(ferr, store.ErrRunNotQueued) {
 			log.Printf("queue: restart: could not fail run %s: %v", in.QueuedRunID, ferr)
 		}
 	}()
