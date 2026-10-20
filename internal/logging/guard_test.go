@@ -16,7 +16,16 @@ import (
 // Println: a new call would silently opt out of levels and structured
 // attributes. Paths are relative to the repo root; subdirectories are
 // separate packages and must be listed on their own.
-var convertedPackages = []string{}
+var convertedPackages = []string{
+	"internal/awaited",
+	"internal/channelhooks",
+	"internal/channels",
+	"internal/concurrency",
+	"internal/coord",
+	"internal/pause",
+	"internal/runner",
+	"internal/runstate",
+}
 
 // stdlibLogCalls returns the positions of log.Printf/Print/Println calls in f,
 // resolving the local name the file gives the "log" import (an aliased or

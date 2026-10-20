@@ -13,7 +13,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"log"
+	"log/slog"
 	"slices"
 	"strings"
 
@@ -228,7 +228,7 @@ func ForRun(ctx context.Context, st EventReader, runID string) (state, on string
 	if err != nil {
 		var nf *store.ErrNotFound
 		if !errors.As(err, &nf) {
-			log.Printf("awaited_state: reading run %s's open tool calls failed: %v", runID, err)
+			slog.Warn("awaited_state: reading the run's open tool calls failed", "run_id", runID, "err", err)
 		}
 	}
 	if state != "" {
