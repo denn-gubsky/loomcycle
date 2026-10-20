@@ -32,10 +32,21 @@ export interface StreamSinkOptions {
 
 export const DEFAULT_ROLLOVER_MS = 100_000;
 
+/** paragraphBreak is what goes between text already shown and text the agent
+ *  writes after a tool call. Each is its own paragraph: appended as they came,
+ *  "Let me search." and "Good results." ran together. */
+function paragraphBreak(before: string, next: string): string {
+  if (before === "" || before.endsWith("\n\n") || next.startsWith("\n")) return "";
+  return before.endsWith("\n") ? "\n" : "\n\n";
+}
+
 export class StreamSink<TRef> implements TurnSink {
   private stream?: StreamLike;
   private startedAt = 0;
   private emitted = false;
+  /** The last text emitted on this stream, for paragraphBreak. */
+  private tail = "";
+  private afterTool = false;
   private stopped = false;
   private timer?: ReturnType<typeof setInterval>;
   private readonly rolloverMs: number;
@@ -56,6 +67,7 @@ export class StreamSink<TRef> implements TurnSink {
       this.stream = this.openStream(this.ref);
       this.startedAt = this.now();
       this.emitted = false;
+      this.tail = "";
       if (!this.timer) {
         this.timer = setInterval(() => this.checkStop(), this.opts.stopPollMs ?? 1000);
         this.timer.unref?.();
@@ -75,6 +87,7 @@ export class StreamSink<TRef> implements TurnSink {
   tool(name: string): void {
     if (this.checkStop()) return;
     const s = this.open();
+    this.afterTool = true;
     // Informative updates only show before the answer starts.
     if (!this.emitted) s.update(`Using ${name}…`);
   }
@@ -85,8 +98,13 @@ export class StreamSink<TRef> implements TurnSink {
       await this.stream.close();
       this.stream = undefined;
     }
-    this.open().emit(t);
+    const s = this.open();
+    // A rolled-over message starts clean: emitted is false on a new stream.
+    const sep = this.afterTool && this.emitted ? paragraphBreak(this.tail, t) : "";
+    this.afterTool = false;
+    s.emit(sep + t);
     this.emitted = true;
+    this.tail = t;
   }
 
   async notice(t: string): Promise<void> {
@@ -124,6 +142,7 @@ export const DEFAULT_MAX_MESSAGE_CHARS = 4000;
 
 export class MessageSink<TRef> implements TurnSink {
   private buf = "";
+  private afterTool = false;
   private typings = 0;
   private timer?: ReturnType<typeof setInterval>;
   private started = false;
@@ -154,10 +173,14 @@ export class MessageSink<TRef> implements TurnSink {
 
   tool(): void {
     this.start();
+    this.afterTool = true;
   }
 
   async text(t: string): Promise<void> {
     this.start();
+    if (!t) return;
+    if (this.afterTool && this.buf.trim() !== "") this.buf += paragraphBreak(this.buf, t);
+    this.afterTool = false;
     this.buf += t;
   }
 
