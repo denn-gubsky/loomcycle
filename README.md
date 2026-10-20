@@ -4,7 +4,7 @@
 
 <p align="center">
   <strong>An agent-system kernel you self-host.</strong><br/>
-  <em>~80 MB Go binary that owns the agent loop and ships with memory, documents, teams, a Decision tool, a Crypto tool whose keys the model never sees, no-trace runs, ephemeral git-source volumes, a visual canvas, bundled dev toolchain and headless Chromium. A deployment-shape snapshot that carries the whole deployment in one archive. Multi-replica HA on Postgres. Apache-2.0 — v1.118.0.</em>
+  <em>~80 MB Go binary that owns the agent loop and ships with memory, documents, teams, a Decision tool, a Crypto tool whose keys the model never sees, no-trace runs, ephemeral git-source volumes, a visual canvas, bundled dev toolchain and headless Chromium. A deployment-shape snapshot that carries the whole deployment in one archive. Multi-replica HA on Postgres. Apache-2.0 — v1.118.1.</em>
 </p>
 
 <p align="center">
@@ -199,11 +199,13 @@ been primitives plus hardening: memory, documents, teams, sandboxing, retention
 and erasure. The agentic-memory subsystem and the document surfaces built on it
 remain the main direction.
 
-The most recent line (v1.118.0) is fixes. A queued run that never starts
+The most recent line (v1.118) is fixes. A queued run that never starts
 now releases its idempotency key and publishes its end, and a restart during a
 pause no longer holds the boot or a snapshot restore until the resume. An agent
 told it hit the configured-run cap no longer retries forever, and only an
-operator may change a shared HookDef. See [`REVISIONS.md`](REVISIONS.md).
+operator may change a shared HookDef. The v1.118.1 patch lets a token be limited
+to an agent named in a group, such as `chat/medium`, which every chat bridge
+needs. See [`REVISIONS.md`](REVISIONS.md).
 
 Before it, v1.117.0 upgraded gbash, the Bashbox sandbox, to
 v0.0.40, so a script can no longer crash the loomcycle process: a deeply nested

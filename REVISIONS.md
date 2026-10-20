@@ -8,6 +8,30 @@ Each entry is the release's tag annotation, so the tag and this file cannot disa
 
 For the **public roadmap**, see [`docs/PLAN.md`](docs/PLAN.md).
 
+## What's in v1.118.1
+
+*A token limited to an agent named in a group, such as `chat/medium`, could not be minted: the request was refused with 400 `invalid_restrictions`. Every bridge mints each of its users such a token for its one agent, so no bridge could answer anyone.*
+
+A patch on the v1.118 line: #1888.
+- `@loomcycle/client` and the Python adapter stay at 1.118.0, with no API change.
+
+### A token's agent list accepts a grouped name (#1888)
+
+A token can be limited to a list of agents (`agents` on `POST /v1/_users/{subject}/tokens`, and on every transport's mint). Each name was checked against a pattern without `/`, though agents are named in groups (`chat/medium`, `doc/manager`). A mint for a grouped agent was refused:
+
+```
+400 {"code":"invalid_restrictions","error":"agents: \"chat/medium\" is not a valid agent name"}
+```
+
+The bridges mint each platform user a token for the bridge's agent, `chat/medium` by default. The Telegram bridge on loomcycle.cloud answered every message with "Something went wrong. Please try again."
+
+The pattern now accepts `/`. It stays as wide as an agent name can be and no wider. A listed name that cannot exist admits nothing, as before.
+
+### Upgrade notes
+
+- **No migration and no config change.**
+- **Images:** a patch tag rebuilds only `denngubsky/loomcycle-browser` (linux/amd64). The plain `loomcycle`, toolbox and sandbox images stay at 1.118.0.
+
 ## What's in v1.118.0
 
 *A queued run that never starts now ends cleanly: its idempotency key is released, so a retry runs the work, and its end is published, so a client waiting on it is not left hanging. A restart during a pause no longer holds the boot or a snapshot restore until the resume. Also: an agent told it hit the configured-run cap no longer retries forever, and only an operator may change a shared HookDef.*
