@@ -326,11 +326,18 @@ func (s *Server) resolvePrincipal(ctx context.Context, bearer string) (auth.Prin
 	if bearer == "" {
 		return auth.Principal{}, false
 	}
-	hash := auth.HashToken(s.cfg().Env.OperatorTokenPepper, bearer)
+	h, err := s.cfg().Env.TokenHasher()
+	if err != nil {
+		// Unreachable past boot (a malformed key is fatal there); never fall
+		// back to an unpeppered lookup.
+		log.Printf("auth: token hashing unavailable (failing closed): %v", err)
+		return auth.Principal{}, false
+	}
+	hash := h.Hash(bearer)
 	if p, found, ok := s.tokenCache.get(hash); ok {
 		return p, found
 	}
-	p, found, cacheable, validUntil := s.resolvePrincipalUncached(ctx, bearer, hash)
+	p, found, cacheable, validUntil := s.resolvePrincipalUncached(ctx, h, bearer, hash)
 	// Only memoise DEFINITIVE outcomes (token hit, legacy fallback, genuine
 	// not-found/expired). A transient store OUTAGE resolves to (_, false) but
 	// is NOT cacheable: caching it would lock a VALID token out for the whole
@@ -344,7 +351,7 @@ func (s *Server) resolvePrincipal(ctx context.Context, bearer string) (auth.Prin
 
 // resolvePrincipalUncached is the resolution itself: token substrate
 // first (indexed peppered-hash lookup, honoring the rotation grace
-// window), then the legacy LOOMCYCLE_AUTH_TOKEN fallback (disabled once
+// window; on a miss, the legacy-hash candidates of lookupLegacyToken), then the legacy LOOMCYCLE_AUTH_TOKEN fallback (disabled once
 // an admin-scoped token exists — the no-lockout migration gate). Returns
 // (_, false) for unknown/expired/invalid — the caller maps that to an
 // opaque 401. NEVER fails open to the legacy token on a substrate error.
@@ -356,10 +363,16 @@ func (s *Server) resolvePrincipal(ctx context.Context, bearer string) (auth.Prin
 // The fourth is when a minted token stops authenticating (zero = never, and
 // for every other kind of principal), so the cache can stop answering for it
 // at that instant rather than at the end of its own TTL.
-func (s *Server) resolvePrincipalUncached(ctx context.Context, bearer, hash string) (auth.Principal, bool, bool, time.Time) {
+func (s *Server) resolvePrincipalUncached(ctx context.Context, h auth.TokenHasher, bearer, hash string) (auth.Principal, bool, bool, time.Time) {
 	var never time.Time
 	if s.store != nil {
 		row, err := s.store.OperatorTokenDefGetByTokenHash(ctx, hash)
+		if err == nil {
+			// On the current hash: no longer a legacy candidate (RFC ES D2).
+			s.legacyTokens.forget(row.DefID)
+		} else if isNotFound(err) {
+			row, err = s.lookupLegacyToken(ctx, h, bearer, hash, err)
+		}
 		if err == nil {
 			// Valid iff not retired (or still inside the grace window) and
 			// not past its fixed lifetime. Both refusals look the same.
