@@ -11,11 +11,13 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/channels"
 	"github.com/denn-gubsky/loomcycle/internal/concurrency"
 	"github.com/denn-gubsky/loomcycle/internal/config"
+	"github.com/denn-gubsky/loomcycle/internal/coord"
 	"github.com/denn-gubsky/loomcycle/internal/credential"
 	"github.com/denn-gubsky/loomcycle/internal/help"
 	"github.com/denn-gubsky/loomcycle/internal/memory"
 	"github.com/denn-gubsky/loomcycle/internal/memory/backends/inprocess"
 	"github.com/denn-gubsky/loomcycle/internal/memory/reranker"
+	"github.com/denn-gubsky/loomcycle/internal/pause"
 	"github.com/denn-gubsky/loomcycle/internal/providers"
 	"github.com/denn-gubsky/loomcycle/internal/resolve"
 	"github.com/denn-gubsky/loomcycle/internal/runstate"
@@ -121,6 +123,17 @@ type boot struct {
 	a2aServer             *a2aapi.Server       // nil when A2A is off
 	webhookReceiver       *webhookapi.Receiver // nil when webhooks are off
 	httpServer            *http.Server
+
+	// Background work. bgCtx is the context every background goroutine runs
+	// under; the shutdown cancels it first. countFlusherDone closes when the
+	// webhook delivery-count flusher has returned.
+	bgCtx             context.Context
+	bgCancel          context.CancelFunc
+	countFlusherDone  chan struct{}
+	advisoryLock      *coord.AdvisoryLock // nil in single-replica mode
+	pauseMgrRef       *pause.Manager
+	sessionGCInterval time.Duration
+	sessionGCMaxIdle  time.Duration
 
 	// cleanups replace the defers main once held; see runCleanups.
 	cleanups []func()
