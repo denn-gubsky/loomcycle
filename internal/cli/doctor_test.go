@@ -485,7 +485,7 @@ func TestCheckTokenPepper_ReportsTheSourceAndWarnsOnNoneWithAuth(t *testing.T) {
 	}{
 		{"explicit", config.Env{OperatorTokenPepper: "p"}, true, "PASS"},
 		{"derived", config.Env{SecretKey: key}, true, "move to it at their next login"},
-		{"derived, fallback off", config.Env{SecretKey: key, TokenLegacyHashOff: true}, true, "legacy token hashes refused"},
+		{"derived, fallback off", config.Env{SecretKey: key, TokenLegacyHashOff: true}, true, "unpeppered token hashes refused"},
 		{"none with auth", config.Env{}, true, "WARN"},
 		{"none without auth", config.Env{}, false, "no auth configured"},
 		{"malformed key", config.Env{SecretKey: "short"}, true, "FAIL"},

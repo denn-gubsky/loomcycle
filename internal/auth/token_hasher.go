@@ -1,6 +1,7 @@
 package auth
 
 import (
+	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
 	"strings"
@@ -21,7 +22,9 @@ const (
 )
 
 // derivedTagVersion marks the stored form of a hash made with a DERIVED
-// pepper: "p1:<pepper fingerprint>:<hex hash>".
+// pepper: "p1:<pepper fingerprint>:<hex HMAC-SHA256(pepper, token)>". A new
+// form, so it uses the keyed MAC rather than SHA-256(pepper ‖ token); the
+// untagged forms (explicit pepper, none) keep the hash they have always had.
 //
 // Why a tag at all (RFC ES #6): the hash is one-way, so without one nothing
 // can tell a row hashed under the derived pepper from a legacy unpeppered
@@ -49,28 +52,33 @@ type TokenHasher struct {
 	pepper string
 	tag    string
 	legacy []TokenHasher
+	// unpeppered reports whether the unpeppered form is among legacy.
+	unpeppered bool
 }
 
 // NewTokenHasher picks the effective pepper: explicit if set, else derived
 // (from the current secret key) if set, else none.
 //
-// Legacy candidates exist only for a derived pepper with legacyFallback on:
-// the hash under the pepper derived from the PREVIOUS secret key (so a key
-// rotation logs nobody out), then the unpeppered hash (rows minted before a
-// pepper existed). An explicit pepper gets none: changing it has always
-// invalidated every token, and a deployment that set one should not start
-// accepting unpeppered rows.
-func NewTokenHasher(explicit, derived, previousDerived string, legacyFallback bool) TokenHasher {
+// Legacy candidates exist only for a derived pepper: the hash under the
+// pepper derived from the PREVIOUS secret key whenever one is set (so a key
+// rotation logs nobody out), then — only with acceptUnpeppered — the
+// unpeppered hash (rows minted before a pepper existed). Turning the
+// unpeppered form off must not drop the previous-key form, or a later key
+// rotation would log out every token, admin included. An explicit pepper
+// gets none: changing it has always invalidated every token, and a
+// deployment that set one should not start accepting unpeppered rows.
+func NewTokenHasher(explicit, derived, previousDerived string, acceptUnpeppered bool) TokenHasher {
 	switch {
 	case explicit != "":
 		return TokenHasher{source: PepperExplicit, pepper: explicit}
 	case derived != "":
 		h := TokenHasher{source: PepperDerived, pepper: derived, tag: derivedTag(derived)}
-		if legacyFallback {
-			if previousDerived != "" && previousDerived != derived {
-				h.legacy = append(h.legacy, TokenHasher{source: PepperDerived, pepper: previousDerived, tag: derivedTag(previousDerived)})
-			}
+		if previousDerived != "" && previousDerived != derived {
+			h.legacy = append(h.legacy, TokenHasher{source: PepperDerived, pepper: previousDerived, tag: derivedTag(previousDerived)})
+		}
+		if acceptUnpeppered {
 			h.legacy = append(h.legacy, TokenHasher{source: PepperNone})
+			h.unpeppered = true
 		}
 		return h
 	default:
@@ -97,11 +105,16 @@ func (h TokenHasher) Source() PepperSource {
 
 // Hash is the token_hash a token is stored and looked up under.
 func (h TokenHasher) Hash(token string) string {
-	return h.tag + HashToken(h.pepper, token)
+	if h.tag == "" {
+		return HashToken(h.pepper, token)
+	}
+	mac := hmac.New(sha256.New, []byte(h.pepper))
+	mac.Write([]byte(token))
+	return h.tag + hex.EncodeToString(mac.Sum(nil))
 }
 
 // LegacyHashes are the older stored forms of token, tried on a lookup miss,
-// in order. Empty unless the legacy fallback is on.
+// in order. Empty when there are no legacy candidates.
 func (h TokenHasher) LegacyHashes(token string) []string {
 	if len(h.legacy) == 0 {
 		return nil
@@ -113,8 +126,16 @@ func (h TokenHasher) LegacyHashes(token string) []string {
 	return out
 }
 
-// LegacyFallback reports whether a lookup miss may try legacy hashes.
-func (h TokenHasher) LegacyFallback() bool { return len(h.legacy) > 0 }
+// HasLegacyCandidates reports whether a lookup miss may try legacy hashes.
+func (h TokenHasher) HasLegacyCandidates() bool { return len(h.legacy) > 0 }
+
+// AcceptsUnpeppered reports whether the unpeppered form is a legacy
+// candidate (LOOMCYCLE_TOKEN_LEGACY_HASH not off).
+func (h TokenHasher) AcceptsUnpeppered() bool { return h.unpeppered }
+
+// IsTagged reports whether a stored hash is in a derived-pepper form, of any
+// key. Untagged rows are unpeppered (or from an explicit pepper since removed).
+func IsTagged(stored string) bool { return strings.HasPrefix(stored, derivedTagVersion+":") }
 
 // IsCurrent reports whether a stored hash is in the current form. Only a
 // derived pepper has a non-current form it can recognise; under an explicit

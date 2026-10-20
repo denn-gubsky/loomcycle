@@ -8,7 +8,9 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/denn-gubsky/loomcycle/internal/auth"
 	"github.com/denn-gubsky/loomcycle/internal/cancel"
@@ -124,8 +126,13 @@ func TestTokenLookup_RowInsertedAfterBootWithUnpepperedHashIsRefused(t *testing.
 	snapshotLegacy(t, s)
 
 	seedTokenHash(t, st, "def_forged", auth.HashToken("", "lct_forged"))
+	logs, restore := captureLog(t)
+	defer restore()
 	if p, ok := s.resolvePrincipal(context.Background(), "lct_forged"); ok {
 		t.Fatalf("a row inserted after boot with an unpeppered hash authenticated as %+v", p)
+	}
+	if !strings.Contains(logs(), `token_def="def_forged" matched a legacy token hash`) {
+		t.Errorf("the refused row was not logged: %q", logs())
 	}
 	if got := storedHash(t, st, "def_forged"); got != auth.HashToken("", "lct_forged") {
 		t.Errorf("a refused row was rewritten: %q", got)
@@ -173,9 +180,9 @@ func TestTokenLookup_CurrentRowLeavesTheLegacySetOnLogin(t *testing.T) {
 	h := hasherFor(t, env)
 	seedTokenHash(t, st, "def_cur", h.Hash("lct_cur"))
 	seedTokenHash(t, st, "def_legacy", auth.HashToken("", "lct_legacy"))
-	n, err := s.SnapshotLegacyTokenRows(context.Background())
-	if err != nil || n != 1 {
-		t.Fatalf("snapshot = (%d, %v), want exactly the one legacy row", n, err)
+	snap, err := s.SnapshotLegacyTokenRows(context.Background())
+	if err != nil || len(snap.IDs) != 1 || snap.IDs[0] != "def_legacy" || snap.Untagged != 1 {
+		t.Fatalf("snapshot = (%+v, %v), want exactly the one legacy row", snap, err)
 	}
 	if _, ok := s.resolvePrincipal(context.Background(), "lct_cur"); !ok {
 		t.Fatal("current token refused")
@@ -216,5 +223,127 @@ func TestTokenMint_UserTokenStoredUnderTheDerivedPepper(t *testing.T) {
 	}
 	if p, ok := s.resolvePrincipal(context.Background(), plaintext); !ok || p.TokenDefID != row.DefID {
 		t.Errorf("minted token does not resolve: ok=%v", ok)
+	}
+}
+
+// racingTokenStore runs `during` once, right after the lookup of hash `at`,
+// to put a concurrent first login (another request or replica finishing the
+// rehash) at a chosen point of this request's lookup.
+type racingTokenStore struct {
+	store.Store
+	at     string
+	during func()
+	fired  bool
+}
+
+func (r *racingTokenStore) OperatorTokenDefGetByTokenHash(ctx context.Context, h string) (store.OperatorTokenDefRow, error) {
+	row, err := r.Store.OperatorTokenDefGetByTokenHash(ctx, h)
+	if h == r.at && !r.fired {
+		r.fired = true
+		r.during()
+	}
+	return row, err
+}
+
+// Two first logins of one legacy token at once. The other one rehashes the
+// row between this request's miss on the current hash and its legacy
+// lookups, so the legacy hash no longer matches. This request must still
+// authenticate, and must not leave a refusal in the cache for the next one.
+func TestTokenLookup_ConcurrentFirstLoginRehashedMidLookupAuthenticates(t *testing.T) {
+	env := config.Env{SecretKey: pepperKey(1)}
+	s, st := derivedPepperServer(t, env)
+	old := auth.HashToken("", "lct_old")
+	seedTokenHash(t, st, "def_old", old)
+	snapshotLegacy(t, s)
+	cur := hasherFor(t, env).Hash("lct_old")
+	s.store = &racingTokenStore{Store: st, at: cur, during: func() {
+		if _, err := st.OperatorTokenRehash(context.Background(), "def_old", old, cur); err != nil {
+			t.Error(err)
+		}
+		s.legacyTokens.forget("def_old")
+	}}
+	s.tokenCache = newTokenCache(30 * time.Second)
+	logs, restore := captureLog(t)
+	defer restore()
+
+	if p, ok := s.resolvePrincipal(context.Background(), "lct_old"); !ok || p.TokenDefID != "def_old" {
+		t.Fatalf("racing first login refused: ok=%v", ok)
+	}
+	if _, ok := s.resolvePrincipal(context.Background(), "lct_old"); !ok {
+		t.Error("the next login was refused (a negative was cached)")
+	}
+	if strings.Contains(logs(), "legacy token hash") {
+		t.Errorf("the race was logged as a forged row: %s", logs())
+	}
+}
+
+// The other ordering: this request finds the row under its legacy hash, and
+// the other login finishes the rehash (and drops the row from the boot set)
+// before this one checks the set.
+func TestTokenLookup_ConcurrentFirstLoginLeavingTheSetMidLookupAuthenticates(t *testing.T) {
+	env := config.Env{SecretKey: pepperKey(1)}
+	s, st := derivedPepperServer(t, env)
+	old := auth.HashToken("", "lct_old")
+	seedTokenHash(t, st, "def_old", old)
+	snapshotLegacy(t, s)
+	cur := hasherFor(t, env).Hash("lct_old")
+	s.store = &racingTokenStore{Store: st, at: old, during: func() {
+		if _, err := st.OperatorTokenRehash(context.Background(), "def_old", old, cur); err != nil {
+			t.Error(err)
+		}
+		s.legacyTokens.forget("def_old")
+	}}
+	s.tokenCache = newTokenCache(30 * time.Second)
+	logs, restore := captureLog(t)
+	defer restore()
+
+	if p, ok := s.resolvePrincipal(context.Background(), "lct_old"); !ok || p.TokenDefID != "def_old" {
+		t.Fatalf("racing first login refused: ok=%v", ok)
+	}
+	if _, ok := s.resolvePrincipal(context.Background(), "lct_old"); !ok {
+		t.Error("the next login was refused (a negative was cached)")
+	}
+	if strings.Contains(logs(), "legacy token hash") {
+		t.Errorf("the race was logged as a forged row: %s", logs())
+	}
+}
+
+// LOOMCYCLE_TOKEN_LEGACY_HASH=off refuses only the unpeppered form. A later
+// LOOMCYCLE_SECRET_KEY rotation with _PREVIOUS set must not log every token
+// out — admin included.
+func TestTokenLookup_LegacyFallbackOffStillAcceptsPreviousSecretKeyRow(t *testing.T) {
+	oldEnv := config.Env{SecretKey: pepperKey(1)}
+	env := config.Env{SecretKey: pepperKey(2), SecretKeyPrevious: pepperKey(1), TokenLegacyHashOff: true}
+	s, st := derivedPepperServer(t, env)
+	seedTokenHash(t, st, "def_prev", hasherFor(t, oldEnv).Hash("lct_prev"))
+	seedTokenHash(t, st, "def_bare", auth.HashToken("", "lct_bare"))
+	snapshotLegacy(t, s)
+
+	if _, ok := s.resolvePrincipal(context.Background(), "lct_prev"); !ok {
+		t.Fatal("a token under the previous key's pepper was refused with the fallback off")
+	}
+	if got, want := storedHash(t, st, "def_prev"), hasherFor(t, env).Hash("lct_prev"); got != want {
+		t.Errorf("previous-key row not rehashed: %q, want %q", got, want)
+	}
+	if _, ok := s.resolvePrincipal(context.Background(), "lct_bare"); ok {
+		t.Error("an unpeppered row authenticated with the fallback off")
+	}
+}
+
+// A refusal reached through the legacy lookups is not cached: it may be the
+// losing side of a concurrent first login, and a cached refusal would lock
+// a valid token out for the whole TTL.
+func TestTokenLookup_NegativeAfterLegacyLookupIsNotCached(t *testing.T) {
+	env := config.Env{SecretKey: pepperKey(1)}
+	s, st := derivedPepperServer(t, env)
+	seedTokenHash(t, st, "def_old", auth.HashToken("", "lct_old"))
+	snapshotLegacy(t, s)
+	s.tokenCache = newTokenCache(30 * time.Second)
+
+	if _, ok := s.resolvePrincipal(context.Background(), "lct_unknown"); ok {
+		t.Fatal("an unknown bearer authenticated")
+	}
+	if _, _, cached := s.tokenCache.get(hasherFor(t, env).Hash("lct_unknown")); cached {
+		t.Error("a refusal that went through the legacy lookups was cached")
 	}
 }

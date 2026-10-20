@@ -1992,6 +1992,7 @@ func main() {
 	if err != nil {
 		log.Fatalf("auth: token pepper: %v", err)
 	}
+	srv.SetTokenHasher(tokenHasher)
 	switch tokenHasher.Source() {
 	case auth.PepperNone:
 		if srv.AuthConfigured(context.Background()) {
@@ -1999,15 +2000,12 @@ func main() {
 		}
 	case auth.PepperDerived:
 		// Before serving: only rows on a legacy hash NOW may log in under one.
-		n, serr := srv.SnapshotLegacyTokenRows(context.Background())
-		switch {
-		case serr != nil:
+		snap, serr := srv.SnapshotLegacyTokenRows(context.Background())
+		if serr != nil {
 			log.Printf("auth: listing tokens on a legacy hash failed (none will log in under one until a restart): %v", serr)
-		case n > 0 && cfg.Env.TokenLegacyHashOff:
-			log.Printf("auth: %d operator token(s) are on a legacy hash and LOOMCYCLE_TOKEN_LEGACY_HASH=off: they will not authenticate", n)
-		case n > 0:
-			log.Printf("auth: %d operator token(s) are on a legacy hash; each moves to the pepper derived from LOOMCYCLE_SECRET_KEY at its next login. Set LOOMCYCLE_TOKEN_LEGACY_HASH=off once this reports none.", n)
+			break
 		}
+		logLegacyTokenSnapshot(snap, tokenHasher.AcceptsUnpeppered())
 	}
 	srv.SetOperatorTokenDefTool(&builtin.OperatorTokenDef{
 		Store:                storeIface,
@@ -4792,4 +4790,36 @@ func deadLinkMemoryScope(scope string) (store.MemoryScope, bool) {
 		return store.MemoryScopeTenant, true
 	}
 	return "", false
+}
+
+// legacyTokenLogMaxIDs caps the def_ids listed in the boot line; a large
+// pre-pepper deployment would otherwise print thousands.
+const legacyTokenLogMaxIDs = 50
+
+// logLegacyTokenSnapshot reports, at every boot under a derived pepper, how
+// many operator tokens are still on a legacy hash (RFC ES D2) — including
+// none, which is when LOOMCYCLE_TOKEN_LEGACY_HASH=off is safe. The def_ids
+// are listed so a row nobody minted stands out.
+func logLegacyTokenSnapshot(snap lchttp.LegacyTokenSnapshot, acceptsUnpeppered bool) {
+	n := len(snap.IDs)
+	if n == 0 {
+		if acceptsUnpeppered {
+			log.Printf("auth: 0 legacy tokens — you can set LOOMCYCLE_TOKEN_LEGACY_HASH=off")
+		} else {
+			log.Printf("auth: 0 legacy tokens")
+		}
+		return
+	}
+	ids := snap.IDs
+	more := ""
+	if len(ids) > legacyTokenLogMaxIDs {
+		more = fmt.Sprintf(" and %d more", len(ids)-legacyTokenLogMaxIDs)
+		ids = ids[:legacyTokenLogMaxIDs]
+	}
+	unpeppered := "move to the current pepper at their next login"
+	if !acceptsUnpeppered {
+		unpeppered = "will NOT authenticate (LOOMCYCLE_TOKEN_LEGACY_HASH=off)"
+	}
+	log.Printf("auth: %d legacy token(s) on a legacy hash: %d without a pepper (%s), %d under a previous LOOMCYCLE_SECRET_KEY (move at their next login); def_ids: %s%s",
+		n, snap.Untagged, unpeppered, n-snap.Untagged, strings.Join(ids, ", "), more)
 }

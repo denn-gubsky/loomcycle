@@ -3,6 +3,7 @@ package http
 import (
 	"context"
 	"log"
+	"sort"
 	"sync"
 
 	"github.com/denn-gubsky/loomcycle/internal/auth"
@@ -27,8 +28,10 @@ import (
 //
 // The set is per replica and in memory. The residual window: a writer who
 // edits one of these boot-time rows onto a legacy hash of their choosing
-// before its owner logs in, or edits any row and waits for a restart, is
-// trusted. LOOMCYCLE_TOKEN_LEGACY_HASH=off closes it.
+// before its owner logs in, or inserts or edits a row and then waits for a
+// restart or a new replica, is trusted. LOOMCYCLE_TOKEN_LEGACY_HASH=off
+// closes it for the unpeppered form; the previous-key form needs the
+// previous key, which such a writer does not have.
 type legacyTokenSet struct {
 	mu  sync.Mutex
 	ids map[string]struct{}
@@ -59,52 +62,73 @@ func (l *legacyTokenSet) forget(id string) {
 	l.mu.Unlock()
 }
 
+// LegacyTokenSnapshot describes the token rows on a legacy hash at boot.
+type LegacyTokenSnapshot struct {
+	// IDs are the rows' def_ids, sorted. Not secret; listed at boot so an
+	// operator can spot a row they never minted.
+	IDs []string
+	// Untagged is how many of them are on the unpeppered form (the rest are
+	// under a previous secret key's pepper).
+	Untagged int
+}
+
 // SnapshotLegacyTokenRows records which token rows are on a legacy hash now.
 // Call once at boot, before serving: only these rows may log in under a
-// legacy hash. Returns how many rows are on one — reported even when the
-// fallback is off, when those rows can no longer log in at all.
-func (s *Server) SnapshotLegacyTokenRows(ctx context.Context) (int, error) {
-	h, err := s.cfg().Env.TokenHasher()
+// legacy hash. Reports them even when the unpeppered form is off, when the
+// untagged ones can no longer log in at all.
+func (s *Server) SnapshotLegacyTokenRows(ctx context.Context) (LegacyTokenSnapshot, error) {
+	h, err := s.hasher()
 	if err != nil {
-		return 0, err
+		return LegacyTokenSnapshot{}, err
 	}
 	if s.store == nil || h.Source() != auth.PepperDerived {
 		s.legacyTokens.replace(nil)
-		return 0, nil
+		return LegacyTokenSnapshot{}, nil
 	}
 	// The table has no list-all; names then rows per name, once, at boot.
 	names, err := s.store.OperatorTokenDefListNames(ctx)
 	if err != nil {
-		return 0, err
+		return LegacyTokenSnapshot{}, err
 	}
+	var snap LegacyTokenSnapshot
 	ids := map[string]struct{}{}
 	for _, n := range names {
 		rows, err := s.store.OperatorTokenDefListByName(ctx, n.Name)
 		if err != nil {
-			return 0, err
+			return LegacyTokenSnapshot{}, err
 		}
 		for _, r := range rows {
-			if !h.IsCurrent(r.TokenHash) {
-				ids[r.DefID] = struct{}{}
+			if h.IsCurrent(r.TokenHash) {
+				continue
+			}
+			ids[r.DefID] = struct{}{}
+			snap.IDs = append(snap.IDs, r.DefID)
+			if !auth.IsTagged(r.TokenHash) {
+				snap.Untagged++
 			}
 		}
 	}
-	count := len(ids)
-	if !h.LegacyFallback() {
+	sort.Strings(snap.IDs)
+	if !h.HasLegacyCandidates() {
 		ids = nil
 	}
 	s.legacyTokens.replace(ids)
-	return count, nil
+	return snap, nil
 }
 
 // lookupLegacyToken is the miss path of the token lookup: try each legacy
 // hash of bearer, accept a match only for a row in the boot set, and rewrite
 // that row to currentHash. Returns miss unchanged when nothing qualifies, and
 // any store error other than not-found so the caller fails closed.
+//
+// The caller runs it only when the hasher has legacy candidates and the
+// boot set was non-empty before its current-hash lookup, and does not cache
+// a refusal from it: it may be the losing side of two first logins of the
+// same token. That race is also why a miss here looks at currentHash once
+// more before giving up — the other login may have moved the row onto it in
+// between.
 func (s *Server) lookupLegacyToken(ctx context.Context, h auth.TokenHasher, bearer, currentHash string, miss error) (store.OperatorTokenDefRow, error) {
-	if !h.LegacyFallback() || s.legacyTokens.empty() {
-		return store.OperatorTokenDefRow{}, miss
-	}
+	refused := ""
 	for _, old := range h.LegacyHashes(bearer) {
 		row, err := s.store.OperatorTokenDefGetByTokenHash(ctx, old)
 		if isNotFound(err) {
@@ -114,13 +138,11 @@ func (s *Server) lookupLegacyToken(ctx context.Context, h auth.TokenHasher, bear
 			return store.OperatorTokenDefRow{}, err
 		}
 		if !s.legacyTokens.has(row.DefID) {
-			// A legacy-hash match on a row that was not on a legacy hash at
-			// boot is what a forged or tampered row looks like.
-			log.Printf("auth: token_def=%q matched a legacy token hash but was not on one at boot; refused", row.DefID)
-			return store.OperatorTokenDefRow{}, miss
+			refused = row.DefID
+			break
 		}
 		// The match authenticates whether or not the rewrite lands: losing
-		// the compare-and-set means another replica moved the row first.
+		// the compare-and-set means another login moved the row first.
 		changed, rerr := s.store.OperatorTokenRehash(ctx, row.DefID, old, currentHash)
 		switch {
 		case rerr != nil:
@@ -133,5 +155,32 @@ func (s *Server) lookupLegacyToken(ctx context.Context, h auth.TokenHasher, bear
 		}
 		return row, nil
 	}
+	row, err := s.store.OperatorTokenDefGetByTokenHash(ctx, currentHash)
+	if err == nil {
+		s.legacyTokens.forget(row.DefID)
+		return row, nil
+	}
+	if !isNotFound(err) {
+		return store.OperatorTokenDefRow{}, err
+	}
+	if refused != "" {
+		// A legacy-hash match on a row that was not on a legacy hash at
+		// boot, and not on the current hash either: what a forged or
+		// tampered row looks like.
+		log.Printf("auth: token_def=%q matched a legacy token hash but was not on one at boot; refused", refused)
+	}
 	return store.OperatorTokenDefRow{}, miss
+}
+
+// SetTokenHasher fixes the hasher every mint and lookup on this server uses.
+// Call from main.go before serving, with the hasher the operator-token tool
+// was given, so the two can never disagree. Unset (tests), it is built from
+// the config on each use.
+func (s *Server) SetTokenHasher(h auth.TokenHasher) { s.tokenHasher = &h }
+
+func (s *Server) hasher() (auth.TokenHasher, error) {
+	if s.tokenHasher != nil {
+		return *s.tokenHasher, nil
+	}
+	return s.cfg().Env.TokenHasher()
 }

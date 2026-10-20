@@ -40,8 +40,8 @@ func TestEnvTokenHasher_DerivesFromTheSecretKeyWithBothLegacyCandidates(t *testi
 		t.Errorf("legacy candidates = %d, want 2 (previous key, unpeppered)", len(got))
 	}
 	e.TokenLegacyHashOff = true
-	if h, _ := e.TokenHasher(); h.LegacyFallback() {
-		t.Error("LOOMCYCLE_TOKEN_LEGACY_HASH=off must leave no legacy candidates")
+	if h, _ := e.TokenHasher(); h.AcceptsUnpeppered() || len(h.LegacyHashes("lct_x")) != 1 {
+		t.Error("LOOMCYCLE_TOKEN_LEGACY_HASH=off must drop only the unpeppered candidate")
 	}
 }
 

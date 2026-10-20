@@ -513,7 +513,7 @@ func (s *Server) handleMintUserToken(w http.ResponseWriter, r *http.Request) {
 	}
 	// Hash with the SAME hasher the auth hot path uses (resolvePrincipal),
 	// else the minted token would never resolve.
-	hasher, err := s.cfg().Env.TokenHasher()
+	hasher, err := s.hasher()
 	if err != nil {
 		writeJSONError(w, http.StatusInternalServerError, "mint_failed", err.Error())
 		return

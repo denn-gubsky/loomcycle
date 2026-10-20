@@ -424,10 +424,10 @@ func checkTokenPepper(r *doctorRun, cfg configForDoctor, authTokenSet bool) {
 	case auth.PepperExplicit:
 		r.pass(label, "LOOMCYCLE_OPERATOR_TOKEN_PEPPER set")
 	case auth.PepperDerived:
-		if h.LegacyFallback() {
+		if h.AcceptsUnpeppered() {
 			r.pass(label, "derived from LOOMCYCLE_SECRET_KEY; tokens minted before it move to it at their next login. The server logs at boot how many remain — set LOOMCYCLE_TOKEN_LEGACY_HASH=off once it reports none")
 		} else {
-			r.pass(label, "derived from LOOMCYCLE_SECRET_KEY; legacy token hashes refused (LOOMCYCLE_TOKEN_LEGACY_HASH=off)")
+			r.pass(label, "derived from LOOMCYCLE_SECRET_KEY; unpeppered token hashes refused (LOOMCYCLE_TOKEN_LEGACY_HASH=off)")
 		}
 	default:
 		if authTokenSet {

@@ -3993,10 +3993,11 @@ type Env struct {
 	// writes use SecretKey. Optional. Secret.
 	SecretKeyPrevious string
 	// TokenLegacyHashOff (LOOMCYCLE_TOKEN_LEGACY_HASH=off) stops a token lookup
-	// from trying the legacy hashes — the pepper derived from
-	// SecretKeyPrevious, and no pepper at all — that rows minted before the
-	// derived pepper may carry. Default: tried, for rows that existed at boot,
-	// and rehashed on a hit (RFC ES D2).
+	// from trying the UNPEPPERED hash a row minted before the derived pepper
+	// may carry. Default: tried, for rows on it at boot, and rehashed on a hit
+	// (RFC ES D2). The hash under the pepper SecretKeyPrevious derives is
+	// tried whenever that key is set, whatever this says — dropping it would
+	// log every token out at the next key rotation.
 	TokenLegacyHashOff bool
 	// AuditLogPath is the JSONL sink for OperatorTokenDef mutations
 	// (RFC L). Empty = no file audit (a NopSink is wired).
