@@ -2617,6 +2617,40 @@ func exitReturn(res RunResult, err error) loopExit {
 	return loopExit{ctl: loopReturn, res: res, err: err}
 }
 
+// reportStatefulInert says which of a run's settings a stateful run does not
+// apply, rather than dropping them silently: tool_choice, output_format,
+// agent_stop hooks and review.
+func reportStatefulInert(ctx context.Context, opts *RunOptions, emit func(providers.Event)) {
+	if !opts.ToolChoice.IsZero() {
+		// Said rather than silently dropped: a stateful step already forces
+		// its own state tool, so a second forced choice has nothing to apply to.
+		msg := "tool_choice is not applied to a stateful run: every step already calls its state tool"
+		emit(providers.Event{Type: providers.EventCapabilityInert, Text: msg,
+			CapabilityInert: &providers.CapabilityInertInfo{Tool: opts.ToolChoice.Name, Gate: "tool_choice", Message: msg}})
+	}
+	if !opts.OutputFormat.IsZero() {
+		// A stateful run's product is its state Σ, shaped by state_schema; its
+		// steps are tool calls, so there is no free-text answer to hold.
+		msg := "output_format is not applied to a stateful run: its result is the state, shaped by context.state_schema"
+		emit(providers.Event{Type: providers.EventCapabilityInert, Text: msg,
+			CapabilityInert: &providers.CapabilityInertInfo{Gate: "output_format", Message: msg}})
+	}
+	if opts.Hooks != nil && opts.Hooks.Matches(ctx, HookIdentity(ctx, opts.AgentName, 0), hooks.PhaseAgentStop) {
+		// Same reason as review below: the step loop's product is its
+		// state, not an answer an agent_stop hook could block or hold.
+		msg := "agent_stop hooks are not applied to a stateful run: it has no finished answer to decide on, only its state"
+		emit(providers.Event{Type: providers.EventCapabilityInert, Text: msg,
+			CapabilityInert: &providers.CapabilityInertInfo{Gate: "agent_stop", Message: msg}})
+	}
+	if opts.reviewAtBoundary(ctx) {
+		// A stateful run ends by marking its state done; there is no
+		// finished answer the loop could hold for a verdict.
+		msg := "review is not applied to a stateful run: it has no finished answer to hold, only its state"
+		emit(providers.Event{Type: providers.EventCapabilityInert, Text: msg,
+			CapabilityInert: &providers.CapabilityInertInfo{Gate: "review", Message: msg}})
+	}
+}
+
 // runState is what runLoop carries from one iteration to the next: one is
 // allocated per run, and the phases of an iteration are its methods. A field
 // is read where it is used, never copied out for later — a park, a fallback
@@ -3015,34 +3049,7 @@ func runLoop(ctx context.Context, opts RunOptions) (RunResult, error) {
 	// P (`system`) and the action-tool catalog are resolved, into the self-
 	// contained stateful loop. The append/recap machinery below does not apply.
 	if contextStatefulMode(opts.Context) {
-		if !opts.ToolChoice.IsZero() {
-			// Said rather than silently dropped: a stateful step already forces
-			// its own state tool, so a second forced choice has nothing to apply to.
-			msg := "tool_choice is not applied to a stateful run: every step already calls its state tool"
-			emit(providers.Event{Type: providers.EventCapabilityInert, Text: msg,
-				CapabilityInert: &providers.CapabilityInertInfo{Tool: opts.ToolChoice.Name, Gate: "tool_choice", Message: msg}})
-		}
-		if !opts.OutputFormat.IsZero() {
-			// A stateful run's product is its state Σ, shaped by state_schema; its
-			// steps are tool calls, so there is no free-text answer to hold.
-			msg := "output_format is not applied to a stateful run: its result is the state, shaped by context.state_schema"
-			emit(providers.Event{Type: providers.EventCapabilityInert, Text: msg,
-				CapabilityInert: &providers.CapabilityInertInfo{Gate: "output_format", Message: msg}})
-		}
-		if opts.Hooks != nil && opts.Hooks.Matches(ctx, HookIdentity(ctx, opts.AgentName, 0), hooks.PhaseAgentStop) {
-			// Same reason as review below: the step loop's product is its
-			// state, not an answer an agent_stop hook could block or hold.
-			msg := "agent_stop hooks are not applied to a stateful run: it has no finished answer to decide on, only its state"
-			emit(providers.Event{Type: providers.EventCapabilityInert, Text: msg,
-				CapabilityInert: &providers.CapabilityInertInfo{Gate: "agent_stop", Message: msg}})
-		}
-		if opts.reviewAtBoundary(ctx) {
-			// A stateful run ends by marking its state done; there is no
-			// finished answer the loop could hold for a verdict.
-			msg := "review is not applied to a stateful run: it has no finished answer to hold, only its state"
-			emit(providers.Event{Type: providers.EventCapabilityInert, Text: msg,
-				CapabilityInert: &providers.CapabilityInertInfo{Gate: "review", Message: msg}})
-		}
+		reportStatefulInert(ctx, &opts, emit)
 		return runStateful(ctx, opts, system, messages, toolSpecs, iterCap, emit)
 	}
 	// The children run on after the calls that started them; they end with
