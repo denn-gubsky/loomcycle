@@ -3081,6 +3081,43 @@ func runLoop(ctx context.Context, opts RunOptions) (RunResult, error) {
 	// context footprint + window ceiling that drive the auto-compact threshold.
 	// lastCompactIter debounces back-to-back auto-compactions.
 	ctx = tools.WithCompactRequest(ctx, &s.compactRequested)
+	s.seedDistillation()
+
+	// RFC BH turn-scoped cancel: turnCancelFn cancels the CURRENT turn's ctx and
+	// disarmTurn removes its armed registry token. Both are re-created per turn
+	// (below, right before the model call) and released here on Run exit — any
+	// path, including a panic unwinding through a caller's recover — so a
+	// turn-cancel can never fire against a finished run. Initialised to no-ops so
+	// the first turn's setup + a non-turn-cancellable run (ArmTurnCancel nil) are
+	// clean.
+	s.turnCancelFn = context.CancelCauseFunc(func(error) {})
+	s.disarmTurn = func() {}
+	defer func() {
+		s.disarmTurn()
+		s.turnCancelFn(nil)
+	}()
+
+	parkAbandoned, ex := s.resumeParked(ctx)
+	if ex.ctl == loopReturn {
+		return ex.res, ex.err
+	}
+
+	for iter := 0; !parkAbandoned && (iter < iterCap || s.closingTurn); iter++ {
+		ex := s.iteration(ctx, iter)
+		if ex.ctl == loopReturn {
+			return ex.res, ex.err
+		}
+		if ex.ctl == loopEnd {
+			break
+		}
+	}
+	return s.finish()
+}
+
+// seedDistillation sets up the run's distillation state before its first
+// iteration: the context footprint the gate opens on, the decline and
+// exhaustion dedup, and the emit the distillers report through.
+func (s *runState) seedDistillation() {
 	// ⚠️ SEEDED, not zero. These used to start at 0 and stay there until the
 	// first provider call RETURNED, while the distillation gate runs at the TOP
 	// of an iteration — so a run whose very first request was already near the
@@ -3102,11 +3139,11 @@ func runLoop(ctx context.Context, opts RunOptions) (RunResult, error) {
 	// Post-call distillation was the alternative and is the wrong shape: for a
 	// continuation it would distil for a NEXT Run() whose counters start at
 	// zero again, which is indistinguishable from doing nothing.
-	// Computed once: the system prompt and tool catalogue do not change within
+	// Computed once: the s.system prompt and tool catalogue do not change within
 	// a run, and they are most of the request on a small window.
-	s.preambleTokens = estimatePreambleTokens(system, toolSpecs)
+	s.preambleTokens = estimatePreambleTokens(s.system, s.toolSpecs)
 	s.lastCtxTokens = estimatePromptTokens(s.preambleTokens, s.messages)
-	s.lastWindow = effectiveWindow(0, opts)
+	s.lastWindow = effectiveWindow(0, *s.opts)
 	s.lastCompactIter = -2
 	s.seenDecline = map[string]bool{}
 	s.seenExhausted = map[int]bool{}
@@ -3147,43 +3184,13 @@ func runLoop(ctx context.Context, opts RunOptions) (RunResult, error) {
 			}
 			s.seenDecline[key] = true
 		}
-		emit(ev)
+		s.emit(ev)
 	}
 	// L1 recap (RFC CR) reuses lastCompactIter to debounce — the two distillation
 	// modes are mutually exclusive per run. No running-recap state is threaded: the
 	// prior recap rides the transcript (see RecapMessages), so replay/resume are
 	// byte-identical without restoring loop state.
-	s.recapMode = contextRecapMode(opts.Context)
-
-	// RFC BH turn-scoped cancel: turnCancelFn cancels the CURRENT turn's ctx and
-	// disarmTurn removes its armed registry token. Both are re-created per turn
-	// (below, right before the model call) and released here on Run exit — any
-	// path, including a panic unwinding through a caller's recover — so a
-	// turn-cancel can never fire against a finished run. Initialised to no-ops so
-	// the first turn's setup + a non-turn-cancellable run (ArmTurnCancel nil) are
-	// clean.
-	s.turnCancelFn = context.CancelCauseFunc(func(error) {})
-	s.disarmTurn = func() {}
-	defer func() {
-		s.disarmTurn()
-		s.turnCancelFn(nil)
-	}()
-
-	parkAbandoned, ex := s.resumeParked(ctx)
-	if ex.ctl == loopReturn {
-		return ex.res, ex.err
-	}
-
-	for iter := 0; !parkAbandoned && (iter < iterCap || s.closingTurn); iter++ {
-		ex := s.iteration(ctx, iter)
-		if ex.ctl == loopReturn {
-			return ex.res, ex.err
-		}
-		if ex.ctl == loopEnd {
-			break
-		}
-	}
-	return s.finish()
+	s.recapMode = contextRecapMode(s.opts.Context)
 }
 
 // resumeParked puts a resumed run back where it paused, before its first
