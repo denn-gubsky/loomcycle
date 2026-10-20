@@ -19,6 +19,8 @@ import (
 	"sync/atomic"
 	"time"
 
+	"go.opentelemetry.io/otel/trace"
+
 	runcancel "github.com/denn-gubsky/loomcycle/internal/cancel"
 	"github.com/denn-gubsky/loomcycle/internal/concurrency"
 	"github.com/denn-gubsky/loomcycle/internal/config"
@@ -3402,351 +3404,28 @@ outerLoop:
 		turnCtx := s.armTurn(iterCtx)
 
 		req := s.buildRequest(reqSystem, reqMessages)
-		callTimer := providers.StartCallTimer(opts.Now)
-		ch, err := opts.Provider.Call(turnCtx, req)
-		if err != nil {
-			// The operator cancelled this turn while its call was still waiting
-			// (in a provider's call lane, or anywhere else Call blocks), so the
-			// call failed with the turn's cancellation. That is the same event as
-			// a cancel during generation and ends the same way: the run parks for
-			// the operator's next message. It is checked before everything below
-			// because it says nothing about the provider, so no retry, fallback
-			// or resolver feedback applies. Nothing was generated, so the history
-			// needs no repair.
-			if opts.ArmTurnCancel != nil && ctx.Err() == nil && errors.Is(context.Cause(turnCtx), ErrTurnCancelled) {
-				var resumed bool
-				s.messages, s.lastCtxTokens, resumed = finishTurnCancel(ctx, &opts, s.messages, iter, s.lastCtxTokens, s.preambleTokens, reasonFromCause(context.Cause(turnCtx)), emit, s.disarmTurn)
-				iterSpan.End()
-				if !resumed {
-					break
-				}
-				// A call waiting for its lane lends the run's global slot, and
-				// it could not take it back under the cancelled turn when none
-				// was free. Take it back under the run's own ctx before the run
-				// computes again: the next turn may be routed to a provider no
-				// lane gates, which would never take it back on its own. A
-				// no-op when the slot is not lent.
-				if concurrency.RunSlotFrom(ctx).Reclaim(ctx) != nil {
-					break
-				}
-				continue outerLoop
-			}
-			// v0.12.9 same-provider retry: when the operator opted
-			// into MaxSameProviderRetries > 0, retryable errors
-			// (429, 5xx, network) sleep with exponential backoff and
-			// re-attempt the SAME (provider, model) before
-			// MarkRateLimited cools the matrix entry and
-			// tryProviderFallback escalates. Captures the common
-			// case of a brief provider-side burst: real-world 429s
-			// often clear within 1-3 seconds, well under the 30s
-			// MarkRateLimited cooldown.
-			if ctx.Err() == nil &&
-				s.sameProviderRetries < opts.MaxSameProviderRetries &&
-				providers.ClassifyError(err) == providers.ErrorClassRetryable {
-				s.sameProviderRetries++
-				backoff := sameProviderRetryBackoff(s.sameProviderRetries)
-				emit(providers.Event{
-					Type: providers.EventRetry,
-					Retry: &providers.RetryInfo{
-						Provider: opts.Provider.ID(),
-						Attempt:  s.sameProviderRetries,
-						WaitMs:   backoff.Milliseconds(),
-						Reason:   providers.RetryReasonSchedule,
-					},
-				})
-				select {
-				case <-ctx.Done():
-					lcotel.SetSpanError(iterSpan, ctx.Err())
-					iterSpan.End()
-					s.turnCancelFn(nil) // RFC BH: release this turn's cancel ctx before terminating (no leak)
-					return RunResult{Iterations: iter}, ctx.Err()
-				case <-time.After(backoff):
-				}
-				lcotel.SetSpanErrorMessage(iterSpan, "provider call failed; same-provider retry scheduled")
-				iterSpan.End()
-				continue outerLoop
-			}
-			// Resolver feedback: a non-context error from Call() is
-			// the driver giving up after its own retries. Route the
-			// feedback by error class:
-			//
-			//   429 (rate limit) → MarkRateLimited (self-recovering
-			//     30s cooldown; transient, not "model broken")
-			//   5xx / model 404 / network → MarkStalled (15-min
-			//     probe-gated recovery; "model is broken for a
-			//     while, stop wasting calls")
-			//
-			// The split matters: pre-v0.12.7 MarkStalled treated 429
-			// the same as 5xx, which under the x1000 load test
-			// (2026-05-26) cascaded ~120 rate-limited runs into 800+
-			// "no provider available" 503s for the rest of the probe
-			// interval. PR #235 patched this with a skip-on-429
-			// guard; this site is the structural fix — positive call
-			// to the right method.
-			//
-			// ctx errors are user-side cancellation, not provider
-			// faults — don't pollute the matrix on either path. RFC AX: an
-			// operator-key refusal is a PER-RUN policy decision (this restricted
-			// run may not use the operator key), not a model outage — marking the
-			// (provider, model) stalled would poison the shared availability
-			// matrix and wrongly exclude the model from OTHER (non-restricted)
-			// runs for the probe interval. Skip matrix feedback for it.
-			//
-			// A cancelled TURN (turnCtx done, run ctx alive) is not a provider
-			// fault either. Call can now sit in a provider's call lane for as long
-			// as the queue is, so an operator cancelling the turn of a queued run
-			// is an ordinary event — and must not mark a healthy model stalled.
-			if ctx.Err() == nil && turnCtx.Err() == nil && !errors.Is(err, providers.ErrOperatorKeyForbidden) {
-				if providers.IsRateLimit(err) {
-					if opts.MarkRateLimited != nil {
-						opts.MarkRateLimited(opts.Provider.ID(), opts.Model, 0)
-					}
-				} else if opts.MarkStalled != nil {
-					opts.MarkStalled(opts.Provider.ID(), opts.Model, err.Error())
-				}
-			}
-			// v0.8.2: when the run carries a fallback policy and the
-			// error class is retryable, swap to the next provider
-			// and re-run this iteration. tryProviderFallback emits
-			// EventProviderFallback (+ EventCacheInvalidated when
-			// switching away from anthropic) and mutates opts in
-			// place. Outcome==Switched → continue the outer loop
-			// without surfacing the error. Other outcomes fall
-			// through to the original error path. The fallback path
-			// switches (provider, model), so the per-pair retry
-			// budget resets — the new pair starts fresh.
-			if tryProviderFallback(ctx, &opts, &s.fallbackAttempts, err, emit, s.messages, s.firstTurnSucceeded) == fallbackOutcomeSwitched {
-				s.sameProviderRetries = 0
-				lcotel.SetSpanErrorMessage(iterSpan, "provider call failed; fallback engaged")
-				iterSpan.End()
-				continue outerLoop
-			}
-			emit(providers.Event{Type: providers.EventError, Error: err.Error()})
-			if tools.RunIsNoTrace(ctx) {
-				// A provider's error can quote the prompt; a no-trace run's
-				// span is exported without it.
-				lcotel.SetSpanErrorMessage(iterSpan, "provider call failed")
-			} else {
-				lcotel.SetSpanError(iterSpan, err)
-			}
-			iterSpan.End()
-			s.turnCancelFn(nil) // RFC BH: release this turn's cancel ctx before terminating (no leak)
-			return RunResult{Iterations: iter}, err
+		t, ex := s.callModel(ctx, turnCtx, iterSpan, iter, req)
+		switch ex.ctl {
+		case loopNext:
+			continue outerLoop
+		case loopEnd:
+			break outerLoop
+		case loopReturn:
+			return ex.res, ex.err
 		}
-		// Call() succeeded — the connection / driver was healthy
-		// enough to open the response stream. Reset the same-provider
-		// retry counter so the next retryable error (if any) starts
-		// from a fresh budget. In-stream errors below have their own
-		// retry path.
-		s.sameProviderRetries = 0
-
-		// Collect this iteration: assistant text, any tool_use blocks, usage.
-		var assistantBlocks []providers.ContentBlock
-		var pendingTools []providers.ToolUse
-		var iterText string
-		var iterStop string
-		var iterUsage *providers.Usage
-		// iterReasoning holds the accumulated reasoning_content from
-		// thinking-mode models (DeepSeek V4 Pro / deepseek-reasoner).
-		// Stamped onto the assistant Message we append below so the
-		// next iteration's request body echoes it back to the API
-		// per DeepSeek's roundtrip contract. Empty for non-thinking
-		// providers.
-		var iterReasoning string
-		// iterReasoningSignature holds the Anthropic extended-thinking block's
-		// signature (paired with iterReasoning); stamped onto the assistant
-		// Message so the Anthropic driver replays the thinking block, seal
-		// included, on the tool-use continuation (else Anthropic 400s). Empty
-		// for non-Anthropic / non-thinking turns.
-		var iterReasoningSignature string
-		// sawDone: the stream ended with the driver's EventDone. Every error
-		// branch below leaves the iteration, so reaching the end of the range
-		// without it means the stream just closed — see the check after it.
-		var sawDone bool
-
-		for ev := range ch {
-			callTimer.Observe(ev)
-			switch ev.Type {
-			case providers.EventText:
-				iterText += ev.Text
-				emit(ev)
-			case providers.EventThinking:
-				// Forward the live reasoning trace to the consumer (SSE / gRPC /
-				// adapters) so a UI can render "thinking…" as the model streams
-				// it. Deliberately NOT accumulated into the assistant message
-				// content and NOT echoed into the next request — the full trace
-				// is carried separately on EventDone.Reasoning (see
-				// providers.EventThinking). Before this case existed the switch
-				// had no branch for EventThinking (and no default), so every
-				// provider's streamed thinking was silently dropped here and
-				// never reached any client — the driver emitted it, the loop ate
-				// it. Regression: TestRun_ForwardsEventThinking.
-				emit(ev)
-			case providers.EventToolCall:
-				// Some providers (Ollama) don't issue tool_call IDs. Anthropic
-				// and OpenAI both 400 if we replay an empty-ID tool_use in the
-				// next turn's history, so we synthesise one here. The synth ID
-				// is deterministic per (run, iter, slot) so a replay produces
-				// the same value.
-				tu := *ev.ToolUse
-				if tu.ID == "" {
-					tu.ID = fmt.Sprintf("lc-%d-%d", iter, len(pendingTools))
-				}
-				pendingTools = append(pendingTools, tu)
-				assistantBlocks = append(assistantBlocks, providers.ContentBlock{
-					Type:      "tool_use",
-					ToolUseID: tu.ID,
-					ToolName:  tu.Name,
-					ToolInput: tu.Input,
-				})
-				emit(providers.Event{Type: providers.EventToolCall, ToolUse: &tu})
-			case providers.EventDone:
-				sawDone = true
-				iterStop = ev.StopReason
-				// A copy: the loop stamps provider, window and timing onto
-				// it below, and the provider's value is not ours to write —
-				// a driver or fixture may hand the same *Usage to several
-				// concurrent runs, which made those stamps a data race.
-				iterUsage = nil
-				if ev.Usage != nil {
-					u := *ev.Usage
-					iterUsage = &u
-				}
-				iterReasoning = ev.Reasoning
-				iterReasoningSignature = ev.ReasoningSignature
-			case providers.EventError:
-				// RFC BH: an operator turn-cancel aborted this turn's stream (turnCtx
-				// cancelled, RUN ctx still alive) — not a provider fault. Skip the
-				// retry / fallback / matrix-feedback machinery below (which would
-				// MarkStalled the model + could swap providers), drain the channel so
-				// the sender goroutine doesn't leak, and let the post-stream
-				// turn-cancel handler park the run.
-				if ctx.Err() == nil && errors.Is(context.Cause(turnCtx), ErrTurnCancelled) {
-					for range ch {
-					}
-					break
-				}
-				// v0.8.2 classification: build the RAW error string so
-				// the status-prefix regex sees the bare "<name>
-				// <code>:" shape. The streamErr wrap below would
-				// obscure that; reserved for the FINAL return value.
-				rawErr := errors.New(ev.Error)
-
-				// v0.12.9 same-provider retry on in-stream retryable
-				// errors. Drain the rest of the channel (drivers may
-				// emit a trailing EventDone after EventError; we must
-				// consume it or the goroutine sending events leaks) and
-				// re-attempt the same (provider, model). Same budget
-				// as the Call() error path.
-				if ctx.Err() == nil &&
-					s.sameProviderRetries < opts.MaxSameProviderRetries &&
-					providers.ClassifyError(rawErr) == providers.ErrorClassRetryable {
-					for range ch {
-					}
-					s.sameProviderRetries++
-					backoff := sameProviderRetryBackoff(s.sameProviderRetries)
-					emit(providers.Event{
-						Type: providers.EventRetry,
-						Retry: &providers.RetryInfo{
-							Provider: opts.Provider.ID(),
-							Attempt:  s.sameProviderRetries,
-							WaitMs:   backoff.Milliseconds(),
-							Reason:   providers.RetryReasonSchedule,
-						},
-					})
-					select {
-					case <-ctx.Done():
-						lcotel.SetSpanError(iterSpan, ctx.Err())
-						iterSpan.End()
-						s.turnCancelFn(nil) // RFC BH: release this turn's cancel ctx before terminating (no leak)
-						return RunResult{Iterations: iter}, ctx.Err()
-					case <-time.After(backoff):
-					}
-					lcotel.SetSpanErrorMessage(iterSpan, "in-stream provider error; same-provider retry scheduled")
-					iterSpan.End()
-					continue outerLoop
-				}
-
-				// Resolver feedback for in-stream errors: same
-				// 429-vs-5xx routing as the Call() error path
-				// above. Driver opened the SSE/NDJSON stream
-				// successfully but then surfaced a provider-side
-				// error mid-stream — route to MarkRateLimited or
-				// MarkStalled based on whether it's a 429.
-				streamErr := errors.New(ev.Error)
-				if ctx.Err() == nil {
-					if providers.IsRateLimit(streamErr) {
-						if opts.MarkRateLimited != nil {
-							opts.MarkRateLimited(opts.Provider.ID(), opts.Model, 0)
-						}
-					} else if opts.MarkStalled != nil {
-						opts.MarkStalled(opts.Provider.ID(), opts.Model, ev.Error)
-					}
-				}
-				if tryProviderFallback(ctx, &opts, &s.fallbackAttempts, rawErr, emit, s.messages, s.firstTurnSucceeded) == fallbackOutcomeSwitched {
-					for range ch {
-					}
-					s.sameProviderRetries = 0
-					lcotel.SetSpanErrorMessage(iterSpan, "in-stream provider error; fallback engaged")
-					iterSpan.End()
-					continue outerLoop
-				}
-				emit(ev)
-				// Drain any trailing events (a driver may emit an EventDone
-				// after EventError) so the sending goroutine doesn't block on
-				// the channel until ctx-cancel / the idle timeout — mirrors the
-				// same-provider-retry + fallback drains above. Without it, the
-				// terminal error path was the one branch that abandoned ch.
-				for range ch {
-				}
-				if tools.RunIsNoTrace(ctx) {
-					lcotel.SetSpanErrorMessage(iterSpan, "in-stream provider error")
-				} else {
-					lcotel.SetSpanErrorMessage(iterSpan, ev.Error)
-				}
-				iterSpan.End()
-				s.turnCancelFn(nil) // RFC BH: release this turn's cancel ctx before terminating (no leak)
-				return RunResult{Iterations: iter}, fmt.Errorf("provider error: %s", ev.Error)
-			}
-		}
-
-		// A stream that closed with neither EventDone nor EventError is a call
-		// that never finished: the server hung up, or the driver's own terminal
-		// error was lost when its stream context was cancelled (an idle timeout
-		// races the error send against ctx.Done). Read as a turn it is an empty
-		// end_turn, and the run used to COMPLETE with no text, no stop reason and
-		// zero usage — invisible as a failure to every caller. A cancelled turn
-		// or run closes the stream the same way; that is not a provider fault,
-		// and turnCtx (a child of the run ctx) tells the two apart.
-		if !sawDone && turnCtx.Err() == nil {
-			msg := fmt.Sprintf("%s: the response stream ended before the model finished its turn", opts.Provider.ID())
-			emit(providers.Event{Type: providers.EventError, Error: msg})
-			lcotel.SetSpanErrorMessage(iterSpan, msg)
-			iterSpan.End()
-			s.turnCancelFn(nil) // RFC BH: release this turn's cancel ctx before terminating (no leak)
-			return RunResult{Iterations: iter}, fmt.Errorf("provider error: %s", msg)
-		}
-
-		// RFC BH: did the operator cancel THIS turn while the model was generating
-		// (run ctx still alive)? Covers both a driver that surfaced EventError on
-		// the turnCtx-cancel (short-circuited above) and one that just closed the
-		// stream. The run-level cancel is checked FIRST (ctx.Err()==nil): a
-		// whole-run cancel terminates as before, never mistaken for a turn-cancel.
-		turnCancelledMidGen := opts.ArmTurnCancel != nil && ctx.Err() == nil &&
-			errors.Is(context.Cause(turnCtx), ErrTurnCancelled)
 
 		// Prepend any text before tool_use blocks so the assistant turn is well-formed.
-		if iterText != "" {
-			assistantBlocks = append(
-				[]providers.ContentBlock{providers.DialogueText(iterText)},
-				assistantBlocks...,
+		if t.iterText != "" {
+			t.assistantBlocks = append(
+				[]providers.ContentBlock{providers.DialogueText(t.iterText)},
+				t.assistantBlocks...,
 			)
 		}
 		s.messages = append(s.messages, providers.Message{
 			Role:               "assistant",
-			Content:            assistantBlocks,
-			Reasoning:          iterReasoning,
-			ReasoningSignature: iterReasoningSignature,
+			Content:            t.assistantBlocks,
+			Reasoning:          t.iterReasoning,
+			ReasoningSignature: t.iterReasoningSignature,
 		})
 		// Mark the run "past turn one." Any subsequent retryable
 		// error that would have triggered cross-provider fallback
@@ -3765,12 +3444,12 @@ outerLoop:
 			opts.ClearStall(opts.Provider.ID(), opts.Model)
 		}
 
-		if iterUsage != nil {
-			s.totalUsage.InputTokens += iterUsage.InputTokens
-			s.totalUsage.OutputTokens += iterUsage.OutputTokens
-			s.totalUsage.CacheCreationTokens += iterUsage.CacheCreationTokens
-			s.totalUsage.CacheReadTokens += iterUsage.CacheReadTokens
-			s.totalUsage.Model = iterUsage.Model
+		if t.iterUsage != nil {
+			s.totalUsage.InputTokens += t.iterUsage.InputTokens
+			s.totalUsage.OutputTokens += t.iterUsage.OutputTokens
+			s.totalUsage.CacheCreationTokens += t.iterUsage.CacheCreationTokens
+			s.totalUsage.CacheReadTokens += t.iterUsage.CacheReadTokens
+			s.totalUsage.Model = t.iterUsage.Model
 			// Capture the ACTUAL provider that served this iteration.
 			// opts.Provider is mutated in place by tryProviderFallback
 			// when a runtime fallback engages, so reading ID() here
@@ -3782,8 +3461,8 @@ outerLoop:
 			// successful iteration's source becomes runs.credential_source —
 			// best-effort for the summary; the exact per-call split is in the
 			// token_usage ledger (one row per EventUsage below).
-			s.totalUsage.CredentialSource = iterUsage.CredentialSource
-			s.totalUsage.CredentialScopeID = iterUsage.CredentialScopeID
+			s.totalUsage.CredentialSource = t.iterUsage.CredentialSource
+			s.totalUsage.CredentialScopeID = t.iterUsage.CredentialScopeID
 			// Stamp the serving model's context-window ceiling onto the
 			// per-iteration usage event so the UI can render a "context
 			// used / max" gauge. Set on iterUsage (discarded after this
@@ -3795,21 +3474,21 @@ outerLoop:
 			// RFC CJ: a per-agent context budget caps the EFFECTIVE window used
 			// by the distillation threshold + the gauge. See effectiveWindow —
 			// shared with the run-start seed so the two cannot disagree.
-			iterUsage.MaxContextTokens = effectiveWindow(iterUsage.MaxContextTokens, opts)
+			t.iterUsage.MaxContextTokens = effectiveWindow(t.iterUsage.MaxContextTokens, opts)
 			// RFC AV: stamp the serving provider onto the per-call usage event
 			// too (not just totalUsage) so the token_usage row records which
 			// provider actually served this call — exact across mid-run fallback.
-			iterUsage.Provider = opts.Provider.ID()
+			t.iterUsage.Provider = opts.Provider.ID()
 			// How long the call took, for the throughput estimate and the ledger.
-			callTimer.Stamp(iterUsage)
-			emit(providers.Event{Type: providers.EventUsage, Usage: iterUsage})
+			t.callTimer.Stamp(t.iterUsage)
+			emit(providers.Event{Type: providers.EventUsage, Usage: t.iterUsage})
 			// Retain this turn's CURRENT context footprint (input + cache, i.e.
 			// what the request actually sent — NOT cumulative totalUsage, which
 			// only grows) + the window ceiling, so the NEXT iteration's
 			// top-of-loop auto-compact check sees the live utilization. After a
 			// compaction the next request shrinks, so this self-debounces.
-			s.lastCtxTokens = iterUsage.InputTokens + iterUsage.CacheReadTokens + iterUsage.CacheCreationTokens
-			s.lastWindow = iterUsage.MaxContextTokens
+			s.lastCtxTokens = t.iterUsage.InputTokens + t.iterUsage.CacheReadTokens + t.iterUsage.CacheCreationTokens
+			s.lastWindow = t.iterUsage.MaxContextTokens
 			// Set BESIDE the values it qualifies, not derived from a separate
 			// flag: the question the reports ask is "did a provider report
 			// this footprint", and the only honest answer is at the assignment
@@ -3817,9 +3496,9 @@ outerLoop:
 			s.footprintMeasured = true
 		}
 
-		s.stopReason = iterStop
-		s.finalText = iterText
-		s.toolChoice.observe(pendingTools) // a COMPLETED turn advances the tool_choice
+		s.stopReason = t.iterStop
+		s.finalText = t.iterText
+		s.toolChoice.observe(t.pendingTools) // a COMPLETED turn advances the tool_choice
 		s.publishAnswerShape()
 
 		// RFC BH turn-cancel (mid-generation): the operator stopped this turn while
@@ -3831,12 +3510,12 @@ outerLoop:
 		//   - synthesize a "cancelled by operator" tool_result for every tool_use the
 		//     model started but we never dispatched — a dangling tool_use 400s too.
 		// Then route into the interactive park (not the terminate/break path).
-		if turnCancelledMidGen {
+		if t.turnCancelledMidGen {
 			if n := len(s.messages); n > 0 && s.messages[n-1].Role == "assistant" && len(s.messages[n-1].Content) == 0 {
 				s.messages = s.messages[:n-1]
 			}
-			if len(pendingTools) > 0 {
-				s.messages = append(s.messages, providers.Message{Role: "user", Content: cancelledToolResults(pendingTools)})
+			if len(t.pendingTools) > 0 {
+				s.messages = append(s.messages, providers.Message{Role: "user", Content: cancelledToolResults(t.pendingTools)})
 			}
 			var resumed bool
 			s.messages, s.lastCtxTokens, resumed = finishTurnCancel(ctx, &opts, s.messages, iter, s.lastCtxTokens, s.preambleTokens, reasonFromCause(context.Cause(turnCtx)), emit, s.disarmTurn)
@@ -3854,12 +3533,12 @@ outerLoop:
 		// no longer read are cancelled and named — but it is not offered to an
 		// interactive park, and a run that ends on it is recorded as stopped
 		// at its cap.
-		if s.closingTurn && len(pendingTools) > 0 {
+		if s.closingTurn && len(t.pendingTools) > 0 {
 			// A model that called tools anyway (a provider that cannot be
 			// held to "none"): they are never run. Answer them so the
 			// history a continuation replays stays valid. Its text is what a
 			// run ending at the cap mid-tool-use leaves: no answer to decide on.
-			s.messages = append(s.messages, providers.Message{Role: "user", Content: notRunToolResults(pendingTools)})
+			s.messages = append(s.messages, providers.Message{Role: "user", Content: notRunToolResults(t.pendingTools)})
 			bg.EndTurn(runcancel.CauseWithReason("its parent ended its turn (on_parent_end: cancel)"))
 			cancelUnreadChildren(bg, emit)
 			s.stopReason = "max_iterations"
@@ -3868,13 +3547,13 @@ outerLoop:
 		}
 
 		// Terminal: model is done.
-		if iterStop != "tool_use" || len(pendingTools) == 0 {
+		if t.iterStop != "tool_use" || len(t.pendingTools) == 0 {
 			// agent_stop hooks decide first: an automated check that blocks the
 			// answer spares a person reviewing one that will change anyway.
 			heldBy := ""
 			if opts.Hooks != nil {
 				out := opts.Hooks.RunAgentStop(ctx, HookIdentity(ctx, opts.AgentName, iter),
-					hooks.LifecycleInfo{FinalText: s.finalText, StopReason: iterStop, StopBlocks: s.stopBlocks})
+					hooks.LifecycleInfo{FinalText: s.finalText, StopReason: t.iterStop, StopBlocks: s.stopBlocks})
 				decisions := out.Decisions
 				if out.Kind == hooks.StopBlock && (s.stopBlocks >= MaxStopBlocks || iter+1 >= iterCap) {
 					// The block fails the run below and sends no turn back. A
@@ -4063,7 +3742,7 @@ outerLoop:
 		// (Ollama's actually-loaded context) rather than the static seed, and a
 		// mid-turn fallback's window rather than the replaced provider's.
 		toolCtx := tools.WithEffectiveContextWindow(turnCtx, s.lastWindow)
-		toolResults := executePendingTools(toolCtx, opts.Dispatcher, pendingTools, opts.ToolParallelism, opts.Hooks, hookIdent, emit)
+		toolResults := executePendingTools(toolCtx, opts.Dispatcher, t.pendingTools, opts.ToolParallelism, opts.Hooks, hookIdent, emit)
 		s.messages = append(s.messages, providers.Message{Role: "user", Content: toolResults})
 		if why, stop := opts.Dispatcher.RepeatedFailure(); stop {
 			msg := "run stopped: " + why + " after being told it cannot succeed as sent"
@@ -4314,6 +3993,387 @@ func (s *runState) buildRequest(reqSystem []providers.ContentBlock, reqMessages 
 		s.emit(providers.Event{Type: providers.EventPromptSnapshot, PromptSnapshot: providers.NewPromptSnapshot(req.System, req.Messages)})
 	}
 	return req
+}
+
+// callModel makes this turn's provider call and reads its response. A call
+// that fails leaves the iteration: a cancelled turn parks, a retryable error
+// retries the same provider or falls back to another, and anything else ends
+// the run.
+func (s *runState) callModel(ctx, turnCtx context.Context, iterSpan trace.Span, iter int, req providers.Request) (turnOutput, loopExit) {
+	callTimer := providers.StartCallTimer(s.opts.Now)
+	ch, err := s.opts.Provider.Call(turnCtx, req)
+	if err != nil {
+		return turnOutput{}, s.callFailed(ctx, turnCtx, iterSpan, iter, err)
+	}
+	// Call() succeeded — the connection / driver was healthy
+	// enough to open the response stream. Reset the same-provider
+	// retry counter so the next retryable error (if any) starts
+	// from a fresh budget. In-stream errors below have their own
+	// retry path.
+	s.sameProviderRetries = 0
+
+	return s.readTurn(ctx, turnCtx, iterSpan, iter, ch, callTimer)
+}
+
+// callFailed handles a provider call that returned an error instead of a
+// stream. It never proceeds: every outcome leaves the iteration.
+func (s *runState) callFailed(ctx, turnCtx context.Context, iterSpan trace.Span, iter int, err error) loopExit {
+	// The operator cancelled this turn while its call was still waiting
+	// (in a provider's call lane, or anywhere else Call blocks), so the
+	// call failed with the turn's cancellation. That is the same event as
+	// a cancel during generation and ends the same way: the run parks for
+	// the operator's next message. It is checked before everything below
+	// because it says nothing about the provider, so no retry, fallback
+	// or resolver feedback applies. Nothing was generated, so the history
+	// needs no repair.
+	if s.opts.ArmTurnCancel != nil && ctx.Err() == nil && errors.Is(context.Cause(turnCtx), ErrTurnCancelled) {
+		var resumed bool
+		s.messages, s.lastCtxTokens, resumed = finishTurnCancel(ctx, s.opts, s.messages, iter, s.lastCtxTokens, s.preambleTokens, reasonFromCause(context.Cause(turnCtx)), s.emit, s.disarmTurn)
+		iterSpan.End()
+		if !resumed {
+			return loopExit{ctl: loopEnd}
+		}
+		// A call waiting for its lane lends the run's global slot, and
+		// it could not take it back under the cancelled turn when none
+		// was free. Take it back under the run's own ctx before the run
+		// computes again: the next turn may be routed to a provider no
+		// lane gates, which would never take it back on its own. A
+		// no-op when the slot is not lent.
+		if concurrency.RunSlotFrom(ctx).Reclaim(ctx) != nil {
+			return loopExit{ctl: loopEnd}
+		}
+		return loopExit{ctl: loopNext}
+	}
+	// v0.12.9 same-provider retry: when the operator opted
+	// into MaxSameProviderRetries > 0, retryable errors
+	// (429, 5xx, network) sleep with exponential backoff and
+	// re-attempt the SAME (provider, model) before
+	// MarkRateLimited cools the matrix entry and
+	// tryProviderFallback escalates. Captures the common
+	// case of a brief provider-side burst: real-world 429s
+	// often clear within 1-3 seconds, well under the 30s
+	// MarkRateLimited cooldown.
+	if ctx.Err() == nil &&
+		s.sameProviderRetries < s.opts.MaxSameProviderRetries &&
+		providers.ClassifyError(err) == providers.ErrorClassRetryable {
+		s.sameProviderRetries++
+		backoff := sameProviderRetryBackoff(s.sameProviderRetries)
+		s.emit(providers.Event{
+			Type: providers.EventRetry,
+			Retry: &providers.RetryInfo{
+				Provider: s.opts.Provider.ID(),
+				Attempt:  s.sameProviderRetries,
+				WaitMs:   backoff.Milliseconds(),
+				Reason:   providers.RetryReasonSchedule,
+			},
+		})
+		select {
+		case <-ctx.Done():
+			lcotel.SetSpanError(iterSpan, ctx.Err())
+			iterSpan.End()
+			s.turnCancelFn(nil) // RFC BH: release this turn's cancel ctx before terminating (no leak)
+			return exitReturn(RunResult{Iterations: iter}, ctx.Err())
+		case <-time.After(backoff):
+		}
+		lcotel.SetSpanErrorMessage(iterSpan, "provider call failed; same-provider retry scheduled")
+		iterSpan.End()
+		return loopExit{ctl: loopNext}
+	}
+	// Resolver feedback: a non-context error from Call() is
+	// the driver giving up after its own retries. Route the
+	// feedback by error class:
+	//
+	//   429 (rate limit) → MarkRateLimited (self-recovering
+	//     30s cooldown; transient, not "model broken")
+	//   5xx / model 404 / network → MarkStalled (15-min
+	//     probe-gated recovery; "model is broken for a
+	//     while, stop wasting calls")
+	//
+	// The split matters: pre-v0.12.7 MarkStalled treated 429
+	// the same as 5xx, which under the x1000 load test
+	// (2026-05-26) cascaded ~120 rate-limited runs into 800+
+	// "no provider available" 503s for the rest of the probe
+	// interval. PR #235 patched this with a skip-on-429
+	// guard; this site is the structural fix — positive call
+	// to the right method.
+	//
+	// ctx errors are user-side cancellation, not provider
+	// faults — don't pollute the matrix on either path. RFC AX: an
+	// operator-key refusal is a PER-RUN policy decision (this restricted
+	// run may not use the operator key), not a model outage — marking the
+	// (provider, model) stalled would poison the shared availability
+	// matrix and wrongly exclude the model from OTHER (non-restricted)
+	// runs for the probe interval. Skip matrix feedback for it.
+	//
+	// A cancelled TURN (turnCtx done, run ctx alive) is not a provider
+	// fault either. Call can now sit in a provider's call lane for as long
+	// as the queue is, so an operator cancelling the turn of a queued run
+	// is an ordinary event — and must not mark a healthy model stalled.
+	if ctx.Err() == nil && turnCtx.Err() == nil && !errors.Is(err, providers.ErrOperatorKeyForbidden) {
+		if providers.IsRateLimit(err) {
+			if s.opts.MarkRateLimited != nil {
+				s.opts.MarkRateLimited(s.opts.Provider.ID(), s.opts.Model, 0)
+			}
+		} else if s.opts.MarkStalled != nil {
+			s.opts.MarkStalled(s.opts.Provider.ID(), s.opts.Model, err.Error())
+		}
+	}
+	// v0.8.2: when the run carries a fallback policy and the
+	// error class is retryable, swap to the next provider
+	// and re-run this iteration. tryProviderFallback emits
+	// EventProviderFallback (+ EventCacheInvalidated when
+	// switching away from anthropic) and mutates opts in
+	// place. Outcome==Switched → continue the outer loop
+	// without surfacing the error. Other outcomes fall
+	// through to the original error path. The fallback path
+	// switches (provider, model), so the per-pair retry
+	// budget resets — the new pair starts fresh.
+	if tryProviderFallback(ctx, s.opts, &s.fallbackAttempts, err, s.emit, s.messages, s.firstTurnSucceeded) == fallbackOutcomeSwitched {
+		s.sameProviderRetries = 0
+		lcotel.SetSpanErrorMessage(iterSpan, "provider call failed; fallback engaged")
+		iterSpan.End()
+		return loopExit{ctl: loopNext}
+	}
+	s.emit(providers.Event{Type: providers.EventError, Error: err.Error()})
+	if tools.RunIsNoTrace(ctx) {
+		// A provider's error can quote the prompt; a no-trace run's
+		// span is exported without it.
+		lcotel.SetSpanErrorMessage(iterSpan, "provider call failed")
+	} else {
+		lcotel.SetSpanError(iterSpan, err)
+	}
+	iterSpan.End()
+	s.turnCancelFn(nil) // RFC BH: release this turn's cancel ctx before terminating (no leak)
+	return exitReturn(RunResult{Iterations: iter}, err)
+}
+
+// turnOutput is what one model call streamed back: the assistant turn's
+// parts, how it stopped, and its usage.
+type turnOutput struct {
+	assistantBlocks        []providers.ContentBlock
+	pendingTools           []providers.ToolUse
+	iterText               string
+	iterStop               string
+	iterUsage              *providers.Usage
+	iterReasoning          string
+	iterReasoningSignature string
+	// turnCancelledMidGen: the operator cancelled this turn while the model
+	// was generating, read once, right after the stream ended.
+	turnCancelledMidGen bool
+	callTimer           *providers.CallTimer
+}
+
+// readTurn consumes the model's response stream for one turn. A stream error
+// leaves the iteration — a same-provider retry or a fallback starts the next
+// one, anything else ends the run — and so does a stream that closed without
+// finishing.
+func (s *runState) readTurn(ctx, turnCtx context.Context, iterSpan trace.Span, iter int, ch <-chan providers.Event, callTimer *providers.CallTimer) (turnOutput, loopExit) {
+	// Collect this iteration: assistant text, any tool_use blocks, usage.
+	var assistantBlocks []providers.ContentBlock
+	var pendingTools []providers.ToolUse
+	var iterText string
+	var iterStop string
+	var iterUsage *providers.Usage
+	// iterReasoning holds the accumulated reasoning_content from
+	// thinking-mode models (DeepSeek V4 Pro / deepseek-reasoner).
+	// Stamped onto the assistant Message we append below so the
+	// next iteration's request body echoes it back to the API
+	// per DeepSeek's roundtrip contract. Empty for non-thinking
+	// providers.
+	var iterReasoning string
+	// iterReasoningSignature holds the Anthropic extended-thinking block's
+	// signature (paired with iterReasoning); stamped onto the assistant
+	// Message so the Anthropic driver replays the thinking block, seal
+	// included, on the tool-use continuation (else Anthropic 400s). Empty
+	// for non-Anthropic / non-thinking turns.
+	var iterReasoningSignature string
+	// sawDone: the stream ended with the driver's EventDone. Every error
+	// branch below leaves the iteration, so reaching the end of the range
+	// without it means the stream just closed — see the check after it.
+	var sawDone bool
+
+	for ev := range ch {
+		callTimer.Observe(ev)
+		switch ev.Type {
+		case providers.EventText:
+			iterText += ev.Text
+			s.emit(ev)
+		case providers.EventThinking:
+			// Forward the live reasoning trace to the consumer (SSE / gRPC /
+			// adapters) so a UI can render "thinking…" as the model streams
+			// it. Deliberately NOT accumulated into the assistant message
+			// content and NOT echoed into the next request — the full trace
+			// is carried separately on EventDone.Reasoning (see
+			// providers.EventThinking). Before this case existed the switch
+			// had no branch for EventThinking (and no default), so every
+			// provider's streamed thinking was silently dropped here and
+			// never reached any client — the driver emitted it, the loop ate
+			// it. Regression: TestRun_ForwardsEventThinking.
+			s.emit(ev)
+		case providers.EventToolCall:
+			// Some providers (Ollama) don't issue tool_call IDs. Anthropic
+			// and OpenAI both 400 if we replay an empty-ID tool_use in the
+			// next turn's history, so we synthesise one here. The synth ID
+			// is deterministic per (run, iter, slot) so a replay produces
+			// the same value.
+			tu := *ev.ToolUse
+			if tu.ID == "" {
+				tu.ID = fmt.Sprintf("lc-%d-%d", iter, len(pendingTools))
+			}
+			pendingTools = append(pendingTools, tu)
+			assistantBlocks = append(assistantBlocks, providers.ContentBlock{
+				Type:      "tool_use",
+				ToolUseID: tu.ID,
+				ToolName:  tu.Name,
+				ToolInput: tu.Input,
+			})
+			s.emit(providers.Event{Type: providers.EventToolCall, ToolUse: &tu})
+		case providers.EventDone:
+			sawDone = true
+			iterStop = ev.StopReason
+			// A copy: the loop stamps provider, window and timing onto
+			// it below, and the provider's value is not ours to write —
+			// a driver or fixture may hand the same *Usage to several
+			// concurrent runs, which made those stamps a data race.
+			iterUsage = nil
+			if ev.Usage != nil {
+				u := *ev.Usage
+				iterUsage = &u
+			}
+			iterReasoning = ev.Reasoning
+			iterReasoningSignature = ev.ReasoningSignature
+		case providers.EventError:
+			// RFC BH: an operator turn-cancel aborted this turn's stream (turnCtx
+			// cancelled, RUN ctx still alive) — not a provider fault. Skip the
+			// retry / fallback / matrix-feedback machinery below (which would
+			// MarkStalled the model + could swap providers), drain the channel so
+			// the sender goroutine doesn't leak, and let the post-stream
+			// turn-cancel handler park the run.
+			if ctx.Err() == nil && errors.Is(context.Cause(turnCtx), ErrTurnCancelled) {
+				for range ch {
+				}
+				break
+			}
+			// v0.8.2 classification: build the RAW error string so
+			// the status-prefix regex sees the bare "<name>
+			// <code>:" shape. The streamErr wrap below would
+			// obscure that; reserved for the FINAL return value.
+			rawErr := errors.New(ev.Error)
+
+			// v0.12.9 same-provider retry on in-stream retryable
+			// errors. Drain the rest of the channel (drivers may
+			// emit a trailing EventDone after EventError; we must
+			// consume it or the goroutine sending events leaks) and
+			// re-attempt the same (provider, model). Same budget
+			// as the Call() error path.
+			if ctx.Err() == nil &&
+				s.sameProviderRetries < s.opts.MaxSameProviderRetries &&
+				providers.ClassifyError(rawErr) == providers.ErrorClassRetryable {
+				for range ch {
+				}
+				s.sameProviderRetries++
+				backoff := sameProviderRetryBackoff(s.sameProviderRetries)
+				s.emit(providers.Event{
+					Type: providers.EventRetry,
+					Retry: &providers.RetryInfo{
+						Provider: s.opts.Provider.ID(),
+						Attempt:  s.sameProviderRetries,
+						WaitMs:   backoff.Milliseconds(),
+						Reason:   providers.RetryReasonSchedule,
+					},
+				})
+				select {
+				case <-ctx.Done():
+					lcotel.SetSpanError(iterSpan, ctx.Err())
+					iterSpan.End()
+					s.turnCancelFn(nil) // RFC BH: release this turn's cancel ctx before terminating (no leak)
+					return turnOutput{}, exitReturn(RunResult{Iterations: iter}, ctx.Err())
+				case <-time.After(backoff):
+				}
+				lcotel.SetSpanErrorMessage(iterSpan, "in-stream provider error; same-provider retry scheduled")
+				iterSpan.End()
+				return turnOutput{}, loopExit{ctl: loopNext}
+			}
+
+			// Resolver feedback for in-stream errors: same
+			// 429-vs-5xx routing as the Call() error path
+			// above. Driver opened the SSE/NDJSON stream
+			// successfully but then surfaced a provider-side
+			// error mid-stream — route to MarkRateLimited or
+			// MarkStalled based on whether it's a 429.
+			streamErr := errors.New(ev.Error)
+			if ctx.Err() == nil {
+				if providers.IsRateLimit(streamErr) {
+					if s.opts.MarkRateLimited != nil {
+						s.opts.MarkRateLimited(s.opts.Provider.ID(), s.opts.Model, 0)
+					}
+				} else if s.opts.MarkStalled != nil {
+					s.opts.MarkStalled(s.opts.Provider.ID(), s.opts.Model, ev.Error)
+				}
+			}
+			if tryProviderFallback(ctx, s.opts, &s.fallbackAttempts, rawErr, s.emit, s.messages, s.firstTurnSucceeded) == fallbackOutcomeSwitched {
+				for range ch {
+				}
+				s.sameProviderRetries = 0
+				lcotel.SetSpanErrorMessage(iterSpan, "in-stream provider error; fallback engaged")
+				iterSpan.End()
+				return turnOutput{}, loopExit{ctl: loopNext}
+			}
+			s.emit(ev)
+			// Drain any trailing events (a driver may emit an EventDone
+			// after EventError) so the sending goroutine doesn't block on
+			// the channel until ctx-cancel / the idle timeout — mirrors the
+			// same-provider-retry + fallback drains above. Without it, the
+			// terminal error path was the one branch that abandoned ch.
+			for range ch {
+			}
+			if tools.RunIsNoTrace(ctx) {
+				lcotel.SetSpanErrorMessage(iterSpan, "in-stream provider error")
+			} else {
+				lcotel.SetSpanErrorMessage(iterSpan, ev.Error)
+			}
+			iterSpan.End()
+			s.turnCancelFn(nil) // RFC BH: release this turn's cancel ctx before terminating (no leak)
+			return turnOutput{}, exitReturn(RunResult{Iterations: iter}, fmt.Errorf("provider error: %s", ev.Error))
+		}
+	}
+
+	// A stream that closed with neither EventDone nor EventError is a call
+	// that never finished: the server hung up, or the driver's own terminal
+	// error was lost when its stream context was cancelled (an idle timeout
+	// races the error send against ctx.Done). Read as a turn it is an empty
+	// end_turn, and the run used to COMPLETE with no text, no stop reason and
+	// zero usage — invisible as a failure to every caller. A cancelled turn
+	// or run closes the stream the same way; that is not a provider fault,
+	// and turnCtx (a child of the run ctx) tells the two apart.
+	if !sawDone && turnCtx.Err() == nil {
+		msg := fmt.Sprintf("%s: the response stream ended before the model finished its turn", s.opts.Provider.ID())
+		s.emit(providers.Event{Type: providers.EventError, Error: msg})
+		lcotel.SetSpanErrorMessage(iterSpan, msg)
+		iterSpan.End()
+		s.turnCancelFn(nil) // RFC BH: release this turn's cancel ctx before terminating (no leak)
+		return turnOutput{}, exitReturn(RunResult{Iterations: iter}, fmt.Errorf("provider error: %s", msg))
+	}
+
+	// RFC BH: did the operator cancel THIS turn while the model was generating
+	// (run ctx still alive)? Covers both a driver that surfaced EventError on
+	// the turnCtx-cancel (short-circuited above) and one that just closed the
+	// stream. The run-level cancel is checked FIRST (ctx.Err()==nil): a
+	// whole-run cancel terminates as before, never mistaken for a turn-cancel.
+	turnCancelledMidGen := s.opts.ArmTurnCancel != nil && ctx.Err() == nil &&
+		errors.Is(context.Cause(turnCtx), ErrTurnCancelled)
+
+	return turnOutput{
+		assistantBlocks:        assistantBlocks,
+		pendingTools:           pendingTools,
+		iterText:               iterText,
+		iterStop:               iterStop,
+		iterUsage:              iterUsage,
+		iterReasoning:          iterReasoning,
+		iterReasoningSignature: iterReasoningSignature,
+		turnCancelledMidGen:    turnCancelledMidGen,
+		callTimer:              callTimer,
+	}, loopExit{}
 }
 
 // publishAnswerShape publishes, not stamps: see tools.AnswerShape.
