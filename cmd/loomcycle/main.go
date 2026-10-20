@@ -1172,13 +1172,21 @@ func main() {
 	if cfg.Env.BashEnabled {
 		log.Printf("WARNING: Bash tool is enabled (LOOMCYCLE_BASH_ENABLED=1). This is NOT a true sandbox — run loomcycle inside a container or VM if you expose this to untrusted prompts.")
 		log.Printf("note: Bash requires a rw volume binding — it runs in the bound volume's root and refuses an agent with no rw volume")
+		if len(cfg.Env.BashAllowedCreds) > 0 {
+			log.Printf("WARNING: Bash injects these credentials into every command (LOOMCYCLE_BASH_ALLOWED_CREDS=%s) — the model can read each one (a plain `env` prints it). Give Bash only credentials you would hand the model.", strings.Join(cfg.Env.BashAllowedCreds, ","))
+		}
 	} else {
 		log.Printf("note: Bash tool is registered but disabled — set LOOMCYCLE_BASH_ENABLED=1 to enable (NOT a true sandbox; see docs)")
 	}
 	if cfg.Env.BashboxEnabled {
-		log.Printf("note: Bashbox tool is enabled (LOOMCYCLE_BASHBOX_ENABLED=1) — a TRUE in-process sandbox (gbash): no OS process, paths rooted at the volume, no network; read-only volumes are honored. gbash is alpha; gate per agent via tools.")
+		log.Printf("note: Bashbox tool is enabled (LOOMCYCLE_BASHBOX_ENABLED=1) — a TRUE in-process sandbox (gbash): no OS process, paths rooted at the volume, no network; read-only volumes are honored. gbash is alpha: gate per agent via tools, and for mutually hostile tenants on one process also run loomcycle in a container.")
 		if len(cfg.Env.BashboxFallbackCommands) > 0 {
 			log.Printf("WARNING: Bashbox host-command fallback is enabled (LOOMCYCLE_BASHBOX_FALLBACK_COMMANDS=%s). These commands ESCAPE the sandbox and run on the real host shell (with host filesystem + network) — only allowlist commands you trust, and only enable for trusted prompts. Fallback requires a read-write volume.", strings.Join(cfg.Env.BashboxFallbackCommands, ","))
+			// RFC ES #9: the variables reach only the host child, but that
+			// child does what the model tells it, including printing them.
+			if len(cfg.Env.BashboxFallbackAllowedEnv) > 0 || len(cfg.Env.BashboxFallbackAllowedCreds) > 0 {
+				log.Printf("WARNING: the model can read every variable and credential given to Bashbox host commands (LOOMCYCLE_BASHBOX_FALLBACK_ALLOWED_ENV=%s, LOOMCYCLE_BASHBOX_FALLBACK_ALLOWED_CREDS=%s): an allowlisted command can be told to print its environment (e.g. git -c alias.x='!env' x). Bind each credential to the one command that needs it (cmd:NAME) and pass only credentials you would hand the model.", strings.Join(cfg.Env.BashboxFallbackAllowedEnv, ","), strings.Join(cfg.Env.BashboxFallbackAllowedCreds, ","))
+			}
 		}
 	} else {
 		log.Printf("note: Bashbox tool is registered but disabled — set LOOMCYCLE_BASHBOX_ENABLED=1 to enable (in-process sandbox; see docs)")

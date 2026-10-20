@@ -427,13 +427,13 @@ questions:
               default: ""
           - variable: LOOMCYCLE_BASHBOX_FALLBACK_ALLOWED_ENV
             label: LOOMCYCLE_BASHBOX_FALLBACK_ALLOWED_ENV
-            description: 'Env vars injected ONLY into fallback (host) commands — never the sandbox (PATH always passes). Reference NAMES here; the secret VALUES live in .env.local. Comma-separated. (example: GH_TOKEN,HOME,SSH_AUTH_SOCK)'
+            description: 'Env vars injected ONLY into fallback (host) commands — never the sandbox (PATH always passes). The model CAN read them: an allowlisted command can print its environment (git -c alias.x=''!env'' x), so pass only values you would hand the model. Reference NAMES here; the secret VALUES live in .env.local. Comma-separated. (example: GH_TOKEN,HOME,SSH_AUTH_SOCK)'
             schema:
               type: string
               default: ""
           - variable: LOOMCYCLE_BASHBOX_FALLBACK_ALLOWED_CREDS
             label: LOOMCYCLE_BASHBOX_FALLBACK_ALLOWED_CREDS
-            description: 'PER-TENANT credentials (RFC AR CredentialDef names) injected into fallback commands — resolved for each run''s own (tenant, user, agent) identity, so a tenant''s own GITHUB_TOKEN reaches git/gh instead of one shared host token. A resolved cred overrides a same-named ALLOWED_ENV var. Requires LOOMCYCLE_SECRET_KEY (the credential KEK). Comma-separated. (example: GITHUB_TOKEN)'
+            description: 'PER-TENANT credentials (RFC AR CredentialDef names) injected into fallback commands — resolved for each run''s own (tenant, user, agent) identity, so a tenant''s own GITHUB_TOKEN reaches git/gh instead of one shared host token. A resolved cred overrides a same-named ALLOWED_ENV var. `cmd:NAME` hands a credential to that one allowlisted command only (git:GITHUB_TOKEN,gh:GH_TOKEN); a bare NAME reac…'
             schema:
               type: string
               default: ""
