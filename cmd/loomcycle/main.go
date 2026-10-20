@@ -834,6 +834,7 @@ func main() {
 		FallbackCommands:     cfg.Env.BashboxFallbackCommands,
 		FallbackAllowedEnv:   cfg.Env.BashboxFallbackAllowedEnv,
 		FallbackAllowedCreds: cfg.Env.BashboxFallbackAllowedCreds,
+		OverlayMaxBytes:      cfg.Env.BashboxOverlayMaxBytes,
 	}
 
 	// Bash is likewise a named var so its CredResolve can be late-bound after

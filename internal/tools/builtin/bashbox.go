@@ -12,6 +12,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/denn-gubsky/loomcycle/internal/config"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
 	"github.com/ewhauser/gbash"
 	"github.com/ewhauser/gbash/commands"
@@ -69,6 +70,12 @@ type Bashbox struct {
 	MaxOutputBytes int64
 	// Timeout caps wall-clock per call. Default 30s. Hard ceiling 5min.
 	Timeout time.Duration
+	// OverlayMaxBytes caps what one call may write into in-memory files: a
+	// read-only volume's write overlay and the empty directory shadowing the
+	// dynamic-volume root. Both live in loomcycle's own heap. Zero means
+	// config.BashboxOverlayMaxBytesDefault (64 MiB). A write past it fails with "no space
+	// left on device". LOOMCYCLE_BASHBOX_OVERLAY_MAX_BYTES.
+	OverlayMaxBytes int64
 
 	// FallbackCommands names host commands (e.g. git, gh) that gbash does NOT
 	// implement and that the operator allows to ESCAPE the sandbox to the real
@@ -322,9 +329,16 @@ func (b *Bashbox) Execute(ctx context.Context, input json.RawMessage) (tools.Res
 	//   ro → HostDirectoryFileSystem: host tree read-only + in-RAM write
 	//        overlay; writes are visible in-sandbox but DISCARDED at end.
 	//   rw → ReadWriteDirectoryFileSystem: writes persist to the host volume.
+	// One budget per call, shared by every in-memory layer below.
+	overlayMax := b.OverlayMaxBytes
+	if overlayMax <= 0 {
+		overlayMax = config.BashboxOverlayMaxBytesDefault
+	}
+	budget := &writeBudget{max: overlayMax}
 	var fsCfg gbash.FileSystemConfig
 	if readOnly {
 		fsCfg = gbash.HostDirectoryFileSystem(rootResolved, gbash.HostDirectoryOptions{})
+		fsCfg.Factory = cappedFactory{inner: fsCfg.Factory, budget: budget}
 	} else {
 		fsCfg = gbash.ReadWriteDirectoryFileSystem(rootResolved, gbash.ReadWriteDirectoryOptions{})
 	}
@@ -334,7 +348,7 @@ func (b *Bashbox) Execute(ctx context.Context, input json.RawMessage) (tools.Res
 			Base: fsCfg.Factory,
 			Mounts: []gbfs.MountConfig{{
 				MountPoint: path.Join(fsCfg.WorkingDir, shadow),
-				Factory:    gbash.InMemoryFileSystem().Factory,
+				Factory:    cappedFactory{inner: gbash.InMemoryFileSystem().Factory, budget: budget},
 			}},
 			WorkingDir: fsCfg.WorkingDir,
 		})
@@ -367,6 +381,14 @@ func (b *Bashbox) Execute(ctx context.Context, input json.RawMessage) (tools.Res
 	}
 
 	out := combineBashboxOutput(res, maxOut)
+	// Some gbash commands drop the error text (head says only "error
+	// writing", cp and cat print nothing), so say once, plainly, that data
+	// was lost to the limit, and fail the call even when the script's last
+	// command succeeded.
+	limitHit := budget.used.Load() >= budget.max
+	if limitHit {
+		out += fmt.Sprintf("\n[write limit reached: one call may write %d bytes into in-memory files, which is where writes to a read-only volume go; writes past it failed with \"no space left on device\"]", budget.max)
+	}
 	if res.ExitCode != 0 {
 		// Non-zero exit is often legitimate (grep no-match → 1; a timeout is
 		// exit 124, with gbash's "execution timed out" line already in `out`).
@@ -374,7 +396,7 @@ func (b *Bashbox) Execute(ctx context.Context, input json.RawMessage) (tools.Res
 		out += fmt.Sprintf("\n[exit: %d]", res.ExitCode)
 		return tools.Result{Text: out, IsError: true}, nil
 	}
-	return tools.Result{Text: out}, nil
+	return tools.Result{Text: out, IsError: limitHit}, nil
 }
 
 // combineBashboxOutput renders stdout followed by stderr (gbash keeps them

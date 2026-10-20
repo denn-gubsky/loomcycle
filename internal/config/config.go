@@ -4178,6 +4178,12 @@ type Env struct {
 	// LOOMCYCLE_BASHBOX_FALLBACK_ALLOWED_CREDS (comma-separated). Requires a KEK
 	// (LOOMCYCLE_SECRET_KEY) for the engine to resolve.
 	BashboxFallbackAllowedCreds []string
+	// BashboxOverlayMaxBytes caps what one Bashbox call may write into
+	// in-memory files — a read-only volume's write overlay and the shadow
+	// over a dynamic-volume root — which live in loomcycle's own heap. A
+	// write past it fails with "no space left on device". Sourced from
+	// LOOMCYCLE_BASHBOX_OVERLAY_MAX_BYTES; default BashboxOverlayMaxBytesDefault.
+	BashboxOverlayMaxBytes int64
 	// SkillsRoot points at a directory holding subdirectories of the
 	// shape `<name>/SKILL.md`. When unset, agents may not list skills
 	// (resolveSkills errors loudly to surface the misconfiguration —
@@ -5836,6 +5842,18 @@ func LoadLayers(layers ...Layer) (*Config, error) {
 			cfg.Env.MaxRequestBytes = n
 		}
 	}
+	// Bashbox in-memory write cap (RFC ES follow-up): a positive override
+	// tunes it; a non-positive or malformed value keeps the default, since
+	// the cap is what keeps one call from exhausting the shared heap. gbash
+	// writes a few KiB of command stubs into the overlay as each call starts,
+	// so a value under 1 MiB is raised to 1 MiB rather than failing every
+	// call on a read-only volume.
+	cfg.Env.BashboxOverlayMaxBytes = BashboxOverlayMaxBytesDefault
+	if v := os.Getenv("LOOMCYCLE_BASHBOX_OVERLAY_MAX_BYTES"); v != "" {
+		if n, err := strconv.ParseInt(v, 10, 64); err == nil && n > 0 {
+			cfg.Env.BashboxOverlayMaxBytes = max(n, 1<<20)
+		}
+	}
 	// Crypto tool limits (RFC EP): a positive override tunes each; a
 	// non-positive or malformed value keeps the default.
 	cfg.Env.CryptoMaxBytes = 1 << 20
@@ -7183,6 +7201,12 @@ func addSkillToolDefaults(cfg *Config) {
 		cfg.Agents[name] = def
 	}
 }
+
+// BashboxOverlayMaxBytesDefault is the per-call cap on Bashbox's in-memory
+// writes when LOOMCYCLE_BASHBOX_OVERLAY_MAX_BYTES is unset. 64 MiB holds any
+// scratch file a script reasonably makes on a read-only volume; gbash's
+// in-memory files cost about 2-2.6x the bytes written in heap.
+const BashboxOverlayMaxBytesDefault = 64 << 20
 
 // splitCSV trims whitespace and drops empties from a comma-separated env value.
 func splitCSV(s string) []string {
