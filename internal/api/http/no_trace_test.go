@@ -243,10 +243,13 @@ func TestNoTrace_WhatANoTraceRunCannotDo(t *testing.T) {
 	before := runsBefore()
 
 	for what, body := range map[string]string{
-		"interactive":                      `{"agent":"parent","interactive":true,` + seg + `}`,
-		"review":                           `{"agent":"parent","review":true,` + seg + `}`,
-		"into an existing session":         `{"agent":"parent","session_id":"` + plain.SessionID + `",` + seg + `}`,
-		"an ordinary run into its session": `{"agent":"child","session_id":"` + quiet.SessionID + `",` + seg + `}`,
+		"interactive": `{"agent":"parent","interactive":true,` + seg + `}`,
+		"review":      `{"agent":"parent","review":true,` + seg + `}`,
+		// session_id continues the session with its own agent, so each names
+		// the session's agent: a no-trace run of it, and a continuation of the
+		// no-trace session.
+		"into an existing session":         `{"agent":"child","retention":"none","session_id":"` + plain.SessionID + `",` + seg + `}`,
+		"an ordinary run into its session": `{"agent":"parent","session_id":"` + quiet.SessionID + `",` + seg + `}`,
 	} {
 		code, resp := postStrictRun(t, srv, body)
 		if code != 400 && code != 409 || !strings.Contains(resp, "retention_none_unsupported") {
