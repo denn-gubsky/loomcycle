@@ -1237,7 +1237,8 @@ Config knobs (full reference: `loomcycle context help operator-tokens` or the `C
 
 | Env var | Purpose |
 |---|---|
-| `LOOMCYCLE_OPERATOR_TOKEN_PEPPER` | Mixed into the token hash; a stolen DB dump without it yields no usable lookup. Set it for multi-tenant deployments. |
+| `LOOMCYCLE_OPERATOR_TOKEN_PEPPER` | Mixed into the token hash, so someone who can write the database cannot insert a row for a token of their choosing. Optional: unset, a pepper is derived from `LOOMCYCLE_SECRET_KEY` (HKDF-SHA256). With neither, tokens are hashed with no pepper and the server warns at boot when auth is on. Changing an explicit pepper invalidates every token. See [Token pepper](#token-pepper). |
+| `LOOMCYCLE_TOKEN_LEGACY_HASH` | `off` stops tokens minted with no pepper (before the derived pepper existed) from logging in. Default: they still log in and are rehashed onto the current pepper at that login. Tokens under the pepper `LOOMCYCLE_SECRET_KEY_PREVIOUS` derives keep logging in whenever that key is set, whatever this says, so a key rotation never logs everyone out. Set `off` once the boot log reports `0 legacy tokens`. |
 | `LOOMCYCLE_AUTH_CACHE_TTL_SECONDS` | Per-replica resolution-cache TTL (default 30; `0` = direct lookup, immediate revocation). Worst-case revocation lag if a cross-replica invalidation is dropped. |
 | `LOOMCYCLE_OPERATOR_TOKEN_ROTATION_GRACE_SECONDS` | Default rotation grace window (default 24h). |
 | `LOOMCYCLE_USER_TOKEN_MAX_TTL_SECONDS` | The longest lifetime a per-user token may be minted with. Unset = no cap. When set, a mint asking for more is refused, and a mint asking for no lifetime gets this one. See [Token lifetime](#token-lifetime). |
@@ -1265,6 +1266,20 @@ Routes enforce a scope from a closed catalog; an under-scoped token gets `403` w
 `substrate:tenant` satisfies the within-tenant scopes (`runs:*`, `channel:*`, and the def/hook gate) but never `substrate:admin` — so a tenant operator passes the def + hook routes yet is refused minting/runtime-admin. Mint one with `--scopes substrate:tenant`. Confinement is automatic: a non-admin principal's def writes are stamped with its authoritative tenant, cross-tenant reads return an opaque `404`, and a tenant-registered hook fires only on that tenant's runs.
 
 On the **loomcycle-as-MCP-server transport** (`/v1/_mcp`, RFC AG) a `substrate:tenant` bearer may now OPEN a session — but the route scope decides only that. Inside the session a per-tool gate still withholds the admin-only meta-tools (token minting, runtime admin, snapshot capture/restore, cross-scope channel listing): they are hidden from the tenant's `tools/list` and refused on `tools/call`. The tools a tenant *can* call (def authoring, run lifecycle, memory/channel/path/document, hooks) are tenant-confined exactly like their HTTP twins. `substrate:admin` sees + may call the full meta-tool set. The thin client (`loomcycle mcp --upstream`) forwards the caller's bearer verbatim, so a tenant bearer there drives a tenant-confined session — see `docs/MCP_SERVER.md`.
+
+### Token pepper
+
+A token row stores `SHA-256(pepper ‖ token)`, never the token. The pepper is what stops someone with write access to the database — but not to the server's environment — from inserting a row for a token they chose. The effective pepper is, in order:
+
+1. `LOOMCYCLE_OPERATOR_TOKEN_PEPPER`, if set — hashes exactly as before;
+2. else one derived from `LOOMCYCLE_SECRET_KEY` (`HKDF-SHA256(key, info="loomcycle/operator-token-pepper/v1")`). Its hashes are stored as `p1:<pepper fingerprint>:<HMAC-SHA256(pepper, token)>`, so a row still on an older hash can be told apart;
+3. else none, with a boot warning when auth is configured. `loomcycle doctor` reports which one applies.
+
+**Upgrading needs no token reissue.** When a deployment that had no pepper sets `LOOMCYCLE_SECRET_KEY`, every existing token still logs in: on a miss the lookup also tries the token's unpeppered hash, and on a hit rewrites the row to the derived hash. The same covers a key rotation — with the old key in `LOOMCYCLE_SECRET_KEY_PREVIOUS`, a token hashed under the pepper it derived logs in and is moved onto the new one. Only rows that were already on such a legacy hash when the server started qualify, so a row inserted later with an unpeppered hash is refused (and logged). Every boot logs how many tokens are still on a legacy hash, split into unpeppered and previous-key, with their `def_id`s — a `def_id` you never minted is a row someone wrote into the database. Once it reports `0 legacy tokens`, set `LOOMCYCLE_TOKEN_LEGACY_HASH=off`. Until then, someone who can edit one of those rows before its owner next logs in — or insert or edit a row, then wait for a restart or a new replica — can still swap in an unpeppered hash; `off` ends that. (`off` does not refuse the previous-key form: forging one needs the previous key.)
+
+**Upgrade every replica together, and plan a rollback as a re-mint.** A release without the derived pepper cannot read the `p1:` form. In a mixed-version cluster, a token rehashed by a new replica at its first login gets `401` from every old replica from then on; upgrade all replicas at once. Rolling back to such a release after the upgrade logs out every token minted or rehashed since; plan to re-mint them.
+
+**What still invalidates tokens:** changing or removing an explicit pepper; setting an explicit pepper on a deployment that used a derived one; removing `LOOMCYCLE_SECRET_KEY` when the pepper is derived from it; and dropping `LOOMCYCLE_SECRET_KEY_PREVIOUS` before every token has logged in once under the new key.
 
 ### Deleting a run tree
 
@@ -1811,6 +1826,12 @@ The embedded Web UI (`/ui`) has a dedicated **Volumes** tab (admin-gated, alongs
 - **Ephemeral.** A read-only table of the tenant's live ephemeral volumes (auto-purged at run completion), polled every ~10s.
 - **Purge is type-to-confirm** — the operator must type the volume's name to enable the confirm button, distinct from the one-click Delete. The server-side `RemoveAll` fence (§6 of the RFC: re-derive, EvalSymlinks, strictly-inside, expected-prefix) remains the real guard.
 - **Backed by two read-only endpoints** — `GET /v1/_volumes` (merged static + tenant dynamic) and `GET /v1/_volumes/ephemeral` (the tenant's live ephemeral volumes). Both are tenant-scoped from the authoritative principal (gated at `substrate:tenant`; admin satisfies). CRUD reuses `POST /v1/_volumedef`.
+
+### 9d.4 Bashbox memory: `LOOMCYCLE_BASHBOX_OVERLAY_MAX_BYTES`
+
+`Bashbox` honors a read-only volume by sending the command's writes to an in-memory overlay that is thrown away when the call ends; the empty directory that hides a `dynamic_root` inside a read-write volume is in memory too. That memory is loomcycle's own heap, shared with every run on the replica, so one call may write at most **`LOOMCYCLE_BASHBOX_OVERLAY_MAX_BYTES`** bytes **in total** to in-memory files — deleting does not give it back (default **64 MiB**; a value under 1 MiB is raised to 1 MiB, and a non-positive or malformed one keeps the default). A write past the limit fails with `no space left on device`, the result says the limit was reached, and the call fails. Every byte written counts, every new file, directory and link counts about 512 bytes plus its path (what gbash spends on each entry beyond its name), and so does a file of the read-only volume that `chmod`, `chown`, `touch`, `mv`, `ln` or an append copies into memory: its bytes are charged as they are read in, so a copy bigger than what is left of the limit fails instead of being kept, and two names for one file are two copies. Reading the volume without changing it streams from disk and is not counted. Bytes written to a named pipe count too, because gbash buffers a pipe in memory without limit, so a pipeline that streams more than the limit through a FIFO fails. Writes to a read-write volume go to disk and are not counted.
+
+What it does not bound: several calls at once each get their own limit (concurrent calls × the cap, plus gbash's in-memory files costing about 2–2.6× the bytes written), and the read side has its own gbash limits (8 MiB per file read, 32 MiB per shell variable, 256 MiB across variables, 1 MiB per output stream). Renaming a directory of the read-only volume copies the metadata of every entry under it into memory uncounted; that is bounded by the size of the operator's tree. For mutually hostile tenants on one process, also set a memory limit on loomcycle's container.
 
 ---
 

@@ -54,6 +54,25 @@ var updateGoldens = flag.Bool("update", false, "rewrite the golden SSE transcrip
 //	anything else         → "hello", end_turn
 type goldenProvider struct {
 	gate chan struct{}
+	// cancelDelay holds a "HOLD" call open this long after its ctx ends: a
+	// run whose finish lags its cancel.
+	cancelDelay time.Duration
+
+	mu    sync.Mutex
+	calls []string // each call's messages, as JSON
+}
+
+// sawCall returns the messages of the first call whose newest message
+// contains marker.
+func (p *goldenProvider) sawCall(marker string) (string, bool) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	for _, c := range p.calls {
+		if strings.Contains(c, marker) {
+			return c, true
+		}
+	}
+	return "", false
 }
 
 func (p *goldenProvider) ID() string                    { return "stub" }
@@ -71,6 +90,10 @@ func (p *goldenProvider) Call(ctx context.Context, req providers.Request) (<-cha
 		b, _ := json.Marshal(req.Messages[n-1])
 		last = string(b)
 	}
+	all, _ := json.Marshal(req.Messages)
+	p.mu.Lock()
+	p.calls = append(p.calls, string(all))
+	p.mu.Unlock()
 	done := func(stop string) providers.Event {
 		return providers.Event{Type: providers.EventDone, StopReason: stop, Usage: &providers.Usage{InputTokens: 3, OutputTokens: 2}}
 	}
@@ -92,6 +115,7 @@ func (p *goldenProvider) Call(ctx context.Context, req providers.Request) (<-cha
 			case <-p.gate:
 				ch <- done("end_turn")
 			case <-ctx.Done():
+				time.Sleep(p.cancelDelay)
 			}
 		}()
 		return ch, nil
@@ -110,6 +134,7 @@ const (
 	goldenRestrictedBearer = "golden-tok-restricted" // may start only "plain"
 	goldenRatedBearer      = "golden-tok-rated"      // one start, then none for a minute
 	goldenMemberBearer     = "golden-tok-member"     // unrestricted member of "acme"
+	goldenIsolatedBearer   = "golden-tok-isolated"   // isolated member "eve" of "acme": its own sessions only
 )
 
 type goldenServer struct {
@@ -118,6 +143,7 @@ type goldenServer struct {
 	ts   *httptest.Server
 	st   store.Store
 	gate chan struct{}
+	prov *goldenProvider
 	// bearer is sent on every request unless a call names another.
 	bearer string
 }
@@ -159,14 +185,19 @@ func newGoldenServer(t *testing.T, o goldenOpts) *goldenServer {
 	t.Cleanup(func() { _ = st.Close() })
 	if o.authed {
 		member := []string{auth.ScopeRunsCreate, auth.ScopeRunsRead}
-		for _, tok := range []struct{ id, bearer, restrictions string }{
-			{"def_golden_restricted", goldenRestrictedBearer, `{"agents":["plain"]}`},
-			{"def_golden_rated", goldenRatedBearer, `{"rate":{"per_minute":1,"burst":1}}`},
-			{"def_golden_member", goldenMemberBearer, ""},
+		isolated := []string{auth.ScopeRunsCreate, auth.ScopeRunsRead, auth.ScopeUser}
+		for _, tok := range []struct {
+			id, bearer, subject, restrictions string
+			scopes                            []string
+		}{
+			{"def_golden_restricted", goldenRestrictedBearer, "dev", `{"agents":["plain"]}`, member},
+			{"def_golden_rated", goldenRatedBearer, "dev", `{"rate":{"per_minute":1,"burst":1}}`, member},
+			{"def_golden_member", goldenMemberBearer, "dev", "", member},
+			{"def_golden_isolated", goldenIsolatedBearer, "eve", "", isolated},
 		} {
 			if _, err := st.OperatorTokenDefCreate(context.Background(), store.OperatorTokenDefRow{
-				DefID: tok.id, Name: "u-" + tok.id, TenantID: "acme", Subject: "dev",
-				TokenHash: auth.HashToken(testTokenPepper, tok.bearer), AllowedScopes: member,
+				DefID: tok.id, Name: "u-" + tok.id, TenantID: "acme", Subject: tok.subject,
+				TokenHash: auth.HashToken(testTokenPepper, tok.bearer), AllowedScopes: tok.scopes,
 				RestrictionsJSON: tok.restrictions,
 			}); err != nil {
 				t.Fatal(err)
@@ -175,11 +206,12 @@ func newGoldenServer(t *testing.T, o goldenOpts) *goldenServer {
 	}
 	gate := make(chan struct{}, 8)
 	sem := concurrency.New(o.maxRuns, 8, 0)
-	srv := New(cfg, &stubResolver{p: &goldenProvider{gate: gate}}, []tools.Tool{}, sem, st)
+	prov := &goldenProvider{gate: gate}
+	srv := New(cfg, &stubResolver{p: prov}, []tools.Tool{}, sem, st)
 	srv.SetSteerRegistry(steer.NewRegistry(0))
 	ts := httptest.NewServer(srv.Mux())
 	t.Cleanup(ts.Close)
-	g := &goldenServer{t: t, srv: srv, ts: ts, st: st, gate: gate}
+	g := &goldenServer{t: t, srv: srv, ts: ts, st: st, gate: gate, prov: prov}
 	if o.authed {
 		g.bearer = goldenAdminBearer
 	}
@@ -212,8 +244,19 @@ func (g *goldenServer) post(path, body string) *goldenResp {
 
 func (g *goldenServer) postAs(bearer, path, body string) *goldenResp {
 	g.t.Helper()
+	return g.do(http.MethodPost, bearer, path, body)
+}
+
+// get sends a GET (a re-attach to a run's stream) as post sends a POST.
+func (g *goldenServer) get(path string) *goldenResp {
+	g.t.Helper()
+	return g.do(http.MethodGet, g.bearer, path, "")
+}
+
+func (g *goldenServer) do(method, bearer, path, body string) *goldenResp {
+	g.t.Helper()
 	ctx, cancel := context.WithCancel(context.Background())
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, g.ts.URL+path, strings.NewReader(body))
+	req, err := http.NewRequestWithContext(ctx, method, g.ts.URL+path, strings.NewReader(body))
 	if err != nil {
 		g.t.Fatal(err)
 	}
@@ -225,9 +268,9 @@ func (g *goldenServer) postAs(bearer, path, body string) *goldenResp {
 	resp, err := client.Do(req)
 	if err != nil {
 		cancel()
-		g.t.Fatalf("POST %s: %v", path, err)
+		g.t.Fatalf("%s %s: %v", method, path, err)
 	}
-	r := &goldenResp{method: http.MethodPost, path: path, status: resp.StatusCode, header: resp.Header,
+	r := &goldenResp{method: method, path: path, status: resp.StatusCode, header: resp.Header,
 		notify: make(chan struct{}, 1), closed: make(chan struct{}), cancel: cancel}
 	g.t.Cleanup(cancel)
 	if !strings.HasPrefix(resp.Header.Get("Content-Type"), "text/event-stream") {
@@ -353,16 +396,6 @@ func newGoldenTranscript() *goldenTranscript {
 // add records a finished response under a label naming its role in the case.
 func (tr *goldenTranscript) add(t *testing.T, label string, r *goldenResp) {
 	t.Helper()
-	tr.addCut(t, label, r, "")
-}
-
-// addCut is add for a stream whose frames after the last one named cutAfter
-// are not recorded. A run that outlives its request is streamed by tailing
-// the store, and the tail can stop on the run's terminal status before it
-// relays the events written just before it (streamRunEvents reads the events,
-// then the status), so whether the last frames arrive is a race.
-func (tr *goldenTranscript) addCut(t *testing.T, label string, r *goldenResp, cutAfter string) {
-	t.Helper()
 	r.drain(t)
 	fmt.Fprintf(&tr.b, "== %s: %s %s\n", label, r.method, tr.m.text(r.path))
 	fmt.Fprintf(&tr.b, "status: %d\n", r.status)
@@ -378,18 +411,6 @@ func (tr *goldenTranscript) addCut(t *testing.T, label string, r *goldenResp, cu
 	r.mu.Lock()
 	frames := append([]goldenFrame(nil), r.frames...)
 	r.mu.Unlock()
-	if cutAfter != "" {
-		last := -1
-		for i, f := range frames {
-			if f.event == cutAfter {
-				last = i
-			}
-		}
-		if last < 0 {
-			t.Fatalf("%s: no %q frame to cut after", label, cutAfter)
-		}
-		frames = frames[:last+1]
-	}
 	runID, dedup := "", false
 	for _, f := range frames {
 		fmt.Fprintf(&tr.b, "event: %s %s\n", f.event, tr.m.data(f.data))
@@ -401,9 +422,6 @@ func (tr *goldenTranscript) addCut(t *testing.T, label string, r *goldenResp, cu
 			_ = json.Unmarshal([]byte(f.data), &a)
 			runID, dedup = a.RunID, a.Deduplicated
 		}
-	}
-	if cutAfter != "" {
-		fmt.Fprintf(&tr.b, "(frames after the last %s not recorded)\n", cutAfter)
 	}
 	if runID != "" && !dedup && tr.st != nil {
 		tr.addStored(t, runID)
@@ -648,7 +666,7 @@ func TestRunDispatchGolden(t *testing.T) {
 			_, runID, _ := r.ids(t)
 			r.until(t, "awaiting_review", 1)
 			v := g.post("/v1/runs/"+runID+"/review", `{"decision":"approve"}`)
-			tr.addCut(t, "run", r, "awaiting_review")
+			tr.add(t, "run", r)
 			tr.add(t, "verdict", v)
 		},
 		"runs_queued": func(t *testing.T, tr *goldenTranscript) {
@@ -686,6 +704,7 @@ func TestRunDispatchGolden(t *testing.T) {
 			tr.st = g.st
 			sid := g.completedSession("plain")
 			tr.add(t, "run in session", g.post("/v1/runs", goldenRunBody("plain", "again", `"session_id":"`+sid+`"`)))
+			tr.add(t, "another agent in the session", g.post("/v1/runs", goldenRunBody("other", "again", `"session_id":"`+sid+`"`)))
 		},
 		"runs_refusals": func(t *testing.T, tr *goldenTranscript) {
 			g := newGoldenServer(t, goldenOpts{})

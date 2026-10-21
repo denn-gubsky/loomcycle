@@ -23,7 +23,13 @@ That changes what the runtime can honestly promise:
   Bashbox mounts a `ro` volume under an **in-RAM write overlay**: writes
   succeed *inside the run* (so a script can use scratch files) but **never
   touch the host tree** — they are discarded when the call returns. The ro
-  guarantee is real.
+  guarantee is real. Those writes are held in memory: a call may write at
+  most 64 MiB in total to in-memory files (unless the operator changed it),
+  and deleting a file does not give it back. Every file or directory created
+  counts too. Past the limit a write fails with `no space left on device`, so
+  keep scratch files on a read-only volume small. Changing a file of the
+  volume (chmod, touch, mv, ln, appending) copies it into that memory, at its
+  full size; reading it unchanged does not.
 
 ## When to use it
 
@@ -78,9 +84,20 @@ Commands gbash doesn't implement — `git`, `gh`, `npm`, … — normally fail w
 - `LOOMCYCLE_BASHBOX_FALLBACK_COMMANDS=git,gh` — only these names escape the
   sandbox; **every other command still runs sandboxed** (so `git status; curl …`
   runs git on the host but `curl` stays in the sandbox).
-- `LOOMCYCLE_BASHBOX_FALLBACK_ALLOWED_ENV=GH_TOKEN,HOME,SSH_AUTH_SOCK` — env
-  vars passed into those host commands (for credentials). They are injected only
-  into the host child, never the sandbox — you can't read them via `env`.
+- `LOOMCYCLE_BASHBOX_FALLBACK_ALLOWED_ENV=GH_TOKEN,HOME,SSH_AUTH_SOCK` — host
+  env vars passed into those host commands.
+- `LOOMCYCLE_BASHBOX_FALLBACK_ALLOWED_CREDS=git:GITHUB_TOKEN,gh:GH_TOKEN` —
+  stored credentials resolved for your tenant/user and passed into those host
+  commands. `cmd:NAME` hands the credential to that one command only; a bare
+  `NAME` hands it to every allowlisted command.
+
+These variables are injected only into the host command, so the sandbox's own
+`env` does not list them. They are **not** hidden from you: an allowlisted host
+command can print its environment (`git -c alias.x='!env' x`), and anything it
+starts (a git alias, hook or credential helper) inherits them. Treat any
+credential a host command is given as one you can read, and never print or
+store it — the saved transcript may mask it, but the tool result you see, and
+everything you send on from it, carries it.
 
 Fallback commands **require a read-write volume** (a real host process can't
 honor the read-only overlay), run with their working directory set to the host
@@ -94,3 +111,10 @@ gbash is **alpha** and pinned to an exact version in loomcycle's `go.mod`. The
 opt-in posture is the escape hatch: if a gbash bug surfaces, drop `Bashbox`
 from the agent's `tools` (or unset the env flag) and fall back to the
 file tools or `Bash`.
+
+Bashbox is a strong layer against an untrusted prompt, but it runs inside the
+loomcycle process and shares its memory with every other run. Operators
+serving mutually hostile tenants from one process should also run loomcycle in
+a container until gbash reaches 1.0. A write to a read-only volume is held in
+memory with no size cap until the command ends, so do not write large or
+unbounded output to a read-only volume.

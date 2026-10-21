@@ -75,7 +75,9 @@ func TestMCPPoolBuild_DefaultRefusesNonOperatorDefWithEnvRef(t *testing.T) {
 	t.Setenv("LOOMCYCLE_PEER_KEY_GLOBEX", "globex-secret-value")
 	peer := newEnvPeer(t)
 	// The opt-out left at its zero value: the default posture.
-	cfg := &config.Config{Env: config.Env{MCPAllowPrivateIPs: true}} // the httptest peer is on loopback
+	// The httptest peer is on loopback: the opt-out covers the operator's
+	// servers, and the private allowlist vouches for it for a tenant's.
+	cfg := &config.Config{Env: config.Env{MCPAllowPrivateIPs: true, HTTPPrivateHostAllowlist: []string{"127.0.0.1"}}}
 	reg := mcp.NewDynamicRegistry()
 	var credSubstitute func(ctx context.Context, s, targetURL string) (string, []string, error)
 	logs := &warnLog{}
@@ -145,7 +147,7 @@ func TestMCPPoolBuild_DefaultRefusesNonOperatorDefWithEnvRef(t *testing.T) {
 func TestMCPPoolBuild_OptOutDialsUnattributedEnvRefWithOneWarning(t *testing.T) {
 	t.Setenv("LOOMCYCLE_PEER_KEY_GLOBEX", "globex-secret-value")
 	peer := newEnvPeer(t)
-	cfg := &config.Config{Env: config.Env{MCPAllowPrivateIPs: true, MCPDialUnattributedEnv: true}}
+	cfg := &config.Config{Env: config.Env{MCPAllowPrivateIPs: true, MCPDialUnattributedEnv: true, HTTPPrivateHostAllowlist: []string{"127.0.0.1"}}}
 	reg := mcp.NewDynamicRegistry()
 	var credSubstitute func(ctx context.Context, s, targetURL string) (string, []string, error)
 	logs := &warnLog{}
