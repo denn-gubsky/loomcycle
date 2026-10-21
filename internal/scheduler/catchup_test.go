@@ -83,6 +83,7 @@ func equalStrings(a, b []string) bool {
 func TestCatchUp_ZeroCollapsesTheOutageAndCountsTheDropped(t *testing.T) {
 	sched, sr, defID, st, slots := backlogFixture(t, 0, "")
 	sr.gate = make(chan struct{})
+	t.Cleanup(func() { close(sr.gate) }) // a failed test still frees its held runs
 
 	sched.tick(context.Background())
 	if got, want := activeSlots(t, st, defID), slotStrings(slots[9]); !equalStrings(got, want) {
@@ -110,6 +111,7 @@ func TestCatchUp_ZeroCollapsesTheOutageAndCountsTheDropped(t *testing.T) {
 func TestCatchUp_ForbidDrainsTheKeptSlotsOneAtATime(t *testing.T) {
 	sched, sr, defID, st, slots := backlogFixture(t, 3, "")
 	sr.gate = make(chan struct{})
+	t.Cleanup(func() { close(sr.gate) }) // a failed test still frees its held runs
 	ctx := context.Background()
 	release := func() {
 		t.Helper()
@@ -168,6 +170,7 @@ func TestCatchUp_ForbidDrainsTheKeptSlotsOneAtATime(t *testing.T) {
 func TestCatchUp_AllowStartsKeptSlotsAtOnceUnderTheLimit(t *testing.T) {
 	sched, sr, defID, st, slots := backlogFixture(t, 3, "allow")
 	sr.gate = make(chan struct{})
+	t.Cleanup(func() { close(sr.gate) }) // a failed test still frees its held runs
 	ctx := context.Background()
 
 	// A run of this schedule is already going.

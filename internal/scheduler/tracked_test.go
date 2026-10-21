@@ -114,6 +114,10 @@ func runState(t *testing.T, st store.Store, defID string) store.ScheduleRunState
 func TestScheduler_TickReturnsWhileItsRunRunsAndTheRunHasNoDeadline(t *testing.T) {
 	sched, sr, defID, st := trackedFixture(t, channelHookDef("done-hook"))
 	sr.hold = make(chan struct{})
+	// Released once, by the test or — when it fails first — by cleanup, so a
+	// held run never blocks the cleanup that waits for runs.
+	release := sync.OnceFunc(func() { close(sr.hold) })
+	t.Cleanup(release)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
@@ -125,7 +129,7 @@ func TestScheduler_TickReturnsWhileItsRunRunsAndTheRunHasNoDeadline(t *testing.T
 	select {
 	case <-ticked:
 	case <-time.After(5 * time.Second):
-		close(sr.hold)
+		release()
 		t.Fatal("the tick did not return while its run ran — it must wait for admission only")
 	}
 
@@ -153,7 +157,7 @@ func TestScheduler_TickReturnsWhileItsRunRunsAndTheRunHasNoDeadline(t *testing.T
 		t.Errorf("hooks dispatched before the run ended: %d", n)
 	}
 
-	close(sr.hold)
+	release()
 	sched.runs.Wait()
 	got = runState(t, st, defID)
 	if got.LastStatus != "completed" || got.LastRunID != ids[0] || got.FinishedAt.IsZero() {
@@ -273,6 +277,10 @@ func TestScheduler_OneShotRetiresWhenItsRunFinishes(t *testing.T) {
 	def.Schedule = "* * * * *"
 	sched, sr, defID, st := trackedFixture(t, def)
 	sr.hold = make(chan struct{})
+	// Released once, by the test or — when it fails first — by cleanup, so a
+	// held run never blocks the cleanup that waits for runs.
+	release := sync.OnceFunc(func() { close(sr.hold) })
+	t.Cleanup(release)
 	ctx := context.Background()
 
 	sched.tick(ctx)
@@ -288,7 +296,7 @@ func TestScheduler_OneShotRetiresWhenItsRunFinishes(t *testing.T) {
 		t.Errorf("runs started = %d, want 1 — a one-shot fires once", len(ids))
 	}
 
-	close(sr.hold)
+	release()
 	sched.runs.Wait()
 	if row, _ := st.ScheduleDefGet(ctx, defID); !row.Retired {
 		t.Error("not retired after its one run finished")
