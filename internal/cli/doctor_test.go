@@ -28,7 +28,14 @@ type stubConfig struct {
 	configWarnings []string
 	awsProviders   map[string]AWSAuthProvider
 	hostShell      bool
+	grpc           string
+	allowOpen      bool
 }
+
+func (s *stubConfig) NonLoopbackListeners() []string {
+	return (&config.Env{ListenAddr: configListenAddr(s), GrpcAddr: s.grpc}).NonLoopbackListeners()
+}
+func (s *stubConfig) AllowOpenMode() bool { return s.allowOpen }
 
 func (s *stubConfig) AWSAuthProviders() map[string]AWSAuthProvider { return s.awsProviders }
 func (s *stubConfig) HostShellEnabled() bool                       { return s.hostShell }
@@ -181,6 +188,57 @@ func TestDoctor_AuthTokenAbsent_WARNs(t *testing.T) {
 	}
 	if !strings.Contains(stdout.String(), "[WARN]  LOOMCYCLE_AUTH_TOKEN set") {
 		t.Errorf("expected WARN for missing auth token:\n%s", stdout.String())
+	}
+}
+
+// runDoctorOpenMode runs doctor with no LOOMCYCLE_AUTH_TOKEN and the given
+// listeners, returning its output.
+func runDoctorOpenMode(t *testing.T, stub *stubConfig) string {
+	t.Helper()
+	withTempHome(t)
+	stub.backend, stub.dataDir = "sqlite", t.TempDir()
+	withStubLoader(t, stub)
+	withEnv(t, "LOOMCYCLE_AUTH_TOKEN", "")
+	configDir := filepath.Join(os.Getenv("HOME"), ".config", "loomcycle")
+	_ = os.MkdirAll(configDir, 0o755)
+	_ = os.WriteFile(filepath.Join(configDir, "loomcycle.yaml"), []byte("p"), 0o644)
+	var stdout, stderr bytes.Buffer
+	if code := RunDoctor(nil, &stdout, &stderr); code != 0 {
+		t.Errorf("a WARN shouldn't fail the run; exit=%d\n%s", code, stdout.String())
+	}
+	return stdout.String()
+}
+
+// TestDoctor_OpenModeOnPublicListener_WARNsOfBootRefusal: with no auth token
+// and a listener beyond loopback, doctor names the boot refusal and its fixes.
+func TestDoctor_OpenModeOnPublicListener_WARNsOfBootRefusal(t *testing.T) {
+	_, port, _ := net.SplitHostPort(freePort(t))
+	out := runDoctorOpenMode(t, &stubConfig{listen: "127.0.0.1:" + port, grpc: ":8788"})
+	if !strings.Contains(out, "[WARN]  Open mode") ||
+		!strings.Contains(out, "LOOMCYCLE_GRPC_ADDR=:8788") ||
+		!strings.Contains(out, "refuses to start") ||
+		!strings.Contains(out, "LOOMCYCLE_ALLOW_OPEN_MODE=1") {
+		t.Errorf("want an open-mode WARN naming the gRPC listener and the refusal:\n%s", out)
+	}
+}
+
+// TestDoctor_OpenModeOptIn_WARNsServedUnauthenticated: with the opt-in the
+// boot is not refused, but doctor still says the routes are open.
+func TestDoctor_OpenModeOptIn_WARNsServedUnauthenticated(t *testing.T) {
+	_, port, _ := net.SplitHostPort(freePort(t))
+	out := runDoctorOpenMode(t, &stubConfig{listen: "0.0.0.0:" + port, allowOpen: true})
+	if !strings.Contains(out, "[WARN]  Open mode") || !strings.Contains(out, "unauthenticated") ||
+		strings.Contains(out, "refuses to start") {
+		t.Errorf("want an opted-in open-mode WARN, not a refusal:\n%s", out)
+	}
+}
+
+// TestDoctor_OpenModeOnLoopback_NoOpenModeWarning: open mode on loopback is
+// allowed, so there is no open-mode line beyond the auth-token WARN.
+func TestDoctor_OpenModeOnLoopback_NoOpenModeWarning(t *testing.T) {
+	out := runDoctorOpenMode(t, &stubConfig{listen: freePort(t)})
+	if strings.Contains(out, "Open mode") {
+		t.Errorf("open mode on loopback should not WARN of a refusal:\n%s", out)
 	}
 }
 

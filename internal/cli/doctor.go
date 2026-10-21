@@ -27,7 +27,10 @@ import (
 //  1. Config file discoverable (./loomcycle.yaml → XDG → ~/.config)
 //  2. Config parses cleanly
 //  3. LOOMCYCLE_AUTH_TOKEN set (WARN when empty — the server boots
-//     but every /v1/* request is allowed unauthenticated)
+//     but every /v1/* request is allowed unauthenticated), and, when it
+//     is empty, whether a listener binds beyond loopback (WARN — the
+//     server refuses that boot unless the store holds an admin token or
+//     LOOMCYCLE_ALLOW_OPEN_MODE=1)
 //  4. Per-configured provider: API-key env var set
 //  5. Storage backend reachable (sqlite path writable; postgres DSN
 //     non-empty)
@@ -93,6 +96,21 @@ func RunDoctor(args []string, stdout, stderr io.Writer) int {
 		r.pass("LOOMCYCLE_AUTH_TOKEN set", "loaded from auth.env (init --with-token)")
 	} else {
 		r.pass("LOOMCYCLE_AUTH_TOKEN set", "")
+	}
+	// Without the legacy secret the server is in open mode unless the store
+	// holds an admin operator token, which doctor does not open — so this is a
+	// WARN naming the boot refusal, not a FAIL.
+	if os.Getenv("LOOMCYCLE_AUTH_TOKEN") == "" {
+		if public := cfg.NonLoopbackListeners(); len(public) > 0 {
+			on := strings.Join(public, ", ")
+			if cfg.AllowOpenMode() {
+				r.warn("Open mode", fmt.Sprintf(
+					"LOOMCYCLE_ALLOW_OPEN_MODE=1: unless the store holds an admin operator token, every route on %s is served unauthenticated", on))
+			} else {
+				r.warn("Open mode", fmt.Sprintf(
+					"%s binds beyond loopback with no LOOMCYCLE_AUTH_TOKEN: the server refuses to start unless the store holds an admin operator token. Set LOOMCYCLE_AUTH_TOKEN, bind to 127.0.0.1, or set LOOMCYCLE_ALLOW_OPEN_MODE=1", on))
+			}
+		}
 	}
 
 	providers := providerListFromConfig(cfg)
@@ -306,6 +324,11 @@ type configForDoctor interface {
 	StoragePgDSN() string
 	StorageDataDir() string
 	ListenAddrValue() string
+	// NonLoopbackListeners names each listener (HTTP, and gRPC when set) that
+	// binds beyond loopback, as "ENV_VAR=addr".
+	NonLoopbackListeners() []string
+	// AllowOpenMode reports LOOMCYCLE_ALLOW_OPEN_MODE=1.
+	AllowOpenMode() bool
 	// ConfigWarnings returns the non-fatal advisories config-load already
 	// produces — an agent holding a tool whose capability gate is empty, a
 	// principal whose token env is unset, a layered override.

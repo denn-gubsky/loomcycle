@@ -9,7 +9,8 @@ set -a; source "$HERE/.env.local"; set +a
 export LOOMCYCLE_DATA_DIR="${LOOMCYCLE_DATA_DIR:-$HERE/data}"
 # For the webhook leg, Gitea must REACH this server. 127.0.0.1 only works if Gitea
 # runs on this host; otherwise bind a reachable IP, e.g. LOOMCYCLE_LISTEN_ADDR=0.0.0.0:8788
-# (or a tailnet/LAN IP) and point the Gitea webhook URL at it. See README.
+# (or a tailnet/LAN IP) and point the Gitea webhook URL at it — and set
+# LOOMCYCLE_AUTH_TOKEN in .env.local, or the server refuses that address. See README.
 export LOOMCYCLE_LISTEN_ADDR="${LOOMCYCLE_LISTEN_ADDR:-127.0.0.1:8787}"
 export LOOMCYCLE_ANTHROPIC_OAUTH_DEV_ENABLED="${LOOMCYCLE_ANTHROPIC_OAUTH_DEV_ENABLED:-1}"
 # tool sandbox: the coder/reviewer use Bash+git under ./work via the `default`

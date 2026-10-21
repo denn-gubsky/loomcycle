@@ -104,8 +104,9 @@ services:
     image: denngubsky/loomcycle-toolbox:latest   # was denngubsky/loomcycle:latest
     environment:
       LOOMCYCLE_LISTEN_ADDR: 0.0.0.0:8787
+      LOOMCYCLE_AUTH_TOKEN: ${LOOMCYCLE_AUTH_TOKEN:?required on 0.0.0.0}
       LOOMCYCLE_BASH_ENABLED: "1"                 # or the Bashbox fallback vars
-      # ... your existing provider keys / auth token
+      # ... your existing provider keys
     volumes:
       - ./config:/home/nonroot/.config/loomcycle:ro
       - ./data:/home/nonroot/.local/share/loomcycle

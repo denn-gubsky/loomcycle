@@ -250,7 +250,7 @@ jobs:
         # credentials yet. Once DOCKER_PUBLISH_ENABLED is set to
         # "true" in the repo's Actions vars, the same run pushes
         # multi-arch images without further config changes.
-        uses: goreleaser/goreleaser-action@v6
+        uses: goreleaser/goreleaser-action@v7
         with:
           version: "v2.15.4"
           # `--skip=docker` skips BOTH the dockers stage AND the

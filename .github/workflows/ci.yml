@@ -540,7 +540,7 @@ jobs:
           go-version: "1.26"
           # The runner caches an older patch; take the newest so a stdlib fix lands.
           check-latest: true
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.11"
       # PINNED, and the pin is the whole reason this gate is usable. The Python
@@ -598,7 +598,7 @@ jobs:
         working-directory: adapters/python
     steps:
       - uses: actions/checkout@v5
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.11"
       - name: Install (with dev extras)
