@@ -176,7 +176,7 @@ func (it *Interruption) Execute(ctx context.Context, raw json.RawMessage) (tools
 		return errResult(fmt.Sprintf("invalid input JSON: %s", err)), nil
 	}
 
-	policy := tools.InterruptionPolicy(ctx)
+	policy := tools.PolicyOf(ctx).Interruption.Load()
 	if !policy.Enabled {
 		return errResult(
 			"Interruption tool: not enabled for this agent — add `Interruption` to the agent's tools list",

@@ -62,7 +62,7 @@ func TestOperatorCtx_AttachesAllRequiredPolicies(t *testing.T) {
 	// this passed, and the matcher (exact name or a trailing "/*" prefix, and
 	// nothing else) never matched a real channel — so the plane silently held
 	// NO channel authority at all.
-	cp := tools.ChannelPolicy(ctx)
+	cp := tools.PolicyOf(ctx).Channel
 	for _, side := range []string{"publish", "subscribe"} {
 		all, list := cp.GrantsFor(side)
 		if !all && !builtin.ChannelAllowed("any-channel-name", list) {

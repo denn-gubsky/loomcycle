@@ -32,15 +32,17 @@ func awaitFixture(t *testing.T) (*Channel, context.Context, func()) {
 	}
 	ctx := tools.WithAgentName(context.Background(), "consolidator")
 	ctx = tools.WithRunIdentity(ctx, tools.RunIdentityValue{UserID: "alice", AgentID: "a_test"})
-	ctx = tools.WithChannelPolicy(ctx, tools.ChannelPolicyValue{
-		Publish:   []string{"c1", "c2", "c3", "secret"},
-		Subscribe: []string{"c1", "c2", "c3"},
-		Channels: map[string]tools.ChannelDef{
-			"c1":     {Name: "c1", Scope: "global", Semantic: "queue"},
-			"c2":     {Name: "c2", Scope: "global", Semantic: "queue"},
-			"c3":     {Name: "c3", Scope: "global", Semantic: "queue"},
-			"secret": {Name: "secret", Scope: "global", Semantic: "queue"},
-		},
+	ctx = tools.UpdateRunPolicy(ctx, func(rp *tools.RunPolicy) {
+		rp.Channel = tools.ChannelPolicyValue{
+			Publish:   []string{"c1", "c2", "c3", "secret"},
+			Subscribe: []string{"c1", "c2", "c3"},
+			Channels: map[string]tools.ChannelDef{
+				"c1":     {Name: "c1", Scope: "global", Semantic: "queue"},
+				"c2":     {Name: "c2", Scope: "global", Semantic: "queue"},
+				"c3":     {Name: "c3", Scope: "global", Semantic: "queue"},
+				"secret": {Name: "secret", Scope: "global", Semantic: "queue"},
+			},
+		}
 	})
 	return tool, ctx, func() { _ = s.Close() }
 }

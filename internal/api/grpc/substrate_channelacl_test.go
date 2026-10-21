@@ -14,7 +14,7 @@ import (
 // Publish: []string{"*"} intending "everything", and the matcher (exact name or
 // a trailing "/*" prefix, nothing else) never matched a real channel.
 func TestSubstrateGRPCCtx_ChannelPolicyActuallyGrants(t *testing.T) {
-	cp := tools.ChannelPolicy(substrateGRPCCtx(context.Background()))
+	cp := tools.PolicyOf(substrateGRPCCtx(context.Background())).Channel
 	for _, side := range []string{"publish", "subscribe"} {
 		all, list := cp.GrantsFor(side)
 		if !all && !builtin.ChannelAllowed("any-channel-name", list) {

@@ -42,7 +42,7 @@ func channelCatalogFixture(t *testing.T) (*Server, store.Store) {
 // mcpChannelCtx is the ctx the MCP plane hands the connector for a principal.
 func mcpChannelCtx(tenant string) context.Context {
 	ctx := auth.WithPrincipal(context.Background(), auth.Principal{TenantID: tenant, Subject: "op"})
-	return tools.WithChannelPolicy(ctx, tools.ChannelPolicyValue{AllPublish: true, AllSubscribe: true})
+	return tools.UpdateRunPolicy(ctx, func(rp *tools.RunPolicy) { rp.Channel = tools.ChannelPolicyValue{AllPublish: true, AllSubscribe: true} })
 }
 
 func TestMCPChannelTool_PublishesToADeclaredChannel(t *testing.T) {

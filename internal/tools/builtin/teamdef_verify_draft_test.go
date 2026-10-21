@@ -140,7 +140,7 @@ func TestTeamDefVerifyDraft_MissingMemberIsValidButNotRunnable(t *testing.T) {
 // order a save checks them, and nothing is written.
 func TestTeamDefVerifyDraft_ReportsEveryProblemInSaveOrderAndWritesNothing(t *testing.T) {
 	tool, ctx := localTeamFixture(t)
-	ctx = tools.WithChannelPolicy(ctx, tools.ChannelPolicyValue{Publish: []string{"verdicts"}})
+	ctx = tools.UpdateRunPolicy(ctx, func(rp *tools.RunPolicy) { rp.Channel = tools.ChannelPolicyValue{Publish: []string{"verdicts"}} })
 	tool.AgentExists = func(context.Context, string) bool { return false }
 	// A graph error (a dead-end state), an ACL entry the author does not hold,
 	// a local agent wider than its author, and a global member that does not

@@ -145,17 +145,19 @@ func ceilingCases() []ceilingCase {
 			wider: `{"history_scope":["tenant","any"]}`, within: `{"history_scope":["tenant"]}`},
 		{field: "channels.publish",
 			policy: func(ctx context.Context) context.Context {
-				return tools.WithChannelPolicy(ctx, tools.ChannelPolicyValue{Publish: []string{"team/*"}})
+				return tools.UpdateRunPolicy(ctx, func(rp *tools.RunPolicy) { rp.Channel = tools.ChannelPolicyValue{Publish: []string{"team/*"}} })
 			},
 			wider: `{"channels":{"publish":["team/*","ops"]}}`, within: `{"channels":{"publish":["team/review","team/x/*"]}}`},
 		{field: "channels.subscribe",
 			policy: func(ctx context.Context) context.Context {
-				return tools.WithChannelPolicy(ctx, tools.ChannelPolicyValue{Subscribe: []string{"team/review"}})
+				return tools.UpdateRunPolicy(ctx, func(rp *tools.RunPolicy) { rp.Channel = tools.ChannelPolicyValue{Subscribe: []string{"team/review"}} })
 			},
 			wider: `{"channels":{"subscribe":["team/*"]}}`, within: `{"channels":{"subscribe":["team/review"]}}`},
 		{field: "interruption",
 			policy: func(ctx context.Context) context.Context {
-				return tools.WithInterruptionPolicy(ctx, tools.InterruptionPolicyValue{Enabled: true})
+				return tools.UpdateRunPolicy(ctx, func(rp *tools.RunPolicy) {
+					rp.Interruption = tools.NewInterruptionPolicyHolder(tools.InterruptionPolicyValue{Enabled: true})
+				})
 			},
 			wider: `{"interruption":{"enabled":true,"kinds":["question","approval"]}}`, refusedAs: "interruption.kinds:", within: `{"interruption":{"enabled":true,"max_pending":2}}`},
 		{field: "evaluation_scopes",
@@ -297,7 +299,9 @@ func TestAgentDefCreate_UnsetFieldIsJudgedUnlessItIsAMemoryDefault(t *testing.T)
 	ctx = tools.UpdateRunPolicy(ctx, func(rp *tools.RunPolicy) {
 		rp.Volumes = tools.VolumePolicyValue{Active: true, Bindings: []tools.VolumeBinding{{Name: "work"}}}
 	})
-	ctx = tools.WithInterruptionPolicy(ctx, tools.InterruptionPolicyValue{Enabled: true, Kinds: []string{"approval"}})
+	ctx = tools.UpdateRunPolicy(ctx, func(rp *tools.RunPolicy) {
+		rp.Interruption = tools.NewInterruptionPolicyHolder(tools.InterruptionPolicyValue{Enabled: true, Kinds: []string{"approval"}})
+	})
 	const rest = `"history_scope":["self"],"volumes":["work"]`
 
 	if res := agentDefOp(t, tool, ctx, "create", "sdlc/new", `{`+rest+`}`); res.IsError {
@@ -447,7 +451,7 @@ func TestDefScopeCovered_IsNarrowOnly(t *testing.T) {
 func TestTeamDefCreate_LocalAgentGrantsOfTheTeamsOwnChannelsAndSkillsAreNotJudged(t *testing.T) {
 	tool, ctx := skillTeamFixture(t)
 	ctx = tools.WithRunID(ctx, "run_author")
-	ctx = tools.WithChannelPolicy(ctx, tools.ChannelPolicyValue{Publish: []string{"team/*"}})
+	ctx = tools.UpdateRunPolicy(ctx, func(rp *tools.RunPolicy) { rp.Channel = tools.ChannelPolicyValue{Publish: []string{"team/*"}} })
 	// The team's skill is authored as "<team>/style", which this allows; it
 	// does not allow "./style" as a pattern.
 	ctx = tools.WithSkillPolicy(ctx, tools.SkillPolicyValue{Granted: true, Patterns: []string{"sdlc/*", "sdlc2/*"}})
@@ -486,7 +490,7 @@ func TestIsTeamLocalRef_AcceptsOnlyOneWellFormedName(t *testing.T) {
 // entry as one of a team's own channels.
 func TestAgentDefCreate_MalformedLocalChannelRefIsJudged(t *testing.T) {
 	tool, ctx := ceilingFixture(t)
-	ctx = tools.WithChannelPolicy(ctx, tools.ChannelPolicyValue{Publish: []string{"team/*"}})
+	ctx = tools.UpdateRunPolicy(ctx, func(rp *tools.RunPolicy) { rp.Channel = tools.ChannelPolicyValue{Publish: []string{"team/*"}} })
 	for _, entry := range []string{"./*", "./a/b", "./../x", "./"} {
 		wantRefused(t, agentDefOp(t, tool, ctx, "create", "sdlc/new", `{"channels":{"publish":[`+strconv.Quote(entry)+`]}}`),
 			"publish "+entry, "channels.publish:")

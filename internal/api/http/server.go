@@ -2603,7 +2603,7 @@ func (s *Server) mergedChannelDefsFor(ctx context.Context, tenantID string, incl
 
 // channelPolicyForAgent builds the v0.8.4 Channel-tool policy from the agent
 // yaml + the top-level `channels:` block AND the runtime channel store.
-// Returns a value suitable for tools.WithChannelPolicy. The Channels map is a
+// Returns the run policy's Channel field. The Channels map is a
 // copy of every declared channel — the tool layer needs the per-channel
 // scope/TTL/max_messages even for channels NOT in this agent's allowlist
 // (e.g. to phrase a useful refusal message). The runtime store read is

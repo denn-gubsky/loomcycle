@@ -641,9 +641,11 @@ func TestContextTool_PermissionsBundle(t *testing.T) {
 			QuotaBytes:    1024,
 		}
 	})
-	ctx = tools.WithChannelPolicy(ctx, tools.ChannelPolicyValue{
-		Publish:   []string{"findings"},
-		Subscribe: []string{"findings"},
+	ctx = tools.UpdateRunPolicy(ctx, func(rp *tools.RunPolicy) {
+		rp.Channel = tools.ChannelPolicyValue{
+			Publish:   []string{"findings"},
+			Subscribe: []string{"findings"},
+		}
 	})
 	ctx = tools.WithAgentDefPolicy(ctx, tools.AgentDefPolicyValue{
 		Scopes:   []string{"self"},
@@ -1200,13 +1202,15 @@ func TestContextTool_EvaluationsRefusedToAnIsolatedRunLikeAMissingDef(t *testing
 
 func TestContextTool_ChannelsListsAccessible(t *testing.T) {
 	tool, _, ctx, _, _, _ := substrateFixture(t)
-	chCtx := tools.WithChannelPolicy(ctx, tools.ChannelPolicyValue{
-		Publish:   []string{"findings", "findings/*"},
-		Subscribe: []string{"findings", "alerts"},
-		Channels: map[string]tools.ChannelDef{
-			"findings": {Name: "findings", Scope: "agent", Semantic: "queue"},
-			"alerts":   {Name: "alerts", Scope: "global", DefaultTTL: 3600},
-		},
+	chCtx := tools.UpdateRunPolicy(ctx, func(rp *tools.RunPolicy) {
+		rp.Channel = tools.ChannelPolicyValue{
+			Publish:   []string{"findings", "findings/*"},
+			Subscribe: []string{"findings", "alerts"},
+			Channels: map[string]tools.ChannelDef{
+				"findings": {Name: "findings", Scope: "agent", Semantic: "queue"},
+				"alerts":   {Name: "alerts", Scope: "global", DefaultTTL: 3600},
+			},
+		}
 	})
 	res, _ := tool.Execute(chCtx, json.RawMessage(`{"op":"channels"}`))
 	if res.IsError {

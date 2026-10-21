@@ -47,7 +47,9 @@ func interruptionFixture(t *testing.T) (*Interruption, context.Context, string, 
 	}
 	ctx = tools.WithRunIdentity(ctx, tools.RunIdentityValue{UserID: "alice", AgentID: "a_test"})
 	ctx = tools.WithRunID(ctx, run.ID)
-	ctx = tools.WithInterruptionPolicy(ctx, tools.InterruptionPolicyValue{Enabled: true})
+	ctx = tools.UpdateRunPolicy(ctx, func(rp *tools.RunPolicy) {
+		rp.Interruption = tools.NewInterruptionPolicyHolder(tools.InterruptionPolicyValue{Enabled: true})
+	})
 	return tool, ctx, run.ID, func() { _ = s.Close() }
 }
 
@@ -73,7 +75,9 @@ func TestInterruption_DefaultDeny(t *testing.T) {
 	tool, ctx, _, cleanup := interruptionFixture(t)
 	defer cleanup()
 	// Strip the permissive policy → default-deny.
-	ctx = tools.WithInterruptionPolicy(ctx, tools.InterruptionPolicyValue{Enabled: false})
+	ctx = tools.UpdateRunPolicy(ctx, func(rp *tools.RunPolicy) {
+		rp.Interruption = tools.NewInterruptionPolicyHolder(tools.InterruptionPolicyValue{Enabled: false})
+	})
 
 	res, err := tool.Execute(ctx, json.RawMessage(`{"op":"ask","question":"hi?"}`))
 	if err != nil {
@@ -457,7 +461,9 @@ func TestInterruption_MaxPendingEnforced(t *testing.T) {
 	tool, ctx, _, cleanup := interruptionFixture(t)
 	defer cleanup()
 	// Cap at 1 pending per run.
-	ctx = tools.WithInterruptionPolicy(ctx, tools.InterruptionPolicyValue{Enabled: true, MaxPending: 1})
+	ctx = tools.UpdateRunPolicy(ctx, func(rp *tools.RunPolicy) {
+		rp.Interruption = tools.NewInterruptionPolicyHolder(tools.InterruptionPolicyValue{Enabled: true, MaxPending: 1})
+	})
 
 	// First ask — creates pending row + blocks. Run in goroutine.
 	resCh := make(chan tools.Result, 1)
@@ -540,7 +546,9 @@ func TestInterruption_RunIDMissingFromCtx(t *testing.T) {
 	// dangling rows.
 	ctx := context.Background()
 	ctx = tools.WithRunIdentity(ctx, tools.RunIdentityValue{UserID: "alice", AgentID: "a_test"})
-	ctx = tools.WithInterruptionPolicy(ctx, tools.InterruptionPolicyValue{Enabled: true})
+	ctx = tools.UpdateRunPolicy(ctx, func(rp *tools.RunPolicy) {
+		rp.Interruption = tools.NewInterruptionPolicyHolder(tools.InterruptionPolicyValue{Enabled: true})
+	})
 
 	res, err := tool.Execute(ctx, json.RawMessage(`{"op":"ask","question":"Hi?"}`))
 	if err != nil {

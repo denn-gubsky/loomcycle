@@ -329,7 +329,7 @@ func isTeamLocalRef(entry string) bool {
 }
 
 func ceilChannels(ctx context.Context, def mergedDef, base *mergedDef, held string) error {
-	pol := tools.ChannelPolicy(ctx)
+	pol := tools.PolicyOf(ctx).Channel
 	var basePub, baseSub []string
 	if base != nil {
 		basePub, baseSub = base.Channels.Publish, base.Channels.Subscribe
@@ -375,7 +375,7 @@ func ceilInterruption(ctx context.Context, def mergedDef, base *mergedDef, held 
 	if !def.Interruption.Enabled && len(def.Interruption.Kinds) == 0 {
 		return nil
 	}
-	pol := tools.InterruptionPolicy(ctx)
+	pol := tools.PolicyOf(ctx).Interruption.Load()
 	var ceiling []string
 	if pol.Enabled {
 		ceiling = interruptionKinds(pol.Kinds)

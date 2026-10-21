@@ -835,7 +835,7 @@ func (c *Context) execPermissions(ctx context.Context) (tools.Result, error) {
 	// gates before attempting them (avoids "tool refused" surprises).
 	hostPol := tools.PolicyOf(ctx).Hosts
 	memPol := tools.PolicyOf(ctx).Memory
-	chPol := tools.ChannelPolicy(ctx)
+	chPol := tools.PolicyOf(ctx).Channel
 	adPol := tools.AgentDefPolicy(ctx)
 	sdPol := tools.SkillPolicy(ctx)
 	evPol := tools.EvaluationPolicy(ctx)
@@ -1099,7 +1099,7 @@ func (c *Context) execEvaluations(ctx context.Context, in contextInput) (tools.R
 // ---- channels ----
 
 func (c *Context) execChannels(ctx context.Context, in contextInput) (tools.Result, error) {
-	pol := tools.ChannelPolicy(ctx)
+	pol := tools.PolicyOf(ctx).Channel
 	type channelSummary struct {
 		Name        string `json:"name"`
 		Scope       string `json:"scope,omitempty"`

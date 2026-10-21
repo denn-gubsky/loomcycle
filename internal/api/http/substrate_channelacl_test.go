@@ -13,7 +13,7 @@ import (
 // a non-empty allowlist proves nothing when the entry is a name that matches
 // no channel.
 func TestSubstrateAdminCtx_ChannelPolicyActuallyGrants(t *testing.T) {
-	cp := tools.ChannelPolicy(substrateAdminCtx(context.Background()))
+	cp := tools.PolicyOf(substrateAdminCtx(context.Background())).Channel
 	for _, side := range []string{"publish", "subscribe"} {
 		all, list := cp.GrantsFor(side)
 		if !all && !builtin.ChannelAllowed("any-channel-name", list) {

@@ -13,9 +13,11 @@ import (
 // so the team-ACL narrowing check has something to narrow FROM.
 func authoringCtx(publish, subscribe []string) context.Context {
 	ctx := tools.WithRunIdentity(context.Background(), tools.RunIdentityValue{AgentID: "a_test"})
-	return tools.WithChannelPolicy(ctx, tools.ChannelPolicyValue{
-		Publish:   publish,
-		Subscribe: subscribe,
+	return tools.UpdateRunPolicy(ctx, func(rp *tools.RunPolicy) {
+		rp.Channel = tools.ChannelPolicyValue{
+			Publish:   publish,
+			Subscribe: subscribe,
+		}
 	})
 }
 

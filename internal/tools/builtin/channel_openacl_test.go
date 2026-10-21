@@ -94,9 +94,7 @@ func TestChannel_UnrestrictedPolicyReachesADeclaredChannel(t *testing.T) {
 func TestTeamChannelAuthority_UnrestrictedAuthorMayDeclareAnACL(t *testing.T) {
 	tool, _, cleanup := teamDefFixture(t)
 	defer cleanup()
-	ctx := tools.WithChannelPolicy(
-		tools.WithRunIdentity(context.Background(), tools.RunIdentityValue{AgentID: "a_operator"}),
-		tools.ChannelPolicyValue{AllPublish: true, AllSubscribe: true})
+	ctx := tools.UpdateRunPolicy(tools.WithRunIdentity(context.Background(), tools.RunIdentityValue{AgentID: "a_operator"}), func(rp *tools.RunPolicy) { rp.Channel = tools.ChannelPolicyValue{AllPublish: true, AllSubscribe: true} })
 
 	res, _ := tool.Execute(ctx, json.RawMessage(`{"op":"create","name":"triage","overlay":`+
 		strings.TrimSuffix(starterGraph, "}")+`,"channels":{"publish":["verdicts"],"subscribe":["pr-events"]}}}`))
@@ -105,9 +103,9 @@ func TestTeamChannelAuthority_UnrestrictedAuthorMayDeclareAnACL(t *testing.T) {
 	}
 
 	// The narrowing rule itself is untouched for a normal, listed author.
-	narrow := tools.WithChannelPolicy(
-		tools.WithRunIdentity(context.Background(), tools.RunIdentityValue{AgentID: "a_agent"}),
-		tools.ChannelPolicyValue{Publish: []string{"verdicts"}, Subscribe: []string{"pr-events"}})
+	narrow := tools.UpdateRunPolicy(tools.WithRunIdentity(context.Background(), tools.RunIdentityValue{AgentID: "a_agent"}), func(rp *tools.RunPolicy) {
+		rp.Channel = tools.ChannelPolicyValue{Publish: []string{"verdicts"}, Subscribe: []string{"pr-events"}}
+	})
 	res, _ = tool.Execute(narrow, json.RawMessage(`{"op":"create","name":"ok-narrow","overlay":`+
 		strings.TrimSuffix(starterGraph, "}")+`,"channels":{"publish":["verdicts"],"subscribe":["pr-events"]}}}`))
 	if res.IsError {

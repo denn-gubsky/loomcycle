@@ -64,9 +64,11 @@ func channelFixture(t *testing.T) (*builtin.Channel, context.Context) {
 	t.Cleanup(func() { _ = s.Close() })
 	tool := &builtin.Channel{Store: s, Bus: channels.NewBus(), MaxValueBytes: 65536, LongPollCapMS: 30000}
 	ctx := tools.WithRunIdentity(context.Background(), tools.RunIdentityValue{UserID: "alice", AgentID: "a_orch"})
-	ctx = tools.WithChannelPolicy(ctx, tools.ChannelPolicyValue{
-		Subscribe: []string{"inbox"},
-		Channels:  map[string]tools.ChannelDef{"inbox": {Name: "inbox", Scope: "global", Semantic: "queue"}},
+	ctx = tools.UpdateRunPolicy(ctx, func(rp *tools.RunPolicy) {
+		rp.Channel = tools.ChannelPolicyValue{
+			Subscribe: []string{"inbox"},
+			Channels:  map[string]tools.ChannelDef{"inbox": {Name: "inbox", Scope: "global", Semantic: "queue"}},
+		}
 	})
 	return tool, ctx
 }

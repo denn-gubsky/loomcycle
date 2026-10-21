@@ -1041,20 +1041,6 @@ type ChannelDef struct {
 	Hooked bool
 }
 
-// WithChannelPolicy attaches the agent's resolved Channel policy to ctx.
-func WithChannelPolicy(ctx context.Context, p ChannelPolicyValue) context.Context {
-	return UpdateRunPolicy(ctx, func(rp *RunPolicy) { rp.Channel = p })
-}
-
-// ChannelPolicy returns the agent's Channel policy from ctx. Zero
-// value (nil Publish/Subscribe, empty Channels) means "no Channel
-// access" — the tool surfaces this as a clear "not configured"
-// refusal so operators see one explicit failure instead of a
-// stack-trace.
-func ChannelPolicy(ctx context.Context) ChannelPolicyValue {
-	return PolicyOf(ctx).Channel
-}
-
 // InterruptionPolicyValue is the per-agent Interruption access
 // policy (v0.8.16). Default-deny: an absent block means Enabled is
 // false and every Interruption op returns is_error with a clear
@@ -1075,21 +1061,13 @@ type InterruptionPolicyValue struct {
 	MaxPending int
 }
 
-// WithInterruptionPolicy attaches the agent's resolved Interruption
-// policy to ctx. The HTTP server's RunOnce / handleRuns wraps the
-// loop ctx with this so any Interruption.Execute downstream can
-// recover the policy in one call.
-func WithInterruptionPolicy(ctx context.Context, p InterruptionPolicyValue) context.Context {
-	return UpdateRunPolicy(ctx, func(rp *RunPolicy) { rp.Interruption = NewInterruptionPolicyHolder(p) })
-}
-
 // InterruptionPolicyHolder is a run's interruption policy that may change
 // while the run is going: a retune of a parked run takes effect at its next
 // operator turn, long after the loop's ctx was built. The ctx cannot be
 // replaced mid-run — it is threaded by value through the loop and into every
-// tool call — so the ctx carries this holder and the server swaps what it
-// holds. Safe for concurrent use: parallel tool calls read while the server
-// writes.
+// tool call — so the run's policy carries this holder (RunPolicy.Interruption)
+// and the server swaps what it holds. Safe for concurrent use: parallel tool
+// calls read while the server writes.
 type InterruptionPolicyHolder struct {
 	p atomic.Pointer[InterruptionPolicyValue]
 }
@@ -1115,21 +1093,6 @@ func (h *InterruptionPolicyHolder) Load() InterruptionPolicyValue {
 // Store replaces the policy every later Load sees.
 func (h *InterruptionPolicyHolder) Store(p InterruptionPolicyValue) {
 	h.p.Store(&p)
-}
-
-// WithInterruptionPolicyHolder attaches a live policy to ctx. It shares the
-// key WithInterruptionPolicy uses, so whichever was attached last wins — a
-// sub-agent's own fixed policy shadows its parent's holder.
-func WithInterruptionPolicyHolder(ctx context.Context, h *InterruptionPolicyHolder) context.Context {
-	return UpdateRunPolicy(ctx, func(p *RunPolicy) { p.Interruption = h })
-}
-
-// InterruptionPolicy returns the agent's Interruption policy from
-// ctx. Zero value (Enabled=false) means "not enabled" — the tool
-// surfaces this as a clear refusal so operators see one explicit
-// failure instead of a stack trace.
-func InterruptionPolicy(ctx context.Context) InterruptionPolicyValue {
-	return PolicyOf(ctx).Interruption.Load()
 }
 
 // ctxKeyDispatcher is the context key carrying the run's tool

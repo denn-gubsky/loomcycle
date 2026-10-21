@@ -50,19 +50,23 @@ func TestChannelIntegration_AgentScopeIsolatesPerAgent(t *testing.T) {
 	// Researcher: publish only.
 	researcherCtx := tools.WithAgentName(context.Background(), "researcher")
 	researcherCtx = tools.WithRunIdentity(researcherCtx, tools.RunIdentityValue{UserID: "alice"})
-	researcherCtx = tools.WithChannelPolicy(researcherCtx, tools.ChannelPolicyValue{
-		Publish:   []string{"findings"},
-		Subscribe: []string{},
-		Channels:  chans,
+	researcherCtx = tools.UpdateRunPolicy(researcherCtx, func(rp *tools.RunPolicy) {
+		rp.Channel = tools.ChannelPolicyValue{
+			Publish:   []string{"findings"},
+			Subscribe: []string{},
+			Channels:  chans,
+		}
 	})
 
 	// Analyst: subscribe only.
 	analystCtx := tools.WithAgentName(context.Background(), "analyst")
 	analystCtx = tools.WithRunIdentity(analystCtx, tools.RunIdentityValue{UserID: "alice"})
-	analystCtx = tools.WithChannelPolicy(analystCtx, tools.ChannelPolicyValue{
-		Publish:   []string{},
-		Subscribe: []string{"findings"},
-		Channels:  chans,
+	analystCtx = tools.UpdateRunPolicy(analystCtx, func(rp *tools.RunPolicy) {
+		rp.Channel = tools.ChannelPolicyValue{
+			Publish:   []string{},
+			Subscribe: []string{"findings"},
+			Channels:  chans,
+		}
 	})
 
 	// ---- (1) researcher publishes 3 findings ----
@@ -124,13 +128,17 @@ func TestChannelIntegration_UserScopedQueueSharedAcrossAgents(t *testing.T) {
 
 	researcherCtx := tools.WithAgentName(context.Background(), "researcher")
 	researcherCtx = tools.WithRunIdentity(researcherCtx, tools.RunIdentityValue{UserID: "alice"})
-	researcherCtx = tools.WithChannelPolicy(researcherCtx, tools.ChannelPolicyValue{
-		Publish: []string{"user-findings"}, Subscribe: []string{}, Channels: chans,
+	researcherCtx = tools.UpdateRunPolicy(researcherCtx, func(rp *tools.RunPolicy) {
+		rp.Channel = tools.ChannelPolicyValue{
+			Publish: []string{"user-findings"}, Subscribe: []string{}, Channels: chans,
+		}
 	})
 	analystCtx := tools.WithAgentName(context.Background(), "analyst")
 	analystCtx = tools.WithRunIdentity(analystCtx, tools.RunIdentityValue{UserID: "alice"})
-	analystCtx = tools.WithChannelPolicy(analystCtx, tools.ChannelPolicyValue{
-		Publish: []string{}, Subscribe: []string{"user-findings"}, Channels: chans,
+	analystCtx = tools.UpdateRunPolicy(analystCtx, func(rp *tools.RunPolicy) {
+		rp.Channel = tools.ChannelPolicyValue{
+			Publish: []string{}, Subscribe: []string{"user-findings"}, Channels: chans,
+		}
 	})
 
 	// Researcher publishes 3 messages.
@@ -170,8 +178,10 @@ func TestChannelIntegration_UserScopedQueueSharedAcrossAgents(t *testing.T) {
 	// Different user_id sees NOTHING (cursor isolated by user_id).
 	bobCtx := tools.WithAgentName(context.Background(), "analyst")
 	bobCtx = tools.WithRunIdentity(bobCtx, tools.RunIdentityValue{UserID: "bob"})
-	bobCtx = tools.WithChannelPolicy(bobCtx, tools.ChannelPolicyValue{
-		Publish: []string{}, Subscribe: []string{"user-findings"}, Channels: chans,
+	bobCtx = tools.UpdateRunPolicy(bobCtx, func(rp *tools.RunPolicy) {
+		rp.Channel = tools.ChannelPolicyValue{
+			Publish: []string{}, Subscribe: []string{"user-findings"}, Channels: chans,
+		}
 	})
 	res, _ = tool.Execute(bobCtx, json.RawMessage(`{"op":"subscribe","channel":"user-findings","max_messages":10}`))
 	got = decodeResult(t, res.Text)
@@ -200,11 +210,15 @@ func TestChannelIntegration_LongPollWakesOnPublish(t *testing.T) {
 
 	pubCtx := tools.WithAgentName(context.Background(), "pub")
 	pubCtx = tools.WithRunIdentity(pubCtx, tools.RunIdentityValue{UserID: "alice"})
-	pubCtx = tools.WithChannelPolicy(pubCtx, tools.ChannelPolicyValue{Publish: []string{"live"}, Subscribe: []string{}, Channels: chans})
+	pubCtx = tools.UpdateRunPolicy(pubCtx, func(rp *tools.RunPolicy) {
+		rp.Channel = tools.ChannelPolicyValue{Publish: []string{"live"}, Subscribe: []string{}, Channels: chans}
+	})
 
 	subCtx := tools.WithAgentName(context.Background(), "sub")
 	subCtx = tools.WithRunIdentity(subCtx, tools.RunIdentityValue{UserID: "alice"})
-	subCtx = tools.WithChannelPolicy(subCtx, tools.ChannelPolicyValue{Publish: []string{}, Subscribe: []string{"live"}, Channels: chans})
+	subCtx = tools.UpdateRunPolicy(subCtx, func(rp *tools.RunPolicy) {
+		rp.Channel = tools.ChannelPolicyValue{Publish: []string{}, Subscribe: []string{"live"}, Channels: chans}
+	})
 
 	// Subscriber: long-poll for up to 3 seconds.
 	done := make(chan time.Duration, 1)
