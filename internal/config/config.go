@@ -5137,6 +5137,9 @@ func LoadLayers(layers ...Layer) (*Config, error) {
 		}
 		src = append(src, l)
 	}
+	// Before any layer's text is ${...}-expanded.
+	denyDeclaredPrincipalBearers(src)
+
 	// primaryPath is the LAST disk-file layer — used for configDir + relative
 	// system_prompt_file resolution. Embedded layers (Data != nil) have no
 	// directory and never set it; a presets-only stack leaves it "" (relative
@@ -6667,7 +6670,8 @@ func ExpandEnvAllowed(name string) bool {
 		// The `sandbox` bundle forwards it in the sidecar's MCP Authorization header,
 		// and the sidecar authenticates against the same name — so both services use
 		// ONE env var instead of a LOOMCYCLE_-prefixed alias. Not a loomcycle infra
-		// secret (those are in expandDenyNames), so allowlisting it here is safe.
+		// secret (expandDenyNames) nor a principal's bearer (principalBearerEnvs),
+		// so allowlisting it here is safe.
 		"SANDBOX_AUTH_TOKEN":
 		return true
 	}

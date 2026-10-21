@@ -67,3 +67,86 @@ func (s *envNameSet) remove(name string) {
 	delete(s.m, name)
 	s.mu.Unlock()
 }
+
+// The YAML text is ${...}-expanded before the principals block is resolved, so
+// the FIRST load in a process must already know the principals' token_env
+// names, or a static header carries a principal's bearer to the server.
+func TestLoad_FirstLoadLeavesAPrincipalBearerLiteral(t *testing.T) {
+	const env = "LOOMCYCLE_FIRSTLOAD_CAROL_TOKEN"
+	t.Setenv(env, "carol_secret")
+	t.Cleanup(func() { principalBearerEnvs.remove(env) })
+	cfg, err := Load(writeCfg(t, `defaults: { provider: anthropic, model: claude-sonnet-4-6 }
+principals:
+  carol:
+    tenant: acme
+    subject: carol
+    scopes: [runs:read]
+    token_env: `+env+`
+mcp_servers:
+  peer:
+    transport: http
+    url: https://peer.example/mcp
+    headers:
+      Authorization: "Bearer ${`+env+`}"
+`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := cfg.MCPServers["peer"].Headers["Authorization"]; got != "Bearer ${"+env+"}" {
+		t.Errorf("first load interpolated a principal bearer into an MCP header: %q", got)
+	}
+}
+
+// Across layers too: the principal declared in a later layer still protects
+// its bearer from an earlier layer's text.
+func TestLoadLayers_PrincipalInALaterLayerProtectsAnEarlierOne(t *testing.T) {
+	const env = "LOOMCYCLE_LAYERS_DAN_TOKEN"
+	t.Setenv(env, "dan_secret")
+	t.Cleanup(func() { principalBearerEnvs.remove(env) })
+	dir := t.TempDir()
+	base := writeYAML(t, dir, "base.yaml", `defaults: { provider: anthropic, model: claude-sonnet-4-6 }
+mcp_servers:
+  peer:
+    transport: http
+    url: https://peer.example/mcp
+    headers:
+      Authorization: "Bearer ${`+env+`}"
+`)
+	top := writeYAML(t, dir, "top.yaml", `principals:
+  dan:
+    tenant: acme
+    subject: dan
+    scopes: [runs:read]
+    token_env: `+env+`
+`)
+	cfg, err := Load(base, top)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := cfg.MCPServers["peer"].Headers["Authorization"]; got != "Bearer ${"+env+"}" {
+		t.Errorf("an earlier layer interpolated a later layer's principal bearer: %q", got)
+	}
+}
+
+// Boot and reload must agree: a check that names a principal's bearer as a
+// credential source refuses it on the first load, as it does on a reload.
+func TestLoad_FirstLoadRefusesAPrincipalBearerAsACredentialSource(t *testing.T) {
+	const env = "LOOMCYCLE_FIRSTLOAD_ERIN_TOKEN"
+	t.Setenv(env, "erin_secret")
+	t.Cleanup(func() { principalBearerEnvs.remove(env) })
+	_, err := Load(writeCfg(t, `defaults: { provider: anthropic, model: claude-sonnet-4-6 }
+principals:
+  erin:
+    tenant: acme
+    subject: erin
+    scopes: [runs:read]
+    token_env: `+env+`
+change_subscriptions:
+  hook:
+    callback_url: https://hooks.example/cb
+    secret_env: `+env+`
+`))
+	if err == nil {
+		t.Fatal("first load accepted a principal's bearer as a change_subscriptions secret_env")
+	}
+}
