@@ -449,8 +449,7 @@ func providerListFromConfig(cfg configForDoctor) []string {
 
 // checkTokenPepper reports where the operator-token pepper comes from (RFC ES
 // D2). Doctor does not open the database, so it cannot count the token rows
-// still on a legacy hash; the server logs that count at every boot, which is
-// where an operator learns when LOOMCYCLE_TOKEN_LEGACY_HASH=off is safe.
+// still on an older hash; the server logs that at every boot.
 func checkTokenPepper(r *doctorRun, cfg configForDoctor, authOn bool) {
 	const label = "Token pepper"
 	h, err := cfg.TokenHasher()
@@ -462,11 +461,7 @@ func checkTokenPepper(r *doctorRun, cfg configForDoctor, authOn bool) {
 	case auth.PepperExplicit:
 		r.pass(label, "LOOMCYCLE_OPERATOR_TOKEN_PEPPER set")
 	case auth.PepperDerived:
-		if h.AcceptsUnpeppered() {
-			r.pass(label, "derived from LOOMCYCLE_SECRET_KEY; tokens minted before it move to it at their next login. The server logs at boot how many remain — set LOOMCYCLE_TOKEN_LEGACY_HASH=off once it reports none")
-		} else {
-			r.pass(label, "derived from LOOMCYCLE_SECRET_KEY; unpeppered token hashes refused (LOOMCYCLE_TOKEN_LEGACY_HASH=off)")
-		}
+		r.pass(label, "derived from LOOMCYCLE_SECRET_KEY; tokens minted before it are rewrapped under it when the server starts")
 	default:
 		if authOn {
 			r.warn(label, "none — anyone who can write the database can mint a working token; set LOOMCYCLE_SECRET_KEY (a pepper is derived from it) or LOOMCYCLE_OPERATOR_TOKEN_PEPPER")

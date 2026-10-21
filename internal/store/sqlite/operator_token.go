@@ -269,6 +269,37 @@ func (s *Store) OperatorTokenRehash(ctx context.Context, defID, oldHash, newHash
 	return n == 1, nil
 }
 
+func (s *Store) OperatorTokenRehashAll(ctx context.Context, ops []store.OperatorTokenRehashOp) (int, error) {
+	if len(ops) == 0 {
+		return 0, nil
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return 0, err
+	}
+	defer func() { _ = tx.Rollback() }()
+	changed := 0
+	for _, op := range ops {
+		if op.DefID == "" || op.OldHash == "" || op.NewHash == "" {
+			return 0, fmt.Errorf("operator_token_def rehash: def_id + old and new hash required")
+		}
+		res, err := tx.ExecContext(ctx,
+			`UPDATE operator_token_defs SET token_hash = ? WHERE def_id = ? AND token_hash = ?`, op.NewHash, op.DefID, op.OldHash)
+		if err != nil {
+			return 0, fmt.Errorf("operator_token_def rehash %q: %w", op.DefID, err)
+		}
+		n, err := res.RowsAffected()
+		if err != nil {
+			return 0, err
+		}
+		changed += int(n)
+	}
+	if err := tx.Commit(); err != nil {
+		return 0, err
+	}
+	return changed, nil
+}
+
 func (s *Store) OperatorTokenDefCountActiveAdmin(ctx context.Context) (int, error) {
 	conn, err := s.db.Conn(ctx)
 	if err != nil {

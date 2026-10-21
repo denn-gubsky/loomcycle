@@ -517,6 +517,7 @@ func Run(t *testing.T, factory Factory) {
 		{"OperatorTokenDefListNames", testOperatorTokenDefListNames},
 		{"OperatorTokenDefListBySubject", testOperatorTokenDefListBySubject},
 		{"OperatorTokenRehashIsACompareAndSet", testOperatorTokenRehashIsACompareAndSet},
+		{"OperatorTokenRehashAllIsAllOrNothing", testOperatorTokenRehashAllIsAllOrNothing},
 		{"OperatorTokenDefExpiry", testOperatorTokenDefExpiry},
 		{"OperatorTokenDefDeleteExpired", testOperatorTokenDefDeleteExpired},
 		{"OperatorTokenDefDeleteExpiredKeepsEachTenant", testOperatorTokenDefDeleteExpiredKeepsEachTenant},
@@ -13907,6 +13908,66 @@ func testOperatorTokenRehashIsACompareAndSet(t *testing.T, s store.Store) {
 	// The other row is untouched.
 	if other, err := s.OperatorTokenDefGetByTokenHash(ctx, "hash-other"); err != nil || other.DefID != "ot-rh-other" {
 		t.Errorf("unrelated row disturbed: %+v %v", other, err)
+	}
+}
+
+// OperatorTokenRehashAll applies its compare-and-sets in one transaction (RFC
+// ES F3: the boot rewrap). A batch that fails part-way changes nothing — a
+// partly rewrapped table would mark itself as already on the derived pepper
+// and strand the rest — and an op whose row moved on is a no-op, so a second
+// replica running the same batch changes nothing either.
+func testOperatorTokenRehashAllIsAllOrNothing(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	for _, r := range []store.OperatorTokenDefRow{
+		mkOperatorTokenDef("ot-ra-1", "ra1", "acme", "ra1", "ra-old-1", nil),
+		mkOperatorTokenDef("ot-ra-2", "ra2", "acme", "ra2", "ra-old-2", nil),
+		mkOperatorTokenDef("ot-ra-3", "ra3", "acme", "ra3", "ra-taken", nil),
+	} {
+		if _, err := s.OperatorTokenDefCreate(ctx, r); err != nil {
+			t.Fatalf("create %s: %v", r.DefID, err)
+		}
+	}
+	hashOf := func(id string) string {
+		t.Helper()
+		r, err := s.OperatorTokenDefGet(ctx, id)
+		if err != nil {
+			t.Fatalf("get %s: %v", id, err)
+		}
+		return r.TokenHash
+	}
+
+	// The second op collides with another row's hash (token_hash is unique):
+	// the first must not land either.
+	if _, err := s.OperatorTokenRehashAll(ctx, []store.OperatorTokenRehashOp{
+		{DefID: "ot-ra-1", OldHash: "ra-old-1", NewHash: "ra-new-1"},
+		{DefID: "ot-ra-2", OldHash: "ra-old-2", NewHash: "ra-taken"},
+	}); err == nil {
+		t.Fatal("a batch with a colliding hash succeeded")
+	}
+	if got := hashOf("ot-ra-1"); got != "ra-old-1" {
+		t.Fatalf("a failed batch changed ot-ra-1 to %q", got)
+	}
+
+	ops := []store.OperatorTokenRehashOp{
+		{DefID: "ot-ra-1", OldHash: "ra-old-1", NewHash: "ra-new-1"},
+		{DefID: "ot-ra-2", OldHash: "ra-stale", NewHash: "ra-new-2"},
+		{DefID: "ot-ra-none", OldHash: "ra-old-1", NewHash: "ra-new-x"},
+	}
+	if n, err := s.OperatorTokenRehashAll(ctx, ops); err != nil || n != 1 {
+		t.Fatalf("batch = (%d, %v), want (1, nil): only the op whose old hash matches lands", n, err)
+	}
+	if got := hashOf("ot-ra-1"); got != "ra-new-1" {
+		t.Errorf("ot-ra-1 = %q, want ra-new-1", got)
+	}
+	if got := hashOf("ot-ra-2"); got != "ra-old-2" {
+		t.Errorf("a stale op changed ot-ra-2 to %q", got)
+	}
+	// The same batch again (another replica): nothing left to change.
+	if n, err := s.OperatorTokenRehashAll(ctx, ops); err != nil || n != 0 {
+		t.Errorf("repeated batch = (%d, %v), want (0, nil)", n, err)
+	}
+	if n, err := s.OperatorTokenRehashAll(ctx, nil); err != nil || n != 0 {
+		t.Errorf("empty batch = (%d, %v), want (0, nil)", n, err)
 	}
 }
 

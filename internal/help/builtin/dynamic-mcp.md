@@ -90,8 +90,10 @@ expands every `${NAME}` in `url`, `headers` and a stdio server's
 `LOOMCYCLE_PEER_KEY_<tenant>`, `GITHUB_TOKEN`, and so on. So:
 
 - An **admin** (a `substrate:admin` token, or the operator on an
-  unauthenticated open-mode / stdio surface) may store any `${NAME}`.
-- **Anyone else** (a `substrate:tenant` token, an agent in a run) is
+  unauthenticated open-mode / stdio surface), calling from outside a run,
+  may store any `${NAME}`.
+- **Anyone else** (a `substrate:tenant` token, an agent in a run — even a
+  run an admin's token started) is
   refused at `create` / `fork` for any `${NAME}`, including one nested
   in a default such as `${run.credentials.x:-${LOOMCYCLE_Y}}`. Use
   `${run.credentials.<name>}` (a credential the run supplies) or

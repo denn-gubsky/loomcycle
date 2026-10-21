@@ -24,7 +24,7 @@ func TestEnvTokenHasher_ExplicitPepperWinsOverTheSecretKey(t *testing.T) {
 	}
 }
 
-func TestEnvTokenHasher_DerivesFromTheSecretKeyWithBothLegacyCandidates(t *testing.T) {
+func TestEnvTokenHasher_DerivesFromTheSecretKeyAndThePreviousOne(t *testing.T) {
 	e := &Env{SecretKey: pepperTestKey(1), SecretKeyPrevious: pepperTestKey(2)}
 	h, err := e.TokenHasher()
 	if err != nil {
@@ -32,16 +32,12 @@ func TestEnvTokenHasher_DerivesFromTheSecretKeyWithBothLegacyCandidates(t *testi
 	}
 	cur, _ := credential.DeriveTokenPepper(pepperTestKey(1))
 	prev, _ := credential.DeriveTokenPepper(pepperTestKey(2))
-	want := auth.NewTokenHasher("", cur, prev, true)
+	want := auth.NewTokenHasher("", cur, prev)
 	if h.Source() != auth.PepperDerived || h.Hash("lct_x") != want.Hash("lct_x") {
 		t.Fatalf("source=%q: not the pepper derived from LOOMCYCLE_SECRET_KEY", h.Source())
 	}
-	if got := h.LegacyHashes("lct_x"); len(got) != 2 {
-		t.Errorf("legacy candidates = %d, want 2 (previous key, unpeppered)", len(got))
-	}
-	e.TokenLegacyHashOff = true
-	if h, _ := e.TokenHasher(); h.AcceptsUnpeppered() || len(h.LegacyHashes("lct_x")) != 1 {
-		t.Error("LOOMCYCLE_TOKEN_LEGACY_HASH=off must drop only the unpeppered candidate")
+	if got := h.PreviousHashes("lct_x"); len(got) != 2 || got[0] != want.PreviousHashes("lct_x")[0] {
+		t.Errorf("previous forms = %q, want those of the pepper LOOMCYCLE_SECRET_KEY_PREVIOUS derives", got)
 	}
 }
 
@@ -51,18 +47,5 @@ func TestEnvTokenHasher_MalformedSecretKeyIsAnError(t *testing.T) {
 	}
 	if _, err := (&Env{SecretKey: pepperTestKey(1), SecretKeyPrevious: "short"}).TokenHasher(); err == nil {
 		t.Error("a malformed LOOMCYCLE_SECRET_KEY_PREVIOUS must be an error")
-	}
-}
-
-func TestLoadEnv_TokenLegacyHashOffReadsTheEnvVar(t *testing.T) {
-	for v, want := range map[string]bool{"off": true, "OFF": true, "": false, "on": false} {
-		t.Setenv("LOOMCYCLE_TOKEN_LEGACY_HASH", v)
-		cfg, err := loadYAMLString(t, "agents: {}\n")
-		if err != nil {
-			t.Fatal(err)
-		}
-		if got := cfg.Env.TokenLegacyHashOff; got != want {
-			t.Errorf("LOOMCYCLE_TOKEN_LEGACY_HASH=%q → %v, want %v", v, got, want)
-		}
 	}
 }

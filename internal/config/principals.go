@@ -5,6 +5,8 @@ import (
 	"os"
 	"sort"
 
+	"gopkg.in/yaml.v3"
+
 	"github.com/denn-gubsky/loomcycle/internal/auth"
 	"github.com/denn-gubsky/loomcycle/internal/dynvol"
 )
@@ -146,10 +148,11 @@ func resolvePrincipals(c *Config) error {
 		// header/url/env referencing ${LOOMCYCLE_ALICE_TOKEN} would exfiltrate
 		// the bearer to the server host (the same S1 exfil class the denylist
 		// closes for the built-in infra secrets, never extended to the newer
-		// per-principal tokens). Written once at config-load, before any runtime
-		// ExpandEnv reader (the MCPServerDef path); denied even for an inert
-		// (empty-at-boot) principal so the name is permanently non-interpolatable.
-		expandDenyNames[def.TokenEnv] = true
+		// per-principal tokens). Denied even for an inert (empty-at-boot)
+		// principal so the name is permanently non-interpolatable. A load has
+		// already added it from the raw text (denyDeclaredPrincipalBearers),
+		// before expansion; this covers a Config resolved without a load.
+		principalBearerEnvs.add(def.TokenEnv)
 		if bad := auth.UnknownScopes(def.Scopes); len(bad) > 0 {
 			return fmt.Errorf("principals.%s: unknown scope(s) %v (not in the closed catalog)", name, bad)
 		}
@@ -227,6 +230,43 @@ func (c *Config) AdminPrincipalResolved() bool {
 		}
 	}
 	return false
+}
+
+// denyDeclaredPrincipalBearers adds every principals.*.token_env named in the
+// layers' RAW text to principalBearerEnvs. It must run before any layer is
+// ${...}-expanded: expansion happens on the text, long before validate reaches
+// resolvePrincipals, so without it the first load in a process interpolated a
+// principal's bearer into, say, a static MCP header, and checks that refuse a
+// bearer as a credential source passed at boot and failed on reload. All layers
+// are scanned first, because a principal declared in a later layer must protect
+// its bearer from an earlier layer's text.
+//
+// Best effort by design: a layer that cannot be read or parsed is skipped (the
+// load itself reports it), and a name stays denied even when the load fails —
+// the set only ever widens.
+func denyDeclaredPrincipalBearers(layers []Layer) {
+	for _, l := range layers {
+		raw := l.Data
+		if raw == nil {
+			b, err := os.ReadFile(l.Name)
+			if err != nil {
+				continue
+			}
+			raw = b
+		}
+		var doc struct {
+			Principals map[string]struct {
+				TokenEnv string `yaml:"token_env"`
+			} `yaml:"principals"`
+		}
+		// A partial decode still yields the names it reached.
+		_ = yaml.Unmarshal(raw, &doc)
+		for _, p := range doc.Principals {
+			if p.TokenEnv != "" {
+				principalBearerEnvs.add(p.TokenEnv)
+			}
+		}
+	}
 }
 
 // PrincipalTenants returns the distinct tenant ids the `principals:` block

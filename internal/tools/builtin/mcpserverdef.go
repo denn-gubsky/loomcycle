@@ -86,7 +86,7 @@ const mcpServerDefDescription = `Register, fork, promote, retire, rediscover, an
 	`allowlist. create/fork auto-discover the upstream's tools (tools/list) at ingestion ` +
 	`(best-effort; opt out with discover:false), so a separate rediscover is only needed to ` +
 	`refresh a changed tool surface. A ${NAME} reference in url, headers or a stdio command/args/env ` +
-	`reads the server's environment when it dials, so only an admin may store one; anyone else uses ` +
+	`reads the server's environment when it dials, so only an admin, outside a run, may store one; anyone else uses ` +
 	`${run.credentials.<name>} or $cred:<name>. A stored definition holding one that an admin did not ` +
 	`save is logged as a warning, and the server may be set to refuse to dial it. ` +
 	`Operations: create, fork, get, list, retire, promote, rediscover, verify.`
@@ -854,12 +854,12 @@ func (m *MCPServerDef) execVerify(ctx context.Context, in mcpServerDefInput) (to
 // re-derives it from its own author. Not applied by snapshot restore, an
 // admin-only action that writes the source's bit as it was.
 //
-// Operator authority counts only off-run: a run started with an admin bearer
-// carries that principal into its tool calls, but the model inside the run is
-// not the operator, and the bit both expands the server environment and skips
-// the MCP egress guard at dial.
+// Operator authority counts only off-run (callerHasOperatorAuthority): a run
+// started with an admin bearer carries that principal into its tool calls, but
+// the model inside the run is not the operator, and the bit both expands the
+// server environment and skips the MCP egress guard at dial.
 func (m *MCPServerDef) bindOperatorEnv(ctx context.Context, name string, def, parent *mcpServerOverlay) error {
-	def.OperatorAuthored = (callerHasOperatorAuthority(ctx) && tools.RunID(ctx) == "") || m.keepsOperatorConnection(name, *def, parent)
+	def.OperatorAuthored = callerHasOperatorAuthority(ctx) || m.keepsOperatorConnection(name, *def, parent)
 	if def.OperatorAuthored {
 		return nil
 	}

@@ -85,7 +85,7 @@ const scheduleDefDescription = `Author, fork, retire, and inspect schedule defin
 	`skipped_overlap when a slot found one still going), active_runs (every run it started and has not finished, with ` +
 	`its slot and whether it is a catch-up run) and missed_slots (how many slots the last outage dropped). ` +
 	`The definition's tenant_id is the tenant its fired runs execute in: it defaults to your own tenant, ` +
-	`and only an admin may set it to another tenant (a fork or hook edit that would keep another tenant's is refused too). ` +
+	`and only an admin, outside a run, may set it to another tenant (a fork or hook edit that would keep another tenant's is refused too). ` +
 	`A definition carrying capture_disabled was restored from a snapshot without its literal user_credentials: ` +
 	`it stays disabled until a fork, or a create on the same name, re-supplies EVERY key listed there and sets ` +
 	`enabled: true. A key counts as a non-blank user_credentials value, or a user_credentials_from_env variable ` +
