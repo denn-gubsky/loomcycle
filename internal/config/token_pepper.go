@@ -14,7 +14,7 @@ import (
 // closed.
 func (e *Env) TokenHasher() (auth.TokenHasher, error) {
 	if e.OperatorTokenPepper != "" {
-		return auth.NewTokenHasher(e.OperatorTokenPepper, "", "", false), nil
+		return auth.NewTokenHasher(e.OperatorTokenPepper, "", ""), nil
 	}
 	cur, err := credential.DeriveTokenPepper(e.SecretKey)
 	if err != nil {
@@ -24,5 +24,5 @@ func (e *Env) TokenHasher() (auth.TokenHasher, error) {
 	if err != nil {
 		return auth.TokenHasher{}, fmt.Errorf("LOOMCYCLE_SECRET_KEY_PREVIOUS: %w", err)
 	}
-	return auth.NewTokenHasher("", cur, prev, !e.TokenLegacyHashOff), nil
+	return auth.NewTokenHasher("", cur, prev), nil
 }

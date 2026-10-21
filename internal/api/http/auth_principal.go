@@ -389,7 +389,7 @@ func (s *Server) resolvePrincipal(ctx context.Context, bearer string) (auth.Prin
 
 // resolvePrincipalUncached is the resolution itself: token substrate
 // first (indexed peppered-hash lookup, honoring the rotation grace
-// window; on a miss, the legacy hashes of lookupLegacyToken), then the
+// window; on a miss, the older forms of lookupOlderTokenForm), then the
 // legacy LOOMCYCLE_AUTH_TOKEN fallback (disabled once an admin-scoped
 // token exists — the no-lockout migration gate). Returns
 // (_, false) for unknown/expired/invalid — the caller maps that to an
@@ -404,19 +404,13 @@ func (s *Server) resolvePrincipal(ctx context.Context, bearer string) (auth.Prin
 // at that instant rather than at the end of its own TTL.
 func (s *Server) resolvePrincipalUncached(ctx context.Context, h auth.TokenHasher, bearer, hash string) (auth.Principal, bool, bool, time.Time) {
 	var never time.Time
-	// A refusal that went through the legacy-hash lookups is not cached
-	// (RFC ES D2; see lookupLegacyToken).
+	// A refusal that went through the older-form lookups is not cached
+	// (RFC ES F3; see lookupOlderTokenForm).
 	negativeCacheable := true
 	if s.store != nil {
-		// Read BEFORE the lookup: a concurrent first login of this same token
-		// may rehash the row and empty the set while it runs.
-		legacyActive := h.HasLegacyCandidates() && !s.legacyTokens.empty()
 		row, err := s.store.OperatorTokenDefGetByTokenHash(ctx, hash)
-		if err == nil {
-			// On the current hash: no longer a legacy candidate (RFC ES D2).
-			s.legacyTokens.forget(row.DefID)
-		} else if isNotFound(err) && legacyActive {
-			row, err = s.lookupLegacyToken(ctx, h, bearer, hash, err)
+		if isNotFound(err) && (s.wrappedTokens.Load() || h.HasPrevious()) {
+			row, err = s.lookupOlderTokenForm(ctx, h, bearer, hash, err)
 			negativeCacheable = false
 		}
 		if err == nil {
@@ -481,7 +475,7 @@ func (s *Server) resolvePrincipalUncached(ctx context.Context, h auth.TokenHashe
 			Legacy:   true,
 		}, true, true, never
 	}
-	return auth.Principal{}, false, negativeCacheable, never // genuine unknown → cacheable negative, unless the legacy lookups ran
+	return auth.Principal{}, false, negativeCacheable, never // genuine unknown → cacheable negative, unless the older-form lookups ran
 }
 
 // legacyFallbackDisabled reports whether the LOOMCYCLE_AUTH_TOKEN path is

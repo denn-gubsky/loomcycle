@@ -4337,6 +4337,13 @@ type OperatorTokenStore interface {
 	// edited. Used to move a token minted under a legacy pepper onto the
 	// current one at its first login (RFC ES D2).
 	OperatorTokenRehash(ctx context.Context, defID, oldHash, newHash string) (bool, error)
+	// OperatorTokenRehashAll applies each op as OperatorTokenRehash does, all
+	// in one transaction, and reports how many rows changed. An error rolls
+	// every op back. Used for the boot rewrap of unpeppered token hashes
+	// (RFC ES F3), which must not stop part-way: a partly rewrapped table
+	// reads as one already on the derived pepper, and the rest would never be
+	// rewrapped.
+	OperatorTokenRehashAll(ctx context.Context, ops []OperatorTokenRehashOp) (int, error)
 	// OperatorTokenDefCountActiveAdmin counts tokens that still authenticate
 	// (not retired, not expired) whose allowed_scopes include
 	// "substrate:admin" (the no-lockout guard).
@@ -6477,6 +6484,14 @@ type OperatorTokenDefNameSummary struct {
 	TokenCount  int       `json:"token_count"`  // including rotated/retired history
 	HasCurrent  bool      `json:"has_current"`  // a non-retired token exists
 	LastUpdated time.Time `json:"last_updated"` // newest created_at for the name
+}
+
+// OperatorTokenRehashOp is one compare-and-set of OperatorTokenRehashAll:
+// move DefID's token_hash from OldHash to NewHash if it still carries OldHash.
+type OperatorTokenRehashOp struct {
+	DefID   string
+	OldHash string
+	NewHash string
 }
 
 // MemoryBackendDefActiveEntry mirrors WebhookDefActiveEntry.

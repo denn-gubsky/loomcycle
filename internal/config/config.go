@@ -3992,13 +3992,6 @@ type Env struct {
 	// a rotation grace window: rows sealed under it still decrypt while new
 	// writes use SecretKey. Optional. Secret.
 	SecretKeyPrevious string
-	// TokenLegacyHashOff (LOOMCYCLE_TOKEN_LEGACY_HASH=off) stops a token lookup
-	// from trying the UNPEPPERED hash a row minted before the derived pepper
-	// may carry. Default: tried, for rows on it at boot, and rehashed on a hit
-	// (RFC ES D2). The hash under the pepper SecretKeyPrevious derives is
-	// tried whenever that key is set, whatever this says — dropping it would
-	// log every token out at the next key rotation.
-	TokenLegacyHashOff bool
 	// AuditLogPath is the JSONL sink for OperatorTokenDef mutations
 	// (RFC L). Empty = no file audit (a NopSink is wired).
 	AuditLogPath string
@@ -5245,7 +5238,6 @@ func LoadLayers(layers ...Layer) (*Config, error) {
 		OperatorTokenPepper:         os.Getenv("LOOMCYCLE_OPERATOR_TOKEN_PEPPER"),
 		SecretKey:                   os.Getenv("LOOMCYCLE_SECRET_KEY"),
 		SecretKeyPrevious:           os.Getenv("LOOMCYCLE_SECRET_KEY_PREVIOUS"),
-		TokenLegacyHashOff:          strings.EqualFold(strings.TrimSpace(os.Getenv("LOOMCYCLE_TOKEN_LEGACY_HASH")), "off"),
 		AuditLogPath:                os.Getenv("LOOMCYCLE_AUDIT_LOG_PATH"),
 		AuthVerbose:                 os.Getenv("LOOMCYCLE_AUTH_VERBOSE") == "1",
 		OperatorKeyRestriction:      os.Getenv("LOOMCYCLE_OPERATOR_KEY_RESTRICTION") == "1",
