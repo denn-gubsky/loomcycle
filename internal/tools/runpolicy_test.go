@@ -108,7 +108,7 @@ func TestRunPolicy_InheritNarrows(t *testing.T) {
 			{8, 2, 2}, // the child's own smaller cap wins (H4)
 			{2, 8, 2}, // never wider than the parent's
 			{4, 0, 4}, // a child with no cap of its own runs under the parent's
-			{0, 3, 0}, // no run cap above: the definition decides, by name
+			{0, 3, 3}, // no run cap above: the child's own definition's
 			{0, 0, 0},
 		} {
 			got := RunPolicy{FanoutCap: c.parent}.Inherit(ChildGrant{Own: RunPolicy{FanoutCap: c.own}}).FanoutCap

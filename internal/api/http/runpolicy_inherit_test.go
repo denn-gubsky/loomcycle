@@ -11,6 +11,7 @@ import (
 
 	"github.com/denn-gubsky/loomcycle/internal/config"
 	"github.com/denn-gubsky/loomcycle/internal/providers"
+	"github.com/denn-gubsky/loomcycle/internal/store"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
 	"github.com/denn-gubsky/loomcycle/internal/tools/builtin"
 )
@@ -220,5 +221,39 @@ func TestResume_SubRunPolicyMatchesItsLiveSpawn(t *testing.T) {
 	}
 	if !reflect.DeepEqual(resumed, live) {
 		t.Errorf("the resumed sub-run's policy differs from the one it ran with live:\n resumed %+v\n live    %+v", resumed, live)
+	}
+}
+
+// A child under a parent with no run cap of its own fans out at its OWN
+// definition's width, the one it was spawned with. The cap used to be dropped
+// to 0 there, which sends the lookup to whatever the agent's NAME resolves to
+// at spawn time: a version promoted since, or one without the pinned
+// version's cap.
+func TestPrepareSubRun_ChildKeepsItsOwnFanoutCapUnderAnUncappedParent(t *testing.T) {
+	h := newReviewHarness(t)
+	cfg := h.srv.cfg()
+	cfg.Agents["child"] = config.AgentDef{Model: "stub-model", SystemPrompt: "c", Tools: []string{"Agent"}, MaxConcurrentChildren: 2}
+	prep, err := h.srv.prepareSubRunValues(tools.WithRunID(context.Background(), "r_parent"), "child", nameFromAgentTool, "", "go", "", false, func(providers.Event) {}, nil, nil, false, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer prep.cleanup()
+	// The name now resolves to a definition with no cap of its own.
+	cfg.Agents["child"] = config.AgentDef{Model: "stub-model", SystemPrompt: "c", Tools: []string{"Agent"}}
+	if got := serverAgentTool(t, h.srv).CapLookup(prep.LoopCtx, "child"); got != 2 {
+		t.Errorf("the child's parallel_spawn cap is %d; it was spawned under a definition allowing 2", got)
+	}
+}
+
+// The same on resume: a sub-run whose record says its ancestors set no cap
+// resumes at its definition's width, not at whatever its name resolves to.
+func TestResume_SubRunKeepsItsOwnFanoutCapUnderAnUncappedParent(t *testing.T) {
+	h := newReviewHarness(t)
+	run := store.Run{ID: "r_child", Agent: "child", ParentRunID: "r_parent", UserID: "u1"}
+	rec := runConfigRecord{Spawn: &spawnRecord{}} // FanoutCap 0: the parent had none
+	def := config.AgentDef{Model: "stub-model", MaxConcurrentChildren: 2}
+	ctx := tools.WithRunIdentity(context.Background(), tools.RunIdentityValue{UserID: "u1"})
+	if got := h.srv.resumedPolicySource(ctx, run, rec, def).FanoutCap; got != 2 {
+		t.Errorf("the resumed sub-run's fan-out cap is %d; its definition allows 2", got)
 	}
 }

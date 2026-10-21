@@ -600,7 +600,7 @@ type spawnRecord struct {
 	Volumes volumeCeilingRecord `json:"volumes"`
 	// FanoutCap is the parallel_spawn width the child runs with: its parent's
 	// run cap narrowed by its own definition's (tools.NarrowFanoutCap); 0 when
-	// its ancestors set none and its definition decides.
+	// neither sets one and the cap lookup resolves the agent by name.
 	FanoutCap int `json:"fanout_cap,omitempty"`
 	// Resident marks a resident child (Agent op=open): a resume rebuilds it as
 	// one — parked between its parent's sends, reachable by its run id.

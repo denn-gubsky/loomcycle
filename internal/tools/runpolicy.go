@@ -198,7 +198,7 @@ var inheritRules = map[string]inheritRule{
 	"Evaluation":         ruleOwn,     //
 	"Crypto":             ruleNarrow,  // the child's own scopes its parent also holds
 	"OperatorAuthored":   ruleOwn,     //
-	"FanoutCap":          ruleNarrow,  // min(parent, child) when both are set
+	"FanoutCap":          ruleNarrow,  // min(parent, child) when both are set, else the one set
 	"Overrides":          ruleInherit, // only a child of the same definition takes them
 	"Compaction":         ruleMerge,   // parent wins per field, then this spawn's override
 	"Context":            ruleMerge,   // parent wins per field
@@ -262,14 +262,18 @@ func (p RunPolicy) Inherit(c ChildGrant) RunPolicy {
 }
 
 // NarrowFanoutCap is a child's parallel_spawn width: the smaller of its
-// parent's run cap and its own definition's when both are set, the parent's
-// when only it is, and 0 — the definition decides, by name, at spawn time —
-// when the parent set none. A child never fans out wider than an ancestor
-// allowed, nor wider than its own definition says.
+// parent's run cap and its own definition's when both are set, and whichever
+// one is set otherwise. A child never fans out wider than an ancestor allowed,
+// nor wider than the definition it was spawned (or resumed) under says. 0 only
+// when neither is set: then the cap lookup resolves the agent by name.
+//
+// The child's own cap is kept under an uncapped parent rather than left to that
+// name lookup, which reads whatever the name resolves to now — a version
+// promoted since the spawn, or not the version a def_id pin ran.
 func NarrowFanoutCap(parent, own int) int {
 	switch {
 	case parent <= 0:
-		return 0
+		return max(own, 0)
 	case own > 0 && own < parent:
 		return own
 	default:
