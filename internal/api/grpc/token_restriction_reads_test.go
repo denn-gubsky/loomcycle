@@ -8,9 +8,12 @@ import (
 
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
+	"google.golang.org/protobuf/encoding/prototext"
+	"google.golang.org/protobuf/proto"
 
 	"github.com/denn-gubsky/loomcycle/internal/api/grpc/loomcyclepb"
 	"github.com/denn-gubsky/loomcycle/internal/auth"
+	"github.com/denn-gubsky/loomcycle/internal/awaited"
 	"github.com/denn-gubsky/loomcycle/internal/store"
 )
 
@@ -169,5 +172,43 @@ func TestGrpcListUserAgents_RestrictedTruncatedDoesNotRevealHiddenRuns(t *testin
 	if err != nil || len(resp.GetAgents()) != userAgentsListMax || resp.GetTruncated() {
 		t.Errorf("restricted ListUserAgents = %d runs, truncated %v, err %v; want its %d runs and no truncated",
 			len(resp.GetAgents()), resp.GetTruncated(), err, userAgentsListMax)
+	}
+}
+
+// An isolated member may list only its own runs, and its listing of another
+// user is the listing of a user with no runs — `truncated` included. The scan
+// behind awaited_states reads that user's rows before dropping each one, so
+// with more of them than the scan bound it used to come back truncated, which
+// says the other user has runs.
+func TestGrpcListUserAgents_IsolatedCrossUserReadsAsAUserWithNoRuns(t *testing.T) {
+	adapter, _, st, _ := ownershipGRPC(t)
+	ctx := context.Background()
+	for i := 0; i <= awaited.ScanCap; i++ {
+		sess, err := st.CreateSession(ctx, "acme", "default", "bob")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := st.CreateRun(ctx, sess.ID, store.RunIdentity{AgentID: fmt.Sprintf("a_bob_%d", i), UserID: "bob", TenantID: "acme"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	alice := scopedCtx("acme", "alice", auth.ScopeUser, auth.ScopeRunsRead)
+	for name, req := range map[string]*loomcyclepb.ListUserAgentsRequest{
+		"awaited": {AwaitedStates: []string{"channel"}},
+		"plain":   {},
+	} {
+		list := func(user string) string {
+			t.Helper()
+			r := proto.Clone(req).(*loomcyclepb.ListUserAgentsRequest)
+			r.UserId = user
+			resp, err := adapter.ListUserAgents(alice, r)
+			if err != nil {
+				t.Fatalf("%s ListUserAgents(%s): %v", name, user, err)
+			}
+			return prototext.Format(resp)
+		}
+		if got, empty := list("bob"), list("nobody"); got != empty {
+			t.Errorf("%s: isolated listing of another user = %q, want exactly a user with no runs: %q", name, got, empty)
+		}
 	}
 }

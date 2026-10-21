@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
@@ -371,6 +373,38 @@ func TestRestrictedToken_ListingDoesNotRevealHiddenRunsThroughTruncated(t *testi
 	for _, path := range []string{"/v1/users/dev/agents?status=all", "/v1/users/dev/agents?awaited_state=channel"} {
 		if code, body := bearerCall(t, ts, restrictedBearer, "GET", path, ""); code != 200 || body != empty {
 			t.Errorf("restricted %s = %d %s, want exactly a user with no runs: %s", path, code, body, empty)
+		}
+	}
+}
+
+// Guard: an isolated member's listing of another user reads exactly as the
+// listing of a user with no runs, `truncated` included, on both the plain and
+// the awaited_state listing — however many runs that user has.
+func TestListUserAgents_IsolatedCrossUserReadsAsAUserWithNoRuns(t *testing.T) {
+	srv, mux := runReadServer(t)
+	srv.awaitedScanCap = 5
+	for i := 0; i < 2*userAgentsListMax; i++ {
+		addRun(t, srv.store, "acme", "bob", fmt.Sprintf("a_bob_%d", i), "")
+	}
+	// Also a scoped principal with no tenant: the store reads tenant "" as
+	// every tenant, so its scan reads acme's rows and must not say so.
+	for name, ctx := range map[string]context.Context{
+		"isolated member": principalCtx("acme", "alice", auth.ScopeUser, auth.ScopeRunsRead),
+		"no-tenant":       principalCtx("", "op", auth.ScopeRunsRead),
+	} {
+		list := func(path string) string {
+			t.Helper()
+			rec := httptest.NewRecorder()
+			mux.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, path, nil).WithContext(ctx))
+			if rec.Code != http.StatusOK {
+				t.Fatalf("%s %s = %d %s, want a listing", name, path, rec.Code, rec.Body)
+			}
+			return rec.Body.String()
+		}
+		for _, q := range []string{"?status=all", "?awaited_state=channel"} {
+			if got, empty := list("/v1/users/bob/agents"+q), list("/v1/users/nobody/agents"+q); got != empty {
+				t.Errorf("%s listing of another user%s = %s, want exactly a user with no runs: %s", name, q, got, empty)
+			}
 		}
 	}
 }
