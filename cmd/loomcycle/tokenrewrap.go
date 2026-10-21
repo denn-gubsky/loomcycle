@@ -17,7 +17,9 @@ const tokenRewrapLogMaxIDs = 50
 // minted stands out.
 func logTokenRewrap(rep lchttp.TokenRewrapReport) {
 	if len(rep.Rewrapped) > 0 {
-		log.Printf("auth: rewrapped %d unpeppered token hash(es) under the derived pepper; def_ids: %s",
+		// An untagged row may also be from an explicit pepper since removed;
+		// the two are indistinguishable, and that kind does not come back.
+		log.Printf("auth: rewrapped %d untagged token hash(es) under the derived pepper — tokens minted with no pepper keep working; any minted under a since-removed LOOMCYCLE_OPERATOR_TOKEN_PEPPER stay invalid; def_ids: %s",
 			len(rep.Rewrapped), capIDs(rep.Rewrapped))
 	}
 	log.Printf("auth: tokens moving to the current pepper at their next login: %d wrapped, %d under a previous LOOMCYCLE_SECRET_KEY",

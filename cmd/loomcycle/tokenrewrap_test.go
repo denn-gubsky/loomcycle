@@ -32,7 +32,7 @@ func TestLogTokenRewrap_ListsRewrappedAndRefusedRowsCapped(t *testing.T) {
 		logTokenRewrap(lchttp.TokenRewrapReport{Rewrapped: many, Wrapped: len(many), Previous: 2, OtherKey: 1, Refused: []string{"def_forged"}})
 	})
 	for _, want := range []string{
-		fmt.Sprintf("rewrapped %d unpeppered token hash(es)", len(many)),
+		fmt.Sprintf("rewrapped %d untagged token hash(es)", len(many)),
 		"def_000", "and 3 more",
 		fmt.Sprintf("%d wrapped, 2 under a previous LOOMCYCLE_SECRET_KEY", len(many)),
 		"1 token(s) hashed under a LOOMCYCLE_SECRET_KEY that is neither",

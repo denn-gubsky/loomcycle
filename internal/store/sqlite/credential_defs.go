@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"time"
 
 	"github.com/denn-gubsky/loomcycle/internal/store"
@@ -112,4 +113,23 @@ func (s *Store) CredentialDefDelete(ctx context.Context, tenantID, scope, scopeI
 		return false, err
 	}
 	return n > 0, nil
+}
+
+func (s *Store) SystemMarkerGet(ctx context.Context, name string) (bool, error) {
+	_, err := s.CredentialDefGet(ctx, "", store.SystemMarkerScope, "", name)
+	var nf *store.ErrNotFound
+	if errors.As(err, &nf) {
+		return false, nil
+	}
+	return err == nil, err
+}
+
+func (s *Store) SystemMarkerSet(ctx context.Context, name string) error {
+	_, err := s.CredentialDefPut(ctx, store.CredentialDefRow{
+		Scope:      store.SystemMarkerScope,
+		Name:       name,
+		Backend:    "marker",
+		Definition: []byte(`{"marker":true}`),
+	})
+	return err
 }

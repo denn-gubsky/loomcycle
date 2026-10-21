@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -253,6 +254,33 @@ func (s *Store) OperatorTokenDefCountActiveAdmin(ctx context.Context) (int, erro
 		WHERE (retired_at IS NULL OR retired_at > now())
 		  AND (expires_at IS NULL OR expires_at > now())
 		  AND allowed_scopes @> '["substrate:admin"]'::jsonb`).Scan(&n)
+	return n, err
+}
+
+func (s *Store) OperatorTokenDefCountActiveAdminMatching(ctx context.Context, m store.TokenHashMatch) (int, error) {
+	q := `SELECT COUNT(*) FROM operator_token_defs
+		WHERE (retired_at IS NULL OR retired_at > now())
+		  AND (expires_at IS NULL OR expires_at > now())
+		  AND allowed_scopes @> '["substrate:admin"]'::jsonb`
+	var args []any
+	arg := func(v any) string {
+		args = append(args, v)
+		return fmt.Sprintf("$%d", len(args))
+	}
+	// starts_with-style comparison on left(), not LIKE: a prefix is matched
+	// literally, whatever it contains.
+	if len(m.Prefixes) > 0 {
+		var ors []string
+		for _, p := range m.Prefixes {
+			ors = append(ors, `left(token_hash, `+arg(len(p))+`) = `+arg(p))
+		}
+		q += ` AND (` + strings.Join(ors, ` OR `) + `)`
+	}
+	for _, p := range m.ExcludePrefixes {
+		q += ` AND left(token_hash, ` + arg(len(p)) + `) <> ` + arg(p)
+	}
+	var n int
+	err := s.pool.QueryRow(ctx, q, args...).Scan(&n)
 	return n, err
 }
 

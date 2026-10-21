@@ -103,3 +103,34 @@ func TestTokenHasher_ZeroValueIsUnpeppered(t *testing.T) {
 		t.Error("no pepper and no secret key → none, with no older forms")
 	}
 }
+
+// UsablePrefixes and Form agree on which stored hashes can authenticate.
+func TestTokenHasher_UsablePrefixesMatchTheFormsALookupReaches(t *testing.T) {
+	matches := func(h TokenHasher, stored string) bool {
+		inc, exc := h.UsablePrefixes()
+		ok := len(inc) == 0
+		for _, p := range inc {
+			ok = ok || strings.HasPrefix(stored, p)
+		}
+		for _, p := range exc {
+			ok = ok && !strings.HasPrefix(stored, p)
+		}
+		return ok
+	}
+	derived := NewTokenHasher("", "derived", "prev")
+	explicit := NewTokenHasher("pep", "", "")
+	stored := []string{
+		derived.Hash("lct_x"), derived.WrappedHash("lct_x"),
+		NewTokenHasher("", "prev", "").Hash("lct_x"), NewTokenHasher("", "prev", "").WrappedHash("lct_x"),
+		NewTokenHasher("", "other", "").Hash("lct_x"), HashToken("", "lct_x"), HashToken("pep", "lct_x"),
+	}
+	for _, st := range stored {
+		f := derived.Form(st)
+		if want := f == FormCurrent || f == FormWrapped || f == FormPrevious; matches(derived, st) != want {
+			t.Errorf("derived: %q usable=%v, form %d", st, !want, f)
+		}
+		if want := !strings.HasPrefix(st, "p1:") && !strings.HasPrefix(st, "w1:"); matches(explicit, st) != want {
+			t.Errorf("explicit: %q usable=%v, want %v", st, !want, want)
+		}
+	}
+}

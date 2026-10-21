@@ -472,8 +472,8 @@ func (s *Server) resolvePrincipalUncached(ctx context.Context, h auth.TokenHashe
 }
 
 // legacyFallbackDisabled reports whether the LOOMCYCLE_AUTH_TOKEN path is
-// retired — true once at least one admin-scoped OperatorTokenDef exists
-// (Decision 10/12). The error is set when the count could not be read; the
+// retired — true once at least one admin-scoped OperatorTokenDef that can
+// authenticate exists (Decision 10/12). The error is set when the count could not be read; the
 // caller then refuses the legacy secret (fails closed). Keeping it enabled on
 // an error would revive a retired admin credential, and does not spare the
 // operator a DB blip: a real outage already fails closed at the token lookup
@@ -482,7 +482,15 @@ func (s *Server) legacyFallbackDisabled(ctx context.Context) (bool, error) {
 	if s.store == nil {
 		return false, nil
 	}
-	n, err := s.store.OperatorTokenDefCountActiveAdmin(ctx)
+	h, err := s.hasher()
+	if err != nil {
+		return false, err
+	}
+	// Only an admin token that can still authenticate counts (RFC ES F3): a
+	// refused unpeppered row, or one under a key no longer configured, would
+	// otherwise switch the shared secret off with no admin token left.
+	include, exclude := h.UsablePrefixes()
+	n, err := s.store.OperatorTokenDefCountActiveAdminMatching(ctx, store.TokenHashMatch{Prefixes: include, ExcludePrefixes: exclude})
 	if err != nil {
 		return false, err
 	}

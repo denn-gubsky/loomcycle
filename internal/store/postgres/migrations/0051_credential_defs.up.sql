@@ -6,6 +6,9 @@
 -- ciphertext (inline backend: AES-256-GCM under a per-tenant HKDF-derived key,
 -- see internal/credential) or an external-backend pointer (vault/aws_sm/gcp_sm/
 -- onepassword) — NEVER a plaintext secret.
+-- One exception: rows under scope 'system' are runtime markers
+-- (store.SystemMarkerGet/Set, e.g. the RFC ES F3 token-hash rewrap), holding a
+-- non-secret JSON note, not sealed ciphertext.
 --
 -- scope is 'tenant' | 'user' | 'agent'; scope_id is '' for tenant, the user
 -- subject for user scope, the agent name for agent scope. Together with name

@@ -28,16 +28,16 @@ import (
 //   - a tagged row (any form, any key) in the token table;
 //   - a marker row the first boot writes, so a table with no token rows yet
 //     (a deployment using only LOOMCYCLE_AUTH_TOKEN or config principals)
-//     is covered too. It sits in the credential table, the only table with a
-//     free key, under a scope no credential lookup or listing reads.
+//     is covered too (store.SystemMarkerGet).
 //
 // An untagged row otherwise is refused, never rewrapped — at this boot and at
 // every later one, which a per-boot allow-list of rows could not promise.
 //
-// The residual: a database writer who deletes the marker AND every tagged
-// token row (logging every token holder out), then writes an unpeppered row
-// and waits for a restart, has it rewrapped. A writer limited to inserting
-// rows cannot. No marker in the database can do better: absence of a row is
+// The residual: a database writer who deletes the marker row (and every
+// tagged token row, if any exist), then writes an unpeppered row and waits
+// for a restart, has it rewrapped. On a deployment with no token rows — only
+// LOOMCYCLE_AUTH_TOKEN or config principals — that is one deleted row and
+// nobody is logged out. A writer limited to inserting rows cannot. No marker in the database can do better: absence of a row is
 // not something a database writer can be kept from causing, so sealing the
 // marker would add nothing — a forged marker only stops a rewrap.
 //
@@ -90,7 +90,7 @@ func (s *Server) RewrapLegacyTokenRows(ctx context.Context) (TokenRewrapReport, 
 	if err != nil {
 		return TokenRewrapReport{}, err
 	}
-	marked, err := s.tokenRewrapMarked(ctx)
+	marked, err := s.store.SystemMarkerGet(ctx, tokenRewrapMarker)
 	if err != nil {
 		return TokenRewrapReport{}, err
 	}
@@ -144,39 +144,17 @@ func (s *Server) RewrapLegacyTokenRows(ctx context.Context) (TokenRewrapReport, 
 	if !marked {
 		// After the rewrap committed: a marker without it would strand the
 		// rows. Failing here leaves only the tagged rows as the record.
-		if err := s.markTokenRewrap(ctx); err != nil {
-			log.Printf("auth: recording the token-hash rewrap failed (retried at the next boot): %v", err)
+		if err := s.store.SystemMarkerSet(ctx, tokenRewrapMarker); err != nil {
+			log.Printf("auth: WARNING: recording the token-hash rewrap failed (retried at the next boot; until then only the tagged token rows keep a later unpeppered row from being rewrapped): %v", err)
 		}
 	}
 	s.wrappedTokens.Store(rep.Wrapped > 0)
 	return rep, nil
 }
 
-// The rewrap marker's key in the credential table. Scope "system" is outside
-// the scopes a credential is stored under (tenant, user, agent), so no
-// credential surface lists or resolves it; it holds no secret.
-const (
-	tokenRewrapMarkerScope = "system"
-	tokenRewrapMarkerName  = "operator-token-rewrap"
-)
-
-func (s *Server) tokenRewrapMarked(ctx context.Context) (bool, error) {
-	_, err := s.store.CredentialDefGet(ctx, "", tokenRewrapMarkerScope, "", tokenRewrapMarkerName)
-	if isNotFound(err) {
-		return false, nil
-	}
-	return err == nil, err
-}
-
-func (s *Server) markTokenRewrap(ctx context.Context) error {
-	_, err := s.store.CredentialDefPut(ctx, store.CredentialDefRow{
-		Scope:      tokenRewrapMarkerScope,
-		Name:       tokenRewrapMarkerName,
-		Backend:    "marker",
-		Definition: []byte(`{"rewrapped_unpeppered_token_hashes":true}`),
-	})
-	return err
-}
+// tokenRewrapMarker names the system marker the first derived-pepper boot
+// records (store.SystemMarkerGet).
+const tokenRewrapMarker = "operator-token-rewrap"
 
 // lookupOlderTokenForm is the miss path of the token lookup under a derived
 // pepper: try the wrapped form and the previous key's forms of bearer, and on

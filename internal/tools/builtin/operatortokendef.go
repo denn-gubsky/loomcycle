@@ -246,7 +246,7 @@ func (s *OperatorTokenDef) execCreate(ctx context.Context, in operatorTokenDefIn
 		// the failure mode of every mistake MAXIMUM PRIVILEGE — and that
 		// mistake is self-locking: one admin-scoped def turns off the legacy
 		// LOOMCYCLE_AUTH_TOKEN fallback (legacyFallbackDisabled →
-		// OperatorTokenDefCountActiveAdmin), so an accidental admin token
+		// OperatorTokenDefCountActiveAdminMatching), so an accidental admin token
 		// revokes the very bearer that minted it. Hit live on 2026-09-21: a
 		// caller sent `allowed_scopes` — the name the RESPONSE and the stored
 		// column both use — json.Unmarshal dropped the unknown key, and three
@@ -582,7 +582,10 @@ func (s *OperatorTokenDef) execRetire(ctx context.Context, in operatorTokenDefIn
 	// config principal is a standing admin credential, so it lifts the guard.
 	adminPrincipal := s.AdminPrincipalDeclared != nil && s.AdminPrincipalDeclared()
 	if !s.LegacyTokenSet && !adminPrincipal && auth.HasScope(target.AllowedScopes, auth.ScopeAdmin) {
-		n, cErr := s.Store.OperatorTokenDefCountActiveAdmin(ctx)
+		// Only admin tokens that can still authenticate (RFC ES F3): a row
+		// under a pepper no longer configured is no fallback.
+		include, exclude := s.Hasher.UsablePrefixes()
+		n, cErr := s.Store.OperatorTokenDefCountActiveAdminMatching(ctx, store.TokenHashMatch{Prefixes: include, ExcludePrefixes: exclude})
 		if cErr != nil {
 			return errResult(fmt.Sprintf("retire: admin-count check: %s", cErr)), nil
 		}

@@ -219,7 +219,7 @@ func (b *boot) wireAuth() {
 		// (RFC ES F3); an unpeppered hash never authenticates on its own.
 		rep, rerr := srv.RewrapLegacyTokenRows(context.Background())
 		if rerr != nil {
-			log.Printf("auth: rewrapping unpeppered token hashes failed (those tokens will not authenticate until a restart rewraps them): %v", rerr)
+			log.Printf("auth: WARNING: rewrapping unpeppered token hashes failed: %v — this replica rewrapped nothing; unless another replica booting now committed the rewrap, tokens still on an unpeppered hash will not authenticate until a restart rewraps them", rerr)
 			break
 		}
 		logTokenRewrap(rep)
