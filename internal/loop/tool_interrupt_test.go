@@ -199,3 +199,56 @@ func (neverPausingGate) PauseRequested() bool       { return false }
 func (neverPausingGate) Park(context.Context) error { return nil }
 
 func newFakePauseGateNever() PauseGate { return neverPausingGate{} }
+
+// The stateful twin: a stateful run's action is interrupted the same way —
+// the call fails naming the shutdown, and the run parks before its next step.
+func TestRun_Stateful_ToolInterruptFailsTheActionAndParks(t *testing.T) {
+	interrupt, fire := context.WithCancel(context.Background())
+	defer fire()
+	gate := &interruptGate{interrupt: interrupt, parked: make(chan struct{})}
+	sink := newEventSink()
+	started := make(chan struct{}, 1)
+	prov := &statefulScriptProvider{scripts: []string{
+		`{"patch":{"step":0},"action":{"tool":"Block","input":{}}}`,
+		`{"patch":{"step":1},"done":true,"final":"should not be reached"}`,
+	}}
+	ts := []tools.Tool{blockingTool{started: started}}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan struct{})
+	go func() {
+		_, _ = Run(ctx, RunOptions{
+			Provider:   prov,
+			Model:      "x",
+			Tools:      ts,
+			Dispatcher: dispatcherFor(ts),
+			Segments:   statefulTaskSegs(),
+			Context:    statefulCtx(nil),
+			OnEvent:    sink.emit,
+			PauseGate:  gate,
+		})
+		close(done)
+	}()
+
+	select {
+	case <-started:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the action never started")
+	}
+	fire()
+
+	res := sink.waitFor(t, providers.EventToolResult, 5*time.Second)
+	if !res.IsError || !strings.Contains(res.Text, "shut down") {
+		t.Errorf("interrupted action result = %+v, want an error naming the shutdown", res)
+	}
+	select {
+	case <-gate.parked:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the stateful run did not park after its action was interrupted")
+	}
+	if n := prov.calls(); n != 1 {
+		t.Errorf("model called %d times, want 1 (the run parks before its next step)", n)
+	}
+	cancel()
+	<-done
+}
