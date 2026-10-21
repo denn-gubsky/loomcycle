@@ -561,8 +561,8 @@ auth:
   when the definition is written: it would be stored in the definition.
 - **It must exist.** When the definition is written, the credential must be a
   tenant-level credential of the author's tenant; another tenant's, or one
-  that does not exist, is refused. (An admin is not checked, so the
-  credential may come after the definition.)
+  that does not exist, is refused. (An admin outside a run is not
+  checked, so the credential may come after the definition.)
 - **Rotating.** Store the new value under a new name, fork the definition with
   `secret` naming it and `previous_secret` naming the old one: a delivery
   signed with either is accepted, and both are always compared. Then fork
@@ -729,7 +729,7 @@ routed under. A definition written through the WebhookDef tool can set
 `user_tier` too; it must name one of the server's `user_tiers`.
 
 **Through the WebhookDef tool, `tenant_id` may name only your own tenant
-unless you are an admin.** Omitted, it defaults to your tenant. A non-admin
+unless you are an admin calling from outside a run.** Omitted, it defaults to your tenant. A non-admin
 `create` or `fork` whose `tenant_id` names another tenant is refused, and so
 is a `fork` of a definition whose runs already execute in another tenant —
 set `tenant_id` to your own tenant in the fork's overlay to re-home it. The

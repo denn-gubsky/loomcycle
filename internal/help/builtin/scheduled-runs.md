@@ -263,13 +263,14 @@ payload, so there is no way for an external value to set the tenant. It
 flows to `RunInput.TenantID`.
 
 **Through the ScheduleDef tool, `tenant_id` may name only your own tenant
-unless you are an admin.** Omitted, it defaults to your tenant. A
+unless you are an admin calling from outside a run.** Omitted, it defaults to your tenant. A
 non-admin `create` or `fork` whose `tenant_id` names another tenant is
 refused, and so is a `fork` or hook edit of a definition whose runs
 already execute in another tenant — set `tenant_id` to your own tenant in
 the fork's overlay to re-home it. The operator's yaml may still name any
 tenant, and so may the operator on an unauthenticated deployment or through
 the local stdio MCP server, which has no token to carry the admin scope.
+An agent in a run is never the admin, even in a run an admin's token started.
 
 A schedule with no tenant runs in the shared operator layer, but writing one
 there does not make it the operator's. Only a schedule an admin wrote with no
@@ -362,7 +363,7 @@ A `$cred:` reference a fired run resolves — in its `user_credentials`, in an
 MCP server's headers, in an A2A peer's credential — is looked up for the
 run's agent, then its `user_id`, then the tenant, **but the `user_id` scope
 only when the schedule's author could act as that user**: an operator
-(admin, or open-mode / stdio), or the user themselves. Anyone else who
+(admin, or open-mode / stdio, outside a run), or the user themselves. Anyone else who
 writes a schedule for someone could otherwise have it send that person's own
 credentials.
 
