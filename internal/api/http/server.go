@@ -578,9 +578,10 @@ type Server struct {
 	// Nil = disabled (direct lookup per request). Wired via
 	// EnableTokenCache from main.go with LOOMCYCLE_AUTH_CACHE_TTL_SECONDS.
 	tokenCache *tokenCache
-	// legacyTokens is the boot snapshot of token rows still on a legacy
-	// hash (RFC ES D2, token_legacy.go). Zero value: none.
-	legacyTokens legacyTokenSet
+	// wrappedTokens reports whether a token row may be on the wrapped form
+	// (RFC ES F3, token_rewrap.go): set by the boot rewrap, which is the only
+	// writer of that form, so the lookup skips it when none exists.
+	wrappedTokens atomic.Bool
 	// tokenHasher is the token hasher fixed at boot (SetTokenHasher); nil →
 	// built from the config per use.
 	tokenHasher *auth.TokenHasher

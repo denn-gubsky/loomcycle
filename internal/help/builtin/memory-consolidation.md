@@ -561,8 +561,9 @@ A consolidation schedule's reach follows its tenant:
 
 Only the operator sweeps every tenant. A `ScheduleDef` with no tenant counts as
 the operator's only when an admin (or the operator on an unauthenticated
-deployment or the local stdio MCP server) wrote that version; anyone else's
-create or fork of such a fan-out is refused. A no-tenant fan-out written before
+deployment or the local stdio MCP server) wrote that version from outside
+a run; a create or fork of such a fan-out by anyone else — an agent in a run
+an admin's token started included — is refused. A no-tenant fan-out written before
 this rule, by someone without that authority, consolidates only the no-tenant
 layer's own users until an admin re-saves it (a `fork` or a hook edit), and
 the log says so on every fire. A hook edit by anyone else takes the reach away

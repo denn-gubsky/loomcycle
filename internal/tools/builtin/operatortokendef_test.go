@@ -22,7 +22,7 @@ func operatorTokenDefFixture(t *testing.T) (*OperatorTokenDef, context.Context, 
 	if err != nil {
 		t.Fatalf("sqlite.Open: %v", err)
 	}
-	tool := &OperatorTokenDef{Store: s, Hasher: auth.NewTokenHasher(testPepper, "", "", false), Audit: audit.NopSink{}}
+	tool := &OperatorTokenDef{Store: s, Hasher: auth.NewTokenHasher(testPepper, "", ""), Audit: audit.NopSink{}}
 	ctx := tools.WithRunIdentity(context.Background(), tools.RunIdentityValue{AgentID: "a_admin", UserID: "ops"})
 	ctx = tools.WithOperatorTokenDefPolicy(ctx, tools.OperatorTokenDefPolicyValue{Admin: true})
 	return tool, ctx, s, func() { _ = s.Close() }
@@ -656,7 +656,7 @@ func TestOperatorTokenDef_RetentionIsStoredAndSurvivesRotation(t *testing.T) {
 func TestOperatorTokenDef_MintsUnderTheDerivedPepper(t *testing.T) {
 	tool, ctx, s, cleanup := operatorTokenDefFixture(t)
 	defer cleanup()
-	tool.Hasher = auth.NewTokenHasher("", "derived-pepper", "", true)
+	tool.Hasher = auth.NewTokenHasher("", "derived-pepper", "")
 
 	out := mustOp(t, tool, ctx, `{"op":"create","name":"dp","tenant_id":"acme","subject":"dp","scopes":["runs:create"]}`)
 	plaintext, _ := out["token"].(string)
@@ -665,7 +665,7 @@ func TestOperatorTokenDef_MintsUnderTheDerivedPepper(t *testing.T) {
 	if err != nil {
 		t.Fatalf("store get: %v", err)
 	}
-	if row.TokenHash != tool.Hasher.Hash(plaintext) || !tool.Hasher.IsCurrent(row.TokenHash) {
+	if row.TokenHash != tool.Hasher.Hash(plaintext) || tool.Hasher.Form(row.TokenHash) != auth.FormCurrent {
 		t.Errorf("create: stored hash is not the derived-pepper hash")
 	}
 

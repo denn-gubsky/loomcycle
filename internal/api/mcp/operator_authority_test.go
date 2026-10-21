@@ -30,3 +30,17 @@ func TestMCPPrincipalCtx_OnlyTheUnauthenticatedOperatorCarriesOperatorMarker(t *
 		}
 	}
 }
+
+// An admin's MCP session is the operator's own off-run call: no run id rides
+// on its ctx, so the def tools keep its operator authority. A run it starts
+// with spawn_run goes through RunOnce, which stamps one on every tool call the
+// run's model makes (see the http package's RunOnce test), and loses it.
+func TestMCPPrincipalCtx_AnAdminSessionCarriesNoRunID(t *testing.T) {
+	admin := auth.WithPrincipal(context.Background(), auth.Principal{Subject: "ops", Scopes: []string{auth.ScopeAdmin}})
+	if id := tools.RunID(mcpPrincipalCtx(admin)); id != "" {
+		t.Errorf("an admin MCP session's ctx carries run id %q", id)
+	}
+	if id := tools.RunID(mcpPrincipalCtx(context.Background())); id != "" {
+		t.Errorf("the stdio / open-mode MCP ctx carries run id %q", id)
+	}
+}

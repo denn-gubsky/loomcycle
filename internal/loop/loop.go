@@ -1149,6 +1149,58 @@ func notRunToolResults(pending []providers.ToolUse) []providers.ContentBlock {
 	return out
 }
 
+// ToolInterrupter is implemented by a PauseGate whose runtime can stop the
+// run's tool calls: a process shutting down cancels ToolInterrupt's context
+// for a run that has not parked in time, because a run parks only at an
+// iteration boundary and one inside a long tool call never reaches it. The
+// interrupted call fails, its process group is killed (a Bash command's), and
+// the run parks at the boundary after it. nil means none.
+type ToolInterrupter interface {
+	ToolInterrupt() context.Context
+}
+
+// errToolsInterrupted is the cause a tool call is cancelled with when its run's
+// ToolInterrupt fires.
+var errToolsInterrupted = errors.New("tool call interrupted: the runtime is shutting down")
+
+// interruptedToolNote leads an interrupted call's error, in the text the model
+// reads and the transcript keeps, so the resumed run knows the call was cut
+// short by the shutdown — not by anything in it — and may not have finished.
+const interruptedToolNote = "interrupted: the runtime shut down while this call was running, so it may not have finished. "
+
+// interruptibleTools returns ctx made to end when the gate's ToolInterrupt
+// does, and the func that detaches it. Checked before the watch is set up, so
+// a run whose interrupt has already fired starts no tool at all.
+func interruptibleTools(ctx context.Context, g PauseGate) (context.Context, func()) {
+	ti, ok := g.(ToolInterrupter)
+	if !ok {
+		return ctx, func() {}
+	}
+	ic := ti.ToolInterrupt()
+	if ic == nil {
+		return ctx, func() {}
+	}
+	out, cancel := context.WithCancelCause(ctx)
+	if ic.Err() != nil {
+		cancel(errToolsInterrupted)
+		return out, func() {}
+	}
+	stop := context.AfterFunc(ic, func() { cancel(errToolsInterrupted) })
+	return out, func() {
+		stop()
+		cancel(nil)
+	}
+}
+
+// markInterrupted leads a failed call's text with interruptedToolNote when the
+// call was interrupted by a shutdown.
+func markInterrupted(ctx context.Context, res tools.Result) tools.Result {
+	if res.IsError && errors.Is(context.Cause(ctx), errToolsInterrupted) {
+		res.Text = interruptedToolNote + res.Text
+	}
+	return res
+}
+
 // cancelledToolResults synthesizes an error-shaped tool_result for every pending
 // tool_use a turn-cancelled turn started but never dispatched, so the next model
 // call sees a well-formed assistant(tool_use)/user(tool_result) pairing — a
@@ -4222,7 +4274,9 @@ func (s *runState) dispatchTools(ctx, turnCtx context.Context, iterSpan trace.Sp
 	// (Ollama's actually-loaded context) rather than the static seed, and a
 	// mid-turn fallback's window rather than the replaced provider's.
 	toolCtx := tools.WithEffectiveContextWindow(turnCtx, s.lastWindow)
+	toolCtx, stopInterrupt := interruptibleTools(toolCtx, s.opts.PauseGate)
 	toolResults := executePendingTools(toolCtx, s.opts.Dispatcher, pendingTools, s.opts.ToolParallelism, s.opts.Hooks, hookIdent, s.emit)
+	stopInterrupt()
 	s.messages = append(s.messages, providers.Message{Role: "user", Content: toolResults})
 	if why, stop := s.opts.Dispatcher.RepeatedFailure(); stop {
 		msg := "run stopped: " + why + " after being told it cannot succeed as sent"
@@ -4901,6 +4955,7 @@ func executePendingTools(
 
 	results := make([]providers.ContentBlock, len(pending))
 	for r := range resCh {
+		r.res = markInterrupted(ctx, r.res)
 		// Emit in completion order so the SSE consumer sees each
 		// tool's result the moment it's done.
 		// Render ONCE, before both uses. The emitted event is what gets

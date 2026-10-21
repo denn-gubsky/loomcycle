@@ -729,6 +729,12 @@ questions:
             schema:
               type: string
               default: ""
+          - variable: LOOMCYCLE_SHUTDOWN_PAUSE_TIMEOUT_MS
+            label: LOOMCYCLE_SHUTDOWN_PAUSE_TIMEOUT_MS
+            description: 'On SIGTERM / SIGINT, pause this replica''s in-flight runs so the next boot resumes them, waiting at most this long. At 3/4 of it, the tool calls of runs not yet parked are interrupted (a Bash command''s process group is killed). 0 = no pause. The default fits Docker''s 10 s stop grace; raise it with stop_grace_period / terminationGracePeriodSeconds. (example: 8000)'
+            schema:
+              type: string
+              default: ""
           - variable: LOOMCYCLE_WEBHOOKS_ENABLED
             label: LOOMCYCLE_WEBHOOKS_ENABLED
             description: '---- RFC H inbound webhooks -------------------------------------------- External systems (GitHub/Gitea/Stripe/Linear/CI/n8n) trigger agent runs or wake parked agents via signed POST /v1/_webhooks/{name}. Off by default; the WebhookDef tool still authors/lists defs while disabled. (example: 1)'
