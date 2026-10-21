@@ -418,6 +418,14 @@ func (s *Server) handleMintUserToken(w http.ResponseWriter, r *http.Request) {
 	}
 	// tenant is FORCED from the authenticated principal — never the wire.
 	tenant := tenantFromCtx(r.Context())
+	// A token row needs a tenant, and a caller with none (open mode, or an
+	// admin principal declared without one) has none to give it. The store
+	// refused that as a 500; it is the caller's state, so it is a 400.
+	if tenant == "" {
+		writeJSONError(w, http.StatusBadRequest, "tenant_required",
+			"user tokens are minted inside a tenant, and this caller has none; call with a token of the user's tenant")
+		return
+	}
 
 	req, err := decodeMintUserTokenRequest(r)
 	if err != nil {
