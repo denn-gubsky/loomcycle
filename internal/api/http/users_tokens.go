@@ -511,14 +511,19 @@ func (s *Server) handleMintUserToken(w http.ResponseWriter, r *http.Request) {
 		writeJSONError(w, http.StatusBadRequest, "invalid_ttl", err.Error())
 		return
 	}
+	// Hash with the SAME hasher the auth hot path uses (resolvePrincipal),
+	// else the minted token would never resolve.
+	hasher, err := s.hasher()
+	if err != nil {
+		writeJSONError(w, http.StatusInternalServerError, "mint_failed", err.Error())
+		return
+	}
 	row := store.OperatorTokenDefRow{
-		DefID:    newTokenDefID(),
-		Name:     name,
-		TenantID: tenant,  // FORCED — authoritative principal tenant
-		Subject:  subject, // the path user
-		// Hash with the SAME pepper the auth hot path uses (resolvePrincipal),
-		// else the minted token would never resolve.
-		TokenHash:     auth.HashToken(s.cfg().Env.OperatorTokenPepper, plaintext),
+		DefID:         newTokenDefID(),
+		Name:          name,
+		TenantID:      tenant,  // FORCED — authoritative principal tenant
+		Subject:       subject, // the path user
+		TokenHash:     hasher.Hash(plaintext),
 		AllowedScopes: scopes,
 		CreatedAt:     now,
 	}

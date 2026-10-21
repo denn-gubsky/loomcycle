@@ -4319,6 +4319,14 @@ type OperatorTokenStore interface {
 	// OperatorTokenDefSetRetiredAt sets retired_at. Used by both retire
 	// (now → immediate) and rotate (now+grace on the prior row).
 	OperatorTokenDefSetRetiredAt(ctx context.Context, defID string, retiredAt time.Time) error
+	// OperatorTokenRehash rewrites one row's token_hash from oldHash to
+	// newHash, only if the row still carries oldHash (a compare-and-set:
+	// UPDATE … WHERE def_id = ? AND token_hash = ?). Reports whether it
+	// changed the row; (false, nil) when the row is gone or no longer
+	// carries oldHash — another replica already rehashed it, or it was
+	// edited. Used to move a token minted under a legacy pepper onto the
+	// current one at its first login (RFC ES D2).
+	OperatorTokenRehash(ctx context.Context, defID, oldHash, newHash string) (bool, error)
 	// OperatorTokenDefCountActiveAdmin counts tokens that still authenticate
 	// (not retired, not expired) whose allowed_scopes include
 	// "substrate:admin" (the no-lockout guard).
