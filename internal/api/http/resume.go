@@ -420,10 +420,53 @@ func (s *Server) resumePausedRun(run store.Run) error {
 	if live {
 		return errRunAlreadyLive
 	}
+	// Claim the row before writing anything to it (RFC ES F1): a compare-and-
+	// set from paused to running that exactly one pass wins. Passes race for
+	// the same rows — a snapshot restore (which takes no lock) and another
+	// replica's periodic pass, a boot pass and an operator's resume — and the
+	// liveness check above cannot see a pass that has listed the row and not
+	// yet dispatched it. The loser leaves the row as the winner writes it.
+	claimed, cerr := s.store.ClaimPausedRun(ctx, run.ID)
+	if cerr != nil {
+		return fmt.Errorf("claim paused run: %w", cerr)
+	}
+	if !claimed {
+		return errRunAlreadyLive
+	}
+	// settled: the run was dispatched, or ended (refused, or cancelled as an
+	// orphan). A pass that stops short of both — a transient read error —
+	// gives the row back as paused, so a later pass tries it again instead of
+	// leaving a running row with no loop for the stale-run sweeper.
+	settled := false
+	ownerSlotHandled := false // another copy here settled the run and its slot
+	defer func() {
+		if !settled {
+			s.unclaimPausedRun(run.ID)
+			return
+		}
+		// Settled — dispatched here, or ended — so the per-user slot the
+		// process that parked the run took for it goes back (RFC ES F1):
+		// in a cluster that slot is a row in user_quotas, which outlived
+		// the process, and the resumed run takes its own. Once per park:
+		// only the pass that claimed the row settles it. A top-level run
+		// only (a sub-run never takes one), and only a row a cluster
+		// process admitted (it carries that replica's id; a restored row
+		// does not). A single replica's counts went with its process.
+		if run.ParentRunID == "" && run.ReplicaID != "" && !ownerSlotHandled {
+			rctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			s.sem.ReleaseUserSlot(rctx, run.TenantID, run.UserID)
+		}
+	}()
+	flag := func(reason string) {
+		settled = true
+		s.flagRunUnresumable(run, reason)
+	}
 	// A child whose parent has ended has nobody to read it or to cancel it:
 	// resumed, it would run on, orphaned, to an end nobody collects. It is
 	// ended cancelled instead, saying why.
 	if reason, orphaned := s.orphanedBy(ctx, run); orphaned {
+		settled = true
 		s.cancelOrphanedRun(run, reason)
 		// The walks it started in poll mode went with its instance as they
 		// would have had it resumed, and are closed as its resume closes them.
@@ -461,7 +504,7 @@ func (s *Server) resumePausedRun(run store.Run) error {
 	agentDef, gone, derr := s.resumedAgentDef(ctx, run, runCfg.AgentVersion)
 	if derr != nil {
 		if gone {
-			s.flagRunUnresumable(run, derr.Error())
+			flag(derr.Error())
 		}
 		return derr
 	}
@@ -483,7 +526,7 @@ func (s *Server) resumePausedRun(run store.Run) error {
 	}
 	providerID, model, effort, rerr := s.resolveAgentDef(ctx, agentDef, run.TenantID, run.UserID, run.Agent, run.UserTier, run.OperatorKeyRestricted)
 	if rerr != nil {
-		s.flagRunUnresumable(run, fmt.Sprintf("resolve provider/model: %v", rerr))
+		flag(fmt.Sprintf("resolve provider/model: %v", rerr))
 		return fmt.Errorf("resolve agent: %w", rerr)
 	}
 	// RFC DD Gap 5: prefer the model the RUN was started with over whatever the
@@ -512,7 +555,7 @@ func (s *Server) resumePausedRun(run store.Run) error {
 	}
 	provider, perr := s.providers.Get(providerID)
 	if perr != nil {
-		s.flagRunUnresumable(run, fmt.Sprintf("provider %q unavailable: %v", providerID, perr))
+		flag(fmt.Sprintf("provider %q unavailable: %v", providerID, perr))
 		return fmt.Errorf("provider %q: %w", providerID, perr)
 	}
 
@@ -626,7 +669,7 @@ func (s *Server) resumePausedRun(run store.Run) error {
 		// fan-out's result would leave a sibling tool_use unanswered (the
 		// provider 400s). Documented Phase-3 limitation; flag for manual
 		// re-attach rather than emit a malformed continuation.
-		s.flagRunUnresumable(run, "parked fan-out parent shared its turn with other in-flight tools; re-attach to continue")
+		flag("parked fan-out parent shared its turn with other in-flight tools; re-attach to continue")
 		return fmt.Errorf("not auto-resumable (mixed fan-out tool turn)")
 	}
 
@@ -683,7 +726,7 @@ func (s *Server) resumePausedRun(run store.Run) error {
 		case resident:
 			startParked = true // waiting for its parent's next send
 		case !run.Interactive || s.steerReg == nil:
-			s.flagRunUnresumable(run, "run was idle awaiting input when paused; re-attach + steer to continue")
+			flag("run was idle awaiting input when paused; re-attach + steer to continue")
 			return fmt.Errorf("not auto-resumable (no pending turn)")
 		default:
 			startParked = true
@@ -713,11 +756,7 @@ func (s *Server) resumePausedRun(run store.Run) error {
 		}}
 	}
 
-	// Flip the row back to running (mirror Manager.Resume) so a concurrent
-	// Pause accounts for it and it's no longer "paused" data on disk.
-	if err := s.store.SetRunPauseState(ctx, run.ID, store.PauseStateRunning); err != nil {
-		return fmt.Errorf("set pause_state=running: %w", err)
-	}
+	// The row reads running already: the claim above moved it.
 	// The run was paused until now — through the restart, or from the snapshot
 	// on the instance it parked on — so its pause ends here, and a parent's
 	// re-armed timeout_ms leaves the downtime out (runConfigRecord.Pauses).
@@ -799,10 +838,13 @@ func (s *Server) resumePausedRun(run store.Run) error {
 		runSpan.End()
 		cancelFn(nil)
 		if held, _ := s.heldInCancelRegistry(run); held {
+			settled = true // a copy here holds it: not ours to give back
+			ownerSlotHandled = true
 			return errRunAlreadyLive
 		}
 		return fmt.Errorf("cancel registry: %w", regErr)
 	}
+	settled = true // from here the run is live: its loop ends it
 	s.publishRunState(meta, "running", "", "")
 
 	// Hoisted above the recording emit so resumed-turn usage is attributed under
@@ -1150,8 +1192,16 @@ func (s *Server) resumePausedRun(run store.Run) error {
 		// caller's resume loop never blocks. Wait, not AcquireForUser: the run
 		// was admitted before its pause, so a full queue, the queue timeout or
 		// the per-user cap must not turn it into a failed run — it queues
-		// until a slot frees or it is cancelled.
-		release, aerr := s.sem.Wait(runCtx)
+		// until a slot frees or it is cancelled. A top-level run is counted
+		// against its user while it runs (WaitForUser), as it was before the
+		// pause, without being refused at the cap; a sub-run never is.
+		var release func()
+		var aerr error
+		if run.ParentRunID == "" {
+			release, aerr = s.sem.WaitForUser(runCtx, run.TenantID, run.UserID)
+		} else {
+			release, aerr = s.sem.Wait(runCtx)
+		}
 		if aerr != nil {
 			s.finishRunFailedReason(run.ID, "resume: acquire run slot: "+aerr.Error(), meta)
 			return
@@ -1467,7 +1517,19 @@ func (s *Server) flagRunUnresumable(run store.Run, reason string) {
 		ParentContext: run.ParentContext,
 	}
 	s.appendResumeRefusal(run, reason)
+	// FinishRun also ends the row's pause, so no later pass finds it.
 	s.finishRunFailedReason(run.ID, "resume failed: "+reason, meta)
+}
+
+// unclaimPausedRun gives a claimed row back as paused, for a resume that
+// stopped before it dispatched or ended the run: a later pass tries it again.
+// Compare-and-set: a run that ended meanwhile (a cancel) is left ended.
+func (s *Server) unclaimPausedRun(runID string) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if _, err := s.store.UnclaimPausedRun(ctx, runID); err != nil {
+		log.Printf("resume: give run %s back as paused: %v — it stays running with no loop until the stale-run sweeper ends it", runID, err)
+	}
 }
 
 // appendResumeRefusal writes the refusal onto the run's own transcript, so it

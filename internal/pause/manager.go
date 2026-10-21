@@ -132,6 +132,14 @@ type Manager struct {
 	// resume nor an operator's resume lifts it.
 	shutdown atomic.Bool
 
+	// replicaID is this replica's id ("" in single-replica mode), set by
+	// SetReplicaID. Guarded by mu.
+	replicaID string
+
+	// turnCanceller stops a run's current turn (SetShutdownTurnCanceller); nil
+	// stops none. Guarded by mu.
+	turnCanceller func(runID string)
+
 	// toolsInterrupted is set at a shutdown pause's interrupt point. A run
 	// registering after it starts with its tool calls interrupted.
 	toolsInterrupted atomic.Bool
@@ -882,6 +890,7 @@ func (m *Manager) Resume(ctx context.Context) (ResumeResult, error) {
 	since, until, rec, ids := m.pausedAt, time.Now(), m.recorder, m.recorded
 	m.pausedAt, m.recorded = time.Time{}, nil
 	bp := m.bp
+	replicaID := m.replicaID
 	m.mu.Unlock()
 	rss := m.rss.Load()
 	m.invalidateStateCache()
@@ -919,6 +928,17 @@ func (m *Manager) Resume(ctx context.Context) (ResumeResult, error) {
 	resumed := 0
 	var warnings []string
 	for _, r := range paused {
+		// In a cluster, only the runs this process holds (RFC ES F1).
+		// ListPausedRuns is cluster-wide: another live replica's parked runs
+		// are flipped by their own gates as the resume reaches it, and any row
+		// no loop here holds — a stopped replica's, a restored one, even one
+		// stamped with this replica's id by an earlier process — has no loop
+		// to wake: flipped to running it would never be resumed, so it stays
+		// paused for the resume pass. A single replica (no id) flips every
+		// row, as before.
+		if replicaID != "" && !m.HoldsRun(r.ID) {
+			continue
+		}
 		if err := m.store.SetRunPauseState(ctx, r.ID, store.PauseStateRunning); err != nil {
 			warnings = append(warnings, fmt.Sprintf("set %s pause_state=running: %v", r.ID, err))
 			continue
@@ -953,4 +973,24 @@ func (m *Manager) Snapshot(ctx context.Context) (StateSnapshot, error) {
 		return StateSnapshot{State: state.String()}, err
 	}
 	return StateSnapshot{State: state.String(), PausedRunsCount: len(paused)}, nil
+}
+
+// SetReplicaID names the replica this manager runs on (cluster mode). Resume
+// then flips only the paused rows this process holds.
+func (m *Manager) SetReplicaID(id string) {
+	m.mu.Lock()
+	m.replicaID = id
+	m.mu.Unlock()
+}
+
+// SetShutdownTurnCanceller installs what stops a run's current turn at a
+// shutdown pause's interrupt point. A run whose turn can be stopped (an
+// interactive or a resident run) then parks waiting for its next message — a
+// clean boundary — even when it is inside a model call, where interrupting its
+// tools alone would leave it unparked. fn is told the run id and stops nothing
+// for a run with no stoppable turn.
+func (m *Manager) SetShutdownTurnCanceller(fn func(runID string)) {
+	m.mu.Lock()
+	m.turnCanceller = fn
+	m.mu.Unlock()
 }

@@ -14,6 +14,7 @@ import (
 // it:
 //
 //  1. Marks every runs row with replica_id = <dead> AND status = 'running'
+//     — but not a paused one, which a resume pass re-dispatches —
 //     as failed with error='owner replica died'. This finalises Phase 3
 //     cross-replica cancel's "owner dead" handling without waiting for
 //     a cancel request — operators see correct status on /v1/agents/{id}
@@ -182,6 +183,16 @@ func (s *ReplicasSweeper) sweepOnce(ctx context.Context) (int, error) {
 // decrement user_quotas, fail its queued runs, delete the row.
 func (s *ReplicasSweeper) reapReplica(ctx context.Context, replicaID string) error {
 	// Step 2a: mark owned runs failed. Phase 3 gap closure.
+	//
+	// Not a PAUSED run (RFC ES F1): its loop parked at a clean boundary — at a
+	// shutdown, or at a cluster pause the replica died in — and its row waits
+	// for a resume pass to re-dispatch it on a live replica; a dead owner is
+	// the case that pass exists for. Its row is left as it is, and so is the
+	// per-user slot the dead replica took for it: the quota reap below counts
+	// only the rows marked here, and the resume that claims the row gives the
+	// slot back. A 'pausing' row is failed like a running one: nothing writes
+	// that state any more, and no resume pass lists it, so sparing it would
+	// strand it.
 	markRes, err := s.pool.Exec(ctx, `
 		UPDATE runs
 		   SET status = 'failed',
@@ -190,6 +201,7 @@ func (s *ReplicasSweeper) reapReplica(ctx context.Context, replicaID string) err
 		       stop_reason = 'replica_died'
 		 WHERE replica_id = $1
 		   AND status = 'running'
+		   AND COALESCE(pause_state, 'running') <> 'paused'
 	`, replicaID)
 	if err != nil {
 		return fmt.Errorf("mark runs failed: %w", err)

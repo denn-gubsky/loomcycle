@@ -731,7 +731,7 @@ questions:
               default: ""
           - variable: LOOMCYCLE_SHUTDOWN_PAUSE_TIMEOUT_MS
             label: LOOMCYCLE_SHUTDOWN_PAUSE_TIMEOUT_MS
-            description: 'On SIGTERM / SIGINT, pause this replica''s in-flight runs so the next boot resumes them, waiting at most this long. At 3/4 of it, the tool calls of runs not yet parked are interrupted (a Bash command''s process group is killed). 0 = no pause. The default fits Docker''s 10 s stop grace; raise it with stop_grace_period / terminationGracePeriodSeconds. (example: 8000)'
+            description: 'On SIGTERM / SIGINT, pause this replica''s in-flight runs so the next boot resumes them, waiting at most this long. At 3/4 of it, the tool calls of runs not yet parked are interrupted (a Bash command''s process group is killed). 0 = no pause. The default leaves room in Docker''s 10 s stop grace; raise it with stop_grace_period / terminationGracePeriodSeconds. (example: 7000)'
             schema:
               type: string
               default: ""

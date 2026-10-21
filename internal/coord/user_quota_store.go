@@ -94,6 +94,26 @@ func (s *UserQuotaStore) TryAcquire(ctx context.Context, tenantID, userID string
 	return tag.RowsAffected() > 0, nil
 }
 
+// CountAdmitted increments user_quotas[userID].active_count whatever the cap:
+// it counts a run admitted before — a paused run resumed on this replica
+// (RFC ES F1), which must not be refused. Release gives it back.
+func (s *UserQuotaStore) CountAdmitted(ctx context.Context, tenantID, userID string) error {
+	if userID == "" {
+		return errors.New("user_id is empty")
+	}
+	_, err := s.pool.Exec(ctx, `
+		INSERT INTO user_quotas (tenant_id, user_id, active_count, updated_at)
+		VALUES ($1, $2, 1, now())
+		ON CONFLICT (tenant_id, user_id) DO UPDATE
+		  SET active_count = user_quotas.active_count + 1,
+		      updated_at   = now()
+	`, tenantID, userID)
+	if err != nil {
+		return fmt.Errorf("user_quotas count %s/%s: %w", tenantID, userID, err)
+	}
+	return nil
+}
+
 // Release decrements user_quotas[userID].active_count. Guarded with
 // `WHERE active_count > 0` so a double-release (or a Phase 5 reap
 // landing between our acquire and release) does not underflow into

@@ -113,7 +113,24 @@ func (b *boot) startCluster() {
 			Hostname:  hostname,
 			Version:   buildVersion,
 		})
-		go hb.Run(bgCtx)
+		// Joined before the pool closes (a cleanup, so it runs before the
+		// store's): the heartbeat's shutdown DELETE of this replica's row must
+		// land. A row it leaves behind ages into the replicas sweeper, which
+		// reads this replica as dead (RFC ES F1).
+		hbDone := make(chan struct{})
+		go func() {
+			defer close(hbDone)
+			hb.Run(bgCtx)
+		}()
+		bgCancel := b.bgCancel
+		b.addCleanup(func() {
+			bgCancel() // a no-op after the shutdown; ends the heartbeat on any other exit
+			select {
+			case <-hbDone:
+			case <-time.After(heartbeatJoinTimeout):
+				log.Printf("coord: the heartbeat's shutdown DELETE did not finish within %s", heartbeatJoinTimeout)
+			}
+		})
 		// Wire the cluster view onto /healthz. Phase 1 ships the
 		// backplane behind the interface but with no live publisher/
 		// subscriber — Phase 2+ adds those.
@@ -626,3 +643,7 @@ func (b *boot) startStoreSweepers() {
 		log.Printf("interrupts: sweeper interval=%s", cfg.Env.ChannelsSweepInterval)
 	}
 }
+
+// heartbeatJoinTimeout bounds the wait for the replica heartbeat's shutdown
+// DELETE, which runs under its own 5 s timeout.
+const heartbeatJoinTimeout = 6 * time.Second

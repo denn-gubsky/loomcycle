@@ -45,17 +45,18 @@ func TestResumePausedRuns_AChildOfACancelledParentIsCancelledNotResumed(t *testi
 	}
 }
 
-// endParentOnFlip ends a run's parent the moment a resume flips that run back
-// to running — after the resume checked the parent and before the pass ends.
+// endParentOnFlip ends a run's parent the moment a resume stamps that run's
+// heartbeat on its way to dispatching it — after the resume checked the parent
+// and before the pass ends.
 type endParentOnFlip struct {
 	store.Store
 	child, parent string
 	once          sync.Once
 }
 
-func (e *endParentOnFlip) SetRunPauseState(ctx context.Context, runID, state string) error {
-	err := e.Store.SetRunPauseState(ctx, runID, state)
-	if runID == e.child && state == store.PauseStateRunning {
+func (e *endParentOnFlip) UpdateHeartbeat(ctx context.Context, runID string) error {
+	err := e.Store.UpdateHeartbeat(ctx, runID)
+	if runID == e.child {
 		e.once.Do(func() {
 			_ = e.Store.FinishRun(ctx, e.parent, store.RunCancelled, "operator stop", store.Usage{}, "")
 		})

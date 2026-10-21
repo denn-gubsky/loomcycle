@@ -502,9 +502,11 @@ func (s *Server) restoredChannelDefValidator(ctx context.Context) func(json.RawM
 //
 // No advisory lock, as the restore endpoint never had one: the lock
 // (coord.LockKeyResumePausedRuns) is for boot, where every replica would
-// otherwise scan the same store at once. A restore runs on the one replica
-// that received it; a run a live loop owns, on this replica or another, is
-// left alone by the resume itself, before it writes anything.
+// otherwise scan the same store at once. A restore's pass can race another
+// replica's periodic pass (or an operator's resume) for the same rows; the
+// resume claims each row with a compare-and-set before it writes anything
+// (store.ClaimPausedRun), so only one of them dispatches it, and a run a live
+// loop owns, on this replica or another, is left alone.
 func (s *Server) finishRestore(ctx context.Context, result *snapshot.RestoreResult) {
 	s.postRestoreRefresh(ctx, result)
 	r := s.resumePausedRunsReport(context.WithoutCancel(ctx))

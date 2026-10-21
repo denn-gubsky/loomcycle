@@ -297,3 +297,40 @@ func TestUserQuotaStore_TenantIsolation(t *testing.T) {
 		t.Errorf("t1 count = %d, want 1 (re-acquired)", got)
 	}
 }
+
+// CountAdmitted counts a resumed run whatever the cap — it was admitted
+// before its pause — creating the user's row when there is none, and Release
+// gives it back.
+func TestUserQuotaStore_CountAdmittedCountsPastTheCap(t *testing.T) {
+	pool := freshUserQuotasPool(t, pgDSNFromEnv(t))
+	s := NewUserQuotaStore(pool)
+	user := uniqueUserID(t)
+	t.Cleanup(func() {
+		_, _ = pool.Exec(context.Background(), `DELETE FROM user_quotas WHERE user_id = $1`, user)
+	})
+	ctx := context.Background()
+	if err := s.CountAdmitted(ctx, "", user); err != nil {
+		t.Fatalf("CountAdmitted on a new user: %v", err)
+	}
+	if ok, err := s.TryAcquire(ctx, "", user, 1); ok || err != nil {
+		t.Fatalf("TryAcquire at cap 1 = %v, %v; want refused", ok, err)
+	}
+	if err := s.CountAdmitted(ctx, "", user); err != nil {
+		t.Fatalf("CountAdmitted at the cap: %v", err)
+	}
+	var n int
+	if err := pool.QueryRow(ctx, `SELECT active_count FROM user_quotas WHERE tenant_id = '' AND user_id = $1`, user).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	if n != 2 {
+		t.Errorf("active_count = %d, want 2", n)
+	}
+	s.Release(ctx, "", user)
+	s.Release(ctx, "", user)
+	if err := pool.QueryRow(ctx, `SELECT active_count FROM user_quotas WHERE tenant_id = '' AND user_id = $1`, user).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	if n != 0 {
+		t.Errorf("active_count after two releases = %d, want 0", n)
+	}
+}

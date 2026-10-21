@@ -2085,7 +2085,11 @@ type RunStore interface {
 	SetRunReplica(ctx context.Context, runID, replicaID string) error
 
 	// ListPausedRuns returns runs whose pause_state is "paused" (the
-	// at-rest paused state, not the in-flight "pausing" transition).
+	// at-rest paused state, not the in-flight "pausing" transition) and
+	// whose status is "running". An ended row is never listed, even one still
+	// reading 'paused' — written by a database from before FinishRun cleared
+	// the pause, or by a writer that ends runs some other way — or a resume
+	// pass, periodic in a cluster, would re-run a run reported ended.
 	// Used by the PauseManager on resume to find which runs need to
 	// re-enter their loops, and by GET /v1/runtime/state for operator
 	// visibility (the response payload's paused_run_count).
@@ -2094,6 +2098,21 @@ type RunStore interface {
 	// pauses first (lower risk of stale state being overwritten by
 	// fresher runs that paused later in the same window).
 	ListPausedRuns(ctx context.Context) ([]Run, error)
+
+	// ClaimPausedRun is the resume's compare-and-set: it moves a row that is
+	// pause_state "paused" and status "running" to pause_state "running" and
+	// reports whether it did. Exactly one of several resume passes racing for
+	// the same row — a snapshot restore, another replica's periodic pass, an
+	// operator resume — gets true; the others get false and must leave the
+	// row alone. A missing row is (false, nil).
+	ClaimPausedRun(ctx context.Context, runID string) (bool, error)
+
+	// UnclaimPausedRun gives a claimed row back for a later pass: pause_state
+	// "running" -> "paused", only while status is still "running". A run that
+	// ended between the claim and the unclaim — an operator's cancel — stays
+	// ended and unlisted, where an unconditional write would put it back on
+	// the resume list. Reports whether it did.
+	UnclaimPausedRun(ctx context.Context, runID string) (bool, error)
 }
 
 // PendingRunStore persists runs that exist but have not started:

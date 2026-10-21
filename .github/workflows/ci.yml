@@ -254,6 +254,19 @@ jobs:
           LOOMCYCLE_TEST_PG_DSN: postgres://loomcycle:loomcycle@127.0.0.1:5432/loomcycle_test?sslmode=disable
         run: go test -count=1 -timeout 600s -run 'TestNoTraceCanary' ./internal/api/http/
 
+      # SHUTDOWN PAUSE ACROSS REPLICAS (RFC ES F1). Boots two replicas on one
+      # database, parks a run on the first by SIGTERM, and requires the second —
+      # already running, as in a rolling update that starts the new pod first —
+      # to resume it to completion. Postgres-gated like everything here, so the
+      # `Go` job skips it. The test creates and drops its own database (the
+      # service role is a superuser), so it shares nothing with the steps around
+      # it. Builds the binary once, a couple of minutes on a shared runner.
+      - name: Shutdown pause across replicas (Postgres)
+        if: ${{ !cancelled() }}
+        env:
+          LOOMCYCLE_TEST_PG_DSN: postgres://loomcycle:loomcycle@127.0.0.1:5432/loomcycle_test?sslmode=disable
+        run: go test -count=1 -timeout 900s -run 'TestBoot_ClusterReplicaResumesRunsAStoppedReplicaParked' ./cmd/loomcycle/
+
       # COORDINATION TIER (multi-replica): cancel/steer coordinators, the
       # Postgres backplane, the replica store + heartbeat, the replicas sweeper
       # and user quotas. Every test here is PG-gated, and until now nothing ran

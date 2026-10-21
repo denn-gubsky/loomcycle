@@ -7295,14 +7295,17 @@ func addSkillToolDefaults(cfg *Config) {
 }
 
 // DefaultShutdownPauseTimeoutMs is the shutdown pause's bound when
-// LOOMCYCLE_SHUTDOWN_PAUSE_TIMEOUT_MS is unset. 8 s keeps the whole shutdown —
-// the pause, with the listeners draining alongside it (5 s each), then the
-// final flushes — inside Docker's default 10 s stop grace, so a default
-// container is never SIGKILLed mid-shutdown. Runs get 6 s to park on their own,
-// then 2 s to park after their tool calls are interrupted. A deployment that
-// grants a longer grace period (stop_grace_period, terminationGracePeriodSeconds)
-// can raise it to let longer model calls finish.
-const DefaultShutdownPauseTimeoutMs = 8000
+// LOOMCYCLE_SHUTDOWN_PAUSE_TIMEOUT_MS is unset. The pause runs alongside the
+// listeners' drains (5 s each), so 7 s leaves about 3 s of Docker's default
+// 10 s stop grace for what follows it: the final flushes, the replica
+// heartbeat's DELETE in a cluster, and the store and MCP pool closing. That is
+// ample in the common case, not a guarantee — each of those has its own
+// worst-case timeout, and a slow store can still meet the SIGKILL. Runs get
+// 5.25 s to park on their own, then 1.75 s after their tool calls are
+// interrupted. A deployment that grants a longer grace period
+// (stop_grace_period, terminationGracePeriodSeconds) can raise it to let longer
+// model calls finish.
+const DefaultShutdownPauseTimeoutMs = 7000
 
 // BashboxOverlayMaxBytesDefault is the per-call cap on Bashbox's in-memory
 // writes when LOOMCYCLE_BASHBOX_OVERLAY_MAX_BYTES is unset. 64 MiB holds any

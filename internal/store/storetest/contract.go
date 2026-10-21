@@ -176,6 +176,9 @@ func Run(t *testing.T, factory Factory) {
 		{"ListPausedRunsEmpty", testListPausedRunsEmpty},
 		{"ListPausedRunsExcludesPausingAndRunning", testListPausedRunsExcludesPausingAndRunning},
 		{"ListPausedRunsOrderedByStartedAtAsc", testListPausedRunsOrderedByStartedAtAsc},
+		{"FinishRunClearsThePause", testFinishRunClearsThePause},
+		{"ClaimPausedRunSucceedsOnce", testClaimPausedRunSucceedsOnce},
+		{"UnclaimPausedRunLeavesAnEndedRunEnded", testUnclaimPausedRunLeavesAnEndedRunEnded},
 		{"SnapshotRestoreRunKeepsItsTenant", testSnapshotRestoreRunKeepsItsTenant},
 		{"SnapshotRestoreRunKeepsItsParentRun", testSnapshotRestoreRunKeepsItsParentRun},
 		{"SnapshotRestoreRunKeepsItsDedupKeys", testSnapshotRestoreRunKeepsItsDedupKeys},
@@ -5035,6 +5038,106 @@ func testListPausedRunsExcludesPausingAndRunning(t *testing.T, s store.Store) {
 	rGot, _ := s.GetRunByAgentID(ctx, "a_running")
 	if rGot.PauseState != store.PauseStateRunning {
 		t.Errorf("a_running PauseState = %q, want running", rGot.PauseState)
+	}
+}
+
+// FinishRun ends a run's pause with it: an ended row is not resumable, and one
+// left reading 'paused' is listed by every resume pass after — refused again,
+// or re-dispatched once its agent resolves, while its row reads failed.
+func testFinishRunClearsThePause(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	sess, _ := s.CreateSession(ctx, "t", "a", "u")
+	live, _ := s.CreateRun(ctx, sess.ID, store.RunIdentity{AgentID: "a_live_paused", UserID: "u"})
+	ended, _ := s.CreateRun(ctx, sess.ID, store.RunIdentity{AgentID: "a_ended_paused", UserID: "u"})
+	_ = s.SetRunPauseState(ctx, live.ID, store.PauseStatePaused)
+	_ = s.SetRunPauseState(ctx, ended.ID, store.PauseStatePaused)
+	if err := s.FinishRun(ctx, ended.ID, store.RunFailed, "", store.Usage{}, "resume failed"); err != nil {
+		t.Fatalf("FinishRun: %v", err)
+	}
+	if got, _ := s.GetRun(ctx, ended.ID); got.PauseState != store.PauseStateRunning {
+		t.Errorf("ended run pause_state = %q, want running", got.PauseState)
+	}
+	// And an ended row still reading 'paused' — as a database from before
+	// this, or a writer that ends runs without FinishRun, leaves one — is
+	// neither listed nor claimable.
+	_ = s.SetRunPauseState(ctx, ended.ID, store.PauseStatePaused)
+	if ok, err := s.ClaimPausedRun(ctx, ended.ID); ok || err != nil {
+		t.Errorf("ClaimPausedRun of an ended row still reading paused = %v, %v; want false", ok, err)
+	}
+	got, err := s.ListPausedRuns(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || got[0].ID != live.ID {
+		ids := make([]string, len(got))
+		for i, r := range got {
+			ids[i] = r.ID
+		}
+		t.Errorf("ListPausedRuns = %v, want only the running paused row %s", ids, live.ID)
+	}
+}
+
+// ClaimPausedRun moves a paused row to pause_state 'running' and reports true
+// exactly once: two resume passes racing for the same row (a restore and
+// another replica's periodic pass) must not both dispatch it. A row that is
+// not paused — one that has ended among them — or does not exist is not
+// claimed.
+func testClaimPausedRunSucceedsOnce(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	sess, _ := s.CreateSession(ctx, "t", "a", "u")
+	run, _ := s.CreateRun(ctx, sess.ID, store.RunIdentity{AgentID: "a_claim", UserID: "u"})
+	ended, _ := s.CreateRun(ctx, sess.ID, store.RunIdentity{AgentID: "a_claim_ended", UserID: "u"})
+	_ = s.SetRunPauseState(ctx, run.ID, store.PauseStatePaused)
+	_ = s.SetRunPauseState(ctx, ended.ID, store.PauseStatePaused)
+	_ = s.FinishRun(ctx, ended.ID, store.RunFailed, "", store.Usage{}, "x")
+
+	ok, err := s.ClaimPausedRun(ctx, run.ID)
+	if err != nil || !ok {
+		t.Fatalf("first ClaimPausedRun = %v, %v; want true", ok, err)
+	}
+	if got, _ := s.GetRun(ctx, run.ID); got.PauseState != store.PauseStateRunning {
+		t.Errorf("claimed row pause_state = %q, want running", got.PauseState)
+	}
+	if ok, err := s.ClaimPausedRun(ctx, run.ID); err != nil || ok {
+		t.Errorf("second ClaimPausedRun = %v, %v; want false", ok, err)
+	}
+	if ok, err := s.ClaimPausedRun(ctx, ended.ID); err != nil || ok {
+		t.Errorf("ClaimPausedRun of an ended row = %v, %v; want false", ok, err)
+	}
+	if ok, err := s.ClaimPausedRun(ctx, "run_does_not_exist"); err != nil || ok {
+		t.Errorf("ClaimPausedRun of a missing row = %v, %v; want false, nil", ok, err)
+	}
+}
+
+// UnclaimPausedRun gives a claimed row back as paused only while it is still
+// running and unpaused: a run cancelled between the claim and the unclaim
+// stays cancelled and off the paused list, or a later pass would resurrect it.
+func testUnclaimPausedRunLeavesAnEndedRunEnded(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	sess, _ := s.CreateSession(ctx, "t", "a", "u")
+	run, _ := s.CreateRun(ctx, sess.ID, store.RunIdentity{AgentID: "a_unclaim", UserID: "u"})
+	cancelled, _ := s.CreateRun(ctx, sess.ID, store.RunIdentity{AgentID: "a_unclaim_cancelled", UserID: "u"})
+	for _, id := range []string{run.ID, cancelled.ID} {
+		_ = s.SetRunPauseState(ctx, id, store.PauseStatePaused)
+		if ok, err := s.ClaimPausedRun(ctx, id); !ok || err != nil {
+			t.Fatalf("claim %s: %v %v", id, ok, err)
+		}
+	}
+	_ = s.FinishRun(ctx, cancelled.ID, store.RunCancelled, "operator stop", store.Usage{}, "")
+
+	if ok, err := s.UnclaimPausedRun(ctx, run.ID); !ok || err != nil {
+		t.Errorf("UnclaimPausedRun of a running claimed row = %v, %v; want true", ok, err)
+	}
+	if ok, err := s.UnclaimPausedRun(ctx, cancelled.ID); ok || err != nil {
+		t.Errorf("UnclaimPausedRun of a cancelled row = %v, %v; want false", ok, err)
+	}
+	got, _ := s.GetRun(ctx, cancelled.ID)
+	if got.Status != store.RunCancelled || got.PauseState == store.PauseStatePaused {
+		t.Errorf("cancelled row = status %s pause_state %q, want cancelled and not paused", got.Status, got.PauseState)
+	}
+	listed, _ := s.ListPausedRuns(ctx)
+	if len(listed) != 1 || listed[0].ID != run.ID {
+		t.Errorf("ListPausedRuns lists %d row(s), want only the unclaimed running row", len(listed))
 	}
 }
 

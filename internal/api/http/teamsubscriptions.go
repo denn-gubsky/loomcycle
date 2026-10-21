@@ -367,6 +367,11 @@ func (s *Server) runSubscribedTeam(ctx context.Context, sub teamSubscription) er
 	if err != nil {
 		return err
 	}
+	// Under the sweep's ctx on purpose (RFC ES F1): the walk runs inside an
+	// advisory lock that pins a pool connection until it returns, so a walk
+	// that outlived a shutdown would hold the pool's close until the SIGKILL.
+	// A shutdown cancels it; its source is not acked, so the next sweep runs
+	// it again.
 	res, err := s.TeamDef(s.subscriptionCtx(ctx, sub), input)
 	if err != nil {
 		s.subBackoff.record(sub.DefID, err)

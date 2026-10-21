@@ -64,6 +64,9 @@ func (e *ErrPerUserQuotaExhausted) Code() string { return "per_user_quota_exhaus
 // false+non-nil = infrastructure error (DB unreachable, etc).
 type userQuotaGate interface {
 	TryAcquire(ctx context.Context, tenantID, userID string, cap int) (bool, error)
+	// CountAdmitted counts a run that was admitted before, whatever the cap:
+	// a resumed run (WaitForUser).
+	CountAdmitted(ctx context.Context, tenantID, userID string) error
 	Release(ctx context.Context, tenantID, userID string)
 	Snapshot(ctx context.Context) (map[string]int, error)
 }
@@ -447,6 +450,74 @@ func (s *Semaphore) Wait(ctx context.Context) (release func(), err error) {
 		s.cancelWaiter(w, key, nil)
 		return nil, ctx.Err()
 	}
+}
+
+// WaitForUser is Wait for a resumed run (RFC ES F1): it takes a global slot
+// as Wait does — never refused, served before Acquire waiters — and counts the
+// run against (tenantID, userID)'s per-user cap while it runs, without
+// refusing it at the cap: it was admitted before its pause, and refusing would
+// cancel work that already started. The count goes back with the release.
+//
+// A cluster count that cannot be written is logged and skipped: the run is not
+// failed over an accounting write, and is then not counted, so its release
+// gives nothing back either.
+func (s *Semaphore) WaitForUser(ctx context.Context, tenantID, userID string) (release func(), err error) {
+	key := userKey{tenant: tenantID, user: userID}
+	s.mu.Lock()
+	qs := s.quotaStore
+	counted := s.maxPerUser > 0 && key.user != ""
+	s.mu.Unlock()
+	// What the release (or a cancelled wait) gives back: the in-process count,
+	// the cluster count, or nothing.
+	relKey, relQS := userKey{}, userQuotaGate(nil)
+	if counted && qs != nil {
+		if cerr := qs.CountAdmitted(ctx, key.tenant, key.user); cerr != nil {
+			slog.Warn("concurrency: count a resumed run against its user failed; it runs uncounted",
+				"tenant", key.tenant, "user", key.user, "err", cerr)
+		} else {
+			relKey, relQS = key, qs
+		}
+	}
+	s.mu.Lock()
+	if counted && qs == nil {
+		if s.perUser == nil {
+			s.perUser = map[userKey]int{}
+		}
+		s.perUser[key]++
+		relKey = key
+	}
+	if s.active < s.maxConcurrent {
+		s.active++
+		s.mu.Unlock()
+		return s.releaseFn(relKey, relQS), nil
+	}
+	w := &semWaiter{ch: make(chan struct{}, 1)}
+	s.admitted = append(s.admitted, w)
+	s.queued++
+	s.mu.Unlock()
+
+	select {
+	case <-w.ch:
+		return s.releaseFn(relKey, relQS), nil
+	case <-ctx.Done():
+		s.cancelWaiter(w, relKey, relQS)
+		return nil, ctx.Err()
+	}
+}
+
+// ReleaseUserSlot gives back one cluster-wide per-user slot that a process now
+// gone took for a run it admitted and parked: the run's resume, which
+// succeeds once per park, calls it before the run takes its own slot
+// (WaitForUser). A single replica's counts went with its process, so there it
+// does nothing.
+func (s *Semaphore) ReleaseUserSlot(ctx context.Context, tenantID, userID string) {
+	s.mu.Lock()
+	qs := s.quotaStore
+	s.mu.Unlock()
+	if qs == nil || userID == "" {
+		return
+	}
+	qs.Release(ctx, tenantID, userID)
 }
 
 // releaseInBackground decouples the caller from a slow DB Release.

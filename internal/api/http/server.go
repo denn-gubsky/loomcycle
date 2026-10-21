@@ -970,7 +970,24 @@ func (s *Server) SetPauseManager(m *pause.Manager) {
 			return recordRunPause(ctx, s.store, runID, since, until)
 		})
 	}
+	// RFC ES F1: a shutdown stops the current turn of an interactive (or
+	// resident) run that has not parked in time, so it parks waiting for its
+	// next message instead of being left inside its model call for the
+	// stale-run sweeper. Only an armed turn: a run with none has no turn to
+	// stop, and CancelLocal's unarmed fallback is for team walks.
+	if m != nil && s.turnCancelReg != nil {
+		reg := s.turnCancelReg
+		m.SetShutdownTurnCanceller(func(runID string) {
+			if reg.IsArmed(runID) {
+				reg.CancelLocal(runID, shutdownTurnCancelReason)
+			}
+		})
+	}
 }
+
+// shutdownTurnCancelReason is the reason a turn stopped by the shutdown
+// carries on its turn_cancelled event.
+const shutdownTurnCancelReason = "the runtime is shutting down"
 
 // replicaLister is the minimum read surface of *coord.ReplicaStore
 // the server needs: the healthz cluster view lists the replicas, and the

@@ -1327,6 +1327,12 @@ func (s *Scheduler) runConsolidationTarget(ctx context.Context, def scheduleDef,
 			}
 		},
 	}
+	// Under the scheduler's ctx on purpose, unlike fireRun's run (RFC ES F1):
+	// the fan-out runs inside an advisory lock, which pins a pool connection
+	// until it returns. A run detached from the scheduler's stop and parked by
+	// a shutdown would never return, so the pool's close — and the process —
+	// would wait for the SIGKILL, while another replica resumed the run. A
+	// shutdown cancels the pass instead; the next tick does it again.
 	runErr := s.runner.RunOnce(ctx, in, cb)
 	usageMu.Lock()
 	refused := keyRefused

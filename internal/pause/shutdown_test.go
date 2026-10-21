@@ -4,10 +4,12 @@ import (
 	"context"
 	"errors"
 	"slices"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/denn-gubsky/loomcycle/internal/store"
+	"github.com/denn-gubsky/loomcycle/internal/store/sqlite"
 )
 
 // parkWhenPaused simulates a run's pause gate: once a pause is declared it
@@ -209,5 +211,114 @@ func TestManager_ToolInterruptUnregisteredIsNil(t *testing.T) {
 	var nilM *Manager
 	if nilM.ToolInterrupt("x") != nil {
 		t.Error("ToolInterrupt on a nil manager is not nil")
+	}
+}
+
+// replicaStampedStore reports each paused row with the replica stamped on it
+// in owners: the sqlite store has no replica column (cluster mode requires
+// Postgres), so the test supplies what the Postgres store reads.
+type replicaStampedStore struct {
+	store.Store
+	owners map[string]string // run id -> replica id
+}
+
+func (s replicaStampedStore) ListPausedRuns(ctx context.Context) ([]store.Run, error) {
+	runs, err := s.Store.ListPausedRuns(ctx)
+	for i := range runs {
+		runs[i].ReplicaID = s.owners[runs[i].ID]
+	}
+	return runs, err
+}
+
+// An operator's resume, in a cluster, wakes only the runs this process holds.
+// Any other paused row is left for the resume pass: one another replica
+// parked at its shutdown has no loop anywhere, and flipped to running it
+// would never be resumed — and one stamped with this replica's id but not
+// held here (restored from a snapshot, or left by this replica's previous
+// process) is no different.
+func TestManager_ResumeFlipsOnlyThisReplicasPausedRows(t *testing.T) {
+	base, err := sqlite.Open(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer base.Close()
+	ctx := context.Background()
+	sess, _ := base.CreateSession(ctx, "t", "a", "u")
+	own, _ := base.CreateRun(ctx, sess.ID, store.RunIdentity{AgentID: "own"})
+	held, _ := base.CreateRun(ctx, sess.ID, store.RunIdentity{AgentID: "held"})
+	other, _ := base.CreateRun(ctx, sess.ID, store.RunIdentity{AgentID: "other"})
+	for _, r := range []store.Run{own, held, other} {
+		_ = base.SetRunPauseState(ctx, r.ID, store.PauseStatePaused)
+	}
+	s := replicaStampedStore{Store: base, owners: map[string]string{
+		own.ID: "replica-a", held.ID: "replica-b", other.ID: "replica-b",
+	}}
+	// own carries this replica's id but no loop here holds it.
+	m := NewManager(s, 100*time.Millisecond)
+	m.SetReplicaID("replica-a")
+	// held's loop lives here: a run resumed onto this replica, its row not
+	// yet re-stamped.
+	m.RegisterRun(held.ID)
+	defer m.DeregisterRun(held.ID)
+	_, _ = m.Pause(ctx, 50*time.Millisecond)
+
+	res, err := m.Resume(ctx)
+	if err != nil {
+		t.Fatalf("Resume: %v", err)
+	}
+	if res.ResumedRunsCount != 1 {
+		t.Errorf("ResumedRunsCount = %d, want 1", res.ResumedRunsCount)
+	}
+	for id, want := range map[string]string{"own": store.PauseStatePaused, "held": store.PauseStateRunning, "other": store.PauseStatePaused} {
+		got, _ := base.GetRunByAgentID(ctx, id)
+		if got.PauseState != want {
+			t.Errorf("%s.PauseState = %q, want %q", id, got.PauseState, want)
+		}
+	}
+}
+
+// At the interrupt point the turn canceller is asked to stop the current turn
+// of each run not yet parked — and of none that has parked.
+func TestManager_ShutdownPauseCancelsTheTurnOfUnparkedRunsOnly(t *testing.T) {
+	m, s, cleanup := newTestManager(t)
+	defer cleanup()
+	stop := make(chan struct{})
+	defer close(stop)
+	parker := newShutdownRun(t, s, "parker")
+	busy := newShutdownRun(t, s, "busy")
+	m.RegisterRun(parker.ID)
+	defer m.DeregisterRun(parker.ID)
+	m.RegisterRun(busy.ID)
+	defer m.DeregisterRun(busy.ID)
+	parkWhenPaused(t, m, s, parker.ID, stop)
+	var mu sync.Mutex
+	var asked []string
+	m.SetShutdownTurnCanceller(func(runID string) {
+		mu.Lock()
+		asked = append(asked, runID)
+		mu.Unlock()
+	})
+
+	_ = m.PauseForShutdown(300 * time.Millisecond)
+	mu.Lock()
+	defer mu.Unlock()
+	if !slices.Equal(asked, []string{busy.ID}) {
+		t.Errorf("turn cancels = %v, want only the unparked run %s", asked, busy.ID)
+	}
+}
+
+// In single-replica mode every paused row is this process's to flip, held or
+// not — as before the cluster scoping.
+func TestManager_ResumeInSingleReplicaModeFlipsEveryPausedRow(t *testing.T) {
+	m, s, cleanup := newTestManager(t)
+	defer cleanup()
+	ctx := context.Background()
+	sess, _ := s.CreateSession(ctx, "t", "a", "u")
+	r1, _ := s.CreateRun(ctx, sess.ID, store.RunIdentity{AgentID: "r1"})
+	_ = s.SetRunPauseState(ctx, r1.ID, store.PauseStatePaused)
+	_, _ = m.Pause(ctx, 50*time.Millisecond)
+	res, err := m.Resume(ctx)
+	if err != nil || res.ResumedRunsCount != 1 {
+		t.Fatalf("Resume = %+v, %v; want 1 resumed", res, err)
 	}
 }

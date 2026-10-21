@@ -1952,7 +1952,8 @@ func (s *Store) FinishRun(ctx context.Context, runID string, status store.RunSta
 			credential_source     = ?,
 			credential_scope_id   = ?,
 			result                = ?,
-			draft                 = NULL, queued_input = NULL
+			draft                 = NULL, queued_input = NULL,
+			pause_state           = 'running'
 		WHERE id = ? AND status IN (?, ?)`,
 		string(status), now, stopReason,
 		usage.InputTokens, usage.OutputTokens,
@@ -3933,6 +3934,36 @@ func (s *Store) SetRunPauseState(ctx context.Context, runID, state string) error
 	return nil
 }
 
+// ClaimPausedRun implements store.Store.
+func (s *Store) ClaimPausedRun(ctx context.Context, runID string) (bool, error) {
+	res, err := s.db.ExecContext(ctx,
+		`UPDATE runs SET pause_state = ? WHERE id = ? AND pause_state = ? AND status = 'running'`,
+		store.PauseStateRunning, runID, store.PauseStatePaused)
+	if err != nil {
+		return false, fmt.Errorf("claim paused run: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return false, fmt.Errorf("claim paused run: %w", err)
+	}
+	return n == 1, nil
+}
+
+// UnclaimPausedRun implements store.Store.
+func (s *Store) UnclaimPausedRun(ctx context.Context, runID string) (bool, error) {
+	res, err := s.db.ExecContext(ctx,
+		`UPDATE runs SET pause_state = ? WHERE id = ? AND pause_state = ? AND status = 'running'`,
+		store.PauseStatePaused, runID, store.PauseStateRunning)
+	if err != nil {
+		return false, fmt.Errorf("unclaim paused run: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return false, fmt.Errorf("unclaim paused run: %w", err)
+	}
+	return n == 1, nil
+}
+
 // ListPausedRuns implements store.Store. Returns runs at pause_state =
 // 'paused' (NOT 'pausing' — the column distinguishes in-flight pause
 // transitions from at-rest paused state). Ordered by started_at ASC
@@ -3940,7 +3971,7 @@ func (s *Store) SetRunPauseState(ctx context.Context, runID, state string) error
 func (s *Store) ListPausedRuns(ctx context.Context) ([]store.Run, error) {
 	rows, err := s.db.QueryContext(ctx,
 		`SELECT `+runColumns+` FROM `+runFromTable+`
-		 WHERE r.pause_state = ?
+		 WHERE r.pause_state = ? AND r.status = 'running'
 		 ORDER BY r.started_at ASC`,
 		store.PauseStatePaused,
 	)

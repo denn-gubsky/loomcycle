@@ -1344,7 +1344,11 @@ func runStateful(ctx context.Context, opts RunOptions, system []providers.Conten
 			// Run lifted the cap to the hard ceiling exactly when the run is
 			// iteration-unbounded, so the ceiling identifies that case here.
 			actCtx = tools.WithIterationBudget(actCtx, iter+1, maxIter, maxIter >= maxIterationsHardCeiling)
+			// A shutdown interrupts the action as it does the append loop's
+			// tools, so the run parks at its next step (RFC ES F1).
+			actCtx, stopInterrupt := interruptibleTools(actCtx, opts.PauseGate)
 			blocks := executePendingTools(actCtx, opts.Dispatcher, []providers.ToolUse{tu}, 1, opts.Hooks, hookIdent, emit)
+			stopInterrupt()
 			// A failure is already the structured error object, isError and all.
 			obs = blocks[0].Text
 			notRetainedObs = ""
