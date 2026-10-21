@@ -1,8 +1,6 @@
 package http
 
 import (
-	"context"
-
 	"github.com/denn-gubsky/loomcycle/internal/config"
 	"github.com/denn-gubsky/loomcycle/internal/providers"
 	"github.com/denn-gubsky/loomcycle/internal/store"
@@ -91,12 +89,6 @@ func holdsInterruptionTool(allowed []tools.Tool) bool {
 // retune at.
 type runInterruption struct {
 	holder *tools.InterruptionPolicyHolder
-}
-
-// startRunInterruption attaches the run's live interruption policy to ctx.
-func (s *Server) startRunInterruption(ctx context.Context, def config.AgentDef, run *config.AgentInterruptionACL) (context.Context, *runInterruption) {
-	live := &runInterruption{holder: tools.NewInterruptionPolicyHolder(s.interruptionPolicyForRun(def, run))}
-	return tools.WithInterruptionPolicyHolder(ctx, live.holder), live
 }
 
 // adoptRunInterruption re-derives the policy from the run's current record.

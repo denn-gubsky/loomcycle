@@ -867,57 +867,12 @@ func (s *Server) resumePausedRun(run store.Run) error {
 	loopCtx = providers.WithOperatorKeyAllowed(loopCtx, !run.OperatorKeyRestricted)
 	loopCtx = tools.WithRunIdentity(loopCtx, rid)
 	loopCtx = tools.WithAgentName(loopCtx, run.Agent)
-	// RFC DC P2: the resumed run's fan-out width, so its children are as narrow
-	// as the original's were. A live sub-run's is the one its spawn recorded.
-	//
-	// A sub-run with no record of it (spawned before the record existed) fails
-	// closed to serial, as its volumes and hosts do: the width its ancestors
-	// allowed is unknown, and its definition's is exactly the widening the
-	// record guards against.
-	fanoutCap := agentDef.MaxConcurrentChildren
-	switch {
-	case runCfg.Spawn != nil && runCfg.Spawn.FanoutCap > 0:
-		fanoutCap = runCfg.Spawn.FanoutCap
-	case runCfg.Spawn == nil && isSubRun(run):
-		log.Printf("resume: sub-run %s has no recorded fan-out width; its ancestors' width is unknown, so it resumes serial", run.ID)
-		fanoutCap = 1
-	}
-	runPolicy, liveInterruption := s.agentRunPolicy(loopCtx, agentDef, run.Agent, runPolicySource{
-		Tools: allowedTools,
-		// RFC DD Gap 2: the run's own narrowing, so the resumed run's sub-agents
-		// inherit the same reach the original's did. Zero value (no record)
-		// leaves the operator floor as the only bound, exactly as before.
-		Hosts: hostPolicy,
-		// Volume confinement (RFC AH attach-gap fix): without it a volume-bound
-		// agent would resume with no volume policy at all. A top-level run's is
-		// its agent's own; a sub-run's is narrowed to its parent's, as it was
-		// live.
-		Volumes: s.resumedVolumePolicy(loopCtx, run, runCfg.Spawn, agentDef),
-		// Read-only ephemeral volumes: what the run started with, read from its
-		// record, or what its definition says now. Either is enough, so a
-		// definition that gained the setting during the pause applies, and one
-		// that lost it does not hand write access back. A sub-run with no spawn
-		// record at all cannot say what it started with, so it resumes
-		// read-only, as it resumes confined to no volume.
-		EphemeralReadOnly: runCfg.EphemeralReadOnly || (runCfg.Spawn == nil && isSubRun(run)),
-		// RFC BL P1: re-stamp the run's core blocks (Memory-tool enforcement +
-		// sub-agent inherit) — lost across pause/snapshot/resume otherwise.
-		CoreBlocks: coreBlocks,
-		Crypto:     resumedCryptoPolicy(run, runCfg.Spawn, agentDef),
-		// Restored from the run's own record, for sub-agent inheritance. The
-		// context policy too: every non-resume run path stamps it, so without
-		// it a resumed run's children inherited a different retention mode
-		// from the original's children.
-		Compaction: runCfg.Compaction,
-		Context:    runCfg.Context,
-		FanoutCap:  fanoutCap,
-		// RFC DC P5: offer this run's overrides to its children. Only a child
-		// of the SAME definition will take them.
-		Overrides: tools.RunOverridesValue{Record: runCfg.marshal(), DefID: run.AgentDefID, AgentName: run.Agent, RunID: run.ID},
-		// From the run's record, which a retune may have changed since it
-		// started — an autonomous run that never parked adopts a retune here.
-		Interruption: runCfg.Interruption,
-	})
+	src := s.resumedPolicySource(loopCtx, run, runCfg, agentDef)
+	src.Tools = allowedTools
+	// RFC BL P1: re-stamp the run's core blocks (Memory-tool enforcement +
+	// sub-agent inherit) — lost across pause/snapshot/resume otherwise.
+	src.CoreBlocks = coreBlocks
+	runPolicy, liveInterruption := s.agentRunPolicy(loopCtx, agentDef, run.Agent, src)
 	loopCtx = tools.WithRunPolicy(loopCtx, runPolicy)
 	// RFC AH Phase 2b: re-attach a fresh run-scoped ephemeral set, REHYDRATED
 	// from any ephemeral_volume_defs rows this run created before it was
@@ -2185,4 +2140,63 @@ func toolResultText(m providers.Message) string {
 		}
 	}
 	return b.String()
+}
+
+// resumedPolicySource is what a resumed run's policy is rebuilt from beyond its
+// definition: its row and its configuration record, which kept what it
+// inherited when it started. The caller adds its tool set and core blocks,
+// re-derived from the definition like its prompt. A sub-run's policy built
+// from this matches the one Inherit gave it live
+// (TestResume_SubRunPolicyMatchesItsLiveSpawn).
+func (s *Server) resumedPolicySource(ctx context.Context, run store.Run, runCfg runConfigRecord, agentDef config.AgentDef) runPolicySource {
+	// RFC DC P2: the resumed run's fan-out width, so its children are as narrow
+	// as the original's were. A sub-run's is the one its spawn recorded — what
+	// it ran with live — narrowed by its definition again, as Inherit narrows
+	// it, so a record written before the child's own cap was applied cannot
+	// hand it its parent's wider one.
+	//
+	// A sub-run with no record of it (spawned before the record existed) fails
+	// closed to serial, as its volumes and hosts do: the width its ancestors
+	// allowed is unknown, and its definition's is exactly the widening the
+	// record guards against.
+	fanoutCap := agentDef.MaxConcurrentChildren
+	switch {
+	case runCfg.Spawn != nil:
+		fanoutCap = tools.NarrowFanoutCap(runCfg.Spawn.FanoutCap, agentDef.MaxConcurrentChildren)
+	case isSubRun(run):
+		log.Printf("resume: sub-run %s has no recorded fan-out width; its ancestors' width is unknown, so it resumes serial", run.ID)
+		fanoutCap = 1
+	}
+	return runPolicySource{
+		// RFC DD Gap 2: the run's own narrowing, so the resumed run's sub-agents
+		// inherit the same reach the original's did. Zero value (no record)
+		// leaves the operator floor as the only bound, exactly as before.
+		Hosts: runCfg.hostPolicy(),
+		// Volume confinement (RFC AH attach-gap fix): without it a volume-bound
+		// agent would resume with no volume policy at all. A top-level run's is
+		// its agent's own; a sub-run's is narrowed to its parent's, as it was
+		// live.
+		Volumes: s.resumedVolumePolicy(ctx, run, runCfg.Spawn, agentDef),
+		// Read-only ephemeral volumes: what the run started with, read from its
+		// record, or what its definition says now. Either is enough, so a
+		// definition that gained the setting during the pause applies, and one
+		// that lost it does not hand write access back. A sub-run with no spawn
+		// record at all cannot say what it started with, so it resumes
+		// read-only, as it resumes confined to no volume.
+		EphemeralReadOnly: runCfg.EphemeralReadOnly || (runCfg.Spawn == nil && isSubRun(run)),
+		Crypto:            resumedCryptoPolicy(run, runCfg.Spawn, agentDef),
+		// Restored from the run's own record, for sub-agent inheritance. The
+		// context policy too: every non-resume run path stamps it, so without
+		// it a resumed run's children inherited a different retention mode
+		// from the original's children.
+		Compaction: runCfg.Compaction,
+		Context:    runCfg.Context,
+		FanoutCap:  fanoutCap,
+		// RFC DC P5: offer this run's overrides to its children. Only a child
+		// of the SAME definition will take them.
+		Overrides: tools.RunOverridesValue{Record: runCfg.marshal(), DefID: run.AgentDefID, AgentName: run.Agent, RunID: run.ID},
+		// From the run's record, which a retune may have changed since it
+		// started — an autonomous run that never parked adopts a retune here.
+		Interruption: runCfg.Interruption,
+	}
 }

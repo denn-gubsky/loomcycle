@@ -120,3 +120,194 @@ func (p RunPolicy) SpawnChildIndex() (int, bool) {
 	}
 	return p.SpawnIndex - 1, true
 }
+
+// ChildGrant is what a spawned child brings to its own policy: the policy its
+// definition would give it on its own, and the facts about that definition
+// Inherit needs to combine it with its parent's.
+type ChildGrant struct {
+	// Own is the policy the child's definition grants, built by the same
+	// constructor a top-level run of that definition uses.
+	Own RunPolicy
+	// DeclaresVolumes is whether the child's definition names volumes. A
+	// child that names none works within its parent's.
+	DeclaresVolumes bool
+	// LocksOverrides is whether the child runs on its definition only
+	// (allow_overrides: false). Its parent's compaction and context carry its
+	// parent's caller's per-run values, which such a child refuses from
+	// anyone, so it takes neither.
+	LocksOverrides bool
+	// HostsNarrowOnly is whether the parent's host list may only narrow for
+	// this child (a locked child, or a caller held by its token's override
+	// lock). Once set it stays set down the tree.
+	HostsNarrowOnly bool
+}
+
+// inheritRule names how Inherit decides one RunPolicy field for a child.
+type inheritRule string
+
+const (
+	// ruleOwn: the child's own definition decides; nothing of the parent's
+	// reaches it.
+	ruleOwn inheritRule = "own"
+	// ruleInherit: the parent's value, unchanged.
+	ruleInherit inheritRule = "inherit"
+	// ruleNarrow: the parent's value narrowed by the child's own; never wider
+	// than either.
+	ruleNarrow inheritRule = "narrow"
+	// ruleMerge: per field, the parent's setting wins and the child's fills
+	// what the parent left unset (the spawn-tree settings).
+	ruleMerge inheritRule = "merge"
+	// ruleClear: this spawn's own input; consumed by the spawn, never the
+	// child's.
+	ruleClear inheritRule = "clear"
+)
+
+// inheritRules is the documentation of Inherit, one line per RunPolicy field.
+// TestRunPolicy_EveryFieldHasAnInheritanceRule fails when a field has no
+// entry, and TestRunPolicy_InheritFollowsItsRules checks Inherit against it,
+// so a field added to RunPolicy cannot reach a child by accident.
+var inheritRules = map[string]inheritRule{
+	"Tools":              ruleOwn,     // the child's tool ceiling is its definition's
+	"ToolPatterns":       ruleOwn,     //
+	"Hosts":              ruleInherit, // the caller's narrowing holds for the whole tree; narrow-only is sticky
+	"Volumes":            ruleNarrow,  // child-declared ∩ parent; undeclared works within the parent's
+	"EphemeralReadOnly":  ruleNarrow,  // read-only if either is
+	"VolumeDef":          ruleOwn,     //
+	"Memory":             ruleOwn,     // a child's surface is its own definition's
+	"SqlMem":             ruleOwn,     //
+	"CoreBlocks":         ruleOwn,     // already folds in the parent's inheritable blocks (applyMemoryInjection)
+	"Decision":           ruleOwn,     //
+	"History":            ruleOwn,     //
+	"Channel":            ruleOwn,     //
+	"Interruption":       ruleOwn,     // from the child's definition and its record
+	"AgentDef":           ruleOwn,     //
+	"Skill":              ruleOwn,     //
+	"Evaluation":         ruleOwn,     //
+	"Crypto":             ruleNarrow,  // the child's own scopes its parent also holds
+	"OperatorAuthored":   ruleOwn,     //
+	"FanoutCap":          ruleNarrow,  // min(parent, child) when both are set
+	"Overrides":          ruleInherit, // only a child of the same definition takes them
+	"Compaction":         ruleMerge,   // parent wins per field, then this spawn's override
+	"Context":            ruleMerge,   // parent wins per field
+	"CompactionOverride": ruleClear,   // consumed by this spawn (into Compaction)
+	"SpawnIndex":         ruleClear,   // this spawn's ledger index
+	"SpawnTimeoutMs":     ruleClear,   // this spawn's ledger bound
+}
+
+// Inherit returns a spawned child's policy: for every field, its parent's (p),
+// its own definition's (c.Own), the narrower of the two, or nothing — as
+// inheritRules says. It is the one place a child's policy is decided; the
+// spawn path builds c and stamps the result.
+func (p RunPolicy) Inherit(c ChildGrant) RunPolicy {
+	own := c.Own
+	parentCompaction, parentContext := p.Compaction, p.Context
+	if c.LocksOverrides {
+		parentCompaction, parentContext = nil, nil
+	}
+	hosts := p.Hosts
+	if hosts.HasList && c.HostsNarrowOnly {
+		hosts.NarrowOnly = true
+	}
+	return RunPolicy{
+		Tools:             own.Tools,
+		ToolPatterns:      own.ToolPatterns,
+		Hosts:             hosts,
+		Volumes:           ChildVolumes(p.Volumes, own.Volumes, c.DeclaresVolumes),
+		EphemeralReadOnly: p.EphemeralReadOnly || own.EphemeralReadOnly,
+		VolumeDef:         own.VolumeDef,
+		Memory:            own.Memory,
+		SqlMem:            own.SqlMem,
+		CoreBlocks:        own.CoreBlocks,
+		Decision:          own.Decision,
+		History:           own.History,
+		Channel:           own.Channel,
+		Interruption:      own.Interruption,
+		AgentDef:          own.AgentDef,
+		Skill:             own.Skill,
+		Evaluation:        own.Evaluation,
+		Crypto:            CryptoPolicyValue{Scopes: NarrowCryptoScopes(p.Crypto.Scopes, own.Crypto.Scopes)},
+		OperatorAuthored:  own.OperatorAuthored,
+		FanoutCap:         NarrowFanoutCap(p.FanoutCap, own.FanoutCap),
+		Overrides:         p.Overrides,
+		// A child's own settings fill what its parent left unset; a per-spawn
+		// override wins over both. A child that runs on its definition only
+		// is refused an override before it gets here (admitAgentOverrides).
+		Compaction: config.MergeCompaction(config.MergeCompaction(own.Compaction, parentCompaction), p.CompactionOverride),
+		Context:    config.MergeContext(own.Context, parentContext),
+		// CompactionOverride, SpawnIndex, SpawnTimeoutMs: zero. They were the
+		// spawn's request, and a child that spawns without them must not pass
+		// them on.
+	}
+}
+
+// NarrowFanoutCap is a child's parallel_spawn width: the smaller of its
+// parent's run cap and its own definition's when both are set, the parent's
+// when only it is, and 0 — the definition decides, by name, at spawn time —
+// when the parent set none. A child never fans out wider than an ancestor
+// allowed, nor wider than its own definition says.
+func NarrowFanoutCap(parent, own int) int {
+	switch {
+	case parent <= 0:
+		return 0
+	case own > 0 && own < parent:
+		return own
+	default:
+		return parent
+	}
+}
+
+// ChildVolumes is a spawned child's volume confinement (RFC AH §4):
+//
+//   - parent not confined (inactive): the child's own, as if top-level — there
+//     is no parent scope to narrow against;
+//   - a child that declares no volumes: the parent's, verbatim — it works
+//     within the parent's scope, as it inherits the parent's hosts;
+//   - otherwise: child-declared ∩ parent (NarrowVolumes).
+func ChildVolumes(parent, own VolumePolicyValue, ownDeclares bool) VolumePolicyValue {
+	if !parent.Active {
+		return own
+	}
+	if !ownDeclares {
+		return parent
+	}
+	return NarrowVolumes(parent, own)
+}
+
+// NarrowVolumes computes a sub-agent's volume binding set as the NARROW-ONLY
+// intersection (RFC AH §4): child set = (child-declared) ∩ (parent's active
+// bindings). A child can NEVER gain a volume the parent lacks; where both hold
+// a volume, ReadOnly resolves to the MORE restrictive of the two (ro wins).
+// This mirrors NarrowHosts exactly — the parent's policy is the floor, the
+// child can only shrink it.
+//
+// The child's Default flag is preserved from the child's own declaration (the
+// parent might mark a different volume as its default), so an omitted `volume`
+// in the child resolves against the child's own designated default among the
+// surviving intersection.
+//
+// Called ONLY with an ACTIVE parent (see ChildVolumes). The result is ALWAYS
+// active: an empty intersection means the child shares none of the parent's
+// volumes and is confined to NOTHING (every file-tool call refused), NOT
+// dropped back to the legacy jail.
+func NarrowVolumes(parent, child VolumePolicyValue) VolumePolicyValue {
+	parentByName := make(map[string]VolumeBinding, len(parent.Bindings))
+	for _, b := range parent.Bindings {
+		parentByName[b.Name] = b
+	}
+	out := make([]VolumeBinding, 0, len(child.Bindings))
+	for _, cb := range child.Bindings {
+		pb, ok := parentByName[cb.Name]
+		if !ok {
+			continue // child named a volume the parent lacks — drop it.
+		}
+		// More-restrictive-wins on the ro/rw axis: ro if EITHER side is ro.
+		out = append(out, VolumeBinding{
+			Name:     cb.Name,
+			Root:     pb.Root, // parent's resolved root is authoritative.
+			ReadOnly: cb.ReadOnly || pb.ReadOnly,
+			Default:  cb.Default,
+			Fence:    pb.Fence, // with the root it fences.
+		})
+	}
+	return VolumePolicyValue{Active: true, Bindings: out}
+}

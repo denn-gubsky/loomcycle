@@ -100,6 +100,13 @@ func TestPrepareSubRun_EveryOperatorPlaneSetterIsReplacedForTheChild(t *testing.
 	for name := range toolsSetterCalls(t, src, "stripOperatorPlane", false) {
 		replaced[name] = true
 	}
+	// The child's whole RunPolicy replaces its parent's, so every setter that
+	// writes a RunPolicy field is replaced by that one call.
+	if replaced["WithRunPolicy"] {
+		for name := range runPolicySetters(t) {
+			replaced[name] = true
+		}
+	}
 	var missing []string
 	for name := range stamped {
 		if !replaced[name] && !replaced["Without"+strings.TrimPrefix(name, "With")] {
@@ -140,7 +147,8 @@ func toolsSetterCalls(t *testing.T, files []string, fn string, required bool) ma
 				if !ok {
 					return true
 				}
-				if pkg, ok := sel.X.(*ast.Ident); ok && pkg.Name == "tools" && strings.HasPrefix(sel.Sel.Name, "With") {
+				if pkg, ok := sel.X.(*ast.Ident); ok && pkg.Name == "tools" &&
+					(strings.HasPrefix(sel.Sel.Name, "With") || sel.Sel.Name == "UpdateRunPolicy") {
 					out[sel.Sel.Name] = true
 				}
 				return true
@@ -152,6 +160,45 @@ func toolsSetterCalls(t *testing.T, files []string, fn string, required bool) ma
 		t.Fatalf("function %s not found in %v", fn, files)
 	}
 	return map[string]bool{}
+}
+
+// runPolicySetters returns the tools functions that write the run's RunPolicy:
+// WithRunPolicy and UpdateRunPolicy themselves, and every With* whose body
+// goes through either. Read from the source, so a setter moved into RunPolicy
+// joins the set without this test being touched.
+func runPolicySetters(t *testing.T) map[string]bool {
+	t.Helper()
+	files, err := filepath.Glob("../../tools/*.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := map[string]bool{"WithRunPolicy": true, "UpdateRunPolicy": true}
+	fset := token.NewFileSet()
+	for _, file := range files {
+		if strings.HasSuffix(file, "_test.go") {
+			continue
+		}
+		f, err := parser.ParseFile(fset, file, nil, 0)
+		if err != nil {
+			t.Fatalf("parse %s: %v", file, err)
+		}
+		for _, d := range f.Decls {
+			fd, ok := d.(*ast.FuncDecl)
+			if !ok || fd.Recv != nil || fd.Body == nil || !strings.HasPrefix(fd.Name.Name, "With") {
+				continue
+			}
+			ast.Inspect(fd.Body, func(n ast.Node) bool {
+				if id, ok := n.(*ast.Ident); ok && (id.Name == "UpdateRunPolicy" || id.Name == "WithRunPolicy") {
+					out[fd.Name.Name] = true
+				}
+				return true
+			})
+		}
+	}
+	if len(out) < 3 {
+		t.Fatalf("found no RunPolicy setters in internal/tools (%v); the scan is not reading the package", out)
+	}
+	return out
 }
 
 // agentDefCallerProvider is a member that calls AgentDef twice — a plain
