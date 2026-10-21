@@ -116,7 +116,7 @@ jobs:
     if: needs.classify.outputs.full == 'true'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
         with:
           # goreleaser needs full git history for the version
           # template + commit-date stamp.
@@ -282,7 +282,7 @@ jobs:
       contents: write # pre-create the GitHub release from the annotated tag
       packages: write # push the GHCR mirror of loomcycle-browser
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
           fetch-tags: true
