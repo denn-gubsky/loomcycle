@@ -178,6 +178,7 @@ func Run(t *testing.T, factory Factory) {
 		{"ListPausedRunsOrderedByStartedAtAsc", testListPausedRunsOrderedByStartedAtAsc},
 		{"FinishRunClearsThePause", testFinishRunClearsThePause},
 		{"ClaimPausedRunSucceedsOnce", testClaimPausedRunSucceedsOnce},
+		{"UnclaimPausedRunLeavesAnEndedRunEnded", testUnclaimPausedRunLeavesAnEndedRunEnded},
 		{"SnapshotRestoreRunKeepsItsTenant", testSnapshotRestoreRunKeepsItsTenant},
 		{"SnapshotRestoreRunKeepsItsParentRun", testSnapshotRestoreRunKeepsItsParentRun},
 		{"SnapshotRestoreRunKeepsItsDedupKeys", testSnapshotRestoreRunKeepsItsDedupKeys},
@@ -5096,6 +5097,38 @@ func testClaimPausedRunSucceedsOnce(t *testing.T, s store.Store) {
 	}
 	if ok, err := s.ClaimPausedRun(ctx, "run_does_not_exist"); err != nil || ok {
 		t.Errorf("ClaimPausedRun of a missing row = %v, %v; want false, nil", ok, err)
+	}
+}
+
+// UnclaimPausedRun gives a claimed row back as paused only while it is still
+// running and unpaused: a run cancelled between the claim and the unclaim
+// stays cancelled and off the paused list, or a later pass would resurrect it.
+func testUnclaimPausedRunLeavesAnEndedRunEnded(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	sess, _ := s.CreateSession(ctx, "t", "a", "u")
+	run, _ := s.CreateRun(ctx, sess.ID, store.RunIdentity{AgentID: "a_unclaim", UserID: "u"})
+	cancelled, _ := s.CreateRun(ctx, sess.ID, store.RunIdentity{AgentID: "a_unclaim_cancelled", UserID: "u"})
+	for _, id := range []string{run.ID, cancelled.ID} {
+		_ = s.SetRunPauseState(ctx, id, store.PauseStatePaused)
+		if ok, err := s.ClaimPausedRun(ctx, id); !ok || err != nil {
+			t.Fatalf("claim %s: %v %v", id, ok, err)
+		}
+	}
+	_ = s.FinishRun(ctx, cancelled.ID, store.RunCancelled, "operator stop", store.Usage{}, "")
+
+	if ok, err := s.UnclaimPausedRun(ctx, run.ID); !ok || err != nil {
+		t.Errorf("UnclaimPausedRun of a running claimed row = %v, %v; want true", ok, err)
+	}
+	if ok, err := s.UnclaimPausedRun(ctx, cancelled.ID); ok || err != nil {
+		t.Errorf("UnclaimPausedRun of a cancelled row = %v, %v; want false", ok, err)
+	}
+	got, _ := s.GetRun(ctx, cancelled.ID)
+	if got.Status != store.RunCancelled || got.PauseState == store.PauseStatePaused {
+		t.Errorf("cancelled row = status %s pause_state %q, want cancelled and not paused", got.Status, got.PauseState)
+	}
+	listed, _ := s.ListPausedRuns(ctx)
+	if len(listed) != 1 || listed[0].ID != run.ID {
+		t.Errorf("ListPausedRuns lists %d row(s), want only the unclaimed running row", len(listed))
 	}
 }
 

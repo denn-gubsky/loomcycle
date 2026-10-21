@@ -2103,6 +2103,13 @@ type RunStore interface {
 	// operator resume — gets true; the others get false and must leave the
 	// row alone. A missing row is (false, nil).
 	ClaimPausedRun(ctx context.Context, runID string) (bool, error)
+
+	// UnclaimPausedRun gives a claimed row back for a later pass: pause_state
+	// "running" -> "paused", only while status is still "running". A run that
+	// ended between the claim and the unclaim — an operator's cancel — stays
+	// ended and unlisted, where an unconditional write would put it back on
+	// the resume list. Reports whether it did.
+	UnclaimPausedRun(ctx context.Context, runID string) (bool, error)
 }
 
 // PendingRunStore persists runs that exist but have not started:

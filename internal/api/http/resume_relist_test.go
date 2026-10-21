@@ -103,3 +103,40 @@ func runEventsOf(t *testing.T, srv *Server, run store.Run) []store.Event {
 	}
 	return evs
 }
+
+// cancelOnTranscriptRead ends the run (an operator's cancel landing) after a
+// resume has claimed it, then fails the transcript read, so the resume stops
+// short and gives the row back.
+type cancelOnTranscriptRead struct {
+	store.Store
+	runID string
+}
+
+func (c *cancelOnTranscriptRead) GetTranscript(ctx context.Context, sessionID string) ([]store.Event, error) {
+	_ = c.Store.FinishRun(ctx, c.runID, store.RunCancelled, "operator stop", store.Usage{}, "")
+	return nil, errors.New("transcript read failed")
+}
+
+// A resume that stops short gives the row back as paused — but not one a
+// cancel ended in between: that run stays cancelled and off the paused list,
+// or a later pass would resurrect it.
+func TestResumePausedRun_ACancelBetweenClaimAndUnclaimStays(t *testing.T) {
+	srv, cfg, prov, run := relistFixture(t)
+	cfg.Agents["ghost"] = config.AgentDef{Provider: "scripted", Model: "stub-model", SystemPrompt: "x", Tools: []string{}}
+	ctx := context.Background()
+	srv.store = &cancelOnTranscriptRead{Store: srv.store, runID: run.ID}
+
+	if n, _ := srv.ResumePausedRuns(ctx); n != 0 {
+		t.Fatalf("resumed %d, want 0", n)
+	}
+	got, _ := srv.store.GetRun(ctx, run.ID)
+	if got.Status != store.RunCancelled || got.PauseState == store.PauseStatePaused {
+		t.Errorf("run = status %s pause_state %q, want cancelled and not paused", got.Status, got.PauseState)
+	}
+	if listed, _ := srv.store.ListPausedRuns(ctx); len(listed) != 0 {
+		t.Errorf("ListPausedRuns lists %d row(s), want none", len(listed))
+	}
+	if n, _ := srv.ResumePausedRuns(ctx); n != 0 || prov.calls.Load() != 0 {
+		t.Errorf("a later pass resumed %d, model called %d time(s): the cancelled run was resurrected", n, prov.calls.Load())
+	}
+}

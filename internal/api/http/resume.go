@@ -1487,10 +1487,11 @@ func (s *Server) flagRunUnresumable(run store.Run, reason string) {
 
 // unclaimPausedRun gives a claimed row back as paused, for a resume that
 // stopped before it dispatched or ended the run: a later pass tries it again.
+// Compare-and-set: a run that ended meanwhile (a cancel) is left ended.
 func (s *Server) unclaimPausedRun(runID string) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	if err := s.store.SetRunPauseState(ctx, runID, store.PauseStatePaused); err != nil {
+	if _, err := s.store.UnclaimPausedRun(ctx, runID); err != nil {
 		log.Printf("resume: give run %s back as paused: %v — it stays running with no loop until the stale-run sweeper ends it", runID, err)
 	}
 }

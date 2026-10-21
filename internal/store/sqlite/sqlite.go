@@ -3947,6 +3947,21 @@ func (s *Store) ClaimPausedRun(ctx context.Context, runID string) (bool, error) 
 	return n == 1, nil
 }
 
+// UnclaimPausedRun implements store.Store.
+func (s *Store) UnclaimPausedRun(ctx context.Context, runID string) (bool, error) {
+	res, err := s.db.ExecContext(ctx,
+		`UPDATE runs SET pause_state = ? WHERE id = ? AND pause_state = ? AND status = 'running'`,
+		store.PauseStatePaused, runID, store.PauseStateRunning)
+	if err != nil {
+		return false, fmt.Errorf("unclaim paused run: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return false, fmt.Errorf("unclaim paused run: %w", err)
+	}
+	return n == 1, nil
+}
+
 // ListPausedRuns implements store.Store. Returns runs at pause_state =
 // 'paused' (NOT 'pausing' — the column distinguishes in-flight pause
 // transitions from at-rest paused state). Ordered by started_at ASC

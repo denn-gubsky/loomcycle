@@ -2434,6 +2434,17 @@ func (s *Store) ClaimPausedRun(ctx context.Context, runID string) (bool, error) 
 	return tag.RowsAffected() == 1, nil
 }
 
+// UnclaimPausedRun implements store.Store.
+func (s *Store) UnclaimPausedRun(ctx context.Context, runID string) (bool, error) {
+	tag, err := s.pool.Exec(ctx,
+		`UPDATE runs SET pause_state = $1 WHERE id = $2 AND pause_state = $3 AND status = 'running'`,
+		store.PauseStatePaused, runID, store.PauseStateRunning)
+	if err != nil {
+		return false, fmt.Errorf("unclaim paused run: %w", err)
+	}
+	return tag.RowsAffected() == 1, nil
+}
+
 // SetRunReplica implements store.Store.
 func (s *Store) SetRunReplica(ctx context.Context, runID, replicaID string) error {
 	tag, err := s.pool.Exec(ctx,
