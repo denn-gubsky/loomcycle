@@ -19,7 +19,7 @@ package channels
 import (
 	"context"
 	"encoding/json"
-	"log"
+	"log/slog"
 	"sync"
 	"time"
 
@@ -85,7 +85,7 @@ func (b *Bus) Notify(channel string) {
 		}
 		ctx, cancel := context.WithTimeout(context.Background(), timeout)
 		if err := bp.Publish(ctx, "loomcycle.channel", payload); err != nil {
-			log.Printf("channels: backplane publish failed for %s: %v", channel, err)
+			slog.Warn("channels: backplane publish failed", "channel", channel, "err", err)
 		}
 		cancel()
 	}
@@ -135,7 +135,7 @@ func (b *Bus) SubscribeBackplane(ctx context.Context, bp coord.Backplane) error 
 		for evt := range ch {
 			var p channelBackplaneEvent
 			if err := json.Unmarshal(evt.Payload, &p); err != nil {
-				log.Printf("channels: malformed backplane event: %v", err)
+				slog.Warn("channels: malformed backplane event", "err", err)
 				continue
 			}
 			b.notifyLocal(p.Channel)

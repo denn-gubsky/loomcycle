@@ -6,7 +6,6 @@ import (
 	"context"
 	"encoding/json"
 	"io"
-	"os"
 	"strings"
 
 	"github.com/denn-gubsky/loomcycle/internal/tools"
@@ -102,9 +101,19 @@ func (r *Read) Execute(ctx context.Context, input json.RawMessage) (tools.Result
 		maxBytes = 256 * 1024
 	}
 
-	// Open the already-resolved path so a symlink swap between EvalSymlinks
-	// and Open can't change what we read.
-	f, err := os.Open(resolved)
+	// Open through the volume's os.Root, not by the resolved path string, so
+	// a directory swapped for a symlink after the check is refused rather
+	// than followed out of the volume (RFC ES #1).
+	vfs, err := openVolumeFS(root, fence)
+	if err != nil {
+		return tools.Result{Text: err.Error(), IsError: true}, nil
+	}
+	defer vfs.Close()
+	rel, err := vfs.rel(resolved)
+	if err != nil {
+		return tools.Result{Text: err.Error(), IsError: true}, nil
+	}
+	f, err := vfs.open(rel)
 	if err != nil {
 		return tools.Result{Text: err.Error(), IsError: true}, nil
 	}

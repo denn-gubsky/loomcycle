@@ -7076,10 +7076,40 @@ func (s *Server) prepareSubRun(ctx context.Context, name, systemExtra, prompt, d
 	return s.prepareSubRunValues(ctx, name, nameFromAgentTool, systemExtra, prompt, defID, interactive, fwd, nil, nil, false, false)
 }
 
+// stripOperatorPlane takes an operator plane's own authority off the ctx a
+// child run is built from. The HTTP, gRPC and MCP substrate surfaces stamp it
+// for their CALLER's off-run call; when that call starts runs — a TeamDef
+// op=run walk spawns its members from the plane's ctx — each run is a model
+// acting, and must not inherit the operator's markers: an AgentDef it wrote was
+// recorded operator-authored, it could create schedules, webhooks and A2A defs
+// under "any", grant those scopes onward, and, in open mode, held operator
+// authority outright.
+//
+// No run path grants any of these def policies from an agent's definition, so
+// the zero value is what every other run holds. What a run does hold (AgentDef,
+// Memory, Channel and the rest) is restamped from the child's own definition in
+// prepareSubRunValues; TestPrepareSubRun_EveryOperatorPlaneSetterIsReplacedForTheChild
+// holds the two lists together.
+func stripOperatorPlane(ctx context.Context) context.Context {
+	ctx = tools.WithoutSubstrateOperator(ctx)
+	ctx = tools.WithoutUnauthenticatedOperator(ctx)
+	ctx = tools.WithScheduleDefPolicy(ctx, tools.ScheduleDefPolicyValue{})
+	ctx = tools.WithA2AServerCardDefPolicy(ctx, tools.A2AServerCardDefPolicyValue{})
+	ctx = tools.WithA2AAgentDefPolicy(ctx, tools.A2AAgentDefPolicyValue{})
+	ctx = tools.WithWebhookDefPolicy(ctx, tools.WebhookDefPolicyValue{})
+	ctx = tools.WithMemoryBackendDefPolicy(ctx, tools.MemoryBackendDefPolicyValue{})
+	ctx = tools.WithDocumentSourceDefPolicy(ctx, tools.DocumentSourceDefPolicyValue{})
+	ctx = tools.WithOperatorTokenDefPolicy(ctx, tools.OperatorTokenDefPolicyValue{})
+	return ctx
+}
+
 // prepareSubRunValues is prepareSubRun with a team state's prompt values. src
 // is who wrote `name` — a state of a team definition, or a model through the
 // Agent tool — which decides how it may resolve inside a team.
 func (s *Server) prepareSubRunValues(ctx context.Context, name string, src nameSource, systemExtra, prompt, defID string, interactive bool, fwd func(providers.Event), values, dataSlots map[string]string, systemAuthored, inputAuthored bool) (*subRunPrep, error) {
+	// First, so nothing below — the child's prompt assembly included — runs
+	// with the authority of an operator plane that started this tree.
+	ctx = stripOperatorPlane(ctx)
 	// RFC N: a parent in tenant T resolves the sub-agent name within T's
 	// view (parent tenant flows via ctx RunIdentity, inherited by every
 	// sub-agent). Confirms RFC N's open-question on cross-boundary spawn:
@@ -7442,6 +7472,11 @@ func (s *Server) prepareSubRunValues(ctx context.Context, name string, src nameS
 	// Likewise where this run reports its outcome (a spawn with result
 	// "object"): a run it spawns must not write over it.
 	subRunCtx = tools.WithChildOutcome(subRunCtx, nil)
+	// And a pre hook's host grant: the loop attaches it to the one tool call it
+	// judged, and when that call is this spawn it is on ctx here. Left on, it
+	// widened the child's every HTTP call for its whole run; the child's calls
+	// are judged by its own hooks.
+	subRunCtx = tools.WithoutExtraAllowedHosts(subRunCtx)
 	defer func() {
 		if !prepOK {
 			subCancelFn(nil)

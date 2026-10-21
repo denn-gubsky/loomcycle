@@ -4,7 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"log"
+	"log/slog"
 	"regexp"
 	"time"
 
@@ -170,7 +170,7 @@ func (h *Heartbeat) Run(ctx context.Context) {
 	// First upsert: synchronous, before the ticker starts. Ensures the
 	// row is visible in /healthz immediately on boot.
 	if err := h.store.UpsertReplica(ctx, h.cfg.ReplicaID, h.cfg.Hostname, h.cfg.Version); err != nil {
-		log.Printf("coord: initial replica upsert failed: %v", err)
+		slog.Warn("coord: initial replica upsert failed", "err", err)
 	}
 	t := time.NewTicker(h.cfg.Interval)
 	defer t.Stop()
@@ -181,13 +181,13 @@ func (h *Heartbeat) Run(ctx context.Context) {
 			// kill the DELETE.
 			shutCtx, cancel := context.WithTimeout(context.Background(), h.cfg.ShutdownTimeout)
 			if err := h.store.DeleteReplica(shutCtx, h.cfg.ReplicaID); err != nil {
-				log.Printf("coord: shutdown DELETE for replica %s failed: %v", h.cfg.ReplicaID, err)
+				slog.Warn("coord: shutdown DELETE for replica failed", "replica", h.cfg.ReplicaID, "err", err)
 			}
 			cancel()
 			return
 		case <-t.C:
 			if err := h.store.UpsertReplica(ctx, h.cfg.ReplicaID, h.cfg.Hostname, h.cfg.Version); err != nil {
-				log.Printf("coord: replica upsert failed: %v (will retry in %s)", err, h.cfg.Interval)
+				slog.Warn("coord: replica upsert failed (will retry)", "err", err, "retry_in", h.cfg.Interval.String())
 			}
 		}
 	}

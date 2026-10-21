@@ -30,7 +30,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"log"
+	"log/slog"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -179,9 +179,9 @@ func (w *Worker) Run(ctx context.Context) {
 			// Progress rows whose message is gone (expired, trimmed, swept) or
 			// already decided; nothing else removes them.
 			if n, err := w.cfg.Store.ChannelHookGC(ctx, 1000); err != nil && ctx.Err() == nil {
-				log.Printf("channelhooks: gc: %v", err)
+				slog.Warn("channelhooks: gc failed", "err", err)
 			} else if n > 0 {
-				log.Printf("channelhooks: gc removed %d stale progress row(s)", n)
+				slog.Info("channelhooks: gc removed stale progress rows", "rows", n)
 			}
 			lastGC = w.now()
 		}
@@ -250,12 +250,12 @@ func (w *Worker) deliverUnhooked(ctx context.Context) int {
 	items, err := w.cfg.Store.ChannelHookClaim(ctx, w.cfg.Owner, now, now.Add(w.cfg.Lease), unhookedBatch)
 	if err != nil {
 		if ctx.Err() == nil {
-			log.Printf("channelhooks: hooks off: claim: %v", err)
+			slog.Warn("channelhooks: hooks off: claim failed", "err", err)
 		}
 		return 0
 	}
 	if len(items) > 0 {
-		log.Printf("channelhooks: hooks are off: delivering %d message(s) left awaiting hooks, unhooked", len(items))
+		slog.Info("channelhooks: hooks are off: delivering messages left awaiting hooks, unhooked", "messages", len(items))
 	}
 	for _, it := range items {
 		m := it.Message
@@ -273,7 +273,7 @@ func (w *Worker) deliverUnhooked(ctx context.Context) int {
 			// Whether the channel holds is unknown, and a hold must not be
 			// delivered past: the message waits out this claim's lease and is
 			// tried again.
-			log.Printf("channelhooks: hooks off: %s message %s: the channel's definition could not be read: %v", m.Channel, m.ID, err)
+			slog.Warn("channelhooks: hooks off: the channel's definition could not be read", "channel", m.Channel, "message_id", m.ID, "err", err)
 			continue
 		}
 		// An ask its hooks left pending has nobody waiting for its answer.
@@ -303,7 +303,7 @@ func (w *Worker) claim(ctx context.Context) bool {
 	items, err := w.cfg.Store.ChannelHookClaim(ctx, w.cfg.Owner, now, until, free)
 	if err != nil {
 		if ctx.Err() == nil {
-			log.Printf("channelhooks: claim: %v", err)
+			slog.Warn("channelhooks: claim failed", "err", err)
 		}
 		return false
 	}
@@ -435,7 +435,7 @@ func (j *job) renew(ctx context.Context, lost func(), left time.Duration) {
 		case <-ctx.Done():
 			return
 		case <-expired.C:
-			log.Printf("channelhooks: %s message %s: lease ran out while renewals failed; stopping", j.msg.Channel, j.msg.ID)
+			slog.Warn("channelhooks: lease ran out while renewals failed; stopping", "channel", j.msg.Channel, "message_id", j.msg.ID)
 			lost()
 			return
 		case <-t.C:
@@ -539,7 +539,7 @@ func (j *job) decide(ctx context.Context) {
 				fm = hooks.FailOpen
 			}
 			j.record(providers.HookDecisionInfo{Hook: name, Decision: "unavailable", FailMode: string(fm), Reason: hooks.DecisionReason(err)})
-			log.Printf("channelhooks: %s on %s message %s failed (fail_mode=%s): %v", name, j.msg.Channel, j.msg.ID, fm, err)
+			slog.WarnContext(ctx, "channelhooks: hook failed", "hook", name, "channel", j.msg.Channel, "message_id", j.msg.ID, "fail_mode", string(fm), "err", err)
 			if fm == hooks.FailOpen {
 				pos, attempts = pos+1, 0
 				continue
@@ -650,7 +650,7 @@ func (j *job) retry(ctx context.Context, def *Def, what string, err error) {
 	if ctx.Err() != nil {
 		return
 	}
-	log.Printf("channelhooks: %s message %s: %s: %v", j.msg.Channel, j.msg.ID, what, err)
+	slog.WarnContext(ctx, "channelhooks: retrying", "channel", j.msg.Channel, "message_id", j.msg.ID, "step", what, "err", err)
 	j.retryAt(ctx, def, j.progress.ChainPos, bodyOrNil(j.body(), j.progress.Body != nil), j.progress.Attempts+1, what, "")
 }
 
@@ -703,7 +703,7 @@ func (j *job) saveProgress(ctx context.Context, pos int, body json.RawMessage, a
 	ok, err := j.w.cfg.Store.ChannelHookSaveProgress(ctx, j.key, j.lease, p, leaseUntil)
 	if err != nil {
 		if ctx.Err() == nil {
-			log.Printf("channelhooks: %s message %s: save progress: %v", j.msg.Channel, j.msg.ID, err)
+			slog.WarnContext(ctx, "channelhooks: save progress failed", "channel", j.msg.Channel, "message_id", j.msg.ID, "err", err)
 		}
 		return err
 	}
@@ -735,7 +735,7 @@ func (j *job) release(ctx context.Context, def *Def, body json.RawMessage, chang
 	ok, err := j.w.cfg.Store.ChannelReleaseHookHeld(ctx, j.key, j.lease, bodyOrNil(body, changed), to)
 	if err != nil {
 		if ctx.Err() == nil {
-			log.Printf("channelhooks: %s message %s: release: %v", j.msg.Channel, j.msg.ID, err)
+			slog.WarnContext(ctx, "channelhooks: release failed", "channel", j.msg.Channel, "message_id", j.msg.ID, "err", err)
 		}
 		return
 	}
@@ -767,7 +767,7 @@ func (j *job) drop(ctx context.Context, def *Def, reason, by string) {
 	ok, err := j.w.cfg.Store.ChannelDropHookHeld(ctx, j.key, j.lease)
 	if err != nil {
 		if ctx.Err() == nil {
-			log.Printf("channelhooks: %s message %s: drop: %v", j.msg.Channel, j.msg.ID, err)
+			slog.WarnContext(ctx, "channelhooks: drop failed", "channel", j.msg.Channel, "message_id", j.msg.ID, "err", err)
 		}
 		return
 	}
@@ -810,7 +810,7 @@ func (j *job) record(d providers.HookDecisionInfo) {
 		Payload: payload, ExpiresAt: j.w.now().Add(7 * 24 * time.Hour),
 		PublishedBy: channels.SystemPublisherUserID, MaxMessages: 1000,
 	}); err != nil && !strings.Contains(err.Error(), "context canceled") {
-		log.Printf("channelhooks: record decision on %s: %v", j.msg.Channel, err)
+		slog.WarnContext(ctx, "channelhooks: record decision failed", "channel", j.msg.Channel, "err", err)
 	}
 }
 

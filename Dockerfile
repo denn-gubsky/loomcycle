@@ -29,7 +29,7 @@
 # in that file, but both produce identical runtime images.
 
 # ---- Stage 1: build the web UI ----------------------------------------------
-FROM node:20-alpine AS web-builder
+FROM node:26-alpine AS web-builder
 WORKDIR /src/web
 COPY web/package.json web/package-lock.json ./
 RUN npm ci

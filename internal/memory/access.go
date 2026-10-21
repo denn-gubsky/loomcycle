@@ -2,7 +2,7 @@ package memory
 
 import (
 	"context"
-	"log"
+	"log/slog"
 	"sync"
 	"time"
 
@@ -211,6 +211,6 @@ func (f *AccessFlusher) flushLogErr() {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	if err := f.Flush(ctx); err != nil {
-		log.Printf("memory: access-count flush: %v", err)
+		slog.Warn("memory: access-count flush failed", "err", err)
 	}
 }
