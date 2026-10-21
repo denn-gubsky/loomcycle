@@ -87,16 +87,115 @@ func TestRunPolicy_InheritFollowsItsRules(t *testing.T) {
 					t.Errorf("clear: a spawn input %v on the child's own grant survived as %v", val, fromOwn)
 				}
 			case ruleNarrow:
-				// Narrowing is field-specific (TestRunPolicy_InheritNarrows);
-				// generically, a child with nothing of its own never ends up
-				// with more than its parent had.
-				if reflect.DeepEqual(val.Interface(), zero) {
-					t.Fatal("fixture: nonZero returned zero")
+				// Never more than the parent held: not with an empty own
+				// grant, and not with an own grant wider than the parent's.
+				// What "more" means is the field's (narrowAtMost); the cases
+				// for each narrowing are TestRunPolicy_InheritNarrows.
+				nc, ok := narrowAtMost[f.Name]
+				if !ok {
+					t.Fatalf("narrow field %s has no comparator in narrowAtMost", f.Name)
+				}
+				if got := parent.Inherit(ChildGrant{}); !nc.atMost(got, parent) {
+					t.Errorf("narrow: with an empty own grant the child holds more than the parent's %v: %v", val, fromParent)
+				}
+				wide := ChildGrant{Own: nc.wideOwn, DeclaresVolumes: true}
+				if got := parent.Inherit(wide); !nc.atMost(got, parent) {
+					t.Errorf("narrow: with a wide own grant the child holds more than the parent's %v: %v",
+						val, reflect.ValueOf(got).Field(i))
+				}
+				// A parent holding none of it passes none on, whatever the
+				// child's own grant — except where zero means "not confined".
+				if !nc.zeroParentUnbounded {
+					if got := (RunPolicy{}).Inherit(wide); !nc.atMost(got, RunPolicy{}) {
+						t.Errorf("narrow: a parent holding none gave a child with a wide own grant %v",
+							reflect.ValueOf(got).Field(i))
+					}
 				}
 			default:
 				t.Fatalf("field %s has rule %q, which this test does not know", f.Name, rule)
 			}
 		})
+	}
+}
+
+// narrowAtMost says, per narrow field, what "no more than the parent" means,
+// with an own grant wider than any fixture parent and a pair the comparator
+// must reject (so it is not vacuous). Every narrow field needs an entry.
+var narrowAtMost = map[string]struct {
+	atMost        func(child, parent RunPolicy) bool
+	wideOwn       RunPolicy
+	widerChild    RunPolicy
+	widerOfParent RunPolicy
+	// zeroParentUnbounded: the field's zero on a parent means \"nothing to
+	// narrow against\", not \"none\" — the child takes its own (an unconfined
+	// parent's child is resolved as if top-level, RFC AH §4).
+	zeroParentUnbounded bool
+}{
+	"Volumes": {
+		atMost: func(c, p RunPolicy) bool {
+			if !c.Volumes.Active {
+				return true // bound to no volume: nothing at all
+			}
+			if !p.Volumes.Active {
+				return false
+			}
+			for _, cb := range c.Volumes.Bindings {
+				ok := false
+				for _, pb := range p.Volumes.Bindings {
+					if cb.Name == pb.Name && cb.Root == pb.Root && (cb.ReadOnly || !pb.ReadOnly) {
+						ok = true
+					}
+				}
+				if !ok {
+					return false
+				}
+			}
+			return true
+		},
+		wideOwn:             RunPolicy{Volumes: VolumePolicyValue{Active: true, Bindings: []VolumeBinding{{Name: "x"}, {Name: "root", Root: "/"}}}},
+		widerChild:          RunPolicy{Volumes: VolumePolicyValue{Active: true, Bindings: []VolumeBinding{{Name: "root", Root: "/"}}}},
+		widerOfParent:       RunPolicy{Volumes: VolumePolicyValue{Active: true}},
+		zeroParentUnbounded: true,
+	},
+	"EphemeralWritable": {
+		atMost:        func(c, p RunPolicy) bool { return !c.EphemeralWritable || p.EphemeralWritable },
+		wideOwn:       RunPolicy{EphemeralWritable: true},
+		widerChild:    RunPolicy{EphemeralWritable: true},
+		widerOfParent: RunPolicy{},
+	},
+	"Crypto": {
+		atMost: func(c, p RunPolicy) bool {
+			for _, s := range c.Crypto.Scopes {
+				if !containsScope(p.Crypto.Scopes, s) {
+					return false
+				}
+			}
+			return true
+		},
+		wideOwn:       RunPolicy{Crypto: CryptoPolicyValue{Scopes: []string{"agent", "user", "tenant", "run"}}},
+		widerChild:    RunPolicy{Crypto: CryptoPolicyValue{Scopes: []string{"tenant"}}},
+		widerOfParent: RunPolicy{Crypto: CryptoPolicyValue{Scopes: []string{"user"}}},
+	},
+	"FanoutCap": {
+		// A capped parent's child is capped no wider (0 would hand the
+		// width to a by-name lookup); an uncapped parent bounds nothing.
+		atMost:        func(c, p RunPolicy) bool { return p.FanoutCap <= 0 || (c.FanoutCap > 0 && c.FanoutCap <= p.FanoutCap) },
+		wideOwn:       RunPolicy{FanoutCap: 1 << 20},
+		widerChild:    RunPolicy{FanoutCap: 8},
+		widerOfParent: RunPolicy{FanoutCap: 2},
+	},
+}
+
+// Each comparator rejects a wider child, so the generic narrow check above can
+// fail.
+func TestRunPolicy_NarrowComparatorsRejectAWiderChild(t *testing.T) {
+	for name, nc := range narrowAtMost {
+		if nc.atMost(nc.widerChild, nc.widerOfParent) {
+			t.Errorf("%s: the comparator accepts a child wider than its parent", name)
+		}
+		if inheritRules[name] != ruleNarrow {
+			t.Errorf("%s has a comparator but rule %q", name, inheritRules[name])
+		}
 	}
 }
 
