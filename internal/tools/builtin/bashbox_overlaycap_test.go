@@ -297,12 +297,21 @@ func TestBashboxEscape_ManyEntriesHitTheCap(t *testing.T) {
 	}
 }
 
-// Bytes streamed through a named pipe pass through and are not kept, so they
-// are not charged: 6 MB through a FIFO under a 4 MiB cap succeeds.
-func TestBashbox_NamedPipeTrafficIsNotCharged(t *testing.T) {
-	res := runBashbox(t, overlayCapped(), roCtx(realDir(t)),
-		"mkfifo p; head -c 6000000 /dev/zero > p & cat p | wc -c; wait")
-	if res.IsError || !strings.Contains(res.Text, "6000000") {
-		t.Errorf("6 MB through a named pipe was charged or failed: %.300q", res.Text)
+// gbash's named pipes buffer in memory without limit (fs/fifo.go appends
+// every write to the pipe's buffer once a reader has opened it, read or not),
+// so bytes written to a FIFO are charged like any other write: a writer whose
+// reader never reads cannot grow the heap past the cap. The writer here is
+// bounded (20 MB), so the test stays small even where the charge is missing.
+func TestBashboxEscape_WriterToAnUnreadFifoHitsTheCap(t *testing.T) {
+	var res tools.Result
+	grew := peakHeapDuring(func() {
+		res = runBashbox(t, overlayCapped(), roCtx(realDir(t)),
+			"mkfifo p; sleep 1 < p & head -c 20000000 /dev/zero > p; echo written")
+	})
+	if !res.IsError || !strings.Contains(res.Text, "write limit reached") {
+		t.Errorf("20 MB into a never-read FIFO was not stopped at a 4 MiB cap: %.300q", res.Text)
+	}
+	if grew > 64<<20 {
+		t.Errorf("heap grew %d MiB writing to a never-read FIFO under a 4 MiB cap", grew>>20)
 	}
 }

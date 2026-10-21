@@ -139,10 +139,11 @@ func (c *cappedFS) OpenFile(ctx context.Context, name string, flag int, perm std
 	if err != nil || flag&(os.O_WRONLY|os.O_RDWR|os.O_APPEND|os.O_TRUNC) == 0 {
 		return f, err
 	}
-	// Bytes through a named pipe pass through and are not kept.
-	if info, statErr := f.Stat(); statErr == nil && info.Mode()&stdfs.ModeNamedPipe != 0 {
-		return f, nil
-	}
+	// A named pipe is charged too: gbash v0.0.40 buffers it in memory without
+	// limit (fs/fifo.go:180 appends each write to the pipe's buffer once a
+	// reader has opened it, whether or not it reads), so a writer whose reader
+	// never reads would otherwise grow the heap past the cap. The cost is a
+	// false refusal for a pipeline streaming more than the cap through a FIFO.
 	return &cappedFile{File: f, name: name, budget: c.budget}, nil
 }
 
