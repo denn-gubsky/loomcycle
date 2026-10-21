@@ -2,6 +2,7 @@ package grpc
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	"google.golang.org/grpc/codes"
@@ -103,5 +104,49 @@ func TestGrpcReads_RestrictedTokenCannotReadAnotherAgentsRuns(t *testing.T) {
 	}
 	if got := listed(free); len(got) != 4 {
 		t.Errorf("unrestricted ListUserAgents = %v, want all four runs", got)
+	}
+}
+
+// A keyed run start answers a repeat with the run that holds the key. A token
+// limited to certain agents shares its tenant's keys, so over gRPC too it is
+// refused, as for any unavailable key, a key held by a run its allowlist does
+// not reach — and is not handed that run's ids or answer.
+func TestGrpcSpawnRunBatch_RestrictedTokenIsNotAnsweredWithAnotherAgentsKeyedRun(t *testing.T) {
+	adapter, _, st, _ := ownershipGRPC(t)
+	ctx := context.Background()
+	sess, err := st.CreateSession(ctx, "acme", "default", "dev")
+	if err != nil {
+		t.Fatal(err)
+	}
+	held, err := st.CreateRun(ctx, sess.ID, store.RunIdentity{
+		AgentID: "a_held", UserID: "dev", TenantID: "acme", IdempotencyKey: "run:acme:dev:k-shared",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Ended, so a join answers at once.
+	if err := st.FinishRun(ctx, held.ID, store.RunCompleted, "end_turn", store.Usage{}, ""); err != nil {
+		t.Fatal(err)
+	}
+	restricted := auth.WithPrincipal(ctx, auth.Principal{
+		TenantID: "acme", Subject: "dev", Scopes: []string{auth.ScopeRunsCreate, auth.ScopeRunsRead},
+		Restrictions: auth.Restrictions{Agents: []string{"agentx"}},
+	})
+	spawn := func(ctx context.Context) *loomcyclepb.SpawnResult {
+		t.Helper()
+		res, err := adapter.SpawnRunBatch(ctx, &loomcyclepb.BatchSpawnRequest{Spawns: []*loomcyclepb.RunRequest{{
+			Agent: "agentx", IdempotencyKey: "k-shared",
+			Segments: []*loomcyclepb.PromptSegment{{Role: "user", Content: []*loomcyclepb.PromptContentBlock{{Type: "trusted-text", Text: "go"}}}},
+		}}})
+		if err != nil || len(res.GetResults()) != 1 {
+			t.Fatalf("SpawnRunBatch = %v, %v", res, err)
+		}
+		return res.GetResults()[0]
+	}
+	if got := spawn(restricted); got.GetDeduplicated() || got.GetRunId() == held.ID || !strings.Contains(got.GetError(), "idempotency_key is not available") {
+		t.Errorf("restricted keyed spawn = %+v, want the key refused as unavailable", got)
+	}
+	if got := spawn(scopedCtx("acme", "dev", auth.ScopeRunsCreate, auth.ScopeRunsRead)); !got.GetDeduplicated() || got.GetRunId() != held.ID {
+		t.Errorf("unrestricted keyed spawn = %+v, want the run holding the key", got)
 	}
 }
