@@ -10,8 +10,9 @@ import (
 // A paused run is not running anywhere: its loop parked, and its row waits for
 // a resume pass to re-dispatch it — a dead owner is exactly the case that pass
 // exists for. Failing it as "owner replica died" would lose a run a shutdown
-// parked on purpose. Only the dead replica's live runs are failed, and only
-// their slots are given back.
+// parked on purpose. Only the dead replica's other runs are failed — a
+// 'pausing' row among them: no resume pass lists one — and only their slots
+// are given back here; the paused run's goes back when a resume claims it.
 func TestReplicasSweeper_LeavesADeadReplicasPausedRunsForResume(t *testing.T) {
 	pool := freshUserQuotasPool(t, pgDSNFromEnv(t))
 	sessionID := seedSession(t, pool)
@@ -44,20 +45,20 @@ func TestReplicasSweeper_LeavesADeadReplicasPausedRunsForResume(t *testing.T) {
 		}
 		return
 	}
-	if st, _ := read(live); st != "failed" {
-		t.Errorf("the dead replica's live run = %q, want failed", st)
-	}
-	for _, id := range []string{paused, pausing} {
-		if st, ps := read(id); st != "running" || ps == "running" {
-			t.Errorf("the dead replica's %s run = status %q pause_state %q, want it left running and paused for resume", id, st, ps)
+	for _, id := range []string{live, pausing} {
+		if st, _ := read(id); st != "failed" {
+			t.Errorf("the dead replica's run %s = %q, want failed", id, st)
 		}
+	}
+	if st, ps := read(paused); st != "running" || ps != "paused" {
+		t.Errorf("the dead replica's paused run = status %q pause_state %q, want it left running and paused for resume", st, ps)
 	}
 	var quota int
 	if err := pool.QueryRow(context.Background(),
 		`SELECT active_count FROM user_quotas WHERE tenant_id = '' AND user_id = $1`, userID).Scan(&quota); err != nil {
 		t.Fatalf("read quota: %v", err)
 	}
-	if quota != 2 {
-		t.Errorf("quota = %d, want 2 (only the failed run's slot given back)", quota)
+	if quota != 1 {
+		t.Errorf("quota = %d, want 1 (the two failed runs' slots given back; the paused run's waits for its resume)", quota)
 	}
 }

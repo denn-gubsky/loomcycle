@@ -187,9 +187,12 @@ func (s *ReplicasSweeper) reapReplica(ctx context.Context, replicaID string) err
 	// Not a PAUSED run (RFC ES F1): its loop parked at a clean boundary — at a
 	// shutdown, or at a cluster pause the replica died in — and its row waits
 	// for a resume pass to re-dispatch it on a live replica; a dead owner is
-	// the case that pass exists for. Its row is left as it is, so the quota
-	// reap below, which counts only the rows marked here, gives back no slot
-	// for it.
+	// the case that pass exists for. Its row is left as it is, and so is the
+	// per-user slot the dead replica took for it: the quota reap below counts
+	// only the rows marked here, and the resume that claims the row gives the
+	// slot back. A 'pausing' row is failed like a running one: nothing writes
+	// that state any more, and no resume pass lists it, so sparing it would
+	// strand it.
 	markRes, err := s.pool.Exec(ctx, `
 		UPDATE runs
 		   SET status = 'failed',
@@ -198,7 +201,7 @@ func (s *ReplicasSweeper) reapReplica(ctx context.Context, replicaID string) err
 		       stop_reason = 'replica_died'
 		 WHERE replica_id = $1
 		   AND status = 'running'
-		   AND COALESCE(pause_state, 'running') NOT IN ('paused', 'pausing')
+		   AND COALESCE(pause_state, 'running') <> 'paused'
 	`, replicaID)
 	if err != nil {
 		return fmt.Errorf("mark runs failed: %w", err)
