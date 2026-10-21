@@ -386,9 +386,9 @@ func (b *Bashbox) Execute(ctx context.Context, input json.RawMessage) (tools.Res
 	// writing", cp and cat print nothing), so say once, plainly, that data
 	// was lost to the limit, and fail the call even when the script's last
 	// command succeeded.
-	limitHit := budget.used.Load() >= budget.max
+	limitHit := budget.hit.Load()
 	if limitHit {
-		out += fmt.Sprintf("\n[write limit reached: one call may write %d bytes into in-memory files, which is where writes to a read-only volume go; writes past it failed with \"no space left on device\"]", budget.max)
+		out += fmt.Sprintf("\n[write limit reached: one call may write at most %d bytes in total to in-memory files (where writes to a read-only volume go), and deleting does not give it back; writes past it failed with \"no space left on device\"]", budget.max)
 	}
 	if res.ExitCode != 0 {
 		// Non-zero exit is often legitimate (grep no-match → 1; a timeout is

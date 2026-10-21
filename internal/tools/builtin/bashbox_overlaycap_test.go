@@ -207,7 +207,9 @@ func TestBashboxEscape_RoCopyUpThenReadKeepsTheHeapBounded(t *testing.T) {
 // The charge is for the bytes a copy actually reads, not the size the file
 // had when it was copied: gbash defers the read, and the volume's file may
 // grow in between (another run writing to the same directory). Here it is
-// 1 byte at the chmod and 4 MiB by the read.
+// 1 byte at the chmod and 4 MiB by the read. The script waits for a marker
+// the test creates only after growing the file, so the read always sees it
+// grown.
 func TestBashboxEscape_RoCopyUpChargesTheBytesActuallyRead(t *testing.T) {
 	root := realDir(t)
 	f := filepath.Join(root, "grows")
@@ -216,11 +218,15 @@ func TestBashboxEscape_RoCopyUpChargesTheBytesActuallyRead(t *testing.T) {
 	}
 	grown := make(chan error, 1)
 	go func() {
-		time.Sleep(300 * time.Millisecond)
-		grown <- os.WriteFile(f, make([]byte, 4<<20), 0o644)
+		time.Sleep(200 * time.Millisecond) // usually after the chmod; the marker makes order irrelevant to the outcome
+		if err := os.WriteFile(f, make([]byte, 4<<20), 0o644); err != nil {
+			grown <- err
+			return
+		}
+		grown <- os.WriteFile(filepath.Join(root, "grown"), nil, 0o644)
 	}()
 	b := &Bashbox{Enabled: true, OverlayMaxBytes: 1 << 20}
-	res := runBashbox(t, b, roCtx(root), "chmod 600 grows; sleep 1; cat grows > /dev/null")
+	res := runBashbox(t, b, roCtx(root), "chmod 600 grows; until [ -e grown ]; do sleep 0.05; done; cat grows > /dev/null")
 	if err := <-grown; err != nil {
 		t.Fatal(err)
 	}
@@ -269,5 +275,34 @@ func TestBashbox_RoReadsOfTheVolumeAreNotCharged(t *testing.T) {
 	res := runBashbox(t, b, roCtx(root), "for f in f*; do cat $f > /dev/null; done; echo read")
 	if res.IsError || !strings.Contains(res.Text, "read") {
 		t.Errorf("reading the volume was charged: %.300q", res.Text)
+	}
+}
+
+// Every entry in gbash's in-memory filesystem costs heap beyond its name
+// (about 700 bytes: the node, a map key holding the full path, the parent's
+// child entry), so creating many empty files or directories must reach the
+// cap long before the names alone would. 100k entries under a 4 MiB cap.
+func TestBashboxEscape_ManyEntriesHitTheCap(t *testing.T) {
+	for _, script := range []string{
+		"touch {1..100000}",
+		"mkdir {1..100000}",
+		"for i in {1..9000}; do ln -s x l$i; done",
+	} {
+		t.Run(script, func(t *testing.T) {
+			res := runBashbox(t, overlayCapped(), roCtx(realDir(t)), script)
+			if !res.IsError || !strings.Contains(res.Text, "write limit reached") {
+				t.Errorf("creating many entries did not reach a 4 MiB cap: %.300q", res.Text)
+			}
+		})
+	}
+}
+
+// Bytes streamed through a named pipe pass through and are not kept, so they
+// are not charged: 6 MB through a FIFO under a 4 MiB cap succeeds.
+func TestBashbox_NamedPipeTrafficIsNotCharged(t *testing.T) {
+	res := runBashbox(t, overlayCapped(), roCtx(realDir(t)),
+		"mkfifo p; head -c 6000000 /dev/zero > p & cat p | wc -c; wait")
+	if res.IsError || !strings.Contains(res.Text, "6000000") {
+		t.Errorf("6 MB through a named pipe was charged or failed: %.300q", res.Text)
 	}
 }

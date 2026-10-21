@@ -4,6 +4,7 @@ import (
 	"context"
 	stdfs "io/fs"
 	"os"
+	"path"
 	"sync/atomic"
 	"syscall"
 	"time"
@@ -16,32 +17,40 @@ import (
 // (RFC ES follow-up). gbash keeps a read-only volume's writes, and the shadow
 // over the dynamic-volume root, in memory with no size limit, and that memory
 // is loomcycle's heap, shared with every run on the replica: `yes > f` passed
-// 3 GiB in a second. Every byte written, and every name a file or link is
-// created under, is charged; nothing is refunded on delete, so the budget
-// bounds what a call can put in memory at once, by the total it may write.
-// Shared by the concurrent commands of a pipeline, hence atomic.
+// 3 GiB in a second. Every byte written, and every entry created, is
+// charged; nothing is refunded on delete, so the budget is the TOTAL a call
+// may write, which bounds what it can hold at once. Shared by the concurrent
+// commands of a pipeline, hence atomic.
 type writeBudget struct {
 	max  int64
 	used atomic.Int64
+	// hit records that a charge was refused, so the result can say so; a call
+	// that used exactly the budget without being refused did not hit it.
+	hit atomic.Bool
 }
 
 // take charges n bytes and reports how many fit: all of n, or what was left.
 func (b *writeBudget) take(n int64) int64 {
 	for {
 		used := b.used.Load()
-		left := b.max - used
-		if left <= 0 {
-			return 0
-		}
+		left := max(b.max-used, 0)
 		grant := n
 		if grant > left {
 			grant = left
+			b.hit.Store(true)
 		}
-		if b.used.CompareAndSwap(used, used+grant) {
+		if grant == 0 || b.used.CompareAndSwap(used, used+grant) {
 			return grant
 		}
 	}
 }
+
+// entryOverhead is what one entry costs gbash's in-memory filesystem beyond
+// its absolute path: the node, the nodes-map key holding that path, the
+// parent's child entry, and a child map for a directory — about 700 bytes
+// measured. Charging only the name let 500k touch grow the heap by 354 MiB
+// and repeated mkdir by 743 MiB under a 64 MiB cap.
+const entryOverhead = 512
 
 // errNoSpace is what a write past the budget fails with. ENOSPC makes gbash's
 // commands print "no space left on device", which a model reads as a full
@@ -82,11 +91,19 @@ func cappedReadOnlyVolume(root string, budget *writeBudget) gbash.FileSystemConf
 }
 
 // cappedFS charges what a script writes into the in-memory layer: data
-// written through an open file, and the names of new files, directories and
-// links (a symlink's target is a string as long as a shell variable allows).
-// Content copied up from a read-only volume is charged where it is read, by
-// copyUpChargedFS. Mkfifo and Lchtimes are optional filesystem methods gbash
-// looks for, so they are forwarded explicitly.
+// written through an open file, and each entry it creates at entryOverhead
+// plus the entry's absolute path (and a symlink's target, a string as long as
+// a shell variable allows). Content copied up from a read-only volume is
+// charged where it is read, by copyUpChargedFS.
+//
+// Not charged: renaming a directory of the read-only volume makes gbash clone
+// every entry under it straight into the in-memory layer, below this wrapper
+// (OverlayFS.Rename → moveMerged → cloneDirNode). That costs metadata only —
+// file content stays lazy and is charged when read — and is bounded by the
+// size of the operator's tree, not by anything the script can grow.
+//
+// Mkfifo and Lchtimes are optional filesystem methods gbash looks for, so
+// they are forwarded explicitly.
 type cappedFS struct {
 	gbfs.FileSystem
 	budget *writeBudget
@@ -99,9 +116,22 @@ func (c *cappedFS) charge(op, name string, n int) error {
 	return nil
 }
 
+// entryCost is what creating name costs: entryOverhead plus its absolute
+// path, which gbash stores as the node's map key.
+func (c *cappedFS) entryCost(name string) int {
+	return entryOverhead + len(gbfs.Resolve(c.FileSystem.Getwd(), name))
+}
+
+// exists reports whether name is already an entry, so reopening an existing
+// file, or mkdir -p over existing directories, creates nothing to charge.
+func (c *cappedFS) exists(ctx context.Context, name string) bool {
+	_, err := c.FileSystem.Lstat(ctx, name)
+	return err == nil
+}
+
 func (c *cappedFS) OpenFile(ctx context.Context, name string, flag int, perm stdfs.FileMode) (gbfs.File, error) {
-	if flag&os.O_CREATE != 0 {
-		if err := c.charge("open", name, len(name)); err != nil {
+	if flag&os.O_CREATE != 0 && !c.exists(ctx, name) {
+		if err := c.charge("open", name, c.entryCost(name)); err != nil {
 			return nil, err
 		}
 	}
@@ -109,32 +139,43 @@ func (c *cappedFS) OpenFile(ctx context.Context, name string, flag int, perm std
 	if err != nil || flag&(os.O_WRONLY|os.O_RDWR|os.O_APPEND|os.O_TRUNC) == 0 {
 		return f, err
 	}
+	// Bytes through a named pipe pass through and are not kept.
+	if info, statErr := f.Stat(); statErr == nil && info.Mode()&stdfs.ModeNamedPipe != 0 {
+		return f, nil
+	}
 	return &cappedFile{File: f, name: name, budget: c.budget}, nil
 }
 
+// MkdirAll charges every directory it will create: each component of the
+// path, from the deepest that exists down.
 func (c *cappedFS) MkdirAll(ctx context.Context, name string, perm stdfs.FileMode) error {
-	if err := c.charge("mkdir", name, len(name)); err != nil {
+	abs := gbfs.Resolve(c.FileSystem.Getwd(), name)
+	cost := 0
+	for p := abs; p != "/" && p != "." && !c.exists(ctx, p); p = path.Dir(p) {
+		cost += entryOverhead + len(p)
+	}
+	if err := c.charge("mkdir", name, cost); err != nil {
 		return err
 	}
 	return c.FileSystem.MkdirAll(ctx, name, perm)
 }
 
 func (c *cappedFS) Symlink(ctx context.Context, target, linkName string) error {
-	if err := c.charge("symlink", linkName, len(target)+len(linkName)); err != nil {
+	if err := c.charge("symlink", linkName, c.entryCost(linkName)+len(target)); err != nil {
 		return err
 	}
 	return c.FileSystem.Symlink(ctx, target, linkName)
 }
 
 func (c *cappedFS) Link(ctx context.Context, oldName, newName string) error {
-	if err := c.charge("link", newName, len(newName)); err != nil {
+	if err := c.charge("link", newName, c.entryCost(newName)); err != nil {
 		return err
 	}
 	return c.FileSystem.Link(ctx, oldName, newName)
 }
 
 func (c *cappedFS) Rename(ctx context.Context, oldName, newName string) error {
-	if err := c.charge("rename", newName, len(newName)); err != nil {
+	if err := c.charge("rename", newName, c.entryCost(newName)); err != nil {
 		return err
 	}
 	return c.FileSystem.Rename(ctx, oldName, newName)
@@ -146,7 +187,7 @@ func (c *cappedFS) Mkfifo(ctx context.Context, name string, perm stdfs.FileMode)
 		// What gbash answers for a filesystem without named pipes.
 		return &os.PathError{Op: "mkfifo", Path: name, Err: stdfs.ErrPermission}
 	}
-	if err := c.charge("mkfifo", name, len(name)); err != nil {
+	if err := c.charge("mkfifo", name, c.entryCost(name)); err != nil {
 		return err
 	}
 	return fifo.Mkfifo(ctx, name, perm)
