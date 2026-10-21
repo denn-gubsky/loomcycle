@@ -126,6 +126,16 @@ type Manager struct {
 	// state transitions.
 	activeRuns sync.Map
 
+	// shutdown is set once a shutdown pause begins (PauseForShutdown) and never
+	// cleared: the process is exiting. While set, the pause is this replica's
+	// alone — State() reads only the in-process state, and neither a cluster
+	// resume nor an operator's resume lifts it.
+	shutdown atomic.Bool
+
+	// toolsInterrupted is set at a shutdown pause's interrupt point. A run
+	// registering after it starts with its tool calls interrupted.
+	toolsInterrupted atomic.Bool
+
 	// unpausable is the runs that take no part in a pause (RegisterUnpausable).
 	// Not in activeRuns, so the barrier never waits for them.
 	unpausable sync.Map
@@ -180,9 +190,13 @@ type RunPauseRecorder func(ctx context.Context, runID string, since, until time.
 const runPauseRecordTimeout = 5 * time.Second
 
 // runEntry tracks one in-flight run for the pause barrier. parked flips
-// true while the run's loop is parked at an iteration boundary.
+// true while the run's loop is parked at an iteration boundary. interrupt is
+// cancelled when a shutdown pause stops the run's tool calls (ToolInterrupt);
+// stop releases it when the run deregisters.
 type runEntry struct {
-	parked atomic.Bool
+	parked    atomic.Bool
+	interrupt context.Context
+	stop      context.CancelFunc
 }
 
 // NewManager constructs a Manager wired to the given store. The
@@ -214,6 +228,11 @@ func (m *Manager) State() RuntimeState {
 	if m == nil {
 		return StateRunning
 	}
+	// A replica shutting down is paused whatever the cluster says: its pause
+	// is its own, and the cluster row still reads running for the others.
+	if m.shutdown.Load() {
+		return loadState(&m.state)
+	}
 	rss := m.rss.Load() // atomic.Pointer load — race-free
 	if rss == nil {
 		// Single-replica mode: v0.11.x in-process atomic.
@@ -240,7 +259,16 @@ func (m *Manager) State() RuntimeState {
 		return loadState(&m.state)
 	}
 	parsed := parseRuntimeState(stateStr)
+	// Under mu, and not once a shutdown pause has begun: a refresh read before
+	// the shutdown set its state must not land after it and un-pause the
+	// replica (PauseForShutdown sets the flag under mu too).
+	m.mu.Lock()
+	if m.shutdown.Load() {
+		m.mu.Unlock()
+		return loadState(&m.state)
+	}
 	m.state.Store(int32(parsed))
+	m.mu.Unlock()
 	m.stateCacheMu.Lock()
 	m.stateCacheValue = parsed
 	m.stateCacheAt = time.Now()
@@ -335,7 +363,7 @@ func (m *Manager) applyRemotePause() {
 // Allocates a fresh pauseCh so the next pause has a clean signal.
 func (m *Manager) applyRemoteResume() {
 	m.mu.Lock()
-	if loadState(&m.state) == StateRunning {
+	if loadState(&m.state) == StateRunning || m.shutdown.Load() {
 		m.mu.Unlock()
 		return
 	}
@@ -462,7 +490,19 @@ func (m *Manager) RegisterRun(runID string) {
 	if m == nil || runID == "" {
 		return
 	}
-	m.activeRuns.LoadOrStore(runID, &runEntry{})
+	if _, ok := m.activeRuns.Load(runID); ok {
+		return
+	}
+	ctx, stop := context.WithCancel(context.Background())
+	if _, loaded := m.activeRuns.LoadOrStore(runID, &runEntry{interrupt: ctx, stop: stop}); loaded {
+		stop()
+		return
+	}
+	// Stored before the flag is read, so an interrupt racing this either sees
+	// the entry or is seen here.
+	if m.toolsInterrupted.Load() {
+		stop()
+	}
 }
 
 // RegisterUnpausable records a run that a pause does not park. It is counted
@@ -498,7 +538,22 @@ func (m *Manager) DeregisterRun(runID string) {
 	if m == nil || runID == "" {
 		return
 	}
-	m.activeRuns.Delete(runID)
+	if e, ok := m.activeRuns.LoadAndDelete(runID); ok {
+		e.(*runEntry).stop()
+	}
+}
+
+// ToolInterrupt is the context a run's tool calls are interrupted by: it is
+// cancelled when a shutdown pause gives up waiting for the run to park
+// (PauseForShutdown). nil when the run is not registered here.
+func (m *Manager) ToolInterrupt(runID string) context.Context {
+	if m == nil || runID == "" {
+		return nil
+	}
+	if e, ok := m.activeRuns.Load(runID); ok {
+		return e.(*runEntry).interrupt
+	}
+	return nil
 }
 
 // HoldsRun reports whether a run's loop is registered with this manager, i.e.
@@ -780,6 +835,11 @@ func (m *Manager) Resume(ctx context.Context) (ResumeResult, error) {
 		return ResumeResult{}, errors.New("resume: nil Manager")
 	}
 	m.mu.Lock()
+	if m.shutdown.Load() {
+		st := loadState(&m.state).String()
+		m.mu.Unlock()
+		return ResumeResult{State: st}, fmt.Errorf("%w: the runtime is shutting down", ErrNotPaused)
+	}
 	// loadState — see the Pause() comment about avoiding m.State()
 	// under m.mu in cluster mode (review-1 #2).
 	if loadState(&m.state) != StatePaused {
@@ -804,7 +864,8 @@ func (m *Manager) Resume(ctx context.Context) (ResumeResult, error) {
 	// Re-check under the lock: a concurrent Resume may have transitioned us to
 	// running between the pre-check and here. The loser reports ErrNotPaused
 	// (the winner already woke the gates) — keeps the state transition atomic.
-	if loadState(&m.state) != StatePaused {
+	// A shutdown pause begun meanwhile refuses it the same way.
+	if loadState(&m.state) != StatePaused || m.shutdown.Load() {
 		st := loadState(&m.state).String()
 		m.mu.Unlock()
 		return ResumeResult{State: st}, ErrNotPaused
