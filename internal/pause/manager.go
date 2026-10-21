@@ -5,7 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"log"
+	"log/slog"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -236,7 +236,7 @@ func (m *Manager) State() RuntimeState {
 	defer cancel()
 	stateStr, _, err := rss.Get(rctx)
 	if err != nil {
-		log.Printf("pause: RuntimeStateStore.Get failed (serving in-process state): %v", err)
+		slog.Warn("pause: RuntimeStateStore.Get failed (serving in-process state)", "err", err)
 		return loadState(&m.state)
 	}
 	parsed := parseRuntimeState(stateStr)
@@ -284,7 +284,7 @@ func (m *Manager) SubscribeBackplane(ctx context.Context, bp coord.Backplane) er
 		for evt := range ch {
 			var p pauseBackplaneEvent
 			if err := json.Unmarshal(evt.Payload, &p); err != nil {
-				log.Printf("pause: malformed backplane event: %v", err)
+				slog.Warn("pause: malformed backplane event", "err", err)
 				continue
 			}
 			switch p.Op {
@@ -293,7 +293,7 @@ func (m *Manager) SubscribeBackplane(ctx context.Context, bp coord.Backplane) er
 			case "resume":
 				m.applyRemoteResume()
 			default:
-				log.Printf("pause: unknown backplane op %q", p.Op)
+				slog.Warn("pause: unknown backplane op", "op", p.Op)
 			}
 		}
 	}()
@@ -325,7 +325,7 @@ func (m *Manager) applyRemotePause() {
 	m.stateCacheMu.Lock()
 	m.stateCacheAt = time.Time{}
 	m.stateCacheMu.Unlock()
-	log.Printf("pause: cluster pause signal received — local state → paused")
+	slog.Info("pause: cluster pause signal received — local state → paused")
 	// Waited for here: the resume arrives on this same goroutine, so the
 	// pauses it ends are all open by then.
 	<-recordRunPauses(rec, ids, since, time.Time{})
@@ -350,7 +350,7 @@ func (m *Manager) applyRemoteResume() {
 	m.stateCacheMu.Lock()
 	m.stateCacheAt = time.Time{}
 	m.stateCacheMu.Unlock()
-	log.Printf("pause: cluster resume signal received — local state → running")
+	slog.Info("pause: cluster resume signal received — local state → running")
 	<-recordRunPauses(rec, ids, since, until)
 }
 
@@ -447,7 +447,7 @@ func recordRunPauses(rec RunPauseRecorder, ids []string, since, until time.Time)
 		for _, id := range ids {
 			ctx, cancel := context.WithTimeout(context.Background(), runPauseRecordTimeout)
 			if err := rec(ctx, id, since, until); err != nil {
-				log.Printf("pause: record the pause on run %s failed: %v — a resumed timeout_ms on it counts this pause", id, err)
+				slog.Warn("pause: record the pause on run failed — a resumed timeout_ms on it counts this pause", "run_id", id, "err", err)
 			}
 			cancel()
 		}
@@ -665,14 +665,14 @@ func (m *Manager) Pause(ctx context.Context, timeout time.Duration) (PauseResult
 	if rss != nil {
 		rctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		if err := rss.Set(rctx, "pausing", 0); err != nil {
-			log.Printf("pause: rss.Set(pausing) failed: %v (continuing in-process only)", err)
+			slog.Warn("pause: rss.Set(pausing) failed (continuing in-process only)", "err", err)
 		}
 		cancel()
 	}
 	if bp != nil {
 		payload, _ := json.Marshal(pauseBackplaneEvent{Op: "pause"})
 		if err := bp.Publish(context.Background(), "loomcycle.pause", payload); err != nil {
-			log.Printf("pause: backplane publish(pause) failed: %v", err)
+			slog.Warn("pause: backplane publish(pause) failed", "err", err)
 		}
 	}
 	m.invalidateStateCache()
@@ -737,7 +737,7 @@ func (m *Manager) finalizePause(start time.Time, recorded <-chan struct{}, warni
 	paused, err := m.store.ListPausedRuns(context.Background())
 	pausedCount := 0
 	if err != nil {
-		log.Printf("pause: ListPausedRuns failed during finalize: %v", err)
+		slog.Warn("pause: ListPausedRuns failed during finalize", "err", err)
 		warnings = append(warnings, "could not enumerate paused runs (state still transitioned to paused)")
 	} else {
 		pausedCount = len(paused)
@@ -749,7 +749,7 @@ func (m *Manager) finalizePause(start time.Time, recorded <-chan struct{}, warni
 	if rss := m.rss.Load(); rss != nil {
 		rctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		if err := rss.Set(rctx, "paused", pausedCount); err != nil {
-			log.Printf("pause: rss.Set(paused) failed: %v", err)
+			slog.Warn("pause: rss.Set(paused) failed", "err", err)
 			warnings = append(warnings, fmt.Sprintf("rss.Set(paused) failed: %v", err))
 		}
 		cancel()
@@ -835,21 +835,21 @@ func (m *Manager) Resume(ctx context.Context) (ResumeResult, error) {
 	if rss != nil {
 		rctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 		if err := rss.Set(rctx, "running", 0); err != nil {
-			log.Printf("resume: rss.Set(running) failed: %v", err)
+			slog.Warn("resume: rss.Set(running) failed", "err", err)
 		}
 		cancel()
 	}
 	if bp != nil {
 		payload, _ := json.Marshal(pauseBackplaneEvent{Op: "resume"})
 		if err := bp.Publish(context.Background(), "loomcycle.pause", payload); err != nil {
-			log.Printf("resume: backplane publish(resume) failed: %v", err)
+			slog.Warn("resume: backplane publish(resume) failed", "err", err)
 		}
 	}
 
 	// The gates are now woken (above); even if the snapshot failed we must not
 	// short-circuit before that. Handle the snapshot error here for the count.
 	if listErr != nil {
-		log.Printf("resume: ListPausedRuns failed: %v", listErr)
+		slog.Warn("resume: ListPausedRuns failed", "err", listErr)
 		return ResumeResult{
 			State:    StateRunning.String(),
 			Warnings: []string{fmt.Sprintf("could not enumerate paused runs: %v", listErr)},

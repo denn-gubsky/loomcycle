@@ -5,7 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"log"
+	"log/slog"
 	"sync"
 	"time"
 
@@ -147,7 +147,7 @@ func (c *SteerCoordinator) PushRemote(ctx context.Context, runID string, m steer
 	if alive, err := c.replicas.IsReplicaAlive(ctx, run.ReplicaID, StaleReplicaThreshold); err != nil {
 		// Probe failure: proceed with the broadcast — a real steer may still
 		// land if the owner responds.
-		log.Printf("coord: steer IsReplicaAlive probe for %s failed: %v (proceeding)", run.ReplicaID, err)
+		slog.Warn("coord: steer IsReplicaAlive probe failed (proceeding)", "replica", run.ReplicaID, "err", err)
 	} else if !alive {
 		return false, false, nil
 	}
@@ -215,13 +215,13 @@ func (c *SteerCoordinator) PushRemote(ctx context.Context, runID string, m steer
 func (c *SteerCoordinator) RunSteerSubscriber(ctx context.Context, reg *steer.Registry) {
 	ch, err := c.bp.Subscribe(ctx, topicSteer)
 	if err != nil {
-		log.Printf("coord: RunSteerSubscriber subscribe failed: %v", err)
+		slog.Error("coord: RunSteerSubscriber subscribe failed", "err", err)
 		return
 	}
 	for evt := range ch {
 		var p steerEventPayload
 		if err := json.Unmarshal(evt.Payload, &p); err != nil {
-			log.Printf("coord: malformed steer event: %v", err)
+			slog.Warn("coord: malformed steer event", "err", err)
 			continue
 		}
 		delivered, found, closed := reg.PushLocal(p.RunID, steer.Message{
@@ -234,7 +234,7 @@ func (c *SteerCoordinator) RunSteerSubscriber(ctx context.Context, reg *steer.Re
 		}
 		ack, _ := json.Marshal(steerAckPayload{RunID: p.RunID, ByReplica: c.replicaID, Delivered: delivered, Closed: closed})
 		if err := c.bp.Publish(ctx, topicSteerAck, ack); err != nil {
-			log.Printf("coord: publish steer ack for %s: %v", p.RunID, err)
+			slog.Warn("coord: publish steer ack failed", "run_id", p.RunID, "err", err)
 		}
 	}
 }
@@ -244,13 +244,13 @@ func (c *SteerCoordinator) RunSteerSubscriber(ctx context.Context, reg *steer.Re
 func (c *SteerCoordinator) RunSteerAckSubscriber(ctx context.Context) {
 	ch, err := c.bp.Subscribe(ctx, topicSteerAck)
 	if err != nil {
-		log.Printf("coord: RunSteerAckSubscriber subscribe failed: %v", err)
+		slog.Error("coord: RunSteerAckSubscriber subscribe failed", "err", err)
 		return
 	}
 	for evt := range ch {
 		var ack steerAckPayload
 		if err := json.Unmarshal(evt.Payload, &ack); err != nil {
-			log.Printf("coord: malformed steer ack: %v", err)
+			slog.Warn("coord: malformed steer ack", "err", err)
 			continue
 		}
 		c.mu.Lock()

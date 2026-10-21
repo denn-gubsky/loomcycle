@@ -20,7 +20,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
-	"log"
+	"log/slog"
 	nethttp "net/http"
 	"slices"
 	"strings"
@@ -1128,7 +1128,7 @@ func (s *Server) MustLogStartupBanner(addr string) {
 	if s.authConfigured != nil {
 		authOn = s.authConfigured(context.Background())
 	}
-	log.Printf("loomcycle gRPC listening on %s (auth=%v)", addr, authOn)
+	slog.Info("loomcycle gRPC listening on "+addr, "auth", authOn)
 }
 
 // ========================
@@ -2453,7 +2453,7 @@ func metadataFromProto(b []byte) map[string]any {
 	}
 	var m map[string]any
 	if err := json.Unmarshal(b, &m); err != nil {
-		log.Printf("grpc: run metadata is not a JSON object and was dropped: %v", err)
+		slog.Warn("grpc: run metadata is not a JSON object and was dropped", "err", err)
 		return nil
 	}
 	return m
@@ -2488,7 +2488,7 @@ func contextFromProto(in *loomcyclepb.Context) *config.Context {
 			// patch against it, so silently dropping it would turn a validated
 			// mode into an unvalidated one. Left nil and logged; the loop's own
 			// handling of an absent schema then applies.
-			log.Printf("grpc: context.state_schema is not a JSON object and was dropped: %v", err)
+			slog.Warn("grpc: context.state_schema is not a JSON object and was dropped", "err", err)
 		} else {
 			out.StateSchema = sch
 		}

@@ -4,7 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
-	"log"
+	"log/slog"
 	"sync"
 	"time"
 )
@@ -158,7 +158,7 @@ func (r *txnRegistry) rollbackAll() {
 	r.mu.Unlock()
 	for id, t := range all {
 		if err := t.finish(false); err != nil {
-			log.Printf("sqlmem: rollback txn %q on close: %v", id, err)
+			slog.Warn("sqlmem: rollback txn on close failed", "txn_id", id, "err", err)
 		}
 	}
 }
@@ -308,7 +308,7 @@ func (m *Manager) RollbackRunTxns(rootRunID string) {
 	m.txns.mu.Unlock()
 	for _, t := range victims {
 		if err := t.finish(false); err != nil {
-			log.Printf("sqlmem: rollback run %q txn on completion: %v", rootRunID, err)
+			slog.Warn("sqlmem: rollback run txn on completion failed", "root_run_id", rootRunID, "err", err)
 		}
 	}
 }
@@ -444,7 +444,7 @@ func (m *Manager) reapStale(ttl time.Duration) {
 	m.txns.mu.Unlock()
 	for _, t := range victims {
 		if err := t.finish(false); err != nil {
-			log.Printf("sqlmem: reap stale txn: %v", err)
+			slog.Warn("sqlmem: reap stale txn failed", "err", err)
 		}
 	}
 }

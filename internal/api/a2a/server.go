@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"log/slog"
 	"net/http"
 	"strings"
 
@@ -152,7 +153,7 @@ func New(ctx context.Context, deps Deps) (*Server, error) {
 		// surface were disabled; un-retire and restart to serve it again.
 		if deps.Store != nil {
 			if row, err := deps.Store.A2AServerCardDefGetActive(ctx, "", cardName); err == nil && row.Retired {
-				log.Printf("a2a server: NOT SERVING — server card %q (LOOMCYCLE_A2A_SERVER_CARD) has a retired active version (def %s); the A2A surface is off until it is un-retired and loomcycle restarted", cardName, row.DefID)
+				slog.Error("a2a server: NOT SERVING — the server card (LOOMCYCLE_A2A_SERVER_CARD) has a retired active version; the A2A surface is off until it is un-retired and loomcycle restarted", "card", cardName, "def_id", row.DefID)
 				return nil, nil
 			}
 		}
@@ -234,7 +235,7 @@ func New(ctx context.Context, deps Deps) (*Server, error) {
 	if grpcEnabled {
 		grpcHandler = a2agrpc.NewHandler(handler)
 	} else {
-		log.Printf("a2a server: tenancy=%q — gRPC binding disabled (tenant cannot be derived from the gRPC transport); REST + JSON-RPC remain available", tenancy)
+		slog.Warn("a2a server: gRPC binding disabled (tenant cannot be derived from the gRPC transport); REST + JSON-RPC remain available", "tenancy", tenancy)
 	}
 
 	return &Server{

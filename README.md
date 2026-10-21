@@ -602,7 +602,7 @@ Full request flow, abstractions, and concurrency model: [`docs/ARCHITECTURE.md`]
 - **Constant-time bearer auth.** `sha256+CTC` on both HTTP and gRPC.
 - **`Bash` is restricted, not isolated.** Run inside a container or VM if you need real isolation.
 
-Full security model and the two-layer default-deny walkthrough: [`docs/TOOLS.md`](docs/TOOLS.md).
+Full security model and the two-layer default-deny walkthrough: [`docs/TOOLS.md`](docs/TOOLS.md). To report a vulnerability, see [`SECURITY.md`](SECURITY.md).
 
 ## Documentation
 

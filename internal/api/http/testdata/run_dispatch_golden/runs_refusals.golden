@@ -1,0 +1,89 @@
+== bad json: POST /v1/runs
+status: 400
+content-type: text/plain; charset=utf-8
+body: bad json: unexpected EOF
+== no agent: POST /v1/runs
+status: 400
+content-type: text/plain; charset=utf-8
+body: agent is required
+== no input: POST /v1/runs
+status: 400
+content-type: text/plain; charset=utf-8
+body: no input: provide "segments" (or a top-level "prompt" string)
+== bad block type: POST /v1/runs
+status: 400
+content-type: text/plain; charset=utf-8
+body: segments[0].content[0]: unknown type "trusted-txt" (allowed: trusted-text, untrusted-block, image)
+== bad user_id: POST /v1/runs
+status: 400
+content-type: text/plain; charset=utf-8
+body: user_id must match [A-Za-z0-9_-]{1,128}
+== bad agent_id: POST /v1/runs
+status: 400
+content-type: text/plain; charset=utf-8
+body: agent_id must match [A-Za-z0-9_-]{1,128}
+== unknown agent: POST /v1/runs
+status: 400
+content-type: text/plain; charset=utf-8
+body: unknown agent "nope"
+== bad admission: POST /v1/runs
+status: 400
+content-type: text/plain; charset=utf-8
+body: admission must be "wait" or "reject"
+== bad retention: POST /v1/runs
+status: 400
+content-type: text/plain; charset=utf-8
+body: retention must be "none" or "default", not "forever"
+== bad max_wall_seconds: POST /v1/runs
+status: 400
+content-type: text/plain; charset=utf-8
+body: max_wall_seconds must be between 0 and 2592000
+== bad user_bearer: POST /v1/runs
+status: 400
+content-type: text/plain; charset=utf-8
+body: user_bearer must match [A-Za-z0-9._\-+/=]{16,512}
+== bad user_credentials: POST /v1/runs
+status: 400
+content-type: text/plain; charset=utf-8
+body: user_credentials: key "bad key!" must match [a-zA-Z0-9_-]{1,64}
+== bad idempotency_key: POST /v1/runs
+status: 400
+content-type: text/plain; charset=utf-8
+body: idempotency_key must match [A-Za-z0-9:._-]{1,200}
+== idempotency_key with session: POST /v1/runs
+status: 400
+content-type: text/plain; charset=utf-8
+body: idempotency_key applies to a fresh run that starts at once, on a runtime with a store
+== unknown session: POST /v1/runs
+status: 404
+content-type: text/plain; charset=utf-8
+body: session not found: <id:1>
+== bad tool_choice: POST /v1/runs
+status: 400
+content-type: text/plain; charset=utf-8
+body: tool_choice.mode "sometimes" is not one of auto, none, required, tool
+== unknown user_tier: POST /v1/runs
+status: 400
+content-type: text/plain; charset=utf-8
+body: unknown user_tier "gold"
+== known user_tier: POST /v1/runs
+status: 200
+content-type: text/event-stream
+event: session {"text":"<id:2>","type":"session"}
+event: agent {"agent_id":"<id:3>","parent_agent_id":null,"parent_context":null,"run_id":"<id:4>","session_id":"<id:2>"}
+event: started {"type":"started"}
+event: text {"text":"hello","type":"text"}
+event: usage {"type":"usage","usage":{"input_tokens":3,"output_tokens":2,"provider":"stub","timing":{}}}
+event: done {"stop_reason":"end_turn","type":"done","usage":{"input_tokens":3,"output_tokens":2,"provider":"stub"}}
+stored row: {"agent":"plain","agent_id":"<id:3>","credential_source":"operator","id":"<id:4>","input_tokens":3,"output_tokens":2,"pause_state":"running","provider":"stub","result":{"final_text":"hello"},"run_config":{"agent_version":{"static":true},"iteration_limit":16},"session_id":"<id:2>","status":"completed","stop_reason":"end_turn","user_tier":"pro"}
+stored event: user_input [{"content":[{"cacheable":true,"text":"be brief","type":"trusted-text"}],"role":"system"},{"content":[{"text":"hi","type":"trusted-text"}],"role":"user"}]
+stored event: system_prompt {"system_prompt":"be brief"}
+stored event: started {"type":"started"}
+stored event: prompt_snapshot {"prompt_snapshot":{"input":[{"text":"hi","type":"text"}],"system":[{"text":"be brief","type":"text"}]},"type":"prompt_snapshot"}
+stored event: text {"text":"hello","type":"text"}
+stored event: usage {"type":"usage","usage":{"input_tokens":3,"output_tokens":2,"provider":"stub","timing":{}}}
+stored event: done {"stop_reason":"end_turn","type":"done","usage":{"input_tokens":3,"output_tokens":2,"provider":"stub"}}
+== no-trace interactive: POST /v1/runs
+status: 400
+content-type: application/json
+body: {"code":"retention_none_unsupported","error":"retention_none_unsupported: a no-trace run cannot be interactive: parking it would need its transcript stored"}

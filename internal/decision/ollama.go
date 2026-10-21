@@ -7,7 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"log"
+	"log/slog"
 	"net/http"
 	"regexp"
 	"strconv"
@@ -123,8 +123,8 @@ func (d *ollamaDriver) Decide(ctx context.Context, req Request) (*Response, erro
 		// cannot outlive the call's timeout, and inside the same Decide, so the
 		// caller's lane slot is still held and the retry does not add to the
 		// load on a runner that is reloading.
-		log.Printf(`{"event":"ollama_runner_retry","provider":%q,"model":%q,"endpoint":%q,"attempt":1,"wait":%q}`,
-			d.providerID, req.Model, ollamaPath, d.runnerRetryWait.String())
+		slog.WarnContext(ctx, "ollama runner retry", "event", "ollama_runner_retry",
+			"provider", d.providerID, "model", req.Model, "endpoint", ollamaPath, "attempt", 1, "wait", d.runnerRetryWait.String())
 		t := time.NewTimer(d.runnerRetryWait)
 		select {
 		case <-t.C:

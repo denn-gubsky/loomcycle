@@ -5,7 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"log"
+	"log/slog"
 	"sync"
 	"time"
 
@@ -189,7 +189,7 @@ func (c *CancelCoordinator) CancelRemote(ctx context.Context, agentID, reason st
 		return cancel.CancelResult{}, false, nil
 	}
 	if run.ReplicaID == c.replicaID {
-		log.Printf("coord: CancelRemote called for run %s owned by self (%s) — local registry missed it; treating as deregistered", run.ID, c.replicaID)
+		slog.Warn("coord: CancelRemote called for a run owned by self — local registry missed it; treating as deregistered", "run_id", run.ID, "replica", c.replicaID)
 		return cancel.CancelResult{}, false, nil
 	}
 
@@ -199,7 +199,7 @@ func (c *CancelCoordinator) CancelRemote(ctx context.Context, agentID, reason st
 	if err != nil {
 		// Liveness probe failure: log and continue with broadcast. A
 		// real cancel may still succeed if the replica responds.
-		log.Printf("coord: IsReplicaAlive probe for %s failed: %v (proceeding with broadcast)", run.ReplicaID, err)
+		slog.Warn("coord: IsReplicaAlive probe failed (proceeding with broadcast)", "replica", run.ReplicaID, "err", err)
 	} else if !alive {
 		// Owner is gone. The run is ended the one way a run no live loop
 		// holds is ended — cancelled, with this cancel's reason, and what is
@@ -299,13 +299,13 @@ func cancelRoutable(status store.RunStatus) bool {
 func (c *CancelCoordinator) RunCancelSubscriber(ctx context.Context, reg *cancel.Registry) {
 	ch, err := c.bp.Subscribe(ctx, topicCancel)
 	if err != nil {
-		log.Printf("coord: RunCancelSubscriber subscribe failed: %v", err)
+		slog.Error("coord: RunCancelSubscriber subscribe failed", "err", err)
 		return
 	}
 	for evt := range ch {
 		var p cancelEventPayload
 		if err := json.Unmarshal(evt.Payload, &p); err != nil {
-			log.Printf("coord: malformed cancel event: %v", err)
+			slog.Warn("coord: malformed cancel event", "err", err)
 			continue
 		}
 		// CRITICAL: use CancelLocal, NOT Cancel. Cancel delegates to
@@ -325,7 +325,7 @@ func (c *CancelCoordinator) RunCancelSubscriber(ctx context.Context, reg *cancel
 			Cascaded:  res.Cascaded,
 		})
 		if err := c.bp.Publish(ctx, topicCancelAck, ack); err != nil {
-			log.Printf("coord: publish cancel ack for %s: %v", p.AgentID, err)
+			slog.Warn("coord: publish cancel ack failed", "agent_id", p.AgentID, "err", err)
 		}
 	}
 }
@@ -336,13 +336,13 @@ func (c *CancelCoordinator) RunCancelSubscriber(ctx context.Context, reg *cancel
 func (c *CancelCoordinator) RunAckSubscriber(ctx context.Context) {
 	ch, err := c.bp.Subscribe(ctx, topicCancelAck)
 	if err != nil {
-		log.Printf("coord: RunAckSubscriber subscribe failed: %v", err)
+		slog.Error("coord: RunAckSubscriber subscribe failed", "err", err)
 		return
 	}
 	for evt := range ch {
 		var ack cancelAckPayload
 		if err := json.Unmarshal(evt.Payload, &ack); err != nil {
-			log.Printf("coord: malformed cancel ack: %v", err)
+			slog.Warn("coord: malformed cancel ack", "err", err)
 			continue
 		}
 		c.mu.Lock()

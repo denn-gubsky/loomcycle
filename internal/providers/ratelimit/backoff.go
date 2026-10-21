@@ -17,7 +17,7 @@ import (
 	"context"
 	"errors"
 	"io"
-	"log"
+	"log/slog"
 	"math/rand"
 	"net/http"
 	"time"
@@ -100,8 +100,9 @@ func (c *Config) applyDefaults() {
 }
 
 func defaultOnRetry(provider string, attempt int, wait time.Duration, reason string) {
-	log.Printf(`{"event":"rate_limit_retry","provider":%q,"attempt":%d,"wait":%q,"reason":%q}`,
-		provider, attempt, wait.String(), reason)
+	// "event" stays a field so a JSON log consumer keyed on it still matches.
+	slog.Warn("rate limit retry", "event", "rate_limit_retry",
+		"provider", provider, "attempt", attempt, "wait", wait.String(), "reason", reason)
 }
 
 // Reason strings passed to OnRetry. These re-export the canonical
