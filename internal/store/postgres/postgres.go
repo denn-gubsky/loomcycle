@@ -2426,7 +2426,7 @@ func (s *Store) SetRunPauseState(ctx context.Context, runID, state string) error
 // ClaimPausedRun implements store.Store.
 func (s *Store) ClaimPausedRun(ctx context.Context, runID string) (bool, error) {
 	tag, err := s.pool.Exec(ctx,
-		`UPDATE runs SET pause_state = $1 WHERE id = $2 AND pause_state = $3`,
+		`UPDATE runs SET pause_state = $1 WHERE id = $2 AND pause_state = $3 AND status = 'running'`,
 		store.PauseStateRunning, runID, store.PauseStatePaused)
 	if err != nil {
 		return false, fmt.Errorf("claim paused run: %w", err)
@@ -2472,7 +2472,7 @@ func (s *Store) ListPausedRuns(ctx context.Context) ([]store.Run, error) {
 		        r.run_config::text, r.result::text,
 		        s.agent
 		 FROM runs r LEFT JOIN sessions s ON r.session_id = s.id
-		 WHERE r.pause_state = $1
+		 WHERE r.pause_state = $1 AND r.status = 'running'
 		 ORDER BY r.started_at ASC`, store.PauseStatePaused)
 	if err != nil {
 		return nil, fmt.Errorf("list paused runs: %w", err)

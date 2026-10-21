@@ -3935,7 +3935,7 @@ func (s *Store) SetRunPauseState(ctx context.Context, runID, state string) error
 // ClaimPausedRun implements store.Store.
 func (s *Store) ClaimPausedRun(ctx context.Context, runID string) (bool, error) {
 	res, err := s.db.ExecContext(ctx,
-		`UPDATE runs SET pause_state = ? WHERE id = ? AND pause_state = ?`,
+		`UPDATE runs SET pause_state = ? WHERE id = ? AND pause_state = ? AND status = 'running'`,
 		store.PauseStateRunning, runID, store.PauseStatePaused)
 	if err != nil {
 		return false, fmt.Errorf("claim paused run: %w", err)
@@ -3969,7 +3969,7 @@ func (s *Store) UnclaimPausedRun(ctx context.Context, runID string) (bool, error
 func (s *Store) ListPausedRuns(ctx context.Context) ([]store.Run, error) {
 	rows, err := s.db.QueryContext(ctx,
 		`SELECT `+runColumns+` FROM `+runFromTable+`
-		 WHERE r.pause_state = ?
+		 WHERE r.pause_state = ? AND r.status = 'running'
 		 ORDER BY r.started_at ASC`,
 		store.PauseStatePaused,
 	)

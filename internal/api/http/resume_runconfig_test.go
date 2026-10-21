@@ -91,11 +91,108 @@ func endTurn() []providers.Event {
 // pause_state='paused' so ResumePausedRuns picks it up.
 func parkForResume(t *testing.T, srv *Server, runID string) {
 	t.Helper()
+	reopenRunForResume(t, srv.store, runID)
+	// A team walk's member resumes only while its walk is live here (a walk
+	// does not survive a restart); these fixtures resume one as if it were.
+	if run, err := srv.store.GetRun(context.Background(), runID); err == nil && run.IsWalkMember() {
+		walkID := run.ParentRunID
+		srv.walks.add(walkID, "", runStateMeta{RunID: walkID}, func(error) {})
+		t.Cleanup(func() { srv.walks.remove(walkID) })
+	}
 	appendResumeEvent(t, srv, runID, "user_input", []loop.PromptSegment{
 		{Role: "user", Content: []loop.PromptContentBlock{{Type: "trusted-text", Text: "carry on"}}},
 	})
 	if err := srv.store.SetRunPauseState(context.Background(), runID, store.PauseStatePaused); err != nil {
 		t.Fatalf("SetRunPauseState: %v", err)
+	}
+}
+
+// reopenRunForResume puts a run these tests drove to its end back in the state
+// a paused run is really in: running, under parents that are running too. A
+// paused row is always running — the resume lists and claims no ended one —
+// and a paused child's parent is alive, or the resume ends the child as
+// orphaned. These fixtures start the runs they resume through POST /v1/runs,
+// which runs them to their end, so their rows read completed. No store method
+// moves a row back to running, so the run's whole tree is rewritten the way a
+// snapshot restore writes one: taken out with its sessions' rows and events,
+// then put back with the same ids, configuration and events — the run and its
+// ancestors running, every other run of the tree as it was.
+func reopenRunForResume(t *testing.T, st store.Store, runID string) {
+	t.Helper()
+	ctx := context.Background()
+	get := func(id string) store.Run {
+		r, err := st.GetRun(ctx, id)
+		if err != nil {
+			t.Fatalf("reopen run %s: read %s: %v", runID, id, err)
+		}
+		return r
+	}
+	reopen := map[string]bool{}
+	root := runID
+	for id := runID; id != ""; {
+		r := get(id)
+		reopen[id] = true
+		root = id
+		id = r.ParentRunID
+	}
+	var tree []store.Run
+	for queue := []string{root}; len(queue) > 0; queue = queue[1:] {
+		r := get(queue[0])
+		tree = append(tree, r)
+		kids, err := st.ListRunsByParentRunID(ctx, r.ID)
+		if err != nil {
+			t.Fatalf("reopen run %s: children of %s: %v", runID, r.ID, err)
+		}
+		for _, k := range kids {
+			queue = append(queue, k.ID)
+		}
+	}
+	ended := false
+	for _, r := range tree {
+		if reopen[r.ID] && r.Status != store.RunRunning {
+			ended = true
+		}
+	}
+	if !ended {
+		return
+	}
+	sessions := map[string]store.Session{}
+	events := map[string][]store.Event{}
+	ids := make([]string, 0, len(tree))
+	for _, r := range tree {
+		ids = append(ids, r.ID)
+		if _, ok := sessions[r.SessionID]; !ok {
+			sess, err := st.GetSession(ctx, r.SessionID)
+			if err != nil {
+				t.Fatalf("reopen run %s: session %s: %v", runID, r.SessionID, err)
+			}
+			sessions[r.SessionID] = sess
+		}
+		evs, err := st.GetRunEventsSince(ctx, r.ID, 0, 1<<20)
+		if err != nil {
+			t.Fatalf("reopen run %s: events of %s: %v", runID, r.ID, err)
+		}
+		events[r.ID] = evs
+	}
+	if _, err := st.DeleteRunSet(ctx, ids, nil); err != nil {
+		t.Fatalf("reopen run %s: take its tree out: %v", runID, err)
+	}
+	for _, sess := range sessions {
+		if _, err := st.SnapshotRestoreSession(ctx, sess); err != nil {
+			t.Fatalf("reopen run %s: session %s back: %v", runID, sess.ID, err)
+		}
+	}
+	for _, r := range tree {
+		if reopen[r.ID] {
+			r.Status, r.CompletedAt, r.StopReason, r.ErrorMsg, r.Result = store.RunRunning, time.Time{}, "", "", nil
+		}
+		r.PauseState = store.PauseStateRunning
+		if inserted, err := st.SnapshotRestoreRun(ctx, r); err != nil || !inserted {
+			t.Fatalf("reopen run %s: put %s back: %v (inserted %v)", runID, r.ID, err, inserted)
+		}
+		if _, err := st.SnapshotRestoreRunEvents(ctx, r.ID, r.SessionID, events[r.ID]); err != nil {
+			t.Fatalf("reopen run %s: events of %s back: %v", runID, r.ID, err)
+		}
 	}
 }
 

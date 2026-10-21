@@ -2085,8 +2085,11 @@ type RunStore interface {
 	SetRunReplica(ctx context.Context, runID, replicaID string) error
 
 	// ListPausedRuns returns runs whose pause_state is "paused" (the
-	// at-rest paused state, not the in-flight "pausing" transition). An
-	// ended run is not among them: FinishRun clears its pause_state.
+	// at-rest paused state, not the in-flight "pausing" transition) and
+	// whose status is "running". An ended row is never listed, even one still
+	// reading 'paused' — written by a database from before FinishRun cleared
+	// the pause, or by a writer that ends runs some other way — or a resume
+	// pass, periodic in a cluster, would re-run a run reported ended.
 	// Used by the PauseManager on resume to find which runs need to
 	// re-enter their loops, and by GET /v1/runtime/state for operator
 	// visibility (the response payload's paused_run_count).
@@ -2097,7 +2100,7 @@ type RunStore interface {
 	ListPausedRuns(ctx context.Context) ([]Run, error)
 
 	// ClaimPausedRun is the resume's compare-and-set: it moves a row that is
-	// pause_state "paused" to pause_state "running" and
+	// pause_state "paused" and status "running" to pause_state "running" and
 	// reports whether it did. Exactly one of several resume passes racing for
 	// the same row — a snapshot restore, another replica's periodic pass, an
 	// operator resume — gets true; the others get false and must leave the

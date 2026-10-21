@@ -5055,6 +5055,13 @@ func testFinishRunClearsThePause(t *testing.T, s store.Store) {
 	if got, _ := s.GetRun(ctx, ended.ID); got.PauseState != store.PauseStateRunning {
 		t.Errorf("ended run pause_state = %q, want running", got.PauseState)
 	}
+	// And an ended row still reading 'paused' — as a database from before
+	// this, or a writer that ends runs without FinishRun, leaves one — is
+	// neither listed nor claimable.
+	_ = s.SetRunPauseState(ctx, ended.ID, store.PauseStatePaused)
+	if ok, err := s.ClaimPausedRun(ctx, ended.ID); ok || err != nil {
+		t.Errorf("ClaimPausedRun of an ended row still reading paused = %v, %v; want false", ok, err)
+	}
 	got, err := s.ListPausedRuns(ctx)
 	if err != nil {
 		t.Fatal(err)
@@ -5064,7 +5071,7 @@ func testFinishRunClearsThePause(t *testing.T, s store.Store) {
 		for i, r := range got {
 			ids[i] = r.ID
 		}
-		t.Errorf("ListPausedRuns = %v, want only the live paused row %s", ids, live.ID)
+		t.Errorf("ListPausedRuns = %v, want only the running paused row %s", ids, live.ID)
 	}
 }
 

@@ -217,3 +217,39 @@ func TestResumePausedRun_MovesTheUsersSlotFromTheStoppedReplica(t *testing.T) {
 		time.Sleep(10 * time.Millisecond)
 	}
 }
+
+// A database from before FinishRun cleared the pause can hold rows that ended
+// while reading 'paused' — a run the old resume refused and marked failed, or
+// one ended by a writer that does not go through FinishRun. The resume pass,
+// periodic in a cluster, must neither list nor resume one, even once its agent
+// resolves: it would run a run its row reports ended.
+func TestResumePausedRuns_AnEndedRowStillMarkedPausedIsNeitherListedNorResumed(t *testing.T) {
+	srv, cfg, prov, run := relistFixture(t)
+	cfg.Agents["ghost"] = config.AgentDef{Provider: "scripted", Model: "stub-model", SystemPrompt: "x", Tools: []string{}}
+	ctx := context.Background()
+	// As an old database has it: ended, and still paused.
+	if err := srv.store.FinishRun(ctx, run.ID, store.RunFailed, "", store.Usage{}, "resume failed: agent gone"); err != nil {
+		t.Fatal(err)
+	}
+	if err := srv.store.SetRunPauseState(ctx, run.ID, store.PauseStatePaused); err != nil {
+		t.Fatal(err)
+	}
+
+	if listed, _ := srv.store.ListPausedRuns(ctx); len(listed) != 0 {
+		t.Errorf("ListPausedRuns lists %d ended row(s), want none", len(listed))
+	}
+	if n, w := srv.ResumePausedRuns(ctx); n != 0 || len(w) != 0 {
+		t.Errorf("pass = resumed %d, warnings %v; want nothing", n, w)
+	}
+	time.Sleep(200 * time.Millisecond)
+	if c := prov.calls.Load(); c != 0 {
+		t.Errorf("model called %d time(s): an ended run was resumed", c)
+	}
+	if got, _ := srv.store.GetRun(ctx, run.ID); got.Status != store.RunFailed {
+		t.Errorf("status = %s, want failed", got.Status)
+	}
+	// A pass that listed the row before it ended cannot claim it either.
+	if ok, _ := srv.store.ClaimPausedRun(ctx, run.ID); ok {
+		t.Error("ClaimPausedRun claimed an ended row")
+	}
+}
