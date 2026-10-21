@@ -306,7 +306,7 @@ func TestBashboxEscape_WriterToAnUnreadFifoHitsTheCap(t *testing.T) {
 	var res tools.Result
 	grew := peakHeapDuring(func() {
 		res = runBashbox(t, overlayCapped(), roCtx(realDir(t)),
-			"mkfifo p; sleep 1 < p & head -c 20000000 /dev/zero > p; echo written")
+			"mkfifo p; head -c 20000000 /dev/zero > p | sleep 1 < p; echo written")
 	})
 	if !res.IsError || !strings.Contains(res.Text, "write limit reached") {
 		t.Errorf("20 MB into a never-read FIFO was not stopped at a 4 MiB cap: %.300q", res.Text)
