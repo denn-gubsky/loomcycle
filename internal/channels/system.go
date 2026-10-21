@@ -4,7 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"log"
+	"log/slog"
 	"sync"
 	"time"
 
@@ -177,7 +177,7 @@ func (p *StorePublisher) Write(ctx context.Context, req WriteRequest) (WriteResu
 	if def.Hooked && !p.HooksEnabled {
 		def.Hooked = false
 		if _, seen := p.skipped.LoadOrStore(req.Channel, struct{}{}); !seen {
-			log.Printf("channels: %q declares hooks, but channel hooks are off (LOOMCYCLE_CHANNEL_HOOKS); its messages are delivered unhooked", req.Channel)
+			slog.Warn("channels: a channel declares hooks, but channel hooks are off (LOOMCYCLE_CHANNEL_HOOKS); its messages are delivered unhooked", "channel", req.Channel)
 		}
 	}
 

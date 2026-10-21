@@ -7,7 +7,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"io/fs"
-	"log"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -236,7 +236,7 @@ func (b *sqliteBackend) evictLocked() {
 		}
 		if h, ok := b.open[lruPath]; ok {
 			if err := h.db.Close(); err != nil {
-				log.Printf("sqlmem: close LRU handle %q: %v", lruPath, err)
+				slog.Warn("sqlmem: close LRU handle failed", "path", lruPath, "err", err)
 			}
 			delete(b.open, lruPath)
 		}
@@ -248,7 +248,7 @@ func (b *sqliteBackend) evictLocked() {
 func (b *sqliteBackend) evictPathLocked(path string) {
 	if h, ok := b.open[path]; ok {
 		if err := h.db.Close(); err != nil {
-			log.Printf("sqlmem: close handle %q before drop: %v", path, err)
+			slog.Warn("sqlmem: close handle before drop failed", "path", path, "err", err)
 		}
 		delete(b.open, path)
 	}
@@ -571,11 +571,11 @@ func fencedRemoveDB(expectedRoot, path string) (removed bool, err error) {
 	// Strictly inside expectedRoot and not equal to it.
 	rel, err := filepath.Rel(rootResolved, resolved)
 	if err != nil || rel == "." || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
-		log.Printf("sqlmem: DropRunScope REFUSED: %q does not resolve strictly inside %q", path, rootResolved)
+		slog.Error("sqlmem: DropRunScope REFUSED: path does not resolve strictly inside the run-scope root", "path", path, "root", rootResolved)
 		return false, fmt.Errorf("sqlmem: refusing to delete %q — not inside the run-scope root", resolved)
 	}
 	if resolved == rootResolved {
-		log.Printf("sqlmem: DropRunScope REFUSED: resolved path is the run-scope root itself")
+		slog.Error("sqlmem: DropRunScope REFUSED: resolved path is the run-scope root itself")
 		return false, fmt.Errorf("sqlmem: refusing to delete the run-scope root")
 	}
 	// Remove the file and its WAL sidecars. RemoveAll tolerates absent

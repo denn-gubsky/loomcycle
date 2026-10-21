@@ -28,7 +28,7 @@ package help
 import (
 	"embed"
 	"fmt"
-	"log"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"sort"
@@ -323,16 +323,16 @@ func LoadSet(root string) (*Set, error) {
 		// process can read into the topic body the model sees.
 		fi, err := os.Lstat(path)
 		if err != nil {
-			log.Printf("help: skipping %s: lstat: %v", path, err)
+			slog.Warn("help: skipping topic: lstat failed", "path", path, "err", err)
 			continue
 		}
 		if fi.Mode()&os.ModeSymlink != 0 {
-			log.Printf("help: skipping %s: symlink (operator-supplied help topics must be regular files)", path)
+			slog.Warn("help: skipping symlink (operator-supplied help topics must be regular files)", "path", path)
 			continue
 		}
 		data, err := os.ReadFile(path)
 		if err != nil {
-			log.Printf("help: skipping %s: %v", path, err)
+			slog.Warn("help: skipping topic", "path", path, "err", err)
 			continue
 		}
 		nameFromFile := strings.TrimSuffix(e.Name(), ".md")
@@ -343,7 +343,7 @@ func LoadSet(root string) (*Set, error) {
 			// defaults (loaded above) remain intact, so the agent
 			// surface degrades gracefully — the bad topic just
 			// doesn't appear in the index.
-			log.Printf("help: skipping %s: %v", path, err)
+			slog.Warn("help: skipping topic", "path", path, "err", err)
 			continue
 		}
 		t.Source = "filesystem"
@@ -358,7 +358,7 @@ func LoadSet(root string) (*Set, error) {
 	if fi, err := os.Lstat(toolsRoot); err == nil {
 		switch {
 		case fi.Mode()&os.ModeSymlink != 0:
-			log.Printf("help: skipping %s: symlink (operator-supplied help topics must be regular files)", toolsRoot)
+			slog.Warn("help: skipping symlink (operator-supplied help topics must be regular files)", "path", toolsRoot)
 		case fi.IsDir():
 			var loaded []*Topic
 			_ = loadToolArticles(osDirFS{toolsRoot}, toolsRoot, func(t *Topic) {
@@ -366,14 +366,14 @@ func LoadSet(root string) (*Set, error) {
 				set.topics[t.Name] = t
 				loaded = append(loaded, t)
 			}, func(path string, err error) error {
-				log.Printf("help: skipping %s: %v", filepath.Join(toolsRoot, path), err)
+				slog.Warn("help: skipping topic", "path", filepath.Join(toolsRoot, path), "err", err)
 				return nil
 			})
 			// Linted after the walk: whether a tool article needs its own
 			// example depends on whether its operation articles loaded.
 			for _, t := range loaded {
 				for _, w := range set.Lint(t) {
-					log.Printf("help: %s: %s", t.Path, w)
+					slog.Warn("help: article lint", "path", t.Path, "warning", w)
 				}
 			}
 		}

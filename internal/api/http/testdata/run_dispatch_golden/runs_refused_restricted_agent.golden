@@ -1,0 +1,8 @@
+== other agent: POST /v1/runs
+status: 403
+content-type: application/json
+body: {"code":"agent_not_allowed","error":"agent not allowed for this token: \"other\""}
+== unknown agent: POST /v1/runs
+status: 403
+content-type: application/json
+body: {"code":"agent_not_allowed","error":"agent not allowed for this token: \"nope\""}

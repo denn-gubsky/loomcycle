@@ -6,7 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"log"
+	"log/slog"
 	"math/rand"
 	"strings"
 	"sync"
@@ -226,7 +226,7 @@ func (b *PostgresBackplane) runSubscribeLoop(ctx context.Context, topic string, 
 			return
 		}
 		jittered := jitter(backoff)
-		log.Printf("coord: LISTEN %s dropped (%v); reconnecting in %s", topic, err, jittered)
+		slog.Warn("coord: LISTEN dropped; reconnecting", "topic", topic, "err", err, "backoff", jittered.String())
 		select {
 		case <-ctx.Done():
 			return
@@ -292,7 +292,7 @@ func (b *PostgresBackplane) subscribeOnce(ctx context.Context, topic string, out
 			// drop logs would be noisy; first-drop-per-topic-per-minute
 			// would be ideal but adds complexity. Phase 1 logs every
 			// drop; if it becomes noisy in practice, rate-limit later).
-			log.Printf("coord: subscriber for %s is slow, dropping event from %s", topic, evt.PublisherReplicaID)
+			slog.Warn("coord: subscriber is slow, dropping event", "topic", topic, "publisher_replica", evt.PublisherReplicaID)
 		}
 	}
 }
@@ -302,12 +302,12 @@ func (b *PostgresBackplane) subscribeOnce(ctx context.Context, topic string, out
 func (b *PostgresBackplane) decode(topic, raw string) (Event, bool) {
 	var env envelope
 	if err := json.Unmarshal([]byte(raw), &env); err != nil {
-		log.Printf("coord: malformed NOTIFY payload on %s (decode env): %v", topic, err)
+		slog.Warn("coord: malformed NOTIFY payload (decode env)", "topic", topic, "err", err)
 		return Event{}, false
 	}
 	payload, err := base64.StdEncoding.DecodeString(env.P)
 	if err != nil {
-		log.Printf("coord: malformed NOTIFY payload on %s (decode b64): %v", topic, err)
+		slog.Warn("coord: malformed NOTIFY payload (decode b64)", "topic", topic, "err", err)
 		return Event{}, false
 	}
 	return Event{
@@ -346,7 +346,7 @@ func (b *PostgresBackplane) Close() error {
 	select {
 	case <-done:
 	case <-time.After(5 * time.Second):
-		log.Printf("coord: backplane close timed out waiting for subscribers")
+		slog.Warn("coord: backplane close timed out waiting for subscribers")
 	}
 	return nil
 }

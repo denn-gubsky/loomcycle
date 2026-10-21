@@ -4,7 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"log"
+	"log/slog"
 	"strconv"
 	"strings"
 	"sync"
@@ -255,7 +255,7 @@ type agentRunner struct {
 	// Supplied by the server for the same reason; nil = not recorded.
 	walk func(ctx context.Context, walkID, state string, visit int) context.Context
 	// logf reports what a Starter could not do but must not fail for — a sink
-	// publish that errored, an ack that did not land. nil = log.Printf.
+	// publish that errored, an ack that did not land. nil = slog, at INFO.
 	logf func(format string, args ...any)
 	// operatorAuthored is the TEAM DEFINITION's authorship, stamped onto every
 	// Prompt this runner builds. The walk reads it from the def row it
@@ -699,8 +699,8 @@ func (r *agentRunner) noteRefused(stateID, field string, refused []string) {
 	if len(refused) == 0 {
 		return
 	}
-	log.Printf("teamrun: state %q %s: refused variable(s) %v — value contained {{ or }}; "+
-		"a variable may not introduce a prompt placeholder", stateID, field, refused)
+	slog.Warn("teamrun: refused variables — value contained {{ or }}; "+
+		"a variable may not introduce a prompt placeholder", "state", stateID, "field", field, "variables", refused)
 }
 
 // runParallel fans a parallel state's agents out concurrently with bounded

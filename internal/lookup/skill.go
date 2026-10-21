@@ -4,7 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"log"
+	"log/slog"
 
 	"github.com/denn-gubsky/loomcycle/internal/skills"
 	"github.com/denn-gubsky/loomcycle/internal/store"
@@ -109,7 +109,7 @@ func resolveSubstrateSkill(ctx context.Context, s SkillStore, tenantID, name str
 		if uerr := json.Unmarshal(row.Definition, &sd); uerr != nil {
 			// Hand-edited / corrupted row — log + fall through to
 			// static so the run can continue with the boot bake.
-			log.Printf("lookup.Skill(%q): parse %s definition failed: %v", name, row.DefID, uerr)
+			slog.WarnContext(ctx, "lookup.Skill: parse definition failed", "skill", name, "def_id", row.DefID, "err", uerr)
 		} else if sd.Body != "" {
 			return SkillResolution{
 				Body:   sd.Body,
@@ -125,7 +125,7 @@ func resolveSubstrateSkill(ctx context.Context, s SkillStore, tenantID, name str
 			// correctness (the static bake still runs); the log line
 			// is the operator's signal that a substrate override was
 			// skipped this run.
-			log.Printf("lookup.Skill(%q): SkillDefGetActive failed: %v", name, err)
+			slog.WarnContext(ctx, "lookup.Skill: SkillDefGetActive failed", "skill", name, "err", err)
 		}
 	}
 	return SkillResolution{}, false

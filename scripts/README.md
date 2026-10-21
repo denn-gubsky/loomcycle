@@ -1,0 +1,47 @@
+# scripts/
+
+## `js-packages.sh` — npm tasks across every JavaScript package
+
+The repo has several independent JavaScript packages (`web/`, `packages/*`,
+`adapters/ts`, `cloud-deployment/landing`). `scripts/js-packages.sh` runs one
+npm task in each of them and prints a summary table:
+
+```sh
+scripts/js-packages.sh install               # npm ci everywhere (do this first)
+scripts/js-packages.sh typecheck --keep-going
+scripts/js-packages.sh test -p packages/bridge
+scripts/js-packages.sh audit --keep-going    # npm audit --omit=dev --audit-level=high
+scripts/js-packages.sh list                  # which packages are covered
+```
+
+The same commands are available as `make js-install`, `make js-build`,
+`make js-test`, `make js-typecheck` and `make js-audit`; pass options through
+`JS_ARGS`, e.g. `make js-test JS_ARGS="--keep-going -p web"`. `lint` and
+`outdated` are available from the script. Run `scripts/js-packages.sh --help`
+for every option.
+
+- A package that does not define the script (`build`, `test`, `typecheck`,
+  `lint`) is reported as `skip`, not a failure.
+- Without `--keep-going` the run stops at the first failing package; with it,
+  every package runs and the exit status is non-zero if any failed.
+- `web/` compiles `packages/{library,explorer,memory-view,def-fields}` from
+  source, so those need `install` before `web/` can be checked on its own.
+- `build` on `web/` writes into `internal/webui/dist/` without clearing old
+  assets; to build the binary's embedded UI, keep using `make build-ui`.
+
+### Adding a package
+
+There is no list to edit. The package set is derived from the tracked
+lockfiles (`git ls-files '*package-lock.json'`), so a new package is covered as
+soon as its `package-lock.json` is committed. Every run warns about a tracked
+`package.json` with no tracked lockfile, since that package would otherwise be
+left out silently. To leave a package out on purpose, add its path to
+`EXCLUDE` in the script, with the reason.
+
+### Why not an npm workspace
+
+Each package keeps its own lockfile on purpose. A package that depends on a
+sibling (`@loomcycle/client`, `@loomcycle/bridge-core`, ...) consumes it by its
+published npm version, never its source. A workspace would symlink the
+siblings together, so local runs and CI would test a dependency graph that npm
+users never install.

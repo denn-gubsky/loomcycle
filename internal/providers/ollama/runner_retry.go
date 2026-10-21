@@ -5,7 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"io"
-	"log"
+	"log/slog"
 	"net/http"
 	"strings"
 	"time"
@@ -118,6 +118,7 @@ func sleepCtx(ctx context.Context, d time.Duration) error {
 }
 
 func logRunnerRetry(provider, model, endpoint string, attempt int, wait time.Duration) {
-	log.Printf(`{"event":"ollama_runner_retry","provider":%q,"model":%q,"endpoint":%q,"attempt":%d,"wait":%q}`,
-		provider, model, endpoint, attempt, wait.String())
+	// "event" stays a field so a JSON log consumer keyed on it still matches.
+	slog.Warn("ollama runner retry", "event", "ollama_runner_retry",
+		"provider", provider, "model", model, "endpoint", endpoint, "attempt", attempt, "wait", wait.String())
 }
