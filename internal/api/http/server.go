@@ -363,6 +363,10 @@ type Server struct {
 	// Single-replica deployments leave this nil and the in-process
 	// SessionLockMap above stays the source of truth.
 	sessionLockPG clusterLocker
+	// sessionRuns: the runs of each session this replica is running, so a
+	// continuation can tell a session busy with a run being cancelled from
+	// one busy with a live turn (takeSession).
+	sessionRuns sessionRunSet
 
 	// mcpFallback is the optional Dispatcher fallback for lazy MCP
 	// server registration. When set, an agent's call to a tool name
@@ -3063,9 +3067,9 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 		}
 		ctx = scopedCtx
 
-		hold, ok := s.holdSession(in.SessionID, in.SessionLockAcrossReplicas)
-		if !ok {
-			return fmt.Errorf("%w: another request is in flight on session %q", runner.ErrSessionBusy, in.SessionID)
+		hold, err := s.takeSession(ctx, in.SessionID, in.SessionLockAcrossReplicas, in.QueuedRunID)
+		if err != nil {
+			return err
 		}
 		sessHold = hold
 		// A detached continuation holds its session until it ends, not until
@@ -3075,16 +3079,6 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 				sessHold.release()
 			}
 		}()
-		// A run parked on another replica has let the cluster lock go
-		// (parkLock): the session's live run is what refuses a second turn
-		// there.
-		if in.SessionLockAcrossReplicas {
-			if live, err := s.sessionHasLiveRun(ctx, in.SessionID, in.QueuedRunID); err != nil {
-				return fmt.Errorf("%w: %v", runner.ErrInternal, err)
-			} else if live {
-				return fmt.Errorf("%w: another request is in flight on session %q", runner.ErrSessionBusy, in.SessionID)
-			}
-		}
 	}
 
 	// RFC AX: use the live principal when one is on ctx (gRPC/MCP/connector);
@@ -3600,6 +3594,19 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 			}
 		}()
 	}
+	// Known to this replica as one of its session's runs until it has ended
+	// and let the session go: a continuation that finds the session busy
+	// waits out its end only while it is being cancelled (takeSession).
+	untrackRun := s.sessionRuns.track(sessionID, agentID, runID)
+	if sessHold != nil {
+		sessHold.onRelease = untrackRun // after the session is let go
+	} else {
+		defer func() {
+			if !handOff {
+				untrackRun()
+			}
+		}()
+	}
 	s.publishRunState(meta, "running", "", "")
 
 	// ---- Persist input segments ----
@@ -3878,6 +3885,9 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 				// A continuation's session is the run's until it ends: no
 				// other turn on it meanwhile, whoever is attached.
 				sessHold.release()
+				if sessHold == nil {
+					untrackRun()
+				}
 			},
 		})
 		switch {
@@ -3973,6 +3983,8 @@ type sessionHold struct {
 	id      string
 	local   func()
 	remote  func() // the advisory lock's release; nil while it is not held
+	// onRelease, when set, runs once the session is let go.
+	onRelease func()
 }
 
 // reacquire takes the cluster lock, if it is not held. It reports false when
@@ -4005,6 +4017,9 @@ func (h *sessionHold) release() {
 	}
 	h.releaseCluster()
 	h.local()
+	if h.onRelease != nil {
+		h.onRelease()
+	}
 }
 
 // SetHookRegistry installs the v0.12.5 Phase 6 DB-backed hook

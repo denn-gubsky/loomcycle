@@ -54,6 +54,9 @@ var updateGoldens = flag.Bool("update", false, "rewrite the golden SSE transcrip
 //	anything else         → "hello", end_turn
 type goldenProvider struct {
 	gate chan struct{}
+	// cancelDelay holds a "HOLD" call open this long after its ctx ends: a
+	// run whose finish lags its cancel.
+	cancelDelay time.Duration
 
 	mu    sync.Mutex
 	calls []string // each call's messages, as JSON
@@ -112,6 +115,7 @@ func (p *goldenProvider) Call(ctx context.Context, req providers.Request) (<-cha
 			case <-p.gate:
 				ch <- done("end_turn")
 			case <-ctx.Done():
+				time.Sleep(p.cancelDelay)
 			}
 		}()
 		return ch, nil

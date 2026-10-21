@@ -855,3 +855,57 @@ func TestHandleMessages_AnOrphanedRunRowDoesNotBlockItsSession(t *testing.T) {
 		})
 	}
 }
+
+// A message right after the cancel of the session's live run continues the
+// session: the bridges end the parked run and continue at once, and the
+// cancelled run lets its session go only once it has finished, a moment later.
+// The continuation waits that out — only while the session's live run is one
+// whose cancel is in flight — instead of answering 409.
+func TestHandleMessages_AContinuationAfterACancelWaitsForTheCancelledRun(t *testing.T) {
+	for _, cluster := range []bool{false, true} {
+		name := "single replica"
+		if cluster {
+			name = "across replicas"
+		}
+		t.Run(name, func(t *testing.T) {
+			g := newGoldenServer(t, goldenOpts{})
+			g.prov.cancelDelay = 500 * time.Millisecond
+			sid := g.completedSession("term")
+			if cluster {
+				g.srv.sessionLockPG = newFakeClusterLocker()
+			}
+			live := g.post("/v1/sessions/"+sid+"/messages", goldenMsgBody("HOLD this turn", `"interactive":true`))
+			agentID, _, _ := live.ids(t)
+			live.until(t, "text", 1)
+
+			g.post("/v1/agents/"+agentID+"/cancel", "").drain(t)
+			next := g.post("/v1/sessions/"+sid+"/messages", goldenMsgBody("next message", `"interactive":true`))
+			if next.status != http.StatusOK {
+				next.drain(t)
+				t.Fatalf("the continuation right after the cancel: %d %s, want the stream", next.status, next.body)
+			}
+			nextAgent, _, _ := next.ids(t)
+			next.until(t, "awaiting_input", 1)
+			g.post("/v1/agents/"+nextAgent+"/cancel", "").drain(t)
+			next.drain(t)
+			live.drain(t)
+		})
+	}
+}
+
+// ...but a session whose live run is not being cancelled is busy at once.
+func TestHandleMessages_AContinuationOfALiveSessionIsStillRefusedAtOnce(t *testing.T) {
+	g := newGoldenServer(t, goldenOpts{})
+	sid := g.completedSession("term")
+	live := g.post("/v1/sessions/"+sid+"/messages", goldenMsgBody("HOLD this turn", `"interactive":true`))
+	agentID, _, _ := live.ids(t)
+	live.until(t, "text", 1)
+	start := time.Now()
+	second := g.post("/v1/sessions/"+sid+"/messages", goldenMsgBody("me too", ""))
+	second.drain(t)
+	if second.status != http.StatusConflict || time.Since(start) > time.Second {
+		t.Errorf("a continuation of a session whose run is live: %d after %s, want 409 at once", second.status, time.Since(start))
+	}
+	g.post("/v1/agents/"+agentID+"/cancel", "").drain(t)
+	live.drain(t)
+}

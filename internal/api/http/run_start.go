@@ -12,8 +12,10 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
+	"github.com/denn-gubsky/loomcycle/internal/cancel"
 	"github.com/denn-gubsky/loomcycle/internal/concurrency"
 	"github.com/denn-gubsky/loomcycle/internal/heartbeat"
 	"github.com/denn-gubsky/loomcycle/internal/loop"
@@ -383,5 +385,102 @@ func (s *Server) releaseSessionWhileParked(opts *loop.RunOptions, p *parkLock, l
 			return func() {}
 		}
 		return arm(turnCancel)
+	}
+}
+
+// sessionRunSet is the runs of each session this replica is running: tracked
+// from their registration until they have ended and let their session go.
+type sessionRunSet struct {
+	mu   sync.Mutex
+	runs map[string]map[string]string // session id -> run id -> agent id
+}
+
+// track adds a run of sessionID; the returned func removes it. A run with no
+// session ("" — no store) is not tracked.
+func (rs *sessionRunSet) track(sessionID, agentID, runID string) (untrack func()) {
+	if sessionID == "" {
+		return func() {}
+	}
+	rs.mu.Lock()
+	if rs.runs == nil {
+		rs.runs = map[string]map[string]string{}
+	}
+	if rs.runs[sessionID] == nil {
+		rs.runs[sessionID] = map[string]string{}
+	}
+	rs.runs[sessionID][runID] = agentID
+	rs.mu.Unlock()
+	var once sync.Once
+	return func() {
+		once.Do(func() {
+			rs.mu.Lock()
+			defer rs.mu.Unlock()
+			delete(rs.runs[sessionID], runID)
+			if len(rs.runs[sessionID]) == 0 {
+				delete(rs.runs, sessionID)
+			}
+		})
+	}
+}
+
+// ending reports whether the session's runs on this replica are all being
+// cancelled — each tracked, none still in the cancel registry (a cancel takes
+// a run out of it at once, and the run lets its session go when it has
+// finished) — and there is at least one.
+func (rs *sessionRunSet) ending(sessionID string, reg *cancel.Registry) bool {
+	rs.mu.Lock()
+	defer rs.mu.Unlock()
+	runs := rs.runs[sessionID]
+	if len(runs) == 0 {
+		return false
+	}
+	for runID, agentID := range runs {
+		if e, ok := reg.Get(agentID); ok && e.RunID == runID {
+			return false
+		}
+	}
+	return true
+}
+
+// cancelledRunGrace is how long a continuation waits for a session whose run
+// on this replica is being cancelled. The bridges end a parked run and
+// continue the session at once; the cancelled run lets the session go only
+// once it has finished, a moment later.
+const cancelledRunGrace = 5 * time.Second
+
+// takeSession takes a continuation's session: its lock (holdSession) and,
+// across replicas, the session free of another live run (sessionHasLiveRun).
+// A session busy only because its run on this replica is being cancelled is
+// waited for, up to cancelledRunGrace; any other busy session is refused at
+// once. except is a run of the session not to count (a restarted queued
+// run's own).
+func (s *Server) takeSession(ctx context.Context, sessionID string, acrossReplicas bool, except string) (*sessionHold, error) {
+	busy := fmt.Errorf("%w: another request is in flight on session %q", runner.ErrSessionBusy, sessionID)
+	deadline := time.Now().Add(cancelledRunGrace)
+	for {
+		if hold, ok := s.holdSession(sessionID, acrossReplicas); ok {
+			live := false
+			if acrossReplicas {
+				var err error
+				if live, err = s.sessionHasLiveRun(ctx, sessionID, except); err != nil {
+					hold.release()
+					return nil, fmt.Errorf("%w: %v", runner.ErrInternal, err)
+				}
+			}
+			if !live {
+				return hold, nil
+			}
+			hold.release()
+		}
+		if !s.sessionRuns.ending(sessionID, s.cancelReg) || !time.Now().Before(deadline) {
+			return nil, busy
+		}
+		t := time.NewTimer(50 * time.Millisecond)
+		select {
+		case <-t.C:
+		case <-ctx.Done():
+			t.Stop()
+			return nil, busy
+		}
 	}
 }
