@@ -27,22 +27,68 @@ import (
 
 const defaultBodySizeLimitBytes = 1 << 20 // 1 MiB
 
-// bodyLimit is how many bytes of a delivery are read: the definition's
+// defaultBodyReadTimeout bounds how long a delivery's body may take to arrive,
+// from the moment the receiver starts reading it. The server sets no
+// ReadTimeout (SSE and long run requests share it), so without this a sender
+// that declares a body and stalls would hold a goroutine and a connection for
+// as long as it likes. 30 s is generous for real senders: GitHub gives up on
+// a delivery after 10 s, and the request limit (16 MiB by default) arrives in
+// well under 30 s on any link a webhook sender uses. The same for every name,
+// so it tells nothing about which exist.
+const defaultBodyReadTimeout = 30 * time.Second
+
+// defaultRequestCapBytes is the server's request limit when
+// LOOMCYCLE_MAX_REQUEST_BYTES is unset; the HTTP server uses the same default.
+const defaultRequestCapBytes = 16 << 20
+
+// requestCap is the server's request limit (LOOMCYCLE_MAX_REQUEST_BYTES): the
+// most of a delivery that is ever read, whatever the name.
+func (rec *Receiver) requestCap() int64 {
+	if rec.cfg != nil && rec.cfg.Env.MaxRequestBytes > 0 {
+		return rec.cfg.Env.MaxRequestBytes
+	}
+	return defaultRequestCapBytes
+}
+
+// bodyLimit is how many bytes of a delivery a definition accepts: its
 // body_size_limit_bytes (1 MiB when unset), never above the server's request
-// limit (LOOMCYCLE_MAX_REQUEST_BYTES), which a definition used to be able to
-// exceed without bound. A stored definition with a larger value still loads;
-// it is capped here.
+// limit, which a definition used to be able to exceed without bound. A stored
+// definition with a larger value still loads; it is capped here.
 func (rec *Receiver) bodyLimit(wd config.Webhook) int64 {
 	limit := int64(wd.BodySizeLimitBytes)
 	if limit <= 0 {
 		limit = defaultBodySizeLimitBytes
 	}
-	if rec.cfg != nil {
-		if max := rec.cfg.Env.MaxRequestBytes; max > 0 && limit > max {
-			limit = max
-		}
+	if max := rec.requestCap(); limit > max {
+		limit = max
 	}
 	return limit
+}
+
+// readDelivery reads a delivery's body the same way for every name, so how it
+// is read (the interim 100 Continue of an Expect: 100-continue request, the
+// connection closing on a body over the request limit) does not tell an
+// unauthenticated caller whether the name exists (RFC ES #4), under the same
+// read deadline (defaultBodyReadTimeout). keep is how
+// much the resolved webhook accepts; 0 for a name that is unknown or inert.
+// At most keep bytes are buffered: the rest of the body, or all of it when
+// nothing is kept, is read into io.Discard, bounded by requestCap, so a large
+// body to an unknown name costs no memory. ok is false when the body was not
+// kept: unknown, unreadable, or over keep.
+func (rec *Receiver) readDelivery(w http.ResponseWriter, r *http.Request, keep int64) (body []byte, ok bool) {
+	// A deadline on the body, the same for every name. A transport that
+	// cannot set one (a test recorder) reports ErrNotSupported; nothing to
+	// bound there.
+	_ = http.NewResponseController(w).SetReadDeadline(time.Now().Add(rec.bodyReadTimeout))
+	rd := http.MaxBytesReader(w, r.Body, rec.requestCap())
+	if keep > 0 {
+		b, err := io.ReadAll(io.LimitReader(rd, keep+1))
+		if err == nil && int64(len(b)) <= keep {
+			return b, true
+		}
+	}
+	_, _ = io.Copy(io.Discard, rd)
+	return nil, false
 }
 
 // Receiver is the RFC H inbound-webhook HTTP handler. It is the
@@ -77,6 +123,9 @@ type Receiver struct {
 
 	dedup   *dedupCache
 	limiter *rateLimiter
+	// bodyReadTimeout bounds how long a delivery's body may take to arrive
+	// (defaultBodyReadTimeout; a test seam).
+	bodyReadTimeout time.Duration
 
 	// recent is the per-webhook-def triage ring buffer (WH-5b), keyed by
 	// webhookKey like the rate-limit buckets. Holds the last recentBufferCap
@@ -166,6 +215,7 @@ func New(d Deps) *Receiver {
 		logf:                 logf,
 		dedup:                newDedupCache(now),
 		limiter:              newRateLimiter(now),
+		bodyReadTimeout:      defaultBodyReadTimeout,
 		counts:               d.Counts,
 		pending:              map[countKey]int64{},
 		now:                  now,
@@ -223,13 +273,16 @@ func (rec *Receiver) handle(w http.ResponseWriter, r *http.Request) {
 	defer span.End()
 	span.SetAttributes(attribute.String("webhook.name", name), attribute.String("webhook.tenant", tenant))
 
-	// 1. Resolve the active Def. Unknown name → 404. owner, not the URL
-	//    tenant, names the def for the per-webhook state below (webhookKey).
+	// 1. Resolve the active Def. Unknown name → 404, after the body is
+	//    read (and discarded) as a live def's would be (readDelivery). owner,
+	//    not the URL tenant, names the def for the per-webhook state below
+	//    (webhookKey).
 	wd, owner, ok := lookup.ResolveWebhook(ctx, rec.store, rec.cfg, tenant, name)
 	if !ok {
+		rec.readDelivery(w, r, 0)
 		// No def, no ring: see recordDelivery.
 		rec.finish(span, "", "", "rejected_unknown", "")
-		writeError(w, http.StatusNotFound, "unknown_webhook", "")
+		writeUnknownWebhook(w)
 		return
 	}
 	whKey := webhookKey(owner, name)
@@ -237,8 +290,9 @@ func (rec *Receiver) handle(w http.ResponseWriter, r *http.Request) {
 		// A disabled Def is addressable but inert. 404 (not 403) so a
 		// disabled webhook is indistinguishable from a never-registered one
 		// to an external caller — no enumeration signal.
+		rec.readDelivery(w, r, 0)
 		rec.finish(span, whKey, "", "rejected_disabled", "")
-		writeError(w, http.StatusNotFound, "unknown_webhook", "")
+		writeUnknownWebhook(w)
 		return
 	}
 	// A provider preset fills the headers and auth kind the definition
@@ -246,12 +300,15 @@ func (rec *Receiver) handle(w http.ResponseWriter, r *http.Request) {
 	// definition keeps what its author wrote.
 	wd = wd.WithProviderDefaults()
 
-	// 2. Read the raw body under the Def's size limit. Raw bytes are what
-	//    the signature is verified against — we never re-serialize.
-	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, rec.bodyLimit(wd)))
-	if err != nil {
+	// 2. Read the raw body under the Def's own size limit. Raw bytes are what
+	//    the signature is verified against — we never re-serialize. A body it
+	//    refuses is answered as an unknown name, unauthenticated as it is;
+	//    the ring keeps rejected_body.
+	body, bodyOK := rec.readDelivery(w, r, rec.bodyLimit(wd))
+	if !bodyOK {
 		rec.finish(span, whKey, "", "rejected_body", "")
-		writeError(w, http.StatusBadRequest, "bad_body", "")
+		rec.logf("webhook %q: body unreadable or over its %d-byte limit", name, rec.bodyLimit(wd))
+		writeUnknownWebhook(w)
 		return
 	}
 
@@ -371,7 +428,7 @@ func (rec *Receiver) authenticate(w http.ResponseWriter, r *http.Request, span t
 		if !rec.allowUnauthenticated {
 			rec.finish(span, whKey, "", verdictUnresolved, "")
 			rec.logf("webhook %q: auth.kind=none but LOOMCYCLE_WEBHOOKS_ALLOW_UNAUTHENTICATED is not set — refusing", name)
-			writeError(w, http.StatusServiceUnavailable, "unauthenticated_mode_disabled", "set LOOMCYCLE_WEBHOOKS_ALLOW_UNAUTHENTICATED=1 to enable auth.kind=none")
+			writeUnavailable(w)
 			return false
 		}
 		rec.logf("webhook %q: accepted UNAUTHENTICATED delivery (auth.kind=none)", name)
@@ -379,18 +436,21 @@ func (rec *Receiver) authenticate(w http.ResponseWriter, r *http.Request, span t
 		var ae *authError
 		if errors.As(verr, &ae) && ae.verdict == verdictUnresolved {
 			// Config-side failure (secret not allowlisted / unset / no such
-			// credential). 503 names the env var or the reference (a NAME,
-			// not a value) so the operator can fix it.
+			// credential). 503 so a sender retries once the operator fixes
+			// it; the env var or reference goes to the log and the ring
+			// only, never to the unauthenticated caller (RFC ES #4).
 			rec.finish(span, whKey, "", verdictUnresolved, "")
 			rec.logf("webhook %q: secret unresolvable: %s", name, ae.msg)
-			writeSecretUnresolvable(w, ae)
+			writeUnavailable(w)
 			return false
 		}
 		// Signature mismatch / replay-window / bad header / wrong bearer:
-		// one opaque 401, NO body detail (no timing/oracle leak).
+		// the same 404 as an unknown or disabled name, so the answer does
+		// not tell a caller that the name exists (RFC ES #4). The ring and
+		// the log keep the real verdict for the operator.
 		rec.finish(span, whKey, "", verdictRejectedSig, "")
 		rec.logf("webhook %q: signature rejected", name)
-		writeError(w, http.StatusUnauthorized, "unauthorized", "")
+		writeUnknownWebhook(w)
 		return false
 	}
 	return true
@@ -912,16 +972,18 @@ func writeError(w http.ResponseWriter, status int, code, detail string) {
 	writeJSON(w, status, body)
 }
 
-// writeSecretUnresolvable emits the 503 with the env-var NAME, or the
-// "$cred:<name>" reference of a stored secret — never a value.
-func writeSecretUnresolvable(w http.ResponseWriter, ae *authError) {
-	body := map[string]string{"error": "secret_unresolvable"}
-	if ae.secretRef != "" {
-		body["secret"] = ae.secretRef
-	} else {
-		body["secret_env"] = ae.secretEnv
-	}
-	writeJSON(w, http.StatusServiceUnavailable, body)
+// writeUnknownWebhook is the one answer for every delivery an unauthenticated
+// caller must not learn more from: no such name, a disabled def, and a failed
+// authentication all write these exact bytes.
+func writeUnknownWebhook(w http.ResponseWriter) {
+	writeError(w, http.StatusNotFound, "unknown_webhook", "")
+}
+
+// writeUnavailable answers a config-side failure on a def (its secret cannot
+// be resolved, or it asks for no auth the operator has not enabled). 503 so a
+// sender retries; nothing in the body names the cause.
+func writeUnavailable(w http.ResponseWriter) {
+	writeError(w, http.StatusServiceUnavailable, "unavailable", "")
 }
 
 // writeRetryAfter emits 429 + Retry-After (whole seconds, min 1).

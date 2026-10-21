@@ -35,8 +35,8 @@ func TestReceiver_AnUnopenableStoredSecretRefusesTheDelivery(t *testing.T) {
 			rec := New(Deps{Cfg: &config.Config{}, Store: st, Runner: &fakeRunner{runID: "r"}, Credentials: credential.NewEngine(st, sealer)})
 
 			code, body := postWith(rec, "/v1/_webhooks/acme/gh", "the-secret", []byte(`{"n":1}`))
-			if code != http.StatusServiceUnavailable || !strings.Contains(body, `"secret":"$cred:hook"`) {
-				t.Errorf("signed with the real secret: %d %s, want 503 naming the reference", code, body)
+			if code != http.StatusServiceUnavailable || body != `{"error":"unavailable"}`+"\n" {
+				t.Errorf("signed with the real secret: %d %s, want the opaque 503", code, body)
 			}
 			if strings.Contains(body, "the-secret") {
 				t.Fatalf("the refusal carries the secret: %s", body)

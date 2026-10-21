@@ -70,8 +70,8 @@ func TestReceiver_StoredSecretVerifiesAndRotatesWithoutARestart(t *testing.T) {
 	if code := deliver("first-secret"); code != http.StatusAccepted {
 		t.Fatalf("signed with the stored secret: %d, want 202", code)
 	}
-	if code := deliver("not-the-secret"); code != http.StatusUnauthorized {
-		t.Fatalf("signed with another secret: %d, want 401", code)
+	if code := deliver("not-the-secret"); code != http.StatusNotFound {
+		t.Fatalf("signed with another secret: %d, want 404", code)
 	}
 
 	// Rotate: the old value moves to a second credential, named as the
@@ -86,8 +86,8 @@ func TestReceiver_StoredSecretVerifiesAndRotatesWithoutARestart(t *testing.T) {
 			t.Errorf("during the rotation, signed with %s: %d, want 202", secret, code)
 		}
 	}
-	if code := deliver("not-the-secret"); code != http.StatusUnauthorized {
-		t.Errorf("during the rotation, signed with neither: %d, want 401", code)
+	if code := deliver("not-the-secret"); code != http.StatusNotFound {
+		t.Errorf("during the rotation, signed with neither: %d, want 404", code)
 	}
 
 	// The rotation ends by deleting the old credential: only the new secret
@@ -96,8 +96,8 @@ func TestReceiver_StoredSecretVerifiesAndRotatesWithoutARestart(t *testing.T) {
 		t.Fatal(err)
 	}
 	clk.pastSecretTTL()
-	if code := deliver("first-secret"); code != http.StatusUnauthorized {
-		t.Errorf("after the old credential is deleted, signed with it: %d, want 401", code)
+	if code := deliver("first-secret"); code != http.StatusNotFound {
+		t.Errorf("after the old credential is deleted, signed with it: %d, want 404", code)
 	}
 	if code := deliver("second-secret"); code != http.StatusAccepted {
 		t.Errorf("after the old credential is deleted, signed with the new one: %d, want 202", code)
@@ -115,8 +115,8 @@ func TestReceiver_StoredSecretIsReadFromTheDefinitionsTenantOnly(t *testing.T) {
 	rec := New(Deps{Cfg: &config.Config{}, Store: st, Runner: &fakeRunner{runID: "r"}, Credentials: engine})
 
 	code, body := postWith(rec, "/v1/_webhooks/acme/gh", "other-tenants-secret", []byte(`{}`))
-	if code != http.StatusServiceUnavailable || !strings.Contains(body, `"secret":"$cred:hook"`) {
-		t.Fatalf("no such credential in the definition's tenant: %d %s, want 503 naming the reference", code, body)
+	if code != http.StatusServiceUnavailable || body != `{"error":"unavailable"}`+"\n" {
+		t.Fatalf("no such credential in the definition's tenant: %d %s, want the opaque 503", code, body)
 	}
 	if strings.Contains(body, "other-tenants-secret") {
 		t.Fatalf("the 503 carries a secret value: %s", body)
@@ -141,7 +141,7 @@ func TestReceiver_StoredBearerTokenAndItsPreviousAreAccepted(t *testing.T) {
 	for i, tc := range []struct {
 		token string
 		want  int
-	}{{"new-token", http.StatusAccepted}, {"old-token", http.StatusAccepted}, {"no-token", http.StatusUnauthorized}} {
+	}{{"new-token", http.StatusAccepted}, {"old-token", http.StatusAccepted}, {"no-token", http.StatusNotFound}} {
 		h := http.Header{}
 		h.Set("X-Gitlab-Token", tc.token)
 		if w := post(rec, "/v1/_webhooks/acme/gl", []byte(fmt.Sprintf(`{"n":%d}`, i)), h); w.Code != tc.want {
