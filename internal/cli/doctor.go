@@ -92,17 +92,24 @@ func RunDoctor(args []string, stdout, stderr io.Writer) int {
 		tokenFromFile = true
 	}
 
-	if os.Getenv("LOOMCYCLE_AUTH_TOKEN") == "" {
+	// Declared principals turn auth on as the legacy secret does, inert ones
+	// included (the server's own rule, config.DeclaresPrincipals).
+	principals := cfg.DeclaredPrincipals()
+	legacySet := os.Getenv("LOOMCYCLE_AUTH_TOKEN") != ""
+	switch {
+	case !legacySet && principals > 0:
+		r.pass("Authentication", fmt.Sprintf("on — %d config principal(s) declared; LOOMCYCLE_AUTH_TOKEN not set", principals))
+	case !legacySet:
 		r.warn("LOOMCYCLE_AUTH_TOKEN set", "empty; every /v1/* request will be allowed unauthenticated")
-	} else if tokenFromFile {
+	case tokenFromFile:
 		r.pass("LOOMCYCLE_AUTH_TOKEN set", "loaded from auth.env (init --with-token)")
-	} else {
+	default:
 		r.pass("LOOMCYCLE_AUTH_TOKEN set", "")
 	}
-	// Without the legacy secret the server is in open mode unless the store
-	// holds an admin operator token, which doctor does not open — so this is a
-	// WARN naming the boot refusal, not a FAIL.
-	if os.Getenv("LOOMCYCLE_AUTH_TOKEN") == "" {
+	// Without the legacy secret or a principal the server is in open mode
+	// unless the store holds an admin operator token, which doctor does not
+	// open — so this is a WARN naming the boot refusal, not a FAIL.
+	if !legacySet && principals == 0 {
 		if public := cfg.NonLoopbackListeners(); len(public) > 0 {
 			on := strings.Join(public, ", ")
 			if cfg.AllowOpenMode() {
@@ -115,7 +122,7 @@ func RunDoctor(args []string, stdout, stderr io.Writer) int {
 		}
 	}
 
-	checkTokenPepper(r, cfg, os.Getenv("LOOMCYCLE_AUTH_TOKEN") != "")
+	checkTokenPepper(r, cfg, legacySet || principals > 0)
 
 	providers := providerListFromConfig(cfg)
 	if len(providers) == 0 {
@@ -333,6 +340,9 @@ type configForDoctor interface {
 	NonLoopbackListeners() []string
 	// AllowOpenMode reports LOOMCYCLE_ALLOW_OPEN_MODE=1.
 	AllowOpenMode() bool
+	// DeclaredPrincipals counts the config `principals:`, inert ones included;
+	// any at all turns authentication on.
+	DeclaredPrincipals() int
 	// ConfigWarnings returns the non-fatal advisories config-load already
 	// produces — an agent holding a tool whose capability gate is empty, a
 	// principal whose token env is unset, a layered override.
@@ -436,7 +446,7 @@ func providerListFromConfig(cfg configForDoctor) []string {
 // D2). Doctor does not open the database, so it cannot count the token rows
 // still on a legacy hash; the server logs that count at every boot, which is
 // where an operator learns when LOOMCYCLE_TOKEN_LEGACY_HASH=off is safe.
-func checkTokenPepper(r *doctorRun, cfg configForDoctor, authTokenSet bool) {
+func checkTokenPepper(r *doctorRun, cfg configForDoctor, authOn bool) {
 	const label = "Token pepper"
 	h, err := cfg.TokenHasher()
 	if err != nil {
@@ -453,7 +463,7 @@ func checkTokenPepper(r *doctorRun, cfg configForDoctor, authTokenSet bool) {
 			r.pass(label, "derived from LOOMCYCLE_SECRET_KEY; unpeppered token hashes refused (LOOMCYCLE_TOKEN_LEGACY_HASH=off)")
 		}
 	default:
-		if authTokenSet {
+		if authOn {
 			r.warn(label, "none — anyone who can write the database can mint a working token; set LOOMCYCLE_SECRET_KEY (a pepper is derived from it) or LOOMCYCLE_OPERATOR_TOKEN_PEPPER")
 		} else {
 			r.pass(label, "none (no auth configured)")
