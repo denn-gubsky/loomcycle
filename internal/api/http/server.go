@@ -3861,7 +3861,9 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 		ReReadShapeOnOperatorTurn: s.reReadShapeOnOperatorTurnFn(runID, runCfg.ToolChoice, runCfg.OutputFormat),
 	}
 	if sessHold != nil {
-		s.releaseSessionWhileParked(&runOpts, &parkLock{hold: sessHold, sessionID: in.SessionID}, cancelFn)
+		stateful := loop.StatefulMode(mergedContext, provider.Capabilities().Local, in.Interactive)
+		s.releaseSessionWhileParked(&runOpts, &parkLock{hold: sessHold, sessionID: in.SessionID}, loopCtx, stateful,
+			func(reason string) { s.cancelReg.CancelLocalRun(agentID, runID, reason) })
 	}
 	if detached {
 		handOff = true

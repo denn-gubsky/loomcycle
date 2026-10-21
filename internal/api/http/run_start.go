@@ -17,6 +17,7 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/loop"
 	"github.com/denn-gubsky/loomcycle/internal/providers"
 	"github.com/denn-gubsky/loomcycle/internal/runner"
+	"github.com/denn-gubsky/loomcycle/internal/steer"
 	"github.com/denn-gubsky/loomcycle/internal/store"
 )
 
@@ -223,11 +224,14 @@ func continuationRefusal(err error) error {
 // the session's live run (sessionHasLiveRun), and on this one by the
 // in-process lock, which the run keeps until it ends.
 //
-// Used only on the run's goroutine (the loop's park, turn and hold hooks).
+// Used only on the run's goroutine (the loop's park, steer and turn hooks).
 type parkLock struct {
 	hold      *sessionHold
 	sessionID string
 	released  bool
+	// retakeFailed: the operator turn that ended the park could not take the
+	// lock back; the turn it starts is cancelled when it is armed.
+	retakeFailed bool
 }
 
 // park lets the cluster lock go, once per park.
@@ -283,13 +287,24 @@ func (s *Server) sessionLiveAfterWait(ctx context.Context, in runner.RunInput, i
 	return s.sessionHasLiveRun(ctx, in.SessionID, row)
 }
 
-// releaseSessionWhileParked wires p into the loop's park, turn and hold
-// hooks: the cluster lock is let go when the run parks for its operator
-// (awaiting_input) or is held for a verdict, and taken back before its next
-// turn. A turn that cannot take it back does not run: an interactive run's
-// turn is cancelled with the busy reason and the run parks again; a run held
-// for review — which has no per-turn cancel — is cancelled.
-func (s *Server) releaseSessionWhileParked(opts *loop.RunOptions, p *parkLock, cancelRun context.CancelCauseFunc) {
+// releaseSessionWhileParked wires p into the loop's hooks.
+//
+// The lock is let go when the run parks for its operator (awaiting_input) or
+// is held for a verdict, and taken back at the start of the turn that ends the
+// park — the operator's message (OnSteer, which both loops' parks and a
+// review's send-back call as that turn begins). It is NOT taken back when a
+// hold ends without a turn — approved, rejected, expired, aborted: an approved
+// interactive run then parks for input, and a run that ends needs no lock. An
+// OnSteer that is not ending a park (a message drained mid-turn) finds the
+// lock held and takes nothing.
+//
+// A turn that cannot take the lock back does not run. An interactive run's
+// turn is cancelled as it is armed (ArmTurnCancel, wired for every
+// continuation here; it never fires otherwise) with the busy reason, and the
+// run parks again. A run with no per-turn cancel — a stateful one, or one that
+// is not interactive (a review's send-back) — is cancelled with the busy
+// reason, which its end records.
+func (s *Server) releaseSessionWhileParked(opts *loop.RunOptions, p *parkLock, loopCtx context.Context, stateful bool, cancelBusy func(reason string)) {
 	onEvent := opts.OnEvent
 	opts.OnEvent = func(ev providers.Event) {
 		onEvent(ev)
@@ -297,21 +312,40 @@ func (s *Server) releaseSessionWhileParked(opts *loop.RunOptions, p *parkLock, c
 			p.park()
 		}
 	}
-	if arm := opts.ArmTurnCancel; arm != nil {
-		opts.ArmTurnCancel = func(turnCancel context.CancelCauseFunc) func() {
-			if !p.resume() {
-				turnCancel(loop.TurnCancelCause(p.busy()))
-			}
-			return arm(turnCancel)
-		}
-	}
 	opts.OnReviewHold = func(held bool) {
 		if held {
 			p.park()
+		}
+	}
+	interactiveNow := func() bool {
+		if opts.InteractiveNow != nil {
+			return opts.InteractiveNow(loopCtx)
+		}
+		return opts.Interactive
+	}
+	onSteer := opts.OnSteer
+	opts.OnSteer = func(m steer.Message) {
+		if onSteer != nil {
+			onSteer(m)
+		}
+		if p.resume() {
 			return
 		}
-		if !p.resume() {
-			cancelRun(fmt.Errorf("%w: %s", runner.ErrSessionBusy, p.busy()))
+		if stateful || !interactiveNow() {
+			cancelBusy(p.busy())
+			return
 		}
+		p.retakeFailed = true
+	}
+	arm := opts.ArmTurnCancel
+	opts.ArmTurnCancel = func(turnCancel context.CancelCauseFunc) func() {
+		if p.retakeFailed {
+			p.retakeFailed = false
+			turnCancel(loop.TurnCancelCause(p.busy()))
+		}
+		if arm == nil {
+			return func() {}
+		}
+		return arm(turnCancel)
 	}
 }

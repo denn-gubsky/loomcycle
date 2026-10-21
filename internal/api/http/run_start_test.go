@@ -7,16 +7,21 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/denn-gubsky/loomcycle/internal/auth"
 	"github.com/denn-gubsky/loomcycle/internal/concurrency"
+	"github.com/denn-gubsky/loomcycle/internal/config"
 	"github.com/denn-gubsky/loomcycle/internal/loop"
 	"github.com/denn-gubsky/loomcycle/internal/providers"
 	"github.com/denn-gubsky/loomcycle/internal/runner"
+	"github.com/denn-gubsky/loomcycle/internal/steer"
 	"github.com/denn-gubsky/loomcycle/internal/store"
+	storesqlite "github.com/denn-gubsky/loomcycle/internal/store/sqlite"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
 )
 
@@ -582,4 +587,197 @@ func TestHandleRuns_SessionIDRevealsNothingTheCallerMayNotSee(t *testing.T) {
 	if limited.status < 400 || strings.Contains(limited.body, `"other"`) {
 		t.Errorf("restricted token: %d %q, want a refusal that does not name agent \"other\"", limited.status, limited.body)
 	}
+}
+
+// An approved run held for review is not re-locked: approving starts no turn.
+// An interactive run approved while another replica briefly holds its
+// session's lock parks for its operator's next message, as it would without
+// the contention; it used to be ended.
+func TestHandleMessages_AnApprovedHoldTakesNoLockAndParks(t *testing.T) {
+	g := newGoldenServer(t, goldenOpts{})
+	sid := g.completedSession("term")
+	locker := newFakeClusterLocker()
+	g.srv.sessionLockPG = locker
+
+	r := g.post("/v1/sessions/"+sid+"/messages", goldenMsgBody("hi again", `"interactive":true,"review":true`))
+	agentID, runID, _ := r.ids(t)
+	r.until(t, "awaiting_review", 1)
+	if !eventually(func() bool { return locker.holding() == 0 }) {
+		t.Errorf("held for review with %d cluster locks", locker.holding())
+	}
+	release, ok := locker.TryLock(context.Background(), sid) // another replica, mid-request
+	if !ok {
+		t.Fatal("could not take the held session's cluster lock")
+	}
+	g.post("/v1/runs/"+runID+"/review", `{"decision":"approve"}`).drain(t)
+	r.until(t, "awaiting_input", 1)
+	if run, err := g.st.GetRun(context.Background(), runID); err != nil || run.Status != store.RunRunning {
+		t.Errorf("after the approval the run is %q (%v), want running, parked for input", run.Status, err)
+	}
+	release()
+	g.post("/v1/agents/"+agentID+"/cancel", "").drain(t)
+	r.drain(t)
+}
+
+// A held run sent back with feedback takes its lock back for the revision.
+// When another replica holds it throughout, the run ends cancelled with the
+// busy reason recorded — not as a client that went away.
+func TestHandleMessages_ASendBackThatCannotRetakeItsLockRecordsTheBusyReason(t *testing.T) {
+	g := newGoldenServer(t, goldenOpts{})
+	sid := g.completedSession("plain")
+	locker := newFakeClusterLocker()
+	g.srv.sessionLockPG = locker
+
+	r := g.post("/v1/sessions/"+sid+"/messages", goldenMsgBody("revise it", `"review":true`))
+	_, runID, _ := r.ids(t)
+	r.until(t, "awaiting_review", 1)
+	if !eventually(func() bool { return locker.holding() == 0 }) {
+		t.Errorf("held for review with %d cluster locks", locker.holding())
+	}
+	release, ok := locker.TryLock(context.Background(), sid)
+	if !ok {
+		t.Fatal("could not take the held session's cluster lock")
+	}
+	defer release()
+	v := g.post("/v1/runs/"+runID+"/review", `{"decision":"reject","feedback":"shorter please"}`)
+	v.drain(t)
+	r.drain(t)
+	run := waitRunStatus(t, g.st, runID, store.RunCancelled)
+	if !strings.Contains(run.StopReason+" "+run.ErrorMsg, "another request is in flight") {
+		t.Errorf("run ended stop_reason=%q error=%q, want the busy reason", run.StopReason, run.ErrorMsg)
+	}
+}
+
+// lockProbeProvider records, at each model call, how many cluster session
+// locks are held. Its "HOLD" answer waits for gate; a stateful agent's step
+// ends its turn with a state patch.
+type lockProbeProvider struct {
+	locker *fakeClusterLocker
+	gate   chan struct{}
+
+	mu   sync.Mutex
+	held []int
+	n    int
+}
+
+func (p *lockProbeProvider) ID() string                  { return "stub" }
+func (p *lockProbeProvider) Probe(context.Context) error { return nil }
+func (p *lockProbeProvider) ListModels(context.Context) ([]string, error) {
+	return []string{"stub-model"}, nil
+}
+func (p *lockProbeProvider) Capabilities() providers.Capabilities {
+	return providers.Capabilities{Streaming: true}
+}
+
+func (p *lockProbeProvider) heldAtCalls() []int {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return append([]int(nil), p.held...)
+}
+
+func (p *lockProbeProvider) Call(ctx context.Context, req providers.Request) (<-chan providers.Event, error) {
+	p.mu.Lock()
+	p.held = append(p.held, p.locker.holding())
+	p.n++
+	n := p.n
+	p.mu.Unlock()
+	var b []byte
+	if n := len(req.Messages); n > 0 {
+		b, _ = json.Marshal(req.Messages[n-1]) // the newest message decides
+	}
+	ch := make(chan providers.Event, 4)
+	done := providers.Event{Type: providers.EventDone, StopReason: "end_turn", Usage: &providers.Usage{InputTokens: 1, OutputTokens: 1}}
+	switch {
+	case len(req.Tools) > 0 && req.Tools[0].Name == "emit_state":
+		ch <- providers.Event{Type: providers.EventToolCall, ToolUse: &providers.ToolUse{ID: fmt.Sprintf("t%d", n), Name: "emit_state",
+			Input: json.RawMessage(fmt.Sprintf(`{"patch":{"turn%d":"seen"},"done":true,"final":"answer %d"}`, n, n))}}
+		done.StopReason = "tool_use"
+		ch <- done
+	case strings.Contains(string(b), "HOLD"):
+		go func() {
+			defer close(ch)
+			ch <- providers.Event{Type: providers.EventText, Text: "held"}
+			select {
+			case <-p.gate:
+				ch <- done
+			case <-ctx.Done():
+			}
+		}()
+		return ch, nil
+	default:
+		ch <- providers.Event{Type: providers.EventText, Text: "hello"}
+		ch <- done
+	}
+	close(ch)
+	return ch, nil
+}
+
+// lockProbeServer is a server whose model records the cluster locks held at
+// each of its calls.
+func lockProbeServer(t *testing.T) (*goldenServer, *lockProbeProvider) {
+	t.Helper()
+	mode := config.ContextModeStateful
+	cfg := &config.Config{
+		Defaults: config.Defaults{Provider: "stub", Model: "stub-model"},
+		Agents: map[string]config.AgentDef{
+			"plain":    {Model: "stub-model", SystemPrompt: "be brief"},
+			"stateful": {Model: "stub-model", SystemPrompt: "be brief", Context: &config.Context{Mode: &mode}},
+		},
+		Concurrency: config.Concurrency{MaxConcurrentRuns: 4, MaxQueueDepth: 8},
+	}
+	st, err := storesqlite.Open(filepath.Join(t.TempDir(), "lockprobe.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+	locker := newFakeClusterLocker()
+	prov := &lockProbeProvider{locker: locker, gate: make(chan struct{}, 8)}
+	srv := New(cfg, &stubResolver{p: prov}, []tools.Tool{}, concurrency.New(4, 8, 0), st)
+	srv.SetSteerRegistry(steer.NewRegistry(0))
+	srv.sessionLockPG = locker
+	ts := httptest.NewServer(srv.Mux())
+	t.Cleanup(ts.Close)
+	return &goldenServer{t: t, srv: srv, ts: ts, st: st, gate: prov.gate}, prov
+}
+
+// A stateful chat has no per-turn cancel hook; its turn after a park still
+// runs holding its session's cluster lock.
+func TestHandleMessages_AStatefulContinuationRetakesItsLockAfterAPark(t *testing.T) {
+	g, prov := lockProbeServer(t)
+	sid := g.completedSession("stateful")
+	r := g.post("/v1/sessions/"+sid+"/messages", goldenMsgBody("hi again", `"interactive":true`))
+	agentID, runID, _ := r.ids(t)
+	r.until(t, "awaiting_input", 1)
+	g.post("/v1/runs/"+runID+"/input", `{"text":"next"}`).drain(t)
+	r.until(t, "awaiting_input", 2)
+	held := prov.heldAtCalls()
+	if len(held) < 3 || held[len(held)-1] != 1 {
+		t.Errorf("cluster locks held at each model call = %v, want 1 at the turn after the park", held)
+	}
+	g.post("/v1/agents/"+agentID+"/cancel", "").drain(t)
+	r.drain(t)
+}
+
+// A run made interactive while it ran parks, and its turn after the park runs
+// holding its session's cluster lock, though it started with no per-turn
+// cancel to re-take it on.
+func TestHandleMessages_AContinuationPromotedToInteractiveRetakesItsLockAfterAPark(t *testing.T) {
+	g, prov := lockProbeServer(t)
+	sid := g.completedSession("plain")
+	r := g.post("/v1/sessions/"+sid+"/messages", goldenMsgBody("HOLD while promoted", ""))
+	agentID, runID, _ := r.ids(t)
+	r.until(t, "text", 1)
+	if code, b := postRetune(t, g.ts, runID, `{"interactive":true}`); code != http.StatusOK {
+		t.Fatalf("retune: %d %s", code, b)
+	}
+	g.gate <- struct{}{}
+	r.until(t, "awaiting_input", 1)
+	g.post("/v1/runs/"+runID+"/input", `{"text":"next"}`).drain(t)
+	r.until(t, "awaiting_input", 2)
+	held := prov.heldAtCalls()
+	if len(held) < 3 || held[len(held)-1] != 1 {
+		t.Errorf("cluster locks held at each model call = %v, want 1 at the turn after the park", held)
+	}
+	g.post("/v1/agents/"+agentID+"/cancel", "").drain(t)
+	r.drain(t)
 }
