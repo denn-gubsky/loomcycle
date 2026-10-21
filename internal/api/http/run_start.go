@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/denn-gubsky/loomcycle/internal/concurrency"
+	"github.com/denn-gubsky/loomcycle/internal/heartbeat"
 	"github.com/denn-gubsky/loomcycle/internal/loop"
 	"github.com/denn-gubsky/loomcycle/internal/providers"
 	"github.com/denn-gubsky/loomcycle/internal/runner"
@@ -282,21 +283,63 @@ func (p *parkLock) busy() string {
 	return fmt.Sprintf("another request is in flight on session %q", p.sessionID)
 }
 
-// sessionHasLiveRun reports whether a run of the session other than except is
-// queued or running — a parked run is running. It is the one-live-turn rule
-// for a replica that does not hold the session's in-process lock, at a moment
-// the cluster lock may be let go (parkLock).
+// sessionHasLiveRun reports whether a run of the session other than except
+// is a live turn. It is the one-live-turn rule for a moment the session's
+// cluster lock may be let go (parkLock), so it applies only where there is a
+// cluster lock: on a single replica the in-process lock is the rule — a parked
+// continuation keeps it to its end — and a crash takes that lock with it, so
+// no row of a dead process can block a session there.
+//
+// Across replicas a row is live when it is queued, or running with a fresh
+// heartbeat — the heartbeat sweeper's own rule (SweepStaleRuns): its last
+// heartbeat, or its start when it never beat, is within HeartbeatStaleAfter —
+// or held by a runtime pause, which beats no heartbeat on purpose. A parked
+// run is running and beats while it waits. So a row orphaned by a crash stops
+// blocking its session once its heartbeat is stale, with or without the
+// sweeper. A queued row is judged by its start, the same way.
 func (s *Server) sessionHasLiveRun(ctx context.Context, sessionID, except string) (bool, error) {
+	if s.sessionLockPG == nil {
+		return false, nil
+	}
 	runs, err := s.store.RunsForSession(ctx, sessionID)
 	if err != nil {
 		return false, err
 	}
+	cutoff := time.Now().Add(-s.heartbeatStaleAfter())
 	for _, r := range runs {
-		if r.ID != except && (r.Status == store.RunRunning || r.Status == store.RunQueued) {
+		if r.ID != except && runIsLive(r, cutoff) {
 			return true, nil
 		}
 	}
 	return false, nil
+}
+
+// runIsLive is sessionHasLiveRun's rule for one row; cutoff is now less
+// HeartbeatStaleAfter.
+func runIsLive(r store.Run, cutoff time.Time) bool {
+	switch r.Status {
+	case store.RunQueued:
+		return !r.StartedAt.Before(cutoff)
+	case store.RunRunning:
+		if r.PauseState == store.PauseStatePaused || r.PauseState == store.PauseStatePausing {
+			return true
+		}
+		beat := r.LastHeartbeatAt
+		if beat.IsZero() {
+			beat = r.StartedAt
+		}
+		return !beat.Before(cutoff)
+	}
+	return false
+}
+
+// heartbeatStaleAfter is how long a run may go without a heartbeat before it
+// is presumed dead: the sweeper's setting, and its default when unset.
+func (s *Server) heartbeatStaleAfter() time.Duration {
+	if d := s.cfg().Env.HeartbeatStaleAfter; d > 0 {
+		return d
+	}
+	return heartbeat.DefaultStaleAfter
 }
 
 // sessionLiveAfterWait is sessionHasLiveRun for a continuation that waited for

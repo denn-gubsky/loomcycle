@@ -537,6 +537,7 @@ func eventually(cond func() bool) bool {
 func TestHandleMessages_QueuedContinuationIsBusyIfAnotherReplicasTurnIsLive(t *testing.T) {
 	g := newGoldenServer(t, goldenOpts{maxRuns: 1})
 	sid := g.completedSession("plain")
+	g.srv.sessionLockPG = newFakeClusterLocker() // replicas: a cluster
 	holder := g.holdSlot()
 	r := g.post("/v1/sessions/"+sid+"/messages", goldenMsgBody("queued turn", ""))
 	r.until(t, "queued", 1)
@@ -815,4 +816,42 @@ func TestHandleMessages_AParkedContinuationWaitsOutABriefHoldOnItsLock(t *testin
 	}
 	g.post("/v1/agents/"+agentID+"/cancel", "").drain(t)
 	r.drain(t)
+}
+
+// A run row orphaned by a crash (killed mid-run: status running, heartbeat
+// stopped) does not block its session. Across replicas a running row is a
+// live turn only while its heartbeat is fresh, by the sweeper's own rule; on a
+// single replica there is no row check at all — the in-process lock is the
+// rule there, and a crash takes it with it.
+func TestHandleMessages_AnOrphanedRunRowDoesNotBlockItsSession(t *testing.T) {
+	for _, cluster := range []bool{true, false} {
+		name := "single replica"
+		if cluster {
+			name = "across replicas"
+		}
+		t.Run(name, func(t *testing.T) {
+			g := newGoldenServer(t, goldenOpts{})
+			sid := g.completedSession("plain")
+			if cluster {
+				g.srv.sessionLockPG = newFakeClusterLocker()
+			}
+			cfg := *g.srv.cfg()
+			cfg.Env.HeartbeatStaleAfter = 50 * time.Millisecond
+			g.srv.cfgHolder.Store(&cfg)
+			// The crashed process's run: running, never heartbeated again.
+			if _, err := g.st.CreateRun(context.Background(), sid, store.RunIdentity{AgentID: "a_crashed"}); err != nil {
+				t.Fatal(err)
+			}
+			// Across replicas, past the staleness window; on one replica even
+			// a fresh orphan must not block.
+			if cluster {
+				time.Sleep(100 * time.Millisecond)
+			}
+			r := g.post("/v1/sessions/"+sid+"/messages", goldenMsgBody("after the crash", ""))
+			r.drain(t)
+			if r.status != http.StatusOK {
+				t.Errorf("a continuation of a session with an orphaned run row: %d %s, want 200", r.status, r.body)
+			}
+		})
+	}
 }
