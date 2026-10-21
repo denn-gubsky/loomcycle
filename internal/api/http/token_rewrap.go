@@ -19,20 +19,27 @@ import (
 // presented token. The token keeps working; the database stops holding
 // anything a writer could have computed.
 //
-// Which untagged rows are genuine: every mint under a derived pepper writes a
-// tagged hash, and the rewrap leaves none untagged. So an untagged row in a
-// table that holds ANY tagged row (any form, any key) was not written by a
-// server on a derived pepper. It is refused, never rewrapped — at this boot
-// and at every later one, which a per-boot allow-list of rows could not
-// promise. The rewrap happens only while the table holds no tagged row at
-// all: the first boot after LOOMCYCLE_SECRET_KEY is set.
+// Which untagged rows are genuine: only those present at the FIRST boot under
+// a derived pepper. Every mint there writes a tagged hash and the rewrap
+// leaves none untagged, so a later untagged row was not written by such a
+// server. Two things record that the first boot happened, and the rewrap runs
+// only when neither is there:
 //
-// The residual: a database writer can still get a token of their choosing
-// rewrapped if, at a boot under a derived pepper, the table holds no tagged
-// row — it is empty (no token was ever minted; the expiry sweep keeps each
-// tenant's last row), or they delete or overwrite every tagged row, logging
-// every token holder out. They then write an unpeppered row and wait for a
-// restart. Closing that needs a marker stored outside the token table.
+//   - a tagged row (any form, any key) in the token table;
+//   - a marker row the first boot writes, so a table with no token rows yet
+//     (a deployment using only LOOMCYCLE_AUTH_TOKEN or config principals)
+//     is covered too. It sits in the credential table, the only table with a
+//     free key, under a scope no credential lookup or listing reads.
+//
+// An untagged row otherwise is refused, never rewrapped — at this boot and at
+// every later one, which a per-boot allow-list of rows could not promise.
+//
+// The residual: a database writer who deletes the marker AND every tagged
+// token row (logging every token holder out), then writes an unpeppered row
+// and waits for a restart, has it rewrapped. A writer limited to inserting
+// rows cannot. No marker in the database can do better: absence of a row is
+// not something a database writer can be kept from causing, so sealing the
+// marker would add nothing — a forged marker only stops a rewrap.
 //
 // Rows under the PREVIOUS secret key's pepper cannot be rewrapped without
 // the token, so they move onto the current form at their next login, as
@@ -54,14 +61,14 @@ type TokenRewrapReport struct {
 	// OtherKey counts rows under a pepper neither secret key derives. They
 	// cannot authenticate.
 	OtherKey int
-	// Refused are the def_ids of unpeppered rows left alone because the
-	// table was already on a derived pepper, sorted. They cannot
+	// Refused are the def_ids of unpeppered rows left alone because an
+	// earlier boot already ran under a derived pepper, sorted. They cannot
 	// authenticate.
 	Refused []string
 }
 
 // RewrapLegacyTokenRows wraps every unpeppered token row under the derived
-// pepper, if the table is not on a derived pepper yet. Call once at boot,
+// pepper, if no earlier boot under a derived pepper happened. Call once at boot,
 // before serving. A no-op under an explicit pepper (its untagged rows are
 // current) and with no pepper. On an error nothing is rewrapped: the rows stay
 // unpeppered and cannot authenticate until a later boot rewraps them.
@@ -80,6 +87,10 @@ func (s *Server) RewrapLegacyTokenRows(ctx context.Context) (TokenRewrapReport, 
 	s.wrappedTokens.Store(true)
 	// The table has no list-all; names then rows per name, once, at boot.
 	names, err := s.store.OperatorTokenDefListNames(ctx)
+	if err != nil {
+		return TokenRewrapReport{}, err
+	}
+	marked, err := s.tokenRewrapMarked(ctx)
 	if err != nil {
 		return TokenRewrapReport{}, err
 	}
@@ -113,7 +124,7 @@ func (s *Server) RewrapLegacyTokenRows(ctx context.Context) (TokenRewrapReport, 
 	sort.Strings(ids)
 	switch {
 	case len(untagged) == 0:
-	case tagged:
+	case tagged || marked:
 		rep.Refused = ids
 	default:
 		ops := make([]store.OperatorTokenRehashOp, 0, len(untagged))
@@ -130,8 +141,41 @@ func (s *Server) RewrapLegacyTokenRows(ctx context.Context) (TokenRewrapReport, 
 		rep.Rewrapped = ids
 		rep.Wrapped += len(ids)
 	}
+	if !marked {
+		// After the rewrap committed: a marker without it would strand the
+		// rows. Failing here leaves only the tagged rows as the record.
+		if err := s.markTokenRewrap(ctx); err != nil {
+			log.Printf("auth: recording the token-hash rewrap failed (retried at the next boot): %v", err)
+		}
+	}
 	s.wrappedTokens.Store(rep.Wrapped > 0)
 	return rep, nil
+}
+
+// The rewrap marker's key in the credential table. Scope "system" is outside
+// the scopes a credential is stored under (tenant, user, agent), so no
+// credential surface lists or resolves it; it holds no secret.
+const (
+	tokenRewrapMarkerScope = "system"
+	tokenRewrapMarkerName  = "operator-token-rewrap"
+)
+
+func (s *Server) tokenRewrapMarked(ctx context.Context) (bool, error) {
+	_, err := s.store.CredentialDefGet(ctx, "", tokenRewrapMarkerScope, "", tokenRewrapMarkerName)
+	if isNotFound(err) {
+		return false, nil
+	}
+	return err == nil, err
+}
+
+func (s *Server) markTokenRewrap(ctx context.Context) error {
+	_, err := s.store.CredentialDefPut(ctx, store.CredentialDefRow{
+		Scope:      tokenRewrapMarkerScope,
+		Name:       tokenRewrapMarkerName,
+		Backend:    "marker",
+		Definition: []byte(`{"rewrapped_unpeppered_token_hashes":true}`),
+	})
+	return err
 }
 
 // lookupOlderTokenForm is the miss path of the token lookup under a derived

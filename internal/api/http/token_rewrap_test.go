@@ -236,15 +236,12 @@ func TestTokenBoot_FailedRewrapIsRetriedAtTheNextBoot(t *testing.T) {
 }
 
 // A row already on the current form, edited by a database writer to an
-// unpeppered hash of a token they chose, never authenticates — while another
-// row keeps the table on the derived pepper. (Editing or deleting EVERY
-// tagged row is the residual: the next boot then rewraps.)
+// unpeppered hash of a token they chose, never authenticates.
 func TestTokenLookup_RowEditedToAnUnpepperedHashIsRefused(t *testing.T) {
 	env := config.Env{SecretKey: pepperKey(1)}
 	s, st := derivedPepperServer(t, env)
 	h := hasherFor(t, env)
 	seedTokenHash(t, st, "def_cur", h.Hash("lct_cur"))
-	seedTokenHash(t, st, "def_other", h.Hash("lct_other"))
 	bootTokenHashes(t, s)
 	if _, err := st.OperatorTokenRehash(context.Background(), "def_cur", h.Hash("lct_cur"), auth.HashToken("", "lct_mine")); err != nil {
 		t.Fatal(err)
@@ -276,5 +273,32 @@ func TestTokenBoot_ReportCountsEachForm(t *testing.T) {
 	}
 	if _, ok := s.resolvePrincipal(context.Background(), "lct_gone"); ok {
 		t.Error("a token under a key neither configured key derives authenticated")
+	}
+}
+
+// A deployment that first boots on the derived pepper with no token rows at
+// all (common: only LOOMCYCLE_AUTH_TOKEN or config principals) has no tagged
+// row to mark the table as done. An unpeppered row written later must still
+// never be rewrapped — a later boot sees the marker the first one left.
+func TestTokenBoot_RowWrittenIntoAnEmptyTableAfterTheFirstBootIsNotRewrapped(t *testing.T) {
+	env := config.Env{SecretKey: pepperKey(1)}
+	s, st := derivedPepperServer(t, env)
+	bootTokenHashes(t, s)
+
+	forged := auth.HashToken("", "lct_forged")
+	seedTokenHash(t, st, "def_forged", forged)
+	s2 := &Server{cfgHolder: s.cfgHolder, store: st}
+	rep, err := s2.RewrapLegacyTokenRows(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := storedHash(t, st, "def_forged"); got != forged {
+		t.Fatalf("a row written after the first boot was rewrapped to %q", got)
+	}
+	if len(rep.Refused) != 1 || rep.Refused[0] != "def_forged" {
+		t.Errorf("report = %+v, want the row refused", rep)
+	}
+	if p, ok := s2.resolvePrincipal(context.Background(), "lct_forged"); ok {
+		t.Errorf("a row written after the first boot authenticated as %+v", p)
 	}
 }
