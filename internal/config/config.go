@@ -4608,6 +4608,15 @@ type Env struct {
 	// LOOMCYCLE_PAUSE_DEFAULT_TIMEOUT_MS.
 	PauseDefaultTimeoutMs int64
 
+	// ShutdownPauseTimeoutMs bounds how long a SIGTERM/SIGINT shutdown waits
+	// for this replica's in-flight runs to park before it exits, so the next
+	// boot resumes them (pause.Manager.PauseForShutdown). At three quarters of
+	// it, the tool calls of the runs not yet parked are interrupted. Default
+	// DefaultShutdownPauseTimeoutMs; 0 skips the pause (runs are abandoned to
+	// the stale-run sweeper, as before). Capped at pause.MaxPauseTimeout. Env:
+	// LOOMCYCLE_SHUTDOWN_PAUSE_TIMEOUT_MS.
+	ShutdownPauseTimeoutMs int64
+
 	// PauseCacheTTLMs is the v0.12.3 Phase 4 TTL for the cluster-
 	// mode DB-backed pause-state cache in pause.Manager.State().
 	// Default 1000 (1s). Lower values reduce the maximum latency
@@ -6103,6 +6112,15 @@ func LoadLayers(layers ...Layer) (*Config, error) {
 		}
 	}
 
+	// RFC ES F1: the shutdown pause's bound. Unset ⇒ the default; an explicit
+	// 0 turns the pause off, so it is told apart from unset.
+	cfg.Env.ShutdownPauseTimeoutMs = DefaultShutdownPauseTimeoutMs
+	if v := os.Getenv("LOOMCYCLE_SHUTDOWN_PAUSE_TIMEOUT_MS"); v != "" {
+		if n, err := strconv.ParseInt(v, 10, 64); err == nil && n >= 0 {
+			cfg.Env.ShutdownPauseTimeoutMs = n
+		}
+	}
+
 	// v0.8.17 pause manager default timeout. 0 ⇒ pause package
 	// default (30s). The manager itself clamps at pause.MaxPauseTimeout
 	// regardless of what we set here.
@@ -7219,6 +7237,16 @@ func addSkillToolDefaults(cfg *Config) {
 		cfg.Agents[name] = def
 	}
 }
+
+// DefaultShutdownPauseTimeoutMs is the shutdown pause's bound when
+// LOOMCYCLE_SHUTDOWN_PAUSE_TIMEOUT_MS is unset. 8 s keeps the whole shutdown —
+// the pause, with the listeners draining alongside it (5 s each), then the
+// final flushes — inside Docker's default 10 s stop grace, so a default
+// container is never SIGKILLed mid-shutdown. Runs get 6 s to park on their own,
+// then 2 s to park after their tool calls are interrupted. A deployment that
+// grants a longer grace period (stop_grace_period, terminationGracePeriodSeconds)
+// can raise it to let longer model calls finish.
+const DefaultShutdownPauseTimeoutMs = 8000
 
 // BashboxOverlayMaxBytesDefault is the per-call cap on Bashbox's in-memory
 // writes when LOOMCYCLE_BASHBOX_OVERLAY_MAX_BYTES is unset. 64 MiB holds any
