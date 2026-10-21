@@ -11,6 +11,6 @@
   },
   "dependencies": {
     "express": "^4.21.2",
-    "jose": "^5.9.6"
+    "jose": "^6.2.12"
   }
 }
