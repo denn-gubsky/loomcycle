@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"slices"
 	"strings"
 	"testing"
 
@@ -694,5 +695,141 @@ func TestHostAllowedExtras_LeadingDotSuffix(t *testing.T) {
 					tc.host, tc.extras, got, tc.want, tc.comment)
 			}
 		})
+	}
+}
+
+// TestHTTPTool_RedactsCredentialBearingResponseHeaders: a response header that
+// carries a credential (a session cookie, a minted token, an API key) must not
+// reach the model, which could repeat it into a transcript, a memory or another
+// request. The header NAME stays, so the model still sees a cookie was set;
+// pagination, rate-limit and challenge headers stay readable.
+func TestHTTPTool_RedactsCredentialBearingResponseHeaders(t *testing.T) {
+	const secret = "s3cr3t-value"
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		h := w.Header()
+		h.Add("Set-Cookie", "sid="+secret+"; HttpOnly")
+		h.Add("Set-Cookie", "csrf="+secret)
+		h.Set("Set-Cookie2", "legacy="+secret)
+		h.Set("Authorization", "Bearer "+secret)
+		h.Set("Proxy-Authorization", "Basic "+secret)
+		h.Set("X-Auth-Token", secret)
+		h.Set("X-Api-Key", secret)
+		h.Set("X-Api_key", secret)
+		h.Set("X-Session-Id", secret)
+		h.Set("X-Client-Secret", secret)
+		h.Set("X-Credential", secret)
+		h.Set("X-Password-Hint", secret)
+		h.Set("X-Upstream-Session", secret)
+		h.Set("X-Authorization", secret)
+		h.Set("X-AuthToken", secret)
+		h.Set("X-Authentication-Info", secret)
+		h.Set("X-Session-Page", secret)
+		h.Set("Page-Api-Key", secret)
+		h.Set("Cursor-Secret", secret)
+		h.Set("X-Access-Token-Cursor", secret)
+		h.Set("X-Access-Page-Token", secret)
+		h.Set("Ocp-Apim-Subscription-Key", secret)
+		h.Set("X-Access-Key", secret)
+		h.Set("X-Jwt-Assertion", secret)
+		h.Set("X-Bearer", secret)
+		h.Set("x-ms-continuationtoken", "ct-1")
+		h.Set("Next-Page-Token", "np-1")
+		h.Set("X-Next-Page-Token", "np-2")
+		h.Set("X-Page-Cursor", "cur-1")
+		h.Set("X-OAuth-Scopes", "repo, user")
+		h.Set("X-Accepted-OAuth-Scopes", "repo")
+		h.Set("Access-Control-Allow-Credentials", "true")
+		h.Set("X-Author", "octocat")
+		h.Set("X-RateLimit-Remaining", "42")
+		h.Set("Link", `<https://api.example/items?page=2>; rel="next"`)
+		h.Set("WWW-Authenticate", `Bearer realm="api"`)
+		h.Set("Proxy-Authenticate", `Basic realm="proxy"`)
+		h.Set("ETag", `"v1"`)
+		h.Set("X-Request-Id", "req-7")
+		fmt.Fprint(w, "ok")
+	}))
+	defer srv.Close()
+
+	host := mustHost(t, srv.URL)
+	h := &HTTP{HostAllowlist: []string{host}, AllowPrivateIPs: true}
+	body, _ := json.Marshal(map[string]string{"method": "GET", "url": srv.URL})
+	res, err := h.Execute(context.Background(), body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.IsError {
+		t.Fatalf("unexpected error: %q", res.Text)
+	}
+	if strings.Contains(res.Text, secret) {
+		t.Errorf("a credential-bearing header value reached the tool result:\n%s", res.Text)
+	}
+	for _, name := range []string{"Set-Cookie", "Set-Cookie2", "Authorization", "Proxy-Authorization",
+		"X-Auth-Token", "X-Api-Key", "X-Api_key", "X-Session-Id", "X-Client-Secret", "X-Credential", "X-Password-Hint",
+		"X-Upstream-Session", "X-Authorization", "X-Authtoken", "X-Authentication-Info",
+		// A pagination word does not lift a credential word beside it.
+		"X-Session-Page", "Page-Api-Key", "Cursor-Secret",
+		// Only a whole pagination-token name is lifted, never a credential
+		// with a pagination word in it.
+		"X-Access-Token-Cursor", "X-Access-Page-Token",
+		"Ocp-Apim-Subscription-Key", "X-Access-Key", "X-Jwt-Assertion", "X-Bearer"} {
+		if !strings.Contains(res.Text, "\n"+name+": [redacted]\n") {
+			t.Errorf("header %s: want its name kept with a [redacted] value; got:\n%s", name, res.Text)
+		}
+	}
+	for _, line := range []string{
+		"X-Ratelimit-Remaining: 42",
+		`Link: <https://api.example/items?page=2>; rel="next"`,
+		`Www-Authenticate: Bearer realm="api"`,
+		`Proxy-Authenticate: Basic realm="proxy"`,
+		`Etag: "v1"`,
+		"X-Request-Id: req-7",
+		// Pagination cursors and scope listings name a token or auth but
+		// are what an agent paging an API needs.
+		"X-Ms-Continuationtoken: ct-1",
+		"Next-Page-Token: np-1",
+		"X-Next-Page-Token: np-2",
+		"X-Page-Cursor: cur-1",
+		"X-Oauth-Scopes: repo, user",
+		"X-Accepted-Oauth-Scopes: repo",
+		"Access-Control-Allow-Credentials: true",
+		"X-Author: octocat",
+	} {
+		if !strings.Contains(res.Text, "\n"+line+"\n") {
+			t.Errorf("want readable header line %q; got:\n%s", line, res.Text)
+		}
+	}
+	if !strings.HasSuffix(res.Text, "\n\nok") {
+		t.Errorf("body not separated from the headers by a blank line; got:\n%s", res.Text)
+	}
+}
+
+// TestHTTPTool_ResponseHeadersInSortedOrder: the header block is in name
+// order, so the same response renders to the same text every time (a
+// transcript diff or a cached prompt does not churn on map order).
+func TestHTTPTool_ResponseHeadersInSortedOrder(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		for _, n := range []string{"X-K", "X-B", "X-H", "X-A", "X-J", "X-C", "X-G", "X-D", "X-I", "X-E", "X-F"} {
+			w.Header().Set(n, "v")
+		}
+		fmt.Fprint(w, "ok")
+	}))
+	defer srv.Close()
+
+	host := mustHost(t, srv.URL)
+	h := &HTTP{HostAllowlist: []string{host}, AllowPrivateIPs: true}
+	body, _ := json.Marshal(map[string]string{"method": "GET", "url": srv.URL})
+	res, err := h.Execute(context.Background(), body)
+	if err != nil || res.IsError {
+		t.Fatalf("unexpected error: %v %q", err, res.Text)
+	}
+	head, _, _ := strings.Cut(res.Text, "\n\n")
+	lines := strings.Split(head, "\n")[1:] // drop the status line
+	var names []string
+	for _, l := range lines {
+		name, _, _ := strings.Cut(l, ":")
+		names = append(names, name)
+	}
+	if !slices.IsSorted(names) {
+		t.Errorf("header lines not in name order: %v", names)
 	}
 }

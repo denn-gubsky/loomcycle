@@ -128,7 +128,7 @@ jobs:
           # pre-create step below, which force-refetches and verifies.
           fetch-tags: true
 
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v7
         with:
           go-version: "1.26"
           # The runner caches an older patch; take the newest so a stdlib fix lands.
@@ -161,7 +161,7 @@ jobs:
         uses: docker/setup-qemu-action@v3
       - name: Set up Docker Buildx
         if: vars.DOCKER_PUBLISH_ENABLED == 'true'
-        uses: docker/setup-buildx-action@v3
+        uses: docker/setup-buildx-action@v4
       - name: Log in to Docker Hub
         if: vars.DOCKER_PUBLISH_ENABLED == 'true'
         uses: docker/login-action@v3
@@ -320,7 +320,7 @@ jobs:
       # goreleaser docker stage. A patch's only artifact IS the image, so with
       # docker publishing off there is nothing more to do (the release page
       # above is still created).
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v7
         if: vars.DOCKER_PUBLISH_ENABLED == 'true'
         with:
           go-version: "1.26"
@@ -355,7 +355,7 @@ jobs:
 
       - name: Set up Docker Buildx
         if: vars.DOCKER_PUBLISH_ENABLED == 'true'
-        uses: docker/setup-buildx-action@v3
+        uses: docker/setup-buildx-action@v4
       - name: Log in to Docker Hub
         if: vars.DOCKER_PUBLISH_ENABLED == 'true'
         uses: docker/login-action@v3

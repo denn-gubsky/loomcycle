@@ -148,7 +148,7 @@ loomcycle            # start the server (default behaviour with no args)
 - **gRPC surface:** https://github.com/denn-gubsky/loomcycle/blob/main/docs/GRPC.md
 - **Release notes:** https://github.com/denn-gubsky/loomcycle/blob/main/REVISIONS.md
 
-In-binary docs (bundled help topics) are accessible via `GET /v1/_help/<topic>` against a running instance. Topic list: `installation`, `getting-started`, `llm-gateway`, `fairness`, `observability`, `vector-memory`, `voyage-embedder`, `sqlite-vec`, `dynamic-mcp`, `bash-security`, and more.
+In-binary docs (bundled help topics) are accessible via `GET /v1/_help/<topic>` against a running instance. Topic list: `installation`, `getting-started`, `llm-gateway`, `fairness`, `observability`, `vector-memory`, `voyage-embedder`, `sqlite-vec`, `dynamic-mcp`, `bashbox`, and more.
 
 ## Adapters
 

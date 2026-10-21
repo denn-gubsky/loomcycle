@@ -11,8 +11,9 @@ import (
 
 // TestReceiver_OversizedBodyRejectedBeforeSpawn pins the body_size_limit_bytes
 // trust-boundary cap: a body larger than the configured limit is rejected
-// (400) by the MaxBytesReader-bounded read BEFORE it is buffered, parsed, or
-// spawned. Closes a fault-injection coverage gap (the cap was enforced but
+// BEFORE it is verified, parsed, or spawned, with the unknown-name 404 (the
+// sender is unauthenticated). Only the server's request limit bounds what is
+// buffered. Closes a fault-injection coverage gap (the cap was enforced but
 // untested).
 func TestReceiver_OversizedBodyRejectedBeforeSpawn(t *testing.T) {
 	secret := "shhh"
@@ -32,8 +33,8 @@ func TestReceiver_OversizedBodyRejectedBeforeSpawn(t *testing.T) {
 	h.Set("X-Hub-Signature-256", githubSig(secret, big))
 	w := doPost(rec, "gh", big, h)
 
-	if w.Code != http.StatusBadRequest {
-		t.Fatalf("oversized body status = %d, want 400; body=%s", w.Code, w.Body.String())
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("oversized body status = %d, want 404; body=%s", w.Code, w.Body.String())
 	}
 	if fr.called {
 		t.Error("runner invoked for an oversized body; the cap must reject it before spawn")

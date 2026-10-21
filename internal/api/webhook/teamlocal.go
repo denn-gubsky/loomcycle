@@ -3,7 +3,6 @@ package webhook
 import (
 	"encoding/json"
 	"errors"
-	"io"
 	"net/http"
 	"net/url"
 
@@ -54,22 +53,23 @@ func (rec *Receiver) handleTeam(w http.ResponseWriter, r *http.Request) {
 
 	// 1. Resolve. No such team, no such webhook, no walk of the team running,
 	//    a retired version: one answer for all, byte-identical to a
-	//    WebhookDef that does not exist, before the body is read — so the
-	//    route tells an unauthenticated caller nothing a WebhookDef's would
-	//    not.
+	//    WebhookDef that does not exist — so the route tells an
+	//    unauthenticated caller nothing a WebhookDef's would not.
 	hook, ok := rec.teamHooks.ResolveTeamWebhook(ctx, tenant, team, name)
 	if !ok {
+		rec.readDelivery(w, r, 0) // read as a live hook's would be
 		rec.finish(span, "", "", "rejected_unknown", "")
-		writeError(w, http.StatusNotFound, "unknown_webhook", "")
+		writeUnknownWebhook(w)
 		return
 	}
 	whKey := teamWebhookKey(tenant, team, name)
 
-	// 2. The raw body, under the receiver's default limit.
-	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, int64(defaultBodySizeLimitBytes)))
-	if err != nil {
+	// 2. The raw body, under the receiver's default limit; a body over it is
+	//    answered as an unknown name, unauthenticated as it is.
+	body, bodyOK := rec.readDelivery(w, r, min(int64(defaultBodySizeLimitBytes), rec.requestCap()))
+	if !bodyOK {
 		rec.finish(span, "", "", "rejected_body", "")
-		writeError(w, http.StatusBadRequest, "bad_body", "")
+		writeUnknownWebhook(w)
 		return
 	}
 
