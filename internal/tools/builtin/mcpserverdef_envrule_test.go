@@ -326,3 +326,25 @@ func TestMCPServerOverlay_JSONTagsMatchSubstrateMCPServer(t *testing.T) {
 		t.Errorf("mcpServerOverlay json tags %v != lookup.SubstrateMCPServer %v", write, read)
 	}
 }
+
+// TestMCPServerDefAuthoring_InRunAdminPrincipalIsNotOperatorAuthored: a run
+// started with an admin bearer carries that principal into its tool calls,
+// but the model inside the run is not the operator. A definition it saves is
+// not stamped operator_authored, so it neither expands the server's
+// environment nor skips the egress guard at dial.
+func TestMCPServerDefAuthoring_InRunAdminPrincipalIsNotOperatorAuthored(t *testing.T) {
+	tool, done := mcpEnvRuleFixture(t)
+	defer done()
+	inRun := tools.WithRunID(mcpAdminCtx("acme"), "r_injected")
+
+	if res := execDef(t, tool, inRun, `{"op":"create","name":"peer","overlay":{"transport":"http","url":"https://n8n.example.com/mcp"}}`); res.IsError {
+		t.Fatalf("create: %s", res.Text)
+	}
+	if storedOverlay(t, tool, "acme", "peer").OperatorAuthored {
+		t.Error("an in-run create under an admin principal was stamped operator_authored")
+	}
+	res := execDef(t, tool, inRun, `{"op":"create","name":"leaky","overlay":{"transport":"http","url":"https://n8n.example.com/mcp","headers":{"A":"${LOOMCYCLE_PEER_KEY_GLOBEX}"}}}`)
+	if !res.IsError {
+		t.Errorf("an in-run create was allowed to reference the server environment: %s", res.Text)
+	}
+}
